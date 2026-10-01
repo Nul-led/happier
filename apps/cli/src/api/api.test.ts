@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import axios from 'axios';
-import { CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION } from '@happier-dev/protocol';
+import tweetnacl from 'tweetnacl';
+import { CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION, SESSION_CREATION_AUTHORIZATION_HEADER_V1 } from '@happier-dev/protocol';
 import { ApiClient } from './api';
 import { connectionState } from '@/api/offline/serverConnectionErrors';
 import { createEnvKeyScope } from '@/testkit/env/envScope';
@@ -77,6 +78,13 @@ const testMetadata = {
     happyLibDir: '/home/user/.happy/lib',
     happyToolsDir: '/home/user/.happy/tools'
 };
+
+// A real Ed25519 public key: MachineInstallationPublicKeySchema rejects small-order
+// points (packages/protocol/src/crypto/ed25519.ts), so an all-zero placeholder is
+// not a valid registration identity.
+const testInstallationPublicKey = Buffer.from(
+    tweetnacl.sign.keyPair.fromSeed(new Uint8Array(32).fill(7)).publicKey,
+).toString('base64url');
 
 const testMachineMetadata = {
     host: 'localhost',
@@ -174,6 +182,53 @@ describe('Api server error handling', () => {
     });
 
     describe('getOrCreateSession', () => {
+        it('establishes the exact Machine access binding before returning a created Session', async () => {
+            api.setLocalMachineId('target-machine');
+            const requests: string[] = [];
+            let releaseBinding: (() => void) | undefined;
+            const bindingCompletion = new Promise<void>((resolve) => { releaseBinding = resolve; });
+            mockGet.mockImplementation(async (url: string) => url.includes('/v1/access-keys/')
+                ? { status: 200, data: { accessKey: null } }
+                : {
+                    status: 200,
+                    data: {
+                        mode: 'e2ee', version: 1,
+                        signingKeyFingerprint: 'signing-fingerprint',
+                        contentKeyFingerprint: 'content-fingerprint',
+                        updatedAt: 1,
+                    },
+                });
+            mockPost.mockImplementation(async (url: string) => {
+                if (url.endsWith('/v1/sessions')) {
+                    requests.push('session');
+                    return { status: 201, data: { session: { id: 's1' } } };
+                }
+                if (url.includes('/v1/access-keys/s1/target-machine')) {
+                    requests.push('access-key');
+                    await bindingCompletion;
+                    return { status: 200, data: { success: true } };
+                }
+                throw new Error(`Unexpected POST: ${url}`);
+            });
+
+            const created = api.getOrCreateSession({
+                tag: 'test-tag', metadata: testMetadata, state: null,
+                creationAuthorizationToken: 'host-signed-proof',
+            });
+            await vi.waitFor(() => expect(requests).toEqual(['session', 'access-key']));
+            let returned = false;
+            void created.then(() => { returned = true; });
+            expect(returned).toBe(false);
+            releaseBinding?.();
+            await expect(created).resolves.toMatchObject({ id: 's1' });
+            expect(requests).toEqual(['session', 'access-key']);
+            expect(mockPost).toHaveBeenCalledWith('https://api.example.com/v1/sessions',
+                expect.not.objectContaining({ creationAuthorizationToken: 'host-signed-proof' }),
+                expect.objectContaining({ headers: expect.objectContaining({
+                    [SESSION_CREATION_AUTHORIZATION_HEADER_V1]: 'host-signed-proof',
+                }) }));
+        });
+
         it('delays session creation when HAPPIER_E2E_DELAY_CREATE_SESSION_MS is set', async () => {
             vi.useFakeTimers();
             envScope.patch({ HAPPIER_E2E_DELAY_CREATE_SESSION_MS: '1000' });
@@ -533,6 +588,30 @@ describe('Api server error handling', () => {
             expect(connectionState.isOffline()).toBe(false);
             expect(mockPost).not.toHaveBeenCalled();
         });
+
+        it('throws the stable auth status error when the refusal is not an Axios error', async () => {
+            connectionState.reset();
+            // Real Axios answers `false` for the preflight's HttpStatusError cause
+            // (it is the repository's minimal Axios-like status carrier, not an
+            // Axios error), so the classifier must read the status, not the brand.
+            mockIsAxiosError.mockImplementation(() => false);
+            mockGet.mockResolvedValue({ status: 403, data: { error: 'forbidden' } });
+
+            try {
+                await expect(api.getOrCreateSession({
+                    tag: 'test-tag',
+                    metadata: testMetadata,
+                    state: null,
+                })).rejects.toMatchObject({
+                    name: 'HttpStatusError',
+                    response: { status: 403 },
+                });
+                expect(connectionState.isOffline()).toBe(false);
+                expect(mockPost).not.toHaveBeenCalled();
+            } finally {
+                mockIsAxiosError.mockImplementation(() => true);
+            }
+        });
     });
 
     describe('getOrCreateMachine', () => {
@@ -640,7 +719,7 @@ describe('Api server error handling', () => {
                 metadata: testMachineMetadata,
                 registrationIdentity: {
                     installationId: 'installation-1',
-                    installationPublicKey: Buffer.from(new Uint8Array(32)).toString('base64url'),
+                    installationPublicKey: testInstallationPublicKey,
                     installationProof: {
                         version: 1,
                         algorithm: 'ed25519',
@@ -655,7 +734,7 @@ describe('Api server error handling', () => {
             const body = mockPost.mock.calls[0]?.[1];
             expect(body).toEqual(expect.objectContaining({
                 installationId: 'installation-1',
-                installationPublicKey: Buffer.from(new Uint8Array(32)).toString('base64url'),
+                installationPublicKey: testInstallationPublicKey,
                 installationProof: {
                     version: 1,
                     algorithm: 'ed25519',
@@ -701,7 +780,7 @@ describe('Api server error handling', () => {
                 metadata: testMachineMetadata,
                 registrationIdentity: {
                     installationId: 'installation-1',
-                    installationPublicKey: Buffer.from(new Uint8Array(32)).toString('base64url'),
+                    installationPublicKey: testInstallationPublicKey,
                     installationProof: {
                         version: 1,
                         algorithm: 'ed25519',
@@ -760,7 +839,7 @@ describe('Api server error handling', () => {
                 metadata: testMachineMetadata,
                 registrationIdentity: {
                     installationId: 'installation-1',
-                    installationPublicKey: Buffer.from(new Uint8Array(32)).toString('base64url'),
+                    installationPublicKey: testInstallationPublicKey,
                     installationProof: {
                         version: 1,
                         algorithm: 'ed25519',
@@ -819,7 +898,7 @@ describe('Api server error handling', () => {
                 metadata: testMachineMetadata,
                 registrationIdentity: {
                     installationId: 'installation-1',
-                    installationPublicKey: Buffer.from(new Uint8Array(32)).toString('base64url'),
+                    installationPublicKey: testInstallationPublicKey,
                     installationProof: {
                         version: 1,
                         algorithm: 'ed25519',

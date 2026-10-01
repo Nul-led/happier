@@ -75,7 +75,7 @@ vi.mock('@/providers/hooks/useProviderModelProjection', () => ({
     useProviderModelProjection: () => ({
         data: {
             status: 'success',
-            agentTargetKey: 'backend:claude',
+            agentTargetKey: 'agent:happier.agent.claude/claude',
             groups: providerProjectionGroups,
             currentSelectionRecovery: providerCurrentSelectionRecovery,
         },
@@ -177,7 +177,7 @@ function experimentalProviderGroup(): SessionModelProjectionGroup {
             ...row,
             ref: {
                 ...row.ref,
-                agentTargetKey: 'backend:claude',
+                agentTargetKey: 'agent:happier.agent.claude/claude',
                 modelId: 'experimental-provider-model',
             },
             descriptor: { id: 'experimental-provider-model', name: 'Experimental Provider model' },

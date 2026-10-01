@@ -147,6 +147,7 @@ vi.mock('@/components/profiles/ProfilesList', () => ({
 describe('NewSessionWizard (attachments.uploads)', () => {
     it('wires AgentInput attachments and its semantic Composer document when enabled', async () => {
         const { NewSessionWizard } = await import('./NewSessionWizard');
+        const onSelectionChangePersist = vi.fn();
         const onStructuredInputMentionsChange = vi.fn();
         const composerDocument = {
             ref: { kind: 'newSession', instanceId: 'new-session-composer-scope' },
@@ -170,6 +171,7 @@ describe('NewSessionWizard (attachments.uploads)', () => {
             hasSendableAttachments: true,
             captureSubmissionSnapshot: () => null,
             clearAcceptedSnapshot: () => false,
+            inputPersistence: { restoreToken: 'new-session-composer-scope', onSelectionChangePersist },
         };
 
         AgentInputMock.mockClear();
@@ -226,8 +228,6 @@ describe('NewSessionWizard (attachments.uploads)', () => {
                         tmuxRequested: false,
                         enabledAgentIds: ['codex'],
                         isAgentSelectable: () => true,
-                        isCliBannerDismissed: () => true,
-                        dismissCliBanner: () => {},
                         agentType: 'codex',
                         setAgentType: () => {},
                         selectedIndicatorColor: '#000',
@@ -283,6 +283,10 @@ describe('NewSessionWizard (attachments.uploads)', () => {
         expect(props.structuredInputMentions).toEqual([]);
         expect(props.onStructuredInputMentionsChange).toBe(onStructuredInputMentionsChange);
         expect(props.hasSendableAttachments).toBe(true);
+        // The input reports its caret through the document's own persistence seam,
+        // so the Automation handoff reads the caret that is actually on screen.
+        props.inputPersistence.onSelectionChangePersist({ start: 2, end: 2 }, 0);
+        expect(onSelectionChangePersist).toHaveBeenCalledWith({ start: 2, end: 2 }, 0);
         expect(props.attachmentRowItems).toContainEqual(expect.objectContaining({
             key: 'issue-42',
             label: 'Issue #42',
@@ -344,8 +348,6 @@ describe('NewSessionWizard (attachments.uploads)', () => {
                 tmuxRequested: false,
                 enabledAgentIds: ['codex'],
                 isAgentSelectable: () => true,
-                isCliBannerDismissed: () => true,
-                dismissCliBanner: () => {},
                 agentType: 'codex',
                 setAgentType: () => {},
                 selectedIndicatorColor: '#000',
@@ -446,8 +448,6 @@ describe('NewSessionWizard (attachments.uploads)', () => {
                         tmuxRequested: false,
                         enabledAgentIds: ['codex'],
                         isAgentSelectable: () => true,
-                        isCliBannerDismissed: () => true,
-                        dismissCliBanner: () => {},
                         agentType: 'codex',
                         setAgentType: () => {},
                         selectedIndicatorColor: '#000',
@@ -588,8 +588,6 @@ describe('NewSessionWizard (attachments.uploads)', () => {
                         tmuxRequested: false,
                         enabledAgentIds: ['codex'],
                         isAgentSelectable: () => true,
-                        isCliBannerDismissed: () => true,
-                        dismissCliBanner: () => {},
                         agentType: 'codex',
                         setAgentType: () => {},
                         selectedIndicatorColor: '#000',
@@ -731,8 +729,6 @@ describe('NewSessionWizard (attachments.uploads)', () => {
                         tmuxRequested: false,
                         enabledAgentIds: ['codex'],
                         isAgentSelectable: () => true,
-                        isCliBannerDismissed: () => true,
-                        dismissCliBanner: () => {},
                         agentType: 'codex',
                         setAgentType: () => {},
                         selectedIndicatorColor: '#000',

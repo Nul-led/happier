@@ -240,14 +240,13 @@ describe('machineRpcWithPeerMediationRoute', () => {
                 kind: 'selected',
                 receipt: 'peer.route.selected',
                 endpoint: {
-                    url: 'http://127.0.0.1:3000/peer-mediation/v1/probe',
+                    url: 'http://127.0.0.1:3000',
                     endpointFingerprint: 'endpoint_1',
                 },
                 grant: {
                     payload: {
-                        v: 1,
+                        v: 2,
                         grantId: 'grant_1',
-                        grantFamilyId: 'family_1',
                         accountId: 'account_1',
                         machineId: 'machine_1',
                         flowKind: 'machine_rpc',
@@ -263,6 +262,8 @@ describe('machineRpcWithPeerMediationRoute', () => {
                         exp: 601_000,
                         aud: 'happier-daemon-route-grant',
                         endpointFingerprint: 'endpoint_1',
+                        proofKind: 'ephemeral_ed25519',
+                        ephemeralPublicKeyBase64Url: Buffer.from(new Uint8Array(32).fill(1)).toString('base64url'),
                     },
                     signature: {
                         keyId: 'key_1',
@@ -270,18 +271,15 @@ describe('machineRpcWithPeerMediationRoute', () => {
                         valueBase64Url: 'AbCdEf012_-',
                     },
                 },
-                nonceProof: {
-                    v: 1,
-                    grantId: 'grant_1',
-                    routeKind: 'loopback_direct',
-                    flowKind: 'machine_rpc',
-                    endpointFingerprint: 'endpoint_1',
+                proof: {
+                    v: 2, kind: 'ephemeral_ed25519',
+                    signedGrantDigestBase64Url: Buffer.from(new Uint8Array(32).fill(1)).toString('base64url'),
                     nonceBase64Url: 'nonce_1',
                     signatureBase64Url: 'AbCdEf012_-',
                 },
             }),
             postDirect: async () => ({
-                v: 1,
+                v: 2,
                 ok: true,
                 receipt: 'peer.rpc.direct_call_succeeded',
                 requestId: 'request_1',
@@ -327,7 +325,7 @@ describe('machineRpcWithPeerMediationRoute', () => {
             resolveDirectRoute: async () => ({
                 kind: 'selected',
                 receipt: 'peer.route.selected',
-                endpoint: { url: 'http://127.0.0.1:3000/peer-mediation/v1/probe', endpointFingerprint: 'endpoint_1' },
+                endpoint: { url: 'http://127.0.0.1:3000', endpointFingerprint: 'endpoint_1' },
                 grant: {
                     payload: {
                         v: 2, grantId: 'grant_v2', accountId: 'account_1', machineId: 'machine_1',
@@ -372,14 +370,13 @@ describe('machineRpcWithPeerMediationRoute', () => {
                 kind: 'selected',
                 receipt: 'peer.route.selected',
                 endpoint: {
-                    url: 'http://127.0.0.1:3000/peer-mediation/v1/probe',
+                    url: 'http://127.0.0.1:3000',
                     endpointFingerprint: 'endpoint_1',
                 },
                 grant: {
                     payload: {
-                        v: 1,
+                        v: 2,
                         grantId: 'grant_1',
-                        grantFamilyId: 'family_1',
                         accountId: 'account_1',
                         machineId: 'machine_1',
                         flowKind: 'machine_rpc',
@@ -395,6 +392,8 @@ describe('machineRpcWithPeerMediationRoute', () => {
                         exp: 601_000,
                         aud: 'happier-daemon-route-grant',
                         endpointFingerprint: 'endpoint_1',
+                        proofKind: 'ephemeral_ed25519',
+                        ephemeralPublicKeyBase64Url: Buffer.from(new Uint8Array(32).fill(1)).toString('base64url'),
                     },
                     signature: {
                         keyId: 'key_1',
@@ -402,18 +401,15 @@ describe('machineRpcWithPeerMediationRoute', () => {
                         valueBase64Url: 'AbCdEf012_-',
                     },
                 },
-                nonceProof: {
-                    v: 1,
-                    grantId: 'grant_1',
-                    routeKind: 'loopback_direct',
-                    flowKind: 'machine_rpc',
-                    endpointFingerprint: 'endpoint_1',
+                proof: {
+                    v: 2, kind: 'ephemeral_ed25519',
+                    signedGrantDigestBase64Url: Buffer.from(new Uint8Array(32).fill(1)).toString('base64url'),
                     nonceBase64Url: 'nonce_1',
                     signatureBase64Url: 'AbCdEf012_-',
                 },
             }),
             postDirect: async () => ({
-                v: 1,
+                v: 2,
                 ok: true,
                 receipt: 'peer.rpc.direct_call_succeeded',
                 requestId: 'request_1',
@@ -453,14 +449,13 @@ describe('machineRpcWithPeerMediationRoute', () => {
                 kind: 'selected',
                 receipt: 'peer.route.selected',
                 endpoint: {
-                    url: 'http://127.0.0.1:3000/peer-mediation/v1/probe',
+                    url: 'http://127.0.0.1:3000',
                     endpointFingerprint: 'endpoint_1',
                 },
                 grant: {
                     payload: {
-                        v: 1,
+                        v: 2,
                         grantId: 'grant_1',
-                        grantFamilyId: 'family_1',
                         accountId: 'account_1',
                         machineId: 'machine_1',
                         flowKind: 'machine_rpc',
@@ -476,6 +471,8 @@ describe('machineRpcWithPeerMediationRoute', () => {
                         exp: 601_000,
                         aud: 'happier-daemon-route-grant',
                         endpointFingerprint: 'endpoint_1',
+                        proofKind: 'ephemeral_ed25519',
+                        ephemeralPublicKeyBase64Url: Buffer.from(new Uint8Array(32).fill(1)).toString('base64url'),
                     },
                     signature: {
                         keyId: 'key_1',
@@ -483,18 +480,15 @@ describe('machineRpcWithPeerMediationRoute', () => {
                         valueBase64Url: 'AbCdEf012_-',
                     },
                 },
-                nonceProof: {
-                    v: 1,
-                    grantId: 'grant_1',
-                    routeKind: 'loopback_direct',
-                    flowKind: 'machine_rpc',
-                    endpointFingerprint: 'endpoint_1',
+                proof: {
+                    v: 2, kind: 'ephemeral_ed25519',
+                    signedGrantDigestBase64Url: Buffer.from(new Uint8Array(32).fill(1)).toString('base64url'),
                     nonceBase64Url: 'nonce_1',
                     signatureBase64Url: 'AbCdEf012_-',
                 },
             }),
             postDirect: async () => ({
-                v: 1,
+                v: 2,
                 ok: false,
                 receipt: 'peer.rpc.fell_back_to_server',
                 requestId: 'other_request',

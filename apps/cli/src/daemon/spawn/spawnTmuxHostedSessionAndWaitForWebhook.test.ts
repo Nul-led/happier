@@ -109,7 +109,12 @@ describe('spawnTmuxHostedSessionAndWaitForWebhook', () => {
           pluginVersion: '1.0.0',
           agentId: 'agent',
           backendId: 'agent',
-          generation: 'generation-1',
+          occurrenceId: 'occurrence:plugin.acme:1',
+          sourceCustody: {
+            kind: 'managed' as const,
+            immutableGenerationId: 'generation-1',
+            installSource: 'npm' as const,
+          },
         },
       },
       runnerAgentInvocationContext: Object.freeze({
@@ -368,6 +373,10 @@ describe('spawnTmuxHostedSessionAndWaitForWebhook', () => {
         ...input,
       }),
     ).rejects.toThrow('marker refused');
+    expect(input.logDebug).toHaveBeenCalledWith(
+      '[DAEMON RUN] Failed to persist accepted spawn marker for PID 4244 (tmux)',
+      'marker refused',
+    );
     expect(mocks.killWindow).toHaveBeenCalledOnce();
     expect(mocks.killWindow).toHaveBeenCalledWith(
       'happy:@7',

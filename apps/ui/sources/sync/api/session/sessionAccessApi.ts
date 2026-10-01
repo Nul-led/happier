@@ -18,6 +18,10 @@ import {
     type SessionGrantIntentV1,
     type SessionGrantMutationV1,
     type SessionAccessAccountSummaryV1,
+    ResolveSessionAccessPrincipalsRequestV1Schema,
+    ResolveSessionAccessPrincipalsResponseV1Schema,
+    type SessionAccessPrincipalSummaryV1,
+    type SessionAccessCreationDecisionV1,
 } from '@happier-dev/protocol';
 import { randomUUID } from '@/platform/randomUUID';
 import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
@@ -511,5 +515,62 @@ export async function searchSessionAccessAccountPage(options: SessionAccessReque
             })),
             nextCursor: page.nextCursor,
         };
+    });
+}
+
+export async function resolveSessionAccessPrincipals(options: SessionAccessRequestOptions & Readonly<{
+    subjects: readonly PrincipalRefV1[];
+}>): Promise<readonly SessionAccessPrincipalSummaryV1[]> {
+    const unique = [...new Map(options.subjects.map((subject) => [JSON.stringify(subject), subject])).values()];
+    if (unique.length === 0) return [];
+    const assertCurrent = () => {
+        if (options.signal?.aborted || options.isCurrent?.() === false) throw new SessionAccessApiError('session_access_stale_scope');
+    };
+    return await runWithServerRequestAuthorityForServerAccountScope({ scope: options.scope,
+        activeRequest: async () => { throw new SessionAccessApiError('session_access_stale_scope'); },
+    }, async authority => {
+        assertCurrent();
+        const body = ResolveSessionAccessPrincipalsRequestV1Schema.parse({ v: 1, subjects: unique });
+        const response = await authority.request('/v1/session-access/principals/resolve', {
+            method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+            ...(options.signal ? { signal: options.signal } : {}),
+        });
+        assertCurrent();
+        if (!response.ok) throw createSessionAccessApiErrorFromResponse(await response.json().catch(() => null), response.status);
+        const parsed = ResolveSessionAccessPrincipalsResponseV1Schema.parse(await response.json());
+        const requested = new Set(unique.map((subject) => JSON.stringify(subject)));
+        return parsed.principals.filter((principal) => {
+            const ref = principal.kind === 'account' ? { kind: 'account', accountId: principal.accountId }
+                : principal.kind === 'team' ? { kind: 'team', teamId: principal.teamId }
+                    : { kind: 'group', teamId: principal.teamId, groupId: principal.groupId };
+            return requested.has(JSON.stringify(ref));
+        });
+    });
+}
+
+/**
+ * Resolve the one server-owned Team creation decision needed by a restored
+ * New Session draft. This deliberately reuses the principal-resolution route
+ * and its authorization/currentness owner; it is not a second Team policy API.
+ */
+export async function resolveSessionAccessCreationDecision(options: SessionAccessRequestOptions & Readonly<{
+    teamId: string;
+}>): Promise<SessionAccessCreationDecisionV1 | null> {
+    const assertCurrent = () => {
+        if (options.signal?.aborted || options.isCurrent?.() === false) throw new SessionAccessApiError('session_access_stale_scope');
+    };
+    return await runWithServerRequestAuthorityForServerAccountScope({ scope: options.scope,
+        activeRequest: async () => { throw new SessionAccessApiError('session_access_stale_scope'); },
+    }, async authority => {
+        assertCurrent();
+        const body = ResolveSessionAccessPrincipalsRequestV1Schema.parse({ v: 1, subjects: [], creationTeamId: options.teamId });
+        const response = await authority.request('/v1/session-access/principals/resolve', {
+            method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+            ...(options.signal ? { signal: options.signal } : {}),
+        });
+        assertCurrent();
+        if (!response.ok) throw createSessionAccessApiErrorFromResponse(await response.json().catch(() => null), response.status);
+        const parsed = ResolveSessionAccessPrincipalsResponseV1Schema.parse(await response.json());
+        return parsed.creationDecision ?? null;
     });
 }

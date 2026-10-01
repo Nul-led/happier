@@ -12,6 +12,7 @@ import { createPluginContextualResourceWatchClient } from './pluginSurfaceResour
 import { logPluginSurfaceDiagnostic } from '@/components/plugins/shared/pluginSurfaceDiagnosticLog';
 import type { ActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
 import { randomUUID } from '@/platform/randomUUID';
+import { useLayoutPresentationActive } from '@/components/ui/presentation/PluginSurfaceFocusEligibility';
 
 type PluginContextualResourceStore = ReturnType<typeof createPluginUiResourceStore>;
 
@@ -33,7 +34,7 @@ export type PluginContextualResourceStoreOwner = Readonly<{
         pluginId: string;
         machineId: string;
         serverId: string | null;
-        expectedGeneration: string;
+        expectedCallerOccurrenceId: string;
         context: PluginResourceContextV1;
     }>): PluginContextualResourceStoreLease | null;
 }>;
@@ -64,7 +65,7 @@ function resourceBindingKey(input: ResourceStoreBinding): string {
         input.pluginId,
         input.machineId,
         input.serverId,
-        input.expectedGeneration,
+        input.expectedCallerOccurrenceId,
         input.context,
     ]);
 }
@@ -120,7 +121,7 @@ function createPluginContextualResourceStoreOwner(): PluginContextualResourceSto
                 const resource = Object.freeze({
                     machineId: input.machineId,
                     serverId: input.serverId,
-                    expectedGeneration: input.expectedGeneration,
+                    expectedCallerOccurrenceId: input.expectedCallerOccurrenceId,
                     context: input.context,
                 });
                 const isCurrent = (): boolean => (
@@ -268,6 +269,7 @@ export function PluginContextualResourceState(props: Readonly<{
     children: (snapshot: PluginUiResourceSnapshot | null) => React.ReactNode;
 }>): React.ReactElement | null {
     const owner = usePluginContextualResourceStoreOwner();
+    const presented = useLayoutPresentationActive();
     const bindingKey = resourceBindingKey(props.binding);
     const resourceKey = resourceRenderKey(props.resource);
     // Callers commonly reconstruct a `{ pluginId, localId }` reference during
@@ -320,8 +322,8 @@ export function PluginContextualResourceState(props: Readonly<{
         return acquired.lease.store.getEntry(stableResource);
     }, [acquired, bindingKey, currentAtRender, owner, stableResource]);
     const subscribe = React.useCallback(
-        (listener: () => void): (() => void) => entry?.subscribe(listener, true) ?? (() => {}),
-        [entry],
+        (listener: () => void): (() => void) => presented ? entry?.subscribe(listener, true) ?? (() => {}) : () => {},
+        [entry, presented],
     );
     const getSnapshot = React.useCallback(
         (): PluginUiResourceSnapshot | null => (

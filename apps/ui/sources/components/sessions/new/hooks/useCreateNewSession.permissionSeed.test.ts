@@ -2,6 +2,7 @@ import 'fake-indexeddb/auto';
 import { createSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
 import { createMachineFixture } from '@/dev/testkit/fixtures/machineFixtures';
 import React from 'react';
+import { createAuthoringMemoryHttpBoundary } from '@/dev/testkit/mocks/authoringMemoryHttp';
 import { createNewSessionPromptStore } from '@/components/sessions/new/hooks/screenModel/newSessionPromptStore';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import renderer, { act } from 'react-test-renderer';
@@ -215,7 +216,10 @@ async function createUseCreateNewSessionHarness() {
         exitCode: 0,
     }));
     let lastCreatedAutomation: Record<string, unknown> | null = null;
+    const authoringMemoryHttp = createAuthoringMemoryHttpBoundary();
     const fetchSpy = vi.fn(async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+        const authoringResponse = await authoringMemoryHttp.handle(input, init);
+        if (authoringResponse) return authoringResponse;
         const url = String(input instanceof Request ? input.url : input);
         const method = input instanceof Request ? input.method : (init?.method ?? 'GET');
         if (url.endsWith('/health')) {
@@ -226,6 +230,9 @@ async function createUseCreateNewSessionHarness() {
         }
         if (url.endsWith('/v1/account/encryption')) {
             return Response.json({ mode: 'e2ee', updatedAt: 1 });
+        }
+        if (url.endsWith('/v2/account/settings') && method === 'GET') {
+            return Response.json({ content: null, version: 1 });
         }
         if (url.includes('/v3/automations?')) {
             const automation = lastCreatedAutomation
@@ -417,6 +424,7 @@ async function createUseCreateNewSessionHarness() {
     const defaultSpawn = sessionSpawnNewRpcSpy.getMockImplementation()!;
     return {
         async reset() {
+            authoringMemoryHttp.reset();
             captured.value = null;
             sessionSpawnNewRpcRequest.value = null;
             lastCreatedAutomation = null;
@@ -616,7 +624,7 @@ describe('useCreateNewSession permission seeding', () => {
             await handleCreateSession?.();
         });
 
-        expect(storage.getState().settings.recentMachinePaths).toEqual([{ machineId: 'm1', path: '/tmp' }]);
+        await vi.waitFor(() => expect(storage.getState().authoringMemory.recentMachinePaths).toEqual([{ machineId: 'm1', path: '/tmp' }]));
         expect(storage.getState().settings.lastUsedAgent).toBe('codex');
         expect(storage.getState().settings.lastUsedBackendTarget).toBeNull();
     });
@@ -1807,14 +1815,14 @@ describe('useCreateNewSession permission seeding', () => {
         });
 
         expect(sessionSpawnNewRpcSpy).toHaveBeenCalledOnce();
-        expect(storage.getState().settings.lastUsedProfile).not.toBe('profile-test');
+        expect(storage.getState().authoringMemory.lastUsedProfile).not.toBe('profile-test');
 
         mockSessionSpawnSuccess('sess_profile_success');
         await act(async () => {
             await handleCreateSession?.();
         });
 
-        expect(storage.getState().settings.lastUsedProfile).toBe('profile-test');
+        await vi.waitFor(() => expect(storage.getState().authoringMemory.lastUsedProfile).toBe('profile-test'));
     });
 
     it('does not record an invalid profile selection as last used', async () => {
@@ -1879,7 +1887,7 @@ describe('useCreateNewSession permission seeding', () => {
         });
 
         expect(sessionSpawnNewRpcSpy).not.toHaveBeenCalled();
-        expect(storage.getState().settings.lastUsedProfile).not.toBe('profile-test');
+        expect(storage.getState().authoringMemory.lastUsedProfile).not.toBe('profile-test');
     });
 
     it('blocks creation when the selected profile is incompatible with the current backend target', async () => {

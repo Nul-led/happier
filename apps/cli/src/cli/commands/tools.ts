@@ -152,6 +152,7 @@ async function resolveCustomToolsRuntimeContext(args: readonly string[], deps: T
   directory: string;
   mcpServers: Awaited<ReturnType<typeof resolveCustomHappierToolsContext>>['mcpServers'];
   accountSettings: Awaited<ReturnType<typeof bootstrapAccountSettingsContext>>['settings'];
+  cleanup: () => void;
   serverFeaturesSnapshot?: CliServerFeaturesSnapshot;
 }>;
 
@@ -165,6 +166,7 @@ async function resolveCustomToolsRuntimeContext(
   directory: string;
   mcpServers: Awaited<ReturnType<typeof resolveCustomHappierToolsContext>>['mcpServers'];
   accountSettings: Awaited<ReturnType<typeof bootstrapAccountSettingsContext>>['settings'];
+  cleanup: () => void;
   serverFeaturesSnapshot?: CliServerFeaturesSnapshot;
 }>;
 
@@ -178,6 +180,7 @@ async function resolveCustomToolsRuntimeContext(
   directory: string;
   mcpServers: Awaited<ReturnType<typeof resolveCustomHappierToolsContext>>['mcpServers'];
   accountSettings: Awaited<ReturnType<typeof bootstrapAccountSettingsContext>>['settings'];
+  cleanup: () => void;
   serverFeaturesSnapshot?: CliServerFeaturesSnapshot;
 }> {
   const baseContext = options?.requireSessionId === true
@@ -213,6 +216,7 @@ async function resolveCustomToolsRuntimeContext(
     directory,
     mcpServers: customContext.mcpServers,
     accountSettings: accountSettingsContext.settings,
+    cleanup: customContext.cleanup,
     ...(serverFeaturesSnapshot ? { serverFeaturesSnapshot } : {}),
   };
 }
@@ -252,65 +256,69 @@ export async function handleToolsCommand(args: string[], overrides?: Partial<Too
   try {
     if (subcommand === 'list') {
       const context = await resolveCustomToolsRuntimeContext(args, deps);
-      const surface = resolveToolsCommandSurface(args);
-      const actionsSettingsProvider = createActionSettingsProvider({
-        accountSettings: context.accountSettings,
-        scopeKey: resolveAccountSettingsScopeKeyForToken(context.credentials.token),
-      });
-      const actionsSettings = actionsSettingsProvider.getActionsSettings();
-      const isServerFeatureEnabled = surface === 'agent'
-        ? (featureId: FeatureId) => resolveCliFeatureDecision({
-            featureId,
-            env: process.env,
-            serverSnapshot: context.serverFeaturesSnapshot,
-          }).state === 'enabled'
-        : undefined;
-      const builtInTools = await deps.listBuiltInHappierTools({
-        surface,
-        actionsSettings,
-        isActionEnabled: (id) => isActionEnabledByActionsSettings(id, actionsSettings, { surface }),
-        ...(isServerFeatureEnabled ? { isServerFeatureEnabled } : {}),
-      });
-      const { tools: customTools, warnings } = await deps.listResolvedCustomHappierTools({ mcpServers: context.mcpServers });
-
-      if (json) {
-        await printJsonEnvelope({
-          ok: true,
-          kind,
-          data: {
-            sources: {
-              happier: builtInTools.map((tool) => ({
-                name: tool.name,
-                title: tool.title,
-                description: tool.description,
-                inputSchema: tool.inputSchema,
-              })),
-              ...Object.fromEntries(
-                Array.from(
-                  customTools.reduce((map, tool) => {
-                    const list = map.get(tool.source) ?? [];
-                    list.push(tool);
-                    map.set(tool.source, list);
-                    return map;
-                  }, new Map<string, CustomToolEntry[]>()),
-                ).map(([source, tools]) => [
-                  source,
-                  tools.map((tool) => ({
-                    name: tool.name,
-                    description: tool.description ?? null,
-                    inputSchema: tool.inputSchema ?? null,
-                  })),
-                ]),
-              ),
-            },
-            warnings,
-          },
+      try {
+        const surface = resolveToolsCommandSurface(args);
+        const actionsSettingsProvider = createActionSettingsProvider({
+          accountSettings: context.accountSettings,
+          scopeKey: resolveAccountSettingsScopeKeyForToken(context.credentials.token),
         });
-        return;
-      }
+        const actionsSettings = actionsSettingsProvider.getActionsSettings();
+        const isServerFeatureEnabled = surface === 'agent'
+          ? (featureId: FeatureId) => resolveCliFeatureDecision({
+              featureId,
+              env: process.env,
+              serverSnapshot: context.serverFeaturesSnapshot,
+            }).state === 'enabled'
+          : undefined;
+        const builtInTools = await deps.listBuiltInHappierTools({
+          surface,
+          actionsSettings,
+          isActionEnabled: (id) => isActionEnabledByActionsSettings(id, actionsSettings, { surface }),
+          ...(isServerFeatureEnabled ? { isServerFeatureEnabled } : {}),
+        });
+        const { tools: customTools, warnings } = await deps.listResolvedCustomHappierTools({ mcpServers: context.mcpServers });
 
-      printHumanToolList({ builtInTools, customTools, warnings });
-      return;
+        if (json) {
+          await printJsonEnvelope({
+            ok: true,
+            kind,
+            data: {
+              sources: {
+                happier: builtInTools.map((tool) => ({
+                  name: tool.name,
+                  title: tool.title,
+                  description: tool.description,
+                  inputSchema: tool.inputSchema,
+                })),
+                ...Object.fromEntries(
+                  Array.from(
+                    customTools.reduce((map, tool) => {
+                      const list = map.get(tool.source) ?? [];
+                      list.push(tool);
+                      map.set(tool.source, list);
+                      return map;
+                    }, new Map<string, CustomToolEntry[]>()),
+                  ).map(([source, tools]) => [
+                    source,
+                    tools.map((tool) => ({
+                      name: tool.name,
+                      description: tool.description ?? null,
+                      inputSchema: tool.inputSchema ?? null,
+                    })),
+                  ]),
+                ),
+              },
+              warnings,
+            },
+          });
+          return;
+        }
+
+        printHumanToolList({ builtInTools, customTools, warnings });
+        return;
+      } finally {
+        context.cleanup();
+      }
     }
 
     if (subcommand === 'call') {
@@ -335,12 +343,16 @@ export async function handleToolsCommand(args: string[], overrides?: Partial<Too
         });
       } else {
         const context = await resolveCustomToolsRuntimeContext(args, deps, { requireSessionId: true });
-        result = await deps.callResolvedCustomHappierTool({
-          source,
-          toolName,
-          args: parsedArgs,
-          mcpServers: context.mcpServers,
-        });
+        try {
+          result = await deps.callResolvedCustomHappierTool({
+            source,
+            toolName,
+            args: parsedArgs,
+            mcpServers: context.mcpServers,
+          });
+        } finally {
+          context.cleanup();
+        }
       }
 
       if (json) {

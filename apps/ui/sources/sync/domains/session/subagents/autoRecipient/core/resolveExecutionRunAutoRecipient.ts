@@ -1,6 +1,6 @@
 import { isExecutionRunAddressableRecipient } from '@/sync/domains/executionRuns/isExecutionRunAddressableRecipient';
 import { readExecutionRunIdFromToolPayload } from '@/sync/domains/session/participants/deriveExecutionRunPollingRefreshKey';
-import type { Message } from '@/sync/domains/messages/messageTypes';
+import type { Message } from "@happier-dev/session-core/messages";
 
 import {
     deriveTranscriptExecutionRunStatus,

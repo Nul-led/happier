@@ -86,7 +86,6 @@ function createDetachedStartHarness() {
         boundedTimeoutMs: null,
         reviewBoundedTimeoutMs: null,
         maxTurns: null,
-        maxDepth: 3,
       },
     }),
     isExecutionRunsEnabled: () => true,
@@ -99,6 +98,23 @@ describe('execution.run.start correlation freedom', () => {
   beforeEach(() => {
     runtimeFactoryMock.createExecutionRunBridgeRuntime.mockReset();
     markerWriterMock.writeExecutionRunMarker.mockClear();
+  });
+
+  it('treats raw parent refs as correlation and keeps a human start at depth zero', async () => {
+    const { manager, executor } = createDetachedStartHarness();
+    try {
+      const result = await executor.execute('execution.run.start', {
+        ...createDetachedTaskStartInput({ instructions: 'Human-started task.' }),
+        parentRunId: 'unknown-parent-run',
+        parentCallId: 'unknown-parent-call',
+      }, { surface: 'rpc' });
+      expect(result).toMatchObject({ ok: true });
+      expect(manager.listPublic()).toHaveLength(1);
+      const runId = manager.listPublic()[0]!.runId;
+      expect(manager.get(runId)?.depth).toBe(0);
+    } finally {
+      await manager.dispose();
+    }
   });
 
   it.each([

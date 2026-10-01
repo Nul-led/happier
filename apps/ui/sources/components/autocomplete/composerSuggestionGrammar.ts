@@ -177,6 +177,7 @@ export const COMPOSER_SUGGESTION_KIND_IDS = [
     'composerReference',
     'skill',
     'slashCommand',
+    'accountMention',
 ] as const;
 
 export type ComposerSuggestionKindId = (typeof COMPOSER_SUGGESTION_KIND_IDS)[number];
@@ -193,6 +194,7 @@ const COMPOSER_SUGGESTION_KIND_TRIGGERS = {
     composerReference: COMPOSER_SUGGESTION_TRIGGERS,
     skill: ['$'],
     slashCommand: ['/'],
+    accountMention: ['@'],
 } as const satisfies Record<ComposerSuggestionKindId, readonly ComposerSuggestionTrigger[]>;
 
 export function resolveComposerSuggestionTriggersForKind(

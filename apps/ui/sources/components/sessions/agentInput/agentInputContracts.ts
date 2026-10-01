@@ -210,6 +210,11 @@ export function hasAgentInputCollapsedOptionsPopoverContent(
 
 export type AgentInputExtraActionChip = Readonly<{
     key: string;
+    /**
+     * Signals that the reader is reaching for this control, through either the
+     * visible chip or the collapsed action menu.
+     */
+    onIntent?: () => void;
     /** Data revision for render/popover closures retained by presentation owners. */
     stabilityKey?: string | number | boolean | null;
     controlId?: AgentInputControlId;
@@ -342,8 +347,8 @@ export function projectAgentInputAttachmentRowItems(input: Readonly<{
 export type ComposerAttachmentCatalogRowDescriptor = Readonly<{
     /** The exact admitted attachment definition this static display belongs to. */
     identity: ComposerAttachmentViewV1['attachment'];
-    /** The installed-generation fence consumed by the one composer mount binding. */
-    immutableGenerationId: string;
+    /** The exact live contribution occurrence consumed by composer surface mounts. */
+    occurrenceId: string;
     picker?: PluginUiRendererChainBindingV1;
     display?: ComposerAttachmentDisplayV1;
     preview?: ComposerAttachmentPreviewV1;

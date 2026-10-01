@@ -1,5 +1,6 @@
 import type {
     BrowserCommandV1,
+    BrowserDaemonViewV1,
     BrowserPlatformV1,
     BrowserTargetPolicyDecisionV1,
     BrowserTargetSuggestionV1,
@@ -11,6 +12,13 @@ import type { BrowserViewState } from "./types";
 import { createBrowserControlState, dispatchBrowserControlCommand } from "./control";
 
 export const DEFAULT_BROWSER_SESSION_ID = "browser_session_default";
+
+/** The daemon discovery owns the exact capture source; every viewer opens that source. */
+export function resolveBrowserDaemonStreamTarget(view: BrowserDaemonViewV1): BrowserViewTargetV1 | null {
+    if (!view.captureSource || view.captureSource.sourceId !== view.sourceId || view.captureSource.sourceKind !== 'browser') return null;
+    return { kind: 'streamedBrowser', targetId: view.sourceId, streamId: view.sourceId,
+        ...(view.target.display ? { display: view.target.display } : {}) };
+}
 
 function resolveDefaultBrowserViewId(target: BrowserViewTargetV1): string {
     return `browser_view:${target.targetId}`;
@@ -50,6 +58,7 @@ export function openBrowserTarget(
         currentUrlExpiresAt?: number;
         targetPolicyDecision?: BrowserTargetPolicyDecisionV1 | null;
         desktopWebViewAvailability?: DesktopWebViewNativeAvailability | null;
+        nativeViewCaptureHandlerRegistered?: boolean;
     }>,
 ): BrowserViewState {
     const viewId = options.viewId ?? resolveDefaultBrowserViewId(target);
@@ -67,6 +76,7 @@ export function openBrowserTarget(
     const result = dispatchBrowserControlCommand(state, command, {
         targetPolicyDecision: options.targetPolicyDecision,
         desktopWebViewAvailability: options.desktopWebViewAvailability,
+        nativeViewCaptureHandlerRegistered: options.nativeViewCaptureHandlerRegistered,
     });
     return {
         ...result.state,

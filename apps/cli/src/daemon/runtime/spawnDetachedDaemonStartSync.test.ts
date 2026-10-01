@@ -27,7 +27,7 @@ vi.mock('@happier-dev/cli-common/process', async (importOriginal) => ({
 }));
 
 describe('spawnDetachedDaemonStartSync', () => {
-  const envScope = createEnvKeyScope(['HAPPIER_RELEASE_RING', 'HAPPIER_PUBLIC_RELEASE_CHANNEL', 'HAPPIER_HOME_DIR']);
+  const envScope = createEnvKeyScope(['HAPPIER_RELEASE_RING', 'HAPPIER_PUBLIC_RELEASE_CHANNEL', 'HAPPIER_HOME_DIR', 'HAPPIER_DAEMON_SERVICE_MANAGED_BY', 'HAPPIER_DAEMON_SERVICE_BUNDLE_ID', 'HAPPIER_DAEMON_SERVICE_AUTOSTART']);
   const originalPlatformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
 
   afterEach(() => {
@@ -48,6 +48,9 @@ describe('spawnDetachedDaemonStartSync', () => {
       HAPPIER_RELEASE_RING: 'dev',
       HAPPIER_PUBLIC_RELEASE_CHANNEL: undefined,
       HAPPIER_HOME_DIR: '/tmp/happier-cli-test-home',
+      HAPPIER_DAEMON_SERVICE_MANAGED_BY: 'desktop',
+      HAPPIER_DAEMON_SERVICE_BUNDLE_ID: 'dev.happier.app',
+      HAPPIER_DAEMON_SERVICE_AUTOSTART: 'on-demand',
     });
 
     const mod = await import('./spawnDetachedDaemonStartSync');
@@ -57,6 +60,10 @@ describe('spawnDetachedDaemonStartSync', () => {
     const [, , options] = spawnMock.mock.calls[0] as any[];
     expect(options?.env?.HAPPIER_PUBLIC_RELEASE_CHANNEL).toBe('dev');
     expect(options?.env?.HAPPIER_DAEMON_STARTUP_SOURCE).toBe('manual');
+    expect(options?.env?.HAPPIER_DAEMON_SERVICE_MANAGED_BY).toBeUndefined();
+    expect(options?.env?.HAPPIER_DAEMON_SERVICE_BUNDLE_ID).toBeUndefined();
+    expect(options?.env?.HAPPIER_DAEMON_SERVICE_AUTOSTART).toBeUndefined();
+    expect(process.env.HAPPIER_DAEMON_SERVICE_BUNDLE_ID).toBe('dev.happier.app');
   });
 
   it('resolves the launch spec from the requested successor environment', async () => {

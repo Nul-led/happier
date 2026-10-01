@@ -16,7 +16,7 @@ export type ChipOptionInteraction<T extends string> =
 export const DEFAULT_OPTION_CHIP_CYCLE_MAX_OPTIONS = 3;
 
 export function resolveChipOptionInteraction<T extends string>(params: Readonly<{
-    currentOptionId: T;
+    currentOptionId: T | null;
     selectableOptionIds: ReadonlyArray<T>;
     cycleMaxOptions: number;
 }>): ChipOptionInteraction<T> {
@@ -36,7 +36,7 @@ export function resolveChipOptionInteraction<T extends string>(params: Readonly<
         };
     }
 
-    const currentIndex = selectable.indexOf(params.currentOptionId);
+    const currentIndex = params.currentOptionId === null ? -1 : selectable.indexOf(params.currentOptionId);
     if (currentIndex < 0) {
         return {
             kind: 'cycle',

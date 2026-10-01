@@ -6,9 +6,20 @@ import {
     getSelectableChangedFilesViewModes,
     isChangedFilesViewModeAvailable,
     resolveChangedFilesViewMode,
+    resolveChangedFilesEmptyStateTranslationKey,
+    partitionRepositoryChangesBySession,
+    type SessionAttributedFile,
 } from './scmAttribution';
+import type { ScmFileStatus } from './scmStatusFiles';
 
 describe('changed files view mode availability', () => {
+    it('uses one empty-state copy projection for every mounted host', () => {
+        expect(resolveChangedFilesEmptyStateTranslationKey('turn')).toBe('files.noLatestTurnChanges');
+        expect(resolveChangedFilesEmptyStateTranslationKey('turn_agent_reported')).toBe('files.noAgentReportedTurnChanges');
+        expect(resolveChangedFilesEmptyStateTranslationKey('turn_checkpoint')).toBe('files.noCheckpointTurnChanges');
+        expect(resolveChangedFilesEmptyStateTranslationKey('session')).toBe('files.noSessionAttributedChanges');
+        expect(resolveChangedFilesEmptyStateTranslationKey('repository')).toBe('files.noChanges');
+    });
     it('uses repository view as the default changed-files mode', () => {
         expect(getDefaultChangedFilesViewMode()).toBe('repository');
     });
@@ -113,5 +124,48 @@ describe('changed files view mode availability', () => {
                 selectable.includes(mode) ? mode : getPreferredChangedFilesViewMode(availability)
             );
         }
+    });
+});
+
+// Session-tabs lab G1: the Git pane groups the repository's changes into the ones this Session made
+// (its attributed change set) and the rest of the repository, session first.
+describe('partitionRepositoryChangesBySession', () => {
+    const file = (fullPath: string): ScmFileStatus => ({
+        fileName: fullPath.split('/').pop() ?? fullPath,
+        filePath: fullPath.split('/').slice(0, -1).join('/'),
+        fullPath,
+        status: 'modified',
+        isIncluded: false,
+        linesAdded: 1,
+        linesRemoved: 0,
+    });
+    const attributed = (entry: ScmFileStatus): SessionAttributedFile => ({
+        file: entry,
+        turns: ['t1'],
+        content: { source: 'provider_native', confidence: 'exact' },
+        attribution: { confidence: 'exact', reason: 'provider_correlated' },
+        checkpointOverlap: 'unknown',
+        evidence: [],
+    } as unknown as SessionAttributedFile);
+
+    it('puts the session change set first, in repository order, and the rest of the repository after it', () => {
+        const repository = [file('AGENTS.md'), file('apps/ui/b.tsx'), file('apps/ui/a.tsx'), file('docs/c.md')];
+        const result = partitionRepositoryChangesBySession(repository, [
+            attributed(file('apps/ui/a.tsx')),
+            attributed(file('apps/ui/b.tsx')),
+        ]);
+
+        expect(result.session.map((entry) => entry.fullPath)).toEqual(['apps/ui/b.tsx', 'apps/ui/a.tsx']);
+        expect(result.elsewhere.map((entry) => entry.fullPath)).toEqual(['AGENTS.md', 'docs/c.md']);
+        // The rows are the repository's current rows (what can be selected and committed), not the evidence copies.
+        expect(result.session[0]).toBe(repository[1]);
+    });
+
+    it('leaves out attributed paths that are no longer changed in the repository', () => {
+        const repository = [file('docs/c.md')];
+        const result = partitionRepositoryChangesBySession(repository, [attributed(file('apps/ui/gone.tsx'))]);
+
+        expect(result.session).toEqual([]);
+        expect(result.elsewhere.map((entry) => entry.fullPath)).toEqual(['docs/c.md']);
     });
 });

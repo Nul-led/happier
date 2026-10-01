@@ -11,6 +11,7 @@ describe('newSessionLaunchAttempt', () => {
             displayText: 'Investigate checkout failures',
             meta: { source: 'test' },
             scopeKey: 'machine:m1|server:server-a|path:/repo',
+            configurationUpdatedAtMs: 0,
             createId: (prefix) => `${prefix}-stable`,
         });
 
@@ -66,6 +67,7 @@ describe('newSessionLaunchAttempt', () => {
             prompt: 'Investigate checkout failures',
             displayText: 'Investigate checkout failures',
             scopeKey: 'machine:m1|server:server-a|path:/repo',
+            configurationUpdatedAtMs: 0,
             spawnNonce: 'new-attempt-nonce',
         });
 
@@ -84,18 +86,21 @@ describe('newSessionLaunchAttempt', () => {
             prompt: 'Investigate checkout failures',
             displayText: 'Investigate checkout failures',
             scopeKey: 'machine:m1|server:server-a|path:/repo',
+            configurationUpdatedAtMs: 0,
             attemptId: 'retryable-attempt',
         });
         const retry = launchAttemptModule.createNewSessionLaunchAttempt({
             prompt: 'Investigate checkout failures',
             displayText: 'Investigate checkout failures',
             scopeKey: 'machine:m1|server:server-a|path:/repo',
+            configurationUpdatedAtMs: 0,
             attemptId: 'retryable-attempt',
         });
         const newIntent = launchAttemptModule.createNewSessionLaunchAttempt({
             prompt: 'Investigate checkout failures',
             displayText: 'Investigate checkout failures',
             scopeKey: 'machine:m1|server:server-a|path:/repo',
+            configurationUpdatedAtMs: 0,
             attemptId: 'new-attempt',
         });
 
@@ -114,6 +119,7 @@ describe('newSessionLaunchAttempt', () => {
                 prompt: '',
                 displayText: '',
                 scopeKey: 'machine:m1|server:server-a|path:/repo',
+                configurationUpdatedAtMs: 0,
                 createId: (prefix) => `${prefix}-stable`,
             }),
             { createdSessionId: 'session-created' },
@@ -130,6 +136,7 @@ describe('newSessionLaunchAttempt', () => {
             prompt: '',
             displayText: '',
             scopeKey: 'machine:m1|server:server-a|path:/repo',
+            configurationUpdatedAtMs: 0,
             createId: (prefix) => `${prefix}-stable`,
         });
 

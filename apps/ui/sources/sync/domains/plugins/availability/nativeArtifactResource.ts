@@ -216,22 +216,16 @@ function persistentIdentityFor(input: Readonly<{
 }>): PluginUiPersistentArtifactIdentity {
     return Object.freeze({
         accountScope: Object.freeze({ ...input.scope }),
-        releaseVersion: input.lease.artifact.releaseVersion,
-        pluginId: input.lease.artifact.pluginId,
-        contributionId: input.lease.artifact.contributionId,
-        tier: input.lease.artifact.tier,
-        platform: input.lease.artifact.platform,
         artifactDigest: input.lease.artifact.digest,
     });
 }
 
 function storagePartitionId(identity: PluginUiPersistentArtifactIdentity): string {
-    // The native host name may reveal this value, so hash its Account/plugin/
-    // version qualification rather than placing any semantic coordinate in it.
+    // The native host name may reveal this value, so hash the Account privacy
+    // partition and immutable digest rather than any semantic coordinate.
     const bytes = [
         derivePluginUiPersistentArtifactAccountKey(identity.accountScope),
-        `${new TextEncoder().encode(identity.pluginId).byteLength}:${identity.pluginId}`,
-        `${new TextEncoder().encode(identity.releaseVersion).byteLength}:${identity.releaseVersion}`,
+        identity.artifactDigest,
     ].join('\n');
     return `hpa_${sha256Hex(bytes)}`;
 }

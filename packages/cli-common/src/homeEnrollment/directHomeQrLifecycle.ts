@@ -45,9 +45,10 @@ export type DirectHomeQrLifecycleAdapters = Readonly<{
   consume(input: Readonly<{ pairId: string; intent: 'cancel' | 'reject'; signal: AbortSignal; timeoutMs: number }>): Promise<DirectHomeQrCancellationResult>;
   complete(input: Readonly<{
     context: Readonly<{
-      direction: 'trusted_home_displays';
+      direction: HomeQrInviteV2['direction'];
       pairId: string;
-      descriptor: HomeConnectionDescriptorV1;
+      /** The Home identity the requester proof was verified against. */
+      homeServerIdentityId: string;
       qrSecret: Uint8Array;
       issuedAtMs: number;
       expiresAtMs: number;
@@ -62,6 +63,17 @@ export type DirectHomeQrLifecycleAdapters = Readonly<{
     | Readonly<{ ok: false; reason: 'invalid_invite' }>;
   sleep(ms: number, signal: AbortSignal): Promise<void>;
   close(): Promise<void>;
+}>;
+
+/** The adapters the approver completion loop needs once a pairing row exists. */
+export type DirectHomeQrCompletionAdapters = Pick<
+  DirectHomeQrLifecycleAdapters,
+  'now' | 'poll' | 'consume' | 'complete' | 'sleep' | 'close'
+>;
+
+export type DirectHomeQrCompletionRun = Readonly<{
+  completion: Promise<DirectHomeQrCompletionOutcome>;
+  cancel(): Promise<DirectHomeQrCancellationResult>;
 }>;
 
 export type DirectHomeQrCompletionOutcome =
@@ -177,6 +189,54 @@ export async function startDirectHomeQrLifecycle(input: Readonly<{
     return { kind: 'failed', status: 422, reason: 'invalid_invite' };
   }
 
+  const run = runDirectHomeQrCompletion({
+    direction: 'trusted_home_displays',
+    pairId: started.pairId,
+    homeServerIdentityId: input.descriptor.homeServerIdentityId,
+    qrSecret,
+    issuedAtMs,
+    expiresAtMs,
+    adapters: input.adapters,
+    ...(input.signal ? { signal: input.signal } : {}),
+  });
+
+  return {
+    kind: 'started',
+    invite,
+    link: rendered.link,
+    qrAvailable: rendered.ok,
+    completion: run.completion,
+    cancel: run.cancel,
+  };
+}
+
+/**
+ * The one approver completion loop for a direct Home QR pairing row: poll the
+ * row, verify the requester's proof for the row's direction, complete it on the
+ * Home, and settle on exactly one outcome. It owns cancellation (a `cancel`
+ * consume, or adopting a completion that already won) and closes the adapters.
+ *
+ * `expectedRequesterPublicKey` pins the requester when the approver scanned the
+ * requester's own QR (`requester_displays`); a mismatched proof is rejected.
+ */
+export function runDirectHomeQrCompletion(input: Readonly<{
+  direction: HomeQrInviteV2['direction'];
+  pairId: string;
+  homeServerIdentityId: string;
+  qrSecret: Uint8Array;
+  issuedAtMs: number;
+  expiresAtMs: number;
+  expectedRequesterPublicKey?: Uint8Array;
+  adapters: DirectHomeQrCompletionAdapters;
+  signal?: AbortSignal;
+}>): DirectHomeQrCompletionRun {
+  const { adapters, pairId, qrSecret, issuedAtMs, expiresAtMs } = input;
+  const cleanupTimeoutMs = () => Math.min(DIRECT_HOME_QR_CLEANUP_TIMEOUT_MS, Math.max(1, expiresAtMs - adapters.now()));
+  const reject = async (): Promise<void> => {
+    const timeoutMs = cleanupTimeoutMs();
+    await adapters.consume({ pairId, intent: 'reject', signal: AbortSignal.timeout(timeoutMs), timeoutMs }).catch(() => ({ ok: false }));
+  };
+
   let controller = new AbortController();
   let cancelled = false;
   let cancellationRequested = false;
@@ -189,9 +249,9 @@ export async function startDirectHomeQrLifecycle(input: Readonly<{
     cancelStarted ??= (async () => {
       const interruptedController = controller;
       interruptedController.abort();
-      const timeoutMs = Math.min(DIRECT_HOME_QR_CLEANUP_TIMEOUT_MS, Math.max(1, expiresAtMs - input.adapters.now()));
-      const outcome = await input.adapters.consume({
-        pairId: started.pairId,
+      const timeoutMs = cleanupTimeoutMs();
+      const outcome = await adapters.consume({
+        pairId,
         intent: 'cancel',
         signal: AbortSignal.timeout(timeoutMs),
         timeoutMs,
@@ -206,19 +266,19 @@ export async function startDirectHomeQrLifecycle(input: Readonly<{
     return cancelStarted;
   };
   const onExternalAbort = () => { void cancel(); };
-  if (input.signal?.aborted) await cancel();
-  else input.signal?.addEventListener('abort', onExternalAbort, { once: true });
+  input.signal?.addEventListener('abort', onExternalAbort, { once: true });
   const completion = (async (): Promise<DirectHomeQrCompletionOutcome> => {
     let transientFailures = 0;
     try {
+      if (input.signal?.aborted) await cancel();
       while (!cancelled) {
-        if (input.adapters.now() >= expiresAtMs) return { kind: 'expired' };
-        let result: Awaited<ReturnType<DirectHomeQrLifecycleAdapters['poll']>>;
+        if (adapters.now() >= expiresAtMs) return { kind: 'expired' };
+        let result: Awaited<ReturnType<DirectHomeQrCompletionAdapters['poll']>>;
         try {
-          result = await input.adapters.poll({
-            pairId: started.pairId,
+          result = await adapters.poll({
+            pairId,
             signal: controller.signal,
-            timeoutMs: Math.max(1, expiresAtMs - input.adapters.now()),
+            timeoutMs: Math.max(1, expiresAtMs - adapters.now()),
           });
         } catch {
           result = { ok: false, reason: 'transient', status: 0 };
@@ -233,19 +293,17 @@ export async function startDirectHomeQrLifecycle(input: Readonly<{
         if (!result.ok) {
           if (result.reason === 'not_found') return { kind: 'expired' };
           if (result.reason !== 'transient') {
-            const timeoutMs = Math.min(DIRECT_HOME_QR_CLEANUP_TIMEOUT_MS, Math.max(1, expiresAtMs - input.adapters.now()));
-            await input.adapters.consume({ pairId: started.pairId, intent: 'reject', signal: AbortSignal.timeout(timeoutMs), timeoutMs }).catch(() => ({ ok: false }));
+            await reject();
             return { kind: 'invalid_request' };
           }
           transientFailures += 1;
         } else {
           const parsedStatus = parseHomeQrPairingStatusV2(result.status);
           const statusMatchesLifecycle = parsedStatus !== null
-            && parsedStatus.pairId === started.pairId
+            && parsedStatus.pairId === pairId
             && Date.parse(parsedStatus.expiresAt) === expiresAtMs;
           if (!statusMatchesLifecycle) {
-            const timeoutMs = Math.min(DIRECT_HOME_QR_CLEANUP_TIMEOUT_MS, Math.max(1, expiresAtMs - input.adapters.now()));
-            await input.adapters.consume({ pairId: started.pairId, intent: 'reject', signal: AbortSignal.timeout(timeoutMs), timeoutMs }).catch(() => ({ ok: false }));
+            await reject();
             return { kind: 'invalid_request' };
           }
           if (parsedStatus.state === 'pending') {
@@ -260,26 +318,26 @@ export async function startDirectHomeQrLifecycle(input: Readonly<{
               // the same exact completion input so the local lifecycle adopts it.
             }
             const requesterPublicKey = verifyHomeQrRequesterProofV2({
-              direction: 'trusted_home_displays',
+              direction: input.direction,
               qrSecret,
-              pairId: started.pairId,
-              homeServerIdentityId: input.descriptor.homeServerIdentityId,
+              pairId,
+              homeServerIdentityId: input.homeServerIdentityId,
               expiresAtMs,
               issuedAtMs,
-              nowMs: input.adapters.now(),
+              nowMs: adapters.now(),
               status: parsedStatus,
+              ...(input.expectedRequesterPublicKey ? { expectedRequesterPublicKey: input.expectedRequesterPublicKey } : {}),
             });
             if (!requesterPublicKey) {
-              const timeoutMs = Math.min(DIRECT_HOME_QR_CLEANUP_TIMEOUT_MS, Math.max(1, expiresAtMs - input.adapters.now()));
-              await input.adapters.consume({ pairId: started.pairId, intent: 'reject', signal: AbortSignal.timeout(timeoutMs), timeoutMs }).catch(() => ({ ok: false }));
+              await reject();
               return { kind: 'invalid_request' };
             }
             try {
-              await input.adapters.complete({
+              await adapters.complete({
                 context: {
-                  direction: 'trusted_home_displays',
-                  pairId: started.pairId,
-                  descriptor: input.descriptor,
+                  direction: input.direction,
+                  pairId,
+                  homeServerIdentityId: input.homeServerIdentityId,
                   qrSecret,
                   issuedAtMs,
                   expiresAtMs,
@@ -304,8 +362,7 @@ export async function startDirectHomeQrLifecycle(input: Readonly<{
               if (error instanceof DirectHomeQrCompletionError && error.classification === 'retryable') {
                 transientFailures += 1;
               } else if (error instanceof DirectHomeQrCompletionError && error.classification === 'invalid') {
-                const timeoutMs = Math.min(DIRECT_HOME_QR_CLEANUP_TIMEOUT_MS, Math.max(1, expiresAtMs - input.adapters.now()));
-                await input.adapters.consume({ pairId: started.pairId, intent: 'reject', signal: AbortSignal.timeout(timeoutMs), timeoutMs }).catch(() => ({ ok: false }));
+                await reject();
                 return { kind: 'invalid_request' };
               } else {
                 return { kind: 'failed', status: 500 };
@@ -313,14 +370,14 @@ export async function startDirectHomeQrLifecycle(input: Readonly<{
             }
           }
         }
-        const remainingMs = expiresAtMs - input.adapters.now();
+        const remainingMs = expiresAtMs - adapters.now();
         if (remainingMs <= 0) return { kind: 'expired' };
         const delayMs = Math.min(
           transientFailures === 0 ? ENROLLMENT_POLL_IDLE_DELAY_MS : enrollmentPollingBackoffMs(transientFailures),
           remainingMs,
         );
         try {
-          await input.adapters.sleep(delayMs, controller.signal);
+          await adapters.sleep(delayMs, controller.signal);
         } catch {
           const pendingCancellation = cancellationRequested ? readPendingCancellation() : null;
           if (pendingCancellation) {
@@ -337,16 +394,9 @@ export async function startDirectHomeQrLifecycle(input: Readonly<{
       return { kind: 'cancelled' };
     } finally {
       input.signal?.removeEventListener('abort', onExternalAbort);
-      await input.adapters.close().catch(() => undefined);
+      await adapters.close().catch(() => undefined);
     }
   })();
 
-  return {
-    kind: 'started',
-    invite,
-    link: rendered.link,
-    qrAvailable: rendered.ok,
-    completion,
-    cancel,
-  };
+  return { completion, cancel };
 }

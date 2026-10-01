@@ -60,8 +60,8 @@ function entry(
 function readAnnouncement(screen: Awaited<ReturnType<typeof renderScreen>>): string | null {
     const region = screen.findByTestId(VOICE_ANNOUNCER_TEST_ID);
     if (!region) return null;
-    const label = region.props?.accessibilityLabel;
-    return typeof label === 'string' ? label : null;
+    const text = region.props?.children?.props?.children;
+    return typeof text === 'string' ? text : null;
 }
 
 /**
@@ -470,6 +470,9 @@ describe('VoiceAnnouncer platform shape', () => {
             );
 
             expect(readAnnouncement(screen)).toBe('Listening. Declared');
+            // One speakable source per transition: a region labelled with the same
+            // text as its child is two Android accessibility events for one change.
+            expect(screen.findByTestId(VOICE_ANNOUNCER_TEST_ID)?.props.accessibilityLabel).toBeUndefined();
             expect(announceForAccessibilityMock).not.toHaveBeenCalled();
             await screen.unmount();
         },

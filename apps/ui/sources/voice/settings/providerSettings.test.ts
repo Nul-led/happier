@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildQualifiedPluginContributionKey,
   createPluginContributionIdentity,
+  readBuiltInLegacyConnectedAccountServiceKeyIngress,
 } from '@happier-dev/protocol';
 
 import { getBundledVoiceProviderEntry } from '@/voice/registry/internalContributions';
@@ -17,6 +18,8 @@ describe('voice provider settings catalog', () => {
     localId: 'realtime-codex',
   }));
   const elevenLabsProviderId = 'happier.voice.elevenlabs/realtime-elevenlabs';
+  const codexConnectedServiceKey = readBuiltInLegacyConnectedAccountServiceKeyIngress('openai-codex');
+  if (!codexConnectedServiceKey) throw new Error('expected bundled Codex Connected Service mapping');
   const bundledCatalogInput = Object.freeze({
     bundledContributions: BUNDLED_FIRST_PARTY_VOICE_CONTRIBUTIONS,
   });
@@ -56,7 +59,6 @@ describe('voice provider settings catalog', () => {
           },
           client: {
             artifactId: 'client',
-            modulePath: './voiceRuntime',
             exportName: 'activate',
           },
         },
@@ -182,7 +184,7 @@ describe('voice provider settings catalog', () => {
     const binding = {
       v: 1 as const,
       bindingsByServiceId: {
-        'openai-codex': selectedBinding,
+        [codexConnectedServiceKey]: selectedBinding,
       },
     };
 

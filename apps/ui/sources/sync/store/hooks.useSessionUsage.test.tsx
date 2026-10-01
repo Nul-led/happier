@@ -3,8 +3,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { createSessionFixture, renderHook, standardCleanup } from '@/dev/testkit';
 import { storage } from '@/sync/domains/state/storageStore';
 import { useSessionUsage } from '@/sync/store/hooks';
-import { createReducer, reducer } from '@/sync/reducer/reducer';
-import { normalizeRawMessage } from '@/sync/typesRaw';
+import { createReducer, reducer } from "@happier-dev/session-core/reducer";
+import { normalizeRawMessage } from "@happier-dev/session-core/raw";
 import {
     getActiveServerId,
     removeServerProfile,

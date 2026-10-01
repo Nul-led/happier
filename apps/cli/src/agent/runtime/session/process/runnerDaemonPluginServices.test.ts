@@ -110,7 +110,7 @@ function preparedSnapshot() {
 }
 
 function managedProviderBootstrap(
-    activationGeneration: string,
+    activationOccurrenceId: string,
 ) {
     return RunnerDaemonManagedProviderBootstrapV1Schema.parse({
         v: 1,
@@ -167,12 +167,17 @@ function managedProviderBootstrap(
             },
             pluginId: 'provider.plugin',
             providerLocalId: 'gateway',
-            activationGeneration,
-            immutableGenerationId:
-                `provider-generation-${activationGeneration}`,
+            occurrenceId:
+                `occurrence:provider.plugin:${activationOccurrenceId}`,
+            sourceCustody: {
+                kind: 'managed',
+                immutableGenerationId:
+                    `provider-generation-${activationOccurrenceId}`,
+                installSource: 'npm',
+            },
             manifestAuthority: 'external',
             operationClaimId:
-                `session-provider-claim-${activationGeneration}`,
+                `session-provider-claim-${activationOccurrenceId}`,
         },
         requestAuth: null,
         providerPluginHardRevocationRevisionAtAdmission: 3,
@@ -2191,7 +2196,7 @@ describe('runner daemon PluginServices proxy', () => {
         expect(bindInputs).toHaveLength(1);
         expect(managedProviderStarts).toHaveLength(1);
         expect(bindInputs[0]?.managedProvider?.bootstrap.scope
-            .activationGeneration).toBe('1');
+            .occurrenceId).toBe('occurrence:provider.plugin:1');
         expect(bindInputs[0]?.managedProvider?.isCurrent())
             .toBe(true);
         await services.connectedAccounts.getBinding('agent-purpose');
@@ -2217,7 +2222,7 @@ describe('runner daemon PluginServices proxy', () => {
         expect(bindInputs[0]?.managedProvider?.isCurrent())
             .toBe(false);
         expect(bindInputs[1]?.managedProvider?.bootstrap.scope
-            .activationGeneration).toBe('1');
+            .occurrenceId).toBe('occurrence:provider.plugin:1');
         expect(bindInputs[1]?.managedProvider?.isCurrent())
             .toBe(true);
 

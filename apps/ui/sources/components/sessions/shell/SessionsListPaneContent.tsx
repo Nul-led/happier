@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { View } from 'react-native';
-import { StyleSheet, useUnistyles } from 'react-native-unistyles';
+import { StyleSheet } from 'react-native-unistyles';
 
 import {
     SessionGettingStartedGuidance,
@@ -13,7 +13,8 @@ import { SessionsListEmptyState } from '@/components/sessions/shell/SessionsList
 import { useSessionGettingStartedGuidanceBaseModel } from '@/components/sessions/guidance/useSessionGettingStartedGuidanceBaseModel';
 import { useVisibleSessionListPaneState, type VisibleSessionListPaneState } from '@/hooks/session/useVisibleSessionListPaneState';
 import { resolveSessionsListEmptyStateKind } from './resolveSessionsListEmptyStateKind';
-import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
+import { SessionListSkeletonRows } from './SessionListSkeletonRows';
+import { HomeReachabilityGate } from '@/components/navigation/connectionStatus/HomeReachabilityGate';
 import {
     normalizeSessionListSurfaceOwnership,
     type SessionListSurfaceOwnership,
@@ -41,25 +42,17 @@ type SessionsListPaneContentProps = Readonly<{
     surfaceOwnership?: Partial<SessionListSurfaceOwnership>;
 }>;
 
-const stylesheet = StyleSheet.create((theme) => ({
+const stylesheet = StyleSheet.create(() => ({
     loadingContainerWrapper: {
         flex: 1,
         flexBasis: 0,
         flexGrow: 1,
-        backgroundColor: theme.colors.background.canvas,
-    },
-    loadingContainer: {
-        flex: 1,
-        alignItems: 'center',
-        justifyContent: 'center',
-        paddingBottom: 32,
     },
     emptyStateContainer: {
         flex: 1,
         flexBasis: 0,
         flexGrow: 1,
         flexDirection: 'column',
-        backgroundColor: theme.colors.background.canvas,
     },
     emptyStateContentContainer: {
         flex: 1,
@@ -170,16 +163,21 @@ function SessionsListPaneEmptyState(props: Pick<SessionsListPaneContentViewProps
     );
 }
 
-function SessionsListPaneContentView(props: SessionsListPaneContentViewProps) {
-    const { theme } = useUnistyles();
+/**
+ * The rendered list, below the subscriber that follows session rows for placement. That subscriber
+ * re-renders on every row write (it must, to re-place rows); when placement did not change its pane
+ * state keeps its identity, so this boundary skips re-rendering the whole list. Each row renders its
+ * content from its own subscription.
+ */
+const SessionsListPaneContentView = React.memo(function SessionsListPaneContentView(props: SessionsListPaneContentViewProps) {
     const styles = stylesheet;
 
     if (props.sessionListPaneState.showLoading) {
         return (
             <View style={styles.loadingContainerWrapper}>
-                <View style={styles.loadingContainer}>
-                    <ActivitySpinner size="small" color={theme.colors.text.secondary} />
-                </View>
+                <HomeReachabilityGate variant="line">
+                    <SessionListSkeletonRows />
+                </HomeReachabilityGate>
             </View>
         );
     }
@@ -204,7 +202,7 @@ function SessionsListPaneContentView(props: SessionsListPaneContentViewProps) {
             surfaceOwnership={props.surfaceOwnership}
         />
     );
-}
+});
 
 export const SessionsListPaneContent = React.memo((props: SessionsListPaneContentProps) => {
     const filterController = useSessionListViewFilterController('active');

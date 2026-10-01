@@ -1,9 +1,11 @@
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
+import { pickSessionCreateOriginFields } from '@/session/shared/sessionCreateOrigin';
 
 import {
   parseSessionMcpSelectionV1Json,
   SessionCreationTagV1Schema,
+  SessionRolesV1Schema,
   type ConnectedServiceMaterializationIdentityV1,
   type SessionMetadata,
 } from '@happier-dev/protocol';
@@ -39,9 +41,13 @@ type SpawnError = Extract<SpawnSessionResult, { type: 'error' }>;
  * directly needs its Session before launch material is opened: the Home
  * discloses direct material only to an existing Session consumer carrying its
  * own accepted Team binding (lane 10 child 06 L10D-R11, §15; child 01
- * principle 3). Every other fresh launch keeps runner-side creation.
+ * principle 3). Resolved role snapshots also commit here so complete role text
+ * reaches the runner through its existing protected attach file, without an
+ * operating-system environment-size boundary. Other fresh launches keep
+ * runner-side creation.
  */
 export function daemonLaunchRequiresCommittedSession(options: SpawnSessionOptions): boolean {
+  if (options.creationAuthorization || options.initialSessionRolesV1) return true;
   const admitted = ConnectedServicesBindingsIngressSchema.safeParse(options.connectedServices);
   if (!admitted.success || !admitted.data) return false;
   return Object.values(admitted.data.bindingsByServiceId).some((binding) => (
@@ -86,6 +92,7 @@ function buildCommittedLaunchMetadata(input: Readonly<{
     ...(options.placementOrigin ? { placementOrigin: options.placementOrigin } : {}),
     ...(mcpSelection ? { mcpSelectionV1: mcpSelection } : {}),
     connectedServiceMaterializationIdentityV1: input.materializationIdentity,
+    ...(options.initialSessionRolesV1 ? { work: { sessionRolesV1: SessionRolesV1Schema.parse(options.initialSessionRolesV1) } } : {}),
   };
   const agentModeId = input.agentModeId?.trim();
   if (agentModeId) {
@@ -129,7 +136,9 @@ export async function commitDaemonLaunchSession(input: Readonly<{
   let created: Awaited<ReturnType<ApiClient['getOrCreateSession']>>;
   try {
     created = await input.api.getOrCreateSession({
+      ...pickSessionCreateOriginFields(options),
       tag,
+      ...(options.creationAuthorization ? { creationAuthorizationToken: options.creationAuthorization.token } : {}),
       metadata: buildCommittedLaunchMetadata({
         options,
         directory: input.directory,
@@ -141,6 +150,7 @@ export async function commitDaemonLaunchSession(input: Readonly<{
       }),
       state: { controlledByUser: false },
       ...(options.initialAccess !== undefined ? { initialAccess: options.initialAccess } : {}),
+      ...(options.reportsTo !== undefined ? { reportsTo: options.reportsTo } : {}),
       ...(options.primaryTeamId !== undefined ? { primaryTeamId: options.primaryTeamId } : {}),
       ...(options.teamCredentialBindings !== undefined
         ? { teamCredentialBindings: options.teamCredentialBindings }
@@ -210,8 +220,15 @@ export async function commitDaemonLaunchSession(input: Readonly<{
 export function withoutFreshSessionCreationFields(options: SpawnSessionOptions): SpawnSessionOptions {
   const {
     initialAccess: _initialAccess,
+    reportsTo: _reportsTo,
+    initialSessionRolesV1: _initialSessionRolesV1,
+    originKind: _originKind,
+    originSessionId: _originSessionId,
+    originRunId: _originRunId,
+    workDepth: _workDepth,
     primaryTeamId: _primaryTeamId,
     teamCredentialBindings: _teamCredentialBindings,
+    creationAuthorization: _creationAuthorization,
     ...attachOptions
   } = options;
   return attachOptions;

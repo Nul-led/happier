@@ -80,6 +80,34 @@ describe('daemon control server: /restart', () => {
     }
   });
 
+  it('acknowledges an accepted restart before slow successor startup completes', async () => {
+    let finishRestart!: () => void;
+    const restartPending = new Promise<void>((resolve) => {
+      finishRestart = resolve;
+    });
+    const requestSelfRestart = vi.fn(async () => {
+      await restartPending;
+    });
+    const app = createBaseApp({ requestSelfRestart });
+    try {
+      await app.ready();
+      const response = await Promise.race([
+        app.inject({
+          method: 'POST',
+          url: '/restart',
+          headers: { 'x-happier-daemon-token': 'test-token' },
+        }),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 100)),
+      ]);
+      expect(response?.statusCode).toBe(202);
+      expect(response?.json()).toEqual({ status: 'restarting' });
+      expect(requestSelfRestart).toHaveBeenCalledTimes(1);
+    } finally {
+      finishRestart();
+      await app.close();
+    }
+  });
+
   it('rejects restart while shutting down', async () => {
     const requestSelfRestart = vi.fn(async () => {});
     const app = createBaseApp({
@@ -116,6 +144,7 @@ describe('daemon control server: /restart', () => {
       expect(first.statusCode).toBe(202);
       expect(first.json()).toEqual({ status: 'restarting' });
       await vi.waitFor(() => expect(requestSelfRestart).toHaveBeenCalledTimes(1));
+      await new Promise((resolve) => setImmediate(resolve));
 
       const second = await app.inject({
         method: 'POST',
@@ -165,9 +194,9 @@ describe('daemon control server: /restart', () => {
       });
 
       expect(res.statusCode).toBe(202);
-      await vi.waitFor(() => expect(requestSelfRestart).toHaveBeenCalledWith({
+      await vi.waitFor(() => expect(requestSelfRestart).toHaveBeenCalledWith(expect.objectContaining({
         successorDistClosureFingerprint: 'abcdef1234567890',
-      }));
+      })));
     } finally {
       await app.close();
     }

@@ -1,6 +1,7 @@
 import { useFeatureDecision } from './useFeatureDecision';
 import type { FeatureScopeParams } from './featureScope';
 import type { FeatureDecision } from '@happier-dev/protocol';
+import { resolveFeatureAvailabilityArm, type FeatureAvailabilityArm } from './resolveFeatureAvailabilityArm';
 
 export type AutomationsSupport = Readonly<{
     enabled: boolean;
@@ -8,6 +9,8 @@ export type AutomationsSupport = Readonly<{
     discoverable?: boolean;
     blockedBy?: FeatureDecision['blockedBy'] | null;
     blockerCode?: FeatureDecision['blockerCode'] | null;
+    /** The canonical availability arm; surfaces choose their copy from it, never from `blockedBy` alone. */
+    arm?: FeatureAvailabilityArm;
 }>;
 
 export function useAutomationsSupport(scope?: FeatureScopeParams): AutomationsSupport {
@@ -19,5 +22,6 @@ export function useAutomationsSupport(scope?: FeatureScopeParams): AutomationsSu
         discoverable: decision == null || decision?.state === 'enabled' || decision?.blockedBy === 'local_policy',
         blockedBy: decision?.blockedBy ?? null,
         blockerCode: decision?.blockerCode ?? null,
+        arm: resolveFeatureAvailabilityArm(decision),
     };
 }

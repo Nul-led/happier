@@ -1,6 +1,7 @@
 import * as React from 'react';
 import { Linking, Platform } from 'react-native';
 
+import { Icon } from '@/components/ui/icons/Icon';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import {
@@ -278,7 +279,7 @@ export function BundledConversationSettingsSection(props: Readonly<{
   return <>
     {!primarySettingsVisible ? null : <ItemGroup
       title={descriptor.titleKey ? tLoose(descriptor.titleKey) : tLoose('settingsVoice.realtimeProviders.setup.title')}
-      footer={descriptor.footerKey ? tLoose(descriptor.footerKey) : undefined}
+      description={descriptor.footerKey ? tLoose(descriptor.footerKey) : undefined}
     >
       {!credentialSourceVisible || !contribution || !credentialDeclaration || !credentialProviderDeclaration ? null : <VoiceCredentialSourceField
         contribution={contribution}
@@ -349,6 +350,7 @@ export function BundledConversationSettingsSection(props: Readonly<{
     {visibleLinks.length === 0 ? null : <ItemGroup title={tLoose('settingsVoice.realtimeProviders.links.title')}>
       {visibleLinks.map(({ kind, url }) => <Item
         key={kind}
+        icon={<Icon name="arrow-square-out" />}
         title={tLoose(`settingsVoice.realtimeProviders.links.${kind}.title`)}
         subtitle={tLoose(`settingsVoice.realtimeProviders.links.${kind}.subtitle`)}
         onPress={() => fireAndForget((async () => {

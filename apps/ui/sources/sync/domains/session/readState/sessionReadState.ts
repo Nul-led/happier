@@ -1,4 +1,4 @@
-import { computeHasUnreadActivity } from '@/sync/domains/messages/unread';
+import { computeHasUnreadActivity } from "@happier-dev/session-core/messages";
 import { summarizeSessionListReadableActivityFromMessageRecords } from '@/sync/domains/session/listing/sessionListRenderable';
 import { deriveExternalSessionAttentionHasUnread } from '@/sync/domains/session/external/readExternalSessionAttention';
 import { readExternalSessionLink } from '@/sync/domains/session/external/readExternalSessionLink';
@@ -7,7 +7,7 @@ import {
     type LastViewedSessionSeqInput,
 } from '@/sync/domains/session/readCursor/resolveLastViewedSessionSeq';
 import { resolveSessionListReadableSeq } from '@/sync/domains/session/listing/sessionListRenderable';
-import type { Metadata } from '@/sync/domains/state/storageTypes';
+import type { Metadata } from '@happier-dev/session-core/state';
 import { readRegisteredStorageState } from '@/sync/domains/state/storageStateReaderBridge';
 import type { PrimaryTurnStatusV1 } from '@happier-dev/protocol';
 import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';

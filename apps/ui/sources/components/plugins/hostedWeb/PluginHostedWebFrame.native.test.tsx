@@ -11,7 +11,7 @@ const inlineDocumentFrameProps: Array<Record<string, unknown>> = [];
 vi.mock('@/sync/domains/plugins/availability/bundledAppExactArtifactSource', () => ({
     createBundledPluginUiAppExactArtifactSource: () => Object.freeze({
         kind: 'appExact' as const,
-        readFile: vi.fn(async () => null),
+        fetch: vi.fn(async () => null),
     }),
 }));
 vi.mock('@/sync/domains/plugins/availability/reader', () => ({
@@ -43,6 +43,36 @@ vi.mock('./HostedArtifactFrame.native', () => ({
 const frameOrigin = 'happier-hosted-artifact://hpa_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 
 describe('PluginHostedWebFrame native Artifact adoption', () => {
+    it('forwards the shared lifecycle callbacks to the generic native URL frame', async () => {
+        genericFrameProps.length = 0;
+        const onLoadStart = vi.fn();
+        const onLoad = vi.fn();
+        const onError = vi.fn();
+        const { PluginHostedWebFrame } = await import('./PluginHostedWebFrame.native');
+
+        await renderScreen(
+            <PluginHostedWebFrame
+                title="Preview"
+                url="https://preview.example.test/"
+                security={{
+                    allowedNavigationOrigins: [], allowedCallbackOrigins: [], allowedConnectOrigins: [],
+                    sourceMaps: 'disabled', mixedContent: 'deny',
+                    csp: {
+                        connectSrc: 'selfOnly', allowDataUrls: false, allowBlobUrls: false,
+                        allowInlineStyles: false, allowEval: false,
+                    },
+                }}
+                sandbox={{ scripts: true, sameOrigin: false, popups: false, topNavigation: false, mixedContent: false }}
+                testID="plugin-hosted-web-frame"
+                onLoadStart={onLoadStart}
+                onLoad={onLoad}
+                onError={onError}
+            />,
+        );
+
+        expect(genericFrameProps.at(-1)).toMatchObject({ onLoadStart, onLoad, onError });
+    });
+
     it('uses the opaque Artifact frame and its canonical custom-scheme bridge instead of a generic URL frame', async () => {
         genericFrameProps.length = 0;
         artifactFrameProps.length = 0;

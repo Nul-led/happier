@@ -62,6 +62,14 @@ describe('Runner broker readiness reviewed application', () => {
     })).toEqual({ status: 'ready' });
   });
 
+  it('rejects an Agent that cannot use the reviewed broker protocol', () => {
+    expect(resolveReviewedRunnerBrokerApplicationCompatibility({
+      agentTargetKey: application.agentTargetKey,
+      agent: { ...agent, acceptsProtocols: ['anthropic'] },
+      endpoints: [endpoint('openai-responses')], application, credential,
+    })).toEqual({ status: 'unavailable', reason: 'reviewed_application_incompatible' });
+  });
+
   it('fails closed when the reviewed endpoint changed, without treating another endpoint as ambiguous', () => {
     expect(resolveReviewedRunnerBrokerApplicationCompatibility({
       agentTargetKey: 'agent:happier.agent.codex/codex', agent,

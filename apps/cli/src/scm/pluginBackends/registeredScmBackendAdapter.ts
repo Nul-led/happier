@@ -1,13 +1,13 @@
 import {
     createScmCapabilitiesFromBackendCapabilities,
     SCM_OPERATION_ERROR_CODES,
-} from '@happier-dev/protocol';
+} from '@happier-dev/protocol/scm';
 import type {
     ScmBackendCapabilities,
     ScmCapabilities,
     ScmPullRequestRunStackedResponse,
     ScmRepoMode,
-} from '@happier-dev/protocol';
+} from '@happier-dev/protocol/scm';
 import type {
     BackendRuntimeRegistration as ScmBackendRuntimeRegistration,
     BackendRuntimeServices as ScmBackendRuntimeServices,
@@ -46,16 +46,6 @@ function withOperationSignal<TInput extends object>(input: TInput): TInput & Rea
 function unsupportedOperation(): Promise<UnsupportedResult> {
     return Promise.resolve({
         success: false,
-        errorCode: SCM_OPERATION_ERROR_CODES.FEATURE_UNSUPPORTED,
-        error: 'SCM backend operation is not implemented by this plugin backend',
-    });
-}
-
-function unsupportedWorktreeCreate(): Promise<Awaited<ReturnType<ScmBackend['worktreeCreate']>>> {
-    return Promise.resolve({
-        success: false,
-        worktreePath: '',
-        branchName: '',
         errorCode: SCM_OPERATION_ERROR_CODES.FEATURE_UNSUPPORTED,
         error: 'SCM backend operation is not implemented by this plugin backend',
     });
@@ -432,9 +422,18 @@ export function createRegisteredScmBackendAdapter(input: Readonly<{
         async branchOperationAbort({ context, request }) {
             return useHandler(runtimeServices, hostingProviderRuntimeServices, input.registration.handlers.branch?.operationAbort, { context, request });
         },
+        async branchOperationSkip({ context, request }) {
+            return useHandler(runtimeServices, hostingProviderRuntimeServices, input.registration.handlers.branch?.operationSkip, { context, request });
+        },
+        async conflictAcceptSide({ context, request }) {
+            return useHandler(runtimeServices, hostingProviderRuntimeServices, input.registration.handlers.branch?.conflictAcceptSide, { context, request });
+        },
+        async conflictMarkResolved({ context, request }) {
+            return useHandler(runtimeServices, hostingProviderRuntimeServices, input.registration.handlers.branch?.conflictMarkResolved, { context, request });
+        },
         async worktreeCreate({ context, request }) {
             const handler = input.registration.handlers.worktree?.create;
-            if (!handler) return unsupportedWorktreeCreate();
+            if (!handler) return unsupportedOperation();
             return await runWithScmBackendRuntimeServices(
                 runtimeServices,
                 async () => await runWithScmHostingProviderRuntimeServices(
@@ -481,6 +480,9 @@ export function createRegisteredScmBackendAdapter(input: Readonly<{
         },
         async stashList({ context, request }) {
             return useHandler(runtimeServices, hostingProviderRuntimeServices, input.registration.handlers.read?.stashList, { context, request });
+        },
+        async stashCreate({ context, request }) {
+            return useHandler(runtimeServices, hostingProviderRuntimeServices, input.registration.handlers.stash?.create, { context, request });
         },
         async stashDrop({ context, request }) {
             return useHandler(runtimeServices, hostingProviderRuntimeServices, input.registration.handlers.stash?.drop, { context, request });

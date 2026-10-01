@@ -1,4 +1,4 @@
-import type { AIBackendProfile, SecretReferenceOverlayV1 } from '@happier-dev/protocol';
+import type { AIBackendProfile, AiLaunchProfile, AiLaunchProfileSourceV1, SecretReferenceOverlayV1 } from '@happier-dev/protocol';
 import * as React from 'react';
 import { Platform, Pressable, View } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
@@ -13,10 +13,11 @@ import type { SavedSecret } from '@/sync/domains/settings/savedSecretTypes';
 import type { Settings } from '@/sync/domains/settings/settings';
 import type { AccountSettingsScope } from '@/sync/domains/settings/scope/accountSettingsScope';
 import type { SavedSecretReferenceResolution } from '@/sync/store/settings/savedSecretCatalogSnapshot';
-import { readUiAiLaunchProfilesForLegacyUi } from '@/sync/domains/profiles/aiLaunchProfileCollection';
+import { projectAiLaunchProfileForLegacyUi, readUiAiLaunchProfilesForLegacyUi } from '@/sync/domains/profiles/aiLaunchProfileCollection';
 import { getBuiltInProfile } from '@/sync/domains/profiles/profileUtils';
 import { t } from '@/text';
 import { resolveStrictV2ProfileSecretReadiness, type StrictV2ProfileSecretReadiness } from '@/components/sessions/new/modules/resolveStrictV2ProfileSecretReadiness';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 export type ExecutionRunSecretReferenceOverlayState = Readonly<{
     readiness: StrictV2ProfileSecretReadiness;
@@ -26,13 +27,14 @@ export type ExecutionRunSecretReferenceOverlayState = Readonly<{
 export function resolveExecutionRunSessionLaunchProfile(
     settings: Pick<Settings, 'profiles'>,
     sessionMetadata: unknown,
-): AIBackendProfile | null {
+    profiles?: readonly AiLaunchProfile[],
+): (AIBackendProfile & AiLaunchProfileSourceV1) | null {
     const rawProfileId = sessionMetadata && typeof sessionMetadata === 'object' && !Array.isArray(sessionMetadata)
         ? Reflect.get(sessionMetadata, 'profileId')
         : null;
     const profileId = typeof rawProfileId === 'string' ? rawProfileId.trim() : '';
     if (!profileId) return null;
-    return readUiAiLaunchProfilesForLegacyUi(settings.profiles ?? []).find((profile) => profile.id === profileId)
+    return (profiles ? profiles.map(projectAiLaunchProfileForLegacyUi) : readUiAiLaunchProfilesForLegacyUi(settings.profiles ?? [])).find((profile) => profile.id === profileId)
         ?? getBuiltInProfile(profileId);
 }
 
@@ -187,7 +189,7 @@ export const ExecutionRunSecretReferenceOverlayField = React.memo((props: Readon
                     borderWidth: 1,
                     borderColor: theme.colors.border.default,
                     backgroundColor: theme.colors.surface.inset,
-                    opacity: !props.editable ? 0.5 : pressed ? 0.7 : 1,
+                    opacity: !props.editable ? 0.5 : pressed ? motionTokens.press.opacity : 1,
                 })}
             >
                 <Text style={{ color: theme.colors.text.primary, fontWeight: '600' }}>

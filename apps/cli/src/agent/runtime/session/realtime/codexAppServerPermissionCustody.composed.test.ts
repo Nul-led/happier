@@ -203,7 +203,7 @@ describe('Codex global Voice permission custody composition', () => {
                 contributionId: 'codex',
                 runtimeId: 'codex',
                 sessionId: session.sessionId,
-                generationId: 'codex-generation-1',
+                occurrenceId: 'codex-occurrence-1',
                 interactionDeadlineMs: 1_000,
                 isCurrent: () => true,
                 signal: sessionLifetime.signal,
@@ -212,7 +212,7 @@ describe('Codex global Voice permission custody composition', () => {
             const ui = createPluginInteractionsService({
                 currentSession: currentSessionUi,
                 signal: sessionLifetime.signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
                 createOperationId: () => permissionRequestId,
             });
             const authorizedCommandEffects: Array<{

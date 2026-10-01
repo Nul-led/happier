@@ -1,14 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
+import { resolveSessionRunnerRuntimeState } from '@/daemon/sessionRunnerRuntime/resolveRuntimeState';
+import { resolveSessionRunnerRuntimeStatusV2 } from '@/daemon/sessionRunnerRuntime/resolveRuntimeStatusV2';
 
 import { registerMachineRpcHandlers } from './rpcHandlers';
+import type { MachineRpcHandlerDeps } from './rpcHandlers';
 
 type Handler = (data: unknown) => Promise<unknown>;
 
-const { getDaemonSessionRunnerStatusMock, getDaemonSessionRunnerStatusV2Mock, requestDaemonSessionRunnerRestartMock, requestDaemonSessionRunnerRestartV2Mock, restartAllDaemonSessionRunnersMock } = vi.hoisted(() => ({
-  getDaemonSessionRunnerStatusMock: vi.fn(),
-  getDaemonSessionRunnerStatusV2Mock: vi.fn(),
+const { requestDaemonSessionRunnerRestartMock, requestDaemonSessionRunnerRestartV2Mock, restartAllDaemonSessionRunnersMock } = vi.hoisted(() => ({
   requestDaemonSessionRunnerRestartMock: vi.fn(),
   requestDaemonSessionRunnerRestartV2Mock: vi.fn(),
   restartAllDaemonSessionRunnersMock: vi.fn(),
@@ -18,8 +19,6 @@ vi.mock('@/daemon/controlClient', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/daemon/controlClient')>();
   return {
     ...actual,
-    getDaemonSessionRunnerStatus: getDaemonSessionRunnerStatusMock,
-    getDaemonSessionRunnerStatusV2: getDaemonSessionRunnerStatusV2Mock,
     requestDaemonSessionRunnerRestart: requestDaemonSessionRunnerRestartMock,
     requestDaemonSessionRunnerRestartV2: requestDaemonSessionRunnerRestartV2Mock,
     restartAllDaemonSessionRunners: restartAllDaemonSessionRunnersMock,
@@ -36,7 +35,7 @@ function createRpcHandlerManager(): { handlers: Map<string, Handler>; registerHa
   };
 }
 
-function registerHandlers(): Map<string, Handler> {
+function registerHandlers(sessionRunnerStatus?: MachineRpcHandlerDeps['sessionRunnerStatus']): Map<string, Handler> {
   const mgr = createRpcHandlerManager();
   registerMachineRpcHandlers({
     rpcHandlerManager: mgr as any,
@@ -45,110 +44,37 @@ function registerHandlers(): Map<string, Handler> {
       stopSession: async () => true,
       requestShutdown: () => {},
     },
+    ...(sessionRunnerStatus ? { deps: { sessionRunnerStatus } } : {}),
   });
   return mgr.handlers;
 }
 
 describe('rpcHandlers (session runner restarts)', () => {
   beforeEach(() => {
-    getDaemonSessionRunnerStatusMock.mockReset();
-    getDaemonSessionRunnerStatusV2Mock.mockReset();
     requestDaemonSessionRunnerRestartMock.mockReset();
     requestDaemonSessionRunnerRestartV2Mock.mockReset();
     restartAllDaemonSessionRunnersMock.mockReset();
   });
 
-  it('validates and forwards session-runner status RPC requests', async () => {
-    getDaemonSessionRunnerStatusMock.mockResolvedValueOnce({
-      v: 1,
-      sessionId: 'sess-1',
-      machineId: null,
-      daemonId: null,
+  it('resolves both status RPC versions at the in-process daemon owner', async () => {
+    const resolveStatus = ({ sessionId }: { sessionId: string }) => resolveSessionRunnerRuntimeState({
+      sessionId,
+      tracked: null,
+      currentIdentity: { status: 'unknown', source: 'unknown', reason: 'empty_command' },
       observedAtMs: 100,
-      runner: {
-        pid: null,
-        runtimeId: null,
-        cliVersion: null,
-        entrypointVersion: null,
-        processCommandHash: null,
-        entrypointSource: 'unknown',
-        startedBy: 'unknown',
-        startingMode: 'unknown',
-      },
-      daemon: {
-        cliVersion: null,
-        startedWithCliVersion: null,
-        currentEntrypointVersion: null,
-        currentEntrypointSource: 'unknown',
-      },
-      versionState: 'unknown',
-      statusSource: 'unknown',
-      plannedRestart: {
-        supported: false,
-        eligible: false,
-        disabledReason: 'no_tracked_process',
-      },
     });
-    const handlers = registerHandlers();
-    const handler = handlers.get(RPC_METHODS.DAEMON_SESSION_RUNNER_STATUS_GET);
-    expect(handler).toBeDefined();
-
-    await expect(handler!({ sessionId: ' sess-1 ' })).resolves.toMatchObject({
-      v: 1,
-      sessionId: 'sess-1',
-      versionState: 'unknown',
+    const handlers = registerHandlers({
+      get: async (request) => resolveStatus(request),
+      getV2: async (request) => resolveSessionRunnerRuntimeStatusV2({
+        state: resolveStatus(request),
+        tracked: null,
+      }),
     });
 
-    expect(getDaemonSessionRunnerStatusMock).toHaveBeenCalledWith({ sessionId: 'sess-1' });
-  });
-
-  it('validates and forwards additive V2 status witness RPC requests', async () => {
-    getDaemonSessionRunnerStatusV2Mock.mockResolvedValueOnce({
-      v: 2,
-      state: {
-        v: 1,
-        sessionId: 'sess-1',
-        machineId: null,
-        daemonId: null,
-        observedAtMs: 100,
-        runner: {
-          pid: 123,
-          runtimeId: null,
-          cliVersion: null,
-          entrypointVersion: null,
-          processCommandHash: null,
-          entrypointSource: 'unknown',
-          startedBy: 'unknown',
-          startingMode: 'unknown',
-        },
-        daemon: {
-          cliVersion: null,
-          startedWithCliVersion: null,
-          currentEntrypointVersion: null,
-          currentEntrypointSource: 'unknown',
-        },
-        versionState: 'unknown',
-        statusSource: 'unknown',
-        plannedRestart: {
-          supported: false,
-          eligible: false,
-          disabledReason: 'no_tracked_process',
-        },
-      },
-      runnerProcessIdentity: {
-        pid: 456,
-        processStartTimeMs: 1_000,
-      },
-    });
-    const handlers = registerHandlers();
-    const handler = handlers.get(RPC_METHODS.DAEMON_SESSION_RUNNER_STATUS_V2_GET);
-    expect(handler).toBeDefined();
-
-    await expect(handler!({ sessionId: ' sess-1 ' })).resolves.toMatchObject({
-      v: 2,
-      runnerProcessIdentity: { pid: 456, processStartTimeMs: 1_000 },
-    });
-    expect(getDaemonSessionRunnerStatusV2Mock).toHaveBeenCalledWith({ sessionId: 'sess-1' });
+    const status = await handlers.get(RPC_METHODS.DAEMON_SESSION_RUNNER_STATUS_GET)!({ sessionId: ' sess-1 ' });
+    const statusV2 = await handlers.get(RPC_METHODS.DAEMON_SESSION_RUNNER_STATUS_V2_GET)!({ sessionId: ' sess-1 ' });
+    expect(status).toMatchObject({ v: 1, sessionId: 'sess-1', observedAtMs: 100 });
+    expect(statusV2).toMatchObject({ v: 2, state: status, runnerProcessIdentity: null });
   });
 
   it('validates and forwards single session-runner restart RPC requests', async () => {

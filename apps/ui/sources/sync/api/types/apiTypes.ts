@@ -1,46 +1,6 @@
 import { z } from 'zod';
 import { ChangeEntrySchema, ChangesResponseSchema } from '@happier-dev/protocol/changes';
-import {
-    MessageActionReferenceV1Schema,
-    SessionMessageAccountActorV1Schema,
-    SessionMessageAttentionImpactSchema,
-    SessionMessageDeliveryResolutionV1Schema,
-    SessionMessageRoleSchema,
-    SessionStoredMessageContentSchema,
-    SessionTranscriptObservationProvenanceV1Schema,
-} from '@happier-dev/protocol';
 import { EphemeralUpdateSchema, type EphemeralUpdate, UpdateBodySchema, UpdateContainerSchema } from '@happier-dev/protocol/updates';
-
-//
-// Session message
-//
-
-export const ApiMessageSchema = z.object({
-    id: z.string(),
-    seq: z.number(),
-    localId: z.string().nullish(),
-    sidechainId: z.string().nullable().optional(),
-    messageRole: SessionMessageRoleSchema.nullish(),
-    attentionImpact: SessionMessageAttentionImpactSchema.optional(),
-    content: SessionStoredMessageContentSchema,
-    createdAt: z.number(),
-    updatedAt: z.number().optional(),
-    sourceCreatedAt: z.number().int().min(0).optional(),
-    sourceUpdatedAt: z.number().int().min(0).optional(),
-    transcriptObservationProvenance: SessionTranscriptObservationProvenanceV1Schema.optional(),
-    deliveryResolution: SessionMessageDeliveryResolutionV1Schema.optional(),
-    messageActionReference: MessageActionReferenceV1Schema.optional(),
-    accountActor: SessionMessageAccountActorV1Schema.nullable().optional(),
-});
-
-export type ApiMessage = z.infer<typeof ApiMessageSchema>;
-
-export const ApiSessionMessagesResponseSchema = z.object({
-    messages: z.array(ApiMessageSchema),
-    hasMore: z.boolean().optional(),
-    nextBeforeSeq: z.number().nullable().optional(),
-    nextAfterSeq: z.number().nullable().optional(),
-});
 
 //
 // /v2/changes
@@ -51,8 +11,6 @@ export type ApiChangeEntry = z.infer<typeof ApiChangeEntrySchema>;
 
 export const ApiChangesResponseSchema = ChangesResponseSchema;
 export type ApiChangesResponse = z.infer<typeof ApiChangesResponseSchema>;
-
-export type ApiSessionMessagesResponse = z.infer<typeof ApiSessionMessagesResponseSchema>;
 
 //
 // Updates

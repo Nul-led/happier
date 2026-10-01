@@ -17,9 +17,12 @@ import {
     type PeerTcpTunnelFlowKind,
 } from '@happier-dev/peer-mediation';
 
-import type { PeerLoopbackRouteAvailabilityResult } from '../loopback/resolvePeerLoopbackRouteAvailability';
+import type { PeerLoopbackRouteAvailabilityResult } from '../loopback/routeAvailability';
 import { openPeerTcpTunnelLoopbackStream, type PeerTcpTunnelWebSocketCtor } from './loopbackStream';
 import { openPeerTcpTunnelRelayStream } from './relayStream';
+import { openPeerTcpTunnelIrohStream, type PeerTcpTunnelIrohRoute } from './irohStream';
+import { readHomeApplicationCarrierEligibility } from '@/sync/runtime/homeCarrierPolicy';
+export type { PeerTcpTunnelIrohRoute } from './irohStream';
 
 export {
     PEER_TCP_TUNNEL_STREAM_CLOSED_CODE,
@@ -30,7 +33,7 @@ export {
 export type OpenPeerTcpTunnelClientResult =
     | Readonly<{
         ok: true;
-        routeKind: 'loopback_direct' | 'server_relay';
+        routeKind: 'loopback_direct' | 'iroh_peer' | 'server_relay';
         response: PeerTcpTunnelOpenResponseV1;
         stream: PeerTcpTunnelClientStream;
       }>
@@ -97,6 +100,8 @@ export async function openPeerTcpTunnel(input: Readonly<{
         routeKind: 'loopback_direct';
         targetMachineId: string;
     }>) => Promise<PeerLoopbackRouteAvailabilityResult>;
+    /** Native clients only; the canonical access owner mints this exact signed scope. */
+    resolveIroh?: (request: Readonly<{ open: PeerTcpTunnelDirectOpen; signal: AbortSignal | null }>) => Promise<PeerTcpTunnelIrohRoute>;
     postOpen: (request: Readonly<{
         open: PeerTcpTunnelDirectOpen;
     }>) => Promise<PeerTcpTunnelOpenResponseV1>;
@@ -121,6 +126,13 @@ export async function openPeerTcpTunnel(input: Readonly<{
         routeKind: 'loopback_direct',
         targetMachineId: input.open.targetMachineId,
     });
+    const iroh = loopback.kind !== 'selected'
+        && input.directPeerDecision?.state === 'enabled'
+        && readHomeApplicationCarrierEligibility() !== 'standard_only'
+        && (input.flowKind ?? 'tcp_tunnel') === 'tcp_tunnel'
+        && input.resolveIroh
+        ? await input.resolveIroh({ open: input.open, signal: input.signal ?? null })
+        : null;
     const route = resolveTcpTunnelRouteDecision({
         flowKind: input.flowKind ?? 'tcp_tunnel',
         directPeerDecision: input.directPeerDecision,
@@ -128,6 +140,9 @@ export async function openPeerTcpTunnel(input: Readonly<{
         directRoute: loopback.kind === 'selected'
             ? { status: 'selected' }
             : { status: 'unavailable', reasonCode: loopback.reasonCode },
+        ...(iroh ? { irohRoute: iroh.kind === 'selected'
+            ? { status: 'selected' as const }
+            : { status: 'unavailable' as const, reasonCode: iroh.reasonCode } } : {}),
     });
     if (route.kind !== 'selected') {
         return {
@@ -135,6 +150,15 @@ export async function openPeerTcpTunnel(input: Readonly<{
             reasonCode: route.reasonCode,
             ...(route.directRouteReasonCode ? { directRouteReasonCode: route.directRouteReasonCode } : {}),
         };
+    }
+
+    if (route.routeKind === 'iroh_peer') {
+        if (iroh?.kind !== 'selected') return { ok: false, reasonCode: 'stream_transport_unavailable' };
+        const native = await openPeerTcpTunnelIrohStream({
+            selected: iroh, requestedOpen: input.open, signal: input.signal,
+            WebSocketCtor: input.WebSocketCtor, openTimeoutMs: input.openStreamTimeoutMs,
+        });
+        return { ok: true, routeKind: 'iroh_peer', ...native };
     }
 
     if (route.routeKind === 'server_relay') {

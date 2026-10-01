@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { BrowserContextCapabilities } from '@happier-dev/protocol';
+import { sanitizeSessionStructuredInputMeta, type BrowserContextCapabilities } from '@happier-dev/protocol';
 
 import { buildBrowserAdapterCapabilities } from '../adapters/capabilities';
 import type { BrowserControlViewState } from '@/sync/domains/browser/control';
+import { buildBrowserContextMessageMetaOverrides } from '@/sync/domains/session/input/browserContext';
 
 import { createBrowserContextAnnotationAdapter } from './annotationAdapter';
 import { createBrowserContextState } from './state';
@@ -264,6 +265,53 @@ describe('browser context annotation adapter', () => {
                 widthPx: 3,
             },
         });
+    });
+
+    it('attaches every draft mark as one card admitted into the canonical model context', async () => {
+        let state = createBrowserContextState();
+        const view = { ...buildView(), currentUrl: 'https://preview.localhost.test/reset/tok9f8e7d6c5b4a3210ffeeddcc?token=secret#secret' };
+        const adapter = createBrowserContextAnnotationAdapter({
+            resolveBinding: () => ({
+                state,
+                view,
+                browserContextEnabled: true,
+                browserDiagnosticsEnabled: true,
+                attachmentsUploadsEnabled: true,
+                contextCapabilities: annotationCapabilities,
+                captureProvider: buildProvider(),
+                nowMs: () => 8_000,
+            }),
+            onStateChange: (next) => { state = next; },
+        });
+        await adapter.dispatch({ kind: 'start' });
+        await adapter.dispatch({ kind: 'addDraftRegion', rect: { x: 10, y: 20, width: 30, height: 40 } });
+        await adapter.dispatch({ kind: 'addDraftRegion', rect: { x: 80, y: 90, width: 20, height: 10 } });
+        await adapter.dispatch({ kind: 'setDraftComment', comment: 'Compare both marked areas' });
+        const committed = await adapter.dispatch({ kind: 'attachDraft' });
+        expect(committed.status).toBe('committed');
+        if (committed.status !== 'committed') throw new Error('Draft did not commit');
+
+        const message = buildBrowserContextMessageMetaOverrides({ state });
+        expect(message.ok).toBe(true);
+        if (!message.ok) throw new Error(message.reasonCode);
+        expect(sanitizeSessionStructuredInputMeta(message.metaOverrides)).toMatchObject({
+            happierStructuredInputV1: {
+                browserContext: {
+                    contexts: committed.itemIds.map((contextId) => ({ contextId, pageUrl: 'https://preview.localhost.test/reset/:redacted' })),
+                    attachments: [{
+                        structuredBlock: {
+                            contextIds: committed.itemIds,
+                            regions: [{ rect: { x: 0, y: 0, width: 30, height: 40 } },
+                                { rect: { x: 70, y: 70, width: 20, height: 10 } }],
+                            comment: 'Compare both marked areas',
+                            pageUrl: 'https://preview.localhost.test/reset/:redacted',
+                            screenshot: { media: [{ mediaId: 'media_capture_1' }] },
+                        },
+                    }],
+                },
+            },
+        });
+        expect(state.attachmentOrder).toHaveLength(1);
     });
 
     it('fails closed with a view-unavailable reason when no active view is bound', async () => {

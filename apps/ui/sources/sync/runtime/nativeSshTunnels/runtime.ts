@@ -5,9 +5,6 @@ import {
     type NativeSshTunnelCredentialResolution,
 } from './adapter';
 import { createNativeSshTunnelSupervisor } from './supervisor';
-import { disposeIrohHomeTunnelRuntime, getIrohHomeTunnelRuntime } from '@/sync/runtime/nativeIrohTunnels/runtime';
-import { irohMachineTransferRuntimeActivity } from '@/sync/runtime/nativeIrohTunnels/machineTransferLifecycle';
-import type { IrohHomeTunnelRuntime } from '@/sync/runtime/nativeIrohTunnels/types';
 import type {
     NativeSshCredentialsRef,
     NativeSshTunnelLease,
@@ -15,7 +12,6 @@ import type {
     NativeSshTunnelSnapshot,
     NativeSshTunnelSupervisor,
 } from './types';
-import { isRuntimeActive, subscribeToRuntimeActiveChange } from '@/utils/runtime/isRuntimeActive';
 
 export type NativeSshTunnelRuntime = NativeSshTunnelSupervisor & Readonly<{
     subscribe: (listener: () => void) => () => void;
@@ -27,7 +23,6 @@ type RuntimeFactoryParams = Readonly<{
 
 const credentialResolutionsByRefKey = new Map<string, NativeSshTunnelCredentialResolution>();
 let singletonRuntime: NativeSshTunnelRuntime | null = null;
-let singletonLifecycleSubscription: Readonly<{ remove: () => void }> | null = null;
 let hostKeyPromptResolver: NativeSshTunnelHostKeyPromptResolver | null = null;
 let authPromptResolver: NativeSshTunnelAuthPromptResolver | null = null;
 
@@ -189,53 +184,9 @@ export function getNativeSshTunnelRuntime(params: RuntimeFactoryParams = {}): Na
     return singletonRuntime;
 }
 
-export function bindNativeTunnelRuntimeActivity(params: Readonly<{
-    isActive: () => boolean;
-    subscribe: (listener: () => void | Promise<void>) => () => void;
-    runtime: NativeSshTunnelRuntime;
-    /** Companion tunnel runtimes (e.g. Iroh) driven by the same activity lifecycle mount. */
-    additionalRuntimes?: readonly Pick<IrohHomeTunnelRuntime, 'markSuspended' | 'markForeground'>[];
-}>): Readonly<{ remove: () => void }> {
-    const runtimes = [params.runtime, ...(params.additionalRuntimes ?? [])];
-    let active = params.isActive();
-    const onActivityChange = async (): Promise<void> => {
-        const nextActive = params.isActive();
-        if (nextActive === active) return;
-        active = nextActive;
-        if (!nextActive) {
-            for (const runtime of runtimes) runtime.markSuspended();
-            return;
-        }
-        await Promise.allSettled(runtimes.map(async (runtime) => await runtime.markForeground()));
-    };
-    if (!active) {
-        for (const runtime of runtimes) runtime.markSuspended();
-    }
-    const unsubscribe = params.subscribe(onActivityChange);
-    return { remove: unsubscribe };
-}
-
-export function startNativeSshTunnelRuntimeAppStateLifecycle(): void {
-    if (singletonLifecycleSubscription) {
-        return;
-    }
-    // One runtime-activity mount owns suspend/foreground recovery for every
-    // native tunnel lifecycle (SSH and Iroh); desktop and mobile use the same
-    // canonical definition of active state.
-    singletonLifecycleSubscription = bindNativeTunnelRuntimeActivity({
-        isActive: isRuntimeActive,
-        subscribe: subscribeToRuntimeActiveChange,
-        runtime: getNativeSshTunnelRuntime(),
-        additionalRuntimes: [getIrohHomeTunnelRuntime(), irohMachineTransferRuntimeActivity],
-    });
-}
-
 export async function disposeNativeSshTunnelRuntime(): Promise<void> {
-    singletonLifecycleSubscription?.remove();
-    singletonLifecycleSubscription = null;
     singletonRuntime = null;
     hostKeyPromptResolver = null;
     authPromptResolver = null;
     credentialResolutionsByRefKey.clear();
-    await disposeIrohHomeTunnelRuntime();
 }

@@ -1,6 +1,8 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getAgentCore } from '@/agents/catalog/catalog';
 import { installVoiceAgentCommonModuleMocks } from './voiceAgentTestHelpers';
+import { storage } from '@/sync/domains/state/storage';
+import { installDisconnectedServerSocketBoundary, restoreServerAccountForTest } from '@/dev/testkit/harness/serverAccountConnectionHarness';
 
 const start = vi.fn(async (_params: any) => ({ voiceAgentId: 'voice-agent-1' }));
 const ensureVoiceAgentInstallablesBackground = vi.fn(async (_args: unknown) => {});
@@ -19,15 +21,7 @@ const sessionExecutionRunGet = vi.fn(async (_sessionId: string, _params?: any) =
     errorCode: 'execution_run_not_found',
 }));
 const sessionExecutionRunStop = vi.fn(async (_sessionId: string, _params?: any) => ({ ok: true }));
-const patchSessionMetadataWithRetry = vi.fn(async (_sessionId: string, updater: (metadata: any) => any) => {
-    const session = state.sessions[_sessionId];
-    session.metadata = updater(session.metadata);
-});
-const ensureSessionVisibleForMessageRoute = vi.fn(async (_sessionId: string, _options?: { forceRefresh?: boolean }) => {});
-const refreshSessionMessages = vi.fn(async (_sessionId: string) => {});
-const getState = vi.fn(() => state);
-
-const state: any = {
+let state: any = {
     settings: {
         voice: {
             providerId: 'local_conversation',
@@ -89,16 +83,9 @@ const state: any = {
     sessionMessages: {},
 };
 
-installVoiceAgentCommonModuleMocks({
-    storage: async () => {
-        const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
-        return createStorageModuleStub({
-            storage: {
-                getState,
-            },
-        });
-    },
-});
+installVoiceAgentCommonModuleMocks();
+
+installDisconnectedServerSocketBoundary();
 
 vi.mock('@/voice/agent/assertDaemonVoiceAgentRuntimeSupported', () => ({
     assertDaemonVoiceAgentRuntimeSupported: () => assertDaemonVoiceAgentRuntimeSupported(),
@@ -120,16 +107,6 @@ vi.mock('@/sync/ops/sessionExecutionRuns', () => ({
     sessionExecutionRunGet: (sessionId: string, params?: any) => sessionExecutionRunGet(sessionId, params),
     sessionExecutionRunList: (sessionId: string, params?: any) => sessionExecutionRunList(sessionId, params),
     sessionExecutionRunStop: (sessionId: string, params?: any) => sessionExecutionRunStop(sessionId, params),
-}));
-
-vi.mock('@/sync/sync', () => ({
-    sync: {
-        ensureSessionVisibleForMessageRoute: (sessionId: string, options?: { forceRefresh?: boolean }) =>
-            ensureSessionVisibleForMessageRoute(sessionId, options),
-        refreshSessionMessages: (sessionId: string) => refreshSessionMessages(sessionId),
-        patchSessionMetadataWithRetry: (sessionId: string, updater: (metadata: any) => any) =>
-            patchSessionMetadataWithRetry(sessionId, updater),
-    },
 }));
 
 vi.mock('@/sync/domains/features/featureDecisionInputs', () => ({
@@ -158,7 +135,29 @@ vi.mock('@/voice/context/buildVoiceInitialContext', () => ({
 }));
 
 describe('initializeVoiceAgentHandle', () => {
-    beforeEach(() => {
+    let connection: Awaited<ReturnType<typeof restoreServerAccountForTest>>;
+    afterEach(async () => {
+        await connection?.dispose();
+        vi.restoreAllMocks();
+    });
+    beforeEach(async () => {
+        const previousServerId = state.profileScope?.serverId ?? 'server-a';
+        connection = await restoreServerAccountForTest({
+            serverUrl: 'https://voice-initialize.example.test',
+            request: async (url) => new URL(String(url)).pathname.endsWith('/messages')
+                ? new Response(JSON.stringify({ messages: [], hasMore: false }), { status: 200 })
+                : new Response('{}', { status: 404 }),
+        });
+        const { home } = connection;
+        storage.setState({
+            ...state,
+            profileScope: { serverId: home.id, accountId: 'account-a' },
+            sessionListRowsByServerId: { [home.id]: state.sessionListRowsByServerId[previousServerId] },
+            ordinarySessionListMembershipByServerId: { [home.id]: ['s1'] },
+            sessionListIndexByServerId: { [home.id]: [{ type: 'session', sessionId: 's1', serverId: home.id, serverName: 'Voice' }] },
+        });
+        state = storage.getState();
+        state.sessions.s1.encryptionMode = 'plain';
         start.mockClear();
         ensureVoiceAgentInstallablesBackground.mockClear();
         assertDaemonVoiceAgentRuntimeSupported.mockClear();
@@ -166,9 +165,6 @@ describe('initializeVoiceAgentHandle', () => {
         sessionExecutionRunList.mockClear();
         sessionExecutionRunGet.mockClear();
         sessionExecutionRunStop.mockClear();
-        patchSessionMetadataWithRetry.mockClear();
-        ensureSessionVisibleForMessageRoute.mockClear();
-        refreshSessionMessages.mockClear();
         state.sessions.s1.metadataLayoutVersion = 0;
         delete state.sessions.s1.ownerMetadataView;
         state.sessions.s1.metadata = {
@@ -178,9 +174,9 @@ describe('initializeVoiceAgentHandle', () => {
                 localControl: { supported: true },
             },
         };
-        state.sessionListRowsByServerId['server-a'].s1.metadataLayoutVersion = 0;
-        delete state.sessionListRowsByServerId['server-a'].s1.ownerMetadataView;
-        state.sessionListRowsByServerId['server-a'].s1.metadata = {
+        state.sessionListRowsByServerId[home.id].s1.metadataLayoutVersion = 0;
+        delete state.sessionListRowsByServerId[home.id].s1.ownerMetadataView;
+        state.sessionListRowsByServerId[home.id].s1.metadata = {
             flavor: 'codex',
             profileId: 'cached-profile',
             agentRuntimeCapabilitiesV1: {
@@ -225,13 +221,13 @@ describe('initializeVoiceAgentHandle', () => {
         ['visible session metadata', () => {
             state.sessions.s1.metadataLayoutVersion = 1;
             state.sessions.s1.ownerMetadataView = null;
-            state.sessionListRowsByServerId['server-a'].s1.metadataLayoutVersion = 1;
-            state.sessionListRowsByServerId['server-a'].s1.ownerMetadataView = null;
+            state.sessionListRowsByServerId[state.profileScope.serverId].s1.metadataLayoutVersion = 1;
+            state.sessionListRowsByServerId[state.profileScope.serverId].s1.ownerMetadataView = null;
         }],
         ['cached session metadata', () => {
             state.sessions.s1.metadata = null;
-            state.sessionListRowsByServerId['server-a'].s1.metadataLayoutVersion = 1;
-            state.sessionListRowsByServerId['server-a'].s1.ownerMetadataView = null;
+            state.sessionListRowsByServerId[state.profileScope.serverId].s1.metadataLayoutVersion = 1;
+            state.sessionListRowsByServerId[state.profileScope.serverId].s1.ownerMetadataView = null;
         }],
     ])('fails closed without RPC when the %s Agent is unreadable', async (_case, arrange) => {
         arrange();
@@ -390,7 +386,7 @@ describe('initializeVoiceAgentHandle', () => {
     });
 
     it.each([
-        ['different', 'backend:codex'],
+        ['different', 'agent:happier.agent.codex/codex'],
         ['malformed', 'not-a-target-key'],
     ])('fails closed when the configured commit target is %s', async (_case, commitTargetKey) => {
         const { initializeVoiceAgentHandle } = await import('./initializeVoiceAgentHandle');

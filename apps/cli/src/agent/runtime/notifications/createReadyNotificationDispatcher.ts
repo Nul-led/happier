@@ -1,6 +1,7 @@
 import type { AccountSettings } from '@happier-dev/protocol';
 
 import { emitReadyIfIdle } from '@/agent/runtime/emitReadyIfIdle';
+import type { SessionClientPort } from '@/api/session/sessionClientPort';
 import type { TurnAssistantTextSnapshotStore } from '@/api/session/turns/assistantTextSnapshot';
 
 import { getSessionNotificationTitle } from './sessionNotificationContext';
@@ -12,7 +13,7 @@ import {
 
 type ReadyNotificationSession = Readonly<{
   sessionId: string;
-  enqueueSessionEventCommitted: (event: { type: 'ready'; ownerActivityDelivery?: 'rich_sender' | 'home_required' }) => Promise<Readonly<{ persisted: boolean; delivered: boolean }>>;
+  enqueueSessionEventCommitted: NonNullable<SessionClientPort['enqueueSessionEventCommitted']>;
   getMetadataSnapshot?: () => unknown;
   getTurnAssistantTextSnapshotStore?: () => TurnAssistantTextSnapshotStore;
 }>;

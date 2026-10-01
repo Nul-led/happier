@@ -5,7 +5,7 @@ import { z } from 'zod';
 
 import { configuration } from '@/configuration';
 import { logger } from '@/ui/logger';
-import { writeJsonAtomic } from '@/utils/fs/writeJsonAtomic';
+import { writeJsonAtomicSync } from '@/utils/fs/writeJsonAtomicSync';
 
 import type {
     LocalServiceInventoryAnnotationStore,
@@ -48,12 +48,13 @@ export function resolveLocalServiceInventoryAnnotationsPath(happyHomeDir?: strin
  *
  * Uses the daemon's existing local-state owners — the configuration-owned home directory and the
  * shared atomic JSON writer — rather than introducing another store. Nothing here is shared with
- * the server or any database, so this is machine-local user content, not a compatibility surface.
+ * the server or any database. This is machine-local user content; the stored V1 shape is retained.
  *
  * Reads are synchronous because the registry is constructed synchronously during daemon startup.
- * Writes are atomic and fire-and-forget: losing the newest label to a crash mid-write is
- * recoverable by renaming again, whereas blocking a scan on disk I/O is not worth it. A malformed
- * or unreadable file yields no annotations rather than failing daemon startup.
+ * User mutations synchronously publish through the existing atomic writer before acknowledgment.
+ * This orders complete snapshots without background writes or a separate flush lifecycle; failures
+ * propagate to the caller and the registry does not publish the failed mutation. Scans do not write.
+ * A malformed or unreadable file yields no annotations rather than failing daemon startup.
  */
 export function createLocalServiceInventoryAnnotationsFileStore(input: Readonly<{
     path?: string;
@@ -81,9 +82,7 @@ export function createLocalServiceInventoryAnnotationsFileStore(input: Readonly<
             }
         },
         write(annotations) {
-            void writeJsonAtomic(path, annotations).catch((error) => {
-                logger.debug('[DAEMON RUN] Failed to persist local-service inventory annotations', error);
-            });
+            writeJsonAtomicSync(path, annotations);
         },
     };
 }

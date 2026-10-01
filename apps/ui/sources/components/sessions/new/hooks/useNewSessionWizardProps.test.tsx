@@ -21,6 +21,7 @@ installNewSessionScreenModelCommonModuleMocks({
 describe('useNewSessionWizardProps', () => {
     it('preserves destination projections and installable presentation in the shared Wizard props', async () => {
         let observed: ReturnType<typeof useNewSessionWizardProps> | null = null;
+        const registerTemporaryComputerReplacementLaunch = vi.fn();
 
         function Probe() {
             observed = useNewSessionWizardProps({
@@ -77,8 +78,6 @@ describe('useNewSessionWizardProps', () => {
                 tmuxRequested: false,
                 enabledAgentIds: [],
                 isAgentSelectable: () => true,
-                isCliBannerDismissed: () => false,
-                dismissCliBanner: () => {},
                 agentType: 'customAcp',
                 setAgentType: () => {},
                 modelOptions: [],
@@ -123,6 +122,7 @@ describe('useNewSessionWizardProps', () => {
                 promptStore: createNewSessionPromptStore(''),
                 setSessionPrompt: () => {},
                 handleCreateSession: () => {},
+                registerTemporaryComputerReplacementLaunch,
                 canCreate: false,
                 isCreating: false,
                 emptyAutocompleteKinds: [],
@@ -148,6 +148,8 @@ describe('useNewSessionWizardProps', () => {
             machinePoolGroups: [expect.objectContaining({ serverId: 'server-a', accountId: 'account-a' })],
             temporaryComputerProjection: { state: 'available', rowCount: 2 },
         }));
+        expect((observed as ReturnType<typeof useNewSessionWizardProps> | null)?.footer.registerTemporaryComputerReplacementLaunch)
+            .toBe(registerTemporaryComputerReplacementLaunch);
     });
 
     it('updates memoized agent and typed Provider launch recovery fields', async () => {
@@ -196,8 +198,6 @@ describe('useNewSessionWizardProps', () => {
                 tmuxRequested: false,
                 enabledAgentIds: ['customAcp'],
                 isAgentSelectable: () => true,
-                isCliBannerDismissed: () => false,
-                dismissCliBanner: () => {},
                 agentType: 'customAcp',
                 agentLabel: props.agentLabel,
                 setAgentType: () => {},

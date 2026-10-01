@@ -15,11 +15,17 @@ import {
   resolveConnectedServiceRuntimeSnapshotForExternalSession,
 } from '@/daemon/connectedServices/externalSessionRuntimeSnapshotRecovery';
 import type { ResolvedExecutablePluginRuntimeRegistry } from '@/plugins/runtime/resolveExecutablePluginRuntimeRegistry';
+import type { PluginRuntimeOccurrenceId } from '@/plugins/runtime/runtimeSlots';
 import type {
   AgentRuntimeRegistrationLease,
 } from '@/plugins/runtime/lifecycle/contributions/targetAgents';
 import { acquireAuthoritativePluginRuntimeRegistryLease } from '@/plugins/runtime/reload/runtimeLease';
 import { EXTERNAL_SESSIONS_INVOCATION_POLICY } from '@/session/external/agentExternalSessionsInvocation';
+import { readStoredCredentials } from '@/persistence';
+import {
+  createCredentialsSpawnConnectedServicesTeamResourceCatalogResolver,
+  resolveSessionSpawnConnectedServicesDefaultsPayload,
+} from '@/session/services/spawnConnectedServicesDefaults';
 import type {
   SpawnSessionOptions,
   SpawnSessionResult,
@@ -27,15 +33,16 @@ import type {
 import { mapExternalTakeoverLaunchPlanToSpawnOptions } from './mapExternalTakeoverLaunchPlanToSpawnOptions';
 import type { LoadedLinkedExternalSession } from './loadLinkedExternalSession';
 
-export type ExternalTakeoverOriginatingGeneration = Readonly<{
+export type ExternalTakeoverOriginatingOccurrence = Readonly<{
   agentId: string;
   pluginId: string;
-  generation: string;
+  occurrenceId: PluginRuntimeOccurrenceId;
 }>;
 
 export type ResolvedExternalTakeoverSpawn = Readonly<{
   options: SpawnSessionOptions;
-  origin: ExternalTakeoverOriginatingGeneration;
+  origin: ExternalTakeoverOriginatingOccurrence;
+  applyConnectedAccountDefaults?: true;
 }>;
 
 export type ExternalTakeoverSpawnResolution =
@@ -90,6 +97,8 @@ export async function resolveExternalTakeoverSpawnOptionsFromRuntimeRegistry(
     linked: LoadedLinkedExternalSession;
     sessionId: string;
     targetDirectory: string;
+    transcriptStorage?: 'direct' | 'persisted';
+    terminal?: SpawnSessionOptions['terminal'];
     signal: AbortSignal;
   }>,
 ): Promise<ExternalTakeoverSpawnResolution> {
@@ -121,6 +130,8 @@ export async function resolveExternalTakeoverSpawnOptionsFromRuntimeRegistry(
     ) {
       return { ok: false, code: 'agent_unavailable' };
     }
+    const occurrenceId = params.registry.readPluginOccurrenceId?.(runtimeLease.pluginId) ?? null;
+    if (!occurrenceId) return { ok: false, code: 'agent_unavailable' };
 
     const resolvedIdentity = await runtimeLease.externalSessions
       .resolveLinkedIdentity({
@@ -152,6 +163,7 @@ export async function resolveExternalTakeoverSpawnOptionsFromRuntimeRegistry(
       source: resolvedIdentity.value.source,
       remoteSessionId: resolvedIdentity.value.remoteSessionId,
       linkData: resolvedIdentity.value.linkData,
+      transcriptStorage: params.transcriptStorage ?? 'direct',
       targetDirectory: params.targetDirectory,
       ...(params.linked.sessionPath
         ? { linkedDirectory: params.linked.sessionPath }
@@ -176,6 +188,7 @@ export async function resolveExternalTakeoverSpawnOptionsFromRuntimeRegistry(
       plan: launch.value,
       targetDirectory: params.targetDirectory,
       resolvedIdentity: resolvedIdentity.value,
+      ...(params.terminal ? { terminal: params.terminal } : {}),
       linkedSessionId: params.sessionId,
       targetAgent,
     });
@@ -187,10 +200,13 @@ export async function resolveExternalTakeoverSpawnOptionsFromRuntimeRegistry(
       value: {
         options,
         remoteSessionId: resolvedIdentity.value.remoteSessionId,
+        ...(launch.value.applyConnectedAccountDefaults
+          ? { applyConnectedAccountDefaults: true as const }
+          : {}),
         origin: {
           agentId: runtimeLease.agentId,
           pluginId: runtimeLease.pluginId,
-          generation: runtimeLease.generation,
+          occurrenceId,
         },
       },
     };
@@ -211,6 +227,8 @@ export async function resolveExternalTakeoverSpawnOptions(params: Readonly<{
   linked: LoadedLinkedExternalSession;
   sessionId: string;
   targetDirectory: string;
+  transcriptStorage?: 'direct' | 'persisted';
+  terminal?: SpawnSessionOptions['terminal'];
   signal?: AbortSignal;
 }>): Promise<ExternalTakeoverSpawnResolution> {
   const signal = params.signal ?? new AbortController().signal;
@@ -230,6 +248,8 @@ export async function resolveExternalTakeoverSpawnOptions(params: Readonly<{
         linked: params.linked,
         sessionId: params.sessionId,
         targetDirectory: params.targetDirectory,
+        transcriptStorage: params.transcriptStorage,
+        ...(params.terminal ? { terminal: params.terminal } : {}),
         signal,
       });
   } finally {
@@ -244,18 +264,42 @@ export async function resolveExternalTakeoverSpawnOptions(params: Readonly<{
       remoteSessionId: resolved.value.remoteSessionId,
     }),
   );
-  return hasConnectedServiceBindings(snapshot)
-    ? {
-        ok: true,
-        value: {
-          ...resolved.value,
-          options: {
-            ...resolved.value.options,
-            ...snapshot,
-          },
+  if (hasConnectedServiceBindings(snapshot)) {
+    return {
+      ok: true,
+      value: {
+        ...resolved.value,
+        options: {
+          ...resolved.value.options,
+          ...snapshot,
         },
-      }
-    : resolved;
+      },
+    };
+  }
+  if (!resolved.value.applyConnectedAccountDefaults) return resolved;
+
+  const credentials = await readStoredCredentials();
+  if (!credentials) return resolved;
+  const resolveTeamCredentialResourceCatalog =
+    createCredentialsSpawnConnectedServicesTeamResourceCatalogResolver(credentials);
+  const accountDefaults = await resolveSessionSpawnConnectedServicesDefaultsPayload({
+    agentId: params.linked.agentId,
+    credentials,
+    ...(resolveTeamCredentialResourceCatalog
+      ? { resolveTeamCredentialResourceCatalog }
+      : {}),
+  });
+  if (!accountDefaults) return resolved;
+  return {
+    ok: true,
+    value: {
+      ...resolved.value,
+      options: {
+        ...resolved.value.options,
+        ...accountDefaults,
+      },
+    },
+  };
 }
 
 export async function isExternalTakeoverLaunchAvailable(
@@ -308,7 +352,10 @@ export async function spawnResolvedExternalTakeoverSessionFromRuntimeRegistry(
     !runtimeLease?.hasPrimaryRuntime
     || !runtimeLease.externalSessionTakeover
     || runtimeLease.pluginId !== params.resolved.origin.pluginId
-    || runtimeLease.generation !== params.resolved.origin.generation
+    || params.registry.isPluginOccurrenceCurrent?.(
+      runtimeLease.pluginId,
+      params.resolved.origin.occurrenceId,
+    ) !== true
     || !runtimeLease.isCurrent()
     || runtimeLease.retirementSignal.aborted
   ) {

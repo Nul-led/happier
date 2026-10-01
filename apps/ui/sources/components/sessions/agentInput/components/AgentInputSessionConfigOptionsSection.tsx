@@ -11,6 +11,7 @@ import {
     resolveBooleanConfigOptionValue,
 } from '@/sync/domains/sessionControl/configOptionsControl';
 import { t } from '@/text';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 type AgentInputSessionConfigOptionsSectionProps = Readonly<{
     controls: ReadonlyArray<SessionConfigOptionControl>;
@@ -32,7 +33,7 @@ export function AgentInputSessionConfigOptionsSection(props: AgentInputSessionCo
             borderColor: theme.colors.radio.active,
         },
         optionRowPressed: {
-            opacity: 0.85,
+            opacity: motionTokens.press.opacitySubtle,
         },
     }), [theme.colors.radio.active]);
 

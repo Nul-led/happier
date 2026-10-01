@@ -1,4 +1,4 @@
-import { router } from 'expo-router';
+import type { Router } from 'expo-router';
 import * as React from 'react';
 import { View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
@@ -33,6 +33,7 @@ export type SessionForkStrategyModalProps = CustomModalInjectedProps & Readonly<
     /** Short quotation of the message this fork branches from, when there is one. */
     sourcePreview?: string | null;
     navigate: (childSessionId: string, options?: Readonly<{ serverId?: string }>) => void | Promise<void>;
+    navigation: Pick<Router, 'push'>;
     /**
      * Leaves for the canonical New Session screen with this fork point attached,
      * or `null` when source-context continuation is not offered for this Session.
@@ -198,8 +199,8 @@ export function SessionForkStrategyModal(props: SessionForkStrategyModalProps) {
     // second place to flip it.
     const handleOpenReplaySettings = React.useCallback(() => {
         onClose();
-        router.push('/(app)/settings/session/resume');
-    }, [onClose]);
+        props.navigation.push('/(app)/settings/session/resume');
+    }, [onClose, props.navigation]);
 
     const recommendedPill = (
         <View style={styles.recommendedPill}>

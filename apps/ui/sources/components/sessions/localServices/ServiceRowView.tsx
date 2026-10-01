@@ -1,30 +1,39 @@
 import * as React from 'react';
-import { Platform, Pressable, View } from 'react-native';
-import { StyleSheet, useUnistyles } from 'react-native-unistyles';
+import { Platform, View } from 'react-native';
+import { StyleSheet } from 'react-native-unistyles';
 
 import { IconButton } from '@/components/ui/buttons/IconButton';
+import { RoundButton } from '@/components/ui/buttons/RoundButton';
+import { SurfaceCard, SURFACE_CARD_PADDING_PX } from '@/components/ui/cards/SurfaceCard';
 import { CopiedPill } from '@/components/ui/copy/CopiedPill';
 import { useTemporaryCopyFeedback } from '@/components/ui/copy/useTemporaryCopyFeedback';
-import { Icon } from '@/components/ui/icons/Icon';
 import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
+import { ExpandableItem } from '@/components/ui/lists/ExpandableItem';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemRowActions } from '@/components/ui/lists/ItemRowActions';
 import type { ItemAction } from '@/components/ui/lists/itemActions';
-import { StatusPill, type StatusPillVariant } from '@/components/ui/status/StatusPill';
 import { Text } from '@/components/ui/text/Text';
 import { Typography } from '@/constants/Typography';
 import { Modal } from '@/modal';
 import type { LocalServiceLaunchTarget } from '@/sync/domains/local/services/launch';
+import type { ServicesOpenInBrowserResult } from '@/components/browser/surfaces/openBrowserTargetInWorkspace';
 import type { ServiceRow, ServiceRowStatus } from '@/sync/domains/local/services/serviceRow';
+import type { LocalServicePublicPreviewState } from '@/sync/domains/local/services/publicPreview/store';
 import { resolveReasonCopy } from '@/sync/domains/surfaces/copy';
 import { t } from '@/text';
 import type { TranslationKey } from '@/text/i18n';
 import { setClipboardStringSafe } from '@/utils/ui/clipboard';
 
 import { useLocalServiceActionRunner } from './localServiceActionOutcome';
+import {
+    hasLocalServicePublicPreviewSurface,
+    LocalServicePublicPreviewControls,
+} from './LocalServicePublicPreviewControls';
+import type { LocalServicePublicPreviewActions } from './publicPreviewActions';
 import { ServiceStatusDot } from './ServiceStatusDot';
+import type { LocalServiceCapabilityDisabledReasons } from './useLocalServicePublicPreviewFeature';
 
-export type ServiceRowOpenHandler = (target: LocalServiceLaunchTarget) => void | Promise<unknown>;
+export type ServiceRowOpenHandler = (target: LocalServiceLaunchTarget) => ServicesOpenInBrowserResult | void | Promise<unknown>;
 export type ServiceRowStartHandler = (target: LocalServiceLaunchTarget) => void | Promise<unknown>;
 export type ServiceRowTerminateHandler = (target: LocalServiceLaunchTarget) => void | Promise<unknown>;
 export type ServiceRowForgetHandler = (target: LocalServiceLaunchTarget) => void | Promise<unknown>;
@@ -33,7 +42,7 @@ export type ServiceRowCopyUrlHandler = (
     value: string,
 ) => Promise<boolean>;
 
-/** The gap the row leaves between its two right-hand controls, shared with their press frames. */
+/** The gap between the expansion's controls, shared with their press frames. */
 const ROW_ACTION_GAP_PX = 8;
 
 const stylesheet = StyleSheet.create((theme) => ({
@@ -47,67 +56,40 @@ const stylesheet = StyleSheet.create((theme) => ({
         color: theme.colors.text.primary,
         fontWeight: '600',
     },
-    port: {
-        ...Typography.mono(),
-        ...Typography.tabular(),
+    statusLabel: {
+        ...Typography.default(),
+        fontSize: 12,
         color: theme.colors.text.secondary,
     },
     facts: {
-        gap: 3,
+        gap: 2,
         alignItems: 'flex-start',
     },
-    /**
-     * The address is a control, so it gets a control's box: a small negative inset keeps the text
-     * optically aligned with the eyebrow beneath it while the pressed surface still reads as a
-     * discrete target. Radius 6 against the row's 8 keeps the two concentric.
-     */
-    addressPressable: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 6,
-        marginHorizontal: -6,
-        paddingHorizontal: 6,
-        paddingVertical: 3,
-        borderRadius: 6,
-        maxWidth: '100%',
-    },
-    addressPressableActive: {
-        backgroundColor: theme.colors.surface.pressed,
-    },
-    /**
-     * The keyboard focus ring, from the theme's dedicated focus role.
-     *
-     * `border.focus` — never `border.strong`, which is an emphasis outline measuring 1.26–1.45:1
-     * against the surfaces here and would be a focus ring nobody can see. Same treatment the
-     * canonical controls in this row use, so a Tab sweep looks like one thing.
-     */
-    addressPressableFocused: {
-        ...(Platform.select({
-            web: {
-                outlineStyle: 'solid',
-                outlineWidth: 2,
-                outlineColor: theme.colors.border.focus,
-                outlineOffset: -2,
-            },
-            default: {},
-        }) as object),
-    },
-    address: {
-        ...Typography.mono(),
+    factsLine: {
         ...Typography.tabular(),
-        flexShrink: 1,
-        color: theme.colors.text.primary,
-    },
-    eyebrow: {
         color: theme.colors.text.secondary,
     },
     reasonText: {
         color: theme.colors.text.secondary,
     },
-    right: {
+    /**
+     * The expansion: the row's own controls and, when it has one, its live public link, in the app's
+     * bordered card (the Home tiles' `SurfaceCard`) spanning the row's full width — not a grey band
+     * indented under the title.
+     */
+    expansion: {
+        paddingHorizontal: 12,
+        paddingBottom: 12,
+    },
+    actions: {
         flexDirection: 'row',
         alignItems: 'center',
         gap: ROW_ACTION_GAP_PX,
+        paddingHorizontal: SURFACE_CARD_PADDING_PX.sm.horizontal,
+        paddingVertical: SURFACE_CARD_PADDING_PX.sm.vertical,
+    },
+    actionsSpacer: {
+        flex: 1,
     },
 }));
 
@@ -117,14 +99,6 @@ const STATUS_LABEL_KEYS: Readonly<Record<ServiceRowStatus, TranslationKey>> = {
     stale: 'localServices.rowStatus.stale',
     stopped: 'localServices.rowStatus.stopped',
     unavailable: 'localServices.rowStatus.unavailable',
-};
-
-const STATUS_VARIANTS: Readonly<Record<ServiceRowStatus, StatusPillVariant>> = {
-    running: 'success',
-    starting: 'info',
-    stale: 'warning',
-    stopped: 'neutral',
-    unavailable: 'neutral',
 };
 
 /**
@@ -137,123 +111,46 @@ const STATUS_VARIANTS: Readonly<Record<ServiceRowStatus, StatusPillVariant>> = {
  */
 function formatRowAddress(row: ServiceRow): string | null {
     if (!row.host) return null;
-    const host = row.host.includes(':') && !row.host.startsWith('[') ? `[${row.host}]` : row.host;
+    // A service bound to every interface answers on localhost: show and copy that, never the bind
+    // address (`0.0.0.0`, `::`), which is not somewhere a person can go.
+    const wildcard = row.host === '0.0.0.0' || row.host === '::' || row.host === '[::]' || row.host === '*';
+    const bound = wildcard ? 'localhost' : row.host;
+    const host = bound.includes(':') && !bound.startsWith('[') ? `[${bound}]` : bound;
     const scheme = row.scheme && row.scheme !== 'unknown' ? `${row.scheme}://` : '';
     return `${scheme}${host}${row.portLabel ?? ''}`;
 }
 
+/** The name, then the status in words beside its dot ("web ● Running"), as the lab draws it. */
 function ServiceRowTitle(props: Readonly<{
     row: ServiceRow;
     animationEnabled?: boolean;
     testID: string;
 }>): React.ReactElement {
     const styles = stylesheet;
+    const statusLabel = t(STATUS_LABEL_KEYS[props.row.status]);
     return (
         <View style={styles.titleRow}>
+            <Text style={styles.title} numberOfLines={1}>{props.row.title}</Text>
+            {/* Unnamed: the status is the word beside it, so it is announced once. */}
             <ServiceStatusDot
                 status={props.row.status}
                 animationEnabled={props.animationEnabled}
                 testID={`${props.testID}-dot`}
-                accessibilityLabel={t(STATUS_LABEL_KEYS[props.row.status])}
             />
-            <Text style={styles.title} numberOfLines={1}>{props.row.title}</Text>
-            {props.row.portLabel ? (
-                <Text testID={`${props.testID}-port`} style={styles.port} numberOfLines={1}>{props.row.portLabel}</Text>
-            ) : null}
+            <Text testID={`${props.testID}-status-${props.row.status}`} style={styles.statusLabel} numberOfLines={1}>
+                {statusLabel}
+            </Text>
         </View>
     );
 }
 
 /**
- * The address line.
- *
- * It used to be a sentence *about* the address — `Address: http://localhost:5173` in body text —
- * with a separate copy `IconButton` beside it. Two elements for one idea, and the thing the user
- * actually wants to grab was the part that was not tappable. Now the address IS the control: one
- * press target, monospaced so a port is scannable, with the glyph inside it as the affordance
- * rather than as a second button. That removes a control from the row instead of adding one.
- */
-function ServiceRowAddress(props: Readonly<{
-    addressValue: string;
-    target: LocalServiceLaunchTarget;
-    onCopyServiceUrl?: ServiceRowCopyUrlHandler;
-    testID: string;
-}>): React.ReactElement {
-    const styles = stylesheet;
-    const { theme } = useUnistyles();
-    const addressGlyphColor = theme.colors.text.secondary;
-    const copyFeedback = useTemporaryCopyFeedback();
-    const { addressValue, onCopyServiceUrl, target } = props;
-    const copyAddress = React.useCallback(() => {
-        void (async () => {
-            // G14: one owner for "copy a local service URL". The handler dispatches the audited
-            // `localServices.actions.copyUrl` where the row has a target the action can address, so
-            // this never bypasses the policy that exists for exactly this.
-            const copied = onCopyServiceUrl
-                ? await onCopyServiceUrl(target, addressValue)
-                : await setClipboardStringSafe(addressValue);
-            if (copied) {
-                copyFeedback.markCopied('address');
-                return;
-            }
-            // A refused or failed copy is silent otherwise: the pill simply never appears and the
-            // user cannot tell the difference between "slow" and "denied".
-            Modal.alert(
-                t('localServices.actions.failureTitle.copyAddress'),
-                resolveReasonCopy({ reasonCode: null, kind: 'localServiceAction' }).body,
-            );
-        })();
-    }, [addressValue, copyFeedback, onCopyServiceUrl, target]);
-    return (
-        <View style={styles.titleRow}>
-            <Pressable
-                testID={`${props.testID}-copy-address`}
-                accessibilityRole="button"
-                accessibilityLabel={t('localServices.actions.copyAddressA11y')}
-                onPress={copyAddress}
-                style={(interactionState) => {
-                    // `hovered` and `focused` are react-native-web only, and RNW hands them to the
-                    // Pressable's own style callback; the cast keeps both affordances on desktop
-                    // without pretending native has them.
-                    const webState = interactionState as typeof interactionState & {
-                        hovered?: boolean;
-                        focused?: boolean;
-                    };
-                    return [
-                        styles.addressPressable,
-                        interactionState.pressed || webState.hovered === true
-                            ? styles.addressPressableActive
-                            : null,
-                        webState.focused === true ? styles.addressPressableFocused : null,
-                    ];
-                }}
-            >
-                <Text style={styles.address} numberOfLines={1} ellipsizeMode="middle">
-                    {addressValue}
-                </Text>
-                <Icon name="copy" size={13} color={addressGlyphColor} />
-            </Pressable>
-            <CopiedPill
-                visible={copyFeedback.isCopied('address')}
-                testID={`${props.testID}-copy-address-feedback`}
-            />
-        </View>
-    );
-}
-
-/**
- * The row's supporting facts, at two lines instead of six.
- *
- * The previous row emitted one full-width grey line per fact — address, workspace, process, source,
- * terminate confidence, launcher reason — inside `subtitleLines={0}`, so a row's height was decided
- * by how much the daemon happened to know about it and a list of eight services could not be
- * scanned. Provenance is one eyebrow now; the two conditional lines stay conditional because they
- * are the ones a user acts on, and the terminate confidence has additionally moved to the terminate
- * action itself, which is where it decides something.
+ * The row's supporting facts on one line — where it answers, who started it, what runs it — plus
+ * the launcher's reason when the row cannot be acted on. The address is text here; copying it is
+ * the expansion's job, so a collapsed row carries no controls of its own.
  */
 function ServiceRowFacts(props: Readonly<{
     row: ServiceRow;
-    onCopyServiceUrl?: ServiceRowCopyUrlHandler;
     testID: string;
 }>): React.ReactElement {
     const styles = stylesheet;
@@ -261,24 +158,16 @@ function ServiceRowFacts(props: Readonly<{
     const reason = row.reasonCode
         ? resolveReasonCopy({ reasonCode: row.reasonCode, kind: 'localServiceLauncher' })
         : null;
-    const addressValue = formatRowAddress(row);
-    const eyebrow = [
-        t(row.sourceLabel),
-        row.workspaceLabel,
-        row.processLabel,
+    const address = formatRowAddress(row) ?? row.portLabel;
+    const facts = [
+        address,
+        row.scope === 'thisSession' ? t('localServices.session.thisSessionTitle') : t(row.sourceLabel),
+        row.processLabel ?? row.workspaceLabel,
     ].filter((part): part is string => Boolean(part)).join(' · ');
     return (
         <View style={styles.facts}>
-            {addressValue ? (
-                <ServiceRowAddress
-                    addressValue={addressValue}
-                    target={row.target}
-                    onCopyServiceUrl={props.onCopyServiceUrl}
-                    testID={props.testID}
-                />
-            ) : null}
-            <Text testID={`${props.testID}-meta`} style={styles.eyebrow} numberOfLines={1}>
-                {eyebrow}
+            <Text testID={`${props.testID}-meta`} style={styles.factsLine} numberOfLines={1} ellipsizeMode="middle">
+                {facts}
             </Text>
             {reason ? (
                 <Text
@@ -294,6 +183,52 @@ function ServiceRowFacts(props: Readonly<{
     );
 }
 
+/**
+ * Copy address, as the expansion's secondary action. One owner for "copy a local service URL": the
+ * handler dispatches the audited `localServices.actions.copyUrl` where the row has a target the
+ * action can address (G14), and a refused copy says so instead of failing silently.
+ */
+function CopyAddressButton(props: Readonly<{
+    addressValue: string;
+    target: LocalServiceLaunchTarget;
+    onCopyServiceUrl?: ServiceRowCopyUrlHandler;
+    testID: string;
+}>): React.ReactElement {
+    const copyFeedback = useTemporaryCopyFeedback();
+    const { addressValue, onCopyServiceUrl, target } = props;
+    const copyAddress = React.useCallback(() => {
+        void (async () => {
+            const copied = onCopyServiceUrl
+                ? await onCopyServiceUrl(target, addressValue)
+                : await setClipboardStringSafe(addressValue);
+            if (copied) {
+                copyFeedback.markCopied('address');
+                return;
+            }
+            Modal.alert(
+                t('localServices.actions.failureTitle.copyAddress'),
+                resolveReasonCopy({ reasonCode: null, kind: 'localServiceAction' }).body,
+            );
+        })();
+    }, [addressValue, copyFeedback, onCopyServiceUrl, target]);
+    return (
+        <>
+            <RoundButton
+                testID={`${props.testID}-copy-address`}
+                size="small"
+                display="secondary"
+                title={t('localServices.pane.copyAddress')}
+                accessibilityLabel={t('localServices.actions.copyAddressA11y')}
+                onPress={copyAddress}
+            />
+            <CopiedPill
+                visible={copyFeedback.isCopied('address')}
+                testID={`${props.testID}-copy-address-feedback`}
+            />
+        </>
+    );
+}
+
 export function ServiceRowView(props: Readonly<{
     row: ServiceRow;
     onOpenServiceInBrowser?: ServiceRowOpenHandler;
@@ -301,6 +236,14 @@ export function ServiceRowView(props: Readonly<{
     onTerminateDetectedService?: ServiceRowTerminateHandler;
     onForgetDetectedService?: ServiceRowForgetHandler;
     onCopyServiceUrl?: ServiceRowCopyUrlHandler;
+    /** The row's live public link, shown only while it is expanded. */
+    publicPreviewState?: LocalServicePublicPreviewState | null;
+    publicPreviewActions?: LocalServicePublicPreviewActions;
+    publicPreviewCapabilityDisabledReasons?: LocalServiceCapabilityDisabledReasons;
+    /** One expanded row at a time is the pane's decision; the row only asks. */
+    expanded?: boolean;
+    onExpandedChange?: (expanded: boolean) => void;
+    showDivider?: boolean;
     animationEnabled?: boolean;
     testID: string;
 }>): React.ReactElement {
@@ -309,7 +252,8 @@ export function ServiceRowView(props: Readonly<{
     const runner = useLocalServiceActionRunner();
     const primary = row.primaryAction;
     const canOpen = primary?.kind === 'open' && Boolean(props.onOpenServiceInBrowser);
-    const canStart = primary?.kind === 'start' && Boolean(props.onStartLauncherTarget);
+    const canStart = (primary?.kind === 'start' || primary?.kind === 'run_script') && Boolean(props.onStartLauncherTarget);
+    const startLabel = primary?.kind === 'run_script' ? t('localServices.actions.runScriptA11y') : t('localServices.actions.startA11y');
     const canTerminate = row.target.source === 'inventory_entry'
         && row.target.actions.includes('terminate_detected')
         && Boolean(props.onTerminateDetectedService);
@@ -317,22 +261,22 @@ export function ServiceRowView(props: Readonly<{
     // suppression is always available for an inventory entry.
     const canForget = row.target.source === 'inventory_entry'
         && Boolean(props.onForgetDetectedService);
+    const addressValue = formatRowAddress(row);
 
     /**
      * Two pending ids for one row, because feedback belongs where the user acted.
      *
-     * An inline action has a control the user is looking at, and `IconButton` already owns that
-     * control's pending state — returning the run's promise hands it the whole lifecycle, spinner
-     * and re-entrancy guard included. An overflow action has no visible control by the time it
-     * runs: the popover has closed, so the ROW is the only place left to say "working". Sharing one
-     * id would put both spinners on screen for the same dispatch.
+     * An inline action has a control the user is looking at, and the button already owns that
+     * control's pending state. An overflow action has no visible control by the time it runs: the
+     * popover has closed, so the ROW is the only place left to say "working". Sharing one id would
+     * put both spinners on screen for the same dispatch.
      */
     const inlinePendingId = `${row.id}:inline`;
     const menuPendingId = `${row.id}:menu`;
 
-    const handleOpen = React.useCallback(() => {
+    const handleOpen = React.useCallback(async () => {
         if (primary?.kind !== 'open') return undefined;
-        return runner.run({
+        return await runner.run({
             id: inlinePendingId,
             failureTitle: t('localServices.actions.failureTitle.open', { service: row.title }),
             action: async () => props.onOpenServiceInBrowser?.(primary.openTarget),
@@ -340,7 +284,7 @@ export function ServiceRowView(props: Readonly<{
     }, [inlinePendingId, primary, props, row.title, runner]);
 
     const handleStart = React.useCallback(() => {
-        if (primary?.kind !== 'start') return undefined;
+        if (primary?.kind !== 'start' && primary?.kind !== 'run_script') return undefined;
         return runner.run({
             id: inlinePendingId,
             failureTitle: t('localServices.actions.failureTitle.start', { service: row.title }),
@@ -377,15 +321,9 @@ export function ServiceRowView(props: Readonly<{
     }, [menuPendingId, props, row.target, row.title, runner]);
 
     /**
-     * Destructive and secondary actions live in the row's overflow (U-11).
-     *
-     * The row used to end in a flush strip of up to six 28px `IconButton`s at `gap: 6`, two of them
-     * near-identical red circles — an `x-circle` that kills a process and a `stop-circle` that
-     * stopped a managed one — with the reversible `eye-slash` sitting between them. Naming the
-     * consequence in a menu is both safer and calmer than asking someone to tell two red glyphs
-     * apart at a glance, and `ItemRowActions` is the canonical owner for exactly this: it already
-     * carries the destructive tone, the box-model press frame (react-native-web ignores `hitSlop`,
-     * and the desktop app IS the web bundle), focus rings, and the anchored `Popover`.
+     * Destructive and secondary actions live in the expansion's overflow (U-11): naming the
+     * consequence in a menu is safer and calmer than two red glyphs side by side, and
+     * `ItemRowActions` already carries the destructive tone, the press frame and the popover.
      */
     const overflowActions = React.useMemo((): ItemAction[] => {
         const actions: ItemAction[] = [];
@@ -393,8 +331,7 @@ export function ServiceRowView(props: Readonly<{
             actions.push({
                 id: 'terminate',
                 title: t('localServices.actions.terminateConfirmCta'),
-                // The identity confidence belongs to the decision, not to a permanent grey line in
-                // the row: this is the moment it changes what a careful person does.
+                // The identity confidence belongs to the decision, not to a permanent grey line.
                 ...(row.terminateIdentityConfidence === 'pid_only'
                     ? { subtitle: t('localServices.actions.terminatePidOnlyConfidence') }
                     : {}),
@@ -416,75 +353,114 @@ export function ServiceRowView(props: Readonly<{
 
     const minimumTargetSize = resolveMinimumInteractiveTargetSize(Platform.OS);
     const pending = runner.pendingId === menuPendingId;
+    // A row that can only be started (a package script) or not acted on at all has nothing to
+    // grow into: it stays a plain row, with ▶ as its one control.
+    const hasPublicLink = Boolean(props.publicPreviewState && props.publicPreviewActions)
+        && hasLocalServicePublicPreviewSurface(row.target);
+    const expandable = canOpen || Boolean(addressValue) || overflowActions.length > 0 || hasPublicLink;
+    const expanded = expandable && props.expanded === true;
+    const onExpandedChange = props.onExpandedChange;
+
+    const title = <ServiceRowTitle row={row} animationEnabled={props.animationEnabled} testID={props.testID} />;
+    const subtitle = <ServiceRowFacts row={row} testID={props.testID} />;
+    // One tap: a running row's signature action sits on the row itself, like ▶ on a row that can be
+    // started (services lab O, H-UX F-8). Pressing the row still grows it into what you do less often.
+    const openControl = canOpen ? (
+        <IconButton
+            testID={`${props.testID}-open`}
+            iconName="arrow-square-out"
+            accessibilityLabel={t('localServices.actions.openA11y', { service: row.title })}
+            tooltip={t('common.open')}
+            minimumInteractiveTargetSize={minimumTargetSize}
+            animationEnabled={props.animationEnabled}
+            onPress={handleOpen}
+        />
+    ) : null;
+    const startControl = canStart ? (
+        <IconButton
+            testID={`${props.testID}-start`}
+            iconName="play"
+            accessibilityLabel={startLabel}
+            tooltip={startLabel}
+            minimumInteractiveTargetSize={minimumTargetSize}
+            animationEnabled={props.animationEnabled}
+            onPress={handleStart}
+        />
+    ) : null;
+
+    if (!expandable || !onExpandedChange) {
+        return (
+            <View testID={props.testID}>
+                <Item
+                    testID={`${props.testID}-item`}
+                    title={title}
+                    subtitle={subtitle}
+                    subtitleLines={2}
+                    mode="info"
+                    showChevron={false}
+                    showDivider={props.showDivider}
+                    loading={pending}
+                    rightElement={openControl ?? startControl}
+                />
+            </View>
+        );
+    }
 
     return (
         <View testID={props.testID}>
-            <Item
-                testID={`${props.testID}-item`}
-                title={(
-                    <ServiceRowTitle row={row} animationEnabled={props.animationEnabled} testID={props.testID} />
-                )}
-                subtitle={(
-                    <ServiceRowFacts
-                        row={row}
-                        onCopyServiceUrl={props.onCopyServiceUrl}
-                        testID={props.testID}
+            <ExpandableItem
+                expanded={expanded}
+                onExpandedChange={onExpandedChange}
+                showDivider={props.showDivider}
+                header={({ headerProps }) => (
+                    <Item
+                        {...headerProps}
+                        testID={`${props.testID}-item`}
+                        title={title}
+                        subtitle={subtitle}
+                        subtitleLines={2}
+                        loading={pending}
+                        rightElement={openControl ?? startControl}
+                        // Open and ▶ are their own buttons: never nest them inside the row's press target.
+                        rightElementOutsidePressable={openControl !== null || startControl !== null}
                     />
                 )}
-                // `Item` applies this to primitive subtitle children only, so the node above clamps
-                // its own lines; the bound is declared here too because it is the row's contract.
-                subtitleLines={2}
-                mode="info"
-                showChevron={false}
-                loading={pending}
-                rightElement={(
-                    <View style={styles.right}>
-                        <StatusPill
-                            testID={`${props.testID}-status-${row.status}`}
-                            variant={STATUS_VARIANTS[row.status]}
-                            label={t(STATUS_LABEL_KEYS[row.status])}
-                            isPulsing={row.status === 'running'}
+            >
+                {/* The disclosure mounts this only while open (and through its collapse). */}
+                <View testID={`${props.testID}-expansion`} style={styles.expansion}>
+                    <SurfaceCard padding="none">
+                        <View style={styles.actions}>
+                            {addressValue ? (
+                                <CopyAddressButton
+                                    addressValue={addressValue}
+                                    target={row.target}
+                                    onCopyServiceUrl={props.onCopyServiceUrl}
+                                    testID={props.testID}
+                                />
+                            ) : null}
+                            <View style={styles.actionsSpacer} />
+                            {overflowActions.length > 0 ? (
+                                <ItemRowActions
+                                    title={row.title}
+                                    actions={overflowActions}
+                                    // Always compact: every action here is secondary or destructive.
+                                    compactThreshold={Number.POSITIVE_INFINITY}
+                                    compactActionIds={[]}
+                                    overflowTriggerTestID={`${props.testID}-overflow`}
+                                    gap={ROW_ACTION_GAP_PX}
+                                />
+                            ) : null}
+                        </View>
+                        <LocalServicePublicPreviewControls
+                            launchTargets={[row.target]}
+                            state={props.publicPreviewState}
+                            actions={props.publicPreviewActions}
+                            capabilityDisabledReasons={props.publicPreviewCapabilityDisabledReasons}
+                            testID={`${props.testID}-public-preview`}
                         />
-                        {canOpen ? (
-                            <IconButton
-                                testID={`${props.testID}-open`}
-                                iconName="arrow-square-out"
-                                accessibilityLabel={t('localServices.launcher.openInBrowserA11y')}
-                                tooltip={t('localServices.launcher.openInBrowserA11y')}
-                                minimumInteractiveTargetSize={minimumTargetSize}
-                                interactiveTargetGapPx={ROW_ACTION_GAP_PX}
-                                animationEnabled={props.animationEnabled}
-                                onPress={handleOpen}
-                            />
-                        ) : null}
-                        {canStart ? (
-                            <IconButton
-                                testID={`${props.testID}-start`}
-                                iconName="play-circle"
-                                accessibilityLabel={t('localServices.actions.startA11y')}
-                                tooltip={t('localServices.actions.startA11y')}
-                                minimumInteractiveTargetSize={minimumTargetSize}
-                                interactiveTargetGapPx={ROW_ACTION_GAP_PX}
-                                animationEnabled={props.animationEnabled}
-                                onPress={handleStart}
-                            />
-                        ) : null}
-                        {overflowActions.length > 0 ? (
-                            <ItemRowActions
-                                title={row.title}
-                                actions={overflowActions}
-                                // Always-compact with no inline ids: every action in this list is
-                                // secondary or destructive, so none of them is ever promoted into
-                                // the row regardless of how wide the pane gets.
-                                compactThreshold={Number.POSITIVE_INFINITY}
-                                compactActionIds={[]}
-                                overflowTriggerTestID={`${props.testID}-overflow`}
-                                gap={ROW_ACTION_GAP_PX}
-                            />
-                        ) : null}
-                    </View>
-                )}
-            />
+                    </SurfaceCard>
+                </View>
+            </ExpandableItem>
         </View>
     );
 }

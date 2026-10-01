@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { act } from 'react-test-renderer';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { SessionSubagent } from '@/sync/domains/session/subagents/types';
@@ -61,7 +62,7 @@ describe('SessionSubagentRow', () => {
                     sessionId="s1"
                     serverId="server-a"
                     row={createSessionAgentActivityRowForTest(subagent)}
-                    onOpenPreview={onOpenPreview}
+                    onPress={onOpenPreview}
                     onOpenFull={vi.fn()}
                     onOpenAdvanced={vi.fn()}
                 />);
@@ -80,7 +81,7 @@ describe('SessionSubagentRow', () => {
         expect(onOpenPreview).toHaveBeenCalledTimes(1);
     });
 
-    it('renders send/open-full/stop actions for execution runs', async () => {
+    it('keeps a row to its summary and offers its operations from the row menu (right-click / long-press)', async () => {
         const { SessionSubagentRow } = await import('./SessionSubagentRow');
         const onOpenPreview = vi.fn();
         const onOpenFull = vi.fn();
@@ -102,33 +103,23 @@ describe('SessionSubagentRow', () => {
                     sessionId="s1"
                     serverId="server-a"
                     row={createSessionAgentActivityRowForTest(subagent)}
-                    onOpenPreview={onOpenPreview}
+                    onPress={onOpenPreview}
                     onOpenFull={onOpenFull}
                     onOpenAdvanced={onOpenAdvanced}
                 />);
 
-        expect(screen.findByTestId('session-subagent-main:execution_run:run_1')).toBeTruthy();
-        expect(screen.findByTestId('session-subagent-actions:execution_run:run_1')).toBeTruthy();
-        expect(screen.findByTestId('session-subagent-footer:execution_run:run_1')).toBeTruthy();
+        // No strip of buttons on the row: the summary is the row (agents lab AG1), and its
+        // operations wait, closed, in the row's menu.
+        expect(screen.findByTestId('session-subagent-stop:execution_run:run_1')).toBeNull();
+        const menu = screen.findByTestId('session-subagent-actions:execution_run:run_1');
+        expect(menu?.props.open).toBe(false);
+        expect(menu?.props.items.map((item: { id: string }) => item.id)).toEqual(['open-full', 'advanced', 'stop']);
 
-        const factRow = screen.findByTestId('session-subagent-facts:execution_run:run_1');
-        expect(factRow).toBeTruthy();
-        if (!factRow) {
-            throw new Error('Expected execution-run facts row to be present');
-        }
-        const factTexts = factRow.findAllByType('Text').map((node) => node.props.children).join(' ');
-        expect(factTexts).toContain('Type: Subagent');
-        expect(factTexts).toContain('Provider: Codex');
-        expect(factTexts).toContain('Intent: Review');
-
-        await screen.pressByTestIdAsync('session-subagent-open-advanced:execution_run:run_1');
+        await act(async () => { menu?.props.onSelect('advanced'); });
         expect(onOpenAdvanced).toHaveBeenCalledTimes(1);
+        expect(onOpenPreview).not.toHaveBeenCalled();
 
-        await screen.pressByTestIdAsync('session-subagent-send:execution_run:run_1');
-        expect(onOpenPreview).toHaveBeenCalledTimes(1);
-        expect(onOpenFull).toHaveBeenCalledTimes(0);
-
-        await screen.pressByTestIdAsync('session-subagent-stop:execution_run:run_1');
+        await act(async () => { menu?.props.onSelect('stop'); });
         expect(stopRunSpy).toHaveBeenCalledWith('s1', { runId: 'run_1' }, { serverId: 'server-a' });
     });
 
@@ -149,12 +140,13 @@ describe('SessionSubagentRow', () => {
         const screen = await renderScreen(<SessionSubagentRow
             sessionId="s1"
             row={createSessionAgentActivityRowForTest(subagent)}
-            onOpenPreview={vi.fn()}
+            onPress={vi.fn()}
             onOpenFull={vi.fn()}
             onOpenAdvanced={vi.fn()}
         />);
 
-        expect(screen.findByTestId('session-subagent-stop:execution_run:unqualified')).toBeNull();
+        const ids = screen.findByTestId('session-subagent-actions:execution_run:unqualified')?.props.items.map((item: { id: string }) => item.id);
+        expect(ids).not.toContain('stop');
     });
 
     it('sends structured shutdown commands for Claude teammates', async () => {
@@ -174,12 +166,12 @@ describe('SessionSubagentRow', () => {
         const screen = await renderScreen(<SessionSubagentRow
                     sessionId="s1"
                     row={createSessionAgentActivityRowForTest(subagent)}
-                    onOpenPreview={vi.fn()}
+                    onPress={vi.fn()}
                     onOpenFull={vi.fn()}
                     onOpenAdvanced={null}
                 />);
 
-        await screen.pressByTestIdAsync('session-subagent-delete:agent_team_member:qa-team:alpha');
+        await act(async () => { screen.findByTestId('session-subagent-actions:agent_team_member:qa-team:alpha')?.props.onSelect('delete'); });
 
         expect(submitMessageSpy).toHaveBeenCalledWith(
             's1',

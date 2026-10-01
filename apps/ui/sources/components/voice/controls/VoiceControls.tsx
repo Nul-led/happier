@@ -1,15 +1,16 @@
 import * as React from 'react';
-import { Platform, Pressable, View } from 'react-native';
-import Animated, { useAnimatedStyle, useSharedValue, withTiming, Easing } from 'react-native-reanimated';
+import { Platform, View } from 'react-native';
+import Animated, { useAnimatedStyle } from 'react-native-reanimated';
 
 import { SafeIonicons } from '@/components/ui/icons/SafeIonicons';
 import { Text } from '@/components/ui/text/Text';
 import { Typography } from '@/constants/Typography';
 
 import { useVoiceEnergy } from '@/components/voice/light/useVoiceEnergy';
-import { VOICE_MOTION, light, useVoiceLightTokens } from '@/components/voice/light/voiceLightTokens';
+import { light, useVoiceLightTokens } from '@/components/voice/light/voiceLightTokens';
 import { Icon } from '@/components/ui/icons/Icon';
 import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
+import { TactilePressable } from '@/components/ui/interactions/TactilePressable';
 import type { FocusReturnTarget } from '@/keyboard/focusReturn';
 
 const MINIMUM_TARGET_SIZE = resolveMinimumInteractiveTargetSize(Platform.OS);
@@ -40,113 +41,6 @@ export type VoiceControlAction = Readonly<{
     /** Required in practice for terminal actions; they are the ones worth explaining. */
     accessibilityHint?: string;
 }>;
-
-const EASE_LOCAL = Easing.bezier(...(VOICE_MOTION.local.bezier as [number, number, number, number]));
-
-/**
- * A control that acknowledges the press before the work completes.
- *
- * `scale(0.96)` is the standard tactile value; anything below 0.95 reads as
- * exaggerated. The press-in is instant and the release settles, so a cancelled
- * press (finger moved away) returns without ever committing. The canonical
- * reduced-motion preference keeps that acknowledgement as an immediate opacity
- * change rather than spatial motion.
- */
-export const TactilePressable = React.memo(function TactilePressable(props: Readonly<{
-    onPress?: () => void;
-    onLongPress?: () => void;
-    accessibilityLabel: string;
-    accessibilityHint?: string;
-    /**
-     * The control's current *state*, when it has one the label does not carry.
-     *
-     * Kept separate from `accessibilityLabel` on purpose: the label names the action a press
-     * performs ("Mute"), the value reports the condition it acts on ("Microphone active").
-     */
-    accessibilityValue?: Readonly<{ text: string }>;
-    /**
-     * Set on a control that expands and collapses a region, so its state is announced.
-     *
-     * Forwarded as `aria-expanded`, which is the one spelling that lands on **both** platforms:
-     * react-native-web 0.21 has no `accessibilityState` handling whatsoever — only `aria-expanded`
-     * (or the deprecated `accessibilityExpanded`) reaches the DOM
-     * (`react-native-web/dist/modules/createDOMProps/index.js:343-345`) — while React Native's own
-     * Pressable folds `aria-expanded` back into `accessibilityState.expanded` for native assistive
-     * tech (`react-native/Libraries/Components/Pressable/Pressable.js:189,231`).
-     */
-    expanded?: boolean;
-    disabled?: boolean;
-    testID?: string;
-    style?: any;
-    children: React.ReactNode;
-    /** Disable the scale response where movement would be distracting. */
-    static?: boolean;
-    /**
-     * Layout applied to the Pressable itself.
-     *
-     * `style` lands on the inner animated view, so flex/size rules put there are
-     * silently ignored by the parent row — the Pressable still shrinks to its
-     * content. Anything that participates in the parent's layout belongs here.
-     */
-    containerStyle?: any;
-    /** Host ref used for ephemeral focus handoff; it owns no focus state. */
-    focusTargetRef?: React.RefCallback<FocusReturnTarget>;
-    onFocus?: () => void;
-    onBlur?: () => void;
-    /*
-     * There is deliberately no `hitSlop` here.
-     *
-     * react-native-web 0.21 implements it only in the legacy `Touchable` export —
-     * `Pressable` and `View` never read the prop — and every surface these
-     * controls appear on ships through the web bundle on desktop. A control's
-     * target is therefore its real frame: either `MINIMUM_TARGET_CONTAINER_STYLE`,
-     * or a larger frame paired with an equal negative margin where the row's
-     * rhythm is measured from the box.
-     */
-}>) {
-    const pressed = useSharedValue(0);
-    const energy = useVoiceEnergy();
-    const reducedMotion = energy.reduced;
-    // A pressable must never wrap another pressable: react-native-web renders
-    // `accessibilityRole="button"` as a real <button>, so nesting produces
-    // invalid DOM and a screen reader that cannot reach the inner control.
-    // Concepts therefore keep their controls as siblings of the tap target,
-    // never as its children.
-    const animated = useAnimatedStyle(() => {
-        'worklet';
-        if (props.static || reducedMotion) return { opacity: 1 - pressed.get() * 0.3 };
-        return { transform: [{ scale: 1 - pressed.get() * 0.04 }] };
-    });
-
-    return (
-        <Pressable
-            ref={props.focusTargetRef as any}
-            accessibilityRole="button"
-            accessibilityLabel={props.accessibilityLabel}
-            accessibilityHint={props.accessibilityHint}
-            accessibilityValue={props.accessibilityValue}
-            {...(props.accessibilityValue
-                ? { 'aria-valuetext': props.accessibilityValue.text }
-                : {})}
-            {...(props.expanded === undefined ? {} : { 'aria-expanded': props.expanded })}
-            disabled={props.disabled}
-            testID={props.testID}
-            style={props.containerStyle}
-            onPressIn={() => pressed.set(
-                reducedMotion ? 1 : withTiming(1, { duration: 90, easing: EASE_LOCAL }),
-            )}
-            onPressOut={() => pressed.set(
-                reducedMotion ? 0 : withTiming(0, { duration: 180, easing: EASE_LOCAL }),
-            )}
-            onPress={props.onPress}
-            onLongPress={props.onLongPress}
-            onFocus={props.onFocus}
-            onBlur={props.onBlur}
-        >
-            <Animated.View style={[props.style, animated]}>{props.children}</Animated.View>
-        </Pressable>
-    );
-});
 
 /**
  * The terminal action.

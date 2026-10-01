@@ -36,6 +36,42 @@ const endpointFactsContent = { v: 1 as const, directory: '/work', machine: {
 } };
 
 describe('ephemeral Runner HTTP control client', () => {
+  it('returns the materialized winner of endpoint decline instead of claiming cancellation', async () => {
+    const connection = createEphemeralRunnerHttpControlConnection({
+      activationId: '00000000-0000-4000-8000-000000000013',
+      request: async () => ({ status: 'unavailable', reason: 'already_materialized' }),
+      createProjectionProof: () => ({ projection: true }),
+    });
+    await expect(connection.decline({ claim: {} as never, signal: new AbortController().signal }))
+      .resolves.toEqual({ status: 'unavailable', reason: 'already_materialized' });
+  });
+
+  it('rejects a malformed decline response rather than treating it as cancellation', async () => {
+    const connection = createEphemeralRunnerHttpControlConnection({
+      activationId: '00000000-0000-4000-8000-000000000013',
+      request: async () => ({ status: 'ok' }),
+      createProjectionProof: () => ({ projection: true }),
+    });
+    await expect(connection.decline({ claim: {} as never, signal: new AbortController().signal })).rejects.toThrow();
+  });
+
+  it('does not wait for reconnection when the endpoint decline transport is unavailable', async () => {
+    const request = vi.fn(async () => { throw new Error('offline'); });
+    const connection = createEphemeralRunnerHttpControlConnection({
+      activationId: '00000000-0000-4000-8000-000000000013', request,
+      pollIntervalMs: 0,
+      createProjectionProof: () => ({ projection: true }),
+    });
+    const abort = new AbortController();
+    const declining = connection.decline({ claim: {} as never, signal: abort.signal });
+    // The current retry loop would repeat until this lifecycle cancellation;
+    // the corrected single attempt surfaces the original transport failure.
+    request.mockImplementationOnce(async () => { throw new Error('offline'); })
+      .mockImplementationOnce(async () => { abort.abort(new Error('close_cancelled')); throw abort.signal.reason; });
+    await expect(declining).rejects.toMatchObject({ cause: expect.objectContaining({ message: 'offline' }) });
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
   it('sends the signed creator phase through the proof-only endpoint route', async () => {
     const request = vi.fn(async () => ({ status: 'stored', progressPhase: 'checking_ai_access' }));
     const connection = createEphemeralRunnerHttpControlConnection({
@@ -96,7 +132,7 @@ describe('ephemeral Runner HTTP control client', () => {
     })).rejects.toMatchObject({ status: 400 });
   });
 
-  it('recovers a committed materialization when Stop aborts the lost projection response', async () => {
+  it('leaves materialization cancellation reconciliation to the controller instead of starting an unabortable request', async () => {
     const stop = new AbortController();
     const materialized = {
       status: 'materialized',
@@ -136,21 +172,30 @@ describe('ephemeral Runner HTTP control client', () => {
     });
     stop.abort(new Error('runner_stopped'));
 
-    await expect(waiting).resolves.toEqual(materialized);
+    await expect(waiting).rejects.toThrow('runner_stopped');
     expect(requests).toEqual([
       {
         path: '/v1/ephemeral-runners/activations/00000000-0000-4000-8000-000000000013/endpoint/projection',
         method: 'POST',
       },
-      {
-        path: '/v1/ephemeral-runners/activations/00000000-0000-4000-8000-000000000013/endpoint',
-        method: 'DELETE',
-      },
-      {
-        path: '/v1/ephemeral-runners/activations/00000000-0000-4000-8000-000000000013/endpoint/projection',
-        method: 'POST',
-      },
     ]);
+  });
+
+  it('fails a materialized-winner recovery read immediately when the Home transport is unavailable', async () => {
+    const request = vi.fn(async () => { throw new Error('offline'); });
+    const connection = createEphemeralRunnerHttpControlConnection({
+      activationId: '00000000-0000-4000-8000-000000000013',
+      request,
+      pollIntervalMs: 0,
+      createProjectionProof: () => ({ proof: true }),
+    });
+
+    await expect(connection.waitForMaterialization({
+      launchManifestCommitment: 'manifest-commitment',
+      signal: new AbortController().signal,
+      retryTransportErrors: false,
+    })).rejects.toMatchObject({ cause: expect.objectContaining({ message: 'offline' }) });
+    expect(request).toHaveBeenCalledTimes(1);
   });
 
   it('uses only proof-bound endpoint routes and opens the exact immutable review', async () => {
@@ -172,7 +217,7 @@ describe('ephemeral Runner HTTP control client', () => {
           ? { status: 'pending', activation: { review: null } }
           : { status: 'pending', activation: { review: { sealedLaunchManifest, authoringCommitment, launchManifestCommitment, endpointFactsProof, agentTargetKey, machineContentKeyBinding: null, displayFacts, credentialSelectionBinding } } };
       }
-      return { status: 'ok' };
+      return init.method === 'DELETE' ? { status: 'declined' } : { status: 'ok' };
     });
     const connection = createEphemeralRunnerHttpControlConnection({
       activationId: '00000000-0000-4000-8000-000000000013',

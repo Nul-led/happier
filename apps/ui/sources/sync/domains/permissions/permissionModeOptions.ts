@@ -2,10 +2,11 @@ import { t } from '@/text';
 import type { TranslationKey } from '@/text';
 import type { AgentType } from '../models/modelOptions';
 import type { PermissionMode } from './permissionTypes';
-import type { Metadata } from '../state/storageTypes';
+import type { Metadata } from '@happier-dev/session-core/state';
 import { CLAUDE_PERMISSION_MODES, CODEX_LIKE_PERMISSION_MODES, normalizePermissionModeForGroup } from './permissionTypes';
 import { getAgentCore, resolveAgentIdFromFlavor } from '@/agents/catalog/catalog';
 import { parsePermissionIntentAlias } from '@happier-dev/agents/permissions';
+import { isPermissionModeGrantedV1 } from '@happier-dev/protocol';
 
 export type PermissionModeOption = Readonly<{
     value: PermissionMode;
@@ -121,4 +122,17 @@ export function getPermissionModeBadgeLabelForAgentType(agentType: AgentType, mo
     if (!seg) return '';
 
     return t(`${core.permissionModeI18nPrefix}.${seg}` as TranslationKey);
+}
+
+/**
+ * Narrows the agent's mode options to an allowed subset (an embed grant's `permissionModes`), in the
+ * catalogue's order; it never adds a mode. `null` means no narrowing.
+ */
+export function restrictPermissionModeOptions<T extends Readonly<{ value: PermissionMode }>>(
+    options: readonly T[],
+    allowed: readonly PermissionMode[] | null | undefined,
+): readonly T[] {
+    if (!allowed) return options;
+    const constraints = { models: null, permissionModes: [...allowed] };
+    return options.filter((option) => isPermissionModeGrantedV1(constraints, option.value));
 }

@@ -132,7 +132,7 @@ it('delivers one watched Antigravity append to the scoped follow listener', asyn
     const initialCursor = initialPage.value.tailCursor;
     const resource = {
         linkGeneration: 'antigravity-link-generation',
-        pluginGeneration: 'antigravity-plugin-generation',
+        occurrenceId: 'antigravity-plugin-generation',
     };
     const manager = createExternalSessionFollowLeaseManager();
     const releasePhysicalFollow = vi.fn(async () => {});
@@ -201,7 +201,7 @@ it('delivers one watched Antigravity append to the scoped follow listener', asyn
             resource: {
                 pluginId: 'happier.antigravity',
                 agentLocalId: 'antigravity',
-                pluginGeneration: resource.pluginGeneration,
+                occurrenceId: resource.occurrenceId,
                 resourceKey: descriptor.descriptor.resourceKey,
             },
             link: {

@@ -4,6 +4,8 @@ import { View } from 'react-native';
 import { useLocalSearchParams } from 'expo-router';
 
 import { ItemList } from '@/components/ui/lists/ItemList';
+import { SettingsPageHeader } from '@/components/settings/shell/SettingsPageHeader';
+import { t } from '@/text';
 import { useScrollRectIntoViewRegistry } from '@/components/ui/scroll/useScrollRectIntoView';
 import { VoiceHistorySettingsEntry } from '@/voice/history/VoiceHistorySettingsEntry';
 import { VoicePrivacyPolicyEntry } from '@/voice/settings/panels/VoicePrivacyPolicyEntry';
@@ -34,7 +36,9 @@ export function VoicePrivacySettingsScreen() {
       onContentSizeChange={focusRegistry.onContentSizeChange}
       onScroll={focusRegistry.onScroll}
       scrollEventThrottle={16}
+      presentation="page"
     >
+      <SettingsPageHeader description={t('settingsVoice.intents.privacy.subtitle')} />
       <VoiceProviderProcessingDisclosureSection voice={voice} />
       <View testID="settings.voice.section.privacy" onLayout={onPrivacySectionLayout}>
         <VoicePrivacySection voice={voice} setVoice={setVoice} />

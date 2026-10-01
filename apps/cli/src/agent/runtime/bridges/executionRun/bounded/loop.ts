@@ -55,7 +55,12 @@ export async function executeBoundedBackendRun(args: Readonly<{
 }>): Promise<void> {
   const { runId, callId, sidechainId, startedAtMs, params } = args;
   const profile = args.profileCatalog
-    ? resolveExecutionRunIntentProfileFromCatalog(args.profileCatalog, params.intent, params.profileId)
+    ? resolveExecutionRunIntentProfileFromCatalog(
+        args.profileCatalog,
+        params.intent,
+        params.profileId,
+        params.profileSourceCustody,
+      )
     : resolveExecutionRunIntentProfile(params.intent);
   const shouldMaterializeInTranscript = params.sessionId !== null
     && profile.transcriptMaterialization !== 'none';

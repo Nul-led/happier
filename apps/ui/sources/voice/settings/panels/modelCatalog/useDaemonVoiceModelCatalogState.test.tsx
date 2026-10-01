@@ -165,7 +165,7 @@ describe('useDaemonVoiceModelCatalogState', () => {
             licenseTextDigest: `sha256:${'a'.repeat(64)}`,
             artifactBinding: {
                 kind: 'materialization' as const,
-                immutableGenerationId: 'generation-local-1',
+                sourceCustody: { kind: 'development' as const, registeredRootId: 'voice-model-test-root' },
             },
             accepted: false,
         };
@@ -580,7 +580,7 @@ describe('useDaemonVoiceModelCatalogState', () => {
             licenseTextDigest: `sha256:${'a'.repeat(64)}`,
             artifactBinding: {
                 kind: 'materialization' as const,
-                immutableGenerationId: 'generation-local-1',
+                sourceCustody: { kind: 'development' as const, registeredRootId: 'voice-model-test-root' },
             },
             accepted: false,
         };

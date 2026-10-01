@@ -10,6 +10,7 @@ export function resolveSessionDraftStatusKey(status: SessionDraftStatus): Transl
         case 'offline': return 'sessionDrafts.status.offline';
         case 'conflict': return 'sessionDrafts.status.conflict';
         case 'error': return 'common.error';
+        case 'unsupported': return 'sessionDrafts.status.unsupported';
         case 'clean': return null;
     }
 }
@@ -24,11 +25,13 @@ export function buildSessionDraftSyncStatusBadge(status: SessionDraftStatus): Ag
         label,
         accessibilityLabel: label,
         testID: 'session-draft-sync-status-badge',
-        tone: status === 'offline' ? 'paused' : 'danger',
+        // A Home that cannot sync this draft is a standing condition, not a
+        // failure to retry, so it reads like `offline` rather than an error.
+        tone: status === 'offline' || status === 'unsupported' ? 'paused' : 'warning',
         emphasis: status === 'error' ? 'prominent' : 'quiet',
         icon: (tint: string) => (
             <Icon
-                name={status === 'offline' ? 'cloud' : 'warning-circle'}
+                name={status === 'offline' || status === 'unsupported' ? 'cloud' : 'warning-circle'}
                 size={14}
                 color={tint}
             />

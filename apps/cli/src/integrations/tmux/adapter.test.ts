@@ -323,9 +323,13 @@ describe('createTmuxTerminalHostAdapter', () => {
 
   it('does not treat an unavailable post-submit screen capture as successful submission', async () => {
     const tmux = new TmuxUtilities();
+    let submitted = false;
     tmux.executeTmuxCommand = vi.fn(async (args: readonly string[]): Promise<TmuxCommandResult> => {
+      if (args[0] === 'send-keys' && args.includes('C-m')) submitted = true;
       if (args[0] === 'capture-pane') {
-        return { returncode: 1, stdout: '', stderr: 'capture failed', command: [...args] };
+        return submitted
+          ? { returncode: 1, stdout: '', stderr: 'capture failed', command: [...args] }
+          : { returncode: 0, stdout: '> queued prompt', stderr: '', command: [...args] };
       }
       return {
         returncode: 0,
@@ -340,7 +344,7 @@ describe('createTmuxTerminalHostAdapter', () => {
       wait: async () => {},
       promptSubmitVerification: {
         shouldVerifyAfterSubmit: () => true,
-        verifyAfterSubmit: () => false,
+        verifyAfterSubmit: ({ screenText }) => screenText.includes('queued prompt'),
       },
     });
 
@@ -367,6 +371,7 @@ describe('createTmuxTerminalHostAdapter', () => {
       phase: 'after_enter_unknown',
       duplicateRisk: 'likely',
     });
+    expect(submitted).toBe(true);
   });
 
   it('reports unstable input state when tmux screen capture is unavailable', async () => {

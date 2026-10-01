@@ -29,6 +29,7 @@ export async function createUnistylesRuntime(overrides?: TestUnistylesRuntimeOve
     const rt = createThemeRuntimeFixture(overrides?.rt);
     const runtimeModule = mergeObjects(
         {
+            getTheme: (..._args: unknown[]) => theme,
             setAdaptiveThemes: (..._args: unknown[]) => {},
             setTheme: (..._args: unknown[]) => {},
             updateTheme: (..._args: unknown[]) => {},

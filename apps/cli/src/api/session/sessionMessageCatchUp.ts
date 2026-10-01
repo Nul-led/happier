@@ -1,13 +1,16 @@
 import { buildCurrentAccountStoredContentCompatibilityHttpHeaders } from '@/api/clientCompatibility/cliClientCompatibility';
 import axios, { type AxiosResponse } from 'axios';
 import {
-    SessionTranscriptObservationProvenanceV1Schema,
+    SessionMessagesPageV1Schema,
+    buildSessionMessagesPath,
+    type SessionMessageV1,
     readPendingLocalId,
 } from '@happier-dev/protocol';
+import { drainSessionMessagesAfter, openSessionStoredContent, SessionMessageGapError, type SessionStoredContentContext } from '@happier-dev/sync-client';
 
-import { SessionMessageContentSchema, type Update } from '../types';
+import { type Update } from '../types';
 import { resolveServerHttpBaseUrl } from '../client/serverHttpBaseUrl';
-import { openSessionMessageContent, type SessionStoredContentCryptoContext } from '@/session/transport/encryption/sessionEncryptionContext';
+import { decryptSessionPayload, encryptSessionPayload, type SessionStoredContentCryptoContext } from '@/session/transport/encryption/sessionEncryptionContext';
 import {
     createAuthenticationHttpStatusError,
     createHttpStatusError,
@@ -36,95 +39,40 @@ function readCatchUpTimestamp(value: unknown): number | null {
     return typeof value === 'number' && Number.isFinite(value) ? Math.trunc(value) : null;
 }
 
-function isOptionalTimestampValid(value: unknown): boolean {
-    return value === undefined || (typeof value === 'number' && Number.isFinite(value));
-}
-
-function parseCatchUpPage(params: Readonly<{
-    rawMessages: unknown;
-    sessionId: string;
-}> & SessionStoredContentCryptoContext): Readonly<{ updates: Update[]; highestSeq: number }> {
-    if (!Array.isArray(params.rawMessages)) {
-        throw createSessionTranscriptStoredContentUnavailableError();
-    }
-
-    const updates: Update[] = [];
-    let highestSeq = 0;
-    for (const rawMessage of params.rawMessages) {
-        if (!rawMessage || typeof rawMessage !== 'object' || Array.isArray(rawMessage)) {
-            throw createSessionTranscriptStoredContentUnavailableError();
-        }
-        const msg = rawMessage as Record<string, unknown>;
-        const id = msg.id;
-        const seq = msg.seq;
-        const parsedContent = SessionMessageContentSchema.safeParse(msg.content);
-        if (
-            typeof id !== 'string'
-            || !id
-            || typeof seq !== 'number'
-            || !Number.isSafeInteger(seq)
-            || seq < 0
-            || !parsedContent.success
-            || !isOptionalTimestampValid(msg.createdAt)
-            || !isOptionalTimestampValid(msg.updatedAt)
-            || !isOptionalTimestampValid(msg.sourceCreatedAt)
-            || !isOptionalTimestampValid(msg.sourceUpdatedAt)
-            || (msg.localId !== undefined && msg.localId !== null && typeof msg.localId !== 'string')
-            || (msg.sidechainId !== undefined && msg.sidechainId !== null && typeof msg.sidechainId !== 'string')
-        ) {
-            throw createSessionTranscriptStoredContentUnavailableError();
-        }
-
-        try {
-            openSessionMessageContent({ ...params, content: parsedContent.data });
-        } catch {
-            throw createSessionTranscriptStoredContentUnavailableError();
-        }
-
-        const localId = readPendingLocalId(msg.localId);
-        const sidechainId = typeof msg.sidechainId === 'string' ? (msg.sidechainId.trim() || null) : null;
-        const createdAt = readCatchUpTimestamp(msg.createdAt);
-        const updatedAt = readCatchUpTimestamp(msg.updatedAt) ?? createdAt;
-        const sourceCreatedAt = readCatchUpTimestamp(msg.sourceCreatedAt);
-        const sourceUpdatedAt = readCatchUpTimestamp(msg.sourceUpdatedAt) ?? sourceCreatedAt;
-        const provenance = msg.transcriptObservationProvenance === undefined
-            ? null
-            : SessionTranscriptObservationProvenanceV1Schema.safeParse(msg.transcriptObservationProvenance);
-        if (provenance && !provenance.success) {
-            throw createSessionTranscriptStoredContentUnavailableError();
-        }
-
-        const update: Update = {
-            id: `catchup-${id}`,
-            seq: 0,
-            createdAt,
-            body: {
-                t: 'new-message',
-                sid: params.sessionId,
-                message: {
-                    id,
-                    seq,
-                    localId,
-                    sidechainId,
-                    content: parsedContent.data,
-                    createdAt,
-                    updatedAt,
-                    ...(sourceCreatedAt === null ? {} : { sourceCreatedAt }),
-                    ...(sourceUpdatedAt === null ? {} : { sourceUpdatedAt }),
-                    ...(provenance ? { transcriptObservationProvenance: provenance.data } : {}),
-                },
+function createCatchUpUpdate(msg: SessionMessageV1, sessionId: string): Update {
+    const localId = readPendingLocalId(msg.localId);
+    const sidechainId = msg.sidechainId?.trim() || null;
+    const createdAt = readCatchUpTimestamp(msg.createdAt);
+    const updatedAt = readCatchUpTimestamp(msg.updatedAt) ?? createdAt;
+    const sourceCreatedAt = readCatchUpTimestamp(msg.sourceCreatedAt);
+    const sourceUpdatedAt = readCatchUpTimestamp(msg.sourceUpdatedAt) ?? sourceCreatedAt;
+    const update: Update = {
+        id: `catchup-${msg.id}`,
+        seq: 0,
+        createdAt,
+        body: {
+            t: 'new-message',
+            sid: sessionId,
+            message: {
+                id: msg.id,
+                seq: msg.seq,
+                localId,
+                sidechainId,
+                content: msg.content,
+                createdAt,
+                updatedAt,
+                ...(sourceCreatedAt === null ? {} : { sourceCreatedAt }),
+                ...(sourceUpdatedAt === null ? {} : { sourceUpdatedAt }),
+                ...(msg.transcriptObservationProvenance ? { transcriptObservationProvenance: msg.transcriptObservationProvenance } : {}),
             },
-        } as Update;
+        },
+    } as Update;
 
-        sessionHistoryReplayProvenance.set(update as object, {
-            sourceCreatedAt: sourceCreatedAt ?? createdAt,
-            sourceUpdatedAt: sourceUpdatedAt ?? updatedAt,
-        });
-        updates.push(update);
-        highestSeq = Math.max(highestSeq, seq);
-    }
-
-    return { updates, highestSeq };
+    sessionHistoryReplayProvenance.set(update as object, {
+        sourceCreatedAt: sourceCreatedAt ?? createdAt,
+        sourceUpdatedAt: sourceUpdatedAt ?? updatedAt,
+    });
+    return update;
 }
 
 export async function catchUpSessionMessagesAfterSeq(params: {
@@ -133,69 +81,71 @@ export async function catchUpSessionMessagesAfterSeq(params: {
     afterSeq: number;
     onUpdate: (update: Update) => void;
 } & SessionStoredContentCryptoContext): Promise<void> {
-    let cursor = Number.isFinite(params.afterSeq) && params.afterSeq >= 0 ? Math.floor(params.afterSeq) : 0;
+    const afterSeq = Number.isFinite(params.afterSeq) && params.afterSeq >= 0 ? Math.floor(params.afterSeq) : 0;
     const serverUrl = resolveServerHttpBaseUrl();
-    while (true) {
-        let response: AxiosResponse<unknown>;
-        try {
-            response = await axios.get(`${serverUrl}/v1/sessions/${params.sessionId}/messages`, {
-                headers: {
-                    ...buildCurrentAccountStoredContentCompatibilityHttpHeaders(),
-                    Authorization: `Bearer ${params.token}`,
-                    'Content-Type': 'application/json',
-                },
-                params: {
-                    afterSeq: cursor,
-                    limit: 200,
-                },
-                timeout: 15_000,
-            });
-        } catch (error) {
-            const status = readAuthenticationStatus(error);
-            if (status) {
-                throw createAuthenticationHttpStatusError(
-                    status,
-                    `Authentication failed during session message catch-up (HTTP ${status})`,
-                );
-            }
-            rethrowSessionTranscriptStoredContentUnavailableResponse(error);
-        }
-        const status = response?.status;
-        throwIfSessionTranscriptStoredContentUnavailableResponse(status, response?.data);
-        if (isAuthenticationStatus(status)) {
-            throw createAuthenticationHttpStatusError(
-                status,
-                `Authentication failed during session message catch-up (HTTP ${status})`,
-            );
-        }
+    const content: SessionStoredContentContext = params.mode === 'plain'
+        ? { mode: 'plain' }
+        : {
+            mode: 'e2ee',
+            encryption: {
+                encryptRaw: async (payload) => encryptSessionPayload({ ctx: params.ctx, payload }),
+                decryptRaw: async (ciphertextBase64) => decryptSessionPayload({ ctx: params.ctx, ciphertextBase64 }),
+            },
+        };
+    try {
+        await drainSessionMessagesAfter({
+            afterSeq,
+            signal: new AbortController().signal,
+            fetchPage: async (cursor) => {
+                let response: AxiosResponse<unknown>;
+                try {
+                    const path = buildSessionMessagesPath({ sessionId: params.sessionId, scope: 'all', afterSeq: cursor, limit: 200 });
+                    response = await axios.get(`${serverUrl}${path}`, {
+                        headers: {
+                            ...buildCurrentAccountStoredContentCompatibilityHttpHeaders(),
+                            Authorization: `Bearer ${params.token}`,
+                            'Content-Type': 'application/json',
+                        },
+                        timeout: 15_000,
+                    });
+                } catch (error) {
+                    const status = readAuthenticationStatus(error);
+                    if (status) {
+                        throw createAuthenticationHttpStatusError(
+                            status,
+                            `Authentication failed during session message catch-up (HTTP ${status})`,
+                        );
+                    }
+                    rethrowSessionTranscriptStoredContentUnavailableResponse(error);
+                }
+                const status = response?.status;
+                throwIfSessionTranscriptStoredContentUnavailableResponse(status, response?.data);
+                if (isAuthenticationStatus(status)) {
+                    throw createAuthenticationHttpStatusError(
+                        status,
+                        `Authentication failed during session message catch-up (HTTP ${status})`,
+                    );
+                }
 
-        if (typeof status === 'number' && status !== 200) {
-            throw createHttpStatusError(status, `Unexpected status during session message catch-up (HTTP ${status})`);
-        }
+                if (typeof status === 'number' && status !== 200) {
+                    throw createHttpStatusError(status, `Unexpected status during session message catch-up (HTTP ${status})`);
+                }
 
-        const messages = (response?.data as any)?.messages;
-        const nextAfterSeq = (response?.data as any)?.nextAfterSeq;
-        if (Array.isArray(messages) && messages.length === 0) {
-            return;
-        }
-        const parsedPage = parseCatchUpPage({ ...params, rawMessages: messages });
-        if (nextAfterSeq !== null && nextAfterSeq !== undefined && (
-            typeof nextAfterSeq !== 'number'
-            || !Number.isSafeInteger(nextAfterSeq)
-            || nextAfterSeq <= cursor
-        )) {
-            throw createSessionTranscriptStoredContentUnavailableError();
-        }
-
-        for (const update of parsedPage.updates) {
-            params.onUpdate(update);
-        }
-        if (typeof nextAfterSeq === 'number') {
-            // The server cursor is the final returned row, so progress is measured
-            // against the request cursor, not the page's highest returned sequence.
-            cursor = Math.max(nextAfterSeq, parsedPage.highestSeq);
-            continue;
-        }
-        return;
+                const page = SessionMessagesPageV1Schema.safeParse(response?.data);
+                if (!page.success) throw createSessionTranscriptStoredContentUnavailableError();
+                return page.data;
+            },
+            onPage: async (messages) => {
+                const opened = await Promise.all(messages.map((message) => openSessionStoredContent(content, message.content)));
+                if (opened.some((result) => result.status !== 'ready')) throw createSessionTranscriptStoredContentUnavailableError();
+                // Ordering observes every Session row; the existing CLI replay surface remains the main chain.
+                for (const message of messages) {
+                    if (!message.sidechainId) params.onUpdate(createCatchUpUpdate(message, params.sessionId));
+                }
+            },
+        });
+    } catch (error) {
+        if (error instanceof SessionMessageGapError) throw createSessionTranscriptStoredContentUnavailableError();
+        throw error;
     }
 }

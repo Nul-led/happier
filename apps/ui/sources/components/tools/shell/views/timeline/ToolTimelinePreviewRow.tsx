@@ -2,8 +2,8 @@ import * as React from 'react';
 import { View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
-import type { ToolCallMessage } from '@/sync/domains/messages/messageTypes';
-import type { Metadata } from '@/sync/domains/state/storageTypes';
+import type { ToolCallMessage } from "@happier-dev/session-core/messages";
+import type { Metadata } from '@happier-dev/session-core/state';
 import { useHistoricalTranscriptAgentId } from '@/components/sessions/transcript/attribution/SessionTranscriptAgentAttributionContext';
 
 import { buildToolHeaderModel } from '@/components/tools/shell/presentation/buildToolHeaderModel';

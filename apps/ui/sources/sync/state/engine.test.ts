@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { SessionModelSelectionIntentV1Schema } from '@happier-dev/protocol';
 
-import type { Metadata } from '@/sync/domains/state/storageTypes';
+import type { Metadata } from '@happier-dev/session-core/state';
 import { writeUiSessionStateField } from './engine';
 
 function buildMetadata(overrides: Partial<Metadata> = {}): Metadata {
@@ -23,7 +23,7 @@ describe('writeUiSessionStateField', () => {
                 v: 1,
                 updatedAt: 12,
                 selection: {
-                    agentTargetKey: 'backend:gemini',
+                    agentTargetKey: 'agent:happier.agent.gemini/gemini',
                     providerConnectionId: null,
                     modelId: 'gemini-2.5-pro',
                 },
@@ -42,7 +42,7 @@ describe('writeUiSessionStateField', () => {
                     v: 1,
                     updatedAt: 12,
                     selection: {
-                        agentTargetKey: 'backend:gemini',
+                        agentTargetKey: 'agent:happier.agent.gemini/gemini',
                         providerConnectionId: null,
                         modelId: 'gemini-2.5-pro',
                     },

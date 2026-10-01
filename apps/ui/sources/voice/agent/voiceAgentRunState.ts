@@ -12,6 +12,8 @@ import { storage } from '@/sync/domains/state/storage';
 import { findSessionListLookupSession } from '@/sync/domains/session/listing/sessionListLookupState';
 import { resolveMachineForActiveServerFromState } from '@/sync/store/domains/machines/resolveMachinesForActiveServerFromState';
 import { isMachineOnline } from '@/utils/sessions/machineUtils';
+import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
+import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { VOICE_AGENT_GLOBAL_SESSION_ID } from '@/voice/agent/voiceAgentGlobalSessionId';
 import {
     readPersistedVoiceConversationRuntimeState,
@@ -28,15 +30,42 @@ import {
 
 import type { VoiceAgentHandle, VoiceAgentStartParams } from './types';
 import { readVoiceSessionOwnerMetadataFromState } from '@/voice/shared/readVoiceSessionOwnerMetadata';
+import type { ServerAccountScopeLifetime } from '@/sync/domains/scope/serverAccountScope';
+import { captureActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
 
-function resolvePreferredVoiceAgentSessionFromState(target: SessionAddress | string): Readonly<{
+export type VoiceAgentSessionState = Readonly<{
+    id?: string;
+    serverId?: string;
     active?: boolean;
-    presence?: 'online' | number;
-    metadata?: Readonly<{ flavor?: unknown; machineId?: unknown }> | null;
-}> | null {
+    presence?: string | number | null;
+    modelMode?: unknown;
+    metadataLayoutVersion?: number;
+    metadata?: unknown;
+    ownerMetadataView?: unknown;
+}>;
+
+/**
+ * Resolves Voice's Session facts through one qualified Home-aware owner.
+ * Bare IDs are accepted only when the local state has one unambiguous address;
+ * direct hydrated state is used as a compatibility fallback only after its Home
+ * matches that qualified address.
+ */
+export function resolveVoiceAgentSessionFromState(target: SessionAddress | string): VoiceAgentSessionState | null {
     const state = storage.getState() as any;
-    const sessionId = typeof target === 'string' ? target : target.sessionId;
-    return findSessionListLookupSession(state, target)?.session ?? state.sessions?.[sessionId] ?? null;
+    const address = typeof target === 'string'
+        ? resolveSessionAddressFromLocalState(state, target)
+        : normalizeSessionAddress(target.serverId, target.sessionId);
+    if (!address) return null;
+
+    const listSession = findSessionListLookupSession(state, address)?.session;
+    if (listSession) return listSession as VoiceAgentSessionState;
+
+    const directSession = state.sessions?.[address.sessionId] as VoiceAgentSessionState | null | undefined;
+    if (!directSession) return null;
+    const directServerId = directSession.serverId ?? getActiveServerSnapshot().serverId;
+    return areServerProfileIdentifiersEquivalent(directServerId, address.serverId)
+        ? directSession
+        : null;
 }
 
 /**
@@ -71,7 +100,7 @@ export async function assertActiveDaemonTargetSession(target: SessionAddress | s
         ? resolveSessionAddressFromLocalState(state as any, sessionId)
         : normalizeSessionAddress(target.serverId, target.sessionId);
     const lookupTarget = address ?? sessionId;
-    const session: any = resolvePreferredVoiceAgentSessionFromState(lookupTarget);
+    const session = resolveVoiceAgentSessionFromState(lookupTarget);
     if (!session) return;
     const metadata = readVoiceSessionOwnerMetadataFromState(state, lookupTarget);
     const machineId = normalizeNonEmptyString(metadata?.machineId);
@@ -123,7 +152,7 @@ export function resolveBoundConversationSessionId(controlSessionId: string): str
 
 function isReusableDaemonConversationSessionId(sessionId: string | null): sessionId is string {
     if (!sessionId) return false;
-    const session: any = resolvePreferredVoiceAgentSessionFromState(sessionId);
+    const session = resolveVoiceAgentSessionFromState(sessionId);
     if (session?.active !== true) return false;
 
     const machineId = normalizeNonEmptyString(
@@ -175,6 +204,7 @@ export async function persistVoiceAgentRunMetadata(
         backendTarget: BackendTargetRefV1;
         resumeHandle: VoiceAgentStartParams['resumeHandle'];
         welcomedEpoch?: number;
+        accountLifetime?: ServerAccountScopeLifetime;
     }>,
 ): Promise<void> {
     if (!metadataSessionId) return;
@@ -184,6 +214,7 @@ export async function persistVoiceAgentRunMetadata(
         backendTarget: params.backendTarget,
         resumeHandle: params.resumeHandle ?? null,
         updatedAtMs: Date.now(),
+        accountLifetime: params.accountLifetime,
         ...(typeof params.welcomedEpoch === 'number' ? { welcomedEpoch: params.welcomedEpoch } : {}),
     });
 }
@@ -191,9 +222,11 @@ export async function persistVoiceAgentRunMetadata(
 export async function persistVoiceAgentWelcomedEpoch(
     metadataSessionId: string | null,
     welcomedEpoch: number,
+    accountLifetime?: ServerAccountScopeLifetime,
 ): Promise<void> {
     if (!metadataSessionId) return;
-    const existing = readVoiceAgentRunMetadataFromSession({ sessionId: metadataSessionId });
+    if (accountLifetime && !accountLifetime.isCurrent()) return;
+    const existing = readVoiceAgentRunMetadataFromSession({ sessionId: metadataSessionId, serverId: accountLifetime?.scope.serverId });
     if (!existing?.backendTarget) return;
     await writeVoiceAgentRunMetadataToSession({
         sessionId: metadataSessionId,
@@ -202,23 +235,26 @@ export async function persistVoiceAgentWelcomedEpoch(
         resumeHandle: existing.resumeHandle ?? null,
         updatedAtMs: Date.now(),
         welcomedEpoch,
+        accountLifetime,
     });
 }
 
-export async function clearVoiceAgentRunMetadata(metadataSessionId: string | null): Promise<void> {
+export async function clearVoiceAgentRunMetadata(metadataSessionId: string | null, accountLifetime?: ServerAccountScopeLifetime): Promise<void> {
     if (!metadataSessionId) return;
-    await clearVoiceAgentRunMetadataFromSession({ sessionId: metadataSessionId });
+    await clearVoiceAgentRunMetadataFromSession({ sessionId: metadataSessionId, accountLifetime });
 }
 
 export async function clearStaleDaemonRunState(
     sessionId: string,
     handle: VoiceAgentHandle | null,
 ): Promise<void> {
+    const accountLifetime = handle?.accountLifetime ?? captureActiveServerAccountScopeLifetime();
+    if (!accountLifetime) return;
     const persistedRuntimeState = readPersistedVoiceConversationRuntimeState({
         managedSessionId: sessionId,
         conversationSessionId: handle?.rpcSessionId,
     });
-    const metadataSessionId = persistedRuntimeState?.metadataSessionId ?? null;
+    const metadataSessionId = handle ? handle.metadataSessionId : persistedRuntimeState?.metadataSessionId ?? null;
     const persistedRunMeta = persistedRuntimeState?.runMetadata ?? null;
     const staleRunId = normalizeNonEmptyString(handle?.voiceAgentId ?? persistedRunMeta?.runId ?? null);
     const staleRpcSessionId =
@@ -228,7 +264,7 @@ export async function clearStaleDaemonRunState(
         ?? sessionId;
 
     if (staleRunId) {
-        await sessionExecutionRunStop(staleRpcSessionId, { runId: staleRunId }).catch(() => {});
+        await sessionExecutionRunStop(staleRpcSessionId, { runId: staleRunId }, { scope: accountLifetime.scope }).catch(() => {});
     }
-    await clearVoiceAgentRunMetadata(metadataSessionId).catch(() => {});
+    await clearVoiceAgentRunMetadata(metadataSessionId, accountLifetime).catch(() => {});
 }

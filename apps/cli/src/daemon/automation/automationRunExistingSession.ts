@@ -8,7 +8,11 @@ export async function runAutomationAgainstExistingSession(params: {
   return await params.spawnSession(
     mergeSpawnSessionOptions(
       params.template,
-      { approvedNewDirectoryCreation: true },
+      {},
+      // A saved automation template is not the user's present consent to lose
+      // managed files. The canonical spawn owner retains its ordinary-path
+      // default while managed resumes require explicit fresh-folder consent.
+      { omit: ['approvedNewDirectoryCreation'] },
     ) as SpawnSessionOptions,
   );
 }

@@ -25,12 +25,58 @@ export type ActionApprovalTerminalStatus = 'rejected' | 'failed' | 'canceled' | 
  */
 export type ActionApprovalContinuation = Readonly<{
     artifactId: string;
+    /** Ends only the mounted caller's interest, not the durable approval. */
+    signal?: AbortSignal;
     onExecuted: (artifact: DecryptedArtifact) => Promise<'consumed' | 'ignored'>;
     onTerminal?: (status: ActionApprovalTerminalStatus, artifact?: DecryptedArtifact | null) => void;
 }>;
 
 /** Existing non-result-bearing callers may continue registering only the Artifact id. */
 export type ActionApprovalRegistration = string | ActionApprovalContinuation;
+
+export type ActionApprovalResultCallbacks<TValue> = Readonly<{
+    signal?: AbortSignal;
+    onApprovalSucceeded: (value: TValue) => void;
+    onApprovalFailed: (code: string, failure?: ActionExecuteFailure) => void;
+}>;
+
+/**
+ * Keep a mounted read pending until its existing continuation delivers a result.
+ * Domain clients retain their own result envelopes; this owner only joins the
+ * immediate and deferred paths and releases local interest on cancellation.
+ */
+export function awaitActionApprovalResult<TValue, TResult extends object>(input: Readonly<{
+    execute: (callbacks: ActionApprovalResultCallbacks<TValue>) => Promise<TResult | Readonly<{ approvalPending: true }>>;
+    succeeded: (value: TValue) => TResult;
+    failed: (code: string, failure?: ActionExecuteFailure) => TResult;
+    aborted: () => TResult;
+    signal?: AbortSignal;
+}>): Promise<TResult> {
+    return new Promise((resolve, reject) => {
+        let settled = false;
+        const finish = (result: TResult) => {
+            if (settled) return;
+            settled = true;
+            input.signal?.removeEventListener('abort', abort);
+            resolve(result);
+        };
+        const abort = () => finish(input.aborted());
+        if (input.signal?.aborted) { abort(); return; }
+        input.signal?.addEventListener('abort', abort, { once: true });
+        void (async () => await input.execute({
+            ...(input.signal ? { signal: input.signal } : {}),
+            onApprovalSucceeded: (value) => finish(input.succeeded(value)),
+            onApprovalFailed: (code, failure) => finish(input.failed(code, failure)),
+        }))().then((result) => {
+            if (!('approvalPending' in result)) finish(result);
+        }, (error: unknown) => {
+            if (settled) return;
+            settled = true;
+            input.signal?.removeEventListener('abort', abort);
+            reject(error);
+        });
+    });
+}
 
 export function normalizeActionApprovalRegistration(
     registration: ActionApprovalRegistration,
@@ -132,6 +178,7 @@ type CreateActionApprovalContinuationInput<TValue, TActionId extends ActionId> =
     artifactId: string;
     actionId: TActionId;
     scope: ServerAccountScope;
+    signal?: AbortSignal;
     /** Bind settlement to the originating invocation when its caller received that identity. */
     expectedRequestId?: string;
     /**
@@ -165,6 +212,7 @@ export function createActionApprovalContinuation(
         : undefined;
     return Object.freeze({
         artifactId: input.artifactId,
+        ...(input.signal ? { signal: input.signal } : {}),
         onExecuted: async (artifact: DecryptedArtifact) => {
             const inspection = inspectActionApprovalRequest({
                 artifact,

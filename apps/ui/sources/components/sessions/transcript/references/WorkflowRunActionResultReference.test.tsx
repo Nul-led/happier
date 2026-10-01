@@ -2,7 +2,7 @@ import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { collectHostText, createDeferred, flushHookEffects, makeToolCall, renderScreen, standardCleanup } from '@/dev/testkit';
+import { collectHostText, createDeferred, flushHookEffects, makeToolCall, renderWithSessionTranscriptSource, createTestSessionTranscriptSource, standardCleanup } from '@/dev/testkit';
 import { createWorkflowRunSummaryFixture } from '@/dev/testkit/fixtures/workflowRunFixtures';
 import { storage } from '@/sync/domains/state/storage';
 import { workflowRunRowFromSummary } from '@/sync/store/domains/workflowRuns';
@@ -26,6 +26,9 @@ const ACTIVE_SCOPE = { serverId: 'home-a', accountId: 'account-a' } as const;
 
 const executeMock = vi.hoisted(() => vi.fn());
 const pushSpy = vi.hoisted(() => vi.fn());
+function renderScreen(element: React.ReactElement) {
+    return renderWithSessionTranscriptSource(element, createTestSessionTranscriptSource({ sessionId: 'session-1', serverId: 'home-a', navigate: pushSpy }));
+}
 const accountLifetime = vi.hoisted(() => ({
     value: null as null | Readonly<{
         scope: { serverId: string; accountId: string };
@@ -65,6 +68,15 @@ vi.mock('@/text', async () => {
     return createTextModuleMock({ translate: (key) => key });
 });
 vi.mock('@/hooks/server/useFeatureEnabled', () => ({ useFeatureEnabled: () => true }));
+/** The canonical server feature-decision seam; Workflows are steered per case. */
+const featureDecisions = vi.hoisted(() => ({
+    workflows: { state: 'enabled' } as Record<string, unknown> | null,
+}));
+vi.mock('@/hooks/server/useFeatureDecision', () => ({
+    useFeatureDecision: (featureId: string) => (
+        featureId === 'workflows' ? featureDecisions.workflows : { state: 'enabled' }
+    ),
+}));
 vi.mock('@/components/ui/code/editor/CodeEditor', () => ({ CodeEditor: () => null }));
 vi.mock('@/sync/ops/actions/frontDoorRuntimeActionExecutor', () => ({
     createFrontDoorActionExecute: () => executeMock,
@@ -119,29 +131,25 @@ function getResult(
     revision = 2,
     metadata: Readonly<{ title: string }> | null = { title: 'Release audit' },
 ) {
+    // The lean exact-Run list projection: one Run summary plus the sparse
+    // private sidecar. `null` metadata is an explicit `unavailable` entry;
+    // an omitted key (see the untitled test below) is a readable Run with no
+    // authored title. Neither carries definitions, checkpoints, usage or
+    // invocation history.
     return {
         ok: true,
         result: {
-            run: createWorkflowRunSummaryFixture({
+            runs: [createWorkflowRunSummaryFixture({
                 id: RUN_ID,
                 origin: { kind: 'direct', originSessionId: 'session-1' },
                 state,
                 revision,
-            }),
-            definition: { version: 1, inputs: [], defaults: {}, blocks: [{
-                kind: 'step', id: 'analyze', document: { text: 'Analyze', references: [], attachments: [] }, input: [], result: { kind: 'text' },
-            }] },
-            acceptedContext: {
-                source: { kind: 'inline' },
-                ...(metadata === null ? {} : { metadata }),
-                inputs: {},
-                machineId: 'machine-1',
-                executionTarget: { kind: 'session' },
-                workspaceTarget: { project: { machineId: 'machine-1', directory: '/repo', checkoutRootPath: '/repo' } },
-                origin: { kind: 'direct', originSessionId: 'session-1' },
+            })],
+            metadataByRunId: {
+                [RUN_ID]: metadata === null
+                    ? { kind: 'unavailable' }
+                    : { kind: 'available', value: metadata },
             },
-            checkpoint: null,
-            availability: createWorkflowRunSummaryFixture().availability,
         },
     };
 }
@@ -186,6 +194,7 @@ beforeEach(() => {
     executeMock.mockReset();
     pushSpy.mockReset();
     installAccountLifetime(ACTIVE_SCOPE);
+    featureDecisions.workflows = { state: 'enabled' };
     storage.setState((state) => ({
         ...state,
         profileScope: ACTIVE_SCOPE,
@@ -200,17 +209,38 @@ describe('inline transcript workflow Run result', () => {
         await settle();
 
         expect(screen.findByTestId(`transcript-workflow-run-${RUN_ID}`)).toBeTruthy();
-        // One exact read through the Action front door, by `runId` alone.
+        // One lean exact-Run read through the Action front door, by `runId`
+        // alone — the list projection, never full detail, usage or history.
         expect(executeMock.mock.calls.map(([actionId, input]) => [actionId, input])).toEqual([
-            ['workflow.run.get', { runId: RUN_ID }],
+            ['workflow.run.list', { runId: RUN_ID, limit: 1 }],
         ]);
         expect(storage.getState().workflowRunsById[RUN_ID]?.summary?.state).toBe('running');
         expect(screen.findByTestId(`transcript-workflow-run-${RUN_ID}-state`)).toBeTruthy();
         const text = collectHostText(screen.tree);
         expect(text).toContain('workflows.runState.running');
-        // The accepted private title, read from the same exact Run detail.
+        // The accepted private title, read from the same exact Run summary.
         expect(text).toContain('Release audit');
         expect(text).not.toContain('workflows.run.untitled');
+    });
+
+    /**
+     * A historical start result stays in the transcript after Workflows are
+     * turned off. The card answers the same canonical decision as the
+     * destination route, so it neither advertises a Run nobody can open here
+     * nor reads it: unresolved and unknown fail closed exactly like disabled.
+     */
+    it.each([
+        ['disabled', { state: 'disabled', blockedBy: 'server' }],
+        ['unknown', { state: 'unknown' }],
+        ['unresolved', null],
+    ] as const)('renders no card and reads nothing on a %s Workflows decision', async (_label, decision) => {
+        featureDecisions.workflows = decision as Record<string, unknown> | null;
+        executeMock.mockResolvedValue(getResult('running'));
+        const screen = await renderCardRow();
+        await settle();
+
+        expect(screen.findAllByProps({ testID: `transcript-workflow-run-${RUN_ID}` })).toHaveLength(0);
+        expect(executeMock).not.toHaveBeenCalled();
     });
 
     it('says private content is unavailable only when the owner says so', async () => {
@@ -221,6 +251,29 @@ describe('inline transcript workflow Run result', () => {
         const text = collectHostText(screen.tree);
         expect(text).toContain('workflows.contentUnavailable');
         expect(text).not.toContain('workflows.run.untitled');
+    });
+
+    it('names a readable Run without an authored title untitled instead of unavailable', async () => {
+        executeMock.mockResolvedValueOnce({
+            ok: true,
+            result: {
+                runs: [createWorkflowRunSummaryFixture({
+                    id: RUN_ID,
+                    origin: { kind: 'direct', originSessionId: 'session-1' },
+                    state: 'running',
+                    revision: 2,
+                })],
+                // The sparse sidecar omits the key when the accepted snapshot
+                // opened cleanly but carries no authored title.
+                metadataByRunId: {},
+            },
+        });
+        const screen = await renderCardRow();
+        await settle();
+
+        const text = collectHostText(screen.tree);
+        expect(text).toContain('workflows.run.untitled');
+        expect(text).not.toContain('workflows.contentUnavailable');
     });
 
     it('reads a Run the store already holds without another request and follows its live updates', async () => {

@@ -1,5 +1,3 @@
-import type { PluginUiArtifactCompatibilityKeyV1 } from '@happier-dev/protocol/plugins/ui';
-
 import {
     publishActivePluginAccountHostedArtifact,
 } from '@/sync/api/plugins/availability/activePluginAccountHostedArtifactRead';
@@ -14,12 +12,6 @@ export type PluginAccountHostedArtifactPublicationInput = Readonly<{
     accountLifetime: ActiveServerAccountScopeLifetime;
     /** An already fully verified lease; its declared bytes are the only payload. */
     lease: PluginSelectedArtifactLease;
-    /**
-     * The publishing host's own adoption facts for exactly these bytes,
-     * supplied by the renderer tier that owns them. The publication Action
-     * validates them against the declared slot before it sends anything.
-     */
-    hostCompatibility: PluginUiArtifactCompatibilityKeyV1;
 }>;
 
 /**
@@ -68,7 +60,6 @@ export async function publishVerifiedPluginArtifactToAccountHosting(
             accountLifetime: input.accountLifetime,
             release: target.release,
             slot: target.slot,
-            hostCompatibility: input.hostCompatibility,
             artifactGraph: input.lease.artifactGraph,
             files: Object.freeze(files),
         });

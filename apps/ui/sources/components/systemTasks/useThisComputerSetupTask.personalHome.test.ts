@@ -1,8 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { SystemTaskResult, SystemTaskSpec } from '@happier-dev/protocol';
 import { act } from 'react-test-renderer';
 
-import { flushHookEffects, renderHook, standardCleanup } from '@/dev/testkit';
+import { flushHookEffects } from '@/dev/testkit/hooks/flushHookEffects';
+import { renderHook } from '@/dev/testkit/hooks/renderHook';
+import { standardCleanup } from '@/dev/testkit/cleanup/standardCleanup';
+
+// Navigation is an external platform boundary; this task family never navigates.
+vi.mock('expo-router/build/link/href', () => ({ resolveHref: vi.fn() }));
 
 const approvalMocks = vi.hoisted(() => ({
     readCredentials: vi.fn(),
@@ -50,47 +54,31 @@ vi.mock('@/sync/http/client', async (importOriginal) => ({
 
 import { respondToTokenOnlyAuthRequestPrompt } from './approveSystemTaskAuthRequestPrompt';
 import { buildLocalMachineSetupSystemTaskSpec } from './buildLocalMachineSetupSystemTaskSpec';
-import { createSystemTaskRunner } from './createSystemTaskRunner';
+import { createManualSystemTaskRunner as createManualRunner } from '@/dev/testkit/harness/manualSystemTaskRunner';
 import { useThisComputerSetupTask } from './useThisComputerSetupTask';
-import type { SystemTaskBridgeListenerSet } from './types';
-
-function createManualRunner() {
-    let nextTaskId = 1;
-    let nextTsMs = 1;
-    const listeners = new Map<string, SystemTaskBridgeListenerSet>();
-    const bridge = {
-        capabilities: {},
-        start: vi.fn(async (_spec: SystemTaskSpec) => `personal-home-task-${nextTaskId++}`),
-        subscribe: vi.fn(async (taskId: string, taskListeners: SystemTaskBridgeListenerSet) => {
-            listeners.set(taskId, taskListeners);
-            return () => {
-                listeners.delete(taskId);
-            };
-        }),
-        cancel: vi.fn(async () => undefined),
-        respond: vi.fn(async () => undefined),
-    };
-
-    return {
-        runner: createSystemTaskRunner({ bridge }),
-        bridge,
-        emitResult(taskId: string, result: SystemTaskResult) {
-            listeners.get(taskId)?.onResult(result);
-        },
-        emitEvent(taskId: string, event: Record<string, unknown>) {
-            listeners.get(taskId)?.onEvent({
-                protocolVersion: 1,
-                taskId,
-                tsMs: nextTsMs++,
-                ...event,
-            });
-        },
-    };
-}
 
 describe('useThisComputerSetupTask Personal Home composition', () => {
     afterEach(() => {
         standardCleanup();
+    });
+
+    it('resumes the same running setup after its presenter remounts', async () => {
+        const manual = createManualRunner();
+        const first = await renderHook(() => useThisComputerSetupTask({ runner: manual.runner }));
+        let taskId = '';
+        await act(async () => {
+            taskId = await first.getCurrent().start(buildLocalMachineSetupSystemTaskSpec({
+                activeRelayUrl: 'https://home.example.test', activeWebappUrl: 'https://home.example.test',
+            }));
+        });
+        await first.unmount();
+        const resumed = await renderHook(() => useThisComputerSetupTask({ runner: manual.runner, taskId }));
+        await act(async () => manual.emitResult(taskId, {
+            protocolVersion: 1, taskId, ok: true, data: { machineId: 'joined-machine' },
+        }));
+        expect(resumed.getCurrent().completedMachineId).toBe('joined-machine');
+        expect(resumed.getCurrent().activeTaskId).toBe(taskId);
+        await resumed.unmount();
     });
 
     it('starts the existing local-machine recipe from the supplied Home descriptor without changing it', async () => {

@@ -72,6 +72,10 @@ describe('Activity personal session membership', () => {
             enabled: true,
             homes,
             statesByServerId,
+            membershipByServerId: Object.fromEntries(homes.map((home) => [
+                home.serverId,
+                [{ serverId: home.serverId, sessionId: 'same-id' }],
+            ])),
             coverageComplete: true,
         }).membershipByServerId).toEqual({
             'home-a': ['same-id'],
@@ -111,6 +115,11 @@ describe('Activity personal session membership', () => {
             enabled: true,
             homes,
             statesByServerId,
+            // The store still holds the unsupported Home's former query membership.
+            membershipByServerId: {
+                'unsupported-home': [{ serverId: 'unsupported-home', sessionId: 'stale-query-row' }],
+                'offline-home': [{ serverId: 'offline-home', sessionId: 'retained-personal' }],
+            },
             coverageComplete: false,
         });
 
@@ -124,6 +133,45 @@ describe('Activity personal session membership', () => {
             'unsupported-home': [],
             'offline-home': ['retained-personal'],
         });
+    });
+
+    it('reads the store-owned last-known membership while no page has applied, without claiming coverage', () => {
+        const homes = buildActivityPersonalQueryHomes(['home-a']);
+        const home = homes[0]!;
+        const projected = projectActivityPersonalSessionMembership({
+            enabled: true,
+            homes,
+            // A cold controller (reload, unreachable Home): nothing applied yet.
+            statesByServerId: {
+                'home-a': queryState({ requestedQueryKey: home.queryKey, phase: 'offline' }),
+            },
+            membershipByServerId: { 'home-a': [{ serverId: 'home-a', sessionId: 'last-known-personal' }] },
+            coverageComplete: false,
+        });
+
+        expect(projected.membershipByServerId).toEqual({ 'home-a': ['last-known-personal'] });
+        expect(projected.coverageComplete).toBe(false);
+    });
+
+    it('never relabels a released-listing fallback page as personal query membership', () => {
+        const homes = buildActivityPersonalQueryHomes(['home-a']);
+        const home = homes[0]!;
+        const projected = projectActivityPersonalSessionMembership({
+            enabled: true,
+            homes,
+            statesByServerId: {
+                'home-a': queryState({
+                    requestedQueryKey: home.queryKey,
+                    appliedQueryKey: home.queryKey,
+                    appliedSourceKind: 'ordinary',
+                    phase: 'ready',
+                }),
+            },
+            membershipByServerId: { 'home-a': [{ serverId: 'home-a', sessionId: 'ordinary-row' }] },
+            coverageComplete: false,
+        });
+
+        expect(projected.membershipByServerId).toEqual({ 'home-a': [] });
     });
 
     it('rejects addresses from a stale query or the wrong Home', () => {
@@ -141,6 +189,7 @@ describe('Activity personal session membership', () => {
                     addresses: [{ serverId: 'home-b', sessionId: 'wrong-home' }],
                 }),
             },
+            membershipByServerId: { 'home-a': [{ serverId: 'home-b', sessionId: 'wrong-home' }] },
             coverageComplete: true,
         });
 
@@ -163,6 +212,7 @@ describe('Activity personal session membership', () => {
                     addresses: [{ serverId: 'home-a', sessionId: 'retained-after-sign-out' }],
                 }),
             },
+            membershipByServerId: { 'home-a': [{ serverId: 'home-a', sessionId: 'retained-after-sign-out' }] },
             coverageComplete: false,
         });
         expect(projected.membershipByServerId).toEqual({});

@@ -1,3 +1,7 @@
-// Node/Vitest and unknown targets use the native-safe fail-closed owner.
-// Metro selects `.web.ts` or `.native.ts` for production platform bundles.
-export { resolveDefaultReactNativeLoaderBackend } from './resolveDefaultReactNativeLoaderBackend.native';
+import type { PluginReactNativeLoaderBackend } from './loader';
+import { createPluginUiCommonJsLoaderBackend } from './commonJsLoaderBackend';
+
+/** Web, iOS, and Android consume the same universal CommonJS artifact. */
+export function resolveDefaultReactNativeLoaderBackend(): PluginReactNativeLoaderBackend {
+    return createPluginUiCommonJsLoaderBackend();
+}

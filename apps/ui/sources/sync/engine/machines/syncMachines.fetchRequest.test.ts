@@ -1,6 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
 import type { MachineDataKeyCacheEntry } from './syncMachines';
+import type { Machine } from '@/sync/domains/state/storageTypes';
+import { createMachineFixture } from '@/dev/testkit/fixtures/machineFixtures';
+
+const legacyCredentials = {
+    token: `e30.${btoa(JSON.stringify({ sub: 'account-1' }))}.signature`,
+    secret: btoa('a'.repeat(32)),
+} satisfies AuthCredentials;
 
 vi.mock('@/log', () => ({ log: { log: vi.fn() } }));
 
@@ -42,7 +49,7 @@ function createEncryptionHarness() {
             initialized.add(machineId);
         }
     });
-    const decryptMetadata = vi.fn(async (_version: number, value: string) => ({ decrypted: value }));
+    const decryptMetadata = vi.fn(async (_version: number, value: string): Promise<unknown> => ({ decrypted: value }));
     const decryptDaemonState = vi.fn(async (_version: number, value: string | null) => {
         if (!value) return null;
         return { decrypted: value };
@@ -74,6 +81,43 @@ async function loadFetchAndApplyMachines() {
 }
 
 describe('fetchAndApplyMachines request override', () => {
+    it('preserves terminal capabilities and their version until refreshed metadata is hydrated', async () => {
+        const fetchAndApplyMachines = await loadFetchAndApplyMachines();
+        const existing = createMachineFixture({
+            id: 'm_refresh',
+            metadataVersion: 1,
+            metadata: {
+                ...createMachineFixture().metadata!,
+                daemonTerminalSessionAttachSupported: true,
+            },
+        });
+        const nextMetadata = { ...existing.metadata!, daemonTerminalSessionAttachSupported: false };
+        let finishHydration!: (metadata: typeof nextMetadata) => void;
+        const pendingMetadata = new Promise<typeof nextMetadata>((resolve) => { finishHydration = resolve; });
+        const encryption = createEncryptionHarness();
+        encryption.decryptMetadata.mockImplementation(async () => pendingMetadata);
+        let current: Machine = existing;
+
+        await fetchAndApplyMachines({
+            credentials: legacyCredentials,
+            sourceServerId: 'home-1',
+            encryption,
+            machineDataKeys: new Map(),
+            request: async () => jsonResponse([{ ...existing, metadata: 'next-ciphertext', metadataVersion: 2, dataEncryptionKey: null }]),
+            getExistingMachine: () => current,
+            cachedMachineDisplayEntries: {},
+            applyMachineDisplayEntries: () => {},
+            applyMachines: (machines) => { current = machines[0]!; },
+        });
+
+        expect(current.metadata?.daemonTerminalSessionAttachSupported).toBe(true);
+        expect(current.metadataVersion).toBe(1);
+        finishHydration(nextMetadata);
+        await vi.waitFor(() => expect(current.metadataVersion).toBe(2));
+        expect(current.metadata?.daemonTerminalSessionAttachSupported).toBe(false);
+    });
+
+
     it('uses injected request transport when provided', async () => {
         const fetchAndApplyMachines = await loadFetchAndApplyMachines();
         const fetchSpy = vi.fn();
@@ -103,7 +147,8 @@ describe('fetchAndApplyMachines request override', () => {
         const applied: unknown[][] = [];
 
         await fetchAndApplyMachines({
-            credentials: { token: 't', secret: 's' } satisfies AuthCredentials,
+            credentials: legacyCredentials,
+            sourceServerId: 'home-1',
             encryption,
             machineDataKeys,
             request: requestSpy,
@@ -119,7 +164,7 @@ describe('fetchAndApplyMachines request override', () => {
         expect((applied[0] as any[])[0]?.revokedAt).toBe(null);
     });
 
-    it('reuses warm cache machine display data when metadata version matches', async () => {
+    it('hydrates full machine capabilities even when cached display metadata is fresh', async () => {
         const fetchAndApplyMachines = await loadFetchAndApplyMachines();
         const requestSpy = vi.fn(async (_path: string, _init?: RequestInit) =>
             jsonResponse([
@@ -145,7 +190,8 @@ describe('fetchAndApplyMachines request override', () => {
         const applyMachineDisplayEntries = vi.fn();
 
         await fetchAndApplyMachines({
-            credentials: { token: 't', secret: 's' } satisfies AuthCredentials,
+            credentials: legacyCredentials,
+            sourceServerId: 'home-1',
             encryption,
             machineDataKeys: new Map<string, MachineDataKeyCacheEntry>(),
             request: requestSpy,
@@ -168,7 +214,9 @@ describe('fetchAndApplyMachines request override', () => {
             } as any),
         } as any);
 
-        expect(encryption.decryptMetadata).not.toHaveBeenCalled();
+        await vi.waitFor(() => expect(applyMachines).toHaveBeenLastCalledWith([
+            expect.objectContaining({ id: 'm_cached', metadata: { decrypted: 'encrypted-meta' } }),
+        ], false));
         expect(applyMachines).toHaveBeenCalledWith([
             expect.objectContaining({
                 id: 'm_cached',
@@ -189,9 +237,9 @@ describe('fetchAndApplyMachines request override', () => {
         ], { replace: false });
     });
 
-    it('caps background warm display hydration rows on boot', async () => {
+    it('hydrates every machine beyond the previous background row cutoff', async () => {
         const fetchAndApplyMachines = await loadFetchAndApplyMachines();
-        const rows = Array.from({ length: 6 }, (_, index) => ({
+        const rows = Array.from({ length: 70 }, (_, index) => ({
             id: `m_${index + 1}`,
             metadata: `encrypted-meta-${index + 1}`,
             metadataVersion: 2,
@@ -225,19 +273,23 @@ describe('fetchAndApplyMachines request override', () => {
         ]));
 
         await fetchAndApplyMachines({
-            credentials: { token: 't', secret: 's' } satisfies AuthCredentials,
+            credentials: legacyCredentials,
+            sourceServerId: 'home-1',
             encryption,
             machineDataKeys: new Map<string, MachineDataKeyCacheEntry>(),
             request: requestSpy,
             applyMachines,
             cachedMachineDisplayEntries,
             applyMachineDisplayEntries,
-            machineDisplayHydrationMaxRows: 2,
         } as any);
         await Promise.resolve();
         await Promise.resolve();
 
-        expect(encryption.decryptMetadata).toHaveBeenCalledTimes(2);
+        await vi.waitFor(() => {
+            const hydrated = applyMachines.mock.calls.slice(1).flatMap(([machines]) => machines as Machine[]);
+            expect(hydrated.map((machine) => machine.id).sort()).toEqual(rows.map((row) => row.id).sort());
+            expect(hydrated.every((machine) => machine.metadata !== null)).toBe(true);
+        });
     });
 
     it('carries machine replacement metadata from fetched rows into applied machine state', async () => {
@@ -273,7 +325,8 @@ describe('fetchAndApplyMachines request override', () => {
         const applyMachineDisplayEntries = vi.fn();
 
         await fetchAndApplyMachines({
-            credentials: { token: 't', secret: 's' } satisfies AuthCredentials,
+            credentials: legacyCredentials,
+            sourceServerId: 'home-1',
             encryption,
             machineDataKeys: new Map<string, MachineDataKeyCacheEntry>(),
             request: requestSpy,
@@ -333,7 +386,8 @@ describe('fetchAndApplyMachines request override', () => {
         const applyMachineDisplayEntries = vi.fn();
 
         await fetchAndApplyMachines({
-            credentials: { token: 't', secret: 's' } satisfies AuthCredentials,
+            credentials: legacyCredentials,
+            sourceServerId: 'home-1',
             encryption,
             machineDataKeys: new Map<string, MachineDataKeyCacheEntry>(),
             request: requestSpy,
@@ -397,7 +451,8 @@ describe('fetchAndApplyMachines request override', () => {
         const applyMachineDisplayEntries = vi.fn();
 
         const fetchPromise = fetchAndApplyMachines({
-            credentials: { token: 't', secret: 's' } satisfies AuthCredentials,
+            credentials: legacyCredentials,
+            sourceServerId: 'home-1',
             encryption,
             machineDataKeys: new Map<string, MachineDataKeyCacheEntry>(),
             request: requestSpy,
@@ -477,7 +532,8 @@ describe('fetchAndApplyMachines request override', () => {
         const applyMachineDisplayEntries = vi.fn();
 
         await fetchAndApplyMachines({
-            credentials: { token: 't', secret: 's' } satisfies AuthCredentials,
+            credentials: legacyCredentials,
+            sourceServerId: 'home-1',
             encryption,
             machineDataKeys: new Map<string, MachineDataKeyCacheEntry>(),
             request: requestSpy,
@@ -552,7 +608,8 @@ describe('fetchAndApplyMachines request override', () => {
         const applyMachineDisplayEntries = vi.fn();
 
         const fetchPromise = fetchAndApplyMachines({
-            credentials: { token: 't', secret: 's' } satisfies AuthCredentials,
+            credentials: legacyCredentials,
+            sourceServerId: 'home-1',
             encryption,
             machineDataKeys: new Map<string, MachineDataKeyCacheEntry>(),
             request: requestSpy,
@@ -597,7 +654,8 @@ describe('fetchAndApplyMachines request override', () => {
 
             await expect(
                 fetchAndApplyMachines({
-                    credentials: { token: 't', secret: 's' } satisfies AuthCredentials,
+                    credentials: legacyCredentials,
+            sourceServerId: 'home-1',
                     encryption,
                     machineDataKeys,
                     request: requestSpy,
@@ -606,6 +664,31 @@ describe('fetchAndApplyMachines request override', () => {
             ).resolves.toBeUndefined();
 
             expect(requestSpy).toHaveBeenCalledTimes(1);
+            expect(applyMachines).not.toHaveBeenCalled();
+        } finally {
+            consoleError.mockRestore();
+        }
+    });
+
+    it.each([
+        ['a network error', async () => { throw new TypeError('Failed to fetch'); }],
+        ['a 502 from the Home', async () => new Response('bad gateway', { status: 502 })],
+    ] as const)('reports an unreadable machine list after %s so the list can end in a terminal state', async (_label, request) => {
+        const fetchAndApplyMachines = await loadFetchAndApplyMachines();
+        const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+        try {
+            const applyMachines = vi.fn();
+            const onListUnavailable = vi.fn();
+            await fetchAndApplyMachines({
+                credentials: legacyCredentials,
+                sourceServerId: 'home-1',
+                encryption: createEncryptionHarness(),
+                machineDataKeys: new Map<string, MachineDataKeyCacheEntry>(),
+                request: vi.fn(request),
+                applyMachines,
+                onListUnavailable,
+            });
+            expect(onListUnavailable).toHaveBeenCalledTimes(1);
             expect(applyMachines).not.toHaveBeenCalled();
         } finally {
             consoleError.mockRestore();
@@ -642,7 +725,8 @@ describe('fetchAndApplyMachines request override', () => {
         const applied: unknown[][] = [];
 
         await fetchAndApplyMachines({
-            credentials: { token: 't', secret: 's' } satisfies AuthCredentials,
+            credentials: legacyCredentials,
+            sourceServerId: 'home-1',
             encryption,
             machineDataKeys,
             request: requestSpy,
@@ -688,14 +772,16 @@ describe('fetchAndApplyMachines request override', () => {
         const machineDataKeys = new Map<string, MachineDataKeyCacheEntry>();
 
         await fetchAndApplyMachines({
-            credentials: { token: 't', secret: 's' } satisfies AuthCredentials,
+            credentials: legacyCredentials,
+            sourceServerId: 'home-1',
             encryption,
             machineDataKeys,
             request: requestSpy,
             applyMachines: () => {},
         });
         await fetchAndApplyMachines({
-            credentials: { token: 't', secret: 's' } satisfies AuthCredentials,
+            credentials: legacyCredentials,
+            sourceServerId: 'home-1',
             encryption,
             machineDataKeys,
             request: requestSpy,
@@ -745,7 +831,8 @@ describe('fetchAndApplyMachines request override', () => {
         };
 
         await fetchAndApplyMachines({
-            credentials: { token: 't', secret: 's' } satisfies AuthCredentials,
+            credentials: legacyCredentials,
+            sourceServerId: 'home-1',
             encryption,
             machineDataKeys,
             request: requestSpy,
@@ -782,7 +869,8 @@ describe('fetchAndApplyMachines request override', () => {
         const applyMachineDisplayEntries = vi.fn();
 
         await fetchAndApplyMachines({
-            credentials: { token: 't', secret: 's' } satisfies AuthCredentials,
+            credentials: legacyCredentials,
+            sourceServerId: 'home-1',
             encryption,
             machineDataKeys: new Map<string, MachineDataKeyCacheEntry>(),
             request: requestSpy,

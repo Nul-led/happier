@@ -1,4 +1,4 @@
-import { execFile, type ExecFileOptions } from 'node:child_process';
+import { execFile, type ChildProcess, type ExecFileOptions } from 'node:child_process';
 
 import { closeStdioWhenCommandExits } from './closeStdioWhenCommandExits.js';
 
@@ -8,7 +8,16 @@ export type ExecFileWithDeadlineOptions =
     encoding?: BufferEncoding | null;
     /** Optional wall-clock budget. Omit when caller cancellation owns the lifetime. This boundary owns it; `child_process` is never told about it. */
     timeout?: number;
+    /** A containing host may own stronger process containment for cancellation and this boundary's deadline. */
+    terminateOnAbort?: (child: ChildProcess) => Promise<void>;
   }>;
+
+export class ExecFileTerminationError extends Error {
+  constructor(cause: unknown) {
+    super('Process termination failed', { cause });
+    this.name = 'ExecFileTerminationError';
+  }
+}
 
 export type ExecFileWithDeadlineResult = Readonly<{
   stdout: string | Buffer;
@@ -53,23 +62,82 @@ export function execFileWithDeadline(
   args: readonly string[],
   options: ExecFileWithDeadlineOptions,
 ): Promise<ExecFileWithDeadlineResult> {
-  const { timeout, ...spawnOptions } = options;
+  const { timeout, terminateOnAbort, ...spawnOptions } = options;
   return new Promise<ExecFileWithDeadlineResult>((resolve, reject) => {
+    const signal = spawnOptions.signal;
+    if (terminateOnAbort) signal?.throwIfAborted();
     let deadline: ReturnType<typeof setTimeout> | undefined;
     let settled = false;
-    const child = execFile(command, [...args], spawnOptions, (error, stdout, stderr) => {
+    let closed = false;
+    let terminating = false;
+    let terminationStarted = false;
+    let deadlineTermination = false;
+    let terminationError: ExecFileTerminationError | undefined;
+    let complete: (() => void) | undefined;
+    const finish = () => { if (closed && !terminating) complete?.(); };
+    const child = execFile(command, [...args], terminateOnAbort ? { ...spawnOptions, signal: undefined } : spawnOptions, (error, stdout, stderr) => {
       settled = true;
       if (deadline) clearTimeout(deadline);
-      if (error) {
-        reject(Object.assign(error, { stdout, stderr }));
-        return;
-      }
-      resolve({ stdout, stderr });
+      complete = () => {
+        if (terminationError) { reject(terminationError); return; }
+        if (terminateOnAbort && signal?.aborted) { reject(signal.reason); return; }
+        if (error) {
+          reject(Object.assign(error, { stdout, stderr }, deadlineTermination ? { killed: true } : {}));
+          return;
+        }
+        if (deadlineTermination) {
+          reject(Object.assign(new Error(`Command timed out: ${command}`), {
+            killed: true, code: child.exitCode, signal: child.signalCode, stdout, stderr,
+          }));
+          return;
+        }
+        resolve({ stdout, stderr });
+      };
+      finish();
+    });
+    const terminate = () => {
+      if (!terminateOnAbort || terminationStarted || closed) return;
+      terminationStarted = true;
+      terminating = true;
+      void Promise.resolve().then(() => terminateOnAbort(child)).then(() => {
+        terminating = false;
+        finish();
+      }, (error: unknown) => {
+        terminating = false;
+        terminationError = new ExecFileTerminationError(error);
+        // A failed terminator may leave the child alive; make that failure observable.
+        reject(terminationError);
+      });
+    };
+    const abort = () => terminate();
+    // Node reports AbortError from its error event immediately after signalling the child.
+    // Waiting for close keeps caller cleanup from racing the still-running command.
+    child.once('close', () => {
+      closed = true;
+      signal?.removeEventListener('abort', abort);
+      finish();
     });
     closeStdioWhenCommandExits(child);
+    if (terminateOnAbort && signal) {
+      signal.addEventListener('abort', abort, { once: true });
+      if (signal.aborted) abort();
+    }
     if (!settled && timeout !== undefined) {
       deadline = setTimeout(() => {
-        child.kill();
+        // A stalled timers phase can run before a finished child's exit notification.
+        // Check phase follows poll: let that notification arrive before deciding whether
+        // termination is interrupting a running command, including one that traps SIGTERM.
+        setImmediate(() => {
+          if (closed || child.exitCode !== null || child.signalCode !== null) return;
+          if (terminateOnAbort) {
+            deadlineTermination = true;
+            terminate();
+          } else {
+            // A successful signal is a deadline interruption even if its handler exits zero.
+            // ESRCH can race the exit notification; a dead command keeps its real outcome.
+            deadlineTermination = child.kill();
+          }
+        });
       }, timeout);
     }
   });

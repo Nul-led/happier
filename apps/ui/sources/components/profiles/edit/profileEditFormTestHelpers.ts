@@ -117,9 +117,6 @@ export function installProfileEditFormModuleMocks(
         MachineSelector: () => null,
     }));
 
-    vi.mock('@/hooks/auth/useCLIDetection', () => ({
-        useCLIDetection: () => ({ status: 'unknown' }),
-    }));
 
     vi.mock('@/components/profiles/environmentVariables/EnvironmentVariablesList', () => ({
         EnvironmentVariablesList: () => null,

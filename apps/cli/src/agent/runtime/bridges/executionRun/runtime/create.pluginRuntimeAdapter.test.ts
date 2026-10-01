@@ -307,7 +307,7 @@ describe('createExecutionRunBackend (plugin runtimeCore adapter)', () => {
       events.push('create');
       expect(options).toMatchObject({
         modelSelection: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: 'pc_openai',
           modelId: 'provider-model',
         },
@@ -352,7 +352,7 @@ describe('createExecutionRunBackend (plugin runtimeCore adapter)', () => {
       backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
       modelId: 'provider-model',
       modelSelection: ProviderBoundModelRefSchema.parse({
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         providerConnectionId: 'pc_openai',
         modelId: 'provider-model',
       }),

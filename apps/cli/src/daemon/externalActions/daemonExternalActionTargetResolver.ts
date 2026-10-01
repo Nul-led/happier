@@ -12,7 +12,7 @@ import { createCurrentMachineExecutionOriginContextResolver } from '@/api/machin
 import { readAccountIdFromToken } from '@/cloud/decodeJwtPayload';
 import { resolveAvailableAccountSettings } from '@/settings/accountSettings/resolveAvailableAccountSettings';
 import { runWithServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
-import { acquireAuthoritativePluginRuntimeRegistryLease } from '@/plugins/runtime/reload/runtimeLease';
+import { readAuthoritativePluginSlotOccurrence } from '@/plugins/runtime/reload/runtimeLease';
 import { resolvePermissionIntentFromSessionMetadata } from '@happier-dev/agents';
 import type {
   AccountApiTokensListActionOutputV1,
@@ -55,12 +55,7 @@ type CurrentMachineExecutionOrigin = Readonly<{
 }>;
 
 async function readCurrentPluginSourceCustody(pluginId: string): Promise<PluginSourceCustodyV1 | null> {
-  const lease = await acquireAuthoritativePluginRuntimeRegistryLease();
-  try {
-    return lease.registry.readPluginSourceCustody?.(pluginId) ?? null;
-  } finally {
-    await lease.release();
-  }
+  return readAuthoritativePluginSlotOccurrence(pluginId)?.sourceCustody ?? null;
 }
 
 /**
@@ -395,7 +390,7 @@ export function createDaemonApprovalExecutionOriginCurrentnessFromCredentials(in
     listAccountApiTokens: async (signal) => {
       const result = await listAccountApiTokensAction({
         input: {},
-        context: { surface: 'ui', authority: 'present_user', serverId: input.serverId },
+        context: { surface: 'rpc', authority: 'account_automation', serverId: input.serverId },
         ...(signal ? { signal } : {}),
       });
       if ('ok' in result) throw new Error(result.errorCode);

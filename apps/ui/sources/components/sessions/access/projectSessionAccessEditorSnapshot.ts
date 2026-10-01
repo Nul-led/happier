@@ -131,7 +131,7 @@ export function projectSessionAccessEditorSnapshot(input: Readonly<{
             grant: row.grant.subject,
             principal: projectSessionAccessPrincipal(row.principal),
             level: editable && transitions.accessLevels.length > 0
-                ? {kind:'editable',value:row.grant.accessLevel,options:transitions.accessLevels.map(value=>({value,label:t(`session.access.${value}`)}))}
+                ? {kind:'editable',value:row.grant.accessLevel,options:transitions.accessLevels}
                 : {kind:'locked',value:row.grant.accessLevel,reason},
             permissionDelegation: projectSessionAccessDelegationControl({
                 accessLevel: row.grant.accessLevel,

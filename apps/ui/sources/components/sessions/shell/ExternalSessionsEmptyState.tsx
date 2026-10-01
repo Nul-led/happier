@@ -1,11 +1,10 @@
 import * as React from 'react';
-import { useRouter } from 'expo-router';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 import { View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { RoundButton } from '@/components/ui/buttons/RoundButton';
 import { EmptyState } from '@/components/ui/empty/EmptyState';
-import { useLayoutMaxWidthStyle } from '@/components/ui/layout/layout';
 import { useLocalSetting } from '@/sync/domains/state/storage';
 import { t } from '@/text';
 import { Icon } from '@/components/ui/icons/Icon';
@@ -15,11 +14,9 @@ type ExternalSessionsEmptyStateProps = Readonly<{
 }>;
 
 const stylesheet = StyleSheet.create(() => ({
-    sidebarContainer: {
+    lineContainer: {
         width: '100%',
-        alignItems: 'center',
-        paddingHorizontal: 20,
-        paddingTop: 12,
+        paddingTop: 8,
     },
     primaryPaneContainer: {
         width: '100%',
@@ -33,23 +30,39 @@ export function ExternalSessionsEmptyState(props: ExternalSessionsEmptyStateProp
     const { theme } = useUnistyles();
     const styles = stylesheet;
     const sidebarWidthPx = useLocalSetting('sidebarWidthPx');
-    const sidebarMaxWidthStyle = useLayoutMaxWidthStyle();
     const primaryPaneMaxWidth = typeof sidebarWidthPx === 'number' && sidebarWidthPx > 0 ? sidebarWidthPx : 320;
-    const containerStyle = props.surface === 'sidebar'
-        ? [styles.sidebarContainer, sidebarMaxWidthStyle]
-        : props.surface === 'primaryPane'
-            ? [styles.primaryPaneContainer, { maxWidth: primaryPaneMaxWidth }]
-            : undefined;
     const handleBrowse = React.useCallback(() => {
         router.push('/external/browse');
     }, [router]);
 
+    // Inside the session list (the rail or the phone list) emptiness is one quiet line with a link;
+    // the main pane keeps the page state, where there is room for it.
+    if (props.surface !== 'primaryPane') {
+        const browseLabel = t('externalSessions.browseOpenExisting');
+        return (
+            <View testID="direct-sessions-empty-state" style={styles.lineContainer}>
+                <EmptyState
+                    testID="direct-sessions-empty-state-line"
+                    layout="line"
+                    lineDensity="compact"
+                    titleTestID="direct-sessions-empty-state-title"
+                    title={t('externalSessions.emptyStateTitle')}
+                    primaryAction={{
+                        label: browseLabel,
+                        onPress: handleBrowse,
+                        testID: 'direct-sessions-empty-state-browse',
+                    }}
+                />
+            </View>
+        );
+    }
+
     return (
-        <View testID="direct-sessions-empty-state" style={containerStyle}>
+        <View testID="direct-sessions-empty-state" style={[styles.primaryPaneContainer, { maxWidth: primaryPaneMaxWidth }]}>
             <EmptyState
                 titleTestID="direct-sessions-empty-state-title"
                 subtitleTestID="direct-sessions-empty-state-description"
-                paddingHorizontal={props.surface === 'default' ? 16 : 0}
+                paddingHorizontal={0}
                 icon={(
                     <Icon
                         name="folder-open"

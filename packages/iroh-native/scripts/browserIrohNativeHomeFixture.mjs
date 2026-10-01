@@ -111,7 +111,7 @@ export function buildAndLoadBrowserIrohTestAddon({ extraOperations = [] } = {}) 
     stdio: 'inherit',
   });
 
-  const addonPath = join(packageDir, 'native', TEST_ADDON);
+  const addonPath = join(packageDir, 'native-test', TEST_ADDON);
   if (!existsSync(addonPath)) {
     bail(`the addon build owner did not produce ${addonPath}`);
   }

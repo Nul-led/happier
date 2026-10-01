@@ -5,31 +5,19 @@ import { SessionSubagentOverviewCard } from '@/components/sessions/agents/detail
 import { SessionSubagentTranscriptBody } from '@/components/sessions/agents/details/SessionSubagentTranscriptBody';
 import { SessionParticipantComposer } from '@/components/sessions/participants/composer/SessionParticipantComposer';
 import { SessionExecutionRunDetailsView } from '@/components/sessions/runs/details/SessionExecutionRunDetailsView';
-import { Text } from '@/components/ui/text/Text';
+import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
 import { useSessionAgentActivityRoster } from '@/hooks/session/useSessionAgentActivity';
-import { useMessage, useResolvedSessionMessageRouteId } from '@/sync/domains/state/storage';
+import { useMessage, useResolvedSessionMessageRouteId, useSessionMessages } from '@/sync/domains/state/storage';
 import { t } from '@/text';
 import { deriveTranscriptInteractionFromSession } from '@/utils/sessions/deriveTranscriptInteraction';
 import { useSessionViewShellSession } from '@/components/sessions/shell/sessionViewStableSession';
 
-const stylesheet = StyleSheet.create((theme) => ({
+const stylesheet = StyleSheet.create(() => ({
     container: {
         flex: 1,
         minHeight: 0,
         minWidth: 0,
         gap: 12,
-    },
-    empty: {
-        flex: 1,
-        alignItems: 'center',
-        justifyContent: 'center',
-        paddingHorizontal: 20,
-        paddingVertical: 24,
-    },
-    emptyText: {
-        color: theme.colors.text.secondary,
-        fontSize: 13,
-        textAlign: 'center',
     },
 }));
 
@@ -46,6 +34,7 @@ export const SessionSubagentDetailsView = React.memo((props: Readonly<{
         serverId: props.serverId ?? session?.serverId,
         session,
     });
+    const { isLoaded: messagesLoaded } = useSessionMessages(props.sessionId);
 
     const subagent = React.useMemo(() => {
         return subagents.find((candidate) => candidate.id === props.subagentId) ?? null;
@@ -70,9 +59,15 @@ export const SessionSubagentDetailsView = React.memo((props: Readonly<{
 
     if (!session || !subagent || !entry) {
         return (
-            <View style={styles.empty}>
-                <Text style={styles.emptyText}>{t('session.subagents.details.unavailable')}</Text>
-            </View>
+            session && !messagesLoaded ? (
+                <SurfaceStateCard testID="session-subagent-details-loading" kind="loading" title={t('common.loading')} />
+            ) : (
+                <SurfaceStateCard
+                    testID="session-subagent-details-unavailable"
+                    kind="unavailable"
+                    title={t('session.subagents.details.unavailable')}
+                />
+            )
         );
     }
 
@@ -89,6 +84,7 @@ export const SessionSubagentDetailsView = React.memo((props: Readonly<{
                     serverId={props.serverId ?? session.serverId}
                     runId={subagent.runRef.runId}
                     presentation="panel"
+                    openingTitle={entry.title}
                 />
             </View>
         );

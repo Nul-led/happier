@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
+import { t } from '@/text';
+
 import type { SessionListRenderableSession } from '@/sync/domains/session/listing/sessionListRenderable';
-import type { Message } from '@/sync/domains/messages/messageTypes';
+import type { Message } from "@happier-dev/session-core/messages";
 import type { Session } from '@/sync/domains/state/storageTypes';
 import type { StorageState } from '@/sync/store/types';
-import { createReducer } from '@/sync/reducer/reducer';
+import { createReducer } from "@happier-dev/session-core/reducer";
 
 import {
     buildCanonicalSessionListSearchText,
@@ -57,6 +59,24 @@ describe('createSessionListSearchTextSelector', () => {
 
         expect(buildCanonicalSessionListSearchText({ sessionId: session.id, renderable: session }))
             .toBe('session1\nBuild lane\n/workspace/project\nbuilder\nmachine-a');
+    });
+
+    it('indexes a no-folder session as a chat, never by its private folder', () => {
+        const session = createRenderable({
+            id: 'chat1',
+            metadata: {
+                name: 'Pricing questions',
+                path: '/home/u/.happier/servers/s/session-directories/3f9a',
+                host: 'builder',
+                machineId: 'machine-a',
+                sessionDirectoryV1: { v: 1, kind: 'managed' },
+            },
+        });
+
+        const text = buildCanonicalSessionListSearchText({ sessionId: session.id, renderable: session });
+        expect(text).not.toContain('session-directories');
+        expect(text).toContain('Pricing questions');
+        expect(text).toContain(t('session.folderless.chats'));
     });
 
     it('includes canonical tag and workspace display labels without reading transcript bodies', () => {

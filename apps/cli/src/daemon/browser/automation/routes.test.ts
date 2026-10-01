@@ -8,6 +8,8 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { createBrowserAutomationRoutes } from './routes';
 import { createBrowserAutomationDaemonService } from './service';
+import { createBrowserAutomationCdpAdapter } from './adapters/cdp';
+import type { BrowserAutomationAdapterExecutionContext } from './adapters/types';
 import type { BrowserAutomationAdapter } from './adapters/types';
 
 const agentRef = { kind: 'agent', id: 'agent_1' } as const;
@@ -42,7 +44,7 @@ function snapshotRequest(): BrowserAutomationActionRequestV1 {
     automationRequestId: 'req_snapshot',
     browserSessionId: 'browser_session_1',
     viewId: 'view_1',
-    navigationGeneration: 1,
+    navigationGeneration: 0,
     requestedBy: 'agent',
     requesterRef: agentRef,
     actionKind: 'snapshot',
@@ -59,7 +61,7 @@ function clickRequest(
     automationRequestId: 'req_click',
     browserSessionId: 'browser_session_1',
     viewId: 'view_1',
-    navigationGeneration: 1,
+    navigationGeneration: 0,
     requestedBy: 'agent',
     requesterRef: agentRef,
     actionKind: 'click',
@@ -70,6 +72,171 @@ function clickRequest(
 }
 
 describe('browser automation routes', () => {
+  it('rejects a forged human requester and derives admitted requester from trusted Action authority', async () => {
+    const inputRequests: string[] = [];
+    const service = createBrowserAutomationDaemonService({ adapter: createBrowserAutomationCdpAdapter({ transport: {
+      ownsView: () => true,
+      dispatchControlCommand: async () => { throw new Error('unexpected navigation'); },
+      dispatchPageQuery: async () => ({ ok: true }),
+      dispatchInputCommand: async context => { inputRequests.push(context.actionKind); return { ok: true }; },
+    } }) });
+    const r = createBrowserAutomationRoutes({ service });
+    const request = clickRequest();
+    await service.recordHumanInput({ ...request, authority: 'present_user' });
+    expect(await r.dispatch('browser.automation.click', request, accountAutomationContext))
+      .toMatchObject({ status: 'failed', errorCode: 'human_interrupted' });
+    expect(await r.dispatch('browser.automation.click', clickRequest({ requestedBy: 'user' }), accountAutomationContext))
+      .toMatchObject({ ok: false, errorCode: 'invalid_parameters' });
+    expect(inputRequests).toEqual([]);
+    expect(await r.dispatch('browser.automation.click', request, presentUserContext)).toMatchObject({ status: 'succeeded' });
+    expect(inputRequests).toEqual(['click']);
+  });
+  it.each([
+    ['browser.automation.click', clickRequest()],
+    ['browser.automation.snapshot', snapshotRequest()],
+  ] as const)('cancels %s from its caller without releasing admission before native completion', async (actionId, request) => {
+    let enterNative: () => void = () => undefined;
+    const entered = new Promise<void>(resolve => { enterNative = resolve; });
+    let releaseNative: () => void = () => undefined;
+    const released = new Promise<void>(resolve => { releaseNative = resolve; });
+    let nativeSignal: AbortSignal | undefined;
+    // Chromium is the external boundary. The route, service, action runtime, and CDP adapter
+    // remain real; the held acknowledgement models input that must drain before admission clears.
+    const dispatchNative = async (context: BrowserAutomationAdapterExecutionContext) => {
+      nativeSignal = context.signal;
+      enterNative();
+      await released;
+      return context.signal?.aborted
+        ? { ok: false as const, errorCode: 'user_canceled' as const, interruptionCompletion: 'stopped' as const }
+        : { ok: true as const };
+    };
+    const service = createBrowserAutomationDaemonService({
+      adapter: createBrowserAutomationCdpAdapter({
+        transport: {
+          ownsView: () => true,
+          dispatchControlCommand: async () => { throw new Error('unexpected navigation'); },
+          dispatchPageQuery: dispatchNative,
+          dispatchInputCommand: dispatchNative,
+        },
+      }),
+    });
+    const r = createBrowserAutomationRoutes({ service });
+    const caller = new AbortController();
+    const pending = r.dispatch(actionId, request, { ...accountAutomationContext, signal: caller.signal });
+
+    try {
+      await entered;
+      caller.abort();
+      expect(nativeSignal?.aborted).toBe(true);
+      expect(service.getTimeline(request).entries).toEqual([]);
+      if (request.actionKind === 'click') {
+        expect(service.getStatus(request).activeAutomationRequestId).toBe(request.automationRequestId);
+        expect(await r.dispatch('browser.automation.click', clickRequest({ automationRequestId: 'blocked_during_drain' })))
+          .toMatchObject({ status: 'failed', errorCode: 'automation_busy' });
+      }
+      releaseNative();
+      expect(await pending).toMatchObject({ status: 'canceled', errorCode: 'user_canceled' });
+      expect(service.getTimeline(request).entries.find(entry => entry.automationRequestId === request.automationRequestId))
+        .toMatchObject({ status: 'canceled', reasonCode: 'user_canceled' });
+      expect(service.getStatus(request).activeAutomationRequestId).toBeUndefined();
+      expect(service.getStatus(request).controlEpoch).toBe(0);
+    } finally {
+      releaseNative();
+      await pending;
+    }
+  });
+
+  it('detaches caller cancellation after the native operation has completed', async () => {
+    let nativeSignal: AbortSignal | undefined;
+    const service = createBrowserAutomationDaemonService({
+      adapter: createBrowserAutomationCdpAdapter({
+        transport: {
+          ownsView: () => true,
+          dispatchControlCommand: async () => { throw new Error('unexpected navigation'); },
+          dispatchPageQuery: async context => {
+            nativeSignal = context.signal;
+            return { ok: true };
+          },
+        },
+      }),
+    });
+    const caller = new AbortController();
+    const result = await createBrowserAutomationRoutes({ service }).dispatch(
+      'browser.automation.snapshot', snapshotRequest(), { ...accountAutomationContext, signal: caller.signal },
+    );
+
+    expect(result).toMatchObject({ status: 'succeeded' });
+    expect(nativeSignal).toBeDefined();
+    caller.abort();
+    expect(nativeSignal?.aborted).toBe(false);
+  });
+
+  it('requires human takeover and fresh observations to recover uncertain caller-aborted input', async () => {
+    let enterNative: () => void = () => undefined;
+    const entered = new Promise<void>(resolve => { enterNative = resolve; });
+    let releaseNative: () => void = () => undefined;
+    const released = new Promise<void>(resolve => { releaseNative = resolve; });
+    let firstInput = true;
+    const service = createBrowserAutomationDaemonService({
+      adapter: createBrowserAutomationCdpAdapter({
+        transport: {
+          ownsView: () => true,
+          dispatchControlCommand: async () => { throw new Error('unexpected navigation'); },
+          dispatchPageQuery: async () => ({ ok: true, data: { observed: true } }),
+          dispatchInputCommand: async context => {
+            if (!firstInput) return { ok: true };
+            firstInput = false;
+            enterNative();
+            await released;
+            return context.signal?.aborted
+              ? { ok: false, errorCode: 'user_canceled', interruptionCompletion: 'uncertain' }
+              : { ok: true };
+          },
+        },
+      }),
+    });
+    const r = createBrowserAutomationRoutes({ service });
+    const observedUncertainty: boolean[] = [];
+    let handedBack = false;
+    service.subscribeBrowserEvents(event => {
+      if (handedBack && event.kind === 'controllerChanged') observedUncertainty.push(event.state.uncertain === true);
+    });
+    const caller = new AbortController();
+    const request = clickRequest();
+    const pending = r.dispatch('browser.automation.click', request, {
+      ...accountAutomationContext, signal: caller.signal,
+    });
+
+    try {
+      await entered;
+      caller.abort();
+      releaseNative();
+      expect(await pending).toMatchObject({
+        status: 'canceled', errorCode: 'user_canceled', resultSummary: { completion: 'uncertain' },
+      });
+      expect(await r.dispatch('browser.automation.click', clickRequest({ automationRequestId: 'needs_observation' })))
+        .toMatchObject({ status: 'failed', errorCode: 'runtime_unavailable' });
+      expect(await r.dispatch('browser.automation.snapshot', snapshotRequest())).toMatchObject({ status: 'succeeded' });
+      expect(await r.dispatch('browser.automation.click', clickRequest({ automationRequestId: 'still_uncertain' })))
+        .toMatchObject({ status: 'failed', errorCode: 'runtime_unavailable' });
+      await service.recordHumanInput({ ...request, authority: 'present_user' });
+      handedBack = true;
+      expect(service.handBack({ ...request, authority: 'present_user' })).toEqual({ ok: true });
+      expect(service.getStatus(request)).toMatchObject({ controller: 'none', uncertain: true });
+      expect(await r.dispatch('browser.automation.click', clickRequest({ automationRequestId: 'after_handback' })))
+        .toMatchObject({ status: 'failed', errorCode: 'stale_navigation' });
+      expect(await r.dispatch('browser.automation.snapshot', snapshotRequest())).toMatchObject({ status: 'succeeded' });
+      expect(observedUncertainty).toEqual([true, false]);
+      expect(service.getStatus(request).uncertain).toBe(false);
+      expect(await r.dispatch('browser.automation.click', clickRequest({ automationRequestId: 'after_observation' })))
+        .toMatchObject({ status: 'succeeded' });
+      expect(service.getStatus(request).controlEpoch).toBe(2);
+    } finally {
+      releaseNative();
+      await pending;
+    }
+  });
+
   it('dispatches snapshot through the service into a BrowserAutomationActionResultV1', async () => {
     const result = await routes().routes.dispatch('browser.automation.snapshot', snapshotRequest());
 
@@ -191,12 +358,12 @@ describe('browser automation routes', () => {
     const pending = r.dispatch('browser.automation.click', clickRequest({ automationRequestId: 'req_takeover' }));
 
     try {
-      const canceled = await r.dispatch('browser.automation.cancelActive', {
+      const canceling = r.dispatch('browser.automation.cancelActive', {
         browserSessionId: 'browser_session_1',
         viewId: 'view_1',
       }, presentUserContext);
-
-      expect(canceled).toEqual({ v: 1, outcome: 'canceled', canceledCount: 1 });
+      release();
+      expect(await canceling).toEqual({ v: 1, outcome: 'canceled', canceledCount: 1, completion: 'uncertain' });
       await expect(pending).resolves.toMatchObject({
         status: 'canceled',
         errorCode: 'user_canceled',
@@ -207,7 +374,7 @@ describe('browser automation routes', () => {
         browserSessionId: 'browser_session_1',
         viewId: 'view_1',
       })).toMatchObject({
-        resultSummary: { controller: 'none', controlEpoch: 1 },
+        resultSummary: { controller: 'human', controlEpoch: 1 },
       });
     } finally {
       release();

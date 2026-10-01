@@ -40,10 +40,10 @@ export function createDefaultVoiceProviderRegistry(input: Readonly<{
     for (const registration of listExternalVoiceProviderRegistrations()) {
       if (enabledPluginIds !== null && !enabledPluginIds.has(registration.pluginId)) continue;
       if (projectionAuthority !== null) {
-        const generation = projectionAuthority.get(registration.providerId);
-        if (!generation || registration.projectionGeneration !== generation) continue;
+        const occurrenceId = projectionAuthority.get(registration.providerId);
+        if (!occurrenceId || registration.occurrenceId !== occurrenceId) continue;
       }
-      // The live projection is the installed/enabled/generation authority. Its
+      // The live projection is the installed/enabled/occurrence authority. Its
       // exact descriptor replaces generated fallback metadata for the same ID.
       // A bundled conversation registration deliberately carries no duplicate
       // descriptor: its live registration still admits the one generated

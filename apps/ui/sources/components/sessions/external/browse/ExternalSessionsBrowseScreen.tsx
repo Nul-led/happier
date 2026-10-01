@@ -7,9 +7,9 @@ import {
     type ExternalSessionsAgentId,
     type ExternalSessionsSource,
 } from '@happier-dev/protocol';
-import { useRouter } from 'expo-router';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 import { buildScopedSessionRouteHref } from '@/hooks/session/sessionRouteServerScope';
-import { StyleSheet, useUnistyles } from 'react-native-unistyles';
+import { StyleSheet } from 'react-native-unistyles';
 
 import {
     resolveAgentCatalogProjection,
@@ -17,18 +17,21 @@ import {
 } from '@/agents/backendCatalog/agentCatalogProjection';
 import { useDaemonMergedProjectionInputs } from '@/agents/backendCatalog/useDaemonMergedProjectionInputs';
 import { AgentCatalogIdentityIcon } from '@/agents/presentation/AgentCatalogIdentityIcon';
-import { MachineAdministrationTargetSelector } from '@/components/settings/machines/MachineAdministrationTargetSelector';
-import { SessionContextChips } from '@/components/sessions/context/SessionContextChips';
-import { DropdownMenu } from '@/components/ui/forms/dropdown/DropdownMenu';
-import { Switch } from '@/components/ui/forms/Switch';
-import { Item } from '@/components/ui/lists/Item';
-import { ItemGroup } from '@/components/ui/lists/ItemGroup';
+import { useMachineAdministrationTargetFilter } from '@/components/settings/machines/MachineAdministrationTargetSelector';
+import { SETTINGS_ROUTES } from '@/components/settings/catalog/routes';
+import { resolveHomeDisplayNameForServerIdentity } from '@/components/settings/server/homeDisplayName';
+import { AppHeaderCloseButton } from '@/components/navigation/AppHeaderCloseButton';
+import type { SelectionListFilter } from '@/components/ui/selectionList';
+import { PageHeaderMenu, type PageHeaderMenuAction } from '@/components/ui/layout/PageHeaderEntityParts';
 import { PopoverScope } from '@/components/ui/popover';
 import { Modal } from '@/modal';
 import { captureActiveServerAccountScopeCurrentness } from '@/sync/domains/scope/activeServerAccountScope';
 import { useAllMachines, useSetting } from '@/sync/domains/state/storage';
 import { MACHINE_ADMINISTRATION_SELECTION_KEYS_V1 } from '@/sync/domains/machines/administration/selectionPreferences';
-import { machineAdministrationTargetsEqual } from '@/sync/domains/machines/administration/targetSelection';
+import {
+    machineAdministrationTargetsEqual,
+    readMachineAdministrationCandidateName,
+} from '@/sync/domains/machines/administration/targetSelection';
 import { isMachineAdministrationExecutionTargetCurrent } from '@/sync/domains/machines/administration/operationCurrentness';
 import { useMachineAdministrationTargetSelection } from '@/sync/domains/machines/administration/useTargetSelection';
 import {
@@ -51,9 +54,11 @@ import {
     resolveExternalSessionBrowseSourceOption,
     resolveExternalSessionBrowseSourceOptions,
 } from './resolveExternalSessionBrowseSourceOptions';
-import { ExternalSessionBrowseCandidatesList } from './ExternalSessionBrowseCandidatesList';
+import {
+    ExternalSessionBrowseCandidatesList,
+    type ExternalSessionBrowseScope,
+} from './ExternalSessionBrowseCandidatesList';
 import { isExternalSessionBrowseCandidateOfflineInert } from './resolveExternalSessionBrowseCandidateOfflineInert';
-import { Icon } from '@/components/ui/icons/Icon';
 import {
     readExternalSessionBrowseCandidateKey,
     readExternalSessionBrowseCandidatePath,
@@ -64,6 +69,7 @@ import {
     resolveExternalSessionBrowseRpcErrorMessage,
     resolveExternalSessionBrowseThrownErrorMessage,
 } from './externalSessionBrowseErrorPresentation';
+import { readMachineName } from '@/utils/sessions/machineDisplayNames';
 
 type ExternalSessionBrowseProviderId = ExternalSessionsAgentId;
 type AppTheme = Theme;
@@ -85,20 +91,11 @@ const stylesheet = StyleSheet.create((theme: AppTheme) => ({
         minHeight: 0,
         backgroundColor: theme.colors.surface.base,
     },
-    filtersGroup: {
-        marginTop: 0,
-    },
-    filtersGroupContainer: {
-        borderWidth: 1,
-        borderColor: theme.colors.border.default,
-        backgroundColor: theme.colors.surface.base,
-        shadowOpacity: 0,
-        elevation: 0,
-        marginHorizontal: 12,
-    },
-    lockedScopeSummary: {
-        paddingHorizontal: 12,
-        paddingVertical: 8,
+    // The ⋯ menu and close trail the search band, as in Search / ⌘K: the band is the top of the card.
+    bandTrailing: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 2,
     },
 }));
 
@@ -107,12 +104,16 @@ export const ExternalSessionsBrowseScreen = React.memo((props: Readonly<{
     lockScope?: ExternalSessionsBrowseScopeLock | null;
     onPickRemoteSessionId?: (remoteSessionId: string) => void;
     onRequestClose?: () => void;
+    /**
+     * Put a close button in the search band, for a host with no chrome of its own (the web modal
+     * route). Without it the host owns close (native header, card modal, Escape).
+     */
+    closeButton?: boolean;
 }>) => {
     const interaction: ExternalSessionsBrowseInteraction = props.interaction ?? 'openSession';
     const lockScope = props.lockScope ?? null;
     const locked = Boolean(lockScope);
     const router = useRouter();
-    const { theme } = useUnistyles() as { theme: AppTheme };
     const styles = stylesheet;
     const machines = useAllMachines();
     const profile = useProfile();
@@ -259,10 +260,11 @@ export const ExternalSessionsBrowseScreen = React.memo((props: Readonly<{
     ));
     const [linkingSessionId, setLinkingSessionId] = React.useState<string | null>(null);
     const [deletingCandidateKey, setDeletingCandidateKey] = React.useState<string | null>(null);
-    const [providerMenuOpen, setProviderMenuOpen] = React.useState(false);
-    const [sourceMenuOpen, setSourceMenuOpen] = React.useState(false);
+    const [machinePickerOpen, setMachinePickerOpen] = React.useState(false);
     const [searchQuery, setSearchQuery] = React.useState('');
     const [candidateSearchTerm, setCandidateSearchTerm] = React.useState('');
+    /** Internal threads (approval reviewers, spawned sub-agents) stay out of the listing unless asked for. */
+    const [includeThreads, setIncludeThreads] = React.useState(false);
     const popoverBoundaryRef = React.useRef<View>(null);
     const selectedAgentProjection = React.useMemo(() => (
         selectedProviderId
@@ -332,7 +334,7 @@ export const ExternalSessionsBrowseScreen = React.memo((props: Readonly<{
             ? [option.label, option.detail].filter(Boolean).join(' · ')
             : null;
     }, [selectedSourceKey, sourceOptions]);
-    const providerMenuItems = React.useMemo(() => providers.map((provider) => ({
+    const providerSelectItems = React.useMemo(() => providers.map((provider) => ({
         id: provider.id,
         title: provider.label,
         icon: (
@@ -341,7 +343,7 @@ export const ExternalSessionsBrowseScreen = React.memo((props: Readonly<{
                 machineId={effectiveSelectedMachineId}
                 serverId={identityServerId}
                 current={daemonMergedProjection.phase === 'ready'}
-                size={18}
+                size={16}
             />
         ),
     })), [
@@ -350,15 +352,10 @@ export const ExternalSessionsBrowseScreen = React.memo((props: Readonly<{
         identityServerId,
         providers,
     ]);
-    const sourceMenuItems = React.useMemo(() => sourceOptions.map((sourceOption) => ({
+    const sourceSelectItems = React.useMemo(() => sourceOptions.map((sourceOption) => ({
         id: sourceOption.key,
         title: sourceOption.label,
-        subtitle: sourceOption.detail,
-        icon: <Icon name="folder-open" size={16} color={theme.colors.text.secondary} />,
-    })), [sourceOptions, theme.colors.text.secondary]);
-    const formatSelectedTitleSubtitle = React.useCallback((selectedItem: Readonly<{ title: string }> | null) => {
-        return selectedItem?.title ?? null;
-    }, []);
+    })), [sourceOptions]);
 
     React.useEffect(() => {
         const trimmedSearchQuery = searchQuery.trim();
@@ -403,6 +400,7 @@ export const ExternalSessionsBrowseScreen = React.memo((props: Readonly<{
         providerId: selectedProviderId,
         source: selectedSource,
         searchTerm: candidateSearchTerm,
+        includeThreads,
         enabled: daemonMergedProjectionReady && effectiveSelectedMachineId !== null,
     });
     /**
@@ -536,14 +534,17 @@ export const ExternalSessionsBrowseScreen = React.memo((props: Readonly<{
     const selectedMachineLabel = React.useMemo(() => {
         if (lockScope) {
             const machine = machines.find((candidate) => candidate.id === effectiveSelectedMachineId);
-            return machine?.metadata?.displayName || machine?.metadata?.host || machine?.id || null;
+            // Same rule as the administration branch below: no name reads "this machine" in the copy.
+            return readMachineName(machine);
         }
         const selectedTarget = administrationTargetSelection.selectedTarget;
-        return selectedTarget
-            ? administrationTargetSelection.candidates.find((candidate) => (
-                machineAdministrationTargetsEqual(candidate.target, selectedTarget)
-            ))?.displayName ?? selectedTarget.machineId
-            : null;
+        const candidate = selectedTarget
+            ? administrationTargetSelection.candidates.find((entry) => (
+                machineAdministrationTargetsEqual(entry.target, selectedTarget)
+            ))
+            : undefined;
+        // A machine with no name is "this machine" in the copy, never its id.
+        return candidate ? readMachineAdministrationCandidateName(candidate) : null;
     }, [administrationTargetSelection, effectiveSelectedMachineId, lockScope, machines]);
     const selectedMachineHomeDir = React.useMemo(() => {
         const machine = lockScope
@@ -778,121 +779,187 @@ export const ExternalSessionsBrowseScreen = React.memo((props: Readonly<{
         selectedSource,
     ]);
 
+    const openMachinePicker = React.useCallback(() => setMachinePickerOpen(true), []);
+    const targetState = administrationTargetSelection.state;
+    /**
+     * Which machine problem the list states first. The target owner already knows the saved machine
+     * is gone, away or locked; the list must say that rather than what its (unreachable) agents
+     * would report.
+     */
+    const browseScope = React.useMemo<ExternalSessionBrowseScope>(() => {
+        if (lockScope) return { kind: 'ready' };
+        switch (targetState.kind) {
+            case 'unselected':
+                return { kind: 'unselected', onChooseMachine: openMachinePicker };
+            case 'missing':
+                if (targetState.inventoryKnown === false) {
+                    return {
+                        kind: 'unreachable',
+                        homeName: resolveHomeDisplayNameForServerIdentity(targetState.target.serverIdentityId),
+                        onChooseMachine: openMachinePicker,
+                    };
+                }
+                return {
+                    kind: 'gone',
+                    homeName: resolveHomeDisplayNameForServerIdentity(targetState.target.serverIdentityId),
+                    onChooseMachine: openMachinePicker,
+                };
+            case 'replaced':
+            case 'revoked':
+                return {
+                    kind: 'gone',
+                    homeName: resolveHomeDisplayNameForServerIdentity(targetState.target.serverIdentityId),
+                    onChooseMachine: openMachinePicker,
+                };
+            case 'offline':
+                return { kind: 'offline', onChooseMachine: openMachinePicker };
+            case 'locked':
+                return { kind: 'locked', onChooseMachine: openMachinePicker };
+            case 'online':
+                return { kind: 'ready' };
+        }
+    }, [lockScope, openMachinePicker, targetState]);
+    const alternativeAgent = React.useMemo(() => {
+        if (locked) return null;
+        const other = providers.find((provider) => provider.id !== selectedProviderId);
+        return other ? { label: other.label, onSelect: () => setSelectedProviderId(other.id) } : null;
+    }, [locked, providers, selectedProviderId]);
+    const menuActions = React.useMemo((): PageHeaderMenuAction[] => [
+        ...(accountSettingsTargetAvailable && autoLinkPolicyScope ? [{
+            id: 'auto-link',
+            testID: 'external-sessions-browse-auto-link',
+            title: t('externalSessions.browseAutoLinkTitle'),
+            checked: autoLinkPolicyEnabled,
+            loading: autoLinkMutationPending,
+            onSelect: () => setAutoLinkPolicyEnabled(!autoLinkPolicyEnabled),
+        }] : []),
+        // Auto-link is a policy: its page holds every source's switch. The picker variant stays put.
+        ...(interaction === 'openSession' ? [{
+            id: 'settings',
+            testID: 'external-sessions-browse-settings',
+            title: t('externalSessions.browseSettingsLink'),
+            onSelect: () => { router.push(SETTINGS_ROUTES.externalSessions as never); },
+        }] : []),
+    ], [
+        accountSettingsTargetAvailable,
+        autoLinkMutationPending,
+        autoLinkPolicyEnabled,
+        autoLinkPolicyScope,
+        interaction,
+        router,
+        setAutoLinkPolicyEnabled,
+    ]);
+    const menu = menuActions.length > 0 ? (
+        <PageHeaderMenu testID="external-sessions-browse-menu" actions={menuActions} />
+    ) : null;
+    const machineFilter = useMachineAdministrationTargetFilter({
+        selection: administrationTargetSelection,
+        testIDPrefix: 'external-sessions.browse.administration.target',
+        groupTitle: t('externalSessions.browseMachines'),
+        chipOpen: machinePickerOpen,
+        onChipOpenChange: setMachinePickerOpen,
+    });
+    /**
+     * The browser's scope as SelectionList filters: machine (its canonical owner's chooser), Agent,
+     * and source only when the Agent has more than one. A locked scope (resume by id) shows the same
+     * chips as fixed values.
+     */
+    const filters = React.useMemo<ReadonlyArray<SelectionListFilter>>(() => {
+        if (locked) {
+            return [
+                {
+                    id: 'machine',
+                    label: t('externalSessions.browseMachines'),
+                    valueLabel: selectedMachineLabel ?? t('externalSessions.browseThisMachine'),
+                    testID: 'external-sessions.browse.locked.machine',
+                },
+                {
+                    id: 'agent',
+                    label: t('externalSessions.browseAgents'),
+                    valueLabel: [
+                        selectedAgentProjection?.title ?? lockScope?.providerId,
+                        selectedSourceLabel,
+                    ].filter(Boolean).join(' · '),
+                    testID: 'external-sessions.browse.locked.agent',
+                },
+            ];
+        }
+        const next: SelectionListFilter[] = [machineFilter];
+        if (effectiveSelectedMachineId && providerSelectItems.length > 0) {
+            next.push({
+                id: 'agent',
+                label: t('externalSessions.browseAgents'),
+                options: providerSelectItems.map((item) => ({ id: item.id, label: item.title, icon: item.icon })),
+                selectedId: selectedProviderId,
+                onChange: (itemId) => setSelectedProviderId(itemId as ExternalSessionBrowseProviderId),
+                testID: 'direct-session-provider-picker',
+            });
+        }
+        if (effectiveSelectedMachineId && sourceSelectItems.length > 1) {
+            next.push({
+                id: 'source',
+                label: t('externalSessions.browseSources'),
+                options: sourceSelectItems.map((item) => ({ id: item.id, label: item.title })),
+                selectedId: selectedSourceKey,
+                onChange: setSelectedSourceKey,
+                testID: 'direct-session-source-picker',
+            });
+        }
+        if (effectiveSelectedMachineId) {
+            next.push({
+                id: 'threads',
+                label: t('externalSessions.browseThreadsFilter'),
+                options: [
+                    { id: 'hidden', label: t('externalSessions.browseThreadsHidden') },
+                    { id: 'shown', label: t('externalSessions.browseThreadsShown') },
+                ],
+                selectedId: includeThreads ? 'shown' : 'hidden',
+                onChange: (optionId) => setIncludeThreads(optionId === 'shown'),
+                testID: 'external-sessions.browse.threads',
+            });
+        }
+        return next;
+    }, [
+        effectiveSelectedMachineId,
+        includeThreads,
+        lockScope?.providerId,
+        locked,
+        machineFilter,
+        providerSelectItems,
+        selectedAgentProjection?.title,
+        selectedMachineLabel,
+        selectedProviderId,
+        selectedSourceKey,
+        selectedSourceLabel,
+        sourceSelectItems,
+    ]);
+    const onRequestClose = props.onRequestClose ?? (() => router.back());
+    const bandTrailing = menu || props.closeButton ? (
+        <View style={styles.bandTrailing}>
+            {menu}
+            {props.closeButton ? (
+                <AppHeaderCloseButton
+                    testID="external-sessions-browse-close"
+                    accessibilityLabel={t('common.close')}
+                    onPress={onRequestClose}
+                />
+            ) : null}
+        </View>
+    ) : null;
+    const agentName = selectedAgentProjection?.title ?? null;
+    const searchPlaceholder = agentName
+        ? t('externalSessions.browseSearchAgentPlaceholder', { agent: agentName })
+        : t('externalSessions.browseSearchPlaceholder');
+
     return (
         <PopoverScope boundaryRef={popoverBoundaryRef}>
-            <View ref={popoverBoundaryRef} style={styles.root} testID="direct-sessions-browse-modal">
-                {!locked ? (
-                    <>
-                        <MachineAdministrationTargetSelector
-                            selection={administrationTargetSelection}
-                            testIDPrefix="external-sessions.browse.administration.target"
-                            groupTitle={t('externalSessions.browseMachines')}
-                        />
-                        {effectiveSelectedMachineId ? (
-                            <ItemGroup
-                                style={styles.filtersGroup}
-                                title={t('externalSessions.browseFiltersTitle')}
-                                containerStyle={styles.filtersGroupContainer}
-                            >
-                                <DropdownMenu
-                                    open={providerMenuOpen}
-                                    onOpenChange={setProviderMenuOpen}
-                                    items={providerMenuItems}
-                                    selectedId={selectedProviderId}
-                                    onSelect={(itemId) => {
-                                        setSelectedProviderId(itemId as ExternalSessionBrowseProviderId);
-                                        setProviderMenuOpen(false);
-                                    }}
-                                    showCategoryTitles={false}
-                                    variant="selectable"
-                                    rowKind="item"
-                                    matchTriggerWidth={true}
-                                    connectToTrigger={true}
-                                    popoverBoundaryRef={popoverBoundaryRef}
-                                    itemTrigger={{
-                                        title: t('externalSessions.browseAgents'),
-                                        icon: <Icon name="cpu" size={16} color={theme.colors.text.secondary} />,
-                                        subtitleFormatter: formatSelectedTitleSubtitle,
-                                        showSelectedDetail: false,
-                                        itemProps: {
-                                            testID: 'direct-session-provider-picker-trigger',
-                                        },
-                                    }}
-                                />
-                                <DropdownMenu
-                                    open={sourceMenuOpen}
-                                    onOpenChange={setSourceMenuOpen}
-                                    items={sourceMenuItems}
-                                    selectedId={selectedSourceKey}
-                                    onSelect={(itemId) => {
-                                        setSelectedSourceKey(itemId);
-                                        setSourceMenuOpen(false);
-                                    }}
-                                    showCategoryTitles={false}
-                                    variant="selectable"
-                                    rowKind="item"
-                                    matchTriggerWidth={true}
-                                    connectToTrigger={true}
-                                    popoverBoundaryRef={popoverBoundaryRef}
-                                    itemTrigger={{
-                                        title: t('externalSessions.browseSources'),
-                                        icon: <Icon name="folder-open" size={16} color={theme.colors.text.secondary} />,
-                                        subtitleFormatter: formatSelectedTitleSubtitle,
-                                        showSelectedDetail: false,
-                                        itemProps: {
-                                            testID: 'direct-session-source-picker-trigger',
-                                        },
-                                    }}
-                                />
-                            </ItemGroup>
-                        ) : null}
-                    </>
-                ) : (
-                    <View
-                        testID="direct-session-locked-scope-summary"
-                        style={styles.lockedScopeSummary}
-                    >
-                        <SessionContextChips
-                            machineLabel={selectedMachineLabel ?? lockScope?.machineId ?? t('externalSessions.browseNoMachines')}
-                            pathLabel={[
-                                selectedAgentProjection?.title ?? lockScope?.providerId,
-                                selectedSourceLabel,
-                            ].filter(Boolean).join(' · ')}
-                        />
-                    </View>
-                )}
-                {accountSettingsTargetAvailable && autoLinkPolicyScope ? (
-                    <ItemGroup
-                        title={t('externalSessions.settingsAutoLinkGroupTitle')}
-                        containerStyle={styles.filtersGroupContainer}
-                    >
-                        <Item
-                            testID="external-sessions-browse-auto-link"
-                            title={t('externalSessions.browseAutoLinkTitle')}
-                            subtitle={t('externalSessions.settingsAutoLinkSubtitle')}
-                            loading={autoLinkMutationPending}
-                            disabled={autoLinkMutationPending}
-                            rightElement={(
-                                <Switch
-                                    testID="external-sessions-browse-auto-link-toggle"
-                                    accessibilityLabel={t('externalSessions.browseAutoLinkTitle')}
-                                    accessibilityHint={t('externalSessions.settingsAutoLinkHint')}
-                                    value={autoLinkPolicyEnabled}
-                                    disabled={autoLinkMutationPending}
-                                    onValueChange={(enabled) => {
-                                        void setAutoLinkPolicyEnabled(enabled);
-                                    }}
-                                />
-                            )}
-                            rightElementOutsidePressable
-                            showChevron={false}
-                            onPress={() => {
-                                void setAutoLinkPolicyEnabled(!autoLinkPolicyEnabled);
-                            }}
-                        />
-                    </ItemGroup>
-                ) : null}
-
+            <View
+                ref={popoverBoundaryRef}
+                style={styles.root}
+                testID="direct-sessions-browse-modal"
+                // The band has no title; the dialog keeps its name.
+                accessibilityLabel={t('externalSessions.browseHeaderTitle')}
+            >
                 <ExternalSessionBrowseCandidatesList
                     candidates={candidates}
                     loading={loading}
@@ -921,6 +988,11 @@ export const ExternalSessionsBrowseScreen = React.memo((props: Readonly<{
                         ? 'ready'
                         : daemonMergedProjection.phase}
                     browseCapabilityAvailable={browseProviderIds.length > 0}
+                    scope={browseScope}
+                    filters={filters}
+                    bandTrailing={bandTrailing}
+                    searchPlaceholder={searchPlaceholder}
+                    alternativeAgent={alternativeAgent}
                     searchQuery={searchQuery}
                     onSearchQueryChange={setSearchQuery}
                     selectionAuthorityGeneration={candidateActionAuthorityGeneration}
@@ -946,7 +1018,7 @@ export const ExternalSessionsBrowseScreen = React.memo((props: Readonly<{
                         }
                         void (nextCursor ? loadMore() : reload());
                     }}
-                    onRequestClose={props.onRequestClose ?? (() => router.back())}
+                    onRequestClose={onRequestClose}
                 />
             </View>
         </PopoverScope>

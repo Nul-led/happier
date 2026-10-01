@@ -5,6 +5,8 @@ import { createPartialStorageModuleMock, createStorageStoreMock, renderScreen } 
 import type { Session } from '@/sync/domains/state/storageTypes';
 import { installSessionFilesViewCommonModuleMocks } from './sessionFilesViewsTestHelpers';
 
+const pollingSpy = vi.hoisted(() => vi.fn());
+
 const mockSession = {
     id: 'session-1',
     seq: 0,
@@ -91,7 +93,7 @@ vi.mock('@/scm/diffCache/useScmDiffCacheLimits', () => ({
 }));
 
 vi.mock('@/scm/refresh/useScmAdaptivePolling', () => ({
-    useScmAdaptivePolling: () => {},
+    useScmAdaptivePolling: pollingSpy,
 }));
 
 vi.mock('@/components/ui/scroll/useScrollEdgeFades', () => ({
@@ -115,6 +117,20 @@ vi.mock('@/components/workspaces/scm/review/ChangedFilesReview', () => ({
 }));
 
 describe('SessionScmReviewDetailsView (loading)', () => {
+    it('stops polling while hidden and refreshes through the current Home when shown', async () => {
+        const { SessionScmReviewDetailsView } = await import('./SessionScmReviewDetailsView');
+        const { scmStatusSync } = await import('@/scm/scmStatusSync');
+        pollingSpy.mockClear();
+        const screen = await renderScreen(<SessionScmReviewDetailsView sessionId="s1" serverId="home-a" scopeId="session:s1" active={false} />);
+        expect(pollingSpy.mock.lastCall?.[0].enabled).toBe(false);
+        await screen.update(<SessionScmReviewDetailsView sessionId="s1" serverId="home-a" scopeId="session:s1" active />);
+        const firstInvalidate = pollingSpy.mock.lastCall?.[0].invalidateAndAwait;
+        await screen.update(<SessionScmReviewDetailsView sessionId="s1" serverId="home-b" scopeId="session:s1" active />);
+        const nextInvalidate = pollingSpy.mock.lastCall?.[0].invalidateAndAwait;
+        expect(nextInvalidate).not.toBe(firstInvalidate);
+        await nextInvalidate();
+        expect(scmStatusSync.invalidateFromAutoRefreshAndAwait).toHaveBeenCalledWith('s1', 'home-b');
+    });
     it('shows a loading indicator while the SCM snapshot is not ready', async () => {
         const { SessionScmReviewDetailsView } = await import('./SessionScmReviewDetailsView');
 

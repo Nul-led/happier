@@ -15,7 +15,7 @@ type PluginSurfaceInteractionBoundaryProps = Readonly<{
     surfaceId: string;
     loadedRuntimeIdentity?: Readonly<{
         pluginId: string;
-        generation: string;
+        occurrenceId: string;
         artifactDigest: string;
         machineId?: string | null;
         serverId?: string | null;
@@ -147,7 +147,7 @@ function buildLoadedRuntimeMarkerTestId(
         'surface-native-loaded-runtime',
         surfaceId,
         identity.pluginId,
-        identity.generation,
+        identity.occurrenceId,
         identity.artifactDigest,
         identity.machineId ?? 'no-machine',
         identity.serverId ?? 'no-server',

@@ -3,19 +3,21 @@ import { act } from 'react-test-renderer';
 import type { ReactTestInstance } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { createDeferred, renderScreen, standardCleanup } from '@/dev/testkit';
-import { installPermissionShellCommonModuleMocks } from './permissionShellTestHelpers';
+import { createDeferred, standardCleanup } from '@/dev/testkit';
+import { installPermissionShellCommonModuleMocks, createPermissionShellRenderer } from './permissionShellTestHelpers';
 
 const platformEnvironment = vi.hoisted(() => ({
     platform: 'web' as 'web' | 'android',
 }));
 
 const ops = vi.hoisted(() => ({
-    sessionAllow: vi.fn(async (..._args: unknown[]) => {}),
-    sessionAllowWithPermissionUpdates: vi.fn(async (..._args: unknown[]) => {}),
-    sessionDeny: vi.fn(async (..._args: unknown[]) => {}),
-    sessionAbort: vi.fn(async (..._args: unknown[]) => {}),
+    approve: vi.fn(async (..._args: unknown[]) => {}),
+    approveWithUpdates: vi.fn(async (..._args: unknown[]) => {}),
+    deny: vi.fn(async (..._args: unknown[]) => {}),
+    abort: vi.fn(async (..._args: unknown[]) => {}),
 }));
+const renderScreen = createPermissionShellRenderer(ops);
+
 
 installPermissionShellCommonModuleMocks({
     reactNative: async () => {
@@ -46,12 +48,7 @@ vi.mock('@expo/vector-icons', () => ({
     Ionicons: 'Ionicons',
 }));
 
-vi.mock('@/sync/ops', () => ({
-    sessionAllow: ops.sessionAllow,
-    sessionAllowWithPermissionUpdates: ops.sessionAllowWithPermissionUpdates,
-    sessionDeny: ops.sessionDeny,
-    sessionAbort: ops.sessionAbort,
-}));
+
 
 function flattenStyle(style: unknown): Record<string, unknown> {
     if (Array.isArray(style)) {
@@ -70,14 +67,14 @@ function expectMinimumActionTarget(button: ReactTestInstance, minimumSize: 44 | 
 describe('PermissionFooter interactive targets', () => {
     beforeEach(() => {
         platformEnvironment.platform = 'web';
-        ops.sessionAllow.mockReset();
-        ops.sessionAllow.mockResolvedValue(undefined);
-        ops.sessionAllowWithPermissionUpdates.mockReset();
-        ops.sessionAllowWithPermissionUpdates.mockResolvedValue(undefined);
-        ops.sessionDeny.mockReset();
-        ops.sessionDeny.mockResolvedValue(undefined);
-        ops.sessionAbort.mockReset();
-        ops.sessionAbort.mockResolvedValue(undefined);
+        ops.approve.mockReset();
+        ops.approve.mockResolvedValue(undefined);
+        ops.approveWithUpdates.mockReset();
+        ops.approveWithUpdates.mockResolvedValue(undefined);
+        ops.deny.mockReset();
+        ops.deny.mockResolvedValue(undefined);
+        ops.abort.mockReset();
+        ops.abort.mockResolvedValue(undefined);
         standardCleanup();
     });
 
@@ -159,7 +156,7 @@ describe('PermissionFooter interactive targets', () => {
         'exposes truthful button, disabled, selected, and busy semantics for $protocol actions',
         async ({ toolName, toolInput, metadata, approvedPermission }) => {
             const approval = createDeferred<void>();
-            ops.sessionAllow.mockImplementationOnce(() => approval.promise);
+            ops.approve.mockImplementationOnce(() => approval.promise);
             const { PermissionFooter } = await import('./PermissionFooter');
             const renderFooter = (permission: {
                 id: string;

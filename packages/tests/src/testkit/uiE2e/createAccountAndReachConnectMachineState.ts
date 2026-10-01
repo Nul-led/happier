@@ -139,20 +139,6 @@ async function hasPersistedAuthCredentials(page: CreateAccountAndReachConnectMac
   }
 }
 
-async function countAuthenticatedShellSurfaces(page: CreateAccountAndReachConnectMachineStatePage): Promise<number> {
-  return (
-    (await page.getByTestId('setup.postAuth').count())
-    + (await page.getByTestId('sidebar-expand-button').count())
-    + (await page.getByTestId('session-composer-input').count())
-    + (await page.getByTestId('session-getting-started-kind-connect_machine').count())
-    + (await page.getByTestId('session-getting-started-kind-start_daemon').count())
-    + (await page.getByTestId('session-getting-started-kind-create_session').count())
-    + (await page.getByTestId('session-getting-started-kind-select_session').count())
-    + (await page.getByTestId('sessions-empty-state-open-setup').count())
-    + (await page.getByTestId('main-header-start-new-session').count())
-  );
-}
-
 async function isAuthenticatedSessionHomeVisible(page: CreateAccountAndReachConnectMachineStatePage): Promise<boolean> {
   const connectMachine = page.getByTestId('session-getting-started-kind-connect_machine');
   if (await isVisible(connectMachine)) return true;
@@ -169,7 +155,7 @@ async function isAuthenticatedSessionHomeVisible(page: CreateAccountAndReachConn
   const openSetup = page.getByTestId('sessions-empty-state-open-setup');
   if (await isVisible(openSetup)) return true;
 
-  const startNewSession = page.getByTestId('main-header-start-new-session');
+  const startNewSession = page.getByTestId('tabbar-start-new-session');
   if (await isVisible(startNewSession)) return true;
 
   return false;
@@ -184,7 +170,7 @@ async function hasDurableAuthenticatedSessionHomeVisible(
   const selectSession = page.getByTestId('session-getting-started-kind-select_session');
   if (await isVisible(selectSession)) return true;
 
-  const startNewSession = page.getByTestId('main-header-start-new-session');
+  const startNewSession = page.getByTestId('tabbar-start-new-session');
   if (await isVisible(startNewSession)) return true;
 
   return false;
@@ -214,28 +200,28 @@ async function clickPreAuthProgressButtonIfPresent(
   return false;
 }
 
-async function navigateToSetupWizard(page: CreateAccountAndReachConnectMachineStatePage): Promise<void> {
+async function navigateToMachineAddDraft(page: CreateAccountAndReachConnectMachineStatePage): Promise<void> {
   if (!page.evaluate) {
-    throw new Error('createAccountAndReachSetupWizardState requires page.evaluate to navigate to /setup/wizard');
+    throw new Error('createAccountAndReachMachineAddDraftState requires page.evaluate to navigate to /settings/machines/add?path=thisComputer');
   }
   await page.evaluate(() => {
-    window.history.pushState({}, '', '/setup/wizard');
+    window.history.pushState({}, '', '/settings/machines/add?path=thisComputer');
     window.dispatchEvent(new PopStateEvent('popstate'));
   });
 }
 
-export async function dismissSetupWizardIfVisible(params: Readonly<{
+export async function discardMachineAddDraftIfVisible(params: Readonly<{
   page: CreateAccountAndReachConnectMachineStatePage;
 }>): Promise<void> {
-  const setupWizard = params.page.getByTestId('setupWizard.surface');
-  if ((await setupWizard.count()) === 0) {
+  const machineDraft = params.page.getByTestId('settings.machines.draft.form');
+  if ((await machineDraft.count()) === 0) {
     return;
   }
 
-  const skipSetup = params.page.getByTestId('setupWizard.surface-skip');
-  await expect.poll(async () => await skipSetup.count(), { timeout: 60_000 }).toBe(1);
-  await skipSetup.click();
-  await expect.poll(async () => await setupWizard.count(), { timeout: 120_000 }).toBe(0);
+  const discard = params.page.getByTestId('settings.machines.draft.discard');
+  await expect.poll(async () => await discard.count(), { timeout: 60_000 }).toBe(1);
+  await discard.click();
+  await expect.poll(async () => await machineDraft.count(), { timeout: 120_000 }).toBe(0);
 }
 
 export async function createAccountAndReachConnectMachineState(params: Readonly<{
@@ -243,11 +229,11 @@ export async function createAccountAndReachConnectMachineState(params: Readonly<
   useFirstCreateButton?: boolean | undefined;
   requirePersistedAuthCredentials?: boolean | undefined;
 }>): Promise<void> {
-  const setupWizard = params.page.getByTestId('setupWizard.surface');
+  const machineDraft = params.page.getByTestId('settings.machines.draft.form');
   const switchedToSessionsTabRef = { current: false };
   let initialCreateButton: TestIdLocator | null = null;
 
-  let initialState: 'create-account' | 'authenticated-home' | 'setup-wizard' | null = null;
+  let initialState: 'create-account' | 'authenticated-home' | 'machine-draft' | null = null;
   await expect
     .poll(async () => {
       if (await dismissFirstLaunchOnboardingIfVisible(params.page)) {
@@ -268,8 +254,8 @@ export async function createAccountAndReachConnectMachineState(params: Readonly<
         initialState = 'authenticated-home';
         return true;
       }
-      if (await isVisible(setupWizard)) {
-        initialState = 'setup-wizard';
+      if (await isVisible(machineDraft)) {
+        initialState = 'machine-draft';
         return true;
       }
       if (await trySwitchToSessionsTab({ page: params.page, switchedRef: switchedToSessionsTabRef })) {
@@ -289,7 +275,7 @@ export async function createAccountAndReachConnectMachineState(params: Readonly<
     .poll(async () => {
       if (await clickPreAuthProgressButtonIfPresent(params.page)) return false;
       const createAccountVisible = (await findVisibleCreateAccountButton(params)) !== null;
-      if (await isVisible(setupWizard)) return true;
+      if (await isVisible(machineDraft)) return true;
       if (createAccountVisible) return false;
       if (await trySwitchToSessionsTab({ page: params.page, switchedRef: switchedToSessionsTabRef })) {
         return false;
@@ -298,7 +284,15 @@ export async function createAccountAndReachConnectMachineState(params: Readonly<
     }, { timeout: 120_000 })
     .toBe(true);
 
-  await dismissSetupWizardIfVisible({ page: params.page });
+  const hadMachineDraft = await isVisible(machineDraft);
+  await discardMachineAddDraftIfVisible({ page: params.page });
+  if (hadMachineDraft && params.page.evaluate) {
+    // Discard returns to Machines, not Home. This helper promises session entry.
+    await params.page.evaluate(() => {
+      window.history.pushState({}, '', '/');
+      window.dispatchEvent(new PopStateEvent('popstate'));
+    });
+  }
   const requirePersistedAuthCredentials = params.requirePersistedAuthCredentials !== false;
 
   await expect.poll(async () => {
@@ -310,52 +304,11 @@ export async function createAccountAndReachConnectMachineState(params: Readonly<
   }, { timeout: 120_000 }).toBe(1);
 }
 
-export async function createAccountAndReachSetupWizardState(params: Readonly<{
+export async function createAccountAndReachMachineAddDraftState(params: Readonly<{
   page: CreateAccountAndReachConnectMachineStatePage;
   useFirstCreateButton?: boolean | undefined;
 }>): Promise<void> {
-  const setupWizard = params.page.getByTestId('setupWizard.surface');
-  let initialCreateButton: TestIdLocator | null = null;
-
-  let initialState: 'create-account' | 'setup-wizard' | null = null;
-  await expect
-    .poll(async () => {
-      if (await clickPreAuthProgressButtonIfPresent(params.page)) {
-        initialState = null;
-        return false;
-      }
-      const createButton = await findVisibleCreateAccountButton(params);
-      if (createButton) {
-        initialCreateButton = createButton;
-        initialState = 'create-account';
-        return true;
-      }
-      if (await isVisible(setupWizard)) {
-        initialState = 'setup-wizard';
-        return true;
-      }
-      if ((await countAuthenticatedShellSurfaces(params.page)) > 0) {
-        initialState = null;
-        return true;
-      }
-      initialState = null;
-      return false;
-    }, { timeout: 60_000 })
-    .toBe(true);
-
-  if (initialState === 'create-account') {
-    await clickCreateAccountButton(initialCreateButton);
-  }
-
-  await expect
-    .poll(async () => {
-      return (await isVisible(setupWizard)) || (await countAuthenticatedShellSurfaces(params.page)) > 0;
-    }, { timeout: 120_000 })
-    .toBe(true);
-
-  if (!(await isVisible(setupWizard))) {
-    await navigateToSetupWizard(params.page);
-  }
-
-  await expect.poll(async () => await setupWizard.count(), { timeout: 120_000 }).toBe(1);
+  await createAccountAndReachConnectMachineState(params);
+  await navigateToMachineAddDraft(params.page);
+  await expect.poll(async () => await params.page.getByTestId('settings.machines.draft.form').count(), { timeout: 120_000 }).toBe(1);
 }

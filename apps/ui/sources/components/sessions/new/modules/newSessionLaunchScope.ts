@@ -33,6 +33,7 @@ export function buildNewSessionLaunchScopeKey(params: Readonly<{
     machineId: string | null;
     serverId: string | null;
     selectedPath: string;
+    directoryKind?: 'path' | 'managed';
     selectedMachineMetadata?: NewSessionLaunchScopeMachineMetadata;
     useProfiles: boolean;
     selectedProfileId: string | null;
@@ -40,7 +41,9 @@ export function buildNewSessionLaunchScopeKey(params: Readonly<{
     return [
         `machine:${normalizeLaunchScopePart(params.machineId)}`,
         `server:${normalizeLaunchScopePart(params.serverId)}`,
-        `path:${normalizeNewSessionLaunchPath(params.selectedPath, params.selectedMachineMetadata)}`,
+        params.directoryKind === 'managed'
+            ? 'directory:managed'
+            : `path:${normalizeNewSessionLaunchPath(params.selectedPath, params.selectedMachineMetadata)}`,
         `profiles:${params.useProfiles ? 'on' : 'off'}`,
         `profile:${normalizeLaunchScopePart(params.selectedProfileId)}`,
     ].join('|');

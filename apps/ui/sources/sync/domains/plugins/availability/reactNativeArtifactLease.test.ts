@@ -20,13 +20,13 @@ import {
     computePluginUiArtifactFileSetSha256DigestV1,
     computePluginUiArtifactSha256DigestV1,
     PluginUiArtifactDigestV1Schema,
+    PluginUiArtifactsManifestEntryV2Schema,
 } from '@happier-dev/protocol/plugins/ui';
 import {
     PluginAccountAvailabilityIntentReadResponseV1Schema,
     PluginReleaseFactsV1Schema,
     type PluginMachineMaterializationV1,
 } from '@happier-dev/protocol/plugins/availability';
-import type { DaemonPluginReactNativeCrashBindingTokenV1 } from '@happier-dev/protocol';
 
 import { encodeBase64 } from '@/encryption/base64';
 import {
@@ -52,6 +52,7 @@ import {
 import {
     createPluginReactNativeArtifactAvailabilityProducer,
 } from './reactNativeArtifactAvailability';
+import { createBundledPluginUiAppExactArtifactSourceFromInventory } from './bundledAppExactArtifactSource';
 
 const scope = { serverId: 'server-a', accountId: 'account-a' } as const;
 
@@ -77,62 +78,26 @@ function createLifetime() {
 
 const inactiveAccountHostedSource = Object.freeze({
     kind: 'accountHosted' as const,
-    readFile: async () => null,
+    fetch: async () => null,
 });
 const inactiveAppExactSource = Object.freeze({
     kind: 'appExact' as const,
-    readFile: async () => null,
+    fetch: async () => null,
 });
 
 const permanentlyCurrentLifetime = createLifetime().lifetime;
 
-function createCrashStateToken(
-    identity: PluginReactNativeBundleCacheIdentity,
-): DaemonPluginReactNativeCrashBindingTokenV1 {
-    return Object.freeze({
-        mount: Object.freeze({
-            kind: 'destination' as const,
-            destination: Object.freeze({ pluginId: identity.pluginId, localId: 'native-destination' }),
-        }),
-        renderer: Object.freeze({ pluginId: identity.pluginId, localId: identity.contributionId }),
-        artifactDigest: identity.artifactDigest,
-        crashStateEpoch: 4,
-    });
-}
-
-function createComposerCrashStateToken(
-    identity: PluginReactNativeBundleCacheIdentity,
-): DaemonPluginReactNativeCrashBindingTokenV1 {
-    return Object.freeze({
-        mount: Object.freeze({
-            kind: 'composer' as const,
-            contribution: Object.freeze({ pluginId: identity.pluginId, localId: 'composer-region' }),
-            immutableGenerationId: 'composer-generation-7',
-            role: 'region' as const,
-        }),
-        renderer: Object.freeze({ pluginId: identity.pluginId, localId: identity.contributionId }),
-        artifactDigest: identity.artifactDigest,
-        crashStateEpoch: 4,
-    });
-}
-
 type ReactNativeLeaseTestInput = Omit<
-    Extract<
-        Parameters<typeof acquirePluginReactNativeArtifactLease>[0],
-        Readonly<{ artifactOwnerKind: 'renderer' }>
-    >,
-    'accountLifetime' | 'artifactOwnerKind' | 'crashStateToken'
+    Parameters<typeof acquirePluginReactNativeArtifactLease>[0],
+    'accountLifetime'
 > & Readonly<{
     accountLifetime?: ActiveServerAccountScopeLifetime;
-    crashStateToken?: DaemonPluginReactNativeCrashBindingTokenV1;
 }>;
 
 function acquire(input: ReactNativeLeaseTestInput) {
     const request = {
         ...input,
         accountLifetime: input.accountLifetime ?? permanentlyCurrentLifetime,
-        artifactOwnerKind: 'renderer' as const,
-        crashStateToken: input.crashStateToken ?? createCrashStateToken(input.cacheIdentity),
     };
     return acquirePluginReactNativeArtifactLease(request);
 }
@@ -145,7 +110,7 @@ beforeEach(() => {
 function createPersistentStore() {
     const records = new Map<string, PluginUiPersistentArtifactRecord>();
     const keyFor = (identity: PluginUiPersistentArtifactRecord['persistentIdentity']) => (
-        `${identity.releaseVersion}:${identity.artifactDigest}`
+        identity.artifactDigest
     );
     const reads = vi.fn(async (identity: PluginUiPersistentArtifactRecord['persistentIdentity']) => (
         records.get(keyFor(identity)) ?? null
@@ -170,47 +135,23 @@ function createPersistentStore() {
 function fixture(input: Readonly<{
     artifactContributionId?: string;
     accountHosted?: boolean;
+    bundled?: boolean;
 }> = {}) {
     const artifactContributionId = input.artifactContributionId ?? 'native-preview';
     const accountHosted = input.accountHosted ?? false;
-    const entryPath = 'react-native/acme/ios.bundle';
-    const chunkPath = 'react-native/acme/chunk.js';
+    const entryPath = 'react-native/native-preview-artifact/entry.cjs.bundle';
     const entryBytes = new TextEncoder().encode('globalThis.__acmeEntry = true;');
-    const chunkBytes = new TextEncoder().encode('globalThis.__acmeChunk = true;');
     const files = [
         {
             relativePath: entryPath,
             digest: computePluginUiArtifactSha256DigestV1(entryBytes),
             byteSize: entryBytes.byteLength,
         },
-        {
-            relativePath: chunkPath,
-            digest: computePluginUiArtifactSha256DigestV1(chunkBytes),
-            byteSize: chunkBytes.byteLength,
-        },
     ] as const;
     const artifactDigest = computePluginUiArtifactFileSetSha256DigestV1([
         { relativePath: entryPath, bytes: entryBytes },
-        { relativePath: chunkPath, bytes: chunkBytes },
     ]);
     const archiveDigestSha256 = PluginUiArtifactDigestV1Schema.parse(`sha256:${'a'.repeat(64)}`);
-    // Portable release facts retain only generated artifact compatibility.
-    // Current host/channel/capability facts belong to the transient link and
-    // renderer adoption identity below.
-    const compatibility = {
-        hostUiApiVersion: '1.0.0',
-        reactVersion: '19.0.0',
-        reactNativeVersion: '0.83.4',
-        expoRuntimeVersion: '0.2.0-native',
-        hermesVersion: '0.15.0',
-    };
-    const adoptionCompatibility = {
-        ...compatibility,
-        hostAppVersion: '2.0.0',
-        platform: 'ios' as const,
-        channel: 'internal',
-        nativeCapabilities: [],
-    };
     const release = PluginReleaseFactsV1Schema.parse({
         ref: { pluginId: 'com.acme.preview', version: '1.2.3' },
         archiveDigestSha256,
@@ -226,10 +167,11 @@ function fixture(input: Readonly<{
         collectionContracts: [],
         uiSlots: [{
             contributionId: artifactContributionId,
+            artifactId: 'native-preview-artifact',
             tier: 'reactNative',
             platform: 'ios',
             artifactDigest,
-            compatibility,
+            hostUiApiRange: '^1.0.0',
         }],
         packageAssetArchive: {
             archiveDigestSha256: `sha256:${'d'.repeat(64)}`,
@@ -242,14 +184,16 @@ function fixture(input: Readonly<{
         materializationId: 'install-epoch-a',
         pluginId: 'com.acme.preview',
         version: '1.2.3',
-        sourceClass: 'versionedArchive',
-        portableRelease: true,
-        archiveDigestSha256,
+        sourceClass: input.bundled ? 'localPath' : 'versionedArchive',
+        portableRelease: !input.bundled,
+        ...(input.bundled ? {} : { archiveDigestSha256 }),
         uiArtifacts: [{
             contributionId: artifactContributionId,
+            artifactId: 'native-preview-artifact',
             tier: 'reactNative',
             platform: 'ios',
             artifactDigest,
+            hostUiApiRange: '^1.0.0',
         }],
         enabled: true,
         trustState: 'trusted',
@@ -257,7 +201,7 @@ function fixture(input: Readonly<{
     };
     const snapshot = {
             availabilityCursor: 7,
-            intentReads: [{
+            intentReads: input.bundled ? [] : [{
                 pluginId: materialization.pluginId,
                 response: PluginAccountAvailabilityIntentReadResponseV1Schema.parse({
                     availabilityCursor: 7,
@@ -278,11 +222,12 @@ function fixture(input: Readonly<{
                         ? [{
                             release: { pluginId: materialization.pluginId, version: materialization.version },
                             contributionId: artifactContributionId,
+                            artifactId: 'native-preview-artifact',
                             tier: 'reactNative' as const,
-                            platform: adoptionCompatibility.platform,
-                            artifactId: '00000000-0000-4000-8000-000000000001',
+                            platform: 'ios' as const,
+                            accountArtifactId: '00000000-0000-4000-8000-000000000001',
                             artifactDigest,
-                            compatibility: adoptionCompatibility,
+                            hostUiApiRange: '^1.0.0',
                         }]
                         : [],
                 }),
@@ -291,7 +236,6 @@ function fixture(input: Readonly<{
             snapshots: [{
                 serverIdentityId: materialization.serverIdentityId,
                 machineId: materialization.machineId,
-                revision: 1,
                 materializations: [materialization],
             }],
     } satisfies PluginAccountAvailabilitySnapshot;
@@ -299,31 +243,20 @@ function fixture(input: Readonly<{
     const cacheIdentity = {
         pluginId: materialization.pluginId,
         contributionId: 'native-preview',
+        artifactId: 'native-preview-artifact',
         artifactDigest,
-        hostAppVersion: adoptionCompatibility.hostAppVersion,
-        hostUiApiVersion: compatibility.hostUiApiVersion,
-        reactVersion: compatibility.reactVersion,
-        reactNativeVersion: compatibility.reactNativeVersion,
-        expoRuntimeVersion: compatibility.expoRuntimeVersion,
-        hermesVersion: compatibility.hermesVersion,
-        platform: adoptionCompatibility.platform,
-        channel: adoptionCompatibility.channel,
-        nativeCapabilitiesDigest: `sha256:${'b'.repeat(64)}`,
-        projectionGeneration: 12,
+        platform: 'ios' as const,
     } satisfies PluginReactNativeBundleCacheIdentity;
-    const crashStateToken = createCrashStateToken(cacheIdentity);
-    const graph = {
-        contributionId: artifactContributionId,
+    const graph = PluginUiArtifactsManifestEntryV2Schema.parse({
+        artifactId: 'native-preview-artifact',
         tier: 'reactNative' as const,
-        platform: cacheIdentity.platform,
         entry: entryPath,
         files,
         digest: artifactDigest,
-        builtWith: { bundler: 'repack' as const, version: '5.0.0' },
-        repack: { containerName: 'acme_preview', modulePath: './renderSurface', exportName: 'renderSurface' },
-        hostUiApiVersion: cacheIdentity.hostUiApiVersion,
-        compat: { react: cacheIdentity.reactVersion, reactNative: cacheIdentity.reactNativeVersion },
-    };
+        builtWith: { bundler: 'esbuild' as const, version: '0.25.0' },
+        executable: { exports: ['renderSurface'] as const },
+        hostUiApiRange: '^1.0.0',
+    });
     const origin = {
         serverIdentityId: materialization.serverIdentityId,
         materializationRef: {
@@ -335,12 +268,8 @@ function fixture(input: Readonly<{
     const daemonResponse = {
         ok: true as const,
         artifactFamily: 'reactNative' as const,
-        artifactOwnerKind: 'renderer' as const,
         cacheIdentity,
-        crashStateToken,
         artifact: {
-            pluginId: cacheIdentity.pluginId,
-            contributionId: cacheIdentity.contributionId,
             artifactKind: 'reactNativeBundle' as const,
             digest: artifactDigest,
             format: 'plainJs' as const,
@@ -349,27 +278,150 @@ function fixture(input: Readonly<{
         bytesBase64: encodeBase64(entryBytes),
         files: [
             { ...files[0], bytesBase64: encodeBase64(entryBytes) },
-            { ...files[1], bytesBase64: encodeBase64(chunkBytes) },
         ],
     };
     return {
         snapshot,
         reader,
         cacheIdentity,
-        crashStateToken,
         graph,
         origin,
         daemonResponse,
         entryBytes,
-        chunkBytes,
         bytesByPath: new Map<string, Uint8Array>([
             [entryPath, entryBytes],
-            [chunkPath, chunkBytes],
         ]),
     };
 }
 
 describe('React Native Artifact lease acquisition', () => {
+    function daemonProjectionSelection() {
+        return Object.freeze({
+            occurrenceId: 'com.acme.preview-occurrence-a',
+            contributionId: 'native-preview',
+            releaseVersion: '1.2.3',
+            isCurrent: () => true,
+        });
+    }
+
+    it.each([false, true])('fetches the exact bundled daemon digest absent from the app and verifies its bytes (corrupt: %s)', async (corrupt) => {
+        const current = fixture({ bundled: true });
+        const readBundledAssetBytes = vi.fn(async () => current.entryBytes);
+        const appExact = createBundledPluginUiAppExactArtifactSourceFromInventory({
+            inventory: [{
+                pluginId: current.cacheIdentity.pluginId,
+                artifactId: current.cacheIdentity.artifactId,
+                tier: 'reactNative',
+                releaseVersion: '1.2.3',
+                digest: `sha256:${'f'.repeat(64)}`,
+                files: [{ relativePath: current.graph.entry, asset: 'older-app-entry' }],
+            }],
+            readBundledAssetBytes,
+        });
+        const fetchDaemonArtifactBytes = vi.fn(async () => corrupt ? {
+            ...current.daemonResponse,
+            files: current.daemonResponse.files.map((file) => ({
+                ...file,
+                bytesBase64: encodeBase64(new Uint8Array([1, 2, 3])),
+            })),
+        } : current.daemonResponse);
+
+        const acquired = await acquire({
+            reader: current.reader,
+            artifactGraph: current.graph,
+            cacheIdentity: current.cacheIdentity,
+            daemonProjectionSelection: daemonProjectionSelection(),
+            appExact,
+            daemon: {
+                machineId: current.origin.materializationRef.machineId,
+                serverId: scope.serverId,
+            },
+            fetchDaemonArtifactBytes,
+        });
+
+        expect(readBundledAssetBytes).not.toHaveBeenCalled();
+        expect(fetchDaemonArtifactBytes).toHaveBeenCalledWith({
+            transport: {
+                machineId: current.origin.materializationRef.machineId,
+                serverId: scope.serverId,
+            },
+            family: 'reactNative',
+            digest: current.cacheIdentity.artifactDigest,
+        });
+        if (corrupt) {
+            expect(acquired.kind).toBe('unavailable');
+        } else {
+            expect(acquired).toMatchObject({ kind: 'available', lease: { sourceKind: 'daemon' } });
+            if (acquired.kind === 'available') {
+                expect(acquired.lease.artifact.digest).toBe(current.graph.digest);
+                acquired.lease.dispose();
+            }
+        }
+    });
+
+    it('fetches an originless selection from its projecting daemon when no mount route is supplied (L2)', async () => {
+        const current = fixture({ bundled: true });
+        const fetchDaemonArtifactBytes = vi.fn(async () => current.daemonResponse);
+
+        const acquired = await acquire({
+            reader: current.reader,
+            artifactGraph: current.graph,
+            cacheIdentity: current.cacheIdentity,
+            appExact: inactiveAppExactSource,
+            daemonProjectionSelection: {
+                ...daemonProjectionSelection(),
+                transport: { machineId: 'projecting-machine', serverId: scope.serverId },
+            },
+            fetchDaemonArtifactBytes,
+        });
+
+        expect(acquired).toMatchObject({ kind: 'available', lease: { sourceKind: 'daemon' } });
+        expect(fetchDaemonArtifactBytes).toHaveBeenCalledWith({
+            transport: { machineId: 'projecting-machine', serverId: scope.serverId },
+            family: 'reactNative',
+            digest: current.cacheIdentity.artifactDigest,
+        });
+        if (acquired.kind === 'available') acquired.lease.dispose();
+    });
+
+    it('uses the generated artifact host API range as the daemon-projection selection fact', async () => {
+        const current = fixture({ bundled: true });
+        const fetchDaemonArtifactBytes = vi.fn(async () => current.daemonResponse);
+
+        const acquired = await acquire({
+            reader: current.reader,
+            artifactGraph: {
+                ...current.graph,
+                hostUiApiRange: '^2.0.0',
+            },
+            cacheIdentity: current.cacheIdentity,
+            daemonProjectionSelection: daemonProjectionSelection(),
+            daemon: { machineId: current.origin.materializationRef.machineId, serverId: scope.serverId },
+            fetchDaemonArtifactBytes: fetchDaemonArtifactBytes,
+        });
+        expect(acquired).toMatchObject({ kind: 'available', lease: { sourceKind: 'daemon' } });
+        expect(fetchDaemonArtifactBytes).toHaveBeenCalledOnce();
+        if (acquired.kind === 'available') acquired.lease.dispose();
+    });
+
+    it('rejects a cache identity for a different semantic contribution before fetching bytes', async () => {
+        const current = fixture({ bundled: true });
+        const fetchDaemonArtifactBytes = vi.fn(async () => current.daemonResponse);
+
+        await expect(acquire({
+            reader: current.reader,
+            artifactGraph: current.graph,
+            cacheIdentity: {
+                ...current.cacheIdentity,
+                contributionId: 'different-native-preview',
+            },
+            daemonProjectionSelection: daemonProjectionSelection(),
+            daemon: { machineId: current.origin.materializationRef.machineId, serverId: scope.serverId },
+            fetchDaemonArtifactBytes: fetchDaemonArtifactBytes,
+        })).resolves.toEqual({ kind: 'unavailable', code: 'artifact_not_current' });
+        expect(fetchDaemonArtifactBytes).not.toHaveBeenCalled();
+    });
+
     it('owns source and cache composition behind an opaque React Native Availability handle', async () => {
         const current = fixture();
         const cache = createPluginReactNativeBundleCache();
@@ -385,22 +437,15 @@ describe('React Native Artifact lease acquisition', () => {
             artifactGraph: current.graph,
             cacheIdentity: current.cacheIdentity,
             accountLifetime: permanentlyCurrentLifetime,
-            artifactOwnerKind: 'renderer',
-            crashStateToken: current.crashStateToken,
-            daemon: {
-                origin: current.origin,
-                serverId: scope.serverId,
-            },
+            daemon: { machineId: current.origin.materializationRef.machineId, serverId: scope.serverId },
             isCurrent: () => true,
         });
 
         expect(acquired).toMatchObject({ kind: 'available' });
         expect(fetchDaemonArtifactBytes).toHaveBeenCalledWith({
-            origin: current.origin,
-            serverId: scope.serverId,
-            identity: current.cacheIdentity,
-            artifactOwnerKind: 'renderer',
-            crashStateToken: current.crashStateToken,
+            transport: { machineId: current.origin.materializationRef.machineId, serverId: scope.serverId },
+            family: 'reactNative',
+            digest: current.cacheIdentity.artifactDigest,
         });
         if (acquired.kind !== 'available') throw new Error('Fixture Availability handle was unavailable.');
         expect(acquired.cacheKey).toEqual(expect.any(String));
@@ -409,69 +454,14 @@ describe('React Native Artifact lease acquisition', () => {
         acquired.dispose();
     });
 
-    it('keeps a client Action anchored to its exact Action identity instead of coercing it into Voice', async () => {
-        const current = fixture({ artifactContributionId: 'client-action-bundle' });
-        const clientContribution = {
-            family: 'actions',
-            action: { pluginId: current.cacheIdentity.pluginId, localId: 'open-preview' },
-        } as const;
-        const actionIdentity = {
-            ...current.cacheIdentity,
-            contributionId: clientContribution.action.localId,
-        } as const;
-        const daemonResponse = {
-            ...current.daemonResponse,
-            artifactOwnerKind: 'clientContribution' as const,
-            cacheIdentity: actionIdentity,
-            clientContribution,
-            artifact: {
-                ...current.daemonResponse.artifact,
-                contributionId: clientContribution.action.localId,
-            },
-        };
-        const cache = createPluginReactNativeBundleCache();
-        const fetchDaemonArtifactBytes = vi.fn(async () => daemonResponse);
-        const producer = createPluginReactNativeArtifactAvailabilityProducer({
-            getCache: () => cache,
-            appExact: inactiveAppExactSource,
-            fetchDaemonArtifactBytes,
-        });
-
-        const acquired = await producer.acquire({
-            reader: current.reader,
-            artifactGraph: current.graph,
-            cacheIdentity: actionIdentity,
-            accountLifetime: permanentlyCurrentLifetime,
-            artifactOwnerKind: 'clientContribution',
-            clientContribution,
-            daemon: {
-                origin: current.origin,
-                serverId: scope.serverId,
-            },
-            isCurrent: () => true,
-        });
-
-        expect(acquired).toMatchObject({ kind: 'available' });
-        expect(fetchDaemonArtifactBytes).toHaveBeenCalledWith({
-            origin: current.origin,
-            serverId: scope.serverId,
-            identity: actionIdentity,
-            artifactOwnerKind: 'clientContribution',
-            clientContribution,
-        });
-        if (acquired.kind === 'available') acquired.dispose();
-    });
-
     it('uses an app-packaged exact Inspector Artifact before the daemon source', async () => {
         const current = fixture();
         const cache = createPluginReactNativeBundleCache();
-        const appExactRead = vi.fn(async ({ relativePath }: Readonly<{ relativePath: string }>) => (
-            current.bytesByPath.get(relativePath) ?? null
-        ));
+        const appExactRead = vi.fn(async () => current.bytesByPath);
         const fetchDaemonArtifactBytes = vi.fn(async () => current.daemonResponse);
         const appExact = Object.freeze({
             kind: 'appExact' as const,
-            readFile: appExactRead,
+            fetch: appExactRead,
         });
         // The producer owns source order; this is its packaged-asset system
         // boundary, not a renderer-facing candidate.
@@ -487,17 +477,41 @@ describe('React Native Artifact lease acquisition', () => {
             artifactGraph: current.graph,
             cacheIdentity: current.cacheIdentity,
             accountLifetime: permanentlyCurrentLifetime,
-            artifactOwnerKind: 'renderer',
-            crashStateToken: current.crashStateToken,
-            daemon: {
-                origin: current.origin,
-                serverId: scope.serverId,
-            },
+            daemon: { machineId: current.origin.materializationRef.machineId, serverId: scope.serverId },
             isCurrent: () => true,
         });
 
         expect(acquired).toMatchObject({ kind: 'available' });
-        expect(appExactRead).toHaveBeenCalledTimes(current.graph.files.length);
+        expect(appExactRead).toHaveBeenCalledTimes(1);
+        expect(fetchDaemonArtifactBytes).not.toHaveBeenCalled();
+        if (acquired.kind === 'available') acquired.dispose();
+    });
+
+    it('uses an app-packaged exact Artifact selected by an originless bundled projection', async () => {
+        const current = fixture({ bundled: true });
+        const cache = createPluginReactNativeBundleCache();
+        const appExactRead = vi.fn(async () => current.bytesByPath);
+        const fetchDaemonArtifactBytes = vi.fn(async () => current.daemonResponse);
+        const producer = createPluginReactNativeArtifactAvailabilityProducer({
+            getCache: () => cache,
+            appExact: Object.freeze({
+                kind: 'appExact' as const,
+                fetch: appExactRead,
+            }),
+            fetchDaemonArtifactBytes,
+        });
+
+        const acquired = await producer.acquire({
+            reader: current.reader,
+            artifactGraph: current.graph,
+            cacheIdentity: current.cacheIdentity,
+            accountLifetime: permanentlyCurrentLifetime,
+            daemonProjectionSelection: daemonProjectionSelection(),
+            isCurrent: () => true,
+        });
+
+        expect(acquired).toMatchObject({ kind: 'available' });
+        expect(appExactRead).toHaveBeenCalledTimes(1);
         expect(fetchDaemonArtifactBytes).not.toHaveBeenCalled();
         if (acquired.kind === 'available') acquired.dispose();
     });
@@ -507,9 +521,7 @@ describe('React Native Artifact lease acquisition', () => {
         const { lifetime } = createLifetime();
         const accountHostedCandidate = Object.freeze({
             kind: 'accountHosted' as const,
-            readFile: vi.fn(async ({ relativePath }: Readonly<{ relativePath: string }>) => (
-                current.bytesByPath.get(relativePath) ?? null
-            )),
+            fetch: vi.fn(async () => current.bytesByPath),
         });
         activeAccountHostedArtifactSource.create.mockReturnValue(accountHostedCandidate);
 
@@ -533,14 +545,9 @@ describe('React Native Artifact lease acquisition', () => {
         const persistent = createPersistentStore();
         const persistentIdentity = {
             accountScope: scope,
-            releaseVersion: '1.2.3',
-            pluginId: current.cacheIdentity.pluginId,
-            contributionId: current.cacheIdentity.contributionId,
-            tier: 'reactNative' as const,
-            platform: current.cacheIdentity.platform,
             artifactDigest: current.cacheIdentity.artifactDigest,
         };
-        persistent.records.set(`${persistentIdentity.releaseVersion}:${persistentIdentity.artifactDigest}`, {
+        persistent.records.set(`${persistentIdentity.artifactDigest}`, {
             persistentIdentity,
             bytes: current.entryBytes,
             entryRelativePath: current.graph.entry,
@@ -548,7 +555,7 @@ describe('React Native Artifact lease acquisition', () => {
                 relativePath: file.relativePath,
                 digest: file.digest,
                 byteSize: file.byteSize,
-                bytes: file.relativePath === current.graph.entry ? current.entryBytes : current.chunkBytes,
+                bytes: current.entryBytes,
             })),
         });
         const fetchArtifactBytes = vi.fn(async () => current.daemonResponse);
@@ -558,11 +565,8 @@ describe('React Native Artifact lease acquisition', () => {
             artifactGraph: current.graph,
             cacheIdentity: current.cacheIdentity,
             persistent: { scope, store: persistent.store, isCurrent: () => true, removePersistentArtifact: persistent.removes },
-            daemon: {
-                origin: current.origin,
-                serverId: scope.serverId,
-                fetchArtifactBytes,
-            },
+            daemon: { machineId: current.origin.materializationRef.machineId, serverId: scope.serverId },
+            fetchDaemonArtifactBytes: fetchArtifactBytes,
         });
 
         expect(acquired).toMatchObject({
@@ -572,63 +576,56 @@ describe('React Native Artifact lease acquisition', () => {
         expect(fetchArtifactBytes).not.toHaveBeenCalled();
     });
 
-    it('uses the exact generated Account slot while daemon bytes retain the renderer contribution identity', async () => {
-        const current = fixture({ artifactContributionId: 'generated-native-slot' });
+    it('retains the semantic contribution alongside the generated artifact locator', async () => {
+        const current = fixture();
         const fetchArtifactBytes = vi.fn(async () => current.daemonResponse);
 
         const acquired = await acquire({
             reader: current.reader,
             artifactGraph: current.graph,
             cacheIdentity: current.cacheIdentity,
-            daemon: {
-                origin: current.origin,
-                serverId: scope.serverId,
-                fetchArtifactBytes,
-            },
+            daemon: { machineId: current.origin.materializationRef.machineId, serverId: scope.serverId },
+            fetchDaemonArtifactBytes: fetchArtifactBytes,
         });
 
         expect(acquired).toMatchObject({
             kind: 'available',
             lease: {
                 sourceKind: 'daemon',
-                artifact: { contributionId: 'generated-native-slot' },
+                artifact: {
+                    contributionId: 'native-preview',
+                    artifactId: 'native-preview-artifact',
+                },
             },
         });
         expect(fetchArtifactBytes).toHaveBeenCalledWith({
-            origin: current.origin,
-            serverId: scope.serverId,
-            identity: current.cacheIdentity,
-            artifactOwnerKind: 'renderer',
-            crashStateToken: current.crashStateToken,
+            transport: { machineId: current.origin.materializationRef.machineId, serverId: scope.serverId },
+            family: 'reactNative',
+            digest: current.cacheIdentity.artifactDigest,
         });
     });
 
-    it('refuses daemon bytes for a cache identity that does not conform to the canonical Protocol schema', async () => {
+    it('dereferences daemon bytes by digest when non-digest client metadata changes', async () => {
         const current = fixture();
         const readerStore = createPluginAccountAvailabilityReaderStore();
         readerStore.replace({ scope, snapshot: current.snapshot });
-        // An empty optional compatibility coordinate is not the canonical
-        // "absent" value; it must not be coerced into matching daemon bytes
-        // whose identity omits the field.
-        const nonConformingIdentity = { ...current.cacheIdentity, expoRuntimeVersion: '' };
-        const { expoRuntimeVersion: _omitted, ...daemonCacheIdentity } = current.cacheIdentity;
+        // Byte delivery is digest-addressed; renderer metadata remains local
+        // admission context and is not echoed by the byte provider.
+        const nonConformingIdentity = { ...current.cacheIdentity, expoRuntimeVersion: 'ignored-locally' };
 
         const acquired = await acquire({
             reader: readerStore.bind(scope),
             artifactGraph: current.graph,
             cacheIdentity: nonConformingIdentity,
-            crashStateToken: createCrashStateToken(nonConformingIdentity),
-            daemon: {
-                origin: current.origin,
-                serverId: scope.serverId,
-                fetchArtifactBytes: async () => ({
-                    ...current.daemonResponse,
-                    cacheIdentity: daemonCacheIdentity,
-                }),
-            },
+            daemon: { machineId: current.origin.materializationRef.machineId, serverId: scope.serverId },
+            fetchDaemonArtifactBytes: async () => ({
+                ...current.daemonResponse,
+                cacheIdentity: current.cacheIdentity,
+            }),
         });
 
-        expect(acquired).toEqual({ kind: 'unavailable', code: 'artifact_source_unavailable' });
+        expect(acquired).toMatchObject({ kind: 'available', lease: { sourceKind: 'daemon' } });
+        if (acquired.kind === 'available') acquired.lease.dispose();
     });
 
     it('keeps an acquired daemon-sourced lease current after its daemon materialization disappears', async () => {
@@ -640,11 +637,8 @@ describe('React Native Artifact lease acquisition', () => {
             reader: readerStore.bind(scope),
             artifactGraph: current.graph,
             cacheIdentity: current.cacheIdentity,
-            daemon: {
-                origin: current.origin,
-                serverId: scope.serverId,
-                fetchArtifactBytes: async () => current.daemonResponse,
-            },
+            daemon: { machineId: current.origin.materializationRef.machineId, serverId: scope.serverId },
+            fetchDaemonArtifactBytes: async () => current.daemonResponse,
         });
         expect(acquired).toMatchObject({ kind: 'available', lease: { sourceKind: 'daemon' } });
         if (acquired.kind !== 'available') throw new Error('unreachable');
@@ -663,115 +657,16 @@ describe('React Native Artifact lease acquisition', () => {
         });
     });
 
-    it('rejects daemon bytes whose echoed crash token is stale even when their artifact identity matches', async () => {
-        const current = fixture();
-        const staleResponse = {
-            ...current.daemonResponse,
-            crashStateToken: {
-                ...current.crashStateToken,
-                crashStateEpoch: current.crashStateToken.crashStateEpoch + 1,
-            },
-        };
-        const fetchArtifactBytes = vi.fn(async () => staleResponse);
-
-        const request = {
-            reader: current.reader,
-            artifactGraph: current.graph,
-            cacheIdentity: current.cacheIdentity,
-            crashStateToken: current.crashStateToken,
-            artifactOwnerKind: 'renderer' as const,
-            daemon: {
-                origin: current.origin,
-                serverId: scope.serverId,
-                fetchArtifactBytes,
-            },
-            accountLifetime: permanentlyCurrentLifetime,
-        };
-
-        await expect(acquirePluginReactNativeArtifactLease(request)).resolves.toEqual({
-            kind: 'unavailable',
-            code: 'artifact_source_unavailable',
-        });
-        expect(fetchArtifactBytes).toHaveBeenCalledWith({
-            origin: current.origin,
-            serverId: scope.serverId,
-            identity: current.cacheIdentity,
-            artifactOwnerKind: 'renderer',
-            crashStateToken: current.crashStateToken,
-        });
-    });
-
-    it('keeps Composer crash bindings exact while materializing daemon bytes into a lease', async () => {
-        const current = fixture();
-        const composerCrashStateToken = createComposerCrashStateToken(current.cacheIdentity);
-        const currentResponse = {
-            ...current.daemonResponse,
-            crashStateToken: composerCrashStateToken,
-        };
-        const fetchCurrentArtifactBytes = vi.fn(async () => currentResponse);
-
-        const acquired = await acquire({
-            reader: current.reader,
-            artifactGraph: current.graph,
-            cacheIdentity: current.cacheIdentity,
-            crashStateToken: composerCrashStateToken,
-            daemon: {
-                origin: current.origin,
-                serverId: scope.serverId,
-                fetchArtifactBytes: fetchCurrentArtifactBytes,
-            },
-        });
-
-        expect(acquired).toMatchObject({
-            kind: 'available',
-            lease: { sourceKind: 'daemon' },
-        });
-        if (acquired.kind !== 'available') throw new Error('Expected a current Composer Artifact lease.');
-        acquired.lease.dispose();
-
-        const staleComposerResponse = {
-            ...currentResponse,
-            crashStateToken: {
-                ...composerCrashStateToken,
-                mount: {
-                    ...composerCrashStateToken.mount,
-                    immutableGenerationId: 'stale-composer-generation',
-                },
-            },
-        };
-        const fetchStaleArtifactBytes = vi.fn(async () => staleComposerResponse);
-
-        await expect(acquire({
-            reader: current.reader,
-            artifactGraph: current.graph,
-            cacheIdentity: current.cacheIdentity,
-            crashStateToken: composerCrashStateToken,
-            daemon: {
-                origin: current.origin,
-                serverId: scope.serverId,
-                fetchArtifactBytes: fetchStaleArtifactBytes,
-            },
-        })).resolves.toEqual({
-            kind: 'unavailable',
-            code: 'artifact_source_unavailable',
-        });
-    });
-
     it('evicts one corrupt persistent Artifact identity before falling back to its exact daemon', async () => {
         const current = fixture();
         const persistent = createPersistentStore();
         const persistentIdentity = {
             accountScope: scope,
-            releaseVersion: '1.2.3',
-            pluginId: current.cacheIdentity.pluginId,
-            contributionId: current.cacheIdentity.contributionId,
-            tier: 'reactNative' as const,
-            platform: current.cacheIdentity.platform,
             artifactDigest: current.cacheIdentity.artifactDigest,
         };
         const corruptEntry = new Uint8Array(current.entryBytes);
         corruptEntry[0] = corruptEntry[0]! ^ 1;
-        persistent.records.set(`${persistentIdentity.releaseVersion}:${persistentIdentity.artifactDigest}`, {
+        persistent.records.set(`${persistentIdentity.artifactDigest}`, {
             persistentIdentity,
             bytes: corruptEntry,
             entryRelativePath: current.graph.entry,
@@ -779,7 +674,7 @@ describe('React Native Artifact lease acquisition', () => {
                 relativePath: file.relativePath,
                 digest: file.digest,
                 byteSize: file.byteSize,
-                bytes: file.relativePath === current.graph.entry ? corruptEntry : current.chunkBytes,
+                bytes: corruptEntry,
             })),
         });
         const fetchArtifactBytes = vi.fn(async () => current.daemonResponse);
@@ -789,11 +684,8 @@ describe('React Native Artifact lease acquisition', () => {
             artifactGraph: current.graph,
             cacheIdentity: current.cacheIdentity,
             persistent: { scope, store: persistent.store, isCurrent: () => true, removePersistentArtifact: persistent.removes },
-            daemon: {
-                origin: current.origin,
-                serverId: scope.serverId,
-                fetchArtifactBytes,
-            },
+            daemon: { machineId: current.origin.materializationRef.machineId, serverId: scope.serverId },
+            fetchDaemonArtifactBytes: fetchArtifactBytes,
         });
 
         expect(acquired).toMatchObject({
@@ -813,18 +705,13 @@ describe('React Native Artifact lease acquisition', () => {
         const persistent = createPersistentStore();
         const persistentIdentity = {
             accountScope: scope,
-            releaseVersion: '1.2.3',
-            pluginId: current.cacheIdentity.pluginId,
-            contributionId: current.cacheIdentity.contributionId,
-            tier: 'reactNative' as const,
-            platform: current.cacheIdentity.platform,
             artifactDigest: current.cacheIdentity.artifactDigest,
         };
         const neighboringIdentity = {
             ...persistentIdentity,
             artifactDigest: PluginUiArtifactDigestV1Schema.parse(`sha256:${'c'.repeat(64)}`),
         };
-        const neighboringKey = `${neighboringIdentity.releaseVersion}:${neighboringIdentity.artifactDigest}`;
+        const neighboringKey = `${neighboringIdentity.artifactDigest}`;
         persistent.records.set(neighboringKey, {
             persistentIdentity: neighboringIdentity,
             bytes: current.entryBytes,
@@ -833,7 +720,7 @@ describe('React Native Artifact lease acquisition', () => {
                 relativePath: file.relativePath,
                 digest: file.digest,
                 byteSize: file.byteSize,
-                bytes: file.relativePath === current.graph.entry ? current.entryBytes : current.chunkBytes,
+                bytes: current.entryBytes,
             })),
         });
 
@@ -842,11 +729,8 @@ describe('React Native Artifact lease acquisition', () => {
             artifactGraph: current.graph,
             cacheIdentity: current.cacheIdentity,
             persistent: { scope, store: persistent.store, isCurrent: () => true, removePersistentArtifact: persistent.removes },
-            daemon: {
-                origin: current.origin,
-                serverId: scope.serverId,
-                fetchArtifactBytes: async () => current.daemonResponse,
-            },
+            daemon: { machineId: current.origin.materializationRef.machineId, serverId: scope.serverId },
+            fetchDaemonArtifactBytes: async () => current.daemonResponse,
         });
         if (acquired.kind !== 'available') throw new Error('Fixture lease was unavailable.');
 
@@ -877,7 +761,7 @@ describe('React Native Artifact lease acquisition', () => {
         // The exact identity this lease admitted is still stored, so re-enabling
         // the plugin reuses these verified bytes instead of re-downloading them.
         expect(
-            persistent.records.get(`${persistentIdentity.releaseVersion}:${persistentIdentity.artifactDigest}`)
+            persistent.records.get(`${persistentIdentity.artifactDigest}`)
                 ?.persistentIdentity,
         ).toEqual(persistentIdentity);
         expect(persistent.removes).not.toHaveBeenCalled();
@@ -885,19 +769,14 @@ describe('React Native Artifact lease acquisition', () => {
         expect(persistent.records.has(neighboringKey)).toBe(true);
     });
 
-    it('reuses the exact persistent Artifact across renderer compatibility and generation replacement', async () => {
+    it('reuses the exact persistent Artifact across semantic slot metadata changes', async () => {
         const current = fixture();
         const persistent = createPersistentStore();
         const persistentIdentity = {
             accountScope: scope,
-            releaseVersion: '1.2.3',
-            pluginId: current.cacheIdentity.pluginId,
-            contributionId: current.cacheIdentity.contributionId,
-            tier: 'reactNative' as const,
-            platform: current.cacheIdentity.platform,
             artifactDigest: current.cacheIdentity.artifactDigest,
         };
-        persistent.records.set(`${persistentIdentity.releaseVersion}:${persistentIdentity.artifactDigest}`, {
+        persistent.records.set(`${persistentIdentity.artifactDigest}`, {
             persistentIdentity,
             bytes: current.entryBytes,
             entryRelativePath: current.graph.entry,
@@ -905,26 +784,26 @@ describe('React Native Artifact lease acquisition', () => {
                 relativePath: file.relativePath,
                 digest: file.digest,
                 byteSize: file.byteSize,
-                bytes: file.relativePath === current.graph.entry ? current.entryBytes : current.chunkBytes,
+                bytes: current.entryBytes,
             })),
         });
         const fetchArtifactBytes = vi.fn(async () => current.daemonResponse);
+        const identityWithChangedSlotMetadata = {
+            ...current.cacheIdentity,
+            contributionId: 'replacement-renderer',
+        };
 
         const acquired = await acquire({
             reader: current.reader,
             artifactGraph: current.graph,
-            cacheIdentity: {
-                ...current.cacheIdentity,
-                channel: 'beta',
-                nativeCapabilitiesDigest: `sha256:${'d'.repeat(64)}`,
-                projectionGeneration: current.cacheIdentity.projectionGeneration + 1,
+            cacheIdentity: identityWithChangedSlotMetadata,
+            daemonProjectionSelection: {
+                ...daemonProjectionSelection(),
+                contributionId: identityWithChangedSlotMetadata.contributionId,
             },
             persistent: { scope, store: persistent.store, isCurrent: () => true, removePersistentArtifact: persistent.removes },
-            daemon: {
-                origin: current.origin,
-                serverId: scope.serverId,
-                fetchArtifactBytes,
-            },
+            daemon: { machineId: current.origin.materializationRef.machineId, serverId: scope.serverId },
+            fetchDaemonArtifactBytes: fetchArtifactBytes,
         });
 
         expect(acquired).toMatchObject({
@@ -935,27 +814,32 @@ describe('React Native Artifact lease acquisition', () => {
         expect(persistent.removes).not.toHaveBeenCalled();
     });
 
-    it('does not turn a same-machine replacement into a daemon source fallback', async () => {
+    it('fetches an Account-release digest from the mount daemon without a matching materialization', async () => {
+        // A daemon source is transport, not admission (AVD-03): the release
+        // already selected the digest and the lease verifies the bytes.
         const current = fixture();
+        const readerStore = createPluginAccountAvailabilityReaderStore();
+        readerStore.replace({
+            scope,
+            snapshot: Object.freeze({ ...current.snapshot, materializations: Object.freeze([]), snapshots: Object.freeze([]) }),
+        });
         const fetchArtifactBytes = vi.fn(async () => current.daemonResponse);
 
-        await expect(acquire({
-            reader: current.reader,
+        const acquired = await acquire({
+            reader: readerStore.bind(scope),
             artifactGraph: current.graph,
             cacheIdentity: current.cacheIdentity,
-            daemon: {
-                origin: {
-                    ...current.origin,
-                    materializationRef: {
-                        ...current.origin.materializationRef,
-                        materializationId: 'reinstalled-after-selection',
-                    },
-                },
-                serverId: scope.serverId,
-                fetchArtifactBytes,
-            },
-        })).resolves.toEqual({ kind: 'unavailable', code: 'artifact_source_unavailable' });
-        expect(fetchArtifactBytes).not.toHaveBeenCalled();
+            daemon: { machineId: 'machine-without-materialization', serverId: scope.serverId },
+            fetchDaemonArtifactBytes: fetchArtifactBytes,
+        });
+
+        expect(acquired).toMatchObject({ kind: 'available', lease: { sourceKind: 'daemon' } });
+        expect(fetchArtifactBytes).toHaveBeenCalledWith({
+            transport: { machineId: 'machine-without-materialization', serverId: scope.serverId },
+            family: 'reactNative',
+            digest: current.cacheIdentity.artifactDigest,
+        });
+        if (acquired.kind === 'available') acquired.lease.dispose();
     });
 
     it('persists only the fully verified daemon file set for a still-current Account scope', async () => {
@@ -967,11 +851,8 @@ describe('React Native Artifact lease acquisition', () => {
             artifactGraph: current.graph,
             cacheIdentity: current.cacheIdentity,
             persistent: { scope, store: persistent.store, isCurrent: () => true, removePersistentArtifact: persistent.removes },
-            daemon: {
-                origin: current.origin,
-                serverId: scope.serverId,
-                fetchArtifactBytes: async () => current.daemonResponse,
-            },
+            daemon: { machineId: current.origin.materializationRef.machineId, serverId: scope.serverId },
+            fetchDaemonArtifactBytes: async () => current.daemonResponse,
         });
 
         expect(acquired).toMatchObject({
@@ -983,12 +864,11 @@ describe('React Native Artifact lease acquisition', () => {
         expect(record).toMatchObject({
             persistentIdentity: expect.objectContaining({
                 accountScope: scope,
-                releaseVersion: '1.2.3',
                 artifactDigest: current.cacheIdentity.artifactDigest,
             }),
             entryRelativePath: current.graph.entry,
         });
-        expect(record.files).toHaveLength(2);
+        expect(record.files).toHaveLength(1);
     });
 
     it('hands only the current complete verified lease to the renderer cache sink', async () => {
@@ -997,11 +877,8 @@ describe('React Native Artifact lease acquisition', () => {
             reader: current.reader,
             artifactGraph: current.graph,
             cacheIdentity: current.cacheIdentity,
-            daemon: {
-                origin: current.origin,
-                serverId: scope.serverId,
-                fetchArtifactBytes: async () => current.daemonResponse,
-            },
+            daemon: { machineId: current.origin.materializationRef.machineId, serverId: scope.serverId },
+            fetchDaemonArtifactBytes: async () => current.daemonResponse,
         });
         if (acquired.kind !== 'available') throw new Error('Fixture lease was unavailable.');
         let consumerCurrent = true;
@@ -1026,7 +903,6 @@ describe('React Native Artifact lease acquisition', () => {
             bytes: current.entryBytes,
             files: expect.arrayContaining([
                 expect.objectContaining({ relativePath: current.graph.entry, bytes: current.entryBytes }),
-                expect.objectContaining({ relativePath: 'react-native/acme/chunk.js', bytes: current.chunkBytes }),
             ]),
         }));
         if (materialized.kind !== 'available') throw new Error('Expected cache handoff to succeed.');
@@ -1045,11 +921,8 @@ describe('React Native Artifact lease acquisition', () => {
             reader: current.reader,
             artifactGraph: current.graph,
             cacheIdentity: current.cacheIdentity,
-            daemon: {
-                origin: current.origin,
-                serverId: scope.serverId,
-                fetchArtifactBytes: async () => current.daemonResponse,
-            },
+            daemon: { machineId: current.origin.materializationRef.machineId, serverId: scope.serverId },
+            fetchDaemonArtifactBytes: async () => current.daemonResponse,
         });
         if (acquired.kind !== 'available') throw new Error('Fixture lease was unavailable.');
         const handedOver: Uint8Array[] = [];
@@ -1074,13 +947,13 @@ describe('React Native Artifact lease acquisition', () => {
             isCurrent: () => true,
         });
         expect(materialized).toMatchObject({ kind: 'available' });
-        expect(handedOver).toHaveLength(2);
+        expect(handedOver).toHaveLength(1);
 
         for (const bytes of handedOver) bytes.fill(0);
 
         const cached = cache.readInstalledArtifact(current.cacheIdentity);
         expect(cached?.bytes).toEqual(current.entryBytes);
-        expect(cached?.files?.map((file) => file.bytes)).toEqual([current.entryBytes, current.chunkBytes]);
+        expect(cached?.files?.map((file) => file.bytes)).toEqual([current.entryBytes]);
     });
 
     it('does not write a lease after the renderer consumer retires during its file handoff', async () => {
@@ -1089,11 +962,8 @@ describe('React Native Artifact lease acquisition', () => {
             reader: current.reader,
             artifactGraph: current.graph,
             cacheIdentity: current.cacheIdentity,
-            daemon: {
-                origin: current.origin,
-                serverId: scope.serverId,
-                fetchArtifactBytes: async () => current.daemonResponse,
-            },
+            daemon: { machineId: current.origin.materializationRef.machineId, serverId: scope.serverId },
+            fetchDaemonArtifactBytes: async () => current.daemonResponse,
         });
         if (acquired.kind !== 'available') throw new Error('Fixture lease was unavailable.');
         let releaseRead!: () => void;

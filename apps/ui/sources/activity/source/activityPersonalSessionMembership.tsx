@@ -10,8 +10,9 @@ import {
     subscribeActiveServer,
 } from '@/sync/domains/server/serverProfiles';
 import type { SessionListQueryHomeState } from '@/sync/domains/session/listing/sessionListQueryController';
+import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
 import { buildSessionListQueryKey } from '@/sync/domains/session/listing/sessionListQueryKey';
-import { useSessionListQuerySourceState } from '@/sync/domains/session/listing/useSessionListQuerySourceState';
+import { useSessionListQueryHomeStates } from '@/sync/domains/session/listing/useSessionListQuerySourceState';
 
 export type ActivityPersonalSessionMembership = Readonly<{
     membershipByServerId: Readonly<Record<string, readonly string[]>>;
@@ -76,25 +77,31 @@ export function buildActivityPersonalQueryHomeServerIds(
     return Array.from(new Set([activeServerId ?? '', ...profileServerIds].map((id) => id.trim()).filter(Boolean)));
 }
 
+/**
+ * Activity reads the shared strict-query membership projection (`useSessionListQueryHomeStates`):
+ * the applied page while one answers, otherwise the store's last-known membership for this exact
+ * Account/Home/query. Controller state only decides what that membership may not claim: an
+ * unsupported or invalid query, or a released-listing fallback page, is never personal membership.
+ */
 export function projectActivityPersonalSessionMembership(input: Readonly<{
     enabled: boolean;
     homes: readonly ActivityPersonalQueryHome[];
     statesByServerId: Readonly<Record<string, SessionListQueryHomeState | undefined>>;
-
+    membershipByServerId: Readonly<Record<string, readonly SessionAddress[] | null | undefined>>;
     coverageComplete: boolean;
 }>): ActivityPersonalSessionMembership {
     if (!input.enabled) return EMPTY_ACTIVITY_PERSONAL_SESSION_MEMBERSHIP;
     const membershipByServerId: Record<string, readonly string[]> = {};
     for (const home of input.homes) {
         const state = input.statesByServerId[home.serverId];
-        membershipByServerId[home.serverId] = state?.appliedSourceKind === 'query'
-            && state.appliedQueryKey === home.queryKey
-            && state.failureReason !== 'unsupported'
-            && state.failureReason !== 'invalid_query'
-            ? state.addresses
+        const withdrawn = state?.failureReason === 'unsupported'
+            || state?.failureReason === 'invalid_query'
+            || (state?.appliedQueryKey === home.queryKey && state.appliedSourceKind !== 'query');
+        membershipByServerId[home.serverId] = withdrawn
+            ? []
+            : (input.membershipByServerId[home.serverId] ?? [])
                 .filter((address) => address.serverId === home.serverId)
-                .map((address) => address.sessionId)
-            : [];
+                .map((address) => address.sessionId);
     }
     return {
         membershipByServerId,
@@ -145,7 +152,9 @@ export function ActivityPersonalSessionMembershipProvider(props: React.PropsWith
         [activeServer.serverId, profilesGeneration],
     );
     const homes = React.useMemo(() => buildActivityPersonalQueryHomes(serverIds), [serverIds]);
-    const querySource = useSessionListQuerySourceState({
+    // Membership needs which Sessions are in the corpus, never their rows: the states-only owner keeps
+    // session content changes from re-rendering Activity.
+    const querySource = useSessionListQueryHomeStates({
         enabled: props.enabled,
         homes,
     });
@@ -160,8 +169,9 @@ export function ActivityPersonalSessionMembershipProvider(props: React.PropsWith
         enabled: props.enabled,
         homes,
         statesByServerId: querySource.statesByServerId,
+        membershipByServerId: querySource.membershipByServerId,
         coverageComplete: querySource.coverageComplete,
-    }), [homes, props.enabled, querySource.coverageComplete, querySource.statesByServerId]);
+    }), [homes, props.enabled, querySource.coverageComplete, querySource.membershipByServerId, querySource.statesByServerId]);
 
     return (
         <ActivityPersonalSessionMembershipContext.Provider value={value}>

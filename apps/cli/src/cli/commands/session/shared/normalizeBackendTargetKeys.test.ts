@@ -22,7 +22,7 @@ describe('normalizeBackendTargetKeysFromCsv', () => {
   });
 
   it('preserves explicit V2 backend target keys', () => {
-    expect(normalizeBackendTargetKeysFromCsv('backend:opencode')).toEqual(['backend:opencode']);
+    expect(normalizeBackendTargetKeysFromCsv('agent:happier.agent.opencode/opencode')).toEqual(['agent:happier.agent.opencode/opencode']);
     expect(normalizeBackendTargetKeysFromCsv('backend:plugin-review-bot')).toEqual(['backend:plugin-review-bot']);
   });
 

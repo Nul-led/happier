@@ -1,11 +1,13 @@
-import { createHash } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { dirname, join } from 'node:path';
 import { mkdirSync, writeFileSync } from 'node:fs';
 
 import cliDistBuildManifest from '@happier-dev/cli-common/cliDistBuildManifest';
+import { BUNDLED_PLUGIN_PUBLICATION_FAILURES_RELATIVE_PATH } from '@happier-dev/cli-common/bundledPluginPublicationPolicy';
+import { PINNED_RUNNER_MANAGED_PROVIDER_RUNTIME_RELATIVE_PATH } from '@happier-dev/cli-common/pinnedRunnerSnapshot';
 import { CLI_RUNTIME_SIDECAR_ENTRIES } from '@happier-dev/cli-common/componentArtifacts/cliRuntimeSidecars';
 import { withTempDir } from '@/testkit/fs/tempDir';
+import { publishPinnedRunnerSnapshotFixture } from '@/testkit/process/spawnHappyCliHarness';
 
 const {
   ensureJavaScriptRuntimeExecutableMock,
@@ -39,8 +41,8 @@ vi.mock('@/utils/spawnHappyCLI', async () => {
 function writeAdmittedDaemonStartupClosure(root: string, marker = 'admitted'): Readonly<{
   entrypoint: string;
   fingerprint: string;
-  repoRoot: string;
   runtimeStatePath: string;
+  runtimeAssetIdentity: string;
 }> {
   const distDir = join(root, 'dist');
   mkdirSync(distDir, { recursive: true });
@@ -67,26 +69,24 @@ function writeAdmittedDaemonStartupClosure(root: string, marker = 'admitted'): R
   writeFileSync(join(toolsDir, 'rg'), '#!/bin/sh\nexit 0\n', 'utf8');
   const managedRuntimeBytes = 'managed-runtime-A';
   writeFileSync(
-    join(toolsDir, 'happier-cliproxyapi-managed'),
+    join(root, ...PINNED_RUNNER_MANAGED_PROVIDER_RUNTIME_RELATIVE_PATH),
     managedRuntimeBytes,
     'utf8',
   );
-  const cliPackageDir = join(root, 'apps', 'cli');
-  mkdirSync(cliPackageDir, { recursive: true });
-  writeFileSync(join(cliPackageDir, 'package.json'), '{"dependencies":{}}\n', 'utf8');
+  writeFileSync(join(root, 'package.json'), '{"name":"@happier-dev/cli"}\n', 'utf8');
+  const failurePath = join(root, BUNDLED_PLUGIN_PUBLICATION_FAILURES_RELATIVE_PATH);
+  mkdirSync(dirname(failurePath), { recursive: true });
+  writeFileSync(failurePath, '[]\n');
 
   const written = cliDistBuildManifest.writeCliDistBuildManifest(entrypoint, {
     outputDir: dirname(entrypoint),
     builtAt: '2026-07-26T00:00:00.000Z',
   });
-  writeFileSync(written.manifestPath, `${JSON.stringify({
-    ...written.manifest,
-    runtimeAsset: {
-      relativePath: 'tools/unpacked/happier-cliproxyapi-managed',
-      byteLength: Buffer.byteLength(managedRuntimeBytes),
-      sha256: createHash('sha256').update(managedRuntimeBytes).digest('hex'),
-    },
-  }, null, 2)}\n`, 'utf8');
+  const { runtimeAsset } = cliDistBuildManifest.writeCliRuntimeAssetBuildManifest({
+    runtimeRoot: root,
+    entrypoint,
+    relativePath: PINNED_RUNNER_MANAGED_PROVIDER_RUNTIME_RELATIVE_PATH.join('/'),
+  });
   const fingerprint = written.manifest.fingerprint;
   const runtimeStatePath = join(root, 'stack.runtime.json');
   writeFileSync(runtimeStatePath, JSON.stringify({
@@ -94,7 +94,7 @@ function writeAdmittedDaemonStartupClosure(root: string, marker = 'admitted'): R
     stackName: 'qa-agent-1',
     daemon: {},
   }) + '\n', 'utf8');
-  return { entrypoint, fingerprint, repoRoot: root, runtimeStatePath };
+  return { entrypoint, fingerprint, runtimeStatePath, runtimeAssetIdentity: runtimeAsset.sha256 };
 }
 
 describe('resolveDaemonLaunchSpec', () => {
@@ -388,7 +388,6 @@ describe('resolveDaemonLaunchSpec', () => {
       process.env.HAPPIER_CLI_SUBPROCESS_DIST_ENTRYPOINT = closure.entrypoint;
       process.env.HAPPIER_CLI_SUBPROCESS_DAEMON_DIST_CLOSURE_FINGERPRINT = closure.fingerprint;
       process.env.HAPPIER_CLI_SUBPROCESS_STACK_RUNTIME_STATE_PATH = closure.runtimeStatePath;
-      process.env.HAPPIER_STACK_REPO_DIR = closure.repoRoot;
       process.env.HAPPIER_STACK_STACK = 'qa-agent-1';
       process.env.HAPPIER_VARIANT = 'dev';
 
@@ -398,7 +397,7 @@ describe('resolveDaemonLaunchSpec', () => {
       expect(result.filePath).toMatch(/[\\/]node(?:\.exe)?$/i);
       expect(result.args).toEqual(expect.arrayContaining([
         expect.stringMatching(
-          /[\\/]\.runner-snapshots[\\/][a-f0-9]{16}-[a-f0-9]{64}-package-dist-v3[\\/]package-dist[\\/]index\.mjs$/,
+          /[\\/]\.runner-snapshots[\\/][a-f0-9]{16}-[a-f0-9]{64}-[a-f0-9]{64}-[a-f0-9]{64}-package-dist-v7[\\/]package-dist[\\/]index\.mjs$/,
         ),
         'daemon',
         'start-sync',
@@ -415,7 +414,6 @@ describe('resolveDaemonLaunchSpec', () => {
       process.env.HAPPIER_CLI_SUBPROCESS_DIST_ENTRYPOINT = incumbent.entrypoint;
       process.env.HAPPIER_CLI_SUBPROCESS_DAEMON_DIST_CLOSURE_FINGERPRINT = incumbent.fingerprint;
       process.env.HAPPIER_CLI_SUBPROCESS_STACK_RUNTIME_STATE_PATH = incumbent.runtimeStatePath;
-      process.env.HAPPIER_STACK_REPO_DIR = incumbent.repoRoot;
       process.env.HAPPIER_STACK_STACK = 'qa-agent-incumbent';
       process.env.HAPPIER_VARIANT = 'dev';
 
@@ -424,7 +422,6 @@ describe('resolveDaemonLaunchSpec', () => {
         HAPPIER_CLI_SUBPROCESS_DIST_ENTRYPOINT: successor.entrypoint,
         HAPPIER_CLI_SUBPROCESS_DAEMON_DIST_CLOSURE_FINGERPRINT: successor.fingerprint,
         HAPPIER_CLI_SUBPROCESS_STACK_RUNTIME_STATE_PATH: successor.runtimeStatePath,
-        HAPPIER_STACK_REPO_DIR: successor.repoRoot,
         HAPPIER_STACK_STACK: 'qa-agent-successor',
       };
 
@@ -437,10 +434,49 @@ describe('resolveDaemonLaunchSpec', () => {
 
       expect(result.args).toEqual(expect.arrayContaining([
         expect.stringContaining(
-          `.runner-snapshots${process.platform === 'win32' ? '\\' : '/'}${successor.fingerprint}-${createHash('sha256').update('managed-runtime-A').digest('hex')}-package-dist-v3`,
+          `.runner-snapshots${process.platform === 'win32' ? '\\' : '/'}${successor.fingerprint}-${successor.runtimeAssetIdentity}-`,
         ),
       ]));
       expect(result.args.join(' ')).not.toContain(incumbent.fingerprint);
+    });
+  });
+
+  it('self-restarts a pinned Stack runner into the successor admitted closure instead of re-running itself', async () => {
+    await withTempDir('happier-daemon-launch-pinned-successor-', async (root) => {
+      // Stack starts a last-green runner directly from its snapshot with tsx disabled; the
+      // successor fingerprint arrives later through the self-restart environment.
+      const successor = writeAdmittedDaemonStartupClosure(join(root, 'successor'), 'successor');
+      const { snapshotEntrypoint: incumbentRunnerEntrypoint } = publishPinnedRunnerSnapshotFixture({
+        stagingRoot: join(root, '.runner-snapshots', '.incumbent-staging'),
+        workspaceRuntimeIdentity: '3'.repeat(64),
+      });
+      const successorEnv: NodeJS.ProcessEnv = {
+        ...process.env,
+        HAPPIER_CLI_SUBPROCESS_RUNTIME: 'node',
+        HAPPIER_CLI_SUBPROCESS_PREFER_TSX: '0',
+        HAPPIER_CLI_SUBPROCESS_DIST_ENTRYPOINT: successor.entrypoint,
+        HAPPIER_CLI_SUBPROCESS_DAEMON_DIST_CLOSURE_FINGERPRINT: successor.fingerprint,
+        HAPPIER_CLI_SUBPROCESS_STACK_RUNTIME_STATE_PATH: successor.runtimeStatePath,
+        HAPPIER_STACK_STACK: 'qa-agent-successor',
+      };
+      const originalArgv = [...process.argv];
+      try {
+        process.argv = [process.execPath, incumbentRunnerEntrypoint, 'daemon', 'start-sync'];
+
+        const mod = await import('./resolveDaemonLaunchSpec');
+        const result = await mod.resolveDaemonLaunchSpec(['daemon', 'start-sync'], successorEnv);
+
+        expect(result.args).toEqual(expect.arrayContaining([
+          expect.stringContaining(
+            `.runner-snapshots${process.platform === 'win32' ? '\\' : '/'}${successor.fingerprint}-`,
+          ),
+          'daemon',
+          'start-sync',
+        ]));
+        expect(result.args).not.toContain(incumbentRunnerEntrypoint);
+      } finally {
+        process.argv = originalArgv;
+      }
     });
   });
 

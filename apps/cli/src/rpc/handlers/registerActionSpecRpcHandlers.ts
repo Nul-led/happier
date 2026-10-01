@@ -1,5 +1,6 @@
 import {
     ActionApprovalRequestCreatedResultSchema,
+    TargetedActionRpcRequestV1Schema,
     readExecutionRunStartRunCreation,
     withExecutionRunStartFailureDetails,
     type ActionExecuteResult,
@@ -11,6 +12,12 @@ import {
     type ActionSpecSurfaceBindings,
     type ActionSurfaceBindingContext,
 } from '@happier-dev/protocol/actions/actionSpecs';
+import {
+    SessionSpawnNewResultV1Schema,
+    SessionFollowSourceKeyPreparationResultV1Schema,
+    SESSION_FOLLOW_SOURCE_KEY_PREPARATION_WAITING_ACTION_ERROR_V1,
+    projectSessionFollowSourceKeyPreparationAfterSetV1,
+} from '@happier-dev/protocol';
 
 import {
     dispatchActionFromRpc,
@@ -55,7 +62,8 @@ export type RegisterActionSpecRpcHandlersParams = Readonly<{
     methods?: readonly string[];
     scopes?: readonly ActionSpecRpcRegistrationScope[];
     /** Authority stamped by the host-owned RPC ingress; never inferred from surface. */
-    authority?: ActionExecutorContext['authority'];
+    /** Exact current daemon Machine; enables strict transport-target request wrappers. */
+    targetMachineId?: string;
     observeExecution?: (request: Readonly<{
         actionId: string;
         input: unknown;
@@ -122,6 +130,21 @@ export function unwrapActionResultForRpc(actionId: ActionId, result: ActionExecu
             readExecutionRunStartRunCreation(result.details),
         )
         : undefined;
+    if (actionId === 'session.spawn_new'
+        && result.errorCode === SESSION_FOLLOW_SOURCE_KEY_PREPARATION_WAITING_ACTION_ERROR_V1
+        && readObjectValue(result.details, 'status') === 'waiting'
+        && readObjectValue(result.details, 'edgeCommitted') === true) {
+        const source = SessionSpawnNewResultV1Schema.safeParse(readObjectValue(result.details, 'source'));
+        const preparation = SessionFollowSourceKeyPreparationResultV1Schema.safeParse({
+            kind: 'waiting', reason: readObjectValue(result.details, 'reason'),
+        });
+        if (source.success && source.data.type === 'success' && preparation.success) {
+            const projected = projectSessionFollowSourceKeyPreparationAfterSetV1({ source: source.data }, preparation.data);
+            if ('ok' in projected) {
+                return { ok: false, errorCode: result.errorCode, error: result.error, details: projected.details };
+            }
+        }
+    }
     return {
         ok: false,
         errorCode: result.errorCode,
@@ -196,6 +219,7 @@ function transportFailure(
 function buildRpcSurfaceBindingContext(
     actionId: ActionId,
     input: unknown,
+    externalActionTarget?: ActionExecutorContext['externalActionTarget'],
     signal?: AbortSignal,
 ): ActionSurfaceBindingContext {
     const hints = buildActionExecutorContextHints(input);
@@ -204,6 +228,7 @@ function buildRpcSurfaceBindingContext(
         surface: 'rpc',
         caller: { kind: 'host' },
         ...hints,
+        ...(externalActionTarget ? { externalActionTarget } : {}),
         ...(signal ? { signal } : {}),
     };
 }
@@ -215,6 +240,7 @@ export function registerActionSpecRpcHandlers(params: RegisterActionSpecRpcHandl
     const scopes = params.scopes ?? null;
     const exceptionMethods = collectExceptionMethods(params.exceptions);
     const registeredMethods = new Map<string, string>();
+    const targetMachineId = normalizeOptionalString(params.targetMachineId);
 
     for (const spec of actionSpecs) {
         if (spec.surfaces?.rpc !== true) {
@@ -251,21 +277,50 @@ export function registerActionSpecRpcHandlers(params: RegisterActionSpecRpcHandl
             if (!mappedRequest.accepted) {
                 return mappedRequest.response;
             }
+            let externalActionTarget: ActionExecutorContext['externalActionTarget'];
+            let envelopeDefaultSessionId: string | undefined;
+            let transportInput = mappedRequest.input;
+            if (readObjectValue(mappedRequest.input, 'kind') === 'targeted_action_rpc') {
+                const envelope = TargetedActionRpcRequestV1Schema.safeParse(mappedRequest.input);
+                if (
+                    !envelope.success
+                    || !targetMachineId
+                    || envelope.data.target.kind !== 'machine'
+                    || envelope.data.target.machineId !== targetMachineId
+                ) {
+                    return unwrapActionResultForRpc(
+                        typedActionId,
+                        transportFailure(typedActionId, 'invalid_action_transport_input'),
+                    );
+                }
+                transportInput = envelope.data.input;
+                externalActionTarget = envelope.data.target;
+                envelopeDefaultSessionId = envelope.data.defaultSessionId;
+            }
             const rpcBinding = spec.surfaceBindings?.rpc;
-            let semanticInput = mappedRequest.input;
+            let semanticInput = transportInput;
             if (rpcBinding) {
-                const transportInput = rpcBinding.inputSchema.safeParse(mappedRequest.input);
-                if (!transportInput.success) {
+                const parsedTransportInput = rpcBinding.inputSchema.safeParse(transportInput);
+                if (!parsedTransportInput.success) {
                     return unwrapActionResultForRpc(typedActionId, transportFailure(typedActionId, 'invalid_action_transport_input'));
                 }
                 try {
                     semanticInput = await rpcBinding.decodeInput(
-                        transportInput.data,
-                        buildRpcSurfaceBindingContext(typedActionId, transportInput.data, context?.signal),
+                        parsedTransportInput.data,
+                        buildRpcSurfaceBindingContext(
+                            typedActionId,
+                            parsedTransportInput.data,
+                            externalActionTarget,
+                            context?.signal,
+                        ),
                     );
                 } catch {
                     return unwrapActionResultForRpc(typedActionId, transportFailure(typedActionId, 'invalid_action_transport_input'));
                 }
+            }
+            const inputSessionId = readDefaultSessionIdFromRpcInput(semanticInput);
+            if (envelopeDefaultSessionId && inputSessionId && inputSessionId !== envelopeDefaultSessionId) {
+                return unwrapActionResultForRpc(typedActionId, transportFailure(typedActionId, 'invalid_action_transport_input'));
             }
             const executor = await resolveActionExecutor(params);
             const execute = async (execution: Readonly<{
@@ -279,16 +334,19 @@ export function registerActionSpecRpcHandlers(params: RegisterActionSpecRpcHandl
                     actionId: typedActionId,
                     input: semanticInput,
                     ...buildActionExecutorContextHints(semanticInput),
+                    // The caller's invoking Session travels as transport context, never as Action input.
+                    ...(envelopeDefaultSessionId ? { defaultSessionId: envelopeDefaultSessionId } : {}),
+                    ...(externalActionTarget ? { externalActionTarget } : {}),
                     ...(execution.signal ? { signal: execution.signal } : {}),
+                    ...(context?.callerAuthority ? { callerAuthority: context.callerAuthority } : {}),
                     ...(
-                        context?.localActionContext || actionRequestId || execution.operationProgress || execution.operationOwnerUpdate || params.authority
+                        context?.localActionContext || actionRequestId || execution.operationProgress || execution.operationOwnerUpdate
                             ? {
                                 localActionContext: {
                                     ...context?.localActionContext,
                                     ...(actionRequestId
                                         ? { actionRequestId }
                                         : {}),
-                                    ...(params.authority ? { authority: params.authority } : {}),
                                     ...(execution.operationProgress
                                         ? { operationProgress: execution.operationProgress }
                                         : {}),
@@ -335,7 +393,12 @@ export function registerActionSpecRpcHandlers(params: RegisterActionSpecRpcHandl
             try {
                 encoded = await rpcBinding.encodeOutput(
                     result.result,
-                    buildRpcSurfaceBindingContext(typedActionId, semanticInput, context?.signal),
+                    buildRpcSurfaceBindingContext(
+                        typedActionId,
+                        semanticInput,
+                        externalActionTarget,
+                        context?.signal,
+                    ),
                 );
             } catch {
                 return unwrapActionResultForRpc(typedActionId, transportFailure(typedActionId, 'invalid_action_transport_output'));

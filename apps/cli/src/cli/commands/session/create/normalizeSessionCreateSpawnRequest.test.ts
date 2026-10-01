@@ -59,7 +59,7 @@ describe('normalizeSessionCreateSpawnRequest', () => {
     expect(providerBound.input.modelSelection).toMatchObject({
       v: 1,
       ref: {
-        agentTargetKey: 'backend:claude',
+        agentTargetKey: 'agent:happier.agent.claude/claude',
         providerConnectionId: 'provider-1',
         modelId: 'default',
       },

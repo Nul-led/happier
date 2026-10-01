@@ -19,13 +19,13 @@ export function createSimulatorInputLeaseManager(input: Readonly<{ ttlMs: number
     const leasesBySource = new Map<string, MachineLiveStreamControlLeaseV1>();
     const ttlMs = Math.max(1, Math.floor(input.ttlMs));
 
-    const keyFor = (streamId: string, sourceId: string) => `${streamId}:${sourceId}`;
-    const readActive = (streamId: string, sourceId: string, nowMs: number): MachineLiveStreamControlLeaseV1 | null => {
-        const key = keyFor(streamId, sourceId);
-        const existing = leasesBySource.get(key) ?? null;
+    // Viewer streams share physical input. The source owns exclusivity; the
+    // stream and holder identify the one controller allowed to renew or release.
+    const readActive = (sourceId: string, nowMs: number): MachineLiveStreamControlLeaseV1 | null => {
+        const existing = leasesBySource.get(sourceId) ?? null;
         if (!existing) return null;
         if (existing.expiresAtMs <= nowMs) {
-            leasesBySource.delete(key);
+            leasesBySource.delete(sourceId);
             return null;
         }
         return existing;
@@ -33,8 +33,8 @@ export function createSimulatorInputLeaseManager(input: Readonly<{ ttlMs: number
 
     return {
         acquire: (request) => {
-            const existing = readActive(request.streamId, request.sourceId, request.nowMs);
-            if (existing && existing.holderId !== request.holderId) {
+            const existing = readActive(request.sourceId, request.nowMs);
+            if (existing && (existing.streamId !== request.streamId || existing.holderId !== request.holderId)) {
                 return { ok: false, reasonCode: 'lease_already_held' };
             }
             const lease: MachineLiveStreamControlLeaseV1 = {
@@ -47,18 +47,20 @@ export function createSimulatorInputLeaseManager(input: Readonly<{ ttlMs: number
                 acquiredAtMs: request.nowMs,
                 expiresAtMs: request.nowMs + ttlMs,
             };
-            leasesBySource.set(keyFor(request.streamId, request.sourceId), lease);
+            leasesBySource.set(request.sourceId, lease);
             return { ok: true, lease };
         },
         release: (request) => {
-            const key = keyFor(request.streamId, request.sourceId);
-            const existing = leasesBySource.get(key);
-            if (!existing || existing.leaseId !== request.leaseId) {
+            const existing = leasesBySource.get(request.sourceId);
+            if (!existing || existing.streamId !== request.streamId || existing.leaseId !== request.leaseId) {
                 return { ok: false, reasonCode: 'input_lease_mismatch' };
             }
-            leasesBySource.delete(key);
+            leasesBySource.delete(request.sourceId);
             return { ok: true };
         },
-        read: (request) => readActive(request.streamId, request.sourceId, request.nowMs),
+        read: (request) => {
+            const existing = readActive(request.sourceId, request.nowMs);
+            return existing?.streamId === request.streamId ? existing : null;
+        },
     };
 }

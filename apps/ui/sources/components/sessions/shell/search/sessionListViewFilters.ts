@@ -1,8 +1,21 @@
+import {
+    buildQualifiedAudienceSelectionKey,
+    buildQualifiedTagAddressKey,
+    normalizeSessionListFilterV1,
+    normalizeSessionListFilterHomeIds as dedupeIds,
+    normalizeSessionListFilterAudiences as dedupeAudiences,
+    normalizeSessionListFilterTagIds as dedupeTagIds,
+    type QualifiedAudienceSelection,
+    type QualifiedTagAddress,
+    type SessionListFilterV1,
+    type SessionListFilterDefaultsInputV1,
+} from '@happier-dev/protocol';
+
+export { buildQualifiedAudienceSelectionKey, buildQualifiedTagAddressKey };
+export type { QualifiedAudienceSelection, QualifiedTagAddress };
 import type {
-    SessionAttentionFilterV1,
     SessionAudienceSelectionV1,
     SessionListQueryV1,
-    SessionListScopeV1,
 } from '@happier-dev/protocol';
 import { buildSessionListQueryKey } from '@/sync/domains/session/listing/sessionListQueryKey';
 import {
@@ -29,32 +42,9 @@ export type SessionListViewContext =
         teamDisplayName?: string | null;
     }>;
 
-export type QualifiedAudienceSelection = Readonly<{
-    serverId: string;
-}> & SessionAudienceSelectionV1;
+export type SessionListViewFilters = SessionListFilterV1 & Readonly<{ searchQuery: string }>;
 
-export type QualifiedTagAddress = Readonly<{
-    serverId: string;
-    tagId: string;
-}>;
-
-export type SessionListViewFilters = Readonly<{
-    scope: SessionListScopeV1;
-    attention: SessionAttentionFilterV1;
-    homeServerIds: readonly string[];
-    audiences: readonly QualifiedAudienceSelection[];
-    tagIds: readonly QualifiedTagAddress[];
-    source: 'all' | 'persisted' | 'direct';
-    searchQuery: string;
-}>;
-
-export type SessionListViewFilterDefaultsInput = Readonly<{
-    scope?: SessionListScopeV1;
-    attention?: SessionAttentionFilterV1;
-    homeServerIds?: readonly string[];
-    audiences?: readonly QualifiedAudienceSelection[];
-    tagIds?: readonly QualifiedTagAddress[];
-    source?: SessionListViewFilters['source'];
+export type SessionListViewFilterDefaultsInput = SessionListFilterDefaultsInputV1 & Readonly<{
     searchQuery?: string;
 }>;
 
@@ -80,100 +70,11 @@ function normalizeId(raw: unknown): string {
     return typeof raw === 'string' ? raw.trim() : '';
 }
 
-function dedupeIds(values: readonly string[] | undefined): string[] {
-    const seen = new Set<string>();
-    const next: string[] = [];
-    for (const raw of values ?? []) {
-        const value = normalizeId(raw);
-        if (!value || seen.has(value)) continue;
-        seen.add(value);
-        next.push(value);
-    }
-    return next;
-}
-
-function normalizeAudience(
-    audience: QualifiedAudienceSelection,
-): QualifiedAudienceSelection | null {
-    const serverId = normalizeId(audience.serverId);
-    if (!serverId) return null;
-    if (audience.kind === 'outside_teams') {
-        return { serverId, kind: 'outside_teams' };
-    }
-    const teamId = normalizeId(audience.teamId);
-    if (!teamId) return null;
-    if (audience.kind === 'team') {
-        return { serverId, kind: 'team', teamId };
-    }
-    const groupId = normalizeId(audience.groupId);
-    return groupId ? { serverId, kind: 'group', teamId, groupId } : null;
-}
-
-export function buildQualifiedAudienceSelectionKey(audience: QualifiedAudienceSelection): string {
-    if (audience.kind === 'outside_teams') {
-        return JSON.stringify([normalizeId(audience.serverId), audience.kind]);
-    }
-    if (audience.kind === 'team') {
-        return JSON.stringify([
-            normalizeId(audience.serverId),
-            audience.kind,
-            normalizeId(audience.teamId),
-        ]);
-    }
-    return JSON.stringify([
-        normalizeId(audience.serverId),
-        audience.kind,
-        normalizeId(audience.teamId),
-        normalizeId(audience.groupId),
-    ]);
-}
-
-export function buildQualifiedTagAddressKey(address: QualifiedTagAddress): string {
-    return JSON.stringify([normalizeId(address.serverId), normalizeId(address.tagId)]);
-}
-
-function dedupeAudiences(
-    values: readonly QualifiedAudienceSelection[] | undefined,
-): QualifiedAudienceSelection[] {
-    const seen = new Set<string>();
-    const next: QualifiedAudienceSelection[] = [];
-    for (const value of values ?? []) {
-        const normalized = normalizeAudience(value);
-        if (!normalized) continue;
-        const key = buildQualifiedAudienceSelectionKey(normalized);
-        if (seen.has(key)) continue;
-        seen.add(key);
-        next.push(normalized);
-    }
-    return next;
-}
-
-function dedupeTagIds(values: readonly QualifiedTagAddress[] | undefined): QualifiedTagAddress[] {
-    const seen = new Set<string>();
-    const next: QualifiedTagAddress[] = [];
-    for (const value of values ?? []) {
-        const serverId = normalizeId(value.serverId);
-        const tagId = normalizeId(value.tagId);
-        if (!serverId || !tagId) continue;
-        const normalized = { serverId, tagId };
-        const key = buildQualifiedTagAddressKey(normalized);
-        if (seen.has(key)) continue;
-        seen.add(key);
-        next.push(normalized);
-    }
-    return next;
-}
-
 export function createSessionListViewFilterDefaults(
     input: SessionListViewFilterDefaultsInput = {},
 ): SessionListViewFilters {
     return {
-        scope: input.scope ?? 'my_work',
-        attention: input.attention ?? 'any',
-        homeServerIds: dedupeIds(input.homeServerIds),
-        audiences: dedupeAudiences(input.audiences),
-        tagIds: dedupeTagIds(input.tagIds),
-        source: input.source ?? 'all',
+        ...normalizeSessionListFilterV1(input),
         searchQuery: input.searchQuery ?? '',
     };
 }
@@ -286,8 +187,28 @@ export function resolveTeamSessionsSurfaceState(input: Readonly<{
 
 export function normalizeSessionListViewFilters(
     input: SessionListViewFilters,
+    viewContext?: SessionListViewContext,
 ): SessionListViewFilters {
-    return createSessionListViewFilterDefaults(input);
+    const filters = createSessionListViewFilterDefaults(input);
+    if (viewContext?.kind !== 'team') return filters;
+    const team = createTeamAddress(viewContext.team.serverId, viewContext.team.teamId);
+    if (!team) return filters;
+    const audiences = filters.audiences.filter((audience) => (
+        audience.serverId === team.serverId
+        && audience.kind !== 'outside_teams'
+        && audience.teamId === team.teamId
+    ));
+    // Groups narrow the fixed destination; clearing its last narrowing returns
+    // to that Team, never to all accessible Sessions on the Home. A removed Home
+    // stays removed rather than being reintroduced by the destination default.
+    return {
+        ...filters,
+        audiences: !filters.homeServerIds.includes(team.serverId)
+            ? []
+            : audiences.length > 0
+                ? audiences
+                : [{ serverId: team.serverId, kind: 'team', teamId: team.teamId }],
+    };
 }
 
 export function removeHomeFromSessionListViewFilters(
@@ -307,9 +228,15 @@ export function removeHomeFromSessionListViewFilters(
 export function removeUnavailableSessionListFilterSelections(
     filters: SessionListViewFilters,
     deleted: SessionListFilterDeletedSelections,
+    viewContext?: SessionListViewContext,
 ): SessionListViewFilters {
     const deletedHomes = new Set(dedupeIds(deleted.deletedHomeServerIds));
     const deletedAudiences = new Set(dedupeAudiences(deleted.deletedAudiences).map(buildQualifiedAudienceSelectionKey));
+    if (viewContext?.kind === 'team') {
+        // The route's fixed Team identity is not an optional catalog selection.
+        // Keeping it also makes repeated missing-Team publications a no-op.
+        deletedAudiences.delete(buildQualifiedAudienceSelectionKey({ ...viewContext.team, kind: 'team' }));
+    }
     const deletedTags = new Set(dedupeTagIds(deleted.deletedTagIds).map(buildQualifiedTagAddressKey));
     if (deletedHomes.size === 0 && deletedAudiences.size === 0 && deletedTags.size === 0) return filters;
 
@@ -329,7 +256,7 @@ export function removeUnavailableSessionListFilterSelections(
     ) {
         return filters;
     }
-    return { ...filters, homeServerIds, audiences, tagIds };
+    return normalizeSessionListViewFilters({ ...filters, homeServerIds, audiences, tagIds }, viewContext);
 }
 
 function toHomeAudience(audience: QualifiedAudienceSelection): SessionAudienceSelectionV1 {

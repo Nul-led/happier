@@ -493,7 +493,7 @@ function parseReviewFacts(value) {
     || !optionalHostAccess
     || !rawCredentialAccess
     || !compatibility
-    || (value.updatePolicy !== 'reviewSensitiveChanges' && value.updatePolicy !== 'reviewEveryUpdate' && value.updatePolicy !== 'pinned')
+    || (value.updatePolicy !== 'allowed' && value.updatePolicy !== 'pinned')
   ) {
     return null;
   }
@@ -586,8 +586,7 @@ function diagnoseReviewFacts(value) {
   if (!parseRawCredentialAccess(value.rawCredentialAccess)) return 'review.rawCredentialAccess: invalid';
   if (!parseReviewCompatibility(value.compatibility)) return 'review.compatibility: invalid';
   if (
-    value.updatePolicy !== 'reviewSensitiveChanges'
-    && value.updatePolicy !== 'reviewEveryUpdate'
+    value.updatePolicy !== 'allowed'
     && value.updatePolicy !== 'pinned'
   ) return 'review.updatePolicy: invalid';
   return 'review: invalid';

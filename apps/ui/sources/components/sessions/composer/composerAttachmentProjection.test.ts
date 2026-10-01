@@ -111,7 +111,7 @@ describe('composer attachment row projection', () => {
             id: 'acme.issues/issue',
             pluginId: 'acme.issues',
             identity: { pluginId: 'acme.issues', localId: 'other-issue' },
-            immutableGenerationId: 'issues-generation-7',
+            occurrenceId: 'issues-generation-7',
             definition: {
                 id: 'other-issue',
                 title: 'Other issue',
@@ -141,7 +141,7 @@ describe('composer attachment row projection', () => {
             entriesById: { [matchingEntry.id]: matchingEntry },
         })).toEqual({
             identity: attachment.attachment,
-            immutableGenerationId: matchingEntry.immutableGenerationId,
+            occurrenceId: matchingEntry.occurrenceId,
             display: { kind: 'surface', renderer: { renderer: 'issue-display' }, sizing: 'content' },
         });
 
@@ -170,7 +170,7 @@ describe('composer attachment row projection', () => {
             id: 'acme.issues/issue',
             pluginId: 'acme.issues',
             identity: attachment.attachment,
-            immutableGenerationId: 'issues-generation-7',
+            occurrenceId: 'issues-generation-7',
             definition: {
                 id: attachment.attachment.localId,
                 title: 'Issue',
@@ -258,7 +258,7 @@ describe('composer attachment row projection', () => {
             id: 'acme.images/image',
             pluginId: 'acme.images',
             identity: attachment.attachment,
-            immutableGenerationId: 'images-generation-7',
+            occurrenceId: 'images-generation-7',
             definition: {
                 id: 'image',
                 title: 'Image',
@@ -371,7 +371,7 @@ describe('composer attachment row projection', () => {
             id: 'acme.recordings/recording',
             pluginId: 'acme.recordings',
             identity: attachment.attachment,
-            immutableGenerationId: 'recordings-generation-7',
+            occurrenceId: 'recordings-generation-7',
             definition: {
                 id: 'recording',
                 title: 'Recording',
@@ -414,7 +414,7 @@ describe('composer attachment row projection', () => {
             id: 'acme.issues/issue',
             pluginId: 'acme.issues',
             identity: attachment.attachment,
-            immutableGenerationId: 'issues-generation-7',
+            occurrenceId: 'issues-generation-7',
             definition: {
                 id: attachment.attachment.localId,
                 title: 'Issue',
@@ -443,7 +443,7 @@ describe('composer attachment row projection', () => {
             attachment,
             catalog: expect.objectContaining({
                 identity: attachment.attachment,
-                immutableGenerationId: entry.immutableGenerationId,
+                occurrenceId: entry.occurrenceId,
                 preview: entry.definition.preview,
             }),
         }));

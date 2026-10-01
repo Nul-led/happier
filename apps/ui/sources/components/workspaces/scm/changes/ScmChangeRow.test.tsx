@@ -303,4 +303,73 @@ describe('ScmChangeRow', () => {
     });
     expect(onToggleSelection).toHaveBeenCalledTimes(1);
   });
+
+  // Session-tabs lab G1: in the name-first (stacked) row, ⋯ appears only on hover or keyboard focus,
+  // taking the +/− slot; at rest the row shows its line counts.
+  it('reveals the row actions in place of the line counts only on hover or focus (stacked, web)', async () => {
+    const { ScmChangeRow } = await import('./ScmChangeRow');
+    const screen = await renderScreen(<ScmChangeRow
+          theme={createScmChangeRowTheme()}
+          layout="stacked"
+          file={{ fileName: 'modal.tsx', filePath: 'apps/ui', fullPath: 'apps/ui/modal.tsx', status: 'modified', isIncluded: false, linesAdded: 4, linesRemoved: 2 } as any}
+          onPress={() => {}}
+          trailingElement={React.createElement('RowMenu', { testID: 'row-menu' })}
+        />);
+
+    expect(screen.findByTestId('row-menu')).toBeNull();
+    expect(screen.findByTestId('scm-change-row-stats-column')).toBeTruthy();
+
+    const row = screen.findByTestId('scm-change-row-container:apps_ui_modal.tsx') as any;
+    await act(async () => { row.props.onMouseEnter?.(); });
+    expect(screen.findByTestId('row-menu')).toBeTruthy();
+    expect(screen.findByTestId('scm-change-row-stats-column')).toBeNull();
+
+    await act(async () => { row.props.onMouseLeave?.(); });
+    expect(screen.findByTestId('row-menu')).toBeNull();
+
+    // Keyboard: focus inside the row reveals it too, so ⋯ stays reachable without a pointer.
+    await act(async () => { row.props.onFocus?.(); });
+    expect(screen.findByTestId('row-menu')).toBeTruthy();
+  });
+
+  it('is highlighted while Review is on its file, and not otherwise', async () => {
+    const arf = await import('../review/activeReviewFile');
+    arf.resetActiveReviewFilesForTests();
+    const { ScmChangeRow } = await import('./ScmChangeRow');
+    const file = { fileName: 'a.ts', filePath: 'src', fullPath: 'src/a.ts', status: 'modified', isIncluded: false, linesAdded: 1, linesRemoved: 0 } as any;
+    const theme = createScmChangeRowTheme();
+    const screen = await renderScreen(<ScmChangeRow theme={theme} file={file} onPress={() => {}} activeReviewFileKey="s1" />);
+    const background = () => flattenStyle(screen.findByTestId('scm-change-row-container:src_a.ts')?.props.style).backgroundColor;
+    expect(background()).toBe(theme.colors.surface.base);
+    await act(async () => { arf.publishActiveReviewFile('s1', { presented: true, activePath: 'src/a.ts' }); });
+    expect(background()).toBe(theme.colors.surface.inset);
+    await act(async () => { arf.publishActiveReviewFile('s1', { presented: true, activePath: 'src/b.ts' }); });
+    expect(background()).toBe(theme.colors.surface.base);
+  });
+
+  it('puts the name first and the folder after it on one line when compact', async () => {
+    const { ScmChangeRow } = await import('./ScmChangeRow');
+    const file = { fileName: 'SettingsModal.tsx', filePath: 'apps/ui/settings', fullPath: 'apps/ui/settings/SettingsModal.tsx', status: 'modified', isIncluded: false, linesAdded: 1, linesRemoved: 0 } as any;
+    const screen = await renderScreen(<ScmChangeRow theme={createScmChangeRowTheme()} file={file} onPress={() => {}} layout="compact" />);
+    const texts = screen.findAllByType('Text' as any).map((node) => [node.props.children].flat().join(''));
+    const nameIndex = texts.findIndex((text) => text === 'SettingsModal.tsx');
+    const folderIndex = texts.findIndex((text) => text.includes('apps/ui/settings'));
+    expect(nameIndex).toBeGreaterThanOrEqual(0);
+    expect(folderIndex).toBeGreaterThan(nameIndex);
+  });
+
+  it('sits a compact row on the tree row rhythm (no row gap) and keeps the two-line row taller', async () => {
+    const { ScmChangeRow } = await import('./ScmChangeRow');
+    const { TREE_ROW_METRICS } = await import('@/components/ui/lists/itemDensityMetrics');
+    const file = { fileName: 'a.ts', filePath: 'src', fullPath: 'src/a.ts', status: 'modified', isIncluded: false, linesAdded: 1, linesRemoved: 0 } as any;
+    const compact = await renderScreen(<ScmChangeRow theme={createScmChangeRowTheme()} file={file} onPress={() => {}} layout="compact" />);
+    const compactStyle = flattenStyle(compact.findByTestId('scm-change-row-container:src_a.ts')?.props.style);
+    // Web under a precise pointer: the tree's 28 px row; the height comes from the row, not padding.
+    expect(compactStyle.minHeight).toBe(TREE_ROW_METRICS.minHeightPx.precise);
+    expect(compactStyle.paddingVertical).toBe(0);
+    const stacked = await renderScreen(<ScmChangeRow theme={createScmChangeRowTheme()} file={file} onPress={() => {}} layout="stacked" />);
+    const stackedStyle = flattenStyle(stacked.findByTestId('scm-change-row-container:src_a.ts')?.props.style);
+    expect(stackedStyle.minHeight).toBeUndefined();
+    expect(stackedStyle.paddingVertical).toBeGreaterThan(0);
+  });
 });

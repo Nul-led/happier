@@ -9,6 +9,7 @@ import {
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ItemList } from '@/components/ui/lists/ItemList';
+import { PageHeader } from '@/components/ui/layout/PageHeader';
 import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
 import { Icon } from '@/components/ui/icons/Icon';
 import { Modal } from '@/modal';
@@ -244,47 +245,85 @@ export function SessionRemotePermissionGrantsView(props: Readonly<{
         void load(state.nextCursor, true);
     }, [load, state]);
 
+    const header = (
+        <PageHeader
+            title={t('sessionRemotePermissionGrants.title')}
+            description={t('sessionPages.permissions.description')}
+        />
+    );
+
     if (state.kind === 'loading') {
         return (
-            <SurfaceStateCard
-                testID="session-remote-permission-grants-loading"
-                kind="loading"
-                title={t('sessionRemotePermissionGrants.loadingTitle')}
-                reason={t('sessionRemotePermissionGrants.loadingReason')}
-                accessibilitySemantics="status"
-            />
+            <ItemList presentation="page" style={{ paddingTop: 0 }}>
+                {header}
+                <ItemGroup surface="none">
+                    <SurfaceStateCard
+                        testID="session-remote-permission-grants-loading"
+                        kind="loading"
+                        title={t('sessionRemotePermissionGrants.loadingTitle')}
+                        reason={t('sessionRemotePermissionGrants.loadingReason')}
+                        accessibilitySemantics="status"
+                    />
+                </ItemGroup>
+            </ItemList>
         );
     }
 
     if (state.kind === 'unavailable') {
         return (
-            <SurfaceStateCard
-                testID="session-remote-permission-grants-unavailable"
-                kind="unavailable"
-                title={t('sessionRemotePermissionGrants.unavailableTitle')}
-                reason={t('sessionRemotePermissionGrants.unavailableReason')}
-                diagnosticCode={state.code}
-                action={{ label: t('sessionRemotePermissionGrants.retry'), onPress: () => load(null, false) }}
-                accessibilitySemantics="alert"
-            />
+            <ItemList presentation="page" style={{ paddingTop: 0 }}>
+                {header}
+                <ItemGroup surface="none">
+                    <SurfaceStateCard
+                        testID="session-remote-permission-grants-unavailable"
+                        kind="unavailable"
+                        title={t('sessionRemotePermissionGrants.unavailableTitle')}
+                        reason={t('sessionRemotePermissionGrants.unavailableReason')}
+                        diagnosticCode={state.code}
+                        action={{ label: t('sessionRemotePermissionGrants.retry'), onPress: () => load(null, false) }}
+                        accessibilitySemantics="alert"
+                    />
+                </ItemGroup>
+            </ItemList>
         );
     }
 
     if (state.grants.length === 0 && !state.nextCursor) {
         return (
-            <SurfaceStateCard
-                testID="session-remote-permission-grants-empty"
-                kind="empty"
-                title={t('sessionRemotePermissionGrants.emptyTitle')}
-                reason={t('sessionRemotePermissionGrants.emptyReason')}
-                action={{ label: t('sessionRemotePermissionGrants.retry'), onPress: () => load(null, false) }}
-                accessibilitySemantics="status"
-            />
+            <ItemList presentation="page" style={{ paddingTop: 0 }}>
+                {header}
+                <ItemGroup surface="none">
+                    <SurfaceStateCard
+                        testID="session-remote-permission-grants-empty"
+                        kind="empty"
+                        title={t('sessionRemotePermissionGrants.emptyTitle')}
+                        reason={t('sessionRemotePermissionGrants.emptyReason')}
+                        action={{ label: t('sessionRemotePermissionGrants.retry'), onPress: () => load(null, false) }}
+                        accessibilitySemantics="status"
+                    />
+                </ItemGroup>
+            </ItemList>
         );
     }
 
     return (
-        <ItemList>
+        <ItemList presentation="page" style={{ paddingTop: 0 }}>
+            {header}
+
+            {operationIssue ? (
+                <ItemGroup>
+                    <Item
+                        testID="session-remote-permission-grants-operation-error"
+                        title={t('sessionRemotePermissionGrants.revokeFailedTitle')}
+                        subtitle={operationIssue === 'loadMore'
+                            ? t('sessionRemotePermissionGrants.loadMoreFailedReason')
+                            : t('sessionRemotePermissionGrants.revokeFailedReason')}
+                        icon={<Icon name="warning-circle" size={20} color={theme.colors.state.danger.foreground} />}
+                        mode="info"
+                    />
+                </ItemGroup>
+            ) : null}
+
             <ItemGroup title={t('sessionRemotePermissionGrants.listTitle')}>
                 {state.grants.map((grant) => {
                     const revoked = grant.revokedAtMs != null;
@@ -302,11 +341,6 @@ export function SessionRemotePermissionGrantsView(props: Readonly<{
                                     sourceRef: grant.sourceRef,
                                     sourceRevisionOrEpoch: grant.sourceRevisionOrEpoch,
                                 })}
-                                icon={<Icon
-                                    name={revoked ? 'x-circle' : 'shield-check'}
-                                    size={29}
-                                    color={revoked ? theme.colors.text.secondary : theme.colors.accent.blue}
-                                />}
                                 mode="info"
                                 copy={grant.grantId}
                             />
@@ -317,10 +351,10 @@ export function SessionRemotePermissionGrantsView(props: Readonly<{
                                     subtitle={revokingGrantId === grant.grantId
                                         ? t('sessionRemotePermissionGrants.revoking')
                                         : undefined}
-                                    icon={<Icon name="x-circle" size={29} color={theme.colors.state.danger.foreground} />}
                                     onPress={() => { void revoke(grant); }}
                                     disabled={revokingGrantId !== null}
                                     loading={revokingGrantId === grant.grantId}
+                                    showChevron={false}
                                     destructive
                                 />
                             )}
@@ -329,28 +363,13 @@ export function SessionRemotePermissionGrantsView(props: Readonly<{
                 })}
             </ItemGroup>
 
-            {operationIssue ? (
-                <ItemGroup title={t('sessionRemotePermissionGrants.revokeFailedTitle')}>
-                    <Item
-                        testID="session-remote-permission-grants-operation-error"
-                        title={t('sessionRemotePermissionGrants.revokeFailedTitle')}
-                        subtitle={operationIssue === 'loadMore'
-                            ? t('sessionRemotePermissionGrants.loadMoreFailedReason')
-                            : t('sessionRemotePermissionGrants.revokeFailedReason')}
-                        icon={<Icon name="warning-circle" size={29} color={theme.colors.state.danger.foreground} />}
-                        mode="info"
-                    />
-                </ItemGroup>
-            ) : null}
-
             {state.nextCursor ? (
-                <ItemGroup title="">
+                <ItemGroup>
                     <Item
                         testID="session-remote-permission-grants-load-more"
                         title={state.loadingMore
                             ? t('sessionRemotePermissionGrants.loadingMore')
                             : t('sessionRemotePermissionGrants.loadMore')}
-                        icon={<Icon name="arrow-circle-down" size={29} color={theme.colors.accent.blue} />}
                         onPress={loadMore}
                         disabled={state.loadingMore}
                         loading={state.loadingMore}

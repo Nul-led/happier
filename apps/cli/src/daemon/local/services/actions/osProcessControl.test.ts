@@ -210,6 +210,17 @@ describe('createOsProcessControl.signal', () => {
         })).resolves.toEqual({ status: 'failed' });
     });
 
+    it.each(['EPERM', 'EACCES', 'EINVAL'])('surfaces a descendant signal refusal (%s)', async (code) => {
+        const kill = (pid: number) => {
+            if (pid === 4_322) throw errnoError(code);
+        };
+        await expect(control(kill).signal({
+            pid: 4_321,
+            signal: 'SIGTERM',
+            descendantPids: [4_322],
+        })).resolves.toEqual({ status: code === 'EINVAL' ? 'failed' : 'permission_denied' });
+    });
+
     it('never signals the daemon itself, pid 0, or pid 1 even if they appear as descendants', async () => {
         const kill = vi.fn();
 
@@ -224,6 +235,18 @@ describe('createOsProcessControl.signal', () => {
 });
 
 describe('createOsProcessControl.resolveDescendantPids', () => {
+    it('follows multiple surviving orphan branches from one process table', async () => {
+        const control = createOsProcessControl({
+            platform: 'linux',
+            refreshInventory: async () => snapshot(),
+            execFile: async () => ({ stdout: '4322 1\n4323 4322\n4324 1\n4325 4324\n' }),
+        });
+
+        await expect(control.resolveDescendantPids([4_322, 4_324])).resolves.toEqual({
+            status: 'resolved', pids: [4_323, 4_325],
+        });
+    });
+
     it('walks the real process table transitively and excludes the daemon itself', async () => {
         const execFile = vi.fn(async () => ({
             stdout: [

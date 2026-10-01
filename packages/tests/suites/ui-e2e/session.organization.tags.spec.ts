@@ -30,8 +30,9 @@ const testIds = {
   rowTagAction: 'session-item-tag-action',
   createTagOption: 'dropdown-option-__create__',
   existingTagOption: (tagLabel: string) => `dropdown-option-${safeDropdownItemId(tagLabel)}`,
-  tagFilterTrigger: 'session-list-tag-filter-trigger',
-  tagFilterOption: (tagLabel: string) => `dropdown-option-session-list-tag-filter_${safeDropdownItemId(tagLabel)}`,
+  // Tags filter the list from the scope editor ("My work ⌄"), the one place for list filters.
+  scopeFilterTrigger: 'session-list-filter-trigger',
+  scopeFilterPanel: 'session-list-filter-panel',
 } as const;
 
 function safeDropdownItemId(value: string): string {
@@ -222,13 +223,14 @@ test.describe('ui e2e: session organization tags', () => {
     await reloadSessionList(page, uiBaseUrl);
     await expectRowsVisible(page, [taggedSessionId, untaggedSessionId]);
 
-    await page.getByTestId(testIds.tagFilterTrigger).click();
-    await expect(page.getByTestId(testIds.tagFilterOption(tagLabel))).toBeVisible({ timeout: 60_000 });
-    await page.getByTestId(testIds.tagFilterOption(tagLabel)).click();
+    await page.getByTestId(testIds.scopeFilterTrigger).click();
+    const tagChip = page.getByTestId(testIds.scopeFilterPanel).getByRole('checkbox', { name: tagLabel });
+    await expect(tagChip).toBeVisible({ timeout: 60_000 });
+    await tagChip.click();
     await expect(page.getByTestId(testIds.row(taggedSessionId))).toHaveCount(1, { timeout: 60_000 });
     await expect(page.getByTestId(testIds.row(untaggedSessionId))).toHaveCount(0, { timeout: 60_000 });
 
-    await page.getByTestId(testIds.tagFilterOption(tagLabel)).click();
+    await tagChip.click();
     await page.keyboard.press('Escape');
     await expectRowsVisible(page, [taggedSessionId, untaggedSessionId]);
 

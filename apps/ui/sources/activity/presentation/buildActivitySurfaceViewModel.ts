@@ -30,16 +30,9 @@ function resolveViewModelTitle(params: Readonly<{
 
 function resolveViewModelSubtitle(params: Readonly<{
     candidate: SessionActivityAttention;
-    isStatusOnly: boolean;
-    contentReadable: boolean;
-    privacyMode: ActivitySurfacePolicy['privacyMode'];
-    showMachinePath: boolean;
+    mayShowWorkspace: boolean;
 }>): string | null {
-    if (!params.showMachinePath) return null;
-    if (params.privacyMode !== 'include_preview') return null;
-    // Lane 09's status-only presentation still withholds everything but runtime state.
-    if (params.isStatusOnly) return null;
-    if (!params.contentReadable) return null;
+    if (!params.mayShowWorkspace) return null;
     const subtitle = params.candidate.subtitle.trim();
     return subtitle.length > 0 ? subtitle : null;
 }
@@ -109,12 +102,13 @@ export function buildActivitySurfaceViewModel(params: Readonly<{
     const isStatusOnly = params.candidate.session.viewer?.attention.presentation === 'status_only';
     const contentReadable = isSessionAwarenessContentReadableV1(params.candidate.awareness.encryption);
     const mayShowPrivateContent = !isStatusOnly && contentReadable;
+    const mayShowWorkspace = params.showMachinePath && mayShowPrivateContent && privacyMode === 'include_preview';
     const status = getSessionStatus(
         buildSessionListRenderableFromSession(params.candidate.session),
         params.nowMs,
     );
     const contextLine = resolveSessionContextLine(params.candidate.context, {
-        showWorkspace: params.showMachinePath,
+        showWorkspace: mayShowWorkspace,
     });
 
     return {
@@ -131,10 +125,7 @@ export function buildActivitySurfaceViewModel(params: Readonly<{
         }),
         subtitle: resolveViewModelSubtitle({
             candidate: params.candidate,
-            isStatusOnly,
-            contentReadable,
-            privacyMode,
-            showMachinePath: params.showMachinePath,
+            mayShowWorkspace,
         }),
         previewText: resolveViewModelPreviewText({
             candidate: params.candidate,

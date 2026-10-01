@@ -1,9 +1,10 @@
 import * as React from 'react';
+import { createReactNavigationNativeMock } from '@/dev/testkit/mocks/reactNavigation';
 import renderer, { act } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { AppPaneProvider } from '@/components/appShell/panes/AppPaneProvider';
-import { renderScreen, standardCleanup } from '@/dev/testkit';
+import { renderScreen } from '@/dev/testkit/render/renderScreen';
+import { standardCleanup } from '@/dev/testkit/cleanup/standardCleanup';
 import { createThemeFixture } from '@/dev/testkit/fixtures/themeFixtures';
 import { createExpoRouterMock } from '@/dev/testkit/mocks/router';
 import { createReactNativeWebMock } from '@/dev/testkit/mocks/reactNative';
@@ -32,7 +33,7 @@ vi.mock('@/sync/domains/plugins/availability/generatedBundledPluginUiArtifacts',
 vi.mock('@/sync/domains/plugins/availability/bundledAppExactArtifactSource', () => ({
     createBundledPluginUiAppExactArtifactSource: () => Object.freeze({
         kind: 'appExact' as const,
-        readFile: vi.fn(async () => null),
+        fetch: vi.fn(async () => null),
     }),
 }));
 vi.mock('@/sync/domains/plugins/availability/reader', () => ({
@@ -200,6 +201,7 @@ vi.mock('react-native-safe-area-context', () => ({
     useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
 }));
 vi.mock('@react-navigation/native', () => ({
+    ...createReactNavigationNativeMock(),
     useFocusEffect: () => {},
     useIsFocused: () => true,
 }));
@@ -420,6 +422,8 @@ vi.mock('@/utils/system/fireAndForget', () => ({
 const AppPaneProviderWrapper = ({ children }: { children?: React.ReactNode }) => (
     <AppPaneProvider>{children ?? null}</AppPaneProvider>
 );
+
+const { AppPaneProvider } = await import('@/components/appShell/panes/AppPaneProvider');
 
 describe('SessionView info navigation', () => {
     beforeEach(() => {

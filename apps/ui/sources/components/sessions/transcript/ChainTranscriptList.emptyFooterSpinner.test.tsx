@@ -2,6 +2,7 @@ import React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { renderScreen, standardCleanup } from '@/dev/testkit';
+import { createTestSessionTranscriptSource, wrapWithSessionTranscriptSource } from '@/dev/testkit/sessionTranscriptSource';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -19,13 +20,27 @@ vi.mock('@legendapp/list/react-native', async () => {
     return createCapturingLegendListMock().module;
 });
 
+
+function createChainTestRoot(Content: typeof import('./ChainTranscriptList')['ChainTranscriptList']) {
+    return function ChainTestRoot(props: React.ComponentProps<typeof Content>) {
+        const [source] = React.useState(() => createTestSessionTranscriptSource({
+            sessionId: props.sessionId, serverId: props.serverId, messages: props.messages,
+            metadata: props.metadata, interaction: props.interaction,
+            loadSidechain: async () => 'not_ready',
+            history: { loadOlder: props.loadOlder ?? (async () => ({ loaded: 0, hasMore: false, status: 'not_ready' })) },
+        }));
+        return wrapWithSessionTranscriptSource(React.createElement(Content, props), source);
+    };
+}
+
 describe('ChainTranscriptList empty-state footer spinner', () => {
     type ChainTranscriptListTestProps =
         Omit<React.ComponentProps<typeof import('./ChainTranscriptList')['ChainTranscriptList']>, 'datasetKey'>
         & { datasetKey?: string };
 
     async function renderChainTranscriptList(props: ChainTranscriptListTestProps) {
-        const { ChainTranscriptList } = await import('./ChainTranscriptList');
+        const { ChainTranscriptList: ChainContent } = await import('./ChainTranscriptList');
+        const ChainTranscriptList = createChainTestRoot(ChainContent);
         return renderScreen(React.createElement(ChainTranscriptList, {
             ...props,
             datasetKey: props.datasetKey ?? JSON.stringify([props.sessionId, 'test-sidechain']),
@@ -41,7 +56,7 @@ describe('ChainTranscriptList empty-state footer spinner', () => {
             sessionId: 's1',
             messages: [],
             metadata: null,
-            interaction: { canSendMessages: true, canApprovePermissions: true, disableToolNavigation: true },
+            interaction: { canSendMessages: true, canApprovePermissions: true },
             isInitialLoadInFlight: true,
         });
 
@@ -53,7 +68,7 @@ describe('ChainTranscriptList empty-state footer spinner', () => {
             sessionId: 's1',
             messages: [],
             metadata: null,
-            interaction: { canSendMessages: true, canApprovePermissions: true, disableToolNavigation: true },
+            interaction: { canSendMessages: true, canApprovePermissions: true },
             isInitialLoadInFlight: false,
         });
 
@@ -65,7 +80,7 @@ describe('ChainTranscriptList empty-state footer spinner', () => {
             sessionId: 's1',
             messages: [],
             metadata: null,
-            interaction: { canSendMessages: true, canApprovePermissions: true, disableToolNavigation: true },
+            interaction: { canSendMessages: true, canApprovePermissions: true },
         });
 
         expect(screen.findByTestId('chain-transcript-loading-footer')).toBeTruthy();

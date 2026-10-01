@@ -1,17 +1,15 @@
 import * as React from 'react';
 import { View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
-import { useRouter } from 'expo-router';
+import { useSessionTranscriptSource } from '@/components/sessions/transcript/source/SessionTranscriptSourceContext';
+import { useTranscriptMachineId } from '@/components/sessions/transcript/source/appSessionTranscriptSource';
+import { buildScopedSessionRouteHref } from '@/hooks/session/sessionRouteServerScope';
 
 import type { SessionAgentTransitionDividerV1 } from '@happier-dev/protocol';
 
 import { getAgentCore } from '@/agents/catalog/catalog';
 import { Icon } from '@/components/ui/icons/Icon';
 import { TranscriptSeparatorRow } from '@/components/sessions/transcript/separators/TranscriptSeparatorRow';
-import {
-    resolvePreferredServerIdForSessionId,
-} from '@/sync/runtime/orchestration/serverScopedRpc/resolvePreferredServerIdForSessionId';
-import { useSessionMachineId } from '@/sync/domains/state/storage';
 import { t } from '@/text';
 
 import {
@@ -62,7 +60,7 @@ export function AgentTransitionDividerRow(props: Readonly<{
     sessionId?: string | null;
 }>): React.ReactElement {
     const { theme } = useUnistyles();
-    const router = useRouter();
+    const transcriptSource = useSessionTranscriptSource();
     const from = resolveAgentSlot(props.divider.fromAgentId);
     const to = resolveAgentSlot(props.divider.toAgentId);
     // The plain sentence stays the row's accessible name and the card's
@@ -81,8 +79,8 @@ export function AgentTransitionDividerRow(props: Readonly<{
     // re-rendered it once per unrelated write (MEASURED; see the sibling
     // `.subscriptionWidth` test); a string compares by value, so it now re-renders
     // exactly when the answer moves.
-    const machineId = useSessionMachineId(sessionId);
-    const serverId = resolvePreferredServerIdForSessionId(sessionId) ?? null;
+    const machineId = useTranscriptMachineId();
+    const serverId = transcriptSource.serverId;
 
     // `0` is a recorded cutoff meaning "nothing was carried over" — a fact the
     // card says its own sentence for. It is never absent: the sidecar schema
@@ -91,7 +89,7 @@ export function AgentTransitionDividerRow(props: Readonly<{
     const cutoff = props.divider.sourceCutoffSeqInclusive;
 
     const handleOpen = React.useCallback(() => {
-        if (!sessionId) return;
+        if (!sessionId || transcriptSource.navigate === null) return;
         openAgentTransitionHandedOverContextModal({
             sessionId,
             machineId,
@@ -108,10 +106,10 @@ export function AgentTransitionDividerRow(props: Readonly<{
             // Same-Session boundary, so the jump target is this transcript. The
             // fork divider pushes its PARENT Session's route because its source
             // is a different Session; here a push would stack a duplicate of the
-            // screen the reader is already on, so the same `jumpSeq` contract is
-            // reached by updating the route's own parameter.
+            // screen the reader is already on. The app source navigation adapter
+            // preserves that same `jumpSeq` contract by updating the route parameter.
             onJumpToCutoff: cutoff > 0
-                ? () => router.setParams({ jumpSeq: String(cutoff) })
+                ? () => transcriptSource.navigate?.(buildScopedSessionRouteHref({ sessionId, serverId, query: { jumpSeq: cutoff } }))
                 : null,
         });
     }, [
@@ -120,7 +118,7 @@ export function AgentTransitionDividerRow(props: Readonly<{
         props.divider.fromAgentId,
         props.divider.returningAgentLastSeenSeqInclusive,
         props.divider.toAgentId,
-        router,
+        transcriptSource,
         serverId,
         sessionId,
         title,
@@ -144,7 +142,7 @@ export function AgentTransitionDividerRow(props: Readonly<{
             // marks, so the sentence has to be carried by the accessible name
             // rather than reassembled from whatever fragments a reader exposes.
             accessibilityLabel={title}
-            {...(sessionId
+            {...(sessionId && transcriptSource.navigate !== null
                 ? {
                     onPress: handleOpen,
                     accessibilityLabel: `${title}. ${t('session.agentContinuation.handedOver.open')}`,

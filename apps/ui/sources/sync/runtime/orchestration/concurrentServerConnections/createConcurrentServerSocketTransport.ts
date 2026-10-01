@@ -1,126 +1,35 @@
-import { io, type Socket } from 'socket.io-client';
-import type {
-    ManagedConnectionTransport,
-    TransportDisconnectEvent,
-} from '@happier-dev/connection-supervisor';
+import { createHappierSocket, type HappierSocket } from '@happier-dev/sync-client';
+import type { ManagedConnectionTransport } from '@happier-dev/connection-supervisor';
 import {
     CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION,
     buildAccountStoredContentCompatibilitySocketAuthV1,
 } from '@happier-dev/protocol';
 
-import {
-    resolveSocketIoTransports,
-    resolveSocketIoTransportsForCarrier,
-    resolveSocketIoTransportsForHomeCarrier,
-} from '@/sync/runtime/socketIoTransports';
+import { resolveSocketIoTransportsForCarrier } from '@/sync/runtime/socketIoTransports';
 import type { HomeCarrier } from '@/sync/runtime/homeCarrier';
 import { resolveServerRuntimeOrigin } from '@/sync/runtime/nativeLoopbackTunnels/runtimeOrigin';
 
-export type ConcurrentServerSocket = Socket;
+export type ConcurrentServerSocket = HappierSocket;
 
 export function createConcurrentServerSocketTransport(params: Readonly<{
     serverUrl: string;
     token: string;
     carrier?: 'https' | 'iroh';
     runtimeOrigin?: string;
-    /** Semantic carrier for a Home with no reachable URL origin (browser Iroh). */
     homeCarrier?: HomeCarrier;
 }>): Readonly<{
     socket: ConcurrentServerSocket;
     transport: ManagedConnectionTransport;
 }> {
-    // A carrier that owns its own bytes supplies the socket. The endpoint stays
-    // this Home's canonical URL — never the focused Home's, and never an
-    // ephemeral port that could be persisted.
-    const transports = params.homeCarrier
-        ? resolveSocketIoTransportsForHomeCarrier(params.homeCarrier.createWebSocket)
-        : resolveSocketIoTransportsForCarrier(params.carrier, resolveSocketIoTransports());
-    const endpoint = resolveServerRuntimeOrigin(params);
-    const socket = io(endpoint, {
-        path: '/v1/updates/',
-        auth: {
-            token: params.token,
-            clientType: 'user-scoped' as const,
-            clientPurpose: 'concurrent-server-cache' as const,
-            ...buildAccountStoredContentCompatibilitySocketAuthV1(
-                CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION,
-            ),
-        },
-        ...(transports ? { transports } : null),
-        withCredentials: false,
-        // Avoid the socket.io global Manager cache. This transport is frequently created/destroyed as
-        // servers enter/exit the concurrent session cache, and cached Managers can retain listeners.
-        forceNew: true,
-        multiplex: false,
-        reconnection: false,
-        autoConnect: false,
+    return createHappierSocket({
+        endpoint: resolveServerRuntimeOrigin(params),
+        token: params.token,
+        clientType: 'user-scoped',
+        clientPurpose: 'concurrent-server-cache',
+        authExtras: buildAccountStoredContentCompatibilitySocketAuthV1(
+            CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION,
+        ),
+        transports: resolveSocketIoTransportsForCarrier(params.carrier),
+        ...(params.homeCarrier ? { websocketFactory: params.homeCarrier.createWebSocket } : {}),
     });
-
-    const connectedListeners = new Set<() => void>();
-    const disconnectedListeners = new Set<(event: TransportDisconnectEvent) => void>();
-    const errorListeners = new Set<(error: unknown) => void>();
-    let intentionalDisconnect = false;
-
-    socket.on('connect', () => {
-        connectedListeners.forEach((listener) => listener());
-    });
-
-    socket.on('disconnect', (reason: unknown) => {
-        const event: TransportDisconnectEvent = {
-            intentional: intentionalDisconnect,
-            reason: typeof reason === 'string' ? reason : null,
-        };
-        intentionalDisconnect = false;
-        disconnectedListeners.forEach((listener) => listener(event));
-    });
-
-    socket.on('connect_error', (error: unknown) => {
-        errorListeners.forEach((listener) => listener(error));
-    });
-
-    socket.on('error', (error: unknown) => {
-        errorListeners.forEach((listener) => listener(error));
-    });
-
-    return {
-        socket,
-        transport: {
-            async connect() {
-                intentionalDisconnect = false;
-                socket.connect();
-            },
-            async disconnect(options = {}) {
-                intentionalDisconnect = options.intentional === true;
-                socket.disconnect();
-            },
-            async destroy() {
-                intentionalDisconnect = false;
-                connectedListeners.clear();
-                disconnectedListeners.clear();
-                errorListeners.clear();
-                socket.offAny?.();
-                socket.removeAllListeners();
-                try {
-                    socket.disconnect();
-                } catch {
-                    // ignore
-                }
-            },
-            isConnected() {
-                return socket.connected;
-            },
-            onConnected(listener) {
-                connectedListeners.add(listener);
-                return () => connectedListeners.delete(listener);
-            },
-            onDisconnected(listener) {
-                disconnectedListeners.add(listener);
-                return () => disconnectedListeners.delete(listener);
-            },
-            onError(listener) {
-                errorListeners.add(listener);
-                return () => errorListeners.delete(listener);
-            },
-        },
-    };
 }

@@ -106,6 +106,8 @@ describe('ApiClient Team credential Provider broker methods', () => {
           teamId: 'team-1',
           resourceId: 'resource-1',
           sourceRevision: 'source-revision-1',
+          brokerPlacementFingerprint: 'c'.repeat(64),
+          initiatorTokenEpoch: 0,
           initiator: { accountId: 'account-1', machineId: 'worker-1', endpointId: 'a'.repeat(64) },
           target: { custodianAccountId: 'account-2', machineId: 'broker-1', endpointId: 'b'.repeat(64) },
           consumer: { kind: 'session' as const, sessionId: 'session-1' },

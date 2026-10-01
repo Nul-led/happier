@@ -1,0 +1,277 @@
+import type { AgentInstallJob, AgentInstallJobConsent, AgentInstallJobEvent, AgentInstallJobIntent } from '@happier-dev/protocol/daemon/agent-install-jobs';
+
+import { MACHINE_RPC_POLL_INTERVAL_MS } from '@/sync/ops/machineRpcPollInterval';
+import { serverAccountScopedResourceKey, type ServerAccountScope, type ServerAccountScopeLifetime } from '@/sync/domains/scope/serverAccountScope';
+import { subscribeHomeCredentialChange } from '@/sync/runtime/orchestration/homeAccountChange';
+import { machineAgentInventoryStore } from '../machineAgentInventoryStore';
+import type { MachineAgentJob, MachineAgentJobStep } from '../machineAgentTypes';
+import { AgentInstallJobRpcError, cancelAgentInstallJobRpc, listAgentInstallJobsRpc, readAgentInstallJobRpc, startAgentInstallJobRpc } from './api';
+
+export type MachineAgentInstallJobTarget = ServerAccountScope & Readonly<{ machineId: string }>;
+export type AgentInstallJobTarget = MachineAgentInstallJobTarget & Readonly<{ agentId: string }>;
+export type AgentInstallJobStartOptions = Readonly<{ consent: AgentInstallJobConsent; force?: boolean }>;
+
+type JobRecord = { job: MachineAgentJob; cursor: number; hydrated: boolean; polling: boolean; timer?: ReturnType<typeof setTimeout> };
+type MachineJobs = { target: MachineAgentInstallJobTarget; controller: AbortController; jobs: ReadonlyMap<string, MachineAgentJob>; records: Map<string, JobRecord>; listeners: Set<() => void>; agentListeners: Map<string, Set<() => void>>; loading?: Promise<void>; starts: Map<string, Promise<MachineAgentJob>> };
+const machines = new Map<string, MachineJobs>();
+const machineKey = (target: MachineAgentInstallJobTarget) => serverAccountScopedResourceKey(target, 'agent-install-jobs', target.machineId);
+const inventoryKey = (target: MachineAgentInstallJobTarget) => serverAccountScopedResourceKey(target, 'machine-agents', target.machineId);
+
+// Closing a presenter must not stop a daemon job; replacing its credential must stop
+// this Account's reads immediately. The shared credential fanout owns that distinction.
+subscribeHomeCredentialChange(({ serverId }) => {
+    for (const [key, state] of [...machines]) {
+        if (state.target.serverId !== serverId) continue;
+        state.controller.abort();
+        for (const record of state.records.values()) if (record.timer) clearTimeout(record.timer);
+        machines.delete(key);
+        machineAgentInventoryStore.publishJobs(inventoryKey(state.target), new Map());
+        for (const listener of state.listeners) listener();
+        for (const listeners of state.agentListeners.values()) for (const listener of listeners) listener();
+    }
+});
+
+function requireCurrent(state: MachineJobs): void {
+    if (state.controller.signal.aborted) throw new AgentInstallJobRpcError('scope_retired');
+}
+
+function accountLifetime(state: MachineJobs): ServerAccountScopeLifetime {
+    const signal = state.controller.signal;
+    return {
+        scope: { serverId: state.target.serverId, accountId: state.target.accountId },
+        isCurrent: () => !signal.aborted,
+        onRetire(cancel) {
+            if (signal.aborted) { cancel(); return { dispose() {} }; }
+            signal.addEventListener('abort', cancel, { once: true });
+            return { dispose() { signal.removeEventListener('abort', cancel); } };
+        },
+    };
+}
+
+function machine(target: MachineAgentInstallJobTarget): MachineJobs {
+    const key = machineKey(target);
+    let state = machines.get(key);
+    if (!state) {
+        state = { target, controller: new AbortController(), jobs: new Map(), records: new Map(), listeners: new Set(), agentListeners: new Map(), starts: new Map() };
+        machines.set(key, state);
+    }
+    return state;
+}
+
+function publish(target: AgentInstallJobTarget, job: MachineAgentJob | null): void {
+    const state = machine(target);
+    const previous = state.jobs.get(target.agentId);
+    if (previous === job || (!job && !state.jobs.has(target.agentId))) return;
+    const jobs = new Map(state.jobs);
+    if (job) jobs.set(target.agentId, job);
+    else jobs.delete(target.agentId);
+    state.jobs = jobs;
+    machineAgentInventoryStore.publishJobs(inventoryKey(target), jobs);
+    for (const listener of state.agentListeners.get(target.agentId) ?? []) listener();
+    for (const listener of state.listeners) listener();
+    if (job?.outcome?.kind === 'succeeded' && (previous?.jobId !== job.jobId || previous.outcome?.kind !== 'succeeded')) {
+        const lifetime = accountLifetime(state);
+        // Facts come from the same inventory owner, including when every presenter is closed.
+        // Loading it lazily keeps the job owner free of a static React/inventory-driver cycle.
+        void import('../useMachineAgents').then(({ refreshMachineAgents }) => refreshMachineAgents({
+            serverId: target.serverId, machineId: target.machineId, accountLifetime: lifetime, force: true,
+        })).catch(() => {});
+    }
+}
+
+export function readAgentInstallJob(target: AgentInstallJobTarget): MachineAgentJob | null {
+    return machine(target).jobs.get(target.agentId) ?? null;
+}
+
+export function readMachineAgentInstallJobs(target: MachineAgentInstallJobTarget): ReadonlyMap<string, MachineAgentJob> {
+    return machine(target).jobs;
+}
+
+export function subscribeAgentInstallJob(target: AgentInstallJobTarget, listener: () => void): () => void {
+    const state = machine(target);
+    let listeners = state.agentListeners.get(target.agentId);
+    if (!listeners) {
+        listeners = new Set();
+        state.agentListeners.set(target.agentId, listeners);
+    }
+    listeners.add(listener);
+    return () => {
+        listeners.delete(listener);
+        if (listeners.size === 0) state.agentListeners.delete(target.agentId);
+    };
+}
+
+export function subscribeMachineAgentInstallJobs(target: MachineAgentInstallJobTarget, listener: () => void): () => void {
+    const listeners = machine(target).listeners;
+    listeners.add(listener);
+    return () => { listeners.delete(listener); };
+}
+
+function fromWire(job: AgentInstallJob): MachineAgentJob {
+    return {
+        jobId: job.jobId, intent: job.intent, startedAtMs: job.startedAt, logLine: null, outcome: job.outcome,
+        steps: job.steps.map((step) => {
+            const progress = job.progress.find((entry) => entry.stepId === step.stepId);
+            return { ...step, bytesDone: progress?.bytesDone ?? null, bytesTotal: progress?.bytesTotal ?? null };
+        }),
+    };
+}
+
+function applyEvents(job: MachineAgentJob, events: readonly AgentInstallJobEvent[]): MachineAgentJob {
+    let next = job;
+    for (const event of events) {
+        if (event.t === 'log') {
+            if (next.logLine !== event.line) next = { ...next, logLine: event.line };
+            continue;
+        }
+        const index = next.steps.findIndex((step) => step.stepId === event.stepId);
+        const previous = next.steps[index];
+        const step: MachineAgentJobStep = event.t === 'step'
+            ? { stepId: event.stepId, label: event.label, state: event.state, bytesDone: previous?.bytesDone ?? null, bytesTotal: previous?.bytesTotal ?? null }
+            : { stepId: event.stepId, label: previous?.label ?? event.stepId, state: previous?.state ?? 'pending', bytesDone: event.bytesDone, bytesTotal: event.bytesTotal };
+        if (previous && previous.label === step.label && previous.state === step.state && previous.bytesDone === step.bytesDone && previous.bytesTotal === step.bytesTotal) continue;
+        const steps = [...next.steps];
+        if (index < 0) steps.push(step);
+        else steps[index] = step;
+        next = { ...next, steps };
+    }
+    return next;
+}
+
+async function poll(target: AgentInstallJobTarget, record: JobRecord): Promise<void> {
+    const state = machine(target);
+    if (state.controller.signal.aborted || record.polling || record.job.outcome || state.records.get(target.agentId) !== record) return;
+    record.polling = true;
+    try {
+        const response = await readAgentInstallJobRpc({ ...target, signal: state.controller.signal }, { jobId: record.job.jobId, cursor: record.cursor });
+        if (state.controller.signal.aborted || state.records.get(target.agentId) !== record) return;
+        if (!response.ok) {
+            if (response.errorCode === 'job_not_found') {
+                state.records.delete(target.agentId);
+                try {
+                    // The initial discovery may have supplied the now-pruned job. Finish it
+                    // before a fresh list so recovery cannot rejoin that stale snapshot.
+                    await state.loading;
+                    await ensureMachineAgentInstallJobs(target);
+                    requireCurrent(state);
+                } catch (error) {
+                    // Discovery can lose the connection too. Keep the last projection and
+                    // retry through the same poll owner rather than declaring an outcome.
+                    if (!state.controller.signal.aborted && !state.records.has(target.agentId)) state.records.set(target.agentId, record);
+                    throw error;
+                }
+                if (!state.records.has(target.agentId)) publish(target, null);
+                return;
+            }
+            throw new AgentInstallJobRpcError(response.errorCode, response.error);
+        }
+        let next = applyEvents(record.job, response.events);
+        if (response.outcome && JSON.stringify(next.outcome) !== JSON.stringify(response.outcome)) next = { ...next, outcome: response.outcome };
+        record.cursor = response.nextCursor;
+        record.job = next;
+        publish(target, next);
+        if (response.done) return;
+    } catch {
+        // A disconnected presenter cannot establish a daemon outcome. Keep the job and cursor;
+        // the next read resumes it, and job_not_found handles a daemon restart.
+    } finally {
+        record.polling = false;
+    }
+    if (!state.controller.signal.aborted && state.records.get(target.agentId) === record && !record.job.outcome) {
+        record.timer = setTimeout(() => { void poll(target, record); }, MACHINE_RPC_POLL_INTERVAL_MS);
+    }
+}
+
+/** List is discovery/recovery; once hydrated, cursor reads own a job's changing projection. */
+export function ensureMachineAgentInstallJobs(target: MachineAgentInstallJobTarget): Promise<void> {
+    const state = machine(target);
+    if (state.loading) return state.loading;
+    state.loading = (async () => {
+        const response = await listAgentInstallJobsRpc({ ...target, signal: state.controller.signal });
+        requireCurrent(state);
+        if (!response.ok) throw new AgentInstallJobRpcError(response.errorCode, response.error);
+        const latest = new Map<string, AgentInstallJob>();
+        for (const wire of response.jobs) {
+            const candidate = latest.get(wire.agentId);
+            // The daemon admits one active job per agent. Historical timestamps can
+            // precede a clock correction, so active work takes priority over history.
+            if (!candidate || (candidate.done && !wire.done) || (candidate.done === wire.done && candidate.startedAt < wire.startedAt)) {
+                latest.set(wire.agentId, wire);
+            }
+        }
+        for (const wire of latest.values()) {
+            const previous = state.records.get(wire.agentId);
+            // A start response names the admitted job even when an older list arrives later.
+            if (previous && !previous.hydrated && previous.job.jobId !== wire.jobId) continue;
+            if (previous?.job.jobId === wire.jobId && previous.hydrated) continue;
+            if (wire.done && previous && previous.job.jobId !== wire.jobId && previous.job.startedAtMs > wire.startedAt) continue;
+            if (previous?.timer) clearTimeout(previous.timer);
+            const record: JobRecord = { job: fromWire(wire), cursor: 0, hydrated: true, polling: false };
+            state.records.set(wire.agentId, record);
+            const agentTarget = { ...target, agentId: wire.agentId };
+            publish(agentTarget, record.job);
+            if (!wire.done) void poll(agentTarget, record);
+        }
+    })().finally(() => { state.loading = undefined; });
+    return state.loading;
+}
+
+export function startAgentInstallJob(target: AgentInstallJobTarget, intent: AgentInstallJobIntent, options: AgentInstallJobStartOptions): Promise<MachineAgentJob> {
+    const state = machine(target);
+    const starting = state.starts.get(target.agentId);
+    if (starting) return starting;
+    const promise = (async () => {
+        const response = await startAgentInstallJobRpc({ ...target, signal: state.controller.signal }, { agentId: target.agentId, intent, ...options });
+        requireCurrent(state);
+        if (!response.ok) throw new AgentInstallJobRpcError(response.errorCode, response.error);
+        if (state.records.get(target.agentId)?.job.jobId !== response.jobId) {
+            const previous = state.records.get(target.agentId);
+            if (previous?.timer) clearTimeout(previous.timer);
+            const record: JobRecord = { job: { jobId: response.jobId, intent, startedAtMs: Date.now(), steps: [], logLine: null, outcome: null }, cursor: 0, hydrated: false, polling: false };
+            state.records.set(target.agentId, record);
+            publish(target, record.job);
+        }
+        // Fetch daemon-owned timing/steps before polling, sharing any mount-time list request.
+        try { await ensureMachineAgentInstallJobs(target); } catch { /* Read still resumes the admitted job. */ }
+        requireCurrent(state);
+        const record = state.records.get(target.agentId);
+        if (!record) throw new AgentInstallJobRpcError('job_not_found');
+        void poll(target, record);
+        return record.job;
+    })().finally(() => { state.starts.delete(target.agentId); });
+    state.starts.set(target.agentId, promise);
+    return promise;
+}
+
+export async function cancelAgentInstallJob(target: AgentInstallJobTarget): Promise<void> {
+    const state = machine(target);
+    const record = state.records.get(target.agentId);
+    if (!record) {
+        if (state.jobs.has(target.agentId)) throw new AgentInstallJobRpcError('job_not_found');
+        return;
+    }
+    if (record.job.outcome) return;
+    const response = await cancelAgentInstallJobRpc({ ...target, signal: state.controller.signal }, { jobId: record.job.jobId });
+    requireCurrent(state);
+    if (!response.ok) throw new AgentInstallJobRpcError(response.errorCode, response.error);
+    if (record.timer) clearTimeout(record.timer);
+    void poll(target, record);
+}
+
+/** Queue and update adapters wait on this owner, with no installer-sized UI deadline. */
+export function waitForAgentInstallJob(target: AgentInstallJobTarget): Promise<NonNullable<MachineAgentJob['outcome']>> {
+    return new Promise((resolve, reject) => {
+        const inspect = () => {
+            const job = readAgentInstallJob(target);
+            if (!job) {
+                unsubscribe();
+                reject(new AgentInstallJobRpcError('job_not_found'));
+            } else if (job.outcome) {
+                unsubscribe();
+                resolve(job.outcome);
+            }
+        };
+        const unsubscribe = subscribeAgentInstallJob(target, inspect);
+        inspect();
+    });
+}

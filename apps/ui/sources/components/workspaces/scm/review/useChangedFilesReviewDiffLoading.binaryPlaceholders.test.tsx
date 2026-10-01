@@ -12,14 +12,14 @@ import { installFilesContentCommonModuleMocks } from './filesContentTestHelpers'
 
 installFilesContentCommonModuleMocks();
 
-const sessionScmDiffFileSpy = vi.fn(async (..._args: any[]) => ({
+const machineScmDiffFileSpy = vi.fn(async () => ({
     success: true,
     diff: 'Binary files a/src/image.png and b/src/image.png differ',
     error: null,
 }));
 
-vi.mock('@/sync/ops', () => ({
-    sessionScmDiffFile: (...args: any[]) => sessionScmDiffFileSpy(...args),
+vi.mock('@/sync/ops/scm/machineScm', () => ({
+    machineScmDiffFile: () => machineScmDiffFileSpy(),
 }));
 
 vi.mock('@/sync/domains/session/resolveWorkspaceTargetForSession', () => ({
@@ -35,14 +35,9 @@ vi.mock('@/sync/ops/workspaceFileSystem', () => ({
     workspaceReadFile: vi.fn(),
 }));
 
-vi.mock('@/scm/utils/filePresentation', () => ({
-    isBinaryContent: () => true,
-    isKnownBinaryPath: () => true,
-}));
-
 describe('useChangedFilesReviewDiffLoading (binary placeholders)', () => {
     it('normalizes non-unified binary diff placeholders to an empty diff', async () => {
-        sessionScmDiffFileSpy.mockClear();
+        machineScmDiffFileSpy.mockClear();
 
         const file = {
             fileName: 'image.png',
@@ -85,7 +80,7 @@ describe('useChangedFilesReviewDiffLoading (binary placeholders)', () => {
             if (current?.status === 'loaded') break;
         }
 
-        expect(sessionScmDiffFileSpy).toHaveBeenCalledTimes(1);
+        expect(machineScmDiffFileSpy).toHaveBeenCalledTimes(1);
         const finalState = diffStateSource?.getDiffState?.('src/image.png');
         expect(finalState?.status).toBe('loaded');
         expect(String(finalState?.diff ?? '')).toBe('');

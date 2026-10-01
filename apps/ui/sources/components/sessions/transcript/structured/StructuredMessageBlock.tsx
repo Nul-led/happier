@@ -2,7 +2,7 @@ import React from 'react';
 
 import type { MessageStructuredPresentationV1 } from '@happier-dev/protocol';
 
-import type { Message } from '@/sync/domains/messages/messageTypes';
+import type { Message } from "@happier-dev/session-core/messages";
 import { PluginSurfaceFallback } from '@/components/sessions/panes/PluginSurfaceFallback';
 import { PluginUiBoundary } from '@/components/plugins/reactNative/PluginUiBoundary';
 import { openPluginContributedActionReference } from '@/components/plugins/actions/openPluginContributedAction';
@@ -10,8 +10,8 @@ import {
     createPluginPersistedStructuredMessageActionController,
     usePluginMessageActionHost,
 } from '@/components/sessions/transcript/messageActions/PluginMessageActions';
-import { readUnsupportedContentMeta } from '@/sync/domains/messages/unsupportedContentMeta';
-import { resolveUnsupportedContentPresentation } from '@/sync/domains/messages/unsupportedContentPresentation';
+import { readUnsupportedContentMeta } from "@happier-dev/session-core/messages";
+import { resolveUnsupportedContentPresentation } from "@happier-dev/session-core/messages";
 import { fireAndForget } from '@/utils/system/fireAndForget';
 import {
     deriveTranscriptInteraction,
@@ -118,6 +118,7 @@ function PersistedPluginStructuredMessage(props: Readonly<{
 export function renderStructuredMessage(params: {
     message: Message;
     sessionId: string;
+    serverId?: string | null;
     interaction: TranscriptInteraction;
     onJumpToAnchor: StructuredMessageRendererParams['onJumpToAnchor'];
     debugInformationEnabled?: boolean;
@@ -146,6 +147,7 @@ export function renderStructuredMessage(params: {
         return parsed.success
             ? builtIn.render(parsed.data, {
                 sessionId: params.sessionId,
+                serverId: params.serverId,
                 message: params.message,
                 interaction: params.interaction,
                 onJumpToAnchor: params.onJumpToAnchor,
@@ -163,6 +165,7 @@ export function renderStructuredMessage(params: {
 export const StructuredMessageBlock = React.memo(function StructuredMessageBlock(props: {
     message: Message;
     sessionId: string;
+    serverId?: string | null;
     interaction?: TranscriptInteraction;
     onJumpToAnchor: StructuredMessageRendererParams['onJumpToAnchor'];
     debugInformationEnabled?: boolean;

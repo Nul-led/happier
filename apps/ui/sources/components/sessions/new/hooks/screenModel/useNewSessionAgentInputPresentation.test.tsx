@@ -7,12 +7,12 @@ import { createExpoRouterMock } from '@/dev/testkit/mocks/router';
 import type { Router } from 'expo-router';
 import type { Machine } from '@/sync/domains/state/storageTypes';
 
-vi.mock('react-native-reanimated', () => ({ __esModule: true, default: {} }));
-vi.mock('react-native-reanimated/lib/module', () => ({ __esModule: true, default: {} }));
-vi.mock('react-native-reanimated/lib/module/index.js', () => ({ __esModule: true, default: {} }));
-vi.mock('react-native-reanimated/lib/module/index', () => ({ __esModule: true, default: {} }));
-vi.mock('react-native-reanimated/lib/module/publicGlobals', () => ({ __esModule: true }));
-vi.mock('react-native-reanimated/lib/module/publicGlobals.js', () => ({ __esModule: true }));
+vi.mock('react-native-reanimated', () => ({ __esModule: true, default: {}, Easing: { bezier: () => (value: number) => value, linear: (value: number) => value } }));
+vi.mock('react-native-reanimated/lib/module', () => ({ __esModule: true, default: {}, Easing: { bezier: () => (value: number) => value, linear: (value: number) => value } }));
+vi.mock('react-native-reanimated/lib/module/index.js', () => ({ __esModule: true, default: {}, Easing: { bezier: () => (value: number) => value, linear: (value: number) => value } }));
+vi.mock('react-native-reanimated/lib/module/index', () => ({ __esModule: true, default: {}, Easing: { bezier: () => (value: number) => value, linear: (value: number) => value } }));
+vi.mock('react-native-reanimated/lib/module/publicGlobals', () => ({ __esModule: true, Easing: { bezier: () => (value: number) => value, linear: (value: number) => value } }));
+vi.mock('react-native-reanimated/lib/module/publicGlobals.js', () => ({ __esModule: true, Easing: { bezier: () => (value: number) => value, linear: (value: number) => value } }));
 
 vi.mock('@/text', async () => {
     const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');

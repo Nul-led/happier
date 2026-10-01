@@ -134,22 +134,32 @@ function buildSystemToolLaunch(params: Readonly<{
   };
 }
 
-function appendPermissionModeArgs(
-  args: readonly string[],
-  definition: AcpRuntimeDefinition,
-  permissionMode?: string,
-): readonly string[] {
-  const mode = typeof permissionMode === 'string' ? permissionMode.trim() : '';
-  const spec = definition.permissionModeArgv;
+export function appendAcpPermissionModeArgs(params: Readonly<{
+  args: readonly string[];
+  spec?: Readonly<{
+    flag: string;
+    map: Readonly<Record<string, string | null | undefined>>;
+  }>;
+  permissionMode?: string;
+  requireMappedValue?: boolean;
+}>): readonly string[] {
+  const mode = typeof params.permissionMode === 'string' ? params.permissionMode.trim() : '';
+  const spec = params.spec;
   if (!spec || mode.length === 0 || !hasOwnDefined(spec.map, mode)) {
-    return args;
+    if (params.requireMappedValue && mode.length > 0) {
+      throw new Error(`ACP permission intent '${mode}' has no launch-time enforcement mapping.`);
+    }
+    return params.args;
   }
 
   const mapped = spec.map[mode];
-  if (mapped === null) {
-    return args;
+  if (typeof mapped !== 'string') {
+    if (params.requireMappedValue) {
+      throw new Error(`ACP permission intent '${mode}' has no launch-time enforcement mapping.`);
+    }
+    return params.args;
   }
-  return [...args, spec.flag, mapped];
+  return [...params.args, spec.flag, mapped];
 }
 
 export function resolveAcpRuntimeLaunch(params: Readonly<{
@@ -177,7 +187,11 @@ export function resolveAcpRuntimeLaunch(params: Readonly<{
       params.env,
       resolvedLaunch.env,
     );
-    const baseArgs = appendPermissionModeArgs(resolvedLaunch.args, params.definition, params.permissionMode);
+    const baseArgs = appendAcpPermissionModeArgs({
+      args: resolvedLaunch.args,
+      spec: params.definition.permissionModeArgv,
+      permissionMode: params.permissionMode,
+    });
     const buildLaunch = (resolvedArgs: readonly string[], resolvedEnv: Readonly<Record<string, string>>): AcpExecutableLaunch => ({
       ...resolvedLaunch,
       args: resolvedArgs,

@@ -13,6 +13,10 @@ import { ReviewFollowUpMessageCard } from '@/components/sessions/reviews/message
 import { PlanOutputMessageCard } from '@/components/sessions/plans/messages/PlanOutputMessageCard';
 import { DelegateOutputMessageCard } from '@/components/sessions/delegations/messages/DelegateOutputMessageCard';
 import type { TranscriptInteraction } from '@/utils/sessions/deriveTranscriptInteraction';
+import {
+    ExecutionRunResultLayout,
+    type ExecutionRunResultPresentation,
+} from '@/components/sessions/runs/ExecutionRunResultLayout';
 
 export type ExecutionRunStructuredMetaEnvelope = Readonly<{
     kind: string;
@@ -23,7 +27,16 @@ export function renderExecutionRunStructuredMeta(params: Readonly<{
     meta: ExecutionRunStructuredMetaEnvelope;
     sessionId: string;
     interaction: TranscriptInteraction;
+    /** `page` when the result is the Run page itself (agents lab RP1); a transcript card otherwise. */
+    presentation?: ExecutionRunResultPresentation;
+    /** Page only: what closes the result's body (the Run's steps disclosure). */
+    after?: React.ReactNode;
+    /** The Run's server scope. */
+    serverId?: string | null;
+    /** Page only: the Run's display group, so a review started on several engines shows as one. */
+    groupId?: string | null;
 }>): React.ReactElement | null {
+    const presentation = params.presentation ?? 'message';
     const kind = params.meta.kind;
     const payload = params.meta.payload;
 
@@ -35,6 +48,10 @@ export function renderExecutionRunStructuredMeta(params: Readonly<{
                 payload={parsed.data}
                 sessionId={params.sessionId}
                 canSendMessages={params.interaction.canSendMessages === true}
+                presentation={presentation}
+                after={params.after}
+                serverId={params.serverId ?? null}
+                groupId={params.groupId ?? null}
             />
         );
     }
@@ -47,6 +64,10 @@ export function renderExecutionRunStructuredMeta(params: Readonly<{
                 payload={parsed.data}
                 sessionId={params.sessionId}
                 canSendMessages={params.interaction.canSendMessages === true}
+                presentation={presentation}
+                after={params.after}
+                serverId={params.serverId ?? null}
+                groupId={params.groupId ?? null}
             />
         );
     }
@@ -54,7 +75,11 @@ export function renderExecutionRunStructuredMeta(params: Readonly<{
     if (kind === 'review_follow_up.v1') {
         const parsed = ReviewFollowUpV1Schema.safeParse(payload);
         if (!parsed.success) return null;
-        return <ReviewFollowUpMessageCard payload={parsed.data} />;
+        return presentation === 'page' ? (
+            <ExecutionRunResultLayout presentation="page" after={params.after}>
+                <ReviewFollowUpMessageCard payload={parsed.data} />
+            </ExecutionRunResultLayout>
+        ) : <ReviewFollowUpMessageCard payload={parsed.data} />;
     }
 
     if (kind === 'plan_output.v1') {
@@ -65,6 +90,8 @@ export function renderExecutionRunStructuredMeta(params: Readonly<{
                 payload={parsed.data}
                 sessionId={params.sessionId}
                 canSendMessages={params.interaction.canSendMessages === true}
+                presentation={presentation}
+                after={params.after}
             />
         );
     }
@@ -72,7 +99,7 @@ export function renderExecutionRunStructuredMeta(params: Readonly<{
     if (kind === 'delegate_output.v1') {
         const parsed = DelegateOutputV1Schema.safeParse(payload);
         if (!parsed.success) return null;
-        return <DelegateOutputMessageCard payload={parsed.data} />;
+        return <DelegateOutputMessageCard payload={parsed.data} presentation={presentation} after={params.after} />;
     }
 
     return null;

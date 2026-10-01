@@ -159,11 +159,10 @@ vi.mock('@/components/ui/code/blocks/CodeBlockView', () => ({
 }));
 
 
-vi.mock('@/utils/web/radixCjs', () => ({
-    requireRadixDismissableLayer: () => ({
-        Branch: (props: React.PropsWithChildren) => React.createElement(React.Fragment, null, props.children),
-    }),
-}));
+vi.mock('@/utils/web/radixCjs', async () => {
+    const { createRadixCjsRealModule } = await import('@/dev/testkit/mocks/radixCjs');
+    return await createRadixCjsRealModule();
+});
 
 vi.mock('@/utils/web/reactDomCjs', async () => {
     const ReactDOM = await import('react-dom');
@@ -220,7 +219,8 @@ function createSurfaceContext(): SurfaceContext {
         targetedContributions: {
             target: {
                 pluginId: 'happier.inspector',
-                immutableGenerationId: 'presentation-host-modal-test-generation',
+                occurrenceId: 'presentation-host-modal-test-generation',
+                sourceCustody: { kind: 'development', registeredRootId: 'inspector-root' },
             },
             points: [],
         },
@@ -235,6 +235,9 @@ function createHostApi(
         version: () => ({ apiVersion: '1.0.0', wireVersion: 1, methods: [] }),
         context: async () => context,
         watchContext: async () => ({ dispose() {} }),
+        readSession: async () => unexpectedHostApiCall('readSession'),
+        watchSession: async () => unexpectedHostApiCall('watchSession'),
+        respondToSessionPermission: async () => unexpectedHostApiCall('respondToSessionPermission'),
         publishCurrentUiContext: () => unexpectedHostApiCall('publishCurrentUiContext'),
         settleEphemeralInput: async () => unexpectedHostApiCall('settleEphemeralInput'),
         activeComposer: async () => unexpectedHostApiCall('activeComposer'),

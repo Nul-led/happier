@@ -19,6 +19,8 @@ import {
     type FavoriteModelSelectionV1,
 } from '@/sync/domains/models/favoriteModelSelections';
 import { buildNewSessionAgentPickerOptions } from './buildNewSessionAgentPickerOptions';
+import type { MachineAgent } from '@/agents/machineAgents/machineAgentTypes';
+import { MachineAgentSetupPane } from '@/components/machines/agents/MachineAgentSetupPane';
 import {
     FAVORITE_MODELS_AGENT_PICKER_OPTION_ID,
     type FavoriteModelTogglePayload,
@@ -28,6 +30,7 @@ import { resolveNewSessionAgentPickerSingleSelectFallbackEntry } from './resolve
 import { useSessionAgentPickerControls } from '@/components/sessions/agentPicker/useSessionAgentPickerControls';
 import { useNewSessionAgentPickerEngineSelectionState } from './useNewSessionAgentPickerEngineSelectionState';
 import type { SessionModelPickerExperimentalConfirmationController } from '@/components/sessions/modelPicker/SessionModelPicker';
+import type { NewSessionEngineOptionDetailProps } from '@/components/sessions/new/components/NewSessionEngineOptionDetail';
 
 export function useNewSessionAgentPickerControls(params: Readonly<{
     useProfiles: boolean;
@@ -49,6 +52,10 @@ export function useNewSessionAgentPickerControls(params: Readonly<{
     setSessionConfigOptionOverrides: React.Dispatch<React.SetStateAction<ReturnType<typeof buildAcpConfigOptionOverridesV1> | null>>;
     setEngineSelectionForBackendTarget?: Parameters<typeof useNewSessionAgentPickerEngineSelectionState>[0]['setEngineSelectionForBackendTarget'];
     selectedMachineId: string | null;
+    /** The composer machine's display name (rail group headings: "Not on devbox yet"). */
+    selectedMachineName?: string | null;
+    /** The agent on the composer's machine, from the one inventory owner (`useMachineAgents`). */
+    getBackendEntryMachineAgent?: (entry: ResolvedBackendCatalogEntry) => MachineAgent | null;
     capabilityServerId: string;
     projectionCurrent: boolean;
     selectedPath: string | null;
@@ -69,6 +76,7 @@ export function useNewSessionAgentPickerControls(params: Readonly<{
      * This is used to make the model refresh button also refresh CLI detection.
      */
     refreshProbe?: OptionPickerProbeState | null;
+    providerProjection?: NewSessionEngineOptionDetailProps['providerProjection'];
     experimentalConfirmation?: SessionModelPickerExperimentalConfirmationController;
 }>): Readonly<{
     agentPickerOptions?: ReadonlyArray<AgentInputChipPickerOption>;
@@ -211,8 +219,23 @@ export function useNewSessionAgentPickerControls(params: Readonly<{
         onToggleFavoriteBackendTarget: params.setFavoriteBackendTargetKeys ? handleToggleFavoriteBackendTarget : undefined,
         onRemoveFavoriteModelSelection: handleRemoveFavoriteModelSelection,
         onRememberAgentPickerView: params.onRememberAgentPickerView,
+        ...(params.providerProjection ? { providerProjection: params.providerProjection } : {}),
         experimentalConfirmation: params.experimentalConfirmation,
+        ...(params.getBackendEntryMachineAgent && params.selectedMachineId ? {
+            getBackendEntryMachineAgent: params.getBackendEntryMachineAgent,
+            selectedMachineName: params.selectedMachineName ?? null,
+            renderMachineAgentSetup: (_entry: ResolvedBackendCatalogEntry, agent: MachineAgent) => (
+                <MachineAgentSetupPane
+                    agent={agent}
+                    serverId={params.capabilityServerId}
+                    machineId={params.selectedMachineId!}
+                    machineName={params.selectedMachineName ?? ''}
+                />
+            ),
+        } : {}),
     }), [
+        params.getBackendEntryMachineAgent,
+        params.selectedMachineName,
         getEngineSelectionForTargetKey,
         handleSelectFavoriteModelOptionValue,
         params.capabilityServerId,
@@ -225,6 +248,7 @@ export function useNewSessionAgentPickerControls(params: Readonly<{
         params.modelSelection,
         params.profileMap,
         params.projectionCurrent,
+        params.providerProjection,
         params.refreshProbe,
         params.resolvedBackendEntries,
         params.selectedMachineId,

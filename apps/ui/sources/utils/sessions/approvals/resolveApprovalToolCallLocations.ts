@@ -1,6 +1,6 @@
 import type { ApprovalRequest } from '@happier-dev/protocol';
 
-import type { Message, ToolCallMessage } from '@/sync/domains/messages/messageTypes';
+import type { Message, ToolCallMessage } from "@happier-dev/session-core/messages";
 import type { PermissionToolCallMessageLocation } from '@/utils/sessions/permissions/permissionToolCallLocationTypes';
 
 type ApprovalLocationEntry = Readonly<{

@@ -4,6 +4,7 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { Text } from '@/components/ui/text/Text';
 import { Icon, type IconName } from '@/components/ui/icons/Icon';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 export function TranscriptSeparatorRow(props: Readonly<{
   testID?: string;
@@ -76,7 +77,7 @@ export function TranscriptSeparatorRow(props: Readonly<{
             style={({ pressed }) => [
               styles.chip,
               chipChrome === 'minimal' ? styles.chipMinimal : null,
-              { backgroundColor: theme.colors.surface.base, borderColor: theme.colors.border.default, opacity: pressed ? 0.82 : 1 },
+              { backgroundColor: theme.colors.surface.base, borderColor: theme.colors.border.default, opacity: pressed ? motionTokens.press.opacitySubtle : 1 },
             ]}
           >
             {chipContent}

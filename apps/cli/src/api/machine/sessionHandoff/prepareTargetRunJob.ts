@@ -23,10 +23,12 @@ import {
 } from '../../../session/handoff/prepare/sessionHandoffPrepareTargetJobLease';
 import type { SessionHandoffAgentBundle } from '../../../session/handoff/types';
 import { ensureSessionHandoffWorkspaceCwd } from '../../../session/handoff/paths/sessionHandoffWorkspaceCwd';
+import { createManagedSessionDirectories } from '../../../session/creation/managedSessionDirectories';
 
 import {
   directPeerTransferUnavailable,
   resolvePrepareAgentBundle,
+  materializePrepareManagedWorkspaceSeed,
   type SessionHandoffDirectPeerTransferHandle,
 } from './prepareTransport';
 import {
@@ -132,6 +134,13 @@ export async function runSessionHandoffPrepareTargetJob(
   let prepareTargetRequest: SessionHandoffPrepareTargetRequest | undefined = initialPrepareTargetRequest ?? request;
   let actualTransportStrategy = initialTransportStrategy;
   let agentBundle: SessionHandoffAgentBundle | null = null;
+  const managedDirectories = createManagedSessionDirectories({ activeServerDir });
+  const managedIdentity = request.targetDirectory?.kind === 'managed'
+    && typeof request.operationId === 'string' && typeof request.sessionId === 'string'
+    ? { operationId: request.operationId, sessionId: request.sessionId }
+    : null;
+  let managedAllocationPrepared = false;
+  let targetReady = false;
 
   const persistJobRecord = async (jobRecord: SessionHandoffPrepareTargetJobRecordInput): Promise<void> => {
     const mergedWithRequest =
@@ -325,7 +334,17 @@ export async function runSessionHandoffPrepareTargetJob(
         return;
       }
 
-      if (request.workspaceRootPath !== undefined && request.workspaceSessionRelativeCwd !== undefined) {
+      const targetPath = managedIdentity
+        ? (await managedDirectories.allocateForHandoff(managedIdentity)).directory
+        : request.targetPath;
+      managedAllocationPrepared = managedIdentity !== null;
+      if (managedIdentity) {
+        await materializePrepareManagedWorkspaceSeed({ request, targetPath, actualTransportStrategy,
+          localSourceExport, machineTransferChannel, directPeerTransfer, transferTimeoutMs,
+          assertCanContinue: assertPrepareJobNotCancelled,
+        });
+      }
+      if (!managedIdentity && request.workspaceRootPath !== undefined && request.workspaceSessionRelativeCwd !== undefined) {
         await ensureSessionHandoffWorkspaceCwd({
           workspaceRootPath: request.workspaceRootPath,
           sessionRelativeCwd: request.workspaceSessionRelativeCwd,
@@ -334,7 +353,7 @@ export async function runSessionHandoffPrepareTargetJob(
       }
       const imported = await importSessionBundle(
         agentBundle,
-        request.targetPath,
+        targetPath,
         request.targetSessionStorageMode === 'persisted'
           ? 'persisted'
           : request.sourceSessionStorageMode === 'persisted'
@@ -365,7 +384,7 @@ export async function runSessionHandoffPrepareTargetJob(
         remoteSessionId: imported.remoteSessionId,
         directSource,
         ...(imported.runtimeDescriptorV1 ? { runtimeDescriptorV1: imported.runtimeDescriptorV1 } : {}),
-        resume: imported.resume,
+        resume: managedIdentity ? { ...imported.resume, directory: targetPath, directoryKind: 'managed' } : imported.resume,
       };
       const afterImportCompletionJob = await prepareJobStore.read(jobId);
       if (afterImportCompletionJob?.cancelRequestedAtMs) {
@@ -393,6 +412,7 @@ export async function runSessionHandoffPrepareTargetJob(
         status: readyForCutoverStatus,
         prepareTargetResult: prepareResult,
       }));
+      targetReady = true;
     } catch (error) {
       const failedAtMs = Date.now();
       const currentJob = await prepareJobStore.read(jobId);
@@ -433,6 +453,9 @@ export async function runSessionHandoffPrepareTargetJob(
       }));
     }
   } finally {
+    if (managedIdentity && managedAllocationPrepared && !targetReady) {
+      await managedDirectories.abortHandoff(managedIdentity);
+    }
     await leaseHeartbeat?.stop().catch(() => undefined);
     if (leaseAcquired) {
       await releaseSessionHandoffPrepareTargetJobLease({
@@ -440,6 +463,13 @@ export async function runSessionHandoffPrepareTargetJob(
         jobId,
         ownerId: prepareTargetJobLeaseOwnerId,
       }).catch(() => undefined);
+    }
+    // Abort may have recorded cancellation after ready publication while our
+    // writer lease prevented its cleanup. Once released, later aborts can
+    // clean directly; earlier cancellations are completed by this writer.
+    if (managedIdentity && managedAllocationPrepared && targetReady
+      && (await prepareJobStore.read(jobId))?.cancelRequestedAtMs) {
+      await managedDirectories.abortHandoff(managedIdentity);
     }
   }
 }

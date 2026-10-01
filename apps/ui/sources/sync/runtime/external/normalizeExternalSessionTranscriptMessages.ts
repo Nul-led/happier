@@ -3,7 +3,7 @@ import {
     type ExternalSessionTranscriptRawMessageV1,
 } from '@happier-dev/protocol';
 
-import { normalizeRawMessages, type NormalizedMessage, type RawMessageNormalizationInput } from '@/sync/typesRaw';
+import { normalizeRawMessages, type NormalizedMessage, type RawMessageNormalizationInput } from "@happier-dev/session-core/raw";
 
 export function normalizeExternalSessionTranscriptMessages(
     items: ReadonlyArray<ExternalSessionTranscriptRawMessageV1>,

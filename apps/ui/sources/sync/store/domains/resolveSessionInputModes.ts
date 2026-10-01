@@ -1,11 +1,11 @@
 import type { Session } from '@/sync/domains/state/storageTypes';
 import { isModelMode, type PermissionMode } from '@/sync/domains/permissions/permissionTypes';
-import { isModelSelectableForSession } from '@/sync/domains/models/modelOptions';
-import { resolveAgentIdFromSessionMetadata, resolveModelSelectionIntentFromSessionMetadata, resolvePermissionIntentFromSessionMetadata } from '@happier-dev/agents';
+import { resolvePermissionIntentFromSessionMetadata } from '@happier-dev/agents';
 import { buildBackendTargetKeyV2 } from '@happier-dev/protocol';
 import { resolveSessionActionDefaultBackend, resolveSessionActionDefaultTarget } from '@/sync/domains/session/resolveSessionActionDefaultBackend';
 import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
 import { resolveMergedSessionPermissionMode } from './resolveMergedSessionPermissionMode';
+import { readSessionModelSelectionIntentFromMetadata } from '@/sync/domains/models/readSessionModelSelectionIntent';
 
 type InputModes = Pick<Session, 'permissionMode' | 'permissionModeUpdatedAt' | 'modelMode' | 'modelModeUpdatedAt'>;
 
@@ -58,11 +58,10 @@ export function resolveSessionInputModes(params: Readonly<{
     const mergedPermissionMode = mergedPermission.mode;
     const mergedPermissionModeUpdatedAt = mergedPermission.updatedAt;
 
-    const resolvedAgentId = resolveAgentIdFromSessionMetadata(ownerMetadataView);
     const resolvedBackend = resolveSessionActionDefaultBackend({ session });
     const resolvedTarget = resolveSessionActionDefaultTarget(resolvedBackend);
     const modelIntent = resolvedTarget
-        ? resolveModelSelectionIntentFromSessionMetadata(
+        ? readSessionModelSelectionIntentFromMetadata(
             ownerMetadataView,
             buildBackendTargetKeyV2(resolvedTarget),
         )
@@ -91,20 +90,8 @@ export function resolveSessionInputModes(params: Readonly<{
         }
     }
 
-    if (
-        resolvedAgentId &&
-        mergedModelMode !== 'default' &&
-        !isModelSelectableForSession(resolvedAgentId, ownerMetadataView, mergedModelMode)
-    ) {
-        mergedModelMode = 'default';
-        if (typeof mergedModelModeUpdatedAt !== 'number' || !Number.isFinite(mergedModelModeUpdatedAt)) {
-            if (typeof metadataModelUpdatedAt === 'number' && Number.isFinite(metadataModelUpdatedAt)) {
-                mergedModelModeUpdatedAt = metadataModelUpdatedAt;
-            } else {
-                mergedModelModeUpdatedAt = params.nowMs;
-            }
-        }
-    }
+    // Catalog omission is not rejection of an already admitted or persisted intent.
+    // Explicit newer intent (including a transition clear) owns reconciliation.
 
     return {
         permissionMode: mergedPermissionMode,

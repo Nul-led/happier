@@ -1,25 +1,22 @@
 import React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { renderScreen, standardCleanup } from '@/dev/testkit';
-import { createMixedAgentTranscriptFixture } from '@/dev/testkit/fixtures/sessionAgentTransitionFixtures';
-import { buildSessionTranscriptAgentAttributionIndex } from '@/components/sessions/transcript/attribution/sessionTranscriptAgentAttribution';
+import { standardCleanup } from '@/dev/testkit';
+import { createMixedAgentTranscriptFixture } from "../../../../../../../packages/session-core/src/testkit/sessionAgentTransitionFixtures.js";
+import { buildSessionTranscriptAgentAttributionIndex } from "@happier-dev/session-core/messages";
 import {
     SessionTranscriptAgentAttributionProvider,
     TranscriptRowSeqProvider,
 } from '@/components/sessions/transcript/attribution/SessionTranscriptAgentAttributionContext';
-import { installPermissionShellCommonModuleMocks } from './permissionShellTestHelpers';
+import { installPermissionShellCommonModuleMocks, createPermissionShellRenderer } from './permissionShellTestHelpers';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+const renderScreen = createPermissionShellRenderer();
+
 
 vi.mock('@expo/vector-icons', () => ({ Ionicons: 'Ionicons' }));
 
-vi.mock('@/sync/ops', () => ({
-    sessionAllow: vi.fn(async () => {}),
-    sessionAllowWithPermissionUpdates: vi.fn(async () => {}),
-    sessionDeny: vi.fn(async () => {}),
-    sessionAbort: vi.fn(async () => {}),
-}));
+
 
 vi.mock('@/sync/sync', () => ({ sync: { sendMessage: vi.fn(async () => {}) } }));
 

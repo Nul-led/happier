@@ -1,6 +1,6 @@
 // Demo message data for development and testing.
 
-import { Message, ToolCall } from '@/sync/domains/messages/messageTypes';
+import { Message, ToolCall } from "@happier-dev/session-core/messages";
 
 // Helper to create a tool call with proper timestamps
 const createToolCall = (name: string, state: ToolCall['state'], input: any, result?: any, description?: string | null): ToolCall => ({
@@ -34,6 +34,34 @@ function createSectionTitle(id: string, text: string, timeOffset: number = 0): M
 }
 
 export const debugMessages: Message[] = [
+    // A context-only wake: three worker updates delivered to an orchestrator (ORC §3.2, lab D1).
+    {
+        id: 'worker-wake-session', localId: null, createdAt: Date.now() - 12 * 60_000, kind: 'agent-event',
+        event: { type: 'worker-update', update: {
+            v: 1, workerKind: 'session', workerId: 'demo-worker-runbook', ownerState: 'settled', wake: 'finished',
+            engine: { agentId: 'claude' }, headline: 'Support runbook for retries', canInspect: true,
+            result: 'Runbook drafted and published as #2490. Its review converged in one round: 2 findings fixed, none disputed.',
+            transcriptPointer: { kind: 'session', sessionId: 'demo-worker-runbook' },
+        } },
+    },
+    {
+        id: 'worker-wake-needs-you', localId: null, createdAt: Date.now() - 3 * 60_000, kind: 'agent-event',
+        event: { type: 'worker-update', update: {
+            v: 1, workerKind: 'session', workerId: 'demo-worker-checkout', ownerState: 'needs_input', wake: 'needs_you',
+            engine: { agentId: 'codex' }, headline: 'Checkout UI retry states', canInspect: true,
+            result: "Wants to run pnpm test:e2e --project=webkit in checkout-web. An orchestrator can't answer approvals for you.",
+            transcriptPointer: { kind: 'session', sessionId: 'demo-worker-checkout' },
+        } },
+    },
+    {
+        id: 'worker-wake-run', localId: null, createdAt: Date.now() - 41_000, kind: 'agent-event',
+        event: { type: 'worker-update', update: {
+            v: 1, workerKind: 'execution_run', workerId: 'demo-run-second-opinion', ownerState: 'succeeded', wake: 'finished',
+            engine: { agentId: 'codex', modelId: 'gpt-6.1-sol' }, headline: 'Second opinion', canInspect: false,
+            result: 'The rollout plan is complete for the v2 scope. One risk: the ledger backfill has no resume point.',
+            transcriptPointer: { kind: 'execution_run', sessionId: 'demo-lead', runId: 'demo-run-second-opinion' },
+        } },
+    },
     // User message
     {
         id: 'user-1',

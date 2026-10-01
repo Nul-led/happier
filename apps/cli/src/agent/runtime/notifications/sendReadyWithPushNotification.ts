@@ -2,6 +2,7 @@ import type { SessionClientPort } from '@/api/session/sessionClientPort'
 import { serializeAxiosErrorForLog } from '@/api/client/serializeAxiosErrorForLog'
 import { buildReadyNotificationContent, type AccountSettings } from '@happier-dev/protocol'
 import { dispatchActivityNotificationAsync } from '@/notifications/activity/dispatchActivityNotification'
+import { isSessionActivityNotificationEligible, type SessionNotificationContextReader } from '@/notifications/activity/sessionActivityNotificationEligibility'
 import {
   resolveLiveActivityRemoteSender,
   type LiveActivityRemoteSenderCandidate,
@@ -9,8 +10,8 @@ import {
 import { getActiveAccountSettingsSnapshot } from '@/settings/accountSettings/activeAccountSettingsSnapshot'
 import { logger } from '@/ui/logger'
 
-type PushSender = LiveActivityRemoteSenderCandidate & {
-  sendToAllDevices?: (title: string, body: string, opts: { sessionId: string }) => void
+type PushSender = LiveActivityRemoteSenderCandidate & SessionNotificationContextReader & {
+  sendToAllDevices?: (title: string, body: string, opts: { sessionId: string; activityEventLocalId?: string }) => void
   sendToAllDevicesAsync?: (title: string, body: string, data: Record<string, unknown>) => Promise<void>
 }
 
@@ -20,7 +21,7 @@ type ReadyTranscriptSession = Pick<SessionClientPort, 'sessionId'>
 export async function enqueueReadySessionEventCommitted(
   session: ReadyTranscriptSession,
   ownerActivityDelivery: 'rich_sender' | 'home_required' = 'home_required',
-): Promise<void> {
+): ReturnType<ReadyTranscriptSession['enqueueSessionEventCommitted']> {
   const admission = await session.enqueueSessionEventCommitted({ type: 'ready', ownerActivityDelivery })
   if (!admission.persisted) {
     throw Object.assign(
@@ -28,6 +29,7 @@ export async function enqueueReadySessionEventCommitted(
       { code: 'ready_transcript_custody_unavailable' },
     )
   }
+  return admission
 }
 
 function resolveReadyNotificationSettingsContext(opts: Readonly<{
@@ -65,12 +67,13 @@ export async function sendReadyWithPushNotification(opts: {
 }): Promise<void> {
   const hasRichAlertSender = typeof opts.pushSender?.sendToAllDevicesAsync === 'function'
     || typeof opts.pushSender?.sendToAllDevices === 'function'
-  await enqueueReadySessionEventCommitted(
+  const admission = await enqueueReadySessionEventCommitted(
     opts.session,
     hasRichAlertSender ? 'rich_sender' : 'home_required',
   )
 
   try {
+    const fetchSessionNotificationContext = opts.pushSender.fetchSessionNotificationContext?.bind(opts.pushSender)
     const currentSettingsContext = resolveReadyNotificationSettingsContext({
       accountSettings: opts.accountSettings,
       settingsSecretsReadKeys: opts.settingsSecretsReadKeys,
@@ -85,7 +88,7 @@ export async function sendReadyWithPushNotification(opts: {
           ? {
               sendToAllDevicesAsync: async (title: string, body: string, data: Record<string, unknown>) => {
                 const sessionId = typeof data.sessionId === 'string' ? data.sessionId : opts.session.sessionId
-                opts.pushSender?.sendToAllDevices?.(title, body, { sessionId })
+                opts.pushSender?.sendToAllDevices?.(title, body, { ...data, sessionId })
               },
             }
           : null
@@ -93,6 +96,7 @@ export async function sendReadyWithPushNotification(opts: {
         settings: currentSettingsContext.settings,
         settingsSecretsReadKeys: currentSettingsContext.settingsSecretsReadKeys,
         expoPushSender,
+        fetchSessionNotificationContext,
         liveActivityRemoteSender: resolveLiveActivityRemoteSender(opts.pushSender),
         event: {
           topic: 'ready',
@@ -100,6 +104,8 @@ export async function sendReadyWithPushNotification(opts: {
           sessionTitle: opts.sessionTitle,
           waitingForCommandLabel: opts.waitingForCommandLabel,
           assistantPreviewText: opts.assistantPreviewText,
+          ...(admission.localId ? { committedLocalId: admission.localId } : {}),
+          ...(admission.committedSequence ? { committedSequence: admission.committedSequence } : {}),
         },
       }).catch((pushError) => {
         loggerDebug(`${opts.logPrefix} Failed to send ready push`, serializeAxiosErrorForLog(pushError))
@@ -109,19 +115,28 @@ export async function sendReadyWithPushNotification(opts: {
     const shouldSend = opts.shouldSendPush ?? (() => true)
     if (shouldSend() !== true) return
     if (!opts.pushSender?.sendToAllDevices) return
-    const content = buildReadyNotificationContent({
-      sessionTitle: opts.sessionTitle,
-      defaultTitle: opts.waitingForCommandLabel,
-      waitingForCommandLabel: opts.waitingForCommandLabel,
-      fallbackBody: `${opts.waitingForCommandLabel} is waiting for your command`,
-      includeMessageText: opts.includeAssistantPreviewText,
-      messageText: opts.assistantPreviewText,
+    void isSessionActivityNotificationEligible({
+      event: { topic: 'ready', sessionId: opts.session.sessionId, waitingForCommandLabel: opts.waitingForCommandLabel },
+      fetchSessionNotificationContext,
+    }).then((eligible) => {
+      if (!eligible) return
+      const content = buildReadyNotificationContent({
+        sessionTitle: opts.sessionTitle,
+        defaultTitle: opts.waitingForCommandLabel,
+        waitingForCommandLabel: opts.waitingForCommandLabel,
+        fallbackBody: `${opts.waitingForCommandLabel} is waiting for your command`,
+        includeMessageText: opts.includeAssistantPreviewText,
+        messageText: opts.assistantPreviewText,
+      })
+      opts.pushSender.sendToAllDevices?.(
+        content.title,
+        content.body,
+        { sessionId: opts.session.sessionId, ...(admission.localId ? { activityEventLocalId: admission.localId } : {}) },
+      )
+    }).catch((pushError) => {
+      const loggerDebug = opts.loggerDebug ?? logger.debug.bind(logger)
+      loggerDebug(`${opts.logPrefix} Failed to send ready push`, serializeAxiosErrorForLog(pushError))
     })
-    opts.pushSender.sendToAllDevices(
-      content.title,
-      content.body,
-      { sessionId: opts.session.sessionId },
-    )
   } catch (pushError) {
     const loggerDebug = opts.loggerDebug ?? logger.debug.bind(logger)
     loggerDebug(`${opts.logPrefix} Failed to send ready push`, serializeAxiosErrorForLog(pushError))

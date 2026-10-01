@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import type { Message } from '@/sync/domains/messages/messageTypes';
-import type { Metadata } from '@/sync/domains/state/storageTypes';
+import type { Message } from "@happier-dev/session-core/messages";
+import type { Metadata } from '@happier-dev/session-core/state';
 
 import { resolveTranscriptSelectionToolbarMessages } from './resolveTranscriptSelectionToolbarMessages';
 

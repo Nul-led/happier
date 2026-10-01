@@ -70,6 +70,12 @@ describe('engineRegistry (Pi External Sessions)', () => {
           contributes: createResolvedContributionRegistry(resolveBuiltInContributions()),
           happyHomeDir: join(directory, 'home'),
           pluginIds: [PI_PLUGIN_ID],
+          resolveDevelopmentSourceAuthority: ({ pluginId, rootPath }) => ({
+            kind: 'development',
+            registeredRootId: `pi-external-sessions:${pluginId}`,
+            canonicalRoot: rootPath,
+            observedRevision: 1,
+          }),
         });
 
         expect(runtimeRegistry.targetActivationFacts).toEqual(expect.arrayContaining([
@@ -133,6 +139,10 @@ describe('engineRegistry (Pi External Sessions)', () => {
           agentIdentity: {
             pluginId: PI_PLUGIN_ID,
             localId: PI_AGENT_ID,
+          },
+          agentSourceCustody: {
+            kind: 'development',
+            registeredRootId: 'pi-external-sessions-fixture',
           },
           source,
           limit: 1,

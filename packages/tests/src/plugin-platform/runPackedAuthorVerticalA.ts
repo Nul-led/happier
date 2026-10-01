@@ -371,23 +371,32 @@ export async function runPackedAuthorVerticalAWithTestServer(
           secret,
           schema: DaemonContributionRegistryProjectionDescribeResponseSchema,
         });
-        const expectedGeneration = String(projection.projection.generation);
+        if (projection.projection.v !== 2) {
+          throw new Error('Structured Action probe requires plugin projection v2');
+        }
         const structuredAction = actionId === null
           ? null
-          : await callEncryptedMachineRpc({
+          : await (async () => {
+              const qualifiedActionId = `${pluginId}/${actionId}`;
+              const projectedAction = projection.projection.actionsById[qualifiedActionId];
+              if (!projectedAction) {
+                throw new Error(`Projected Action '${qualifiedActionId}' is unavailable`);
+              }
+              return await callEncryptedMachineRpc({
               ui: connection.ui,
               machineId: connection.machineId,
               method: RPC_METHODS.DAEMON_PLUGIN_STRUCTURED_MESSAGE_ACTION_EXECUTE,
               req: {
                 machineId: connection.machineId,
-                expectedGeneration,
-                qualifiedActionId: `${pluginId}/${actionId}`,
+                expectedContributorOccurrenceId: projectedAction.occurrenceId,
+                qualifiedActionId,
                 input: actionInput,
                 executionSurface: 'ui',
               },
               secret,
               schema: DaemonPluginStructuredMessageActionExecuteResponseSchema,
-            });
+              });
+            })();
         return { projection, structuredAction };
       },
       probeExternalTool: async ({

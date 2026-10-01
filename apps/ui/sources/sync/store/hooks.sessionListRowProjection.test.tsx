@@ -4,7 +4,7 @@ import renderer, { act } from 'react-test-renderer';
 import { flushHookEffects, renderHook, standardCleanup } from '@/dev/testkit';
 import type { SessionListIndexItem } from '@/sync/domains/sessionList/sessionListIndex';
 import type { SessionListRenderableSession } from '@/sync/domains/session/listing/sessionListRenderable';
-import { buildSessionListRuntimePriorityRowKeys } from '@/sync/domains/session/listing/sessionListRuntimePriorityRows';
+import { buildSessionListRuntimePriorityRowKeys, resolveSessionListRuntimePriorityRowNextFreshnessAtMs } from '@/sync/domains/session/listing/sessionListRuntimePriorityRows';
 import {
     buildSessionListRowScopeKey,
     buildSessionListServerScopedRowKey,
@@ -571,6 +571,53 @@ describe('session list row subscription cost across three Homes', () => {
 });
 
 describe('useSessionListRuntimePriorityRowKeysForItems', () => {
+    it('does not rederive unchanged rows on store notifications and still refreshes expired signals', async () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(1_000_000);
+        const previousState = storage.getState();
+        const items = [
+            { type: 'session', serverId: 'server-a', sessionId: 'thinking-row' },
+        ] satisfies ReadonlyArray<SessionListIndexItem>;
+        let runtimeReads = 0;
+        const row = {
+            ...buildActiveRenderable({ id: 'thinking-row', thinking: true, thinkingAt: 990_000 }),
+            get latestTurnStatus() {
+                runtimeReads += 1;
+                return null;
+            },
+        } satisfies SessionListRenderableSession;
+        try {
+            storage.setState({ sessionListRowsByServerId: { 'server-a': { 'thinking-row': row } } });
+            const hook = await renderHook(() => useSessionListRuntimePriorityRowKeysForItems(items));
+            const first = hook.getCurrent();
+            expect(first).toEqual(new Set([buildSessionListRowScopeKey('server-a', 'thinking-row')]));
+            const initialReads = runtimeReads;
+            expect(initialReads).toBeGreaterThan(0);
+
+            await act(async () => {
+                storage.setState({ sessionListRowsByServerId: { 'server-a': { 'thinking-row': row } } });
+            });
+            expect(hook.getCurrent()).toBe(first);
+            expect(runtimeReads).toBe(initialReads);
+
+            const deadline = resolveSessionListRuntimePriorityRowNextFreshnessAtMs(row, Date.now());
+            expect(deadline).not.toBeNull();
+            await act(async () => { await vi.advanceTimersByTimeAsync(deadline! - Date.now() + 1); });
+            expect(hook.getCurrent()).toEqual(first);
+            expect(runtimeReads).toBeGreaterThan(initialReads);
+            await act(async () => {
+                storage.setState({ sessionListRowsByServerId: { 'server-a': {
+                    'thinking-row': { ...row, active: false, thinking: false },
+                } } });
+            });
+            expect(hook.getCurrent()).toEqual(new Set());
+            await hook.unmount();
+        } finally {
+            standardCleanup();
+            storage.setState(previousState);
+        }
+    });
+
     it('promotes canonical online runtime activity and removes the priority when it becomes idle', async () => {
         vi.useFakeTimers();
         vi.setSystemTime(1_000_000);
@@ -639,4 +686,55 @@ describe('useSessionListRuntimePriorityRowKeysForItems', () => {
             storage.setState(previousState);
         }
     });
+
+    it('skips runtime-priority row work while disabled and restores the current priority when enabled', async () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(1_000_000);
+        const previousState = storage.getState();
+        const items = [
+            { type: 'session', serverId: 'server-a', sessionId: 'runtime-active' },
+        ] satisfies ReadonlyArray<SessionListIndexItem>;
+
+        try {
+            storage.setState((state) => ({
+                ...state,
+                sessionListRowsByServerId: {
+                    ...state.sessionListRowsByServerId,
+                    'server-a': {
+                        ...(state.sessionListRowsByServerId['server-a'] ?? {}),
+                        'runtime-active': buildActiveRenderable({
+                            id: 'runtime-active',
+                            active: false,
+                            thinking: false,
+                            presence: 'online',
+                            latestTurnStatus: 'completed',
+                            latestTurnStatusObservedAt: 990_000,
+                            runtimeActivityState: 'active',
+                            runtimeActivityActiveCount: 1,
+                            runtimeActivityObservedAt: 999_000,
+                            runtimeActivityRevision: 1,
+                        }),
+                    },
+                },
+            }));
+
+            const hook = await renderHook(
+                ({ enabled }: { enabled: boolean }) => useSessionListRuntimePriorityRowKeysForItems(items, { enabled }),
+                { initialProps: { enabled: false } },
+            );
+
+            expect(hook.getCurrent()).toEqual(new Set());
+
+            await hook.rerender({ enabled: true });
+
+            expect(hook.getCurrent()).toEqual(new Set([
+                buildSessionListRowScopeKey('server-a', 'runtime-active'),
+            ]));
+            await hook.unmount();
+        } finally {
+            standardCleanup();
+            storage.setState(previousState);
+        }
+    });
+
 });

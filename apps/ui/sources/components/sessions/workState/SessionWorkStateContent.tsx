@@ -2,6 +2,7 @@ import * as React from 'react';
 
 import { SessionWorkflowActivitySection } from './SessionWorkflowActivitySection';
 import type { GoalActionCapabilities } from './goalActionVisibility';
+import type { SessionGoalContinuationContext } from './sessionGoalContinuation';
 import type { SessionWorkflowActivityState } from './useSessionWorkflowActivity';
 import type { SessionWorkStateSnapshot } from '@/sync/domains/session/workState/sessionWorkStateTypes';
 import {
@@ -38,6 +39,8 @@ export function SessionWorkStateContent(props: Readonly<{
      * should only show goal controls once there is an actual goal to inspect/edit.
      */
     showEmptyGoalControls?: boolean;
+    /** The continuation owner row (Keep going or the agent's own mode); the Goal control passes it. */
+    continuation?: SessionGoalContinuationContext | null;
     requestClose: () => void;
     onSetGoal?: (request: SessionWorkStateGoalSetRequest) => Promise<SessionWorkStateOperationResult>;
     onClearGoal?: () => Promise<SessionWorkStateOperationResult>;
@@ -54,6 +57,7 @@ export function SessionWorkStateContent(props: Readonly<{
         goalActionCapabilityProfile: props.goalActionCapabilityProfile ?? null,
         workflowSection,
         showEmptyGoalControls: props.showEmptyGoalControls,
+        continuation: props.continuation ?? null,
         onRequestClose: props.requestClose,
         onSetGoal: props.onSetGoal,
         onClearGoal: props.onClearGoal,

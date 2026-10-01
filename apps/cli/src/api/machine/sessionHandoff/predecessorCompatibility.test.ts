@@ -11,6 +11,7 @@ import {
 } from '@happier-dev/protocol';
 
 import {
+  projectReleasedSessionHandoffRequestForMethod,
   projectReleasedSessionHandoffResponseForMethod,
   projectSessionHandoffPrepareTargetResponseForPredecessor,
   projectSessionHandoffResponseForPredecessor,
@@ -49,13 +50,6 @@ const PredecessorStartResponseSchema = z.object({
       manifestHash: z.string(),
       endpointCandidates: z.array(z.unknown()).optional(),
     }).strict().optional(),
-    workspaceReplicationSourceRootPath: z.string().optional(),
-    workspaceReplicationHandoffBackTargetRootPath: z.string().optional(),
-    workspaceReplicationManifestTransferPublication: z.object({
-      transferId: z.string(),
-      endpointCandidates: z.array(z.unknown()).optional(),
-    }).strict().optional(),
-    workspaceReplicationSourceControllerMetadata: z.record(z.string(), z.unknown()).optional(),
   }).strict().optional(),
 }).strict();
 
@@ -79,6 +73,42 @@ const PredecessorPrepareResponseSchema = z.object({
 }).strict();
 
 describe('session handoff predecessor wire compatibility', () => {
+  it('accepts the released predecessor workspace-replication metadata on prepare', () => {
+    const request = {
+      handoffId: 'handoff-1',
+      sourceMachineId: 'machine-source',
+      targetMachineId: 'machine-target',
+      negotiatedTransportStrategy: 'direct_peer',
+      sourceSessionStorageMode: 'persisted',
+      targetSessionStorageMode: 'persisted',
+      targetPath: '/repo',
+      endpointCandidates: [],
+      handoffMetadataV2: {
+        workspaceReplicationSourceRootPath: '/repo',
+        workspaceReplicationHandoffBackTargetRootPath: '/repo-back',
+        workspaceReplicationManifestTransferPublication: {
+          transferId: 'workspace-manifest:handoff-1',
+          endpointCandidates: [],
+        },
+        workspaceReplicationSourceControllerMetadata: {
+          archiveId: 'archive-1',
+        },
+      },
+      workspaceTransfer: {
+        enabled: true,
+        strategy: 'sync_changes',
+        conflictPolicy: 'replace_existing',
+        includeIgnoredMode: 'exclude',
+        ignoredIncludeGlobs: [],
+      },
+    } as const;
+
+    expect(projectReleasedSessionHandoffRequestForMethod(
+      RPC_METHODS.DAEMON_SESSION_HANDOFF_PREPARE_TARGET,
+      request,
+    )).toEqual({ accepted: true, input: request });
+  });
+
   it('projects current-only start and prepare fields onto the exact strict predecessor wire', () => {
     const status = {
       handoffId: 'handoff-1',
@@ -141,6 +171,7 @@ describe('session handoff predecessor wire compatibility', () => {
     expect(PredecessorStartResponseSchema.parse(start)).toEqual(start);
     expect(PredecessorPrepareResponseSchema.parse(prepare)).toEqual(prepare);
     expect(start).not.toHaveProperty('handoffMetadataV2.agentBundleTransferPublication');
+    expect(start).not.toHaveProperty('handoffMetadataV2.workspaceReplicationSourceRootPath');
     expect(prepare).not.toHaveProperty('runtimeDescriptorV1');
     expect(prepare).not.toHaveProperty('workspaceReplicationJobId');
     expect(prepare).not.toHaveProperty('resume.agentTarget');

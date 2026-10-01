@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { createSessionFixture } from '@/dev/testkit';
+import { createSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
 import { buildSessionListRenderableFromSession } from '@/sync/domains/session/listing/sessionListRenderable';
 import type { SessionListViewItem } from '@/sync/domains/session/listing/sessionListViewData';
-import type { NormalizedMessage } from '@/sync/typesRaw';
+import type { NormalizedMessage } from "@happier-dev/session-core/raw";
 
 const kvStore = vi.hoisted(() => new Map<string, string>());
 vi.mock('react-native-mmkv', () => {
@@ -48,6 +48,7 @@ vi.mock('@/sync/api/session/apiSocket', () => ({
         onConnectionStateChange: vi.fn(() => () => {}),
         connect: vi.fn(),
         disconnect: vi.fn(),
+        invalidateRequests: vi.fn(),
         initialize: vi.fn(),
         request: vi.fn(async () => new Response(
             JSON.stringify({ messages: [], hasMore: false, nextAfterSeq: null }),
@@ -59,6 +60,12 @@ vi.mock('@/sync/api/session/apiSocket', () => ({
 vi.mock('@/log', () => ({
     log: { log: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
+
+// Packaged Expo assets are absent in this unit harness; retain the real plugin owners.
+vi.mock('@/sync/domains/plugins/availability/generatedBundledPluginUiArtifacts', async () => {
+    const { emptyBundledPluginUiAssetsModule } = await import('@/dev/testkit/mocks/bundledPluginUiAssets');
+    return emptyBundledPluginUiAssetsModule;
+});
 
 describe('sync session viewport', () => {
     type RuntimeViewportChangeSync = Readonly<{

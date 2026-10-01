@@ -11,17 +11,9 @@ import {
     type PluginContributionIdentityV1,
 } from '@happier-dev/protocol';
 
-import { BUNDLED_AGENT_CONTRIBUTION_IDENTITIES } from '@happier-dev/agents/agent-ids';
-
 function resolveAgentIdentityForBackendId(backendId: string): PluginContributionIdentityV1 | null {
-    // One bundled Agent carries exactly one canonical binding key: the qualified
-    // contribution identity. The retired `backend:<bundledId>` spelling must
-    // rekey onto it so persisted selections join current targets.
-    const bundledIdentity = BUNDLED_AGENT_CONTRIBUTION_IDENTITIES[
-        backendId as keyof typeof BUNDLED_AGENT_CONTRIBUTION_IDENTITIES
-    ] ?? null;
-    if (bundledIdentity) return bundledIdentity;
-    // An installed Agent's host routing id *is* its qualified contribution key,
+    // A bundled Agent's single canonical key comes from the protocol key owner
+    // (`buildBackendTargetKeyV2`). An installed Agent's host routing id *is* its qualified contribution key,
     // so `backend:<pluginId>/<localId>` names the same Agent as the canonical
     // `agent:` target. Without this, a Voice selection, remembered engine, or
     // persisted run target spelled in backend vocabulary never joins the

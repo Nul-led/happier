@@ -1,5 +1,5 @@
 import type { FeatureId } from '@happier-dev/protocol';
-import type { TranslationKey } from '@/text';
+import type { TranslationKeyNoParams } from '@/text';
 
 export type UiFeatureToggleServerVisibilityScope = 'main_selection' | 'runtime';
 
@@ -9,12 +9,8 @@ export type UiFeatureDefinition = Readonly<{
         isExperimental: boolean;
         defaultEnabled: boolean;
         serverVisibilityScope?: UiFeatureToggleServerVisibilityScope;
-        titleKey: TranslationKey;
-        subtitleKey: TranslationKey;
-        icon: Readonly<{
-            ioniconName: string;
-            color: string;
-        }>;
+        titleKey: TranslationKeyNoParams;
+        subtitleKey: TranslationKeyNoParams;
     }>;
     analytics?: Readonly<{
         trackPreference?: boolean;
@@ -26,11 +22,12 @@ export const UI_FEATURE_REGISTRY = {
     automations: {
         settingsToggle: {
             showInSettings: true,
-            isExperimental: true,
+            // Graduated with the one Workflows destination: the switch governs triggers, and the
+            // Experiments switch no longer turns them off (FIN 04 §3.1).
+            isExperimental: false,
             defaultEnabled: true,
             titleKey: 'settingsFeatures.expAutomations',
             subtitleKey: 'settingsFeatures.expAutomationsSubtitle',
-            icon: { ioniconName: 'timer-outline', color: '#007AFF' },
         },
     },
     workflows: {
@@ -43,7 +40,6 @@ export const UI_FEATURE_REGISTRY = {
             defaultEnabled: false,
             titleKey: 'settingsFeatures.expExecutionRuns',
             subtitleKey: 'settingsFeatures.expExecutionRunsSubtitle',
-            icon: { ioniconName: 'code-slash-outline', color: '#AF52DE' },
         },
     },
     'pets.companion': {
@@ -54,7 +50,6 @@ export const UI_FEATURE_REGISTRY = {
             serverVisibilityScope: 'main_selection',
             titleKey: 'settingsFeatures.expPetsCompanion',
             subtitleKey: 'settingsFeatures.expPetsCompanionSubtitle',
-            icon: { ioniconName: 'paw-outline', color: '#34C759' },
         },
     },
     'pets.sync': {
@@ -73,7 +68,6 @@ export const UI_FEATURE_REGISTRY = {
             defaultEnabled: false,
             titleKey: 'settingsFeatures.voice',
             subtitleKey: 'settingsFeatures.voiceSubtitle',
-            icon: { ioniconName: 'mic-outline', color: '#34C759' },
         },
     },
     'voice.happierVoice': {
@@ -86,7 +80,6 @@ export const UI_FEATURE_REGISTRY = {
             defaultEnabled: false,
             titleKey: 'settingsFeatures.expVoiceAgent',
             subtitleKey: 'settingsFeatures.expVoiceAgentSubtitle',
-            icon: { ioniconName: 'sparkles-outline', color: '#AF52DE' },
         },
     },
     'voice.daemonInference': {
@@ -96,18 +89,10 @@ export const UI_FEATURE_REGISTRY = {
             defaultEnabled: false,
             titleKey: 'settingsFeatures.expVoiceDaemonInference',
             subtitleKey: 'settingsFeatures.expVoiceDaemonInferenceSubtitle',
-            icon: { ioniconName: 'hardware-chip-outline', color: '#34C759' },
         },
     },
     'connectedServices.quotas': {
-        settingsToggle: {
-            showInSettings: true,
-            isExperimental: true,
-            defaultEnabled: false,
-            titleKey: 'settingsFeatures.expConnectedServicesQuotas',
-            subtitleKey: 'settingsFeatures.expConnectedServicesQuotasSubtitle',
-            icon: { ioniconName: 'analytics-outline', color: '#34C759' },
-        },
+        settingsToggle: undefined,
     },
     'connectedServices.subscription': {
         settingsToggle: undefined,
@@ -156,7 +141,6 @@ export const UI_FEATURE_REGISTRY = {
             serverVisibilityScope: 'main_selection',
             titleKey: 'settingsFeatures.expSessionsFolders',
             subtitleKey: 'settingsFeatures.expSessionsFoldersSubtitle',
-            icon: { ioniconName: 'folder-outline', color: '#5856D6' },
         },
     },
     'sessions.handoff': {
@@ -326,7 +310,6 @@ export const UI_FEATURE_REGISTRY = {
             defaultEnabled: false,
             titleKey: 'settingsFeatures.expFriends',
             subtitleKey: 'settingsFeatures.expFriendsSubtitle',
-            icon: { ioniconName: 'people-outline', color: '#007AFF' },
         },
     },
     'inbox.global': {
@@ -351,7 +334,6 @@ export const UI_FEATURE_REGISTRY = {
             defaultEnabled: true,
             titleKey: 'settingsFeatures.expSessionsDirect',
             subtitleKey: 'settingsFeatures.expSessionsDirectSubtitle',
-            icon: { ioniconName: 'albums-outline', color: '#34C759' },
         },
     },
     providers: {
@@ -437,7 +419,6 @@ export const UI_FEATURE_REGISTRY = {
             defaultEnabled: false,
             titleKey: 'settingsFeatures.expLiveActivities',
             subtitleKey: 'settingsFeatures.expLiveActivitiesSubtitle',
-            icon: { ioniconName: 'phone-portrait-outline', color: '#34C759' },
         },
     },
     'app.ui.homeScreenWidgets': {
@@ -447,7 +428,6 @@ export const UI_FEATURE_REGISTRY = {
             defaultEnabled: false,
             titleKey: 'settingsFeatures.expHomeScreenWidgets',
             subtitleKey: 'settingsFeatures.expHomeScreenWidgetsSubtitle',
-            icon: { ioniconName: 'grid-outline', color: '#007AFF' },
         },
     },
     bugReports: {
@@ -460,7 +440,6 @@ export const UI_FEATURE_REGISTRY = {
             defaultEnabled: false,
             titleKey: 'settingsFeatures.expAttachmentsUploads',
             subtitleKey: 'settingsFeatures.expAttachmentsUploadsSubtitle',
-            icon: { ioniconName: 'attach-outline', color: '#007AFF' },
         },
     },
     'scm.writeOperations': {
@@ -470,7 +449,6 @@ export const UI_FEATURE_REGISTRY = {
             defaultEnabled: false,
             titleKey: 'settingsFeatures.expScmOperations',
             subtitleKey: 'settingsFeatures.expScmOperationsSubtitle',
-            icon: { ioniconName: 'git-branch-outline', color: '#FF9500' },
         },
     },
     'files.reviewComments': {
@@ -480,7 +458,6 @@ export const UI_FEATURE_REGISTRY = {
             defaultEnabled: true,
             titleKey: 'settingsFeatures.expFilesReviewComments',
             subtitleKey: 'settingsFeatures.expFilesReviewCommentsSubtitle',
-            icon: { ioniconName: 'chatbox-ellipses-outline', color: '#34C759' },
         },
     },
     'files.diffSyntaxHighlighting': {
@@ -490,7 +467,6 @@ export const UI_FEATURE_REGISTRY = {
             defaultEnabled: true,
             titleKey: 'settingsFeatures.expFilesDiffSyntaxHighlighting',
             subtitleKey: 'settingsFeatures.expFilesDiffSyntaxHighlightingSubtitle',
-            icon: { ioniconName: 'color-palette-outline', color: '#007AFF' },
         },
     },
     'files.syntaxHighlighting.advanced': {
@@ -500,7 +476,6 @@ export const UI_FEATURE_REGISTRY = {
             defaultEnabled: true,
             titleKey: 'settingsFeatures.expFilesAdvancedSyntaxHighlighting',
             subtitleKey: 'settingsFeatures.expFilesAdvancedSyntaxHighlightingSubtitle',
-            icon: { ioniconName: 'sparkles-outline', color: '#AF52DE' },
         },
     },
     'memory.search': {
@@ -510,7 +485,6 @@ export const UI_FEATURE_REGISTRY = {
             defaultEnabled: false,
             titleKey: 'settingsFeatures.expMemorySearch',
             subtitleKey: 'settingsFeatures.expMemorySearchSubtitle',
-            icon: { ioniconName: 'search-outline', color: '#34C759' },
         },
     },
     search: {
@@ -523,7 +497,6 @@ export const UI_FEATURE_REGISTRY = {
             defaultEnabled: true,
             titleKey: 'settingsFeatures.expEmbeddedTerminal',
             subtitleKey: 'settingsFeatures.expEmbeddedTerminalSubtitle',
-            icon: { ioniconName: 'terminal-outline', color: '#AF52DE' },
         },
     },
     'terminal.transport.byteStream': {
@@ -548,7 +521,6 @@ export const UI_FEATURE_REGISTRY = {
             defaultEnabled: true,
             titleKey: 'settingsFeatures.expFilesEditor',
             subtitleKey: 'settingsFeatures.expFilesEditorSubtitle',
-            icon: { ioniconName: 'create-outline', color: '#FF9500' },
         },
     },
     'files.markdownRichEditor': {
@@ -558,7 +530,6 @@ export const UI_FEATURE_REGISTRY = {
             defaultEnabled: false,
             titleKey: 'settingsFeatures.expMarkdownRichEditor',
             subtitleKey: 'settingsFeatures.expMarkdownRichEditorSubtitle',
-            icon: { ioniconName: 'document-text-outline', color: '#AF52DE' },
         },
     },
     'zen.navigation': {
@@ -568,7 +539,6 @@ export const UI_FEATURE_REGISTRY = {
             defaultEnabled: true,
             titleKey: 'settingsFeatures.expZen',
             subtitleKey: 'settingsFeatures.expZenSubtitle',
-            icon: { ioniconName: 'leaf-outline', color: '#34C759' },
         },
     },
     'usage.reporting': {
@@ -578,7 +548,6 @@ export const UI_FEATURE_REGISTRY = {
             defaultEnabled: true,
             titleKey: 'settingsFeatures.expUsageReporting',
             subtitleKey: 'settingsFeatures.expUsageReportingSubtitle',
-            icon: { ioniconName: 'analytics-outline', color: '#007AFF' },
         },
     },
     'setup.relay.allowRelaySelection': {

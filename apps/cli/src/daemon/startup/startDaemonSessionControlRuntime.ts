@@ -8,6 +8,8 @@ import type { Metadata, SessionCreationOutcome } from '@/api/types';
 import { fetchAccountProfile } from '@/api/accountProfile';
 import { serializeAxiosErrorForLog } from '@/api/client/serializeAxiosErrorForLog';
 import { configuration } from '@/configuration';
+import { readAccountIdFromToken as readPreviewAccountIdFromToken } from '@/cloud/decodeJwtPayload';
+import { refreshTerminalPresentUserPolicy } from '@/settings/accountSettings/resolveEffectiveTerminalPresentUserPolicy';
 import { getSessionNotificationTitle } from '@/agent/runtime/notifications/sessionNotificationContext';
 import {
     getActiveAccountSettingsSnapshot,
@@ -68,6 +70,9 @@ import {
     type RuntimeDescriptorV1,
     type SessionContinuationResumePromptModeV1,
     type SessionRunnerRestartDisabledReason,
+    type SessionRunnerRuntimeStateV1,
+    type SessionRunnerRuntimeStatusV2,
+    type SessionRunnerStatusGetRequestV1,
     pluginSourceCustodyV1Equal,
 } from '@happier-dev/protocol';
 import {
@@ -255,6 +260,7 @@ import { createBrowserDiagnosticsDaemonStore } from '../browser/diagnostics/stor
 import { createBrowserDaemonControlBroker } from '../browser/control/broker';
 import { createBrowserDaemonControlRoutes, type BrowserDaemonControlRoutes } from '../browser/control/routes';
 import { createBrowserContextRoutes, type BrowserContextRoutes } from '../browser/context/routes';
+import { createComputerRoutes, type ComputerRoutes } from '../computer/routes';
 import {
     createUnavailableBrowserContextSource,
     type BrowserContextSource,
@@ -266,7 +272,7 @@ import {
 } from '../browser/context/diagnostics/summary';
 import { createSidecarCdpDiagnosticsRuntime } from '../browser/sidecar/diagnostics/runtime';
 import { createTransferPathAllowanceRegistry } from '@/transfers/targets/createTransferPathAllowanceRegistry';
-import { createBrowserAutomationDaemonService } from '../browser/automation/service';
+import { createBrowserAutomationDaemonService, type BrowserAutomationDaemonService } from '../browser/automation/service';
 import { createBrowserAutomationRuntimeProvisioner } from '../browser/sidecar/provisioning';
 import type { ProvisionBrowserAutomationRuntime } from '../browser/actions/runtimeActionExecutor';
 import { createBrowserAutomationRoutes, type BrowserAutomationRoutes } from '../browser/automation/routes';
@@ -280,12 +286,16 @@ import {
 import { resolveBrowserRecordingStartContext as resolveBrowserRecordingStartContextForProducers } from '../browser/recording/startContext';
 import { createBrowserRecordingNativeViewCaptureCommand } from '../browser/recording/adapters/nativeViewCommand';
 import { createBrowserRecordingCdpScreencastTransport } from '../browser/recording/adapters/cdpScreencastTransport';
+import { createBrowserCdpScreencastProducer, type BrowserCdpScreencastProducer } from '../browser/capture/cdpScreencast';
+import { registerBrowserLiveCapture } from '../browser/capture/registration';
 import {
     createDesktopBrowserRecordingNativeViewCaptureTransport,
     type DesktopBrowserRecordingFrameCaptureInvoke,
 } from '../browser/recording/adapters/nativeViewTransport';
 import { createReverseDesktopBrowserRecordingNativeViewCaptureInvoke } from '../browser/recording/adapters/reverseCaptureInvoke';
 import { createDesktopReverseBrowserRecordingCaptureUiCall } from '../browser/recording/reverseChannel/desktopReverseCaptureUiCall';
+import { createBrowserAutomationReverseDispatcher } from '../browser/automation/reverseDispatch';
+import type { BrowserUiAutomationRouteOwner } from '../runtimeActionExecutor';
 import type { BrowserRecordingRoutes } from '../browser/recording/routes';
 import { createBrowserProfileStore, type BrowserProfileStore } from '../browser/profiles/store';
 import {
@@ -312,7 +322,7 @@ import type {
 import { createProductBrowserSidecarControlAdapterFactory } from '../browser/sidecar/productSource';
 import { createBrowserDaemonFeatureGate, type BrowserDaemonFeatureGate } from '../browser/featureGate';
 import type { MachineLiveStreamCaptureRegistry } from '../peer/mediation/stream';
-import { createLocalServicesDaemonRuntime } from '../local/services/runtime';
+import { createLocalServicesDaemonRuntime, type LocalServicesDaemonRuntime } from '../local/services/runtime';
 import { fetchServerFeaturesSnapshot, type CliServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
 import { resolveCliFeatureDecision } from '@/features/featureDecisionService';
 import {
@@ -325,6 +335,7 @@ import type { LocalServicePreviewRoutes } from '../local/services/preview/routes
 import { createLocalServicePublicPreviewServerRoutes } from '../local/services/public/routes';
 import { resolveHostedWebStaticAssetLifecycleSource } from '../local/services/plugins/staticAssets/source';
 import { createOnChildExited } from '../sessions/onChildExited';
+import { resolveRecoveredSpawnNonceAdmission } from '../spawn/recoveredSpawnNonceAdmission';
 import { applyTrackedSessionTurnLifecycle } from '../sessions/applyTrackedSessionTurnLifecycle';
 import {
     isSessionRunnerActive as isSessionRunnerActiveInDaemon,
@@ -372,6 +383,7 @@ import {
 import {
     refreshTrackedRunnerAgentRuntimeDaemonServiceAuthority,
 } from '../agentRuntime/refreshTrackedRunnerAgentRuntimeDaemonServiceAuthority';
+import { currentAgentBindingMatchesRetainedRunner } from '@/plugins/runtime/retainedPluginSourceAttestation';
 import {
     awaitTrackedRunnerAgentSessionOpen,
     recordTrackedRunnerAgentSessionOpenAttestation,
@@ -469,6 +481,8 @@ import type {
 import { SPAWN_SESSION_ERROR_CODES } from '@/session/shared/spawnSessionContract';
 import { updateSessionMetadataWithRetry } from '@/session/metadata/updateSessionMetadataWithRetry';
 import { resolveSessionMachineWorkspacePath } from '@/session/machineControlLocality';
+import { readSessionDirectoryKind } from '@happier-dev/protocol/sessions/metadata/directory';
+import { createManagedSessionDirectories } from '@/session/creation/managedSessionDirectories';
 import { fetchSessionByIdCompat } from '@/session/transport/http/sessionsHttp';
 import { readTerminalHostAttachmentInfo } from '@/terminal/attachment/terminalAttachmentInfo';
 import { tryDecryptSessionOwnerMetadataView } from '@/session/transport/encryption/sessionEncryptionContext';
@@ -494,7 +508,7 @@ import {
 } from '../agentRuntime/prepareForegroundAdmission';
 import { isPidSafeHappySessionProcess } from '../pidSafety';
 import { computeDaemonSpawnRequestKey, createSpawnRequestCoalescer } from '../spawn/spawnRequestCoalescer';
-import { DEFAULT_SESSION_WEBHOOK_TIMEOUT_MS } from '../spawn/sessionWebhookTimeoutPolicy';
+import { DEFAULT_SESSION_WEBHOOK_TIMEOUT_MS } from '@happier-dev/protocol';
 import { resolveExistingSessionSpawnPreGate } from '../spawn/resolveExistingSessionSpawnPreGate';
 import {
     createSessionRunnerRespawnManager,
@@ -692,6 +706,7 @@ import {
 } from './terminalControlServiceabilityProjection';
 import { publishReportedTerminalControlServiceability } from './publishReportedTerminalControlServiceability';
 import { retireExactTerminalControlServiceability } from '../sessions/retireTerminalControlServiceability';
+import { executeTerminalHostDisposition } from '@/terminal/attachment/terminalHostDisposition';
 import { recoverStrandedTerminalControlServiceability } from '../sessions/recoverStrandedTerminalControlServiceability';
 import { resolveSharedStateRequiredSwitchContinuity } from '../connectedServices/sessionAuthSwitch/sharedStateContinuity';
 import { resolveUnsupportedSwitchContinuityErrorCode } from '../connectedServices/sessionAuthSwitch/resolveUnsupportedSwitchContinuityErrorCode';
@@ -1262,7 +1277,7 @@ async function publishCurrentTerminalControlServiceability(input: Readonly<{
         happyHomeDir: input.happyHomeDir,
         sessionId: input.sessionId,
     });
-    if (attachment?.version !== 2) return false;
+    if (!attachment || attachment.version === 1) return false;
     const evidence = resolveRunnerTerminalControlServiceabilityEvidence({
         serviceability: input.serviceability,
         attachmentId: attachment.attachmentId,
@@ -1277,7 +1292,7 @@ async function publishCurrentTerminalControlServiceability(input: Readonly<{
         happyHomeDir: input.happyHomeDir,
         sessionId: input.sessionId,
     });
-    if (attachmentBeforeUpdate?.version !== 2 || attachmentBeforeUpdate.attachmentId !== attachment.attachmentId) return false;
+    if (!attachmentBeforeUpdate || attachmentBeforeUpdate.version === 1 || attachmentBeforeUpdate.attachmentId !== attachment.attachmentId) return false;
     await updateSessionMetadataWithRetry({
         token: input.credentials.token,
         credentials: input.credentials,
@@ -2054,7 +2069,7 @@ export async function startDaemonSessionControlRuntime(
         externalSessionHostOperationOwner?: ExternalSessionHostOperationOwner;
         runtimeId?: string;
         credentials: NonNullable<Parameters<typeof executeSpawnSessionRequest>[0]['credentials']>;
-        daemonSessionMutationCustody: Pick<DaemonSessionMutationCustody, 'stageTranscriptEvent'>
+        daemonSessionMutationCustody: Pick<DaemonSessionMutationCustody, 'stageTranscriptEvent' | 'stageTranscriptMessage'>
             & Partial<Pick<DaemonSessionMutationCustody, 'stage'>>;
         cancelInactiveSessionUsageLimitRecoveryAfterExplicitStop?: (input: Readonly<{
             sessionId: string;
@@ -2093,9 +2108,11 @@ export async function startDaemonSessionControlRuntime(
         pidToAwaiter: Map<number, (session: TrackedSession) => void>;
         pidToSpawnResultResolver: Map<number, (result: SpawnSessionResult) => void>;
         pidToSpawnWebhookTimeout: Map<number, NodeJS.Timeout>;
+        persistedTakeoverAdmissionWaiter?: Parameters<typeof executeSpawnSessionRequest>[0]['persistedTakeoverAdmissionWaiter'];
         getApiMachineForSessions: () => ApiMachineClient | null;
         onLocalServicesPreviewRoutesReady?: (routes: LocalServicePreviewRoutes) => void;
         onLocalServicesRoutesReady?: (routes: DaemonLocalServicesMachineRpcRoutes) => void;
+        onLocalServicesSummaryReady?: (source: Pick<LocalServicesDaemonRuntime, 'getSummary' | 'subscribeSummary' | 'refreshInventoryNow'>) => void;
         onProviderManagedCatalogRuntimeOwnerReady?: (owner: ProviderManagedCatalogRuntimeOwner) => void;
         onManagedServiceEndpointReadHostReady?: (
             host: ReturnType<
@@ -2226,6 +2243,10 @@ export async function startDaemonSessionControlRuntime(
     spawnSession: (options: SpawnSessionOptions) => Promise<SpawnSessionResult>;
     stopSession: (sessionId: string) => Promise<StopSessionResult>;
     isSessionAlreadyRunning: (sessionId: string) => Promise<boolean>;
+    sessionRunnerStatus: Readonly<{
+        get: (request: SessionRunnerStatusGetRequestV1) => Promise<SessionRunnerRuntimeStateV1>;
+        getV2: (request: SessionRunnerStatusGetRequestV1) => Promise<SessionRunnerRuntimeStatusV2>;
+    }>;
     onChildExited: (pid: number, exit: { reason: string; code: number | null; signal: string | null }) => void;
     controlPort: number;
     controlToken: string;
@@ -2307,6 +2328,8 @@ export async function startDaemonSessionControlRuntime(
     purgeBrowserStorageForSessionDeleted: (sessionId: string) => Promise<void>;
     purgeBrowserStorageForLogout: () => Promise<void>;
 }>> {
+    let computerRoutes: ComputerRoutes | null = null;
+    await refreshTerminalPresentUserPolicy({ token: params.credentials.token, serverHttpBaseUrl: params.serverBaseUrl });
     const connectedServiceRuntimeRegistry =
         params.connectedServiceRuntimeRegistry ?? new ConnectedServiceRuntimeRegistry();
     let advanceProviderInputAdmissionsAfterHotApplyRegistration: (input: Readonly<{
@@ -4010,7 +4033,6 @@ export async function startDaemonSessionControlRuntime(
             await waitForExistingSessionExitIfStopRequested({
                 sessionId,
                 pidToTrackedSession: params.pidToTrackedSession,
-                isSessionRunnerActive,
                 timeoutMs: configuration.daemonStopSessionWaitForExitMs,
                 pollIntervalMs: configuration.daemonStopSessionWaitForExitPollIntervalMs,
                 onExitObserved: (pid, exit) => onChildExited(pid, exit),
@@ -4077,6 +4099,56 @@ export async function startDaemonSessionControlRuntime(
                             errorCode: SPAWN_SESSION_ERROR_CODES.UNEXPECTED,
                             errorMessage: preGateResult.errorMessage,
                         };
+                    }
+                }
+                if (options.existingSessionId) {
+                    const sessionId = normalizeOptionalString(options.existingSessionId);
+                    const tracked = [...params.pidToTrackedSession.values()].find((candidate) => candidate.happySessionId === sessionId);
+                    if (sessionId && tracked) {
+                        const metadata = await resolvePersistedConnectedServiceSwitchSessionMetadata({
+                            token: params.credentials.token,
+                            credentials: params.credentials,
+                            sessionId,
+                        }).catch(() => null) ?? tracked.happySessionMetadataFromLocalWebhook ?? null;
+                        const managed = readSessionDirectoryKind(metadata) === 'managed'
+                            || tracked.spawnOptions?.directoryKind === 'managed'
+                            || options.directoryKind === 'managed';
+                        if (managed) {
+                            const directory = resolveSessionMachineWorkspacePath({
+                                metadata: metadata ?? {},
+                                currentMachineId: params.machineId,
+                                candidatePath: metadata?.path ?? tracked.spawnOptions?.directory,
+                            }) ?? '';
+                            const proof = await createManagedSessionDirectories().resolveForSession({
+                                sessionId,
+                                path: directory,
+                                sessionCreationTag: tracked.spawnOptions?.sessionCreationTag,
+                            });
+                            if (!proof.ok) {
+                                const missingDirectoryResult = {
+                                    type: 'error' as const,
+                                    errorCode: SPAWN_SESSION_ERROR_CODES.SESSION_DIRECTORY_MISSING,
+                                    errorMessage: 'The session folder is no longer available on this machine.',
+                                };
+                                if (options.approvedNewDirectoryCreation !== true) return missingDirectoryResult;
+                                // Consent admits a new launch, not the old process whose cwd is missing.
+                                // Preserve exact-process custody until the normal Stop owner retires it.
+                                const stopped = await stopSession(sessionId, {
+                                    expectedTrackedRunner: {
+                                        tracked,
+                                        sessionRunnerPid: tracked.sessionRunnerPid,
+                                        processStartTimeMs: tracked.processStartTimeMs,
+                                        processCommandHash: tracked.processCommandHash,
+                                    },
+                                });
+                                if (!isTerminalHostPhysicallyRetiredStopResult(stopped) && stopped.status !== 'not_found') {
+                                    return missingDirectoryResult;
+                                }
+                                if ([...params.pidToTrackedSession.values()].some((candidate) => candidate.happySessionId === sessionId)) {
+                                    return missingDirectoryResult;
+                                }
+                            }
+                        }
                     }
                 }
                 const existingSessionPreGate = await resolveExistingSessionSpawnPreGate({
@@ -4204,6 +4276,7 @@ export async function startDaemonSessionControlRuntime(
                         pidToAwaiter: params.pidToAwaiter,
                         pidToSpawnResultResolver: params.pidToSpawnResultResolver,
                         pidToSpawnWebhookTimeout: params.pidToSpawnWebhookTimeout,
+                        persistedTakeoverAdmissionWaiter: params.persistedTakeoverAdmissionWaiter,
                         resolveCanonicalTrackedSessionId,
                         onChildExited,
                         spawnResourceCleanupByPid: params.spawnResourceCleanupByPid,
@@ -5990,16 +6063,19 @@ export async function startDaemonSessionControlRuntime(
                         && isCurrent
                         && registration.pluginId
                             === retainedAgent.pluginId
-                        && registration.pluginVersion
-                            === retainedAgent.pluginVersion
                         && registration.agentId
                             === retainedAgent.agentId
                         && registration.sourceCustody
                         && pluginSourceCustodyV1Equal(
                             registration.sourceCustody,
-                            retainedAgent.sourceCustody,
+                            binding.sourceCustody,
                         )
-                        && isDeepStrictEqual(binding, retainedAgent),
+                        && currentAgentBindingMatchesRetainedRunner({
+                            runnerSnapshotIdentity:
+                                runner.snapshotIdentity,
+                            currentBinding: binding,
+                            retainedBinding: retainedAgent,
+                        }),
                     );
                     const capturedAgentRegistration =
                         currentRegistrationIsExact
@@ -8010,6 +8086,7 @@ export async function startDaemonSessionControlRuntime(
         },
         onPidPromoted: onTrackedSessionPidPromoted,
         shouldPreserveSessionMarkerOnExit: ({ trackedSession, unexpected }) => {
+            if (trackedSession.publishedTerminalControlServiceabilityAttachmentLifecycle === 'borrowed') return false;
             if (unexpected && trackedSession.startedBy === 'daemon') return true;
             const terminal = trackedSession.happySessionMetadataFromLocalWebhook?.terminal
                 ?? trackedSession.hostedTerminal;
@@ -8033,6 +8110,35 @@ export async function startDaemonSessionControlRuntime(
                 });
                 throw error;
             });
+            const borrowedAttachmentId = trackedSession.publishedTerminalControlServiceabilityAttachmentLifecycle === 'borrowed'
+                ? trackedSession.publishedTerminalControlServiceabilityAttachmentId
+                : attachmentInfo?.version === 3
+                    && (!trackedSession.publishedTerminalControlServiceabilityAttachmentId
+                        || trackedSession.publishedTerminalControlServiceabilityAttachmentId === attachmentInfo.attachmentId)
+                    ? attachmentInfo.attachmentId
+                    : undefined;
+            if (borrowedAttachmentId) {
+                const terminalMode = attachmentInfo?.version === 3 && attachmentInfo.attachmentId === borrowedAttachmentId
+                    ? resolveDisconnectedTerminalMode({ terminal, hostKind: attachmentInfo.handle.kind, attachmentId: borrowedAttachmentId })
+                    : terminal?.mode;
+                if (terminalMode && terminalMode !== 'plain') {
+                    await retireTerminalControlServiceabilityForCurrentAccount({
+                        sessionId, attachmentId: borrowedAttachmentId, terminalMode,
+                    });
+                }
+                if (attachmentInfo?.version === 3 && attachmentInfo.attachmentId === borrowedAttachmentId) {
+                    const disposition = await executeTerminalHostDisposition({
+                        happyHomeDir: configuration.happyHomeDir,
+                        sessionId,
+                        expectedAttachmentId: borrowedAttachmentId,
+                        intent: { kind: 'release_borrowed_host', reason: 'provider_exit' },
+                    });
+                    if (disposition.status !== 'retired') {
+                        throw new Error('borrowed_terminal_attachment_retirement_failed');
+                    }
+                }
+                return;
+            }
             if (attachmentInfo?.version !== 2) {
                 if (
                     trackedSession.publishedTerminalControlServiceabilityAttachmentId
@@ -8067,9 +8173,23 @@ export async function startDaemonSessionControlRuntime(
     });
     onChildExited = async (pid, exit) => {
         const trackedBeforeExit = params.pidToTrackedSession.get(pid) ?? null;
+        const startupPid = trackedBeforeExit?.spawnStartupAwaiterPid ?? pid;
+        const startupResolver = params.pidToSpawnResultResolver.get(startupPid);
         const connectedServiceRestartWasRequested = params.connectedServicesRestartRequestedPids.has(pid);
         await onChildExitedBase(pid, exit);
         const trackedAfterExit = params.pidToTrackedSession.get(pid) ?? null;
+        if (
+            trackedBeforeExit
+            && ![...params.pidToTrackedSession.values()].includes(trackedBeforeExit)
+            && startupResolver
+            && params.pidToSpawnResultResolver.get(startupPid) === startupResolver
+        ) {
+            startupResolver({
+                type: 'error',
+                errorCode: SPAWN_SESSION_ERROR_CODES.CHILD_EXITED_BEFORE_WEBHOOK,
+                errorMessage: 'Child process exited before startup readiness completed',
+            });
+        }
         void params.connectedServiceGroupHomeCleanupScheduler?.cleanupPendingDeletedGroupHomes().catch((error) => {
             logger.debug('[DAEMON RUN] Connected-service group home cleanup tick failed (non-fatal)', error);
         });
@@ -8131,6 +8251,7 @@ export async function startDaemonSessionControlRuntime(
                 );
             }
             if (!stillLive && !restartWasRequested) {
+                await computerRoutes?.closeSession(trackedBeforeExit.happySessionId);
                 connectedServiceRuntimeAuthSwitchAttempts.clearSession(trackedBeforeExit.happySessionId);
                 connectedServiceSessionAuthSwitchCore.clearSession(trackedBeforeExit.happySessionId);
                 void disposeSessionHookArtifactsForSession({
@@ -8189,6 +8310,7 @@ export async function startDaemonSessionControlRuntime(
         options?: StopSessionOptions,
     ): Promise<StopSessionResult> =>
         await disconnectedTerminalHostResumeLifecycle.runStop(sessionId, async () => {
+            const stopStartedAtMs = Date.now();
             sessionRunnerRespawnManager.markStopRequested(sessionId, { reason: 'daemon_stop_session', requestedAtMs: Date.now() });
             const automaticRecoveryCancellations = await Promise.allSettled([
                 params.cancelInactiveSessionUsageLimitRecoveryAfterExplicitStop?.({ sessionId })
@@ -8223,10 +8345,20 @@ export async function startDaemonSessionControlRuntime(
                 });
             }
             physicallyRetiredTerminalAttachmentIdBySessionId.delete(sessionId);
+            logger.infoFile('[DAEMON STOP] Recovery cancellation completed', {
+                sessionId,
+                elapsedMs: Date.now() - stopStartedAtMs,
+            });
             const trackedStopResult = await stopSessionCore(
                 sessionId,
                 options,
             );
+            logger.infoFile('[DAEMON STOP] Physical stop owner completed', {
+                sessionId,
+                elapsedMs: Date.now() - stopStartedAtMs,
+                status: trackedStopResult.status,
+                ...(trackedStopResult.status === 'incomplete' ? { reason: trackedStopResult.reason } : {}),
+            });
             const physicallyRetiredAttachmentId = physicallyRetiredTerminalAttachmentIdBySessionId.get(sessionId);
             physicallyRetiredTerminalAttachmentIdBySessionId.delete(sessionId);
             if (isTerminalHostPhysicallyRetiredStopResult(trackedStopResult) && physicallyRetiredAttachmentId) {
@@ -8868,7 +9000,13 @@ export async function startDaemonSessionControlRuntime(
         }));
     const localServicesRuntime = createLocalServicesDaemonRuntime({
         machineId: params.machineId,
+        accountId: readPreviewAccountIdFromToken(params.credentials.token) ?? undefined,
+        previewServer: { token: params.credentials.token, serverBaseUrl: params.serverBaseUrl },
         processEnv: params.processEnv,
+        internalProcessPids: () => [process.pid, ...params.pidToTrackedSession.keys()],
+        // These are the selected Happier Home/UI endpoint authorities. The scanner admits
+        // only literal-loopback HTTP(S) URLs and their exact matching bindings.
+        internalEndpointUrls: () => [configuration.apiServerUrl, configuration.serverUrl, configuration.webappUrl],
         // `localServices.inventory` is server-represented (default-allow): the inventory scan
         // respects the server decision. Supply the daemon's server-features snapshot so a server
         // that disables the product stops the daemon scanning (mirrors the quotas daemon gate).
@@ -9055,15 +9193,27 @@ export async function startDaemonSessionControlRuntime(
             : {}),
     });
     const runtimeActionRouteProviderTarget = params.api as Readonly<{
+        setComputerRoutesProvider?: (provider: (() => ComputerRoutes | null) | null) => void;
         setBrowserDaemonControlRoutesProvider?: (provider: (() => BrowserDaemonControlRoutes | null) | null) => void;
         setBrowserDaemonContextRoutesProvider?: (provider: (() => BrowserContextRoutes | null) | null) => void;
         setBrowserDaemonAutomationRoutesProvider?: (provider: (() => BrowserAutomationRoutes | null) | null) => void;
+        setBrowserUiAutomationProvider?: (provider: (() => BrowserUiAutomationRouteOwner | null) | null) => void;
         setBrowserAutomationRuntimeProvisionerProvider?: (provider: (() => ProvisionBrowserAutomationRuntime | null) | null) => void;
         setBrowserDiagnosticsActionRoutesProvider?: (provider: (() => BrowserDiagnosticsActionRoutes | null) | null) => void;
         setBrowserRecordingRoutesProvider?: (provider: (() => BrowserRecordingRoutes | null) | null) => void;
         setLocalServicesRuntimeActionRoutesProvider?: (provider: (() => LocalServicesRuntimeActionRoutes | null) | null) => void;
         setSimulatorPreviewRoutesProvider?: (provider: (() => SimulatorPreviewRoutes | null) | null) => void;
     }>;
+    // Driver installation/capture is lazy and follows an approved explicit-target Action,
+    // never daemon startup. Native lifecycle uses the already-published capture registry.
+    computerRoutes = params.liveStreamCaptureRegistry ? createComputerRoutes({
+        machineId: params.machineId, machineDisplayName: params.currentMachineHost ?? undefined,
+        registry: params.liveStreamCaptureRegistry,
+        defaultDisplayId: process.env.DISPLAY,
+    }) : null;
+    runtimeActionRouteProviderTarget.setComputerRoutesProvider?.(() => computerRoutes);
+    // The person's own controls (choose, stop, hand back) reach the same owner over the machine RPC.
+    params.getApiMachineForSessions()?.registerComputerRoutes(() => computerRoutes);
     // OWNER-GATE: one daemon-boundary browser feature gate. The first startup pass keeps the daemon
     // fail-closed when the server feature snapshot is unavailable; the returned
     // refreshBrowserRouteOwners() method re-runs the SAME gate/producer construction after the
@@ -9095,6 +9245,11 @@ export async function startDaemonSessionControlRuntime(
     let browserDiagnosticsActionRoutes: BrowserDiagnosticsActionRoutes | null = null;
     let browserDiagnosticsActionRoutesHasInteraction = false;
     const browserControlBroker = createBrowserDaemonControlBroker();
+    const browserUiAutomation: BrowserUiAutomationRouteOwner = {
+        ownsAutomationView: browserControlBroker.ownsView,
+        uiAutomation: createBrowserAutomationReverseDispatcher({ getMachineClient: params.getApiMachineForSessions }),
+    };
+    runtimeActionRouteProviderTarget.setBrowserUiAutomationProvider?.(() => browserUiAutomation);
     let unregisterBrowserSidecarControlAdapter: (() => void) | null = null;
     let disposeBrowserSidecarControlAdapter: (() => void | Promise<void>) | null = null;
     let disposeBrowserSidecarDiagnosticsRuntime: (() => void) | null = null;
@@ -9102,8 +9257,11 @@ export async function startDaemonSessionControlRuntime(
     let browserContextRoutes: BrowserContextRoutes | null = null;
     let browserAutomationRoutes: BrowserAutomationRoutes | null = null;
     let disposeBrowserAutomationService: (() => void) | null = null;
+    let browserAutomationServiceForCapture: BrowserAutomationDaemonService | null = null;
+    let browserLiveCaptureRegistration: ReturnType<typeof registerBrowserLiveCapture> | null = null;
     let browserRecordingRuntime: BrowserRecordingDaemonRuntime | null = null;
     let browserSidecarContextCaptureForRecording: BrowserSidecarContextCaptureSurface | null = null;
+    let browserCdpScreencastProducer: BrowserCdpScreencastProducer | null = null;
     let browserRecordingRuntimeHasCdpScreencast = false;
     let browserRecordingCdpScreencastAvailable = false;
     let browserControlRoutesPublished = false;
@@ -9192,6 +9350,7 @@ export async function startDaemonSessionControlRuntime(
                 const browserSidecarControlAdapterFactory = params.browserSidecarControlAdapterFactory
                     ?? createProductBrowserSidecarControlAdapterFactory({
                         featureEnabled: browserSidecarEnabled,
+                        profileStore: browserProfileStore,
                         // OPEN PRODUCT DECISION (E2-F1, awaiting a user ruling — see
                         // `.project/plans/2026-08-23-ru2-surfaces-finalization/lanes/A1.md`).
                         // `autoInstallWhenMissing` defaults to `true`, and MCH-2's lazy install is
@@ -9215,7 +9374,9 @@ export async function startDaemonSessionControlRuntime(
                     );
                     disposeBrowserSidecarControlAdapter = browserSidecarControlAdapterResult.dispose ?? null;
                     if (browserControlBroker.hasExecutableAdapters() && !browserControlRoutes) {
-                        browserControlRoutes = createBrowserDaemonControlRoutes({ broker: browserControlBroker });
+                        browserControlRoutes = createBrowserDaemonControlRoutes({ broker: browserControlBroker,
+                            captureRegistry: params.liveStreamCaptureRegistry,
+                            automation: () => browserAutomationServiceForCapture });
                     }
                     if (browserControlBroker.hasExecutableAdapters() && browserDaemonFeatureGate.isEnabled('browser.context') && !browserContextRoutes) {
                         const browserContextSource = params.browserContextSourceFactory
@@ -9224,6 +9385,7 @@ export async function startDaemonSessionControlRuntime(
                                 ? createSidecarCdpBrowserContextSource({
                                     contextCapture: browserSidecarControlAdapterResult.contextCapture,
                                     workingDirectory: configuration.happyHomeDir,
+                                    screenshotMediaStorage: 'daemon',
                                     pathAllowanceRegistry: createTransferPathAllowanceRegistry(),
                                     diagnosticsSummarySource: browserContextDiagnosticsSummarySource,
                                 })
@@ -9231,14 +9393,18 @@ export async function startDaemonSessionControlRuntime(
                         browserContextRoutes = createBrowserContextRoutes({
                             ownerAccountId: params.machineId,
                             source: browserContextSource,
-                            // Single-owner daemon feature-gate is the only publish-time authority:
-                            // the server can disable browser.context after this owner is constructed,
-                            // so page/screenshot publish reads the live gate instead of a hardcoded allow.
-                            resolveGate: () => ({
-                                featureEnabled: browserDaemonFeatureGate.isEnabled('browser.context'),
-                                policyAllowed: true,
-                                runtimeAvailable: true,
-                            }),
+                            // Recheck the live feature and active Session profile. The capture source
+                            // supplies privacy facts to the shared Protocol export decision.
+                            resolveGate: (view) => {
+                                const profile = browserSidecarControlAdapterResult.contextCapture?.resolveProfile?.(view);
+                                return {
+                                    featureEnabled: browserDaemonFeatureGate.isEnabled('browser.context'),
+                                    // Privacy intent is Session ownership, not storage retention.
+                                    policyAllowed: profile?.owner.kind === 'session' && profile.owner.id === view.browserSessionId
+                                        && profile.lifecycleState === 'active',
+                                    runtimeAvailable: Boolean(browserSidecarControlAdapterResult.contextCapture?.resolvePageHandle(view)),
+                                };
+                            },
                         });
                     }
                     if (browserControlBroker.hasExecutableAdapters() && browserDaemonFeatureGate.isEnabled('browser.automation') && !browserAutomationRoutes) {
@@ -9247,6 +9413,19 @@ export async function startDaemonSessionControlRuntime(
                             adapter: createBrowserAutomationCdpAdapter({
                                 transport: createControlAdapterAutomationTransport({
                                     adapter: browserSidecarControlAdapterResult.adapter,
+                                    summarizeDiagnostics: (view) => {
+                                        const consoleSummary = browserContextDiagnosticsSummarySource.summarize({
+                                            ...view, kind: 'browserConsoleSummary',
+                                        });
+                                        const networkSummary = browserContextDiagnosticsSummarySource.summarize({
+                                            ...view, kind: 'browserNetworkSummary',
+                                        });
+                                        if (!consoleSummary && !networkSummary) return null;
+                                        return {
+                                            summary: [consoleSummary?.summary, networkSummary?.summary].filter(Boolean).join('\n'),
+                                            ...(consoleSummary?.truncated || networkSummary?.truncated ? { truncated: true } : {}),
+                                        };
+                                    },
                                     ...(browserContextRoutes ? { browserContext: browserContextRoutes } : {}),
                                     ...(browserSidecarContextCapture
                                         ? { contextCapture: browserSidecarContextCapture }
@@ -9258,10 +9437,20 @@ export async function startDaemonSessionControlRuntime(
                                 : {}),
                         });
                         disposeBrowserAutomationService = () => browserAutomationService.dispose();
+                        browserAutomationServiceForCapture = browserAutomationService;
                         browserAutomationRoutes = createBrowserAutomationRoutes({ service: browserAutomationService });
                     }
                     const browserSidecarContextCapture = browserSidecarControlAdapterResult.contextCapture;
                     browserSidecarContextCaptureForRecording = browserSidecarContextCapture ?? null;
+                    if (browserSidecarContextCapture?.subscribeCdpEvents && !browserCdpScreencastProducer) {
+                        browserCdpScreencastProducer = createBrowserCdpScreencastProducer({ contextCapture: browserSidecarContextCapture });
+                    }
+                    if (params.liveStreamCaptureRegistry && browserSidecarContextCapture && browserCdpScreencastProducer && !browserLiveCaptureRegistration) {
+                        browserLiveCaptureRegistration = registerBrowserLiveCapture({
+                            registry: params.liveStreamCaptureRegistry, contextCapture: browserSidecarContextCapture,
+                            producer: browserCdpScreencastProducer, automation: () => browserAutomationServiceForCapture,
+                        });
+                    }
                     if (
                         browserDiagnosticsEnabled
                         && !disposeBrowserSidecarDiagnosticsRuntime
@@ -9332,14 +9521,29 @@ export async function startDaemonSessionControlRuntime(
                 browserRecordingRuntimeHasCdpScreencast = false;
             }
             if (browserDaemonFeatureGate.isEnabled('browser.recording') && !browserRecordingRuntime) {
-                const cdpScreencastTransport = browserSidecarContextCaptureForRecording?.subscribeCdpEvents
+                const cdpScreencastTransport = browserCdpScreencastProducer
                     ? createBrowserRecordingCdpScreencastTransport({
-                        contextCapture: browserSidecarContextCaptureForRecording,
+                        producer: browserCdpScreencastProducer,
                     })
                     : null;
                 browserRecordingCdpScreencastAvailable = Boolean(cdpScreencastTransport);
                 browserRecordingRuntime = createBrowserRecordingDaemonRuntime({
                     workingDirectory: configuration.happyHomeDir,
+                    resolveWorkingDirectory: ({ sessionId }) => {
+                        const tracked = findTrackedSessionByHappySessionId(params.pidToTrackedSession.values(), sessionId);
+                        const directory = tracked?.spawnOptions?.directory
+                            ?? tracked?.happySessionMetadataFromLocalWebhook?.path;
+                        if (!directory) throw new Error('Browser recording session working directory is unavailable.');
+                        return directory;
+                    },
+                    commitAttachment: async ({ sessionId, localId, meta }) => {
+                        await params.daemonSessionMutationCustody.stageTranscriptMessage({
+                            sessionId,
+                            localId,
+                            messageRole: 'user',
+                            payload: { role: 'user', content: { type: 'text', text: 'Browser recording' }, meta },
+                        });
+                    },
                     liveStreamCaptureRegistry: params.liveStreamCaptureRegistry,
                     streamFrameEncoderFactory: params.browserRecordingStreamFrameEncoderFactory,
                     ...(browserRecordingNativeViewCapture
@@ -9406,7 +9610,7 @@ export async function startDaemonSessionControlRuntime(
             hasCdpScreencast: browserRecordingCdpScreencastAvailable,
         })(startInput));
     // BRW-6 privacy: daemon-side owner of on-disk browser profile/partition purge. Subscribed
-    // to the session-deleted signal (purges `session`-mode profiles + bound partitions) and the
+    // to the session-deleted signal (purges session profiles and cleanup-on-close ephemeral profiles) and the
     // logout transition (purges `ephemeral` profiles + partitions). Fail-closed: a failed disk
     // purge marks the profile `unusable` and emits an audit; it is never silently reused.
     const browserStoragePartitionOwner = createBrowserStoragePartitionOwner({
@@ -9480,6 +9684,7 @@ export async function startDaemonSessionControlRuntime(
         localServicesPublicPreview: localServicesRuntimeActionRoutes.publicPreviewRoutes,
     };
     params.onLocalServicesRoutesReady?.(localServicesMachineRpcRoutes);
+    params.onLocalServicesSummaryReady?.(localServicesRuntime);
     params.onLocalServicesPreviewRoutesReady?.(localServicesRuntime.previewRoutes);
     params.onSimulatorPreviewRoutesReady?.(simulatorPreviewRuntime.routes);
     const apiMachineForSessions = params.getApiMachineForSessions();
@@ -9488,6 +9693,8 @@ export async function startDaemonSessionControlRuntime(
     const disposeControlRuntimeResources = async (): Promise<void> => {
         if (controlRuntimeResourcesDisposed) return;
         controlRuntimeResourcesDisposed = true;
+        runtimeActionRouteProviderTarget.setComputerRoutesProvider?.(null);
+        await computerRoutes?.dispose();
         await managedServiceEndpointReadOwner?.dispose();
         managedServiceEndpointReadOwner = null;
         unsubscribeConnectedServiceRuntimeTargetRegistrations();
@@ -9511,6 +9718,7 @@ export async function startDaemonSessionControlRuntime(
             runtimeActionRouteProviderTarget.setBrowserDaemonAutomationRoutesProvider?.(null);
         }
         runtimeActionRouteProviderTarget.setBrowserAutomationRuntimeProvisionerProvider?.(null);
+        runtimeActionRouteProviderTarget.setBrowserUiAutomationProvider?.(null);
         if (browserDiagnosticsActionRoutes) {
             runtimeActionRouteProviderTarget.setBrowserDiagnosticsActionRoutesProvider?.(null);
         }
@@ -9519,10 +9727,17 @@ export async function startDaemonSessionControlRuntime(
         }
         await browserDiagnosticsInteractionTransport?.dispose();
         browserDiagnosticsInteractionTransport = null;
+        browserLiveCaptureRegistration?.dispose();
+        browserLiveCaptureRegistration = null;
         disposeBrowserAutomationService?.();
         disposeBrowserAutomationService = null;
+        browserAutomationServiceForCapture = null;
         disposeBrowserSidecarDiagnosticsRuntime?.();
         unregisterBrowserSidecarControlAdapter?.();
+        await browserCdpScreencastProducer?.dispose().catch((error: unknown) => {
+            logger.debug('[DAEMON RUN] Failed to stop browser screencast producer', error);
+        });
+        browserCdpScreencastProducer = null;
         await disposeBrowserSidecarControlAdapter?.();
         runtimeActionRouteProviderTarget.setLocalServicesRuntimeActionRoutesProvider?.(null);
         runtimeActionRouteProviderTarget.setSimulatorPreviewRoutesProvider?.(null);
@@ -11070,8 +11285,8 @@ export async function startDaemonSessionControlRuntime(
                 const result = await externalActionAccountServerDeps.accountApiTokensListAction!({
                     input: {},
                     context: {
-                        surface: 'ui',
-                        authority: 'present_user',
+                        surface: 'rpc',
+                        authority: 'account_automation',
                         serverId: params.serverId,
                     },
                     ...(signal ? { signal } : {}),
@@ -11291,6 +11506,7 @@ export async function startDaemonSessionControlRuntime(
         Parameters<typeof startDaemonControlServer>[0]['externalActionApi']
     > | undefined = externalActionIngressOwner
         ? {
+            terminalPolicyScope: { token: params.credentials.token, serverHttpBaseUrl: params.serverBaseUrl },
             readEncryptionAccess: createAccountServerPatEncryptionAccessReader({
                 accountId: externalActionAccountId, serverBaseUrl: params.serverBaseUrl,
             }),
@@ -11371,6 +11587,22 @@ export async function startDaemonSessionControlRuntime(
         cleanup: () => Promise<void>;
     }>>();
     const { port: controlPort, stop: stopControlServer } = await startDaemonControlServer({
+        resolveRecoveredSpawnNonce: async (spawnNonce) => await resolveRecoveredSpawnNonceAdmission({
+            spawnNonce,
+            happyHomeDir: configuration.happyHomeDir,
+            getChildren: () => Array.from(params.pidToTrackedSession.values()),
+            probeSessionServiceability: async (sessionId) => await probeSessionRunnerServiceability({
+                sessionId,
+                trackedSessions: params.pidToTrackedSession.values(),
+                probeCapability: async () => await probeAlreadyRunningExistingSessionServiceability({
+                    sessionId,
+                    credentials: params.credentials,
+                    abortSignal: shutdownCancellationDomains.daemonWorkSignal,
+                    ...(params.isShuttingDown ? { isShuttingDown: params.isShuttingDown } : {}),
+                }),
+            }),
+        }),
+        runtimeActionExecute: params.runtimeActionExecute,
         getChildren: () => Array.from(params.pidToTrackedSession.values()),
         machineId: params.machineId,
         runtimeId: params.runtimeId ?? '',
@@ -11885,7 +12117,7 @@ export async function startDaemonSessionControlRuntime(
                                     !== params.machineId
                                     ? {
                                         status: 'rejected' as const,
-                                        code: 'session_input_target_update_required' as const,
+                                        code: 'session_input_source_authority_mismatch' as const,
                                     }
                                     : await params
                                         .getApiMachineForSessions()
@@ -13427,21 +13659,14 @@ export async function startDaemonSessionControlRuntime(
         },
         handleConnectedServiceQuotaRecoveryCreditConsume: async (input) => {
             const coordinator = params.getConnectedServiceQuotasCoordinator();
-            const legacyServiceId =
-                resolveFirstPartyLegacyConnectedServiceIdForQualifiedServiceKey(
-                    input.serviceId,
-                );
-            if (!coordinator || !legacyServiceId) {
+            if (!coordinator) {
                 return {
                     ok: false as const,
                     errorCode: 'connected_service_quota_recovery_credit_unavailable',
                     error: 'connected_service_quota_recovery_credit_unavailable',
                 };
             }
-            return await coordinator.consumeRecoveryCreditForProfile({
-                ...input,
-                serviceId: legacyServiceId,
-            });
+            return await coordinator.consumeRecoveryCreditForProfile(input);
         },
         handleProviderAccountUsageSnapshot: async (input) => {
             let qualifiedUsageSource: ConnectedServiceUsageSourceV1 | null = null;
@@ -13928,6 +14153,10 @@ export async function startDaemonSessionControlRuntime(
         spawnSession: spawnSessionForInternalResume,
         stopSession,
         isSessionAlreadyRunning,
+        sessionRunnerStatus: {
+            get: resolveSessionRunnerStatus,
+            getV2: resolveSessionRunnerStatusV2,
+        },
         onChildExited,
         controlPort,
         controlToken,

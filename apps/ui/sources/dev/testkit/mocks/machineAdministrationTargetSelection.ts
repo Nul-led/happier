@@ -21,6 +21,8 @@ export type MachineAdministrationTargetSelectionMockMachine = Readonly<{
     machineId: string;
     displayName?: string;
     homeDir?: string;
+    /** Exact daemon lifetime used by operation-currentness and cache fences. */
+    daemonStateVersion?: number;
     availability?: MachineAdministrationCandidateAvailabilityV1;
     observation?: 'live' | 'stale';
     /**
@@ -50,6 +52,11 @@ export type MachineAdministrationTargetSelectionMockController = Readonly<{
     select(machineId: string | null, serverIdentityId?: string): void;
     /** Replaces the candidate inventory the selector and callers can see. */
     setMachines(machines: readonly MachineAdministrationTargetSelectionMockMachine[]): void;
+    /**
+     * Keeps the selected machine online in the picker while its live connection cannot be resolved
+     * yet (the Account's data still loading): `resolveExecutionTarget()` answers `null`.
+     */
+    setExecutionPending(pending: boolean): void;
     /** Restores the machines and selection the mock was created with. */
     reset(): void;
     readonly serverId: string;
@@ -103,6 +110,7 @@ function buildInventoryRows(input: Readonly<{
             serverName: rowServerLabel,
             machine: {
                 id: machine.machineId,
+                daemonStateVersion: machine.daemonStateVersion ?? 1,
                 metadata: {
                     ...(machine.displayName ? { displayName: machine.displayName } : {}),
                     ...(machine.homeDir ? { homeDir: machine.homeDir } : {}),
@@ -166,6 +174,8 @@ export function createMachineAdministrationTargetSelectionFixture(
             storedTarget: selectedTarget,
             candidates,
             allowSoleCandidate: true,
+            // A fixture's rows are a settled machine list.
+            isInventoryKnown: () => true,
         }),
         selectedTarget,
         selectedTargetServerMatchesActiveAccount: selectedTarget?.serverIdentityId === serverIdentityId,
@@ -202,6 +212,7 @@ export function createMachineAdministrationTargetSelectionMock(
         selectedServerIdentityId: options.selectedServerIdentityId ?? serverIdentityId,
         selectedTargets: [] as MachineAdministrationTargetV1[],
         clearCount: 0,
+        executionPending: false,
     };
     const listeners = new Set<() => void>();
     const notify = (): void => {
@@ -220,7 +231,7 @@ export function createMachineAdministrationTargetSelectionMock(
             }
     );
     const resolve = (target: MachineAdministrationTargetV1 | null): ResolvedExecutionTarget => (
-        resolveExecutionTargetFrom({ rows: currentRows(), target })
+        state.executionPending ? null : resolveExecutionTargetFrom({ rows: currentRows(), target })
     );
 
     // Stable across renders, exactly like the real owner's selection-key-scoped
@@ -238,7 +249,12 @@ export function createMachineAdministrationTargetSelectionMock(
             state.machines = [...machines];
             notify();
         },
+        setExecutionPending(pending) {
+            state.executionPending = pending;
+            notify();
+        },
         reset() {
+            state.executionPending = false;
             state.machines = [...initialMachines];
             state.selectedMachineId = initialSelected;
             state.selectedServerIdentityId = options.selectedServerIdentityId ?? serverIdentityId;
@@ -279,6 +295,7 @@ export function createMachineAdministrationTargetSelectionMock(
                     storedTarget: target,
                     candidates,
                     allowSoleCandidate: true,
+                    isInventoryKnown: () => true,
                 }),
                 selectedTarget: target,
                 selectedTargetServerMatchesActiveAccount: target?.serverIdentityId === serverIdentityId,
@@ -313,5 +330,14 @@ export function installMachineAdministrationTargetSelectionBoundary(
         MachineAdministrationTargetSelector: (props: Record<string, unknown>) => (
             React.createElement('MachineAdministrationTargetSelector', props)
         ),
+        // The machine scope as a SelectionList filter: a fixed stand-in chip that still carries the
+        // selection and the controlled-open props, so a test can assert what the owner received.
+        useMachineAdministrationTargetFilter: (props: Readonly<Record<string, unknown>>) => ({
+            id: 'machine',
+            label: String(props.groupTitle ?? 'machine'),
+            valueLabel: 'machine',
+            testID: `${String(props.testIDPrefix ?? 'machine-administration-target')}.chip`,
+            ownerProps: props,
+        }),
     }));
 }

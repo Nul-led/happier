@@ -296,7 +296,7 @@ describe('createSessionProviderInputOutcomeNormalizer', () => {
     const takeAppliedModel = vi.fn(() => ({
       provider: 'codex',
       selection: {
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         providerConnectionId: null,
         modelId: 'gpt-5.6-terra',
       },
@@ -324,7 +324,7 @@ describe('createSessionProviderInputOutcomeNormalizer', () => {
       appliedModel: {
         provider: 'codex',
         selection: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: null,
           modelId: 'gpt-5.6-terra',
         },

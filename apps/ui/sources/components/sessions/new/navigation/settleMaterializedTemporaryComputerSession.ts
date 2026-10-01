@@ -300,7 +300,7 @@ export async function settlePersistedMaterializedTemporaryComputerSession(
                     initialMessageText: delivery.initialMessageText,
                     displayText: delivery.displayText,
                     metaOverrides: delivery.metaOverrides,
-                    messageLocalId: attachmentUpload.firstTurnLocalId || undefined,
+                    messageLocalId: attachmentUpload.firstTurnLocalId,
                 });
             }
             promptAdmitted = true;
@@ -311,7 +311,7 @@ export async function settlePersistedMaterializedTemporaryComputerSession(
             upload: () => uploadReviewedRunnerAttachments({
                 sessionId: input.sessionId,
                 sessionTarget: { ...input.scope, sessionId: input.sessionId },
-                messageLocalId: attachmentUpload.attachmentMessageLocalId || input.activationId,
+                messageLocalId: attachmentUpload.attachmentMessageLocalId,
                 reviewedFiles: preparedAuthoring.files,
                 stagedFiles: attachmentUpload.stagedFiles,
                 ...(attachmentUpload.resumedUploads ? { resumedUploads: attachmentUpload.resumedUploads } : {}),

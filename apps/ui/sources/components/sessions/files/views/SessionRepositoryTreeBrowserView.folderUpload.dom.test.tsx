@@ -134,10 +134,6 @@ vi.mock('@expo/vector-icons', () => ({
     Ionicons: ({ accessibilityLabel: _accessibilityLabel, accessibilityRole: _accessibilityRole, ...props }: any) => React.createElement('span', props),
 }));
 
-vi.mock('@/components/sessions/files/content/RepositoryTreeList', () => ({
-    RepositoryTreeList: () => React.createElement('div'),
-}));
-
 vi.mock('@/components/sessions/files/content/ChangedFilesTreeList', () => ({
     ChangedFilesTreeList: () => React.createElement('div'),
 }));
@@ -224,6 +220,10 @@ vi.mock('@/components/sessions/files/repositoryTree/showUploadConflictResolution
 vi.mock('@/sync/domains/input/suggestionFile', () => ({
     searchFiles: vi.fn(async () => []),
     fileSearchCache: { clearCache: vi.fn() },
+}));
+
+vi.mock('@/components/sessions/agents/presentation/useSessionMachineName', () => ({
+    useSessionMachineName: () => 'MacBook Pro',
 }));
 
 vi.mock('@/components/sessions/model/useSessionMachineReachability', () => ({

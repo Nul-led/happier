@@ -26,11 +26,10 @@ import type { Machine } from '@/sync/domains/state/storageTypes';
 import type { PermissionMode, ModelMode } from '@/sync/domains/permissions/permissionTypes';
 import { getPermissionModeOptionsForAgentType } from '@/sync/domains/permissions/permissionModeOptions';
 import type { SecretSatisfactionResult } from '@/utils/secrets/secretSatisfaction';
-import type { CLIAvailability } from '@/hooks/auth/useCLIDetection';
+import type { CLIAvailability } from '@/agents/machineAgents/machineAgentCliAvailability';
 import { getAgentCore, isBundledAgentId, type AgentId } from '@/agents/catalog/catalog';
 import { getAgentPickerOptions } from '@/agents/catalog/agentPickerOptions';
 import type { ResolvedBackendCatalogEntry } from '@/agents/backendCatalog/getResolvedBackendCatalogEntries';
-import { CliNotDetectedBanner, type CliNotDetectedBannerDismissScope } from '@/components/sessions/new/components/CliNotDetectedBanner';
 import { InstallableDepInstaller, type InstallableDepInstallerProps } from '@/components/machines/InstallableDepInstaller';
 import { Text } from '@/components/ui/text/Text';
 import { normalizeNodeForView } from '@/components/ui/rendering/normalizeNodeForView';
@@ -87,6 +86,7 @@ import {
 } from '@/components/sessions/new/hooks/screenModel/newSessionPromptStore';
 import type { NewSessionComposerDocument } from '@/components/sessions/new/hooks/screenModel/useNewSessionComposerDocument';
 import type { StyleProp, ViewStyle } from 'react-native';
+import { getMachineDisplayName } from '@/utils/sessions/machineDisplayNames';
 
 
 export interface NewSessionWizardLayoutProps {
@@ -131,8 +131,6 @@ export interface NewSessionWizardAgentProps {
     tmuxRequested: boolean;
     enabledAgentIds: AgentId[];
     isAgentSelectable: (agentId: AgentId) => boolean;
-    isCliBannerDismissed: (agentId: AgentId) => boolean;
-    dismissCliBanner: (agentId: AgentId, scope: CliNotDetectedBannerDismissScope) => void;
     agentType: string;
     agentLabel?: string;
     setAgentType: (agent: AgentId) => void;
@@ -233,6 +231,8 @@ export interface NewSessionWizardFooterProps {
     statusTrailingActions?: React.ComponentProps<typeof AgentInput>['statusTrailingActions'];
     machinePopover?: React.ComponentProps<typeof AgentInput>['machinePopover'];
     pathPopover?: React.ComponentProps<typeof AgentInput>['pathPopover'];
+    folderChipState?: React.ComponentProps<typeof AgentInput>['folderChipState'];
+    onRemoveFolder?: () => void;
     resumeSessionId?: string | null;
     resumePopover?: React.ComponentProps<typeof AgentInput>['resumePopover'];
     resumeIsChecking?: boolean;
@@ -416,8 +416,6 @@ export const NewSessionWizard = React.memo(function NewSessionWizard(props: NewS
         tmuxRequested,
         enabledAgentIds,
         isAgentSelectable,
-        isCliBannerDismissed,
-        dismissCliBanner,
         agentType,
         agentLabel,
         agentPickerOptions,
@@ -499,7 +497,7 @@ export const NewSessionWizard = React.memo(function NewSessionWizard(props: NewS
         inputMaxHeight,
     } = props.footer;
 
-    const machineDisplayName = selectedMachine?.metadata?.displayName || selectedMachine?.metadata?.host || props.profiles.selectedMachineId || undefined;
+    const machineDisplayName = getMachineDisplayName(selectedMachine) ?? (props.profiles.selectedMachineId || undefined);
     const { sharedProfilesListProps, profilePopover } = React.useMemo(() => {
         return buildNewSessionProfileSelectionPopover({
             useProfiles,
@@ -743,6 +741,8 @@ export const NewSessionWizard = React.memo(function NewSessionWizard(props: NewS
                                         machinePopover={props.footer.machinePopover}
                                         onMachineClick={props.footer.machinePopover ? undefined : handleAgentInputMachineClick}
                                         currentPath={selectedPath}
+                                        folderChipState={props.footer.folderChipState}
+                                        onRemoveFolder={props.footer.onRemoveFolder}
                                         pathPopover={props.footer.pathPopover}
                                         onPathClick={props.footer.pathPopover ? undefined : handleAgentInputPathClick}
                                         resumeSessionId={resumeSessionId}
@@ -876,20 +876,6 @@ export const NewSessionWizard = React.memo(function NewSessionWizard(props: NewS
                                                     <InstallableDepInstaller key={installer.depId} {...installer} />
                                                 ))}
                                             </>
-                                        ) : null}
-
-                                        {selectedMachineId ? (
-                                            enabledAgentIds
-                                                .filter((agentId) => cliAvailability.available[agentId] === false)
-                                                .filter((agentId) => !isCliBannerDismissed(agentId))
-                                                .map((agentId) => (
-                                                    <CliNotDetectedBanner
-                                                        key={agentId}
-                                                        agentId={agentId}
-                                                        theme={theme}
-                                                        onDismiss={(scope) => dismissCliBanner(agentId, scope)}
-                                                    />
-                                                ))
                                         ) : null}
 
                                         {(() => {
@@ -1076,6 +1062,7 @@ export const NewSessionWizard = React.memo(function NewSessionWizard(props: NewS
                                             {t('newSession.selectModelDescription')}
                                         </Text>
                                         <NewSessionModelSelectionContent
+                                            modelDiscoveryFailed={modelOptionsProbe?.failed}
                                             presentation={modelPresentation}
                                             modelOptions={modelOptions}
                                             selectedModelId={modelMode}

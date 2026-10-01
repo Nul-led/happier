@@ -1,9 +1,10 @@
 import * as React from 'react';
-import { useRouter, type Href } from 'expo-router';
+import { useRouter, type Href } from '@/components/appShell/workspace/destinationRoute';
 
 import { useAppPaneScope } from '@/components/appShell/panes/hooks/useAppPaneScope';
 import { buildSessionExecutionRunRouteHref } from '@/components/sessions/agents/navigation/buildSessionExecutionRunRouteHref';
 import { createSessionPaneScopeId } from '@/components/sessions/panes/sessionPaneScopeId';
+import { useDestinationPaneScopeId } from '@/components/appShell/workspace/DestinationInstanceHost';
 import {
     createExecutionRunDetailsTab,
     createInteractiveExecutionRunDraftDetailsTab,
@@ -25,22 +26,23 @@ import { useDeviceType } from '@/utils/platform/responsive';
 export function useOpenSessionAgentConversation(input: Readonly<{
     address: SessionAddress;
 }>): Readonly<{
-    openAgentConversation: (runId: string) => void;
+    /** Opens a Run's conversation; `title` names its tab by intent when the caller knows it. */
+    openAgentConversation: (runId: string, title?: string | null) => void;
     openNewAgentConversation: () => void;
 }> {
     const router = useRouter();
     const deviceType = useDeviceType();
-    const pane = useAppPaneScope(createSessionPaneScopeId(input.address.sessionId, input.address.serverId));
+    const pane = useAppPaneScope(useDestinationPaneScopeId(createSessionPaneScopeId(input.address.sessionId, input.address.serverId)));
     const { sessionId, serverId } = input.address;
 
     return React.useMemo(() => ({
-        openAgentConversation: (runId: string) => {
+        openAgentConversation: (runId: string, title?: string | null) => {
             if (deviceType === 'phone') {
                 const href = buildSessionExecutionRunRouteHref({ sessionId, serverId, runId });
                 if (href) router.push(href as Href);
                 return;
             }
-            pane.openDetailsTab(createExecutionRunDetailsTab(runId), { intent: 'preview' });
+            pane.openDetailsTab(createExecutionRunDetailsTab(runId, undefined, title), { intent: 'preview' });
         },
         openNewAgentConversation: () => {
             if (deviceType === 'phone') {

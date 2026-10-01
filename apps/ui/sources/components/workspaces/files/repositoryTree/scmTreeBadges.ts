@@ -1,3 +1,5 @@
+import { describeScmChangeKind } from '@/scm/scmChangeKind';
+import { selectScmChangedFiles } from '@/scm/scmStatusFiles';
 import type { ScmEntryKind, ScmWorkingSnapshot } from '@/sync/domains/state/storageTypes';
 
 export type ScmTreeBadge = Readonly<{
@@ -14,29 +16,6 @@ function sumEntryAdded(entry: { stats: { includedAdded: number; pendingAdded: nu
 
 function sumEntryRemoved(entry: { stats: { includedRemoved: number; pendingRemoved: number } }): number {
     return entry.stats.includedRemoved + entry.stats.pendingRemoved;
-}
-
-function kindLetter(kind: ScmEntryKind): string {
-    switch (kind) {
-        case 'modified':
-            return 'M';
-        case 'added':
-            return 'A';
-        case 'deleted':
-            return 'D';
-        case 'renamed':
-            return 'R';
-        case 'copied':
-            return 'C';
-        case 'untracked':
-            // Treat untracked files as "added" in the UI, since they represent new content
-            // that will be included once staged/committed.
-            return 'A';
-        case 'conflicted':
-            return '!';
-        default:
-            return 'M';
-    }
 }
 
 type DirKindPriority = Readonly<{ priority: number; letter: string }>;
@@ -88,7 +67,10 @@ export function createScmTreeBadgeIndex(snapshot: ScmWorkingSnapshot | null | un
         if (cached) return cached;
     }
 
-    const entries = snapshot?.entries ?? [];
+    // Folder counts come from the one changed-file list, so a folder's total and the header count
+    // agree (a directory the backend collapsed, such as `scratch/`, is not a changed file).
+    const changedPaths = snapshot ? new Set(selectScmChangedFiles(snapshot).map((file) => file.fullPath)) : null;
+    const entries = (snapshot?.entries ?? []).filter((entry) => changedPaths?.has(entry.path) === true);
     const fileMap = new Map<string, ScmTreeBadge>();
     const dirAgg = new Map<string, DirAggregate>();
 
@@ -103,7 +85,7 @@ export function createScmTreeBadgeIndex(snapshot: ScmWorkingSnapshot | null | un
     for (const entry of entries) {
         const added = sumEntryAdded(entry);
         const removed = sumEntryRemoved(entry);
-        fileMap.set(entry.path, { kindLetter: kindLetter(entry.kind), added, removed, changedCount: 1, ...(entry.stats.isComplete === false ? { isComplete: false } : {}) });
+        fileMap.set(entry.path, { kindLetter: describeScmChangeKind(entry.kind).code, added, removed, changedCount: 1, ...(entry.stats.isComplete === false ? { isComplete: false } : {}) });
 
         const { priority, letter } = kindToDirPriority(entry.kind);
         const segments = entry.path.split('/').filter(Boolean);

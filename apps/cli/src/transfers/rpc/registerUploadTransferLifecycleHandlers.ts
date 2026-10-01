@@ -63,10 +63,11 @@ export function registerUploadTransferLifecycleHandlers<TInitResponse, TFinalize
   buildFinalizeSizeMismatchResponse: () => TFinalizeResponse;
   buildFinalizeHashMismatchResponse: () => TFinalizeResponse;
   buildFinalizeErrorResponse: (error: unknown) => TFinalizeResponse;
-  buildFinalizeFailureResponse: (error: string) => TFinalizeResponse;
+  buildFinalizeFailureResponse: (error: string, errorCode?: string, expiresAt?: number) => TFinalizeResponse;
   buildFinalizeSuccessResponse: (input: Readonly<{
     finalized: Readonly<{ path: string; sizeBytes: number; result?: unknown }>;
     sha256: string;
+    uploadId: string;
   }>) => TFinalizeResponse;
   enableChunkEncryption?: boolean;
   maxEncryptedDataKeyEnvelopeBytes?: number;
@@ -143,12 +144,13 @@ export function registerUploadTransferLifecycleHandlers<TInitResponse, TFinalize
       if (finalized.error === 'Upload hash mismatch') {
         return params.buildFinalizeHashMismatchResponse();
       }
-      return params.buildFinalizeFailureResponse(finalized.error);
+      return params.buildFinalizeFailureResponse(finalized.error, finalized.errorCode, params.store.getUploadSession(uploadId)?.expiresAt);
     }
 
     return params.buildFinalizeSuccessResponse({
       finalized: finalized.finalized,
       sha256: finalized.sha256,
+      uploadId,
     });
   });
 

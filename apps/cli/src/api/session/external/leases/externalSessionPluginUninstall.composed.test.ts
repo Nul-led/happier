@@ -365,8 +365,8 @@ describe('installed path plugin External Session uninstall lifecycle', () => {
                     resource: {
                         linkGeneration:
                             latestObservation.link.linkGeneration,
-                        pluginGeneration:
-                            latestObservation.resource.pluginGeneration,
+                        occurrenceId:
+                            latestObservation.resource.occurrenceId,
                         retirementSignal:
                             latestObservation.resource.retirementSignal,
                     },

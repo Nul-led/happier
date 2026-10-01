@@ -27,6 +27,7 @@ export type TranscriptItemHeightCacheEntry = Readonly<{
 export type TranscriptItemHeightCache = Readonly<{
     get(signature: TranscriptItemHeightValiditySignature): TranscriptItemHeightCacheEntry | undefined;
     set(signature: TranscriptItemHeightValiditySignature, entry: TranscriptItemHeightCacheEntry): boolean;
+    delete(signature: TranscriptItemHeightValiditySignature): boolean;
     clear(): void;
     size(): number;
 }>;
@@ -83,6 +84,9 @@ export function createDefaultTranscriptItemHeightCache(
                 heightPx: entry.heightPx,
             });
             return true;
+        },
+        delete(signature) {
+            return entries.delete(buildTranscriptItemHeightSignatureKey(signature));
         },
         clear() {
             entries.clear();

@@ -17,7 +17,7 @@ import {
     retryActiveServerConnection,
 } from '@/sync/runtime/orchestration/connectionManager';
 
-import { buildOrdinarySessionListHomeState } from './ordinarySessionListHomeState';
+import { buildOrdinarySessionListHomeState, type OrdinarySessionListLifecycle } from './ordinarySessionListHomeState';
 import type {
     SessionListQueryHomeState,
     SessionListQueryPageRequest,
@@ -54,6 +54,15 @@ export function getSessionListQueryHomeAvailability(
 
 export function isSessionListQueryHomeOnline(serverIdRaw: string): boolean {
     return getSessionListQueryHomeAvailability(serverIdRaw) === 'online';
+}
+
+/**
+ * Reads the incumbent ordinary lifecycle without creating a second pagination owner.
+ */
+export function readOrdinarySessionListLifecycle(serverId: string): OrdinarySessionListLifecycle {
+    return resolveOrdinarySessionListHomeOwner(serverId) === 'sync'
+        ? sync.readOrdinarySessionListLifecycle()
+        : readConcurrentOrdinarySessionListLifecycle(serverId);
 }
 
 /**
@@ -103,9 +112,7 @@ export function readOrdinarySessionListHomeState(input: Readonly<{
         requestedQueryKey: input.requestedQueryKey,
         sessionIds: state.ordinarySessionListMembershipByServerId?.[input.serverId] ?? [],
         observation: state.concurrentSessionListCacheByServerId?.[input.serverId]?.listObservation ?? null,
-        lifecycle: resolveOrdinarySessionListHomeOwner(input.serverId) === 'sync'
-            ? sync.readOrdinarySessionListLifecycle()
-            : readConcurrentOrdinarySessionListLifecycle(input.serverId),
+        lifecycle: readOrdinarySessionListLifecycle(input.serverId),
         online: input.online,
     });
 }

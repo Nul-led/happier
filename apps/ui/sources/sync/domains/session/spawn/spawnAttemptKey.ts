@@ -4,6 +4,7 @@ import {
     SessionCreationImmutableRecipeV1Schema,
     SessionSpawnNewInputV2Schema,
     type SessionCreationImmutableRecipeV1,
+    type SessionDirectoryIntentV1,
     type SessionSpawnNewInputV2,
     normalizeSessionCreationOrganizationPlacementV1,
 } from '@happier-dev/protocol';
@@ -53,6 +54,22 @@ export function resolveSpawnAttemptDirectoryIdentity(
     return identity;
 }
 
+/**
+ * The directory part of a spawn attempt's identity. A folder is keyed by its canonical absolute
+ * path; no folder has no path to key by, so the attempt's own creation key keeps two separate
+ * no-folder chats with the same settings apart (the daemon keys the private folder by the canonical
+ * creation tag, not by this client-side custody key).
+ */
+function resolveSpawnAttemptDirectoryIntentIdentity(
+    directory: SessionDirectoryIntentV1,
+    creationKey: string | undefined,
+    machineHomeDir: string | null | undefined,
+): unknown {
+    return directory.kind === 'managed'
+        ? { kind: 'managed', creationKey: creationKey ?? null }
+        : resolveSpawnAttemptDirectoryIdentity(directory.path, machineHomeDir);
+}
+
 export function createSpawnAttemptKeyForImmutableCreationRecipe(
     input: SessionCreationImmutableRecipeV1,
 ): string {
@@ -72,7 +89,7 @@ export function createSpawnAttemptKeyForSessionSpawnNewInput(
     const parsed = SessionSpawnNewInputV2Schema.parse(input);
     const authoredImmutableIntent = {
         executionTarget: parsed.executionTarget,
-        directory: resolveSpawnAttemptDirectoryIdentity(parsed.directory, machineHomeDir),
+        directory: resolveSpawnAttemptDirectoryIntentIdentity(parsed.directory, parsed.creationKey, machineHomeDir),
         organizationPlacement: normalizeSessionCreationOrganizationPlacementV1(
             parsed.organizationPlacement,
         ),
@@ -130,7 +147,7 @@ export function createSpawnAttemptKeyForFreshSpawnOptions<T extends SpawnAttempt
     const recipe = SessionCreationImmutableRecipeV1Schema.parse({
         execution: {
             machineId: options.machineId.trim(),
-            directory,
+            directory: { kind: 'path', path: directory },
         },
         organization,
         agentTarget: options.agentTarget,

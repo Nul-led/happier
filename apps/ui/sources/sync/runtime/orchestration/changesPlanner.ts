@@ -5,9 +5,11 @@ import {
     HOME_GOVERNANCE_ACCOUNT_CHANGE_ENTITY_ID_V1,
     SessionOrganizationChangeHintSchema,
     TEAMS_ACCOUNT_CHANGE_ENTITY_ID_V1,
+    readSessionUpdatedMessageChangeHintV1,
     type ChangeKind,
 } from '@happier-dev/protocol/changes';
 import {
+    AuthoringMemoryChangeHintV1Schema,
     SessionDraftChangeHintV1Schema,
     SessionDraftChangeHintV2Schema,
     canonicalSessionDraftAddressV2,
@@ -45,6 +47,7 @@ export type PlannedSessionTranscriptRepair = Readonly<{
     sessionId: string;
     minSeq: number;
     messageIds: string[];
+    messageSeqs?: Readonly<Record<string, number>>;
 }>;
 
 export type ChangeCheckpointDecision =
@@ -98,6 +101,12 @@ export type PlannedChangeActions = {
     changes: ApiChangeEntry[];
     workflowRunIdsToRefresh: string[];
     sessionIdsToCatchUp: string[];
+    /**
+     * Listed Sessions whose change can only have altered their own row. They are
+     * refreshed by id; only `invalidate.sessions` re-reads which Sessions are listed.
+     * Empty whenever `invalidate.sessions` is set, since that refresh hydrates them too.
+     */
+    sessionRowRefreshIds: string[];
     sessionTranscriptRepairs: PlannedSessionTranscriptRepair[];
     sessionFolderAssignmentSessionIds: string[];
     sessionOrganization: PlannedSessionOrganizationAction;
@@ -118,7 +127,14 @@ export type PlannedChangeActions = {
     };
     kv: PlannedKvAction;
     sessionDraftAddresses?: SessionDraftAddressV2[];
+    authoringMemoryKeys?: string[];
 };
+
+export function getChangeAuthoringMemoryHint(change: ApiChangeEntry) {
+    if (change.kind !== 'account') return null;
+    const parsed = AuthoringMemoryChangeHintV1Schema.safeParse(change.hint);
+    return parsed.success ? parsed.data : null;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
     return !!value && typeof value === 'object' && !Array.isArray(value);
@@ -200,18 +216,6 @@ export function getChangeTargetMessageSeq(change: ApiChangeEntry): number | null
     return Math.trunc(candidate);
 }
 
-export function getChangeUpdatedMessageHint(
-    change: ApiChangeEntry,
-): Readonly<{ seq: number; messageId: string }> | null {
-    if (change.kind !== 'session' && change.kind !== 'share') return null;
-    const hint = change.hint;
-    if (!isRecord(hint)) return null;
-    const seq = hint.updatedMessageSeq;
-    const messageId = typeof hint.updatedMessageId === 'string' ? hint.updatedMessageId.trim() : '';
-    if (typeof seq !== 'number' || !Number.isFinite(seq) || seq < 0 || !messageId) return null;
-    return { seq: Math.trunc(seq), messageId };
-}
-
 function requiresFollowSessionRefresh(change: ApiChangeEntry): boolean {
     return change.kind === 'account' && change.entityId === ACCOUNT_SESSION_FOLLOW_CHANGE_ENTITY_ID;
 }
@@ -248,6 +252,11 @@ export function classifyChangeForCheckpoint(
     }
 
     const coverage = CHANGE_CHECKPOINT_COVERAGE[kind];
+
+    if (getChangeAuthoringMemoryHint(change)) {
+        return { kind, cursor, entityId, decision: 'critical', plannerOwner: 'authoring-memory',
+            snapshotDomain: 'authoring-memory', materializationProof: 'authoring-memory' };
+    }
 
     if (requiresFollowSessionRefresh(change)) {
         return {
@@ -347,9 +356,57 @@ export function classifyChangeForCheckpoint(
     };
 }
 
-export function planSyncActionsFromChanges(changes: ApiChangeEntry[]): PlannedChangeActions {
+/**
+ * Hint keys that only row-level Session writes carry: transcript commits and edits,
+ * shared metadata, read cursors, pending-queue and ready projections, board surfaces
+ * and discussions. Metadata, agent-state and runtime-activity writes carry no hint.
+ *
+ * AccountChange rows are coalesced per Session, so a hint describes only the latest
+ * write. A hidden membership fact is still recovered: the exact row refresh re-reads
+ * archive state, and a deleted or revoked Session fails that read and escalates to a
+ * list refresh. Any hint outside this set (archive, deletion, responsibility, or a
+ * future producer) conservatively re-reads the list.
+ */
+const ROW_LEVEL_SESSION_CHANGE_HINT_KEYS = new Set([
+    'v',
+    'lastMessageSeq',
+    'lastMessageId',
+    'updatedMessageSeq',
+    'updatedMessageId',
+    'sharedMetadataVersion',
+    'lastViewedSessionSeq',
+    'pendingVersion',
+    'pendingCount',
+    'pendingBlockedCount',
+    'meaningfulActivityAt',
+    'pendingActivationRequestId',
+    'latestReadyEventSeq',
+    'latestReadyEventAt',
+    'sessionSurfaces',
+    'sessionDiscussions',
+]);
+
+function isRowLevelSessionChangeHint(hint: unknown): boolean {
+    if (hint === null || hint === undefined) return true;
+    if (!isRecord(hint)) return false;
+    const keys = Object.keys(hint);
+    return keys.every((key) => ROW_LEVEL_SESSION_CHANGE_HINT_KEYS.has(key))
+        // `v` alone versions some other hint family; it is not a row write by itself.
+        && keys.some((key) => key !== 'v');
+}
+
+export type SessionChangePlanningContext = Readonly<{
+    /** Whether this Session is already in a loaded list membership of the planned Home. */
+    isSessionListMember(sessionId: string): boolean;
+}>;
+
+export function planSyncActionsFromChanges(
+    changes: ApiChangeEntry[],
+    context?: SessionChangePlanningContext,
+): PlannedChangeActions {
     const sessionIds = new Set<string>();
-    const sessionTranscriptRepairs = new Map<string, { minSeq: number; messageIds: Set<string> }>();
+    const sessionRowRefreshIds = new Set<string>();
+    const sessionTranscriptRepairs = new Map<string, { minSeq: number; messageIds: Set<string>; messageSeqs: Record<string, number> }>();
     const sessionFolderAssignmentSessionIds = new Set<string>();
     const organizationAssignmentSessionIds = new Set<string>();
     const organizationFolderIds = new Set<string>();
@@ -377,6 +434,7 @@ export function planSyncActionsFromChanges(changes: ApiChangeEntry[]): PlannedCh
     let kvFull = false;
     const kvKeys = new Set<string>();
     const sessionDraftAddresses = new Map<string, SessionDraftAddressV2>();
+    const authoringMemoryKeys = new Set<string>();
     const workflowRunIdsToRefresh = new Set<string>();
 
     for (const change of changes) {
@@ -430,19 +488,30 @@ export function planSyncActionsFromChanges(changes: ApiChangeEntry[]): PlannedCh
                 organizationIncludeLabels = organizationIncludeLabels || hintScope === 'labels';
                 continue;
             }
-            invalidateSessions = true;
+            const rowLevel = kind === 'session'
+                && typeof change.entityId === 'string'
+                && change.entityId.length > 0
+                && context?.isSessionListMember(change.entityId) === true
+                && isRowLevelSessionChangeHint(change.hint);
+            if (rowLevel) {
+                sessionRowRefreshIds.add(change.entityId);
+            } else {
+                invalidateSessions = true;
+            }
             if (typeof change.entityId === 'string' && change.entityId.length > 0) {
                 sessionIds.add(change.entityId);
-                const updatedMessage = getChangeUpdatedMessageHint(change);
+                const updatedMessage = readSessionUpdatedMessageChangeHintV1(change);
                 if (updatedMessage) {
                     const existing = sessionTranscriptRepairs.get(change.entityId);
                     if (existing) {
                         existing.minSeq = Math.min(existing.minSeq, updatedMessage.seq);
                         existing.messageIds.add(updatedMessage.messageId);
+                        existing.messageSeqs[updatedMessage.messageId] = updatedMessage.seq;
                     } else {
                         sessionTranscriptRepairs.set(change.entityId, {
                             minSeq: updatedMessage.seq,
                             messageIds: new Set([updatedMessage.messageId]),
+                            messageSeqs: { [updatedMessage.messageId]: updatedMessage.seq },
                         });
                     }
                 }
@@ -451,6 +520,11 @@ export function planSyncActionsFromChanges(changes: ApiChangeEntry[]): PlannedCh
         }
 
         if (kind === 'account') {
+            const authoringMemoryHint = getChangeAuthoringMemoryHint(change);
+            if (authoringMemoryHint) {
+                authoringMemoryKeys.add(authoringMemoryHint.key);
+                continue;
+            }
             if (changeRequiresSavedSecretCatalogRefresh(change)) {
                 invalidateSavedSecretResources = true;
             }
@@ -583,11 +657,13 @@ export function planSyncActionsFromChanges(changes: ApiChangeEntry[]): PlannedCh
         changes: [...changes],
         workflowRunIdsToRefresh: [...workflowRunIdsToRefresh].sort(),
         sessionIdsToCatchUp: Array.from(sessionIds).sort(),
+        sessionRowRefreshIds: invalidateSessions ? [] : Array.from(sessionRowRefreshIds).sort(),
         sessionTranscriptRepairs: Array.from(sessionTranscriptRepairs.entries())
             .map(([sessionId, repair]) => ({
                 sessionId,
                 minSeq: repair.minSeq,
                 messageIds: Array.from(repair.messageIds).sort(),
+                messageSeqs: repair.messageSeqs,
             }))
             .sort((left, right) => left.sessionId.localeCompare(right.sessionId)),
         sessionFolderAssignmentSessionIds: Array.from(sessionFolderAssignmentSessionIds).sort(),
@@ -620,6 +696,7 @@ export function planSyncActionsFromChanges(changes: ApiChangeEntry[]): PlannedCh
             savedSecretResources: invalidateSavedSecretResources,
         },
         kv,
+        authoringMemoryKeys: [...authoringMemoryKeys].sort(),
         sessionDraftAddresses: [...sessionDraftAddresses.values()].sort((left, right) => (
             canonicalSessionDraftAddressV2(left).localeCompare(canonicalSessionDraftAddressV2(right))
         )),
@@ -637,7 +714,14 @@ export function planSyncActionsFromChanges(changes: ApiChangeEntry[]): PlannedCh
  */
 export function plannedChangesAffectSessionListQuery(
     planned: PlannedChangeActions,
-): boolean {
+): boolean | 'structural' {
+    if (plannedChangesAffectEverySessionListQuery(planned)) return true;
+    // A row-level write leaves ordinary-answerable corpora as they are, but a
+    // structural selection (Team, tag, attention, scope) may be decided by that row.
+    return planned.sessionRowRefreshIds.length > 0 ? 'structural' : false;
+}
+
+function plannedChangesAffectEverySessionListQuery(planned: PlannedChangeActions): boolean {
     if (planned.invalidate.sessions) return true;
     if (
         planned.sessionOrganization.mode === 'snapshot'

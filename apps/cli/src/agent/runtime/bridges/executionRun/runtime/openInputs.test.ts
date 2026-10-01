@@ -4,6 +4,13 @@ import { ProviderBoundModelRefSchema, buildBackendTargetKeyV2 } from '@happier-d
 import { buildExecutionRunConfiguration } from './openInputs';
 
 describe('buildExecutionRunConfiguration', () => {
+    it('keeps hands-off independent of the delegation permission ceiling', () => {
+        expect(buildExecutionRunConfiguration({
+            backendTarget: { kind: 'builtInAgent', agentId: 'codex' }, permissionMode: 'yolo',
+            workspaceWrites: 'deny', updatedAtMs: 1,
+        }).configuration).toMatchObject({ workspaceWrites: 'deny', permissionIntent: { value: 'yolo' } });
+    });
+
     it('builds a bounded configuration snapshot for the canonical qualified Provider selection', () => {
         const agentTargetKey = buildBackendTargetKeyV2({
             kind: 'agent',
@@ -48,7 +55,7 @@ describe('buildExecutionRunConfiguration', () => {
         {
             label: 'Agent target',
             modelSelection: ProviderBoundModelRefSchema.parse({
-                agentTargetKey: 'backend:claude',
+                agentTargetKey: 'agent:happier.agent.claude/claude',
                 providerConnectionId: 'pc_openai',
                 modelId: 'gpt-5.1-codex',
             }),
@@ -58,7 +65,7 @@ describe('buildExecutionRunConfiguration', () => {
         {
             label: 'model',
             modelSelection: ProviderBoundModelRefSchema.parse({
-                agentTargetKey: 'backend:codex',
+                agentTargetKey: 'agent:happier.agent.codex/codex',
                 providerConnectionId: 'pc_openai',
                 modelId: 'gpt-5.1-codex',
             }),

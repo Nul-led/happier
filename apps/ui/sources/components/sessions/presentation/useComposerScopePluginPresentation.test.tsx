@@ -53,7 +53,7 @@ const region = {
     id: 'acme.compose/summary',
     pluginId: 'acme.compose',
     identity: { pluginId: 'acme.compose', localId: 'summary' },
-    immutableGenerationId: 'generation-1',
+    occurrenceId: 'generation-1',
     definition: {
         id: 'summary',
         placement: 'beforeComposer',
@@ -65,11 +65,11 @@ const control = {
     id: 'acme.compose/refresh',
     pluginId: 'acme.compose',
     identity: { pluginId: 'acme.compose', localId: 'refresh' },
-    immutableGenerationId: 'generation-1',
+    occurrenceId: 'generation-1',
     definition: {
         id: 'refresh',
         label: 'Refresh',
-        icon: 'sparkles',
+        icon: 'preview',
         interaction: { kind: 'action', action: 'refresh' },
     },
 };
@@ -77,7 +77,7 @@ const control = {
 function createCatalogEntry(): DaemonPluginUiComposerSurfaceCatalogEntryV1 {
     return DaemonPluginUiComposerSurfaceCatalogEntryV1Schema.parse({
         contribution: region.identity,
-        immutableGenerationId: 'generation-1',
+        occurrenceId: 'generation-1',
         projectionGeneration: 7,
         role: 'region',
         rendererChain: [{ pluginId: 'acme.compose', localId: 'summary-renderer' }],
@@ -86,12 +86,11 @@ function createCatalogEntry(): DaemonPluginUiComposerSurfaceCatalogEntryV1 {
             renderer: {
                 kind: 'declarative',
                 contributionId: 'summary-renderer',
-                model: { visible: true },
             },
             availability: { state: 'available', reason: 'available', diagnostics: [] },
         },
         executionOrigin: {
-            serverIdentityId: 'server-1',
+            serverIdentityId: 'srv_server-1',
             materializationRef: {
                 machineId: 'machine-1',
                 materializationId: 'materialization-1',
@@ -100,7 +99,11 @@ function createCatalogEntry(): DaemonPluginUiComposerSurfaceCatalogEntryV1 {
         },
         resourceCapability: { readable: true, dynamic: true },
         contributorTargetedContributions: {
-            target: { pluginId: 'acme.compose', immutableGenerationId: 'generation-1' },
+            target: {
+                pluginId: 'acme.compose',
+                occurrenceId: 'generation-1',
+                sourceCustody: { kind: 'development', registeredRootId: 'compose-root' },
+            },
             points: [],
         },
     });
@@ -131,7 +134,7 @@ function createOrderedControl(input: Readonly<{
         id: `acme.compose/${input.localId}`,
         pluginId: 'acme.compose',
         identity: { pluginId: 'acme.compose', localId: input.localId },
-        immutableGenerationId: 'generation-1',
+        occurrenceId: 'generation-1',
         definition: {
             id: input.localId,
             label: input.localId,
@@ -150,7 +153,7 @@ function createOrderedRegion(input: Readonly<{
         id: `acme.compose/${input.localId}`,
         pluginId: 'acme.compose',
         identity: { pluginId: 'acme.compose', localId: input.localId },
-        immutableGenerationId: 'generation-1',
+        occurrenceId: 'generation-1',
         definition: {
             id: input.localId,
             placement: 'beforeComposer',
@@ -178,13 +181,13 @@ function createPluginProjectionById(): Readonly<Record<string, PluginProjectionE
             editableSettingsGroups: [],
             actions: [{
                 id: 'review',
+                occurrenceId: 'generation-1',
                 title: 'Review',
                 description: null,
                 icon: null,
                 scopes: ['session'],
                 surfaces: ['ui'],
                 placementBindings: ['composer.slash'],
-                inputSchema: null,
                 inputHints: { fields: [] },
                 slash: { tokens: ['/review'] },
                 priority: null,
@@ -531,6 +534,55 @@ describe('useComposerScopePluginPresentation', () => {
         await hook.unmount();
     });
 
+    // A parent that rebuilds an equal Session target object on every render must not retire the
+    // Composer scope: a new parent lifetime replaces every physical Composer surface controller, whose
+    // committed publication re-renders the parent, and the imported-Session view looped until React
+    // stopped it ("Maximum update depth exceeded").
+    it('keeps the existing-Session scope current when the parent passes an equal new Session target', async () => {
+        const projection = createProjection();
+        const projectionInputs = {
+            pluginProjectionById: {},
+            pluginProjectionV2: projection,
+            composerSurfaceCatalog: [createCatalogEntry()],
+        };
+        const isScopeCurrent = (): boolean => true;
+        const readParentLifetime = (node: React.ReactNode): unknown => (
+            React.isValidElement<Readonly<{ parentLifetime: unknown }>>(node)
+                ? node.props.parentLifetime
+                : null
+        );
+        // The render callback builds fresh, structurally equal objects each time, as the Session view does.
+        const hook = await renderHook((_props: Readonly<{ revision: number }>) => (
+            useComposerScopePluginPresentation({
+                composer: { kind: 'session', sessionId: 'session-1' },
+                physicalTarget: { kind: 'session', sessionId: 'session-1' },
+                resourceContext: { kind: 'session', sessionId: 'session-1' },
+                machineId: 'machine-1',
+                serverId: 'server-1',
+                projectionPhase: 'ready',
+                projectionInputs,
+                accountLifetime: null,
+                isScopeCurrent,
+                attachmentsEnabled: true,
+                includeSessionActions: true,
+            })
+        ), { initialProps: { revision: 0 } });
+
+        const active = asSessionActionAdapterPresentation(hook.getCurrent());
+        const activeSnapshot = active.getCurrentActionSnapshot();
+        const activeLifetime = readParentLifetime(active.renderComposerRegion(active.composerRegions[0]!));
+        expect(activeSnapshot).not.toBeNull();
+        expect(activeLifetime).not.toBeNull();
+
+        await hook.rerender({ revision: 1 });
+
+        const current = asSessionActionAdapterPresentation(hook.getCurrent());
+        expect(current.getCurrentActionSnapshot()).toBe(activeSnapshot);
+        expect(readParentLifetime(current.renderComposerRegion(current.composerRegions[0]!))).toBe(activeLifetime);
+
+        await hook.unmount();
+    });
+
     it('keeps the existing-Session action adapter on the shared current scope', async () => {
         const projection = createProjection();
         const pluginProjectionById = createPluginProjectionById();
@@ -619,7 +671,7 @@ describe('useComposerScopePluginPresentation', () => {
             attachment,
             catalog: {
                 identity: attachment.attachment,
-                immutableGenerationId: 'generation-1',
+                occurrenceId: 'occurrence-1',
                 display: { kind: 'surface', sizing: 'content', renderer: { renderer: 'issue-display' } },
             },
         });

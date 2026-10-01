@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import tweetnacl from 'tweetnacl';
 
 import {
+  API_TOKEN_FULL_GRANT_V1,
   SessionAgentSpawnPolicyV1Schema,
   signExternalActionApprovalInputV1,
   type ApprovalExecutionOriginV1,
@@ -46,6 +47,10 @@ describe('daemon approval execution-origin currentness', () => {
           lastUsedAt: null,
           hasEncryptionAccess: false,
           hasUnattendedTeamAccess: false,
+          grant: API_TOKEN_FULL_GRANT_V1,
+          parentTokenId: null,
+          activeChildCount: 0,
+          embedConfig: null,
         }],
       }),
     });
@@ -66,6 +71,7 @@ describe('daemon approval execution-origin currentness', () => {
         accountId: 'account-1',
         principalId: 'principal-1',
         credentialId: '11111111-1111-4111-8111-111111111111',
+        grant: API_TOKEN_FULL_GRANT_V1,
         machineId: 'machine-1',
         actionId: 'approval.request.create',
         requestId: 'request-1',
@@ -119,6 +125,10 @@ describe('daemon approval execution-origin currentness', () => {
         expiresAt: null,
         hasEncryptionAccess: false,
         hasUnattendedTeamAccess: false,
+        grant: API_TOKEN_FULL_GRANT_V1,
+        parentTokenId: null,
+        activeChildCount: 0,
+        embedConfig: null,
       }] }),
       externalActionMachinePublicKey: keyPair.publicKey,
       verifyExternalExecutionAuthorization,
@@ -145,6 +155,7 @@ describe('daemon approval execution-origin currentness', () => {
         accountId: 'account-1',
         principalId: 'principal-1',
         credentialId: '11111111-1111-4111-8111-111111111111',
+        grant: API_TOKEN_FULL_GRANT_V1,
         machineId: 'machine-1',
         actionId: 'approval.request.create',
         requestId: 'request-1',
@@ -224,6 +235,7 @@ describe('daemon approval execution-origin currentness', () => {
         accountId: 'account-1',
         principalId: 'account-1',
         credentialId: '11111111-1111-4111-8111-111111111111',
+        grant: { ...API_TOKEN_FULL_GRANT_V1, actions: { families: [], ids: ['acme.external/actions/archive-member'] } },
         machineId: 'machine-1',
         actionId: 'action.invoke',
         requestId: 'request-plugin-1',
@@ -301,6 +313,10 @@ describe('daemon approval execution-origin currentness', () => {
         expiresAt: null,
         hasEncryptionAccess: false,
         hasUnattendedTeamAccess: false,
+        grant: API_TOKEN_FULL_GRANT_V1,
+        parentTokenId: null,
+        activeChildCount: 0,
+        embedConfig: null,
       }] }),
       externalActionMachinePublicKey: keyPair.publicKey,
       verifyExternalExecutionAuthorization,
@@ -344,6 +360,10 @@ describe('daemon approval execution-origin currentness', () => {
         expiresAt: null,
         hasEncryptionAccess: false,
         hasUnattendedTeamAccess: false,
+        grant: API_TOKEN_FULL_GRANT_V1,
+        parentTokenId: null,
+        activeChildCount: 0,
+        embedConfig: null,
       }],
     }));
     const isCurrent = createDaemonApprovalExecutionOriginCurrentness({
@@ -372,6 +392,10 @@ describe('daemon approval execution-origin currentness', () => {
         expiresAt: '2026-09-01T00:00:00.000Z',
         hasEncryptionAccess: false,
         hasUnattendedTeamAccess: false,
+        grant: API_TOKEN_FULL_GRANT_V1,
+        parentTokenId: null,
+        activeChildCount: 0,
+        embedConfig: null,
       }],
     }));
     const isCurrent = createDaemonApprovalExecutionOriginCurrentness({

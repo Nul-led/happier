@@ -1,7 +1,7 @@
+import { renderWithSessionTranscriptSource } from '@/dev/testkit';
 import React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-    renderScreen,
     standardCleanup,
 } from '@/dev/testkit';
 import {
@@ -120,7 +120,7 @@ describe('ToolView (detail level: title)', () => {
             result: { file: { content: 'hello' } },
         });
 
-        const screen = await renderScreen(React.createElement(ToolView, { tool, metadata: null }));
+        const screen = await renderWithSessionTranscriptSource(React.createElement(ToolView, { tool, metadata: null }));
 
         // Header still renders (baseline sanity).
         expect(collectHostText(screen.tree).length).toBeGreaterThan(0);

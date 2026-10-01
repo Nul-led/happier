@@ -28,14 +28,16 @@ import type { LocalServiceActionExecutionOutcome } from './executor';
  *    listener pid of a run-wrapped dev server (`npm run dev` -> node) is not a group leader, so
  *    `kill(-pid)` raises ESRCH and signals nothing, and `kill(-pgid)` would reach unrelated
  *    members of the launching shell's group. The descendant set is resolved before SIGTERM and
- *    re-resolved before SIGKILL, unioned: pids orphaned onto init by the SIGTERM stay covered by
- *    the first set, and a worker the service spawned during the grace window is caught by the
- *    second. If the process table cannot be read we refuse (`process_tree_unresolved`) rather
+ *    re-resolved below every surviving tree member before SIGKILL, unioned: pids orphaned onto
+ *    init by SIGTERM stay covered, as do workers those survivors spawned during the grace window.
+ *    If the process table cannot be read we refuse (`process_tree_unresolved`) rather
  *    than signalling the listener alone — killing the parent frees the port, so a partial tree
  *    kill would report success while leaving the user's children running, which is the exact
  *    class of lie this lane exists to remove.
  *  - **Post-release verification, with the failure named.** After signalling we poll liveness
- *    and confirm the port was released (or rebound by a *different* pid). If our pid still
+ *    for the listener and every captured descendant and confirm the port was released (or
+ *    rebound by a *different* pid). A free port does not prove a completed tree termination.
+ *    If our pid still
  *    holds it we distinguish `port_not_released` (we did signal it and it survived) from
  *    `terminate_no_process_signaled` (every pid we addressed was already gone, so our targeting
  *    was wrong) — the second is what an ESRCH swallowed as success used to hide behind the
@@ -111,11 +113,14 @@ export type TerminateProcessControl = Readonly<{
     /** Re-resolve which pid currently holds the `(host, port)` listener. */
     probeListener(input: TerminateListenerProbeInput): Promise<TerminateListenerProbeResult>;
     /**
-     * Transitive descendants of `pid`. `unavailable` means the process table could not be read;
+     * Transitive descendants of one or more tree members from a single process-table read.
+     * `unavailable` means the process table could not be read;
      * the caller must refuse rather than half-kill the tree. Windows resolves to an empty set —
      * `taskkill /T` owns the subtree there.
      */
-    resolveDescendantPids(pid: number): Promise<TerminateDescendantResolution>;
+    resolveDescendantPids(roots: number | readonly number[]): Promise<TerminateDescendantResolution>;
+    /** Fresh OS identity, used to prevent escalation against a reused captured pid. */
+    readProcessIdentity(pid: number): Promise<TerminateProcessIdentity | null>;
     isProcessAlive(pid: number): Promise<boolean>;
     signal(input: TerminateProcessSignalInput): Promise<TerminateProcessSignalOutcome>;
     terminateWindowsTree(input: TerminateWindowsTreeInput): Promise<void>;
@@ -232,6 +237,24 @@ export function createTerminateDetectedService(
         }
 
         let deliveredAnySignal = false;
+        const capturedStartTimes = new Map<number, number>();
+        const presentTreeMembers = async (): Promise<number[]> => {
+            const members = [pid, ...descendantPids];
+            const present = await Promise.all(members.map((member) => control.isProcessAlive(member)));
+            return members.filter((_, index) => present[index]);
+        };
+        const verifyCapturedIdentities = async (members: readonly number[]): Promise<LocalServiceActionExecutionOutcome | null> => {
+            for (const member of members) {
+                const identity = await control.readProcessIdentity(member);
+                if (identity?.pid !== member || typeof identity.startTime !== 'number') {
+                    return { status: 'failed', reasonCode: 'process_tree_unresolved' };
+                }
+                if (capturedStartTimes.get(member) !== identity.startTime) {
+                    return { status: 'denied', reasonCode: 'identity_changed' };
+                }
+            }
+            return null;
+        };
         try {
             if (control.platform === 'windows') {
                 await control.terminateWindowsTree({ pid, force: false });
@@ -241,6 +264,17 @@ export function createTerminateDetectedService(
                     await control.terminateWindowsTree({ pid, force: true });
                 }
             } else {
+                for (const member of [pid, ...descendantPids]) {
+                    const identity = await control.readProcessIdentity(member);
+                    if (identity?.pid !== member || typeof identity.startTime !== 'number') {
+                        return { status: 'failed', reasonCode: 'process_tree_unresolved' };
+                    }
+                    if (member === pid && typeof current.identity.startTime === 'number'
+                        && current.identity.startTime !== identity.startTime) {
+                        return { status: 'denied', reasonCode: 'identity_changed' };
+                    }
+                    capturedStartTimes.set(member, identity.startTime);
+                }
                 const terminated = await control.signal({ pid, signal: 'SIGTERM', descendantPids });
                 const terminateFailure = signalFailureReasonCode(terminated);
                 if (terminateFailure) {
@@ -248,17 +282,37 @@ export function createTerminateDetectedService(
                 }
                 deliveredAnySignal = terminated.status === 'delivered';
                 await control.wait(graceMs);
-                if (await control.isProcessAlive(pid)) {
-                    // Surviving the grace window is exactly the case where the service may have
-                    // spawned more children during it, so re-resolve — and union, because the
-                    // first round's pids may since have been orphaned onto init and would no
-                    // longer appear as descendants.
-                    const escalation = await control.resolveDescendantPids(pid);
+                const survivors = await presentTreeMembers();
+                if (survivors.length > 0) {
+                    // A child can exit and its pid can be reused during grace. Revalidate before
+                    // treating that pid as an owned orphan root or discovering its descendants.
+                    const beforeDiscovery = await verifyCapturedIdentities(survivors);
+                    if (beforeDiscovery) return beforeDiscovery;
+                    // The listener may have exited while its children ignored TERM. Follow the
+                    // surviving children too: they can be orphaned and spawn additional workers.
+                    const escalation = await control.resolveDescendantPids(survivors);
                     if (escalation.status === 'unavailable') {
                         return { status: 'failed', reasonCode: 'process_tree_unresolved' };
                     }
                     descendantPids = [...new Set([...descendantPids, ...escalation.pids])];
-                    const killed = await control.signal({ pid, signal: 'SIGKILL', descendantPids });
+                    const signalTargets = [...new Set([...survivors, ...escalation.pids])];
+                    for (const member of signalTargets) {
+                        if (capturedStartTimes.has(member)) continue;
+                        const identity = await control.readProcessIdentity(member);
+                        if (identity?.pid !== member || typeof identity.startTime !== 'number') {
+                            return { status: 'failed', reasonCode: 'process_tree_unresolved' };
+                        }
+                        capturedStartTimes.set(member, identity.startTime);
+                    }
+                    // The process-table read is another OS round trip: keep the generation guard
+                    // adjacent to SIGKILL too, not only before discovering orphan descendants.
+                    const beforeKill = await verifyCapturedIdentities(signalTargets);
+                    if (beforeKill) return beforeKill;
+                    // Do not address a listener/child already observed absent again. The first
+                    // surviving member supplies the adapter's required primary pid.
+                    const [primary, ...remaining] = signalTargets;
+                    if (primary === undefined) throw new Error('process tree survivor is missing');
+                    const killed = await control.signal({ pid: primary, signal: 'SIGKILL', descendantPids: remaining });
                     const killFailure = signalFailureReasonCode(killed);
                     if (killFailure) {
                         return { status: 'failed', reasonCode: killFailure };
@@ -271,10 +325,10 @@ export function createTerminateDetectedService(
         }
 
         // Post-release verification. Liveness is free, so poll that and spend a listener probe
-        // only once the process is gone; the machine-wide scan behind a probe is the expensive
+        // only once the entire captured tree is gone; the machine-wide scan behind a probe is the expensive
         // part and a single terminate used to issue up to eleven of them.
         for (let attempt = 0; attempt < verifyAttempts; attempt += 1) {
-            if (!(await control.isProcessAlive(pid))) {
+            if ((await presentTreeMembers()).length === 0) {
                 const after = await control.probeListener(probeInput);
                 if (isPortReleased(after, pid)) {
                     return { status: 'succeeded' };
@@ -284,11 +338,14 @@ export function createTerminateDetectedService(
         }
 
         const final = await control.probeListener(probeInput);
-        if (isPortReleased(final, pid)) {
+        if (isPortReleased(final, pid) && (await presentTreeMembers()).length === 0) {
             return { status: 'succeeded' };
         }
         if (final.status === 'indeterminate') {
             return { status: 'failed', reasonCode: 'port_release_unverified' };
+        }
+        if (isPortReleased(final, pid)) {
+            return { status: 'failed', reasonCode: 'terminate_signal_failed' };
         }
         return deliveredAnySignal
             ? { status: 'failed', reasonCode: 'port_not_released' }

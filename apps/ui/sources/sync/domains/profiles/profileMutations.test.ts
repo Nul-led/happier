@@ -13,9 +13,9 @@ describe('createEmptyCustomProfile', () => {
             id: 'profile-id',
             extraEnvironmentVariables: [],
             compatibilityByTargetKey: {
-                'backend:claude': true,
-                'backend:codex': true,
-                'backend:gemini': true,
+                'agent:happier.agent.claude/claude': true,
+                'agent:happier.agent.codex/codex': true,
+                'agent:happier.agent.gemini/gemini': true,
             },
             defaultPermissionModeByTargetKey: {},
             defaultPersistenceModeByTargetKey: {},
@@ -33,9 +33,9 @@ describe('createEmptyCustomProfile', () => {
                 { name: 'OPENAI_API_TIMEOUT_MS', value: '600000' },
                 { name: 'SAFE_LAUNCH_FLAG', value: '1' },
             ],
-            defaultPermissionModeByTargetKey: { 'backend:claude': 'acceptEdits' as const },
-            defaultPersistenceModeByTargetKey: { 'backend:claude': 'persisted' as const },
-            compatibilityByTargetKey: { 'backend:claude': true },
+            defaultPermissionModeByTargetKey: { 'agent:happier.agent.claude/claude': 'acceptEdits' as const },
+            defaultPersistenceModeByTargetKey: { 'agent:happier.agent.claude/claude': 'persisted' as const },
+            compatibilityByTargetKey: { 'agent:happier.agent.claude/claude': true },
             createdAt: 1, updatedAt: 1,
         };
 
@@ -50,9 +50,9 @@ describe('createEmptyCustomProfile', () => {
                     { name: 'OPENAI_API_TIMEOUT_MS', value: '600000' },
                     { name: 'SAFE_LAUNCH_FLAG', value: '1' },
                 ],
-                defaultPermissionModeByTargetKey: { 'backend:claude': 'acceptEdits' },
-                defaultPersistenceModeByTargetKey: { 'backend:claude': 'persisted' },
-                compatibilityByTargetKey: { 'backend:claude': true },
+                defaultPermissionModeByTargetKey: { 'agent:happier.agent.claude/claude': 'acceptEdits' },
+                defaultPersistenceModeByTargetKey: { 'agent:happier.agent.claude/claude': 'persisted' },
+                compatibilityByTargetKey: { 'agent:happier.agent.claude/claude': true },
             });
             expect(converted.extraEnvironmentVariables).not.toContainEqual(expect.objectContaining({ name: 'ANTHROPIC_BASE_URL' }));
             expect(converted.extraEnvironmentVariables).not.toContainEqual(expect.objectContaining({ name: 'AZURE_OPENAI_API_VERSION' }));

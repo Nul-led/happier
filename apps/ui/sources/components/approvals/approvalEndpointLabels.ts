@@ -1,3 +1,4 @@
+import { readSessionDirectoryKind } from '@happier-dev/protocol';
 import type { Machine, Session } from '@/sync/domains/state/storageTypes';
 import type { SessionListRenderableSession } from '@/sync/domains/session/listing/sessionListRenderable';
 import { getMachineDisplayName } from '@/utils/sessions/machineUtils';
@@ -21,7 +22,8 @@ export function readApprovalSessionEndpointLabels(input: Readonly<{
     machineId?: string | null;
 }>): ApprovalEndpointLabels {
     const ownerMetadata = input.session ? readSessionOwnerMetadataView(input.session) : null;
-    const displayPath = input.session
+    // A no-folder session names only its machine; its private folder is not a destination to show.
+    const displayPath = input.session && readSessionDirectoryKind(ownerMetadata) !== 'managed'
         ? readDisplayPathForSession({ sessionId: null, metadata: ownerMetadata })
         : '';
 

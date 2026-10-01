@@ -2,6 +2,7 @@ import { randomBytes as nodeRandomBytes } from 'node:crypto';
 
 import {
   BUNDLED_LEGACY_CONNECTED_ACCOUNT_COMPATIBILITY_BY_SERVICE_ID,
+  computeCanonicalDomainSeparatedDigest,
   QualifiedConnectedAccountCredentialPayloadV1Schema,
   QualifiedConnectedAccountCredentialMetadataV4Schema,
   QualifiedConnectedAccountCredentialSnapshotV4Schema,
@@ -88,6 +89,7 @@ export type QualifiedConnectedAccountMaterialSnapshot = Readonly<{
   authenticationModeId: string;
   credentialRevision: ConnectedServiceCredentialRevisionV1;
   configurationRevision: string | null;
+  serviceConfigurationFingerprint?: string;
   contributionContractVersion: string;
   isCurrent(): Promise<boolean>;
 }>;
@@ -347,29 +349,31 @@ function assertSnapshotPair(input: Readonly<{
 
 async function resolveDirectMaterialConfiguration(
   record: ConnectedAccountConfigurationRecord | null,
-  readSecret: (
-    secretId: string,
-    options?: Readonly<{ signal?: AbortSignal }>,
-  ) => Promise<string | null>,
+  secrets: ConnectedAccountDaemonPersistence['configuration']['secrets'],
   signal?: AbortSignal,
 ): Promise<Readonly<{
-  values: Readonly<Record<string, JsonValue>>;
-  secretValues: Readonly<Record<string, string>>;
-}> | null> {
-  if (record === null) return null;
+  configuration: QualifiedConnectedAccountMaterialSnapshot['configuration'];
+  fingerprints: readonly string[];
+}>> {
+  if (record === null) return { configuration: null, fingerprints: [] };
   const secretValues: Record<string, string> = { ...(record.secretValues ?? {}) };
-  for (const [fieldId, secretId] of Object.entries(record.secretRefs)) {
+  const fingerprints: string[] = [];
+  for (const [fieldId, secretId] of Object.entries(record.secretRefs).sort(([left], [right]) => left.localeCompare(right))) {
     assertNotAborted(signal);
-    const value = await readSecret(secretId, signal ? { signal } : undefined);
-    if (value === null) {
+    const resolved = await secrets.readMaterial?.(secretId, signal ? { signal } : undefined);
+    if (!resolved) {
       throw new Error('Connected-account configuration secret is unavailable');
     }
-    secretValues[fieldId] = value;
+    secretValues[fieldId] = resolved.value;
+    fingerprints.push(fieldId, resolved.fingerprint);
   }
   assertNotAborted(signal);
   return Object.freeze({
-    values: Object.freeze({ ...record.values }),
-    secretValues: Object.freeze(secretValues),
+    configuration: Object.freeze({
+      values: Object.freeze({ ...record.values }),
+      secretValues: Object.freeze(secretValues),
+    }),
+    fingerprints: Object.freeze(fingerprints),
   });
 }
 
@@ -463,6 +467,7 @@ export function createQualifiedConnectedAccountEstablishedRuntimeOwner(
     if (accountMode === 'unknown') {
       throw new Error('Connected-account account encryption mode is unavailable');
     }
+    const resolvedAccountMode: Exclude<ConnectedServiceAccountEncryptionMode, 'unknown'> = accountMode;
     const snapshots = await readExactSnapshots(input.account, input.signal);
     const authenticationModeId = snapshots.credential.authenticationModeId;
     if (!authenticationModeId) {
@@ -480,29 +485,76 @@ export function createQualifiedConnectedAccountEstablishedRuntimeOwner(
         envelope: snapshots.credential.content,
       }),
     });
-    const configurationRecord = snapshots.configuration === null
-      ? null
-      : parseConnectedAccountConfigurationRecordContent(
-        openEnvelope({
-          kind: 'configuration',
-          accountMode,
-          credentials: params.credentials,
-          material,
-          envelope: snapshots.configuration.configurationContent,
-        }),
-        snapshots.configuration.configurationRevision,
+    const registryLease = await params.reloadController.acquireRuntimeRegistry();
+    let contributionContractVersion: string;
+    let mode: PluginConnectedAccountAuthenticationModeV2;
+    let sourceCustody: PluginSourceCustody;
+    let isContributionCurrent: () => boolean;
+    try {
+      const contribution = registryLease.registry.connectedAccountContributions?.describe(input.account.service);
+      const selectedMode = contribution?.descriptor.authentication.modes.find((candidate) => candidate.id === authenticationModeId);
+      if (!contribution || !selectedMode || !contribution.isCurrent()
+        || !params.reloadController.isRuntimeRegistryCurrent(registryLease.registry)) {
+        throw new Error('Connected-account contribution contract is unavailable');
+      }
+      contributionContractVersion = contribution.occurrenceId;
+      mode = selectedMode;
+      sourceCustody = contribution.sourceCustody;
+      isContributionCurrent = () => contribution.isCurrent()
+        && params.reloadController.isRuntimeRegistryCurrent(registryLease.registry);
+    } finally {
+      await registryLease.release();
+    }
+    const target = configurationTarget(input.account, mode);
+    const descriptorConfiguration = 'configuration' in mode ? mode.configuration : undefined;
+    async function readConfigurationRecord(current: Awaited<ReturnType<typeof readExactSnapshots>>) {
+      if (target.kind !== 'account' && current.configuration !== null) {
+        throw new Error('Connected-account configuration sidecar does not match its descriptor scope');
+      }
+      return target.kind === 'service'
+        ? descriptorConfiguration ? await params.configuration.read(target) : null
+        : current.configuration === null ? null
+          : parseConnectedAccountConfigurationRecordContent(openEnvelope({
+              kind: 'configuration', accountMode: resolvedAccountMode, credentials: params.credentials, material,
+              envelope: current.configuration.configurationContent,
+            }), current.configuration.configurationRevision);
+    }
+    const configurationOwner = params.configurationOwner ?? createConnectedAccountConfigurationOwner({
+      read: async () => readConfigurationRecord(await readExactSnapshots(input.account, input.signal)),
+      replace: async () => ({ status: 'unavailable', code: 'connected_account_configuration_read_only' }),
+      destroyAttempt: async () => {},
+      secrets: params.configuration.secrets,
+      isRuntimeCurrent: () => isContributionCurrent(),
+    });
+    async function resolveConfiguration(current: Awaited<ReturnType<typeof readExactSnapshots>>) {
+      const record = await readConfigurationRecord(current);
+      if (!descriptorConfiguration) return { configuration: null, serviceConfigurationFingerprint: undefined };
+      // Use the ordinary configuration owner for required fields, defaults and
+      // reference admission before creating the read-only direct projection.
+      const admitted = await configurationOwner.admit({
+        intent: 'reconnect', service: input.account.service, account: input.account,
+        mode, occurrenceId: contributionContractVersion, sourceCustody,
+        ...(record ? { expectedConfigurationRevision: record.revision } : {}),
+      });
+      if (admitted.status !== 'ready' || !record
+        || admitted.snapshot.revision !== record.revision) {
+        throw new Error('Connected-account established configuration is unavailable');
+      }
+      const resolved = await resolveDirectMaterialConfiguration(
+        { ...record, values: admitted.snapshot.values }, params.configuration.secrets, input.signal,
       );
-    // Direct preparation is an operation boundary: admit the configuration's
-    // Saved Secret refs before their values leave this daemon.
-    await params.configuration.secrets.admit(
-      Object.values(configurationRecord?.secretRefs ?? {}),
-      input.signal ? { signal: input.signal } : undefined,
-    );
-    const configuration = await resolveDirectMaterialConfiguration(
-      configurationRecord,
-      (secretId, options) => params.configuration.secrets.read(secretId, options),
-      input.signal,
-    );
+      return {
+        configuration: resolved.configuration,
+        ...(target.kind === 'service' && descriptorConfiguration ? {
+          serviceConfigurationFingerprint: computeCanonicalDomainSeparatedDigest(
+            'happier.team-credential-service-configuration.v1',
+            [record?.revision ?? 'unconfigured', ...resolved.fingerprints],
+          ),
+        } : {}),
+      };
+    }
+    const resolvedConfiguration = await resolveConfiguration(snapshots);
+    const { configuration } = resolvedConfiguration;
     const current = await readExactSnapshots(input.account, input.signal);
     if (
       current.credential.credentialRevision
@@ -514,26 +566,6 @@ export function createQualifiedConnectedAccountEstablishedRuntimeOwner(
     ) {
       throw new Error('Connected-account material source changed during snapshot resolution');
     }
-    const registryLease = await params.reloadController.acquireRuntimeRegistry();
-    let contributionContractVersion: string;
-    try {
-      const contribution = registryLease.registry.connectedAccountContributions?.describe(
-        input.account.service,
-      );
-      if (
-        !contribution
-        || !contribution.isCurrent()
-        || !params.reloadController.isRuntimeRegistryCurrent(registryLease.registry)
-        || !contribution.descriptor.authentication.modes.some(
-          (mode) => mode.id === authenticationModeId,
-        )
-      ) {
-        throw new Error('Connected-account contribution contract is unavailable');
-      }
-      contributionContractVersion = contribution.occurrenceId;
-    } finally {
-      await registryLease.release();
-    }
     assertNotAborted(input.signal);
     return Object.freeze({
       credential,
@@ -541,6 +573,9 @@ export function createQualifiedConnectedAccountEstablishedRuntimeOwner(
       authenticationModeId,
       credentialRevision: snapshots.credential.credentialRevision,
       configurationRevision: snapshots.credential.configurationRevision,
+      ...(resolvedConfiguration.serviceConfigurationFingerprint ? {
+        serviceConfigurationFingerprint: resolvedConfiguration.serviceConfigurationFingerprint,
+      } : {}),
       contributionContractVersion,
       async isCurrent(): Promise<boolean> {
         if (input.signal?.aborted) return false;
@@ -555,24 +590,8 @@ export function createQualifiedConnectedAccountEstablishedRuntimeOwner(
           ) {
             return false;
           }
-          const latestConfigurationRecord = latest.configuration === null
-            ? null
-            : parseConnectedAccountConfigurationRecordContent(
-                openEnvelope({
-                  kind: 'configuration',
-                  accountMode,
-                  credentials: params.credentials,
-                  material,
-                  envelope: latest.configuration.configurationContent,
-                }),
-                latest.configuration.configurationRevision,
-              );
-          const latestConfiguration = await resolveDirectMaterialConfiguration(
-            latestConfigurationRecord,
-            (secretId, options) => params.configuration.secrets.read(secretId, options),
-            input.signal,
-          );
-          if (JSON.stringify(latestConfiguration) !== JSON.stringify(configuration)) {
+          const latestConfiguration = await resolveConfiguration(latest);
+          if (JSON.stringify(latestConfiguration) !== JSON.stringify(resolvedConfiguration)) {
             return false;
           }
           const latestRegistryLease = await params.reloadController.acquireRuntimeRegistry();

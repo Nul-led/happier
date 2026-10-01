@@ -1,6 +1,10 @@
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 import {
   DaemonTerminalCloseRequestSchema,
+  AGENT_SIGN_IN_PREPARE_RPC_METHOD,
+  AGENT_SIGN_IN_STATUS_RPC_METHOD,
+  AgentSignInPrepareRequestSchema,
+  AgentSignInStatusRequestSchema,
   DaemonTerminalEnsureRequestSchema,
   DaemonTerminalListRequestV1Schema,
   DaemonTerminalListResponseV1Schema,
@@ -24,8 +28,10 @@ import {
 } from '@happier-dev/protocol';
 
 import type { RpcHandlerRegistrar } from '../rpc/types';
+import { prepareAgentSignIn, probeAgentSignInStatus } from '@/capabilities/cliAuth/agentSignIn';
 import { validatePath } from '@/rpc/handlers/pathSecurity';
 import { expandHomeDirPath } from '@/utils/path/expandHomeDirPath';
+import { resolveLocalServiceRunTargetCommand } from '@/daemon/local/services/launch/runTargets';
 import { resolveMachineRpcWorkingDirectory } from './resolveMachineRpcWorkingDirectory';
 import {
   resolveFilesystemAccessPolicy,
@@ -37,6 +43,7 @@ import { createNodePtyProvider } from '@/terminal/pty/provider';
 import { getSharedTerminalProcessRegistry, type TerminalProcessRegistry } from '@/daemon/local/services/inventory/terminalRegistry';
 import {
   resolveDaemonTerminalLaunch,
+  AgentLoginLaunchError,
   type TerminalLaunchProcess,
 } from '@/terminal/pty/launch';
 
@@ -102,6 +109,12 @@ export function registerMachineTerminalRpcHandlers(params: Readonly<{
 }>): MachineTerminalRpcRegistration {
   const { rpcHandlerManager } = params;
   const env = params.deps?.env ?? process.env;
+  rpcHandlerManager.registerHandler(AGENT_SIGN_IN_STATUS_RPC_METHOD, async (raw) => {
+    const request = AgentSignInStatusRequestSchema.parse(raw);
+    return await probeAgentSignInStatus(request.agentId);
+  });
+  rpcHandlerManager.registerHandler(AGENT_SIGN_IN_PREPARE_RPC_METHOD, (raw) =>
+    prepareAgentSignIn(AgentSignInPrepareRequestSchema.parse(raw)));
 
   const config = readDaemonTerminalPtyConfig(env);
   const workingDirectory =
@@ -112,7 +125,19 @@ export function registerMachineTerminalRpcHandlers(params: Readonly<{
   // the exact store the local-services scanner queries (same process). An explicit dep
   // can override (tests / future injection).
   const terminalRegistry = params.deps?.terminalRegistry ?? getSharedTerminalProcessRegistry();
-  const resolveLaunch = params.deps?.resolveLaunch ?? resolveDaemonTerminalLaunch;
+  const resolveLaunch = params.deps?.resolveLaunch
+    ?? ((launch) => resolveDaemonTerminalLaunch(launch, { env, platform: params.deps?.platform }));
+  const resolveRequestedLaunch = async (launch: import('@happier-dev/protocol').DaemonTerminalLaunchIntent | undefined, cwd: string) => {
+    try {
+      if (launch?.kind === 'package_script') {
+        const initialCommand = await resolveLocalServiceRunTargetCommand({ cwd, runTargetId: launch.runTargetId });
+        return initialCommand === null ? err('terminal_invalid_request') : { ok: true as const, initialCommand, launchProcess: undefined };
+      }
+      return { ok: true as const, initialCommand: undefined, launchProcess: launch ? resolveLaunch(launch) : undefined };
+    } catch (error) {
+      return err(error instanceof AgentLoginLaunchError ? error.code : 'terminal_spawn_failed');
+    }
+  };
 
   let sessionManager: TerminalBridgeSessionManager | null = params.deps?.sessionManager ?? null;
   const getSessionManager = (): TerminalBridgeSessionManager => {
@@ -164,14 +189,16 @@ export function registerMachineTerminalRpcHandlers(params: Readonly<{
 
     const cwd = resolveCwd(parsed.data.cwd);
     if (!cwd.ok) return cwd;
+    const launch = await resolveRequestedLaunch(parsed.data.launch, cwd.cwd);
+    if (!launch.ok) return launch;
 
     return getSessionManager().ensure({
       terminalKey: parsed.data.terminalKey,
       cwd: cwd.cwd,
       cols: parsed.data.cols,
       rows: parsed.data.rows,
-      initialCommand: parsed.data.initialCommand,
-      ...(parsed.data.launch ? { launchProcess: resolveLaunch(parsed.data.launch) } : {}),
+      initialCommand: launch.initialCommand ?? parsed.data.initialCommand,
+      ...(launch.launchProcess ? { launchProcess: launch.launchProcess } : {}),
       // Attribution only: stamped onto the terminal->port registration, never used to
       // gate resolveCwd/spawn.
       ...(params.deps?.requiredSessionId || parsed.data.sessionId
@@ -265,14 +292,16 @@ export function registerMachineTerminalRpcHandlers(params: Readonly<{
 
     const cwd = resolveCwd(parsed.data.cwd);
     if (!cwd.ok) return cwd;
+    const launch = await resolveRequestedLaunch(parsed.data.launch, cwd.cwd);
+    if (!launch.ok) return launch;
 
     return getSessionManager().restart({
       terminalKey: parsed.data.terminalKey,
       cwd: cwd.cwd,
       cols: parsed.data.cols,
       rows: parsed.data.rows,
-      initialCommand: parsed.data.initialCommand,
-      ...(parsed.data.launch ? { launchProcess: resolveLaunch(parsed.data.launch) } : {}),
+      initialCommand: launch.initialCommand ?? parsed.data.initialCommand,
+      ...(launch.launchProcess ? { launchProcess: launch.launchProcess } : {}),
       ...(params.deps?.requiredSessionId ? { sessionId: params.deps.requiredSessionId } : {}),
     });
   });

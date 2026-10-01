@@ -769,7 +769,7 @@ test.describe('plugin UI: current generated RNW artifact delivery', () => {
             kind: 'plugins_install',
         });
         const runtimeV1 = attestExternalInspectorRuntime(await describeProjection());
-        expect(runtimeV1.artifactDigest).toBe(inspectorAttestation.artifact.digest);
+        expect(runtimeV1.artifactDigest).toBe(inspectorAttestation.artifact.artifactDigest);
 
         const traffic = observePeerTraffic(page);
         await page.setViewportSize({ width: 1440, height: 900 });
@@ -989,12 +989,8 @@ test.describe('plugin UI: current generated RNW artifact delivery', () => {
                 loadedUiRuntimeJson: JSON.stringify(loadedUiRuntime),
                 daemonPid: daemon.state.pid,
                 daemonStartedWithCliVersion: daemon.state.startedWithCliVersion ?? null,
-                inspectorWebArtifactDigest: runtimeV3.artifactDigest,
-                inspectorIosArtifactDigest: inspectorAttestation.iosArtifactDigest,
-                inspectorAndroidArtifactDigest: inspectorAttestation.androidArtifactDigest,
-                inspectorRepackContainerName: inspectorAttestation.repackContainerName,
-                inspectorRepackModulePath: inspectorAttestation.repackModulePath,
-                inspectorRepackExportName: inspectorAttestation.repackExportName,
+                inspectorUniversalArtifactDigest: inspectorAttestation.artifact.artifactDigest,
+                inspectorHostUiApiRange: inspectorAttestation.artifact.hostUiApiRange,
                 graphByteSize: v1Fixture.webByteSize,
                 initialMountLatencyMs,
                 initialProjectionGeneration: runtimeV1.generation,

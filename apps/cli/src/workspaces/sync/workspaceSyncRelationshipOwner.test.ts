@@ -32,14 +32,18 @@ function status(id: string): WorkspaceSyncStatusV1 {
     alphaPath: '/source',
     betaPath: '/target',
     mode: 'keep_synced',
-    changedFiles: 0,
+    endpointStates: {
+      alpha: { connected: true, scanned: true, scanProblemCount: 0, transitionProblemCount: 0 },
+      beta: { connected: true, scanned: true, scanProblemCount: 0, transitionProblemCount: 0 },
+    },
     conflictCount: 0,
-    lastSuccessfulSyncAtMs: 1,
+    lastCycleObservedAtMs: 1,
   };
 }
 
 function createHarness() {
   let settings: Readonly<Record<string, unknown>> = { workspaceRefsV1: [], workspaceSyncRelationshipsV1: [] };
+  let beforeNextMutation: ((current: Readonly<Record<string, unknown>>) => Readonly<Record<string, unknown>>) | undefined;
   let returnOutcomeUnknownAfterApplying = false;
   let returnOutcomeUnknownWithoutApplying = false;
   let failNextRead = false;
@@ -47,6 +51,10 @@ function createHarness() {
     if (returnOutcomeUnknownWithoutApplying) {
       returnOutcomeUnknownWithoutApplying = false;
       return { status: 'outcomeUnknown', lastKnownVersion: 1 } satisfies AccountSettingsMutationResult;
+    }
+    if (beforeNextMutation) {
+      settings = beforeNextMutation(settings);
+      beforeNextMutation = undefined;
     }
     settings = await mutate(settings);
     if (returnOutcomeUnknownAfterApplying) {
@@ -94,6 +102,9 @@ function createHarness() {
     applyNextMutationWithUnknownOutcome: () => { returnOutcomeUnknownAfterApplying = true; },
     loseNextMutationOutcomeWithoutApplying: () => { returnOutcomeUnknownWithoutApplying = true; },
     failNextSettingsRead: () => { failNextRead = true; },
+    beforeNextSettingsMutation: (mutate: (current: Readonly<Record<string, unknown>>) => Readonly<Record<string, unknown>>) => {
+      beforeNextMutation = mutate;
+    },
   };
 }
 
@@ -259,40 +270,107 @@ describe('WorkspaceSyncRelationshipOwner', () => {
     expect(harness.read().workspaceSyncRelationshipsV1).toEqual([]);
   });
 
-  it('compensates a determinate pause reconciliation failure back to the prior durable intent', async () => {
+  it('validates enable admission against the latest CAS snapshot without rejecting an unrelated valid component', async () => {
+    const harness = createHarness();
+    const prepared = await harness.owner.prepareCreate(createInput);
+    await prepared.commit();
+    await harness.owner.setEnabled('relationship_1', false);
+    const unrelatedPolicy = policy;
+    harness.beforeNextSettingsMutation((current) => ({
+      ...current,
+      workspaceRefsV1: [
+        ...(current.workspaceRefsV1 as readonly unknown[]),
+        { id: 'other_source', serverId: 'server_a', machineId: 'machine_source', rootPath: '/other-source', createdAtMs: 1 },
+        { id: 'other_target', serverId: 'server_a', machineId: 'machine_other', rootPath: '/other-target', createdAtMs: 1 },
+      ],
+      workspaceSyncRelationshipsV1: [
+        ...(current.workspaceSyncRelationshipsV1 as readonly unknown[]),
+        {
+          v: 1,
+          relationshipId: 'unrelated',
+          controllerMachineId: 'machine_source',
+          alphaWorkspaceRefId: 'other_source',
+          betaWorkspaceRefId: 'other_target',
+          mode: 'keep_synced',
+          contentPolicy: unrelatedPolicy,
+          enabled: true,
+          createdAtMs: 1,
+          updatedAtMs: 1,
+        },
+      ],
+    }));
+
+    await expect(harness.owner.setEnabled('relationship_1', true)).resolves.toBeUndefined();
+    expect(harness.read().workspaceSyncRelationshipsV1).toEqual(expect.arrayContaining([
+      expect.objectContaining({ relationshipId: 'relationship_1', enabled: true }),
+      expect.objectContaining({ relationshipId: 'unrelated', enabled: true }),
+    ]));
+  });
+
+  it('rejects enable admission when the latest CAS snapshot added an invalid relationship in the same component', async () => {
+    const harness = createHarness();
+    const prepared = await harness.owner.prepareCreate(createInput);
+    await prepared.commit();
+    await harness.owner.setEnabled('relationship_1', false);
+    harness.waitForSettingsReconciliation.mockClear();
+    harness.beforeNextSettingsMutation((current) => ({
+      ...current,
+      workspaceSyncRelationshipsV1: [
+        ...(current.workspaceSyncRelationshipsV1 as readonly unknown[]),
+        {
+          v: 1,
+          relationshipId: 'concurrent-invalid',
+          controllerMachineId: 'machine_source',
+          alphaWorkspaceRefId: 'source_ref',
+          betaWorkspaceRefId: 'target_ref',
+          mode: 'keep_synced',
+          contentPolicy: policy,
+          enabled: false,
+          createdAtMs: 1,
+          updatedAtMs: 1,
+        },
+      ],
+    }));
+
+    await expect(harness.owner.setEnabled('relationship_1', true))
+      .rejects.toMatchObject({ code: 'workspace_sync_topology_invalid' });
+    expect(harness.waitForSettingsReconciliation).not.toHaveBeenCalled();
+    expect(harness.read().workspaceSyncRelationshipsV1).toEqual(expect.arrayContaining([
+      expect.objectContaining({ relationshipId: 'relationship_1', enabled: false }),
+      expect.objectContaining({ relationshipId: 'concurrent-invalid', enabled: false }),
+    ]));
+  });
+
+  it('keeps a settled pause intent when runtime reconciliation fails', async () => {
     const harness = createHarness();
     const prepared = await harness.owner.prepareCreate(createInput);
     await prepared.commit();
     harness.waitForSettingsReconciliation.mockClear();
     harness.waitForSettingsReconciliation
-      .mockRejectedValueOnce(Object.assign(new Error('engine rejected pause'), { code: 'engine_unavailable' }))
-      .mockResolvedValueOnce(undefined);
+      .mockRejectedValueOnce(Object.assign(new Error('engine rejected pause'), { code: 'engine_unavailable' }));
 
     await expect(harness.owner.setEnabled('relationship_1', false))
       .rejects.toMatchObject({ code: 'engine_unavailable', message: 'engine rejected pause' });
 
     expect(harness.read().workspaceSyncRelationshipsV1).toEqual([
-      expect.objectContaining({ relationshipId: 'relationship_1', enabled: true }),
+      expect.objectContaining({ relationshipId: 'relationship_1', enabled: false }),
     ]);
-    expect(harness.waitForSettingsReconciliation).toHaveBeenCalledTimes(2);
+    expect(harness.waitForSettingsReconciliation).toHaveBeenCalledTimes(1);
   });
 
-  it('compensates a determinate stop reconciliation failure by restoring the removed relationship', async () => {
+  it('keeps a settled stop intent when runtime reconciliation fails', async () => {
     const harness = createHarness();
     const prepared = await harness.owner.prepareCreate(createInput);
     await prepared.commit();
     harness.waitForSettingsReconciliation.mockClear();
     harness.waitForSettingsReconciliation
-      .mockRejectedValueOnce(Object.assign(new Error('engine rejected termination'), { code: 'engine_unavailable' }))
-      .mockResolvedValueOnce(undefined);
+      .mockRejectedValueOnce(Object.assign(new Error('engine rejected termination'), { code: 'engine_unavailable' }));
 
     await expect(harness.owner.stop('relationship_1'))
       .rejects.toMatchObject({ code: 'engine_unavailable', message: 'engine rejected termination' });
 
-    expect(harness.read().workspaceSyncRelationshipsV1).toEqual([
-      expect.objectContaining({ relationshipId: 'relationship_1', enabled: true }),
-    ]);
-    expect(harness.waitForSettingsReconciliation).toHaveBeenCalledTimes(2);
+    expect(harness.read().workspaceSyncRelationshipsV1).toEqual([]);
+    expect(harness.waitForSettingsReconciliation).toHaveBeenCalledTimes(1);
   });
 
   it('leaves indeterminate durable intent in place without unsafe compensation', async () => {
@@ -311,27 +389,6 @@ describe('WorkspaceSyncRelationshipOwner', () => {
       expect.objectContaining({ relationshipId: 'relationship_1', enabled: false }),
     ]);
     expect(harness.waitForSettingsReconciliation).toHaveBeenCalledTimes(1);
-  });
-
-  it('preserves the transition failure together with compensation failure evidence', async () => {
-    const harness = createHarness();
-    const prepared = await harness.owner.prepareCreate(createInput);
-    await prepared.commit();
-    harness.waitForSettingsReconciliation.mockClear();
-    const transitionFailure = Object.assign(new Error('engine rejected pause'), { code: 'engine_unavailable' });
-    const compensationFailure = new Error('engine rejected compensation');
-    harness.waitForSettingsReconciliation
-      .mockRejectedValueOnce(transitionFailure)
-      .mockRejectedValueOnce(compensationFailure);
-
-    const outcome = harness.owner.setEnabled('relationship_1', false).catch((error: unknown) => error);
-    await expect(outcome).resolves.toBeInstanceOf(AggregateError);
-    const failure = await outcome as AggregateError & { code?: string };
-    expect(failure.code).toBe('engine_unavailable');
-    expect(failure.errors).toEqual([transitionFailure, compensationFailure]);
-    expect(harness.read().workspaceSyncRelationshipsV1).toEqual([
-      expect.objectContaining({ relationshipId: 'relationship_1', enabled: true }),
-    ]);
   });
 
   it('reports an outcome-unknown settings write as indeterminate without claiming engine reconciliation', async () => {

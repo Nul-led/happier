@@ -17,7 +17,6 @@ import { useHostActivelyViewed } from '@/utils/runtime/useHostActivelyViewed';
 
 const MARK_SIZE = 76;
 const RING_STROKE = 3;
-const GLYPH_CHIP_SIZE = 56;
 /**
  * Half-period of the breathe. No duration token covers a looping status rhythm — the longest is a
  * one-shot stage camera move — so this is a local, deliberately slow value: fast enough to read as
@@ -27,7 +26,7 @@ const WORKING_PULSE_MS = 1500;
 const WORKING_OPACITY_LOW = 0.5;
 const WORKING_OPACITY_HIGH = 1;
 
-const styles = StyleSheet.create((theme) => ({
+const styles = StyleSheet.create(() => ({
     root: {
         width: MARK_SIZE,
         height: MARK_SIZE,
@@ -35,14 +34,6 @@ const styles = StyleSheet.create((theme) => ({
         justifyContent: 'center',
     },
     ringLayer: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center' },
-    chip: {
-        width: GLYPH_CHIP_SIZE,
-        height: GLYPH_CHIP_SIZE,
-        borderRadius: GLYPH_CHIP_SIZE / 2,
-        alignItems: 'center',
-        justifyContent: 'center',
-        backgroundColor: theme.colors.button.primary.background,
-    },
 }));
 
 /**
@@ -124,9 +115,7 @@ export const PersonalHomeSetupMark = React.memo(function PersonalHomeSetupMark(p
             ) : (
                 <View style={styles.ringLayer}>{ring}</View>
             )}
-            <View style={styles.chip}>
-                <Icon name="house" size={ICON_SIZE.lg} color={theme.colors.button.primary.tint} />
-            </View>
+            <Icon name="house" size={ICON_SIZE.lg} color={theme.colors.text.primary} />
         </View>
     );
 });

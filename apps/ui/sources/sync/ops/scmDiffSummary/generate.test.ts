@@ -79,7 +79,7 @@ describe('SCM diff summary operations', () => {
             intentInput: {
                 ...input,
                 summarySchemaVersion: 1,
-                resolvedSelector: { catalogId: 'backend:claude' },
+                resolvedSelector: { catalogId: 'agent:happier.agent.claude/claude' },
                 turnChangeSet,
             },
         });
@@ -113,7 +113,7 @@ describe('SCM diff summary operations', () => {
             'session_1',
             expect.objectContaining({
                 intentInput: expect.objectContaining({
-                    resolvedSelector: { catalogId: 'backend:claude' },
+                    resolvedSelector: { catalogId: 'agent:happier.agent.claude/claude' },
                 }),
             }),
         );

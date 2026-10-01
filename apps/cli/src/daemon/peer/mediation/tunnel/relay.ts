@@ -9,7 +9,7 @@ import {
     PeerTcpTunnelRelayEnvelopeSchema,
     verifyPeerTcpTunnelRelayAuthorizationV2,
     createPeerApplicationAuthorityDigestV1,
-    type MachineTunnelSubstreamCapabilities,
+    type PeerTcpTunnelSubstreamCapsV2,
     type PeerTcpTunnelEncoding,
     type PeerTcpTunnelFrameV1,
     type PeerTcpTunnelOpenV1,
@@ -85,7 +85,7 @@ export type RegisterPeerTcpTunnelRelayTerminatorOptions = Readonly<{
     maxRawPayloadBytes?: number;
     maxFramedMessageBytes?: number;
     maxActiveTunnels?: number;
-    substreamCaps?: MachineTunnelSubstreamCapabilities;
+    substreamCaps?: PeerTcpTunnelSubstreamCapsV2;
     observability?: DaemonPeerMediationObservabilityEmitter;
     voiceBinaryAppendConsumer?: PeerTcpTunnelVoiceBinaryAppendConsumer;
     voiceBinaryTerminalConsumer?: PeerTcpTunnelVoiceBinaryTerminalConsumer;
@@ -197,18 +197,20 @@ function normalizePositiveInt(value: number | undefined, fallback: number): numb
 }
 
 function resolveSubstreamCaps(input: Readonly<{
-    configured: MachineTunnelSubstreamCapabilities | undefined;
+    configured: PeerTcpTunnelSubstreamCapsV2 | undefined;
     authorization: PeerTcpTunnelRelayAuthorizationPayloadV2;
-}>): MachineTunnelSubstreamCapabilities {
-    const configured = input.configured ?? DEFAULT_MACHINE_TUNNEL_SUBSTREAM_CAPABILITIES;
-    const authorizationMaxBytes = input.authorization.maxTotalBytes ?? Number.MAX_SAFE_INTEGER;
+}>): PeerTcpTunnelSubstreamCapsV2 {
+    const maxConcurrentSubstreams = input.configured?.maxConcurrentSubstreams
+        ?? DEFAULT_MACHINE_TUNNEL_SUBSTREAM_CAPABILITIES.maxConcurrentSubstreams;
+    if (input.authorization.flowKind === 'tcp_tunnel') {
+        return { maxConcurrentSubstreams };
+    }
     return {
-        maxConcurrentSubstreams: configured.maxConcurrentSubstreams,
-        maxTotalSubstreams: configured.maxTotalSubstreams,
-        maxBytesPerSubstream: Math.min(configured.maxBytesPerSubstream, authorizationMaxBytes),
-        maxAggregateBytes: Math.min(configured.maxAggregateBytes, authorizationMaxBytes),
-        maxSubstreamIdleMs: Math.min(configured.maxSubstreamIdleMs, input.authorization.maxIdleMs),
-        maxSessionIdleMs: Math.min(configured.maxSessionIdleMs, input.authorization.maxIdleMs),
+        maxConcurrentSubstreams,
+        maxBytesPerSubstream: input.authorization.maxTotalBytes,
+        maxAggregateBytes: input.authorization.maxTotalBytes,
+        maxSubstreamIdleMs: input.authorization.maxIdleMs,
+        maxSessionIdleMs: input.authorization.maxIdleMs,
     };
 }
 
@@ -576,7 +578,7 @@ export function registerPeerTcpTunnelRelayTerminator(
                 : undefined;
         openingTunnels.add(tunnelId);
         let connection: PeerTcpTunnelTcpConnection | undefined;
-        if (verification.payload.flowKind === 'tcp_tunnel' || providerBrokerTarget) {
+        if (providerBrokerTarget) {
             try {
                 connection = await options.connectTcp({
                     host: providerBrokerTarget ? '127.0.0.1' : normalizeDestinationHost(open.destination!.host),
@@ -636,6 +638,7 @@ export function registerPeerTcpTunnelRelayTerminator(
                         if (!await recordFrameBytes(frame, verification.payload.maxTotalBytes)) return;
                         emitBinarySessionFrame(frame);
                     },
+                    onClosed: () => { void closeTunnel(tunnelId); },
                 });
         const resolvedSubstreamCaps = resolveSubstreamCaps({
             configured: options.substreamCaps,
@@ -943,14 +946,19 @@ export function registerPeerTcpTunnelRelayTerminator(
             return;
         }
         if (!await recordFrameBytes(frame, active.maxTotalBytes)) return;
+        if (frame.kind === 'abort' || (frame.kind === 'close' && !frame.halfClose)) {
+            await closeTunnel(tunnelId);
+            return;
+        }
         if (!active.session) {
+            if (active.substreamMux) {
+                await denyActiveTunnelFrame({ tunnelId, reasonCode: 'encoding_unsupported' });
+                return;
+            }
             await denyActiveTunnelFrame({ tunnelId, reasonCode: 'voice_relay_frame_not_allowed' });
             return;
         }
         await active.session.acceptFrame(frame);
-        if (isTerminalFrame(frame)) {
-            await closeTunnel(tunnelId);
-        }
     }
 
     options.socket.on(PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT, async (raw: unknown) => {

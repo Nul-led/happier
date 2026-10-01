@@ -8,14 +8,14 @@ describe('createModelTransitionMetadataObserver', () => {
     const setSessionModelSelection = vi.fn(async () => {});
 
     const sync = createModelTransitionMetadataObserver({
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       session: {
         getMetadataSnapshot: () => ({
           modelSelectionIntentV1: {
             v: 1,
             updatedAt: 11,
             selection: {
-              agentTargetKey: 'backend:codex',
+              agentTargetKey: 'agent:happier.agent.codex/codex',
               providerConnectionId: 'pc_work',
               modelId: 'model-b',
             },
@@ -32,7 +32,7 @@ describe('createModelTransitionMetadataObserver', () => {
     started = true;
     await sync.flushPendingAfterStart();
     expect(setSessionModelSelection).toHaveBeenCalledWith({
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       providerConnectionId: 'pc_work',
       modelId: 'model-b',
     });
@@ -42,7 +42,7 @@ describe('createModelTransitionMetadataObserver', () => {
     const setSessionModelSelection = vi.fn(async () => {});
 
     const sync = createModelTransitionMetadataObserver({
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       session: {
         getMetadataSnapshot: () => ({ modelOverrideV1: { v: 1, updatedAt: 21, modelId: 'model-b' } } as any),
       },
@@ -52,7 +52,7 @@ describe('createModelTransitionMetadataObserver', () => {
 
     sync.syncFromMetadata();
     expect(setSessionModelSelection).toHaveBeenCalledWith({
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       providerConnectionId: null,
       modelId: 'model-b',
     });
@@ -64,7 +64,7 @@ describe('createModelTransitionMetadataObserver', () => {
     });
 
     const sync = createModelTransitionMetadataObserver({
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       session: {
         getMetadataSnapshot: () => ({ modelOverrideV1: { v: 1, updatedAt: 21, modelId: 'model-b' } } as any),
       },
@@ -81,7 +81,7 @@ describe('createModelTransitionMetadataObserver', () => {
 
     expect(setSessionModelSelection).toHaveBeenCalledTimes(1);
     expect(setSessionModelSelection).toHaveBeenLastCalledWith({
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       providerConnectionId: null,
       modelId: 'model-b',
     });
@@ -101,7 +101,7 @@ describe('createModelTransitionMetadataObserver', () => {
     });
 
     const sync = createModelTransitionMetadataObserver({
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       session: {
         getMetadataSnapshot: () => ({ modelOverrideV1: { v: 1, updatedAt: 21, modelId: 'model-b' } } as any),
       },
@@ -134,7 +134,7 @@ describe('createModelTransitionMetadataObserver', () => {
     });
 
     const sync = createModelTransitionMetadataObserver({
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       session: {
         getMetadataSnapshot: () => ({ modelOverrideV1: { v: 1, updatedAt: 31, modelId: 'model-c' } } as any),
       },
@@ -162,7 +162,7 @@ describe('createModelTransitionMetadataObserver', () => {
     };
     const setSessionModelSelection = vi.fn(async () => {});
     const sync = createModelTransitionMetadataObserver({
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       session: { getMetadataSnapshot: () => metadata },
       runtime: { setSessionModelSelection },
       isStarted: () => true,
@@ -180,14 +180,14 @@ describe('createModelTransitionMetadataObserver', () => {
 
   it('refuses canonical selections for another agent target instead of applying the bare id', () => {
     const sync = createModelTransitionMetadataObserver({
-      agentTargetKey: 'backend:claude',
+      agentTargetKey: 'agent:happier.agent.claude/claude',
       session: {
         getMetadataSnapshot: () => ({
           modelSelectionIntentV1: {
             v: 1,
             updatedAt: 31,
             selection: {
-              agentTargetKey: 'backend:codex',
+              agentTargetKey: 'agent:happier.agent.codex/codex',
               providerConnectionId: 'pc_work',
               modelId: 'wrong-agent-model',
             },

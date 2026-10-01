@@ -1,4 +1,4 @@
-import { connect as connectSocket, type Socket } from 'node:net';
+import { connect as connectSocket } from 'node:net';
 
 import {
     PEER_MEDIATION_RECEIPTS,
@@ -7,39 +7,30 @@ import {
     PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2,
     PEER_TCP_TUNNEL_STREAM_PATH,
     PeerTcpTunnelOpenResponseV1Schema,
-    PeerTcpTunnelOpenV1Schema,
     PeerTcpTunnelOpenV2Schema,
+    isLiteralLoopbackHostname,
+    normalizeHostnameForLoopbackCheck,
     type PeerTcpTunnelDestinationV1,
     type PeerTcpTunnelOpenResponseV1,
-    type PeerTcpTunnelOpenV1,
     type PeerTcpTunnelOpenV2,
     type PeerFlowKindV1,
     type VoiceMediaApplicationAuthorityV1,
+    type LocalServicePreviewDirectBindingV1,
 } from '@happier-dev/protocol';
 
 import {
-    verifyDirectRouteGrantV1,
     verifyDirectRouteGrantV2,
-    verifyPeerRouteNonceV1,
     type DirectRouteGrantTrustRoot,
-    type DirectRouteGrantVerifyReasonCode,
     type DirectRouteGrantV2VerifyReasonCode,
-    type PeerRouteNonceVerifyReasonCode,
-} from '../verifyDirectRouteGrantV1';
+} from '../verifyDirectRouteGrant';
 import type { AtomicRouteGrantConsumption } from './grantConsumption';
+import type { PeerTcpTunnelStreamConnection } from './frames';
 
-export type PeerTcpTunnelTcpConnection = Readonly<{
-    write?: (bytes: Uint8Array) => Promise<void> | void;
-    endWrite?: () => Promise<void> | void;
-    pauseRead?: () => Promise<void> | void;
-    resumeRead?: () => Promise<void> | void;
-    onData?: (handler: (bytes: Uint8Array) => Promise<void> | void) => (() => void) | void;
-    close: () => Promise<void> | void;
-}>;
+export type PeerTcpTunnelTcpConnection = PeerTcpTunnelStreamConnection;
 
 export type PeerTcpTunnelRuntimeLimits = Readonly<{
-    maxIdleMs: number;
-    maxDurationMs: number;
+    maxIdleMs?: number;
+    maxDurationMs?: number;
     maxTotalBytes?: number;
 }>;
 
@@ -54,26 +45,26 @@ export type OpenPeerTcpTunnelReasonCode =
     | 'encoding_unsupported'
     | 'tcp_connect_failed'
     | 'route_kind_unsupported'
-    | DirectRouteGrantVerifyReasonCode
-    | DirectRouteGrantV2VerifyReasonCode
-    | PeerRouteNonceVerifyReasonCode;
+    | 'preview_registration_unavailable'
+    | DirectRouteGrantV2VerifyReasonCode;
 
 export type OpenPeerTcpTunnelResult =
     | Readonly<{
         ok: true;
+        /** Actual route established by the signed admission owner. */
+        routeKind: 'loopback_direct' | 'iroh_peer';
         response: PeerTcpTunnelOpenResponseV1;
         receipt: typeof PEER_MEDIATION_RECEIPTS.tunnelOpened;
         flowKind: Extract<PeerFlowKindV1, 'tcp_tunnel' | 'voice_media'>;
         /**
          * The admitted tunnel's one canonical destination, already normalized by this owner.
-         * Every later dial on the tunnel — the base `connection` here and the substream mux in
-         * `registerRoutes` — resolves it from this field rather than re-deriving a second
+         * Every child dial in the substream mux resolves it from this field rather than re-deriving a second
          * normalization from the open frame. Absent for `voice_media`, which never dials TCP.
          */
         destination?: PeerTcpTunnelDestinationV1;
         voiceMediaApplicationAuthority?: VoiceMediaApplicationAuthorityV1;
-        connection?: PeerTcpTunnelTcpConnection;
         limits: PeerTcpTunnelRuntimeLimits;
+        previewApplication?: Readonly<{ signal: AbortSignal; close: () => Promise<void> }>;
       }>
     | Readonly<{
         ok: false;
@@ -88,13 +79,18 @@ export type OpenPeerTcpTunnelInput = Readonly<{
         accountId: string;
         machineId: string;
         endpointFingerprint: string;
-        accountPublicKey?: string;
+        /** Current native Machine identity, supplied by the listener owner. */
+        irohEndpointId?: string;
     }>;
     trustRoots: readonly DirectRouteGrantTrustRoot[];
     grantConsumption: AtomicRouteGrantConsumption;
     initialWindowBytes?: number;
     maxFrameBytes?: number;
     connectTcp?: (target: Readonly<{ host: string; port: number }>) => Promise<PeerTcpTunnelTcpConnection>;
+    signal?: AbortSignal;
+    acquirePreviewApplication?: (binding: LocalServicePreviewDirectBindingV1, grantId: string, signal?: AbortSignal) => Promise<Readonly<{
+        destination: PeerTcpTunnelDestinationV1; signal: AbortSignal; close: () => Promise<void>;
+    }>>;
 }>;
 
 function fallback(reasonCode: OpenPeerTcpTunnelReasonCode): OpenPeerTcpTunnelResult {
@@ -105,32 +101,24 @@ function fallback(reasonCode: OpenPeerTcpTunnelReasonCode): OpenPeerTcpTunnelRes
     };
 }
 
-function normalizeDestinationHost(host: string): string {
-    const trimmed = host.trim().toLowerCase();
-    return trimmed.startsWith('[') && trimmed.endsWith(']') ? trimmed.slice(1, -1) : trimmed;
-}
-
-function isIpv4LoopbackHost(host: string): boolean {
-    const parts = host.split('.');
-    if (parts.length !== 4 || parts[0] !== '127') return false;
-    return parts.slice(1).every((part) => {
-        if (!/^\d+$/.test(part)) return false;
-        const value = Number(part);
-        return Number.isInteger(value) && value >= 0 && value <= 255;
-    });
-}
-
 export function isPeerTcpTunnelLoopbackDestinationHost(host: string): boolean {
-    const normalized = normalizeDestinationHost(host);
-    return normalized === 'localhost' || normalized === '::1' || isIpv4LoopbackHost(normalized);
+    return isLiteralLoopbackHostname(host);
 }
 
 export async function connectPeerTcpTunnelTcp(
     target: Readonly<{ host: string; port: number }>,
 ): Promise<PeerTcpTunnelTcpConnection> {
-    const socket = await new Promise<Socket>((resolve, reject) => {
-        const tcpSocket = connectSocket({ host: target.host, port: target.port }, () => resolve(tcpSocket));
-        tcpSocket.once('error', reject);
+    const socket = connectSocket({ host: target.host, port: target.port, allowHalfOpen: true });
+    let connectionError: unknown;
+    // Keep the error fact even if a peer resets between connect and session
+    // subscription. Node also requires an error listener throughout that gap.
+    socket.on('error', (error) => { connectionError = error; });
+    await new Promise<void>((resolve, reject) => {
+        socket.once('error', reject);
+        socket.once('connect', () => {
+            socket.off('error', reject);
+            resolve();
+        });
     });
     return {
         write: (bytes) => new Promise<void>((resolve, reject) => {
@@ -139,8 +127,8 @@ export async function connectPeerTcpTunnelTcp(
                 else resolve();
             });
         }),
-        endWrite: () => new Promise<void>((resolve) => {
-            socket.end(() => resolve());
+        endWrite: () => new Promise<void>((resolve, reject) => {
+            socket.end((error?: Error | null) => error ? reject(error) : resolve());
         }),
         pauseRead: () => {
             socket.pause();
@@ -157,15 +145,31 @@ export async function connectPeerTcpTunnelTcp(
                 socket.off('data', dataHandler);
             };
         },
+        onEnd: (handler) => {
+            socket.on('end', handler);
+            if (socket.readableEnded) queueMicrotask(handler);
+            return () => { socket.off('end', handler); };
+        },
+        onError: (handler) => {
+            socket.on('error', handler);
+            if (connectionError !== undefined) queueMicrotask(() => handler(connectionError));
+            return () => { socket.off('error', handler); };
+        },
+        onClose: (handler) => {
+            socket.on('close', handler);
+            if (socket.closed) queueMicrotask(handler);
+            return () => { socket.off('close', handler); };
+        },
         close: () => new Promise<void>((resolve) => {
-            socket.end(() => resolve());
+            if (socket.closed) { resolve(); return; }
+            socket.once('close', () => resolve());
             socket.destroy();
         }),
     };
 }
 
 function validateDestination(
-    open: PeerTcpTunnelOpenV1 | PeerTcpTunnelOpenV2,
+    open: PeerTcpTunnelOpenV2,
     destination: PeerTcpTunnelDestinationV1,
 ): OpenPeerTcpTunnelReasonCode | null {
     if (!isPeerTcpTunnelLoopbackDestinationHost(destination.host)) {
@@ -178,11 +182,14 @@ function validateDestination(
     if (scope.kind === 'tcp_tunnel' && !scope.allowedPorts.includes(destination.port)) {
         return 'destination_port_not_allowed';
     }
+    if (scope.kind === 'tcp_tunnel' && scope.preview && (
+        scope.preview.target.host !== destination.host || scope.preview.target.port !== destination.port
+    )) return 'grant_scope_mismatch';
 
     return null;
 }
 
-function validateEncodingSelection(open: PeerTcpTunnelOpenV1 | PeerTcpTunnelOpenV2): OpenPeerTcpTunnelReasonCode | null {
+function validateEncodingSelection(open: PeerTcpTunnelOpenV2): OpenPeerTcpTunnelReasonCode | null {
     const selectedEncoding = open.selectedEncoding ?? PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2;
     const supportedEncodings = open.supportedEncodings ?? [PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2];
 
@@ -196,28 +203,25 @@ function validateEncodingSelection(open: PeerTcpTunnelOpenV1 | PeerTcpTunnelOpen
 
 export async function openPeerTcpTunnel(input: OpenPeerTcpTunnelInput): Promise<OpenPeerTcpTunnelResult> {
     const parsedV2 = PeerTcpTunnelOpenV2Schema.safeParse(input.open);
-    const parsedV1 = parsedV2.success ? null : PeerTcpTunnelOpenV1Schema.safeParse(input.open);
-    if (!parsedV2.success && !parsedV1?.success) return fallback('open_invalid');
-    const open: PeerTcpTunnelOpenV1 | PeerTcpTunnelOpenV2 = parsedV2.success
-        ? parsedV2.data
-        : PeerTcpTunnelOpenV1Schema.parse(input.open);
+    if (!parsedV2.success) return fallback('open_invalid');
+    const open = parsedV2.data;
 
-    if (open.routeKind !== 'loopback_direct') return fallback('route_kind_unsupported');
-    // Protocol V1 admits a destination-free open only for the provider-broker application relay,
-    // which is a `server_relay` route this direct owner never serves. A loopback direct open that
-    // names no destination is therefore an unusable frame, not an authorization decision.
+    if (open.routeKind !== 'loopback_direct' && (
+        open.routeKind !== 'iroh_peer' || !input.expected.irohEndpointId
+    )) return fallback('route_kind_unsupported');
     const requestedDestination = open.destination;
     if (!requestedDestination) return fallback('open_invalid');
     if (!open.grant) return fallback('grant_missing');
-    if (open.v === 1 && !open.nonceProof) return fallback('nonce_invalid');
     const requestedFlowKind = open.grant.payload.flowKind;
     if (requestedFlowKind !== 'tcp_tunnel' && requestedFlowKind !== 'voice_media') {
         return fallback('grant_scope_mismatch');
     }
     const requestedScope = open.grant.payload.scope;
+    if (open.routeKind === 'iroh_peer' && requestedFlowKind !== 'tcp_tunnel') {
+        return fallback('grant_scope_mismatch');
+    }
 
-    const grantVerification = open.v === 2
-      ? verifyDirectRouteGrantV2({
+    const grantVerification = verifyDirectRouteGrantV2({
         grant: open.grant,
         proof: open.proof,
         trustRoots: input.trustRoots,
@@ -234,44 +238,28 @@ export async function openPeerTcpTunnel(input: OpenPeerTcpTunnelInput): Promise<
                     applicationAuthorityDigest: requestedScope.applicationAuthorityDigest,
                 },
             } : {}),
-            routeKind: 'loopback_direct',
-            endpointFingerprint: input.expected.endpointFingerprint,
+            routeKind: open.routeKind,
+            endpointFingerprint: open.routeKind === 'iroh_peer'
+                ? input.expected.irohEndpointId
+                : input.expected.endpointFingerprint,
+            ...(open.routeKind === 'iroh_peer' && open.grant.payload.iroh && input.expected.irohEndpointId ? {
+                iroh: {
+                    // The signed/proof-bound initiator is authenticated by the
+                    // outer Machine admission; only this listener supplies the
+                    // target identity. No request header selects that target.
+                    initiator: open.grant.payload.iroh.initiator,
+                    target: { machineId: input.expected.machineId, endpointId: input.expected.irohEndpointId },
+                    operationKind: 'tcp_tunnel' as const,
+                },
+            } : {}),
         },
-      })
-      : verifyDirectRouteGrantV1({
-        grant: open.grant,
-        trustRoots: input.trustRoots,
-        nowMs: input.nowMs,
-        expected: {
-            accountId: input.expected.accountId,
-            machineId: input.expected.machineId,
-            flowKind: requestedFlowKind,
-            routeKind: 'loopback_direct',
-            endpointFingerprint: input.expected.endpointFingerprint,
-        },
-      });
+    });
     if (!grantVerification.valid) return fallback(grantVerification.reasonCode);
-
-    const nonceVerification = open.v === 2
-        ? { valid: true as const }
-        : input.expected.accountPublicKey
-        ? verifyPeerRouteNonceV1({
-            proof: open.nonceProof,
-            accountPublicKey: input.expected.accountPublicKey,
-            expected: {
-                grantId: grantVerification.payload.grantId,
-                routeKind: grantVerification.payload.routeKind,
-                flowKind: grantVerification.payload.flowKind,
-                endpointFingerprint: grantVerification.payload.endpointFingerprint,
-            },
-        })
-        : { valid: false as const, reasonCode: 'nonce_invalid' as const };
-    if (!nonceVerification.valid) return fallback(nonceVerification.reasonCode);
 
     const destinationInvalid = validateDestination(open, requestedDestination);
     if (destinationInvalid) return fallback(destinationInvalid);
-    const destination: PeerTcpTunnelDestinationV1 = {
-        host: normalizeDestinationHost(requestedDestination.host),
+    let destination: PeerTcpTunnelDestinationV1 = {
+        host: normalizeHostnameForLoopbackCheck(requestedDestination.host),
         port: requestedDestination.port,
     };
     const encodingInvalid = validateEncodingSelection(open);
@@ -290,6 +278,7 @@ export async function openPeerTcpTunnel(input: OpenPeerTcpTunnelInput): Promise<
         reservation.commit();
         return {
             ok: true,
+            routeKind: 'loopback_direct',
             response: PeerTcpTunnelOpenResponseV1Schema.parse({
                 v: 1,
                 tunnelId: open.tunnelId,
@@ -314,20 +303,30 @@ export async function openPeerTcpTunnel(input: OpenPeerTcpTunnelInput): Promise<
         };
     }
 
-    let connection: PeerTcpTunnelTcpConnection;
-    try {
-        connection = await (input.connectTcp ?? connectPeerTcpTunnelTcp)(destination);
-    } catch {
-        // Safe direct retry rule: connectTcp rejects before it returns an
-        // activated connection, so no tunnel was exposed to the caller.
-        reservation.activationFailed();
-        return fallback('tcp_connect_failed');
+    let previewApplication: Readonly<{ signal: AbortSignal; close: () => Promise<void> }> | undefined;
+    if (scope.preview) {
+        if (!input.acquirePreviewApplication) {
+            reservation.activationFailed();
+            return fallback('preview_registration_unavailable');
+        }
+        try {
+            const application = await input.acquirePreviewApplication(scope.preview, grantVerification.payload.grantId, input.signal);
+            if (application.signal.aborted || input.signal?.aborted) {
+                await application.close();
+                throw new Error('preview_registration_closed');
+            }
+            destination = application.destination;
+            previewApplication = application;
+        } catch {
+            reservation.activationFailed();
+            return fallback('preview_registration_unavailable');
+        }
     }
-
     reservation.commit();
 
     return {
         ok: true,
+        routeKind: open.routeKind === 'iroh_peer' ? 'iroh_peer' : 'loopback_direct',
         response: PeerTcpTunnelOpenResponseV1Schema.parse({
             v: 1,
             tunnelId: open.tunnelId,
@@ -339,13 +338,7 @@ export async function openPeerTcpTunnel(input: OpenPeerTcpTunnelInput): Promise<
         receipt: PEER_MEDIATION_RECEIPTS.tunnelOpened,
         flowKind: requestedFlowKind,
         destination,
-        connection,
-        limits: {
-            maxIdleMs: scope.maxIdleMs,
-            maxDurationMs: scope.maxDurationMs,
-            ...(scope.maxTotalBytes !== undefined
-                ? { maxTotalBytes: scope.maxTotalBytes }
-                : {}),
-        },
+        ...(previewApplication ? { previewApplication } : {}),
+        limits: {},
     };
 }

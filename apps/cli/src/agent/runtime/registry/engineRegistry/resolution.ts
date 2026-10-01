@@ -64,7 +64,7 @@ function declaresAgentExternalSessionSurface(
 function resolveRegisteredAgentAuxiliarySurfaces(
     engineEntry: Readonly<{
         pluginId: string;
-        generation: string;
+        occurrenceId: string;
         retirementSignal: AbortSignal;
         isCurrent(): boolean;
         externalSessions?: Parameters<typeof createAgentExternalSessionsExecutionSurface>[0];

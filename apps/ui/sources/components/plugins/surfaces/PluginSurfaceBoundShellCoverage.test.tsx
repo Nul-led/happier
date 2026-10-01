@@ -70,6 +70,7 @@ function placement(input: Readonly<{
     return Object.freeze({
         id: `surfacePlacement:com.example.bound-shell:${input.destinationId}`,
         pluginId: 'com.example.bound-shell',
+        occurrenceId: 'bound-shell-occurrence-1',
         contributionKind: 'surfacePlacement',
         descriptorId: input.destinationId,
         binding,
@@ -80,7 +81,7 @@ function placement(input: Readonly<{
             model: createPluginDeclarativeModelFixture({
                 pluginId: 'com.example.bound-shell',
                 localId: input.rendererId,
-                generation: 'bound-shell-generation-1',
+                occurrenceId: 'bound-shell-occurrence-1',
                 document: { version: 1, root: { kind: 'text', text: input.label } },
             }),
         }),

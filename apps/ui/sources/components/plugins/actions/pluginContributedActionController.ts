@@ -4,6 +4,7 @@ import {
     PluginActionScopeV2Schema,
     PluginContributionIdentityV1Schema,
     QualifiedConnectedAccountRefSchema,
+    pluginSourceCustodyV1Equal,
     sameQualifiedConnectedAccountRef,
     buildQualifiedPluginContributionKey,
     compilePluginJsonSchema,
@@ -14,6 +15,7 @@ import {
     type MessageActionReferenceV1,
     type PluginActionPlacementV2,
     type PluginActionScopeV2,
+    type PluginJsonSchemaV2,
 } from '@happier-dev/protocol';
 import {
     PluginUiJsonValueV1Schema,
@@ -42,10 +44,8 @@ import {
 import { launchPluginSurfaceAction } from '@/components/plugins/surfaces/launchPluginSurfaceAction';
 import type { PluginSurfaceOpenHandler } from '@/components/plugins/surfaces/openPluginSurface';
 import {
-    createPluginActionCurrentIntentHandler,
-} from '@/components/plugins/surfaces/pluginSurfaceFeedback';
-import {
     machinePluginActionFormConnectedAccountOptionsResolve,
+    machinePluginActionSchemasRead,
     type MachinePluginActionFormConnectedAccountOptionsResult,
 } from '@/sync/ops/machineContributionRegistryProjection';
 import { PLUGIN_PRESENT_USER_INTERACTION_DEADLINE_MS } from '@/components/plugins/hostApi/interactionLifetime';
@@ -96,16 +96,14 @@ function projectResolvedConnectedAccountOptions(
 }
 
 /**
- * The host facts a concrete UI placement already owns. `expectedGeneration`
- * must agree with the current projected plugin generation; the caller cannot
- * use this controller to target an arbitrary retained projection.
+ * The host facts a concrete UI placement already owns. Action currentness is
+ * carried by each projected Action's exact contributor occurrence.
  */
 export type PluginContributedActionHostFacts = Readonly<{
     machineId: string | null | undefined;
     /** Existing machine-store display projection; never an identifier fallback. */
     machineDisplayName?: string | null;
     serverId?: string | null;
-    expectedGeneration: string | number | null | undefined;
     /** Exact mounted targeted-contribution target; never derived from a contributor. */
     targetPluginId?: string | null;
     sessionId?: string | null;
@@ -380,12 +378,12 @@ export type PluginActionInputSelectionController = Readonly<{
 /**
  * One exact, current plugin-surface Action input request. Unlike the Host API
  * adapter, this carries no target-contribution membership or caller identity:
- * its caller has already received an admitted qualified Action and immutable
- * generation from its owning catalog.
+ * its caller has already received an admitted qualified Action and occurrence
+ * from its owning catalog.
  */
 export type PluginExactBoundActionInputRequest = Readonly<{
     action: Readonly<{ pluginId: string; localId: string }>;
-    expectedImmutableGenerationId: string;
+    expectedOccurrenceId: string;
     draft?: Readonly<Record<string, unknown>>;
 }>;
 
@@ -403,9 +401,10 @@ type ResolvedCurrentAction = Readonly<{
 
 type ResolvedAction = ResolvedCurrentAction & Readonly<{
     descriptor: PluginContributedActionDescriptor;
+    expectedOccurrenceId: string;
 }>;
 
-type ResolvedFormAction = ResolvedCurrentAction & Readonly<{
+type ResolvedFormAction = ResolvedAction & Readonly<{
     descriptor: Extract<PluginContributedActionDescriptor, Readonly<{ kind: 'form' }>>;
 }>;
 
@@ -421,13 +420,6 @@ function isResolvedFormAction(resolved: ResolvedAction): resolved is ResolvedFor
 function readRequiredString(value: string | null | undefined): string | null {
     const normalized = value?.trim();
     return normalized ? normalized : null;
-}
-
-function readExpectedGeneration(value: string | number | null | undefined): string | null {
-    const normalized = typeof value === 'number'
-        ? (Number.isFinite(value) ? String(value) : null)
-        : readRequiredString(value);
-    return normalized && normalized !== 'NaN' ? normalized : null;
 }
 
 function sameMessageActionReference(
@@ -598,7 +590,7 @@ type ExactBoundAction = Readonly<{
     plugin: PluginProjectionEntry;
     action: PluginProjectionAction;
     identity: Readonly<{ pluginId: string; localId: string }>;
-    expectedImmutableGenerationId: string;
+    expectedOccurrenceId: string;
 }>;
 
 function sameTargetedContributionOperation(
@@ -610,7 +602,11 @@ function sameTargetedContributionOperation(
         && left.point.protocol.version === right.point.protocol.version
         && left.contributor.pluginId === right.contributor.pluginId
         && left.contributor.contributionId === right.contributor.contributionId
-        && left.contributor.immutableGenerationId === right.contributor.immutableGenerationId
+        && left.contributor.occurrenceId === right.contributor.occurrenceId
+        && pluginSourceCustodyV1Equal(
+            left.contributor.sourceCustody,
+            right.contributor.sourceCustody,
+        )
         && left.role === right.role
         && left.action.pluginId === right.action.pluginId
         && left.action.localId === right.action.localId;
@@ -621,7 +617,11 @@ function sameTargetedContributionTarget(
     right: PluginUiTargetedContributionsV1['target'],
 ): boolean {
     return left.pluginId === right.pluginId
-        && left.immutableGenerationId === right.immutableGenerationId;
+        && left.occurrenceId === right.occurrenceId
+        && pluginSourceCustodyV1Equal(
+            left.sourceCustody,
+            right.sourceCustody,
+        );
 }
 
 function readPath(input: Readonly<Record<string, unknown>>, path: string): unknown {
@@ -656,9 +656,9 @@ function deletePath(input: Readonly<Record<string, unknown>>, path: string): Rea
 }
 
 function resolveInputSchemaLeaf(
-    schema: NonNullable<PluginProjectionAction['inputSchema']>,
+    schema: PluginJsonSchemaV2,
     path: string,
-): NonNullable<PluginProjectionAction['inputSchema']> | null {
+): PluginJsonSchemaV2 | null {
     let current = schema;
     for (const segment of path.split('.')) {
         if (current.type !== 'object') return null;
@@ -672,10 +672,10 @@ function resolveInputSchemaLeaf(
 function draftMatchesDeclaredNonSecretFields(params: Readonly<{
     draft: Readonly<Record<string, unknown>>;
     action: PluginProjectionAction;
+    inputSchema: PluginJsonSchemaV2;
 }>): boolean {
-    const schema = params.action.inputSchema;
+    const schema = params.inputSchema;
     const fields = params.action.inputHints?.fields ?? [];
-    if (!schema) return Object.keys(params.draft).length === 0;
     if (fields.length === 0) {
         try {
             return isValidPluginJsonSchemaValue(compilePluginJsonSchema(schema), params.draft);
@@ -735,16 +735,11 @@ export function createPluginContributedActionController(params: Readonly<{
             kind: 'ready';
             machineId: string | null;
             serverId: string | null;
-            expectedGeneration: string;
             accountLifetime: ActiveServerAccountScopeLifetime | null;
         }>
         | PluginContributedActionUnavailableOutcome
         | PluginContributedActionStaleOutcome {
         const machineId = readRequiredString(snapshot.host.machineId);
-        const expectedGeneration = readExpectedGeneration(snapshot.host.expectedGeneration);
-        if (!expectedGeneration) {
-            return { kind: 'unavailable', reason: 'host_unavailable' };
-        }
         if (
             snapshot.host.signal?.aborted
             || snapshot.host.isCurrent?.() === false
@@ -756,7 +751,6 @@ export function createPluginContributedActionController(params: Readonly<{
             kind: 'ready',
             machineId,
             serverId: readRequiredString(snapshot.host.serverId) ?? null,
-            expectedGeneration,
             accountLifetime: snapshot.host.accountLifetime ?? null,
         };
     }
@@ -789,12 +783,8 @@ export function createPluginContributedActionController(params: Readonly<{
             return false;
         }
         if (!projectedAction || projectedAction.execution.target !== 'client') return true;
-        const projectionGeneration = Number(readExpectedGeneration(snapshot.host.expectedGeneration));
-        return Number.isSafeInteger(projectionGeneration)
-            && projectionGeneration >= 0
-            && resolvePluginUiClientActionRegistration({
+        return resolvePluginUiClientActionRegistration({
                 action: projectedAction,
-                projectionGeneration,
                 platform: resolvePluginUiClientExecutablePlatform(),
             }) !== null;
     }
@@ -808,14 +798,24 @@ export function createPluginContributedActionController(params: Readonly<{
     function hasSameActionFormHostBinding(
         original: PluginContributedActionCurrentSnapshot,
         current: PluginContributedActionCurrentSnapshot,
+        identity: Readonly<{ pluginId: string; localId: string }>,
     ): boolean {
         const originalHost = hostStatus(original);
         const currentHost = hostStatus(current);
+        const originalOccurrenceId = readRequiredString(
+            original.pluginProjectionById[identity.pluginId]?.actions
+                .find((candidate) => candidate.id === identity.localId)?.occurrenceId,
+        );
+        const currentOccurrenceId = readRequiredString(
+            current.pluginProjectionById[identity.pluginId]?.actions
+                .find((candidate) => candidate.id === identity.localId)?.occurrenceId,
+        );
         return originalHost.kind === 'ready'
             && currentHost.kind === 'ready'
             && originalHost.machineId === currentHost.machineId
             && originalHost.serverId === currentHost.serverId
-            && originalHost.expectedGeneration === currentHost.expectedGeneration
+            && originalOccurrenceId !== null
+            && originalOccurrenceId === currentOccurrenceId
             && originalHost.accountLifetime === currentHost.accountLifetime
             && readRequiredString(original.host.sessionId) === readRequiredString(current.host.sessionId)
             && sameMessageActionReference(
@@ -836,14 +836,14 @@ export function createPluginContributedActionController(params: Readonly<{
             !plugin
             || plugin.pluginId !== requested.identity.pluginId
             || plugin.enabled !== true
-            || plugin.generation === null
-            || String(plugin.generation) !== host.expectedGeneration
         ) {
             return { kind: 'stale', reason: 'action_retired' };
         }
         const action = plugin.actions.find((candidate) => candidate.id === requested.identity.localId);
+        const expectedOccurrenceId = readRequiredString(action?.occurrenceId);
         if (
             !action
+            || !expectedOccurrenceId
             || !isActionCurrent(snapshot, requested.identity)
             || !hasCurrentClientActionRegistration(snapshot, requested.identity)
         ) {
@@ -861,7 +861,15 @@ export function createPluginContributedActionController(params: Readonly<{
         if (!descriptor || !sameDescriptor(requested, descriptor)) {
             return { kind: 'stale', reason: 'action_retired' };
         }
-        return { kind: 'resolved', value: { snapshot, descriptor, identity: descriptor.identity } };
+        return {
+            kind: 'resolved',
+            value: {
+                snapshot,
+                descriptor,
+                identity: descriptor.identity,
+                expectedOccurrenceId,
+            },
+        };
     }
 
     function resolveFormAction(
@@ -870,7 +878,7 @@ export function createPluginContributedActionController(params: Readonly<{
     ): ResolveActionResult {
         const current = resolveAction(requested);
         if (current.kind !== 'resolved') return current;
-        return hasSameActionFormHostBinding(originalSnapshot, current.value.snapshot)
+        return hasSameActionFormHostBinding(originalSnapshot, current.value.snapshot, requested.identity)
             ? current
             : { kind: 'stale', reason: 'host_retired' };
     }
@@ -889,8 +897,6 @@ export function createPluginContributedActionController(params: Readonly<{
             !plugin
             || plugin.pluginId !== identity.data.pluginId
             || plugin.enabled !== true
-            || plugin.generation === null
-            || String(plugin.generation) !== host.expectedGeneration
         ) {
             return { kind: 'stale', reason: 'action_retired' };
         }
@@ -938,9 +944,11 @@ export function createPluginContributedActionController(params: Readonly<{
             selector: { placement, scope: 'session' },
         });
         if (!descriptor) return { kind: 'stale', reason: 'action_retired' };
+        const expectedOccurrenceId = readRequiredString(action.occurrenceId);
+        if (!expectedOccurrenceId) return { kind: 'stale', reason: 'action_retired' };
         return {
             kind: 'resolved',
-            value: { ...reference.value, descriptor },
+            value: { ...reference.value, descriptor, expectedOccurrenceId },
         };
     }
 
@@ -1036,13 +1044,6 @@ export function createPluginContributedActionController(params: Readonly<{
         const projectedAction = resolved.snapshot.resolveContributedAction?.(resolved.identity) ?? null;
         if (!projectedAction) return { kind: 'unavailable', reason: 'host_unavailable' };
         const executionTarget = projectedAction.execution.target;
-        const projectionGeneration = Number(host.expectedGeneration);
-        if (
-            executionTarget === 'client'
-            && (!Number.isSafeInteger(projectionGeneration) || projectionGeneration < 0)
-        ) {
-            return { kind: 'unavailable', reason: 'host_unavailable' };
-        }
         if (executionTarget === 'daemon' && !host.machineId) {
             return { kind: 'unavailable', reason: 'host_unavailable' };
         }
@@ -1055,19 +1056,6 @@ export function createPluginContributedActionController(params: Readonly<{
         const invocation = resolveHostInvocation({ resolved, placement });
         if (invocation.kind !== 'resolved') return invocation;
         const dispatchSignal = signal ?? resolved.snapshot.host.signal;
-        const requestCurrentIntent = executionTarget === 'client' && projectedAction
-            ? createPluginActionCurrentIntentHandler({
-                requester: {
-                    pluginId: resolved.identity.pluginId,
-                    contributionId: resolved.identity.localId,
-                    generationId: host.expectedGeneration,
-                    invocationId: `ui-action:${host.expectedGeneration}`,
-                },
-                signal: dispatchSignal ?? new AbortController().signal,
-                isCurrent,
-                pluginUiProjection: resolved.snapshot.pluginUiProjection,
-            })
-            : undefined;
         try {
             const dispatchInput: DispatchPluginSurfaceActionInput = {
                 // Catalog, Composer, and transcript host presentation never
@@ -1081,11 +1069,9 @@ export function createPluginContributedActionController(params: Readonly<{
                 ...(executionTarget === 'client'
                     ? {
                         clientAction: {
-                            projectionGeneration,
                             ...(resolved.snapshot.host.openSurface
                                 ? { openSurface: resolved.snapshot.host.openSurface }
                                 : {}),
-                            ...(requestCurrentIntent ? { requestCurrentIntent } : {}),
                             ...(resolved.snapshot.host.readCurrentUiContext
                                 ? { currentUiContext: resolved.snapshot.host.readCurrentUiContext }
                                 : {}),
@@ -1098,7 +1084,6 @@ export function createPluginContributedActionController(params: Readonly<{
                         contributedAction: {
                             machineId: host.machineId!,
                             serverId: readRequiredString(resolved.snapshot.host.serverId) ?? null,
-                            expectedGeneration: host.expectedGeneration,
                             ...(readRequiredString(resolved.snapshot.host.sessionId)
                                 ? { sessionId: readRequiredString(resolved.snapshot.host.sessionId)! }
                                 : {}),
@@ -1109,6 +1094,7 @@ export function createPluginContributedActionController(params: Readonly<{
                         },
                     }),
                 ...(invocation.invocation ? { invocation: invocation.invocation } : {}),
+                pluginUiProjection: resolved.snapshot.pluginUiProjection,
                 ...(dispatchSignal ? { signal: dispatchSignal } : {}),
                 isCurrent,
             };
@@ -1193,7 +1179,7 @@ export function createPluginContributedActionController(params: Readonly<{
                 host.machineId,
                 {
                     serverId: readRequiredString(resolved.snapshot.host.serverId) ?? null,
-                    expectedGeneration: host.expectedGeneration,
+                    expectedOccurrenceId: resolved.expectedOccurrenceId,
                     qualifiedActionId: resolved.descriptor.qualifiedActionId,
                     fieldPath: field.path,
                     timeoutMs: PLUGIN_PRESENT_USER_INTERACTION_DEADLINE_MS,
@@ -1206,7 +1192,7 @@ export function createPluginContributedActionController(params: Readonly<{
                 return { kind: 'unavailable', reason: 'host_unavailable' };
             }
             if (!result.result.ok) {
-                return result.result.code === 'plugin_generation_stale'
+                return result.result.code === 'plugin_occurrence_stale'
                     ? { kind: 'stale', reason: 'action_retired' }
                     : { kind: 'unavailable', reason: 'host_unavailable' };
             }
@@ -1259,7 +1245,7 @@ export function createPluginContributedActionController(params: Readonly<{
         const admitted = protocol.contributions.some((contribution) => (
             contribution.contributor.pluginId === operation.contributor.pluginId
             && contribution.contributor.contributionId === operation.contributor.contributionId
-            && contribution.contributor.immutableGenerationId === operation.contributor.immutableGenerationId
+            && contribution.contributor.occurrenceId === operation.contributor.occurrenceId
             && contribution.operations.some((candidate) => (
                 sameTargetedContributionOperation(candidate, operation)
             ))
@@ -1279,6 +1265,7 @@ export function createPluginContributedActionController(params: Readonly<{
         const action = plugin.actions.find((candidate) => candidate.id === operation.action.localId);
         if (
             !action
+            || readRequiredString(action.occurrenceId) !== operation.contributor.occurrenceId
             || !hasCurrentClientActionRegistration(snapshot, identity.data)
             || !isPluginProjectedActionExecutable(action)
             || !action.surfaces.includes('plugin')
@@ -1310,22 +1297,22 @@ export function createPluginContributedActionController(params: Readonly<{
                 current.targetedContributions.target,
                 original.targetedContributions.target,
             )
-            && hasSameActionFormHostBinding(original.snapshot, current.snapshot)
+            && hasSameActionFormHostBinding(original.snapshot, current.snapshot, current.identity)
             ? current
             : { kind: 'stale', reason: 'action_retired' };
     }
 
     /**
-     * Resolves exactly one qualified plugin-surface Action and its committed
-     * immutable generation. This is deliberately narrower than catalog
+     * Resolves exactly one qualified plugin-surface Action and its process-local
+     * occurrence. This is deliberately narrower than catalog
      * selection: it never enumerates another plugin or local-id candidate.
      */
     function resolveExactBoundAction(
         request: PluginExactBoundActionInputRequest,
     ): ExactBoundAction | PluginContributedActionUnavailableOutcome | PluginContributedActionStaleOutcome {
         const identity = PluginContributionIdentityV1Schema.safeParse(request.action);
-        const expectedImmutableGenerationId = readRequiredString(request.expectedImmutableGenerationId);
-        if (!identity.success || !expectedImmutableGenerationId) {
+        const expectedOccurrenceId = readRequiredString(request.expectedOccurrenceId);
+        if (!identity.success || !expectedOccurrenceId) {
             return { kind: 'unavailable', reason: 'invalid_input' };
         }
         const snapshot = currentSnapshot();
@@ -1337,15 +1324,13 @@ export function createPluginContributedActionController(params: Readonly<{
             !plugin
             || plugin.pluginId !== identity.data.pluginId
             || plugin.enabled !== true
-            || plugin.generation === null
-            || String(plugin.generation) !== host.expectedGeneration
-            || readRequiredString(plugin.immutableGenerationId) !== expectedImmutableGenerationId
         ) {
             return { kind: 'stale', reason: 'action_retired' };
         }
         const action = plugin.actions.find((candidate) => candidate.id === identity.data.localId);
         if (
             !action
+            || readRequiredString(action.occurrenceId) !== expectedOccurrenceId
             || !hasCurrentClientActionRegistration(snapshot, identity.data)
             || !isPluginProjectedActionExecutable(action)
             || !action.surfaces.includes('plugin')
@@ -1357,7 +1342,7 @@ export function createPluginContributedActionController(params: Readonly<{
             plugin,
             action,
             identity: identity.data,
-            expectedImmutableGenerationId,
+            expectedOccurrenceId,
         };
     }
 
@@ -1376,8 +1361,8 @@ export function createPluginContributedActionController(params: Readonly<{
         }
         return current.identity.pluginId === original.identity.pluginId
             && current.identity.localId === original.identity.localId
-            && current.expectedImmutableGenerationId === original.expectedImmutableGenerationId
-            && hasSameActionFormHostBinding(original.snapshot, current.snapshot)
+            && current.expectedOccurrenceId === original.expectedOccurrenceId
+            && hasSameActionFormHostBinding(original.snapshot, current.snapshot, current.identity)
             && additionallyCurrent
             ? current
             : { kind: 'stale', reason: 'action_retired' };
@@ -1394,7 +1379,7 @@ export function createPluginContributedActionController(params: Readonly<{
         if (!host.machineId) return { kind: 'unavailable', reason: 'host_unavailable' };
         const result = await resolveConnectedAccountOptions(host.machineId, {
             serverId: host.serverId,
-            expectedGeneration: host.expectedGeneration,
+            expectedOccurrenceId: resolved.expectedOccurrenceId,
             qualifiedActionId: buildQualifiedPluginContributionKey(resolved.identity),
             fieldPath: field.path,
             ...(resolved.snapshot.host.signal ? { signal: resolved.snapshot.host.signal } : {}),
@@ -1402,7 +1387,7 @@ export function createPluginContributedActionController(params: Readonly<{
         const current = resolveCurrent();
         if ('kind' in current) return current;
         if (!result.supported) return { kind: 'unavailable', reason: 'host_unavailable' };
-        if (!result.result.ok) return result.result.code === 'plugin_generation_stale'
+        if (!result.result.ok) return result.result.code === 'plugin_occurrence_stale'
             ? { kind: 'stale', reason: 'action_retired' }
             : { kind: 'unavailable', reason: 'host_unavailable' };
         const options = result.result.options;
@@ -1445,8 +1430,26 @@ export function createPluginContributedActionController(params: Readonly<{
         if (accountFields.length > 1) {
             return { kind: 'unavailable', reason: 'connected_account_ambiguous' };
         }
+        // The Action's declared input schema is not projected; read it for
+        // this exact occurrence from the Action's machine.
+        const machineId = readRequiredString(resolved.snapshot.host.machineId);
+        if (!machineId) return { kind: 'unavailable', reason: 'host_unavailable' };
+        const schemas = await machinePluginActionSchemasRead(machineId, {
+            serverId: readRequiredString(resolved.snapshot.host.serverId) ?? null,
+            expectedOccurrenceId: resolved.expectedOccurrenceId,
+            qualifiedActionId: buildQualifiedPluginContributionKey(resolved.identity),
+            ...(resolved.snapshot.host.signal ? { signal: resolved.snapshot.host.signal } : {}),
+        });
+        if (!schemas.supported || !schemas.result.ok) {
+            return schemas.supported && !schemas.result.ok && schemas.result.code === 'plugin_occurrence_stale'
+                ? { kind: 'stale', reason: 'action_retired' }
+                : { kind: 'unavailable', reason: 'host_unavailable' };
+        }
+        const inputSchema = schemas.result.inputSchema;
+        const afterSchemaRead = resolveCurrent();
+        if ('kind' in afterSchemaRead) return afterSchemaRead;
         const draft = request.draft ?? {};
-        if (!draftMatchesDeclaredNonSecretFields({ draft, action: resolved.action })) {
+        if (!draftMatchesDeclaredNonSecretFields({ draft, action: resolved.action, inputSchema })) {
             return { kind: 'unavailable', reason: 'invalid_draft' };
         }
         if (!inputHints || fields.length === 0) {
@@ -1455,12 +1458,9 @@ export function createPluginContributedActionController(params: Readonly<{
                 && parsedInput.data
                 && !Array.isArray(parsedInput.data)
                 && typeof parsedInput.data === 'object'
-                && (
-                    resolved.action.inputSchema == null
-                    || isValidPluginJsonSchemaValue(
-                        compilePluginJsonSchema(resolved.action.inputSchema),
-                        parsedInput.data,
-                    )
+                && isValidPluginJsonSchemaValue(
+                    compilePluginJsonSchema(inputSchema),
+                    parsedInput.data,
                 );
             return validatesDraft
                 ? {
@@ -1517,13 +1517,12 @@ export function createPluginContributedActionController(params: Readonly<{
                     settle(current);
                     return current;
                 }
-                if (
-                    !current.action.inputSchema
-                    || !isValidPluginJsonSchemaValue(
-                        compilePluginJsonSchema(current.action.inputSchema),
-                        candidate,
-                    )
-                ) return { kind: 'unavailable', reason: 'invalid_input' };
+                // `resolveCurrent` pins the same Action occurrence the schema
+                // was read for.
+                if (!isValidPluginJsonSchemaValue(
+                    compilePluginJsonSchema(inputSchema),
+                    candidate,
+                )) return { kind: 'unavailable', reason: 'invalid_input' };
 
                 const accountField = accountFields[0];
                 let input = candidate;
@@ -1606,9 +1605,19 @@ export function createPluginContributedActionController(params: Readonly<{
                 machineDisplayName: readRequiredString(target.snapshot.host.machineDisplayName),
             },
             selection: {
-                target: target.targetedContributions.target,
+                target: {
+                    pluginId: target.targetedContributions.target.pluginId,
+                    sourceCustody:
+                        target.targetedContributions.target.sourceCustody,
+                },
                 point: target.operation.point,
-                contributor: target.operation.contributor,
+                contributor: {
+                    pluginId: target.operation.contributor.pluginId,
+                    contributionId:
+                        target.operation.contributor.contributionId,
+                    sourceCustody:
+                        target.operation.contributor.sourceCustody,
+                },
             },
         };
     }
@@ -1633,8 +1642,7 @@ export function createPluginContributedActionController(params: Readonly<{
             if (!snapshot || hostStatus(snapshot).kind !== 'ready') return [];
             const actions: PluginContributedActionDescriptor[] = [];
             for (const plugin of Object.values(snapshot.pluginProjectionById)) {
-                if (plugin.enabled !== true || plugin.generation === null) continue;
-                if (String(plugin.generation) !== readExpectedGeneration(snapshot.host.expectedGeneration)) continue;
+                if (plugin.enabled !== true) continue;
                 for (const action of plugin.actions) {
                     const identity = { pluginId: plugin.pluginId, localId: action.id };
                     if (
@@ -1657,8 +1665,7 @@ export function createPluginContributedActionController(params: Readonly<{
             if (!snapshot || hostStatus(snapshot).kind !== 'ready') return [];
             const actions: PluginContributedActionDescriptor[] = [];
             for (const plugin of Object.values(snapshot.pluginProjectionById)) {
-                if (plugin.enabled !== true || plugin.generation === null) continue;
-                if (String(plugin.generation) !== readExpectedGeneration(snapshot.host.expectedGeneration)) continue;
+                if (plugin.enabled !== true) continue;
                 for (const action of plugin.actions) {
                     const identity = { pluginId: plugin.pluginId, localId: action.id };
                     if (
@@ -1719,7 +1726,7 @@ export function createPluginContributedActionController(params: Readonly<{
             // local-id lookup, or invocation path of its own.
             const selected = await selectExactBoundActionInputForm({
                 action: target.identity,
-                expectedImmutableGenerationId: target.operation.contributor.immutableGenerationId,
+                expectedOccurrenceId: target.operation.contributor.occurrenceId,
                 ...(request.draft === undefined ? {} : { draft: request.draft }),
             }, () => !('kind' in resolveCurrentSelection(request, target)));
             if (selected.kind === 'direct') {

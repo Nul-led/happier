@@ -5,10 +5,15 @@ import { readSessionPersonalAttentionExpirationsForViewer } from '@/sync/domains
 
 import type { ActivityAttentionSource } from './activityAttentionSourceTypes';
 import {
+    buildActivityOverviewSummaryFromSource,
     buildActivityOverviewFromSource,
     readActivitySourceAttentionMessages,
+    type ActivityOverviewSummary,
 } from './buildActivityOverviewFromSource';
-import { useActivityAttentionSource } from './useActivityAttentionSource';
+import {
+    useActivityAttentionSource,
+    useActivityAttentionSummarySource,
+} from './useActivityAttentionSource';
 
 export type MountedActivityOverview = Readonly<{
     source: ActivityAttentionSource;
@@ -78,4 +83,29 @@ export function useActivityOverview(): MountedActivityOverview {
     }, [nextBoundaryMs]);
 
     return React.useMemo(() => ({ source, overview }), [overview, source]);
+}
+
+export function useActivityOverviewSummary(): ActivityOverviewSummary {
+    const source = useActivityAttentionSummarySource();
+    const [boundaryVersion, advanceBoundary] = React.useReducer((value: number) => value + 1, 0);
+    const nowMs = React.useMemo(() => Date.now(), [boundaryVersion, source]);
+    const summary = React.useMemo(
+        () => buildActivityOverviewSummaryFromSource({
+            source,
+            nowMs,
+            includeWarmSourceWhenNotReady: true,
+        }),
+        [nowMs, source],
+    );
+
+    React.useEffect(() => {
+        if (summary.nextAttentionBoundaryMs === null) return undefined;
+        const timeoutId = setTimeout(
+            advanceBoundary,
+            Math.max(0, summary.nextAttentionBoundaryMs - Date.now()),
+        );
+        return () => clearTimeout(timeoutId);
+    }, [summary.nextAttentionBoundaryMs]);
+
+    return summary;
 }

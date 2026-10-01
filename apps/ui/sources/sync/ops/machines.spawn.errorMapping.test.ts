@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { RPC_ERROR_CODES, RPC_METHODS } from '@happier-dev/protocol/rpc';
+import { createSocketIoAckTimeoutError } from '@happier-dev/sync-client';
 import { SessionModelSelectionV1Schema, SPAWN_SESSION_ERROR_CODES } from '@happier-dev/protocol';
 import type { Machine } from '@/sync/domains/state/storageTypes';
 import { storage } from '@/sync/domains/state/storage';
@@ -22,11 +23,6 @@ vi.mock('../api/session/apiSocket', () => ({
   },
 }));
 
-vi.mock('@/sync/runtime/socketIoAckTimeout', () => ({
-  isSocketIoAckTimeoutError: (error: unknown) =>
-    error instanceof Error && error.message.includes('timed out'),
-}));
-
 vi.mock('@/platform/randomUUID', () => ({
   randomUUID: randomUUIDMock,
 }));
@@ -43,7 +39,7 @@ describe('machineSpawnNewSession error mapping', () => {
     v: 1,
     updatedAt: 1,
     ref: {
-      agentTargetKey: 'backend:claude',
+      agentTargetKey: 'agent:happier.agent.claude/claude',
       providerConnectionId: 'pc_work',
       modelId: 'provider-model',
     },
@@ -52,7 +48,7 @@ describe('machineSpawnNewSession error mapping', () => {
     v: 1,
     updatedAt: 1,
     ref: {
-      agentTargetKey: 'backend:claude',
+      agentTargetKey: 'agent:happier.agent.claude/claude',
       providerConnectionId: null,
       modelId: 'native-model',
     },
@@ -211,7 +207,7 @@ describe('machineSpawnNewSession error mapping', () => {
 
   it('does not replay spawn through legacy after an ambiguous provider-safe timeout', async () => {
     machineRpcWithServerScopeMock
-      .mockRejectedValueOnce(new Error('machine RPC timed out'))
+      .mockRejectedValueOnce(createSocketIoAckTimeoutError())
       .mockResolvedValueOnce({ status: 'unsupported' });
 
     const { machineSpawnNewSession } = await import('./machines');

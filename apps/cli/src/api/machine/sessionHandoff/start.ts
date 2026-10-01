@@ -1,4 +1,5 @@
 import {
+  readServerEnabledBit,
   resolveLinkedExternalSessionAuthorityV1,
   type SessionHandoffMetadataV2,
   type SessionHandoffStartRequest,
@@ -6,7 +7,9 @@ import {
   type SessionHandoffStatus,
   type TransferEndpointCandidate,
 } from '@happier-dev/protocol';
+import { resolveMachineTransferRoute } from '@happier-dev/transfers';
 
+import type { CliServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
 import type { SessionHandoffPrepareTargetJobRecordInput } from '../../../session/handoff/prepare/sessionHandoffPrepareTargetJobStore';
 import type { SessionHandoffSourceExportRecord } from '../../../session/handoff/state/sessionHandoffSourceExportStore';
 import type { SessionHandoffAgentBundle } from '../../../session/handoff/types';
@@ -66,6 +69,7 @@ export type RegisterSessionHandoffStartRpcHandlerInput = Readonly<{
   ) => Promise<Record<string, unknown> | null>;
   machineTransferChannelPresent: boolean;
   directPeerTransfer: SessionHandoffDirectPeerTransferHandle | undefined;
+  resolveServerFeaturesSnapshot?: () => Promise<CliServerFeaturesSnapshot | undefined> | CliServerFeaturesSnapshot | undefined;
   stopSessionForHandoff?: (sessionId: string) => Promise<SessionHandoffSourceStopState>;
   prepareJobStore: SessionHandoffPrepareJobStoreLike;
   sourceExportStore: SessionHandoffSourceExportStoreLike;
@@ -144,35 +148,14 @@ function shouldDeferSourcePreparation(
   }>,
 ): boolean {
   const crossMachine = request.sourceMachineId !== request.targetMachineId;
-  if (!crossMachine) {
+  // Managed preparation publishes its workspace seed before the target consumer starts.
+  if (!crossMachine || request.targetDirectory?.kind === 'managed') {
     return false;
   }
 
   // Cross-daemon direct-peer starts with a server-routed fallback should still acknowledge quickly
   // and publish direct-peer endpoint candidates through the deferred path even without workspace sync.
   return request.negotiatedTransportStrategy === 'direct_peer' && options.hasServerRoutedFallback;
-}
-
-function resolveSessionHandoffTransportStrategy(
-  request: SessionHandoffStartRequest,
-  availability: Readonly<{
-    machineTransferChannelPresent: boolean;
-    directPeerTransferPresent: boolean;
-  }>,
-): SessionHandoffStartRequest['negotiatedTransportStrategy'] {
-  const isAvailable = (strategy: NonNullable<SessionHandoffStartRequest['negotiatedTransportStrategy']>) => (
-    strategy === 'direct_peer'
-      ? availability.directPeerTransferPresent
-      : availability.machineTransferChannelPresent
-  );
-  if (
-    request.negotiatedTransportStrategy
-    && request.preferredTransportStrategies.includes(request.negotiatedTransportStrategy)
-    && isAvailable(request.negotiatedTransportStrategy)
-  ) {
-    return request.negotiatedTransportStrategy;
-  }
-  return request.preferredTransportStrategies.find(isAvailable);
 }
 
 export function createSessionHandoffStartActionHandler(
@@ -184,6 +167,7 @@ export function createSessionHandoffStartActionHandler(
     loadSessionMetadata,
     machineTransferChannelPresent,
     directPeerTransfer,
+    resolveServerFeaturesSnapshot,
     stopSessionForHandoff,
     prepareJobStore,
     sourceExportStore,
@@ -204,17 +188,50 @@ export function createSessionHandoffStartActionHandler(
     if (hasUnsupportedWorkspaceAction(raw)) return workspaceSyncUpdateRequired();
     const parsed = SessionHandoffStartRequestSchema.safeParse(raw);
     if (!parsed.success) return invalidRequest();
-    const negotiatedTransportStrategy = resolveSessionHandoffTransportStrategy(parsed.data, {
-      machineTransferChannelPresent,
-      directPeerTransferPresent: directPeerTransfer !== undefined,
+    context?.signal?.throwIfAborted();
+    const serverFeaturesSnapshot = await resolveServerFeaturesSnapshot?.();
+    context?.signal?.throwIfAborted();
+    const serverFeatures = serverFeaturesSnapshot?.status === 'ready'
+      ? serverFeaturesSnapshot.features
+      : null;
+    if (!serverFeatures) {
+      return {
+        ok: false,
+        errorCode: 'server_features_unavailable',
+        error: 'Machine transfer policy is unavailable on the selected server',
+      } as const;
+    }
+    if (readServerEnabledBit(serverFeatures, 'sessions.handoff') !== true) {
+      return {
+        ok: false,
+        errorCode: 'handoff_disabled',
+        error: 'Session handoff is disabled on the selected server',
+      } as const;
+    }
+    const transport = resolveMachineTransferRoute({
+      serverFeatures,
+      preferredStrategies: parsed.data.negotiatedTransportStrategy
+        ? [parsed.data.negotiatedTransportStrategy, ...parsed.data.preferredTransportStrategies]
+        : parsed.data.preferredTransportStrategies,
+      directPeerAvailable: directPeerTransfer !== undefined,
     });
-    if (!negotiatedTransportStrategy) {
+    if (transport.kind === 'unavailable') {
+      return {
+        ok: false,
+        errorCode: transport.reasonCode,
+        error: 'Machine transfer is disabled on the selected server',
+      } as const;
+    }
+    if (transport.strategy === 'server_relay_stream' && !machineTransferChannelPresent) {
       return {
         ok: false,
         errorCode: 'transport_unavailable',
         error: 'transport_unavailable',
       } as const;
     }
+    const negotiatedTransportStrategy = transport.strategy === 'server_relay_stream'
+      ? 'server_routed_stream'
+      : transport.strategy;
     const request: SessionHandoffStartRequest = {
       ...parsed.data,
       negotiatedTransportStrategy,
@@ -535,18 +552,20 @@ export function createSessionHandoffStartActionHandler(
     } catch (error) {
       if (error instanceof ExternalSessionOperationClaimLostError) throw error;
       const errorMessage = error instanceof Error ? error.message : 'Failed to export session handoff state';
+      const errorCode = error !== null && typeof error === 'object' && 'code' in error
+        && error.code === 'SESSION_DIRECTORY_MISSING' ? error.code : 'source_export_failed';
       if (!exportAfterStop) {
         await releaseSessionOperationClaim(handoffId);
         return {
           ok: false,
-          errorCode: 'source_export_failed',
+          errorCode,
           error: errorMessage,
         } as const;
       }
       const status = buildStartRecoveryStatus(handoffId);
       return {
         ok: false,
-        errorCode: 'source_export_failed',
+        errorCode,
         error: errorMessage,
         handoffId,
         status,

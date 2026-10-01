@@ -47,7 +47,7 @@ vi.mock('@/scm/scmStatusSync', () => ({
 }));
 
 describe('executeScmCommit (daemon unavailable)', () => {
-  it('shows daemon-unavailable alert with Retry when commit RPC backend is unavailable', async () => {
+  it('leaves an unavailable daemon to the pane outcome line instead of raising a modal', async () => {
     modalAlert.mockReset();
     modalConfirm.mockReset();
     sessionScmCommitCreate.mockReset();
@@ -76,51 +76,7 @@ describe('executeScmCommit (daemon unavailable)', () => {
     });
 
     expect(result.ok).toBe(false);
-    expect(modalAlert).toHaveBeenCalled();
-    const [title, message, buttons] = modalAlert.mock.calls[0] ?? [];
-    expect(title).toBe('errors.daemonUnavailableTitle');
-    expect(String(message ?? '')).toContain('errors.daemonUnavailableBody');
-    expect(Array.isArray(buttons)).toBe(true);
-    expect((buttons as any[]).some((b) => b?.text === 'common.retry')).toBe(true);
-  });
-
-  it('does not retry when caller indicates it is unmounted', async () => {
-    modalAlert.mockReset();
-    modalConfirm.mockReset();
-    sessionScmCommitCreate.mockReset();
-    sessionScmRepositoryRemoveIndexLock.mockClear();
-
-    sessionScmCommitCreate.mockResolvedValueOnce({
-      success: false,
-      errorCode: SCM_OPERATION_ERROR_CODES.BACKEND_UNAVAILABLE,
-      error: 'RPC method not available',
-    });
-
-    const { executeScmCommit } = await import('./executeScmCommit');
-
-    const result = await executeScmCommit({
-      sessionId: 's1',
-      repoPath: '/repo',
-      commitMessage: 'feat: test',
-      scmCommitStrategy: 'git_staging',
-      commitSelectionPaths: [],
-      commitSelectionPatches: [],
-      refreshScmData: vi.fn(async () => {}),
-      loadCommitHistory: vi.fn(async () => {}),
-      setScmOperationBusy: vi.fn(),
-      setScmOperationStatus: vi.fn(),
-      tracking: null,
-      shouldContinue: () => false,
-    });
-
-    expect(result.ok).toBe(false);
-    const [_title, _message, buttons] = modalAlert.mock.calls[0] ?? [];
-    const retry = (buttons as any[]).find((b) => b?.text === 'common.retry');
-    expect(retry).toBeTruthy();
-
-    retry.onPress();
-    await new Promise((r) => setTimeout(r, 0));
-
+    expect(modalAlert).not.toHaveBeenCalled();
     expect(sessionScmCommitCreate).toHaveBeenCalledTimes(1);
   });
 
@@ -173,6 +129,7 @@ describe('executeScmCommit (daemon unavailable)', () => {
         message: 'feat: test',
         patches: expect.any(Array),
       }),
+      undefined,
     );
     expect(sessionScmCommitCreate.mock.calls[0]?.[1]).not.toHaveProperty('scope');
   });
@@ -218,7 +175,7 @@ describe('executeScmCommit (daemon unavailable)', () => {
       cwd: '/repo',
       confirmed: true,
       confirmationToken: REMOVE_INDEX_LOCK_CONFIRMATION_TOKEN,
-    });
+    }, undefined);
     expect(sessionScmCommitCreate).toHaveBeenCalledTimes(2);
     expect(refreshScmData).toHaveBeenCalledTimes(1);
     expect(loadCommitHistory).toHaveBeenCalledWith({ reset: true });

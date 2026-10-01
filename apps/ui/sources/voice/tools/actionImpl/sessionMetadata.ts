@@ -1,3 +1,4 @@
+import { readSessionDirectoryKind } from '@happier-dev/protocol';
 import { formatPathRelativeToHome } from '@/utils/sessions/formatPathRelativeToHome';
 
 import { normalizeNonEmptyString } from './shared';
@@ -18,7 +19,9 @@ export function resolveVoiceSessionTitleFromMetadata(metadata: SessionMetadataLi
   const name = metadata && typeof metadata === 'object'
     ? normalizeNonEmptyString(metadata.name)
     : null;
-  const path = metadata && typeof metadata === 'object'
+  // A no-folder session's private folder is not a name or a place.
+  const withoutFolder = readSessionDirectoryKind(metadata) === 'managed';
+  const path = metadata && typeof metadata === 'object' && !withoutFolder
     ? normalizeNonEmptyString(metadata.path)
     : null;
   const pathLabel = path ? normalizeNonEmptyString(path.split('/').filter(Boolean).at(-1)) : null;
@@ -27,7 +30,7 @@ export function resolveVoiceSessionTitleFromMetadata(metadata: SessionMetadataLi
 }
 
 export function resolveVoiceSessionLocationLabelFromMetadata(metadata: SessionMetadataLike): string | null {
-  const path = metadata && typeof metadata === 'object'
+  const path = metadata && typeof metadata === 'object' && readSessionDirectoryKind(metadata) !== 'managed'
     ? normalizeNonEmptyString(metadata.path)
     : null;
   if (!path) return null;

@@ -1,5 +1,6 @@
 import { TokenStorage, type AuthCredentials } from '@/auth/storage/tokenStorage';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
+import { resolvePortableServerIdentityForRoutingId } from '@/sync/domains/server/resolvePortableServerIdentityForRoutingId';
 import { toServerUrlDisplay } from '@/sync/domains/server/url/serverUrlDisplay';
 import { isLoopbackHostname, redactPublicShareCapabilityUrl } from '@happier-dev/protocol';
 import { runtimeFetch } from '@/utils/system/runtimeFetch';
@@ -43,8 +44,6 @@ export class ServerFetchAbortedForServerSwitchError extends Error {
 }
 
 export class ServerFetchConnectivityTimeoutError extends Error {
-    public readonly retryable = false;
-
     constructor() {
         super('Timed out waiting for server reachability');
         this.name = 'ServerFetchConnectivityTimeoutError';
@@ -113,19 +112,38 @@ type EndpointRequestContext = Readonly<{
     generation?: number;
     /** Active requests retain switch currentness/abort semantics; explicit requests do not. */
     active: boolean;
+    /**
+     * A concrete incumbent binding may retain readiness and endpoint-supervisor
+     * policy without consulting the staged active-Home selector.
+     */
+    superviseReachability?: boolean;
     /** `true` means credentials are resolved from the target's scoped storage. */
     useStoredCredentials: boolean;
+    /**
+     * The initial bearer is an explicit binding, but an authenticated 401 may
+     * retire that exact target-scoped credential and retry one idempotent read
+     * with its replacement. This never selects the staged Home.
+     */
+    recoverStoredCredentials?: boolean;
+    /** Currentness belongs to a captured caller binding when this is not the staged active request. */
+    isCurrent?: () => boolean;
+    /** Lets the caller adopt a recovered target credential before the retry completes. */
+    onRecoveredCredentials?: (credentials: AuthCredentials) => boolean;
     credentials?: AuthCredentials | null;
     signal?: AbortSignal;
 }>;
 
-function assertActiveRequestContextCurrent(context: EndpointRequestContext): void {
-    if (!context.active) return;
-    const current = getActiveServerSnapshot();
-    if (
-        current.serverId !== context.serverId
-        || current.generation !== context.generation
-    ) {
+function assertRequestContextCurrent(context: EndpointRequestContext): void {
+    if (context.active) {
+        const current = getActiveServerSnapshot();
+        if (
+            current.serverId !== context.serverId
+            || current.generation !== context.generation
+        ) {
+            throw new StaleServerGenerationError();
+        }
+    }
+    if (context.isCurrent && !context.isCurrent()) {
         throw new StaleServerGenerationError();
     }
 }
@@ -244,6 +262,9 @@ async function requestAtEndpoint(
     options: ServerFetchOptions = {},
 ): Promise<Response> {
     const localAbortSequence = context.active ? abortSequence : null;
+    const usesReachabilitySupervision = context.active || context.superviseReachability === true;
+    const recoversStoredCredentials = context.active || context.recoverStoredCredentials === true;
+    assertRequestContextCurrent(context);
     if (!context.active) {
         const targetOrigin = tryParseUrl(context.runtimeOrigin);
         if (
@@ -356,8 +377,7 @@ async function requestAtEndpoint(
             rejectedFirstKeyBearer = null;
         }
         if (
-            context.active
-            && context.useStoredCredentials
+            recoversStoredCredentials
             && credentials?.token
             && (
                 rejectedFirstKeyBearer
@@ -499,8 +519,13 @@ async function requestAtEndpoint(
         && !isCrossOrigin
         && !!absoluteRequestUrl
         && !!activeServerUrl;
+    const isSupervisedOrigin =
+        usesReachabilitySupervision
+        && !isCrossOrigin
+        && !!absoluteRequestUrl
+        && !!activeServerUrl;
     const endpointSupervisor =
-        isActiveOrigin
+        isSupervisedOrigin
             ? getEndpointSupervisorForServer({ serverId: context.serverId, serverUrl: context.endpointUrl })
             : null;
     // A Home carrier is bound to exactly one Home. An absolute cross-origin URL
@@ -519,14 +544,16 @@ async function requestAtEndpoint(
     try {
         for (let attempt = 0; attempt < 2; attempt += 1) {
             try {
-                if (isActiveOrigin && retryMode !== 'none') {
+                if (isSupervisedOrigin && retryMode !== 'none') {
                     const tokenForReachability =
                         usedToken
                         ?? null;
                     try {
+                        const homeIdentityId = resolvePortableServerIdentityForRoutingId(context.serverId);
                         await waitForServerReachable({
                             serverUrl: context.endpointUrl,
                             token: tokenForReachability,
+                            ...(homeIdentityId ? { homeIdentityId } : {}),
                             signal: requestController.signal,
                             timeoutMs: readServerReachabilityWaitTimeoutMs(),
                             acceptAuthFailed: true,
@@ -617,17 +644,9 @@ async function requestAtEndpoint(
                 throw error;
             }
 
-            if (context.active) {
-                const current = getActiveServerSnapshot();
-                if (
-                    current.generation !== context.generation
-                    || current.serverId !== context.serverId
-                ) {
-                    throw new StaleServerGenerationError();
-                }
-            }
+            assertRequestContextCurrent(context);
 
-            if (!usedToken || response.status !== 401 || !isActiveOrigin) {
+            if (!usedToken || response.status !== 401 || !isSupervisedOrigin) {
                 break;
             }
 
@@ -636,7 +655,7 @@ async function requestAtEndpoint(
             // prevents a persistent 401 loop and permits a refreshed token.
             let invalidatedStoredCredentials = false;
             try {
-                if (context.active && context.useStoredCredentials) {
+                if (recoversStoredCredentials) {
                     // Load the first-key owner lazily: it uses serverFetch for recovery
                     // requests, so a static import here would create a module cycle.
                     const {
@@ -650,7 +669,7 @@ async function requestAtEndpoint(
                             serverId: context.serverId,
                             serverUrl: context.endpointUrl,
                         });
-                    assertActiveRequestContextCurrent(context);
+                    assertRequestContextCurrent(context);
                     if (guard.kind !== 'allowed') {
                         const marked =
                             await markAccountEncryptionFirstKeyRejectedCredential({
@@ -658,7 +677,7 @@ async function requestAtEndpoint(
                                     guard.recovery,
                                 token: usedToken,
                             });
-                        assertActiveRequestContextCurrent(context);
+                        assertRequestContextCurrent(context);
                         if (
                             marked.kind
                             !== 'recorded'
@@ -709,7 +728,7 @@ async function requestAtEndpoint(
                         break;
                     }
                 }
-                if (context.useStoredCredentials) {
+                if (recoversStoredCredentials) {
                     invalidatedStoredCredentials =
                         await TokenStorage.invalidateCredentialsTokenForServerUrl(
                             context.endpointUrl,
@@ -739,14 +758,18 @@ async function requestAtEndpoint(
             // Re-read target-scoped credentials and retry once if we found a
             // different token. Explicit caller credentials are immutable for the
             // request and must not be replaced from storage.
-            if (!context.useStoredCredentials) break;
+            if (!recoversStoredCredentials) break;
             try {
                 const fresh = await TokenStorage.getCredentialsForServerUrl(
                     context.endpointUrl,
                     context.serverId ? { serverId: context.serverId } : {},
                 );
                 const freshToken = fresh?.token ?? null;
-                if (freshToken && freshToken !== usedToken) {
+                if (fresh && freshToken && freshToken !== usedToken) {
+                    assertRequestContextCurrent(context);
+                    if (context.onRecoveredCredentials && !context.onRecoveredCredentials(fresh)) {
+                        throw new StaleServerGenerationError();
+                    }
                     usedToken = freshToken;
                     headers.set('Authorization', `Bearer ${freshToken}`);
                     continue;
@@ -825,6 +848,14 @@ export function createServerFetchAtEndpoint(
         credentials?: AuthCredentials | null;
         serverId?: string;
         signal?: AbortSignal;
+        /** Preserve readiness/supervisor policy for a captured incumbent binding. */
+        superviseReachability?: boolean;
+        /** Preserve target-scoped 401 invalidation/retry for a captured incumbent binding. */
+        recoverStoredCredentials?: boolean;
+        /** Reject recovery if the caller's captured binding was retired. */
+        isCurrent?: () => boolean;
+        /** Allows a caller to adopt the replacement target credential before retrying. */
+        onRecoveredCredentials?: (credentials: AuthCredentials) => boolean;
     }>,
 ): ServerFetch {
     const endpointUrl = normalizeEndpointBase(params.endpointUrl);
@@ -835,6 +866,10 @@ export function createServerFetchAtEndpoint(
         runtimeOrigin,
         serverId,
         active: false,
+        ...(params.superviseReachability === true ? { superviseReachability: true } : {}),
+        ...(params.recoverStoredCredentials === true ? { recoverStoredCredentials: true } : {}),
+        ...(params.isCurrent ? { isCurrent: params.isCurrent } : {}),
+        ...(params.onRecoveredCredentials ? { onRecoveredCredentials: params.onRecoveredCredentials } : {}),
         useStoredCredentials: params.credentials === undefined,
         ...(params.homeCarrier ? { homeCarrier: params.homeCarrier } : {}),
         ...(params.credentials !== undefined ? { credentials: params.credentials } : {}),

@@ -32,6 +32,8 @@ export type WelcomeAction =
 
 export type WelcomeEntryModel = Readonly<{
     heading: 'first_time' | 'returning';
+    /** Only notices about the effective Home target belong in this entry. */
+    showHomeStatus: boolean;
     targetContext?: Readonly<{ label: string }>;
     actions: readonly Readonly<{
         id: string;
@@ -41,12 +43,14 @@ export type WelcomeEntryModel = Readonly<{
     notice?: Readonly<{
         kind: 'service_loading' | 'service_unavailable' | 'service_unsupported' | 'service_methodless';
         serviceName: string | null;
+        hasUsableHomeMethods: boolean;
     }>;
 }>;
 
 export type ComposeWelcomeEntryModelInput = Readonly<{
     target:
         | Readonly<{ kind: 'none' }>
+        | Readonly<{ kind: 'selected_service'; label: string }>
         | Readonly<{ kind: 'explicit_home' | 'selected_home'; home: HomeTargetInput; label: string }>;
     homeMethods: readonly WelcomeAuthenticationMethod[];
     /**
@@ -131,6 +135,15 @@ function withoutSameServerDuplicates(
 }
 
 export function composeWelcomeEntryModel(input: ComposeWelcomeEntryModelInput): WelcomeEntryModel {
+    // A service offer without a chosen Home supersedes the unrelated seeded
+    // Home. An explicit service choice does so even on a dual-role endpoint,
+    // including while discovery is loading or unavailable.
+    const sameServer = input.serviceCatalogState.kind === 'ready'
+        && input.observedHomeServerIdentityId !== undefined
+        && input.serviceCatalogState.authority.serverIdentityId === input.observedHomeServerIdentityId;
+    const showHomeStatus = input.target.kind !== 'selected_service'
+        && (input.target.kind !== 'none' || input.serviceCatalogState.kind === 'not_offered' || sameServer);
+    if (!showHomeStatus) input = { ...input, homeMethods: [], observedHomeServerIdentityId: undefined };
     const homeProvision = input.homeMethods.filter((row) => row.action.id === 'provision');
     const homeDirect = input.homeMethods.filter((row) => row.action.id !== 'provision');
     const serviceMethods = withoutSameServerDuplicates(input);
@@ -152,12 +165,12 @@ export function composeWelcomeEntryModel(input: ComposeWelcomeEntryModelInput): 
     if (input.userHistory === 'returning' && input.allowedNavigation.scanOrPasteHome) {
         actions.push({ kind: 'scan_or_paste_home' });
     }
-    actions.push(...serviceMethods.map((row) => methodAction(row, row === primaryServiceProvision ? 'new_here' : 'method')));
+    actions.push(...serviceMethods.map((row) => methodAction(row, row === primaryServiceProvision && !primaryProvision ? 'new_here' : 'method')));
     if (input.userHistory === 'first_time' && input.allowedNavigation.scanOrPasteHome) {
         actions.push({ kind: 'scan_or_paste_home' });
     }
     if (input.allowedNavigation.changeHome) actions.push({ kind: 'choose_home' });
-    if (input.allowedNavigation.selectService && input.target.kind === 'none') actions.push({ kind: 'choose_sign_in_service' });
+    if (input.allowedNavigation.selectService && (input.target.kind === 'none' || input.target.kind === 'selected_service')) actions.push({ kind: 'choose_sign_in_service' });
     if (input.allowedNavigation.createPersonalHome) actions.push({ kind: 'create_personal_home' });
     if (input.userHistory === 'returning') {
         if (primaryProvision) actions.push(methodAction(primaryProvision, 'new_here'));
@@ -174,8 +187,9 @@ export function composeWelcomeEntryModel(input: ComposeWelcomeEntryModelInput): 
     }
 
     // `choose_sign_in_service` is already an ordinary action row whenever the
-    // navigation allows it, so the notice carries only what it renders: which
-    // service failed, and how.
+    // navigation allows it. The notice also distinguishes an optional service
+    // failure from a Home entry dead end so the UI never tells users to abandon
+    // working Home methods.
     const noticeKindByCatalogState = {
         loading: 'service_loading',
         unavailable: 'service_unavailable',
@@ -187,11 +201,18 @@ export function composeWelcomeEntryModel(input: ComposeWelcomeEntryModelInput): 
         : input.serviceCatalogState;
     const notice = noticeState === null
         ? undefined
-        : { kind: noticeKindByCatalogState[noticeState.kind], serviceName: noticeState.hintName ?? null };
+        : {
+            kind: noticeKindByCatalogState[noticeState.kind],
+            serviceName: noticeState.hintName ?? null,
+            hasUsableHomeMethods: input.homeMethods.length > 0,
+        };
 
     return {
         heading: input.userHistory,
-        ...(input.target.kind === 'none' ? {} : { targetContext: { label: input.target.label } }),
+        showHomeStatus,
+        ...(input.target.kind === 'none'
+            ? input.serviceCatalogState.kind === 'ready' ? { targetContext: { label: input.serviceCatalogState.name } } : {}
+            : { targetContext: { label: input.target.label } }),
         actions: unique.map((action, index) => ({
             id: actionIdentity(action),
             emphasis: index === 0 ? 'primary' : 'secondary',

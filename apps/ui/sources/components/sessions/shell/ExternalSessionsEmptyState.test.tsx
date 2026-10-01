@@ -55,4 +55,18 @@ describe('ExternalSessionsEmptyState', () => {
 
         expect(routerPushSpy).toHaveBeenCalledWith('/external/browse');
     });
+
+    it('says it in one line inside the session list and keeps the page state for the main pane', async () => {
+        const { ExternalSessionsEmptyState } = await import('./ExternalSessionsEmptyState');
+        const rail = await renderScreen(<ExternalSessionsEmptyState surface="sidebar" />);
+        expect(rail.findByTestId('direct-sessions-empty-state-line')).toBeTruthy();
+        expect(rail.findByTestId('direct-sessions-empty-state-description')).toBeNull();
+        await rail.pressByTestIdAsync('direct-sessions-empty-state-browse');
+        expect(routerPushSpy).toHaveBeenCalledWith('/external/browse');
+        await rail.unmount();
+
+        const pane = await renderScreen(<ExternalSessionsEmptyState surface="primaryPane" />);
+        expect(pane.findByTestId('direct-sessions-empty-state-line')).toBeNull();
+        expect(pane.findByTestId('direct-sessions-empty-state-description')).toBeTruthy();
+    });
 });

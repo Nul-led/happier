@@ -370,3 +370,127 @@ func TestDarwinWorkspaceConfinedDeletePreservesQuarantineAndReportsPhysicalRecov
 		t.Fatalf("clear immutable recovery fixture: %v", err)
 	}
 }
+
+func TestDarwinWorkspaceConfinedObserveCaptureApplyAndRecover(t *testing.T) {
+	root := t.TempDir()
+	captureDirectory := t.TempDir()
+	recoveryDirectory := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "selected"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "selected", "child"), []byte("selected bytes"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "destination"), []byte("old bytes"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	observeReader, observeInput, observeDone := beginDarwinWorkspaceConfinedExchange(t, workspaceConfinedObserveCommand, map[string]any{
+		"v": 1, "rootPath": root, "relativePath": "selected",
+	})
+	observed := decideDarwinWorkspaceConfinedExchange(t, observeReader, observeInput, observeDone, "commit")
+	selected := observed["expectation"]
+	if observed["status"] != "observed" || selected == nil {
+		t.Fatalf("unexpected observation: %#v", observed)
+	}
+	heldDebug, debugDomainErr := openWorkspaceConfinedDarwinHeldPath(root, "selected")
+	if debugDomainErr != nil {
+		t.Fatalf("open debug source: %#v", debugDomainErr)
+	}
+	debugParent, debugName, debugTarget := darwinHeldParentNameTarget(heldDebug)
+	debugPath := filepath.Join(captureDirectory, "debug")
+	if err := copyWorkspaceConfinedDarwinHandle(debugParent.fd, debugName, *debugTarget, debugPath); err != nil {
+		t.Fatalf("copy debug source: %v", err)
+	}
+	debugSource, _ := observeWorkspaceConfinedDarwinHeldPath(heldDebug)
+	debugMaterial, debugMaterialErr := observeWorkspaceConfinedPrivateMaterial(debugPath)
+	heldDebug.close()
+	if debugMaterialErr != nil || !workspaceConfinedExpectationsEqual(debugSource, debugMaterial) {
+		heldChild, _ := openWorkspaceConfinedDarwinHeldPath(root, "selected/child")
+		sourceChild, _ := observeWorkspaceConfinedDarwinHeldPath(heldChild)
+		heldChild.close()
+		materialChild, _ := observeWorkspaceConfinedPrivateMaterial(filepath.Join(debugPath, "child"))
+		t.Fatalf("captured material differs: source=%#v material=%#v sourceChild=%#v materialChild=%#v err=%v", debugSource, debugMaterial, sourceChild, materialChild, debugMaterialErr)
+	}
+	if err := removeWorkspaceConfinedPrivateMaterial(debugPath); err != nil {
+		t.Fatal(err)
+	}
+
+	captureReader, captureInput, captureDone := beginDarwinWorkspaceConfinedExchange(t, workspaceConfinedCaptureCommand, map[string]any{
+		"v": 1, "rootPath": root, "relativePath": "selected", "expected": selected,
+		"captureDirectory": captureDirectory, "operationId": "native-e2e",
+	})
+	captured := decideDarwinWorkspaceConfinedExchange(t, captureReader, captureInput, captureDone, "commit")
+	materialPath, ok := captured["materialPath"].(string)
+	if captured["status"] != "captured" || !ok {
+		materialExpectation, materialErr := observeWorkspaceConfinedPrivateMaterial(workspaceConfinedMaterialPath(captureDirectory, "native-e2e"))
+		currentPath, currentDomainErr := openWorkspaceConfinedDarwinHeldPath(root, "selected")
+		var currentExpectation workspaceConfinedExpectation
+		if currentDomainErr == nil {
+			currentExpectation, _ = observeWorkspaceConfinedDarwinHeldPath(currentPath)
+			currentPath.close()
+		}
+		t.Fatalf("unexpected capture: %#v; material=%#v/%v current=%#v/%#v", captured, materialExpectation, materialErr, currentExpectation, currentDomainErr)
+	}
+	destination, err := observeWorkspaceConfinedPrivateMaterial(filepath.Join(root, "destination"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	applyReader, applyInput, applyDone := beginDarwinWorkspaceConfinedExchange(t, workspaceConfinedApplyCommand, map[string]any{
+		"v": 1, "rootPath": root, "relativePath": "destination", "expectedDestination": destination,
+		"selectedExpectation": selected, "materialPath": materialPath, "recoveryDirectory": recoveryDirectory,
+		"operationId": "native-e2e",
+	})
+	applied := decideDarwinWorkspaceConfinedExchange(t, applyReader, applyInput, applyDone, "commit")
+	if applied["status"] != "installed" {
+		t.Fatalf("unexpected apply: %#v", applied)
+	}
+	if content, err := os.ReadFile(filepath.Join(root, "destination", "child")); err != nil || string(content) != "selected bytes" {
+		t.Fatalf("selected directory was not installed: %q %v", content, err)
+	}
+
+	recoverReader, recoverInput, recoverDone := beginDarwinWorkspaceConfinedExchange(t, workspaceConfinedRecoverCommand, map[string]any{
+		"v": 1, "rootPath": root, "recoveryDirectory": recoveryDirectory, "operationId": "native-e2e",
+	})
+	recovered := decideDarwinWorkspaceConfinedExchange(t, recoverReader, recoverInput, recoverDone, "commit")
+	if recovered["status"] != "settled" {
+		t.Fatalf("completed apply left recovery blocked: %#v", recovered)
+	}
+}
+
+func TestDarwinWorkspaceConfinedRecoverRetainsChangedDisplacedEntry(t *testing.T) {
+	root := t.TempDir()
+	recovery := t.TempDir()
+	priorName := ".happier-conflict-resolution-op-prior"
+	priorPath := filepath.Join(root, priorName)
+	if err := os.WriteFile(priorPath, []byte("reviewed"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	prior, _ := observeWorkspaceConfinedPrivateMaterial(priorPath)
+	if err := os.WriteFile(filepath.Join(root, "entry"), []byte("selected"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	selected, _ := observeWorkspaceConfinedPrivateMaterial(filepath.Join(root, "entry"))
+	held, domainErr := openWorkspaceConfinedDarwinHeldPath(root, "entry")
+	if domainErr != nil {
+		t.Fatal(domainErr)
+	}
+	identity := darwinWorkspaceConfinedIdentity(held.handles[0])
+	held.close()
+	record := workspaceConfinedRecoveryRecord{V: 1, OperationID: "op", RootPath: root, RootIdentity: identity, RelativePath: "entry", ExpectedDestination: prior, SelectedExpectation: selected, CandidateName: ".happier-conflict-resolution-op-selected", PriorName: priorName}
+	if err := workspaceConfinedWriteRecoveryRecord(workspaceConfinedRecoveryRecordPath(recovery, "op"), record); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(priorPath, []byte("unreviewed"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reader, input, done := beginDarwinWorkspaceConfinedExchange(t, workspaceConfinedRecoverCommand, map[string]any{"v": 1, "rootPath": root, "recoveryDirectory": recovery, "operationId": "op"})
+	result := decideDarwinWorkspaceConfinedExchange(t, reader, input, done, "commit")
+	if result["status"] != "recovery_needed" {
+		t.Fatalf("changed displaced entry was settled: %#v", result)
+	}
+	if content, err := os.ReadFile(priorPath); err != nil || string(content) != "unreviewed" {
+		t.Fatalf("changed displaced bytes were removed: %q %v", content, err)
+	}
+}

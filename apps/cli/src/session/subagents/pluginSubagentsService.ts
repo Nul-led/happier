@@ -9,6 +9,9 @@ import {
 } from '@happier-dev/plugin-sdk/sessions/subagents';
 import {
   serializeSessionSubagentCustodyDetailV1,
+  normalizePluginSourceCustodyV1,
+  PluginSourceCustodyV1Schema,
+  type PluginSourceCustodyV1,
   type SubagentRefV1,
 } from '@happier-dev/protocol';
 import { AgentRuntimeJsonValueV1Schema } from '@happier-dev/protocol/runtime';
@@ -19,7 +22,7 @@ import type { HostSubagentStore } from './hostSubagentStore';
 export type PluginSubagentHostIdentity = Readonly<{
   pluginId: string;
   contributionId: string;
-  immutableGenerationId: string;
+  sourceCustody: PluginSourceCustodyV1;
   parentSessionId: string;
 }>;
 
@@ -64,12 +67,12 @@ function stateFor(store: HostSubagentStore): StoreState {
 }
 
 function identityKey(identity: PluginSubagentHostIdentity): string {
-  return JSON.stringify([identity.pluginId, identity.contributionId, identity.immutableGenerationId, identity.parentSessionId]);
+  return JSON.stringify([identity.pluginId, identity.contributionId, normalizePluginSourceCustodyV1(identity.sourceCustody), identity.parentSessionId]);
 }
 
 function qualifiedId(identity: PluginSubagentHostIdentity, localId: string): string {
   const digest = createHash('sha256').update(JSON.stringify([
-    identity.pluginId, identity.contributionId, identity.immutableGenerationId, identity.parentSessionId, localId,
+    identity.pluginId, identity.contributionId, normalizePluginSourceCustodyV1(identity.sourceCustody), identity.parentSessionId, localId,
   ]), 'utf8').digest('hex');
   return `plugin-subagent-v1:sha256:${digest}`;
 }
@@ -155,7 +158,7 @@ function normalizeStatus(status: SubagentSummary['status']) {
 type PluginServiceMetadata = Readonly<{
   pluginId: string;
   contributionId: string;
-  generationId: string;
+  sourceCustody: PluginSourceCustodyV1;
   localId: string;
   revision: string;
   updatedAtMs: number;
@@ -168,12 +171,13 @@ function readMetadata(ref: SubagentRefV1): PluginServiceMetadata | null {
   if (
     typeof value.pluginId !== 'string'
     || typeof value.contributionId !== 'string'
-    || typeof value.generationId !== 'string'
     || typeof value.localId !== 'string'
     || typeof value.revision !== 'string'
     || typeof value.updatedAtMs !== 'number'
   ) return null;
-  return value as PluginServiceMetadata;
+  const sourceCustody = PluginSourceCustodyV1Schema.safeParse(value.sourceCustody);
+  if (!sourceCustody.success) return null;
+  return { ...value, sourceCustody: sourceCustody.data } as PluginServiceMetadata;
 }
 
 function projectSummary(ref: SubagentRefV1): SubagentSummary | null {
@@ -193,7 +197,7 @@ function projectOwnedSummary(ref: SubagentRefV1, identity: PluginSubagentHostIde
   if (!metadata || identityKey(identity) !== identityKey({
     pluginId: metadata.pluginId,
     contributionId: metadata.contributionId,
-    immutableGenerationId: metadata.generationId,
+    sourceCustody: metadata.sourceCustody,
     parentSessionId: ref.parentSessionId,
   })) return null;
   return projectSummary(ref);
@@ -234,7 +238,7 @@ export function createPluginSubagentsService(params: Readonly<{
           pluginServiceV1: {
             pluginId: params.identity.pluginId,
             contributionId: params.identity.contributionId,
-            generationId: params.identity.immutableGenerationId,
+            sourceCustody: params.identity.sourceCustody,
             localId: observationId,
             revision: summary.revision,
             updatedAtMs: summary.updatedAtMs,

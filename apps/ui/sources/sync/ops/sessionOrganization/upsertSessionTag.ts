@@ -27,8 +27,11 @@ export async function upsertSessionTag(params: Readonly<{
     credentials: AuthCredentials;
     serverId: string;
     serverUrl?: string;
+    requestAtEndpoint?: (path: string, init?: RequestInit) => Promise<Response>;
+    assertCurrent?: () => void;
     request: CreateOrUpdateSessionOrganizationTagRequest;
 }>): Promise<UiSessionOrganizationTag> {
+    params.assertCurrent?.();
     const request: ConcreteSessionOrganizationTagRequest = {
         ...params.request,
         tagId: params.request.tagId ?? createSessionOrganizationOpaqueId({
@@ -38,17 +41,21 @@ export async function upsertSessionTag(params: Readonly<{
         display: await prepareSessionOrganizationDisplayEnvelopeForWrite({
             credentials: params.credentials,
             envelope: params.request.display,
+            request: params.requestAtEndpoint,
         }),
     };
+    params.assertCurrent?.();
     const response = await upsertSessionOrganizationTagApi({
         credentials: params.credentials,
         serverUrl: params.serverUrl,
+        requestAtEndpoint: params.requestAtEndpoint,
         request,
     });
     const tag = await openSessionOrganizationTagDisplay({
         credentials: params.credentials,
         tag: response.tag,
     });
+    params.assertCurrent?.();
     const recordId = getStorage().getState().upsertSessionOrganizationTagOptimistic(params.serverId, tag);
     getStorage().getState().commitSessionOrganizationOptimistic(recordId);
     return tag;

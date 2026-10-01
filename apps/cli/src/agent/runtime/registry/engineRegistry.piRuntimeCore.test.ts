@@ -149,7 +149,7 @@ describe('engineRegistry (pi runtimeCore)', () => {
             v: 1,
             updatedAt: 42,
             ref: {
-              agentTargetKey: 'backend:pi',
+              agentTargetKey: 'agent:happier.agent.pi/pi',
               providerConnectionId: null,
               modelId: 'openai/gpt-5.4',
             },
@@ -171,7 +171,7 @@ describe('engineRegistry (pi runtimeCore)', () => {
           directory,
           metadata: createTestMetadata({ path: directory }),
           machineId: 'machine-pi-native',
-          agentTargetKey: 'backend:pi',
+          agentTargetKey: 'agent:happier.agent.pi/pi',
           session,
           transcriptSession: session,
           messageBuffer: new MessageBuffer(),
@@ -239,7 +239,7 @@ describe('engineRegistry (pi runtimeCore)', () => {
             v: 1,
             updatedAt: 43,
             ref: {
-              agentTargetKey: 'backend:pi',
+              agentTargetKey: 'agent:happier.agent.pi/pi',
               providerConnectionId: null,
               modelId: 'openai/reject-initial-model',
             },

@@ -46,7 +46,7 @@ vi.mock('@/sync/runtime/orchestration/projectManager', () => ({
 
 import { storage } from './domains/state/storage';
 import type { Session } from './domains/state/storageTypes';
-import { createReducer } from './reducer/reducer';
+import { createReducer } from "@happier-dev/session-core/reducer";
 
 const initialStorageState = storage.getState();
 

@@ -77,7 +77,7 @@ describe('sessionControl.sessionsHttp URL encoding', () => {
         status: 'ready',
         features: FeaturesResponseSchema.parse({
           features: {
-            sessions: { enabled: true, collaboration: { enabled: true } },
+            sessions: { enabled: true },
             sharing: { session: { enabled: true } },
           },
           capabilities: {},

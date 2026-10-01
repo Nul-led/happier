@@ -51,7 +51,8 @@ export async function createNodeIrohHomeTunnelSession(input: Readonly<{
   packageRoot?: string;
   native?: NodeIrohNativeModule;
   endpointKeyPath?: string;
-  keylessEndpoint?: 'fixture' | 'probe';
+  /** Account-client helpers have no stable service identity; each gets a fresh endpoint. */
+  keylessEndpoint?: 'account_client' | 'fixture' | 'probe';
   relayPolicy?: 'automatic' | 'disabled';
   relayUrls?: readonly string[];
 }>): Promise<NodeIrohHomeTunnelSession> {
@@ -59,7 +60,7 @@ export async function createNodeIrohHomeTunnelSession(input: Readonly<{
   if (Boolean(endpointKeyPath) === Boolean(input.keylessEndpoint)) {
     throw new IrohError(
       'invalid_descriptor',
-      'Node Iroh sessions require a persistent endpoint key path; keyless identity is explicit fixture/probe use only',
+      'Node Iroh sessions require either a persistent endpoint key path or an explicit keyless endpoint role',
     );
   }
   const loaded = input.native ? null : loadIrohNodeNative(input.packageRoot);

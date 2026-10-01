@@ -1,4 +1,5 @@
 import { decodeBase64, decrypt } from '../encryption';
+import { normalizeSessionMetadataForRead } from '@happier-dev/protocol';
 import type { AgentState, Metadata, Update } from '../types';
 import { tryParseJsonObject } from '@/utils/tryParseJsonRecord';
 import { readKnownPendingQueueState, type KnownPendingQueueState } from './pendingQueueState';
@@ -118,7 +119,23 @@ export function handleSessionStateUpdate(params: {
             // A shared-only socket projection is not an owner compatibility view.
             // Keep the exact local owner tuple intact until the canonical by-id
             // reader can atomically replace all three envelopes.
-            params.onMetadataEnvelopeTupleInvalidated?.();
+            const hasVersionBeyond = (envelope: unknown, currentVersion: number): boolean => {
+                if (!envelope || typeof envelope !== 'object') return true;
+                const version = (envelope as { version?: unknown }).version;
+                return typeof version !== 'number' || !Number.isInteger(version) || version > currentVersion;
+            };
+            const hasMetadata = Object.prototype.hasOwnProperty.call(body, 'metadata');
+            const hasAgentState = Object.prototype.hasOwnProperty.call(body, 'agentState');
+            const hasOwnerMetadata = Object.prototype.hasOwnProperty.call(body, 'ownerMetadata');
+            // Owner tuple writes advance both versions. An equal-version owner
+            // envelope may be a reseal of the same content, not a new state.
+            if (
+                (hasOwnerMetadata && (!hasMetadata || !hasAgentState))
+                || (hasMetadata && hasVersionBeyond(body.metadata, params.metadataVersion))
+                || (hasAgentState && hasVersionBeyond(body.agentState, params.agentStateVersion))
+            ) {
+                params.onMetadataEnvelopeTupleInvalidated?.();
+            }
             return {
                 handled: true,
                 metadata: params.metadata,
@@ -150,9 +167,13 @@ export function handleSessionStateUpdate(params: {
                 ...params,
             });
             if (decodedMetadata.ok) {
-                metadata = decodedMetadata.value;
-                metadataVersion = body.metadata.version;
-                params.onMetadataUpdated();
+                try {
+                    metadata = normalizeSessionMetadataForRead(decodedMetadata.value);
+                    metadataVersion = body.metadata.version;
+                    params.onMetadataUpdated();
+                } catch {
+                    params.onWarning('Ignoring invalid Session terminal metadata');
+                }
             }
         }
 

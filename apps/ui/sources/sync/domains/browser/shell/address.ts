@@ -4,12 +4,21 @@ import {
 } from '@happier-dev/protocol';
 
 export type BrowserAddressNormalizationOptions = Readonly<{
+    /** A `{query}` template; omitted means the default engine below. */
     searchUrlTemplate?: string;
 }>;
 
+/**
+ * The search engine a typed query goes to when nothing chooses another. Without a default every
+ * non-address entry ended in "No search engine is configured" (H-UX F-16), because no producer of a
+ * template existed. A privacy-respecting engine with a stable, documented `?q=` URL. A user setting
+ * can pass its own template through `searchUrlTemplate` when one exists; this stays the default.
+ */
+export const DEFAULT_BROWSER_SEARCH_URL_TEMPLATE = 'https://duckduckgo.com/?q={query}';
+
 export type BrowserAddressNormalizationResult =
     | Readonly<{ ok: true; url: string }>
-    | Readonly<{ ok: false; reasonCode: 'empty' | 'invalid_url' | 'search_unconfigured' }>;
+    | Readonly<{ ok: false; reasonCode: 'empty' | 'invalid_url' }>;
 
 function parseHttpUrl(input: string): string | null {
     try {
@@ -100,11 +109,12 @@ export function normalizeBrowserAddressInput(
         return domainUrl ? { ok: true, url: domainUrl } : { ok: false, reasonCode: 'invalid_url' };
     }
 
-    if (!options.searchUrlTemplate) {
-        return { ok: false, reasonCode: 'search_unconfigured' };
+    // Something with a scheme was meant as an address; a malformed one is an error, not a query.
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(input)) {
+        return { ok: false, reasonCode: 'invalid_url' };
     }
 
-    const searchUrl = parseHttpUrl(fillSearchTemplate(options.searchUrlTemplate, input));
+    const searchUrl = parseHttpUrl(fillSearchTemplate(options.searchUrlTemplate ?? DEFAULT_BROWSER_SEARCH_URL_TEMPLATE, input));
     return searchUrl ? { ok: true, url: searchUrl } : { ok: false, reasonCode: 'invalid_url' };
 }
 
@@ -113,9 +123,10 @@ export function normalizeBrowserAddressInput(
  * field: the http(s) scheme, a leading `www.`, and a bare root trailing slash are
  * trimmed while the path/query/fragment are preserved. Non-http(s) or unparseable
  * input falls back to the trimmed raw value so the field is never blank when a URL
- * exists; `null`/empty input yields an empty string.
+ * exists; `null`/empty input yields an empty string. `hostOnly` keeps just the host (the phone's
+ * address capsule, which names where the page is and leaves the path for a tap).
  */
-export function formatBrowserDisplayUrl(raw: string | null): string {
+export function formatBrowserDisplayUrl(raw: string | null, options?: Readonly<{ hostOnly?: boolean }>): string {
     const input = (raw ?? '').trim();
     if (!input) {
         return '';
@@ -133,6 +144,7 @@ export function formatBrowserDisplayUrl(raw: string | null): string {
     }
 
     const host = parsed.host.replace(/^www\./i, '');
+    if (options?.hostOnly === true) return host;
     const path = parsed.pathname === '/' ? '' : parsed.pathname;
     return `${host}${path}${parsed.search}${parsed.hash}`;
 }

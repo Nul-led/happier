@@ -8,6 +8,21 @@ import {
 import { serializeWindowsCommandLine } from './windowsCommandLine';
 
 describe('Windows process launch custody', () => {
+  it('accepts a command change within the captured process generation before taskkill', async () => {
+    const terminate = vi.fn(async () => undefined);
+    const cancel = createExactWindowsProcessCancellation({
+      pid: 4_242,
+      processStartTimeMs: 1_000,
+      processCommandHash: 'a'.repeat(64),
+      readProcessIdentityByPidFn: vi.fn()
+        .mockResolvedValueOnce({ pid: 4_242, processStartTimeMs: 1_000, command: 'new command' })
+        .mockResolvedValueOnce(null),
+      terminateProcessTreeFn: terminate,
+      isPidAliveFn: () => false,
+    });
+    await expect(cancel()).resolves.toEqual({ status: 'stopped' });
+    expect(terminate).toHaveBeenCalledOnce();
+  });
   it('taskkills the exact captured birth and reports stopped only after absence', async () => {
     const readIdentity = vi.fn()
       .mockResolvedValueOnce({ processStartTimeMs: 1_000 })

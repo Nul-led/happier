@@ -19,6 +19,33 @@ describe('resolveReplaySourceContextAuthority', () => {
     fetchSessionByIdCompat.mockReset();
   });
 
+  it('retains the managed source directory as private seed evidence only when source machine identity agrees', async () => {
+    fetchSessionByIdCompat.mockResolvedValue(createSessionRecordFixture({
+      id: 'managed-source',
+      encryptionMode: 'plain',
+      metadata: JSON.stringify({ machineId: 'machine-1', path: '/private/source', sessionDirectoryV1: { v: 1, kind: 'managed' } }),
+      machineId: 'machine-1',
+      effectiveAccess: {
+        v: 1,
+        level: 'owner',
+        sources: [{ kind: 'owner' }],
+        capabilities: projectLegacySessionAccessCapabilitiesV1({ level: 'owner' }),
+      },
+    }));
+    const { resolveReplaySourceContextAuthority } = await import('./resolveReplaySourceContextAuthority');
+    await expect(resolveReplaySourceContextAuthority({ credentials, sourceSessionId: 'managed-source' }))
+      .resolves.toMatchObject({ status: 'owned', sourceMachineId: 'machine-1', managedDirectorySeed: {
+        sourceSessionId: 'managed-source', sourcePath: '/private/source',
+      } });
+    fetchSessionByIdCompat.mockResolvedValue(createSessionRecordFixture({
+      id: 'managed-source', encryptionMode: 'plain', machineId: 'machine-other',
+      metadata: JSON.stringify({ machineId: 'machine-1', path: '/private/source', sessionDirectoryV1: { v: 1, kind: 'managed' } }),
+      effectiveAccess: { v: 1, level: 'owner', sources: [{ kind: 'owner' }], capabilities: projectLegacySessionAccessCapabilitiesV1({ level: 'owner' }) },
+    }));
+    await expect(resolveReplaySourceContextAuthority({ credentials, sourceSessionId: 'managed-source' }))
+      .resolves.toEqual({ status: 'owned', sourceMachineId: null, managedSource: true });
+  });
+
   it('accepts a current owner projection when the released share marker is absent', async () => {
     fetchSessionByIdCompat.mockResolvedValue(createSessionRecordFixture({
       id: 'owned-source',

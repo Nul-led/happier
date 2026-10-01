@@ -57,7 +57,7 @@ export function createDisconnectedTerminalHostResumeLifecycle(input: Readonly<{
         } else {
           return {
             type: 'error',
-            errorMessage: 'The existing session has preserved terminal topology that cannot be verified. Stop it explicitly before retrying resume.',
+            errorMessage: 'The existing session has preserved terminal topology that cannot be verified. Reconnect to the original terminal host and retry Resume, or Stop the session if that action is available before resuming on a fresh host.',
           };
         }
       }
@@ -67,7 +67,7 @@ export function createDisconnectedTerminalHostResumeLifecycle(input: Readonly<{
       if (gate.action === 'resume') return null;
       return {
         type: 'error',
-        errorMessage: `The existing session has a preserved terminal host that cannot be resumed (${gate.reason}). Stop it explicitly before retrying resume.`,
+        errorMessage: `The existing session has a preserved terminal host that cannot be resumed (${gate.reason}). Reconnect to the original terminal host and retry Resume, or Stop the session if that action is available before resuming on a fresh host.`,
       };
     },
     runStop: async (

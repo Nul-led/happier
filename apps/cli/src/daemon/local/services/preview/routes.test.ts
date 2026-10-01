@@ -1,11 +1,42 @@
 import { describe, expect, it } from 'vitest';
+import { AxiosError, AxiosHeaders } from 'axios';
 
-import { createLocalServicePreviewRoutes } from './routes';
+import { createLocalServicePreviewRoutes as createRoutes } from './routes';
+import type { LocalServicePreviewResourceV1 } from '@happier-dev/protocol';
 import { createLocalServicePreviewRegistry } from './registry';
 import { createLocalServiceInventoryRegistry } from '../inventory/registry';
 import type { NormalizedLocalServiceInventoryEntry } from '../inventory/scanner';
+import type { LocalServicePreviewServerInput } from './serverRoutes';
+import { createServer, request as httpRequest } from 'node:http';
+import { once } from 'node:events';
+import { startLocalServicePreviewNativeAdapter } from './nativeAdapter';
 
 const MACHINE_ID = 'machine-a';
+
+function createLocalServicePreviewRoutes(
+    input: Parameters<typeof createRoutes>[0],
+    deletePreview?: NonNullable<LocalServicePreviewServerInput['http']>['delete'],
+) {
+    let admission = 0;
+    // HTTP is the genuine server boundary; inventory, registry and route logic remain real.
+    return createRoutes({
+        ...input,
+        accountId: 'account-1',
+        server: {
+            token: 'daemon-token',
+            serverBaseUrl: 'https://home.example.test',
+            http: {
+                async post(_url: string, body: unknown) {
+                    const resource = body as LocalServicePreviewResourceV1;
+                    const url = new URL(`https://${resource.previewId}.preview.example.test${resource.initialPath.pathname}${resource.initialPath.search}`);
+                    url.searchParams.set('previewToken', `admission-${++admission}`);
+                    return { data: { resource, accessUrl: url.toString(), expiresAt: 61_000 } };
+                },
+                delete: deletePreview ?? (async () => ({ data: { ok: true } })),
+            },
+        },
+    });
+}
 
 function inventoryEntry(overrides: Partial<NormalizedLocalServiceInventoryEntry> = {}): NormalizedLocalServiceInventoryEntry {
     return {
@@ -49,6 +80,122 @@ function inventoryRegistryWith(entries: readonly NormalizedLocalServiceInventory
 }
 
 describe('createLocalServicePreviewRoutes lifecycle', () => {
+    it.each(['http', 'websocket'] as const)('rejects a malformed absolute %s request target and keeps the native adapter live', async (kind) => {
+        let upstreamRequests = 0;
+        const target = createServer((_request, response) => { upstreamRequests += 1; response.end('alive'); });
+        target.listen(0, '127.0.0.1');
+        await once(target, 'listening');
+        const address = target.address();
+        if (!address || typeof address === 'string') throw new Error('Expected loopback target');
+        const abort = new AbortController();
+        const adapter = await startLocalServicePreviewNativeAdapter({ signal: abort.signal, preview: {
+            previewId: 'preview_1', machineId: MACHINE_ID, owner: { kind: 'user', id: 'account-1' },
+            target: { scheme: 'http', host: '127.0.0.1', port: address.port },
+            initialPath: { pathname: '/', search: '' }, display: { title: 'Preview', addressLabel: 'loopback' }, originMode: 'host',
+        } });
+        let malformed: ReturnType<typeof httpRequest> | undefined;
+        let onUncaught: ((error: Error) => void) | undefined;
+        try {
+            const outcome = await new Promise<{ status: number } | { failure: Error }>((resolve) => {
+                // Observe the real callback failure without substituting an ingress/parser.
+                // Vitest still records any uncaught exception as a failing daemon contract.
+                onUncaught = (error) => resolve({ failure: error });
+                process.once('uncaughtExceptionMonitor', onUncaught);
+                malformed = httpRequest({ host: '127.0.0.1', port: adapter.port, method: 'GET', path: 'http://',
+                    ...(kind === 'websocket' ? { headers: { connection: 'Upgrade', upgrade: 'websocket',
+                        'sec-websocket-key': 'dGhlIHNhbXBsZSBub25jZQ==', 'sec-websocket-version': '13' } } : {}),
+                }, (response) => { response.resume(); resolve({ status: response.statusCode ?? 0 }); });
+                malformed.once('error', (failure) => resolve({ failure }));
+                malformed.end();
+            });
+            malformed?.destroy();
+            expect(outcome).toEqual({ status: 400 });
+            expect(upstreamRequests).toBe(0);
+            expect(await (await fetch(`http://127.0.0.1:${adapter.port}/`)).text()).toBe('alive');
+            expect(upstreamRequests).toBe(1);
+        } finally {
+            if (onUncaught) process.off('uncaughtExceptionMonitor', onUncaught);
+            malformed?.destroy();
+            await adapter.close();
+            target.closeAllConnections();
+            await new Promise<void>((resolve) => target.close(() => resolve()));
+        }
+    });
+    it('projects the access owner no-private-route reason without losing the registration', async () => {
+        const routes = createRoutes({
+            machineId: MACHINE_ID,
+            accountId: 'account-1',
+            registry: createLocalServicePreviewRegistry(),
+            inventoryRegistry: inventoryRegistryWith([inventoryEntry()]),
+            server: {
+                token: 'daemon-token',
+                http: {
+                    async post(_url, body) {
+                        return { data: { resource: body, accessUrl: null, expiresAt: null, accessUnavailableReasonCode: 'preview_private_route_unavailable' } };
+                    },
+                    async delete() { return { data: { ok: true } }; },
+                },
+            },
+        });
+        const opened = await routes.openOrCreate({ machineId: MACHINE_ID, sessionId: 'session-1', inventoryEntryId: 'entry-vite' });
+        expect(opened.ok).toBe(true);
+        if (!opened.ok) return;
+        expect(opened.response.preview).toMatchObject({ accessUrl: null, accessUnavailableReasonCode: 'preview_private_route_unavailable' });
+        expect((await routes.getSnapshot()).previews).toEqual([opened.response.preview]);
+    });
+    it('reads preview snapshots without minting new viewer admissions', async () => {
+        const routes = createLocalServicePreviewRoutes({ machineId: MACHINE_ID, registry: createLocalServicePreviewRegistry(), inventoryRegistry: inventoryRegistryWith([inventoryEntry()]), now: () => 1_000 });
+        const opened = await routes.openOrCreate({ machineId: MACHINE_ID, inventoryEntryId: 'entry-vite' });
+        expect(opened.ok).toBe(true);
+        if (!opened.ok) return;
+        const first = await routes.getSnapshot();
+        const second = await routes.getSnapshot();
+        expect(first.previews?.[0]?.accessUrl).toBe(opened.response.preview.accessUrl);
+        expect(second.previews?.[0]?.accessUrl).toBe(first.previews?.[0]?.accessUrl);
+        expect(second.previews?.[0]?.resource.previewId).toBe(opened.response.preview.resource.previewId);
+    });
+    it('keeps a failed registration as a typed row without losing healthy preview snapshots', async () => {
+        const routes = createRoutes({
+            machineId: MACHINE_ID,
+            accountId: 'account-1',
+            registry: createLocalServicePreviewRegistry(),
+            inventoryRegistry: inventoryRegistryWith([inventoryEntry(), inventoryEntry({ id: 'entry-bad', port: 5174, endpoint: { scheme: 'http', host: '127.0.0.1', port: 5174, probeState: 'ready', probedAt: 2_000 } })]),
+            server: {
+                token: 'daemon-token',
+                http: {
+                    async post(_url, body) {
+                        const resource = body as LocalServicePreviewResourceV1;
+                        if (resource.target.port === 5174) throw new Error('registration refused');
+                        return { data: { resource, accessUrl: 'https://healthy.preview.example.test/?previewToken=one', expiresAt: 61_000 } };
+                    },
+                    async delete() { return { data: { ok: true } }; },
+                },
+            },
+        });
+        expect((await routes.openOrCreate({ machineId: MACHINE_ID, inventoryEntryId: 'entry-vite' })).ok).toBe(true);
+        expect(await routes.openOrCreate({ machineId: MACHINE_ID, inventoryEntryId: 'entry-bad' })).toEqual({ ok: false, reasonCode: 'preview_registration_failed' });
+        const snapshot = await routes.getSnapshot();
+        expect(snapshot.previews).toHaveLength(2);
+        expect(snapshot.previews?.find((row) => row.resource.target.port === 5173)?.accessUrl).toContain('healthy.preview.example.test');
+        expect(snapshot.previews?.find((row) => row.resource.target.port === 5174)).toMatchObject({ accessUrl: null, expiresAt: null, diagnostics: [{ code: 'preview_registration_failed', severity: 'error', scope: 'privatePreview' }] });
+    });
+    it('keeps sessionless Machine scope real and does not reuse another Session or path', async () => {
+        const routes = createLocalServicePreviewRoutes({ machineId: MACHINE_ID, registry: createLocalServicePreviewRegistry(), inventoryRegistry: inventoryRegistryWith([inventoryEntry()]), now: () => 1_000 });
+        const unscoped = await routes.openOrCreate({ machineId: MACHINE_ID, inventoryEntryId: 'entry-vite' });
+        const first = await routes.openOrCreate({ machineId: MACHINE_ID, sessionId: 'session-1', inventoryEntryId: 'entry-vite' });
+        const other = await routes.openOrCreate({ machineId: MACHINE_ID, sessionId: 'session-2', inventoryEntryId: 'entry-vite', initialPath: { pathname: '/second', search: '?view=2' } });
+        expect(unscoped.ok && first.ok && other.ok).toBe(true);
+        if (!unscoped.ok || !first.ok || !other.ok) return;
+        expect(unscoped.response.preview.resource.sessionId).toBeUndefined();
+        expect(unscoped.response.preview.resource.owner).toEqual({ kind: 'user', id: 'account-1' });
+        expect(first.response.preview.previewId).not.toBe(other.response.preview.previewId);
+        expect(other.response.preview.resource.sessionId).toBe('session-2');
+        expect(new URL(other.response.preview.accessUrl ?? '').pathname).toBe('/second');
+        const navigated = await routes.openOrCreate({ machineId: MACHINE_ID, sessionId: 'session-1', inventoryEntryId: 'entry-vite', initialPath: { pathname: '/new', search: '?tab=3' } });
+        expect(navigated.ok).toBe(true);
+        if (navigated.ok) expect(new URL(navigated.response.preview.accessUrl ?? '').pathname).toBe('/new');
+    });
+
     it('openOrCreate registers a loopback inventory entry and mints its accessUrl', async () => {
         const registry = createLocalServicePreviewRegistry();
         const routes = createLocalServicePreviewRoutes({
@@ -67,7 +214,7 @@ describe('createLocalServicePreviewRoutes lifecycle', () => {
         expect(result.ok).toBe(true);
         if (!result.ok) return;
         expect(result.response.status).toBe('created');
-        expect(result.response.preview.accessUrl).toBe('http://127.0.0.1:5173/');
+        expect(new URL(result.response.preview.accessUrl ?? '').hostname).toMatch(/\.preview\.example\.test$/);
         expect(result.response.preview.resource.browserTarget?.kind).toBe('localServicePreview');
         // The snapshot now reflects the registered preview.
         expect(result.response.snapshot.previews).toHaveLength(1);
@@ -100,7 +247,7 @@ describe('createLocalServicePreviewRoutes lifecycle', () => {
 
         expect(result.ok).toBe(true);
         if (!result.ok) return;
-        expect(result.response.preview.accessUrl).toBe('https://127.0.0.1:8443/');
+        expect(new URL(result.response.preview.accessUrl ?? '').hostname).toMatch(/\.preview\.example\.test$/);
         expect(result.response.preview.resource.target).toMatchObject({
             scheme: 'https',
             host: '127.0.0.1',
@@ -192,6 +339,38 @@ describe('createLocalServicePreviewRoutes lifecycle', () => {
         if (!revoked.ok) return;
         expect(revoked.response.revoked).toBe(true);
         expect(revoked.response.snapshot.previews).toHaveLength(0);
+    });
+
+    it('revoke preserves failures but removes a registration the server confirms absent', async () => {
+        let status = 403;
+        let reasonCode = 'session_not_authorized';
+        const routes = createLocalServicePreviewRoutes({
+            machineId: MACHINE_ID,
+            registry: createLocalServicePreviewRegistry(),
+            inventoryRegistry: inventoryRegistryWith([inventoryEntry()]),
+        }, async () => {
+            throw new AxiosError('Preview deletion refused', undefined, undefined, undefined, {
+                status,
+                statusText: 'Error',
+                headers: {},
+                config: { headers: new AxiosHeaders() },
+                data: { reasonCode },
+            });
+        });
+        const created = await routes.openOrCreate({ machineId: MACHINE_ID, inventoryEntryId: 'entry-vite' });
+        expect(created.ok).toBe(true);
+        if (!created.ok) return;
+        const request = { machineId: MACHINE_ID, previewId: created.response.preview.previewId };
+
+        expect(await routes.revoke(request)).toEqual({ ok: false, reasonCode });
+        expect((await routes.getSnapshot()).previews).toHaveLength(1);
+        status = 404;
+        expect(await routes.revoke(request)).toEqual({ ok: false, reasonCode });
+        expect((await routes.getSnapshot()).previews).toHaveLength(1);
+
+        reasonCode = 'preview_not_found';
+        const revoked = await routes.revoke(request);
+        expect(revoked).toMatchObject({ ok: true, response: { revoked: true, snapshot: { previews: [] } } });
     });
 
     it('revoke of a non-existent preview reports revoked:false (idempotent)', async () => {

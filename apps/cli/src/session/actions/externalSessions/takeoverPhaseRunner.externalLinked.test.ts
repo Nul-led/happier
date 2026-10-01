@@ -29,9 +29,23 @@ import {
 import {
   createExternalSessionPersistedTakeoverAdmissionOwner,
 } from './persistedTakeoverAdmission';
+import {
+  createPluginRuntimeOccurrenceId,
+  type PluginRuntimeOccurrenceId,
+} from '@/plugins/runtime/runtimeSlots';
+
+const occurrenceIds = new Map<string, PluginRuntimeOccurrenceId>();
+
+function occurrenceId(label: string): PluginRuntimeOccurrenceId {
+  const existing = occurrenceIds.get(label);
+  if (existing) return existing;
+  const created = createPluginRuntimeOccurrenceId(label);
+  occurrenceIds.set(label, created);
+  return created;
+}
 
 function externalLinkedRecord(): ExternalSessionOperationRecordV1 {
-  const request = {
+  const request: ExternalSessionOperationRecordV1['request'] = {
     v: 1 as const,
     idempotencyKey: 'takeover-external-1',
     sessionId: 'session-1',
@@ -45,7 +59,7 @@ function externalLinkedRecord(): ExternalSessionOperationRecordV1 {
       },
       linkGeneration: 'link-1',
       sourceGeneration: 'source-1',
-      contributionGeneration: 'contribution-1',
+      sourceCustody: { kind: 'development', registeredRootId: 'contribution-1' },
     },
     plan: 'takeover' as const,
     targetStorageMode: 'external-linked' as const,
@@ -101,7 +115,7 @@ describe('external-linked durable takeover continuation', () => {
     const acquire = vi.fn();
     const loadCurrent = vi.fn(async () => ({
       linked: {} as never,
-      pluginGeneration: record.request.source.contributionGeneration,
+      occurrenceId: occurrenceId('plugin-occurrence-1'),
       quiescenceIdentity: 'verified-source-and-process',
       permitsAdmission: true,
       hostedOwnerSessionId: null,
@@ -174,7 +188,7 @@ describe('external-linked durable takeover continuation', () => {
     });
     const prepared = {
       linked: {} as never,
-      pluginGeneration: 'contribution-1',
+      occurrenceId: occurrenceId('contribution-1'),
       quiescenceIdentity: 'verified-source-and-process-1',
       permitsAdmission: true,
       externalLinkedTakeoverWriterSafety: 'native_prevention' as const,
@@ -253,7 +267,7 @@ describe('external-linked durable takeover continuation', () => {
     });
     const prepared = {
       linked: {} as never,
-      pluginGeneration: 'contribution-1',
+      occurrenceId: occurrenceId('contribution-1'),
       quiescenceIdentity: 'verified-source-and-process-1',
       permitsAdmission: true,
       externalLinkedTakeoverWriterSafety: 'native_prevention' as const,
@@ -281,7 +295,7 @@ describe('external-linked durable takeover continuation', () => {
             origin: {
               agentId: 'example',
               pluginId: 'example.plugin',
-              generation: 'contribution-2',
+              occurrenceId: occurrenceId('contribution-2'),
             },
           },
         }),
@@ -321,7 +335,7 @@ describe('external-linked durable takeover continuation', () => {
     });
     const prepared = {
       linked: {} as never,
-      pluginGeneration: 'contribution-1',
+      occurrenceId: occurrenceId('contribution-1'),
       quiescenceIdentity: 'verified-source-and-process-1',
       permitsAdmission: true,
       externalLinkedTakeoverWriterSafety: 'native_prevention' as const,
@@ -357,7 +371,7 @@ describe('external-linked durable takeover continuation', () => {
             origin: {
               agentId: 'example',
               pluginId: 'example.plugin',
-              generation: 'contribution-1',
+              occurrenceId: occurrenceId('contribution-1'),
             },
           },
         }),
@@ -399,7 +413,7 @@ describe('external-linked durable takeover continuation', () => {
     });
     const prepared = {
       linked: {} as never,
-      pluginGeneration: 'contribution-1',
+      occurrenceId: occurrenceId('contribution-1'),
       quiescenceIdentity: 'verified-source-and-process-1',
       permitsAdmission: true,
       externalLinkedTakeoverWriterSafety: 'native_prevention' as const,
@@ -439,7 +453,7 @@ describe('external-linked durable takeover continuation', () => {
             origin: {
               agentId: 'example',
               pluginId: 'example.plugin',
-              generation: 'contribution-1',
+              occurrenceId: occurrenceId('contribution-1'),
             },
           },
         }),
@@ -525,7 +539,7 @@ describe('external-linked durable takeover continuation', () => {
     } as never;
     const prepared = {
       linked,
-      pluginGeneration: record.request.source.contributionGeneration,
+      occurrenceId: occurrenceId('plugin-occurrence-1'),
       quiescenceIdentity: 'verified-source-and-process-1',
       permitsAdmission: true,
       externalLinkedTakeoverWriterSafety: 'native_prevention' as const,
@@ -594,7 +608,7 @@ describe('external-linked durable takeover continuation', () => {
             origin: {
               agentId: 'example',
               pluginId: 'example.plugin',
-              generation: record.request.source.contributionGeneration,
+              occurrenceId: occurrenceId('plugin-occurrence-1'),
             },
           },
         }),
@@ -653,9 +667,7 @@ describe('external-linked durable takeover continuation', () => {
       activeServerDir,
       ownerId: 'external-linked-runtime-bound-timeout-owner',
     });
-    const admissionWaiter = createPersistedTakeoverAdmissionWaiter({
-      timeoutMs: 30_000,
-    });
+    const admissionWaiter = createPersistedTakeoverAdmissionWaiter();
     const admissionOwner = createExternalSessionPersistedTakeoverAdmissionOwner({
       activeServerDir,
       admissionWaiter,
@@ -666,7 +678,7 @@ describe('external-linked durable takeover continuation', () => {
     });
     const prepared = {
       linked: {} as never,
-      pluginGeneration: record.request.source.contributionGeneration,
+      occurrenceId: occurrenceId('plugin-occurrence-1'),
       quiescenceIdentity: 'verified-source-and-process-1',
       permitsAdmission: true,
       externalLinkedTakeoverWriterSafety: 'native_prevention' as const,
@@ -739,7 +751,7 @@ describe('external-linked durable takeover continuation', () => {
           origin: {
             agentId: 'example',
             pluginId: 'example.plugin',
-            generation: record.request.source.contributionGeneration,
+            occurrenceId: occurrenceId('plugin-occurrence-1'),
           },
         },
       }),
@@ -897,8 +909,7 @@ describe('external-linked durable takeover continuation', () => {
       };
       const loadCurrent = vi.fn(async () => ({
         linked: {} as never,
-        pluginGeneration:
-          interrupted.request.source.contributionGeneration,
+        occurrenceId: occurrenceId('plugin-occurrence-1'),
         quiescenceIdentity: 'verified-source-and-process-1',
         permitsAdmission: hostedOwnerSessionId === null,
         externalLinkedTakeoverWriterSafety: 'native_prevention' as const,
@@ -914,8 +925,7 @@ describe('external-linked durable takeover continuation', () => {
           origin: {
             agentId: 'example',
             pluginId: 'example.plugin',
-            generation:
-              interrupted.request.source.contributionGeneration,
+            occurrenceId: occurrenceId('plugin-occurrence-1'),
           },
         },
       }));
@@ -1131,8 +1141,7 @@ describe('external-linked durable takeover continuation', () => {
     const acquire = vi.fn();
     const loadCurrent = vi.fn(async () => ({
       linked: {} as never,
-      pluginGeneration:
-        interrupted.request.source.contributionGeneration,
+      occurrenceId: occurrenceId('plugin-occurrence-1'),
       quiescenceIdentity: 'verified-source-and-process-1',
       permitsAdmission: hostedOwnerSessionId === null,
       externalLinkedTakeoverWriterSafety: 'native_prevention' as const,
@@ -1221,8 +1230,7 @@ describe('external-linked durable takeover continuation', () => {
         bindings: interrupted.bindings,
         request: expect.objectContaining({
           source: expect.objectContaining({
-            contributionGeneration:
-              interrupted.request.source.contributionGeneration,
+            sourceCustody: interrupted.request.source.sourceCustody,
           }),
         }),
       }));
@@ -1384,7 +1392,7 @@ describe('external-linked durable takeover continuation', () => {
         linkGeneration: 'link-1',
         source: { kind: 'jsonl', path: '/tmp/session.jsonl' },
       } as never,
-      pluginGeneration: 'contribution-1',
+      occurrenceId: occurrenceId('contribution-1'),
       quiescenceIdentity: 'verified-source-and-process-1',
       permitsAdmission: true,
       externalLinkedTakeoverWriterSafety: 'native_prevention' as const,
@@ -1444,7 +1452,7 @@ describe('external-linked durable takeover continuation', () => {
           origin: {
             agentId: 'example',
             pluginId: 'example.plugin',
-            generation: 'contribution-1',
+            occurrenceId: occurrenceId('contribution-1'),
           },
         },
       });
@@ -1511,10 +1519,12 @@ describe('external-linked durable takeover continuation', () => {
       expect(resolveSpawn).toHaveBeenNthCalledWith(1, expect.objectContaining({
         sessionId: record.request.sessionId,
         targetDirectory: record.request.targetDirectory,
+        transcriptStorage: 'direct',
       }));
       expect(resolveSpawn).toHaveBeenNthCalledWith(2, expect.objectContaining({
         sessionId: record.request.sessionId,
         targetDirectory: record.request.targetDirectory,
+        transcriptStorage: 'direct',
       }));
       expect(spawnResolvedTakeoverSession).toHaveBeenCalledOnce();
       expect(spawnSession).toHaveBeenCalledOnce();
@@ -1557,7 +1567,7 @@ describe('external-linked durable takeover continuation', () => {
     const admissionWaiter = createPersistedTakeoverAdmissionWaiter();
     const prepared = {
       linked: {} as never,
-      pluginGeneration: record.request.source.contributionGeneration,
+      occurrenceId: occurrenceId('plugin-occurrence-1'),
       quiescenceIdentity: 'verified-source-and-process-1',
       permitsAdmission: true,
       externalLinkedTakeoverWriterSafety: 'native_prevention' as const,
@@ -1598,7 +1608,7 @@ describe('external-linked durable takeover continuation', () => {
       sendHistoricalCommand: sendAdmissionCommand,
       loadExternalLinkedCurrent: async () => ({
         linked: admissionLinked,
-        pluginGeneration: record.request.source.contributionGeneration,
+        occurrenceId: occurrenceId('plugin-occurrence-1'),
         quiescenceIdentity: 'verified-source-and-process-1',
         permitsAdmission: true,
         externalLinkedTakeoverWriterSafety: 'native_prevention' as const,
@@ -1691,7 +1701,7 @@ describe('external-linked durable takeover continuation', () => {
             origin: {
               agentId: 'example',
               pluginId: 'example.plugin',
-              generation: record.request.source.contributionGeneration,
+              occurrenceId: occurrenceId('plugin-occurrence-1'),
             },
           },
         }),

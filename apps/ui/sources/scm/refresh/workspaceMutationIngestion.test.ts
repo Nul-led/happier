@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type { NormalizedMessage } from '@/sync/typesRaw';
+import type { NormalizedMessage } from "@happier-dev/session-core/raw";
 
 import { createWorkspaceMutationIngestion } from './workspaceMutationIngestion';
 

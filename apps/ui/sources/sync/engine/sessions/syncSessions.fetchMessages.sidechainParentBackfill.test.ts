@@ -1,8 +1,9 @@
+import { type SessionMessageV1 } from '@happier-dev/protocol';
 import { describe, expect, it, vi } from 'vitest';
-import type { ApiMessage } from '@/sync/api/types/apiTypes';
+
 import { fetchAndApplyMessages } from './syncSessions';
 
-function buildApiMessage(id: string, seq: number): ApiMessage {
+function buildApiMessage(id: string, seq: number): SessionMessageV1 {
   return {
     id,
     seq,
@@ -43,7 +44,7 @@ describe('fetchAndApplyMessages (sidechain parent backfill)', () => {
       );
     });
 
-    const decryptMessages = vi.fn(async (apiMessages: ApiMessage[]) => {
+    const decryptMessages = vi.fn(async (apiMessages: SessionMessageV1[]) => {
       return apiMessages.map((m) => {
         if (m.id === 'parent') {
           return {
@@ -138,7 +139,7 @@ describe('fetchAndApplyMessages (sidechain parent backfill)', () => {
       );
     });
 
-    const decryptMessages = vi.fn(async (apiMessages: ApiMessage[]) => {
+    const decryptMessages = vi.fn(async (apiMessages: SessionMessageV1[]) => {
       return apiMessages.map((m) => {
         if (m.id === 'parent') {
           return {
@@ -230,7 +231,7 @@ describe('fetchAndApplyMessages (sidechain parent backfill)', () => {
       { status: 200, headers: { 'Content-Type': 'application/json' } },
     ));
 
-    const decryptMessages = vi.fn(async (apiMessages: ApiMessage[]) => apiMessages.map((m) => ({
+    const decryptMessages = vi.fn(async (apiMessages: SessionMessageV1[]) => apiMessages.map((m) => ({
       id: m.id,
       seq: m.seq,
       localId: null,

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ServerAccountScope } from '../scope/serverAccountScope';
-import type { PersistedSessionMessagePinV1 } from '../messages/pins/sessionMessagePins';
+import type { PersistedSessionMessagePinV1 } from '@happier-dev/session-core/pins';
 
 const store = vi.hoisted(() => new Map<string, string>());
 

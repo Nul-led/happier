@@ -7,14 +7,6 @@ import { clearTerminalControlServiceabilityProjection } from '../startup/termina
 
 export type ExactTerminalControlServiceabilityRetirement = 'retired' | 'superseded';
 
-export function requireExactTerminalControlServiceabilityRetirement(
-    result: ExactTerminalControlServiceabilityRetirement | void,
-): void {
-    if (result === 'superseded') {
-        throw new Error('terminal_control_serviceability_retirement_superseded');
-    }
-}
-
 export async function retireExactTerminalControlServiceability(params: Readonly<{
     credentials: StoredCredentials;
     sessionId: string;

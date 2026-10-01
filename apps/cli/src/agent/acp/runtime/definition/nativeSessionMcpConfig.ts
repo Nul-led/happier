@@ -2,14 +2,13 @@ import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 
 import type { PluginAgentAcpNativeSessionMcpConfigV2 } from '@happier-dev/protocol';
+import type { AgentSessionMcpLaunchConfig } from '@happier-dev/plugin-sdk/agents/runtime';
 import {
   createAbsolutePathSymlink,
   createSecureTempDirectorySync,
   expandHomePath,
   resolveHomeDirFromEnvironment,
 } from '@happier-dev/plugin-sdk/fs';
-
-import type { McpServerConfig } from '@/agent/core/AgentTypes';
 
 type EnvLike = Readonly<Record<string, string | undefined>>;
 type JsonObject = Record<string, unknown>;
@@ -205,14 +204,14 @@ function withSourceConfigRoot(
 }
 
 function buildSessionServerEntry(params: Readonly<{
-  config: McpServerConfig;
+  config: AgentSessionMcpLaunchConfig;
   constants: Readonly<Record<string, string>>;
   configRootEnvKey: string;
   sourceConfigRoot: string;
 }>): JsonObject {
   return {
     command: params.config.command,
-    args: params.config.args ?? [],
+    args: [...(params.config.args ?? [])],
     env: {
       [params.configRootEnvKey]: params.sourceConfigRoot,
       ...params.config.env,
@@ -233,7 +232,7 @@ export async function prepareNativeSessionMcpConfig(params: Readonly<{
   cwd: string;
   /** Effective launch environment: process env, launch overrides, then unsets. */
   env: EnvLike;
-  mcpServers: Readonly<Record<string, McpServerConfig>> | undefined;
+  mcpServers: Readonly<Record<string, AgentSessionMcpLaunchConfig>> | undefined;
   platform?: NodeJS.Platform;
 }>): Promise<NativeSessionMcpConfigDelivery> {
   const sessionServers = params.mcpServers ?? {};

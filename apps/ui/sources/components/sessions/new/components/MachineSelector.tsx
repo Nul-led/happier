@@ -6,6 +6,7 @@ import { DropdownMenu, type DropdownMenuItem } from '@/components/ui/forms/dropd
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import type { Machine } from '@/sync/domains/state/storageTypes';
 import { isMachineOnline } from '@/utils/sessions/machineUtils';
+import { getMachineDisplayName, resolveMachineDisplayNames } from '@/utils/sessions/machineDisplayNames';
 import { t } from '@/text';
 import { MachineCliGlyphs } from '@/components/sessions/new/components/MachineCliGlyphs';
 import { resolveMachinePickerPresence } from './resolveMachinePickerPresence';
@@ -131,6 +132,9 @@ export function MachineSelector({
         showRecent,
     ]);
     const visibleMachines = bucketModel.visibleMachines;
+    // One naming owner for every machine this selector shows, telling same-named machines apart.
+    const machineNames = React.useMemo(() => resolveMachineDisplayNames(machines), [machines]);
+    const machineName = (machine: Machine): string => machineNames.get(machine.id) ?? getMachineDisplayName(machine) ?? machine.id;
     const launchPinnedFavoriteMachines = bucketModel.favoriteMachines;
     const favoriteMachineIdSet = bucketModel.favoriteMachineIdSet;
     const visibleRecentMachinesWithoutFavorites = bucketModel.recentMachinesWithoutFavorites;
@@ -176,7 +180,7 @@ export function MachineSelector({
         return {
             id: machine.id,
             testID: getMachineOptionTestID(machine),
-            title: machine.metadata?.displayName || machine.metadata?.host || machine.id,
+            title: machineName(machine),
             subtitle: unavailable ? t('common.unavailable') : t('status.online'),
             category,
             disabled: disableOfflineMachines && unavailable,
@@ -256,7 +260,7 @@ export function MachineSelector({
                     popoverBoundaryRef={popoverBoundaryRef}
                     itemTrigger={{
                         title: dropdownTitle ?? t('newSession.selectMachineTitle'),
-                        subtitle: dropdownSubtitle ?? selectedMachine?.metadata?.displayName ?? selectedMachine?.metadata?.host ?? selectedMachine?.id ?? t('newSession.selectMachineDescription'),
+                        subtitle: dropdownSubtitle ?? (selectedMachine ? machineName(selectedMachine) : t('newSession.selectMachineDescription')),
                         showSelectedDetail: false,
                         showSelectedSubtitle: false,
                         icon: (
@@ -277,7 +281,7 @@ export function MachineSelector({
         <SearchableListSelector<Machine>
             config={{
                 getItemId: (machine) => machine.id,
-                getItemTitle: (machine) => machine.metadata?.displayName || machine.metadata?.host || machine.id,
+                getItemTitle: (machine) => machineName(machine),
                 getItemSubtitle: undefined,
                 getItemIcon: () => (
                     <Icon
@@ -320,10 +324,10 @@ export function MachineSelector({
                         />
                     ),
                 } : {}),
-                formatForDisplay: (machine) => machine.metadata?.displayName || machine.metadata?.host || machine.id,
+                formatForDisplay: (machine) => machineName(machine),
                 parseFromDisplay: (text) => {
                     return visibleMachines.find(m =>
-                        m.metadata?.displayName === text || m.metadata?.host === text || m.id === text
+                        machineName(m) === text || m.metadata?.displayName === text || m.metadata?.host === text || m.id === text
                     ) || null;
                 },
                 filterItem: (machine, searchText) => {

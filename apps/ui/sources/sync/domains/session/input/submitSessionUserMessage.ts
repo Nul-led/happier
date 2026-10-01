@@ -409,6 +409,8 @@ async function directSend(
             profileId: opts.profileId ?? undefined,
             localId: opts.localId ?? undefined,
             ...(opts.hostAdmissionOrigin ? { hostAdmissionOrigin: opts.hostAdmissionOrigin } : {}),
+            ...(opts.allowedModels ? { allowedModels: opts.allowedModels } : {}),
+            ...(opts.allowedPermissionModes ? { allowedPermissionModes: opts.allowedPermissionModes } : {}),
             bypassPendingQueueReason,
             ...(opts.serverId ? { serverId: opts.serverId } : {}),
             ...(opts.accountLifetime ? { accountLifetime: opts.accountLifetime, session: opts.session } : {}),
@@ -511,6 +513,8 @@ async function enqueuePending(
                 ...(opts.accountLifetime ? { accountLifetime: opts.accountLifetime } : {}),
                 ...(opts.recipient ? { recipient: opts.recipient } : {}),
                 ...(opts.hostAdmissionOrigin ? { hostAdmissionOrigin: opts.hostAdmissionOrigin } : {}),
+                ...(opts.allowedModels ? { allowedModels: opts.allowedModels } : {}),
+                ...(opts.allowedPermissionModes ? { allowedPermissionModes: opts.allowedPermissionModes } : {}),
                 requestedAction,
                 ...(wakeFromUiForWhenAvailable === false ? { resumeWhenAvailable: true as const } : {}),
                 onLocalPendingProjectionCreated: opts.onOutboundHandoff

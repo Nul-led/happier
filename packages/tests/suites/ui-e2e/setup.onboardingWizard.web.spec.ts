@@ -4,8 +4,7 @@ import { mkdir } from 'node:fs/promises';
 import { createRunDirs } from '../../src/testkit/runDir';
 import { startServerLight, type StartedServer } from '../../src/testkit/process/serverLight';
 import { resolveUiWebBeforeAllTimeoutMs, startUiWeb, type StartedUiWeb } from '../../src/testkit/process/uiWeb';
-import { navigateSpa } from '../../src/testkit/uiE2e/fakeTauriDesktop';
-import { gotoCommittedWithRetries, normalizeLoopbackBaseUrl } from '../../src/testkit/uiE2e/pageNavigation';
+import { createAccountAndReachMachineAddDraftState, gotoCommittedWithRetries, normalizeLoopbackBaseUrl } from '../../src/testkit/uiE2e/pageNavigation';
 
 const run = createRunDirs({ runLabel: 'ui-e2e' });
 
@@ -140,39 +139,12 @@ test.describe('ui e2e: web onboarding wizard', () => {
         await expect(page.getByTestId('welcome-footer-relay-action')).toBeVisible({ timeout: 120_000 });
     }
 
-    async function openRootAndCreateAccount(
-        page: Page,
-        mode: 'guided' | 'skip' = 'guided',
-        viewport: 'mobile' | 'desktop' = 'mobile',
-        advanceIntoLocalSetup = true,
-    ) {
-        await advanceWizardToAuthEntry(page, mode, viewport);
-
-        const createAccount = page.getByTestId('welcome-primary-start');
-        await expect(createAccount).toBeVisible({ timeout: 120_000 });
-        await expect(createAccount).toBeEnabled({ timeout: 120_000 });
-        await createAccount.click();
-
-        await expect(page.getByTestId('setupWizard.surface')).toBeVisible({ timeout: 120_000 });
-
-        if (advanceIntoLocalSetup) {
-            const localBranch = page.getByTestId('setupWizard-branch:local');
-            const handoff = page.getByTestId('setupWizard-machine-arrival-stack');
-            await expect(localBranch.or(handoff)).toBeVisible({ timeout: 120_000 });
-            if (await handoff.isVisible()) {
-                // Already on the local handoff surface.
-            } else {
-                await localBranch.click();
-                const primary = page.getByTestId('setupWizard.surface-primary');
-                await expect(primary).toBeEnabled({ timeout: 120_000 });
-                await primary.click();
-            }
-        }
-
-        await expect(page.getByTestId('setupWizard-machine-arrival-stack')).toHaveCount(1, { timeout: 120_000 });
-        await expect(page.getByTestId('setupWizard-machine-arrival')).toHaveCount(1, { timeout: 120_000 });
-        await expect(page.getByTestId('machine-arrival-card-status:variant:neutral')).toHaveCount(1, { timeout: 120_000 });
-        await expect(page.getByTestId('setupWizard-machine-arrival-desktop-app-download-cta')).toHaveCount(1, { timeout: 120_000 });
+    async function openRootAndOpenMachineDraft(page: Page, viewport: 'mobile' | 'desktop' = 'mobile') {
+        await openRoot(page, viewport);
+        await createAccountAndReachMachineAddDraftState({ page });
+        await expect(page.getByTestId('settings.machines.draft.form')).toBeVisible({ timeout: 120_000 });
+        await expect(page.getByTestId('settings.machines.draft.form.pane.command')).toBeVisible({ timeout: 120_000 });
+        await expect(page.getByTestId('settings.machines.draft.form.pane.watch')).toBeVisible({ timeout: 120_000 });
     }
 
     async function openRootAndGoToRelaySelect(page: Page, viewport: 'mobile' | 'desktop' = 'mobile') {
@@ -283,55 +255,38 @@ test.describe('ui e2e: web onboarding wizard', () => {
         await expect(page.getByTestId('restore-open-manual')).toHaveCount(0, { timeout: 120_000 });
     });
 
-    test('web onboarding remote relay-host handoff serializes split SSH fields and keeps code blocks scrollable', async ({ page }) => {
+    test('web machine SSH draft serializes split fields without exposing the password', async ({ page }) => {
         test.setTimeout(300_000);
-        await openRootAndCreateAccount(page, 'guided', 'desktop', false);
+        await openRootAndOpenMachineDraft(page, 'desktop');
+        await page.getByTestId('settings.machines.draft.form.path:ssh').click();
+        await page.getByTestId('settings.machines.draft.form.pane.ssh-sshUsernameInput').fill('very-long-admin-username');
+        await page.getByTestId('settings.machines.draft.form.pane.ssh-sshHostInput').fill('very-long-relay-host-name.example.internal');
+        await page.getByTestId('settings.machines.draft.form.pane.ssh-sshPortInput').fill('2200');
+        await page.getByTestId('settings.machines.draft.form.pane.ssh-sshAuthMethod:password').click();
+        await page.getByTestId('settings.machines.draft.form.pane.ssh-sshPasswordInput').fill('correct horse battery staple');
 
-        await navigateSpa(page, '/setup/wizard?step=setup_chooser');
-        await expect(page.getByTestId('setupWizard.surface')).toBeVisible({ timeout: 120_000 });
-
-        await expect(page.getByTestId('setupWizard-branch:remoteRelay')).toHaveCount(1, { timeout: 120_000 });
-        await page.getByTestId('setupWizard-branch:remoteRelay').click();
-        await expect(page.getByTestId('setupWizard.surface-primary')).toBeEnabled({ timeout: 120_000 });
-        await page.getByTestId('setupWizard.surface-primary').click();
-
-        await expect(page.getByTestId('setupWizard-web-remote-ssh')).toHaveCount(1, { timeout: 120_000 });
-        await page.getByTestId('setupWizard-web-remote-ssh-sshUsernameInput').fill('very-long-admin-username');
-        await page.getByTestId('setupWizard-web-remote-ssh-sshHostInput').fill('very-long-relay-host-name.example.internal');
-        await page.getByTestId('setupWizard-web-remote-ssh-sshPortInput').fill('2200');
-        await page.getByTestId('setupWizard-web-remote-ssh-sshAuthMethod:password').click();
-        await page.getByTestId('setupWizard-web-remote-ssh-sshPasswordInput').fill('correct horse battery staple');
-
-        await expect(page.getByTestId('setupWizard-terminal-handoff-step-remote-ssh-setup')).toBeVisible({ timeout: 120_000 });
-        const relayInstallCode = page.getByTestId('setupWizard-terminal-handoff-remote-ssh-setup');
-        await expect(relayInstallCode).toBeVisible({ timeout: 120_000 });
-
-        const commandText = await relayInstallCode.evaluate((node) => (node.textContent ?? '').replace(/\s+/g, ' ').trim());
-        expect(commandText).toContain('machine setup');
-        expect(commandText).toContain('--ssh-user very-long-admin-username');
-        expect(commandText).toContain('--ssh-host very-long-relay-host-name.example.internal');
-        expect(commandText).toContain('--ssh-auth password');
-        expect(commandText).toContain('--ssh-port 2200');
-        expect(commandText).toContain('--install-relay-runtime');
-
-        const hasHorizontalOverflow = await relayInstallCode.evaluate((node) => {
-            const element = node as HTMLElement;
-            return element.scrollWidth > element.clientWidth;
-        });
-        expect(hasHorizontalOverflow).toBe(true);
+        const code = page.getByTestId('settings.machines.draft.form.pane.command.code');
+        await expect(code).toBeVisible({ timeout: 120_000 });
+        await expect(code).toContainText('--ssh-user very-long-admin-username');
+        await expect(code).toContainText('--ssh-host very-long-relay-host-name.example.internal');
+        await expect(code).toContainText('--ssh-port 2200');
+        await expect(code).not.toContainText('correct horse battery staple');
     });
 
-    test('web onboarding reaches the post-auth setup wizard after authentication', async ({ page }) => {
+    test('web onboarding can open the canonical machine draft after authentication', async ({ page }) => {
         test.setTimeout(300_000);
-        await openRootAndCreateAccount(page, 'guided', 'mobile');
+        await openRootAndOpenMachineDraft(page);
     });
 
-    test('web onboarding renders the post-auth setup commands as scrollable code blocks', async ({ page }) => {
+    test('web machine commands remain readable with exclusive OS choices', async ({ page }) => {
         test.setTimeout(300_000);
-        await openRootAndCreateAccount(page, 'guided', 'mobile');
-
-        const setupCode = page.getByTestId('machine-arrival-card-command-setup');
-        const overflowX = await setupCode.evaluate((node) => getComputedStyle(node as HTMLElement).overflowX);
-        expect(['auto', 'scroll']).toContain(overflowX);
+        await openRootAndOpenMachineDraft(page);
+        const command = page.getByTestId('settings.machines.draft.form.pane.command');
+        const radios = command.getByRole('radio');
+        await expect(radios).toHaveCount(3);
+        await expect(command.getByRole('radio', { checked: true })).toHaveCount(1);
+        await command.getByRole('radio', { name: 'Windows', exact: true }).click();
+        await expect(command.getByRole('radio', { name: 'Windows', exact: true })).toBeChecked();
+        await expect(page.getByTestId('settings.machines.draft.form.pane.command.code')).toBeVisible();
     });
 });

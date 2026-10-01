@@ -15,6 +15,27 @@ const descriptor = {
 };
 
 describe('prepareDaemonHomeIrohTransport', () => {
+  it('uses the declared standard endpoint without touching native Iroh under Standard only', async () => {
+    const runtime = { ensureHomeTunnel: vi.fn() };
+    const probe = vi.fn(async () => ({ status: 'ready' as const }));
+    const result = await prepareDaemonHomeIrohTransport({
+      runtime: runtime as never,
+      profile: {
+        serverUrl: descriptor.canonicalServerUrl,
+        homeConnectionDescriptor: { ...descriptor, endpoints: [
+          { kind: 'https', url: 'https://ingress.example.test' },
+          ...descriptor.endpoints,
+        ] },
+      } as never,
+      applicationCarrierEligibility: 'standard_only',
+      token: 'home-token',
+      probe,
+      publishRuntimeOrigin: vi.fn(() => vi.fn()),
+    });
+    expect(result.carrier).toBe('standard');
+    expect(runtime.ensureHomeTunnel).not.toHaveBeenCalled();
+    expect(probe).toHaveBeenCalledWith(expect.objectContaining({ serverUrl: 'https://ingress.example.test' }));
+  });
   it('publishes the descriptor-declared HTTPS origin when it differs from the canonical audience', async () => {
     const httpsOnlyDescriptor = {
       ...descriptor,
@@ -68,7 +89,7 @@ describe('prepareDaemonHomeIrohTransport', () => {
       serverUrl: 'http://127.0.0.1:48123',
       expectedServerIdentityId: descriptor.homeServerIdentityId,
     });
-    expect(publish).toHaveBeenCalledWith('http://127.0.0.1:48123', 'iroh');
+    expect(publish).toHaveBeenCalledWith('http://127.0.0.1:48123', 'iroh', expect.objectContaining({ descriptor }));
     expect(probe).not.toHaveBeenCalled();
 
     await expect(result.verifyAuthenticated('fresh-token')).resolves.toEqual({ status: 'ready' });
@@ -107,7 +128,7 @@ describe('prepareDaemonHomeIrohTransport', () => {
       serverUrl: 'http://127.0.0.1:48123', token: 'account-token',
       expectedServerIdentityId: 'srv_home_daemon',
     });
-    expect(publish).toHaveBeenCalledWith('http://127.0.0.1:48123', 'iroh');
+    expect(publish).toHaveBeenCalledWith('http://127.0.0.1:48123', 'iroh', expect.objectContaining({ descriptor }));
     expect(result).toMatchObject({ carrier: 'iroh', observedPath: 'direct' });
     await expect(result.reacquire()).resolves.toEqual({ status: 'ready' });
     expect(runtime.ensureHomeTunnel).toHaveBeenCalledTimes(2);
@@ -135,12 +156,14 @@ describe('prepareDaemonHomeIrohTransport', () => {
     expect(release).toHaveBeenCalledTimes(1);
   });
 
-  it('fails closed after acquiring Iroh when readiness is unavailable instead of publishing HTTPS', async () => {
+  it('waits on the selected Iroh lease when readiness is unavailable instead of publishing HTTPS', async () => {
+    vi.useFakeTimers();
     const release = vi.fn(async () => undefined);
     const httpsUrl = 'https://public-home.example.test';
     const publish = vi.fn(() => vi.fn());
 
-    await expect(prepareDaemonHomeIrohTransport({
+    let reachable = false;
+    const preparation = prepareDaemonHomeIrohTransport({
       runtime: {
         available: true,
         ensureHomeTunnel: vi.fn(async () => ({
@@ -157,14 +180,27 @@ describe('prepareDaemonHomeIrohTransport', () => {
         },
       } as never,
       token: 'account-token',
-      probe: async ({ serverUrl }) => serverUrl === httpsUrl
+      probe: async ({ serverUrl }) => serverUrl === httpsUrl || reachable
         ? { status: 'ready' }
         : { status: 'server_unreachable', errorMessage: 'Iroh readiness failed' },
       publishRuntimeOrigin: publish,
-    })).rejects.toThrow(/Iroh readiness failed/);
-
-    expect(release).toHaveBeenCalledOnce();
-    expect(publish).not.toHaveBeenCalled();
+    });
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(release).not.toHaveBeenCalled();
+      expect(publish).not.toHaveBeenCalled();
+      reachable = true;
+      await vi.advanceTimersByTimeAsync(250);
+      const transport = await preparation;
+      expect(transport.carrier).toBe('iroh');
+      expect(publish).toHaveBeenCalledWith('http://127.0.0.1:48123', 'iroh', expect.objectContaining({
+        descriptor: expect.objectContaining({ homeServerIdentityId: descriptor.homeServerIdentityId }),
+      }));
+      await transport.release();
+      expect(release).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('fails closed after selecting Iroh when transport acquisition times out instead of falling back to HTTPS', async () => {
@@ -399,7 +435,7 @@ describe('prepareDaemonHomeIrohTransport', () => {
     expect(releaseInitialNative).not.toHaveBeenCalled();
 
     await expect(transport.reacquire()).resolves.toEqual({ status: 'ready' });
-    expect(publish).toHaveBeenNthCalledWith(2, 'http://127.0.0.1:48124', 'iroh');
+    expect(publish).toHaveBeenNthCalledWith(2, 'http://127.0.0.1:48124', 'iroh', expect.objectContaining({ descriptor }));
     expect(unpublishInitial).toHaveBeenCalledOnce();
     expect(releaseInitialNative).toHaveBeenCalledOnce();
     expect(publish.mock.invocationCallOrder[1]!).toBeLessThan(unpublishInitial.mock.invocationCallOrder[0]!);
@@ -473,6 +509,157 @@ describe('prepareDaemonHomeIrohTransport', () => {
       descriptor,
       replacementDescriptor,
     ]);
+  });
+
+  it('recovers a Home restart through stable relay hints without parking on stale direct hints', async () => {
+    const originalDescriptor = {
+      ...descriptor,
+      endpoints: [{
+        kind: 'iroh' as const,
+        endpointId: descriptor.endpoints[0]!.endpointId,
+        directAddresses: ['127.0.0.1:40123'],
+        relayUrls: ['https://relay.example.test'],
+      }],
+    };
+    const refreshedDescriptor = {
+      ...originalDescriptor,
+      revision: originalDescriptor.revision + 1,
+      endpoints: [{ ...originalDescriptor.endpoints[0]!, directAddresses: ['127.0.0.1:40124'] }],
+    };
+    let currentDescriptor = originalDescriptor;
+    let attempts = 0;
+    let oldLeaseUnavailable = false;
+    let markHomeReady!: () => void;
+    const homeReady = new Promise<void>((resolve) => { markHomeReady = resolve; });
+    const runtime = {
+      available: true as const,
+      endpoint: { endpointId: 'a'.repeat(64), relayUrls: ['https://relay.example.test'] },
+      ensureHomeTunnel: vi.fn(async ({ descriptor: requested, relayOnly }: {
+        descriptor: typeof originalDescriptor;
+        relayOnly?: boolean;
+      }) => {
+        attempts += 1;
+        const directAddresses = requested.endpoints[0]?.directAddresses;
+        if (attempts > 1 && !relayOnly && directAddresses?.includes('127.0.0.1:40123')) {
+          // The native dial begun during Home downtime cannot finish against
+          // the prior process's direct address, even after Home is online.
+          await new Promise<void>(() => undefined);
+        }
+        if (attempts > 1 && relayOnly) await homeReady;
+        return {
+          runtimeOrigin: `http://127.0.0.1:${48122 + attempts}`,
+          observedPath: relayOnly ? 'relay' as const : 'direct' as const,
+          release: vi.fn(async () => undefined),
+        };
+      }),
+    };
+    const transport = await prepareDaemonHomeIrohTransport({
+      runtime: runtime as never,
+      profile: { serverUrl: descriptor.canonicalServerUrl, homeConnectionDescriptor: originalDescriptor } as never,
+      token: 'account-token',
+      readProfile: async () => ({
+        serverUrl: descriptor.canonicalServerUrl,
+        homeConnectionDescriptor: currentDescriptor,
+      }) as never,
+      probe: async ({ serverUrl }) => oldLeaseUnavailable && serverUrl === 'http://127.0.0.1:48123'
+        ? { status: 'server_unreachable' }
+        : { status: 'ready' },
+      publishRuntimeOrigin: vi.fn(() => vi.fn()),
+    });
+
+    expect(transport.observedPath).toBe('direct');
+    oldLeaseUnavailable = true;
+    const reacquire = transport.reacquire();
+    await vi.waitFor(() => expect(runtime.ensureHomeTunnel).toHaveBeenCalledTimes(2));
+    markHomeReady();
+    await expect(reacquire).resolves.toEqual({ status: 'ready' });
+    expect(transport.observedPath).toBe('relay');
+    expect(runtime.ensureHomeTunnel.mock.calls[1]?.[0]).toEqual({
+      descriptor: originalDescriptor,
+      relayOnly: true,
+    });
+
+    currentDescriptor = refreshedDescriptor;
+    await expect(transport.reacquire()).resolves.toEqual({ status: 'ready' });
+    expect(transport.observedPath).toBe('direct');
+    expect(runtime.ensureHomeTunnel.mock.calls[2]?.[0]).toEqual({ descriptor: refreshedDescriptor });
+    await transport.release();
+  });
+
+  it('keeps a verified direct Iroh lease after a transient Machine socket disconnect', async () => {
+    const directAndRelayDescriptor = {
+      ...descriptor,
+      endpoints: [{
+        ...descriptor.endpoints[0]!,
+        directAddresses: ['127.0.0.1:40123'],
+        relayUrls: ['https://relay.example.test'],
+      }],
+    };
+    const runtime = {
+      available: true as const,
+      endpoint: { endpointId: 'a'.repeat(64), relayUrls: ['https://relay.example.test'] },
+      ensureHomeTunnel: vi.fn(async () => ({
+        runtimeOrigin: 'http://127.0.0.1:48123',
+        observedPath: 'direct' as const,
+        release: vi.fn(async () => undefined),
+      })),
+    };
+    const transport = await prepareDaemonHomeIrohTransport({
+      runtime: runtime as never,
+      profile: { serverUrl: descriptor.canonicalServerUrl, homeConnectionDescriptor: directAndRelayDescriptor } as never,
+      token: 'account-token',
+      readProfile: async () => ({
+        serverUrl: descriptor.canonicalServerUrl,
+        homeConnectionDescriptor: directAndRelayDescriptor,
+      }) as never,
+      probe: async () => ({ status: 'ready' }),
+      publishRuntimeOrigin: vi.fn(() => vi.fn()),
+    });
+
+    await expect(transport.reacquire()).resolves.toEqual({ status: 'ready' });
+    expect(transport.observedPath).toBe('direct');
+    expect(runtime.ensureHomeTunnel).toHaveBeenCalledOnce();
+    await transport.release();
+  });
+
+  it('does not request relay-only recovery when the daemon endpoint disables relays', async () => {
+    const directAndRelayDescriptor = {
+      ...descriptor,
+      endpoints: [{
+        ...descriptor.endpoints[0]!,
+        directAddresses: ['127.0.0.1:40123'],
+        relayUrls: ['https://relay.example.test'],
+      }],
+    };
+    let oldLeaseUnavailable = false;
+    const runtime = {
+      available: true as const,
+      endpoint: { endpointId: 'a'.repeat(64), relayUrls: [] },
+      ensureHomeTunnel: vi.fn(async () => ({
+        runtimeOrigin: 'http://127.0.0.1:48123',
+        observedPath: 'direct' as const,
+        release: vi.fn(async () => undefined),
+      })),
+    };
+    const transport = await prepareDaemonHomeIrohTransport({
+      runtime: runtime as never,
+      profile: { serverUrl: descriptor.canonicalServerUrl, homeConnectionDescriptor: directAndRelayDescriptor } as never,
+      token: 'account-token',
+      readProfile: async () => ({
+        serverUrl: descriptor.canonicalServerUrl,
+        homeConnectionDescriptor: directAndRelayDescriptor,
+      }) as never,
+      probe: async () => oldLeaseUnavailable
+        ? { status: 'server_unreachable' }
+        : { status: 'ready' },
+      identityProbe: async () => ({ status: 'ready' }),
+      publishRuntimeOrigin: vi.fn(() => vi.fn()),
+    });
+
+    oldLeaseUnavailable = true;
+    await expect(transport.reacquire()).resolves.toMatchObject({ status: 'server_unreachable' });
+    expect(runtime.ensureHomeTunnel).toHaveBeenNthCalledWith(2, { descriptor: directAndRelayDescriptor });
+    await transport.release();
   });
 
   it('activates Iroh when the canonical profile learns a descriptor after startup', async () => {

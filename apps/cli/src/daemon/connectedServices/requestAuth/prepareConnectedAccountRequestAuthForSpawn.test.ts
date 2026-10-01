@@ -48,6 +48,25 @@ const bindings: ConnectedServiceBindingsV2 = {
 };
 
 describe('ordinary Agent request-auth spawn preparation', () => {
+    it('uses acquired executable auth uses with cold purpose declarations', () => {
+        const catalogEntry = { connectedAccountRequestAuthUses: [{ purpose: 'model_upstream',
+            materialization: { kind: 'httpHeaders', origin: 'https://api.anthropic.com', headerNames: ['authorization'] } }] };
+        const input = {
+            agentId: 'claude', bindings, catalogEntry,
+            contributions: { agentDefinitionsById: new Map([['claude', {
+                identity: { pluginId: 'happier.agent.claude', localId: 'claude' },
+                richDefinition: { definition: { connectedAccounts: [{ purpose: 'model_upstream',
+                    service: 'claude-subscription', materializationKinds: ['httpHeaders'] }] } },
+            }]]) },
+        };
+        expect(resolveQualifiedPurposeBindingSnapshotForAgentSpawn(input)).toMatchObject({
+            requestAuthUses: [{ purpose: { consumer: { pluginId: 'happier.agent.claude', localId: 'claude' },
+                purpose: 'model_upstream' }, materialization: catalogEntry.connectedAccountRequestAuthUses[0]!.materialization }],
+        });
+        expect(resolveQualifiedPurposeBindingSnapshotForAgentSpawn({ ...input, catalogEntry: null }))
+            .not.toHaveProperty('requestAuthUses');
+    });
+
     it('projects a complete launch snapshot so explicit native purposes remain unbound', () => {
         expect(resolveQualifiedPurposeBindingSnapshotForAgentSpawn({
             agentId: 'codex',

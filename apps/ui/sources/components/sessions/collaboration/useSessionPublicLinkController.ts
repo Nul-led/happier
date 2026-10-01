@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { SharingAuthoritySession } from '@/sync/domains/social/sessionSharingMutationAuthority';
 import { serverAccountScopeKeySuffix, type ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
 import { SessionAccessApiError, SessionAccessApprovalPendingError, createSessionAccessClient } from '@/sync/api/session/sessionAccessApi';
@@ -9,11 +9,8 @@ import {
     type SessionPublicLinkPublication,
 } from '@/sync/domains/social/sessionPublicLinkPublication';
 import { assertSessionSharingMutationAuthority } from '@/sync/domains/social/sessionSharingMutationAuthority';
-import { openPublicLinkDialog } from '@/components/sessions/sharing/openPublicLinkDialog';
-import type { PublicLinkDialogProps } from '@/components/sessions/sharing/components/PublicLinkDialog';
-import type { FocusReturnRef } from '@/keyboard/focusReturn';
 import type { ExternalSessionSharingAvailability } from '@/components/sessions/external/sharing/useExternalSessionSharingAvailability';
-import { Modal, type CustomModalInjectedProps } from '@/modal';
+import { Modal } from '@/modal';
 import { HappyError } from '@/utils/errors/errors';
 import { t } from '@/text';
 import { presentSessionAccessFailure } from '@/components/sessions/access/presentSessionAccessFailure';
@@ -39,12 +36,15 @@ export type SessionPublicLinkControllerInput = Readonly<{
     session: SharingAuthoritySession | null;
     availability: ExternalSessionSharingAvailability;
     publicLinkEnabled: boolean;
+    authorityCurrent?: boolean;
 }>;
+
+export type SessionPublicLinkCreateOptions = Readonly<{ expiresInDays?: number; maxUses?: number; isConsentRequired: boolean }>;
 
 const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
 
 export function useSessionPublicLinkController(input: SessionPublicLinkControllerInput) {
-    const { scope, sessionId, availability, session, publicLinkEnabled } = input;
+    const { scope, sessionId, availability, session, publicLinkEnabled, authorityCurrent = true } = input;
     const canManage = publicLinkEnabled && session?.access?.capabilities.managePublicLink === true;
     const allowed = canManage && availability.sharingPresentation.shareable;
     const scopeKey = JSON.stringify([serverAccountScopeKeySuffix(scope), sessionId, allowed]);
@@ -59,14 +59,19 @@ export function useSessionPublicLinkController(input: SessionPublicLinkControlle
     const epoch = lifecycle.current.epoch;
     const currentSession = useRef(session);
     currentSession.current = session;
-    const dialogs = useRef(new Set<string>());
+    // Card callbacks can outlive the render that bound them (a confirmation is
+    // awaited in between). Read the current authority through the same mutable
+    // fence used for the exact Session, so a retained control cannot replay a
+    // stale mutation after a transient or definitive snapshot change.
+    const authorityCurrentRef = useRef(authorityCurrent);
+    authorityCurrentRef.current = authorityCurrent;
     const requestRevision = useRef(0);
     const [state, setState] = useState<PublicLinkState>({ epoch, publication: null, loaded: false, loading: false, error: false });
     const isCurrent = useCallback(() => lifecycle.current.mounted && lifecycle.current.epoch === epoch, [epoch]);
     const assertCurrent = useCallback(() => {
-        if (!isCurrent() || !allowed || !currentSession.current) throw new HappyError(t('errors.permissionDenied'), false);
+        if (!isCurrent() || !authorityCurrentRef.current || !allowed || !currentSession.current) throw new HappyError(t('errors.permissionDenied'), false);
         assertSessionSharingMutationAuthority(currentSession.current, 'managePublicLink');
-    }, [allowed, isCurrent]);
+    }, [allowed, authorityCurrent, isCurrent]);
     /**
      * One Action-backed publication client per request.
      *
@@ -84,35 +89,23 @@ export function useSessionPublicLinkController(input: SessionPublicLinkControlle
         isCurrent,
         ...(options?.onBearerIssued ? { onPublicLinkBearerIssued: options.onBearerIssued } : {}),
     }), [isCurrent, scope.accountId, scope.serverId, sessionId]);
-    const closeDialogs = useCallback(() => {
-        for (const id of dialogs.current) Modal.hide(id);
-        dialogs.current.clear();
-    }, []);
-    const updateDialogs = useCallback((publication: SessionPublicLinkPublication | null) => {
-        for (const id of dialogs.current) {
-            Modal.update<PublicLinkDialogProps & CustomModalInjectedProps>(id, { publicShare: publication });
-        }
-    }, []);
     const applyAuthoritativePublication = useCallback((publication: SessionPublicLinkPublication | null) => {
         ++requestRevision.current;
         token.current = publication?.token ?? null;
         currentPublication.current = publication;
         setState({ epoch, publication, loaded: true, loading: false, error: false });
-        updateDialogs(publication);
-    }, [epoch, updateDialogs]);
+    }, [epoch]);
     useEffect(() => {
         lifecycle.current.mounted = true;
         return () => {
             lifecycle.current.mounted = false;
-            closeDialogs();
             token.current = null;
             currentPublication.current = null;
         };
-    }, [closeDialogs]);
-    useEffect(() => { closeDialogs(); }, [epoch, closeDialogs]);
+    }, []);
 
     const reload = useCallback(async () => {
-        if (!allowed || !isCurrent()) return;
+        if (!authorityCurrent || !allowed || !isCurrent()) return;
         const revision = ++requestRevision.current;
         setState((previous) => ({ ...(previous.epoch === epoch ? previous : { epoch, publication: null, loaded: false }), loading: true, error: false }));
         try {
@@ -127,20 +120,19 @@ export function useSessionPublicLinkController(input: SessionPublicLinkControlle
             token.current = merged.cachedToken;
             currentPublication.current = merged.publication;
             setState({ epoch, publication: merged.publication, loaded: true, loading: false, error: false });
-            updateDialogs(merged.publication);
         } catch {
             if (!isCurrent() || requestRevision.current !== revision) return;
             setState((previous) => ({ ...previous, loading: false, error: true }));
         }
-    }, [allowed, assertCurrent, client, epoch, isCurrent, updateDialogs]);
+    }, [allowed, assertCurrent, authorityCurrent, client, epoch, isCurrent]);
     useEffect(() => { void reload(); }, [reload]);
     useEffect(() => {
-        if (!allowed) return;
+        if (!authorityCurrent || !allowed) return;
         return subscribeSessionPublicLinkInvalidation(
             { serverId: scope.serverId, sessionId },
             () => { void reload(); },
         );
-    }, [allowed, reload, scope.serverId, sessionId]);
+    }, [allowed, authorityCurrent, reload, scope.serverId, sessionId]);
 
     const presentFailure = useCallback((error: unknown): never => {
         const issue = presentSessionAccessFailure(error, { outcomeUnknown: true });
@@ -163,9 +155,8 @@ export function useSessionPublicLinkController(input: SessionPublicLinkControlle
         expectedInput: unknown,
         onSucceeded: () => Promise<void>,
     ) => {
-        // The dialog cannot show a publication that does not exist yet; the
-        // section's approval row is where this change is followed now.
-        closeDialogs();
+        // The card cannot show a publication that does not exist yet; its
+        // approval line is where this change is followed now.
         holdApproval(pending, actionId, expectedInput, {
             isCurrent,
             onSucceeded,
@@ -176,9 +167,9 @@ export function useSessionPublicLinkController(input: SessionPublicLinkControlle
                 Modal.alert(t('common.error'), issue.message);
             },
         });
-    }, [closeDialogs, holdApproval, isCurrent, reload]);
+    }, [holdApproval, isCurrent, reload]);
 
-    const create = useCallback(async (options: { expiresInDays?: number; maxUses?: number; isConsentRequired: boolean }) => {
+    const create = useCallback(async (options: SessionPublicLinkCreateOptions): Promise<SessionPublicLinkPublication | null> => {
         assertCurrent();
         const desired = {
             expiresAt: options.expiresInDays ? Date.now() + options.expiresInDays * MILLISECONDS_PER_DAY : null,
@@ -227,7 +218,7 @@ export function useSessionPublicLinkController(input: SessionPublicLinkControlle
         return created;
     }, [applyAuthoritativePublication, assertCurrent, client, holdForApproval, isCurrent, presentFailure, reload, scope.accountId, scope.serverId, sessionId]);
 
-    const remove = useCallback(async () => {
+    const remove = useCallback(async (): Promise<void> => {
         assertCurrent();
         try {
             await client().removePublicLink();
@@ -267,48 +258,34 @@ export function useSessionPublicLinkController(input: SessionPublicLinkControlle
     }, [applyAuthoritativePublication, assertCurrent, client, holdForApproval, isCurrent, presentFailure, reload, sessionId]);
 
     const publication = state.epoch === epoch && allowed ? state.publication : null;
-    const openEditor = useCallback(async (focusReturnRef?: FocusReturnRef) => {
-        assertCurrent();
+    // The Home's own shareable address rides along in the link, so a viewer opening it reaches
+    // this Home even when it is not the app's default.
+    const shareableServerUrl = useMemo(() => {
         const profile = getServerProfileById(scope.serverId);
-        const validatedShareableServerUrl = profile
-            ? resolveValidatedShareableServerUrl({
-                shareableServerUrl: profile.shareableServerUrl,
-                validatedAgainstServerUrl: profile.shareableServerUrlValidatedAgainstServerUrl,
-                currentServerUrl: profile.serverUrl,
-            })
-            : null;
-        const serverUrl = profile
-            ? resolvePreferredShareableServerUrl({
-                preferredShareableServerUrl: validatedShareableServerUrl,
-                canonicalServerUrl: profile.serverUrl,
-                activeServerUrl: null,
-            })
-            : null;
-        const id = await openPublicLinkDialog({
-            publicShare: publication,
-            serverUrl,
-            onCreate: create,
-            onDelete: remove,
-            focusReturnRef,
+        if (!profile) return null;
+        const validatedShareableServerUrl = resolveValidatedShareableServerUrl({
+            shareableServerUrl: profile.shareableServerUrl,
+            validatedAgainstServerUrl: profile.shareableServerUrlValidatedAgainstServerUrl,
+            currentServerUrl: profile.serverUrl,
         });
-        if (!isCurrent()) Modal.hide(id);
-        else {
-            dialogs.current.add(id);
-            Modal.update<PublicLinkDialogProps & CustomModalInjectedProps>(id, {
-                publicShare: currentPublication.current,
-            });
-        }
-    }, [assertCurrent, create, isCurrent, publication, remove, scope.serverId]);
+        return resolvePreferredShareableServerUrl({
+            preferredShareableServerUrl: validatedShareableServerUrl,
+            canonicalServerUrl: profile.serverUrl,
+            activeServerUrl: null,
+        });
+    }, [scope.serverId]);
     const currentPendingApproval = allowed ? approval.pendingApproval : null;
     return {
         publicShare: publication, canManage,
         hasLoaded: allowed && state.epoch === epoch && state.loaded,
         loading: allowed && (state.epoch !== epoch || !state.loaded || state.loading) && !state.error,
         error: allowed && state.epoch === epoch && state.error,
-        // One publication change at a time: an open approval holds the editor.
-        canOpen: allowed && state.epoch === epoch && state.loaded && !state.error && !currentPendingApproval,
+        // One publication change at a time: an open approval holds every control,
+        // and a snapshot that is not current withdraws them without hiding the link.
+        canMutate: authorityCurrent && allowed && state.epoch === epoch && state.loaded && !state.error && !currentPendingApproval,
         pendingApproval: currentPendingApproval,
         openPendingApproval: approval.openPendingApproval,
-        reload, openEditor,
+        shareableServerUrl,
+        reload, create, remove,
     };
 }

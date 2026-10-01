@@ -63,5 +63,9 @@ describe('buildReviewCommentsOutboundMessage', () => {
                 },
             },
         });
+        expect(outbound.text).toContain('reviews.comments.transition');
+        expect(outbound.text).toContain('reviews.comments.setDisposition');
+        expect(outbound.text).toContain('Please verify this project change.');
+        expect(outbound.text).toContain('[attachments block]');
     });
 });

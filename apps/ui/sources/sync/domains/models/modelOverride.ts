@@ -1,8 +1,8 @@
-import { resolveModelSelectionIntentFromSessionMetadata } from '@happier-dev/agents';
 import { SessionModelSelectionV1Schema, type SessionModelSelectionV1 } from '@happier-dev/protocol';
 
 import type { Session } from '../state/storageTypes';
 import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
+import { readSessionModelSelectionIntentFromMetadata } from '@/sync/domains/models/readSessionModelSelectionIntent';
 
 export type ModelOverrideForSpawn = {
     modelSelection: SessionModelSelectionV1;
@@ -13,8 +13,8 @@ export function getModelOverrideForSpawn(session: Session, agentTargetKey: strin
         && Number.isFinite(session.modelModeUpdatedAt)
         ? session.modelModeUpdatedAt
         : null;
-    const metadataIntent = resolveModelSelectionIntentFromSessionMetadata(
-        readSessionOwnerMetadataView(session),
+    const metadataIntent = readSessionModelSelectionIntentFromMetadata(
+        session.composerOptionsInput === undefined ? readSessionOwnerMetadataView(session) : session.composerOptionsInput,
         agentTargetKey,
     );
     const metadataUpdatedAt = metadataIntent?.updatedAt ?? 0;

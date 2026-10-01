@@ -12,7 +12,7 @@ import {
 } from '@/scm/history/historyPresentation';
 import { SourceControlOperationsHistoryLoadMoreButton } from './SourceControlOperationsHistoryLoadMoreButton';
 import { SourceControlOperationsHistoryTimelineRow } from './SourceControlOperationsHistoryTimelineRow';
-import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
+import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
 
 type SourceControlOperationsHistorySectionProps = Readonly<{
     theme: any;
@@ -46,15 +46,11 @@ export function SourceControlOperationsHistorySection(props: SourceControlOperat
     }
 
     if (historyLoading && historyEntries.length === 0) {
-        return <ActivitySpinner size="small" color={theme.colors.text.secondary} />;
+        return <SurfaceStateCard size="line" kind="loading" title={t('common.loading')} />;
     }
 
     if (historyEntries.length === 0) {
-        return (
-            <Text style={{ color: theme.colors.text.secondary, fontSize: 12, ...Typography.default() }}>
-                {t('files.operationsHistory.noCommitsAvailable')}
-            </Text>
-        );
+        return <SurfaceStateCard size="line" kind="empty" title={t('files.operationsHistory.noCommitsAvailable')} />;
     }
 
     return (

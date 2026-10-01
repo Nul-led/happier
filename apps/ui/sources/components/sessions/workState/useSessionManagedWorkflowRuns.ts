@@ -1,14 +1,30 @@
 import * as React from 'react';
 
-import type { WorkflowRunSummaryV1 } from '@happier-dev/protocol/workflows/workflowProgressV1';
+import { useWorkflowsAvailability } from '@/components/workflows/gating/workflowsAvailability';
+
+import type {
+    WorkflowRunInvocationIndexV1,
+    WorkflowRunSummaryV1,
+} from '@happier-dev/protocol/workflows/workflowProgressV1';
 import type { WorkflowRunPrivateMetadataV1 } from '@happier-dev/protocol/workflows/actionsV1';
+import type { WorkflowDefinitionV1 } from '@happier-dev/protocol/workflows/workflowV1';
 
 import { captureActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
 import { serverAccountScopeKeySuffix } from '@/sync/domains/scope/serverAccountScope';
 import { getStorage, useActiveServerAccountScope, useWorkflowRunRows } from '@/sync/domains/state/storage';
 import { listWorkflowRuns } from '@/sync/domains/workflows/workflowRunListActions';
+import { workflowRunDetailActions } from '@/sync/domains/workflows/workflowRunDetailActions';
 import { subscribeVisibleWorkflowRunListInvalidation } from '@/sync/domains/workflows/workflowRunListInvalidation';
-import { workflowRunRowFromSummary } from '@/sync/store/domains/workflowRuns';
+import { selectWorkflowRunWindowInvocations, workflowRunRowFromSummary } from '@/sync/store/domains/workflowRuns';
+import {
+    projectWorkflowFlow,
+    type WorkflowFlowNodeRunState,
+    type WorkflowFlowProjection,
+} from '@/components/workflows/flow/workflowFlowProjection';
+import {
+    projectWorkflowFlowRunStates,
+    projectWorkflowInvocationStructure,
+} from '@/components/workflows/run/workflowInvocationStructure';
 
 /**
  * The managed Workflow Runs this Session started.
@@ -35,7 +51,7 @@ import { workflowRunRowFromSummary } from '@/sync/store/domains/workflowRuns';
 export type SessionManagedWorkflowRunsState = Readonly<{
     phase: 'idle' | 'loading' | 'loaded' | 'failed';
     runs: readonly WorkflowRunSummaryV1[];
-    metadataByRunId?: Readonly<Record<string, WorkflowRunPrivateMetadataV1>>;
+    metadataByRunId?: Readonly<Record<string, WorkflowRunPrivateMetadataV1 | null>>;
     /** Exactly the Run ids the server's attention predicate returned. */
     attentionRunIds: ReadonlySet<string>;
     /**
@@ -95,7 +111,12 @@ export function useSessionManagedWorkflowRuns(params: Readonly<{
     enabled?: boolean;
 }>): SessionManagedWorkflowRunsState {
     const sessionId = params.sessionId !== null && params.sessionId.trim().length > 0 ? params.sessionId : null;
-    const enabled = params.enabled ?? true;
+    // Contextual managed-Run reads answer the same canonical Workflows decision
+    // the dedicated routes do, and fail closed while it is unresolved: a
+    // Session's ordinary one-shot Automations stay untouched, but this surface
+    // must not read or link a Workflow the Home does not offer.
+    const workflows = useWorkflowsAvailability();
+    const enabled = (params.enabled ?? true) && workflows.available;
     const activeAccountScope = useActiveServerAccountScope();
     const accountScopeKey = activeAccountScope === null ? null : serverAccountScopeKeySuffix(activeAccountScope);
     const [listWindow, setWindow] = React.useState<SessionManagedWorkflowRunsWindow>(EMPTY_WINDOW);
@@ -216,4 +237,103 @@ export function useSessionManagedWorkflowRuns(params: Readonly<{
         () => ({ phase, runs, metadataByRunId, attentionRunIds, refreshFailed }),
         [attentionRunIds, metadataByRunId, phase, refreshFailed, runs],
     );
+}
+
+export type SessionManagedWorkflowRunFlow = Readonly<{
+    projection: WorkflowFlowProjection;
+    runStates: ReadonlyMap<string, readonly WorkflowFlowNodeRunState[]>;
+}>;
+
+const EMPTY_INVOCATIONS: readonly WorkflowRunInvocationIndexV1[] = Object.freeze([]);
+
+/**
+ * One managed Run's live flow: the compact map a Work row draws under it (INT §6 I4).
+ *
+ * The definition is frozen at admission, so it is read once per mount through
+ * the exact-Run reader. Lifecycles are the leading page of the Run's invocation
+ * window in the one Account-scoped owner — the same window Run detail pages —
+ * restated on the Run's own Account-change wake, so the map and Run detail
+ * cannot disagree and nothing polls. The caller mounts this only while the row
+ * is on screen: an off-screen row holds no read and no wake.
+ */
+export function useSessionManagedWorkflowRunFlow(runId: string): SessionManagedWorkflowRunFlow | null {
+    const activeAccountScope = useActiveServerAccountScope();
+    const accountScopeKey = activeAccountScope === null ? null : serverAccountScopeKeySuffix(activeAccountScope);
+    const contentKey = accountScopeKey === null ? null : `${accountScopeKey}\u0000${runId}`;
+    const [definition, setDefinition] = React.useState<Readonly<{ key: string; value: WorkflowDefinitionV1 }> | null>(null);
+    const [invalidationToken, setInvalidationToken] = React.useState(0);
+    const invocations = getStorage()((state) => (
+        contentKey === null ? EMPTY_INVOCATIONS : selectWorkflowRunWindowInvocations(state.workflowRunInvocationsByRunId[runId], 'history')
+    ));
+
+    React.useEffect(() => {
+        if (contentKey === null) return;
+        const lifetime = captureActiveServerAccountScopeLifetime();
+        if (lifetime === null) return;
+        const controller = new AbortController();
+        const retirement = lifetime.onRetire(() => controller.abort());
+        void workflowRunDetailActions.getRun(runId, controller.signal).then(
+            (detail) => {
+                if (controller.signal.aborted || !lifetime.isCurrent()) return;
+                setDefinition({ key: contentKey, value: detail.definition });
+            },
+            // A Run this device cannot open keeps its row, without a map.
+            () => undefined,
+        );
+        return () => {
+            controller.abort();
+            retirement.dispose();
+        };
+    }, [contentKey, runId]);
+
+    React.useEffect(() => {
+        if (contentKey === null) return;
+        const lifetime = captureActiveServerAccountScopeLifetime();
+        if (lifetime === null) return;
+        const controller = new AbortController();
+        const retirement = lifetime.onRetire(() => controller.abort());
+        void workflowRunDetailActions.listInvocations({ runId }, controller.signal).then(
+            (page) => {
+                if (controller.signal.aborted || !lifetime.isCurrent()) return;
+                const state = getStorage().getState();
+                // A traversal Run detail already paged keeps its later pages; this restates the first.
+                state.applyWorkflowRunInvocationPage({
+                    runId,
+                    invocations: page.invocations,
+                    nextCursor: page.nextCursor ?? null,
+                    parentRevision: page.parentRevision,
+                    mode: state.workflowRunInvocationsByRunId[runId]?.history.loaded === true ? 'refresh' : 'replace',
+                });
+            },
+            // A failed restatement keeps the last-known lifecycles.
+            () => undefined,
+        );
+        return () => {
+            controller.abort();
+            retirement.dispose();
+        };
+    }, [contentKey, invalidationToken, runId]);
+
+    React.useEffect(() => {
+        if (contentKey === null) return;
+        const lifetime = captureActiveServerAccountScopeLifetime();
+        if (lifetime === null) return;
+        return subscribeVisibleWorkflowRunListInvalidation({
+            lifetime,
+            runId,
+            isVisibleWindowLoaded: () => true,
+            invalidate: () => setInvalidationToken((token) => token + 1),
+        });
+    }, [contentKey, runId]);
+
+    const definitionValue = definition !== null && definition.key === contentKey ? definition.value : null;
+    const projection = React.useMemo(
+        () => (definitionValue === null ? null : projectWorkflowFlow(definitionValue)),
+        [definitionValue],
+    );
+    return React.useMemo(() => {
+        if (projection === null || definitionValue === null) return null;
+        const structure = projectWorkflowInvocationStructure({ definition: definitionValue, invocations });
+        return { projection, runStates: projectWorkflowFlowRunStates({ invocations, structure }) };
+    }, [definitionValue, invocations, projection]);
 }

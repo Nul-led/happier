@@ -1,11 +1,15 @@
 import {
+  WORKFLOW_ATTENTION_INVOCATION_LIFECYCLES_V1,
   WorkflowRunInvocationIndexV1Schema,
   type WorkflowInvocationLifecycleV1,
   type WorkflowRunInvocationIndexV1,
   type WorkflowRunOriginV1,
   type WorkflowRunStateV1,
   type WorkflowRunSummaryV1,
-} from '@happier-dev/protocol';
+} from '@happier-dev/protocol/workflows/workflowProgressV1';
+
+import type { WorkflowAccountRunActionDeps } from '@happier-dev/protocol';
+import type { WorkflowRunRecipientCensusResponseV1 } from '@happier-dev/protocol/workflows';
 
 /**
  * In-memory stand-in for the server's opaque Workflow Run storage owner.
@@ -28,12 +32,10 @@ const TERMINAL_RUN_STATES = [
 ] as const satisfies readonly WorkflowRunStateV1[];
 
 /** Mirrors the server's indexed actionable-invocation attention predicate. */
-const ATTENTION_LIFECYCLES = [
-  'waiting_for_approval', 'needs_attention', 'cancel_requested', 'outcome_uncertain',
-] as const satisfies readonly WorkflowInvocationLifecycleV1[];
+const ATTENTION_LIFECYCLES = WORKFLOW_ATTENTION_INVOCATION_LIFECYCLES_V1;
 
 const CANCELLABLE_LIFECYCLES = [
-  'pending', 'waiting_for_capacity', 'admitting', 'running', 'waiting_for_approval', 'needs_attention',
+  'pending', 'waiting_for_capacity', 'admitting', 'running', 'waiting_for_approval', 'needs_attention', 'waiting_for_review',
 ] as const satisfies readonly WorkflowInvocationLifecycleV1[];
 
 /**
@@ -50,8 +52,8 @@ type StoredRow = {
   contentEnvelope: string;
 };
 
-/** Matches the transport's own untyped request shape so the kit is assignable wherever it is used. */
-export type WorkflowRunStorageTestkitOperation = Readonly<Record<string, unknown>>;
+/** Mirrors the canonical Account Action owner's storage boundary; unknown operations still fail below. */
+export type WorkflowRunStorageTestkitOperation = Parameters<WorkflowAccountRunActionDeps['storage']['execute']>[0];
 
 export type WorkflowRunStorageTestkit = Readonly<{
   execute: (operation: WorkflowRunStorageTestkitOperation, options?: Readonly<{ signal?: AbortSignal }>) => Promise<unknown>;
@@ -87,13 +89,27 @@ function decodeCursor(cursor: unknown): string | null {
   return typeof after === 'string' ? after : null;
 }
 
+export function createPlainWorkflowRunKeyCensusFixture(params: Readonly<{
+  runId: string;
+  accountId?: string;
+}>): WorkflowRunRecipientCensusResponseV1 {
+  return {
+    runId: params.runId, ownerAccountId: params.accountId ?? 'account-1',
+    ownerAccountCurrentness: { mode: 'plain', version: 1, contentKeyFingerprint: null },
+    encryptionMode: 'plain', access: 'owner', visibleTeamId: null,
+    dataEncryptionKey: null, callerDataEncryptionKey: null, recipients: [],
+  };
+}
+
 export function createWorkflowRunStorageTestkit(params: Readonly<{
   runId: string;
   machineId: string;
   origin: WorkflowRunOriginV1;
+  accountId?: string;
+  keyCensus?: WorkflowRunRecipientCensusResponseV1;
   acceptedEnvelope?: string;
   state?: WorkflowRunStateV1;
-  resultDeliveryState?: WorkflowRunSummaryV1['workflowResultDeliveryState'];
+  originDeliveryAckRevision?: WorkflowRunSummaryV1['originDeliveryAckRevision'];
   /** Bounded page size so paged discovery of off-page rows is actually exercised. */
   invocationPageSize?: number;
   /** Lets a test advance out-of-band state between `wait` observations. */
@@ -111,20 +127,25 @@ export function createWorkflowRunStorageTestkit(params: Readonly<{
   let state: WorkflowRunStateV1 = params.state ?? 'queued';
   let revision = 0;
   let custodyState: WorkflowRunSummaryV1['workflowCustodyState'] = 'pending';
-  let resultDeliveryState: WorkflowRunSummaryV1['workflowResultDeliveryState'] = params.resultDeliveryState ?? null;
+  let originDeliveryAckRevision = params.originDeliveryAckRevision ?? null;
   let waitAttempts = 0;
+  const keyCensus = params.keyCensus ?? createPlainWorkflowRunKeyCensusFixture(params);
 
-  const summary = (): WorkflowRunSummaryV1 => ({
+  const requiresAttention = () => state === 'interrupted'
+    || (TERMINAL_RUN_STATES.some(value => value === state) && custodyState === 'pending')
+    || [...rows.values()].some(value => ATTENTION_LIFECYCLES.some(lifecycle => lifecycle === value.index.lifecycle));
+
+  const summary = (): WorkflowRunSummaryV1 => ({ sourceArtifactId: null, ownerAccountId: keyCensus.ownerAccountId, visibleTeamId: keyCensus.visibleTeamId,
     id: params.runId,
     origin: params.origin,
     state,
     revision,
     machineId: params.machineId,
     workflowCustodyState: custodyState,
-    workflowResultDeliveryState: resultDeliveryState,
+    originDeliveryAckRevision,
     availability: {
-      pause: true, resumeBoundary: false, recoverSameConversation: false, recoverFreshAgent: false,
-      retry: false, restoreWorkspace: false, cancel: true, inspectExecution: true, disabledReasons: [],
+      pause: true, resumeBoundary: false,
+       restoreWorkspace: false, cancel: true, inspectExecution: true, disabledReasons: [],
     },
     createdAt: now,
     updatedAt: now,
@@ -137,9 +158,12 @@ export function createWorkflowRunStorageTestkit(params: Readonly<{
   const newestPerMemberSlot = (parentRecordId: string): StoredRow[] => {
     const newest = new Map<string, StoredRow>();
     for (const row of rows.values()) {
-      if (row.index.parentRecordId !== parentRecordId) continue;
+      if (row.index.runId !== params.runId || row.index.parentRecordId !== parentRecordId) continue;
       const current = newest.get(row.index.memberOrdinal);
-      if (!current || BigInt(row.index.attempt) > BigInt(current.index.attempt)) newest.set(row.index.memberOrdinal, row);
+      if (!current || BigInt(row.index.attempt) > BigInt(current.index.attempt)
+        || (row.index.attempt === current.index.attempt && row.index.id > current.index.id)) {
+        newest.set(row.index.memberOrdinal, row);
+      }
     }
     return [...newest.values()]
       .sort((left, right) => (BigInt(left.index.memberOrdinal) < BigInt(right.index.memberOrdinal) ? -1 : 1));
@@ -148,10 +172,11 @@ export function createWorkflowRunStorageTestkit(params: Readonly<{
   const admitRow = (input: Readonly<{
     id: string; sequence: string; parentRecordId: string | null; memberOrdinal: string;
     lifecycle: WorkflowInvocationLifecycleV1; contentEnvelope: string;
+    attempt?: string;
   }>): WorkflowRunInvocationIndexV1 => {
     const index = WorkflowRunInvocationIndexV1Schema.parse({
       id: input.id, runId: params.runId, sequence: input.sequence, parentRecordId: input.parentRecordId,
-      memberOrdinal: input.memberOrdinal, attempt: '0', lifecycle: input.lifecycle, createdAt: now, updatedAt: now,
+      memberOrdinal: input.memberOrdinal, attempt: input.attempt ?? '0', contentRevision: '0', lifecycle: input.lifecycle, createdAt: now, updatedAt: now,
     });
     rows.set(index.id, { index, contentEnvelope: input.contentEnvelope });
     return index;
@@ -163,11 +188,18 @@ export function createWorkflowRunStorageTestkit(params: Readonly<{
     const expectRevision = () => {
       if (operation.expectedRevision !== revision) throw storageError('currentness_conflict');
     };
+    const expectInputAdmissionOpen = () => {
+      const cancelledRoot = [...rows.values()].some((row) => row.index.parentRecordId === null
+        && (row.index.lifecycle === 'cancel_requested' || row.index.lifecycle === 'cancelled'));
+      if ((state !== 'claimed' && state !== 'running') || cancelledRoot) throw storageError('currentness_conflict');
+    };
     switch (kind) {
+      case 'run-key.census':
+        return keyCensus;
       case 'admit': {
         if (acceptedEnvelope === null) {
           acceptedEnvelope = String(operation.acceptedEnvelope);
-          if (operation.resultDelivery !== undefined) resultDeliveryState = 'pending';
+          if (operation.resultDelivery !== undefined) originDeliveryAckRevision = 0;
           return { kind: 'created', run: summary() };
         }
         return { kind: 'existing', run: summary() };
@@ -183,7 +215,7 @@ export function createWorkflowRunStorageTestkit(params: Readonly<{
       }
       case 'get': {
         if (acceptedEnvelope === null) throw notFound();
-        return { run: summary(), acceptedEnvelope, checkpointEnvelope, resultEnvelope };
+        return { run: summary(), acceptedEnvelope, checkpointEnvelope, resultEnvelope, keyCensus };
       }
       case 'initialize': {
         expectRevision();
@@ -199,18 +231,35 @@ export function createWorkflowRunStorageTestkit(params: Readonly<{
         return { initialization: 'created', run: summary() };
       }
       case 'invocations.admit': {
+        const requests = operation.invocations as ReadonlyArray<Readonly<Record<string, unknown>>>;
+        if (requests.every((item) => rows.has(String(item.id)))) {
+          return { disposition: 'existing', parentRevision: revision, invocations: requests.map((item) => rows.get(String(item.id))!.index) };
+        }
         expectRevision();
+        expectInputAdmissionOpen();
+        for (const item of requests) {
+          const replaces = item.replaces as Readonly<{ id: string; attempt: string; contentRevision: string }> | undefined;
+          if (!replaces) continue;
+          const prior = rows.get(replaces.id);
+          if (!prior || prior.index.lifecycle !== 'waiting_for_review' || prior.index.attempt !== replaces.attempt
+            || prior.index.contentRevision !== replaces.contentRevision) throw storageError('currentness_conflict');
+        }
         revision += 1;
         checkpointEnvelope = String(operation.checkpointEnvelope);
-        const invocations = (operation.invocations as ReadonlyArray<Readonly<Record<string, unknown>>>).map((item) => {
+        const invocations = requests.map((item) => {
           const existing = rows.get(String(item.id));
           if (existing) return existing.index;
+          const replaces = item.replaces as Readonly<{ id: string }> | undefined;
+          const prior = replaces ? rows.get(replaces.id) : undefined;
+          if (prior) rows.set(prior.index.id, { ...prior, index: { ...prior.index, lifecycle: 'superseded',
+            contentRevision: (BigInt(prior.index.contentRevision) + 1n).toString() } });
           return admitRow({
             id: String(item.id),
             sequence: String(item.sequence),
             parentRecordId: String(item.parentRecordId),
             memberOrdinal: String(item.memberOrdinal),
             lifecycle: (item.lifecycle as WorkflowInvocationLifecycleV1 | undefined) ?? 'pending',
+            ...(prior ? { attempt: (BigInt(prior.index.attempt) + 1n).toString() } : {}),
             contentEnvelope: String(item.contentEnvelope),
           });
         });
@@ -220,6 +269,15 @@ export function createWorkflowRunStorageTestkit(params: Readonly<{
         const row = rows.get(String(operation.invocationId));
         if (!row) throw notFound();
         return { invocation: { index: row.index, contentEnvelope: row.contentEnvelope, parentRevision: revision } };
+      }
+      case 'invocations.current': {
+        if (operation.runId !== params.runId) throw notFound();
+        const row = newestPerMemberSlot(String(operation.parentRecordId))
+          .find((candidate) => candidate.index.memberOrdinal === operation.memberOrdinal);
+        return {
+          invocation: row ? { index: row.index, contentEnvelope: row.contentEnvelope } : null,
+          parentRevision: revision,
+        };
       }
       case 'invocations.list': {
         const lifecycles = Array.isArray(operation.lifecycles)
@@ -246,12 +304,15 @@ export function createWorkflowRunStorageTestkit(params: Readonly<{
         };
       }
       case 'invocations.fact': {
+        const attentionBefore = requiresAttention();
         const row = rows.get(String(operation.invocationId));
         if (!row) throw notFound();
         if (row.index.lifecycle !== operation.expectedLifecycle) throw storageError('currentness_conflict');
         if (row.index.attempt !== operation.invocationAttempt) throw storageError('currentness_conflict');
+        if (row.index.contentRevision !== operation.expectedContentRevision) throw storageError('currentness_conflict');
+        if (operation.lifecycle === 'admitting') expectInputAdmissionOpen();
         const contentEnvelope = String(operation.contentEnvelope);
-        if (row.index.lifecycle === operation.lifecycle && row.contentEnvelope === contentEnvelope) return row.index;
+        if (row.index.lifecycle === operation.lifecycle && row.contentEnvelope === contentEnvelope) return { ...row.index, parentRevision: revision };
         if (TERMINAL_INVOCATION_LIFECYCLES.some((candidate) => candidate === row.index.lifecycle)
           && operation.lifecycle !== row.index.lifecycle) {
           throw storageError('currentness_conflict');
@@ -259,9 +320,11 @@ export function createWorkflowRunStorageTestkit(params: Readonly<{
         const index = WorkflowRunInvocationIndexV1Schema.parse({
           ...row.index,
           lifecycle: operation.lifecycle as WorkflowInvocationLifecycleV1,
+          contentRevision: (BigInt(row.index.contentRevision) + 1n).toString(),
         });
         rows.set(index.id, { index, contentEnvelope });
-        return index;
+        if (attentionBefore !== requiresAttention()) revision += 1;
+        return { ...index, parentRevision: revision };
       }
       case 'transition': {
         expectRevision();
@@ -269,6 +332,7 @@ export function createWorkflowRunStorageTestkit(params: Readonly<{
           const row = rows.get(String(item.id));
           if (!row) throw notFound();
           if (row.index.lifecycle !== item.expectedLifecycle) throw storageError('currentness_conflict');
+          if (row.index.contentRevision !== item.expectedContentRevision) throw storageError('currentness_conflict');
         }
         revision += 1;
         state = operation.state as WorkflowRunStateV1;
@@ -277,9 +341,11 @@ export function createWorkflowRunStorageTestkit(params: Readonly<{
         if (operation.custodyState === 'settled') custodyState = 'settled';
         for (const item of (operation.invocationTransitions ?? []) as ReadonlyArray<Readonly<Record<string, unknown>>>) {
           const row = rows.get(String(item.id))!;
+          if (row.index.lifecycle === item.lifecycle) continue;
           rows.set(row.index.id, {
             ...row,
-            index: { ...row.index, lifecycle: item.lifecycle as WorkflowInvocationLifecycleV1 },
+            index: { ...row.index, lifecycle: item.lifecycle as WorkflowInvocationLifecycleV1,
+              contentRevision: (BigInt(row.index.contentRevision) + 1n).toString() },
           });
         }
         return summary();
@@ -295,19 +361,11 @@ export function createWorkflowRunStorageTestkit(params: Readonly<{
           state = 'cancelled';
           for (const row of [...rows.values()]) {
             if (!CANCELLABLE_LIFECYCLES.some((candidate) => candidate === row.index.lifecycle)) continue;
-            rows.set(row.index.id, { ...row, index: { ...row.index, lifecycle: 'cancelled' } });
+            rows.set(row.index.id, { ...row, index: { ...row.index, lifecycle: 'cancelled',
+              contentRevision: (BigInt(row.index.contentRevision) + 1n).toString() } });
           }
         }
         return { run: summary(), intent: kind === 'cancel' ? 'cancelled' : kind };
-      }
-      case 'result-delivery.settle': {
-        expectRevision();
-        revision += 1;
-        custodyState = 'settled';
-        resultDeliveryState = operation.state === 'unavailable'
-          ? { kind: 'unavailable', ...(operation.reason === 'workflow_outcome_unresolved' ? { reason: operation.reason } : {}) }
-          : 'accepted';
-        return { run: summary() };
       }
       case 'wait': {
         // Faithful projection of the server's observation contract: terminal,
@@ -320,9 +378,7 @@ export function createWorkflowRunStorageTestkit(params: Readonly<{
             return { observation: 'terminal', run: summary(), ...(resultEnvelope ? { resultEnvelope } : {}) };
           }
           if (state === 'paused') return { observation: 'paused', run: summary() };
-          if (state === 'interrupted'
-            || (typeof resultDeliveryState === 'object'
-              && resultDeliveryState?.kind === 'unavailable')) {
+          if (state === 'interrupted') {
             return { observation: 'needs_attention', run: summary() };
           }
           if ([...rows.values()].some((row) => ATTENTION_LIFECYCLES.some((candidate) => candidate === row.index.lifecycle))) {
@@ -355,7 +411,9 @@ export function createWorkflowRunStorageTestkit(params: Readonly<{
       if (next !== 'cancelled' && next !== 'cancel_requested') return;
       for (const row of [...rows.values()]) {
         if (!CANCELLABLE_LIFECYCLES.some((candidate) => candidate === row.index.lifecycle)) continue;
-        rows.set(row.index.id, { ...row, index: { ...row.index, lifecycle: 'cancel_requested' } });
+        rows.set(row.index.id, { ...row, index: { ...row.index,
+          lifecycle: row.index.lifecycle === 'waiting_for_review' ? 'cancelled' : 'cancel_requested',
+          contentRevision: (BigInt(row.index.contentRevision) + 1n).toString() } });
       }
     },
   };

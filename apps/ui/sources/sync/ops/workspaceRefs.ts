@@ -23,6 +23,12 @@ export type RemoveWorkspaceRefFromAccountResult = WorkspaceRefAccountRemovalResu
  * Settings winner. A later winner is surfaced instead of replaying the intent.
  */
 async function mutateWorkspaceRefsInAccount(
+    mutation: Extract<WorkspaceRefAccountMutation, { kind: 'remove' }>,
+): Promise<RemoveWorkspaceRefFromAccountResult>;
+async function mutateWorkspaceRefsInAccount(
+    mutation: WorkspaceRefAccountMutation,
+): Promise<WorkspaceRefAccountSettingsMutationResult>;
+async function mutateWorkspaceRefsInAccount(
     mutation: WorkspaceRefAccountMutation,
 ): Promise<WorkspaceRefAccountSettingsMutationResult> {
     const sync = getSyncSingleton();

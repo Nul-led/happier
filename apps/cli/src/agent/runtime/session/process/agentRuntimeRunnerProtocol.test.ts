@@ -19,7 +19,14 @@ describe('Runner Agent protocol', () => {
       pluginVersion: '1.0.0',
       agentId: 'codex',
       backendId: 'codex',
-      generation: 'generation-1',
+      occurrenceId: 'occurrence:happier.agent.codex:1',
+      sourceCustody: {
+        kind: 'bundled_first_party' as const,
+        packagedRuntime: {
+          kind: 'cli_version_root' as const,
+          versionRootId: 'cli-version-root-1',
+        },
+      },
       agentDeclaration: {
         provenance: 'first_party' as const,
         source: { kind: 'bundled' as const },
@@ -90,7 +97,12 @@ describe('Runner Agent protocol', () => {
       pluginVersion: '1.0.0',
       agentId,
       backendId: agentId,
-      generation: 'generation-1',
+      occurrenceId: `occurrence:${pluginId}:1`,
+      sourceCustody: {
+        kind: 'managed' as const,
+        immutableGenerationId: 'generation-1',
+        installSource: 'npm' as const,
+      },
     };
     expect(AgentRuntimeDaemonSessionDescriptorV1Schema.safeParse(descriptor).success).toBe(true);
   });
@@ -122,6 +134,20 @@ describe('Runner Agent protocol', () => {
       AgentRuntimeDaemonSessionOpenRequestV1Schema.safeParse(request)
         .success,
     ).toBe(true);
+    for (const sessionDirectoryKind of ['path', 'managed']) {
+      expect(AgentRuntimeDaemonSessionOpenRequestV1Schema.parse({
+        ...request,
+        sessionDirectoryKind,
+      })).toMatchObject({ sessionDirectoryKind });
+      expect(projectAgentRuntimeDaemonSessionOpenAttestationRequestV1({
+        ...request,
+        sessionDirectoryKind,
+      })).toMatchObject({ sessionDirectoryKind });
+    }
+    expect(AgentRuntimeDaemonSessionOpenRequestV1Schema.safeParse({
+      ...request,
+      sessionDirectoryKind: 'Managed',
+    }).success).toBe(false);
     expect(
       AgentRuntimeDaemonSessionOpenRequestV1Schema.safeParse({
         ...request,
@@ -411,7 +437,7 @@ describe('Runner Agent protocol', () => {
           },
           surfaces: ['agent', 'mcp'],
         },
-        expectedContributorImmutableGenerationId: 'generation-g',
+        expectedContributorOccurrenceId: 'occurrence-g',
       }],
       toolPromptContributions: [{
         pluginId: 'example.agent-context-companion',

@@ -107,10 +107,10 @@ async function waitForProcessBoundary(markerPath: string, timeoutMs: number): Pr
 }
 
 describe('first-party native Agent production dispatch', () => {
-    it('routes the exact sixteen predecessor Agents and native-only Grok through their declared primary runtime surfaces', async () => {
+    it('routes every predecessor Agent and native-only Grok through their declared primary runtime surfaces', async () => {
         const predecessorAgentIds = AGENT_IDS.filter((agentId) => agentId !== 'grok');
-        expect(predecessorAgentIds).toHaveLength(16);
-        expect(AGENT_IDS).toHaveLength(17);
+        expect(predecessorAgentIds).toHaveLength(19);
+        expect(AGENT_IDS).toHaveLength(20);
 
         const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-native-agent-dispatch-'));
         const originalPath = process.env.PATH;
@@ -212,11 +212,16 @@ describe('first-party native Agent production dispatch', () => {
                     happyHomeDir,
                     contributes,
                     pluginIds: [pluginId],
+                    resolveDevelopmentSourceAuthority: ({ pluginId: sourcePluginId, rootPath }) => ({
+                        kind: 'development',
+                        registeredRootId: `first-party-native-dispatch:${sourcePluginId}`,
+                        canonicalRoot: rootPath,
+                        observedRevision: 1,
+                    }),
                     generationAuthority: {
                         commit: null,
                         generations: new Map(),
                         rejectedGenerations: new Map(),
-                        unavailableBundledPackageNames: new Set(),
                         isCurrent: async () => true,
                     },
                     connectedAccounts: createUnboundConnectedAccountsOwner(),

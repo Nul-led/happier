@@ -6,7 +6,7 @@ import {
     createSessionOwnerMetadataV1,
 } from '@happier-dev/protocol';
 
-import { MetadataSchema, type Metadata } from '../state/storageTypes';
+import { MetadataSchema, type Metadata } from '@happier-dev/session-core/state';
 import { computeSessionConfigOptionControls,
     computeSessionConfigOptionControlsForProvider,
     computeSessionConfigOptionControlsFromOverride,

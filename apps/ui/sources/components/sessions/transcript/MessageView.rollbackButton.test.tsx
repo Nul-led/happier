@@ -6,7 +6,7 @@ import { renderScreen, standardCleanup } from '@/dev/testkit';
 import { createSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
 import { createStorageStoreMock } from '@/dev/testkit/mocks/storage';
 import { installMessageViewCommonModuleMocks } from './messageViewTestHelpers';
-import { createReducer } from '@/sync/reducer/reducer';
+import { createReducer } from "@happier-dev/session-core/reducer";
 import { createUseSettingMock } from '@/dev/testkit/mocks/storage';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;

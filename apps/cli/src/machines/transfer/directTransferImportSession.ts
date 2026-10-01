@@ -9,12 +9,12 @@ import {
   type TransferSessionLifecycle,
 } from '@/transfers/core/transferSessionLifecycle';
 import { TransferSessionStore } from '@/transfers/core/transferSessionStore';
-import type { TransferPathAllowanceRegistry } from '@/transfers/targets/createTransferPathAllowanceRegistry';
 import type { ComposerMediaStageUploadTargetDeps } from '@/transfers/targets/resolveComposerMediaStageUploadTarget';
 import {
   resolveTransferUploadInitTarget,
   type TransferUploadInitPromptAssetDeps,
   type TransferUploadInitRequest,
+  type TransferUploadInitAttachmentDeps,
 } from '@/transfers/targets/resolveTransferUploadInitTarget';
 import type { WorkspaceFinalizeFileOperationsFactory } from '@/transfers/targets/resolveWorkspaceFileUploadTarget';
 import { configuration } from '@/configuration';
@@ -105,6 +105,7 @@ function fingerprintImportOpenAuthorizationScope(input: DirectTransferImportOpen
         }
       : ('t' in input && input.t === 'session_attachment_upload_v1'
       ? {
+          sessionId: input.sessionId,
           messageLocalId: input.messageLocalId ?? null,
           fileName: input.fileName ?? null,
           sizeBytes: input.sizeBytes ?? null,
@@ -135,9 +136,7 @@ export function createDirectTransferImportSessionManager(params?: Readonly<{
   accessPolicy?: FilesystemAccessPolicy;
   onActiveSessionCountChanged?: (count: number) => void;
   onActivity?: () => void;
-  attachmentUpload?: Readonly<{
-    pathAllowanceRegistry: TransferPathAllowanceRegistry;
-  }>;
+  attachmentUpload?: TransferUploadInitAttachmentDeps;
   composerMediaStage?: ComposerMediaStageUploadTargetDeps;
   promptAssetUpload?: TransferUploadInitPromptAssetDeps;
   finalizeFileOperations?: WorkspaceFinalizeFileOperationsFactory;

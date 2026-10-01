@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { __resetQualifiedConnectedAccountQuotaSnapshotStore } from './qualifiedConnectedAccountQuotaSnapshotStore';
 
 import {
     resolveConnectedServiceSettingsErrorMessage,
@@ -8,10 +9,19 @@ const {
     getQuotaMock,
     requestRefreshMock,
     openQuotaMock,
+    machineRpcMock,
 } = vi.hoisted(() => ({
     getQuotaMock: vi.fn(),
     requestRefreshMock: vi.fn(),
     openQuotaMock: vi.fn(),
+    machineRpcMock: vi.fn(),
+}));
+
+vi.mock('@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc', () => ({
+    machineRpcWithServerScope: machineRpcMock,
+}));
+vi.mock('@/sync/domains/server/serverRuntime', () => ({
+    getActiveServerSnapshot: () => ({ serverId: 'server-a', serverUrl: 'https://server-a.test', generation: 1 }),
 }));
 
 vi.mock('@/sync/api/account/apiQualifiedConnectedAccountsV4', () => ({
@@ -44,6 +54,7 @@ const ref = {
     },
     accountId: 'work',
 };
+const sourceResolution = { recordId: 'pau-record' };
 
 function buildContext(serverId: string, generation: number) {
     return {
@@ -67,13 +78,45 @@ async function flushAsyncTurns(turns = 8): Promise<void> {
 describe('qualifiedConnectedAccountQuotaSnapshotStore', () => {
     beforeEach(async () => {
         vi.clearAllMocks();
-        const { __resetQualifiedConnectedAccountQuotaSnapshotStore } =
-            await import('./qualifiedConnectedAccountQuotaSnapshotStore');
         __resetQualifiedConnectedAccountQuotaSnapshotStore();
     });
 
+    it.each([
+        { fetchPolicy: 'poll', refused: false },
+        { fetchPolicy: 'once', refused: false },
+        { fetchPolicy: 'once', refused: true },
+    ] as const)('reloads the consumed account in the admitted Home generation without requesting another provider refresh ($fetchPolicy, refused=$refused)', async ({ fetchPolicy, refused }) => {
+        const snapshot = { v: 1, ref, fetchedAt: 1, staleAfterMs: 60_000, planLabel: null, accountLabel: null, meters: [] };
+        getQuotaMock.mockResolvedValue({ ref, sourceResolution });
+        openQuotaMock.mockReturnValue(snapshot);
+        const store = await import('./qualifiedConnectedAccountQuotaSnapshotStore');
+        const current = buildContext('server-a', 1);
+        const other = buildContext('server-b', 1);
+        const currentKey = store.buildQualifiedQuotaSnapshotScopeKey(current);
+        const otherKey = store.buildQualifiedQuotaSnapshotScopeKey(other);
+        const releaseOther = store.retainQualifiedQuotaSnapshotPolling(otherKey, other);
+        const releaseCurrent = fetchPolicy === 'poll'
+            ? store.retainQualifiedQuotaSnapshotPolling(currentKey, current)
+            : store.loadQualifiedQuotaSnapshotOnce(currentKey, current);
+        await flushAsyncTurns();
+        const refreshed = { ...snapshot, fetchedAt: 2, recoveryCredits: { availableCount: 1, credits: [] } };
+        openQuotaMock.mockReturnValue(refreshed);
+        const receipt = { idempotencyKey: 'manual-1', status: refused ? 'not_available' : 'consumed' };
+        machineRpcMock.mockResolvedValue(refused
+            ? { ok: false, errorCode: 'connected_service_quota_recovery_credit_not_available', error: 'unavailable', receipt }
+            : { ok: true, receipt, snapshot: null });
+        const { connectedServiceQuotaRecoveryCreditConsume } = await import('@/sync/ops/connectedServiceQuotaRecoveryCredits');
+        const result = await connectedServiceQuotaRecoveryCreditConsume({ machineId: 'machine-1', serviceId: 'anthropic', profileId: ref.accountId });
+        expect(result).toMatchObject({ ok: !refused, receipt });
+        expect(store.getQualifiedQuotaSnapshotEntry(currentKey).snapshot).toEqual(refreshed);
+        expect(store.getQualifiedQuotaSnapshotEntry(otherKey).snapshot).toEqual(snapshot);
+        expect(requestRefreshMock).not.toHaveBeenCalled();
+        releaseCurrent();
+        releaseOther();
+    });
+
     it('deduplicates the qualified read across concurrent consumers', async () => {
-        const response = { ref };
+        const response = { ref, sourceResolution };
         const snapshot = {
             v: 1,
             ref,
@@ -116,6 +159,7 @@ describe('qualifiedConnectedAccountQuotaSnapshotStore', () => {
         getQuotaMock.mockImplementation(
             async (_credentials, _ref, options) => ({
                 ref,
+                sourceResolution,
                 serverId: options?.expectedActiveServer?.serverId,
             }),
         );
@@ -180,7 +224,7 @@ describe('qualifiedConnectedAccountQuotaSnapshotStore', () => {
         const failure = Object.assign(new Error('not found'), {
             code: 'connect_group_not_found',
         });
-        getQuotaMock.mockResolvedValue({ ref });
+        getQuotaMock.mockResolvedValue({ ref, sourceResolution });
         openQuotaMock.mockReturnValue(snapshot);
         requestRefreshMock.mockRejectedValue(failure);
         const {
@@ -274,7 +318,7 @@ describe('qualifiedConnectedAccountQuotaSnapshotStore', () => {
             expect(getQuotaMock).toHaveBeenCalledTimes(3);
 
             // A success clears the ladder: the next poll is back at the floor.
-            getQuotaMock.mockResolvedValue({ ref });
+            getQuotaMock.mockResolvedValue({ ref, sourceResolution });
             await vi.advanceTimersByTimeAsync(120_000);
             await flushAsyncTurns();
             expect(getQuotaMock).toHaveBeenCalledTimes(4);
@@ -303,7 +347,7 @@ describe('qualifiedConnectedAccountQuotaSnapshotStore', () => {
             accountLabel: null,
             meters: [],
         };
-        getQuotaMock.mockResolvedValue({ ref });
+        getQuotaMock.mockResolvedValue({ ref, sourceResolution });
         openQuotaMock.mockReturnValue(snapshot);
         const {
             buildQualifiedQuotaSnapshotScopeKey,

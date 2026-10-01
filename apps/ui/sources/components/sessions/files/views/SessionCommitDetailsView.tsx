@@ -1,7 +1,5 @@
 import * as React from 'react';
-import { View, Platform, Pressable } from 'react-native';
-import { Text } from '@/components/ui/text/Text';
-import { Typography } from '@/constants/Typography';
+import { View, Platform } from 'react-native';
 import {
     sessionScmCommitBackout,
     sessionScmDiffCommit,
@@ -19,7 +17,6 @@ import {
 } from '@/sync/domains/state/storage';
 import { Modal } from '@/modal';
 import { useUnistyles, StyleSheet } from 'react-native-unistyles';
-import { layout } from '@/components/ui/layout/layout';
 import { t } from '@/text';
 import { scmStatusSync } from '@/scm/scmStatusSync';
 import { canRevertFromSnapshot } from '@/scm/operations/safety';
@@ -44,14 +41,18 @@ import { useScmReviewViewabilityConfig } from '@/scm/review/useScmReviewViewabil
 import { useViewableItemIndices } from '@/components/ui/scroll/useViewableItemIndices';
 import { useScmDiffExpandedKeys } from '@/components/workspaces/scm/review/useScmDiffExpandedKeys';
 import { useWorkspaceScopeForSession } from '@/sync/domains/session/resolveWorkspaceScopeForSession';
-import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
+import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
+import { ToolbarButton } from '@/components/ui/buttons/ToolbarButton';
+import { Icon } from '@/components/ui/icons/Icon';
+import { DetailsDiffSummaryRow } from '@/components/appShell/panes/details/header/DetailsDiffSummaryRow';
+import { ScmCommitDetailsHeader } from '@/components/workspaces/scm/history/ScmCommitDetailsHeader';
+import { useScmCommitLogEntry } from '@/scm/history/useScmCommitLogEntry';
 
 export type SessionCommitDetailsViewProps = Readonly<{
     sessionId: string;
     serverId?: string | null;
     sha: string;
     onBack?: () => void;
-    presentation?: 'screen' | 'panel';
     onOpenFile?: (filePath: string) => void;
     onOpenFilePinned?: (filePath: string) => void;
 }>;
@@ -61,13 +62,13 @@ export function SessionCommitDetailsView(props: SessionCommitDetailsViewProps) {
     const onBack = props.onBack ?? (() => {});
     const sessionId = props.sessionId;
     const sha = props.sha;
-    const presentation = props.presentation ?? 'screen';
-    const constrainWidth = presentation === 'screen';
 
     const scmWriteEnabled = useFeatureEnabled('scm.writeOperations');
     const reviewScope = useWorkspaceScopeForSession(sessionId, props.serverId);
     const reviewCommentsEnabled = useFeatureEnabled('files.reviewComments') === true && Boolean(reviewScope);
     const scmSnapshot = useSessionProjectScmSnapshot(sessionId, props.serverId);
+    // The commit's identity (subject, author, time, message) for the header; the diff never waits on it.
+    const commitEntry = useScmCommitLogEntry(reviewScope, sha);
     const inFlightScmOperation = useSessionProjectScmInFlightOperation(sessionId, props.serverId);
     const canRevert = canRevertFromSnapshot(scmSnapshot);
 
@@ -97,6 +98,15 @@ export function SessionCommitDetailsView(props: SessionCommitDetailsViewProps) {
         return total;
     }, [diffFiles]);
     const tooLarge = diffFiles.length > maxFiles || totalChangedLines > maxChangedLines;
+    const { totalAdded, totalRemoved } = React.useMemo(() => {
+        let added = 0;
+        let removed = 0;
+        for (const file of diffFiles) {
+            added += Math.max(0, typeof file.added === 'number' ? file.added : 0);
+            removed += Math.max(0, typeof file.removed === 'number' ? file.removed : 0);
+        }
+        return { totalAdded: added, totalRemoved: removed };
+    }, [diffFiles]);
 
     const viewabilityConfig = useScmReviewViewabilityConfig();
     const viewability = useViewableItemIndices({
@@ -314,113 +324,57 @@ export function SessionCommitDetailsView(props: SessionCommitDetailsViewProps) {
     }, [props.serverId, scmSnapshot, scmWriteEnabled, sessionId, sessionPath, sha]);
 
     if (isLoading) {
-        return (
-            <View
-                style={[
-                    styles.centered,
-                    constrainWidth ? { maxWidth: layout.maxWidth, alignSelf: 'center', width: '100%' } : null,
-                ]}
-            >
-                <ActivitySpinner size="small" color={theme.colors.text.secondary} />
-            </View>
-        );
+        return <SurfaceStateCard testID="scm-commit-details-loading" kind="loading" title={t('surfaceState.opening', { name: sha.slice(0, 7) })} />;
     }
 
     if (error) {
+        // Pane-states lab 0 "X": what failed in words and one recovery. The failure text comes from the
+        // transport, so it is the diagnostic behind the collapsed Details, never the headline.
         return (
-            <View
-                style={[
-                    styles.centered,
-                    constrainWidth ? { maxWidth: layout.maxWidth, alignSelf: 'center', width: '100%' } : null,
-                ]}
-            >
-                <View style={{ width: '100%', ...(constrainWidth ? { maxWidth: layout.maxWidth } : null), paddingHorizontal: 16 }}>
-                    <Text style={{ color: theme.colors.text.primary, fontSize: 16, ...Typography.default('semiBold') }}>
-                        {t('files.commitDetails.diffUnavailableTitle')}
-                    </Text>
-                    <Text
-                        testID="scm-commit-details-error-message"
-                        style={{ marginTop: 6, color: theme.colors.state.danger.foreground, ...Typography.default('semiBold') }}
-                    >
-                        {error}
-                    </Text>
-                    <Text style={{ marginTop: 10, color: theme.colors.text.secondary, fontSize: 12, ...Typography.default() }}>
-                        {t('files.commitDetails.diffUnavailableHint')}
-                    </Text>
-                    <Pressable
-                        onPress={onBack}
-                        testID="scm-commit-details-back"
-                        style={{
-                            marginTop: 14,
-                            alignSelf: 'flex-start',
-                            paddingHorizontal: 12,
-                            paddingVertical: 8,
-                            borderRadius: 10,
-                            borderWidth: 1,
-                            borderColor: theme.colors.border.default,
-                            backgroundColor: theme.colors.surface.inset ?? theme.colors.surface.base,
-                        }}
-                    >
-                        <Text style={{ color: theme.colors.text.primary, fontSize: 12, ...Typography.default('semiBold') }}>
-                            {t('common.back')}
-                        </Text>
-                    </Pressable>
-                </View>
-            </View>
+            <SurfaceStateCard
+                testID="scm-commit-details-error"
+                kind="error"
+                iconName="git-commit"
+                title={t('files.commitDetails.couldNotOpenTitle', { sha: sha.slice(0, 7) })}
+                reason={t('files.commitDetails.couldNotOpenReason')}
+                diagnosticCode={error}
+                action={{ label: t('surfaceState.tryAgain'), onPress: () => loadCommit() }}
+                secondaryAction={{ label: t('common.back'), onPress: onBack }}
+            />
         );
     }
 
     return (
         <View style={[styles.container, { backgroundColor: theme.colors.surface.base, position: 'relative' }]}>
-            <View
-                style={{
-                    padding: 16,
-                    borderBottomWidth: Platform.select({ ios: 0.33, default: 1 }),
-                    borderBottomColor: theme.colors.border.default,
-                    backgroundColor: theme.colors.surface.inset,
-                }}
-            >
-                <Text style={{ color: theme.colors.text.secondary, fontSize: 12, ...Typography.default('semiBold') }}>
-                    {t('files.commitDetails.commitLabel')}
-                </Text>
-                <Text style={{ color: theme.colors.text.primary, fontSize: 14, ...Typography.mono() }}>{sha}</Text>
-                {inFlightScmOperation && (
-                    <Text style={{ marginTop: 6, color: theme.colors.text.secondary, fontSize: 12, ...Typography.default() }}>
-                        {t('files.commitDetails.running', { operation: inFlightScmOperation.operation })}
-                    </Text>
-                )}
-
-                {scmWriteEnabled && (
+            <ScmCommitDetailsHeader
+                sha={sha}
+                commit={commitEntry}
+                runningOperation={inFlightScmOperation?.operation ?? null}
+                actions={(
                     <>
-                        <Pressable
-                            disabled={isReverting || !canRevert || Boolean(inFlightScmOperation)}
-                            onPress={revertCommit}
-                            testID="scm-commit-details-revert"
-                            style={{
-                                marginTop: 10,
-                                alignSelf: 'flex-start',
-                                paddingHorizontal: 12,
-                                paddingVertical: 7,
-                                borderRadius: 8,
-                                backgroundColor: theme.colors.state.neutral.foreground,
-                                opacity: isReverting || !canRevert || Boolean(inFlightScmOperation) ? 0.6 : 1,
-                            }}
-                        >
-                            <Text style={{ color: 'white', fontSize: 12, ...Typography.default('semiBold') }}>{t('files.commitDetails.revert.button')}</Text>
-                        </Pressable>
-                        {!canRevert && (
-                            <Text style={{ marginTop: 6, color: theme.colors.text.secondary, fontSize: 12, ...Typography.default() }}>
-                                {t('files.commitRevertUnavailable')}
-                            </Text>
-                        )}
+                        {Platform.OS === 'web' ? <DiffPresentationStyleToggleButton /> : null}
+                        <WrapLinesToggleButton />
                     </>
                 )}
-            </View>
-
-            <View style={{ paddingHorizontal: 16, paddingTop: 12, paddingBottom: 8, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                {Platform.OS === 'web' ? <DiffPresentationStyleToggleButton /> : null}
-                <WrapLinesToggleButton />
-            </View>
+            />
+            <DetailsDiffSummaryRow
+                testID="scm-commit-details-summary"
+                label={t('detailsSurface.history.filesChanged', { count: diffFiles.length })}
+                added={totalAdded}
+                removed={totalRemoved}
+                trailing={scmWriteEnabled ? (
+                    <ToolbarButton
+                        testID="scm-commit-details-revert"
+                        label={t('detailsSurface.history.revertEllipsis')}
+                        accessibilityLabel={canRevert ? t('files.commitDetails.revert.button') : t('files.commitRevertUnavailable')}
+                        icon={<Icon name="arrow-arc-left" size={14} color={theme.colors.text.secondary} />}
+                        disabled={isReverting || !canRevert || Boolean(inFlightScmOperation)}
+                        busy={isReverting}
+                        onPress={revertCommit}
+                        style={{ borderWidth: 0, backgroundColor: 'transparent' }}
+                    />
+                ) : null}
+            />
 
             <DiffFilesListView
                 files={diffFiles}
@@ -460,10 +414,5 @@ const styles = StyleSheet.create((theme) => ({
     container: {
         flex: 1,
         backgroundColor: theme.colors.surface.base,
-    },
-    centered: {
-        flex: 1,
-        justifyContent: 'center',
-        alignItems: 'center',
     },
 }));

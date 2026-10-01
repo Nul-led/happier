@@ -480,6 +480,7 @@ type DaemonStartupPhase =
   | 'resolveCliTestLaunchSpec'
   | 'stopExistingDaemon'
   | 'reserveDirectPeerBindPort'
+  | 'beforeSpawn'
   | 'waitForDaemonState'
   | 'waitForOriginalDaemonExit'
   | 'afterOriginalDaemonExit'
@@ -947,6 +948,8 @@ export async function startTestDaemon(params: {
   startupTimeoutMs?: number;
   cleanupDescendantsOnExit?: boolean;
   cliLaunchSpec?: CliTestLaunchSpec;
+  /** Test-only artifact preparation after daemon setup and immediately before process spawn. */
+  __beforeSpawn?: () => Promise<void>;
 }): Promise<StartedDaemon> {
   await mkdir(params.testDir, { recursive: true });
   const stdoutPath = resolve(params.testDir, 'daemon.stdout.log');
@@ -1024,6 +1027,10 @@ export async function startTestDaemon(params: {
         : reserveAvailablePort().then(String),
       baseDiagnostics,
     );
+
+    if (params.__beforeSpawn) {
+      await runDaemonStartupPhase('beforeSpawn', params.__beforeSpawn(), baseDiagnostics);
+    }
 
     proc = spawnLoggedProcess({
       command: cliLaunchSpec.command,

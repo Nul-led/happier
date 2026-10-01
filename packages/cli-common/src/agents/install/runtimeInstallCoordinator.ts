@@ -8,6 +8,8 @@ import {
 import { buildRuntimeInstallFailureResult } from './runtimeInstallFailureHandling.js';
 import { runRuntimeInstallModeDispatch } from './runtimeInstallModeDispatch.js';
 import { runRuntimeInstallPreflight } from './runtimeInstallPreflight.js';
+import type { AgentInstallProgressCallback } from '../installProgress.js';
+import { ExecFileTerminationError } from '../../process/index.js';
 
 export async function runRuntimeInstallCoordinator(params: Readonly<{
     runtimeSpec: AgentCliRuntimeDescriptor;
@@ -20,6 +22,7 @@ export async function runRuntimeInstallCoordinator(params: Readonly<{
     allowVendorRecipeExecution?: boolean;
     sourcePolicy?: AgentCliSourcePolicy;
     signal?: AbortSignal;
+    onProgress?: AgentInstallProgressCallback;
     deps: ManagedInstallDeps;
 }>): Promise<InstallAgentCliResult> {
     params.signal?.throwIfAborted();
@@ -44,6 +47,7 @@ export async function runRuntimeInstallCoordinator(params: Readonly<{
         plan,
         env,
         logDir: params.logDir,
+        onProgress: params.onProgress,
     });
 
     try {
@@ -54,9 +58,10 @@ export async function runRuntimeInstallCoordinator(params: Readonly<{
             lifecycleContext,
             deps: params.deps,
             signal: params.signal,
+            onProgress: params.onProgress,
         });
     } catch (error) {
-        params.signal?.throwIfAborted();
+        if (!(error instanceof ExecFileTerminationError)) params.signal?.throwIfAborted();
         return buildRuntimeInstallFailureResult({ error, plan, lifecycleContext });
     } finally {
         await disposeRuntimeInstallLifecycleContext(lifecycleContext);

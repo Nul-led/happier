@@ -4,6 +4,7 @@ import {
     isNewSessionOrganizationPlacementAvailable,
     normalizeNewSessionOrganizationPlacement,
     reconcileNewSessionOrganizationPlacementForWorkspace,
+    resolveNewSessionFolderWorkspace,
 } from './newSessionOrganizationPlacementState';
 
 describe('newSessionOrganizationPlacementState', () => {
@@ -15,7 +16,7 @@ describe('newSessionOrganizationPlacementState', () => {
     });
 
     it('clears only a folder whose workspace no longer matches the exact target and path', () => {
-        const placement = { folderId: 'folder-1', tagIds: ['tag-1'] } as const;
+        const placement = { folderId: 'folder-1', tagIds: ['tag-1'] };
         const folders = [{
             folderId: 'folder-1',
             workspace: { t: 'workspaceScope', serverId: 'server-1', machineId: 'machine-1', rootPath: '/repo' },
@@ -36,7 +37,7 @@ describe('newSessionOrganizationPlacementState', () => {
     });
 
     it('uses the canonical workspace path normalization instead of raw root-path equality', () => {
-        const placement = { folderId: 'folder-1', tagIds: [] } as const;
+        const placement = { folderId: 'folder-1', tagIds: [] };
         expect(reconcileNewSessionOrganizationPlacementForWorkspace({
             placement,
             executionTarget: { serverId: 'server-1', machineId: 'machine-1' },
@@ -62,5 +63,23 @@ describe('newSessionOrganizationPlacementState', () => {
             featureEnabled: false,
             placement: { folderId: null, tagIds: [] },
         })).toBe(true);
+    });
+
+    it('places a no-folder draft in its machine’s Chats scope, never by its path', () => {
+        const placement = { folderId: 'chats-leads', tagIds: [] };
+        const folders = [
+            { folderId: 'chats-leads', workspace: { t: 'managedSessions', serverId: 'server-1', machineId: 'machine-1' } },
+            { folderId: 'repo-folder', workspace: { t: 'workspaceScope', serverId: 'server-1', machineId: 'machine-1', rootPath: '/repo' } },
+        ] as const;
+        const target = { serverId: 'server-1', machineId: 'machine-1' };
+
+        expect(resolveNewSessionFolderWorkspace({ executionTarget: target, directory: '', directoryKind: 'managed' }))
+            .toEqual({ t: 'managedSessions', serverId: 'server-1', machineId: 'machine-1' });
+        expect(reconcileNewSessionOrganizationPlacementForWorkspace({
+            placement, executionTarget: target, directory: '/repo', directoryKind: 'managed', folders,
+        })).toBe(placement);
+        expect(reconcileNewSessionOrganizationPlacementForWorkspace({
+            placement, executionTarget: target, directory: '/repo', directoryKind: 'path', folders,
+        })).toEqual({ folderId: null, tagIds: [] });
     });
 });

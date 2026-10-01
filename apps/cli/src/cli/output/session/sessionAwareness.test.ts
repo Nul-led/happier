@@ -29,6 +29,14 @@ function project(row: Parameters<typeof createSessionRecordFixture>[0], nowMs = 
 }
 
 describe('projectCliSessionAwarenessV1', () => {
+  it('retains public workflow origin when private content cannot be opened', () => {
+    const awareness = project({ id: 'locked-step', encryptionMode: 'e2ee',
+      metadata: 'unavailable', origin: { kind: 'run_step', runId: 'workflow-run' },
+    });
+    expect(awareness.origin).toEqual({ kind: 'run_step', runId: 'workflow-run' });
+    expect(awareness).not.toHaveProperty('lineage');
+    expect(SessionAwarenessProjectionV1Schema.safeParse(awareness).success).toBe(true);
+  });
   it('keeps a foreground turn but reports runtime currentness as unknown without presence evidence', () => {
     const awareness = project({
       id: 'session-working',

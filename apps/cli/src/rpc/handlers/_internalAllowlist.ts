@@ -82,6 +82,11 @@ export const INTERNAL_ONLY_RPC_METHODS = Object.freeze([
         ownerPacket: 'same-session-cross-agent-continuation',
     },
     {
+        method: RPC_METHODS.SESSION_CONTINUATION_INSPECT_BATCH,
+        rationale: 'Ordered Agent-picker continuation projection sharing one source Session read across its targets; it grants no authority, persists nothing, and remains the same internal owner as the single-target compatibility operation.',
+        ownerPacket: 'same-session-cross-agent-continuation',
+    },
+    {
         method: RPC_METHODS.SESSION_AGENT_TRANSITION_BRIEF_PREVIEW,
         rationale: 'Exact-machine read-only rebuild of the activation brief a transition divider stands for; it runs the same bounded context pass, grants no authority, persists nothing, and is not an ActionSpec action surface.',
         ownerPacket: 'same-session-cross-agent-continuation',
@@ -272,9 +277,19 @@ export const INTERNAL_ONLY_RPC_METHODS = Object.freeze([
         ownerPacket: 'SDK-ACTION-FORM',
     },
     {
+        method: RPC_METHODS.DAEMON_PLUGIN_ACTION_SCHEMAS_READ,
+        rationale: 'PPS core simplification W1: per-Action schema read that replaces schemas in the bulk describe projection; it reads the current runtime registry declaration and owns no catalog, dispatch, or policy.',
+        ownerPacket: 'PPS-08',
+    },
+    {
         method: RPC_METHODS.DAEMON_PLUGIN_COMPOSER_REFERENCE_SEARCH,
         rationale: 'SDK-EU-19 bounded generation-leased picker search through the canonical registered composer-reference owner; it transports candidates only, not durable resolved context.',
         ownerPacket: 'SDK-EU-19',
+    },
+    {
+        method: RPC_METHODS.DAEMON_PLUGIN_UI_TARGETED_CONTRIBUTIONS_READ,
+        rationale: 'PPS-01 W1 per-mount read of the current contributions to one plugin target; internal transport over the runtime registry, not a public action surface.',
+        ownerPacket: 'PPS-01',
     },
     {
         method: RPC_METHODS.DAEMON_PLUGIN_UI_RESOURCE_READ,
@@ -298,11 +313,6 @@ export const INTERNAL_ONLY_RPC_METHODS = Object.freeze([
     {
         method: RPC_METHODS.DAEMON_PLUGIN_UI_ARTIFACT_BYTES_READ,
         rationale: 'A.16x.10 daemon-to-UI installed plugin UI artifact byte transfer; remains internal transport and verifies installed artifact integrity.',
-        ownerPacket: 'A.16x.10',
-    },
-    {
-        method: RPC_METHODS.DAEMON_PLUGIN_UI_REACT_NATIVE_CRASH_REPORT_SUBMIT,
-        rationale: 'A.16x.10 UI-to-daemon React Native crash-disable report transport; remains internal daemon safety-state mutation, not a plugin-exposed action surface.',
         ownerPacket: 'A.16x.10',
     },
     {
@@ -396,6 +406,16 @@ export const INTERNAL_ONLY_RPC_METHODS = Object.freeze([
         ownerPacket: 'BRW-2',
     },
     {
+        method: RPC_METHODS.DAEMON_COMPUTER_ACTION_EXECUTE,
+        rationale: 'Computer-use present-user bridge; validates the Action id against the present-user set and dispatches to the daemon computer owner with host-stamped present-user authority.',
+        ownerPacket: 'U3-COMPUTER-USE',
+    },
+    {
+        method: RPC_METHODS.DAEMON_BROWSER_VIEW_LIST,
+        rationale: 'BRW-2 session-filtered daemon browser discovery projects exact view identities and current capture readiness from the control owner.',
+        ownerPacket: 'BRW-2',
+    },
+    {
         method: RPC_METHODS.DAEMON_BROWSER_CONTEXT_DISPATCH,
         rationale: 'BRW-11 daemon-owned browser context bridge; validates typed capture/attach/clear/annotate requests before context producer dispatch.',
         ownerPacket: 'BRW-11',
@@ -434,6 +454,11 @@ export const INTERNAL_ONLY_RPC_METHODS = Object.freeze([
         method: RPC_METHODS.UI_BROWSER_RECORDING_CAPTURE_FRAME,
         rationale: 'BRW-15 reverse daemon-to-UI frame capture bridge; requests one reference-only desktop WebView frame and returns only path/metadata, never inline bytes.',
         ownerPacket: 'BRW-15',
+    },
+    {
+        method: RPC_METHODS.UI_BROWSER_AUTOMATION_DISPATCH,
+        rationale: 'BRW-7 authenticated reverse continuation of an approved automation Action on the exact mounted UI view; never a public action-admission bypass.',
+        ownerPacket: 'BRW-7',
     },
     {
         method: RPC_METHODS.DAEMON_SIMULATOR_PREVIEW_SNAPSHOT,

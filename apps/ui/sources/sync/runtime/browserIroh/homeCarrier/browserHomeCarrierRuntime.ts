@@ -17,6 +17,8 @@
  * decision-maker the amendment forbids.
  */
 
+import { createOwnedHomeCarrierRelease } from '@happier-dev/cli-common/homeEnrollment';
+
 import {
     resolvePackagedBrowserIrohEndpointClient,
     type BrowserIrohEndpointClient,
@@ -48,27 +50,6 @@ export class BrowserIrohHomeCarrierIneligibleError extends Error {
         super(`Browser Iroh Home carrier is not eligible: ${reason}`);
         this.name = 'BrowserIrohHomeCarrierIneligibleError';
     }
-}
-
-function createRetainedRelease(release: () => Promise<void>): () => Promise<void> {
-    let done = false;
-    let inFlight: Promise<void> | null = null;
-    return () => {
-        if (done) return Promise.resolve();
-        // Concurrent callers share one attempt; a failed release stays owned so
-        // the next explicit switch/logout/dispose can retry the same lease.
-        inFlight ??= release().then(
-            () => {
-                done = true;
-                inFlight = null;
-            },
-            (error: unknown) => {
-                inFlight = null;
-                throw error;
-            },
-        );
-        return inFlight;
-    };
 }
 
 function createCarrier(params: Readonly<{
@@ -133,7 +114,7 @@ function createCarrier(params: Readonly<{
         openStream,
     });
 
-    const releaseLease = createRetainedRelease(async () => {
+    const releaseLease = createOwnedHomeCarrierRelease(async () => {
         await lease.release();
         diagnostics = projectIrohHomeTransportDiagnosticsEvent(diagnostics, {
             type: 'closed',

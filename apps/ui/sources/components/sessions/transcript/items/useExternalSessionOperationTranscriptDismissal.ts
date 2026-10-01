@@ -1,3 +1,4 @@
+import { useSessionTranscriptSource } from '@/components/sessions/transcript/source/SessionTranscriptSourceContext';
 import * as React from 'react';
 
 import type {
@@ -17,20 +18,23 @@ export function useExternalSessionOperationTranscriptDismissal(params: Readonly<
     dismissal: ExternalSessionOperationTranscriptDismissal | null;
     onDismiss: (actionRef: ExternalSessionOperationActionRef) => void;
 }> {
+    const transcriptSource = useSessionTranscriptSource();
+    const sessionId = transcriptSource.sessionId;
     const [dismissal, setDismissal] =
         React.useState<ExternalSessionOperationTranscriptDismissal | null>(null);
 
     React.useEffect(() => {
         setDismissal((current) =>
-            current?.sessionId === params.sessionId ? current : null
+            current?.sessionId === sessionId ? current : null
         );
-    }, [params.sessionId]);
+    }, [sessionId]);
 
     const onDismiss = React.useCallback((
         actionRef: ExternalSessionOperationActionRef,
     ) => {
         if (
-            params.presentation === null
+            transcriptSource.actions === null
+            || params.presentation === null
             || !isExternalSessionOperationDismissibleStatus(
                 params.presentation.status,
             )
@@ -40,11 +44,11 @@ export function useExternalSessionOperationTranscriptDismissal(params: Readonly<
             return;
         }
         setDismissal({
-            sessionId: params.sessionId,
+            sessionId: sessionId,
             operationId: actionRef.operationId,
             revision: actionRef.revision,
         });
-    }, [params.presentation, params.sessionId]);
+    }, [params.presentation, sessionId, transcriptSource.actions]);
 
     return React.useMemo(() => ({
         dismissal,

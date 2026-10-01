@@ -17,12 +17,12 @@ const boundaries = vi.hoisted(() => {
         directAddresses: string[];
         relayUrls: string[];
     }> = {};
-    const legacyEligibleServerIds = new Set<string>();
     const finiteTransferRpcEligibleServerIds = new Set<string>();
+    const identityOnlyEndpointServerIds = new Set<string>();
     const currentTransferSupportedServerIds = new Set<string>();
     const resetEndpoints = () => {
-        legacyEligibleServerIds.clear();
         finiteTransferRpcEligibleServerIds.clear();
+        identityOnlyEndpointServerIds.clear();
         currentTransferSupportedServerIds.clear();
         currentTransferSupportedServerIds.add('server-1');
         currentTransferSupportedServerIds.add('server-2');
@@ -46,12 +46,14 @@ const boundaries = vi.hoisted(() => {
         acquireBrowserStream: vi.fn(),
         getReadyServerFeatures: vi.fn(async (..._args: unknown[]) => ({
             features: {
-                machines: { transfer: { enabled: true, directPeer: { enabled: true } } },
+                machines: {
+                    transfer: { enabled: true, directPeer: { enabled: true } },
+                    peerMediation: { enabled: true },
+                },
             },
         })),
         getCredentials: vi.fn(),
         requestGrant: vi.fn(),
-        probeMachineRpc: vi.fn(async (..._args: unknown[]): Promise<'viable' | 'unavailable' | 'unknown'> => 'unavailable'),
         probeNative: vi.fn(async () => true),
         startTunnel: vi.fn(),
         captureAuthority: vi.fn(),
@@ -75,17 +77,17 @@ const boundaries = vi.hoisted(() => {
         removeEndpoint: (serverId: string) => {
             delete endpointsByServerId[serverId];
         },
-        markLegacyEligible: (serverId: string) => {
-            legacyEligibleServerIds.add(serverId);
-        },
         markFiniteTransferRpcEligible: (serverId: string) => {
             finiteTransferRpcEligibleServerIds.add(serverId);
+        },
+        omitCurrentEndpointHints: (serverId: string) => {
+            identityOnlyEndpointServerIds.add(serverId);
         },
         removeCurrentTransferSupport: (serverId: string) => {
             currentTransferSupportedServerIds.delete(serverId);
         },
-        isLegacyEligible: (serverId: string) => legacyEligibleServerIds.has(serverId),
         isFiniteTransferRpcEligible: (serverId: string) => finiteTransferRpcEligibleServerIds.has(serverId),
+        isCurrentEndpointIdentityOnly: (serverId: string) => identityOnlyEndpointServerIds.has(serverId),
         isCurrentTransferSupported: (serverId: string) => currentTransferSupportedServerIds.has(serverId),
         readEndpoint: (serverId: string) => endpointsByServerId[serverId],
     };
@@ -118,7 +120,9 @@ vi.mock('@/sync/runtime/orchestration/connectionManager', () => ({
 vi.mock('@/sync/runtime/orchestration/serverScopedRpc/createServerRequestWithServerScope', () => ({
     captureServerRequestAuthorityForServerAccountScope: (...args: unknown[]) => boundaries.captureAuthority(...args),
 }));
-vi.mock('@/sync/domains/state/storage', () => ({
+vi.mock('@/sync/domains/state/storage', async () => {
+    const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
+    return createStorageModuleStub({
     storage: {
         getState: () => ({
             machineListByServerId: {
@@ -128,12 +132,17 @@ vi.mock('@/sync/domains/state/storage', () => ({
                         kind: boundaries.isFiniteTransferRpcEligible('server-1') ? 'ephemeral_session_runner' : 'persistent',
                         active: true,
                         revokedAt: null,
-                        operationProtocolCapabilities: boundaries.isFiniteTransferRpcEligible('server-1')
-                            ? { finiteTransferRpc: { protocolVersions: [1] } }
-                            : null,
-                        operationProtocolCapabilitiesRevision: boundaries.isFiniteTransferRpcEligible('server-1') ? 1 : null,
+                        operationProtocolCapabilities: {
+                            ...(boundaries.isFiniteTransferRpcEligible('server-1') ? { finiteTransferRpc: { protocolVersions: [1] } } : {}),
+                            ...(boundaries.readEndpoint('server-1') ? { irohMachineEndpoint: {
+                                protocolVersions: [1],
+                                ...(boundaries.isCurrentEndpointIdentityOnly('server-1')
+                                    ? { endpointId: boundaries.readEndpoint('server-1')!.endpointId }
+                                    : boundaries.readEndpoint('server-1')),
+                            } } : {}),
+                        },
+                        operationProtocolCapabilitiesRevision: 1,
                         daemonState: boundaries.isFiniteTransferRpcEligible('server-1') ? null : {
-                            ...(boundaries.isLegacyEligible('server-1') ? { status: 'running' } : {}),
                             ...(boundaries.isCurrentTransferSupported('server-1') ? {
                                 transfer: {
                                     supported: { import: true, export: true },
@@ -160,12 +169,17 @@ vi.mock('@/sync/domains/state/storage', () => ({
                         kind: boundaries.isFiniteTransferRpcEligible('server-2') ? 'ephemeral_session_runner' : 'persistent',
                         active: true,
                         revokedAt: null,
-                        operationProtocolCapabilities: boundaries.isFiniteTransferRpcEligible('server-2')
-                            ? { finiteTransferRpc: { protocolVersions: [1] } }
-                            : null,
-                        operationProtocolCapabilitiesRevision: boundaries.isFiniteTransferRpcEligible('server-2') ? 1 : null,
+                        operationProtocolCapabilities: {
+                            ...(boundaries.isFiniteTransferRpcEligible('server-2') ? { finiteTransferRpc: { protocolVersions: [1] } } : {}),
+                            ...(boundaries.readEndpoint('server-2') ? { irohMachineEndpoint: {
+                                protocolVersions: [1],
+                                ...(boundaries.isCurrentEndpointIdentityOnly('server-2')
+                                    ? { endpointId: boundaries.readEndpoint('server-2')!.endpointId }
+                                    : boundaries.readEndpoint('server-2')),
+                            } } : {}),
+                        },
+                        operationProtocolCapabilitiesRevision: 1,
                         daemonState: boundaries.isFiniteTransferRpcEligible('server-2') ? null : {
-                            ...(boundaries.isLegacyEligible('server-2') ? { status: 'running' } : {}),
                             ...(boundaries.isCurrentTransferSupported('server-2') ? {
                                 transfer: {
                                     supported: { import: true, export: true },
@@ -188,7 +202,8 @@ vi.mock('@/sync/domains/state/storage', () => ({
             machines: {},
         }),
     },
-}));
+    });
+});
 vi.mock('@/sync/runtime/nativeIrohTunnels/machineTransferLifecycle', () => ({
     getIrohApplicationEndpoint: async () => ({ endpointId: 'b'.repeat(64) }),
     isIrohMachineTransferLifecycleAvailable: () => true,
@@ -197,9 +212,6 @@ vi.mock('@/sync/runtime/nativeIrohTunnels/machineTransferLifecycle', () => ({
 }));
 vi.mock('@/sync/runtime/browserIroh/hostEligibility', () => ({
     isBrowserIrohHost: () => boundaries.browserHostEligible(),
-}));
-vi.mock('../../probeMachineRpcDirectRouteAvailability', () => ({
-    probeMachineRpcDirectRouteAvailability: (...args: unknown[]) => boundaries.probeMachineRpc(...args),
 }));
 vi.mock('@/sync/runtime/browserIroh', () => ({
     resolvePackagedBrowserIrohEndpointClient: () => boundaries.resolvePackagedClient(),
@@ -224,8 +236,6 @@ describe('resolveMachineCarrierRoute', () => {
             release: boundaries.releaseAuthority,
         });
         boundaries.requestGrant.mockReset();
-        boundaries.probeMachineRpc.mockReset();
-        boundaries.probeMachineRpc.mockResolvedValue('unavailable');
         boundaries.startTunnel.mockReset();
         boundaries.probeNative.mockClear();
         boundaries.browserHostEligible.mockReset();
@@ -246,7 +256,17 @@ describe('resolveMachineCarrierRoute', () => {
             directAddresses: ['127.0.0.1:48123'],
             relayUrls: [],
         });
+        boundaries.omitCurrentEndpointHints('server-1');
 
+        await expect(resolveMachineCarrierRoute('machine-1', 'server-1')).resolves.toMatchObject({
+            kind: 'unavailable', errorCode: 'machine_carrier_unavailable',
+        });
+        expect(boundaries.acquireBrowserStream).not.toHaveBeenCalled();
+    });
+
+    it('does not revive relay hints from stale daemon state after current publication removes them', async () => {
+        boundaries.browserHostEligible.mockReturnValue(true);
+        boundaries.omitCurrentEndpointHints('server-1');
         await expect(resolveMachineCarrierRoute('machine-1', 'server-1')).resolves.toMatchObject({
             kind: 'unavailable', errorCode: 'machine_carrier_unavailable',
         });
@@ -264,34 +284,31 @@ describe('resolveMachineCarrierRoute', () => {
         expect(boundaries.acquireBrowserStream).not.toHaveBeenCalled();
     });
 
-    it('selects the independently eligible predecessor route before prepare when Iroh is absent', async () => {
+    it('returns a typed unavailable route for a current Runner without an Iroh endpoint', async () => {
         boundaries.removeEndpoint('server-1');
-        boundaries.markLegacyEligible('server-1');
-        boundaries.probeMachineRpc.mockResolvedValueOnce('viable');
+        boundaries.markFiniteTransferRpcEligible('server-1');
 
-        await expect(resolveMachineCarrierRoute('machine-1', 'server-1')).resolves.toEqual({
-            kind: 'legacy_machine_rpc',
-        });
-        expect(boundaries.probeMachineRpc).toHaveBeenCalledWith({
-            serverId: 'server-1',
-            remoteMachineId: 'machine-1',
+        await expect(resolveMachineCarrierRoute('machine-1', 'server-1')).resolves.toMatchObject({
+            kind: 'unavailable', errorCode: 'machine_carrier_unavailable',
         });
         expect(boundaries.probeNative).not.toHaveBeenCalled();
         expect(boundaries.requestGrant).not.toHaveBeenCalled();
         expect(boundaries.startTunnel).not.toHaveBeenCalled();
     });
 
-    it('selects the exact Machine RPC transfer route for a current Runner without daemon state', async () => {
-        boundaries.removeEndpoint('server-1');
+    it('selects current Runner Iroh without daemon state and never probes Machine RPC', async () => {
         boundaries.markFiniteTransferRpcEligible('server-1');
-
-        await expect(resolveMachineCarrierRoute('machine-1', 'server-1')).resolves.toEqual({
-            kind: 'legacy_machine_rpc',
+        await expect(resolveMachineCarrierRoute('machine-1', 'server-1')).resolves.toMatchObject({
+            kind: 'iroh_peer', carrierKind: 'native_http',
         });
-        expect(boundaries.probeMachineRpc).not.toHaveBeenCalled();
-        expect(boundaries.probeNative).not.toHaveBeenCalled();
-        expect(boundaries.requestGrant).not.toHaveBeenCalled();
-        expect(boundaries.startTunnel).not.toHaveBeenCalled();
+    });
+
+    it('selects current Runner browser Iroh from authenticated capability relay hints', async () => {
+        boundaries.markFiniteTransferRpcEligible('server-1');
+        boundaries.browserHostEligible.mockReturnValue(true);
+        await expect(resolveMachineCarrierRoute('machine-1', 'server-1')).resolves.toMatchObject({
+            kind: 'iroh_peer', carrierKind: 'browser_stream',
+        });
     });
 
     it('pins deferred acquisition to the server resolved at route time when focus moves before acquisition', async () => {

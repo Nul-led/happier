@@ -19,6 +19,8 @@ export type SessionTagsMenuContent = Readonly<{
     selectionListStep: SelectionListStep;
 }>;
 
+const EMPTY_DROPDOWN_ITEMS: readonly DropdownMenuItem[] = [];
+
 function normalizeTags(tags: readonly SessionTagsMenuContentTag[]): SessionTagsMenuContentTag[] {
     const seen = new Set<string>();
     const normalized: SessionTagsMenuContentTag[] = [];
@@ -70,7 +72,7 @@ export function buildSessionTagsMenuContent(params: Readonly<{
             if (normalized) params.onCreate?.(normalized);
         }
         : null;
-    const dropdownItems: DropdownMenuItem[] = tags.map((tag) => ({
+    const dropdownItems = tags.length === 0 ? EMPTY_DROPDOWN_ITEMS : tags.map((tag) => ({
         id: tag.id,
         testID: `session-tags-menu-item:${tag.id}`,
         title: tag.label,

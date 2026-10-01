@@ -6,6 +6,7 @@ import { createManagedToolScratchDir } from '../createManagedToolScratchDir.js';
 import type { AgentCliInstallPlan } from '../install.js';
 import { resolveHappyHomeDirFromEnvironment } from '../resolveHappyHomeDir.js';
 import type { AgentCliRuntimeDescriptor } from '../resolution.js';
+import type { AgentInstallProgressCallback } from '../installProgress.js';
 
 type AppendCommandLogFn = (
     logPath: string,
@@ -101,6 +102,7 @@ export async function createRuntimeInstallLifecycleContext(params: Readonly<{
     plan: AgentCliInstallPlan;
     env: NodeJS.ProcessEnv;
     logDir?: string | null;
+    onProgress?: AgentInstallProgressCallback;
 }>): Promise<RuntimeInstallLifecycleContext> {
     const logPath = resolveLogPath({ agentId: params.runtimeSpec.id, logDir: params.logDir, env: params.env });
     writeLogHeader(logPath, params.plan);
@@ -115,7 +117,10 @@ export async function createRuntimeInstallLifecycleContext(params: Readonly<{
         logPath,
         vendorScratchDir,
         appendCommandLog,
-        appendLogLine,
+        appendLogLine: (path, line) => {
+            appendLogLine(path, line);
+            params.onProgress?.({ t: 'log', line });
+        },
     };
 }
 

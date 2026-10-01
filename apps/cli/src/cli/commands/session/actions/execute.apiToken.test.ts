@@ -66,6 +66,20 @@ describe('session actions execute with an API token', () => {
     resolveSessionTransportContext.mockClear();
   });
 
+  it('refuses unknown options and surplus arguments before reading credentials', async () => {
+    const readCredentialsFn = vi.fn(async () => ({ token: 'hap_v1_pat_secret', encryption: null, credentialProvenance: 'api_token' as const }));
+    await expect(cmdSessionActionsExecute(
+      ['actions', 'execute', 'session-1', 'session.status.get', '--not-an-option', '--json'],
+      { readCredentialsFn },
+    )).rejects.toMatchObject({ code: 'invalid_arguments' });
+    await expect(cmdSessionActionsExecute(
+      ['actions', 'execute', 'session-1', 'session.status.get', 'surplus', '--json'],
+      { readCredentialsFn },
+    )).rejects.toMatchObject({ code: 'invalid_arguments' });
+    expect(readCredentialsFn).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+  });
+
   it('resolves an E2EE-capable selector through the PAT Action adapter before legacy Session lookup', async () => {
     const credentials = {
       token: 'hap_v1_pat_secret',
@@ -108,7 +122,6 @@ describe('session actions execute with an API token', () => {
         {
           defaultSessionId: 'session_exact_123',
           surface: 'cli',
-          authority: 'present_user',
         },
       );
       expect(output.json()).toEqual({

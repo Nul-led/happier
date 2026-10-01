@@ -199,9 +199,9 @@ describe('inspector renderSurface (real source, mounted)', () => {
         expect(rendered).toContain('Aucun plugin installé.');
         expect(rendered).toContain('Actualiser l’inventaire');
         // Untranslated key → the author fallback, never the raw key.
-        expect(rendered).toContain('Inspector actions');
+        expect(rendered).toContain('Quick menu');
         expect(rendered).not.toContain('plugins.inspector.surface.empty');
-        expect(rendered).not.toContain('plugins.inspector.surface.showActions');
+        expect(rendered).not.toContain('plugins.inspector.surface.quickMenu');
     });
 
     it('fetches plugins.list on mount and renders each plugin row', async () => {

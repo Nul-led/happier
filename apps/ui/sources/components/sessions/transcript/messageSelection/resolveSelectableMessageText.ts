@@ -1,8 +1,8 @@
 import { normalizeVoiceAgentTurnTranscriptText } from '@happier-dev/agents';
 
 import { parseHappierMetaEnvelope } from '@/components/sessions/transcript/structured/happierMetaEnvelope';
-import type { Message } from '@/sync/domains/messages/messageTypes';
-import { readStreamSegmentMetaV1 } from '@/sync/reducer/helpers/streamSegmentMeta';
+import type { Message } from "@happier-dev/session-core/messages";
+import { readStreamSegmentMetaV1 } from "@happier-dev/session-core/reducer";
 
 import type { TranscriptSelectableMessageText } from './_types';
 

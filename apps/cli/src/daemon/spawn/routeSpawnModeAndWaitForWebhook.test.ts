@@ -1,10 +1,11 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { chmodSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 import { partitionProviderSessionArgs } from '@/cli/providerSessionArgPartition';
 import type { SpawnSessionResult } from '@/rpc/handlers/registerSessionHandlers';
 import type { NativeForkSource } from '@/session/shared/spawnSessionContract';
+import type { DaemonPluginDevelopmentRootsOwner } from '@/plugins/daemon/developmentRoots';
 import { createSpawnHappyCliEnvScope } from '@/testkit/process/spawnHappyCliHarness';
 import { withTempDir } from '@/testkit/fs/tempDir';
 import cliDistBuildManifest from '@happier-dev/cli-common/cliDistBuildManifest';
@@ -14,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   prepareSourceDevSharedDepsForHappyCliSpawn: vi.fn(),
   prepareSourceDevSharedDepsForBundledPluginRuntimeLoad: vi.fn(),
   spawnTmuxHostedSessionAndWaitForWebhook: vi.fn(),
+  spawnAdapterHostedSessionAndWaitForWebhook: vi.fn(),
   spawnRegularProcessAndWaitForWebhook: vi.fn(),
   spawnWindowsHostedSessionAndWaitForWebhook: vi.fn(),
   resolveWindowsRemoteSessionConsoleMode: vi.fn(() => 'hidden'),
@@ -31,6 +33,10 @@ vi.mock('@/subprocess/sourceDevSharedDepsPreflight', async (importOriginal) => {
 
 vi.mock('./spawnTmuxHostedSessionAndWaitForWebhook', () => ({
   spawnTmuxHostedSessionAndWaitForWebhook: mocks.spawnTmuxHostedSessionAndWaitForWebhook,
+}));
+
+vi.mock('./spawnAdapterHostedSessionAndWaitForWebhook', () => ({
+  spawnAdapterHostedSessionAndWaitForWebhook: mocks.spawnAdapterHostedSessionAndWaitForWebhook,
 }));
 
 vi.mock('./spawnRegularProcessAndWaitForWebhook', () => ({
@@ -60,6 +66,7 @@ const successResult: SpawnSessionResult = {
 
 const ROUTE_SPAWN_MODE_TEST_TIMEOUT_MS = 90_000;
 const envScope = createSpawnHappyCliEnvScope();
+let developmentRootsOwner: DaemonPluginDevelopmentRootsOwner | undefined;
 
 const nativeForkSource: NativeForkSource = {
   sessionId: 'source-session',
@@ -74,6 +81,12 @@ const nativeForkSource: NativeForkSource = {
 };
 
 function createParams() {
+  const processEnv = { ...process.env };
+  delete processEnv.HAPPIER_CLI_SUBPROCESS_RUNTIME;
+  delete processEnv.HAPPIER_CLI_SUBPROCESS_RUNTIME_BACKED;
+  delete processEnv.HAPPIER_CLI_SUBPROCESS_DIST_ENTRYPOINT;
+  delete processEnv.HAPPIER_CLI_SUBPROCESS_DAEMON_DIST_CLOSURE_FINGERPRINT;
+  delete processEnv.HAPPIER_CLI_SUBPROCESS_STACK_RUNTIME_STATE_PATH;
   return {
     terminalRequest: { requested: null },
     directory: '/tmp/happier-project',
@@ -88,7 +101,7 @@ function createParams() {
     },
     directoryCreated: false,
     extraEnvForChildWithMessage: {},
-    processEnv: process.env,
+    processEnv,
     happyHomeDir: '/tmp/happier-home',
     pidToTrackedSession: new Map(),
     pidToAwaiter: new Map(),
@@ -160,6 +173,43 @@ function writeManagedJavaScriptRuntime(homeDir: string): string {
 }
 
 describe('routeSpawnModeAndWaitForWebhook', () => {
+  beforeAll(async () => {
+    // The daemon owns a real applied runtime before accepting any spawn request.
+    mocks.prepareSourceDevSharedDepsForBundledPluginRuntimeLoad.mockResolvedValue({
+      type: 'ready', checked: false, reason: 'not-source-dev',
+    });
+    const [{ configuration }, { resolveExecutablePluginRuntimeRegistry }, { pluginReloadController }, { createDaemonPluginDevelopmentRootsOwner }] = await Promise.all([
+      import('@/configuration'),
+      import('@/plugins/runtime/resolveExecutablePluginRuntimeRegistry'),
+      import('@/plugins/runtime/reload/singleton'),
+      import('@/plugins/daemon/developmentRoots'),
+    ]);
+    developmentRootsOwner = createDaemonPluginDevelopmentRootsOwner({
+      happyHomeDir: configuration.happyHomeDir,
+      submitObservation: async () => {
+        throw new Error('The spawn fixture does not observe development source changes');
+      },
+    });
+    const registry = await resolveExecutablePluginRuntimeRegistry({
+      happyHomeDir: configuration.happyHomeDir,
+      generation: 1,
+      resolveDevelopmentSourceAuthority: developmentRootsOwner.resolveDevelopmentSourceAuthority,
+    });
+    const adoption = await pluginReloadController.adoptPreparedRuntimeRegistry({
+      registry,
+      changedPluginIds: [],
+      durableRevision: 1,
+      runningSessionDisposition: 'retainRunningSessions',
+    });
+    if (!adoption.ok) throw new Error('Failed to prepare the daemon runtime for spawn routing');
+  }, ROUTE_SPAWN_MODE_TEST_TIMEOUT_MS);
+
+  afterAll(async () => {
+    const { pluginReloadController } = await import('@/plugins/runtime/reload/singleton');
+    await pluginReloadController.shutdown();
+    await developmentRootsOwner?.stop();
+  });
+
   beforeEach(() => {
     mocks.prepareSourceDevSharedDepsForHappyCliSpawn.mockReset().mockResolvedValue({
       type: 'ready',
@@ -177,6 +227,7 @@ describe('routeSpawnModeAndWaitForWebhook', () => {
       tmuxFallbackReason: null,
       tmuxCreationDisposition: 'not_created',
     });
+    mocks.spawnAdapterHostedSessionAndWaitForWebhook.mockReset().mockResolvedValue(null);
     mocks.spawnRegularProcessAndWaitForWebhook.mockReset().mockResolvedValue(successResult);
     mocks.spawnWindowsHostedSessionAndWaitForWebhook.mockReset().mockResolvedValue(successResult);
     mocks.resolveWindowsRemoteSessionConsoleMode.mockReset().mockReturnValue('hidden');
@@ -186,6 +237,89 @@ describe('routeSpawnModeAndWaitForWebhook', () => {
   afterEach(() => {
     envScope.restore();
   });
+
+  it('routes an interactive Herdr request through the shared adapter-hosted launcher', async () => {
+    mocks.spawnAdapterHostedSessionAndWaitForWebhook.mockResolvedValueOnce(successResult);
+    const { routeSpawnModeAndWaitForWebhook } = await import('./routeSpawnModeAndWaitForWebhook');
+
+    await expect(routeSpawnModeAndWaitForWebhook({
+      ...createParams(),
+      terminalRequest: { requested: 'herdr', herdr: { sessionName: 'default' } },
+    })).resolves.toEqual(successResult);
+
+    expect(mocks.spawnAdapterHostedSessionAndWaitForWebhook).toHaveBeenCalledWith(expect.objectContaining({
+      terminalRequest: { requested: 'herdr', herdr: { sessionName: 'default' } },
+    }));
+    expect(mocks.spawnRegularProcessAndWaitForWebhook).not.toHaveBeenCalled();
+  }, ROUTE_SPAWN_MODE_TEST_TIMEOUT_MS);
+
+  it.each(['opencode', 'codex'])('keeps selected %s ACP headless even when Herdr is requested', async (agentId) => {
+    const { routeSpawnModeAndWaitForWebhook } = await import('./routeSpawnModeAndWaitForWebhook');
+
+    await expect(routeSpawnModeAndWaitForWebhook({
+      ...createParams(),
+      effectiveBackendTargetV2: { kind: 'backend', sourceKind: 'built_in', backendId: agentId },
+      terminalRequest: { requested: 'herdr', herdr: { sessionName: 'default' } },
+      options: {
+        directory: '/tmp/happier-project',
+        runtimeDescriptorV1: { v: 1, agentId, agent: { backendMode: 'acp' } },
+      },
+    } as Parameters<typeof routeSpawnModeAndWaitForWebhook>[0])).resolves.toEqual(successResult);
+
+    expect(mocks.spawnAdapterHostedSessionAndWaitForWebhook.mock.calls[0]?.[0].terminalRequest).toEqual({ requested: 'plain' });
+    expect(mocks.spawnRegularProcessAndWaitForWebhook).toHaveBeenCalledOnce();
+  }, ROUTE_SPAWN_MODE_TEST_TIMEOUT_MS);
+
+  it.each(['gemini', 'auggie'])('keeps %s headless when the RPC omits a runtime descriptor', async (agentId) => {
+    const { routeSpawnModeAndWaitForWebhook } = await import('./routeSpawnModeAndWaitForWebhook');
+
+    await expect(routeSpawnModeAndWaitForWebhook({
+      ...createParams(),
+      effectiveBackendTargetV2: { kind: 'backend', sourceKind: 'built_in', backendId: agentId },
+      terminalRequest: { requested: 'herdr', herdr: { sessionName: 'default' } },
+    })).resolves.toEqual(successResult);
+
+    expect(mocks.spawnAdapterHostedSessionAndWaitForWebhook.mock.calls[0]?.[0].terminalRequest).toEqual({ requested: 'plain' });
+  }, ROUTE_SPAWN_MODE_TEST_TIMEOUT_MS);
+
+  it.each(['claude', 'codex', 'opencode'])('preserves native terminal presentation for %s', async (agentId) => {
+    const { routeSpawnModeAndWaitForWebhook } = await import('./routeSpawnModeAndWaitForWebhook');
+    const terminalRequest = { requested: 'herdr' as const, herdr: { sessionName: 'default' } };
+
+    await expect(routeSpawnModeAndWaitForWebhook({
+      ...createParams(),
+      effectiveBackendTargetV2: { kind: 'backend', sourceKind: 'built_in', backendId: agentId },
+      terminalRequest,
+    })).resolves.toEqual(successResult);
+
+    expect(mocks.spawnAdapterHostedSessionAndWaitForWebhook.mock.calls[0]?.[0].terminalRequest).toEqual(terminalRequest);
+  }, ROUTE_SPAWN_MODE_TEST_TIMEOUT_MS);
+
+  it.each(['codex', 'opencode'])('honors the %s config-selected ACP runtime without a descriptor', async (agentId) => {
+    const { routeSpawnModeAndWaitForWebhook } = await import('./routeSpawnModeAndWaitForWebhook');
+    await expect(routeSpawnModeAndWaitForWebhook({
+      ...createParams(),
+      effectiveBackendTargetV2: { kind: 'backend', sourceKind: 'built_in', backendId: agentId },
+      terminalRequest: { requested: 'herdr', herdr: { sessionName: 'default' } },
+      options: {
+        directory: '/tmp/happier-project',
+        sessionConfigOptionOverrides: { v: 1, updatedAt: 1, overrides: {
+          [`${agentId}BackendMode`]: { value: 'acp', updatedAt: 1 },
+        } },
+      },
+    })).resolves.toEqual(successResult);
+    expect(mocks.spawnAdapterHostedSessionAndWaitForWebhook.mock.calls[0]?.[0].terminalRequest).toEqual({ requested: 'plain' });
+  }, ROUTE_SPAWN_MODE_TEST_TIMEOUT_MS);
+
+  it('keeps configured ACP targets headless even when their ID matches a built-in runtime', async () => {
+    const { routeSpawnModeAndWaitForWebhook } = await import('./routeSpawnModeAndWaitForWebhook');
+    await expect(routeSpawnModeAndWaitForWebhook({
+      ...createParams(),
+      effectiveBackendTargetV2: { kind: 'backend', sourceKind: 'configured', backendId: 'codex', configuredBackendId: 'codex' },
+      terminalRequest: { requested: 'herdr', herdr: { sessionName: 'default' } },
+    })).resolves.toEqual(successResult);
+    expect(mocks.spawnAdapterHostedSessionAndWaitForWebhook.mock.calls[0]?.[0].terminalRequest).toEqual({ requested: 'plain' });
+  }, ROUTE_SPAWN_MODE_TEST_TIMEOUT_MS);
 
   it('provisions the managed runtime before resolving a runtime-backed pinned runner', async () => {
     await withTempDir('happier-runtime-backed-session-spawn-', async (root) => {

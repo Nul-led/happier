@@ -46,8 +46,6 @@ export function createVoiceExecutionTransport(): VoiceExecutionTransport {
     const voiceAgentTurnAbortControllerBySessionId = new Map<string, AbortController>();
     const voiceAgentStopPromiseBySessionId = new Map<string, Promise<void>>();
 
-    let daemonVoiceAgentClient: DaemonVoiceAgentClient | null = null;
-
     const trackActiveTurn = async <T>(sessionId: string, task: () => Promise<T>): Promise<T> => {
         let turn: Promise<T>;
         try {
@@ -88,10 +86,7 @@ export function createVoiceExecutionTransport(): VoiceExecutionTransport {
         createHandle: (sessionId: string) =>
             initializeVoiceAgentHandle({
                 sessionId,
-                getDaemonVoiceAgentClient: () => {
-                    daemonVoiceAgentClient ??= new DaemonVoiceAgentClient();
-                    return daemonVoiceAgentClient;
-                },
+                getDaemonVoiceAgentClient: (scope) => new DaemonVoiceAgentClient(scope),
                 setDeferredTargetSessionContext: (pendingSessionId, update) => {
                     const text = update.trim();
                     if (!text) return;
@@ -128,9 +123,8 @@ export function createVoiceExecutionTransport(): VoiceExecutionTransport {
 
         interruptActiveTurn(sessionId);
         const stopPromise = (async () => {
-            await waitForActiveTurns(sessionId);
             try {
-                await recovery.stop(sessionId);
+                await recovery.stop(sessionId, () => waitForActiveTurns(sessionId));
             } finally {
                 clearRetainedLocalVoiceEffectOutcomes(sessionId);
             }

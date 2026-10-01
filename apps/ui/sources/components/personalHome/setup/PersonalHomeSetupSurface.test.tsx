@@ -99,6 +99,14 @@ describe('PersonalHomeSetupSurface', () => {
         expect(screen.findByTestId('personal-home-bootstrap-progress')).toBeNull();
     });
 
+    it('names the Personal Home while checking instead of showing a generic loading label', async () => {
+        const screen = await renderScreen(<PersonalHomeSetupSurface snapshot={{ ...snapshot, phase: 'checking' }} />);
+        const text = screen.getTextContent();
+
+        expect(text).toContain(tLoose('personalHome.bootstrap.checkingStatus'));
+        expect(text).not.toContain(tLoose('common.loading'));
+    });
+
     it('exposes retry/details for failure without a competing progress checklist', async () => {
         const failed: PersonalHomeBootstrapSnapshot = {
             ...snapshot,
@@ -112,6 +120,37 @@ describe('PersonalHomeSetupSurface', () => {
         expect(screen.findByTestId('personal-home-bootstrap-retry')).not.toBeNull();
         expect(screen.findByTestId('personal-home-bootstrap-details')).not.toBeNull();
         expect(screen.findByTestId('personal-home-bootstrap-activity')).toBeNull();
+    });
+
+    // U10: a failure Retry cannot fix (offline runtime install, unhealthy runtime) must not trap the
+    // user behind the full-screen gate: "Use another Home" stays available when setup is blocked.
+    it('keeps "Use another Home" available when the gate is blocked', async () => {
+        const screen = await renderScreen(<PersonalHomeSetupSurface
+            snapshot={{ ...snapshot, phase: 'blocked', action: 'retry', detail: {
+                code: 'runtime_unhealthy', message: 'runtime unhealthy', retryable: true,
+            } }}
+            onRetry={() => {}}
+            onUseAnotherHome={() => {}}
+        />);
+        expect(screen.findByTestId('personal-home-bootstrap-retry')).not.toBeNull();
+        expect(screen.findByTestId('personal-home-use-another')).not.toBeNull();
+    });
+
+    // R10 D4: one question, two answers, no failure framing and no competing escape.
+    it('asks a signed-in user to keep their Home or set up a Personal Home', async () => {
+        const screen = await renderScreen(<PersonalHomeSetupSurface
+            snapshot={{ ...snapshot, phase: 'blocked', action: 'choose-signed-in-home', signedInHomeLabel: 'Happier Cloud', detail: {
+                code: 'signed_in_other_home', message: 'signed in elsewhere', retryable: false,
+            } }}
+            onKeepSignedInHome={() => {}}
+            onCreatePersonalHome={() => {}}
+            onUseAnotherHome={() => {}}
+        />);
+        expect(screen.findByTestId('personal-home-keep-signed-in-home')).not.toBeNull();
+        expect(screen.findByTestId('personal-home-create-personal-home')).not.toBeNull();
+        expect(screen.getTextContent()).toContain('Happier Cloud');
+        expect(screen.findByTestId('personal-home-bootstrap-failure')).toBeNull();
+        expect(screen.findByTestId('personal-home-use-another')).toBeNull();
     });
 
     it('discloses sanitized failure details without an active task or external callback', async () => {
@@ -181,6 +220,10 @@ describe('PersonalHomeSetupSurface', () => {
         );
 
         expect(screen.findByTestId('personal-home-existing-runtime-decision')).not.toBeNull();
+        expect(screen.findByTestId('personal-home-use-existing-title')).not.toBeNull();
+        expect(screen.findByTestId('personal-home-use-existing-subtitle')).not.toBeNull();
+        expect(screen.findByTestId('personal-home-use-another-title')).not.toBeNull();
+        expect(screen.findByTestId('personal-home-use-another-subtitle')).not.toBeNull();
         expect(screen.findByTestId('personal-home-bootstrap-failure')).toBeNull();
         expect(screen.findByTestId('personal-home-bootstrap-details-toggle')).not.toBeNull();
         await screen.pressByTestIdAsync('personal-home-bootstrap-details-toggle');
@@ -210,8 +253,8 @@ describe('PersonalHomeSetupSurface', () => {
                 <PersonalHomeSetupSurface snapshot={state} onRetry={() => {}} onUseExisting={() => {}} onUseAnotherHome={() => {}} />,
             );
             const arc = screen.root.findByProps({ testID: 'personal-home-bootstrap-progress-arc' });
-            const circumference = Number(String(arc.props.strokeDasharray).split(' ')[0]);
-            const filled = 1 - Number(arc.props.strokeDashoffset) / circumference;
+            const circumference = Number(arc.props.circumference ?? String(arc.props.strokeDasharray).split(' ')[0]);
+            const filled = 1 - Number(arc.props.animatedProps?.strokeDashoffset ?? arc.props.strokeDashoffset ?? arc.props.dashOffset) / circumference;
 
             expect(filled).toBeCloseTo(derivePersonalHomeSetupProgress(state).fraction, 5);
             // One of exactly six quantised values: a time-based or event-counted fill cannot land here.
@@ -237,8 +280,8 @@ describe('PersonalHomeSetupSurface', () => {
         expect(screen.findByTestId('personal-home-bootstrap-activity')).toBeNull();
         expect(screen.findAllHostsByTestId('personal-home-bootstrap-mark')).toHaveLength(1);
         const arc = screen.root.findByProps({ testID: 'personal-home-bootstrap-progress-arc' });
-        const circumference = Number(String(arc.props.strokeDasharray).split(' ')[0]);
-        expect(1 - Number(arc.props.strokeDashoffset) / circumference).toBeCloseTo(1 / 5, 5);
+        const circumference = Number(arc.props.circumference ?? String(arc.props.strokeDasharray).split(' ')[0]);
+        expect(1 - Number(arc.props.animatedProps?.strokeDashoffset ?? arc.props.strokeDashoffset ?? arc.props.dashOffset) / circumference).toBeCloseTo(1 / 5, 5);
     });
 
     it('never announces or displays a percentage', async () => {

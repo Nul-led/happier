@@ -128,7 +128,7 @@ describe('resolveNonSteerableSendPlan (G4 busy-send preflight)', () => {
                             v: 1,
                             updatedAt: 10,
                             selection: {
-                                agentTargetKey: 'backend:claude',
+                                agentTargetKey: 'agent:happier.agent.claude/claude',
                                 providerConnectionId: null,
                                 modelId: 'claude-opus-4-7',
                             },
@@ -168,7 +168,7 @@ describe('resolveNonSteerableSendPlan (G4 busy-send preflight)', () => {
                         v: 1,
                         updatedAt: 20,
                         selection: {
-                            agentTargetKey: 'backend:claude',
+                            agentTargetKey: 'agent:happier.agent.claude/claude',
                             providerConnectionId: null,
                             modelId: 'claude-opus-4-7',
                         },
@@ -181,7 +181,7 @@ describe('resolveNonSteerableSendPlan (G4 busy-send preflight)', () => {
                         activeSelectionV1: {
                             v: 1,
                             selection: {
-                                agentTargetKey: 'backend:claude',
+                                agentTargetKey: 'agent:happier.agent.claude/claude',
                                 providerConnectionId: null,
                                 modelId: 'claude-opus-4-7',
                             },

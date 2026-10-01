@@ -4,6 +4,7 @@ import {
     ExternalSessionTranscriptRefreshReadAfterResponseV1Schema,
     ExternalSessionTranscriptReadAfterRequestSchema,
     externalSessionTranscriptRefreshBindingsEqualV1,
+    pluginSourceCustodyV1Equal,
     type ExternalSessionTranscriptPageResponse,
     type ExternalSessionTranscriptReadAfterResponse,
     type ExternalSessionTranscriptRefreshReadAfterResponseV1,
@@ -14,13 +15,16 @@ import { collectTransientSessionMediaReadFiles } from '@/session/media/reference
 import { EXTERNAL_SESSIONS_INVOCATION_POLICY } from '@/session/external/agentExternalSessionsInvocation';
 
 import type { ExternalSessionActionContext } from './externalSessionActionContext';
-import { resolveExternalSessionSurfaceOps } from './providerOpsResolution';
+import {
+    resolveExternalSessionSurfaceOps,
+    resolveOccurrenceBoundExternalSessionFollowSurface,
+} from './providerOpsResolution';
 import {
     externalSessionsError,
     internalErrorResponse,
     mapExternalSessionProviderFailureToExternalSessionsError,
 } from './responseErrors';
-import { resolveExternalSessionTranscriptRefreshBinding } from '@/api/session/external/secureRefresh/resolveExternalSessionTranscriptRefreshBinding';
+import { resolveExternalSessionTranscriptRefreshCurrentness } from '@/api/session/external/secureRefresh/resolveExternalSessionTranscriptRefreshBinding';
 import { loadLinkedExternalSession } from '@/api/session/external/takeover/loadLinkedExternalSession';
 import { readStoredCredentials } from '@/persistence';
 
@@ -103,7 +107,7 @@ export async function executeExternalSessionTranscriptReadAfterAction(
     const refreshRequest = ExternalSessionTranscriptRefreshReadAfterRequestV1Schema.safeParse(raw);
     if (refreshRequest.success) {
         const request = refreshRequest.data;
-        const currentBinding = await resolveExternalSessionTranscriptRefreshBinding({
+        const current = await resolveExternalSessionTranscriptRefreshCurrentness({
             sessionId: request.binding.sessionId,
             cursor: request.cursor,
             ...(context?.deviceLocalSecretStorage
@@ -113,14 +117,14 @@ export async function executeExternalSessionTranscriptReadAfterAction(
                 }
                 : {}),
         }).catch(() => null);
-        if (!currentBinding) {
+        if (!current) {
             return ExternalSessionTranscriptRefreshReadAfterResponseV1Schema.parse({
                 v: 1,
                 binding: request.binding,
                 result: { outcome: 'source_unavailable' },
             });
         }
-        if (!externalSessionTranscriptRefreshBindingsEqualV1(request.binding, currentBinding)) {
+        if (!externalSessionTranscriptRefreshBindingsEqualV1(request.binding, current.binding)) {
             return ExternalSessionTranscriptRefreshReadAfterResponseV1Schema.parse({
                 v: 1,
                 binding: request.binding,
@@ -143,7 +147,24 @@ export async function executeExternalSessionTranscriptReadAfterAction(
             });
         }
         try {
-            const providerOps = await resolveExternalSessionSurfaceOps(loaded.session.agentId);
+            const resolvedSurface = await resolveOccurrenceBoundExternalSessionFollowSurface(
+                loaded.session.agentId,
+                loaded.session.linkGeneration,
+            );
+            const providerOps = resolvedSurface.providerOps;
+            if (
+                resolvedSurface.occurrenceId !== current.occurrenceId
+                || !pluginSourceCustodyV1Equal(
+                    resolvedSurface.sourceCustody,
+                    request.binding.sourceCustody,
+                )
+            ) {
+                return ExternalSessionTranscriptRefreshReadAfterResponseV1Schema.parse({
+                    v: 1,
+                    binding: request.binding,
+                    result: { outcome: 'source_replaced' },
+                });
+            }
             if (!providerOps.readAfterTranscript) {
                 return ExternalSessionTranscriptRefreshReadAfterResponseV1Schema.parse({
                     v: 1,
@@ -158,7 +179,7 @@ export async function executeExternalSessionTranscriptReadAfterAction(
                 maxBytes: EXTERNAL_SESSIONS_INVOCATION_POLICY.readAfterTranscript.maxSerializedBytes,
                 maxItems: EXTERNAL_SESSIONS_INVOCATION_POLICY.readAfterTranscript.maxItems,
             });
-            const bindingAfterRead = await resolveExternalSessionTranscriptRefreshBinding({
+            const currentAfterRead = await resolveExternalSessionTranscriptRefreshCurrentness({
                 sessionId: request.binding.sessionId,
                 cursor: request.cursor,
                 ...(context?.deviceLocalSecretStorage
@@ -168,14 +189,20 @@ export async function executeExternalSessionTranscriptReadAfterAction(
                     }
                     : {}),
             }).catch(() => null);
-            if (!bindingAfterRead) {
+            if (!currentAfterRead) {
                 return ExternalSessionTranscriptRefreshReadAfterResponseV1Schema.parse({
                     v: 1,
                     binding: request.binding,
                     result: { outcome: 'source_unavailable' },
                 });
             }
-            if (!externalSessionTranscriptRefreshBindingsEqualV1(request.binding, bindingAfterRead)) {
+            if (
+                currentAfterRead.occurrenceId !== resolvedSurface.occurrenceId
+                || !externalSessionTranscriptRefreshBindingsEqualV1(
+                    request.binding,
+                    currentAfterRead.binding,
+                )
+            ) {
                 return ExternalSessionTranscriptRefreshReadAfterResponseV1Schema.parse({
                     v: 1,
                     binding: request.binding,

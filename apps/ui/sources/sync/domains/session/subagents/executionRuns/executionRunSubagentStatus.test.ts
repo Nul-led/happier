@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { ToolCall } from '@/sync/domains/messages/messageTypes';
+import type { ToolCall } from "@happier-dev/session-core/messages";
 
 import { deriveTranscriptExecutionRunStatus } from './executionRunSubagentStatus';
 

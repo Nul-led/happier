@@ -6,11 +6,12 @@ import {
     getModelOptionsForSession,
     getSelectableModelIdsForSession,
     hasDynamicModelListForSession,
+    supportsFreeformModelSelectionForSession,
     isModelSelectableForSession,
     resolveCanonicalNativeModelSelectionRef,
 } from './modelOptions';
 import { findModelOptionForEffectiveModelId } from './modelOptions';
-import type { Metadata } from '@/sync/domains/state/storageTypes';
+import type { Metadata } from '@happier-dev/session-core/state';
 import { SessionModelSelectionIntentV1Schema } from '@happier-dev/protocol';
 import { buildAgentUniverseBackendTargetKey } from '@/agents/catalog/agentUniverse';
 
@@ -23,6 +24,66 @@ function withMetadata(overrides: Partial<Metadata>): Metadata {
 }
 
 describe('modelOptions', () => {
+    it('builds the model picker for a session whose stored selection targets another Agent key', () => {
+        // The engine popover rebuilt this list and a stale `backend:codex`
+        // selection threw into the React tree. It is read as absent instead.
+        const metadata = withMetadata({
+            modelSelectionIntentV1: {
+                v: 1,
+                updatedAt: 5,
+                selection: { agentTargetKey: 'backend:codex', providerConnectionId: null, modelId: 'gpt-stale' },
+            },
+        } as Partial<Metadata>);
+        const context = {
+            preflight: { availableModels: [{ id: 'fresh', name: 'Fresh' }], supportsFreeform: false },
+            preflightUpdatedAt: 20,
+        };
+        expect(getModelOptionsForSession('codex', metadata, context).map((option) => option.value)).toEqual(['default', 'fresh']);
+    });
+
+    it('uses one fresh catalog for display, freeform policy and selection admission', () => {
+        const metadata = withMetadata({ sessionModelsV1: {
+            v: 1, agentId: 'codex', updatedAt: 10, currentModelId: 'old',
+            availableModels: [{ id: 'old', name: 'Old' }],
+        } });
+        const context = {
+            preflight: { availableModels: [{ id: 'fresh', name: 'Fresh' }], supportsFreeform: false },
+            preflightUpdatedAt: 20,
+        };
+        expect(getModelOptionsForSession('codex', metadata, context).map((option) => option.value)).toEqual(['default', 'fresh']);
+        expect(isModelSelectableForSession('codex', metadata, 'fresh', context)).toBe(true);
+        expect(isModelSelectableForSession('codex', metadata, 'old', context)).toBe(false);
+        expect(supportsFreeformModelSelectionForSession('pi', null, context)).toBe(false);
+        expect(isModelSelectableForSession('pi', null, 'unlisted', context)).toBe(false);
+    });
+
+    it('resolves observation freshness and preserves requested selection without resurrecting membership', () => {
+        const metadata = withMetadata({ sessionModelsV1: {
+            v: 1, agentId: 'claude', updatedAt: 30, currentModelId: 'applied', availableModels: [],
+        } });
+        const context = {
+            preflight: { availableModels: [{ id: 'old', name: 'Old' }], supportsFreeform: true },
+            preflightUpdatedAt: 20,
+            selectedModelId: 'requested',
+        };
+        expect(hasDynamicModelListForSession('claude', metadata)).toBe(true);
+        expect(getModelOptionsForSession('claude', metadata, context).map((option) => option.value)).toEqual(['default', 'requested']);
+        expect(getModelOptionsForSession('claude', metadata, { ...context, preflightUpdatedAt: null }).map((option) => option.value)).toEqual(['default', 'requested']);
+        expect(getModelOptionsForSession('claude', null, { ...context, preflightUpdatedAt: null }).map((option) => option.value)).toEqual(['default', 'old', 'requested']);
+        expect(getModelOptionsForSession('claude', withMetadata({ sessionModelsV1: { ...metadata.sessionModelsV1!, updatedAt: 0 } })).length).toBeGreaterThan(1);
+    });
+
+    it('keeps discovery isolated to its exact target including configured backends', () => {
+        const context = {
+            preflight: { availableModels: [{ id: 'foreign', name: 'Foreign' }], supportsFreeform: true },
+            preflightUpdatedAt: 20,
+            currentTargetKey: 'backend:customAcp:configured:mine',
+            preflightTargetKey: 'backend:customAcp:configured:other',
+        };
+        expect(getModelOptionsForSession('codex', null, context).map((option) => option.value)).toEqual(['default']);
+        expect(isModelSelectableForSession('codex', null, 'foreign', context)).toBe(false);
+    });
+
     it('builds generic options for unknown modes', () => {
         const out = getModelOptionsForModes(['gpt-5-low', 'default']);
         expect(out.map((o) => o.value)).toEqual(['gpt-5-low', 'default']);
@@ -172,8 +233,7 @@ describe('modelOptions', () => {
         }), 'acme-pro')).toBe(true);
     });
 
-    it('uses current dynamic session model rows for a probe-enabled provider and fills the remaining static catalog', () => {
-        const staticClaudeValues = getModelOptionsForAgentType('claude').map((option) => option.value);
+    it('uses authoritative session membership and capabilities for a probe-enabled Agent', () => {
         const out = getModelOptionsForSession(
             'claude',
             withMetadata({
@@ -194,17 +254,9 @@ describe('modelOptions', () => {
             'default',
             'claude-opus-4-6',
             'claude-sonnet-4-6',
-            ...staticClaudeValues.filter((value) => ![
-                'default',
-                'claude-opus-4-6',
-                'claude-sonnet-4-6',
-            ].includes(value)),
         ]);
         expect(out.find((option) => option.value === 'claude-opus-4-6')).toMatchObject({
             label: 'Opus 4.6 (From Session)',
-            modelOptions: expect.arrayContaining([
-                expect.objectContaining({ id: 'reasoning_effort' }),
-            ]),
         });
         expect(out.find((option) => option.value === 'claude-sonnet-4-6')).toMatchObject({
             label: 'Sonnet 4.6 (From Session)',
@@ -222,6 +274,7 @@ describe('modelOptions', () => {
                     currentModelId: 'claude-opus-4-5-20251101',
                     availableModels: [
                         { id: 'claude-opus-4-5-20251101', name: 'Opus 4.5' },
+                        { id: 'claude-opus-4-5', name: 'Opus 4.5' },
                         { id: 'claude-opus-4-6', name: 'Opus 4.6' },
                     ],
                 },
@@ -301,7 +354,7 @@ describe('modelOptions', () => {
         expect(out.some((option) => option.value === 'provider-custom-model')).toBe(true);
     });
 
-    it('appends a selected custom model after the current dynamic and static catalog', () => {
+    it('appends a selected custom model after the authoritative dynamic catalog', () => {
         const sessionModelsV1 = {
             v: 1 as const,
             agentId: 'claude',
@@ -326,7 +379,7 @@ describe('modelOptions', () => {
         ]);
     });
 
-    it('derives selectable ids from the same dynamic-plus-static session model policy', () => {
+    it('derives selectable ids from the same authoritative session model policy', () => {
         const metadata = withMetadata({
             sessionModelsV1: {
                 v: 1,
@@ -355,7 +408,7 @@ describe('modelOptions', () => {
         expect(out.some((option) => option.value === 'gemini-custom-model')).toBe(true);
     });
 
-    it('does not add stale cross-provider metadata override models for constrained freeform providers', () => {
+    it('preserves explicit requested intent independently of custom-model admission rules', () => {
         const out = getModelOptionsForSession(
             'gemini',
             withMetadata({
@@ -363,7 +416,8 @@ describe('modelOptions', () => {
             }),
         );
 
-        expect(out.some((option) => option.value === 'gpt-5.5')).toBe(false);
+        expect(out.some((option) => option.value === 'gpt-5.5')).toBe(true);
+        expect(isModelSelectableForSession('gemini', null, 'gpt-5.5')).toBe(false);
     });
 
     it('falls back to static options when dynamic list provider does not match agent', () => {
@@ -523,7 +577,7 @@ describe('resolveCanonicalNativeModelSelectionRef', () => {
             { value: 'openai-codex/gpt-shared' },
         ];
         const nativeAlias = {
-            agentTargetKey: 'backend:pi',
+            agentTargetKey: 'agent:happier.agent.pi/pi',
             providerConnectionId: null,
             modelId: 'gpt-5.6-luna',
         };

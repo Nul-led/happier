@@ -11,6 +11,32 @@ vi.mock('@/ui/logger', () => ({
 }));
 
 describe('daemon control server: /spawn-session', () => {
+  it.each(['agent_cli_missing', 'agent_signed_out'] as const)('preserves %s identity and readable message through HTTP and nonce lookup', async (errorCode) => {
+    const app = createDaemonControlApp({
+      getChildren: () => [], machineId: 'machine_local',
+      stopSession: async () => ({ status: 'not_found' as const }),
+      spawnSession: async () => ({ type: 'error', errorCode, agentId: 'codex', errorMessage: 'Sign in or install Codex before starting.' }),
+      requestShutdown: () => {}, onHappySessionWebhook: () => {}, controlToken: 'test-token',
+    });
+    try {
+      await app.ready();
+      const headers = { 'Content-Type': 'application/json', 'x-happier-daemon-token': 'test-token' };
+      const response = await app.inject({
+        method: 'POST', url: '/spawn-session', headers,
+        payload: JSON.stringify({ directory: '/tmp', spawnNonce: `precondition-${errorCode}` }),
+      });
+      expect(response.statusCode).toBe(500);
+      expect(response.json()).toEqual({ success: false, errorCode, agentId: 'codex', error: 'Sign in or install Codex before starting.' });
+      const resolution = await app.inject({
+        method: 'POST', url: '/spawn-session/resolve', headers,
+        payload: JSON.stringify({ spawnNonce: `precondition-${errorCode}` }),
+      });
+      expect(resolution.json()).toEqual({ success: true, status: 'error', errorCode, agentId: 'codex', errorMessage: 'Sign in or install Codex before starting.' });
+    } finally {
+      await app.close();
+    }
+  });
+
   afterEach(() => {
     vi.restoreAllMocks();
   });
@@ -563,7 +589,7 @@ describe('daemon control server: /spawn-session', () => {
     }
   });
 
-  it('resolves spawn nonce to a canonical session id when the tracked session is ready', async () => {
+  it('keeps a tracked canonical session id pending without readiness authority', async () => {
     const app = createDaemonControlApp({
       getChildren: () => [
         {
@@ -571,7 +597,7 @@ describe('daemon control server: /spawn-session', () => {
           pid: 123,
           happySessionId: 'sess-ready',
           spawnOptions: { directory: '/tmp', spawnNonce: 'nonce-1' },
-        } as any,
+        },
       ],
       machineId: 'machine_local',
       stopSession: async () => ({ status: 'not_found' as const }),
@@ -593,8 +619,7 @@ describe('daemon control server: /spawn-session', () => {
       expect(res.statusCode).toBe(200);
       expect(res.json()).toEqual({
         success: true,
-        status: 'success',
-        sessionId: 'sess-ready',
+        status: 'pending',
       });
     } finally {
       await app.close();

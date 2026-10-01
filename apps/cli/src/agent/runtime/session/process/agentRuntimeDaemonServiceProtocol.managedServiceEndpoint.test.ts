@@ -22,7 +22,11 @@ function projection() {
     contributionId: 'opencode',
     serverId: 'opencode',
     instanceId: 'instance-1',
-    immutableGenerationId: 'immutable-generation-1',
+    sourceCustody: {
+      kind: 'managed' as const,
+      immutableGenerationId: 'immutable-generation-1',
+      installSource: 'npm' as const,
+    },
     custodyOwner: 'sessionRunner' as const,
     mode: 'managedSpawn' as const,
     endpoint: {

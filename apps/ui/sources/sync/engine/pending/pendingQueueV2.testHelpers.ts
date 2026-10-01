@@ -1,21 +1,28 @@
 import { Encryption } from '@/sync/encryption/encryption';
 import { storage } from '@/sync/domains/state/storage';
 import type { Session } from '@/sync/domains/state/storageTypes';
-import type { RawRecord } from '@/sync/typesRaw';
+import type { RawRecord } from "@happier-dev/session-core/raw";
 import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
 import { setActiveServerId, upsertServerProfile } from '@/sync/domains/server/serverProfiles';
+import { switchConnectionToActiveServer } from '@/sync/runtime/orchestration/connectionManager';
 
 const initialStorageState = storage.getState();
 
 export async function resetPendingQueueState(activeScope?: ServerAccountScope): Promise<void> {
     storage.setState(initialStorageState, true);
-    if (activeScope) {
-        const server = await upsertServerProfile({ serverUrl: `https://${activeScope.serverId}` });
-        if (server.id !== activeScope.serverId) throw new Error('Pending queue fixture requires its exact Home profile');
-        await setActiveServerId(server.id, { scope: 'device' });
-        storage.getState().activateProfileScope(activeScope);
-        storage.getState().activateSettingsScope(activeScope);
-    }
+    if (activeScope) await activatePendingQueueScope(activeScope);
+}
+
+export async function activatePendingQueueScope(activeScope: ServerAccountScope): Promise<void> {
+    const server = await upsertServerProfile({ serverUrl: `https://${activeScope.serverId}` });
+    if (server.id !== activeScope.serverId) throw new Error('Pending queue fixture requires its exact Home profile');
+    await setActiveServerId(server.id, { scope: 'device' });
+    // Pending projections follow the applied Home, not just the selected profile.
+    // With the fixture's empty credential store, this applies the real connection
+    // owner without starting authenticated Sync or issuing network requests.
+    await switchConnectionToActiveServer();
+    storage.getState().activateProfileScope(activeScope);
+    storage.getState().activateSettingsScope(activeScope);
 }
 
 export async function createPendingQueueEncryption(params: {

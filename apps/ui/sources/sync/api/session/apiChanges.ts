@@ -1,5 +1,5 @@
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
-import { serverFetch } from '@/sync/http/client';
+import { serverFetch, type ServerFetch } from '@/sync/http/client';
 import {
     ChangesResponseSchema,
     CurrentCursorResponseSchema,
@@ -11,6 +11,8 @@ export async function fetchChanges(params: {
     credentials: AuthCredentials;
     afterCursor: string | null;
     limit: number;
+    request?: ServerFetch;
+    sessionId?: string;
 }): Promise<
     | { status: 'ok'; changes: ChangeEntry[]; nextCursor: string }
     | { status: 'cursor-gone'; currentCursor: string }
@@ -26,8 +28,8 @@ export async function fetchChanges(params: {
     const limit = Number.isFinite(params.limit) ? Math.min(Math.max(Math.floor(params.limit), 1), 500) : 200;
     let response: Response;
     try {
-        response = await serverFetch(
-            `/v2/changes?after=${after}&limit=${limit}`,
+        response = await (params.request ?? serverFetch)(
+            `/v2/changes?after=${after}&limit=${limit}${params.sessionId ? `&sessionId=${encodeURIComponent(params.sessionId)}` : ''}`,
             {
                 headers: {
                     Authorization: `Bearer ${params.credentials.token}`,
@@ -71,10 +73,11 @@ export async function fetchChanges(params: {
 
 export async function fetchCurrentChangesCursor(params: {
     credentials: AuthCredentials;
+    request?: ServerFetch;
 }): Promise<{ status: 'ok'; cursor: string } | { status: 'error' }> {
     let response: Response;
     try {
-        response = await serverFetch(
+        response = await (params.request ?? serverFetch)(
             '/v2/cursor',
             {
                 headers: {

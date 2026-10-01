@@ -1,3 +1,5 @@
+import { showPutUnderSessionModal } from '@/components/sessions/work/PutUnderSessionModal';
+import { roleActions } from '@/sync/ops/roles/roleActions';
 import { t } from '@/text';
 import { HappyError } from '@/utils/errors/errors';
 import {
@@ -26,6 +28,9 @@ import {
     SESSION_ACTION_MOVE_TO_FOLDER_ID,
     SESSION_ACTION_PIN_ID,
     SESSION_ACTION_RENAME_ID,
+    SESSION_ACTION_MAKE_ORCHESTRATOR_ID,
+    ORCHESTRATOR_ROLE_ID,
+    SESSION_ACTION_PUT_UNDER_ID,
     SESSION_ACTION_RESUME_ID,
     SESSION_ACTION_SET_ATTENTION_STANDING_ID,
     SESSION_ACTION_STOP_ID,
@@ -59,6 +64,10 @@ function resolveUnarchiveSession(context: SessionActionExecutionContext | undefi
 
 function resolveRenameSession(context: SessionActionExecutionContext | undefined) {
     return context?.operations?.renameSession ?? sessionRename;
+}
+
+function resolveSetSessionRole(context: SessionActionExecutionContext | undefined) {
+    return context?.operations?.setSessionRole ?? roleActions.setSessionRole;
 }
 
 function resolveDeleteSession(context: SessionActionExecutionContext | undefined) {
@@ -188,6 +197,16 @@ export async function executeSessionAction(params: Readonly<{
                 await resolveRenameSession(params.context)(params.target.sessionId, title, { serverId: params.target.serverId }),
                 t('sessionInfo.failedToRenameSession'),
             );
+            return;
+        }
+        case SESSION_ACTION_MAKE_ORCHESTRATOR_ID: {
+            const result = await resolveSetSessionRole(params.context)(params.target.sessionId, ORCHESTRATOR_ROLE_ID);
+            if (!result.ok) throw new HappyError(t('sessionWork.actions.makeOrchestratorFailed'), false);
+            return;
+        }
+        case SESSION_ACTION_PUT_UNDER_ID: {
+            const openPicker = params.context?.operations?.openPutUnderPicker ?? showPutUnderSessionModal;
+            openPicker({ sessionId: params.target.sessionId, serverId: params.target.serverId });
             return;
         }
         case SESSION_ACTION_RESUME_ID: {

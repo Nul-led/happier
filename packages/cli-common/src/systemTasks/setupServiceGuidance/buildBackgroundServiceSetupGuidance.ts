@@ -43,9 +43,22 @@ export type BackgroundServiceSetupGuidance = Readonly<{
   shouldPromptForServiceReplacement: boolean;
 }>;
 
+/**
+ * Which background service this setup converges.
+ *
+ * - `pinned`: an explicitly selected Home gets its own service for its server id. Daemons are
+ *   per-server, so it coexists with the user's default-following service and other Homes' services
+ *   (R10 D3); `serverId` is `null` until the Home has a saved profile.
+ * - `default-following`: the one service that follows the terminal's active server, owned by the
+ *   default release channel (R10 D2). `followedServerId` names the server it follows today so only
+ *   services serving that same server compete with it.
+ */
+export type BackgroundServiceSetupServiceTarget =
+  | Readonly<{ targetMode: 'pinned'; serverId: string | null }>
+  | Readonly<{ targetMode: 'default-following'; followedServerId: string | null }>;
+
 export type BackgroundServiceSetupReconciliationAction =
-  | Readonly<{ kind: 'remove-existing' }>
-  | Readonly<{ kind: 'install'; takeover: boolean }>
+  | Readonly<{ kind: 'install'; takeover: boolean; replaceExisting?: boolean }>
   | Readonly<{ kind: 'start'; takeover: boolean }>
   | Readonly<{ kind: 'restart' }>;
 
@@ -54,11 +67,17 @@ export function resolveBackgroundServiceSetupReconciliationDisposition(params: R
   targetChanged: boolean;
   tookOverManualRelayRuntime: boolean;
   replacedExistingServices: boolean;
+  /**
+   * This run changed which CLI runs this computer's service (the R12 answer is that consent): the
+   * existing definition's launcher must be rewritten through the strict install, and restarted.
+   */
+  runtimeChanged?: boolean;
 }>): readonly BackgroundServiceSetupReconciliationAction[] {
   if (params.replacedExistingServices) {
+    // The install removes exactly the conflict plan's `servicesToRemove` for this target
+    // (`--replace-existing=all`), never every service on the machine (R3-7).
     return [
-      { kind: 'remove-existing' },
-      { kind: 'install', takeover: params.tookOverManualRelayRuntime },
+      { kind: 'install', takeover: params.tookOverManualRelayRuntime, replaceExisting: true },
       { kind: 'start', takeover: params.tookOverManualRelayRuntime },
     ];
   }
@@ -67,6 +86,9 @@ export function resolveBackgroundServiceSetupReconciliationDisposition(params: R
       { kind: 'install', takeover: params.tookOverManualRelayRuntime },
       { kind: 'start', takeover: params.tookOverManualRelayRuntime },
     ];
+  }
+  if (params.runtimeChanged) {
+    return [{ kind: 'install', takeover: params.tookOverManualRelayRuntime }, { kind: 'restart' }];
   }
   if (params.tookOverManualRelayRuntime) {
     return [{ kind: 'start', takeover: true }];
@@ -161,22 +183,47 @@ export function buildBackgroundServiceSetupGuidance(params: Readonly<{
   currentRelayOwner?: Pick<MachineDaemonOwnershipMetadata, 'serviceManaged' | 'publicReleaseChannel' | 'cliVersion'> | null;
   platform: HappierServicePlatform;
   mode: 'user' | 'system';
+  /** Absent: the legacy ambient default-following target (terminal setup). */
+  serviceTarget?: BackgroundServiceSetupServiceTarget;
+  /**
+   * Whether this setup may offer to switch the default release channel. An app of another channel
+   * adopts the default channel's service instead of replacing it (R10 D2), so explicit desktop
+   * targets pass `false`; a pinned target runs its own ring and never needs the switch.
+   */
+  offerDefaultReleaseChannelSwitch?: boolean;
 }>): BackgroundServiceSetupGuidance {
   const targetReleaseChannel = resolveReleaseChannelLabel(params.targetReleaseChannel);
   const currentDefaultReleaseChannel = resolvePublicReleaseRingLabelForId(
     params.managedReleaseChannelInventory.defaultReleaseChannel,
   );
-  const target: DaemonServiceInstallTarget = {
-    platform: params.platform,
-    backend: resolveDaemonServiceBackend(params.platform, params.mode),
-    targetMode: 'default-following',
-    ring: null,
-    instanceId: null,
-    serverUrl: null,
-    happierHomeDir: typeof params.currentHappierHomeDir === 'string' && params.currentHappierHomeDir.trim()
-      ? params.currentHappierHomeDir.trim()
-      : null,
-  };
+  const targetServerUrl = typeof params.targetServerUrl === 'string' && params.targetServerUrl.trim()
+    ? params.targetServerUrl.trim()
+    : null;
+  const happierHomeDir = typeof params.currentHappierHomeDir === 'string' && params.currentHappierHomeDir.trim()
+    ? params.currentHappierHomeDir.trim()
+    : null;
+  const target: DaemonServiceInstallTarget = params.serviceTarget?.targetMode === 'pinned'
+    ? {
+        platform: params.platform,
+        backend: resolveDaemonServiceBackend(params.platform, params.mode),
+        targetMode: 'pinned',
+        ring: targetReleaseChannel,
+        instanceId: params.serviceTarget.serverId,
+        serverUrl: targetServerUrl,
+        happierHomeDir,
+      }
+    : {
+        platform: params.platform,
+        backend: resolveDaemonServiceBackend(params.platform, params.mode),
+        targetMode: 'default-following',
+        ring: null,
+        instanceId: null,
+        serverUrl: null,
+        happierHomeDir,
+        followedServerId: params.serviceTarget?.followedServerId ?? null,
+      };
+  const mayOfferDefaultReleaseChannelSwitch = target.targetMode === 'default-following'
+    && params.offerDefaultReleaseChannelSwitch !== false;
   const conflictPlan = resolveDaemonServiceInstallConflictPlan({
     target,
     strategy: 'require-explicit',
@@ -195,9 +242,7 @@ export function buildBackgroundServiceSetupGuidance(params: Readonly<{
 
   return {
     targetReleaseChannel,
-    targetServerUrl: typeof params.targetServerUrl === 'string' && params.targetServerUrl.trim()
-      ? params.targetServerUrl.trim()
-      : null,
+    targetServerUrl,
     currentHappierHomeDir,
     currentDefaultReleaseChannel,
     managedReleaseChannels: params.managedReleaseChannelInventory.managedReleaseChannels,
@@ -207,7 +252,8 @@ export function buildBackgroundServiceSetupGuidance(params: Readonly<{
     conflictingServices,
     foreignHomeConflictingServices,
     shouldOfferDefaultReleaseChannelSwitch:
-      currentDefaultReleaseChannel !== targetReleaseChannel
+      mayOfferDefaultReleaseChannelSwitch
+      && currentDefaultReleaseChannel !== targetReleaseChannel
       && params.managedReleaseChannelInventory.managedReleaseChannels.some((entry) => (
         resolveReleaseChannelLabel(entry.releaseChannel) === targetReleaseChannel
       )),

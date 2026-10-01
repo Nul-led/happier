@@ -10,6 +10,7 @@ import {
     SIDECHAIN_TRANSCRIPT_RENDERER_AXES,
     standardCleanup,
 } from '@/dev/testkit';
+import { createTestSessionTranscriptSource, wrapWithSessionTranscriptSource } from '@/dev/testkit/sessionTranscriptSource';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -82,13 +83,27 @@ function LegendChildLayoutCallbackProbe() {
     return null;
 }
 
+
+function createChainTestRoot(Content: typeof import('./ChainTranscriptList')['ChainTranscriptList']) {
+    return function ChainTestRoot(props: React.ComponentProps<typeof Content>) {
+        const [source] = React.useState(() => createTestSessionTranscriptSource({
+            sessionId: props.sessionId, serverId: props.serverId, messages: props.messages,
+            metadata: props.metadata, interaction: props.interaction,
+            loadSidechain: async () => 'not_ready',
+            history: { loadOlder: props.loadOlder ?? (async () => ({ loaded: 0, hasMore: false, status: 'not_ready' })) },
+        }));
+        return wrapWithSessionTranscriptSource(React.createElement(Content, props), source);
+    };
+}
+
 describe('ChainTranscriptList', () => {
     type ChainTranscriptListTestProps =
         Omit<React.ComponentProps<typeof import('./ChainTranscriptList')['ChainTranscriptList']>, 'datasetKey'>
         & { datasetKey?: string };
 
     async function renderChainTranscriptList(props: ChainTranscriptListTestProps) {
-        const { ChainTranscriptList } = await import('./ChainTranscriptList');
+        const { ChainTranscriptList: ChainContent } = await import('./ChainTranscriptList');
+        const ChainTranscriptList = createChainTestRoot(ChainContent);
         return renderScreen(React.createElement(ChainTranscriptList, {
             ...props,
             datasetKey: props.datasetKey ?? JSON.stringify([props.sessionId, 'test-sidechain']),
@@ -171,7 +186,7 @@ describe('ChainTranscriptList', () => {
                         { kind: 'agent-text', id: 'newest', localId: null, createdAt: 2, text: 'second', isThinking: false },
                     ],
                     metadata: null,
-                    interaction: { canSendMessages: true, canApprovePermissions: true, disableToolNavigation: true },
+                    interaction: { canSendMessages: true, canApprovePermissions: true },
                 });
 
                 const list = findSidechainTranscriptRenderer(screen, axis);
@@ -195,11 +210,12 @@ describe('ChainTranscriptList', () => {
             pendingLoads.push(deferred);
             return deferred.promise;
         });
-        const { ChainTranscriptList } = await import('./ChainTranscriptList');
+        const { ChainTranscriptList: ChainContent } = await import('./ChainTranscriptList');
+        const ChainTranscriptList = createChainTestRoot(ChainContent);
         const baseProps = {
             sessionId: 'dataset-pagination',
             metadata: null,
-            interaction: { canSendMessages: true, canApprovePermissions: true, disableToolNavigation: true },
+            interaction: { canSendMessages: true, canApprovePermissions: true },
             loadOlder,
         } as const;
         const renderDataset = (sidechainId: string) => React.createElement(ChainTranscriptList, {
@@ -281,7 +297,7 @@ describe('ChainTranscriptList', () => {
                 sessionId: 'native-legend-item-proximity',
                 messages,
                 metadata: null,
-                interaction: { canSendMessages: true, canApprovePermissions: true, disableToolNavigation: true },
+                interaction: { canSendMessages: true, canApprovePermissions: true },
                 loadOlder,
             });
             const list = getLegendList(screen);
@@ -344,12 +360,13 @@ describe('ChainTranscriptList', () => {
             text: `message ${index}`,
             isThinking: false,
         }));
-        const { ChainTranscriptList } = await import('./ChainTranscriptList');
+        const { ChainTranscriptList: ChainContent } = await import('./ChainTranscriptList');
+        const ChainTranscriptList = createChainTestRoot(ChainContent);
         const baseProps = {
             sessionId: 'same-dataset-child-layout',
             datasetKey: JSON.stringify(['same-dataset-child-layout', 'sidechain-a']),
             metadata: null,
-            interaction: { canSendMessages: true, canApprovePermissions: true, disableToolNavigation: true },
+            interaction: { canSendMessages: true, canApprovePermissions: true },
             loadOlder,
         } as const;
 
@@ -394,7 +411,7 @@ describe('ChainTranscriptList', () => {
                 sessionId: 's1',
                 messages: [{ kind: 'agent-text', id: 'm1', localId: null, createdAt: 1, text: 'hi', isThinking: false }],
                 metadata: null,
-                interaction: { canSendMessages: true, canApprovePermissions: true, disableToolNavigation: true },
+                interaction: { canSendMessages: true, canApprovePermissions: true },
             });
 
             const list = getLegendList(screen);
@@ -405,7 +422,8 @@ describe('ChainTranscriptList', () => {
     });
 
     it('does not call loadOlder more than once while a load is in flight', async () => {
-                const { ChainTranscriptList } = await import('./ChainTranscriptList');
+                const { ChainTranscriptList: ChainContent } = await import('./ChainTranscriptList');
+        const ChainTranscriptList = createChainTestRoot(ChainContent);
         const deferred = createDeferred<ChainTranscriptLoadResult>();
         const loadOlder = vi.fn(async () => await deferred.promise);
 
@@ -415,7 +433,7 @@ describe('ChainTranscriptList', () => {
                 datasetKey: JSON.stringify(['s1', 'test-sidechain']),
                 messages: [{ kind: 'agent-text', id: 'm1', localId: null, createdAt: 1, text: 'hi', isThinking: false }],
                 metadata: null,
-                interaction: { canSendMessages: true, canApprovePermissions: true, disableToolNavigation: true },
+                interaction: { canSendMessages: true, canApprovePermissions: true },
                 loadOlder,
             }),
         );
@@ -457,7 +475,8 @@ describe('ChainTranscriptList', () => {
     it('offers a retry at the older edge when the page read fails, and re-reads on press', async () => {
         // A FAILED older read used to be indistinguishable from a loaded empty page, so the
         // reader was left parked at the edge with no failure shown and nothing to press.
-        const { ChainTranscriptList } = await import('./ChainTranscriptList');
+        const { ChainTranscriptList: ChainContent } = await import('./ChainTranscriptList');
+        const ChainTranscriptList = createChainTestRoot(ChainContent);
         const deferred = createDeferred<ChainTranscriptLoadResult>();
         const loadOlder = vi.fn(async () => await deferred.promise);
 
@@ -467,7 +486,7 @@ describe('ChainTranscriptList', () => {
                 datasetKey: JSON.stringify(['s1', 'retry-sidechain']),
                 messages: [{ kind: 'agent-text', id: 'm1', localId: null, createdAt: 1, text: 'hi', isThinking: false }],
                 metadata: null,
-                interaction: { canSendMessages: true, canApprovePermissions: true, disableToolNavigation: true },
+                interaction: { canSendMessages: true, canApprovePermissions: true },
                 loadOlder,
             }),
         );
@@ -508,7 +527,8 @@ describe('ChainTranscriptList', () => {
     });
 
     it('loads older when scrolled near the top (even if onStartReached is not fired)', async () => {
-                const { ChainTranscriptList } = await import('./ChainTranscriptList');
+                const { ChainTranscriptList: ChainContent } = await import('./ChainTranscriptList');
+        const ChainTranscriptList = createChainTestRoot(ChainContent);
         const deferred = createDeferred<{ loaded: number; hasMore: boolean; status: 'loaded' }>();
         const loadOlder = vi.fn(async () => await deferred.promise);
 
@@ -516,7 +536,7 @@ describe('ChainTranscriptList', () => {
             sessionId: 's1',
             messages: [{ kind: 'agent-text', id: 'm1', localId: null, createdAt: 1, text: 'hi', isThinking: false }],
             metadata: null,
-            interaction: { canSendMessages: true, canApprovePermissions: true, disableToolNavigation: true },
+            interaction: { canSendMessages: true, canApprovePermissions: true },
             loadOlder,
         });
 
@@ -556,7 +576,7 @@ describe('ChainTranscriptList', () => {
                 sessionId: 's1',
                 messages: [{ kind: 'agent-text', id: 'm1', localId: null, createdAt: 1, text: 'hi', isThinking: false }],
                 metadata: null,
-                interaction: { canSendMessages: true, canApprovePermissions: true, disableToolNavigation: true },
+                interaction: { canSendMessages: true, canApprovePermissions: true },
                 loadOlder,
             });
 
@@ -601,7 +621,7 @@ describe('ChainTranscriptList', () => {
                 sessionId: 's1',
                 messages: [{ kind: 'agent-text', id: 'm1', localId: null, createdAt: 1, text: 'hi', isThinking: false }],
                 metadata: null,
-                interaction: { canSendMessages: true, canApprovePermissions: true, disableToolNavigation: true },
+                interaction: { canSendMessages: true, canApprovePermissions: true },
                 loadOlder,
             });
 
@@ -645,7 +665,7 @@ describe('ChainTranscriptList', () => {
             sessionId: 's1',
             messages: [{ kind: 'agent-text', id: 'm1', localId: null, createdAt: 1, text: 'hi', isThinking: false }],
             metadata: null,
-            interaction: { canSendMessages: true, canApprovePermissions: true, disableToolNavigation: true },
+            interaction: { canSendMessages: true, canApprovePermissions: true },
             loadOlder,
         });
 
@@ -675,7 +695,7 @@ describe('ChainTranscriptList', () => {
             sessionId: 's1',
             messages: [{ kind: 'agent-text', id: 'm1', localId: null, createdAt: 1, text: 'hi', isThinking: false }],
             metadata: null,
-            interaction: { canSendMessages: true, canApprovePermissions: true, disableToolNavigation: true },
+            interaction: { canSendMessages: true, canApprovePermissions: true },
             loadOlder: vi.fn(async () => ({ loaded: 1, hasMore: true, status: 'loaded' as const })),
         });
 
@@ -689,7 +709,8 @@ describe('ChainTranscriptList', () => {
     });
 
     it('loads older on web-like scroll events where layout/content sizes are not present', async () => {
-                const { ChainTranscriptList } = await import('./ChainTranscriptList');
+                const { ChainTranscriptList: ChainContent } = await import('./ChainTranscriptList');
+        const ChainTranscriptList = createChainTestRoot(ChainContent);
         const deferred = createDeferred<{ loaded: number; hasMore: boolean; status: 'loaded' }>();
         const loadOlder = vi.fn(async () => await deferred.promise);
 
@@ -697,7 +718,7 @@ describe('ChainTranscriptList', () => {
             sessionId: 's1',
             messages: [{ kind: 'agent-text', id: 'm1', localId: null, createdAt: 1, text: 'hi', isThinking: false }],
             metadata: null,
-            interaction: { canSendMessages: true, canApprovePermissions: true, disableToolNavigation: true },
+            interaction: { canSendMessages: true, canApprovePermissions: true },
             loadOlder,
         });
 
@@ -739,7 +760,7 @@ describe('ChainTranscriptList', () => {
                 sessionId: 's1',
                 messages: [{ kind: 'agent-text', id: 'm1', localId: null, createdAt: 1, text: 'hi', isThinking: false }],
                 metadata: null,
-                interaction: { canSendMessages: true, canApprovePermissions: true, disableToolNavigation: true },
+                interaction: { canSendMessages: true, canApprovePermissions: true },
                 loadOlder,
             });
 
@@ -786,7 +807,8 @@ describe('ChainTranscriptList', () => {
         vi.useFakeTimers({ now: new Date(0) });
         try {
             const loadOlder = vi.fn(async () => ({ loaded: 1, hasMore: true, status: 'loaded' as const }));
-            const { ChainTranscriptList } = await import('./ChainTranscriptList');
+            const { ChainTranscriptList: ChainContent } = await import('./ChainTranscriptList');
+        const ChainTranscriptList = createChainTestRoot(ChainContent);
             const renderProjection = (messageCount: number) => React.createElement(ChainTranscriptList, {
                 sessionId: 's1',
                 datasetKey: JSON.stringify(['s1', 'test-sidechain']),
@@ -799,7 +821,7 @@ describe('ChainTranscriptList', () => {
                     isThinking: false,
                 })),
                 metadata: null,
-                interaction: { canSendMessages: true, canApprovePermissions: true, disableToolNavigation: true },
+                interaction: { canSendMessages: true, canApprovePermissions: true },
                 loadOlder,
             });
             // A tall content surface so the viewport can park inside the threshold without being at
@@ -875,7 +897,8 @@ describe('ChainTranscriptList', () => {
         vi.useFakeTimers({ now: new Date(0) });
         try {
             const loadOlder = vi.fn(async () => ({ loaded: 1, hasMore: true, status: 'loaded' as const }));
-            const { ChainTranscriptList } = await import('./ChainTranscriptList');
+            const { ChainTranscriptList: ChainContent } = await import('./ChainTranscriptList');
+        const ChainTranscriptList = createChainTestRoot(ChainContent);
             const renderProjection = (messageCount: number) => React.createElement(ChainTranscriptList, {
                 sessionId: 's1',
                 datasetKey: JSON.stringify(['s1', 'test-sidechain']),
@@ -888,7 +911,7 @@ describe('ChainTranscriptList', () => {
                     isThinking: false,
                 })),
                 metadata: null,
-                interaction: { canSendMessages: true, canApprovePermissions: true, disableToolNavigation: true },
+                interaction: { canSendMessages: true, canApprovePermissions: true },
                 loadOlder,
             });
             const scrollEl = {
@@ -956,7 +979,7 @@ describe('ChainTranscriptList', () => {
             sessionId: 's1',
             messages: [{ kind: 'agent-text', id: 'm1', localId: null, createdAt: 1, text: 'hi', isThinking: false }],
             metadata: null,
-            interaction: { canSendMessages: true, canApprovePermissions: true, disableToolNavigation: true },
+            interaction: { canSendMessages: true, canApprovePermissions: true },
             loadOlder: vi.fn(async () => ({ loaded: 0, hasMore: false, status: 'no_more' as const })),
         });
 
@@ -969,7 +992,7 @@ describe('ChainTranscriptList', () => {
             sessionId: 's1',
             messages: [{ kind: 'agent-text', id: 'm1', localId: null, createdAt: 1, text: 'hi', isThinking: false }],
             metadata: null,
-            interaction: { canSendMessages: true, canApprovePermissions: true, disableToolNavigation: true },
+            interaction: { canSendMessages: true, canApprovePermissions: true },
             loadOlder: vi.fn(async () => ({ loaded: 0, hasMore: false, status: 'no_more' as const })),
         });
 
@@ -983,7 +1006,7 @@ describe('ChainTranscriptList', () => {
             sessionId: 's1',
             messages: [{ kind: 'agent-text', id: 'm1', localId: null, createdAt: 1, text: 'hi', isThinking: false }],
             metadata: null,
-            interaction: { canSendMessages: true, canApprovePermissions: true, disableToolNavigation: true },
+            interaction: { canSendMessages: true, canApprovePermissions: true },
             loadOlder,
         });
 
@@ -1011,7 +1034,7 @@ describe('ChainTranscriptList', () => {
             sessionId: 's1',
             messages: [{ kind: 'agent-text', id: 'm1', localId: null, createdAt: 1, text: 'hi', isThinking: false }],
             metadata: null,
-            interaction: { canSendMessages: true, canApprovePermissions: true, disableToolNavigation: true },
+            interaction: { canSendMessages: true, canApprovePermissions: true },
             loadOlder,
         });
 
@@ -1033,7 +1056,7 @@ describe('ChainTranscriptList', () => {
             sessionId: 's1',
             messages: [{ kind: 'agent-text', id: 'm1', localId: null, createdAt: 1, text: 'hi', isThinking: false }],
             metadata: null,
-            interaction: { canSendMessages: true, canApprovePermissions: true, disableToolNavigation: true },
+            interaction: { canSendMessages: true, canApprovePermissions: true },
             loadOlder,
         });
 

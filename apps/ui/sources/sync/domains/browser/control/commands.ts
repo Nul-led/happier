@@ -9,7 +9,7 @@ import { selectBrowserTargetAdapter } from '../adapters/selection';
 import { LOCAL_BROWSER_PROFILE_ID } from '../profiles/localBrowserProfile';
 import { isClientRenderedBrowserEngine } from './lifecycle';
 import { applyBrowserControlEvent } from './reducer';
-import type { BrowserControlState } from './state';
+import type { BrowserControlState, BrowserControlViewState } from './state';
 
 type BrowserNavigationCommand = Extract<
     BrowserCommandV1,
@@ -54,15 +54,20 @@ export type BrowserControlCommandDispatchOptions = Readonly<{
     sendDaemonCommand?: (command: BrowserCommandV1) => void;
     targetPolicyDecision?: BrowserTargetPolicyDecisionV1 | null;
     desktopWebViewAvailability?: DesktopWebViewNativeAvailability | null;
+    nativeViewCaptureHandlerRegistered?: boolean;
 }>;
 
 function isFocusViewCommand(command: BrowserCommandV1): command is BrowserFocusViewCommand {
     return command.kind === 'focusView';
 }
 
-function isDaemonAuthoritativeView(state: BrowserControlState, viewId: string): boolean {
-    const view = state.viewsById[viewId];
+/** A view the daemon owns (its managed Chromium): it runs on a machine and is shown as a stream. */
+export function isDaemonAuthoritativeBrowserView(view: Pick<BrowserControlViewState, 'adapterKind'> | null | undefined): boolean {
     return view?.adapterKind === 'chromiumSidecar' || view?.adapterKind === 'streamedBrowserSurface';
+}
+
+function isDaemonAuthoritativeView(state: BrowserControlState, viewId: string): boolean {
+    return isDaemonAuthoritativeBrowserView(state.viewsById[viewId]);
 }
 
 function supportsNavigationCommand(
@@ -168,6 +173,7 @@ function dispatchOpenViewCommand(
         platform: command.platform,
         targetPolicyDecision: options.targetPolicyDecision,
         desktopWebViewAvailability: options.desktopWebViewAvailability,
+        nativeViewCaptureHandlerRegistered: options.nativeViewCaptureHandlerRegistered,
     });
     // `openExternalTab` is a side-effect OS-tab handoff (the host opens it via the canonical
     // opener before dispatch); it is not a renderable in-app view, so opening one is rejected here.
@@ -231,6 +237,7 @@ function applyLocalSetTargetIntent(
         platform: view.platform,
         targetPolicyDecision: options.targetPolicyDecision,
         desktopWebViewAvailability: options.desktopWebViewAvailability,
+        nativeViewCaptureHandlerRegistered: options.nativeViewCaptureHandlerRegistered,
     });
     // `openExternalTab` is an OS-tab handoff, not an in-app render target — reject retargeting to it.
     if (!selectedAdapter.ok || selectedAdapter.outcome === 'openExternalTab') {
@@ -340,6 +347,14 @@ export function dispatchBrowserControlCommand(
                 command,
             }],
         };
+    }
+
+    if (command.kind === 'takeControl' || command.kind === 'handBack') {
+        if (!isDaemonAuthoritativeView(state, command.viewId)) {
+            return { state, effects: [{ kind: 'commandRejected', command, reasonCode: 'adapter_unavailable' }] };
+        }
+        options.sendDaemonCommand?.(command);
+        return { state, effects: [{ kind: 'daemonCommand', command }] };
     }
 
     if (!supportsNavigationCommand(state, command)) {

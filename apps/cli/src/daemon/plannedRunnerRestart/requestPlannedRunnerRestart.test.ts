@@ -129,7 +129,6 @@ describe('requestPlannedRunnerRestart', () => {
   });
 
   it.each([
-    ['missing command hash', { processCommandHash: undefined, processStartTimeMs: 12_345 }],
     ['missing process birth', { processCommandHash: 'hash-1', processStartTimeMs: undefined }],
     ['non-finite process birth', { processCommandHash: 'hash-1', processStartTimeMs: Number.NaN }],
   ] satisfies ReadonlyArray<readonly [string, Partial<TrackedSession>]>) (
@@ -160,6 +159,28 @@ describe('requestPlannedRunnerRestart', () => {
       expect(restartRequestedPids).toEqual(new Set());
     },
   );
+
+  it('admits a captured process birth without a command hash when the live identity verifies it', async () => {
+    const tracked = makeTracked({ processCommandHash: undefined, processStartTimeMs: 12_345 });
+    const isProcessSafeToSignal = vi.fn(async () => true);
+    const requestSignal = vi.fn(async ({ shouldSignal }: { shouldSignal: () => boolean | Promise<boolean> }) => ({
+      status: await shouldSignal() ? 'requested' as const : 'skipped_stale_owner' as const,
+    }));
+    await expect(requestPlannedRunnerRestart({
+      sessionId: 'sess-1',
+      tracked,
+      deferral: { kind: 'none' },
+      restartRequestedPids: new Set<number>(),
+      pidToTrackedSession: new Map([[tracked.pid, tracked]]),
+      requestSignal,
+      isProcessSafeToSignal,
+    })).resolves.toEqual({ signaled: true });
+    expect(isProcessSafeToSignal).toHaveBeenCalledWith({
+      pid: tracked.pid,
+      expectedProcessCommandHash: '',
+      expectedProcessStartTimeMs: 12_345,
+    });
+  });
 
   it('rechecks the request-start command and process birth witness before PID safety', async () => {
     const tracked = makeTracked({

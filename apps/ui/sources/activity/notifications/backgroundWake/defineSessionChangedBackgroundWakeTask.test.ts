@@ -100,7 +100,7 @@ describe('session_changed background wake consumer', () => {
             .toBe(BackgroundNotificationTaskResult.NoData);
     });
 
-    it('registers once where it can run and unregisters a stale registration elsewhere', async () => {
+    it('registers once on each supported push platform', async () => {
         const registerTaskAsync = vi.fn(async () => undefined);
         const unregisterTaskAsync = vi.fn(async () => undefined);
         const notifications = { registerTaskAsync, unregisterTaskAsync };
@@ -120,10 +120,22 @@ describe('session_changed background wake consumer', () => {
         })).toEqual({ status: 'registered' });
         expect(registerTaskAsync).toHaveBeenCalledTimes(2);
         expect(unregisterTaskAsync).not.toHaveBeenCalled();
+    });
+
+    it('skips registration on web without touching native task APIs', async () => {
+        const registerTaskAsync = vi.fn(async () => undefined);
+        const unregisterTaskAsync = vi.fn(async () => undefined);
+        const isTaskRegisteredAsync = vi.fn(async () => {
+            throw new Error('TaskManager.isTaskRegisteredAsync is unavailable on web');
+        });
 
         expect(await syncSessionChangedBackgroundWakeTaskRegistration({
-            platformOS: 'web', notifications, taskManager: { isTaskRegisteredAsync: async () => true },
-        })).toEqual({ status: 'unregistered', reason: 'platform_unsupported' });
-        expect(unregisterTaskAsync).toHaveBeenCalledWith(SESSION_CHANGED_BACKGROUND_WAKE_TASK_NAME);
+            platformOS: 'web',
+            notifications: { registerTaskAsync, unregisterTaskAsync },
+            taskManager: { isTaskRegisteredAsync },
+        })).toEqual({ status: 'already_unregistered', reason: 'platform_unsupported' });
+        expect(isTaskRegisteredAsync).not.toHaveBeenCalled();
+        expect(registerTaskAsync).not.toHaveBeenCalled();
+        expect(unregisterTaskAsync).not.toHaveBeenCalled();
     });
 });

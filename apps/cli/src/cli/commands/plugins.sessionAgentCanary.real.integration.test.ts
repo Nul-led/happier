@@ -23,7 +23,7 @@ import { handlePluginsCommand } from './plugins';
 // canonical lifecycle an outside author runs — `plugins create --template
 // session-agent`, `plugins dev install`
 // (dependency materialization/refresh), `plugins test`, `plugins dev build`,
-// the headless `plugins install . --dev --trust` daemon change, and
+// the headless `plugins install . --dev` daemon change, and
 // `plugins uninstall` — in a temp directory outside this repository, against
 // current source.
 //
@@ -298,8 +298,9 @@ describe('external Session-Agent author journey canary', () => {
         built.error ? `${built.error.code}: ${JSON.stringify(built.error)}` : undefined,
       ).toMatchObject({ ok: true, kind: 'plugins_dev_build', data: { operation: 'build' } });
 
-      // 6. The documented headless first install: the explicit `--dev --trust`
-      //    daemon change, served by the real in-process daemon runtime owner.
+      // 6. The documented headless first install: the explicit `--dev` command
+      //    is the exact-source code-trust action, served by the real in-process
+      //    daemon runtime owner.
       //    A committed result with a current applied generation is the
       //    activation fact this host lane can reach; a real Session turn stays
       //    with the loaded current-source corridors.
@@ -307,7 +308,6 @@ describe('external Session-Agent author journey canary', () => {
         'install',
         targetDir,
         '--dev',
-        '--trust',
       ]);
       expect(
         trustedInstall,

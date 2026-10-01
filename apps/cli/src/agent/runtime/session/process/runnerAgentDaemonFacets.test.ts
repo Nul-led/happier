@@ -24,6 +24,7 @@ import {
     AgentRuntimeDaemonServiceRequestV1Schema,
 } from './agentRuntimeDaemonServiceProtocol';
 
+const runnerAgentGeneration = 'generation-1';
 const runnerFixture = {
   sessionId: 'session-1',
   binding: createAgentSessionRunnerFactoryBinding({
@@ -32,7 +33,11 @@ const runnerFixture = {
     pluginVersion: '1.0.0',
     agentId: 'acme',
     localAgentId: 'acme',
-    immutableGenerationId: 'generation-1',
+    sourceCustody: {
+      kind: 'managed',
+      immutableGenerationId: runnerAgentGeneration,
+      installSource: 'localPath',
+    },
     locator: {
       module: './agent/factory.js',
       export: 'createAgentRuntime',
@@ -116,7 +121,6 @@ function voiceDeclaration(): ConversationVoiceProviderContribution {
     },
     client: {
       artifactId: 'voice-runtime-web',
-      modulePath: './ui/voice',
       exportName: 'activate' as const,
     },
   };
@@ -137,7 +141,7 @@ describe('runner Agent daemon facet adapters', () => {
             ok: true,
             result: {
               kind: 'voice.authority.snapshot',
-              agentGeneration: runnerFixture.binding.immutableGenerationId,
+              agentSourceCustody: runnerFixture.binding.sourceCustody,
               providers: [],
             },
           };
@@ -299,7 +303,7 @@ describe('runner Agent daemon facet adapters', () => {
           ok: true,
           result: {
             kind: 'voice.authority.snapshot',
-            agentGeneration: runnerFixture.binding.immutableGenerationId,
+            agentSourceCustody: runnerFixture.binding.sourceCustody,
             providers: [],
           },
         };
@@ -384,7 +388,7 @@ describe('runner Agent daemon facet adapters', () => {
           ok: true,
           result: {
             kind: 'voice.authority.snapshot',
-            agentGeneration: runnerFixture.binding.immutableGenerationId,
+            agentSourceCustody: runnerFixture.binding.sourceCustody,
             providers: [],
           },
         };
@@ -473,7 +477,7 @@ describe('runner Agent daemon facet adapters', () => {
           ok: true,
           result: {
             kind: 'voice.authority.snapshot',
-            agentGeneration: runnerFixture.binding.immutableGenerationId,
+            agentSourceCustody: runnerFixture.binding.sourceCustody,
             providers: [{
               provider: voiceProvider,
               providerGeneration: 'voice-generation-1',
@@ -559,7 +563,7 @@ describe('runner Agent daemon facet adapters', () => {
         {
           pluginId: runnerFixture.binding.pluginId,
           agentId: runnerFixture.binding.agentId,
-          generation: immutableGenerationId,
+          occurrenceId: immutableGenerationId,
           immutableGenerationId,
           sessionRunnerFactoryBinding: {
             pluginId: runnerFixture.binding.pluginId,
@@ -572,13 +576,13 @@ describe('runner Agent daemon facet adapters', () => {
         },
       ]]),
       resolveVoiceProviderRuntimeLifecycle: () => ({
-        generation: 'voice-generation-1',
+        occurrenceId: 'voice-occurrence-1',
         isCurrent: () => !voiceProviderRetirement.signal.aborted,
         retirementSignal: voiceProviderRetirement.signal,
       }),
     });
     let currentRegistry = registryForAgentGeneration(
-      runnerFixture.binding.immutableGenerationId,
+      runnerAgentGeneration,
     );
     let daemon: 'A' | 'B' = 'A';
     let retirementWaitCount = 0;
@@ -590,7 +594,7 @@ describe('runner Agent daemon facet adapters', () => {
         });
       const declaration = voiceAuthority?.resolveDeclaration(voiceProvider);
       const providerGeneration =
-        voiceAuthority?.resolveProviderGeneration(voiceProvider);
+        voiceAuthority?.resolveProviderOccurrenceId(voiceProvider);
       if (
         !voiceAuthority
         || !declaration
@@ -600,7 +604,7 @@ describe('runner Agent daemon facet adapters', () => {
         return null;
       }
       return {
-        agentGeneration: voiceAuthority.generation,
+        agentSourceCustody: runnerFixture.binding.sourceCustody,
         providers: [{
           provider: voiceProvider,
           providerGeneration,
@@ -653,7 +657,7 @@ describe('runner Agent daemon facet adapters', () => {
           });
         const retirementSignal = voiceAuthority
           && voiceAuthority.isCurrent(voiceProvider)
-          && voiceAuthority.resolveProviderGeneration(voiceProvider)
+          && voiceAuthority.resolveProviderOccurrenceId(voiceProvider)
             === request.operation.providerGeneration
           ? voiceAuthority.resolveRetirementSignal(voiceProvider)
           : null;
@@ -711,7 +715,7 @@ describe('runner Agent daemon facet adapters', () => {
           ok: true,
           result: {
             kind: 'voice.authority.snapshot',
-            agentGeneration: runnerFixture.binding.immutableGenerationId,
+            agentSourceCustody: runnerFixture.binding.sourceCustody,
             providers: [{
               provider: voiceProvider,
               providerGeneration: 'voice-generation-1',
@@ -759,7 +763,7 @@ describe('runner Agent daemon facet adapters', () => {
           ok: true,
           result: {
             kind: 'voice.authority.snapshot',
-            agentGeneration: runnerFixture.binding.immutableGenerationId,
+            agentSourceCustody: runnerFixture.binding.sourceCustody,
             providers: [],
           },
         };
@@ -969,7 +973,7 @@ describe('runner Agent daemon facet adapters', () => {
           ok: true,
           result: {
             kind: 'voice.authority.snapshot',
-            agentGeneration: runnerFixture.binding.immutableGenerationId,
+            agentSourceCustody: runnerFixture.binding.sourceCustody,
             providers: [],
           },
         };
@@ -1171,7 +1175,7 @@ describe('runner Agent daemon facet adapters', () => {
           ok: true,
           result: {
             kind: 'voice.authority.snapshot',
-            agentGeneration: runnerFixture.binding.immutableGenerationId,
+            agentSourceCustody: runnerFixture.binding.sourceCustody,
             providers: [],
           },
         };
@@ -1317,7 +1321,7 @@ describe('runner Agent daemon facet adapters', () => {
           ok: true,
           result: {
             kind: 'voice.authority.snapshot',
-            agentGeneration: runnerFixture.binding.immutableGenerationId,
+            agentSourceCustody: runnerFixture.binding.sourceCustody,
             providers: [],
           },
         };
@@ -1427,7 +1431,7 @@ describe('runner Agent daemon facet adapters', () => {
           ok: true,
           result: {
             kind: 'voice.authority.snapshot',
-            agentGeneration: runnerFixture.binding.immutableGenerationId,
+            agentSourceCustody: runnerFixture.binding.sourceCustody,
             providers: [],
           },
         };
@@ -1543,7 +1547,7 @@ describe('runner Agent daemon facet adapters', () => {
           ok: true,
           result: {
             kind: 'voice.authority.snapshot',
-            agentGeneration: runnerFixture.binding.immutableGenerationId,
+            agentSourceCustody: runnerFixture.binding.sourceCustody,
             providers: [],
           },
         };
@@ -1664,7 +1668,7 @@ describe('runner Agent daemon facet adapters', () => {
             ok: true,
             result: {
               kind: 'voice.authority.snapshot',
-              agentGeneration: runnerFixture.binding.immutableGenerationId,
+              agentSourceCustody: runnerFixture.binding.sourceCustody,
               providers: [],
             },
           };
@@ -1786,7 +1790,7 @@ describe('runner Agent daemon facet adapters', () => {
           ok: true,
           result: {
             kind: 'voice.authority.snapshot',
-            agentGeneration: runnerFixture.binding.immutableGenerationId,
+            agentSourceCustody: runnerFixture.binding.sourceCustody,
             providers: [],
           },
         };
@@ -1885,7 +1889,7 @@ describe('runner Agent daemon facet adapters', () => {
           ok: true,
           result: {
             kind: 'voice.authority.snapshot',
-            agentGeneration: runnerFixture.binding.immutableGenerationId,
+            agentSourceCustody: runnerFixture.binding.sourceCustody,
             providers: [{
               provider: voiceProvider,
               providerGeneration: 'voice-generation-1',
@@ -1945,7 +1949,7 @@ describe('runner Agent daemon facet adapters', () => {
         ok: true,
         result: {
           kind: 'voice.authority.snapshot',
-          agentGeneration: runnerFixture.binding.immutableGenerationId,
+          agentSourceCustody: runnerFixture.binding.sourceCustody,
           providers: [],
         },
       };
@@ -1960,14 +1964,18 @@ describe('runner Agent daemon facet adapters', () => {
     await facets.dispose();
   });
 
-  it('fails closed when the daemon snapshot does not match the admitted Agent generation', async () => {
+  it('fails closed when the daemon snapshot does not match the admitted Agent custody', async () => {
     const facets = await createRunnerAgentDaemonFacets({
       authority,
       dispatch: async () => ({
         ok: true,
         result: {
           kind: 'voice.authority.snapshot',
-          agentGeneration: 'other-generation',
+          agentSourceCustody: {
+            kind: 'managed',
+            immutableGenerationId: 'other-generation',
+            installSource: 'localPath',
+          },
           providers: [],
         },
       }),
@@ -1987,7 +1995,7 @@ describe('runner Agent daemon facet adapters', () => {
           ok: true,
           result: {
             kind: 'voice.authority.snapshot',
-            agentGeneration: runnerFixture.binding.immutableGenerationId,
+            agentSourceCustody: runnerFixture.binding.sourceCustody,
             providers: [],
           },
         };

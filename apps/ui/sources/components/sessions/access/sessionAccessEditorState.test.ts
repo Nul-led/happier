@@ -137,4 +137,26 @@ describe('access acknowledged state',()=>{
   expect(state.recipients.rows).toEqual([]);
   expect(state.preparation.kind).toBe('idle');
  });
+ it('retains a device-key stop through diagnostic refresh and clears it only for a new pass',()=>{
+  let state=reduceSessionAccessEditorState(createSessionAccessEditorState('a'),{type:'snapshot',scopeKey:'a',snapshot:managerSnapshot});
+  state=reduceSessionAccessEditorState(state,{type:'prepared',scopeKey:'a',origin:'manual',
+   preparation:{kind:'settled',status:'session_data_key_unavailable',summary:null}});
+  state=reduceSessionAccessEditorState(state,{type:'prepared',scopeKey:'a',origin:'discovery',
+   preparation:{kind:'settled',status:'incomplete',summary:{prepared:0,pending:1,invalid:0,recipientKeyUnavailable:0}}});
+  expect(state.preparation).toMatchObject({kind:'settled',status:'session_data_key_unavailable'});
+  state=reduceSessionAccessEditorState(state,{type:'preparing',scopeKey:'a',preparedCount:0,actionableTotal:null});
+  expect(state.preparation.kind).toBe('preparing');
+ });
+ it('keeps pass progress through a failed diagnostic, but permits discovery-only failure recovery',()=>{
+  let state=reduceSessionAccessEditorState(createSessionAccessEditorState('a'),{type:'snapshot',scopeKey:'a',snapshot:managerSnapshot});
+  const error={code:'network',message:'Offline',retryable:true};
+  state=reduceSessionAccessEditorState(state,{type:'preparing',scopeKey:'a',preparedCount:2,actionableTotal:4});
+  state=reduceSessionAccessEditorState(state,{type:'preparationFailed',scopeKey:'a',origin:'discovery',error});
+  expect(state.preparation).toMatchObject({kind:'preparing',preparedCount:2,actionableTotal:4});
+  state=reduceSessionAccessEditorState(createSessionAccessEditorState('a'),{type:'snapshot',scopeKey:'a',snapshot:managerSnapshot});
+  state=reduceSessionAccessEditorState(state,{type:'preparationFailed',scopeKey:'a',origin:'discovery',error});
+  state=reduceSessionAccessEditorState(state,{type:'prepared',scopeKey:'a',origin:'discovery',
+   preparation:{kind:'settled',status:'complete',summary:{prepared:1,pending:0,invalid:0,recipientKeyUnavailable:0}}});
+  expect(state.preparation).toMatchObject({kind:'settled',status:'complete'});
+ });
 });

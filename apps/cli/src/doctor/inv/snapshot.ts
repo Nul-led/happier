@@ -1,5 +1,5 @@
 import { configuration } from '@/configuration';
-import { decodeJwtPayload } from '@/cloud/decodeJwtPayload';
+import { readAccountIdFromToken } from '@/cloud/decodeJwtPayload';
 import type { DoctorRepairReport } from '@/diagnostics/doctorRepair/types';
 
 import {
@@ -196,9 +196,7 @@ export function buildDoctorSnapshotFromInventory(params: Readonly<{
   const { credentials, daemonStatus, installations, localRelays, services, settings, warnings } = params.inventory;
 
   const token = credentials?.token ?? '';
-  const payload = token ? decodeJwtPayload(token) : null;
-  const sub = payload && typeof payload.sub === 'string' ? payload.sub.trim() : '';
-  const accountId = sub || null;
+  const accountId = token ? readAccountIdFromToken(token) : null;
 
   const knownAccountIds: string[] = [];
   const cursorMapByServer = settings.lastChangesCursorByServerIdByAccountId ?? {};

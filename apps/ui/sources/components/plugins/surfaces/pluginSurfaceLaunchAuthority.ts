@@ -14,15 +14,15 @@ import {
  * The authority a plugin launch input belongs to.
  *
  * `openSurface(destination, input)` hands the host a bounded JSON argument meant for
- * ONE destination, produced by ONE contribution generation, on ONE machine, for
+ * ONE destination, produced by ONE contribution occurrence, on ONE machine, for
  * ONE account/server. Every fact in that sentence can change while the value is
- * still held: a projection generation is replaced, a plugin is uninstalled and
+ * still held: a plugin occurrence is replaced, a plugin is uninstalled and
  * reinstalled under the same id, the active server or account changes, or the
  * contributing machine goes away. A launch input that outlives any of them is
  * delivered to a surface the author never addressed.
  *
  * This is the same triple the bound surface controller already treats as the
- * mount's identity (`machineId` / `serverId` / `projectionGeneration` in
+ * mount's identity (`machineId` / `serverId` / `occurrenceId` in
  * `PluginSurfaceHost`), so a held launch input is scoped by exactly the facts
  * the surface it belongs to is scoped by — rather than by a plugin id, which
  * survives all of them.
@@ -30,8 +30,8 @@ import {
 export type PluginSurfaceLaunchAuthority = Readonly<{
     serverId: string | null;
     machineId: string | null;
-    /** The contribution-registry projection generation the open was made under. */
-    generation: number | null;
+    /** The exact plugin occurrence the open was made under. */
+    occurrenceId: string | null;
     /**
      * The opaque incumbent Account lifetime captured by the owning host scope.
      * It prevents an Account transition that keeps the server id stable from
@@ -39,9 +39,10 @@ export type PluginSurfaceLaunchAuthority = Readonly<{
      */
     accountLifetime: ActiveServerAccountScopeLifetime | null;
     /**
-     * Exact selected materialization when this launch came from a unioned
-     * app-scope contribution. It is intentionally absent for machine-scoped
-     * surfaces, whose surrounding controller already owns their one producer.
+     * Exact selected materialization when one exists for a unioned app-scope
+     * contribution. Originless bundled/development contributions deliberately
+     * retain `null`; their selected machine and exact occurrence identify the
+     * producer without fabricating an Account materialization.
      *
      * Do not reconstruct this from the coarse machine/server coordinates:
      * materialization replacement can retain both while changing the producer.
@@ -52,14 +53,14 @@ export type PluginSurfaceLaunchAuthority = Readonly<{
 export function createPluginSurfaceLaunchAuthority(input: Readonly<{
     serverId?: string | null;
     machineId?: string | null;
-    generation?: number | null;
+    occurrenceId?: string | null;
     accountLifetime?: ActiveServerAccountScopeLifetime | null;
     executionOrigin?: PluginMachineExecutionOriginV1 | null;
 }>): PluginSurfaceLaunchAuthority {
     return Object.freeze({
         serverId: input.serverId ?? null,
         machineId: input.machineId ?? null,
-        generation: input.generation ?? null,
+        occurrenceId: input.occurrenceId ?? null,
         accountLifetime: input.accountLifetime ?? null,
         executionOrigin: input.executionOrigin ?? null,
     });
@@ -78,22 +79,31 @@ export function resolveSelectedPluginSurfaceLaunchAuthority(input: Readonly<{
     accountLifetime: ActiveServerAccountScopeLifetime | null;
 }>): PluginSurfaceLaunchAuthority | null {
     if (!input.placement || input.accountLifetime?.isCurrent() === false) return null;
+    const occurrenceId = typeof input.placement.occurrenceId === 'string'
+        && input.placement.occurrenceId.trim().length > 0
+        ? input.placement.occurrenceId
+        : null;
     const origin = readPluginUiContributionOrigin(input.placement);
     const executionOrigin = origin?.executionOrigin ?? null;
     if (
         !origin
-        || !executionOrigin
+        || !occurrenceId
         || origin.phase !== 'current'
         || origin.interactionEnabled !== true
-        || executionOrigin.materializationRef.pluginId !== input.placement.pluginId
-        || executionOrigin.materializationRef.machineId !== origin.machineId
+        || (
+            executionOrigin !== null
+            && (
+                executionOrigin.materializationRef.pluginId !== input.placement.pluginId
+                || executionOrigin.materializationRef.machineId !== origin.machineId
+            )
+        )
     ) {
         return null;
     }
     return createPluginSurfaceLaunchAuthority({
         serverId: origin.serverId,
         machineId: origin.machineId,
-        generation: origin.generation,
+        occurrenceId,
         accountLifetime: input.accountLifetime,
         executionOrigin,
     });
@@ -107,7 +117,6 @@ export function resolveSelectedPluginSurfaceLaunchAuthority(input: Readonly<{
 export type PluginSurfaceScopedLaunchFacts = Readonly<{
     serverId: string | null;
     machineId: string | null;
-    generation: number | null;
     interactionEnabled: boolean;
 }>;
 
@@ -137,12 +146,15 @@ export function resolvePluginSurfaceLaunchAuthority(input: Readonly<{
     }
 
     const scoped = input.scoped ?? null;
+    const occurrenceId = typeof input.placement.occurrenceId === 'string'
+        && input.placement.occurrenceId.trim().length > 0
+        ? input.placement.occurrenceId
+        : null;
     if (
         !scoped
+        || !occurrenceId
         || scoped.interactionEnabled !== true
         || !scoped.machineId
-        || scoped.generation === null
-        || !Number.isFinite(scoped.generation)
     ) {
         return null;
     }
@@ -157,7 +169,7 @@ export function resolvePluginSurfaceLaunchAuthority(input: Readonly<{
     return createPluginSurfaceLaunchAuthority({
         serverId: scoped.serverId,
         machineId: scoped.machineId,
-        generation: scoped.generation,
+        occurrenceId,
         accountLifetime: input.accountLifetime,
         executionOrigin,
     });
@@ -185,7 +197,7 @@ export function isSamePluginSurfaceLaunchAuthority(
 ): boolean {
     const sameCoordinates = left.serverId === right.serverId
         && left.machineId === right.machineId
-        && left.generation === right.generation;
+        && left.occurrenceId === right.occurrenceId;
     if (!sameCoordinates || left.accountLifetime !== right.accountLifetime) {
         return false;
     }

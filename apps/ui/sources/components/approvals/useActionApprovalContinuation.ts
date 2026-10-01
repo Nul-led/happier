@@ -14,119 +14,155 @@ const TERMINAL_FAILURE_STATUSES = new Set<ActionApprovalTerminalStatus>([
     'canceled',
 ]);
 
+type RegisteredApproval = ReturnType<typeof normalizeActionApprovalRegistration>;
+type ApprovalSettlement = Readonly<{
+    registration: RegisteredApproval;
+    artifact: NonNullable<ReturnType<typeof useApprovalArtifact>['artifact']> | null;
+    status: 'executed' | ActionApprovalTerminalStatus;
+}>;
+type ApprovalCustody = Readonly<{
+    scopeKey: string;
+    registrations: readonly RegisteredApproval[];
+    settlement: ApprovalSettlement | null;
+}>;
+
 /**
- * Shared process-local presentation and result-custody owner for one Action approval.
+ * Shared process-local presentation and result-custody owner for mounted Action approvals.
  * Durable lifecycle stays in the approval Artifact; this hook only reconnects an
- * already executed result to the still-mounted operation that requested it.
+ * already executed result to the still-mounted operation that requested it. One
+ * Artifact reader serves concurrent callers without replacing their registrations.
  */
 export function useActionApprovalContinuation(input: Readonly<{
     scopeKey: string;
     serverId: string;
     onExecuted: () => void;
 }>) {
-    const [approval, setApproval] = React.useState<Readonly<{
-        artifactId: string;
-        scopeKey: string;
-        continuation: ReturnType<typeof normalizeActionApprovalRegistration>['continuation'];
-    }> | null>(null);
-    const approvalId = approval?.scopeKey === input.scopeKey ? approval.artifactId : null;
+    const [custody, setCustody] = React.useState<ApprovalCustody>({
+        scopeKey: input.scopeKey,
+        registrations: [],
+        settlement: null,
+    });
+    const approval = custody.scopeKey === input.scopeKey && custody.settlement === null
+        ? custody.registrations[0] ?? null
+        : null;
+    const approvalId = approval?.artifactId ?? null;
     const currentScopeKeyRef = React.useRef(input.scopeKey);
     currentScopeKeyRef.current = input.scopeKey;
-    const settledScopeKeyRef = React.useRef(input.scopeKey);
     const onExecutedRef = React.useRef(input.onExecuted);
     onExecutedRef.current = input.onExecuted;
-    const claimedArtifactIdRef = React.useRef<string | null>(null);
-    const settlementRef = React.useRef<
-        | Readonly<{
-            kind: 'executed';
-            artifact: NonNullable<ReturnType<typeof useApprovalArtifact>['artifact']>;
-            continuation: NonNullable<ReturnType<typeof normalizeActionApprovalRegistration>['continuation']> | null;
-        }>
-        | Readonly<{
-            kind: 'terminal';
-            status: ActionApprovalTerminalStatus;
-            artifact: NonNullable<ReturnType<typeof useApprovalArtifact>['artifact']> | null;
-            continuation: NonNullable<ReturnType<typeof normalizeActionApprovalRegistration>['continuation']> | null;
-        }>
-        | null
-    >(null);
+    const deliveredSettlementRef = React.useRef<ApprovalSettlement | null>(null);
     const artifactBinding = useApprovalArtifact({ artifactId: approvalId, serverId: input.serverId });
     const approvalStatus = artifactBinding.artifact?.header?.approvalStatus;
-    const awaitingTypedBody = approval?.continuation !== null
+    const awaitingTypedBody = Boolean(approval?.continuation)
         && (approvalStatus === 'executed' || TERMINAL_FAILURE_STATUSES.has(approvalStatus as ActionApprovalTerminalStatus))
         && typeof artifactBinding.artifact?.body !== 'string';
     const approvalPending = approvalId !== null
         && (approvalStatus === undefined || PENDING_STATUSES.has(String(approvalStatus)) || awaitingTypedBody);
 
     React.useEffect(() => {
-        if (settledScopeKeyRef.current === input.scopeKey) return;
-        settledScopeKeyRef.current = input.scopeKey;
-        claimedArtifactIdRef.current = null;
-        settlementRef.current = null;
-        setApproval(null);
+        setCustody((current) => current.scopeKey === input.scopeKey
+            ? current
+            : { scopeKey: input.scopeKey, registrations: [], settlement: null });
     }, [input.scopeKey]);
 
     const requestApproval = React.useCallback((registration: ActionApprovalRegistration) => {
         if (currentScopeKeyRef.current !== input.scopeKey) return;
         const normalized = normalizeActionApprovalRegistration(registration);
-        claimedArtifactIdRef.current = null;
-        setApproval({ ...normalized, scopeKey: input.scopeKey });
+        if (normalized.continuation?.signal?.aborted) return;
+        setCustody((current) => {
+            if (currentScopeKeyRef.current !== input.scopeKey) return current;
+            const scoped = current.scopeKey === input.scopeKey
+                ? current
+                : { scopeKey: input.scopeKey, registrations: [], settlement: null };
+            if (scoped.settlement?.registration.artifactId === normalized.artifactId
+                || scoped.registrations.some((entry) => entry.artifactId === normalized.artifactId)) return scoped;
+            return { ...scoped, registrations: [...scoped.registrations, normalized] };
+        });
     }, [input.scopeKey]);
 
     React.useEffect(() => {
-        if (approvalId === null || claimedArtifactIdRef.current === approvalId) return;
-        if (approvalStatus === 'executed') {
-            const artifact = artifactBinding.artifact;
-            if (approval?.continuation && (!artifact || typeof artifact.body !== 'string')) return;
-            claimedArtifactIdRef.current = approvalId;
-            settlementRef.current = {
-                kind: 'executed',
-                artifact: artifact!,
-                continuation: approval?.continuation ?? null,
-            };
-            setApproval(null);
-            return;
-        }
-        const terminalStatus: ActionApprovalTerminalStatus | null = artifactBinding.invalidArtifact
+        if (!approval) return;
+        const status = artifactBinding.invalidArtifact
             ? 'invalid'
-            : TERMINAL_FAILURE_STATUSES.has(approvalStatus as ActionApprovalTerminalStatus)
-                ? approvalStatus as ActionApprovalTerminalStatus
-                : null;
-        if (terminalStatus) {
-            const artifact = artifactBinding.artifact;
-            if (approval?.continuation && terminalStatus !== 'invalid' && (!artifact || typeof artifact.body !== 'string')) return;
-            claimedArtifactIdRef.current = approvalId;
-            settlementRef.current = {
-                kind: 'terminal',
-                status: terminalStatus,
-                artifact: artifact ?? null,
-                continuation: approval?.continuation ?? null,
-            };
-            setApproval(null);
-        }
-    }, [approval, approvalId, approvalStatus, artifactBinding.artifact, artifactBinding.invalidArtifact]);
+            : approvalStatus === 'executed'
+                ? 'executed'
+                : TERMINAL_FAILURE_STATUSES.has(approvalStatus as ActionApprovalTerminalStatus)
+                    ? approvalStatus as ActionApprovalTerminalStatus
+                    : null;
+        if (!status) return;
+        const artifact = artifactBinding.artifact;
+        if (approval.continuation && status !== 'invalid' && (!artifact || typeof artifact.body !== 'string')) return;
+        setCustody((current) => current.scopeKey !== input.scopeKey
+            || current.settlement !== null
+            || current.registrations[0] !== approval
+            ? current
+            : {
+                ...current,
+                registrations: current.registrations.slice(1),
+                settlement: { registration: approval, status, artifact: artifact ?? null },
+            });
+    }, [approval, approvalStatus, artifactBinding.artifact, artifactBinding.invalidArtifact, input.scopeKey]);
 
     React.useEffect(() => {
-        if (approval !== null || settlementRef.current === null) return;
-        const settlement = settlementRef.current;
-        settlementRef.current = null;
-        if (settlement.kind === 'terminal') {
-            try {
-                settlement.continuation?.onTerminal?.(settlement.status, settlement.artifact);
-            } catch {
-                // Terminal settlement already released the operation for retry.
-            }
+        const settlement = custody.settlement;
+        if (custody.scopeKey !== input.scopeKey || !settlement) {
+            deliveredSettlementRef.current = null;
             return;
         }
-        onExecutedRef.current();
-        if (settlement.continuation) {
-            void settlement.continuation.onExecuted(settlement.artifact).catch(() => {
-                // The operation-specific continuation owns its visible failure
-                // state. Custody is intentionally once-only: never replay an
-                // already executed mutation because a UI callback threw.
-            });
+        if (deliveredSettlementRef.current === settlement) return;
+        deliveredSettlementRef.current = settlement;
+        const continuation = settlement.registration.continuation;
+        try {
+            if (continuation?.signal?.aborted) return;
+            if (settlement.status !== 'executed') {
+                try {
+                    continuation?.onTerminal?.(settlement.status, settlement.artifact);
+                } catch {
+                    // Terminal settlement already released the operation for retry.
+                }
+                return;
+            }
+            if (continuation && settlement.artifact) {
+                void continuation.onExecuted(settlement.artifact).catch(() => {
+                    // The operation owns its visible failure state. Never replay
+                    // an executed Action because a result callback threw.
+                });
+            }
+            onExecutedRef.current();
+        } finally {
+            // Start the original continuation before exposing the next Artifact.
+            // A callback may enqueue another Action without losing either result.
+            setCustody((current) => current.settlement !== settlement
+                ? current
+                : { ...current, settlement: null });
         }
-    }, [approval]);
+    }, [custody.scopeKey, custody.settlement, input.scopeKey]);
+
+    React.useEffect(() => {
+        if (custody.scopeKey !== input.scopeKey) return;
+        const registrations = custody.settlement
+            ? [...custody.registrations, custody.settlement.registration]
+            : custody.registrations;
+        const cleanups = registrations.map((registration) => {
+            const signal = registration.continuation?.signal;
+            if (!signal) return () => {};
+            const detach = () => setCustody((current) => {
+                if (current.scopeKey !== input.scopeKey) return current;
+                const queued = current.registrations.includes(registration);
+                const settling = current.settlement?.registration === registration;
+                if (!queued && !settling) return current;
+                return {
+                    ...current,
+                    registrations: queued ? current.registrations.filter((entry) => entry !== registration) : current.registrations,
+                    settlement: settling ? null : current.settlement,
+                };
+            });
+            if (signal.aborted) detach();
+            else signal.addEventListener('abort', detach, { once: true });
+            return () => signal.removeEventListener('abort', detach);
+        });
+        return () => cleanups.forEach((cleanup) => cleanup());
+    }, [custody.scopeKey, custody.registrations, custody.settlement, input.scopeKey]);
 
     return {
         ...artifactBinding,

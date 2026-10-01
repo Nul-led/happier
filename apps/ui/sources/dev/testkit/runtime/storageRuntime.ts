@@ -6,8 +6,9 @@ import {
 } from '@/sync/domains/settings/settings';
 import { localSettingsDefaults, type LocalSettings } from '@/sync/domains/settings/localSettings';
 import { buildSessionListServerScopedRowKey } from '@/sync/domains/session/listing/sessionListKeyNormalization';
-import { createReducer } from '@/sync/reducer/reducer';
+import { createReducer } from "@happier-dev/session-core/reducer";
 import type { StorageState } from '@/sync/store/types';
+import { authoringMemoryDefaults } from '@/sync/store/domains/authoringMemory';
 import type { StoreApi, UseBoundStore } from 'zustand';
 
 const { isDeepStrictEqual } = getVitestNodeBuiltin<{
@@ -172,6 +173,7 @@ function completePartialStorageState(state: Partial<StorageState>): StorageState
         archivedSessionListMembershipByServerId: {},
         sessionTailContiguousBoundary: {},
         sessionTranscriptLoadIssues: {},
+        authoringMemory: authoringMemoryDefaults,
         ...state,
         localSettings: state.localSettings ?? localSettingsDefaults,
     } as StorageState;
@@ -267,6 +269,7 @@ export function createStorageModuleStub<TOverrides extends object>(
         useProfile: () => store.getState().profile ?? defaultProfile,
         useIsDataReady: () => true,
         useAutomations: () => [],
+        useWorkflowRunRows: () => [],
         useSessionMessages: () => ({ messages: [], isLoaded: true } as const),
         useSessionMessagesReducerState: () => sessionMessagesReducerState,
         useSessionMessagesById: () => sessionMessagesById,
@@ -280,6 +283,7 @@ export function createStorageModuleStub<TOverrides extends object>(
         }),
         useSessionUsage: () => null,
         useSessionProjectScmSnapshot: () => null,
+        useSessionDirectoryKind: () => null,
         useSessionSubagentSourceMessages: () => [],
         useSessionSidechainMessages: () => [],
         useMachineCliDetectionTarget: () => ({ daemonStateVersion: 0, isOnline: false }),
@@ -335,6 +339,7 @@ export function createStorageModuleStub<TOverrides extends object>(
         useMachineListStatusByServerId: () => ({}),
         useMachineListForServer: () => null,
         useMachineListStatusForServer: () => 'idle' as const,
+        useIsActiveMachineListSettled: () => true,
         useServerScopedMachine: () => null,
         useWorkspaceScmSnapshot: () => null,
         useWorkspaceScmSnapshotError: () => null,
@@ -356,18 +361,23 @@ export function createStorageModuleStub<TOverrides extends object>(
         }),
         useEndpointStatus: () => 'online',
         useSyncError: () => null,
+        useAuthoringMemoryField: ((name: keyof typeof authoringMemoryDefaults) =>
+            (store.getState().authoringMemory ?? authoringMemoryDefaults)[name]) as StorageModule['useAuthoringMemoryField'],
     } satisfies Partial<StorageModule>;
 
     const module = { ...defaults, ...(overrides as Partial<StorageModule>) } as StorageModule;
+    const moduleWithSettingReader: StorageModule = Object.prototype.hasOwnProperty.call(overrides, 'useSettingMutable')
+        ? module
+        : { ...module, useSettingMutable: createUseSettingMutableMock(module.useSetting, options) };
     const moduleWithCurrentSecretBindings: StorageModule = Object.prototype.hasOwnProperty.call(
         overrides,
         'useCurrentSecretBindingsByProfileIdMutable',
     )
-        ? module
+        ? moduleWithSettingReader
         : {
-            ...module,
+            ...moduleWithSettingReader,
             useCurrentSecretBindingsByProfileIdMutable:
-                createUseCurrentSecretBindingsByProfileIdMutableMock(module.useSetting, options),
+                createUseCurrentSecretBindingsByProfileIdMutableMock(moduleWithSettingReader.useSetting, options),
         };
     const storageOverride = (overrides as { storage?: unknown }).storage;
     const finalStorage = isStorageStoreLike(storageOverride)
@@ -378,6 +388,10 @@ export function createStorageModuleStub<TOverrides extends object>(
             ...moduleWithCurrentSecretBindings,
             storage: finalStorage,
             getStorage: () => finalStorage,
+            ...(!Object.prototype.hasOwnProperty.call(overrides, 'useAuthoringMemoryField') ? {
+                useAuthoringMemoryField: ((name: keyof typeof authoringMemoryDefaults) =>
+                    (finalStorage.getState().authoringMemory ?? authoringMemoryDefaults)[name]) as StorageModule['useAuthoringMemoryField'],
+            } : {}),
         };
     }
     return {

@@ -109,6 +109,8 @@ describe('resolveSessionActivityStatusBadgePresentation', () => {
         });
         expect(result?.iconKind).toBe('workflow');
         expect(result?.label).toBe('Workflow 1/4 agents');
+        // Healthy work is neutral (INT T4): a running workflow is not painted blue.
+        expect(result?.tone).toBe('neutral');
     });
 
     it('uses the active phase label when run detail is loaded', () => {
@@ -206,7 +208,7 @@ describe('resolveSessionActivityStatusBadgePresentation', () => {
 
         expect(result?.iconKind).toBe('workflow');
         expect(result?.label).toBe('Workflow');
-        expect(result?.tone).toBe('active');
+        expect(result?.tone).toBe('neutral');
     });
 
     it('leads with managed attention over every non-permission signal', () => {

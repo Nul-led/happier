@@ -12,10 +12,10 @@ import {
 import {
     readStoredSessionMessages,
     type SessionMessagesStateLike,
-} from '@/sync/domains/messages/readStoredSessionMessages';
-import type { PersistSessionTranscriptMessageInput } from '@/sync/domains/messages/persistSessionTranscriptMessage';
+} from "@happier-dev/session-core/messages";
+import type { PersistSessionTranscriptMessageInput } from "@happier-dev/session-core/messages";
 import { storage } from '@/sync/domains/state/storage';
-import type { NormalizedMessage, RawRecord } from '@/sync/typesRaw';
+import type { NormalizedMessage, RawRecord } from "@happier-dev/session-core/raw";
 import { fireAndForget } from '@/utils/system/fireAndForget';
 import {
     readSafeVoiceRuntimeFailureCode,

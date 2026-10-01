@@ -2,6 +2,7 @@ import * as React from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createCapturingLegendListMock, renderScreen } from '@/dev/testkit';
+import { createResolvedAgentCatalogEntryFixture } from '@/dev/testkit/fixtures/agentCatalogFixtures';
 import { formatShortRelativeTime } from '@/utils/time/formatShortRelativeTime';
 
 const accessibilityPlatform = vi.hoisted(() => ({
@@ -32,8 +33,11 @@ const { module: capturedLegendList, state: legendListState } = createCapturingLe
     renderItemLimit: 20,
 });
 
+// The factory runs while this file's static imports are still being evaluated (the virtualized list
+// backend imports Legend transitively), before `capturedLegendList` is initialized; read it at render.
 vi.mock('@legendapp/list/react-native', () => ({
-    LegendList: capturedLegendList.LegendList,
+    LegendList: React.forwardRef<unknown, Record<string, unknown>>((props, ref) =>
+        React.createElement(capturedLegendList.LegendList, { ...props, ref })),
 }));
 
 vi.mock('@/text', () => ({ t: (key: string) => key }));
@@ -44,6 +48,14 @@ const candidate = {
     updatedAtMs: 1_700_000_000_000,
     activity: 'idle' as const,
     details: { path: '/repo' },
+};
+
+const agentCatalogEntry = createResolvedAgentCatalogEntryFixture({ agentId: 'claude' });
+const agentIdentity = {
+    entry: agentCatalogEntry,
+    machineId: null,
+    serverId: null,
+    current: true,
 };
 
 type CandidatePresentationReadCounts = {
@@ -210,7 +222,7 @@ describe('ExternalSessionBrowseCandidatesList SelectionList shell', () => {
         const screen = await renderScreen(<ExternalSessionBrowseCandidatesList
             {...props}
             candidates={candidates}
-            agentId="claude"
+            agentIdentity={agentIdentity}
         />);
 
         expect(screen.findAllByType('LegendListItem' as never)).toHaveLength(20);
@@ -230,7 +242,7 @@ describe('ExternalSessionBrowseCandidatesList SelectionList shell', () => {
         await screen.update(<ExternalSessionBrowseCandidatesList
             {...props}
             candidates={candidates}
-            agentId="claude"
+            agentIdentity={agentIdentity}
             linkingSessionId="candidate-5000"
         />);
 
@@ -391,6 +403,21 @@ describe('ExternalSessionBrowseCandidatesList SelectionList shell', () => {
         expect(screen.findByTestId('direct-session-candidate:session-1')?.props.disabled).toBeFalsy();
     });
 
+    it('shows only the progress row while indexing, and the status notice only once indexing is done', async () => {
+        const props = defaultProps();
+        const { ExternalSessionBrowseCandidatesList } = await import('./ExternalSessionBrowseCandidatesList');
+        const screen = await renderScreen(<ExternalSessionBrowseCandidatesList
+            {...props}
+            annotationsIncomplete
+            preparation={{ kind: 'building_candidate_index', scanned: 50 } as never}
+        />);
+        // Statuses are still being established while the index builds: not a notice yet.
+        expect(screen.findByTestId('direct-session-candidates-annotations-incomplete')).toBeNull();
+
+        await screen.update(<ExternalSessionBrowseCandidatesList {...props} annotationsIncomplete preparation={null} />);
+        expect(screen.findByTestId('direct-session-candidates-annotations-incomplete')).not.toBeNull();
+    });
+
     it('uses automatic end reach without rendering a manual Load More row', async () => {
         const props = defaultProps();
         const { ExternalSessionBrowseCandidatesList } = await import('./ExternalSessionBrowseCandidatesList');
@@ -417,6 +444,70 @@ describe('ExternalSessionBrowseCandidatesList SelectionList shell', () => {
             accessibilityRole: 'progressbar',
             accessibilityLabel: 'common.loading',
         })).toHaveLength(1);
+    });
+
+    it('says a missing machine is gone before claiming no agent can browse (state precedence)', async () => {
+        const props = defaultProps();
+        const onChooseMachine = vi.fn();
+        const { ExternalSessionBrowseCandidatesList } = await import('./ExternalSessionBrowseCandidatesList');
+        const screen = await renderScreen(<ExternalSessionBrowseCandidatesList
+            {...props}
+            candidates={[]}
+            nextCursor={null}
+            browseCapabilityAvailable={false}
+            scope={{ kind: 'gone', homeName: 'Studio', onChooseMachine }}
+        />);
+
+        expect(screen.findByTestId('direct-session-candidates:machine-gone')).not.toBeNull();
+        expect(screen.findByTestId('direct-session-candidates:no-agents')).toBeNull();
+        expect(screen.getTextContent()).toContain('settingsPlugins.targetSelection.missingInHome');
+        await screen.pressByTestIdAsync('direct-session-candidates:machine-gone-action');
+        expect(onChooseMachine).toHaveBeenCalledTimes(1);
+    });
+
+    it('says the Home cannot be reached, not that the machine is gone, while its machine list is unread', async () => {
+        const props = defaultProps();
+        const onChooseMachine = vi.fn();
+        const { ExternalSessionBrowseCandidatesList } = await import('./ExternalSessionBrowseCandidatesList');
+        const screen = await renderScreen(<ExternalSessionBrowseCandidatesList
+            {...props}
+            candidates={[]}
+            nextCursor={null}
+            browseCapabilityAvailable={false}
+            scope={{ kind: 'unreachable', homeName: 'Studio', onChooseMachine }}
+        />);
+
+        expect(screen.findByTestId('direct-session-candidates:home-unreachable')).not.toBeNull();
+        expect(screen.findByTestId('direct-session-candidates:machine-gone')).toBeNull();
+        expect(screen.findByTestId('direct-session-candidates:no-agents')).toBeNull();
+        expect(screen.getTextContent()).toContain('settingsPlugins.targetSelection.unreachableHome');
+        await screen.pressByTestIdAsync('direct-session-candidates:home-unreachable-action');
+        expect(onChooseMachine).toHaveBeenCalledTimes(1);
+    });
+
+    it('asks for a machine, and says an unreachable machine is offline, before any agent state', async () => {
+        const props = defaultProps();
+        const { ExternalSessionBrowseCandidatesList } = await import('./ExternalSessionBrowseCandidatesList');
+        const screen = await renderScreen(<ExternalSessionBrowseCandidatesList
+            {...props}
+            candidates={[]}
+            nextCursor={null}
+            browseCapabilityAvailable={false}
+            scope={{ kind: 'unselected', onChooseMachine: vi.fn() }}
+        />);
+        expect(screen.findByTestId('direct-session-candidates:no-machine')).not.toBeNull();
+        expect(screen.findByTestId('direct-session-candidates:no-agents')).toBeNull();
+
+        await screen.update(<ExternalSessionBrowseCandidatesList
+            {...props}
+            candidates={[]}
+            nextCursor={null}
+            browseCapabilityAvailable={false}
+            machineLabel="MacBook Pro"
+            scope={{ kind: 'offline', onChooseMachine: vi.fn() }}
+        />);
+        expect(screen.findByTestId('direct-session-candidates:offline')).not.toBeNull();
+        expect(screen.findByTestId('direct-session-candidates:no-agents')).toBeNull();
     });
 
     it('renders an actionable offline state instead of an empty list', async () => {
@@ -453,7 +544,7 @@ describe('ExternalSessionBrowseCandidatesList SelectionList shell', () => {
         />);
 
         const text = screen.getTextContent();
-        expect(text).toContain('newSession.machineOfflineInlineBody');
+        expect(text).toContain('externalSessions.browseMachineOfflineBody');
         expect(text).not.toContain('externalSessions.browseAgentUnavailable');
     });
 
@@ -473,7 +564,7 @@ describe('ExternalSessionBrowseCandidatesList SelectionList shell', () => {
         expect(screen.tree.root.findAllByProps({ accessibilityLiveRegion: 'assertive' })).toHaveLength(1);
     });
 
-    it('orients an empty result with safe Agent and source display labels', async () => {
+    it('shows a settled empty listing as the page empty state', async () => {
         const props = defaultProps();
         const { ExternalSessionBrowseCandidatesList } = await import('./ExternalSessionBrowseCandidatesList');
         const screen = await renderScreen(<ExternalSessionBrowseCandidatesList
@@ -484,10 +575,28 @@ describe('ExternalSessionBrowseCandidatesList SelectionList shell', () => {
             sourceLabel="Default Claude config"
         />);
 
+        // The settled empty listing is the page empty state inside the results area (the toolbar
+        // above keeps the agent and source visible), not a bare "no candidates" line.
         const empty = screen.findByTestId('direct-session-candidates:empty');
-        expect(empty?.findAllByProps({
-            children: 'externalSessions.browseNoCandidates\nClaude Code · Default Claude config',
-        }).length).toBeGreaterThan(0);
+        expect(empty).not.toBeNull();
+        expect(screen.getTextContent()).toContain('externalSessions.browseEmptyTitle');
+        expect(screen.findByTestId('direct-session-candidates:no-matches')).toBeNull();
+    });
+
+    it('answers a search without matches with one line and a way to clear it', async () => {
+        const props = defaultProps();
+        const { ExternalSessionBrowseCandidatesList } = await import('./ExternalSessionBrowseCandidatesList');
+        const screen = await renderScreen(<ExternalSessionBrowseCandidatesList
+            {...props}
+            candidates={[]}
+            nextCursor={null}
+            searchQuery="postgres"
+        />);
+
+        expect(screen.findByTestId('direct-session-candidates:no-matches')).not.toBeNull();
+        expect(screen.findByTestId('direct-session-candidates:empty')).toBeNull();
+        await screen.pressByTestIdAsync('direct-session-candidates:no-matches:clear');
+        expect(props.onSearchQueryChange).toHaveBeenCalledWith('');
     });
 
     it('continues an empty cursor page through SelectionList without a manual action', async () => {
@@ -652,7 +761,20 @@ describe('ExternalSessionBrowseCandidatesList SelectionList shell', () => {
     it('coalesces indexing announcements while keeping the current progress value queryable', async () => {
         const props = defaultProps();
         const { ExternalSessionBrowseCandidatesList } = await import('./ExternalSessionBrowseCandidatesList');
+        // The live region is mounted before the index build starts, so the build's
+        // arrival is inserted into an existing region and actually spoken.
         const screen = await renderScreen(<ExternalSessionBrowseCandidatesList
+            {...props}
+            candidates={[]}
+            loading
+            nextCursor={null}
+            preparation={null}
+        />);
+        const silentRegion = screen.findByTestId('direct-session-candidates:indexing:a11y-status');
+        expect((silentRegion?.props.children as { props?: { children?: unknown } } | undefined)?.props?.children)
+            .toBe('');
+
+        await screen.update(<ExternalSessionBrowseCandidatesList
             {...props}
             candidates={[]}
             loading

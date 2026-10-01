@@ -2,7 +2,7 @@ import * as React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AppPaneProvider } from '@/components/appShell/panes/AppPaneProvider';
-import { pressTestInstanceAsync, renderScreen } from '@/dev/testkit';
+import { pressTestInstanceAsync, renderWithSessionTranscriptSource, createTestSessionTranscriptSource } from '@/dev/testkit';
 import { storage } from '@/sync/domains/state/storageStore';
 import type { SessionListRenderableSession } from '@/sync/domains/session/listing/sessionListRenderable';
 
@@ -13,6 +13,9 @@ import type { SessionListRenderableSession } from '@/sync/domains/session/listin
 // before any file-level `const` is initialized.
 const routerMockState = vi.hoisted(() => ({ push: vi.fn() }));
 const routerPushSpy = routerMockState.push;
+function renderScreen(element: React.ReactElement) {
+    return renderWithSessionTranscriptSource(element, createTestSessionTranscriptSource({ sessionId: 'host-session', navigate: routerPushSpy }));
+}
 
 vi.mock('@/utils/platform/responsive', () => ({
     useDeviceType: () => 'tablet',

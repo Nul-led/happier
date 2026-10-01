@@ -157,7 +157,6 @@ export function buildServerFeaturesResponse(overrides: FixtureOverrides = {}): F
                     hostedWeb: { enabled: false },
                     reactNativeBundles: {
                         enabled: false,
-                        devHotReload: { enabled: false },
                     },
                 },
             },

@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
+import * as runtime from './runtime';
+
 describe('daemon browser sidecar runtime planning', () => {
     it('fails closed when the browser.sidecar feature gate is disabled', async () => {
-        const mod = await import('./runtime');
+        const mod = runtime;
 
         expect(mod).not.toBeNull();
         if (!mod) return;
@@ -39,7 +41,7 @@ describe('daemon browser sidecar runtime planning', () => {
     });
 
     it('creates a spawn-free private launch plan from managed binary and ephemeral profile inputs', async () => {
-        const mod = await import('./runtime');
+        const mod = runtime;
 
         expect(mod).not.toBeNull();
         if (!mod) return;
@@ -81,6 +83,7 @@ describe('daemon browser sidecar runtime planning', () => {
         expect(plan.privateLaunch).toMatchObject({
             executablePath: '/managed/chrome',
             args: expect.arrayContaining([
+                '--headless=new',
                 '--user-data-dir=/tmp/happier/browser/profile_1',
                 '--remote-debugging-port=0',
             ]),

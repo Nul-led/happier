@@ -264,6 +264,7 @@ describe('Android scrcpy raw-stream capture bridge', () => {
             startRequest: startRequest(),
             emitFrame: vi.fn(),
             fail: vi.fn(),
+            reportInputFailure: vi.fn(),
         })).rejects.toMatchObject({
             reasonCode: 'android_scrcpy_avcc_description_unavailable',
         });
@@ -411,6 +412,7 @@ describe('Android scrcpy raw-stream capture bridge', () => {
             startRequest: startRequest(),
             emitFrame: vi.fn(),
             fail: vi.fn(),
+            reportInputFailure: vi.fn(),
         })).rejects.toMatchObject({
             reasonCode: 'android_scrcpy_raw_stream_ended',
         });

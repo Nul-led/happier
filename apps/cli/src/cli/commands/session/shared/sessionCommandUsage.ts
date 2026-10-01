@@ -1,6 +1,6 @@
 import {
   AGENT_PERMISSION_INTENTS_V1,
-} from '@happier-dev/protocol';
+} from '@happier-dev/protocol/runtime';
 
 const SESSION_CREATE_HELP = [
   'happier session create [options]',

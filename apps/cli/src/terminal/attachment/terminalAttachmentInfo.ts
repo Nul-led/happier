@@ -36,7 +36,17 @@ export type BoundTerminalHostAttachmentInfo = Readonly<{
   updatedAt: number;
 }>;
 
-export type TerminalHostAttachmentInfo = LegacyTerminalHostAttachmentInfo | BoundTerminalHostAttachmentInfo;
+export type BorrowedTerminalHostAttachmentInfo = Readonly<{
+  version: 3;
+  lifecycle: 'borrowed';
+  attachmentId: TerminalAttachmentId;
+  sessionId: string;
+  handle: TerminalHostHandle & Readonly<{ attachmentId: TerminalAttachmentId }>;
+  updatedAt: number;
+}>;
+
+export type ExactTerminalHostAttachmentInfo = BoundTerminalHostAttachmentInfo | BorrowedTerminalHostAttachmentInfo;
+export type TerminalHostAttachmentInfo = LegacyTerminalHostAttachmentInfo | ExactTerminalHostAttachmentInfo;
 
 export type TerminalHostAttachmentReadState =
   | Readonly<{ status: 'absent' }>
@@ -117,8 +127,12 @@ export async function writeTerminalAttachmentInfo(params: {
 function parseTerminalHostHandle(value: unknown): TerminalHostHandle | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
-  if (record.kind !== 'tmux' && record.kind !== 'zellij' && record.kind !== 'windows_console') return null;
+  if (record.kind !== 'tmux' && record.kind !== 'zellij' && record.kind !== 'herdr' && record.kind !== 'windows_console') return null;
   if (typeof record.sessionName !== 'string' || !record.sessionName.trim()) return null;
+  if (record.kind === 'herdr' && (
+    typeof record.socketPath !== 'string' || !record.socketPath.trim()
+    || typeof record.terminalId !== 'string' || !record.terminalId.trim()
+  )) return null;
   const attachMetadata = record.attachMetadata;
   if (!attachMetadata || typeof attachMetadata !== 'object' || Array.isArray(attachMetadata)) return null;
   const metadata = attachMetadata as Record<string, unknown>;
@@ -136,6 +150,8 @@ function parseTerminalHostHandle(value: unknown): TerminalHostHandle | null {
     sessionName: record.sessionName,
     ...(typeof record.paneId === 'string' && record.paneId ? { paneId: record.paneId } : {}),
     ...(typeof record.socketDir === 'string' && record.socketDir ? { socketDir: record.socketDir } : {}),
+    ...(typeof record.socketPath === 'string' && record.socketPath ? { socketPath: record.socketPath } : {}),
+    ...(typeof record.terminalId === 'string' && record.terminalId ? { terminalId: record.terminalId } : {}),
     ...(expectedCommandFragments ? { expectedCommandFragments } : {}),
     attachMetadata: {
       attachStrategy: 'terminal_host',
@@ -162,9 +178,10 @@ function terminalHostHandlesEqual(left: TerminalHostHandle, right: TerminalHostH
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
-function terminalMetadataMatchesHostHandle(
+export function terminalMetadataMatchesHostHandle(
   terminal: NonNullable<Metadata['terminal']>,
   handle: TerminalHostHandle,
+  knownAttachmentId: string | undefined = terminal.controlServiceabilityV1?.attachmentId,
 ): boolean {
   const socketDir = typeof handle.socketDir === 'string' ? handle.socketDir.trim() : '';
   if (handle.kind === 'tmux') {
@@ -193,15 +210,28 @@ function terminalMetadataMatchesHostHandle(
       && paneId === (handle.paneId?.trim() ?? '')
       && persistedSocketDir === socketDir;
   }
+  if (handle.kind === 'herdr') {
+    return terminal.mode === 'herdr'
+      && terminal.herdr?.sessionName === handle.sessionName.trim()
+      && terminal.herdr?.socketPath === handle.socketPath?.trim()
+      && terminal.herdr?.terminalId === handle.terminalId?.trim();
+  }
+  if (handle.kind === 'windows_console') {
+    // PTY metadata has no reconstructible host geometry; its committed ID is the binding.
+    const attachmentId = knownAttachmentId?.trim();
+    return terminal.mode === 'windows_console' && terminal.windows?.host === 'console'
+      && Boolean(attachmentId) && attachmentId === handle.attachmentId;
+  }
   return false;
 }
 
-function parseRemoteDevBoundTerminalAttachmentInfo(
+function parseRemoteDevExactTerminalAttachmentInfo(
   raw: string,
   sessionId: string,
-): BoundTerminalHostAttachmentInfo | null {
+): ExactTerminalHostAttachmentInfo | null {
   const parsed = JSON.parse(raw) as Record<string, unknown>;
-  if (parsed.version !== 2 || parsed.sessionId !== sessionId) return null;
+  if ((parsed.version !== 2 && parsed.version !== 3) || parsed.sessionId !== sessionId) return null;
+  if (parsed.version === 3 && parsed.lifecycle !== 'borrowed') return null;
   if (typeof parsed.attachmentId !== 'string' || !parsed.attachmentId.trim()) return null;
   if (typeof parsed.updatedAt !== 'number' || !Number.isFinite(parsed.updatedAt)) return null;
   if (!parsed.terminal || typeof parsed.terminal !== 'object' || Array.isArray(parsed.terminal)) return null;
@@ -209,13 +239,15 @@ function parseRemoteDevBoundTerminalAttachmentInfo(
   const handle = parseTerminalHostHandle(parsed.handle);
   if (!handle || handle.attachmentId !== parsed.attachmentId) return null;
   if (!terminalMetadataMatchesHostHandle(terminal, handle)) return null;
-  return {
-    version: 2,
+  const exactBase = {
     attachmentId: parsed.attachmentId as TerminalAttachmentId,
     sessionId,
     handle: handle as TerminalHostHandle & Readonly<{ attachmentId: TerminalAttachmentId }>,
     updatedAt: parsed.updatedAt,
   };
+  return parsed.version === 3
+    ? { version: 3, lifecycle: 'borrowed', ...exactBase }
+    : { version: 2, ...exactBase };
 }
 
 async function readRemoteDevBoundTerminalAttachmentState(params: Readonly<{
@@ -238,13 +270,13 @@ async function readRemoteDevBoundTerminalAttachmentState(params: Readonly<{
     }
     try {
       const parsedRaw = JSON.parse(raw) as { version?: unknown };
-      if (parsedRaw.version !== 2) return { status: 'absent' };
-      const info = parseRemoteDevBoundTerminalAttachmentInfo(raw, params.sessionId);
+      if (parsedRaw.version !== 2 && parsedRaw.version !== 3) return { status: 'absent' };
+      const info = parseRemoteDevExactTerminalAttachmentInfo(raw, params.sessionId);
       return info
         ? { status: 'present', info }
         : { status: 'unreadable', reason: 'invalid' };
     } catch {
-      return { status: 'absent' };
+      return { status: 'unreadable', reason: 'invalid' };
     }
   }
   return { status: 'absent' };
@@ -254,7 +286,8 @@ export async function writeTerminalHostAttachmentInfo(params: Readonly<{
   happyHomeDir: string;
   sessionId: string;
   handle: TerminalHostHandle;
-}>): Promise<BoundTerminalHostAttachmentInfo> {
+  lifecycle?: 'owned' | 'borrowed';
+}>): Promise<ExactTerminalHostAttachmentInfo> {
   const handle = parseTerminalHostHandle(params.handle);
   if (!handle) throw new Error('Invalid terminal host handle');
   const attachmentId = handle.attachmentId ?? createTerminalAttachmentId();
@@ -262,13 +295,22 @@ export async function writeTerminalHostAttachmentInfo(params: Readonly<{
   const dir = sessionsDir(params.happyHomeDir);
   await mkdir(dir, { recursive: true, mode: 0o700 });
   await chmod(dir, 0o700).catch(() => {});
-  const info: BoundTerminalHostAttachmentInfo = {
-    version: 2,
-    attachmentId,
-    sessionId: params.sessionId,
-    handle: boundHandle,
-    updatedAt: Date.now(),
-  };
+  const info: ExactTerminalHostAttachmentInfo = params.lifecycle === 'borrowed'
+    ? {
+        version: 3,
+        lifecycle: 'borrowed',
+        attachmentId,
+        sessionId: params.sessionId,
+        handle: boundHandle,
+        updatedAt: Date.now(),
+      }
+    : {
+        version: 2,
+        attachmentId,
+        sessionId: params.sessionId,
+        handle: boundHandle,
+        updatedAt: Date.now(),
+      };
   await withTerminalHostDescriptorLock(params, async () => {
     await writeJsonAtomic(terminalHostFilePath(params.happyHomeDir, params.sessionId), info);
   });
@@ -291,26 +333,31 @@ export async function readTerminalHostAttachmentState(params: Readonly<{
   try {
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     const handle = parseTerminalHostHandle(parsed.handle);
-    if ((parsed.version !== 1 && parsed.version !== 2) || parsed.sessionId !== params.sessionId || !handle) {
+    if ((parsed.version !== 1 && parsed.version !== 2 && parsed.version !== 3) || parsed.sessionId !== params.sessionId || !handle) {
       return { status: 'unreadable', reason: 'invalid' };
     }
     if (typeof parsed.updatedAt !== 'number' || !Number.isFinite(parsed.updatedAt)) {
       return { status: 'unreadable', reason: 'invalid' };
     }
-    if (parsed.version === 2) {
+    if (parsed.version === 2 || parsed.version === 3) {
       if (typeof parsed.attachmentId !== 'string' || !parsed.attachmentId.trim()) {
+        return { status: 'unreadable', reason: 'invalid' };
+      }
+      if (parsed.version === 3 && parsed.lifecycle !== 'borrowed') {
         return { status: 'unreadable', reason: 'invalid' };
       }
       if (handle.attachmentId !== parsed.attachmentId) {
         return { status: 'unreadable', reason: 'invalid' };
       }
-      return { status: 'present', info: {
-          version: 2,
+      const exactBase = {
           attachmentId: parsed.attachmentId as TerminalAttachmentId,
           sessionId: params.sessionId,
           handle: handle as TerminalHostHandle & Readonly<{ attachmentId: TerminalAttachmentId }>,
           updatedAt: parsed.updatedAt,
-        } };
+      };
+      return parsed.version === 3
+        ? { status: 'present', info: { version: 3, lifecycle: 'borrowed', ...exactBase } }
+        : { status: 'present', info: { version: 2, ...exactBase } };
     }
     return { status: 'present', info: {
         version: 1,
@@ -352,7 +399,7 @@ async function removeRemoteDevBoundTerminalAttachmentInfo(params: Readonly<{
         if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return false;
         throw error;
       }
-      const current = parseRemoteDevBoundTerminalAttachmentInfo(raw, params.sessionId);
+      const current = parseRemoteDevExactTerminalAttachmentInfo(raw, params.sessionId);
       if (!current) return false;
       const expectedAttachmentId = params.expectedAttachmentId ?? params.expectedHandle?.attachmentId;
       if (!expectedAttachmentId || current.attachmentId !== expectedAttachmentId) return false;
@@ -375,7 +422,7 @@ export async function removeTerminalHostAttachmentInfo(params: Readonly<{
     const current = await readTerminalHostAttachmentInfo(params);
     if (!current) return false;
     const expectedHandle = params.expectedHandle ? parseTerminalHostHandle(params.expectedHandle) : null;
-    if (current.version === 2) {
+    if (current.version === 2 || current.version === 3) {
       const expectedAttachmentId = params.expectedAttachmentId ?? expectedHandle?.attachmentId;
       if (!expectedAttachmentId || current.attachmentId !== expectedAttachmentId) return false;
     } else if (!expectedHandle || !terminalHostHandlesEqual(current.handle, expectedHandle)) {
@@ -403,20 +450,21 @@ function parseTerminalAttachmentInfo(
   try {
     const parsed = JSON.parse(raw) as Record<string, unknown> | null;
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
-    if ((parsed.version !== 1 && parsed.version !== 2) || parsed.sessionId !== sessionId) return null;
+    if ((parsed.version !== 1 && parsed.version !== 2 && parsed.version !== 3) || parsed.sessionId !== sessionId) return null;
     if (!parsed.terminal || typeof parsed.terminal !== 'object') return null;
     const terminal = parsed.terminal as NonNullable<Metadata['terminal']>;
     if (
       terminal.mode !== 'plain'
       && terminal.mode !== 'tmux'
       && terminal.mode !== 'zellij'
+      && terminal.mode !== 'herdr'
       && terminal.mode !== 'windows_terminal'
       && terminal.mode !== 'windows_console'
     ) {
       return null;
     }
     if (typeof parsed.updatedAt !== 'number' || !Number.isFinite(parsed.updatedAt)) return null;
-    if (parsed.version === 2 && !parseRemoteDevBoundTerminalAttachmentInfo(raw, sessionId)) return null;
+    if ((parsed.version === 2 || parsed.version === 3) && !parseRemoteDevExactTerminalAttachmentInfo(raw, sessionId)) return null;
     return {
       version: 1,
       sessionId,
@@ -487,7 +535,7 @@ export async function disposeTerminalAttachmentInfoForSession(params: Readonly<{
   happyHomeDir: string;
   sessionId: string;
 }>): Promise<void> {
-  // The v2 host descriptor is exact attachment state. Only terminal-host disposition may retire it.
+  // Exact host descriptors are attachment state. Only terminal-host disposition may retire them.
   const encodedPath = sessionFilePath(params.happyHomeDir, params.sessionId);
   const paths = [encodedPath];
   if (!params.sessionId.includes('/') && !params.sessionId.includes('\\')) {
@@ -503,10 +551,10 @@ export async function disposeTerminalAttachmentInfoForSession(params: Readonly<{
         if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return;
         throw error;
       }
-      // Remote Dev stored its exact v2 host descriptor at the display-metadata
-      // path. Preserve that supported predecessor until terminal-host disposition
+      // Remote Dev stored exact v2/v3 host descriptors at the display-metadata
+      // path. Preserve supported predecessors until terminal-host disposition
       // proves and retires the exact host.
-      if (parseRemoteDevBoundTerminalAttachmentInfo(raw, params.sessionId)) return;
+      if (parseRemoteDevExactTerminalAttachmentInfo(raw, params.sessionId)) return;
       await unlink(path);
     });
   }));

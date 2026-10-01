@@ -1,10 +1,12 @@
 import * as React from 'react';
+import { createReactNavigationNativeMock } from '@/dev/testkit/mocks/reactNavigation';
 import { act } from 'react-test-renderer';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ComposerAttachmentDraftV1 } from '@happier-dev/protocol';
 
-import { AppPaneProvider } from '@/components/appShell/panes/AppPaneProvider';
-import { createDeferred, pressTestInstanceAsync, renderScreen, standardCleanup } from '@/dev/testkit';
+import { createDeferred } from '@/dev/testkit/hooks/createDeferred';
+import { pressTestInstanceAsync, renderScreen } from '@/dev/testkit/render/renderScreen';
+import { standardCleanup } from '@/dev/testkit/cleanup/standardCleanup';
 import { createSessionAccessFixture } from '@/dev/testkit/fixtures/sessionFixtures';
 import { createReactNativeWebMock } from '@/dev/testkit/mocks/reactNative';
 import { createExpoRouterMock } from '@/dev/testkit/mocks/router';
@@ -381,9 +383,12 @@ installSessionShellCommonModuleMocks({
 });
 
 vi.mock('react-native-safe-area-context', () => ({
+    // Native startup metrics may be unavailable; React Navigation still imports this SDK export.
+    initialWindowMetrics: null,
     useSafeAreaInsets: () => ({ top: 0, bottom: safeAreaState.bottom, left: 0, right: 0 }),
 }));
 vi.mock('@react-navigation/native', () => ({
+    ...createReactNavigationNativeMock(),
     useFocusEffect: () => {},
     useIsFocused: () => true,
 }));
@@ -514,6 +519,8 @@ vi.mock('@/sync/sync', async () => {
 });
 
 const sessionViewModulePromise = import('./SessionView');
+// Fixture collection owns cold module loading, not the behavior test's execution budget.
+await sessionViewModulePromise;
 
 function flattenStyle(style: unknown): Record<string, unknown> {
     if (Array.isArray(style)) {
@@ -524,6 +531,8 @@ function flattenStyle(style: unknown): Record<string, unknown> {
     }
     return {};
 }
+
+const { AppPaneProvider } = await import('@/components/appShell/panes/AppPaneProvider');
 
 describe('SessionView (data ready gating)', () => {
     it.each([
@@ -640,7 +649,7 @@ describe('SessionView (data ready gating)', () => {
         const handlers = createComposerPresentationHostHandlers({
             owner: {
                 identity: { pluginId: 'acme.fixture', localId: 'composer-tools' },
-                immutableGenerationId: 'generation-1',
+                occurrenceId: 'generation-1',
                 surfaceInstanceKey: 'mounted-1',
             },
         });
@@ -741,7 +750,7 @@ describe('SessionView (data ready gating)', () => {
             id: 'acme.compose/before',
             pluginId: 'acme.compose',
             identity: { pluginId: 'acme.compose', localId: 'before' },
-            immutableGenerationId: 'compose-generation-a',
+            occurrenceId: 'compose-generation-a',
             definition: {
                 id: 'before',
                 placement: 'beforeComposer',
@@ -751,7 +760,7 @@ describe('SessionView (data ready gating)', () => {
             id: 'acme.compose/after',
             pluginId: 'acme.compose',
             identity: { pluginId: 'acme.compose', localId: 'after' },
-            immutableGenerationId: 'compose-generation-a',
+            occurrenceId: 'compose-generation-a',
             definition: {
                 id: 'after',
                 placement: 'afterComposer',
@@ -816,7 +825,6 @@ describe('SessionView (data ready gating)', () => {
                     generation: 7,
                     installedPackagesById: {},
                     agentsById: {},
-                    backendsById: {},
                     actionsById: {},
                     toolsById: {},
                     commandsById: {},
@@ -830,7 +838,7 @@ describe('SessionView (data ready gating)', () => {
                                     id: 'acme.compose/launch',
                                     pluginId: 'acme.compose',
                                     identity: { pluginId: 'acme.compose', localId: 'launch' },
-                                    immutableGenerationId: 'compose-generation-a',
+                                    occurrenceId: 'compose-generation-a',
                                     definition: {
                                         id: 'launch',
                                         label: 'Launch compose helper',
@@ -850,7 +858,7 @@ describe('SessionView (data ready gating)', () => {
                                     id: 'acme.compose/before',
                                     pluginId: 'acme.compose',
                                     identity: { pluginId: 'acme.compose', localId: 'before' },
-                                    immutableGenerationId: 'compose-generation-a',
+                                    occurrenceId: 'compose-generation-a',
                                     definition: {
                                         id: 'before',
                                         placement: 'beforeComposer',
@@ -861,7 +869,7 @@ describe('SessionView (data ready gating)', () => {
                                     id: 'acme.compose/after',
                                     pluginId: 'acme.compose',
                                     identity: { pluginId: 'acme.compose', localId: 'after' },
-                                    immutableGenerationId: 'compose-generation-a',
+                                    occurrenceId: 'compose-generation-a',
                                     definition: {
                                         id: 'after',
                                         placement: 'afterComposer',
@@ -954,7 +962,6 @@ describe('SessionView (data ready gating)', () => {
                     generation: 7,
                     installedPackagesById: {},
                     agentsById: {},
-                    backendsById: {},
                     actionsById: {},
                     toolsById: {},
                     commandsById: {},
@@ -1056,7 +1063,6 @@ describe('SessionView (data ready gating)', () => {
                     generation: 7,
                     installedPackagesById: {},
                     agentsById: {},
-                    backendsById: {},
                     actionsById: {},
                     toolsById: {},
                     commandsById: {},
@@ -1185,7 +1191,7 @@ describe('SessionView (data ready gating)', () => {
             id: 'acme.compose/inline',
             pluginId: 'acme.compose',
             identity: { pluginId: 'acme.compose', localId: 'inline' },
-            immutableGenerationId: 'compose-generation-a',
+            occurrenceId: 'compose-generation-a',
             definition: {
                 id: 'inline',
                 label: 'Inline compose helper',
@@ -1202,7 +1208,7 @@ describe('SessionView (data ready gating)', () => {
             id: 'acme.compose/before',
             pluginId: 'acme.compose',
             identity: { pluginId: 'acme.compose', localId: 'before' },
-            immutableGenerationId: 'compose-generation-a',
+            occurrenceId: 'compose-generation-a',
             definition: {
                 id: 'before',
                 placement: 'beforeComposer',
@@ -1213,7 +1219,7 @@ describe('SessionView (data ready gating)', () => {
             id: 'acme.compose/after',
             pluginId: 'acme.compose',
             identity: { pluginId: 'acme.compose', localId: 'after' },
-            immutableGenerationId: 'compose-generation-a',
+            occurrenceId: 'compose-generation-a',
             definition: {
                 id: 'after',
                 placement: 'afterComposer',
@@ -1222,7 +1228,7 @@ describe('SessionView (data ready gating)', () => {
         };
         const catalogEntry = (contribution: Readonly<{ pluginId: string; localId: string }>, role: string, rendererId: string) => ({
             contribution,
-            immutableGenerationId: 'compose-generation-a',
+            occurrenceId: 'compose-generation-a',
             projectionGeneration: 7,
             role,
             rendererChain: [{ pluginId: contribution.pluginId, localId: rendererId }],
@@ -1247,7 +1253,7 @@ describe('SessionView (data ready gating)', () => {
             contributorTargetedContributions: {
                 target: {
                     pluginId: contribution.pluginId,
-                    immutableGenerationId: 'compose-generation-a',
+                    occurrenceId: 'compose-generation-a',
                 },
                 points: [],
             },
@@ -1261,7 +1267,6 @@ describe('SessionView (data ready gating)', () => {
                     generation: 7,
                     installedPackagesById: {},
                     agentsById: {},
-                    backendsById: {},
                     actionsById: {},
                     toolsById: {},
                     commandsById: {},
@@ -1396,7 +1401,7 @@ describe('SessionView (data ready gating)', () => {
             id: 'acme.issues/issue',
             pluginId: attachment.attachment.pluginId,
             identity: attachment.attachment,
-            immutableGenerationId: 'issues-generation-a',
+            occurrenceId: 'issues-generation-a',
             definition: {
                 id: attachment.attachment.localId,
                 title: 'Issue',
@@ -1424,7 +1429,6 @@ describe('SessionView (data ready gating)', () => {
                     generation: 7,
                     installedPackagesById: {},
                     agentsById: {},
-                    backendsById: {},
                     actionsById: {},
                     toolsById: {},
                     commandsById: {},
@@ -1440,7 +1444,7 @@ describe('SessionView (data ready gating)', () => {
                 },
                 composerSurfaceCatalog: [{
                     contribution: attachment.attachment,
-                    immutableGenerationId: attachmentEntry.immutableGenerationId,
+                    occurrenceId: attachmentEntry.occurrenceId,
                     projectionGeneration: 7,
                     role: 'attachmentDisplay',
                     rendererChain: [{ pluginId: attachment.attachment.pluginId, localId: 'issue-display' }],
@@ -1465,13 +1469,13 @@ describe('SessionView (data ready gating)', () => {
                     contributorTargetedContributions: {
                         target: {
                             pluginId: attachment.attachment.pluginId,
-                            immutableGenerationId: attachmentEntry.immutableGenerationId,
+                            occurrenceId: attachmentEntry.occurrenceId,
                         },
                         points: [],
                     },
                 }, {
                     contribution: attachment.attachment,
-                    immutableGenerationId: attachmentEntry.immutableGenerationId,
+                    occurrenceId: attachmentEntry.occurrenceId,
                     projectionGeneration: 7,
                     role: 'attachmentPreview',
                     rendererChain: [{ pluginId: attachment.attachment.pluginId, localId: 'issue-preview' }],
@@ -1496,7 +1500,7 @@ describe('SessionView (data ready gating)', () => {
                     contributorTargetedContributions: {
                         target: {
                             pluginId: attachment.attachment.pluginId,
-                            immutableGenerationId: attachmentEntry.immutableGenerationId,
+                            occurrenceId: attachmentEntry.occurrenceId,
                         },
                         points: [],
                     },
@@ -1751,13 +1755,14 @@ describe('SessionView (data ready gating)', () => {
             <AppPaneProvider>
                 <SessionView
                     id="s1"
+                    routeServerId="server-a"
                     routeHydrationState={{ kind: 'loading', sessionId: 's1', reason: 'store-miss' }}
                 />
             </AppPaneProvider>,
         );
 
         expect(screen.getTextContent()).not.toContain('errors.sessionDeleted');
-        expect(screen.findAllByTestId('session-route-loading')).toHaveLength(1);
+        expect(screen.findAllHostsByTestId('session-route-loading')).toHaveLength(1);
         expect(screen.findByTestId('session-auth-required-fallback')).toBeNull();
     });
 
@@ -1803,13 +1808,14 @@ describe('SessionView (data ready gating)', () => {
             <AppPaneProvider>
                 <SessionView
                     id="s1"
+                    routeServerId="server-a"
                     routeHydrationState={{ kind: 'retrying', sessionId: 's1', cause: 'server_unavailable' }}
                 />
             </AppPaneProvider>,
         );
 
         expect(screen.findAllByTestId('session-route-loading')).toHaveLength(0);
-        expect(screen.findAllByTestId('session-route-retrying')).toHaveLength(1);
+        expect(screen.findAllHostsByTestId('session-route-retrying')).toHaveLength(1);
         expect(screen.getTextContent()).toContain('newSession.notConnectedToServer');
         expect(screen.getTextContent()).not.toContain('errors.sessionDeleted');
     });

@@ -3,6 +3,23 @@ import { describe, expect, it } from 'vitest';
 import { buildSessionFollowPickerContextTitle, resolveSessionFollowPickerPresentation } from './sessionFollowPickerPresentation';
 
 describe('resolveSessionFollowPickerPresentation', () => {
+    it('keeps retained rows read-only while network or the exact Home is offline', () => {
+        for (const presentation of [
+            { kind: 'ready', complete: true },
+            { kind: 'refreshing', retainedRows: true },
+        ] as const) {
+            expect(resolveSessionFollowPickerPresentation(presentation, 2, false)).toEqual({
+                statusKey: 'session.follow.offline', canSelect: false, canRetryQuery: false,
+            });
+        }
+        expect(resolveSessionFollowPickerPresentation({
+            kind: 'partial', unavailableHomes: [{ serverId: 'home-a', reason: 'offline' }],
+        }, 2)).toEqual({
+            statusKey: 'session.follow.offline', canSelect: false, canRetryQuery: true,
+        });
+        expect(resolveSessionFollowPickerPresentation({ kind: 'ready', complete: true }, 2, true).canSelect).toBe(true);
+    });
+
     it('keeps currentness truthful while retaining available rows', () => {
         expect(resolveSessionFollowPickerPresentation({ kind: 'initial_loading' }, 0)).toEqual({
             statusKey: 'sessionsList.queryInitialLoadingTitle',
@@ -31,7 +48,7 @@ describe('resolveSessionFollowPickerPresentation', () => {
             kind: 'partial',
             unavailableHomes: [{ serverId: 'home-a', reason: 'offline' }],
         }, 0)).toEqual({
-            statusKey: 'sessionsList.querySomeHomesUnavailableTitle',
+            statusKey: 'session.follow.offline',
             canSelect: false,
             // Neither state advances the query on its own, so both owe an explicit retry.
             canRetryQuery: true,

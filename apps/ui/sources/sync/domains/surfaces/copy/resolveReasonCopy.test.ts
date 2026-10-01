@@ -62,6 +62,12 @@ const LOCAL_SERVICE_LAUNCHER_CODES = [
 ] as const;
 
 describe('resolveReasonCopy', () => {
+    it('explains a policy-disabled plugin details destination with the shared reason copy', () => {
+        const copy = resolveReasonCopy({ reasonCode: 'details_destination_policy_unavailable', kind: 'pluginRuntime' });
+        expect(copy.message).toBe(t('pluginRuntime.disabledByPolicy'));
+        expect(copy.diagnosticCode).toBe('details_destination_policy_unavailable');
+    });
+
     it('maps every browser-frame adapter code to a non-empty message that never leaks the raw code', () => {
         for (const reasonCode of BROWSER_ADAPTER_REASON_CODES) {
             const copy = resolveReasonCopy({ reasonCode, kind: 'browserFrame' });
@@ -197,7 +203,6 @@ const STREAM_PLAYER_CODES = [
 
 const PLUGIN_RUNTIME_CODES = [
     { code: 'crash_threshold_reached', expected: () => t('pluginRuntime.crashLoop') },
-    { code: 'crash_disabled', expected: () => t('pluginRuntime.crashLoop') },
     { code: 'feature_disabled', expected: () => t('pluginRuntime.disabledByPolicy') },
     { code: 'feature_gate_disabled', expected: () => t('pluginRuntime.disabledByPolicy') },
     { code: 'required_feature_disabled', expected: () => t('pluginRuntime.disabledByPolicy') },
@@ -219,7 +224,6 @@ const PLUGIN_RUNTIME_CODES = [
     { code: 'required_permission_missing', expected: () => t('pluginRuntime.missingRequirement') },
     { code: 'entry_missing', expected: () => t('pluginRuntime.missingRequirement') },
     { code: 'runtime_mismatch', expected: () => t('pluginRuntime.missingRequirement') },
-    { code: 'repack_script_manager_unavailable', expected: () => t('pluginRuntime.missingRequirement') },
     { code: 'transport_unavailable', expected: () => t('pluginRuntime.unavailableGeneric') },
 ] as const;
 
@@ -397,66 +401,77 @@ describe('resolvePluginSurfaceStatePresentation', () => {
         expect(failedRetry.card?.reason).not.toContain('raw_machine_probe');
     });
 
-    it('maps each daemon-issued RN reset state to its localized card or content notice', () => {
-        const requested = resolvePluginSurfaceStatePresentation({
-            state: 'loading',
-            copyVariant: 'pluginReactNativeResetRequested',
-        });
-        expect(requested).toMatchObject({
-            disposition: 'replace',
-            card: {
-                kind: 'loading',
-                title: t('pluginReactNative.reset.requested.title'),
-                reason: t('pluginReactNative.reset.requested.reason'),
-                accessibilitySemantics: 'status',
-            },
-            contentNotice: null,
-        });
+    it('maps recovery semantics without exposing raw failure codes', () => {
+        const cases = [
+            ['artifact_source_integrity_invalid', 'repair'],
+            ['artifact_incompatible', 'updateCompatible'],
+            ['module_instantiation_failed', 'managePlugin'],
+            ['unknown_host_module', 'managePlugin'],
+            ['invalid_executable_export', 'managePlugin'],
+            ['local_artifact_failure', 'retry'],
+            ['feature_disabled', 'enable'],
+            ['disabled', 'enable'],
+            ['plugin_revoked', 'managePlugin'],
+            ['plugin_uninstalled', 'managePlugin'],
+            ['revoked', 'managePlugin'],
+            ['uninstalled', 'managePlugin'],
+        ] as const;
 
-        const awaitingProjection = resolvePluginSurfaceStatePresentation({
-            state: 'loading',
-            copyVariant: 'pluginReactNativeResetAwaitingProjection',
-        });
-        expect(awaitingProjection).toMatchObject({
-            disposition: 'replace',
-            card: {
-                kind: 'loading',
-                title: t('pluginReactNative.reset.awaitingProjection.title'),
-                reason: t('pluginReactNative.reset.awaitingProjection.reason'),
-                accessibilitySemantics: 'status',
-            },
-            contentNotice: null,
-        });
-        expect(awaitingProjection.card?.title).not.toBe(requested.card?.title);
+        for (const [reasonCode, actionKind] of cases) {
+            const presentation = resolvePluginSurfaceStatePresentation({
+                state: 'unavailable',
+                reasonCode,
+            });
+            expect(presentation.recoveryAction?.kind, reasonCode).toBe(actionKind);
+            expect(presentation.card?.reason, reasonCode).not.toBe(reasonCode);
+            if (reasonCode.includes('_')) {
+                expect(presentation.card?.reason, reasonCode).not.toContain(reasonCode);
+            }
+        }
 
-        const failed = resolvePluginSurfaceStatePresentation({
-            state: 'failedRetry',
-            copyVariant: 'pluginReactNativeResetFailed',
-        });
-        expect(failed).toMatchObject({
-            disposition: 'replace',
-            card: {
-                kind: 'error',
-                title: t('pluginReactNative.reset.failed.title'),
-                reason: t('pluginReactNative.reset.failed.reason'),
-                accessibilitySemantics: 'alert',
-            },
-            contentNotice: null,
-        });
-
-        const completed = resolvePluginSurfaceStatePresentation({
-            state: 'available',
-            copyVariant: 'pluginReactNativeResetComplete',
-        });
-
-        expect(completed).toMatchObject({
-            disposition: 'content',
-            card: null,
-            contentNotice: {
-                title: t('pluginReactNative.reset.complete.title'),
-                reason: t('pluginReactNative.reset.complete.reason'),
-                accessibilitySemantics: 'status',
-            },
-        });
+        expect(resolvePluginSurfaceStatePresentation({
+            state: 'unavailable',
+            reasonCode: 'artifact_source_unavailable',
+        }).recoveryAction?.kind).toBe('retry');
     });
+
+    it('classifies transient host failures as Retry and configuration failures as Manage plugin', () => {
+        const cases = [
+            // Transient: asking again can change the answer.
+            ['targeted_contributions_error', 'retry'],
+            ['hosted_web_bridge_timeout', 'retry'],
+            ['load_timeout', 'retry'],
+            // Configuration: the plugin's own page is where the fix lives.
+            ['required_permission_missing', 'managePlugin'],
+            ['plugin_app_page_unavailable', 'managePlugin'],
+            ['plugin_disabled', 'enable'],
+        ] as const;
+        for (const [reasonCode, actionKind] of cases) {
+            expect(resolvePluginSurfaceStatePresentation({
+                state: 'unavailable',
+                reasonCode,
+            }).recoveryAction?.kind, reasonCode).toBe(actionKind);
+        }
+        // Neither a retry nor plugin management fixes these; no action is offered.
+        for (const reasonCode of [
+            'targeted_contributions_unsupported',
+            'plugin_surface_open_sub_path_invalid',
+            'platform_denied',
+        ]) {
+            expect(resolvePluginSurfaceStatePresentation({
+                state: 'unavailable',
+                reasonCode,
+            }).recoveryAction, reasonCode).toBeNull();
+        }
+    });
+
+    it('offers no recovery action while content is merely loading', () => {
+        for (const state of ['loading', 'refreshing'] as const) {
+            expect(resolvePluginSurfaceStatePresentation({
+                state,
+                reasonCode: 'load_timeout',
+            }).recoveryAction, state).toBeNull();
+        }
+    });
+
 });

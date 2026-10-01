@@ -1,11 +1,12 @@
 import React from 'react';
+import { describeWorkStatusBucket } from '@/components/work/status/workStatusBuckets';
 import { View, Pressable, Platform, I18nManager, Image as ReactNativeImage, type StyleProp, type ViewProps, type ViewStyle } from 'react-native';
-import { HappierPressable } from '@happier-dev/plugin-ui/presentation';
+import { HappierPressable, resolveHappierFocusRingVisible } from '@happier-dev/plugin-ui/presentation';
 import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
 import { useSettingMutable } from '@/sync/domains/state/storage';
 import { useUnistyles } from 'react-native-unistyles';
 import { RecoveryKeyReminderBanner } from '@/components/account/RecoveryKeyReminderBanner';
-import { UpdateBanner } from '@/components/ui/feedback/UpdateBanner';
+import { useIsTablet } from '@/utils/platform/responsive';
 import { DropdownMenu, type DropdownMenuItem } from '@/components/ui/forms/dropdown/DropdownMenu';
 import { Text } from '@/components/ui/text/Text';
 import { Eyebrow } from '@/components/ui/text/Eyebrow';
@@ -22,8 +23,9 @@ import {
     useYieldSessionListLayoutIntent,
 } from '@/hooks/session/sessionListLayoutIntent';
 
-import { sessionListStyles } from './sessionListStyles';
+import { SESSION_LIST_COLUMN_METRICS, sessionListStyles } from './sessionListStyles';
 import { resolveProjectGroupHeaderMenuItems } from './resolveProjectGroupHeaderMenuItems';
+import { resolveNewSessionGroupTarget } from './resolveSessionListHeaderActionHandlers';
 import {
     resolveSessionListViewOptionSelectionDelta,
     resolveSessionListViewOptionsPresentation,
@@ -32,16 +34,13 @@ import {
 import type { RegisterSessionFolderDropTarget } from './useSessionListViewState';
 import { useWorkspaceFavicon } from './useWorkspaceFavicon';
 import { resolveWorkspaceRootTreeRowId, treeRowId } from './drop-resolution/treeRowId';
-import { Icon } from '@/components/ui/icons/Icon';
+import { IconButton } from '@/components/ui/buttons/IconButton';
+import { Icon, ICON_SIZE } from '@/components/ui/icons/Icon';
 import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
 import { useApplySettings } from '@/sync/store/settingsWriters';
 import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 const HEADER_ACTION_TARGET_SIZE = resolveMinimumInteractiveTargetSize(Platform.OS);
-const HEADER_ACTION_TARGET_STYLE = {
-    minWidth: HEADER_ACTION_TARGET_SIZE,
-    minHeight: HEADER_ACTION_TARGET_SIZE,
-};
 
 
 export function stopPressEventPropagation(event: unknown): void {
@@ -122,6 +121,8 @@ export const SessionListViewOptionsButton = React.memo(function SessionListViewO
     placement?: 'top' | 'bottom' | 'left' | 'right';
     onMenuOpenChange?: (open: boolean) => void;
     serverId?: string | null;
+    /** The touch floor where the primary pointer is a finger; the column's compact square otherwise. */
+    minimumInteractiveTargetSize?: number;
 }>) {
     const styles = sessionListStyles;
     const { theme } = useUnistyles();
@@ -206,7 +207,7 @@ export const SessionListViewOptionsButton = React.memo(function SessionListViewO
         } satisfies DropdownMenuItem] : []),
         {
             id: 'attentionPlacement',
-            title: t('sessionsList.attentionSectionTitle'),
+            title: describeWorkStatusBucket('needs_you'),
             category: t('settingsSession.sessionList.attentionPlacementTitle'),
             rightElement: <Text style={{ color: theme.colors.text.secondary }}>{selectedTitle(
                 presentation.attentionItems,
@@ -223,7 +224,7 @@ export const SessionListViewOptionsButton = React.memo(function SessionListViewO
         },
         {
             id: 'workingPlacement',
-            title: t('sessionsList.workingSectionTitle'),
+            title: describeWorkStatusBucket('working'),
             category: t('settingsSession.sessionList.attentionPlacementTitle'),
             rightElement: <Text style={{ color: theme.colors.text.secondary }}>{selectedTitle(
                 presentation.workingItems,
@@ -307,19 +308,24 @@ export const SessionListViewOptionsButton = React.memo(function SessionListViewO
             placement={props.placement ?? 'bottom'}
             popoverAnchorAlign="end"
             trigger={({ toggle }) => (
-                <Pressable
+                <IconButton
                     testID="session-list-view-options-trigger"
-                    style={[styles.headerActionButton, HEADER_ACTION_TARGET_STYLE]}
+                    accessibilityLabel={t('sessionsList.viewOptions')}
+                    tooltip={t('sessionsList.viewOptions')}
+                    tooltipHidden={menuOpen}
+                    variant="plain"
+                    size={SESSION_LIST_COLUMN_METRICS.iconButtonSizePx}
+                    iconSize={ICON_SIZE.sm}
+                    minimumInteractiveTargetSize={props.minimumInteractiveTargetSize}
+                    interactiveTargetGapPx={SESSION_LIST_COLUMN_METRICS.iconButtonGapPx}
+                    expanded={menuOpen}
+                    hasPopup="menu"
+                    iconName="sliders-horizontal"
                     onPress={(event) => {
                         stopPressEventPropagation(event);
                         toggle();
                     }}
-                    accessibilityRole="button"
-                    accessibilityLabel={t('sessionsList.viewOptions')}
-                    accessibilityState={{ expanded: menuOpen }}
-                >
-                    <Icon name="sliders-horizontal" size={16} color={actionIconColor} />
-                </Pressable>
+                />
             )}
         />
     );
@@ -327,11 +333,14 @@ export const SessionListViewOptionsButton = React.memo(function SessionListViewO
 
 export const SessionsListHeader = React.memo(function SessionsListHeader() {
     const styles = sessionListStyles;
+    // Wide layouts show the home hub beside this list, and its "Get set up" section owns the
+    // recovery-key step; a second card here would repeat it. Phones have no hub, so it stays here.
+    const hubOwnsRecoveryKey = useIsTablet();
+    if (hubOwnsRecoveryKey) return null;
 
     return (
         <View style={styles.listHeaderSection}>
             <RecoveryKeyReminderBanner />
-            <UpdateBanner />
         </View>
     );
 });
@@ -366,7 +375,7 @@ export const SessionFolderFocusBreadcrumbs = React.memo(function SessionFolderFo
                         justifyContent: 'center',
                         borderRadius: 6,
                         borderWidth: 1,
-                        borderColor: focused ? theme.colors.border.focus : 'transparent',
+                        borderColor: resolveHappierFocusRingVisible(focused) ? theme.colors.border.focus : 'transparent',
                         opacity: pressed ? motionTokens.press.opacitySubtle : 1,
                     }]}
                 >
@@ -395,7 +404,7 @@ export const SessionFolderFocusBreadcrumbs = React.memo(function SessionFolderFo
                                 justifyContent: 'center',
                                 borderRadius: 6,
                                 borderWidth: 1,
-                                borderColor: focused ? theme.colors.border.focus : 'transparent',
+                                borderColor: resolveHappierFocusRingVisible(focused) ? theme.colors.border.focus : 'transparent',
                                 opacity: pressed ? motionTokens.press.opacitySubtle : 1,
                             }]}
                         >
@@ -432,16 +441,16 @@ export const ProjectGroupHeader = React.memo(function ProjectGroupHeader(props: 
     const [isActionsHovered, setIsActionsHovered] = React.useState(false);
     const [menuOpen, setMenuOpen] = React.useState(false);
     const isWeb = Platform.OS === 'web';
-    const projectServerId = item.workspaceScopeHint?.serverId ?? item.serverId ?? null;
+    const newSessionTarget = resolveNewSessionGroupTarget(item);
+    const projectServerId = newSessionTarget?.serverId ?? item.serverId ?? null;
     const sessionFoldersFeatureEnabled = useFeatureEnabled('sessions.folders', projectServerId
         ? { scopeKind: 'spawn', serverId: projectServerId }
         : { scopeKind: 'main_selection' });
     const showHoverActions = !isWeb || isRowHovered || isActionsHovered || menuOpen;
     const showChevron = !isWeb || collapsed || showHoverActions;
-    const menuEnabled = Boolean(item.workspaceScopeHint);
     const reorderHandleKey = item.groupKey ?? item.workspaceKey ?? '';
     const actionIconColor = theme.colors.text.secondary;
-    const canCreateSession = Boolean(item.workspaceScopeHint);
+    const canCreateSession = newSessionTarget !== null;
     const favicon = useWorkspaceFavicon({
         enabled: workspaceFaviconsEnabled,
         serverId: item.workspaceScopeHint?.serverId ?? item.serverId ?? null,
@@ -466,12 +475,13 @@ export const ProjectGroupHeader = React.memo(function ProjectGroupHeader(props: 
     });
 
     const menuItems = resolveProjectGroupHeaderMenuItems({
-        menuEnabled: Boolean(item.workspaceScopeHint),
         canOpenProject,
-        canAddFolder: sessionFoldersFeatureEnabled,
+        canAddFolder: sessionFoldersFeatureEnabled && workspace !== null,
+        canRename: Boolean(item.workspaceScopeHint) && item.workspace?.t !== 'managedSessions',
         hasCustomLabel,
         actionIconColor,
     });
+    const menuEnabled = menuItems.length > 0;
 
     const chevronColor = theme.colors.text.secondary;
     return (
@@ -600,7 +610,9 @@ export const ProjectGroupHeader = React.memo(function ProjectGroupHeader(props: 
                                 onCreateSession();
                             }}
                             accessibilityRole="button"
-                            accessibilityLabel={t('machine.launchNewSessionInDirectory')}
+                            accessibilityLabel={newSessionTarget && 'kind' in newSessionTarget && newSessionTarget.kind === 'managed'
+                                ? t('newSession.title')
+                                : t('machine.launchNewSessionInDirectory')}
                             hitSlop={8}
                         >
                             <Icon name="plus" size={14} color={actionIconColor} />

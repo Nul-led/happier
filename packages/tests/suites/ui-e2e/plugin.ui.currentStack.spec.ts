@@ -128,7 +128,7 @@ test.describe('current managed Stack Plugin UI', () => {
     await expect(selfCheckAction).toBeVisible();
     await selfCheckAction.click();
     await expect(page.getByTestId('inspector-self-check-settled')).toHaveText(
-      'Inspector self-check: success',
+      'Self-check passed',
       { timeout: 180_000 },
     );
 

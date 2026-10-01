@@ -27,6 +27,16 @@ export type InboxActionOperationEntry = Readonly<{
     reason: InboxActionOperationReason;
 }>;
 
+export type ActionOperationActivitySummary = Readonly<{
+    activeCount: number;
+    hasAttention: boolean;
+}>;
+
+export type InboxActionOperationSummary = Readonly<{
+    count: number;
+    hasAttention: boolean;
+}>;
+
 export type ActionOperationSelectors = Readonly<{
     selectAll(state: ActionOperationStoreSnapshot): readonly ActionOperationProjection[];
     selectById(state: ActionOperationStoreSnapshot, address: ActionOperationAddress): ActionOperationProjection | null;
@@ -39,6 +49,8 @@ export type ActionOperationSelectors = Readonly<{
     selectActive(state: ActionOperationStoreSnapshot): readonly ActionOperationProjection[];
     selectForSession(state: ActionOperationStoreSnapshot, address: ActionOperationSessionAddress): readonly ActionOperationProjection[];
     selectInbox(state: ActionOperationStoreSnapshot): readonly InboxActionOperationEntry[];
+    selectActivitySummary(state: ActionOperationStoreSnapshot): ActionOperationActivitySummary;
+    selectInboxSummary(state: ActionOperationStoreSnapshot): InboxActionOperationSummary;
     selectHasUnseenTerminal(state: ActionOperationStoreSnapshot): boolean;
     selectHasAttention(state: ActionOperationStoreSnapshot): boolean;
 }>;
@@ -58,11 +70,39 @@ function compareOperations(a: ActionOperationProjection, b: ActionOperationProje
     return (b.snapshot.settledAt ?? b.snapshot.createdAt) - (a.snapshot.settledAt ?? a.snapshot.createdAt);
 }
 
-function isUnseen(state: ActionOperationStoreSnapshot, operation: ActionOperationProjection): boolean {
+function isUnseen(
+    state: ActionOperationStoreSnapshot,
+    operation: Pick<ActionOperationProjection, 'serverId' | 'snapshot'>,
+): boolean {
     if (!isActionOperationTerminal(operation.snapshot.state)) return false;
     const key = actionOperationAddressKey({ serverId: operation.serverId, operationId: operation.snapshot.operationId });
     const seen = state.seenAtByOperationKey.get(key);
     return seen === undefined || operation.snapshot.revision > seen.revision;
+}
+
+function shouldIncludeOperation(
+    state: ActionOperationStoreSnapshot,
+    key: string,
+    operation: QualifiedActionOperation,
+): boolean {
+    return !(
+        (operation.snapshot.state === 'succeeded'
+            && state.dismissedRecentOperationKeys.has(key)
+            && readFollowUpAttention(state, operation) === null)
+        || (state.unavailableOperationKeys.has(key) && state.dismissedUnavailableOperationKeys.has(key))
+    );
+}
+
+function readOperationObservation(
+    state: ActionOperationStoreSnapshot,
+    key: string,
+    operation: QualifiedActionOperation,
+): ActionOperationObservation {
+    if (state.unavailableOperationKeys.has(key)) return 'unavailable';
+    return state.machineObservationByKey.get(actionOperationMachineAddressKey({
+        serverId: operation.serverId,
+        machineId: operation.snapshot.scope.machineId,
+    })) ?? 'unavailable';
 }
 
 function readFollowUpAttention(
@@ -84,6 +124,10 @@ export function createActionOperationSelectors(): ActionOperationSelectors {
     let previousAll: readonly ActionOperationProjection[] = EMPTY_OPERATIONS;
     let previousActive: readonly ActionOperationProjection[] = EMPTY_OPERATIONS;
     let previousInbox: readonly InboxActionOperationEntry[] = EMPTY_INBOX_OPERATIONS;
+    let previousActivitySummaryState: ActionOperationStoreSnapshot | null = null;
+    let previousActivitySummary: ActionOperationActivitySummary = Object.freeze({ activeCount: 0, hasAttention: false });
+    let previousInboxSummaryState: ActionOperationStoreSnapshot | null = null;
+    let previousInboxSummary: InboxActionOperationSummary = Object.freeze({ count: 0, hasAttention: false });
     const projectionCache = new Map<string, ActionOperationProjection>();
     const sessionCache = new Map<string, readonly ActionOperationProjection[]>();
 
@@ -91,22 +135,12 @@ export function createActionOperationSelectors(): ActionOperationSelectors {
         if (state === previousState) return previousAll;
         const retainedKeys = new Set<string>();
         const next = Array.from(state.operationsByKey.entries())
-            .filter(([key, operation]) => !(
-                (operation.snapshot.state === 'succeeded'
-                    && state.dismissedRecentOperationKeys.has(key)
-                    && readFollowUpAttention(state, operation) === null)
-                || (state.unavailableOperationKeys.has(key) && state.dismissedUnavailableOperationKeys.has(key))
-            ))
+            .filter(([key, operation]) => shouldIncludeOperation(state, key, operation))
             .map(([key, operation]) => {
                 retainedKeys.add(key);
                 const snapshot = operation.snapshot;
                 const isUnavailableProjection = state.unavailableOperationKeys.has(key);
-                const observation = isUnavailableProjection
-                    ? 'unavailable'
-                    : state.machineObservationByKey.get(actionOperationMachineAddressKey({
-                        serverId: operation.serverId,
-                        machineId: snapshot.scope.machineId,
-                    })) ?? 'unavailable';
+                const observation = readOperationObservation(state, key, operation);
                 const followUpAttention = readFollowUpAttention(state, operation);
                 const cached = projectionCache.get(key);
                 if (
@@ -230,6 +264,53 @@ export function createActionOperationSelectors(): ActionOperationSelectors {
         || selectAll(state).some((operation) => operation.followUpAttention !== null)
     );
 
+    const selectActivitySummary = (state: ActionOperationStoreSnapshot): ActionOperationActivitySummary => {
+        if (state === previousActivitySummaryState) return previousActivitySummary;
+        let activeCount = 0;
+        let hasAttention = false;
+        for (const [key, operation] of state.operationsByKey) {
+            if (!shouldIncludeOperation(state, key, operation)) continue;
+            const snapshot = operation.snapshot;
+            if (!isActionOperationTerminal(snapshot.state)) {
+                hasAttention = true;
+                if (readOperationObservation(state, key, operation) === 'available') activeCount += 1;
+                continue;
+            }
+            if (isUnseen(state, operation) || readFollowUpAttention(state, operation) !== null) {
+                hasAttention = true;
+            }
+        }
+        previousActivitySummaryState = state;
+        if (
+            previousActivitySummary.activeCount !== activeCount
+            || previousActivitySummary.hasAttention !== hasAttention
+        ) {
+            previousActivitySummary = Object.freeze({ activeCount, hasAttention });
+        }
+        return previousActivitySummary;
+    };
+
+    const selectInboxSummary = (state: ActionOperationStoreSnapshot): InboxActionOperationSummary => {
+        if (state === previousInboxSummaryState) return previousInboxSummary;
+        let count = 0;
+        for (const [key, operation] of state.operationsByKey) {
+            if (!shouldIncludeOperation(state, key, operation)) continue;
+            const snapshot = operation.snapshot;
+            if (
+                (snapshot.state === 'failed' && isUnseen(state, operation))
+                || (snapshot.state === 'succeeded' && readFollowUpAttention(state, operation) !== null)
+                || (!isActionOperationTerminal(snapshot.state) && state.unavailableOperationKeys.has(key))
+            ) {
+                count += 1;
+            }
+        }
+        previousInboxSummaryState = state;
+        if (previousInboxSummary.count !== count) {
+            previousInboxSummary = Object.freeze({ count, hasAttention: count > 0 });
+        }
+        return previousInboxSummary;
+    };
+
     return {
         selectAll,
         selectById,
@@ -237,6 +318,8 @@ export function createActionOperationSelectors(): ActionOperationSelectors {
         selectActive,
         selectForSession,
         selectInbox,
+        selectActivitySummary,
+        selectInboxSummary,
         selectHasUnseenTerminal,
         selectHasAttention,
     };

@@ -1,13 +1,16 @@
 import { buildCurrentAccountStoredContentCompatibilityHttpHeaders } from '@/api/clientCompatibility/cliClientCompatibility';
 import axios from 'axios';
 import type { HappierService } from '@happier-dev/cli-common/happierRuntime';
+import { selectServingDaemonService } from '@happier-dev/cli-common/systemTasks';
 import { isAuthenticationError } from '@/api/client/httpStatusError';
 import { resolveLoopbackHttpUrl } from '@/api/client/loopbackUrl';
 import type { CliAuthState } from '@/capabilities/cliAuth/types';
 import { configuration } from '@/configuration';
 import { readStoredCredentials, type StoredCredentials } from '@/persistence';
 import { resolveDaemonServiceCliRuntimeFromEnv, type DaemonServiceListEntry } from '@/daemon/service/cli';
-import { resolveInstalledDaemonServiceInventoryForCurrentRelay } from '@/daemon/ownership/daemonServiceInventory';
+import {
+    resolveInstalledDaemonServiceInventoryForCurrentRelay,
+} from '@/daemon/ownership/daemonServiceInventory';
 
 import { promptInput, runCliAction } from './server/commandUtilities';
 
@@ -108,10 +111,18 @@ function resolveRestartArgs(mode: BackgroundServiceFollowUpMode): string[] {
         : ['service', 'restart'];
 }
 
-function renderRestartCommand(mode: BackgroundServiceFollowUpMode): string {
+function restartCommand(mode: BackgroundServiceFollowUpMode): string {
     return mode === 'system'
-        ? '  happier service restart --mode system'
-        : '  happier service restart';
+        ? 'happier service restart --mode system'
+        : 'happier service restart';
+}
+
+function renderRestartCommand(mode: BackgroundServiceFollowUpMode): string {
+    return `  ${restartCommand(mode)}`;
+}
+
+function repairCommand(modes: readonly BackgroundServiceFollowUpMode[] | undefined): string {
+    return modes?.includes('system') ? 'sudo happier service repair --yes' : 'happier service repair --yes';
 }
 
 function hasDuplicateDefaultFollowingModes(
@@ -129,18 +140,16 @@ function hasMissingHomeMetadataDefaultFollowingService(services: readonly Backgr
 }
 
 function renderRepairGuidance(params: Readonly<{ modes?: readonly BackgroundServiceFollowUpMode[] }>): readonly string[] {
-    const requiresSudo = params.modes?.includes('system') ?? false;
     return [
         'Multiple default-following background services are installed. Repair them before restarting a background service for this change:',
-        requiresSudo ? '  sudo happier service repair --yes' : '  happier service repair --yes',
+        `  ${repairCommand(params.modes)}`,
     ];
 }
 
 function renderMissingHomeRepairGuidance(params: Readonly<{ modes?: readonly BackgroundServiceFollowUpMode[] }>): readonly string[] {
-    const requiresSudo = params.modes?.includes('system') ?? false;
     return [
         'Detected default-following background services with missing Happier home metadata. Automatic restart guidance will not replace or remove them; remove the legacy service(s) from the owning installation first:',
-        requiresSudo ? '  sudo happier service repair --yes' : '  happier service repair --yes',
+        `  ${repairCommand(params.modes)}`,
     ];
 }
 
@@ -159,13 +168,15 @@ export async function promptForDefaultFollowingBackgroundServiceRestart(params: 
     runCliAction: (args: string[]) => Promise<void>;
     subject: string;
     modes?: readonly BackgroundServiceFollowUpMode[];
+    /** Replaces the default "so it now follows <subject>" question. */
+    question?: string;
 }>): Promise<boolean> {
     if (!params.interactive) {
         return false;
     }
 
     const answer = String(
-        await params.promptInput(`Restart the background service so it now follows ${params.subject}? [Y/n]: `),
+        await params.promptInput(`${params.question ?? `Restart the background service so it now follows ${params.subject}?`} [Y/n]: `),
     ).trim().toLowerCase();
     const shouldRestart = answer === '' || answer === 'y' || answer === 'yes';
     if (!shouldRestart) {
@@ -212,6 +223,26 @@ function renderManualRestartFollowUp(params: Readonly<{
     return [
         `Restart the background service so it now follows ${params.subject}:`,
         ...resolveRestartModes(params.modes).map(renderRestartCommand),
+    ];
+}
+
+/**
+ * The selected relay already has this home's own pinned background service: it serves that relay,
+ * and the default-following service stands by rather than compete for the per-server lock (its
+ * daemon startup yields — `evaluateDefaultFollowingServiceStartup`). Restarting the default one is
+ * then only how it stops serving the relay the terminal left; it never follows the new one.
+ */
+const STAND_BY_RESTART = 'Restart the default background service so it stops serving the relay you left';
+
+function renderStandingByFollowUp(params: Readonly<{
+    targetServerUrl: string;
+    pinnedServices: readonly DaemonServiceListEntry[];
+}>): readonly string[] {
+    return [
+        `${params.targetServerUrl} has its own background service, so the default background service stands by:`,
+        ...params.pinnedServices.map((service) => `  ${service.label} (${service.releaseChannel}, pinned)`),
+        'To keep the default background service on another relay, select that relay again:',
+        '  happier server use <relay>',
     ];
 }
 
@@ -281,6 +312,8 @@ export async function runDefaultFollowingBackgroundServiceServerChangeFollowUp(p
     authState: CliAuthState;
     log: (message: string) => void;
     services: readonly DaemonServiceListEntry[];
+    /** This home's installed pin selected for the target relay by the shared selector. */
+    pinnedServices?: readonly DaemonServiceListEntry[];
 }>): Promise<void> {
     const modes = resolveInstalledDefaultFollowingDaemonServiceModes(params.services);
     if (modes.length === 0) {
@@ -297,6 +330,32 @@ export async function runDefaultFollowingBackgroundServiceServerChangeFollowUp(p
     if (hasDuplicateDefaultFollowingModes(modes)) {
         for (const line of renderRepairGuidance({ modes })) {
             params.log(line);
+        }
+        return;
+    }
+
+    const pinnedServices = params.pinnedServices ?? [];
+    if (pinnedServices.length > 0) {
+        for (const line of renderStandingByFollowUp({ targetServerUrl: params.targetServerUrl, pinnedServices })) {
+            params.log(line);
+        }
+        const manualRestart = [`${STAND_BY_RESTART}:`, ...modes.map(renderRestartCommand)];
+        if (!params.interactive) {
+            for (const line of manualRestart) params.log(line);
+            return;
+        }
+        try {
+            await promptForDefaultFollowingBackgroundServiceRestart({
+                interactive: params.interactive,
+                promptInput: params.promptInput,
+                runCliAction: params.runCliAction,
+                subject: params.targetServerUrl,
+                modes,
+                question: `${STAND_BY_RESTART}?`,
+            });
+        } catch {
+            params.log('Background service follow-up failed after the primary change was already applied.');
+            for (const line of manualRestart) params.log(line);
         }
         return;
     }
@@ -357,6 +416,20 @@ export async function runDefaultFollowingBackgroundServiceServerChangeFollowUp(p
     }
 }
 
+/** The installed services of the relay the terminal now selects, and this home's pinned ones among them. */
+async function readSelectedRelayServices(): Promise<Readonly<{
+    services: readonly DaemonServiceListEntry[];
+    pinnedServices: readonly DaemonServiceListEntry[];
+}>> {
+    const runtime = resolveDaemonServiceCliRuntimeFromEnv({ processEnv: process.env });
+    const services = await resolveInstalledDaemonServiceInventoryForCurrentRelay(runtime);
+    const serving = selectServingDaemonService(services);
+    return {
+        services,
+        pinnedServices: serving?.targetMode === 'pinned' ? [serving] : [],
+    };
+}
+
 /**
  * Canonical reconciliation for "the active relay just changed".
  *
@@ -369,8 +442,7 @@ export async function runServerSelectionBackgroundServiceFollowUp(params: Readon
     interactive: boolean;
     targetServerUrl: string;
 }>): Promise<void> {
-    const runtime = resolveDaemonServiceCliRuntimeFromEnv({ processEnv: process.env });
-    const services = await resolveInstalledDaemonServiceInventoryForCurrentRelay(runtime);
+    const { services, pinnedServices } = await readSelectedRelayServices();
     if (resolveInstalledDefaultFollowingDaemonServiceModes(services).length === 0) {
         return;
     }
@@ -384,7 +456,33 @@ export async function runServerSelectionBackgroundServiceFollowUp(params: Readon
         authState: credentials ? 'logged_in' : 'logged_out',
         log: console.log,
         services,
+        pinnedServices,
     });
+}
+
+/** The server-selection follow-up for a caller that cannot be prompted (`--json`). */
+export type ServerSelectionBackgroundServiceFollowUp = Readonly<{
+    /** This home's pinned service that serves the selected relay; the default one stands by. */
+    servedByPinnedService: string | null;
+    /** What brings the default-following service in line with the selection. */
+    commands: readonly string[];
+}>;
+
+/**
+ * The same decision as the interactive follow-up, as data: `null` when no default-following
+ * service is installed. Nothing is restarted and no credential is probed.
+ */
+export async function readServerSelectionBackgroundServiceFollowUp(): Promise<ServerSelectionBackgroundServiceFollowUp | null> {
+    const { services, pinnedServices } = await readSelectedRelayServices();
+    const modes = resolveInstalledDefaultFollowingDaemonServiceModes(services);
+    if (modes.length === 0) {
+        return null;
+    }
+    const servedByPinnedService = pinnedServices[0]?.label ?? null;
+    if (hasMissingHomeMetadataDefaultFollowingService(services) || hasDuplicateDefaultFollowingModes(modes)) {
+        return { servedByPinnedService, commands: [repairCommand(modes)] };
+    }
+    return { servedByPinnedService, commands: modes.map(restartCommand) };
 }
 
 /**

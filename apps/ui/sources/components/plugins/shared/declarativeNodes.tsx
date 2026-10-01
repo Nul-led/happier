@@ -40,6 +40,7 @@ import {
     type PluginUiIconDirection,
 } from '@/components/plugins/surfaces/iconToken/resolvePluginUiIconToken';
 import { t } from '@/text';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 /**
  * The single host renderer for the declarative plugin node vocabulary
@@ -278,7 +279,7 @@ function renderActionAffordance(
                 borderWidth: 1,
                 backgroundColor: variantColors.background,
                 borderColor: state.focused ? context.presentationTheme.colors.focus : variantColors.border,
-                opacity: state.disabled ? 0.5 : state.pressed ? 0.8 : 1,
+                opacity: state.disabled ? 0.5 : state.pressed ? motionTokens.press.opacitySubtle : 1,
             })}
         >
             <Text

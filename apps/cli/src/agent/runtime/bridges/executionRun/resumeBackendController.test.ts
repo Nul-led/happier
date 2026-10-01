@@ -350,7 +350,6 @@ describe('resumeBackendControllerForResumableRun', () => {
         executeBoundedRun: async () => undefined,
         send: async () => ({ ok: true }),
         voiceAgentManager,
-        getDepthByCallId: () => null,
       });
 
       (accountSettings.customExecutionRunRuntimeSettings as Record<string, unknown>).mode = 'current-settings';

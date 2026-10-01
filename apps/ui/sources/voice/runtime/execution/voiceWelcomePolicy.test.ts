@@ -105,6 +105,12 @@ function createState(): any {
 
 function createHandle(client: VoiceAgentClient): VoiceAgentHandle {
     return {
+        accountLifetime: {
+            scope: { serverId: 'server-a', accountId: 'account-a' },
+            isCurrent: () => true,
+            onRetire: () => ({ dispose() {} }),
+        },
+        metadataSessionId: 'sys_voice',
         client,
         voiceAgentId: 'run_1',
         backend: 'daemon',

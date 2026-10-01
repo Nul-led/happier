@@ -170,7 +170,7 @@ function createIssueAttachmentTransactionApplier() {
         id: 'acme.fixture/issue',
         pluginId: 'acme.fixture',
         identity: { pluginId: 'acme.fixture', localId: 'issue' },
-        immutableGenerationId: 'generation-1',
+        occurrenceId: 'generation-1',
         definition: {
             id: 'issue',
             title: 'Issue',
@@ -191,7 +191,7 @@ function createHandlers(options: Readonly<{
     return createComposerPresentationHostHandlers({
         owner: {
             identity: { pluginId: 'acme.fixture', localId: 'composer-tools' },
-            immutableGenerationId: 'generation-1',
+            occurrenceId: 'generation-1',
             surfaceInstanceKey: 'mounted-1',
         },
         ...options,
@@ -224,7 +224,7 @@ describe('composer presentation host handlers', () => {
         const handlers = createComposerPresentationHostHandlers({
             owner: {
                 identity: { pluginId: 'acme.fixture', localId: 'composer-tools' },
-                immutableGenerationId: 'generation-1',
+                occurrenceId: 'generation-1',
                 surfaceInstanceKey: 'mounted-1',
             },
             transactionApplier: createIssueAttachmentTransactionApplier(),
@@ -278,7 +278,7 @@ describe('composer presentation host handlers', () => {
         const handlers = createComposerPresentationHostHandlers({
             owner: {
                 identity: { pluginId: 'acme.fixture', localId: 'composer-tools' },
-                immutableGenerationId: 'generation-1',
+                occurrenceId: 'generation-1',
                 surfaceInstanceKey: 'mounted-1',
             },
             transactionApplier: createIssueAttachmentTransactionApplier(),
@@ -333,7 +333,7 @@ describe('composer presentation host handlers', () => {
         const handlers = createComposerPresentationHostHandlers({
             owner: {
                 identity: { pluginId: 'acme.fixture', localId: 'composer-tools' },
-                immutableGenerationId: 'generation-1',
+                occurrenceId: 'generation-1',
                 surfaceInstanceKey: 'mounted-1',
             },
             transactionApplier: createIssueAttachmentTransactionApplier(),
@@ -396,7 +396,7 @@ describe('composer presentation host handlers', () => {
         const handlers = createComposerPresentationHostHandlers({
             owner: {
                 identity: { pluginId: 'acme.fixture', localId: 'composer-tools' },
-                immutableGenerationId: 'generation-1',
+                occurrenceId: 'generation-1',
                 surfaceInstanceKey: 'mounted-1',
             },
             transactionApplier: createIssueAttachmentTransactionApplier(),
@@ -456,7 +456,7 @@ describe('composer presentation host handlers', () => {
         const handlers = createComposerPresentationHostHandlers({
             owner: {
                 identity: { pluginId: 'acme.fixture', localId: 'composer-tools' },
-                immutableGenerationId: 'generation-1',
+                occurrenceId: 'generation-1',
                 surfaceInstanceKey: 'mounted-1',
             },
             transactionApplier: createIssueAttachmentTransactionApplier(),
@@ -507,7 +507,7 @@ describe('composer presentation host handlers', () => {
         const handlers = createComposerPresentationHostHandlers({
             owner: {
                 identity: { pluginId: 'acme.fixture', localId: 'composer-tools' },
-                immutableGenerationId: 'generation-1',
+                occurrenceId: 'generation-1',
                 surfaceInstanceKey: 'mounted-1',
             },
             transactionApplier: createIssueAttachmentTransactionApplier(),
@@ -557,7 +557,7 @@ describe('composer presentation host handlers', () => {
         const makeHandlers = () => createComposerPresentationHostHandlers({
             owner: {
                 identity: { pluginId: 'acme.fixture', localId: 'composer-tools' },
-                immutableGenerationId: 'generation-1',
+                occurrenceId: 'generation-1',
                 surfaceInstanceKey: 'mounted-1',
             },
             transactionApplier: createIssueAttachmentTransactionApplier(),
@@ -631,7 +631,7 @@ describe('composer presentation host handlers', () => {
         const handlers = createComposerPresentationHostHandlers({
             owner: {
                 identity: { pluginId: 'acme.fixture', localId: 'composer-tools' },
-                immutableGenerationId: 'generation-1',
+                occurrenceId: 'generation-1',
                 surfaceInstanceKey: 'mounted-1',
             },
             transactionApplier: createIssueAttachmentTransactionApplier(),
@@ -675,7 +675,7 @@ describe('composer presentation host handlers', () => {
         const handlers = createComposerPresentationHostHandlers({
             owner: {
                 identity: { pluginId: 'acme.fixture', localId: 'composer-tools' },
-                immutableGenerationId: 'generation-1',
+                occurrenceId: 'generation-1',
                 surfaceInstanceKey: 'mounted-1',
             },
             transactionApplier: createIssueAttachmentTransactionApplier(),
@@ -707,7 +707,7 @@ describe('composer presentation host handlers', () => {
         const handlers = createComposerPresentationHostHandlers({
             owner: {
                 identity: { pluginId: 'acme.fixture', localId: 'composer-tools' },
-                immutableGenerationId: 'generation-1',
+                occurrenceId: 'generation-1',
                 surfaceInstanceKey: 'mounted-1',
             },
             transactionApplier: createIssueAttachmentTransactionApplier(),
@@ -747,7 +747,7 @@ describe('composer presentation host handlers', () => {
         const handlers = createComposerPresentationHostHandlers({
             owner: {
                 identity: { pluginId: 'acme.fixture', localId: 'composer-tools' },
-                immutableGenerationId: 'generation-1',
+                occurrenceId: 'generation-1',
                 surfaceInstanceKey: 'mounted-1',
             },
             transactionApplier: createIssueAttachmentTransactionApplier(),
@@ -773,7 +773,7 @@ describe('composer presentation host handlers', () => {
         const handlers = createComposerPresentationHostHandlers({
             owner: {
                 identity: { pluginId: 'acme.fixture', localId: 'composer-tools' },
-                immutableGenerationId: 'generation-1',
+                occurrenceId: 'generation-1',
                 surfaceInstanceKey: 'mounted-1',
             },
             transactionApplier: createIssueAttachmentTransactionApplier(),
@@ -795,7 +795,7 @@ describe('composer presentation host handlers', () => {
         const handlers = createComposerPresentationHostHandlers({
             owner: {
                 identity: { pluginId: 'acme.fixture', localId: 'composer-tools' },
-                immutableGenerationId: 'generation-1',
+                occurrenceId: 'generation-1',
                 surfaceInstanceKey: 'mounted-1',
             },
             transactionApplier: createIssueAttachmentTransactionApplier(),
@@ -828,7 +828,7 @@ describe('composer presentation host handlers', () => {
         const handlers = createComposerPresentationHostHandlers({
             owner: {
                 identity: { pluginId: 'acme.fixture', localId: 'composer-tools' },
-                immutableGenerationId: 'generation-1',
+                occurrenceId: 'generation-1',
                 surfaceInstanceKey: 'mounted-1',
             },
             transactionApplier: createIssueAttachmentTransactionApplier(),
@@ -1076,7 +1076,7 @@ describe('composer presentation host handlers', () => {
         const handlers = createComposerPresentationHostHandlers({
             owner: {
                 identity: { pluginId: 'acme.fixture', localId: 'composer-tools' },
-                immutableGenerationId: 'generation-1',
+                occurrenceId: 'generation-1',
                 surfaceInstanceKey: 'mounted-1',
             },
             publishComposerSnapshot: (event) => published.push(event),
@@ -1124,7 +1124,7 @@ describe('composer presentation host handlers', () => {
         const handlers = createComposerPresentationHostHandlers({
             owner: {
                 identity: { pluginId: 'acme.fixture', localId: 'composer-tools' },
-                immutableGenerationId: 'generation-1',
+                occurrenceId: 'generation-1',
                 surfaceInstanceKey: 'mounted-1',
             },
             publishComposerSnapshot: (event) => published.push(event),
@@ -1188,7 +1188,7 @@ describe('composer presentation host handlers', () => {
         const handlers = createComposerPresentationHostHandlers({
             owner: {
                 identity: { pluginId: 'acme.fixture', localId: 'composer-tools' },
-                immutableGenerationId: 'generation-1',
+                occurrenceId: 'generation-1',
                 surfaceInstanceKey: 'mounted-1',
             },
             transactionApplier: createIssueAttachmentTransactionApplier(),

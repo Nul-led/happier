@@ -12,6 +12,8 @@ export type TerminalAttachPlan =
       type: 'windows_console_host';
       pid: number;
     }
+  | { type: 'zellij'; sessionName: string; paneId?: string }
+  | { type: 'herdr'; sessionName: string; socketPath: string; terminalId: string }
   | {
       type: 'tmux';
       sessionName: string;
@@ -84,6 +86,23 @@ export function createTerminalAttachPlan(params: {
       type: 'windows_console_host',
       pid,
     };
+  }
+
+  if (params.terminal.mode === 'zellij') {
+    const sessionName = params.terminal.zellij?.sessionName?.trim();
+    if (!sessionName) return { type: 'not-attachable', reason: 'Session does not include a Zellij session name.' };
+    const paneId = params.terminal.zellij?.paneId?.trim();
+    return { type: 'zellij', sessionName, ...(paneId ? { paneId } : {}) };
+  }
+
+  if (params.terminal.mode === 'herdr') {
+    const sessionName = params.terminal.herdr?.sessionName?.trim();
+    const socketPath = params.terminal.herdr?.socketPath?.trim();
+    const terminalId = params.terminal.herdr?.terminalId?.trim();
+    if (!sessionName || !socketPath || !terminalId) {
+      return { type: 'not-attachable', reason: 'Session does not include a complete Herdr terminal identity.' };
+    }
+    return { type: 'herdr', sessionName, socketPath, terminalId };
   }
 
   const target = params.terminal.tmux?.target;

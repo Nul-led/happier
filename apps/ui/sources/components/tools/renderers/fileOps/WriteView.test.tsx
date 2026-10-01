@@ -1,7 +1,7 @@
 import React from 'react';
 import { beforeEach, describe, expect, it } from 'vitest';
 import renderer from 'react-test-renderer';
-import type { ToolCall } from '@/sync/domains/messages/messageTypes';
+import type { ToolCall } from "@happier-dev/session-core/messages";
 import { createPartialStorageModuleMock, renderScreen } from '@/dev/testkit';
 import { collectHostText, makeToolCall, makeToolViewProps } from '@/dev/testkit';
 import {

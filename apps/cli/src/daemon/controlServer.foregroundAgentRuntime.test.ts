@@ -23,7 +23,14 @@ describe('daemon control server: foreground Agent runtime admission', () => {
           pluginVersion: '1.0.0',
           agentId: 'codex',
           backendId: 'codex',
-          generation: 'generation-1',
+          occurrenceId: 'occurrence:happier.agent.codex:1',
+          sourceCustody: {
+            kind: 'bundled_first_party' as const,
+            packagedRuntime: {
+              kind: 'cli_version_root' as const,
+              versionRootId: 'cli-version-root-1',
+            },
+          },
         },
       },
       launchPolicy: {
@@ -91,7 +98,14 @@ describe('daemon control server: foreground Agent runtime admission', () => {
       foregroundPid: 1234,
       pluginId: 'happier.agent.codex',
       agentId: 'codex',
-      generation: 'generation-1',
+      occurrenceId: 'occurrence:happier.agent.codex:1',
+      sourceCustody: {
+        kind: 'bundled_first_party' as const,
+        packagedRuntime: {
+          kind: 'cli_version_root' as const,
+          versionRootId: 'cli-version-root-1',
+        },
+      },
       capability: 'scoped-capability',
       foregroundSatisfiedProfileSecretRequirementNames: [],
     } as const;

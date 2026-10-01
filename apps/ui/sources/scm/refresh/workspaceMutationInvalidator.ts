@@ -1,4 +1,4 @@
-import type { NormalizedMessage } from '@/sync/typesRaw';
+import type { NormalizedMessage } from "@happier-dev/session-core/raw";
 
 import { extractWorkspaceMutationsFromNormalizedMessages } from './workspaceMutationDetection/extractWorkspaceMutations';
 

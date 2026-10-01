@@ -140,6 +140,12 @@ export type DaemonUsageLimitRecoveryFieldMutation = RegisteredSessionStateFieldM
     deliveryClass: 'durable_required';
 }>;
 
+export type DaemonWorkStateFieldMutation = RegisteredSessionStateFieldMutationV1 & Readonly<{
+    fieldId: 'runtime.workState';
+    source: 'daemon';
+    deliveryClass: 'durable_required';
+}>;
+
 export type SessionClientDurableMutationAttemptReason =
     | 'delivery_not_confirmed'
     | 'delivery_error'

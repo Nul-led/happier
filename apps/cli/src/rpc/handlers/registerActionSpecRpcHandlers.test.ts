@@ -50,6 +50,25 @@ function createRpcHarness() {
 }
 
 describe('ActionSpec-derived RPC registrar', () => {
+    it('keeps only the validated committed spawn outcome in source-key waiting failures', async () => {
+        const module = await import('./registerActionSpecRpcHandlers');
+        const source = { type: 'success', disposition: 'created', sessionId: 'c111111111111111111111111',
+            executionTarget: { serverId: 'home', machineId: 'machine' },
+            organizationPlacement: { folderId: null, tagIds: [] }, initialInput: { status: 'notRequested' } };
+        const failure = { ok: false as const, errorCode: 'session_follow_source_key_preparation_waiting',
+            error: 'session_follow_source_key_preparation_waiting', details: {
+                status: 'waiting', reason: 'source_key_unavailable', edgeCommitted: true, source,
+                secret: 'must-not-cross-the-boundary',
+            } };
+        expect(module.unwrapActionResultForRpc('session.spawn_new', failure)).toEqual({
+            ...failure, details: { status: 'waiting', reason: 'source_key_unavailable', edgeCommitted: true, source },
+        });
+        expect(module.unwrapActionResultForRpc('session.spawn_new', { ...failure,
+            details: { ...failure.details, source: { ...source, secret: 'invalid-spawn-dto' } },
+        })).not.toHaveProperty('details');
+        expect(module.unwrapActionResultForRpc('memory.search', failure)).not.toHaveProperty('details');
+    });
+
     it('lets one compatibility seam reject an alias request before canonical Action dispatch', async () => {
         const module = await import('./registerActionSpecRpcHandlers');
         const execute = vi.fn(async () => ({ ok: true as const, result: null }));
@@ -344,6 +363,51 @@ describe('ActionSpec-derived RPC registrar', () => {
                 },
             },
         ]);
+    });
+
+    it('keeps raw direct Action requests unchanged when targeted requests are enabled', async () => {
+        const module = await import('./registerActionSpecRpcHandlers');
+        const execute = vi.fn(async () => ({ ok: true as const, result: { state: 'paused' } }));
+        const { handlers, rpcHandlerManager } = createRpcHarness();
+        module.registerActionSpecRpcHandlers({
+            rpcHandlerManager,
+            actionExecutor: { execute },
+            targetMachineId: 'machine-1',
+            actionSpecs: [{
+                id: 'workflow.run.pause',
+                surfaces: { rpc: true },
+                bindings: { rpcMethod: 'workflow.run.pause' },
+            }],
+        });
+        const input = {
+            runId: '11111111-1111-4111-8111-111111111111',
+            expectedRevision: 2,
+        };
+
+        await expect(handlers.get('workflow.run.pause')?.(input)).resolves.toEqual({ state: 'paused' });
+        expect(execute).toHaveBeenCalledWith(
+            'workflow.run.pause',
+            input,
+            { surface: 'rpc', authority: 'account_automation' },
+        );
+    });
+
+    it('opens the targeted envelope origin session into the execution context', async () => {
+        const module = await import('./registerActionSpecRpcHandlers');
+        const execute = vi.fn(async () => ({ ok: true as const, result: { admission: 'created' } }));
+        const { handlers, rpcHandlerManager } = createRpcHarness();
+        module.registerActionSpecRpcHandlers({
+            rpcHandlerManager,
+            actionExecutor: { execute },
+            targetMachineId: 'machine-1',
+            actionSpecs: [{ id: 'workflow.run.start', surfaces: { rpc: true }, bindings: { rpcMethod: 'workflow.run.start' } }],
+        });
+        const input = { runId: '11111111-1111-4111-8111-111111111111' };
+        const target = { kind: 'machine' as const, machineId: 'machine-1' };
+
+        await handlers.get('workflow.run.start')?.({ v: 1, kind: 'targeted_action_rpc', input, target, defaultSessionId: 'session-a' });
+        expect(execute).toHaveBeenCalledWith('workflow.run.start', input,
+            expect.objectContaining({ defaultSessionId: 'session-a', externalActionTarget: target }));
     });
 
     it('registers new ActionSpec rows matched by RPC method scope without action-id catalog updates', async () => {

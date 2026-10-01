@@ -8,6 +8,7 @@ import {
 
 import type { TransferAvailabilitySnapshot } from '../availability/transferAvailability';
 import { resolveTransferAvailability } from '../availability/transferAvailability';
+import { isIrohMachineCarrierFeatureEnabled } from './resolveMachineCarrierPreselection';
 import type { TransferRouteKind } from './transferRouteKinds';
 
 export type ResolveTransferRouteDecisionInput = Readonly<{
@@ -107,7 +108,11 @@ export function resolveTransferRouteDecision(
 
     const preferredRouteKinds = input.preferredRouteKinds ?? DEFAULT_ROUTE_PREFERENCE_ORDER;
     for (const routeKind of preferredRouteKinds) {
-        if (routeKind === 'iroh_peer' && resolveTransferPeerRoute({ routeKind, availability }) === 'iroh_peer') {
+        if (
+            routeKind === 'iroh_peer'
+            && isIrohMachineCarrierFeatureEnabled(input.serverFeatures)
+            && resolveTransferPeerRoute({ routeKind, availability }) === 'iroh_peer'
+        ) {
             return {
                 kind: 'selected',
                 preferredRouteKind: 'iroh_peer',

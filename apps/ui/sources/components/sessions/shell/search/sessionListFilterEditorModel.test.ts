@@ -89,6 +89,60 @@ describe('sessionListFilterEditorModel', () => {
         }
     });
 
+    it('offers Archived as a destination at the end of the scope choices, never as a selected facet', () => {
+        const input = {
+            filters: createSessionListViewFilterDefaults({ homeServerIds: ['home-a'] }),
+            includeInactive: true,
+            labels,
+            scopesAvailable: {
+                my_work: true,
+                assigned_to_me: true,
+                following: true,
+                involving_me: true,
+                all_accessible: true,
+            },
+            homes: [{ serverId: 'home-a', label: 'Home A' }],
+            audiences: [],
+            tags: [],
+            sourceAvailable: false,
+        } as const;
+        const model = buildSessionListFilterEditorModel({ ...input, archivedLabel: 'Archived' });
+        const show = model.rootStep.sections.find((section) => section.id === 'show');
+        expect(show?.kind).toBe('static');
+        if (show?.kind !== 'static') return;
+        expect(show.options.at(-1)).toMatchObject({ id: 'destination:archived', label: 'Archived' });
+        expect(model.selection.selectedIds.has('destination:archived')).toBe(false);
+        // The archived corpus itself offers no way back into archived.
+        const archivedCorpus = buildSessionListFilterEditorModel(input);
+        const archivedShow = archivedCorpus.rootStep.sections.find((section) => section.id === 'show');
+        expect(archivedShow?.kind === 'static' && archivedShow.options.some((option) => option.id === 'destination:archived')).toBe(false);
+    });
+
+    it('offers the Homes facet only when there is more than one Home to choose between', () => {
+        const base = {
+            includeInactive: true,
+            labels,
+            scopesAvailable: {
+                my_work: true, assigned_to_me: true, following: true, involving_me: true, all_accessible: true,
+            },
+            audiences: [],
+            tags: [],
+            sourceAvailable: false,
+        } as const;
+        const single = buildSessionListFilterEditorModel({
+            ...base,
+            filters: createSessionListViewFilterDefaults({ homeServerIds: ['home-a'] }),
+            homes: [{ serverId: 'home-a', label: 'Home A' }],
+        });
+        expect(single.rootStep.sections.some((section) => section.id === 'homes')).toBe(false);
+        const two = buildSessionListFilterEditorModel({
+            ...base,
+            filters: createSessionListViewFilterDefaults({ homeServerIds: ['home-a', 'home-b'] }),
+            homes: [{ serverId: 'home-a', label: 'Home A' }, { serverId: 'home-b', label: 'Home B' }],
+        });
+        expect(two.rootStep.sections.some((section) => section.id === 'homes')).toBe(true);
+    });
+
     it('keeps Source choices enabled while omitting unavailable server-query scopes', () => {
         const model = buildSessionListFilterEditorModel({
             filters: createSessionListViewFilterDefaults({ homeServerIds: ['home-a'] }),

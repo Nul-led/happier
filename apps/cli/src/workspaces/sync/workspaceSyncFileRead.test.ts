@@ -1,10 +1,10 @@
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, rename, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { readWorkspaceSyncFileAtRoot } from './workspaceSyncFileRead';
+import { observeWorkspaceSyncEntryAtRoot, readWorkspaceSyncFileAtRoot } from './workspaceSyncFileRead';
 
 describe('readWorkspaceSyncFileAtRoot', () => {
   afterEach(() => {
@@ -178,5 +178,84 @@ describe('readWorkspaceSyncFileAtRoot', () => {
       maxBytes: 1024,
       assertCurrentAuthority,
     });
+  });
+});
+
+describe('observeWorkspaceSyncEntryAtRoot', () => {
+  it.skipIf(process.platform !== 'linux')('does not authorize a directory containing an unrepresentable filename', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'workspace-sync-observe-invalid-name-'));
+    await mkdir(join(root, 'tree'));
+    const invalidPath = Buffer.concat([Buffer.from(join(root, 'tree') + '/'), Buffer.from([0xff])]);
+    try {
+      await writeFile(invalidPath, 'unreviewed');
+      await expect(observeWorkspaceSyncEntryAtRoot({ rootPath: root, relativePath: 'tree' }))
+        .rejects.toMatchObject({ code: 'workspace_file_unsupported' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform !== 'linux')('does not authorize an unrepresentable symlink target', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'workspace-sync-observe-invalid-link-'));
+    try {
+      await symlink(Buffer.from([0xff]), join(root, 'link'));
+      await expect(observeWorkspaceSyncEntryAtRoot({ rootPath: root, relativePath: 'link' }))
+        .rejects.toMatchObject({ code: 'workspace_file_unsupported' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform !== 'linux')('uses canonical JSON for a valid Unicode and escaped child name', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'workspace-sync-observe-unicode-'));
+    const name = 'café"\\\n.txt';
+    try {
+      await mkdir(join(root, 'tree'));
+      await writeFile(join(root, 'tree', name), 'v');
+      const child = {
+        kind: 'file' as const,
+        digest: createHash('sha1').update('v').digest('hex'),
+        executable: false,
+        size: 1,
+      };
+      const fingerprint = createHash('sha256').update(JSON.stringify({ v: 1, entries: [[name, child]] })).digest('hex');
+      await expect(observeWorkspaceSyncEntryAtRoot({ rootPath: root, relativePath: 'tree' }))
+        .resolves.toEqual({ kind: 'directory', fingerprint });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform !== 'linux')('observes full binary files independently of preview bounds and executable semantics', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'workspace-sync-observe-'));
+    const bytes = Buffer.alloc(2 * 1024 * 1024 + 17, 0xa5);
+    const path = join(root, 'large.bin');
+    await writeFile(path, bytes);
+    await chmod(path, 0o755);
+
+    await expect(observeWorkspaceSyncEntryAtRoot({ rootPath: root, relativePath: 'large.bin' })).resolves.toEqual({
+      kind: 'file',
+      digest: createHash('sha1').update(bytes).digest('hex'),
+      executable: true,
+      size: bytes.byteLength,
+    });
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it.skipIf(process.platform !== 'linux')('binds symlink targets and every directory child into the complete fingerprint', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'workspace-sync-observe-tree-'));
+    await mkdir(join(root, 'tree'));
+    await writeFile(join(root, 'tree', 'a.txt'), 'a');
+    await symlink('a.txt', join(root, 'tree', 'link'));
+    const first = await observeWorkspaceSyncEntryAtRoot({ rootPath: root, relativePath: 'tree' });
+    await writeFile(join(root, 'tree', 'b.txt'), 'b');
+    const second = await observeWorkspaceSyncEntryAtRoot({ rootPath: root, relativePath: 'tree' });
+
+    expect(first).toMatchObject({ kind: 'directory' });
+    expect(second).toMatchObject({ kind: 'directory' });
+    expect(second).not.toEqual(first);
+    await expect(observeWorkspaceSyncEntryAtRoot({ rootPath: root, relativePath: 'tree/link' }))
+      .resolves.toEqual({ kind: 'symlink', target: 'a.txt' });
+    await rm(root, { recursive: true, force: true });
   });
 });

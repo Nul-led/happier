@@ -10,7 +10,11 @@ import {
 
 import type { LocalServiceLaunchTarget } from '@/sync/domains/local/services/launch';
 import { randomUUID } from '@/platform/randomUUID';
+import { publishPresentationNotice } from '@/components/sessions/presentation/presentationNotices';
+import { resolveReasonCopy } from '@/sync/domains/surfaces/copy';
+import { t } from '@/text';
 import { setClipboardStringSafe } from '@/utils/ui/clipboard';
+import { readLocalServiceActionOutcome } from './localServiceActionOutcome';
 
 function normalizeNonEmptyString(value: string | null | undefined): string | undefined {
     if (typeof value !== 'string') return undefined;
@@ -77,11 +81,16 @@ export function buildDetectedLocalServiceForgetRequest(input: Readonly<{
     sessionId?: string | null;
     workspaceId?: string | null;
     requestId?: string;
+    undoKey?: string;
 }>): LocalServiceActionRequestV1 {
-    return buildInventoryEntryActionRequest({
-        ...input,
-        action: 'forget',
-    });
+    return {
+        ...buildInventoryEntryActionRequest({
+            ...input,
+            inventoryEntryId: input.undoKey ?? input.inventoryEntryId,
+            action: 'forget',
+        }),
+        ...(input.undoKey ? { undoKey: input.undoKey } : {}),
+    };
 }
 
 export function buildLocalServiceCopyUrlRequest(input: Readonly<{
@@ -183,7 +192,7 @@ export function useDetectedLocalServiceForgetAction(
             if (target.source !== 'inventory_entry' || !inventoryEntryId) {
                 return undefined;
             }
-            return await runtimeActionExecute({
+            const request = {
                 actionId: 'localServices.actions.forget',
                 input: buildDetectedLocalServiceForgetRequest({
                     inventoryEntryId,
@@ -196,7 +205,49 @@ export function useDetectedLocalServiceForgetAction(
                     ...(serverId ? { serverId } : {}),
                     surface: 'ui',
                 },
-            });
+            } satisfies Parameters<RuntimeActionExecute>[0];
+            const result = await runtimeActionExecute(request);
+            const parsed = LocalServiceActionResultV1Schema.safeParse(result);
+            if (parsed.success && parsed.data.status === 'succeeded' && parsed.data.undoKey) {
+                const undoKey = parsed.data.undoKey;
+                const noticeKey = `local-service-forget:${serverId ?? ''}:${machineId}:${undoKey}`;
+                publishPresentationNotice({
+                    key: noticeKey,
+                    message: t('localServices.actions.hiddenNotice'),
+                    severity: 'info',
+                    undo: {
+                        label: t('sessionBoard.companion.actions.undo'),
+                        run: async () => {
+                            let reasonCode: string | null = null;
+                            let result: unknown;
+                            try {
+                                result = await runtimeActionExecute({
+                                    ...request,
+                                    input: buildDetectedLocalServiceForgetRequest({
+                                        inventoryEntryId, machineId,
+                                        sessionId: sessionId ?? target.sessionId,
+                                        workspaceId: workspaceId ?? target.workspaceId,
+                                        undoKey,
+                                    }),
+                                });
+                                const receipt = LocalServiceActionResultV1Schema.safeParse(result);
+                                if (receipt.success && receipt.data.status === 'succeeded') return result;
+                                const outcome = readLocalServiceActionOutcome(result);
+                                reasonCode = outcome.kind === 'failed' ? outcome.reasonCode : null;
+                            } catch {
+                                // Transport failure is visible through the same notice owner.
+                            }
+                            publishPresentationNotice({
+                                key: `${noticeKey}:undo-failed`,
+                                message: resolveReasonCopy({ reasonCode, kind: 'localServiceAction' }).body,
+                                severity: 'error',
+                            });
+                            return result;
+                        },
+                    },
+                });
+            }
+            return result;
         };
     }, [machineId, runtimeActionExecute, serverId, sessionId, workspaceId]);
 }

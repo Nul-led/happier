@@ -1,21 +1,26 @@
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
 import { deleteSessionOrganizationFolder as deleteSessionOrganizationFolderApi } from '@/sync/api/session/sessionOrganizationApi';
 import { getStorage } from '@/sync/domains/state/storageStore';
-import type { DeleteSessionOrganizationFolderRequest } from '@happier-dev/protocol';
+import type { DeleteSessionOrganizationFolderRequest, DeleteSessionOrganizationFolderResponse } from '@happier-dev/protocol';
 
 export async function deleteSessionFolder(params: Readonly<{
     credentials: AuthCredentials;
     serverId: string;
     serverUrl?: string;
+    requestAtEndpoint?: (path: string, init?: RequestInit) => Promise<Response>;
+    assertCurrent?: () => void;
     request: DeleteSessionOrganizationFolderRequest;
-}>): Promise<void> {
+}>): Promise<DeleteSessionOrganizationFolderResponse> {
+    params.assertCurrent?.();
     const recordId = getStorage().getState().deleteSessionOrganizationFolderOptimistic(params.serverId, params.request.folderId);
     try {
         const response = await deleteSessionOrganizationFolderApi({
             credentials: params.credentials,
             serverUrl: params.serverUrl,
+            requestAtEndpoint: params.requestAtEndpoint,
             request: params.request,
         });
+        params.assertCurrent?.();
         getStorage().getState().commitSessionOrganizationOptimistic(recordId);
         for (const folderId of response.deletedFolderIds) {
             const reconcileRecordId = getStorage().getState().deleteSessionOrganizationFolderOptimistic(params.serverId, folderId);
@@ -28,8 +33,12 @@ export async function deleteSessionFolder(params: Readonly<{
                 response.assignmentTargetFolderId,
             );
         }
+        return response;
     } catch (error) {
-        getStorage().getState().rollbackSessionOrganizationOptimistic(recordId);
+        try {
+            params.assertCurrent?.();
+            getStorage().getState().rollbackSessionOrganizationOptimistic(recordId);
+        } catch { /* The retired Account owns its optimistic record. */ }
         throw error;
     }
 }

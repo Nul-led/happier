@@ -2,7 +2,7 @@ import { join, posix } from 'node:path';
 
 import {
     PluginHostedWebSecurityPolicyV1Schema,
-    type PluginUiArtifactsManifestEntryV1,
+    type PluginUiHostedStaticArtifactV2,
 } from '@happier-dev/protocol/plugins/ui';
 
 import { GENERATED_PLUGIN_UI_ARTIFACTS_ROOT_RELATIVE_PATH } from '@/plugins/install/ui/generatedArtifacts';
@@ -17,7 +17,6 @@ export const HOSTED_WEB_UI_ARTIFACTS_ROOT_RELATIVE_PATH = GENERATED_PLUGIN_UI_AR
 
 export type HostedWebStaticAssetLifecycleSourceDiagnosticCode =
     | 'hosted_web_static_artifact_missing'
-    | 'hosted_web_static_artifact_platform_mismatch'
     | 'hosted_web_static_artifact_asset_root_invalid'
     | 'hosted_web_static_asset_plugin_root_unavailable';
 
@@ -68,7 +67,7 @@ function resolveGeneratedRendererTitle(input: Readonly<{
 function resolveGeneratedHostedWebEntry(
     renderer: ResolvedUiRendererV2Contribution,
 ): Readonly<{
-    entry: PluginUiArtifactsManifestEntryV1;
+    entry: PluginUiHostedStaticArtifactV2;
     assetRootId: string;
 }> | null {
     const definition = renderer.definition;
@@ -77,10 +76,8 @@ function resolveGeneratedHostedWebEntry(
     }
     const artifactId = definition.source.artifact;
     const entry = renderer.generatedUiArtifactsManifest?.entries.find((candidate) => (
-        candidate.contributionId === artifactId
-        && candidate.tier === 'hostedWeb'
-        && candidate.platform === 'web'
-    ));
+        candidate.artifactId === artifactId && candidate.tier === 'hostedWeb'
+    )) as PluginUiHostedStaticArtifactV2 | undefined;
     if (!entry) return null;
     const assetRootId = posix.dirname(entry.entry);
     if (
@@ -124,20 +121,11 @@ export async function resolveHostedWebStaticAssetLifecycleSource(input: Readonly
             continue;
         }
         const matchingEntries = manifest?.entries.filter((entry) => (
-            entry.contributionId === artifactId
-            && entry.tier === 'hostedWeb'
+            entry.artifactId === artifactId && entry.tier === 'hostedWeb'
         )) ?? [];
         if (matchingEntries.length === 0) {
             diagnostics.push(diagnostic({
                 code: 'hosted_web_static_artifact_missing',
-                pluginId,
-                contributionId,
-            }));
-            continue;
-        }
-        if (!matchingEntries.some((entry) => entry.platform === 'web')) {
-            diagnostics.push(diagnostic({
-                code: 'hosted_web_static_artifact_platform_mismatch',
                 pluginId,
                 contributionId,
             }));
@@ -155,7 +143,6 @@ export async function resolveHostedWebStaticAssetLifecycleSource(input: Readonly
         contributions.push(Object.freeze({
             pluginId,
             contributionId,
-            manifestContributionId: artifactId,
             sessionId: input.sessionId,
             machineId: input.machineId,
             title: resolveGeneratedRendererTitle({

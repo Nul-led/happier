@@ -89,6 +89,25 @@ describe('provider account usage store', () => {
         vi.useRealTimers();
     });
 
+    it('retains a valid subscription when a newer quota observation has no subscription result', async () => {
+        const module = await loadStoreModule();
+        expect(module).not.toBeNull();
+        const store = module!.createProviderAccountUsageStore();
+        const previous = createSnapshot({
+            subscription: {
+                status: 'subscribed', renewal: 'off', observedAtMs: 900,
+                staleAfterMs: 60_000, currentPeriodEndAtMs: 1_800_000_000_000,
+            },
+        });
+        store.recordSnapshot(previous);
+        store.recordSnapshot(createSnapshot({
+            fetchedAtMs: 2_000,
+            observedAtMs: 2_000,
+            subscription: undefined,
+        }));
+        expect(store.resolveRecordId(previous.recordId)?.subscription).toEqual(previous.subscription);
+    });
+
     it('uses the typed status as the only mutation-acceptance authority', async () => {
         const module = await loadStoreModule();
         expect(module).not.toBeNull();

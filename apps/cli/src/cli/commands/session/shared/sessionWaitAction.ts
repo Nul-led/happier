@@ -29,7 +29,7 @@ export async function executeSessionWaitAction(params: Readonly<{
   return normalizeActionExecuteResult(await params.executor.execute(
     'session.wait.idle',
     { sessionId: params.sessionId, timeoutSeconds: params.timeoutSeconds },
-    { surface: 'cli', authority: 'present_user', defaultSessionId: null },
+    { surface: 'cli', defaultSessionId: null },
   ));
 }
 

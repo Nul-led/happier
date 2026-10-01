@@ -1,4 +1,4 @@
-import { isAuthoritativeAutomationRunCancellationCauseV1 } from '@happier-dev/protocol';
+import { isAuthoritativeAutomationRunCancellationCauseV1 } from '@happier-dev/protocol/plugins/events/hostReferencesV1';
 
 import type { Update } from '@/api/types';
 import { abortAutomationRunForAuthoritativeCancellation } from './automationRunCancellation';
@@ -7,9 +7,10 @@ export type ActiveAutomationRun = Readonly<{
   runId: string;
   attempt: number;
   controller?: AbortController;
+  refreshReviewHolds?: () => void;
 }>;
 
-export type AutomationRunInvalidationAction = 'none' | 'abort' | 'authoritative-cancellation';
+export type AutomationRunInvalidationAction = 'none' | 'abort' | 'authoritative-cancellation' | 'review-resolved';
 
 type AutomationRunInvalidation = Readonly<{
   runId: string;
@@ -57,6 +58,17 @@ export function getAutomationRunInvalidationAction(params: Readonly<{
     return 'none';
   }
 
+  const body = params.update.body;
+  if (body.t === 'automation-run-updated' && (body.workflowControl === 'cancel_requested' || body.workflowControl === 'review_resolved')) {
+    // A targeted control hint belongs only to the named claim. Stale hints
+    // cannot cancel or invalidate a newer same-machine reclaim.
+    return body.targetMachineId === params.machineId
+      && body.machineId === params.machineId
+      && body.attempt === params.active.attempt
+      ? body.workflowControl === 'review_resolved' ? 'review-resolved' : 'authoritative-cancellation'
+      : 'none';
+  }
+
   const stateIsCurrent = invalidation.state === 'claimed' || invalidation.state === 'running';
   const machineIsCurrent = invalidation.machineId === params.machineId;
   // Older Run updates and the bounded lifecycle Host Event omit the attempt.
@@ -88,6 +100,10 @@ export function invalidateActiveAutomationRun(params: Readonly<{
   machineId: string;
 }>): AutomationRunInvalidationAction {
   const action = getAutomationRunInvalidationAction(params);
+  if (action === 'review-resolved') {
+    params.active?.refreshReviewHolds?.();
+    return action;
+  }
   const controller = params.active?.controller;
   if (!controller) return action;
   if (action === 'authoritative-cancellation') {

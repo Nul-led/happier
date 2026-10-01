@@ -1,27 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { encodeBase64 } from '@happier-dev/protocol';
-import { RPC_ERROR_CODES } from '@happier-dev/protocol/rpc';
+import { RPC_ERROR_CODES, RPC_METHODS } from '@happier-dev/protocol/rpc';
 import { createRpcCallError, RpcError } from '@happier-dev/protocol/rpcErrors';
+import { storage } from '@/sync/domains/state/storage';
+import { settingsDefaults } from '@/sync/domains/settings/settings';
+import { createMachineFixture } from '@/dev/testkit/fixtures/machineFixtures';
+import { saveAccountSettings } from '@/sync/domains/state/accountSettingsPersistence';
 
 const machineRpcWithServerScopeMock = vi.hoisted(() => vi.fn());
-const storageState = vi.hoisted(() => ({
-    value: {
-        machines: {},
-    },
-}));
 
 vi.mock('@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc', () => ({
     machineRpcWithServerScope: machineRpcWithServerScopeMock,
 }));
 
-vi.mock('@/sync/domains/state/storage', async () => {
-    const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
-    return createStorageModuleStub({
-        storage: {
-            getState: () => storageState.value,
-        },
-    });
-});
 
 const directSource = {
     kind: 'codexHome' as const,
@@ -120,7 +111,24 @@ const materializeStartResponse = {
 describe('machine direct sessions ops server-scoped routing', () => {
     beforeEach(() => {
         machineRpcWithServerScopeMock.mockReset();
-        storageState.value = { machines: {} };
+        storage.setState({ machines: {}, settings: { ...settingsDefaults }, settingsScope: null });
+    });
+
+    it('executes Browse discovery through the same released-daemon compatibility owner', async () => {
+        machineRpcWithServerScopeMock
+            .mockRejectedValueOnce(new RpcError('Method not found', RPC_ERROR_CODES.METHOD_NOT_FOUND))
+            .mockResolvedValueOnce({ ok: true, candidates: [], nextCursor: null });
+        const { executeExternalSessionBrowseAction } = await import('./actions/externalSessionBrowseAction');
+        const result = await executeExternalSessionBrowseAction({
+            actionId: 'sessions.external.candidates.list',
+            input: { machineId: 'machine-1', agentId: 'codex', source: directSource },
+            context: { surface: 'agent', serverId: 'home-b', authority: 'account_automation' },
+        });
+        expect(result).toEqual({ ok: true, result: { ok: true, candidates: [], nextCursor: null } });
+        expect(machineRpcWithServerScopeMock.mock.calls[1]?.[0]).toMatchObject({
+            serverId: 'home-b', method: RPC_METHODS.DAEMON_DIRECT_SESSIONS_CANDIDATES_LIST_LEGACY,
+            payload: { machineId: 'machine-1', providerId: 'codex', source: directSource },
+        });
     });
 
     it('routes direct session candidate listing through server-scoped machine rpc', async () => {
@@ -502,10 +510,10 @@ describe('machine direct sessions ops server-scoped routing', () => {
             remoteSessionId: 'vendor-session-1',
             titleHint: 'Existing Codex Session',
             directoryHint: '/tmp/worktree',
-            codexBackendMode: 'appServer',
+            linkData: { codexBackendMode: 'appServer' },
             runtimeDescriptorV1: runtimeDescriptor,
             source: directSource,
-        } as any, { serverId: 'server-a' });
+        }, { serverId: 'server-a' });
 
         expect(result).toEqual({
             ok: true,
@@ -522,7 +530,7 @@ describe('machine direct sessions ops server-scoped routing', () => {
                 remoteSessionId: 'vendor-session-1',
                 titleHint: 'Existing Codex Session',
                 directoryHint: '/tmp/worktree',
-                codexBackendMode: 'appServer',
+                linkData: { codexBackendMode: 'appServer' },
                 runtimeDescriptorV1: runtimeDescriptor,
                 source: directSource,
             },
@@ -909,6 +917,56 @@ describe('machine direct sessions ops server-scoped routing', () => {
     });
 
     describe('externalSessionTranscriptReadAfterRequiresResyncV1', () => {
+        it.each([true, false])('normalizes predecessor page limits without changing older availability (%s)', async (hasMore) => {
+            // Prospective ../0.2 pageOpenCodeTranscript.ts reports an ordinary
+            // byte-limited page with truncated:true plus page_limit and its cursor.
+            machineRpcWithServerScopeMock
+                .mockRejectedValueOnce(new RpcError('Method not found', RPC_ERROR_CODES.METHOD_NOT_FOUND))
+                .mockResolvedValueOnce({ ok: true, items: [], nextCursor: hasMore ? 'older-next' : null,
+                    tailCursor: 'source-tail', hasMore, truncated: true, truncationReason: 'page_limit' });
+            const { machineExternalSessionTranscriptPage } = await import('./machineExternalSessions');
+            const response = await machineExternalSessionTranscriptPage({
+                machineId: 'machine-1', agentId: 'opencode', remoteSessionId: 'vendor-session-1',
+                source: { kind: 'opencodeServer', baseUrl: 'http://127.0.0.1:4096' }, direction: 'older', cursor: 'older-current',
+            });
+            expect(response).toMatchObject({ ok: true, truncated: false, hasMore, nextCursor: hasMore ? 'older-next' : null });
+        });
+
+        it.each([
+            { truncationReason: 'page_limit', truncated: true },
+            { truncationReason: 'page_limit', truncated: false },
+            { truncationReason: 'source_discontinuity', truncated: true },
+        ] as const)('normalizes predecessor $truncationReason with truncated=$truncated at the legacy RPC seam', async ({ truncationReason, truncated }) => {
+            // Prospective ../0.2 producer: directSessions/daemonRpcV1.ts and
+            // backends/{claude,codex,opencode,pi}/directSessions read-after owners.
+            machineRpcWithServerScopeMock
+                .mockRejectedValueOnce(new RpcError('Method not found', RPC_ERROR_CODES.METHOD_NOT_FOUND))
+                .mockResolvedValueOnce({
+                    ok: true,
+                    items: [{ id: 'next-row', createdAtMs: 2, raw: { role: 'agent' } }],
+                    nextCursor: 'cursor-2',
+                    truncated,
+                    truncationReason,
+                });
+            const { machineExternalSessionTranscriptReadAfter, externalSessionTranscriptReadAfterRequiresResyncV1 } = await import('./machineExternalSessions');
+            const response = await machineExternalSessionTranscriptReadAfter({
+                machineId: 'machine-1', agentId: 'claude', remoteSessionId: 'vendor-session-1',
+                source: { kind: 'claudeConfig' }, cursor: 'cursor-1',
+            });
+            expect(response.ok).toBe(true);
+            if (!response.ok) throw new Error('expected read-after success');
+            expect(externalSessionTranscriptReadAfterRequiresResyncV1(response, 'cursor-1')).toBe(true);
+            expect(externalSessionTranscriptReadAfterRequiresResyncV1(response, 'cursor-1', { allowAdjacentPage: true }))
+                .toBe(truncationReason === 'source_discontinuity');
+            if (truncationReason === 'page_limit') {
+                expect(response).toMatchObject({ truncated: false, hasMore: true });
+            } else {
+                expect(response).toMatchObject({
+                    diagnostics: expect.arrayContaining([expect.objectContaining({ severity: 'required' })]),
+                });
+            }
+        });
+
         const releasedTail = (overrides: Partial<Extract<
             Awaited<ReturnType<typeof import('./machineExternalSessions').machineExternalSessionTranscriptReadAfter>>,
             { ok: true }
@@ -937,9 +995,37 @@ describe('machine direct sessions ops server-scoped routing', () => {
                 releasedTail({ nextCursor: null }),
                 'cursor-1',
             )).toBe(true);
+            // A legacy source-unavailable reply can be empty with no cursor.
+            // It must not erase an accepted cursor and later resume from tail.
+            for (const nextCursor of [null, undefined]) {
+                expect(externalSessionTranscriptReadAfterRequiresResyncV1(
+                    releasedTail({ items: [], nextCursor }),
+                    'cursor-1',
+                    { allowAdjacentPage: true },
+                )).toBe(true);
+            }
             expect(externalSessionTranscriptReadAfterRequiresResyncV1(
                 releasedTail({ hasMore: true }),
                 'cursor-1',
+            )).toBe(true);
+            expect(externalSessionTranscriptReadAfterRequiresResyncV1(
+                releasedTail({ items: [], nextCursor: 'cursor-1', hasMore: true }),
+                'cursor-1',
+                { allowAdjacentPage: true },
+            )).toBe(true);
+            expect(externalSessionTranscriptReadAfterRequiresResyncV1(
+                releasedTail({
+                    items: [],
+                    nextCursor: 'cursor-1',
+                    diagnostics: [{
+                        code: 'external_session_source_diagnostic',
+                        severity: 'required',
+                        count: 1,
+                        positions: [0],
+                    }],
+                }),
+                'cursor-1',
+                { allowAdjacentPage: true },
             )).toBe(true);
             expect(externalSessionTranscriptReadAfterRequiresResyncV1(
                 releasedTail({
@@ -963,13 +1049,12 @@ describe('machine direct sessions ops server-scoped routing', () => {
                 releasedTail(),
                 'cursor-1',
             )).toBe(false);
-            expect(externalSessionTranscriptReadAfterRequiresResyncV1(
-                releasedTail({
-                    items: [],
-                    nextCursor: 'cursor-1',
-                }),
-                'cursor-1',
-            )).toBe(false);
+            for (const nextCursor of ['cursor-1', null, undefined]) {
+                expect(externalSessionTranscriptReadAfterRequiresResyncV1(
+                    releasedTail({ items: [], nextCursor }),
+                    nextCursor == null ? 'tail' : 'cursor-1',
+                )).toBe(false);
+            }
         });
     });
 
@@ -1349,7 +1434,10 @@ describe('machine direct sessions ops server-scoped routing', () => {
                 },
                 generation: 'source-1',
             },
-            contributionGeneration: 'contribution-1',
+            sourceCustody: {
+                kind: 'bundled_first_party' as const,
+                packagedRuntime: { kind: 'cli_version_root' as const, versionRootId: 'version-root-1' },
+            },
             cursorIdentity: `external_session_cursor_binding_v1:${'a'.repeat(64)}`,
         };
         const cursor = 'happier_external_cursor_v1:Y3Vyc29yLTE';
@@ -1369,6 +1457,8 @@ describe('machine direct sessions ops server-scoped routing', () => {
     });
 
     it('routes both takeover storage modes through the durable start RPC', async () => {
+        const terminal = { mode: 'tmux', tmux: { sessionName: 'takeover', isolated: true, tmpDir: null } };
+        storage.setState({ settings: { ...settingsDefaults, sessionUseTmux: true, sessionTmuxSessionName: 'takeover', sessionTmuxIsolated: true, sessionTmuxTmpDir: '' } });
         machineRpcWithServerScopeMock
             .mockResolvedValueOnce(takeoverStartResponse)
             .mockResolvedValueOnce(takeoverStartResponse);
@@ -1397,7 +1487,7 @@ describe('machine direct sessions ops server-scoped routing', () => {
             serverId: 'server-a',
             method: 'daemon.externalSessions.takeover.start',
             payload: {
-                request: externalLinkedTakeoverStartRequest,
+                request: { ...externalLinkedTakeoverStartRequest, terminal },
             },
         }));
         expect(machineRpcWithServerScopeMock).toHaveBeenNthCalledWith(2, expect.objectContaining({
@@ -1405,9 +1495,70 @@ describe('machine direct sessions ops server-scoped routing', () => {
             serverId: 'server-a',
             method: 'daemon.externalSessions.takeover.start',
             payload: {
-                request: takeoverStartRequest,
+                request: { ...takeoverStartRequest, terminal },
             },
         }));
+    });
+
+    it('omits tmux when the machine override disables the global preference', async () => {
+        storage.setState({ settings: {
+            ...settingsDefaults,
+            sessionUseTmux: true,
+            sessionTmuxByMachineId: { 'machine-1': { useTmux: false, sessionName: '', isolated: false, tmpDir: '' } },
+        } });
+        machineRpcWithServerScopeMock.mockResolvedValueOnce(takeoverStartResponse);
+        const { machineExternalSessionTakeoverStart } = await import('./machineExternalSessions');
+        await machineExternalSessionTakeoverStart({ machineId: 'machine-1', request: takeoverStartRequest });
+        expect(machineRpcWithServerScopeMock.mock.calls[0]?.[0]?.payload.request).not.toHaveProperty('terminal');
+    });
+
+    it('uses the captured Account preferences and RPC identity while another Account is focused', async () => {
+        const scope = { serverId: 'server-a', accountId: 'account-a' };
+        saveAccountSettings(scope, { ...settingsDefaults, sessionUseTmux: true, sessionTmuxSessionName: 'account-a-tmux', sessionTmuxIsolated: true, sessionTmuxTmpDir: '' }, 1);
+        storage.setState({
+            settingsScope: { serverId: 'server-b', accountId: 'account-b' },
+            settings: { ...settingsDefaults, sessionUseTmux: false },
+            machines: {
+                'machine-1': createMachineFixture({ id: 'machine-1', active: false, replacedAt: 1, replacedByMachineId: 'focused-replacement' }),
+                'focused-replacement': createMachineFixture({ id: 'focused-replacement', active: true }),
+            },
+        });
+        machineRpcWithServerScopeMock.mockResolvedValueOnce(takeoverStartResponse);
+        const { machineExternalSessionTakeoverStart } = await import('./machineExternalSessions');
+        await machineExternalSessionTakeoverStart({ machineId: 'machine-1', request: takeoverStartRequest }, {
+            serverId: scope.serverId,
+            accountLifetime: { scope, isCurrent: () => true, onRetire: () => ({ dispose() {} }) },
+        });
+        expect(machineRpcWithServerScopeMock).toHaveBeenCalledWith(expect.objectContaining({
+            machineId: 'machine-1',
+            serverId: scope.serverId,
+            accountId: scope.accountId,
+            payload: { request: { ...takeoverStartRequest, terminal: { mode: 'tmux', tmux: { sessionName: 'account-a-tmux', isolated: true, tmpDir: null } } } },
+        }));
+    });
+
+    it('does not emit a takeover under a retired Account lifetime', async () => {
+        const { machineExternalSessionTakeoverStart } = await import('./machineExternalSessions');
+        await expect(machineExternalSessionTakeoverStart({ machineId: 'machine-1', request: takeoverStartRequest }, {
+            accountLifetime: { scope: { serverId: 'server-a', accountId: 'account-a' }, isCurrent: () => false, onRetire: () => ({ dispose() {} }) },
+        })).rejects.toThrow();
+        expect(machineRpcWithServerScopeMock).not.toHaveBeenCalled();
+    });
+
+    it('stops takeover emission when the owning Account retires during transport preparation', async () => {
+        let current = true;
+        let emitted = false;
+        machineRpcWithServerScopeMock.mockImplementationOnce(async (params: { onIssued?: () => void }) => {
+            current = false;
+            params.onIssued?.();
+            emitted = true;
+            return takeoverStartResponse;
+        });
+        const { machineExternalSessionTakeoverStart } = await import('./machineExternalSessions');
+        await expect(machineExternalSessionTakeoverStart({ machineId: 'machine-1', request: takeoverStartRequest }, {
+            accountLifetime: { scope: { serverId: 'server-a', accountId: 'account-a' }, isCurrent: () => current, onRetire: () => ({ dispose() {} }) },
+        })).rejects.toMatchObject({ code: 'session_account_scope_retired' });
+        expect(emitted).toBe(false);
     });
 
     it('sends only materialization intent to the daemon-owned start action', async () => {
@@ -1517,27 +1668,35 @@ describe('machine direct sessions ops server-scoped routing', () => {
     });
 
     it('routes external session RPCs to a replacement machine while preserving linked metadata identity', async () => {
-        storageState.value = {
+        const terminal = { mode: 'tmux', tmux: { sessionName: 'machine-work', isolated: false, tmpDir: '/tmp/machine-tmux' } };
+        const scope = { serverId: 'server-a', accountId: 'account-a' };
+        storage.setState({
+            settingsScope: scope,
             machines: {
-                'machine-old': {
+                'machine-old': createMachineFixture({
                     id: 'machine-old',
                     active: false,
                     replacedByMachineId: 'machine-new',
                     replacedAt: 123,
-                },
-                'machine-new': {
+                }),
+                'machine-new': createMachineFixture({
                     id: 'machine-new',
                     active: true,
-                },
+                }),
             },
-        };
+            settings: {
+                ...settingsDefaults,
+                sessionUseTmux: false,
+                sessionTmuxByMachineId: { 'machine-new': { useTmux: true, sessionName: ' machine-work ', isolated: false, tmpDir: ' /tmp/machine-tmux ' } },
+            },
+        });
         machineRpcWithServerScopeMock.mockResolvedValueOnce(takeoverStartResponse);
         const { machineExternalSessionTakeoverPersist } = await import('./machineExternalSessions');
 
         const result = await machineExternalSessionTakeoverPersist({
             machineId: 'machine-old',
             request: takeoverStartRequest,
-        }, { serverId: 'server-a' });
+        }, { serverId: scope.serverId, accountLifetime: { scope, isCurrent: () => true, onRetire: () => ({ dispose() {} }) } });
 
         expect(result).toMatchObject({ ok: true, progress: { operationId: 'operation-1' } });
         expect(machineRpcWithServerScopeMock).toHaveBeenCalledWith(expect.objectContaining({
@@ -1545,7 +1704,7 @@ describe('machine direct sessions ops server-scoped routing', () => {
             serverId: 'server-a',
             method: 'daemon.externalSessions.takeover.start',
             payload: {
-                request: takeoverStartRequest,
+                request: { ...takeoverStartRequest, terminal },
             },
         }));
     });

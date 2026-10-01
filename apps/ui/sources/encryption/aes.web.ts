@@ -1,49 +1,18 @@
 import { decodeBase64, encodeBase64 } from '@/encryption/base64';
+import { openAesGcmPayloadWebCrypto, sealAesGcmPayloadWebCrypto } from '@happier-dev/protocol';
 
 import { decodeUTF8, encodeUTF8 } from './text';
 
-const IV_LENGTH_BYTES = 12;
-
-async function importAesGcmKeyFromBase64(keyB64: string): Promise<CryptoKey> {
-    const keyBytes = new Uint8Array(decodeBase64(keyB64, 'base64'));
-    return await globalThis.crypto.subtle.importKey('raw', keyBytes, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']);
-}
-
-async function encryptAesGcmBytes(plaintext: Uint8Array, key: CryptoKey): Promise<Uint8Array> {
-    const iv = globalThis.crypto.getRandomValues(new Uint8Array(IV_LENGTH_BYTES));
-    const plaintextBytes = new Uint8Array(plaintext);
-    const ciphertext = await globalThis.crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, plaintextBytes);
-    const ciphertextBytes = new Uint8Array(ciphertext);
-
-    const out = new Uint8Array(iv.length + ciphertextBytes.length);
-    out.set(iv, 0);
-    out.set(ciphertextBytes, iv.length);
-    return out;
-}
-
-async function decryptAesGcmBytes(payload: Uint8Array, key: CryptoKey): Promise<Uint8Array> {
-    if (payload.byteLength < IV_LENGTH_BYTES) {
-        throw new Error('Invalid AES-GCM payload');
-    }
-    const iv = payload.slice(0, IV_LENGTH_BYTES);
-    const ciphertextBytes = payload.slice(IV_LENGTH_BYTES);
-    const ciphertextPayloadBytes = new Uint8Array(ciphertextBytes);
-    const plaintext = await globalThis.crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ciphertextPayloadBytes);
-    return new Uint8Array(plaintext);
-}
-
 export async function encryptAESGCMString(data: string, key64: string): Promise<string> {
-    const key = await importAesGcmKeyFromBase64(key64);
     const plaintext = new TextEncoder().encode(data);
-    const payload = await encryptAesGcmBytes(plaintext, key);
+    const payload = await sealAesGcmPayloadWebCrypto(plaintext, decodeBase64(key64, 'base64'));
     return encodeBase64(payload, 'base64');
 }
 
 export async function decryptAESGCMString(data: string, key64: string): Promise<string | null> {
     try {
-        const key = await importAesGcmKeyFromBase64(key64);
         const payloadBytes = new Uint8Array(decodeBase64(data, 'base64'));
-        const plaintextBytes = await decryptAesGcmBytes(payloadBytes, key);
+        const plaintextBytes = await openAesGcmPayloadWebCrypto(payloadBytes, decodeBase64(key64, 'base64'));
         return new TextDecoder().decode(plaintextBytes).trim();
     } catch {
         return null;

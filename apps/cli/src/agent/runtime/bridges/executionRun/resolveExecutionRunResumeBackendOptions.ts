@@ -20,6 +20,7 @@ import type { ExecutionRunState } from './executionRunTypes';
  * on ambient/native auth. Passing `null` preserves an explicit native (opt-out) selection.
  */
 export type ExecutionRunResumeBackendOptions = Readonly<{
+  workspaceWrites?: 'allow' | 'deny';
   modelId?: string;
   modelSelection?: ProviderBoundModelRef;
   teamCredentialModel?: TeamCredentialProviderModelSelectionV1;
@@ -37,6 +38,7 @@ export function resolveExecutionRunResumeBackendOptions(args: Readonly<{
   if (!run) return {};
   const launch = run.launch ?? null;
   return {
+    ...(run.workspaceWrites !== undefined ? { workspaceWrites: run.workspaceWrites === 'allow' ? 'allow' : 'deny' } : {}),
     ...(launch?.modelId ? { modelId: launch.modelId } : {}),
     ...(launch?.modelSelection ? { modelSelection: launch.modelSelection } : {}),
     ...(launch?.teamCredentialModel ? { teamCredentialModel: launch.teamCredentialModel } : {}),
@@ -59,6 +61,7 @@ export function resolveExecutionRunResumeBackendOptions(args: Readonly<{
       runClass: run.runClass,
       ioMode: run.ioMode,
       ...(run.profileId ? { profileId: run.profileId } : {}),
+      ...(run.profileSourceCustody ? { profileSourceCustody: run.profileSourceCustody } : {}),
       ...(typeof run.intentInput !== 'undefined' ? { intentInput: run.intentInput } : {}),
     },
   };

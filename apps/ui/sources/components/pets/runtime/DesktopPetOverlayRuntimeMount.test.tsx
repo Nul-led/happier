@@ -6,6 +6,11 @@ import { renderScreen, standardCleanup } from '@/dev/testkit';
 import type { PetCompanionActivityState } from '@/components/pets/state/buildPetCompanionActivityState';
 import type { Settings } from '@/sync/domains/settings/settings';
 import type { LocalSettings } from '@/sync/domains/settings/localSettings';
+import { storage } from '@/sync/domains/state/storageStore';
+import { settingsDefaults } from '@/sync/domains/settings/settings';
+import { localSettingsDefaults } from '@/sync/domains/settings/localSettings';
+import { getPersistenceStorage } from '@/sync/domains/state/persistenceStorage';
+import * as overlayPolicy from '@/components/pets/desktop/policy/resolveDesktopPetOverlayPolicy';
 
 type AccountPetsSettingsSubset = Pick<
     Settings,
@@ -53,6 +58,7 @@ const activityState = vi.hoisted((): { current: PetCompanionActivityState } => (
                 address: { serverId: 'server-a', sessionId: 'session-running' },
                 sessionId: 'session-running',
                 contextLine: 'Home A',
+                accessibilityContext: null,
                 status: 'running',
                 priority: 0,
                 title: 'Running session',
@@ -138,29 +144,12 @@ vi.mock('@/components/pets/source/useSelectedPetPackage', () => ({
     }),
 }));
 
-vi.mock('@/sync/domains/state/storage', async (importOriginal) => {
-    const { createStorageModuleMock } = await import('@/dev/testkit/mocks/storage');
-    const actual = await importOriginal<typeof import('@/sync/domains/state/storage')>();
-    const { settingsDefaults } = await import('@/sync/domains/settings/settings');
-    const { localSettingsDefaults } = await import('@/sync/domains/settings/localSettings');
-    return createStorageModuleMock({
-        importOriginal,
-        overrides: {
-            ...actual,
-            useSettings: () => ({
-                ...settingsDefaults,
-                ...accountSettingsState.current,
-            }),
-            useLocalSettings: () => ({
-                ...localSettingsDefaults,
-                ...localSettingsState.current,
-            }),
-        },
-    });
-});
-
 describe('DesktopPetOverlayRuntimeMount', () => {
-    beforeEach(() => {
+    beforeEach(async () => {
+        getPersistenceStorage().clearAll();
+        await storage.getState().activateSettingsScope({ serverId: 'pets-home', accountId: 'pets-account' });
+        storage.getState().applySettings({ ...settingsDefaults, ...accountSettingsState.current }, 1);
+        storage.getState().applyLocalSettings({ ...localSettingsDefaults, ...localSettingsState.current }, { persist: false });
         vi.useFakeTimers();
         vi.setSystemTime(12_000);
         activityState.current = {
@@ -175,6 +164,7 @@ describe('DesktopPetOverlayRuntimeMount', () => {
                     address: { serverId: 'server-a', sessionId: 'session-running' },
                     sessionId: 'session-running',
                     contextLine: 'Home A',
+                    accessibilityContext: null,
                     status: 'running',
                     priority: 0,
                     title: 'Running session',
@@ -213,6 +203,7 @@ describe('DesktopPetOverlayRuntimeMount', () => {
                     address: { serverId: 'server-a', sessionId: 'session-running' },
                     sessionId: 'session-running',
                     contextLine: 'Home A',
+                    accessibilityContext: null,
                     status: 'running',
                     priority: 0,
                     title: 'Running session',
@@ -341,6 +332,7 @@ describe('DesktopPetOverlayRuntimeMount', () => {
             ...localSettingsState.current,
             petsCompanionSizeScale: 1.5,
         };
+        storage.getState().applyLocalSettings(localSettingsState.current, { persist: false });
         const { DesktopPetOverlayRuntimeMount } = await import('./DesktopPetOverlayRuntimeMount');
 
         await renderScreen(<DesktopPetOverlayRuntimeMount />);
@@ -363,6 +355,7 @@ describe('DesktopPetOverlayRuntimeMount', () => {
             ...accountSettingsState.current,
             petsDesktopOverlayDefaultVisibilityMode: 'attentionOrActive',
         };
+        storage.getState().applySettingsLocal(accountSettingsState.current);
         const { DesktopPetOverlayRuntimeMount } = await import('./DesktopPetOverlayRuntimeMount');
 
         const screen = await renderScreen(<DesktopPetOverlayRuntimeMount />);
@@ -390,6 +383,7 @@ describe('DesktopPetOverlayRuntimeMount', () => {
             ...accountSettingsState.current,
             petsDesktopOverlayDefaultVisibilityMode: 'attentionOrActive',
         };
+        storage.getState().applySettingsLocal(accountSettingsState.current);
         const { DesktopPetOverlayRuntimeMount } = await import('./DesktopPetOverlayRuntimeMount');
 
         await renderScreen(<DesktopPetOverlayRuntimeMount />);
@@ -430,5 +424,45 @@ describe('DesktopPetOverlayRuntimeMount', () => {
 
         expect(screen.findByTestId('pet-companion-state')).toBeNull();
         expect(desktopRuntimeProps.calls).toHaveLength(0);
+    });
+
+    it('ignores unrelated settings and changes the overlay when its account preference changes', async () => {
+        const { DesktopPetOverlayRuntimeMount } = await import('./DesktopPetOverlayRuntimeMount');
+        const commits = vi.fn();
+        const resolvePolicy = vi.spyOn(overlayPolicy, 'resolveDesktopPetOverlayPolicy');
+        await renderScreen(
+            <React.Profiler id="desktop-pet" onRender={commits}>
+                <DesktopPetOverlayRuntimeMount />
+            </React.Profiler>,
+        );
+        const baseline = commits.mock.calls.length;
+        const runtimeBaseline = desktopRuntimeProps.calls.length;
+        const computationBaseline = resolvePolicy.mock.calls.length;
+        await act(async () => {
+            storage.getState().applySettingsLocal({ homeHubLayoutV1: { order: ['sessions'], hidden: [] } });
+        });
+        expect(commits.mock.calls.length).toBe(baseline);
+        expect(desktopRuntimeProps.calls.length).toBe(runtimeBaseline);
+        expect(resolvePolicy.mock.calls.length).toBe(computationBaseline);
+        await act(async () => {
+            storage.getState().applySettingsLocal({ petsDesktopOverlayDefaultVisibilityMode: 'attentionOnly' });
+        });
+        expect(commits.mock.calls.length).toBe(baseline + 1);
+        expect(resolvePolicy.mock.calls.length).toBe(computationBaseline + 1);
+        expect(desktopRuntimeProps.calls.at(-1)).toMatchObject({
+            visible: false,
+            policy: { visibilityMode: 'attentionOnly' },
+        });
+        await act(async () => {
+            storage.getState().applyLocalSettings({ uiFontScale: 1.25 }, { persist: false });
+        });
+        expect(commits.mock.calls.length).toBe(baseline + 1);
+        expect(resolvePolicy.mock.calls.length).toBe(computationBaseline + 1);
+        await act(async () => {
+            storage.getState().applyLocalSettings({ desktopPetOverlayLocked: true }, { persist: false });
+        });
+        expect(commits.mock.calls.length).toBe(baseline + 2);
+        expect(resolvePolicy.mock.calls.length).toBe(computationBaseline + 2);
+        expect(desktopRuntimeProps.calls.at(-1)).toMatchObject({ policy: { inputLocked: true } });
     });
 });

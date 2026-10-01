@@ -35,7 +35,6 @@ import type {
     PluginUiHostedWebProjection,
     PluginUiProjectionModel,
 } from '@/sync/domains/plugins/ui/projection';
-import { readPluginUiContributionOrigin } from '@/sync/domains/plugins/ui/projectionUnion';
 import { resolveHostedWebRuntimeDiagnostics } from '@/sync/domains/plugins/ui/hostedWebRuntime';
 import type { PluginUiArtifactAdoption } from '@/sync/domains/plugins/ui/artifactAdoption';
 import type { PluginNativeArtifactResourceHandle } from '@/sync/domains/plugins/availability/nativeArtifactResource';
@@ -45,6 +44,7 @@ import type {
 } from '@/components/browser/frame/types';
 import { BrowserFrameError } from '@/components/browser/frame/BrowserFrameError';
 import { BrowserFrameLoading } from '@/components/browser/frame/BrowserFrameLoading';
+import type { SurfaceStateAction } from '@/components/ui/surfaces/SurfaceStateCard';
 import { isLoopbackHostedWebUrl } from '@/components/browser/adapters/HostedPluginTargetSecurity';
 import { createInlineHostedHtmlSecurityPolicy } from '@/components/browser/adapters/HostedPluginTargetSecurity';
 import { resolvePluginUiText } from '@/sync/domains/plugins/ui/i18n';
@@ -57,7 +57,10 @@ import {
 } from '@/components/plugins/surfaces/pluginSurfaceContext';
 
 import { HostedFrameHost } from '@/components/ui/surfaces/framed/HostedFrameHost';
-import { scheduleHostedFrameReadyTimeout } from '@/components/ui/surfaces/framed/useHostedFrameLifecycle';
+import {
+    useHostedFrameLifecycle,
+    type HostedFrameFailure,
+} from '@/components/ui/surfaces/framed/useHostedFrameLifecycle';
 import { resolveHostedFrameHostOrigin } from '@/components/ui/surfaces/framed/hostOrigin';
 import {
     PluginHostedWebUnavailable,
@@ -408,7 +411,7 @@ function resolveHostedWebPaneUnavailableDiagnosticCode(input: Readonly<{
     frameOriginAvailable: boolean;
     bridgeRequested: boolean;
     bridgeNonceAvailable: boolean;
-    readyTimedOut: boolean;
+    frameFailure: HostedFrameFailure | null;
     endpointRenderable: boolean;
 }>): PluginHostedWebUnavailableDiagnosticCode | null {
     if (!input.descriptorPresent) {
@@ -449,8 +452,11 @@ function resolveHostedWebPaneUnavailableDiagnosticCode(input: Readonly<{
     if (input.bridgeRequested && !input.bridgeNonceAvailable) {
         return resolveDownstreamDiagnostic('hosted_web_bridge_nonce_unavailable');
     }
-    if (input.readyTimedOut) {
+    if (input.frameFailure === 'ready_timeout') {
         return resolveDownstreamDiagnostic('hosted_web_bridge_timeout');
+    }
+    if (input.frameFailure) {
+        return resolveDownstreamDiagnostic('hosted_web_preview_unavailable');
     }
     if (!input.endpointRenderable) {
         return resolveDownstreamDiagnostic('hosted_web_endpoint_policy_denied');
@@ -473,8 +479,6 @@ export function PluginHostedWebPane(props: Readonly<{
     /** Exact normalized egress request written into this document's CSP. */
     inlineDocumentNetworkOrigins?: readonly UiSurfaceNetworkOriginV1[];
     title?: string;
-    /** The exact selected renderer's projection generation, when supplied. */
-    projectionGeneration?: number | null;
     /**
      * §3.1/UI-D11: the mount's surface identity, produced by the ONE bound
      * controller (`resolveBoundPluginSurfaceContext`). The frame query the guest
@@ -499,6 +503,8 @@ export function PluginHostedWebPane(props: Readonly<{
     unavailableDiagnosticCode?: PluginHostedWebUnavailableDiagnosticCode | null;
     /** Retry the incumbent exact Artifact acquisition/issuance without changing source ownership. */
     onUnavailableRetry?: () => void;
+    /** Existing route-owned recovery callback for settings/update/enable actions. */
+    unavailableAction?: SurfaceStateAction;
     /**
      * Existing target/caller fallback for a targeted surface. The host owns
      * selection and contributor attribution; the pane consumes this only for
@@ -601,9 +607,15 @@ export function PluginHostedWebPane(props: Readonly<{
     nativeArtifactLoadedRuntimeIdentity?: Readonly<{
         pluginId: string;
         contributionId: string;
-        projectionGeneration: number;
         artifactDigest: PluginUiArtifactDigestV1;
     }> | null;
+    /** Candidate-adoption callbacks; omitted for already-applied ordinary frames. */
+    onArtifactCandidateReady?: () => void;
+    onArtifactCandidateFailure?: (code: string) => void;
+    /** The outer adoption transaction carries a pending handle across the presentation swap. */
+    retainCandidateAdoptionOnUnmount?: boolean;
+    /** Candidate frames may load, but cannot use live host mutation authority before adoption. */
+    artifactCandidatePreparing?: boolean;
 }>): React.ReactElement {
     const { theme, rt } = useUnistyles();
     const descriptor = props.projectedContribution === undefined
@@ -614,10 +626,9 @@ export function PluginHostedWebPane(props: Readonly<{
     const interactionEnabled = props.interactionEnabled ?? Boolean(props.hostApi);
     const effectiveInteractionEnabled = interactionEnabled && props.focusEligible !== false;
     const inlineDocument = props.inlineDocument;
-    const projectionGeneration = props.projectionGeneration
-        ?? readPluginUiContributionOrigin(descriptor)?.generation
-        ?? props.pluginUiProjection?.generation
-        ?? null;
+    const occurrenceId = typeof descriptor?.occurrenceId === 'string'
+        ? descriptor.occurrenceId
+        : null;
     const launchInputSemanticKey = stableJsonStringify({
         present: props.launchInput !== undefined,
         value: props.launchInput,
@@ -627,13 +638,31 @@ export function PluginHostedWebPane(props: Readonly<{
         html: inlineDocument?.html,
         networkOrigins: props.inlineDocumentNetworkOrigins,
         launchInputSemanticKey,
-        projectionGeneration,
+        occurrenceId,
         mountInstanceKey: props.mountInstanceKey,
         subPath: props.subPath,
-    }), [props.endpointUrl, inlineDocument?.html, props.inlineDocumentNetworkOrigins, launchInputSemanticKey, projectionGeneration, props.mountInstanceKey, props.subPath]);
+    }), [props.endpointUrl, inlineDocument?.html, props.inlineDocumentNetworkOrigins, launchInputSemanticKey, occurrenceId, props.mountInstanceKey, props.subPath]);
+    const allowedMessageKinds = inlineDocument ? INLINE_DOCUMENT_MESSAGES : descriptor ? readAllowedMessageKinds(descriptor.bridge) : [];
+    const canonicalHostOrigin = resolveHostedFrameHostOrigin();
+    const canonicalWireAllowed = allowedMessageKinds.includes('hostApi');
+    const readyRequired = Boolean(props.canonicalHostApi && canonicalWireAllowed && canonicalHostOrigin)
+        || allowedMessageKinds.includes('ready');
+    const frameSinkRef = React.useRef<((message: unknown) => void) | null>(null);
+    const hostApiBridgeHandlerRef = React.useRef<PluginHostedWebHostApiBridgeHandler | null>(null);
+    const lifecycle = useHostedFrameLifecycle({
+        lifetimeKey: rendererDocumentKey,
+        readyRequired,
+        readyTimeoutMs: props.readyTimeoutMs,
+        onReadyTimeout: () => { hostApiBridgeHandlerRef.current?.recordReadyTimeout(); },
+        onRetireAttempt: (reason) => {
+            if (reason === 'unexpected_navigation') frameSinkRef.current = null;
+            hostApiBridgeHandlerRef.current?.dispose();
+            frameSinkRef.current = null;
+        },
+    });
     const rendererMount = useUiSurfaceRendererMount({
         lifetime: props.mountLifetime,
-        mountKey: rendererDocumentKey,
+        mountKey: `${rendererDocumentKey}\u001f${lifecycle.attempt}`,
         interactionEnabled,
         focusEligible: props.focusEligible !== false,
     });
@@ -660,13 +689,14 @@ export function PluginHostedWebPane(props: Readonly<{
     onIntrinsicHeightChangeRef.current = props.onIntrinsicHeightChange;
     const artifactCurrentnessRef = React.useRef<PluginHostedWebArtifactCurrentness | null>(null);
     const isSurfaceCurrent = React.useCallback(() => {
+        if (props.artifactCandidatePreparing) return false;
         if (!rendererMount.isCurrent() || !(isCurrentRef.current?.() ?? true)) return false;
         try {
             return artifactCurrentnessRef.current?.isCurrent() ?? true;
         } catch {
             return false;
         }
-    }, [rendererMount.isCurrent]);
+    }, [props.artifactCandidatePreparing, rendererMount.isCurrent]);
     const surfaceEnvironment = usePluginSurfaceEnvironment(platform);
     const policyContext = React.useMemo(() => createPluginUiPolicyEvaluationContext(
         props.policyContext,
@@ -729,12 +759,12 @@ export function PluginHostedWebPane(props: Readonly<{
         }
         setNativeArtifactFrameEnabled(true);
         return () => {
-            // Target/generation replacement owns the consumed handle's normal
+            // Target/occurrence replacement owns the consumed handle's normal
             // teardown. This executes in layout cleanup before a replacement
             // frame is committed, so stale bytes cannot remain mounted.
-            disposeForTarget();
+            if (!props.retainCandidateAdoptionOnUnmount) disposeForTarget();
         };
-    }, [nativeArtifactAdoption, projectionGeneration, props.mountInstanceKey]);
+    }, [nativeArtifactAdoption, occurrenceId, props.mountInstanceKey, props.retainCandidateAdoptionOnUnmount]);
     React.useLayoutEffect(() => {
         setNativeInlineDocumentUnavailable(false);
     }, [rendererDocumentKey]);
@@ -768,7 +798,8 @@ export function PluginHostedWebPane(props: Readonly<{
     }, [nativeArtifactAdoption, nativeArtifactHandle]);
     const handleNativeHostedHtmlUnavailable = React.useCallback(() => {
         setNativeInlineDocumentUnavailable(true);
-    }, []);
+        lifecycle.fail('load_failed');
+    }, [lifecycle.fail]);
     const handleNativeArtifactLoadStart = React.useCallback(() => {
         const handle = nativeArtifactHandle;
         if (!handle || artifactCurrentnessRef.current !== handle || !handle.isCurrent()) return;
@@ -778,7 +809,9 @@ export function PluginHostedWebPane(props: Readonly<{
         const handle = nativeArtifactHandle;
         if (!handle || artifactCurrentnessRef.current !== handle || !handle.isCurrent()) return;
         setNativeArtifactFrameLoadStateForHandle({ handle, state: 'ready' });
-    }, [nativeArtifactHandle]);
+        lifecycle.markLoaded();
+        props.onArtifactCandidateReady?.();
+    }, [lifecycle.markLoaded, nativeArtifactHandle, props.onArtifactCandidateReady]);
     const handleNativeArtifactLoadError = React.useCallback((event: unknown) => {
         const handle = nativeArtifactHandle;
         if (!handle || artifactCurrentnessRef.current !== handle || !handle.isCurrent()) return;
@@ -792,8 +825,11 @@ export function PluginHostedWebPane(props: Readonly<{
         // The native mount has failed and this render transitions off it. Retire
         // the adoption/bridge lifetime synchronously with that transition so no
         // late guest, bridge, or history work can settle through the dead frame.
-        nativeArtifactAdoption?.dispose();
-    }, [nativeArtifactAdoption, nativeArtifactHandle]);
+        const code = readNativeArtifactLoadErrorCode(event);
+        if (props.onArtifactCandidateFailure) props.onArtifactCandidateFailure(code);
+        else nativeArtifactAdoption?.dispose();
+        lifecycle.fail('load_failed');
+    }, [lifecycle.fail, nativeArtifactAdoption, nativeArtifactHandle, props.onArtifactCandidateFailure]);
     const handleNativeArtifactHistoryStateChange = React.useCallback((canGoBack: boolean) => {
         const handle = nativeArtifactHandle;
         if (!handle || artifactCurrentnessRef.current !== handle || !handle.isCurrent()) return;
@@ -841,9 +877,6 @@ export function PluginHostedWebPane(props: Readonly<{
     // page location is one of them: `bridgeLifetimeKey` below already re-keys the
     // frame on it, so without it here the document minted for the previous page
     // would hand its still-valid nonce to the document that replaces it.
-    const allowedMessageKinds = inlineDocument ? INLINE_DOCUMENT_MESSAGES : descriptor ? readAllowedMessageKinds(descriptor.bridge) : [];
-    const canonicalHostOrigin = resolveHostedFrameHostOrigin();
-    const canonicalWireAllowed = allowedMessageKinds.includes('hostApi');
     // §3.2/§3.3/UI-D11: one context owner. This mount no longer builds its own
     // snapshot from its own copy of the environment hooks — it composes the same
     // `SurfaceContext` the React Native mount receives, so the two can no longer
@@ -887,7 +920,6 @@ export function PluginHostedWebPane(props: Readonly<{
     // not an author-selected bridge method. A canonical frame cannot receive its
     // post-ready bootstrap without it, even when the declared author vocabulary
     // contains only `hostApi`.
-    const readyRequired = canonicalHostApi !== undefined || allowedMessageKinds.includes('ready');
     const bridgeAllowedMessageKinds = React.useMemo(() => {
         const kinds = new Set<string>(allowedMessageKinds);
         if (canonicalHostApi) kinds.add('ready');
@@ -896,12 +928,10 @@ export function PluginHostedWebPane(props: Readonly<{
         }
         return kinds;
     }, [allowedMessageKinds, canonicalHostApi, accountDataMessageAllowed]);
-    const [readyTimedOut, setReadyTimedOut] = React.useState(false);
     // EU-8: the mounted frame lends its host->frame delivery primitive here for
     // as long as it is mounted. The registry is a ref, not state, so attaching a
     // frame never re-creates the bridge handler — a handler churn would retire
     // the guest's subscriptions on every render.
-    const frameSinkRef = React.useRef<((message: unknown) => void) | null>(null);
     const postToFrame = React.useCallback<PluginHostedWebHostMessageSink>((envelope) => {
         const terminal = envelope.kind === 'hostApi' && envelope.payload.kind === 'disconnected';
         if (!terminal && !isSurfaceCurrent()) return;
@@ -951,7 +981,7 @@ export function PluginHostedWebPane(props: Readonly<{
             canonicalHostApi.identity.mountNonce,
             getPluginSurfaceTargetAuthorityKey(canonicalHostApi.target),
             canonicalHostApi.surface.targetedContributions.target.pluginId,
-            canonicalHostApi.surface.targetedContributions.target.immutableGenerationId,
+            canonicalHostApi.surface.targetedContributions.target.occurrenceId,
         ].join('')
         : null;
     const frameOrigin = (inlineDocument ? 'null' : null)
@@ -990,7 +1020,7 @@ export function PluginHostedWebPane(props: Readonly<{
         subPath: props.subPath ?? null,
         mountInstanceKey: props.mountInstanceKey ?? null,
         opaqueArtifactFrame,
-        projectionGeneration,
+        occurrenceId,
         handleRequestInstalled,
         accountDataBridgeAllowed,
         surfaceIdentity: bridgeSurfaceIdentityKey,
@@ -1047,14 +1077,9 @@ export function PluginHostedWebPane(props: Readonly<{
             isCurrent: isSurfaceCurrent,
             ...(handleRequestInstalled ? { handleRequest } : {}),
             onReadyStateChange: (state) => {
-                if (state.state === 'ready') {
-                    setReadyTimedOut(false);
-                    return;
-                }
-                if (state.state === 'timedOut') {
-                    setReadyTimedOut(true);
-                }
+                if (state.state === 'ready') lifecycle.markReady();
             },
+            onGuestError: () => lifecycle.fail('guest_error'),
             onHeightChanged: (height) => {
                 if (onIntrinsicHeightChangeRef.current) heightReporter.report(height);
             },
@@ -1074,9 +1099,12 @@ export function PluginHostedWebPane(props: Readonly<{
         heightReporter,
         isSurfaceCurrent,
         props.accountLifetime,
+        lifecycle.fail,
+        lifecycle.markReady,
     ]);
-    const hostApiBridgeHandlerRef = React.useRef<PluginHostedWebHostApiBridgeHandler | null>(null);
-    hostApiBridgeHandlerRef.current = hostApiBridgeHandler;
+    React.useLayoutEffect(() => {
+        hostApiBridgeHandlerRef.current = hostApiBridgeHandler;
+    }, [hostApiBridgeHandler]);
     const setComposerSubscriptionPublisher = props.setComposerSubscriptionPublisher;
     const composerSubscriptionPublisher = setComposerSubscriptionPublisher !== undefined
         && canonicalHostApi?.methods.includes('watchComposer')
@@ -1094,19 +1122,14 @@ export function PluginHostedWebPane(props: Readonly<{
     }, [composerSubscriptionPublisher, setComposerSubscriptionPublisher]);
     React.useLayoutEffect(() => {
         const signal = rendererMount.signal;
-        const retire = () => hostApiBridgeHandler?.dispose();
+        const retire = () => lifecycle.retire();
         signal.addEventListener('abort', retire, { once: true });
         if (signal.aborted) retire();
         return () => signal.removeEventListener('abort', retire);
-    }, [hostApiBridgeHandler, rendererMount.signal]);
+    }, [lifecycle.retire, rendererMount.signal]);
     const handleOpaqueArtifactUnexpectedNavigation = React.useCallback(() => {
-        // The opaque iframe now contains a replacement document, so its
-        // wildcard delivery primitive must be severed before the bridge's
-        // disposal packet can be constructed. The bridge remains the one
-        // owner of subscription cancellation and terminal state.
-        frameSinkRef.current = null;
-        hostApiBridgeHandlerRef.current?.dispose();
-    }, []);
+        lifecycle.fail('unexpected_navigation');
+    }, [lifecycle.fail]);
     React.useLayoutEffect(() => {
         const handle = artifactCurrentness;
         if (!handle) return;
@@ -1115,16 +1138,15 @@ export function PluginHostedWebPane(props: Readonly<{
             // incumbent bridge handler while its exact frame sink is still
             // attached. The following React update only removes presentation;
             // it is not a second retirement owner.
-            hostApiBridgeHandlerRef.current?.dispose();
+            lifecycle.retire();
             setNativeArtifactFrameEnabled(false);
         };
         const subscription = handle.onRevoke(retire);
         if (!handle.isCurrent()) retire();
         return () => subscription.dispose();
-    }, [artifactCurrentness, nativeArtifactHandle]);
+    }, [artifactCurrentness, lifecycle.retire, nativeArtifactHandle]);
     const attachHostMessages = React.useCallback((send: (message: unknown) => void) => {
         frameSinkRef.current = send;
-        const attachedHandler = hostApiBridgeHandler;
         return () => {
             // Dispose through the one bridge owner while this exact sink is
             // still lent. React deletes a keyed replacement frame before the
@@ -1132,10 +1154,10 @@ export function PluginHostedWebPane(props: Readonly<{
             // the sink before the canonical terminal packet can reach the old
             // guest. Disposal is lifetime-idempotent and terminal delivery is
             // the one operation intentionally allowed after currentness closes.
-            attachedHandler?.dispose();
+            lifecycle.retire();
             if (frameSinkRef.current === send) frameSinkRef.current = null;
         };
-    }, [hostApiBridgeHandler]);
+    }, [hostApiBridgeHandler, lifecycle.retire]);
     // The context producer for this transport (UI-D03), the hosted-web twin of
     // `PluginSurfaceHost`'s. An identical snapshot is not republished, so the
     // push that runs at mount is not a spurious event.
@@ -1154,28 +1176,6 @@ export function PluginHostedWebPane(props: Readonly<{
             hostApiBridgeHandler.publishResourceSubscriptionEvent(event);
         });
     }, [hostApiBridgeHandler, subscribeResourceInvalidations]);
-    React.useLayoutEffect(() => {
-        setReadyTimedOut(false);
-        if (!hostApiBridgeHandler || !readyRequired || props.readyTimeoutMs === null) {
-            return () => {
-                hostApiBridgeHandler?.dispose();
-            };
-        }
-
-        const cancelReadyTimeout = scheduleHostedFrameReadyTimeout({
-            timeoutMs: props.readyTimeoutMs ?? undefined,
-            onTimeout: () => {
-                const snapshot = hostApiBridgeHandler.recordReadyTimeout();
-                if (snapshot.state === 'timedOut') {
-                    setReadyTimedOut(true);
-                }
-            },
-        });
-        return () => {
-            cancelReadyTimeout();
-            hostApiBridgeHandler.dispose();
-        };
-    }, [hostApiBridgeHandler, props.readyTimeoutMs, readyRequired]);
     const handleBridgeMessage = React.useCallback((
         envelope: PluginHostedWebBridgeEnvelopeV1,
     ) => {
@@ -1219,7 +1219,7 @@ export function PluginHostedWebPane(props: Readonly<{
         frameOriginAvailable: Boolean(frameOrigin),
         bridgeRequested,
         bridgeNonceAvailable: Boolean(bridgeNonce),
-        readyTimedOut,
+        frameFailure: lifecycle.failure,
         endpointRenderable,
     });
 
@@ -1236,6 +1236,7 @@ export function PluginHostedWebPane(props: Readonly<{
             <BrowserFrameError
                 testID="plugin-hosted-web-frame"
                 errorCode={nativeArtifactFrameLoadState.code}
+                onReload={props.onUnavailableRetry ?? lifecycle.reload}
             />
         );
     }
@@ -1243,14 +1244,15 @@ export function PluginHostedWebPane(props: Readonly<{
     // The bounded resolver above owns every remaining terminal reason. Retain
     // the direct presence guard so TypeScript narrows the render-only values
     // below without introducing a second policy/currentness decision.
-    if (unavailableDiagnosticCode || (!descriptor && !inlineDocument) || !sandbox || !security || !frameOrigin) {
+    if ((unavailableDiagnosticCode && !nativeArtifactHandle) || (!descriptor && !inlineDocument) || !sandbox || !security || !frameOrigin) {
         if (unavailableDiagnosticCode && props.targetedFallback !== undefined) {
             return <>{props.targetedFallback}</>;
         }
         return (
             <PluginHostedWebUnavailable
                 diagnosticCode={unavailableDiagnosticCode}
-                onRetry={props.onUnavailableRetry}
+                onRetry={lifecycle.failure ? lifecycle.reload : props.onUnavailableRetry}
+                recoveryAction={props.unavailableAction}
             />
         );
     }
@@ -1337,12 +1339,10 @@ export function PluginHostedWebPane(props: Readonly<{
         && nativeArtifactLoadedRuntimeIdentity
         && nativeArtifactLoadedRuntimeIdentity.pluginId === descriptor?.pluginId
         && nativeArtifactLoadedRuntimeIdentity.contributionId === descriptor?.contributionId
-        && nativeArtifactLoadedRuntimeIdentity.projectionGeneration === projectionGeneration
         ? [
             'plugin-hosted-web-native-ready',
             nativeArtifactLoadedRuntimeIdentity.pluginId,
             nativeArtifactLoadedRuntimeIdentity.contributionId,
-            nativeArtifactLoadedRuntimeIdentity.projectionGeneration,
             nativeArtifactLoadedRuntimeIdentity.artifactDigest,
         ].join(':')
         : null;
@@ -1373,10 +1373,11 @@ export function PluginHostedWebPane(props: Readonly<{
             >
             <HostedFrameHost
                 key={[
-                    projectionGeneration ?? 'unversioned',
+                    occurrenceId ?? 'unversioned',
                     props.mountInstanceKey ?? 'legacy',
                     nativeArtifact?.artifactHandleToken ?? desktopArtifact?.artifactHandleToken ?? 'daemon-frame',
                     bridgeLifetimeKey,
+                    lifecycle.attempt,
                 ].join('\u001f')}
                 bridge={bridge}
                 security={security}
@@ -1411,6 +1412,14 @@ export function PluginHostedWebPane(props: Readonly<{
                 navigationKey={props.navigationKey}
                 navigationCommand={frameNavigationCommand}
                 diagnostics={props.diagnostics}
+                onLoad={() => {
+                    lifecycle.markLoaded();
+                    props.onArtifactCandidateReady?.();
+                }}
+                onError={() => {
+                    props.onArtifactCandidateFailure?.('load_failed');
+                    lifecycle.fail('load_failed');
+                }}
                 testID="plugin-hosted-web-frame"
             />
             </View>

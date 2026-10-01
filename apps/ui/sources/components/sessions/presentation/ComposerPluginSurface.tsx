@@ -32,7 +32,7 @@ import { stableJsonStringify } from '@/utils/json/stableJsonStringify';
 
 export type ComposerPluginSurfaceMountRequest = Readonly<{
     contribution: PluginContributionIdentityV1;
-    immutableGenerationId: string;
+    occurrenceId: string;
     role: ComposerSurfaceRoleV1;
     input: ComposerSurfaceInputV1;
     instanceKey: string;
@@ -51,7 +51,7 @@ export function readComposerPluginSurfaceMountBinding(input: Readonly<{
     const matchingEntries = input.catalogEntries.filter((entry) => (
         entry.contribution.pluginId === input.request.contribution.pluginId
         && entry.contribution.localId === input.request.contribution.localId
-        && entry.immutableGenerationId === input.request.immutableGenerationId
+        && entry.occurrenceId === input.request.occurrenceId
         && entry.projectionGeneration === input.projectionGeneration
         && entry.role === input.request.role
     ));
@@ -60,7 +60,7 @@ export function readComposerPluginSurfaceMountBinding(input: Readonly<{
     const mount = ComposerSurfaceMountBindingV1Schema.safeParse({
         kind: 'composer',
         contribution: input.request.contribution,
-        immutableGenerationId: input.request.immutableGenerationId,
+        occurrenceId: input.request.occurrenceId,
         projectionGeneration: input.projectionGeneration,
         role: input.request.role,
         selectedRenderer: catalogEntry.selectedRenderer.identity,
@@ -117,13 +117,17 @@ export function ComposerPluginSurface(props: ComposerPluginSurfaceProps): React.
     // handler identity as its controller lifetime boundary. Retain the exact
     // prior binding only while every fact the host consumes is equivalent;
     // absent, changed, or mismatched candidates still fail closed immediately.
-    const mountKey = stableJsonStringify(requestedMount === null ? null : {
-        mount: requestedMount.mount,
-        catalogEntry: requestedMount.catalogEntry,
-    });
+    const mountKey = stableJsonStringify(requestedMount === null ? null : (() => {
+        const { projectionGeneration: _mountProjectionGeneration, ...mount } = requestedMount.mount;
+        const { projectionGeneration: _catalogProjectionGeneration, ...catalogEntry } = requestedMount.catalogEntry;
+        return { mount, catalogEntry };
+    })());
     const mount = React.useMemo(
         () => requestedMount,
-        // `mountKey` covers the full parsed mount and selected catalog row.
+        // Aggregate projection generation admits the selected row but is not
+        // the physical lifetime of an already-selected occurrence. Excluding
+        // it keeps live subscriptions/controllers intact across an unrelated
+        // daemon projection refresh while every consumed mount fact is equal.
         // Raw response/request object identities are intentionally not mount
         // currentness facts; including them would retire live observations on
         // every equivalent parent render.
@@ -151,7 +155,7 @@ export function ComposerPluginSurface(props: ComposerPluginSurfaceProps): React.
         return createComposerPresentationHostHandlers({
             owner: {
                 identity: mount.mount.contribution,
-                immutableGenerationId: mount.mount.immutableGenerationId,
+                occurrenceId: mount.mount.occurrenceId,
                 surfaceInstanceKey: mount.mount.instanceKey,
             },
             transactionApplier: props.transactionApplier,

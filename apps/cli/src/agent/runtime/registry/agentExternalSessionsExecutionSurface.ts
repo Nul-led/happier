@@ -183,6 +183,7 @@ export function createAgentExternalSessionsExecutionSurface(
                 ...(request.cursor === undefined ? {} : { cursor: request.cursor }),
                 ...(request.searchTerm === undefined ? {} : { searchTerm: request.searchTerm }),
                 ...(request.searchMode === undefined ? {} : { searchMode: request.searchMode }),
+                ...(request.includeThreads === undefined ? {} : { includeThreads: request.includeThreads }),
                 ...(request.readCandidateIndexState === undefined
                     ? {}
                     : { readCandidateIndexState: request.readCandidateIndexState }),
@@ -249,6 +250,7 @@ export function createAgentExternalSessionsExecutionSurface(
         },
         async pageTranscript(request) {
             const result = unwrap('pageTranscript', await contribution.pageTranscript({
+                ...(request.projection ? { projection: request.projection } : {}),
                 source: toAgentSource(request.source, 'pageTranscript'),
                 remoteSessionId: request.remoteSessionId,
                 direction: request.direction,
@@ -273,6 +275,7 @@ export function createAgentExternalSessionsExecutionSurface(
         },
         async readAfterTranscript(request) {
             const result = unwrap('readAfterTranscript', await contribution.readAfterTranscript({
+                ...(request.projection ? { projection: request.projection } : {}),
                 source: toAgentSource(request.source, 'readAfterTranscript'),
                 remoteSessionId: request.remoteSessionId,
                 cursor: request.cursor,

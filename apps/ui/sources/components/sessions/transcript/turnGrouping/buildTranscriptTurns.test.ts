@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { AgentTextMessage, Message, ModeSwitchMessage, ToolCallMessage, UserTextMessage } from '@/sync/domains/messages/messageTypes';
+import type { AgentTextMessage, Message, ModeSwitchMessage, ToolCallMessage, UserTextMessage } from "@happier-dev/session-core/messages";
 import type { PendingMessage } from '@/sync/domains/state/storageTypes';
 
 import { buildTranscriptTurns, buildTranscriptTurnsCached } from './buildTranscriptTurns';

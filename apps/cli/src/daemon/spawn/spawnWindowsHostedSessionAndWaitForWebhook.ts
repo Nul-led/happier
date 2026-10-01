@@ -1,3 +1,4 @@
+import type { PersistedTakeoverAdmissionWaitRegistration } from './persistedTakeoverAdmission';
 import type { Metadata } from '@/api/types';
 import { buildHappyCliSubprocessLaunchSpec, type HappyCliSubprocessLaunchOptions } from '@/utils/spawnHappyCLI';
 import { SPAWN_SESSION_ERROR_CODES, type SpawnSessionOptions, type SpawnSessionResult } from '@/session/shared/spawnSessionContract';
@@ -19,7 +20,7 @@ import {
 import type { ChildExit } from '../sessions/onChildExited';
 import { resolveSpawnWebhookResult } from '../sessions/resolveSpawnWebhookResult';
 import { waitForVisibleConsoleSessionWebhook } from '../sessions/visibleConsoleSpawnWaiter';
-import { waitForSessionWebhook } from './waitForSessionWebhook';
+import { armSessionWebhookStartupCustody, waitForSessionWebhook } from './waitForSessionWebhook';
 import type {
     RunnerAgentInvocationContext,
     TrackedSession,
@@ -63,6 +64,7 @@ export async function spawnWindowsHostedSessionAndWaitForWebhook(params: Readonl
     pidToAwaiter: Map<number, (session: TrackedSession) => void>;
     pidToSpawnResultResolver: Map<number, (result: SpawnSessionResult) => void>;
     pidToSpawnWebhookTimeout: Map<number, NodeJS.Timeout>;
+    takeoverAdmission?: PersistedTakeoverAdmissionWaitRegistration;
     resolveCanonicalTrackedSessionId: (pid: number) => string;
     onChildExited: (pid: number, exit: ChildExit) => void | Promise<void>;
     spawnLifecycleCallbacks: SpawnLifecycleCallbacks;
@@ -217,6 +219,8 @@ export async function spawnWindowsHostedSessionAndWaitForWebhook(params: Readonl
         trackedSession.cancelStartupLaunchBeforeAck =
             cancelStartupLaunch;
         params.pidToTrackedSession.set(waitParams.pid, trackedSession);
+        params.spawnLifecycleCallbacks.registerSpawnResourceCleanupForPid(trackedSession.pid);
+        params.spawnLifecycleCallbacks.consumeSessionAttachCleanupForPid(trackedSession.pid);
         let acceptedSpawnMarkerPromise: Promise<void>;
         let settleUnstartedWindowsTerminalMarker:
             (() => void) | null = null;
@@ -283,12 +287,31 @@ export async function spawnWindowsHostedSessionAndWaitForWebhook(params: Readonl
         const pollMs = Number.isFinite(pollMsParsed) && pollMsParsed > 0 ? pollMsParsed : 5000;
 
         params.logDebug(`[DAEMON RUN] Waiting for session webhook for PID ${waitParams.pid} (${waitParams.logLabel})`);
+        const commitLocalAttachment = async (completedSession: TrackedSession): Promise<void> => {
+            await acceptedSpawnMarkerPromise;
+            if (trackedSession.spawnStartupReadinessFailure) {
+                throw new Error(trackedSession.spawnStartupReadinessFailure.errorMessage);
+            }
+            const sessionId = completedSession.happySessionId?.trim();
+            if (!sessionId) throw new Error('canonical_session_id_missing');
+            try {
+                await writeTerminalAttachmentInfo({ happyHomeDir: params.happyHomeDir, sessionId,
+                    terminal: trackedSession.hostedTerminal ?? waitParams.terminal });
+            } catch {
+                trackedSession.spawnStartupReadinessFailure ??= {
+                    type: 'error', errorCode: SPAWN_SESSION_ERROR_CODES.SPAWN_FAILED,
+                    errorMessage: 'terminal_attachment_binding_failed',
+                };
+                throw new Error('terminal_attachment_binding_failed');
+            }
+        };
 
         const spawnResultPromise =
             waitParams.windowsTerminalLaunchCustody
                 ? waitForSessionWebhook({
                     pid: waitParams.pid,
                     pidToAwaiter: params.pidToAwaiter,
+                    takeoverAdmission: params.takeoverAdmission,
                     pidToSpawnResultResolver:
                         params.pidToSpawnResultResolver,
                     pidToSpawnWebhookTimeout:
@@ -297,11 +320,13 @@ export async function spawnWindowsHostedSessionAndWaitForWebhook(params: Readonl
                         params.pidToTrackedSession,
                     timeoutErrorMessage:
                         `Session webhook timeout for PID ${waitParams.pid}`,
+                    onSuccess: commitLocalAttachment,
                 })
                 : waitForVisibleConsoleSessionWebhook({
                     pid: waitParams.pid,
                     pollMs,
                     pidToAwaiter: params.pidToAwaiter,
+                    takeoverAdmission: params.takeoverAdmission,
                     pidToSpawnResultResolver:
                         params.pidToSpawnResultResolver,
                     pidToSpawnWebhookTimeout:
@@ -309,7 +334,9 @@ export async function spawnWindowsHostedSessionAndWaitForWebhook(params: Readonl
                     pidToTrackedSession:
                         params.pidToTrackedSession,
                     onChildExited: params.onChildExited,
+                    onSuccess: commitLocalAttachment,
                 });
+        armSessionWebhookStartupCustody(trackedSession, spawnResultPromise, acceptedSpawnMarkerPromise);
         const resolveHostedSpawnResult = async (
             result: SpawnSessionResult,
         ): Promise<SpawnSessionResult> => {
@@ -350,21 +377,6 @@ export async function spawnWindowsHostedSessionAndWaitForWebhook(params: Readonl
                 params.logDebug(
                     `[DAEMON RUN] Session ${resolved.sessionId} fully spawned with webhook (${waitParams.logLabel})`,
                 );
-                const resolvedSessionId =
-                    typeof resolved.sessionId === 'string' ? resolved.sessionId.trim() : '';
-                if (resolvedSessionId) {
-                    try {
-                        await writeTerminalAttachmentInfo({
-                            happyHomeDir: params.happyHomeDir,
-                            sessionId: resolvedSessionId,
-                            terminal:
-                                trackedSession.hostedTerminal
-                                ?? waitParams.terminal,
-                        });
-                    } catch (error) {
-                        params.logDebug('[DAEMON RUN] Failed to persist Windows terminal attachment info', error);
-                    }
-                }
             } else if (
                 resolved.type === 'error' &&
                 resolved.errorCode === SPAWN_SESSION_ERROR_CODES.SESSION_WEBHOOK_TIMEOUT
@@ -459,9 +471,7 @@ export async function spawnWindowsHostedSessionAndWaitForWebhook(params: Readonl
             }
             throw error;
         }
-        params.spawnLifecycleCallbacks.registerConnectedServiceSpawnTarget(waitParams.pid);
-        params.spawnLifecycleCallbacks.registerSpawnResourceCleanupForPid(waitParams.pid);
-        params.spawnLifecycleCallbacks.consumeSessionAttachCleanupForPid(waitParams.pid);
+        params.spawnLifecycleCallbacks.registerConnectedServiceSpawnTarget(trackedSession.pid);
         trackedSession.acceptedSpawnMarkerGate = undefined;
         resolveAcceptedSpawnMarker(true);
 

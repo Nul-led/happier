@@ -14,6 +14,8 @@ import { startVoiceInferenceWorker, type VoiceInferenceWorkerHandle } from '../v
 import { createDaemonPublicVoiceModelPackRuntime } from '../voiceInference/publicModelPacks/runtime';
 import { resolveVoiceInferencePaths } from '../voiceInference/voiceInferencePaths';
 import { configuration } from '@/configuration';
+import { watchLastCliUpdateResult } from '@happier-dev/cli-common/firstPartyRuntime';
+import { readCliUpdateFactsForThisCli } from '@/cli/runtime/update/cliUpdateFacts';
 import type { startDaemonMachineRegistration } from '../machine/startDaemonMachineRegistration';
 import {
   createDaemonMachineLiveStreamCaptureAdapter,
@@ -22,6 +24,7 @@ import {
 import type { DaemonPeerMediationObservabilityEmitter } from '../peer/mediation/observability/events';
 import type { StoredCredentials } from '@/persistence';
 import type { NormalizedLocalServiceInventorySnapshot } from '../local/services/inventory/scanner';
+import type { LocalServicesDaemonRuntime } from '../local/services/runtime';
 import packageJson from '../../../package.json';
 import type { PersistedTakeoverAdmissionWaiter } from '../spawn/persistedTakeoverAdmission';
 import type {
@@ -43,7 +46,7 @@ import { createRunnerBrokerReadinessApplicationLifecycle } from '../peer/mediati
 import type { StartPeerMediationLoopbackInput } from '../peer/mediation/rpc/startLoopback';
 import type { DaemonProviderBrokerRuntime } from '@/providers/broker/daemonProviderBrokerRuntime';
 import type { ExecutionRunTeamCredentialProviderBindingPreparer } from '@/agent/runtime/bridges/executionRun/runtime/providerLaunch';
-import type { DirectRouteGrantTrustRoot } from '../peer/mediation/verifyDirectRouteGrantV1';
+import type { DirectRouteGrantTrustRoot } from '../peer/mediation/verifyDirectRouteGrant';
 
 type BootstrapRuntime = Omit<
   Parameters<typeof startDaemonMachineRegistration>[0]['bootstrapRuntime'],
@@ -81,10 +84,6 @@ export function createDaemonMachineBootstrapRuntime(
       handoffAdapter: WorkspaceSyncHandoffAdapter;
       workspaceSync: NonNullable<ApiMachineClientLifecycleDependencies['workspaceSync']>;
     }>;
-    diagnosticSubsystemGates: Readonly<{
-      disableMachineSync: boolean;
-      disableAutomationWorker: boolean;
-    }>;
     runtimeId: string;
     publicReleaseChannel: NonNullable<DaemonState['publicReleaseChannel']>;
     startupSource: string;
@@ -94,15 +93,18 @@ export function createDaemonMachineBootstrapRuntime(
     }> | null;
     spawnSession: BootstrapRuntime['spawnSession'];
     stopSession: BootstrapRuntime['stopSession'];
+    sessionRunnerStatus?: BootstrapRuntime['sessionRunnerStatus'];
     awaitAgentSessionOpen: BootstrapRuntime['awaitAgentSessionOpen'];
     isSessionAlreadyRunning: BootstrapRuntime['isSessionAlreadyRunning'];
     loadLocalSessionMetadataForHandoff: BootstrapRuntime['loadLocalSessionMetadataForHandoff'];
+    resolveHostedSessionWorkingDirectory?: (sessionId: string) => Promise<string | null>;
     beforeShutdown: BootstrapRuntime['beforeShutdown'];
     requestShutdown: BootstrapRuntime['requestShutdown'];
     directPeerServerLifecycle: BootstrapRuntime['directPeerServerLifecycle'];
     machineIrohRuntime?: BootstrapRuntime['machineIrohRuntime'];
     prepareServerTransportForReconnect?: BootstrapRuntime['prepareServerTransportForReconnect'];
     acquireWorkspaceSyncMachineIngress?: BootstrapRuntime['acquireWorkspaceSyncMachineIngress'];
+    acquireLocalServicePreviewApplication?: BootstrapRuntime['acquireLocalServicePreviewApplication'];
     directTransferPromptAssetAdapterRegistry: BootstrapRuntime['directTransferPromptAssetAdapterRegistry'];
     directTransferPromptRegistryRegistry: BootstrapRuntime['directTransferPromptRegistryRegistry'];
     daemonServerWorkScheduler: BootstrapRuntime['daemonServerWorkScheduler'];
@@ -127,6 +129,7 @@ export function createDaemonMachineBootstrapRuntime(
     // PMS-WIRE: shared observability emitter whose store is published on the Api provider bridge.
     peerMediationObservabilityEmitter?: DaemonPeerMediationObservabilityEmitter;
     readLocalServiceInventorySnapshot?: () => Promise<NormalizedLocalServiceInventorySnapshot | null>;
+    localServiceSummary?: Pick<LocalServicesDaemonRuntime, 'getSummary' | 'subscribeSummary' | 'refreshInventoryNow'>;
     managedCatalogRuntime?: BootstrapRuntime['managedCatalogRuntime'];
     resolveManagedPurposeBindingIntent?: BootstrapRuntime['resolveManagedPurposeBindingIntent'];
     openTeamDirect?: BootstrapRuntime['openTeamDirect'];
@@ -178,6 +181,8 @@ export function createDaemonMachineBootstrapRuntime(
       ?.checkRunnerCredentialSelectionCurrentness(currentness, signal) ?? 'update_required',
   });
   let connectedApiMachine: ApiMachineClient | null = null;
+  let unsubscribeLocalServiceSummary: (() => void) | null = null;
+  let unsubscribeLocalServiceConnection: (() => void) | null = null;
   let providerBrokerApplication: Awaited<ReturnType<NonNullable<
     typeof params.startProviderBrokerApplication
   >>> | null = null;
@@ -221,6 +226,14 @@ export function createDaemonMachineBootstrapRuntime(
   let workspaceSyncService: ApiMachineClientLifecycleDependencies['workspaceSync'];
   return {
     cliVersion: packageJson.version,
+    // K5 (plan R13): published with the daemon-owned metadata and republished on each update outcome.
+    readCliUpdateFacts: readCliUpdateFactsForThisCli,
+    watchCliUpdateRecord: (onChange) => watchLastCliUpdateResult({
+      channel: configuration.publicReleaseRing,
+      processEnv: { ...process.env, HAPPIER_HOME_DIR: configuration.happyHomeDir },
+      onChange,
+      onError: (error) => logger.warn('[DAEMON RUN] Stopped watching the CLI update record; the next daemon start republishes it', error),
+    }),
     credentials: params.credentials,
     ...(params.daemonSessionMutationCustody
       ? { daemonSessionMutationCustody: params.daemonSessionMutationCustody }
@@ -250,6 +263,9 @@ export function createDaemonMachineBootstrapRuntime(
     ...(params.acquireWorkspaceSyncMachineIngress
       ? { acquireWorkspaceSyncMachineIngress: params.acquireWorkspaceSyncMachineIngress }
       : {}),
+    ...(params.acquireLocalServicePreviewApplication
+      ? { acquireLocalServicePreviewApplication: params.acquireLocalServicePreviewApplication }
+      : {}),
     ...(params.getServerFeaturesSnapshot
       ? { getServerFeaturesSnapshot: params.getServerFeaturesSnapshot }
       : {}),
@@ -257,7 +273,6 @@ export function createDaemonMachineBootstrapRuntime(
       ? { resolvePeerMediationTrustRoots: params.resolvePeerMediationTrustRoots }
       : {}),
     createConnectedApiMachine: async (registeredMachine) => {
-      if (params.diagnosticSubsystemGates.disableMachineSync) return null;
       const workspaceRuntime = params.createWorkspaceSyncRuntime
           ? await params.createWorkspaceSyncRuntime({
             machineId: registeredMachine.id,
@@ -278,6 +293,7 @@ export function createDaemonMachineBootstrapRuntime(
             ...(params.serviceLabel ? { serviceLabel: params.serviceLabel } : null),
           }, {
             isDaemonQuiescing: params.isShuttingDown,
+            resolveHostedSessionWorkingDirectory: params.resolveHostedSessionWorkingDirectory,
             ...(workspaceSyncHandoffAdapter
               ? { workspaceSyncHandoffAdapter }
               : {}),
@@ -292,6 +308,31 @@ export function createDaemonMachineBootstrapRuntime(
               : {}),
       });
       connectedApiMachine = apiMachine;
+      unsubscribeLocalServiceSummary?.();
+      unsubscribeLocalServiceConnection?.();
+      const localServices = params.localServiceSummary;
+      if (localServices) {
+        let online = false;
+        const publishSummary = (): void => {
+          if (!online || connectedApiMachine !== apiMachine || params.isShuttingDown()) return;
+          // The existing transport may defer/retry this handler. Read the live projection
+          // at that boundary so an older attempt cannot restore a superseded count.
+          void apiMachine.updateDaemonState((state) => ({
+            ...(state ?? { status: 'running' as const }),
+            localServices: localServices.getSummary(),
+          })).catch((error) => logger.warn('[DAEMON RUN] Local-service summary publication failed', error));
+        };
+        unsubscribeLocalServiceSummary = localServices.subscribeSummary(publishSummary);
+        unsubscribeLocalServiceConnection = apiMachine.onConnectionStateChange((state) => {
+          const wasOnline = online;
+          online = state.phase === 'online';
+          if (!online || wasOnline) return;
+          publishSummary();
+          void localServices.refreshInventoryNow().catch((error) => {
+            logger.debug('[DAEMON RUN] Local-service summary refresh failed', error);
+          });
+        });
+      }
       const recoverWorkflowRuns = params.createWorkflowRecoveryForMachine?.({
         machineId: registeredMachine.id,
         machineAdmissionTransport: async (request, options) =>
@@ -339,15 +380,15 @@ export function createDaemonMachineBootstrapRuntime(
       if (!workspaceSyncService?.prepareSourceSeedExport) throw new Error('Workspace sync source seed is unavailable');
       return await workspaceSyncService.prepareSourceSeedExport(request);
     },
+    prepareWorkspaceSyncResolutionExport: async (request) => {
+      if (!workspaceSyncService?.prepareConflictResolutionExport) throw new Error('Reviewed workspace conflict export is unavailable');
+      return await workspaceSyncService.prepareConflictResolutionExport(request);
+    },
     attachTransferRuntimeStatePublisher: async (connectedApiMachine) => {
       if (!params.transferRuntimeStatePublisher) return;
       await params.transferRuntimeStatePublisher.attachApiMachine(connectedApiMachine);
     },
     startAutomationWorkerForMachine: (runtimeMachineId) => {
-      if (params.diagnosticSubsystemGates.disableAutomationWorker) {
-        logger.warn('[DAEMON RUN] Diagnostic gate enabled: automation worker disabled');
-        return null;
-      }
       const automationApiMachine = connectedApiMachine;
       const coordinateWorkflowRun = automationApiMachine && params.createWorkflowRunCoordinatorForMachine
         ? params.createWorkflowRunCoordinatorForMachine({
@@ -368,9 +409,6 @@ export function createDaemonMachineBootstrapRuntime(
         token: params.credentials.token,
         credentials: params.credentials,
         machineId: runtimeMachineId,
-        ...(params.credentials.encryption
-          ? { encryption: params.credentials.encryption }
-          : {}),
         spawnSession: params.spawnSession,
         ...(coordinateWorkflowRun
           ? {
@@ -437,10 +475,15 @@ export function createDaemonMachineBootstrapRuntime(
     },
     spawnSession: params.spawnSession,
     stopSession: params.stopSession,
+    ...(params.sessionRunnerStatus ? { sessionRunnerStatus: params.sessionRunnerStatus } : {}),
     awaitAgentSessionOpen: params.awaitAgentSessionOpen,
     isSessionAlreadyRunning: params.isSessionAlreadyRunning,
     loadLocalSessionMetadataForHandoff: params.loadLocalSessionMetadataForHandoff,
     beforeShutdown: async () => {
+      unsubscribeLocalServiceSummary?.();
+      unsubscribeLocalServiceSummary = null;
+      unsubscribeLocalServiceConnection?.();
+      unsubscribeLocalServiceConnection = null;
       if (providerBrokerApplication) {
         try {
           await providerBrokerApplicationApiMachine?.setProviderBrokerIngressLive(false);

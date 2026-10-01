@@ -14,6 +14,7 @@ import {
 import {
     resolveComposerSuggestionKindsForTrigger,
     resolveComposerSuggestionScope,
+    type ComposerAccountMentionSource,
     type ComposerReferenceSearchHost,
     type ComposerSuggestionKindDefinition,
     type ComposerSuggestionKindId,
@@ -114,6 +115,8 @@ export type GetSuggestionsOptions = Readonly<{
     contributedActions?: readonly PluginContributedActionDescriptor[];
     /** Current aggregate rows as individual kinds settle; final settlement is marked complete. */
     onUpdate?: AutocompleteSuggestionUpdate;
+    /** A human discussion's Account search, for the `accountMention` kind only. */
+    accountMentions?: ComposerAccountMentionSource | null;
 }>;
 
 function describeSuggestionFailure(reason: unknown): string {
@@ -285,6 +288,7 @@ type KindResolveArgs = Readonly<{
     signal: AbortSignal | undefined;
     composerReferenceHost: ComposerReferenceSearchHost | null | undefined;
     contributedActions: readonly PluginContributedActionDescriptor[] | undefined;
+    accountMentions: ComposerAccountMentionSource | null | undefined;
     publish?: (suggestions: readonly AutocompleteSuggestion[]) => void;
 }>;
 
@@ -323,6 +327,7 @@ async function resolveKindCandidates(
         signal: args.signal,
         composerReferenceHost: args.composerReferenceHost,
         contributedActions: args.contributedActions,
+        accountMentions: args.accountMentions,
         ...(args.publish ? { publish: args.publish } : {}),
     });
 }
@@ -362,6 +367,7 @@ export async function getSuggestions(
         signal,
         composerReferenceHost: options?.composerReferenceHost,
         contributedActions: options?.contributedActions,
+        accountMentions: options?.accountMentions,
     };
 
     const rowsByKind: Array<readonly AutocompleteSuggestion[] | null> = definitions.map(() => null);

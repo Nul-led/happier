@@ -6,6 +6,7 @@ import {
     SESSION_ACTION_SET_ATTENTION_STANDING_ID,
     SESSION_ACTION_MARK_UNREAD_ID,
     SESSION_ACTION_MOVE_TO_FOLDER_ID,
+    SESSION_ACTION_PUT_UNDER_ID,
     SESSION_ACTION_RENAME_ID,
     SESSION_ACTION_STOP_ID,
 } from '@/components/sessions/actions/sessionActionIds';
@@ -87,6 +88,7 @@ describe('buildSessionRowMoreMenuItems', () => {
             SESSION_ACTION_RENAME_ID,
             SESSION_ACTION_MARK_UNREAD_ID,
             'attention-reminder',
+            SESSION_ACTION_PUT_UNDER_ID,
             SESSION_ACTION_STOP_ID,
             SESSION_ACTION_ARCHIVE_ID,
             SESSION_ACTION_MOVE_TO_FOLDER_ID,
@@ -146,6 +148,7 @@ describe('buildSessionRowMoreMenuItems', () => {
             SESSION_ACTION_SET_ATTENTION_STANDING_ID,
             'attention-reminder',
             'session.fork',
+            SESSION_ACTION_PUT_UNDER_ID,
             SESSION_ACTION_STOP_ID,
             SESSION_ACTION_ARCHIVE_ID,
         ]);

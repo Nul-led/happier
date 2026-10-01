@@ -69,7 +69,7 @@ describe('buildSpawnHappySessionRpcParams', () => {
                 v: 1,
                 updatedAt: 123,
                 ref: {
-                    agentTargetKey: 'backend:claude',
+                    agentTargetKey: 'agent:happier.agent.claude/claude',
                     providerConnectionId: null,
                     modelId: 'o3',
                 },
@@ -81,7 +81,7 @@ describe('buildSpawnHappySessionRpcParams', () => {
                 v: 1,
                 updatedAt: 123,
                 ref: {
-                    agentTargetKey: 'backend:claude',
+                    agentTargetKey: 'agent:happier.agent.claude/claude',
                     providerConnectionId: null,
                     modelId: 'o3',
                 },

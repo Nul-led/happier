@@ -31,6 +31,7 @@ describe('native Agent durable transcript publication', () => {
             },
             publications: {
                 models: { bind: () => ({ dispose() {} }) },
+                modes: { bind: () => ({ dispose() {} }) },
                 activeInput: { bind: () => ({ dispose() {} }), publishStatus: vi.fn() },
             },
             readToolExecutionCapability: () => null,
@@ -88,6 +89,7 @@ describe('native Agent durable transcript publication', () => {
             },
             publications: {
                 models: { bind: () => ({ dispose() {} }) },
+                modes: { bind: () => ({ dispose() {} }) },
                 activeInput: { bind: () => ({ dispose() {} }), publishStatus: vi.fn() },
             },
             readToolExecutionCapability: () => null,
@@ -149,6 +151,7 @@ describe('native Agent durable transcript publication', () => {
             },
             publications: {
                 models: { bind: () => ({ dispose() {} }) },
+                modes: { bind: () => ({ dispose() {} }) },
                 activeInput: { bind: () => ({ dispose() {} }), publishStatus: vi.fn() },
             },
             readToolExecutionCapability: () => null,
@@ -203,6 +206,7 @@ describe('native Agent durable transcript publication', () => {
             },
             publications: {
                 models: { bind: () => ({ dispose() {} }) },
+                modes: { bind: () => ({ dispose() {} }) },
                 activeInput: { bind: () => ({ dispose() {} }), publishStatus: vi.fn() },
             },
             readToolExecutionCapability: () => null,
@@ -273,6 +277,7 @@ describe('native Agent durable transcript publication', () => {
             },
             publications: {
                 models: { bind: () => ({ dispose() {} }) },
+                modes: { bind: () => ({ dispose() {} }) },
                 activeInput: { bind: () => ({ dispose() {} }), publishStatus: vi.fn() },
             },
             readToolExecutionCapability: () => null,
@@ -325,6 +330,7 @@ describe('native Agent durable transcript publication', () => {
             },
             publications: {
                 models: { bind: () => ({ dispose() {} }) },
+                modes: { bind: () => ({ dispose() {} }) },
                 activeInput: { bind: () => ({ dispose() {} }), publishStatus: vi.fn() },
             },
             readToolExecutionCapability: () => null,
@@ -378,6 +384,7 @@ describe('native Agent durable transcript publication', () => {
             },
             publications: {
                 models: { bind: () => ({ dispose() {} }) },
+                modes: { bind: () => ({ dispose() {} }) },
                 activeInput: { bind: () => ({ dispose() {} }), publishStatus: vi.fn() },
             },
             readToolExecutionCapability: () => null,

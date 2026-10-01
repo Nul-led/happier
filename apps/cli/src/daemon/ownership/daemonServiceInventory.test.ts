@@ -1,12 +1,22 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { dirname, join } from 'node:path';
 import { mkdirSync, writeFileSync } from 'node:fs';
+import * as childProcess from 'node:child_process';
 
 import { renderSystemdServiceUnit } from '@happier-dev/cli-common/service';
 import type { DaemonServiceCliRuntime } from '@/daemon/service/paths';
 
+// Preprocess the real N8 graph during collection; each case still reloads it after setting its env.
+import '@/cli/commands/backgroundServiceFollowUp';
+
 import { createEnvKeyScope } from '@/testkit/env/envScope';
 import { withTempDir } from '@/testkit/fs/tempDir';
+
+// Adapt Node's immutable ESM namespace at its real subprocess boundary, preserving all other calls.
+vi.mock('node:child_process', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('node:child_process')>();
+    return { ...actual, spawnSync: vi.fn(actual.spawnSync) };
+});
 
 describe('daemonServiceInventory', () => {
     const envScope = createEnvKeyScope([
@@ -39,6 +49,45 @@ describe('daemonServiceInventory', () => {
 
         expect(rendered.lines.join(' ')).toContain('happier service restart');
         expect(rendered.lines.join(' ')).toContain('restart a manual relay runtime');
+    });
+
+    it('N8 reports the installed pin even while the OS manager reports it stopped', async () => {
+        await withTempDir('happier-n8-installed-pin-', async (homeDir) => {
+            envScope.patch({
+                HAPPIER_HOME_DIR: homeDir, HAPPIER_ACTIVE_SERVER_ID: 'cloud',
+                HAPPIER_SERVER_URL: 'https://api.happier.dev', HAPPIER_PUBLIC_SERVER_URL: 'https://api.happier.dev',
+                HAPPIER_PUBLIC_RELEASE_CHANNEL: 'stable', HAPPIER_DAEMON_SERVICE_CHANNEL: 'stable',
+                HAPPIER_DAEMON_SERVICE_PLATFORM: 'linux', HAPPIER_DAEMON_SERVICE_USER_HOME_DIR: homeDir,
+                HAPPIER_DAEMON_SERVICE_HAPPIER_HOME_DIR: homeDir, HAPPIER_DAEMON_SERVICE_TARGET_MODE: 'default-following',
+            });
+            writeFileSync(join(homeDir, 'settings.json'), JSON.stringify({
+                schemaVersion: 6, activeServerId: 'cloud',
+                servers: { cloud: { id: 'cloud', name: 'Cloud', serverUrl: 'https://api.happier.dev', createdAt: 0, updatedAt: 0, lastUsedAt: 0 } },
+            }));
+            // systemctl is the OS boundary; real discovery, settings, selection and N8 run below it.
+            const realSpawn = (await vi.importActual<typeof import('node:child_process')>('node:child_process')).spawnSync;
+            vi.spyOn(childProcess, 'spawnSync').mockImplementation((...args) => {
+                if (args[0] === 'systemctl') return { pid: 1, status: 0, signal: null, output: [null, 'LoadState=loaded\nActiveState=inactive\nUnitFileState=enabled\n', ''], stdout: 'LoadState=loaded\nActiveState=inactive\nUnitFileState=enabled\n', stderr: '' };
+                return Reflect.apply(realSpawn, childProcess, args);
+            });
+            vi.resetModules();
+            const { resolveDaemonServiceCliRuntimeFromEnv, resolveDaemonServicePaths } = await import('@/daemon/service/cli');
+            const runtime = resolveDaemonServiceCliRuntimeFromEnv({ processEnv: process.env });
+            for (const [targetMode, id] of [['default-following', 'cloud'], ['pinned', 'cloud']] as const) {
+                const paths = resolveDaemonServicePaths({ ...runtime, targetMode, instanceId: id });
+                mkdirSync(dirname(paths.installedPath), { recursive: true });
+                writeFileSync(paths.installedPath, renderSystemdServiceUnit({
+                    description: 'N8 fixture', execStart: ['/tmp/happier', 'daemon', 'start-sync'], env: {
+                        HAPPIER_HOME_DIR: homeDir, HAPPIER_DAEMON_SERVICE_HAPPIER_HOME_DIR: homeDir,
+                        HAPPIER_DAEMON_STARTUP_SOURCE: 'background-service', HAPPIER_DAEMON_SERVICE_TARGET_MODE: targetMode,
+                        HAPPIER_ACTIVE_SERVER_ID: id, HAPPIER_SERVER_URL: runtime.serverUrl, HAPPIER_PUBLIC_SERVER_URL: runtime.publicServerUrl,
+                        HAPPIER_PUBLIC_RELEASE_CHANNEL: 'stable',
+                    },
+                }));
+            }
+            const { readServerSelectionBackgroundServiceFollowUp } = await import('@/cli/commands/backgroundServiceFollowUp');
+            expect(await readServerSelectionBackgroundServiceFollowUp()).toMatchObject({ servedByPinnedService: 'happier-daemon.cloud' });
+        });
     });
 
     it('does not treat a default-following background service as belonging to an ephemeral non-default relay selection', async () => {

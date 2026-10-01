@@ -72,7 +72,6 @@ describe('voice registry provider selection', () => {
         },
         client: {
           artifactId: 'voice-runtime-web',
-          modulePath: './voiceRuntime',
           exportName: 'activate',
         },
       }],
@@ -218,7 +217,6 @@ describe('voice registry provider selection', () => {
         },
         client: {
           artifactId: 'voice-runtime-web',
-          modulePath: './voiceRuntime',
           exportName: 'activate',
         },
       }],

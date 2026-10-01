@@ -6,14 +6,16 @@ import { createWorkspaceRootOwnershipManager } from './workspaceSyncRootOwnershi
 import { computeWorkspaceSyncRootFingerprint, workspaceSyncTargetBootstrap } from './workspaceSyncTargetBootstrap';
 
 const [mode, targetPath, materializationDirectory, readyPath] = process.argv.slice(2);
-if ((mode !== 'existing' && mode !== 'missing-git') || !targetPath || !materializationDirectory || !readyPath) {
+if ((mode !== 'existing' && mode !== 'existing-quarantined' && mode !== 'missing-git') || !targetPath || !materializationDirectory || !readyPath) {
   throw new Error('workspace sync bootstrap child fixture arguments are required');
 }
 
 const rootOwnershipManager = createWorkspaceRootOwnershipManager({
   lockDirectory: join(materializationDirectory, 'root-locks'),
 });
-const canonicalTargetPath = mode === 'existing' ? await realpath(targetPath) : null;
+const canonicalTargetPath = mode === 'existing' || mode === 'existing-quarantined'
+  ? await realpath(targetPath)
+  : null;
 
 await workspaceSyncTargetBootstrap({
   rootPath: targetPath,
@@ -23,7 +25,7 @@ await workspaceSyncTargetBootstrap({
   targetWorkspaceRefId: 'workspace-beta',
   policyDigest: 'a'.repeat(64),
   contentSelection: mode === 'missing-git' ? 'git_worktree' : 'all_files',
-  ...(mode === 'existing' ? { targetReplacementApproval: {
+  ...(mode === 'existing' || mode === 'existing-quarantined' ? { targetReplacementApproval: {
     v: 1 as const,
     consequences: ['replace_nonempty_workspace_target'] as const,
     serverId: 'server-1',
@@ -36,7 +38,7 @@ await workspaceSyncTargetBootstrap({
   rootOwnershipManager,
   createIfMissing: mode === 'missing-git',
   targetBootstrap: 'materialize_from_source_workspace',
-  ...(mode === 'existing'
+  ...(mode === 'existing' || mode === 'existing-quarantined'
     ? {
         materializeSeed: async ({ canonicalRoot, materializationReceiptPath, originalTargetExists }) => {
           const materialization = await beginWorkspaceTargetMaterialization({
@@ -45,10 +47,12 @@ await workspaceSyncTargetBootstrap({
             receiptPath: materializationReceiptPath,
             originalTargetExists,
           });
-          await mkdir(canonicalRoot);
-          await writeFile(join(canonicalRoot, 'new.txt'), 'new');
-          await materialization.custody.bindPromotedTarget();
-          await writeFile(readyPath, 'renamed');
+          if (mode === 'existing') {
+            await mkdir(canonicalRoot);
+            await writeFile(join(canonicalRoot, 'new.txt'), 'new');
+            await materialization.custody.bindPromotedTarget();
+          }
+          await writeFile(readyPath, mode === 'existing' ? 'replaced' : 'quarantined');
           await new Promise<void>(() => undefined);
           return materialization.custody;
         },

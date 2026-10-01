@@ -8,6 +8,7 @@ export {
     applyBrowserControlEvent,
     beginBrowserAdapterRefresh,
     createBrowserControlState,
+    refreshBrowserNativeViewCaptureCapabilities,
 } from './reducer';
 export {
     browserViewLifecycleEvent,
@@ -26,6 +27,7 @@ export type {
 export {
     createBrowserDaemonControlCommandSender,
     dispatchBrowserDaemonControlCommandViaMachineRpc,
+    listBrowserDaemonViewsViaMachineRpc,
     type BrowserDaemonControlDispatchClientInput,
     type BrowserDaemonControlDispatchClientResult,
 } from './machineRpc';

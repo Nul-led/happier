@@ -1,9 +1,13 @@
 import {
     getMachineLiveStreamPayloadDecodedByteLength,
+    isMachineLiveStreamTerminalReceiptV1,
+    MachineLiveStreamStartRequestV1Schema,
     PEER_MEDIATION_RECEIPTS,
     validateMachineLiveStreamControlLeaseV1,
     type MachineLiveStreamControlLeaseV1,
     type MachineLiveStreamControlSourceV1,
+    type MachineLiveStreamCaptureSourceKindV1,
+    type MachineLiveStreamControlV1,
     type MachineLiveStreamFrameV1,
     type MachineLiveStreamRelayEnvelopeV1,
     type MachineLiveStreamReceiptV1,
@@ -15,6 +19,7 @@ import {
     classifyCaptureTerminalCloseKind,
     type MachineLiveStreamCaptureAdapter,
     type MachineLiveStreamCaptureSession,
+    type MachineLiveStreamCaptureStartResult,
 } from './captureAdapter';
 import type { MachineLiveStreamCaptureRegistry } from './captureRegistry';
 import { createMachineLiveStreamSession } from './session';
@@ -33,19 +38,18 @@ export type MachineLiveStreamRelayTerminator = Readonly<{
     dispose: () => Promise<void>;
 }>;
 
-type ActiveRelayStream = Readonly<{
-    captureSession: MachineLiveStreamCaptureSession;
+type ActiveRelayStream = {
+    captureSession: MachineLiveStreamCaptureSession | null;
     controlSource: MachineLiveStreamControlSourceV1 | null;
-    applyTransportControl: (control: MachineLiveStreamRelayEnvelopeV1) => Readonly<{ ok: true } | { ok: false; reasonCode: string }>;
+    controlSourceKind: MachineLiveStreamCaptureSourceKindV1 | undefined;
+    applyTransportControl: (control: MachineLiveStreamControlV1) => Readonly<{ ok: true } | { ok: false; reasonCode: string }>;
     startRequest: MachineLiveStreamStartRequestV1;
-}>;
-
-const TERMINAL_CAPTURE_RECEIPT_IDS = new Set<string>([
-    PEER_MEDIATION_RECEIPTS.streamPaused,
-    PEER_MEDIATION_RECEIPTS.streamBandwidthCapped,
-]);
-
-export const MACHINE_LIVE_STREAM_RELAY_PRE_ACTIVE_BUFFER_FRAME_LIMIT = 32;
+    lifetimeExpiresAtMs: number;
+    expiresAtMs: number;
+    expiryTimer: ReturnType<typeof setTimeout> | null;
+    closedReason: string | null;
+    bytesOut: number;
+};
 
 // The per-tab viewer target rides the signed start's `viewerSocketId`. The source daemon echoes
 // it onto every relay envelope it emits (start/frame/receipt) so the server relay delivers to the
@@ -105,53 +109,17 @@ function startEnvelope(startRequest: MachineLiveStreamStartRequestV1): MachineLi
     };
 }
 
-function isTerminalCaptureReceipt(receipt: MachineLiveStreamReceiptV1): boolean {
-    return TERMINAL_CAPTURE_RECEIPT_IDS.has(receipt.id);
-}
-
-function readFrameEnvelope(
-    envelope: MachineLiveStreamRelayEnvelopeV1,
-): MachineLiveStreamFrameV1 | null {
-    return envelope.message.kind === 'frame' ? envelope.message.frame : null;
-}
-
-function countPendingFrameEnvelopes(envelopes: readonly MachineLiveStreamRelayEnvelopeV1[]): number {
-    return envelopes.reduce((count, envelope) => count + (readFrameEnvelope(envelope) ? 1 : 0), 0);
-}
-
-function dropFirstPendingFrame(
-    envelopes: MachineLiveStreamRelayEnvelopeV1[],
-): MachineLiveStreamFrameV1 | null {
-    const index = envelopes.findIndex((envelope) => readFrameEnvelope(envelope) !== null);
-    if (index < 0) return null;
-    const [removed] = envelopes.splice(index, 1);
-    return removed ? readFrameEnvelope(removed) : null;
-}
-
-function dropPendingDeltasUntilKeyframe(envelopes: MachineLiveStreamRelayEnvelopeV1[]): void {
-    while (true) {
-        const index = envelopes.findIndex((envelope) => readFrameEnvelope(envelope) !== null);
-        if (index < 0) return;
-        const frame = readFrameEnvelope(envelopes[index]!);
-        if (!frame || frame.payloadKind === 'image_keyframe') return;
-        envelopes.splice(index, 1);
-    }
-}
-
-function enqueuePendingPreActiveEnvelope(
-    envelopes: MachineLiveStreamRelayEnvelopeV1[],
-    envelope: MachineLiveStreamRelayEnvelopeV1,
-): void {
-    envelopes.push(envelope);
-    let droppedKeyframe = false;
-    while (countPendingFrameEnvelopes(envelopes) > MACHINE_LIVE_STREAM_RELAY_PRE_ACTIVE_BUFFER_FRAME_LIMIT) {
-        const dropped = dropFirstPendingFrame(envelopes);
-        if (!dropped) break;
-        if (dropped.payloadKind === 'image_keyframe') droppedKeyframe = true;
-    }
-    if (droppedKeyframe) {
-        dropPendingDeltasUntilKeyframe(envelopes);
-    }
+// Renewal changes authorization time only. Capture identity, routing, codec and admitted caps
+// are immutable for an active stream; the authenticated server ingress verifies the signature.
+function hasSameRenewalScope(previous: MachineLiveStreamStartRequestV1, next: MachineLiveStreamStartRequestV1): boolean {
+    const fields = [
+        'streamId', 'streamFamily', 'sourceId', 'routeKind', 'sourceMachineId', 'targetMachineId',
+        'viewerSocketId', 'codecId', 'maxBitrateBps', 'maxFramesPerSecond',
+        'maxFrameBytes', 'maxDurationMs', 'maxTotalBytes',
+    ] as const;
+    return fields.every((field) => previous[field] === next[field])
+        && JSON.stringify(previous.viewerCodecs) === JSON.stringify(next.viewerCodecs)
+        && previous.authorization?.payload.accountId === next.authorization?.payload.accountId;
 }
 
 export function createMachineLiveStreamRelayTerminator(input: Readonly<{
@@ -168,7 +136,6 @@ export function createMachineLiveStreamRelayTerminator(input: Readonly<{
     observability?: DaemonPeerMediationObservabilityEmitter;
 }>): MachineLiveStreamRelayTerminator {
     const activeStreams = new Map<string, ActiveRelayStream>();
-    const bytesByStreamId = new Map<string, number>();
     let disposed = false;
     let disposePromise: Promise<void> | null = null;
 
@@ -199,18 +166,36 @@ export function createMachineLiveStreamRelayTerminator(input: Readonly<{
     }
 
     const closeActiveStream = async (closeInput: Readonly<{
-        streamId: string;
+        active: ActiveRelayStream;
         observabilityKind: DaemonPeerMediationObservabilityEventKind;
         reasonCode?: string;
+        emitTerminalReceipt?: boolean;
     }>): Promise<void> => {
-        const active = activeStreams.get(closeInput.streamId);
-        if (!active) return;
-        activeStreams.delete(closeInput.streamId);
-        const bytesOut = bytesByStreamId.get(closeInput.streamId);
-        bytesByStreamId.delete(closeInput.streamId);
+        const active = closeInput.active;
+        if (active.closedReason !== null) return;
+        active.closedReason = closeInput.reasonCode ?? 'stream_stopped';
+        if (activeStreams.get(active.startRequest.streamId) === active) {
+            activeStreams.delete(active.startRequest.streamId);
+        }
+        if (active.expiryTimer !== null) clearTimeout(active.expiryTimer);
+        active.expiryTimer = null;
+        if (closeInput.emitTerminalReceipt !== false) {
+            input.emitEnvelope(receiptEnvelope({
+                sourceMachineId: active.startRequest.sourceMachineId,
+                targetMachineId: active.startRequest.targetMachineId,
+                ...viewerSocketIdEcho(active.startRequest),
+                receipt: {
+                    v: 1, id: PEER_MEDIATION_RECEIPTS.streamPaused,
+                    streamId: active.startRequest.streamId, routeKind: 'server_relay', flowKind: 'live_stream',
+                    reasonCode: active.closedReason, terminal: true,
+                    terminalOutcome: closeInput.observabilityKind === 'flow.closed' ? 'stopped' : 'error',
+                    bytesSent: active.bytesOut,
+                },
+            }));
+        }
         let reasonCode = closeInput.reasonCode;
         try {
-            await active.captureSession.stop();
+            await active.captureSession?.stop();
         } catch {
             reasonCode ??= 'capture_stop_failed';
         }
@@ -218,9 +203,29 @@ export function createMachineLiveStreamRelayTerminator(input: Readonly<{
             kind: closeInput.observabilityKind,
             startRequest: active.startRequest,
             ...(reasonCode ? { reasonCode } : {}),
-            ...(bytesOut !== undefined ? { bytesOut } : {}),
+            bytesOut: active.bytesOut,
         });
     };
+
+    function expireStream(active: ActiveRelayStream): boolean {
+        if (input.nowMs() < active.expiresAtMs) return false;
+        void closeActiveStream({
+            active, observabilityKind: 'flow.errored',
+            reasonCode: active.expiresAtMs === active.startRequest.authorization?.payload.exp
+                ? 'grant_expired' : 'max_duration_ms_exceeded',
+        });
+        return true;
+    }
+
+    function scheduleExpiry(active: ActiveRelayStream): void {
+        if (active.expiryTimer !== null) clearTimeout(active.expiryTimer);
+        active.expiryTimer = setTimeout(() => {
+            active.expiryTimer = null;
+            if (active.closedReason !== null) return;
+            if (!expireStream(active)) scheduleExpiry(active);
+        }, Math.max(0, active.expiresAtMs - input.nowMs()));
+        active.expiryTimer.unref?.();
+    }
 
     return {
         start: async (startRequest) => {
@@ -237,7 +242,7 @@ export function createMachineLiveStreamRelayTerminator(input: Readonly<{
                 return { ok: false, reasonCode: 'source_machine_mismatch' };
             }
 
-            const source = input.registry?.resolve({ streamFamily: startRequest.streamFamily }) ?? null;
+            const source = input.registry?.resolve({ sourceId: startRequest.sourceId, streamFamily: startRequest.streamFamily }) ?? null;
             if (source && !source.ok && !input.captureAdapter) {
                 emitObservability({ kind: 'flow.denied', startRequest, reasonCode: source.diagnostic.reasonCode });
                 return { ok: false, reasonCode: source.diagnostic.reasonCode };
@@ -278,14 +283,35 @@ export function createMachineLiveStreamRelayTerminator(input: Readonly<{
             // point before `flow.ready` so the started/ready split is observable.
             emitObservability({ kind: 'flow.started', startRequest });
 
-            const pendingEnvelopes: MachineLiveStreamRelayEnvelopeV1[] = [];
+            let pendingKeyframe: MachineLiveStreamFrameV1 | null = null;
+            let pendingMetadata: MachineLiveStreamFrameV1 | null = null;
+            let requiresKeyframe = true;
             let relayActive = false;
-            const emitStreamEnvelope = (envelope: MachineLiveStreamRelayEnvelopeV1): void => {
-                if (relayActive) {
-                    input.emitEnvelope(envelope);
-                    return;
+
+            const emitCapturedFrame = (frame: MachineLiveStreamFrameV1): void => {
+                active.bytesOut += getMachineLiveStreamPayloadDecodedByteLength(frame.payloadBase64);
+                input.emitEnvelope(frameEnvelope({
+                    sourceMachineId: active.startRequest.sourceMachineId,
+                    targetMachineId: active.startRequest.targetMachineId,
+                    ...viewerSocketIdEcho(active.startRequest), frame,
+                }));
+            };
+
+            const receiveReceipt = (receipt: MachineLiveStreamReceiptV1): void => {
+                if (active.closedReason !== null || receipt.streamId !== active.startRequest.streamId) return;
+                input.emitEnvelope(receiptEnvelope({
+                    sourceMachineId: active.startRequest.sourceMachineId,
+                    targetMachineId: active.startRequest.targetMachineId,
+                    ...viewerSocketIdEcho(active.startRequest), receipt,
+                }));
+                if (isMachineLiveStreamTerminalReceiptV1(receipt)) {
+                    void closeActiveStream({
+                        active,
+                        observabilityKind: classifyCaptureTerminalCloseKind(receipt.reasonCode),
+                        reasonCode: receipt.reasonCode ?? 'capture_stopped',
+                        emitTerminalReceipt: false,
+                    });
                 }
-                enqueuePendingPreActiveEnvelope(pendingEnvelopes, envelope);
             };
 
             const pump = startMachineLiveStreamFramePump({
@@ -295,114 +321,162 @@ export function createMachineLiveStreamRelayTerminator(input: Readonly<{
                 startedAtMs: session.session.startedAtMs,
                 nowMs: input.nowMs,
                 emitFrame: (frame) => {
-                    const currentBytes = bytesByStreamId.get(session.session.streamId) ?? 0;
-                    bytesByStreamId.set(
-                        session.session.streamId,
-                        currentBytes + getMachineLiveStreamPayloadDecodedByteLength(frame.payloadBase64),
-                    );
-                    emitStreamEnvelope(frameEnvelope({
-                        sourceMachineId: startRequest.sourceMachineId,
-                        targetMachineId: startRequest.targetMachineId,
-                        ...viewerSocketIdEcho(startRequest),
-                        frame,
-                    }));
-                },
-                emitReceipt: (receipt) => emitStreamEnvelope(receiptEnvelope({
-                    sourceMachineId: startRequest.sourceMachineId,
-                    targetMachineId: startRequest.targetMachineId,
-                    ...viewerSocketIdEcho(startRequest),
-                    receipt,
-                })),
-            });
-
-            const capture = await captureAdapter.start({
-                streamId: session.session.streamId,
-                streamFamily: startRequest.streamFamily,
-                sourceMachineId: startRequest.sourceMachineId,
-                targetMachineId: startRequest.targetMachineId,
-                caps: startRequest,
-                startRequest,
-                startedAtMs: session.session.startedAtMs,
-                expiresAtMs: session.session.expiresAtMs,
-                nowMs: input.nowMs,
-                offerFrame: pump.offerFrame,
-                applyControl: pump.applyControl,
-                emitReceipt: (receipt) => {
-                    input.emitEnvelope(receiptEnvelope({
-                        sourceMachineId: startRequest.sourceMachineId,
-                        targetMachineId: startRequest.targetMachineId,
-                        ...viewerSocketIdEcho(startRequest),
-                        receipt,
-                    }));
-                    if (isTerminalCaptureReceipt(receipt)) {
-                        void closeActiveStream({
-                            streamId: receipt.streamId,
-                            observabilityKind: classifyCaptureTerminalCloseKind(receipt.reasonCode),
-                            ...(receipt.reasonCode ? { reasonCode: receipt.reasonCode } : {}),
-                        });
+                    if (relayActive) {
+                        if (frame.payloadKind === 'image_delta' && requiresKeyframe) return;
+                        if (frame.payloadKind === 'image_keyframe') requiresKeyframe = false;
+                        emitCapturedFrame(frame);
+                    } else if (frame.payloadKind === 'image_keyframe') {
+                        // Startup is a latest-observation projection, never a queued video history.
+                        pendingKeyframe = frame;
+                        requiresKeyframe = false;
+                    } else if (frame.payloadKind === 'metadata') {
+                        pendingMetadata = frame;
+                    } else {
+                        requiresKeyframe = true;
                     }
                 },
+                emitReceipt: receiveReceipt,
             });
-            if (!capture.ok) {
-                bytesByStreamId.delete(session.session.streamId);
-                emitObservability({ kind: 'flow.errored', startRequest, reasonCode: capture.reasonCode });
-                return { ok: false, reasonCode: capture.reasonCode };
+
+            const active: ActiveRelayStream = {
+                captureSession: null,
+                controlSourceKind: source?.ok ? source.source.capabilities.sourceKind : undefined,
+                controlSource: source?.ok ? {
+                    sourceId: source.source.capabilities.sourceId,
+                    inputMode: source.source.capabilities.inputMode,
+                } : null,
+                applyTransportControl: (control) => {
+                    const result = pump.applyControl(control);
+                    if (result.ok && control.kind === 'keyframe_required') requiresKeyframe = true;
+                    return result;
+                },
+                startRequest,
+                lifetimeExpiresAtMs: typeof startRequest.maxDurationMs === 'number'
+                    ? session.session.startedAtMs + startRequest.maxDurationMs : Number.POSITIVE_INFINITY,
+                expiresAtMs: session.session.expiresAtMs,
+                expiryTimer: null, closedReason: null, bytesOut: 0,
+            };
+            activeStreams.set(session.session.streamId, active);
+            scheduleExpiry(active);
+
+            let capture: MachineLiveStreamCaptureStartResult;
+            try {
+                capture = await captureAdapter.start({
+                    streamId: session.session.streamId,
+                    streamFamily: startRequest.streamFamily,
+                    sourceMachineId: startRequest.sourceMachineId,
+                    targetMachineId: startRequest.targetMachineId,
+                    caps: startRequest,
+                    startRequest,
+                    startedAtMs: session.session.startedAtMs,
+                    expiresAtMs: session.session.expiresAtMs,
+                    nowMs: input.nowMs,
+                    offerFrame: (frame) => {
+                        if (active.closedReason !== null || expireStream(active)) {
+                            return { ok: false, reasonCode: 'stream_closed' };
+                        }
+                        return pump.offerFrame(frame);
+                    },
+                    applyControl: pump.applyControl,
+                    emitReceipt: receiveReceipt,
+                });
+            } catch {
+                await closeActiveStream({ active, observabilityKind: 'flow.errored', reasonCode: 'capture_start_failed' });
+                return { ok: false, reasonCode: active.closedReason ?? 'capture_start_failed' };
             }
-            if (disposed) {
-                bytesByStreamId.delete(session.session.streamId);
+            if (!capture.ok) {
+                await closeActiveStream({
+                    active, observabilityKind: 'flow.errored', reasonCode: capture.reasonCode,
+                });
+                return { ok: false, reasonCode: active.closedReason ?? capture.reasonCode };
+            }
+            if (active.closedReason !== null || expireStream(active)) {
                 try {
                     await capture.session.stop();
                 } catch {
                     // Disposal remains terminal even when the capture source cannot stop cleanly.
                 }
-                emitObservability({ kind: 'flow.closed', startRequest, reasonCode: 'relay_disposed' });
-                return { ok: false, reasonCode: 'relay_disposed' };
+                return { ok: false, reasonCode: active.closedReason ?? 'grant_expired' };
             }
-
-            activeStreams.set(session.session.streamId, {
-                captureSession: capture.session,
-                controlSource: source?.ok
-                    ? {
-                        sourceId: source.source.capabilities.sourceId,
-                        inputMode: source.source.capabilities.inputMode,
-                    }
-                    : null,
-                applyTransportControl: (envelope) => {
-                    if (envelope.message.kind !== 'control') return { ok: false, reasonCode: 'invalid_control' };
-                    return pump.applyControl(envelope.message.control);
-                },
-                startRequest,
-            });
+            active.captureSession = capture.session;
             relayActive = true;
-            input.emitEnvelope(startEnvelope(startRequest));
-            for (const envelope of pendingEnvelopes) input.emitEnvelope(envelope);
-            pendingEnvelopes.length = 0;
+            input.emitEnvelope(startEnvelope(active.startRequest));
+            const observations: MachineLiveStreamFrameV1[] = [];
+            if (pendingKeyframe) observations.push(pendingKeyframe);
+            if (pendingMetadata) observations.push(pendingMetadata);
+            observations.sort((left, right) => left.sequence - right.sequence);
+            for (const frame of observations) {
+                emitCapturedFrame(frame);
+            }
+            pendingKeyframe = null;
+            pendingMetadata = null;
+            if (requiresKeyframe) capture.session.applyControl?.({
+                v: 1, streamId: startRequest.streamId, kind: 'keyframe_required', reasonCode: 'startup_keyframe_required',
+            });
             emitObservability({
                 kind: 'flow.ready',
                 startRequest,
-                bytesOut: bytesByStreamId.get(session.session.streamId) ?? 0,
+                bytesOut: active.bytesOut,
             });
 
             return { ok: true, streamId: session.session.streamId };
         },
         applyControl: (envelope) => {
+            if (envelope.message.kind === 'renew') {
+                const request = envelope.message.startRequest;
+                const active = activeStreams.get(request.streamId);
+                if (!active) return { ok: false, reasonCode: 'live_stream_start_required' };
+                if (expireStream(active)) return { ok: false, reasonCode: 'grant_expired' };
+                if (!hasSameRenewalScope(active.startRequest, request)
+                    || envelope.sourceMachineId !== active.startRequest.sourceMachineId
+                    || envelope.targetMachineId !== active.startRequest.targetMachineId
+                    || envelope.viewerSocketId !== active.startRequest.viewerSocketId) {
+                    return { ok: false, reasonCode: 'renewal_scope_mismatch' };
+                }
+                const parsed = MachineLiveStreamStartRequestV1Schema.safeParse(request);
+                if (!parsed.success || !parsed.data.authorization) return { ok: false, reasonCode: 'invalid_renewal' };
+                const expiresAtMs = parsed.data.authorization.payload.exp;
+                if (expiresAtMs <= input.nowMs()
+                    || expiresAtMs <= (active.startRequest.authorization?.payload.exp ?? 0)) {
+                    return { ok: false, reasonCode: 'renewal_expiry_not_extended' };
+                }
+                active.startRequest = parsed.data;
+                active.expiresAtMs = Math.min(expiresAtMs, active.lifetimeExpiresAtMs);
+                scheduleExpiry(active);
+                return { ok: true };
+            }
             if (envelope.message.kind === 'control') {
                 const active = activeStreams.get(envelope.message.control.streamId);
                 if (!active) return { ok: false, reasonCode: 'live_stream_start_required' };
+                if (expireStream(active)) return { ok: false, reasonCode: 'grant_expired' };
                 if (envelope.message.control.kind === 'stop') {
                     void closeActiveStream({
-                        streamId: envelope.message.control.streamId,
+                        active,
                         observabilityKind: 'flow.closed',
                         reasonCode: envelope.message.control.reasonCode ?? 'stream_stopped',
                     });
                     return { ok: true };
                 }
-                return active.applyTransportControl(envelope);
+                const applied = active.applyTransportControl(envelope.message.control);
+                if (!applied.ok) return applied;
+                const control = envelope.message.control;
+                if (control.kind === 'ack') {
+                    // The transport admits credit; demand-driven sources consume the wake-up.
+                    return active.captureSession?.applyControl?.(control) ?? { ok: true };
+                }
+                if (control.kind === 'pause' || control.kind === 'resume' || control.kind === 'keyframe_required') {
+                    if (!active.captureSession) return { ok: false, reasonCode: 'capture_start_pending' };
+                    const applyCaptureControl = active.captureSession.applyControl;
+                    if (!applyCaptureControl) return { ok: false, reasonCode: 'transport_control_not_supported' };
+                    return applyCaptureControl(control);
+                }
+                return { ok: true };
             }
             if (envelope.message.kind !== 'sideband_control') return { ok: false, reasonCode: 'invalid_control' };
             const active = activeStreams.get(envelope.message.control.streamId);
             if (!active) return { ok: false, reasonCode: 'live_stream_start_required' };
-            const sidebandControl = active.captureSession.applySidebandControl;
+            if (expireStream(active)) return { ok: false, reasonCode: 'grant_expired' };
+            const sidebandControl = active.captureSession?.applySidebandControl;
             if (!sidebandControl) return { ok: false, reasonCode: 'input_not_supported' };
             const nowMs = input.nowMs();
             const controlSource = active.controlSource ?? {
@@ -411,6 +485,7 @@ export function createMachineLiveStreamRelayTerminator(input: Readonly<{
             } satisfies MachineLiveStreamControlSourceV1;
             const leaseValidation = validateMachineLiveStreamControlLeaseV1({
                 source: controlSource,
+                sourceKind: active.controlSourceKind,
                 control: envelope.message.control,
                 activeLease: input.readActiveControlLease?.({
                     streamId: envelope.message.control.streamId,
@@ -423,17 +498,19 @@ export function createMachineLiveStreamRelayTerminator(input: Readonly<{
             return sidebandControl(envelope.message.control);
         },
         stop: async (streamId) => {
+            const active = activeStreams.get(streamId);
+            if (!active) return;
             await closeActiveStream({
-                streamId,
+                active,
                 observabilityKind: 'flow.closed',
             });
         },
         dispose: async () => {
             if (!disposePromise) {
                 disposed = true;
-                disposePromise = Promise.all([...activeStreams.keys()].map(async (streamId) => {
+                disposePromise = Promise.all([...activeStreams.values()].map(async (active) => {
                     await closeActiveStream({
-                        streamId,
+                        active,
                         observabilityKind: 'flow.closed',
                         reasonCode: 'relay_disposed',
                     });

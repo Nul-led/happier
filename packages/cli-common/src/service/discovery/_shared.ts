@@ -125,9 +125,18 @@ export function parsePowerShellDoubleQuotedText(raw: string): string {
   const text = String(raw ?? '');
   const quoted = text.startsWith('"') && text.endsWith('"');
   const inner = quoted ? text.slice(1, -1) : text;
-  return inner
-    .replaceAll('``', '`')
-    .replaceAll('`"', '"');
+  let parsed = '';
+  for (let index = 0; index < inner.length; index += 1) {
+    const ch = inner[index] ?? '';
+    const escaped = inner[index + 1];
+    if (ch === '`' && (escaped === '`' || escaped === '$' || escaped === '"')) {
+      parsed += escaped;
+      index += 1;
+      continue;
+    }
+    parsed += ch;
+  }
+  return parsed;
 }
 
 export function parsePowerShellCommandLine(raw: string): string[] {

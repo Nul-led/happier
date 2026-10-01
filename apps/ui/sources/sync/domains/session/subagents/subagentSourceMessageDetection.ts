@@ -1,4 +1,4 @@
-import type { Message } from '../../messages/messageTypes';
+import type { Message } from '@happier-dev/session-core/messages';
 
 export function agentTextLooksLikeExecutionRunSignal(text: string): boolean {
     const normalized = text.trim().toLowerCase();

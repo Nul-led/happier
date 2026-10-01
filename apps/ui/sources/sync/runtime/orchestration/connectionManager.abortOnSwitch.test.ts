@@ -283,6 +283,7 @@ describe('switchConnectionToActiveServer', () => {
         vi.doMock('@/sync/sync', () => ({
             syncSwitchServer: vi.fn(async () => {}),
             syncRestore: syncRestoreSpy,
+            syncHydrateLocalState: vi.fn(),
         }));
         vi.doMock('@/sync/http/client', () => ({ abortServerFetches: vi.fn() }));
 
@@ -370,6 +371,79 @@ describe('switchConnectionToActiveServer', () => {
             expect.objectContaining({ serverId: 'server-a', generation: 1 }),
         );
         expect(connection.isAppliedActiveServerRuntimeAvailable()).toBe(true);
+    });
+
+    it('starts Sync with the new credential when the same Home is signed into after a signed-out apply', async () => {
+        const snapshot = {
+            serverId: 'server-a',
+            serverUrl: 'https://a.example.test',
+            kind: 'custom',
+            generation: 1,
+        };
+        let storedCredentials: { token: string; secret: string } | null = null;
+        const syncSwitchServerSpy = vi.fn(async () => {});
+        vi.doMock('@/sync/domains/server/serverRuntime', () => createServerRuntimeMock(() => snapshot));
+        vi.doMock('@/auth/storage/tokenStorage', () => ({
+            TokenStorage: {
+                getCredentials: vi.fn(async () => null),
+                getCredentialsForServerUrl: vi.fn(async () => storedCredentials),
+            },
+        }));
+        vi.doMock('@/sync/sync', () => ({ syncSwitchServer: syncSwitchServerSpy }));
+        vi.doMock('@/sync/http/client', () => ({ abortServerFetches: vi.fn() }));
+
+        const connection = await import('./connectionManager');
+        // A signed-out tab applies the focused Home with no credential.
+        await connection.switchConnectionToActiveServer();
+        expect(syncSwitchServerSpy).toHaveBeenLastCalledWith(null, expect.objectContaining({ serverId: 'server-a' }));
+
+        // Signing in persists a credential for the same Home and generation.
+        storedCredentials = { token: 'token-a', secret: 's' };
+        await connection.switchConnectionToActiveServer();
+
+        expect(syncSwitchServerSpy).toHaveBeenLastCalledWith(
+            { token: 'token-a', secret: 's' },
+            expect.objectContaining({ serverId: 'server-a', generation: 1 }),
+        );
+
+        // An unchanged credential keeps reusing the applied runtime.
+        await connection.switchConnectionToActiveServer();
+        expect(syncSwitchServerSpy).toHaveBeenCalledTimes(2);
+    });
+
+    it('retires Sync when the same Home signs out, and restarts it for the next credential', async () => {
+        const snapshot = {
+            serverId: 'server-a',
+            serverUrl: 'https://a.example.test',
+            kind: 'custom',
+            generation: 1,
+        };
+        let storedCredentials: { token: string; secret: string } | null = { token: 'token-a', secret: 's' };
+        const syncSwitchServerSpy = vi.fn(async () => {});
+        vi.doMock('@/sync/domains/server/serverRuntime', () => createServerRuntimeMock(() => snapshot));
+        vi.doMock('@/auth/storage/tokenStorage', () => ({
+            TokenStorage: {
+                getCredentials: vi.fn(async () => null),
+                getCredentialsForServerUrl: vi.fn(async () => storedCredentials),
+            },
+        }));
+        vi.doMock('@/sync/sync', () => ({ syncSwitchServer: syncSwitchServerSpy }));
+        vi.doMock('@/sync/http/client', () => ({ abortServerFetches: vi.fn() }));
+
+        const connection = await import('./connectionManager');
+        await connection.switchConnectionToActiveServer();
+
+        storedCredentials = null;
+        await expect(connection.switchConnectionToActiveServer()).resolves.toBeNull();
+        expect(syncSwitchServerSpy).toHaveBeenLastCalledWith(null, expect.objectContaining({ serverId: 'server-a' }));
+
+        storedCredentials = { token: 'token-a2', secret: 's' };
+        await connection.switchConnectionToActiveServer();
+        expect(syncSwitchServerSpy).toHaveBeenLastCalledWith(
+            { token: 'token-a2', secret: 's' },
+            expect.objectContaining({ serverId: 'server-a', generation: 1 }),
+        );
+        expect(syncSwitchServerSpy).toHaveBeenCalledTimes(3);
     });
 
     it('publishes only the focused Home whose full Sync application has completed', async () => {

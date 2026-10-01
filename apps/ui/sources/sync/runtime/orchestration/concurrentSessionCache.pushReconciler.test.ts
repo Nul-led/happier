@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createSocketIoBoundaryStub } from '@/dev/testkit/mocks/socketIo';
 
 const mocks = vi.hoisted(() => ({
     registerPushToken: vi.fn(),
@@ -123,7 +124,7 @@ vi.mock('@/sync/runtime/nativeLoopbackTunnels/runtime', () => ({
     startNativeLoopbackTunnelRuntimeAppStateLifecycle: vi.fn(),
 }));
 
-vi.mock('socket.io-client', () => ({ io: vi.fn() }));
+vi.mock('socket.io-client', () => ({ io: vi.fn(() => createSocketIoBoundaryStub().socket) }));
 
 vi.mock('@/sync/engine/sessions/sessionSnapshot', () => ({
     fetchAndApplySessions: vi.fn(async () => undefined),

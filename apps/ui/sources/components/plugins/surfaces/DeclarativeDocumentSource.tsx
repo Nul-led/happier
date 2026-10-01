@@ -12,7 +12,7 @@ import {
     type PluginUiResourceError,
     type PluginUiResourceSnapshot,
 } from '@happier-dev/plugin-ui/hostApi';
-import type { PreparedDaemonPluginUiTargetedSurfaceMountV1 } from '@/agents/backendCatalog/loadDaemonMergedProjectionInputs';
+import type { PreparedDaemonPluginUiTargetedSurfaceMountV1 } from './mountedTargetedContributions';
 import {
     admitDeclarativeStaticModel,
     declarativeCollectionUiQueryKey,
@@ -37,7 +37,7 @@ type DeclarativeDocumentSourceMountLifetime = Readonly<{
  */
 export type DeclarativeDocumentSourceMountScope = Readonly<{
     pluginId: string;
-    generation: string;
+    occurrenceId: string;
     accountLifetime: DeclarativeDocumentSourceAccountLifetime | null;
     /** Captured from the one mounted surface controller; never a new owner. */
     mountLifetime: DeclarativeDocumentSourceMountLifetime;
@@ -47,12 +47,12 @@ type DeclarativeDocumentSourceScope = Readonly<{
     hostApi: ReturnType<typeof usePluginHostApi> | null;
     accountLifetime: DeclarativeDocumentSourceAccountLifetime | null;
     mountLifetime: DeclarativeDocumentSourceMountLifetime | null;
-    mountGeneration: string | null;
+    mountOccurrenceId: string | null;
     mountPluginId: string | null;
     pluginId: string;
     staticModel: RecordValue;
     sourceId: string;
-    generation: string | null;
+    occurrenceId: string | null;
     /** Exact mounted-target inventory for dynamic symbolic surface admission. */
     preparedTargetedSurfaces?: readonly PluginDeclarativePreparedTargetedSurfaceInventoryEntryV1[];
 }>;
@@ -158,7 +158,8 @@ export function projectDeclarativeTargetedSurfaceInventory(
             contributor: Object.freeze({
                 pluginId: mount.contributor.pluginId,
                 contributionId: mount.contributor.contributionId,
-                immutableGenerationId: mount.contributor.immutableGenerationId,
+                occurrenceId: mount.contributor.occurrenceId,
+                sourceCustody: mount.contributor.sourceCustody,
             }),
             role: mount.role,
             presentation: mount.presentation,
@@ -189,12 +190,12 @@ function readDocumentSourceId(value: unknown): string | null {
 function hasMatchingMountScope(input: Readonly<{
     scope: DeclarativeDocumentSourceMountScope | null | undefined;
     pluginId: string;
-    generation: string | null;
+    occurrenceId: string | null;
 }>): boolean {
     if (
         !input.scope
         || input.scope.pluginId !== input.pluginId
-        || input.scope.generation !== input.generation
+        || input.scope.occurrenceId !== input.occurrenceId
         || !input.scope.accountLifetime
         || !input.scope.mountLifetime
     ) {
@@ -207,7 +208,7 @@ function hasMatchingMountScope(input: Readonly<{
  * L1 owns Resource currentness; this adapter also fences the short interval
  * between a delivered snapshot and its passive whole-document adoption. It
  * deliberately consumes the mount's existing lifetime rather than creating a
- * second generation or publication authority.
+ * second occurrence or publication authority.
  */
 function isCurrentDocumentSourceScope(scope: DeclarativeDocumentSourceScope): boolean {
     if (!scope.accountLifetime || !scope.mountLifetime) {
@@ -252,11 +253,11 @@ function areDeclarativeDocumentSourceScopesEquivalent(
     return left.hostApi === right.hostApi
         && left.accountLifetime === right.accountLifetime
         && left.mountLifetime === right.mountLifetime
-        && left.mountGeneration === right.mountGeneration
+        && left.mountOccurrenceId === right.mountOccurrenceId
         && left.mountPluginId === right.mountPluginId
         && left.pluginId === right.pluginId
         && left.sourceId === right.sourceId
-        && left.generation === right.generation
+        && left.occurrenceId === right.occurrenceId
         && samePlainValue(left.preparedTargetedSurfaces, right.preparedTargetedSurfaces)
         && samePlainValue(left.staticModel, right.staticModel);
 }
@@ -364,7 +365,7 @@ function parseResourceDocument(bytes: Uint8Array): unknown {
 
 function normalizeLiveDocument(input: Readonly<{
     pluginId: string;
-    generation: string;
+    occurrenceId: string;
     staticModel: RecordValue;
     preparedTargetedSurfaces?: readonly PluginDeclarativePreparedTargetedSurfaceInventoryEntryV1[];
     resource: Readonly<{
@@ -377,12 +378,12 @@ function normalizeLiveDocument(input: Readonly<{
         model: input.staticModel,
         expectedPluginId: input.pluginId,
     });
-    if (!bindings || bindings.generation !== input.generation) {
+    if (!bindings || bindings.occurrenceId !== input.occurrenceId) {
         throw new Error('plugin_declarative_static_model_unavailable');
     }
     const normalized = normalizePluginDeclarativeDocumentV1({
         pluginId: input.pluginId,
-        generation: input.generation,
+        occurrenceId: input.occurrenceId,
         document,
         actions: [...bindings.actions.values()].map(({ identity }) => identity),
         destinations: [...bindings.destinations.values()].map(({ identity }) => identity),
@@ -422,39 +423,39 @@ export function useDeclarativeDocumentSource(input: DeclarativeDocumentSourceInp
     const hostApi = usePluginHostApi();
     const { resource, refresh } = useLivePluginResource(sourceId);
     const identity = readRecord(input.staticModel.identity);
-    const generation = readString(identity?.generation);
+    const occurrenceId = readString(identity?.occurrenceId);
     const matchedMountScope = hasMatchingMountScope({
         scope: input.mountScope,
         pluginId: input.pluginId,
-        generation,
+        occurrenceId,
     })
         ? input.mountScope!
         : null;
     const fallbackHostApi = matchedMountScope ? null : hostApi;
     const candidateSourceScope = React.useMemo<DeclarativeDocumentSourceScope>(() => Object.freeze({
         // A reconnect may replace the transport/controller facade while the
-        // mounted Account and projection generation remain current. The L1
+        // mounted Account and projection occurrenceId remain current. The L1
         // store owns the new read; this document owner retains its valid LKG
         // until that store publishes a replacement. Without a canonical mount
         // scope, retain host identity as the fail-closed replacement boundary.
         hostApi: fallbackHostApi,
         accountLifetime: matchedMountScope?.accountLifetime ?? null,
         mountLifetime: matchedMountScope?.mountLifetime ?? null,
-        mountGeneration: matchedMountScope?.generation ?? null,
+        mountOccurrenceId: matchedMountScope?.occurrenceId ?? null,
         mountPluginId: matchedMountScope?.pluginId ?? null,
         pluginId: input.pluginId,
         staticModel: input.staticModel,
         sourceId,
-        generation,
+        occurrenceId,
         ...(input.preparedTargetedSurfaces === undefined
             ? {}
             : { preparedTargetedSurfaces: input.preparedTargetedSurfaces }),
     }), [
         matchedMountScope?.accountLifetime,
         matchedMountScope?.mountLifetime,
-        matchedMountScope?.generation,
+        matchedMountScope?.occurrenceId,
         matchedMountScope?.pluginId,
-        generation,
+        occurrenceId,
         fallbackHostApi,
         input.pluginId,
         input.staticModel,
@@ -476,7 +477,7 @@ export function useDeclarativeDocumentSource(input: DeclarativeDocumentSourceInp
         invalidDocument: false,
     }));
 
-    // A changed Account/generation (or a mount that lacks a current semantic
+    // A changed Account/occurrenceId (or a mount that lacks a current semantic
     // scope) reverts to static before its new store can publish a fresh
     // candidate. A reconnect-only controller replacement deliberately keeps
     // the same scope and therefore retains its adopted dynamic LKG.
@@ -491,7 +492,7 @@ export function useDeclarativeDocumentSource(input: DeclarativeDocumentSourceInp
 
     React.useEffect(() => {
         const value = resource.value;
-        if (!isCurrentDocumentSourceScope(sourceScope) || !sourceScope.generation || !value) {
+        if (!isCurrentDocumentSourceScope(sourceScope) || !sourceScope.occurrenceId || !value) {
             return;
         }
         // The canonical Resource store retains authenticated last-known-good
@@ -503,7 +504,7 @@ export function useDeclarativeDocumentSource(input: DeclarativeDocumentSourceInp
         try {
             candidate = normalizeLiveDocument({
                 pluginId: sourceScope.pluginId,
-                generation: sourceScope.generation,
+                occurrenceId: sourceScope.occurrenceId,
                 staticModel: sourceScope.staticModel,
                 ...(sourceScope.preparedTargetedSurfaces === undefined
                     ? {}

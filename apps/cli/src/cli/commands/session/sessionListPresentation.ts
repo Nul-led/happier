@@ -13,6 +13,17 @@ function isAwarenessRequest(input: Readonly<Record<string, unknown>>): boolean {
   return input.view === 'awareness';
 }
 
+export function formatSessionListMetadataUpgradeNotice(count: number | undefined): string | null {
+  return count !== undefined && count > 0
+    ? 'Session list is incomplete: owners must upgrade shared Sessions before they can appear.'
+    : null;
+}
+
+function warnIfMetadataUpgradeRequired(count: number | undefined): void {
+  const notice = formatSessionListMetadataUpgradeNotice(count);
+  if (notice) console.warn(yellow(notice));
+}
+
 function isCliSessionRowModel(value: unknown): value is CliSessionRowModel {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const row = value as Partial<CliSessionRowModel>;
@@ -34,6 +45,7 @@ export const SESSION_LIST_PRESENTATION: ActionCliPresentation = {
       if (context.json) {
         await printJsonEnvelope({ ok: true, kind: 'session_list', data: awareness });
       } else {
+        warnIfMetadataUpgradeRequired(awareness.metadataUpgradeRequiredCount);
         const plain = context.callerInput.plain === true;
         for (const session of awareness.sessions) {
           console.log(plain
@@ -60,11 +72,15 @@ export const SESSION_LIST_PRESENTATION: ActionCliPresentation = {
           ...(result.attentionNextCursor !== undefined ? { attentionNextCursor: result.attentionNextCursor } : {}),
           ...(result.attentionHasNext !== undefined ? { attentionHasNext: result.attentionHasNext } : {}),
           ...(result.queryVersion !== undefined ? { queryVersion: result.queryVersion } : {}),
+          ...(result.metadataUpgradeRequiredCount !== undefined
+            ? { metadataUpgradeRequiredCount: result.metadataUpgradeRequiredCount }
+            : {}),
         },
       });
       return true;
     }
 
+    warnIfMetadataUpgradeRequired(result.metadataUpgradeRequiredCount);
     if (context.callerInput.plain === true) {
       const includeSystem = context.callerInput.includeSystem === true;
       for (const row of rows) {

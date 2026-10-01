@@ -1,4 +1,4 @@
-import { readStoredSessionMessages } from '@/sync/domains/messages/readStoredSessionMessages';
+import { readStoredSessionMessages } from "@happier-dev/session-core/messages";
 import { storage } from '@/sync/domains/state/storage';
 import { formatSessionFull } from '@/voice/context/contextFormatters';
 import { getVoiceContextFormatterPrefs } from '@/voice/context/voiceContextPrefs';

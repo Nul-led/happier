@@ -1,9 +1,12 @@
 import {
+  ActionApprovalRequestCreatedResultSchema,
   SessionHandoffActionResultV1Schema,
+  WorkspaceSyncPrepareBetweenResultV1Schema,
   type ActionExecuteResult,
   type ActionExecutorContext,
   type HandoffWorkspaceActionV1,
   type SessionHandoffActionResultV1,
+  type WorkspaceSyncPrepareBetweenResultV1,
 } from '@happier-dev/protocol';
 
 type ExecuteAction = (actionId: 'session.handoff', input: unknown, context?: ActionExecutorContext) => Promise<ActionExecuteResult>;
@@ -20,7 +23,14 @@ type ExecuteSessionHandoffActionArgs = Readonly<{
 
 export type ExecuteSessionHandoffActionResult =
   | Readonly<{ ok: true; result: SessionHandoffActionResultV1 }>
-  | Readonly<{ ok: false; error: string; recovery?: unknown }>;
+  | Readonly<{ ok: true; kind: 'approval_required'; artifactId: string }>
+  | Readonly<{
+      ok: false;
+      error: string;
+      errorCode?: string;
+      recovery?: unknown;
+      workspacePreparation?: Extract<WorkspaceSyncPrepareBetweenResultV1, { ok: false }>;
+    }>;
 
 function normalizeNonEmptyString(value: unknown): string | null {
   if (typeof value !== 'string') return null;
@@ -43,7 +53,20 @@ export async function executeSessionHandoffAction(
     args.context,
   );
   if (!actionResult.ok) {
-    return { ok: false, error: normalizeNonEmptyString(actionResult.error) ?? 'failed_to_start_session_handoff' };
+    const detail = args.workspaceAction?.kind === 'linked_workspace'
+      ? WorkspaceSyncPrepareBetweenResultV1Schema.safeParse(actionResult.details)
+      : null;
+    return {
+      ok: false,
+      error: normalizeNonEmptyString(actionResult.error) ?? 'failed_to_start_session_handoff',
+      ...(normalizeNonEmptyString(actionResult.errorCode) ? { errorCode: actionResult.errorCode } : {}),
+      ...(detail?.success && !detail.data.ok ? { workspacePreparation: detail.data } : {}),
+    };
+  }
+
+  const deferredApproval = ActionApprovalRequestCreatedResultSchema.safeParse(actionResult.result);
+  if (deferredApproval.success) {
+    return { ok: true, kind: 'approval_required', artifactId: deferredApproval.data.artifactId };
   }
 
   const terminalResult = SessionHandoffActionResultV1Schema.safeParse(actionResult.result);

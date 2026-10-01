@@ -1,4 +1,4 @@
-import { buildSessionFolderTree, type SessionFolderTreeNode } from './tree';
+import { buildSessionFolderTree, type SessionFolderTreeItem, type SessionFolderTreeNode } from './tree';
 import type { SessionFoldersV1, SessionFolderWorkspaceRefV1 } from './types';
 
 export type SessionFolderMoveTarget = Readonly<{
@@ -15,8 +15,8 @@ export type SessionFolderWorkspaceTarget = Readonly<{
     depth: number;
 }>;
 
-function pushFolderWorkspaceTargets(
-    nodes: readonly SessionFolderTreeNode[],
+function pushFolderWorkspaceTargets<TItem extends SessionFolderTreeItem>(
+    nodes: readonly SessionFolderTreeNode<TItem>[],
     out: SessionFolderWorkspaceTarget[],
 ): void {
     for (const node of nodes) {

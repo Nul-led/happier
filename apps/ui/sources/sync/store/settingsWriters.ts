@@ -18,8 +18,9 @@ import type {
 } from '../domains/settings/sessionAuthoringSelectionPersistence';
 import {
   replayFavoriteModelSelectionReplacementIntent,
-  replayRememberedEngineSelectionReplacementIntent,
 } from '../domains/settings/sessionAuthoringSelectionPersistence';
+import type { AuthoringMemory } from './domains/authoringMemory';
+import type { AuthoringMemoryDelta } from '@/sync/engine/authoringMemory/authoringMemorySync';
 import { removeAiLaunchProfileFromAccountSettings } from '../domains/profiles/aiLaunchProfileCollection';
 import {
   applySessionReminderPresetIntentToAccountSettings,
@@ -29,7 +30,7 @@ import { getSyncSingleton } from '@/sync/runtime/getSyncSingleton';
 import type { SettingsAnalyticsSource } from '@/track/settingsAnalytics/types';
 import { getStorage } from '@/sync/domains/state/storageStore';
 import { requireOneShotAccountSettingsMutationApplied } from '@/sync/engine/settings/syncSettings';
-import type { AccountSettingsScope } from '@/sync/domains/settings/scope/accountSettingsScope';
+import { areAccountSettingsScopesEqual, type AccountSettingsScope } from '@/sync/domains/settings/scope/accountSettingsScope';
 
 function requireSettingsVersion(settingsVersion: number | null): number {
   if (settingsVersion === null) throw new Error('Account settings version is unavailable');
@@ -45,6 +46,7 @@ async function persistAccountSettingsOnce(
     await getSyncSingleton().mutateAccountSettingsOnce({
       expectedSettingsScope,
       expectedSettingsVersion,
+      rebaseOnConflict: true,
       mutate: (raw) => ({ settings: mutate(raw), value: undefined }),
     }),
   );
@@ -82,18 +84,31 @@ export function useApplySettings(): (delta: SettingsWriteDelta) => void {
   }, [expectedSettingsScope]);
 }
 
+export function useApplyAuthoringMemoryDelta(): (delta: AuthoringMemoryDelta) => Promise<void> {
+  const expectedSettingsScope = useAccountSettingsScope();
+  return React.useCallback(async (delta: AuthoringMemoryDelta) => {
+    await getSyncSingleton().applyAuthoringMemoryDelta(delta, { expectedSettingsScope });
+  }, [expectedSettingsScope]);
+}
+
 /**
  * Reminder-preset edits apply as an intent through the existing one-shot Account-settings write, so
  * the list the user ends up with is the current one plus their change — never a whole array
  * captured before a modal and a network round trip.
  */
 export function useApplySessionReminderPresetIntent(): (intent: SessionReminderPresetIntent) => Promise<void> {
-  const settingsSnapshot = useAccountSettingsMutationSnapshot();
+  const expectedScope = useAccountSettingsScope();
   return React.useCallback(async (intent: SessionReminderPresetIntent) => {
-    await persistAccountSettingsOnce(settingsSnapshot.scope, requireSettingsVersion(settingsSnapshot.version), (raw) => (
+    // The modal retains its Account, not the revision from before it opened. The semantic intent
+    // is applied to the canonical writer's current raw settings; replacement guards its own baseline.
+    const current = getStorage().getState();
+    if (!expectedScope || !areAccountSettingsScopesEqual(expectedScope, current.settingsScope)) {
+      throw new Error('Account settings scope changed before saving reminder presets');
+    }
+    await persistAccountSettingsOnce(expectedScope, requireSettingsVersion(current.settingsVersion), (raw) => (
       applySessionReminderPresetIntentToAccountSettings(raw, intent)
     ));
-  }, [settingsSnapshot]);
+  }, [expectedScope]);
 }
 
 export function useApplyProfileSave(): (input: Readonly<{
@@ -124,6 +139,13 @@ export function useDeleteAiLaunchProfile(): (profileId: string) => Promise<void>
     await persistAccountSettingsOnce(settingsSnapshot.scope, requireSettingsVersion(settingsSnapshot.version), (raw) => (
       removeAiLaunchProfileFromAccountSettings(raw, profileId)
     ));
+    const current = getStorage().getState();
+    if (areAccountSettingsScopesEqual(current.settingsScope, settingsSnapshot.scope)
+      && current.authoringMemory.lastUsedProfile === profileId) {
+      await getSyncSingleton().applyAuthoringMemoryDelta({
+        lastUsedProfileReplacement: { base: profileId, proposed: null },
+      }, { expectedSettingsScope: settingsSnapshot.scope });
+    }
   }, [settingsSnapshot]);
 }
 
@@ -167,9 +189,10 @@ export function useApplyRetainedSecretBindingsByProfileId(): (
 }
 
 /**
- * Apply a typed Favorite replacement once against the explicitly observed
- * Account Settings version. The reducer preserves opaque entries in that
- * observed carrier; a concurrent winner is reported rather than replayed.
+ * Apply a typed Favorite replacement against the explicitly observed Account
+ * Settings version. The reducer preserves opaque entries in the observed
+ * carrier, and the canonical writer rebases the deterministic intent if a
+ * concurrent field-level write wins the CAS.
  */
 export function useApplyFavoriteModelSelectionReplacementIntent(): (
   input: Readonly<{
@@ -186,21 +209,19 @@ export function useApplyFavoriteModelSelectionReplacementIntent(): (
 }
 
 /**
- * Apply a typed remembered-selection replacement through the same one-shot
- * owner. An opaque scope in the observed carrier remains unowned by this UI.
+ * Apply a typed remembered-selection intent through the per-scope row CAS owner.
+ * Opaque scope carriers remain unowned by this UI.
  */
 export function useApplyRememberedEngineSelectionReplacementIntent(): (
   input: Readonly<{
-    base: CurrentSessionAuthoringSelectionsRuntimeProjection['currentRememberedEngineSelectionsByScopeV1'];
-    proposed: CurrentSessionAuthoringSelectionsRuntimeProjection['currentRememberedEngineSelectionsByScopeV1'];
+    base: AuthoringMemory['currentRememberedEngineSelectionsByScopeV1'];
+    proposed: AuthoringMemory['currentRememberedEngineSelectionsByScopeV1'];
   }>,
 ) => Promise<void> {
-  const settingsSnapshot = useAccountSettingsMutationSnapshot();
+  const applyAuthoringMemory = useApplyAuthoringMemoryDelta();
   return React.useCallback(async (input) => {
-    await persistAccountSettingsOnce(settingsSnapshot.scope, requireSettingsVersion(settingsSnapshot.version), (raw) => (
-      replayRememberedEngineSelectionReplacementIntent({ raw, ...input })
-    ));
-  }, [settingsSnapshot]);
+    await applyAuthoringMemory({ rememberedEngineSelectionReplacement: input });
+  }, [applyAuthoringMemory]);
 }
 
 export function useApplyLocalSettings(): (delta: Partial<LocalSettings>) => void {

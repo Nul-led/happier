@@ -163,16 +163,15 @@ describe('mobile Dev Client flow contracts', () => {
 
   it('dismisses a late Expo Dev Menu overlay before asserting new-session guidance', () => {
     const flow = readFileSync(newSessionGuidanceNoMachineSmokeUrl, 'utf8');
-    const newSessionTapIndex = flow.indexOf('id: main-header-start-new-session');
+    const newSessionTapIndex = flow.indexOf('id: tabbar-start-new-session');
     const overlayDismissIndex = flow.indexOf('file: _shared/dismissExpoDevMenuOverlayMaybe.yaml', newSessionTapIndex);
-    const guidanceWaitIndex = flow.indexOf('id: setupWizard-machine-arrival-stack', newSessionTapIndex);
+    const guidanceWaitIndex = flow.indexOf('id: session-getting-started-kind-connect_machine', newSessionTapIndex);
 
     expect(newSessionTapIndex).toBeGreaterThanOrEqual(0);
     expect(overlayDismissIndex).toBeGreaterThan(newSessionTapIndex);
     expect(guidanceWaitIndex).toBeGreaterThan(overlayDismissIndex);
-    expect(flow).toContain('id: setupWizard-machine-arrival');
-    expect(flow).toContain('id: setupWizard-machine-arrival-desktop-app-download-cta');
-    expect(flow).not.toContain('session-getting-started-step-');
+    expect(flow).toContain('id: session-getting-started-open-setup');
+    expect(flow).toContain('id: settings.machines.draft.form');
   });
 
   it('keeps runFlow file references resolvable relative to their owner flow', () => {

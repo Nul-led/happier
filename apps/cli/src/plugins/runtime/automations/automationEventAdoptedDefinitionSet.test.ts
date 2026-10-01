@@ -226,8 +226,8 @@ describe('createAutomationEventAdoptedDefinitionSetV1', () => {
     const owner = createAutomationEventAdoptedDefinitionSetV1({
       caller,
       transport: { kind: 'checkpointedPull' },
-      generationSignal: new AbortController().signal,
-      isGenerationCurrent: () => true,
+      occurrenceSignal: new AbortController().signal,
+      isOccurrenceCurrent: () => true,
       revalidateCallerMaterialization: async () => true,
       resolveAccountEncryption: async () => PLAIN_ACCOUNT_ENCRYPTION,
       readStoredDefinitions,
@@ -270,8 +270,8 @@ describe('createAutomationEventAdoptedDefinitionSetV1', () => {
     const owner = createAutomationEventAdoptedDefinitionSetV1({
       caller,
       transport: { kind: 'checkpointedPull' },
-      generationSignal: new AbortController().signal,
-      isGenerationCurrent: () => true,
+      occurrenceSignal: new AbortController().signal,
+      isOccurrenceCurrent: () => true,
       revalidateCallerMaterialization: async () => true,
       resolveAccountEncryption: async () => PLAIN_ACCOUNT_ENCRYPTION,
       readStoredDefinitions,
@@ -342,8 +342,8 @@ describe('createAutomationEventAdoptedDefinitionSetV1', () => {
     const owner = createAutomationEventAdoptedDefinitionSetV1({
       caller,
       transport: { kind: 'checkpointedPull' },
-      generationSignal: new AbortController().signal,
-      isGenerationCurrent: () => true,
+      occurrenceSignal: new AbortController().signal,
+      isOccurrenceCurrent: () => true,
       revalidateCallerMaterialization: async () => true,
       resolveAccountEncryption: async () => PLAIN_ACCOUNT_ENCRYPTION,
       readStoredDefinitions,
@@ -413,8 +413,8 @@ describe('createAutomationEventAdoptedDefinitionSetV1', () => {
     const owner = createAutomationEventAdoptedDefinitionSetV1({
       caller,
       transport: { kind: 'checkpointedPull' },
-      generationSignal: new AbortController().signal,
-      isGenerationCurrent: () => true,
+      occurrenceSignal: new AbortController().signal,
+      isOccurrenceCurrent: () => true,
       revalidateCallerMaterialization: async () => true,
       resolveAccountEncryption: async () => PLAIN_ACCOUNT_ENCRYPTION,
       readStoredDefinitions,
@@ -494,8 +494,8 @@ describe('createAutomationEventAdoptedDefinitionSetV1', () => {
     const owner = createAutomationEventAdoptedDefinitionSetV1({
       caller,
       transport: { kind: 'durablePush' },
-      generationSignal: new AbortController().signal,
-      isGenerationCurrent: () => true,
+      occurrenceSignal: new AbortController().signal,
+      isOccurrenceCurrent: () => true,
       revalidateCallerMaterialization: async () => true,
       resolveAccountEncryption: async () => PLAIN_ACCOUNT_ENCRYPTION,
       readStoredDefinitions,
@@ -537,8 +537,8 @@ describe('createAutomationEventAdoptedDefinitionSetV1', () => {
     const owner = createAutomationEventAdoptedDefinitionSetV1({
       caller,
       transport: { kind: 'checkpointedPull' },
-      generationSignal: new AbortController().signal,
-      isGenerationCurrent: () => true,
+      occurrenceSignal: new AbortController().signal,
+      isOccurrenceCurrent: () => true,
       revalidateCallerMaterialization: async () => true,
       resolveAccountEncryption: async () => PLAIN_ACCOUNT_ENCRYPTION,
       readStoredDefinitions,
@@ -576,8 +576,8 @@ describe('createAutomationEventAdoptedDefinitionSetV1', () => {
     const owner = createAutomationEventAdoptedDefinitionSetV1({
       caller,
       transport: { kind: 'checkpointedPull' },
-      generationSignal: new AbortController().signal,
-      isGenerationCurrent: () => true,
+      occurrenceSignal: new AbortController().signal,
+      isOccurrenceCurrent: () => true,
       revalidateCallerMaterialization: async () => true,
       resolveAccountEncryption: async () => PLAIN_ACCOUNT_ENCRYPTION,
       readStoredDefinitions: async ({ input }) => input.cursor === undefined
@@ -617,8 +617,8 @@ describe('createAutomationEventAdoptedDefinitionSetV1', () => {
     const owner = createAutomationEventAdoptedDefinitionSetV1({
       caller,
       transport: { kind: 'checkpointedPull' },
-      generationSignal: new AbortController().signal,
-      isGenerationCurrent: () => true,
+      occurrenceSignal: new AbortController().signal,
+      isOccurrenceCurrent: () => true,
       revalidateCallerMaterialization: async () => true,
       resolveAccountEncryption: async () => PLAIN_ACCOUNT_ENCRYPTION,
       readStoredDefinitions,
@@ -660,8 +660,8 @@ describe('createAutomationEventAdoptedDefinitionSetV1', () => {
     const owner = createAutomationEventAdoptedDefinitionSetV1({
       caller,
       transport: { kind: 'checkpointedPull' },
-      generationSignal: new AbortController().signal,
-      isGenerationCurrent: () => true,
+      occurrenceSignal: new AbortController().signal,
+      isOccurrenceCurrent: () => true,
       revalidateCallerMaterialization: async () => true,
       resolveAccountEncryption: async () => PLAIN_ACCOUNT_ENCRYPTION,
       readStoredDefinitions,
@@ -681,8 +681,8 @@ describe('createAutomationEventAdoptedDefinitionSetV1', () => {
     const owner = createAutomationEventAdoptedDefinitionSetV1({
       caller,
       transport: { kind: 'checkpointedPull' },
-      generationSignal: new AbortController().signal,
-      isGenerationCurrent: () => true,
+      occurrenceSignal: new AbortController().signal,
+      isOccurrenceCurrent: () => true,
       revalidateCallerMaterialization: async () => true,
       resolveAccountEncryption: async () => PLAIN_ACCOUNT_ENCRYPTION,
       readStoredDefinitions: async () => page('7', [malformed], null),
@@ -703,8 +703,8 @@ describe('createAutomationEventAdoptedDefinitionSetV1', () => {
     const owner = createAutomationEventAdoptedDefinitionSetV1({
       caller,
       transport: { kind: 'checkpointedPull' },
-      generationSignal: new AbortController().signal,
-      isGenerationCurrent: () => true,
+      occurrenceSignal: new AbortController().signal,
+      isOccurrenceCurrent: () => true,
       revalidateCallerMaterialization: async () => true,
       resolveAccountEncryption: async () => PLAIN_ACCOUNT_ENCRYPTION,
       readStoredDefinitions: async ({ input }) => input.knownRevision === '7'
@@ -731,8 +731,8 @@ describe('createAutomationEventAdoptedDefinitionSetV1', () => {
     const owner = createAutomationEventAdoptedDefinitionSetV1({
       caller,
       transport: { kind: 'checkpointedPull' },
-      generationSignal: new AbortController().signal,
-      isGenerationCurrent: () => true,
+      occurrenceSignal: new AbortController().signal,
+      isOccurrenceCurrent: () => true,
       revalidateCallerMaterialization: async () => true,
       resolveAccountEncryption: async () => PLAIN_ACCOUNT_ENCRYPTION,
       readStoredDefinitions: async () => oversizedPage,
@@ -750,8 +750,8 @@ describe('createAutomationEventAdoptedDefinitionSetV1', () => {
     const owner = createAutomationEventAdoptedDefinitionSetV1({
       caller,
       transport: { kind: 'checkpointedPull' },
-      generationSignal: new AbortController().signal,
-      isGenerationCurrent: () => true,
+      occurrenceSignal: new AbortController().signal,
+      isOccurrenceCurrent: () => true,
       revalidateCallerMaterialization: async () => true,
       resolveAccountEncryption: async () => PLAIN_ACCOUNT_ENCRYPTION,
       readStoredDefinitions: async ({ signal }) => {
@@ -781,8 +781,8 @@ describe('createAutomationEventAdoptedDefinitionSetV1', () => {
     const owner = createAutomationEventAdoptedDefinitionSetV1({
       caller,
       transport: { kind: 'checkpointedPull' },
-      generationSignal: new AbortController().signal,
-      isGenerationCurrent: () => true,
+      occurrenceSignal: new AbortController().signal,
+      isOccurrenceCurrent: () => true,
       revalidateCallerMaterialization: async () => true,
       resolveAccountEncryption: async () => PLAIN_ACCOUNT_ENCRYPTION,
       readStoredDefinitions: async ({ input, signal }) => {
@@ -839,8 +839,8 @@ describe('createAutomationEventAdoptedDefinitionSetV1', () => {
     const owner = createAutomationEventAdoptedDefinitionSetV1({
       caller,
       transport: { kind: 'checkpointedPull' },
-      generationSignal: generation.signal,
-      isGenerationCurrent: () => !generation.signal.aborted,
+      occurrenceSignal: generation.signal,
+      isOccurrenceCurrent: () => !generation.signal.aborted,
       revalidateCallerMaterialization: async () => true,
       resolveAccountEncryption: async () => PLAIN_ACCOUNT_ENCRYPTION,
       readStoredDefinitions: async ({ signal }) => await new Promise<AutomationEventStoredDefinitionsReadResultV1>(
@@ -891,8 +891,8 @@ describe('createAutomationEventAdoptedDefinitionSetV1', () => {
     const owner = createAutomationEventAdoptedDefinitionSetV1({
       caller,
       transport: { kind: 'checkpointedPull' },
-      generationSignal: new AbortController().signal,
-      isGenerationCurrent: () => true,
+      occurrenceSignal: new AbortController().signal,
+      isOccurrenceCurrent: () => true,
       revalidateCallerMaterialization: async () => true,
       resolveAccountEncryption: async () => PLAIN_ACCOUNT_ENCRYPTION,
       readStoredDefinitions: async () => {
@@ -934,8 +934,8 @@ describe('createAutomationEventAdoptedDefinitionSetV1', () => {
     const owner = createAutomationEventAdoptedDefinitionSetV1({
       caller,
       transport: { kind: 'checkpointedPull' },
-      generationSignal: new AbortController().signal,
-      isGenerationCurrent: () => true,
+      occurrenceSignal: new AbortController().signal,
+      isOccurrenceCurrent: () => true,
       revalidateCallerMaterialization: async () => true,
       resolveAccountEncryption: async () => PLAIN_ACCOUNT_ENCRYPTION,
       readStoredDefinitions: async () => {
@@ -971,8 +971,8 @@ describe('createAutomationEventAdoptedDefinitionSetV1', () => {
     const owner = createAutomationEventAdoptedDefinitionSetV1({
       caller,
       transport: { kind: 'checkpointedPull' },
-      generationSignal: generation.signal,
-      isGenerationCurrent: () => !generation.signal.aborted,
+      occurrenceSignal: generation.signal,
+      isOccurrenceCurrent: () => !generation.signal.aborted,
       revalidateCallerMaterialization: async () => callerCurrent,
       resolveAccountEncryption: async () => (accountCurrent ? PLAIN_ACCOUNT_ENCRYPTION : null),
       readStoredDefinitions: async () => {
@@ -990,8 +990,8 @@ describe('createAutomationEventAdoptedDefinitionSetV1', () => {
     const accountRetiringOwner = createAutomationEventAdoptedDefinitionSetV1({
       caller,
       transport: { kind: 'checkpointedPull' },
-      generationSignal: generation.signal,
-      isGenerationCurrent: () => !generation.signal.aborted,
+      occurrenceSignal: generation.signal,
+      isOccurrenceCurrent: () => !generation.signal.aborted,
       revalidateCallerMaterialization: async () => callerCurrent,
       resolveAccountEncryption: async () => (accountCurrent ? PLAIN_ACCOUNT_ENCRYPTION : null),
       readStoredDefinitions: async () => {
@@ -1011,8 +1011,8 @@ describe('createAutomationEventAdoptedDefinitionSetV1', () => {
     const original = createAutomationEventAdoptedDefinitionSetV1({
       caller,
       transport: { kind: 'checkpointedPull' },
-      generationSignal: new AbortController().signal,
-      isGenerationCurrent: () => true,
+      occurrenceSignal: new AbortController().signal,
+      isOccurrenceCurrent: () => true,
       revalidateCallerMaterialization: async () => originalCallerCurrent,
       resolveAccountEncryption: async () => PLAIN_ACCOUNT_ENCRYPTION,
       readStoredDefinitions: async ({ input }) => input.knownRevision === '7'
@@ -1030,8 +1030,8 @@ describe('createAutomationEventAdoptedDefinitionSetV1', () => {
     const replacement = createAutomationEventAdoptedDefinitionSetV1({
       caller: movedCaller,
       transport: { kind: 'checkpointedPull' },
-      generationSignal: new AbortController().signal,
-      isGenerationCurrent: () => true,
+      occurrenceSignal: new AbortController().signal,
+      isOccurrenceCurrent: () => true,
       revalidateCallerMaterialization: async () => true,
       resolveAccountEncryption: async () => PLAIN_ACCOUNT_ENCRYPTION,
       readStoredDefinitions: async () => page('9', [], null),
@@ -1059,8 +1059,8 @@ describe('createAutomationEventAdoptedDefinitionSetV1', () => {
     const owner = createAutomationEventAdoptedDefinitionSetV1({
       caller,
       transport: { kind: 'checkpointedPull' },
-      generationSignal: generation.signal,
-      isGenerationCurrent: () => !generation.signal.aborted,
+      occurrenceSignal: generation.signal,
+      isOccurrenceCurrent: () => !generation.signal.aborted,
       revalidateCallerMaterialization: async () => true,
       resolveAccountEncryption: async () => PLAIN_ACCOUNT_ENCRYPTION,
       readStoredDefinitions: async () => page('7', [definition], null),

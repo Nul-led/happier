@@ -2,10 +2,14 @@ import {
   AccountSettingsSchema,
   ActionApprovalRequestCreatedResultSchema,
   ApprovalRequestSchema,
+  deriveWorkspaceSyncConflictAsidePaths,
+  WorkspaceSyncConflictResolutionResultV1Schema,
   createActionExecutor,
   type ActionExecutorDeps,
   type ApprovalRequest,
   type WorkspaceSyncConflictResolveActionInputV1,
+  type WorkspaceSyncConflictResolutionResultV1,
+  type WorkspaceSyncEntryExpectationV1,
 } from '@happier-dev/protocol';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 import {
@@ -17,28 +21,43 @@ import {
 } from '@happier-dev/cli-common/firstPartyRuntime';
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { access, mkdir, mkdtemp, open, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, open, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-import { deleteWorkspaceSyncConflictLoserAtRoot } from '@/workspaces/sync/workspaceSyncConflicts';
+import { applyCapturedWorkspaceSyncEntryAtRoot, captureWorkspaceSyncEntryAtRoot, recoverWorkspaceSyncEntryReplacementAtRoot } from '@/workspaces/sync/workspaceSyncConflicts';
+import { observeWorkspaceSyncEntryAtRoot } from '@/workspaces/sync/workspaceSyncFileRead';
+import {
+  discoverNativeConfinedWorkspaceSyncRecovery,
+  runNativeConfinedWorkspaceSyncApply,
+  runNativeConfinedWorkspaceSyncRecover,
+} from '@/workspaces/sync/workspaceSyncNativeConfinedFileSystem';
 import {
   registerMachineWorkspaceSyncRpcHandlers,
   type MachineWorkspaceSyncRpcService,
 } from '@/api/machine/rpcHandlers.workspaceSync';
 import type { RpcHandler, RpcHandlerContext, RpcHandlerRegistrar } from '@/api/rpc/types';
 import { createWorkspaceRootOwnershipManager } from '@/workspaces/sync/workspaceSyncRootOwnership';
+import { createWorkspaceSyncTargetAuthority } from '@/workspaces/sync/workspaceSyncTargetAuthority';
+import type {
+  FiniteTransferMachineTunnel,
+  WorkspaceSyncMachineTunnel,
+  WorkspaceSyncMachineTunnelOpen,
+  WorkspaceSyncMachineTunnelOpenInput,
+} from '@/workspaces/sync/workspaceSyncMachineCarrierStream';
 import type { WorkspaceSyncSidecarProcess } from '@/workspaces/sync/workspaceSyncSidecarLifecycle';
 import { createWorkspaceSyncPeerIdentityValidator } from '@/workspaces/sync/transport/workspaceSyncPeerIdentity';
 import { computeWorkspaceSyncPolicyDigest } from '@/workspaces/sync/workspaceSyncTypes';
+import { createWorkspaceSyncHandoffAdapter } from '@/workspaces/sync/workspaceSyncHandoffAdapter';
+import { prepareWorkspaceSyncBetween } from '@/workspaces/sync/workspaceSyncPreparation';
 import { createWorkspaceSyncConflictResolutionAuthorizer } from './createProductionDaemonWorkspaceSyncRuntime';
 import type {
   WorkspaceSyncPersistentModeV1,
   WorkspaceSyncRelationshipV1,
 } from '@/workspaces/sync/workspaceSyncTypes';
 import { createDaemonWorkspaceSyncBroker } from './createDaemonWorkspaceSyncBroker';
-import { createDaemonWorkspaceSyncRuntime, type DaemonWorkspaceSyncRuntime } from './createDaemonWorkspaceSyncRuntime';
+import { createDaemonWorkspaceSyncRuntime, type DaemonWorkspaceSyncRuntime, type DaemonWorkspaceSyncRuntimeDependencies } from './createDaemonWorkspaceSyncRuntime';
 import {
   launchWorkspaceSyncLocalAgent,
   spawnWorkspaceSyncSidecar,
@@ -350,13 +369,12 @@ describe('workspace sync conflict Action persistence fixture', () => {
     const authority = createLiveConflictApprovalAuthority(artifactDirectory);
     const actionInput: WorkspaceSyncConflictResolveActionInputV1 = {
       controllerMachineId: 'local-machine',
-      request: {
-        relationshipId: 'relationship-1',
-        path: 'conflicted.txt',
-        keep: 'alpha',
-        expectedKind: 'file',
-        expectedDigest: 'a'.repeat(40),
-      },
+      hubWorkspaceRefId: 'alpha-ref',
+      path: 'conflicted.txt',
+      source: { workspaceRefId: 'alpha-ref', expected: { kind: 'file', digest: 'a'.repeat(40), executable: false, size: 1 } },
+      targets: [{ workspaceRefId: 'beta-ref', expected: { kind: 'file', digest: 'b'.repeat(40), executable: false, size: 1 } }],
+      relationshipIds: ['relationship-1'],
+      strategy: 'use_source',
     };
     let executedReceiptId: string | null = null;
     try {
@@ -366,17 +384,7 @@ describe('workspace sync conflict Action persistence fixture', () => {
         const reopenedAuthority = createLiveConflictApprovalAuthority(artifactDirectory);
         await reopenedAuthority.assertAuthorized(actionReceiptId, input);
         executedReceiptId = actionReceiptId;
-        return {
-          relationshipId: input.request.relationshipId,
-          controllerMachineId: input.controllerMachineId,
-          state: 'watching' as const,
-          alphaPath: '/alpha',
-          betaPath: '/beta',
-          mode: 'keep_both_in_sync' as const,
-          changedFiles: 0,
-          conflictCount: 0,
-          lastSuccessfulSyncAtMs: 1,
-        };
+        return { endpoints: [{ workspaceRefId: 'beta-ref', status: 'applied' as const }] };
       };
       const executor = createActionExecutor({
         workspaceSyncConflictResolve,
@@ -427,7 +435,7 @@ async function resolveConflictThroughApprovedAction(
   runtime: DaemonWorkspaceSyncRuntime,
   approvalAuthority: LiveConflictApprovalAuthority,
   actionInput: WorkspaceSyncConflictResolveActionInputV1,
-): Promise<void> {
+): Promise<WorkspaceSyncConflictResolutionResultV1> {
   const handlers = new Map<string, (raw: unknown, context?: RpcHandlerContext) => Promise<unknown>>();
   const rpcHandlerManager = {
     registerHandler: <TRequest, TResponse>(method: string, handler: RpcHandler<TRequest, TResponse>) => {
@@ -439,12 +447,17 @@ async function resolveConflictThroughApprovedAction(
   };
   const service: MachineWorkspaceSyncRpcService = {
     controller: runtime.managedWorkspaceSync,
+    prepareBetween: unavailableTargetOperation,
     relationshipOwner: {
+      create: unavailableTargetOperation,
       setEnabled: async () => undefined,
       stop: async () => undefined,
     },
-    deleteConflictLoserAtTarget: unavailableTargetOperation,
+    stageConflictResolutionAtTarget: unavailableTargetOperation,
+    applyStagedConflictResolutionAtTarget: unavailableTargetOperation,
+    recoverConflictResolutionAtTarget: unavailableTargetOperation,
     readFileAtTarget: unavailableTargetOperation,
+    observeEntryAtTarget: unavailableTargetOperation,
     preflightHandoffTargetReplacement: unavailableTargetOperation,
     prepareBootstrapAtTarget: unavailableTargetOperation,
     releaseBootstrapAtTarget: unavailableTargetOperation,
@@ -452,14 +465,14 @@ async function resolveConflictThroughApprovedAction(
     assertConflictResolutionAuthorized: approvalAuthority.assertAuthorized,
   };
   registerMachineWorkspaceSyncRpcHandlers({ rpcHandlerManager, service });
-  const conflictDelete = handlers.get(RPC_METHODS.DAEMON_WORKSPACE_SYNC_CONFLICT_DELETE);
-  if (!conflictDelete) throw new Error('Workspace conflict deletion RPC was not registered');
+  const conflictResolve = handlers.get(RPC_METHODS.DAEMON_WORKSPACE_SYNC_CONFLICT_RESOLVE);
+  if (!conflictResolve) throw new Error('Workspace conflict resolution RPC was not registered');
 
   const executor = createActionExecutor({
-    workspaceSyncConflictResolve: async ({ actionReceiptId, input }: Parameters<NonNullable<ActionExecutorDeps['workspaceSyncConflictResolve']>>[0]) => await conflictDelete({
+    workspaceSyncConflictResolve: async ({ actionReceiptId, input }: Parameters<NonNullable<ActionExecutorDeps['workspaceSyncConflictResolve']>>[0]) => await conflictResolve({
       actionReceiptId,
       actionInput: input,
-    }) as Awaited<ReturnType<DaemonWorkspaceSyncRuntime['managedWorkspaceSync']['flush']>>,
+    }) as WorkspaceSyncConflictResolutionResultV1,
     isActionApprovalRequired: () => false,
     approvalsCreate: approvalAuthority.approvalsCreate,
     approvalsGet: approvalAuthority.approvalsGet,
@@ -494,88 +507,169 @@ async function resolveConflictThroughApprovedAction(
   if (!decision || decision.ok !== true || decision.status !== 'executed') {
     throw new Error(`Workspace conflict Action approval did not execute: ${JSON.stringify(decided)}`);
   }
+  const execution = decision.execution && typeof decision.execution === 'object'
+    ? decision.execution as Record<string, unknown>
+    : null;
+  const result = execution?.result && typeof execution.result === 'object'
+    ? execution.result as Record<string, unknown>
+    : null;
+  const endpoints = Array.isArray(result?.endpoints) ? result.endpoints : null;
+  if (!endpoints || endpoints.length !== actionInput.targets.length || endpoints.some((endpoint) => (
+    !endpoint || typeof endpoint !== 'object' || !('status' in endpoint)
+    || (endpoint.status !== 'applied' && endpoint.status !== 'applied_paused')
+  ))) {
+    throw new Error(`Workspace conflict Action did not apply reviewed content: ${JSON.stringify(decided)}`);
+  }
+  return WorkspaceSyncConflictResolutionResultV1Schema.parse(result);
 }
 
 async function startLiveRuntime(input: Readonly<{
   root: string;
   binaries: Readonly<{ manager: string; agent: string; custody: string }>;
   relationship: WorkspaceSyncRelationshipV1 | null;
+  relationships?: readonly WorkspaceSyncRelationshipV1[];
+  remote?: Readonly<{
+    localMachineId: string;
+    endpointMachineIds: Readonly<{ alpha: string; beta: string; gamma: string }>;
+    prepareRelationshipTarget: DaemonWorkspaceSyncRuntimeDependencies['prepareRelationshipTarget'];
+    recoverConflictResolutionAtTarget: NonNullable<DaemonWorkspaceSyncRuntimeDependencies['recoverConflictResolutionAtTarget']>;
+    openMachineCarrierTunnel: WorkspaceSyncMachineTunnelOpen;
+  }>;
   conflictApprovalAuthority?: LiveConflictApprovalAuthority;
   onSidecarSpawned?: (process: WorkspaceSyncSidecarProcess) => void | Promise<void>;
 }>): Promise<DaemonWorkspaceSyncRuntime> {
   const alphaRoot = join(input.root, 'alpha');
   const betaRoot = join(input.root, 'beta');
+  const gammaRoot = join(input.root, 'gamma');
   const dataRoot = join(input.root, 'daemon');
   await Promise.all([
     mkdir(alphaRoot, { recursive: true }),
     mkdir(betaRoot, { recursive: true }),
+    ...(input.relationships ? [mkdir(gammaRoot, { recursive: true })] : []),
   ]);
+  const activeRelationships = input.relationships ?? (input.relationship ? [input.relationship] : []);
+  const refs = [
+    { id: 'alpha-ref', serverId: 'server-1', machineId: input.remote?.endpointMachineIds.alpha ?? 'local-machine', rootPath: alphaRoot, createdAtMs: 1 },
+    { id: 'beta-ref', serverId: 'server-1', machineId: input.remote?.endpointMachineIds.beta ?? 'local-machine', rootPath: betaRoot, createdAtMs: 1 },
+    ...(input.relationships
+      ? [{ id: 'gamma-ref', serverId: 'server-1', machineId: input.remote?.endpointMachineIds.gamma ?? 'local-machine', rootPath: gammaRoot, createdAtMs: 1 }]
+      : []),
+  ];
   const snapshot = {
     source: 'network' as const,
     settings: AccountSettingsSchema.parse(
-      input.relationship
+      activeRelationships.length > 0
         ? {
-            workspaceRefsV1: [
-              {
-                id: 'alpha-ref',
-                serverId: 'server-1',
-                machineId: 'local-machine',
-                rootPath: alphaRoot,
-                createdAtMs: 1,
-              },
-              {
-                id: 'beta-ref',
-                serverId: 'server-1',
-                machineId: 'local-machine',
-                rootPath: betaRoot,
-                createdAtMs: 1,
-              },
-            ],
-            workspaceSyncRelationshipsV1: [input.relationship],
+            workspaceRefsV1: refs,
+            workspaceSyncRelationshipsV1: activeRelationships,
           }
         : {},
     ),
     settingsVersion: 1,
     loadedAtMs: 1,
     settingsSecretsReadKeys: [],
-    scopeKey: input.relationship?.relationshipId ?? 'live-copy-once',
+    scopeKey: activeRelationships[0]?.relationshipId ?? 'live-copy-once',
   };
-  const workspaceRefs = new Map([
-    ['alpha-ref', { serverId: 'server-1', machineId: 'local-machine', rootPath: alphaRoot }],
-    ['beta-ref', { serverId: 'server-1', machineId: 'local-machine', rootPath: betaRoot }],
-  ]);
+  const workspaceRefs = new Map(refs.map(({ id, serverId, machineId, rootPath }) => [id, { serverId, machineId, rootPath }] as const));
   const rootOwnershipManager = createWorkspaceRootOwnershipManager({
     lockDirectory: join(dataRoot, 'root-ownership'),
   });
   const conflictApprovalAuthority = input.conflictApprovalAuthority
     ?? createLiveConflictApprovalAuthority(join(dataRoot, 'approval-artifacts'));
+  const resolutionMaterialDirectory = join(dataRoot, 'resolution-material');
+  const stagedResolutions = new Map<string, Readonly<{
+    targetRoot: string;
+    targetExpected: WorkspaceSyncEntryExpectationV1;
+    selectedExpectation: WorkspaceSyncEntryExpectationV1;
+    materialPath: string | null;
+  }>>();
+  const requireLocalConflictEndpoint = (workspaceRefId: string, machineId: string): string => {
+    const endpoint = workspaceRefs.get(workspaceRefId);
+    if (!endpoint || endpoint.machineId !== machineId) {
+      throw Object.assign(new Error('Workspace sync conflict endpoint is unavailable'), { code: 'peer_unavailable' });
+    }
+    return endpoint.rootPath;
+  };
 
   const peerIdentityEvents: string[] = [];
   const runtime = createDaemonWorkspaceSyncRuntime({
     daemonDataRoot: dataRoot,
     localServerId: 'server-1',
-    localMachineId: 'local-machine',
+    localMachineId: input.remote?.localMachineId ?? 'local-machine',
     releaseChannel: 'publicdev',
     resolveWorkspaceRef: (id) => workspaceRefs.get(id) ?? null,
     rootOwnershipManager,
-    // The production target-authority boundary is covered separately; this
-    // local two-root harness starts with both authorized roots prepared.
-    prepareRelationshipTarget: async () => undefined,
+    // Single-daemon cases start with their roots prepared; the three-machine
+    // case calls each spoke's real target authority before manager admission.
+    prepareRelationshipTarget: input.remote?.prepareRelationshipTarget ?? (async () => undefined),
+    ...(input.remote ? { openMachineCarrierTunnel: input.remote.openMachineCarrierTunnel } : {}),
     bootstrap: async () => ({ release: async () => undefined }),
-    deleteConflictLoserAtTarget: async (request) => {
-      const target = workspaceRefs.get(request.targetWorkspaceRefId);
-      if (!target || target.machineId !== request.targetMachineId) {
-        throw Object.assign(new Error('Workspace sync conflict target is unavailable'), { code: 'peer_unavailable' });
-      }
-      // Model the receiving daemon's final authorization check immediately
-      // before its confined mutation, using the same production authorizer.
+    observeEntryAtTarget: async (request) => await observeWorkspaceSyncEntryAtRoot({
+      rootPath: requireLocalConflictEndpoint(request.targetWorkspaceRefId, request.targetMachineId),
+      relativePath: request.path,
+    }),
+    stageConflictResolutionAtTarget: async (request) => {
       await conflictApprovalAuthority.assertAuthorized(request.actionReceiptId, request.actionInput);
-      await deleteWorkspaceSyncConflictLoserAtRoot({
-        rootPath: target.rootPath,
-        relativePath: request.path,
-        expectedKind: request.expectedKind,
-        ...(request.expectedDigest === undefined ? {} : { expectedDigest: request.expectedDigest }),
+      const sourceRoot = requireLocalConflictEndpoint(request.sourceWorkspaceRefId, request.sourceMachineId);
+      const targetRoot = requireLocalConflictEndpoint(request.targetWorkspaceRefId, request.targetMachineId);
+      const captured = await captureWorkspaceSyncEntryAtRoot({
+        rootPath: sourceRoot,
+        relativePath: request.actionInput.path,
+        expected: request.sourceExpected,
+        captureDirectory: resolutionMaterialDirectory,
+        operationId: request.operationId,
       });
+      stagedResolutions.set(request.operationId, {
+        targetRoot,
+        targetExpected: request.targetExpected,
+        selectedExpectation: captured.expectation,
+        materialPath: captured.materialPath,
+      });
+    },
+    applyStagedConflictResolutionAtTarget: async (request) => {
+      await conflictApprovalAuthority.assertAuthorized(request.actionReceiptId, request.actionInput);
+      const staged = stagedResolutions.get(request.operationId);
+      const targetRoot = requireLocalConflictEndpoint(request.targetWorkspaceRefId, request.targetMachineId);
+      if (!staged || staged.targetRoot !== targetRoot) {
+        throw Object.assign(new Error('Reviewed workspace resolution was not staged'), { code: 'conflict_changed' });
+      }
+      return await applyCapturedWorkspaceSyncEntryAtRoot({
+        rootPath: targetRoot,
+        relativePath: request.path,
+        expectedDestination: staged.targetExpected,
+        selectedExpectation: staged.selectedExpectation,
+        materialPath: staged.materialPath,
+        recoveryDirectory: resolutionMaterialDirectory,
+        operationId: request.operationId,
+      }, {
+        runNativeConfinedApply: async (nativeInput) => await runNativeConfinedWorkspaceSyncApply(nativeInput, {
+          resolveExecutable: () => input.binaries.custody,
+        }),
+      });
+    },
+    recoverConflictResolutionAtTarget: async (request) => {
+      if (input.remote && request.targetMachineId !== input.remote.localMachineId) {
+        return await input.remote.recoverConflictResolutionAtTarget(request);
+      }
+      const targetRoot = requireLocalConflictEndpoint(request.targetWorkspaceRefId, request.targetMachineId);
+      await mkdir(resolutionMaterialDirectory, { recursive: true });
+      const records = await discoverNativeConfinedWorkspaceSyncRecovery(
+        { recoveryDirectory: resolutionMaterialDirectory },
+        { resolveExecutable: () => input.binaries.custody },
+      );
+      for (const record of records.filter((candidate) => candidate.rootPath === targetRoot)) {
+        const result = await recoverWorkspaceSyncEntryReplacementAtRoot({
+          rootPath: targetRoot,
+          recoveryDirectory: resolutionMaterialDirectory,
+          operationId: record.operationId,
+        }, {
+          runNativeConfinedRecover: async (nativeInput) => await runNativeConfinedWorkspaceSyncRecover(nativeInput, {
+            resolveExecutable: () => input.binaries.custody,
+          }),
+        });
+        if (result.status === 'recovery_needed') return result;
+      }
+      return { status: 'settled' as const };
     },
     assertConflictResolutionAuthorized: conflictApprovalAuthority.assertAuthorized,
     createBroker: async (brokerInput) => {
@@ -739,6 +833,7 @@ describe.skipIf(runInstalledArtifactIntegration)(
         { binaries, relationship: liveRelationship({ relationshipId: 'live-local-byte-path', mode: 'keep_both_in_sync' }) },
         async ({ runtime, alphaRoot, betaRoot }) => {
           await writeFile(join(alphaRoot, 'alpha-to-beta.txt'), 'non-empty alpha payload\n');
+          await runtime.managedWorkspaceSync.flush('live-local-byte-path');
           await waitForContents(join(betaRoot, 'alpha-to-beta.txt'), 'non-empty alpha payload\n');
 
           await writeFile(join(betaRoot, 'beta-to-alpha.txt'), 'non-empty beta payload\n');
@@ -751,6 +846,429 @@ describe.skipIf(runInstalledArtifactIntegration)(
           });
         },
       );
+    });
+
+    it('keeps the second real link running after the first shared-hub link terminates and after restart', async () => {
+      const binaries = await requireLiveBinaries();
+      const root = await realpath(await mkdtemp(join(tmpdir(), 'hwsl-')));
+      const alphaRoot = join(root, 'alpha');
+      const betaRoot = join(root, 'beta');
+      const gammaRoot = join(root, 'gamma');
+      const first = liveRelationship({ relationshipId: 'live-hub-beta', mode: 'keep_both_in_sync' });
+      const second = {
+        ...liveRelationship({ relationshipId: 'live-hub-gamma', mode: 'keep_both_in_sync' }),
+        betaWorkspaceRefId: 'gamma-ref',
+      };
+      let runtime: DaemonWorkspaceSyncRuntime | null = null;
+      try {
+        runtime = await startLiveRuntime({ root, binaries, relationship: null, relationships: [first, second] });
+        await writeFile(join(alphaRoot, 'shared.txt'), 'initial hub contents\n');
+        await Promise.all([
+          waitForContents(join(betaRoot, 'shared.txt'), 'initial hub contents\n'),
+          waitForContents(join(gammaRoot, 'shared.txt'), 'initial hub contents\n'),
+        ]);
+        await Promise.all([
+          writeFile(join(betaRoot, 'from-beta.txt'), 'beta edit\n'),
+          writeFile(join(gammaRoot, 'from-gamma.txt'), 'gamma edit\n'),
+        ]);
+        await Promise.all([
+          waitForContents(join(alphaRoot, 'from-beta.txt'), 'beta edit\n'),
+          waitForContents(join(alphaRoot, 'from-gamma.txt'), 'gamma edit\n'),
+        ]);
+        await rename(join(alphaRoot, 'shared.txt'), join(alphaRoot, 'renamed.txt'));
+        await waitForContents(join(gammaRoot, 'renamed.txt'), 'initial hub contents\n');
+
+        await runtime.managedWorkspaceSync.pause(first.relationshipId);
+        await writeFile(join(alphaRoot, 'offline-return.txt'), 'hub changed while beta was offline\n');
+        await waitForContents(join(gammaRoot, 'offline-return.txt'), 'hub changed while beta was offline\n');
+        await assertStillAbsent(join(betaRoot, 'offline-return.txt'));
+        await runtime.managedWorkspaceSync.resume(first.relationshipId);
+        await waitForContents(join(betaRoot, 'offline-return.txt'), 'hub changed while beta was offline\n');
+
+        await writeFile(join(alphaRoot, 'three-versions.txt'), 'common version\n');
+        await Promise.all([
+          waitForContents(join(betaRoot, 'three-versions.txt'), 'common version\n'),
+          waitForContents(join(gammaRoot, 'three-versions.txt'), 'common version\n'),
+        ]);
+        await Promise.all([
+          runtime.managedWorkspaceSync.pause(first.relationshipId),
+          runtime.managedWorkspaceSync.pause(second.relationshipId),
+        ]);
+        await Promise.all([
+          writeFile(join(alphaRoot, 'three-versions.txt'), 'hub version\n'),
+          writeFile(join(betaRoot, 'three-versions.txt'), 'beta version\n'),
+          writeFile(join(gammaRoot, 'three-versions.txt'), 'gamma version\n'),
+        ]);
+        await Promise.all([
+          runtime.managedWorkspaceSync.resume(first.relationshipId),
+          runtime.managedWorkspaceSync.resume(second.relationshipId),
+        ]);
+        await Promise.all([
+          runtime.managedWorkspaceSync.flush(first.relationshipId),
+          runtime.managedWorkspaceSync.flush(second.relationshipId),
+        ]);
+        for (const relationship of [first, second]) {
+          const conflicts = await runtime.managedWorkspaceSync.listConflicts({
+            relationshipId: relationship.relationshipId,
+            limit: 100,
+          });
+          expect(conflicts.status).toBe('page');
+          if (conflicts.status !== 'page') throw new Error('conflict cursor invalidated on initial page');
+          expect(conflicts.conflicts.some((entry) => entry.path === 'three-versions.txt')).toBe(true);
+        }
+        await Promise.all([
+          waitForContents(join(alphaRoot, 'three-versions.txt'), 'hub version\n'),
+          waitForContents(join(betaRoot, 'three-versions.txt'), 'beta version\n'),
+          waitForContents(join(gammaRoot, 'three-versions.txt'), 'gamma version\n'),
+        ]);
+
+        await Promise.all([
+          writeFile(join(alphaRoot, 'delete-modify.txt'), 'common delete/modify version\n'),
+          writeFile(join(alphaRoot, 'structure'), 'common structural version\n'),
+        ]);
+        await Promise.all([
+          waitForContents(join(betaRoot, 'delete-modify.txt'), 'common delete/modify version\n'),
+          waitForContents(join(gammaRoot, 'delete-modify.txt'), 'common delete/modify version\n'),
+          waitForContents(join(betaRoot, 'structure'), 'common structural version\n'),
+          waitForContents(join(gammaRoot, 'structure'), 'common structural version\n'),
+        ]);
+        await runtime.managedWorkspaceSync.pause(first.relationshipId);
+        await rm(join(betaRoot, 'delete-modify.txt'));
+        await rm(join(betaRoot, 'structure'));
+        await mkdir(join(betaRoot, 'structure'));
+        await writeFile(join(betaRoot, 'structure', 'child.txt'), 'beta directory version\n');
+        await Promise.all([
+          writeFile(join(alphaRoot, 'delete-modify.txt'), 'hub modified version\n'),
+          writeFile(join(alphaRoot, 'structure'), 'hub file version\n'),
+        ]);
+        await Promise.all([
+          waitForContents(join(gammaRoot, 'delete-modify.txt'), 'hub modified version\n'),
+          waitForContents(join(gammaRoot, 'structure'), 'hub file version\n'),
+        ]);
+        await runtime.managedWorkspaceSync.resume(first.relationshipId);
+        await runtime.managedWorkspaceSync.flush(first.relationshipId);
+        const betaConflicts = await runtime.managedWorkspaceSync.listConflicts({
+          relationshipId: first.relationshipId,
+          limit: 100,
+        });
+        expect(betaConflicts.status).toBe('page');
+        if (betaConflicts.status !== 'page') throw new Error('conflict cursor invalidated on initial page');
+        // Mutagen reconciles this delete/modify pair by retaining the modified
+        // contents; it does not report a synthetic delete/modify conflict.
+        expect(betaConflicts.conflicts.some((entry) => entry.path === 'delete-modify.txt')).toBe(false);
+        expect(betaConflicts.conflicts.some((entry) => entry.path === 'structure' || entry.path.startsWith('structure/'))).toBe(true);
+        await waitForContents(join(alphaRoot, 'delete-modify.txt'), 'hub modified version\n');
+        await waitForContents(join(betaRoot, 'delete-modify.txt'), 'hub modified version\n');
+        await waitForContents(join(betaRoot, 'structure', 'child.txt'), 'beta directory version\n');
+
+        await runtime.managedWorkspaceSync.terminate(first.relationshipId);
+        await writeFile(join(alphaRoot, 'after-first-stopped.txt'), 'second link remains live\n');
+        await waitForContents(join(gammaRoot, 'after-first-stopped.txt'), 'second link remains live\n');
+        expect(await stat(join(betaRoot, 'after-first-stopped.txt')).catch(() => null)).toBeNull();
+
+        await runtime.stop();
+        runtime = await startLiveRuntime({ root, binaries, relationship: null, relationships: [second] });
+        await writeFile(join(gammaRoot, 'after-restart.txt'), 'restarted spoke edit\n');
+        await waitForContents(join(alphaRoot, 'after-restart.txt'), 'restarted spoke edit\n');
+      } finally {
+        await runtime?.stop().catch(() => undefined);
+        await rm(root, { recursive: true, force: true });
+      }
+    });
+
+    it('runs two hub-to-spoke sessions through separate target authorities and rooted agents', async () => {
+      const binaries = await requireLiveBinaries();
+      const root = await realpath(await mkdtemp(join(tmpdir(), 'hwsm-')));
+      const alphaRoot = join(root, 'alpha');
+      const betaRoot = join(root, 'beta');
+      const gammaRoot = join(root, 'gamma');
+      const machineIds = { alpha: 'machine-a', beta: 'machine-b', gamma: 'machine-c' };
+      const first = { ...liveRelationship({ relationshipId: 'remote-hub-beta', mode: 'keep_both_in_sync' }), controllerMachineId: machineIds.alpha };
+      const second = {
+        ...liveRelationship({ relationshipId: 'remote-hub-gamma', mode: 'keep_both_in_sync' }),
+        controllerMachineId: machineIds.alpha,
+        betaWorkspaceRefId: 'gamma-ref',
+      };
+      const relationships = [first, second];
+      const targetAgents: Array<Awaited<ReturnType<typeof launchWorkspaceSyncLocalAgent>>> = [];
+      await Promise.all([alphaRoot, betaRoot, gammaRoot].map(async (path) => await mkdir(path, { recursive: true })));
+      const snapshot = {
+        source: 'network' as const,
+        settings: AccountSettingsSchema.parse({
+          workspaceRefsV1: [
+            { id: 'alpha-ref', serverId: 'server-1', machineId: machineIds.alpha, rootPath: alphaRoot, createdAtMs: 1 },
+            { id: 'beta-ref', serverId: 'server-1', machineId: machineIds.beta, rootPath: betaRoot, createdAtMs: 1 },
+            { id: 'gamma-ref', serverId: 'server-1', machineId: machineIds.gamma, rootPath: gammaRoot, createdAtMs: 1 },
+          ],
+          workspaceSyncRelationshipsV1: relationships,
+        }),
+        settingsVersion: 1,
+        loadedAtMs: 1,
+        settingsSecretsReadKeys: [],
+      };
+      const createTarget = async (machineId: string) => {
+        const home = join(root, machineId);
+        const dataDirectory = join(home, 'mutagen', 'data');
+        await mkdir(dataDirectory, { recursive: true, mode: 0o700 });
+        return createWorkspaceSyncTargetAuthority({
+          localServerId: 'server-1',
+          localMachineId: machineId,
+          getSettingsSnapshot: () => snapshot,
+          callMachineRpc: async () => { throw new Error('Cross-machine bootstrap RPC was not expected at this local authority'); },
+          bootstrap: {
+            materializationDirectory: join(home, 'bootstrap'),
+            rootOwnershipManager: createWorkspaceRootOwnershipManager({ lockDirectory: join(home, 'root-ownership') }),
+          },
+          resolutionMaterialDirectory: join(home, 'resolution-material'),
+          openRootedAgent: async (request) => {
+            const agent = await launchWorkspaceSyncLocalAgent({
+              executablePath: binaries.agent,
+              args: ['synchronizer', '--external', '--root', request.canonicalRoot],
+              dataDirectory,
+              ...(request.signal ? { signal: request.signal } : {}),
+            });
+            targetAgents.push(agent);
+            return agent;
+          },
+        });
+      };
+      const targets = new Map([
+        [machineIds.beta, await createTarget(machineIds.beta)],
+        [machineIds.gamma, await createTarget(machineIds.gamma)],
+      ]);
+      const requireTarget = (machineId: string) => {
+        const target = targets.get(machineId);
+        if (!target) throw new Error(`No target authority for ${machineId}`);
+        return target;
+      };
+      async function openMachineCarrierTunnel(
+        request: Extract<WorkspaceSyncMachineTunnelOpenInput, { flow: 'file_transfer' }>,
+      ): Promise<FiniteTransferMachineTunnel>;
+      async function openMachineCarrierTunnel(
+        request: Extract<WorkspaceSyncMachineTunnelOpenInput, { flow: 'workspace_sync' }>,
+      ): Promise<WorkspaceSyncMachineTunnel>;
+      async function openMachineCarrierTunnel(
+        request: WorkspaceSyncMachineTunnelOpenInput,
+      ): Promise<FiniteTransferMachineTunnel | WorkspaceSyncMachineTunnel> {
+        if (request.flow !== 'workspace_sync') throw new Error('No finite transfer is expected for empty existing targets');
+        const ingress = await requireTarget(request.targetMachineId).acquireWorkspaceSyncMachineIngress({
+          operationId: request.operationId,
+          sourceMachineId: request.sourceMachineId,
+          targetMachineId: request.targetMachineId,
+          ...(request.signal ? { signal: request.signal } : {}),
+        });
+        return { localPort: ingress.port, localCapability: ingress.localCapability, observedPath: 'direct', close: ingress.close };
+      }
+      let runtime: DaemonWorkspaceSyncRuntime | null = null;
+      try {
+        runtime = await startLiveRuntime({
+          root,
+          binaries,
+          relationship: null,
+          relationships,
+          remote: {
+            localMachineId: machineIds.alpha,
+            endpointMachineIds: machineIds,
+            prepareRelationshipTarget: async (definition) => {
+              const targetMachineId = definition.betaWorkspaceRefId === 'beta-ref' ? machineIds.beta : machineIds.gamma;
+              const targetAuthority = requireTarget(targetMachineId);
+              await targetAuthority.prepareBootstrapHere({
+                v: 1,
+                bootstrapOperationId: definition.relationshipId,
+                owner: { kind: 'relationship', relationshipId: definition.relationshipId },
+                transientRelationship: definition,
+                targetWorkspaceRefId: definition.betaWorkspaceRefId,
+                endpointRole: 'beta',
+                policyDigest: definition.contentPolicy.policyDigest,
+                createIfMissing: true,
+                targetBootstrap: 'use_existing',
+              });
+              await targetAuthority.releaseBootstrapHere({
+                v: 1,
+                bootstrapOperationId: definition.relationshipId,
+                targetWorkspaceRefId: definition.betaWorkspaceRefId,
+                reason: 'relationship_committed',
+              });
+            },
+            recoverConflictResolutionAtTarget: async (request) => await requireTarget(request.targetMachineId)
+              .recoverConflictResolutionHere(request, request.signal),
+            openMachineCarrierTunnel,
+          },
+        });
+        await expect(requireTarget(machineIds.beta).acquireWorkspaceSyncMachineIngress({
+          operationId: second.relationshipId,
+          sourceMachineId: machineIds.alpha,
+          targetMachineId: machineIds.beta,
+        })).rejects.toMatchObject({ code: 'peer_unavailable' });
+        await writeFile(join(alphaRoot, 'hub.txt'), 'hub bytes\n');
+        try {
+          await Promise.all(relationships.map(async (relationship) => await runtime!.managedWorkspaceSync.flush(relationship.relationshipId)));
+        } catch (error) {
+          const statuses = await Promise.all(relationships.map(async (relationship) => await runtime!.managedWorkspaceSync.get(relationship.relationshipId)));
+          throw new Error(`Remote hub flush failed: ${JSON.stringify(statuses)}`, { cause: error });
+        }
+        await Promise.all([
+          waitForContents(join(betaRoot, 'hub.txt'), 'hub bytes\n'),
+          waitForContents(join(gammaRoot, 'hub.txt'), 'hub bytes\n'),
+        ]);
+        await Promise.all([
+          writeFile(join(betaRoot, 'beta.txt'), 'beta bytes\n'),
+          writeFile(join(gammaRoot, 'gamma.txt'), 'gamma bytes\n'),
+        ]);
+        await Promise.all([
+          waitForContents(join(alphaRoot, 'beta.txt'), 'beta bytes\n'),
+          waitForContents(join(alphaRoot, 'gamma.txt'), 'gamma bytes\n'),
+        ]);
+        const offlineBeta = requireTarget(machineIds.beta);
+        targets.delete(machineIds.beta);
+        await offlineBeta.releaseAllRetainedBootstraps();
+        const betaCustody = createWorkspaceRootOwnershipManager({ lockDirectory: join(root, machineIds.beta, 'root-ownership') });
+        const releasedBeta = await betaCustody.tryAcquire({ ownerId: 'offline-beta-probe', canonicalRoot: betaRoot, operation: 'handoff' });
+        expect(releasedBeta).not.toHaveProperty('kind');
+        if (!('kind' in releasedBeta)) await releasedBeta.release();
+        const gammaCustody = createWorkspaceRootOwnershipManager({ lockDirectory: join(root, machineIds.gamma, 'root-ownership') });
+        const retainedGamma = await gammaCustody.tryAcquire({ ownerId: 'online-gamma-probe', canonicalRoot: gammaRoot, operation: 'handoff' });
+        if (!('kind' in retainedGamma)) await retainedGamma.release();
+        expect(retainedGamma).toMatchObject({ kind: 'overlap' });
+        await Promise.all([
+          writeFile(join(alphaRoot, 'offline.txt'), 'hub while beta offline\n'),
+          writeFile(join(betaRoot, 'beta-offline.txt'), 'beta while its daemon is offline\n'),
+        ]);
+        await waitForContents(join(gammaRoot, 'offline.txt'), 'hub while beta offline\n');
+        await assertStillAbsent(join(betaRoot, 'offline.txt'));
+        targets.set(machineIds.beta, await createTarget(machineIds.beta));
+        try {
+          await Promise.all([
+            waitForContents(join(betaRoot, 'offline.txt'), 'hub while beta offline\n'),
+            waitForContents(join(alphaRoot, 'beta-offline.txt'), 'beta while its daemon is offline\n'),
+          ]);
+        } catch (error) {
+          const current = await runtime.managedWorkspaceSync.get(first.relationshipId);
+          throw new Error(`Remote beta reconnect failed: ${JSON.stringify(current)}`, { cause: error });
+        }
+
+        await writeFile(join(alphaRoot, 'three-versions.txt'), 'common bytes\n');
+        await Promise.all([
+          waitForContents(join(betaRoot, 'three-versions.txt'), 'common bytes\n'),
+          waitForContents(join(gammaRoot, 'three-versions.txt'), 'common bytes\n'),
+        ]);
+        await Promise.all([
+          runtime.managedWorkspaceSync.pause(first.relationshipId),
+          runtime.managedWorkspaceSync.pause(second.relationshipId),
+        ]);
+        await Promise.all([
+          writeFile(join(alphaRoot, 'three-versions.txt'), 'hub version\n'),
+          writeFile(join(betaRoot, 'three-versions.txt'), 'beta version\n'),
+          writeFile(join(gammaRoot, 'three-versions.txt'), 'gamma version\n'),
+        ]);
+        await Promise.all([
+          runtime.managedWorkspaceSync.resume(first.relationshipId),
+          runtime.managedWorkspaceSync.resume(second.relationshipId),
+        ]);
+        await Promise.all([
+          runtime.managedWorkspaceSync.flush(first.relationshipId),
+          runtime.managedWorkspaceSync.flush(second.relationshipId),
+        ]);
+        for (const relationship of relationships) {
+          const conflicts = await runtime.managedWorkspaceSync.listConflicts({ relationshipId: relationship.relationshipId, limit: 100 });
+          expect(conflicts.status).toBe('page');
+          if (conflicts.status !== 'page') throw new Error('conflict cursor invalidated on initial page');
+          expect(conflicts.conflicts.some((entry) => entry.path === 'three-versions.txt')).toBe(true);
+        }
+        expect(targetAgents.length).toBeGreaterThanOrEqual(2);
+
+        await runtime.managedWorkspaceSync.terminate(first.relationshipId);
+        await writeFile(join(alphaRoot, 'after-first-stopped.txt'), 'second remote link remains live\n');
+        await waitForContents(join(gammaRoot, 'after-first-stopped.txt'), 'second remote link remains live\n');
+        await assertStillAbsent(join(betaRoot, 'after-first-stopped.txt'));
+      } finally {
+        await runtime?.stop().catch(() => undefined);
+        await Promise.all([...targets.values()].map(async (target) => await target.releaseAllRetainedBootstraps().catch(() => undefined)));
+        await rm(root, { recursive: true, force: true });
+      }
+    });
+
+    it('prewarms and finally transfers a linked spoke Session path through the real hub before target reading', async () => {
+      const binaries = await requireLiveBinaries();
+      const root = await realpath(await mkdtemp(join(tmpdir(), 'hwsh-')));
+      const hubRoot = join(root, 'alpha');
+      const targetRoot = join(root, 'beta');
+      const sourceRoot = join(root, 'gamma');
+      const sourceHub = {
+        ...liveRelationship({ relationshipId: 'source-hub', mode: 'keep_both_in_sync' }),
+        betaWorkspaceRefId: 'gamma-ref',
+      };
+      const hubTarget = liveRelationship({ relationshipId: 'hub-target', mode: 'keep_synced' });
+      const relationships = [sourceHub, hubTarget];
+      let runtime: DaemonWorkspaceSyncRuntime | null = null;
+      try {
+        runtime = await startLiveRuntime({ root, binaries, relationship: null, relationships });
+        const workspaceRefs = [
+          { id: 'alpha-ref', serverId: 'server-1', machineId: 'local-machine', rootPath: hubRoot, createdAtMs: 1 },
+          { id: 'beta-ref', serverId: 'server-1', machineId: 'local-machine', rootPath: targetRoot, createdAtMs: 1 },
+          { id: 'gamma-ref', serverId: 'server-1', machineId: 'local-machine', rootPath: sourceRoot, createdAtMs: 1 },
+        ];
+        const adapter = createWorkspaceSyncHandoffAdapter({
+          sync: runtime.managedWorkspaceSync,
+          bootstrap: async () => ({ release: async () => undefined }),
+          prepareBetween: async (request, signal) => await prepareWorkspaceSyncBetween({
+            ...request,
+            readCurrent: async () => ({ workspaceRefs, relationships }),
+            flush: async (relationshipId, flushSignal) => await runtime!.managedWorkspaceSync.flush(relationshipId, flushSignal),
+            ...(signal ? { signal } : {}),
+          }),
+        });
+        const handoff = {
+          operationId: 'linked-spoke-handoff',
+          action: { kind: 'linked_workspace' as const },
+          sourceMachineId: 'local-machine',
+          targetMachineId: 'local-machine',
+          sourceWorkspaceRefId: 'gamma-ref',
+          targetWorkspaceRefId: 'beta-ref',
+          sourceRootPath: sourceRoot,
+          targetRootPath: targetRoot,
+        };
+        const prepared = await adapter.prepare(handoff);
+        expect(prepared.traversed?.map(({ relationshipId }) => relationshipId)).toEqual(['source-hub', 'hub-target']);
+
+        const relativeSessionPath = join('packages', 'app');
+        await mkdir(join(sourceRoot, relativeSessionPath), { recursive: true });
+        await writeFile(join(sourceRoot, relativeSessionPath, 'handoff.txt'), 'final source Session edit\n');
+        const finalized = await adapter.finalize({ operationId: handoff.operationId, prepared });
+        expect(finalized.traversed?.map(({ relationshipId }) => relationshipId)).toEqual(['source-hub', 'hub-target']);
+        await waitForContents(join(targetRoot, relativeSessionPath, 'handoff.txt'), 'final source Session edit\n');
+        const targetReader = await readFile(join(targetRoot, relativeSessionPath, 'handoff.txt'), 'utf8');
+        expect(targetReader).toBe('final source Session edit\n');
+        expect(relationships).toHaveLength(2);
+        await adapter.commit({ operationId: handoff.operationId, prepared });
+
+        await runtime.managedWorkspaceSync.pause('hub-target');
+        await writeFile(join(sourceRoot, relativeSessionPath, 'retry.txt'), 'retry after blocked link\n');
+        const blocked = await prepareWorkspaceSyncBetween({
+          sourceWorkspaceRefId: 'gamma-ref', targetWorkspaceRefId: 'beta-ref',
+          readCurrent: async () => ({ workspaceRefs, relationships }),
+          flush: async (relationshipId) => await runtime!.managedWorkspaceSync.flush(relationshipId),
+        });
+        expect(blocked).toMatchObject({
+          ok: false,
+          completed: [{ relationshipId: 'source-hub' }],
+          blockedRelationshipId: 'hub-target',
+        });
+        await runtime.managedWorkspaceSync.resume('hub-target');
+        const retried = await prepareWorkspaceSyncBetween({
+          sourceWorkspaceRefId: 'gamma-ref', targetWorkspaceRefId: 'beta-ref',
+          readCurrent: async () => ({ workspaceRefs, relationships }),
+          flush: async (relationshipId) => await runtime!.managedWorkspaceSync.flush(relationshipId),
+        });
+        expect(retried).toMatchObject({
+          ok: true,
+          traversed: [{ relationshipId: 'source-hub' }, { relationshipId: 'hub-target' }],
+        });
+        await waitForContents(join(targetRoot, relativeSessionPath, 'retry.txt'), 'retry after blocked link\n');
+      } finally {
+        await runtime?.stop().catch(() => undefined);
+        await rm(root, { recursive: true, force: true });
+      }
     });
 
     it('copy_once materializes alpha bytes on beta, completes the flush, and leaves no persistent relationship or session', async () => {
@@ -777,7 +1295,7 @@ describe.skipIf(runInstalledArtifactIntegration)(
             relationshipId: 'live-copy-once-mode',
             mode: 'copy_once',
           });
-          expect(typeof status.lastSuccessfulSyncAtMs).toBe('number');
+          expect(typeof status.lastCycleObservedAtMs).toBe('number');
 
           // The initial copy reached the target.
           await waitForContents(join(betaRoot, 'alpha-to-beta.txt'), 'non-empty copy_once payload\n');
@@ -795,11 +1313,11 @@ describe.skipIf(runInstalledArtifactIntegration)(
       );
     });
 
-    it('keep_synced (one-way-safe) propagates source changes, preserves non-conflicting target-only files, and propagates non-conflicting source deletion', async () => {
+    it('keep_synced (one-way-safe) preserves target-only files and installs an approved target version upstream', async () => {
       const binaries = await requireLiveBinaries();
       await withLiveRuntime(
         { binaries, relationship: liveRelationship({ relationshipId: 'live-keep-synced-mode', mode: 'keep_synced' }) },
-        async ({ runtime, alphaRoot, betaRoot }) => {
+        async ({ runtime, alphaRoot, betaRoot, conflictApprovalAuthority }) => {
           await writeFile(join(alphaRoot, 'notes.txt'), 'keep_synced v1\n');
           await waitForContents(join(betaRoot, 'notes.txt'), 'keep_synced v1\n');
 
@@ -813,6 +1331,33 @@ describe.skipIf(runInstalledArtifactIntegration)(
           // Deleting an unmodified source path propagates to the target.
           await rm(join(alphaRoot, 'notes.txt'));
           await waitForAbsent(join(betaRoot, 'notes.txt'), 'source deletion to propagate');
+
+          await writeFile(join(alphaRoot, 'reviewed.txt'), 'common version\n');
+          await waitForContents(join(betaRoot, 'reviewed.txt'), 'common version\n');
+          await writeFile(join(alphaRoot, 'reviewed.txt'), 'alpha losing edit\n');
+          await writeFile(join(betaRoot, 'reviewed.txt'), 'beta reviewed edit\n');
+          await runtime.managedWorkspaceSync.flush('live-keep-synced-mode');
+          const conflicts = await runtime.managedWorkspaceSync.listConflicts({
+            relationshipId: 'live-keep-synced-mode', limit: 100,
+          });
+          if (conflicts.status !== 'page' || !conflicts.conflicts.some((entry) => entry.path === 'reviewed.txt')) {
+            throw new Error('One-way divergence did not produce a reviewable conflict');
+          }
+          const [betaReviewed, alphaLosing] = await Promise.all([
+            observeWorkspaceSyncEntryAtRoot({ rootPath: betaRoot, relativePath: 'reviewed.txt' }),
+            observeWorkspaceSyncEntryAtRoot({ rootPath: alphaRoot, relativePath: 'reviewed.txt' }),
+          ]);
+          await resolveConflictThroughApprovedAction(runtime, conflictApprovalAuthority, {
+            controllerMachineId: 'local-machine',
+            hubWorkspaceRefId: 'alpha-ref',
+            path: 'reviewed.txt',
+            source: { workspaceRefId: 'beta-ref', expected: betaReviewed },
+            targets: [{ workspaceRefId: 'alpha-ref', expected: alphaLosing }],
+            relationshipIds: ['live-keep-synced-mode'],
+            strategy: 'use_source',
+          });
+          await waitForContents(join(alphaRoot, 'reviewed.txt'), 'beta reviewed edit\n', 'approved target version upstream');
+          await waitForContents(join(betaRoot, 'reviewed.txt'), 'beta reviewed edit\n', 'reviewed target version retained');
 
           const status = await runtime.managedWorkspaceSync.get('live-keep-synced-mode');
           expect(status).toMatchObject({
@@ -891,15 +1436,18 @@ describe.skipIf(runInstalledArtifactIntegration)(
           if (conflict.beta.kind === 'unsupported') {
             throw new Error('regular-file conflict unexpectedly reported as unsupported');
           }
+          const [alphaExpected, betaExpected] = await Promise.all([
+            observeWorkspaceSyncEntryAtRoot({ rootPath: alphaRoot, relativePath: conflict.path }),
+            observeWorkspaceSyncEntryAtRoot({ rootPath: betaRoot, relativePath: conflict.path }),
+          ]);
           await resolveConflictThroughApprovedAction(runtime, conflictApprovalAuthority, {
             controllerMachineId: 'local-machine',
-            request: {
-              relationshipId: 'live-two-way-mode',
-              path: conflict.path,
-              keep: 'alpha',
-              expectedKind: conflict.beta.kind,
-              ...(conflict.beta.digest === undefined ? {} : { expectedDigest: conflict.beta.digest }),
-            },
+            hubWorkspaceRefId: 'alpha-ref',
+            path: conflict.path,
+            source: { workspaceRefId: 'alpha-ref', expected: alphaExpected },
+            targets: [{ workspaceRefId: 'beta-ref', expected: betaExpected }],
+            relationshipIds: ['live-two-way-mode'],
+            strategy: 'use_source',
           });
           await waitForContents(join(betaRoot, 'conflicted.txt'), 'alpha divergent edit\n', 'resolved alpha conflict');
 
@@ -910,10 +1458,7 @@ describe.skipIf(runInstalledArtifactIntegration)(
           if (resolvedConflicts.status !== 'page') throw new Error('conflict cursor invalidated on initial page');
           expect(resolvedConflicts.conflicts.some((entry) => entry.path.includes('conflicted.txt'))).toBe(false);
 
-          // Exercise the opposite direction through the same public Action.
-          // Keeping beta deletes the controller-local alpha loser, so the
-          // controller itself must consume the approval receipt authority
-          // rather than relying only on the registered target RPC service.
+          // Exercise the opposite direction through the same approved Action.
           await writeFile(join(alphaRoot, 'conflicted-beta.txt'), 'alpha losing edit\n');
           await writeFile(join(betaRoot, 'conflicted-beta.txt'), 'beta winning edit\n');
           await runtime.managedWorkspaceSync.flush('live-two-way-mode');
@@ -928,15 +1473,18 @@ describe.skipIf(runInstalledArtifactIntegration)(
           if (!betaWinningConflict || betaWinningConflict.alpha.kind === 'unsupported') {
             throw new Error('regular-file conflict unexpectedly reported as unsupported');
           }
+          const [betaWinningExpected, alphaLosingExpected] = await Promise.all([
+            observeWorkspaceSyncEntryAtRoot({ rootPath: betaRoot, relativePath: betaWinningConflict.path }),
+            observeWorkspaceSyncEntryAtRoot({ rootPath: alphaRoot, relativePath: betaWinningConflict.path }),
+          ]);
           await resolveConflictThroughApprovedAction(runtime, conflictApprovalAuthority, {
             controllerMachineId: 'local-machine',
-            request: {
-              relationshipId: 'live-two-way-mode',
-              path: betaWinningConflict.path,
-              keep: 'beta',
-              expectedKind: betaWinningConflict.alpha.kind,
-              ...(betaWinningConflict.alpha.digest === undefined ? {} : { expectedDigest: betaWinningConflict.alpha.digest }),
-            },
+            hubWorkspaceRefId: 'alpha-ref',
+            path: betaWinningConflict.path,
+            source: { workspaceRefId: 'beta-ref', expected: betaWinningExpected },
+            targets: [{ workspaceRefId: 'alpha-ref', expected: alphaLosingExpected }],
+            relationshipIds: ['live-two-way-mode'],
+            strategy: 'use_source',
           });
           await waitForContents(join(alphaRoot, 'conflicted-beta.txt'), 'beta winning edit\n', 'resolved beta conflict');
 
@@ -946,6 +1494,151 @@ describe.skipIf(runInstalledArtifactIntegration)(
           });
           if (betaResolvedConflicts.status !== 'page') throw new Error('conflict cursor invalidated after beta resolution');
           expect(betaResolvedConflicts.conflicts.some((entry) => entry.path.includes('conflicted-beta.txt'))).toBe(false);
+        },
+      );
+    });
+
+    it('keeps the displaced hub file beside the chosen spoke file and propagates both through the real two-way engine', async () => {
+      const binaries = await requireLiveBinaries();
+      const relationshipId = 'live-two-way-keep-both';
+      await withLiveRuntime(
+        { binaries, relationship: liveRelationship({ relationshipId, mode: 'keep_both_in_sync' }) },
+        async ({ runtime, alphaRoot, betaRoot, conflictApprovalAuthority }) => {
+          const path = 'reviewed.txt';
+          await writeFile(join(alphaRoot, path), 'shared baseline\n');
+          await waitForContents(join(betaRoot, path), 'shared baseline\n');
+          await runtime.managedWorkspaceSync.pause(relationshipId);
+          await Promise.all([
+            writeFile(join(alphaRoot, path), 'preserved hub version\n'),
+            writeFile(join(betaRoot, path), 'chosen spoke version\n'),
+          ]);
+          const displacedBeforeSync = await observeWorkspaceSyncEntryAtRoot({ rootPath: alphaRoot, relativePath: path });
+          if (displacedBeforeSync.kind !== 'file') throw new Error('The hub version was not a regular file');
+          const [occupiedAsidePath, alternateAsidePath] = deriveWorkspaceSyncConflictAsidePaths(path, displacedBeforeSync);
+          await writeFile(join(alphaRoot, occupiedAsidePath), 'unrelated existing aside\n');
+          await runtime.managedWorkspaceSync.resume(relationshipId);
+          await runtime.managedWorkspaceSync.flush(relationshipId);
+          await waitForContents(join(betaRoot, occupiedAsidePath), 'unrelated existing aside\n');
+          const page = await runtime.managedWorkspaceSync.listConflicts({ relationshipId, limit: 100 });
+          expect(page.status).toBe('page');
+          if (page.status !== 'page') throw new Error('conflict cursor invalidated on initial page');
+          expect(page.conflicts.some((entry) => entry.path === path)).toBe(true);
+
+          const inspection = await runtime.managedWorkspaceSync.inspectConflict({ workspaceRefId: 'alpha-ref', path });
+          expect(inspection.preservationOptions).toContainEqual({
+            status: 'name_conflict',
+            source: { workspaceRefId: 'alpha-ref', expected: displacedBeforeSync },
+            proposed: { workspaceRefId: 'alpha-ref', path: occupiedAsidePath },
+          });
+          const alternative = inspection.preservationOptions?.find((option) => (
+            option.status === 'available' && option.source.workspaceRefId === 'alpha-ref'
+          ));
+          if (!alternative || alternative.status !== 'available') {
+            throw new Error(`The current hub version has no reviewed preservation option: ${JSON.stringify(inspection.preservationOptions)}`);
+          }
+          expect(alternative.destination.path).toBe(alternateAsidePath);
+          expect(alternative.consequence.propagatingToWorkspaceRefIds).toContain('beta-ref');
+          const [chosen, displaced] = await Promise.all([
+            observeWorkspaceSyncEntryAtRoot({ rootPath: betaRoot, relativePath: path }),
+            observeWorkspaceSyncEntryAtRoot({ rootPath: alphaRoot, relativePath: path }),
+          ]);
+          const result = await resolveConflictThroughApprovedAction(runtime, conflictApprovalAuthority, {
+            controllerMachineId: 'local-machine',
+            hubWorkspaceRefId: 'alpha-ref',
+            path,
+            source: { workspaceRefId: 'beta-ref', expected: chosen },
+            targets: [{ workspaceRefId: 'alpha-ref', expected: displaced }],
+            relationshipIds: [relationshipId],
+            strategy: 'keep_both',
+            alternatives: [{
+              source: alternative.source,
+              destination: alternative.destination,
+              consequence: alternative.consequence,
+            }],
+          });
+          expect(result).toEqual({
+            endpoints: [{ workspaceRefId: 'alpha-ref', status: 'applied' }],
+            preserved: [{
+              alternativeIndex: 0,
+              sourceWorkspaceRefId: 'alpha-ref',
+              destinationWorkspaceRefId: 'alpha-ref',
+              path: alternative.destination.path,
+              propagatingToWorkspaceRefIds: ['beta-ref'],
+              outcome: { status: 'preserved' },
+            }],
+          });
+          await Promise.all([
+            waitForContents(join(alphaRoot, path), 'chosen spoke version\n'),
+            waitForContents(join(betaRoot, path), 'chosen spoke version\n'),
+            waitForContents(join(alphaRoot, occupiedAsidePath), 'unrelated existing aside\n'),
+            waitForContents(join(betaRoot, occupiedAsidePath), 'unrelated existing aside\n'),
+            waitForContents(join(alphaRoot, alternative.destination.path), 'preserved hub version\n'),
+            waitForContents(join(betaRoot, alternative.destination.path), 'preserved hub version\n'),
+          ]);
+        },
+      );
+    });
+
+    it('preserves a target-only file upstream before exact mirroring removes the original', async () => {
+      const binaries = await requireLiveBinaries();
+      const relationshipId = 'live-exact-replica-keep-both';
+      await withLiveRuntime(
+        { binaries, relationship: liveRelationship({ relationshipId, mode: 'mirror_exactly' }) },
+        async ({ runtime, alphaRoot, betaRoot, conflictApprovalAuthority }) => {
+          const path = 'target-only.txt';
+          await writeFile(join(alphaRoot, 'baseline.txt'), 'replica ready\n');
+          await waitForContents(join(betaRoot, 'baseline.txt'), 'replica ready\n');
+          await runtime.managedWorkspaceSync.pause(relationshipId);
+          await writeFile(join(betaRoot, path), 'target-authored bytes\n');
+          const inspection = await runtime.managedWorkspaceSync.inspectConflict({ workspaceRefId: 'beta-ref', path });
+          const alternative = inspection.preservationOptions?.find((option) => (
+            option.status === 'available' && option.source.workspaceRefId === 'beta-ref'
+          ));
+          if (!alternative || alternative.status !== 'available') {
+            throw new Error(`Target-only version has no reviewed upstream preservation option: ${JSON.stringify(inspection)}`);
+          }
+          expect(alternative.destination.workspaceRefId).toBe('alpha-ref');
+          expect(alternative.consequence.propagatingToWorkspaceRefIds).not.toContain('beta-ref');
+          expect(alternative.consequence.unverifiedPropagationToWorkspaceRefIds).toContain('beta-ref');
+          const [hubMissing, targetOnly] = await Promise.all([
+            observeWorkspaceSyncEntryAtRoot({ rootPath: alphaRoot, relativePath: path }),
+            observeWorkspaceSyncEntryAtRoot({ rootPath: betaRoot, relativePath: path }),
+          ]);
+          expect(hubMissing).toEqual({ kind: 'missing' });
+          expect(targetOnly.kind).toBe('file');
+          const result = await resolveConflictThroughApprovedAction(runtime, conflictApprovalAuthority, {
+            controllerMachineId: 'local-machine',
+            hubWorkspaceRefId: 'alpha-ref',
+            path,
+            source: { workspaceRefId: 'alpha-ref', expected: hubMissing },
+            targets: [{ workspaceRefId: 'beta-ref', expected: targetOnly }],
+            relationshipIds: [relationshipId],
+            strategy: 'keep_both',
+            alternatives: [{
+              source: alternative.source,
+              destination: alternative.destination,
+              consequence: alternative.consequence,
+            }],
+          });
+          expect(result).toEqual({
+            endpoints: [{ workspaceRefId: 'beta-ref', status: 'applied_paused' }],
+            preserved: [{
+              alternativeIndex: 0,
+              sourceWorkspaceRefId: 'beta-ref',
+              destinationWorkspaceRefId: 'alpha-ref',
+              path: alternative.destination.path,
+              propagatingToWorkspaceRefIds: [],
+              unverifiedPropagationToWorkspaceRefIds: ['beta-ref'],
+              outcome: { status: 'preserved' },
+            }],
+          });
+          await runtime.managedWorkspaceSync.resume(relationshipId);
+          await runtime.managedWorkspaceSync.flush(relationshipId);
+          await Promise.all([
+            waitForAbsent(join(betaRoot, path), 'exact replica original removal'),
+            waitForContents(join(alphaRoot, alternative.destination.path), 'target-authored bytes\n'),
+            waitForContents(join(betaRoot, alternative.destination.path), 'target-authored bytes\n'),
+          ]);
         },
       );
     });

@@ -1,18 +1,20 @@
 import React from 'react';
 import type { ReactTestInstance } from 'react-test-renderer';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { pressTestInstanceAsync, renderScreen } from '@/dev/testkit';
-import { installPermissionShellCommonModuleMocks } from './permissionShellTestHelpers';
+import { pressTestInstanceAsync } from '@/dev/testkit';
+import { installPermissionShellCommonModuleMocks, createPermissionShellRenderer } from './permissionShellTestHelpers';
 
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 const ops = vi.hoisted(() => ({
-    sessionAllow: vi.fn(async (..._args: unknown[]) => {}),
-    sessionAllowWithPermissionUpdates: vi.fn(async (..._args: unknown[]) => {}),
-    sessionDeny: vi.fn(async (..._args: unknown[]) => {}),
-    sessionAbort: vi.fn(async (..._args: unknown[]) => {}),
+    approve: vi.fn(async (..._args: unknown[]) => {}),
+    approveWithUpdates: vi.fn(async (..._args: unknown[]) => {}),
+    deny: vi.fn(async (..._args: unknown[]) => {}),
+    abort: vi.fn(async (..._args: unknown[]) => {}),
 }));
+const renderScreen = createPermissionShellRenderer(ops);
+
 
 const logMock = vi.hoisted(() => ({
     log: vi.fn((..._args: unknown[]) => {}),
@@ -22,12 +24,7 @@ vi.mock('@expo/vector-icons', () => ({
     Ionicons: 'Ionicons',
 }));
 
-vi.mock('@/sync/ops', () => ({
-    sessionAllow: ops.sessionAllow,
-    sessionAllowWithPermissionUpdates: ops.sessionAllowWithPermissionUpdates,
-    sessionDeny: ops.sessionDeny,
-    sessionAbort: ops.sessionAbort,
-}));
+
 
 installPermissionShellCommonModuleMocks({
     log: async () => ({ log: logMock }),
@@ -75,16 +72,16 @@ function findActionError(screen: Awaited<ReturnType<typeof renderScreen>>) {
 
 describe('PermissionFooter action error handling', () => {
     beforeEach(() => {
-        ops.sessionAllow.mockReset();
-        ops.sessionAllowWithPermissionUpdates.mockReset();
-        ops.sessionDeny.mockReset();
-        ops.sessionAbort.mockReset();
+        ops.approve.mockReset();
+        ops.approveWithUpdates.mockReset();
+        ops.deny.mockReset();
+        ops.abort.mockReset();
         logMock.log.mockReset();
     });
 
     it('shows retryable feedback and resets allow loading when approval fails', async () => {
         const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
-        ops.sessionAllow
+        ops.approve
             .mockRejectedValueOnce(new Error('secret-provider-token'))
             .mockResolvedValueOnce(undefined);
 
@@ -103,13 +100,13 @@ describe('PermissionFooter action error handling', () => {
 
         await pressTestInstanceAsync(allowButton, 'allow button retry');
 
-        expect(ops.sessionAllow).toHaveBeenCalledTimes(2);
+        expect(ops.approve).toHaveBeenCalledTimes(2);
         expect(findActionError(screen)).toHaveLength(0);
         consoleError.mockRestore();
     });
 
     it('shows retryable feedback and resets deny loading when deny fails', async () => {
-        ops.sessionDeny
+        ops.deny
             .mockRejectedValueOnce(new Error('deny failed with sensitive details'))
             .mockResolvedValueOnce(undefined);
 
@@ -123,13 +120,12 @@ describe('PermissionFooter action error handling', () => {
 
         await pressTestInstanceAsync(denyButton, 'deny button retry');
 
-        expect(ops.sessionDeny).toHaveBeenCalledTimes(2);
+        expect(ops.deny).toHaveBeenCalledTimes(2);
         expect(findActionError(screen)).toHaveLength(0);
     });
 
-    it('shows retryable feedback and resets stop loading when abort fails', async () => {
-        ops.sessionDeny.mockResolvedValue(undefined);
-        ops.sessionAbort
+    it('shows retryable feedback and resets stop loading when stop delivery fails', async () => {
+        ops.deny
             .mockRejectedValueOnce(new Error('abort failed with sensitive details'))
             .mockResolvedValueOnce(undefined);
 
@@ -143,7 +139,7 @@ describe('PermissionFooter action error handling', () => {
 
         await pressTestInstanceAsync(stopButton, 'stop button retry');
 
-        expect(ops.sessionAbort).toHaveBeenCalledTimes(2);
+        expect(ops.deny).toHaveBeenCalledTimes(2);
         expect(findActionError(screen)).toHaveLength(0);
     });
 });

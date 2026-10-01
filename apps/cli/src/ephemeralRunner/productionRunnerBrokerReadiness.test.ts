@@ -1,14 +1,37 @@
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { definePlugin } from '@happier-dev/plugin-sdk';
+import {
+  AccountSettingsSchema,
+  DEFAULT_PROVIDER_SETTINGS_V1,
+  ProviderConnectionIdSchema,
+  ProviderSettingsV1Schema,
+  createEmptyProviderRuntimeStateFileV1,
+  encryptSecretStringV1,
+  normalizeActionsSettingsV1,
+} from '@happier-dev/protocol';
 import { encodeBase64 } from '@happier-dev/protocol/crypto/base64';
 import { signRunnerClaimV1 } from '@happier-dev/protocol/ephemeralRunner/endpoint';
 import { signMachineInstallationProof } from '@happier-dev/protocol/machines/identity/installationIdentity';
-import { verifyRunnerBrokerReadinessRequestV1 } from '@happier-dev/protocol/teams';
+import { TeamCredentialResourceSummaryV1Schema, verifyRunnerBrokerReadinessRequestV1 } from '@happier-dev/protocol/teams';
 import tweetnacl from 'tweetnacl';
 import { describe, expect, it, vi } from 'vitest';
 
+import { bindPluginRuntimeSourceAuthority } from '@/plugins/runtime/sourceAuthority';
+import { seedCurrentLocalPathPluginFixture } from '@/plugins/store/registry/currentState.testkit';
+import { resolveRunnerCredentialSelectionCurrentness } from '@/providers/broker/daemonProviderBrokerRuntime';
+import { createRuntimeProviderModelManagementServices } from '@/providers/modelManagement/runtimeServices';
+import { resolveProviderConnectionForMachine } from '@/providers/registry';
+import { resolveProviderContributionRegistryView } from '@/providers/registry/contributions';
+import type { ProviderRuntimeStateStore } from '@/providers/runtimeState';
+import { createScopedRuntimeActionSettingsProvider } from '@/settings/scopedRuntimeActionSettingsProvider';
+
+import { acquireReviewedRunnerPluginRuntimeLease } from './runnerPluginRuntimeLease';
 import { checkProductionRunnerBrokerReadiness } from './productionRunnerBrokerReadiness';
 
-describe('production Runner broker readiness', () => {
-  it('derives the exact reviewed target and unique Provider protocol, dual-signs the carrier request, and signs content-free readiness', async () => {
+function createReadinessFacts() {
     const activation = tweetnacl.sign.keyPair.fromSeed(new Uint8Array(32).fill(71));
     const installation = tweetnacl.sign.keyPair.fromSeed(new Uint8Array(32).fill(73));
     const binding = {
@@ -43,6 +66,12 @@ describe('production Runner broker readiness', () => {
       },
       activationSecretKey: activation.secretKey,
     });
+    return { activation, installation, binding, claim };
+}
+
+describe('production Runner broker readiness', () => {
+  it('derives the exact reviewed target and unique Provider protocol, dual-signs the carrier request, and signs content-free readiness', async () => {
+    const { activation, installation, binding, claim } = createReadinessFacts();
     const selection = { v: 1 as const, resourceId: 'resource-1', brokerMachineId: 'broker-machine', revision: 9,
       application: { agentTargetKey: 'agent:happier.agent.codex/codex', implementationIdentity: { pluginId: 'happier.provider.openai', localId: 'openai' }, endpointTemplateId: 'responses', protocol: 'openai-responses' },
       sourceRevision: 'source-revision-9' };
@@ -117,11 +146,152 @@ describe('production Runner broker readiness', () => {
     if (result.status === 'ready') {
       expect(result.readiness.payload.installation).toEqual({
         agentTarget,
-        managedInstallationId: 'codex',
+        agentRuntimeId: 'codex',
         executablePath: '/managed/codex',
         authoritativeVersion: null,
       });
       expect(result.readiness.payload.credentialSelectionBinding).toEqual(selection);
+    }
+  });
+
+  it('uses a separately installed public-SDK Provider on the broker, without installing it on the Runner, and rejects revoked sources', async () => {
+    const agentTarget = { kind: 'agent' as const, identity: { pluginId: 'happier.agent.codex', localId: 'codex' } };
+    const agentTargetKey = 'agent:happier.agent.codex/codex';
+    // The external author's entire declaration uses the public SDK. The host
+    // fixture below loads it through the ordinary immutable-generation catalog.
+    const { manifest: providerManifest } = definePlugin({
+      id: 'acme.runner-models', version: '1.0.0', engines: { happier: '*' },
+      providers: {
+        gateway: { declaration: {
+          v: 1, name: 'Runner fixture models', kind: 'cloud',
+          endpointTemplates: [{
+            id: 'responses', protocol: 'openai-responses', baseUrl: 'https://models.example.test/v1',
+            capabilities: { streaming: 'supported', toolRoundTrips: 'supported', statefulResponses: 'supported', reasoningControls: 'supported' },
+          }],
+          credential: {
+            kind: 'apiKey', slotId: 'apiKey', required: true,
+            transports: [{ id: 'bearer', protocols: ['openai-responses'], uses: ['runtime', 'probe'], destination: { kind: 'httpHeader', name: 'authorization', format: 'bearer' } }],
+          },
+          catalog: { source: 'static', manualModelPolicy: 'catalog-only', staticModels: [{ id: 'fixture-model', name: 'Fixture model', capabilities: { toolRoundTrips: 'supported', reasoningControls: 'supported' } }] },
+          compatibilityOverrides: [{
+            agentTargetKey, protocol: 'openai-responses', status: 'verified', reason: 'Deterministic source fixture',
+            evidence: { sourceUrls: ['https://models.example.test/docs'], verifiedAt: '2026-09-26' },
+          }],
+        } },
+      },
+    });
+    const root = await mkdtemp(join(tmpdir(), 'happier-runner-broker-provider-'));
+    const brokerHome = join(root, 'broker');
+    const runnerHome = join(root, 'runner');
+    const pluginRoot = join(root, 'provider');
+    const acquire = (happyHomeDir: string) => acquireReviewedRunnerPluginRuntimeLease({
+      happyHomeDir, target: agentTarget,
+      resolveDevelopmentSourceAuthority: ({ rootPath }) => {
+        const authority = bindPluginRuntimeSourceAuthority({
+          custody: { kind: 'development', registeredRootId: 'runner-readiness-fixture' },
+          resolvedRoot: rootPath, observedRevision: 1,
+        });
+        return authority.kind === 'development' ? authority : null;
+      },
+      scopedActionRuntime: {
+        credentials: null,
+        actionsSettingsProvider: createScopedRuntimeActionSettingsProvider(normalizeActionsSettingsV1({ v: 1, actions: {} })),
+      },
+    });
+    let runner: Awaited<ReturnType<typeof acquire>> | null = null;
+    try {
+      await mkdir(join(pluginRoot, '.happier-plugin'), { recursive: true });
+      await writeFile(join(pluginRoot, '.happier-plugin', 'plugin.json'), JSON.stringify(providerManifest));
+      await seedCurrentLocalPathPluginFixture({ happyHomeDir: brokerHome, pluginRoot, pluginId: providerManifest.id, manifestVersion: providerManifest.version });
+      runner = await acquire(runnerHome);
+      expect(runner.lease.registry.contributes.providersByContributionKey?.has('acme.runner-models/gateway') ?? false).toBe(false);
+      const broker = await acquire(brokerHome);
+      const generation = broker.lease.registry.generation;
+      if (generation === undefined) throw new Error('Reviewed Runner registry has no generation');
+      const registry = resolveProviderContributionRegistryView(broker.lease.registry.contributes, generation, broker.lease.registry.readPluginOccurrenceId);
+      expect(registry.providersByContributionKey.get('acme.runner-models/gateway')?.provenance).toBe('external');
+      await broker.release();
+
+      const baseSettings = ProviderSettingsV1Schema.parse({
+        ...DEFAULT_PROVIDER_SETTINGS_V1,
+        connections: [{ v: 1, id: 'fixture-connection', source: { kind: 'contribution', contributionKey: 'acme.runner-models/gateway' }, role: 'default', displayName: 'Fixture', displayNameMode: 'automatic', revision: 1, createdAt: 1, updatedAt: 1 }],
+      });
+      const resolved = resolveProviderConnectionForMachine({
+        connectionId: 'fixture-connection', machineId: 'broker-machine', accountSettings: { providerSettingsV1: baseSettings }, registry,
+        dnsEvidenceByEndpointUrl: new Map([['https://models.example.test/v1', ['1.1.1.1']]]),
+      });
+      if (resolved.status !== 'resolved') throw new Error('Expected external Provider connection');
+      const settingsSecretsReadKey = new Uint8Array(32).fill(43);
+      const settings = AccountSettingsSchema.parse({
+        providerSettingsV1: {
+          ...baseSettings,
+          secretBindingsByConnectionId: { 'fixture-connection': { account: { apiKey: 'fixture-secret' } } },
+          accountGrants: [{ v: 1, connectionId: 'fixture-connection', connectionSecurityFingerprint: resolved.record.connectionSecurityFingerprint, confirmedAt: 1 }],
+        },
+        secrets: [{ id: 'fixture-secret', name: 'Fixture', kind: 'apiKey', encryptedValue: { _isSecretValue: true, encryptedValue: encryptSecretStringV1('fixture-upstream-key', settingsSecretsReadKey, (length) => new Uint8Array(length).fill(47)) }, createdAt: 1, updatedAt: 1 }],
+      });
+      // Account settings, DNS and persisted observation storage are boundaries;
+      // catalog assembly, compatibility, registry lookup and eligibility are real.
+      let state = createEmptyProviderRuntimeStateFileV1('broker-machine');
+      const runtimeStore: ProviderRuntimeStateStore = {
+        path: join(brokerHome, 'fixture-observations.json'),
+        read: async () => state,
+        update: async (transform) => { state = await transform(state); return state; },
+        updateTransientEndpointHealth: async (transform) => { state = { ...state, endpointHealth: [...await transform(state.endpointHealth)] }; },
+      };
+      const services = createRuntimeProviderModelManagementServices({
+        machineId: 'broker-machine', happyHomeDir: brokerHome, registry, runtimeStore,
+        featureGate: { isEnabled: () => true },
+        resolveAddresses: async () => ['1.1.1.1'],
+        acquireRuntimeLease: async () => (await acquire(brokerHome)).lease,
+        getAccountSettingsSnapshot: () => ({ source: 'cache', settings, settingsVersion: 1, loadedAtMs: 1, settingsSecretsReadKeys: [settingsSecretsReadKey] }),
+        modelSettingsMutation: async (intent) => ({ status: 'success', action: intent.action }),
+      });
+      const source = { v: 1 as const, kind: 'provider_connection' as const, connectionId: ProviderConnectionIdSchema.parse('fixture-connection'), connectionSecurityFingerprint: resolved.record.connectionSecurityFingerprint, credentialSlotId: 'apiKey' };
+      const projected = await services.projectModels({ machineId: 'broker-machine', agentTargetKey, providerConnection: { connectionId: source.connectionId, expectedConnectionSecurityFingerprint: source.connectionSecurityFingerprint }, refreshPolicy: 'current_only', mode: 'picker' });
+      if (projected.status !== 'success') throw new Error(`Expected broker model projection: ${JSON.stringify(projected)}`);
+      const group = projected.groups[0];
+      const row = group?.rows[0];
+      if (!group?.sourceRevision || !row?.application || !group.sourceAuthority) throw new Error(`Expected authoritative external Provider row: ${JSON.stringify(projected)}`);
+      const selection = { v: 1 as const, resourceId: 'resource-1', brokerMachineId: 'broker-machine', revision: 9, application: row.application, sourceRevision: group.sourceRevision };
+      const resource = TeamCredentialResourceSummaryV1Schema.parse({
+        id: selection.resourceId, teamId: 'team-1', custodianAccountId: 'custodian', displayName: 'Fixture', enabled: true, revision: 9,
+        disclosureCeiling: 'brokered_only', sessionUsePolicy: 'personal_allowed', source,
+        sourcePresentation: { kind: 'provider', provider: group.sourceAuthority.provider },
+        requestPolicy: null, brokerPlacement: { kind: 'machine', machineId: 'broker-machine' }, allMembersDeliveryMode: null,
+        groupGrants: [], memberGrants: [], readiness: { kind: 'available' }, recoveryAction: null,
+        brokerPresentation: { selectedTarget: null, eligibleTargets: [], selectedPool: null, eligiblePools: [] }, createdAt: '', updatedAt: '',
+      });
+      const currentness = () => resolveRunnerCredentialSelectionCurrentness({
+        registeredMachineId: 'broker-machine', selection, modelId: row.descriptor.id, signal: new AbortController().signal,
+        readResource: async () => resource,
+        resolveEligibility: services.resolveTeamCredentialBrokerEligibility,
+      });
+      expect(await currentness()).toBe('available');
+      const { activation, installation, binding, claim } = createReadinessFacts();
+      const checkInput = {
+        binding, claim,
+        // Unrelated authoring fields have already crossed the sealed-manifest
+        // boundary; this fixture exercises the real readiness/registry corridor.
+        manifest: { preparedAuthoring: { authoring: { agentTarget } }, credentialSelectionBinding: selection, reviewedProviderModel: { selection: { modelId: row.descriptor.id } } } as never,
+        launchManifestCommitment: encodeBase64(new Uint8Array(32).fill(89), 'base64url'),
+        activationSecretKey: activation.secretKey, installationSecretKey: installation.secretKey,
+        preparation: { managed: { resolution: { command: '/managed/codex' } }, pluginRuntime: runner },
+        // Home projects the executable application, not the separate source
+        // Provider. Team Provider Connections use the canonical broker gateway.
+        projection: { credentialSelectionBinding: selection, target: { endpointId: 'd'.repeat(64) }, provider: { identity: selection.application.implementationIdentity, definitionRevision: 1 as const }, readiness: { kind: 'available' as const } },
+        happyHomeDir: runnerHome, signal: new AbortController().signal,
+        transportCheck: async (input: Parameters<NonNullable<Parameters<typeof checkProductionRunnerBrokerReadiness>[0]['transportCheck']>>[0]) => {
+          input.createRequest('c'.repeat(64));
+          return { kind: await currentness() };
+        },
+      };
+      expect(await checkProductionRunnerBrokerReadiness(checkInput)).toMatchObject({ status: 'ready', readiness: { payload: { installation: { agentRuntimeId: 'codex', executablePath: '/managed/codex' } } } });
+      resource.enabled = false;
+      expect(await checkProductionRunnerBrokerReadiness(checkInput)).toEqual({ status: 'denied', reason: 'source_unavailable' });
+    } finally {
+      await runner?.release();
+      await rm(root, { recursive: true, force: true });
     }
   });
 });

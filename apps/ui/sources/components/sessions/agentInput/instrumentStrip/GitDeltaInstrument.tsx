@@ -6,11 +6,12 @@ import { AnimatedNumber } from '@/components/instrument';
 import { hapticsLight } from '@/components/ui/theme/haptics';
 import { normalizeNodeForView } from '@/components/ui/rendering/normalizeNodeForView';
 import { Text } from '@/components/ui/text/Text';
-import type { ScmStatusSummary } from '@/components/sessions/sourceControl/status/statusSummary';
+import type { SessionScmSummary } from '@/components/sessions/sourceControl/status/statusSummary';
 import { t } from '@/text';
 
 import { instrumentStripStyles } from './instrumentStripStyles';
 import { Icon } from '@/components/ui/icons/Icon';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 const GIT_HIT_SLOP = { top: 12, bottom: 12, left: 8, right: 8 } as const;
 
@@ -18,7 +19,7 @@ const formatAdded = (value: number) => `+${Math.trunc(value)}`;
 const formatRemoved = (value: number) => `−${Math.trunc(value)}`;
 
 export type GitDeltaInstrumentProps = Readonly<{
-    git: ScmStatusSummary;
+    git: SessionScmSummary;
     /** Narrow layout (<360px): drop the branch icon, keep the numbers. */
     compact: boolean;
     onPress?: () => void;
@@ -27,7 +28,7 @@ export type GitDeltaInstrumentProps = Readonly<{
 
 /**
  * Session git ± instrument (relocated from the composer action row, F-UI-12).
- * Reuses the canonical `buildScmStatusSummaryFromSnapshot` data (via the model)
+ * Reuses the canonical `buildSessionScmSummary` data (via the model)
  * and `versionControl` theme colors; the odometer presentation is new.
  */
 export const GitDeltaInstrument = React.memo(function GitDeltaInstrument(props: GitDeltaInstrumentProps) {
@@ -112,7 +113,7 @@ export const GitDeltaInstrument = React.memo(function GitDeltaInstrument(props: 
             accessibilityLabel={accessibilityLabel}
             hitSlop={GIT_HIT_SLOP}
             onPress={handlePress}
-            style={({ pressed }) => (pressed ? { opacity: 0.7 } : null)}
+            style={({ pressed }) => (pressed ? { opacity: motionTokens.press.opacity } : null)}
         >
             {body}
         </Pressable>

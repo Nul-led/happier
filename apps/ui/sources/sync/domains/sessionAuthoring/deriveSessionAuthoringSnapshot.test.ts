@@ -4,6 +4,33 @@ import { SessionModelSelectionIntentV1Schema, type CodexBackendMode } from '@hap
 import { deriveSessionAuthoringSnapshot } from './deriveSessionAuthoringSnapshot';
 
 describe('deriveSessionAuthoringSnapshot', () => {
+    it('retains Herdr terminal selection when continuing an existing session', () => {
+        const snapshot = deriveSessionAuthoringSnapshot({
+            session: {
+                id: 'session-herdr',
+                encryptionMode: 'plain',
+                metadata: {
+                    agent: 'codex',
+                    path: '/tmp/project',
+                    host: 'qa-host',
+                    terminal: {
+                        mode: 'herdr',
+                        herdr: {
+                            sessionName: 'work',
+                            socketPath: '/tmp/work.sock',
+                            terminalId: 'term_42',
+                        },
+                    },
+                },
+                permissionMode: 'default',
+                permissionModeUpdatedAt: null,
+                modelMode: 'default',
+                modelModeUpdatedAt: null,
+            },
+        });
+        expect(snapshot.terminal).toEqual({ mode: 'herdr', herdr: { sessionName: 'work' } });
+    });
+
     const legacyCodexBackendMode = '  mcp_resume  ' as unknown as CodexBackendMode;
 
     it('derives the authoring-relevant live session snapshot from session metadata and overrides', () => {
@@ -224,7 +251,7 @@ describe('deriveSessionAuthoringSnapshot', () => {
                         v: 1,
                         updatedAt: 20,
                         selection: {
-                            agentTargetKey: 'backend:codex',
+                            agentTargetKey: 'agent:happier.agent.codex/codex',
                             providerConnectionId: 'pc_01J00000000000000000000000',
                             modelId: 'shared-id',
                         },
@@ -239,7 +266,7 @@ describe('deriveSessionAuthoringSnapshot', () => {
         });
 
         expect(snapshot.modelSelection?.ref).toEqual({
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             providerConnectionId: 'pc_01J00000000000000000000000',
             modelId: 'shared-id',
         });
@@ -258,7 +285,7 @@ describe('deriveSessionAuthoringSnapshot', () => {
                         v: 1,
                         updatedAt: 20,
                         selection: {
-                            agentTargetKey: 'backend:codex',
+                            agentTargetKey: 'agent:happier.agent.codex/codex',
                             providerConnectionId: 'pc_01J00000000000000000000000',
                             modelId: 'provider-model',
                         },
@@ -276,7 +303,7 @@ describe('deriveSessionAuthoringSnapshot', () => {
             v: 1,
             updatedAt: 20,
             ref: {
-                agentTargetKey: 'backend:codex',
+                agentTargetKey: 'agent:happier.agent.codex/codex',
                 providerConnectionId: 'pc_01J00000000000000000000000',
                 modelId: 'provider-model',
             },

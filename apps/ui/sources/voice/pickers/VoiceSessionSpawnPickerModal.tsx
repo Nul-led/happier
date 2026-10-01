@@ -1,10 +1,10 @@
+import { useAuthoringMemoryField } from '@/sync/domains/state/storage';
 import * as React from 'react';
 import { View, Pressable, ScrollView } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import type { CustomModalInjectedProps } from '@/modal';
 import { useModalCardChrome } from '@/modal/components/card/useModalCardChrome';
-import { Typography } from '@/constants/Typography';
 import { t } from '@/text';
 
 import { MachineSelector } from '@/components/sessions/new/components/MachineSelector';
@@ -20,7 +20,6 @@ import {
   useStableRecentPathsResolver,
 } from '@/utils/sessions/useStableRecentPathsForMachine';
 import { resolvePreferredMachineId } from '@/components/settings/pickers/resolvePreferredMachineId';
-import { Text } from '@/components/ui/text/Text';
 import { canAttemptMachineSpawn } from '@/sync/domains/machines/identity/resolveMachineSpawnReadiness';
 import { machineMetadataPlatformToTarget } from '@/utils/path/machinePlatform';
 import {
@@ -30,6 +29,7 @@ import {
 
 import type { VoiceSessionSpawnPickerResult } from './openVoiceSessionSpawnPicker';
 import { Icon } from '@/components/ui/icons/Icon';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 
 type Props = CustomModalInjectedProps & Readonly<{
@@ -39,7 +39,7 @@ type Props = CustomModalInjectedProps & Readonly<{
 
 type Step = 'machine' | 'path';
 
-const stylesheet = StyleSheet.create((theme) => ({
+const stylesheet = StyleSheet.create(() => ({
   body: {
     flex: 1,
     minHeight: 0,
@@ -51,18 +51,6 @@ const stylesheet = StyleSheet.create((theme) => ({
     alignItems: 'center',
     justifyContent: 'flex-end',
     gap: 10,
-  },
-  stepHeaderRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    paddingHorizontal: 16,
-    paddingTop: 12,
-    paddingBottom: 6,
-  },
-  stepHeaderText: {
-    color: theme.colors.text.secondary,
-    ...Typography.default(),
   },
 }));
 
@@ -77,7 +65,7 @@ export function VoiceSessionSpawnPickerModal(props: Props) {
 
   const machines = useAllMachines();
   const sessions = useAllSessionListRenderables();
-  const recentMachinePaths = useSetting('recentMachinePaths');
+  const recentMachinePaths = useAuthoringMemoryField('recentMachinePaths');
   const normalizedRecentMachinePaths = React.useMemo(
     () => Array.isArray(recentMachinePaths) ? recentMachinePaths : [],
     [recentMachinePaths],
@@ -172,12 +160,28 @@ export function VoiceSessionSpawnPickerModal(props: Props) {
     </View>
   ), [canCreate, handleCancel, handleCreate, styles.footer]);
 
+  // The title band names the step; on the folder step its leading control goes back to machines.
+  const backToMachines = React.useMemo(() => step === 'path' ? (
+    <Pressable
+      testID="voice-session-spawn-back"
+      onPress={() => setStep('machine')}
+      hitSlop={10}
+      style={({ pressed }) => ({ padding: 2, opacity: pressed ? motionTokens.press.opacity : 1 })}
+      accessibilityRole="button"
+      accessibilityLabel={t('common.back')}
+    >
+      <Icon name="caret-left" size={20} color={theme.colors.text.secondary} />
+    </Pressable>
+  ) : null, [step, theme.colors.text.secondary]);
+
   const chrome = React.useMemo(() => ({
     kind: 'card' as const,
+    leading: backToMachines,
     title: t('newSession.title'),
+    subtitle: step === 'machine' ? t('newSession.selectMachineTitle') : t('newSession.selectWorkingDirectoryTitle'),
     dimensions: { width: 520, maxHeightRatio: 0.92, size: 'md' as const },
     footer,
-  }), [footer]);
+  }), [backToMachines, footer, step]);
 
   useModalCardChrome(setChrome, chrome);
 
@@ -185,9 +189,6 @@ export function VoiceSessionSpawnPickerModal(props: Props) {
     <View style={styles.body}>
       {step === 'machine' ? (
         <>
-          <View style={styles.stepHeaderRow}>
-            <Text style={styles.stepHeaderText}>{t('newSession.selectMachineTitle')}</Text>
-          </View>
           <ItemList style={{ paddingTop: 0 }}>
             <MachineSelector
               machines={machines}
@@ -217,18 +218,6 @@ export function VoiceSessionSpawnPickerModal(props: Props) {
         </>
       ) : (
         <>
-          <View style={styles.stepHeaderRow}>
-            <Pressable
-              onPress={() => setStep('machine')}
-              hitSlop={10}
-              style={({ pressed }) => ({ padding: 2, opacity: pressed ? 0.7 : 1 })}
-              accessibilityRole="button"
-              accessibilityLabel={t('common.back')}
-            >
-              <Icon name="caret-left" size={20} color={theme.colors.text.secondary} />
-            </Pressable>
-            <Text style={styles.stepHeaderText}>{t('newSession.selectWorkingDirectoryTitle')}</Text>
-          </View>
           <ScrollView keyboardShouldPersistTaps="handled">
             <PathSelectionList
               initialValue={selectedPath}

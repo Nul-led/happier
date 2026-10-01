@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
     PluginAvailabilityActionHttpPathsV1,
 } from '@happier-dev/protocol/plugins/availability';
+import { createDeferred } from '@/dev/testkit/hooks/createDeferred';
 
 import {
     createActivePluginAccountAvailabilityProjectionHydrator,
@@ -53,7 +54,6 @@ function materializationSnapshot(cursor: number, pluginIds: readonly string[]) {
         snapshots: pluginIds.map((id) => ({
             serverIdentityId: 'srv_identity',
             machineId: 'machine-a',
-            revision: 1,
             materializations: [{
                 serverIdentityId: 'srv_identity',
                 machineId: 'machine-a',
@@ -90,6 +90,69 @@ function intentRead(cursor: number, id: string) {
 }
 
 describe('active Plugin Account Availability projection hydrator', () => {
+    it('starts independent discovery reads together and commits only their coherent completed projection', async () => {
+        const materializations = createDeferred<Response>();
+        const intentListStarted = createDeferred<void>();
+        const request = vi.fn(async (path: string) => {
+            if (path === PluginAvailabilityActionHttpPathsV1['account.plugins.availability.materializations.read']) {
+                return await materializations.promise;
+            }
+            if (path === PluginAvailabilityActionHttpPathsV1['account.plugins.availability.intents.list']) {
+                intentListStarted.resolve();
+                return jsonResponse({ availabilityCursor: 17, pluginIds: [pluginId] });
+            }
+            return jsonResponse(intentRead(17, pluginId));
+        });
+        const hydrator = createActivePluginAccountAvailabilityProjectionHydrator({
+            captureLifetime: () => ({
+                scope,
+                isCurrent: () => true,
+                onRetire: () => ({ dispose: () => {} }),
+            }),
+            getServerSnapshot: () => ({ serverId: scope.serverId, generation: 4 }),
+            captureRequestAuthority: async () => ({ request }),
+        });
+
+        const refresh = hydrator.refresh();
+        let committed = false;
+        void refresh.then(() => { committed = true; });
+        try {
+            await vi.waitFor(() => expect(request.mock.calls.map(([path]) => path)).toContain(
+                PluginAvailabilityActionHttpPathsV1['account.plugins.availability.intents.list'],
+            ));
+            await intentListStarted.promise;
+            expect(committed).toBe(false);
+            expect(request.mock.calls.map(([path]) => path)).not.toContain(
+                PluginAvailabilityActionHttpPathsV1['account.plugins.availability.intent.read'],
+            );
+        } finally {
+            materializations.resolve(jsonResponse(materializationSnapshot(17, [pluginId])));
+            await refresh;
+        }
+        await expect(refresh).resolves.toMatchObject({ snapshot: { availabilityCursor: 17 } });
+    });
+
+    it('returns only the distinct plugin IDs named by valid availability hints', () => {
+        const hydrator = createActivePluginAccountAvailabilityProjectionHydrator({
+            captureLifetime: () => ({
+                scope,
+                isCurrent: () => true,
+                onRetire: () => ({ dispose: () => {} }),
+            }),
+        });
+        const hint = {
+            cursor: 23,
+            kind: 'pluginDomain',
+            entityId: `pluginDomain/${pluginId}/availability`,
+            changedAt: 1,
+            hint: { pluginDomain: 'availability', pluginId },
+        };
+
+        expect(hydrator.invalidate([hint, hint, { ...hint, hint: { pluginDomain: 'unknown', pluginId } }]))
+            .toEqual([pluginId]);
+        expect(hydrator.invalidate([])).toEqual([]);
+    });
+
     it('hydrates one coherent initial projection from the canonical materialization and intent reads', async () => {
         let current = true;
         const request = vi.fn(async (path: string, init?: RequestInit) => {
@@ -123,7 +186,6 @@ describe('active Plugin Account Availability projection hydrator', () => {
                 snapshots: [{
                     serverIdentityId: 'srv_identity',
                     machineId: 'machine-a',
-                    revision: 1,
                     materializations: [expect.objectContaining({ pluginId })],
                 }],
             },
@@ -155,7 +217,6 @@ describe('active Plugin Account Availability projection hydrator', () => {
                             snapshots: [{
                                 serverIdentityId: 'srv_identity',
                                 machineId: 'machine-empty',
-                                revision: 9,
                                 materializations: [],
                             }],
                         });
@@ -178,7 +239,7 @@ describe('active Plugin Account Availability projection hydrator', () => {
             entityId: `pluginDomain/${pluginId}/availability`,
             changedAt: 1,
             hint: { pluginDomain: 'availability', pluginId },
-        }])).toBe(true);
+        }])).toEqual([pluginId]);
 
         await expect(hydrator.refresh()).resolves.toMatchObject({
             snapshot: {
@@ -187,7 +248,6 @@ describe('active Plugin Account Availability projection hydrator', () => {
                 snapshots: [{
                     serverIdentityId: 'srv_identity',
                     machineId: 'machine-empty',
-                    revision: 9,
                     materializations: [],
                 }],
             },
@@ -198,7 +258,7 @@ describe('active Plugin Account Availability projection hydrator', () => {
         await expect(hydrator.refresh()).resolves.toMatchObject({
             snapshot: {
                 intentReads: [expect.objectContaining({ pluginId })],
-                snapshots: [expect.objectContaining({ machineId: 'machine-empty', revision: 9 })],
+                snapshots: [expect.objectContaining({ machineId: 'machine-empty' })],
             },
         });
         expect(requestedPluginIds).toEqual([pluginId, pluginId]);
@@ -207,7 +267,7 @@ describe('active Plugin Account Availability projection hydrator', () => {
         );
     });
 
-    it('retries rather than committing when intent discovery has a different Account cursor', async () => {
+    it('commits per-plugin reads without requiring Account-wide cursor agreement', async () => {
         let attempt = 0;
         const hydrator = createActivePluginAccountAvailabilityProjectionHydrator({
             captureLifetime: () => ({
@@ -217,36 +277,36 @@ describe('active Plugin Account Availability projection hydrator', () => {
             }),
             getServerSnapshot: () => ({ serverId: scope.serverId, generation: 4 }),
             captureRequestAuthority: async () => ({
-                request: async (path) => {
+                request: async (path, init) => {
                     if (path === PluginAvailabilityActionHttpPathsV1['account.plugins.availability.materializations.read']) {
                         attempt += 1;
-                        return jsonResponse(materializationSnapshot(attempt === 1 ? 23 : 25, []));
+                        return jsonResponse(materializationSnapshot(23, []));
                     }
                     if (path === PluginAvailabilityActionHttpPathsV1['account.plugins.availability.intents.list']) {
                         return jsonResponse({
-                            availabilityCursor: attempt === 1 ? 24 : 25,
+                            availabilityCursor: 24,
                             pluginIds: [pluginId],
                         });
                     }
-                    return jsonResponse(intentRead(attempt === 1 ? 23 : 25, pluginId));
+                    return jsonResponse(intentRead(25, pluginId));
                 },
             }),
         });
 
         await expect(hydrator.refresh()).resolves.toMatchObject({
             snapshot: {
-                availabilityCursor: 25,
+                availabilityCursor: 23,
                 intentReads: [expect.objectContaining({
                     pluginId,
                     response: expect.objectContaining({ availabilityCursor: 25 }),
                 })],
             },
         });
-        expect(attempt).toBe(2);
+        expect(attempt).toBe(1);
     });
 
-    it('retries rather than committing when a per-intent read has a different Account cursor', async () => {
-        let attempt = 0;
+    it('returns successful reads and failed plugin IDs independently', async () => {
+        const failedPluginId = 'com.acme.failed';
         const hydrator = createActivePluginAccountAvailabilityProjectionHydrator({
             captureLifetime: () => ({
                 scope,
@@ -255,36 +315,38 @@ describe('active Plugin Account Availability projection hydrator', () => {
             }),
             getServerSnapshot: () => ({ serverId: scope.serverId, generation: 4 }),
             captureRequestAuthority: async () => ({
-                request: async (path) => {
+                request: async (path, init) => {
                     if (path === PluginAvailabilityActionHttpPathsV1['account.plugins.availability.materializations.read']) {
-                        attempt += 1;
-                        return jsonResponse(materializationSnapshot(attempt === 1 ? 23 : 25, []));
+                        return jsonResponse(materializationSnapshot(23, []));
                     }
                     if (path === PluginAvailabilityActionHttpPathsV1['account.plugins.availability.intents.list']) {
                         return jsonResponse({
-                            availabilityCursor: attempt === 1 ? 23 : 25,
-                            pluginIds: [pluginId],
+                            availabilityCursor: 24,
+                            pluginIds: [failedPluginId, pluginId],
                         });
                     }
-                    return jsonResponse(intentRead(attempt === 1 ? 24 : 25, pluginId));
+                    const body = JSON.parse(String(init?.body ?? '{}')) as { pluginId: string };
+                    if (body.pluginId === failedPluginId) {
+                        return jsonErrorResponse(503, { error: 'temporarily_unavailable' });
+                    }
+                    return jsonResponse(intentRead(25, body.pluginId));
                 },
             }),
         });
 
         await expect(hydrator.refresh()).resolves.toMatchObject({
+            failedPluginIds: [failedPluginId],
             snapshot: {
-                availabilityCursor: 25,
+                availabilityCursor: 23,
                 intentReads: [expect.objectContaining({
                     pluginId,
                     response: expect.objectContaining({ availabilityCursor: 25 }),
                 })],
             },
         });
-        expect(attempt).toBe(2);
     });
 
-    it('keeps the incumbent materialization discovery when an older server does not support intent discovery', async () => {
-        let intentDiscoveryRequests = 0;
+    it('does not treat a missing intent-list route as a supported predecessor', async () => {
         const hydrator = createActivePluginAccountAvailabilityProjectionHydrator({
             captureLifetime: () => ({
                 scope,
@@ -298,23 +360,18 @@ describe('active Plugin Account Availability projection hydrator', () => {
                         return jsonResponse(materializationSnapshot(23, [pluginId]));
                     }
                     if (path === PluginAvailabilityActionHttpPathsV1['account.plugins.availability.intents.list']) {
-                        intentDiscoveryRequests += 1;
                         return jsonErrorResponse(404, {
                             error: 'Not found',
                             path,
                             method: 'POST',
                         });
                     }
-                    const body = JSON.parse(String(init?.body ?? '{}')) as { pluginId: string };
-                    return jsonResponse(intentRead(23, body.pluginId));
+                    throw new Error(`Unexpected Availability path: ${path}`);
                 },
             }),
         });
 
-        await expect(hydrator.refresh()).resolves.toMatchObject({
-            snapshot: { intentReads: [expect.objectContaining({ pluginId })] },
-        });
-        expect(intentDiscoveryRequests).toBe(1);
+        await expect(hydrator.refresh()).rejects.toThrow('status 404');
     });
 
     it('fails closed on a 404 that only resembles the exact older Fastify route-missing envelope', async () => {
@@ -594,7 +651,7 @@ describe('active Plugin Account Availability projection hydrator', () => {
                     entityId: `pluginDomain/${pluginId}/availability`,
                     changedAt: 1,
                     hint: { pluginDomain: 'availability', pluginId },
-                }])).toBe(true);
+                }])).toEqual([pluginId]);
             }
             resolvePendingResponse(
                 pendingStage === 'intent discovery'

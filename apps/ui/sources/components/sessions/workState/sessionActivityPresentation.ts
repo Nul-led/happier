@@ -158,21 +158,9 @@ function badgeToneToInputTone(tone: ReturnType<typeof resolveSessionWorkStateBad
     return tone;
 }
 
-function workflowToneToInputTone(tone: ReturnType<typeof resolveSessionWorkflowRunToneSafe>): AgentInputStatusBadgeTone {
-    switch (tone) {
-        case 'active':
-            return 'active';
-        case 'warning':
-            return 'warning';
-        case 'complete':
-            return 'complete';
-        default:
-            return 'neutral';
-    }
-}
-
-function resolveSessionWorkflowRunToneSafe(status: SessionWorkflowRunHeadlineV1['status']) {
-    return resolveWorkflowRunTone(status);
+/** A workflow badge speaks the one work-status tone: healthy is neutral, trouble warns (INT §5.3). */
+function workflowRunBadgeTone(status: SessionWorkflowRunHeadlineV1['status']): AgentInputStatusBadgeTone {
+    return resolveWorkflowRunTone(status) === 'neutral' ? 'neutral' : 'warning';
 }
 
 /** Compact single-workflow label: active phase when detail loaded, else headline counts/title. */
@@ -292,7 +280,7 @@ export function resolveSessionActivityStatusBadgePresentation(
                 left: input.translateWorkflow.goalActive(),
                 right: workflowSegment,
             }),
-            tone: workflowToneToInputTone(resolveSessionWorkflowRunToneSafe(primaryRun.status)),
+            tone: workflowRunBadgeTone(primaryRun.status),
             emphasis: 'quiet',
             iconKind: 'workflow',
             popoverKind: 'workState',
@@ -304,7 +292,7 @@ export function resolveSessionActivityStatusBadgePresentation(
         return {
             key: SESSION_WORK_STATE_STATUS_BADGE_KEY,
             label: formatWorkflowSegment(activeRuns, primaryRun, input.loadedWorkflowRunsById, input.translateWorkflow),
-            tone: workflowToneToInputTone(resolveSessionWorkflowRunToneSafe(primaryRun.status)),
+            tone: workflowRunBadgeTone(primaryRun.status),
             emphasis: 'quiet',
             iconKind: 'workflow',
             popoverKind: 'workState',
@@ -321,7 +309,8 @@ export function resolveSessionActivityStatusBadgePresentation(
             label: activeGoal
                 ? input.translateWorkflow.join({ left: input.translateWorkflow.goalActive(), right: segment })
                 : segment,
-            tone: 'active',
+            // Running managed work is healthy, so its badge stays neutral.
+            tone: 'neutral',
             emphasis: 'quiet',
             iconKind: 'workflow',
             popoverKind: 'workState',

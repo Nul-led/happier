@@ -1,6 +1,7 @@
 import * as React from 'react';
 
 import { derivePersonalHomeBootstrapSnapshot } from './derivePersonalHomeBootstrapSnapshot';
+import { readThisComputerConnectionFromError } from './personalHomeComputerErrors';
 import { isPersonalHomeBootstrapRuntimeHost } from './personalHomeBootstrapHost';
 import type {
     PersonalHomeBootstrapOperation,
@@ -8,9 +9,18 @@ import type {
     PersonalHomeFacts,
 } from './personalHomeBootstrapTypes';
 
+/**
+ * How an operation was started. A Retry carries the code of the failure it retries, so the operation
+ * can resume what that failure left undone (R12: `cli_choice_service_convergence_failed`).
+ */
+export type PersonalHomeBootstrapOperationContext = Readonly<{
+    trigger: 'automatic' | 'retry' | 'manual';
+    previousErrorCode?: string;
+}>;
+
 export type PersonalHomeBootstrapOperationRunner = (
     facts: PersonalHomeFacts,
-    context?: Readonly<{ trigger: 'automatic' | 'retry' | 'manual' }>,
+    context?: PersonalHomeBootstrapOperationContext,
 ) => Promise<void>;
 
 export type PersonalHomeBootstrapControllerOptions = Readonly<{
@@ -67,7 +77,9 @@ function errorSnapshot(snapshot: PersonalHomeBootstrapSnapshot, error: Error): P
             phase: 'blocked',
             action: 'choose-existing-runtime',
             detail: {
-                code: 'existing_runtime',
+                // S18: credentials this app cannot verify (a Home another Happier app on this
+                // computer set up) are named as such, not as a generic existing-Home choice.
+                code: code === 'personal_home_credentials_unverified' ? 'existing_runtime_credentials' : 'existing_runtime',
                 message: error.message,
                 retryable: false,
             },
@@ -88,15 +100,17 @@ function errorSnapshot(snapshot: PersonalHomeBootstrapSnapshot, error: Error): P
             },
         };
     }
+    const thisComputer = readThisComputerConnectionFromError(error);
     return {
         ...snapshot,
         shouldGateShell: snapshot.homeReady ? false : true,
         phase: 'blocked',
         action: 'retry',
         detail: {
-            code: 'bootstrap_operation_failed',
+            code: thisComputer ? thisComputer.status : 'bootstrap_operation_failed',
             message: error.message,
             retryable: true,
+            ...(thisComputer ? { thisComputer } : {}),
         },
     };
 }
@@ -166,7 +180,7 @@ export function usePersonalHomeBootstrapController(
 
     const execute = React.useCallback(async (
         runner: PersonalHomeBootstrapOperationRunner,
-        context: Readonly<{ trigger: 'automatic' | 'retry' | 'manual' }> = { trigger: 'manual' },
+        context: PersonalHomeBootstrapOperationContext = { trigger: 'manual' },
     ): Promise<boolean> => {
         if (!enabled || !facts || operationInFlightRef.current) return false;
         const startedFromExistingRuntimeDecision = derivedSnapshot.action === 'choose-existing-runtime';
@@ -223,12 +237,13 @@ export function usePersonalHomeBootstrapController(
                 : 'ensure-home-ready';
             const runner = options.operations?.[operation];
             if (runner && facts) {
-                void execute(runner, { trigger: 'retry' });
+                const previousErrorCode = readOperationErrorCode(error);
+                void execute(runner, previousErrorCode ? { trigger: 'retry', previousErrorCode } : { trigger: 'retry' });
                 return;
             }
         }
         refresh();
-    }, [execute, facts, options.operations, refresh, snapshot.action, snapshot.homeReady]);
+    }, [error, execute, facts, options.operations, refresh, snapshot.action, snapshot.homeReady]);
 
     React.useEffect(() => {
         if (!enabled || !facts || !hasAuthoritativeFacts || error || isChecking || isOperating) return;
@@ -266,4 +281,10 @@ export function usePersonalHomeBootstrapController(
 /** Compatibility export for the gate; host eligibility is owned by the canonical runtime predicate. */
 export function isPersonalHomeDesktopHost(): boolean {
     return isPersonalHomeBootstrapRuntimeHost();
+}
+
+/** The typed code a failed operation carried (a system-task error code), when it has one. */
+function readOperationErrorCode(error: unknown): string | null {
+    const code = error && typeof error === 'object' ? (error as { code?: unknown }).code : null;
+    return typeof code === 'string' && code.trim() ? code.trim() : null;
 }

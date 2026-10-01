@@ -28,7 +28,7 @@ export type ScmHostingProviderDescriptor = Readonly<Omit<ScmHostingProviderContr
 
 export type ScmHostingProviderRuntimeBinding = Readonly<{
     pluginId: string;
-    generation: string;
+    occurrenceId: string;
     registration: ScmHostingProviderRuntimeRegistration;
 }>;
 
@@ -223,7 +223,7 @@ function bindRuntimeCapability<TCapability extends object>(
             const bound = Object.freeze((...args: readonly unknown[]) => runWithHostingProviderExecutionAuthority(
                 {
                     pluginId: binding.pluginId,
-                    generation: binding.generation,
+                    occurrenceId: binding.occurrenceId,
                     contributionId: binding.registration.id,
                 },
                 () => Reflect.apply(method, target, args),

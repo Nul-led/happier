@@ -1,9 +1,12 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { resolveServerScopedContext } from './resolveServerScopedContext';
 
 const getCredentialsSpy = vi.hoisted(() => vi.fn());
 const createEncryptionSpy = vi.hoisted(() => vi.fn());
 const listServerProfilesSpy = vi.hoisted(() => vi.fn());
 const getActiveServerSnapshotSpy = vi.hoisted(() => vi.fn());
+const getAppliedActiveServerSnapshotSpy = vi.hoisted(() => vi.fn());
+const isAppliedActiveServerRuntimeAvailableSpy = vi.hoisted(() => vi.fn());
 
 function tokenForSub(sub: string): string {
     const payload = globalThis.btoa(JSON.stringify({ sub }))
@@ -40,12 +43,24 @@ vi.mock('@/sync/domains/server/serverRuntime', () => ({
     getActiveServerSnapshot: (...args: unknown[]) => getActiveServerSnapshotSpy(...args),
 }));
 
+vi.mock('@/sync/runtime/orchestration/connectionManager', () => ({
+    getAppliedActiveServerSnapshot: (...args: unknown[]) => getAppliedActiveServerSnapshotSpy(...args),
+    isAppliedActiveServerRuntimeAvailable: (...args: unknown[]) => isAppliedActiveServerRuntimeAvailableSpy(...args),
+}));
+
 describe('resolveServerScopedContext', () => {
+    beforeEach(() => {
+        getAppliedActiveServerSnapshotSpy.mockImplementation(() => getActiveServerSnapshotSpy());
+        isAppliedActiveServerRuntimeAvailableSpy.mockReturnValue(true);
+    });
+
     afterEach(() => {
         getCredentialsSpy.mockReset();
         createEncryptionSpy.mockReset();
         listServerProfilesSpy.mockReset();
         getActiveServerSnapshotSpy.mockReset();
+        getAppliedActiveServerSnapshotSpy.mockReset();
+        isAppliedActiveServerRuntimeAvailableSpy.mockReset();
     });
 
     it('returns active scope when serverId is missing', async () => {
@@ -55,7 +70,6 @@ describe('resolveServerScopedContext', () => {
             generation: 1,
         });
 
-        const { resolveServerScopedContext } = await import('./resolveServerScopedContext');
         const context = await resolveServerScopedContext({
             machineId: 'machine-1',
         });
@@ -83,7 +97,6 @@ describe('resolveServerScopedContext', () => {
         ]);
         getCredentialsSpy.mockResolvedValue({ token: 'token-a', secret: 'secret-a' });
 
-        const { resolveServerScopedContext } = await import('./resolveServerScopedContext');
         const context = await resolveServerScopedContext({
             machineId: 'machine-1',
             serverId: 'localhost-52753',
@@ -95,6 +108,58 @@ describe('resolveServerScopedContext', () => {
             timeoutMs: 30000,
         }));
         expect(getCredentialsSpy).not.toHaveBeenCalled();
+    });
+
+    it('uses scoped credentials for the applied Home while its direct runtime is unavailable during a staged switch', async () => {
+        getActiveServerSnapshotSpy.mockReturnValue({
+            serverId: 'server-b',
+            serverUrl: 'https://server-b.example.test',
+            generation: 2,
+        });
+        getAppliedActiveServerSnapshotSpy.mockReturnValue({
+            serverId: 'server-a',
+            serverUrl: 'https://server-a.example.test',
+            generation: 1,
+        });
+        isAppliedActiveServerRuntimeAvailableSpy.mockReturnValue(false);
+        listServerProfilesSpy.mockReturnValue([
+            { id: 'server-a', serverUrl: 'https://server-a.example.test', name: 'Server A' },
+            { id: 'server-b', serverUrl: 'https://server-b.example.test', name: 'Server B' },
+        ]);
+        const tokenA = tokenForSub('account-a');
+        const tokenB = tokenForSub('account-b');
+        getCredentialsSpy.mockImplementation(async (_url: string, options: { serverId?: string }) => (
+            options.serverId === 'server-a'
+                ? { token: tokenA, secret: 'secret-a' }
+                : { token: tokenB, secret: 'secret-b' }
+        ));
+        const fakeEncryption = {
+            decryptEncryptionKey: vi.fn(async () => null),
+            initializeMachines: vi.fn(async () => {}),
+            getMachineEncryption: vi.fn(),
+        };
+        createEncryptionSpy.mockResolvedValue(fakeEncryption);
+
+        const [appliedContext, stagedContext] = await Promise.all([
+            resolveServerScopedContext({ machineId: 'machine-a', serverId: 'server-a' }),
+            resolveServerScopedContext({ machineId: 'machine-b', serverId: 'server-b' }),
+        ]);
+
+        expect(appliedContext).toEqual(expect.objectContaining({
+            scope: 'scoped',
+            machineId: 'machine-a',
+            targetServerId: 'server-a',
+            targetAccountId: 'account-a',
+            token: tokenA,
+        }));
+        expect(stagedContext).toEqual(expect.objectContaining({
+            scope: 'scoped',
+            machineId: 'machine-b',
+            targetServerId: 'server-b',
+            targetServerUrl: 'https://server-b.example.test',
+            targetAccountId: 'account-b',
+        }));
+        expect(getCredentialsSpy).toHaveBeenCalledWith('https://server-b.example.test', { serverId: 'server-b' });
     });
 
     it('returns scoped context with credentials and encryption when target differs from active server', async () => {
@@ -116,7 +181,6 @@ describe('resolveServerScopedContext', () => {
         };
         createEncryptionSpy.mockResolvedValue(fakeEncryption);
 
-        const { resolveServerScopedContext } = await import('./resolveServerScopedContext');
         const context = await resolveServerScopedContext({
             machineId: 'machine-1',
             serverId: 'server-b',
@@ -151,7 +215,6 @@ describe('resolveServerScopedContext', () => {
         };
         createEncryptionSpy.mockResolvedValue(fakeEncryption);
 
-        const { resolveServerScopedContext } = await import('./resolveServerScopedContext');
         const context = await resolveServerScopedContext({
             machineId: 'machine-1',
             forceScoped: true,
@@ -178,7 +241,6 @@ describe('resolveServerScopedContext', () => {
         });
         getCredentialsSpy.mockResolvedValue({ token: tokenForSub('account-b'), secret: 'secret-b' });
 
-        const { resolveServerScopedContext } = await import('./resolveServerScopedContext');
         await expect(resolveServerScopedContext({
             machineId: 'machine-1',
             serverId: 'server-a',

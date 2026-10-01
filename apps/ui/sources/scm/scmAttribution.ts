@@ -16,6 +16,24 @@ export type ChangedFilesViewMode =
     | 'session';
 export type ChangedFilesPresentation = 'list' | 'review';
 
+export type ChangedFilesEmptyStateTranslationKey =
+    | 'files.noChanges'
+    | 'files.noLatestTurnChanges'
+    | 'files.noAgentReportedTurnChanges'
+    | 'files.noCheckpointTurnChanges'
+    | 'files.noSessionAttributedChanges';
+
+/** One empty-state projection shared by list, review, and right-panel hosts. */
+export function resolveChangedFilesEmptyStateTranslationKey(
+    mode: ChangedFilesViewMode,
+): ChangedFilesEmptyStateTranslationKey {
+    if (mode === 'turn') return 'files.noLatestTurnChanges';
+    if (mode === 'turn_agent_reported') return 'files.noAgentReportedTurnChanges';
+    if (mode === 'turn_checkpoint') return 'files.noCheckpointTurnChanges';
+    if (mode === 'session') return 'files.noSessionAttributedChanges';
+    return 'files.noChanges';
+}
+
 export type SessionAttributedFile = {
     file: ScmFileStatus;
     /** Internal aggregate lineage retained with the evidence projection; never rendered as user copy. */
@@ -92,4 +110,28 @@ export function resolveChangedFilesViewMode(input: ChangedFilesViewModeAvailabil
 export function getSelectableChangedFilesViewModes(input: ChangedFilesViewModeAvailability): ChangedFilesViewMode[] {
     const modes = ORDERED_CHANGED_FILES_VIEW_MODES.filter((mode) => isChangedFilesViewModeAvailable({ ...input, mode }));
     return modes.length > 1 ? modes : [];
+}
+
+/**
+ * The Git pane's All-changes grouping (session-tabs lab G1): the repository's current changed rows
+ * split into the ones this Session's change set attributes to it and the rest of the repository.
+ *
+ * Both groups keep repository order and hold the repository's own rows (what can be selected,
+ * committed and discarded), never the evidence copies; an attributed path that is no longer changed
+ * in the repository is in neither group.
+ */
+export function partitionRepositoryChangesBySession(
+    repositoryFiles: readonly ScmFileStatus[],
+    sessionAttributedFiles: readonly SessionAttributedFile[],
+): Readonly<{ session: ScmFileStatus[]; elsewhere: ScmFileStatus[] }> {
+    const sessionPaths = new Set<string>();
+    for (const entry of sessionAttributedFiles) {
+        if (entry?.file?.fullPath) sessionPaths.add(entry.file.fullPath);
+    }
+    const session: ScmFileStatus[] = [];
+    const elsewhere: ScmFileStatus[] = [];
+    for (const file of repositoryFiles) {
+        (sessionPaths.has(file.fullPath) ? session : elsewhere).push(file);
+    }
+    return { session, elsewhere };
 }

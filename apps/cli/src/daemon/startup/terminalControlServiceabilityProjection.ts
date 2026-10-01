@@ -96,6 +96,7 @@ export function clearTerminalControlServiceabilityProjection(params: Readonly<{
   const terminal = asRecord(params.metadata.terminal) ?? {};
   const existing = asRecord(terminal.controlServiceabilityV1);
   if (existing && existing.attachmentId !== params.retiredAttachmentId) return params.metadata;
+  if (existing?.retired === true && existing.attachmentId === params.retiredAttachmentId) return params.metadata;
   const existingObservedAt = typeof existing?.observedAt === 'number' && Number.isFinite(existing.observedAt)
     ? existing.observedAt
     : Number.NEGATIVE_INFINITY;

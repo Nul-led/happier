@@ -9,6 +9,7 @@ import { createSessionActionTarget } from './sessionActionContext';
 import {
     SESSION_ACTION_ARCHIVE_ID,
     SESSION_ACTION_EDIT_TAGS_ID,
+    SESSION_ACTION_MAKE_ORCHESTRATOR_ID,
     SESSION_ACTION_MARK_READ_ID,
     SESSION_ACTION_MOVE_TO_FOLDER_ID,
     SESSION_ACTION_PIN_ID,
@@ -225,6 +226,22 @@ describe('executeSessionAction', () => {
 
         expect(setManualReadState).toHaveBeenCalledWith('session_1', 'read', { serverId: 'server_1' });
         expect(renameSession).toHaveBeenCalledWith('session_1', 'New title', { serverId: 'server_1' });
+    });
+
+    it('makes the Session an orchestrator through the role Action and reports a refusal', async () => {
+        const setSessionRole = vi.fn(async () => ({ ok: true }));
+        await executeSessionAction({
+            actionId: SESSION_ACTION_MAKE_ORCHESTRATOR_ID,
+            target: createTarget(),
+            context: { operations: { setSessionRole } },
+        });
+        expect(setSessionRole).toHaveBeenCalledWith('session_1', 'orchestrator');
+
+        await expect(executeSessionAction({
+            actionId: SESSION_ACTION_MAKE_ORCHESTRATOR_ID,
+            target: createTarget(),
+            context: { operations: { setSessionRole: async () => ({ ok: false, error: 'role_target_unavailable' }) } },
+        })).rejects.toBeInstanceOf(HappyError);
     });
 
     it('throws HappyError when a single-target operation reports failure', async () => {

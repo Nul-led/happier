@@ -1442,10 +1442,8 @@ describePackedCandidate('candidate-bound packed public-authoring Voice lifecycle
       if (replacementRawInspection.authorization.subject.kind !== 'credential_access_disclosure') {
         throw new Error('packed_voice_replacement_raw_authorization_subject_invalid');
       }
-      expect(replacementRawInspection.authorization.subject.installReviewPrincipalDigest)
-        .toBe(requestedRaw.authorization.subject.installReviewPrincipalDigest);
-      expect(replacementRawInspection.authorization.subject.installedGenerationId)
-        .not.toBe(requestedRaw.authorization.subject.installedGenerationId);
+      expect(replacementRawInspection.authorization.subject)
+        .toEqual(requestedRaw.authorization.subject);
       await expect(lifecycle.toggle('packed-candidate-raw-stale-grant-session'))
         .resolves.toBeUndefined();
       await waitForReact(() => {

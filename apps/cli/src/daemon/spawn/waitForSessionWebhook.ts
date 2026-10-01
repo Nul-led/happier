@@ -2,7 +2,9 @@ import type { SpawnSessionResult } from '@/session/shared/spawnSessionContract';
 import { SPAWN_SESSION_ERROR_CODES } from '@/session/shared/spawnSessionContract';
 
 import type { TrackedSession } from '../types';
-import { DEFAULT_SESSION_WEBHOOK_TIMEOUT_MS } from './sessionWebhookTimeoutPolicy';
+import type { PersistedTakeoverAdmissionWaitRegistration } from './persistedTakeoverAdmission';
+import { DEFAULT_SESSION_WEBHOOK_TIMEOUT_MS } from '@happier-dev/protocol';
+import { logger } from '@/ui/logger';
 
 export { DEFAULT_SESSION_WEBHOOK_TIMEOUT_MS };
 const SESSION_WEBHOOK_TIMEOUT_ENV_KEY = 'HAPPIER_DAEMON_SESSION_WEBHOOK_TIMEOUT_MS';
@@ -17,9 +19,10 @@ type WaitForSessionWebhookParams = {
   pidToSpawnWebhookTimeout: Map<number, NodeJS.Timeout>;
   pidToTrackedSession?: Map<number, TrackedSession>;
   timeoutMs?: number;
+  takeoverAdmission?: PersistedTakeoverAdmissionWaitRegistration;
   timeoutErrorMessage: string;
   onTimeout?: (trackedSession: TrackedSession | null) => void;
-  onSuccess?: (session: TrackedSession) => void;
+  onSuccess?: (session: TrackedSession) => void | Promise<void>;
 };
 
 function resolveTimeoutMs(explicitTimeoutMs: number | undefined): number {
@@ -101,15 +104,72 @@ function markTrackedSessionWebhookTimedOut(
   tombstoneTrackedSessionWebhookPids(params.pid, tracked);
 }
 
+export type SessionWebhookCompletion = Promise<SpawnSessionResult> & Readonly<{
+  getCurrentPid: () => number;
+  isPending: () => boolean;
+  settleFailure: (failure: Extract<SpawnSessionResult, { type: 'error' }>) => void;
+  waitForFinalization: () => Promise<void>;
+}>;
+
+export function armSessionWebhookStartupCustody(
+  tracked: TrackedSession,
+  completion: SessionWebhookCompletion,
+  registration: Promise<void>,
+): void {
+  const custody: NonNullable<TrackedSession['startupCustody']> = {
+    finalization: registration.catch(() => {
+      completion.settleFailure({ type: 'error', errorCode: SPAWN_SESSION_ERROR_CODES.SPAWN_FAILED,
+        errorMessage: 'Daemon spawn custody was not accepted' });
+    }).then(async () => {
+      await completion;
+      await completion.waitForFinalization();
+    }).catch(() => {
+      logger.infoFile('[DAEMON RUN] Warning: startup finalization did not complete', { pid: completion.getCurrentPid() });
+    }),
+    observeExit: (exit) => {
+      if (!completion.isPending()) return;
+      const failure: Extract<SpawnSessionResult, { type: 'error' }> = {
+        type: 'error', errorCode: SPAWN_SESSION_ERROR_CODES.CHILD_EXITED_BEFORE_WEBHOOK,
+        errorMessage: `Child process exited before session webhook (pid=${completion.getCurrentPid()}, reason=${exit.reason})`,
+      };
+      tracked.spawnStartupReadinessFailure ??= failure;
+      completion.settleFailure(failure);
+    },
+  };
+  tracked.startupCustody = custody;
+  void custody.finalization.then(() => {
+    if (tracked.startupCustody === custody) delete tracked.startupCustody;
+  });
+}
+
 export function waitForSessionWebhook(
   params: WaitForSessionWebhookParams,
-): Promise<SpawnSessionResult> {
+): SessionWebhookCompletion {
   const timeoutMs = resolveTimeoutMs(params.timeoutMs);
-
-  return new Promise((resolve) => {
+  const requestTrackedSession = params.pidToTrackedSession?.get(params.pid);
+  let isPending = () => true;
+  let settleFailure!: SessionWebhookCompletion['settleFailure'];
+  let waitForFinalization = () => Promise.resolve();
+  const completion = new Promise<SpawnSessionResult>((resolve) => {
     const requestTrackedSession = params.pidToTrackedSession?.get(params.pid);
-    const requestResolver = resolve;
+    let settled = false;
+    let webhookSession: TrackedSession | null = null;
+    const requestResolver = (result: SpawnSessionResult): void => {
+      if (settled) return;
+      settled = true;
+      if (requestTrackedSession?.spawnStartupAwaiterPid === params.pid) {
+        delete requestTrackedSession.spawnStartupAwaiterPid;
+      }
+      clearTimeout(requestTimeout);
+      clearRequestOwnedState();
+      if (result.type !== 'success') params.takeoverAdmission?.cancel();
+      resolve(result);
+    };
     let requestAwaiter!: (session: TrackedSession) => void;
+    let successFinalization: Promise<void> | null = null;
+    isPending = () => !settled;
+    settleFailure = requestResolver;
+    waitForFinalization = () => successFinalization ?? Promise.resolve();
     let requestTimeout!: NodeJS.Timeout;
     const clearRequestOwnedState = () => {
       if (params.pidToAwaiter.get(params.pid) === requestAwaiter) {
@@ -138,7 +198,7 @@ export function waitForSessionWebhook(
         markTrackedSessionWebhookTimedOut(params, currentTrackedSession);
         params.onTimeout?.(currentTrackedSession);
       }
-      resolve({
+      requestResolver({
         type: 'error',
         errorCode: SPAWN_SESSION_ERROR_CODES.SESSION_WEBHOOK_TIMEOUT,
         errorMessage: params.timeoutErrorMessage,
@@ -148,31 +208,83 @@ export function waitForSessionWebhook(
     params.pidToSpawnWebhookTimeout.set(params.pid, requestTimeout);
 
     requestAwaiter = (completedSession) => {
-      clearTimeout(requestTimeout);
-      clearRequestOwnedState();
+      if (settled) return;
+      if (params.takeoverAdmission && (
+        params.pidToSpawnResultResolver.get(params.pid) !== requestResolver
+        || (params.pidToTrackedSession !== undefined && findRequestTrackedSession(params, requestTrackedSession) === null)
+      )) {
+        requestResolver({
+          type: 'error',
+          errorCode: SPAWN_SESSION_ERROR_CODES.SPAWN_FAILED,
+          errorMessage: 'Takeover startup process custody changed',
+        });
+        return;
+      }
       if (completedSession.spawnStartupReadinessFailure) {
-        resolve(completedSession.spawnStartupReadinessFailure);
+        requestResolver(completedSession.spawnStartupReadinessFailure);
         return;
       }
       const sessionId =
         typeof completedSession.happySessionId === 'string' ? completedSession.happySessionId.trim() : '';
       if (!sessionId) {
-        resolve({
+        requestResolver({
           type: 'error',
           errorCode: SPAWN_SESSION_ERROR_CODES.UNEXPECTED,
           errorMessage: `Session webhook did not include a sessionId (pid=${params.pid})`,
         });
         return;
       }
-      params.onSuccess?.(completedSession);
-      resolve({
-        type: 'success',
-        sessionId,
-        ...(completedSession.sessionCreationOutcome
-          ? { sessionCreationOutcome: completedSession.sessionCreationOutcome }
-          : {}),
+      webhookSession = completedSession;
+      if (params.takeoverAdmission && params.takeoverAdmission.readOutcome()?.status !== 'committed') return;
+      successFinalization ??= Promise.resolve().then(async () => {
+        await params.onSuccess?.(completedSession);
       });
+      const complete = successFinalization.then(() => {
+        if (settled) return;
+        requestResolver({
+          type: 'success',
+          sessionId,
+          ...(completedSession.sessionCreationOutcome
+            ? { sessionCreationOutcome: completedSession.sessionCreationOutcome }
+            : {}),
+        });
+      }, (error: unknown) => {
+        requestResolver({
+          type: 'error',
+          errorCode: SPAWN_SESSION_ERROR_CODES.SPAWN_FAILED,
+          errorMessage: error instanceof Error ? error.message : String(error),
+        });
+      });
+      // Takeover webhook acknowledgement must remain independent from the
+      // later runtime-bound admission. Ordinary spawns return this promise so
+      // their report cannot race canonical attachment finalization.
+      if (params.takeoverAdmission) {
+        void complete;
+        return;
+      }
+      return complete;
     };
     params.pidToAwaiter.set(params.pid, requestAwaiter);
+    void params.takeoverAdmission?.outcome.then((outcome) => {
+      if (settled) return;
+      if (outcome.status === 'failed') {
+        const failure: Extract<SpawnSessionResult, { type: 'error' }> = {
+          type: 'error',
+          errorCode: SPAWN_SESSION_ERROR_CODES.SPAWN_FAILED,
+          errorMessage: 'Takeover runtime admission did not complete',
+        };
+        const tracked = findRequestTrackedSession(params, requestTrackedSession);
+        if (tracked) tracked.spawnStartupReadinessFailure = failure;
+        requestResolver(failure);
+      } else if (webhookSession) {
+        requestAwaiter(webhookSession);
+      }
+    });
+  });
+  return Object.assign(completion, {
+    getCurrentPid: () => requestTrackedSession?.pid ?? params.pid,
+    isPending: () => isPending(),
+    settleFailure: (failure: Extract<SpawnSessionResult, { type: 'error' }>) => settleFailure(failure),
+    waitForFinalization: () => waitForFinalization(),
   });
 }

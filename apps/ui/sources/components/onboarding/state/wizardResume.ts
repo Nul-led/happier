@@ -1,4 +1,4 @@
-import { getPendingSetupIntent, setPendingSetupIntent } from '@/sync/domains/pending/pendingSetupIntent';
+import { setPendingSetupIntent } from '@/sync/domains/pending/pendingSetupIntent';
 
 export function setOnboardingWizardPreAuthResumeIntent(relayUrl: string | null): void {
     setPendingSetupIntent({
@@ -14,10 +14,6 @@ export function setOnboardingWizardAwaitingAuthResumeIntent(relayUrl: string | n
         phase: 'awaiting_auth',
         relayUrl,
     });
-}
-
-export function shouldResumeSetupWizardAfterAuth(): boolean {
-    return getPendingSetupIntent()?.phase === 'awaiting_auth';
 }
 
 export function resolveWizardAuthReturnToRoute(): string {

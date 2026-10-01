@@ -5,6 +5,8 @@ import { useUnistyles } from 'react-native-unistyles';
 
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
+import { SettingAnchor } from '@/components/settings/shell/SettingRow';
+import { VOICE_CONVERSATIONS_SETTINGS } from '@/voice/settings/voiceSettingsDeclarations';
 import {
   PluginSettingSelectField,
   PluginSettingSwitchField,
@@ -96,7 +98,7 @@ import { VoiceGlobalConnectedServicesBindingField } from './realtime/VoiceGlobal
 import { VoiceCredentialSourceField } from './realtime/VoiceCredentialSourceField';
 import { resolveVoiceProviderReadinessPresentation } from './voiceProviderReadinessPresentation';
 import { Icon } from '@/components/ui/icons/Icon';
-import { ExternalSessionOperationAccessibilityStatus } from '@/components/sessions/external/progress/ExternalSessionOperationAccessibilityStatus';
+import { PoliteAccessibilityStatus } from '@/components/ui/accessibility/PoliteAccessibilityStatus';
 
 const registry = createDefaultVoiceProviderRegistry();
 
@@ -962,10 +964,12 @@ export function VoiceProviderSection(props: {
 
   return (
     <>
+      <SettingAnchor setting={VOICE_CONVERSATIONS_SETTINGS.settings.provider}>
       <ItemGroup
-        title={t('settingsVoice.modeTitle')}
+        title={t('settingsVoice.providerSectionTitle')}
+        description={t('settingsVoice.providerSectionDescription')}
         accessibilityRole="radiogroup"
-        accessibilityLabel={t('settingsVoice.modeTitle')}
+        accessibilityLabel={t('settingsVoice.providerSectionTitle')}
       >
       <Item
         testID="settings.voice.provider.off"
@@ -983,10 +987,11 @@ export function VoiceProviderSection(props: {
         <Item
           testID="settings.voice.provider.selectedUnavailable"
           title={tLoose(selectedUnavailableProvider.titleKey)}
-          subtitle={selectedUnavailableProvider.subtitleKey
+          // What blocks the provider reads under its name; only the selection mark sits to the right.
+          subtitle={selectedUnavailableDetail ?? (selectedUnavailableProvider.subtitleKey
             ? tLoose(selectedUnavailableProvider.subtitleKey)
-            : undefined}
-          detail={selectedUnavailableDetail}
+            : undefined)}
+          subtitleLines={2}
           accessibilityRole="radio"
           webRole="radio"
           selected={true}
@@ -1001,8 +1006,8 @@ export function VoiceProviderSection(props: {
           key={`${row.providerId}:${row.optionId}`}
           testID={`settings.voice.provider.${encodeURIComponent(row.providerId)}.${encodeURIComponent(row.optionId)}`}
           title={tLoose(row.titleKey)}
-          subtitle={tLoose(row.subtitleKey)}
-          detail={row.detail}
+          subtitle={row.detail ?? tLoose(row.subtitleKey)}
+          subtitleLines={2}
           accessibilityRole="radio"
           webRole="radio"
           selected={row.selected}
@@ -1020,10 +1025,11 @@ export function VoiceProviderSection(props: {
         />
       ))}
       </ItemGroup>
+      </SettingAnchor>
       {voice.providerId && selectedProviderReadiness ? (
         <ItemGroup
           title={t('settingsVoice.setupCheck.title')}
-          footer={t('settingsVoice.setupCheck.footer')}
+          description={t('settingsVoice.setupCheck.footer')}
         >
           <Item
             testID="settings.voice.provider.checkSetup"
@@ -1045,13 +1051,17 @@ export function VoiceProviderSection(props: {
                   ? () => checkedReadinessRecoveryHandler(checkedReadinessRecoveryAction)
                   : undefined}
               />
-              <ExternalSessionOperationAccessibilityStatus
-                announcement={checkedProviderResult?.detail ?? t('settingsVoice.setupCheck.result')}
-                statusTestID="settings.voice.provider.readiness-status"
-                transitionKey={`${checkedReadiness?.providerId ?? ''}:${checkedProviderResult?.kind ?? ''}:${checkedProviderResult?.detail ?? ''}`}
-              />
             </>
           ) : null}
+          <PoliteAccessibilityStatus
+            announcement={showCheckedReadiness
+              ? checkedProviderResult?.detail ?? t('settingsVoice.setupCheck.result')
+              : ''}
+            statusTestID="settings.voice.provider.readiness-status"
+            transitionKey={showCheckedReadiness
+              ? `${checkedReadinessRevision.current}:${checkedReadiness?.providerId ?? ''}:${checkedProviderResult?.kind ?? ''}:${checkedProviderResult?.detail ?? ''}`
+              : `idle:${checkedReadinessRevision.current}`}
+          />
         </ItemGroup>
       ) : null}
       {!selectedExternalRow
@@ -1061,7 +1071,7 @@ export function VoiceProviderSection(props: {
         || (!selectedExternalHasSavedSecret && !selectedExternalHasConnectedAccount) ? null : (
         <ItemGroup
           title={tLoose(selectedExternalRow.titleKey)}
-          footer={t(
+          description={t(
             selectedExternalCredentialAccessIsRaw
               ? 'settingsVoice.externalCredentials.rawFooter'
               : 'settingsVoice.externalCredentials.footer',

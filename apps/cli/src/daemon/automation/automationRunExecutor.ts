@@ -49,7 +49,6 @@ import { runAutomationAsNewSession } from './automationRunNewSession';
 import {
   parseAutomationTemplateExecution,
   type ParsedAutomationExecution,
-  type AutomationTemplateEncryption,
 } from './automationTemplateExecution';
 import { logAutomationWarn } from './automationTelemetry';
 import type {
@@ -77,7 +76,7 @@ type ClaimableDirectWorkflowRunPayload = Extract<
 function isDirectWorkflowRunClaim(
   claimed: ClaimableRunPayload,
 ): claimed is ClaimableDirectWorkflowRunPayload {
-  return claimed.protocol === 'v3' && claimed.run.automationId === null;
+  return claimed.run.automationId === null;
 }
 
 const EXISTING_SESSION_MACHINE_UNAVAILABLE_ERROR_CODES = new Set<SpawnSessionErrorCode>([
@@ -116,50 +115,38 @@ type AutomationV3RunFailureSettlement = Readonly<{
   accountCurrentness: AutomationAccountCurrentnessWitnessV1;
   producedSessionId?: string | null;
   errorCode: string;
+  terminalState?: 'skipped';
   errorDetailEnvelope: string | null;
   errorMessage?: never;
 }>;
 
-type AutomationV2RunFailureSettlement = Readonly<{
-  protocol: 'v2';
-  runId: string;
-  machineId: string;
-  attempt: number;
-  producedSessionId?: string | null;
-  errorCode: string;
-  /** Released V2 transport adapter only. */
-  errorMessage: string;
-  errorDetailEnvelope?: never;
-  accountCurrentness?: never;
-}>;
-
 type AutomationRunClaimClient = Readonly<{
   startRun: (params: {
-    protocol: 'v2' | 'v3';
+    protocol: 'v3';
     runId: string;
     machineId: string;
     attempt: number;
-    /** C for V3; predecessor V2 does not carry Account currentness. */
-    accountCurrentness?: AutomationAccountCurrentnessWitnessV1;
+    /** Claim Account currentness. */
+    accountCurrentness: AutomationAccountCurrentnessWitnessV1;
   }) => Promise<AutomationAccountCurrentnessWitnessV1 | null | void>;
   heartbeatRun: (params: {
-    protocol: 'v2' | 'v3';
+    protocol: 'v3';
     runId: string;
     machineId: string;
     attempt: number;
     leaseDurationMs: number;
   }) => Promise<void>;
   succeedRun: (params: {
-    protocol: 'v2' | 'v3';
+    protocol: 'v3';
     runId: string;
     machineId: string;
     attempt: number;
-    /** S for V3; predecessor V2 does not carry Account currentness. */
-    accountCurrentness?: AutomationAccountCurrentnessWitnessV1;
+    /** Start Account currentness. */
+    accountCurrentness: AutomationAccountCurrentnessWitnessV1;
     producedSessionId?: string | null;
     resultEnvelope?: string | null;
   }) => Promise<void>;
-  failRun: (params: AutomationV3RunFailureSettlement | AutomationV2RunFailureSettlement) => Promise<void>;
+  failRun: (params: AutomationV3RunFailureSettlement) => Promise<void>;
   settleExecutionDispatch?: (params: {
     protocol: 'v3';
     runId: string;
@@ -431,6 +418,7 @@ async function failV3ClaimedRunBeforeStart(params: Readonly<{
   isCurrent: () => boolean;
   resolveAutomationAccountEncryption?: ResolveAutomationAccountEncryption;
   errorCode: string;
+  terminalState?: 'skipped';
   errorMessage: string;
 }>): Promise<void> {
   if (!params.isCurrent()) return;
@@ -440,13 +428,16 @@ async function failV3ClaimedRunBeforeStart(params: Readonly<{
     resolveAutomationAccountEncryption: params.resolveAutomationAccountEncryption,
   });
   if (!currentness || !params.isCurrent()) return;
-  await params.claimClient.failRun(createV3RunFailureSettlement({
-    machineId: params.machineId,
-    claimed: params.claimed,
-    accountEncryption: currentness,
-    errorCode: params.errorCode,
-    errorMessage: params.errorMessage,
-  }));
+  await params.claimClient.failRun({
+    ...createV3RunFailureSettlement({
+      machineId: params.machineId,
+      claimed: params.claimed,
+      accountEncryption: currentness,
+      errorCode: params.errorCode,
+      errorMessage: params.errorMessage,
+    }),
+    ...(params.terminalState !== undefined ? { terminalState: params.terminalState } : {}),
+  });
 }
 
 type StrictRecipeContentReadResult =
@@ -505,7 +496,7 @@ function openStrictRecipeContent(params: Readonly<{
   }
 }
 
-function parseRetainedV2ExecutionInputForClaim(params: Readonly<{
+function parseRetainedTemplateExecutionInputForClaim(params: Readonly<{
   raw: string | null;
   cause: AutomationRunCause;
 }>): AutomationRunExecutionInputV1 | null {
@@ -543,7 +534,7 @@ async function executeParsedAutomationTemplate(params: Readonly<{
   signal: AbortSignal;
   isCurrent: () => boolean;
   template: ParsedAutomationExecution;
-  /** Rechecks S before every V3 target effect; V2 supplies a no-op. */
+  /** Rechecks Account currentness before every retained-template target effect. */
   beforeTargetEffect: () => Promise<boolean>;
   onPromptSessionId: (sessionId: string) => void;
   /** Observes the one canonical new-Session result for the incumbent fallback owner. */
@@ -734,6 +725,7 @@ async function executeStrictV3Run(params: Readonly<{
   dispatchSessionServerStart?: DispatchSessionServerStart;
   /** Origin-neutral workflow claim/start owner; Automation supplies only its frozen envelopes. */
   coordinateWorkflowRun?: ReturnType<typeof createProductionWorkflowRunCoordinator>;
+  registerReviewHoldRefresh?: (refresh: () => Promise<void>) => void;
   onPromptSessionId: (sessionId: string) => void;
   /**
    * Observes the only canonical Session result before its terminal Run
@@ -1201,7 +1193,7 @@ async function executeStrictV3Run(params: Readonly<{
   }
 }
 
-async function executeRetainedV2InputOnV3Lifecycle(params: Readonly<{
+async function executeRetainedTemplateInputOnCurrentLifecycle(params: Readonly<{
   machineId: string;
   claimed: ClaimableV3AutomationRunPayload;
   claimClient: AutomationRunClaimClient;
@@ -1219,21 +1211,10 @@ async function executeRetainedV2InputOnV3Lifecycle(params: Readonly<{
     accountEncryption: AvailableAutomationAccountEncryptionV1,
   ) => void;
 }>): Promise<void> {
-  const template = parseAutomationTemplateExecution({
-    run: {
-      id: params.claimed.run.id,
-      automationId: params.claimed.run.automationId,
-    },
-    automation: {
-      id: params.claimed.automation.id,
-      name: params.claimed.automation.name,
-      enabled: params.claimed.automation.enabled,
-      targetType: params.input.targetType,
-      templateCiphertext: params.input.templateCiphertext,
-    },
-  }, isAvailableE2eeAutomationAccountEncryptionV1(params.encryptionAtOpen)
+  const template = parseAutomationTemplateExecution(params.input,
+    isAvailableE2eeAutomationAccountEncryptionV1(params.encryptionAtOpen)
     ? params.encryptionAtOpen.material.material
-    : undefined);
+    : undefined, params.encryptionAtOpen.witness.mode);
   if (!template.ok) {
     await failV3ClaimedRunBeforeStart({
       machineId: params.machineId,
@@ -1322,7 +1303,6 @@ export async function executeClaimedRun(params: {
   spawnSession: (options: SpawnSessionOptions) => Promise<SpawnSessionResult>;
   heartbeatMs: number;
   leaseDurationMs: number;
-  encryption?: AutomationTemplateEncryption;
   machineAdmissionTransport?: AutomationMachineAdmissionTransport;
   /** Canonical Account-currentness/material owner for strict V3 recipes. */
   resolveAutomationAccountEncryption?: ResolveAutomationAccountEncryption;
@@ -1334,6 +1314,7 @@ export async function executeClaimedRun(params: {
   signal?: AbortSignal;
   /** Origin-neutral workflow coordinator supplied by daemon bootstrap. */
   coordinateWorkflowRun?: ReturnType<typeof createProductionWorkflowRunCoordinator>;
+  registerReviewHoldRefresh?: Parameters<ReturnType<typeof createProductionWorkflowRunCoordinator>>[0]['registerReviewHoldRefresh'];
   claimed: ClaimableRunPayload;
 }): Promise<void> {
   const {
@@ -1342,7 +1323,6 @@ export async function executeClaimedRun(params: {
     spawnSession,
     heartbeatMs,
     leaseDurationMs,
-    encryption,
     claimed,
   } = params;
   const attempt = claimed.run.attempt;
@@ -1401,259 +1381,191 @@ export async function executeClaimedRun(params: {
       },
     });
 
-    if (claimed.protocol === 'v3') {
-      try {
-        if (isDirectWorkflowRunClaim(claimed)) {
-          if (!params.coordinateWorkflowRun) throw new Error('Workflow Run coordinator is unavailable');
-          await params.coordinateWorkflowRun({
-            runId: claimed.run.id,
-            attempt: claimed.run.attempt,
-            expectedRevision: claimed.run.revision,
-            accountCurrentness: claimed.accountCurrentness,
-            acceptedEnvelope: claimed.run.workflowAcceptedSnapshotEnvelope,
-            registerAuthorizationCurrentnessCheck: (check) => {
-              workflowAuthorizationCurrentnessCheck = check;
-            },
-            registerControlCheck: (check) => {
-              workflowControlCheck = check;
-            },
-            signal: executionController.signal,
-          });
-          return;
-        }
-        if (claimed.run.recipeKind === 'workflow-v2') {
-          if (claimed.run.executionInputEnvelope === null || !params.coordinateWorkflowRun) {
-            throw new Error('Workflow Run coordinator is unavailable');
-          }
-          await params.coordinateWorkflowRun({
-            runId: claimed.run.id,
-            automationId: claimed.run.automationId,
-            attempt: claimed.run.attempt,
-            expectedRevision: claimed.run.revision,
-            accountCurrentness: claimed.accountCurrentness,
-            definitionEnvelope: claimed.run.executionInputEnvelope,
-            automationEvidenceEnvelope: claimed.run.automationEvidenceEnvelope,
-            automationCause: claimed.run.cause,
-            registerAuthorizationCurrentnessCheck: (check) => {
-              workflowAuthorizationCurrentnessCheck = check;
-            },
-            registerControlCheck: (check) => {
-              workflowControlCheck = check;
-            },
-            signal: executionController.signal,
-          });
-          return;
-        }
-        // Current V3 Runs carry one Protocol-owned strict recipe. Parse and
-        // materialize it before start: C never authorizes a target effect.
-        const strictRecipe = parseAutomationRunExecutionRecipeV1(
-          claimed.run.executionInputEnvelope,
-        );
-        if (strictRecipe.kind === 'available') {
-          const encryptionAtOpen = await resolveMatchingAutomationCurrentness({
-            signal: executionController.signal,
-            expected: claimed.accountCurrentness,
-            resolveAutomationAccountEncryption: params.resolveAutomationAccountEncryption,
-          });
-          if (!encryptionAtOpen || !isCurrent()) return;
-          await executeStrictV3Run({
-            machineId,
-            leaseDurationMs,
-            claimed,
-            claimClient,
-            credentials: params.credentials,
-            machineAdmissionTransport: params.machineAdmissionTransport,
-            signal: executionController.signal,
-            isCurrent,
-            resolveAutomationAccountEncryption: params.resolveAutomationAccountEncryption,
-            executeAction: params.executeAction,
-            dispatchSessionServerStart: params.dispatchSessionServerStart,
-            onPromptSessionId: (sessionId) => {
-              cancellationPromptSessionId = sessionId;
-            },
-            onProducedNewSession: (sessionId, accountEncryption) => {
-              knownProducedNewSessionId = sessionId;
-              knownProducedNewSessionEncryption = accountEncryption;
-            },
-            recipe: strictRecipe.recipe,
-            encryptionAtOpen,
-          });
-          return;
-        }
-
-        const retainedV2Input = parseRetainedV2ExecutionInputForClaim({
-          raw: claimed.run.executionInputEnvelope,
-          cause: claimed.run.cause,
+    try {
+      if (isDirectWorkflowRunClaim(claimed)) {
+        if (!params.coordinateWorkflowRun) throw new Error('Workflow Run coordinator is unavailable');
+        await params.coordinateWorkflowRun({
+          runId: claimed.run.id,
+          attempt: claimed.run.attempt,
+          expectedRevision: claimed.run.revision,
+          ...(claimed.run.workflowResumeRequestedRevision === undefined ? {} : {
+            workflowResumeRequestedRevision: claimed.run.workflowResumeRequestedRevision,
+          }),
+          accountCurrentness: claimed.accountCurrentness,
+          acceptedEnvelope: claimed.run.workflowAcceptedSnapshotEnvelope,
+          registerAuthorizationCurrentnessCheck: (check) => {
+            workflowAuthorizationCurrentnessCheck = check;
+          },
+          registerControlCheck: (check) => {
+            workflowControlCheck = check;
+          },
+          registerReviewHoldRefresh: params.registerReviewHoldRefresh,
+          signal: executionController.signal,
         });
-        if (retainedV2Input) {
-          const encryptionAtOpen = await resolveMatchingAutomationCurrentness({
-            signal: executionController.signal,
-            expected: claimed.accountCurrentness,
-            resolveAutomationAccountEncryption: params.resolveAutomationAccountEncryption,
-          });
-          if (!encryptionAtOpen || !isCurrent()) return;
-          await executeRetainedV2InputOnV3Lifecycle({
-            machineId,
-            claimed,
-            claimClient,
-            credentials: params.credentials,
-            spawnSession,
-            machineAdmissionTransport: params.machineAdmissionTransport,
-            signal: executionController.signal,
-            isCurrent,
-            resolveAutomationAccountEncryption: params.resolveAutomationAccountEncryption,
-            input: retainedV2Input,
-            encryptionAtOpen,
-            onPromptSessionId: (sessionId) => {
-              cancellationPromptSessionId = sessionId;
-            },
-            onProducedNewSession: (sessionId, accountEncryption) => {
-              knownProducedNewSessionId = sessionId;
-              knownProducedNewSessionEncryption = accountEncryption;
-            },
-          });
-          return;
+        return;
+      }
+      if (claimed.run.recipeKind === 'workflow-v2') {
+        if (claimed.run.executionInputEnvelope === null || !params.coordinateWorkflowRun) {
+          throw new Error('Workflow Run coordinator is unavailable');
         }
-
-        // Current V3 has one cause-bound recipe model. Only the exact released
-        // V2 frozen input is admitted as a fallback; malformed and unreleased
-        // predecessor shapes fail before start.
-        await failV3ClaimedRunBeforeStart({
+        const result = await params.coordinateWorkflowRun({
+          runId: claimed.run.id,
+          automationId: claimed.run.automationId,
+          attempt: claimed.run.attempt,
+          expectedRevision: claimed.run.revision,
+          ...(claimed.run.workflowResumeRequestedRevision === undefined ? {} : {
+            workflowResumeRequestedRevision: claimed.run.workflowResumeRequestedRevision,
+          }),
+          accountCurrentness: claimed.accountCurrentness,
+          definitionEnvelope: claimed.run.executionInputEnvelope,
+          workflowDefinitionId: claimed.automation.workflowDefinitionId,
+          scopeSessionId: claimed.automation.scopeSessionId,
+          causeWorkDepth: claimed.run.causeWorkDepth,
+          lastSucceededRun: claimed.run.lastSucceededRun,
+          automationEvidenceEnvelope: claimed.run.automationEvidenceEnvelope,
+          automationCause: claimed.run.cause,
+          registerAuthorizationCurrentnessCheck: (check) => {
+            workflowAuthorizationCurrentnessCheck = check;
+          },
+          registerControlCheck: (check) => {
+            workflowControlCheck = check;
+          },
+          registerReviewHoldRefresh: params.registerReviewHoldRefresh,
+          signal: executionController.signal,
+        });
+        if ('admission' in result && result.admission === 'refused') {
+          await failV3ClaimedRunBeforeStart({
+            machineId, claimed, claimClient, signal: executionController.signal, isCurrent,
+            resolveAutomationAccountEncryption: params.resolveAutomationAccountEncryption,
+            errorCode: result.reason,
+            ...(result.state === 'skipped' ? { terminalState: 'skipped' as const } : {}),
+            errorMessage: `Workflow trigger admission refused: ${result.reason}${result.blockId === undefined ? '' : ` (block ${result.blockId})`}`,
+          });
+        }
+        return;
+      }
+      // Current V3 Runs carry one Protocol-owned strict recipe. Parse and
+      // materialize it before start: C never authorizes a target effect.
+      const strictRecipe = parseAutomationRunExecutionRecipeV1(
+        claimed.run.executionInputEnvelope,
+      );
+      if (strictRecipe.kind === 'available') {
+        const encryptionAtOpen = await resolveMatchingAutomationCurrentness({
+          signal: executionController.signal,
+          expected: claimed.accountCurrentness,
+          resolveAutomationAccountEncryption: params.resolveAutomationAccountEncryption,
+        });
+        if (!encryptionAtOpen || !isCurrent()) return;
+        await executeStrictV3Run({
           machineId,
+          leaseDurationMs,
           claimed,
           claimClient,
+          credentials: params.credentials,
+          machineAdmissionTransport: params.machineAdmissionTransport,
           signal: executionController.signal,
           isCurrent,
           resolveAutomationAccountEncryption: params.resolveAutomationAccountEncryption,
-          errorCode: 'invalid_template',
-          errorMessage: 'Frozen automation execution recipe is invalid',
+          executeAction: params.executeAction,
+          dispatchSessionServerStart: params.dispatchSessionServerStart,
+          onPromptSessionId: (sessionId) => {
+            cancellationPromptSessionId = sessionId;
+          },
+          onProducedNewSession: (sessionId, accountEncryption) => {
+            knownProducedNewSessionId = sessionId;
+            knownProducedNewSessionEncryption = accountEncryption;
+          },
+          recipe: strictRecipe.recipe,
+          encryptionAtOpen,
         });
-      } catch (error) {
-        const authoritativeCancellation = isAuthoritativeAutomationRunCancellation(params.signal);
-        if (
-          !isDirectWorkflowRunClaim(claimed)
-          && knownProducedNewSessionId
-          && knownProducedNewSessionEncryption
-          && (isCurrent() || authoritativeCancellation)
-        ) {
-          // The canonical Session result already established creation truth.
-          // Reuse the incumbent V3 fail owner to retain that identity when a
-          // terminal request loses its response; ordinary invalidation never
-          // manufactures settlement authority.
-          await claimClient.failRun(createV3RunFailureSettlement({
-            machineId,
-            claimed,
-            accountEncryption: knownProducedNewSessionEncryption,
-            producedSessionId: knownProducedNewSessionId,
-            errorCode: 'unexpected_error',
-            errorMessage: error instanceof Error ? error.message : String(error),
-          })).catch((innerError) => {
-            logAutomationWarn('Failed to record automation run failure', innerError, {
-              runId: claimed.run.id,
-              automationId: claimedAutomationId,
-            });
-          });
-          return;
-        }
-        // An exception before a Session result has no proven target outcome.
-        // The incumbent lease owner will reclaim the immutable Run after its
-        // bounded deadline.
-        if (isCurrent()) {
-          logAutomationWarn('Strict Automation Run execution failed before a proven terminal outcome', error, {
+        return;
+      }
+
+      const retainedTemplateInput = parseRetainedTemplateExecutionInputForClaim({
+        raw: claimed.run.executionInputEnvelope,
+        cause: claimed.run.cause,
+      });
+      if (retainedTemplateInput) {
+        const encryptionAtOpen = await resolveMatchingAutomationCurrentness({
+          signal: executionController.signal,
+          expected: claimed.accountCurrentness,
+          resolveAutomationAccountEncryption: params.resolveAutomationAccountEncryption,
+        });
+        if (!encryptionAtOpen || !isCurrent()) return;
+        await executeRetainedTemplateInputOnCurrentLifecycle({
+          machineId,
+          claimed,
+          claimClient,
+          credentials: params.credentials,
+          spawnSession,
+          machineAdmissionTransport: params.machineAdmissionTransport,
+          signal: executionController.signal,
+          isCurrent,
+          resolveAutomationAccountEncryption: params.resolveAutomationAccountEncryption,
+          input: retainedTemplateInput,
+          encryptionAtOpen,
+          onPromptSessionId: (sessionId) => {
+            cancellationPromptSessionId = sessionId;
+          },
+          onProducedNewSession: (sessionId, accountEncryption) => {
+            knownProducedNewSessionId = sessionId;
+            knownProducedNewSessionEncryption = accountEncryption;
+          },
+        });
+        return;
+      }
+
+      // Current recipes and frozen input containing retained 0.2 template data
+      // are the only accepted forms. Malformed and undeployed intermediary
+      // shapes fail before start.
+      await failV3ClaimedRunBeforeStart({
+        machineId,
+        claimed,
+        claimClient,
+        signal: executionController.signal,
+        isCurrent,
+        resolveAutomationAccountEncryption: params.resolveAutomationAccountEncryption,
+        errorCode: 'invalid_template',
+        errorMessage: 'Frozen automation execution recipe is invalid',
+      });
+    } catch (error) {
+      const authoritativeCancellation = isAuthoritativeAutomationRunCancellation(params.signal);
+      if (
+        !isDirectWorkflowRunClaim(claimed)
+        && knownProducedNewSessionId
+        && knownProducedNewSessionEncryption
+        && (isCurrent() || authoritativeCancellation)
+      ) {
+        // The canonical Session result already established creation truth.
+        // Reuse the incumbent V3 fail owner to retain that identity when a
+        // terminal request loses its response; ordinary invalidation never
+        // manufactures settlement authority.
+        await claimClient.failRun(createV3RunFailureSettlement({
+          machineId,
+          claimed,
+          accountEncryption: knownProducedNewSessionEncryption,
+          producedSessionId: knownProducedNewSessionId,
+          errorCode: 'unexpected_error',
+          errorMessage: error instanceof Error ? error.message : String(error),
+        })).catch((innerError) => {
+          logAutomationWarn('Failed to record automation run failure', innerError, {
             runId: claimed.run.id,
             automationId: claimedAutomationId,
           });
-        }
+        });
+        return;
       }
-      return;
+      // An exception before a Session result has no proven target outcome.
+      // The incumbent lease owner will reclaim the immutable Run after its
+      // bounded deadline.
+      if (isCurrent()) {
+        logAutomationWarn('Strict Automation Run execution failed before a proven terminal outcome', error, {
+          runId: claimed.run.id,
+          automationId: claimedAutomationId,
+        });
+      }
     }
 
-    await claimClient.startRun({ protocol: 'v2', runId: claimed.run.id, machineId, attempt });
-    if (!isCurrent()) return;
-
-    const parsedTemplate = parseAutomationTemplateExecution({
-      run: {
-        id: claimed.run.id,
-        automationId: claimed.run.automationId,
-      },
-      automation: {
-        id: claimed.automation.id,
-        name: claimed.automation.name,
-        enabled: claimed.automation.enabled,
-        targetType: claimed.automation.targetType,
-        templateCiphertext: claimed.automation.templateCiphertext,
-      },
-    }, encryption);
-
-    if (!parsedTemplate.ok) {
-      if (!isCurrent()) return;
-      await claimClient.failRun({
-        protocol: 'v2',
-        runId: claimed.run.id,
-        machineId,
-        attempt,
-        errorCode: parsedTemplate.code,
-        errorMessage: parsedTemplate.error,
-      });
-      return;
-    }
-
-    await executeParsedAutomationTemplate({
-      credentials: params.credentials,
-      machineId,
-      claimed,
-      spawnSession,
-      machineAdmissionTransport: params.machineAdmissionTransport,
-      signal: executionController.signal,
-      isCurrent,
-      template: parsedTemplate.value,
-      beforeTargetEffect: async () => true,
-      onPromptSessionId: (sessionId) => {
-        cancellationPromptSessionId = sessionId;
-      },
-      onProducedNewSessionId: (sessionId) => {
-        knownProducedNewSessionId = sessionId;
-      },
-      fail: async (errorCode, errorMessage, producedSessionId) => await claimClient.failRun({
-        protocol: 'v2',
-        runId: claimed.run.id,
-        machineId,
-        attempt,
-        ...(producedSessionId === undefined ? {} : { producedSessionId }),
-        errorCode,
-        errorMessage,
-      }),
-      succeed: async (producedSessionId) => await claimClient.succeedRun({
-        protocol: 'v2',
-        runId: claimed.run.id,
-        machineId,
-        attempt,
-        producedSessionId,
-      }),
-  });
-  } catch (error) {
-    const authoritativeCancellation = isAuthoritativeAutomationRunCancellation(params.signal);
-    if (!isCurrent() && (!authoritativeCancellation || !knownProducedNewSessionId)) return;
-    // The existing fail/cancel owner is the only safe fallback after a
-    // terminal RPC loses its acknowledgement. An ordinary invalidation must
-    // not settle; authoritative cancellation may retain only the known
-    // canonical new-Session identity.
-    await claimClient.failRun({
-      protocol: 'v2',
-      runId: claimed.run.id,
-      machineId,
-      attempt,
-      ...(knownProducedNewSessionId === undefined
-        ? {}
-        : { producedSessionId: knownProducedNewSessionId }),
-      errorCode: 'unexpected_error',
-      errorMessage: error instanceof Error ? error.message : String(error),
-    }).catch((innerError) => {
-      logAutomationWarn('Failed to record automation run failure', innerError, {
-        runId: claimed.run.id,
-        automationId: claimedAutomationId,
-      });
-    });
   } finally {
     heartbeat?.stop();
     params.signal?.removeEventListener('abort', abortFromWorker);

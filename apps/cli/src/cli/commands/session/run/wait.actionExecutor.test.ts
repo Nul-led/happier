@@ -76,7 +76,7 @@ describe('happier session run wait (action executor)', () => {
       expect(execute).toHaveBeenCalledWith(
         'execution.run.wait',
         { sessionId: 'sess-canonical', runId: 'run-1' },
-        expect.objectContaining({ surface: 'cli', authority: 'present_user', defaultSessionId: 'sess-canonical' }),
+        expect.objectContaining({ surface: 'cli', defaultSessionId: 'sess-canonical' }),
       );
       expect(resolveSessionTarget).toHaveBeenCalledWith('sess-1');
       expect(resolveSessionTransportContext).not.toHaveBeenCalled();
@@ -105,7 +105,7 @@ describe('happier session run wait (action executor)', () => {
       expect(execute).toHaveBeenCalledWith(
         'execution.run.wait',
         { sessionId: 'sess-canonical', runId: 'run-1', timeoutSeconds: 42 },
-        expect.objectContaining({ surface: 'cli', authority: 'present_user', defaultSessionId: 'sess-canonical' }),
+        expect.objectContaining({ surface: 'cli', defaultSessionId: 'sess-canonical' }),
       );
 
       expect(output.json()).toEqual(expect.objectContaining({
@@ -168,7 +168,7 @@ describe('happier session run wait (action executor)', () => {
       expect(execute).toHaveBeenCalledWith(
         'execution.run.wait',
         { sessionId: 'sess-canonical', runId: 'run-1', timeoutSeconds: 1 },
-        expect.objectContaining({ surface: 'cli', authority: 'present_user', defaultSessionId: 'sess-canonical' }),
+        expect.objectContaining({ surface: 'cli', defaultSessionId: 'sess-canonical' }),
       );
       const text = output.logs.join('\n');
       expect(text).not.toContain('run finished');
@@ -227,7 +227,7 @@ describe('happier session run wait (action executor)', () => {
       expect(execute).toHaveBeenCalledWith(
         'execution.run.wait',
         { sessionId: 'sess-canonical', runId: 'run-1' },
-        expect.objectContaining({ surface: 'cli', authority: 'present_user', defaultSessionId: 'sess-canonical' }),
+        expect.objectContaining({ surface: 'cli', defaultSessionId: 'sess-canonical' }),
       );
       expect(output.json()).toEqual({
         v: 1,

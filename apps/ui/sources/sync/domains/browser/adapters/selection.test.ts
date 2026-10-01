@@ -106,6 +106,23 @@ const capturingDesktopWebView = {
 } satisfies DesktopWebViewNativeAvailability;
 
 describe('selectBrowserTargetAdapter', () => {
+    it('publishes desktop recording readiness from the registered capture owner, and withdraws it when the owner is unavailable', () => {
+        const input = {
+            target: externalUrlTarget,
+            platform: 'desktop' as const,
+            targetPolicyDecision: allowedExternalUrlPolicy,
+            desktopWebViewAvailability: capturingDesktopWebView,
+            nativeViewCaptureHandlerRegistered: true,
+        };
+        expect(selectBrowserTargetAdapter(input)).toMatchObject({
+            ok: true,
+            capabilities: { automationActions: { recording: { available: true } } },
+        });
+        expect(selectBrowserTargetAdapter({ ...input, nativeViewCaptureHandlerRegistered: false })).toMatchObject({
+            ok: true,
+            capabilities: { automationActions: { recording: { available: false } } },
+        });
+    });
     it('selects the shared iframe engine for web local previews', () => {
         expect(selectBrowserTargetAdapter({
             target: localPreviewTarget,
@@ -334,33 +351,7 @@ describe('selectBrowserTargetAdapter', () => {
         });
     });
 
-    it('fails closed for streamed browser targets with sidecar and stream dependencies named', () => {
-        expect(selectBrowserTargetAdapter({
-            target: {
-                kind: 'streamedBrowser',
-                targetId: 'stream_1',
-                streamId: 'stream_1',
-            },
-            platform: 'web',
-        })).toEqual({
-            ok: false,
-            adapterKind: 'streamedBrowserSurface',
-            engineKind: 'unavailable',
-            reasonCode: 'streamed_browser_unavailable',
-            reason: {
-                reasonCode: 'streamed_browser_unavailable',
-                blockedBy: ['BRW-7', 'BRW-8', 'PMS-8', 'SIM-5'],
-                requiredCapability: 'browserStreamSurface',
-                targetKind: 'streamedBrowser',
-            },
-        });
-    });
-
-    // DEC-5: the streamed adapter is CONTRACTED. Nothing in production can produce a
-    // `streamedBrowser` target, no renderer exists, and the server excludes the kind outright, so a
-    // reachable daemon control transport must no longer make the surface selectable. Reachability
-    // of a transport is not the existence of a renderer.
-    it('never selects a streamed browser surface, even with a reachable daemon control transport', () => {
+    it('selects the streamed renderer and daemon navigation capabilities for an admitted browser target', () => {
         expect(selectBrowserTargetAdapter({
             target: {
                 kind: 'streamedBrowser',
@@ -369,6 +360,26 @@ describe('selectBrowserTargetAdapter', () => {
             },
             platform: 'web',
         })).toMatchObject({
+            ok: true,
+            outcome: 'renderEngine',
+            adapterKind: 'streamedBrowserSurface',
+            engineKind: 'streamedSurface',
+            capabilities: { supportsStreamingDisplay: true, navigation: {
+                canNavigate: true, canReload: true, canGoBack: true, canGoForward: true, canStop: true,
+            } },
+        });
+    });
+
+    it('retains policy denial for a streamed browser target', () => {
+        expect(selectBrowserTargetAdapter({
+            target: {
+                kind: 'streamedBrowser',
+                targetId: 'stream_1',
+                streamId: 'stream_1',
+            },
+            platform: 'web',
+            targetPolicyDecision: { ...deniedExternalUrlPolicy, targetKind: 'streamedBrowser' },
+        })).toMatchObject({
             ok: false,
             adapterKind: 'streamedBrowserSurface',
             engineKind: 'unavailable',
@@ -376,10 +387,7 @@ describe('selectBrowserTargetAdapter', () => {
         });
     });
 
-    // DEC-5: there is no longer any input that lets the streamed adapter escape the fail-closed
-    // gate. It could previously advertise a full navigable capability set to agents and plugins
-    // while no renderer existed anywhere in the product.
-    it('never builds navigable capabilities for a streamed browser surface', () => {
+    it('builds daemon navigation capabilities for a streamed browser surface', () => {
         const capabilities = buildBrowserAdapterCapabilities({
             adapterKind: 'streamedBrowserSurface',
             supportedTargetKinds: ['streamedBrowser'],
@@ -387,17 +395,17 @@ describe('selectBrowserTargetAdapter', () => {
         });
 
         expect(capabilities).toMatchObject({
-            supportedRenderEngines: ['unavailable'],
-            supportsStreamingDisplay: false,
+            supportedRenderEngines: ['streamedSurface'],
+            supportsStreamingDisplay: true,
             navigation: {
-                canNavigate: false,
-                canReload: false,
-                canGoBack: false,
-                canGoForward: false,
-                canStop: false,
+                canNavigate: true,
+                canReload: true,
+                canGoBack: true,
+                canGoForward: true,
+                canStop: true,
             },
         });
-        expect(capabilities.disabledReasons).toEqual(['streamed_browser_unavailable']);
+        expect(capabilities.disabledReasons).toEqual([]);
     });
 
     // E2-F6: the policy owner's decision is the authority for EVERY target kind, not just external
@@ -528,57 +536,6 @@ describe('selectBrowserTargetAdapter', () => {
         });
     });
 
-    it('builds fail-closed capability diagnostics for real browser engines without runtime owners', () => {
-        const sidecar = buildBrowserAdapterCapabilities({
-            adapterKind: 'chromiumSidecar',
-            supportedTargetKinds: ['externalUrl'],
-            supportedRenderEngines: ['streamedSurface'],
-        });
-        const streamedBrowser = buildBrowserAdapterCapabilities({
-            adapterKind: 'streamedBrowserSurface',
-            supportedTargetKinds: ['streamedBrowser'],
-            supportedRenderEngines: ['streamedSurface'],
-        });
-        // NOTE (R-2): `externalUrl + nativeWebView` used to be asserted here as a third
-        // "no runtime owner" engine. It is not one — the RN `WebView` is exactly the runtime owner
-        // for an external site on ios/android, and `selectBrowserTargetAdapter` selects it (see
-        // "selects the native WebView engine for allowed external URLs on ios/android" above). This
-        // assertion was the capability half of that split-brain: the selector said "render it", the
-        // builder said "unavailable", and mobile shipped a dead toolbar. The positive contract now
-        // lives at the capability owner (`capabilities.test.ts`); the genuinely ownerless engines
-        // are the two below, and the fail-closed desktop case has its own test.
-        expect(sidecar).toMatchObject({
-            supportedRenderEngines: ['unavailable'],
-            disabledReasons: ['sidecar_runtime_unavailable'],
-            supportsStreamingDisplay: false,
-            navigation: {
-                canNavigate: false,
-                canGoBack: false,
-                canGoForward: false,
-                canReload: false,
-                canStop: false,
-            },
-        });
-        expect(sidecar.automationActions?.snapshot).toMatchObject({
-            available: false,
-            fidelity: 'unavailable',
-            trustedInput: false,
-            disabledReasons: ['sidecar_runtime_unavailable'],
-        });
-
-        expect(streamedBrowser).toMatchObject({
-            supportedRenderEngines: ['unavailable'],
-            disabledReasons: ['streamed_browser_unavailable'],
-            supportsStreamingDisplay: false,
-        });
-        expect(streamedBrowser.automationActions?.click).toMatchObject({
-            available: false,
-            fidelity: 'unavailable',
-            trustedInput: false,
-            disabledReasons: ['streamed_browser_unavailable'],
-        });
-    });
-
     it('does not advertise desktop WebView automation without a desktop automation producer', () => {
         const capabilities = buildBrowserAdapterCapabilities({
             adapterKind: 'localPreview',
@@ -612,7 +569,7 @@ describe('selectBrowserTargetAdapter', () => {
         });
     });
 
-    it('advertises only native navigation and page-info diagnostics for a backed desktop WebView producer', () => {
+    it('keeps native navigation and page-info diagnostics usable without native automation support', () => {
         const capabilities = buildBrowserAdapterCapabilities({
             adapterKind: 'externalUrl',
             supportedTargetKinds: ['externalUrl'],
@@ -646,7 +603,7 @@ describe('selectBrowserTargetAdapter', () => {
             available: false,
             fidelity: 'unavailable',
             trustedInput: false,
-            disabledReasons: ['desktop_webview_automation_unavailable'],
+            disabledReasons: ['unsupported_action'],
         });
         expect(capabilities.automationActions?.screenshotReference).toMatchObject({
             available: false,

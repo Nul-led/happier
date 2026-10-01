@@ -25,7 +25,11 @@ export type PersistedTakeoverAdmissionWaiter = Readonly<{
   isPending(correlation: HostPrivatePersistedTakeoverAdmission): boolean;
   register(
     correlation: HostPrivatePersistedTakeoverAdmission,
+    options?: Readonly<{ signal?: AbortSignal }>,
   ): PersistedTakeoverAdmissionWaitRegistration;
+  getRegistration(
+    correlation: HostPrivatePersistedTakeoverAdmission,
+  ): PersistedTakeoverAdmissionWaitRegistration | null;
   settle(
     correlation: HostPrivatePersistedTakeoverAdmission,
     outcome: PersistedTakeoverAdmissionOutcome,
@@ -48,20 +52,15 @@ export type PersistedTakeoverAdmissionWaiter = Readonly<{
     | Readonly<{ status: 'unavailable' }>;
 }>;
 
-export function createPersistedTakeoverAdmissionWaiter(options: Readonly<{
-  timeoutMs?: number;
-}> = {}): PersistedTakeoverAdmissionWaiter {
+export function createPersistedTakeoverAdmissionWaiter(): PersistedTakeoverAdmissionWaiter {
   type PendingAdmission = {
     readonly outcome: Promise<PersistedTakeoverAdmissionOutcome>;
     readonly resolve: (outcome: PersistedTakeoverAdmissionOutcome) => void;
-    timer: ReturnType<typeof setTimeout>;
+    registration: PersistedTakeoverAdmissionWaitRegistration;
+    removeAbortListener: () => void;
     settledOutcome: PersistedTakeoverAdmissionOutcome | null;
     state: 'pending' | 'runtime_bound_reserved';
   };
-  const timeoutMs = options.timeoutMs ?? 30_000;
-  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
-    throw new Error('Persisted takeover admission timeout must be positive');
-  }
   const pendingByAttempt = new Map<string, PendingAdmission>();
   const keyFor = (correlation: HostPrivatePersistedTakeoverAdmission): string => {
     const parsed = parsePersistedTakeoverAdmission(correlation);
@@ -76,7 +75,7 @@ export function createPersistedTakeoverAdmissionWaiter(options: Readonly<{
     const pending = pendingByAttempt.get(key);
     if (!pending) return false;
     pendingByAttempt.delete(key);
-    clearTimeout(pending.timer);
+    pending.removeAbortListener();
     pending.settledOutcome = outcome;
     pending.resolve(outcome);
     return true;
@@ -86,7 +85,10 @@ export function createPersistedTakeoverAdmissionWaiter(options: Readonly<{
     isPending(correlation) {
       return pendingByAttempt.get(keyFor(correlation))?.state === 'pending';
     },
-    register(correlation) {
+    getRegistration(correlation) {
+      return pendingByAttempt.get(keyFor(correlation))?.registration ?? null;
+    },
+    register(correlation, options = {}) {
       const parsed = parsePersistedTakeoverAdmission(correlation);
       const key = keyFor(parsed);
       if (pendingByAttempt.has(key)) {
@@ -96,32 +98,30 @@ export function createPersistedTakeoverAdmissionWaiter(options: Readonly<{
       const outcome = new Promise<PersistedTakeoverAdmissionOutcome>((resolve) => {
         resolveOutcome = resolve;
       });
+      const cancel = () => {
+        if (pendingByAttempt.get(key) !== pending) return;
+        settle(parsed, {
+          status: 'failed',
+          errorCode: 'persisted_takeover_admission_cancelled',
+        });
+      };
+      const registration: PersistedTakeoverAdmissionWaitRegistration = Object.freeze({
+        outcome,
+        readOutcome: () => pending.settledOutcome,
+        cancel,
+      });
       const pending: PendingAdmission = {
         outcome,
         resolve: resolveOutcome,
+        registration,
+        removeAbortListener: () => options.signal?.removeEventListener('abort', cancel),
         settledOutcome: null,
         state: 'pending',
-        timer: undefined as unknown as ReturnType<typeof setTimeout>,
       };
-      pending.timer = setTimeout(() => {
-        settle(parsed, {
-          status: 'failed',
-          errorCode: 'persisted_takeover_admission_timeout',
-        });
-      }, timeoutMs);
       pendingByAttempt.set(key, pending);
-      return Object.freeze({
-        outcome,
-        readOutcome: () => pending.settledOutcome,
-        cancel() {
-          const current = pendingByAttempt.get(key);
-          if (current !== pending) return;
-          settle(parsed, {
-            status: 'failed',
-            errorCode: 'persisted_takeover_admission_cancelled',
-          });
-        },
-      });
+      options.signal?.addEventListener('abort', cancel, { once: true });
+      if (options.signal?.aborted) cancel();
+      return registration;
     },
     settle,
     reserveRuntimeBound(correlation) {
@@ -142,7 +142,7 @@ export function createPersistedTakeoverAdmissionWaiter(options: Readonly<{
           return false;
         }
         pendingByAttempt.delete(key);
-        clearTimeout(pending.timer);
+        pending.removeAbortListener();
         pending.settledOutcome = outcome;
         pending.resolve(outcome);
         return true;

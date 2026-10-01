@@ -1,21 +1,16 @@
 import * as React from 'react';
-import {
-    AccessibilityInfo,
-    Platform,
-    StyleSheet,
-    View,
-} from 'react-native';
+import { StyleSheet, View } from 'react-native';
 import {
     HAPPIER_TONE_COLOR_TOKEN,
     HappierProgress,
 } from '@happier-dev/plugin-ui/presentation';
 import { useUnistyles } from 'react-native-unistyles';
 
+import { PoliteAccessibilityStatus } from '@/components/ui/accessibility/PoliteAccessibilityStatus';
 import { projectPluginUiTheme } from '@/components/plugins/surfaces/pluginUiThemeProjection';
 import { ProgressChecklist } from '@/components/systemTasks/ProgressChecklist';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
-import { resolveOverlayPointerEvents } from '@/components/ui/overlays/resolveOverlayPointerEvents';
 import { StatusDot } from '@/components/ui/status/StatusDot';
 import { Text } from '@/components/ui/text/Text';
 import { t } from '@/text';
@@ -27,65 +22,11 @@ import {
 } from './pluginTranscriptActivityPresentation';
 
 const styles = StyleSheet.create({
-    accessibilityStatus: {
-        position: 'absolute',
-        width: 1,
-        height: 1,
-        overflow: 'hidden',
-    },
     progress: {
         width: 72,
         flexShrink: 0,
     },
 });
-
-/**
- * A presentation-only announcement adapter. Counter updates stay visible and
- * queryable on the progressbar, while the semantic transition key coalesces
- * live announcements. It holds no activity lifecycle or Resource state.
- */
-const PluginTranscriptActivityAccessibilityStatus = React.memo(
-    function PluginTranscriptActivityAccessibilityStatus(props: Readonly<{
-        announcement: string;
-        transitionKey: string;
-    }>) {
-        const lastIosTransitionRef = React.useRef<string | null>(null);
-        const pointerEvents = resolveOverlayPointerEvents('none');
-
-        React.useEffect(() => {
-            if (
-                Platform.OS !== 'ios'
-                || lastIosTransitionRef.current === props.transitionKey
-            ) {
-                return;
-            }
-            lastIosTransitionRef.current = props.transitionKey;
-            try {
-                AccessibilityInfo.announceForAccessibility(props.announcement);
-            } catch {
-                // Assistive-technology announcements are best effort.
-            }
-        }, [props.announcement, props.transitionKey]);
-
-        if (Platform.OS === 'ios') return null;
-        return (
-            <View
-                testID="plugin-transcript-activity-a11y-status"
-                accessible
-                accessibilityLiveRegion="polite"
-                pointerEvents={pointerEvents.nativePointerEvents}
-                style={[styles.accessibilityStatus, pointerEvents.webStyle]}
-                {...({
-                    role: 'status',
-                    'aria-live': 'polite',
-                    'aria-atomic': true,
-                } as Record<string, unknown>)}
-            >
-                <Text>{props.announcement}</Text>
-            </View>
-        );
-    },
-);
 
 /**
  * Presentation-only Resource activity card. Its final transcript item already
@@ -123,8 +64,11 @@ export const PluginTranscriptActivityCard = React.memo(
         }
         return (
             <View testID="plugin-transcript-activity-card">
-                <PluginTranscriptActivityAccessibilityStatus
+                {/* Counter updates stay visible and queryable on the progressbar; the
+                    semantic transition key coalesces live announcements. */}
+                <PoliteAccessibilityStatus
                     announcement={presentation.announcement}
+                    statusTestID="plugin-transcript-activity-a11y-status"
                     transitionKey={presentation.announcementKey}
                 />
                 <ItemGroup title={props.activity.title}>

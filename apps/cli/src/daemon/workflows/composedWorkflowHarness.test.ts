@@ -1,3 +1,4 @@
+import { createTestWorkflowCoordinator as createWorkflowCoordinator } from './workflowCoordinator.testkit';
 import { execFile } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -5,26 +6,39 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  admitAgentStartV1,
+  createAccountScopedCryptoMaterialSnapshotV1,
+  convertContentPublicKeyFingerprintToAccountEncryptionMigrateKeyFingerprintV1,
   AutomationRunCauseSchema,
+  AutomationStoredWorkflowDefinitionV2Schema,
   AutomationV3RunMutationResponseSchema,
+  DEFAULT_SESSION_AGENT_SPAWN_POLICY_V1,
   deriveAutomationOccurrenceKeyV1,
   WorkflowProgressEnvelopeV1Schema,
   openWorkflowAcceptedSnapshotStoredEnvelopeV1,
   openWorkflowProgressStoredEnvelopeV1,
   parseWorkflowStoredContentEnvelopeV1,
+  prepareWorkflowRunDataKeyV1,
   sealWorkflowAcceptedSnapshotStoredEnvelopeV1,
   serializeWorkflowStoredContentEnvelopeV1,
   type WorkflowDefinitionV1,
+  type WorkflowRunDataKeyV1,
   type WorkflowRunInvocationIndexV1,
   type WorkflowStep,
 } from '@happier-dev/protocol';
+import type { SessionInputResultV1 } from '@/session/services/sendSessionMessage';
+import type { AvailableAutomationAccountEncryptionV1 } from '@/plugins/runtime/automations/automationAccountCurrentness';
 
 import { executeClaimedRun } from '@/daemon/automation/automationRunExecutor';
 import { dispatchActionFromRpc } from '@/rpc/handlers/_actionDispatchAdapter';
 import { createWorkflowActionExecutor } from '@/session/actions/workflowActionExecutor';
 import { createWorkflowRunActionOwner } from '@/session/actions/workflowRunActions';
-import { createInMemoryWorkflowCoordinatorStore, createWorkflowCoordinator, workflowInvocationKey } from './coordinator';
+import {  workflowInvocationKey } from './coordinator';
+import { createInMemoryWorkflowCoordinatorStore } from './workflowCoordinator.testkit';
+import { createWorkflowInvocationRecoveryObserver } from './daemonRuntime';
+import { createWorkflowRunRecoveryReader } from './recovery';
 import { createGitWorkflowWorkspaceTestDependencies } from './workflowWorkspace.testkit';
+import { createWorkflowProducerBinding } from './workflowScopeBinding';
 import { bindAutomationWorkflowInputs, isWorkflowJsonObject } from './input';
 import { createProductionWorkflowRunCoordinator } from './production';
 import { createWorkflowSessionStepExecutor } from './sessionStepExecutor';
@@ -83,9 +97,13 @@ function sealDirectAccepted(input: Readonly<{
   definition: WorkflowDefinitionV1;
   directory: string;
   deliverResult?: boolean;
+  runCrypto?: WorkflowRunDataKeyV1;
 }>): string {
+  const runCrypto = input.runCrypto ?? { mode: 'plain' as const };
+  const sealMode = runCrypto.mode === 'e2ee'
+    ? { ...runCrypto, randomBytes: (length: number) => new Uint8Array(length).fill(3) } : runCrypto;
   return serializeWorkflowStoredContentEnvelopeV1(sealWorkflowAcceptedSnapshotStoredEnvelopeV1({
-    mode: 'plain',
+    ...sealMode,
     binding: { v: 1, purpose: 'accepted_snapshot', accountId, runId: input.runId },
     acceptedSnapshot: {
       definition: input.definition,
@@ -96,7 +114,7 @@ function sealDirectAccepted(input: Readonly<{
       workspaceTarget: { project: { machineId, directory: input.directory, checkoutRootPath: input.directory } },
       origin: { kind: 'direct', ...(input.deliverResult ? { originSessionId: sessionId } : {}) },
       authorization,
-      ...(input.deliverResult ? { resultDelivery: { kind: 'originating_session' as const, originSessionId: sessionId, localInputId: `workflow-run:${input.runId}:result-delivery` } } : {}),
+      ...(input.deliverResult ? { resultDelivery: { kind: 'originating_session' as const, originSessionId: sessionId } } : {}),
     },
   }));
 }
@@ -109,7 +127,7 @@ function leafLabel(text: string): string {
 }
 
 function sessionInputBoundary(
-  outcomes: Readonly<Record<string, LeafOutcome>> = {},
+  outcomes: Readonly<Record<string, LeafOutcome | SessionInputResultV1>> = {},
   hooks: Readonly<{ onObserve?: (label: string, signal?: AbortSignal) => Promise<void> }> = {},
 ) {
   const enqueue = vi.fn(async (request: Readonly<{ text: string }>) => ({
@@ -118,11 +136,16 @@ function sessionInputBoundary(
   }));
   const observe = vi.fn(async (request: Readonly<{ localId: string; signal?: AbortSignal }>) => {
     await hooks.onObserve?.(request.localId, request.signal);
-    switch (outcomes[request.localId] ?? 'completed') {
+    const outcome = outcomes[request.localId] ?? 'completed';
+    if (typeof outcome !== 'string') {
+      return { ok: true as const, sessionId, localId: request.localId, result: outcome };
+    }
+    switch (outcome) {
       case 'needs_attention':
         return { ok: false as const, code: 'workflow_step_timeout' };
       case 'failed':
-        return { ok: true as const, sessionId, localId: request.localId, result: { kind: 'failed' as const } };
+        return { ok: true as const, sessionId, localId: request.localId,
+          result: { kind: 'failed' as const, message: 'Provider rejected the required step input' } };
       default:
         return {
           ok: true as const, sessionId, localId: request.localId,
@@ -131,7 +154,7 @@ function sessionInputBoundary(
     }
   });
   const cancel = vi.fn(async () => ({ kind: 'turn_cancel_requested' as const }));
-  return { preflight: () => ({ ok: true as const }), enqueue, observe, cancel };
+  return {  enqueue, observe, cancel };
 }
 
 /**
@@ -144,50 +167,47 @@ function workflowDaemonProcess(input: Readonly<{
   storage: Readonly<{ execute: WorkflowRunStorageTestkit['execute'] }>;
   sessionInput: ReturnType<typeof sessionInputBoundary>;
   directory: string;
-  resultDeliveryTransport?: ReturnType<typeof vi.fn>;
+  encryption?: AvailableAutomationAccountEncryptionV1;
 }>) {
   const unusedRunActions = { execute: vi.fn(async () => ({ ok: false as const, errorCode: 'unused' })) };
   const actionContext = () => ({ surface: 'agent' as const, authority: 'account_automation' as const });
   return createProductionWorkflowRunCoordinator({
+    resolveControllerContext: async () => ({ surface: 'cli', authority: 'account_automation', callerPermissionMode: 'yolo' }),
     token: 'token',
     accountId,
     machineId,
-    resolveAccountEncryption: async () => ({ kind: 'available', witness: currentness }) as never,
+    resolveAccountEncryption: async () => input.encryption ?? { kind: 'available', witness: currentness },
     isAcceptedAuthorizationCurrent: async () => true,
+    // Opened Account policy and exact-Machine availability are host boundaries;
+    // the canonical materializer and ORC admission decision remain real.
+    resolveMaterializationHost: async ({ runId, workDepth, directory, originSessionId }) => ({
+      effects: { resolveTargetAvailability: async () => true },
+      admitLeaf: async (leaf, facts) => admitAgentStartV1(DEFAULT_SESSION_AGENT_SPAWN_POLICY_V1,
+        { kind: 'workflow_run_leaf', leaf }, {
+          caller: { kind: 'originless', runId, runDepth: workDepth,
+            ...(originSessionId ? { runOriginSessionId: originSessionId } : {}) },
+          baseline: { machineId, directory }, ledSubtreeSessionIds: [],
+          roles: facts.role ? { [facts.role.roleId]: facts.role } : {},
+          workDepthLimit: 4, callerPermissionCeiling: facts.permissionCeiling,
+        }),
+    }),
     execution: {
       credentials: { token: 'token', encryption: null } as never,
       serverId: 'server-1',
-      resolveMachineOperationProtocolCapabilities: async () => ({
-        sessionInputAdmission: { protocolVersions: [1, 2] },
-      }),
+
       machineAdmissionTransport: vi.fn(async () => ({ status: 'accepted' as const, localId: 'local-1' })) as never,
       resolveExistingSessionConversation: async () => ({ sessionId, machineId, directory: input.directory }),
       sessionInput: input.sessionInput as never,
       detachedRun: { actionExecutor: unusedRunActions as never, buildActionContext: actionContext as never },
-      attachedRun: {
-        actionExecutor: unusedRunActions as never,
-        buildActionContext: actionContext as never,
-        sendInput: vi.fn() as never,
-      },
     },
-    // The SCM/worktree owner is reached through the daemon-applied plugin
-    // runtime, which is a real process boundary and is absent here. Every
-    // definition below selects the accepted project checkout, so only the
-    // recorded-workspace verification and accepted-target inspection are
-    // substituted; path canonicalization stays with its canonical owner.
+    // The daemon-applied plugin process is a real boundary. Exercise its real
+    // Git registration and SCM logic through the canonical workspace testkit.
     prepareAcceptedWorkspaceTarget: async () => ({
       ok: true,
       workspaceTarget: { project: { machineId, directory: input.directory, checkoutRootPath: input.directory } },
     }),
-    workspaceScm: { verifyRecordedWorkspace: async () => 'available' as const },
+    workspaceScm: createGitWorkflowWorkspaceTestDependencies(),
     onCommittedTransition: vi.fn(),
-    ...(input.resultDeliveryTransport ? {
-      resultDelivery: {
-        credentials: { token: 'token', encryption: null } as never,
-        resolveMachineOperationProtocolCapabilities: async () => ({ sessionInputAdmission: { protocolVersions: [1, 2] } }),
-        machineAdmissionTransport: input.resultDeliveryTransport as never,
-      },
-    } : {}),
     storage: input.storage as never,
   });
 }
@@ -207,11 +227,11 @@ function storageLosingFirstSettlement(kit: WorkflowRunStorageTestkit) {
   };
 }
 
-function openRowProgress(kit: WorkflowRunStorageTestkit, index: WorkflowRunInvocationIndexV1) {
+function openRowProgress(kit: WorkflowRunStorageTestkit, index: WorkflowRunInvocationIndexV1, runCrypto: WorkflowRunDataKeyV1 = { mode: 'plain' }) {
   const row = kit.rowById(index.id);
   if (!row) throw new Error('missing_row');
   const opened = openWorkflowProgressStoredEnvelopeV1({
-    mode: 'plain',
+    ...runCrypto,
     binding: {
       v: 1, purpose: 'invocation_progress', accountId, runId: index.runId,
       recordId: index.id, sequence: index.sequence, parentRecordId: index.parentRecordId,
@@ -223,10 +243,10 @@ function openRowProgress(kit: WorkflowRunStorageTestkit, index: WorkflowRunInvoc
   return WorkflowProgressEnvelopeV1Schema.parse(opened.content);
 }
 
-function rowFor(kit: WorkflowRunStorageTestkit, blockId: string): WorkflowRunInvocationIndexV1 | undefined {
+function rowFor(kit: WorkflowRunStorageTestkit, blockId: string, runCrypto: WorkflowRunDataKeyV1 = { mode: 'plain' }): WorkflowRunInvocationIndexV1 | undefined {
   return kit.rows()
     .map((row) => row.index)
-    .find((index) => openRowProgress(kit, index).invocationPath.blockId === blockId);
+    .find((index) => openRowProgress(kit, index, runCrypto).invocationPath.blockId === blockId);
 }
 
 function fanOutDefinition(failurePolicy: 'collect_outcomes' | 'fail_stop'): WorkflowDefinitionV1 {
@@ -253,7 +273,7 @@ function fanOutDefinition(failurePolicy: 'collect_outcomes' | 'fail_stop'): Work
 }
 
 describe('composed Workflow front door and claimed execution', () => {
-  it('keeps a successful Run inspectable and sends nothing when configured delivery has no selected final output', async () => {
+  it('settles a successful Run with no selected final output while origin delivery remains unacknowledged', async () => {
     const runId = '10101010-1010-4010-8010-101010101010';
     const directory = await projectDirectory();
     const definition: WorkflowDefinitionV1 = {
@@ -262,22 +282,20 @@ describe('composed Workflow front door and claimed execution', () => {
     const acceptedEnvelope = sealDirectAccepted({ runId, definition, directory, deliverResult: true });
     const kit = createWorkflowRunStorageTestkit({
       runId, machineId, origin: { kind: 'direct', originSessionId: sessionId },
-      acceptedEnvelope, resultDeliveryState: 'pending',
+      acceptedEnvelope, originDeliveryAckRevision: 0,
     });
     const sessionInput = sessionInputBoundary();
-    const deliveryTransport = vi.fn(async () => ({ status: 'accepted' as const, localId: 'must-not-send' }));
-    const coordinate = workflowDaemonProcess({ storage: kit, sessionInput, directory, resultDeliveryTransport: deliveryTransport });
+    const coordinate = workflowDaemonProcess({ storage: kit, sessionInput, directory });
 
     await expect(coordinate({
       protocol: 'v3', automationId: null, runId, attempt: 0, expectedRevision: 0,
       accountCurrentness: currentness, acceptedSnapshotEnvelope: acceptedEnvelope,
     } as never)).resolves.toMatchObject({ state: 'succeeded' });
 
-    expect(deliveryTransport).not.toHaveBeenCalled();
     expect(openRowProgress(kit, rowFor(kit, 'work')!).result).toBe('work');
     expect(kit.run()).toMatchObject({
       state: 'succeeded', workflowCustodyState: 'settled',
-      workflowResultDeliveryState: { kind: 'unavailable', reason: 'workflow_outcome_unresolved' },
+      originDeliveryAckRevision: 0,
     });
   });
 
@@ -288,7 +306,7 @@ describe('composed Workflow front door and claimed execution', () => {
   }>([
     { expectedState: 'paused', outcomes: {}, pauseAfter: 'first' },
     { expectedState: 'interrupted', outcomes: { first: 'failed' }, pauseAfter: null },
-  ])('does not attempt configured direct delivery after a $expectedState parent commit', async ({ expectedState, outcomes, pauseAfter }) => {
+  ])('preserves recoverable custody after a $expectedState parent commit with origin delivery enabled', async ({ expectedState, outcomes, pauseAfter }) => {
     const runId = expectedState === 'paused'
       ? '13131313-1313-4313-8313-131313131313'
       : '14141414-1414-4414-8414-141414141414';
@@ -306,15 +324,14 @@ describe('composed Workflow front door and claimed execution', () => {
       machineId,
       origin: { kind: 'direct', originSessionId: sessionId },
       acceptedEnvelope,
-      resultDeliveryState: 'pending',
+      originDeliveryAckRevision: 0,
     });
     const sessionInput = sessionInputBoundary(outcomes, {
       onObserve: async (label) => {
         if (label === pauseAfter) kit.requestControl('pause_requested');
       },
     });
-    const deliveryTransport = vi.fn(async () => ({ status: 'accepted' as const, localId: 'must-not-send' }));
-    const coordinate = workflowDaemonProcess({ storage: kit, sessionInput, directory, resultDeliveryTransport: deliveryTransport });
+    const coordinate = workflowDaemonProcess({ storage: kit, sessionInput, directory });
 
     await expect(coordinate({
       runId,
@@ -324,12 +341,16 @@ describe('composed Workflow front door and claimed execution', () => {
       acceptedEnvelope,
     } as never)).resolves.toMatchObject({ state: expectedState });
 
-    expect(deliveryTransport).not.toHaveBeenCalled();
-    expect(kit.calls.filter((operation) => operation.operation === 'result-delivery.settle')).toEqual([]);
+    if (expectedState === 'interrupted') {
+      expect(openRowProgress(kit, rowFor(kit, 'first')!).reason).toEqual({
+        code: 'session_input_failed', message: 'Provider rejected the required step input',
+      });
+      expect(rowFor(kit, 'must-not-run')).toBeUndefined();
+    }
     expect(kit.run()).toMatchObject({
       state: expectedState,
       workflowCustodyState: 'pending',
-      workflowResultDeliveryState: 'pending',
+      originDeliveryAckRevision: 0,
     });
   });
 
@@ -407,6 +428,9 @@ describe('composed Workflow front door and claimed execution', () => {
         storage: kit,
         definitions: { get: vi.fn() },
         resolveEncryption: async () => ({ kind: 'available', witness: currentness }),
+        // The exact Machine's inventory is an external boundary, not a
+        // replacement for the admission owner's real materialization path.
+        resolveMaterializationContext: async () => ({ effects: { resolveTargetAvailability: async () => true } }),
         prepareWorkspace: async () => ({
           ok: true,
           workspaceTarget: { project: { machineId, directory, checkoutRootPath: directory } },
@@ -414,7 +438,7 @@ describe('composed Workflow front door and claimed execution', () => {
       });
       const workflowActions = createWorkflowActionExecutor({
         isWorkflowFeatureEnabled: async () => true,
-        definitions: { list: vi.fn(), get: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn() },
+        definitions: { list: vi.fn(), get: vi.fn(), create: vi.fn(), update: vi.fn(), edit: vi.fn(), delete: vi.fn() },
         runs: runOwner,
       });
       const actionExecutor = {
@@ -565,17 +589,20 @@ describe('composed Automation workflow claim and optional receipt', () => {
       claimed: {
         protocol: 'v3',
         accountCurrentness: currentness,
-        automation: { id: 'automation-1' },
+        automation: { id: 'automation-1', workflowDefinitionId: null, scopeSessionId: null },
         run: {
           id: runId,
           automationId: 'automation-1',
           attempt: 0,
           revision: 0,
+          causeWorkDepth: 0,
           origin: { kind: 'automation', automationId: 'automation-1' },
           recipeKind: 'workflow-v2',
           executionInputEnvelope: JSON.stringify({
             t: 'plain',
-            v: { definition, project: { machineId, directory } },
+            v: AutomationStoredWorkflowDefinitionV2Schema.parse({
+              inlineDefinition: definition, workspace: { directory }, executionTarget: { kind: 'session' },
+            }),
           }),
           automationEvidenceEnvelope: JSON.stringify({ t: 'plain', v: { request: 'ship it' } }),
           cause: { kind: 'conversation', occurrenceKey: 'A'.repeat(43), occurredAt: 1 },
@@ -639,21 +666,24 @@ describe('composed Automation workflow claim and optional receipt', () => {
       claimed: {
         protocol: 'v3',
         accountCurrentness: currentness,
-        automation: { id: 'automation-1' },
+        automation: { id: 'automation-1', workflowDefinitionId: null, scopeSessionId: null },
         run: {
           id: runId,
           automationId: 'automation-1',
           attempt: 0,
           revision: 0,
+          causeWorkDepth: 0,
           origin: { kind: 'automation', automationId: 'automation-1' },
           recipeKind: 'workflow-v2',
           executionInputEnvelope: JSON.stringify({
             t: 'plain',
-            v: { definition, project: { machineId, directory } },
+            v: AutomationStoredWorkflowDefinitionV2Schema.parse({
+              inlineDefinition: definition, workspace: { directory }, executionTarget: { kind: 'session' },
+            }),
           }),
           automationEvidenceEnvelope: null,
           cause,
-          triggerId: null,
+          triggerId: cause.triggerId,
         },
       } as never,
     });
@@ -670,6 +700,101 @@ describe('composed Automation workflow claim and optional receipt', () => {
       state: 'succeeded',
       workflowCustodyState: 'settled',
     });
+  });
+});
+
+describe.each(['plain', 'e2ee'] as const)('composed exact result live/recovery parity (%s)', (mode) => {
+  it.each<Readonly<{ name: string; contract: WorkflowStep['result']; observed: SessionInputResultV1; valid: boolean }>>([
+    { name: 'successful no-text', contract: { kind: 'text' }, valid: true,
+      observed: { kind: 'terminal_no_result', reason: 'missing_final_assistant_text', usage: { inputTokens: 8 } } },
+    { name: 'exact whitespace', contract: { kind: 'text' }, valid: true,
+      observed: { kind: 'final_text', text: '  answer\n', usage: { inputTokens: 8 } } },
+    { name: 'strict JSON', contract: { kind: 'json', schema: { type: 'object', required: ['answer'] } }, valid: true,
+      observed: { kind: 'final_text', text: '{"answer":42}', usage: { inputTokens: 8 } } },
+    { name: 'invalid JSON', contract: { kind: 'json', schema: {} }, valid: false,
+      observed: { kind: 'final_text', text: 'not JSON', usage: { inputTokens: 8 } } },
+    { name: 'missing required decision', contract: { kind: 'decision', decisions: ['continue', 'stop'] }, valid: false,
+      observed: { kind: 'terminal_no_result', reason: 'missing_final_assistant_text', usage: { inputTokens: 8 } } },
+    { name: 'provider rejection', contract: { kind: 'text' }, valid: false,
+      observed: { kind: 'failed', message: 'Provider rejected the required step input', usage: { inputTokens: 8 } } },
+  ])('$name commits the same exact fact before the successor can run', async ({ contract, observed, valid }) => {
+    const runId = '89898989-8989-4989-8989-898989898989';
+    const directory = await projectDirectory();
+    const material = mode === 'e2ee' ? createAccountScopedCryptoMaterialSnapshotV1({
+      accountEncryptionMode: 'e2ee', material: { type: 'legacy', secret: new Uint8Array(32).fill(7) },
+    }) : undefined;
+    const encryption: AvailableAutomationAccountEncryptionV1 = mode === 'plain'
+      ? { kind: 'available', witness: currentness }
+      : { kind: 'available', witness: { mode, version: 1,
+        contentKeyFingerprint: convertContentPublicKeyFingerprintToAccountEncryptionMigrateKeyFingerprintV1(material!.contentPublicKeyFingerprint) }, material: material! };
+    const prepared = prepareWorkflowRunDataKeyV1({ accountId, encryption,
+      randomBytes: (length: number) => new Uint8Array(length).fill(3) });
+    const runCrypto = prepared.runCrypto;
+    const ownerEnvelope = prepared.recipientKeyEnvelopes[0]?.encryptedDataKey ?? null;
+    const definition: WorkflowDefinitionV1 = {
+      version: 1, inputs: [], defaults: retainedConversationDefaults(),
+      blocks: [step('first', { result: contract }), step('successor', {
+        input: [{ kind: 'result', producer: { blockId: 'first', scope: { kind: 'current' } }, path: [] }],
+      })],
+    };
+    const acceptedEnvelope = sealDirectAccepted({ runId, definition, directory, runCrypto });
+    const makeKit = () => createWorkflowRunStorageTestkit({ runId, machineId, origin: { kind: 'direct' }, acceptedEnvelope,
+      keyCensus: { runId, ownerAccountId: accountId, access: 'owner', visibleTeamId: null, encryptionMode: mode,
+        ownerAccountCurrentness: encryption.witness, dataEncryptionKey: ownerEnvelope,
+        callerDataEncryptionKey: ownerEnvelope, recipients: [] },
+    });
+    const claim = { runId, attempt: 0, expectedRevision: 0, accountCurrentness: encryption.witness, acceptedEnvelope };
+    const ordinary = makeKit();
+    const ordinaryBoundary = sessionInputBoundary({ first: observed });
+    await expect(workflowDaemonProcess({ storage: ordinary, sessionInput: ordinaryBoundary, directory, encryption })(claim))
+      .resolves.toMatchObject({ state: valid ? 'succeeded' : 'interrupted' });
+    const ordinaryIndex = rowFor(ordinary, 'first', runCrypto)!;
+    const ordinaryFact = openRowProgress(ordinary, ordinaryIndex, runCrypto);
+    expect(Boolean(rowFor(ordinary, 'successor', runCrypto))).toBe(valid);
+
+    const restarted = makeKit();
+    const interruptedBoundary = sessionInputBoundary({}, {
+      onObserve: async () => { throw new Error('simulated_daemon_loss_after_exact_enqueue'); },
+    });
+    await expect(workflowDaemonProcess({ storage: restarted, sessionInput: interruptedBoundary, directory, encryption })(claim))
+      .rejects.toThrow('simulated_daemon_loss_after_exact_enqueue');
+    const pendingIndex = rowFor(restarted, 'first', runCrypto)!;
+    const pendingFact = openRowProgress(restarted, pendingIndex, runCrypto);
+    expect(pendingIndex.lifecycle).toBe('running');
+    expect(rowFor(restarted, 'successor', runCrypto)).toBeUndefined();
+
+    const observer = createWorkflowInvocationRecoveryObserver({
+      credentials: { token: 'token', encryption: null }, machineId,
+      observeSession: async (request) => {
+        if (pendingFact.execution?.kind !== 'session') throw new Error('missing_exact_session_correspondence');
+        expect(request).toMatchObject({ sessionId: pendingFact.execution.sessionId, localId: pendingFact.execution.localInputId });
+        return { ok: true, sessionId, localId: request.localId, result: observed };
+      },
+      cancelSession: async () => { throw new Error('nonterminal_parent_must_not_cancel'); },
+      actionExecutor: { execute: async () => { throw new Error('session_correspondence_must_not_use_native'); } },
+    });
+    await createWorkflowRunRecoveryReader({
+      accountId, machineId,
+      storage: { execute: async (operation, options) => operation.operation === 'recovery.list'
+        ? { candidates: [{ run: restarted.run(), parentAttempt: 0 }] } : restarted.execute(operation, options) },
+      resolveAccountEncryption: async () => encryption, reconcileInvocation: observer,
+    })('reconnect');
+    const recoveredIndex = rowFor(restarted, 'first', runCrypto)!;
+    const recoveredFact = openRowProgress(restarted, recoveredIndex, runCrypto);
+    expect(recoveredIndex.id).toBe(pendingIndex.id);
+    expect(recoveredIndex.lifecycle).toBe(ordinaryIndex.lifecycle);
+    expect(recoveredFact.execution).toEqual(pendingFact.execution);
+    expect({ result: recoveredFact.result, usage: recoveredFact.usage, reason: recoveredFact.reason })
+      .toEqual({ result: ordinaryFact.result, usage: ordinaryFact.usage, reason: ordinaryFact.reason });
+    expect(rowFor(restarted, 'successor', runCrypto)).toBeUndefined();
+
+    const replacementBoundary = sessionInputBoundary();
+    await expect(workflowDaemonProcess({ storage: restarted, sessionInput: replacementBoundary, directory, encryption })({
+      ...claim, expectedRevision: restarted.run().revision,
+    })).resolves.toMatchObject({ state: valid ? 'succeeded' : 'interrupted' });
+    expect(replacementBoundary.enqueue.mock.calls.map(([request]) => leafLabel(request.text)))
+      .toEqual(valid ? ['successor'] : []);
+    expect(Boolean(rowFor(restarted, 'successor', runCrypto))).toBe(valid);
   });
 });
 
@@ -1099,7 +1224,7 @@ describe('composed off-page child attention discovery', () => {
     });
     const workflowActions = createWorkflowActionExecutor({
       isWorkflowFeatureEnabled: async () => true,
-      definitions: { list: vi.fn(), get: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn() },
+      definitions: { list: vi.fn(), get: vi.fn(), create: vi.fn(), update: vi.fn(), edit: vi.fn(), delete: vi.fn() },
       runs: runOwner,
     });
     const context = { surface: 'rpc' as const, authority: 'account_automation' as const };
@@ -1224,9 +1349,9 @@ describe('composed Git workspace through the canonical SCM owner', () => {
       // same durable store owner used by execution.
       const store = createInMemoryWorkflowCoordinatorStore();
       const sourceKey = workflowInvocationKey({ runId: 'run-composed-git', blockId: 'a', scope: [], attempt: 0 });
-      await store.ensureIntent({ key: sourceKey, recordId: 'inv-a', runId: 'run-composed-git', blockId: 'a', path: { blockId: 'a', scope: [] }, attempt: 0, acceptedAtMs: 1, lifecycle: 'completed', workspace: { descriptor: projectWorkspace } });
+      await store.ensureIntent({ key: sourceKey, recordId: 'inv-a', runId: 'run-composed-git', blockKind: 'step', blockId: 'a', memberOrdinal: '0', path: { blockId: 'a', scope: [] }, attempt: 0, acceptedAtMs: 1, lifecycle: 'completed', workspace: { descriptor: projectWorkspace } });
       const targetKey = workflowInvocationKey({ runId: 'run-composed-git', blockId: 'b', scope: [], attempt: 0 });
-      const target = await store.ensureIntent({ key: targetKey, recordId: 'inv-b', runId: 'run-composed-git', blockId: 'b', path: { blockId: 'b', scope: [] }, attempt: 0, acceptedAtMs: 2, lifecycle: 'admitting' });
+      const target = await store.ensureIntent({ key: targetKey, recordId: 'inv-b', runId: 'run-composed-git', blockKind: 'step', blockId: 'b', memberOrdinal: '1', path: { blockId: 'b', scope: [] }, attempt: 0, acceptedAtMs: 2, lifecycle: 'admitting' });
       const resolver = createCoordinatorWorkspaceResolver({
         store,
         projectWorkspace,
@@ -1235,9 +1360,11 @@ describe('composed Git workspace through the canonical SCM owner', () => {
       await expect(resolver({
         runId: 'run-composed-git',
         definition: { version: 1, inputs: [], defaults: {}, blocks: [step('b')] },
-        step: { kind: 'step', id: 'b', document: { text: 'b', references: [], attachments: [] }, input: [], result: { kind: 'text' }, execution: { workspace: { kind: 'from_step', producer: { blockId: 'a', scope: { kind: 'current' } } } } },
+        step: { id: 'b', execution: { workspace: { kind: 'from_step', producer: { blockId: 'a', scope: { kind: 'current' } } } } },
         invocation: target,
         scope: [],
+        producerBinding: createWorkflowProducerBinding({ runId: 'run-composed-git', store,
+          frame: { scope: [], blocks: [step('a'), step('b')] } }),
       })).resolves.toMatchObject({ ok: true });
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -1255,10 +1382,10 @@ describe('composed Session approvals and observation deadlines', () => {
     const deniedEnqueue = vi.fn();
     const denied = createWorkflowSessionStepExecutor({
       credentials: { token: 'token' } as never,
-      resolveMachineOperationProtocolCapabilities: async () => null,
+
       prepareConversation: deniedPrepare,
       materializeConversation: vi.fn(),
-      sessionInput: { preflight: vi.fn(), enqueue: deniedEnqueue, observe: vi.fn(), cancel: vi.fn() },
+      sessionInput: { enqueue: deniedEnqueue, observe: vi.fn(), cancel: vi.fn() },
     });
     await expect(denied({
       runId: 'run-approvals',
@@ -1285,14 +1412,10 @@ describe('composed Session approvals and observation deadlines', () => {
     });
     const sessionOwner = createWorkflowSessionStepExecutor({
       credentials: { token: 'token' } as never,
-      resolveMachineOperationProtocolCapabilities: async () => ({
-        sessionInputAdmission: { protocolVersions: [1, 2] },
-      }),
+
       prepareConversation: async () => ({ kind: 'workflow_session_conversation', existing: null }),
       materializeConversation: async () => ({ sessionId: 'session-1', machineAdmissionTransport: vi.fn() }),
-      sessionInput: {
-        preflight: () => ({ ok: true }),
-        enqueue: enqueue as never,
+      sessionInput: { enqueue: enqueue as never,
         observe: observe as never,
         cancel: vi.fn() as never,
       },

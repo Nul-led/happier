@@ -1,6 +1,7 @@
 import { readFile, readdir, readlink } from 'node:fs/promises';
 
 import { execFileWithDeadline } from '@happier-dev/cli-common/process';
+import { compareNumericProcessGenerationIdentities } from '@happier-dev/cli-common/processInstance';
 
 import { parseProcessCustodyStartIdentity } from '@/subprocess/supervision/processCustody';
 import {
@@ -32,50 +33,10 @@ function isSupportedPlatform(platform: NodeJS.Platform): platform is SupportedPr
     return platform === 'darwin' || platform === 'linux' || platform === 'win32';
 }
 
-function isValidProcessStartTimeMs(value: number | undefined): value is number {
-    return Number.isInteger(value) && (value ?? -1) >= 0;
-}
-
-/**
- * Process start time is the cross-platform process-generation witness. Command
- * lines can legitimately change while a process remains the same generation.
- */
-export function processGenerationMatches(
-    expectedProcessStartTimeMs: number | undefined,
-    observedProcessStartTimeMs: number | undefined,
-): boolean {
-    return isValidProcessStartTimeMs(expectedProcessStartTimeMs)
-        && isValidProcessStartTimeMs(observedProcessStartTimeMs)
-        && expectedProcessStartTimeMs === observedProcessStartTimeMs;
-}
-
-export function processGenerationProvesReuse(
-    expectedProcessStartTimeMs: number | undefined,
-    observedProcessStartTimeMs: number | undefined,
-): boolean {
-    return isValidProcessStartTimeMs(expectedProcessStartTimeMs)
-        && isValidProcessStartTimeMs(observedProcessStartTimeMs)
-        && expectedProcessStartTimeMs !== observedProcessStartTimeMs;
-}
-
-/** Persisted process generation encoded as the observed pid and process start time. */
-type ParsedProcessGenerationIdentity = Readonly<{ pid: number; startMs: number }>;
-
-function parseProcessGenerationIdentity(
-    value: string,
-): ParsedProcessGenerationIdentity | null {
-    const match = /^(\d+):(\d+)$/u.exec(value);
-    if (!match?.[1] || !match[2]) return null;
-    const pid = Number(match[1]);
-    const startMs = Number(match[2]);
-    if (
-        !Number.isSafeInteger(pid)
-        || pid <= 0
-        || !Number.isSafeInteger(startMs)
-        || startMs < 0
-    ) return null;
-    return { pid, startMs };
-}
+export {
+    processGenerationMatches,
+    processGenerationProvesReuse,
+} from '@happier-dev/cli-common/processInstance';
 
 /**
  * Compare two tagged native-custody identities owned by the processCustody
@@ -128,9 +89,9 @@ export type ProcessGenerationIdentityComparison =
 /**
  * Compare a persisted generation identity against a fresh observation of the same-number pid.
  *
- * The verdict is honest about resolution: Linux/Windows start facts decide equality, while an
- * equal whole-second Darwin observation remains ambiguous because it cannot exclude same-second
- * pid reuse. 'ambiguous' is the fail-closed answer — it never authorizes signaling or reaping.
+ * Native tagged custody decides Darwin subsecond generations exactly. Numeric
+ * records use cli-common's numeric verdict, which preserves whole-second
+ * Darwin ambiguity for destructive custody decisions.
  */
 export function compareProcessGenerationIdentities(
     expectedIdentity: string,
@@ -142,16 +103,7 @@ export function compareProcessGenerationIdentities(
         observedIdentity,
     );
     if (taggedComparison !== null) return taggedComparison;
-    const expected = parseProcessGenerationIdentity(expectedIdentity);
-    const observed = parseProcessGenerationIdentity(observedIdentity);
-    if (
-        !expected
-        || !observed
-        || expected.pid !== observed.pid
-        || expected.pid <= 0
-    ) return 'ambiguous';
-    if (expected.startMs !== observed.startMs) return 'reused';
-    return platform === 'darwin' ? 'ambiguous' : 'same';
+    return compareNumericProcessGenerationIdentities(expectedIdentity, observedIdentity, platform);
 }
 
 function normalizeExactProcessIdentity(

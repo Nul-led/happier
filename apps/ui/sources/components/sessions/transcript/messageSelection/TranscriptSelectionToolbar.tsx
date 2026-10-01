@@ -1,9 +1,9 @@
 import * as React from 'react';
-import { Platform, Pressable, View } from 'react-native';
-import { StyleSheet, useUnistyles } from 'react-native-unistyles';
+import type { HappierSelectionActionBarAction } from '@happier-dev/plugin-ui/presentation';
+import { View } from 'react-native';
 
-import { Text } from '@/components/ui/text/Text';
-import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
+import { Icon } from '@/components/ui/icons/Icon';
+import { SelectionActionBar } from '@/components/ui/selection/SelectionActionBar';
 import { useKeyboardShortcutHandlers } from '@/keyboard/KeyboardShortcutProvider';
 import type { KeyboardShortcutHandlers } from '@/keyboard/runtime';
 import { Modal } from '@/modal';
@@ -17,7 +17,6 @@ import { useTranscriptSelectionActions, useTranscriptSelectionState } from './Tr
 export type TranscriptSelectionToolbarMessage = TranscriptSelectableMessageText & Readonly<{ id: string }>;
 
 const TRANSCRIPT_SELECTION_COPY_FEEDBACK_MS = 1200;
-const MINIMUM_INTERACTIVE_TARGET_SIZE = resolveMinimumInteractiveTargetSize(Platform.OS);
 
 export function TranscriptSelectionToolbar(props: Readonly<{
     selectableMessagesInOrder: ReadonlyArray<TranscriptSelectionToolbarMessage>;
@@ -36,7 +35,6 @@ export function TranscriptSelectionToolbar(props: Readonly<{
     }>;
     onSendToSession?: (messages: ReadonlyArray<TranscriptSelectionToolbarMessage>) => void | Promise<void>;
 }>): React.ReactElement | null {
-    const { theme } = useUnistyles();
     const state = useTranscriptSelectionState();
     const actions = useTranscriptSelectionActions();
     const [busyAction, setBusyAction] = React.useState<'copy' | 'send' | 'additional' | null>(null);
@@ -122,152 +120,69 @@ export function TranscriptSelectionToolbar(props: Readonly<{
     }, [actions, handleCopy, handleSend, props.onSendToSession, props.selectableMessagesInOrder, props.sendToSessionEnabled, state.isSelectionMode]);
     useKeyboardShortcutHandlers(shortcutHandlers);
 
-    if (!state.isSelectionMode) return null;
+    const outwardDisabled = selectedMessages.length === 0 || selectionUnavailable || busyAction != null;
+    const barActions: HappierSelectionActionBarAction[] = [
+        {
+            id: 'copy',
+            testID: 'transcript-selection-copy',
+            label: t('transcript.selection.copy'),
+            accessibilityLabel: t('transcript.selection.copyA11y', { count: state.count }),
+            disabled: outwardDisabled,
+            renderIcon: (color) => <Icon name="copy" size={14} color={color} />,
+            onPress: handleCopy,
+        },
+        ...(props.sendToSessionEnabled && props.onSendToSession ? [{
+            id: 'send',
+            testID: 'transcript-selection-send',
+            label: t('transcript.selection.send'),
+            accessibilityLabel: t('transcript.selection.sendA11y', { count: state.count }),
+            disabled: outwardDisabled,
+            renderIcon: (color: string) => <Icon name="arrow-right" size={14} color={color} />,
+            onPress: handleSend,
+        }] : []),
+        ...(props.additionalAction ? [{
+            id: 'additional',
+            testID: props.additionalAction.testID,
+            label: props.additionalAction.label,
+            accessibilityLabel: props.additionalAction.accessibilityLabel,
+            // The caller's own action (Ask Agent) is the one this selection was made for.
+            emphasis: 'primary' as const,
+            disabled: outwardDisabled,
+            renderIcon: (color: string) => <Icon name="sparkle" size={14} color={color} />,
+            onPress: handleAdditionalAction,
+        }] : []),
+        {
+            id: 'select-all',
+            testID: 'transcript-selection-select-all',
+            label: t('transcript.selection.selectAll'),
+            onPress: () => actions.selectAll(props.selectableMessagesInOrder.map((message) => message.id)),
+        },
+    ];
+    const status = copySucceeded
+        ? t('transcript.selection.copySuccess')
+        : selectionUnavailable && props.selectionUnavailableText ? props.selectionUnavailableText : null;
 
     return (
         <View
-            testID="transcript-selection-toolbar"
             accessibilityLiveRegion="polite"
-            style={[
-                styles.container,
-                typeof props.maxWidth === 'number' && Number.isFinite(props.maxWidth) ? { width: '100%' as const, maxWidth: props.maxWidth, alignSelf: 'center' as const } : null,
-                { borderColor: theme.colors.border.default },
-            ]}
+            style={typeof props.maxWidth === 'number' && Number.isFinite(props.maxWidth)
+                ? { width: '100%', maxWidth: props.maxWidth, alignSelf: 'center' }
+                : { width: '100%' }}
         >
-            <View style={styles.statusTextGroup}>
-                <Text testID="transcript-selection-toolbar-count" style={styles.countText}>
-                    {t('transcript.selection.selectedCount', { count: state.count })}
-                </Text>
-                {copySucceeded ? (
-                    <Text testID="transcript-selection-copy-feedback" style={styles.feedbackText}>
-                        {t('transcript.selection.copySuccess')}
-                    </Text>
-                ) : null}
-                {selectionUnavailable && props.selectionUnavailableText ? (
-                    <Text testID="transcript-selection-unavailable" style={styles.feedbackText}>
-                        {props.selectionUnavailableText}
-                    </Text>
-                ) : null}
-            </View>
-            <View testID="transcript-selection-toolbar-actions" style={styles.actions}>
-                <ToolbarButton
-                    testID="transcript-selection-copy"
-                    label={t('transcript.selection.copy')}
-                    accessibilityLabel={t('transcript.selection.copyA11y', { count: state.count })}
-                    disabled={selectedMessages.length === 0 || selectionUnavailable || busyAction != null}
-                    onPress={handleCopy}
-                />
-                {props.sendToSessionEnabled && props.onSendToSession ? (
-                    <ToolbarButton
-                        testID="transcript-selection-send"
-                        label={t('transcript.selection.send')}
-                        accessibilityLabel={t('transcript.selection.sendA11y', { count: state.count })}
-                        disabled={selectedMessages.length === 0 || selectionUnavailable || busyAction != null}
-                        onPress={handleSend}
-                    />
-                ) : null}
-                {props.additionalAction ? (
-                    <ToolbarButton
-                        testID={props.additionalAction.testID}
-                        label={props.additionalAction.label}
-                        accessibilityLabel={props.additionalAction.accessibilityLabel}
-                        disabled={selectedMessages.length === 0 || selectionUnavailable || busyAction != null}
-                        onPress={handleAdditionalAction}
-                    />
-                ) : null}
-                <ToolbarButton
-                    testID="transcript-selection-select-all"
-                    label={t('transcript.selection.selectAll')}
-                    onPress={() => actions.selectAll(props.selectableMessagesInOrder.map((message) => message.id))}
-                />
-                <ToolbarButton
-                    testID="transcript-selection-cancel"
-                    label={t('transcript.selection.cancel')}
-                    accessibilityLabel={t('transcript.selection.exitA11y')}
-                    onPress={actions.exit}
-                />
-            </View>
+            <SelectionActionBar
+                visible={state.isSelectionMode}
+                testID="transcript-selection-toolbar"
+                label={t('transcript.selection.selectedCount', { count: state.count })}
+                labelTestID="transcript-selection-toolbar-count"
+                status={status}
+                statusTestID={copySucceeded ? 'transcript-selection-copy-feedback' : 'transcript-selection-unavailable'}
+                actions={barActions}
+                dismiss={{
+                    testID: 'transcript-selection-cancel',
+                    label: t('transcript.selection.exitA11y'),
+                    onPress: actions.exit,
+                }}
+            />
         </View>
     );
 }
-
-function ToolbarButton(props: Readonly<{
-    testID: string;
-    label: string;
-    accessibilityLabel?: string;
-    disabled?: boolean;
-    onPress: () => void | Promise<void>;
-}>): React.ReactElement {
-    return (
-        <Pressable
-            testID={props.testID}
-            accessibilityRole="button"
-            accessibilityLabel={props.accessibilityLabel ?? props.label}
-            accessibilityState={props.disabled ? { disabled: true } : undefined}
-            disabled={props.disabled}
-            onPress={props.onPress}
-            style={({ pressed }) => [styles.actionButton, pressed ? styles.actionButtonPressed : null, props.disabled ? styles.actionButtonDisabled : null]}
-        >
-            <Text style={styles.actionButtonText}>{props.label}</Text>
-        </Pressable>
-    );
-}
-
-const styles = StyleSheet.create((theme) => ({
-    container: {
-        flexDirection: 'row',
-        flexWrap: 'wrap',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        gap: 12,
-        borderWidth: StyleSheet.hairlineWidth,
-        borderRadius: 14,
-        paddingHorizontal: 12,
-        paddingVertical: 10,
-        backgroundColor: theme.colors.surface.elevated,
-    },
-    statusTextGroup: {
-        flexGrow: 1,
-        flexShrink: 1,
-        minWidth: 0,
-        gap: 2,
-    },
-    countText: {
-        color: theme.colors.text.secondary,
-    },
-    feedbackText: {
-        color: theme.colors.state.success.foreground,
-    },
-    actions: {
-        flexGrow: 1,
-        flexShrink: 1,
-        flexDirection: 'row',
-        flexWrap: 'wrap',
-        alignItems: 'center',
-        justifyContent: 'flex-end',
-        gap: 8,
-    },
-    actionButton: {
-        flexShrink: 1,
-        maxWidth: '100%',
-        minHeight: MINIMUM_INTERACTIVE_TARGET_SIZE,
-        minWidth: MINIMUM_INTERACTIVE_TARGET_SIZE,
-        alignItems: 'center',
-        justifyContent: 'center',
-        borderRadius: 10,
-        paddingHorizontal: 10,
-        paddingVertical: 8,
-        backgroundColor: theme.colors.button.secondary.background,
-    },
-    actionButtonPressed: {
-        backgroundColor: theme.colors.state.neutral.background,
-    },
-    actionButtonDisabled: {
-        opacity: 0.5,
-    },
-    actionButtonText: {
-        flexShrink: 1,
-        textAlign: 'center',
-        color: theme.colors.button.secondary.tint,
-    },
-}));

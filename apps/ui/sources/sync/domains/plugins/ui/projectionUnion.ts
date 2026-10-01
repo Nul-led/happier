@@ -34,10 +34,12 @@ type UnknownRecord = Readonly<Record<string, unknown>>;
  * *not machine-specific*: selecting one machine contradicts the name.
  *
  * Availability supplies release facts; Administration resolves those facts to
- * zero, one, or an explicitly selected exact materialization. This projection
- * consumes that result and only then retains a matching member's contribution.
- * It stamps each retained contribution with that origin machine, generation and
- * interaction authority, so a mount cannot roam because a heartbeat changed.
+ * zero, one, or an explicitly selected exact materialization. Contributions
+ * without a materialization use Administration's existing Plugin machine
+ * target instead. This projection consumes those decisions and only then
+ * retains a matching member's contribution. It stamps each retained
+ * contribution with that origin machine, generation and interaction authority,
+ * so a mount cannot roam because a heartbeat changed.
  */
 export const PLUGIN_UI_CONTRIBUTION_ORIGIN_KEY = 'hostOrigin';
 
@@ -245,42 +247,48 @@ function selectedOriginOwnsEntry(input: Readonly<{
 
 /**
  * Why a member's entry may contribute to the union, or `null` for one that may
- * not. The two arms are not interchangeable: only an UNMATERIALIZED
- * contribution may be published without an exact producer stamp.
+ * not. The two arms are not interchangeable: only an ORIGINLESS contribution
+ * may be published without an exact producer stamp.
  */
-type PluginUiProjectionUnionEntryAdmission = 'unmaterialized' | 'selectedOrigin';
+type PluginUiProjectionUnionEntryAdmission = 'originless' | 'selectedOrigin';
 
 function admitMemberEntry(input: Readonly<{
     member: PluginUiProjectionUnionMember & Readonly<{ projection: PluginUiProjectionModel }>;
     selectedOriginsByPluginId: PluginUiProjectionUnionOriginSelections;
+    selectedOriginlessMachineId: string | null;
     conflictedOriginlessPluginIds?: ReadonlySet<string>;
     entry: unknown;
 }>): PluginUiProjectionUnionEntryAdmission | null {
     const pluginId = readString(asRecord(input.entry)?.pluginId);
     if (!pluginId) return null;
-    // The unmaterialized arm.
+    // The originless arm.
     //
     // The projection producer stamps an entry only for a plugin it holds a
     // materialization for (`materializationIdsByPluginId`). A plugin the
     // Account can never materialize therefore arrives UNSTAMPED and has
-    // nothing for Administration to select: requiring a selected origin for it
-    // is not fail-closed, it is fail-always — it removed every app-scope
-    // contribution of every such plugin, on every machine.
+    // nothing for per-plugin materialization selection to select. The existing
+    // Plugin Administration machine target supplies that missing machine
+    // selection. With no target yet, the sole originless producer remains a
+    // safe continuity fallback; replicas stay withheld until the canonical
+    // target exists rather than electing a heartbeat/order winner.
     //
     // The discriminator is that STRUCTURAL fact — the producer stamped no
     // materialization — never the plugin's provenance. A plugin shipped inside
     // the host binary and an externally authored plugin the daemon loaded
     // without an Account materialization are in the identical position and are
-    // admitted on identical terms. Wherever an Administration selection CAN
-    // exist it stays the sole authority, so this arm fills only the gap a
-    // selection can never reach and can never shadow a selected
-    // materialization.
+    // admitted on identical terms. This machine target applies only while the
+    // plugin has no per-plugin materialization selection, so it can never
+    // shadow the more specific Account-owned origin.
     if (
         !input.selectedOriginsByPluginId.has(pluginId)
-        && !input.conflictedOriginlessPluginIds?.has(pluginId)
         && readPluginUiProjectionEntryExecutionOrigin(input.entry) === null
+        && (
+            input.selectedOriginlessMachineId !== null
+                ? input.member.machineId === input.selectedOriginlessMachineId
+                : !input.conflictedOriginlessPluginIds?.has(pluginId)
+        )
     ) {
-        return 'unmaterialized';
+        return 'originless';
     }
     return selectedOriginOwnsEntry({
         selectedOriginsByPluginId: input.selectedOriginsByPluginId,
@@ -294,11 +302,13 @@ function admitMemberEntry(input: Readonly<{
 function memberHasAdmittedContribution(input: Readonly<{
     member: PluginUiProjectionUnionMember & Readonly<{ projection: PluginUiProjectionModel }>;
     selectedOriginsByPluginId: PluginUiProjectionUnionOriginSelections;
+    selectedOriginlessMachineId: string | null;
     conflictedOriginlessPluginIds: ReadonlySet<string>;
 }>): boolean {
     const owns = (entry: unknown): boolean => admitMemberEntry({
         member: input.member,
         selectedOriginsByPluginId: input.selectedOriginsByPluginId,
+        selectedOriginlessMachineId: input.selectedOriginlessMachineId,
         conflictedOriginlessPluginIds: input.conflictedOriginlessPluginIds,
         entry,
     }) !== null;
@@ -344,14 +354,15 @@ export function arePluginUiProjectionUnionMembersEquivalent(
  * Project selected app-scope contributions into ONE model.
  *
  * A plugin's placement, hosted-web/React Native contribution, translations and
- * artifacts all follow the SAME Administration-selected materialization. The
- * caller must supply that decision for every visible plugin. This function has
- * no winner election and intentionally treats a missing or malformed selection
- * as no contribution.
+ * artifacts all follow the SAME Administration decision: the exact per-plugin
+ * materialization when one exists, otherwise the Plugin machine target. This
+ * function has no winner election; replicated originless contributions stay
+ * withheld until that machine target is available.
  */
 export function unionPluginUiProjections(
     members: readonly PluginUiProjectionUnionMember[],
     selectedOriginsByPluginId: PluginUiProjectionUnionOriginSelections,
+    selectedOriginlessMachineId: string | null = null,
 ): PluginUiProjectionUnion {
     const eligible = members.filter((member) => readString(member.machineId) !== null);
     const phase = resolveUnionProjectionPhase(eligible);
@@ -411,6 +422,7 @@ export function unionPluginUiProjections(
     const admittedContributing = contributing.filter((member) => memberHasAdmittedContribution({
         member,
         selectedOriginsByPluginId,
+        selectedOriginlessMachineId,
         conflictedOriginlessPluginIds,
     }));
 
@@ -446,9 +458,9 @@ export function unionPluginUiProjections(
     const voiceProvidersById: Record<string, PluginVoiceProviderProjection> = {};
     const unknownEntriesById: Record<string, UnknownRecord> = {};
 
-    // Exact selected origins are unique. Originless replicas were withheld as
-    // conflicts above, so this guard only protects malformed duplicate keys
-    // within one admitted producer.
+    // Exact selected origins are unique. Originless replicas admit only the
+    // selected machine (or the sole fallback before a selection exists), so
+    // this guard only protects malformed duplicate keys within one producer.
     const publishFirstAdmitted = <T>(map: Record<string, T>, key: string, value: T): void => {
         if (Object.hasOwn(map, key)) return;
         map[key] = value;
@@ -461,17 +473,18 @@ export function unionPluginUiProjections(
             const admission = admitMemberEntry({
                 member,
                 selectedOriginsByPluginId,
+                selectedOriginlessMachineId,
                 conflictedOriginlessPluginIds,
                 entry,
             });
             if (!admission) return null;
             const executionOrigin = readPluginUiProjectionEntryExecutionOrigin(entry);
             // A selected contribution keeps its hard producer-stamp
-            // requirement. An unmaterialized contribution has no
+            // requirement. An originless contribution has no
             // materialization to stamp, so it publishes an absent exact origin:
             // every consumer that needs one still fails closed on its own
             // rather than on a fabricated identity.
-            if (!executionOrigin && admission !== 'unmaterialized') return null;
+            if (!executionOrigin && admission !== 'originless') return null;
             const pluginId = executionOrigin?.materializationRef.pluginId
                 ?? readString(entry.pluginId);
             if (pluginId) admittedPluginIds.add(pluginId);

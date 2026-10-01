@@ -1,5 +1,6 @@
 import * as React from 'react';
 import type { PluginContributionClientPlatform } from '@happier-dev/protocol';
+import { getPreferredLanguage } from '@/text';
 
 import {
     createInstalledPluginUiReactNativeRuntimeProjectionSource,
@@ -25,36 +26,44 @@ import {
 } from '@/sync/domains/plugins/ui/projectionWarmCache';
 import {
     getMachineContributionRegistryProjectionRevision,
-    machineContributionRegistryProjectionDescribe,
     subscribeMachineContributionRegistryProjectionInvalidation,
 } from '@/sync/ops/machineContributionRegistryProjection';
+import { loadDaemonMergedProjectionCacheEntry } from '@/agents/backendCatalog/loadDaemonMergedProjectionInputs';
 import {
     useEndpointStatus,
     useMachineCliDetectionTarget,
+    useSetting,
 } from '@/sync/domains/state/storage';
 import {
     captureActiveServerAccountScopeLifetime,
     type ActiveServerAccountScopeLifetime,
 } from '@/sync/domains/scope/activeServerAccountScope';
+import {
+    readConnectedAccountDescriptorProjection,
+    type ConnectedAccountDescriptorMachineProjection,
+} from '@/sync/domains/connectedServices/connectedAccountDescriptorProjection';
 
-const PLUGIN_UI_PROJECTION_TIMEOUT_MS = 5_000;
 /**
  * The first rungs cover a transport blip around mount or reconnect. The final
- * rung is the steady state and repeats for as long as the failure lasts, so it
- * is bounded by the cadence the app already pays for this same RPC: the app
- * shell re-describes every online machine's projection every 30 s
- * (`CONNECTED_ACCOUNT_PROJECTION_REFRESH_INTERVAL_MS`). Asking faster than that
- * cannot surface a change sooner and re-pulls the whole projection each time —
- * a failure the daemon answers deterministically (a response this client cannot
- * parse arrives here as the same opaque `error`) would otherwise re-read it
- * twelve times a minute forever.
+ * rung preserves the incumbent 30 s recovery cadence while the failure lasts.
+ * Successful snapshots refresh through the canonical machine invalidation
+ * subscription, not a second AppShell full-projection poll.
  */
 const PLUGIN_UI_PROJECTION_RETRY_BACKOFF_MS = [250, 1_000, 2_500, 5_000, 30_000] as const;
+const CONNECTED_ACCOUNT_PROJECTION_TRANSPORT_ERROR = Object.freeze({
+    kind: 'error' as const,
+    reason: 'transport' as const,
+});
+const CONNECTED_ACCOUNT_PROJECTION_UNSUPPORTED = Object.freeze({
+    kind: 'error' as const,
+    reason: 'unsupported' as const,
+});
 
 type ProjectionConnectionState = Readonly<{
     targetKey: string | null;
     online: boolean;
     reconnectSequence: number;
+    reloadRevision: number;
 }>;
 
 /**
@@ -86,6 +95,7 @@ type LoadedProjectionState = Readonly<{
     phase: Exclude<PluginUiProjectionPhase, 'retainedOffline'>;
     pluginUiProjection: PluginUiProjectionModel;
     pluginBrowserProjection: PluginBrowserProjectionModel;
+    connectedAccountProjection: ConnectedAccountDescriptorMachineProjection | null;
 }>;
 
 export type PluginUiProjectionCurrentness = Readonly<{
@@ -96,6 +106,8 @@ export type PluginUiProjectionCurrentness = Readonly<{
     machineId: string | null;
     serverId: string | null;
     platform: LocalServicePreviewPlatform;
+    /** Present on machine-owned reports; aggregate surface projections have no descriptor authority. */
+    connectedAccountProjection?: ConnectedAccountDescriptorMachineProjection | null;
 }>;
 
 /**
@@ -118,16 +130,17 @@ export function resolvePluginUiClientExecutablePlatform(): PluginContributionCli
 
 function advanceProjectionConnectionState(
     previous: ProjectionConnectionState,
-    input: Readonly<{ targetKey: string | null; online: boolean }>,
+    input: Readonly<{ targetKey: string | null; online: boolean; reloadRevision: number }>,
 ): ProjectionConnectionState {
     if (previous.targetKey !== input.targetKey) {
         return {
             targetKey: input.targetKey,
             online: input.online,
             reconnectSequence: 0,
+            reloadRevision: input.reloadRevision,
         };
     }
-    if (previous.online === input.online) {
+    if (previous.online === input.online && previous.reloadRevision === input.reloadRevision) {
         return previous;
     }
     return {
@@ -136,6 +149,7 @@ function advanceProjectionConnectionState(
         reconnectSequence: previous.reconnectSequence + (
             !previous.online && input.online ? 1 : 0
         ),
+        reloadRevision: input.reloadRevision,
     };
 }
 
@@ -150,15 +164,17 @@ function createEmptyLoadedProjectionState(
         phase: targetKey ? 'establishing' : 'unavailable',
         pluginUiProjection: EMPTY_PLUGIN_UI_PROJECTION,
         pluginBrowserProjection: EMPTY_PLUGIN_BROWSER_PROJECTION,
+        connectedAccountProjection: null,
     };
 }
 
 /**
  * A fresh process with no reachable daemon has no in-process snapshot to
  * retain, so it restores this Account's last-confirmed admission snapshot from
- * device custody and presents it read-only. Restoring is deliberately
- * conditional on there being no live authority: when a daemon is reachable the
- * fresh describe is one RPC away and remains the only thing worth showing.
+ * device custody and presents it read-only while the live describe establishes
+ * current authority. The retained slice contains presentation contributions
+ * only, and the phase gate keeps interaction disabled until that describe
+ * settles, so a warm launch does not need to hide a catalog it already proved.
  */
 function createRestoredLoadedProjectionState(input: Readonly<{
     targetKey: string;
@@ -182,6 +198,7 @@ function createRestoredLoadedProjectionState(input: Readonly<{
         phase: 'current',
         pluginUiProjection: restored,
         pluginBrowserProjection: EMPTY_PLUGIN_BROWSER_PROJECTION,
+        connectedAccountProjection: null,
     };
 }
 
@@ -196,6 +213,7 @@ function createUnavailableLoadedProjectionState(
         phase: 'unavailable',
         pluginUiProjection: EMPTY_PLUGIN_UI_PROJECTION,
         pluginBrowserProjection: EMPTY_PLUGIN_BROWSER_PROJECTION,
+        connectedAccountProjection: CONNECTED_ACCOUNT_PROJECTION_UNSUPPORTED,
     };
 }
 
@@ -217,7 +235,11 @@ export function usePluginUiProjectionCurrentness(params: Readonly<{
     machineId?: string | null;
     serverId?: string | null;
     enabled?: boolean;
+    reloadRevision?: number;
 }>): PluginUiProjectionCurrentness {
+    // Local and remote Settings use the same language authority and narrow subscription.
+    useSetting('preferredLanguage');
+    const locale = getPreferredLanguage();
     const platform = resolvePluginUiProjectionPlatform();
     const machineId = typeof params.machineId === 'string' && params.machineId.trim().length > 0
         ? params.machineId
@@ -247,10 +269,12 @@ export function usePluginUiProjectionCurrentness(params: Readonly<{
         targetKey,
         online,
         reconnectSequence: 0,
+        reloadRevision: params.reloadRevision ?? 0,
     }));
     const nextConnectionState = advanceProjectionConnectionState(connectionState, {
         targetKey,
         online,
+        reloadRevision: params.reloadRevision ?? 0,
     });
     if (nextConnectionState !== connectionState) {
         setConnectionState(nextConnectionState);
@@ -276,7 +300,9 @@ export function usePluginUiProjectionCurrentness(params: Readonly<{
             targetKey,
             machineCliDetectionTarget.daemonStateVersion,
             nextConnectionState.reconnectSequence,
+            nextConnectionState.reloadRevision,
             projectionInvalidationRevision,
+            locale,
         ].join(':')
         : null;
     const currentAuthorityKeyRef = React.useRef(authorityKey);
@@ -327,9 +353,7 @@ export function usePluginUiProjectionCurrentness(params: Readonly<{
         });
         setLoadedProjection((previous) => {
             if (previous.targetKey !== targetKey || previous.accountLifetime !== accountLifetime) {
-                return authorityKey
-                    ? createEmptyLoadedProjectionState(targetKey, accountLifetime)
-                    : restoreRetained();
+                return restoreRetained();
             }
             // Losing live authority before this process confirmed anything is
             // the same cold state as booting without it: the Account server's
@@ -347,7 +371,6 @@ export function usePluginUiProjectionCurrentness(params: Readonly<{
         }
 
         let cancelled = false;
-        let activeRequestController: AbortController | null = null;
         let retryTimer: ReturnType<typeof setTimeout> | null = null;
         let retryAttempts = 0;
 
@@ -360,6 +383,13 @@ export function usePluginUiProjectionCurrentness(params: Readonly<{
 
         const scheduleRetry = (): void => {
             if (!isRequestCurrent() || retryTimer !== null) return;
+            setLoadedProjection((previous) => (
+                previous.targetKey !== targetKey
+                    || previous.accountLifetime !== accountLifetime
+                    || previous.connectedAccountProjection === CONNECTED_ACCOUNT_PROJECTION_TRANSPORT_ERROR
+                    ? previous
+                    : { ...previous, connectedAccountProjection: CONNECTED_ACCOUNT_PROJECTION_TRANSPORT_ERROR }
+            ));
             const delayMs = PLUGIN_UI_PROJECTION_RETRY_BACKOFF_MS[
                 Math.min(retryAttempts, PLUGIN_UI_PROJECTION_RETRY_BACKOFF_MS.length - 1)
             ]!;
@@ -372,20 +402,23 @@ export function usePluginUiProjectionCurrentness(params: Readonly<{
 
         const requestProjection = (): void => {
             if (!isRequestCurrent()) return;
-            const controller = new AbortController();
-            activeRequestController = controller;
-            void machineContributionRegistryProjectionDescribe(target.machineId, {
+            // The one per-machine projection owner: every reader of this
+            // machine shares its request and its projection revision.
+            void loadDaemonMergedProjectionCacheEntry({
+                machineId: target.machineId,
                 serverId: target.serverId,
-                timeoutMs: PLUGIN_UI_PROJECTION_TIMEOUT_MS,
-                signal: controller.signal,
-                requestEpoch: authorityKey,
-            }).then((result) => {
+                accountLifetime,
+                reuseFreshReady: loadedProjection.authorityKey === null
+                    || loadedProjection.authorityKey === authorityKey,
+            }).then((entry) => {
                 if (!isRequestCurrent()) return;
-                if (!result.supported) {
-                    if (result.reason === 'error') {
-                        scheduleRetry();
-                        return;
-                    }
+                if (!entry || entry.kind === 'error') {
+                    // Keep the last-known snapshot, but retry a current
+                    // transient failure without letting it regain authority.
+                    scheduleRetry();
+                    return;
+                }
+                if (entry.kind === 'unsupported') {
                     // The daemon itself answered that this machine does not
                     // serve the projection. That answer must survive a restart,
                     // so the retained snapshot is retired here rather than
@@ -406,6 +439,11 @@ export function usePluginUiProjectionCurrentness(params: Readonly<{
                     });
                     return;
                 }
+                const projection = entry.inputs.pluginProjectionV2;
+                if (!projection) {
+                    scheduleRetry();
+                    return;
+                }
                 retryAttempts = 0;
                 // This is the one moment admission currentness is confirmed,
                 // so it is the only moment the Account-qualified snapshot is
@@ -414,8 +452,9 @@ export function usePluginUiProjectionCurrentness(params: Readonly<{
                     scope: accountLifetime?.scope ?? null,
                     targetKey,
                     machineId: target.machineId,
-                    projection: result.projection,
+                    projection,
                 });
+                const connectedAccountProjection = readConnectedAccountDescriptorProjection(projection);
                 setLoadedProjection((previous) => {
                     if (
                         previous.targetKey !== targetKey
@@ -429,9 +468,10 @@ export function usePluginUiProjectionCurrentness(params: Readonly<{
                         accountLifetime,
                         authorityKey,
                         phase: 'current',
+                        connectedAccountProjection,
                         pluginUiProjection: resolvePluginUiProjectionState(
                             previous.pluginUiProjection,
-                            result.projection,
+                            projection,
                             {
                                 reuseSameGeneration: previous.authorityKey === authorityKey,
                                 platform,
@@ -439,16 +479,12 @@ export function usePluginUiProjectionCurrentness(params: Readonly<{
                         ),
                         pluginBrowserProjection: resolvePluginBrowserProjectionState(
                             previous.pluginBrowserProjection,
-                            result.projection,
+                            projection,
                         ),
                     };
                 });
             }).catch(() => {
-                // Keep the last-known snapshot, but retry a current transient
-                // describe failure without allowing it to regain authority.
                 scheduleRetry();
-            }).finally(() => {
-                if (activeRequestController === controller) activeRequestController = null;
             });
         };
 
@@ -457,9 +493,8 @@ export function usePluginUiProjectionCurrentness(params: Readonly<{
         return () => {
             cancelled = true;
             if (retryTimer !== null) clearTimeout(retryTimer);
-            activeRequestController?.abort();
         };
-    }, [accountLifetime, authorityKey, platform, target, targetKey]);
+    }, [accountLifetime, authorityKey, machineCliDetectionTarget.daemonStateVersion, platform, target, targetKey]);
 
     const hasLoadedCurrentScope = Boolean(
         targetKey
@@ -487,6 +522,9 @@ export function usePluginUiProjectionCurrentness(params: Readonly<{
 
     const currentPluginUiProjection = hasLoadedCurrentScope && phase !== 'unavailable'
         ? loadedProjection.pluginUiProjection
+        : null;
+    const connectedAccountProjection = hasLoadedCurrentScope
+        ? loadedProjection.connectedAccountProjection
         : null;
     currentPluginUiProjectionRef.current = currentPluginUiProjection;
     const reactNativeRuntimeProjectionSourceRef = React.useRef<PluginUiReactNativeRuntimeProjectionSource | null>(null);
@@ -524,8 +562,10 @@ export function usePluginUiProjectionCurrentness(params: Readonly<{
         machineId,
         serverId,
         platform,
+        connectedAccountProjection,
     }), [
         interactionEnabled,
+        connectedAccountProjection,
         machineId,
         phase,
         platform,

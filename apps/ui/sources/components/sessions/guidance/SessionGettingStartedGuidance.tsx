@@ -4,18 +4,26 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { Typography } from '@/constants/Typography';
 import { RoundButton } from '@/components/ui/buttons/RoundButton';
 import { t } from '@/text';
-import { router } from 'expo-router';
+import { useDestinationRouter } from '@/components/appShell/workspace/DestinationInstanceHost';
 import { Modal } from '@/modal';
 import { Image } from 'expo-image';
-import { useLocalSetting } from '@/sync/domains/state/storage';
 import { useConnectTerminal } from '@/hooks/session/useConnectTerminal';
 import type { FeatureId } from '@happier-dev/protocol';
 import { getFeatureBuildPolicyDecision } from '@/sync/domains/features/featureBuildPolicy';
 import { resolveCliInvokerNameForCurrentApp } from '@/sync/runtime/resolvePublicReleaseRing';
-import { buildMachineSetupWizardHref } from '@/utils/routes/setupWizardHref';
+import { buildMachineAddHref } from '@/components/settings/machines/collection/machineCollectionModel';
+import { SETTINGS_ROUTES } from '@/components/settings/catalog/routes';
+import { useLocalDaemonControl } from '@/components/settings/machines/localControl/useLocalDaemonControl';
+import { presentThisComputerConnection } from '@/components/settings/machines/localControl/thisComputerConnectionPresentation';
+import {
+    useAppAccountIdentity,
+    useThisComputerConnection,
+} from '@/components/settings/machines/localControl/useThisComputerConnection';
+import { formatAccountLabel } from '@/sync/domains/server/relayDrift/thisComputerConnection';
 
 import type { SessionGettingStartedDecisionKind } from './gettingStartedModel';
 import { Text } from '@/components/ui/text/Text';
+import { HomeReachabilityGate } from '@/components/navigation/connectionStatus/HomeReachabilityGate';
 import { listSessionGettingStartedCliCommands } from './listSessionGettingStartedCliCommands';
 import { normalizeNodeForView } from '@/components/ui/rendering/normalizeNodeForView';
 import { getSessionGettingStartedSubtitle, getSessionGettingStartedTitle } from './sessionGettingStartedText';
@@ -234,7 +242,50 @@ async function copyTextToClipboard(text: string): Promise<boolean> {
     return copied;
 }
 
+/**
+ * "No machines yet", explained in one sentence with one action. Mounted only for `connect_machine`,
+ * so its local status read never runs for any other state. On desktop the shared this-computer owner
+ * says why this computer is not one of the account's machines (another account, another Home…) and
+ * the action opens the page that repairs it; otherwise the sentence names the account and the Home,
+ * and the action is setup.
+ */
+function ConnectMachinePrimaryCardContent(props: Readonly<{
+    targetLabel: string;
+    onOpenSetup: () => void;
+}>): React.ReactElement {
+    const router = useDestinationRouter();
+    const styles = stylesheet;
+    const { status } = useLocalDaemonControl();
+    const connection = useThisComputerConnection(status);
+    const { accountId, accountLabel } = useAppAccountIdentity();
+    const presentation = connection ? presentThisComputerConnection(connection) : null;
+    const openThisComputer = React.useCallback(() => {
+        router.push(SETTINGS_ROUTES.machinesThisComputer);
+    }, [router]);
+
+    return (
+        <>
+            <Text style={styles.title}>{presentation?.title ?? t('sessionGettingStarted.title.connectMachine')}</Text>
+            <Text style={styles.subtitle}>
+                {presentation?.description ?? t('machine.thisComputer.noComputers', {
+                    home: props.targetLabel,
+                    appAccount: formatAccountLabel(accountLabel, accountId) ?? t('status.unknown'),
+                })}
+            </Text>
+            <View style={styles.buttonWrapper}>
+                <RoundButton
+                    testID={presentation ? 'session-getting-started-open-this-computer' : 'session-getting-started-open-setup'}
+                    title={presentation ? t('machine.thisComputer.openThisComputer') : t('setupOnboarding.openSetupAction')}
+                    onPress={presentation ? openThisComputer : props.onOpenSetup}
+                    size="normal"
+                />
+            </View>
+        </>
+    );
+}
+
 function SessionGettingStartedGuidanceViewImpl(props: SessionGettingStartedGuidanceViewProps): React.ReactElement {
+    const router = useDestinationRouter();
     const { theme } = useUnistyles();
     const styles = stylesheet;
     const { model } = props;
@@ -261,16 +312,21 @@ function SessionGettingStartedGuidanceViewImpl(props: SessionGettingStartedGuida
             model.onOpenSetup();
             return;
         }
-        router.push(buildMachineSetupWizardHref({ action: 'local', step: 'setup_this_computer' }) as any);
-    }, [model.onOpenSetup]);
+        router.push(buildMachineAddHref({ path: 'thisComputer' }) as any);
+    }, [model.onOpenSetup, router]);
 
-    return (
+    // An unreachable Home never blocks: the reachability owner settles "Loading…" into
+    // "Can't reach {Home} · Retry" (a line in the sidebar list, a pane elsewhere).
+    const loadingGateVariant = props.variant === 'sidebar' || props.variant === 'phone' ? 'line' : 'pane';
+    const content = (
         <ScrollView
             testID="session-getting-started-scroll"
             style={styles.scrollContainer}
             contentContainerStyle={[
                 styles.contentContainer,
-                props.variant === 'primaryPane' && showSummaryOnly ? styles.contentContainerCentered : null,
+                props.variant === 'primaryPane' && (showSummaryOnly || showSetupPrimaryCard)
+                    ? styles.contentContainerCentered
+                    : null,
             ]}
             keyboardShouldPersistTaps="handled"
         >
@@ -287,16 +343,22 @@ function SessionGettingStartedGuidanceViewImpl(props: SessionGettingStartedGuida
 
             {showSetupPrimaryCard ? (
                 <View testID="session-getting-started-setup-primary-card" style={styles.primaryCard}>
-                    <Text style={styles.title}>{title}</Text>
-                    <Text style={styles.subtitle}>{subtitle}</Text>
-                    <View style={styles.buttonWrapper}>
-                        <RoundButton
-                            testID="session-getting-started-open-setup"
-                            title={t('setupOnboarding.openSetupAction')}
-                            onPress={handleOpenSetup}
-                            size="normal"
-                        />
-                    </View>
+                    {model.kind === 'connect_machine' ? (
+                        <ConnectMachinePrimaryCardContent targetLabel={model.targetLabel} onOpenSetup={handleOpenSetup} />
+                    ) : (
+                        <>
+                            <Text style={styles.title}>{title}</Text>
+                            <Text style={styles.subtitle}>{subtitle}</Text>
+                            <View style={styles.buttonWrapper}>
+                                <RoundButton
+                                    testID="session-getting-started-open-setup"
+                                    title={t('setupOnboarding.openSetupAction')}
+                                    onPress={handleOpenSetup}
+                                    size="normal"
+                                />
+                            </View>
+                        </>
+                    )}
                 </View>
             ) : (
                 showSummaryOnly ? (
@@ -395,6 +457,8 @@ function SessionGettingStartedGuidanceViewImpl(props: SessionGettingStartedGuida
             </View>
         </ScrollView>
     );
+    if (model.kind !== 'loading') return content;
+    return <HomeReachabilityGate variant={loadingGateVariant}>{content}</HomeReachabilityGate>;
 }
 
 function areSessionGettingStartedGuidanceViewModelsEqual(
@@ -427,29 +491,26 @@ export const SessionGettingStartedGuidanceView = React.memo(
 );
 SessionGettingStartedGuidanceView.displayName = 'SessionGettingStartedGuidanceView';
 
-function useSessionGettingStartedGuidanceViewModelBase(
-    options: Readonly<{ ignoreConnectMachineDismissal?: boolean }> = {},
-): SessionGettingStartedGuidanceViewModel | null {
+/**
+ * The empty state always orients: "I'll do this later" defers the setup wizard (recorded per
+ * account on the pending setup intent), it never blanks the place that explains what is missing.
+ */
+function useSessionGettingStartedGuidanceViewModelBase(): SessionGettingStartedGuidanceViewModel {
+    const router = useDestinationRouter();
     const baseModel = useSessionGettingStartedGuidanceBaseModel();
     const resolveNewSessionOrdinaryEntryRoute = useResolveNewSessionOrdinaryEntryRoute();
-    const dismissed = useLocalSetting('sessionGettingStartedGuidanceDismissed') === true;
-    const ignoreConnectMachineDismissal = options.ignoreConnectMachineDismissal === true;
     const onOpenSetup = React.useCallback(() => {
-        router.push(buildMachineSetupWizardHref({ action: 'local', step: 'setup_this_computer' }) as any);
-    }, []);
+        router.push(buildMachineAddHref({ path: 'thisComputer' }) as any);
+    }, [router]);
 
     const onStartNewSession = React.useCallback((event?: unknown) => {
         const { draftId, draftOrigin } = resolveNewSessionOrdinaryEntryRoute({
             forceFresh: shouldForceFreshNewSessionEntryFromPressEvent(event),
         });
         router.push({ pathname: '/new', params: { draftId, draftOrigin } });
-    }, [resolveNewSessionOrdinaryEntryRoute]);
+    }, [resolveNewSessionOrdinaryEntryRoute, router]);
 
     return React.useMemo(() => {
-        if (dismissed && baseModel.kind === 'connect_machine' && !ignoreConnectMachineDismissal) {
-            return null;
-        }
-
         return {
             kind: baseModel.kind,
             targetLabel: baseModel.targetLabel,
@@ -465,14 +526,12 @@ function useSessionGettingStartedGuidanceViewModelBase(
         baseModel.serverUrl,
         baseModel.showServerSetup,
         baseModel.targetLabel,
-        dismissed,
-        ignoreConnectMachineDismissal,
         onOpenSetup,
         onStartNewSession,
     ]);
 }
 
-function SessionGettingStartedPhoneGuidanceEnabled(): React.ReactElement | null {
+function SessionGettingStartedPhoneGuidanceEnabled(): React.ReactElement {
     const baseViewModel = useSessionGettingStartedGuidanceViewModelBase();
     const { connectTerminal, connectWithUrl, isLoading } = useConnectTerminal();
 
@@ -491,29 +550,21 @@ function SessionGettingStartedPhoneGuidanceEnabled(): React.ReactElement | null 
         }
     }, [connectWithUrl]);
 
-    const viewModel = React.useMemo<SessionGettingStartedGuidanceViewModel | null>(() => (
-        baseViewModel
-            ? {
-                ...baseViewModel,
-                onConnectTerminal: connectTerminal,
-                onEnterUrlManually,
-                connectIsLoading: isLoading,
-            }
-            : null
-    ), [baseViewModel, connectTerminal, isLoading, onEnterUrlManually]);
+    const viewModel = React.useMemo<SessionGettingStartedGuidanceViewModel>(() => ({
+        ...baseViewModel,
+        onConnectTerminal: connectTerminal,
+        onEnterUrlManually,
+        connectIsLoading: isLoading,
+    }), [baseViewModel, connectTerminal, isLoading, onEnterUrlManually]);
 
-    if (!viewModel) return null;
     return <SessionGettingStartedGuidanceView variant="phone" model={viewModel} />;
 }
 
 function SessionGettingStartedGuidanceEnabled(
     props: Readonly<{ variant: Exclude<SessionGettingStartedGuidanceVariant, 'phone'> }>,
-): React.ReactElement | null {
-    const viewModel = useSessionGettingStartedGuidanceViewModelBase({
-        ignoreConnectMachineDismissal: props.variant === 'newSessionBlocking',
-    });
+): React.ReactElement {
+    const viewModel = useSessionGettingStartedGuidanceViewModelBase();
 
-    if (!viewModel) return null;
     return <SessionGettingStartedGuidanceView variant={props.variant} model={viewModel} />;
 }
 

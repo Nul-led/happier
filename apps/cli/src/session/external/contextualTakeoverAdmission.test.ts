@@ -113,7 +113,7 @@ function durableRecord(input: Readonly<{
       }).source,
       remoteSessionId: inputRef.remoteSessionId,
       sourceGeneration: 'source-generation-1',
-      contributionGeneration: 'contribution-generation-1',
+      sourceCustody: { kind: 'development', registeredRootId: 'contribution-generation-1' },
     },
   } satisfies Extract<
     ExternalSessionOperationSemanticRequestV1,

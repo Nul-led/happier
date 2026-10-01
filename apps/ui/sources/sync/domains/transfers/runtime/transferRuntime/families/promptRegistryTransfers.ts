@@ -166,16 +166,6 @@ export async function downloadDaemonPromptRegistryItem(
         serverId: opts?.serverId,
         timeoutMs: opts?.timeoutMs ?? undefined,
         parsePayload: parsePromptRegistryTransferPayload,
-        predecessorRpc: {
-            payloadWithRecipient: (recipientPublicKeyBase64) => ({
-                ...payload,
-                recipientPublicKeyBase64,
-            }),
-            initMethod: RPC_METHODS.DAEMON_PROMPT_REGISTRY_DOWNLOAD_INIT,
-            chunkMethod: RPC_METHODS.DAEMON_PROMPT_REGISTRY_DOWNLOAD_CHUNK,
-            finalizeMethod: RPC_METHODS.DAEMON_PROMPT_REGISTRY_DOWNLOAD_FINALIZE,
-            abortMethod: RPC_METHODS.DAEMON_PROMPT_REGISTRY_DOWNLOAD_ABORT,
-        },
         directExportRequest: {
             t: 'prompt_registry_download_v1',
             sourceId: payload.sourceId,

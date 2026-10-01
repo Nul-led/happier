@@ -29,6 +29,7 @@ import {
   PluginJsonSchemaV2Schema,
   PluginAgentContributionV2Schema,
   PluginRuntimeCapabilityFamilyV1Schema,
+  PluginSourceCustodyV1Schema,
   ProviderAgentTargetKeySchema,
   ProviderConnectionIdSchema,
   ProviderModelDescriptorV1Schema,
@@ -220,7 +221,7 @@ const AgentRuntimeDaemonCompositionToolBindingV1Schema = z.object({
     availability: PluginActionAvailabilityV2Schema.optional(),
     surfaces: z.array(z.enum(['agent', 'mcp', 'cli'])).min(1).max(3),
   }).strict(),
-  expectedContributorImmutableGenerationId: z.string().trim().min(1).max(512),
+  expectedContributorOccurrenceId: z.string().trim().min(1).max(512),
 }).strict();
 
 const AgentRuntimeDaemonCompositionInstructionV1Schema = z.object({
@@ -396,10 +397,10 @@ export const AgentRuntimeDaemonSessionDescriptorV1Schema = z.object({
   // applying the narrower generic backend-local bound to a qualified external
   // Agent id.
   backendId: AgentIdV1Schema,
-  generation: BoundedIdSchema,
-  immutableGenerationId: z.string().trim().min(1).max(512).optional(),
+  occurrenceId: z.string().trim().min(1).max(512),
+  sourceCustody: PluginSourceCustodyV1Schema,
   /**
-   * Exact immutable-generation Agent declaration selected by the daemon. The
+   * Exact Agent declaration selected by the daemon. The
    * runner re-verifies this fact against its retained direct binding before
    * runtime construction; the descriptor itself grants no authority.
    */
@@ -464,6 +465,7 @@ const ConnectedAccountSchema = z.object({
 const AgentSessionOpenBaseSchema = z.object({
   sessionId: BoundedIdSchema,
   cwd: BoundedPathSchema,
+  sessionDirectoryKind: z.enum(['path', 'managed']).optional(),
   launchEnvironment: AgentLaunchEnvironmentV1Schema.optional(),
   runtimeDescriptorV1: RuntimeDescriptorV1Schema.optional(),
   configuration: AgentSessionConfigurationSnapshotV1Schema.optional(),

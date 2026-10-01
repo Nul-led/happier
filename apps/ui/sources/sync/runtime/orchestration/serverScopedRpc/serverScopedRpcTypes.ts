@@ -3,7 +3,7 @@ import type { SocketRpcAuthorizationContext } from '@happier-dev/protocol/rpc';
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
 import type { EncryptionGenerationScopeAuthority, EncryptionScopeInput } from '@/sync/encryption/encryption';
 import type { HomeCarrier } from '@/sync/runtime/homeCarrier';
-import type { Metadata } from '@/sync/domains/state/storageTypes';
+import type { Metadata } from '@happier-dev/session-core/state';
 
 /**
  * How long an unqualified server-scoped RPC operation may stay in flight.
@@ -14,10 +14,6 @@ import type { Metadata } from '@/sync/domains/state/storageTypes';
  * round-trip derive their bound from this value instead of restating it.
  */
 export const DEFAULT_SERVER_SCOPED_RPC_TIMEOUT_MS = 30_000;
-
-export type SocketRpcResult =
-    | { ok: true; result: string }
-    | { ok: false; error?: string; errorCode?: string };
 
 export type ServerScopedMachineRpcParams<A> = Readonly<{
     machineId: string;
@@ -64,7 +60,7 @@ export type ResolvedServerRpcContext = ActiveServerRpcContext | ScopedServerRpcC
 
 export type ScopedRpcEncryptionContext = Readonly<{
     decryptEncryptionKey: (value: string) => Promise<Uint8Array | null>;
-    initializeMachines: (keys: Map<string, Uint8Array | null>) => Promise<void>;
+    initializeMachines: (keys: Map<string, Uint8Array | null>, unavailableMachineIds?: ReadonlySet<string>) => Promise<void>;
     getMachineEncryption: (machineId: string) => ScopedMachineEncryption | null | undefined;
 }>;
 
@@ -107,6 +103,8 @@ export type ScopedSessionEncryption = Readonly<{
 export type ScopedSocketConnectParams = Readonly<{
     /** Actual verified Socket.IO origin. */
     serverUrl: string;
+    /** Exact, profile-proven Home identity for local foreground reach history. */
+    homeIdentityId?: string;
     /** Stable Home identity/auth audience and reachability key. */
     reachabilityServerUrl?: string;
     carrier?: 'https' | 'iroh';
@@ -122,6 +120,13 @@ export type ScopedSocketConnectParams = Readonly<{
      * afterwards — including when this call fails, which the pool unwinds itself.
      */
     releaseCarrier?: () => Promise<void>;
+    /**
+     * Defers carrier custody transfer until the pool knows it must create a
+     * physical socket entry. Reusing an existing entry does not invoke this
+     * callback, so an authority can safely issue another logical operation
+     * without consuming a second carrier release.
+     */
+    takeCarrierRelease?: () => (() => Promise<void>) | undefined;
     token: string;
     timeoutMs: number;
 }>;

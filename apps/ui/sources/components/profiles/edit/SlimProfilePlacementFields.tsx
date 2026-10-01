@@ -117,7 +117,7 @@ export function SlimProfilePlacementFields(props: Readonly<{
     return <>
         <ItemGroup
             title={t('profiles.launchPlacement.title')}
-            footer={t('profiles.launchPlacement.footer')}
+            description={t('profiles.launchPlacement.footer')}
         >
             <DropdownMenu
                 open={placementOpen}
@@ -157,7 +157,7 @@ export function SlimProfilePlacementFields(props: Readonly<{
 
         <ItemGroup
             title={t('profiles.launchCheckout.title')}
-            footer={t('profiles.launchCheckout.footer')}
+            description={t('profiles.launchCheckout.footer')}
         >
             <DropdownMenu
                 open={checkoutOpen}

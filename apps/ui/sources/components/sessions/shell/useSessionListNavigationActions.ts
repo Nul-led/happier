@@ -1,4 +1,4 @@
-import { useRouter } from 'expo-router';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 
 import { buildNewSessionTempDataFromSessionConfiguration } from '@/components/sessions/authoring/draft/sessionConfigurationSeed';
 import { resolveNewSessionDraftRouteIdentity } from '@/components/sessions/new/navigation/newSessionDraftRouteIdentity';
@@ -13,7 +13,7 @@ import {
     type UniversalSearchScopeSeed,
 } from '@/components/appShell/search/UniversalSearchRuntimeContext';
 
-import type { CreateSessionFromWorkspaceScopeOptions } from './resolveSessionListHeaderActionHandlers';
+import type { CreateSessionFromWorkspaceScopeOptions, NewSessionGroupTarget } from './resolveSessionListHeaderActionHandlers';
 
 type WorkspaceScopeHint = Readonly<{
     serverId: string;
@@ -49,10 +49,32 @@ export function useSessionListNavigationActions(
             openProject(workspaceRefId);
         },
         handleCreateSessionFromWorkspaceScope(
-            scopeHint: WorkspaceScopeHint,
+            target: NewSessionGroupTarget,
             options?: CreateSessionFromWorkspaceScopeOptions,
         ) {
             const draftId = resolveNewSessionDraftRouteIdentity({ routeDraftId: undefined }).draftId;
+            if (!('rootPath' in target)) {
+                // A machine's Chats group starts another no-folder session on that machine.
+                const seedSession = rememberLastProjectSessionSelections
+                    ? resolveSeedSession(options?.seedSessionId)
+                    : null;
+                const dataId = storeTempData(seedSession
+                    ? buildNewSessionTempDataFromSessionConfiguration({ session: seedSession, machineId: target.machineId })
+                    : { machineId: target.machineId, directoryKind: 'managed' });
+                router.push({
+                    pathname: '/new',
+                    params: {
+                        ...buildNewSessionLaunchRouteParams({
+                            draftId,
+                            machineId: target.machineId,
+                            targetServerId: target.serverId,
+                        }),
+                        dataId,
+                    },
+                } as any);
+                return;
+            }
+            const scopeHint: WorkspaceScopeHint = target;
             const seedSessionId = normalizeString(options?.seedSessionId);
             const seedSession = rememberLastProjectSessionSelections
                 ? resolveSeedSession(seedSessionId)

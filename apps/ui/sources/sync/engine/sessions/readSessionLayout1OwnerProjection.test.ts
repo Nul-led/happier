@@ -10,7 +10,7 @@ import { encodeBase64 } from '@/encryption/base64';
 
 import { normalizeSessionAccessProjection } from './normalizeSessionAccessProjection';
 
-import { readSessionLayout1OwnerMetadata } from './readSessionLayout1OwnerProjection';
+import { readSessionLayout1OwnerMetadata, projectSessionLayout1OwnerMetadata } from './readSessionLayout1OwnerProjection';
 
 const ownerMetadata = SessionOwnerMetadataV1Schema.parse({
     v: 1,
@@ -23,6 +23,54 @@ const credentials = {
 };
 
 describe('readSessionLayout1OwnerMetadata', () => {
+    it('opens plain owner options only from authoritative plain Account mode, not Session mode or key absence', () => {
+        const plainOwner = createPlainSessionOwnerMetadataEnvelopeV1(SessionOwnerMetadataV1Schema.parse({
+            v: 1, workspace: { path: '/private' }, runtime: { modelOverrideV1: { v: 1, modelId: 'chosen', updatedAt: 10 } },
+        }));
+        const params = { access: normalizeSessionAccessProjection({ share: null }, { allowLegacy: true }),
+            credentials: { token: 'child-token' }, ownerMetadataEnvelope: plainOwner, composerOptionsInput: null };
+        expect(readSessionLayout1OwnerMetadata({ ...params, accountMode: 'plain' })).toEqual({
+            kind: 'composer', ownerMetadataView: null, composerOptionsInput: { modelOverrideV1: { v: 1, modelId: 'chosen', updatedAt: 10 } },
+        });
+        expect(readSessionLayout1OwnerMetadata({ ...params, accountMode: 'e2ee' })).toEqual({ kind: 'composer', ownerMetadataView: null, composerOptionsInput: null });
+        expect(readSessionLayout1OwnerMetadata(params)).toEqual({ kind: 'composer', ownerMetadataView: null, composerOptionsInput: null });
+    });
+    it('keeps the complete owner view unavailable when a frame supplies only composer input', () => {
+        const composerOptionsInput = { modelOverrideV1: { v: 1 as const, modelId: 'model-a', updatedAt: 10 } };
+        const read = readSessionLayout1OwnerMetadata({
+            access: normalizeSessionAccessProjection({ share: null }, { allowLegacy: true }),
+            ownerMetadataEnvelope: sealSessionOwnerMetadataEnvelopeV1({
+                material: { type: 'legacy', secret }, ownerMetadata, randomBytes: (length) => new Uint8Array(length).fill(1),
+            }),
+            credentials: { token: 'child-token' },
+            composerOptionsInput,
+        });
+        expect(projectSessionLayout1OwnerMetadata({ sharedMetadata: { v: 1 }, ownerMetadataRead: read }))
+            .toEqual({ kind: 'composer', ownerMetadataView: null, composerOptionsInput });
+    });
+
+    it('extracts only composer input at the owner projection producer', () => {
+        const catalog = {
+            v: 1 as const, agentId: 'codex', updatedAt: 10, currentModelId: 'model-a',
+            availableModels: [{ id: 'model-a', name: 'Model A' }],
+        };
+        const projection = projectSessionLayout1OwnerMetadata({
+            sharedMetadata: { v: 1 },
+            ownerMetadataRead: {
+                kind: 'owner',
+                ownerMetadataEnvelope: createPlainSessionOwnerMetadataEnvelopeV1(ownerMetadata),
+                ownerMetadata: SessionOwnerMetadataV1Schema.parse({
+                    v: 1, workspace: { path: '/private/worktree' },
+                    runtime: { sessionModelsV1: catalog },
+                }),
+            },
+        });
+        expect(projection).toMatchObject({
+            kind: 'owner', composerOptionsInput: { sessionModelsV1: catalog },
+        });
+        expect(projection.kind === 'owner' && 'composerOptionsInput' in projection
+            ? Object.keys(projection.composerOptionsInput as object) : []).toEqual(['sessionModelsV1']);
+    });
     it.each(['plain', 'e2ee'] as const)('keeps Team-only recipients away from owner metadata in %s mode', (accountMode) => {
         const access = normalizeSessionAccessProjection({ effectiveAccess: {
             v: 1, level: 'edit',

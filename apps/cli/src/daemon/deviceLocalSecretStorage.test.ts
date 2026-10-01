@@ -106,6 +106,10 @@ describe('deviceLocalSecretStorage', () => {
         purpose: 'session_respawn_environment',
         ciphertext: `${sealed}x`,
       })).toBeNull();
+      expect(first.openJson({
+        purpose: 'execution_run_worker_update',
+        ciphertext: sealed,
+      })).toBeNull();
     } finally {
       await Promise.all([
         rm(firstHome, { recursive: true, force: true }),

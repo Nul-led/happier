@@ -17,11 +17,7 @@ import type { ActivityAttentionSource } from './activityAttentionSourceTypes';
 import { createActivityAttentionStoreSourceSelector } from './createActivityAttentionStoreSourceSelector';
 import { useActivityPersonalSessionMembership } from './activityPersonalSessionMembership';
 
-function getServerSourceGeneration(): string {
-    return `${getServerProfilesGeneration()}:${getActiveServerSnapshot().generation}`;
-}
-
-export function useActivityAttentionSource(): ActivityAttentionSource {
+export function useActivityAttentionSummarySource(): ActivityAttentionSource {
     const personalMembership = useActivityPersonalSessionMembership();
     const storeSourceSelector = React.useMemo(
         () => createActivityAttentionStoreSourceSelector(
@@ -29,59 +25,68 @@ export function useActivityAttentionSource(): ActivityAttentionSource {
         ),
         [personalMembership.membershipByServerId],
     );
-    const serverSourceGeneration = React.useSyncExternalStore(
+    const activeServer = React.useSyncExternalStore(
         React.useCallback((listener) => {
-            const unsubscribeProfiles = subscribeServerProfiles(listener);
-            const unsubscribeActive = subscribeActiveServer(() => listener());
-            return () => {
-                unsubscribeProfiles();
-                unsubscribeActive();
-            };
+            return subscribeActiveServer(() => listener());
         }, []),
-        getServerSourceGeneration,
-        getServerSourceGeneration,
+        getActiveServerSnapshot,
+        getActiveServerSnapshot,
     );
     const storeSource = storage(storeSourceSelector);
-    const serverSource = React.useMemo(() => {
+    return React.useMemo(() => ({
+        ...storeSource,
+        activeServer,
+        activeServerId: activeServer.serverId,
+        personalSessionListMembershipByServerId: personalMembership.membershipByServerId,
+        personalSessionListQueryStatesByServerId: personalMembership.statesByServerId,
+        personalSessionListCoverageComplete: personalMembership.coverageComplete,
+        sessionListHomeObservationByServerId: buildSessionListHomeObservations({
+            concurrentSessionListCacheByServerId: storeSource.concurrentSessionListCacheByServerId,
+            queryStatesByServerId: personalMembership.statesByServerId,
+        }),
+    }), [activeServer, personalMembership, storeSource]);
+}
+
+export function useActivityAttentionSource(): ActivityAttentionSource {
+    const summarySource = useActivityAttentionSummarySource();
+    const serverProfilesGeneration = React.useSyncExternalStore(
+        subscribeServerProfiles,
+        getServerProfilesGeneration,
+        getServerProfilesGeneration,
+    );
+    const serverProfilesById = React.useMemo(() => {
         const profileEntries = listServerProfiles().flatMap((profile) => [
             [profile.id, profile] as const,
             [resolveServerProfileScopeId(profile), profile] as const,
         ]);
-        return {
-            serverProfilesById: Object.fromEntries(profileEntries),
-            activeServer: getActiveServerSnapshot(),
-        };
-    }, [serverSourceGeneration]);
+        return Object.fromEntries(profileEntries);
+    }, [serverProfilesGeneration]);
 
     const audienceAddresses = React.useMemo(() => [
-        ...Object.values(storeSource.sessionsById).flatMap((session) => {
+        ...Object.values(summarySource.sessionsById).flatMap((session) => {
             const address = normalizeSessionAddress(session.serverId, session.id);
             return address ? [address] : [];
         }),
-        ...Object.entries(storeSource.ordinarySessionListMembershipByServerId ?? {})
+        ...Object.entries(summarySource.ordinarySessionListMembershipByServerId ?? {})
         .flatMap(([serverId, ids]) => (ids ?? []).flatMap((id) => {
             const address = normalizeSessionAddress(serverId, id);
             return address ? [address] : [];
         })),
-        ...Object.entries(personalMembership.membershipByServerId)
+        ...Object.entries(summarySource.personalSessionListMembershipByServerId ?? {})
         .flatMap(([serverId, ids]) => (ids ?? []).flatMap((id) => {
             const address = normalizeSessionAddress(serverId, id);
             return address ? [address] : [];
         })),
-    ], [personalMembership.membershipByServerId, storeSource.ordinarySessionListMembershipByServerId, storeSource.sessionsById]);
+    ], [
+        summarySource.ordinarySessionListMembershipByServerId,
+        summarySource.personalSessionListMembershipByServerId,
+        summarySource.sessionsById,
+    ]);
     const audience = useSessionAudienceContext(audienceAddresses);
-    const sessionListHomeObservationByServerId = React.useMemo(() => buildSessionListHomeObservations({
-        concurrentSessionListCacheByServerId: storeSource.concurrentSessionListCacheByServerId,
-        queryStatesByServerId: personalMembership.statesByServerId,
-    }), [personalMembership.statesByServerId, storeSource.concurrentSessionListCacheByServerId]);
     return React.useMemo(() => ({
+        ...summarySource,
         audienceScopes: audience.scopes,
         audienceLabelsVersion: audience.labelsVersion,
-        personalSessionListMembershipByServerId: personalMembership.membershipByServerId,
-        personalSessionListQueryStatesByServerId: personalMembership.statesByServerId,
-        personalSessionListCoverageComplete: personalMembership.coverageComplete,
-        sessionListHomeObservationByServerId,
-        ...storeSource,
-        ...serverSource,
-    }), [serverSource, sessionListHomeObservationByServerId, storeSource, audience, personalMembership]);
+        serverProfilesById,
+    }), [audience.labelsVersion, audience.scopes, serverProfilesById, summarySource]);
 }

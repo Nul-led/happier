@@ -173,8 +173,7 @@ function availableSupportMatchesNativeContract(
         return false;
     }
     return support.navigation === true
-        && support.recording === false
-        && support.automation === false;
+        && support.recording === false;
 }
 
 function readString(value: unknown): string | null {

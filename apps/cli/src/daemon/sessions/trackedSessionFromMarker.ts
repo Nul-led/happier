@@ -3,6 +3,32 @@ import type { SpawnSessionOptions } from '@/session/shared/spawnSessionContract'
 import type { DaemonSessionMarker } from '../sessionRegistry';
 import type { TrackedSession } from '../types';
 
+export function resolveReattachedRunnerAgentInvocationContext(
+  marker: Pick<
+    DaemonSessionMarker,
+    | 'startedBy'
+    | 'cwd'
+    | 'agentRuntimeDaemonServiceAuthorityFilePath'
+    | 'runnerManagedDependencyRetentionV1'
+  >,
+): TrackedSession['runnerAgentInvocationContext'] {
+  if (
+    marker.startedBy !== 'daemon'
+    || !marker.agentRuntimeDaemonServiceAuthorityFilePath
+    || typeof marker.cwd !== 'string'
+    || !marker.cwd.trim()
+  ) return undefined;
+
+  return Object.freeze({
+    cwd: marker.cwd,
+    environment: Object.freeze({}),
+    providerBindingActive: Boolean(
+      marker.runnerManagedDependencyRetentionV1
+        ?.adoptedManagedProviderAuthority,
+    ),
+  });
+}
+
 export function buildTrackedSessionFromMarker(params: Readonly<{
   marker: DaemonSessionMarker;
   startedByFallback: string;
@@ -17,6 +43,8 @@ export function buildTrackedSessionFromMarker(params: Readonly<{
   const processCommandHash = params.processCommandHash ?? marker.processCommandHash;
   const processStartTimeMs = params.processStartTimeMs ?? marker.processStartTimeMs;
   const processCommand = params.processCommand ?? marker.processCommand;
+  const runnerAgentInvocationContext =
+    resolveReattachedRunnerAgentInvocationContext(marker);
 
   return {
     startedBy: marker.startedBy ?? params.startedByFallback,
@@ -39,16 +67,19 @@ export function buildTrackedSessionFromMarker(params: Readonly<{
             marker.agentRuntimeDaemonServiceAuthorityFilePath,
         }
       : {}),
+    ...(runnerAgentInvocationContext
+      ? { runnerAgentInvocationContext }
+      : {}),
     ...(marker.runnerManagedDependencyRetentionV1
       ? {
           runnerManagedDependencyRetentionV1:
             marker.runnerManagedDependencyRetentionV1,
         }
       : {}),
-    ...(marker.runnerAgentImmutableGenerationId
+    ...(marker.runnerAgentSourceCustodyV1
       ? {
-          runnerAgentImmutableGenerationId:
-            marker.runnerAgentImmutableGenerationId,
+          runnerAgentSourceCustodyV1:
+            marker.runnerAgentSourceCustodyV1,
         }
       : {}),
     ...(marker.agentRuntimeDaemonServiceActiveAdmission

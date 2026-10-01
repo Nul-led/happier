@@ -1,6 +1,6 @@
 import { isRuntimeCheckedExperimentalVendorResume } from '@happier-dev/agents';
 
-import { AGENTS } from '@/agent/catalog/registry';
+import { readCurrentCatalogHook } from '@/agent/catalog/runtimeEntry';
 import { resolveCatalogAgentId } from '@/agent/catalog/resolution';
 import type {
   CatalogAgentId,
@@ -11,27 +11,18 @@ import type { AgentCliSessionCommandBuildInputV1 } from '@happier-dev/plugin-sdk
 
 export async function getVendorResumeSupport(agentId?: CatalogAgentId | null): Promise<VendorResumeSupportFn> {
   const catalogId = resolveCatalogAgentId(agentId);
-  // The active contribution registry may replace an installed Agent under the
-  // same id. Keep this read current rather than retaining an old hook by id.
-  const entry = catalogId ? AGENTS[catalogId] ?? null : null;
-  // An Agent that is absent from the current catalog supports nothing: vendor
-  // resume must fail closed rather than inherit the default Agent's support.
-  if (!catalogId || !entry) {
+  if (!catalogId) return () => false;
+  // Demand the current Agent runtime through the shared catalog owner. A
+  // declaration-only snapshot does not contain lazily registered predicates.
+  return await readCurrentCatalogHook(catalogId, async (entry): Promise<VendorResumeSupportFn> => {
+    if (entry.vendorResumeSupport === 'supported') return () => true;
+    if (entry.vendorResumeSupport === 'unsupported') return () => false;
+    if (entry.vendorResumeSupport === 'experimental' && entry.getVendorResumeSupport) {
+      return await entry.getVendorResumeSupport();
+    }
+    if (isRuntimeCheckedExperimentalVendorResume(catalogId)) return () => true;
     return () => false;
-  }
-  if (entry.vendorResumeSupport === 'supported') {
-    return () => true;
-  }
-  if (entry.vendorResumeSupport === 'unsupported') {
-    return () => false;
-  }
-  if (entry.vendorResumeSupport === 'experimental' && entry.getVendorResumeSupport) {
-    return await entry.getVendorResumeSupport();
-  }
-  if (isRuntimeCheckedExperimentalVendorResume(catalogId)) {
-    return () => true;
-  }
-  return () => false;
+  }) ?? (() => false);
 }
 
 export async function resolveProviderSessionRuntimePreferences(
@@ -39,6 +30,8 @@ export async function resolveProviderSessionRuntimePreferences(
   params: AgentCliSessionCommandBuildInputV1,
 ): Promise<ProviderSessionRuntimePreferences> {
   const catalogId = resolveCatalogAgentId(agentId);
-  const entry = catalogId ? AGENTS[catalogId] ?? null : null;
-  return await (entry?.resolveSessionRuntimePreferences?.(params) ?? Promise.resolve({}));
+  if (!catalogId) return {};
+  return await readCurrentCatalogHook(catalogId, (entry) => (
+    entry.resolveSessionRuntimePreferences?.(params) ?? Promise.resolve({})
+  )) ?? {};
 }

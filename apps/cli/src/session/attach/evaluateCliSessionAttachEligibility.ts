@@ -234,6 +234,15 @@ export async function evaluateCliSessionAttachEligibility(params: Readonly<{
   const hasLocalTerminalEvidence = params.localAttachmentInfo !== null;
   const hasSyncedTerminalMetadata = asRecord(metadata?.terminal) !== null;
   const sessionId = resolveSessionId(params.rawSession);
+  if (params.localAttachmentInfo) {
+    const hosted = buildTerminalAttachEligibility({
+      metadata,
+      localAttachmentInfo: params.localAttachmentInfo,
+      insideTmux: params.insideTmux,
+      currentTmuxSocketPath: params.currentTmuxSocketPath ?? null,
+    });
+    if (hosted.eligible) return hosted;
+  }
   const backendId = resolveCliSessionAttachBackendId(metadata);
   const backendExecutionSurfaces = backendId
     ? await params.resolveExecutionSurfaces(backendId)

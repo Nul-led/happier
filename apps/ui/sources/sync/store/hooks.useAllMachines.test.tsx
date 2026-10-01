@@ -2,22 +2,212 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { act } from 'react-test-renderer';
 
 import { renderHook, standardCleanup } from '@/dev/testkit';
+import { createSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
+import { buildSessionListRenderableFromSession } from '@/sync/domains/session/listing/sessionListRenderable';
 
 import {
     useAllMachines,
     useLaunchSelectionMachines,
     useMachineCliDetectionTargets,
     useMachineListByServerId,
+    useMachineListForServer,
+    useMachineListStatusForServer,
     useSessionForkSupportSource,
+    useSessionChatFooterState,
 } from '@/sync/domains/state/storage';
 import { storage } from '@/sync/domains/state/storageStore';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
+import type { Machine } from '@/sync/domains/state/storageTypes';
 
 afterEach(() => {
     standardCleanup();
 });
 
 describe('useAllMachines', () => {
+    it.each(['shared', 'exclusive'] as const)('retires and restores %s footer control through the real store', async (topology) => {
+        const previousState = storage.getState();
+        const session = createSessionFixture({
+            id: 's-control-lifecycle', active: true,
+            agentState: { controlledByUser: topology === 'exclusive', ...(topology === 'shared' ? {
+                localControl: { attached: true, topology, remoteWritable: true, canDetach: true },
+            } : {}) },
+        });
+        try {
+            storage.setState((state) => ({ sessions: { ...state.sessions, [session.id]: session } }));
+            const hook = await renderHook(() => useSessionChatFooterState(session.id), { flushOptions: { cycles: 1, turns: 4 } });
+            const attached = hook.getCurrent();
+            expect(attached?.localControl?.attached).toBe(true);
+            expect(attached?.controlledByUser).toBe(topology === 'exclusive');
+            await act(async () => {
+                storage.setState((state) => ({ sessions: { ...state.sessions, [session.id]: { ...session, active: false } } }));
+            });
+            expect(hook.getCurrent()).toMatchObject({ controlledByUser: false, localControl: null });
+            await act(async () => {
+                storage.setState((state) => ({ sessions: { ...state.sessions, [session.id]: session } }));
+            });
+            expect(hook.getCurrent()).toEqual(attached);
+            await act(async () => {
+                storage.setState((state) => ({ sessions: { ...state.sessions, [session.id]: {
+                    ...session, metadataLayoutVersion: 1, metadata: null, ownerMetadataView: { ...session.metadata!, terminal: {
+                        mode: 'herdr', controlServiceabilityV1: { v: 1, attachmentId: 'retired-host', observedAt: 20,
+                            state: 'unknown', retired: true },
+                    } },
+                } } }));
+            });
+            expect(hook.getCurrent()).toMatchObject({ controlledByUser: false, localControl: null });
+            await hook.unmount();
+        } finally {
+            storage.setState(previousState);
+        }
+    });
+
+    it('uses the exact Home row for fork support when duplicate ids are present', async () => {
+        const previousState = storage.getState();
+        try {
+            const directHomeSession = createSessionFixture({
+                id: 's-duplicate-fork',
+                serverId: 'home-a',
+                metadata: { path: '/repo-a', host: 'home-a', flavor: 'a' },
+            });
+            const requestedHomeSession = createSessionFixture({
+                id: 's-duplicate-fork',
+                serverId: 'home-b',
+                metadata: { path: '/repo-b', host: 'home-b', flavor: 'b' },
+            });
+            storage.setState((state) => ({
+                ...state,
+                isDataReady: true,
+                sessions: { ...state.sessions, [directHomeSession.id]: directHomeSession },
+                sessionListRowsByServerId: {
+                    ...state.sessionListRowsByServerId,
+                    'home-b': {
+                        ...(state.sessionListRowsByServerId['home-b'] ?? {}),
+                        [requestedHomeSession.id]: buildSessionListRenderableFromSession(requestedHomeSession),
+                    },
+                },
+            }));
+
+            const hook = await renderHook(
+                () => useSessionForkSupportSource('s-duplicate-fork', 'home-b'),
+                { flushOptions: { cycles: 1, turns: 4 } },
+            );
+
+            expect(hook.getCurrent()).toMatchObject({
+                serverId: 'home-b',
+                metadata: { path: '/repo-b', flavor: 'b' },
+            });
+            await hook.unmount();
+        } finally {
+            storage.setState(previousState);
+        }
+    });
+
+    it('keeps one Home machine slices stable across unrelated Home updates', async () => {
+        const previousState = storage.getState();
+        const machineA = {
+            id: 'machine-a',
+            seq: 1,
+            active: true,
+            activeAt: 1000,
+            createdAt: 1000,
+            updatedAt: 1000,
+            metadata: {
+                host: 'home-a',
+                platform: 'darwin',
+                happyCliVersion: '1',
+                happyHomeDir: '.happy',
+                homeDir: '/home/a',
+            },
+            metadataVersion: 1,
+            daemonState: null,
+            daemonStateVersion: 1,
+            revokedAt: null,
+        } satisfies Machine;
+        const machineB = {
+            id: 'machine-b',
+            seq: 1,
+            active: true,
+            activeAt: 1000,
+            createdAt: 1000,
+            updatedAt: 1000,
+            metadata: {
+                host: 'home-b',
+                platform: 'darwin',
+                happyCliVersion: '1',
+                happyHomeDir: '.happy',
+                homeDir: '/home/b',
+            },
+            metadataVersion: 1,
+            daemonState: null,
+            daemonStateVersion: 1,
+            revokedAt: null,
+        } satisfies Machine;
+        let renderCount = 0;
+
+        try {
+            storage.setState((state) => ({
+                ...state,
+                machineListByServerId: {
+                    'home-a': [machineA],
+                    'home-b': [machineB],
+                },
+                machineListStatusByServerId: {
+                    'home-a': 'idle',
+                    'home-b': 'idle',
+                },
+            }));
+            const hook = await renderHook(() => {
+                renderCount += 1;
+                return {
+                    machines: useMachineListForServer('home-a'),
+                    status: useMachineListStatusForServer('home-a'),
+                };
+            }, { flushOptions: { cycles: 1, turns: 4 } });
+            const firstSnapshot = hook.getCurrent();
+            const firstRenderCount = renderCount;
+
+            await act(async () => {
+                storage.setState((state) => ({
+                    ...state,
+                    machineListByServerId: {
+                        ...state.machineListByServerId,
+                        'home-b': [{ ...machineB, activeAt: 2000 }],
+                    },
+                    machineListStatusByServerId: {
+                        ...state.machineListStatusByServerId,
+                        'home-b': 'loading',
+                    },
+                }));
+            });
+
+            expect(renderCount).toBe(firstRenderCount);
+            expect(hook.getCurrent()).toBe(firstSnapshot);
+
+            await act(async () => {
+                storage.setState((state) => ({
+                    ...state,
+                    machineListByServerId: {
+                        ...state.machineListByServerId,
+                        'home-a': [{ ...machineA, activeAt: 3000 }],
+                    },
+                    machineListStatusByServerId: {
+                        ...state.machineListStatusByServerId,
+                        'home-a': 'loading',
+                    },
+                }));
+            });
+
+            expect(renderCount).toBeGreaterThan(firstRenderCount);
+            expect(hook.getCurrent()).not.toBe(firstSnapshot);
+            expect(hook.getCurrent()).toMatchObject({ status: 'loading' });
+            expect(hook.getCurrent().machines?.[0]?.activeAt).toBe(3000);
+
+            await hook.unmount();
+        } finally {
+            storage.setState(previousState);
+        }
+    });
+
     it('projects a stable requested currentness set without subscribing to unrelated machines', async () => {
         const previousState = storage.getState();
         const now = Date.now();

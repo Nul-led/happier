@@ -1,13 +1,19 @@
 import type { InstallAgentCliResult, AgentCliInstallPlan } from '../install.js';
 import type { RuntimeInstallLifecycleContext } from './runtimeInstallLifecycleContext.js';
+import { AgentCliDownloadError } from '../downloadGitHubReleaseAsset.js';
+import { ExecFileTerminationError } from '../../process/index.js';
+import { ArchiveExtractionTimeoutError } from '@happier-dev/release-runtime/archiveExtraction';
 
-type RuntimeInstallFailureErrorCode = 'managed-runtime-unavailable' | 'command-failed';
+type RuntimeInstallFailureErrorCode = 'managed-runtime-unavailable' | 'command-failed' | 'command-timed-out' | 'termination-failed' | AgentCliDownloadError['errorCode'];
 
 function resolveRuntimeInstallFailureMessage(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
 }
 
-function classifyRuntimeInstallFailureErrorCode(message: string): RuntimeInstallFailureErrorCode {
+function classifyRuntimeInstallFailureErrorCode(error: unknown, message: string): RuntimeInstallFailureErrorCode {
+    if (error instanceof AgentCliDownloadError) return error.errorCode;
+    if (error instanceof ExecFileTerminationError) return 'termination-failed';
+    if (error instanceof ArchiveExtractionTimeoutError) return 'command-timed-out';
     if (
         message.startsWith('Managed pnpm is unavailable') ||
         message.startsWith('Managed JavaScript runtime is unavailable')
@@ -23,7 +29,7 @@ export function buildRuntimeInstallFailureResult(params: Readonly<{
     lifecycleContext: RuntimeInstallLifecycleContext;
 }>): InstallAgentCliResult {
     const errorMessage = resolveRuntimeInstallFailureMessage(params.error);
-    const errorCode = classifyRuntimeInstallFailureErrorCode(errorMessage);
+    const errorCode = classifyRuntimeInstallFailureErrorCode(params.error, errorMessage);
     params.lifecycleContext.appendLogLine(params.lifecycleContext.logPath, errorMessage);
     return {
         ok: false,

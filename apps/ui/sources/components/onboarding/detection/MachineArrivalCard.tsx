@@ -2,19 +2,16 @@ import * as React from 'react';
 import { Pressable, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
-import { CodeBlockView } from '@/components/ui/code/blocks/CodeBlockView';
+import { OsCommandBlock } from '@/components/ui/code/blocks/OsCommandBlock';
 import { StatusPill, resolveStatusPillVariantForState } from '@/components/ui/status/StatusPill';
 import { Text } from '@/components/ui/text/Text';
 import { Typography } from '@/constants/Typography';
 import { t, tLoose } from '@/text';
 import { getMachineDisplayName } from '@/utils/sessions/machineUtils';
-import {
-    buildCliInstallAndRunCommandForCurrentApp,
-    buildCliInstallAndRunPowershellCommandForCurrentApp,
-} from '@/components/onboarding/commands/wizardCliCommands';
+import { buildMachineAddCommand } from '@/components/machines/add/machineAddCommand';
 import type { Machine } from '@/sync/domains/state/storageTypes';
 
-import { useAwaitedMachineArrival } from './useAwaitedMachineArrival';
+import { useAwaitedMachineArrival, type AwaitedMachineArrivalBaseline } from './useAwaitedMachineArrival';
 
 export type MachineArrivalCardProps =
     | Readonly<{
@@ -25,13 +22,12 @@ export type MachineArrivalCardProps =
     | Readonly<{
         mode: 'live';
         serverUrl?: string | null;
-        since?: number | null;
+        arrivalBaseline?: AwaitedMachineArrivalBaseline | null;
+        onArrivalBaselineCaptured?: (baseline: AwaitedMachineArrivalBaseline) => void;
         onArrived?: (machine: Machine) => void;
         notSeeingYourMachine?: React.ReactNode;
         testID?: string;
     }>;
-
-type PlatformTab = 'posix' | 'windows';
 
 const stylesheet = StyleSheet.create((theme) => ({
     card: {
@@ -74,28 +70,6 @@ const stylesheet = StyleSheet.create((theme) => ({
         fontSize: 14,
         lineHeight: 20,
     },
-    commandShell: {
-        gap: 8,
-    },
-    tabs: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 10,
-    },
-    divider: {
-        width: 1,
-        height: 16,
-        backgroundColor: theme.colors.border.default,
-    },
-    tabText: {
-        color: theme.colors.text.secondary,
-        fontSize: 12,
-        lineHeight: 16,
-    },
-    tabTextSelected: {
-        color: theme.colors.text.primary,
-        ...Typography.default('semiBold'),
-    },
     liveStatus: {
         gap: 8,
         alignItems: 'flex-start',
@@ -110,82 +84,22 @@ const stylesheet = StyleSheet.create((theme) => ({
     },
 }));
 
-function buildSetupArgs(serverUrl: string | null | undefined): string[] {
-    const trimmed = String(serverUrl ?? '').trim();
-    return trimmed ? ['--home-url', trimmed] : [];
-}
-
 function useSetupCommands(serverUrl: string | null | undefined): Readonly<{ posix: string; windows: string }> {
-    const args = React.useMemo(() => buildSetupArgs(serverUrl), [serverUrl]);
     return React.useMemo(() => ({
-        posix: buildCliInstallAndRunCommandForCurrentApp({ action: 'setup', args }),
-        windows: buildCliInstallAndRunPowershellCommandForCurrentApp({ action: 'setup', args }),
-    }), [args]);
-}
-
-function PlatformTabButton(props: Readonly<{
-    selected: boolean;
-    label: string;
-    testID: string;
-    onPress: () => void;
-}>): React.ReactElement {
-    const styles = stylesheet;
-    return (
-        <Pressable
-            testID={props.testID}
-            accessibilityRole="button"
-            accessibilityState={{ selected: props.selected }}
-            onPress={props.onPress}
-        >
-            <Text
-                numberOfLines={1}
-                style={[styles.tabText, props.selected ? styles.tabTextSelected : null]}
-            >
-                {props.label}
-            </Text>
-        </Pressable>
-    );
+        posix: buildMachineAddCommand({ kind: 'joinHome', os: 'linux', descriptor: null, profileSource: null, fallbackHomeUrl: serverUrl ?? null }),
+        windows: buildMachineAddCommand({ kind: 'joinHome', os: 'windows', descriptor: null, profileSource: null, fallbackHomeUrl: serverUrl ?? null }),
+    }), [serverUrl]);
 }
 
 function CommandBlock(props: Readonly<{
     serverUrl?: string | null;
 }>): React.ReactElement {
-    const styles = stylesheet;
     const commands = useSetupCommands(props.serverUrl);
-    const [tab, setTab] = React.useState<PlatformTab>('posix');
     return (
-        <View style={styles.commandShell}>
-            <View style={styles.tabs}>
-                <PlatformTabButton
-                    testID="machine-arrival-card-command-setup-platform:macos"
-                    label={t('setupOnboarding.handoffPlatformMacosLabel')}
-                    selected={tab === 'posix'}
-                    onPress={() => setTab('posix')}
-                />
-                <PlatformTabButton
-                    testID="machine-arrival-card-command-setup-platform:linux"
-                    label={t('setupOnboarding.handoffPlatformLinuxLabel')}
-                    selected={tab === 'posix'}
-                    onPress={() => setTab('posix')}
-                />
-                <View style={styles.divider} />
-                <PlatformTabButton
-                    testID="machine-arrival-card-command-setup-platform:windows"
-                    label={t('setupOnboarding.handoffPlatformWindowsLabel')}
-                    selected={tab === 'windows'}
-                    onPress={() => setTab('windows')}
-                />
-            </View>
-            <CodeBlockView
-                code={tab === 'windows' ? commands.windows : commands.posix}
-                language={tab === 'windows' ? 'powershell' : 'bash'}
-                // Spec §2 / F-W13-1: the one command must be fully readable —
-                // wrap to multiple lines, never fade/cut unread content.
-                wrap
-                showCopyButton
-                scrollTestID="machine-arrival-card-command-setup"
-            />
-        </View>
+        <OsCommandBlock
+            testID="machine-arrival-card-command-setup"
+            commands={{ macos: commands.posix, linux: commands.posix, windows: commands.windows }}
+        />
     );
 }
 
@@ -205,11 +119,16 @@ function useArrivalCallback(
 
 function LiveStatus(props: Readonly<{
     serverUrl?: string | null;
-    since?: number | null;
+    arrivalBaseline?: AwaitedMachineArrivalBaseline | null;
+    onArrivalBaselineCaptured?: (baseline: AwaitedMachineArrivalBaseline) => void;
     onArrived?: (machine: Machine) => void;
 }>): React.ReactElement {
     const styles = stylesheet;
-    const arrival = useAwaitedMachineArrival({ serverUrl: props.serverUrl, since: props.since });
+    const arrival = useAwaitedMachineArrival({
+        serverUrl: props.serverUrl,
+        baseline: props.arrivalBaseline,
+        onBaselineCaptured: props.onArrivalBaselineCaptured,
+    });
     useArrivalCallback(arrival, props.onArrived);
 
     if (arrival.status === 'arrived') {
@@ -287,7 +206,8 @@ export function MachineArrivalCard(props: MachineArrivalCardProps): React.ReactE
                         <>
                             <LiveStatus
                                 serverUrl={props.serverUrl}
-                                since={props.since}
+                                arrivalBaseline={props.arrivalBaseline}
+                                onArrivalBaselineCaptured={props.onArrivalBaselineCaptured}
                                 onArrived={props.onArrived}
                             />
                             {props.notSeeingYourMachine ? (

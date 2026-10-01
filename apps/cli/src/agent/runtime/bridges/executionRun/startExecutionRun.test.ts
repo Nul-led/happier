@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { tmpdir } from 'node:os';
 
 import type { ACPMessageData } from '@/api/session/sessionMessageTypes';
 import type { ExecutionRunController } from '@/agent/executionRuns/controllers/types';
@@ -14,6 +15,8 @@ import type { ExecutionRunState } from './executionRunTypes';
 import type { ExecutionRunStructuredMeta } from '@/agent/executionRuns/profiles/ExecutionRunIntentProfile';
 import { VoiceAgentManager } from '@/agent/voice/agent/VoiceAgentManager';
 import { ExecutionBudgetRegistry } from '@/daemon/executionBudget/ExecutionBudgetRegistry';
+import { BUILT_IN_ROLES_V1, resolveRoleSelectionV1 } from '@happier-dev/protocol';
+import { TaskProfile } from '@/agent/executionRuns/profiles/task/TaskProfile';
 
 const TEST_BACKEND_ID = `${'summary'}.${'backend'}` as never;
 
@@ -105,6 +108,142 @@ describe('startExecutionRun', () => {
           });
   });
 
+  it('refuses a role start without a target-host admission snapshot before creating a run', async () => {
+    const runs = new Map<string, ExecutionRunState>();
+    const voiceAgentManager = new VoiceAgentManager({ createRuntime: () => { throw new Error('unused'); } });
+    try {
+      await expect(startExecutionRun({
+        params: { sessionId: 'parent_session_1', intent: 'task', roleId: 'second_opinion',
+          backendTarget: { kind: 'builtInAgent', agentId: TEST_BACKEND_ID }, instructions: 'Assess this change.',
+          accountSettings: {}, permissionMode: 'yolo', retentionPolicy: 'resumable', runClass: 'bounded', ioMode: 'request_response' },
+        parentProvider: TEST_BACKEND_ID, sendAcp: async () => {}, streamedTranscriptSession: null,
+        createRuntime: () => { throw new Error('Runtime must not be reached before admission'); },
+        getNowMs: () => 1, budgetRegistry: null, runs, controllers: new Map(),
+        enqueueMarkerWrite: async () => {}, writeActivityMarker: async () => {}, finishRun: async () => {},
+        executeBoundedRun: async () => {}, send: async () => ({ ok: true }), voiceAgentManager,
+      })).rejects.toMatchObject({ code: 'target_unavailable' });
+      expect(runs.size).toBe(0);
+    } finally { await voiceAgentManager.dispose(); }
+  });
+
+  it('starts Second opinion with its canonical role plan, read-only ceiling and strict verdict contract', async () => {
+    const role = resolveRoleSelectionV1({ roleId: 'second_opinion', defaultEngine: { agentTargetKey: 'agent:happier.agent.codex/codex' } });
+    if (!role.ok) throw new Error('Fixture role must resolve');
+    const runs = new Map<string, ExecutionRunState>();
+    const createRuntime = vi.fn<StartExecutionRunArgs['createRuntime']>(() => createProvisioningRuntime());
+    const executeBoundedRun = vi.fn<StartExecutionRunArgs['executeBoundedRun']>(async () => {});
+    const voiceAgentManager = new VoiceAgentManager({ createRuntime: () => { throw new Error('unused'); } });
+    try {
+      const started = await startExecutionRun({
+        params: { sessionId: 'parent_session_1', intent: 'task', roleId: 'second_opinion', resolvedRole: role.selection,
+          promptCredentials: { token: 'synthetic-account-token', encryption: null },
+          backendTarget: { kind: 'builtInAgent', agentId: TEST_BACKEND_ID }, instructions: 'Assess this change.',
+          cwd: tmpdir(), accountSettings: {}, permissionMode: 'yolo', retentionPolicy: 'resumable', runClass: 'bounded', ioMode: 'request_response' },
+        parentProvider: TEST_BACKEND_ID, sendAcp: async () => {}, streamedTranscriptSession: null,
+        createRuntime, getNowMs: () => 1, budgetRegistry: null, runs, controllers: new Map(),
+        enqueueMarkerWrite: async () => {}, writeActivityMarker: async () => {}, finishRun: async () => {}, executeBoundedRun,
+        send: async () => ({ ok: true }), voiceAgentManager,
+      });
+      const run = runs.get(started.runId)!;
+      expect(run.instructions).toContain(BUILT_IN_ROLES_V1.second_opinion.instructions);
+      expect(run.instructions).toContain('<happier_role');
+      expect(run.instructions.match(/<happier_role\b/g)).toHaveLength(1);
+      expect(run.instructions).toContain('Assess this change.');
+      expect(run.intentInput).toMatchObject({ input: { question: 'Assess this change.', changeFingerprint: null,
+        diff: null, diffUnavailable: 'scm_unavailable', transcriptPointer: { sessionId: 'parent_session_1' } } });
+      await vi.waitFor(() => expect(createRuntime.mock.calls[0]?.[0]).toMatchObject({ workspaceWrites: 'deny' }));
+      expect(createRuntime.mock.calls[0]?.[0].start).not.toHaveProperty('promptCredentials');
+      expect(createRuntime.mock.calls[0]?.[0].start).not.toHaveProperty('resolvedRole');
+      await vi.waitFor(() => expect(executeBoundedRun.mock.calls[0]?.[0].params).toBeDefined());
+      expect(executeBoundedRun.mock.calls[0]?.[0].params).not.toHaveProperty('promptCredentials');
+      const start = { ...run, instructions: run.instructions, backendTarget: run.backendTarget, startedAtMs: 1 };
+      const verdict = { verdict: 'uncertain', confidence: 0.6, risks: [{ title: 'Untested path', severity: 'high', evidence: 'Missing integration check' }], missingEvidence: ['Runtime check'], nextStep: 'Validate' };
+      expect(TaskProfile.onBoundedComplete({ start, rawText: JSON.stringify(verdict), finishedAtMs: 2 }))
+        .toMatchObject({ status: 'succeeded', toolResultOutput: verdict });
+      expect(TaskProfile.onBoundedComplete({ start, rawText: '{"verdict":"agree"}', finishedAtMs: 2 }))
+        .toMatchObject({ status: 'failed' });
+    } finally { await voiceAgentManager.dispose(); }
+  });
+
+  it.each([
+    ['review', 'bounded', undefined, true],
+    ['plan', 'bounded', undefined, true],
+    ['delegate', 'bounded', undefined, true],
+    ['agent', 'long_lived', undefined, false],
+    ['delegate', 'long_lived', undefined, false],
+    ['review', 'bounded', false, false],
+    ['agent', 'long_lived', true, true],
+  ] as const)('resolves report defaults for %s/%s with override %s', async (intent, runClass, notifyParentOnCompletion, expected) => {
+    const runs = new Map<string, ExecutionRunState>();
+    const voiceAgentManager = new VoiceAgentManager({
+      createRuntime: () => { throw new Error('voice runtime is unused'); },
+    });
+    try {
+      const result = await startExecutionRun({
+        params: {
+          sessionId: 'parent_session_1', intent, runClass, notifyParentOnCompletion,
+          backendTarget: { kind: 'builtInAgent', agentId: TEST_BACKEND_ID },
+          instructions: '', permissionMode: 'read_only', retentionPolicy: 'resumable', ioMode: 'request_response',
+          accountSettings: { executionRunsNotifyParentOnCompletionDefault: false },
+        },
+        parentProvider: TEST_BACKEND_ID, sendAcp: async () => {}, streamedTranscriptSession: null,
+        createRuntime: createProvisioningRuntime, getNowMs: () => 1_700_000_000_000,
+        budgetRegistry: null, runs, controllers: new Map(), enqueueMarkerWrite: async () => {},
+        writeActivityMarker: async () => {}, finishRun: async () => {}, executeBoundedRun: async () => {},
+        send: async () => ({ ok: true }), voiceAgentManager,
+      });
+      expect(runs.get(result.runId)?.notifyParentOnCompletion).toBe(expected);
+    } finally {
+      await voiceAgentManager.dispose();
+    }
+  });
+
+  it('keeps admitted absolute depth and never derives depth from caller-supplied parent refs', async () => {
+    const runs = new Map<string, ExecutionRunState>();
+    const controllers = new Map<string, ExecutionRunController>();
+    const voiceAgentManager = new VoiceAgentManager({
+      createRuntime: () => { throw new Error('voice runtime is unused'); },
+    });
+    const args = {
+      params: {
+        sessionId: null,
+        intent: 'agent' as const,
+        backendTarget: { kind: 'builtInAgent' as const, agentId: TEST_BACKEND_ID },
+        instructions: '',
+        permissionMode: 'read_only',
+        retentionPolicy: 'resumable' as const,
+        runClass: 'long_lived' as const,
+        ioMode: 'request_response' as const,
+        workDepth: 4,
+      },
+      parentProvider: TEST_BACKEND_ID,
+      sendAcp: async () => {},
+      streamedTranscriptSession: null,
+      createRuntime: () => createProvisioningRuntime(),
+      getNowMs: () => 1_700_000_000_000,
+      budgetRegistry: null,
+      runs,
+      controllers,
+      enqueueMarkerWrite: async () => {},
+      writeActivityMarker: async () => {},
+      finishRun: async () => { throw new Error('empty initial input does not settle the run'); },
+      executeBoundedRun: async () => { throw new Error('long-lived creation does not execute a bounded run'); },
+      send: async () => { throw new Error('empty initial input does not send a prompt'); },
+      voiceAgentManager,
+    } satisfies StartExecutionRunArgs;
+    try {
+      const admitted = await startExecutionRun(args);
+      expect(runs.get(admitted.runId)?.depth).toBe(4);
+      const human = await startExecutionRun({
+        ...args,
+        params: { ...args.params, workDepth: undefined, parentRunId: admitted.runId, parentCallId: admitted.callId },
+      });
+      expect(runs.get(human.runId)?.depth).toBe(0);
+    } finally {
+      await voiceAgentManager.dispose();
+    }
+  });
+
   it('rejoins the Run allocated for one host-stamped Action request without repeating start effects', async () => {
     const runs = new Map<string, ExecutionRunState>();
     const controllers = new Map<string, ExecutionRunController>();
@@ -144,7 +283,6 @@ describe('startExecutionRun', () => {
       executeBoundedRun: async () => {},
       send,
       voiceAgentManager,
-      getDepthByCallId: () => null,
     } satisfies StartExecutionRunArgs;
 
     try {
@@ -220,7 +358,6 @@ describe('startExecutionRun', () => {
         executeBoundedRun: async () => {},
         send: async () => ({ ok: true }),
         voiceAgentManager,
-        getDepthByCallId: () => null,
         onPublicStateUpdated,
       })).rejects.toMatchObject({
         code: 'provider_binding_changed',
@@ -282,7 +419,6 @@ describe('startExecutionRun', () => {
       executeBoundedRun: async () => {},
       send: async () => ({ ok: true }),
       voiceAgentManager,
-      getDepthByCallId: () => null,
     });
 
     expect(createRuntime).toHaveBeenCalledWith(expect.objectContaining({
@@ -358,7 +494,6 @@ describe('startExecutionRun', () => {
         executeBoundedRun: async () => {},
         send: async () => ({ ok: true }),
         voiceAgentManager,
-        getDepthByCallId: () => null,
       })).rejects.toMatchObject({
         code: 'execution_run_not_allowed',
       });
@@ -421,7 +556,6 @@ describe('startExecutionRun', () => {
         executeBoundedRun: async () => {},
         send: async () => ({ ok: true }),
         voiceAgentManager,
-        getDepthByCallId: () => null,
       })).rejects.toMatchObject({
         code: 'execution_run_not_allowed',
         details: { executionRunStart: { v: 1, runCreation: 'noRunCreated' } },
@@ -472,7 +606,6 @@ describe('startExecutionRun', () => {
         executeBoundedRun: async () => {},
         send: async () => ({ ok: true }),
         voiceAgentManager,
-        getDepthByCallId: () => null,
       });
 
       await startWith({
@@ -526,7 +659,6 @@ describe('startExecutionRun', () => {
         executeBoundedRun: async () => {},
         send: async () => ({ ok: true }),
         voiceAgentManager,
-        getDepthByCallId: () => null,
       })).rejects.toMatchObject({
         code: 'execution_run_not_allowed',
         details: { executionRunStart: { v: 1, runCreation: 'noRunCreated' } },
@@ -608,7 +740,6 @@ describe('startExecutionRun', () => {
         },
         send: async () => ({ ok: true }),
         voiceAgentManager,
-        getDepthByCallId: () => null,
       });
 
       let startSettled = false;
@@ -695,7 +826,6 @@ describe('startExecutionRun', () => {
         executeBoundedRun,
         send: async () => ({ ok: true }),
         voiceAgentManager,
-        getDepthByCallId: () => null,
       });
 
       expect(createRuntime).toHaveBeenCalledTimes(1);
@@ -750,7 +880,6 @@ describe('startExecutionRun', () => {
         executeBoundedRun,
         send: async () => ({ ok: true }),
         voiceAgentManager,
-        getDepthByCallId: () => null,
       });
 
       await vi.waitFor(() => {
@@ -805,7 +934,6 @@ describe('startExecutionRun', () => {
         executeBoundedRun,
         send: async () => ({ ok: true }),
         voiceAgentManager,
-        getDepthByCallId: () => null,
       });
 
       await vi.waitFor(() => {
@@ -856,7 +984,6 @@ describe('startExecutionRun', () => {
       executeBoundedRun: async () => {},
       send: async () => ({ ok: true }),
       voiceAgentManager,
-      getDepthByCallId: () => null,
     } as const;
 
     try {
@@ -918,7 +1045,6 @@ describe('startExecutionRun', () => {
         executeBoundedRun: async () => {},
         send: async () => ({ ok: true }),
         voiceAgentManager,
-        getDepthByCallId: () => null,
       })).rejects.toThrow('runtime creation failed');
 
       expect(budgetRegistry.getInFlightSnapshot()).toEqual({
@@ -982,7 +1108,6 @@ describe('startExecutionRun', () => {
         executeBoundedRun: async () => {},
         send: async () => ({ ok: true }),
         voiceAgentManager,
-        getDepthByCallId: () => null,
       });
 
       await vi.waitFor(() => expect(finishRun).toHaveBeenCalledOnce());
@@ -1097,7 +1222,6 @@ describe('startExecutionRun', () => {
           }),
         send: async () => ({ ok: true }),
         voiceAgentManager,
-        getDepthByCallId: () => null,
       });
 
       await finished;
@@ -1189,7 +1313,6 @@ describe('startExecutionRun', () => {
         executeBoundedRun: async () => {},
         send: async () => ({ ok: true }),
         voiceAgentManager,
-        getDepthByCallId: () => null,
       });
 
       const startOutcome = await Promise.race([
@@ -1294,7 +1417,6 @@ describe('startExecutionRun', () => {
       executeBoundedRun: async () => {},
       send,
       voiceAgentManager,
-      getDepthByCallId: () => null,
     });
 
     try {
@@ -1388,7 +1510,6 @@ describe('startExecutionRun', () => {
         executeBoundedRun: async () => {},
         send: async () => ({ ok: true }),
         voiceAgentManager,
-        getDepthByCallId: () => null,
       });
       const oldController = controllers.get(started.runId);
       if (!oldController || oldController.kind !== 'backend') {
@@ -1472,7 +1593,6 @@ describe('startExecutionRun', () => {
         executeBoundedRun,
         send: async () => ({ ok: true }),
         voiceAgentManager,
-        getDepthByCallId: () => null,
       });
 
       await provisionStarted;
@@ -1546,7 +1666,6 @@ describe('startExecutionRun', () => {
         executeBoundedRun: async () => {},
         send: async () => ({ ok: true }),
         voiceAgentManager,
-        getDepthByCallId: () => null,
       });
 
       await provisionStartedPromise;
@@ -1630,7 +1749,6 @@ describe('startExecutionRun', () => {
         executeBoundedRun: async () => {},
         send: async () => ({ ok: true }),
         voiceAgentManager,
-        getDepthByCallId: () => null,
       });
 
       await readyWaitStartedPromise;
@@ -1710,7 +1828,6 @@ describe('startExecutionRun', () => {
         executeBoundedRun: async () => {},
         send,
         voiceAgentManager,
-        getDepthByCallId: () => null,
       });
 
       await vi.waitFor(() => expect(controllers.size).toBe(1));
@@ -1794,7 +1911,6 @@ describe('startExecutionRun', () => {
         executeBoundedRun,
         send: async () => ({ ok: true }),
         voiceAgentManager,
-        getDepthByCallId: () => null,
       });
 
       await resumeSupportStarted;
@@ -1870,7 +1986,6 @@ describe('startExecutionRun', () => {
         executeBoundedRun: async () => {},
         send: async () => ({ ok: true }),
         voiceAgentManager,
-        getDepthByCallId: () => null,
       });
 
       await transcriptStarted;

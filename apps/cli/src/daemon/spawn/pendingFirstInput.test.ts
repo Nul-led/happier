@@ -79,6 +79,7 @@ describe('pendingFirstInput', () => {
       localId: 'spawn-first-turn:structured',
       meta: { source: 'ui', sentFrom: 'cli', ...meta },
       inputAdmission,
+      requestedAction: { v: 1, kind: 'send_now' },
     });
   });
 
@@ -140,6 +141,7 @@ describe('pendingFirstInput', () => {
           permission: {},
         },
       },
+      requestedAction: { v: 1, kind: 'send_now' },
     });
     expect(env[HAPPIER_DAEMON_PENDING_FIRST_INPUT_ENV_KEY]).toBeUndefined();
   });

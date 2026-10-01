@@ -93,7 +93,7 @@ export function normalizeSessionConfigOptions(raw: ReadonlyArray<unknown>): Sess
         const optDescription = getString(opt, 'description');
         normalized.push({ value, name: optName, ...(optDescription ? { description: optDescription } : {}) });
       }
-      if (normalized.length > 0) options = normalized;
+      if (normalized.length > 0 || optionsRaw.length === 0) options = normalized;
     }
 
     out.push({
@@ -188,8 +188,9 @@ export function readSessionModelStateFromSessionResponse(
     .filter((model): model is SessionModel => Boolean(model));
 
   if (
-    availableModels.length === 0
-    || !availableModels.some((model) => model.id === currentModelId)
+    availableModelsRaw.length > 0 && (
+      availableModels.length === 0 || !availableModels.some((model) => model.id === currentModelId)
+    )
   ) return null;
 
   return { currentModelId, availableModels };
@@ -224,8 +225,9 @@ export async function readSessionModelStateFromSessionResponseAwaitable(
     availableModels.push(revalidated);
   }
   if (
-    availableModels.length === 0
-    || !availableModels.some((model) => model.id === currentModelId)
+    availableModelsCandidate.length > 0 && (
+      availableModels.length === 0 || !availableModels.some((model) => model.id === currentModelId)
+    )
   ) {
     return null;
   }
@@ -253,14 +255,14 @@ export function readSessionModelStateFromConfigOptions(
   if (!normalizedConfigId) return null;
   const configOptions = readSessionConfigOptionsFromSessionResponse(sessionResponse);
   const modelOption = configOptions?.find((option) => option.id === normalizedConfigId) ?? null;
-  if (!modelOption?.options || modelOption.options.length === 0) return null;
+  if (!modelOption?.options) return null;
 
   const availableModels = modelOption.options.map((option) => ({
     id: option.value,
     name: option.name,
     ...(option.description ? { description: option.description } : {}),
   }));
-  if (!availableModels.some((model) => model.id === modelOption.currentValue)) return null;
+  if (availableModels.length > 0 && !availableModels.some((model) => model.id === modelOption.currentValue)) return null;
   return {
     currentModelId: modelOption.currentValue,
     availableModels,

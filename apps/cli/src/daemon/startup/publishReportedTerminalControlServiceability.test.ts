@@ -77,5 +77,43 @@ describe('publishReportedTerminalControlServiceability', () => {
       },
     );
     expect(tracked.publishedTerminalControlServiceabilityAttachmentId).toBe(attachmentId);
+    expect(tracked).toMatchObject({ publishedTerminalControlServiceabilityAttachmentLifecycle: 'owned' });
+  });
+
+  it.each([false, true])('tracks a borrowed foreground runner with already-published serviceability=%s', async (alreadyPublished) => {
+    const sessionId = 'sess-borrowed-herdr';
+    const attachmentId = createTerminalAttachmentId();
+    const terminal = {
+      mode: 'herdr' as const,
+      herdr: { sessionName: 'default', socketPath: '/tmp/herdr.sock', terminalId: 'terminal_1' },
+      ...(alreadyPublished ? { controlServiceabilityV1: { v: 1 as const, attachmentId, state: 'servable' as const, observedAt: 1 } } : {}),
+    };
+    const tracked: TrackedSession = {
+      pid: 43,
+      startedBy: 'terminal',
+      happySessionId: sessionId,
+      happySessionMetadataFromLocalWebhook: {
+        path: '/tmp', host: 'test-host', homeDir: '/tmp/home', happyHomeDir: '/tmp/happier',
+        happyLibDir: '/tmp/happier/lib', happyToolsDir: '/tmp/happier/tools', terminal,
+      },
+    };
+    let published = false;
+    await publishReportedTerminalControlServiceability({
+      tracked,
+      readTerminalAttachmentInfo: async () => ({
+        version: 3, lifecycle: 'borrowed', attachmentId, sessionId, updatedAt: 1,
+        handle: {
+          kind: 'herdr', attachmentId, ...terminal.herdr,
+          attachMetadata: { attachStrategy: 'terminal_host', topology: 'shared', locality: 'same_machine', liveProbe: 'required' },
+        },
+      }),
+      probeSessionRunnerServiceability: async () => ({ state: 'runner_present', control: { state: 'servable' } }),
+      publishSessionRunnerControlServiceability: async () => { published = true; return true; },
+    });
+    expect(published).toBe(!alreadyPublished);
+    expect(tracked).toMatchObject({
+      publishedTerminalControlServiceabilityAttachmentId: attachmentId,
+      publishedTerminalControlServiceabilityAttachmentLifecycle: 'borrowed',
+    });
   });
 });

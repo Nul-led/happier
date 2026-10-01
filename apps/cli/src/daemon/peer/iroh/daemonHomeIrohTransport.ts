@@ -1,8 +1,14 @@
 import { classifyIrohHomeCarrierFailure, IrohError } from '@happier-dev/iroh-native/node';
-import type { ReadinessProbeResult } from '@happier-dev/connection-supervisor';
+import {
+  createManagedEndpointSupervisor,
+  DEFAULT_MANAGED_CONNECTION_POLICY,
+  type ReadinessProbeResult,
+} from '@happier-dev/connection-supervisor';
 import type { FeaturesResponse, HomeConnectionDescriptorV1 } from '@happier-dev/protocol';
 import {
   acquireHomeCarrierByPolicy,
+  readHomeApplicationCarrierEligibilityFromEnv,
+  type HomeApplicationCarrierEligibility,
   type HomeCarrierAcquisitionMode,
 } from '@happier-dev/cli-common/homeEnrollment';
 import { assertResolvedHomeTargetIdentity, resolveHomeTarget } from '@happier-dev/cli-common/homeTarget';
@@ -12,6 +18,7 @@ import {
   createLoopbackReadinessProbe,
 } from '@/api/connection/createLoopbackReadinessProbe';
 import { publishServerHttpRuntimeOrigin } from '@/api/client/serverHttpBaseUrl';
+import { logger } from '@/ui/logger';
 import {
   getActiveServerProfile,
   reconcileActiveServerProfileHomeConnectionDescriptor,
@@ -24,11 +31,13 @@ type ProbeInput = Readonly<{
   serverUrl: string;
   token: string;
   expectedServerIdentityId: string;
+  signal?: AbortSignal;
 }>;
 
 type IdentityProbeInput = Readonly<{
   serverUrl: string;
   expectedServerIdentityId: string;
+  signal?: AbortSignal;
 }>;
 
 export type DaemonHomeTransport = Readonly<{
@@ -55,15 +64,59 @@ class DaemonHomeReadinessError extends Error {
 type PrepareDaemonHomeIrohTransportInput = Readonly<{
   runtime: DaemonMachineIrohRuntime | null;
   profile: ServerProfile;
+  applicationCarrierEligibility?: HomeApplicationCarrierEligibility;
   token?: string;
   readProfile?: () => Promise<ServerProfile>;
   identityProbe?: (input: IdentityProbeInput) => Promise<ReadinessProbeResult>;
   probe?: (input: ProbeInput) => Promise<ReadinessProbeResult>;
   publishRuntimeOrigin?: typeof publishServerHttpRuntimeOrigin;
   isCancelled?: () => boolean;
+  signal?: AbortSignal;
 }>;
 
 type ActiveDaemonHomeTransport = Omit<DaemonHomeTransport, 'reacquire'>;
+
+async function waitForDaemonHomeReadiness(
+  probe: () => Promise<ReadinessProbeResult>,
+  signal?: AbortSignal,
+): Promise<ReadinessProbeResult> {
+  // Startup waits before publishing a verified origin or successor control state.
+  // The existing endpoint owner supplies retry/backoff; reconnect already has
+  // its own supervisor and continues to consume one-attempt probes below.
+  const supervisor = createManagedEndpointSupervisor({
+    ...DEFAULT_MANAGED_CONNECTION_POLICY,
+    probeReadiness: probe,
+    onStateChange: (state) => {
+      if (state.phase === 'offline') {
+        logger.warn('[DAEMON RUN] Waiting for verified Home transport', {
+          status: state.lastProbe?.status,
+          nextRetryAt: state.nextRetryAt,
+        });
+      }
+    },
+  });
+  let unsubscribe = () => {};
+  let onAbort = () => {};
+  try {
+    return await new Promise<ReadinessProbeResult>((resolve, reject) => {
+      onAbort = () => resolve({ status: 'server_unreachable', errorMessage: 'Home transport is released' });
+      if (signal?.aborted) {
+        onAbort();
+        return;
+      }
+      signal?.addEventListener('abort', onAbort, { once: true });
+      unsubscribe = supervisor.subscribe((state) => {
+        if (state.phase === 'online') resolve({ status: 'ready' });
+        if (state.phase === 'auth_failed' && state.lastProbe) resolve(state.lastProbe);
+      });
+      void supervisor.start().catch(reject);
+    });
+  } finally {
+    signal?.removeEventListener('abort', onAbort);
+    unsubscribe();
+    await supervisor.stop();
+  }
+}
 
 function withReacquisition(
   input: PrepareDaemonHomeIrohTransportInput,
@@ -77,6 +130,11 @@ function withReacquisition(
   let releaseInFlight: Promise<void> | null = null;
   let reacquireInFlight: Promise<ReadinessProbeResult> | null = null;
   let authenticatedToken = input.token;
+  let acceptedDescriptorRevision = input.profile.homeConnectionDescriptor?.revision ?? null;
+  const readinessCancellation = new AbortController();
+  const readinessSignal = input.signal
+    ? AbortSignal.any([input.signal, readinessCancellation.signal])
+    : readinessCancellation.signal;
   return {
     get carrier() {
       return active.carrier;
@@ -87,6 +145,7 @@ function withReacquisition(
     async release() {
       if (released) return;
       closing = true;
+      readinessCancellation.abort();
       releaseInFlight ??= (async () => {
         await reacquireInFlight?.catch(() => undefined);
         const errors: unknown[] = [];
@@ -118,6 +177,20 @@ function withReacquisition(
               errorMessage: 'Selected Iroh Home transport cannot be replaced without a current connection descriptor',
             };
           }
+          const currentDescriptor = currentProfile.homeConnectionDescriptor;
+          // On an Iroh lease reconnect, an unchanged descriptor can still
+          // contain the previous Home process's ephemeral direct address.
+          // Verify the current lease first: a transient Machine socket loss
+          // must not needlessly move a healthy direct path onto a relay.
+          const relayOnlyRecovery = active.carrier === 'iroh'
+            && Boolean(input.runtime?.endpoint?.relayUrls?.length)
+            && currentDescriptor?.revision === acceptedDescriptorRevision
+            && currentDescriptor.endpoints.some((endpoint) => endpoint.kind === 'iroh'
+              && Boolean(endpoint.relayUrls?.length && endpoint.directAddresses?.length));
+          if (relayOnlyRecovery && authenticatedToken) {
+            const currentReadiness = await active.verifyAuthenticated(authenticatedToken);
+            if (currentReadiness.status !== 'server_unreachable') return currentReadiness;
+          }
           const replacement = await prepareDaemonHomeIrohTransportOnce(
             {
               ...input,
@@ -125,7 +198,11 @@ function withReacquisition(
               isCancelled: () => closing || released,
             },
             currentProfile,
-            active.carrier === 'iroh' ? 'pinned_recovery' : 'initial_selection',
+            active.carrier === 'iroh' && (input.applicationCarrierEligibility
+              ?? readHomeApplicationCarrierEligibilityFromEnv(process.env)) !== 'standard_only'
+              ? 'pinned_recovery'
+              : 'initial_selection',
+            relayOnlyRecovery,
           );
           if (closing || released) {
             pendingReleases.add(replacement.release);
@@ -136,6 +213,7 @@ function withReacquisition(
           const predecessorRelease = activeRelease;
           active = replacement;
           activeRelease = replacement.release;
+          acceptedDescriptorRevision = currentDescriptor?.revision ?? null;
           pendingReleases.add(activeRelease);
           try {
             await predecessorRelease();
@@ -163,8 +241,8 @@ function withReacquisition(
       return await reacquireInFlight;
     },
     async verifyAuthenticated(token) {
-      if (released) return { status: 'server_unreachable', errorMessage: 'Home transport is released' };
-      const readiness = await active.verifyAuthenticated(token);
+      if (released || closing) return { status: 'server_unreachable', errorMessage: 'Home transport is released' };
+      const readiness = await waitForDaemonHomeReadiness(() => active.verifyAuthenticated(token), readinessSignal);
       if (readiness.status === 'ready') authenticatedToken = token;
       return readiness;
     },
@@ -183,6 +261,8 @@ async function prepareDaemonHomeIrohTransportOnce(
   input: PrepareDaemonHomeIrohTransportInput,
   profile: ServerProfile,
   mode: HomeCarrierAcquisitionMode,
+  relayOnlyRecovery = false,
+  superviseReadiness = false,
 ): Promise<ActiveDaemonHomeTransport> {
   const descriptor = profile.homeConnectionDescriptor;
   if (!descriptor) {
@@ -200,7 +280,7 @@ async function prepareDaemonHomeIrohTransportOnce(
   const expectedHomeServerIdentityId = resolvedTarget.homeServerIdentityId;
   if (!expectedHomeServerIdentityId) throw new Error('Resolved daemon Home target has no stable identity');
 
-  const probe = input.probe ?? defaultProbe;
+  const probe = input.probe ?? (async (probeInput: ProbeInput) => await defaultProbe({ ...probeInput, signal: input.signal }));
   const identityProbe = input.identityProbe ?? (
     input.probe
       ? async ({ serverUrl, expectedServerIdentityId }: IdentityProbeInput) => await input.probe!({
@@ -208,8 +288,11 @@ async function prepareDaemonHomeIrohTransportOnce(
         token: input.token ?? '',
         expectedServerIdentityId,
       })
-      : defaultIdentityProbe
+      : async (probeInput: IdentityProbeInput) => await defaultIdentityProbe({ ...probeInput, signal: input.signal })
   );
+  const checkReadiness = async (check: () => Promise<ReadinessProbeResult>) => superviseReadiness
+    ? await waitForDaemonHomeReadiness(check, input.signal)
+    : await check();
   const publish = input.publishRuntimeOrigin ?? publishServerHttpRuntimeOrigin;
   const verifyTrustedFallback = async (serverUrl: string, token: string) => await probe({
     serverUrl,
@@ -217,7 +300,7 @@ async function prepareDaemonHomeIrohTransportOnce(
     expectedServerIdentityId: expectedHomeServerIdentityId,
   });
   const activateTrustedFallback = (serverUrl: string): ActiveDaemonHomeTransport => {
-    if (input.isCancelled?.()) {
+    if (input.signal?.aborted || input.isCancelled?.()) {
       throw new DaemonHomeReadinessError({ status: 'server_unreachable', errorMessage: 'Home transport is released' });
     }
     const unpublish = publish(serverUrl, 'https');
@@ -228,25 +311,29 @@ async function prepareDaemonHomeIrohTransportOnce(
       verifyAuthenticated: async (token) => await verifyTrustedFallback(serverUrl, token),
     };
   };
+  const acquireNativeLease = async () => {
+    const ensureHomeTunnel = input.runtime?.ensureHomeTunnel;
+    if (!ensureHomeTunnel) {
+      throw new IrohError('unavailable', 'Native Iroh Home transport is unavailable');
+    }
+    return await ensureHomeTunnel({ descriptor, ...(relayOnlyRecovery ? { relayOnly: true } : {}) });
+  };
   const selection = await acquireHomeCarrierByPolicy({
     mode,
-    applicationCarrierEligibility: 'automatic',
+    applicationCarrierEligibility: input.applicationCarrierEligibility
+      ?? readHomeApplicationCarrierEligibilityFromEnv(process.env),
     descriptor,
     preferredTransport: resolvedTarget.preferredTransport,
     classifyFailure: (error) => error instanceof DaemonHomeReadinessError
       ? { fallbackAllowed: !error.afterIrohAcquisition && error.probe.status !== 'auth_failed' }
       : classifyIrohHomeCarrierFailure(error),
     acquireIroh: async ({ endpoint }) => {
-      const ensureHomeTunnel = input.runtime?.ensureHomeTunnel;
-      if (!ensureHomeTunnel) {
-        throw new IrohError('unavailable', 'Native Iroh Home transport is unavailable');
-      }
-      const nativeLease = await ensureHomeTunnel({ descriptor });
+      const nativeLease = await acquireNativeLease();
       try {
-        const identityReadiness = await identityProbe({
+        const identityReadiness = await checkReadiness(async () => await identityProbe({
           serverUrl: nativeLease.runtimeOrigin,
           expectedServerIdentityId: expectedHomeServerIdentityId,
-        });
+        }));
         if (identityReadiness.status !== 'ready') {
           throw new DaemonHomeReadinessError({
             ...identityReadiness,
@@ -254,11 +341,11 @@ async function prepareDaemonHomeIrohTransportOnce(
           }, true);
         }
         if (input.token) {
-          const authenticatedReadiness = await probe({
+          const authenticatedReadiness = await checkReadiness(async () => await probe({
             serverUrl: nativeLease.runtimeOrigin,
             token: input.token,
             expectedServerIdentityId: expectedHomeServerIdentityId,
-          });
+          }));
           if (authenticatedReadiness.status !== 'ready') {
             throw new DaemonHomeReadinessError({
               ...authenticatedReadiness,
@@ -266,7 +353,7 @@ async function prepareDaemonHomeIrohTransportOnce(
             }, true);
           }
         }
-        if (input.isCancelled?.()) {
+        if (input.signal?.aborted || input.isCancelled?.()) {
           throw new IrohError('cancelled', 'Home transport is released');
         }
         return {
@@ -292,12 +379,12 @@ async function prepareDaemonHomeIrohTransportOnce(
     throw selection.error;
   }
   if (selection.kind === 'https') {
-    const standardReadiness = input.token
+    const standardReadiness = await checkReadiness(async () => input.token
       ? await verifyTrustedFallback(selection.runtimeOrigin, input.token)
       : await identityProbe({
           serverUrl: selection.runtimeOrigin,
           expectedServerIdentityId: expectedHomeServerIdentityId,
-        });
+        }));
     if (standardReadiness.status !== 'ready') {
       throw new DaemonHomeReadinessError({
         ...standardReadiness,
@@ -308,11 +395,19 @@ async function prepareDaemonHomeIrohTransportOnce(
   }
 
   const nativeLease = selection.carrier.value;
-  if (input.isCancelled?.()) {
+  if (input.signal?.aborted || input.isCancelled?.()) {
     await selection.release();
     throw new DaemonHomeReadinessError({ status: 'server_unreachable', errorMessage: 'Home transport is released' });
   }
-  const unpublish = publish(nativeLease.runtimeOrigin, 'iroh');
+  const unpublish = publish(nativeLease.runtimeOrigin, 'iroh', {
+    descriptor,
+    acquire: async () => ({
+      ...await acquireNativeLease(),
+      homeServerIdentityId: selection.carrier.homeServerIdentityId,
+      endpointId: selection.carrier.endpointId,
+      status: 'ready',
+    }),
+  });
   let released = false;
   return {
     carrier: 'iroh',
@@ -336,7 +431,7 @@ export async function prepareDaemonHomeIrohTransport(
 ): Promise<DaemonHomeTransport> {
   return withReacquisition(
     input,
-    await prepareDaemonHomeIrohTransportOnce(input, input.profile, 'initial_selection'),
+    await prepareDaemonHomeIrohTransportOnce(input, input.profile, 'initial_selection', false, true),
   );
 }
 

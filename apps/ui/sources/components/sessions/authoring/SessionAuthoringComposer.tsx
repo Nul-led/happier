@@ -138,7 +138,7 @@ function SessionAuthoringComposerDictationAccessory(props: Readonly<{
  * correlation only; persistence, submission, references, attachments and
  * runtime authority remain with the controlled host.
  */
-export const SessionAuthoringComposer = React.forwardRef<
+const SessionAuthoringComposerSurface = React.forwardRef<
     MultiTextInputHandle,
     SessionAuthoringComposerProps
 >((props, forwardedRef) => {
@@ -199,4 +199,9 @@ export const SessionAuthoringComposer = React.forwardRef<
     );
 });
 
+SessionAuthoringComposerSurface.displayName = 'SessionAuthoringComposerSurface';
+
+export const SessionAuthoringComposer = React.forwardRef<MultiTextInputHandle, SessionAuthoringComposerProps>((props, ref) => {
+    return <SessionAuthoringComposerSurface {...props} ref={ref} />;
+});
 SessionAuthoringComposer.displayName = 'SessionAuthoringComposer';

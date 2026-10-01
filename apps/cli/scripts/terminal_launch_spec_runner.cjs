@@ -3,6 +3,7 @@
 const fs = require('node:fs/promises');
 const { spawn } = require('node:child_process');
 const path = require('node:path');
+const { killProcessTree } = require('./process_tree.cjs');
 
 const terminalSignalNames = ['SIGINT', 'SIGQUIT'];
 
@@ -67,11 +68,15 @@ async function readLaunchSpecFile(specPath) {
     if (typeof parsed.cwd !== 'string' || parsed.cwd.length === 0) {
         throw new Error('Invalid terminal launch spec: cwd must be a non-empty string');
     }
+    if (parsed.windowsVerbatimArguments !== undefined && typeof parsed.windowsVerbatimArguments !== 'boolean') {
+        throw new Error('Invalid terminal launch spec: windowsVerbatimArguments must be a boolean');
+    }
     return {
         command: parsed.command,
         args: readStringArray(parsed.args, 'args'),
         cwd: parsed.cwd,
         env: buildChildEnv(readEnv(parsed.env), readOptionalStringArray(parsed.envPassthroughKeys, 'envPassthroughKeys')),
+        ...(parsed.windowsVerbatimArguments === true ? { windowsVerbatimArguments: true } : {}),
     };
 }
 
@@ -104,8 +109,9 @@ function installTerminalSignalGuards() {
     };
 }
 
-function runLaunchSpec(spec) {
+function runLaunchSpec(spec, controllerSignal) {
     return new Promise((resolve, reject) => {
+        if (controllerSignal?.aborted) { resolve(1); return; }
         const child = spawn(spec.command, spec.args, {
             cwd: spec.cwd,
             env: spec.env,
@@ -117,11 +123,21 @@ function runLaunchSpec(spec) {
                 : {}),
         });
         const removeSignalGuards = installTerminalSignalGuards();
+        let controllerCleanup = null;
+        const onControllerClosed = () => {
+            // The surviving launcher owns this tree; no polling or independent host policy.
+            controllerCleanup = killProcessTree(child).catch(() => {
+                console.error('Owned terminal process cleanup could not be verified (terminal_controller_cleanup_incomplete)');
+            });
+        };
+        controllerSignal?.addEventListener('abort', onControllerClosed, { once: true });
         let settled = false;
-        const settle = (fn) => {
+        const settle = async (fn) => {
             if (settled) return;
             settled = true;
+            controllerSignal?.removeEventListener('abort', onControllerClosed);
             removeSignalGuards();
+            await controllerCleanup;
             fn();
         };
         child.on('error', (error) => {
@@ -142,7 +158,22 @@ function runLaunchSpec(spec) {
 }
 
 async function runLaunchSpecFile(specPath) {
-    return await runLaunchSpec(await readLaunchSpecFile(specPath));
+    // Arm before the asynchronous secret handoff read. Imported callers may themselves
+    // have IPC (for example test workers); only this standalone launcher's channel is ours.
+    const lifetime = require.main === module && typeof process.send === 'function' ? new AbortController() : null;
+    const onControllerClosed = () => lifetime.abort();
+    if (lifetime) {
+        process.once('disconnect', onControllerClosed);
+        if (!process.connected) lifetime.abort();
+    }
+    try {
+        return await runLaunchSpec(await readLaunchSpecFile(specPath), lifetime?.signal);
+    } finally {
+        if (lifetime) {
+            process.off('disconnect', onControllerClosed);
+            if (process.connected) process.disconnect();
+        }
+    }
 }
 
 async function main(argv) {

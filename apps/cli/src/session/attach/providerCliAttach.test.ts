@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { readFile } from 'node:fs/promises';
 
 import { createProviderCliAttachSurface, probeLocalSocket } from './providerCliAttach';
 
@@ -101,6 +102,70 @@ describe('createProviderCliAttachSurface', () => {
         });
     });
 
+    it.each([false, true])('stops the exact attach child and reports signal failures (killFails=%s)', async (killFails) => {
+        vi.stubEnv('HAPPIER_LOG_LEVEL', 'info');
+        vi.resetModules();
+        const { createProviderCliAttachSurface: createSurface } = await import('./providerCliAttach');
+        const { logger } = await import('@/ui/logger');
+        logger.infoFile('Provider attach cleanup regression started');
+        const exitHandlers: SpawnExitHandler[] = [];
+        const kill = vi.fn(() => {
+            if (killFails) throw new Error('attach signal failed');
+            return true;
+        });
+        const spawnProcess = vi.fn(() => ({
+            exitCode: null,
+            kill,
+            once: (event: 'exit' | 'error', handler: SpawnExitHandler | SpawnErrorHandler) => {
+                if (event === 'exit') exitHandlers.push(handler as SpawnExitHandler);
+            },
+        }));
+        const controller = new AbortController();
+        const surface = createSurface<Record<string, never>>({
+            agentId: 'codex',
+            resolveTarget: () => ({ ok: true, value: {} }),
+            createArgs: () => ['attach'],
+            resolveLaunchSpec: () => ({
+                source: 'managed',
+                resolvedPath: '/managed/codex',
+                command: 'codex',
+                args: [],
+            }),
+            spawnProcess: spawnProcess as unknown as Parameters<typeof createProviderCliAttachSurface>[0]['spawnProcess'],
+        });
+
+        const attachPromise = surface.attach({
+            sessionId: 'session-1',
+            metadata: {},
+            signal: controller.signal,
+        });
+        await vi.waitFor(() => expect(spawnProcess).toHaveBeenCalledTimes(1));
+
+        try {
+            vi.useFakeTimers();
+            controller.abort();
+            expect(kill).toHaveBeenCalledWith('SIGINT');
+            if (killFails) {
+                await vi.runOnlyPendingTimersAsync();
+                expect(kill).toHaveBeenCalledWith('SIGKILL');
+                logger.flushSync();
+                const log = await readFile(logger.logFilePath, 'utf8');
+                expect(log).toContain('provider_attach_cleanup_signal_failed');
+                expect(log).toContain('SIGINT');
+                expect(log).toContain('SIGKILL');
+            }
+            exitHandlers[0]?.(0, 'SIGINT');
+            await expect(attachPromise).resolves.toEqual({
+                ok: true,
+                value: { exitCode: 0 },
+            });
+        } finally {
+            exitHandlers[0]?.(0, 'SIGINT');
+            vi.useRealTimers();
+            vi.unstubAllEnvs();
+        }
+    });
+
     it('probes descriptor health URL with a bounded request', async () => {
         const fetchFn = vi.fn(async () => ({ ok: true }));
         const surface = createProviderCliAttachSurface<{ healthUrl: string }>({
@@ -121,6 +186,217 @@ describe('createProviderCliAttachSurface', () => {
         expect(fetchFn).toHaveBeenCalledWith(
             'https://opencode.example.test/global/health',
             expect.objectContaining({ method: 'GET' }),
+        );
+    });
+
+    it('passes the exact selected CLI version to provider-owned argv and reachability', async () => {
+        const createArgs = vi.fn(() => []);
+        const resolveReachability = vi.fn(() => ({
+            kind: 'http' as const,
+            url: 'https://opencode.example.test/api/info',
+        }));
+        const fetchFn = vi.fn(async () => ({ ok: true }));
+        const surface = createProviderCliAttachSurface<{ baseUrl: string }>({
+            agentId: 'opencode',
+            resolveTarget: () => ({ ok: true, value: { baseUrl: 'https://opencode.example.test' } }),
+            createArgs,
+            resolveReachability,
+            cliVersionArgs: ['--version'],
+            resolveCliVersion: async () => '2.0.15',
+            fetchFn: fetchFn as unknown as typeof fetch,
+        });
+
+        await expect(surface.evaluateAvailability?.({
+            operation: 'attach',
+            sessionId: 'session-1',
+            metadata: {},
+            depth: 'live',
+        })).resolves.toEqual({ available: true });
+        expect(resolveReachability).toHaveBeenCalledWith(
+            { baseUrl: 'https://opencode.example.test' },
+            { cliVersion: '2.0.15' },
+        );
+    });
+
+    it('reuses one selected launch for the attach version probe and child spawn', async () => {
+        const exitHandlers: SpawnExitHandler[] = [];
+        const spawnProcess = vi.fn(() => ({
+            once: (event: 'exit' | 'error', handler: SpawnExitHandler | SpawnErrorHandler) => {
+                if (event === 'exit') exitHandlers.push(handler as SpawnExitHandler);
+            },
+        }));
+        const selectedLaunch = Object.freeze({
+            source: 'system' as const,
+            resolvedPath: '/tools/opencode-v2',
+            command: '/tools/opencode-v2',
+            args: Object.freeze(['--selected-v2']),
+        });
+        const resolveLaunchSpec = vi.fn(async () => selectedLaunch);
+        const resolveCliVersion = vi.fn(async ({ launch }) => {
+            expect(launch).toBe(selectedLaunch);
+            return '2.0.15';
+        });
+        const surface = createProviderCliAttachSurface<Record<string, never>>({
+            agentId: 'opencode',
+            resolveTarget: () => ({ ok: true, value: {} }),
+            cliVersionArgs: ['--version'],
+            resolveLaunchSpec,
+            resolveCliVersion,
+            createArgs: (_target, host) => ['attach', `--version=${host.cliVersion ?? ''}`],
+            spawnProcess: spawnProcess as unknown as Parameters<typeof createProviderCliAttachSurface>[0]['spawnProcess'],
+        });
+
+        const attachPromise = surface.attach({ sessionId: 'session-v2', metadata: {} });
+        await vi.waitFor(() => expect(spawnProcess).toHaveBeenCalledTimes(1));
+        expect(resolveLaunchSpec).toHaveBeenCalledTimes(1);
+        expect(resolveCliVersion).toHaveBeenCalledWith({
+            launch: selectedLaunch,
+            args: ['--version'],
+            env: expect.any(Object),
+        });
+        expect(spawnProcess).toHaveBeenCalledWith(
+            '/tools/opencode-v2',
+            ['--selected-v2', 'attach', '--version=2.0.15'],
+            expect.objectContaining({ shell: false, stdio: 'inherit' }),
+        );
+        exitHandlers[0]?.(0, null);
+        await expect(attachPromise).resolves.toEqual({ ok: true, value: { exitCode: 0 } });
+    });
+
+    it('uses exact managed-service access for authenticated health and child credentials', async () => {
+        const exitHandlers: SpawnExitHandler[] = [];
+        const spawnProcess = vi.fn(() => ({
+            once: (event: 'exit' | 'error', handler: SpawnExitHandler | SpawnErrorHandler) => {
+                if (event === 'exit') exitHandlers.push(handler as SpawnExitHandler);
+            },
+        }));
+        const request = vi.fn(async () => ({ ok: true }));
+        const resolveManagedServiceAccess = vi.fn(async () => ({
+            baseUrl: 'http://127.0.0.1:4096/',
+            request,
+            childEnvironment: Object.freeze({
+                OPENCODE_SERVER_PASSWORD: 'exact-host-owned-password',
+                OPENCODE_PASSWORD: 'wrong-returned-alias',
+                PATH: '/wrong-returned-path',
+            }),
+        }));
+        const ambientEnv = Object.freeze({
+            PATH: '/bin',
+            OPENCODE_PASSWORD: 'wrong-canonical-ambient-password',
+            OPENCODE_SERVER_PASSWORD: 'wrong-ambient-password',
+        });
+        const surface = createProviderCliAttachSurface<{ baseUrl: string }>({
+            agentId: 'opencode',
+            resolveTarget: () => ({
+                ok: true,
+                value: { baseUrl: 'http://127.0.0.1:4096/' },
+            }),
+            createArgs: () => [
+                '--server',
+                'http://127.0.0.1:4096/',
+                '--session',
+                'opencode-session-1',
+                '/repo',
+            ],
+            resolveReachability: () => ({
+                kind: 'http',
+                url: 'http://127.0.0.1:4096/api/info',
+            }),
+            resolveManagedServiceAccess,
+            managedServiceTargetBaseUrl: (target) => target.baseUrl,
+            managedServiceCredentialEnvironmentKey: 'OPENCODE_SERVER_PASSWORD',
+            managedServiceCredentialEnvironmentAliases: ['OPENCODE_PASSWORD'],
+            resolveLaunchSpec: () => ({
+                source: 'managed',
+                resolvedPath: '/managed/opencode',
+                command: 'opencode',
+                args: [],
+            }),
+            env: ambientEnv,
+            spawnProcess: spawnProcess as unknown as Parameters<typeof createProviderCliAttachSurface>[0]['spawnProcess'],
+        });
+
+        await expect(surface.evaluateAvailability?.({
+            operation: 'attach',
+            sessionId: 'session-1',
+            metadata: {},
+            depth: 'live',
+        })).resolves.toEqual({ available: true });
+        expect(request).toHaveBeenCalledWith({
+            pathAndQuery: '/api/info',
+            signal: expect.any(AbortSignal),
+        });
+
+        const attachPromise = surface.attach({ sessionId: 'session-1', metadata: {} });
+        await vi.waitFor(() => expect(spawnProcess).toHaveBeenCalledTimes(1));
+        expect(spawnProcess).toHaveBeenCalledWith(
+            'opencode',
+            [
+                '--server',
+                'http://127.0.0.1:4096/',
+                '--session',
+                'opencode-session-1',
+                '/repo',
+            ],
+            expect.objectContaining({
+                env: {
+                    PATH: '/bin',
+                    OPENCODE_PASSWORD: 'exact-host-owned-password',
+                    OPENCODE_SERVER_PASSWORD: 'exact-host-owned-password',
+                },
+            }),
+        );
+        expect(ambientEnv.OPENCODE_SERVER_PASSWORD).toBe('wrong-ambient-password');
+        exitHandlers[0]?.(0, null);
+        await attachPromise;
+    });
+
+    it('never applies managed-service credentials to a different attach target', async () => {
+        const spawnProcess = vi.fn(() => ({
+            once: (event: 'exit' | 'error', handler: SpawnExitHandler | SpawnErrorHandler) => {
+                if (event === 'exit') (handler as SpawnExitHandler)(0, null);
+            },
+        }));
+        const surface = createProviderCliAttachSurface<{ baseUrl: string }>({
+            agentId: 'opencode',
+            resolveTarget: () => ({
+                ok: true,
+                value: { baseUrl: 'https://operator.example.test/' },
+            }),
+            createArgs: () => [],
+            resolveManagedServiceAccess: async () => ({
+                baseUrl: 'http://127.0.0.1:4096/',
+                request: async () => ({ ok: true }),
+                childEnvironment: Object.freeze({ SECRET: 'must-not-leak' }),
+            }),
+            managedServiceTargetBaseUrl: (target) => target.baseUrl,
+            managedServiceCredentialEnvironmentKey: 'SECRET',
+            managedServiceCredentialEnvironmentAliases: ['SECRET_ALIAS'],
+            env: {
+                PATH: '/bin',
+                SECRET: 'external-target-password',
+                SECRET_ALIAS: 'external-target-password',
+            },
+            resolveLaunchSpec: () => ({
+                source: 'managed',
+                resolvedPath: '/managed/opencode',
+                command: 'opencode',
+                args: [],
+            }),
+            spawnProcess: spawnProcess as unknown as Parameters<typeof createProviderCliAttachSurface>[0]['spawnProcess'],
+        });
+
+        await surface.attach({ sessionId: 'session-1', metadata: {} });
+        expect(spawnProcess).toHaveBeenCalledWith(
+            'opencode',
+            [],
+            expect.objectContaining({
+                env: {
+                    PATH: '/bin',
+                    SECRET: 'external-target-password',
+                    SECRET_ALIAS: 'external-target-password',
+                },
+            }),
         );
     });
 

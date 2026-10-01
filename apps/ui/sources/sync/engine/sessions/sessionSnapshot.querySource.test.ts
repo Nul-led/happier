@@ -10,6 +10,7 @@ import {
 
 import { fetchAndApplySessions } from './sessionSnapshot';
 import { createSessionListQueryHomeController } from '@/sync/domains/session/listing/sessionListQueryController';
+import { createSessionListRenderableSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
 
 const PLAIN_ACCOUNT_CURRENTNESS = {
     mode: 'plain',
@@ -74,6 +75,33 @@ function buildQuery(): SessionListQueryV1 {
 }
 
 describe('fetchAndApplySessions query source', () => {
+    it('applies newer Agent state to a list row even when the hydrated snapshot has older row timestamps', async () => {
+        const row = {
+            ...buildSessionRow('agent-mixed'),
+            seq: 2, updatedAt: 5, agentStateVersion: 2,
+            agentState: JSON.stringify({ requests: { request: { tool: 'tool', arguments: {}, createdAt: 4 } } }),
+        };
+        const current = createSessionListRenderableSessionFixture({
+            id: row.id, seq: 10, updatedAt: 10, metadataLayoutVersion: 0,
+            metadataVersion: 1, agentStateVersion: 1,
+            hasPendingPermissionRequests: false, hasPendingUserActionRequests: false,
+        });
+        const patches: unknown[] = [];
+        await fetchAndApplySessions({
+            serverId: 'home-a',
+            credentials: { token: 't' }, accountCurrentness: PLAIN_ACCOUNT_CURRENTNESS,
+            encryption: null, sessionDataKeys: new Map(),
+            request: async () => jsonResponse({ sessions: [row], nextCursor: null, hasNext: false }),
+            applySessions: () => {}, applySessionListRenderables: () => {},
+            applySessionListRenderablePatches: (next) => patches.push(...next),
+            getCurrentSessionListRenderable: () => current,
+            log: { log: () => {} },
+        });
+        await vi.waitFor(() => expect(patches).toContainEqual(expect.objectContaining({
+            sessionId: row.id,
+            patch: expect.objectContaining({ agentStateVersion: 2, hasPendingPermissionRequests: true }),
+        })));
+    });
     it('preserves released responsibility omission without creating own-property undefined', async () => {
         const applySessionListRenderables = vi.fn();
         const legacy = buildSessionRow('legacy-omission') as Record<string, unknown>;
@@ -317,8 +345,11 @@ describe('fetchAndApplySessions acquisition identity', () => {
         expect(ordinaryResult.sessionIds).toEqual(['ordinary']);
     });
 
-    it('still supersedes an in-flight read of the same corpus by the same reader', async () => {
+    it('does not publish an in-flight read that its owning caller supersedes', async () => {
         const encryption = buildHydrationEncryption();
+        const firstAbort = new AbortController();
+        const applyFirstSessions = vi.fn();
+        const applyFirstRenderables = vi.fn();
         let releaseFirst!: () => void;
         const firstReleased = new Promise<void>((resolve) => {
             releaseFirst = resolve;
@@ -326,6 +357,7 @@ describe('fetchAndApplySessions acquisition identity', () => {
 
         const first = fetchAndApplySessions({
             serverId: 'home-a',
+            signal: firstAbort.signal,
             source: { kind: 'ordinary', path: '/v2/sessions', allowV1Fallback: true },
             credentials: { token: 'token-a', secret: 'secret-a' } as AuthCredentials,
             accountCurrentness: PLAIN_ACCOUNT_CURRENTNESS,
@@ -335,26 +367,35 @@ describe('fetchAndApplySessions acquisition identity', () => {
                 await firstReleased;
                 return jsonResponse({ sessions: [buildSessionRow('first')], nextCursor: null, hasNext: false });
             },
-            applySessions: vi.fn(),
-            applySessionListRenderables: vi.fn(),
+            applySessions: applyFirstSessions,
+            applySessionListRenderables: applyFirstRenderables,
             log: { log: () => {} },
         });
 
-        await fetchAndApplySessions({
-            serverId: 'home-a',
-            source: { kind: 'ordinary', path: '/v2/sessions', allowV1Fallback: true },
-            credentials: { token: 'token-a', secret: 'secret-a' } as AuthCredentials,
-            accountCurrentness: PLAIN_ACCOUNT_CURRENTNESS,
-            encryption,
-            sessionDataKeys: new Map(),
-            request: async () => jsonResponse({ sessions: [buildSessionRow('second')], nextCursor: null, hasNext: false }),
-            applySessions: vi.fn(),
-            applySessionListRenderables: vi.fn(),
-            log: { log: () => {} },
-        });
+        firstAbort.abort();
+        try {
+            const second = await fetchAndApplySessions({
+                serverId: 'home-a',
+                source: { kind: 'ordinary', path: '/v2/sessions', allowV1Fallback: true },
+                credentials: { token: 'token-a', secret: 'secret-a' } as AuthCredentials,
+                accountCurrentness: PLAIN_ACCOUNT_CURRENTNESS,
+                encryption,
+                sessionDataKeys: new Map(),
+                request: async () => jsonResponse({ sessions: [buildSessionRow('second')], nextCursor: null, hasNext: false }),
+                applySessions: vi.fn(),
+                applySessionListRenderables: vi.fn(),
+                log: { log: () => {} },
+            });
 
-        releaseFirst();
+            releaseFirst();
 
-        expect((await first).current).toBe(false);
+            expect((await first).current).toBe(false);
+            expect(second.current).toBe(true);
+            expect(applyFirstSessions).not.toHaveBeenCalled();
+            expect(applyFirstRenderables).not.toHaveBeenCalled();
+        } finally {
+            releaseFirst();
+            await first.catch(() => undefined);
+        }
     });
 });

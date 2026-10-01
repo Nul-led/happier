@@ -311,7 +311,6 @@ function throwActionFailure(result: ActionExecuteFailure): never {
 function actionContext(signal?: AbortSignal) {
   return {
     surface: 'cli' as const,
-    authority: 'present_user' as const,
     ...(signal ? { signal } : {}),
   };
 }

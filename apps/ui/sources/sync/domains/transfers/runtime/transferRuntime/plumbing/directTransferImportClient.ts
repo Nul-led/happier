@@ -1,6 +1,7 @@
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 import {
     type ComposerContentHandleV1,
+    type SessionAttachmentUploadInitRequestV1,
     DIRECT_TRANSFER_SESSION_EXPIRES_AT_HEADER,
     isSafeDirectTransferEndpointCandidate,
     normalizeDirectPeerImportEndpointBaseUrl,
@@ -40,17 +41,7 @@ export type DirectTransferImportOpenRequest = Readonly<{
         overwrite: unknown;
         sha256?: unknown;
     }>
-    | Readonly<{
-        t: 'session_attachment_upload_v1';
-        messageLocalId: unknown;
-        fileName: unknown;
-        sizeBytes: unknown;
-        uploadLocation?: 'workspace' | 'os_temp';
-        workspaceRootPath?: unknown;
-        workspaceRelativeDir?: string;
-        vcsIgnoreStrategy?: 'git_info_exclude' | 'gitignore' | 'none';
-        vcsIgnoreWritesEnabled?: boolean;
-    }>
+    | SessionAttachmentUploadInitRequestV1
     | Readonly<{
         t: 'prompt_asset_upload_v1';
         sizeBytes: unknown;
@@ -175,6 +166,19 @@ export function resolveDirectImportCarrierRequest(input: Readonly<{
 
 function isObject(value: unknown): value is Record<string, unknown> {
     return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function unsupportedPrepareResponseError(value: unknown): string {
+    // Describe only fixed field types: RPC envelopes and missing responses are
+    // distinguishable without copying untrusted response values into errors.
+    const shape = value === null
+        ? 'null'
+        : Array.isArray(value)
+            ? 'array'
+            : isObject(value)
+                ? `object; success=${typeof value.success}; error=${typeof value.error}; ok=${typeof value.ok}; result=${typeof value.result}`
+                : typeof value;
+    return `Direct import prepare returned an unsupported response (shape: ${shape})`;
 }
 
 function isDirectTransferImportPrepareSuccess(value: unknown): value is Extract<DirectTransferImportPrepareResponse, { success: true }> {
@@ -390,7 +394,7 @@ export async function prepareDirectImportSession(params: Readonly<{
     if (!isObject(prepare)) {
         return {
             success: false,
-            error: 'Direct import prepare returned an unsupported response',
+            error: unsupportedPrepareResponseError(prepare),
             errorCode: DIRECT_IMPORT_PREPARE_INVALID_ERROR_CODE,
         };
     }
@@ -403,7 +407,7 @@ export async function prepareDirectImportSession(params: Readonly<{
             }
             : {
                 success: false,
-                error: 'Direct import prepare returned an unsupported response',
+                error: unsupportedPrepareResponseError(prepare),
                 errorCode: DIRECT_IMPORT_PREPARE_INVALID_ERROR_CODE,
             };
     }

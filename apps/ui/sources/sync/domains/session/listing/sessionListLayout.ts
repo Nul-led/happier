@@ -24,6 +24,8 @@ export type SessionListSectionMode = 'activity' | 'single';
 export type SessionListSessionRowDragPolicy = Readonly<{
     canReorderSiblings: boolean;
     canMoveBetweenFolders: boolean;
+    /** The row can be dropped on another Session to report to it (`reportsTo`, R-03). */
+    canPutUnder: boolean;
     canDrag: boolean;
 }>;
 
@@ -133,6 +135,7 @@ export function resolveSessionListLayoutPresentation(
 export function resolveSessionListSessionRowDragPolicy(params: Readonly<{
     manualSessionOrderingEnabled: boolean;
     folderContainmentEnabled: boolean;
+    putUnderEnabled?: boolean;
     item: Pick<Extract<SessionListIndexItem, { type: 'session' }>, 'section' | 'groupKind'>;
     sectionModeV1: SessionListSectionMode;
     orderingModeV1: 'custom' | 'created' | 'updated';
@@ -143,10 +146,12 @@ export function resolveSessionListSessionRowDragPolicy(params: Readonly<{
             userOrderingMode: normalizeSessionListOrderingModeV1(params.orderingModeV1),
         }) === 'custom';
     const canMoveBetweenFolders = params.folderContainmentEnabled;
+    const canPutUnder = params.putUnderEnabled === true;
     return {
         canReorderSiblings,
         canMoveBetweenFolders,
-        canDrag: canReorderSiblings || canMoveBetweenFolders,
+        canPutUnder,
+        canDrag: canReorderSiblings || canMoveBetweenFolders || canPutUnder,
     };
 }
 

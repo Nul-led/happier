@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { discoverLocalServiceRunTargets } from './runTargets';
+import { discoverLocalServiceRunTargets, resolveLocalServiceRunTargetCommand } from './runTargets';
 
 async function makeRepo(): Promise<string> {
     return await mkdtemp(join(tmpdir(), 'happier-local-services-'));
@@ -15,6 +15,18 @@ async function writeJson(path: string, value: unknown): Promise<void> {
 }
 
 describe('discoverLocalServiceRunTargets', () => {
+    it('uses the same nearest lockfile manager for discovery and shell execution', async () => {
+        const root = await makeRepo();
+        await writeFile(join(root, 'pnpm-lock.yaml'), 'lockfileVersion: 9\n');
+        const cwd = join(root, 'web');
+        await mkdir(cwd);
+        await writeFile(join(cwd, 'package-lock.json'), '{}');
+        await writeJson(join(cwd, 'package.json'), { name: 'web;echo injected', scripts: { dev: 'vite' } });
+        const targets = await discoverLocalServiceRunTargets({ roots: [root] });
+        expect(targets[0]?.packageManager).toBe('npm');
+        expect(await resolveLocalServiceRunTargetCommand({ cwd, runTargetId: targets[0]!.id })).toBe('npm run dev');
+        expect(await resolveLocalServiceRunTargetCommand({ cwd, runTargetId: 'web;echo injected:dev & malicious' })).toBeNull();
+    });
     it('discovers server-oriented package scripts across workspace folders', async () => {
         const root = await makeRepo();
         await writeFile(join(root, 'pnpm-lock.yaml'), 'lockfileVersion: 9\n', 'utf8');

@@ -45,6 +45,21 @@ const RELAY = 'machines.tunnel.serverRouted' as FeatureId;
 const VOICE_RELAY = 'machines.liveStream.serverRouted' as FeatureId;
 
 describe('resolveTcpTunnelRouteDecision', () => {
+    it('selects an admitted native iroh carrier before the server relay', () => {
+        expect(resolveTcpTunnelRouteDecision({
+            flowKind: 'tcp_tunnel',
+            directPeerDecision: enabled(DIRECT),
+            serverRoutedDecision: enabled(RELAY),
+            directRoute: { status: 'unavailable', reasonCode: 'route_unavailable' },
+            irohRoute: { status: 'selected' },
+        })).toEqual({
+            kind: 'selected',
+            flowKind: 'tcp_tunnel',
+            routeKind: 'iroh_peer',
+            allowServerRelayFallback: true,
+        });
+    });
+
     it('selects loopback direct before server relay when both are enabled and the direct route is viable', () => {
         expect(resolveTcpTunnelRouteDecision({
             flowKind: 'tcp_tunnel',

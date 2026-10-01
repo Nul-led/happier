@@ -8,6 +8,7 @@ import { stripMigratedSessionOrganizationSettings } from '@/sync/domains/setting
 import {
     pickLocalOnlyAccountSettings,
     stripLocalOnlyAccountSettings,
+    stripLegacyAuthoringMemorySettingsDelta,
 } from '@/sync/domains/settings/localOnlyAccountSettings';
 import {
     isServerIssuedIdentityId,
@@ -15,6 +16,7 @@ import {
 } from '@/sync/domains/settings/serverIdentityKeyMigration';
 import {
     accountSettingsScopeKeySuffix,
+    areAccountSettingsScopesEqual,
     type AccountSettingsScope,
 } from '@/sync/domains/settings/scope/accountSettingsScope';
 import { hydrateAccountSettingsFromLocalPersistence } from '@/sync/domains/settings/accountSettingsNormalization';
@@ -255,6 +257,16 @@ export function loadAccountSettings(scope: AccountSettingsScope): { settings: un
     };
 }
 
+export function readAccountSettingsForScope(params: Readonly<{
+    scope: AccountSettingsScope;
+    focusedScope: AccountSettingsScope | null | undefined;
+    focusedSettings: Settings;
+}>): Settings {
+    return areAccountSettingsScopesEqual(params.focusedScope, params.scope)
+        ? params.focusedSettings
+        : settingsParse(loadAccountSettings(params.scope).settings);
+}
+
 export function saveAccountSettings(scope: AccountSettingsScope, settings: Settings, version: number): void {
     saveAccountSettingsEnvelope(scope, settings, version);
 }
@@ -438,7 +450,7 @@ export function savePendingAccountSettings(scope: AccountSettingsScope, settings
     const key = pendingAccountSettingsKey(scope);
     assertNoUnsealedSettingsSecretValues(settings);
     const sanitizedSettings =
-        stripMigratedSessionOrganizationSettings(settings as Record<string, unknown>) as Partial<Settings>;
+        stripLegacyAuthoringMemorySettingsDelta(stripMigratedSessionOrganizationSettings(settings as Record<string, unknown>)) as Partial<Settings>;
     if (Object.keys(sanitizedSettings).length === 0) {
         getPersistenceStorage().delete(key);
         return;

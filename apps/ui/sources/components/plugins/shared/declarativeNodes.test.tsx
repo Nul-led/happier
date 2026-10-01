@@ -5,6 +5,7 @@ import type { HappierUiTheme } from '@happier-dev/plugin-ui/environment';
 import { Spinner } from '@happier-dev/plugin-ui/components';
 
 import { renderDeclarativeNode, type DeclarativeNodeRenderContext } from './declarativeNodes';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 describe('declarative item action structure', () => {
     it('routes live loading state through the activity-aware shared Spinner adapter', () => {
@@ -71,7 +72,7 @@ describe('declarative item action structure', () => {
         });
         expect(style({ focused: false, pressed: true, disabled: false })).toMatchObject({
             borderColor: '#777777',
-            opacity: 0.8,
+            opacity: motionTokens.press.opacitySubtle,
         });
         expect(style({ focused: true, pressed: true, disabled: true })).toMatchObject({
             borderColor: '#0055ff',

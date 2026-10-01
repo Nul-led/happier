@@ -31,7 +31,11 @@ import { handlePluginsCommand } from './plugins';
 
 const reviewRequired = {
   kind: 'reviewRequired' as const,
+  reviewKind: 'installation' as const,
   pendingChangeId: 'pending-1',
+  reason: 'firstInstall' as const,
+  currentVersion: null,
+  authorityExpansion: [],
   review: createPluginInstallationReviewFixture({
     pluginId: 'acme.sample',
     displayName: 'Acme Sample',
@@ -411,7 +415,11 @@ describe('plugins command daemon mutations', () => {
   it('rejoins a pending daemon change by id without sending another mutation', async () => {
     const readPluginChangeStatus = vi.fn(async () => ({
       kind: 'reviewRequired' as const,
+      reviewKind: 'installation' as const,
       pendingChangeId: 'pending-1',
+      reason: 'firstInstall' as const,
+      currentVersion: null,
+      authorityExpansion: [],
       review: createPluginInstallationReviewFixture(),
     }));
     const output = captureStdoutJsonOutput();
@@ -426,7 +434,7 @@ describe('plugins command daemon mutations', () => {
       expect(output.json()).toMatchObject({
         ok: true,
         kind: 'plugins_change_status',
-        data: { kind: 'reviewRequired', pendingChangeId: 'pending-1' },
+        data: { kind: 'reviewRequired', reviewKind: 'installation', reason: 'firstInstall', currentVersion: null, authorityExpansion: [], pendingChangeId: 'pending-1' },
       });
     } finally {
       output.restore();
@@ -481,7 +489,33 @@ describe('plugins command daemon mutations', () => {
     }
   });
 
-  it('keeps a non-JSON headless review pending without prompting', async () => {
+  it('reports the daemon registry-profile requirement as a typed install failure', async () => {
+    daemon.requestChange.mockResolvedValue({
+      kind: 'registryProfileRequired',
+      registryOrigin: 'https://registry.acme.test',
+      packageName: '@acme/private-plugin',
+      registryProfileId: 'registry-private',
+    });
+    const output = captureStdoutJsonOutput();
+    try {
+      await handlePluginsCommand(['install', '/tmp/acme-private-plugin', '--json']);
+
+      expect(output.json()).toMatchObject({
+        ok: false,
+        kind: 'plugins_install',
+        error: {
+          code: 'plugin_registry_profile_required',
+          registryOrigin: 'https://registry.acme.test',
+          packageName: '@acme/private-plugin',
+          registryProfileId: 'registry-private',
+        },
+      });
+    } finally {
+      output.restore();
+    }
+  });
+
+  it('cancels an unexpected non-JSON path review without prompting or fabricating approval', async () => {
     daemon.requestChange.mockResolvedValue(reviewRequired);
     // Pending-review guidance names the invoking invoker; pin the documented
     // default lane instead of inheriting the test runner's argv-derived one.
@@ -495,117 +529,66 @@ describe('plugins command daemon mutations', () => {
       });
 
       expect(daemon.requestChange).toHaveBeenCalledWith({
-        kind: 'installPath', locator: '/tmp/acme-sample', development: false,
+        kind: 'installPath', locator: '/tmp/acme-sample',
       });
       expect(daemon.confirm).not.toHaveBeenCalled();
-      expect(daemon.decideChange).not.toHaveBeenCalled();
-      expect(error.mock.calls.flat().join('\n')).toContain('happier plugins change status pending-1');
-      expect(error.mock.calls.flat().join('\n')).toContain('happier plugins change approve pending-1');
-      expect(error.mock.calls.flat().join('\n')).toContain('happier plugins change reject pending-1');
+      expect(daemon.decideChange).toHaveBeenCalledWith({
+        pendingChangeId: 'pending-1',
+        decision: 'cancel',
+      });
+      expect(error.mock.calls.flat().join('\n')).toContain(
+        'The daemon review did not match the exact local path named by the install command.',
+      );
     } finally {
       envScope.restore();
     }
   });
 
-  it('keeps a first dev install pending, then completes its two present-user decisions by the same id', async () => {
-    const sourceRootReview = {
-      kind: 'sourceRootReviewRequired' as const,
-      pendingChangeId: 'pending-dev-1',
-      review: { source: { kind: 'path' as const, locator: '/tmp/acme-dev' } },
-    };
-    const packageReview = {
-      kind: 'reviewRequired' as const,
-      pendingChangeId: 'pending-dev-1',
-      review: createPluginInstallationReviewFixture({
-        pluginId: 'acme.dev',
-        displayName: 'Acme Dev',
-        source: { kind: 'path', locator: '/tmp/acme-dev' },
-        updateChannel: { kind: 'path', locator: '/tmp/acme-dev', development: true },
-      }),
-    };
-    daemon.requestChange.mockResolvedValue(sourceRootReview);
-    daemon.readStatus
-      .mockResolvedValueOnce(sourceRootReview)
-      .mockResolvedValueOnce(packageReview);
-    daemon.decideChange
-      .mockResolvedValueOnce(packageReview)
-      .mockResolvedValueOnce({
-        kind: 'committed',
-        pluginId: 'acme.dev',
-        desiredGeneration: 'generation-dev-1',
-        appliedGeneration: 'generation-dev-1',
-        pendingSurfaces: [],
-      });
+  it('routes legacy install --dev directly through daemon development control without installation review', async () => {
+    const controlPluginDevelopment = vi.fn(async () => ({
+      kind: 'status' as const,
+      status: {
+        roots: [{
+          kind: 'explicit' as const,
+          rootPath: '/tmp/acme-dev',
+          trusted: true,
+          persisted: true,
+        }],
+        plugins: [],
+      },
+    }));
     const installOutput = captureStdoutJsonOutput();
     try {
-      await handlePluginsCommand(['install', '/tmp/acme-dev', '--dev', '--json']);
+      await handlePluginsCommand(['install', '/tmp/acme-dev', '--dev', '--json'], {
+        controlPluginDevelopment,
+      });
 
       expect(installOutput.json()).toMatchObject({
-        ok: false,
+        ok: true,
         kind: 'plugins_install',
-        error: {
-          code: 'source_root_review_required',
-          pendingChangeId: 'pending-dev-1',
+        data: {
+          rootPath: '/tmp/acme-dev',
+          status: {
+            roots: [expect.objectContaining({ rootPath: '/tmp/acme-dev' })],
+          },
         },
       });
     } finally {
       installOutput.restore();
     }
+    expect(daemon.ensureRunning).toHaveBeenCalledOnce();
+    expect(controlPluginDevelopment).toHaveBeenCalledWith({
+      kind: 'registerExplicit',
+      rootPath: '/tmp/acme-dev',
+    });
+    expect(daemon.requestChange).not.toHaveBeenCalled();
+    expect(daemon.readStatus).not.toHaveBeenCalled();
     expect(daemon.decideChange).not.toHaveBeenCalled();
-
-    process.exitCode = undefined;
-    const sourceRootDecisionOutput = captureStdoutJsonOutput();
-    try {
-      await handlePluginsCommand(['change', 'approve', 'pending-dev-1', '--json']);
-
-      expect(sourceRootDecisionOutput.json()).toMatchObject({
-        ok: false,
-        kind: 'plugins_change_decision',
-        error: {
-          code: 'review_required',
-          outcome: 'reviewRequired',
-          pendingChangeId: 'pending-dev-1',
-        },
-      });
-    } finally {
-      sourceRootDecisionOutput.restore();
-    }
-    expect(daemon.readStatus).toHaveBeenCalledWith({ pendingChangeId: 'pending-dev-1' });
-    expect(daemon.decideChange).toHaveBeenNthCalledWith(1, expect.objectContaining({
-      pendingChangeId: 'pending-dev-1',
-      decision: 'trustSourceRoot',
-    }));
-
-    process.exitCode = undefined;
-    const packageDecisionOutput = captureStdoutJsonOutput();
-    try {
-      await handlePluginsCommand(['change', 'approve', 'pending-dev-1', '--json']);
-
-      expect(packageDecisionOutput.json()).toMatchObject({
-        ok: true,
-        kind: 'plugins_change_decision',
-        data: {
-          outcome: 'applied',
-          pendingChangeId: 'pending-dev-1',
-          result: {
-            kind: 'committed',
-            pluginId: 'acme.dev',
-          },
-        },
-      });
-    } finally {
-      packageDecisionOutput.restore();
-    }
-    expect(daemon.decideChange).toHaveBeenNthCalledWith(2, expect.objectContaining({
-      pendingChangeId: 'pending-dev-1',
-      decision: 'installAndTrust',
-      optionalSelections: [],
-    }));
   });
 
   it('rejects a pending change explicitly by id without minting approval evidence', async () => {
     daemon.readStatus.mockResolvedValue({
-      kind: 'reviewRequired',
+      kind: 'reviewRequired', reviewKind: 'installation', reason: 'firstInstall', currentVersion: null, authorityExpansion: [],
       pendingChangeId: 'pending-1',
       review: createPluginInstallationReviewFixture(),
     });

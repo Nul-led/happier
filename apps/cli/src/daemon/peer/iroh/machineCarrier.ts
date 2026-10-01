@@ -11,7 +11,7 @@ import {
 import {
     verifyDirectRouteGrantV2,
     type DirectRouteGrantTrustRoot,
-} from '../mediation/verifyDirectRouteGrantV1';
+} from '../mediation/verifyDirectRouteGrant';
 
 export const MACHINE_CARRIER_ALPN_V1 = MACHINE_ALPN;
 export type MachineCarrierOperationKind = IrohMachineCarrierFlowV1;

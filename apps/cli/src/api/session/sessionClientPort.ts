@@ -78,7 +78,7 @@ export interface SessionClientPort {
   enqueueSessionEventCommitted?(
     event: SessionEventMessage,
     id?: string,
-  ): Promise<Readonly<{ persisted: boolean; delivered: boolean }>>;
+  ): Promise<Readonly<{ persisted: boolean; delivered: boolean; localId?: string; committedSequence?: number }>>;
   enqueueUserTextMessageCommitted?(
     text: string,
     opts: CommittedTranscriptMessageOptions,
@@ -145,6 +145,7 @@ export interface SessionClientPort {
   getMetadataSnapshot(): Metadata | null;
   getCommittedUserMessageSeq?(localId: string): number | null;
   subscribeCommittedUserMessageSeq?(listener: CommittedUserMessageSeqListener): () => void;
+  subscribePendingProviderInputRetirement?(listener: (localId: string) => void): () => void;
   hasUserMessageLocalConsumption?(query: UserMessageLocalConsumptionQuery): boolean;
   confirmUserMessageLocallyConsumed?(confirmation: LocallyConsumedUserMessageConfirmation): void;
   waitForMetadataUpdate(abortSignal?: AbortSignal): Promise<boolean>;

@@ -55,6 +55,7 @@ const ENDPOINT_COPY_EN = Object.freeze({
   'failure.beforeSession': 'The request could not be prepared. Check the activation and try again.',
   'failure.beforeSessionTerminal': 'The request could not be prepared, so nothing was started on this computer. Ask for a new package in Happier.',
   'failure.afterSession': 'The local Agent has stopped. Open the ordinary Session in Happier for details.',
+  'failure.closeUnconfirmed': 'Runner stopped on this computer. Cancellation with Home could not be confirmed. Open Happier to check the request.',
   'failure.fallback': 'The Runner stopped before it could finish.',
   'failure.question': 'Retry this activation or exit?',
   'phase.connecting': 'Connecting to Home',
@@ -70,14 +71,27 @@ const ENDPOINT_COPY_EN = Object.freeze({
   'phase.failed': 'Happier Runner could not continue',
   'connection.reconnecting': 'Reconnecting',
   'connection.reconnectingDetail': 'The current Session remains selected while its connection returns.',
+  'connection.connectedDetail': 'Connected. Access lasts until stopped.',
   'value.none': 'None',
   'value.sealed': '{name} (value sealed)',
   'review.title': 'Review the exact request',
   'review.section.application': 'Application and publisher',
   'review.section.destination': 'Home and destination',
   'review.section.runtime': 'Agent and AI access',
+  'review.section.plugin': 'Plugin installation and access',
   'review.section.request': 'Request',
   'review.section.attachments': 'Files ({count})',
+  'review.details': 'Technical details',
+  'review.trust.unverifiedPublisher': '{name} · Unverified publisher ({id})',
+  'review.trust.notProvided': 'Not provided',
+  'review.trust.verified': 'Verified',
+  'review.trust.unsupported': 'Verification unsupported',
+  'review.trust.declaredUnverified': 'Declared, not verified',
+  'review.trust.retrievedUnverified': 'Retrieved, not verified',
+  'review.trust.unavailable': 'Unavailable',
+  'review.trust.notApplicable': 'Not applicable',
+  'review.trust.approved': 'Approved',
+  'review.trust.unreviewed': 'Unreviewed',
   'review.application': 'Application',
   'review.publisher': 'Publisher',
   'review.artifact': 'Release artifact',
@@ -146,7 +160,6 @@ const ENDPOINT_COPY_EN = Object.freeze({
   'terminal.stopPrompt': 'Type S then Enter to Stop Session (or press Enter to keep it running):',
   'terminal.stillRunning': 'Session is still running. Stop Session remains available here.',
   'terminal.stopUnavailable': 'The Stop prompt is unavailable. Press Ctrl-C to request the same Stop decision.',
-  'terminal.connected': 'Connected. Access lasts until stopped.',
   'fatal.safe': 'Happier Runner could not continue. Open Happier for details.',
 } as const);
 
@@ -182,6 +195,7 @@ const ENDPOINT_COPY_FR = Object.freeze({
   'failure.beforeSession': 'La demande n’a pas pu être préparée. Vérifiez l’activation et réessayez.',
   'failure.beforeSessionTerminal': 'La demande n’a pas pu être préparée, donc rien n’a démarré sur cet ordinateur. Demandez un nouveau paquet dans Happier.',
   'failure.afterSession': 'L’Agent local s’est arrêté. Ouvrez la session ordinaire dans Happier pour plus de détails.',
+  'failure.closeUnconfirmed': 'Le Runner s’est arrêté sur cet ordinateur. L’annulation auprès du Home n’a pas pu être confirmée. Ouvrez Happier pour vérifier la demande.',
   'failure.fallback': 'Le Runner s’est arrêté avant de pouvoir terminer.',
   'failure.question': 'Réessayer cette activation ou quitter ?',
   'phase.connecting': 'Connexion au Home',
@@ -197,14 +211,27 @@ const ENDPOINT_COPY_FR = Object.freeze({
   'phase.failed': 'Happier Runner ne peut pas continuer',
   'connection.reconnecting': 'Reconnexion',
   'connection.reconnectingDetail': 'La session actuelle reste sélectionnée pendant le rétablissement de la connexion.',
+  'connection.connectedDetail': 'Connecté. L’accès dure jusqu’à l’arrêt.',
   'value.none': 'Aucun',
   'value.sealed': '{name} (valeur scellée)',
   'review.title': 'Vérifier la demande exacte',
   'review.section.application': 'Application et éditeur',
   'review.section.destination': 'Home et destination',
   'review.section.runtime': 'Agent et accès à l’IA',
+  'review.section.plugin': 'Installation et accès du plugin',
   'review.section.request': 'Demande',
   'review.section.attachments': 'Fichiers ({count})',
+  'review.details': 'Détails techniques',
+  'review.trust.unverifiedPublisher': '{name} · Éditeur non vérifié ({id})',
+  'review.trust.notProvided': 'Non fourni',
+  'review.trust.verified': 'Vérifié',
+  'review.trust.unsupported': 'Vérification non prise en charge',
+  'review.trust.declaredUnverified': 'Déclarée, non vérifiée',
+  'review.trust.retrievedUnverified': 'Récupérée, non vérifiée',
+  'review.trust.unavailable': 'Indisponible',
+  'review.trust.notApplicable': 'Sans objet',
+  'review.trust.approved': 'Approuvé',
+  'review.trust.unreviewed': 'Non examiné',
   'review.application': 'Application',
   'review.publisher': 'Éditeur',
   'review.artifact': 'Artefact de version',
@@ -273,7 +300,6 @@ const ENDPOINT_COPY_FR = Object.freeze({
   'terminal.stopPrompt': 'Saisissez S puis Entrée pour arrêter la session (ou appuyez sur Entrée pour la laisser s’exécuter) :',
   'terminal.stillRunning': 'La session est toujours en cours. Arrêter la session reste disponible ici.',
   'terminal.stopUnavailable': 'L’invite d’arrêt est indisponible. Appuyez sur Ctrl-C pour demander le même arrêt.',
-  'terminal.connected': 'Connecté. L’accès reste actif jusqu’à l’arrêt.',
   'fatal.safe': 'Happier Runner ne peut pas continuer. Ouvrez Happier pour plus de détails.',
 } as const satisfies Record<EndpointCopyKey, string>);
 
@@ -460,6 +486,7 @@ const FAILURE_COPY_KEYS = {
   before_session: 'failure.beforeSession',
   before_session_terminal: 'failure.beforeSessionTerminal',
   session_runtime_or_stop: 'failure.afterSession',
+  activation_close_unconfirmed: 'failure.closeUnconfirmed',
 } as const satisfies Record<EphemeralRunnerEndpointFailure['kind'], EndpointCopyKey>;
 
 /** The terminal or retryable failure and the recovery the endpoint may choose. */
@@ -547,7 +574,9 @@ export function resolveEphemeralRunnerEndpointPresentation(
       : t('failure.fallback')
     : reconnecting
       ? t('connection.reconnectingDetail')
-      : null;
+      : input.phase === 'running' && input.connection === 'connected'
+        ? t('connection.connectedDetail')
+        : null;
   const actionIds: readonly EphemeralRunnerEndpointPresentationAction[] = ['starting', 'running'].includes(input.phase)
     ? ['stop_session']
     : failed
@@ -625,11 +654,14 @@ export type EphemeralRunnerConsentReviewFact = Readonly<{
   id: string;
   label: string;
   value: string;
+  /** Exact evidence remains reviewable below the decision facts. */
+  detail?: boolean;
 }>;
 
 export type EphemeralRunnerConsentReviewSection = Readonly<{
-  id: 'application' | 'destination' | 'runtime' | 'request' | 'attachments';
+  id: 'application' | 'destination' | 'runtime' | 'request' | 'attachments' | 'plugin';
   title: string;
+  detailsLabel: string;
   facts: readonly EphemeralRunnerConsentReviewFact[];
 }>;
 
@@ -678,12 +710,32 @@ function humanizeIdentityLocalId(value: string): string {
     : `${word.charAt(0).toUpperCase()}${word.slice(1)}`).join(' ');
 }
 
+const REVIEW_DECISION_FACT_IDS = new Set([
+  'application', 'publisher', 'home', 'requested_by', 'team', 'folder',
+  'agent', 'model', 'permissions', 'ai_source', 'prompt',
+  'initial_access', 'action_policy', 'profile', 'environment', 'mcp', 'mcp_material',
+  'connected_services', 'connected_service_bindings',
+  'plugin_package', 'plugin_publisher', 'plugin_curation', 'plugin_signature', 'plugin_provenance',
+  'plugin_executable_code', 'plugin_required_access', 'plugin_optional_access',
+  'plugin_request_interceptors', 'plugin_raw_credential_access',
+  'attachment_destination', 'workspace_folder',
+]);
+
 function section(
   id: EphemeralRunnerConsentReviewSection['id'],
   title: string,
   facts: readonly EphemeralRunnerConsentReviewFact[],
+  t: EndpointTranslator,
 ): EphemeralRunnerConsentReviewSection {
-  return Object.freeze({ id, title, facts: Object.freeze([...facts]) });
+  return Object.freeze({
+    id,
+    title,
+    detailsLabel: t('review.details'),
+    facts: Object.freeze(facts.map((entry) => Object.freeze({
+      ...entry,
+      detail: !REVIEW_DECISION_FACT_IDS.has(entry.id) && !entry.id.startsWith('file:'),
+    }))),
+  });
 }
 
 /**
@@ -725,14 +777,14 @@ function pluginInstallationFacts(
 ): readonly EphemeralRunnerConsentReviewFact[] {
   if (!review) return [];
   const publisher = review.publisherIdentity.status === 'unverified'
-    ? `${review.publisherIdentity.displayName} (${review.publisherIdentity.id})`
+    ? t('review.trust.unverifiedPublisher', { name: review.publisherIdentity.displayName, id: review.publisherIdentity.id })
     : t('review.unknown');
   const updateChannel = review.updateChannel.kind === 'npm'
     ? `${review.updateChannel.packageName} · ${review.updateChannel.registryOrigin}`
     : `${review.updateChannel.kind} · ${review.updateChannel.locator}`;
   const curation = review.curation.status === 'notApplicable'
-    ? review.curation.status
-    : `${review.curation.status} · ${review.curation.sourceId}`;
+    ? t('review.trust.notApplicable')
+    : `${t(`review.trust.${review.curation.status}`)} · ${review.curation.sourceId}`;
   return Object.freeze([
     fact('plugin_package', t('review.pluginPackage'), [
       `${review.displayName} ${review.version}`,
@@ -746,15 +798,15 @@ function pluginInstallationFacts(
     fact('plugin_update_channel', t('review.pluginUpdateChannel'), updateChannel),
     fact('plugin_curation', t('review.pluginCuration'), curation),
     fact('plugin_signature', t('review.pluginSignature'), review.signature.status === 'notProvided'
-      ? review.signature.status
-      : `${review.signature.status} · ${review.signature.keyId}`),
+      ? t('review.trust.notProvided')
+      : `${t(`review.trust.${review.signature.status}`)} · ${review.signature.keyId}`),
     fact('plugin_provenance', t('review.pluginProvenance'), review.provenance.status === 'declaredUnverified'
-      ? `${review.provenance.status} · ${review.provenance.predicateType}`
+      ? `${t('review.trust.declaredUnverified')} · ${review.provenance.predicateType}`
       : review.provenance.status === 'retrievedUnverified'
-        ? `${review.provenance.status} · ${review.provenance.predicateTypes.join(', ')}`
+        ? `${t('review.trust.retrievedUnverified')} · ${review.provenance.predicateTypes.join(', ')}`
         : review.provenance.status === 'unavailable'
-          ? `${review.provenance.status} · ${review.provenance.code}`
-          : review.provenance.status),
+          ? `${t('review.trust.unavailable')} · ${review.provenance.code}`
+          : t('review.trust.notProvided')),
     fact('plugin_executable_code', t('review.pluginExecutableCode'),
       review.executableRealms.length > 0 ? review.executableRealms.join(', ') : t('review.unknown')),
     fact('plugin_required_access', t('review.pluginRequiredAccess'),
@@ -808,11 +860,6 @@ export function resolveEphemeralRunnerConsentReviewPresentation(input: Readonly<
     heading: t('app.name'),
     title: t('review.title'),
     sections: Object.freeze([
-      section('application', t('review.section.application'), [
-        fact('application', t('review.application'), `Happier Runner ${artifact.version}`),
-        fact('publisher', t('review.publisher'), 'Happier'),
-        fact('artifact', t('review.artifact'), `${artifact.target} · SHA-256 ${artifact.sha256}`),
-      ]),
       section('destination', t('review.section.destination'), [
         fact('home', t('review.home'), manifest.displayFacts.homeName),
         fact('home_id', t('review.homeId'), manifest.displayFacts.homeId),
@@ -821,7 +868,7 @@ export function resolveEphemeralRunnerConsentReviewPresentation(input: Readonly<
         fact('team', t('review.team'), manifest.displayFacts.teamName),
         fact('team_id', t('review.teamId'), manifest.displayFacts.teamId),
         fact('folder', t('review.folder'), directory),
-      ]),
+      ], t),
       section('runtime', t('review.section.runtime'), [
         fact('agent', t('review.agent'), humanizeIdentityLocalId(agentTargetKey)),
         fact('agent_id', t('review.agentId'), agentTargetKey),
@@ -859,8 +906,7 @@ export function resolveEphemeralRunnerConsentReviewPresentation(input: Readonly<
         fact('ai_source_id', t('review.aiSourceId'), `${sourceIdentity.pluginId}/${sourceIdentity.localId}`),
         fact('ai_resource', t('review.aiResource'), selection.resourceId),
         fact('broker_machine', t('review.brokerMachine'), selection.brokerMachineId),
-        ...pluginInstallationFacts(input.pluginInstallation ?? null, t),
-      ]),
+      ], t),
       section('request', t('review.section.request'), [
         fact('prompt', t('review.prompt'), displayValue(prepared.composer.text, t)),
         fact('references', t('review.references'), displayValue(prepared.composer.references, t)),
@@ -868,7 +914,9 @@ export function resolveEphemeralRunnerConsentReviewPresentation(input: Readonly<
         fact('organization_placement', t('review.organizationPlacement'), displayValue(authoring.organizationPlacement, t)),
         fact('review_comments', t('review.comments'), displayValue(prepared.reviewComments, t)),
         fact('action_policy', t('review.actionPolicy'), displayValue(prepared.actionsSettings, t)),
-      ]),
+      ], t),
+      ...(input.pluginInstallation ? [section('plugin', t('review.section.plugin'),
+        pluginInstallationFacts(input.pluginInstallation, t), t)] : []),
       section('attachments', t('review.section.attachments', { count: prepared.files.length }), [
         ...prepared.files.map((file) => fact(`file:${file.id}`, file.name, [
           `${t('review.fileId')}: ${file.id}`,
@@ -880,7 +928,12 @@ export function resolveEphemeralRunnerConsentReviewPresentation(input: Readonly<
         fact('workspace_folder', t('review.workspaceFolder'), destination.workspaceRelativeDir),
         fact('vcs_ignore', t('review.vcsIgnore'), destination.vcsIgnoreStrategy),
         fact('vcs_ignore_writes', t('review.vcsIgnoreWrites'), destination.vcsIgnoreWritesEnabled ? t('review.enabled') : t('review.disabled')),
-      ]),
+      ], t),
+      section('application', t('review.section.application'), [
+        fact('application', t('review.application'), `Happier Runner ${artifact.version}`),
+        fact('publisher', t('review.publisher'), 'Happier'),
+        fact('artifact', t('review.artifact'), `${artifact.target} · SHA-256 ${artifact.sha256}`),
+      ], t),
     ]),
     notice: Object.freeze([t('review.notice1'), t('review.notice2')]),
     declineLabel: t('action.decline'),
@@ -994,7 +1047,7 @@ export function createEphemeralRunnerTerminalUi(input: Readonly<{
   let lastPresentationIdentity: string | null = null;
   let reviewedRuntimeSummary: readonly EphemeralRunnerConsentReviewFact[] = [];
   let stopPromptAbort: AbortController | null = null;
-  let stopPromptRunning = false;
+  let stopPromptTask: Promise<void> | null = null;
 
   const readChoice = async <TId extends string>(params: Readonly<{
     message: string;
@@ -1012,11 +1065,10 @@ export function createEphemeralRunnerTerminalUi(input: Readonly<{
   };
 
   const startStopPrompt = () => {
-    if (!interactive || !controls || stopPromptRunning || !activeSnapshot || !['starting', 'running'].includes(activeSnapshot.phase)) return;
-    stopPromptRunning = true;
+    if (!interactive || !controls || stopPromptTask || !activeSnapshot || !['starting', 'running'].includes(activeSnapshot.phase)) return;
     const abort = new AbortController();
     stopPromptAbort = abort;
-    void (async () => {
+    stopPromptTask = (async () => {
       try {
         while (!abort.signal.aborted && activeSnapshot && ['starting', 'running'].includes(activeSnapshot.phase)) {
           const answer = (await readInput(`${t('terminal.stopPrompt')} `, {
@@ -1034,7 +1086,7 @@ export function createEphemeralRunnerTerminalUi(input: Readonly<{
         }
       } finally {
         if (stopPromptAbort === abort) stopPromptAbort = null;
-        stopPromptRunning = false;
+        stopPromptTask = null;
       }
     })();
   };
@@ -1143,7 +1195,10 @@ export function createEphemeralRunnerTerminalUi(input: Readonly<{
         // Agent visibly supervised. Stop locally rather than leaving hidden work.
         return 'stop';
       }
-      if (result === 'keep_open') queueMicrotask(startStopPrompt);
+      // A Stop-triggered confirmation is still inside the old prompt task.
+      // Resume only after it releases the input owner; a window-close decision
+      // with no active prompt can start it immediately on the next microtask.
+      if (result === 'keep_open') void (stopPromptTask ?? Promise.resolve()).then(startStopPrompt);
       return result;
     },
     requestFailureRecovery: async ({ failure, canRetry, signal }) => {
@@ -1200,7 +1255,6 @@ export function createEphemeralRunnerTerminalUi(input: Readonly<{
         if (presentation.facts.length > 0) {
           write(`${presentation.facts.map(renderFact).join('\n')}\n`);
         }
-        if (snapshot.phase === 'running') write(`${t('terminal.connected')}\n`);
         const stop = presentation.actions.find((action) => action.id === 'stop_session');
         if (stop) write(`[ ${stop.label} ]\n`);
       }

@@ -19,11 +19,22 @@ describe('resolveSystemTaskStepLabel', () => {
             'setup.repairThisComputer.authenticate',
             'setup.repairThisComputer.installService',
             'setup.repairThisComputer.startService',
+            'setup.repairThisComputer.restartService',
             'setup.repairThisComputer.waitForReady',
             'setup.repairThisComputer.finish',
         ]) {
             expect(resolveSystemTaskStepLabel(stepId), stepId).not.toBe(stepId);
         }
+    });
+
+    it('names a service restart as a restart, distinct from a start (A13-08)', () => {
+        expect(resolveSystemTaskStepLabel('setup.thisComputer.restartService')).toBe(resolveSystemTaskStepLabel('setup.repairThisComputer.restartService'));
+        expect(resolveSystemTaskStepLabel('setup.thisComputer.restartService')).not.toBe('setup.thisComputer.restartService');
+        expect(resolveSystemTaskStepLabel('setup.thisComputer.restartService')).not.toBe(resolveSystemTaskStepLabel('setup.thisComputer.startService'));
+    });
+
+    it('translates the one-CLI question step (R12)', () => {
+        expect(resolveSystemTaskStepLabel('setup.thisComputer.cliChoice')).not.toBe('setup.thisComputer.cliChoice');
     });
 
     it('translates known Tailscale secure access step ids', () => {

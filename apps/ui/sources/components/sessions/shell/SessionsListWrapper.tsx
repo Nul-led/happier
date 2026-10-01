@@ -1,5 +1,5 @@
-import { useIsFocused } from '@react-navigation/native';
-import { usePathname } from 'expo-router';
+import { useIsFocused } from '@/components/appShell/workspace/destinationRoute';
+import { usePathname } from '@/components/appShell/workspace/destinationRoute';
 import { View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 import { useSessionListStorageKind } from '@/components/sessions/model/useSessionListStorageKind';
@@ -24,7 +24,7 @@ const stylesheet = StyleSheet.create(() => ({
 export function SessionsListWrapper(props: Readonly<{
     pathname?: string;
 }> = {}) {
-    const { externalSessionsEnabled, storageKind } = useSessionListStorageKind();
+    const { storageKind } = useSessionListStorageKind();
     const isFocused = useIsFocused();
     const routePathname = usePathname();
     const anchorPathname = useSurfaceAnchorPathname(routePathname);
@@ -43,7 +43,6 @@ export function SessionsListWrapper(props: Readonly<{
     return (
         <View style={styles.container}>
             <SessionsListStorageChrome
-                externalSessionsEnabled={externalSessionsEnabled}
                 storageKind={storageKind}
             />
             <SessionsListPaneContent

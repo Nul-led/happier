@@ -1,5 +1,6 @@
 import * as React from 'react';
 import { Platform, Pressable, View } from 'react-native';
+import Animated from 'react-native-reanimated';
 import { useHappierItemGroupItemBehavior } from '@happier-dev/plugin-ui/presentation';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
@@ -11,6 +12,7 @@ import { Typography } from '@/constants/Typography';
 import { t } from '@/text';
 
 import { Icon, type IconName } from '@/components/ui/icons/Icon';
+import { usePressFeedback } from '@/components/ui/interactions/usePressFeedback';
 
 type WizardChoiceRowProps = Readonly<{
     testID: string;
@@ -78,6 +80,7 @@ const stylesheet = StyleSheet.create((theme) => ({
 
 export const WizardChoiceRow = React.memo(function WizardChoiceRow(props: WizardChoiceRowProps) {
     const { theme } = useUnistyles();
+    const menuTriggerFeedback = usePressFeedback({ glyph: true });
     const styles = stylesheet;
     const iconColor = props.selected ? theme.colors.text.primary : theme.colors.text.secondary;
     const rowDisabled = Boolean(props.disabled);
@@ -188,15 +191,18 @@ export const WizardChoiceRow = React.memo(function WizardChoiceRow(props: Wizard
                                     testID={`${props.testID}-menu`}
                                     hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
                                     onPress={toggle}
-                                    style={({ pressed }) => ([
+                                    onPressIn={menuTriggerFeedback.onPressIn}
+                                    onPressOut={menuTriggerFeedback.onPressOut}
+                                    style={[
                                         styles.menuTrigger,
-                                        { opacity: pressed ? 0.72 : 1 },
                                         Platform.OS === 'web' ? ({ cursor: 'pointer' } as any) : null,
-                                    ])}
+                                    ]}
                                     accessibilityRole="button"
                                     accessibilityLabel={t('common.more')}
                                 >
-                                    <Icon name="dots-three" size={16} color={theme.colors.text.secondary} />
+                                    <Animated.View style={menuTriggerFeedback.animatedStyle}>
+                                        <Icon name="dots-three" size={16} color={theme.colors.text.secondary} />
+                                    </Animated.View>
                                 </Pressable>
                             )}
                         />

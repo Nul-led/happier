@@ -1,4 +1,4 @@
-import type { Message } from '../domains/messages/messageTypes';
+import type { Message } from "@happier-dev/session-core/messages";
 import type { StorageState } from './types';
 
 export type MessageStoreRef = Readonly<{

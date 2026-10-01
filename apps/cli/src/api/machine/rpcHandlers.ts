@@ -106,7 +106,7 @@ import type {
 } from '@/daemon/machine/externalSessionStatusDemandBinding';
 import type { CliServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
 import type { RawSessionRecord } from '@/session/transport/http/sessionsHttp';
-import type { DaemonUsageLimitRecoveryFieldMutation } from '@/api/session/client/transport/mutations/sessionClientDurableMutationTypes';
+import type { DaemonUsageLimitRecoveryFieldMutation, DaemonWorkStateFieldMutation } from '@/api/session/client/transport/mutations/sessionClientDurableMutationTypes';
 import type { PersistedTakeoverAdmissionWaiter } from '@/daemon/spawn/persistedTakeoverAdmission';
 import type {
   ExternalSessionPersistedTakeoverAdmissionOwner,
@@ -129,7 +129,9 @@ import type {
 import type { MachineSessionServerStartRpcRegistrationOptions } from '@/rpc/handlers/sessionServerStartMachineBinding';
 import { registerApprovalRpcHandlers } from '@/rpc/handlers/approvals';
 import { registerCapabilitiesHandlers } from '@/rpc/handlers/capabilities';
+import { registerMachineAgentInstallJobRpcHandlers } from './rpcHandlers.agentInstallJobs';
 import { registerExecutionRunHandlers } from '@/rpc/handlers/executionRuns';
+import { createExecutionBudgetRegistry } from '@/daemon/executionBudget/createExecutionBudgetRegistry';
 import type { ExecutionRunTeamCredentialProviderBindingPreparer } from '@/agent/runtime/bridges/executionRun/runtime/providerLaunch';
 import type { ExecutionRunHostBridge } from '@/agent/runtime/bridges/executionRun/ExecutionRunHostBridge';
 import type { RuntimeActionSettingsProvider } from '@/settings/actionsSettingsProvider';
@@ -157,6 +159,9 @@ import type {
   TransferEndpointCandidate,
   TransferRelayV2SendEnvelope,
   SessionConnectedServiceAuthSwitchRpcParams,
+  SessionRunnerStatusGetRequestV1,
+  SessionRunnerRuntimeStateV1,
+  SessionRunnerRuntimeStatusV2,
 } from '@happier-dev/protocol';
 import {
   RestartAllSessionRunnersRequestV1Schema,
@@ -180,8 +185,6 @@ import { createTransferSessionLifecycle } from '@/transfers/core/transferSession
 import type { FilesystemAccessPolicy } from '@/rpc/handlers/fileSystem/accessPolicy/filesystemAccessPolicy';
 import type { TerminalProcessRegistry } from '@/daemon/local/services/inventory/terminalRegistry';
 import {
-  getDaemonSessionRunnerStatus,
-  getDaemonSessionRunnerStatusV2,
   requestDaemonSessionConnectedServiceAuthSwitch,
   requestDaemonSessionRunnerRestart,
   requestDaemonSessionRunnerRestartV2,
@@ -278,6 +281,10 @@ export type MachineRpcHandlers = {
 };
 
 export type MachineRpcHandlerDeps = Readonly<{
+  sessionRunnerStatus?: Readonly<{
+    get: (request: SessionRunnerStatusGetRequestV1) => Promise<SessionRunnerRuntimeStateV1>;
+    getV2: (request: SessionRunnerStatusGetRequestV1) => Promise<SessionRunnerRuntimeStatusV2>;
+  }>;
   actionOperations?: Readonly<{
     handlers: ActionOperationRpcHandlers;
     observeExecution: NonNullable<RegisterActionSpecRpcHandlersParams['observeExecution']>;
@@ -285,6 +292,7 @@ export type MachineRpcHandlerDeps = Readonly<{
   sessionHandoffCoordinator?: NonNullable<
     Parameters<typeof registerMachineSessionHandoffRpcHandlers>[0]['coordinateSessionHandoff']
   >;
+  resolveServerFeaturesSnapshot?: () => Promise<CliServerFeaturesSnapshot | undefined> | CliServerFeaturesSnapshot | undefined;
   workspaceSync?: MachineWorkspaceSyncRpcService;
   /**
    * Host-private server-origin Session-start binding. The session RPC owner
@@ -343,6 +351,8 @@ export type MachineRpcHandlerDeps = Readonly<{
   retryTemporaryThrottleNow?: RetryTemporaryThrottleNow;
   currentMachineId?: string;
   executionRunRuntimeAccountId?: string;
+  /** Review transport bound to this daemon's exact authenticated Home credentials. */
+  executionRunApprovalDeps?: Parameters<typeof registerExecutionRunHandlers>[1]['actionApprovalDeps'];
   /** Daemon-owned exact Team binding opener for detached explicit Runs. */
   prepareRunTeamCredentialProviderBinding?: ExecutionRunTeamCredentialProviderBindingPreparer;
   /** Routes marker-located requests into the exact live Session runtime owner. */
@@ -370,6 +380,10 @@ export type MachineRpcHandlerDeps = Readonly<{
   getServerFeaturesSnapshot?: () => CliServerFeaturesSnapshot | undefined;
   stageUsageLimitRecoveryMutation?: (input: Readonly<{
     mutation: DaemonUsageLimitRecoveryFieldMutation;
+    rawSession: RawSessionRecord;
+  }>) => Promise<void>;
+  stageWorkStateMutation?: (input: Readonly<{
+    mutation: DaemonWorkStateFieldMutation;
     rawSession: RawSessionRecord;
   }>) => Promise<void>;
 }>;
@@ -451,7 +465,7 @@ function registerMachineRpcHandlersOnce(params: Readonly<{
     registerExternalActionRpcHandler(rpcHandlerManager, externalAction);
     registerActionSpecRpcHandlers({
       rpcHandlerManager,
-      actionIds: WORKFLOW_ACTION_IDS_V1,
+      actionIds: [...WORKFLOW_ACTION_IDS_V1, 'notifications.notify_me', 'action.options.resolve'],
       ...(params.deps?.currentMachineId
         ? { targetMachineId: params.deps.currentMachineId }
         : {}),
@@ -475,6 +489,7 @@ function registerMachineRpcHandlersOnce(params: Readonly<{
       retryTemporaryThrottleNow: params.deps?.retryTemporaryThrottleNow,
       currentMachineId: params.deps?.currentMachineId,
       stageUsageLimitRecoveryMutation: params.deps?.stageUsageLimitRecoveryMutation,
+      stageWorkStateMutation: params.deps?.stageWorkStateMutation,
     },
   });
   registerMachineConnectedServiceQuotaRpcHandlers({ rpcHandlerManager });
@@ -487,9 +502,11 @@ function registerMachineRpcHandlersOnce(params: Readonly<{
       ? { createApiClient: params.deps.createCapabilitiesApiClient }
       : {}),
   });
+  registerMachineAgentInstallJobRpcHandlers({ rpcHandlerManager });
   let detachedExecutionRunManager: ExecutionRunHostBridge | null = null;
   registerExecutionRunHandlers(rpcHandlerManager, {
     sessionId: null,
+    budgetRegistry: createExecutionBudgetRegistry(),
     serverId: configuration.activeServerId,
     ...(params.deps?.executionRunRuntimeAccountId
       ? { runtimeAccountId: params.deps.executionRunRuntimeAccountId }
@@ -506,12 +523,16 @@ function registerMachineRpcHandlersOnce(params: Readonly<{
       ? { prepareRunTeamCredentialProviderBinding: params.deps.prepareRunTeamCredentialProviderBinding }
       : {}),
     parentProvider: 'daemon.executionRuns',
+    ...(params.deps?.executionRunApprovalDeps ? { actionApprovalDeps: params.deps.executionRunApprovalDeps } : {}),
     sendAcp: async () => {},
     onManagerCreated: (manager) => {
       detachedExecutionRunManager = manager;
     },
   });
-  rpcHandlerManager.registerHandler(RPC_METHODS.DAEMON_EXECUTION_RUN_PERMISSION_RESPOND, async (raw: unknown) => {
+  rpcHandlerManager.registerHandler(RPC_METHODS.DAEMON_EXECUTION_RUN_PERMISSION_RESPOND, async (raw: unknown, context) => {
+    if (context?.callerAuthority !== 'present_user') {
+      return { ok: false, errorCode: 'present_user_required', error: 'Present-user authority required' };
+    }
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
       return { ok: false, errorCode: 'execution_run_invalid_action_input', error: 'Invalid params' };
     }
@@ -763,11 +784,13 @@ function registerMachineRpcHandlersOnce(params: Readonly<{
   });
   rpcHandlerManager.registerHandler(RPC_METHODS.DAEMON_SESSION_RUNNER_STATUS_GET, async (raw: unknown) => {
     const request = SessionRunnerStatusGetRequestV1Schema.parse(raw);
-    return await getDaemonSessionRunnerStatus(request);
+    if (!params.deps?.sessionRunnerStatus) throw new Error('Daemon session runner status owner is unavailable');
+    return await params.deps.sessionRunnerStatus.get(request);
   });
   rpcHandlerManager.registerHandler(RPC_METHODS.DAEMON_SESSION_RUNNER_STATUS_V2_GET, async (raw: unknown) => {
     const request = SessionRunnerStatusGetRequestV1Schema.parse(raw);
-    return await getDaemonSessionRunnerStatusV2(request);
+    if (!params.deps?.sessionRunnerStatus) throw new Error('Daemon session runner status owner is unavailable');
+    return await params.deps.sessionRunnerStatus.getV2(request);
   });
   registerMachineSpawnSessionNonceRpcHandlers({
     rpcHandlerManager,
@@ -815,6 +838,9 @@ function registerMachineRpcHandlersOnce(params: Readonly<{
     ...(handlers.loadLocalSessionMetadata ? { loadLocalSessionMetadata: handlers.loadLocalSessionMetadata } : {}),
     ...(handlers.machineTransferChannel ? { machineTransferChannel: handlers.machineTransferChannel } : {}),
     ...(handlers.directPeerTransfer ? { directPeerTransfer: handlers.directPeerTransfer } : {}),
+    ...(params.deps?.resolveServerFeaturesSnapshot
+      ? { resolveServerFeaturesSnapshot: params.deps.resolveServerFeaturesSnapshot }
+      : {}),
     ...(params.deps?.actionOperations
       ? { observeExecution: params.deps.actionOperations.observeExecution }
       : {}),

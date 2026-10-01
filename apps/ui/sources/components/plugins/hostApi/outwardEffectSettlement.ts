@@ -35,6 +35,7 @@ export const PLUGIN_UI_OUTWARD_EFFECT_HOST_METHODS_V1 = Object.freeze([
     'writeClipboard',
     'openExternalLink',
     'settleEphemeralInput',
+    'respondToSessionPermission',
 ] as const satisfies readonly PluginUiHostMethodV1[]);
 
 const OUTWARD_EFFECT_HOST_METHODS = new Set<PluginUiHostMethodV1>(

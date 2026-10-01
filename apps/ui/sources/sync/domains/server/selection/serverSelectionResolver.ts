@@ -1,4 +1,9 @@
 import {
+    ALL_HOMES_MINIMUM_HOME_COUNT,
+    ALL_HOMES_SELECTION_TARGET_ID,
+    isAllHomesSelectionTargetId,
+} from './allHomesSelectionTarget';
+import {
     filterServerSelectionGroupsToAvailableServers,
     normalizeStoredServerSelectionGroups,
 } from './serverSelectionMutations';
@@ -62,7 +67,8 @@ function normalizeGroupProfiles(
         normalizeStoredServerSelectionGroups(rawGroups),
         availableServerIds,
     );
-    return normalizedGroups.map((group) => ({
+    // "All Homes" is virtual: a stored group can never take its id.
+    return normalizedGroups.filter((group) => !isAllHomesSelectionTargetId(group.id)).map((group) => ({
         id: group.id,
         name: group.name,
         serverIds: normalizeServerIds(group.serverIds, availableServerIds),
@@ -78,6 +84,35 @@ function resolveFallbackServerId(activeServerIdRaw: string, availableServerIds: 
 
 function toServerTarget(serverId: string): ActiveServerSelectionTarget {
     return { kind: 'server', id: serverId, serverId };
+}
+
+/**
+ * The Homes "All Homes" gathers: the available Homes this device can use (it holds a credential for
+ * them) once that is known, else every available Home. A saved Home this device never signed in to
+ * — a pre-saved Happier Cloud — is not one of them.
+ */
+function resolveAllHomesServerIds(
+    availableServerIds: ReadonlyArray<string>,
+    usableServerIds: ReadonlyArray<string> | null | undefined,
+): string[] {
+    if (!usableServerIds) return availableServerIds.slice();
+    const usable = new Set(usableServerIds.map((id) => normalizeId(id)).filter(Boolean));
+    return availableServerIds.filter((id) => usable.has(id));
+}
+
+/** "All Homes" as a group over the Homes it gathers, or null while there are fewer than two. */
+function resolveAllHomesGroup(
+    availableServerIds: ReadonlyArray<string>,
+    usableServerIds?: ReadonlyArray<string> | null,
+): GroupProfileNormalized | null {
+    const serverIds = resolveAllHomesServerIds(availableServerIds, usableServerIds);
+    if (serverIds.length < ALL_HOMES_MINIMUM_HOME_COUNT) return null;
+    return {
+        id: ALL_HOMES_SELECTION_TARGET_ID,
+        name: '',
+        serverIds,
+        presentation: 'grouped',
+    };
 }
 
 function toGroupTarget(group: GroupProfileNormalized): ActiveServerSelectionTarget {
@@ -123,13 +158,17 @@ function normalizeResolvedServerIds(ids: ReadonlyArray<string>): string[] {
 export function listServerSelectionTargets(params: Readonly<{
     serverProfiles: ReadonlyArray<ServerProfileLike>;
     groupProfiles: ReadonlyArray<ServerSelectionGroup>;
+    /** Homes this device can use (`useUsableHomeServerIds`); unknown while null or absent. */
+    usableServerIds?: ReadonlyArray<string> | null;
 }>): ServerSelectionTarget[] {
     const availableIds = new Set(
         params.serverProfiles.map((profile) => normalizeId(profile.id)).filter(Boolean),
     );
     const groups = normalizeGroupProfiles(params.groupProfiles, availableIds).filter((group) => group.serverIds.length > 0);
+    const allHomes = resolveAllHomesGroup(Array.from(availableIds), params.usableServerIds);
 
     return [
+        ...(allHomes ? [toGroupSelectionTarget(allHomes)] : []),
         ...params.serverProfiles.map((profile) => {
             const id = normalizeId(profile.id);
             return {
@@ -140,21 +179,30 @@ export function listServerSelectionTargets(params: Readonly<{
                 serverUrl: normalizeId(profile.serverUrl),
             };
         }),
-        ...groups.map((group) => ({
-            kind: 'group' as const,
-            id: group.id,
-            groupId: group.id,
-            name: group.name,
-            serverIds: group.serverIds.slice(),
-            presentation: group.presentation,
-        })),
+        ...groups.map(toGroupSelectionTarget),
     ];
+}
+
+function toGroupSelectionTarget(group: GroupProfileNormalized): ServerSelectionTarget {
+    return {
+        kind: 'group',
+        id: group.id,
+        groupId: group.id,
+        name: group.name,
+        serverIds: group.serverIds.slice(),
+        presentation: group.presentation,
+    };
 }
 
 export function resolveActiveServerSelection(params: Readonly<{
     activeServerId: string;
     availableServerIds: ReadonlyArray<string>;
     settings: ServerSelectionSettingsLike;
+    /**
+     * Homes this device can use (it holds a credential for them), once known. With two or more,
+     * "All Homes" is the default until the person picks a scope; while unknown, one Home is.
+     */
+    usableServerIds?: ReadonlyArray<string> | null;
 }>): ResolvedActiveServerSelection {
     const availableServerIds = Array.from(
         new Set(params.availableServerIds.map((id) => normalizeId(id)).filter(Boolean)),
@@ -183,12 +231,21 @@ export function resolveActiveServerSelection(params: Readonly<{
         };
     }
 
-    if (explicitKind === 'group' && explicitId) {
+    if (explicitKind === 'group' && isAllHomesSelectionTargetId(explicitId)) {
+        const allHomes = resolveAllHomesGroup(availableServerIds, params.usableServerIds);
+        if (allHomes) return resolveGroupSelection(allHomes, fallbackServerId, true);
+    } else if (explicitKind === 'group' && explicitId) {
         const group = groupById.get(explicitId);
         if (group && group.serverIds.length > 0) {
             return resolveGroupSelection(group, fallbackServerId, true);
         }
     }
+
+    // No scope chosen (or the chosen one is gone): All Homes once this device can use two or more.
+    const defaultAllHomes = params.usableServerIds
+        ? resolveAllHomesGroup(availableServerIds, params.usableServerIds)
+        : null;
+    if (defaultAllHomes) return resolveGroupSelection(defaultAllHomes, fallbackServerId, false);
 
     if (fallbackServerId) {
         return {
@@ -215,6 +272,7 @@ export function getEffectiveServerSelection(params: Readonly<{
     activeServerId: string;
     availableServerIds: ReadonlyArray<string>;
     settings: ServerSelectionSettingsLike;
+    usableServerIds?: ReadonlyArray<string> | null;
 }>): EffectiveServerSelection {
     const resolved = resolveActiveServerSelection(params);
 
@@ -242,6 +300,7 @@ export function getNewSessionServerTargeting(params: Readonly<{
     activeServerId: string;
     availableServerIds: ReadonlyArray<string>;
     settings: ServerSelectionSettingsLike;
+    usableServerIds?: ReadonlyArray<string> | null;
 }>): NewSessionServerTargeting {
     const selection = getEffectiveServerSelection(params);
     const allowedServerIds = normalizeResolvedServerIds(selection.serverIds);

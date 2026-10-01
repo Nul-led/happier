@@ -9,7 +9,7 @@ import type { AgentSessionOpenRequest } from '@happier-dev/plugin-sdk/agents/run
 
 export type SessionLifecycleActionHandler = (
     rawParams: unknown,
-    context?: Readonly<{ signal: AbortSignal }>,
+    context?: Readonly<{ signal?: AbortSignal }> & Pick<SpawnSessionOptions, 'creationAuthorization' | 'callerInputConstraints'>,
 ) => Promise<unknown>;
 
 export type SessionLifecycleMachineHandlers = Readonly<{

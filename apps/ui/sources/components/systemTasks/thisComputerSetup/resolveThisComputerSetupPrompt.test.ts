@@ -109,4 +109,31 @@ describe('resolveThisComputerSetupPrompt', () => {
             currentCliVersion: '0.2.0',
         });
     });
+    it('parses the one-CLI question (R12) with the facts the person recognises', async () => {
+        const { resolveThisComputerSetupPrompt } = await import('./resolveThisComputerSetupPrompt');
+
+        expect(resolveThisComputerSetupPrompt(createSnapshot({
+            kind: 'setup.cliChoice',
+            command: '/usr/local/bin/happier',
+            version: '0.2.13',
+            origin: 'npm',
+            removalCommand: 'npm uninstall -g @happier-dev/cli',
+            updateCommand: 'npm install -g @happier-dev/cli@latest',
+            belowSetupFloor: false,
+            missing: false,
+            keepBlockedBy: null,
+        }))).toEqual({
+            kind: 'setup.cliChoice',
+            message: 'Prompt message',
+            command: '/usr/local/bin/happier',
+            version: '0.2.13',
+            origin: 'npm',
+            removalCommand: 'npm uninstall -g @happier-dev/cli',
+            updateCommand: 'npm install -g @happier-dev/cli@latest',
+            belowSetupFloor: false,
+            missing: false,
+            keepBlockedBy: null,
+        });
+        expect(resolveThisComputerSetupPrompt(createSnapshot({ kind: 'setup.cliChoice', command: '' }))).toBeNull();
+    });
 });

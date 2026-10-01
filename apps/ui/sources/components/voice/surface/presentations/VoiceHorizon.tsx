@@ -18,9 +18,9 @@ import {
 import { t } from '@/text';
 import { formatWithCachedDateTimeFormatter } from '@/utils/datetime/cachedIntlFormatters';
 
+import { TactilePressable } from '@/components/ui/interactions/TactilePressable';
 import {
     ControlRow,
-    TactilePressable,
     VoiceTransport,
     type VoiceControlAction,
     type VoiceControlId,

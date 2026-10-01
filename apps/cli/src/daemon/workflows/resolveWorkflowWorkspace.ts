@@ -25,10 +25,16 @@ import {
   type WorkflowCoordinatorInvocation,
   type WorkflowCoordinatorStore,
 } from './coordinator';
+import type { WorkflowProducerBinding } from './workflowScopeBinding';
+import type { WorkflowConversationBinding } from './workflowConversation';
 
 export type WorkflowWorkspaceDescriptor = WorkflowWorkspaceDescriptorV1;
 export type WorkflowWorkspaceCreationIntent = WorkflowWorkspaceCreationIntentV1;
 export type WorkflowWorkspaceResolution = WorkflowWorkspaceResolutionV1;
+export type WorkflowWorkspaceSource = Readonly<{
+  descriptor: WorkflowWorkspaceDescriptor;
+  creationIntent?: WorkflowWorkspaceCreationIntent;
+}>;
 export type WorkflowWorkspaceRestoreResult = Readonly<{ ok: true }> | Readonly<{
   ok: false;
   code: 'workflow_workspace_restore_unavailable' | 'workflow_workspace_restore_failed';
@@ -39,7 +45,10 @@ export type WorkflowAcceptedWorkspaceTargetPreparation =
   | Readonly<{ ok: false; code: 'workspace_unavailable' | 'workspace_conflict' | 'committed_revision_unavailable' }>;
 
 type Dependencies = Readonly<{
-  resolveProducerWorkspace?: (producer: WorkflowAuthoredProducerRef) => Promise<WorkflowWorkspaceDescriptor | null>;
+  resolveProducerWorkspace?: (producer: WorkflowAuthoredProducerRef) => Promise<WorkflowWorkspaceSource | null>;
+  inspectLocation?: (input: Readonly<{ candidatePath: string }>) => Promise<Readonly<{
+    inspection: Readonly<{ rootPath: string }>;
+  }> | null>;
   inspectCommittedRevision?: (directory: string) => Promise<string | null>;
   realizeWorktree?: (intent: WorkflowWorkspaceCreationIntent) => Promise<Readonly<{ directory: string; checkoutRootPath: string; branchName: string }> | null>;
   persistCreationIntent?: (intent: WorkflowWorkspaceCreationIntent) => Promise<void>;
@@ -55,8 +64,8 @@ function sameWorkspace(left: WorkflowConversationWorkspace, right: WorkflowConve
     && getPathRemainderWithinBase(left.directory, right.directory) === '';
 }
 
-function creationDisplayName(runId: string, logicalInvocationRecordId: string): string {
-  return `workflow-${runId}-${logicalInvocationRecordId}`;
+function creationDisplayName(runId: string, logicalInvocationRecordId: string, slot?: 'frame_project'): string {
+  return `workflow-${runId}-${logicalInvocationRecordId}${slot === 'frame_project' ? '-project' : ''}`;
 }
 
 async function canonicalExistingPathsEqual(left: string, right: string): Promise<boolean> {
@@ -148,7 +157,9 @@ function workflowUsesOriginalCommittedRevision(definition: WorkflowDefinitionV1)
   );
   if (selectionUsesOriginal(definition.defaults.workspace)) return true;
   const visit = (blocks: WorkflowDefinitionV1['blocks']): boolean => blocks.some((block) => {
-    if (block.kind === 'step') return selectionUsesOriginal(block.execution?.workspace);
+    if (block.kind === 'step' || block.kind === 'action' || block.kind === 'wait' || block.kind === 'workflow') {
+      return selectionUsesOriginal(block.execution?.workspace);
+    }
     if (block.kind === 'parallel') return block.branches.some((branch) => visit(branch.blocks));
     if (block.kind === 'if') return visit(block.then) || visit(block.otherwise);
     return visit(block.body)
@@ -286,11 +297,16 @@ export async function resolveWorkflowWorkspace(input: Readonly<{
   selection: WorkflowWorkspaceSelection;
   defaultSelection: WorkflowWorkspaceSelection;
   projectWorkspace: WorkflowWorkspaceDescriptor;
+  projectWorkspaceCreationIntent?: WorkflowWorkspaceCreationIntent;
   runId: string;
   logicalInvocationRecordId: string;
+  /** A Workflow frame's selected project and lazy default are separate correspondence slots. */
+  creationSlot?: 'frame_project';
   originalCommittedRevision?: string;
   /** Resolved stable workflow default when a step forks from `workflow`. */
-  workflowWorkspace?: WorkflowWorkspaceDescriptor;
+  workflowWorkspace?: WorkflowWorkspaceSource;
+  /** Exact inherited correspondence, including a session-bound cwd or lazy default. */
+  inheritedWorkspace?: WorkflowWorkspaceSource;
   conversationWorkspace?: WorkflowConversationWorkspace;
   recorded?: Readonly<{ creationIntent?: WorkflowWorkspaceCreationIntent; workspace?: WorkflowWorkspaceDescriptor }>;
   deps: Dependencies;
@@ -308,28 +324,35 @@ export async function resolveWorkflowWorkspace(input: Readonly<{
   }
 
   const selection = input.selection.kind === 'inherit' ? input.defaultSelection : input.selection;
-  let sourceWorkspace: WorkflowWorkspaceDescriptor;
+  let source: WorkflowWorkspaceSource;
   if (selection.kind === 'inherit' || selection.kind === 'project_checkout') {
-    sourceWorkspace = input.projectWorkspace;
+    source = input.selection.kind === 'inherit' && input.inheritedWorkspace
+      ? input.inheritedWorkspace
+      : { descriptor: input.projectWorkspace,
+        ...(input.projectWorkspaceCreationIntent ? { creationIntent: input.projectWorkspaceCreationIntent } : {}) };
   } else if (selection.kind === 'from_step') {
     const resolved = await input.deps.resolveProducerWorkspace?.(selection.producer);
     if (!resolved) return { ok: false, code: 'source_workspace_unavailable' };
-    sourceWorkspace = resolved;
+    source = resolved;
   } else {
     if (selection.source.kind === 'step') {
       const resolved = await input.deps.resolveProducerWorkspace?.(selection.source.producer);
       if (!resolved) return { ok: false, code: 'source_workspace_unavailable' };
-      sourceWorkspace = resolved;
+      source = resolved;
     } else {
-      sourceWorkspace = input.workflowWorkspace ?? input.projectWorkspace;
+      source = selection.source.kind === 'workflow' && input.workflowWorkspace
+        ? input.workflowWorkspace
+        : { descriptor: input.projectWorkspace,
+          ...(input.projectWorkspaceCreationIntent ? { creationIntent: input.projectWorkspaceCreationIntent } : {}) };
     }
   }
+  const sourceWorkspace = source.descriptor;
 
   if (sourceWorkspace.machineId !== input.projectWorkspace.machineId) {
     return { ok: false, code: 'workspace_conflict' };
   }
 
-  const sourceVerification = await input.deps.verifyRecordedWorkspace?.(sourceWorkspace) ?? 'available';
+  const sourceVerification = await input.deps.verifyRecordedWorkspace?.(sourceWorkspace, source.creationIntent) ?? 'available';
   if (sourceVerification !== 'available') {
     return {
       ok: false,
@@ -347,6 +370,7 @@ export async function resolveWorkflowWorkspace(input: Readonly<{
     // shared project and producer-derived workspaces. Persisting only newly
     // created worktrees would make a replacement coordinator re-resolve a
     // source whose current attempt or checkout may since have changed.
+    if (source.creationIntent) await input.deps.persistCreationIntent?.(source.creationIntent);
     await input.deps.persistWorkspace?.(sourceWorkspace);
     return { ok: true, workspace: sourceWorkspace };
   }
@@ -358,7 +382,7 @@ export async function resolveWorkflowWorkspace(input: Readonly<{
       ? input.originalCommittedRevision ?? null
       : await (input.deps.inspectCommittedRevision ?? inspectCommittedRevision)(sourceWorkspace.checkoutRootPath);
     if (!baseRef) return { ok: false, code: 'committed_revision_unavailable' };
-    creationIntent = { kind: 'git_worktree', sourceDirectory: sourceWorkspace.directory, baseRef, displayName: creationDisplayName(input.runId, input.logicalInvocationRecordId), branchMode: 'new' };
+    creationIntent = { kind: 'git_worktree', sourceDirectory: sourceWorkspace.directory, baseRef, displayName: creationDisplayName(input.runId, input.logicalInvocationRecordId, input.creationSlot), branchMode: 'new' };
     await input.deps.persistCreationIntent?.(creationIntent);
   }
   const realized = await (input.deps.realizeWorktree ?? realizeWorktree)(creationIntent);
@@ -376,131 +400,156 @@ export async function resolveWorkflowWorkspace(input: Readonly<{
   return { ok: true, workspace };
 }
 
-export function resolveWorkflowProducerScope(
-  producer: WorkflowAuthoredProducerRef,
-  currentScope: WorkflowProgressEnvelopeV1['invocationPath']['scope'],
-): WorkflowProgressEnvelopeV1['invocationPath']['scope'] | null {
-  if (producer.scope.kind === 'current') return currentScope;
-  if (producer.scope.kind === 'outer') {
-    return producer.scope.levels <= currentScope.length
-      ? currentScope.slice(0, currentScope.length - producer.scope.levels)
-      : null;
-  }
-  let index = -1;
-  for (let candidate = currentScope.length - 1; candidate >= 0; candidate -= 1) {
-    const part = currentScope[candidate];
-    if (part?.kind === 'iteration' && part.blockId === producer.scope.loopBlockId) {
-      index = candidate;
-      break;
-    }
-  }
-  const part = currentScope[index];
-  if (index < 0 || part?.kind !== 'iteration' || part.index === 0) return null;
-  return [...currentScope.slice(0, index), { ...part, index: part.index - 1 }, ...currentScope.slice(index + 1)];
-}
-
 /** Binds the pure workspace policy adapter to the coordinator's one row-local persistence owner. */
 export function createCoordinatorWorkspaceResolver(input: Readonly<{
   store: WorkflowCoordinatorStore;
   projectWorkspace: WorkflowWorkspaceDescriptor;
   originalCommittedRevision?: string;
-  scm?: Pick<Dependencies, 'inspectCommittedRevision' | 'realizeWorktree' | 'verifyRecordedWorkspace'>;
+  scm?: Pick<Dependencies, 'inspectLocation' | 'inspectCommittedRevision' | 'realizeWorktree' | 'verifyRecordedWorkspace'>;
 }>): (params: Readonly<{
   runId: string;
   definition: WorkflowDefinitionV1;
-  step: WorkflowStep;
+  step: Pick<WorkflowStep, 'id' | 'execution'>;
   invocation: WorkflowCoordinatorInvocation;
   scope: WorkflowProgressEnvelopeV1['invocationPath']['scope'];
+  producerBinding: WorkflowProducerBinding;
+  defaultWorkspaceOwner?: WorkflowCoordinatorInvocation;
+  conversationBinding?: WorkflowConversationBinding;
   conversationWorkspace?: WorkflowConversationWorkspace;
+  useConversationWorkspace?: boolean;
+  projectWorkspace?: WorkflowWorkspaceSource;
 }>) => Promise<WorkflowWorkspaceResolution> {
   return async (params) => {
     const selection: WorkflowWorkspaceSelection = params.step.execution?.workspace ?? { kind: 'inherit' };
     const defaultSelection: WorkflowWorkspaceSelection = params.definition.defaults.workspace ?? { kind: 'project_checkout' };
-    const sharesDefaultWorktree = selection.kind === 'inherit' && defaultSelection.kind === 'new_worktree';
-    const rootKey = workflowInvocationKey({ runId: params.runId, blockId: '$root', scope: [], attempt: 0 });
-    const rootOwner = await input.store.read(rootKey);
-    const workspaceOwner = sharesDefaultWorktree
-      ? rootOwner
-      : params.invocation;
-    if (!workspaceOwner) return { ok: false, code: 'workspace_unavailable' };
+    const frameProject = params.invocation.blockKind === 'workflow';
+    const workspaceProgress = (owner: WorkflowCoordinatorInvocation, selectedProject: boolean) => selectedProject
+      ? owner.container?.kind === 'body' ? owner.container.frameProjectWorkspace : undefined
+      : owner.workspace;
+    const recordedWorkspace = (owner: WorkflowCoordinatorInvocation, selectedProject: boolean) => {
+      const workspace = workspaceProgress(owner, selectedProject);
+      return workspace ? {
+        ...(workspace.creationIntent ? { creationIntent: workspace.creationIntent } : {}),
+        ...(workspace.descriptor ? { workspace: workspace.descriptor } : {}),
+      } : undefined;
+    };
+    const persistWorkspaceProgress = async (owner: WorkflowCoordinatorInvocation,
+      progress: WorkflowWorkspaceProgressV1, selectedProject: boolean) => {
+      if (!selectedProject) {
+        await input.store.commitFact({ key: owner.key, lifecycle: owner.lifecycle, workspace: progress });
+        return;
+      }
+      const current = await input.store.read(owner.key);
+      if (current?.container?.kind !== 'body') throw new Error('workflow_frame_container_missing');
+      await input.store.commitFact({ key: owner.key, lifecycle: current.lifecycle,
+        container: { ...current.container,
+          frameProjectWorkspace: { ...current.container.frameProjectWorkspace, ...progress } } });
+    };
+    const dependencies = (owner: WorkflowCoordinatorInvocation, selectedProject = false): Dependencies => ({
+      ...(input.scm?.inspectCommittedRevision ? { inspectCommittedRevision: input.scm.inspectCommittedRevision } : {}),
+      ...(input.scm?.realizeWorktree ? { realizeWorktree: input.scm.realizeWorktree } : {}),
+      resolveProducerWorkspace: async (producer) => {
+        const record = await params.producerBinding.resolve(producer);
+        if (!record) return null;
+        const workspace = workspaceProgress(record, record.blockKind === 'workflow');
+        return workspace?.descriptor
+          ? {
+            descriptor: { ...workspace.descriptor, sourceInvocation: { producer, invocationRecordId: record.recordId } },
+            ...(workspace.creationIntent ? { creationIntent: workspace.creationIntent } : {}),
+          }
+          : null;
+      },
+      persistCreationIntent: async (creationIntent) => {
+        await persistWorkspaceProgress(owner, { creationIntent }, selectedProject);
+      },
+      persistWorkspace: async (descriptor) => {
+        await persistWorkspaceProgress(owner, { descriptor }, selectedProject);
+      },
+      verifyRecordedWorkspace: input.scm?.verifyRecordedWorkspace ?? (async (workspace, creationIntent) => (
+        await verifyWorkflowWorkspaceCurrentness(workspace, { creationIntent })
+      )),
+    });
+    const resolveForOwner = (
+      owner: WorkflowCoordinatorInvocation,
+      selected: WorkflowWorkspaceSelection,
+      defaults: WorkflowWorkspaceSelection,
+      sources: Readonly<{ workflowWorkspace?: WorkflowWorkspaceSource; inheritedWorkspace?: WorkflowWorkspaceSource }> = {},
+      conversationWorkspace?: WorkflowConversationWorkspace,
+      selectedProject = false,
+    ) => resolveWorkflowWorkspace({
+      selection: selected,
+      defaultSelection: defaults,
+      projectWorkspace: params.projectWorkspace?.descriptor ?? input.projectWorkspace,
+      ...(params.projectWorkspace?.creationIntent
+        ? { projectWorkspaceCreationIntent: params.projectWorkspace.creationIntent } : {}),
+      ...sources,
+      ...(conversationWorkspace ? { conversationWorkspace } : {}),
+      runId: params.runId,
+      logicalInvocationRecordId: owner.logicalInvocationRecordId ?? owner.recordId,
+      ...(selectedProject ? { creationSlot: 'frame_project' as const } : {}),
+      ...(input.originalCommittedRevision ? { originalCommittedRevision: input.originalCommittedRevision } : {}),
+      recorded: recordedWorkspace(owner, selectedProject),
+      deps: dependencies(owner, selectedProject),
+    });
 
-    let workflowWorkspace: WorkflowWorkspaceDescriptor | undefined;
-    if (selection.kind === 'new_worktree'
-      && selection.source.kind === 'workflow'
-      && defaultSelection.kind === 'new_worktree') {
-      if (!rootOwner) return { ok: false, code: 'workspace_unavailable' };
-      const defaultResolution = await resolveWorkflowWorkspace({
-        selection: defaultSelection,
-        defaultSelection: { kind: 'project_checkout' },
-        projectWorkspace: input.projectWorkspace,
-        runId: params.runId,
-        logicalInvocationRecordId: rootOwner.logicalInvocationRecordId ?? rootOwner.recordId,
-        ...(input.originalCommittedRevision ? { originalCommittedRevision: input.originalCommittedRevision } : {}),
-        ...(params.conversationWorkspace ? { conversationWorkspace: params.conversationWorkspace } : {}),
-        ...(rootOwner.workspace ? {
-          recorded: {
-            ...(rootOwner.workspace.creationIntent ? { creationIntent: rootOwner.workspace.creationIntent } : {}),
-            ...(rootOwner.workspace.descriptor ? { workspace: rootOwner.workspace.descriptor } : {}),
-          },
-        } : {}),
-        deps: {
-          ...(input.scm?.inspectCommittedRevision ? { inspectCommittedRevision: input.scm.inspectCommittedRevision } : {}),
-          ...(input.scm?.realizeWorktree ? { realizeWorktree: input.scm.realizeWorktree } : {}),
-          persistCreationIntent: async (creationIntent) => {
-            await input.store.commitFact({ key: rootOwner.key, lifecycle: rootOwner.lifecycle, workspace: { creationIntent } });
-          },
-          persistWorkspace: async (descriptor) => {
-            await input.store.commitFact({ key: rootOwner.key, lifecycle: rootOwner.lifecycle, workspace: { descriptor } });
-          },
-          verifyRecordedWorkspace: input.scm?.verifyRecordedWorkspace ?? (async (workspace, creationIntent) => (
-            await verifyWorkflowWorkspaceCurrentness(workspace, { creationIntent })
-          )),
-        },
-      });
-      if (!defaultResolution.ok) return defaultResolution;
-      workflowWorkspace = defaultResolution.workspace;
+    // A leaf's recorded correspondence is exact, even if its lazy default or
+    // producer has since changed. Known missing paths are never rematerialized.
+    if (workspaceProgress(params.invocation, frameProject)?.descriptor) {
+      return await resolveForOwner(params.invocation, selection, defaultSelection, {}, params.conversationWorkspace, frameProject);
+    }
+    if (selection.kind === 'new_worktree' && params.conversationWorkspace) {
+      return { ok: false, code: 'conversation_workspace_mismatch' };
     }
 
-    return resolveWorkflowWorkspace({
-      selection,
-      defaultSelection,
-      projectWorkspace: input.projectWorkspace,
-      ...(workflowWorkspace ? { workflowWorkspace } : {}),
-      ...(params.conversationWorkspace ? { conversationWorkspace: params.conversationWorkspace } : {}),
-      runId: params.runId,
-      logicalInvocationRecordId: workspaceOwner.logicalInvocationRecordId ?? workspaceOwner.recordId,
-      ...(input.originalCommittedRevision ? { originalCommittedRevision: input.originalCommittedRevision } : {}),
-      ...(workspaceOwner.workspace ? {
-        recorded: {
-          ...(workspaceOwner.workspace.creationIntent ? { creationIntent: workspaceOwner.workspace.creationIntent } : {}),
-          ...(workspaceOwner.workspace.descriptor ? { workspace: workspaceOwner.workspace.descriptor } : {}),
-        },
-      } : {}),
-      deps: {
-        ...(input.scm?.inspectCommittedRevision ? { inspectCommittedRevision: input.scm.inspectCommittedRevision } : {}),
-        ...(input.scm?.realizeWorktree ? { realizeWorktree: input.scm.realizeWorktree } : {}),
-        resolveProducerWorkspace: async (producer) => {
-          const scope = resolveWorkflowProducerScope(producer, params.scope);
-          if (!scope) return null;
-          const record = await input.store.readCurrent?.({
-            runId: params.runId, blockId: producer.blockId, scope,
-          }) ?? await input.store.read(workflowInvocationKey({
-            runId: params.runId, blockId: producer.blockId, scope, attempt: 0,
-          }));
-          return record?.workspace?.descriptor
-            ? { ...record.workspace.descriptor, sourceInvocation: { producer, invocationRecordId: record.recordId } }
-            : null;
-        },
-        persistCreationIntent: async (creationIntent) => {
-          await input.store.commitFact({ key: workspaceOwner.key, lifecycle: workspaceOwner.lifecycle, workspace: { creationIntent } });
-        },
-        persistWorkspace: async (descriptor) => {
-          await input.store.commitFact({ key: workspaceOwner.key, lifecycle: workspaceOwner.lifecycle, workspace: { descriptor } });
-        },
-        verifyRecordedWorkspace: input.scm?.verifyRecordedWorkspace ?? (async (workspace, creationIntent) => (
-          await verifyWorkflowWorkspaceCurrentness(workspace, { creationIntent })
-        )),
-      },
-    });
+    if (selection.kind === 'inherit' && params.useConversationWorkspace && params.conversationWorkspace) {
+      const conversation = params.step.execution?.conversation ?? params.definition.defaults.conversation;
+      let source: WorkflowWorkspaceSource;
+      if (conversation?.kind === 'from_step') {
+        const resolved = await dependencies(params.invocation).resolveProducerWorkspace?.(conversation.producer);
+        if (!resolved) return { ok: false, code: 'source_workspace_unavailable' };
+        source = resolved;
+      } else if (params.conversationBinding?.kind === 'shared') {
+        const owner = await input.store.readByLogicalInvocation(params.conversationBinding.scopeOwnerKey);
+        const sourceId = owner?.sharedConversationInvocationRecordId?.session;
+        const record = sourceId ? await input.store.readByLogicalInvocation(sourceId) : undefined;
+        if (!record?.workspace?.descriptor) return { ok: false, code: 'source_workspace_unavailable' };
+        source = { descriptor: record.workspace.descriptor,
+          ...(record.workspace.creationIntent ? { creationIntent: record.workspace.creationIntent } : {}) };
+      } else {
+        const directory = params.conversationWorkspace.directory;
+        const inspected = await (input.scm?.inspectLocation ?? inspectWorkspaceLocationWithScmWorkspace)({ candidatePath: directory });
+        const checkoutRootPath = inspected?.inspection.rootPath ?? directory;
+        source = { descriptor: {
+          machineId: params.conversationWorkspace.machineId, directory, checkoutRootPath,
+        } };
+      }
+      return await resolveForOwner(params.invocation, selection, { kind: 'project_checkout' },
+        { inheritedWorkspace: source }, params.conversationWorkspace, frameProject);
+    }
+
+    const needsDefault = defaultSelection.kind === 'new_worktree' && (
+      selection.kind === 'inherit'
+      || (selection.kind === 'new_worktree' && selection.source.kind === 'workflow')
+    );
+    let workflowWorkspace: WorkflowWorkspaceSource | undefined;
+    if (needsDefault) {
+      const rootKey = workflowInvocationKey({ runId: params.runId, blockId: '$root', scope: [], attempt: 0 });
+      const owner = await input.store.read(params.defaultWorkspaceOwner?.key ?? rootKey);
+      if (!owner) return { ok: false, code: 'workspace_unavailable' };
+      const resolved = await resolveForOwner(owner, defaultSelection, { kind: 'project_checkout' }, {},
+        selection.kind === 'inherit' ? params.conversationWorkspace : undefined);
+      if (!resolved.ok) return resolved;
+      const recorded = await input.store.read(owner.key);
+      workflowWorkspace = {
+        descriptor: resolved.workspace,
+        ...(recorded?.workspace?.creationIntent ? { creationIntent: recorded.workspace.creationIntent } : {}),
+      };
+    }
+    return await resolveForOwner(params.invocation, selection,
+      workflowWorkspace && selection.kind === 'inherit' ? { kind: 'project_checkout' } : defaultSelection,
+      {
+        ...(workflowWorkspace ? { workflowWorkspace } : {}),
+        ...(workflowWorkspace && selection.kind === 'inherit' ? { inheritedWorkspace: workflowWorkspace } : {}),
+      }, params.conversationWorkspace, frameProject);
   };
 }

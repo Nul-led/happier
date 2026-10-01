@@ -125,6 +125,7 @@ describe('session list layout projection', () => {
         })).toEqual({
             canReorderSiblings: false,
             canMoveBetweenFolders: false,
+            canPutUnder: false,
             canDrag: false,
         });
 
@@ -137,6 +138,7 @@ describe('session list layout projection', () => {
         })).toEqual({
             canReorderSiblings: false,
             canMoveBetweenFolders: true,
+            canPutUnder: false,
             canDrag: true,
         });
 
@@ -149,7 +151,23 @@ describe('session list layout projection', () => {
         })).toEqual({
             canReorderSiblings: false,
             canMoveBetweenFolders: false,
+            canPutUnder: false,
             canDrag: false,
+        });
+
+        // Putting a Session under a lead is its own drag, available whatever the ordering or folders.
+        expect(resolveSessionListSessionRowDragPolicy({
+            manualSessionOrderingEnabled: false,
+            folderContainmentEnabled: false,
+            putUnderEnabled: true,
+            item: { section: 'active', groupKind: 'project' },
+            sectionModeV1: 'single',
+            orderingModeV1: 'updated',
+        })).toEqual({
+            canReorderSiblings: false,
+            canMoveBetweenFolders: false,
+            canPutUnder: true,
+            canDrag: true,
         });
     });
 

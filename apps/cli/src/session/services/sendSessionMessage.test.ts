@@ -25,6 +25,9 @@ describe('sendSessionMessage', () => {
     type SendWaitRowsOptions = Readonly<{
         limit100RowsByCall?: readonly (readonly unknown[])[];
         sessionSnapshot?: Record<string, unknown>;
+        readResult?: boolean;
+        inputObservation?: { kind: 'after_input'; timeoutMs: number };
+        onInputMaterialized?: (acceptedAtMs: number) => Promise<void>;
     }>;
 
     async function sendAndWaitForRowsAfterCurrentUser(
@@ -115,10 +118,15 @@ describe('sendSessionMessage', () => {
             })),
         }));
 
-        const { sendSessionMessage } = await import('./sendSessionMessage');
+        const { sendSessionMessage, waitForSessionInputResult } = await import('./sendSessionMessage');
         const machineKey = new Uint8Array(32).fill(1);
 
-        const result = await sendSessionMessage({
+        const result = options.readResult ? await waitForSessionInputResult({
+            credentials: { token: 'token', encryption: { type: 'dataKey', publicKey: machineKey, machineKey } },
+            idOrPrefix: 'sess-1', localId: 'local-user',
+            ...(options.inputObservation ? { observation: options.inputObservation } : { timeoutMs: 50 }),
+            ...(options.onInputMaterialized ? { onInputMaterialized: options.onInputMaterialized } : {}),
+        }) : await sendSessionMessage({
             credentials: { token: 'token', encryption: { type: 'dataKey', publicKey: machineKey, machineKey } },
             idOrPrefix: 'sess-1',
             message: 'hello',
@@ -143,6 +151,33 @@ describe('sendSessionMessage', () => {
             },
         };
     }
+
+    it('starts an authored observation budget at the exact materialized host input timestamp', async () => {
+        const accepted: number[] = [];
+        const { result } = await sendAndWaitForRowsAfterCurrentUser([
+            { role: 'agent', content: { type: 'text', text: 'own host turn' } }, rawLifecycle('task_complete'),
+        ], {
+            readResult: true, inputObservation: { kind: 'after_input', timeoutMs: 50 },
+            onInputMaterialized: async (acceptedAtMs) => { accepted.push(acceptedAtMs); },
+        });
+        expect(accepted).toEqual([100]);
+        expect(result).toMatchObject({ ok: true, result: { kind: 'final_text', text: 'own host turn' } });
+    });
+
+    it.each(['direct', 'published'] as const)('closes the current result scan at the next %s context-only host input', async (shape) => {
+        const event = { type: 'worker-update', update: {
+            v: 1, workerKind: 'execution_run', workerId: 'run-2', ownerState: 'succeeded',
+            wake: 'finished', headline: 'Worker finished', result: 'Worker result', canInspect: true,
+        } };
+        const { result } = await sendAndWaitForRowsAfterCurrentUser([
+            { role: 'agent', content: { type: 'text', text: 'First result' } },
+            { role: 'agent', content: shape === 'direct' ? { type: 'event', data: event }
+                : { type: 'acp', data: { type: 'event', data: event } } },
+            { role: 'agent', content: { type: 'text', text: 'Second result' } },
+            rawLifecycle('turn_failed'),
+        ], { readResult: true });
+        expect(result).toMatchObject({ ok: true, result: { kind: 'final_text', text: 'First result' } });
+    });
 
     function rawEventLifecycle(type: string) {
         return {
@@ -247,7 +282,7 @@ describe('sendSessionMessage', () => {
                             v: 1,
                             updatedAt: 2,
                             selection: {
-                                agentTargetKey: 'backend:claude',
+                                agentTargetKey: 'agent:happier.agent.claude/claude',
                                 providerConnectionId: 'pc_pending',
                                 modelId: 'pending-restart-model',
                             },
@@ -344,7 +379,7 @@ describe('sendSessionMessage', () => {
                             v: 1,
                             updatedAt: 1,
                             selection: {
-                                agentTargetKey: 'backend:claude',
+                                agentTargetKey: 'agent:happier.agent.claude/claude',
                                 providerConnectionId: 'pc_work',
                                 modelId: 'provider-old',
                             },
@@ -385,7 +420,7 @@ describe('sendSessionMessage', () => {
             modelSelectionV1: expect.objectContaining({
                 v: 1,
                 ref: {
-                    agentTargetKey: 'backend:claude',
+                    agentTargetKey: 'agent:happier.agent.claude/claude',
                     providerConnectionId: 'pc_work',
                     modelId: 'default',
                 },
@@ -443,7 +478,7 @@ describe('sendSessionMessage', () => {
             modelSelectionV1: expect.objectContaining({
                 v: 1,
                 ref: {
-                    agentTargetKey: 'backend:claude',
+                    agentTargetKey: 'agent:happier.agent.claude/claude',
                     providerConnectionId: 'pc_other',
                     modelId: 'other-model',
                 },
@@ -1505,6 +1540,7 @@ describe('sendSessionMessage', () => {
             idOrPrefix: 'sess-1',
             message: 'continue',
             localId: 'connected-service-continuation:test',
+            requestedAction: { v: 1, kind: 'enqueue' },
             wait: false,
             timeoutMs: 1,
         })).resolves.toMatchObject({ ok: true, sessionId: 'sess-1', localId: 'connected-service-continuation:test', waited: false });
@@ -1512,7 +1548,10 @@ describe('sendSessionMessage', () => {
         expect(enqueuePendingQueueV2MessageViaHttp).toHaveBeenCalledWith(expect.objectContaining({
             token: 'token',
             sessionId: 'sess-1',
-            body: expect.objectContaining({ localId: 'connected-service-continuation:test' }),
+            body: expect.objectContaining({
+                localId: 'connected-service-continuation:test',
+                requestedAction: { v: 1, kind: 'send_now' },
+            }),
         }));
         expect(materializeNextPendingQueueV2MessageViaHttp).not.toHaveBeenCalled();
         expect(enqueuePendingQueueV2MessageViaHttp.mock.invocationCallOrder[0]).toBeLessThan(
@@ -1529,10 +1568,17 @@ describe('sendSessionMessage', () => {
             idOrPrefix: 'sess-1',
             message: 'continue later',
             localId: 'connected-service-continuation:pending-only',
+            requestedAction: { v: 1, kind: 'enqueue' },
             resumeInactiveSession: false,
             wait: false,
             timeoutMs: 1,
         })).resolves.toMatchObject({ ok: true, sessionId: 'sess-1', localId: 'connected-service-continuation:pending-only', waited: false });
+        expect(enqueuePendingQueueV2MessageViaHttp).toHaveBeenLastCalledWith(expect.objectContaining({
+            body: expect.objectContaining({
+                localId: 'connected-service-continuation:pending-only',
+                requestedAction: { v: 1, kind: 'enqueue' },
+            }),
+        }));
         expect(requestInactiveSessionResume).toHaveBeenCalledTimes(1);
     });
 
@@ -1621,7 +1667,7 @@ describe('sendSessionMessage', () => {
                     v: 1,
                     updatedAt: 11,
                     selection: {
-                        agentTargetKey: 'backend:claude',
+                        agentTargetKey: 'agent:happier.agent.claude/claude',
                         providerConnectionId: null,
                         modelId: 'owner-model',
                     },
@@ -1700,7 +1746,7 @@ describe('sendSessionMessage', () => {
                             model: 'owner-model',
                             modelSelectionV1: expect.objectContaining({
                                 ref: {
-                                    agentTargetKey: 'backend:claude',
+                                    agentTargetKey: 'agent:happier.agent.claude/claude',
                                     providerConnectionId: null,
                                     modelId: 'owner-model',
                                 },

@@ -1,48 +1,6 @@
 import type { BrowserCommandV1 } from '@happier-dev/protocol';
 import { describe, expect, it, vi } from 'vitest';
-
-type FactoryModule = Readonly<{
-    createBrowserSidecarCdpControlAdapterFactory?: (input: Readonly<{
-        browserSessionId: string;
-        sidecarId: string;
-        endpointSource: Readonly<{ kind: 'devtoolsStderr'; stderr: string }> | Readonly<{ kind: 'explicit'; endpoint: string }>;
-        connectTransport?: (endpoint: Readonly<{ url: string }>) => Promise<{
-            transport: Readonly<{
-                openPage(input: Readonly<{ url: string; focus: boolean }>): Promise<Readonly<{ targetId: string; sessionId?: string }>>;
-                dispatchPageCommand(input: Readonly<{
-                    targetId: string;
-                    sessionId?: string;
-                    method: string;
-                    params?: Record<string, unknown>;
-                }>): Promise<unknown>;
-                dispatchBrowserCommand(input: Readonly<{
-                    method: string;
-                    params?: Record<string, unknown>;
-                }>): Promise<unknown>;
-            }>;
-            dispose?: () => void | Promise<void>;
-        }>;
-    }>) => (input: Readonly<{ machineId: string }>) => Promise<FactoryResult> | FactoryResult;
-}>;
-
-type FactoryResult =
-    | Readonly<{
-        ok: true;
-        adapter: Readonly<{
-            adapterKind: 'chromiumSidecar';
-            dispatchCommand(command: BrowserCommandV1): Promise<unknown> | unknown;
-        }>;
-        dispose?: () => void | Promise<void>;
-    }>
-    | Readonly<{
-        ok: false;
-        errorCode: 'cdp_unavailable';
-        disabledReason: string;
-    }>;
-
-async function loadFactoryModule(): Promise<FactoryModule | null> {
-    return import('./controlAdapterFactory') as Promise<FactoryModule | null>;
-}
+import { createBrowserSidecarCdpControlAdapterFactory } from './controlAdapterFactory';
 
 function openViewCommand(): Extract<BrowserCommandV1, { kind: 'openView' }> {
     return {
@@ -62,12 +20,7 @@ function openViewCommand(): Extract<BrowserCommandV1, { kind: 'openView' }> {
 
 describe('browser sidecar CDP control adapter factory', () => {
     it('returns cdp_unavailable without endpoint details when discovery fails', async () => {
-        const mod = await loadFactoryModule();
-
-        expect(mod?.createBrowserSidecarCdpControlAdapterFactory).toBeTypeOf('function');
-        if (!mod?.createBrowserSidecarCdpControlAdapterFactory) return;
-
-        const factory = mod.createBrowserSidecarCdpControlAdapterFactory({
+        const factory = createBrowserSidecarCdpControlAdapterFactory({
             browserSessionId: 'browser_session_factory',
             sidecarId: 'sidecar_factory',
             endpointSource: {
@@ -87,15 +40,10 @@ describe('browser sidecar CDP control adapter factory', () => {
     });
 
     it('returns cdp_unavailable without endpoint details when transport connection fails', async () => {
-        const mod = await loadFactoryModule();
-
-        expect(mod?.createBrowserSidecarCdpControlAdapterFactory).toBeTypeOf('function');
-        if (!mod?.createBrowserSidecarCdpControlAdapterFactory) return;
-
         const connectTransport = vi.fn(async () => {
             throw new Error('connect failed at ws://127.0.0.1:9222/devtools/browser/secret-token');
         });
-        const factory = mod.createBrowserSidecarCdpControlAdapterFactory({
+        const factory = createBrowserSidecarCdpControlAdapterFactory({
             browserSessionId: 'browser_session_factory',
             sidecarId: 'sidecar_factory',
             endpointSource: {
@@ -117,11 +65,6 @@ describe('browser sidecar CDP control adapter factory', () => {
     });
 
     it('returns an executable adapter only after a private CDP transport is connected', async () => {
-        const mod = await loadFactoryModule();
-
-        expect(mod?.createBrowserSidecarCdpControlAdapterFactory).toBeTypeOf('function');
-        if (!mod?.createBrowserSidecarCdpControlAdapterFactory) return;
-
         const dispose = vi.fn();
         const transport = {
             openPage: vi.fn(async () => ({
@@ -132,7 +75,7 @@ describe('browser sidecar CDP control adapter factory', () => {
             dispatchBrowserCommand: vi.fn(async () => ({})),
         };
         const connectTransport = vi.fn(async () => ({ transport, dispose }));
-        const factory = mod.createBrowserSidecarCdpControlAdapterFactory({
+        const factory = createBrowserSidecarCdpControlAdapterFactory({
             browserSessionId: 'browser_session_factory',
             sidecarId: 'sidecar_factory',
             endpointSource: {

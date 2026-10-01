@@ -15,6 +15,7 @@ import type {
     MachineLiveStreamCaptureStartInput,
     MachineLiveStreamControlApplyResult,
 } from '../../../peer/mediation/stream/captureAdapter';
+import { classifyCaptureTerminalCloseKind } from '../../../peer/mediation/stream/captureAdapter';
 
 export type SimulatorCaptureFramePayload = Readonly<{
     codecId: MachineLiveStreamCodecIdV1;
@@ -31,7 +32,6 @@ export type SimulatorCaptureReadyFrameValue = Readonly<{
     payloadEncoding: 'binary_base64';
     payloadBase64: string;
     payloadSizeBytes: number;
-    encryption?: MachineLiveStreamFrameV1['encryption'];
 }>;
 
 export type SimulatorCaptureReadyFrame = Readonly<{
@@ -73,6 +73,7 @@ export type SimulatorCaptureFrameProducerStartInput = Readonly<{
     startRequest: MachineLiveStreamStartRequestV1;
     emitFrame: (frame: SimulatorCaptureProducerFrame) => void;
     fail: (reasonCode: string) => void;
+    reportInputFailure: (reasonCode: string) => void;
 }>;
 
 export type SimulatorCaptureFrameProducer = Readonly<{
@@ -83,12 +84,6 @@ export type CreateSimulatorFrameProducerCaptureAdapterInput = Readonly<{
     sourceId: string;
     sourceCodecs: readonly MachineLiveStreamCodecIdV1[];
     producer: SimulatorCaptureFrameProducer;
-}>;
-
-type ExtendedStartRequest = MachineLiveStreamStartRequestV1 & Readonly<{
-    codecId?: unknown;
-    preferredCodec?: unknown;
-    viewerCodecs?: unknown;
 }>;
 
 function createStreamReceipt(input: Readonly<{
@@ -105,6 +100,8 @@ function createStreamReceipt(input: Readonly<{
         routeKind: input.routeKind,
         flowKind: 'live_stream',
         reasonCode: input.reasonCode,
+        terminal: true,
+        terminalOutcome: classifyCaptureTerminalCloseKind(input.reasonCode) === 'flow.closed' ? 'stopped' : 'error',
         maxBitrateBps: input.caps.maxBitrateBps,
         maxFramesPerSecond: input.caps.maxFramesPerSecond,
         maxFrameBytes: input.caps.maxFrameBytes,
@@ -113,38 +110,20 @@ function createStreamReceipt(input: Readonly<{
     };
 }
 
-function isCodecId(value: unknown): value is MachineLiveStreamCodecIdV1 {
-    return value === 'image.frame.v1' || value === 'image.mjpeg' || value === 'h264.avcc';
-}
-
-function resolveRequestedCodec(startRequest: MachineLiveStreamStartRequestV1): MachineLiveStreamCodecIdV1 | null {
-    const request = startRequest as ExtendedStartRequest;
-    if (isCodecId(request.codecId)) return request.codecId;
-    if (isCodecId(request.preferredCodec)) return request.preferredCodec;
-    return null;
-}
-
-function resolveViewerCodecs(startRequest: MachineLiveStreamStartRequestV1): readonly MachineLiveStreamCodecIdV1[] | null {
-    const request = startRequest as ExtendedStartRequest;
-    if (!Array.isArray(request.viewerCodecs)) return null;
-    const codecs = request.viewerCodecs.filter(isCodecId);
-    return codecs.length > 0 ? codecs : null;
-}
-
 function negotiateCodec(input: Readonly<{
     sourceCodecs: readonly MachineLiveStreamCodecIdV1[];
     startRequest: MachineLiveStreamStartRequestV1;
 }>): Readonly<{ ok: true; codecId: MachineLiveStreamCodecIdV1 } | { ok: false; reasonCode: string }> {
     if (input.sourceCodecs.length === 0) return { ok: false, reasonCode: 'unsupported_codec' };
 
-    const requestedCodec = resolveRequestedCodec(input.startRequest);
+    const requestedCodec = input.startRequest.codecId;
+    const viewerCodecs = input.startRequest.viewerCodecs;
     if (requestedCodec) {
-        return input.sourceCodecs.includes(requestedCodec)
+        return input.sourceCodecs.includes(requestedCodec) && (!viewerCodecs || viewerCodecs.includes(requestedCodec))
             ? { ok: true, codecId: requestedCodec }
             : { ok: false, reasonCode: 'unsupported_codec' };
     }
 
-    const viewerCodecs = resolveViewerCodecs(input.startRequest);
     if (viewerCodecs) {
         const commonCodec = input.sourceCodecs.find((codecId) => viewerCodecs.includes(codecId));
         return commonCodec ? { ok: true, codecId: commonCodec } : { ok: false, reasonCode: 'unsupported_codec' };
@@ -259,6 +238,16 @@ export function createSimulatorFrameProducerCaptureAdapter(
             let pendingStop = false;
             let captureClosed = false;
             let producerStopInvoked = false;
+            let needsKeyframe = false;
+            let keyframeRequested = false;
+            let pendingMetadata: SimulatorCaptureProducerFrame | null = null;
+
+            const requestRecoveryKeyframe = (): void => {
+                if (!needsKeyframe || keyframeRequested || !producerSession?.requestKeyframe) return;
+                keyframeRequested = true;
+                producerSession.requestKeyframe({ v: 1, streamId: startInput.streamId, sourceId: input.sourceId,
+                    eventId: `${startInput.streamId}:backpressure`, kind: 'request_keyframe' });
+            };
 
             const stopProducer = async (): Promise<void> => {
                 captureClosed = true;
@@ -296,8 +285,30 @@ export function createSimulatorFrameProducerCaptureAdapter(
                     caps: startInput.caps,
                     startRequest: startInput.startRequest,
                     fail: failClosed,
+                    reportInputFailure: (reasonCode) => {
+                        if (captureClosed) return;
+                        const { terminalOutcome: _outcome, ...receipt } = createStreamReceipt({
+                            id: PEER_MEDIATION_RECEIPTS.streamPaused, streamId: startInput.streamId,
+                            routeKind: startInput.startRequest.routeKind, reasonCode, caps: startInput.caps,
+                        });
+                        startInput.emitReceipt({ ...receipt, terminal: false });
+                    },
                     emitFrame: (producerFrame) => {
                         if (captureClosed) return;
+                        const payloadKind = 'frame' in producerFrame ? producerFrame.frame.payloadKind : producerFrame.payloadKind;
+                        if (payloadKind === 'metadata') pendingMetadata = producerFrame;
+                        else if (pendingMetadata) {
+                            const metadata = normalizeProducerFrame({ frame: pendingMetadata, streamId: startInput.streamId,
+                                sequence, nowMs: startInput.nowMs, negotiatedCodecId: negotiated.codecId });
+                            if (!metadata.ok) { failClosed(metadata.reasonCode); return; }
+                            const offer = startInput.offerFrame(metadata.frame);
+                            if (!offer.ok) {
+                                if (offer.reasonCode !== 'backpressure_window_exhausted') failClosed(offer.reasonCode);
+                                return;
+                            }
+                            pendingMetadata = null;
+                            sequence += 1;
+                        }
                         const frame = normalizeProducerFrame({
                             frame: producerFrame,
                             streamId: startInput.streamId,
@@ -309,11 +320,22 @@ export function createSimulatorFrameProducerCaptureAdapter(
                             failClosed(frame.reasonCode);
                             return;
                         }
+                        if (needsKeyframe && frame.frame.payloadKind === 'image_delta') return;
                         const offer = startInput.offerFrame(frame.frame);
                         if (!offer.ok) {
+                            if (offer.reasonCode === 'backpressure_window_exhausted') {
+                                if (frame.frame.payloadKind !== 'metadata') needsKeyframe = negotiated.codecId === 'h264.avcc';
+                                requestRecoveryKeyframe();
+                                return;
+                            }
                             failClosed(offer.reasonCode);
                             return;
                         }
+                        if (frame.frame.payloadKind === 'image_keyframe') {
+                            needsKeyframe = false;
+                            keyframeRequested = false;
+                        }
+                        if (frame.frame.payloadKind === 'metadata') pendingMetadata = null;
                         sequence += 1;
                     },
                 });
@@ -325,11 +347,25 @@ export function createSimulatorFrameProducerCaptureAdapter(
                 await stopProducer();
                 return { ok: false, reasonCode: failureReason ?? 'capture_stopped' };
             }
+            requestRecoveryKeyframe();
 
             return {
                 ok: true,
                 session: {
                     stop: stopProducer,
+                    applyControl: (control) => {
+                        if (captureClosed) return { ok: false, reasonCode: 'capture_stopped' };
+                        if (control.streamId !== startInput.streamId) return { ok: false, reasonCode: 'invalid_control' };
+                        const kind = control.kind === 'pause' ? 'pause_capture'
+                            : control.kind === 'resume' ? 'resume_capture'
+                                : control.kind === 'keyframe_required' ? 'request_keyframe' : null;
+                        if (!kind) return { ok: true };
+                        return applyProducerControl({
+                            control: { v: 1, streamId: control.streamId, sourceId: input.sourceId,
+                                eventId: `${control.streamId}:${control.kind}`, kind },
+                            sourceId: input.sourceId, streamId: startInput.streamId, session: producerSession,
+                        });
+                    },
                     applySidebandControl: (control) => {
                         if (captureClosed) return { ok: false, reasonCode: 'capture_stopped' };
                         return applyProducerControl({

@@ -1,5 +1,6 @@
 import type { ServerProfile } from '@/sync/domains/server/serverProfiles';
 import type { SystemTaskRunState } from '@/components/systemTasks/types';
+import type { ThisComputerConnection } from '@/sync/domains/server/relayDrift/thisComputerConnection';
 
 export type PersonalHomeBootstrapPhase =
     | 'checking'
@@ -12,6 +13,8 @@ export type NormalizedSetupDetail = Readonly<{
     code?: string;
     message: string;
     retryable: boolean;
+    /** Set when the failure is a fact about this computer's daemon; recovery copy names it. */
+    thisComputer?: ThisComputerConnection;
 }>;
 
 export type RelayRuntimeStatusSnapshot = Readonly<{
@@ -53,6 +56,11 @@ export type PersonalHomeFacts = Readonly<{
     isDesktopMainWindow: boolean;
     /** A durable, explicit selection of a different Home releases first-run Personal Home setup. */
     explicitlySelectedOtherHome: boolean;
+    /**
+     * R10 D4: the implicitly selected Home the app already holds credentials for (a 0.2 Cloud user,
+     * say). While present, a Personal Home is created only after the user chooses it.
+     */
+    signedInOtherHome?: Readonly<{ serverId: string; label: string }> | null;
     completedPersonalHomeProfile: ServerProfile | null;
     candidateLocalProfile: ServerProfile | null;
     relayRuntime: RelayRuntimeStatusSnapshot | null;
@@ -70,7 +78,9 @@ export type PersonalHomeBootstrapSnapshot = Readonly<{
     daemonReady: boolean;
     phase: PersonalHomeBootstrapPhase;
     daemonState: 'not-started' | 'pending' | 'ready' | 'blocked';
-    action: 'none' | 'retry' | 'choose-existing-runtime' | 'use-another-home' | 'open-details';
+    action: 'none' | 'retry' | 'choose-existing-runtime' | 'choose-signed-in-home' | 'use-another-home' | 'open-details';
+    /** The Home the user is already signed in to, named by the `choose-signed-in-home` decision. */
+    signedInHomeLabel?: string;
     /** Facts already proven by the bootstrap owner; presentation may only count these. */
     progressMilestones?: Readonly<{
         runtimeHealthy: boolean;

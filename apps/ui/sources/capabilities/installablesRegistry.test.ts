@@ -100,7 +100,6 @@ describe('getInstallablesRegistryEntries', () => {
                 generation: 1,
                 installedPackagesById: {},
                 agentsById: {},
-                backendsById: {},
                 actionsById: {},
                 toolsById: {},
                 commandsById: {},

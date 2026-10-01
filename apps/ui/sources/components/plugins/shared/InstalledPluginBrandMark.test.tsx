@@ -26,7 +26,7 @@ beforeEach(() => {
 });
 
 describe('InstalledPluginBrandMark', () => {
-    it('renders an admitted PNG against the canonical opaque light backing with one accessible display name', async () => {
+    it('renders an admitted colored PNG without a tile with one accessible display name', async () => {
         const screen = await renderScreen(
             <InstalledPluginBrandMark brand={brand} size="small" testID="plugin-brand" />,
         );
@@ -41,9 +41,9 @@ describe('InstalledPluginBrandMark', () => {
         expect(image?.props.style).toEqual(expect.objectContaining({
             width: 32,
             height: 32,
-            borderRadius: lightTheme.borderRadius.md,
-            backgroundColor: lightTheme.colors.surface.base,
         }));
+        expect(image?.props.style.backgroundColor).toBeUndefined();
+        expect(image?.props.style.tintColor).toBeUndefined();
         expect(screen.getTextContent()).not.toContain('Acme Brand');
     });
 
@@ -62,10 +62,7 @@ describe('InstalledPluginBrandMark', () => {
         expect(fallback?.props.accessibilityLabel).toBeUndefined();
         expect(fallback?.props.accessibilityElementsHidden).toBe(true);
         expect(fallback?.props.importantForAccessibility).toBe('no-hide-descendants');
-        expect(fallback?.props.style).toEqual(expect.objectContaining({
-            backgroundColor: lightTheme.colors.surface.base,
-            borderRadius: lightTheme.borderRadius.md,
-        }));
+        expect(fallback?.props.style.backgroundColor).toBeUndefined();
         expect(screen.getTextContent()).toContain('A');
         expect(screen.getTextContent()).not.toContain('Acme Brand');
     });
@@ -91,10 +88,10 @@ describe('InstalledPluginBrandMark', () => {
         expect(scaled).toBeTruthy();
     });
 
-    it('inverts the opaque backing contrast pair in dark theme without changing the packaged bitmap', async () => {
+    it('renders a declared monochrome glyph in the dark theme foreground without changing its bytes', async () => {
         themeState.theme = darkTheme;
         const screen = await renderScreen(
-            <InstalledPluginBrandMark brand={brand} testID="plugin-brand" />,
+            <InstalledPluginBrandMark brand={{ ...brand, monochrome: true }} testID="plugin-brand" />,
         );
 
         const image = screen.findByType('Image');
@@ -102,7 +99,8 @@ describe('InstalledPluginBrandMark', () => {
             uri: `data:image/png;base64,${Buffer.from(createValidPluginBrandPngFixture()).toString('base64')}`,
         });
         expect(image?.props.style).toEqual(expect.objectContaining({
-            backgroundColor: darkTheme.colors.text.primary,
+            tintColor: darkTheme.colors.text.primary,
         }));
+        expect(image?.props.style.backgroundColor).toBeUndefined();
     });
 });

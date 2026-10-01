@@ -1,4 +1,5 @@
 import type {
+    ScmStashApplyResponse,
     ScmStashDropResponse,
     ScmStashListResponse,
     ScmStashPopResponse,
@@ -10,4 +11,6 @@ export type ScmStashDetailsAdapter = Readonly<{
     show: (stashRef: string) => Promise<ScmStashShowResponse>;
     pop: (stashRef: string) => Promise<ScmStashPopResponse>;
     drop: (stashRef: string) => Promise<ScmStashDropResponse>;
+    /** Puts the stash's changes back and keeps the stash (Restore also removes it). */
+    apply: (stashRef: string) => Promise<ScmStashApplyResponse>;
 }>;

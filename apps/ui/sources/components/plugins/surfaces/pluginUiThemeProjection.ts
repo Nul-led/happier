@@ -1,5 +1,15 @@
 import type { PluginUiThemeV1 } from '@happier-dev/plugin-sdk/ui';
+import type {
+    HappierFontFace,
+    HappierTypeRole,
+    HappierTypeRoleStyle,
+    HappierUiPalette,
+    HappierUiTypography,
+} from '@happier-dev/plugin-ui/environment';
+import type { TextStyle } from 'react-native';
 
+import { pageTitleTypography } from '@/components/ui/layout/pageTitleTypography';
+import { ITEM_TITLE_TEXT_METRICS } from '@/components/ui/lists/itemDensityMetrics';
 import { FontWeights, getMonoFont, Typography } from '@/constants/Typography';
 import type { Theme } from '@/theme';
 import type { ThemeColorTokenId } from '@/theme/tokens/themeColorTokenDefinitions';
@@ -38,7 +48,11 @@ export const PLUGIN_UI_THEME_COLOR_TOKEN_IDS = Object.freeze({
     warning: 'state.warning.foreground',
     danger: 'state.danger.foreground',
     info: 'state.info.foreground',
-    control: 'control.input.background',
+    // Chips, secondary buttons, pickers and field wells. The raised surface,
+    // as the host's own raised controls use: `input.background` is an inset
+    // well that in the dark theme sits a hair below the page and left every
+    // plugin control nearly invisible there.
+    control: 'surface.elevated',
     controlDisabled: 'control.button.primary.disabled',
     overlay: 'overlay.scrim',
 } as const satisfies Readonly<Record<keyof PluginUiThemeV1['colors'], ThemeColorTokenId>>);
@@ -62,6 +76,93 @@ function readTextStyleMetric(
 }
 
 /**
+ * The ONE mapping from plugin type roles to the host's own typography owners.
+ *
+ * Both projections below read it, so the public snapshot's metrics and the
+ * same-realm role styles can never disagree on size:
+ *
+ * - `heading` — the page title step (`PageHeader`), for a plugin page heading;
+ * - `title` — the host's primary item title, for pane and section headings;
+ * - `label` — the host row title, for row titles, buttons and tabs;
+ * - `body` — the host row meta line, for prose and secondary lines;
+ * - `caption` — the host timestamp role (tabular), for quiet metadata.
+ *
+ * Each is a descending step, so a heading always reads above a row title and a
+ * row title always reads above its own context line.
+ */
+const PLUGIN_UI_TYPE_ROLES: Readonly<Record<HappierTypeRole, Readonly<{
+    style: () => TextStyle;
+    fontWeight: string;
+}>>> = Object.freeze({
+    heading: { style: () => pageTitleTypography(), fontWeight: FontWeights.bold },
+    title: {
+        style: () => ({ ...Typography.default('semiBold'), ...ITEM_TITLE_TEXT_METRICS.comfortable }),
+        fontWeight: FontWeights.semiBold,
+    },
+    label: { style: () => Typography.rowTitle(), fontWeight: FontWeights.semiBold },
+    body: { style: () => Typography.rowMeta(), fontWeight: FontWeights.regular },
+    caption: { style: () => Typography.timestamp(), fontWeight: FontWeights.regular },
+});
+
+function projectTypeRoleMetric(role: HappierTypeRole) {
+    const style = PLUGIN_UI_TYPE_ROLES[role].style();
+    return Object.freeze({
+        fontSize: readTextStyleMetric(style, 'fontSize'),
+        lineHeight: readTextStyleMetric(style, 'lineHeight'),
+        fontWeight: PLUGIN_UI_TYPE_ROLES[role].fontWeight,
+    });
+}
+
+function projectTypeRoleStyle(role: HappierTypeRole): HappierTypeRoleStyle {
+    const style = PLUGIN_UI_TYPE_ROLES[role].style();
+    return Object.freeze({
+        fontSize: readTextStyleMetric(style, 'fontSize'),
+        lineHeight: readTextStyleMetric(style, 'lineHeight'),
+        // A family that encodes its weight (Inter-SemiBold) carries no
+        // `fontWeight`; adding one would ask the browser to synthesize bold.
+        ...(typeof style.fontWeight === 'string' ? { fontWeight: style.fontWeight } : {}),
+        ...(typeof style.fontFamily === 'string' ? { fontFamily: style.fontFamily } : {}),
+        ...(typeof style.letterSpacing === 'number' ? { letterSpacing: style.letterSpacing } : {}),
+        ...(Array.isArray(style.fontVariant) && style.fontVariant.includes('tabular-nums')
+            ? { fontVariant: ['tabular-nums'] as const }
+            : {}),
+    });
+}
+
+function projectFontFace(style: TextStyle): HappierFontFace {
+    return Object.freeze({
+        ...(typeof style.fontFamily === 'string' ? { fontFamily: style.fontFamily } : {}),
+        ...(typeof style.fontWeight === 'string' ? { fontWeight: style.fontWeight } : {}),
+    });
+}
+
+let hostTypography: HappierUiTypography | null = null;
+
+/**
+ * The same-realm host fact: the real role styles (family, tracking, tabular
+ * figures and the heading step) every shared plugin text owner renders with
+ * when a plugin surface is mounted inside the app. Platform-selected, not
+ * theme-dependent, so it is computed once — on first use, never at import.
+ */
+export function readPluginUiHostTypography(): HappierUiTypography {
+    hostTypography ??= Object.freeze({
+        heading: projectTypeRoleStyle('heading'),
+        title: projectTypeRoleStyle('title'),
+        label: projectTypeRoleStyle('label'),
+        body: projectTypeRoleStyle('body'),
+        caption: projectTypeRoleStyle('caption'),
+        // The face per weight of the configuration-page anatomy (`HAPPIER_PAGE_TEXT`).
+        weights: Object.freeze({
+            regular: projectFontFace(Typography.default('regular')),
+            medium: projectFontFace(Typography.default('medium')),
+            semiBold: projectFontFace(Typography.default('semiBold')),
+            bold: projectFontFace(Typography.default('bold')),
+        }),
+    });
+    return hostTypography;
+}
+
+/**
  * Project the canonical Happier theme into the public plugin theme snapshot.
  *
  * Total by construction: every field reads a typed path off `Theme` or a
@@ -69,10 +170,6 @@ function readTextStyleMetric(
  * and no fallback palette.
  */
 export function projectPluginUiTheme(theme: Theme): PluginUiThemeV1 {
-    const title = Typography.rowTitle();
-    const body = Typography.rowMeta();
-    const label = Typography.pillLabel();
-    const caption = Typography.timestamp();
     const code = Typography.keyHint();
     return Object.freeze({
         version: 1,
@@ -92,7 +189,7 @@ export function projectPluginUiTheme(theme: Theme): PluginUiThemeV1 {
             warning: theme.colors.state.warning.foreground,
             danger: theme.colors.state.danger.foreground,
             info: theme.colors.state.info.foreground,
-            control: theme.colors.input.background,
+            control: theme.colors.surface.elevated,
             controlDisabled: theme.colors.button.primary.disabled,
             overlay: theme.colors.overlay.scrim,
         }),
@@ -110,26 +207,10 @@ export function projectPluginUiTheme(theme: Theme): PluginUiThemeV1 {
             pill: PLUGIN_UI_PILL_RADIUS,
         }),
         typography: Object.freeze({
-            body: Object.freeze({
-                fontSize: readTextStyleMetric(body, 'fontSize'),
-                lineHeight: readTextStyleMetric(body, 'lineHeight'),
-                fontWeight: FontWeights.regular,
-            }),
-            label: Object.freeze({
-                fontSize: readTextStyleMetric(label, 'fontSize'),
-                lineHeight: readTextStyleMetric(label, 'lineHeight'),
-                fontWeight: FontWeights.semiBold,
-            }),
-            title: Object.freeze({
-                fontSize: readTextStyleMetric(title, 'fontSize'),
-                lineHeight: readTextStyleMetric(title, 'lineHeight'),
-                fontWeight: FontWeights.semiBold,
-            }),
-            caption: Object.freeze({
-                fontSize: readTextStyleMetric(caption, 'fontSize'),
-                lineHeight: readTextStyleMetric(caption, 'lineHeight'),
-                fontWeight: FontWeights.regular,
-            }),
+            body: projectTypeRoleMetric('body'),
+            label: projectTypeRoleMetric('label'),
+            title: projectTypeRoleMetric('title'),
+            caption: projectTypeRoleMetric('caption'),
             code: Object.freeze({
                 fontSize: readTextStyleMetric(code, 'fontSize'),
                 lineHeight: readTextStyleMetric(code, 'lineHeight'),
@@ -137,4 +218,43 @@ export function projectPluginUiTheme(theme: Theme): PluginUiThemeV1 {
             }),
         }),
     });
+}
+
+const hostPalettes = new WeakMap<Theme, HappierUiPalette>();
+
+/**
+ * The same-realm host fact for configuration-page anatomy: the exact colour
+ * roles Happier's own pages draw sheets, row seams, field boxes, switches,
+ * segmented choices and tiles with, so a mounted plugin page renders in the
+ * app's colours rather than the snapshot's nearest roles. Theme-dependent,
+ * memoized per resolved theme object.
+ */
+export function projectPluginUiHostPalette(theme: Theme): HappierUiPalette {
+    const existing = hostPalettes.get(theme);
+    if (existing) return existing;
+    const colors = theme.colors;
+    const palette: HappierUiPalette = Object.freeze({
+        page: colors.surface.base,
+        sheet: colors.surface.sectionTint,
+        sheetBorder: colors.border.default,
+        rowDivider: colors.border.subtle,
+        groupDivider: colors.border.faint,
+        controlBorder: colors.border.strong,
+        fieldBackground: colors.surface.base,
+        placeholder: colors.input.placeholder,
+        selection: colors.button.primary.background,
+        switchTrackOn: colors.switch.track.active,
+        switchTrackOff: colors.switch.track.inactive,
+        switchThumb: colors.switch.thumb.active,
+        segmentTrack: colors.segmentedControl.trackBackground,
+        segmentThumb: colors.segmentedControl.activeBackground,
+        // A navigation column's rows on the shell plane: the same chip and hover core rows draw
+        // (`HAPPIER_COLLECTION_LIST_ROW_STYLE` over `Item`).
+        navigationSelected: colors.surface.elevated,
+        navigationHover: colors.surface.pressed,
+        freshnessBackground: colors.surface.inset,
+        searchFieldRadiusPx: theme.borderRadius.lg,
+    });
+    hostPalettes.set(theme, palette);
+    return palette;
 }

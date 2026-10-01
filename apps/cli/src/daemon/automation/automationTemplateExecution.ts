@@ -1,19 +1,10 @@
 import { z } from 'zod';
 import {
-  AcpConfigOptionOverridesV1Schema,
   AUTOMATION_TEMPLATE_CIPHERTEXT_MAX_CHARS,
-  AUTOMATION_TEMPLATE_ENCRYPTED_V1_KIND,
-  AUTOMATION_TEMPLATE_PLAIN_V1_KIND,
-  BackendTargetRefV2Schema,
-  materializeAutomationRunPromptV1,
-  normalizeBackendTargetRefV2InputToV2,
-  normalizeAutomationTemplateEnvelopeStoredRead,
-  openAccountScopedBlobCiphertext,
+  AutomationTemplatePayloadV1Schema,
+  openAutomationTemplateStoredV1,
+  readAutomationTemplateStoredEnvelopeV1,
   type SessionAuthoringCheckoutCreationDraftV1,
-  SessionAuthoringCheckoutCreationDraftV1Schema,
-  SessionMcpSelectionV1Schema,
-  SessionModelSelectionV1Schema,
-  RuntimeDescriptorV1Schema,
 } from '@happier-dev/protocol';
 
 import type { SpawnSessionOptions } from '@/session/shared/spawnSessionContract';
@@ -21,64 +12,24 @@ import {
   SpawnSessionPermissionModeSchema,
   SpawnSessionTerminalSchema,
 } from '@/rpc/handlers/spawnSessionOptionsContract';
-import { decodeBase64, decryptLegacy } from '@/api/encryption';
 import { readCanonicalSpawnRuntimeSelectionFromCompatIngress } from '@/rpc/handlers/spawnRuntimeSelection';
 
-const TemplateSchema = z.object({
-  directory: z.string().trim().min(1),
-  checkoutCreationDraft: SessionAuthoringCheckoutCreationDraftV1Schema.optional(),
+const TemplateSchema = AutomationTemplatePayloadV1Schema.omit({
+  executionTarget: true, agentTarget: true, organizationPlacement: true,
+}).extend({
   agent: z.string().trim().min(1).optional(),
-  backendTarget: z.preprocess(normalizeBackendTargetRefV2InputToV2, BackendTargetRefV2Schema).optional(),
-  profileId: z.string().optional(),
-  environmentVariables: z.record(z.string(), z.string()).optional(),
-  resume: z.string().optional(),
-  permissionMode: SpawnSessionPermissionModeSchema.optional(),
-  permissionModeUpdatedAt: z.number().int().optional(),
-  modelSelection: SessionModelSelectionV1Schema.nullable().optional(),
-  modelId: z.string().optional(),
-  modelUpdatedAt: z.number().int().optional(),
-  sessionConfigOptionOverrides: AcpConfigOptionOverridesV1Schema.optional(),
-  mcpSelection: SessionMcpSelectionV1Schema.optional(),
-  connectedServices: z.unknown().optional(),
-  transcriptStorage: z.enum(['persisted', 'direct']).optional(),
-  terminal: SpawnSessionTerminalSchema.optional(),
-  windowsRemoteSessionLaunchMode: z.enum(['hidden', 'windows_terminal', 'console']).optional(),
-  windowsRemoteSessionConsole: z.enum(['hidden', 'visible']).optional(),
-  windowsTerminalWindowName: z.string().optional(),
-  runtimeDescriptorV1: RuntimeDescriptorV1Schema.optional(),
-  /**
-   * Released remote-dev V2 account-template ingress only. Current writers
-   * use runtimeDescriptorV1. Remove when those stored templates are no longer
-   * accepted by the Automation worker.
-   */
-  experimentalCodexAcp: z.boolean().optional(),
-  /** Same released remote-dev V2 account-template ingress as above. */
-  codexBackendMode: z.enum(['mcp', 'acp', 'appServer']).optional(),
-  agentModeId: z.string().optional(),
   existingSessionId: z.string().trim().min(1).optional(),
-  sessionEncryptionMode: z.enum(['e2ee', 'plain']).optional(),
-  sessionEncryptionKeyBase64: z.string().optional(),
-  sessionEncryptionVariant: z.literal('dataKey').optional(),
-  prompt: z.string().optional(),
-  displayText: z.string().optional(),
-}).strict();
+  permissionMode: SpawnSessionPermissionModeSchema.optional(),
+  terminal: SpawnSessionTerminalSchema.optional(),
+});
 
 export type AutomationTemplateEncryption =
   | Readonly<{ type: 'legacy'; secret: Uint8Array }>
   | Readonly<{ type: 'dataKey'; machineKey: Uint8Array }>;
 
-export type AutomationClaimedRunPayload = Readonly<{
-  run: {
-    id: string;
-    automationId: string;
-  };
-  automation: {
-    id: string;
-    name: string;
-    enabled: boolean;
-    targetType: 'new_session' | 'existing_session';
-    templateCiphertext: string;
-  };
+export type AutomationTemplateExecutionInput = Readonly<{
+  targetType: 'new_session' | 'existing_session';
+  templateCiphertext: string;
 }>;
 
 export type ParsedAutomationExecution = Readonly<{
@@ -116,7 +67,7 @@ export type AutomationTemplateExecutionParseResult =
   | Readonly<{ ok: true; value: ParsedAutomationExecution }>
   | Readonly<{
       ok: false;
-      code: 'invalid_template' | 'encryption_material_unavailable';
+      code: 'invalid_template' | 'encryption_material_unavailable' | 'encryption_mode_mismatch';
       error: string;
     }>;
 
@@ -126,117 +77,26 @@ function invalidAutomationTemplate(
   return { ok: false, code: 'invalid_template', error };
 }
 
-type AutomationTemplatePromptMaterializationResult =
-  | Readonly<{ ok: true; prompt?: string }>
-  | Extract<AutomationTemplateExecutionParseResult, { ok: false }>;
-
-/**
- * Renders a released V2 Definition's prompt through the one Protocol token
- * materializer. This adapter never carries trigger evidence: its only writer
- * is constrained by the released V2 representability adapter before the
- * worker reaches here. The template is built locally, so the only
- * way it can fail the Protocol template shape is its prompt byte ceiling.
- */
-export function materializeAutomationTemplatePrompt(params: Readonly<{
-  prompt: string | undefined;
-}>): AutomationTemplatePromptMaterializationResult {
-  const materialized = materializeAutomationRunPromptV1({
-    template: { v: 1, prompt: params.prompt ?? '' },
-    triggerEvidence: null,
-  });
-  if (materialized.kind !== 'available') {
-    switch (materialized.reason) {
-      case 'malformedToken':
-        return invalidAutomationTemplate('Invalid automation template: malformed token');
-      case 'unsupportedToken':
-        return invalidAutomationTemplate(
-          `Invalid automation template: unsupported token ${materialized.token}`,
-        );
-      default:
-        return invalidAutomationTemplate('Invalid automation template: materialized input exceeds its UTF-8 byte limit');
-    }
-  }
-
-  return materialized.prompt.length > 0 ? { ok: true, prompt: materialized.prompt } : { ok: true };
-}
-
 export function parseAutomationTemplateExecution(
-  payload: AutomationClaimedRunPayload,
-  encryption?: AutomationTemplateEncryption,
+  payload: AutomationTemplateExecutionInput,
+  encryption: AutomationTemplateEncryption | undefined,
+  accountMode: 'plain' | 'e2ee',
 ): AutomationTemplateExecutionParseResult {
-  if (payload.automation.templateCiphertext.length > AUTOMATION_TEMPLATE_CIPHERTEXT_MAX_CHARS) {
+  if (payload.templateCiphertext.length > AUTOMATION_TEMPLATE_CIPHERTEXT_MAX_CHARS) {
     return invalidAutomationTemplate('Invalid automation template: envelope too large');
   }
 
-  let parsedEnvelope: unknown;
-  try {
-    parsedEnvelope = JSON.parse(payload.automation.templateCiphertext);
-  } catch {
-    return invalidAutomationTemplate('Invalid automation template JSON');
-  }
-
-  const storedRead = normalizeAutomationTemplateEnvelopeStoredRead(parsedEnvelope);
-  if (!storedRead) {
-    return invalidAutomationTemplate('Invalid automation template envelope');
-  }
-  if (
-    payload.automation.targetType === 'new_session'
-    && storedRead.legacyExistingSessionId
-  ) {
-    return invalidAutomationTemplate('Invalid automation template: existingSessionId is not allowed for new_session target');
-  }
-  const anyEnvelope = storedRead.envelope;
-
-  let parsedPayload: unknown;
-  if (anyEnvelope.kind === AUTOMATION_TEMPLATE_PLAIN_V1_KIND) {
-    parsedPayload = anyEnvelope.payload;
-  } else if (
-    anyEnvelope.kind === AUTOMATION_TEMPLATE_ENCRYPTED_V1_KIND
-  ) {
-    if (!encryption) {
-      return {
-        ok: false,
-        code: 'encryption_material_unavailable',
-        error: 'Encrypted automation template cannot be decrypted without account encryption material',
-      };
-    }
-
-    const opened = (() => {
-      try {
-        const opened = openAccountScopedBlobCiphertext({
-          kind: 'automation_template_payload',
-          material: encryption.type === 'legacy'
-            ? { type: 'legacy', secret: encryption.secret }
-            : { type: 'dataKey', machineKey: encryption.machineKey },
-          ciphertext: anyEnvelope.payloadCiphertext,
-        });
-        const decrypted = opened?.value;
-        if (!decrypted || typeof decrypted !== 'object' || Array.isArray(decrypted)) {
-          return null;
-        }
-        return decrypted;
-      } catch {
-        return null;
-      }
-    })();
-
-    if (opened) {
-      parsedPayload = opened;
-    } else {
-      // Legacy fallback: some older templates were sealed with a raw secretbox (base64 of encryptLegacy).
-      try {
-        const ciphertextBytes = decodeBase64(anyEnvelope.payloadCiphertext, 'base64');
-        const secret = encryption.type === 'legacy' ? encryption.secret : encryption.machineKey;
-        const decrypted = decryptLegacy(ciphertextBytes, secret);
-        if (!decrypted || typeof decrypted !== 'object' || Array.isArray(decrypted)) {
-          return invalidAutomationTemplate('Invalid encrypted automation template payload');
-        }
-        parsedPayload = decrypted;
-      } catch {
-        return invalidAutomationTemplate('Invalid encrypted automation template payload');
-      }
-    }
-  }
+  const storedRead = readAutomationTemplateStoredEnvelopeV1(payload.templateCiphertext);
+  if (!storedRead) return invalidAutomationTemplate('Invalid automation template envelope');
+  const opened = openAutomationTemplateStoredV1({
+    templateCiphertext: payload.templateCiphertext,
+    accountMode,
+    ...(encryption ? { material: encryption } : {}),
+  });
+  if (!opened.ok) return { ok: false, code: opened.code, error: opened.code === 'encryption_material_unavailable'
+    ? 'Encrypted automation template cannot be decrypted without account encryption material'
+    : 'Invalid automation template: ' + opened.code };
+  const parsedPayload = opened.template;
 
   const parsed = TemplateSchema.safeParse(parsedPayload);
   if (!parsed.success) {
@@ -255,24 +115,24 @@ export function parseAutomationTemplateExecution(
     runtimeDescriptorV1: template.runtimeDescriptorV1,
   }).runtimeDescriptorV1;
 
-  if (payload.automation.targetType === 'existing_session' && !template.existingSessionId) {
+  if (payload.targetType === 'existing_session' && !template.existingSessionId) {
     return invalidAutomationTemplate('Invalid automation template: existingSessionId is required for existing_session target');
   }
   if (
-    payload.automation.targetType === 'existing_session'
+    payload.targetType === 'existing_session'
     && storedRead.legacyExistingSessionId
     && storedRead.legacyExistingSessionId !== template.existingSessionId
   ) {
     return invalidAutomationTemplate('Invalid automation template: existingSessionId mismatch');
   }
-  if (payload.automation.targetType === 'new_session' && template.existingSessionId) {
+  if (payload.targetType === 'new_session' && template.existingSessionId) {
     return invalidAutomationTemplate('Invalid automation template: existingSessionId is not allowed for new_session target');
   }
 
   return {
     ok: true,
     value: {
-      targetType: payload.automation.targetType,
+      targetType: payload.targetType,
       directory: template.directory,
       ...(template.checkoutCreationDraft ? { checkoutCreationDraft: template.checkoutCreationDraft } : {}),
       ...(template.backendTarget

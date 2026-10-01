@@ -1,4 +1,6 @@
 import { flushHookEffects } from '@/dev/testkit/hooks/flushHookEffects';
+import 'fake-indexeddb/auto';
+import { createReactNavigationNativeMock } from '@/dev/testkit/mocks/reactNavigation';
 import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -18,8 +20,11 @@ import type { RestartStaleSessionRunnerResult } from '@/sync/ops/sessionRunnerRe
 import type { SessionModelProjectionGroup } from '@/components/sessions/modelPicker/buildSessionModelPickerSections';
 import type { sendVoiceSessionComposerText } from '@/voice/binding/sendVoiceSessionComposerText';
 
-import { AppPaneProvider } from '@/components/appShell/panes/AppPaneProvider';
-import { createDeferred, createSessionAccessFixture, pressTestInstanceAsync, renderScreen, standardCleanup } from '@/dev/testkit';
+import { createDeferred } from '@/dev/testkit/hooks/createDeferred';
+import { createSessionAccessFixture } from '@/dev/testkit/fixtures/sessionFixtures';
+import type { SessionViewPresentation } from '@/components/sessions/shell/embedded/embeddedSessionPresentation';
+import { pressTestInstanceAsync, renderScreen } from '@/dev/testkit/render/renderScreen';
+import { standardCleanup } from '@/dev/testkit/cleanup/standardCleanup';
 import { localSettingsDefaults, type LocalSettings } from '@/sync/domains/settings/localSettings';
 import { settingsDefaults, type Settings } from '@/sync/domains/settings/settings';
 import { listOpenApprovalArtifactsForSession } from '@/sync/domains/artifacts/approvalArtifacts';
@@ -433,6 +438,7 @@ installSessionShellCommonModuleMocks({
 });
 
 vi.mock('@react-navigation/native', () => ({
+    ...createReactNavigationNativeMock(),
   useFocusEffect: () => {},
   useIsFocused: () => true,
 }));
@@ -542,7 +548,9 @@ vi.mock('@/utils/platform/responsive', () => ({
   useIsTablet: () => true,
 }));
 vi.mock('@/hooks/session/useDraft', () => ({
-  useDraft: (_sessionId: string, value: string, onChange: (next: string) => void) => {
+  useDraft: (_sessionId: string, textStore: Readonly<{ getPrompt: () => string; setPrompt: (next: string) => void }>) => {
+    const value = textStore.getPrompt();
+    const onChange = textStore.setPrompt;
     draftHookState.valuesBySessionId.set(_sessionId, value);
     return {
     clearDraft: () => {
@@ -796,11 +804,14 @@ vi.mock('@/sync/domains/session/control/localControlSwitch', async (importOrigin
   };
 });
 
+const { AppPaneProvider } = await import('@/components/appShell/panes/AppPaneProvider');
+
 describe('SessionView (direct sessions)', () => {
   async function renderSessionView(props: {
     sessionId?: string;
     routeServerId?: string;
     jumpToSeq?: number | null;
+    presentation?: SessionViewPresentation;
   } = {}) {
     const sessionId = props.sessionId ?? 's1';
     const routeServerId = props.routeServerId?.trim();
@@ -818,6 +829,7 @@ describe('SessionView (direct sessions)', () => {
           id={sessionId}
           routeServerId={props.routeServerId ?? (sessions[sessionId]?.serverId as string | undefined)}
           jumpToSeq={props.jumpToSeq}
+          presentation={props.presentation}
         />
       </AppPaneProvider>,
     );
@@ -827,7 +839,11 @@ describe('SessionView (direct sessions)', () => {
     sessionId?: string;
     routeServerId?: string;
     jumpToSeq?: number | null;
+    presentation?: SessionViewPresentation;
   } = {}) {
+    // Match the app bootstrap's persisted-draft preparation before mounting the real composer.
+    const { prepareSessionDraftPersistenceStorage } = await import('@/sync/ops/sessionDrafts/sessionDraftPersistenceStorage');
+    await prepareSessionDraftPersistenceStorage();
     const screen = await renderSessionView(props);
     await settleDirectSessionView();
     return screen;
@@ -3509,7 +3525,7 @@ describe('SessionView (direct sessions)', () => {
     expect(providerModelProjectionState.inputSpy).toHaveBeenCalledWith(expect.objectContaining({ enabled: false }));
     const modelContentOverride = findAgentInput(screen).props.modelContentOverride;
     expect(modelContentOverride).toBeTruthy();
-    expect(modelContentOverride.props.agentTargetKey).toBe('backend:codex');
+    expect(modelContentOverride.props.agentTargetKey).toBe('agent:happier.agent.codex/codex');
     expect(modelContentOverride.props.providerGroups).toEqual([]);
     expect(modelContentOverride.props.hiddenNativeModelKeys).toEqual(new Set());
   });
@@ -3523,7 +3539,7 @@ describe('SessionView (direct sessions)', () => {
           v: 1,
           updatedAt: 11,
           selection: {
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             providerConnectionId: null,
             modelId: 'gpt-5.6-luna',
           },
@@ -3555,7 +3571,7 @@ describe('SessionView (direct sessions)', () => {
     const picker = findAgentInput(screen).props.modelContentOverride;
 
     expect(picker.props.selected).toEqual({
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       providerConnectionId: null,
       modelId: 'openai-codex/gpt-5.6-luna',
     });
@@ -3569,7 +3585,7 @@ describe('SessionView (direct sessions)', () => {
     {
       label: 'Provider model',
       selection: {
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         providerConnectionId: ProviderConnectionIdSchema.parse('pc_work'),
         modelId: 'provider-model',
       },
@@ -3612,6 +3628,48 @@ describe('SessionView (direct sessions)', () => {
     expect(publishSessionModelOverrideToMetadataSpy).not.toHaveBeenCalled();
   });
 
+  it('admits an embed\'s granted model change without Send in a controls-only composer', async () => {
+    // Send off, Change model on: the credential grants `session.model.set` on its own, so the
+    // model control is reachable and its mutation is admitted without text submission.
+    storageState.sessions.s1 = {
+      ...storageState.sessions.s1,
+      accessLevel: 'view',
+      access: createSessionAccessFixture('view'),
+    };
+    const screen = await renderSessionViewAndSettle({
+      routeServerId: 'server-route-1',
+      presentation: { kind: 'embedded', composer: 'auto', modelPicker: true, modelSelectionGranted: true },
+    });
+    const agentInput = findAgentInput(screen);
+    expect(agentInput.props.inputPresentation).toBe('controlsOnly');
+
+    await act(async () => {
+      agentInput.props.modelContentOverride.props.onSelect(null);
+      await Promise.resolve();
+    });
+
+    expect(actionExecuteSpy).toHaveBeenCalledWith(
+      'session.model.set',
+      { sessionId: 's1', providerConnectionId: null, modelId: 'default' },
+      { surface: 'ui', defaultSessionId: 's1', serverId: 'server-route-1' },
+    );
+  });
+
+  it('keeps an embed without Send or a model grant composer-free', async () => {
+    storageState.sessions.s1 = {
+      ...storageState.sessions.s1,
+      accessLevel: 'view',
+      access: createSessionAccessFixture('view'),
+    };
+    const screen = await renderSessionViewAndSettle({
+      routeServerId: 'server-route-1',
+      // The picker alone (a host choice) is not authority to change the model.
+      presentation: { kind: 'embedded', composer: 'auto', modelPicker: true },
+    });
+
+    expect(findAgentInput(screen)).toBeNull();
+  });
+
   it('routes an exact existing-session Team resource selection through session.model.set', async () => {
     const screen = await renderSessionViewAndSettle({ routeServerId: 'server-route-1' });
     const modelContentOverride = findAgentInput(screen).props.modelContentOverride;
@@ -3621,7 +3679,7 @@ describe('SessionView (direct sessions)', () => {
       resourceId: 'resource-1',
       expectedResourceRevision: 7,
       deliveryMode: 'brokered' as const,
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       modelId: 'team-model',
     };
 
@@ -3645,7 +3703,7 @@ describe('SessionView (direct sessions)', () => {
       resourceId: 'resource-1',
       expectedResourceRevision: 7,
       deliveryMode: 'brokered' as const,
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       modelId: 'team-model',
     };
     actionExecuteSpy.mockResolvedValue({
@@ -3682,7 +3740,7 @@ describe('SessionView (direct sessions)', () => {
       resourceId: 'resource-1',
       expectedResourceRevision: 7,
       deliveryMode: 'brokered' as const,
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       modelId: 'team-model',
     };
     actionExecuteSpy.mockResolvedValue({
@@ -3729,7 +3787,7 @@ describe('SessionView (direct sessions)', () => {
               resourceId: 'resource-1',
               expectedResourceRevision: 7,
               deliveryMode,
-              agentTargetKey: 'backend:codex',
+              agentTargetKey: 'agent:happier.agent.codex/codex',
               modelId: 'team-model',
             },
           },
@@ -3744,7 +3802,7 @@ describe('SessionView (direct sessions)', () => {
         resourceId: 'resource-1',
         expectedResourceRevision: 7,
         deliveryMode,
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         modelId: 'team-model',
       });
     },
@@ -3768,7 +3826,7 @@ describe('SessionView (direct sessions)', () => {
             resourceId: 'resource-1',
             expectedResourceRevision: 7,
             deliveryMode: 'brokered',
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             modelId: 'team-model',
           },
         },
@@ -3789,7 +3847,7 @@ describe('SessionView (direct sessions)', () => {
       resourceId: 'resource-1',
       expectedResourceRevision: 7,
       deliveryMode: 'brokered',
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       modelId: 'team-model',
     });
   });
@@ -3805,7 +3863,7 @@ describe('SessionView (direct sessions)', () => {
 
     await act(async () => {
       modelContentOverride.props.onSelect({
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         providerConnectionId: ProviderConnectionIdSchema.parse('pc_work'),
         modelId: 'provider-model',
       });
@@ -3824,7 +3882,7 @@ describe('SessionView (direct sessions)', () => {
   ] as const)('surfaces %s and restarts through the existing Provider runner recovery', async (status) => {
     featureEnabledState.providers = true;
     const requestedSelection = {
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       providerConnectionId: ProviderConnectionIdSchema.parse('pc_work'),
       modelId: 'provider-model',
     };
@@ -3837,7 +3895,7 @@ describe('SessionView (direct sessions)', () => {
         activeSelection: status === 'reconciliation_required'
           ? null
           : {
-              agentTargetKey: 'backend:codex',
+              agentTargetKey: 'agent:happier.agent.codex/codex',
               providerConnectionId: null,
               modelId: 'default',
             },
@@ -3895,7 +3953,7 @@ describe('SessionView (direct sessions)', () => {
 
   it('never reuses a cached Provider restart target after the control machine changes', async () => {
     const requestedSelection = {
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       providerConnectionId: null,
       modelId: 'native-next',
     } as const;
@@ -3927,7 +3985,7 @@ describe('SessionView (direct sessions)', () => {
       details: {
         status: 'restart_required',
         activeSelection: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: null,
           modelId: 'native-old',
         },
@@ -4028,7 +4086,7 @@ describe('SessionView (direct sessions)', () => {
 
   it('does not clear local restart UX from another Agent model snapshot', async () => {
     const requestedSelection = {
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       providerConnectionId: null,
       modelId: 'default',
     } as const;
@@ -4054,7 +4112,7 @@ describe('SessionView (direct sessions)', () => {
       details: {
         status: 'restart_required',
         activeSelection: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: null,
           modelId: 'native-old',
         },
@@ -4092,7 +4150,7 @@ describe('SessionView (direct sessions)', () => {
           v: 1,
           updatedAt: 11,
           selection: {
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             providerConnectionId: null,
             modelId: 'native-next',
           },
@@ -4105,7 +4163,7 @@ describe('SessionView (direct sessions)', () => {
           activeSelectionV1: {
             v: 1,
             selection: {
-              agentTargetKey: 'backend:codex',
+              agentTargetKey: 'agent:happier.agent.codex/codex',
               providerConnectionId: null,
               modelId: 'native-old',
             },
@@ -4140,7 +4198,7 @@ describe('SessionView (direct sessions)', () => {
       processStartTimeMs: 2_000,
     };
     const activeSelection = {
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       providerConnectionId: null,
       modelId: 'native-next',
     } as const;
@@ -4199,7 +4257,7 @@ describe('SessionView (direct sessions)', () => {
       processStartTimeMs: 2_000,
     };
     const activeSelection = {
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       providerConnectionId: null,
       modelId: 'native-next',
     } as const;
@@ -4272,7 +4330,7 @@ describe('SessionView (direct sessions)', () => {
           v: 1,
           updatedAt: 11,
           selection: {
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             providerConnectionId: null,
             modelId: 'native-next',
           },
@@ -4285,7 +4343,7 @@ describe('SessionView (direct sessions)', () => {
           activeSelectionV1: {
             v: 1,
             selection: {
-              agentTargetKey: 'backend:codex',
+              agentTargetKey: 'agent:happier.agent.codex/codex',
               providerConnectionId: null,
               modelId: 'native-next',
             },
@@ -4311,7 +4369,7 @@ describe('SessionView (direct sessions)', () => {
     expect(screen.findByTestId('session.providerBinding.banner')).toBeTruthy();
     expect(findAgentInput(screen).props.modelContentOverride.props.reportedModel).toEqual({
       ref: {
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         providerConnectionId: null,
         modelId: 'native-next',
       },
@@ -4328,7 +4386,7 @@ describe('SessionView (direct sessions)', () => {
           v: 1,
           updatedAt: 11,
           selection: {
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             providerConnectionId: null,
             modelId: 'native-next',
           },
@@ -4348,7 +4406,7 @@ describe('SessionView (direct sessions)', () => {
           updatedAt: 9,
           modelId: 'native-next',
           selection: {
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             providerConnectionId: null,
             modelId: 'native-next',
           },
@@ -4383,7 +4441,7 @@ describe('SessionView (direct sessions)', () => {
 
     expect(picker.props.reportedModel).toEqual({
       ref: {
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         providerConnectionId: null,
         modelId: 'native-next',
       },
@@ -4400,7 +4458,7 @@ describe('SessionView (direct sessions)', () => {
           v: 1,
           updatedAt: 11,
           selection: {
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             providerConnectionId: null,
             modelId: 'native-next',
           },
@@ -4448,7 +4506,7 @@ describe('SessionView (direct sessions)', () => {
           v: 1,
           updatedAt: 11,
           selection: {
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             providerConnectionId: 'pc_work',
             modelId: 'provider-next',
           },
@@ -4473,7 +4531,7 @@ describe('SessionView (direct sessions)', () => {
   it('does not clear local restart presentation from fallback current-model metadata', async () => {
     featureEnabledState.providers = true;
     const requestedSelection = {
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       providerConnectionId: ProviderConnectionIdSchema.parse('pc_b'),
       modelId: 'model-b',
     };
@@ -4484,7 +4542,7 @@ describe('SessionView (direct sessions)', () => {
       details: {
         status: 'restart_required',
         activeSelection: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: null,
           modelId: 'default',
         },
@@ -4527,7 +4585,7 @@ describe('SessionView (direct sessions)', () => {
   it('suppresses local Provider restart presentation when the Providers feature turns off', async () => {
     featureEnabledState.providers = true;
     const requestedSelection = {
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       providerConnectionId: ProviderConnectionIdSchema.parse('pc_b'),
       modelId: 'model-b',
     };
@@ -4538,7 +4596,7 @@ describe('SessionView (direct sessions)', () => {
       details: {
         status: 'restart_required',
         activeSelection: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: null,
           modelId: 'default',
         },
@@ -4562,7 +4620,7 @@ describe('SessionView (direct sessions)', () => {
   it('does not derive Provider switch presentation from retained projection data after Providers are disabled', async () => {
     const providerConnectionId = ProviderConnectionIdSchema.parse('pc_stale');
     const exactSelection = {
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       providerConnectionId,
       modelId: 'provider-only-model',
     };
@@ -4672,7 +4730,7 @@ describe('SessionView (direct sessions)', () => {
     featureEnabledState.providers = true;
     const providerConnectionId = (await import('@happier-dev/protocol')).ProviderConnectionIdSchema.parse('pc_stale');
     const exactSelection = {
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       providerConnectionId,
       modelId: 'provider-only-model',
     };
@@ -4708,7 +4766,7 @@ describe('SessionView (direct sessions)', () => {
     }));
     const modelContentOverride = findAgentInput(screen).props.modelContentOverride;
     expect(modelContentOverride).toBeTruthy();
-    expect(modelContentOverride.props.agentTargetKey).toBe('backend:codex');
+    expect(modelContentOverride.props.agentTargetKey).toBe('agent:happier.agent.codex/codex');
     expect(modelContentOverride.props.providerGroups).toEqual([]);
     expect(modelContentOverride.props.selected).toEqual(exactSelection);
     expect(modelContentOverride.props.effectiveLabel).toBe('provider-only-model');
@@ -4801,7 +4859,7 @@ describe('SessionView (direct sessions)', () => {
     expect(picker.props.selected).toBeNull();
     expect(picker.props.reportedModel).toEqual({
       ref: {
-        agentTargetKey: 'backend:grok',
+        agentTargetKey: 'agent:happier.agent.grok/grok',
         providerConnectionId: null,
         modelId: 'grok-4.5',
       },
@@ -4818,7 +4876,7 @@ describe('SessionView (direct sessions)', () => {
         v: 1,
         updatedAt: 2,
         selection: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: null,
           modelId: 'gpt-5.6-sol',
         },
@@ -4859,13 +4917,13 @@ describe('SessionView (direct sessions)', () => {
     const picker = findAgentInput(screen).props.modelContentOverride;
 
     expect(picker.props.selected).toEqual({
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       providerConnectionId: null,
       modelId: 'gpt-5.6-sol',
     });
     expect(picker.props.reportedModel).toEqual({
       ref: {
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         providerConnectionId: null,
         modelId: 'gpt-5.6-terra',
       },
@@ -4895,7 +4953,7 @@ describe('SessionView (direct sessions)', () => {
         v: 1,
         updatedAt: 2,
         selection: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: null,
           modelId: 'gpt-5.6-sol',
         },

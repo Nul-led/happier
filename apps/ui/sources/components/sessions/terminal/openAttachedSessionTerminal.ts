@@ -12,6 +12,7 @@ import { useSessionTerminalAvailability } from './useSessionTerminalAvailability
 import type { Session } from '@/sync/domains/state/storageTypes';
 import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
 import { createSessionPaneScopeId } from '@/components/sessions/panes/sessionPaneScopeId';
+import { useDestinationPaneScopeId } from '@/components/appShell/workspace/DestinationInstanceHost';
 
 export type AttachedSessionTerminalUnavailableReason =
     | 'missing_session'
@@ -27,7 +28,7 @@ export function useOpenAttachedSessionTerminal(sessionId: string | null, serverI
 }> {
     const normalizedSessionId = sessionId?.trim() ?? '';
     const normalizedServerId = serverId?.trim() || null;
-    const pane = useAppPaneScope(createSessionPaneScopeId(normalizedSessionId, normalizedServerId));
+    const pane = useAppPaneScope(useDestinationPaneScopeId(createSessionPaneScopeId(normalizedSessionId, normalizedServerId)));
     const cockpitChrome = useSessionCockpitChromeRegistration();
     // Subscription width: this hook feeds `SessionHeaderRightElement`, whose
     // `onSelectExtraItem` identity gates `SessionHeaderActionMenu`'s comparator. Subscribing
@@ -59,7 +60,7 @@ export function useOpenAttachedSessionTerminal(sessionId: string | null, serverI
     const available = unavailableReason === null;
     const open = React.useCallback(() => {
         if (!available) return;
-        setSessionTerminalMode(normalizedSessionId, 'session_attach', normalizedServerId);
+        setSessionTerminalMode(normalizedSessionId, 'session_attach', normalizedServerId, pane.scopeId);
         if (
             cockpitChrome?.sessionId === normalizedSessionId
             && (!normalizedServerId || areServerProfileIdentifiersEquivalent(cockpitChrome.serverId, normalizedServerId))

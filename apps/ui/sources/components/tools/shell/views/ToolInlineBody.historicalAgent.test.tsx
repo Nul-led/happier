@@ -2,8 +2,8 @@ import React from 'react';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { collectHostText, makeToolCall, renderScreen, standardCleanup } from '@/dev/testkit';
-import { createMixedAgentTranscriptFixture } from '@/dev/testkit/fixtures/sessionAgentTransitionFixtures';
-import { buildSessionTranscriptAgentAttributionIndex } from '@/components/sessions/transcript/attribution/sessionTranscriptAgentAttribution';
+import { createMixedAgentTranscriptFixture } from "../../../../../../../packages/session-core/src/testkit/sessionAgentTransitionFixtures.js";
+import { buildSessionTranscriptAgentAttributionIndex } from "@happier-dev/session-core/messages";
 import {
     SessionTranscriptAgentAttributionProvider,
     TranscriptRowSeqProvider,

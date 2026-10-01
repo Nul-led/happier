@@ -36,7 +36,7 @@ function createSelectedRoute() {
         kind: 'selected' as const,
         receipt: 'peer.route.selected',
         endpoint: {
-            url: 'http://127.0.0.1:3000/peer-mediation/v1/probe',
+            url: 'http://127.0.0.1:3000',
             endpointFingerprint: 'endpoint_1',
         },
         grant: {

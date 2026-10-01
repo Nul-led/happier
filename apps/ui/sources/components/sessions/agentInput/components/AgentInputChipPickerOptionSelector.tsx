@@ -341,13 +341,13 @@ const stylesheet = StyleSheet.create((theme) => ({
     gap: 4,
     marginBottom: 10,
   },
+  // Sentence-case group label ("Favorites", "Agents"): the same anatomy as every picker group.
   sectionTitle: {
     paddingHorizontal: 6,
     fontSize: 12,
+    lineHeight: 16,
     color: theme.colors.text.secondary,
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
-    ...Typography.header(),
+    ...Typography.default("medium"),
   },
   railOptionsColumn: {
     gap: 6,

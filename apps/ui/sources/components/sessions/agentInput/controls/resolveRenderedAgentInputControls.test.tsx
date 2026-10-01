@@ -24,4 +24,27 @@ describe('resolveRenderedAgentInputControls', () => {
         });
         expect(collapsed.chips).toEqual([coreControl, pluginControl]);
     });
+
+    it('shows only the host\'s bar controls, in the host\'s order, when collapsed', () => {
+        const node = (key: string) => <React.Fragment key={key}>{key}</React.Fragment>;
+        const nodes = { engine: [node('engine')], permission: [node('permission')], actionMenu: [node('actionMenu')], machine: [node('machine')], path: [node('path')], resume: [node('resume')] };
+        const collapsed = resolveRenderedAgentInputControls({
+            layout: 'collapsed',
+            coreControlNodesById: nodes,
+            extraControlNodesById: { mcp: [node('mcp')], automation: [node('automation')] },
+            extraChips: [],
+            barControlIds: ['machine', 'path', 'engine', 'permission', 'actionMenu'],
+        });
+        expect(collapsed.chips.map((chip) => (chip as React.ReactElement).key)).toEqual(['machine', 'path', 'engine', 'permission', 'actionMenu']);
+
+        // Other layouts are unchanged by the host's bar set.
+        const wrap = resolveRenderedAgentInputControls({
+            layout: 'wrap',
+            coreControlNodesById: nodes,
+            extraControlNodesById: { mcp: [node('mcp')] },
+            extraChips: [],
+            barControlIds: ['machine'],
+        });
+        expect(wrap.chips.map((chip) => (chip as React.ReactElement).key)).toContain('mcp');
+    });
 });

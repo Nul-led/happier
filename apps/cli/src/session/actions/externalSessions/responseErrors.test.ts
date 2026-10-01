@@ -8,6 +8,7 @@ import {
 } from '@/session/external/externalSessionFollowFailure';
 import { ExternalSessionProviderFailureError } from '@/session/external/providerOps';
 import { isAgentExternalSessionsFailureCode } from '@happier-dev/plugin-sdk/sessions/external';
+import { ExternalSessionPersistedTakeoverPreflightError } from './materializeAction';
 
 const { debugLog } = vi.hoisted(() => ({
     debugLog: vi.fn(),
@@ -20,6 +21,7 @@ vi.mock('@/ui/logger', () => ({
 }));
 
 import {
+    ExternalSessionTakeoverAdmissionInvariantError,
     internalErrorResponse,
     logExternalSessionsInternalError,
     mapExternalSessionCorridorFailureToExternalSessionsError,
@@ -48,6 +50,67 @@ afterEach(() => {
 });
 
 describe('External Sessions structural error diagnostics', () => {
+    it('retains schema-owned spawn codes and detail kinds without their private payloads', () => {
+        const failure = {
+            type: 'error',
+            errorCode: 'SPAWN_VALIDATION_FAILED',
+            errorMessage: SENTINELS[1],
+            errorDetail: { kind: 'provider_error', message: SENTINELS[2], path: SENTINELS[0] },
+        };
+        logExternalSessionsInternalError('external_session.takeover_admission.spawn', failure);
+        expect(debugLog).toHaveBeenLastCalledWith('[externalSessions][internal_error]', {
+            context: 'external_session.takeover_admission.spawn',
+            errorCode: 'SPAWN_VALIDATION_FAILED',
+            errorKind: 'spawn_failure',
+            detailKind: 'provider_error',
+        });
+        logExternalSessionsInternalError('external_session.takeover_admission.spawn', {
+            ...failure, errorCode: SENTINELS[4], errorDetail: { kind: SENTINELS[0] },
+        });
+        expect(debugLog).toHaveBeenLastCalledWith('[externalSessions][internal_error]', {
+            context: 'external_session.takeover_admission.spawn',
+            errorCode: 'internal_error',
+            errorKind: 'non_error',
+        });
+        expectNoSentinels(debugLog.mock.calls);
+    });
+
+    it('logs only closed admission invariant codes and rejects forged code fields', () => {
+        const error = Object.assign(new ExternalSessionTakeoverAdmissionInvariantError(
+            'persisted_takeover_admission_authority_mismatch',
+        ), { message: SENTINELS[1], cause: { token: SENTINELS[4] } });
+        logExternalSessionsInternalError('external_session.takeover_admission.prepare_spawn', error);
+        expect(debugLog).toHaveBeenLastCalledWith('[externalSessions][internal_error]', {
+            context: 'external_session.takeover_admission.prepare_spawn',
+            errorCode: 'persisted_takeover_admission_authority_mismatch',
+            errorKind: 'takeover_admission_invariant',
+        });
+        Object.assign(error, { code: SENTINELS[0] });
+        logExternalSessionsInternalError('external_session.takeover_admission.prepare_spawn', error);
+        expect(debugLog).toHaveBeenLastCalledWith('[externalSessions][internal_error]', expect.objectContaining({
+            context: 'external_session.takeover_admission.prepare_spawn',
+            errorCode: 'internal_error',
+            errorKind: 'error',
+        }));
+        expectNoSentinels(debugLog.mock.calls);
+    });
+
+    it('retains a typed takeover preflight code while keeping its private details out of diagnostics', () => {
+        const error = new ExternalSessionPersistedTakeoverPreflightError(
+            'not_allowed',
+            `${SENTINELS[0]} ${SENTINELS[1]} ${SENTINELS[4]}`,
+        );
+
+        logExternalSessionsInternalError('external_session.takeover_admission.prepare_spawn', error);
+
+        expect(debugLog).toHaveBeenCalledWith('[externalSessions][internal_error]', {
+            context: 'external_session.takeover_admission.prepare_spawn',
+            errorCode: 'not_allowed',
+            errorKind: 'takeover_preflight',
+        });
+        expectNoSentinels(debugLog.mock.calls);
+    });
+
     it('logs Error failures without message, stack, cause, request, source, link, claim, transcript, path, or token data even in DEBUG', () => {
         vi.stubEnv('DEBUG', '1');
         const error = Object.assign(
@@ -76,8 +139,50 @@ describe('External Sessions structural error diagnostics', () => {
                 context: 'external_session.test_failure',
                 errorCode: 'internal_error',
                 errorKind: 'error',
+                errorName: 'Error',
+                frames: expect.any(Array),
             },
         );
+        expectNoSentinels(debugLog.mock.calls);
+    });
+
+    it('locates a plain Error by its name, safe code and message-free stack frames', () => {
+        function failingAttachStep(): never {
+            throw Object.assign(new TypeError(`bad read of ${SENTINELS[0]}\n    at forged (${SENTINELS[1]})`), {
+                code: 'ERR_TEST_CODE',
+            });
+        }
+        let thrown: unknown;
+        try {
+            failingAttachStep();
+        } catch (error) {
+            thrown = error;
+        }
+
+        logExternalSessionsInternalError('external_session_attach', thrown);
+
+        const [, fields] = debugLog.mock.calls[0]!;
+        expect(fields).toMatchObject({
+            context: 'external_session_attach',
+            errorCode: 'internal_error',
+            errorKind: 'error',
+            errorName: 'TypeError',
+            code: 'ERR_TEST_CODE',
+        });
+        expect(fields.frames[0]).toContain('failingAttachStep');
+        expect(fields.frames.length).toBeLessThanOrEqual(8);
+        expectNoSentinels(debugLog.mock.calls);
+    });
+
+    it('drops an unsafe code and a forged name instead of logging them', () => {
+        const error = Object.assign(new Error(SENTINELS[1]), { code: SENTINELS[0] });
+        error.name = SENTINELS[2];
+
+        logExternalSessionsInternalError('external_session_attach', error);
+
+        const [, fields] = debugLog.mock.calls[0]!;
+        expect(fields.code).toBeUndefined();
+        expect(fields.errorName).toBe('Error');
         expectNoSentinels(debugLog.mock.calls);
     });
 
@@ -109,18 +214,18 @@ describe('External Sessions structural error diagnostics', () => {
 
         expect(debugLog).toHaveBeenCalledWith(
             '[externalSessions][internal_error]',
-            {
+            expect.objectContaining({
                 context: 'external_session.internal_error',
                 errorCode: 'internal_error',
                 errorKind: 'error',
-            },
+            }),
         );
         expectNoSentinels(debugLog.mock.calls);
     });
 
     it('retains only the normalized Agent failure class and retryability', () => {
         const error = Object.assign(new ExternalSessionProviderFailureError({
-            code: 'provider_error',
+            code: 'agent_error',
             message: SENTINELS[1],
             operation: `read:${SENTINELS[0]}`,
             retryable: true,
@@ -135,7 +240,7 @@ describe('External Sessions structural error diagnostics', () => {
             '[externalSessions][internal_error]',
             {
                 context: 'external_session.agent_failure',
-                errorCode: 'agent_unavailable',
+                errorCode: 'agent_error',
                 errorKind: 'agent_failure',
                 retryable: true,
             },
@@ -145,7 +250,7 @@ describe('External Sessions structural error diagnostics', () => {
 
     it('does not expose provider or action failure messages in outward diagnostics', () => {
         const providerFailure = new ExternalSessionProviderFailureError({
-            code: 'provider_error',
+            code: 'agent_error',
             message: `${SENTINELS[1]} ${SENTINELS[0]} ${SENTINELS[4]}`,
             operation: `read:${SENTINELS[2]}`,
             retryable: true,
@@ -155,8 +260,13 @@ describe('External Sessions structural error diagnostics', () => {
             mapExternalSessionProviderFailureToExternalSessionsError(providerFailure),
         ).toEqual({
             ok: false,
-            errorCode: 'agent_unavailable',
-            error: 'agent_unavailable',
+            errorCode: 'agent_error',
+            error: 'agent_error',
+            retryable: true,
+        });
+        expect(debugLog).toHaveBeenCalledWith('[externalSessions][agent_failure]', {
+            code: 'agent_error',
+            errorCode: 'agent_error',
             retryable: true,
         });
         expect(mapActionFailureToExternalSessionsError({
@@ -246,29 +356,31 @@ describe('External Sessions structural error diagnostics', () => {
         });
     });
 
-    it('keeps every contribution failure code the SDK admits on an Agent-facing outcome', () => {
-        for (const code of [
-            'source_unreachable',
-            'agent_unavailable',
-            'unsupported',
-            'unavailable',
-            'not_authorized',
-            'cancelled',
-            'agent_error',
-            'timeout',
-        ]) {
+    it('keeps a timeout, an Agent fault and an unavailable Agent on distinct outcomes', () => {
+        const outcomes: ReadonlyArray<readonly [string, string]> = [
+            ['timeout', 'agent_timeout'],
+            ['agent_error', 'agent_error'],
+            ['agent_unavailable', 'agent_unavailable'],
+            ['source_unreachable', 'agent_unavailable'],
+            ['unsupported', 'agent_unavailable'],
+            ['unavailable', 'agent_unavailable'],
+            ['not_authorized', 'agent_unavailable'],
+            ['cancelled', 'agent_unavailable'],
+        ];
+        for (const [code, errorCode] of outcomes) {
             expect(isAgentExternalSessionsFailureCode(code)).toBe(true);
             expect(mapExternalSessionProviderFailureToExternalSessionsError(
                 new ExternalSessionProviderFailureError({
                     code,
                     message: SENTINELS[1],
                     operation: 'pageTranscript',
+                    retryable: code === 'timeout',
                 }),
             )).toEqual({
                 ok: false,
-                errorCode: 'agent_unavailable',
-                error: 'agent_unavailable',
-                retryable: false,
+                errorCode,
+                error: errorCode,
+                retryable: code === 'timeout',
             });
         }
         expect(isAgentExternalSessionsFailureCode('conflict')).toBe(false);

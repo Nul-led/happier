@@ -709,6 +709,23 @@ describe('useLiveSessionAccessEditorController encrypted-access preparation', ()
         });
     });
 
+    it('retries the exact original mutation from the row-local recovery action', async () => {
+        const home = await setupHome({ sharing: true, encrypted: true });
+        home.state.granted = true;
+        home.state.grantMode = 'malformed_without_commit';
+        home.state.envelopePages.push({ summary: { prepared: 0, pending: 0, invalid: 0, recipientKeyUnavailable: 0 }, items: [] });
+        const controller = await mountController(home.profile.id);
+        await vi.waitFor(() => expect(controller().model.grants[0]?.level).toMatchObject({ value: 'view' }));
+
+        await act(async () => { controller().actions.setAccessLevel(GRANT_ROW.grant.subject, 'edit'); });
+        await vi.waitFor(() => expect(controller().model.grants[0]?.operation.kind).toBe('error'));
+
+        home.state.grantMode = 'normal';
+        await act(async () => { controller().actions.retryMutation(GRANT_ROW.grant.subject); });
+        await vi.waitFor(() => expect(controller().model.grants[0]?.level).toMatchObject({ value: 'edit' }));
+        expect(controller().model.grants[0]?.operation).toEqual({ kind: 'idle' });
+    });
+
     it('refreshes the aggregate but does not seal anything for an audience a revocation just made smaller', async () => {
         const home = await setupHome({ sharing: true, encrypted: true });
         home.state.granted = true;
@@ -726,7 +743,7 @@ describe('useLiveSessionAccessEditorController encrypted-access preparation', ()
         expect(home.paths.filter((path) => path === `/v2/sessions/${SESSION_ID}`)).toHaveLength(0);
         // A healthy audience stays quiet: one ready line and no preparation action.
         expect(controller().model.encryption?.actionLabel).toBeUndefined();
-        expect(controller().model.encryption?.summaryLabel).toBe('Encrypted access ready');
+        expect(controller().model.encryption?.summaryLabel).toBe('Encrypted access prepared');
     });
 
     it('refreshes an open editor when the exact Session is invalidated elsewhere, and ignores unrelated wakes', async () => {
@@ -866,7 +883,7 @@ describe('useLiveSessionAccessEditorController encrypted-access preparation', ()
         );
         await act(async () => { controller().actions.prepareAccess(); });
         await vi.waitFor(() => expect(home.state.uploaded?.recipientAccountId).toBe(RECIPIENT_ID));
-        await vi.waitFor(() => expect(controller().model.encryption?.summaryLabel).toBe('Encrypted access ready'));
+        await vi.waitFor(() => expect(controller().model.encryption?.summaryLabel).toBe('Encrypted access prepared'));
         await vi.waitFor(() => expect(controller().model.encryption?.recipients).toBeUndefined());
         expect(home.envelopeStates.at(-1)).toBe('action_required');
     });

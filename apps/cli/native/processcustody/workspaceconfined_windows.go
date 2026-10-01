@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"hash"
 	"path/filepath"
+	"slices"
 	"strings"
 	"unicode/utf16"
 	"unsafe"
@@ -729,7 +730,10 @@ func listWorkspaceConfinedDirectory(directory windows.Handle) ([]string, error) 
 				return nil, fmt.Errorf("invalid directory entry name")
 			}
 			nameWords := unsafe.Slice((*uint16)(unsafe.Pointer(&buffer[offset+12])), int(nameBytes/2))
-			name := string(utf16.Decode(nameWords))
+			name, err := decodeWorkspaceConfinedWindowsDirectoryName(nameWords)
+			if err != nil {
+				return nil, err
+			}
 			if name != "." && name != ".." {
 				if _, domainErr := validateWorkspaceConfinedRelativePath(name); domainErr != nil || strings.ContainsAny(name, `\/`) {
 					return nil, fmt.Errorf("unsafe directory entry name")
@@ -745,6 +749,14 @@ func listWorkspaceConfinedDirectory(directory windows.Handle) ([]string, error) 
 			offset += int(next)
 		}
 	}
+}
+
+func decodeWorkspaceConfinedWindowsDirectoryName(nameWords []uint16) (string, error) {
+	decoded := utf16.Decode(nameWords)
+	if !slices.Equal(utf16.Encode(decoded), nameWords) {
+		return "", fmt.Errorf("directory entry name cannot be represented without changing its identity")
+	}
+	return string(decoded), nil
 }
 
 func disposeWorkspaceConfinedHandle(handle windows.Handle) error {

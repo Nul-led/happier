@@ -14,6 +14,7 @@ import {
 import {
     BUNDLED_LEGACY_CONNECTED_ACCOUNT_COMPATIBILITY_BY_SERVICE_ID,
     ConnectedServiceAuthGroupPolicyV1Schema,
+    CONNECTED_SERVICE_POOL_MEMBER_PRIORITY_STEP,
     sameQualifiedConnectedAccountGroupRef,
     type BuiltInLegacyConnectedAccountOperation,
     type ConnectedServiceAuthGroupMemberStateV1,
@@ -72,6 +73,7 @@ export type QualifiedConnectedAccountUiGroup = Readonly<{
     displayName: string | null;
     policy: ConnectedServiceAuthGroupPolicyV1;
     activeAccountId: string | null;
+    activeSince?: Readonly<{ accountId: string; atMs: number }> | null;
     revision: QualifiedConnectedAccountUiGroupRevision;
     state: ConnectedServiceAuthGroupStateV1;
     members: readonly QualifiedConnectedAccountUiGroupMember[];
@@ -85,7 +87,7 @@ export type QualifiedConnectedAccountUiGroup = Readonly<{
  * Owned here, on the mutation seam, so the reorder consumer and `addMember`
  * cannot pick different spacings for the same ladder.
  */
-export const MEMBER_PRIORITY_STEP = 100;
+export const MEMBER_PRIORITY_STEP = CONNECTED_SERVICE_POOL_MEMBER_PRIORITY_STEP;
 
 /**
  * The priority to give a member appended to the end of the ladder: one full step
@@ -121,18 +123,22 @@ function fromQualifiedGroup(
     expectedService: PluginContributionIdentityV1,
 ): QualifiedConnectedAccountUiGroup {
     assertQualifiedGroupService(group, expectedService);
+    const activeSince = group.state.activeSince?.accountId === group.activeConnectedAccountId
+        ? group.state.activeSince
+        : null;
     return {
         ref: group.ref,
         displayName: group.displayName,
         policy: group.policy,
         activeAccountId: group.activeConnectedAccountId,
+        activeSince,
         revision: {
             protocol: 'v4',
             incarnation: group.incarnation,
             generation: group.generation,
             runtimeStateRevision: group.runtimeStateRevision,
         },
-        state: group.state,
+        state: { ...group.state, activeSince },
         members: group.members.map((member) => ({
             ref: {
                 service: expectedService,

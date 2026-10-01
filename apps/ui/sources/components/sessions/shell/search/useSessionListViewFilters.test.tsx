@@ -2,6 +2,13 @@ import { act } from 'react-test-renderer';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { renderHook, standardCleanup } from '@/dev/testkit';
+import {
+    buildQualifiedAudienceSelectionKey,
+    buildSessionListFilterQueryHomes,
+    resolveSessionListViewContextDefaults,
+    type SessionListViewContext,
+} from './sessionListViewFilters';
+import { reduceSessionListFilterEditorSelection } from './sessionListFilterEditorModel';
 
 import {
     clearSessionListViewFilterRetentionForTests,
@@ -22,6 +29,65 @@ afterEach(() => {
 });
 
 describe('useSessionListViewFilters', () => {
+    it.each(['team', 'global'] as const)('preserves the %s audience boundary through authoritative Group pruning', async (kind) => {
+        const team = { serverId: 'home-a', teamId: 'team-a' };
+        const viewContext: SessionListViewContext = kind === 'team' ? { kind, team } : { kind };
+        const context = resolveSessionListViewContextDefaults(viewContext, [team.serverId], 'all');
+        const fixedAudienceKeys = kind === 'team'
+            ? new Set([buildQualifiedAudienceSelectionKey({ ...team, kind: 'team' })])
+            : undefined;
+        const hook = await renderHook(() => useSessionListViewFilters({
+            ...context,
+            viewContext,
+            accountScopeResolutions: boundAccountScopes({ serverId: team.serverId, accountId: 'account-a' }),
+        }));
+        const group = (groupId: string) => ({ ...team, kind: 'group' as const, groupId });
+        const queryAudiences = () => buildSessionListFilterQueryHomes(hook.getCurrent().filters, {
+            storage: 'active', includeInactive: true, mountedHomeServerIds: [team.serverId],
+        })[0].query.audiences;
+        await act(async () => {
+            for (const id of ['group-a', 'group-b']) {
+                hook.getCurrent().updateFilters((filters) => reduceSessionListFilterEditorSelection(
+                    filters, `audience:${buildQualifiedAudienceSelectionKey(group(id))}`, { fixedAudienceKeys },
+                ));
+            }
+            hook.getCurrent().setSearchQuery('retain this search');
+        });
+        expect(queryAudiences()).toEqual([
+            { kind: 'group', teamId: team.teamId, groupId: 'group-a' },
+            { kind: 'group', teamId: team.teamId, groupId: 'group-b' },
+        ]);
+        await act(async () => hook.getCurrent().removeAuthoritativelyDeletedSelections({ deletedAudiences: [group('group-a')] }));
+        expect(queryAudiences()).toEqual([{ kind: 'group', teamId: team.teamId, groupId: 'group-b' }]);
+        await act(async () => hook.getCurrent().removeAuthoritativelyDeletedSelections({ deletedAudiences: [group('group-b')] }));
+        expect(queryAudiences()).toEqual(kind === 'team' ? [{ kind: 'team', teamId: team.teamId }] : []);
+        expect(hook.getCurrent().filters.searchQuery).toBe('retain this search');
+        expect(hook.getCurrent().filters.homeServerIds).toEqual([team.serverId]);
+        await hook.unmount();
+        const remounted = await renderHook(() => useSessionListViewFilters({
+            ...context, viewContext,
+            accountScopeResolutions: boundAccountScopes({ serverId: team.serverId, accountId: 'account-a' }),
+        }));
+        expect(remounted.getCurrent().filters.audiences).toEqual(kind === 'team' ? [{ ...team, kind: 'team' }] : []);
+        if (kind === 'team') {
+            const before = remounted.getCurrent().filters;
+            await act(async () => remounted.getCurrent().removeAuthoritativelyDeletedSelections({
+                deletedAudiences: [{ ...team, kind: 'team' }],
+            }));
+            // The destination's fixed identity survives catalog removal without
+            // producing an endless prune/restore render loop.
+            expect(remounted.getCurrent().filters).toBe(before);
+        }
+        await act(async () => remounted.getCurrent().removeAuthoritativelyDeletedSelections({
+            deletedHomeServerIds: [team.serverId],
+        }));
+        expect(remounted.getCurrent().filters.homeServerIds).toEqual([]);
+        expect(remounted.getCurrent().filters.audiences).toEqual([]);
+        expect(buildSessionListFilterQueryHomes(remounted.getCurrent().filters, {
+            storage: 'active', includeInactive: true, mountedHomeServerIds: [team.serverId],
+        })).toEqual([]);
+    });
+
     it('retains the whole canonical filter model for one credential corpus/context lifetime', async () => {
         const hook = await renderHook(
             (contextKey: string) => useSessionListViewFilters({

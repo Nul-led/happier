@@ -101,14 +101,15 @@ describe('machineRpcWithServerScope signal', () => {
         controller.abort();
 
         const { machineRpcWithServerScope } = await import('./serverScopedMachineRpc');
-        await expect(
-            machineRpcWithServerScope({
-                machineId: 'machine-1',
-                method: 'method-test',
-                payload: { value: 1 },
-                signal: controller.signal,
-            }),
-        ).rejects.toMatchObject({ code: 'MACHINE_RPC_ABORTED' });
+        const outcome = machineRpcWithServerScope({
+            machineId: 'machine-1',
+            method: 'method-test',
+            payload: { value: 1 },
+            signal: controller.signal,
+        }).catch((error: unknown) => error);
+        await expect(outcome).resolves.toMatchObject({ code: 'MACHINE_RPC_ABORTED' });
+        const { readRpcRequestDisposition } = await import('@happier-dev/sync-client');
+        expect(readRpcRequestDisposition(await outcome)).toBe('notSent');
         expect(machineRpcSpy).not.toHaveBeenCalled();
     });
 

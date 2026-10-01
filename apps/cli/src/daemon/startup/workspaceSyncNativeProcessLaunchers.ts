@@ -253,6 +253,7 @@ export function createWorkspaceSyncNativeProcessLaunchers(
       detached: platform !== 'win32',
       shell: false,
       stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env, MUTAGEN_DATA_DIRECTORY: input.dataDirectory },
       windowsHide: true,
     });
     let stopPromise: Promise<void> | null = null;

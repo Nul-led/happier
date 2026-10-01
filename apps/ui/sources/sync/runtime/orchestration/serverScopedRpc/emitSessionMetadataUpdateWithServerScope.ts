@@ -15,6 +15,7 @@ import { apiSocket } from '@/sync/api/session/apiSocket';
 import type { UpdateMetadataAck } from '@/sync/domains/session/metadata/updateSessionMetadataWithRetry';
 
 import { createEphemeralServerSocketClient } from './createEphemeralServerSocketClient';
+import { createScopedSocketConnectParams } from './createScopedSocketConnectParams';
 import {
     createServerRequestForResolvedServerScope,
     type ServerAccountRequestAuthority,
@@ -281,6 +282,7 @@ async function emitLegacySessionMetadataUpdate(params: Readonly<{
     metadata: string;
     context: Awaited<ReturnType<typeof resolveServerAccountRequestContext>>;
     assertCurrent: () => void;
+    transferCarrierCustody: () => (() => Promise<void>) | undefined;
 }>): Promise<UpdateMetadataAck> {
     const payload = {
         sid: params.sessionId,
@@ -297,13 +299,12 @@ async function emitLegacySessionMetadataUpdate(params: Readonly<{
         params.assertCurrent();
         return result;
     }
-    const socket = await createEphemeralServerSocketClient({
-        serverUrl: params.context.runtimeOrigin ?? params.context.targetServerUrl,
-        reachabilityServerUrl: params.context.targetServerUrl,
-        ...(params.context.carrier ? { carrier: params.context.carrier } : {}),
-        token: params.context.token,
-        timeoutMs: params.context.timeoutMs,
-    });
+    const socket = await createEphemeralServerSocketClient(
+        createScopedSocketConnectParams(
+            params.context,
+            params.transferCarrierCustody,
+        ),
+    );
     try {
         params.assertCurrent();
         const result = await socket
@@ -339,6 +340,7 @@ export async function emitSessionMetadataUpdateWithServerScope(
         timeoutMs: params.timeoutMs,
     });
     const ownsContext = !params.authority;
+    let ownsCarrierRelease = ownsContext;
     const assertCurrent = (): void => {
         if (params.isCurrent?.() === false) {
             throw Object.assign(new Error('Session Account authority retired during metadata update'), {
@@ -378,8 +380,19 @@ export async function emitSessionMetadataUpdateWithServerScope(
         metadata: params.metadata,
         context,
         assertCurrent,
+        transferCarrierCustody: () => {
+            if (params.authority) {
+                const transferCarrierCustody = params.authority.transferCarrierCustody;
+                if (!transferCarrierCustody) {
+                    throw new Error('Server Account authority cannot transfer scoped socket carrier custody');
+                }
+                return transferCarrierCustody();
+            }
+            ownsCarrierRelease = false;
+            return context.scope === 'scoped' ? context.release : undefined;
+        },
     });
     } finally {
-        if (ownsContext && context.scope === 'scoped') await context.release?.();
+        if (ownsCarrierRelease && context.scope === 'scoped') await context.release?.();
     }
 }

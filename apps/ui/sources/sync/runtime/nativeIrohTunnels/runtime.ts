@@ -5,7 +5,10 @@ import {
     type ActiveServerRuntimeTarget,
 } from '@/sync/domains/server/serverProfiles';
 
-import { IROH_HOME_TUNNEL_INVALID_ENDPOINT_ERROR, IROH_HOME_TUNNEL_STALE_FOCUS_ERROR } from './fallback';
+import {
+    IROH_HOME_TUNNEL_INVALID_ENDPOINT_ERROR,
+    IROH_HOME_TUNNEL_STALE_FOCUS_ERROR,
+} from '@happier-dev/iroh-native';
 import { releaseRetainedIrohMachineTransferLeases } from './machineTransferLifecycle';
 import { createIrohHomeTunnelSupervisor, IROH_HOME_TUNNEL_DISPOSED_ERROR, type IrohHomeTunnelSupervisor, type IrohNativeLifecycleModule } from './supervisor';
 import type {

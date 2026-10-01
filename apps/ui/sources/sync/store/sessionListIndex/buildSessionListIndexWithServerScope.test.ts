@@ -696,13 +696,13 @@ describe('buildSessionListIndexWithServerScope', () => {
         const previousServerUrl = getServerUrl();
 
         try {
-            setServerUrl('http://localhost:32109');
+            await setServerUrl('http://localhost:32109');
 
             const index = buildActiveServerSessionListIndex(baseParams);
 
             expect(index.some((item) => item.serverId === 'localhost-32109')).toBe(true);
         } finally {
-            setServerUrl(previousServerUrl || null);
+            await setServerUrl(previousServerUrl || null);
         }
     });
 });

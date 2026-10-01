@@ -6,7 +6,7 @@ import {
 import { Platform } from 'react-native';
 
 import { isTranscriptNavigationRailSupportedPlatform } from '@/components/sessions/transcript/navigation/deriveTranscriptNavigationRailLayout';
-import type { Message } from '@/sync/domains/messages/messageTypes';
+import type { Message } from "@happier-dev/session-core/messages";
 
 /**
  * Transcript-host entry point into the single navigation derivation owner
@@ -16,7 +16,7 @@ import type { Message } from '@/sync/domains/messages/messageTypes';
 export function useTranscriptRootNavigationState(params: Readonly<{
     activeServerAccountScope: TranscriptNavigationServerAccountScope;
     forkedTranscriptEnabled: boolean;
-    messageIdsOldestFirst: string[];
+    messageIdsOldestFirst: readonly string[];
     messagesById: Record<string, Message>;
     sessionId: string;
 }>): SessionTranscriptNavigationEntriesState {

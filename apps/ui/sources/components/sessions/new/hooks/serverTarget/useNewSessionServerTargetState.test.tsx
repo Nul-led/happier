@@ -82,6 +82,15 @@ describe('useNewSessionServerTargetState', () => {
         ];
     });
 
+    it('uses the admitted creation host Home without saved profiles or Account selection', async () => {
+        const hook = await renderHook(() => useNewSessionServerTargetState({ settings: buildSettings(),
+            serverProfiles: [], activeServerId: '', hostTargetServerId: 'https://embed-home.example', request: {} }));
+        expect(hook.getCurrent().targetServerId).toBe('https://embed-home.example');
+        expect(hook.getCurrent().allowedTargetServerIds).toEqual(['https://embed-home.example']);
+        expect(hook.getCurrent().showServerPickerChip).toBe(false);
+        await hook.unmount();
+    });
+
     it('keeps the initial authoring Home when focused Home changes before draft persistence', async () => {
         const hook = await renderHook((activeServerId: string) => useNewSessionServerTargetState({
             settings: buildSettings(),

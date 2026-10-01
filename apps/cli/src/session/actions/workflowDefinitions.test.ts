@@ -1,12 +1,23 @@
 import {
   EXTERNAL_ACTION_RESPONSE_MAX_SERIALIZED_BYTES,
   isExternalActionResultWithinResponseEnvelopeLimitV1,
+  accountSettingsParse,
 } from '@happier-dev/protocol';
 import { describe, expect, it, vi } from 'vitest';
 
 import { encodeAccountArtifactListCursor, type createAccountArtifactStore } from '@/api/artifacts/accountArtifactStore';
 
 import { createWorkflowDefinitionActions } from './workflowDefinitions';
+import { resolveCliAgentStartContextV1 } from './resolveCliAgentStartContextV1';
+
+const agentStartContext = resolveCliAgentStartContextV1({
+  sessionId: 'origin', machineId: 'machine', directory: '/repo',
+  backendTarget: { kind: 'backend', backendId: 'claude', sourceKind: 'built_in' },
+  metadata: {}, starterDepth: 0, turnDepth: 0, callerPermissionMode: 'default', settings: accountSettingsParse({}),
+});
+if (!agentStartContext) throw new Error('expected current host authority fixture');
+// The machine catalog is a system boundary. Materialization and policy remain real.
+const resolveMaterializer = async () => ({ effects: { resolveTargetAvailability: async () => true } });
 
 const definitionBody = JSON.stringify({
   kind: 'workflow-definition.v1',
@@ -20,6 +31,141 @@ const definitionBody = JSON.stringify({
 type ArtifactCreateInput = Parameters<ReturnType<typeof createAccountArtifactStore>['create']>[0];
 
 describe('workflow definition Actions', () => {
+  it('allows an agent to save input-bound loop limits while enforcing the leaf authority', async () => {
+    const step = { kind: 'step', id: 'work', document: { text: 'Work', references: [], attachments: [] }, input: [], result: { kind: 'text' } };
+    const definition = { version: 1, defaults: JSON.parse(definitionBody).definition.defaults,
+      inputs: [{ name: 'rounds', valueType: 'number', required: true }],
+      blocks: [{ kind: 'loop', id: 'loop', repetition: { kind: 'until', maxIterations: { kind: 'input', name: 'rounds' },
+        stopWhen: { kind: 'exists', value: { kind: 'literal', value: true } } }, body: [step] }] };
+    let stored: ArtifactCreateInput | undefined;
+    const actions = createWorkflowDefinitionActions({ artifactStore: {
+      read: async () => stored ? { artifactId: 'definition-1', header: stored.header, body: stored.body,
+        revision: { headerVersion: 1, bodyVersion: 1 }, seq: 1, createdAt: 1, updatedAt: 1 } : null,
+      create: async (input: ArtifactCreateInput) => { stored = input; return { artifactId: 'definition-1', revision: { headerVersion: 1, bodyVersion: 1 } }; },
+    } as never, resolveMaterializer });
+    const caller = { surface: 'agent' as const, agentStartContext, sessionAgentSpawnPolicyV1: { v: 1 as const, allowModelOverride: false } };
+    await expect(actions.create({ definitionId: 'definition-1', metadata: { title: 'Loop' }, definition }, undefined, caller))
+      .resolves.toMatchObject({ definitionId: 'definition-1' });
+    expect(JSON.parse(stored!.body).definition.blocks[0].repetition.maxIterations).toEqual({ kind: 'input', name: 'rounds' });
+    const forbidden = { ...definition, blocks: [{ ...definition.blocks[0], body: [{ ...step, execution: { modelSelection: {
+      v: 1, ref: { agentTargetKey: 'agent:happier.agent.claude/claude', providerConnectionId: null, modelId: 'other' }, updatedAt: 1,
+    } } }] }] };
+    await expect(actions.create({ definitionId: 'definition-2', metadata: { title: 'Forbidden' }, definition: forbidden }, undefined, caller))
+      .rejects.toMatchObject({ code: 'definition_exceeds_authority' });
+  });
+  it.each(['existing', 'conflict', 'response_loss'] as const)('rejoins semantically identical same-id content after %s', async (scenario) => {
+    const definitionId = '11111111-1111-4111-8111-111111111111';
+    const definition = JSON.parse(definitionBody).definition;
+    const artifact = {
+      artifactId: definitionId,
+      header: { kind: 'workflow-definition.v1', definitionId, revision: { headerVersion: 1, bodyVersion: 1 },
+        metadata: { title: 'Review', description: 'Same document' } },
+      body: definitionBody, revision: { headerVersion: 1, bodyVersion: 1 }, seq: 1, createdAt: 1, updatedAt: 1,
+    };
+    let saved = scenario === 'existing';
+    const actions = createWorkflowDefinitionActions({ artifactStore: {
+      read: async () => saved ? artifact : null,
+      create: async () => {
+        saved = true;
+        throw Object.assign(new Error(scenario), { code: scenario === 'conflict' ? 'conflict' : 'network_error' });
+      },
+    } as never });
+    await expect(actions.create({ definitionId, definition, metadata: { description: 'Same document', title: 'Review' } }))
+      .resolves.toMatchObject({ definitionId, metadata: { title: 'Review', description: 'Same document' } });
+  });
+
+  it.each(['conflict', 'response_loss'] as const)('refuses different same-id content after %s', async (scenario) => {
+    const definitionId = '11111111-1111-4111-8111-111111111111';
+    let saved = false;
+    const actions = createWorkflowDefinitionActions({ artifactStore: {
+      read: async () => saved ? { artifactId: definitionId,
+        header: { kind: 'workflow-definition.v1', definitionId, revision: { headerVersion: 1, bodyVersion: 1 }, metadata: { title: 'Other' } },
+        body: definitionBody, revision: { headerVersion: 1, bodyVersion: 1 }, seq: 1, createdAt: 1, updatedAt: 1 } : null,
+      create: async () => { saved = true; throw Object.assign(new Error(scenario), { code: scenario === 'conflict' ? 'conflict' : 'network_error' }); },
+    } as never });
+    await expect(actions.create({ definitionId, definition: JSON.parse(definitionBody).definition, metadata: { title: 'Review' } }))
+      .rejects.toMatchObject({ code: 'currentness_conflict' });
+  });
+
+  it('refuses an agent-created definition with a forbidden step model override', async () => {
+    const definition = JSON.parse(definitionBody).definition;
+    definition.blocks[0].execution = { modelSelection: {
+      v: 1, ref: { agentTargetKey: 'agent:happier.agent.claude/claude', providerConnectionId: null, modelId: 'model-1' }, updatedAt: 1,
+    } };
+    const create = vi.fn(async (_input: ArtifactCreateInput) => ({ artifactId: 'definition-1', revision: { headerVersion: 1, bodyVersion: 1 } }));
+    const read = vi.fn().mockResolvedValueOnce(null).mockImplementation(async () => {
+      const request = create.mock.calls[0]![0];
+      return { artifactId: 'definition-1', header: request.header, body: request.body,
+        revision: { headerVersion: 1, bodyVersion: 1 }, seq: 1, createdAt: 1, updatedAt: 1 };
+    });
+    const actions = createWorkflowDefinitionActions({ artifactStore: { create, read } as never, resolveMaterializer });
+    await expect(actions.create({ definitionId: 'definition-1', metadata: { title: 'Review' }, definition },
+      { agentTarget: definition.defaults.agentTarget },
+      { surface: 'agent', agentStartContext, sessionAgentSpawnPolicyV1: { v: 1, allowModelOverride: false } },
+    )).rejects.toMatchObject({ code: 'definition_exceeds_authority', details: {
+      cause: { code: 'policy_denied_field', field: 'modelSelection' },
+    } });
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('refuses an agent update that introduces a forbidden step model override', async () => {
+    const definition = JSON.parse(definitionBody).definition;
+    definition.blocks[0].execution = { modelSelection: {
+      v: 1, ref: { agentTargetKey: 'agent:happier.agent.claude/claude', providerConnectionId: null, modelId: 'model-1' }, updatedAt: 1,
+    } };
+    const update = vi.fn();
+    const actions = createWorkflowDefinitionActions({ artifactStore: { update, read: vi.fn() } as never, resolveMaterializer });
+    await expect(actions.update({ definitionId: 'definition-1', expectedRevision: { headerVersion: 1, bodyVersion: 1 },
+      metadata: { title: 'Review' }, definition }, { agentTarget: definition.defaults.agentTarget },
+    { surface: 'agent', agentStartContext, sessionAgentSpawnPolicyV1: { v: 1, allowModelOverride: false } }))
+      .rejects.toMatchObject({ code: 'definition_exceeds_authority', details: {
+        cause: { code: 'policy_denied_field', field: 'modelSelection' },
+      } });
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('admits an authored workflow role through its frozen selection without a Settings role entry', async () => {
+    const definition = { ...JSON.parse(definitionBody).definition, defaults: { engine: { role: 'workflow_reviewer' } },
+      roles: [{ roleId: 'workflow_reviewer', name: 'Reviewer', instructions: 'Review only',
+        runsAs: { kind: 'session' }, engine: { agentTargetKey: 'agent:happier.agent.claude/claude' } }],
+    };
+    const create = vi.fn(async (_input: ArtifactCreateInput) => ({ artifactId: 'definition-1', revision: { headerVersion: 1, bodyVersion: 1 } }));
+    const read = vi.fn().mockResolvedValueOnce(null).mockImplementation(async () => {
+      const request = create.mock.calls[0]![0];
+      return { artifactId: 'definition-1', header: request.header, body: request.body,
+        revision: { headerVersion: 1, bodyVersion: 1 }, seq: 1, createdAt: 1, updatedAt: 1 };
+    });
+    const actions = createWorkflowDefinitionActions({ artifactStore: { create, read } as never, resolveMaterializer });
+    await expect(actions.create({ definitionId: 'definition-1', metadata: { title: 'Review' }, definition },
+      { agentTarget: JSON.parse(definitionBody).definition.defaults.agentTarget },
+      { surface: 'agent', agentStartContext, sessionAgentSpawnPolicyV1: { v: 1 } },
+    )).resolves.toMatchObject({ definitionId: 'definition-1' });
+    expect(create).toHaveBeenCalledOnce();
+  });
+
+  it('checks a nested definition’s same-id role against its own frozen engine before any write', async () => {
+    const role = { roleId: 'scoped', name: 'Scoped', instructions: 'Review', runsAs: { kind: 'session' },
+      engine: { agentTargetKey: 'agent:happier.agent.claude/claude' } };
+    const step = { kind: 'step', id: 'same', document: { text: 'Review', references: [], attachments: [] }, input: [], result: { kind: 'text' } };
+    const definition = { version: 1 as const, defaults: { engine: { role: 'scoped' } }, roles: [role],
+      blocks: [step, { kind: 'workflow', id: 'nested', workflowRef: 'builtin:child', input: {} }],
+    };
+    const child = { version: 1, defaults: { engine: { role: 'scoped' } },
+      roles: [{ ...role, engine: { agentTargetKey: 'agent:happier.agent.codex/codex' } }], blocks: [step] };
+    const create = vi.fn();
+    const actions = createWorkflowDefinitionActions({ artifactStore: { create, read: async () => null } as never,
+      resolveMaterializer: async () => ({ effects: { resolveTargetAvailability: async () => true,
+        readWorkflowDefinition: async () => ({ sourceKey: 'builtin:child', definition: child }),
+      } }),
+    });
+    await expect(actions.create({ definitionId: 'definition-1', metadata: { title: 'Review' }, definition }, undefined,
+      { surface: 'agent', agentStartContext, sessionAgentSpawnPolicyV1: { v: 1, allowBackendTargetOverride: false } },
+    )).rejects.toMatchObject({ code: 'definition_exceeds_authority', details: {
+      blockId: 'same', cause: { code: 'policy_denied_field', field: 'agentTarget' },
+    } });
+    expect(create).not.toHaveBeenCalled();
+  });
+
   it('normalizes through the canonical workflow validator before Artifact create', async () => {
     const create = vi.fn(async (_input: ArtifactCreateInput) => ({ artifactId: 'definition-1', revision: { headerVersion: 1, bodyVersion: 1 } }));
     const read = vi.fn()

@@ -4,6 +4,7 @@ import { useRouter } from 'expo-router';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { Text } from '@/components/ui/text/Text';
+import { Typography } from '@/constants/Typography';
 import { getSessionName } from '@/utils/sessions/sessionUtils';
 import type { Machine, Session } from '@/sync/domains/state/storageTypes';
 import type { SessionListRenderableSession } from '@/sync/domains/session/listing/sessionListRenderable';
@@ -12,8 +13,14 @@ import { buildScopedSessionRouteHref } from '@/hooks/session/sessionRouteServerS
 import { t } from '@/text';
 import { SessionContextChips } from '@/components/sessions/context/SessionContextChips';
 import { Icon } from '@/components/ui/icons/Icon';
+import { ItemGroup } from '@/components/ui/lists/ItemGroup';
+import { SectionContentRow } from '@/components/ui/lists/SectionContentRow';
 import { readApprovalSessionEndpointLabels } from './approvalEndpointLabels';
 
+/**
+ * The "Requested by" section of an approval page: the requesting session, where it runs, and the
+ * agent and surface that asked. Renders nothing when none of that is known.
+ */
 export const ApprovalSessionContextCard = React.memo(function ApprovalSessionContextCard(props: Readonly<{
     session: Session | SessionListRenderableSession | null;
     machine: Machine | null;
@@ -27,7 +34,7 @@ export const ApprovalSessionContextCard = React.memo(function ApprovalSessionCon
     const router = useRouter();
     const { theme } = useUnistyles();
     const sessionTitle = props.session && (!props.serverId || props.context?.mayShowDecryptedContent === true)
-        ? getSessionName(props.session)
+        ? getSessionName(props.session, props.serverId)
         : null;
     const endpointLabels = readApprovalSessionEndpointLabels({
         session: props.session,
@@ -42,6 +49,11 @@ export const ApprovalSessionContextCard = React.memo(function ApprovalSessionCon
     }
 
     return (
+        <ItemGroup
+            title={t('detailPages.approval.contextTitle')}
+            description={t('detailPages.approval.contextDescription')}
+        >
+        <SectionContentRow>
         <View style={styles.card}>
             <View style={styles.headerRow}>
                 <View style={styles.titleColumn}>
@@ -86,16 +98,14 @@ export const ApprovalSessionContextCard = React.memo(function ApprovalSessionCon
                 </View>
             </View>
         </View>
+        </SectionContentRow>
+        </ItemGroup>
     );
 });
 
 const styles = StyleSheet.create((theme) => ({
+    // Sheet content of the "Requested by" section: the section owns the chrome.
     card: {
-        borderRadius: 16,
-        borderWidth: 1,
-        borderColor: theme.colors.border.default,
-        backgroundColor: theme.colors.surface.elevated,
-        padding: 16,
         gap: 12,
     },
     headerRow: {
@@ -108,8 +118,8 @@ const styles = StyleSheet.create((theme) => ({
         minWidth: 0,
     },
     title: {
-        fontSize: 16,
-        fontWeight: '700',
+        ...Typography.default('medium'),
+        fontSize: 15,
         color: theme.colors.text.primary,
     },
     contextChips: {

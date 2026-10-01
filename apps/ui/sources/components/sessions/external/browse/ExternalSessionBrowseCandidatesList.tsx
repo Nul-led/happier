@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { AccessibilityInfo, Platform, View } from 'react-native';
+import { Platform, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import type { ResolvedAgentCatalogEntry } from '@/agents/backendCatalog/agentCatalogProjection';
@@ -11,15 +11,19 @@ import {
     resolveExternalSessionCandidateActivityPresentation,
     resolveExternalSessionStatusPillState,
 } from '@/components/sessions/presentation/externalSessionRuntimePresentation';
+import { announceAccessibilityMessage } from '@/components/ui/accessibility/announceAccessibilityMessage';
+import { PoliteAccessibilityStatus } from '@/components/ui/accessibility/PoliteAccessibilityStatus';
 import { RoundButton } from '@/components/ui/buttons/RoundButton';
+import { EmptyState } from '@/components/ui/empty/EmptyState';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import type { ItemAction } from '@/components/ui/lists/itemActions';
 import { ItemRowActions } from '@/components/ui/lists/ItemRowActions';
+import { MeterBar } from '@/components/ui/lists/MeterBar';
 import { ITEM_SUBTITLE_TEXT_METRICS } from '@/components/ui/lists/itemDensityMetrics';
 import { useResolvedItemDensity } from '@/components/ui/lists/useResolvedItemDensity';
-import { resolveOverlayPointerEvents } from '@/components/ui/overlays/resolveOverlayPointerEvents';
 import {
     SelectionList,
+    type SelectionListFilter,
     type SelectionListOption,
     type SelectionListStep,
     type SelectionListVirtualizedOptionSource,
@@ -27,6 +31,7 @@ import {
 } from '@/components/ui/selectionList';
 import { SelectionListSkeletonRow } from '@/components/ui/selectionList/SelectionListSkeletonRow';
 import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
+import { HappierPressable } from '@happier-dev/plugin-ui/presentation';
 import {
     resolveStatusPillVariantForState,
     StatusPill,
@@ -56,61 +61,57 @@ const styles = StyleSheet.create((theme: AppTheme) => ({
     },
     loading: {
         flex: 1,
-        minHeight: 220,
-        justifyContent: 'center',
-    },
-    loadingLabel: {
-        color: theme.colors.text.secondary,
-        textAlign: 'center',
-        paddingBottom: 8,
-    },
-    loadingProgress: {
-        color: theme.colors.text.secondary,
-        textAlign: 'center',
-        paddingBottom: 12,
+        paddingTop: 8,
     },
     loadingProgressRegion: {
         width: '100%',
     },
+    searchSuffix: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+        flexShrink: 1,
+    },
     searchProgress: {
-        paddingHorizontal: 8,
+        paddingHorizontal: 4,
     },
     searchIncomplete: {
         color: theme.colors.text.secondary,
         paddingHorizontal: 16,
         paddingVertical: 8,
     },
-    loadingAction: {
-        alignSelf: 'center',
-        marginTop: 12,
+    // Indexing: a 2px line across the list's top edge and one status line under it, with Stop at its
+    // end. Rows the index has already served stay live below it.
+    indexing: {
+        width: '100%',
     },
-    indexingBanner: {
+    indexingStatus: {
         flexDirection: 'row',
         alignItems: 'center',
         gap: 12,
         paddingHorizontal: 16,
-        paddingVertical: 8,
+        paddingVertical: 6,
     },
-    indexingBannerRegion: {
+    indexingRegion: {
         flex: 1,
         minWidth: 0,
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
     },
-    indexingBannerLabel: {
+    indexingLabel: {
+        ...Typography.default(),
+        fontSize: 12.5,
+        lineHeight: 18,
         color: theme.colors.text.secondary,
-        textAlign: 'left',
+        flexShrink: 1,
     },
-    indexingBannerProgress: {
-        color: theme.colors.text.tertiary,
-        textAlign: 'left',
-    },
-    indexingBannerAction: {
-        marginTop: 0,
-    },
-    accessibilityStatus: {
-        position: 'absolute',
-        width: 1,
-        height: 1,
-        overflow: 'hidden',
+    noMatchesClear: {
+        ...Typography.default('medium'),
+        fontSize: 13,
+        lineHeight: 18,
+        color: theme.colors.text.link,
+        textDecorationLine: 'underline',
     },
 }));
 
@@ -125,37 +126,8 @@ function useIosAccessibilityAnnouncement(message: string | null): void {
         }
         if (lastAnnouncementRef.current === message) return;
         lastAnnouncementRef.current = message;
-        try {
-            AccessibilityInfo.announceForAccessibility(message);
-        } catch {
-            // Accessibility announcements are best effort on native platforms.
-        }
+        announceAccessibilityMessage(message);
     }, [message]);
-}
-
-function BrowseIndexingAccessibilityStatus(props: Readonly<{
-    announcement: string | null;
-}>): React.ReactElement | null {
-    const pointerEvents = resolveOverlayPointerEvents('none');
-
-    if (Platform.OS === 'ios' || !props.announcement) return null;
-
-    return (
-        <View
-            testID="direct-session-candidates:indexing:a11y-status"
-            accessible
-            accessibilityLiveRegion="polite"
-            pointerEvents={pointerEvents.nativePointerEvents}
-            style={[styles.accessibilityStatus, pointerEvents.webStyle]}
-            {...({
-                role: 'status',
-                'aria-live': 'polite',
-                'aria-atomic': true,
-            } as Record<string, unknown>)}
-        >
-            <Text>{props.announcement}</Text>
-        </View>
-    );
 }
 
 type BrowseCandidatePresentationContext = Readonly<{
@@ -164,6 +136,8 @@ type BrowseCandidatePresentationContext = Readonly<{
     agentLabel?: string | null;
     machineLabel?: string | null;
     machineHomeDir?: string | null;
+    /** Titles of the rows in this listing, for naming a thread's parent the Agent did not name. */
+    titleByRemoteSessionId?: ReadonlyMap<string, string>;
 }>;
 
 type BrowseAgentIdentity = Readonly<{
@@ -178,6 +152,9 @@ function resolveBrowseCandidateIdentity(
     candidate: ExternalSessionBrowseCandidate,
     candidatePath: string | null,
 ) {
+    const thread = candidate.thread;
+    const parentTitle = thread?.parentTitle
+        ?? (thread?.parentRemoteSessionId ? context.titleByRemoteSessionId?.get(thread.parentRemoteSessionId) : undefined);
     return resolveExternalSessionBrowseCandidateIdentityPresentation({
         remoteSessionId: candidate.remoteSessionId,
         title: candidate.title,
@@ -185,12 +162,17 @@ function resolveBrowseCandidateIdentity(
         homeDir: context.machineHomeDir,
         agentLabel: context.agentLabel,
         machineLabel: context.machineLabel,
+        ...(thread ? { thread: parentTitle ? { ...thread, parentTitle } : thread } : {}),
     });
 }
 
+/** The candidate's name without row context (search matching, the delete confirmation): the same owner. */
 function resolveBrowseCandidateMatchingLabel(candidate: ExternalSessionBrowseCandidate): string {
-    const title = typeof candidate.title === 'string' ? candidate.title.trim() : '';
-    return title || candidate.remoteSessionId;
+    return resolveExternalSessionBrowseCandidateIdentityPresentation({
+        remoteSessionId: candidate.remoteSessionId,
+        title: candidate.title,
+        path: null,
+    }).title;
 }
 
 function resolveBrowseCandidateAccessibilityLabel(
@@ -397,12 +379,20 @@ function buildCandidateVirtualizedSource(params: Readonly<{
     onSelectCandidate: (candidate: ExternalSessionBrowseCandidate, selectionAuthorityGeneration: number) => void;
     onDeleteCandidate: (candidate: ExternalSessionBrowseCandidate, selectionAuthorityGeneration: number) => void;
 }>): SelectionListVirtualizedOptionSource {
+    let titleByRemoteSessionId: Map<string, string> | undefined;
+    if (params.candidates.some((candidate) => candidate.thread?.parentRemoteSessionId)) {
+        titleByRemoteSessionId = new Map();
+        for (const candidate of params.candidates) {
+            if (candidate.title) titleByRemoteSessionId.set(candidate.remoteSessionId, candidate.title);
+        }
+    }
     const presentationContext: BrowseCandidatePresentationContext = {
         theme: params.theme,
         density: params.density,
         agentLabel: params.agentLabel,
         machineLabel: params.machineLabel,
         machineHomeDir: params.machineHomeDir,
+        titleByRemoteSessionId,
     };
     const groups: BrowseCandidateProjectGroup[] = [];
     const projectGroupIndexByPath = new Map<string, number>();
@@ -424,11 +414,21 @@ function buildCandidateVirtualizedSource(params: Readonly<{
     const navigationOptionIndexes: number[] = [];
     let positionInSet = 0;
     for (let groupIndex = 0; groupIndex < groups.length; groupIndex += 1) {
-        items.push({ kind: 'section-header', sectionIndex: groupIndex });
+        items.push({ kind: 'section-header', key: `project:${groups[groupIndex]!.path}::header`, sectionIndex: groupIndex });
         for (const candidateIndex of groups[groupIndex]!.candidateIndexes) {
             positionInSet += 1;
             navigationOptionIndexes.push(candidateIndex);
-            items.push({ kind: 'option', optionIndex: candidateIndex, positionInSet });
+            const candidate = params.candidates[candidateIndex]!;
+            items.push({
+                kind: 'option',
+                // Read lazily (only mounted rows are keyed by the window), but from this listing's
+                // own candidate, so a row of a replaced listing still keys itself.
+                get key() {
+                    return readExternalSessionBrowseCandidateKey(candidate);
+                },
+                optionIndex: candidateIndex,
+                positionInSet,
+            });
         }
     }
 
@@ -596,86 +596,123 @@ function buildCandidateVirtualizedSource(params: Readonly<{
     };
 }
 
+/**
+ * Loading and indexing, one presentation. Before anything arrives the list shows skeleton rows in
+ * place of the results (no "Loading…" text). While a candidate index builds, a 2px progress line and
+ * one status line with Stop sit on the list's top edge, above the rows it has already served (or
+ * above the skeleton rows while it has served none); the progress region and Stop never appear twice.
+ */
 function BrowseLoadingState(props: Readonly<{
     preparation: ExternalSessionBrowsePreparation | null;
     onCancelPreparation?: () => void;
-    /**
-     * Where this one indexing presentation sits. `content` fills the empty list area
-     * before the index has served anything; `banner` sits above the rows it has
-     * already served, so preparation progress and its cancel affordance stay
-     * reachable for the whole build. The two placements are mutually exclusive —
-     * `content` only renders while there are no rows — so the progress region and the
-     * cancel button never appear twice at once.
-     */
+    /** `banner` sits above served rows; `content` fills the empty list area. */
     placement?: 'content' | 'banner';
 }>): React.ReactElement {
+    const { theme } = useUnistyles() as { theme: AppTheme };
     const isBanner = props.placement === 'banner';
-    const progressLabel = props.preparation?.total === undefined
+    const preparation = props.preparation;
+    const total = preparation?.total;
+    const progressLabel = total === undefined
         ? t('externalSessions.browseIndexing')
         : t('externalSessions.browseIndexingProgress', {
-            scanned: props.preparation.scanned,
-            total: props.preparation.total,
+            scanned: preparation!.scanned,
+            total,
         });
+    const skeleton = isBanner ? null : Array.from({ length: 7 }, (_, index) => (
+        <SelectionListSkeletonRow
+            key={index}
+            index={index}
+            testID={`direct-session-candidates:loading:row-${index}`}
+        />
+    ));
+    if (!preparation) {
+        return (
+            <View style={styles.loading}>
+                <View
+                    testID="direct-session-candidates:loading"
+                    style={styles.loadingProgressRegion}
+                    accessibilityRole="text"
+                    accessibilityLabel={t('common.loading')}
+                    accessibilityLiveRegion="polite"
+                    {...({ role: 'status', 'aria-live': 'polite' } as Record<string, unknown>)}
+                >
+                    {skeleton}
+                </View>
+            </View>
+        );
+    }
+    const fraction = total !== undefined && total > 0
+        ? Math.max(0, Math.min(1, preparation.scanned / total))
+        : null;
     return (
-        <View style={isBanner ? styles.indexingBanner : styles.loading}>
+        <View style={isBanner ? styles.indexing : [styles.indexing, styles.loading]}>
             <View
-                testID={props.preparation
-                    ? 'direct-session-candidates:indexing'
-                    : 'direct-session-candidates:loading'}
-                style={isBanner ? styles.indexingBannerRegion : styles.loadingProgressRegion}
-                accessibilityRole={props.preparation ? 'progressbar' : 'text'}
-                accessibilityLabel={props.preparation ? progressLabel : t('common.loading')}
-                accessibilityValue={props.preparation?.total === undefined ? undefined : {
-                    min: 0,
-                    max: props.preparation.total,
-                    now: props.preparation.scanned,
-                }}
-                accessibilityLiveRegion={props.preparation ? undefined : 'polite'}
-                {...({
-                    role: props.preparation ? 'progressbar' : 'status',
-                    ...(props.preparation ? {} : { 'aria-live': 'polite' }),
-                } as Record<string, unknown>)}
+                accessibilityElementsHidden={fraction !== null}
+                importantForAccessibility={fraction !== null ? 'no-hide-descendants' : undefined}
+                {...(fraction !== null ? ({ 'aria-hidden': true } as Record<string, unknown>) : {})}
             >
-                <Text style={isBanner ? styles.indexingBannerLabel : styles.loadingLabel}>
-                    {props.preparation ? t('externalSessions.browseIndexing') : t('common.loading')}
-                </Text>
-                {props.preparation ? (
-                    props.preparation.total === undefined ? (
+                <MeterBar tone="neutral" fillFraction={fraction ?? 0} height={2}
+                    fillColor={theme.colors.text.secondary} trackColor={theme.colors.border.default} />
+            </View>
+            <View style={styles.indexingStatus}>
+                <View
+                    testID="direct-session-candidates:indexing"
+                    style={styles.indexingRegion}
+                    accessibilityRole="progressbar"
+                    accessibilityLabel={progressLabel}
+                    accessibilityValue={total === undefined ? undefined : {
+                        min: 0,
+                        max: total,
+                        now: preparation.scanned,
+                    }}
+                    {...({ role: 'progressbar' } as Record<string, unknown>)}
+                >
+                    {total === undefined ? (
                         <View
                             accessibilityElementsHidden
                             importantForAccessibility="no-hide-descendants"
                             {...({ 'aria-hidden': true } as Record<string, unknown>)}
                         >
-                            <ActivitySpinner size="small" />
+                            <ActivitySpinner size="small" color={theme.colors.text.secondary} />
                         </View>
-                    ) : (
-                        <Text style={isBanner ? styles.indexingBannerProgress : styles.loadingProgress}>
-                            {progressLabel}
-                        </Text>
-                    )
-                ) : (
-                    Array.from({ length: 5 }, (_, index) => (
-                        <SelectionListSkeletonRow
-                            key={index}
-                            index={index}
-                            testID={`direct-session-candidates:loading:row-${index}`}
-                        />
-                    ))
-                )}
+                    ) : null}
+                    <Text style={[styles.indexingLabel, Typography.tabular()]} numberOfLines={1}>
+                        {total === undefined
+                            ? t('externalSessions.browseIndexing')
+                            : `${t('externalSessions.browseIndexing')} · ${progressLabel}`}
+                    </Text>
+                </View>
+                {props.onCancelPreparation ? (
+                    <RoundButton
+                        testID="direct-session-candidates:indexing:cancel"
+                        size="small"
+                        display="inverted"
+                        title={t('externalSessions.browseIndexingStop')}
+                        accessibilityLabel={t('externalSessions.browseIndexingStop')}
+                        onPress={props.onCancelPreparation}
+                    />
+                ) : null}
             </View>
-            {props.preparation && props.onCancelPreparation ? (
-                <RoundButton
-                    testID="direct-session-candidates:indexing:cancel"
-                    size="small"
-                    title={t('common.cancel')}
-                    accessibilityLabel={t('common.cancel')}
-                    onPress={props.onCancelPreparation}
-                    style={isBanner ? styles.indexingBannerAction : styles.loadingAction}
-                />
-            ) : null}
+            {skeleton}
         </View>
     );
 }
+
+/**
+ * The machine scope the browser is looking at, owned by the screen. It decides which state speaks
+ * first: a missing machine or an absent choice outranks anything the (unreachable) machine's agents
+ * could report.
+ */
+export type ExternalSessionBrowseScope =
+    | Readonly<{ kind: 'ready' }>
+    | Readonly<{ kind: 'unselected'; onChooseMachine?: () => void }>
+    | Readonly<{ kind: 'gone'; homeName: string | null; onChooseMachine?: () => void }>
+    /** The machine's Home has not answered with its machine list: not known to be gone. */
+    | Readonly<{ kind: 'unreachable'; homeName: string | null; onChooseMachine?: () => void }>
+    | Readonly<{ kind: 'offline'; onChooseMachine?: () => void }>
+    | Readonly<{ kind: 'locked'; onChooseMachine?: () => void }>;
+
+const READY_SCOPE: ExternalSessionBrowseScope = { kind: 'ready' };
 
 export const ExternalSessionBrowseCandidatesList = React.memo(function ExternalSessionBrowseCandidatesList(props: Readonly<{
     candidates: readonly ExternalSessionBrowseCandidate[];
@@ -715,6 +752,16 @@ export const ExternalSessionBrowseCandidatesList = React.memo(function ExternalS
     sourceLabel?: string | null;
     projectionPhase?: 'loading' | 'ready' | 'unsupported' | 'error';
     browseCapabilityAvailable?: boolean;
+    /** The machine scope; see {@link ExternalSessionBrowseScope}. Absent means ready. */
+    scope?: ExternalSessionBrowseScope;
+    /** The browser's scope (machine, Agent, source) as SelectionList filters beside the search band. */
+    filters?: ReadonlyArray<SelectionListFilter>;
+    /** Controls that trail the search band after the filters (the ⋯ menu, close). */
+    bandTrailing?: React.ReactNode;
+    /** The search band's placeholder ("Search Claude sessions…"). */
+    searchPlaceholder?: string;
+    /** Another agent on this machine that can share sessions, offered when this one has none. */
+    alternativeAgent?: Readonly<{ label: string; onSelect: () => void }> | null;
 }>) {
     const { theme } = useUnistyles() as { theme: AppTheme };
     const itemDensity = useResolvedItemDensity(undefined);
@@ -788,32 +835,35 @@ export const ExternalSessionBrowseCandidatesList = React.memo(function ExternalS
     );
     const rootStep = React.useMemo<SelectionListStep>(() => {
         const hasSearchQuery = props.searchQuery.trim().length > 0;
-        const emptyStateContext = Array.from(new Set(
-            [props.agentLabel, props.sourceLabel]
-                .map((label) => label?.trim())
-                .filter((label): label is string => Boolean(label)),
-        )).join(' · ');
-        const emptyStateLabel = t(hasSearchQuery
-            ? 'externalSessions.browseNoSearchResults'
-            : 'externalSessions.browseNoCandidates');
         return {
             id: 'external-session-candidates',
-            inputPlaceholder: t('externalSessions.browseSearchPlaceholder'),
+            inputPlaceholder: props.searchPlaceholder ?? t('externalSessions.browseSearchPlaceholder'),
             disableInputFilter: true,
-            emptyStateLabel: !hasSearchQuery && emptyStateContext
-                ? `${emptyStateLabel}\n${emptyStateContext}`
-                : emptyStateLabel,
+            // The same keys as Search / ⌘K, shown only with a hardware keyboard.
+            footerHints: [
+                { id: 'move', label: '↑↓', description: t('commandPalette.hints.move') },
+                { id: 'open', label: '↵', description: t('commandPalette.hints.open') },
+                { id: 'close', label: 'esc', description: t('commandPalette.hints.close') },
+            ],
+            // Only reached while a cursor page is still continuing; a settled empty listing and a
+            // search without matches are content states below.
+            emptyStateLabel: t(hasSearchQuery
+                ? 'externalSessions.browseNoSearchResults'
+                : 'externalSessions.browseNoCandidates'),
             sections: [],
             ...(virtualizedOptionSource === null ? {} : { virtualizedOptionSource }),
         };
-    }, [props.agentLabel, props.searchQuery, props.sourceLabel, virtualizedOptionSource]);
+    }, [props.searchPlaceholder, props.searchQuery, virtualizedOptionSource]);
     const handleSelect = React.useCallback(() => undefined, []);
     const searchIncompleteAnnouncement = props.searchIncomplete && props.candidates.length > 0
         ? t('externalSessions.browseSearchIncomplete', {
             count: props.candidates.length,
         })
         : null;
-    const annotationsIncompleteAnnouncement = props.annotationsIncomplete && props.candidates.length > 0
+    // Statuses are still being established while the index builds: the progress row says so. Only a
+    // listing that finished and still could not confirm some statuses shows the notice.
+    const showAnnotationsIncomplete = props.annotationsIncomplete && props.candidates.length > 0 && props.preparation === null;
+    const annotationsIncompleteAnnouncement = showAnnotationsIncomplete
         ? t('externalSessions.browseAnnotationsIncomplete')
         : null;
     const incompleteAnnouncement = [searchIncompleteAnnouncement, annotationsIncompleteAnnouncement]
@@ -833,11 +883,13 @@ export const ExternalSessionBrowseCandidatesList = React.memo(function ExternalS
     const projectionFailureMessage = projectionPhase === 'unsupported' || projectionPhase === 'error'
         ? t('newSession.daemonRpcUnavailableBody')
         : null;
-    const loadingAnnouncement = props.preparation
-        ? t('externalSessions.browseIndexing')
-        : !hasLoadedRows && (projectionPhase === 'loading' || props.loading || props.loadingMore)
-            ? t('common.loading')
-            : null;
+    // The visible loading state is a live region on web/Android; iOS mirrors it.
+    // An index build is announced by the hidden status below instead, because its
+    // visible progress deliberately is not live (count ticks must not speak).
+    const loadingAnnouncement = !props.preparation
+        && !hasLoadedRows && (projectionPhase === 'loading' || props.loading || props.loadingMore)
+        ? t('common.loading')
+        : null;
     useIosAccessibilityAnnouncement(loadingAnnouncement);
     /**
      * An index build that stopped before completing leaves a prefix of the source on
@@ -850,59 +902,175 @@ export const ExternalSessionBrowseCandidatesList = React.memo(function ExternalS
         ? t('externalSessions.browseIndexingCancelled')
         : null;
     const presentationError = props.offline
-        ? t('newSession.machineOfflineInlineBody')
+        ? t('externalSessions.browseMachineOfflineBody')
         : props.error;
     const retainedRowsLoading = hasLoadedRows
         && (props.loading || projectionPhase === 'loading');
-    const contentState = !hasLoadedRows && projectionPhase === 'loading' ? (
+    const scope = props.scope ?? READY_SCOPE;
+    const machineName = props.machineLabel?.trim() || null;
+    const machineInSentence = machineName ?? t('externalSessions.browseThisMachine');
+    const trimmedQuery = props.searchQuery.trim();
+    const onChooseMachine = scope.kind === 'ready' ? undefined : scope.onChooseMachine;
+    const chooseAnother = onChooseMachine
+        ? { label: t('externalSessions.browseChooseAnotherMachine'), onPress: onChooseMachine }
+        : undefined;
+    const retry = props.onRetry ? { label: t('common.retry'), onPress: props.onRetry } : undefined;
+    const offlineTitle = machineName
+        ? t('externalSessions.browseMachineOfflineTitle', { machine: machineName })
+        : t('externalSessions.browseThisMachineOfflineTitle');
+    /**
+     * One state speaks at a time, in order of what the user must fix first: the machine choice, a
+     * machine that is gone or away, the machine's Happier service, whether any agent there can share,
+     * then the listing itself. A missing machine therefore never reads as "no agent can browse".
+     * The toolbar above stays on screen in every state, since it holds the control that recovers it.
+     */
+    const contentState = hasLoadedRows ? undefined : scope.kind === 'unselected' ? (
+        <SurfaceStateCard
+            testID="direct-session-candidates:no-machine"
+            kind="empty"
+            iconName="desktop"
+            title={t('externalSessions.browseChooseMachineTitle')}
+            reason={t('externalSessions.browseChooseMachineBody')}
+            action={onChooseMachine
+                ? { label: t('externalSessions.browseChooseMachineTitle'), onPress: onChooseMachine }
+                : undefined}
+        />
+    ) : scope.kind === 'gone' ? (
+        <SurfaceStateCard
+            testID="direct-session-candidates:machine-gone"
+            kind="unavailable"
+            iconName="desktop"
+            accessibilitySemantics="status"
+            title={scope.homeName
+                ? t('settingsPlugins.targetSelection.missingInHome', { home: scope.homeName })
+                : t('settingsPlugins.targetSelection.missingInThisHome')}
+            reason={t('externalSessions.browseMachineGoneBody')}
+            action={onChooseMachine
+                ? { label: t('settingsPlugins.targetSelection.chooseAnother'), onPress: onChooseMachine }
+                : undefined}
+        />
+    ) : scope.kind === 'unreachable' ? (
+        <SurfaceStateCard
+            testID="direct-session-candidates:home-unreachable"
+            kind="unavailable"
+            iconName="cloud-slash"
+            accessibilitySemantics="status"
+            title={scope.homeName
+                ? t('settingsPlugins.targetSelection.unreachableHome', { home: scope.homeName })
+                : t('settingsPlugins.targetSelection.unreachableThisHome')}
+            reason={t('externalSessions.browseHomeUnreachableBody')}
+            action={onChooseMachine
+                ? { label: t('settingsPlugins.targetSelection.chooseAnother'), onPress: onChooseMachine }
+                : undefined}
+        />
+    ) : scope.kind === 'locked' ? (
+        <SurfaceStateCard
+            testID="direct-session-candidates:machine-locked"
+            kind="unavailable"
+            iconName="lock"
+            accessibilitySemantics="status"
+            title={t('settingsPlugins.targetSelection.locked')}
+            action={chooseAnother}
+        />
+    ) : scope.kind === 'offline' || (props.offline && props.error && props.nextCursor === null) ? (
+        <SurfaceStateCard
+            testID="direct-session-candidates:offline"
+            kind="unavailable"
+            iconName="cloud-slash"
+            accessibilitySemantics="alert"
+            title={offlineTitle}
+            reason={t('externalSessions.browseMachineOfflineBody')}
+            action={scope.kind === 'offline' ? chooseAnother : retry}
+        />
+    ) : projectionPhase === 'loading' ? (
         <BrowseLoadingState preparation={null} />
-    ) : !hasLoadedRows && (projectionPhase === 'unsupported' || projectionPhase === 'error') ? (
+    ) : projectionPhase === 'unsupported' || projectionPhase === 'error' ? (
         <SurfaceStateCard
             testID={projectionPhase === 'unsupported'
                 ? 'direct-session-candidates:unavailable'
                 : 'direct-session-candidates:projection-error'}
             kind={projectionPhase === 'unsupported' ? 'unavailable' : 'error'}
+            iconName="link-break"
             accessibilitySemantics="alert"
-            title={t('newSession.daemonRpcUnavailableTitle')}
-            reason={t('newSession.daemonRpcUnavailableBody')}
-            action={props.onRetry ? { label: t('common.retry'), onPress: props.onRetry } : undefined}
+            title={t('externalSessions.browseCantReachTitle', { machine: machineInSentence })}
+            reason={t('externalSessions.browseCantReachBody')}
+            action={retry}
         />
-    ) : !hasLoadedRows && props.browseCapabilityAvailable === false ? (
+    ) : props.browseCapabilityAvailable === false ? (
         <SurfaceStateCard
             testID="direct-session-candidates:no-agents"
             kind="unavailable"
-            title={t('externalSessions.settingsIntegrationsUnavailableTitle')}
-            reason={t('externalSessions.settingsIntegrationsUnavailableSubtitle')}
+            iconName="cpu"
+            title={t('externalSessions.browseNothingToBrowseTitle', { machine: machineInSentence })}
+            reason={t('externalSessions.browseNothingToBrowseBody')}
         />
-    ) : !hasLoadedRows && (props.loading || props.loadingMore) ? (
+    ) : props.loading || props.loadingMore ? (
         <BrowseLoadingState
             preparation={props.preparation}
             onCancelPreparation={props.onCancelPreparation}
         />
-    ) : !hasLoadedRows && props.cancelled ? (
+    ) : props.cancelled ? (
         <SurfaceStateCard
             testID="direct-session-candidates:cancelled"
             kind="unavailable"
+            iconName="stop"
             accessibilitySemantics="status"
             title={t('externalSessions.browseIndexingCancelled')}
-            action={props.onRetry ? { label: t('common.retry'), onPress: props.onRetry } : undefined}
+            action={retry}
         />
-    ) : !hasLoadedRows && props.error && props.nextCursor === null ? (
+    ) : props.error && props.nextCursor === null ? (
         <SurfaceStateCard
-            testID={`direct-session-candidates:${props.offline ? 'offline' : 'error'}`}
-            kind={props.offline ? 'unavailable' : 'error'}
+            testID="direct-session-candidates:error"
+            kind="error"
             accessibilitySemantics="alert"
-            title={props.offline ? t('newSession.machineOfflineInlineTitle') : t('common.error')}
-            reason={presentationError ?? undefined}
-            action={props.onRetry ? { label: t('common.retry'), onPress: props.onRetry } : undefined}
+            title={t('externalSessions.browseErrorTitle')}
+            reason={props.error}
+            action={retry}
         />
-    ) : undefined;
+    ) : props.nextCursor !== null ? undefined : trimmedQuery ? (
+        <EmptyState
+            layout="line"
+            testID="direct-session-candidates:no-matches"
+            title={t('externalSessions.browseNoMatches', { query: trimmedQuery })}
+            action={(
+                <HappierPressable
+                    testID="direct-session-candidates:no-matches:clear"
+                    accessibilityRole="button"
+                    accessibilityLabel={t('common.clearSearch')}
+                    onPress={() => props.onSearchQueryChange('')}
+                >
+                    <Text style={styles.noMatchesClear}>{t('common.clearSearch')}</Text>
+                </HappierPressable>
+            )}
+        />
+    ) : (
+        <SurfaceStateCard
+            testID="direct-session-candidates:empty"
+            kind="empty"
+            iconName="clock-counter-clockwise"
+            title={t('externalSessions.browseEmptyTitle', {
+                agent: props.agentLabel?.trim() || t('externalSessions.browseAgents'),
+                machine: machineInSentence,
+            })}
+            reason={t('externalSessions.browseEmptyBody')}
+            secondaryAction={props.alternativeAgent
+                ? {
+                    label: t('externalSessions.browseTryAgent', { agent: props.alternativeAgent.label }),
+                    onPress: props.alternativeAgent.onSelect,
+                }
+                : undefined}
+        />
+    );
 
-    return (
-        <View style={styles.root}>
-            <BrowseIndexingAccessibilityStatus
-                announcement={props.preparation ? loadingAnnouncement : null}
-            />
+    /**
+     * The listing's status lines (index progress, incomplete search or statuses) sit under the search
+     * band, above the rows, so the band stays the top of the card as in Search / ⌘K.
+     */
+    const hasStatusRows = indexingBannerVisible
+        || (props.candidates.length > 0 && props.searchIncomplete === true)
+        || showAnnotationsIncomplete;
+    const statusRows = hasStatusRows ? (
+        <View testID="direct-session-candidates-status">
             {indexingBannerVisible ? (
                 <BrowseLoadingState
                     placement="banner"
@@ -922,7 +1090,7 @@ export const ExternalSessionBrowseCandidatesList = React.memo(function ExternalS
                     })}
                 </Text>
             ) : null}
-            {props.annotationsIncomplete && props.candidates.length > 0 ? (
+            {showAnnotationsIncomplete ? (
                 <Text
                     testID="direct-session-candidates-annotations-incomplete"
                     style={styles.searchIncomplete}
@@ -932,25 +1100,44 @@ export const ExternalSessionBrowseCandidatesList = React.memo(function ExternalS
                     {t('externalSessions.browseAnnotationsIncomplete')}
                 </Text>
             ) : null}
+        </View>
+    ) : undefined;
+
+    return (
+        <View testID="direct-session-candidates-root" style={styles.root}>
+            <PoliteAccessibilityStatus
+                announcement={props.preparation ? t('externalSessions.browseIndexing') : ''}
+                statusTestID="direct-session-candidates:indexing:a11y-status"
+                transitionKey={props.preparation ? 'indexing' : 'idle'}
+            />
             <SelectionList
                 rootStep={rootStep}
                 inputValue={props.searchQuery}
                 inputTestID="direct-session-candidates-search-input"
                 onChangeInputValue={props.onSearchQueryChange}
-                inputSuffix={props.searchAugmenting ? (
-                    <View
-                        testID="direct-session-candidates-search-augmenting"
-                        style={styles.searchProgress}
-                    >
-                        <ActivitySpinner
-                            size="small"
-                            accessibilityLabel={t('common.loading')}
-                        />
+                selectionMark="enter"
+                filters={props.filters}
+                inputAccessoryRow={statusRows}
+                inputSuffix={props.searchAugmenting || props.bandTrailing ? (
+                    <View style={styles.searchSuffix}>
+                        {props.searchAugmenting ? (
+                            <View
+                                testID="direct-session-candidates-search-augmenting"
+                                style={styles.searchProgress}
+                            >
+                                <ActivitySpinner
+                                    size="small"
+                                    accessibilityLabel={t('common.loading')}
+                                />
+                            </View>
+                        ) : null}
+                        {props.bandTrailing ?? null}
                     </View>
                 ) : undefined}
                 onSelect={handleSelect}
                 onRequestClose={props.onRequestClose ?? (() => undefined)}
-                keyboardHintsEnabled={false}
+                // Opening browse lands on the search field, not on the band's ⋯.
+                autoFocusInputOnWeb
                 disableTransitions
                 testID="direct-session-candidates"
                 fillAvailableSpace

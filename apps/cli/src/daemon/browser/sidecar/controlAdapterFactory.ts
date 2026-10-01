@@ -77,8 +77,13 @@ export function createBrowserSidecarCdpControlAdapterFactory(input: Readonly<{
                     ? { subscribeCdpEvents: (listener) => subscribeCdpEvents(listener) }
                     : {}),
                 subscribeViewLifecycle: (listener) => adapter.subscribeViewLifecycle(listener),
+                getNavigationState: (view) => adapter.getNavigationState(view),
+                subscribeBrowserEvents: (listener) => adapter.subscribeBrowserEvents(listener),
             },
-            ...(connected.dispose ? { dispose: connected.dispose } : {}),
+            dispose: async () => {
+                adapter.dispose();
+                await connected.dispose?.();
+            },
         };
     };
 }

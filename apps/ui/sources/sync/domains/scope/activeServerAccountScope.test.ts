@@ -6,12 +6,25 @@ const activeServerSnapshot = vi.hoisted(() => ({
     generation: 0,
 }));
 
+const appliedServerSnapshot = vi.hoisted(() => ({
+    serverId: 'srv_identity',
+    serverUrl: 'https://relay.example.test',
+    generation: 0,
+}));
+
+const appliedRuntime = vi.hoisted(() => ({ available: true }));
+
 const storageState = vi.hoisted(() => ({
     profileScope: null as null | { serverId: string; accountId: string },
 }));
 
 vi.mock('@/sync/domains/server/serverRuntime', () => ({
     getActiveServerSnapshot: () => activeServerSnapshot,
+}));
+
+vi.mock('@/sync/runtime/orchestration/connectionManager', () => ({
+    getAppliedActiveServerSnapshot: () => appliedServerSnapshot,
+    isAppliedActiveServerRuntimeAvailable: () => appliedRuntime.available,
 }));
 
 vi.mock('@/sync/domains/state/storageStateReaderBridge', () => ({
@@ -23,6 +36,10 @@ describe('getActiveServerAccountScope', () => {
         activeServerSnapshot.serverId = 'srv_identity';
         activeServerSnapshot.serverUrl = 'https://relay.example.test';
         activeServerSnapshot.generation = 0;
+        appliedServerSnapshot.serverId = 'srv_identity';
+        appliedServerSnapshot.serverUrl = 'https://relay.example.test';
+        appliedServerSnapshot.generation = 0;
+        appliedRuntime.available = true;
         storageState.profileScope = null;
     });
 
@@ -113,6 +130,37 @@ describe('getActiveServerAccountScope', () => {
         expect(accountB).not.toBe(accountA);
         expect(accountB?.scope).toEqual(storageState.profileScope);
         expect(accountB?.isCurrent()).toBe(true);
+
+        retireActiveServerAccountScopeLifetime();
+    });
+
+    it('keeps the applied lifetime through staging, then retires it when the singleton runtime resets', async () => {
+        storageState.profileScope = { serverId: 'srv_identity', accountId: 'account-a' };
+        const { captureActiveServerAccountScopeLifetime, retireActiveServerAccountScopeLifetime } = await lifetimeApi();
+
+        const accountA = captureActiveServerAccountScopeLifetime();
+        expect(accountA).not.toBeNull();
+        if (!accountA) throw new Error('Expected Account A lifetime.');
+
+        activeServerSnapshot.serverId = 'srv_next';
+        activeServerSnapshot.serverUrl = 'https://next.example.test';
+        activeServerSnapshot.generation = 1;
+        expect(captureActiveServerAccountScopeLifetime()).toBe(accountA);
+        expect(accountA.isCurrent()).toBe(true);
+
+        appliedRuntime.available = false;
+        expect(captureActiveServerAccountScopeLifetime()).toBeNull();
+        expect(accountA.isCurrent()).toBe(false);
+
+        appliedServerSnapshot.serverId = 'srv_next';
+        appliedServerSnapshot.serverUrl = 'https://next.example.test';
+        appliedServerSnapshot.generation = 1;
+        appliedRuntime.available = true;
+        storageState.profileScope = { serverId: 'srv_next', accountId: 'account-b' };
+        const accountB = captureActiveServerAccountScopeLifetime();
+        expect(accountB).not.toBeNull();
+        expect(accountB).not.toBe(accountA);
+        expect(accountB?.scope).toEqual(storageState.profileScope);
 
         retireActiveServerAccountScopeLifetime();
     });

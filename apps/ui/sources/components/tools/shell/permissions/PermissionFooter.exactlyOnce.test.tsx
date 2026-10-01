@@ -2,15 +2,17 @@ import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { createDeferred, renderScreen, standardCleanup } from '@/dev/testkit';
-import { installPermissionShellCommonModuleMocks } from './permissionShellTestHelpers';
+import { createDeferred, standardCleanup } from '@/dev/testkit';
+import { installPermissionShellCommonModuleMocks, createPermissionShellRenderer } from './permissionShellTestHelpers';
 
 const ops = vi.hoisted(() => ({
-    sessionAllow: vi.fn(async (..._args: unknown[]) => {}),
-    sessionAllowWithPermissionUpdates: vi.fn(async (..._args: unknown[]) => {}),
-    sessionDeny: vi.fn(async (..._args: unknown[]) => {}),
-    sessionAbort: vi.fn(async (..._args: unknown[]) => {}),
+    approve: vi.fn(async (..._args: unknown[]) => {}),
+    approveWithUpdates: vi.fn(async (..._args: unknown[]) => {}),
+    deny: vi.fn(async (..._args: unknown[]) => {}),
+    abort: vi.fn(async (..._args: unknown[]) => {}),
 }));
+const renderScreen = createPermissionShellRenderer(ops);
+
 
 installPermissionShellCommonModuleMocks({
     reactNative: async () => {
@@ -35,23 +37,18 @@ vi.mock('@expo/vector-icons', () => ({
     Ionicons: 'Ionicons',
 }));
 
-vi.mock('@/sync/ops', () => ({
-    sessionAllow: ops.sessionAllow,
-    sessionAllowWithPermissionUpdates: ops.sessionAllowWithPermissionUpdates,
-    sessionDeny: ops.sessionDeny,
-    sessionAbort: ops.sessionAbort,
-}));
+
 
 describe('PermissionFooter exactly-once actions', () => {
     beforeEach(() => {
-        ops.sessionAllow.mockReset();
-        ops.sessionAllow.mockResolvedValue(undefined);
-        ops.sessionAllowWithPermissionUpdates.mockReset();
-        ops.sessionAllowWithPermissionUpdates.mockResolvedValue(undefined);
-        ops.sessionDeny.mockReset();
-        ops.sessionDeny.mockResolvedValue(undefined);
-        ops.sessionAbort.mockReset();
-        ops.sessionAbort.mockResolvedValue(undefined);
+        ops.approve.mockReset();
+        ops.approve.mockResolvedValue(undefined);
+        ops.approveWithUpdates.mockReset();
+        ops.approveWithUpdates.mockResolvedValue(undefined);
+        ops.deny.mockReset();
+        ops.deny.mockResolvedValue(undefined);
+        ops.abort.mockReset();
+        ops.abort.mockResolvedValue(undefined);
         standardCleanup();
     });
 
@@ -60,24 +57,24 @@ describe('PermissionFooter exactly-once actions', () => {
         const cases = [
             {
                 firstTestID: 'permission-footer.allow',
-                expectedOperation: ops.sessionAllow,
-                expectedArgs: ['session-1', 'permission-1', undefined, undefined, 'approved'],
+                expectedOperation: ops.approve,
+                expectedArgs: [{ id: 'permission-1', approved: true, decision: 'approved' }],
             },
             {
                 firstTestID: 'permission-footer.deny',
-                expectedOperation: ops.sessionDeny,
-                expectedArgs: ['session-1', 'permission-1', undefined, undefined, 'denied'],
+                expectedOperation: ops.deny,
+                expectedArgs: [{ id: 'permission-1', approved: false, decision: 'denied' }],
             },
             {
                 firstTestID: 'permission-footer.allow-for-session',
-                expectedOperation: ops.sessionAllow,
-                expectedArgs: ['session-1', 'permission-1', undefined, undefined, 'approved_for_session'],
+                expectedOperation: ops.approve,
+                expectedArgs: [{ id: 'permission-1', approved: true, decision: 'approved_for_session' }],
             },
         ] as const;
 
         for (const testCase of cases) {
-            ops.sessionAllow.mockClear();
-            ops.sessionDeny.mockClear();
+            ops.approve.mockClear();
+            ops.deny.mockClear();
             const pendingOperation = createDeferred<void>();
             testCase.expectedOperation.mockReturnValueOnce(pendingOperation.promise);
             const screen = await renderScreen(
@@ -104,7 +101,7 @@ describe('PermissionFooter exactly-once actions', () => {
                 }
             });
 
-            expect(ops.sessionAllow.mock.calls.length + ops.sessionDeny.mock.calls.length).toBe(1);
+            expect(ops.approve.mock.calls.length + ops.deny.mock.calls.length).toBe(1);
             expect(testCase.expectedOperation).toHaveBeenCalledWith(...testCase.expectedArgs);
 
             pendingOperation.resolve();
@@ -118,8 +115,8 @@ describe('PermissionFooter exactly-once actions', () => {
     it('scopes admission and settlement to the current permission request identity', async () => {
         const oldApproval = createDeferred<void>();
         const currentDenial = createDeferred<void>();
-        ops.sessionAllow.mockReturnValueOnce(oldApproval.promise);
-        ops.sessionDeny.mockReturnValueOnce(currentDenial.promise);
+        ops.approve.mockReturnValueOnce(oldApproval.promise);
+        ops.deny.mockReturnValueOnce(currentDenial.promise);
 
         const { PermissionFooter } = await import('./PermissionFooter');
         const renderFooter = (permissionId: string) => (
@@ -149,8 +146,8 @@ describe('PermissionFooter exactly-once actions', () => {
         act(() => {
             currentDenyPress = currentDeny.props.onPress();
         });
-        expect(ops.sessionAllow).toHaveBeenCalledTimes(1);
-        expect(ops.sessionDeny).toHaveBeenCalledTimes(1);
+        expect(ops.approve).toHaveBeenCalledTimes(1);
+        expect(ops.deny).toHaveBeenCalledTimes(1);
 
         oldApproval.reject(new Error('stale permission failure'));
         await act(async () => {
@@ -169,7 +166,7 @@ describe('PermissionFooter exactly-once actions', () => {
         });
 
         const unmountedApproval = createDeferred<void>();
-        ops.sessionAllow.mockReturnValueOnce(unmountedApproval.promise);
+        ops.approve.mockReturnValueOnce(unmountedApproval.promise);
         await screen.update(renderFooter('permission-3'));
         let unmountedApprovalPress!: Promise<void>;
         act(() => {
@@ -181,7 +178,7 @@ describe('PermissionFooter exactly-once actions', () => {
             await unmountedApprovalPress;
         });
 
-        expect(ops.sessionAllow).toHaveBeenCalledTimes(2);
-        expect(ops.sessionDeny).toHaveBeenCalledTimes(1);
+        expect(ops.approve).toHaveBeenCalledTimes(2);
+        expect(ops.deny).toHaveBeenCalledTimes(1);
     });
 });

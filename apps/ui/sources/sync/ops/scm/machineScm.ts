@@ -8,6 +8,8 @@ import type {
     ScmBranchListRequest,
     ScmBranchListResponse,
     ScmBranchOperationControlRequest,
+    ScmConflictAcceptSideRequest,
+    ScmConflictMarkResolvedRequest,
     ScmChangeApplyRequest,
     ScmChangeApplyResponse,
     ScmChangeDiscardRequest,
@@ -49,6 +51,8 @@ import type {
     ScmStashApplyRequest,
     ScmStashApplyResponse,
     ScmStashDropRequest,
+    ScmStashCreateRequest,
+    ScmStashCreateResponse,
     ScmStashDropResponse,
     ScmStashListRequest,
     ScmStashListResponse,
@@ -57,17 +61,20 @@ import type {
     ScmStashShowRequest,
     ScmStashShowResponse,
     ScmStatusSnapshotRequest,
-    ScmStatusSnapshotResponse,
+    ScmStatusSnapshotTransportResponse,
     ScmWorktreeCreateRequest,
     ScmWorktreeCreateResponse,
     ScmWorktreePruneRequest,
     ScmWorktreePruneResponse,
     ScmWorktreeRemoveRequest,
     ScmWorktreeRemoveResponse,
-} from '@happier-dev/protocol';
-import { SCM_OPERATION_ERROR_CODES, ScmLogListResponseSchema } from '@happier-dev/protocol';
-import { isRpcMethodNotAvailableError, isRpcMethodNotFoundError, type RpcErrorCarrier } from '@happier-dev/protocol/rpcErrors';
-import { RPC_ERROR_MESSAGES, RPC_METHODS } from '@happier-dev/protocol/rpc';
+} from '@happier-dev/protocol/scm';
+import { SCM_OPERATION_ERROR_CODES, ScmLogListResponseSchema } from '@happier-dev/protocol/scm';
+import { RPC_METHODS } from '@happier-dev/protocol/rpc';
+import { getScmRpcSideEffectClass } from '@happier-dev/protocol/actions/scmGitActionSpecs';
+import { scmFallbackError } from './scmRpcFailure';
+import { runScmRpcWithAdmission } from './scmRpcAdmission';
+export { assertScmResponse, scmFallbackError } from './scmRpcFailure';
 
 import { storage } from '@/sync/domains/state/storage';
 import { machineRpcWithServerScope } from '@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc';
@@ -77,7 +84,6 @@ import {
 } from '@/scm/settings/preferences';
 import { getFirstPartyScmBackendLegacyLocalId } from '@/scm/registry/firstPartyScmBackendIdentity';
 
-const SCM_UNSUPPORTED_RESPONSE_ERROR = 'SCM_UNSUPPORTED_RESPONSE_ERROR';
 const SCM_DIFF_COMMIT_TIMEOUT_MS = 120_000;
 
 export type MachineScmCallOptions = Readonly<{
@@ -91,68 +97,6 @@ function resolveScmRpcTimeoutMs(method: string): number | undefined {
         return SCM_DIFF_COMMIT_TIMEOUT_MS;
     }
     return undefined;
-}
-
-export function scmFallbackError<T extends { success: boolean; error?: string; errorCode?: string }>(error: unknown): T {
-    if (error instanceof Error && error.message === SCM_UNSUPPORTED_RESPONSE_ERROR) {
-        return {
-            success: false,
-            error: RPC_ERROR_MESSAGES.METHOD_NOT_FOUND,
-            errorCode: SCM_OPERATION_ERROR_CODES.FEATURE_UNSUPPORTED,
-        } as T;
-    }
-    if (error && typeof error === 'object') {
-        const rpcError: RpcErrorCarrier = {
-            rpcErrorCode:
-                typeof (error as { rpcErrorCode?: unknown }).rpcErrorCode === 'string'
-                    ? (error as { rpcErrorCode: string }).rpcErrorCode
-                    : undefined,
-            message:
-                typeof (error as { message?: unknown }).message === 'string'
-                    ? (error as { message: string }).message
-                    : undefined,
-        };
-
-        if (isRpcMethodNotAvailableError(rpcError)) {
-            return {
-                success: false,
-                error: RPC_ERROR_MESSAGES.METHOD_NOT_AVAILABLE,
-                errorCode: SCM_OPERATION_ERROR_CODES.BACKEND_UNAVAILABLE,
-            } as T;
-        }
-        if (isRpcMethodNotFoundError(rpcError)) {
-            return {
-                success: false,
-                error: RPC_ERROR_MESSAGES.METHOD_NOT_FOUND,
-                errorCode: SCM_OPERATION_ERROR_CODES.FEATURE_UNSUPPORTED,
-            } as T;
-        }
-    }
-    // Everything reaching here threw out of the machine RPC, which means no answer came back at
-    // all: the transport failed, timed out, or the machine is unreachable. No source-control
-    // command ran, so `COMMAND_FAILED` was the wrong domain and its raw `error.message` put an
-    // internal exception (`Cannot read properties of undefined (reading 'emit')`) into the user
-    // error slot. A well-formed git failure never lands here — `assertScmResponse` returns it as a
-    // `{ success: false, error, errorCode }` response without throwing. This is the same
-    // classification the no-machine-target path already makes (`sessionScm.ts:81-86`), and the same
-    // discipline the local-services inventory adapter applies to its own catch: a typed reason, and
-    // the exception text never reaches the surface.
-    return {
-        success: false,
-        error: RPC_ERROR_MESSAGES.METHOD_NOT_AVAILABLE,
-        errorCode: SCM_OPERATION_ERROR_CODES.BACKEND_UNAVAILABLE,
-    } as T;
-}
-
-export function assertScmResponse<T extends { success: boolean; error?: string; errorCode?: string }>(value: unknown): T {
-    if (
-        !value
-        || typeof value !== 'object'
-        || typeof (value as { success?: unknown }).success !== 'boolean'
-    ) {
-        throw new Error(SCM_UNSUPPORTED_RESPONSE_ERROR);
-    }
-    return value as T;
 }
 
 export function withScmBackendPreference<T extends { backendPreference?: unknown }>(request: T): T {
@@ -186,18 +130,23 @@ export async function runMachineScmRpc<
     request: R,
     options?: MachineScmCallOptions,
 ): Promise<T> {
-    const payload = withScmBackendPreference(request);
-    const timeoutMs = resolveScmRpcTimeoutMs(method);
-    const response = await machineRpcWithServerScope<T, R>({
-        machineId,
-        method,
-        payload: payload as R,
-        ...(options?.serverId ? { serverId: options.serverId } : {}),
-        ...(options?.accountId ? { accountId: options.accountId } : {}),
-        ...(options?.signal ? { signal: options.signal } : {}),
-        timeoutMs,
+    const payload = withScmBackendPreference({
+        ...request,
+        outcomeVersion: 1 as const,
+        ...(method === RPC_METHODS.SCM_STATUS_SNAPSHOT ? { operationStateVersion: 1 as const } : {}),
     });
-    return assertScmResponse<T>(response);
+    return await runScmRpcWithAdmission<T>({
+        method, request: payload,
+        call: (rpcMethod, rpcPayload) => machineRpcWithServerScope<unknown, object>({
+            machineId,
+            method: rpcMethod,
+            payload: rpcPayload,
+            ...(options?.serverId ? { serverId: options.serverId } : {}),
+            ...(options?.accountId ? { accountId: options.accountId } : {}),
+            ...(options?.signal ? { signal: options.signal } : {}),
+            timeoutMs: resolveScmRpcTimeoutMs(rpcMethod),
+        }),
+    });
 }
 
 async function callMachineScm<
@@ -216,10 +165,10 @@ async function callMachineScm<
         // request silently — not be reclassified as a backend failure, which would present
         // offline truth for a query the user simply left. This matches the typed
         // workspace-file adapter's cancellation discipline.
-        if (options?.signal?.aborted) {
+        if (options?.signal?.aborted && getScmRpcSideEffectClass(method) === 'read') {
             throw error;
         }
-        return scmFallbackError<T>(error);
+        return scmFallbackError<T>(error, { method, request });
     }
 }
 
@@ -227,8 +176,8 @@ export async function machineScmStatusSnapshot(
     machineId: string,
     request: ScmStatusSnapshotRequest,
     options?: MachineScmCallOptions,
-): Promise<ScmStatusSnapshotResponse> {
-    return await callMachineScm<ScmStatusSnapshotResponse, ScmStatusSnapshotRequest>(machineId, RPC_METHODS.SCM_STATUS_SNAPSHOT, request, options);
+): Promise<ScmStatusSnapshotTransportResponse> {
+    return await callMachineScm<ScmStatusSnapshotTransportResponse, ScmStatusSnapshotRequest>(machineId, RPC_METHODS.SCM_STATUS_SNAPSHOT, request, options);
 }
 
 export async function machineScmDiffFile(
@@ -379,6 +328,18 @@ export async function machineScmBranchOperationAbort(
     options?: MachineScmCallOptions,
 ): Promise<ScmBranchIntegrationResponse> {
     return await callMachineScm<ScmBranchIntegrationResponse, ScmBranchOperationControlRequest>(machineId, RPC_METHODS.SCM_BRANCH_OPERATION_ABORT, request, options);
+}
+
+export async function machineScmBranchOperationSkip(machineId: string, request: ScmBranchOperationControlRequest, options?: MachineScmCallOptions): Promise<ScmBranchIntegrationResponse> {
+    return callMachineScm(machineId, RPC_METHODS.SCM_BRANCH_OPERATION_SKIP, request, options);
+}
+
+export async function machineScmConflictAcceptSide(machineId: string, request: ScmConflictAcceptSideRequest, options?: MachineScmCallOptions): Promise<ScmBranchIntegrationResponse> {
+    return callMachineScm(machineId, RPC_METHODS.SCM_CONFLICT_ACCEPT_SIDE, request, options);
+}
+
+export async function machineScmConflictMarkResolved(machineId: string, request: ScmConflictMarkResolvedRequest, options?: MachineScmCallOptions): Promise<ScmBranchIntegrationResponse> {
+    return callMachineScm(machineId, RPC_METHODS.SCM_CONFLICT_MARK_RESOLVED, request, options);
 }
 
 export async function machineScmWorktreeCreate(
@@ -537,6 +498,14 @@ export async function machineScmStashList(
     options?: MachineScmCallOptions,
 ): Promise<ScmStashListResponse> {
     return await callMachineScm<ScmStashListResponse, ScmStashListRequest>(machineId, RPC_METHODS.SCM_STASH_LIST, request, options);
+}
+
+export async function machineScmStashCreate(
+    machineId: string,
+    request: ScmStashCreateRequest,
+    options?: MachineScmCallOptions,
+): Promise<ScmStashCreateResponse> {
+    return await callMachineScm<ScmStashCreateResponse, ScmStashCreateRequest>(machineId, RPC_METHODS.SCM_STASH_CREATE, request, options);
 }
 
 export async function machineScmStashDrop(

@@ -21,7 +21,7 @@ function normalizeValueId(raw: unknown): ConfigOptionValueId | undefined {
   return undefined;
 }
 
-function collectConfigOptionIdsFromAliasRoot(metadata: Metadata | null | undefined, key: string, out: Set<string>): void {
+function collectConfigOptionIdsFromAliasRoot(metadata: Readonly<Record<string, unknown>> | null | undefined, key: string, out: Set<string>): void {
   const root = metadata && typeof metadata === 'object' ? (metadata as Record<string, unknown>)[key] : null;
   const rootRecord = root && typeof root === 'object' && !Array.isArray(root) ? root as Record<string, unknown> : null;
   const overridesRaw = rootRecord?.overrides;
@@ -33,7 +33,7 @@ function collectConfigOptionIdsFromAliasRoot(metadata: Metadata | null | undefin
   }
 }
 
-function collectConfigOptionIdsFromMetadata(metadata: Metadata | null | undefined): string[] {
+function collectConfigOptionIdsFromMetadata(metadata: Readonly<Record<string, unknown>> | null | undefined): string[] {
   const configIds = new Set<string>();
   collectConfigOptionIdsFromAliasRoot(metadata, SESSION_CONFIG_OPTION_OVERRIDES_KEY, configIds);
   collectConfigOptionIdsFromAliasRoot(metadata, LEGACY_ACP_CONFIG_OPTION_OVERRIDES_KEY, configIds);
@@ -41,12 +41,12 @@ function collectConfigOptionIdsFromMetadata(metadata: Metadata | null | undefine
 }
 
 export function resolveSessionConfigOptionOverridesFromMetadataSnapshot(opts: Readonly<{
-  metadata: Metadata | null | undefined;
+  metadata: Readonly<Record<string, unknown>> | null | undefined;
 }>): ConfigOptionOverrideCandidate[] {
   const out: ConfigOptionOverrideCandidate[] = [];
   const configIds = collectConfigOptionIdsFromMetadata(opts.metadata);
   for (const configId of configIds) {
-    const intent = readAcpConfigOptionIntentFromMetadata((opts.metadata ?? {}) as Metadata, configId);
+    const intent = readAcpConfigOptionIntentFromMetadata(opts.metadata ?? {}, configId);
     if (!intent) continue;
     const valueId = normalizeValueId(intent.value);
     if (valueId === undefined) continue;

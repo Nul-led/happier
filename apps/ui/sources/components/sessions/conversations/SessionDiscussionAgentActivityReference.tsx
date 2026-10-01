@@ -1,25 +1,34 @@
 import * as React from 'react';
-import { Pressable } from 'react-native';
-import { StyleSheet } from 'react-native-unistyles';
+import { Pressable, View } from 'react-native';
+import { StyleSheet, useUnistyles } from 'react-native-unistyles';
+
+import { Icon } from '@/components/ui/icons/Icon';
 
 import { SessionAgentActivitySummary } from '@/components/sessions/agents/presentation/SessionAgentActivitySummary';
 import { resolveSessionAgentActivityPresentation } from '@/components/sessions/agents/presentation/sessionAgentActivityPresentation';
 import type { AgentActivityEntry } from '@/sync/domains/session/agentActivity';
 import type { SessionSubagent } from '@/sync/domains/session/subagents/types';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 const stylesheet = StyleSheet.create((theme) => ({
     reference: {
-        marginHorizontal: 14,
-        marginVertical: 4,
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+        maxWidth: 520,
         paddingHorizontal: 12,
         paddingVertical: 10,
         borderRadius: 12,
         borderWidth: 1,
         borderColor: theme.colors.border.subtle,
-        backgroundColor: theme.colors.surface.inset,
+        backgroundColor: theme.colors.surface.base,
+    },
+    summary: {
+        flex: 1,
+        minWidth: 0,
     },
     referencePressed: {
-        opacity: 0.72,
+        opacity: motionTokens.press.opacity,
     },
 }));
 
@@ -36,6 +45,7 @@ export const SessionDiscussionAgentActivityReference = React.memo((props: Readon
     onPress: () => void;
 }>) => {
     const styles = stylesheet;
+    const { theme } = useUnistyles();
     const presentation = React.useMemo(() => resolveSessionAgentActivityPresentation({
         entry: props.entry,
         subagent: props.subagent,
@@ -50,10 +60,13 @@ export const SessionDiscussionAgentActivityReference = React.memo((props: Readon
             onPress={props.onPress}
             style={({ pressed }) => [styles.reference, pressed ? styles.referencePressed : null]}
         >
-            <SessionAgentActivitySummary
-                testID={`session-discussion-agent-activity-summary:${runId}`}
-                presentation={presentation}
-            />
+            <View style={styles.summary}>
+                <SessionAgentActivitySummary
+                    testID={`session-discussion-agent-activity-summary:${runId}`}
+                    presentation={presentation}
+                />
+            </View>
+            <Icon name="caret-right" size={16} color={theme.colors.text.tertiary} />
         </Pressable>
     );
 });

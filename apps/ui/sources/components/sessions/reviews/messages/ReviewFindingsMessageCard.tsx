@@ -1,20 +1,70 @@
 import React from 'react';
 import { Pressable, View } from 'react-native';
-import { StyleSheet } from 'react-native-unistyles';
+import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import type {
+    ReviewCommentV1,
     ReviewFinding,
     ReviewFindingsV1,
     ReviewFindingsV2,
     ReviewQuestion,
     ReviewTriageStatus,
 } from '@happier-dev/protocol';
+import { REVIEW_FINDINGS_VERIFY_AND_FIX_INSTRUCTIONS_V1, renderReviewFindingsForVerifyV1, ReviewFollowUpFailureCodeSchema } from '@happier-dev/protocol';
 
+import { hasAgentIconMark } from '@/agents/catalog/catalog';
+import { AgentIcon } from '@/agents/registry/AgentIcon';
 import { MarkdownView } from '@/components/markdown/MarkdownView';
+import { buildSessionExecutionRunRouteHref } from '@/components/sessions/agents/navigation/buildSessionExecutionRunRouteHref';
+import { ReviewFindingRow, type ReviewFindingDecision } from '@/components/sessions/reviews/findings/ReviewFindingRow';
+import type {
+    ReviewFindingAskContext,
+    ReviewFindingThreadEntryView,
+} from '@/components/sessions/reviews/findings/ReviewFindingThread';
+import {
+    ReviewFollowUpComposer,
+    type ReviewFollowUpRecipient,
+} from '@/components/sessions/reviews/findings/ReviewFollowUpComposer';
+import {
+    formatReviewFindingsHeadline,
+    isHighReviewSeverity,
+} from '@/components/sessions/reviews/findings/reviewFindingPresentation';
+import {
+    formatReviewerSet,
+    mergeReviewFindings,
+    sortReviewFindingRows,
+    type ReviewFindingRowModel,
+    type ReviewFindingSource,
+    type ReviewMember,
+} from '@/components/sessions/reviews/findings/reviewFindingsMerge';
+import {
+    describeReviewFollowUpFailure,
+    resolveReviewFollowUpAvailability,
+    type ReviewFollowUpAvailability,
+} from '@/components/sessions/reviews/findings/reviewFollowUpAvailability';
+import { useReviewGroupSiblings } from '@/components/sessions/reviews/findings/useReviewGroupSiblings';
+import { useReviewRunsComments } from '@/components/sessions/reviews/findings/useReviewRunComments';
 import { resolveEffectiveReviewFindings } from '@/components/sessions/reviews/messages/resolveEffectiveReviewFindings';
-import { Text, TextInput } from '@/components/ui/text/Text';
+import {
+    ExecutionRunResultLayout,
+    type ExecutionRunResultPresentation,
+} from '@/components/sessions/runs/ExecutionRunResultLayout';
+import { resolveExecutionRunBackendLabel } from '@/components/sessions/runs/resolveExecutionRunBackendLabel';
+import { useSessionTranscriptSource } from '@/components/sessions/transcript/source/SessionTranscriptSourceContext';
+import { RoundButton } from '@/components/ui/buttons/RoundButton';
+import { Icon, ICON_SIZE } from '@/components/ui/icons/Icon';
+import { Text } from '@/components/ui/text/Text';
+import { Typography } from '@/constants/Typography';
 import { useSessionMessages } from '@/sync/domains/state/storage';
+import {
+    decideReviewRunFinding,
+    loadReviewRunComments,
+    readReviewRunComments,
+} from '@/sync/domains/reviews/comments/reviewRunComments';
 import { sessionExecutionRunAction } from '@/sync/ops/sessionExecutionRuns';
+import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
+import { useServerCredentialAccountScopeBindings } from '@/sync/domains/scope/useServerCredentialAccountScopes';
+import { usePreferredServerIdForSession } from '@/sync/runtime/orchestration/serverScopedRpc/usePreferredServerIdForSession';
 import { sync } from '@/sync/sync';
 import { t } from '@/text';
 import { fireAndForget } from '@/utils/system/fireAndForget';
@@ -28,24 +78,20 @@ type NormalizedReviewPayload = Readonly<{
     findings: readonly ReviewFinding[];
     questions: readonly ReviewQuestion[];
     assumptions: ReviewFindingsV2['assumptions'];
-    triage?: ReviewFindingsV2['triage'];
-    publication?: ReviewFindingsV2['publication'];
 }>;
 
-type ReviewTriageOverlayState = NonNullable<ReviewFindingsV2['triage']>;
+/** The transcript card shows this many findings before "N more findings" (lab R2 `card`). */
+const CARD_VISIBLE_FINDINGS = 3;
 
-const REVIEW_FINDING_ACTION_STATUSES = ['accept', 'reject', 'defer', 'needs_refinement'] as const;
 const EMPTY_REVIEW_QUESTIONS: ReviewFindingsV2['questions'] = [];
 const EMPTY_REVIEW_ASSUMPTIONS: ReviewFindingsV2['assumptions'] = [];
-
-function isReviewPublication(value: unknown): value is NonNullable<ReviewFindingsV2['publication']> {
-    if (!value || typeof value !== 'object') return false;
-    return Array.isArray((value as { findings?: unknown }).findings);
-}
+const EMPTY_THREAD: readonly never[] = [];
+const EMPTY_PENDING: Readonly<Record<string, ReviewTriageStatus>> = Object.freeze({});
+/** A reviewer run that stopped in one of these has no result: it didn't finish its review. */
+const UNFINISHED_RUN_STATUSES: ReadonlySet<string> = new Set(['failed', 'cancelled', 'timeout']);
 
 function normalizePayload(payload: ReviewFindingsCardPayload): NormalizedReviewPayload {
     if ('overviewMarkdown' in payload && typeof payload.overviewMarkdown === 'string') {
-        const publication = isReviewPublication(payload.publication) ? payload.publication : undefined;
         return {
             runRef: payload.runRef,
             summary: payload.summary,
@@ -53,11 +99,8 @@ function normalizePayload(payload: ReviewFindingsCardPayload): NormalizedReviewP
             findings: payload.findings ?? [],
             questions: Array.isArray(payload.questions) ? payload.questions : EMPTY_REVIEW_QUESTIONS,
             assumptions: Array.isArray(payload.assumptions) ? payload.assumptions : EMPTY_REVIEW_ASSUMPTIONS,
-            ...(payload.triage ? { triage: payload.triage } : {}),
-            ...(publication ? { publication } : {}),
         };
     }
-
     return {
         runRef: payload.runRef,
         summary: payload.summary,
@@ -65,626 +108,760 @@ function normalizePayload(payload: ReviewFindingsCardPayload): NormalizedReviewP
         findings: payload.findings ?? [],
         questions: EMPTY_REVIEW_QUESTIONS,
         assumptions: EMPTY_REVIEW_ASSUMPTIONS,
-        ...(payload.triage ? { triage: payload.triage } : {}),
     };
 }
 
-function formatFindingLocation(finding: ReviewFinding): string | null {
-    if (!finding.filePath) return null;
-    if (typeof finding.startLine === 'number' && typeof finding.endLine === 'number') {
-        return `${finding.filePath}:${finding.startLine}-${finding.endLine}`;
+/** The durable comment a finding materialized into: its reference first, else its run-scoped id. */
+function findCommentForFinding(
+    comments: readonly ReviewCommentV1[],
+    finding: ReviewFinding,
+    runId: string,
+): ReviewCommentV1 | null {
+    const referencedId = finding.comment?.id;
+    if (referencedId) {
+        const referenced = comments.find((comment) => comment.id === referencedId);
+        if (referenced) return referenced;
     }
-    if (typeof finding.startLine === 'number') {
-        return `${finding.filePath}:${finding.startLine}`;
-    }
-    return finding.filePath;
+    return comments.find((comment) => comment.runId === runId && comment.findingId === finding.id && !comment.parentCommentId) ?? null;
 }
 
-function buildPublishedFindings(findings: readonly ReviewFinding[], acceptedFindingIds: readonly string[]): ReviewFinding[] {
-    return findings.filter((finding) => acceptedFindingIds.includes(finding.id)).slice(0, 50);
+function readDecision(status: ReviewCommentV1['reviewTriageStatus'] | undefined): ReviewFindingDecision | 'undecided' {
+    return status === 'accept' || status === 'reject' || status === 'defer' ? status : 'undecided';
 }
 
-function normalizeReviewTriageOverlayState(value: ReviewFindingsV2['triage'] | undefined): ReviewTriageOverlayState {
-    const findings = Array.isArray(value?.findings)
-        ? value.findings
-            .map((finding) => {
-                const comment = typeof finding.comment === 'string' ? finding.comment.trim() : '';
-                return {
-                    id: String(finding.id),
-                    status: finding.status,
-                    ...(comment ? { comment } : {}),
-                };
-            })
-            .sort((left, right) => left.id.localeCompare(right.id))
-        : [];
-    return { findings };
+/**
+ * The exact Home and Account a review is open under: its comments are read and decided there, never
+ * on whichever Home happens to be focused. `null` until the Home's credentials resolve.
+ */
+function useReviewAccountScope(sessionId: string, serverId: string | null): ServerAccountScope | null {
+    const preferredServerId = usePreferredServerIdForSession({ serverId, sessionId });
+    const serverIds = React.useMemo(() => [preferredServerId], [preferredServerId]);
+    const bindings = useServerCredentialAccountScopeBindings(serverIds);
+    return [...bindings.values()][0]?.scope ?? null;
 }
 
-function serializeReviewTriageOverlayState(value: ReviewFindingsV2['triage'] | undefined): string {
-    return JSON.stringify(normalizeReviewTriageOverlayState(value));
+/** A reviewer of this result as the card shows it: its run, latest findings, decisions and threads. */
+type CardMember = ReviewMember & Readonly<{
+    runRef: ReviewFindingsV2['runRef'];
+    normalized: NormalizedReviewPayload;
+    followUp: ReviewFollowUpAvailability;
+    threadRefsByFindingId: Readonly<Record<string, readonly string[]>>;
+    pending: Readonly<Record<string, ReviewTriageStatus>>;
+}>;
+
+function reviewerLabelOf(runRef: ReviewFindingsV2['runRef']): string {
+    return resolveExecutionRunBackendLabel(runRef.backendTarget ?? { kind: 'backend', backendId: runRef.backendId }) ?? runRef.backendId;
 }
 
+function sourceDecision(source: ReviewFindingSource, pending: Readonly<Record<string, ReviewTriageStatus>>): ReviewFindingDecision | 'undecided' {
+    if (!source.comment) return 'undecided';
+    return readDecision(pending[source.comment.id] ?? source.comment.reviewTriageStatus);
+}
+
+/** A merged row's decision is its sources' decision when they agree; otherwise none is shown. */
+function rowDecision(row: ReviewFindingRowModel, pendingOf: (runId: string) => Readonly<Record<string, ReviewTriageStatus>>): ReviewFindingDecision | 'undecided' {
+    const decided = row.sources.filter((source) => source.comment !== null);
+    if (decided.length === 0) return 'undecided';
+    const first = sourceDecision(decided[0]!, pendingOf(decided[0]!.member.runId));
+    return decided.every((source) => sourceDecision(source, pendingOf(source.member.runId)) === first) ? first : 'undecided';
+}
+
+const FOLLOW_UP_AVAILABLE: ReviewFollowUpAvailability = Object.freeze({ available: true });
+
+/** Questions go to every reviewer named, so any of them that can't take one decides. */
+function followUpOf(members: readonly CardMember[]): ReviewFollowUpAvailability {
+    return members.find((member) => !member.followUp.available)?.followUp ?? FOLLOW_UP_AVAILABLE;
+}
+
+function recipientOf(members: readonly CardMember[]): ReviewFollowUpRecipient {
+    const labels = members.map((member) => member.reviewerLabel);
+    return {
+        label: formatReviewerSet(labels),
+        accessibilityLabel: labels.length === 1
+            ? t('runPage.review.toReviewer', { reviewer: labels[0]! })
+            : t('runPage.review.followUpsGoToAll', { count: labels.length }),
+        backendIds: members.map((member) => member.backendId),
+    };
+}
+
+function waitingLabelOf(members: readonly CardMember[]): string {
+    return members.length === 1
+        ? t('runPage.review.waitingForAnswer', { reviewer: members[0]!.reviewerLabel })
+        : t('runPage.review.waitingForAnswers');
+}
+
+/**
+ * A review's result, result first (lab R1/R2): the summary, who reviewed, the findings most severe
+ * first with where they are, what changed after a question, a decision under each (Implement fix ·
+ * Ignore · Decide later) and a thread for questions (Ask about this), then one primary that
+ * implements exactly the chosen fixes, verified first.
+ *
+ * One component, every place a review result shows: the run pane mounts it as the page (`page`),
+ * the transcript as a card (`message`). A finding's decision lives in its durable `ReviewComment`,
+ * so the same decision shows wherever the review is open.
+ *
+ * A review started on several engines at once is one result on the page: the reviewers sharing the
+ * run's `groupId` are merged into one findings list, a finding they both reported (the same
+ * `ReviewComment.findingIdentity`) is one "Both" row, and the headline is derived from them all.
+ */
 export function ReviewFindingsMessageCard(props: {
     payload: ReviewFindingsCardPayload;
     sessionId: string;
     canSendMessages: boolean;
+    presentation?: ExecutionRunResultPresentation;
+    /** Page only: what closes the result's body (the Run's steps disclosure). */
+    after?: React.ReactNode;
+    /** The server scope: used to open the result in its run pane, and to reach its reviewers. */
+    serverId?: string | null;
+    /** Page only: the review's group (`display.groupId`) when several reviewers ran it. */
+    groupId?: string | null;
 }) {
+    const styles = stylesheet;
+    const { theme } = useUnistyles();
+    const presentation = props.presentation ?? 'message';
+    const isPage = presentation === 'page';
+    const sessionId = props.sessionId;
+    const serverId = props.serverId ?? null;
+    const scope = useReviewAccountScope(sessionId, serverId);
+    const canAct = props.canSendMessages === true;
+    const canActRef = React.useRef(canAct);
+    React.useLayoutEffect(() => {
+        canActRef.current = canAct;
+    }, [canAct]);
+
     const normalized = React.useMemo(() => normalizePayload(props.payload), [props.payload]);
-    const { messages: sessionMessages } = useSessionMessages(props.sessionId);
-    const effectiveReviewFindings = React.useMemo(() => {
-        return resolveEffectiveReviewFindings({
-            runRef: normalized.runRef,
-            initialFindings: normalized.findings ?? [],
+    const runId = normalized.runRef.runId;
+    const siblings = useReviewGroupSiblings({ sessionId, scope, groupId: isPage ? props.groupId ?? null : null, selfRunId: runId });
+    const resultMembers = React.useMemo(() => [
+        normalized,
+        ...siblings.flatMap((sibling) => (sibling.payload ? [normalizePayload(sibling.payload)] : [])),
+    ], [normalized, siblings]);
+    const waitingSiblings = React.useMemo(() => siblings.filter((sibling) => sibling.payload === null), [siblings]);
+    const memberRunIds = React.useMemo(() => resultMembers.map((member) => member.runRef.runId), [resultMembers]);
+    const commentIdsByRunId = React.useMemo(() => Object.fromEntries(resultMembers.map((member) => [
+        member.runRef.runId, member.findings.flatMap((finding) => finding.comment ? [finding.comment.id] : []),
+    ])), [resultMembers]);
+    const { messages: sessionMessages } = useSessionMessages(sessionId);
+    const hasFindings = resultMembers.some((member) => member.findings.length > 0);
+
+    // Read-only viewers need the same canonical finding identity for the merged result.
+    const commentSnapshots = useReviewRunsComments({ scope, sessionId, runIds: memberRunIds, commentIdsByRunId, enabled: hasFindings, refresh: isPage });
+    const allComments = React.useMemo(() => commentSnapshots.flatMap((snapshot) => snapshot.comments), [commentSnapshots]);
+    const allPending = React.useMemo(() => Object.assign({}, ...commentSnapshots.map((snapshot) => snapshot.pending)) as Readonly<Record<string, ReviewTriageStatus>>, [commentSnapshots]);
+    const members = React.useMemo<readonly CardMember[]>(() => resultMembers.map((member) => {
+        const effective = resolveEffectiveReviewFindings({
+            runRef: member.runRef,
+            initialFindings: member.findings,
             messages: sessionMessages,
         });
-    }, [normalized.findings, normalized.runRef, sessionMessages]);
-    const findings = effectiveReviewFindings.findings;
-    const [expandedFindingId, setExpandedFindingId] = React.useState<string | null>(null);
-    const [draftStatusByFindingId, setDraftStatusByFindingId] = React.useState<Record<string, ReviewTriageStatus>>({});
-    const [draftCommentByFindingId, setDraftCommentByFindingId] = React.useState<Record<string, string>>({});
-    const [composerFindingIds, setComposerFindingIds] = React.useState<readonly string[]>([]);
-    const [composerReplyToQuestionId, setComposerReplyToQuestionId] = React.useState<string | null>(null);
-    const [followUpMessage, setFollowUpMessage] = React.useState('');
-    const [appliedTriageOverlayKey, setAppliedTriageOverlayKey] = React.useState(() => serializeReviewTriageOverlayState(normalized.triage));
-    const [saveError, setSaveError] = React.useState<string | null>(null);
-    const [isSaving, setIsSaving] = React.useState(false);
-    const [applyError, setApplyError] = React.useState<string | null>(null);
+        const commentByFindingId = new Map<string, ReviewCommentV1>();
+        for (const finding of effective.findings) {
+            const comment = findCommentForFinding(allComments, finding, member.runRef.runId);
+            if (comment) commentByFindingId.set(finding.id, comment);
+        }
+        return {
+            runId: member.runRef.runId,
+            backendId: member.runRef.backendId,
+            reviewerLabel: reviewerLabelOf(member.runRef),
+            findings: effective.findings,
+            commentByFindingId,
+            originalByFindingId: effective.originalByFindingId,
+            threadsByFindingId: effective.threadsByFindingId,
+            threadRefsByFindingId: effective.threadRefsByFindingId,
+            runRef: member.runRef,
+            normalized: member,
+            followUp: resolveReviewFollowUpAvailability(member.runRef),
+            pending: allPending,
+        };
+    }), [allComments, allPending, resultMembers, sessionMessages]);
+    const reviewerCount = members.length + waitingSiblings.length;
+    const multiReviewer = reviewerCount > 1;
+    const memberByRunId = React.useMemo(() => new Map(members.map((member) => [member.runId, member] as const)), [members]);
+    const pendingOf = React.useCallback(
+        (memberRunId: string) => memberByRunId.get(memberRunId)?.pending ?? EMPTY_PENDING,
+        [memberByRunId],
+    );
+    const rows = React.useMemo(() => sortReviewFindingRows(mergeReviewFindings(members)), [members]);
+    const rowById = React.useMemo(() => new Map(rows.map((row) => [row.rowId, row] as const)), [rows]);
+    const rowFindings = React.useMemo(() => rows.map((row) => row.finding), [rows]);
+    const headline = React.useMemo(() => formatReviewFindingsHeadline(rowFindings), [rowFindings]);
+    const highCount = React.useMemo(() => rowFindings.filter((finding) => isHighReviewSeverity(finding.severity)).length, [rowFindings]);
+    const commentsStatus = commentSnapshots[0]?.status ?? 'idle';
+    const decisionsFailed = commentSnapshots.some((snapshot) => snapshot.status === 'failed');
+    const acceptedRows = React.useMemo(
+        () => rows.filter((row) => rowDecision(row, pendingOf) === 'accept'),
+        [pendingOf, rows],
+    );
+    const followUp = React.useMemo(() => followUpOf(members), [members]);
+
+    const [showAllFindings, setShowAllFindings] = React.useState(false);
+    const [openThreadRowId, setOpenThreadRowId] = React.useState<string | null>(null);
+    const [pendingQuestionByRowId, setPendingQuestionByRowId] = React.useState<Readonly<Record<string, string>>>({});
+    const [replyToQuestion, setReplyToQuestion] = React.useState<Readonly<{ runId: string; question: ReviewQuestion }> | null>(null);
+    const [error, setError] = React.useState<string | null>(null);
     const [isApplying, setIsApplying] = React.useState(false);
-    const [followUpError, setFollowUpError] = React.useState<string | null>(null);
-    const [isSendingFollowUp, setIsSendingFollowUp] = React.useState(false);
-    const canSendMessagesRef = React.useRef(props.canSendMessages === true);
 
-    React.useLayoutEffect(() => {
-        canSendMessagesRef.current = props.canSendMessages === true;
-    }, [props.canSendMessages]);
-
-    React.useEffect(() => {
-        const next: Record<string, ReviewTriageStatus> = {};
-        const nextComments: Record<string, string> = {};
-        const triageFindings = normalized.triage?.findings ?? [];
-        for (const triageFinding of triageFindings) {
-            if (typeof triageFinding.id === 'string' && typeof triageFinding.status === 'string') {
-                next[triageFinding.id] = triageFinding.status as ReviewTriageStatus;
-                if (typeof (triageFinding as any).comment === 'string' && String((triageFinding as any).comment).trim().length > 0) {
-                    nextComments[triageFinding.id] = String((triageFinding as any).comment).trim();
-                }
-            }
+    const threadEntriesByRowId = React.useMemo(() => {
+        const entriesByRowId = new Map<string, readonly ReviewFindingThreadEntryView[]>();
+        for (const row of rows) {
+            const entries = row.sources.flatMap((source) => (source.member.threadsByFindingId[source.finding.id] ?? [])
+                .map((entry) => ({ ...entry, reviewerLabel: source.member.reviewerLabel })));
+            if (entries.length > 0) entriesByRowId.set(row.rowId, entries.sort((left, right) => left.generatedAtMs - right.generatedAtMs));
         }
-        setDraftStatusByFindingId(next);
-        setDraftCommentByFindingId(nextComments);
-    }, [normalized.triage]);
+        return entriesByRowId;
+    }, [rows]);
 
+    // A question's pending echo gives way once its answer has arrived in the thread.
+    const threadCountByRowIdRef = React.useRef<Readonly<Record<string, number>>>({});
     React.useEffect(() => {
-        setAppliedTriageOverlayKey(serializeReviewTriageOverlayState(normalized.triage));
-    }, [normalized.triage]);
-
-    const triageOverlay = React.useMemo(() => {
-        const items = Object.entries(draftStatusByFindingId).map(([id, status]) => {
-            const comment = typeof draftCommentByFindingId[id] === 'string' ? draftCommentByFindingId[id].trim() : '';
-            return {
-                id,
-                status,
-                ...(comment ? { comment } : {}),
-            };
+        const previous = threadCountByRowIdRef.current;
+        const answered = Object.keys(pendingQuestionByRowId).filter(
+            (rowId) => (threadEntriesByRowId.get(rowId)?.length ?? 0) > (previous[rowId] ?? 0),
+        );
+        threadCountByRowIdRef.current = Object.fromEntries(
+            Array.from(threadEntriesByRowId.entries()).map(([rowId, entries]) => [rowId, entries.length]),
+        );
+        if (answered.length === 0) return;
+        setPendingQuestionByRowId((current) => {
+            const next = { ...current };
+            for (const rowId of answered) delete next[rowId];
+            return next;
         });
-        return { findings: items };
-    }, [draftCommentByFindingId, draftStatusByFindingId]);
+    }, [pendingQuestionByRowId, threadEntriesByRowId]);
 
-    const triageOverlayKey = React.useMemo(() => serializeReviewTriageOverlayState(triageOverlay), [triageOverlay]);
-    const hasDraft = triageOverlay.findings.length > 0;
-    const hasUnsavedTriageChanges = hasDraft && triageOverlayKey !== appliedTriageOverlayKey;
-    const triageApplied = hasDraft && !hasUnsavedTriageChanges;
-
-    const acceptedFindingIds = React.useMemo(() => {
-        return Object.entries(draftStatusByFindingId)
-            .filter(([, status]) => status === 'accept')
-            .map(([id]) => id);
-    }, [draftStatusByFindingId]);
-    const supportsReviewFollowUp = React.useMemo(() => {
-        const runRefRecord = normalized.runRef as unknown as Record<string, unknown>;
-        const retentionPolicyRaw = runRefRecord.retentionPolicy;
-        const retentionPolicy = typeof retentionPolicyRaw === 'string' ? retentionPolicyRaw.trim() : '';
-        if (retentionPolicy === 'ephemeral') return false;
-        if (retentionPolicy === 'resumable') return true;
-
-        // Fail closed for legacy structured messages that do not carry retention metadata yet.
-        // Runtime enforcement is authoritative.
-        return false;
-    }, [normalized.runRef]);
-
-    const statusLabel = React.useCallback((status: ReviewTriageStatus | 'untriaged') => {
-        switch (status) {
-            case 'accept':
-                return t('session.reviewFindings.status.accept');
-            case 'reject':
-                return t('session.reviewFindings.status.reject');
-            case 'defer':
-                return t('session.reviewFindings.status.defer');
-            case 'needs_refinement':
-                return t('session.reviewFindings.status.needsRefinement');
-            case 'untriaged':
-            default:
-                return t('session.reviewFindings.status.untriaged');
+    const decide = React.useCallback((rowId: string, decision: ReviewFindingDecision) => {
+        if (!canActRef.current || !scope) return;
+        const row = rowById.get(rowId);
+        if (!row) return;
+        setError(null);
+        // A merged row's decision is recorded on every reviewer's comment for it.
+        const decidedIds = new Set<string>();
+        for (const source of row.sources) {
+            if (!source.comment || sourceDecision(source, pendingOf(source.member.runId)) === decision) continue;
+            if (decidedIds.has(source.comment.id)) continue;
+            decidedIds.add(source.comment.id);
+            fireAndForget(
+                decideReviewRunFinding({ scope, sessionId, runId: source.member.runId, commentId: source.comment.id, decision }).then((saved) => {
+                    if (!saved) setError(t('runPage.review.couldNotSaveChoice'));
+                }),
+                { tag: 'ReviewFindingsMessageCard.decide' },
+            );
         }
-    }, []);
+    }, [pendingOf, rowById, scope, sessionId]);
 
-    const openFollowUpComposer = React.useCallback((params: Readonly<{
-        findingIds?: readonly string[];
-        replyToQuestionId?: string | null;
-        seedMessage?: string | null;
-    }>) => {
-        if (!canSendMessagesRef.current) return;
-        setComposerFindingIds(params.findingIds ?? []);
-        setComposerReplyToQuestionId(params.replyToQuestionId ?? null);
-        setFollowUpMessage((current) => current.length > 0 ? current : (params.seedMessage ?? ''));
-        setFollowUpError(null);
-    }, []);
-
-    const resetFollowUpComposer = React.useCallback(() => {
-        setComposerFindingIds([]);
-        setComposerReplyToQuestionId(null);
-        setFollowUpMessage('');
-    }, []);
-
-    const handleApplyTriage = React.useCallback(() => {
-        if (!canSendMessagesRef.current) return;
-        fireAndForget((async () => {
-            setSaveError(null);
-            setIsSaving(true);
-            try {
-                const res = await sessionExecutionRunAction(props.sessionId, {
-                    runId: normalized.runRef.runId,
-                    actionId: 'review.triage',
-                    input: triageOverlay,
-                });
-                if (!res.ok) {
-                    setSaveError(t('session.reviewFindings.errors.applyTriageFailed'));
-                    return;
-                }
-                setAppliedTriageOverlayKey(triageOverlayKey);
-            } catch (e) {
-                setSaveError(
-                    e instanceof Error ? e.message : t('session.reviewFindings.errors.applyTriageFailed')
-                );
-            } finally {
-                setIsSaving(false);
+    const sendFollowUp = React.useCallback(async (params: Readonly<{
+        runId: string;
+        findingIds: readonly string[];
+        messageMarkdown: string;
+        threadId?: string;
+        replyToQuestionId?: string;
+    }>): Promise<boolean> => {
+        if (!scope) return false;
+        try {
+            // The question goes to the review run that reported the finding.
+            const result = await sessionExecutionRunAction(sessionId, {
+                runId: params.runId,
+                actionId: 'review.follow_up',
+                input: {
+                    findingIds: [...params.findingIds],
+                    ...(params.threadId ? { threadId: params.threadId } : {}),
+                    ...(params.replyToQuestionId ? { replyToQuestionId: params.replyToQuestionId } : {}),
+                    messageMarkdown: params.messageMarkdown,
+                },
+            }, { serverId: scope.serverId, scope });
+            if (!result.ok) {
+                const code = ReviewFollowUpFailureCodeSchema.safeParse('errorCode' in result ? result.errorCode : undefined);
+                setError(describeReviewFollowUpFailure(code.success ? code.data : undefined));
+                return false;
             }
-        })(), { tag: 'ReviewFindingsMessageCard.applyTriage' });
-    }, [normalized.runRef.runId, props.sessionId, triageOverlay]);
+            return true;
+        } catch {
+            setError(describeReviewFollowUpFailure(undefined));
+            return false;
+        }
+    }, [sessionId, scope]);
 
-    const handleSendFollowUp = React.useCallback(() => {
-        if (!canSendMessagesRef.current) return;
-        const messageMarkdown = followUpMessage.trim();
-        if (messageMarkdown.length === 0) return;
-        fireAndForget((async () => {
-            setFollowUpError(null);
-            setIsSendingFollowUp(true);
-            try {
-                const res = await sessionExecutionRunAction(props.sessionId, {
-                    runId: normalized.runRef.runId,
-                    actionId: 'review.follow_up',
-                    input: {
-                        findingIds: [...composerFindingIds],
-                        ...(composerReplyToQuestionId ? { replyToQuestionId: composerReplyToQuestionId } : {}),
-                        messageMarkdown,
-                    },
-                });
-                if (!res.ok) {
-                    setFollowUpError(t('session.reviewFindings.errors.followUpFailed'));
-                    return;
-                }
-                resetFollowUpComposer();
-            } catch (e) {
-                setFollowUpError(
-                    e instanceof Error ? e.message : t('session.reviewFindings.errors.followUpFailed')
-                );
-            } finally {
-                setIsSendingFollowUp(false);
-            }
-        })(), { tag: 'ReviewFindingsMessageCard.sendFollowUp' });
-    }, [
-        composerFindingIds,
-        composerReplyToQuestionId,
-        followUpMessage,
-        normalized.runRef.runId,
-        props.sessionId,
-        resetFollowUpComposer,
-    ]);
+    /** Sends to each target; accepted when at least one reviewer took it (the others say why not). */
+    const sendToEach = React.useCallback(async (targets: readonly Parameters<typeof sendFollowUp>[0][]) => {
+        if (!canActRef.current || targets.length === 0) return false;
+        setError(null);
+        const sent = await Promise.all(targets.map((target) => sendFollowUp(target)));
+        return sent.some(Boolean);
+    }, [sendFollowUp]);
 
-    const handlePublishAcceptedFindings = React.useCallback(() => {
-        if (!canSendMessagesRef.current) return;
+    const askAboutRow = React.useCallback(async (rowId: string, messageMarkdown: string) => {
+        const row = rowById.get(rowId);
+        if (!row) return false;
+        // One thread per finding and reviewer: a merged row asks each reviewer in its own thread.
+        const sent = await sendToEach(row.sources.map((source) => {
+            const threadId = source.member.threadsByFindingId[source.finding.id]?.at(-1)?.threadId;
+            return { runId: source.member.runId, findingIds: [source.finding.id], messageMarkdown, ...(threadId ? { threadId } : {}) };
+        }));
+        if (sent) setPendingQuestionByRowId((current) => ({ ...current, [rowId]: messageMarkdown }));
+        return sent;
+    }, [rowById, sendToEach]);
+
+    const askReviewers = React.useCallback(async (messageMarkdown: string) => {
+        const targets = replyToQuestion
+            ? [{
+                runId: replyToQuestion.runId,
+                findingIds: replyToQuestion.question.findingIds ?? [],
+                messageMarkdown,
+                replyToQuestionId: replyToQuestion.question.id,
+            }]
+            : members.map((member) => ({ runId: member.runId, findingIds: [], messageMarkdown }));
+        const sent = await sendToEach(targets);
+        if (sent) setReplyToQuestion(null);
+        return sent;
+    }, [members, replyToQuestion, sendToEach]);
+
+    const toggleThread = React.useCallback((rowId: string) => {
+        setOpenThreadRowId((current) => (current === rowId ? null : rowId));
+    }, []);
+
+    const implementFixes = React.useCallback(() => {
+        if (!canActRef.current || !scope || acceptedRows.length === 0) return;
         fireAndForget((async () => {
-            if (acceptedFindingIds.length === 0) return;
-            setApplyError(null);
+            setError(null);
             setIsApplying(true);
             try {
-                const publishedFindings = buildPublishedFindings(findings, acceptedFindingIds);
-                const threadRefs = Array.from(new Set(
-                    publishedFindings.flatMap((finding) => effectiveReviewFindings.threadRefsByFindingId[finding.id] ?? []),
-                ));
-                const payload = {
-                    sourceRunRef: normalized.runRef,
-                    findingIds: acceptedFindingIds,
-                    publishedFindings,
-                    ...(threadRefs.length > 0 ? { threadRefs } : {}),
-                };
-                const text = [
-                    'Please implement the accepted review findings below.',
-                    '',
-                    ...publishedFindings.map((finding) => `- [${finding.severity}/${finding.category}] ${finding.title}: ${finding.summary}`),
-                ].join('\n');
-
+                // Read the comments' current revisions and decisions: the verify step writes each
+                // verdict under CAS, and a choice changed meanwhile (here or on another surface) wins.
+                await Promise.all(memberRunIds.map((memberRunId) => loadReviewRunComments({ scope, sessionId, runId: memberRunId, commentIds: commentIdsByRunId[memberRunId] })));
+                const fresh = (memberRunId: string) => readReviewRunComments({ scope, sessionId, runId: memberRunId });
+                const freshComments = memberRunIds.flatMap((memberRunId) => fresh(memberRunId).comments);
+                const freshRows = rows.map((row) => ({
+                    ...row,
+                    sources: row.sources.map((source) => ({
+                        ...source,
+                        comment: findCommentForFinding(freshComments, source.finding, source.member.runId),
+                    })),
+                }));
+                const accepted = freshRows.filter((row) => rowDecision(row, (memberRunId) => fresh(memberRunId).pending) === 'accept');
+                if (accepted.length === 0) return;
+                // Each reviewer's finding goes with its own comment, so every comment gets its verdict.
+                const includedCommentIds = new Set<string>();
+                const findings = accepted.flatMap((row) => row.sources.flatMap((source) => {
+                    const comment = source.comment;
+                    if (comment && includedCommentIds.has(comment.id)) return [];
+                    if (comment) includedCommentIds.add(comment.id);
+                    const member = memberByRunId.get(source.member.runId);
+                    return [{
+                        ...source.finding,
+                        ...(comment ? { comment, flags: comment.flags, engineId: comment.engineId } : {}),
+                        ...(typeof source.finding.attributionConfidence === 'string' ? { attributionConfidence: source.finding.attributionConfidence } : {}),
+                        threadRefs: member?.threadRefsByFindingId[source.finding.id] ?? [],
+                    }];
+                }));
+                const text = `${REVIEW_FINDINGS_VERIFY_AND_FIX_INSTRUCTIONS_V1}\n\n${renderReviewFindingsForVerifyV1(findings)}`;
                 await sync.submitMessage(
-                    props.sessionId,
+                    sessionId,
                     text,
                     t('session.reviewFindings.actions.applyAcceptedFindings'),
-                    {
-                        happier: {
-                            kind: 'review_publish_request.v1',
-                            payload,
-                        },
-                    },
-                    {
-                        callerSurface: 'review_findings_apply',
-                    },
+                    undefined,
+                    { callerSurface: 'review_findings_apply' },
                 );
             } catch (e) {
-                setApplyError(
-                    e instanceof Error ? e.message : t('session.reviewFindings.errors.applyAcceptedFailed')
-                );
+                setError(e instanceof Error ? e.message : t('session.reviewFindings.errors.applyAcceptedFailed'));
             } finally {
                 setIsApplying(false);
             }
-        })(), { tag: 'ReviewFindingsMessageCard.publishAcceptedFindings' });
-    }, [acceptedFindingIds, effectiveReviewFindings.threadRefsByFindingId, findings, normalized.runRef, props.sessionId]);
+        })(), { tag: 'ReviewFindingsMessageCard.implementFixes' });
+    }, [acceptedRows.length, commentIdsByRunId, memberByRunId, memberRunIds, rows, scope, sessionId]);
+
+    const visibleRows = !isPage && !showAllFindings ? rows.slice(0, CARD_VISIBLE_FINDINGS) : rows;
+    const hiddenCount = rows.length - visibleRows.length;
+    const openQuestions = members.flatMap((member) => member.normalized.questions
+        .filter((question) => question.status !== 'superseded')
+        .map((question) => ({ member, question })));
+    const dockMembers = replyToQuestion
+        ? members.filter((member) => member.runId === replyToQuestion.runId)
+        : members;
+    const dockRecipient = React.useMemo(() => recipientOf(dockMembers), [dockMembers]);
+    const askContextByRowId = React.useMemo(() => {
+        const contexts = new Map<string, ReviewFindingAskContext>();
+        for (const row of rows) {
+            const rowMembers = row.sources.map((source) => memberByRunId.get(source.member.runId)!).filter(Boolean);
+            contexts.set(row.rowId, {
+                sessionId,
+                serverId,
+                draftRunId: runId,
+                recipient: recipientOf(rowMembers),
+                waitingLabel: waitingLabelOf(rowMembers),
+            });
+        }
+        return contexts;
+    }, [memberByRunId, rows, runId, serverId, sessionId]);
+    const attributionByRowId = React.useMemo(() => {
+        const attributions = new Map<string, Readonly<{ label: string; backendIds: readonly string[] }>>();
+        if (!multiReviewer) return attributions;
+        for (const row of rows) {
+            attributions.set(row.rowId, {
+                label: formatReviewerSet(row.sources.map((source) => source.member.reviewerLabel)),
+                backendIds: row.sources.map((source) => source.member.backendId),
+            });
+        }
+        return attributions;
+    }, [multiReviewer, rows]);
+
+    const implementButton = canAct && rows.length > 0 ? (
+        <RoundButton
+            testID="review-findings-publish-accepted"
+            size="small"
+            display={isPage ? 'default' : 'secondary'}
+            title={t('runPage.review.implementFixes', { count: acceptedRows.length })}
+            disabled={acceptedRows.length === 0 || isApplying}
+            loading={isApplying}
+            onPress={implementFixes}
+        />
+    ) : null;
+
+    const dock = isPage && canAct && openThreadRowId === null ? (
+        <View style={styles.dock}>
+            {followUp.available ? (
+                <>
+                    <ReviewFollowUpComposer
+                        testID="review-findings-follow-up"
+                        sessionId={sessionId}
+                        serverId={serverId}
+                        draftRunId={runId}
+                        placeholder={dockMembers.length > 1
+                            ? t('runPage.review.askReviewersPlaceholder')
+                            : t('runPage.review.askReviewerPlaceholder')}
+                        recipient={dockRecipient}
+                        onSend={askReviewers}
+                    />
+                    <Text style={styles.caption}>
+                        {dockMembers.length > 1
+                            ? t('runPage.review.followUpsGoToAll', { count: dockMembers.length })
+                            : t('runPage.review.followUpsGoTo', { reviewer: dockMembers[0]!.reviewerLabel })}
+                    </Text>
+                </>
+            ) : (
+                <Text testID="review-findings-follow-up-unavailable" style={styles.caption}>{followUp.reason}</Text>
+            )}
+        </View>
+    ) : null;
+
+    const groupHeadline = multiReviewer
+        ? [t('runPage.review.reviewerCount', { count: reviewerCount }), headline].join(' · ')
+        : null;
 
     return (
-        <View style={styles.container}>
-            <Text style={styles.headerText}>{t('session.reviewFindings.title', { count: findings.length })}</Text>
-            <Text style={styles.summaryText}>{normalized.summary}</Text>
-            <MarkdownView markdown={normalized.overviewMarkdown} textStyle={styles.markdownText} agentTexMath />
+        <ExecutionRunResultLayout
+            presentation={presentation}
+            testID="review-findings"
+            after={props.after}
+            footNote={isPage
+                ? (canAct && rows.length > 0
+                    ? (acceptedRows.length > 0
+                        ? t('runPage.review.fixesToImplement', { count: acceptedRows.length })
+                        : t('runPage.review.noFixesSelected'))
+                    : null)
+                : (rows.length > 0 ? headline : null)}
+            footDetail={isPage && canAct && acceptedRows.length > 0 ? t('runPage.review.verifiedFirst') : null}
+            footActions={isPage ? implementButton : (
+                rows.length > 0 ? (
+                    <>
+                        <ReviewOpenResultButton sessionId={sessionId} runId={runId} serverId={serverId} />
+                        {implementButton}
+                    </>
+                ) : null
+            )}
+            dock={dock}
+        >
+            {groupHeadline
+                ? <Text testID="review-findings-headline" style={styles.lead}>{groupHeadline}</Text>
+                : isPage
+                    ? <MarkdownView markdown={normalized.overviewMarkdown} textStyle={styles.lead} agentTexMath />
+                    : <Text selectable style={styles.lead}>{normalized.summary}</Text>}
 
-            {normalized.questions.length > 0 ? (
+            {isPage ? (
                 <View style={styles.section}>
-                    <Text style={styles.sectionTitle}>{t('session.reviewFindings.questionsTitle')}</Text>
-                    {normalized.questions.map((question) => (
-                        <View key={question.id} style={styles.questionRow}>
-                            <Text style={styles.questionText}>{question.text}</Text>
-                            {props.canSendMessages === true && supportsReviewFollowUp ? (
-                                <Pressable
-                                    style={styles.secondaryButton}
-                                    onPress={() =>
-                                        openFollowUpComposer({
-                                            findingIds: question.findingIds ?? [],
-                                            replyToQuestionId: question.id,
-                                        })
-                                    }
-                                >
-                                    <Text style={styles.secondaryButtonText}>{t('session.reviewFindings.actions.answerQuestion')}</Text>
-                                </Pressable>
-                            ) : null}
-                        </View>
-                    ))}
-                </View>
-            ) : null}
-
-            {normalized.assumptions.length > 0 ? (
-                <View style={styles.section}>
-                    <Text style={styles.sectionTitle}>{t('session.reviewFindings.assumptionsTitle')}</Text>
-                    {normalized.assumptions.map((assumption) => (
-                        <Text key={assumption.id} style={styles.assumptionText}>
-                            • {assumption.text}
-                        </Text>
-                    ))}
-                </View>
-            ) : null}
-
-            {findings.map((finding) => {
-                const isExpanded = expandedFindingId === finding.id;
-                const location = formatFindingLocation(finding);
-                const triageStatus = (draftStatusByFindingId[finding.id] ?? 'untriaged') as ReviewTriageStatus | 'untriaged';
-                return (
-                    <View key={finding.id} style={styles.findingRow}>
-                        <Pressable
-                            testID={`review-findings-header:${finding.id}`}
-                            accessibilityRole="button"
-                            onPress={() => setExpandedFindingId((prev) => (prev === finding.id ? null : finding.id))}
-                            style={styles.findingHeader}
-                        >
-                            <Text style={styles.findingTitleText}>
-                                {t('session.reviewFindings.findingTitle', {
-                                    status: statusLabel(triageStatus),
-                                    severity: String(finding.severity ?? ''),
-                                    category: String(finding.category ?? ''),
-                                    title: String(finding.title ?? ''),
-                                })}
-                            </Text>
-                            {location ? (
-                                <Text style={styles.findingLocationText} numberOfLines={1}>
-                                    {location}
-                                </Text>
-                            ) : null}
-                        </Pressable>
-                        {isExpanded ? (
-                            <View style={styles.findingBody}>
-                                <Text style={styles.findingSummaryText}>{finding.summary}</Text>
-                                {finding.whyItMatters ? (
-                                    <Text style={styles.findingDetailText}>{finding.whyItMatters}</Text>
-                                ) : null}
-                                {finding.evidence ? (
-                                    <Text style={styles.findingDetailMutedText}>{finding.evidence}</Text>
-                                ) : null}
-                                {finding.suggestion ? (
-                                    <Text style={styles.findingSuggestionText}>{finding.suggestion}</Text>
-                                ) : null}
-                                {props.canSendMessages === true ? (
-                                    <View style={styles.triageRow}>
-                                        {REVIEW_FINDING_ACTION_STATUSES.map((status) => {
-                                            const selected = draftStatusByFindingId[finding.id] === status;
-                                            return (
-                                                <Pressable
-                                                    key={status}
-                                                    style={[styles.triageChip, selected && styles.triageChipSelected]}
-                                                    onPress={() => {
-                                                        if (!canSendMessagesRef.current) return;
-                                                        setDraftStatusByFindingId((prev) => ({ ...prev, [finding.id]: status }));
-                                                    }}
-                                                >
-                                                    <Text style={[styles.triageChipText, selected && styles.triageChipTextSelected]}>
-                                                        {statusLabel(status)}
-                                                    </Text>
-                                                </Pressable>
-                                            );
-                                        })}
-                                    </View>
-                                ) : null}
-                                {props.canSendMessages === true && draftStatusByFindingId[finding.id] === 'needs_refinement' ? (
-                                    <TextInput
-                                        value={draftCommentByFindingId[finding.id] ?? ''}
-                                        onChangeText={(text) => {
-                                            if (!canSendMessagesRef.current) return;
-                                            setDraftCommentByFindingId((prev) => ({ ...prev, [finding.id]: String(text ?? '') }));
-                                        }}
-                                        placeholder={t('session.reviewFindings.refinementPlaceholder')}
-                                        multiline
-                                        style={styles.refinementInput as any}
-                                    />
-                                ) : null}
-                                {props.canSendMessages === true && supportsReviewFollowUp ? (
-                                    <Pressable
-                                        style={styles.secondaryButton}
-                                        onPress={() => openFollowUpComposer({ findingIds: [finding.id] })}
-                                    >
-                                        <Text style={styles.secondaryButtonText}>{t('session.reviewFindings.actions.askReviewer')}</Text>
-                                    </Pressable>
-                                ) : null}
+                    <Text accessibilityRole="header" style={styles.sectionTitle}>{t('runPage.review.reviewers')}</Text>
+                    <View testID="review-reviewers" style={styles.sheet}>
+                        {members.map((member, index) => (
+                            <View key={member.runId} testID={`review-reviewer:${member.runId}`} style={[styles.reviewer, index > 0 ? styles.reviewerDivided : null]}>
+                                <View style={styles.reviewerHead}>
+                                    {hasAgentIconMark(member.backendId, theme) ? <AgentIcon agentId={member.backendId} size={ICON_SIZE.sm} /> : null}
+                                    <Text style={styles.reviewerName}>{member.reviewerLabel}</Text>
+                                    <Text style={styles.reviewerMeta}>{formatReviewFindingsHeadline(member.findings)}</Text>
+                                </View>
+                                {multiReviewer ? <Text selectable style={styles.quiet}>{member.normalized.summary}</Text> : null}
                             </View>
+                        ))}
+                        {waitingSiblings.map((sibling) => {
+                            const agentId = sibling.backendTarget.kind === 'builtInAgent' ? sibling.backendTarget.agentId : sibling.backendTarget.backendId;
+                            const meta = UNFINISHED_RUN_STATUSES.has(sibling.status)
+                                ? t('runPage.review.reviewerDidNotFinish')
+                                : sibling.status === 'running' ? t('runPage.review.stillReviewing') : null;
+                            return (
+                                <View key={sibling.runId} testID={`review-reviewer:${sibling.runId}`} style={[styles.reviewer, styles.reviewerDivided]}>
+                                    <View style={styles.reviewerHead}>
+                                        {hasAgentIconMark(agentId, theme) ? <AgentIcon agentId={agentId} size={ICON_SIZE.sm} /> : null}
+                                        <Text style={styles.reviewerName}>{resolveExecutionRunBackendLabel(sibling.backendTarget) ?? agentId}</Text>
+                                        {meta ? <Text style={styles.reviewerMeta}>{meta}</Text> : null}
+                                    </View>
+                                </View>
+                            );
+                        })}
+                    </View>
+                </View>
+            ) : null}
+
+            {rows.length > 0 ? (
+                <View style={styles.section}>
+                    {isPage ? (
+                        <View style={styles.sectionTitleRow}>
+                            <Text accessibilityRole="header" style={styles.sectionTitle}>{t('runPage.review.findings')}</Text>
+                            <Text style={styles.sectionCount}>
+                                {highCount > 0
+                                    ? `${t('runPage.review.findingsCount', { count: rows.length })} · ${t('runPage.review.highCount', { count: highCount })}`
+                                    : t('runPage.review.findingsCount', { count: rows.length })}
+                            </Text>
+                        </View>
+                    ) : null}
+                    <View style={isPage ? styles.sheet : null}>
+                        {visibleRows.map((row, index) => {
+                            const decidable = row.sources.some((source) => source.comment !== null);
+                            const rowMembers = row.sources.map((source) => memberByRunId.get(source.member.runId)!);
+                            return (
+                                <ReviewFindingRow
+                                    key={row.rowId}
+                                    rowId={row.rowId}
+                                    finding={row.finding}
+                                    attribution={attributionByRowId.get(row.rowId) ?? null}
+                                    original={row.sources.find((source) => source.finding === row.finding)?.member.originalByFindingId[row.finding.id] ?? null}
+                                    density={isPage ? 'page' : 'card'}
+                                    divided={index > 0}
+                                    decision={canAct ? rowDecision(row, pendingOf) : null}
+                                    decisionDisabled={!decidable}
+                                    decisionNote={commentsStatus === 'loaded' && !decidable ? t('runPage.review.notSaved') : null}
+                                    onDecide={decide}
+                                    followUp={canAct ? followUpOf(rowMembers) : null}
+                                    threadEntries={threadEntriesByRowId.get(row.rowId) ?? EMPTY_THREAD}
+                                    pendingQuestion={pendingQuestionByRowId[row.rowId] ?? null}
+                                    threadOpen={openThreadRowId === row.rowId}
+                                    onToggleThread={toggleThread}
+                                    askContext={askContextByRowId.get(row.rowId)!}
+                                    onAsk={askAboutRow}
+                                />
+                            );
+                        })}
+                        {hiddenCount > 0 ? (
+                            <Pressable
+                                testID="review-findings-show-more"
+                                accessibilityRole="button"
+                                onPress={() => setShowAllFindings(true)}
+                                style={styles.more}
+                            >
+                                <Text style={styles.moreText}>{t('runPage.review.moreFindings', { count: hiddenCount })}</Text>
+                            </Pressable>
                         ) : null}
                     </View>
-                );
-            })}
-
-            {props.canSendMessages === true && supportsReviewFollowUp ? (
-                <View style={styles.section}>
-                    <Pressable
-                        style={styles.secondaryButton}
-                        onPress={() => openFollowUpComposer({})}
-                    >
-                        <Text style={styles.secondaryButtonText}>{t('session.reviewFindings.actions.askReviewer')}</Text>
-                    </Pressable>
-                    {(composerFindingIds.length > 0 || composerReplyToQuestionId || followUpMessage.length > 0) ? (
-                        <View style={styles.followUpComposer}>
-                            <TextInput
-                                value={followUpMessage}
-                                onChangeText={(text) => {
-                                    if (!canSendMessagesRef.current) return;
-                                    setFollowUpMessage(String(text ?? ''));
-                                }}
-                                placeholder={t('session.reviewFindings.refinementPlaceholder')}
-                                multiline
-                                style={styles.refinementInput as any}
-                            />
+                    {canAct && decisionsFailed ? (
+                        <View style={styles.notice}>
+                            <Text style={styles.caption}>{t('runPage.review.decisionsUnavailable')}</Text>
                             <Pressable
-                                onPress={handleSendFollowUp}
-                                style={[styles.applyButton, (followUpMessage.trim().length === 0 || isSendingFollowUp) && styles.applyButtonDisabled]}
-                                disabled={followUpMessage.trim().length === 0 || isSendingFollowUp}
+                                testID="review-findings-reload-decisions"
+                                accessibilityRole="button"
+                                onPress={() => {
+                                    for (const memberRunId of memberRunIds) {
+                                        if (!scope) continue;
+                                        fireAndForget(loadReviewRunComments({ scope, sessionId, runId: memberRunId }).catch(() => undefined), { tag: 'ReviewFindingsMessageCard.reload' });
+                                    }
+                                }}
                             >
-                                <Text style={styles.applyButtonText}>
-                                    {isSendingFollowUp
-                                        ? t('session.reviewFindings.actions.sending')
-                                        : t('session.reviewFindings.actions.sendFollowUp')}
-                                </Text>
+                                <Text style={styles.inlineLinkText}>{t('common.retry')}</Text>
                             </Pressable>
                         </View>
+                    ) : null}
+                    {canAct && !followUp.available && !isPage ? (
+                        <Text testID="review-findings-follow-up-unavailable" style={styles.caption}>{followUp.reason}</Text>
                     ) : null}
                 </View>
             ) : null}
 
-            {saveError ? <Text style={styles.errorText}>{saveError}</Text> : null}
-            {followUpError ? <Text style={styles.errorText}>{followUpError}</Text> : null}
-            {applyError ? <Text style={styles.errorText}>{applyError}</Text> : null}
-
-            {props.canSendMessages === true ? (
-                <>
-                    <Pressable
-                        testID="review-findings-apply-triage"
-                        accessibilityRole="button"
-                        onPress={handleApplyTriage}
-                        style={[styles.applyButton, (!hasUnsavedTriageChanges || isSaving) && styles.applyButtonDisabled]}
-                        disabled={!hasUnsavedTriageChanges || isSaving}
-                    >
-                        <Text style={styles.applyButtonText}>
-                            {isSaving
-                                ? t('session.reviewFindings.actions.applying')
-                                : triageApplied
-                                    ? t('common.applied')
-                                    : t('session.reviewFindings.actions.applyTriage')}
+            {isPage ? openQuestions.map(({ member, question }) => (
+                <View key={`${member.runId}:${question.id}`} testID={`review-question:${question.id}`} style={styles.question}>
+                    <Icon name="question" size={ICON_SIZE.sm} color={theme.colors.text.secondary} />
+                    <View style={styles.questionBody}>
+                        <Text style={styles.questionEyebrow}>
+                            {multiReviewer ? `${member.reviewerLabel} · ${t('runPage.review.reviewerAsks')}` : t('runPage.review.reviewerAsks')}
                         </Text>
-                    </Pressable>
-
-                    <Pressable
-                        testID="review-findings-publish-accepted"
-                        accessibilityRole="button"
-                        onPress={handlePublishAcceptedFindings}
-                        style={[styles.applyButton, (acceptedFindingIds.length === 0 || isApplying) && styles.applyButtonDisabled]}
-                        disabled={acceptedFindingIds.length === 0 || isApplying}
-                    >
-                        <Text style={styles.applyButtonText}>
-                            {isApplying ? t('session.reviewFindings.actions.sending') : t('session.reviewFindings.actions.applyAcceptedFindings')}
+                        <Text selectable style={styles.questionText}>
+                            {question.text}
+                            {canAct && member.followUp.available && question.status === 'open' ? (
+                                <>
+                                    {'  '}
+                                    <Text
+                                        testID={`review-question-answer:${question.id}`}
+                                        accessibilityRole="button"
+                                        onPress={() => setReplyToQuestion({ runId: member.runId, question })}
+                                        style={styles.inlineLinkText}
+                                    >
+                                        {t('runPage.review.answer')}
+                                    </Text>
+                                </>
+                            ) : null}
                         </Text>
-                    </Pressable>
-                </>
-            ) : null}
-        </View>
+                    </View>
+                </View>
+            )) : null}
+
+            {isPage ? members.filter((member) => member.normalized.assumptions.length > 0).map((member) => (
+                <View key={`assumptions:${member.runId}`} style={styles.section}>
+                    <Text accessibilityRole="header" style={styles.sectionTitle}>
+                        {multiReviewer
+                            ? `${t('session.reviewFindings.assumptionsTitle')} · ${member.reviewerLabel}`
+                            : t('session.reviewFindings.assumptionsTitle')}
+                    </Text>
+                    {member.normalized.assumptions.map((assumption) => (
+                        <Text selectable key={assumption.id} style={styles.quiet}>{assumption.text}</Text>
+                    ))}
+                </View>
+            )) : null}
+
+            {error ? <Text style={styles.errorText}>{error}</Text> : null}
+        </ExecutionRunResultLayout>
     );
 }
 
-const styles = StyleSheet.create((theme) => ({
-    container: {
-        padding: 12,
-        borderRadius: 10,
-        backgroundColor: theme.colors.surface.elevated,
-        borderWidth: 1,
-        borderColor: theme.colors.border.default,
-        gap: 10,
-    },
-    headerText: {
+/** The card's way into the full result: the review's run pane. */
+function ReviewOpenResultButton(props: Readonly<{ sessionId: string; runId: string; serverId: string | null }>) {
+    const source = useSessionTranscriptSource();
+    const href = buildSessionExecutionRunRouteHref({ sessionId: props.sessionId, runId: props.runId, serverId: props.serverId });
+    if (!source.navigate || !href) return null;
+    return (
+        <RoundButton
+            testID="review-findings-open-result"
+            size="small"
+            display="secondary"
+            title={t('runPage.review.openResult')}
+            onPress={() => source.navigate?.(href)}
+        />
+    );
+}
+
+const stylesheet = StyleSheet.create((theme) => ({
+    lead: {
+        ...Typography.default(),
         color: theme.colors.text.primary,
         fontSize: 15,
-        fontWeight: '600',
-    },
-    summaryText: {
-        color: theme.colors.text.secondary,
-        fontSize: 13,
-    },
-    markdownText: {
-        color: theme.colors.text.primary,
-        fontSize: 13,
+        lineHeight: 22,
     },
     section: {
+        gap: 10,
+    },
+    sectionTitleRow: {
+        flexDirection: 'row',
+        alignItems: 'baseline',
         gap: 8,
     },
     sectionTitle: {
+        ...Typography.default('semiBold'),
         color: theme.colors.text.primary,
-        fontSize: 13,
-        fontWeight: '600',
+        fontSize: 15,
     },
-    questionRow: {
+    sectionCount: {
+        ...Typography.default(),
+        color: theme.colors.text.secondary,
+        fontSize: 13,
+        fontVariant: ['tabular-nums'],
+    },
+    sheet: {
+        borderRadius: 12,
+        borderWidth: StyleSheet.hairlineWidth,
+        borderColor: theme.colors.border.default,
+        backgroundColor: theme.colors.surface.base,
+        paddingHorizontal: 14,
+    },
+    reviewer: {
+        gap: 4,
+        paddingVertical: 12,
+    },
+    reviewerDivided: {
+        borderTopWidth: StyleSheet.hairlineWidth,
+        borderTopColor: theme.colors.border.default,
+    },
+    reviewerHead: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        flexWrap: 'wrap',
         gap: 8,
+    },
+    reviewerName: {
+        ...Typography.default('semiBold'),
+        color: theme.colors.text.primary,
+        fontSize: 14,
+    },
+    reviewerMeta: {
+        ...Typography.default(),
+        color: theme.colors.text.secondary,
+        fontSize: 13,
+        fontVariant: ['tabular-nums'],
+    },
+    more: {
+        alignSelf: 'flex-start',
+        paddingVertical: 8,
+        paddingLeft: 84,
+    },
+    moreText: {
+        ...Typography.default(),
+        color: theme.colors.text.secondary,
+        fontSize: 13,
+    },
+    notice: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        flexWrap: 'wrap',
+        gap: 8,
+    },
+    question: {
+        flexDirection: 'row',
+        alignItems: 'flex-start',
+        gap: 10,
+        padding: 14,
+        borderRadius: 12,
+        borderWidth: StyleSheet.hairlineWidth,
+        borderColor: theme.colors.border.default,
+    },
+    questionBody: {
+        flex: 1,
+        minWidth: 0,
+        gap: 4,
+    },
+    questionEyebrow: {
+        ...Typography.default('semiBold'),
+        color: theme.colors.text.secondary,
+        fontSize: 13,
     },
     questionText: {
+        ...Typography.default(),
         color: theme.colors.text.primary,
+        fontSize: 14.5,
+        lineHeight: 21,
+    },
+    quiet: {
+        ...Typography.default(),
+        color: theme.colors.text.secondary,
         fontSize: 13,
     },
-    assumptionText: {
+    inlineLinkText: {
+        ...Typography.default('semiBold'),
         color: theme.colors.text.secondary,
-        fontSize: 12,
     },
-    findingRow: {
-        paddingVertical: 6,
-        borderTopWidth: 1,
-        borderTopColor: theme.colors.border.default,
+    dock: {
         gap: 6,
     },
-    findingHeader: {
-        gap: 2,
-    },
-    findingTitleText: {
-        color: theme.colors.text.primary,
-        fontSize: 13,
-        fontWeight: '600',
-    },
-    findingLocationText: {
+    caption: {
+        ...Typography.default(),
         color: theme.colors.text.secondary,
-        fontSize: 12,
-        fontFamily: 'Menlo',
-    },
-    findingBody: {
-        gap: 6,
-    },
-    findingSummaryText: {
-        color: theme.colors.text.primary,
-        fontSize: 13,
-    },
-    findingDetailText: {
-        color: theme.colors.text.primary,
-        fontSize: 12,
-    },
-    findingDetailMutedText: {
-        color: theme.colors.text.secondary,
-        fontSize: 12,
-    },
-    findingSuggestionText: {
-        color: theme.colors.text.secondary,
-        fontSize: 12,
-    },
-    triageRow: {
-        flexDirection: 'row',
-        flexWrap: 'wrap',
-        gap: 6,
-    },
-    triageChip: {
-        paddingHorizontal: 8,
-        paddingVertical: 4,
-        borderRadius: 8,
-        borderWidth: 1,
-        borderColor: theme.colors.border.default,
-    },
-    triageChipSelected: {
-        borderColor: theme.colors.text.link,
-    },
-    triageChipText: {
-        color: theme.colors.text.secondary,
-        fontSize: 12,
-        fontFamily: 'Menlo',
-    },
-    triageChipTextSelected: {
-        color: theme.colors.text.link,
-        fontWeight: '600',
-    },
-    refinementInput: {
-        borderWidth: 1,
-        borderColor: theme.colors.border.default,
-        borderRadius: 10,
-        padding: 10,
-        minHeight: 44,
-        color: theme.colors.text.primary,
-    },
-    followUpComposer: {
-        gap: 8,
-    },
-    secondaryButton: {
-        paddingHorizontal: 10,
-        paddingVertical: 8,
-        borderRadius: 10,
-        borderWidth: 1,
-        borderColor: theme.colors.border.default,
-        alignItems: 'center',
-        alignSelf: 'flex-start',
-    },
-    secondaryButtonText: {
-        color: theme.colors.text.primary,
-        fontSize: 12,
-        fontWeight: '600',
+        fontSize: 12.5,
     },
     errorText: {
-        color: theme.colors.text.secondary,
-        fontSize: 12,
-    },
-    applyButton: {
-        paddingHorizontal: 10,
-        paddingVertical: 8,
-        borderRadius: 10,
-        borderWidth: 1,
-        borderColor: theme.colors.border.default,
-        alignItems: 'center',
-    },
-    applyButtonDisabled: {
-        opacity: 0.5,
-    },
-    applyButtonText: {
-        color: theme.colors.text.primary,
+        ...Typography.default(),
+        color: theme.colors.state.danger.foreground,
         fontSize: 13,
-        fontWeight: '600',
     },
 }));

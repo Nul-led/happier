@@ -10,6 +10,11 @@ export function resolveRenderedAgentInputControls(params: Readonly<{
     coreControlNodesById: ControlNodesById;
     extraControlNodesById: ControlNodesById;
     extraChips: readonly React.ReactNode[];
+    /**
+     * Collapsed layout only: the controls the host keeps on its bar, in bar order. Everything
+     * else is reached from the actions menu (which omits these). Unset: every control shows.
+     */
+    barControlIds?: readonly AgentInputControlId[];
 }>): Readonly<{
     chips: readonly React.ReactNode[];
     secondaryLeadingControls: readonly React.ReactNode[];
@@ -36,7 +41,7 @@ export function resolveRenderedAgentInputControls(params: Readonly<{
     );
 
     const chips = params.layout === 'collapsed'
-        ? resolveControlNodes(controlLines.collapsed).filter(Boolean)
+        ? resolveControlNodes(params.barControlIds ?? controlLines.collapsed).filter(Boolean)
         : [
             ...resolveControlNodes(controlLines.primary),
             ...params.extraChips,

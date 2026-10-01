@@ -910,7 +910,7 @@ describe('ApiSessionClient pending queue materialization', () => {
         const client = createClient(session);
         const queueState = createPermissionModeQueueState({
             session: client,
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             initialPermissionMode: 'default',
         });
         await waitForPendingInputContract(client);

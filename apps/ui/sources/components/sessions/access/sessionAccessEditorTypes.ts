@@ -1,81 +1,40 @@
 import type { EffectiveSessionAccessLevelV1, PrincipalRefV1, SessionAccessLevelV1 } from '@happier-dev/protocol';
 
 import type { SessionCollaborationHandoff } from '@/components/sessions/collaboration/sessionCollaborationIntent';
+import type {
+    ShareAvatarPresentation, ShareCandidateRowModel, ShareDirectoryKind, ShareDirectorySectionModel, ShareGrantRowModel,
+    ShareLevelControlModel, ShareOperationModel, ShareOwnerRowModel, SharePrincipalPresentation, ShareRemovalModel,
+    ShareUiError, ShareUiReason,
+} from '@/components/sharing/shareSheetTypes';
 
 export type SessionAccessPrincipalRef = PrincipalRefV1;
 export type SessionAccessGrantRef = PrincipalRefV1;
 export type SessionAccessLevel = SessionAccessLevelV1;
-export type SessionAccessUiReason = Readonly<{ code: string; message: string }>;
-export type SessionAccessUiError = SessionAccessUiReason & Readonly<{ retryable: boolean }>;
-/**
- * Inputs for the canonical `Avatar` owner, not a second avatar model: it already
- * owns image loading and the generated identity fallback, so a principal only
- * has to say which Account it is and where its picture lives. Teams and Groups
- * carry no Account profile and are drawn with their kind glyph instead.
- */
-export type SessionAccessAvatarPresentation = Readonly<{ id: string; imageUrl?: string }>;
-export type SessionAccessPrincipalPresentation = Readonly<{
-    ref: PrincipalRefV1;
-    key: string;
-    displayName: string;
-    secondaryLabel?: string;
-    avatar?: SessionAccessAvatarPresentation;
-    accessibilityLabel: string;
-}>;
-/**
- * Level semantics are explained once by the editor's shared access-help row, so
- * an option carries only its value and localized label. A per-option description
- * no producer ever populates would be a dead contract branch.
- */
-export type SessionAccessLevelOption = Readonly<{ value: SessionAccessLevel; label: string }>;
-export type SessionAccessLevelControlModel =
-    | Readonly<{ kind: 'editable'; value: SessionAccessLevel; options: readonly SessionAccessLevelOption[] }>
-    | Readonly<{ kind: 'locked'; value: SessionAccessLevel; reason: SessionAccessUiReason }>;
+// The grant roster vocabulary is the one share sheet's (`components/sharing`). These names are the
+// session adapter's view of it; only the fields below the roster are session-only.
+export type SessionAccessUiReason = ShareUiReason;
+export type SessionAccessUiError = ShareUiError;
+export type SessionAccessAvatarPresentation = ShareAvatarPresentation;
+export type SessionAccessPrincipalPresentation = SharePrincipalPresentation;
+export type SessionAccessLevelControlModel = ShareLevelControlModel;
 export type SessionAccessDelegationControlModel =
     | Readonly<{ kind: 'hidden' }>
     | Readonly<{ kind: 'editable'; value: boolean }>
     | Readonly<{ kind: 'locked'; value: boolean; reason: SessionAccessUiReason }>;
-export type SessionAccessRemovalModel =
-    | Readonly<{ kind: 'allowed' }>
-    /**
-     * `consequences` are the Home's own preview of what this removal breaks —
-     * today the Team credential selections that survive only while this subject
-     * can read the Session. Empty when the Home publishes no preview, so the
-     * confirmation reads exactly as it did before.
-     */
-    | Readonly<{ kind: 'confirming'; consequences: readonly string[] }>
-    | Readonly<{ kind: 'blocked'; reason: SessionAccessUiReason }>;
-export type SessionAccessGrantOperationModel =
-    | Readonly<{ kind: 'idle' | 'saving' | 'removing' }>
-    | Readonly<{ kind: 'error'; error: SessionAccessUiError }>;
-export type SessionAccessOwnerRowModel = Readonly<{ principal: SessionAccessPrincipalPresentation }>;
-export type SessionAccessGrantRowModel = Readonly<{
-    grant: SessionAccessGrantRef;
-    principal: SessionAccessPrincipalPresentation;
-    level: SessionAccessLevelControlModel;
+export type SessionAccessRemovalModel = ShareRemovalModel;
+export type SessionAccessGrantOperationModel = ShareOperationModel;
+export type SessionAccessOwnerRowModel = ShareOwnerRowModel;
+export type SessionAccessGrantRowModel = ShareGrantRowModel & Readonly<{
     permissionDelegation: SessionAccessDelegationControlModel;
-    removal: SessionAccessRemovalModel;
     requiredByTeamPolicy: boolean;
-    operation: SessionAccessGrantOperationModel;
 }>;
-export type SessionAccessCandidateRowModel = Readonly<{
-    principal: SessionAccessPrincipalPresentation;
+export type SessionAccessCandidateRowModel = ShareCandidateRowModel & Readonly<{
     teamMembership?: Readonly<{ teamId: string; teamMembershipId: string; accountId: string }>;
     teamGroup?: Readonly<{ teamId: string; teamGroupId: string }>;
-    addition: Readonly<{ kind: 'allowed' }> | Readonly<{ kind: 'blocked'; reason: SessionAccessUiReason }>;
-    operation: SessionAccessGrantOperationModel;
 }>;
-export type SessionAccessDirectoryKind = PrincipalRefV1['kind'];
-export type SessionAccessDirectorySectionModel = Readonly<{
-    kind: SessionAccessDirectoryKind;
-    title: string;
+export type SessionAccessDirectoryKind = ShareDirectoryKind;
+export type SessionAccessDirectorySectionModel = Omit<ShareDirectorySectionModel, 'candidates' | 'resolveCandidates'> & Readonly<{
     candidates: readonly SessionAccessCandidateRowModel[];
-    status: 'idle' | 'loading' | 'refreshing' | 'error';
-    error?: SessionAccessUiError;
-    cursor: string | null;
-    hasMore: boolean;
-    loadingMore: boolean;
-    resolverKey?: string;
     resolveCandidates?: (query: string, signal: AbortSignal) => Promise<readonly SessionAccessCandidateRowModel[]>;
 }>;
 export type SessionAccessDirectoryModel = Readonly<{ query: string; sections: readonly SessionAccessDirectorySectionModel[] }>;
@@ -216,6 +175,8 @@ export type SessionAccessEditorActions = Readonly<{
     retryDirectory(kind: SessionAccessDirectoryKind): void;
     loadMore(kind: SessionAccessDirectoryKind): void;
     addPrincipal(principal: SessionAccessPrincipalRef): void;
+    /** Retries the exact acknowledged-or-unknown mutation represented by this row. */
+    retryMutation(grant: SessionAccessGrantRef): void;
     setAccessLevel(grant: SessionAccessGrantRef, level: SessionAccessLevel): void;
     setPermissionDelegation(grant: SessionAccessGrantRef, enabled: boolean): void;
     requestRemove(grant: SessionAccessGrantRef): void;
@@ -251,5 +212,9 @@ export type SessionAccessEditorProps = Readonly<{
      * controller cannot rebuild for itself.
      */
     onOpenFullSurface?: (handoff: SessionCollaborationHandoff) => void;
+    /** The Session's in-app route for Copy link; absent before the Session exists. */
+    linkPath?: string;
+    /** The Session's responsible Account, tagged where its access is listed (Share panel). */
+    responsibleAccountId?: string | null;
     testID?: string;
 }>;

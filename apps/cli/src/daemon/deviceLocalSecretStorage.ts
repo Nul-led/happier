@@ -15,7 +15,7 @@ const DEVICE_LOCAL_NONCE_BYTES = 12;
 const DEVICE_LOCAL_AUTH_TAG_BYTES = 16;
 const DEVICE_LOCAL_CIPHERTEXT_PREFIX = 'v1';
 
-export type DeviceLocalSecretPurpose = 'session_respawn_environment';
+export type DeviceLocalSecretPurpose = 'session_respawn_environment' | 'execution_run_worker_update';
 export type DeviceLocalOpaqueIdentityPurpose =
   'external_session_transcript_refresh_cursor';
 export type DeviceLocalDerivedSecretKeyPurpose =

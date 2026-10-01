@@ -92,7 +92,7 @@ import {
     resetSessionSurfaceVisibilityForTests,
 } from './domains/session/sessionSurfaceVisibility';
 import type { Machine, Session } from './domains/state/storageTypes';
-import type { NormalizedMessage } from './typesRaw';
+import type { NormalizedMessage } from "@happier-dev/session-core/raw";
 
 type SyncCatchUpTestAccess = {
     encryption: { getSessionEncryption: (sessionId: string) => null };

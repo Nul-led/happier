@@ -13,11 +13,16 @@ import {
     deleteSessionDraft,
     getSessionDraftSnapshot,
     resetSessionDraftRepositoryForTests,
+    readSessionScmDraftFromDraft,
     writeExistingSessionDraft,
 } from '@/sync/ops/sessionDrafts/sessionDraftRepository';
 import { readExecutionRunRequestedAction } from '@/sync/domains/input/participants/executionRunRequestedAction';
 
 const LEGACY_TEST_SCOPE: ServerAccountScope = { serverId: 'legacy-test', accountId: 'legacy-test' };
+
+export function readSessionScmDraft(scope: ServerAccountScope, sessionId: string) {
+    return readSessionScmDraftFromDraft(getSessionDraftSnapshot(scope, { kind: 'session', sessionId })?.document);
+}
 
 function scopeOrLegacy(scope: ServerAccountScope | null | undefined): ServerAccountScope {
     return scope ?? LEGACY_TEST_SCOPE;

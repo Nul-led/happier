@@ -15,6 +15,7 @@ import {
   type ExternalSessionOperationActionResponseV1,
   type ExternalSessionOperationClaimV1,
   type ExternalSessionOperationRecordV1,
+  type ExternalSessionDestructiveQuiescenceResultV1,
   type ExternalSessionOperationAuthorIntentV1,
   type ExternalSessionRequiredItemFailuresV1,
   type ExternalSessionRequiredItemDiagnosticV1,
@@ -196,6 +197,7 @@ export type ExternalSessionPersistedTakeoverPreparation = (
   record: ExternalSessionPersistedTakeoverImportRecord,
 ) => Promise<Readonly<{
   workingDirectory: string;
+  destructiveQuiescence: ExternalSessionDestructiveQuiescenceResultV1;
   resumeFollowOnFailure(): Promise<void>;
 }>>;
 
@@ -2178,6 +2180,10 @@ export function createExternalSessionMaterializeActionExecutor(
               revision: fresh.revision + 1,
               status: 'running',
               updatedAtMs: nowMs(),
+              canonicalOwnerEvidence: {
+                ...fresh.canonicalOwnerEvidence,
+                ...(takeoverPreparation ? { destructiveQuiescence: takeoverPreparation.destructiveQuiescence } : {}),
+              },
             };
           },
         );
@@ -2285,6 +2291,7 @@ export function createExternalSessionMaterializeActionExecutor(
           canonicalOwnerEvidence: {
             ...current.canonicalOwnerEvidence,
             sourceSnapshotEvidenceRef: source.capturedSource.revision,
+            ...(takeoverPreparation ? { destructiveQuiescence: takeoverPreparation.destructiveQuiescence } : {}),
           },
         }));
         const result = await stageAndImport(

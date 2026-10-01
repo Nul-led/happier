@@ -371,27 +371,6 @@ function createJourneyWizardSurfaceProps(): OnboardingWizardSurfaceProps {
             serverAvailability: 'ready',
             serverUrlForCopy: 'https://relay.example.test',
             showAuthActions: true,
-            showProviderSignup: false,
-            showAnonymousSignup: false,
-            showMtlsLogin: false,
-            showKeylessProviderLogin: false,
-            providerId: null,
-            keylessProviderId: null,
-            providerSignupTitle: '',
-            providerKeylessTitle: '',
-            anonymousSignupTitle: '',
-            mtlsTitle: '',
-            primaryAction: null,
-            mtlsPrimary: false,
-            keylessPrimary: false,
-            autoRedirect: {
-                enabled: false,
-                providerId: null,
-                toKeyedProvision: false,
-                toKeylessLogin: false,
-                toMtls: false,
-                toLegacySignupProvider: false,
-            },
             retryServerCheck: () => undefined,
         },
         accountContinuationIntent: { kind: 'enter', target: { kind: 'automatic' } },
@@ -577,21 +556,37 @@ describe('demo mode egress-zero smoke', () => {
         );
     });
 
-    it('mounts the relay settings surface without network egress', async () => {
+    it('mounts the Homes settings collection and opens the seeded Home without network egress', async () => {
         routerState.pathname = '/settings/server';
-        const { ServerSettingsScreen } = await import('@/components/settings/server/screens/ServerSettingsScreen');
-
-        await expectNoEgressAfterMountAndInteraction(<ServerSettingsScreen />, 'settings.server.openSetupWizard');
+        const { HomesSettingsStageSurface } = await import('@/components/settings/server/collection/HomesSettingsIndex');
+        const { homeCollectionHref } = await import('@/components/settings/server/collection/homeCollectionModel');
+        const { getServerProfileById, resolveServerProfileScopeId } = await import('@/sync/domains/server/serverProfiles');
+        let homeId = '';
+        const screen = await mountSeededSurfaceFromFactory(() => {
+            const profile = getServerProfileById(getActiveServerSnapshot().serverId);
+            if (!profile) throw new Error('The demo Home must be seeded before mounting its collection');
+            homeId = resolveServerProfileScopeId(profile);
+            return <HomesSettingsStageSurface />;
+        });
+        // Opening a saved Home is the real collection interaction; the add menu opens a DOM popover.
+        await settleAndPressControl(screen, `settings.homes.row.${homeId}`);
+        expect(routerPushSpy).toHaveBeenLastCalledWith(homeCollectionHref(homeId));
+        expectZeroFirewallEgress();
     });
 
     it('mounts the machines settings surface without network egress', async () => {
         routerState.pathname = '/settings/machines';
         const { MachinesSettingsView } = await import('@/components/settings/machines/MachinesSettingsView');
 
-        await expectNoEgressAfterMountAndInteraction(
-            <MachinesSettingsView />,
-            'settings.machines.openWizard.setupThisComputer',
-        );
+        // Opening the seeded machine (a navigation) is the interaction; the "+" menu opens a DOM popover.
+        let machineRowTestId = '';
+        const { DEMO_MACHINE_ID } = await import('@/demoMode/world/constants');
+        const screen = await mountSeededSurfaceFromFactory(() => {
+            machineRowTestId = `settings.machines.row.${getActiveServerSnapshot().serverId}.${DEMO_MACHINE_ID}`;
+            return <MachinesSettingsView />;
+        });
+        await settleAndPressControl(screen, machineRowTestId);
+        expectZeroFirewallEgress();
     });
 
     it('mounts the subagents dream surface (A5) without network egress', async () => {
@@ -614,8 +609,8 @@ describe('demo mode egress-zero smoke', () => {
 
     it('mounts the MCP servers dream surface (A11) without network egress', async () => {
         routerState.pathname = '/settings/mcp';
-        const { McpServersSettingsScreen } = await import('@/components/settings/mcpServers/McpServersSettingsScreen');
-        await expectNoEgressAfterMount(<McpServersSettingsScreen />);
+        const { McpServerCollection } = await import('@/components/settings/mcpServers/collection/McpServerCollection');
+        await expectNoEgressAfterMount(<McpServerCollection variant="page" />);
     });
 
     it('mounts the connected-services dream surface (A12) without network egress', async () => {

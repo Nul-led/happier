@@ -1,8 +1,9 @@
+import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { flushHookEffects, renderHook, standardCleanup } from '@/dev/testkit';
-import type { Message } from '@/sync/domains/messages/messageTypes';
+import { flushHookEffects, renderHook as renderBaseHook, standardCleanup, createTestSessionTranscriptSource, wrapWithSessionTranscriptSource } from '@/dev/testkit';
+import type { Message } from "@happier-dev/session-core/messages";
 import type { SessionMessageHistoryRemoteRow } from '@/sync/engine/sessions/fetchUserMessageHistoryPage';
 import { resetUserMessageHistoryRemoteEntriesForTests } from '@/hooks/session/useUserMessageHistory';
 
@@ -36,18 +37,15 @@ vi.mock('react-native-mmkv', () => {
 
 const transcriptState = vi.hoisted(() => ({
     ids: [] as string[],
-    messagesById: {} as Record<string, unknown>,
+    messagesById: {} as Record<string, Message>,
 }));
 
-vi.mock('@/sync/domains/state/storage', async () => {
-    const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
-    return createStorageModuleStub({
-        useForkedTranscriptSnapshot: () => null,
-        useSessionTranscriptIds: () => ({ ids: transcriptState.ids, isLoaded: true }),
-        useSessionMessagesById: () => transcriptState.messagesById,
-        useSessionMessages: () => ({ messages: [], isLoaded: true }),
+function renderHook<Result>(hook: () => Result) {
+    const source = createTestSessionTranscriptSource({
+        sessionId: 'session-1', messages: transcriptState.ids.flatMap((id) => transcriptState.messagesById[id] ?? []),
     });
-});
+    return renderBaseHook(hook, { wrapper: ({ children }) => wrapWithSessionTranscriptSource(children as React.ReactElement, source) });
+}
 
 vi.mock('@/sync/store/hooks', () => ({
     useActiveServerAccountScope: () => null,

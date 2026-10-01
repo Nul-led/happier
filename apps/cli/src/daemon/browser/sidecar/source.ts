@@ -1,6 +1,7 @@
 import {
     CHROMIUM_FOR_TESTING_PRODUCT_SOURCE,
     resolveChromiumForTestingPlatform,
+    resolveChromiumForTestingAssetVersion,
     type BrowserSidecarBinaryProvenanceV1,
     type ChromiumForTestingPlatformAsset,
 } from '@happier-dev/protocol';
@@ -47,7 +48,7 @@ export async function resolveManagedBrowserSidecarCandidate(params: Readonly<{
     const executablePath = await resolveInstalledChromiumForTestingExecutable({
         platform,
         arch,
-        executableSubpath: asset.executableSubpath,
+        asset,
     });
 
     if (!executablePath) {
@@ -55,13 +56,13 @@ export async function resolveManagedBrowserSidecarCandidate(params: Readonly<{
             source: 'managedBrowserPackage',
             discoveryKind: 'managedRuntime',
             available: false,
-            disabledReason: `Managed Chrome-for-Testing ${CHROMIUM_FOR_TESTING_PRODUCT_SOURCE.pinnedVersion} is not installed.`,
+            disabledReason: `Managed Chrome-for-Testing ${resolveChromiumForTestingAssetVersion(asset)} is not installed.`,
         };
     }
 
     const provenance: BrowserSidecarBinaryProvenanceV1 = {
         origin: 'managed_package',
-        pinnedVersion: CHROMIUM_FOR_TESTING_PRODUCT_SOURCE.pinnedVersion,
+        pinnedVersion: resolveChromiumForTestingAssetVersion(asset),
         channel: CHROMIUM_FOR_TESTING_PRODUCT_SOURCE.channel,
         integrityDigest: asset.integrityDigest,
         license: CHROMIUM_FOR_TESTING_PRODUCT_SOURCE.license,

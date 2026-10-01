@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { PendingMessage } from '@/sync/domains/state/storageTypes';
-import type { AgentTextMessage, Message, ToolCall } from '@/sync/domains/messages/messageTypes';
+import type { AgentTextMessage, Message, ToolCall } from "@happier-dev/session-core/messages";
 import { buildChatListItems, buildChatListItemsCached } from './chatListItems';
 
 function buildPending(params: {
@@ -61,6 +61,59 @@ function buildToolCallMessage(params: {
 }
 
 describe('buildChatListItems', () => {
+    it('does not show a pending tool answer delivery as a chat message', () => {
+        const reply = buildPending({ id: 'p-reply', localId: 'reply-1', createdAt: 2, text: 'encoded answer' });
+        reply.rawRecord = {
+            role: 'user',
+            content: { type: 'text', text: 'encoded answer' },
+            meta: { happier: { kind: 'tool-answer-delivery.v1', payload: { toolCallId: 'question-1' } } },
+        };
+
+        const items = buildChatListItems({
+            messageIdsOldestFirst: ['m1'],
+            messagesById: { m1: { kind: 'user-text', id: 'm1', localId: null, createdAt: 1, text: 'real user text' } },
+            pendingMessages: [reply],
+        });
+
+        expect(items.map((item) => item.kind)).toEqual(['message']);
+    });
+
+    it('keeps blocked and failed tool answer deliveries visible for recovery', () => {
+        const replies = ['blocked', 'failed'].map((state, index) => {
+            const reply = buildPending({ id: `reply-${index}`, localId: `reply-${index}`, createdAt: index + 2 });
+            reply.rawRecord = {
+                role: 'user',
+                content: { type: 'text', text: 'encoded answer' },
+                meta: { happier: { kind: 'tool-answer-delivery.v1', payload: { toolCallId: 'question-1' } } },
+            };
+            if (state === 'blocked') reply.pendingDeliveryStatus = 'blocked';
+            else reply.sendState = 'failed';
+            return reply;
+        });
+        const items = buildChatListItems({
+            messageIdsOldestFirst: [],
+            messagesById: {},
+            pendingMessages: replies,
+        });
+        expect(items.map((item) => item.kind)).toEqual(['pending-queue']);
+    });
+
+    it('keeps discarded tool answer deliveries visible for recovery', () => {
+        const reply = buildPending({ id: 'reply-discarded', localId: 'reply-discarded', createdAt: 2 });
+        reply.rawRecord = {
+            role: 'user',
+            content: { type: 'text', text: 'encoded answer' },
+            meta: { happier: { kind: 'tool-answer-delivery.v1', payload: { toolCallId: 'question-1' } } },
+        };
+        const items = buildChatListItems({
+            messageIdsOldestFirst: [],
+            messagesById: {},
+            pendingMessages: [],
+            discardedMessages: [{ ...reply, discardedAt: 3, discardedReason: 'manual' }],
+        });
+        expect(items.map((item) => item.kind)).toEqual(['pending-queue']);
+    });
+
     it('can omit committed transcript message items (turns mode) while still including pending/drafts', () => {
         const messages: Message[] = [
             { kind: 'user-text', id: 'm1', localId: 'u1', createdAt: 1, text: 'user' },

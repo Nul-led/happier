@@ -263,7 +263,6 @@ describe('resolveExternalSessionBrowseSourceOptions', () => {
                     },
                 },
             },
-            backendsById: {},
             actionsById: {},
             toolsById: {},
             commandsById: {},

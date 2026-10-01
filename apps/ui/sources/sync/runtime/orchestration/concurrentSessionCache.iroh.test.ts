@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createSocketIoManagerBoundaryStub } from '@/dev/testkit/mocks/socketIo';
 
 import {
     createMachineFixture,
@@ -56,6 +57,7 @@ let recoveryRequiredListener: ((event: Readonly<{
 function createSocketStub() {
     const listeners = new Map<string, Set<(...args: unknown[]) => void>>();
     const socket = {
+        io: createSocketIoManagerBoundaryStub(),
         connected: false,
         on: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
             const bucket = listeners.get(event) ?? new Set();

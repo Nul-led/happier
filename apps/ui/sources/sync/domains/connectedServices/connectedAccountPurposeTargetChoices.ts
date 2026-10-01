@@ -10,6 +10,7 @@ import type { TeamCredentialResourceCatalogEntryV1 } from '@happier-dev/protocol
 
 import { t } from '@/text';
 import type { ConnectedAccountUiNegotiation } from './resolveConnectedAccountUiNegotiation';
+import type { ConnectedAccountIdentityPresenter } from './maskAccountEmail';
 
 import {
   resolveConnectedAccountPurposeTargetEligibility,
@@ -125,6 +126,7 @@ export function buildConnectedAccountPurposeTargetChoices(input: Readonly<{
   /** Applied descriptor title for the declaration service, never an installed-manifest guess. */
   serviceTitle: string;
   sourceNegotiation?: ConnectedAccountUiNegotiation;
+  presentIdentity?: ConnectedAccountIdentityPresenter;
   resolveAuthentication: (
     service: PluginContributionIdentityV1,
   ) => PluginConnectedAccountAuthenticationV2 | null;
@@ -134,6 +136,8 @@ export function buildConnectedAccountPurposeTargetChoices(input: Readonly<{
    * no source Account or Pool is copied into the recipient's choices.
    */
   teamResources?: readonly TeamCredentialResourceCatalogEntryV1[];
+  /** Exact Home catalog currentness; stale retained resources stay visible but cannot be selected. */
+  teamResourceCurrentKeys?: ReadonlySet<string>;
   teamNameById?: Readonly<Record<string, string>>;
 }>): readonly ConnectedAccountPurposeTargetChoice[] {
   const candidates: ConnectedAccountPurposeTargetChoice[] = [];
@@ -180,6 +184,7 @@ export function buildConnectedAccountPurposeTargetChoices(input: Readonly<{
         labelsByKey: input.labelsByKey,
         legacyServiceId: getQualifiedConnectedServiceRegistryEntry(account.ref.service)?.legacyServiceId ?? null,
         serviceTitle: input.serviceTitle,
+        presentIdentity: input.presentIdentity,
       }),
       kind: 'account',
       eligibility,
@@ -216,6 +221,7 @@ export function buildConnectedAccountPurposeTargetChoices(input: Readonly<{
         labelsByKey: input.labelsByKey,
         legacyServiceId: getQualifiedConnectedServiceRegistryEntry(group.ref.service)?.legacyServiceId ?? null,
         serviceTitle: input.serviceTitle,
+        presentIdentity: input.presentIdentity,
       }),
       kind: 'group',
       eligibility,
@@ -232,6 +238,8 @@ export function buildConnectedAccountPurposeTargetChoices(input: Readonly<{
       && sameService(resource.sourcePresentation.service, input.declaration.service)
     ))
     .flatMap((resource) => resource.connectedServiceSelections.flatMap((selection) => {
+      const resourceCurrent = input.teamResourceCurrentKeys === undefined
+        || input.teamResourceCurrentKeys.has(`${resource.teamId}:${resource.id}`);
       if (
         selection.deliveryMode === 'direct'
         && !sameService(selection.disclosedMember.service, input.declaration.service)
@@ -240,11 +248,13 @@ export function buildConnectedAccountPurposeTargetChoices(input: Readonly<{
         teamId: resource.teamId,
         selection,
       };
-      const eligibility = resolveConnectedAccountPurposeTeamResourceEligibility({
+      const eligibility = resourceCurrent
+        ? resolveConnectedAccountPurposeTeamResourceEligibility({
         teamResource,
         service: input.declaration.service,
         teamResources: input.teamResources ?? [],
-      });
+      })
+        : 'unusable' as const;
       return [{
         id: connectedAccountPurposeTargetChoiceId(null, teamResource),
         target: null,
@@ -255,9 +265,9 @@ export function buildConnectedAccountPurposeTargetChoices(input: Readonly<{
           serviceTitle: input.serviceTitle,
           ...(input.teamNameById ? { teamNameById: input.teamNameById } : {}),
         }),
-        kind: 'team_resource',
+        kind: resourceCurrent ? 'team_resource' : 'unavailable',
         eligibility,
-        selectable: eligibility === 'usable',
+        selectable: resourceCurrent && eligibility === 'usable',
         current: sameTeamResource(teamResource, selectedTeamResource),
       } satisfies ConnectedAccountPurposeTargetChoice];
     }))
@@ -291,6 +301,7 @@ export function buildConnectedAccountPurposeTargetChoices(input: Readonly<{
       labelsByKey: input.labelsByKey,
       serviceTitle: input.serviceTitle,
       sourceNegotiation: input.sourceNegotiation,
+      presentIdentity: input.presentIdentity,
     });
     candidates.push({
       id: connectedAccountPurposeTargetChoiceId(input.selectedTarget),
@@ -318,6 +329,7 @@ export function resolveConnectedAccountPurposeTargetDisplay(input: Readonly<{
   labelsByKey: Readonly<Record<string, string | undefined>>;
   serviceTitle: string;
   sourceNegotiation?: ConnectedAccountUiNegotiation;
+  presentIdentity?: ConnectedAccountIdentityPresenter;
 }>): string {
   return presentQualifiedConnectedAccountTarget({
     target: input.target,
@@ -329,5 +341,6 @@ export function resolveConnectedAccountPurposeTargetDisplay(input: Readonly<{
     )?.legacyServiceId ?? null,
     serviceTitle: input.serviceTitle,
     sourceNegotiation: input.sourceNegotiation,
+    presentIdentity: input.presentIdentity,
   }).primaryLabel;
 }

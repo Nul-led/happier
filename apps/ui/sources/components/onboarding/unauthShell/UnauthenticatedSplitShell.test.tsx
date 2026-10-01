@@ -248,7 +248,7 @@ describe('UnauthenticatedSplitShell', () => {
             <UnauthenticatedSplitShell
                 stepId="welcome"
                 isWelcomeStep
-                retentionSummary="This relay cleans up subagent transcripts after 7 days."
+                retentionDisclosure={{ kind: 'summary', summary: 'This relay cleans up subagent transcripts after 7 days.' }}
                 onOpenRelayCustomFlow={() => {}}
                 onBrandHeroGetStarted={() => {}}
             >

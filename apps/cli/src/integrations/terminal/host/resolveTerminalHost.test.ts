@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { resolveTerminalHost } from './resolveTerminalHost';
 import type { TerminalHostAdapter, TerminalHostResolverPlatform } from './_types';
 
-function adapter(kind: 'tmux' | 'zellij' | 'windows_console'): TerminalHostAdapter {
+function adapter(kind: 'tmux' | 'zellij' | 'herdr' | 'windows_console'): TerminalHostAdapter {
   return {
     kind,
     createOrAttachHost: async () => {
@@ -21,6 +21,18 @@ function adapter(kind: 'tmux' | 'zellij' | 'windows_console'): TerminalHostAdapt
 }
 
 describe('resolveTerminalHost', () => {
+  it('selects an explicitly requested Herdr host when it is available', () => {
+    const herdrAdapter = adapter('herdr');
+    const result = resolveTerminalHost({
+      preference: 'herdr',
+      platform: { os: 'linux', arch: 'arm64' },
+      adapters: { herdr: herdrAdapter },
+      tmuxAvailable: false,
+      zellijAvailable: false,
+    });
+    expect(result).toMatchObject({ status: 'resolved', adapter: herdrAdapter, reason: 'herdr_forced' });
+  });
+
   it('prefers tmux on POSIX auto when tmux is available', () => {
     expect(
       resolveTerminalHost({

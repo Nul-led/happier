@@ -1,6 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import axios, { AxiosHeaders, type AxiosResponse } from 'axios';
 import type { ActionExecutorDeps } from '@happier-dev/protocol';
+import {
+  FeaturesResponseSchema,
+  projectLegacySessionAccessCapabilitiesV1,
+} from '@happier-dev/protocol';
 import { createSessionTranscriptFollowLeaseRegistry } from '@/api/session/transcriptQueries';
+import {
+  createAccountEncryptionCurrentnessFixture,
+  createCurrentSessionProjectionRecordFixture,
+} from '@/testkit/backends/sessionFixtures';
 import type { SessionSpawnDirectTargetTransport } from './createCliActionDeps';
 import type { createCliActionExecutor as CreateCliActionExecutor } from './createCliActionExecutor';
 
@@ -18,6 +27,16 @@ const createSessionTrackedTargetCompatibilityDep = vi.fn(() => ({}));
 const createSessionFollowSourceKeyPreparationAfterSet = vi.fn(() => vi.fn());
 const readSettings = vi.fn(async () => ({ machineId: 'machine-active-home' }));
 
+function axiosResponse<T>(data: T): AxiosResponse<T> {
+  return {
+    data,
+    status: 200,
+    statusText: 'OK',
+    headers: new AxiosHeaders(),
+    config: { headers: new AxiosHeaders() },
+  };
+}
+
 vi.mock('./createCliActionExecutor', () => ({
   createCliActionExecutor,
 }));
@@ -28,7 +47,8 @@ vi.mock('./ensureCliActionPolicySettings', () => ({
 
 vi.mock('@/agent/runtime/session/follow/createSessionFollowSourceKeyPreparationAfterSet', () => ({ createSessionFollowSourceKeyPreparationAfterSet }));
 
-vi.mock('@/session/transport/http/sessionsHttp', () => ({
+vi.mock('@/session/transport/http/sessionsHttp', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/session/transport/http/sessionsHttp')>()),
   importHistoricalSessionTranscript,
 }));
 
@@ -41,7 +61,8 @@ vi.mock('@/api/sessionFollowActionDeps', () => ({
   createSessionTrackedTargetCompatibilityDep,
 }));
 
-vi.mock('@/session/transport/encryption/sessionEncryptionContext', () => ({
+vi.mock('@/session/transport/encryption/sessionEncryptionContext', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/session/transport/encryption/sessionEncryptionContext')>()),
   resolveSessionEncryptionContextFromCredentials: vi.fn(() => ({ kind: 'legacy' })),
 }));
 
@@ -214,6 +235,151 @@ describe('createCliActionExecutorFromCredentials', () => {
     }));
   });
 
+  it('resolves a collective-only Session through the credential Home feature fallback', async () => {
+    const { createCliActionExecutorFromCredentials } = await import('./createCliActionExecutorFromCredentials');
+    const sessionId = 'c123456789012345678901234';
+    const credentials = {
+      token: 'token_home_b',
+      encryption: { type: 'legacy' as const, secret: new Uint8Array(32).fill(1) },
+    };
+    const features = FeaturesResponseSchema.parse({
+      features: {
+        sessions: { enabled: true },
+        sharing: { session: { enabled: true } },
+      },
+      capabilities: {},
+    });
+    const row = createCurrentSessionProjectionRecordFixture({
+      id: sessionId,
+      encryptionMode: 'plain',
+      effectiveAccess: {
+        v: 1,
+        level: 'view',
+        sources: [{ kind: 'team', teamId: 'team-1', requiredByTeamPolicy: false }],
+        capabilities: projectLegacySessionAccessCapabilitiesV1({ level: 'view' }),
+      },
+    });
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      if (String(input) === 'https://home-b.example.test/v1/features/authenticated') {
+        return new Response(JSON.stringify(features), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (String(input) === 'http://127.0.0.1:3005/v1/account/encryption/currentness') {
+        return new Response(JSON.stringify(createAccountEncryptionCurrentnessFixture()), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      throw new Error(`Unexpected request: ${String(input)}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const axiosGet = vi.spyOn(axios, 'get').mockImplementation(async (url) => {
+      if (String(url) === 'http://127.0.0.1:3005/v1/account/encryption/currentness') {
+        return axiosResponse(createAccountEncryptionCurrentnessFixture());
+      }
+      if (String(url) === `http://127.0.0.1:3005/v2/sessions/${sessionId}?accessProjectionVersion=1`) {
+        return axiosResponse({ session: row });
+      }
+      if (String(url) === 'https://home-b.example.test/v1/account/encryption/currentness') {
+        return axiosResponse(createAccountEncryptionCurrentnessFixture());
+      }
+      if (String(url) === `https://home-b.example.test/v2/sessions/${sessionId}?accessProjectionVersion=1`) {
+        return axiosResponse({ session: row });
+      }
+      throw new Error(`Unexpected request: ${String(url)}`);
+    });
+
+    try {
+      const executor = createCliActionExecutorFromCredentials({
+        credentials,
+        serverId: 'home-b',
+        serverApiUrl: 'https://home-b.example.test',
+      });
+
+      await expect(executor.resolveSessionTarget(sessionId)).resolves.toEqual({ ok: true, sessionId });
+      expect(readSettings).not.toHaveBeenCalled();
+    } finally {
+      axiosGet.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('acquires a collective-only transcript store through the credential Home feature fallback', async () => {
+    const { createCliActionExecutorFromCredentials } = await import('./createCliActionExecutorFromCredentials');
+    const sessionId = 'c123456789012345678901234';
+    const credentials = {
+      token: 'token_home_b',
+      encryption: { type: 'legacy' as const, secret: new Uint8Array(32).fill(1) },
+    };
+    const features = FeaturesResponseSchema.parse({
+      features: {
+        sessions: { enabled: true },
+        sharing: { session: { enabled: true } },
+      },
+      capabilities: {},
+    });
+    const row = createCurrentSessionProjectionRecordFixture({
+      id: sessionId,
+      encryptionMode: 'plain',
+      effectiveAccess: {
+        v: 1,
+        level: 'view',
+        sources: [{ kind: 'team', teamId: 'team-1', requiredByTeamPolicy: false }],
+        capabilities: projectLegacySessionAccessCapabilitiesV1({ level: 'view' }),
+      },
+    });
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      if (String(input) === 'https://home-b.example.test/v1/features/authenticated') {
+        return new Response(JSON.stringify(features), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (String(input) === 'http://127.0.0.1:3005/v1/account/encryption/currentness') {
+        return new Response(JSON.stringify(createAccountEncryptionCurrentnessFixture()), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      throw new Error(`Unexpected request: ${String(input)}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const axiosGet = vi.spyOn(axios, 'get').mockImplementation(async (url) => {
+      if (String(url) === 'http://127.0.0.1:3005/v1/account/encryption/currentness') {
+        return axiosResponse(createAccountEncryptionCurrentnessFixture());
+      }
+      if (String(url) === `http://127.0.0.1:3005/v2/sessions/${sessionId}?accessProjectionVersion=1`) {
+        return axiosResponse({ session: row });
+      }
+      if (String(url) === 'https://home-b.example.test/v1/account/encryption/currentness') {
+        return axiosResponse(createAccountEncryptionCurrentnessFixture());
+      }
+      if (String(url) === `https://home-b.example.test/v2/sessions/${sessionId}?accessProjectionVersion=1`) {
+        return axiosResponse({ session: row });
+      }
+      throw new Error(`Unexpected request: ${String(url)}`);
+    });
+
+    try {
+      createCliActionExecutorFromCredentials({
+        credentials,
+        serverId: 'home-b',
+        serverApiUrl: 'https://home-b.example.test',
+      });
+      const options = createCliActionExecutor.mock.calls.at(-1)?.[0];
+      if (!options?.resolveTranscriptStore) throw new Error('Expected transcript store resolver');
+
+      const store = await options.resolveTranscriptStore(sessionId);
+      await expect(store.warm()).resolves.toBeUndefined();
+      expect(readSettings).not.toHaveBeenCalled();
+    } finally {
+      axiosGet.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('loads action policy settings before preparation and preserves the prepared invocation', async () => {
     const events: string[] = [];
     const invocation = { run: vi.fn(async () => ({ ok: true as const, result: { childSessionId: 'child-1' } })) };
@@ -272,17 +438,17 @@ describe('createCliActionExecutorFromCredentials', () => {
       encryption: { type: 'legacy' as const, secret: new Uint8Array(32).fill(1) },
     };
     const revalidatePluginActionCallerMaterialization = vi.fn(async () => true);
-    const revalidatePluginActionCallerImmutableGeneration = vi.fn(async () => true);
+    const revalidatePluginActionCallerOccurrence = vi.fn(async () => true);
 
     createCliActionExecutorFromCredentials({
       credentials,
       revalidatePluginActionCallerMaterialization,
-      revalidatePluginActionCallerImmutableGeneration,
+      revalidatePluginActionCallerOccurrence,
     });
 
     expect(createCliActionExecutor).toHaveBeenLastCalledWith(expect.objectContaining({
       revalidatePluginActionCallerMaterialization,
-      revalidatePluginActionCallerImmutableGeneration,
+      revalidatePluginActionCallerOccurrence,
     }));
   });
 

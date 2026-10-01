@@ -1,7 +1,7 @@
+import { renderWithSessionTranscriptSource } from '@/dev/testkit';
 import React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-    renderScreen,
     standardCleanup,
 } from '@/dev/testkit';
 import { collectHostText, installToolShellCommonModuleMocks, makeToolCall } from './ToolView.testHelpers';
@@ -112,7 +112,7 @@ describe('ToolView (unknown tools)', () => {
             result: { ok: true },
         });
 
-        const screen = await renderScreen(React.createElement(ToolView, { tool, metadata: null }));
+        const screen = await renderWithSessionTranscriptSource(React.createElement(ToolView, { tool, metadata: null }));
 
         expect(collectHostText(screen.tree).join(' ')).toContain('SomeBrandNewTool');
         // Body should be hidden because the tool is unknown and collapses to title-only.

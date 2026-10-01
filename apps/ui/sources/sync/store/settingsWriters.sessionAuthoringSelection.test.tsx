@@ -5,6 +5,7 @@ import { FavoriteModelSelectionV1Schema } from '@/sync/domains/models/favoriteMo
 import { RememberedEngineSelectionsByScopeV1Schema } from '@/sync/domains/session/authoring/rememberedEngineSelections';
 
 const mutateAccountSettingsOnce = vi.hoisted(() => vi.fn());
+const applyAuthoringMemoryDelta = vi.hoisted(() => vi.fn());
 const settingsState = vi.hoisted(() => ({
     settingsVersion: 7 as number | null,
     settingsScope: { serverId: 'server-a', accountId: 'account-a' } as {
@@ -14,7 +15,7 @@ const settingsState = vi.hoisted(() => ({
 }));
 
 vi.mock('@/sync/runtime/getSyncSingleton', () => ({
-    getSyncSingleton: () => ({ mutateAccountSettingsOnce }),
+    getSyncSingleton: () => ({ mutateAccountSettingsOnce, applyAuthoringMemoryDelta }),
 }));
 vi.mock('@/sync/domains/state/storageStore', () => {
     const store = Object.assign(
@@ -35,7 +36,7 @@ function favorite(modelId: string, updatedAt: number) {
             v: 1,
             updatedAt,
             ref: {
-                agentTargetKey: 'backend:codex',
+                agentTargetKey: 'agent:happier.agent.codex/codex',
                 providerConnectionId: null,
                 modelId,
             },
@@ -70,6 +71,7 @@ describe('session-authoring Settings writers', () => {
         const input = mutateAccountSettingsOnce.mock.calls[0]?.[0];
         expect(input.expectedSettingsScope).toEqual({ serverId: 'server-a', accountId: 'account-a' });
         expect(input.expectedSettingsVersion).toBe(7);
+        expect(input.rebaseOnConflict).toBe(true);
         const result = input.mutate({
             favoriteModelSelectionsV1: [
                 base[0],
@@ -86,7 +88,7 @@ describe('session-authoring Settings writers', () => {
         });
     });
 
-    it('applies a remembered replacement once and retains an opaque scope in the observed carrier', async () => {
+    it('routes remembered edits to authoring memory without writing the Account settings document', async () => {
         const base = RememberedEngineSelectionsByScopeV1Schema.parse({
             'server-a:backend:codex': {
                 v: 1,
@@ -105,23 +107,10 @@ describe('session-authoring Settings writers', () => {
 
         await hook.getCurrent()({ base, proposed });
 
-        expect(mutateAccountSettingsOnce).toHaveBeenCalledOnce();
-        const input = mutateAccountSettingsOnce.mock.calls[0]?.[0];
-        expect(input.expectedSettingsScope).toEqual({ serverId: 'server-a', accountId: 'account-a' });
-        expect(input.expectedSettingsVersion).toBe(7);
-        const result = input.mutate({
-            lastEngineSelectionsByScopeV1: {
-                'server-a:backend:codex': base['server-a:backend:codex'],
-                'server-a:backend:future': { v: 2, futureWriterField: 'opaque-remembered' },
-            },
-        });
-
-        expect(result.settings).toMatchObject({
-            lastEngineSelectionsByScopeV1: {
-                'server-a:backend:codex': proposed['server-a:backend:codex'],
-                'server-a:backend:future': { v: 2, futureWriterField: 'opaque-remembered' },
-            },
-        });
+        expect(mutateAccountSettingsOnce).not.toHaveBeenCalled();
+        expect(applyAuthoringMemoryDelta).toHaveBeenCalledWith({
+            rememberedEngineSelectionReplacement: { base, proposed },
+        }, { expectedSettingsScope: { serverId: 'server-a', accountId: 'account-a' } });
     });
 
     it('keeps a retained writer bound to the Account scope and revision rendered before focus changes', async () => {

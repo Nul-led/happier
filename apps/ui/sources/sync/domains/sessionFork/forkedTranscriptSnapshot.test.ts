@@ -1,11 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { StorageState } from '@/sync/store/types';
-import type { Message } from '@/sync/domains/messages/messageTypes';
+import type { Message } from "@happier-dev/session-core/messages";
 import { getForkedTranscriptSnapshotCached } from './forkedTranscriptSnapshot';
 import type { Session } from '@/sync/domains/state/storageTypes';
 import type { SessionMessages } from '@/sync/store/domains/messages';
-import { createReducer } from '@/sync/reducer/reducer';
+import { createReducer } from "@happier-dev/session-core/reducer";
 
 function userMessage(id: string, seq: number, text: string): Message {
   return {

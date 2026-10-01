@@ -8,6 +8,7 @@ import {
 } from '@happier-dev/cli-common/homeEnrollment';
 import { classifyIrohHomeCarrierFailure, IrohError } from '@happier-dev/iroh-native';
 import type { HomeConnectionDescriptorV1 } from '@happier-dev/protocol';
+import { readRegisteredStorageState } from '@/sync/domains/state/storageStateReaderBridge';
 
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
 import {
@@ -35,12 +36,17 @@ export type AcquiredHomeCarrier =
 
 export type HomeCarrierAcquisitionInput = Readonly<{
     mode: HomeCarrierAcquisitionMode;
-    applicationCarrierEligibility: HomeApplicationCarrierEligibility;
+    applicationCarrierEligibility?: HomeApplicationCarrierEligibility;
     descriptor: HomeConnectionDescriptorV1;
     verification: IrohHomeTunnelVerification;
     credentials?: AuthCredentials;
     acquireNative?: (input: IrohHomeTunnelAcquireInput) => Promise<IrohHomeRuntimeOriginLease>;
 }>;
+
+/** The device-local setting is authoritative even for callers that request automatic selection. */
+export function readHomeApplicationCarrierEligibility(): HomeApplicationCarrierEligibility {
+    return readRegisteredStorageState()?.localSettings?.homeApplicationCarrierEligibility ?? 'automatic';
+}
 
 type UiIrohCarrierValue =
     | Readonly<{ kind: 'browser'; carrier: BrowserIrohHomeCarrier }>
@@ -65,7 +71,9 @@ function browserRequestFor(input: HomeCarrierAcquisitionInput): BrowserIrohHomeC
 export async function acquireEligibleHomeCarrier(input: HomeCarrierAcquisitionInput): Promise<AcquiredHomeCarrier> {
     const result = await acquireHomeCarrierByPolicy<UiIrohCarrierValue>({
         mode: input.mode,
-        applicationCarrierEligibility: input.applicationCarrierEligibility,
+        applicationCarrierEligibility: readHomeApplicationCarrierEligibility() === 'standard_only'
+            ? 'standard_only'
+            : input.applicationCarrierEligibility ?? 'automatic',
         descriptor: input.descriptor,
         preferredTransport: resolveHomeCarrierPreferredTransport(input.descriptor),
         classifyFailure: classifyIrohHomeCarrierFailure,

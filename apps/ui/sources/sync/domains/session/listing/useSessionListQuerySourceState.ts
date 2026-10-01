@@ -5,9 +5,11 @@ import {
     useMachineListByServerId,
     useMachineListStatusByServerId,
     useOrdinarySessionListMembershipByServerId,
+    useSessionListQueryMembershipByKey,
     useSessionListRowsByServerId,
     useSettings,
     useSocketStatus,
+    storage,
 } from '@/sync/domains/state/storage';
 import { getServerProfileById } from '@/sync/domains/server/serverProfiles';
 import { buildMachineDisplaysByIdFromMachineList, buildSessionListIndexWithServerScope } from '@/sync/store/sessionListIndex/buildSessionListIndexWithServerScope';
@@ -31,6 +33,7 @@ import {
     type SessionListOrdinaryPageAdapter,
     type SessionListQueryHomeController,
     type SessionListQueryHomeState,
+    type SessionListQueryMembership,
 } from './sessionListQueryController';
 import {
     fetchSessionListQueryPageForHome,
@@ -66,6 +69,20 @@ export type SessionListQueryHomeInput = Readonly<{
      * over this one per-Home pagination owner.
      */
     ordinaryAdapter?: SessionListOrdinaryPageAdapter | null;
+}>;
+
+/** The query corpora's lifecycle without their rows: what a membership-only consumer reads. */
+export type SessionListQueryHomeStatesState = Readonly<{
+    statesByServerId: Readonly<Record<string, SessionListQueryHomeState | undefined>>;
+    /**
+     * The shared membership projection each list surface renders: the applied page while one
+     * answers, otherwise the store's last-known membership for this exact Account/Home/query
+     * (`null` when neither exists). Last-known membership never makes `coverageComplete` true.
+     */
+    membershipByServerId: Readonly<Record<string, readonly SessionAddress[] | null>>;
+    coverageComplete: boolean;
+    loadNext(): Promise<void>;
+    refresh(): Promise<void>;
 }>;
 
 export type SessionListQuerySourceState = Readonly<{
@@ -232,6 +249,8 @@ export function buildSessionListQueryHomeIndex(input: Readonly<{
     sectionModeV1?: 'activity' | 'single';
     serverId: string;
     serverName: string | null;
+    /** The last index built for this Home: unchanged items (and the array itself) are reused. */
+    previousIndex?: ReadonlyArray<SessionListIndexItem> | null;
 }>): SessionListIndexItem[] {
     const rows: Record<string, SessionListRenderableSession> = {};
     for (const address of input.addresses) {
@@ -244,23 +263,38 @@ export function buildSessionListQueryHomeIndex(input: Readonly<{
         activeGroupingV1: input.activeGroupingV1,
         inactiveGroupingV1: input.inactiveGroupingV1,
         sectionModeV1: input.sectionModeV1,
+        previousIndex: input.previousIndex ?? null,
         serverScope: {
             serverId: input.serverId,
             serverName: input.serverName,
         },
     });
-    for (const address of input.addresses) {
-        if (input.rowsBySessionId?.[address.sessionId]) continue;
-        index.push({
-            type: 'session',
-            serverId: address.serverId,
-            ...(input.serverName ? { serverName: input.serverName } : {}),
-            sessionId: address.sessionId,
-            section: 'active',
-            groupKind: 'loading',
-        });
+    const missingAddresses = input.addresses.filter((address) => !input.rowsBySessionId?.[address.sessionId]);
+    if (missingAddresses.length === 0) return index;
+    // Rows not hydrated yet render as loading placeholders; reuse the previous placeholder objects.
+    const previousLoadingBySessionId = new Map(
+        (input.previousIndex ?? []).flatMap((item) => (
+            item.type === 'session' && item.groupKind === 'loading' ? [[item.sessionId, item] as const] : []
+        )),
+    );
+    const next: SessionListIndexItem[] = [...index];
+    for (const address of missingAddresses) {
+        const previous = previousLoadingBySessionId.get(address.sessionId);
+        next.push(previous && previous.type === 'session' && previous.serverId === address.serverId
+            ? previous
+            : {
+                type: 'session',
+                serverId: address.serverId,
+                ...(input.serverName ? { serverName: input.serverName } : {}),
+                sessionId: address.sessionId,
+                section: 'active',
+                groupKind: 'loading',
+            });
     }
-    return index;
+    const previousIndex = input.previousIndex;
+    return previousIndex && previousIndex.length === next.length && previousIndex.every((item, i) => item === next[i])
+        ? previousIndex as SessionListIndexItem[]
+        : next;
 }
 
 /**
@@ -268,11 +302,62 @@ export function buildSessionListQueryHomeIndex(input: Readonly<{
  * partial state, but only this predicate can turn a zero-row result into an
  * authoritative empty one.
  */
-export function useSessionListQuerySourceState(input: Readonly<{
+type SessionListQueryInput = Readonly<{
     enabled: boolean;
     homes: readonly SessionListQueryHomeInput[];
     emptySelectionComplete?: boolean;
-}>): SessionListQuerySourceState {
+}>;
+
+type SessionListQueryHomeStatus = 'ready' | 'unsupported' | 'pending';
+
+/**
+ * What a Home renders. `current` is the applied page; `retained` is the last-known
+ * membership for this exact Account/Home/query while no page can answer (a new
+ * controller, an unreachable Home, a transport hand-over). Retained rows never claim
+ * coverage: the Home stays pending until an authoritative page lands.
+ */
+type SessionListQueryRenderMembership = Readonly<{
+    addresses: readonly SessionAddress[];
+    retained: boolean;
+}>;
+
+/** The state layer plus what the index layer needs to place each Home's rows. */
+type SessionListQueryHomeStatesLayer = SessionListQueryHomeStatesState & Readonly<{
+    homes: readonly NormalizedQueryHome[];
+    statusByServerId: Readonly<Record<string, SessionListQueryHomeStatus>>;
+    renderMembershipByServerId: Readonly<Record<string, SessionListQueryRenderMembership | null>>;
+    hasReadySource: boolean;
+    hasPendingSource: boolean;
+}>;
+
+const retainedAddressesByMembership = new WeakMap<SessionListQueryMembership, readonly SessionAddress[]>();
+
+function readRetainedAddresses(membership: SessionListQueryMembership): readonly SessionAddress[] {
+    const cached = retainedAddressesByMembership.get(membership);
+    if (cached) return cached;
+    const addresses = membership.sessionIds.map((sessionId) => ({ serverId: membership.serverId, sessionId }));
+    retainedAddressesByMembership.set(membership, addresses);
+    return addresses;
+}
+
+/**
+ * The query corpora's lifecycle: controllers, per-Home state, coverage, paging and refresh. It reads
+ * no rows, machines or list settings, so a consumer that needs only membership (which Sessions are in
+ * a corpus) is not re-rendered by session content changes.
+ */
+export function useSessionListQueryHomeStates(input: SessionListQueryInput): SessionListQueryHomeStatesState {
+    const layer = useSessionListQueryHomeStatesLayer(input);
+    const { statesByServerId, membershipByServerId, coverageComplete, loadNext, refresh } = layer;
+    return React.useMemo(() => ({ statesByServerId, membershipByServerId, coverageComplete, loadNext, refresh }), [
+        coverageComplete,
+        loadNext,
+        membershipByServerId,
+        refresh,
+        statesByServerId,
+    ]);
+}
+
+function useSessionListQueryHomeStatesLayer(input: SessionListQueryInput): SessionListQueryHomeStatesLayer {
     const homes = React.useMemo(() => normalizeHomes(input.homes), [input.homes]);
     const homeServerIds = React.useMemo(() => homes.map((home) => home.serverId), [homes]);
     const supportByServerId = useSessionListQueryHomeSupportByServerId(homeServerIds, input.enabled);
@@ -285,12 +370,10 @@ export function useSessionListQuerySourceState(input: Readonly<{
         followingHomeServerIds,
         input.enabled && followingHomeServerIds.length > 0,
     );
-    const rowsByServerId = useSessionListRowsByServerId();
     const ordinaryMembershipByServerId = useOrdinarySessionListMembershipByServerId();
-    const machineListsByServerId = useMachineListByServerId();
+    const queryMembershipByKey = useSessionListQueryMembershipByKey();
     const machineStatusesByServerId = useMachineListStatusByServerId();
     const socketStatus = useSocketStatus();
-    const settings = useSettings();
     const accountScopesByServerId = useServerCredentialAccountScopes(homeServerIds);
     // Homes whose ordinary corpus an incumbent runtime already owns — Sync for the
     // applied Home, the concurrent cache for every other managed Home. Their
@@ -356,9 +439,16 @@ export function useSessionListQuerySourceState(input: Readonly<{
             if (!binding?.isCurrent()) continue;
             let controller = controllersRef.current.get(home.serverId);
             if (!controller) {
+                const accountId = binding.accountId;
                 controller = createSessionListQueryHomeController({
                     serverId: home.serverId,
                     fetchPage: (page) => fetchSessionListQueryPageForHome(home.serverId, page),
+                    // The store owns what the list shows; the controller commits each
+                    // applied page under the exact Account it was read for.
+                    commitMembership: (queryKey, sessionIds) => storage.getState().commitSessionListQueryMembership(
+                        queryKey,
+                        sessionIds ? { serverId: home.serverId, accountId, sessionIds } : null,
+                    ),
                 });
                 controllersRef.current.set(home.serverId, controller);
                 controllerAccountScopesRef.current.set(home.serverId, binding);
@@ -451,40 +541,48 @@ export function useSessionListQuerySourceState(input: Readonly<{
         )));
     }, [homes, readHomeState, managedOrdinaryHomes]);
 
-    return React.useMemo(() => {
-        const statesByServerId: Record<string, SessionListQueryHomeState | undefined> = {};
-        const byServerId: Record<string, ReadonlyArray<SessionListIndexItem> | null | undefined> = {};
-        const source: SessionListIndexItem[] = [];
+    const readRetainedRenderMembership = React.useCallback((
+        home: NormalizedQueryHome,
+        state: SessionListQueryHomeState | undefined,
+    ): SessionListQueryRenderMembership | null => {
+        // The incumbent ordinary corpus is already store-owned (warm cache, then Sync or
+        // the concurrent cache); only its first snapshot is outstanding.
+        if (managedOrdinaryHomes.has(home.serverId)) {
+            return state && state.addresses.length > 0 ? { addresses: state.addresses, retained: true } : null;
+        }
+        const membership = queryMembershipByKey[home.queryKey];
+        const binding = accountScopesByServerId.get(home.serverId);
+        if (!membership || !binding?.isCurrent() || membership.accountId !== binding.accountId) return null;
+        return { addresses: readRetainedAddresses(membership), retained: true };
+    }, [accountScopesByServerId, managedOrdinaryHomes, queryMembershipByKey]);
+
+    const previousStatesRef = React.useRef<Readonly<Record<string, SessionListQueryHomeState | undefined>> | null>(null);
+    const previousMembershipRef = React.useRef<Readonly<Record<string, readonly SessionAddress[] | null>> | null>(null);
+    const layer = React.useMemo(() => {
+        const nextStates: Record<string, SessionListQueryHomeState | undefined> = {};
+        const statusByServerId: Record<string, SessionListQueryHomeStatus> = {};
+        const renderMembershipByServerId: Record<string, SessionListQueryRenderMembership | null> = {};
         let hasReadySource = false;
         let hasPendingSource = false;
         let coverageComplete = true;
         for (const home of homes) {
             const state = readHomeState(home);
-            statesByServerId[home.serverId] = state;
+            nextStates[home.serverId] = state;
             if (!state || state.appliedQueryKey !== home.queryKey) {
                 if (state?.phase === 'error' && state.failureReason === 'unsupported') {
-                    byServerId[home.serverId] = [];
+                    statusByServerId[home.serverId] = 'unsupported';
                     hasReadySource = true;
                     coverageComplete = false;
                     continue;
                 }
-                byServerId[home.serverId] = null;
+                statusByServerId[home.serverId] = 'pending';
                 hasPendingSource = true;
                 coverageComplete = false;
+                renderMembershipByServerId[home.serverId] = readRetainedRenderMembership(home, state);
                 continue;
             }
-            const index = buildSessionListQueryHomeIndex({
-                addresses: state.addresses,
-                rowsBySessionId: rowsByServerId[home.serverId],
-                machines: buildMachineDisplaysByIdFromMachineList(machineListsByServerId[home.serverId]),
-                activeGroupingV1: settings.sessionListActiveGroupingV1,
-                inactiveGroupingV1: settings.sessionListInactiveGroupingV1,
-                sectionModeV1: settings.sessionListSectionModeV1,
-                serverId: home.serverId,
-                serverName: getServerProfileById(home.serverId)?.name ?? null,
-            });
-            byServerId[home.serverId] = index;
-            source.push(...index);
+            statusByServerId[home.serverId] = 'ready';
+            renderMembershipByServerId[home.serverId] = { addresses: state.addresses, retained: false };
             hasReadySource = true;
             if (!isSessionListQueryHomeCoverageComplete({
                 state,
@@ -493,11 +591,29 @@ export function useSessionListQuerySourceState(input: Readonly<{
                 coverageComplete = false;
             }
         }
-
+        // Keep the record when every Home's state object is the one already published.
+        const previousStates = previousStatesRef.current;
+        const statesByServerId = previousStates
+            && Object.keys(previousStates).length === homes.length
+            && homes.every((home) => home.serverId in previousStates && previousStates[home.serverId] === nextStates[home.serverId])
+            ? previousStates
+            : nextStates;
+        const nextMembership: Record<string, readonly SessionAddress[] | null> = {};
+        for (const home of homes) nextMembership[home.serverId] = renderMembershipByServerId[home.serverId]?.addresses ?? null;
+        const previousMembership = previousMembershipRef.current;
+        const membershipByServerId = previousMembership
+            && Object.keys(previousMembership).length === homes.length
+            && homes.every((home) => home.serverId in previousMembership && previousMembership[home.serverId] === nextMembership[home.serverId])
+            ? previousMembership
+            : nextMembership;
         return {
+            homes,
             statesByServerId,
-            byServerId,
-            source: !input.enabled ? null : hasReadySource ? source : hasPendingSource ? null : [],
+            membershipByServerId,
+            statusByServerId,
+            renderMembershipByServerId,
+            hasReadySource,
+            hasPendingSource,
             coverageComplete: homes.length === 0
                 ? resolveEmptySessionListQueryCoverage({
                     enabled: input.enabled,
@@ -514,15 +630,127 @@ export function useSessionListQuerySourceState(input: Readonly<{
         input.enabled,
         input.emptySelectionComplete,
         loadNext,
-        machineListsByServerId,
         machineStatusesByServerId,
         ordinaryMembershipByServerId,
+        queryMembershipByKey,
         readHomeState,
+        readRetainedRenderMembership,
         refresh,
-        rowsByServerId,
-        settings.sessionListActiveGroupingV1,
-        settings.sessionListInactiveGroupingV1,
-        settings.sessionListSectionModeV1,
         socketStatus,
     ]);
+    // Remember only what was committed; an abandoned render must not become the reference point.
+    React.useLayoutEffect(() => {
+        previousStatesRef.current = layer.statesByServerId;
+        previousMembershipRef.current = layer.membershipByServerId;
+    }, [layer.membershipByServerId, layer.statesByServerId]);
+    return layer;
+}
+
+const NO_SERVER_IDS: readonly string[] = Object.freeze([]);
+
+/**
+ * The query corpora as list indexes: the state layer plus each ready Home's rows placed into the
+ * session list index. It follows only the enabled Homes' rows, and a row change that leaves every
+ * Home's index structurally equal (a metadata write) publishes the previous indexes and record, so the
+ * list and every summary computed from it keep their identity. Row content is rendered by each row
+ * from its own subscription, not from this index.
+ */
+export function useSessionListQuerySourceState(input: SessionListQueryInput): SessionListQuerySourceState {
+    const layer = useSessionListQueryHomeStatesLayer(input);
+    const homeServerIds = React.useMemo(
+        () => (input.enabled ? layer.homes.map((home) => home.serverId) : NO_SERVER_IDS),
+        [input.enabled, layer.homes],
+    );
+    const rowsByServerId = useSessionListRowsByServerId(homeServerIds);
+    const machineListsByServerId = useMachineListByServerId();
+    const settings = useSettings();
+    const activeGroupingV1 = settings.sessionListActiveGroupingV1;
+    const inactiveGroupingV1 = settings.sessionListInactiveGroupingV1;
+    const sectionModeV1 = settings.sessionListSectionModeV1;
+    const previousRef = React.useRef<Readonly<{
+        byServerId: Readonly<Record<string, ReadonlyArray<SessionListIndexItem> | null | undefined>>;
+        source: ReadonlyArray<SessionListIndexItem> | null;
+        result: SessionListQuerySourceState | null;
+    }>>({ byServerId: {}, source: null, result: null });
+
+    const result = React.useMemo(() => {
+        const previous = previousRef.current;
+        const nextByServerId: Record<string, ReadonlyArray<SessionListIndexItem> | null | undefined> = {};
+        for (const home of layer.homes) {
+            const status = layer.statusByServerId[home.serverId];
+            if (status === 'unsupported') {
+                const previousIndex = previous.byServerId[home.serverId];
+                nextByServerId[home.serverId] = Array.isArray(previousIndex) && previousIndex.length === 0 ? previousIndex : [];
+                continue;
+            }
+            const membership = layer.renderMembershipByServerId[home.serverId];
+            if (!membership) {
+                nextByServerId[home.serverId] = null;
+                continue;
+            }
+            const homeRows = rowsByServerId[home.serverId];
+            const previousIndex = previous.byServerId[home.serverId];
+            // Retained rows show only what this device still holds; a retained id with
+            // no row (retired meanwhile) is not a loading placeholder.
+            const addresses = membership.retained
+                ? membership.addresses.filter((address) => Boolean(homeRows?.[address.sessionId]))
+                : membership.addresses;
+            if (membership.retained && addresses.length === 0 && membership.addresses.length > 0) {
+                // Last-known ids alone are not an answer: with none of their rows held, this
+                // Home is still loading rather than an empty result.
+                nextByServerId[home.serverId] = null;
+                continue;
+            }
+            nextByServerId[home.serverId] = buildSessionListQueryHomeIndex({
+                addresses,
+                rowsBySessionId: rowsByServerId[home.serverId],
+                machines: buildMachineDisplaysByIdFromMachineList(machineListsByServerId[home.serverId]),
+                activeGroupingV1,
+                inactiveGroupingV1,
+                sectionModeV1,
+                serverId: home.serverId,
+                serverName: getServerProfileById(home.serverId)?.name ?? null,
+                previousIndex: Array.isArray(previousIndex) ? previousIndex : null,
+            });
+        }
+        const previousByServerId = previous.byServerId;
+        const byServerIdUnchanged = Object.keys(previousByServerId).length === layer.homes.length
+            && layer.homes.every((home) => (
+                home.serverId in previousByServerId && previousByServerId[home.serverId] === nextByServerId[home.serverId]
+            ));
+        const byServerId = byServerIdUnchanged ? previousByServerId : nextByServerId;
+        const hasRenderableSource = layer.hasReadySource
+            || layer.homes.some((home) => nextByServerId[home.serverId] != null);
+        const source = !input.enabled
+            ? null
+            : hasRenderableSource
+                ? (byServerIdUnchanged && previous.source !== null
+                    ? previous.source
+                    : layer.homes.flatMap((home) => nextByServerId[home.serverId] ?? []))
+                : layer.hasPendingSource ? null : [];
+        const previousResult = previous.result;
+        if (
+            previousResult
+            && previousResult.byServerId === byServerId
+            && previousResult.source === source
+            && previousResult.statesByServerId === layer.statesByServerId
+            && previousResult.coverageComplete === layer.coverageComplete
+            && previousResult.loadNext === layer.loadNext
+            && previousResult.refresh === layer.refresh
+        ) {
+            return previousResult;
+        }
+        return {
+            statesByServerId: layer.statesByServerId,
+            byServerId,
+            source,
+            coverageComplete: layer.coverageComplete,
+            loadNext: layer.loadNext,
+            refresh: layer.refresh,
+        };
+    }, [activeGroupingV1, inactiveGroupingV1, input.enabled, layer, machineListsByServerId, rowsByServerId, sectionModeV1]);
+    React.useLayoutEffect(() => {
+        previousRef.current = { byServerId: result.byServerId, source: result.source, result };
+    }, [result]);
+    return result;
 }

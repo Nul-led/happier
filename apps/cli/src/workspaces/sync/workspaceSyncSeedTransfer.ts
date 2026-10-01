@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { WorkspaceManifestSchema } from '@happier-dev/protocol';
+import { WorkspaceManifestSchema, type WorkspaceContentPolicyV1 } from '@happier-dev/protocol';
 import type { ScmBackendRegistry } from '@/scm/registry';
 import { buildWorkspaceExportArtifactsWithBlobProviderFromWorkspaceIntegration } from '@/scm/workspace/workspaceTransferResolution';
 import type { ScmWorkspaceIntegrationWorkspaceExportArtifacts } from '@/scm/workspace/workspaceExportArtifacts';
@@ -33,6 +33,19 @@ const WORKSPACE_SYNC_SEED_MATERIALIZATION_NAMING = {
   stagingIdPrefix: 'workspace-sync-seed',
 } as const;
 
+/** One content-policy projection for enrolled copy_once and managed Session seeds. */
+export function resolveWorkspaceSyncSeedTransfer(
+  contentPolicy: Pick<WorkspaceContentPolicyV1, 'selection' | 'extraIncludePatterns' | 'extraIgnorePatterns'>,
+): ScmWorkspaceIntegrationWorkspaceTransferRequestInput {
+  const ignoredIncludeGlobs = [...contentPolicy.extraIncludePatterns];
+  return {
+    includeIgnoredMode: ignoredIncludeGlobs.length > 0 ? 'include_selected' as const : 'exclude' as const,
+    ignoredIncludeGlobs,
+    ...(contentPolicy.selection === 'all_files' ? { includeAllIgnored: true } : {}),
+    extraIgnorePatterns: [...contentPolicy.extraIgnorePatterns],
+  };
+}
+
 function blobTransferId(operationId: string, digest: string): string {
   return `${operationId}:blob:${createHash('sha256').update(digest).digest('hex')}`;
 }
@@ -46,6 +59,7 @@ export async function createWorkspaceSyncSeedExport(input: Readonly<{
 }>): Promise<Readonly<{
   payloadSource: TransferPayloadSource;
   onDemandScope: DirectPeerOnDemandTransferScope;
+  blobTransferIds: readonly string[];
 }>> {
   const built = await buildWorkspaceExportArtifactsWithBlobProviderFromWorkspaceIntegration(input);
   const digests = [...new Set(built.workspaceExportArtifacts.manifest.entries.flatMap((entry) => (
@@ -59,6 +73,7 @@ export async function createWorkspaceSyncSeedExport(input: Readonly<{
     blobTransferIds: Object.fromEntries(transferIdByDigest),
   };
   return {
+    blobTransferIds: [...digestByTransferId.keys()],
     payloadSource: createBufferTransferPayloadSource(Buffer.from(JSON.stringify(envelope), 'utf8')),
     onDemandScope: {
       allowTransferId: (transferId) => digestByTransferId.has(transferId),

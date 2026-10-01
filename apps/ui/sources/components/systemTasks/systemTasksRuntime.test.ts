@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { resolveSystemTaskRunnerMode } from './systemTasksRuntime';
+import { resolveSystemTaskRunnerMode } from './systemTaskRunnerMode';
 
 describe('resolveSystemTaskRunnerMode', () => {
     it('selects native system tasks automatically on iOS and Android when no explicit mode is set', () => {
@@ -27,7 +27,7 @@ describe('resolveSystemTaskRunnerMode', () => {
         })).toBe('unavailable');
     });
 
-    it('uses the native task bridge only for Tauri and fails closed on Electron', () => {
+    it('uses the shared desktop task bridge for both Tauri and Electron', () => {
         expect(resolveSystemTaskRunnerMode({
             explicitMode: '',
             desktopHostKind: 'tauri',
@@ -39,6 +39,6 @@ describe('resolveSystemTaskRunnerMode', () => {
             desktopHostKind: 'electron',
             nodeEnv: 'production',
             platformOS: 'web',
-        })).toBe('unavailable');
+        })).toBe('tauri');
     });
 });

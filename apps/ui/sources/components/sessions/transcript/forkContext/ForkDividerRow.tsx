@@ -1,13 +1,14 @@
+import { useSessionTranscriptSource } from '@/components/sessions/transcript/source/SessionTranscriptSourceContext';
 import * as React from 'react';
 import { Pressable } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
-import { useRouter } from 'expo-router';
 import { Text } from '@/components/ui/text/Text';
 import { t } from '@/text';
 import { TranscriptSeparatorRow } from '@/components/sessions/transcript/separators/TranscriptSeparatorRow';
 import { buildScopedSessionRouteHref } from '@/hooks/session/sessionRouteServerScope';
 import { useSession } from '@/sync/domains/state/storage';
 import { getSessionName } from '@/utils/sessions/sessionUtils';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 export function ForkDividerRow(props: Readonly<{
   parentSessionId: string;
@@ -17,7 +18,7 @@ export function ForkDividerRow(props: Readonly<{
   serverId?: string | null;
 }>): React.ReactElement {
   const { theme } = useUnistyles();
-  const router = useRouter();
+  const transcriptSource = useSessionTranscriptSource();
   const parentSession = useSession(props.parentSessionId);
   const dividerId = `${props.parentSessionId}:${props.childSessionId}`;
   const parentName = parentSession ? getSessionName(parentSession) : null;
@@ -29,12 +30,12 @@ export function ForkDividerRow(props: Readonly<{
   const parentServerId = props.serverId ?? parentSession?.serverId ?? null;
   const handleOpenParent = React.useCallback(() => {
     const seq = Math.max(0, Math.trunc(props.parentCutoffSeqInclusive));
-    router.push(buildScopedSessionRouteHref({
+    transcriptSource.navigate?.(buildScopedSessionRouteHref({
       sessionId: props.parentSessionId,
       serverId: parentServerId,
       query: { jumpSeq: seq },
-    }) as any);
-  }, [parentServerId, props.parentCutoffSeqInclusive, props.parentSessionId, router]);
+    }));
+  }, [parentServerId, props.parentCutoffSeqInclusive, props.parentSessionId, transcriptSource]);
 
   return (
     <TranscriptSeparatorRow
@@ -42,18 +43,18 @@ export function ForkDividerRow(props: Readonly<{
       iconName="git-branch"
       title={title}
       subtitle={t('session.forking.dividerSubtitle')}
-      rightAccessory={(
+      rightAccessory={transcriptSource.navigate !== null ? (
         <Pressable
           testID={`transcript-fork-divider-open-parent:${dividerId}`}
           onPress={handleOpenParent}
           accessibilityRole="button"
           accessibilityLabel={t('session.forking.openParentA11y')}
           hitSlop={12}
-          style={({ pressed }) => [styles.openButton, pressed ? { opacity: 0.65 } : null]}
+          style={({ pressed }) => [styles.openButton, pressed ? { opacity: motionTokens.press.opacity } : null]}
         >
           <Text style={[styles.openButtonText, { color: theme.colors.text.link }]}>{t('session.forking.openParent')}</Text>
         </Pressable>
-      )}
+      ) : null}
     />
   );
 }

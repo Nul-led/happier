@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Machine, Session } from '@/sync/domains/state/storageTypes';
+import { t } from '@/text';
 import { buildSessionListViewData, type SessionListViewItem } from './sessionListViewData';
 
 type SessionListViewHeader = Extract<SessionListViewItem, { type: 'header' }>;
@@ -463,6 +464,32 @@ describe('buildSessionListViewData', () => {
         expect(projectHeader).toMatchObject({
             seedSessionId: 'newest',
         });
+    });
+
+    it('names project groups through the machine naming owner: same names told apart, unnamed never the id', () => {
+        const meta = { platform: 'darwin', happyCliVersion: '0.0.0', happyHomeDir: '/h', homeDir: '/home/u' };
+        const machines = {
+            'm-a': makeMachine({ id: 'm-a', metadata: { ...meta, displayName: 'Build', host: 'mac.local' } as any }),
+            'm-b': makeMachine({ id: 'm-b', metadata: { ...meta, displayName: 'Build', host: 'linux.local' } as any }),
+            'm-unnamed': makeMachine({ id: 'm-unnamed', metadata: { ...meta } as any }),
+        };
+        const session = (id: string, machineId: string, path: string) => makeSession({
+            id,
+            createdAt: 1,
+            updatedAt: 1,
+            metadata: { machineId, path, homeDir: '/home/u', host: '', version: '0.0.0', flavor: 'claude' },
+        });
+        const data = buildSessionListViewData({
+            a: session('a', 'm-a', '/home/u/repoA'),
+            b: session('b', 'm-b', '/home/u/repoB'),
+            c: session('c', 'm-unnamed', '/home/u/repoC'),
+        }, machines, { serverScope: { serverId: 'server-1' } } as any);
+
+        const subtitles = data
+            .filter((item): item is Extract<typeof item, { type: 'header' }> => item.type === 'header' && item.headerKind === 'project')
+            .map((header) => header.subtitle);
+        expect(subtitles).toEqual(expect.arrayContaining(['Build · mac.local', 'Build · linux.local', t('machine.unnamedMachine')]));
+        expect(subtitles).not.toContain('m-unnamed');
     });
 
     it('groups sessions by the canonical reachable machine target when metadata machine ids are stale', () => {

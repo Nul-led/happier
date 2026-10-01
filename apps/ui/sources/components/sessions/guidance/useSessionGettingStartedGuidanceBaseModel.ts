@@ -1,9 +1,8 @@
 import * as React from 'react';
 
 import { useVisibleSessionListSummaryState } from '@/hooks/session/useVisibleSessionListSummaryState';
-import { useAllMachines, useMachineListByServerId } from '@/sync/domains/state/storage';
+import { useAllMachines, useMachineListByServerId, useMachineListStatusByServerId } from '@/sync/domains/state/storage';
 import { useHomeViewSelectionSettings } from '@/hooks/server/useHomeViewSelectionSettings';
-import { useLocalDaemonControl } from '@/components/settings/machines/localControl/useLocalDaemonControl';
 
 import type { SessionGettingStartedViewModel } from './gettingStartedModel';
 import { buildSessionGettingStartedViewModel } from './gettingStartedModel';
@@ -14,7 +13,7 @@ export function useSessionGettingStartedGuidanceBaseModel(): SessionGettingStart
     const { serverSelectionGroups } = useHomeViewSelectionSettings();
     const activeMachines = useAllMachines();
     const machineListByServerId = useMachineListByServerId();
-    const localDaemonControl = useLocalDaemonControl();
+    const machineListStatusByServerId = useMachineListStatusByServerId();
     const selectionSnapshot = React.useMemo(() => ({
         activeTarget: summarySelection.activeTarget,
         activeServerId: summarySelection.activeServerId,
@@ -31,17 +30,17 @@ export function useSessionGettingStartedGuidanceBaseModel(): SessionGettingStart
             sessionsReady: sessionSummary.sessionsReady,
             sessionCount: sessionSummary.sessionCount,
             activeMachines,
-            localDaemonStatus: localDaemonControl.status,
             selection: selectionSnapshot,
             serverSelectionGroups,
             activeServerProfile,
             machineListByServerId,
+            machineListStatusByServerId,
         });
     }, [
         activeServerProfile,
         activeMachines,
-        localDaemonControl.status,
         machineListByServerId,
+        machineListStatusByServerId,
         selectionSnapshot,
         serverSelectionGroups,
         sessionSummary.sessionCount,

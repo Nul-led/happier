@@ -1,14 +1,17 @@
 import {
     REMOVE_INDEX_LOCK_CONFIRMATION_TOKEN,
+    normalizeScmOperationOutcome,
+    ScmOperationErrorCodeSchema,
+    type ScmOperationOutcome,
     type ScmRepositoryRemoveIndexLockRequest,
     type ScmRepositoryRemoveIndexLockResponse,
-} from '@happier-dev/protocol';
+} from '@happier-dev/protocol/scm';
 
 import { Modal } from '@/modal';
 import { t } from '@/text';
 import { isRecoverableGitIndexLockError } from '@/scm/operations/userFacingErrors';
 
-type ScmOperationResponse = { success: boolean; errorCode?: string; error?: string; stderr?: string };
+type ScmOperationResponse = { success: boolean; errorCode?: string; error?: string; stderr?: string; outcome?: ScmOperationOutcome; commitSha?: string };
 
 export async function runScmOperationWithGitIndexLockRecovery<
     TFailureResponse extends ScmOperationResponse,
@@ -22,6 +25,7 @@ export async function runScmOperationWithGitIndexLockRecovery<
 }>): Promise<TFailureResponse | TRetryResponse> {
     if (
         input.recoveryAlreadyAttempted === true
+        || normalizeScmOperationOutcome({ ...input.failedResponse, errorCode: ScmOperationErrorCodeSchema.safeParse(input.failedResponse.errorCode).data }).kind !== 'failed'
         || !isRecoverableGitIndexLockError(input.failedResponse)
     ) {
         return input.failedResponse;

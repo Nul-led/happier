@@ -17,6 +17,7 @@ import { BrandWordmark } from './BrandWordmark';
 import { PlanetBackground } from './PlanetBackground';
 import { WelcomeFooterLinks } from './WelcomeFooterLinks';
 import { useBrandPaneTokens } from './brandPaneTokens';
+import type { RelayRetentionDisclosureState } from './RelayRetentionDisclosure';
 
 // Mobile welcome wordmark sits at the same coordinates as the brand hero's
 // wordmark (24px top + 24px left, plus the safe-area insets) so users see
@@ -60,7 +61,9 @@ export type WorkflowPanelProps = Readonly<{
     variant: 'desktop' | 'mobile';
     children: React.ReactNode;
     isWelcomeStep: boolean;
-    retentionSummary?: string | null;
+    /** Shows the compact mobile product mark on focused public entry flows. */
+    showMobileWordmark?: boolean;
+    retentionDisclosure?: RelayRetentionDisclosureState | null;
     onOpenRelayCustomFlow: () => void;
     onBack?: () => void;
     transitionKey: string;
@@ -124,6 +127,7 @@ export const WorkflowPanel = React.memo(function WorkflowPanel(props: WorkflowPa
     // back to flat canvas. Scoped to mobile + welcome so other steps stay
     // clean and desktop uses StagePane for the planet.
     const showMobileWelcomeBackdrop = isMobile && props.isWelcomeStep;
+    const showMobileWordmark = isMobile && (props.isWelcomeStep || props.showMobileWordmark === true);
     // When the planet backdrop renders, the underlying canvas color must
     // match the planet's top-edge color so any area not covered by the
     // oversized image blends seamlessly with it. Outside the welcome step
@@ -158,7 +162,7 @@ export const WorkflowPanel = React.memo(function WorkflowPanel(props: WorkflowPa
                     style={styles.planetBottomFade}
                 />
             ) : null}
-            {showMobileWelcomeBackdrop ? (
+            {showMobileWordmark ? (
                 <View
                     testID="welcome-mobile-wordmark"
                     style={[
@@ -243,7 +247,7 @@ export const WorkflowPanel = React.memo(function WorkflowPanel(props: WorkflowPa
                             </StepTransitionFrame>
                             <WelcomeFooterLinks
                                 variant="mobile"
-                                retentionSummary={props.retentionSummary}
+                                retentionDisclosure={props.retentionDisclosure}
                             />
                         </>
                     ) : (
@@ -262,7 +266,7 @@ export const WorkflowPanel = React.memo(function WorkflowPanel(props: WorkflowPa
                             <View style={styles.footerSpacer} />
                             <WelcomeFooterLinks
                                 variant="desktop"
-                                retentionSummary={props.retentionSummary}
+                                retentionDisclosure={props.retentionDisclosure}
                             />
                         </>
                     )

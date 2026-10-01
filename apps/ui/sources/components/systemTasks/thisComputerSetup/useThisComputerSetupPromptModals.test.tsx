@@ -9,6 +9,7 @@ import type { SystemTaskRunState, SystemTaskRunner } from '../types';
 
 const modalSpies = vi.hoisted(() => ({
     confirm: vi.fn(async () => false),
+    alertAsync: vi.fn(async (..._args: unknown[]) => {}),
 }));
 
 // Mock factories import the leaf testkit mock modules, never the full
@@ -20,6 +21,7 @@ vi.mock('@/modal', async () => {
     return createModalModuleMock({
         spies: {
             confirm: modalSpies.confirm,
+            alertAsync: modalSpies.alertAsync as never,
         },
     }).module;
 });
@@ -72,7 +74,49 @@ afterEach(() => {
     standardCleanup();
     modalSpies.confirm.mockReset();
     modalSpies.confirm.mockResolvedValue(false);
+    modalSpies.alertAsync.mockReset();
 });
+
+type AlertButtonArg = Readonly<{ text: string; style?: string; onPress?: () => void }>;
+
+function cliChoicePrompt(overrides: Record<string, unknown> = {}): SystemTaskPromptEnvelope {
+    return {
+        kind: 'setup.cliChoice',
+        message: 'Happier CLI 0.2.13 is already installed at /usr/local/bin/happier.',
+        data: {
+            kind: 'setup.cliChoice',
+            command: '/usr/local/bin/happier',
+            version: '0.2.13',
+            origin: 'npm',
+            removalCommand: 'npm uninstall -g @happier-dev/cli',
+            updateCommand: 'npm install -g @happier-dev/cli@latest',
+            belowSetupFloor: false,
+            missing: false,
+            keepBlockedBy: null,
+            ...overrides,
+        } as SystemTaskPromptEnvelope['data'],
+    };
+}
+
+async function answerCliChoice(prompt: SystemTaskPromptEnvelope, pressText: string | null) {
+    const { useThisComputerSetupPromptModals } = await import('./useThisComputerSetupPromptModals');
+    const { runner, respond } = createRunnerStub();
+    let buttons: readonly AlertButtonArg[] = [];
+    let title = '';
+    modalSpies.alertAsync.mockImplementation(async (...args: unknown[]) => {
+        title = args[0] as string;
+        buttons = (args[2] ?? []) as readonly AlertButtonArg[];
+        buttons.find((button) => button.text === pressText)?.onPress?.();
+    });
+    await renderHook(() => useThisComputerSetupPromptModals({
+        runner,
+        taskId: 'task-cli',
+        snapshot: createSnapshot('task-cli'),
+        prompt,
+    }));
+    await flushHookEffects();
+    return { respond, title, buttonTexts: buttons.map((button) => button.text) };
+}
 
 describe('useThisComputerSetupPromptModals', () => {
     it('accepts the default release-channel switch prompt and responds to the system task', async () => {
@@ -219,5 +263,38 @@ describe('useThisComputerSetupPromptModals', () => {
         expect(confirmCalls[0]?.[0]).toBe(prompt.message);
         expect(confirmCalls[0]?.[1]).toBeUndefined();
         expect(respond).toHaveBeenCalledWith(taskId, { takeOverManualRelayRuntime: true });
+    });
+    describe('the one-CLI question (R12)', () => {
+        it('answers managed when the person lets Happier manage the command line', async () => {
+            const { respond, title, buttonTexts } = await answerCliChoice(cliChoicePrompt(), 'machine.thisComputer.cliChoice.manage');
+            expect(title).toBe('machine.thisComputer.cliChoice.title');
+            expect(buttonTexts).toEqual(['machine.thisComputer.cliChoice.keep', 'machine.thisComputer.cliChoice.manage']);
+            expect(modalSpies.confirm).not.toHaveBeenCalled();
+            expect(respond).toHaveBeenCalledWith('task-cli', { choice: 'managed' });
+        });
+
+        it('answers own when the person keeps their CLI', async () => {
+            const { respond } = await answerCliChoice(cliChoicePrompt(), 'machine.thisComputer.cliChoice.keep');
+            expect(respond).toHaveBeenCalledWith('task-cli', { choice: 'own' });
+        });
+
+        it('answers nothing when the question is dismissed, so setup stops before writing', async () => {
+            const { respond } = await answerCliChoice(cliChoicePrompt(), null);
+            expect(respond).toHaveBeenCalledWith('task-cli', { choice: null });
+        });
+
+        it('does not offer Keep when another managed link answers first; Not now answers nothing', async () => {
+            const { respond, buttonTexts } = await answerCliChoice(
+                cliChoicePrompt({ keepBlockedBy: '/home/me/.local/bin/happier' }),
+                'machine.thisComputer.cliChoice.notNow',
+            );
+            expect(buttonTexts).toEqual(['machine.thisComputer.cliChoice.notNow', 'machine.thisComputer.cliChoice.manage']);
+            expect(respond).toHaveBeenCalledWith('task-cli', { choice: null });
+        });
+
+        it('asks about a kept CLI that disappeared by the path it was at', async () => {
+            const { title } = await answerCliChoice(cliChoicePrompt({ missing: true, version: null }), null);
+            expect(title).toBe('machine.thisComputer.cliChoice.titleMissing');
+        });
     });
 });

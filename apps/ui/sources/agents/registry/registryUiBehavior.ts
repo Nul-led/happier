@@ -259,6 +259,8 @@ export type AgentUiBehavior = Readonly<{
         supportsEditableGoals?: (ctx: {
             agentId: AgentLookupId;
             session: Session;
+            /** The goal's daemon executes goal changes for this session (closed, or no runtime goal controls). */
+            daemonGoalControlsSupported?: boolean;
         }) => boolean;
         /**
          * Provider goal-action capability profile applied when no goal item carries its own
@@ -270,6 +272,8 @@ export type AgentUiBehavior = Readonly<{
         resolveGoalActionCapabilityProfile?: (ctx: {
             agentId: AgentLookupId;
             session: Session;
+            /** The goal's daemon executes goal changes for this session (closed, or no runtime goal controls). */
+            daemonGoalControlsSupported?: boolean;
         }) => GoalActionCapabilities | null;
     }>;
     sessionComposer?: Readonly<{
@@ -395,6 +399,14 @@ export type AgentUiBehavior = Readonly<{
         createTeammateLauncherDetailsTab?: (ctx: {
             session: Session;
             teamId: string;
+        }) => DetailsTab | null;
+        /**
+         * A Details tab that presents the Agent's launch surface (the same one `renderLaunchCards`
+         * mounts), so a host can offer it from a menu instead of as a card in its pane.
+         */
+        createLaunchDetailsTab?: (ctx: {
+            session: Session;
+            subagents: readonly SessionSubagent[];
         }) => DetailsTab | null;
     }>;
 }>;

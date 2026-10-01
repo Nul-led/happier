@@ -3,17 +3,12 @@ import type { SessionAuthoringDraft } from '@/components/sessions/authoring/draf
 import type { NewSessionAutomationDraft } from '@/sync/domains/automations/automationDraft';
 import type { SessionAuthoringSnapshot } from '@/sync/domains/sessionAuthoring/sessionAuthoringSnapshot';
 
-export type NewSessionAuthoringSubmissionMode = 'launch' | 'createAutomation';
-export type NewSessionSubmitAccessibilityLabelKey = 'automations.create.createButtonTitle';
-
 export type NewSessionAuthoringContext = Readonly<{
     kind: 'newSession';
     draft: SessionAuthoringDraft;
     effectiveAutomationDraft: NewSessionAutomationDraft;
     showAutomationActionChips: boolean;
     canSubmit: boolean;
-    submissionMode: NewSessionAuthoringSubmissionMode;
-    submitAccessibilityLabelKey?: NewSessionSubmitAccessibilityLabelKey;
 }>;
 
 export type LiveSessionAuthoringContext = Readonly<{

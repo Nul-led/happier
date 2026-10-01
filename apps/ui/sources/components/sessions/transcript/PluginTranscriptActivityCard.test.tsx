@@ -185,10 +185,9 @@ describe('PluginTranscriptActivityCard', () => {
             />,
         );
 
-        expect(announceForAccessibilityMock).toHaveBeenCalledTimes(1);
-        expect(announceForAccessibilityMock).toHaveBeenLastCalledWith(
-            expect.stringContaining('status.working'),
-        );
+        // The state a card mounts with is already on screen (and a virtualized
+        // transcript remounts cards on scroll), so the shared owner stays silent.
+        expect(announceForAccessibilityMock).not.toHaveBeenCalled();
 
         await screen.update(
             <PluginTranscriptActivityCard
@@ -200,7 +199,7 @@ describe('PluginTranscriptActivityCard', () => {
                 })}
             />,
         );
-        expect(announceForAccessibilityMock).toHaveBeenCalledTimes(1);
+        expect(announceForAccessibilityMock).not.toHaveBeenCalled();
 
         await screen.update(
             <PluginTranscriptActivityCard
@@ -213,7 +212,7 @@ describe('PluginTranscriptActivityCard', () => {
                 })}
             />,
         );
-        expect(announceForAccessibilityMock).toHaveBeenCalledTimes(2);
+        expect(announceForAccessibilityMock).toHaveBeenCalledTimes(1);
         expect(announceForAccessibilityMock).toHaveBeenLastCalledWith(
             expect.stringContaining('status.offline'),
         );

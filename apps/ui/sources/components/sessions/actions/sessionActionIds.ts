@@ -13,6 +13,11 @@ export const SESSION_ACTION_EDIT_TAGS_ID = 'ui.session.tags.edit';
 export const SESSION_ACTION_MOVE_TO_FOLDER_ID = 'ui.session.move-to-folder';
 export const SESSION_ACTION_SET_ATTENTION_STANDING_ID = 'ui.session.set-attention-standing';
 export const SESSION_ACTION_CLEAR_ATTENTION_STANDING_ID = 'ui.session.clear-attention-standing';
+/** Gives the Session the Orchestrator role (ORC §3.8): `session.role.set {roleId: 'orchestrator'}`. */
+export const SESSION_ACTION_MAKE_ORCHESTRATOR_ID = 'ui.session.make-orchestrator';
+export const ORCHESTRATOR_ROLE_ID = 'orchestrator';
+/** Puts the Session under a lead, or back at the top ("Put under…", the drag equivalent; ORC §3.8). */
+export const SESSION_ACTION_PUT_UNDER_ID = 'ui.session.put-under';
 
 export function resolveManualReadStateFromSessionActionId(actionId: string): 'read' | 'unread' | null {
     if (actionId === SESSION_ACTION_MARK_READ_ID) return 'read';

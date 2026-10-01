@@ -4,7 +4,8 @@ import type { ExternalSessionBrowseCandidate } from '@/components/sessions/exter
 import type { ReviewCommentDraft } from '@/sync/domains/input/reviewComments/reviewCommentTypes';
 import type { NewSessionDraft } from '@/sync/domains/state/persistence';
 import type { Machine, PendingMessage, Session } from '@/sync/domains/state/storageTypes';
-import type { NormalizedMessage } from '@/sync/typesRaw';
+import type { NormalizedMessage } from "@happier-dev/session-core/raw";
+import type { DecryptedArtifact } from '@/sync/domains/artifacts/artifactTypes';
 
 import { buildDemoProfile, type DemoWorldProfile } from './connectedAccounts';
 import { buildDemoLocalSettings, type DemoWorldLocalSettings } from './localSettings';
@@ -22,12 +23,14 @@ import { buildDemoMessages, buildDemoPendingMessages, buildDemoReviewComments } 
 import { buildDemoServerFeatures } from './serverFeatures';
 import { buildDemoSessions, createDemoOpenCodeSessionFixture } from './sessions';
 import { buildDemoSettings, type DemoWorldSettings } from './settings';
+import { buildDemoRoleArtifacts } from './subagentGuidance';
 
 export { DEMO_RICH_SESSION_ID } from './constants';
 export { createDemoMachineFixture, type CreateDemoMachineFixtureOptions } from './machines';
 export { createDemoOpenCodeSessionFixture, type CreateDemoOpenCodeSessionFixtureOptions } from './sessions';
 
 export type DemoWorld = Readonly<{
+    artifacts: DecryptedArtifact[];
     sessions: Session[];
     machines: Machine[];
     messages: Record<string, NormalizedMessage[]>;
@@ -41,6 +44,7 @@ export type DemoWorld = Readonly<{
 
 export function buildDemoWorld(): DemoWorld {
     return {
+        artifacts: buildDemoRoleArtifacts(),
         sessions: buildDemoSessions(),
         machines: buildDemoMachines(),
         messages: buildDemoMessages(),

@@ -8,6 +8,19 @@ import { HappyError } from '@/utils/errors/errors';
 
 import { buildSessionListQueryKey } from './sessionListQueryKey';
 
+/** One strict-query corpus's applied membership as the store holds it. */
+export type SessionListQueryMembership = Readonly<{
+    serverId: string;
+    accountId: string;
+    sessionIds: readonly string[];
+    /**
+     * Restored from this device's warm cache; no page has confirmed it in this process. It renders
+     * only as retained (never complete coverage), an applied page always replaces it, and it is not
+     * written back, so persisted corpora stay the ones this process actually read.
+     */
+    lastKnown?: true;
+}>;
+
 export type SessionListQueryFailureReason =
     | 'unsupported'
     | 'invalid_query'
@@ -86,7 +99,12 @@ export type SessionListQueryHomeController = Readonly<{
     subscribe(listener: () => void): () => void;
     update(input: ControllerInput): Promise<void>;
     refresh(): Promise<void>;
-    invalidate(): Promise<void>;
+    /**
+     * Re-read page one after an Account change. `'structural'` (a row-level Session
+     * write) skips a corpus the ordinary list can answer: its membership is decided by
+     * ownership and archive state, which the exact row refresh already reconciles.
+     */
+    invalidate(scope?: 'structural'): Promise<void>;
     /**
      * Removes one committed-retired (deleted/revoked) Session from this Home's
      * applied membership. A response already in flight is fenced at the list reader,
@@ -218,6 +236,12 @@ function classifyFailure(error: unknown): Readonly<{
 export function createSessionListQueryHomeController(params: Readonly<{
     serverId: string;
     fetchPage(request: SessionListQueryPageRequest): Promise<SessionListFetchResult>;
+    /**
+     * Receives every change of the applied membership (`null` when access denial
+     * withdraws it). The store is the rendered owner; this controller keeps only the
+     * request and cursor lifecycle.
+     */
+    commitMembership?(queryKey: string, sessionIds: readonly string[] | null): void;
     now?: () => number;
 }>): SessionListQueryHomeController {
     const serverId = params.serverId.trim();
@@ -257,8 +281,35 @@ export function createSessionListQueryHomeController(params: Readonly<{
 
     const publish = (next: SessionListQueryHomeState): void => {
         if (disposed || next === state) return;
+        const previous = state;
         state = next;
+        if (next.appliedQueryKey && (next.appliedQueryKey !== previous.appliedQueryKey || next.addresses !== previous.addresses)) {
+            params.commitMembership?.(next.appliedQueryKey, next.addresses.map((address) => address.sessionId));
+        } else if (!next.appliedQueryKey && previous.appliedQueryKey) {
+            params.commitMembership?.(previous.appliedQueryKey, null);
+        }
         for (const listener of listeners) listener();
+    };
+
+    /**
+     * Publish an unavailable phase (not selected, support loading, unsupported,
+     * transferring, offline) only when it changes what subscribers can observe.
+     * Surfaces re-apply their input on every socket or machine-status change; a
+     * fresh but equal state object would re-render every list consumer each time.
+     */
+    const publishPhase = (
+        requestedQueryKey: string,
+        phase: SessionListQueryHomeState['phase'],
+        failureReason: SessionListQueryHomeState['failureReason'] = null,
+        failureCode: SessionListQueryHomeState['failureCode'] = null,
+    ): void => {
+        if (
+            state.requestedQueryKey === requestedQueryKey
+            && state.phase === phase
+            && state.failureReason === failureReason
+            && state.failureCode === failureCode
+        ) return;
+        publish({ ...state, requestedQueryKey, phase, failureReason, failureCode });
     };
 
     const isRequestCurrent = (requestRevision: number, signal: AbortSignal): boolean => (
@@ -326,7 +377,7 @@ export function createSessionListQueryHomeController(params: Readonly<{
                 const addresses = appendAddresses(
                     family === 'replace' ? [] : state.addresses,
                     serverId,
-                    result.sessionIds,
+                    result.sessionIds.filter((sessionId) => result.isSessionCurrent?.(sessionId) !== false),
                 );
 
                 if (repeatedOrdinaryCursor || repeatedAttentionCursor) {
@@ -424,13 +475,7 @@ export function createSessionListQueryHomeController(params: Readonly<{
                 activeAbortController = null;
                 inFlight = null;
                 refreshQueued = false;
-                publish({
-                    ...state,
-                    requestedQueryKey: nextQueryKey,
-                    phase: 'not_selected',
-                    failureReason: null,
-                    failureCode: null,
-                });
+                publishPhase(nextQueryKey, 'not_selected');
                 return;
             }
             if (nextInput.supported === null || nextInput.supported === undefined) {
@@ -439,13 +484,7 @@ export function createSessionListQueryHomeController(params: Readonly<{
                 activeAbortController = null;
                 inFlight = null;
                 refreshQueued = false;
-                publish({
-                    ...state,
-                    requestedQueryKey: nextQueryKey,
-                    phase: 'idle',
-                    failureReason: null,
-                    failureCode: null,
-                });
+                publishPhase(nextQueryKey, 'idle');
                 return;
             }
             // Strict query admission stays exactly `supported === true`. A Home that
@@ -458,13 +497,7 @@ export function createSessionListQueryHomeController(params: Readonly<{
                 activeAbortController = null;
                 inFlight = null;
                 refreshQueued = false;
-                publish({
-                    ...state,
-                    requestedQueryKey: nextQueryKey,
-                    phase: 'error',
-                    failureReason: 'unsupported',
-                    failureCode: 'filtered_session_listing_unavailable',
-                });
+                publishPhase(nextQueryKey, 'error', 'unsupported', 'filtered_session_listing_unavailable');
                 return;
             }
             if (nextInput.online === null) {
@@ -473,13 +506,7 @@ export function createSessionListQueryHomeController(params: Readonly<{
                 activeAbortController = null;
                 inFlight = null;
                 refreshQueued = false;
-                publish({
-                    ...state,
-                    requestedQueryKey: nextQueryKey,
-                    phase: state.appliedQueryKey === nextQueryKey ? 'refreshing' : 'loading',
-                    failureReason: null,
-                    failureCode: null,
-                });
+                publishPhase(nextQueryKey, state.appliedQueryKey === nextQueryKey ? 'refreshing' : 'loading');
                 return;
             }
             if (!nextInput.online) {
@@ -492,24 +519,27 @@ export function createSessionListQueryHomeController(params: Readonly<{
                 // the one canonical replacement for the newly-online input; a
                 // later invalidation can still queue against that new request.
                 refreshQueued = false;
-                publish({
-                    ...state,
-                    requestedQueryKey: nextQueryKey,
-                    phase: 'offline',
-                    failureReason: null,
-                    failureCode: null,
-                });
+                publishPhase(nextQueryKey, 'offline');
                 return;
             }
             const queryChanged = previousQueryKey !== nextQueryKey
                 || state.appliedQueryKey !== nextQueryKey;
             const previousPlan = resolvePageRequestPlan(previousInput);
             const nextPlan = resolvePageRequestPlan(input);
-            if (
-                queryChanged
-                || previousPlan === null
-                || previousPlan.membership !== nextPlan?.membership
-            ) {
+            const membershipChanged = previousPlan === null
+                || previousPlan.membership !== nextPlan?.membership;
+            // The same query re-applied while its page is still in flight is not a new request:
+            // restarting it would abort the page that is about to answer, and a surface that
+            // re-applies its input on every render would never leave loading.
+            const requestAlreadyInFlight = inFlight !== null
+                && previousQueryKey === nextQueryKey
+                && state.requestedQueryKey === nextQueryKey
+                && !membershipChanged;
+            if (requestAlreadyInFlight) {
+                await inFlight;
+                return;
+            }
+            if (queryChanged || membershipChanged) {
                 await startPage('replace');
             }
         },
@@ -525,8 +555,9 @@ export function createSessionListQueryHomeController(params: Readonly<{
             }
             return startPage('replace');
         },
-        invalidate: () => {
+        invalidate: (scope) => {
             if (disposed || !input?.selected || !input.online) return Promise.resolve();
+            if (scope === 'structural' && canSessionListOrdinaryPageAnswerQuery(input.query)) return Promise.resolve();
             if (inFlight) {
                 refreshQueued = true;
                 const currentRequest = inFlight;

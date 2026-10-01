@@ -6,6 +6,11 @@ import type { Duplex } from 'node:stream';
 import type { LoopbackWebSocketJsonClientV1 } from '@/plugins/runtime/exec/privateContract';
 import { describe, expect, it, vi } from 'vitest';
 
+import { createBrowserAutomationCdpAdapter } from '../automation/adapters/cdp';
+import { createControlAdapterAutomationTransport } from '../automation/adapters/controlBridge';
+import { connectBrowserSidecarCdpTransport, createBrowserSidecarCdpTransport } from './cdpTransport';
+import { createBrowserSidecarCdpControlAdapter } from './controlAdapter';
+
 type CdpPageHandle = Readonly<{
     targetId: string;
     sessionId?: string;
@@ -20,6 +25,8 @@ type CdpTransport = Readonly<{
     dispatchBrowserCommand(input: Readonly<{
         method: string;
         params?: Record<string, unknown>;
+        deadlineMs?: number;
+        signal?: AbortSignal;
     }>): Promise<unknown>;
     subscribeCdpEvents(listener: (notification: Readonly<{
         method: string;
@@ -32,14 +39,10 @@ type CdpTransport = Readonly<{
 type CdpTransportModule = Readonly<{
     createBrowserSidecarCdpTransport?: (input: Readonly<{
         client: LoopbackWebSocketJsonClientV1;
-        requestTimeoutMs?: number;
-        maxResponseBytes?: number;
     }>) => CdpTransport;
     connectBrowserSidecarCdpTransport?: (input: Readonly<{
         endpoint: Readonly<{ url: string }>;
-        requestTimeoutMs?: number;
         connectTimeoutMs?: number;
-        maxMessageBytes?: number;
     }>) => Promise<CdpTransport>;
 }>;
 
@@ -49,7 +52,7 @@ async function loadTransportModule(): Promise<CdpTransportModule | null> {
     return import('./cdpTransport') as Promise<CdpTransportModule | null>;
 }
 
-function createFakeJsonClient(): {
+function createFakeJsonClient(reply?: (message: SentMessage) => Record<string, unknown> | undefined): {
     readonly client: LoopbackWebSocketJsonClientV1;
     readonly sent: readonly SentMessage[];
     emit(message: unknown): void;
@@ -73,7 +76,12 @@ function createFakeJsonClient(): {
                 return () => listeners.delete(listener);
             },
             async sendJson(message) {
-                sent.push(message as SentMessage);
+                const command = message as SentMessage;
+                sent.push(command);
+                const result = reply?.(command);
+                if (result !== undefined) {
+                    for (const listener of [...listeners]) await listener({ id: command.id, result });
+                }
             },
         },
         sent,
@@ -102,7 +110,20 @@ function responseFor(message: SentMessage, result: unknown): Readonly<{ id: numb
 
 function encodeServerFrame(text: string): Buffer {
     const payload = Buffer.from(text, 'utf8');
-    if (payload.byteLength >= 126) throw new Error('test server supports small frames only');
+    if (payload.byteLength > 65_535) {
+        const header = Buffer.alloc(10);
+        header[0] = 0x81;
+        header[1] = 127;
+        header.writeBigUInt64BE(BigInt(payload.byteLength), 2);
+        return Buffer.concat([header, payload]);
+    }
+    if (payload.byteLength >= 126) {
+        const header = Buffer.alloc(4);
+        header[0] = 0x81;
+        header[1] = 126;
+        header.writeUInt16BE(payload.byteLength, 2);
+        return Buffer.concat([header, payload]);
+    }
     return Buffer.concat([Buffer.from([0x81, payload.byteLength]), payload]);
 }
 
@@ -169,11 +190,10 @@ async function startCdpWebSocketServer(onMessage: (message: Record<string, unkno
                 }
                 const requestMessage = JSON.parse(decoded.text) as Record<string, unknown>;
                 const response = onMessage(requestMessage);
-                socket.write(encodeServerFrame(
-                    typeof response === 'string'
-                        ? response
-                        : JSON.stringify(response),
-                ));
+                for (const frame of Array.isArray(response) ? response : [response]) {
+                    if (frame === undefined) continue;
+                    socket.write(encodeServerFrame(typeof frame === 'string' ? frame : JSON.stringify(frame)));
+                }
             }
         });
     });
@@ -200,6 +220,113 @@ async function startCdpWebSocketServer(onMessage: (message: Record<string, unkno
 }
 
 describe('browser sidecar CDP JSON-RPC transport', () => {
+    it('drains issued navigation acknowledgements on cancellation and honors the containing deadline without closing unrelated requests', async () => {
+        vi.useFakeTimers();
+        const fake = createFakeJsonClient(command => {
+            if (command.method === 'Target.createTarget') return { targetId: 'target_1' };
+            if (command.method === 'Target.attachToTarget') return { sessionId: 'session_1' };
+            if (command.method === 'Page.getFrameTree') return { frameTree: { frame: { id: 'frame_1', url: 'https://example.test' } } };
+            if (command.method === 'Page.getNavigationHistory') return { currentIndex: 0, entries: [{ id: 1, url: 'https://example.test', title: 'Fixture' }] };
+            if (command.method === 'Page.navigate') return undefined;
+            if (command.method === 'Browser.getVersion') return { product: 'healthy' };
+            return {};
+        });
+        const transport = createBrowserSidecarCdpTransport({ client: fake.client });
+        const adapter = createBrowserSidecarCdpControlAdapter({ browserSessionId: 'browser_session_1', sidecarId: 'sidecar_1', transport });
+        try {
+            const opened = adapter.dispatchCommand({ kind: 'openView', commandId: 'open', browserSessionId: 'browser_session_1', viewId: 'view_1', platform: 'web', focus: false,
+                target: { kind: 'externalUrl', targetId: 'external', url: 'https://example.test' } });
+            await opened;
+            const automation = createBrowserAutomationCdpAdapter({ transport: createControlAdapterAutomationTransport({ adapter }) });
+            const controller = new AbortController();
+            let cancelledResult: unknown;
+            const cancelled = automation.execute({ v: 1, automationRequestId: 'cancel', browserSessionId: 'browser_session_1', viewId: 'view_1', navigationGeneration: 1, requestedBy: 'agent', requesterRef: { kind: 'agent', id: 'agent_1' }, actionKind: 'navigate', payload: { url: 'https://example.test/cancel' }, timeoutMs: 10_000 }, { deadlineMs: Date.now() + 10_000, signal: controller.signal })
+                .then(result => { cancelledResult = result; });
+            await vi.advanceTimersByTimeAsync(0);
+            const heldNavigation = fake.sent.find(command => command.method === 'Page.navigate');
+            expect(heldNavigation).toBeDefined();
+            controller.abort();
+            await vi.advanceTimersByTimeAsync(0);
+            expect(cancelledResult).toBeUndefined();
+            await expect(transport.dispatchBrowserCommand({ method: 'Browser.getVersion' })).resolves.toEqual({ product: 'healthy' });
+            fake.emit(responseFor(heldNavigation!, {}));
+            await cancelled;
+            expect(cancelledResult).toMatchObject({ status: 'canceled', errorCode: 'user_canceled', interruptionCompletion: 'uncertain' });
+            let navigationResult: unknown;
+            const navigation = Promise.resolve(adapter.dispatchCommand({ kind: 'navigate', commandId: 'navigate', browserSessionId: 'browser_session_1', viewId: 'view_1', url: 'https://example.test/next' }, { deadlineMs: Date.now() + 20 }))
+                .then((result) => { navigationResult = result; });
+            await vi.advanceTimersByTimeAsync(20);
+            expect(navigationResult).toMatchObject({ status: 'failed' });
+            await navigation;
+            const healthy = transport.dispatchBrowserCommand({ method: 'Browser.getVersion' });
+            await expect(healthy).resolves.toEqual({ product: 'healthy' });
+        } finally {
+            adapter.dispose();
+            transport.dispose();
+            vi.useRealTimers();
+        }
+    });
+    it('keeps large screenshot responses and screencast events healthy alongside unrelated responses on a real socket', async () => {
+        const data = 'A'.repeat(1024 * 1024 + 4);
+        let screenshotId: unknown;
+        const server = await startCdpWebSocketServer((message) => {
+            if (message.method === 'Page.captureScreenshot') {
+                screenshotId = message.id;
+                return undefined;
+            }
+            return [
+                { method: 'Page.screencastFrame', sessionId: 'page', params: { data } },
+                { id: screenshotId, result: { data } },
+                { id: message.id, result: { product: 'Chrome/Test' } },
+            ];
+        });
+        const transport = await connectBrowserSidecarCdpTransport({ endpoint: server.endpoint });
+        try {
+            const events: unknown[] = [];
+            transport.subscribeCdpEvents((event) => events.push(event));
+            const screenshot = transport.dispatchBrowserCommand({ method: 'Page.captureScreenshot' });
+            const version = transport.dispatchBrowserCommand({ method: 'Browser.getVersion' });
+            const results = await Promise.allSettled([screenshot, version]);
+            expect(results.map((result) => result.status)).toEqual(['fulfilled', 'fulfilled']);
+            if (results[0].status === 'fulfilled') expect(results[0].value).toEqual({ data });
+            if (results[1].status === 'fulfilled') expect(results[1].value).toEqual({ product: 'Chrome/Test' });
+            expect(events).toEqual([{ method: 'Page.screencastFrame', sessionId: 'page', params: { data } }]);
+        } finally {
+            transport.dispose();
+            await server.close();
+        }
+    });
+
+    it('uses the containing deadline beyond five seconds and isolates cancellation and late replies', async () => {
+        vi.useFakeTimers();
+        const fake = createFakeJsonClient();
+        const transport = createBrowserSidecarCdpTransport({ client: fake.client });
+        try {
+            const abort = new AbortController();
+            const long = transport.dispatchBrowserCommand({ method: 'Long', deadlineMs: Date.now() + 10_000 });
+            const cancelled = transport.dispatchBrowserCommand({ method: 'Cancelled', signal: abort.signal });
+            const cancelledResult = Promise.allSettled([cancelled]);
+            const longResult = Promise.allSettled([long]);
+            await vi.advanceTimersByTimeAsync(6_000);
+            abort.abort();
+            expect(await cancelledResult).toMatchObject([{ status: 'rejected', reason: { name: 'AbortError' } }]);
+            fake.emit(responseFor(fake.sent[1], {}));
+            fake.emit(responseFor(fake.sent[0], { finished: true }));
+            expect(await longResult).toEqual([{ status: 'fulfilled', value: { finished: true } }]);
+            const timed = transport.dispatchBrowserCommand({ method: 'Timed', deadlineMs: Date.now() + 10 });
+            const timedResult = Promise.allSettled([timed]);
+            await vi.advanceTimersByTimeAsync(10);
+            expect(await timedResult).toMatchObject([{ status: 'rejected', reason: { code: 'cdp_request_timeout' } }]);
+            fake.emit(responseFor(fake.sent[2], {}));
+            const next = transport.dispatchBrowserCommand({ method: 'Next' });
+            fake.emit(responseFor(fake.sent[3], { healthy: true }));
+            await expect(next).resolves.toEqual({ healthy: true });
+        } finally {
+            transport.dispose();
+            vi.useRealTimers();
+        }
+    });
+
     it('opens a focused page through Target.createTarget, attachToTarget, and activateTarget', async () => {
         const mod = await loadTransportModule();
 
@@ -209,7 +336,6 @@ describe('browser sidecar CDP JSON-RPC transport', () => {
         const fake = createFakeJsonClient();
         const transport = mod.createBrowserSidecarCdpTransport({
             client: fake.client,
-            requestTimeoutMs: 250,
         });
 
         const opened = transport.openPage({
@@ -253,7 +379,6 @@ describe('browser sidecar CDP JSON-RPC transport', () => {
         const fake = createFakeJsonClient();
         const transport = mod.createBrowserSidecarCdpTransport({
             client: fake.client,
-            requestTimeoutMs: 250,
         });
 
         const result = transport.dispatchPageCommand({
@@ -288,7 +413,6 @@ describe('browser sidecar CDP JSON-RPC transport', () => {
         const fake = createFakeJsonClient();
         const transport = mod.createBrowserSidecarCdpTransport({
             client: fake.client,
-            requestTimeoutMs: 250,
         });
 
         const received: Array<Record<string, unknown>> = [];
@@ -332,8 +456,6 @@ describe('browser sidecar CDP JSON-RPC transport', () => {
         const fake = createFakeJsonClient();
         const transport = mod.createBrowserSidecarCdpTransport({
             client: fake.client,
-            requestTimeoutMs: 250,
-            maxResponseBytes: 512,
         });
 
         const command = transport.dispatchPageCommand({
@@ -357,7 +479,7 @@ describe('browser sidecar CDP JSON-RPC transport', () => {
         await expect(command).rejects.not.toThrow(/ws:\/\/|session_secret|target_secret/u);
     });
 
-    it('rejects unknown response ids, malformed responses, oversize responses, close, timeout, and dispose', async () => {
+    it('rejects unknown response ids, malformed responses, close, containing deadline, and dispose', async () => {
         const mod = await loadTransportModule();
 
         expect(mod?.createBrowserSidecarCdpTransport).toBeTypeOf('function');
@@ -366,7 +488,6 @@ describe('browser sidecar CDP JSON-RPC transport', () => {
         const unknownIdClient = createFakeJsonClient();
         const unknownIdTransport = mod.createBrowserSidecarCdpTransport({
             client: unknownIdClient.client,
-            requestTimeoutMs: 250,
         });
         const unknownIdCommand = unknownIdTransport.dispatchBrowserCommand({ method: 'Browser.getVersion' });
         await waitForSent(unknownIdClient.sent, 1);
@@ -376,28 +497,15 @@ describe('browser sidecar CDP JSON-RPC transport', () => {
         const malformedClient = createFakeJsonClient();
         const malformedTransport = mod.createBrowserSidecarCdpTransport({
             client: malformedClient.client,
-            requestTimeoutMs: 250,
         });
         const malformedCommand = malformedTransport.dispatchBrowserCommand({ method: 'Browser.getVersion' });
         await waitForSent(malformedClient.sent, 1);
         malformedClient.emit('not a json-rpc response');
         await expect(malformedCommand).rejects.toMatchObject({ code: 'cdp_malformed_response' });
 
-        const oversizedClient = createFakeJsonClient();
-        const oversizedTransport = mod.createBrowserSidecarCdpTransport({
-            client: oversizedClient.client,
-            requestTimeoutMs: 250,
-            maxResponseBytes: 32,
-        });
-        const oversizedCommand = oversizedTransport.dispatchBrowserCommand({ method: 'Browser.getVersion' });
-        await waitForSent(oversizedClient.sent, 1);
-        oversizedClient.emit({ id: oversizedClient.sent[0].id, result: { payload: 'x'.repeat(100) } });
-        await expect(oversizedCommand).rejects.toMatchObject({ code: 'cdp_response_too_large' });
-
         const closedClient = createFakeJsonClient();
         const closedTransport = mod.createBrowserSidecarCdpTransport({
             client: closedClient.client,
-            requestTimeoutMs: 250,
         });
         const closedCommand = closedTransport.dispatchBrowserCommand({ method: 'Browser.getVersion' });
         await waitForSent(closedClient.sent, 1);
@@ -408,15 +516,13 @@ describe('browser sidecar CDP JSON-RPC transport', () => {
         const timeoutClient = createFakeJsonClient();
         const timeoutTransport = mod.createBrowserSidecarCdpTransport({
             client: timeoutClient.client,
-            requestTimeoutMs: 5,
         });
-        await expect(timeoutTransport.dispatchBrowserCommand({ method: 'Browser.getVersion' }))
+        await expect(timeoutTransport.dispatchBrowserCommand({ method: 'Browser.getVersion', deadlineMs: Date.now() + 5 }))
             .rejects.toMatchObject({ code: 'cdp_request_timeout' });
 
         const disposedClient = createFakeJsonClient();
         const disposedTransport = mod.createBrowserSidecarCdpTransport({
             client: disposedClient.client,
-            requestTimeoutMs: 250,
         });
         const disposedCommand = disposedTransport.dispatchBrowserCommand({ method: 'Browser.getVersion' });
         await waitForSent(disposedClient.sent, 1);
@@ -439,9 +545,7 @@ describe('browser sidecar CDP JSON-RPC transport', () => {
         try {
             const transport = await mod.connectBrowserSidecarCdpTransport({
                 endpoint: server.endpoint,
-                requestTimeoutMs: 250,
                 connectTimeoutMs: 250,
-                maxMessageBytes: 512,
             });
             await expect(transport.dispatchBrowserCommand({ method: 'Browser.getVersion' }))
                 .resolves.toEqual({ product: 'Chrome/Test' });

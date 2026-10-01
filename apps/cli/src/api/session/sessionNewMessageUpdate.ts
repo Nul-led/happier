@@ -3,7 +3,7 @@ import type {
     UserMessage,
 } from '../types';
 import { SessionMessageContentSchema, UserMessageSchema } from '../types';
-import { AgentSessionRuntimeEventSchema, coerceSessionUserPromptV1, readPendingLocalId } from '@happier-dev/protocol';
+import { AgentSessionRuntimeEventSchema, SessionInputAdmissionReceiptV1Schema, coerceSessionUserPromptV1, readPendingLocalId } from '@happier-dev/protocol';
 import { summarizeValueShapeForLog } from '@/diagnostics/eventShapeForLog';
 import {
     detectSessionTurnLifecycleEvent,
@@ -96,6 +96,15 @@ export function handleSessionNewMessageUpdate(params: {
         };
     }
 
+    const rawInputAdmissionReceipt = params.update.body.message.inputAdmissionReceipt;
+    const inputAdmissionReceipt = SessionInputAdmissionReceiptV1Schema.safeParse(rawInputAdmissionReceipt);
+    if (rawInputAdmissionReceipt != null && !inputAdmissionReceipt.success) {
+        return {
+            handled: true,
+            lastObservedMessageSeq: params.lastObservedMessageSeq,
+            lastObservedUserMessageSeq: params.lastObservedUserMessageSeq,
+        };
+    }
     const messageId = params.update.body.message.id;
     const hasMessageId = typeof messageId === 'string' && messageId.length > 0;
     const markMessageIdAsReceived = () => {
@@ -172,6 +181,7 @@ export function handleSessionNewMessageUpdate(params: {
         && params.consumeLocallyAuthoredTranscriptObservationLocalId?.(localId) === true;
     const bodyWithTransportFields = {
         ...(bodyWithLocalId as any),
+        callerInputConstraints: inputAdmissionReceipt.success ? inputAdmissionReceipt.data.callerInputConstraints : undefined,
         // Attach server timestamps so downstream consumers can make clock-safe decisions.
         ...(transportCreatedAt === undefined ? {} : {
             createdAt: historyReplayProvenance?.sourceCreatedAt ?? transportCreatedAt,
@@ -232,6 +242,7 @@ export function handleSessionNewMessageUpdate(params: {
         if (coerced) {
             const candidate = {
                 role: 'user' as const,
+                callerInputConstraints: bodyWithTransportFields.callerInputConstraints,
                 content: { type: 'text' as const, text: coerced.text },
                 createdAt: (bodyWithTransportFields as any).createdAt,
                 localId: (bodyWithTransportFields as any).localId,

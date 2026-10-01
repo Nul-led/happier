@@ -1,4 +1,4 @@
-import { useInboxModel } from './useInboxModel';
+import { useSharedInboxSummary } from './useInboxSummary';
 
 /**
  * The navigation dot represents ready or response-required work. Recent
@@ -7,5 +7,5 @@ import { useInboxModel } from './useInboxModel';
  * owning surfaces.
  */
 export function useInboxHasContent(): boolean {
-    return useInboxModel().hasContent;
+    return useSharedInboxSummary().hasContent;
 }

@@ -25,6 +25,10 @@ import { installAutomationComponentCommonModuleMocks } from '../automationCompon
 const itemFocusNodes = vi.hoisted(() => new Map<string, { focus: ReturnType<typeof vi.fn> }>());
 const textInputFocusNodes = vi.hoisted(() => new Map<string, { focus: ReturnType<typeof vi.fn> }>());
 
+function readKeyboardCommandHandler(command: string): (() => void) | undefined {
+    return keyboardRegistration.handlers?.[command];
+}
+
 installAutomationComponentCommonModuleMocks({
     reactNative: async () => {
         const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
@@ -79,7 +83,6 @@ vi.mock('@/components/ui/lists/Item', () => ({
 vi.mock('@/components/ui/lists/ItemGroupColumns', () => createPassThroughModule(['ItemGroupColumns', 'ItemGroupColumn']));
 vi.mock('@/components/ui/forms/Switch', () => createPassThroughModule(['Switch']));
 vi.mock('@/components/ui/forms/FieldItem', () => createPassThroughModule(['FieldItem']));
-vi.mock('@/components/ui/forms/dropdown/DropdownMenu', () => createPassThroughModule(['DropdownMenu']));
 vi.mock('@/components/ui/selectionList', () => createPassThroughModule(['SelectionList']));
 vi.mock('@/components/ui/text/Text', () => ({
     Text: (props: Record<string, unknown> & { children?: React.ReactNode }) => (
@@ -97,9 +100,11 @@ vi.mock('@/components/ui/text/Text', () => ({
         return React.createElement('TextInput', props, props.children);
     }),
 }));
-vi.mock('@/components/ui/icons/Icon', async () => {
+vi.mock('@/components/ui/icons/Icon', async (importOriginal) => {
     const { createPassThroughModule: createModule } = await import('@/dev/testkit/mocks/components');
-    return createModule(['Icon']);
+    const actual = await importOriginal<typeof import('@/components/ui/icons/Icon')>();
+    // The page header sizes its meta glyphs from the real icon scale.
+    return { ...createModule(['Icon']), ICON_SIZE: actual.ICON_SIZE };
 });
 vi.mock('@/components/ui/popover', () => ({
     usePopoverBoundaryRef: () => ({ current: null }),
@@ -396,7 +401,7 @@ describe('AutomationPluralEditorScreen', () => {
         expect(onChange).not.toHaveBeenCalled();
 
         await act(async () => {
-            intervalInput().props.onEndEditing();
+            intervalInput().props.onBlur();
         });
 
         const next = onChange.mock.calls.at(-1)?.[0] as AutomationEditorDraft;
@@ -440,7 +445,7 @@ describe('AutomationPluralEditorScreen', () => {
         expect(intervalInput().props.value).toBe('0');
 
         await act(async () => {
-            intervalInput().props.onEndEditing();
+            intervalInput().props.onBlur();
         });
 
         expect(onChange).not.toHaveBeenCalled();
@@ -555,9 +560,10 @@ describe('AutomationPluralEditorScreen', () => {
             screen.findByProps({ testID: 'automation-trigger-add' }).props.onPress();
         });
         for (const kind of ['schedule', 'pluginEvent', 'sessionLifecycle']) {
-            const choice = screen.findByProps({ testID: `automation-trigger-kind-${kind}` });
+            const choice = screen.findHostByTestId(`automation-trigger-kind-${kind}`)!;
             expect(choice.props.accessibilityRole).toBe('button');
-            expect(choice.props.accessibilityState).toBeUndefined();
+            // An action tile starts an operation: it never carries a selected or checked state.
+            expect(choice.props.accessibilityState).toEqual({ disabled: false });
         }
     });
 
@@ -621,7 +627,7 @@ describe('AutomationPluralEditorScreen', () => {
                 onSubmit={submitted}
             />,
         );
-        const save = keyboardRegistration.handlers?.['workflow.save'];
+        const save = readKeyboardCommandHandler('workflow.save');
         if (typeof save !== 'function') throw new Error('Expected workflow.save to be registered');
         await act(async () => { save(); });
         expect(submitted).toHaveBeenCalledTimes(1);
@@ -708,7 +714,7 @@ describe('AutomationPluralEditorScreen', () => {
         const onCancel = vi.fn();
         const screen = await renderScreen(
             <AutomationTriggerEditor
-                value={{ ...createDraft(), automationId: null, pendingAutomationId: 'automation-new', expectedTemplateVersion: null }}
+                value={createDraft()}
                 onChange={() => {}}
                 onSubmit={onSubmit}
                 onCancel={onCancel}
@@ -984,7 +990,7 @@ describe('AutomationPluralEditorScreen', () => {
 
         // An empty or otherwise invalid draft reverts on end-editing.
         await act(async () => {
-            countInput().props.onEndEditing();
+            countInput().props.onBlur();
         });
         expect(onChange).not.toHaveBeenCalled();
         expect(countInput().props.value).toBe('2');
@@ -995,7 +1001,7 @@ describe('AutomationPluralEditorScreen', () => {
         });
         expect(onChange).not.toHaveBeenCalled();
         await act(async () => {
-            countInput().props.onEndEditing();
+            countInput().props.onBlur();
         });
 
         expect(onChange).toHaveBeenCalledTimes(1);
@@ -1095,7 +1101,7 @@ describe('AutomationPluralEditorScreen', () => {
             screen.findByProps({ testID: 'automation-lifecycle-match-count' }).props.onChangeText('3');
         });
         await act(async () => {
-            screen.findByProps({ testID: 'automation-lifecycle-match-count' }).props.onEndEditing();
+            screen.findByProps({ testID: 'automation-lifecycle-match-count' }).props.onBlur();
         });
 
         const lifecycleRow = screen.findAll((instance) => (

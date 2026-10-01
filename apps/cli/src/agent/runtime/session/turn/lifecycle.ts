@@ -4,6 +4,7 @@ import {
     AgentSessionRuntimeEventSchema,
     type AgentSessionRuntimeEvent,
     type SessionRuntimeIssueV1,
+    type SessionTurnFactsV1,
 } from '@happier-dev/protocol';
 import { classifyPrimarySessionRuntimeIssue } from '@/agent/runtime/session/errors/classifyPrimarySessionRuntimeIssue';
 
@@ -22,6 +23,8 @@ export type SessionTurnLifecycleMutationPort = Readonly<{
 type SessionTurnLifecycleParams = Readonly<{
     session: SessionTurnLifecycleMutationPort;
     agentId?: string;
+    readTurnFacts?: () => SessionTurnFactsV1;
+    onTurnFactsChanged?: (input: Readonly<{ turnId: string; facts: SessionTurnFactsV1 | null }>) => void;
     onAcceptedTurnLifecycle?: (input: Readonly<{
         event: 'task_started' | 'assistant_message_end' | 'turn_cancelled';
         turnId: string;
@@ -230,11 +233,14 @@ export function createSessionTurnLifecycle(params: SessionTurnLifecycleParams): 
             if (event.kind === 'turn-start') {
                 activeTurnId = event.turnId;
                 lastActiveTurnTouchAtMs = null;
+                const facts = params.readTurnFacts?.();
+                if (facts) params.onTurnFactsChanged?.({ turnId: event.turnId, facts });
                 publish(
                     {
                         ...buildMutationBase({ session: params.session, agentId: params.agentId, action: 'begin', event }),
                         action: 'begin',
                         turnId: event.turnId,
+                        ...facts,
                         ...(event.agentTurnId ? { agentTurnId: event.agentTurnId } : {}),
                     } satisfies RuntimeSessionTurnMutationV1,
                     { event: 'task_started', turnId: event.turnId },
@@ -285,6 +291,7 @@ export function createSessionTurnLifecycle(params: SessionTurnLifecycleParams): 
                     { event: 'assistant_message_end', turnId: event.turnId, terminalStatus: 'completed' },
                 );
                 if (activeTurnId === event.turnId) {
+                    params.onTurnFactsChanged?.({ turnId: event.turnId, facts: null });
                     activeTurnId = null;
                     lastActiveTurnTouchAtMs = null;
                 }
@@ -309,6 +316,7 @@ export function createSessionTurnLifecycle(params: SessionTurnLifecycleParams): 
                     { event: 'assistant_message_end', turnId: event.turnId, terminalStatus: 'failed' },
                 );
                 if (activeTurnId === event.turnId) {
+                    params.onTurnFactsChanged?.({ turnId: event.turnId, facts: null });
                     activeTurnId = null;
                     lastActiveTurnTouchAtMs = null;
                 }
@@ -328,6 +336,7 @@ export function createSessionTurnLifecycle(params: SessionTurnLifecycleParams): 
                     { event: 'turn_cancelled', turnId: event.turnId },
                 );
                 if (activeTurnId === event.turnId) {
+                    params.onTurnFactsChanged?.({ turnId: event.turnId, facts: null });
                     activeTurnId = null;
                     lastActiveTurnTouchAtMs = null;
                 }
@@ -336,6 +345,7 @@ export function createSessionTurnLifecycle(params: SessionTurnLifecycleParams): 
 
             if (event.kind === 'runtime-ended') {
                 if (!activeTurnId) return;
+                params.onTurnFactsChanged?.({ turnId: activeTurnId, facts: null });
                 activeTurnId = null;
             }
         },

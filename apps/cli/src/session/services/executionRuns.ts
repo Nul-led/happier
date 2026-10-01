@@ -33,7 +33,7 @@ import type {
     SessionStoredContentCryptoContext,
 } from '@/session/transport/encryption/sessionEncryptionContext';
 import { callSessionRpc } from '@/session/transport/rpc/sessionRpc';
-import { readRpcRequestDisposition } from '@/session/transport/rpc/rpcRequestDisposition';
+import { readRpcRequestDisposition } from '@happier-dev/sync-client';
 import { applyExecutionRunListRequest } from './applyExecutionRunListRequest';
 import {
     findExecutionRunPublicStateInHistoryRows,
@@ -827,6 +827,7 @@ export async function readExecutionRunStream(
     return await callExecutionRunControlRpc({
         ...params,
         methodSuffix: SESSION_RPC_METHODS.EXECUTION_RUN_STREAM_READ,
+        ...(isRecord(params.request) && params.request.waitForEvents === true ? { transportTimeoutMs: null } : {}),
     });
 }
 

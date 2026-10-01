@@ -50,7 +50,6 @@ async function renderOptions() {
         selectedBackendTargetKeys: ['agent:codex'],
         profileChoices: [],
         selectedProfileId: '',
-        selectedProfileGenerationId: '',
         selectedPermissionMode: 'read-only',
         permissionModeOptions,
         fields: [],
@@ -78,10 +77,10 @@ describe('ExecutionRunLauncherOptions', () => {
                 const screen = await renderOptions();
                 const targetSize = resolveMinimumInteractiveTargetSize(platform);
 
+                // Agent tiles size themselves; the permission modes are the segmented owner's
+                // (`SegmentedTabBar targetSize="platform"`), whose policy it tests itself.
                 for (const testID of [
                     'execution-run-launcher-target:agent:codex',
-                    'execution-run-launcher-permission-mode:read-only',
-                    'execution-run-launcher-permission-mode:default',
                 ]) {
                     const target = screen.findByTestId(testID);
                     expect(target, testID).not.toBeNull();
@@ -104,9 +103,9 @@ describe('ExecutionRunLauncherOptions', () => {
         expect(screen.findByTestId('execution-run-launcher-target:agent:codex')?.props.accessibilityState)
             .toMatchObject({ selected: true });
         expect(screen.findByTestId('execution-run-launcher-permission-mode:read-only')?.props.accessibilityState)
-            .toMatchObject({ selected: true });
+            .toMatchObject({ checked: true });
         expect(screen.findByTestId('execution-run-launcher-permission-mode:default')?.props.accessibilityState)
-            .toMatchObject({ selected: false });
+            .toMatchObject({ checked: false });
         standardCleanup();
     });
 });

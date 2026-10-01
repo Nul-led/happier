@@ -434,6 +434,32 @@ describe('scoped plugin Settings adapter', () => {
         expect(daemonSet).not.toHaveBeenCalled();
     });
 
+    it('never sends a daemon secret field through the Settings record writer', async () => {
+        const daemonSet = vi.fn();
+        const adapter = createScopedPluginSettingsAdapter({
+            daemonGet: vi.fn(),
+            daemonSet,
+            accountRead: vi.fn(),
+            accountWrite: vi.fn(),
+        });
+
+        await expect(adapter.write({
+            pluginId: 'acme.settings',
+            scope: { kind: 'daemon' },
+            target: {
+                kind: 'daemon',
+                serverIdentityId: 'server-identity-a',
+                machineId: 'machine-a',
+                serverId: 'profile-a',
+            },
+            fields: [{ key: 'apiToken', redacted: true }],
+            fieldId: 'apiToken',
+            mutation: { kind: 'set', value: 'token-must-use-the-secret-writer' },
+            expectedRevision: { kind: 'daemon', value: '3' },
+        })).resolves.toEqual({ status: 'unavailable', reason: 'scope-mismatch' });
+        expect(daemonSet).not.toHaveBeenCalled();
+    });
+
     it('uses the exact canonical server identity for per-active-server bindings', () => {
         const field = {
             key: 'endpoint',

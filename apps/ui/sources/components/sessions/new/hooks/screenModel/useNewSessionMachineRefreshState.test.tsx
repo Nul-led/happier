@@ -5,11 +5,11 @@ import type { Machine, Session } from '@/sync/domains/state/storageTypes';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-vi.mock('react-native-reanimated', () => ({ __esModule: true, default: {} }));
-vi.mock('react-native-reanimated/lib/module', () => ({ __esModule: true, default: {} }));
-vi.mock('react-native-reanimated/lib/module/index.js', () => ({ __esModule: true, default: {} }));
-vi.mock('react-native-reanimated/lib/module/index', () => ({ __esModule: true, default: {} }));
-vi.mock('react-native-reanimated/lib/module/publicGlobals', () => ({ __esModule: true }));
+vi.mock('react-native-reanimated', () => ({ __esModule: true, default: {}, Easing: { bezier: () => (value: number) => value, linear: (value: number) => value } }));
+vi.mock('react-native-reanimated/lib/module', () => ({ __esModule: true, default: {}, Easing: { bezier: () => (value: number) => value, linear: (value: number) => value } }));
+vi.mock('react-native-reanimated/lib/module/index.js', () => ({ __esModule: true, default: {}, Easing: { bezier: () => (value: number) => value, linear: (value: number) => value } }));
+vi.mock('react-native-reanimated/lib/module/index', () => ({ __esModule: true, default: {}, Easing: { bezier: () => (value: number) => value, linear: (value: number) => value } }));
+vi.mock('react-native-reanimated/lib/module/publicGlobals', () => ({ __esModule: true, Easing: { bezier: () => (value: number) => value, linear: (value: number) => value } }));
 vi.mock('@/sync/sync', () => ({
     sync: {
         refreshMachinesThrottled: vi.fn(async () => undefined),

@@ -23,9 +23,7 @@ export type BrowserRecordingCdpScreencastFrame = Readonly<{
 }>;
 
 export type BrowserRecordingCdpScreencastSession = Readonly<{
-  /** Ack the CDP screencast frame so Chromium dispatches the next one. */
-  ackFrame(sessionId: number): void;
-  /** Stop `Page.screencast` and release the CDP subscription. */
+  /** Release this recording's subscription; other page consumers remain active. */
   stop(): Promise<void>;
 }>;
 
@@ -139,9 +137,7 @@ export function createBrowserRecordingCdpScreencastCaptureAdapter(
       const maxFrames = resolveMaxFrames(input.recording);
       const recordingId = input.recording.recordingId;
 
-      // CDP `screencastFrame` events only arrive after `Page.startScreencast` resolves (on later
-      // event-loop ticks), so the active record is always present by the time a frame fires. A
-      // frame seen before the record exists is dropped (it could not be acked without a session).
+      // The shared page producer owns ACKs, including frames arriving during capture startup.
       const onFrame = (frame: BrowserRecordingCdpScreencastFrame): void => {
         const active = activeByRecordingId.get(recordingId);
         if (!active) return;
@@ -166,9 +162,8 @@ export function createBrowserRecordingCdpScreencastCaptureAdapter(
           } catch (error) {
             active.fatalError = error;
           }
-        } finally {
-          // ALWAYS ack so Chromium keeps emitting (or drains promptly when we have stopped).
-          active.session.ackFrame(frame.sessionId);
+        } catch (error) {
+          active.fatalError = error;
         }
       };
 

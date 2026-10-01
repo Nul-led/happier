@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { SessionSystemRecordListQuerySchema } from '@happier-dev/protocol';
 import { createSessionSystemRecordRepository } from './repository';
+import { selectWorkflowSystemRecordQuery } from './compatibility/legacyHostTransport';
 import { invalidateSessionSystemRecordsFromChanges } from './changeWatch';
-import { openSessionStoredContent, type OpenSessionStoredContentResult, type SessionStoredContentContext } from '@/sync/encryption/sessionStoredContent';
+import { openSessionStoredContent, type OpenSessionStoredContentResult, type SessionStoredContentContext } from '@happier-dev/sync-client';
+import { makeSessionWorkflowRunSnapshot } from '@/dev/testkit';
 
 const scope = { serverId: 'home-a', accountId: 'alice' };
 const session = { serverId: 'home-a', sessionId: 'session-one' };
@@ -218,7 +220,7 @@ describe('Account-scoped Session System Record repository', () => {
         stop();
     });
 
-    it('serves a Session addressed by the device-local id of a Home its scope names by published identity', async () => {
+    it.each(['strict', 'legacy'] as const)('serves a %s Session query addressed by the device-local id of a Home its scope names by published identity', async (protocol) => {
         // The captured Account scope names an identity-bearing Home by its `srv_*` scope id,
         // while a Board or Workflow surface addresses its Session by the device-local profile
         // id. Both name one Home, so reads and invalidation must reach the same projection.
@@ -235,31 +237,39 @@ describe('Account-scoped Session System Record repository', () => {
         try {
             const scopeId = resolveServerProfileScopeIdForIdentifier(home.id);
             expect(scopeId).not.toBe(home.id);
+            const selected = selectWorkflowSystemRecordQuery({ localId: record.address.localId, protocolVersions: null });
+            if (selected.status !== 'ready') throw new Error('Expected negotiated legacy workflow query');
+            const sessionQuery = protocol === 'legacy' ? selected.query : query;
             let requests = 0;
             const repository = createSessionSystemRecordRepository({
                 scope: { serverId: scopeId, accountId: 'alice' },
                 request: async () => {
                     requests += 1;
-                    return page();
+                    return protocol === 'legacy' ? new Response(JSON.stringify({ record: {
+                        id: record.id, sessionId: session.sessionId,
+                        namespace: record.address.namespace, kind: record.address.kind, localId: record.address.localId,
+                        content: { t: 'plain', v: makeSessionWorkflowRunSnapshot({ runId: 'run-one' }) },
+                        createdAt: record.createdAt, updatedAt: record.updatedAt,
+                    } })) : page();
                 },
             });
             const localAddress = { serverId: home.id, sessionId: 'session-one' };
 
-            const stop = repository.subscribe(localAddress, query, () => {});
-            await repository.refresh(localAddress, query);
+            const stop = repository.subscribe(localAddress, sessionQuery, () => {});
+            await repository.refresh(localAddress, sessionQuery);
             expect(requests).toBe(1);
-            expect(repository.getSnapshot(localAddress, query)).toMatchObject({ freshness: 'fresh', lastError: null });
+            expect(repository.getSnapshot(localAddress, sessionQuery)).toMatchObject({ freshness: 'fresh', lastError: null });
             // The scope's own address reads the same entry rather than a second projection.
-            expect(repository.getSnapshot({ serverId: scopeId, sessionId: 'session-one' }, query).data)
-                .toBe(repository.getSnapshot(localAddress, query).data);
+            expect(repository.getSnapshot({ serverId: scopeId, sessionId: 'session-one' }, sessionQuery).data)
+                .toBe(repository.getSnapshot(localAddress, sessionQuery).data);
 
             repository.invalidate({ serverId: scopeId, sessionId: 'session-one' });
-            expect(repository.getSnapshot(localAddress, query).freshness).toBe('stale');
-            await repository.refresh(localAddress, query);
+            expect(repository.getSnapshot(localAddress, sessionQuery).freshness).toBe('stale');
+            await repository.refresh(localAddress, sessionQuery);
             expect(requests).toBe(2);
 
             // A different Home is still refused without a request.
-            expect(repository.getSnapshot({ serverId: 'home-b', sessionId: 'session-one' }, query).lastError).toEqual({ status: 'forbidden' });
+            expect(repository.getSnapshot({ serverId: 'home-b', sessionId: 'session-one' }, sessionQuery).lastError).toEqual({ status: 'forbidden' });
             stop();
         } finally {
             await removeServerProfile(home.id);

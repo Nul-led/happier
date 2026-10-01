@@ -97,6 +97,7 @@ export async function generateScmCommitMessage(params: Readonly<{
 
     const wait = started.data.wait;
     if (!wait.ok) return waitObservationFailure(wait.code);
+    if (wait.status === 'running') return waitObservationFailure('timeout');
     if (
         wait.result.run.runId !== started.data.runId
         || wait.result.run.status !== wait.status

@@ -21,7 +21,7 @@ import {
 
 export async function streamVoiceAgentTurn(params: Readonly<{
     sessionId: string;
-    handle: VoiceAgentHandle;
+    handle: Pick<VoiceAgentHandle, 'client' | 'voiceAgentId' | 'rpcSessionId'>;
     userText: string;
     displayUserText: string;
     resume?: boolean;

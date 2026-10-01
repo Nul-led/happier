@@ -95,7 +95,8 @@ function draftItem(draft: SessionActionDraft): TranscriptRowShellItem {
 function draft(overrides: Partial<SessionActionDraft> = {}): SessionActionDraft {
     return {
         id: 'd1',
-        sessionId: 's1',
+        address: { serverId: 'server-1', sessionId: 's1' },
+        accountId: 'account-1',
         actionId: 'subagents.delegate.start',
         createdAt: 1_000,
         status: 'editing',
@@ -224,7 +225,8 @@ describe('action-draft paint-blind key — the converse defect', () => {
     function reviewDraft(inputOverrides: Record<string, unknown> = {}, overrides: Partial<SessionActionDraft> = {}): SessionActionDraft {
         return {
             id: 'd1',
-            sessionId: 's1',
+            address: { serverId: 'server-1', sessionId: 's1' },
+            accountId: 'account-1',
             actionId: 'review.start',
             createdAt: 1_000,
             status: 'editing',
@@ -308,7 +310,8 @@ describe('action-draft paint-blind key — the converse defect', () => {
         // reports `multiline: false` and the joined entries land in a one-line field.
         const trackedDraft = (sessionIds: readonly string[]): SessionActionDraft => ({
             id: 'd1',
-            sessionId: 's1',
+            address: { serverId: 'server-1', sessionId: 's1' },
+            accountId: 'account-1',
             actionId: 'session.target.tracked.set',
             createdAt: 1_000,
             status: 'editing',
@@ -355,7 +358,8 @@ describe('action-draft in-flow validation line', () => {
     function reviewDraft(inputOverrides: Record<string, unknown> = {}, overrides: Partial<SessionActionDraft> = {}): SessionActionDraft {
         return {
             id: 'd1',
-            sessionId: 's1',
+            address: { serverId: 'server-1', sessionId: 's1' },
+            accountId: 'account-1',
             actionId: 'review.start',
             createdAt: 1_000,
             status: 'editing',
@@ -439,7 +443,8 @@ describe('action-draft option rows — the resolved option list', () => {
     function reviewDraft(inputOverrides: Record<string, unknown> = {}): SessionActionDraft {
         return {
             id: 'd1',
-            sessionId: 's1',
+            address: { serverId: 'server-1', sessionId: 's1' },
+            accountId: 'account-1',
             actionId: 'review.start',
             createdAt: 1_000,
             status: 'editing',

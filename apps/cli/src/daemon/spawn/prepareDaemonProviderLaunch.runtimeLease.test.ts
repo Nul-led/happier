@@ -103,7 +103,7 @@ describe('prepareDaemonProviderLaunch runtime lease currentness', () => {
       v: 1 as const,
       updatedAt: 1,
       ref: {
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         providerConnectionId: ProviderConnectionIdSchema.parse('pc_gateway'),
         modelId: 'model-a',
       },
@@ -130,14 +130,14 @@ describe('prepareDaemonProviderLaunch runtime lease currentness', () => {
         >[0],
       ) => {
         await input.resolvePrerequisites({
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           connectionId: selection.ref.providerConnectionId,
           modelId: 'model-a',
         });
         await input.createAuthorizationAttempt({
           selection,
           machineId: 'machine-a',
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           agentId: 'codex',
         });
         return { ok: true as const, kind: 'native' as const };
@@ -209,7 +209,7 @@ describe('prepareDaemonProviderLaunch runtime lease currentness', () => {
       v: 1 as const,
       updatedAt: 1,
       ref: {
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         providerConnectionId: ProviderConnectionIdSchema.parse('pc_gateway'),
         modelId: 'model-a',
       },
@@ -224,7 +224,7 @@ describe('prepareDaemonProviderLaunch runtime lease currentness', () => {
       await input.createAuthorizationAttempt({
         selection,
         machineId: 'machine-a',
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         agentId: 'codex',
       });
       return { ok: true as const, kind: 'native' as const };

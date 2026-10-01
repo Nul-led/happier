@@ -20,6 +20,7 @@ import {
   materializeSamplePluginFixture,
 } from '@/plugins/testkit/samplePackage';
 import { seedCurrentLocalPathPluginFixture } from '@/plugins/store/registry/currentState.testkit';
+import { bindPluginRuntimeSourceAuthority } from '@/plugins/runtime/sourceAuthority';
 import { createScopedRuntimeActionSettingsProvider } from '@/settings/scopedRuntimeActionSettingsProvider';
 
 import {
@@ -28,6 +29,21 @@ import {
 } from './runnerPluginRuntimeLease';
 
 const temporaryRoots: string[] = [];
+
+const resolveRunnerFixtureDevelopmentSourceAuthority = ({ rootPath }: Readonly<{
+  pluginId: string;
+  rootPath: string;
+}>) => {
+  const authority = bindPluginRuntimeSourceAuthority({
+    custody: {
+      kind: 'development',
+      registeredRootId: 'runner-reviewed-bundled-source',
+    },
+    resolvedRoot: rootPath,
+    observedRevision: 1,
+  });
+  return authority.kind === 'development' ? authority : null;
+};
 
 beforeEach(() => {
   persistenceBoundary.readStoredCredentials.mockClear();
@@ -49,6 +65,7 @@ describe('Runner reviewed plugin runtime lease', () => {
         kind: 'agent',
         identity: { pluginId: 'happier.agent.codex', localId: 'codex' },
       },
+      resolveDevelopmentSourceAuthority: resolveRunnerFixtureDevelopmentSourceAuthority,
       scopedActionRuntime: {
         credentials: null,
         actionsSettingsProvider: createScopedRuntimeActionSettingsProvider(
@@ -73,6 +90,7 @@ describe('Runner reviewed plugin runtime lease', () => {
         kind: 'agent',
         identity: { pluginId: 'happier.agent.codex', localId: 'codex' },
       },
+      resolveDevelopmentSourceAuthority: resolveRunnerFixtureDevelopmentSourceAuthority,
     });
     try {
       expect(handle.selected).toMatchObject({

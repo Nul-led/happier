@@ -168,7 +168,6 @@ describe('happier session discussions (compiled Action executor)', () => {
       },
       {
         surface: 'cli',
-        authority: 'present_user',
         defaultSessionId: 'session-exact',
         actionRequestId: expect.any(String),
       },

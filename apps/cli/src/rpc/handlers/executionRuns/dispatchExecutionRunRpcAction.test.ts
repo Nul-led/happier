@@ -11,6 +11,9 @@ import { resolveExecutionRunPolicy } from '@/agent/executionRuns/policy/executio
 import type { ExecutionRunHostBridgeContract } from '@/agent/runtime/bridges/executionRun/executionRunBridgeContract';
 import type { ExecutionRunState } from '@/agent/runtime/bridges/executionRun/executionRunTypes';
 import type { BrowserAutomationRoutes } from '@/daemon/browser/automation/routes';
+import type { BrowserUiAutomationRouteOwner } from '@/daemon/runtimeActionExecutor';
+import { createBrowserDaemonControlBroker } from '@/daemon/browser/control/broker';
+import { createBrowserAutomationReverseDispatcher } from '@/daemon/browser/automation/reverseDispatch';
 import type { CliServerFeaturesSnapshot } from '@/features/featureDecisionService';
 import { createActionSettingsProvider } from '@/settings/actionsSettingsProvider';
 import { createScopedRuntimeActionSettingsProvider } from '@/settings/scopedRuntimeActionSettingsProvider';
@@ -186,7 +189,6 @@ function createAgentExecutionRunStartExecutor(start: ExecutionRunHostBridgeContr
         boundedTimeoutMs: null,
         reviewBoundedTimeoutMs: null,
         maxTurns: null,
-        maxDepth: 3,
       },
     }),
     isExecutionRunsEnabled: () => true,
@@ -206,7 +208,6 @@ describe('execution-run RPC Action settings provider', () => {
           boundedTimeoutMs: null,
           reviewBoundedTimeoutMs: null,
           maxTurns: null,
-          maxDepth: 3,
         },
       }),
       isExecutionRunsEnabled: () => true,
@@ -260,7 +261,6 @@ describe('execution-run RPC Action settings provider', () => {
           boundedTimeoutMs: null,
           reviewBoundedTimeoutMs: null,
           maxTurns: null,
-          maxDepth: 3,
         },
       }),
       isExecutionRunsEnabled: () => true,
@@ -302,7 +302,6 @@ describe('execution-run RPC Action settings provider', () => {
           boundedTimeoutMs: null,
           reviewBoundedTimeoutMs: null,
           maxTurns: null,
-          maxDepth: 3,
         },
       }),
       isExecutionRunsEnabled: () => true,
@@ -320,6 +319,37 @@ describe('execution-run RPC Action settings provider', () => {
 });
 
 describe('createExecutionRunRpcActionExecutor', () => {
+  it('resolves the current UI automation owner for Session actions and refuses after provider retirement', async () => {
+    const broker = createBrowserDaemonControlBroker();
+    const calls: unknown[] = [];
+    let owner: BrowserUiAutomationRouteOwner | null = {
+      ownsAutomationView: broker.ownsView,
+      uiAutomation: createBrowserAutomationReverseDispatcher({ getMachineClient: () => ({
+        hasConnectedClientRpcHandler: () => true,
+        callConnectedClientRpc: async (_method, input) => {
+          calls.push(input);
+          return { ok: true, result: { v: 1, outcome: 'no_active', canceledCount: 0 } };
+        },
+      }) }),
+    };
+    const deps = createExecutionRunRpcActionDeps({
+      manager: createUnusedExecutionRunBridge(),
+      context: { sessionId: 'sess_1', cwd: '/workspace', getBrowserUiAutomation: () => owner,
+        getServerFeaturesSnapshot: () => BROWSER_DIAGNOSTICS_RUNTIME_ACTIONS_ENABLED },
+      policy: resolveExecutionRunPolicy({ defaults: {
+        maxConcurrentRuns: null, boundedTimeoutMs: null, reviewBoundedTimeoutMs: null, maxTurns: null,
+      } }),
+      isExecutionRunsEnabled: () => true,
+    });
+    const request = { actionId: 'browser.automation.cancelActive',
+      input: { browserSessionId: 'session:sess_1:right-sidebar', viewId: 'visible-view' },
+      context: { surface: 'agent', defaultSessionId: 'sess_1', authority: 'present_user' } } as const;
+    expect(await deps.runtimeActionExecute?.(request)).toEqual({ v: 1, outcome: 'no_active', canceledCount: 0 });
+    owner = null;
+    expect(await deps.runtimeActionExecute?.(request)).toMatchObject({ errorCode: 'runtime_action_disabled' });
+    expect(calls).toEqual([{ v: 1, actionId: request.actionId, input: request.input, authority: 'present_user' }]);
+  });
+
   it('binds the exact Workflow observation sink to a detached start with a local input id', async () => {
     const workflowObservationSink = { commit: vi.fn(async () => undefined) };
     const start = vi.fn(async () => ({
@@ -331,7 +361,7 @@ describe('createExecutionRunRpcActionExecutor', () => {
       policy: resolveExecutionRunPolicy({
         defaults: {
           maxConcurrentRuns: null, boundedTimeoutMs: null, reviewBoundedTimeoutMs: null,
-          maxTurns: null, maxDepth: 3,
+          maxTurns: null
         },
       }),
       isExecutionRunsEnabled: () => true,
@@ -400,7 +430,6 @@ describe('createExecutionRunRpcActionExecutor', () => {
           boundedTimeoutMs: null,
           reviewBoundedTimeoutMs: null,
           maxTurns: null,
-          maxDepth: 3,
         },
       }),
       isExecutionRunsEnabled: () => true,
@@ -452,7 +481,6 @@ describe('createExecutionRunRpcActionExecutor', () => {
           boundedTimeoutMs: null,
           reviewBoundedTimeoutMs: null,
           maxTurns: null,
-          maxDepth: 3,
         },
       }),
       isExecutionRunsEnabled: () => true,
@@ -495,7 +523,6 @@ describe('createExecutionRunRpcActionExecutor', () => {
           boundedTimeoutMs: null,
           reviewBoundedTimeoutMs: null,
           maxTurns: null,
-          maxDepth: 3,
         },
       }),
       isExecutionRunsEnabled: () => true,
@@ -640,7 +667,6 @@ describe('createExecutionRunRpcActionExecutor', () => {
           boundedTimeoutMs: null,
           reviewBoundedTimeoutMs: null,
           maxTurns: null,
-          maxDepth: 3,
         },
       }),
       isExecutionRunsEnabled: () => true,
@@ -804,7 +830,6 @@ describe('createExecutionRunRpcActionExecutor', () => {
           boundedTimeoutMs: null,
           reviewBoundedTimeoutMs: null,
           maxTurns: null,
-          maxDepth: 3,
         },
       }),
       isExecutionRunsEnabled: () => true,
@@ -875,7 +900,6 @@ describe('createExecutionRunRpcActionExecutor', () => {
           boundedTimeoutMs: null,
           reviewBoundedTimeoutMs: null,
           maxTurns: null,
-          maxDepth: 3,
         },
       }),
       isExecutionRunsEnabled: () => true,
@@ -911,7 +935,6 @@ describe('createExecutionRunRpcActionExecutor', () => {
           boundedTimeoutMs: null,
           reviewBoundedTimeoutMs: null,
           maxTurns: null,
-          maxDepth: 3,
         },
       }),
       isExecutionRunsEnabled: () => true,
@@ -951,7 +974,6 @@ describe('createExecutionRunRpcActionExecutor', () => {
           boundedTimeoutMs: null,
           reviewBoundedTimeoutMs: null,
           maxTurns: null,
-          maxDepth: 3,
         },
       }),
       isExecutionRunsEnabled: () => true,
@@ -1014,7 +1036,7 @@ describe('createExecutionRunRpcActionExecutor', () => {
       manager: { ...createUnusedExecutionRunBridge(), start },
       context: { sessionId: 'sess_1', cwd: '/workspace' },
       policy: resolveExecutionRunPolicy({
-        defaults: { maxConcurrentRuns: null, boundedTimeoutMs: null, reviewBoundedTimeoutMs: null, maxTurns: null, maxDepth: 3 },
+        defaults: { maxConcurrentRuns: null, boundedTimeoutMs: null, reviewBoundedTimeoutMs: null, maxTurns: null },
       }),
       isExecutionRunsEnabled: () => true,
     });
@@ -1060,7 +1082,6 @@ describe('createExecutionRunRpcActionExecutor', () => {
           boundedTimeoutMs: null,
           reviewBoundedTimeoutMs: null,
           maxTurns: null,
-          maxDepth: 3,
         },
       }),
       isExecutionRunsEnabled: () => true,
@@ -1090,7 +1111,14 @@ describe('createExecutionRunRpcActionExecutor', () => {
     }, { surface: 'rpc' })).resolves.toMatchObject({ ok: true, result: { runId: 'run_team_1' } });
 
     expect(order).toEqual(['team-visibility', 'run-start']);
-    expect(grantAttachedRunTeamVisibility).toHaveBeenCalledWith({ sessionId: 'sess_1', teamId: 'team-1' });
+    expect(grantAttachedRunTeamVisibility).toHaveBeenCalledWith({
+      sessionId: 'sess_1', teamId: 'team-1',
+      requiredTeamCredential: {
+        resourceId: selection.resourceId,
+        expectedResourceRevision: selection.expectedResourceRevision,
+        deliveryMode: selection.deliveryMode,
+      },
+    });
     const managerRequest = start.mock.calls[0]?.[0];
     expect(managerRequest).toBeDefined();
     expect(managerRequest).toMatchObject({ teamCredentialModel: selection });
@@ -1106,7 +1134,7 @@ describe('createExecutionRunRpcActionExecutor', () => {
       manager: { ...createUnusedExecutionRunBridge(), start },
       context: { sessionId: 'sess_1', cwd: '/workspace', grantAttachedRunTeamVisibility },
       policy: resolveExecutionRunPolicy({
-        defaults: { maxConcurrentRuns: null, boundedTimeoutMs: null, reviewBoundedTimeoutMs: null, maxTurns: null, maxDepth: 3 },
+        defaults: { maxConcurrentRuns: null, boundedTimeoutMs: null, reviewBoundedTimeoutMs: null, maxTurns: null },
       }),
       isExecutionRunsEnabled: () => true,
     });
@@ -1138,7 +1166,7 @@ describe('createExecutionRunRpcActionExecutor', () => {
       manager: { ...createUnusedExecutionRunBridge(), start },
       context: { sessionId: 'sess_1', cwd: '/workspace', grantAttachedRunTeamVisibility },
       policy: resolveExecutionRunPolicy({
-        defaults: { maxConcurrentRuns: null, boundedTimeoutMs: null, reviewBoundedTimeoutMs: null, maxTurns: null, maxDepth: 3 },
+        defaults: { maxConcurrentRuns: null, boundedTimeoutMs: null, reviewBoundedTimeoutMs: null, maxTurns: null },
       }),
       isExecutionRunsEnabled: () => true,
     });
@@ -1177,7 +1205,7 @@ describe('createExecutionRunRpcActionExecutor', () => {
       manager: { ...createUnusedExecutionRunBridge(), start },
       context: { sessionId: null, cwd: '/workspace', grantAttachedRunTeamVisibility },
       policy: resolveExecutionRunPolicy({
-        defaults: { maxConcurrentRuns: null, boundedTimeoutMs: null, reviewBoundedTimeoutMs: null, maxTurns: null, maxDepth: 3 },
+        defaults: { maxConcurrentRuns: null, boundedTimeoutMs: null, reviewBoundedTimeoutMs: null, maxTurns: null },
       }),
       isExecutionRunsEnabled: () => true,
     });
@@ -1353,7 +1381,6 @@ describe('createExecutionRunRpcActionExecutor', () => {
           boundedTimeoutMs: null,
           reviewBoundedTimeoutMs: null,
           maxTurns: null,
-          maxDepth: 3,
         },
       }),
       isExecutionRunsEnabled: () => true,
@@ -1442,7 +1469,6 @@ describe('createExecutionRunRpcActionExecutor', () => {
             boundedTimeoutMs: null,
             reviewBoundedTimeoutMs: null,
             maxTurns: null,
-            maxDepth: 3,
           },
         }),
         isExecutionRunsEnabled: () => true,
@@ -1515,7 +1541,6 @@ describe('createExecutionRunRpcActionExecutor', () => {
             boundedTimeoutMs: null,
             reviewBoundedTimeoutMs: null,
             maxTurns: null,
-            maxDepth: 3,
           },
         }),
         isExecutionRunsEnabled: () => true,
@@ -1560,7 +1585,6 @@ describe('createExecutionRunRpcActionExecutor', () => {
             boundedTimeoutMs: null,
             reviewBoundedTimeoutMs: null,
             maxTurns: null,
-            maxDepth: 3,
           },
         }),
         isExecutionRunsEnabled: () => true,
@@ -1614,7 +1638,6 @@ describe('createExecutionRunRpcActionExecutor', () => {
             boundedTimeoutMs: null,
             reviewBoundedTimeoutMs: null,
             maxTurns: null,
-            maxDepth: 3,
           },
         }),
         isExecutionRunsEnabled: () => true,
@@ -1674,7 +1697,6 @@ describe('createExecutionRunRpcActionExecutor', () => {
             boundedTimeoutMs: null,
             reviewBoundedTimeoutMs: null,
             maxTurns: null,
-            maxDepth: 3,
           },
         }),
         isExecutionRunsEnabled: () => true,
@@ -1732,7 +1754,6 @@ describe('createExecutionRunRpcActionExecutor', () => {
           boundedTimeoutMs: null,
           reviewBoundedTimeoutMs: null,
           maxTurns: null,
-          maxDepth: 3,
         },
       }),
       isExecutionRunsEnabled: () => true,
@@ -1780,7 +1801,6 @@ describe('createExecutionRunRpcActionExecutor', () => {
           boundedTimeoutMs: null,
           reviewBoundedTimeoutMs: null,
           maxTurns: null,
-          maxDepth: 3,
         },
       }),
       isExecutionRunsEnabled: () => true,
@@ -1829,7 +1849,6 @@ describe('createExecutionRunRpcActionExecutor', () => {
           boundedTimeoutMs: null,
           reviewBoundedTimeoutMs: null,
           maxTurns: null,
-          maxDepth: 3,
         },
       }),
       isExecutionRunsEnabled: () => true,
@@ -1857,7 +1876,6 @@ describe('createExecutionRunRpcActionExecutor', () => {
           boundedTimeoutMs: null,
           reviewBoundedTimeoutMs: null,
           maxTurns: null,
-          maxDepth: 3,
         },
       }),
       isExecutionRunsEnabled: () => true,
@@ -1903,7 +1921,6 @@ describe('createExecutionRunRpcActionExecutor', () => {
           boundedTimeoutMs: null,
           reviewBoundedTimeoutMs: null,
           maxTurns: null,
-          maxDepth: 3,
         },
       }),
       isExecutionRunsEnabled: () => true,
@@ -1966,7 +1983,6 @@ describe('createExecutionRunRpcActionExecutor', () => {
           boundedTimeoutMs: null,
           reviewBoundedTimeoutMs: null,
           maxTurns: null,
-          maxDepth: 3,
         },
       }),
       isExecutionRunsEnabled: () => true,
@@ -2029,7 +2045,6 @@ describe('createExecutionRunRpcActionExecutor', () => {
           boundedTimeoutMs: null,
           reviewBoundedTimeoutMs: null,
           maxTurns: null,
-          maxDepth: 3,
         },
       }),
       isExecutionRunsEnabled: () => true,
@@ -2097,7 +2112,6 @@ describe('createExecutionRunRpcActionExecutor', () => {
           boundedTimeoutMs: null,
           reviewBoundedTimeoutMs: null,
           maxTurns: null,
-          maxDepth: 3,
         },
       }),
       isExecutionRunsEnabled: () => true,
@@ -2106,7 +2120,7 @@ describe('createExecutionRunRpcActionExecutor', () => {
     const result = await executor.execute('execution.run.action', {
       runId: 'run_1',
       actionId: 'browser.diagnostics.snapshot',
-      input: { browserSessionId: 'browser_session_1', viewId: 'view_1' },
+      input: { browserSessionId: 'sess_1', viewId: 'view_1' },
     }, { surface: 'rpc', defaultSessionId: 'sess_1' });
 
     expect(result).toEqual({
@@ -2161,7 +2175,6 @@ describe('createExecutionRunRpcActionExecutor', () => {
           boundedTimeoutMs: null,
           reviewBoundedTimeoutMs: null,
           maxTurns: null,
-          maxDepth: 3,
         },
       }),
       isExecutionRunsEnabled: () => true,
@@ -2226,7 +2239,7 @@ describe('createExecutionRunRpcActionExecutor', () => {
       policy: resolveExecutionRunPolicy({
         defaults: {
           maxConcurrentRuns: null, boundedTimeoutMs: null, reviewBoundedTimeoutMs: null,
-          maxTurns: null, maxDepth: 3,
+          maxTurns: null
         },
       }),
       isExecutionRunsEnabled: () => true,
@@ -2262,7 +2275,6 @@ describe('createExecutionRunRpcActionExecutor', () => {
           boundedTimeoutMs: null,
           reviewBoundedTimeoutMs: null,
           maxTurns: null,
-          maxDepth: 3,
         },
       }),
       isExecutionRunsEnabled: () => true,

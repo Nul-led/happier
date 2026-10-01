@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { reportSessionScmOperation, reportWorkspaceScmOperation, trackBlockedScmOperation } from './reporting';
+import type { ScmOperationOutcome } from '@happier-dev/protocol/scm';
 
 describe('reportSessionScmOperation', () => {
     it('appends operation log entry and captures sanitized telemetry', () => {
@@ -27,6 +28,7 @@ describe('reportSessionScmOperation', () => {
             status: 'failed',
             path: 'src/secret.ts',
             detail: 'fatal',
+            errorCode: 'CHANGE_APPLY_FAILED',
             timestamp: 123,
         });
 
@@ -40,6 +42,17 @@ describe('reportSessionScmOperation', () => {
             has_detail: true,
             detail_length: 5,
         });
+    });
+
+    it('retains typed recovery evidence in the log and sends only its kind to telemetry', () => {
+        const appendSessionProjectScmOperation = vi.fn();
+        const capture = vi.fn();
+        const outcome: ScmOperationOutcome = { v: 1, kind: 'outcome_unknown', errorCode: 'COMMAND_OUTCOME_UNKNOWN', reconciliation: { kind: 'repository_status', cwd: '/private/repo' }, nextActions: [{ kind: 'refresh' }], message: 'private diagnostics' };
+        reportSessionScmOperation({ state: { appendSessionProjectScmOperation }, sessionId: 's', operation: 'commit', status: 'failed', outcome, surface: 'commit', tracking: { capture } });
+        expect(appendSessionProjectScmOperation).toHaveBeenCalledWith('s', expect.objectContaining({ outcome }));
+        expect(capture).toHaveBeenCalledWith('scm_operation_result', expect.objectContaining({ outcome: 'outcome_unknown', error_code: 'COMMAND_OUTCOME_UNKNOWN', error_category: 'command' }));
+        expect(JSON.stringify(capture.mock.calls)).not.toContain('/private/repo');
+        expect(JSON.stringify(capture.mock.calls)).not.toContain('private diagnostics');
     });
 
     it('does not include sensitive detail contents in telemetry props', () => {
@@ -74,7 +87,7 @@ describe('reportSessionScmOperation', () => {
         );
     });
 
-    it('includes raw SCM error in telemetry when explicitly provided', () => {
+    it('never includes raw SCM error in telemetry when explicitly provided', () => {
         const capture = vi.fn();
 
         reportSessionScmOperation({
@@ -94,10 +107,7 @@ describe('reportSessionScmOperation', () => {
 
         expect(capture).toHaveBeenCalledWith(
             'scm_operation_result',
-            expect.objectContaining({
-                raw_error: 'fatal: unable to write new index file',
-                raw_error_length: 37,
-            })
+            expect.not.objectContaining({ raw_error: expect.anything() })
         );
     });
 });

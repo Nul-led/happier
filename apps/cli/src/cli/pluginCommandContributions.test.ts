@@ -481,7 +481,11 @@ describe('handlePluginCommandCliCommand help', () => {
       pluginId: 'acme.notes',
       inputSchema: {
         type: 'object',
-        properties: { value: { type: 'string' } },
+        properties: {
+          value: { type: 'string' },
+          priority: { type: 'string', enum: ['low', 'high'] },
+          count: { type: 'integer', minimum: 1, maximum: 5 },
+        },
         required: ['value'],
         additionalProperties: false,
       },
@@ -493,10 +497,17 @@ describe('handlePluginCommandCliCommand help', () => {
         rawArgv: ['happier', 'notes', 'add', '--value', 'hello', '--help'],
         terminalRuntime: null,
       });
-      expect(String(output.mock.calls.at(-1)?.[0])).toContain('Command: acme.notes/add');
-      expect(String(output.mock.calls.at(-1)?.[0])).toContain('[--value]');
-      expect(String(output.mock.calls.at(-1)?.[0])).toContain('[--input-json <json>]');
-      expect(String(output.mock.calls.at(-1)?.[0])).toContain('Alias: --input <json>');
+      const help = String(output.mock.calls.at(-1)?.[0]);
+      expect(help).toContain('Command: acme.notes/add');
+      expect(help).toContain('[--value]');
+      expect(help).toContain('[--input-json <json>]');
+      expect(help).toContain('Alias: --input <json>');
+      // The contributed leaf documents its fields through the same shared
+      // projection as a built-in command: type, requiredness, choices and range.
+      const valueRow = help.split('\n').find((line) => line.includes('--value <value>'));
+      expect(valueRow).toContain('[required]');
+      expect(help.split('\n').find((line) => line.includes('--priority <value>'))).toContain('low | high');
+      expect(help.split('\n').find((line) => line.includes('--count <value>'))).toContain('1–5');
     } finally {
       output.mockRestore();
     }
@@ -540,7 +551,6 @@ describe('plugin command host registry synchronization', () => {
         actionId: 'happier.bundled.notes/execute-add-action',
         input: { value: 'hello' },
         surface: 'cli',
-        authority: 'present_user',
       });
       expect(runtimeLeaseMock.acquire).not.toHaveBeenCalled();
       expect(output).toHaveBeenCalledWith(
@@ -651,7 +661,6 @@ describe('plugin command host registry synchronization', () => {
       actionId: 'acme.notes/run',
       input: { input: 'not-a-transport-flag' },
       surface: 'cli',
-      authority: 'present_user',
     });
   });
 

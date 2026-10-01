@@ -43,6 +43,7 @@ describe('doctorRuntimeDiagnostics', () => {
       bunVersion: null,
       nodeVersion: '22.14.0',
       projectRoot: '/repo/apps/cli',
+      moduleUrl: 'file:///repo/apps/cli/src/ui/doctorRuntimeDiagnostics.ts',
       exists,
     });
 
@@ -52,11 +53,21 @@ describe('doctorRuntimeDiagnostics', () => {
       nodeCompatibilityVersion: 'v22.14.0',
       isEmbeddedBundle: false,
       wrapperPath: '/repo/apps/cli/bin/happier.mjs',
-      cliEntrypointPath: '/repo/apps/cli/dist/index.mjs',
+      cliEntrypointPath: '/repo/apps/cli/src/index.ts',
       wrapperExists: true,
       cliEntrypointExists: false,
     });
     expect(formatDoctorRuntimeLabel(diagnostics)).toBe('Node.js v22.14.0');
-    expect(formatDoctorSpawnPathLabel(diagnostics.cliEntrypointPath)).toBe('/repo/apps/cli/dist/index.mjs');
+    expect(formatDoctorSpawnPathLabel(diagnostics.cliEntrypointPath)).toBe('/repo/apps/cli/src/index.ts');
+  });
+
+  it('reports the executing packaged tree even when another tree exists', () => {
+    const diagnostics = buildDoctorRuntimeDiagnostics({
+      runtime: 'node', projectRoot: '/repo/apps/cli',
+      moduleUrl: 'file:///repo/apps/cli/package-dist/chunk-doctor.mjs',
+      exists: () => true,
+    });
+    expect(diagnostics.cliEntrypointPath).toBe('/repo/apps/cli/package-dist/index.mjs');
+    expect(diagnostics.cliEntrypointExists).toBe(true);
   });
 });

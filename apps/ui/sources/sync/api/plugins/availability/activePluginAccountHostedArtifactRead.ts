@@ -86,10 +86,11 @@ export type ActivePluginAccountHostedArtifactReadInput = Readonly<{
     release: PluginAvailabilityUiArtifactReadActionInputV1['release'];
     slot: Readonly<{
         contributionId: PluginAvailabilityUiArtifactReadActionInputV1['contributionId'];
+        artifactId: PluginAvailabilityUiArtifactReadActionInputV1['artifactId'];
         tier: PluginAvailabilityUiArtifactReadActionInputV1['tier'];
         platform: PluginAvailabilityUiArtifactReadActionInputV1['platform'];
     }>;
-    expectedArtifactId: string;
+    expectedAccountArtifactId: string;
     expectedArtifactDigest: string;
     signal?: AbortSignal;
 }>;
@@ -105,6 +106,7 @@ export type ActivePluginAccountHostedArtifactTargetReadInput = Readonly<{
     release: PluginAvailabilityUiArtifactReadActionInputV1['release'];
     slot: Readonly<{
         contributionId: PluginAvailabilityUiArtifactReadActionInputV1['contributionId'];
+        artifactId: PluginAvailabilityUiArtifactReadActionInputV1['artifactId'];
         tier: PluginAvailabilityUiArtifactReadActionInputV1['tier'];
         platform: PluginAvailabilityUiArtifactReadActionInputV1['platform'];
     }>;
@@ -173,7 +175,6 @@ export type ActivePluginAccountHostedArtifactPublishInput = Readonly<{
     accountLifetime: ActiveServerAccountScopeLifetime;
     release: PluginAvailabilityUiArtifactPublishActionInputV1['release'];
     slot: PluginAvailabilityUiArtifactPublishActionInputV1['slot'];
-    hostCompatibility: PluginAvailabilityUiArtifactPublishActionInputV1['hostCompatibility'];
     artifactGraph: unknown;
     files: readonly Readonly<{
         relativePath: string;
@@ -242,7 +243,7 @@ function readCurrentnessCode(input: Readonly<{
 function responseMatchesExpected(input: Readonly<{
     response: PluginAvailabilityUiArtifactReadActionOutputV1;
     request: PluginAvailabilityUiArtifactReadActionInputV1;
-    expectedArtifactId: string | null;
+    expectedAccountArtifactId: string | null;
     expectedArtifactDigest: string;
 }>): boolean {
     const { link } = input.response;
@@ -251,7 +252,8 @@ function responseMatchesExpected(input: Readonly<{
         && link.contributionId === input.request.contributionId
         && link.tier === input.request.tier
         && link.platform === input.request.platform
-        && (input.expectedArtifactId === null || link.artifactId === input.expectedArtifactId)
+        && link.artifactId === input.request.artifactId
+        && (input.expectedAccountArtifactId === null || link.accountArtifactId === input.expectedAccountArtifactId)
         && link.artifactDigest === input.expectedArtifactDigest;
 }
 
@@ -260,10 +262,10 @@ function archiveMatchesLink(input: Readonly<{
     link: PluginAvailabilityUiArtifactReadActionOutputV1['link'];
 }>): boolean {
     const graph = input.archive.artifactGraph;
-    return graph.contributionId === input.link.contributionId
+    return graph.artifactId === input.link.artifactId
         && graph.tier === input.link.tier
-        && (graph.platform ?? 'web') === input.link.platform
-        && graph.digest === input.link.artifactDigest;
+        && graph.digest === input.link.artifactDigest
+        && graph.hostUiApiRange === input.link.hostUiApiRange;
 }
 
 function archiveMatchesPublishSlot(input: Readonly<{
@@ -271,18 +273,10 @@ function archiveMatchesPublishSlot(input: Readonly<{
     slot: PluginAvailabilityUiArtifactPublishActionInputV1['slot'];
 }>): boolean {
     const graph = input.archive.header.artifactGraph;
-    const frameworkCompatibilityMatches = input.slot.tier === 'hostedWeb'
-        ? Object.keys(graph.compat).length === 0
-        : graph.compat.react === input.slot.compatibility.reactVersion
-            && graph.compat.reactNative === input.slot.compatibility.reactNativeVersion
-            && graph.compat.expoRuntime === input.slot.compatibility.expoRuntimeVersion
-            && graph.compat.hermes === input.slot.compatibility.hermesVersion;
-    return graph.contributionId === input.slot.contributionId
+    return graph.artifactId === input.slot.artifactId
         && graph.tier === input.slot.tier
-        && (graph.platform ?? 'web') === input.slot.platform
         && graph.digest === input.slot.artifactDigest
-        && graph.hostUiApiVersion === input.slot.compatibility.hostUiApiVersion
-        && frameworkCompatibilityMatches;
+        && graph.hostUiApiRange === input.slot.hostUiApiRange;
 }
 
 function publishResponseMatchesExpected(input: Readonly<{
@@ -295,9 +289,10 @@ function publishResponseMatchesExpected(input: Readonly<{
         && link.contributionId === input.request.slot.contributionId
         && link.tier === input.request.slot.tier
         && link.platform === input.request.slot.platform
-        && (input.response.outcome === 'rejoined' || link.artifactId === input.request.artifactId)
+        && link.artifactId === input.request.slot.artifactId
+        && (input.response.outcome === 'rejoined' || link.accountArtifactId === input.request.accountArtifactId)
         && link.artifactDigest === input.request.slot.artifactDigest
-        && isPluginUiReleaseSlotCompatibleWithArtifactLinkV1(input.request.slot, link.compatibility);
+        && isPluginUiReleaseSlotCompatibleWithArtifactLinkV1(input.request.slot, link);
 }
 
 async function resolveCurrentE2eeArtifactEnvelopeKeySealer(input: Readonly<{
@@ -400,8 +395,8 @@ export function createActivePluginAccountHostedArtifactReader(
     const readExact = async (
         input: ActivePluginAccountHostedArtifactReadInput | ActivePluginAccountHostedArtifactTargetReadInput,
     ): Promise<ActivePluginAccountHostedArtifactReadResult> => {
-        const expectedArtifactId = 'expectedArtifactId' in input
-            ? input.expectedArtifactId
+        const expectedAccountArtifactId = 'expectedAccountArtifactId' in input
+            ? input.expectedAccountArtifactId
             : null;
         if (input.signal?.aborted) return unavailable('operation_cancelled');
         if (!input.accountLifetime.isCurrent()) return unavailable('account_scope_changed');
@@ -423,7 +418,7 @@ export function createActivePluginAccountHostedArtifactReader(
             // This explicit, narrow server-owned purpose admits one exact
             // prospective release slot for Data preparation. Ordinary hosted
             // rendering deliberately retains the current-intent fence.
-            ...(expectedArtifactId === null ? {
+            ...(expectedAccountArtifactId === null ? {
                 purpose: 'candidatePreparation' as const,
                 expectedArtifactDigest: input.expectedArtifactDigest,
             } : {}),
@@ -527,7 +522,7 @@ export function createActivePluginAccountHostedArtifactReader(
             if (!responseMatchesExpected({
                 response: parsed.data,
                 request: request.data,
-                expectedArtifactId,
+                expectedAccountArtifactId,
                 expectedArtifactDigest: input.expectedArtifactDigest,
             })) {
                 return unavailable('response_identity_mismatch');
@@ -643,10 +638,6 @@ export function createActivePluginAccountHostedArtifactPublisher(
                 if (
                     !created
                     || !archiveMatchesPublishSlot({ archive: created, slot: input.slot })
-                    || !isPluginUiReleaseSlotCompatibleWithArtifactLinkV1(
-                        input.slot,
-                        input.hostCompatibility,
-                    )
                 ) {
                     return unavailable('source_archive_invalid');
                 }
@@ -764,8 +755,7 @@ export function createActivePluginAccountHostedArtifactPublisher(
                 : PluginAvailabilityUiArtifactPublishActionInputV1Schema.safeParse({
                     release: input.release,
                     slot: input.slot,
-                    hostCompatibility: input.hostCompatibility,
-                    artifactId,
+                    accountArtifactId: artifactId,
                     artifact: envelope,
                 });
             if (!request.success) return unavailable('source_archive_invalid');
@@ -848,114 +838,68 @@ export async function publishActivePluginAccountPackageAssets(
     return await installedPublisher.publishPackageAssets(input);
 }
 
+function archiveFileSet(
+    result: ActivePluginAccountHostedArtifactReadResult,
+): ReadonlyMap<string, Uint8Array> | null {
+    return result.kind === 'available' ? result.value.archive.files : null;
+}
+
 /**
- * Adapts only one current qualified Account Artifact into Artifact's existing
- * source-candidate contract. It owns neither source precedence nor cache
- * custody; its one in-flight archive read merely prevents repeated transport
- * while the lease asks for the declared files.
+ * Account hosting as one Artifact byte source: it reads the selected digest's
+ * archive through the current qualified link. It owns neither source order,
+ * integrity, nor cache custody.
  */
 export function createActivePluginAccountHostedArtifactSourceCandidate(input: Readonly<{
     accountLifetime: ActiveServerAccountScopeLifetime;
     reader?: ActivePluginAccountHostedArtifactReader;
 }>): PluginArtifactSourceCandidate & Readonly<{ kind: 'accountHosted' }> {
     const reader = input.reader ?? installedReader;
-    let pendingKey: string | null = null;
-    let pending: Promise<ActivePluginAccountHostedArtifactReadResult> | null = null;
     return Object.freeze({
         kind: 'accountHosted' as const,
-        readFile: async ({ artifact, relativePath, accountHostedArtifactId }) => {
+        fetch: async ({ artifact, accountHostedArtifactId }) => {
             if (!input.accountLifetime.isCurrent() || !accountHostedArtifactId) return null;
-            const key = [
-                artifact.pluginId,
-                artifact.releaseVersion,
-                artifact.contributionId,
-                artifact.tier,
-                artifact.platform,
-                accountHostedArtifactId,
-                artifact.digest,
-            ].join('\u0000');
-            if (pendingKey !== key || !pending) {
-                pendingKey = key;
-                pending = reader.read({
-                    accountLifetime: input.accountLifetime,
-                    release: {
-                        pluginId: artifact.pluginId,
-                        version: artifact.releaseVersion,
-                    },
-                    slot: {
-                        contributionId: artifact.contributionId,
-                        tier: artifact.tier,
-                        platform: artifact.platform,
-                    },
-                    expectedArtifactId: accountHostedArtifactId,
-                    expectedArtifactDigest: artifact.digest,
-                });
-            }
-            const result = await pending;
-            if (result.kind !== 'available' || !input.accountLifetime.isCurrent()) {
-                if (pendingKey === key) {
-                    pendingKey = null;
-                    pending = null;
-                }
-                return null;
-            }
-            const bytes = result.value.archive.files.get(relativePath);
-            return bytes ? new Uint8Array(bytes) : null;
+            const result = await reader.read({
+                accountLifetime: input.accountLifetime,
+                release: { pluginId: artifact.pluginId, version: artifact.releaseVersion },
+                slot: {
+                    contributionId: artifact.contributionId,
+                    artifactId: artifact.artifactId,
+                    tier: artifact.tier,
+                    platform: artifact.platform,
+                },
+                expectedAccountArtifactId: accountHostedArtifactId,
+                expectedArtifactDigest: artifact.digest,
+            });
+            return input.accountLifetime.isCurrent() ? archiveFileSet(result) : null;
         },
     });
 }
 
 /**
- * Adapts one prospective release slot through Availability's qualified read.
- * The server-selected link remains inside this boundary: consumers receive
- * only declared bytes after the exact target digest has been verified.
+ * Account hosting for one prospective release slot, addressed by its exact
+ * release and digest; the server-selected link stays inside this boundary.
  */
 export function createActivePluginAccountHostedArtifactTargetSourceCandidate(input: Readonly<{
     accountLifetime: ActiveServerAccountScopeLifetime;
     reader?: ActivePluginAccountHostedArtifactReader;
 }>): PluginArtifactSourceCandidate & Readonly<{ kind: 'accountHosted' }> {
     const reader = input.reader ?? installedReader;
-    let pendingKey: string | null = null;
-    let pending: Promise<ActivePluginAccountHostedArtifactReadResult> | null = null;
     return Object.freeze({
         kind: 'accountHosted' as const,
-        readFile: async ({ artifact, relativePath }) => {
+        fetch: async ({ artifact }) => {
             if (!input.accountLifetime.isCurrent()) return null;
-            const key = [
-                artifact.pluginId,
-                artifact.releaseVersion,
-                artifact.contributionId,
-                artifact.tier,
-                artifact.platform,
-                artifact.digest,
-                String(artifact.availabilityCursor),
-            ].join('\u0000');
-            if (pendingKey !== key || !pending) {
-                pendingKey = key;
-                pending = reader.readTarget({
-                    accountLifetime: input.accountLifetime,
-                    release: {
-                        pluginId: artifact.pluginId,
-                        version: artifact.releaseVersion,
-                    },
-                    slot: {
-                        contributionId: artifact.contributionId,
-                        tier: artifact.tier,
-                        platform: artifact.platform,
-                    },
-                    expectedArtifactDigest: artifact.digest,
-                });
-            }
-            const result = await pending;
-            if (result.kind !== 'available' || !input.accountLifetime.isCurrent()) {
-                if (pendingKey === key) {
-                    pendingKey = null;
-                    pending = null;
-                }
-                return null;
-            }
-            const bytes = result.value.archive.files.get(relativePath);
-            return bytes ? new Uint8Array(bytes) : null;
+            const result = await reader.readTarget({
+                accountLifetime: input.accountLifetime,
+                release: { pluginId: artifact.pluginId, version: artifact.releaseVersion },
+                slot: {
+                    contributionId: artifact.contributionId,
+                    artifactId: artifact.artifactId,
+                    tier: artifact.tier,
+                    platform: artifact.platform,
+                },
+                expectedArtifactDigest: artifact.digest,
+            });
+            return input.accountLifetime.isCurrent() ? archiveFileSet(result) : null;
         },
     });
 }

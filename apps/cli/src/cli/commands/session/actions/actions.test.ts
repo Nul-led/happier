@@ -107,7 +107,7 @@ describe('happier session actions (unit)', () => {
       status: 'ready' as const,
       features: FeaturesResponseSchema.parse({
         features: {
-          sessions: { enabled: true, collaboration: { enabled: true } },
+          sessions: { enabled: true },
         },
         capabilities: {},
       }),
@@ -182,7 +182,6 @@ describe('happier session actions (unit)', () => {
         {
           defaultSessionId: 'sess-1',
           surface: 'cli',
-          authority: 'present_user',
           actionRequestId: 'attempt-1',
           resumeActionRequest: true,
         },
@@ -442,7 +441,7 @@ describe('happier session actions (unit)', () => {
       expect(execute).toHaveBeenCalledWith(
         'session.terminalComposer.clear',
         { sessionId: 'sess-1', expectedStateAtMs: 42 },
-        { defaultSessionId: 'sess-1', surface: 'cli', authority: 'present_user' },
+        { defaultSessionId: 'sess-1', surface: 'cli' },
       );
     } finally {
       output.restore();
@@ -484,7 +483,7 @@ describe('happier session actions (unit)', () => {
       expect(execute).toHaveBeenCalledWith(
         'session.list',
         { limit: 10 },
-        { defaultSessionId: 'sess-1', surface: 'cli', authority: 'present_user' },
+        { defaultSessionId: 'sess-1', surface: 'cli' },
       );
       expect(createCliActionExecutor).toHaveBeenCalledWith(expect.objectContaining({
         serverId: expect.any(String),

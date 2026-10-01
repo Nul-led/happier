@@ -11,6 +11,25 @@ import { resolveServerHttpBaseUrl } from './serverHttpBaseUrl';
 
 export type ConnectedAccountAttemptTransactionKind = 'oauth' | 'device';
 
+export type ConnectedAccountAttemptTransactionScope = Readonly<{
+  machineId: string;
+  service: Readonly<{ pluginId: string; localId: string }>;
+  modeId: string;
+  intent: 'connect' | 'reconnect';
+  phase: 'starting' | 'awaitingOAuth' | 'awaitingDeviceAuthorization' | 'outcomeUnknown';
+  createdAtMs: number;
+}>;
+
+export type PendingConnectedAccountAttemptTransaction = Readonly<{
+  attemptId: string;
+  kind: ConnectedAccountAttemptTransactionKind;
+  modeId: string;
+  intent: ConnectedAccountAttemptTransactionScope['intent'];
+  phase: Exclude<ConnectedAccountAttemptTransactionScope['phase'], 'starting'>;
+  createdAtMs: number;
+  expiresAtMs: number;
+}>;
+
 export type ConnectedAccountAttemptTransactionRecord = Readonly<{
   revision: number;
   content: StoredJsonContentEnvelope;
@@ -23,6 +42,7 @@ export type ConnectedAccountAttemptTransactionStoreApi = Readonly<{
     attemptId: string;
     content: StoredJsonContentEnvelope;
     expiresAtMs: number;
+    scope: ConnectedAccountAttemptTransactionScope;
   }>): Promise<ConnectedAccountAttemptTransactionRecord>;
   read(input: Readonly<{
     kind: ConnectedAccountAttemptTransactionKind;
@@ -34,12 +54,17 @@ export type ConnectedAccountAttemptTransactionStoreApi = Readonly<{
     expectedRevision: number;
     content: StoredJsonContentEnvelope;
     expiresAtMs: number;
+    scope: ConnectedAccountAttemptTransactionScope;
   }>): Promise<ConnectedAccountAttemptTransactionRecord>;
   delete(input: Readonly<{
     kind: ConnectedAccountAttemptTransactionKind;
     attemptId: string;
     expectedRevision: number;
   }>): Promise<void>;
+  listPending(input: Readonly<{
+    machineId: string;
+    service: ConnectedAccountAttemptTransactionScope['service'];
+  }>): Promise<readonly PendingConnectedAccountAttemptTransaction[]>;
 }>;
 
 export type ConnectedAccountAttemptTransactionApiErrorCode =
@@ -64,6 +89,19 @@ const TransactionRecordSchema = z.object({
   revision: z.number().int().min(1),
   content: StoredJsonContentEnvelopeSchema,
   expiresAtMs: z.number().int().positive(),
+}).strict();
+
+const PendingTransactionSchema = z.object({
+  attemptId: z.string().min(1).max(160),
+  kind: z.enum(['oauth', 'device']),
+  modeId: z.string().min(1).max(256),
+  intent: z.enum(['connect', 'reconnect']),
+  phase: z.enum(['awaitingOAuth', 'awaitingDeviceAuthorization', 'outcomeUnknown']),
+  createdAtMs: z.number().int().nonnegative(),
+  expiresAtMs: z.number().int().positive(),
+}).strict();
+const PendingTransactionsSchema = z.object({
+  attempts: z.array(PendingTransactionSchema),
 }).strict();
 
 const TransactionErrorSchema = z.object({
@@ -114,6 +152,7 @@ export function createConnectedAccountAttemptTransactionApi(
         {
           content: input.content,
           expiresAtMs: input.expiresAtMs,
+          scope: input.scope,
         },
         {
           ...options,
@@ -155,6 +194,7 @@ export function createConnectedAccountAttemptTransactionApi(
           expectedRevision: input.expectedRevision,
           content: input.content,
           expiresAtMs: input.expiresAtMs,
+          scope: input.scope,
         },
         {
           ...options,
@@ -204,6 +244,18 @@ export function createConnectedAccountAttemptTransactionApi(
           'connected_account_attempt_transaction_contract_invalid',
         );
       }
+    },
+    async listPending(input) {
+      const url = new URL(`${resolveServerHttpBaseUrl()}/v2/connect/connected-account-attempt-transactions/pending`);
+      url.searchParams.set('machineId', input.machineId);
+      url.searchParams.set('pluginId', input.service.pluginId);
+      url.searchParams.set('localId', input.service.localId);
+      const response = await axios.get(url.toString(), {
+        ...options,
+        validateStatus: (status) => status === 200 || status === 409,
+      });
+      if (response.status !== 200) throwResponseError(response.data);
+      return PendingTransactionsSchema.parse(response.data).attempts;
     },
   });
 }

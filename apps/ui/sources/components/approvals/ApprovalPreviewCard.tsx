@@ -4,7 +4,8 @@ import { StyleSheet } from 'react-native-unistyles';
 
 import { Text } from '@/components/ui/text/Text';
 
-function getPreviewSummary(preview: unknown): string | null {
+/** The requester's one-line summary of what approving will do, when it sent one. */
+export function readApprovalPreviewSummary(preview: unknown): string | null {
     if (!preview || typeof preview !== 'object' || Array.isArray(preview)) return null;
     const summary = typeof (preview as { summary?: unknown }).summary === 'string'
         ? (preview as { summary: string }).summary.trim()
@@ -13,7 +14,7 @@ function getPreviewSummary(preview: unknown): string | null {
 }
 
 export const ApprovalPreviewCard = React.memo(function ApprovalPreviewCard(props: Readonly<{ preview: unknown }>) {
-    const summary = React.useMemo(() => getPreviewSummary(props.preview), [props.preview]);
+    const summary = React.useMemo(() => readApprovalPreviewSummary(props.preview), [props.preview]);
     if (!summary) return null;
 
     return (
@@ -24,12 +25,8 @@ export const ApprovalPreviewCard = React.memo(function ApprovalPreviewCard(props
 });
 
 const styles = StyleSheet.create((theme) => ({
+    // Sheet content of the approval's "Request" section: the section owns the chrome.
     card: {
-        borderRadius: 16,
-        borderWidth: 1,
-        borderColor: theme.colors.border.default,
-        backgroundColor: theme.colors.surface.elevated,
-        padding: 16,
         gap: 4,
     },
     summary: {

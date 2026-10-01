@@ -2,6 +2,14 @@ import { describe, expect, it } from 'vitest';
 import { resolveTerminalRequestFromSpawnOptions } from './terminalConfig';
 
 describe('resolveTerminalRequestFromSpawnOptions', () => {
+  it('keeps an explicit Herdr request ahead of inherited tmux context', () => {
+    expect(resolveTerminalRequestFromSpawnOptions({
+      happyHomeDir: '/tmp/happier',
+      terminal: { mode: 'herdr', herdr: { sessionName: 'work' } },
+      environmentVariables: { TMUX_SESSION_NAME: 'ambient' },
+    })).toEqual({ requested: 'herdr', herdr: { sessionName: 'work' } });
+  });
+
   it('prefers typed terminal config over legacy TMUX_* env vars', () => {
     const resolved = resolveTerminalRequestFromSpawnOptions({
       happyHomeDir: '/home/user/.happy',

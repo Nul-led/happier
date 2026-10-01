@@ -9,7 +9,7 @@
  * between agent UI behavior graphs, message compatibility, and registry maps.
  *
  * This file is emitted by:
- * - `scripts/migrations/extensions/generateBundledPluginEntries.ts`
+ * - `apps/cli/scripts/build-owned/generateBundledPluginEntries.ts`
  */
 
 import type { CanonicalAgentId } from './registryCore';

@@ -417,6 +417,7 @@ describe('NewSessionSimplePanel', () => {
             createdSessionId: null,
             firstTurnLocalId: 'first-turn-1',
             attachmentMessageLocalId: 'attachment-1',
+            configurationUpdatedAtMs: 0,
             status: 'spawning',
             prompt: {
                 prompt: 'Build the pending launch state',

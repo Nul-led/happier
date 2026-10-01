@@ -237,7 +237,6 @@ describe('current-source Session Agent harness boundaries', () => {
       'install',
       '/tmp/external-session-agent',
       '--dev',
-      '--trust',
       '--json',
     ]);
   });

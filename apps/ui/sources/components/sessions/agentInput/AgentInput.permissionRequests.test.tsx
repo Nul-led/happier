@@ -144,10 +144,6 @@ vi.mock('@/components/tools/shell/permissions/PermissionFooter', () => ({
         React.createElement('PermissionFooter', { ...props, testID: 'agent-input-permission-footer' }, null),
 }));
 
-vi.mock('@/components/tools/normalization/parse/parseParenIdentifier', () => ({
-    parseParenIdentifier: () => null,
-}));
-
 vi.mock('@/hooks/session/useUserMessageHistory', () => ({
     useUserMessageHistory: () => ({
         getPrevious: () => null,

@@ -141,8 +141,10 @@ describe('useTeamPagedList', () => {
             }),
             { initialProps: { key: 'first' } },
         );
+        const firstSignal = loadPage.mock.calls[0]?.[1] as AbortSignal | undefined;
 
         await rendered.rerender({ key: 'second' });
+        expect(firstSignal?.aborted).toBe(true);
         await vi.waitFor(() => expect(rendered.getCurrent().rows).toEqual(['fresh']));
 
         // The first sequence's answer arrives after it was superseded.
@@ -150,7 +152,9 @@ describe('useTeamPagedList', () => {
         await Promise.resolve();
         expect(rendered.getCurrent().rows).toEqual(['fresh']);
         expect(rendered.getCurrent().hasMore).toBe(false);
+        const currentSignal = loadPage.mock.calls[1]?.[1] as AbortSignal | undefined;
         await rendered.unmount();
+        expect(currentSignal?.aborted).toBe(true);
     });
 
     it('claims nothing and asks nothing while disabled', async () => {

@@ -2,6 +2,7 @@ import * as React from 'react';
 
 import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
 import { useSession, useSessionListRenderableWithServerScope } from '@/sync/domains/state/storage';
+import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
 
 import { useSessionMessageViewerScope } from './useSessionMessageViewerScope';
 
@@ -31,10 +32,10 @@ export function useSessionMessageAuthorshipScope(
     sessionServerId?: string | null,
 ): SessionMessageAuthorshipScope {
     const exactSessionServerId = sessionServerId?.trim() || null;
-    const session = useSession(sessionId);
+    const session = useSession(sessionId, sessionServerId);
     const scopedSession = useSessionListRenderableWithServerScope(exactSessionServerId, sessionId);
     const audienceSession = exactSessionServerId
-        ? scopedSession ?? (session?.serverId === exactSessionServerId ? session : null)
+        ? scopedSession ?? (session && areServerProfileIdentifiersEquivalent(session.serverId, exactSessionServerId) ? session : null)
         : session;
     const viewerScope = useSessionMessageViewerScope(sessionId, sessionServerId);
     const hasOtherNamedCollaborator = audienceSession?.hasOtherNamedCollaborator === true;

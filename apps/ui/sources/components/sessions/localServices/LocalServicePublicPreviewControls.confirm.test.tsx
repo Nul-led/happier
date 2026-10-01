@@ -222,7 +222,9 @@ describe('LocalServicePublicPreviewControls (consequence sheet before create)', 
 
         const result = await renderWithAppProviders(
             <LocalServicePublicPreviewControls
-                launchTargets={[target]}
+                launchTargets={[]}
+                browserTarget={target.browserTarget}
+                serviceTitle={target.title}
                 state={previewState}
                 actions={{ create, copyUrl: vi.fn(async () => true), revoke: vi.fn(async () => undefined) }}
             />,
@@ -247,7 +249,7 @@ describe('LocalServicePublicPreviewControls (consequence sheet before create)', 
 
         // The policy admits exactly one lifetime here, so the sheet offers exactly that one and the
         // exposure shape is explicit rather than a hard-coded 10 minutes.
-        expect(create).toHaveBeenCalledWith(target, { mode: 'secret_link', ttlMs: 600_000 });
+        expect(create).toHaveBeenCalledWith(target.browserTarget, { mode: 'secret_link', ttlMs: 600_000 });
         await result.unmount();
     });
 
@@ -460,6 +462,54 @@ describe('LocalServicePublicPreviewControls (consequence sheet before create)', 
         });
         expect(String(countdown.props.children)).toContain('29');
         await result.unmount();
+    });
+
+    /**
+     * F-PLAN-22: the live countdown is presentation. In a retained pane that is hidden (a closed
+     * right-sidebar tab keeps its rows mounted) it stops ticking; shown again, it reads the clock anew.
+     */
+    it('stops ticking the countdown while its pane is hidden and ticks while it is shown', async () => {
+        const { PluginSurfaceFocusEligibilityProvider } = await import('@/components/ui/presentation/PluginSurfaceFocusEligibility');
+        const { act } = await import('react-test-renderer');
+        vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] });
+        try {
+            const start = new Date('2026-10-01T10:00:00.000Z').getTime();
+            vi.setSystemTime(start);
+            const liveState = applyLocalServicePublicPreviewSnapshot(
+                createLocalServicePublicPreviewState(),
+                {
+                    ...snapshot,
+                    exposures: [{ ...activeCurrentPreviewExposure, issuedAt: start - 60_000, expiresAt: start + 30 * 60_000 }],
+                },
+            );
+            const renderIn = async (active: boolean) => await renderWithAppProviders(
+                <PluginSurfaceFocusEligibilityProvider active={active}>
+                    <LocalServicePublicPreviewControls
+                        launchTargets={[target]}
+                        state={liveState}
+                        actions={{ create: vi.fn(), copyUrl: vi.fn(async () => true), revoke: vi.fn() }}
+                    />
+                </PluginSurfaceFocusEligibilityProvider>,
+            );
+            const countdownText = (result: Awaited<ReturnType<typeof renderWithAppProviders>>) => String(result.tree.root.findByProps({
+                testID: 'local-service-public-preview-controls-exposure:public_preview_1-countdown',
+            }).props.children);
+
+            const hidden = await renderIn(false);
+            const hiddenBefore = countdownText(hidden);
+            await act(async () => { vi.advanceTimersByTime(5 * 60_000); });
+            expect(countdownText(hidden)).toBe(hiddenBefore);
+            await hidden.unmount();
+
+            vi.setSystemTime(start);
+            const shown = await renderIn(true);
+            const shownBefore = countdownText(shown);
+            await act(async () => { vi.advanceTimersByTime(5 * 60_000); });
+            expect(countdownText(shown)).not.toBe(shownBefore);
+            await shown.unmount();
+        } finally {
+            vi.useRealTimers();
+        }
     });
 
     it('stops claiming a lapsed exposure is active and refuses to copy a dead link (G15)', async () => {

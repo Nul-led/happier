@@ -1,6 +1,9 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import axios from 'axios';
 import {
     buildLinkedExternalSessionMetadataV1,
+    accountSettingsParse,
+    V2SessionByIdResponseSchema,
     type ExternalAgentObservationSnapshotV1,
     type LinkedExternalSessionQualifiedIdentityV1,
     type SessionMetadata,
@@ -9,6 +12,12 @@ import {
 import {
     createExternalAgentObservationFieldPublisher,
 } from './publishExternalAgentObservationField';
+import { createSessionNotificationContextFixture, createAccountEncryptionCurrentnessFixture } from '@/testkit/backends/sessionFixtures';
+import { setActiveAccountSettingsSnapshot, resetActiveAccountSettingsSnapshotForTests } from '@/settings/accountSettings/activeAccountSettingsSnapshot';
+import { runWithServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
+import * as pinnedHttp from '@/network/pinnedHttp';
+import { buildSessionMetadataEnvelopeFields } from '@/session/metadata/buildSessionMetadataEnvelopeCreateFields';
+import type { patchSessionMetadataEnvelopeTuple } from '@/session/transport/http/sessionsHttp';
 
 function snapshot(
     boundary?: Readonly<{ id: string; observedAtMs: number }>,
@@ -46,7 +55,7 @@ function linkedMetadata(input?: Readonly<{
         qualifiedIdentity.source.kind === 'claudeConfig';
     return buildLinkedExternalSessionMetadataV1(
         {
-            summary: { text: 'External review' },
+            summary: { text: 'External review', updatedAt: 1_000 },
             preservedMetadata: 'preserved',
         },
         {
@@ -121,6 +130,85 @@ function setup(params?: Readonly<{
 }
 
 describe('publishExternalAgentObservationField', () => {
+    afterEach(() => {
+        vi.restoreAllMocks();
+        resetActiveAccountSettingsSnapshotForTests();
+    });
+
+    it.each(['status_only', 'title_only', 'include_preview'] as const)(
+      'uses current Follow facts and %s privacy for the real external-ready webhook path', async (previewBehavior) => {
+        const sessionId = 'c123456789012345678901234';
+        let suppressed = true;
+        const { preservedMetadata: _preserved, ...metadata } = linkedMetadata();
+        const fields = buildSessionMetadataEnvelopeFields({
+            credentials: { token: 'external-token', encryption: null },
+            accountEncryptionMode: 'plain', storedContentMode: 'plain', metadata, agentState: null,
+        });
+        const rawSession = {
+            ...createSessionNotificationContextFixture(sessionId),
+            encryptionMode: 'plain' as const,
+            share: null,
+            metadataLayoutVersion: fields.metadataLayoutVersion,
+            metadata: fields.sharedMetadata.ciphertext,
+            ownerMetadata: fields.ownerMetadata,
+        };
+        vi.spyOn(axios, 'get').mockImplementation(async (url) => {
+            if (String(url).endsWith('/v1/account/encryption/currentness')) {
+                return { status: 200, data: createAccountEncryptionCurrentnessFixture() };
+            }
+            const viewer = rawSession.viewer!;
+            return { status: 200, data: V2SessionByIdResponseSchema.parse({ session: { ...rawSession, viewer: {
+                ...viewer, follow: { follows: false, notificationLevel: suppressed ? 'none' : null },
+            } } }) };
+        });
+        vi.spyOn(axios, 'patch').mockImplementation(async (_url, body: unknown) => {
+            const patch = body as Extract<Parameters<typeof patchSessionMetadataEnvelopeTuple>[0]['patch'], { mode: 'owner' }>;
+            rawSession.metadata = patch.sharedMetadata.ciphertext;
+            rawSession.ownerMetadata = patch.ownerMetadata;
+            rawSession.metadataVersion = patch.sharedMetadata.expectedVersion + 1;
+            rawSession.agentState = patch.agentState.ciphertext;
+            rawSession.agentStateVersion = patch.agentState.expectedVersion + 1;
+            return { status: 200, data: { success: true, metadataLayoutVersion: 1,
+                sharedMetadata: { version: rawSession.metadataVersion }, agentState: { version: rawSession.agentStateVersion },
+            } };
+        });
+        const requests: pinnedHttp.PinnedHttpStreamRequest[] = [];
+        vi.spyOn(pinnedHttp, 'openPinnedHttpStream').mockImplementation(async (request) => {
+            requests.push(request);
+            return { status: 202, headers: {}, contentLength: 0, read: async () => null, cancel: () => {} };
+        });
+        setActiveAccountSettingsSnapshot({
+            source: 'network', settingsVersion: 1, loadedAtMs: 1, settingsSecretsReadKeys: [],
+            settings: accountSettingsParse({
+                attentionDeliveryPolicyV1: { v: 1, privacy: { defaultPreviewBehavior: previewBehavior } },
+                notificationChannelsV1: [{
+                v: 1, id: 'external-ready', kind: 'webhook', enabled: true,
+                url: 'https://93.184.216.34/happier', topics: { ready: true },
+            }] }),
+        });
+        const publish = createExternalAgentObservationFieldPublisher({
+            shouldSendReadyNotification: () => true,
+            readCredentials: async () => ({ token: 'external-token', encryption: null }),
+        });
+        const send = (id: string) => runWithServerHttpBaseUrl('https://external-home.example.test', () => publish({
+            sessionId, fieldId: 'runtime.externalAgent', value: snapshot({ id, observedAtMs: suppressed ? 2_000 : 3_000 }),
+        }));
+        await send('boundary-muted');
+        expect(requests).toHaveLength(0);
+        suppressed = false;
+        await send('boundary-enabled');
+        expect(requests).toHaveLength(1);
+        const payload = JSON.parse(Buffer.from(requests[0]!.body!).toString('utf8'));
+        expect(JSON.stringify(payload).includes('External review')).toBe(previewBehavior !== 'status_only');
+        if (previewBehavior === 'status_only') {
+            expect(payload.content).toEqual({ title: 'Session', body: 'Session is waiting for your command' });
+        }
+        expect(axios.get).toHaveBeenCalledWith(
+            `https://external-home.example.test/v2/sessions/${sessionId}?accessProjectionVersion=1`,
+            expect.objectContaining({ headers: expect.objectContaining({ Authorization: 'Bearer external-token' }) }),
+        );
+    });
+
     it('uses the canonical boundary advancement to suppress replay after restart', async () => {
         const owner = setup();
 

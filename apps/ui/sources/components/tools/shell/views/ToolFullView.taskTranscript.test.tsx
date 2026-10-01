@@ -5,17 +5,34 @@ import {
     installToolShellCommonModuleMocks,
     makeToolCall,
 } from './ToolView.testHelpers';
-import type { Message } from '@/sync/domains/messages/messageTypes';
+import type { Message } from "@happier-dev/session-core/messages";
 import { deriveTranscriptInteraction } from '@/utils/sessions/deriveTranscriptInteraction';
 import {
     createDeferred,
+    createTestSessionTranscriptSource,
     flushHookEffects,
     invokeTestInstanceHandler,
-    renderScreen,
+    renderScreen as renderBaseScreen,
+    renderWithSessionTranscriptSource,
+    wrapWithSessionTranscriptSource,
     standardCleanup,
 } from '@/dev/testkit';
 import { createUseSettingMock } from '@/dev/testkit/mocks/storage';
+import { createSessionAccessFixture } from '@/dev/testkit/fixtures/sessionFixtures';
 import { sessionAddressKey } from '@/sync/domains/session/sessionAddress';
+
+function wrapToolFullView(element: React.ReactElement) {
+    const props = element.props as React.ComponentProps<typeof import('./ToolFullView').ToolFullView>;
+    return wrapWithSessionTranscriptSource(element, createTestSessionTranscriptSource({
+        sessionId: props.sessionId ?? 's1', serverId: props.serverId,
+        messages: props.messages ?? [], metadata: props.metadata, interaction: props.interaction,
+    }));
+}
+
+async function renderScreen(element: React.ReactElement) {
+    const screen = await renderBaseScreen(wrapToolFullView(element));
+    return { ...screen, update: (next: React.ReactElement) => screen.update(wrapToolFullView(next)) };
+}
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -81,9 +98,18 @@ vi.mock('@/components/ui/media/CodeView', () => ({
 
 const renderedSpecificTaskViewSpy = vi.fn();
 const renderedSpecificSubAgentRunViewSpy = vi.fn();
+const renderedToolSourceSpy = vi.fn();
 
-vi.mock('@/components/tools/renderers/core/_registry', () => ({
+vi.mock('@/components/tools/renderers/core/_registry', async () => {
+    const { useSessionTranscriptSource } = await import('@/components/sessions/transcript/source/SessionTranscriptSourceContext');
+    return ({
     getToolViewComponent: (toolName: string) => {
+        if (toolName === 'Read' || toolName === 'read') {
+            return () => {
+                renderedToolSourceSpy(useSessionTranscriptSource());
+                return React.createElement('SourceProbe');
+            };
+        }
         if (toolName === 'Task' || toolName === 'SubAgent') {
             return (props: any) => {
                 renderedSpecificTaskViewSpy(props);
@@ -98,7 +124,8 @@ vi.mock('@/components/tools/renderers/core/_registry', () => ({
         }
         return null;
     },
-}));
+    });
+});
 
 vi.mock('@/components/tools/catalog', () => ({
     knownTools: {
@@ -117,17 +144,25 @@ vi.mock('../permissions/PermissionFooter', () => ({
 }));
 
 const renderedMessageViewSpy = vi.fn();
+const renderedSourceIdentitySpy = vi.fn();
 
-vi.mock('@/components/sessions/transcript/MessageView', () => ({
+vi.mock('@/components/sessions/transcript/MessageView', async () => {
+    const { useSessionTranscriptSource } = await import('@/components/sessions/transcript/source/SessionTranscriptSourceContext');
+    return ({
     MessageView: (props: any) => {
+        const source = useSessionTranscriptSource();
+        renderedSourceIdentitySpy({ sessionId: source.sessionId, serverId: source.serverId });
         renderedMessageViewSpy(props);
         return React.createElement('MessageView', null);
     },
     MessageViewWithSessionCommon: (props: any) => {
+        const source = useSessionTranscriptSource();
+        renderedSourceIdentitySpy({ sessionId: source.sessionId, serverId: source.serverId });
         renderedMessageViewSpy(props);
         return React.createElement('MessageViewWithSessionCommon', null);
     },
-}));
+    });
+});
 
 describe('ToolFullView (Task transcript reuse)', () => {
     let ToolFullView: typeof import('./ToolFullView').ToolFullView;
@@ -135,6 +170,22 @@ describe('ToolFullView (Task transcript reuse)', () => {
     beforeAll(async () => {
         ({ ToolFullView } = await import('./ToolFullView'));
     }, 60000);
+
+    it('closes nested navigation while preserving the supplied session action authority', async () => {
+        renderedToolSourceSpy.mockClear();
+        const actions = {
+            respondToPermission: vi.fn(async () => {}), answerUserAction: vi.fn(async () => {}),
+            abort: vi.fn(async () => {}), submitMessage: vi.fn(async () => {}),
+        };
+        await renderWithSessionTranscriptSource(React.createElement(ToolFullView, {
+            tool: makeToolCall({ name: 'Read', input: { file_path: '/tmp/file' } }), metadata: null,
+            messages: [], sessionId: 's1', owningMessageId: 'message-1',
+        }), createTestSessionTranscriptSource({ sessionId: 's1', navigate: vi.fn(), actions }));
+        expect(renderedToolSourceSpy).toHaveBeenCalled();
+        const source = renderedToolSourceSpy.mock.calls.at(-1)?.[0];
+        expect(source.navigate).toBeNull();
+        expect(source.actions).toBe(actions);
+    });
 
     beforeEach(() => {
         ensureSidechainMessagesLoadedMock.mockReset();
@@ -147,6 +198,22 @@ describe('ToolFullView (Task transcript reuse)', () => {
 
     afterEach(() => {
         standardCleanup();
+    });
+
+    it('binds the chain rows to the exact session and Home that opened the tool', async () => {
+        renderedSourceIdentitySpy.mockClear();
+        await renderScreen(
+            React.createElement(ToolFullView, {
+                tool: makeToolCall({ id: 'chain-tool', name: 'Task', input: { description: 'Explore' } }),
+                owningMessageId: 'chain-owner',
+                sessionId: 'chain-session',
+                serverId: 'chain-home',
+                metadata: null,
+                messages: [{ kind: 'agent-text', id: 'chain-row', localId: null, createdAt: 1, text: 'Chain output' }],
+                interaction: { canSendMessages: false, canApprovePermissions: false },
+            }),
+        );
+        expect(renderedSourceIdentitySpy).toHaveBeenCalledWith({ sessionId: 'chain-session', serverId: 'chain-home' });
     });
 
     it('ensures the sidechain transcript is loaded for Task tools', async () => {
@@ -329,7 +396,6 @@ describe('ToolFullView (Task transcript reuse)', () => {
             expect.objectContaining({
                 message: child,
                 sessionId: 's1',
-                interaction: expect.objectContaining({ disableToolNavigation: true }),
             }),
         );
         expect(renderedSpecificTaskViewSpy).not.toHaveBeenCalled();
@@ -604,7 +670,6 @@ describe('ToolFullView (Task transcript reuse)', () => {
             expect.objectContaining({
                 message: child,
                 sessionId: 's1',
-                interaction: expect.objectContaining({ disableToolNavigation: true }),
             }),
         );
         expect(renderedSpecificSubAgentRunViewSpy).not.toHaveBeenCalled();
@@ -624,8 +689,7 @@ describe('ToolFullView (Task transcript reuse)', () => {
         renderedMessageViewSpy.mockReset();
         const granted = deriveTranscriptInteraction({
             kind: 'session',
-            accessLevel: null,
-            canApprovePermissions: true,
+            access: createSessionAccessFixture('owner'),
             isSessionActive: true,
         });
         expect(granted.canFork).toBe(true);
@@ -663,8 +727,6 @@ describe('ToolFullView (Task transcript reuse)', () => {
         expect(delivered.canPreviewMedia === true).toBe(true);
         expect(delivered.canSendMessages === true).toBe(true);
         expect(delivered.canApprovePermissions === true).toBe(true);
-        // ToolFullView still owns tool navigation suppression on its own surface.
-        expect(delivered.disableToolNavigation).toBe(true);
     });
 
     it('keeps denied fork/open-file/media-preview affordances denied on the sidechain transcript surface', async () => {
@@ -702,7 +764,6 @@ describe('ToolFullView (Task transcript reuse)', () => {
         expect(delivered.canSendMessages).toBe(false);
         expect(delivered.canApprovePermissions).toBe(false);
         expect(delivered.permissionDisabledReason).toBe('public');
-        expect(delivered.disableToolNavigation).toBe(true);
     });
 
     it('renders Agent sidechain messages through MessageView in full view', async () => {
@@ -739,7 +800,6 @@ describe('ToolFullView (Task transcript reuse)', () => {
             expect.objectContaining({
                 message: child,
                 sessionId: 's1',
-                interaction: expect.objectContaining({ disableToolNavigation: true }),
             }),
         );
         expect(renderedSpecificTaskViewSpy).not.toHaveBeenCalled();

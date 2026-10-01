@@ -562,6 +562,14 @@ export function createTerminalPtySessionManager(params: Readonly<{
       });
     }
 
+    if (input.launchProcess?.initialInput) {
+      try {
+        pty.write(input.launchProcess.initialInput);
+      } catch {
+        closeById(terminalId);
+        return okDisabled('terminal_spawn_failed');
+      }
+    }
     if (input.initialCommand && input.initialCommand.trim()) {
       const cmd = input.initialCommand.endsWith('\n') ? input.initialCommand : `${input.initialCommand}\n`;
       try {

@@ -78,6 +78,33 @@ const persistedProviderBinding = {
 } as const;
 
 describe('resolveSessionRuntimeSnapshot', () => {
+  it('rehydrates managed directory identity without retaining one-shot creation or consent', async () => {
+    const runtimeSnapshot = await loadRuntimeSnapshotModule();
+    expect(runtimeSnapshot).not.toBeNull();
+    if (!runtimeSnapshot) return;
+    const result = runtimeSnapshot.resolveSessionRuntimeSnapshot({
+      incomingOptions: {
+        directory: '/managed/chat', freshSessionCreation: true, approvedNewDirectoryCreation: true,
+        managedDirectorySeed: { sourceSessionId: 'source', sourcePath: '/managed/source' },
+      },
+      persistedMetadata: { sessionDirectoryV1: { v: 1, kind: 'managed' } },
+    });
+    expect(result.spawnOptions.directoryKind).toBe('managed');
+    expect(result.spawnOptions.approvedNewDirectoryCreation).toBe(false);
+    expect(result.spawnOptions.freshSessionCreation).toBeUndefined();
+    expect(result.spawnOptions.managedDirectorySeed).toBeUndefined();
+  });
+  it('retains trusted managed creation routing before the initial row publishes its marker', async () => {
+    const runtimeSnapshot = await loadRuntimeSnapshotModule();
+    expect(runtimeSnapshot).not.toBeNull();
+    if (!runtimeSnapshot) return;
+    const result = runtimeSnapshot.resolveSessionRuntimeSnapshot({
+      incomingOptions: { directory: '/managed/chat', directoryKind: 'managed', freshSessionCreation: true },
+      persistedMetadata: { path: '/managed/chat' },
+    });
+    expect(result.spawnOptions.directoryKind).toBe('managed');
+    expect(result.spawnOptions.freshSessionCreation).toBeUndefined();
+  });
   it('restores persisted per-session MCP selection into resume and respawn options', async () => {
     const runtimeSnapshot = await loadRuntimeSnapshotModule();
     expect(runtimeSnapshot).not.toBeNull();
@@ -155,7 +182,7 @@ describe('resolveSessionRuntimeSnapshot', () => {
       modelSelection: {
         v: 1,
         updatedAt: 530,
-        ref: { agentTargetKey: 'backend:claude', providerConnectionId: null, modelId: 'claude-opus-4-7' },
+        ref: { agentTargetKey: 'agent:happier.agent.claude/claude', providerConnectionId: null, modelId: 'claude-opus-4-7' },
       },
       resume: 'incoming-vendor-resume',
     });
@@ -213,7 +240,7 @@ describe('resolveSessionRuntimeSnapshot', () => {
           v: 1,
           updatedAt: 100,
           selection: {
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             providerConnectionId: 'pc_work',
             modelId: 'provider-model',
           },
@@ -227,7 +254,7 @@ describe('resolveSessionRuntimeSnapshot', () => {
       v: 1,
       updatedAt: 100,
       ref: {
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         providerConnectionId: 'pc_work',
         modelId: 'provider-model',
       },
@@ -243,7 +270,7 @@ describe('resolveSessionRuntimeSnapshot', () => {
       v: 1 as const,
       updatedAt: 90,
       ref: {
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         providerConnectionId: ProviderConnectionIdSchema.parse('pc_work'),
         modelId: 'retained-model',
       },
@@ -256,7 +283,7 @@ describe('resolveSessionRuntimeSnapshot', () => {
       v: 1 as const,
       updatedAt: 100,
       selection: {
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         providerConnectionId: 'pc_work',
         modelId: 'next-model',
       },
@@ -290,8 +317,8 @@ describe('resolveSessionRuntimeSnapshot', () => {
   });
 
   it.each([
-    ['native', { agentTargetKey: 'backend:codex', providerConnectionId: null, modelId: 'native-next' }],
-    ['another Provider', { agentTargetKey: 'backend:codex', providerConnectionId: 'pc_other', modelId: 'other-next' }],
+    ['native', { agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: null, modelId: 'native-next' }],
+    ['another Provider', { agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: 'pc_other', modelId: 'other-next' }],
   ] as const)(
     'keeps the retained live Provider envelope when the next launch selects %s',
     async (_label, nextSelection) => {
@@ -306,7 +333,7 @@ describe('resolveSessionRuntimeSnapshot', () => {
         v: 1 as const,
         updatedAt: 90,
         ref: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: ProviderConnectionIdSchema.parse('pc_work'),
           modelId: 'retained-model',
         },
@@ -349,7 +376,7 @@ describe('resolveSessionRuntimeSnapshot', () => {
           v: 1,
           updatedAt: 100,
           ref: {
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             providerConnectionId: ProviderConnectionIdSchema.parse('pc_work'),
             modelId: 'next-model',
           },
@@ -383,7 +410,7 @@ describe('resolveSessionRuntimeSnapshot', () => {
           v: 1,
           updatedAt: 100,
           selection: {
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             providerConnectionId: 'pc_work',
             modelId: 'provider-model',
           },

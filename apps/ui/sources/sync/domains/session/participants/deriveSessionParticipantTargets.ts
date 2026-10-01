@@ -1,6 +1,6 @@
 import type { ParticipantRecipientV1 } from '@happier-dev/protocol';
 
-import type { Message, ToolCall } from '@/sync/domains/messages/messageTypes';
+import type { Message, ToolCall } from "@happier-dev/session-core/messages";
 import type { Session } from '@/sync/domains/state/storageTypes';
 import { applyExecutionRunControlCapabilities } from '@/sync/domains/session/subagents/executionRuns/applyExecutionRunControlCapabilities';
 import { resolveSessionSubagentAutoRecipient } from '@/sync/domains/session/subagents/autoRecipient/resolveSessionSubagentAutoRecipient';

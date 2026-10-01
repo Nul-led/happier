@@ -1,5 +1,3 @@
-import type { TemporaryComputerLaunchStatus } from '@/components/sessions/new/hooks/useTemporaryComputerLaunch';
-
 import {
     isNewSessionLaunchAttemptPendingBeforeSession,
     type NewSessionLaunchAttempt,
@@ -28,11 +26,11 @@ export type NewSessionLaunchPresentation = 'none' | 'machine' | 'temporary_compu
  * to show the author the request they just sent.
  */
 export function resolveNewSessionLaunchPresentation(input: Readonly<{
-    temporaryComputerLaunchStatus: TemporaryComputerLaunchStatus;
+    temporaryComputerLaunchActive: boolean;
     isCreating: boolean;
     pendingLaunchAttempt: NewSessionLaunchAttempt | null | undefined;
 }>): NewSessionLaunchPresentation {
-    if (input.temporaryComputerLaunchStatus !== 'idle') return 'temporary_computer';
+    if (input.temporaryComputerLaunchActive) return 'temporary_computer';
     if (!input.isCreating) return 'none';
     const attempt = input.pendingLaunchAttempt;
     if (!isNewSessionLaunchAttemptPendingBeforeSession(attempt)) return 'none';

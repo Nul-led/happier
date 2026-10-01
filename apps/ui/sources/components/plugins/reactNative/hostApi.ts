@@ -30,6 +30,11 @@ import {
     PluginUiSelectActionInputResultV1Schema,
     PluginUiSelectedActionInputCarrierV1Schema,
     PluginUiWatchComposerRequestV1Schema,
+    PluginUiReadSessionRequestV1Schema,
+    PluginUiReadSessionResultV1Schema,
+    PluginUiRespondToSessionPermissionRequestV1Schema,
+    PluginUiRespondToSessionPermissionResultV1Schema,
+    PluginUiWatchSessionRequestV1Schema,
     ComposerDecorationResultV1Schema,
     ComposerFocusResultV1Schema,
     ComposerReadResultV1Schema,
@@ -45,6 +50,7 @@ import {
     type PluginUiResourceSubscriptionEventV1,
     type PluginUiResourceSubscriptionRequestV1,
     type PluginUiWatchComposerRequestV1,
+    type PluginUiWatchSessionRequestV1,
     type PluginUiSurfaceContextV1,
     type PluginUiTargetedContributionOperationV1,
     type PluginUiSelectActionInputResultV1,
@@ -114,6 +120,12 @@ type PluginReactNativeHostRequestTransport = Readonly<{
     ) => Promise<PluginUiJsonValueV1 | undefined>;
     watchResource: (
         payload: PluginUiResourceSubscriptionRequestV1,
+        listener: (event: PluginUiResourceSubscriptionEventV1) => void,
+        options?: PluginSurfaceHostApiRequestOptions,
+    ) => Promise<PluginReactNativeHostRequestSubscription>;
+    /** A Session watch rides the same invalidation-signal lifecycle as a Resource watch. */
+    watchSession: (
+        payload: PluginUiWatchSessionRequestV1 & Readonly<{ subscriptionId: string }>,
         listener: (event: PluginUiResourceSubscriptionEventV1) => void,
         options?: PluginSurfaceHostApiRequestOptions,
     ) => Promise<PluginReactNativeHostRequestSubscription>;
@@ -334,7 +346,47 @@ function createPluginReactNativeHostRequestTransport(params: Readonly<{
         if (!parsedPayload.success) {
             throwHostApiError('invalid_payload');
         }
-        const subscriptionId = parsedPayload.data.subscriptionId;
+        return await establishInvalidationSubscription(
+            'watchResource',
+            parsedPayload.data.subscriptionId,
+            parsedPayload.data,
+            listener,
+            options,
+        );
+    }
+
+    async function watchSession(
+        payload: PluginUiWatchSessionRequestV1 & Readonly<{ subscriptionId: string }>,
+        listener: (event: PluginUiResourceSubscriptionEventV1) => void,
+        options?: PluginSurfaceHostApiRequestOptions,
+    ): Promise<PluginReactNativeHostRequestSubscription> {
+        const parsedPayload = PluginUiWatchSessionRequestV1Schema.safeParse({ sessionId: payload.sessionId });
+        const subscriptionId = payload.subscriptionId.trim();
+        if (!parsedPayload.success || !subscriptionId) {
+            throwHostApiError('invalid_payload');
+        }
+        return await establishInvalidationSubscription(
+            'watchSession',
+            subscriptionId,
+            { subscriptionId, ...parsedPayload.data },
+            listener,
+            options,
+        );
+    }
+
+    /**
+     * The one invalidation-signal establishment lifecycle. Resource and
+     * Session watches differ only in their request payload; registry
+     * bookkeeping, late-admission custody and `disposeHostResource`
+     * retirement are shared.
+     */
+    async function establishInvalidationSubscription(
+        method: Extract<PluginUiHostApiRequestMethodV1, 'watchResource' | 'watchSession'>,
+        subscriptionId: string,
+        requestPayload: PluginUiJsonValueV1,
+        listener: (event: PluginUiResourceSubscriptionEventV1) => void,
+        options?: PluginSurfaceHostApiRequestOptions,
+    ): Promise<PluginReactNativeHostRequestSubscription> {
         // Register before opening the host watch. Its pump may publish as soon
         // as the daemon accepts the subscription; registering after awaiting
         // the response would silently drop that first invalidation.
@@ -372,7 +424,7 @@ function createPluginReactNativeHostRequestTransport(params: Readonly<{
                 abortSignal.addEventListener('abort', onAbort, { once: true });
             })
             : undefined;
-        const establishment = request('watchResource', parsedPayload.data, options);
+        const establishment = request(method, requestPayload, options);
         let established: PluginUiJsonValueV1 | undefined;
         try {
             established = await (abortPromise
@@ -534,6 +586,7 @@ function createPluginReactNativeHostRequestTransport(params: Readonly<{
     return Object.freeze({
         request,
         watchResource,
+        watchSession,
         watchComposer,
         acquireComposerInputLock,
         publishSubscriptionEvent: (event) => subscriptions.publish(params.requestSurface, event),
@@ -832,6 +885,25 @@ export function createCanonicalPluginReactNativeHostApiAdapter(params: Readonly<
         throwHostApiError('unsupported_method', [`host_api_method_not_installed:${method}`]);
     }
 
+    /**
+     * Admission for the two fire-and-forget members (`publishCurrentUiContext`,
+     * `diagnostic`). They return nothing, acknowledge nothing and are called
+     * from author effects and cleanups, so a synchronous throw there is not a
+     * typed answer the author can act on: it unwinds React's commit and takes
+     * the app down. A retired mount's publication is already void — the host
+     * retired its slot synchronously — and a method the daemon has only
+     * transiently withdrawn is re-advertised on recovery. Both are dropped,
+     * exactly as the hosted-web client transport drops a failed request.
+     * A method this mount can never serve still fails loudly as
+     * `unsupported_method`: that is a capability verdict, not currentness.
+     */
+    function admitFireAndForget(method: PluginUiHostMethodV1): boolean {
+        if (disposed || params.isCurrent?.() === false) return false;
+        if (resolveNegotiatedMethods().includes(method)) return true;
+        if (resolveStructuralMethods().includes(method)) return false;
+        throwHostApiError('unsupported_method', [`host_api_method_not_installed:${method}`]);
+    }
+
     function disposable(dispose: () => void): Readonly<{ dispose: () => void }> {
         let active = true;
         const wrapped = () => {
@@ -854,10 +926,9 @@ export function createCanonicalPluginReactNativeHostApiAdapter(params: Readonly<
             methods: resolveStructuralMethods(),
         }),
         publishCurrentUiContext: (enrichment) => {
-            assertActive();
-            assertInstalled('publishCurrentUiContext');
             const payload = PluginUiPublishCurrentUiContextRequestV1Schema.safeParse({ enrichment });
             if (!payload.success) throwHostApiError('invalid_payload');
+            if (!admitFireAndForget('publishCurrentUiContext')) return;
             // Like the browser transport, publication has no acknowledgement or
             // author-visible ID. The mount/controller remains the authority for
             // admission and synchronous retirement; a late transport failure
@@ -886,7 +957,7 @@ export function createCanonicalPluginReactNativeHostApiAdapter(params: Readonly<
         // once and is cast to the overloaded member.
         executeAction: (async (
             action: PluginReference,
-            input: JsonValue,
+            input?: JsonValue,
             options?: PluginUiActionExecutionOptions,
         ) => {
             assertActive(options?.signal);
@@ -896,7 +967,7 @@ export function createCanonicalPluginReactNativeHostApiAdapter(params: Readonly<
             // the mounted dispatcher owns both decisions after this transport.
             const actionRequest = PluginUiExecuteActionRequestV1Schema.safeParse({
                 action,
-                input,
+                ...(input === undefined ? {} : { input }),
             });
             if (!actionRequest.success) throwHostApiError('invalid_payload');
             const explicitSelectedActionInput = options?.selectedActionInput;
@@ -1120,6 +1191,50 @@ export function createCanonicalPluginReactNativeHostApiAdapter(params: Readonly<
                     : { admittedDigest: subscription.admittedDigest }),
             });
         },
+        readSession: async (sessionId, options) => {
+            assertActive(options?.signal);
+            assertInstalled('readSession');
+            const payload = PluginUiReadSessionRequestV1Schema.safeParse({ sessionId });
+            if (!payload.success) throwHostApiError('invalid_payload');
+            const result = PluginUiReadSessionResultV1Schema.safeParse(await transport.request(
+                'readSession',
+                payload.data,
+                options?.signal ? { signal: options.signal } : undefined,
+            ));
+            if (!result.success) throwHostApiError('invalid_payload');
+            return result.data;
+        },
+        watchSession: async (sessionId, listener, options) => {
+            assertActive(options?.signal);
+            assertInstalled('watchSession');
+            subscriptionSequence += 1;
+            const subscription = await transport.watchSession(
+                {
+                    subscriptionId: `${params.requestIdPrefix}:session:${subscriptionSequence}`,
+                    sessionId,
+                },
+                listener,
+                options?.signal ? { signal: options.signal } : undefined,
+            );
+            if (disposed || options?.signal?.aborted) {
+                await subscription.dispose();
+                assertActive(options?.signal);
+            }
+            return disposable(() => { void subscription.dispose(); });
+        },
+        respondToSessionPermission: async (responseRequest, options) => {
+            assertActive(options?.signal);
+            assertInstalled('respondToSessionPermission');
+            const payload = PluginUiRespondToSessionPermissionRequestV1Schema.safeParse(responseRequest);
+            if (!payload.success) throwHostApiError('invalid_payload');
+            const result = PluginUiRespondToSessionPermissionResultV1Schema.safeParse(await transport.request(
+                'respondToSessionPermission',
+                payload.data,
+                options?.signal ? { signal: options.signal } : undefined,
+            ));
+            if (!result.success) throwHostApiError('invalid_payload');
+            return result.data;
+        },
         activeComposer: async (options) => {
             assertActive(options?.signal);
             assertInstalled('activeComposer');
@@ -1328,8 +1443,7 @@ export function createCanonicalPluginReactNativeHostApiAdapter(params: Readonly<
             return decoded.value;
         },
         diagnostic: (data) => {
-            assertActive();
-            assertInstalled('diagnostic');
+            if (!admitFireAndForget('diagnostic')) return;
             void transport.request('diagnostic', encodePluginUiDiagnostic(data)).catch(() => undefined);
         },
         readClipboard: async (options) => {

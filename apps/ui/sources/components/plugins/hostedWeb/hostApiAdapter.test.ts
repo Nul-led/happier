@@ -36,6 +36,22 @@ const canonicalIdentity = {
     mountNonce: 'nonce-1',
 } as const;
 
+const targetSourceCustody = {
+    kind: 'managed',
+    immutableGenerationId: 'target-generation-a',
+    installSource: 'archive',
+} as const;
+const providerSourceCustody = {
+    kind: 'managed',
+    immutableGenerationId: 'provider-generation-a',
+    installSource: 'archive',
+} as const;
+const scmSourceCustody = {
+    kind: 'managed',
+    immutableGenerationId: 'scm-generation-a',
+    installSource: 'archive',
+} as const;
+
 const canonicalSurface = {
     mount: {
         kind: 'destination',
@@ -56,7 +72,8 @@ const canonicalSurface = {
     targetedContributions: {
         target: {
             pluginId: 'acme.preview',
-            immutableGenerationId: 'target-generation-a',
+            occurrenceId: 'target-occurrence-a',
+            sourceCustody: targetSourceCustody,
         },
         points: [],
     },
@@ -781,7 +798,8 @@ describe('hosted web plugin host API adapter', () => {
                     contributor: {
                         pluginId: 'acme.provider',
                         contributionId: 'github-connection',
-                        immutableGenerationId: 'provider-generation-a',
+                        occurrenceId: 'provider-occurrence-a',
+                        sourceCustody: providerSourceCustody,
                     },
                     role: 'setup',
                     action: { pluginId: 'acme.provider', localId: 'connection/prepare-v1' },
@@ -801,7 +819,8 @@ describe('hosted web plugin host API adapter', () => {
             contributor: {
                 pluginId: 'acme.provider',
                 contributionId: 'github-connection',
-                immutableGenerationId: 'provider-generation-a',
+                occurrenceId: 'provider-occurrence-a',
+                sourceCustody: providerSourceCustody,
             },
             role: 'setup',
             action: { pluginId: 'acme.provider', localId: 'connection/prepare-v1' },
@@ -821,10 +840,14 @@ describe('hosted web plugin host API adapter', () => {
             selection: {
                 target: {
                     pluginId: surface.pluginId,
-                    immutableGenerationId: 'target-generation-a',
+                    sourceCustody: targetSourceCustody,
                 },
                 point: targetedOperation.point,
-                contributor: targetedOperation.contributor,
+                contributor: {
+                    pluginId: targetedOperation.contributor.pluginId,
+                    contributionId: targetedOperation.contributor.contributionId,
+                    sourceCustody: providerSourceCustody,
+                },
             },
             connectedAccount: { kind: 'none' },
             presentation: { connectedAccountLabel: null, machineDisplayName: null },
@@ -896,7 +919,8 @@ describe('hosted web plugin host API adapter', () => {
             contributor: {
                 pluginId: 'acme.provider',
                 contributionId: 'github-connection',
-                immutableGenerationId: 'provider-generation-a',
+                occurrenceId: 'provider-occurrence-a',
+                sourceCustody: providerSourceCustody,
             },
             role: 'setup',
             action: { pluginId: 'acme.provider', localId: 'connection/prepare-v1' },
@@ -914,7 +938,7 @@ describe('hosted web plugin host API adapter', () => {
             ...retainedTargetedOperation,
             contributor: {
                 ...retainedTargetedOperation.contributor,
-                immutableGenerationId: 'forged-generation',
+                occurrenceId: 'forged-occurrence',
             },
         } as const;
         const selectedInput = { repository: 'happier-dev/happier' } as const;
@@ -925,10 +949,14 @@ describe('hosted web plugin host API adapter', () => {
             selection: {
                 target: {
                     pluginId: surface.pluginId,
-                    immutableGenerationId: 'target-generation-a',
+                    sourceCustody: targetSourceCustody,
                 },
                 point: retainedTargetedOperation.point,
-                contributor: retainedTargetedOperation.contributor,
+                contributor: {
+                    pluginId: retainedTargetedOperation.contributor.pluginId,
+                    contributionId: retainedTargetedOperation.contributor.contributionId,
+                    sourceCustody: providerSourceCustody,
+                },
             },
             connectedAccount: { kind: 'none' },
             presentation: { connectedAccountLabel: null, machineDisplayName: null },
@@ -940,7 +968,9 @@ describe('hosted web plugin host API adapter', () => {
         const mountedHostApi = createPluginSurfaceActionHostApi({
             surfaceContext: surface,
             callerBinding: {
+                pluginId: surface.pluginId,
                 contributionLocalId: surface.contributionId,
+                occurrenceId: `${surface.pluginId}:current`,
                 materializationRef: {
                     machineId: 'machine-1',
                     materializationId: 'materialization-current',
@@ -949,7 +979,6 @@ describe('hosted web plugin host API adapter', () => {
             },
             contributedAction: {
                 machineId: 'machine-1',
-                expectedGeneration: '7',
                 execute: contributed,
             },
             resolveContributedAction: (identity) => {
@@ -967,6 +996,7 @@ describe('hosted web plugin host API adapter', () => {
                     ? {
                         id: identity.localId,
                         pluginId: identity.pluginId,
+                        occurrenceId: 'targeted-action-occurrence-a',
                         title: 'Targeted connection action',
                         scopes: ['session'],
                         surfaces: ['ui'],
@@ -1057,10 +1087,11 @@ describe('hosted web plugin host API adapter', () => {
         const preservedInput = { ...relaySelectedInput.input };
         const mutableSelectedInput = guestSelectedInput.input as { repository: string };
         mutableSelectedInput.repository = 'mutated-after-selection';
-        const mutableRequestedContributor = guestSelectedInput.selection.contributor as {
-            immutableGenerationId: string;
-        };
-        mutableRequestedContributor.immutableGenerationId = 'mutated-after-selection';
+        Reflect.set(
+            guestSelectedInput.selection.contributor.sourceCustody,
+            'immutableGenerationId',
+            'mutated-after-selection',
+        );
 
         await expect(handler(createEnvelope('hostApi', {
             wireVersion: 1,
@@ -1079,7 +1110,6 @@ describe('hosted web plugin host API adapter', () => {
         expect(contributed).toHaveBeenCalledWith('machine-1', expect.objectContaining({
             qualifiedActionId: 'acme.provider/connection/prepare-v1',
             input: { repository: 'happier-dev/happier' },
-            expectedContributorImmutableGenerationId: 'provider-generation-a',
         }));
 
         await expect(handler(createEnvelope('hostApi', {
@@ -1090,13 +1120,7 @@ describe('hosted web plugin host API adapter', () => {
             method: 'executeAction',
             payload: { action: targetedOperation.action, input: selectedInput },
             targetedOperation: forgedTargetedOperation,
-            selectedActionInput: {
-                ...relaySelectedInput,
-                selection: {
-                    ...relaySelectedInput.selection,
-                    contributor: forgedTargetedOperation.contributor,
-                },
-            },
+            selectedActionInput: relaySelectedInput,
         }))).resolves.toMatchObject({
             payload: { kind: 'error', error: { code: 'invalid_payload' } },
         });
@@ -1171,7 +1195,8 @@ describe('hosted web plugin host API adapter', () => {
             contributor: {
                 pluginId: 'acme.scm',
                 contributionId: 'github',
-                immutableGenerationId: 'scm-generation-a',
+                occurrenceId: 'scm-occurrence-a',
+                sourceCustody: scmSourceCustody,
             },
             role: 'prepareReviewWorkspace',
             action: { pluginId: 'acme.scm', localId: 'prepare-review-workspace' },
@@ -1181,9 +1206,13 @@ describe('hosted web plugin host API adapter', () => {
             action: operation.action,
             input: { repository: 'happier-dev/happier', pullRequestNumber: 42 },
             selection: {
-                target: canonicalSurface.targetedContributions.target,
+                target: { pluginId: canonicalSurface.targetedContributions.target.pluginId, sourceCustody: targetSourceCustody },
                 point: operation.point,
-                contributor: operation.contributor,
+                contributor: {
+                    pluginId: operation.contributor.pluginId,
+                    contributionId: operation.contributor.contributionId,
+                    sourceCustody: providerSourceCustody,
+                },
             },
             connectedAccount: { kind: 'none' },
             presentation: { connectedAccountLabel: null, machineDisplayName: null },
@@ -1259,7 +1288,8 @@ describe('hosted web plugin host API adapter', () => {
             contributor: {
                 pluginId: 'acme.provider',
                 contributionId: 'github-connection',
-                immutableGenerationId: 'provider-generation-a',
+                occurrenceId: 'provider-occurrence-a',
+                sourceCustody: providerSourceCustody,
             },
             role: 'setup',
             action: { pluginId: 'acme.provider', localId: 'connection/prepare-v1' },
@@ -1279,9 +1309,13 @@ describe('hosted web plugin host API adapter', () => {
                     action: targetedOperation.action,
                     input: { repository: `happier-${selectionOrdinal}` },
                     selection: {
-                        target: canonicalSurface.targetedContributions.target,
+                        target: { pluginId: canonicalSurface.targetedContributions.target.pluginId, sourceCustody: targetSourceCustody },
                         point: targetedOperation.point,
-                        contributor: targetedOperation.contributor,
+                        contributor: {
+                            pluginId: targetedOperation.contributor.pluginId,
+                            contributionId: targetedOperation.contributor.contributionId,
+                            sourceCustody: providerSourceCustody,
+                        },
                     },
                     connectedAccount: { kind: 'none' },
                     presentation: { connectedAccountLabel: null, machineDisplayName: null },
@@ -1422,7 +1456,8 @@ describe('hosted web plugin host API adapter', () => {
             targetedContributions: {
                 target: {
                     pluginId: 'acme.target',
-                    immutableGenerationId: 'target-generation-a',
+                    occurrenceId: 'target-occurrence-a',
+                    sourceCustody: targetSourceCustody,
                 },
                 points: [],
             },

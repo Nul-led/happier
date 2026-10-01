@@ -1,6 +1,6 @@
 import React from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ToolCall } from '@/sync/domains/messages/messageTypes';
+import type { ToolCall } from "@happier-dev/session-core/messages";
 import { createPartialStorageModuleMock, renderScreen } from '@/dev/testkit';
 import { collectHostText, findPressableByText, makeToolCall, makeToolViewProps, pressTestInstanceAsync } from '@/dev/testkit';
 import { makeCompletedTool, normalizedHostText } from '../core/truncationView.testHelpers';

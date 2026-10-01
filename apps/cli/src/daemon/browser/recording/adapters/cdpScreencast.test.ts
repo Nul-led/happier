@@ -74,24 +74,18 @@ function createFakeEncoder(byteSize = 4_096): CapturedEncoder {
 type FakeTransportControls = {
   transport: BrowserRecordingCdpScreencastTransport;
   emit: (frame: BrowserRecordingCdpScreencastFrame) => void;
-  acked: number[];
   stopSpy: ReturnType<typeof vi.fn>;
   startCalls: number;
 };
 
 function createFakeTransport(options: { startReturnsNull?: boolean } = {}): FakeTransportControls {
-  const acked: number[] = [];
   const stopSpy = vi.fn(async () => {});
   let onFrame: ((frame: BrowserRecordingCdpScreencastFrame) => void) | null = null;
   let startCalls = 0;
   const session: BrowserRecordingCdpScreencastSession = {
-    ackFrame: (sessionId) => {
-      acked.push(sessionId);
-    },
     stop: stopSpy,
   };
   return {
-    acked,
     stopSpy,
     get startCalls() {
       return startCalls;
@@ -115,7 +109,7 @@ function jpegFrame(sessionId: number, bytes: Buffer, timestampMs = 1_100): Brows
 }
 
 describe('browser recording cdpScreencast adapter', () => {
-  it('feeds CDP screencast JPEG frames into the encoder and acks each frame', async () => {
+  it('feeds the shared producer JPEG frames into the recording encoder', async () => {
     const fake = createFakeTransport();
     const encoder = createFakeEncoder(8_192);
     const adapter = createBrowserRecordingCdpScreencastCaptureAdapter({
@@ -131,8 +125,6 @@ describe('browser recording cdpScreencast adapter', () => {
     fake.emit(jpegFrame(1, Buffer.from('jpeg-frame-one'), 1_100));
     fake.emit(jpegFrame(2, Buffer.from('jpeg-frame-two'), 1_200));
 
-    // Every screencast frame must be acked so Chromium keeps emitting frames.
-    expect(fake.acked).toEqual([1, 2]);
     expect(encoder.appended).toHaveLength(2);
     expect(encoder.appended[0]?.toString()).toBe('jpeg-frame-one');
 
@@ -199,8 +191,7 @@ describe('browser recording cdpScreencast adapter', () => {
     fake.emit(jpegFrame(1, Buffer.from('12345678'))); // 8 bytes -> accepted
     fake.emit(jpegFrame(2, Buffer.from('12345678'))); // would push to 16 > 12 -> rejected
 
-    // The over-budget frame is still acked (to drain Chromium) but NOT appended.
-    expect(fake.acked).toEqual([1, 2]);
+    // The producer owns ACKs; the recording encoder does not append over-budget frames.
     expect(encoder.appended).toHaveLength(1);
   });
 

@@ -3,7 +3,7 @@ import { access, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, symlink, w
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { reclaimJsonOwnerFileLockSnapshot } from '@/utils/fs/jsonOwnerFileLock';
 import { createWorkspaceRootOwnershipManager } from './workspaceSyncRootOwnership';
 
@@ -52,6 +52,43 @@ async function waitForFile(path: string): Promise<void> {
 }
 
 describe('workspace root ownership', () => {
+  it.each(['EACCES', 'EIO'])('retains an existing writer when process presence cannot be established (%s)', async (code) => {
+    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-root-unverifiable-owner-'));
+    const lockDirectory = join(fixture, 'locks');
+    const root = join(fixture, 'workspace');
+    await mkdir(root);
+    const ownerPid = 2_147_483_000;
+    const original = createWorkspaceRootOwnershipManager({
+      lockDirectory,
+      processOwner: {
+        pid: ownerPid,
+        processStartedAtMs: 1_000,
+        ownerToken: '11111111-1111-4111-8111-111111111111',
+      },
+    });
+    const acquired = await original.tryAcquire({ ownerId: 'first', canonicalRoot: root, operation: 'sync' });
+    if ('kind' in acquired) throw new Error('fixture did not acquire root');
+    const [recordName] = (await readdir(lockDirectory)).filter((name) => name.endsWith('.json'));
+    if (!recordName) throw new Error('fixture did not persist ownership');
+    const recordPath = join(lockDirectory, recordName);
+    const before = await readFile(recordPath, 'utf8');
+    const realKill = process.kill.bind(process);
+    const kill = vi.spyOn(process, 'kill').mockImplementation((pid, signal) => {
+      if (pid === ownerPid && signal === 0) throw Object.assign(new Error(code), { code });
+      return realKill(pid, signal);
+    });
+    try {
+      const replacement = createWorkspaceRootOwnershipManager({ lockDirectory });
+      await expect(replacement.tryAcquire({ ownerId: 'second', canonicalRoot: root, operation: 'sync' }))
+        .resolves.toMatchObject({ kind: 'overlap', existing: { ownerId: 'first' } });
+      expect(await readFile(recordPath, 'utf8')).toBe(before);
+    } finally {
+      kill.mockRestore();
+      await acquired.release();
+      await rm(fixture, { recursive: true, force: true });
+    }
+  });
+
   it('rejects a missing root unless absent-target identity binding was explicitly deferred', async () => {
     const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-root-missing-'));
     const manager = createWorkspaceRootOwnershipManager({

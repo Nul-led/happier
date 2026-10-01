@@ -3,7 +3,7 @@ import { CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION, ARTIFACT_PLAIN_DATA_KE
 import type { Artifact, ArtifactCreateRequest, ArtifactUpdateRequest, DecryptedArtifact } from '@/sync/domains/artifacts/artifactTypes';
 import { upsertAndActivateServer } from '@/sync/domains/server/serverRuntime';
 import { Encryption } from '@/sync/encryption/encryption';
-import { createArtifactViaApi, fetchArtifactWithBodyFromApi, updateArtifactViaApi, type ArtifactDataKeyCache } from './syncArtifacts';
+import { createArtifactViaApi, createArtifactWithHeaderViaApi, fetchArtifactWithBodyFromApi, updateArtifactViaApi, updateArtifactWithHeaderViaApi, type ArtifactDataKeyCache } from './syncArtifacts';
 
 // HTTP is the only substituted boundary; API, mode, compatibility, and crypto stay real.
 const runtimeFetch = vi.hoisted(() => vi.fn());
@@ -16,9 +16,54 @@ function json(value: unknown, status = 200): Response {
 afterEach(() => { runtimeFetch.mockReset(); });
 
 describe('artifact captured Home transport', () => {
+    it('uses the caller artifact id and exact revision even when recovering an uncached key', async () => {
+        const encryption = await Encryption.create(new Uint8Array(32).fill(23));
+        const artifactDataKeys: ArtifactDataKeyCache = new Map();
+        let stored: Artifact | undefined;
+        let projected: DecryptedArtifact | undefined;
+        const updates: ArtifactUpdateRequest[] = [];
+        const request = vi.fn(async (path: string, init?: RequestInit) => {
+            if (path === '/v1/account/encryption') return json({ mode: 'e2ee', updatedAt: 0 });
+            if (path === '/v1/artifacts') {
+                const payload = JSON.parse(String(init?.body)) as ArtifactCreateRequest;
+                stored ??= { ...payload, headerVersion: 1, bodyVersion: 1, seq: 1, createdAt: 1, updatedAt: 1 };
+                return json(stored);
+            }
+            if (init?.method === 'POST') {
+                const payload = JSON.parse(String(init.body)) as ArtifactUpdateRequest;
+                updates.push(payload);
+                if (payload.expectedHeaderVersion !== stored!.headerVersion || payload.expectedBodyVersion !== stored!.bodyVersion) {
+                    return json({ success: false, error: 'version-mismatch' });
+                }
+                stored = { ...stored!, header: payload.header!, body: payload.body!, headerVersion: 2, bodyVersion: 2 };
+                return json({ success: true, headerVersion: 2, bodyVersion: 2 });
+            }
+            return json(stored);
+        });
+        const common = { credentials: { token: 'captured-account-token' }, encryption, artifactDataKeys, request };
+        expect(await createArtifactWithHeaderViaApi({ ...common, artifactId: 'caller-id', header: { title: 'Original' }, body: 'same body',
+            addArtifact: (artifact) => { projected = artifact; } })).toBe('caller-id');
+        expect(stored?.id).toBe('caller-id');
+        await createArtifactWithHeaderViaApi({ ...common, artifactId: 'caller-id', header: { title: 'Competing create' }, body: 'different body',
+            addArtifact: (artifact) => { projected = artifact; } });
+        expect(projected).toMatchObject({ title: 'Original', body: 'same body' });
+        artifactDataKeys.clear();
+        await updateArtifactWithHeaderViaApi({ ...common, artifactId: 'caller-id', expectedRevision: { headerVersion: 1, bodyVersion: 1 },
+            header: { title: 'Changed' }, body: 'same body', getArtifact: () => projected,
+            updateArtifact: (artifact) => { projected = artifact; } });
+        expect(updates[0]).toMatchObject({ expectedHeaderVersion: 1, expectedBodyVersion: 1 });
+        expect(typeof updates[0]?.body).toBe('string');
+        expect(projected).toMatchObject({ headerVersion: 2, bodyVersion: 2, title: 'Changed', body: 'same body' });
+        artifactDataKeys.clear();
+        await expect(updateArtifactWithHeaderViaApi({ ...common, artifactId: 'caller-id', expectedRevision: { headerVersion: 1, bodyVersion: 1 },
+            header: { title: 'Stale overwrite' }, body: 'stale body', getArtifact: () => projected,
+            updateArtifact: (artifact) => { projected = artifact; } })).rejects.toMatchObject({ code: 'version_mismatch' });
+        expect(updates[1]).toMatchObject({ expectedHeaderVersion: 1, expectedBodyVersion: 1 });
+        expect(projected?.title).toBe('Changed');
+    });
     it.each(['plain', 'e2ee'] as const)('creates, fetches and updates %s artifacts on B while A is focused', async (mode) => {
         const homeB = await upsertAndActivateServer({ serverUrl: `https://artifact-b-${mode}.test`, scope: 'tab' });
-        upsertAndActivateServer({ serverUrl: `https://artifact-a-${mode}.test`, scope: 'tab' });
+        await upsertAndActivateServer({ serverUrl: `https://artifact-a-${mode}.test`, scope: 'tab' });
         let stored: Artifact | undefined;
         const requests: string[] = [];
         runtimeFetch.mockImplementation(async (url: unknown, init?: RequestInit) => {

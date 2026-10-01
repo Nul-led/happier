@@ -192,6 +192,7 @@ describe('E2EE Account Security mutation client', () => {
         };
 
         const prepared = await prepareAccountEncryptionModePasswordCredential(request, {
+            scope: { scope: { serverId: 'home-a', accountId: 'account-1' }, isCurrent: () => true },
             fromMode: 'e2ee', toMode: 'plain', password: 'correct horse battery staple',
             accountId: 'account-1', expectedCredentialRevision: 4,
             normalizedNativeEmail: 'person@example.test', secret,
@@ -220,6 +221,7 @@ describe('E2EE Account Security mutation client', () => {
         }), { status: 200 });
 
         await expect(prepareAccountEncryptionModePasswordCredential(request, {
+            scope: { scope: { serverId: 'home-a', accountId: 'account-1' }, isCurrent: () => true },
             fromMode: 'plain', toMode: 'e2ee', password: 'correct horse battery staple',
             accountId: 'account-1', expectedCredentialRevision: 4,
             normalizedNativeEmail: 'person@example.test', secret,

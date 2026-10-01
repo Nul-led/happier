@@ -593,64 +593,73 @@ function rebaseRemainingOptimisticRecords<S extends SessionOrganizationDomain>(
     // Undo only the keys this record actually changed. Restoring its whole `before` map would
     // also erase every write that committed after it — a failed mutation on one Session would
     // roll back an unrelated Session's confirmed pin, folder, tag, order or reminder.
-    let pins = undoRecordDelta(
+    const pins = undoRecordDelta(
         state.sessionOrganizationPinsBySessionKey,
         rolledBackRecord.before.sessionOrganizationPinsBySessionKey,
         rolledBackRecord.after.sessionOrganizationPinsBySessionKey,
     );
-    let attentionStandings = undoRecordDelta(
+    const attentionStandings = undoRecordDelta(
         state.sessionOrganizationAttentionStandingsBySessionKey,
         rolledBackRecord.before.sessionOrganizationAttentionStandingsBySessionKey,
         rolledBackRecord.after.sessionOrganizationAttentionStandingsBySessionKey,
     );
-    let folders = undoRecordDelta(
+    const folders = undoRecordDelta(
         state.sessionOrganizationFoldersByFolderKey,
         rolledBackRecord.before.sessionOrganizationFoldersByFolderKey,
         rolledBackRecord.after.sessionOrganizationFoldersByFolderKey,
     );
-    let tags = undoRecordDelta(
+    const tags = undoRecordDelta(
         state.sessionOrganizationTagsByTagKey,
         rolledBackRecord.before.sessionOrganizationTagsByTagKey,
         rolledBackRecord.after.sessionOrganizationTagsByTagKey,
     );
-    let labels = undoRecordDelta(
+    const labels = undoRecordDelta(
         state.sessionOrganizationLabelsByLabelKey,
         rolledBackRecord.before.sessionOrganizationLabelsByLabelKey,
         rolledBackRecord.after.sessionOrganizationLabelsByLabelKey,
     );
-    let orderEntries = undoRecordDelta(
+    const orderEntries = undoRecordDelta(
         state.sessionOrganizationOrderEntriesByScopeKey,
         rolledBackRecord.before.sessionOrganizationOrderEntriesByScopeKey,
         rolledBackRecord.after.sessionOrganizationOrderEntriesByScopeKey,
     );
-    let tagAssignments = undoRecordDelta(
+    const tagAssignments = undoRecordDelta(
         state.sessionOrganizationTagAssignmentsBySessionKey,
         rolledBackRecord.before.sessionOrganizationTagAssignmentsBySessionKey,
         rolledBackRecord.after.sessionOrganizationTagAssignmentsBySessionKey,
     );
-    let organizationFolderAssignments = undoRecordDelta(
+    const organizationFolderAssignments = undoRecordDelta(
         state.sessionOrganizationFolderAssignmentsBySessionKey,
         rolledBackRecord.before.sessionOrganizationFolderAssignmentsBySessionKey,
         rolledBackRecord.after.sessionOrganizationFolderAssignmentsBySessionKey,
     );
 
-    for (const record of sortOptimisticRecords(Object.values(remainingRecords))) {
-        pins = applyRecordDelta(pins, record.before.sessionOrganizationPinsBySessionKey, record.after.sessionOrganizationPinsBySessionKey);
-        attentionStandings = applyRecordDelta(
-            attentionStandings,
-            record.before.sessionOrganizationAttentionStandingsBySessionKey,
-            record.after.sessionOrganizationAttentionStandingsBySessionKey,
-        );
-        folders = applyRecordDelta(folders, record.before.sessionOrganizationFoldersByFolderKey, record.after.sessionOrganizationFoldersByFolderKey);
-        tags = applyRecordDelta(tags, record.before.sessionOrganizationTagsByTagKey, record.after.sessionOrganizationTagsByTagKey);
-        labels = applyRecordDelta(labels, record.before.sessionOrganizationLabelsByLabelKey, record.after.sessionOrganizationLabelsByLabelKey);
-        orderEntries = applyRecordDelta(orderEntries, record.before.sessionOrganizationOrderEntriesByScopeKey, record.after.sessionOrganizationOrderEntriesByScopeKey);
-        tagAssignments = applyRecordDelta(tagAssignments, record.before.sessionOrganizationTagAssignmentsBySessionKey, record.after.sessionOrganizationTagAssignmentsBySessionKey);
-        organizationFolderAssignments = applyRecordDelta(
-            organizationFolderAssignments,
-            record.before.sessionOrganizationFolderAssignmentsBySessionKey,
-            record.after.sessionOrganizationFolderAssignmentsBySessionKey,
-        );
+    // Later writes already own their visible values. Replaying them here could overwrite a
+    // still newer confirmed value. Only remove the failed write from their rollback baselines,
+    // otherwise a later failure would resurrect this failed write.
+    const records = { ...remainingRecords };
+    for (const record of Object.values(records)) {
+        if (readOptimisticRecordSequence(record) <= readOptimisticRecordSequence(rolledBackRecord)) continue;
+        const before = { ...record.before };
+        const after = { ...record.after };
+        const rebaseMap = <K extends keyof SessionOrganizationOptimisticRecord['before']>(key: K) => {
+            const originalBefore = record.before[key];
+            const originalAfter = record.after[key];
+            if (!originalBefore || !originalAfter) return;
+            const rebasedBefore = undoRecordDelta<unknown>(originalBefore, rolledBackRecord.before[key], rolledBackRecord.after[key]);
+            // Both maps retain the same K's values; the generic delta functions change keys only.
+            before[key] = rebasedBefore as SessionOrganizationOptimisticRecord['before'][K];
+            after[key] = applyRecordDelta<unknown>(rebasedBefore, originalBefore, originalAfter) as SessionOrganizationOptimisticRecord['after'][K];
+        };
+        rebaseMap('sessionOrganizationPinsBySessionKey');
+        rebaseMap('sessionOrganizationAttentionStandingsBySessionKey');
+        rebaseMap('sessionOrganizationFoldersByFolderKey');
+        rebaseMap('sessionOrganizationTagsByTagKey');
+        rebaseMap('sessionOrganizationLabelsByLabelKey');
+        rebaseMap('sessionOrganizationOrderEntriesByScopeKey');
+        rebaseMap('sessionOrganizationTagAssignmentsBySessionKey');
+        rebaseMap('sessionOrganizationFolderAssignmentsBySessionKey');
+        records[record.id] = { ...record, before, after };
     }
 
     return {
@@ -662,7 +671,7 @@ function rebaseRemainingOptimisticRecords<S extends SessionOrganizationDomain>(
         sessionOrganizationOrderEntriesByScopeKey: orderEntries,
         sessionOrganizationTagAssignmentsBySessionKey: tagAssignments,
         sessionOrganizationFolderAssignmentsBySessionKey: organizationFolderAssignments,
-        sessionOrganizationOptimisticRecords: remainingRecords,
+        sessionOrganizationOptimisticRecords: records,
     } as Partial<S>;
 }
 

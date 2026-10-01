@@ -70,21 +70,34 @@ function avccEnvelope(tag: number, payload: readonly number[]): Uint8Array {
 }
 
 describe('LiveStreamPlayer', () => {
+    it('shows H264 playing only after decoder output and counts actual decoded frames', async () => {
+        const mod = await loadLiveStreamPlayer();
+        let decoded: (() => void) | undefined;
+        const screen = await renderScreen(<mod.LiveStreamPlayer
+            state={{ phase: 'opening', selectedCodec: 'h264.avcc', activeRenderer: 'webcodecs', decodedFrames: 0, droppedFrames: 0, bufferedBytes: 0 }}
+            avcc={{
+                chunks: [avccEnvelope(0x01, [1, 0x64, 0, 0x28]), avccEnvelope(0x02, [0x65, 1])],
+                adapter: { isSupported: () => ({ ok: true }), configure: async () => ({}),
+                    decode: () => new Promise<void>((resolve) => { decoded = resolve; }), close: () => undefined },
+            }} testID="live-stream" />);
+        await flushHookEffects({ cycles: 2, turns: 2 });
+        expect(screen.findByTestId('live-stream-status-opening')).toBeTruthy();
+        decoded?.();
+        await flushHookEffects({ cycles: 2, turns: 2 });
+        expect(screen.findByTestId('live-stream-status-playing')).toBeTruthy();
+    });
+
     afterEach(() => {
         vi.useRealTimers();
         vi.unstubAllGlobals();
     });
 
-    it('keeps the last frame visible while surfacing reconnect state and disabled controls', async () => {
+    it('keeps the last frame visible while surfacing reconnect state, with no control row of its own', async () => {
         const mod = await loadLiveStreamPlayer();
 
         const screen = await renderScreen(
             <mod.LiveStreamPlayer
                 state={reconnectingState}
-                controls={{
-                    canRequestKeyframe: false,
-                    canSetQuality: false,
-                }}
                 testID="live-stream"
             />,
         );
@@ -94,8 +107,9 @@ describe('LiveStreamPlayer', () => {
         });
         expect(screen.findByTestId('live-stream-status-reconnecting')).toBeTruthy();
         expect(screen.findByTestId('live-stream-last-frame')).toBeTruthy();
-        expect(screen.findByTestId('live-stream-request-keyframe')?.props.accessibilityState?.disabled).toBe(true);
-        expect(screen.findByTestId('live-stream-lower-quality')?.props.accessibilityState?.disabled).toBe(true);
+        // Pixels and one status overlay only: refresh and quality belong to the owning surface's toolbar.
+        expect(screen.findByTestId('live-stream-request-keyframe')).toBeNull();
+        expect(screen.findByTestId('live-stream-lower-quality')).toBeNull();
     });
 
     it('renders an explicit unavailable state when no renderer can show a frame', async () => {
@@ -112,18 +126,12 @@ describe('LiveStreamPlayer', () => {
                     bufferedBytes: 0,
                     diagnostic: { reasonCode: 'h264_renderer_unavailable' },
                 }}
-                controls={{
-                    canRequestKeyframe: true,
-                    canSetQuality: false,
-                }}
                 testID="live-stream"
             />,
         );
 
         expect(screen.findByTestId('live-stream-unavailable')).toBeTruthy();
         expect(screen.findByTestId('live-stream-frame')).toBeNull();
-        expect(screen.findByTestId('live-stream-request-keyframe')?.props.accessibilityState?.disabled).toBe(false);
-        expect(screen.findByTestId('live-stream-lower-quality')?.props.accessibilityState?.disabled).toBe(true);
     });
 
     it('does not route H.264 renderer output through the MJPEG image renderer', async () => {
@@ -141,10 +149,6 @@ describe('LiveStreamPlayer', () => {
                     droppedFrames: 0,
                     bufferedBytes: 0,
                     diagnostic: { reasonCode: 'webcodecs_renderer_unavailable' },
-                }}
-                controls={{
-                    canRequestKeyframe: true,
-                    canSetQuality: true,
                 }}
                 testID="live-stream"
             />,
@@ -170,10 +174,6 @@ describe('LiveStreamPlayer', () => {
                     droppedFrames: 0,
                     bufferedBytes: 0,
                     diagnostic: { reasonCode: 'h264_renderer_unavailable' },
-                }}
-                controls={{
-                    canRequestKeyframe: true,
-                    canSetQuality: true,
                 }}
                 testID="live-stream"
             />,
@@ -228,10 +228,6 @@ describe('LiveStreamPlayer', () => {
                         close: () => undefined,
                     },
                 }}
-                controls={{
-                    canRequestKeyframe: true,
-                    canSetQuality: false,
-                }}
                 state={{
                     phase: 'error',
                     selectedCodec: 'h264.avcc',
@@ -248,7 +244,6 @@ describe('LiveStreamPlayer', () => {
         expect(screen.findByTestId('live-stream-webcodecs-surface')).toBeNull();
         expect(screen.findByTestId('live-stream-unavailable')).toBeTruthy();
         expect(screen.findByTestId('live-stream-status-error')).toBeTruthy();
-        expect(screen.findByTestId('live-stream-request-keyframe')?.props.accessibilityState?.disabled).toBe(false);
     });
 
     it('propagates unsupported WebCodecs diagnostics from product-style AVCC input into player state', async () => {

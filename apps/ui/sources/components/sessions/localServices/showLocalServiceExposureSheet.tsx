@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Platform, Pressable, View } from 'react-native';
+import { View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import type { LocalServicePublicExposureModeV1 } from '@happier-dev/protocol';
@@ -10,6 +10,7 @@ import { SegmentedTabBar } from '@/components/ui/navigation/SegmentedTabBar';
 import { Text } from '@/components/ui/text/Text';
 import { Typography } from '@/constants/Typography';
 import { Modal, type CustomModalInjectedProps } from '@/modal';
+import type { TranslationKey } from '@/text/i18n';
 import { createDeferredOnce } from '@/modal/async/createDeferredOnce';
 import { t } from '@/text';
 
@@ -62,38 +63,32 @@ const stylesheet = StyleSheet.create((theme) => ({
     choice: {
         gap: 6,
     },
+    /** Sentence-case, above its control: no uppercase group labels (DESIGN "Configuration surfaces"). */
     choiceLabel: {
         ...Typography.default('semiBold'),
-        fontSize: 11,
-        letterSpacing: 0.4,
-        textTransform: 'uppercase',
+        fontSize: 12.5,
+        color: theme.colors.text.secondary,
+    },
+    /** One allowed lifetime is a fact, read on one line: label left, value right. */
+    fixedChoice: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: 12,
+    },
+    fixedChoiceLabel: {
+        ...Typography.default('semiBold'),
+        fontSize: 13,
+        color: theme.colors.text.primary,
+    },
+    fixedChoiceValue: {
+        ...Typography.tabular(),
+        fontSize: 13,
         color: theme.colors.text.secondary,
     },
     commit: {
-        gap: 10,
+        gap: 8,
         paddingTop: 2,
-    },
-    cancelRow: {
-        alignItems: 'center',
-        paddingVertical: 8,
-        borderRadius: 8,
-    },
-    /** Keyboard focus ring from the theme's focus role — never `border.strong`. */
-    cancelRowFocused: {
-        ...(Platform.select({
-            web: {
-                outlineStyle: 'solid',
-                outlineWidth: 2,
-                outlineColor: theme.colors.border.focus,
-                outlineOffset: -2,
-            },
-            default: {},
-        }) as object),
-    },
-    cancelText: {
-        ...Typography.default('semiBold'),
-        fontSize: 13,
-        color: theme.colors.text.secondary,
     },
 }));
 
@@ -114,6 +109,17 @@ function Consequence(props: Readonly<{
     );
 }
 
+/**
+ * Who can open the link, per link type — the one consequence that differs between them. The server
+ * decides it (`public/runtime.ts`): a secret link opens for anyone holding it; a signed-in link only
+ * for a signed-in person who can open the Session it belongs to.
+ */
+const REACH_BY_MODE: Readonly<Record<LocalServicePublicExposureModeV1, TranslationKey>> = {
+    secret_link: 'localServices.publicPreview.consequenceReach',
+    public: 'localServices.publicPreview.consequenceReach',
+    authenticated: 'localServices.publicPreview.consequenceReachSignedIn',
+};
+
 type ExposureSheetProps = CustomModalInjectedProps & Readonly<{
     modeChoices: readonly LocalServiceExposureModeChoice[];
     ttlChoices: readonly LocalServiceExposureTtlChoice[];
@@ -126,9 +132,10 @@ type ExposureSheetProps = CustomModalInjectedProps & Readonly<{
  *
  * It replaces THREE sequential dialogs — a two-string `Modal.confirm`, then a mode picker, then a
  * lifetime picker — with one moment. The three dialogs were not a smaller design: they asked the
- * user to commit before telling them the two facts that decide the answer (no sign-in is required;
+ * user to commit before telling them the two facts that decide the answer (who can open the link;
  * the link expires on its own), and then made them answer two more questions afterwards, by which
- * point the decision was already made. `DESIGN.md` asks for privacy and cost consequences to be
+ * point the decision was already made. Who can open it depends on the link type, so that sentence
+ * follows the choice; a lifetime the server does not let them choose is still stated. `DESIGN.md` asks for privacy and cost consequences to be
  * explained *before* commitment and for choices to be described in terms of outcomes.
  *
  * Every control here is a primitive the corridor already owns: the card chrome is `@/modal`'s, the
@@ -152,6 +159,8 @@ const LocalServiceExposureSheet: React.FC<ExposureSheetProps> = (props) => {
         [props.ttlChoices],
     );
 
+    const fixedTtlLabel = props.ttlChoices.length === 1 ? props.ttlChoices[0]?.label ?? null : null;
+
     const commit = React.useCallback(() => {
         props.onResolve({ mode, ttlMs });
         props.onClose();
@@ -167,7 +176,7 @@ const LocalServiceExposureSheet: React.FC<ExposureSheetProps> = (props) => {
             <View style={styles.consequences}>
                 <Consequence
                     iconName="globe"
-                    text={t('localServices.publicPreview.consequenceReach')}
+                    text={t(REACH_BY_MODE[mode])}
                     testID={`${props.testIDPrefix}-consequence-reach`}
                 />
                 <Consequence
@@ -187,6 +196,7 @@ const LocalServiceExposureSheet: React.FC<ExposureSheetProps> = (props) => {
                 <View style={styles.choice}>
                     <Text style={styles.choiceLabel}>{t('localServices.publicPreview.linkTypeLabel')}</Text>
                     <SegmentedTabBar
+                        role="radiogroup"
                         tabs={modeTabs}
                         activeTabId={mode}
                         onSelectTab={(next) => setMode(next as LocalServicePublicExposureModeV1)}
@@ -202,6 +212,7 @@ const LocalServiceExposureSheet: React.FC<ExposureSheetProps> = (props) => {
                 <View style={styles.choice}>
                     <Text style={styles.choiceLabel}>{t('localServices.publicPreview.lifetimeLabel')}</Text>
                     <SegmentedTabBar
+                        role="radiogroup"
                         tabs={ttlTabs}
                         activeTabId={String(ttlMs)}
                         onSelectTab={(next) => setTtlMs(Number.parseInt(next, 10))}
@@ -210,6 +221,13 @@ const LocalServiceExposureSheet: React.FC<ExposureSheetProps> = (props) => {
                         slidingThumb
                         compact
                     />
+                </View>
+            ) : fixedTtlLabel ? (
+                // One allowed lifetime is not a decision, but it is still a consequence: the expiry
+                // line above promises it, so it is read here as a fact rather than hidden (F-PLAN-26).
+                <View style={styles.fixedChoice} testID={`${props.testIDPrefix}-ttl-fixed`}>
+                    <Text style={styles.fixedChoiceLabel}>{t('localServices.publicPreview.lifetimeLabel')}</Text>
+                    <Text style={styles.fixedChoiceValue}>{fixedTtlLabel}</Text>
                 </View>
             ) : null}
 
@@ -220,21 +238,13 @@ const LocalServiceExposureSheet: React.FC<ExposureSheetProps> = (props) => {
                     size="normal"
                     onPress={commit}
                 />
-                <Pressable
+                <RoundButton
                     testID={`${props.testIDPrefix}-cancel`}
-                    accessibilityRole="button"
+                    title={t('common.cancel')}
+                    size="normal"
+                    display="secondary"
                     onPress={cancel}
-                    style={(interactionState) => {
-                        const webState = interactionState as typeof interactionState & { focused?: boolean };
-                        return [
-                            styles.cancelRow,
-                            interactionState.pressed ? { opacity: 0.85 } : null,
-                            webState.focused === true ? styles.cancelRowFocused : null,
-                        ];
-                    }}
-                >
-                    <Text style={styles.cancelText}>{t('common.cancel')}</Text>
-                </Pressable>
+                />
             </View>
         </View>
     );

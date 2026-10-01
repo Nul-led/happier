@@ -72,7 +72,7 @@ describe('createCliActionInventoryDeps', () => {
 
     await expect(deps.agentsModelsList({
       agentId: 'opencode',
-      backendTargetKey: 'backend:opencode',
+      backendTargetKey: 'agent:happier.agent.opencode/opencode',
       machineId: 'local-machine',
       limit: 10,
     })).resolves.toEqual({
@@ -121,7 +121,7 @@ describe('createCliActionInventoryDeps', () => {
 
     await expect(deps.agentsModelsList({
       agentId: 'opencode',
-      backendTargetKey: 'backend:opencode',
+      backendTargetKey: 'agent:happier.agent.opencode/opencode',
       machineId: 'local-machine',
       limit: 10,
     })).resolves.toEqual({
@@ -183,8 +183,8 @@ describe('createCliActionInventoryDeps', () => {
 
   it('reads current account settings for each inventory request instead of caching the first snapshot', async () => {
     resolveAvailableAccountSettings
-      .mockResolvedValueOnce({ backendEnabledByTargetKey: { 'backend:codex': false } })
-      .mockResolvedValueOnce({ backendEnabledByTargetKey: { 'backend:codex': true } });
+      .mockResolvedValueOnce({ backendEnabledByTargetKey: { 'agent:happier.agent.codex/codex': false } })
+      .mockResolvedValueOnce({ backendEnabledByTargetKey: { 'agent:happier.agent.codex/codex': true } });
 
     const deps = createCliActionInventoryDeps({
       token: 'token',
@@ -230,7 +230,7 @@ describe('createCliActionInventoryDeps', () => {
 
     await expect(deps.agentsSessionModesList({
       agentId: 'codex',
-      backendTargetKey: 'backend:codex',
+      backendTargetKey: 'agent:happier.agent.codex/codex',
       machineId: 'local-machine',
       limit: 1,
     })).resolves.toEqual({
@@ -287,7 +287,7 @@ describe('createCliActionInventoryDeps', () => {
 
     const result = await deps.agentsConfigOptionsList({
       agentId: 'claude',
-      backendTargetKey: 'backend:claude',
+      backendTargetKey: 'agent:happier.agent.claude/claude',
       machineId: 'local-machine',
       modelId: 'claude-opus-4-8',
       limit: 10,
@@ -402,7 +402,7 @@ describe('createCliActionInventoryDeps', () => {
 
     const result = await deps.spawnConnectedServicesList({
       agentId: 'codex',
-      backendTargetKey: 'backend:codex',
+      backendTargetKey: 'agent:happier.agent.codex/codex',
     });
 
     expect(result).toEqual({

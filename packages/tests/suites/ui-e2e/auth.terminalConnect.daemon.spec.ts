@@ -188,9 +188,7 @@ test.describe('ui e2e: auth + terminal connect', () => {
           // Keep this test focused on the auth + terminal-connect + daemon flow first.
           HAPPIER_BUILD_FEATURES_DENY: 'sharing.contentKeys',
           HAPPIER_FEATURE_AUTH_LOGIN__KEY_CHALLENGE_ENABLED: '1',
-          // Make presence timeouts fast enough for UI E2E reconnect flows.
-          // NOTE: DB lastActiveAt updates are throttled, so the timeout needs to be comfortably above that threshold.
-          HAPPIER_PRESENCE_SESSION_TIMEOUT_MS: '60000',
+          // This scenario exercises machine offline → online after expiry.
           HAPPIER_PRESENCE_MACHINE_TIMEOUT_MS: '60000',
           HAPPIER_PRESENCE_TIMEOUT_TICK_MS: '1000',
         },
@@ -391,7 +389,7 @@ test.describe('ui e2e: auth + terminal connect', () => {
     await expect(backendModeRow).toContainText('ACP', { timeout: 60_000 });
   });
 
-  test('daemon can reconnect and UI reflects offline → online', async ({ page }, testInfo) => {
+  test('daemon can reconnect and UI preserves a queued follow-up', async ({ page }, testInfo) => {
     test.setTimeout(420_000);
     if (!ui) throw new Error('missing ui fixture');
     if (!server) throw new Error('missing server fixture');
@@ -425,9 +423,6 @@ test.describe('ui e2e: auth + terminal connect', () => {
     try {
       await restoreAccountUsingSecretKey(page, uiBaseUrl, accountSecretKeyFormatted);
       await reloadCreatedSessionFromNewSessionComposer({ page, session: createdSession });
-
-      const transcriptMessages = transcriptMessageLocator(page);
-      const messageCountBefore = await transcriptMessages.count();
 
       const machineId = readLatestMachineIdFromServerLightDb({ suiteDir });
       await daemon.stop();
@@ -472,8 +467,11 @@ test.describe('ui e2e: auth + terminal connect', () => {
       const composer = getVisibleSessionComposer(page);
       await expect(composer).toHaveCount(1, { timeout: 120_000 });
       await composer.fill(followup);
-      await composer.press('Enter');
-      await expect.poll(async () => transcriptMessages.count(), { timeout: 180_000 }).toBeGreaterThan(messageCountBefore);
+      await page.getByTestId('session-composer-send').click();
+      // Reconnecting the daemon restores machine presence, not the stopped agent
+      // process. Keep the follow-up visible until the session is resumed.
+      await expect(page.locator('[data-testid^="pendingMessages.message:"]', { hasText: followup })).toBeVisible({ timeout: 60_000 });
+      await expect(page.getByRole('button', { name: 'Pending messages · Queued' })).toBeVisible({ timeout: 60_000 });
     } catch (error) {
       thrown = error;
       throw error;

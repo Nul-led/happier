@@ -131,3 +131,15 @@ export function useSessionAddressForSessionId(
         [serverId, sessionId],
     );
 }
+
+/** Project the shell-owned runtime into the exact facts its pane driver and chrome consume. */
+export function createSessionPaneSurfaceScope(sessionId: string, runtime: SessionPluginRuntimeState): SessionPaneSurfaceScope {
+    return {
+        targetKind: 'session', sessionId,
+        machineId: runtime.machineId, serverId: runtime.serverId,
+        pluginUiProjection: runtime.pluginUiProjection,
+        pluginBrowserProjection: runtime.pluginBrowserProjection,
+        projectionPhase: runtime.phase, interactionEnabled: runtime.interactionEnabled,
+        platform: runtime.platform,
+    };
+}

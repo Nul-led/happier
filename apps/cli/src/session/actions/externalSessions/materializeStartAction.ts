@@ -30,7 +30,7 @@ import {
   readExternalSessionOperationSharedPresentation,
 } from './operationProgressPublisher';
 import {
-  resolveGenerationBoundExternalSessionFollowSurface,
+  resolveOccurrenceBoundExternalSessionFollowSurface,
 } from './providerOpsResolution';
 import {
   createExternalSessionSourceGenerationAnchor,
@@ -347,7 +347,7 @@ export function createDefaultExternalSessionMaterializeStartActionExecutor(
       if (!qualifiedIdentity) {
         throw new Error('external_session_materialize_start_source_unavailable');
       }
-      const resolved = await resolveGenerationBoundExternalSessionFollowSurface(
+      const resolved = await resolveOccurrenceBoundExternalSessionFollowSurface(
         linked.agentId,
         linked.linkGeneration,
       );
@@ -380,7 +380,7 @@ export function createDefaultExternalSessionMaterializeStartActionExecutor(
           linkGeneration: linked.linkGeneration,
           sourceGeneration:
             createExternalSessionSourceGenerationAnchor(sourceSnapshotEvidenceRef),
-          contributionGeneration: resolved.resource.pluginGeneration,
+          sourceCustody: resolved.sourceCustody,
         },
       };
     },

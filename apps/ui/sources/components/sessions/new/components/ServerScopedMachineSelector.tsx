@@ -14,6 +14,7 @@ import type {
 } from '@/components/sessions/new/hooks/machines/useServerScopedMachineOptions';
 import { Text } from '@/components/ui/text/Text';
 import { Icon } from '@/components/ui/icons/Icon';
+import { getMachineDisplayName, resolveMachineDisplayNames } from '@/utils/sessions/machineDisplayNames';
 
 
 type ServerScopedMachineSelectorProps<TMachine extends ServerScopedMachinePresentation> = Readonly<{
@@ -86,6 +87,7 @@ export function ServerScopedMachineSelector<
         <>
             {props.groups.map((group) => {
                 const title = `${group.serverName} (${group.machines.length})`;
+                const machineNames = resolveMachineDisplayNames(group.machines);
                 return (
                     <ItemGroup key={group.serverId} title={title}>
                         {group.loading ? (
@@ -122,8 +124,8 @@ export function ServerScopedMachineSelector<
                                     <Item
                                         key={`${group.serverId}::${machineKey}`}
                                         testID={optionTestIdPrefix ? `${optionTestIdPrefix}:${machineKey}` : undefined}
-                                        title={presentation?.title ?? machine.metadata?.displayName ?? machine.metadata?.host ?? machine.id}
-                                        subtitle={presentation?.subtitle ?? machine.metadata?.host ?? machine.id}
+                                        title={presentation?.title ?? machineNames.get(machine.id) ?? getMachineDisplayName(machine)}
+                                        subtitle={presentation?.subtitle ?? machine.metadata?.host ?? undefined}
                                         icon={<Icon name="desktop" size={20} color={theme.colors.text.secondary} />}
                                         selected={isSelected}
                                         detail={availability.detail}

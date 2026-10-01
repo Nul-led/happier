@@ -5,6 +5,7 @@ import { ItemRowActions } from '@/components/ui/lists/ItemRowActions';
 import type { ItemAction } from '@/components/ui/lists/itemActions';
 import { t } from '@/text';
 import { toTestIdSafeValue } from '@/utils/ui/toTestIdSafeValue';
+import type { FilesystemBrowserRowActionsControl } from '@/components/ui/filesystemBrowser/FilesystemBrowserRow';
 
 export type RepositoryTreeRowActionMenuItemId =
     | 'repository-tree-menuitem-rename'
@@ -15,12 +16,17 @@ export type RepositoryTreeRowActionMenuItemId =
 
 type RepositoryTreeRowActionItem = Omit<ItemAction, 'onPress'>;
 
+// Touch rows open the menu from a long press; the anchor stays, the … is not drawn.
+const renderNoTrigger = () => null;
+
 export function RepositoryTreeRowActionsMenu(props: Readonly<{
     path: string;
     kind: 'file' | 'directory';
     disableWriteActions: boolean;
     downloadActionsEnabled: boolean;
     onSelect: (itemId: RepositoryTreeRowActionMenuItemId) => void;
+    /** The tree row's reveal: open from a long press, and no … drawn under a finger. */
+    control?: FilesystemBrowserRowActionsControl;
 }>) {
     const { theme } = useUnistyles();
 
@@ -102,7 +108,13 @@ export function RepositoryTreeRowActionsMenu(props: Readonly<{
             compactThreshold={Number.POSITIVE_INFINITY}
             compactActionIds={[]}
             iconSize={14}
+            // Tree rows are 28 px (session tabs lab F1): the ⋯ is drawn at 24 and its press frame grows
+            // vertically to the platform floor, so it never makes the row taller.
+            actionControlSizePx={24}
             gap={0}
+            overflowOpen={props.control?.open}
+            onOverflowOpenChange={props.control?.onOpenChange}
+            renderOverflowTrigger={props.control?.triggerHidden ? renderNoTrigger : undefined}
         />
     );
 }

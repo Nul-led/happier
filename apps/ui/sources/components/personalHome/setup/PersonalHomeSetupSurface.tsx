@@ -9,7 +9,11 @@ import { Typography } from '@/constants/Typography';
 import { t, tLoose } from '@/text';
 
 import type { PersonalHomeBootstrapSnapshot } from '../bootstrap/personalHomeBootstrapTypes';
-import { PersonalHomeExistingRuntimeDecision, PersonalHomeUseAnotherHomeAction } from './PersonalHomeExistingRuntimeDecision';
+import {
+    PersonalHomeExistingRuntimeDecision,
+    PersonalHomeSignedInHomeDecision,
+    PersonalHomeUseAnotherHomeAction,
+} from './PersonalHomeExistingRuntimeDecision';
 import { PersonalHomeSetupFailure } from './PersonalHomeSetupFailure';
 import { PersonalHomeSetupMark } from './PersonalHomeSetupMark';
 import { PersonalHomeDiagnosticDetails } from './PersonalHomeDiagnosticDetails';
@@ -79,10 +83,12 @@ function blockedFailureBodyCopy(snapshot: PersonalHomeBootstrapSnapshot): string
 
 function phaseCopy(snapshot: PersonalHomeBootstrapSnapshot): string {
     switch (snapshot.phase) {
-        case 'checking': return t('common.loading');
+        case 'checking': return t('personalHome.bootstrap.checkingStatus');
         case 'ensuring-home': return t('personalHome.bootstrap.ensuringHomeStatus');
         case 'preparing-computer': return t('personalHome.bootstrap.preparingComputerStatus');
-        case 'blocked': return blockedStatusCopy(snapshot) ?? t('personalHome.bootstrap.blockedStatus');
+        case 'blocked':
+            if (snapshot.action === 'choose-signed-in-home') return t('personalHome.bootstrap.signedInHome.status');
+            return blockedStatusCopy(snapshot) ?? t('personalHome.bootstrap.blockedStatus');
         case 'ready': return t('personalHome.bootstrap.readyStatus');
     }
 }
@@ -111,6 +117,8 @@ export const PersonalHomeSetupSurface = React.memo(function PersonalHomeSetupSur
     onOpenDetails?: () => void;
     onUseExisting?: () => void;
     onUseAnotherHome?: () => void;
+    onKeepSignedInHome?: () => void;
+    onCreatePersonalHome?: () => void;
 }>) {
     const [detailsOpen, setDetailsOpen] = React.useState(false);
     const retryRef = React.useRef<FocusableAction | null>(null);
@@ -127,7 +135,13 @@ export const PersonalHomeSetupSurface = React.memo(function PersonalHomeSetupSur
         ? resolveCliAcquisitionFailureMessage(failedTask.error.code)
         : undefined;
     const showExistingDecision = props.snapshot.action === 'choose-existing-runtime';
-    const showFailure = hasFailure && (!showExistingDecision || props.snapshot.detail?.retryable === true);
+    const signedInHomeLabel = props.snapshot.action === 'choose-signed-in-home' ? props.snapshot.signedInHomeLabel : undefined;
+    const showSignedInDecision = signedInHomeLabel != null
+        && props.onKeepSignedInHome != null
+        && props.onCreatePersonalHome != null;
+    const showFailure = hasFailure
+        && props.snapshot.action !== 'choose-signed-in-home'
+        && (!showExistingDecision || props.snapshot.detail?.retryable === true);
     // The status line above already names the reason. The card body stays the generic
     // guidance unless this state contradicts it — the erased Home must not be told its
     // completed setup work is safe.
@@ -136,7 +150,9 @@ export const PersonalHomeSetupSurface = React.memo(function PersonalHomeSetupSur
     const showDetails = detailsOpen && hasLocalDetails;
     const toggleDetails = React.useCallback(() => setDetailsOpen((value) => !value), []);
     const failureDetailsAction = props.onOpenDetails ?? (hasLocalDetails ? toggleDetails : undefined);
-    const recoveryFocusState = showExistingDecision && props.onUseExisting && props.onUseAnotherHome
+    const recoveryFocusState = showSignedInDecision
+        ? 'signed-in-home'
+        : showExistingDecision && props.onUseExisting && props.onUseAnotherHome
         ? 'existing-runtime'
         : hasFailure && props.snapshot.action === 'retry' && props.onRetry
             ? 'retry'
@@ -151,7 +167,7 @@ export const PersonalHomeSetupSurface = React.memo(function PersonalHomeSetupSur
         }
         if (focusedRecoveryStateRef.current === recoveryFocusState) return;
         focusedRecoveryStateRef.current = recoveryFocusState;
-        if (recoveryFocusState === 'existing-runtime') {
+        if (recoveryFocusState === 'existing-runtime' || recoveryFocusState === 'signed-in-home') {
             focusAction(useExistingRef.current);
         } else if (recoveryFocusState === 'retry') {
             focusAction(retryRef.current);
@@ -211,6 +227,7 @@ export const PersonalHomeSetupSurface = React.memo(function PersonalHomeSetupSur
                         <View style={styles.recovery}>
                             <PersonalHomeExistingRuntimeDecision
                                 primaryActionControlRef={(instance) => { useExistingRef.current = instance; }}
+                                needsRecoveryKey={props.snapshot.detail?.code === 'existing_runtime_credentials'}
                                 onUseExisting={props.onUseExisting}
                                 onUseAnotherHome={props.onUseAnotherHome}
                                 details={hasLocalDetails ? (
@@ -219,6 +236,17 @@ export const PersonalHomeSetupSurface = React.memo(function PersonalHomeSetupSur
                                         {showDetails ? detailsPanel : null}
                                     </>
                                 ) : undefined}
+                            />
+                        </View>
+                    ) : null}
+
+                    {showSignedInDecision && signedInHomeLabel && props.onKeepSignedInHome != null && props.onCreatePersonalHome != null ? (
+                        <View style={styles.recovery}>
+                            <PersonalHomeSignedInHomeDecision
+                                homeLabel={signedInHomeLabel}
+                                primaryActionControlRef={(instance) => { useExistingRef.current = instance; }}
+                                onKeepSignedInHome={props.onKeepSignedInHome}
+                                onCreatePersonalHome={props.onCreatePersonalHome}
                             />
                         </View>
                     ) : null}
@@ -238,6 +266,13 @@ export const PersonalHomeSetupSurface = React.memo(function PersonalHomeSetupSur
                                 onRetry={props.snapshot.action === 'retry' ? props.onRetry : undefined}
                                 onOpenDetails={failureDetailsAction}
                             />
+                        </View>
+                    ) : null}
+
+                    {/* U10: a failure Retry cannot fix must never trap the user behind the gate. */}
+                    {showFailure && !showExistingDecision && props.onUseAnotherHome ? (
+                        <View style={styles.recovery}>
+                            <PersonalHomeUseAnotherHomeAction onUseAnotherHome={props.onUseAnotherHome} />
                         </View>
                     ) : null}
 

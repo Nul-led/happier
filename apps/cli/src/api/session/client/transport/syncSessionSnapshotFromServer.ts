@@ -12,7 +12,7 @@ import { fetchSessionSnapshotUpdateFromServer } from '../../snapshotSync';
 import type { SessionSnapshotRefreshReason } from '../../sessionSnapshotRefreshReason';
 import type { LatestTurnStatusSnapshot } from '../../sessionTurnStatusSnapshot';
 import type { SessionStoredContentCryptoContext } from '@/session/transport/encryption/sessionEncryptionContext';
-import type { AccountEncryptionCurrentnessResponse } from '@happier-dev/protocol';
+import type { AccountEncryptionCurrentnessResponse, V2SessionByIdResponse } from '@happier-dev/protocol';
 import { readSessionMetadataLayoutVersion } from '@/session/metadata/sessionMetadataLayout';
 
 export async function syncSessionSnapshotFromServer(
@@ -31,6 +31,7 @@ export async function syncSessionSnapshotFromServer(
         isClosed: () => boolean;
         setMetadataSnapshot: (metadata: Metadata | null, version: number, layoutVersion: number) => void;
         setAgentStateSnapshot: (agentState: AgentState | null, version: number) => void;
+        setOrganizationSnapshot?: (organization: Pick<V2SessionByIdResponse['session'], 'reportsTo' | 'origin'>) => void;
         setMetadataEnvelopeTupleSnapshot: (
             snapshot: SessionMetadataEnvelopeTupleSnapshot,
         ) => void;
@@ -71,6 +72,7 @@ export async function syncSessionSnapshotFromServer(
         : await request();
 
     if (params.isClosed()) return false;
+    if (update.organization) params.setOrganizationSnapshot?.(update.organization);
 
     if (update.metadataTuple) {
         params.setMetadataEnvelopeTupleSnapshot(update.metadataTuple);

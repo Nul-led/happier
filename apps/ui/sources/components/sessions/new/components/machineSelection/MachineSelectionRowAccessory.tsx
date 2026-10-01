@@ -2,7 +2,7 @@ import * as React from 'react';
 import { Platform, Pressable, View, type GestureResponderEvent } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
-import { Text } from '@/components/ui/text/Text';
+import { StatusDot } from '@/components/ui/status/StatusDot';
 import { MachineCliGlyphs } from '@/components/sessions/new/components/MachineCliGlyphs';
 import { t } from '@/text';
 import type { Machine } from '@/sync/domains/state/storageTypes';
@@ -18,10 +18,35 @@ type AccessoryPressEvent = Partial<GestureResponderEvent> & {
     };
 };
 
+/**
+ * The presence dot leading a machine row's status line ("● Online · …"). It carries the row's
+ * readiness state (`data-state`: ready / offline / revoked / replaced) for tests and automation.
+ */
+export function MachinePresenceDot(props: Readonly<{
+    machine: MachineDisplayRenderable;
+    readinessTestID?: string;
+}>): React.ReactElement {
+    const { theme } = useUnistyles();
+    const presence = resolveMachinePickerPresence(props.machine);
+    const readinessState = presence.selectable ? 'ready' : presence.status;
+    return (
+        <View
+            testID={props.readinessTestID}
+            {...({
+                'data-state': readinessState,
+                ...(Platform.OS === 'web' ? { dataSet: { state: readinessState } } : {}),
+            } as Record<string, unknown>)}
+        >
+            <StatusDot
+                color={presence.selectable ? theme.colors.status.connected : theme.colors.status.disconnected}
+            />
+        </View>
+    );
+}
+
 export type MachineSelectionRowAccessoryProps<TMachine extends MachineDisplayRenderable = Machine> = Readonly<{
     machine: TMachine;
     serverId?: string | null;
-    readinessTestID?: string;
     showCliGlyphs: boolean;
     autoDetectCliGlyphs: boolean;
     showFavoriteToggle: boolean;
@@ -35,19 +60,6 @@ const stylesheet = StyleSheet.create((theme) => ({
         alignItems: 'center',
         gap: 8,
     },
-    readiness: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 6,
-    },
-    dot: {
-        width: 6,
-        height: 6,
-        borderRadius: 3,
-    },
-    readinessText: {
-        color: theme.colors.text.secondary,
-    },
     favoriteButton: {
         alignItems: 'center',
         justifyContent: 'center',
@@ -58,14 +70,9 @@ const stylesheet = StyleSheet.create((theme) => ({
 
 export function MachineSelectionRowAccessory<TMachine extends MachineDisplayRenderable = Machine>(
     props: MachineSelectionRowAccessoryProps<TMachine>,
-): React.ReactElement {
+): React.ReactElement | null {
     const { theme } = useUnistyles();
     const styles = stylesheet;
-    const presence = resolveMachinePickerPresence(props.machine);
-    const readinessState = presence.selectable ? 'ready' : presence.status;
-    const readinessColor = presence.selectable
-        ? theme.colors.status.connected
-        : theme.colors.status.disconnected;
     const selectedColor = theme.dark ? theme.colors.text.primary : theme.colors.button.primary.background;
 
     const handleToggleFavorite = React.useCallback((event?: AccessoryPressEvent) => {
@@ -74,23 +81,11 @@ export function MachineSelectionRowAccessory<TMachine extends MachineDisplayRend
         props.onToggleFavorite?.(props.machine);
     }, [props]);
 
+    const showFavoriteToggle = props.showFavoriteToggle && props.onToggleFavorite !== undefined;
+    if (!props.showCliGlyphs && !showFavoriteToggle) return null;
+
     return (
         <View style={styles.container}>
-            <View
-                testID={props.readinessTestID}
-                {...(readinessState
-                    ? {
-                        'data-state': readinessState,
-                        ...(Platform.OS === 'web' ? { dataSet: { state: readinessState } } : {}),
-                    }
-                    : {})}
-                style={styles.readiness}
-            >
-                <View style={[styles.dot, { backgroundColor: readinessColor }]} />
-                <Text style={styles.readinessText}>
-                    {presence.selectable ? t('status.online') : t('status.offline')}
-                </Text>
-            </View>
             {props.showCliGlyphs ? (
                 <MachineCliGlyphs
                     machineId={props.machine.id}
@@ -99,7 +94,7 @@ export function MachineSelectionRowAccessory<TMachine extends MachineDisplayRend
                     autoDetect={props.autoDetectCliGlyphs}
                 />
             ) : null}
-            {props.showFavoriteToggle && props.onToggleFavorite ? (
+            {showFavoriteToggle ? (
                 <Pressable
                     hitSlop={{ top: 10, right: 10, bottom: 10, left: 10 }}
                     onPress={handleToggleFavorite}

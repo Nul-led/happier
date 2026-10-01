@@ -9,7 +9,8 @@ const eligibleEvent = DaemonContributionRegistryProjectionAutomationEligibleEven
     event: {
         id: 'acme.github/events/repository',
         identity: { pluginId: 'acme.github', localId: 'events/repository' },
-        immutableGenerationId: 'github-generation-a',
+        occurrenceId: 'github-occurrence-a',
+        sourceCustody: { kind: 'development', registeredRootId: 'github-root-a' },
         title: 'Repository updates',
         description: null,
         payloadSchema: {
@@ -40,7 +41,7 @@ const eligibleEvent = DaemonContributionRegistryProjectionAutomationEligibleEven
     setupAction: {
         id: 'acme.github/actions/setup/repository-source',
         identity: { pluginId: 'acme.github', localId: 'setup/repository-source' },
-        immutableGenerationId: 'github-generation-a',
+        occurrenceId: 'github-occurrence-a',
         title: 'Configure repository source',
         description: null,
         inputSchema: {

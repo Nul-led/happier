@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { chmod, mkdir, mkdtemp, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import type { AgentInstallProgressCallback } from '../installProgress.js';
 
 import { extractExactWheelAsset } from './extract.js';
 import {
@@ -33,9 +34,11 @@ type FetchBinaryResponse = Readonly<{
 
 export type PypiWheelAssetFetchWheel = (url: string, init: Readonly<{
   headers: Readonly<Record<string, string>>;
+  signal?: AbortSignal;
 }>) => Promise<Buffer | Uint8Array | ArrayBuffer>;
 
 export type PypiWheelAssetCompatibilityProbe = (params: Readonly<{
+  signal?: AbortSignal;
   executablePath: string;
   probeId: string;
   distribution: string;
@@ -152,9 +155,12 @@ async function defaultFetchWheel(
   url: string,
   init: Readonly<{
     headers: Readonly<Record<string, string>>;
+    signal?: AbortSignal;
   }>,
   maxWheelSizeBytes: number,
+  onProgress?: AgentInstallProgressCallback,
 ): Promise<Buffer> {
+  init.signal?.throwIfAborted();
   if (typeof globalThis.fetch !== 'function') {
     throw new PypiWheelAssetError('wheel_download_failed', '[pypi-wheel-asset] fetch is unavailable');
   }
@@ -164,25 +170,36 @@ async function defaultFetchWheel(
   }
   const contentLengthHeader = response.headers?.get('content-length');
   const contentLength = Number.parseInt(contentLengthHeader ?? '', 10);
+  const bytesTotal = contentLengthHeader !== null && contentLengthHeader !== undefined
+    && Number.isSafeInteger(Number(contentLengthHeader)) && Number(contentLengthHeader) >= 0
+    ? Number(contentLengthHeader) : null;
   if (Number.isFinite(contentLength) && !Number.isNaN(contentLength) && contentLength > maxWheelSizeBytes) {
     throw new PypiWheelAssetError('wheel_size_exceeded', '[pypi-wheel-asset] wheel exceeds configured size cap');
   }
   if (!response.body) {
     const bytes = Buffer.from(await response.arrayBuffer());
+    onProgress?.({ t: 'progress', bytesDone: bytes.length, bytesTotal });
+    init.signal?.throwIfAborted();
     if (bytes.length > maxWheelSizeBytes) {
       throw new PypiWheelAssetError('wheel_size_exceeded', '[pypi-wheel-asset] wheel exceeds configured size cap');
     }
     return bytes;
   }
   const reader = response.body.getReader();
+  const onAbort = () => { void reader.cancel?.().catch(() => undefined); };
+  init.signal?.addEventListener('abort', onAbort, { once: true });
   const chunks: Buffer[] = [];
   let bytesRead = 0;
   try {
     while (true) {
+      init.signal?.throwIfAborted();
       const result = await reader.read();
+      init.signal?.throwIfAborted();
       if (result.done) break;
       if (result.value) {
         bytesRead += result.value.byteLength;
+        onProgress?.({ t: 'progress', bytesDone: bytesRead, bytesTotal });
+        init.signal?.throwIfAborted();
         if (bytesRead > maxWheelSizeBytes) {
           await reader.cancel?.().catch(() => undefined);
           throw new PypiWheelAssetError('wheel_size_exceeded', '[pypi-wheel-asset] wheel exceeds configured size cap');
@@ -194,7 +211,11 @@ async function defaultFetchWheel(
     if (error instanceof PypiWheelAssetError) {
       throw error;
     }
+    if ((init.signal?.aborted && error === init.signal.reason)
+      || (error instanceof Error && error.name === 'AbortError')) throw error;
     throw new PypiWheelAssetError('wheel_download_failed', `[pypi-wheel-asset] failed to read wheel: ${error instanceof Error ? error.message : 'unknown error'}`);
+  } finally {
+    init.signal?.removeEventListener('abort', onAbort);
   }
   return Buffer.concat(chunks, bytesRead);
 }
@@ -205,13 +226,17 @@ async function downloadVerifiedWheel(params: Readonly<{
   destinationPath: string;
   maxWheelSizeBytes: number;
   fetchWheel: PypiWheelAssetFetchWheel;
+  signal?: AbortSignal;
 }>): Promise<void> {
+  params.signal?.throwIfAborted();
   const bytes = toBuffer(await params.fetchWheel(params.url, {
+    signal: params.signal,
     headers: {
       accept: 'application/octet-stream',
       'user-agent': 'happier-cli',
     },
   }));
+  params.signal?.throwIfAborted();
   if (bytes.length > params.maxWheelSizeBytes) {
     throw new PypiWheelAssetError('wheel_size_exceeded', '[pypi-wheel-asset] wheel exceeds configured size cap');
   }
@@ -219,7 +244,7 @@ async function downloadVerifiedWheel(params: Readonly<{
     throw new PypiWheelAssetError('wheel_digest_mismatch', '[pypi-wheel-asset] wheel checksum verification failed');
   }
   await mkdir(dirname(params.destinationPath), { recursive: true });
-  await writeFile(params.destinationPath, bytes);
+  await writeFile(params.destinationPath, bytes, { signal: params.signal });
 }
 
 async function promoteCandidate(params: Readonly<{
@@ -227,7 +252,9 @@ async function promoteCandidate(params: Readonly<{
   stagingDir: string;
   versionDir: string;
   metadata: InstalledPypiWheelAssetMetadata;
+  signal?: AbortSignal;
 }>): Promise<void> {
+  params.signal?.throwIfAborted();
   try {
     await rename(params.stagingDir, params.versionDir);
   } catch (error) {
@@ -241,6 +268,7 @@ async function promoteCandidate(params: Readonly<{
   const pointerTempPath = join(params.installRoot, `.current-${process.pid}-${randomUUID()}.json.tmp`);
   try {
     await writeFile(pointerTempPath, `${JSON.stringify(params.metadata, null, 2)}\n`, 'utf8');
+    params.signal?.throwIfAborted();
     await rename(pointerTempPath, pointerPath);
   } catch (error) {
     await rm(pointerTempPath, { force: true }).catch(() => undefined);
@@ -269,8 +297,12 @@ export async function installPypiWheelAsset(params: Readonly<{
   fetchJson?: PypiWheelAssetFetchJson;
   fetchWheel?: PypiWheelAssetFetchWheel;
   probeExecutable?: PypiWheelAssetCompatibilityProbe;
+  signal?: AbortSignal;
+  onProgress?: AgentInstallProgressCallback;
 }>): Promise<InstalledPypiWheelAsset> {
+  params.signal?.throwIfAborted();
   const resolved = await resolvePypiWheelAsset({
+    signal: params.signal,
     distribution: params.distribution,
     versionSpecifier: params.versionSpecifier,
     assetPathByPlatform: params.assetPathByPlatform,
@@ -279,6 +311,7 @@ export async function installPypiWheelAsset(params: Readonly<{
     ...(params.index ? { index: params.index } : {}),
     ...(params.fetchJson ? { fetchJson: params.fetchJson } : {}),
   });
+  params.signal?.throwIfAborted();
   if (!resolved.ok) {
     throw new PypiWheelAssetError(resolved.code, resolved.message);
   }
@@ -292,22 +325,27 @@ export async function installPypiWheelAsset(params: Readonly<{
   const versionsDir = join(params.installRoot, 'versions');
   const versionDir = join(versionsDir, `${safePathSegment(resolved.version)}-${resolved.sha256.slice(0, 12)}-${randomUUID()}`);
   try {
+    params.signal?.throwIfAborted();
     const wheelPath = join(scratchDir, resolved.filename);
     await downloadVerifiedWheel({
+      signal: params.signal,
       url: resolved.url,
       expectedSha256: resolved.sha256,
       destinationPath: wheelPath,
       maxWheelSizeBytes: params.maxWheelSizeBytes ?? DEFAULT_MAX_WHEEL_SIZE_BYTES,
-      fetchWheel: params.fetchWheel ?? ((url, init) => defaultFetchWheel(url, init, params.maxWheelSizeBytes ?? DEFAULT_MAX_WHEEL_SIZE_BYTES)),
+      fetchWheel: params.fetchWheel ?? ((url, init) => defaultFetchWheel(url, init, params.maxWheelSizeBytes ?? DEFAULT_MAX_WHEEL_SIZE_BYTES, params.onProgress)),
     });
+    params.signal?.throwIfAborted();
 
     const executablePath = join(stagingDir, 'bin', commandBasenameFromAsset(resolved.assetPath));
     await extractExactWheelAsset({
+      signal: params.signal,
       wheelPath,
       assetPath: resolved.assetPath,
       outputPath: executablePath,
       maxAssetSizeBytes: params.maxAssetSizeBytes ?? DEFAULT_MAX_ASSET_SIZE_BYTES,
     });
+    params.signal?.throwIfAborted();
     if (params.executable && params.platform !== 'win32-x64' && params.platform !== 'win32-arm64') {
       await chmod(executablePath, 0o755);
     }
@@ -316,12 +354,14 @@ export async function installPypiWheelAsset(params: Readonly<{
     if (params.compatibilityProbe) {
       const probe = params.probeExecutable
         ? await params.probeExecutable({
+          signal: params.signal,
           executablePath,
           probeId: params.compatibilityProbe,
           distribution: resolved.distribution,
           version: resolved.version,
         })
         : { ok: false as const, errorMessage: 'No compatibility probe runner is available' };
+      params.signal?.throwIfAborted();
       probeResult = {
         id: params.compatibilityProbe,
         ok: probe.ok,
@@ -349,7 +389,7 @@ export async function installPypiWheelAsset(params: Readonly<{
     };
     await writeFile(join(stagingDir, 'metadata.json'), `${JSON.stringify(metadata, null, 2)}\n`, 'utf8');
     await mkdir(versionsDir, { recursive: true });
-    await promoteCandidate({ installRoot: params.installRoot, stagingDir, versionDir, metadata });
+    await promoteCandidate({ installRoot: params.installRoot, stagingDir, versionDir, metadata, signal: params.signal });
 
     return {
       executablePath: metadata.executablePath,

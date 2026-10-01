@@ -1,18 +1,14 @@
 import * as React from 'react';
 
 import { useScopedPluginUiProjection } from '@/components/plugins/projection/useScopedPluginUiProjection';
+import { useMachinePresenceSummary } from '@/components/sessions/model/useMachinePresenceSummary';
 import { PluginSurfacePlacementStack } from '@/components/plugins/surfaces';
 import type { RuntimeActionExecute } from '@happier-dev/protocol';
-import {
-    type LocalServiceLauncherSnapshotClient,
-    type LocalServiceLauncherState,
-    type LocalServiceLaunchTarget,
-    useLocalServiceLauncherStateController,
+import type {
+    LocalServiceLauncherSnapshotClient,
+    LocalServiceLauncherState,
 } from '@/sync/domains/local/services/launch';
-import {
-    type LocalServiceInventorySnapshotClient,
-    useLocalServiceInventoryStateController,
-} from '@/sync/domains/local/services/inventory/useLocalServiceInventoryState';
+import type { LocalServiceInventorySnapshotClient } from '@/sync/domains/local/services/inventory/useLocalServiceInventoryState';
 import type { LocalServiceInventoryState } from '@/sync/domains/local/services/inventory/store';
 import type { LocalServicePublicPreviewState } from '@/sync/domains/local/services/publicPreview/store';
 import {
@@ -24,6 +20,7 @@ import type { PluginUiProjectionModel } from '@/sync/domains/plugins/ui/projecti
 import { createFrontDoorRuntimeActionExecutor } from '@/sync/ops/actions/frontDoorRuntimeActionExecutor';
 
 import { DetectedLocalServicesPane } from './DetectedLocalServicesPane';
+import type { ServiceRowOpenHandler } from './ServiceRowView';
 import { useLocalServiceLauncherStartAction } from './launcherStartAction';
 import {
     useDetectedLocalServiceForgetAction,
@@ -31,6 +28,7 @@ import {
     useLocalServiceCopyUrlAction,
 } from './lifecycleActions';
 import { useLocalServicePublicPreviewActions } from './publicPreviewActions';
+import { useLocalServiceLiveFeeds } from './useLocalServiceLiveFeeds';
 import {
     useLocalServiceCapabilityDisabledReasons,
     useLocalServicePublicPreviewFeatureEnabled,
@@ -51,7 +49,7 @@ export type LocalServicesSurfaceHostProps = Readonly<{
     publicPreviewState?: LocalServicePublicPreviewState | null;
     publicPreviewStatusClient?: LocalServicePublicPreviewStatusClient;
     runtimeActionExecute?: RuntimeActionExecute;
-    onOpenServiceInBrowser?: (target: LocalServiceLaunchTarget) => void | Promise<unknown>;
+    onOpenServiceInBrowser?: ServiceRowOpenHandler;
     /** Exact AppPane-admitted projection when a driver-owned surface supplies it. */
     pluginUiProjection?: PluginUiProjectionModel | null;
     projectionInteractionEnabled?: boolean;
@@ -65,25 +63,23 @@ export function LocalServicesSurfaceHost(props: LocalServicesSurfaceHostProps): 
     const sessionId = props.sessionId;
     const workspaceRoot = props.workspaceRoot ?? null;
     const [scope, setScope] = React.useState<'workspace' | 'machine'>(props.scope ?? 'workspace');
+    // The header line and the offline state name the machine and read its presence: one summary,
+    // primitives only, so presence heartbeats that change nothing re-render nothing.
+    const machine = useMachinePresenceSummary(serverId, machineId);
     const publicPreviewFeatureEnabled = useLocalServicePublicPreviewFeatureEnabled(serverId);
     // Resolved once for the whole surface: the server names which prerequisite is unmet, and the
     // rows render it instead of one generic sentence for eleven different causes (audit P1-3).
     const publicPreviewCapabilityDisabledReasons = useLocalServiceCapabilityDisabledReasons(serverId);
-    const liveInventoryState = useLocalServiceInventoryStateController({
+    const feeds = useLocalServiceLiveFeeds({
         machineId,
         serverId,
         sessionId,
-        enabled: props.inventoryState === undefined,
-        snapshotClient: props.inventorySnapshotClient,
-    });
-    const liveLauncherState = useLocalServiceLauncherStateController({
-        machineId,
-        serverId,
-        sessionId,
-        scope,
         workspaceRoot,
-        enabled: props.launcherState === undefined,
-        snapshotClient: props.launcherSnapshotClient,
+        scope,
+        inventoryState: props.inventoryState,
+        launcherState: props.launcherState,
+        inventorySnapshotClient: props.inventorySnapshotClient,
+        launcherSnapshotClient: props.launcherSnapshotClient,
     });
     const livePublicPreviewState = useLocalServicePublicPreviewStateController({
         machineId,
@@ -92,46 +88,7 @@ export function LocalServicesSurfaceHost(props: LocalServicesSurfaceHostProps): 
         enabled: props.publicPreviewState === undefined && publicPreviewFeatureEnabled,
         statusClient: props.publicPreviewStatusClient,
     });
-    // The pane's rows are built from the daemon's LAUNCHER feed, and inventory entries only enrich
-    // them — so making the inventory fresh is not enough on its own for a service started after
-    // mount to appear. The launcher feed is derived from the same inventory the daemon just
-    // rescanned, so it needs no push producer of its own: one push source (the inventory watch)
-    // drives the derived read. `generatedAt` advancing is exactly "the daemon rescanned".
-    const inventoryGeneratedAt = liveInventoryState.state.generatedAt;
-    const refreshLauncher = liveLauncherState.refresh;
-    const lastSyncedInventoryGeneratedAtRef = React.useRef<number | null>(null);
-    React.useEffect(() => {
-        if (props.inventoryState !== undefined || inventoryGeneratedAt === null) {
-            return;
-        }
-        if (lastSyncedInventoryGeneratedAtRef.current === inventoryGeneratedAt) {
-            return;
-        }
-        const isFirstObservation = lastSyncedInventoryGeneratedAtRef.current === null;
-        lastSyncedInventoryGeneratedAtRef.current = inventoryGeneratedAt;
-        // The launcher's own mount read already covers the first snapshot; only a later change
-        // needs a derived re-read.
-        if (!isFirstObservation) {
-            refreshLauncher?.();
-        }
-    }, [inventoryGeneratedAt, props.inventoryState, refreshLauncher]);
-
-    // An explicit refresh re-reads both halves directly rather than relying on the derived chain:
-    // an unchanged inventory would otherwise leave the launcher feed untouched, and a user who
-    // pressed refresh is entitled to a real re-read of what they can see.
-    const refreshInventory = liveInventoryState.refresh;
-    const onRefresh = React.useMemo(() => {
-        if (props.inventoryState !== undefined || !refreshInventory) {
-            return undefined;
-        }
-        return () => {
-            refreshInventory();
-            refreshLauncher?.();
-        };
-    }, [props.inventoryState, refreshInventory, refreshLauncher]);
-
-    const inventoryState = props.inventoryState ?? liveInventoryState.state;
-    const launcherState = props.launcherState !== undefined ? props.launcherState : liveLauncherState.state;
+    const { inventoryState, launcherState, refresh: onRefresh } = feeds;
     // Single front door (FINALIZATION-PLAN §3.1/§12.6): local-service runtime actions dispatch
     // through ActionExecutor.execute via the canonical bridge, so ActionsSettings enablement and
     // approval routing apply — never the raw runtime executor.
@@ -162,7 +119,7 @@ export function LocalServicesSurfaceHost(props: LocalServicesSurfaceHostProps): 
         machineId,
         serverId,
         sessionId,
-        applyLauncherSnapshot: props.launcherState === undefined ? liveLauncherState.applySnapshot : undefined,
+        applyLauncherSnapshot: feeds.applyLauncherSnapshot,
     });
     const publicPreviewState = props.publicPreviewState !== undefined
         ? props.publicPreviewState
@@ -191,36 +148,39 @@ export function LocalServicesSurfaceHost(props: LocalServicesSurfaceHostProps): 
         ? props.platform ?? pluginProjection.platform
         : pluginProjection.platform;
 
+    const pluginStack = (
+        <PluginSurfacePlacementStack
+            container="servicesPanel"
+            pluginUiProjection={pluginUiProjection}
+            projectionInteractionEnabled={projectionInteractionEnabled}
+            machineId={machineId}
+            serverId={serverId}
+            sessionId={sessionId}
+            platform={platform}
+            targetKind="services"
+            testID={`${props.testID}-plugin-stack`}
+        />
+    );
+
     return (
-        <>
-            <DetectedLocalServicesPane
-                inventoryState={inventoryState}
-                launcherState={launcherState}
-                publicPreviewState={publicPreviewState}
-                sessionId={sessionId}
-                scope={scope}
-                onChangeScope={setScope}
-                onTerminateDetectedService={onTerminateDetectedService}
-                onForgetDetectedService={onForgetDetectedService}
-                onCopyServiceUrl={onCopyServiceUrl}
-                onStartLauncherTarget={onStartLauncherTarget}
-                onOpenServiceInBrowser={props.onOpenServiceInBrowser}
-                publicPreviewActions={publicPreviewActions}
-                publicPreviewCapabilityDisabledReasons={publicPreviewCapabilityDisabledReasons}
-                onRefresh={onRefresh}
-                testID={props.testID}
-            />
-            <PluginSurfacePlacementStack
-                container="servicesPanel"
-                pluginUiProjection={pluginUiProjection}
-                projectionInteractionEnabled={projectionInteractionEnabled}
-                machineId={machineId}
-                serverId={serverId}
-                sessionId={sessionId}
-                platform={platform}
-                targetKind="services"
-                testID={`${props.testID}-plugin-stack`}
-            />
-        </>
+        <DetectedLocalServicesPane
+            inventoryState={inventoryState}
+            launcherState={launcherState}
+            publicPreviewState={publicPreviewState}
+            sessionId={sessionId}
+            scope={scope}
+            onChangeScope={setScope}
+            onTerminateDetectedService={onTerminateDetectedService}
+            onForgetDetectedService={onForgetDetectedService}
+            onCopyServiceUrl={onCopyServiceUrl}
+            onStartLauncherTarget={onStartLauncherTarget}
+            onOpenServiceInBrowser={props.onOpenServiceInBrowser}
+            publicPreviewActions={publicPreviewActions}
+            publicPreviewCapabilityDisabledReasons={publicPreviewCapabilityDisabledReasons}
+            machine={machine}
+            onRefresh={onRefresh}
+            testID={props.testID}
+            footer={pluginStack}
+        />
     );
 }

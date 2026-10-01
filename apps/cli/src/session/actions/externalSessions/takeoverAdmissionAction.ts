@@ -33,6 +33,7 @@ import {
 import {
   recoverExternalSessionTakeoverPrecommitAdmission,
 } from './takeoverPrecommitAdmissionRecovery';
+import { logExternalSessionsInternalError } from './responseErrors';
 
 type TakeoverRequest = Extract<
   ExternalSessionOperationRecordV1['request'],
@@ -121,17 +122,13 @@ export function isExternalSessionPersistedTakeoverAdmissionReady(
       && record.error?.code === 'admission_failed'
       && record.error.retryable === true
       && record.fence.kind === 'none'
-      && (
-        record.canonicalOwnerEvidence.transcriptAuthorityRevision === undefined
-        && record.canonicalOwnerEvidence.pendingAdmissionRevision === undefined
-      )
+      && record.canonicalOwnerEvidence.transcriptAuthorityRevision === undefined
     );
   const isAuthorityReconciliation = record.status === 'failed'
     && record.error?.code === 'admission_failed'
     && record.error.retryable === true
     && record.fence.kind === 'none'
-    && record.canonicalOwnerEvidence.transcriptAuthorityRevision !== undefined
-    && record.canonicalOwnerEvidence.pendingAdmissionRevision !== undefined;
+    && record.canonicalOwnerEvidence.transcriptAuthorityRevision !== undefined;
   const isHostedOfflineRetry = record.status === 'failed'
     && record.phase === 'spawning'
     && record.error?.code === 'spawn_failed'
@@ -176,8 +173,7 @@ function requiresPersistedTakeoverAuthorityReconciliation(
     && record.error?.code === 'admission_failed'
     && record.error.retryable === true
     && record.fence.kind === 'none'
-    && record.canonicalOwnerEvidence.transcriptAuthorityRevision !== undefined
-    && record.canonicalOwnerEvidence.pendingAdmissionRevision !== undefined;
+    && record.canonicalOwnerEvidence.transcriptAuthorityRevision !== undefined;
 }
 
 export function createExternalSessionTakeoverAdmissionActionExecutor(
@@ -343,6 +339,14 @@ export function createExternalSessionTakeoverAdmissionActionExecutor(
       let activeRecord: PersistedTakeoverRecord = current;
       let admissionWait: PersistedTakeoverAdmissionWaitRegistration | null = null;
       let attemptCommitted = false;
+      let admissionStage:
+        | 'claim'
+        | 'publish'
+        | 'prepare_spawn'
+        | 'register_wait'
+        | 'spawn'
+        | 'await_admission'
+        | 'reconcile_runtime' = 'claim';
       const cancelAdmissionWait = (): PersistedTakeoverAdmissionWaitRegistration | null => {
         const wait = admissionWait;
         admissionWait = null;
@@ -414,18 +418,22 @@ export function createExternalSessionTakeoverAdmissionActionExecutor(
         }
         activeRecord = admitted.record as PersistedTakeoverRecord;
         attemptCommitted = true;
+        admissionStage = 'publish';
         activeRecord =
           await publish(activeRecord) as PersistedTakeoverRecord;
 
+        admissionStage = 'prepare_spawn';
         const preparedSpawn = await maintenance.race(
           () => dependencies.prepareSpawn(activeRecord, maintenance.signal),
         );
         maintenance.throwIfLost();
+        admissionStage = 'register_wait';
         admissionWait = dependencies.admissionWaiter.register({
           mode: 'persisted',
           operationId: activeRecord.operationId,
           attemptId,
-        });
+        }, { signal: maintenance.signal });
+        admissionStage = 'spawn';
         const fencedSpawn = await maintenance.race(
           () => dependencies.spawnResolvedTakeoverSession({
             resolved: preparedSpawn,
@@ -443,6 +451,12 @@ export function createExternalSessionTakeoverAdmissionActionExecutor(
         );
         maintenance.throwIfLost();
         if (!fencedSpawn.ok) {
+          logExternalSessionsInternalError(
+            fencedSpawn.code === 'cancelled'
+              ? 'external_session.takeover_admission.fenced_spawn.cancelled'
+              : 'external_session.takeover_admission.fenced_spawn.agent_unavailable',
+            new Error(),
+          );
           cancelAdmissionWait();
           const reconciled =
             await dependencies.reconcileRuntimeBindingFailure?.({
@@ -458,6 +472,7 @@ export function createExternalSessionTakeoverAdmissionActionExecutor(
         }
         const spawnResult = fencedSpawn.value;
         if (spawnResult.type === 'success') {
+          admissionStage = 'await_admission';
           const admissionOutcome = await maintenance.race(
             () => admissionWait!.outcome,
           );
@@ -475,8 +490,20 @@ export function createExternalSessionTakeoverAdmissionActionExecutor(
             const published = await publishBestEffort(committedRecord);
             return success(published);
           }
+          logExternalSessionsInternalError(
+            'external_session.takeover_admission.await_admission.failed',
+            new Error(),
+          );
+        } else {
+          logExternalSessionsInternalError(
+            spawnResult.type === 'error'
+              ? 'external_session.takeover_admission.spawn'
+              : 'external_session.takeover_admission.spawn.directory_approval_required',
+            spawnResult,
+          );
         }
         cancelAdmissionWait();
+        admissionStage = 'reconcile_runtime';
         const reconciled = await dependencies.reconcileRuntimeBindingFailure?.({
           sessionId: activeRecord.request.sessionId,
           operationId: activeRecord.operationId,
@@ -488,8 +515,12 @@ export function createExternalSessionTakeoverAdmissionActionExecutor(
         }
         return await recoverPrecommitAdmissionFailure(activeRecord);
       } catch (error) {
+        logExternalSessionsInternalError(
+          `external_session.takeover_admission.${admissionStage}`,
+          error,
+        );
         if (attemptCommitted) {
-          const exactWait = admissionWait;
+          const exactWait = cancelAdmissionWait();
           const admissionOutcome = exactWait
             ? exactWait.readOutcome() ?? await exactWait.outcome
             : null;

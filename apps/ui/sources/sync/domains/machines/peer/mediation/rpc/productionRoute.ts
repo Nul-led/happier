@@ -2,32 +2,17 @@ import {
     DIRECT_ROUTE_GRANT_TTL_MS,
     PEER_MEDIATION_RECEIPTS,
     PeerLoopbackEndpointCandidateV1Schema,
-    PeerLoopbackProbeResponseV1Schema,
-    PeerMachineRpcDirectResponseV1Schema,
     PeerMachineRpcDirectResponseV2Schema,
-    SignedDirectRouteGrantV1Schema,
     SignedDirectRouteGrantV2Schema,
     createEphemeralPeerRouteProofHandleV2,
-    createPeerRouteNonceSigningInputV1,
-    type DirectPeerRouteKindV1,
-    type PeerFlowKindV1,
     type PeerLoopbackEndpointCandidateV1,
-    type PeerLoopbackProbeRequestV1,
-    type PeerLoopbackProbeResponseV1,
     type PeerMachineRpcDirectFallbackReasonCodeV1,
-    type PeerMachineRpcDirectRequestV1,
     type PeerMachineRpcDirectRequestV2,
-    type PeerMachineRpcDirectResponseV1,
     type PeerMachineRpcDirectResponseV2,
-    type PeerRouteNonceProofV1,
-    type SignedDirectRouteGrantV1,
     type SignedDirectRouteGrantV2,
 } from '@happier-dev/protocol';
-import { createPeerRouteViabilityCache } from '@happier-dev/peer-mediation';
 
-import { TokenStorage, isLegacyAuthCredentials, type AuthCredentials } from '@/auth/storage/tokenStorage';
-import { decodeBase64, encodeBase64 } from '@/encryption/base64';
-import sodium from '@/encryption/libsodium.lib';
+import { TokenStorage, type AuthCredentials } from '@/auth/storage/tokenStorage';
 import { getRandomBytes } from '@/platform/cryptoRandom';
 import { getReadyServerFeatures } from '@/sync/api/capabilities/getReadyServerFeatures';
 import {
@@ -38,26 +23,15 @@ import {
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { storage } from '@/sync/domains/state/storage';
 import { parseToken } from '@/utils/auth/parseToken';
+import { resolvePeerMediationDirectPreferencesForScope } from '@/sync/domains/settings/peerMediationPreferences';
 
-import { resolvePeerLoopbackRouteAvailability } from '../loopback/resolvePeerLoopbackRouteAvailability';
-import type { PeerLoopbackRouteAvailabilityResult } from '../loopback/resolvePeerLoopbackRouteAvailability';
 import { requestPeerMediationServerJsonForCredential } from '../peerMediationServerRequest';
 import { readPeerEndpointForServerScope } from '../readPeerEndpointForServerScope';
 import type { MachineRpcDirectRouteResolution } from './client';
 import { resolveMachineRpcDirectRoutePreflight } from './directRoutePreflight';
 
 const MACHINE_RPC_DIRECT_FETCH_TIMEOUT_MS = 5_000;
-const MACHINE_RPC_DIRECT_GRANT_MAX_CALLS = 2;
 const MACHINE_RPC_DIRECT_GRANT_MAX_IDLE_MS = 30_000;
-const MACHINE_RPC_DIRECT_NONCE_BYTES = 16;
-const MACHINE_RPC_DIRECT_CACHE_POSITIVE_TTL_MS = 30_000;
-const MACHINE_RPC_DIRECT_CACHE_NEGATIVE_TTL_MS = 5_000;
-
-const machineRpcRouteAvailabilityCache = createPeerRouteViabilityCache({
-    now: Date.now,
-    positiveTtlMs: MACHINE_RPC_DIRECT_CACHE_POSITIVE_TTL_MS,
-    negativeTtlMs: MACHINE_RPC_DIRECT_CACHE_NEGATIVE_TTL_MS,
-});
 
 type TargetServer = Readonly<{
     serverId: string;
@@ -68,22 +42,15 @@ type OperationResult<T> =
     | Readonly<{ ok: true; value: T }>
     | Readonly<{ ok: false; reasonCode: string }>;
 
-export { resolvePeerRouteSigningReadiness } from '../identity/signingReadiness';
-export type { PeerRouteSigningReadiness } from '../identity/signingReadiness';
-
 function normalizeId(raw: unknown): string {
     return String(raw ?? '').trim();
 }
 
-function fallback(
-    reasonCode: string,
-    details?: Readonly<{ requiredCapability: string }>,
-): Extract<MachineRpcDirectRouteResolution, { kind: 'fallback' }> {
+function fallback(reasonCode: string): Extract<MachineRpcDirectRouteResolution, { kind: 'fallback' }> {
     return {
         kind: 'fallback',
         receipt: PEER_MEDIATION_RECEIPTS.routeFallback,
         reasonCode,
-        ...details,
     };
 }
 
@@ -158,62 +125,6 @@ async function fetchJson(params: Readonly<{
     }
 }
 
-async function requestMachineRpcRouteGrant(input: Readonly<{
-    server: TargetServer;
-    credentials: AuthCredentials;
-    machineId: string;
-    method: string;
-    flowKind: PeerFlowKindV1;
-    routeKind: DirectPeerRouteKindV1;
-    endpointFingerprint: string;
-    timeoutMs?: number;
-}>): Promise<OperationResult<SignedDirectRouteGrantV1>> {
-    try {
-        const response = await requestPeerMediationServerJsonForCredential({
-            serverId: input.server.serverId,
-            token: input.credentials.token,
-            path: '/v1/machines/peer/mediation/route-grants',
-            timeoutMs: input.timeoutMs,
-            init: {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    machineId: input.machineId,
-                    flowKind: input.flowKind,
-                    routeKind: input.routeKind,
-                    endpointFingerprint: input.endpointFingerprint,
-                    ttlMs: DIRECT_ROUTE_GRANT_TTL_MS.loopbackMachineRpcDefault,
-                    scope: {
-                        kind: 'machine_rpc',
-                        rpcScopeId: `${input.machineId}:${input.method}`,
-                        allowedMethods: [input.method],
-                        maxCalls: MACHINE_RPC_DIRECT_GRANT_MAX_CALLS,
-                        maxIdleMs: MACHINE_RPC_DIRECT_GRANT_MAX_IDLE_MS,
-                    },
-                }),
-            },
-        });
-        if (!response.ok) {
-            return { ok: false, reasonCode: 'grant_missing' };
-        }
-        const body = response.body as { ok?: unknown; reasonCode?: unknown; grant?: unknown } | null;
-        if (body?.ok !== true) {
-            return {
-                ok: false,
-                reasonCode: typeof body?.reasonCode === 'string' ? body.reasonCode : 'grant_missing',
-            };
-        }
-        const parsed = SignedDirectRouteGrantV1Schema.safeParse(body.grant);
-        return parsed.success
-            ? { ok: true, value: parsed.data }
-            : { ok: false, reasonCode: 'grant_invalid' };
-    } catch {
-        return { ok: false, reasonCode: 'grant_missing' };
-    }
-}
-
 async function requestMachineRpcRouteGrantV2(input: Readonly<{
     server: TargetServer;
     credentials: AuthCredentials;
@@ -270,83 +181,10 @@ async function requestMachineRpcRouteGrantV2(input: Readonly<{
     }
 }
 
-function createNonceProof(input: Readonly<{
-    credentials: AuthCredentials;
-    grant: SignedDirectRouteGrantV1;
-    routeKind: DirectPeerRouteKindV1;
-    flowKind: PeerFlowKindV1;
-    endpointFingerprint: string;
-}>): OperationResult<PeerRouteNonceProofV1> {
-    if (!isLegacyAuthCredentials(input.credentials)) {
-        return { ok: false, reasonCode: 'nonce_invalid' };
-    }
-    try {
-        const seed = decodeBase64(input.credentials.secret);
-        const keyPair = sodium.crypto_sign_seed_keypair(seed);
-        const nonceBase64Url = encodeBase64(getRandomBytes(MACHINE_RPC_DIRECT_NONCE_BYTES), 'base64url');
-        const signingInput = createPeerRouteNonceSigningInputV1({
-            grantId: input.grant.payload.grantId,
-            routeKind: input.routeKind,
-            flowKind: input.flowKind,
-            endpointFingerprint: input.endpointFingerprint,
-            nonceBase64Url,
-        });
-        const signature = sodium.crypto_sign_detached(new TextEncoder().encode(signingInput), keyPair.privateKey);
-        return {
-            ok: true,
-            value: {
-                v: 1,
-                grantId: input.grant.payload.grantId,
-                routeKind: input.routeKind,
-                flowKind: input.flowKind,
-                endpointFingerprint: input.endpointFingerprint,
-                nonceBase64Url,
-                signatureBase64Url: encodeBase64(signature, 'base64url'),
-            },
-        };
-    } catch {
-        return { ok: false, reasonCode: 'nonce_invalid' };
-    }
-}
-
-async function postLoopbackProbe(input: Readonly<{
-    url: string;
-    request: PeerLoopbackProbeRequestV1;
-    timeoutMs?: number;
-}>): Promise<PeerLoopbackProbeResponseV1> {
-    const response = await fetchJson({
-        url: input.url,
-        timeoutMs: input.timeoutMs,
-        init: {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(input.request),
-        },
-    });
-    if (!response.ok) {
-        return {
-            v: 1,
-            ok: false,
-            receipt: PEER_MEDIATION_RECEIPTS.routeFallback,
-            reasonCode: 'grant_invalid',
-        };
-    }
-    const parsed = PeerLoopbackProbeResponseV1Schema.safeParse(response.body);
-    if (!parsed.success) {
-        return {
-            v: 1,
-            ok: false,
-            receipt: PEER_MEDIATION_RECEIPTS.routeFallback,
-            reasonCode: 'grant_invalid',
-        };
-    }
-    return parsed.data;
-}
-
 function fallbackDirectResponse(
-    request: PeerMachineRpcDirectRequestV1 | PeerMachineRpcDirectRequestV2,
+    request: PeerMachineRpcDirectRequestV2,
     reasonCode: PeerMachineRpcDirectFallbackReasonCodeV1,
-): PeerMachineRpcDirectResponseV1 | PeerMachineRpcDirectResponseV2 {
+): PeerMachineRpcDirectResponseV2 {
     return {
         v: request.v,
         ok: false,
@@ -397,10 +235,18 @@ export async function resolveProductionMachineRpcDirectRoute(input: Readonly<{
         serverId: server.serverId,
     });
     if (!credentials) return fallback('grant_missing');
+    let accountId: string;
+    try { accountId = parseToken(credentials.token); } catch { return fallback('grant_missing'); }
+    const directPreferences = resolvePeerMediationDirectPreferencesForScope({
+        scope: { serverId: server.serverId, accountId },
+        machineId: input.machineId,
+        flowKind: 'machine_rpc',
+    });
     const identityPreflight = resolveMachineRpcDirectRoutePreflight({
         method: input.method,
         serverFeatures,
         credentials,
+        ...directPreferences,
     });
     if (identityPreflight.kind === 'fallback') return identityPreflight;
     if (identityPreflight.kind !== 'endpoint_required') return fallback('grant_invalid');
@@ -408,6 +254,7 @@ export async function resolveProductionMachineRpcDirectRoute(input: Readonly<{
         method: input.method,
         serverFeatures,
         credentials,
+        ...directPreferences,
         endpoint: readEndpointFromMachineState({
             serverId: server.serverId,
             machineId: input.machineId,
@@ -420,7 +267,7 @@ export async function resolveProductionMachineRpcDirectRoute(input: Readonly<{
     }
     const endpoint = routePreflight.endpoint;
 
-    if (routePreflight.proofKind === 'ephemeral_v2') {
+    {
         const proofHandle = createEphemeralPeerRouteProofHandleV2({ randomBytes: getRandomBytes });
         try {
             const grant = await requestMachineRpcRouteGrantV2({
@@ -451,80 +298,14 @@ export async function resolveProductionMachineRpcDirectRoute(input: Readonly<{
         }
     }
 
-    const requestGrant = async () => await requestMachineRpcRouteGrant({
-        server,
-        credentials,
-        machineId: input.machineId,
-        method: input.method,
-        flowKind: 'machine_rpc',
-        routeKind: 'loopback_direct',
-        endpointFingerprint: endpoint.endpointFingerprint,
-        timeoutMs: input.timeoutMs,
-    });
-    const createProof = (grant: SignedDirectRouteGrantV1) => createNonceProof({
-        credentials,
-        grant,
-        routeKind: 'loopback_direct',
-        flowKind: 'machine_rpc',
-        endpointFingerprint: endpoint.endpointFingerprint,
-    });
-
-    const availability = await resolvePeerLoopbackRouteAvailability({
-        serverId: server.serverId,
-        targetMachineId: input.machineId,
-        flowKind: 'machine_rpc',
-        routeKind: 'loopback_direct',
-        endpoint,
-        cache: machineRpcRouteAvailabilityCache,
-        requestGrant: async () => {
-            const grant = await requestGrant();
-            return grant.ok ? { ok: true, grant: grant.value } : grant;
-        },
-        createNonceProof: async ({ grant }) => {
-            const nonceProof = createProof(grant);
-            return nonceProof.ok ? { ok: true, nonceProof: nonceProof.value } : nonceProof;
-        },
-        postProbe: async ({ url, request }) => await postLoopbackProbe({
-            url,
-            request,
-            timeoutMs: input.timeoutMs,
-        }),
-    }).catch((): PeerLoopbackRouteAvailabilityResult => ({
-        kind: 'fallback',
-        receipt: PEER_MEDIATION_RECEIPTS.routeFallback,
-        reasonCode: 'topology_unavailable',
-    }));
-    if (availability.kind === 'fallback') {
-        return availability;
-    }
-
-    const grant = availability.grant
-        ? { ok: true as const, value: availability.grant }
-        : await requestGrant();
-    if (!grant.ok) return fallback(grant.reasonCode);
-    const nonceProof = availability.nonceProof
-        ? { ok: true as const, value: availability.nonceProof }
-        : createProof(grant.value);
-    if (!nonceProof.ok) return fallback(nonceProof.reasonCode);
-
-    return {
-        kind: 'selected',
-        receipt: availability.receipt,
-        endpoint: {
-            url: endpoint.url,
-            endpointFingerprint: endpoint.endpointFingerprint,
-        },
-        grant: grant.value,
-        nonceProof: nonceProof.value,
-    };
 }
 
 export async function postProductionMachineRpcDirect(input: Readonly<{
     url: string;
-    request: PeerMachineRpcDirectRequestV1 | PeerMachineRpcDirectRequestV2;
+    request: PeerMachineRpcDirectRequestV2;
     timeoutMs?: number;
     signal?: AbortSignal;
-}>): Promise<PeerMachineRpcDirectResponseV1 | PeerMachineRpcDirectResponseV2> {
+}>): Promise<PeerMachineRpcDirectResponseV2> {
     try {
         const response = await fetchJson({
             url: input.url,
@@ -539,9 +320,7 @@ export async function postProductionMachineRpcDirect(input: Readonly<{
         if (!response.ok) {
             return fallbackDirectResponse(input.request, 'topology_unavailable');
         }
-        const parsed = input.request.v === 2
-            ? PeerMachineRpcDirectResponseV2Schema.safeParse(response.body)
-            : PeerMachineRpcDirectResponseV1Schema.safeParse(response.body);
+        const parsed = PeerMachineRpcDirectResponseV2Schema.safeParse(response.body);
         return parsed.success ? parsed.data : fallbackDirectResponse(input.request, 'invalid_request');
     } catch {
         return fallbackDirectResponse(input.request, 'topology_unavailable');

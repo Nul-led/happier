@@ -3,11 +3,16 @@ import { router } from 'expo-router';
 import * as React from 'react';
 import { Platform } from 'react-native';
 
-import { setActiveServerAndSwitch, upsertActivateAndSwitchServer } from '@/sync/domains/server/activeServerSwitch';
+import { setActiveServerAndSwitch } from '@/sync/domains/server/activeServerSwitch';
+import { connectHomeAtAddress } from '@/sync/ops/home/connectHomeAtAddress';
+import { confirmCanonicalHomeUrl, confirmInsecureHomeHttp, homeConnectFailureMessage } from '@/components/homes/add/homeConnectPresentation';
+import { Modal } from '@/modal';
+import { t } from '@/text';
 import {
     areServerProfileIdentifiersEquivalent,
     getActiveServerSnapshot,
     listServerProfiles,
+    resolveSavedServerProfileByUrl,
 } from '@/sync/domains/server/serverProfiles';
 import { createServerUrlComparableKey } from '@/sync/domains/server/url/serverUrlCanonical';
 import { fireAndForget } from '@/utils/system/fireAndForget';
@@ -77,6 +82,18 @@ function resolveNotificationCommandRoute(command: ActivityInteractionCommand): s
     }
 }
 
+function resolveNotificationCommandRouteForVerifiedHome(command: ActivityInteractionCommand, serverId: string): string | null {
+    switch (command.kind) {
+        case 'openSession':
+        case 'focusComposer':
+            return createActivitySurfaceSessionRoute(command.sessionId, serverId);
+        case 'executeAction':
+            return createActivitySurfaceSessionRoute(command.defaultSessionId, serverId);
+        default:
+            return resolveNotificationCommandRoute(command);
+    }
+}
+
 function resolveNotificationCommandServerUrl(command: ActivityInteractionCommand): string | null {
     switch (command.kind) {
         case 'openSession':
@@ -121,19 +138,14 @@ function isNotificationServerActive(params: Readonly<{
         return areServerProfileIdentifiersEquivalent(serverId, active.serverId);
     }
 
-    const saved = findSavedServerProfile({ serverId: null, serverUrl: params.serverUrl });
-    if (saved) {
-        return areServerProfileIdentifiersEquivalent(saved.id, active.serverId);
+    const saved = resolveSavedServerProfileByUrl(params.serverUrl);
+    if (saved.kind === 'resolved') {
+        return areServerProfileIdentifiersEquivalent(saved.profile.id, active.serverId);
     }
 
     // Legacy URL-only records created before a profile was persisted can still
-    // complete once their URL is the active Home. Duplicate saved matches fail closed.
-    const matchingProfileCount = targetUrlKey
-        ? listServerProfiles().filter(
-            (profile) => createServerUrlComparableKey(profile.serverUrl) === targetUrlKey,
-        ).length
-        : 0;
-    return matchingProfileCount === 0 && Boolean(targetUrlKey && targetUrlKey === activeUrlKey);
+    // complete once their URL is the active Home. Ambiguous saved matches fail closed.
+    return saved.kind === 'missing' && Boolean(targetUrlKey && targetUrlKey === activeUrlKey);
 }
 
 /**
@@ -206,6 +218,43 @@ export function useNotificationResponseRouting(params: Readonly<{
             }
         };
 
+        const connectAndSwitchUnsavedHome = (serverUrl: string, route: string, command: ActivityInteractionCommand, tag: string): void => {
+            setPendingNotificationNav({ serverUrl, route });
+            fireAndForget((async () => {
+                try {
+                    const connected = await connectHomeAtAddress({
+                        serverUrl,
+                        source: 'notification',
+                        confirmInsecureHttp: confirmInsecureHomeHttp,
+                        confirmCanonicalUrl: confirmCanonicalHomeUrl,
+                    });
+                    if (connected.kind !== 'connected') {
+                        if (connected.kind === 'declined') clearPendingNotificationNav();
+                        const message = homeConnectFailureMessage(connected);
+                        if (message) Modal.alert(t('common.error'), message);
+                        return;
+                    }
+                    const verifiedRoute = resolveNotificationCommandRouteForVerifiedHome(command, connected.profile.id);
+                    if (!verifiedRoute) return;
+                    setPendingNotificationNav({
+                        serverUrl: connected.profile.serverUrl,
+                        serverId: connected.profile.id,
+                        route: verifiedRoute,
+                    });
+                    const switched = await setActiveServerAndSwitch({
+                        serverId: connected.profile.id,
+                        scope: resolveRoutineServerSelectionScope(Platform.OS, isDesktopHost()),
+                        refreshAuth: refreshAuthRef.current,
+                    });
+                    if (switched === 'blocked') return;
+                    clearPendingNotificationNav();
+                    router.push(verifiedRoute);
+                } catch (error) {
+                    Modal.alert(t('common.error'), error instanceof Error ? error.message : t('common.error'));
+                }
+            })(), { tag });
+        };
+
         const pendingAction = getPendingNotificationAction();
         if (pendingAction) {
             if (isNotificationServerActive(pendingAction)) {
@@ -262,7 +311,7 @@ export function useNotificationResponseRouting(params: Readonly<{
             const serverUrl = resolveNotificationCommandServerUrl(command);
             const serverId = resolveNotificationCommandServerId(command);
             const routeToServerSettingsForUrl = (url: string) => {
-                router.push(`/server?url=${encodeURIComponent(url)}&source=notification`);
+                router.push(`/settings/server/add?address=${encodeURIComponent(url)}&source=notification`);
             };
 
             // Permission action buttons are security-sensitive. Only perform allow/deny when:
@@ -290,21 +339,7 @@ export function useNotificationResponseRouting(params: Readonly<{
                         // If the app has no servers, we can auto-add/switch to restore a working deep link,
                         // but never perform the allow/deny action on an unsaved server.
                         if (listServerProfiles().length === 0) {
-                            setPendingNotificationNav({ serverUrl, route });
-                            fireAndForget((async () => {
-                                try {
-                                    await upsertActivateAndSwitchServer({
-                                        serverUrl,
-                                        source: 'notification',
-                                        scope: resolveRoutineServerSelectionScope(Platform.OS, isDesktopHost()),
-                                        refreshAuth: refreshAuthRef.current,
-                                    });
-                                    clearPendingNotificationNav();
-                                    router.push(route);
-                                } catch {
-                                    // keep pending notification nav as fallback
-                                }
-                            })(), { tag: 'RootLayout.notificationNav.autoAddServer.actionTap' });
+                            connectAndSwitchUnsavedHome(serverUrl, route, command, 'RootLayout.notificationNav.autoAddServer.actionTap');
                             return;
                         }
                         // Servers exist but the target isn't saved: redirect to server settings with a prefilled url.
@@ -312,6 +347,7 @@ export function useNotificationResponseRouting(params: Readonly<{
                         routeToServerSettingsForUrl(serverUrl);
                         return;
                     }
+                    const savedRoute = resolveNotificationCommandRouteForVerifiedHome(command, saved.id) ?? route;
 
                     setPendingNotificationAction({
                         serverUrl: saved.serverUrl,
@@ -334,7 +370,7 @@ export function useNotificationResponseRouting(params: Readonly<{
                             } catch {
                                 // best-effort
                             }
-                            router.push(route);
+                            router.push(savedRoute);
                         } catch {
                             // keep pending notification action as fallback
                         }
@@ -347,7 +383,8 @@ export function useNotificationResponseRouting(params: Readonly<{
                 if (!isNotificationServerActive({ serverId, serverUrl })) {
                     const saved = findSavedServerProfile({ serverId, serverUrl });
                     if (saved) {
-                        setPendingNotificationNav({ serverUrl: saved.serverUrl, serverId: saved.id, route });
+                        const savedRoute = resolveNotificationCommandRouteForVerifiedHome(command, saved.id) ?? route;
+                        setPendingNotificationNav({ serverUrl: saved.serverUrl, serverId: saved.id, route: savedRoute });
                         fireAndForget((async () => {
                             try {
                                 await setActiveServerAndSwitch({
@@ -356,7 +393,7 @@ export function useNotificationResponseRouting(params: Readonly<{
                                     refreshAuth: refreshAuthRef.current,
                                 });
                                 clearPendingNotificationNav();
-                                router.push(route);
+                                router.push(savedRoute);
                             } catch {
                                 // keep pending notification nav as fallback
                             }
@@ -371,21 +408,7 @@ export function useNotificationResponseRouting(params: Readonly<{
                     }
 
                     if (listServerProfiles().length === 0) {
-                        setPendingNotificationNav({ serverUrl, route });
-                        fireAndForget((async () => {
-                            try {
-                                await upsertActivateAndSwitchServer({
-                                    serverUrl,
-                                    source: 'notification',
-                                    scope: resolveRoutineServerSelectionScope(Platform.OS, isDesktopHost()),
-                                    refreshAuth: refreshAuthRef.current,
-                                });
-                                clearPendingNotificationNav();
-                                router.push(route);
-                            } catch {
-                                // keep pending notification nav as fallback
-                            }
-                        })(), { tag: 'RootLayout.notificationNav.autoAddServer' });
+                        connectAndSwitchUnsavedHome(serverUrl, route, command, 'RootLayout.notificationNav.autoAddServer');
                         return;
                     }
                     // Servers exist but the target isn't saved: redirect to server settings with a prefilled url.

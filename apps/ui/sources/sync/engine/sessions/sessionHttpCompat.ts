@@ -26,9 +26,8 @@ export const DEFAULT_SESSION_LIST_PATH = '/v2/sessions';
 
 /**
  * The one answer to "which ordinary list resource does this read address".
- * The request builder and the read's abort identity must agree: `/v2/sessions`
- * and `/v2/sessions/archived` are different corpora, so a read of one must not
- * cancel an in-flight read of the other.
+ * Ordinary and archived reads address different resources. Cancellation belongs
+ * to each acquisition's caller and is independent of this route selection.
  */
 export function resolveSessionListRequestPath(params: Readonly<{
     source?: SessionListPageSource;
@@ -201,7 +200,8 @@ const EXTERNAL_SESSION_STORAGE_STATES: ReadonlySet<string> = new Set([
     'legacy_external_unknown',
 ]);
 
-function readExternalSessionStorageState(value: unknown): V2SessionRecord['currentStorageState'] {
+/** The one reader of a wire storage state (HTTP records and the socket `new-session` body). */
+export function readExternalSessionStorageState(value: unknown): V2SessionRecord['currentStorageState'] {
     return typeof value === 'string' && EXTERNAL_SESSION_STORAGE_STATES.has(value)
         ? value as V2SessionRecord['currentStorageState']
         : undefined;

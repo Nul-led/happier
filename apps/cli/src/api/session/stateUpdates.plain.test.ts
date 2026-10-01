@@ -26,6 +26,64 @@ function createMetadata(overrides: Partial<Metadata> = {}): Metadata {
 }
 
 describe('stateUpdates (plaintext sessions)', () => {
+  it('reports terminal metadata write failure without leaking the rejected payload or changing local state', async () => {
+    const infoFile = vi.spyOn(logger, 'infoFile').mockImplementation(() => {});
+    const original = createMetadata();
+    let metadata: Metadata | null = original;
+    let version = 7;
+    try {
+      await expect(updateSessionMetadataWithAck({
+        socket: { emitWithAck: async () => ({ result: 'error', error: 'private-server-payload' }) },
+        sessionId: 's1',
+        sessionEncryptionMode: 'plain',
+        getMetadata: () => metadata,
+        setMetadata: (next) => { metadata = next; },
+        getMetadataVersion: () => version,
+        setMetadataVersion: (next) => { version = next; },
+        syncSessionSnapshotFromServer: async () => {},
+        handler: (current) => ({ ...current, name: 'private-session-title' }),
+      })).rejects.toMatchObject({ code: 'metadata_update_failed', retryable: false });
+      expect(metadata).toBe(original);
+      expect(version).toBe(7);
+      expect(infoFile).toHaveBeenCalledWith('[API] session_metadata_update_failed', {
+        phase: 'terminal_failure', operation: 'update-metadata', sessionId: 's1',
+      });
+      expect(JSON.stringify(infoFile.mock.calls)).not.toContain('private-server-payload');
+      expect(JSON.stringify(infoFile.mock.calls)).not.toContain('private-session-title');
+    } finally {
+      infoFile.mockRestore();
+    }
+  });
+
+  it('keeps flat Herdr metadata readable on the wire without changing the local host or opaque fields', async () => {
+    let metadata: Metadata & { providerExtension?: { retained: boolean } } = {
+      ...createMetadata({
+      terminal: { mode: 'herdr', requested: 'herdr', herdr: { sessionName: 'work', socketPath: '/tmp/herdr.sock', terminalId: 'term_1' } },
+      }),
+      providerExtension: { retained: true },
+    };
+    const original = metadata;
+    let version = 1;
+    let wireMetadata: unknown;
+    const result = await updateSessionMetadataWithAck({
+      socket: { emitWithAck: async (_event: string, payload: PlainMetadataAckPayload) => {
+        wireMetadata = JSON.parse(payload.metadata);
+        return { result: 'success', version: 2, metadata: payload.metadata };
+      } },
+      sessionId: 's1', sessionEncryptionMode: 'plain',
+      getMetadata: () => metadata, setMetadata: (next) => { metadata = next ?? createMetadata(); },
+      getMetadataVersion: () => version, setMetadataVersion: (next) => { version = next; },
+      syncSessionSnapshotFromServer: async () => {}, handler: (current) => ({ ...current, name: 'renamed' }),
+    });
+    expect(wireMetadata).toMatchObject({
+      terminal: { mode: 'plain', hostKind: 'herdr', requested: 'plain', requestedHostKind: 'herdr' },
+      providerExtension: { retained: true },
+    });
+    expect(result.metadata.terminal).toEqual(original.terminal);
+    expect(result.metadata).toHaveProperty('providerExtension', { retained: true });
+    expect(result.metadata.terminal).not.toHaveProperty('hostKind');
+  });
+
   it('sends runtime activity through its public projection socket mutation only', async () => {
     const emitWithAck = vi.fn(async (_event: string, payload: any) => ({
       status: 'applied',

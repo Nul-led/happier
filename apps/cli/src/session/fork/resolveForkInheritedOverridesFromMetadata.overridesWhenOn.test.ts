@@ -2,10 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { AgentModelOptionSchema } from '@happier-dev/protocol';
 
-import {
-  resolveForkInheritedOverridesFromMetadata,
-  resolveSessionAgentSpawnInheritedOverridesFromMetadata,
-} from './resolveForkInheritedOverridesFromMetadata';
+import { resolveForkInheritedOverridesFromMetadata } from './resolveForkInheritedOverridesFromMetadata';
 
 const claudeTarget = {
   kind: 'backend' as const,
@@ -66,7 +63,7 @@ const SOURCE_METADATA: Record<string, unknown> = {
 
 const EXPECTED_RULE = { optionIds: ['reasoning_effort'], forcedValue: 'xhigh' };
 
-describe('fork/spawn inheritance preserves producer-declared option override rules', () => {
+describe('fork inheritance preserves producer-declared option override rules', () => {
   it('carries overridesWhenOn through the canonical inherited catalog carriers on fork', () => {
     const inherited = resolveForkInheritedOverridesFromMetadata(SOURCE_METADATA, claudeTarget);
 
@@ -79,18 +76,6 @@ describe('fork/spawn inheritance preserves producer-declared option override rul
     ).toEqual(EXPECTED_RULE);
     expect(inherited.metadata.acpSessionModelsV1).toBeUndefined();
     expect(inherited.metadata.acpConfigOptionsV1).toBeUndefined();
-  });
-
-  it('carries overridesWhenOn through the session-agent spawn inheritance path', () => {
-    const inherited = resolveSessionAgentSpawnInheritedOverridesFromMetadata(SOURCE_METADATA, claudeTarget);
-
-    expect(
-      inherited.metadata.sessionModelsV1?.availableModels[0]?.modelOptions?.find((o) => o.id === 'ultracode')
-        ?.overridesWhenOn,
-    ).toEqual(EXPECTED_RULE);
-    expect(
-      inherited.metadata.sessionConfigOptionsV1?.configOptions.find((o) => o.id === 'ultracode')?.overridesWhenOn,
-    ).toEqual(EXPECTED_RULE);
   });
 
   it('does not invent a rule for options that declared none', () => {

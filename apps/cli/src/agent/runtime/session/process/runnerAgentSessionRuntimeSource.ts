@@ -54,6 +54,7 @@ import {
     resolveCurrentAgentRuntimeDaemonTurnContributions,
 } from './agentRuntimeDaemonServiceAuthorityClient';
 import { loadRetainedAgentRuntimeLeaf } from '@/plugins/runtime/runner/loadRetainedAgentRuntimeLeaf';
+import { runnerPinnedBundledCustodyCanSupersedeBootstrap } from '@/plugins/runtime/retainedPluginSourceAttestation';
 import {
     resolveAgentContributionQualifiedId,
 } from '@/plugins/projection/registry/agentRoutingIdentity';
@@ -142,24 +143,32 @@ function assertBootstrapIdentityMatchesClaim(
     const identity = source.identity;
     const descriptorAgentDeclaration = descriptor.agentDeclaration;
     const claimedAgent = source.agentContribution;
+    const runnerOwnsPinnedSource =
+        runnerPinnedBundledCustodyCanSupersedeBootstrap(
+            descriptor.sourceCustody,
+            identity.sourceCustody,
+        );
     if (
         identity.pluginId !== descriptor.pluginId
-        || identity.pluginVersion !== descriptor.pluginVersion
+        || (!runnerOwnsPinnedSource
+            && identity.pluginVersion !== descriptor.pluginVersion)
         || identity.agentId !== descriptor.agentId
         || identity.backendId !== descriptor.backendId
         || identity.occurrenceId !== descriptor.occurrenceId
-        || !pluginSourceCustodyV1Equal(
+        || (!runnerOwnsPinnedSource && !pluginSourceCustodyV1Equal(
             identity.sourceCustody,
             descriptor.sourceCustody,
-        )
+        ))
         || !descriptorAgentDeclaration
         || claimedAgent.pluginId !== descriptor.pluginId
+        || claimedAgent.identity?.localId
+            !== descriptorAgentDeclaration.definition.id
         || claimedAgent.provenance
             !== descriptorAgentDeclaration.provenance
-        || !isDeepStrictEqual(
+        || (!runnerOwnsPinnedSource && !isDeepStrictEqual(
             claimedAgent.richDefinition?.definition,
             descriptorAgentDeclaration.definition,
-        )
+        ))
     ) {
         throw createRunnerSourceUnavailableError(
             'Runner Agent session runtime authority does not match its admitted bootstrap identity',
@@ -373,11 +382,13 @@ export async function createRunnerAgentSessionRuntimeBootstrap(input: Readonly<{
     const retainedExternalSessionProviderOps:
         ExternalSessionExecutionSurface =
             Object.freeze({
-                externalLinkedTakeoverWriterSafety:
-                    bootstrapAgentContribution.richDefinition?.definition
+                get externalLinkedTakeoverWriterSafety() {
+                    return (claimed?.agentContribution
+                        ?? bootstrapAgentContribution).richDefinition?.definition
                         .surfaces?.externalSession
                         .externalLinkedTakeover?.writerSafety
-                    ?? 'unsupported',
+                        ?? 'unsupported';
+                },
                 async validateSource(params) {
                     return await requireRetainedExternalSessionProviderOps()
                         .validateSource!(params);
@@ -504,7 +515,10 @@ export async function createRunnerAgentSessionRuntimeBootstrap(input: Readonly<{
             });
 
     return Object.freeze({
-        agentContribution: bootstrapAgentContribution,
+        get agentContribution() {
+            return claimed?.agentContribution
+                ?? bootstrapAgentContribution;
+        },
         identity: Object.freeze({
             get pluginId() {
                 return claimed?.identity.pluginId

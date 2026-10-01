@@ -115,7 +115,6 @@ function createPublicEntry(input: Readonly<{
     }),
     client: Object.freeze({
       artifactId: 'voice-runtime',
-      modulePath: './voiceRuntime',
       exportName: 'activate' as const,
     }),
   });

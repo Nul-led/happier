@@ -3,6 +3,8 @@ import { View } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 
 import { ItemList } from '@/components/ui/lists/ItemList';
+import { SettingsPageHeader } from '@/components/settings/shell/SettingsPageHeader';
+import { t } from '@/text';
 import { useScrollRectIntoViewRegistry } from '@/components/ui/scroll/useScrollRectIntoView';
 import { createVoiceDictationRuntimeSettingsSnapshot } from '@/voice/dictation/voiceDictationRuntimeSettings';
 import { DictationSettingsSection } from '@/voice/dictation/DictationSettingsSection';
@@ -120,8 +122,9 @@ export function VoiceDictationSettingsScreen() {
           onContentSizeChange={focusRegistry.onContentSizeChange}
           onScroll={focusRegistry.onScroll}
           scrollEventThrottle={16}
-          style={{ paddingTop: 0 }}
+          presentation="page"
         >
+          <SettingsPageHeader description={t('settingsVoice.intents.dictation.subtitle')} />
           <View onLayout={onProviderSectionLayout}>
             <DictationSettingsSection
               voice={voice}

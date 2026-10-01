@@ -1,4 +1,8 @@
-const DEFAULT_SPAWN_SESSION_RPC_TIMEOUT_MS = 5 * 60_000;
+import { DEFAULT_SESSION_SPAWN_OPERATION_TIMEOUT_MS } from '@happier-dev/protocol';
+import { DEFAULT_SERVER_SCOPED_RPC_TIMEOUT_MS } from '@/sync/runtime/orchestration/serverScopedRpc/serverScopedRpcTypes';
+
+const DEFAULT_SPAWN_SESSION_RPC_TIMEOUT_MS =
+    DEFAULT_SESSION_SPAWN_OPERATION_TIMEOUT_MS + DEFAULT_SERVER_SCOPED_RPC_TIMEOUT_MS;
 const MAX_SPAWN_SESSION_RPC_TIMEOUT_MS = 10 * 60_000;
 
 export function readSpawnSessionRpcTimeoutMsFromEnv(): number {

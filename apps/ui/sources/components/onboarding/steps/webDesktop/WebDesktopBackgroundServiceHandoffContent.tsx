@@ -1,7 +1,6 @@
 import * as React from 'react';
 
-import { buildCliInstallAndRunCommandForCurrentApp } from '../../commands/wizardCliCommands';
-import { buildCliInstallAndRunPowershellCommandForCurrentApp } from '../../commands/wizardCliCommands';
+import { buildMachineAddCommand } from '@/components/machines/add/machineAddCommand';
 import { buildWebDesktopBackgroundServiceHandoffSteps } from '../../commands/webDesktopHandoffSteps';
 import {
     WizardGuidedHandoff,
@@ -16,13 +15,13 @@ export type WebDesktopBackgroundServiceHandoffContentProps = Readonly<{
 }>;
 
 export function WebDesktopBackgroundServiceHandoffContent(props: WebDesktopBackgroundServiceHandoffContentProps) {
-    const installAndSetupCommand = React.useMemo(() => buildCliInstallAndRunCommandForCurrentApp({
-        action: 'setup',
-        args: ['--home-url', props.relayUrl, '--skip-providers'],
+    const installAndSetupCommand = React.useMemo(() => buildMachineAddCommand({
+        kind: 'joinHome', os: 'linux', descriptor: null, profileSource: null,
+        fallbackHomeUrl: props.relayUrl, skipProviders: true,
     }), [props.relayUrl]);
-    const installAndSetupWindowsCommand = React.useMemo(() => buildCliInstallAndRunPowershellCommandForCurrentApp({
-        action: 'setup',
-        args: ['--home-url', props.relayUrl, '--skip-providers'],
+    const installAndSetupWindowsCommand = React.useMemo(() => buildMachineAddCommand({
+        kind: 'joinHome', os: 'windows', descriptor: null, profileSource: null,
+        fallbackHomeUrl: props.relayUrl, skipProviders: true,
     }), [props.relayUrl]);
     const steps = React.useMemo(() => buildWebDesktopBackgroundServiceHandoffSteps({
         installAndSetupCommand,

@@ -9,9 +9,9 @@ appId: ${HAPPIER_E2E_MOBILE_APP_ID}
           id: tabbar-tab-sessions
 
 - assertVisible:
-    id: main-header-start-new-session
+    id: tabbar-start-new-session
 - tapOn:
-    id: main-header-start-new-session
+    id: tabbar-start-new-session
 
 - extendedWaitUntil:
     visible:

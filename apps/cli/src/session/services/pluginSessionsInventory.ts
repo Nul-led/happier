@@ -357,7 +357,7 @@ export function createPluginSessionsInventory(
   const pollIntervalMs = Math.max(1, Math.floor(params.watchPollIntervalMs ?? DEFAULT_WATCH_POLL_INTERVAL_MS));
   const cursors = new Map<string, CursorSnapshot>();
 
-  const isGenerationCurrent = (): boolean => {
+  const isOccurrenceCurrent = (): boolean => {
     if (params.signal.aborted) return false;
     try {
       return params.isCurrent() === true;
@@ -366,7 +366,7 @@ export function createPluginSessionsInventory(
     }
   };
   const assertGenerationCurrent = (): void => {
-    if (!isGenerationCurrent()) throw pluginError('plugin_generation_retired', 'Plugin generation is retired');
+    if (!isOccurrenceCurrent()) throw pluginError('plugin_generation_retired', 'Plugin generation is retired');
   };
   const readCurrentCredentials = async (signal?: AbortSignal): Promise<StoredCredentials> => {
     assertNotAborted(signal);
@@ -648,12 +648,12 @@ export function createPluginSessionsInventory(
       let lastDeliveredSequence = -1;
 
       const schedule = (delayMs: number): void => {
-        if (disposed || !isGenerationCurrent()) return;
+        if (disposed || !isOccurrenceCurrent()) return;
         timer = setTimeout(() => void poll(), delayMs);
         timer.unref?.();
       };
       const poll = async (): Promise<void> => {
-        if (disposed || !isGenerationCurrent()) return;
+        if (disposed || !isOccurrenceCurrent()) return;
         try {
           const credentials = await assertSessionAccess(sessionId, 'read');
           const page = await getSessionTranscript({
@@ -671,7 +671,7 @@ export function createPluginSessionsInventory(
             includeStructuredPayload: false,
             maxCharsPerMessage: 50_000,
           });
-          if (disposed || !isGenerationCurrent()) return;
+          if (disposed || !isOccurrenceCurrent()) return;
           if (!page.ok) {
             throw pluginError('plugin_session_messages_unavailable', 'Session messages are temporarily unavailable');
           }
@@ -683,7 +683,7 @@ export function createPluginSessionsInventory(
             .filter((event): event is Extract<SessionEvent, { kind: 'message' }> => event !== null)
             .sort((left, right) => left.sequence - right.sequence);
           for (const event of events) {
-            if (disposed || !isGenerationCurrent()) return;
+            if (disposed || !isOccurrenceCurrent()) return;
             if (event.sequence <= lastDeliveredSequence) continue;
             lastDeliveredSequence = event.sequence;
             try {
@@ -890,10 +890,10 @@ export function createPluginSessionsInventory(
       }
     };
     const poll = async (): Promise<void> => {
-      if (disposed || !isGenerationCurrent()) return;
+      if (disposed || !isOccurrenceCurrent()) return;
       try {
         const items = await loadAll(query);
-        if (disposed || !isGenerationCurrent()) return;
+        if (disposed || !isOccurrenceCurrent()) return;
         const next = new Map(items.map((item) => [item.id, item] as const));
         if (revision === 0) {
           emit({ kind: 'snapshot', items });
@@ -907,9 +907,9 @@ export function createPluginSessionsInventory(
         }
         previous = next;
       } catch {
-        if (!disposed && isGenerationCurrent()) emit({ kind: 'resyncRequired' });
+        if (!disposed && isOccurrenceCurrent()) emit({ kind: 'resyncRequired' });
       }
-      if (!disposed && isGenerationCurrent()) timer = setTimeout(() => void poll(), pollIntervalMs);
+      if (!disposed && isOccurrenceCurrent()) timer = setTimeout(() => void poll(), pollIntervalMs);
     };
     void poll();
     return Object.freeze({

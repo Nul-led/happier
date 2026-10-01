@@ -3,7 +3,7 @@ import { View } from 'react-native';
 import { act } from 'react-test-renderer';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { renderScreen, standardCleanup } from '@/dev/testkit';
+import { createThemeFixture, renderScreen, standardCleanup } from '@/dev/testkit';
 import { FocusReturnProvider, useFocusReturnFallbackRef } from '@/keyboard/focusReturn';
 import type { NewSessionDraftProjection } from '@/sync/ops/sessionDrafts/sessionDraftRepository';
 
@@ -888,6 +888,72 @@ describe('NewSessionDraftsSection', () => {
         await screen.unmount();
     });
 
+    it('labels the drafts group like a project group, with a quiet count instead of a grouped sheet title', async () => {
+        const first = draft();
+        const second = draft({ draftId: '00000000-0000-4000-8000-000000000002' }, 'Second');
+        const screen = await renderScreen(
+            <NewSessionDraftsSectionView
+                drafts={[first, second]}
+                onContinue={vi.fn()}
+                onDelete={vi.fn(async () => false)}
+            />,
+        );
+        const header = screen.findByTestId('session-drafts-header');
+        expect(header).toBeTruthy();
+        expect(screen.getTextContent()).toContain('sessionDrafts.sectionTitle');
+        expect(screen.findByTestId('session-drafts-header-count')?.props.children).toBe(2);
+        // The grouped sheet title is the uppercase eyebrow the rail no longer uses.
+        expect(screen.findByType('ItemGroup' as any)?.props.title).toBeUndefined();
+        await screen.unmount();
+    });
+
+    it('keeps the inline delete quiet at rest and tints it only while hovered or pressed', async () => {
+        const theme = createThemeFixture();
+        const projection = draft();
+        const screen = await renderScreen(
+            <NewSessionDraftsSectionView
+                drafts={[projection]}
+                onContinue={vi.fn()}
+                onDelete={vi.fn(async () => false)}
+            />,
+        );
+        const deleteId = `session-draft-delete:new-session:${projection.draftId}`;
+        const glyphColor = () => screen.findByTestId(deleteId)?.findByType('Icon' as any).props.color;
+        expect(screen.findByTestId(deleteId)?.props.accessibilityLabel).toBe('sessionDrafts.delete.action');
+        expect(glyphColor()).toBe(theme.colors.text.secondary);
+        await act(async () => screen.findByTestId(deleteId)?.props.onHoverIn?.());
+        expect(glyphColor()).toBe(theme.colors.state.danger.foreground);
+        await act(async () => screen.findByTestId(deleteId)?.props.onHoverOut?.());
+        expect(glyphColor()).toBe(theme.colors.text.secondary);
+        await act(async () => screen.findByTestId(deleteId)?.props.onPressIn?.());
+        expect(glyphColor()).toBe(theme.colors.state.danger.foreground);
+        await screen.unmount();
+    });
+
+    it('shows the web delete only while its row is hovered or the button has keyboard focus', async () => {
+        const projection = draft();
+        const screen = await renderScreen(
+            <NewSessionDraftsSectionView
+                drafts={[projection]}
+                onContinue={vi.fn()}
+                onDelete={vi.fn(async () => false)}
+            />,
+        );
+        const slotId = `session-draft-action-slot:new-session:${projection.draftId}`;
+        const deleteId = `session-draft-delete:new-session:${projection.draftId}`;
+        const slotOpacity = () => Object.assign({}, ...([] as any[]).concat(screen.findByTestId(slotId)?.props.style ?? [])).opacity;
+        expect(slotOpacity()).toBe(0);
+        // Hidden visually only: it stays in the tab order and keeps its accessible name.
+        expect(screen.findByTestId(deleteId)?.props.disabled).toBeFalsy();
+        await act(async () => screen.findByTestId(`session-draft-row:new-session:${projection.draftId}`)?.props.onHoverIn?.());
+        expect(slotOpacity()).toBe(1);
+        await act(async () => screen.findByTestId(`session-draft-row:new-session:${projection.draftId}`)?.props.onHoverOut?.());
+        expect(slotOpacity()).toBe(0);
+        await act(async () => screen.findByTestId(deleteId)?.props.onFocus?.());
+        expect(slotOpacity()).toBe(1);
+        await screen.unmount();
+    });
+
     it('binds Continue and Delete to the row\'s exact Home and Account scope', async () => {
         const projection = draft();
         const scope = { serverId: 'home-b', accountId: 'account-b' } as const;
@@ -940,7 +1006,9 @@ describe('NewSessionDraftsSection', () => {
             testID: `session-draft-agent-logo:new-session:${projection.draftId}`,
         });
         expect(String(row?.props.accessibilityLabel)).toContain('sessionDrafts.status.syncing');
-        expect(screen.findByTestId(`session-draft-action-slot:new-session:${projection.draftId}`)?.props.style).toMatchObject({
+        expect(Object.assign({}, ...([] as any[]).concat(
+            screen.findByTestId(`session-draft-action-slot:new-session:${projection.draftId}`)?.props.style ?? [],
+        ))).toMatchObject({
             alignItems: 'flex-end',
             width: 24,
         });

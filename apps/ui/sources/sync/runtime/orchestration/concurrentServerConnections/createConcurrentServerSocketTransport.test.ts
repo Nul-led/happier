@@ -1,57 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION } from '@happier-dev/protocol';
+import { createSocketIoBoundaryStub } from '@/dev/testkit/mocks/socketIo';
 
-type SocketHandler = (...args: any[]) => void;
-
-vi.mock('@/sync/runtime/socketIoTransports', async (importOriginal) => ({
-    ...await importOriginal<typeof import('@/sync/runtime/socketIoTransports')>(),
-    resolveSocketIoTransports: () => undefined,
-}));
-
-function createSocketStub() {
-    const handlersByEvent = new Map<string, Set<SocketHandler>>();
-    const anyHandlers = new Set<SocketHandler>();
-    const socket = {
-        connected: false,
-        on: vi.fn((event: string, handler: SocketHandler) => {
-            const bucket = handlersByEvent.get(event) ?? new Set<SocketHandler>();
-            bucket.add(handler);
-            handlersByEvent.set(event, bucket);
-            return socket;
-        }),
-        onAny: vi.fn((handler: SocketHandler) => {
-            anyHandlers.add(handler);
-            return socket;
-        }),
-        offAny: vi.fn(() => {
-            anyHandlers.clear();
-            return socket;
-        }),
-        connect: vi.fn(() => {
-            socket.connected = true;
-            for (const handler of handlersByEvent.get('connect') ?? []) {
-                handler();
-            }
-        }),
-        disconnect: vi.fn(() => {
-            const wasConnected = socket.connected;
-            socket.connected = false;
-            if (!wasConnected) return;
-            for (const handler of handlersByEvent.get('disconnect') ?? []) {
-                handler('io client disconnect');
-            }
-        }),
-        removeAllListeners: vi.fn(() => {
-            handlersByEvent.clear();
-        }),
-        __emit(event: string, ...args: any[]) {
-            for (const handler of handlersByEvent.get(event) ?? []) {
-                handler(...args);
-            }
-        },
-    };
-    return socket;
-}
+function createSocketStub() { return createSocketIoBoundaryStub().socket; }
 
 describe('createConcurrentServerSocketTransport', () => {
     afterEach(() => {
@@ -72,6 +23,8 @@ describe('createConcurrentServerSocketTransport', () => {
             serverUrl: 'https://api.example.test',
             token: 'token-a',
         });
+
+        expect(socket.io.timeout()).toBe(false);
 
         expect(ioSpy).toHaveBeenCalledWith(
             'https://api.example.test',

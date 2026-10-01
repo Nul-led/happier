@@ -1,15 +1,19 @@
 import { describe, expect, it, vi } from 'vitest';
-import { RunnerBrokerReadinessRequestV1Schema } from '@happier-dev/protocol';
+import { HomeConnectionDescriptorV1Schema, RunnerBrokerReadinessRequestV1Schema } from '@happier-dev/protocol';
+import { createNodeIrohHomeTunnelSession } from '@happier-dev/iroh-native/node';
 
 import { createDaemonMachineIrohRuntime } from './daemonMachineIrohRuntime';
+import { prepareDaemonHomeIrohTransport } from './daemonHomeIrohTransport';
+import { acquireTerminalAuthEnrollmentRuntime } from '@/auth/terminalAuthEnrollmentRuntime';
+import { resolveServerHttpBaseUrl, resolveServerSocketIoTransports } from '@/api/client/serverHttpBaseUrl';
 
-const HOME_DESCRIPTOR = {
+const HOME_DESCRIPTOR = HomeConnectionDescriptorV1Schema.parse({
   v: 1,
   homeServerIdentityId: 'srv_home_iroh',
   canonicalServerUrl: 'https://home.example',
   revision: 7,
   endpoints: [{ kind: 'iroh', endpointId: 'c'.repeat(64), relayUrls: ['https://relay.test/'] }],
-} as never;
+});
 
 const WORKSPACE_SYNC_HANDSHAKE = { v: 1, flow: 'workspace_sync', operationId: 'operation-1', exact: 'verified' };
 
@@ -59,6 +63,107 @@ async function createHarness(nativeOverrides: Record<string, unknown> = {}, conn
 }
 
 describe('createDaemonMachineIrohRuntime', () => {
+  it('keeps the daemon endpoint and acceptor active when an in-process auth helper closes', async () => {
+    const { native, runtime } = await createHarness();
+    if (!runtime.available) throw new Error('expected daemon endpoint');
+    await runtime.startAttemptAcceptor({ admissionPort: 49124 });
+    const home = await prepareDaemonHomeIrohTransport({
+      runtime,
+      profile: { serverUrl: 'https://home.example', homeConnectionDescriptor: HOME_DESCRIPTOR } as never,
+      probe: async () => ({ status: 'ready' }),
+    });
+    try {
+      const helper = await acquireTerminalAuthEnrollmentRuntime(HOME_DESCRIPTOR, {
+        // Exercise the real session lifecycle beneath the native/OS boundary.
+        createSession: async (input) => await createNodeIrohHomeTunnelSession({ ...input, native: native as never }),
+        classifyFailure: () => ({ fallbackAllowed: false }),
+      });
+      expect(helper.ok).toBe(true);
+      if (!helper.ok) throw helper.error;
+      expect(helper.runtime.runtimeOrigin).toBe('http://127.0.0.1:49123');
+      await helper.close();
+      expect(native.shutdownEndpoint).not.toHaveBeenCalled();
+      expect(native.stopMachineAcceptor).not.toHaveBeenCalled();
+      expect(resolveServerHttpBaseUrl()).toBe('http://127.0.0.1:49123');
+      expect(resolveServerSocketIoTransports()).toEqual(['websocket']);
+      const cancellation = new AbortController();
+      cancellation.abort();
+      const cancelledHelper = await acquireTerminalAuthEnrollmentRuntime(HOME_DESCRIPTOR, {
+        createSession: async (input) => await createNodeIrohHomeTunnelSession({ ...input, native: native as never }),
+        classifyFailure: () => ({ fallbackAllowed: false }),
+      }, cancellation.signal);
+      expect(cancelledHelper).toMatchObject({ ok: false, error: { name: 'AbortError' } });
+      expect(native.shutdownEndpoint).not.toHaveBeenCalled();
+      const releaseFailure = new Error('native lease release failed');
+      const retryableHelper = await acquireTerminalAuthEnrollmentRuntime(HOME_DESCRIPTOR, {
+        createSession: async (input) => await createNodeIrohHomeTunnelSession({ ...input, native: native as never }),
+        classifyFailure: () => ({ fallbackAllowed: false }),
+      });
+      if (!retryableHelper.ok) throw retryableHelper.error;
+      native.releaseHomeTunnel.mockRejectedValueOnce(releaseFailure);
+      await expect(retryableHelper.close()).rejects.toBe(releaseFailure);
+      expect(native.shutdownEndpoint).not.toHaveBeenCalled();
+      await retryableHelper.close();
+
+      const privateNative = nativeHarness();
+      const ensurePrivateTunnel = privateNative.ensureHomeTunnel;
+      privateNative.ensureHomeTunnel = vi.fn(async () => ({
+        ...await ensurePrivateTunnel(), runtimeOrigin: 'http://127.0.0.1:49125',
+      }));
+      const otherRevision = await acquireTerminalAuthEnrollmentRuntime({ ...HOME_DESCRIPTOR, revision: 8 }, {
+        createSession: async (input) => await createNodeIrohHomeTunnelSession({ ...input, native: privateNative as never }),
+        classifyFailure: () => ({ fallbackAllowed: false }),
+      });
+      if (!otherRevision.ok) throw otherRevision.error;
+      expect(otherRevision.runtime.runtimeOrigin).toBe('http://127.0.0.1:49125');
+      await otherRevision.close();
+      expect(privateNative.shutdownEndpoint).toHaveBeenCalledOnce();
+      expect(native.shutdownEndpoint).not.toHaveBeenCalled();
+      expect(resolveServerHttpBaseUrl()).toBe('http://127.0.0.1:49123');
+      await expect(runtime.ensureHomeTunnel!({ descriptor: HOME_DESCRIPTOR })).resolves.toMatchObject({
+        runtimeOrigin: 'http://127.0.0.1:49123',
+      });
+    } finally {
+      await home.release();
+      await runtime.shutdown();
+    }
+  });
+
+  it('dials relay-only recovery without changing the published Home descriptor', async () => {
+    const { native, runtime } = await createHarness();
+    expect(runtime.available).toBe(true);
+    if (!runtime.available) return;
+    const descriptorWithDirectAndRelay = {
+      v: 1 as const,
+      homeServerIdentityId: 'srv_home_iroh',
+      canonicalServerUrl: 'https://home.example',
+      revision: 7,
+      endpoints: [{
+        kind: 'iroh' as const,
+        endpointId: 'c'.repeat(64),
+        directAddresses: ['127.0.0.1:40123'],
+        relayUrls: ['https://relay.test/'],
+      }],
+    };
+
+    const first = await runtime.ensureHomeTunnel!({ descriptor: descriptorWithDirectAndRelay });
+    const second = await runtime.ensureHomeTunnel!({ descriptor: descriptorWithDirectAndRelay, relayOnly: true });
+    expect(native.ensureHomeTunnel).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      directAddresses: ['127.0.0.1:40123'],
+      relayUrls: ['https://relay.test/'],
+    }));
+    expect(native.ensureHomeTunnel).toHaveBeenNthCalledWith(2, {
+      endpointHandle: 'endpoint-1',
+      homeServerIdentityId: descriptorWithDirectAndRelay.homeServerIdentityId,
+      endpointId: descriptorWithDirectAndRelay.endpoints[0]!.endpointId,
+      relayUrls: ['https://relay.test/'],
+    });
+    expect(descriptorWithDirectAndRelay.endpoints[0]!.directAddresses).toEqual(['127.0.0.1:40123']);
+    await first.release();
+    await second.release();
+    await runtime.shutdown();
+  });
+
   it('reuses the installation key path and EndpointId across daemon restarts', async () => {
     const endpointId = 'e'.repeat(64);
     let nextHandle = 0;

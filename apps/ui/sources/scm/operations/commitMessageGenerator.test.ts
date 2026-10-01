@@ -31,12 +31,12 @@ function startResult(wait: unknown) {
     };
 }
 
-function successfulTerminalResult() {
+function successfulTerminalResult(runId = 'run_1') {
     return {
         ok: true,
         result: {
             run: {
-                runId: 'run_1',
+                runId,
                 callId: 'call_1',
                 sidechainId: 'call_1',
                 intent: 'scm_commit_message',
@@ -79,7 +79,7 @@ describe('commitMessageGenerator', () => {
             .mockResolvedValueOnce(startResult({
                 ok: true,
                 status: 'succeeded',
-                result: { run: { runId: 'run_1', status: 'succeeded' } },
+                result: successfulTerminalResult().result,
             }))
             .mockResolvedValueOnce(successfulTerminalResult());
 
@@ -133,7 +133,15 @@ describe('commitMessageGenerator', () => {
     });
 
     it.each([
-        ['timeout', { ok: false, code: 'timeout' }, 'Commit message generation timed out'],
+        ['timeout', {
+            ok: true,
+            status: 'running',
+            disposition: 'observation_timeout',
+            runId: 'run_1',
+            timeoutMs: 12_000,
+            observedAtMs: 13_000,
+            deadlineAtMs: 13_000,
+        }, 'Commit message generation timed out'],
         ['cancelled', { ok: false, code: 'cancelled' }, 'Commit message generation was cancelled'],
     ] as const)('returns the canonical %s observation result without redispatching or stopping', async (errorCode, wait, error) => {
         actionExecuteMock.mockResolvedValueOnce(startResult(wait));
@@ -181,7 +189,7 @@ describe('commitMessageGenerator', () => {
         actionExecuteMock.mockResolvedValueOnce(startResult({
             ok: true,
             status: 'succeeded',
-            result: { run: { runId: 'run_other', status: 'succeeded' } },
+            result: successfulTerminalResult('run_other').result,
         }));
 
         await expect(generate()).resolves.toEqual({ ok: false, error: 'Commit message generation failed' });

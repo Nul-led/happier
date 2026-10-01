@@ -5,9 +5,19 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { Icon } from '@/components/ui/icons/Icon';
 import { Text } from '@/components/ui/text/Text';
 import { Typography } from '@/constants/Typography';
+import { t } from '@/text';
+
+/**
+ * What the pre-sign-in disclosure can say about a Home's data retention: what it deletes, from a
+ * policy that answered, or that it could not be checked (with a retry). It never falls silent on a
+ * failed read, since silence would read as "nothing is deleted".
+ */
+export type RelayRetentionDisclosureState =
+    | Readonly<{ kind: 'summary'; summary: string }>
+    | Readonly<{ kind: 'unreadable'; retry: () => void }>;
 
 export type RelayRetentionDisclosureProps = Readonly<{
-    summary: string;
+    disclosure: RelayRetentionDisclosureState;
     testID?: string;
 }>;
 
@@ -27,7 +37,22 @@ export const RelayRetentionDisclosure = React.memo(function RelayRetentionDisclo
                 color={theme.colors.text.secondary}
                 style={styles.icon}
             />
-            <Text style={styles.text}>{props.summary}</Text>
+            {props.disclosure.kind === 'summary' ? (
+                <Text style={styles.text}>{props.disclosure.summary}</Text>
+            ) : (
+                <Text style={styles.text}>
+                    {t('server.retention.disclosureUnreadable')}
+                    {' · '}
+                    <Text
+                        testID={`${testID}-retry`}
+                        accessibilityRole="button"
+                        onPress={props.disclosure.retry}
+                        style={styles.retry}
+                    >
+                        {t('common.retry')}
+                    </Text>
+                </Text>
+            )}
         </View>
     );
 });
@@ -49,5 +74,9 @@ const stylesheet = StyleSheet.create((theme) => ({
     },
     icon: {
         marginTop: 2,
+    },
+    retry: {
+        color: theme.colors.text.primary,
+        textDecorationLine: 'underline',
     },
 }));

@@ -33,7 +33,7 @@ import {
     resolveExternalSessionAttachLeaseTtlMs,
 } from './actionConfiguration';
 import type { ExternalSessionActionContext } from './externalSessionActionContext';
-import { resolveGenerationBoundExternalSessionFollowSurface } from './providerOpsResolution';
+import { resolveOccurrenceBoundExternalSessionFollowSurface } from './providerOpsResolution';
 import {
     externalSessionsError,
     internalErrorResponse,
@@ -81,7 +81,7 @@ export async function executeExternalSessionAttachAction(
             return externalSessionsError(validatedSource.errorCode ?? 'invalid_request', validatedSource.error) satisfies ExternalSessionAttachResponse;
         }
         const { providerOps, resource } =
-            await resolveGenerationBoundExternalSessionFollowSurface(
+            await resolveOccurrenceBoundExternalSessionFollowSurface(
                 loaded.session.agentId,
                 loaded.session.linkGeneration,
             );
@@ -330,7 +330,7 @@ export async function executeExternalSessionFollowPolicySetAction(
             ) satisfies ExternalSessionFollowPolicySetResponse;
         }
         const { providerOps, resource } =
-            await resolveGenerationBoundExternalSessionFollowSurface(
+            await resolveOccurrenceBoundExternalSessionFollowSurface(
                 loaded.session.agentId,
                 loaded.session.linkGeneration,
             );

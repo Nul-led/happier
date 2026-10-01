@@ -7,6 +7,7 @@
  */
 export {
   MACHINE_HTTP_LOCAL_CAPABILITY_HEADER as IROH_MACHINE_HTTP_LOCAL_CAPABILITY_HEADER,
+  MACHINE_WEBSOCKET_CAPABILITY_PROTOCOL_PREFIX as IROH_MACHINE_WEBSOCKET_CAPABILITY_PROTOCOL_PREFIX,
 } from './descriptor.js';
 
 export type NativeIrohModule = Readonly<{
@@ -61,6 +62,8 @@ export type NativeIrohModule = Readonly<{
     relayUrls?: readonly string[];
     handshakeJson: string;
     capProfile?: 'machineBulk';
+    /** Guest-safe HTTP/WS origin over one signed generic TCP mux destination. */
+    nativeHttpLease?: { openJson: string };
   }) => Promise<{
     machineTunnelId: string;
     endpointHandle: string;

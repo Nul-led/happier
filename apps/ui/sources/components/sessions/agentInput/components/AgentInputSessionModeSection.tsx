@@ -6,6 +6,7 @@ import { StyleSheet, useUnistyles } from "react-native-unistyles";
 import { Text } from "@/components/ui/text/Text";
 import { t } from "@/text";
 import { Icon } from '@/components/ui/icons/Icon';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 export type AgentInputSessionModeOption = Readonly<{
   id: string;
@@ -154,7 +155,7 @@ const styles = StyleSheet.create((theme) => ({
     backgroundColor: theme.colors.surface.pressed,
   },
   optionCardPressed: {
-    opacity: 0.86,
+    opacity: motionTokens.press.opacitySubtle,
   },
   optionCardHeader: {
     flexDirection: "row",

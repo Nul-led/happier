@@ -225,6 +225,7 @@ describe('NewSessionSimplePanel (attachments.uploads)', () => {
 
     it('projects its semantic Composer document through the attachment-owner and input surface', async () => {
         const { NewSessionSimplePanel } = await import('./NewSessionSimplePanel');
+        const onSelectionChangePersist = vi.fn();
         const onStructuredInputMentionsChange = vi.fn();
         const composerDocument = {
             ref: { kind: 'newSession', instanceId: 'new-session-composer-scope' },
@@ -248,6 +249,7 @@ describe('NewSessionSimplePanel (attachments.uploads)', () => {
             hasSendableAttachments: true,
             captureSubmissionSnapshot: () => null,
             clearAcceptedSnapshot: () => false,
+            inputPersistence: { restoreToken: 'new-session-composer-scope', onSelectionChangePersist },
         };
 
         AgentInputMock.mockClear();
@@ -291,6 +293,10 @@ describe('NewSessionSimplePanel (attachments.uploads)', () => {
         expect(inputProps.structuredInputMentions).toEqual([]);
         expect(inputProps.onStructuredInputMentionsChange).toBe(onStructuredInputMentionsChange);
         expect(inputProps.hasSendableAttachments).toBe(true);
+        // The input reports its caret through the document's own persistence seam,
+        // so the Automation handoff reads the caret that is actually on screen.
+        inputProps.inputPersistence.onSelectionChangePersist({ start: 2, end: 2 }, 0);
+        expect(onSelectionChangePersist).toHaveBeenCalledWith({ start: 2, end: 2 }, 0);
         expect(inputProps.attachmentRowItems).toContainEqual(expect.objectContaining({
             key: 'issue-42',
             label: 'Issue #42',

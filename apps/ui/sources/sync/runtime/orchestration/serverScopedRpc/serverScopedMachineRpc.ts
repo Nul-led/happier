@@ -1,4 +1,9 @@
-import { SOCKET_RPC_EVENTS } from '@happier-dev/protocol/socketRpc';
+import {
+    callSocketRpc,
+    isSocketIoAckTimeoutError,
+    markRpcRequestDisposition,
+    readRpcRequestDisposition,
+} from '@happier-dev/sync-client';
 import { RPC_ERROR_CODES, RPC_METHODS, SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc';
 import { readRpcErrorCode } from '@happier-dev/protocol/rpcErrors';
 
@@ -6,7 +11,6 @@ import { createRpcCallError } from '@/sync/runtime/rpcErrors';
 import { apiSocket } from '@/sync/api/session/apiSocket';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
-import { isSocketIoAckTimeoutError } from '@/sync/runtime/socketIoAckTimeout';
 import { createEphemeralServerSocketClient } from '@/sync/runtime/orchestration/serverScopedRpc/createEphemeralServerSocketClient';
 import { createScopedSocketConnectParams } from '@/sync/runtime/orchestration/serverScopedRpc/createScopedSocketConnectParams';
 import { resolveServerScopedContext } from '@/sync/runtime/orchestration/serverScopedRpc/resolveServerScopedContext';
@@ -27,18 +31,13 @@ import { recordMachineRpcPeerMediationReceipt } from '@/sync/domains/machines/pe
 import {
     requireCurrentAccountStoredContentServerCompatibility,
 } from '@/sync/api/capabilities/accountStoredContentCompatibility';
-import {
-    createSocketRpcRequestId,
-} from '@/sync/runtime/socketRpcCallCancellation';
-
 import { DEFAULT_SERVER_SCOPED_RPC_TIMEOUT_MS } from './serverScopedRpcTypes';
-import type { ServerScopedMachineRpcParams, SocketRpcResult } from './serverScopedRpcTypes';
+import type { ServerScopedMachineRpcParams } from './serverScopedRpcTypes';
 import { isGuardedMachineRpcMethod, resolveTransferPolicyAllowsMachineRpcDirect } from './guardedMachineRpcPolicy';
 import {
     isMachineRpcTimeoutError,
     MACHINE_RPC_TIMEOUT_ERROR_CODE,
 } from './machineRpcTimeoutError';
-import { scopedSocketEmitWithAck } from './scopedSocketEmitWithAck';
 import { resolveMachineRpcTargetServerId } from './resolveMachineRpcTargetServerId';
 import { resolveRunnerMachineContentKeyTrustV1 } from '@/sync/domains/machines/runnerMachineContentKeyTrust';
 import { isTokenOnlyAuthCredentials } from '@/auth/storage/tokenStorage';
@@ -82,16 +81,18 @@ function createMachineRpcTimeoutError(params: Readonly<{
     return error;
 }
 
-function createMachineRpcAbortError(method: string): Error {
+function createMachineRpcAbortError(method: string, cause?: unknown): Error {
     const error = new Error(`Machine RPC for ${method} was aborted by the caller`);
     error.name = 'AbortError';
     Object.assign(error, { code: 'MACHINE_RPC_ABORTED' });
+    const disposition = readRpcRequestDisposition(cause);
+    if (disposition) markRpcRequestDisposition(error, disposition);
     return error;
 }
 
 function throwIfMachineRpcAborted(method: string, signal: AbortSignal | undefined): void {
     if (!signal?.aborted) return;
-    throw createMachineRpcAbortError(method);
+    throw markRpcRequestDisposition(createMachineRpcAbortError(method), 'notSent');
 }
 
 /**
@@ -103,24 +104,30 @@ async function withMachineRpcAbort<T>(
     method: string,
     signal: AbortSignal | undefined,
     run: () => Promise<T>,
+    socketRpcAbortScope?: Readonly<{ issued: boolean }>,
 ): Promise<T> {
     if (!signal) {
         return await run();
     }
     if (signal.aborted) {
-        throw createMachineRpcAbortError(method);
+        throw markRpcRequestDisposition(createMachineRpcAbortError(method), 'notSent');
     }
     return await new Promise<T>((resolve, reject) => {
-        const onAbort = () => reject(createMachineRpcAbortError(method));
+        // Once issued, the shared RPC owner cancels and classifies the outcome.
+        // The caller fence remains responsible for setup and direct HTTP work.
+        const onAbort = () => {
+            if (!socketRpcAbortScope?.issued) reject(createMachineRpcAbortError(method));
+        };
         signal.addEventListener('abort', onAbort, { once: true });
         run().then(
             (value) => {
                 signal.removeEventListener('abort', onAbort);
-                resolve(value);
+                if (signal.aborted) reject(createMachineRpcAbortError(method));
+                else resolve(value);
             },
             (error) => {
                 signal.removeEventListener('abort', onAbort);
-                reject(error);
+                reject(signal.aborted ? createMachineRpcAbortError(method, error) : error);
             },
         );
     });
@@ -205,7 +212,10 @@ function shouldFallbackToScopedMachineRpc(error: unknown): boolean {
         || error.message.includes('Socket not connected');
 }
 
-async function machineRpcWithServerTransport<R, A>(params: ServerScopedMachineRpcParams<A>): Promise<R> {
+async function machineRpcWithServerTransport<R, A>(
+    params: ServerScopedMachineRpcParams<A>,
+    socketRpcAbortScope: { issued: boolean },
+): Promise<R> {
     const configuredTimeoutMs = resolveMachineRpcTimeoutMs(params.timeoutMs);
     const guarded = isGuardedMachineRpcMethod(params.method);
     const allowDirect = guarded && params.skipTransferPolicyEvaluation !== true
@@ -225,6 +235,7 @@ async function machineRpcWithServerTransport<R, A>(params: ServerScopedMachineRp
         : undefined;
 
     const runOnce = async (options?: { forceScoped?: boolean }): Promise<R> => {
+        socketRpcAbortScope.issued = false;
         throwIfMachineRpcAborted(params.method, params.signal);
         const timeoutBudget = createMachineRpcTimeoutBudget({
             method: params.method,
@@ -251,14 +262,15 @@ async function machineRpcWithServerTransport<R, A>(params: ServerScopedMachineRp
 
         if (context.scope === 'active' && !preferScoped) {
             let abandonedBeforeEmission = false;
-            const activeOnIssued = onIssued
-                ? () => {
+            const activeOnIssued = () => {
+                if (onIssued) {
                     if (abandonedBeforeEmission) {
                         throw new Error('Exact active machine RPC was superseded before emission');
                     }
                     onIssued();
                 }
-                : undefined;
+                socketRpcAbortScope.issued = true;
+            };
             try {
                 const result = await timeoutBudget.runWithinTimeout(
                     'active',
@@ -270,7 +282,7 @@ async function machineRpcWithServerTransport<R, A>(params: ServerScopedMachineRp
                         {
                             timeoutMs,
                             ...(params.authorization ? { authorization: params.authorization } : {}),
-                            ...(activeOnIssued ? { onIssued: activeOnIssued } : {}),
+                            onIssued: activeOnIssued,
                             ...(params.signal ? { signal: params.signal } : {}),
                         },
                     ),
@@ -296,14 +308,17 @@ async function machineRpcWithServerTransport<R, A>(params: ServerScopedMachineRp
 
         let carrierCustodyTransferred = false;
         try {
-            const runnerTrust = context.credentials
-                ? resolveRunnerMachineContentKeyTrustV1({
-                    credentials: context.credentials,
+            const credentials = context.credentials;
+            const runnerTrust = credentials
+                ? await timeoutBudget.runWithinTimeout('scoped', async () => await resolveRunnerMachineContentKeyTrustV1({
+                    credentials,
                     homeServerIdentityId: context.targetServerId,
                     machineId: context.machineId,
-                })
+                }))
                 : null;
-            const machineTransport = await timeoutBudget.runWithinTimeout(
+            const machineTransport = !runnerTrust && context.credentials && !isTokenOnlyAuthCredentials(context.credentials)
+                ? null
+                : await timeoutBudget.runWithinTimeout(
                 'scoped',
                 async (timeoutMs) =>
                     await resolveScopedMachineTransport({
@@ -336,7 +351,14 @@ async function machineRpcWithServerTransport<R, A>(params: ServerScopedMachineRp
             );
         throwIfMachineRpcAborted(params.method, params.signal);
 
-        const usePlaintextTransport = machineTransport?.mode === 'plain';
+        if (!machineTransport) {
+            await context.encryption?.initializeMachines(new Map(), new Set([context.machineId]));
+            throw createRpcCallError({
+                error: `Machine encryption not found for ${context.machineId}`,
+                errorCode: 'MACHINE_ENCRYPTION_UNAVAILABLE',
+            });
+        }
+        const usePlaintextTransport = machineTransport.mode === 'plain';
         if (usePlaintextTransport) {
             await requireCurrentAccountStoredContentServerCompatibility({
                 serverId: context.targetServerId,
@@ -352,7 +374,7 @@ async function machineRpcWithServerTransport<R, A>(params: ServerScopedMachineRp
                 async () => {
                     await context.encryption!.initializeMachines(new Map([[
                         context.machineId,
-                        machineTransport?.mode === 'e2ee'
+                        machineTransport.mode === 'e2ee'
                             ? machineTransport.dataKey
                             : null,
                     ]]));
@@ -381,64 +403,56 @@ async function machineRpcWithServerTransport<R, A>(params: ServerScopedMachineRp
         );
         try {
             throwIfMachineRpcAborted(params.method, params.signal);
-            const encodedPayload = usePlaintextTransport
-                ? params.payload
-                : await timeoutBudget.runWithinTimeout(
-                    'scoped',
-                    async () => await measureMachineEncryptRawAttribution(
-                        resolveScopedMachineRpcEncryptRawAttributionEvent(params.method),
-                        async () => await machineEncryption!.encryptRaw(params.payload),
-                    ),
-                );
-            const result = await timeoutBudget.runWithinTimeout(
+            return await timeoutBudget.runWithinTimeout(
                 'scoped',
                 async (timeoutMs) => {
                     try {
-                        const requestId = params.signal ? createSocketRpcRequestId() : undefined;
-                        return await scopedSocketEmitWithAck<SocketRpcResult>({
+                        return await callSocketRpc<R>({
                             socket,
-                            event: SOCKET_RPC_EVENTS.CALL,
+                            target: { kind: 'machine', id: context.machineId },
+                            method: params.method,
+                            params: params.payload,
+                            content: usePlaintextTransport
+                                ? { mode: 'plain' }
+                                : {
+                                    mode: 'e2ee',
+                                    cipher: {
+                                        encryptRaw: async (payload) => await timeoutBudget.runWithinTimeout(
+                                            'scoped',
+                                            async () => await measureMachineEncryptRawAttribution(
+                                                resolveScopedMachineRpcEncryptRawAttributionEvent(params.method),
+                                                async () => await machineEncryption!.encryptRaw(payload),
+                                            ),
+                                        ),
+                                        decryptRaw: async (payload) => await timeoutBudget.runWithinTimeout(
+                                            'scoped',
+                                            async () => await machineEncryption!.decryptRaw(payload),
+                                        ),
+                                    },
+                                },
                             timeoutMs,
-                            payload: {
-                                method: `${context.machineId}:${params.method}`,
-                                params: encodedPayload,
-                                timeoutMs,
-                                ...(requestId ? { requestId } : {}),
-                                ...(params.authorization ? { authorization: params.authorization } : {}),
+                            authorization: params.authorization,
+                            onIssued: () => {
+                                onIssued?.();
+                                socketRpcAbortScope.issued = true;
                             },
-                            onIssued,
-                            ...(params.signal ? { signal: params.signal } : {}),
-                            requestId,
+                            signal: params.signal,
                         });
                     } catch (error) {
                         if (isSocketIoAckTimeoutError(error)) {
-                            throw createMachineRpcTimeoutError({
+                            const timeoutError = createMachineRpcTimeoutError({
                                 scope: 'scoped',
                                 method: params.method,
                                 timeoutMs: configuredTimeoutMs,
                                 remainingTimeoutMs: timeoutMs,
                             });
+                            const disposition = readRpcRequestDisposition(error);
+                            throw disposition ? markRpcRequestDisposition(timeoutError, disposition) : timeoutError;
                         }
                         throw error;
                     }
                 },
             );
-
-            if (result.ok) {
-                if (usePlaintextTransport) {
-                    return result.result as R;
-                }
-                const decoded = await timeoutBudget.runWithinTimeout(
-                    'scoped',
-                    async () => await machineEncryption!.decryptRaw(result.result) as R,
-                );
-                return decoded;
-            }
-
-            throw createRpcCallError({
-                error: typeof result.error === 'string' ? result.error : 'RPC call failed',
-                errorCode: typeof result.errorCode === 'string' ? result.errorCode : undefined,
-            });
         } finally {
             socket.disconnect();
         }
@@ -450,11 +464,11 @@ async function machineRpcWithServerTransport<R, A>(params: ServerScopedMachineRp
     let lastError: unknown = null;
     for (let attempt = 0; attempt < 2; attempt++) {
         try {
-            return await withMachineRpcAbort(params.method, params.signal, () => runOnce());
+            return await withMachineRpcAbort(params.method, params.signal, () => runOnce(), socketRpcAbortScope);
         } catch (error) {
             lastError = error;
             if (params.signal?.aborted) {
-                throw createMachineRpcAbortError(params.method);
+                throw createMachineRpcAbortError(params.method, error);
             }
             if (exactIssuanceAttempted) {
                 throw error;
@@ -480,9 +494,10 @@ export async function machineRpcWithServerScope<R, A>(params: ServerScopedMachin
         ...params,
         serverId: effectiveServerId || undefined,
     };
+    const socketRpcAbortScope = { issued: false };
 
     if (effectiveParams.onIssued) {
-        return await machineRpcWithServerTransport<R, A>(effectiveParams);
+        return await machineRpcWithServerTransport<R, A>(effectiveParams, socketRpcAbortScope);
     }
     return await withMachineRpcAbort(
         effectiveParams.method,
@@ -520,7 +535,8 @@ export async function machineRpcWithServerScope<R, A>(params: ServerScopedMachin
                 accountId: fallbackInput.accountId,
                 timeoutMs: fallbackInput.timeoutMs,
                 authorization: fallbackInput.authorization,
-            }),
+            }, socketRpcAbortScope),
         }),
+        socketRpcAbortScope,
     );
 }

@@ -19,7 +19,8 @@ describe('isOpenApprovalInboxArtifact', () => {
     v: 1, kind: 'plugin_target_action', status: 'open', createdAtMs: 1, updatedAtMs: 1,
     createdBy: { surface: 'system' }, requestedSurface: 'ui',
     qualifiedActionId: 'acme.publisher/actions/releases/publish', input: null,
-    generation: 'generation-1', policyFingerprint: '0'.repeat(64), subjectFingerprint: 'a'.repeat(64),
+    sourceCustody: { kind: 'managed', immutableGenerationId: 'generation-1', installSource: 'npm' },
+    policyFingerprint: '0'.repeat(64), subjectFingerprint: 'a'.repeat(64),
     summary: 'Publish',
   });
   const host = ExecutionRunHostActionApprovalRequestV1Schema.parse({

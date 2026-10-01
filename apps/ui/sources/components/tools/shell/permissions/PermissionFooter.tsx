@@ -1,19 +1,21 @@
-import { extractShellCommand, formatPermissionRequestSummary } from '@happier-dev/protocol';
+import { extractShellCommand, formatPermissionRequestSummary, type SessionPermissionDecisionActorV1 } from '@happier-dev/protocol';
 import React, { useRef, useState } from 'react';
 import { View, TouchableOpacity, Platform } from 'react-native';
-import { sessionAbort, sessionAllow, sessionAllowWithPermissionUpdates, sessionDeny } from '@/sync/ops';
+import { useSessionTranscriptSource } from '@/components/sessions/transcript/source/SessionTranscriptSourceContext';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
-import { storage } from '@/sync/domains/state/storage';
 import { useServerCredentialAccountScopeResolution } from '@/sync/domains/scope/useServerCredentialAccountScopes';
-import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
-import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
 import { t } from '@/text';
 import { resolveAgentIdForPermissionUi } from '@/agents/catalog/resolve';
 import { useHistoricalTranscriptAgentId } from '@/components/sessions/transcript/attribution/SessionTranscriptAgentAttributionContext';
 import { getPermissionFooterCopy } from '@/agents/catalog/permissionUiCopy';
-import { getAgentBehavior, isBundledAgentId } from '@/agents/catalog/catalog';
-import { resolveSessionMachineId } from '@/sync/domains/session/external/resolveSessionMachineId';
-import { parseParenIdentifier } from '@/components/tools/normalization/parse/parseParenIdentifier';
+import {
+    answerSessionPermission,
+    resolveSessionPermissionAnswerPolicy,
+    resolveSessionPermissionBehavior,
+    supportsSessionPermissionRule,
+    type SessionPermissionAnswer,
+} from '@/sync/ops/sessionPermissionAnswers';
+import { parseParenIdentifier } from "@happier-dev/session-core/tools";
 import { Text } from '@/components/ui/text/Text';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
@@ -23,9 +25,12 @@ import {
     type PermissionActionFailureKind,
     type PermissionActionFailureState,
 } from './permissionActionFailure';
+import type { PromptResponseOrigin } from './executionRunPromptResponseTarget';
+import type { TranscriptPermissionDisabledReason } from '@/utils/sessions/deriveTranscriptInteraction';
+import { resolvePermissionDisabledMessage } from '@/components/tools/shell/permissions/permissionDisabledMessage';
 
 
-interface PermissionFooterProps {
+type PermissionFooterProps = PromptResponseOrigin & {
     permission: {
         id: string;
         turnId?: string;
@@ -36,20 +41,21 @@ interface PermissionFooterProps {
         allowTools?: string[]; // legacy alias
         decision?: 'approved' | 'approved_for_session' | 'approved_execpolicy_amendment' | 'denied' | 'abort';
         suggestions?: unknown;
+        decisionActor?: SessionPermissionDecisionActorV1;
     };
-    sessionId: string;
     serverId?: string;
     toolName: string;
     toolInput?: any;
     metadata?: any;
     canApprovePermissions?: boolean;
-    disabledReason?: 'public' | 'readOnly' | 'notGranted' | 'inactive';
+    disabledReason?: TranscriptPermissionDisabledReason;
     embedded?: boolean;
     alignFirstButtonToStart?: boolean;
-}
+};
 
 type PermissionRequestIdentity = Readonly<{
-    sessionId: string;
+    /** The Session, or the Execution Run, that owns the request. */
+    originId: string;
     serverId?: string;
     permissionId: string;
     turnId?: string;
@@ -70,7 +76,7 @@ function isSamePermissionRequest(
     right: PermissionRequestIdentity,
 ): boolean {
     return left !== null
-        && left.sessionId === right.sessionId
+        && left.originId === right.originId
         && left.serverId === right.serverId
         && left.permissionId === right.permissionId
         && left.turnId === right.turnId;
@@ -212,17 +218,25 @@ const stylesheet = StyleSheet.create((theme) => ({
 
 export const PermissionFooter: React.FC<PermissionFooterProps> = ({
     permission,
-    sessionId,
+    sessionId: sessionIdProp,
+    executionRun,
     serverId,
     toolName,
     toolInput,
     metadata,
-    canApprovePermissions = true,
+    canApprovePermissions: callerCanApprovePermissions,
     disabledReason,
     embedded = false,
     alignFirstButtonToStart = false,
 }) => {
     const { theme } = useUnistyles();
+    const source = useSessionTranscriptSource();
+    const interaction = source.useInteraction();
+    const actions = source.actions;
+    const canApprovePermissions = callerCanApprovePermissions !== false && (executionRun !== undefined
+        ? executionRun.respond !== undefined
+        : actions !== null && interaction.canApprovePermissions);
+    disabledReason = disabledReason ?? (executionRun === undefined ? interaction.permissionDisabledReason : undefined);
     const styles = stylesheet;
     const historicalAgentId = useHistoricalTranscriptAgentId();
     const accountScopeResolution = useServerCredentialAccountScopeResolution(serverId);
@@ -234,16 +248,15 @@ export const PermissionFooter: React.FC<PermissionFooterProps> = ({
         minHeight: minimumInteractiveTargetSize,
     };
     const alignedButtonStyle = alignFirstButtonToStart ? styles.buttonAlignedToStart : null;
-    const storedTurnId = (serverId === undefined || areServerProfileIdentifiersEquivalent(serverId, getActiveServerSnapshot().serverId)
-        ? storage.getState().sessions[sessionId]
-        : undefined)?.agentState?.requests?.[permission.id]?.turnId;
+    // The Session transport below is reachable only when no Execution Run owns
+    // the request: that origin renders its own two decisions and never reads
+    // or answers a Session.
+    const sessionId = sessionIdProp ?? '';
     const projectedTurnId = typeof permission.turnId === 'string' && permission.turnId.trim().length > 0
         ? permission.turnId.trim()
-        : typeof storedTurnId === 'string' && storedTurnId.trim().length > 0
-            ? storedTurnId.trim()
-            : undefined;
+        : undefined;
     const requestIdentity: PermissionRequestIdentity = {
-        sessionId,
+        originId: executionRun === undefined ? `session:${sessionId}` : `executionRun:${executionRun.executionRunId}`,
         serverId,
         permissionId: permission.id,
         ...(projectedTurnId ? { turnId: projectedTurnId } : {}),
@@ -268,6 +281,8 @@ export const PermissionFooter: React.FC<PermissionFooterProps> = ({
     const actionFailure = isSamePermissionRequest(storedActionFailure?.requestIdentity ?? null, requestIdentity)
         ? storedActionFailure?.failure ?? null
         : null;
+    /** An answer the Execution Run's caller already holds keeps both decisions withdrawn. */
+    const executionRunAnswerPending = executionRun?.pendingRequestIds.has(permission.id) === true;
 
     React.useEffect(() => {
         isMounted.current = true;
@@ -295,15 +310,26 @@ export const PermissionFooter: React.FC<PermissionFooterProps> = ({
     // could be answered with machine A's stop handling, permission-update or
     // exec-policy behavior. Bundled behavior is local/static; projected external
     // behavior therefore requires an owning machine and otherwise fails closed.
-    const owningMachineId = resolveSessionMachineId(metadata);
-    const permissionBehavior = agentId && (isBundledAgentId(agentId) || owningMachineId !== null)
-        ? getAgentBehavior(agentId, owningMachineId, accountScope).permissions
-        : undefined;
+    const permissionBehavior = resolveSessionPermissionBehavior({ agentId, metadata, accountScope });
     const copy = getPermissionFooterCopy(permissionBehavior?.promptProtocol);
     const permissionFooterBehavior = permissionBehavior?.footer;
-    const isCodexDecision = copy.protocol === 'codexDecision';
-    const shouldUsePermissionUpdates = permissionFooterBehavior?.usePermissionUpdates === true || Array.isArray(permission?.suggestions);
-    const shouldForceReadOnlyAfterStop = permissionFooterBehavior?.forceReadOnlyAfterStop === true;
+    // The primary Allow once / Always for this session / Deny decisions share
+    // one answer owner with the plugin UI Host API, so both mean the same
+    // provider decision.
+    const answerPolicy = resolveSessionPermissionAnswerPolicy({
+        permissionBehavior,
+        suggestions: permission?.suggestions,
+    });
+    const isCodexDecision = answerPolicy.protocol === 'codexDecision';
+    const shouldUsePermissionUpdates = answerPolicy.usePermissionUpdates;
+    const answerThroughSession = (answer: SessionPermissionAnswer) => answerSessionPermission({
+        requestId: permission.id,
+        ...(projectedTurnId !== undefined ? { turnId: projectedTurnId } : {}),
+        toolName,
+        answer,
+        policy: answerPolicy,
+        respondToPermission: async (params) => { if (actions) await actions.respondToPermission(params); },
+    });
     const execPolicyCommand = (() => {
         const proposedAmendment = toolInput?.proposedExecpolicyAmendment ?? toolInput?.proposed_execpolicy_amendment;
         if (Array.isArray(proposedAmendment)) {
@@ -318,14 +344,15 @@ export const PermissionFooter: React.FC<PermissionFooterProps> = ({
         return null;
     }
 
+    // Without a current responder the Execution Run's request is shown, not decided.
+    if (executionRun !== undefined && executionRun.respond === undefined) {
+        return null;
+    }
+
     if (!canApprovePermissions && permission.status === 'pending') {
         const summary = formatPermissionRequestSummary({ toolName, toolInput });
         const disabledMessage =
-            disabledReason === 'public'
-                ? t('session.sharing.permissionApprovalsDisabledPublic')
-                : disabledReason === 'readOnly'
-                    ? t('session.sharing.permissionApprovalsDisabledReadOnly')
-                    : t('session.sharing.permissionApprovalsDisabledNotGranted');
+            resolvePermissionDisabledMessage(disabledReason);
         return (
             <View style={{ marginTop: 8, paddingHorizontal: 12, paddingBottom: 12 }}>
                 <View style={{
@@ -355,6 +382,7 @@ export const PermissionFooter: React.FC<PermissionFooterProps> = ({
         setLoading: (loading: boolean) => void,
         operation: () => Promise<void>,
     ) => {
+        if (!canApprovePermissions || (executionRun === undefined && actions === null)) return;
         if (isSamePermissionRequest(permissionActionInFlight.current?.requestIdentity ?? null, requestIdentity)) {
             return;
         }
@@ -405,10 +433,14 @@ export const PermissionFooter: React.FC<PermissionFooterProps> = ({
     };
 
     const handleApprove = async () => {
-        if (permission.status !== 'pending' || loadingButton !== null || loadingAllEdits || loadingForSession) return;
+        if (permission.status !== 'pending' || loadingButton !== null || loadingAllEdits || loadingForSession || executionRunAnswerPending) return;
 
         await runPermissionAction('approve', (loading) => setLoadingButton(loading ? 'allow' : null), async () => {
-            await sessionAllow(sessionId, permission.id, undefined, undefined, undefined, undefined, projectedTurnId, ...(serverId !== undefined ? [{ serverId }] as const : [] as const));
+            if (executionRun !== undefined) {
+                await executionRun.respond?.({ requestId: permission.id, approved: true });
+                return;
+            }
+            await answerThroughSession('allowOnce');
         });
     };
 
@@ -416,20 +448,13 @@ export const PermissionFooter: React.FC<PermissionFooterProps> = ({
         if (permission.status !== 'pending' || loadingButton !== null || loadingAllEdits || loadingForSession) return;
 
         await runPermissionAction('approve_all_edits', setLoadingAllEdits, async () => {
-            if (shouldUsePermissionUpdates) {
-                await sessionAllowWithPermissionUpdates(sessionId, permission.id, {
-                    mode: 'acceptEdits',
+            await actions?.respondToPermission({
+                id: permission.id, approved: true, mode: 'acceptEdits',
+                ...(projectedTurnId !== undefined ? { turnId: projectedTurnId } : {}),
+                ...(shouldUsePermissionUpdates ? {
                     updatedPermissions: [{ type: 'setMode', mode: 'acceptEdits', destination: 'session' }],
-                    turnId: projectedTurnId,
-                    ...(serverId !== undefined ? { serverId } : {}),
-                });
-            } else {
-                await sessionAllow(sessionId, permission.id, 'acceptEdits', undefined, undefined, undefined, projectedTurnId, ...(serverId !== undefined ? [{ serverId }] as const : [] as const));
-            }
-            // Update the session permission mode to 'acceptEdits' for future permissions
-            if (serverId === undefined || areServerProfileIdentifiersEquivalent(serverId, getActiveServerSnapshot().serverId)) {
-                storage.getState().updateSessionPermissionMode(sessionId, 'acceptEdits');
-            }
+                } : {}),
+            });
         });
     };
 
@@ -437,23 +462,7 @@ export const PermissionFooter: React.FC<PermissionFooterProps> = ({
         if (permission.status !== 'pending' || loadingButton !== null || loadingAllEdits || loadingForSession || loadingForSessionPrefix || !toolName) return;
 
         await runPermissionAction('approve_for_session', setLoadingForSession, async () => {
-            let toolIdentifier = toolName;
-            if (shouldUsePermissionUpdates) {
-                const parsed = parseParenIdentifier(toolIdentifier);
-                const rules = [
-                    parsed
-                        ? { toolName: parsed.name, ...(parsed.spec ? { ruleContent: parsed.spec } : {}) }
-                        : { toolName: toolIdentifier },
-                ];
-                await sessionAllowWithPermissionUpdates(sessionId, permission.id, {
-                    allowedTools: [toolIdentifier],
-                    updatedPermissions: [{ type: 'addRules', rules, behavior: 'allow', destination: 'session' }],
-                    turnId: projectedTurnId,
-                    ...(serverId !== undefined ? { serverId } : {}),
-                });
-            } else {
-                await sessionAllow(sessionId, permission.id, undefined, [toolIdentifier], undefined, undefined, projectedTurnId, ...(serverId !== undefined ? [{ serverId }] as const : [] as const));
-            }
+            await answerThroughSession('allowForSession');
         });
     };
 
@@ -485,14 +494,14 @@ export const PermissionFooter: React.FC<PermissionFooterProps> = ({
                         ? { toolName: parsed.name, ...(parsed.spec ? { ruleContent: parsed.spec } : {}) }
                         : { toolName: toolIdentifier },
                 ];
-                await sessionAllowWithPermissionUpdates(sessionId, permission.id, {
+                await actions?.respondToPermission({
+                    id: permission.id, approved: true,
                     allowedTools: [toolIdentifier],
                     updatedPermissions: [{ type: 'addRules', rules, behavior: 'allow', destination: 'session' }],
-                    turnId: projectedTurnId,
-                    ...(serverId !== undefined ? { serverId } : {}),
+                    ...(projectedTurnId !== undefined ? { turnId: projectedTurnId } : {}),
                 });
             } else {
-                await sessionAllow(sessionId, permission.id, undefined, [toolIdentifier], undefined, undefined, projectedTurnId, ...(serverId !== undefined ? [{ serverId }] as const : [] as const));
+                await actions?.respondToPermission({ id: permission.id, approved: true, allowedTools: [toolIdentifier], ...(projectedTurnId !== undefined ? { turnId: projectedTurnId } : {}) });
             }
         });
     };
@@ -517,23 +526,27 @@ export const PermissionFooter: React.FC<PermissionFooterProps> = ({
                         ? { toolName: parsed.name, ...(parsed.spec ? { ruleContent: parsed.spec } : {}) }
                         : { toolName: toolIdentifier },
                 ];
-                await sessionAllowWithPermissionUpdates(sessionId, permission.id, {
+                await actions?.respondToPermission({
+                    id: permission.id, approved: true,
                     allowedTools: [toolIdentifier],
                     updatedPermissions: [{ type: 'addRules', rules, behavior: 'allow', destination: 'session' }],
-                    turnId: projectedTurnId,
-                    ...(serverId !== undefined ? { serverId } : {}),
+                    ...(projectedTurnId !== undefined ? { turnId: projectedTurnId } : {}),
                 });
             } else {
-                await sessionAllow(sessionId, permission.id, undefined, [toolIdentifier], undefined, undefined, projectedTurnId, ...(serverId !== undefined ? [{ serverId }] as const : [] as const));
+                await actions?.respondToPermission({ id: permission.id, approved: true, allowedTools: [toolIdentifier], ...(projectedTurnId !== undefined ? { turnId: projectedTurnId } : {}) });
             }
         });
     };
 
     const handleDeny = async () => {
-        if (permission.status !== 'pending' || loadingButton !== null || loadingAllEdits || loadingForSession) return;
+        if (permission.status !== 'pending' || loadingButton !== null || loadingAllEdits || loadingForSession || executionRunAnswerPending) return;
 
         await runPermissionAction('deny', (loading) => setLoadingButton(loading ? 'deny' : null), async () => {
-            await sessionDeny(sessionId, permission.id, undefined, undefined, 'denied', undefined, projectedTurnId, ...(serverId !== undefined ? [{ serverId }] as const : [] as const));
+            if (executionRun !== undefined) {
+                await executionRun.respond?.({ requestId: permission.id, approved: false });
+                return;
+            }
+            await answerThroughSession('deny');
         });
     };
 
@@ -541,13 +554,7 @@ export const PermissionFooter: React.FC<PermissionFooterProps> = ({
         if (permission.status !== 'pending' || loadingButton !== null || loadingAllEdits || loadingForSession) return;
 
         await runPermissionAction('stop', (loading) => setLoadingButton(loading ? 'abort' : null), async () => {
-            await sessionDeny(sessionId, permission.id, undefined, undefined, 'abort', undefined, projectedTurnId, ...(serverId !== undefined ? [{ serverId }] as const : [] as const));
-            // Denying a single tool call is not always enough to stop the agent from continuing.
-            // Also abort the current session run so the agent stops and waits for the user.
-            await sessionAbort(sessionId, ...(serverId !== undefined ? [{ serverId }] as const : [] as const));
-            if (shouldForceReadOnlyAfterStop && (serverId === undefined || areServerProfileIdentifiersEquivalent(serverId, getActiveServerSnapshot().serverId))) {
-                storage.getState().updateSessionPermissionMode(sessionId, 'read-only');
-            }
+            await actions?.respondToPermission({ id: permission.id, approved: false, decision: 'abort', ...(projectedTurnId !== undefined ? { turnId: projectedTurnId } : {}) });
         });
     };
     
@@ -555,7 +562,7 @@ export const PermissionFooter: React.FC<PermissionFooterProps> = ({
         if (permission.status !== 'pending' || loadingButton !== null || loadingForSession || loadingExecPolicy) return;
         
         await runPermissionAction('approve', (loading) => setLoadingButton(loading ? 'allow' : null), async () => {
-            await sessionAllow(sessionId, permission.id, undefined, undefined, 'approved', undefined, projectedTurnId, ...(serverId !== undefined ? [{ serverId }] as const : [] as const));
+            await answerThroughSession('allowOnce');
         });
     };
     
@@ -563,7 +570,7 @@ export const PermissionFooter: React.FC<PermissionFooterProps> = ({
         if (permission.status !== 'pending' || loadingButton !== null || loadingForSession || loadingExecPolicy) return;
         
         await runPermissionAction('approve_for_session', setLoadingForSession, async () => {
-            await sessionAllow(sessionId, permission.id, undefined, undefined, 'approved_for_session', undefined, projectedTurnId, ...(serverId !== undefined ? [{ serverId }] as const : [] as const));
+            await answerThroughSession('allowForSession');
         });
     };
 
@@ -571,16 +578,11 @@ export const PermissionFooter: React.FC<PermissionFooterProps> = ({
         if (permission.status !== 'pending' || loadingButton !== null || loadingForSession || loadingExecPolicy || !canApproveExecPolicy) return;
 
         await runPermissionAction('approve_execpolicy', setLoadingExecPolicy, async () => {
-            await sessionAllow(
-                sessionId,
-                permission.id,
-                undefined,
-                undefined,
-                'approved_execpolicy_amendment',
-                { command: execPolicyCommand },
-                projectedTurnId,
-                ...(serverId !== undefined ? [{ serverId }] as const : [] as const),
-            );
+            await actions?.respondToPermission({
+                id: permission.id, approved: true, decision: 'approved_execpolicy_amendment',
+                execPolicyAmendment: { command: execPolicyCommand },
+                ...(projectedTurnId !== undefined ? { turnId: projectedTurnId } : {}),
+            });
         });
     };
     
@@ -590,7 +592,7 @@ export const PermissionFooter: React.FC<PermissionFooterProps> = ({
         if (permission.status !== 'pending' || loadingButton !== null || loadingAllEdits || loadingForSession || loadingExecPolicy) return;
         
         await runPermissionAction('stop', (loading) => setLoadingButton(loading ? 'abort' : null), async () => {
-            await sessionDeny(sessionId, permission.id, undefined, undefined, 'denied', undefined, projectedTurnId, ...(serverId !== undefined ? [{ serverId }] as const : [] as const));
+            await actions?.respondToPermission({ id: permission.id, approved: false, decision: 'denied', ...(projectedTurnId !== undefined ? { turnId: projectedTurnId } : {}) });
         });
     };
 
@@ -747,6 +749,63 @@ export const PermissionFooter: React.FC<PermissionFooterProps> = ({
             </Text>
         </View>
     ) : null;
+
+    if (isApproved && permission.decisionActor?.kind === 'approvalReviewer') {
+        return (
+            <View style={[styles.container, embedded ? styles.containerEmbedded : styles.containerStandalone]}>
+                <Text testID="permission-footer.approvalReviewer">{t('roles.delegation.approvedByReviewer')}</Text>
+            </View>
+        );
+    }
+
+    // An Execution Run settles a permission with one Boolean decision; the
+    // Session-only grants, exec-policy amendments and stop have no equivalent
+    // there, so only the neutral pair is offered.
+    if (executionRun !== undefined) {
+        const actionsDisabled = !isPending || loadingButton !== null || executionRunAnswerPending;
+        const decisions = [
+            { key: 'allow', onPress: handleApprove, label: t('common.yes'), pendingStyle: styles.buttonTextAllow, spinnerColor: styles.loadingIndicatorAllow.color },
+            { key: 'deny', onPress: handleDeny, label: t('common.no'), pendingStyle: styles.buttonTextDeny, spinnerColor: styles.loadingIndicatorDeny.color },
+        ] as const;
+        return (
+            <View style={[styles.container, embedded ? styles.containerEmbedded : styles.containerStandalone]}>
+                <View style={styles.buttonContainer}>
+                    {decisions.map((decision) => (
+                        <TouchableOpacity
+                            key={decision.key}
+                            testID={`permission-footer.${decision.key}`}
+                            accessibilityRole="button"
+                            accessibilityState={{
+                                disabled: actionsDisabled,
+                                busy: loadingButton === decision.key || executionRunAnswerPending,
+                            }}
+                            style={[styles.button, minimumInteractiveTargetStyle, alignedButtonStyle]}
+                            onPress={decision.onPress}
+                            disabled={actionsDisabled}
+                            activeOpacity={isPending ? 0.7 : 1}
+                        >
+                            {loadingButton === decision.key && isPending ? (
+                                <View style={[styles.buttonContent, { width: 40, height: 20, justifyContent: 'center' }]}>
+                                    <ActivitySpinner size={Platform.OS === 'ios' ? 'small' : 14} color={decision.spinnerColor} />
+                                </View>
+                            ) : (
+                                <View style={styles.buttonContent}>
+                                    <Text
+                                        style={[styles.buttonText, isPending && decision.pendingStyle]}
+                                        numberOfLines={1}
+                                        ellipsizeMode="tail"
+                                    >
+                                        {decision.label}
+                                    </Text>
+                                </View>
+                            )}
+                        </TouchableOpacity>
+                    ))}
+                </View>
+                {actionFailureNode}
+            </View>
+        );
+    }
 
     // Do not borrow a bundled Agent's approval semantics when the current
     // Agent did not publish a recognized prompt protocol. A single explicit
@@ -1103,7 +1162,7 @@ export const PermissionFooter: React.FC<PermissionFooterProps> = ({
                 )}
 
                 {/* Allow for session button - only show for non-edit, non-exit-plan tools */}
-                {toolName && toolName !== 'Edit' && toolName !== 'MultiEdit' && toolName !== 'Write' && toolName !== 'NotebookEdit' && toolName !== 'exit_plan_mode' && toolName !== 'ExitPlanMode' && (
+                {supportsSessionPermissionRule(toolName) && (
                     <TouchableOpacity
                         accessibilityRole="button"
                         accessibilityState={{

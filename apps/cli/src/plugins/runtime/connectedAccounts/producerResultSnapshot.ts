@@ -1,6 +1,7 @@
 import {
     PluginDiagnosticDataV1Schema,
     ConnectedServiceQuotaRecoveryCreditConsumeReceiptV1Schema,
+    ProviderAccountSubscriptionV1Schema,
 } from '@happier-dev/protocol';
 import type {
     ConnectedAccountHealthResult as PluginConnectedAccountHealthResult,
@@ -452,7 +453,7 @@ function snapshotQuotaResult(
     const snapshot = cloneStrictJsonResult(raw, 'quota');
     const record = readStrictConnectedAccountProducerRecord(
         snapshot,
-        ['observedAtMs', 'limits'],
+        ['observedAtMs', 'limits', 'subscription'],
         ['observedAtMs', 'limits'],
     );
     if (
@@ -464,6 +465,10 @@ function snapshotQuotaResult(
     ) {
         return null;
     }
+    const subscription = record.subscription === undefined
+        ? undefined
+        : ProviderAccountSubscriptionV1Schema.safeParse(record.subscription);
+    if (subscription && !subscription.success) return null;
     const ids = new Set<string>();
     const limits: Array<Readonly<{
         id: string;
@@ -522,6 +527,12 @@ function snapshotQuotaResult(
     return Object.freeze({
         observedAtMs: Number(record.observedAtMs),
         limits: Object.freeze(limits),
+        ...(subscription?.success ? {
+            subscription: clonePluginPlainData(subscription.data, {
+                path: 'Connected Account quota subscription',
+                invalid: () => invalidResult('quota'),
+            }),
+        } : {}),
     });
 }
 

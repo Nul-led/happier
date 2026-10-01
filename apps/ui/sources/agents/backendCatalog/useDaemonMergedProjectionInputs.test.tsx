@@ -8,7 +8,7 @@ const projectionState = vi.hoisted(() => ({
     revision: 0,
     listener: null as (() => void) | null,
     generation: 1,
-    entryIsFresh: false,
+    cachedEntryReusable: false,
     cachedEntry: null as ReturnType<typeof readyEntry> | {
         kind: 'error';
         fetchedAtMs: number;
@@ -16,7 +16,6 @@ const projectionState = vi.hoisted(() => ({
     } | null,
 }));
 const loadDaemonMergedProjectionCacheEntryMock = vi.hoisted(() => vi.fn());
-const retainMountedTargetProjectionCacheScopeMock = vi.hoisted(() => vi.fn());
 const activeAccountLifetime = vi.hoisted(() => ({
     value: null as Readonly<{
         scope: Readonly<{ serverId: string; accountId: string }>;
@@ -42,10 +41,9 @@ vi.mock('@/sync/ops/machineContributionRegistryProjection', () => ({
 }));
 
 vi.mock('./loadDaemonMergedProjectionInputs', () => ({
-    entryIsFresh: () => projectionState.entryIsFresh,
+    readReusableDaemonMergedProjectionCacheEntry: () => projectionState.cachedEntryReusable ? projectionState.cachedEntry : null,
     readCachedDaemonMergedProjectionCacheEntry: () => projectionState.cachedEntry,
     loadDaemonMergedProjectionCacheEntry: loadDaemonMergedProjectionCacheEntryMock,
-    retainMountedTargetProjectionCacheScope: retainMountedTargetProjectionCacheScopeMock,
 }));
 
 vi.mock('@/sync/domains/scope/activeServerAccountScope', () => ({
@@ -61,6 +59,7 @@ vi.mock('@/sync/domains/scope/useServerCredentialAccountScopes', () => ({
             return new Map([[serverId, {
                 serverId,
                 accountId: lifetime.scope.accountId,
+                scope: lifetime.scope,
                 revision: 1,
                 isCurrent: lifetime.isCurrent,
                 onRetire: lifetime.onRetire,
@@ -104,12 +103,10 @@ describe('useDaemonMergedProjectionInputs', () => {
         projectionState.revision = 0;
         projectionState.listener = null;
         projectionState.generation = 1;
-        projectionState.entryIsFresh = false;
+        projectionState.cachedEntryReusable = false;
         projectionState.cachedEntry = null;
         loadDaemonMergedProjectionCacheEntryMock.mockReset();
         loadDaemonMergedProjectionCacheEntryMock.mockImplementation(async () => readyEntry(projectionState.generation));
-        retainMountedTargetProjectionCacheScopeMock.mockReset();
-        retainMountedTargetProjectionCacheScopeMock.mockImplementation(() => () => {});
         activeAccountLifetime.value = createAccountLifetime('account-a');
     });
 
@@ -177,6 +174,22 @@ describe('useDaemonMergedProjectionInputs', () => {
         });
     });
 
+    it('serves only the cached projection and never asks the machine when loading is off', async () => {
+        projectionState.cachedEntry = readyEntry(4);
+        projectionState.cachedEntryReusable = true;
+
+        const { useDaemonMergedProjectionInputs } = await import('./useDaemonMergedProjectionInputs');
+        const hook = await renderHook(() => useDaemonMergedProjectionInputs({
+            machineId: 'machine-1',
+            serverId: 'server-1',
+            load: false,
+        }));
+        await flushHookEffects({ cycles: 3, turns: 2 });
+
+        expect(hook.getCurrent()).toMatchObject({ phase: 'ready', inputs: { pluginProjectionV2: { generation: 4 } } });
+        expect(loadDaemonMergedProjectionCacheEntryMock).not.toHaveBeenCalled();
+    });
+
     it('restores inert stale metadata from an error cache entry after remount', async () => {
         projectionState.cachedEntry = {
             kind: 'error',
@@ -201,7 +214,6 @@ describe('useDaemonMergedProjectionInputs', () => {
     });
 
     it('revalidates instead of serving a fresh cached failure as authoritative', async () => {
-        projectionState.entryIsFresh = true;
         projectionState.cachedEntry = {
             kind: 'error',
             fetchedAtMs: Date.now(),
@@ -229,6 +241,26 @@ describe('useDaemonMergedProjectionInputs', () => {
                 pluginProjectionV2: { generation: 1 },
             },
         });
+    });
+
+    it('does not publish a fresh cached ready entry from the previous revision on first mount', async () => {
+        projectionState.revision = 2;
+        projectionState.cachedEntry = readyEntry(1);
+        projectionState.cachedEntryReusable = false;
+        const pending = createDeferred<ReturnType<typeof readyEntry>>();
+        loadDaemonMergedProjectionCacheEntryMock.mockImplementationOnce(async () => pending.promise);
+
+        const { useDaemonMergedProjectionInputs } = await import('./useDaemonMergedProjectionInputs');
+        const hook = await renderHook(() => useDaemonMergedProjectionInputs({
+            machineId: 'machine-1',
+            serverId: 'server-1',
+        }));
+
+        expect(hook.getCurrent().phase).toBe('loading');
+        expect(loadDaemonMergedProjectionCacheEntryMock).toHaveBeenCalledTimes(1);
+        pending.resolve(readyEntry(2));
+        await flushHookEffects({ cycles: 3, turns: 2 });
+        expect(hook.getCurrent()).toMatchObject({ phase: 'ready', inputs: { pluginProjectionV2: { generation: 2 } } });
     });
 
     it('does not expose the previous machine projection while a newly selected machine loads', async () => {
@@ -328,117 +360,5 @@ describe('useDaemonMergedProjectionInputs', () => {
 
         replacementLoad.resolve(readyEntry(2));
         await flushHookEffects({ cycles: 3, turns: 2 });
-    });
-
-    it('releases a target-scoped projection cache entry when its mounted host unmounts', async () => {
-        const release = vi.fn();
-        retainMountedTargetProjectionCacheScopeMock.mockReturnValueOnce(release);
-        const mountedTarget = {
-            pluginId: 'acme.preview',
-            immutableGenerationId: 'target-generation-a',
-        } as const;
-        const { useDaemonMergedProjectionInputs } = await import('./useDaemonMergedProjectionInputs');
-        const hook = await renderHook(() => useDaemonMergedProjectionInputs({
-            machineId: 'machine-1',
-            serverId: 'server-1',
-            mountedTarget,
-        }));
-
-        expect(retainMountedTargetProjectionCacheScopeMock).toHaveBeenCalledWith(expect.objectContaining({
-            machineId: 'machine-1',
-            serverId: 'server-1',
-            mountedTarget,
-        }));
-
-        await hook.unmount();
-        expect(release).toHaveBeenCalledTimes(1);
-    });
-
-    it('fences a target cache lifecycle to the captured Account lifetime on an Account replacement', async () => {
-        const mountedTarget = {
-            pluginId: 'acme.preview',
-            immutableGenerationId: 'target-generation-a',
-        } as const;
-        const accountA = createAccountLifetime('account-a');
-        const accountB = createAccountLifetime('account-b');
-        activeAccountLifetime.value = accountA;
-        const { useDaemonMergedProjectionInputs } = await import('./useDaemonMergedProjectionInputs');
-        const hook = await renderHook(
-            (renderRevision: number) => useDaemonMergedProjectionInputs({
-                machineId: 'machine-1',
-                serverId: 'server-1',
-                mountedTarget,
-                refreshKey: renderRevision,
-            }),
-            { initialProps: 0 },
-        );
-        await flushHookEffects({ cycles: 3, turns: 2 });
-
-        expect(retainMountedTargetProjectionCacheScopeMock).toHaveBeenLastCalledWith(expect.objectContaining({
-            accountLifetime: accountA,
-        }));
-        expect(loadDaemonMergedProjectionCacheEntryMock).toHaveBeenLastCalledWith(expect.objectContaining({
-            accountLifetime: accountA,
-        }));
-
-        activeAccountLifetime.value = accountB;
-        await hook.rerender(1);
-        await flushHookEffects({ cycles: 3, turns: 2 });
-
-        expect(retainMountedTargetProjectionCacheScopeMock).toHaveBeenLastCalledWith(expect.objectContaining({
-            accountLifetime: accountB,
-        }));
-        expect(loadDaemonMergedProjectionCacheEntryMock).toHaveBeenLastCalledWith(expect.objectContaining({
-            accountLifetime: accountB,
-        }));
-    });
-
-    it('does not render Account A target inputs while Account B loads the same target', async () => {
-        const mountedTarget = {
-            pluginId: 'acme.preview',
-            immutableGenerationId: 'target-generation-a',
-        } as const;
-        const accountA = createAccountLifetime('account-a');
-        const accountB = createAccountLifetime('account-b');
-        const accountBLoad = createDeferred<ReturnType<typeof readyEntry>>();
-        activeAccountLifetime.value = accountA;
-        loadDaemonMergedProjectionCacheEntryMock.mockImplementation(async (params: Readonly<{
-            accountLifetime?: unknown;
-        }>) => {
-            if (params.accountLifetime === accountB) return await accountBLoad.promise;
-            return readyEntry(1);
-        });
-
-        const { useDaemonMergedProjectionInputs } = await import('./useDaemonMergedProjectionInputs');
-        const hook = await renderHook(
-            (renderRevision: number) => useDaemonMergedProjectionInputs({
-                machineId: 'machine-1',
-                serverId: 'server-1',
-                mountedTarget,
-                refreshKey: renderRevision,
-                retainInputsAcrossScopeChange: true,
-            }),
-            { initialProps: 0 },
-        );
-        await flushHookEffects({ cycles: 3, turns: 2 });
-        expect(hook.getCurrent()).toMatchObject({
-            phase: 'ready',
-            inputs: { pluginProjectionV2: { generation: 1 } },
-        });
-
-        activeAccountLifetime.value = accountB;
-        await hook.rerender(1);
-
-        expect(hook.getCurrent()).toEqual({
-            phase: 'loading',
-            inputs: null,
-        });
-
-        accountBLoad.resolve(readyEntry(2));
-        await flushHookEffects({ cycles: 3, turns: 2 });
-        expect(hook.getCurrent()).toMatchObject({
-            phase: 'ready',
-            inputs: { pluginProjectionV2: { generation: 2 } },
-        });
     });
 });

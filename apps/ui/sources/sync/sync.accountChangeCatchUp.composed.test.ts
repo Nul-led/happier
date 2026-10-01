@@ -1,16 +1,26 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { act } from 'react-test-renderer';
 import {
     CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION,
+    projectLegacySessionAccessCapabilitiesV1,
     type NormalizedPluginCollectionUiQueryDescriptorV1,
     type PluginCollectionUiQueryRequestV1,
 } from '@happier-dev/protocol';
 import {
     PluginAvailabilityActionHttpPathsV1,
+    PluginAvailabilityIntentReadActionOutputV1Schema,
 } from '@happier-dev/protocol/plugins/availability';
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
 import type { ChangesCursorScope } from '@/sync/domains/state/persistence';
+import { createDeferred } from '@/dev/testkit/hooks/createDeferred';
+import { renderHook } from '@/dev/testkit/hooks/renderHook';
 
-import { installLocalStorageMock, type LocalStorageMockHandle } from '@/auth/storage/tokenStorage.web.testHelpers';
+import {
+    installLocalStorageMock,
+    installWebLockManagerMock,
+    type LocalStorageMockHandle,
+    type WebLockManagerMockHandle,
+} from '@/auth/storage/tokenStorage.web.testHelpers';
 
 const ACCOUNT_ID = 'account-a';
 const ACCOUNT_TOKEN = 'hdr.eyJzdWIiOiJhY2NvdW50LWEifQ.sig';
@@ -130,6 +140,9 @@ vi.mock('@/sync/api/session/apiSocket', () => ({
         onConnectionStateChange: vi.fn(() => () => {}),
         connect: vi.fn(),
         disconnect: vi.fn(),
+        invalidateRequests: vi.fn(),
+        disposeScopedAuthority: vi.fn(),
+        getSessionScopedTarget: vi.fn(() => null),
         initialize: vi.fn(),
         request: apiRequest,
     },
@@ -143,10 +156,15 @@ vi.mock('@/sync/runtime/connectivity/serverReachabilityRuntimeFetch', () => ({
 }));
 
 const fetchChanges = vi.hoisted(() => vi.fn());
-vi.mock('./api/session/apiChanges', () => ({
-    fetchChanges,
-    fetchCurrentChangesCursor: vi.fn(async () => ({ status: 'ok' as const, cursor: '0' })),
-}));
+vi.mock('./api/session/apiChanges', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('./api/session/apiChanges')>();
+    return {
+        fetchChanges: (params: Parameters<typeof actual.fetchChanges>[0]) => params.request ? actual.fetchChanges(params) : fetchChanges(params),
+        fetchCurrentChangesCursor: (params: Parameters<typeof actual.fetchCurrentChangesCursor>[0]) => params.request
+            ? actual.fetchCurrentChangesCursor(params)
+            : Promise.resolve({ status: 'ok' as const, cursor: '0' }),
+    };
+});
 
 vi.mock('@/log', () => ({
     log: { log: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -234,7 +252,7 @@ async function prepareAccountChangeWakeSchedulingHarness(): Promise<SyncAccountC
     const { storage } = await import('./domains/state/storage');
     const { sync } = await import('./sync');
 
-    upsertAndActivateServer({ serverUrl: 'http://localhost:53288', scope: 'tab' });
+    await upsertAndActivateServer({ serverUrl: 'http://localhost:53288', scope: 'tab' });
     const serverId = String(getActiveServerSnapshot().serverId ?? '').trim();
     storage.getState().activateProfileScope({ serverId, accountId: ACCOUNT_ID });
     storage.setState((state) => ({
@@ -247,6 +265,12 @@ async function prepareAccountChangeWakeSchedulingHarness(): Promise<SyncAccountC
     harness.serverID = ACCOUNT_ID;
     harness.isForeground = true;
     harness.resumeInFlight = null;
+    // The socket owner only handles wakes for the Home its transport is applied to.
+    (harness as unknown as { appliedServerTarget: unknown }).appliedServerTarget = {
+        serverId,
+        serverUrl: 'http://localhost:53288',
+        generation: 1,
+    };
     return harness;
 }
 
@@ -266,30 +290,135 @@ function accountChangeWake(id: string): Readonly<{
 
 describe('sync AccountChange catch-up projection', () => {
     let localStorage: LocalStorageMockHandle | null = null;
+    let webLocks: WebLockManagerMockHandle | null = null;
 
     beforeEach(() => {
         vi.resetModules();
         kvStore.clear();
         localStorage = installLocalStorageMock();
+        webLocks = installWebLockManagerMock();
         apiRequest.mockReset();
         runtimeFetchWithServerReachability.mockReset();
         fetchChanges.mockReset();
     });
 
     afterEach(() => {
+        vi.unstubAllGlobals();
         localStorage?.restore();
         localStorage = null;
+        webLocks?.restore();
+        webLocks = null;
         vi.resetModules();
         vi.clearAllMocks();
         vi.unstubAllGlobals();
     });
 
+    it('boots and renews the embed session with only its explicit child credential and session corridor', async () => {
+        // The browser realm is a genuine boundary: capture its route before importing owners.
+        vi.stubGlobal('window', { location: { pathname: '/embed/session/embed' }, localStorage: globalThis.localStorage,
+            addEventListener: vi.fn(), removeEventListener: vi.fn() });
+        const { TokenStorage } = await import('@/auth/storage/tokenStorage');
+        const storedCredentialRead = vi.spyOn(TokenStorage, 'getCredentials');
+        const scopedCredentialRead = vi.spyOn(TokenStorage, 'getCredentialsForServerUrl');
+        const { sync } = await import('./sync');
+        const paths: string[] = [];
+        const changesAfter: string[] = [];
+        let expectedToken = 'hap_v1_child';
+        let accessLevel: 'view' | 'edit' = 'view';
+        let credentialRejected = false;
+        const onCredentialRejected = vi.fn();
+        vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+            const url = new URL(String(input));
+            paths.push(url.pathname);
+            expect(new Headers(init?.headers).get('authorization')).toBe(`Bearer ${expectedToken}`);
+            if (url.pathname === '/v1/features/authenticated') return currentAccountStoredContentCompatibilityFeaturesResponse();
+            if (url.pathname === '/v2/cursor') return credentialRejected
+                ? new Response(null, { status: 401 }) : jsonResponse({ cursor: 8 });
+            if (url.pathname === '/v2/changes') {
+                expect(url.searchParams.get('sessionId')).toBe('embed');
+                changesAfter.push(url.searchParams.get('after') ?? '');
+                return jsonResponse({ changes: [], nextCursor: 9 });
+            }
+            if (url.pathname === '/v2/sessions/embed') return jsonResponse({ session: {
+                id: 'embed', createdAt: 1, updatedAt: 1, seq: 0, active: false, activeAt: 0,
+                encryptionMode: 'plain', dataEncryptionKey: null, metadataLayoutVersion: 0,
+                metadataVersion: 1, metadata: JSON.stringify({ path: '/hidden', host: 'hidden', name: 'Embedded' }),
+                agentStateVersion: 0, agentState: null, share: null,
+                responsibleAccountId: null, responsibleAccount: null,
+                effectiveAccess: { v: 1, level: accessLevel, sources: [],
+                    capabilities: projectLegacySessionAccessCapabilitiesV1({ level: accessLevel }) },
+            } });
+            if (url.pathname === '/v1/sessions/embed/turns') return jsonResponse({ v: 1, sessionId: 'embed', turns: [] });
+            if (url.pathname === '/v1/sessions/embed/messages') return jsonResponse({ messages: [], nextAfterSeq: null });
+            if (url.pathname === '/v2/sessions/embed/pending') return jsonResponse({ pending: [], pendingVersion: 0 });
+            throw new Error(`Account request escaped embed: ${url.pathname}`);
+        }));
+        await sync.create({ token: 'hap_v1_child' }, null, undefined, {
+            scope: { kind: 'embedSession', sessionId: 'embed' }, accountId: ACCOUNT_ID,
+            endpointUrl: 'http://localhost:53288', isCurrent: () => true, onCredentialRejected,
+        });
+        expect(paths).toContain('/v2/sessions/embed');
+        expect(paths).toContain('/v1/sessions/embed/messages');
+        expect(paths).toContain('/v2/sessions/embed/pending');
+        expect(paths.every((path) => path.includes('/embed') || path === '/v2/cursor' || path === '/v1/features/authenticated')).toBe(true);
+        expect(storedCredentialRead).not.toHaveBeenCalled();
+        expect(scopedCredentialRead).not.toHaveBeenCalled();
+        expect(apiRequest).not.toHaveBeenCalled();
+        expect(kvStore.size).toBe(0);
+        const { apiSocket } = await import('@/sync/api/session/apiSocket');
+        const state = (await import('@/sync/domains/state/storage')).storage;
+        const retainedTranscriptBeforeRenewal = state.getState().sessionMessages.embed;
+        const retainedTurnsBeforeRenewal = state.getState().sessions.embed?.sessionTurns;
+        const initialContext = sync.getEmbedSessionRequestContext();
+        paths.length = 0;
+        expectedToken = 'hap_v1_renewed';
+        accessLevel = 'edit';
+        await sync.create({ token: expectedToken }, null, undefined, {
+            scope: { kind: 'embedSession', sessionId: 'embed' }, accountId: ACCOUNT_ID,
+            endpointUrl: 'http://localhost:53288', isCurrent: () => true, onCredentialRejected,
+        });
+        expect(paths).toContain('/v2/sessions/embed');
+        expect(paths).toContain('/v2/changes');
+        expect(changesAfter).toEqual(['8']);
+        expect(paths).not.toContain('/v1/features/authenticated');
+        expect(paths).not.toContain('/v2/cursor');
+        expect(paths).not.toContain('/v1/sessions/embed/turns');
+        expect(paths).not.toContain('/v1/sessions/embed/messages');
+        expect(state.getState().sessionMessages.embed).toBe(retainedTranscriptBeforeRenewal);
+        expect(state.getState().sessions.embed?.sessionTurns).toBe(retainedTurnsBeforeRenewal);
+        expect(state.getState().sessions.embed?.access?.capabilities.submitAgentInput).toBe(true);
+        expect(vi.mocked(apiSocket.initialize).mock.calls.map(([configuration]) => configuration.token))
+            .toEqual(['hap_v1_child', 'hap_v1_renewed']);
+        await expect(initialContext!.request('/v2/sessions/embed')).rejects.toMatchObject({ name: 'StaleServerGenerationError' });
+        const onUpdate = vi.mocked(apiSocket.onMessage).mock.calls.find(([event]) => event === 'update')?.[1];
+        const before = (await import('@/sync/domains/state/storage')).storage.getState().sessions.embed?.access;
+        await onUpdate?.({ id: 'u', seq: 1, createdAt: 2, body: { t: 'update-session', id: 'embed',
+            access: { role: 'owner', capabilities: projectLegacySessionAccessCapabilitiesV1({ level: 'owner' }) } } }, { serverId: 'http://localhost:53288' });
+        expect((await import('@/sync/domains/state/storage')).storage.getState().sessions.embed?.access).toEqual(before);
+        const context = sync.getEmbedSessionRequestContext();
+        expect(context).not.toBeNull();
+        await expect(context!.request('/v2/sessions/another')).rejects.toThrow('outside the embed Session corridor');
+        credentialRejected = true;
+        expect((await context!.request('/v2/cursor')).status).toBe(401);
+        expect(onCredentialRejected).toHaveBeenCalledOnce();
+        const retainedSession = state.getState().sessions.embed;
+        const retainedTranscript = state.getState().sessionMessages.embed;
+        sync.disposeEmbedSession({ preserveSessionState: true });
+        expect(state.getState().sessions.embed).toBe(retainedSession);
+        expect(state.getState().sessionMessages.embed).toBe(retainedTranscript);
+        await expect(context!.request('/v2/sessions/embed')).rejects.toMatchObject({ name: 'StaleServerGenerationError' });
+    });
+
     it('projects one V3 AccountChange catch-up page through the existing Data, Settings, and Availability owners', async () => {
+        const availabilityRefresh = createDeferred<void>();
         let dataReadCount = 0;
         runtimeFetchWithServerReachability.mockImplementation(async ({ url }: { url: string }) => {
             const path = new URL(url).pathname;
             if (path === '/v1/features') {
                 return currentAccountStoredContentCompatibilityFeaturesResponse();
+            }
+            if (path === '/v1/account/saved-secrets/resources/materials') {
+                return jsonResponse({ resources: [] });
             }
             if (path === '/v1/plugins/data/ui-query') {
                 dataReadCount += 1;
@@ -299,6 +428,7 @@ describe('sync AccountChange catch-up projection', () => {
                 );
             }
             if (path === PluginAvailabilityActionHttpPathsV1['account.plugins.availability.materializations.read']) {
+                await availabilityRefresh.promise;
                 return availabilityMaterializationsResponse();
             }
             if (path === PluginAvailabilityActionHttpPathsV1['account.plugins.availability.intents.list']) {
@@ -381,9 +511,12 @@ describe('sync AccountChange catch-up projection', () => {
         const { sync } = await import('./sync');
         const syncHarness = sync as unknown as SyncAccountChangeCatchUpHarness;
 
-        upsertAndActivateServer({ serverUrl: 'http://localhost:53288', scope: 'tab' });
+        await upsertAndActivateServer({ serverUrl: 'http://localhost:53288', scope: 'tab' });
+        const { switchConnectionToActiveServer } = await import('./runtime/orchestration/connectionManager');
+        await switchConnectionToActiveServer();
         const serverId = String(getActiveServerSnapshot().serverId ?? '').trim();
         storage.getState().activateProfileScope({ serverId, accountId: ACCOUNT_ID });
+        await storage.getState().activateSettingsScope({ serverId, accountId: ACCOUNT_ID });
         storage.setState((state) => ({
             ...state,
             profile: { ...(state.profile ?? {}), id: ACCOUNT_ID },
@@ -404,6 +537,33 @@ describe('sync AccountChange catch-up projection', () => {
         syncHarness.changesCursor = '0';
         const cursorScope = syncHarness.getChangesCursorScope();
         expect(cursorScope).not.toBeNull();
+
+        const {
+            replacePluginAccountAvailabilityProjection,
+            useActivePluginAccountAvailabilityReader,
+        } = await import('./domains/plugins/availability/projection');
+        const unaffectedPluginId = 'example.unaffected';
+        replacePluginAccountAvailabilityProjection({
+            scope: { serverId, accountId: ACCOUNT_ID },
+            snapshot: {
+                availabilityCursor: 8,
+                intentReads: await Promise.all([AVAILABILITY_PLUGIN_ID, unaffectedPluginId].map(async (pluginId) => ({
+                    pluginId,
+                    response: PluginAvailabilityIntentReadActionOutputV1Schema.parse({
+                        ...await availabilityIntentResponse(pluginId).json(),
+                        availabilityCursor: 8,
+                    }),
+                }))),
+                materializations: [],
+                snapshots: [],
+            },
+        });
+        const availabilityHook = await renderHook(useActivePluginAccountAvailabilityReader);
+        const availabilityReader = availabilityHook.getCurrent();
+        expect(availabilityReader?.readMaterializations()).toMatchObject({
+            kind: 'available',
+            intentReads: [{ pluginId: AVAILABILITY_PLUGIN_ID }, { pluginId: unaffectedPluginId }],
+        });
 
         const pager = createActivePluginCollectionUiQueryPager({ descriptor, request: queryRequest });
         await pager.refresh();
@@ -434,11 +594,28 @@ describe('sync AccountChange catch-up projection', () => {
             });
         });
 
-        await expect(syncHarness.resumeViaChanges({ accountId: ACCOUNT_ID })).resolves.toMatchObject({
-            status: 'ok',
-        });
+        try {
+            await act(async () => {
+                await expect(syncHarness.resumeViaChanges({ accountId: ACCOUNT_ID })).resolves.toMatchObject({
+                    status: 'ok',
+                });
+            });
+            // A named X hint retires X before refresh, without withdrawing Y.
+            expect(availabilityReader?.readMaterializations()).toMatchObject({
+                kind: 'available',
+                intentReads: [{ pluginId: unaffectedPluginId }],
+            });
+        } finally {
+            availabilityRefresh.resolve();
+            await availabilityHook.unmount();
+        }
         await pagerRefreshed;
         await syncHarness.pluginAvailabilitySync.awaitQueue({ timeoutMs: 2_000 });
+        expect(availabilityReader?.readMaterializations()).toMatchObject({
+            kind: 'available',
+            availabilityCursor: 9,
+            intentReads: [{ pluginId: AVAILABILITY_PLUGIN_ID }],
+        });
 
         expect(syncHarness.changesCursor).toBe('9');
         expect(loadChangesCursor(cursorScope)).toBe('9');
@@ -497,7 +674,7 @@ describe('sync AccountChange catch-up projection', () => {
         const observedWakes: Array<{
             serverId: string;
             entityIds?: readonly string[];
-            sessionListQueryAffects?: boolean;
+            sessionListQueryAffects?: boolean | 'structural';
         }> = [];
         const dispose = subscribeHomeAccountChange((event) => observedWakes.push(event));
         const catchUp = harness.resumeViaChanges({ accountId: ACCOUNT_ID });
@@ -577,7 +754,6 @@ describe('sync AccountChange catch-up projection', () => {
     it('coalesces wakes received after a changes response into one trailing canonical catch-up', async () => {
         const harness = await prepareAccountChangeWakeSchedulingHarness();
         const { subscribeHomeAccountChange } = await import('./runtime/orchestration/homeAccountChange');
-        const { getActiveServerSnapshot } = await import('./domains/server/serverRuntime');
         const observedHomes: string[] = [];
         const disposeHomeAccountChanged = subscribeHomeAccountChange(({ serverId }) => observedHomes.push(serverId));
         const resumeUnit: ResumeSyncUnit = {
@@ -638,7 +814,35 @@ describe('sync AccountChange catch-up projection', () => {
         expect(rearmPendingOutbox).toHaveBeenCalledTimes(1);
         expect(catchUpCalls).toBe(1);
         expect(resumeUnit.invalidateCoalesced).toHaveBeenCalledTimes(2);
-        expect(observedBeforeResume).toContain(getActiveServerSnapshot().serverId);
+        expect(observedBeforeResume).toEqual([]);
+    });
+
+    it('publishes no content-free Home change for a focused-Home wake and asks for the exact page instead', async () => {
+        const harness = await prepareAccountChangeWakeSchedulingHarness();
+        const { subscribeHomeAccountChange } = await import('./runtime/orchestration/homeAccountChange');
+        const resumeUnit: ResumeSyncUnit = { invalidateCoalesced: vi.fn(), awaitQueue: vi.fn(async () => {}) };
+        harness.purchasesSync = resumeUnit;
+        harness.nativeUpdateSync = resumeUnit;
+        harness.sessionsSync = resumeUnit;
+        harness.machinesSync = resumeUnit;
+        vi.spyOn(harness, 'rearmPendingOutboxForActiveScope').mockResolvedValue(undefined);
+        vi.spyOn(harness, 'catchUpLoadedExternalSessionsOnResume').mockResolvedValue(undefined);
+        const resumeViaChanges = vi.spyOn(harness, 'resumeViaChanges').mockResolvedValue({
+            status: 'ok',
+            refreshedByCatchUp: { sessions: false, machines: false },
+        });
+        const observed: Array<Readonly<{ serverId: string; entityIds?: readonly string[] }>> = [];
+        const dispose = subscribeHomeAccountChange((event) => observed.push(event));
+
+        await harness.handleUpdate(accountChangeWake('account-change-focused'));
+        await vi.waitFor(() => expect(resumeViaChanges).toHaveBeenCalled());
+        await vi.waitFor(() => expect(harness.resumeInFlight).toBeNull());
+        dispose();
+
+        // A busy Account wakes about once a second; every Home projection with an entity filter
+        // (governance, eligibility, Teams) would treat a content-free event as "anything changed"
+        // and refetch. The focused Home's exact page is published by the change planner instead.
+        expect(observed).toEqual([]);
     });
 
     it('drops a queued AccountChange wake when its server/account lifetime resets', async () => {

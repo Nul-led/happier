@@ -252,8 +252,8 @@ describe('ensureVoiceConversationBindingResolution', () => {
                 agentId: 'opencode',
                 providerChat: {
                   status: 'configured',
-                  chat: { agentTargetKey: 'backend:opencode', providerConnectionId: 'provider-chat', modelId: 'chat' },
-                  commit: { agentTargetKey: 'backend:opencode', providerConnectionId: 'provider-chat', modelId: 'commit' },
+                  chat: { agentTargetKey: 'agent:happier.agent.opencode/opencode', providerConnectionId: 'provider-chat', modelId: 'chat' },
+                  commit: { agentTargetKey: 'agent:happier.agent.opencode/opencode', providerConnectionId: 'provider-chat', modelId: 'commit' },
                   configuration: { temperature: null },
                 },
               },

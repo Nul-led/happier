@@ -10,7 +10,7 @@ import {
 
 const serverStartDraft: SessionServerStartSpawnDraftV1 = {
     executionTarget: { serverId: 'server-1', machineId: 'machine-1' },
-    directory: '/workspace',
+    directory: { kind: 'path', path: '/workspace' },
     agentTarget: {
         kind: 'agent',
         identity: { pluginId: 'happier.agent.claude', localId: 'claude' },

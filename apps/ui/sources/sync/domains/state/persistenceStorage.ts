@@ -1,6 +1,23 @@
 import { MMKV } from 'react-native-mmkv';
+import { isEmbedWindowContext } from '@/embed/isEmbedWindowContext';
 
-let persistedStorage: MMKV | null = null;
+type PersistenceStorage = Pick<MMKV, 'set' | 'getString' | 'delete' | 'getAllKeys' | 'clearAll'>;
+
+let persistedStorage: PersistenceStorage | null = null;
+
+function createMemoryStorage(): PersistenceStorage {
+    const values = new Map<string, boolean | string | number | ArrayBuffer>();
+    return {
+        set: (key, value) => { values.set(key, value); },
+        getString: (key) => {
+            const value = values.get(key);
+            return typeof value === 'string' ? value : undefined;
+        },
+        delete: (key) => { values.delete(key); },
+        getAllKeys: () => Array.from(values.keys()),
+        clearAll: () => { values.clear(); },
+    };
+}
 
 function isWebRuntime(): boolean {
     return typeof window !== 'undefined' && typeof document !== 'undefined';
@@ -29,10 +46,19 @@ export function getPersistenceStorageId(): string {
     return buildScopedStorageId('default', isWebRuntime() ? null : readScopedStorageScopeFromEnv());
 }
 
-export function getPersistenceStorage(): MMKV {
+export function getPersistenceStorage(): PersistenceStorage {
     if (persistedStorage) return persistedStorage;
+    if (isEmbedWindowContext()) {
+        persistedStorage = createMemoryStorage();
+        return persistedStorage;
+    }
     // Keep storage-scope bootstrap local here to avoid import-cycle TDZ hazards during Sync initialization.
     const storageScope = isWebRuntime() ? null : readScopedStorageScopeFromEnv();
     persistedStorage = storageScope ? new MMKV({ id: getPersistenceStorageId() }) : new MMKV();
     return persistedStorage;
+}
+
+/** Hard embed retirement clears only this frame's already-created volatile adapter. */
+export function clearEmbedMemoryStorage(): void {
+    if (isEmbedWindowContext()) persistedStorage?.clearAll();
 }

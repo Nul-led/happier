@@ -11,6 +11,9 @@ export async function fetchSessionFollowSourceProjection(input: Readonly<{
   token: string;
   destinationSessionId: string;
   sourceSessionId: string;
+  edgeKind?: 'reports_to';
+  attachedAt?: number;
+  readMode?: 'incremental' | 'initial_current_snapshot';
   afterTranscriptSeq: number;
   observedTranscriptSeq: number;
   limit: number;
@@ -19,6 +22,8 @@ export async function fetchSessionFollowSourceProjection(input: Readonly<{
   const body = SessionFollowSourceProjectionRequestV1Schema.parse({
     v: 1,
     sourceSessionId: input.sourceSessionId,
+    ...(input.edgeKind ? { edgeKind: input.edgeKind, attachedAt: input.attachedAt } : {}),
+    ...(input.readMode ? { readMode: input.readMode } : {}),
     afterTranscriptSeq: input.afterTranscriptSeq,
     observedTranscriptSeq: input.observedTranscriptSeq,
     limit: input.limit,

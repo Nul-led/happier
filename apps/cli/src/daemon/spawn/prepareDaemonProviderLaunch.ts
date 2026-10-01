@@ -2,6 +2,7 @@ import { join } from 'node:path';
 
 import type {
     BackendTargetRefV2,
+    ArtifactSharingResourceV1,
     SessionModelSelectionV1,
     SessionProviderBindingMetadataV1,
 } from '@happier-dev/protocol';
@@ -63,6 +64,7 @@ export async function prepareDaemonProviderLaunch(input: Readonly<{
     resolveProvidersFeatureEnabled?: () => boolean | Promise<boolean>;
     resolveManagedPurposeBindingIntent?: ResolveManagedProviderPurposeBindingIntent;
     processEnv: NodeJS.ProcessEnv;
+    launchProfileArtifacts?: ReadonlyMap<string, ArtifactSharingResourceV1>;
 }>): Promise<PreparedDaemonProviderLaunch | DaemonProviderLaunchRefusal> {
     const nativePreflight = resolveAgentNativeSpawnDefinitiveRejection({
         agentId: input.catalogAgentId,
@@ -99,6 +101,7 @@ export async function prepareDaemonProviderLaunch(input: Readonly<{
         const profileValidation = validateSpawnProfileEnvironment({
             rawSettings: getActiveAccountSettingsSnapshot()?.settings,
             profileId: input.options.profileId,
+            artifactsById: input.launchProfileArtifacts,
             providedEnvironmentVariables: input.profileEnvironmentVariables,
             reservedEnvironmentVariableNames,
         });
@@ -114,12 +117,15 @@ export async function prepareDaemonProviderLaunch(input: Readonly<{
         }
     }
 
+    const { callerInputConstraints: _callerInputConstraints, ...launchOptions } = input.options;
     let optionsWithProviderIsolation: SpawnSessionOptions = {
-        ...input.options,
+        ...launchOptions,
         backendTarget: input.effectiveBackendTarget,
     };
     const providerSessionId = input.normalizedExistingSessionId || null;
     const prepared = await prepareProviderLaunch({
+        ...(input.options.callerInputConstraints ? { callerInputConstraints: input.options.callerInputConstraints } : {}),
+        permissionMode: input.options.permissionMode ?? 'default',
         ...(input.modelSelection ? { selection: input.modelSelection } : {}),
         backendTarget: input.effectiveBackendTarget,
         machineId: input.options.machineId,

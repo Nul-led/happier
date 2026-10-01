@@ -8,6 +8,7 @@ import {
 
 import {
   continueAccountServiceHomeEnrollment,
+  enrollAccountServiceHome,
   observeAccountServiceHomeApproval,
   publishAccountServiceHomeLink,
   runAccountServiceDirectoryJourney,
@@ -326,6 +327,7 @@ describe('Account Service deterministic domain operations', () => {
       nowMs: 1_700_000_002_000,
     })).resolves.toEqual({
       kind: 'verification_failed',
+      stage: 'post_redemption',
       reason: 'authenticated_observation_required',
     });
     expect(harness.adapters.reconcileAuthenticatedHome).not.toHaveBeenCalled();
@@ -344,7 +346,114 @@ describe('Account Service deterministic domain operations', () => {
       requesterSecretKey: 'requester-secret',
       adapters: harness.adapters,
       nowMs: 1_700_000_002_000,
-    })).resolves.toMatchObject({ kind: 'unavailable' });
+    })).resolves.toEqual({
+      kind: 'verification_failed',
+      stage: 'post_redemption',
+      reason: 'authenticated_reconciliation_failed',
+    });
+    expect(harness.adapters.commitHomeCredential).not.toHaveBeenCalled();
+  });
+
+  it('keeps a pre-redemption destination contradiction terminal and distinct from retryable post-redemption failures', async () => {
+    const harness = createEnrollmentHarness();
+    const result = await continueAccountServiceHomeEnrollment({
+      home: HOME_B,
+      assertion: createAssertion(HOME_B, {
+        credentialDestinationDigestBase64Url: createHomeCredentialDestinationDigestV1(
+          HOME_A.connectionDescriptor,
+        ),
+      }),
+      requesterSecretKey: 'requester-secret',
+      adapters: harness.adapters,
+      nowMs: 1_700_000_002_000,
+    });
+
+    expect(result).toEqual({
+      kind: 'verification_failed',
+      reason: 'credential_destination_mismatch',
+    });
+    expect(harness.adapters.redeemAssertion).not.toHaveBeenCalled();
+    expect(harness.adapters.commitHomeCredential).not.toHaveBeenCalled();
+  });
+
+  it('retains the same process-local invocation for a post-redemption retry', async () => {
+    const harness = createEnrollmentHarness();
+    vi.mocked(harness.adapters.observeAuthenticatedHome)
+      .mockResolvedValueOnce({
+        homeServerIdentityId: HOME_B.homeServerIdentityId,
+        connectionDescriptor: HOME_B.connectionDescriptor,
+        provenance: 'public',
+      })
+      .mockResolvedValueOnce({
+        homeServerIdentityId: HOME_B.homeServerIdentityId,
+        connectionDescriptor: HOME_B.connectionDescriptor,
+        provenance: 'authenticated',
+      });
+
+    const journey = await runAccountServiceDirectoryJourney({
+      directory: {
+        homes: [HOME_B],
+        preferredHomeServerIdentityId: HOME_B.homeServerIdentityId,
+      },
+      issuerServerIdentityId: 'srv_directory',
+      adoptHome: harness.adoptHome,
+      enrollmentAdapters: harness.adapters,
+      nowMs: 1_700_000_002_000,
+    });
+
+    expect(journey).toMatchObject({
+      kind: 'home_failed',
+      selection: 'preferred',
+      enrollment: {
+        kind: 'verification_failed',
+        stage: 'post_redemption',
+        retry: expect.any(Function),
+      },
+    });
+    if (journey.kind !== 'home_failed'
+      || journey.enrollment.kind !== 'verification_failed'
+      || !('stage' in journey.enrollment)
+      || !journey.enrollment.retry) {
+      throw new Error('Expected retained post-redemption invocation');
+    }
+
+    await expect(journey.enrollment.retry({ nowMs: 1_700_000_003_000 })).resolves.toEqual({
+      kind: 'enrolled',
+      commit: 'committed-profile-b',
+    });
+    expect(harness.adapters.createRequesterKeyPair).toHaveBeenCalledOnce();
+    expect(harness.adapters.requestAssertion).toHaveBeenCalledOnce();
+    expect(harness.adapters.redeemAssertion).toHaveBeenCalledTimes(2);
+    expect(harness.adapters.commitHomeCredential).toHaveBeenCalledOnce();
+  });
+
+  it('does not re-enter the retained invocation after the original assertion expires', async () => {
+    const harness = createEnrollmentHarness();
+    vi.mocked(harness.adapters.observeAuthenticatedHome).mockResolvedValue({
+      homeServerIdentityId: HOME_B.homeServerIdentityId,
+      connectionDescriptor: HOME_B.connectionDescriptor,
+      provenance: 'public',
+    });
+    const assertion = createAssertion();
+    const result = await enrollAccountServiceHome({
+      home: HOME_B,
+      issuerServerIdentityId: 'srv_directory',
+      adapters: harness.adapters,
+      nowMs: 1_700_000_002_000,
+    });
+    if (result.kind !== 'verification_failed'
+      || !('stage' in result)
+      || !result.retry) {
+      throw new Error('Expected retained post-redemption invocation');
+    }
+
+    await expect(result.retry({ nowMs: assertion.expiresAtMs })).resolves.toEqual({
+      kind: 'verification_failed',
+      reason: 'redemption_expired',
+    });
+    expect(harness.adapters.requestAssertion).toHaveBeenCalledOnce();
+    expect(harness.adapters.openHomeTransport).toHaveBeenCalledOnce();
+    expect(harness.adapters.redeemAssertion).toHaveBeenCalledOnce();
     expect(harness.adapters.commitHomeCredential).not.toHaveBeenCalled();
   });
 

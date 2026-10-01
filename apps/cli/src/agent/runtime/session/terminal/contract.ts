@@ -230,6 +230,7 @@ export type HostTerminalTranscriptFollowBindResult =
 
 export type HostTerminalTranscriptFollowService = Readonly<{
     bindProviderSession(request: Readonly<{
+        replay?: 'historical' | 'fresh';
         agentId: string;
         providerSessionId: string;
         signal?: AbortSignal;

@@ -24,6 +24,7 @@ import type {
 export type BrowserDaemonRuntimeActionDisabledReason =
   | 'browser_action_unbacked'
   | 'browser_automation_route_unavailable'
+  | 'browser_ui_automation_unavailable'
   // The managed browser runtime is being fetched right now because this dispatch asked for it.
   // A ~150MB download behind an action that looks like it did nothing is the silent-stall class
   // this program is closing, so it gets its own typed outcome the UI can render.
@@ -63,6 +64,9 @@ export type CreateBrowserDaemonRuntimeActionExecutorInput = Readonly<{
   control?: BrowserDaemonControlRoutes;
   context?: BrowserContextRoutes;
   automation?: BrowserAutomationRoutes;
+  /** Physical ownership is read from the existing daemon control broker. */
+  ownsAutomationView?: (view: Readonly<{ browserSessionId: string; viewId: string }>) => boolean;
+  uiAutomation?: RuntimeActionExecute;
   diagnostics?: BrowserDiagnosticsActionRoutes;
   // Non-attach `browser.recording.*` lifecycle (start/stop/cancel/status/listForView/discard/
   // cleanupExpired). `attachToComposer` keeps its dedicated `recordingAttach` executor below.
@@ -128,11 +132,8 @@ function parseRuntimeActionInput(args: RuntimeActionExecuteArgs): Readonly<
 async function executeBrowserControlAction(
   args: RuntimeActionExecuteArgs,
   control: BrowserDaemonControlRoutes | undefined,
+  provisionAutomationRuntime: ProvisionBrowserAutomationRuntime | undefined,
 ): Promise<unknown> {
-  if (!control) {
-    return browserRuntimeActionDisabledResult('browser_control_route_unavailable');
-  }
-
   const parsed = parseRuntimeActionInput(args);
   if (!parsed.ok) return parsed.result;
 
@@ -141,7 +142,17 @@ async function executeBrowserControlAction(
     return invalidParametersResult;
   }
 
-  return await control.dispatchCommand(command.data);
+  if (!control) {
+    if (command.data.kind === 'openView' && provisionAutomationRuntime) {
+      const outcome = await provisionAutomationRuntime();
+      return browserRuntimeActionDisabledResult(outcome === 'unavailable'
+        ? 'browser_control_route_unavailable'
+        : PROVISION_OUTCOME_REASONS[outcome]);
+    }
+    return browserRuntimeActionDisabledResult('browser_control_route_unavailable');
+  }
+
+  return await control.dispatchCommand(command.data, args.context);
 }
 
 async function executeBrowserContextAction(
@@ -216,6 +227,13 @@ export function createBrowserDaemonRuntimeActionExecutor(
       return await fallback(args);
     }
 
+    // This identity scopes the Session's daemon browser workspace. UI-owned panes have their
+    // own Browser identity and authenticated reverse room, not the Happier Session's identity.
+    const sessionId = args.context.defaultSessionId;
+    const browserSessionId = args.input && typeof args.input === 'object' && !Array.isArray(args.input)
+      ? (args.input as Record<string, unknown>).browserSessionId : undefined;
+    const sessionBrowserMismatch = Boolean(sessionId && typeof browserSessionId === 'string' && browserSessionId !== sessionId);
+
     // The ActionSpec's canonical agent surface is the single authority on which browser Actions a
     // caller may reach; a family member excluded from `RUNTIME_ACTION_REAL_EXECUTOR_*` is refused
     // here rather than routed on family membership alone. Every browser Action currently carries
@@ -225,17 +243,27 @@ export function createBrowserDaemonRuntimeActionExecutor(
       return browserRuntimeActionDisabledResult('browser_action_unbacked');
     }
 
-    if (BROWSER_CONTROL_ACTION_IDS.has(args.actionId)) {
-      if (!featureGate.isEnabled('browser.sidecar')) {
-        return browserRuntimeActionDisabledResult('browser_control_route_unavailable');
-      }
-      return await executeBrowserControlAction(args, input.control);
-    }
     if (BROWSER_AUTOMATION_ACTION_IDS.has(args.actionId)) {
       if (!featureGate.isEnabled('browser.automation')) {
         return browserRuntimeActionDisabledResult('browser_automation_route_unavailable');
       }
+      const parsed = parseRuntimeActionInput(args);
+      if (!parsed.ok) return parsed.result;
+      const view = parsed.input as Readonly<{ browserSessionId: string; viewId: string }>;
+      if (input.ownsAutomationView && !input.ownsAutomationView(view)) {
+        return input.uiAutomation
+          ? await input.uiAutomation({ ...args, input: parsed.input })
+          : browserRuntimeActionDisabledResult('browser_ui_automation_unavailable');
+      }
+      if (sessionBrowserMismatch) return invalidParametersResult;
       return await executeBrowserAutomationAction(args, input.automation, input.provisionAutomationRuntime);
+    }
+    if (sessionBrowserMismatch) return invalidParametersResult;
+    if (BROWSER_CONTROL_ACTION_IDS.has(args.actionId)) {
+      if (!featureGate.isEnabled('browser.sidecar')) {
+        return browserRuntimeActionDisabledResult('browser_control_route_unavailable');
+      }
+      return await executeBrowserControlAction(args, input.control, input.provisionAutomationRuntime);
     }
     if (BROWSER_DIAGNOSTICS_ACTION_IDS.has(args.actionId)) {
       if (!featureGate.isEnabled('browser.diagnostics')) {

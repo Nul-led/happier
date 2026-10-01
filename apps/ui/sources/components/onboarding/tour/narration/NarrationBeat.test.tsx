@@ -87,6 +87,8 @@ vi.mock('react-native-reanimated', () => {
         Easing: {
             out: (easing: unknown) => easing,
             cubic: 'cubic',
+            bezier: () => (value: number) => value,
+            linear: (value: number) => value,
         },
         useAnimatedStyle: <T,>(factory: () => T): T => {
             const style = factory();

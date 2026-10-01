@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
     formatScmHistoryTimestamp,
     formatScmHistoryTimestampAccessibilityLabel,
+    formatScmTimelineWhen,
 } from './historyPresentation';
 
 describe('historyPresentation', () => {
@@ -31,5 +32,16 @@ describe('historyPresentation', () => {
         expect(formatScmHistoryTimestamp(0)).toBe('');
         expect(formatScmHistoryTimestampAccessibilityLabel(Number.NaN)).toBe('');
         expect(formatScmHistoryTimestampAccessibilityLabel(0)).toBe('');
+    });
+
+    it('says when a timeline item happened in the fewest words: the time today, the weekday this week, the date before', () => {
+        const now = new Date(2026, 8, 29, 16, 30).getTime();
+        const today = new Date(2026, 8, 29, 10, 44).getTime();
+        const thisWeek = new Date(2026, 8, 27, 9, 0).getTime();
+        const older = new Date(2026, 7, 12, 9, 0).getTime();
+        expect(formatScmTimelineWhen(today, now)).toBe(new Date(today).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+        expect(formatScmTimelineWhen(thisWeek, now)).toBe(new Date(thisWeek).toLocaleDateString([], { weekday: 'short' }));
+        expect(formatScmTimelineWhen(older, now)).toBe(new Date(older).toLocaleDateString([], { day: 'numeric', month: 'short' }));
+        expect(formatScmTimelineWhen(Number.NaN, now)).toBe('');
     });
 });

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const h = vi.hoisted(() => {
   const sourceDispose = vi.fn();
@@ -314,6 +314,7 @@ async function start(
 
 describe('production Runner pre-handle resource custody', () => {
   beforeEach(() => {
+    vi.stubEnv('HAPPIER_HOME_CARRIER_POLICY', 'automatic');
     for (const mock of Object.values(h)) {
       if (typeof mock === 'function') mock.mockReset();
     }
@@ -337,7 +338,11 @@ describe('production Runner pre-handle resource custody', () => {
     h.runScmRoute.mockResolvedValue({ success: true });
     h.createProviderRuntime.mockResolvedValue({
       available: true,
-      endpoint: { endpointId: 'a'.repeat(64) },
+      endpoint: {
+        endpointId: 'a'.repeat(64),
+        relayUrls: ['https://relay.example.test'],
+        directAddresses: ['192.0.2.10:443'],
+      },
       startAttemptAcceptor: vi.fn(async () => undefined),
       stopAttemptAcceptor: vi.fn(async () => undefined),
       stopActiveTunnels: vi.fn(async () => undefined),
@@ -370,6 +375,17 @@ describe('production Runner pre-handle resource custody', () => {
     h.runHostSessionRuntimePlan.mockImplementation(async (plan: { config: { onRuntimeStopReady?(stop: () => Promise<void>): void } }) => {
       plan.config.onRuntimeStopReady?.(h.ordinarySessionStop);
     });
+  });
+  afterEach(() => vi.unstubAllEnvs());
+
+  it('does not create a native Provider Machine runtime after Standard-only is selected', async () => {
+    vi.stubEnv('HAPPIER_HOME_CARRIER_POLICY', 'standard_only');
+
+    await expect(start()).rejects.toThrow('runner_provider_machine_runtime_unavailable');
+    expect(h.createProviderRuntime).not.toHaveBeenCalled();
+    expect(h.createMachineClient).not.toHaveBeenCalled();
+    expect(h.startMachineIrohIngress).not.toHaveBeenCalled();
+    expect(h.terminateMaterializedSession).toHaveBeenCalledOnce();
   });
 
   it('publishes one persistent Iroh endpoint and opens the exact creator-reviewed Provider binding', async () => {
@@ -434,7 +450,11 @@ describe('production Runner pre-handle resource custody', () => {
       relayConfig: { relayPolicy: 'automatic', relayUrls: [], explicitlyConfigured: false },
     });
     expect(h.createMachineClient).toHaveBeenCalledWith(expect.objectContaining({
-      irohEndpointId: 'a'.repeat(64),
+      irohEndpoint: {
+        endpointId: 'a'.repeat(64),
+        relayUrls: ['https://relay.example.test'],
+        directAddresses: ['192.0.2.10:443'],
+      },
     }));
     expect(h.startMachineIrohIngress).toHaveBeenCalledOnce();
     expect(h.startMachineIrohIngress.mock.invocationCallOrder[0])

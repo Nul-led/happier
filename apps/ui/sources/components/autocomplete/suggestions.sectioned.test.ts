@@ -167,9 +167,9 @@ function composerReferenceProjection(entries: readonly Readonly<{
     icon?: PluginUiIconTokenV1;
     triggers?: readonly ('@' | '$' | '/')[];
     registrationState?: 'bound' | 'unbound' | 'unavailable';
-    registrationGeneration?: string;
+    registrationOccurrenceId?: string;
     activationState?: 'active' | 'dormant' | 'unavailable';
-    activationGeneration?: string;
+    activationOccurrenceId?: string;
 }>[]): PluginProjectionV2 {
     const generation = 7;
     return {
@@ -177,7 +177,6 @@ function composerReferenceProjection(entries: readonly Readonly<{
         generation,
         installedPackagesById: {},
         agentsById: {},
-        backendsById: {},
         actionsById: {},
         toolsById: {},
         commandsById: {},
@@ -201,14 +200,14 @@ function composerReferenceProjection(entries: readonly Readonly<{
                     requirement: 'required',
                     state: entry.registrationState ?? 'bound',
                     ...(entry.registrationState === 'bound' || entry.registrationState === undefined
-                        ? { generation: entry.registrationGeneration ?? String(generation) }
+                        ? { occurrenceId: entry.registrationOccurrenceId ?? `fixture-occurrence:${entry.pluginId}` }
                         : {}),
                 },
                 activation: entry.activationState === 'dormant'
                     ? { state: 'dormant' }
                     : entry.activationState === 'unavailable'
                         ? { state: 'unavailable', reason: 'test unavailable' }
-                        : { state: 'active', generation: entry.activationGeneration ?? String(generation) },
+                        : { state: 'active', occurrenceId: entry.activationOccurrenceId ?? `fixture-occurrence:${entry.pluginId}` },
                 projection: { state: 'projected' },
                 consumer: 'composer-reference-host',
                 platforms: ['cli', 'web'],
@@ -380,7 +379,7 @@ describe('sectioned composer suggestions (EU-3)', () => {
                 method: RPC_METHODS.DAEMON_PLUGIN_COMPOSER_REFERENCE_SEARCH,
                 payload: {
                     machineId: 'machine-a',
-                    expectedGeneration: '7',
+                    expectedOccurrenceId: '7',
                     reference: { pluginId: 'acme.issues', localId: 'issues' },
                     trigger: '$',
                     query: 'issue',
@@ -410,7 +409,7 @@ describe('sectioned composer suggestions (EU-3)', () => {
                 {
                     pluginId: 'acme.retired',
                     localId: 'old-issues',
-                    activationGeneration: '6',
+                    activationOccurrenceId: '6',
                 },
             ]);
             const controller = new AbortController();
@@ -462,7 +461,7 @@ describe('sectioned composer suggestions (EU-3)', () => {
                 method: RPC_METHODS.DAEMON_PLUGIN_COMPOSER_REFERENCE_SEARCH,
                 payload: {
                     machineId: 'machine-a',
-                    expectedGeneration: '7',
+                    expectedOccurrenceId: '7',
                     reference: { pluginId: 'acme.issues', localId: 'issues' },
                     trigger: '@',
                     query: 'issue',
@@ -880,6 +879,86 @@ describe('sectioned composer suggestions (EU-3)', () => {
         });
     });
 
+    describe('Account mentions (a human discussion)', () => {
+        const ALICE = {
+            accountId: 'account-alice',
+            profile: { firstName: 'Alice', lastName: 'Ng', username: 'alice', avatarUrl: null },
+            accessHint: 'view' as const,
+        };
+        function person(index: number) {
+            return { ...ALICE, accountId: `account-${index}`, profile: { ...ALICE.profile, firstName: `Person ${index}`, username: null } };
+        }
+
+        it('carries the chosen Account as the row identity behind the name the author sees', async () => {
+            const { getSuggestions } = await importSuggestions();
+            const search = vi.fn(async () => ({ candidates: [ALICE], hasMore: false }));
+
+            const suggestions = await getSuggestions(null, '@al', {
+                kinds: ['accountMention'],
+                accountMentions: { search, retry: vi.fn() },
+            });
+
+            expect(suggestions).toHaveLength(1);
+            expect(suggestions[0]).toMatchObject({
+                kind: 'accountMention',
+                key: 'account-alice',
+                // The name as written (no quoting): identity is the range-bound mention, not a re-parse.
+                text: '@Alice Ng',
+                label: 'Alice Ng',
+                structuredInput: { kind: 'happier.account', ref: 'account:account-alice', label: 'Alice Ng' },
+            });
+            expect(suggestions[0]!.listStatus).toBeUndefined();
+            expect(search).toHaveBeenCalledWith(expect.objectContaining({ query: 'al' }));
+        });
+
+        it('says more people match than fit instead of silently cutting the list', async () => {
+            const { getSuggestions } = await importSuggestions();
+            const search = vi.fn(async ({ limit }: { limit: number }) => ({
+                candidates: Array.from({ length: limit }, (_unused, index) => person(index)),
+                hasMore: true,
+            }));
+
+            const suggestions = await getSuggestions(null, '@p', {
+                kinds: ['accountMention'],
+                accountMentions: { search, retry: vi.fn() },
+            });
+
+            expect(suggestions).toHaveLength(12);
+            expect(suggestions.slice(0, 11).every((row) => row.structuredInput !== undefined)).toBe(true);
+            expect(suggestions[11]).toMatchObject({ listStatus: { kind: 'narrow' } });
+            expect(suggestions[11]!.structuredInput).toBeUndefined();
+        });
+
+        it('shows a Retry row when the search fails, and choosing it retries without touching the text', async () => {
+            const { getSuggestions } = await importSuggestions();
+            const { resolveComposerSuggestionKind } = await import('./composerSuggestionKinds');
+            const { t } = await import('@/text');
+            const retry = vi.fn();
+
+            const suggestions = await getSuggestions(null, '@al', {
+                kinds: ['accountMention'],
+                accountMentions: { search: vi.fn(async () => { throw new Error('offline'); }), retry },
+            });
+
+            expect(suggestions).toHaveLength(1);
+            expect(suggestions[0]).toMatchObject({ label: t('session.collaboration.discussion.retry'), listStatus: { kind: 'retry' } });
+            const result = await resolveComposerSuggestionKind('accountMention').applySelection!({
+                suggestion: suggestions[0]!,
+                inputText: 'hi @al',
+                selection: { start: 6, end: 6 },
+                activeWord: { offset: 3, endOffset: 6 },
+            });
+            expect(result).toEqual({ handled: false, preserveInput: true });
+            expect(retry).toHaveBeenCalledTimes(1);
+        });
+
+        it('offers nothing where no discussion adapter supplies an Account search', async () => {
+            const { getSuggestions } = await importSuggestions();
+
+            await expect(getSuggestions(null, '@al', { kinds: ['accountMention'] })).resolves.toEqual([]);
+        });
+    });
+
     describe('D-22 — per-trigger row budget', () => {
         it('caps a catalog kind at its declared limit instead of mounting the whole catalog', async () => {
             seedCatalogs({
@@ -917,19 +996,31 @@ describe('sectioned composer suggestions (EU-3)', () => {
         });
 
         it('keeps every trigger under the mounted-row ceiling', async () => {
-            const { COMPOSER_SUGGESTION_TRIGGER_ROW_BUDGET, resolveComposerSuggestionKind } = await import('./composerSuggestionKinds');
+            const {
+                COMPOSER_SUGGESTION_TRIGGER_ROW_BUDGET,
+                DISCUSSION_COMPOSER_SUGGESTION_KINDS,
+                resolveComposerSuggestionKind,
+            } = await import('./composerSuggestionKinds');
             const {
                 COMPOSER_SUGGESTION_KIND_IDS,
                 COMPOSER_SUGGESTION_TRIGGERS,
                 resolveComposerSuggestionTriggersForKind,
             } = await import('./composerSuggestionGrammar');
+            // A human discussion's composer offers only its own kind, and no agent composer
+            // offers it, so the two sets never mount rows together: each is bounded on its own.
+            const discussionKinds: readonly string[] = DISCUSSION_COMPOSER_SUGGESTION_KINDS;
+            const composableKindSets = [
+                COMPOSER_SUGGESTION_KIND_IDS.filter((id) => !discussionKinds.includes(id)),
+                DISCUSSION_COMPOSER_SUGGESTION_KINDS,
+            ];
 
-            for (const trigger of COMPOSER_SUGGESTION_TRIGGERS) {
-                const total = COMPOSER_SUGGESTION_KIND_IDS
-                    .filter((id) => resolveComposerSuggestionTriggersForKind(id).includes(trigger))
-                    .reduce((sum, id) => sum + resolveComposerSuggestionKind(id).limit, 0);
-                expect(total).toBeGreaterThan(0);
-                expect(total).toBeLessThanOrEqual(COMPOSER_SUGGESTION_TRIGGER_ROW_BUDGET);
+            for (const kinds of composableKindSets) {
+                for (const trigger of COMPOSER_SUGGESTION_TRIGGERS) {
+                    const total = kinds
+                        .filter((id) => resolveComposerSuggestionTriggersForKind(id).includes(trigger))
+                        .reduce((sum, id) => sum + resolveComposerSuggestionKind(id).limit, 0);
+                    expect(total).toBeLessThanOrEqual(COMPOSER_SUGGESTION_TRIGGER_ROW_BUDGET);
+                }
             }
         });
     });

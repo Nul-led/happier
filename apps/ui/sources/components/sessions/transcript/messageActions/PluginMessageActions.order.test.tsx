@@ -62,13 +62,13 @@ const messageReference: MessageActionReferenceV1 = {
 function action(id: string): PluginProjectionAction {
     return {
         id,
+        occurrenceId: null,
         title: id,
         description: null,
         icon: null,
         scopes: ['message'],
         surfaces: ['ui'],
         placementBindings: ['rowAction'],
-        inputSchema: null,
         inputHints: null,
         priority: null,
         dangerLevel: 'safe',
@@ -115,7 +115,7 @@ describe('PluginMessageActions row adapter', () => {
                 host: {
                     machineId: 'machine-1',
                     serverId: 'server-1',
-                    expectedGeneration: 7,
+                    expectedContributorOccurrenceId: 7,
                     sessionId: 'session-1',
                     isCurrent: () => true,
                 },
@@ -161,7 +161,7 @@ describe('PluginMessageActions row adapter', () => {
                 host: {
                     machineId: 'machine-1',
                     serverId: 'server-1',
-                    expectedGeneration: 7,
+                    expectedContributorOccurrenceId: 7,
                     sessionId: 'session-1',
                     isCurrent: () => true,
                 },

@@ -394,6 +394,7 @@ describe('createZellijTerminalHostAdapter', () => {
   });
 
   it('reports post-submit verification failure without claiming the live zellij host is unreachable', async () => {
+    let elapsedMs = 208;
     const prompt = 'queued prompt remains visible';
     const actions = createActions({
       dumpScreen: vi.fn(async () => `> ${prompt}`),
@@ -402,8 +403,8 @@ describe('createZellijTerminalHostAdapter', () => {
       zellijBinary: '/tools/zellij',
       socketDir: '/tmp/zellij-sock',
       actions,
-      now: () => 208,
-      wait: async () => {},
+      now: () => elapsedMs,
+      wait: async (delayMs) => { elapsedMs += delayMs; },
       promptSubmitVerification: {
         shouldVerifyAfterSubmit: () => true,
         verifyAfterSubmit: ({ screenText }) => screenText.includes(prompt),
@@ -452,7 +453,7 @@ describe('createZellijTerminalHostAdapter', () => {
         liveProbe: 'required',
       },
     })).resolves.toMatchObject({ paneAlive: true, paneDead: false });
-    expect(actions.sendEnter).toHaveBeenCalledTimes(2);
+    expect(actions.sendEnter).toHaveBeenCalledTimes(1);
   });
 
   it('blocks over-cap zellij prompts before any write or Enter', async () => {

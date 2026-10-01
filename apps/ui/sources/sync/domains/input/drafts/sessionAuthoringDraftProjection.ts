@@ -114,6 +114,7 @@ export function projectNewSessionDraftSyncedAuthoringFields(params: Readonly<{
             ? { temporaryComputerActivationRef: draft.temporaryComputerActivationRef }
             : {}),
         ...(draft.selectedPath ? { directory: draft.selectedPath } : {}),
+        ...(draft.directoryKind === 'managed' ? { directoryKind: 'managed' as const } : {}),
         ...(draft.checkoutCreationDraft ? { checkoutCreationDraft: draft.checkoutCreationDraft } : {}),
         ...(draft.access !== undefined ? { access: draft.access } : {}),
         ...(draft.primaryTeamId !== undefined ? { primaryTeamId: draft.primaryTeamId } : {}),

@@ -33,6 +33,7 @@ function createReceipt(input: Readonly<{
     caps: MachineLiveStreamCapsV1;
     bytesSent?: number;
     framesSent?: number;
+    terminal?: boolean;
 }>): MachineLiveStreamReceiptV1 {
     return {
         v: 1,
@@ -41,6 +42,7 @@ function createReceipt(input: Readonly<{
         routeKind: input.routeKind,
         flowKind: 'live_stream',
         reasonCode: input.reasonCode,
+        ...(input.terminal ? { terminal: true, terminalOutcome: 'error' as const } : {}),
         maxBitrateBps: input.caps.maxBitrateBps,
         maxFramesPerSecond: input.caps.maxFramesPerSecond,
         maxFrameBytes: input.caps.maxFrameBytes,
@@ -65,12 +67,12 @@ export function startMachineLiveStreamFramePump(_input: Readonly<{
     ) => Readonly<{ ok: true } | { ok: false; reasonCode: 'invalid_control' | 'stale_ack' }>;
     offerFrame: (frame: MachineLiveStreamFrameV1) => Readonly<{ ok: true } | { ok: false; reasonCode: FramePumpReasonCode }>;
 }> {
-    // The server relay owns network/window backpressure for server-routed viewers. The daemon
-    // pump starts unbounded locally and only applies explicit transport credit when an ack is
-    // forwarded back from the server.
+    // Relay credit belongs solely to the server. Direct carriers use this pump's credit;
+    // neither route may change the producer's sequence from a viewer acknowledgement.
     let windowFrames = Number.POSITIVE_INFINITY;
     let windowBytes = Number.POSITIVE_INFINITY;
     let nextSequence = 1;
+    let nextAcknowledgedSequence = 1;
     const meter = createMachineLiveStreamMeter({
         caps: _input.caps,
         startedAtMs: _input.startedAtMs,
@@ -84,8 +86,9 @@ export function startMachineLiveStreamFramePump(_input: Readonly<{
             const control = parsed.data;
             if (control.streamId !== _input.streamId) return { ok: false, reasonCode: 'invalid_control' };
             if (control.kind === 'ack') {
-                if (control.nextSequence < nextSequence) return { ok: false, reasonCode: 'stale_ack' };
-                nextSequence = control.nextSequence;
+                if (routeKind === 'server_relay') return { ok: true };
+                if (control.nextSequence < nextAcknowledgedSequence) return { ok: false, reasonCode: 'stale_ack' };
+                nextAcknowledgedSequence = control.nextSequence;
                 windowFrames = control.windowFrames ?? Number.POSITIVE_INFINITY;
                 windowBytes = control.windowBytes ?? Number.POSITIVE_INFINITY;
             }
@@ -107,6 +110,18 @@ export function startMachineLiveStreamFramePump(_input: Readonly<{
                 return { ok: false, reasonCode: 'non_monotonic_sequence' };
             }
 
+            const frameBytes = getMachineLiveStreamPayloadDecodedByteLength(frame.payloadBase64);
+            if (windowFrames <= 0 || windowBytes < frameBytes) {
+                _input.emitReceipt(createReceipt({
+                    id: PEER_MEDIATION_RECEIPTS.streamPaused,
+                    streamId: _input.streamId,
+                    routeKind,
+                    reasonCode: 'backpressure_window_exhausted',
+                    caps: _input.caps,
+                }));
+                return { ok: false, reasonCode: 'backpressure_window_exhausted' };
+            }
+
             const metered = meter.recordFrame(frame, _input.nowMs());
             if (!metered.ok) {
                 _input.emitReceipt(createReceipt({
@@ -117,22 +132,9 @@ export function startMachineLiveStreamFramePump(_input: Readonly<{
                     caps: _input.caps,
                     bytesSent: metered.metering.bytesSent,
                     framesSent: metered.metering.framesSent,
+                    terminal: true,
                 }));
                 return { ok: false, reasonCode: metered.reasonCode };
-            }
-
-            const frameBytes = getMachineLiveStreamPayloadDecodedByteLength(frame.payloadBase64);
-            if (frame.sequence < nextSequence || windowFrames <= 0 || windowBytes < frameBytes) {
-                _input.emitReceipt(createReceipt({
-                    id: PEER_MEDIATION_RECEIPTS.streamPaused,
-                    streamId: _input.streamId,
-                    routeKind,
-                    reasonCode: 'backpressure_window_exhausted',
-                    caps: _input.caps,
-                    bytesSent: metered.metering.bytesSent,
-                    framesSent: metered.metering.framesSent,
-                }));
-                return { ok: false, reasonCode: 'backpressure_window_exhausted' };
             }
 
             _input.emitFrame(frame);

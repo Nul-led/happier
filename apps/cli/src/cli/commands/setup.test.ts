@@ -1071,6 +1071,77 @@ function withoutAgentCliPathOverrides(): () => void {
     });
   });
 
+  it.each([
+    ['key_required', 'account key'],
+    ['update_required', 'cannot complete sign-in'],
+    ['identity_mismatch', 'different identity'],
+    ['destination_mismatch', 'different destination'],
+    ['timed_out', 'timed out'],
+    ['failed', 'did not complete'],
+  ] as const)('offers Home actions instead of a dead end for the %s sign-in-service outcome', async (kind, sentence) => {
+    await withTempDir(`happier-setup-typed-outcome-${kind}-`, async (homeDir) => {
+      envScope.patch({ HAPPIER_HOME_DIR: homeDir, HAPPIER_SERVER_URL: 'https://api.happier.dev', HAPPIER_ACTIVE_SERVER_ID: undefined });
+      const { handleSetupCommand } = await importHandleSetupCommand();
+      const prompts: string[] = [];
+      const calls: string[][] = [];
+
+      await handleSetupCommand(['--skip-providers'], {
+        readCredentialsFn: async () => null,
+        readSettingsFn: async () => ({ machineId: null } as never),
+        isInteractiveTerminalFn: () => true,
+        promptInputFn: async (prompt) => {
+          prompts.push(stripAnsi(prompt));
+          if (prompt.includes('How would you like to set up this computer?')) return 'f';
+          if (stripAnsi(prompt).includes(sentence)) return 'c';
+          return '';
+        },
+        runAccountServiceHomeEntryFn: async () => ({ kind }),
+        runHappyCliStepFn: async (argv) => { calls.push([...argv]); return 0; },
+      });
+
+      const rendered = stripAnsi(output.logs.join('\n'));
+      expect(prompts.join('\n')).toContain(sentence);
+      expect(prompts.join('\n')).toContain('Create a Personal Home on this computer');
+      expect(rendered).not.toContain('Setup could not enter a Home.');
+      expect(calls).toEqual([['home', 'create']]);
+    });
+  });
+
+  it('offers the dual-role Cloud Home in the no-Homes state and retargets it directly', async () => {
+    await withTempDir('happier-setup-available-cloud-home-', async (homeDir) => {
+      envScope.patch({ HAPPIER_HOME_DIR: homeDir, HAPPIER_SERVER_URL: 'https://old-home.example.test', HAPPIER_ACTIVE_SERVER_ID: undefined });
+      const { handleSetupCommand } = await importHandleSetupCommand();
+      const prompts: string[] = [];
+      const preparedSelections: string[][] = [];
+      const entry = vi.fn(async () => ({
+        kind: 'account_connected_no_homes' as const,
+        availableHome: { canonicalServerUrl: 'https://api.happier.dev' },
+      }));
+
+      await handleSetupCommand(['--skip-daemon', '--skip-providers'], {
+        readCredentialsFn: async () => null,
+        readSettingsFn: async () => ({ machineId: null } as never),
+        isInteractiveTerminalFn: () => true,
+        promptInputFn: async (prompt) => {
+          prompts.push(stripAnsi(prompt));
+          if (prompt.includes('How would you like to set up this computer?')) return 'f';
+          if (stripAnsi(prompt).includes('No linked Homes')) return 'u';
+          return '';
+        },
+        prepareServerSelectionFromArgsFn: async (selectionArgs) => {
+          preparedSelections.push([...selectionArgs]);
+          return { rest: ['--skip-daemon', '--skip-providers'], profileId: 'cloud' };
+        },
+        runAccountServiceHomeEntryFn: entry,
+        runHappyCliStepFn: async () => 0,
+      });
+
+      expect(prompts.join('\n')).toContain('Use an available Cloud Home');
+      expect(entry).toHaveBeenCalledOnce();
+      expect(preparedSelections.some((args) => args.includes('https://api.happier.dev'))).toBe(true);
+    });
+  });
+
   it('reports selected-Home adoption failure and exits nonzero without continuing setup', async () => {
     await withTempDir('happier-setup-selected-adoption-failure-', async (homeDir) => {
       envScope.patch({ HAPPIER_HOME_DIR: homeDir, HAPPIER_SERVER_URL: 'https://api.happier.dev', HAPPIER_ACTIVE_SERVER_ID: undefined });
@@ -1514,8 +1585,7 @@ function withoutAgentCliPathOverrides(): () => void {
         processEnv: process.env,
       });
       expect(calls).toEqual([
-        ['service', 'uninstall', '--all', '--yes'],
-        ['service', 'install', '--takeover'],
+        ['service', 'install', '--takeover', '--replace-existing=all', '--yes'],
         ['service', 'start', '--takeover'],
         ['agents', 'setup', '--yes'],
       ]);
@@ -1835,15 +1905,61 @@ function withoutAgentCliPathOverrides(): () => void {
       expect(calls).toEqual([]);
       expect(process.exitCode).toBe(1);
       const text = stripAnsi(output.logs.join('\n'));
-      expect(text).toContain('Aborted.');
+      expect(text).toContain('Existing background services were left unchanged.');
+      expect(text).toContain('--skip-daemon');
       expect(text).not.toContain('Setup complete.');
     });
   });
 
-  it('fails closed in non-interactive mode when guided daemon setup needs release-channel or service decisions', async () => {
+  it('continues on the valid current channel when the optional default-channel switch is declined', async () => {
+    await withTempDir('happier-setup-channel-offer-declined-', async (homeDir) => {
+      envScope.patch({ HAPPIER_HOME_DIR: homeDir, HAPPIER_SERVER_URL: 'https://relay.example.test', HAPPIER_ACTIVE_SERVER_ID: undefined });
+      const { handleSetupCommand } = await importHandleSetupCommand();
+      const calls: string[][] = [];
+      const writeDefaultManagedReleaseChannelFn = vi.fn(async () => ({
+        releaseChannel: 'preview' as const,
+        statePath: `${homeDir}/default-cli-release-channel.json`,
+      }));
+
+      await handleSetupCommand(['--relay-url', 'https://relay.example.test', '--yes', '--skip-providers'], {
+        quiet: true,
+        invocation: 'authenticated-home-create-continuation',
+        applyServerSelectionFromArgs: async (args) => args,
+        readCredentialsFn: async () => ({ encryption: { type: 'legacy', secret: new Uint8Array([1]) }, token: 't' } as any),
+        readSettingsFn: async () => ({ machineId: 'mid_123', machineIdConfirmedByServer: true } as never),
+        isInteractiveTerminalFn: () => true,
+        promptInputFn: async () => 'n',
+        readBackgroundServiceSetupGuidanceFn: async () => createBackgroundServiceSetupGuidance({
+          targetReleaseChannel: 'preview',
+          currentDefaultReleaseChannel: 'stable',
+          shouldOfferDefaultReleaseChannelSwitch: true,
+        }),
+        writeDefaultManagedReleaseChannelFn,
+        runHappyCliStepFn: async (argv) => { calls.push([...argv]); return 0; },
+      });
+
+      expect(writeDefaultManagedReleaseChannelFn).not.toHaveBeenCalled();
+      expect(calls).toEqual([
+        ['service', 'install'],
+        ['service', 'start'],
+      ]);
+      expect(process.exitCode).toBeUndefined();
+    });
+  });
+
+  it('does not let a non-interactive Home-create continuation take over services or switch channels', async () => {
     await withTempDir('happier-setup-guided-noninteractive-', async (homeDir) => {
       envScope.patch({ HAPPIER_HOME_DIR: homeDir, HAPPIER_SERVER_URL: 'https://relay.example.test', HAPPIER_ACTIVE_SERVER_ID: undefined });
       const { handleSetupCommand } = await importHandleSetupCommand();
+
+      const writeDefaultManagedReleaseChannelFn: typeof import('@happier-dev/cli-common/firstPartyRuntime').writeDefaultManagedReleaseChannel = vi.fn(async () => ({
+        releaseChannel: 'preview' as const,
+        statePath: `${homeDir}/default-cli-release-channel.json`,
+      }));
+      const syncInstalledFirstPartyShimsFn = vi.fn(async (): Promise<SyncInstalledFirstPartyShimsResult> => ({
+        shimPaths: [`${homeDir}/bin/happier`],
+      }));
+      const calls: string[][] = [];
 
       await expect(handleSetupCommand(
         ['--relay-url', 'https://relay.example.test', '--yes'],
@@ -1873,10 +1989,79 @@ function withoutAgentCliPathOverrides(): () => void {
               },
             ],
             shouldOfferDefaultReleaseChannelSwitch: true,
+            conflictingServices: [{
+              label: 'com.happier.cli.daemon.stable.default',
+              releaseChannel: 'stable',
+              targetMode: 'pinned',
+              running: true,
+              serverUrl: 'https://other.example.test',
+              happierHomeDir: homeDir,
+            }],
+            shouldPromptForServiceReplacement: true,
           }),
-          runHappyCliStepFn: async () => 0,
+          writeDefaultManagedReleaseChannelFn,
+          syncInstalledFirstPartyShimsFn,
+          runHappyCliStepFn: async (argv) => {
+            calls.push([...argv]);
+            return 0;
+          },
         },
-      )).rejects.toThrow(/requires interactive guidance/i);
+      )).rejects.toMatchObject({ code: 'home_create_reconciliation_failed' });
+
+      expect(writeDefaultManagedReleaseChannelFn).not.toHaveBeenCalled();
+      expect(syncInstalledFirstPartyShimsFn).not.toHaveBeenCalled();
+      expect(calls).toEqual([]);
+    });
+  });
+
+  it('honors explicit non-interactive Home-create reconciliation decisions', async () => {
+    await withTempDir('happier-setup-guided-noninteractive-explicit-', async (homeDir) => {
+      envScope.patch({ HAPPIER_HOME_DIR: homeDir, HAPPIER_SERVER_URL: 'https://relay.example.test', HAPPIER_ACTIVE_SERVER_ID: undefined });
+      const { handleSetupCommand } = await importHandleSetupCommand();
+      const writeDefaultManagedReleaseChannelFn = vi.fn(async () => ({
+        releaseChannel: 'preview' as const,
+        statePath: `${homeDir}/default-cli-release-channel.json`,
+      }));
+      const syncInstalledFirstPartyShimsFn = vi.fn(async (): Promise<SyncInstalledFirstPartyShimsResult> => ({
+        shimPaths: [`${homeDir}/bin/happier`],
+      }));
+      const calls: string[][] = [];
+
+      await handleSetupCommand(
+        ['--relay-url', 'https://relay.example.test', '--yes', '--switch-channel', '--replace-services'],
+        {
+          quiet: true,
+          invocation: 'authenticated-home-create-continuation',
+          applyServerSelectionFromArgs: async (args) => args,
+          readCredentialsFn: async () => ({ encryption: { type: 'legacy', secret: new Uint8Array([1]) }, token: 't' } as any),
+          readSettingsFn: async () => ({ machineId: 'mid_123', machineIdConfirmedByServer: true } as any),
+          isInteractiveTerminalFn: () => false,
+          promptInputFn: async () => { throw new Error('prompt should not be used'); },
+          readBackgroundServiceSetupGuidanceFn: async () => createBackgroundServiceSetupGuidance({
+            targetReleaseChannel: 'preview',
+            currentDefaultReleaseChannel: 'stable',
+            managedReleaseChannels: [{
+              releaseChannel: 'preview', label: 'preview', version: '2.0.0',
+              installationId: 'preview-install', installationPath: '/managed/preview',
+              invokerName: 'hprev', isDefault: false, onPath: true,
+            }],
+            shouldOfferDefaultReleaseChannelSwitch: true,
+            conflictingServices: [{
+              label: 'com.happier.cli.daemon.stable.default', releaseChannel: 'stable',
+              targetMode: 'pinned', running: true, serverUrl: 'https://other.example.test',
+              happierHomeDir: homeDir,
+            }],
+            shouldPromptForServiceReplacement: true,
+          }),
+          writeDefaultManagedReleaseChannelFn,
+          syncInstalledFirstPartyShimsFn,
+          runHappyCliStepFn: async (argv) => { calls.push([...argv]); return 0; },
+        },
+      );
+
+      expect(writeDefaultManagedReleaseChannelFn).toHaveBeenCalledWith(expect.objectContaining({ releaseChannel: 'preview' }));
+      expect(calls).toContainEqual(['service', 'install', '--replace-existing=all', '--yes']);
+      expect(calls).not.toContainEqual(['service', 'uninstall', '--all', '--yes']);
     });
   });
 
@@ -2345,10 +2530,13 @@ function withoutAgentCliPathOverrides(): () => void {
       });
     });
 
-    it('renders a committed enter failure instead of a simple abort after Home focus', async () => {
+    it('retargets the committed Home and repairs machine registration after a committed enter failure', async () => {
       await withTempDir('happier-setup-account-service-committed-enter-failure-', async (homeDir) => {
         envScope.patch({ HAPPIER_HOME_DIR: homeDir, HAPPIER_SERVER_URL: 'https://old-home.example.test', HAPPIER_ACTIVE_SERVER_ID: undefined });
         const { handleSetupCommand } = await importHandleSetupCommand();
+        const preparedSelections: string[][] = [];
+        const childCalls: string[][] = [];
+        const focusedProfiles: string[] = [];
 
         await handleSetupCommand(['--skip-providers'], {
           readCredentialsFn: async () => null,
@@ -2363,14 +2551,30 @@ function withoutAgentCliPathOverrides(): () => void {
             homeCredentialCommitted: true,
             recovery: 'retry_stage',
           }),
+          prepareServerSelectionFromArgsFn: async (selectionArgs) => {
+            preparedSelections.push([...selectionArgs]);
+            return { rest: ['--skip-providers'], profileId: 'new-home' };
+          },
+          useHomeProfileFn: async (profileId) => {
+            focusedProfiles.push(profileId);
+            return { id: profileId } as never;
+          },
           readBackgroundServiceSetupGuidanceFn: async () => createBackgroundServiceSetupGuidance(),
-          runHappyCliStepFn: async () => 0,
+          runHappyCliStepFn: async (argv) => {
+            childCalls.push([...argv]);
+            return 0;
+          },
         });
 
         const rendered = stripAnsi(output.logs.join('\n'));
-        expect(rendered).toContain('This Home is connected. Machine registration can be retried');
+        expect(rendered).toContain('This Home is connected. Finishing machine registration for it now.');
         expect(rendered).not.toContain('Aborted.');
-        expect(process.exitCode).toBe(1);
+        expect(rendered).not.toContain('Setup could not enter a Home.');
+        // The committed Home is the retargeted destination, so the repair runs
+        // against it instead of re-entering Home selection.
+        expect(preparedSelections).toEqual([['--server', 'new-home', '--skip-providers']]);
+        expect(childCalls.some(([command, sub]) => command === 'auth' && sub === 'login')).toBe(true);
+        expect(focusedProfiles).toEqual(['new-home']);
       });
     });
 

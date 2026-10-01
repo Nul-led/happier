@@ -1,38 +1,19 @@
 import * as React from 'react';
-import type { Message } from '@/sync/domains/messages/messageTypes';
-import {
-    useForkedTranscriptSnapshot,
-    useSessionMessages,
-    useSessionMessagesById,
-    useSessionTranscriptIds,
-} from '@/sync/domains/state/storage';
+import type { Message } from "@happier-dev/session-core/messages";
+import { useForkedTranscriptSnapshot } from '@/sync/domains/state/storage';
+import { useSessionTranscriptSource } from '../source/SessionTranscriptSourceContext';
 import { buildForkAwareMessageDescriptors } from '@/components/sessions/transcript/forkContext/buildForkAwareMessageDescriptors';
 import { sync } from '@/sync/sync';
 import { fireAndForget } from '@/utils/system/fireAndForget';
 
 export function useTranscriptRootMessages(sessionId: string) {
-    const fork = useForkedTranscriptSnapshot(sessionId);
-    const { ids: childMessageIdsOldestFirst, isLoaded } = useSessionTranscriptIds(sessionId);
-    const childMessagesById = useSessionMessagesById(sessionId);
+    const source = useSessionTranscriptSource();
+    // Fork ancestry is an app-owned cross-session projection, never a snapshot fallback.
+    const fork = source.kind === 'app' ? useForkedTranscriptSnapshot(sessionId) : null;
+    const childMessageIdsOldestFirst = source.useMessageIdsOldestFirst();
+    const { isLoaded } = source.history.useState();
+    const childMessagesById = source.useMessagesById();
     const forkedTranscriptEnabled = fork != null;
-    const swrFallbackCandidateEnabled = !forkedTranscriptEnabled && childMessageIdsOldestFirst.length === 0;
-    const { messages: swrCommittedMessages } = useSessionMessages(sessionId, { enabled: swrFallbackCandidateEnabled });
-
-    const swrFallbackEnabled = !forkedTranscriptEnabled
-        && childMessageIdsOldestFirst.length === 0
-        && swrCommittedMessages.length > 0;
-    const swrFallbackMessageIdsOldestFirst = React.useMemo(() => {
-        if (!swrFallbackEnabled) return childMessageIdsOldestFirst;
-        return swrCommittedMessages.map((message) => message.id);
-    }, [childMessageIdsOldestFirst, swrCommittedMessages, swrFallbackEnabled]);
-    const swrFallbackMessagesById = React.useMemo(() => {
-        if (!swrFallbackEnabled) return childMessagesById;
-        const out: Record<string, Message> = {};
-        for (const message of swrCommittedMessages) {
-            out[message.id] = message;
-        }
-        return out;
-    }, [childMessagesById, swrCommittedMessages, swrFallbackEnabled]);
 
     const forkContextNeedsPrefetch = React.useMemo(() => {
         if (!fork) return false;
@@ -65,14 +46,14 @@ export function useTranscriptRootMessages(sessionId: string) {
         if (forkAwareMessageDescriptors) {
             return forkAwareMessageDescriptors.messageIdsOldestFirst as string[];
         }
-        return swrFallbackMessageIdsOldestFirst;
-    }, [forkAwareMessageDescriptors, swrFallbackMessageIdsOldestFirst]);
+        return childMessageIdsOldestFirst;
+    }, [forkAwareMessageDescriptors, childMessageIdsOldestFirst]);
     const messagesById = React.useMemo(() => {
         if (forkAwareMessageDescriptors) {
             return forkAwareMessageDescriptors.messagesById as Record<string, Message>;
         }
-        return swrFallbackMessagesById;
-    }, [forkAwareMessageDescriptors, swrFallbackMessagesById]);
+        return childMessagesById;
+    }, [forkAwareMessageDescriptors, childMessagesById]);
 
     return {
         fork,

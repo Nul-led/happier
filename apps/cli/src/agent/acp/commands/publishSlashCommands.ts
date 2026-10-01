@@ -36,19 +36,11 @@ export function publishSlashCommandsToMetadata(params: {
 
   updateMetadataBestEffort(
     session,
-    (metadata) => {
-      const prevNames = Array.isArray(metadata?.slashCommands) ? metadata.slashCommands : [];
-      const prevDetails = Array.isArray(metadata?.slashCommandDetails) ? metadata.slashCommandDetails : [];
-      const sameNames = JSON.stringify(prevNames) === JSON.stringify(names);
-      const sameDetails = JSON.stringify(prevDetails) === JSON.stringify(details);
-      if (sameNames && sameDetails) return metadata;
-
-      return {
-        ...metadata,
-        slashCommands: names,
-        slashCommandDetails: details,
-      };
-    },
+    (metadata) => ({
+      ...metadata,
+      slashCommands: names,
+      slashCommandDetails: details,
+    }),
     '[ACP]',
     'publish_slash_commands',
   );

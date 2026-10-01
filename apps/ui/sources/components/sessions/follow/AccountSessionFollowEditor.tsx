@@ -9,6 +9,8 @@ import {
 import { Switch } from '@/components/ui/forms/Switch';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
+import { SegmentedChoiceItem } from '@/components/ui/lists/SegmentedChoiceItem';
+import { useListPresentation } from '@/components/ui/lists/listPresentation';
 import { Icon } from '@/components/ui/icons/Icon';
 import { t } from '@/text';
 
@@ -19,6 +21,12 @@ export type AccountSessionFollowEditorProps = Readonly<{
     state: AccountSessionFollowEditorSnapshot;
     voiceReadiness: AccountVoiceFollowReadiness;
     archived: boolean;
+    /**
+     * A linked external Session whose Background sync is off. Following it still
+     * works, but Happier only sees the external source while that Session is
+     * attached, so the editor says so instead of promising delivery.
+     */
+    externalBackgroundSyncOff?: boolean;
     onSet(preferences: SetSessionFollowRequest): void;
     onRemove(): void;
     onRetry(): void;
@@ -29,6 +37,8 @@ const LEVELS = ['none', 'important', 'all_messages'] as const;
 
 export function AccountSessionFollowEditor(props: AccountSessionFollowEditorProps) {
     const { theme } = useUnistyles();
+    // On a page the notification level is a segmented choice; hosted in a popover it stays a radio list.
+    const isPage = useListPresentation() === 'page';
     const { state } = props;
     const isSessionOwner = state.projection?.isSessionOwner === true;
     // Effective state, not the raw row: a Session owner with no stored choice is
@@ -66,8 +76,10 @@ export function AccountSessionFollowEditor(props: AccountSessionFollowEditorProp
                 ? t('common.unavailable')
                 : t('errors.unknownError');
 
+    const levelOptions = LEVELS.map((level) => ({ id: level, label: t(`session.follow.level.${level}`) }));
+
     return <>
-        <ItemGroup footer={t('session.follow.footer')}>
+        <ItemGroup description={t('session.follow.footer')}>
             {isSessionOwner ? <Item
                 testID="session-follow-owner-row"
                 title={t('session.follow.following')}
@@ -108,7 +120,17 @@ export function AccountSessionFollowEditor(props: AccountSessionFollowEditorProp
             {state.online ? <Item testID="session-follow-retry" title={t('common.retry')} onPress={props.onRetry} showChevron={false} /> : null}
         </ItemGroup> : null}
         {following ? <>
-            <ItemGroup title={t('session.follow.notifications')} accessibilityRole="radiogroup" accessibilityLabel={t('session.follow.notifications')}>
+            {isPage ? <ItemGroup>
+                <SegmentedChoiceItem<SessionFollowNotificationLevel>
+                    testID="session-follow-level"
+                    testIDPrefix="session-follow-level"
+                    title={t('session.follow.notifications')}
+                    options={levelOptions}
+                    value={preferences.notificationLevel}
+                    disabled={disabled}
+                    onChange={(level) => props.onSet({ ...preferences, notificationLevel: level })}
+                />
+            </ItemGroup> : <ItemGroup title={t('session.follow.notifications')} accessibilityRole="radiogroup" accessibilityLabel={t('session.follow.notifications')}>
                 {LEVELS.map((level: SessionFollowNotificationLevel) => <Item
                     key={level}
                     testID={`session-follow-level-${level}`}
@@ -123,7 +145,7 @@ export function AccountSessionFollowEditor(props: AccountSessionFollowEditorProp
                         ? <Icon name="check" size={20} color={theme.colors.text.primary} />
                         : undefined}
                 />)}
-            </ItemGroup>
+            </ItemGroup>}
             <ItemGroup>
                 <Item
                     title={t('session.follow.voice.title')}
@@ -145,6 +167,15 @@ export function AccountSessionFollowEditor(props: AccountSessionFollowEditorProp
                     accessibilityLiveRegion="polite"
                 /> : null}
             </ItemGroup>
+            {props.externalBackgroundSyncOff ? <ItemGroup>
+                <Item
+                    testID="session-follow-external-attached-only"
+                    title={t('session.follow.editor.externalAttachedOnly')}
+                    mode="info"
+                    titleLines={0}
+                    showChevron={false}
+                />
+            </ItemGroup> : null}
         </> : null}
         <ItemGroup>
             <Item title={t('session.follow.settingsLink')} onPress={props.onOpenNotificationSettings} />

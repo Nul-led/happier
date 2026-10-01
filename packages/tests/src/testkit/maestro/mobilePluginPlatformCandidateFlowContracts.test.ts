@@ -116,7 +116,7 @@ describe('Plugin Platform exact-candidate native Maestro flow contracts', () => 
     );
 
     for (const selector of [
-      'main-header-start-new-session',
+      'tabbar-start-new-session',
       'new-session-composer-input',
       'new-session-composer-send',
       'settings-connect-terminal-scan',
@@ -321,11 +321,8 @@ describe('Plugin Platform exact-candidate native Maestro flow contracts', () => 
     expect(cliSource).toContain('runManagedChildCommand({');
     expect(cliSource).not.toContain('plugin_platform_mobile_candidate_preflight_blocked');
     expect(cliSource).not.toContain('resolveMobilePluginPlatformCandidateMetroDevClientAttestationBlocker');
-    expect(cliSource).toContain('createReactNativeRepackResolveOptions');
-    expect(cliSource).toContain(
-      'createReactNativeRepackResolveOptions(Repack.getResolveOptions(platform))',
-    );
-    expect(cliSource).not.toContain('...Repack.getResolveOptions(platform)');
+    expect(cliSource).not.toContain('@callstack/repack');
+    expect(cliSource).not.toContain('repackVersion');
     expect(cliSource).toContain("view.container = 'rightSidebarTab';");
     expect(cliSource).toContain("view.target = { kind: 'app' };");
     expect(cliSource).toContain('delete view.placement;');
@@ -385,12 +382,19 @@ describe('Plugin Platform exact-candidate native Maestro flow contracts', () => 
       "import { PUBLIC_TOOLCHAIN_SCAFFOLD_BINDINGS_V1 } from '@happier-dev/plugin-sdk/ui/build';",
     );
     expect(cliSource).toContain(
-      "'@swc/helpers': PUBLIC_TOOLCHAIN_SCAFFOLD_BINDINGS_V1.devDependencies['@swc/helpers'],",
+      'reactVersion: PUBLIC_TOOLCHAIN_SCAFFOLD_BINDINGS_V1.dependencies.react,',
     );
-    expect(cliSource).not.toContain("'@swc/helpers': '0.5.23'");
-    expect(cliSource).toContain("import { defineBuildConfig } from '@happier-dev/plugin-sdk/ui/build'");
-    expect(cliSource).toContain("platforms: ['ios', 'android']");
-    expect(cliSource).toContain('v1NativeArtifacts.iosDigest === v2NativeArtifacts.iosDigest');
+    expect(cliSource).toContain(
+      "reactNativeVersion: PUBLIC_TOOLCHAIN_SCAFFOLD_BINDINGS_V1.dependencies['react-native'],",
+    );
+    expect(cliSource).toContain(
+      '[`./happier-plugin-ui/${NATIVE_CONTRIBUTION_ID}`]: \'./src/ui/renderSurface.tsx\'',
+    );
+    expect(cliSource).not.toContain('defineBuildConfig');
+    expect(cliSource).not.toContain("platforms: ['ios', 'android']");
+    expect(cliSource).toContain(
+      'v1NativeArtifacts.artifactDigest === v2NativeArtifacts.artifactDigest',
+    );
     expect(cliSource).toContain('context.hostApi.context()');
     expect(cliSource).toContain('testID="candidate-native-host-api-ok"');
     expect(cliSource).toContain('accessibilityLabel="Test plugin failure isolation"');

@@ -1,12 +1,13 @@
+import { applyReducedMessages } from '@happier-dev/session-core/transcript';
 import type { PermissionMode } from '@/sync/domains/permissions/permissionTypes';
 import {
     inferLatestUserPermissionModeIntent,
     readPermissionModeIntentFromMetadata,
 } from '@happier-dev/agents';
 
-import { createReducer, reducer, type ReducerState } from '../../reducer/reducer';
-import type { Message } from '../../domains/messages/messageTypes';
-import type { NormalizedMessage } from '../../typesRaw';
+import { createReducer, reducer, type ReducerState } from "@happier-dev/session-core/reducer";
+import type { Message } from "@happier-dev/session-core/messages";
+import type { NormalizedMessage } from "@happier-dev/session-core/raw";
 import type { Session } from '../../domains/state/storageTypes';
 import { readSessionPresentationCompletedRequests } from '../../domains/session/presentation/readSessionPresentationCompletedRequests';
 import {
@@ -29,21 +30,20 @@ import { shouldIncludeSubagentSourceMessage } from '@/sync/domains/session/subag
 import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
 import {
     compareTranscriptMessagesOldestFirst,
-    hasTranscriptMessageOrderChanged,
     normalizeTranscriptSeq,
-} from '@/sync/domains/messages/transcriptOrdering';
-import { buildMessageRouteId } from '@/sync/domains/messages/messageRouteIds';
+} from "@happier-dev/session-core/messages";
+import { buildMessageRouteId } from "@happier-dev/session-core/messages";
 import {
     reconcilePersistedSessionMessagePinRouteIds,
 } from '@/sync/domains/state/sessionMessagePinsPersistence';
 import type {
     SessionMessagePinRole,
-} from '@/sync/domains/messages/pins/sessionMessagePinIdentity';
+} from "@happier-dev/session-core/pins";
 import type {
     SessionMessagePinRouteHydrationFact,
-} from '@/sync/domains/messages/pins/sessionMessagePins';
+} from "@happier-dev/session-core/pins";
 import { shouldPreservePendingProjectionAfterCommittedUserLocalId } from '@/sync/domains/pending/pendingTranscriptProjection';
-import { isRecoveredHistoryTranscriptObservation } from '@/sync/domains/messages/transcriptObservationProvenance';
+import { isRecoveredHistoryTranscriptObservation, type TranscriptMessageMetadataUpdate } from "@happier-dev/session-core/messages";
 import { clearSessionTranscriptDerivedCachesForSession } from '../../runtime/sessionTranscriptDerivedCaches';
 import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
@@ -62,11 +62,8 @@ export type SessionMessages = {
     messagesMap: Record<string, Message>;
     /**
      * IMPORTANT ARCHITECTURE NOTE:
-     * `messagesById` AND `messageRevisionsById` are intentionally mutated
-     * in-place for streaming performance.
-     *
-     * As a result:
-     * - Do NOT rely on their referential identity changes to detect updates.
+     * `messagesById` is an immutable snapshot with structurally shared rows.
+     * `messageRevisionsById` remains an internal, in-place revision index.
      * - Prefer id-based subscriptions (`useMessage(sessionId, messageId)`) or
      *   selectors keyed on stable primitives (ids/version counters).
      */
@@ -104,6 +101,7 @@ export type MessagesDomain = {
         messages: NormalizedMessage[],
         options?: Readonly<{
             replaceExisting?: boolean;
+            metadataUpdates?: readonly TranscriptMessageMetadataUpdate[];
         }>,
     ) => {
         changed: string[];
@@ -150,71 +148,6 @@ function mergeLatestNumber(existing: number | null | undefined, incoming: number
         : normalizedIncoming;
 }
 
-function mergeSortedMessageIdsOldestFirst(params: Readonly<{
-    existingSortedIds: readonly string[];
-    insertSortedIds: readonly string[];
-    messagesById: Readonly<Record<string, Message>>;
-}>): string[] {
-    const out: string[] = [];
-    const seen = new Set<string>();
-    let i = 0;
-    let j = 0;
-
-    const compare = (aId: string, bId: string): number => {
-        if (aId === bId) return 0;
-        const a = params.messagesById[aId];
-        const b = params.messagesById[bId];
-        if (!a && !b) return String(aId).localeCompare(String(bId));
-        if (!a) return -1;
-        if (!b) return 1;
-        return compareTranscriptMessagesOldestFirst(a, b);
-    };
-
-    while (i < params.existingSortedIds.length || j < params.insertSortedIds.length) {
-        const aId = i < params.existingSortedIds.length ? params.existingSortedIds[i]! : null;
-        const bId = j < params.insertSortedIds.length ? params.insertSortedIds[j]! : null;
-
-        const nextId = (() => {
-            if (aId === null) return bId!;
-            if (bId === null) return aId!;
-            return compare(aId, bId) <= 0 ? aId : bId;
-        })();
-
-        if (!seen.has(nextId)) {
-            out.push(nextId);
-            seen.add(nextId);
-        }
-
-        if (aId !== null && nextId === aId) i += 1;
-        if (bId !== null && nextId === bId) j += 1;
-    }
-
-    return out;
-}
-
-function appendSortedMessageIdsOldestFirst(params: Readonly<{
-    existingSortedIds: readonly string[];
-    insertSortedIds: readonly string[];
-    messagesById: Readonly<Record<string, Message>>;
-}>): string[] | null {
-    if (params.insertSortedIds.length === 0) return params.existingSortedIds as string[];
-    if (params.existingSortedIds.length === 0) return params.insertSortedIds.slice();
-
-    const lastExistingId = params.existingSortedIds[params.existingSortedIds.length - 1];
-    const firstInsertId = params.insertSortedIds[0];
-    if (!lastExistingId || !firstInsertId) return null;
-
-    const lastExisting = params.messagesById[lastExistingId];
-    const firstInsert = params.messagesById[firstInsertId];
-    if (!lastExisting || !firstInsert) return null;
-
-    if (compareTranscriptMessagesOldestFirst(lastExisting, firstInsert) <= 0) {
-        return [...params.existingSortedIds, ...params.insertSortedIds];
-    }
-
-    return null;
-}
-
 function coerceSessionMessages(input: unknown): SessionMessages {
     const raw = input as any;
     const reducerState: ReducerState = raw?.reducerState ? (raw.reducerState as ReducerState) : createReducer();
@@ -244,8 +177,8 @@ function coerceSessionMessages(input: unknown): SessionMessages {
         })();
 
     const latestThinkingMessageId: string | null =
-        typeof raw?.latestThinkingMessageId === 'string'
-            ? (raw.latestThinkingMessageId as string)
+        typeof raw?.latestThinkingMessageId === 'string' || raw?.latestThinkingMessageId === null
+            ? raw.latestThinkingMessageId
             : findLatestThinkingMessageId({ idsOldestFirst: messageIdsOldestFirst, messagesById });
 
     const latestThinkingMessageActivityAtMs: number | null =
@@ -375,10 +308,11 @@ export function applyAgentStateUpdateToSessionMessages(params: Readonly<{
     const reducerResult = reducer(existing.reducerState, [], params.agentState);
     const processedMessages = reducerResult.messages;
 
-    const messagesById = existing.messagesById;
     const messageRevisionsById = existing.messageRevisionsById ?? {};
-    const idsToRemove = new Set<string>();
-    const idsToInsert: string[] = [];
+    const previousMessages = new Map(processedMessages.map((message) => [message.id, existing.messagesById[message.id]]));
+    const orderedTranscript = applyReducedMessages(existing, processedMessages);
+    const messagesById = orderedTranscript.messagesById;
+    const nextIds = orderedTranscript.messageIdsOldestFirst;
 
     let latestThinkingMessageId = existing.latestThinkingMessageId;
     let shouldRecomputeLatestThinking = false;
@@ -387,15 +321,9 @@ export function applyAgentStateUpdateToSessionMessages(params: Readonly<{
     let didSubagentSourceChange = false;
 
     for (const message of processedMessages) {
-        const prev = messagesById[message.id];
+        const prev = previousMessages.get(message.id);
         if ((prev && shouldIncludeSubagentSourceMessage(prev)) || shouldIncludeSubagentSourceMessage(message)) {
             didSubagentSourceChange = true;
-        }
-        if (!prev) {
-            idsToInsert.push(message.id);
-        } else if (hasTranscriptMessageOrderChanged(prev, message)) {
-            idsToRemove.add(message.id);
-            idsToInsert.push(message.id);
         }
 
         if (message.kind === 'agent-text' && message.isThinking === true) {
@@ -405,7 +333,7 @@ export function applyAgentStateUpdateToSessionMessages(params: Readonly<{
             }
         }
 
-        messagesById[message.id] = message;
+        previousMessages.set(message.id, message);
         messageRevisionsById[message.id] = (messageRevisionsById[message.id] ?? 0) + 1;
 
         if (message.kind === 'agent-text' && message.isThinking === true) {
@@ -421,24 +349,6 @@ export function applyAgentStateUpdateToSessionMessages(params: Readonly<{
             shouldRecomputeLatestThinking = true;
         }
     }
-
-    const nextIds = (() => {
-        const existingIds = existing.messageIdsOldestFirst;
-        if (idsToInsert.length === 0 && idsToRemove.size === 0) return existingIds;
-
-        const filtered = idsToRemove.size > 0
-            ? existingIds.filter((id) => !idsToRemove.has(id))
-            : existingIds.slice();
-
-        const uniqueInsertIds = Array.from(new Set(idsToInsert));
-        uniqueInsertIds.sort((a, b) => compareTranscriptMessagesOldestFirst(messagesById[a]!, messagesById[b]!));
-
-        return mergeSortedMessageIdsOldestFirst({
-            existingSortedIds: filtered,
-            insertSortedIds: uniqueInsertIds,
-            messagesById,
-        });
-    })();
 
     if (shouldRecomputeLatestThinking) {
         latestThinkingMessageId = findLatestThinkingMessageId({ idsOldestFirst: nextIds, messagesById });
@@ -546,6 +456,7 @@ export function createMessagesDomain<S extends MessagesDomain & MessagesDomainDe
             messages: NormalizedMessage[],
             options?: Readonly<{
                 replaceExisting?: boolean;
+                metadataUpdates?: readonly TranscriptMessageMetadataUpdate[];
             }>,
         ) => {
             const telemetryFields: Record<string, number> = { messages: messages.length };
@@ -577,13 +488,13 @@ export function createMessagesDomain<S extends MessagesDomain & MessagesDomainDe
                     typeof session?.agentStateVersion === 'number' && Number.isFinite(session.agentStateVersion)
                         ? Math.trunc(session.agentStateVersion)
                         : null;
-                const shouldApplyAgentState = agentState != null && (
+                const shouldApplyAgentState = agentState != null && !(messages.length === 0 && options?.metadataUpdates) && (
                     messages.length > 0
                     || agentStateVersion === null
                     || existingSession.lastAppliedAgentStateVersion !== agentStateVersion
                 );
                 telemetryFields.agentStateApplied = shouldApplyAgentState ? 1 : 0;
-                if (messages.length === 0 && !shouldApplyAgentState && options?.replaceExisting !== true) {
+                if (messages.length === 0 && !options?.metadataUpdates?.length && !shouldApplyAgentState && options?.replaceExisting !== true) {
                     telemetryFields.processed = 0;
                     telemetryFields.changed = 0;
                     telemetryFields.noop = 1;
@@ -612,6 +523,7 @@ export function createMessagesDomain<S extends MessagesDomain & MessagesDomainDe
                         existingSession.reducerState,
                         normalizedMessages,
                         shouldApplyAgentState ? agentState : null,
+                        options?.metadataUpdates,
                     ),
                 );
                 const processedMessages = reducerResult.messages;
@@ -654,10 +566,16 @@ export function createMessagesDomain<S extends MessagesDomain & MessagesDomainDe
                     );
                 }
 
-                const messagesById = existingSession.messagesById;
                 const messageRevisionsById = existingSession.messageRevisionsById ?? {};
-                const idsToRemove = new Set<string>();
-                const idsToInsert: string[] = [];
+                const previousMessages = new Map(processedMessages.map((message) => [message.id, existingSession.messagesById[message.id]]));
+                const orderedTranscript = syncPerformanceTelemetry.measure(
+                    'sync.store.messages.index',
+                    { processed: processedMessages.length },
+                    () => applyReducedMessages(existingSession, processedMessages),
+                );
+                const messagesById = orderedTranscript.messagesById;
+                const nextIds = orderedTranscript.messageIdsOldestFirst;
+                telemetryFields.idsChanged = nextIds !== existingSession.messageIdsOldestFirst ? 1 : 0;
 
                 let latestThinkingMessageId = existingSession.latestThinkingMessageId;
                 let shouldRecomputeLatestThinking = false;
@@ -670,7 +588,7 @@ export function createMessagesDomain<S extends MessagesDomain & MessagesDomainDe
                 let renderableAggregate = existingSession.renderableAggregate;
 
                 for (const message of processedMessages) {
-                    const prev = messagesById[message.id];
+                    const prev = previousMessages.get(message.id);
                     if (renderableAggregate) {
                         const appliedToAggregate = applyMessageChangeToTranscriptRenderableAggregate({
                             aggregate: renderableAggregate,
@@ -684,12 +602,6 @@ export function createMessagesDomain<S extends MessagesDomain & MessagesDomainDe
                     if ((prev && shouldIncludeSubagentSourceMessage(prev)) || shouldIncludeSubagentSourceMessage(message)) {
                         didSubagentSourceChange = true;
                     }
-                    if (!prev) {
-                        idsToInsert.push(message.id);
-                    } else if (hasTranscriptMessageOrderChanged(prev, message)) {
-                        idsToRemove.add(message.id);
-                        idsToInsert.push(message.id);
-                    }
 
                     if (
                         !isRecoveredHistoryTranscriptObservation(message)
@@ -702,7 +614,7 @@ export function createMessagesDomain<S extends MessagesDomain & MessagesDomainDe
                         }
                     }
 
-                    messagesById[message.id] = message;
+                    previousMessages.set(message.id, message);
                     messageRevisionsById[message.id] = (messageRevisionsById[message.id] ?? 0) + 1;
 
                     if (
@@ -722,56 +634,6 @@ export function createMessagesDomain<S extends MessagesDomain & MessagesDomainDe
                         shouldRecomputeLatestThinking = true;
                     }
                 }
-
-                const indexTelemetryFields: Record<string, number> = {
-                    processed: processedMessages.length,
-                    insertedOrMoved: idsToInsert.length,
-                    removedForReorder: idsToRemove.size,
-                };
-                let nextIds = syncPerformanceTelemetry.measure(
-                    'sync.store.messages.index',
-                    indexTelemetryFields,
-                    () => {
-                    const existingIds = existingSession.messageIdsOldestFirst;
-                    if (idsToInsert.length === 0 && idsToRemove.size === 0) {
-                        indexTelemetryFields.idsChanged = 0;
-                        indexTelemetryFields.uniqueInsertedOrMoved = 0;
-                        return existingIds;
-                    }
-
-                    const filtered = idsToRemove.size > 0
-                        ? existingIds.filter((id) => !idsToRemove.has(id))
-                        : existingIds.slice();
-
-                    const uniqueInsertIds = Array.from(new Set(idsToInsert));
-                    uniqueInsertIds.sort((a, b) => compareTranscriptMessagesOldestFirst(messagesById[a]!, messagesById[b]!));
-                    indexTelemetryFields.idsChanged = 1;
-                    indexTelemetryFields.uniqueInsertedOrMoved = uniqueInsertIds.length;
-
-                    if (idsToRemove.size === 0) {
-                        const appended = appendSortedMessageIdsOldestFirst({
-                            existingSortedIds: existingIds,
-                            insertSortedIds: uniqueInsertIds,
-                            messagesById,
-                        });
-                        if (appended) {
-                            indexTelemetryFields.appendOnly = 1;
-                            return appended;
-                        }
-                    }
-                    indexTelemetryFields.appendOnly = 0;
-
-                    return mergeSortedMessageIdsOldestFirst({
-                        existingSortedIds: filtered,
-                        insertSortedIds: uniqueInsertIds,
-                        messagesById,
-                    });
-                    },
-                );
-                telemetryFields.insertedOrMoved = indexTelemetryFields.insertedOrMoved ?? 0;
-                telemetryFields.removedForReorder = indexTelemetryFields.removedForReorder ?? 0;
-                telemetryFields.uniqueInsertedOrMoved = indexTelemetryFields.uniqueInsertedOrMoved ?? 0;
-                telemetryFields.idsChanged = indexTelemetryFields.idsChanged ?? 0;
 
                 if (shouldRecomputeLatestThinking) {
                     latestThinkingMessageId = findLatestThinkingMessageId({ idsOldestFirst: nextIds, messagesById });

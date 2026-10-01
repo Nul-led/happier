@@ -1,4 +1,5 @@
 import {
+    TEAMS_ACCOUNT_CHANGE_ENTITY_ID_V1,
     bindHomeDomainActionHttpRequestV1,
     HomeGovernanceEligibilityV1Schema,
     homeDomainActionOutputSchemaV1,
@@ -71,7 +72,9 @@ const loader = createScopedSnapshotLoader<EligibilityTarget>({
     invalidateTarget: ({ scope }) => {
         invalidateHomeGovernanceEligibilitySnapshot(scope);
     },
-    matchesWake: isHomeAdministrationAccountChange,
+    // Joining or leaving a Team changes whether this viewer is shown Teams.
+    matchesWake: (event) => isHomeAdministrationAccountChange(event)
+        || event.entityIds?.includes(TEAMS_ACCOUNT_CHANGE_ENTITY_ID_V1) === true,
 });
 
 export function observeHomeGovernanceEligibility(scope: ServerAccountScope): () => void {

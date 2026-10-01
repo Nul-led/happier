@@ -101,7 +101,12 @@ export type SessionAuthoringFieldControlModel =
          * Absent means the ordinary "Default" reading is true; a field whose
          * value is genuinely unresolved supplies its own honest label instead.
          */
-        unselectedLabel?: string;
+        unselectedLabel?: string;        /**
+         * A stored value the current catalog no longer offers (B7, L14): it stays
+         * selected under its last-known label with the one-line repair, and is
+         * never replaced by a default until the person chooses another.
+         */
+        preserved?: Readonly<{ label: string; repair: string }>;
     }>
     | Readonly<{
         field: SessionAuthoringFieldId;
@@ -198,6 +203,8 @@ export type SessionAuthoringControlFacts = Readonly<{
      */
     contextualDefaultAgentTarget?: AgentExecutionTargetV1 | null;
     profiles?: ReadonlyArray<Readonly<{ id: string; label: string; subtitle?: string }>>;
+    /** The exact Machine these facts describe, by its display name: the repair line names it. */
+    machineName?: string | null;
     /** The exact run target runs Windows, so its launch controls apply. */
     targetIsWindows?: boolean;
     windowsTerminalAvailable?: boolean;
@@ -384,6 +391,19 @@ function buildConfigOptionGroups(
     });
 }
 
+/** A stored value no offered option names, kept under its last-known label with its repair line. */
+function preservedValue(label: string, facts: SessionAuthoringControlFacts) {
+    return {
+        unselectedLabel: label,
+        preserved: {
+            label,
+            repair: facts.machineName
+                ? t('agentInput.agent.noLongerAvailableOn', { machine: facts.machineName })
+                : t('agentInput.agent.noLongerAvailable'),
+        },
+    } as const;
+}
+
 /**
  * The control for one field, given the resolved effective policy and the facts
  * the host contributed.
@@ -427,11 +447,10 @@ export function resolveSessionAuthoringFieldControl(params: Readonly<{
                 // ordinary "Default" hides the exact reason a strict Workflow
                 // refuses to run.
                 ...(selectedOption === null
-                    ? {
-                        unselectedLabel: values.agentTarget
-                            ? t('common.unavailable')
-                            : t('agentInput.agent.unselected'),
-                    }
+                    ? (values.agentTarget
+                        // An authored Agent this Machine does not offer keeps its own name.
+                        ? preservedValue(values.agentTarget.identity.localId, facts)
+                        : { unselectedLabel: t('agentInput.agent.unselected') })
                     : {}),
             };
         }
@@ -450,6 +469,10 @@ export function resolveSessionAuthoringFieldControl(params: Readonly<{
                     ...(option.description ? { subtitle: option.description } : {}),
                 })),
                 selectedOptionId: readSessionModelSelectionOptionId(values.modelSelection),
+                ...(values.modelSelection
+                    && !controls.modelOptions.some((option) => option.value === readSessionModelSelectionOptionId(values.modelSelection))
+                    ? preservedValue(readSessionModelSelectionOptionId(values.modelSelection), facts)
+                    : {}),
             };
         }
 
@@ -501,6 +524,10 @@ export function resolveSessionAuthoringFieldControl(params: Readonly<{
                     })),
                 ],
                 selectedOptionId: values.profileId ?? SESSION_AUTHORING_NONE_OPTION_ID,
+                // A Launch Profile that was deleted keeps its id visible rather than reading as None.
+                ...(values.profileId && !profiles.some((profile) => profile.id === values.profileId)
+                    ? preservedValue(values.profileId, facts)
+                    : {}),
             };
         }
 

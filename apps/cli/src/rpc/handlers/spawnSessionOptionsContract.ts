@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { SpawnSessionTerminalSchema } from '@happier-dev/protocol/spawnSession';
 import {
   AcpConfigOptionOverridesV1Schema,
   AgentExecutionTargetV1Schema,
@@ -14,6 +15,14 @@ import {
   SessionModelSelectionV1Schema,
   SessionCreationTagV1Schema,
   SessionInitialAccessDraftV1Schema,
+  SessionReportsToV1Schema,
+  SessionRolesV1Schema,
+  SessionInitialGoalRequestV1Schema,
+  SessionOriginKindV1Schema,
+  SessionIdSchema,
+  ExecutionRunIdSchema,
+  SessionWorkDepthV1Schema,
+  refineSessionCreateOriginFieldsV1,
   MachinePoolSelectionOriginV1Schema,
   NonBlankOpaqueIdentifierSchema,
   SecretReferenceOverlayV1Schema,
@@ -36,6 +45,7 @@ import {
   type SpawnSessionOptions,
 } from '@/session/shared/spawnSessionContract';
 import { readCanonicalSpawnRuntimeSelectionFromCompatIngress } from './spawnRuntimeSelection';
+import { asHostProtocolZod } from '@/plugins/runtime/protocolComposableZodAdapter';
 
 function asNonEmptyStringTuple<T extends string>(values: readonly T[]): [T, ...T[]] {
   if (values.length === 0) {
@@ -78,6 +88,8 @@ export type SpawnDaemonSessionRequest = Omit<
   SpawnSessionOptions,
   | 'backendTarget'
   | 'providerBindingMetadataV1'
+  | 'creationAuthorization'
+  | 'callerInputConstraints'
 > & {
   /** Private machine transport discriminator retained for lifecycle routing. */
   type?: 'spawn-in-directory' | 'resume-session';
@@ -113,14 +125,7 @@ export function canonicalizeSpawnBackendTargetFromTransportInput(params: Readonl
   };
 }
 
-export const SpawnSessionTerminalSchema = z.object({
-  mode: z.enum(['plain', 'tmux', 'windows_terminal', 'windows_console']).optional(),
-  tmux: z.object({
-    sessionName: z.string().optional(),
-    isolated: z.boolean().optional(),
-    tmpDir: z.union([z.string(), z.null()]).optional(),
-  }).optional(),
-});
+export { SpawnSessionTerminalSchema };
 
 function canonicalizeSpawnDaemonSessionRequestIngress(value: unknown): unknown {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -174,6 +179,17 @@ function canonicalizeSpawnDaemonSessionRequestIngress(value: unknown): unknown {
 const SpawnDaemonSessionRequestCompatSchema = z.preprocess(canonicalizeSpawnDaemonSessionRequestIngress, z.object({
   type: z.enum(['spawn-in-directory', 'resume-session']).optional(),
   directory: z.string(),
+  directoryKind: z.enum(['path', 'managed']).optional(),
+  freshSessionCreation: z.boolean().optional(),
+  managedDirectorySeed: z.object({
+    sourceSessionId: z.string().trim().min(1),
+    sourceSessionCreationTag: z.string().trim().min(1).optional(),
+    sourcePath: z.string().trim().min(1),
+  }).strict().optional(),
+  originKind: SessionOriginKindV1Schema.optional(),
+  originSessionId: asHostProtocolZod(SessionIdSchema).optional(),
+  originRunId: ExecutionRunIdSchema.optional(),
+  workDepth: SessionWorkDepthV1Schema.optional(),
   approvedNewDirectoryCreation: z.boolean().optional(),
   machineId: z.string().trim().min(1).optional(),
   spawnNonce: z.string().trim().min(1).optional(),
@@ -182,6 +198,8 @@ const SpawnDaemonSessionRequestCompatSchema = z.preprocess(canonicalizeSpawnDaem
   placementOrigin: MachinePoolSelectionOriginV1Schema.optional(),
   initialTitle: z.string().trim().min(1).optional(),
   initialAccess: SessionInitialAccessDraftV1Schema.optional(),
+  reportsTo: SessionReportsToV1Schema.optional(),
+  initialSessionRolesV1: asHostProtocolZod(SessionRolesV1Schema).optional(),
   primaryTeamId: z.string().min(1).nullable().optional(),
   teamCredentialBindings: SessionTeamCredentialBindingIntentsV1Schema.optional(),
   pendingFirstInput: z.object({
@@ -208,6 +226,7 @@ const SpawnDaemonSessionRequestCompatSchema = z.preprocess(canonicalizeSpawnDaem
   sessionId: z.string().trim().min(1).optional(),
   existingSessionId: z.string().trim().min(1).optional(),
   initialTranscriptAfterSeq: z.number().int().min(0).optional(),
+  initialGoal: SessionInitialGoalRequestV1Schema.optional(),
   executionAuthorization: SpawnSessionExecutionAuthorizationSchema.optional(),
   attachMetadataIdentityPolicy: SessionAttachMetadataIdentityPolicySchema.optional(),
   /** Agent-issued and opaque: admitted for presence, carried byte for byte. */
@@ -243,6 +262,23 @@ const SpawnDaemonSessionRequestCompatSchema = z.preprocess(canonicalizeSpawnDaem
 }).strict());
 
 export const SpawnDaemonSessionRequestSchema = SpawnDaemonSessionRequestCompatSchema.transform((request, ctx) => {
+  refineSessionCreateOriginFieldsV1(request, ctx);
+  if (request.initialGoal && !request.existingSessionId && request.type !== 'resume-session') {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['initialGoal'],
+      message: 'Initial goals require Session resume',
+    });
+    return z.NEVER;
+  }
+  if (request.reportsTo !== undefined && (request.existingSessionId || request.type === 'resume-session')) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['reportsTo'], message: 'The lead relation requires fresh Session creation' });
+    return z.NEVER;
+  }
+  if (request.initialSessionRolesV1 !== undefined && (request.existingSessionId || request.type === 'resume-session')) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['initialSessionRolesV1'], message: 'Initial roles require fresh Session creation' });
+    return z.NEVER;
+  }
   if ((request.initialAccess !== undefined || request.primaryTeamId !== undefined)
     && (request.existingSessionId || request.type === 'resume-session')) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['initialAccess'], message: 'Initial access and Team context require fresh Session creation' });
@@ -359,12 +395,20 @@ export const SpawnDaemonSessionRequestSchema = SpawnDaemonSessionRequestCompatSc
 const SPAWN_SESSION_OPTION_KEYS = [
   'machineId',
   'directory',
+  'directoryKind',
+  'freshSessionCreation',
+  'managedDirectorySeed',
+  'originKind',
+  'originSessionId',
+  'originRunId',
+  'workDepth',
   'spawnNonce',
   'sessionCreationTag',
   'sessionCreationCorrespondence',
   'placementOrigin',
   'initialTitle',
   'initialAccess',
+  'reportsTo',
   'primaryTeamId',
   'teamCredentialBindings',
   'pendingFirstInput',
@@ -376,6 +420,7 @@ const SPAWN_SESSION_OPTION_KEYS = [
   'runtimeDescriptorV1',
   'existingSessionId',
   'initialTranscriptAfterSeq',
+  'initialGoal',
   'executionAuthorization',
   'attachMetadataIdentityPolicy',
   'permissionMode',

@@ -88,12 +88,21 @@ describe('provider account usage material fingerprint', () => {
                 details: {},
             }],
         });
+        const refreshedSubscription = createSnapshot({
+            subscription: {
+                status: 'subscribed', renewal: 'off', observedAtMs: 2_000,
+                staleAfterMs: 60_000, currentPeriodEndAtMs: 1_800_000_000_000,
+            },
+        });
 
         expect(module!.computeProviderAccountUsageSnapshotFingerprint(first, key)).toBe(
             module!.computeProviderAccountUsageSnapshotFingerprint(sameMaterial, key),
         );
         expect(module!.computeProviderAccountUsageSnapshotFingerprint(first, key)).not.toBe(
             module!.computeProviderAccountUsageSnapshotFingerprint(changedMeter, key),
+        );
+        expect(module!.computeProviderAccountUsageSnapshotFingerprint(first, key)).not.toBe(
+            module!.computeProviderAccountUsageSnapshotFingerprint(refreshedSubscription, key),
         );
     });
 

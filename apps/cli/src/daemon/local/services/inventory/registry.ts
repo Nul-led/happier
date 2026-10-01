@@ -1,3 +1,5 @@
+import { processGenerationProvesReuse } from '@happier-dev/cli-common/processInstance';
+
 import {
     createLocalServiceInventoryEntryRemovedEvent,
     createLocalServiceInventoryEntryUpsertedEvent,
@@ -23,7 +25,8 @@ export type LocalServiceInventoryRegistry = Readonly<{
     forgetEntry(input: Readonly<{
         inventoryId: string;
         updatedAt: number;
-    }>): Readonly<{ ok: true } | { ok: false; reason: 'unknown_inventory_entry' }>;
+    }>): Readonly<{ ok: true; undoKey: string } | { ok: false; reason: 'unknown_inventory_entry' }>;
+    undoForget(undoKey: string): Readonly<{ ok: true } | { ok: false; reason: 'unknown_inventory_entry' }>;
     applyLabelPatch(input: Readonly<{
         inventoryId: string;
         text: string;
@@ -58,13 +61,8 @@ export type LocalServiceInventoryAnnotationStore = Readonly<{
 }>;
 
 export type LocalServiceInventoryRegistryOptions = Readonly<{
-    maxForgottenEntries?: number;
-    forgottenEntryTtlMs?: number;
     annotations?: LocalServiceInventoryAnnotationStore;
 }>;
-
-const DEFAULT_MAX_FORGOTTEN_ENTRIES = 512;
-const DEFAULT_FORGOTTEN_ENTRY_TTL_MS = 30 * 60_000;
 
 type ForgottenSuppression = Readonly<{
     forgottenAt: number;
@@ -126,42 +124,10 @@ function isDefinitelyDifferentRun(
     if (forgotten.pid !== current.pid) {
         return true;
     }
-    return forgotten.processStartTimeMs !== null
-        && current.processStartTimeMs !== null
-        && forgotten.processStartTimeMs !== current.processStartTimeMs;
-}
-
-function resolvePositiveInt(value: number | undefined, fallback: number): number {
-    return typeof value === 'number' && Number.isFinite(value) && value > 0
-        ? Math.max(1, Math.trunc(value))
-        : fallback;
-}
-
-function addSuppression(
-    suppressions: Map<string, ForgottenSuppression>,
-    key: string,
-    value: ForgottenSuppression,
-    maxEntries: number,
-): void {
-    suppressions.delete(key);
-    suppressions.set(key, value);
-    while (suppressions.size > maxEntries) {
-        const oldest = suppressions.keys().next().value;
-        if (oldest === undefined) break;
-        suppressions.delete(oldest);
-    }
-}
-
-function pruneExpiredSuppressions(
-    suppressions: Map<string, ForgottenSuppression>,
-    now: number,
-    ttlMs: number,
-): void {
-    for (const [key, suppression] of suppressions) {
-        if (now - suppression.forgottenAt >= ttlMs) {
-            suppressions.delete(key);
-        }
-    }
+    return processGenerationProvesReuse(
+        forgotten.processStartTimeMs ?? undefined,
+        current.processStartTimeMs ?? undefined,
+    );
 }
 
 export function createLocalServiceInventoryRegistry(
@@ -169,22 +135,20 @@ export function createLocalServiceInventoryRegistry(
 ): LocalServiceInventoryRegistry {
     const subscribers = new Set<LocalServiceInventorySubscriber>();
     const restored = options.annotations?.read() ?? null;
-    const labels = createLocalServiceInventoryLabelStore(restored?.labelsByFallbackKey ?? []);
-    const maxForgottenEntries = resolvePositiveInt(options.maxForgottenEntries, DEFAULT_MAX_FORGOTTEN_ENTRIES);
-    const forgottenEntryTtlMs = resolvePositiveInt(options.forgottenEntryTtlMs, DEFAULT_FORGOTTEN_ENTRY_TTL_MS);
-    // Inventory ids do not survive a restart, so only the address-keyed suppressions are restored;
-    // the id-keyed map is rebuilt as this run forgets things.
-    const forgottenInventoryIds = new Map<string, ForgottenSuppression>();
-    const forgottenFallbackKeys = new Map<string, ForgottenSuppression>(
+    let labels = createLocalServiceInventoryLabelStore(restored?.labelsByFallbackKey ?? []);
+    // One address-keyed decision survives restart and expires only on a proven new run.
+    let forgottenFallbackKeys = new Map<string, ForgottenSuppression>(
         (restored?.forgottenFallbackKeys ?? []).map(([key, suppression]) => [key, suppression] as const),
     );
     let snapshot = createEmptySnapshot();
+    // Keep the scan's current facts at this owner so Undo never revives an obsolete row.
+    let scannedEntries = snapshot.entries;
 
-    const persistAnnotations = (): void => {
+    const persistAnnotations = (nextLabels = labels, nextForgotten = forgottenFallbackKeys): void => {
         options.annotations?.write({
             v: 1,
-            labelsByFallbackKey: labels.snapshotDurableLabels(),
-            forgottenFallbackKeys: [...forgottenFallbackKeys.entries()].map(([key, value]) => [key, value] as const),
+            labelsByFallbackKey: nextLabels.snapshotDurableLabels(),
+            forgottenFallbackKeys: [...nextForgotten.entries()].map(([key, value]) => [key, value] as const),
         });
     };
 
@@ -199,12 +163,8 @@ export function createLocalServiceInventoryRegistry(
             return snapshot;
         },
         replaceSnapshot(nextSnapshot) {
-            pruneExpiredSuppressions(forgottenInventoryIds, nextSnapshot.generatedAt, forgottenEntryTtlMs);
-            pruneExpiredSuppressions(forgottenFallbackKeys, nextSnapshot.generatedAt, forgottenEntryTtlMs);
+            scannedEntries = nextSnapshot.entries;
             const visibleEntries = nextSnapshot.entries.filter((entry) => {
-                if (forgottenInventoryIds.has(entry.id)) {
-                    return false;
-                }
                 const fallbackKey = inventoryFallbackKey(entry);
                 const fallbackSuppression = forgottenFallbackKeys.get(fallbackKey);
                 if (!fallbackSuppression) {
@@ -231,23 +191,43 @@ export function createLocalServiceInventoryRegistry(
                 forgottenAt: input.updatedAt,
                 runIdentity: inventoryRunIdentity(target),
             };
-            addSuppression(forgottenInventoryIds, target.id, suppression, maxForgottenEntries);
-            addSuppression(forgottenFallbackKeys, inventoryFallbackKey(target), suppression, maxForgottenEntries);
-            persistAnnotations();
+            const nextForgotten = new Map(forgottenFallbackKeys);
+            nextForgotten.set(inventoryFallbackKey(target), suppression);
+            persistAnnotations(labels, nextForgotten);
+            forgottenFallbackKeys = nextForgotten;
             snapshot = {
                 ...snapshot,
                 generatedAt: input.updatedAt,
                 entries: snapshot.entries.filter((entry) => entry.id !== target.id),
             };
             publish(createLocalServiceInventoryEntryRemovedEvent(snapshot, target.id));
+            return { ok: true, undoKey: inventoryFallbackKey(target) };
+        },
+        undoForget(undoKey) {
+            if (!forgottenFallbackKeys.has(undoKey)) {
+                return { ok: false, reason: 'unknown_inventory_entry' };
+            }
+            const nextForgotten = new Map(forgottenFallbackKeys);
+            nextForgotten.delete(undoKey);
+            persistAnnotations(labels, nextForgotten);
+            forgottenFallbackKeys = nextForgotten;
+            snapshot = {
+                ...snapshot,
+                entries: scannedEntries
+                    .filter((entry) => !forgottenFallbackKeys.has(inventoryFallbackKey(entry)))
+                    .map((entry) => attachStoredLabels(entry, labels.labelsFor(entry))),
+            };
+            publish(createLocalServiceInventorySnapshotEvent(snapshot));
             return { ok: true };
         },
         applyLabelPatch(input) {
-            const result = labels.applyPatch({ ...input, knownEntries: snapshot.entries });
+            const nextLabels = createLocalServiceInventoryLabelStore(labels.snapshotDurableLabels());
+            const result = nextLabels.applyPatch({ ...input, knownEntries: snapshot.entries });
             if (!result.ok) {
                 return result;
             }
-            persistAnnotations();
+            persistAnnotations(nextLabels);
+            labels = nextLabels;
             const nextEntries = snapshot.entries.map((entry) => (
                 entry.id === input.inventoryId ? attachStoredLabels(entry, labels.labelsFor(entry)) : entry
             ));

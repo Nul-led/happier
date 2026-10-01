@@ -84,6 +84,7 @@ function createHarness(createSessionsDomain: any) {
         archivedSessionListMembershipByServerId: {},
         sessionListIndexByServerId: {},
         concurrentSessionListCacheByServerId: {},
+        sessionListQueryMembershipByKey: {},
         sessionScmStatus: {},
         sessionLastViewed: {},
         sessionRepositoryTreeExpandedPathsBySessionId: {},

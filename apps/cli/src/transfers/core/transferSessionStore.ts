@@ -5,6 +5,13 @@ import { dirname, join } from 'path';
 
 import { isPidPresent } from '@happier-dev/cli-common/process';
 import type { UploadTransferTarget } from '../targets/uploadTransferTarget';
+import type { SessionAttachmentHandleV1 } from '@happier-dev/protocol';
+
+type IssuedAttachment = Readonly<{
+  handle: SessionAttachmentHandleV1;
+  filePath: string;
+  name: string;
+}>;
 
 type UploadSession = {
   uploadId: string;
@@ -59,6 +66,7 @@ export type TransferSessionStoreDeps = Readonly<{
 export class TransferSessionStore {
   private readonly uploads = new Map<string, UploadSession>();
   private readonly downloads = new Map<string, DownloadSession>();
+  private readonly attachments = new Map<string, IssuedAttachment>();
   private readonly baseTempRoot: string;
   private readonly tempRoot: string;
   private readonly ttlMs: number;
@@ -292,6 +300,19 @@ export class TransferSessionStore {
     return this.uploads.get(uploadId) ?? null;
   }
 
+  issueAttachment(input: Readonly<{ uploadId: string; sessionId: string; filePath: string; name: string }>): SessionAttachmentHandleV1 {
+    this.assertOpen();
+    const handle: SessionAttachmentHandleV1 = { v: 1, sessionId: input.sessionId, id: input.uploadId };
+    this.attachments.set(handle.id, { handle, filePath: input.filePath, name: input.name });
+    return handle;
+  }
+
+  getIssuedAttachment(handle: SessionAttachmentHandleV1): IssuedAttachment | null {
+    if (this.disposed) return null;
+    const issued = this.attachments.get(handle.id);
+    return issued?.handle.sessionId === handle.sessionId ? issued : null;
+  }
+
   beginUploadSessionOperation(
     uploadId: string,
   ): Readonly<{ session: UploadSession; release(): void }> | null {
@@ -419,6 +440,8 @@ export class TransferSessionStore {
     const downloads = [...this.downloads.values()];
     this.uploads.clear();
     this.downloads.clear();
+    // Retire preview authority, not the successfully finalized attachment files.
+    this.attachments.clear();
 
     this.disposePromise = (async () => {
       await this.settleClosures();

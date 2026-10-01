@@ -157,7 +157,12 @@ const canonicalMount = {
 const canonicalTargetedContributions = {
     target: {
         pluginId: 'acme.target',
-        immutableGenerationId: 'target-generation-1',
+        occurrenceId: 'target-occurrence-1',
+        sourceCustody: {
+            kind: 'managed',
+            immutableGenerationId: 'target-generation-1',
+            installSource: 'archive',
+        },
     },
     points: [],
 } satisfies SurfaceContext['targetedContributions'];
@@ -177,6 +182,7 @@ const projection: PluginUiProjectionModel = {
         'hostedWeb:acme.preview:preview-web': {
             id: 'hostedWeb:acme.preview:preview-web',
             pluginId: 'acme.preview',
+            occurrenceId: 'preview-occurrence-1',
             contributionKind: 'hostedWeb',
             contributionId: 'preview-web',
             display: { titleKey: 'preview.frame.title', developerFallback: 'Preview' },
@@ -242,6 +248,12 @@ function createNativeArtifactAdoption(
             disposed = true;
             handle.dispose();
         },
+        commit: () => !disposed,
+        fail: () => {
+            if (disposed) return;
+            disposed = true;
+            handle.dispose();
+        },
     });
 }
 
@@ -289,14 +301,12 @@ describe('PluginHostedWebPane native Artifact consumer', () => {
             'plugin-hosted-web-native-ready',
             'acme.preview',
             'preview-web',
-            '27',
             artifactDigest,
         ].join(':');
         const { PluginHostedWebPane } = await import('./PluginHostedWebPane');
         const identity = {
             pluginId: 'acme.preview',
             contributionId: 'preview-web',
-            projectionGeneration: 27,
             artifactDigest,
         } as const;
         const element = (
@@ -308,7 +318,6 @@ describe('PluginHostedWebPane native Artifact consumer', () => {
                 surfaceContext={surfaceContext}
                 pluginUiProjection={projection}
                 platform="ios"
-                projectionGeneration={27}
                 {...({
                     nativeArtifactAdoption,
                     nativeArtifactLoadedRuntimeIdentity: identity,
@@ -486,6 +495,7 @@ describe('PluginHostedWebPane native Artifact consumer', () => {
     it('treats a current native Artifact as loading rather than unavailable, then lets native callbacks publish ready or error state', async () => {
         frameProps.length = 0;
         const native = createHandle();
+        const retryNativeArtifact = vi.fn();
         const { PluginHostedWebPane } = await import('./PluginHostedWebPane');
         const screen = await renderScreen(
             <PluginHostedWebPane mountLifetime={mountLifetime}
@@ -493,6 +503,7 @@ describe('PluginHostedWebPane native Artifact consumer', () => {
                 surfaceContext={surfaceContext}
                 pluginUiProjection={projection}
                 platform="ios"
+                onUnavailableRetry={retryNativeArtifact}
                 {...({ nativeArtifactAdoption: createNativeArtifactAdoption(native.handle), mountInstanceKey: 'native-lifecycle' } as const)}
             />,
         );
@@ -519,7 +530,43 @@ describe('PluginHostedWebPane native Artifact consumer', () => {
         expect(native.handle.isCurrent()).toBe(false);
         expect(screen.findByTestId('plugin-hosted-web-frame-error')).toBeTruthy();
         expect(screen.findByTestId('plugin-hosted-web-frame-error-diagnostic-hosted_web_artifact_load_failed')).toBeTruthy();
+        expect(screen.findByTestId('plugin-hosted-web-frame-error-action')).toBeTruthy();
+        await act(async () => {
+            screen.pressByTestId('plugin-hosted-web-frame-error-action');
+        });
+        expect(retryNativeArtifact).toHaveBeenCalledOnce();
         expect(screen.findByTestId('plugin-hosted-web-unavailable')).toBeNull();
+    });
+
+    it('reports candidate readiness and delegates candidate failure retirement to the adoption transaction', async () => {
+        frameProps.length = 0;
+        const native = createHandle();
+        const onReady = vi.fn();
+        const onFailure = vi.fn();
+        const { PluginHostedWebPane } = await import('./PluginHostedWebPane');
+        await renderScreen(
+            <PluginHostedWebPane mountLifetime={mountLifetime}
+                contributionId="hostedWeb:acme.preview:preview-web"
+                surfaceContext={surfaceContext}
+                pluginUiProjection={projection}
+                platform="ios"
+                onArtifactCandidateReady={onReady}
+                onArtifactCandidateFailure={onFailure}
+                retainCandidateAdoptionOnUnmount
+                {...({ nativeArtifactAdoption: createNativeArtifactAdoption(native.handle), mountInstanceKey: 'native-candidate' } as const)}
+            />,
+        );
+
+        const loadEnd = frameProps.at(-1)?.onNativeArtifactLoadEnd as (() => void) | undefined;
+        await act(async () => { loadEnd?.(); });
+        expect(onReady).toHaveBeenCalledOnce();
+
+        const loadError = frameProps.at(-1)?.onNativeArtifactLoadError as ((event: unknown) => void) | undefined;
+        await act(async () => {
+            loadError?.({ nativeEvent: { code: 'hosted_web_candidate_load_failed' } });
+        });
+        expect(onFailure).toHaveBeenCalledWith('hosted_web_candidate_load_failed');
+        expect(native.dispose).not.toHaveBeenCalled();
     });
 
     it('intercepts iOS route Back only for current guest history, then releases the route when native history declines', async () => {

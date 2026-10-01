@@ -1,6 +1,6 @@
-import type { Message, ToolCall, ToolCallMessage } from '@/sync/domains/messages/messageTypes';
+import type { Message, ToolCall, ToolCallMessage } from "@happier-dev/session-core/messages";
 import type { DiscardedPendingMessage, PendingMessage } from '@/sync/domains/state/storageTypes';
-import { createReducer } from '@/sync/reducer/reducer';
+import { createReducer } from "@happier-dev/session-core/reducer";
 import type { SessionMessages } from '@/sync/store/domains/messages';
 
 export function createPendingMessageFixture(overrides: Partial<PendingMessage> = {}): PendingMessage {

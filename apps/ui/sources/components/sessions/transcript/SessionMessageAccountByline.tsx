@@ -1,5 +1,5 @@
 import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
-import type { TranscriptAccountActor } from '@/sync/domains/messages/transcriptAccountActor';
+import type { TranscriptAccountActor } from "@happier-dev/session-core/messages";
 import * as React from 'react';
 import { View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';

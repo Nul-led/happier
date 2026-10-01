@@ -19,16 +19,39 @@ export type ServerEndpointErrorClassification = Readonly<{
   retryAfterMs?: number;
 }>;
 
-const NETWORK_ERROR_CODES = new Set([
+export const NETWORK_ERROR_CODES = [
   'ECONNABORTED',
   'ECONNREFUSED',
   'ECONNRESET',
   'EAI_AGAIN',
   'ENETDOWN',
   'ENETUNREACH',
+  'EHOSTDOWN',
+  'EHOSTUNREACH',
   'ENOTFOUND',
+  'ERR_NETWORK',
   'ETIMEDOUT',
+] as const;
+
+const networkErrorCodeSet: ReadonlySet<string> = new Set(NETWORK_ERROR_CODES);
+const preDispatchConnectionErrorCodes: ReadonlySet<string> = new Set([
+  'ECONNREFUSED', 'EAI_AGAIN', 'EHOSTDOWN', 'EHOSTUNREACH',
+  'ENETDOWN', 'ENETUNREACH', 'ENOTFOUND',
 ]);
+
+export function isNetworkConnectionErrorCode(code: string | null | undefined): boolean {
+  return code != null && networkErrorCodeSet.has(code.trim().toUpperCase());
+}
+
+export function isProvenPreDispatchConnectionFailure(error: unknown): boolean {
+  const code = readNormalizedConnectionErrorCode(error);
+  return code !== null && preDispatchConnectionErrorCodes.has(code);
+}
+
+export function readNormalizedConnectionErrorCode(error: unknown): string | null {
+  const code = readErrorCode(error).trim().toUpperCase();
+  return code.length > 0 ? code : null;
+}
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
@@ -70,7 +93,7 @@ function readRetryAfterMs(error: unknown): number | undefined {
 function readErrorCode(error: unknown, depth = 0): string {
   const record = asRecord(error);
   const code = record?.code;
-  if (typeof code === 'string') return code;
+  if (typeof code === 'string' && code.trim().length > 0) return code;
   if (depth >= 4) return '';
   return readErrorCode(record?.cause, depth + 1);
 }
@@ -106,6 +129,8 @@ function isNetworkMessage(message: string): boolean {
     normalized.includes('econnaborted') ||
     normalized.includes('enetdown') ||
     normalized.includes('enetunreach') ||
+    normalized.includes('ehostdown') ||
+    normalized.includes('ehostunreach') ||
     normalized.includes('enotfound') ||
     normalized.includes('eai_again') ||
     normalized.includes('socket hang up') ||
@@ -175,7 +200,7 @@ export function classifyServerEndpointError(
   if (code === 'ETIMEDOUT' || code === 'ECONNABORTED') {
     return { kind: 'timeout', retryable: true, retryAfterMs: readRetryAfterMs(error) };
   }
-  if (code && NETWORK_ERROR_CODES.has(code)) {
+  if (isNetworkConnectionErrorCode(code)) {
     return { kind: 'network', retryable: true, retryAfterMs: readRetryAfterMs(error) };
   }
   const message = readErrorMessage(error);

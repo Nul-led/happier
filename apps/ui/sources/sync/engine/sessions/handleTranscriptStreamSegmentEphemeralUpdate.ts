@@ -4,17 +4,9 @@ import type { SessionEncryption } from '@/sync/encryption/sessionEncryption';
 import { readStoredSessionMessage } from '@/sync/runtime/readStoredSessionContent';
 import { markStreamingMessagesAppliedForSessionUiTelemetry } from '@/sync/runtime/performance/sessionUiTelemetry';
 import { syncPerformanceTelemetry } from '@/sync/runtime/syncPerformanceTelemetry';
-import type { NormalizedMessage, RawMessageNormalizationSequenceState } from '@/sync/typesRaw';
-import { normalizeRawMessage, normalizeRawMessageInSequence } from '@/sync/typesRaw';
+import type { NormalizedMessage, RawMessageNormalizationSequenceState } from '@happier-dev/session-core/raw';
 import { isLegacyMemoryArtifactTranscriptRow } from './legacyMemoryArtifactTranscriptRows';
-import {
-    applyTranscriptStreamSegmentDelta,
-    evictTranscriptStreamSegmentAssembly,
-    isTranscriptStreamSegmentAssemblyReady,
-    noteTranscriptStreamSegmentSnapshot,
-    readTranscriptStreamSegmentText,
-    withTranscriptStreamSegmentText,
-} from './transcriptStreamSegmentAssembly';
+import { interpretTranscriptStreamSegment, type TranscriptStreamSegmentAssembler } from '@happier-dev/session-core/live';
 
 export type TranscriptStreamSegmentEphemeralUpdate = Extract<ApiEphemeralUpdate, { type: 'transcript-stream-segment' }>;
 export type TranscriptStreamSegmentDeltaEphemeralUpdate = Extract<ApiEphemeralUpdate, { type: 'transcript-stream-segment-delta' }>;
@@ -33,6 +25,7 @@ type TranscriptStreamSegmentTelemetryFields = Readonly<{
 
 type HandleTranscriptStreamSegmentEphemeralUpdateParams = Readonly<{
     update: AnyTranscriptStreamSegmentEphemeralUpdate;
+    assembler: TranscriptStreamSegmentAssembler;
     getSessionEncryption: (sessionId: string) => TranscriptStreamSegmentSessionMessageEncryption | null;
     getSession: (sessionId: string) => Session | undefined;
     applyMessages: (sessionId: string, messages: NormalizedMessage[]) => void;
@@ -55,7 +48,7 @@ async function applyTranscriptStreamSegmentEphemeralUpdate(
 
     // Deltas can only be chained onto known, in-sync assembly state. Check before decrypting so
     // undecodable deltas cost nothing; the next full-snapshot checkpoint resyncs the segment.
-    if (isDelta && !isTranscriptStreamSegmentAssemblyReady(sessionId, update.message.localId)) {
+    if (isDelta && !params.assembler.isTranscriptStreamSegmentAssemblyReady(sessionId, update.message.localId)) {
         if (telemetryFields) {
             syncPerformanceTelemetry.count('sync.sessions.socket.transcriptStreamSegmentDelta.droppedUnchained', telemetryFields);
         }
@@ -69,6 +62,7 @@ async function applyTranscriptStreamSegmentEphemeralUpdate(
     }
 
     const readMessage = () => readStoredSessionMessage({
+        sessionEncryptionMode: session.encryptionMode ?? 'e2ee',
         message: {
             id: update.message.localId,
             seq: 0,
@@ -99,60 +93,21 @@ async function applyTranscriptStreamSegmentEphemeralUpdate(
         return;
     }
 
-    let contentForNormalize = decrypted.content;
-    if (update.type === 'transcript-stream-segment-delta') {
-        const deltaText = readTranscriptStreamSegmentText(decrypted.content);
-        if (deltaText === null) {
-            // A delta that does not carry chainable text cannot be reconstructed; wait for the
-            // next full snapshot instead of guessing.
-            evictTranscriptStreamSegmentAssembly(sessionId, update.message.localId);
-            return;
-        }
-        const assembledText = applyTranscriptStreamSegmentDelta({
-            sessionId,
+    const normalizeMessage = () => interpretTranscriptStreamSegment({
+        assembler: params.assembler,
+        sessionId,
+        record: decrypted.content,
+        message: {
             localId: update.message.localId,
-            deltaText,
-            tick: update.message.tick,
-            baseLength: update.message.baseLength,
-        });
-        if (assembledText === null) {
-            if (telemetryFields) {
-                syncPerformanceTelemetry.count('sync.sessions.socket.transcriptStreamSegmentDelta.droppedUnchained', telemetryFields);
-            }
-            return;
-        }
-        const patched = decrypted.content
-            ? withTranscriptStreamSegmentText(decrypted.content, assembledText)
-            : null;
-        if (!patched) {
-            evictTranscriptStreamSegmentAssembly(sessionId, update.message.localId);
-            return;
-        }
-        contentForNormalize = patched;
-    } else {
-        noteTranscriptStreamSegmentSnapshot({
-            sessionId,
-            localId: update.message.localId,
-            record: decrypted.content,
-            tick: typeof update.message.tick === 'number' ? update.message.tick : null,
-        });
-    }
-
-    const normalizeMessage = () => params.rawMessageNormalizationState
-        ? normalizeRawMessageInSequence({
-            id: update.message.localId,
-            localId: decrypted.localId,
             createdAt: decrypted.createdAt,
-            raw: contentForNormalize,
-            messageRole: decrypted.messageRole ?? undefined,
-        }, params.rawMessageNormalizationState)
-        : normalizeRawMessage(
-            update.message.localId,
-            decrypted.localId,
-            decrypted.createdAt,
-            contentForNormalize,
-            { messageRole: decrypted.messageRole ?? undefined },
-        );
+            messageRole: decrypted.messageRole,
+            sidechainId: update.message.sidechainId,
+        },
+        rawMessageNormalizationState: params.rawMessageNormalizationState,
+        ...(update.type === 'transcript-stream-segment-delta'
+            ? { type: update.type, tick: update.message.tick, baseLength: update.message.baseLength }
+            : { type: update.type, tick: update.message.tick }),
+    });
 
     const normalized = telemetryFields
         ? syncPerformanceTelemetry.measure(
@@ -162,6 +117,9 @@ async function applyTranscriptStreamSegmentEphemeralUpdate(
         )
         : normalizeMessage();
     if (!normalized) {
+        if (telemetryFields && isDelta && !params.assembler.isTranscriptStreamSegmentAssemblyReady(sessionId, update.message.localId)) {
+            syncPerformanceTelemetry.count('sync.sessions.socket.transcriptStreamSegmentDelta.droppedUnchained', telemetryFields);
+        }
         return;
     }
 

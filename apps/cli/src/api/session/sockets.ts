@@ -1,45 +1,61 @@
 import type { ClientToServerEvents, ServerToClientEvents } from '../types';
-import { io, Socket } from 'socket.io-client'
+import type { Socket } from 'socket.io-client';
+import type { ManagedConnectionTransport } from '@happier-dev/connection-supervisor';
+import { createHappierSocket } from '@happier-dev/sync-client';
 import { normalizeServerHttpBaseUrl, resolveServerHttpBaseUrl, resolveServerSocketIoTransports } from '../client/serverHttpBaseUrl';
 import { getSocketIoProxyOptions } from '@/utils/proxy/socketIoProxy';
+import { buildTerminalAuthorityCeiling } from '@/settings/accountSettings/resolveEffectiveTerminalPresentUserPolicy';
 import {
     buildCurrentCliClientCompatibilitySocketAuth,
 } from '@/api/clientCompatibility/cliClientCompatibility';
 
-export function createSessionScopedSocket(opts: { token: string; sessionId: string; machineId?: string; serverUrl?: string }): Socket<ServerToClientEvents, ClientToServerEvents> {
+type SessionSocketConnection = Readonly<{
+    socket: Socket<ServerToClientEvents, ClientToServerEvents>;
+    transport: ManagedConnectionTransport;
+}>;
+
+export function createSessionScopedSocketConnection(opts: { token: string; sessionId: string; machineId?: string; serverUrl?: string; connectTimeoutMs?: number }): SessionSocketConnection {
     const serverUrl = opts.serverUrl ? normalizeServerHttpBaseUrl(opts.serverUrl) : resolveServerHttpBaseUrl();
     const transports = resolveServerSocketIoTransports();
-    return io(serverUrl, {
-        auth: {
-            token: opts.token,
-            clientType: 'session-scoped' as const,
-            sessionId: opts.sessionId,
-            ...(opts.machineId ? { machineId: opts.machineId } : null),
+    return createHappierSocket({
+        endpoint: serverUrl,
+        token: opts.token,
+        clientType: 'session-scoped',
+        sessionId: opts.sessionId,
+        ...(opts.machineId ? { machineId: opts.machineId } : {}),
+        authExtras: {
             ...buildCurrentCliClientCompatibilitySocketAuth('session-runner'),
+            ...buildTerminalAuthorityCeiling({ token: opts.token, serverHttpBaseUrl: serverUrl }),
         },
-        path: '/v1/updates/',
-        reconnection: false,
         ...(transports ? { transports } : null),
         withCredentials: true,
-        autoConnect: false,
-        ...getSocketIoProxyOptions({ targetUrl: serverUrl, env: process.env }),
-    });
+        engineOptions: getSocketIoProxyOptions({ targetUrl: serverUrl, env: process.env }),
+        ...(opts.connectTimeoutMs === undefined ? {} : { connectTimeoutMs: opts.connectTimeoutMs }),
+    }) as SessionSocketConnection;
+}
+
+export function createSessionScopedSocket(opts: { token: string; sessionId: string; machineId?: string; serverUrl?: string }): Socket<ServerToClientEvents, ClientToServerEvents> {
+    return createSessionScopedSocketConnection(opts).socket;
+}
+
+export function createUserScopedSocketConnection(opts: { token: string; serverUrl?: string; connectTimeoutMs?: number }): SessionSocketConnection {
+    const serverUrl = opts.serverUrl ? normalizeServerHttpBaseUrl(opts.serverUrl) : resolveServerHttpBaseUrl();
+    const transports = resolveServerSocketIoTransports();
+    return createHappierSocket({
+        endpoint: serverUrl,
+        token: opts.token,
+        clientType: 'user-scoped',
+        authExtras: {
+            ...buildCurrentCliClientCompatibilitySocketAuth('session-runner'),
+            ...buildTerminalAuthorityCeiling({ token: opts.token, serverHttpBaseUrl: serverUrl }),
+        },
+        ...(transports ? { transports } : null),
+        withCredentials: true,
+        engineOptions: getSocketIoProxyOptions({ targetUrl: serverUrl, env: process.env }),
+        ...(opts.connectTimeoutMs === undefined ? {} : { connectTimeoutMs: opts.connectTimeoutMs }),
+    }) as SessionSocketConnection;
 }
 
 export function createUserScopedSocket(opts: { token: string; serverUrl?: string }): Socket<ServerToClientEvents, ClientToServerEvents> {
-    const serverUrl = opts.serverUrl ? normalizeServerHttpBaseUrl(opts.serverUrl) : resolveServerHttpBaseUrl();
-    const transports = resolveServerSocketIoTransports();
-    return io(serverUrl, {
-        auth: {
-            token: opts.token,
-            clientType: 'user-scoped' as const,
-            ...buildCurrentCliClientCompatibilitySocketAuth('session-runner'),
-        },
-        path: '/v1/updates/',
-        reconnection: false,
-        ...(transports ? { transports } : null),
-        withCredentials: true,
-        autoConnect: false,
-        ...getSocketIoProxyOptions({ targetUrl: serverUrl, env: process.env }),
-    });
+    return createUserScopedSocketConnection(opts).socket;
 }

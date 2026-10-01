@@ -30,12 +30,16 @@ export async function waitForDaemonRunningWithinBudget(params: {
       : (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
   let remainingMs = params.timeoutMs;
+  let nextPollMs = params.pollMs;
   while (remainingMs > 0) {
-    const sleepMs = Math.min(params.pollMs, remainingMs);
+    const sleepMs = Math.min(nextPollMs, remainingMs);
     await sleep(sleepMs);
     remainingMs -= sleepMs;
     if (await params.isRunning()) return true;
     if (params.shouldAbort?.()) return false;
+    // Startup can be slow under load. Keep the first readiness probe quick, then
+    // match the stack's one-second lifecycle observation cadence on misses.
+    nextPollMs = Math.min(nextPollMs * 2, 1_000);
   }
 
   return false;

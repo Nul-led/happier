@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { mergeTurnChangeSets, type SessionChangeSet, type TurnChangeSet } from '@happier-dev/protocol';
 
 import type { ScmWorkingSnapshot } from '@/sync/domains/state/storageTypes';
-import type { Message } from '@/sync/domains/messages/messageTypes';
+import type { Message } from "@happier-dev/session-core/messages";
 import { filterPresentableSessionAttributedFiles } from '@/scm/scmAttribution';
 import { deriveTurnChangeSetsFromMessages } from '@/sync/domains/session/changes/derivation/deriveTurnChangeSetsFromMessages';
 import { buildTurnChangeSetDiffInput } from '../../../../../cli/src/agent/tools/diff/buildTurnChangeSetDiffInput';
@@ -137,6 +137,80 @@ function makeMixedTurnChangeSet(): TurnChangeSet {
 }
 
 describe('useChangedFilesData', () => {
+    it.each([true, false])('keeps recorded Session span counts honest after files leave the working tree (continuous: %s)', async (continuous) => {
+        const base = makeMixedTurnChangeSet();
+        const turns: TurnChangeSet[] = [
+            { ...base, files: [{ ...base.files[0]!, oldText: 'one\ntwo\n', newText: 'ONE\ntwo\n',
+                unifiedDiff: '@@ -1,2 +1,2 @@\n-one\n+ONE\n two\n' }] },
+            { ...base, turnId: 'turn-3', seqRange: { startSeqInclusive: 4, endSeqInclusive: 6 },
+                files: [{ ...base.files[0]!, oldText: continuous ? 'ONE\ntwo\n' : 'unrelated fragment\n', newText: 'ONE\nTWO\n',
+                    unifiedDiff: '@@ -1,2 +1,2 @@\n ONE\n-two\n+TWO\n' }] },
+        ];
+        const changeSet = mergeTurnChangeSets({ sessionId: 's1', turns });
+        let latest: UseChangedFilesDataResult | null = null;
+        function Test() {
+            latest = useChangedFilesData({ sessionId: 's1', scmSnapshot: null, workspaceTouchedPaths: [],
+                searchQuery: '', showAllRepositoryFiles: false, sessionChangeSet: changeSet });
+            return null;
+        }
+        const screen = await renderScreen(<Test />);
+        if (!latest) throw new Error('Expected hook result');
+        const result: UseChangedFilesDataResult = latest;
+        expect(result.sessionAttributedFiles[0]?.file).toMatchObject(continuous
+            ? { linesAdded: 2, linesRemoved: 2 }
+            : { isComplete: false });
+        act(() => screen.tree.unmount());
+    });
+
+    it('keeps every rename contributor after a later edit while copies remain independent', async () => {
+        const base = makeMixedTurnChangeSet();
+        const paths = ['src/old.ts', 'src/middle.ts', 'src/a.ts', 'src/a.ts'];
+        const turns: TurnChangeSet[] = paths.map((filePath, index) => ({
+            ...base, turnId: `turn-${index}`, seqRange: { startSeqInclusive: index + 1, endSeqInclusive: index + 1 },
+            files: [{ ...base.files[0]!, filePath, providerMessageId: `edit-${index}`,
+                ...(index === 1 || index === 2 ? { changeKind: 'renamed', previousFilePath: paths[index - 1] } : {}) }],
+        }));
+        turns.push({ ...base, turnId: 'copy', seqRange: { startSeqInclusive: 5, endSeqInclusive: 5 },
+            files: [{ ...base.files[0]!, filePath: 'src/copy.ts', previousFilePath: 'src/a.ts',
+                changeKind: 'copied', providerMessageId: 'copy' }] });
+        const changeSet = mergeTurnChangeSets({ sessionId: 's1', turns });
+        let latest: UseChangedFilesDataResult | null = null;
+        function Test() {
+            latest = useChangedFilesData({ sessionId: 's1', scmSnapshot: makeSnapshot(), workspaceTouchedPaths: [],
+                searchQuery: '', showAllRepositoryFiles: false, sessionChangeSet: changeSet });
+            return null;
+        }
+        const screen = await renderScreen(<Test />);
+        if (!latest) throw new Error('Expected hook result');
+        const result: UseChangedFilesDataResult = latest;
+        expect(result.sessionAttributedFiles.find((entry) => entry.file.fullPath === 'src/a.ts')?.evidence
+            .map((file) => file.providerMessageId)).toEqual(['edit-0', 'edit-1', 'edit-2', 'edit-3']);
+        expect(result.sessionAttributedFiles.find((entry) => entry.file.fullPath === 'src/copy.ts')?.evidence
+            .map((file) => file.providerMessageId)).toEqual(['copy']);
+        act(() => screen.tree.unmount());
+    });
+
+    it('shows one file with both absolute tool and relative checkpoint evidence', async () => {
+        const turn = makeMixedTurnChangeSet();
+        const files = turn.files.map((file) => file.source === 'provider_native' ? { ...file, filePath: '/repo/src/a.ts' } : file);
+        let latest: UseChangedFilesDataResult | null = null;
+        function Test() {
+            latest = useChangedFilesData({ sessionId: 's1', scmSnapshot: makeSnapshot(), workspaceTouchedPaths: [],
+                searchQuery: '', showAllRepositoryFiles: false, latestTurnEvidence: { ...turn, files } });
+            return null;
+        }
+        const screen = await renderScreen(<Test />);
+        if (!latest) throw new Error('Expected hook result');
+        const result: UseChangedFilesDataResult = latest;
+        expect(result.turnAttributedFiles).toHaveLength(1);
+        expect(result.turnAttributedFiles[0]).toMatchObject({
+            file: { fullPath: 'src/a.ts' }, content: { source: 'scm_checkpoint', confidence: 'exact' },
+            attribution: { confidence: 'session_exact', reason: 'provider_correlated' }, checkpointOverlap: 'observed',
+        });
+        expect(result.turnAttributedFiles[0]?.evidence.map((file) => file.filePath)).toEqual(['/repo/src/a.ts', 'src/a.ts']);
+        act(() => screen.tree.unmount());
+    });
+
     it('projects one real provider/checkpoint turn identically through mounted list, review, and right-panel adapters', async () => {
         const projected = projectRepositoryCheckpointTurnChangeSet({
             providerTurnChangeSet: {
@@ -383,6 +457,33 @@ describe('useChangedFilesData', () => {
         act(() => {
             root!.unmount();
         });
+    });
+
+    it('keeps the latest-turn view available when the latest turn has no file changes', async () => {
+        const latest: { current: UseChangedFilesDataResult | null } = { current: null };
+        const latestTurnEvidence: TurnChangeSet = {
+            ...makeMixedTurnChangeSet(),
+            turnId: 'turn-without-files',
+            files: [],
+        };
+
+        function Test() {
+            latest.current = useChangedFilesData({
+                sessionId: 's1',
+                scmSnapshot: makeSnapshot(),
+                workspaceTouchedPaths: [],
+                searchQuery: '',
+                showAllRepositoryFiles: false,
+                latestTurnEvidence,
+            });
+            return null;
+        }
+
+        const screen = await renderScreen(<Test />);
+        if (!latest.current) throw new Error('Expected hook result');
+        expect(latest.current.showTurnViewToggle).toBe(true);
+        expect(latest.current.turnAttributedFiles).toHaveLength(0);
+        act(() => screen.tree.unmount());
     });
 
     it('keeps canonical Session evidence reachable when it cannot be projected onto repository changes', async () => {

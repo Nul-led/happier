@@ -229,7 +229,7 @@ export async function normalizeSessionCreateSpawnRequest(
   })();
   const candidate = {
     executionTarget,
-    directory,
+    directory: { kind: 'path', path: directory },
     agentTarget: resolvedAgent.agentTarget,
     ...(modelSelectionRef
       ? {

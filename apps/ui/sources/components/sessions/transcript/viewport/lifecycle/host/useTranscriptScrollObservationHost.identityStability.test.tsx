@@ -9,7 +9,8 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { renderHook } from '@/dev/testkit';
+import { createTestSessionTranscriptSource, renderHookWithSessionTranscriptSource } from '@/dev/testkit';
+import type { RenderHookOptions } from '@/dev/testkit/hooks/renderHook';
 import type { WebTranscriptScrollMetrics } from '@/components/sessions/transcript/webTranscriptScrollMetrics';
 import { createWebDomScrollObservation } from '@/components/sessions/transcript/viewport/driver/webDomObservation';
 import { createTranscriptLifecycleHost } from '@/components/sessions/transcript/viewport/lifecycle/lifecycleHost';
@@ -17,6 +18,16 @@ import { createTranscriptLifecycleHost } from '@/components/sessions/transcript/
 import { useTranscriptScrollObservationHost } from './useTranscriptScrollObservationHost';
 
 type ScrollObservationHostDeps = Parameters<typeof useTranscriptScrollObservationHost>[0];
+
+function renderHook<Value>(
+    useValue: (deps: ScrollObservationHostDeps) => Value,
+    options: RenderHookOptions<ScrollObservationHostDeps>,
+) {
+    return renderHookWithSessionTranscriptSource(useValue, {
+        ...options,
+        source: createTestSessionTranscriptSource({ sessionId: options.initialProps.sessionId }),
+    });
+}
 
 function createRef<T>(current: T): { current: T } {
     return { current };

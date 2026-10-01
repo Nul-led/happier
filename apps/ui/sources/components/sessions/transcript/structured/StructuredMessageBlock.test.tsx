@@ -201,13 +201,13 @@ describe('StructuredMessageBlock', () => {
                     editableSettingsGroups: [],
                         actions: [{
                             id: 'open-report',
+                            occurrenceId: 'open-report-occurrence-a',
                             title: 'Current report Action title',
                             description: null,
                             icon: null,
                             scopes: ['message'],
                             surfaces: ['ui'],
                             placementBindings: ['message.menu'],
-                            inputSchema: null,
                             inputHints: null,
                             priority: null,
                             dangerLevel: 'safe',
@@ -223,6 +223,7 @@ describe('StructuredMessageBlock', () => {
                 'acme.preview/open-report': {
                     id: 'open-report',
                     pluginId: 'acme.preview',
+                    occurrenceId: 'open-report-occurrence-a',
                     title: 'Current report Action title',
                     scopes: ['message'],
                     surfaces: ['ui'],
@@ -235,7 +236,6 @@ describe('StructuredMessageBlock', () => {
             host: {
                 machineId: 'machine-1',
                 serverId: 'server-1',
-                expectedGeneration: '7',
                 sessionId: 's1',
                 isCurrent: () => true,
             },
@@ -284,7 +284,7 @@ describe('StructuredMessageBlock', () => {
         // action owner without reviving the retired structured-message route.
         expect(machinePluginStructuredMessageActionExecuteMock).toHaveBeenCalledWith('machine-1', {
             serverId: 'server-1',
-            expectedGeneration: '7',
+            expectedContributorOccurrenceId: '7',
             qualifiedActionId: 'acme.preview/open-report',
             input: { reportId: 'report-1' },
             executionSurface: 'ui',
@@ -322,6 +322,7 @@ describe('StructuredMessageBlock', () => {
                         editableSettingsGroups: [],
                         actions: [{
                             id: 'open-report',
+                            occurrenceId: 'open-report-occurrence-b',
                             title: 'New report Action title',
                             icon: null,
                             description: null,
@@ -340,7 +341,7 @@ describe('StructuredMessageBlock', () => {
                 host: {
                     machineId: 'machine-1',
                     serverId: 'server-1',
-                    expectedGeneration: '7',
+                    expectedContributorOccurrenceId: '7',
                     sessionId: 's1',
                     isCurrent: () => true,
                 },

@@ -3,6 +3,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { IrohHomeTunnelAcquireInput, IrohHomeTunnelLease, IrohHomeTunnelRequest } from './types';
 import type { IrohHomeTunnelSupervisor } from './supervisor';
 import type { LoopbackTunnelLifecycleEvent, LoopbackTunnelSnapshot } from '@/sync/runtime/nativeLoopbackTunnels/types';
+import * as profiles from '../../domains/server/serverProfiles';
+import { resetRuntimeFetch, setRuntimeFetch } from '@/utils/system/runtimeFetch';
+import {
+    createIrohHomeTunnelRuntime,
+    disposeIrohHomeTunnelRuntime,
+    getIrohHomeTunnelRuntime,
+} from './runtime';
+import { createIrohHomeTunnelSupervisor } from './supervisor';
 
 function randomScope(): string {
     return `iroh_lifecycle_${Date.now()}_${Math.random().toString(16).slice(2)}`;
@@ -196,28 +204,26 @@ function createRecordingNativeLifecycle(): {
 describe('Iroh Home tunnel lifecycle runtime', () => {
     const previousScope = process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE;
 
-    afterEach(() => {
+    afterEach(async () => {
+        await disposeIrohHomeTunnelRuntime().catch(() => undefined);
+        resetRuntimeFetch();
+        profiles.resetServerProfilesRuntimeForTests();
         if (previousScope === undefined) delete process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE;
         else process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = previousScope;
-        vi.resetModules();
         vi.restoreAllMocks();
         vi.useRealTimers();
     });
 
     it('reports retained native QUIC death once and replaces that handle through the existing supervisor', async () => {
-        vi.resetModules();
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
-        const profiles = await import('../../domains/server/serverProfiles');
         const home = await profiles.upsertServerProfile({ serverUrl: 'https://terminal.example.test', source: 'manual' });
         await profiles.setActiveServerId(home.id, { scope: 'device' });
         const native = createRecordingNativeLifecycle();
         let connectionActive = true;
         const getTunnelStatus = vi.fn(async () => ({ active: true, connectionActive, observedPath: 'direct' }));
-        const { setRuntimeFetch } = await import('@/utils/system/runtimeFetch');
         setRuntimeFetch(async (input) => String(input).endsWith('/v1/features')
             ? jsonResponse(200, identityFeaturesPayload(HOME_IDENTITY_A))
             : jsonResponse(200, { ok: true }));
-        const { createIrohHomeTunnelRuntime } = await import('./runtime');
         const runtime = createIrohHomeTunnelRuntime({ native: { ...native.module, getTunnelStatus } });
         const request = {
             homeServerIdentityId: HOME_IDENTITY_A, endpoint: { endpointId: 'endpoint-a' },
@@ -248,9 +254,7 @@ describe('Iroh Home tunnel lifecycle runtime', () => {
     });
 
     it('publishes the runtime origin only after native acquire, health, authenticated ping, and identity proof', async () => {
-        vi.resetModules();
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
-        const profiles = await import('../../domains/server/serverProfiles');
         const home = await profiles.upsertServerProfile({ serverUrl: 'https://order.example.test', source: 'manual' });
         await profiles.setActiveServerId(home.id, { scope: 'device' });
 
@@ -263,7 +267,6 @@ describe('Iroh Home tunnel lifecycle runtime', () => {
             }),
             releaseHomeTunnel: vi.fn(async () => undefined),
         };
-        const { setRuntimeFetch } = await import('@/utils/system/runtimeFetch');
         setRuntimeFetch(async (input, init) => {
             const url = String(input);
             events.push(url.endsWith('/health') ? 'probe:health' : url.endsWith('/v1/auth/ping') ? 'probe:auth-ping' : 'probe:features');
@@ -279,8 +282,6 @@ describe('Iroh Home tunnel lifecycle runtime', () => {
             }
             throw new Error(`unexpected request ${url}`);
         });
-
-        const { createIrohHomeTunnelRuntime } = await import('./runtime');
         const runtime = createIrohHomeTunnelRuntime({ native });
         const lease = await runtime.ensureHomeTunnel({
             homeServerIdentityId: HOME_IDENTITY_A,
@@ -320,14 +321,11 @@ describe('Iroh Home tunnel lifecycle runtime', () => {
     });
 
     it('acquires a verified pre-token runtime origin without publishing active-profile state and returns a scoped release', async () => {
-        vi.resetModules();
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
-        const profiles = await import('../../domains/server/serverProfiles');
         const active = await profiles.upsertServerProfile({ serverUrl: 'https://active.example.test', source: 'manual' });
         await profiles.setActiveServerId(active.id, { scope: 'device' });
 
         const fake = createSupervisorFake();
-        const { createIrohHomeTunnelRuntime } = await import('./runtime');
         const runtime = createIrohHomeTunnelRuntime({ createSupervisor: () => fake.supervisor });
         const acquired = await runtime.acquireHomeRuntimeOrigin({
             homeServerIdentityId: HOME_IDENTITY_B,
@@ -356,9 +354,7 @@ describe('Iroh Home tunnel lifecycle runtime', () => {
     });
 
     it('fails closed without acquiring anything when the endpoint identity is missing', async () => {
-        vi.resetModules();
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
-        const profiles = await import('../../domains/server/serverProfiles');
         const home = await profiles.upsertServerProfile({ serverUrl: 'https://malformed.example.test', source: 'manual' });
         await profiles.setActiveServerId(home.id, { scope: 'device' });
 
@@ -366,7 +362,6 @@ describe('Iroh Home tunnel lifecycle runtime', () => {
             ensureHomeTunnel: vi.fn(async () => nativeLease('native-lease-never', HOME_IDENTITY_A, 'endpoint-a', 45971)),
             releaseHomeTunnel: vi.fn(async () => undefined),
         };
-        const { createIrohHomeTunnelRuntime } = await import('./runtime');
         const runtime = createIrohHomeTunnelRuntime({ native });
 
         await expect(runtime.ensureHomeTunnel({
@@ -388,9 +383,7 @@ describe('Iroh Home tunnel lifecycle runtime', () => {
     });
 
     it('releases the native lease and never publishes when the Home identity mismatches', async () => {
-        vi.resetModules();
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
-        const profiles = await import('../../domains/server/serverProfiles');
         const home = await profiles.upsertServerProfile({ serverUrl: 'https://mismatch.example.test', source: 'manual' });
         await profiles.setActiveServerId(home.id, { scope: 'device' });
 
@@ -398,7 +391,6 @@ describe('Iroh Home tunnel lifecycle runtime', () => {
             ensureHomeTunnel: vi.fn(async () => nativeLease('native-lease-mismatch', HOME_IDENTITY_A, 'endpoint-a', 45911)),
             releaseHomeTunnel: vi.fn(async () => undefined),
         };
-        const { setRuntimeFetch } = await import('@/utils/system/runtimeFetch');
         setRuntimeFetch(async (input) => {
             const url = String(input);
             if (url === 'http://127.0.0.1:45911/health') return jsonResponse(200, { ok: true });
@@ -408,8 +400,6 @@ describe('Iroh Home tunnel lifecycle runtime', () => {
             }
             throw new Error(`unexpected request ${url}`);
         });
-
-        const { createIrohHomeTunnelRuntime } = await import('./runtime');
         const runtime = createIrohHomeTunnelRuntime({ native });
 
         await expect(runtime.ensureHomeTunnel({
@@ -424,9 +414,7 @@ describe('Iroh Home tunnel lifecycle runtime', () => {
     });
 
     it('releases the native lease and never publishes when the authenticated ping fails', async () => {
-        vi.resetModules();
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
-        const profiles = await import('../../domains/server/serverProfiles');
         const home = await profiles.upsertServerProfile({ serverUrl: 'https://authfail.example.test', source: 'manual' });
         await profiles.setActiveServerId(home.id, { scope: 'device' });
 
@@ -434,15 +422,12 @@ describe('Iroh Home tunnel lifecycle runtime', () => {
             ensureHomeTunnel: vi.fn(async () => nativeLease('native-lease-authfail', HOME_IDENTITY_A, 'endpoint-a', 45921)),
             releaseHomeTunnel: vi.fn(async () => undefined),
         };
-        const { setRuntimeFetch } = await import('@/utils/system/runtimeFetch');
         setRuntimeFetch(async (input) => {
             const url = String(input);
             if (url === 'http://127.0.0.1:45921/health') return jsonResponse(200, { ok: true });
             if (url === 'http://127.0.0.1:45921/v1/auth/ping') return jsonResponse(403, { error: 'forbidden' });
             throw new Error(`unexpected request ${url}`);
         });
-
-        const { createIrohHomeTunnelRuntime } = await import('./runtime');
         const runtime = createIrohHomeTunnelRuntime({ native });
 
         await expect(runtime.ensureHomeTunnel({
@@ -457,9 +442,7 @@ describe('Iroh Home tunnel lifecycle runtime', () => {
     });
 
     it('releases the native lease and never publishes when health is unreachable', async () => {
-        vi.resetModules();
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
-        const profiles = await import('../../domains/server/serverProfiles');
         const home = await profiles.upsertServerProfile({ serverUrl: 'https://unhealthy.example.test', source: 'manual' });
         await profiles.setActiveServerId(home.id, { scope: 'device' });
 
@@ -467,10 +450,7 @@ describe('Iroh Home tunnel lifecycle runtime', () => {
             ensureHomeTunnel: vi.fn(async () => nativeLease('native-lease-health', HOME_IDENTITY_A, 'endpoint-a', 45931)),
             releaseHomeTunnel: vi.fn(async () => undefined),
         };
-        const { setRuntimeFetch } = await import('@/utils/system/runtimeFetch');
         setRuntimeFetch(async () => jsonResponse(503, { error: 'unavailable' }));
-
-        const { createIrohHomeTunnelRuntime } = await import('./runtime');
         const runtime = createIrohHomeTunnelRuntime({ native });
 
         await expect(runtime.ensureHomeTunnel({
@@ -485,7 +465,6 @@ describe('Iroh Home tunnel lifecycle runtime', () => {
     });
 
     it('retains failed-start cleanup custody and retries the exact native lease during runtime disposal', async () => {
-        vi.resetModules();
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
 
         let rejectFirstStop = true;
@@ -498,9 +477,6 @@ describe('Iroh Home tunnel lifecycle runtime', () => {
                 }
             }),
         };
-
-        const { createIrohHomeTunnelRuntime } = await import('./runtime');
-        const { createIrohHomeTunnelSupervisor } = await import('./supervisor');
         const runtime = createIrohHomeTunnelRuntime({
             createSupervisor: () => createIrohHomeTunnelSupervisor({
                 native,
@@ -531,11 +507,8 @@ describe('Iroh Home tunnel lifecycle runtime', () => {
     });
 
     it('stops the native tunnel exactly once per released lease and never again on disposal', async () => {
-        vi.resetModules();
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
         const native = createRecordingNativeLifecycle();
-        const { createIrohHomeTunnelRuntime } = await import('./runtime');
-        const { createIrohHomeTunnelSupervisor } = await import('./supervisor');
         const runtime = createIrohHomeTunnelRuntime({
             createSupervisor: () => createIrohHomeTunnelSupervisor({
                 native: native.module,
@@ -562,11 +535,8 @@ describe('Iroh Home tunnel lifecycle runtime', () => {
     });
 
     it('keeps a failed native stop owned by the supervisor and retries it on the next release', async () => {
-        vi.resetModules();
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
         const native = createRecordingNativeLifecycle();
-        const { createIrohHomeTunnelRuntime } = await import('./runtime');
-        const { createIrohHomeTunnelSupervisor } = await import('./supervisor');
         const runtime = createIrohHomeTunnelRuntime({
             createSupervisor: () => createIrohHomeTunnelSupervisor({
                 native: native.module,
@@ -593,14 +563,10 @@ describe('Iroh Home tunnel lifecycle runtime', () => {
     });
 
     it('unpublishes before disposal, retries the failed native stop, and leaves no publication custody behind', async () => {
-        vi.resetModules();
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
-        const profiles = await import('../../domains/server/serverProfiles');
         const home = await profiles.upsertServerProfile({ serverUrl: 'https://dispose-custody.example.test', source: 'manual' });
         await profiles.setActiveServerId(home.id, { scope: 'device' });
         const native = createRecordingNativeLifecycle();
-        const { createIrohHomeTunnelRuntime } = await import('./runtime');
-        const { createIrohHomeTunnelSupervisor } = await import('./supervisor');
         const runtime = createIrohHomeTunnelRuntime({
             createSupervisor: () => createIrohHomeTunnelSupervisor({
                 native: native.module,
@@ -635,11 +601,8 @@ describe('Iroh Home tunnel lifecycle runtime', () => {
     });
 
     it('shares one native tunnel across concurrent leases and stops it only after the last reference releases', async () => {
-        vi.resetModules();
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
         const native = createRecordingNativeLifecycle();
-        const { createIrohHomeTunnelRuntime } = await import('./runtime');
-        const { createIrohHomeTunnelSupervisor } = await import('./supervisor');
         const runtime = createIrohHomeTunnelRuntime({
             createSupervisor: () => createIrohHomeTunnelSupervisor({
                 native: native.module,
@@ -672,9 +635,7 @@ describe('Iroh Home tunnel lifecycle runtime', () => {
     });
 
     it('releases the native lease and never publishes when focus changes during acquisition', async () => {
-        vi.resetModules();
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
-        const profiles = await import('../../domains/server/serverProfiles');
         const first = await profiles.upsertServerProfile({ serverUrl: 'https://stale-first.example.test', source: 'manual' });
         const second = await profiles.upsertServerProfile({ serverUrl: 'https://stale-second.example.test', source: 'manual' });
         await profiles.setActiveServerId(first.id, { scope: 'device' });
@@ -684,7 +645,6 @@ describe('Iroh Home tunnel lifecycle runtime', () => {
             ensureHomeTunnel: vi.fn(async () => await new Promise<ReturnType<typeof nativeLease>>((resolve) => { resolveNative = resolve; })),
             releaseHomeTunnel: vi.fn(async () => undefined),
         };
-        const { setRuntimeFetch } = await import('@/utils/system/runtimeFetch');
         setRuntimeFetch(async (input) => {
             const url = String(input);
             if (url === 'http://127.0.0.1:45941/health') return jsonResponse(200, { ok: true });
@@ -694,8 +654,6 @@ describe('Iroh Home tunnel lifecycle runtime', () => {
             }
             throw new Error(`unexpected request ${url}`);
         });
-
-        const { createIrohHomeTunnelRuntime } = await import('./runtime');
         const runtime = createIrohHomeTunnelRuntime({ native });
 
         const pending = runtime.ensureHomeTunnel({
@@ -714,17 +672,11 @@ describe('Iroh Home tunnel lifecycle runtime', () => {
     });
 
     it('reports an honest typed outcome and never publishes when the native module is unavailable', async () => {
-        vi.resetModules();
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
-        const profiles = await import('../../domains/server/serverProfiles');
         const home = await profiles.upsertServerProfile({ serverUrl: 'https://nonative.example.test', source: 'manual' });
         await profiles.setActiveServerId(home.id, { scope: 'device' });
-
-        const { setRuntimeFetch } = await import('@/utils/system/runtimeFetch');
         const runtimeFetch = vi.fn(async () => jsonResponse(200, {}));
         setRuntimeFetch(runtimeFetch);
-
-        const { createIrohHomeTunnelRuntime } = await import('./runtime');
         const runtime = createIrohHomeTunnelRuntime({ native: null });
 
         await expect(runtime.ensureHomeTunnel({
@@ -739,9 +691,7 @@ describe('Iroh Home tunnel lifecycle runtime', () => {
     });
 
     it('reuses one verified lease per Home identity and descriptor facts, not per request', async () => {
-        vi.resetModules();
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
-        const profiles = await import('../../domains/server/serverProfiles');
         const home = await profiles.upsertServerProfile({ serverUrl: 'https://reuse.example.test', source: 'manual' });
         await profiles.setActiveServerId(home.id, { scope: 'device' });
 
@@ -753,7 +703,6 @@ describe('Iroh Home tunnel lifecycle runtime', () => {
             }),
             releaseHomeTunnel: vi.fn(async () => undefined),
         };
-        const { setRuntimeFetch } = await import('@/utils/system/runtimeFetch');
         let probeRound = 0;
         setRuntimeFetch(async (input) => {
             const url = String(input);
@@ -764,8 +713,6 @@ describe('Iroh Home tunnel lifecycle runtime', () => {
             }
             throw new Error(`unexpected request ${url}`);
         });
-
-        const { createIrohHomeTunnelRuntime } = await import('./runtime');
         const runtime = createIrohHomeTunnelRuntime({ native });
         const input: IrohHomeTunnelAcquireInput = {
             homeServerIdentityId: HOME_IDENTITY_A,
@@ -799,9 +746,7 @@ describe('Iroh Home tunnel lifecycle runtime', () => {
     });
 
     it('releases and rejects an acquisition whose publication loses a focus race', async () => {
-        vi.resetModules();
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
-        const profiles = await import('../../domains/server/serverProfiles');
         const first = await profiles.upsertServerProfile({ serverUrl: 'https://race-first.example.test', source: 'manual' });
         const second = await profiles.upsertServerProfile({ serverUrl: 'https://race-second.example.test', source: 'manual' });
         await profiles.setActiveServerId(first.id, { scope: 'device' });
@@ -811,8 +756,6 @@ describe('Iroh Home tunnel lifecycle runtime', () => {
         fake.ensureTunnel.mockImplementationOnce(async (request: IrohHomeTunnelRequest) => {
             return await new Promise<IrohHomeTunnelLease>((resolve) => { resolveEnsure = resolve; });
         });
-
-        const { createIrohHomeTunnelRuntime } = await import('./runtime');
         const runtime = createIrohHomeTunnelRuntime({ createSupervisor: () => fake.supervisor });
 
         const pending = runtime.ensureHomeTunnel({
@@ -831,9 +774,7 @@ describe('Iroh Home tunnel lifecycle runtime', () => {
     });
 
     it('retains failed cleanup when a focus-race publication is rejected', async () => {
-        vi.resetModules();
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
-        const profiles = await import('../../domains/server/serverProfiles');
         const first = await profiles.upsertServerProfile({ serverUrl: 'https://retry-race-first.example.test', source: 'manual' });
         const second = await profiles.upsertServerProfile({ serverUrl: 'https://retry-race-second.example.test', source: 'manual' });
         await profiles.setActiveServerId(first.id, { scope: 'device' });
@@ -844,8 +785,6 @@ describe('Iroh Home tunnel lifecycle runtime', () => {
             return await new Promise<IrohHomeTunnelLease>((resolve) => { resolveEnsure = resolve; });
         });
         fake.releaseTunnel.mockRejectedValueOnce(new Error('native stop failed'));
-
-        const { createIrohHomeTunnelRuntime } = await import('./runtime');
         const runtime = createIrohHomeTunnelRuntime({ createSupervisor: () => fake.supervisor });
         const pending = runtime.ensureHomeTunnel({
             homeServerIdentityId: HOME_IDENTITY_A,
@@ -865,13 +804,10 @@ describe('Iroh Home tunnel lifecycle runtime', () => {
     });
 
     it('keeps the focused Home lease published when a stale Home lease is released late', async () => {
-        vi.resetModules();
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
-        const profiles = await import('../../domains/server/serverProfiles');
         const first = await profiles.upsertServerProfile({ serverUrl: 'https://ab-first.example.test', source: 'manual' });
         const second = await profiles.upsertServerProfile({ serverUrl: 'https://ab-second.example.test', source: 'manual' });
         const fake = createSupervisorFake();
-        const { createIrohHomeTunnelRuntime } = await import('./runtime');
         const runtime = createIrohHomeTunnelRuntime({ createSupervisor: () => fake.supervisor });
 
         await profiles.setActiveServerId(first.id, { scope: 'device' });
@@ -906,13 +842,10 @@ describe('Iroh Home tunnel lifecycle runtime', () => {
     });
 
     it('keeps the newest Home A lease published when an old A lease is released after refocusing A', async () => {
-        vi.resetModules();
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
-        const profiles = await import('../../domains/server/serverProfiles');
         const first = await profiles.upsertServerProfile({ serverUrl: 'https://aba-first.example.test', source: 'manual' });
         const second = await profiles.upsertServerProfile({ serverUrl: 'https://aba-second.example.test', source: 'manual' });
         const fake = createSupervisorFake();
-        const { createIrohHomeTunnelRuntime } = await import('./runtime');
         const runtime = createIrohHomeTunnelRuntime({ createSupervisor: () => fake.supervisor });
 
         await profiles.setActiveServerId(first.id, { scope: 'device' });
@@ -948,13 +881,10 @@ describe('Iroh Home tunnel lifecycle runtime', () => {
     });
 
     it('releases leases from a prior Home/focus generation during the switch', async () => {
-        vi.resetModules();
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
-        const profiles = await import('../../domains/server/serverProfiles');
         const first = await profiles.upsertServerProfile({ serverUrl: 'https://reap-first.example.test', source: 'manual' });
         const second = await profiles.upsertServerProfile({ serverUrl: 'https://reap-second.example.test', source: 'manual' });
         const fake = createSupervisorFake();
-        const { createIrohHomeTunnelRuntime } = await import('./runtime');
         const runtime = createIrohHomeTunnelRuntime({ createSupervisor: () => fake.supervisor });
 
         await profiles.setActiveServerId(first.id, { scope: 'device' });
@@ -973,14 +903,11 @@ describe('Iroh Home tunnel lifecycle runtime', () => {
     });
 
     it('retains failed stale-generation cleanup so the existing lifecycle owner can retry it', async () => {
-        vi.resetModules();
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
-        const profiles = await import('../../domains/server/serverProfiles');
         const first = await profiles.upsertServerProfile({ serverUrl: 'https://retry-stale-first.example.test', source: 'manual' });
         const second = await profiles.upsertServerProfile({ serverUrl: 'https://retry-stale-second.example.test', source: 'manual' });
         const fake = createSupervisorFake();
         fake.releaseTunnel.mockRejectedValueOnce(new Error('native stop failed'));
-        const { createIrohHomeTunnelRuntime } = await import('./runtime');
         const runtime = createIrohHomeTunnelRuntime({ createSupervisor: () => fake.supervisor });
 
         await profiles.setActiveServerId(first.id, { scope: 'device' });
@@ -1000,14 +927,11 @@ describe('Iroh Home tunnel lifecycle runtime', () => {
     });
 
     it('retains failed superseded cleanup so active shutdown can retry it', async () => {
-        vi.resetModules();
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
-        const profiles = await import('../../domains/server/serverProfiles');
         const home = await profiles.upsertServerProfile({ serverUrl: 'https://retry-superseded.example.test', source: 'manual' });
         await profiles.setActiveServerId(home.id, { scope: 'device' });
         const fake = createSupervisorFake();
         fake.releaseTunnel.mockRejectedValueOnce(new Error('native stop failed'));
-        const { createIrohHomeTunnelRuntime } = await import('./runtime');
         const runtime = createIrohHomeTunnelRuntime({ createSupervisor: () => fake.supervisor });
 
         const supersededLease = await runtime.ensureHomeTunnel({
@@ -1030,14 +954,11 @@ describe('Iroh Home tunnel lifecycle runtime', () => {
     });
 
     it('unpublishes while suspended and republishes only a lease the foreground re-probe verified', async () => {
-        vi.resetModules();
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
-        const profiles = await import('../../domains/server/serverProfiles');
         const home = await profiles.upsertServerProfile({ serverUrl: 'https://lifecycle.example.test', source: 'manual' });
         await profiles.setActiveServerId(home.id, { scope: 'device' });
 
         const fake = createSupervisorFake();
-        const { createIrohHomeTunnelRuntime } = await import('./runtime');
         const runtime = createIrohHomeTunnelRuntime({ createSupervisor: () => fake.supervisor });
 
         const lease = await runtime.ensureHomeTunnel({
@@ -1068,14 +989,11 @@ describe('Iroh Home tunnel lifecycle runtime', () => {
     });
 
     it('keeps a foreground-ready lease unpublished when its focused Home generation is stale', async () => {
-        vi.resetModules();
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
-        const profiles = await import('../../domains/server/serverProfiles');
         const home = await profiles.upsertServerProfile({ serverUrl: 'https://stale-foreground.example.test', source: 'manual' });
         const otherHome = await profiles.upsertServerProfile({ serverUrl: 'https://other-foreground.example.test', source: 'manual' });
         await profiles.setActiveServerId(home.id, { scope: 'device' });
         const fake = createSupervisorFake();
-        const { createIrohHomeTunnelRuntime } = await import('./runtime');
         const runtime = createIrohHomeTunnelRuntime({ createSupervisor: () => fake.supervisor });
         const recoveryEvents: unknown[] = [];
         runtime.subscribeRecoveryRequired((event) => recoveryEvents.push(event));
@@ -1107,13 +1025,10 @@ describe('Iroh Home tunnel lifecycle runtime', () => {
     });
 
     it('releases the focused native lease and publication on active-connection shutdown', async () => {
-        vi.resetModules();
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
-        const profiles = await import('../../domains/server/serverProfiles');
         const home = await profiles.upsertServerProfile({ serverUrl: 'https://logout.example.test', source: 'manual' });
         await profiles.setActiveServerId(home.id, { scope: 'device' });
         const fake = createSupervisorFake();
-        const { createIrohHomeTunnelRuntime } = await import('./runtime');
         const runtime = createIrohHomeTunnelRuntime({ createSupervisor: () => fake.supervisor });
         const lease = await runtime.ensureHomeTunnel({
             homeServerIdentityId: HOME_IDENTITY_A,
@@ -1129,9 +1044,7 @@ describe('Iroh Home tunnel lifecycle runtime', () => {
     });
 
     it('attempts every active release, retains failed ownership, and retries only the failed lease', async () => {
-        vi.resetModules();
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
-        const profiles = await import('../../domains/server/serverProfiles');
         const first = await profiles.upsertServerProfile({ serverUrl: 'https://release-all-first.example.test', source: 'manual' });
         const second = await profiles.upsertServerProfile({ serverUrl: 'https://release-all-second.example.test', source: 'manual' });
         const fake = createSupervisorFake();
@@ -1139,7 +1052,6 @@ describe('Iroh Home tunnel lifecycle runtime', () => {
         fake.releaseTunnel.mockImplementation(async (leaseId: string) => {
             if (leaseId === 'lease-1' && failFirstLease) throw new Error('first native stop failed');
         });
-        const { createIrohHomeTunnelRuntime } = await import('./runtime');
         const runtime = createIrohHomeTunnelRuntime({ createSupervisor: () => fake.supervisor });
 
         await profiles.setActiveServerId(first.id, { scope: 'device' });
@@ -1170,13 +1082,10 @@ describe('Iroh Home tunnel lifecycle runtime', () => {
     });
 
     it('disposes the singleton through its runtime owner and leaves no lifecycle subscription or active lease', async () => {
-        vi.resetModules();
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
-        const profiles = await import('../../domains/server/serverProfiles');
         const home = await profiles.upsertServerProfile({ serverUrl: 'https://dispose.example.test', source: 'manual' });
         await profiles.setActiveServerId(home.id, { scope: 'device' });
         const fake = createSupervisorFake();
-        const { disposeIrohHomeTunnelRuntime, getIrohHomeTunnelRuntime } = await import('./runtime');
         const runtime = getIrohHomeTunnelRuntime({ createSupervisor: () => fake.supervisor });
         const lease = await runtime.ensureHomeTunnel({
             homeServerIdentityId: HOME_IDENTITY_A,
@@ -1196,10 +1105,8 @@ describe('Iroh Home tunnel lifecycle runtime', () => {
     });
 
     it('disposes lifecycle-neutral leases even when their consumer did not release them', async () => {
-        vi.resetModules();
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
         const fake = createSupervisorFake();
-        const { disposeIrohHomeTunnelRuntime, getIrohHomeTunnelRuntime } = await import('./runtime');
         const runtime = getIrohHomeTunnelRuntime({ createSupervisor: () => fake.supervisor });
         const lease = await runtime.acquireHomeRuntimeOrigin({
             homeServerIdentityId: HOME_IDENTITY_A,
@@ -1216,13 +1123,10 @@ describe('Iroh Home tunnel lifecycle runtime', () => {
     });
 
     it('keeps the singleton and lifecycle owner when disposal fails, then retries cleanup through that same owner', async () => {
-        vi.resetModules();
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
-        const profiles = await import('../../domains/server/serverProfiles');
         const home = await profiles.upsertServerProfile({ serverUrl: 'https://dispose-retry.example.test', source: 'manual' });
         await profiles.setActiveServerId(home.id, { scope: 'device' });
         const fake = createSupervisorFake();
-        const { disposeIrohHomeTunnelRuntime, getIrohHomeTunnelRuntime } = await import('./runtime');
         const runtime = getIrohHomeTunnelRuntime({ createSupervisor: () => fake.supervisor });
         const lease = await runtime.ensureHomeTunnel({
             homeServerIdentityId: HOME_IDENTITY_A,
@@ -1249,9 +1153,7 @@ describe('Iroh Home tunnel lifecycle runtime', () => {
     });
 
     it('closes admission while disposal is in flight and releases an admitted lease that completes after disposal begins', async () => {
-        vi.resetModules();
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
-        const profiles = await import('../../domains/server/serverProfiles');
         const home = await profiles.upsertServerProfile({ serverUrl: 'https://dispose-race.example.test', source: 'manual' });
         await profiles.setActiveServerId(home.id, { scope: 'device' });
 
@@ -1261,8 +1163,6 @@ describe('Iroh Home tunnel lifecycle runtime', () => {
                 await new Promise<ReturnType<typeof nativeLease>>((resolve) => { resolveNative = resolve; })),
             releaseHomeTunnel: vi.fn(async () => undefined),
         };
-        const { createIrohHomeTunnelRuntime } = await import('./runtime');
-        const { createIrohHomeTunnelSupervisor } = await import('./supervisor');
         const runtime = createIrohHomeTunnelRuntime({
             createSupervisor: () => createIrohHomeTunnelSupervisor({ native, probe: async () => ({ ok: true }) }),
         });
@@ -1297,9 +1197,7 @@ describe('Iroh Home tunnel lifecycle runtime', () => {
     });
 
     it('keeps the singleton published during in-flight disposal while refusing its work', async () => {
-        vi.resetModules();
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
-        const profiles = await import('../../domains/server/serverProfiles');
         const home = await profiles.upsertServerProfile({ serverUrl: 'https://singleton-dispose.example.test', source: 'manual' });
         await profiles.setActiveServerId(home.id, { scope: 'device' });
 
@@ -1309,8 +1207,6 @@ describe('Iroh Home tunnel lifecycle runtime', () => {
                 await new Promise<ReturnType<typeof nativeLease>>((resolve) => { resolveNative = resolve; })),
             releaseHomeTunnel: vi.fn(async () => undefined),
         };
-        const { getIrohHomeTunnelRuntime, disposeIrohHomeTunnelRuntime } = await import('./runtime');
-        const { createIrohHomeTunnelSupervisor } = await import('./supervisor');
         let resolveSupervisorDisposalBegan: (() => void) | undefined;
         const supervisorDisposalBegan = new Promise<void>((resolve) => { resolveSupervisorDisposalBegan = resolve; });
         const supervisor = createIrohHomeTunnelSupervisor({ native, probe: async () => ({ ok: true }) });
@@ -1355,11 +1251,8 @@ describe('Iroh Home tunnel lifecycle runtime', () => {
     });
 
     it('refuses further acquisitions on a disposed runtime without starting native work', async () => {
-        vi.resetModules();
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
         const native = createRecordingNativeLifecycle();
-        const { createIrohHomeTunnelRuntime } = await import('./runtime');
-        const { createIrohHomeTunnelSupervisor } = await import('./supervisor');
         const runtime = createIrohHomeTunnelRuntime({
             createSupervisor: () => createIrohHomeTunnelSupervisor({
                 native: native.module,
@@ -1388,13 +1281,10 @@ describe('Iroh Home tunnel lifecycle runtime', () => {
     });
 
     it('unpublishes the matching generation when the native owner reports transport closure', async () => {
-        vi.resetModules();
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
-        const profiles = await import('../../domains/server/serverProfiles');
         const home = await profiles.upsertServerProfile({ serverUrl: 'https://event.example.test', source: 'manual' });
         await profiles.setActiveServerId(home.id, { scope: 'device' });
         const fake = createSupervisorFake();
-        const { createIrohHomeTunnelRuntime } = await import('./runtime');
         const runtime = createIrohHomeTunnelRuntime({ createSupervisor: () => fake.supervisor });
         const lease = await runtime.ensureHomeTunnel({
             homeServerIdentityId: HOME_IDENTITY_A,
@@ -1414,13 +1304,10 @@ describe('Iroh Home tunnel lifecycle runtime', () => {
     });
 
     it('keeps the active runtime published across a transient native status observation error', async () => {
-        vi.resetModules();
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
-        const profiles = await import('../../domains/server/serverProfiles');
         const home = await profiles.upsertServerProfile({ serverUrl: 'https://status-error.example.test', source: 'manual' });
         await profiles.setActiveServerId(home.id, { scope: 'device' });
         const fake = createSupervisorFake();
-        const { createIrohHomeTunnelRuntime } = await import('./runtime');
         const runtime = createIrohHomeTunnelRuntime({ createSupervisor: () => fake.supervisor });
         const recoveryEvents: unknown[] = [];
         runtime.subscribeRecoveryRequired((event) => recoveryEvents.push(event));
@@ -1460,13 +1347,10 @@ describe('Iroh Home tunnel lifecycle runtime', () => {
     });
 
     it('requests replacement for a terminal native lease and a foreground probe failure', async () => {
-        vi.resetModules();
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
-        const profiles = await import('../../domains/server/serverProfiles');
         const home = await profiles.upsertServerProfile({ serverUrl: 'https://recover.example.test', source: 'manual' });
         await profiles.setActiveServerId(home.id, { scope: 'device' });
         const fake = createSupervisorFake();
-        const { createIrohHomeTunnelRuntime } = await import('./runtime');
         const runtime = createIrohHomeTunnelRuntime({ createSupervisor: () => fake.supervisor });
         const recoveryEvents: unknown[] = [];
         runtime.subscribeRecoveryRequired((event) => recoveryEvents.push(event));
@@ -1498,13 +1382,10 @@ describe('Iroh Home tunnel lifecycle runtime', () => {
     });
 
     it('keeps native path telemetry diagnostic-only without republishing the active Home snapshot', async () => {
-        vi.resetModules();
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
-        const profiles = await import('../../domains/server/serverProfiles');
         const home = await profiles.upsertServerProfile({ serverUrl: 'https://path.example.test', source: 'manual' });
         await profiles.setActiveServerId(home.id, { scope: 'device' });
         const fake = createSupervisorFake();
-        const { createIrohHomeTunnelRuntime } = await import('./runtime');
         const runtime = createIrohHomeTunnelRuntime({ createSupervisor: () => fake.supervisor });
         const lease = await runtime.ensureHomeTunnel({
             homeServerIdentityId: HOME_IDENTITY_A,

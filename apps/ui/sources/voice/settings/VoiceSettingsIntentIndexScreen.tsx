@@ -1,9 +1,11 @@
 import * as React from 'react';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 
+import { Icon } from '@/components/ui/icons/Icon';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ItemList } from '@/components/ui/lists/ItemList';
+import { SettingsPageHeader } from '@/components/settings/shell/SettingsPageHeader';
 import { t } from '@/text';
 import { useNavigationFocusReturn } from '@/utils/navigation/useNavigationFocusReturn';
 import {
@@ -28,8 +30,9 @@ export function VoiceSettingsIntentIndexScreen() {
   }, [legacyIntent, routeParams.focus, router]);
 
   return (
-    <ItemList testID="settings.voice.intents" style={{ paddingTop: 0 }}>
-      <ItemGroup title={t('settings.voiceAssistant')}>
+    <ItemList testID="settings.voice.intents" presentation="page">
+      <SettingsPageHeader description={t('settings.voiceAssistantSubtitle')} />
+      <ItemGroup>
         {VOICE_SETTINGS_INTENTS.map((intent) => {
           const title = t(intent.titleKey);
           const subtitle = t(intent.subtitleKey);
@@ -37,6 +40,7 @@ export function VoiceSettingsIntentIndexScreen() {
             <Item
               key={intent.id}
               testID={`settings.voice.intent.${intent.id}`}
+              icon={<Icon name={intent.iconName} />}
               title={title}
               subtitle={subtitle}
               subtitleLines={0}

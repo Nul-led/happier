@@ -1,9 +1,9 @@
+import { useSessionTranscriptSource } from '@/components/sessions/transcript/source/SessionTranscriptSourceContext';
 import * as React from 'react';
 import { Platform, Pressable, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
-import { useRouter } from 'expo-router';
 
-import type { Metadata } from '@/sync/domains/state/storageTypes';
+import type { Metadata } from '@happier-dev/session-core/state';
 import type { PendingPermissionRequest } from '@/utils/sessions/sessionUtils';
 
 import { Text } from '@/components/ui/text/Text';
@@ -23,6 +23,8 @@ import {
 import { isGenericSubAgentToolName } from '@happier-dev/protocol/tools/v2';
 import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
 import { Icon } from '@/components/ui/icons/Icon';
+import type { PromptResponseOrigin } from './executionRunPromptResponseTarget';
+import type { TranscriptPermissionDisabledReason } from '@/utils/sessions/deriveTranscriptInteraction';
 
 const PROMPT_CARD_HORIZONTAL_PADDING = 12;
 const PROMPT_CARD_ICON_SIZE = 18;
@@ -30,18 +32,17 @@ const PROMPT_CARD_ICON_TEXT_GAP = 6;
 const PROMPT_CARD_TEXT_COLUMN_START =
     PROMPT_CARD_HORIZONTAL_PADDING + PROMPT_CARD_ICON_SIZE + PROMPT_CARD_ICON_TEXT_GAP;
 
-export const PermissionPromptCard = React.memo(function PermissionPromptCard(props: {
+export const PermissionPromptCard = React.memo(function PermissionPromptCard(props: PromptResponseOrigin & {
     request: PendingPermissionRequest;
     location: PermissionToolCallMessageLocation | null;
-    sessionId: string;
     serverId?: string;
     metadata: Metadata | null;
     canApprovePermissions: boolean;
-    disabledReason?: 'public' | 'readOnly' | 'notGranted' | 'inactive';
+    disabledReason?: TranscriptPermissionDisabledReason;
     chrome?: 'card' | 'inline';
 }) {
     const { theme } = useUnistyles();
-    const router = useRouter();
+    const transcriptSource = useSessionTranscriptSource();
     const minimumInteractiveTargetSize = resolveMinimumInteractiveTargetSize(Platform.OS);
 
     const toolViewDetailLevelDefault = useSetting('toolViewDetailLevelDefault');
@@ -54,11 +55,14 @@ export const PermissionPromptCard = React.memo(function PermissionPromptCard(pro
     const headerText = model.headerText;
 
     const onViewTool = React.useCallback(() => {
+        if (props.sessionId === undefined) return;
+        const sessionId = props.sessionId;
         navigateWithBlurOnWeb(() => {
-            router.push(buildPermissionToolCallRoute({ sessionId: props.sessionId, serverId: props.serverId, location: props.location }));
+            transcriptSource.navigate?.(buildPermissionToolCallRoute({ sessionId, serverId: props.serverId, location: props.location }));
         });
-    }, [props.location, props.sessionId, props.serverId, router]);
-    const canOpenToolRoute = canOpenPermissionToolCallRoute(props.location);
+    }, [props.location, props.sessionId, props.serverId, transcriptSource]);
+    // A tool-call route is a Session transcript location; an Execution Run has none.
+    const canOpenToolRoute = transcriptSource.navigate !== null && props.sessionId !== undefined && canOpenPermissionToolCallRoute(props.location);
 
     const previewDetailLevel = React.useMemo(() => {
         const normalizedToolViewDetailLevelDefaultSetting: ToolViewDetailLevelSetting =
@@ -142,7 +146,7 @@ export const PermissionPromptCard = React.memo(function PermissionPromptCard(pro
                             pressed && styles.viewButtonPressed,
                         ]}
                     >
-                        <Icon name="arrow-square-out" size={16} color={theme.colors.text.secondary} />
+                        <Icon name="arrow-square-out" size={PROMPT_CARD_ICON_SIZE} color={theme.colors.text.secondary} />
                     </Pressable>
                 ) : null}
             </View>
@@ -171,6 +175,9 @@ export const PermissionPromptCard = React.memo(function PermissionPromptCard(pro
 
             <View style={styles.actions}>
                 <PermissionFooter
+                    {...(props.executionRun === undefined
+                        ? { sessionId: props.sessionId }
+                        : { executionRun: props.executionRun })}
                     embedded={true}
                     alignFirstButtonToStart={true}
                     permission={{
@@ -181,7 +188,6 @@ export const PermissionPromptCard = React.memo(function PermissionPromptCard(pro
                             ? { suggestions: props.request.permissionSuggestions }
                             : {}),
                     }}
-                    sessionId={props.sessionId}
                     serverId={props.serverId}
                     toolName={props.request.tool}
                     toolInput={props.request.arguments}
@@ -196,7 +202,7 @@ export const PermissionPromptCard = React.memo(function PermissionPromptCard(pro
 
 const styles = StyleSheet.create((theme) => ({
     container: {
-        borderRadius: 12,
+        borderRadius: theme.parts.approvalCard.radius,
         borderWidth: 1,
         borderColor: theme.colors.border.default,
         backgroundColor: theme.colors.surface.elevated,

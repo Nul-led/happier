@@ -163,7 +163,7 @@ function resolveBrowserAction(
 export function normalizePluginBrowserProjection(
     projection: DaemonContributionRegistryProjection | null,
 ): PluginBrowserProjectionModel {
-    if (!projection || projection.v !== 2) {
+    if (!projection) {
         return EMPTY_PLUGIN_BROWSER_PROJECTION;
     }
 
@@ -220,9 +220,6 @@ export function resolvePluginBrowserProjectionState(
 ): PluginBrowserProjectionModel {
     if (projection === null) {
         return previous;
-    }
-    if (projection.v !== 2) {
-        return EMPTY_PLUGIN_BROWSER_PROJECTION;
     }
     return normalizePluginBrowserProjection(projection);
 }

@@ -1,13 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
 import { makeToolCall } from '@/dev/testkit';
-import { createMixedAgentTranscriptFixture } from '@/dev/testkit/fixtures/sessionAgentTransitionFixtures';
+import { createMixedAgentTranscriptFixture } from "../../../../../../../packages/session-core/src/testkit/sessionAgentTransitionFixtures.js";
 import { installToolShellCommonModuleMocks } from '@/components/tools/shell/views/ToolView.testHelpers';
 
 import {
     buildSessionTranscriptAgentAttributionIndex,
     resolveHistoricalAgentIdAtSeq,
-} from './sessionTranscriptAgentAttribution';
+} from "@happier-dev/session-core/messages";
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 

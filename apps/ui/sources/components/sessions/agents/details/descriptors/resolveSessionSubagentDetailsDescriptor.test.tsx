@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { Message } from '@/sync/domains/messages/messageTypes';
+import type { Message } from "@happier-dev/session-core/messages";
 import type { SessionSubagent } from '@/sync/domains/session/subagents/types';
 
 async function resolveDescriptor(subagent: SessionSubagent, message: Message | null = null) {

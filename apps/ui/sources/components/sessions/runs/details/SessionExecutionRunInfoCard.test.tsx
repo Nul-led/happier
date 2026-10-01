@@ -1,8 +1,10 @@
 import * as React from 'react';
-import renderer from 'react-test-renderer';
 import { describe, expect, it, vi } from 'vitest';
-import { renderScreen } from '@/dev/testkit';
+import { flattenTestStyle, renderScreen } from '@/dev/testkit';
+import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
 import { installSessionExecutionRunDetailsCommonModuleMocks } from './sessionExecutionRunDetailsTestHelpers';
+import { SessionExecutionRunInfoCard } from './SessionExecutionRunInfoCard';
+
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -23,6 +25,7 @@ installSessionExecutionRunDetailsCommonModuleMocks({
         const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
         return createTextModuleMock({
             translate: (key, values) => {
+                if (key.endsWith('.readOnly')) return 'Read only';
                 if (key === 'session.subagents.intent.review') return 'Review';
                 if (key === 'executionRuns.details.labels.backend' && values?.value) return `Backend: ${String(values.value)}`;
                 if (key === 'executionRuns.details.labels.permissions' && values?.value) {
@@ -43,34 +46,210 @@ installSessionExecutionRunDetailsCommonModuleMocks({
     },
     unistyles: async () => {
         const { createUnistylesMock } = await import('@/dev/testkit/mocks/unistyles');
-        return createUnistylesMock({
-            theme: {
-                colors: {
-                    surface: '#111',
-                    surfaceHigh: '#222',
-                    divider: '#333',
-                    text: '#eee',
-                    textSecondary: '#aaa',
-                    accent: {
-                        blue: '#06f',
-                        green: '#0a0',
-                        orange: '#f80',
-                        red: '#f33',
-                    },
-                },
-            },
-        });
+        return createUnistylesMock();
     },
 });
 
 vi.mock('@/components/ui/text/Text', () => ({
     Text: ({ children, ...props }: any) => React.createElement('Text', props, children),
 }));
+const clipboardWrites = vi.hoisted(() => [] as string[]);
+vi.mock('expo-clipboard', () => ({
+    setStringAsync: async (value: string) => { clipboardWrites.push(value); },
+}));
+vi.mock('@/components/ui/popover', () => ({
+    Popover: (props: { open: boolean; children: React.ReactNode | ((input: { maxHeight: number; maxWidth: number }) => React.ReactNode) }) => {
+        if (!props.open) return null;
+        return React.createElement('Popover', null, typeof props.children === 'function'
+            ? props.children({ maxHeight: 560, maxWidth: 400 })
+            : props.children);
+    },
+}));
+vi.mock('@/components/ui/overlays/FloatingOverlay', () => ({
+    FloatingOverlay: (props: { children: React.ReactNode }) => React.createElement('FloatingOverlay', null, props.children),
+}));
+
+/** The run's facts live behind ⋯ → Run details; open the menu and read the whole card. */
+async function openRunMenu(screen: Awaited<ReturnType<typeof renderScreen>>): Promise<string> {
+    await screen.pressByTestIdAsync('session-run-details-actions-menu');
+    return JSON.stringify(screen.tree.toJSON());
+}
 
 describe('SessionExecutionRunInfoCard', () => {
+    it('titles the conversation by its intent, with its status and the time it has been running', async () => {
+        const startedAtMs = Date.now() - 72_000;
+        {
+            const screen = await renderScreen(<SessionExecutionRunInfoCard
+                run={{
+                    runId: 'run_1',
+                    intent: 'delegate',
+                    display: { title: 'Is 5 attempts enough during a deploy?' },
+                    backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
+                    requestedConfiguration: { modelId: 'gpt-6-luna' },
+                    runClass: 'long_lived',
+                    status: 'running',
+                    startedAtMs,
+                } as any}
+                originTitle="Relay retry plan"
+                hostSessionId="session_1"
+            />);
+
+            const text = screen.getTextContent();
+            expect(screen.findByTestId('session-run-header.title')?.props.children).toBe('Is 5 attempts enough during a deploy?');
+            expect(screen.findByTestId('session-run-header-mark')).not.toBeNull();
+            expect(text).toContain('sessionAgentActivity.status.running');
+            expect(screen.findByTestId('session-run-header-elapsed')?.props.children).toBe('1:12');
+            expect(text).toContain('gpt-6-luna');
+            expect(text).not.toContain('Run ID: run_1');
+        }
+    });
+
+    it('says the conversation is waiting on you, in the roster words, instead of Running', async () => {
+        const screen = await renderScreen(<SessionExecutionRunInfoCard
+            run={{
+                runId: 'run_1',
+                intent: 'delegate',
+                display: { title: 'Why does the sheet remount on rotate?' },
+                backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
+                runClass: 'long_lived',
+                status: 'running',
+                startedAtMs: Date.now() - 6_000,
+            } as any}
+            attention={{ label: 'Needs your answer', variant: 'warning', description: 'Needs your answer' }}
+        />);
+
+        const text = screen.getTextContent();
+        expect(text).toContain('Needs your answer');
+        expect(text).not.toContain('sessionAgentActivity.status.running');
+        // A person is the blocker, so no clock claims the agent is working.
+        expect(screen.findByTestId('session-run-header-elapsed')).toBeNull();
+    });
+
+    it('puts Cancel run, the rare actions and the run facts, in words, under ⋯ (lab convo-C1)', async () => {
+        const onStop = vi.fn();
+        const onCancel = vi.fn();
+        const onShowInTranscript = vi.fn();
+        const screen = await renderScreen(<SessionExecutionRunInfoCard
+            run={{
+                runId: 'run_1',
+                intent: 'review',
+                backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
+                permissionMode: 'read-only',
+                runClass: 'bounded',
+                ioMode: 'streaming',
+                status: 'running',
+                startedAtMs: 1,
+            } as any}
+            stopAction={{ stopping: false, onStop }}
+            cancelResponseAction={{ pending: false, onCancel }}
+            copyResultText="The fix is right for desktop."
+            onShowInTranscript={onShowInTranscript}
+        />);
+
+        // The header carries no Stop of its own: cancelling is one of the menu's actions.
+        expect(screen.findByTestId('session-run-details-stop')).toBeNull();
+        await openRunMenu(screen);
+        await screen.pressByTestIdAsync('session-run-details-stop');
+        expect(onStop).toHaveBeenCalledTimes(1);
+        const actionTarget = screen.findByTestId('session-run-details-actions-menu');
+        expect(flattenTestStyle(actionTarget?.props.style)).toEqual(expect.objectContaining({
+            minWidth: resolveMinimumInteractiveTargetSize('web'),
+            minHeight: resolveMinimumInteractiveTargetSize('web'),
+        }));
+        // Nothing of the run's plumbing leads the page.
+        expect(screen.getTextContent()).not.toContain('run_1');
+
+        const menu = await openRunMenu(screen);
+        // The run facts read as words, never as the wire's tokens.
+        expect(menu).toContain('runPage.menu.finishesOnItsOwn');
+        expect(menu).not.toContain('bounded');
+        expect(menu).not.toContain('streaming');
+        expect(screen.findByTestId('session-run-menu-fact-run')).not.toBeNull();
+        expect(menu.indexOf('runPage.menu.kind')).toBeLessThan(menu.indexOf('run_1'));
+
+        await screen.pressByTestIdAsync('session-run-details-cancel-turn');
+        expect(onCancel).toHaveBeenCalledTimes(1);
+        await openRunMenu(screen);
+        await screen.pressByTestIdAsync('session-run-menu-copy-result');
+        expect(clipboardWrites.at(-1)).toBe('The fix is right for desktop.');
+        await openRunMenu(screen);
+        await screen.pressByTestIdAsync('session-run-menu-show-in-transcript');
+        expect(onShowInTranscript).toHaveBeenCalledTimes(1);
+    });
+
+    it('offers only the actions this run really has', async () => {
+        const screen = await renderScreen(<SessionExecutionRunInfoCard
+            run={{
+                runId: 'run_1',
+                intent: 'delegate',
+                backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
+                permissionMode: 'default',
+                runClass: 'long_lived',
+                ioMode: 'streaming',
+                status: 'succeeded',
+                startedAtMs: 1,
+            } as any}
+        />);
+        const menu = await openRunMenu(screen);
+        expect(screen.findByTestId('session-run-details-cancel-turn')).toBeNull();
+        expect(screen.findByTestId('session-run-menu-copy-result')).toBeNull();
+        expect(screen.findByTestId('session-run-menu-show-in-transcript')).toBeNull();
+        expect(menu).toContain('runPage.menu.staysOpen');
+    });
+
+    it('offers Copy result and Send to the lead only once the run has finished', async () => {
+        const onSend = vi.fn();
+        const running = await renderScreen(<SessionExecutionRunInfoCard
+            run={{
+                runId: 'run_1', intent: 'delegate', backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
+                runClass: 'bounded', status: 'running', startedAtMs: 1,
+            } as any}
+            sendToSession={{ sessionTitle: 'Payments v2 rollout', onSend }}
+        />);
+        await openRunMenu(running);
+        // Named, but waiting: the result does not exist yet, so neither row acts.
+        expect(running.findByTestId('session-run-menu-copy-result')).not.toBeNull();
+        expect(running.findByTestId('session-run-menu-send-to-session')).not.toBeNull();
+        expect(running.getTextContent()).toContain('agentStart.pane.whenItFinishes');
+        await running.pressByTestIdAsync('session-run-menu-send-to-session');
+        expect(onSend).not.toHaveBeenCalled();
+
+        const finished = await renderScreen(<SessionExecutionRunInfoCard
+            run={{
+                runId: 'run_2', intent: 'delegate', backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
+                runClass: 'bounded', status: 'succeeded', startedAtMs: 1, finishedAtMs: 2,
+            } as any}
+            copyResultText="Checkpoint per batch; resume from the last one."
+            sendToSession={{ sessionTitle: 'Payments v2 rollout', onSend }}
+        />);
+        await openRunMenu(finished);
+        await finished.pressByTestIdAsync('session-run-menu-send-to-session');
+        expect(onSend).toHaveBeenCalledWith('Checkpoint per batch; resume from the last one.');
+    });
+
+    it('says how long a finished run took and its permissions in words', async () => {
+        const screen = await renderScreen(<SessionExecutionRunInfoCard
+            run={{
+                runId: 'run_1',
+                intent: 'review',
+                backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
+                permissionMode: 'read-only',
+                runClass: 'bounded',
+                ioMode: 'request_response',
+                status: 'succeeded',
+                startedAtMs: 1_700_000_000_000,
+                finishedAtMs: 1_700_000_400_000,
+            } as any}
+        />);
+        expect(screen.findByTestId('session-run-header-elapsed')?.props.children).toBe('6:40');
+        const facts = screen.findByTestId('session-run-header.subtitle');
+        expect(facts).not.toBeNull();
+        expect(JSON.stringify(facts?.props.children)).toContain('Read only');
+        expect(JSON.stringify(facts?.props.children)).not.toContain('read-only');
+    });
+
     it('renders a user-facing title and labeled facts instead of a raw run-id header', async () => {
-        const { SessionExecutionRunInfoCard } = await import('./SessionExecutionRunInfoCard');
-        const tree = (await renderScreen(
+        const screen = await renderScreen(
             <SessionExecutionRunInfoCard
                 run={{
                     runId: 'run_1',
@@ -86,19 +265,16 @@ describe('SessionExecutionRunInfoCard', () => {
                 } as any}
                 daemonProcessLine="pid 123"
             />,
-        )).tree;
+        );
 
-        const text = JSON.stringify(tree!.toJSON());
-        expect(text).toContain('Review Subagent');
-        expect(text).toContain('Run ID: run_1');
-        expect(text).toContain('Backend: agentInput.agent.codex');
-        expect(text).toContain('Permissions: safe_yolo');
-        expect(text).toContain('Mode: bounded · streaming');
-        expect(text).toContain('Status: running');
+        // Titled by what it is for, never by its id.
+        expect(screen.findByTestId('session-run-header.title')?.props.children).toBe('runPage.intentTitles.review');
+        const menu = await openRunMenu(screen);
+        expect(menu).toContain('run_1');
+        expect(menu).toContain('pid 123');
     });
 
     it('labels canonical V2 backend targets in the same user-facing way', async () => {
-        const { SessionExecutionRunInfoCard } = await import('./SessionExecutionRunInfoCard');
         const tree = (await renderScreen(
             <SessionExecutionRunInfoCard
                 run={{
@@ -123,12 +299,11 @@ describe('SessionExecutionRunInfoCard', () => {
         )).tree;
 
         const text = JSON.stringify(tree!.toJSON());
-        expect(text).toContain('Review Subagent');
-        expect(text).toContain('Backend: review-bot');
+        expect(text).toContain('runPage.intentTitles.review');
+        expect(text).toContain('review-bot');
     });
 
     it('renders Discussion launch provenance without presenting it as execution authority', async () => {
-        const { SessionExecutionRunInfoCard } = await import('./SessionExecutionRunInfoCard');
         const tree = (await renderScreen(
             <SessionExecutionRunInfoCard
                 run={{
@@ -154,13 +329,14 @@ describe('SessionExecutionRunInfoCard', () => {
         )).tree;
 
         const text = JSON.stringify(tree!.toJSON());
-        expect(text).toContain('Started from discussion discussion_1');
+        // Where it came from, in words; never the raw discussion id.
+        expect(text).toContain('sessionConversation.origin.fromUntitled');
+        expect(text).not.toContain('discussion_1');
         expect(text).not.toContain('acting as');
     });
 
     it('shows no finish time for a run whose finish was never recorded, instead of 1 January 1970', async () => {
-        const { SessionExecutionRunInfoCard } = await import('./SessionExecutionRunInfoCard');
-        const render = async (finishedAtMs: number) => JSON.stringify((await renderScreen(
+        const render = async (finishedAtMs: number) => (await renderScreen(
             <SessionExecutionRunInfoCard
                 run={{
                     runId: 'run_4',
@@ -176,17 +352,17 @@ describe('SessionExecutionRunInfoCard', () => {
                     finishedAtMs,
                 } as any}
             />,
-        )).tree!.toJSON());
+        ));
 
         // The derivations fall back to a history row's creation instant, which is itself 0 when the
-        // row carries none — so a 0 finish reaches this card the same way a 0 start does.
-        expect(await render(0)).not.toContain('executionRuns.details.timestamps.finished');
-        expect(await render(1_700_000_016_000)).toContain('executionRuns.details.timestamps.finished');
+        // row carries none — so a 0 finish reaches this card the same way a 0 start does, and no
+        // duration is made up from it.
+        expect((await render(0)).findByTestId('session-run-header-elapsed')).toBeNull();
+        expect((await render(1_700_000_016_000)).findByTestId('session-run-header-elapsed')?.props.children).toBe('0:16');
     });
 
     it('shows no start time for a run whose start was never recorded, instead of 1 January 1970', async () => {
-        const { SessionExecutionRunInfoCard } = await import('./SessionExecutionRunInfoCard');
-        const render = async (startedAtMs: number) => JSON.stringify((await renderScreen(
+        const render = async (startedAtMs: number) => openRunMenu(await renderScreen(
             <SessionExecutionRunInfoCard
                 run={{
                     runId: 'run_3',
@@ -201,12 +377,12 @@ describe('SessionExecutionRunInfoCard', () => {
                     startedAtMs,
                 } as any}
             />,
-        )).tree!.toJSON());
+        ));
 
         // `startedAtMs` is required on the wire, so an unrecorded start arrives as the 0 sentinel —
         // and `new Date(0)` prints an epoch date as though it were an observed fact.
-        expect(await render(0)).not.toContain('executionRuns.details.timestamps.started');
+        expect(await render(0)).not.toContain('runPage.menu.started');
         // A genuinely recorded start is still shown.
-        expect(await render(1_700_000_000_000)).toContain('executionRuns.details.timestamps.started');
+        expect(await render(1_700_000_000_000)).toContain('runPage.menu.started');
     });
 });

@@ -158,12 +158,15 @@ export type SessionRunnerServiceabilityProbe =
 export function resolveSessionRunnerResumeDecision(probe: SessionRunnerServiceabilityProbe):
   | Readonly<{ action: 'spawn' }>
   | Readonly<{ action: 'adopt' }>
+  | Readonly<{ action: 'wait_for_exit'; reason: 'rpc_method_unavailable' | 'rpc_failed' }>
   | Readonly<{ action: 'fence'; reason: string }> {
   if (probe.state === 'runner_absent') return { action: 'spawn' };
   if (probe.state === 'runner_unknown') return { action: 'fence', reason: probe.reason };
-  return probe.control.state === 'servable'
-    ? { action: 'adopt' }
-    : { action: 'fence', reason: probe.control.reason };
+  if (probe.control.state === 'servable') return { action: 'adopt' };
+  if (probe.control.reason === 'rpc_method_unavailable' || probe.control.reason === 'rpc_failed') {
+    return { action: 'wait_for_exit', reason: probe.control.reason };
+  }
+  return { action: 'fence', reason: probe.control.reason };
 }
 
 export async function probeSessionRunnerServiceability(params: Readonly<{

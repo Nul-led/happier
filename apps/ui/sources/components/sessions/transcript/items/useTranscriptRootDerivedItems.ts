@@ -2,7 +2,7 @@ import * as React from 'react';
 import { buildChatListItems, buildChatListItemsCached } from '@/components/sessions/chatListItems';
 import { insertForkDividersIntoTranscriptItems, type ForkDividerTranscriptItem } from '@/components/sessions/transcript/forkContext/insertForkDividersIntoTranscriptItems';
 import { sync } from '@/sync/sync';
-import type { Message } from '@/sync/domains/messages/messageTypes';
+import type { Message } from "@happier-dev/session-core/messages";
 import { buildTranscriptTurnsCached } from '@/components/sessions/transcript/turnGrouping/buildTranscriptTurns';
 import type { ChatTranscriptListItem } from '@/components/sessions/transcript/chatListTypes';
 import type { ForkAwareMessageDescriptors } from '@/components/sessions/transcript/forkContext/buildForkAwareMessageDescriptors';
@@ -39,7 +39,7 @@ export function useTranscriptRootDerivedItems(params: Readonly<{
     forkedTranscriptEnabled: boolean;
     groupToolCalls: boolean;
     groupingMode: 'linear' | 'turns';
-    messageIdsOldestFirst: string[];
+    messageIdsOldestFirst: readonly string[];
     messagesById: Record<string, Message>;
     pendingMessages: BuildChatListItemsOptions['pendingMessages'];
     pendingUserActionRequests: NonNullable<BuildChatListItemsOptions['pendingUserActionRequests']>;

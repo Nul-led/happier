@@ -62,6 +62,12 @@ describe('engineRegistry (Antigravity External Sessions)', () => {
           contributes: createResolvedContributionRegistry(resolveBuiltInContributions()),
           happyHomeDir: join(directory, 'happier-home'),
           pluginIds: [ANTIGRAVITY_PLUGIN_ID],
+          resolveDevelopmentSourceAuthority: ({ pluginId, rootPath }) => ({
+            kind: 'development',
+            registeredRootId: `antigravity-external-sessions:${pluginId}`,
+            canonicalRoot: rootPath,
+            observedRevision: 1,
+          }),
         });
 
         expect(runtimeRegistry.targetActivationFacts).toEqual(expect.arrayContaining([
@@ -226,6 +232,10 @@ describe('engineRegistry (Antigravity External Sessions)', () => {
           agentIdentity: {
             pluginId: ANTIGRAVITY_PLUGIN_ID,
             localId: ANTIGRAVITY_AGENT_ID,
+          },
+          agentSourceCustody: {
+            kind: 'development',
+            registeredRootId: 'antigravity-external-sessions-fixture',
           },
           source,
           limit: 5,

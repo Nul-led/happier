@@ -14,6 +14,128 @@ import {
 import { createWorkspaceSyncHandoffAdapter } from '@/workspaces/sync/workspaceSyncHandoffAdapter';
 
 describe('createTrackedSessionHandoffCoordinator', () => {
+  it('keeps a nested Session directory when an existing all-files relationship is selected', async () => {
+    const policyInput = { v: 1 as const, selection: 'all_files' as const, extraIgnorePatterns: [], extraIncludePatterns: [] };
+    const policy = { ...policyInput, policyDigest: computeWorkspaceSyncPolicyDigest(policyInput) };
+    const flush = vi.fn(async () => ({
+      relationshipId: 'source-target', controllerMachineId: 'machine-source', state: 'watching' as const,
+      alphaPath: '/source', betaPath: '/target', mode: 'keep_synced' as const,
+      endpointStates: {
+        alpha: { connected: true, scanned: true, scanProblemCount: 0, transitionProblemCount: 0 },
+        beta: { connected: true, scanned: true, scanProblemCount: 0, transitionProblemCount: 0 },
+      },
+      conflictCount: 0, lastCycleObservedAtMs: null,
+    }));
+    const workspaceSyncAdapter = createWorkspaceSyncHandoffAdapter({
+      sync: { flush } as never,
+      relationshipController: { flush },
+      bootstrap: async () => ({ release: async () => undefined }),
+    });
+    const callMachine = vi.fn(async (input: { method: string }) => (
+      input.method === RPC_METHODS.DAEMON_SESSION_HANDOFF_PREPARE_TARGET_V3
+        ? { ok: false, errorCode: 'target_unavailable', error: 'target_unavailable' }
+        : { ok: true }
+    ));
+    const coordinate = createTrackedSessionHandoffCoordinator({
+      expectedAccountServerId: 'server-1',
+      readCredentials: async () => ({ token: 'token' } as never),
+      resolveSource: async () => ({
+        ok: true, sourceMachineId: 'machine-source',
+        sourceRootPath: '/source/packages/app', sessionStorageMode: 'persisted',
+      }),
+      refreshWorkspaceSettings: async () => ({ settingsVersion: 1, settings: {
+        workspaceRefsV1: [
+          { id: 'source', serverId: 'server-1', machineId: 'machine-source', rootPath: '/source', createdAtMs: 1 },
+          { id: 'target', serverId: 'server-1', machineId: 'machine-target', rootPath: '/target', createdAtMs: 1 },
+        ],
+        workspaceSyncRelationshipsV1: [{
+          v: 1, relationshipId: 'source-target', controllerMachineId: 'machine-source',
+          alphaWorkspaceRefId: 'source', betaWorkspaceRefId: 'target',
+          mode: 'keep_synced', contentPolicy: policy, enabled: true, createdAtMs: 1, updatedAtMs: 1,
+        }],
+      } }),
+      workspaceSyncAdapter,
+      callMachine,
+    });
+    const result = await coordinate({
+      operationId: 'operation-direct',
+      actionInput: {
+        sessionId: 'session-1', targetMachineId: 'machine-target', targetPath: '/target',
+        workspaceAction: { kind: 'relationship', relationshipId: 'source-target', flushBeforeCommit: true },
+      },
+      start: async () => ({ ok: true, result: {
+        handoffId: 'handoff-direct', targetPath: '/target', endpointCandidates: [],
+        status: {
+          handoffId: 'handoff-direct', sessionId: 'session-1', sourceMachineId: 'machine-source',
+          targetMachineId: 'machine-target', status: 'in_progress', phase: 'preparing',
+          transportStrategy: 'server_routed_stream', recoveryActions: [],
+        },
+      } }),
+      signal: new AbortController().signal,
+      publishOwnerUpdate: vi.fn(),
+    });
+    expect(result).toMatchObject({ ok: false, errorCode: 'target_unavailable' });
+    expect(flush).toHaveBeenCalledTimes(2);
+    expect(callMachine).toHaveBeenCalledWith(expect.objectContaining({
+      method: RPC_METHODS.DAEMON_SESSION_HANDOFF_PREPARE_TARGET_V3,
+      request: expect.objectContaining({ targetPath: '/target/packages/app' }),
+    }));
+  });
+  it('derives a linked spoke route from the admitted nested Session and keeps the target subdirectory', async () => {
+    const basePolicy = { v: 1 as const, selection: 'git_worktree' as const, extraIgnorePatterns: [], extraIncludePatterns: [] };
+    const sourcePolicy = { ...basePolicy, policyDigest: computeWorkspaceSyncPolicyDigest(basePolicy) };
+    const targetBasePolicy = { ...basePolicy, selection: 'all_files' as const };
+    const targetPolicy = { ...targetBasePolicy, policyDigest: computeWorkspaceSyncPolicyDigest(targetBasePolicy) };
+    const workspaceSyncAdapter = {
+      prepare: vi.fn(async (input: { operationId: string }) => ({ kind: 'linked_workspace' as const, operationId: input.operationId, action: { kind: 'linked_workspace' as const } })),
+      finalize: vi.fn(), commit: vi.fn(), abort: vi.fn(async () => undefined),
+    };
+    const callMachine = vi.fn(async (input: { method: string; request: unknown }) => {
+      if (input.method === RPC_METHODS.DAEMON_SESSION_HANDOFF_PREPARE_TARGET_V3) {
+        return { ok: false, errorCode: 'target_unavailable', error: 'target_unavailable' };
+      }
+      return { ok: true };
+    });
+    const coordinate = createTrackedSessionHandoffCoordinator({
+      expectedAccountServerId: 'server-1',
+      readCredentials: async () => ({ token: 'token' } as never),
+      resolveSource: async () => ({ ok: true, sourceMachineId: 'machine-c', sourceRootPath: '/source/packages/app', sessionStorageMode: 'persisted' }),
+      refreshWorkspaceSettings: async () => ({ settingsVersion: 1, settings: {
+        workspaceRefsV1: [
+          { id: 'hub', serverId: 'server-1', machineId: 'machine-a', rootPath: '/hub', createdAtMs: 1 },
+          { id: 'source', serverId: 'server-1', machineId: 'machine-c', rootPath: '/source', createdAtMs: 1 },
+          { id: 'target', serverId: 'server-1', machineId: 'machine-b', rootPath: '/target', createdAtMs: 1 },
+        ],
+        workspaceSyncRelationshipsV1: [
+          { v: 1, relationshipId: 'a-c', controllerMachineId: 'machine-a', alphaWorkspaceRefId: 'hub', betaWorkspaceRefId: 'source', mode: 'keep_both_in_sync', contentPolicy: sourcePolicy, enabled: true, createdAtMs: 1, updatedAtMs: 1 },
+          { v: 1, relationshipId: 'a-b', controllerMachineId: 'machine-a', alphaWorkspaceRefId: 'hub', betaWorkspaceRefId: 'target', mode: 'keep_synced', contentPolicy: targetPolicy, enabled: true, createdAtMs: 1, updatedAtMs: 1 },
+        ],
+      } }),
+      resolveWorkspaceTransferRoot: async () => ({ repositoryRoot: '/source', sessionRelativeCwd: 'packages/app' }),
+      workspaceSyncAdapter,
+      callMachine,
+    });
+    const result = await coordinate({
+      operationId: 'operation-linked',
+      actionInput: { sessionId: 'session-1', targetMachineId: 'machine-b', targetPath: '/target', workspaceAction: { kind: 'linked_workspace' } },
+      start: async () => ({ ok: true, result: {
+        handoffId: 'handoff-linked', targetPath: '/target', endpointCandidates: [],
+        status: { handoffId: 'handoff-linked', sessionId: 'session-1', sourceMachineId: 'machine-c', targetMachineId: 'machine-b', status: 'in_progress', phase: 'preparing', transportStrategy: 'server_routed_stream', recoveryActions: [] },
+      } }),
+      signal: new AbortController().signal,
+      publishOwnerUpdate: vi.fn(),
+    });
+    expect(result).toMatchObject({ ok: false, errorCode: 'target_unavailable' });
+    expect(workspaceSyncAdapter.prepare).toHaveBeenCalledWith(expect.objectContaining({
+      action: { kind: 'linked_workspace' }, sourceWorkspaceRefId: 'source', targetWorkspaceRefId: 'target',
+      sourceRootPath: '/source', targetRootPath: '/target',
+    }));
+    expect(callMachine).toHaveBeenCalledWith(expect.objectContaining({
+      method: RPC_METHODS.DAEMON_SESSION_HANDOFF_PREPARE_TARGET_V3,
+      request: expect.objectContaining({ targetPath: '/target/packages/app', workspaceRootPath: '/target', workspaceSessionRelativeCwd: 'packages/app' }),
+    }));
+  });
+
   it('fails closed when a current V3 prepare response omits its qualified Agent target', () => {
     expect(() => buildTrackedSessionHandoffSpawnOptions({
       targetMachineId: 'target-1',
@@ -241,11 +363,16 @@ describe('createTrackedSessionHandoffCoordinator', () => {
       alphaPath: '/source/workspace',
       betaPath: '/target/workspace',
       mode: 'mirror_exactly',
-      changedFiles: 0,
+      endpointStates: {
+        alpha: { connected: true, scanned: true, scanProblemCount: 0, transitionProblemCount: 0 },
+        beta: { connected: true, scanned: true, scanProblemCount: 0, transitionProblemCount: 0 },
+      },
       conflictCount: 0,
-      lastSuccessfulSyncAtMs: 1,
+      lastCycleObservedAtMs: 1,
     };
-    const sync = {
+    const sync: ManagedWorkspaceSync = {
+      resolveLocalResolutionEndpoint: vi.fn(async () => null),
+      borrowSourceRootForCopy: vi.fn(async () => null),
       get: vi.fn(async () => null),
       list: vi.fn(async () => []),
       subscribe: vi.fn(() => ({ async *[Symbol.asyncIterator]() {} })),
@@ -262,7 +389,9 @@ describe('createTrackedSessionHandoffCoordinator', () => {
         nextCursor: null,
         conflicts: [],
       })),
-      deleteConflictLoser: vi.fn(async () => relationshipStatus),
+      listRelationships: vi.fn(async () => { throw new Error('unexpected relationship inspection'); }),
+      inspectConflict: vi.fn(async () => { throw new Error('unexpected conflict inspection'); }),
+      resolveConflict: vi.fn(async () => { throw new Error('unexpected conflict resolution'); }),
       readFile: vi.fn(async () => ({ status: 'missing' as const })),
       withAuthorizedSourceSeedExport: vi.fn(async (_request, exportSource) => await exportSource('/source/workspace')),
       withSourceSeedAuthorization: vi.fn(async (_operation, _handles, action) => await action()),

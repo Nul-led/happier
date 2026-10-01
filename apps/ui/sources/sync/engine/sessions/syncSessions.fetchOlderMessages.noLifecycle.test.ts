@@ -1,8 +1,9 @@
+import { type SessionMessageV1 } from '@happier-dev/protocol';
 import { describe, expect, it, vi } from 'vitest';
-import type { ApiMessage } from '@/sync/api/types/apiTypes';
+
 import { fetchAndApplyOlderMessages } from './syncSessions';
 
-function buildApiMessage(id: string, seq: number): ApiMessage {
+function buildApiMessage(id: string, seq: number): SessionMessageV1 {
   return {
     id,
     seq,
@@ -17,7 +18,7 @@ function buildApiMessage(id: string, seq: number): ApiMessage {
   };
 }
 
-function buildPlainApiMessage(id: string, seq: number): ApiMessage {
+function buildPlainApiMessage(id: string, seq: number): SessionMessageV1 {
   return {
     id,
     seq,

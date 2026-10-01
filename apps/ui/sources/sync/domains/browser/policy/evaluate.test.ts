@@ -71,6 +71,13 @@ const simulatorPreviewTarget = {
 } satisfies BrowserViewTargetV1;
 
 describe('evaluateBrowserTargetPolicy', () => {
+    it('admits a streamed browser under the enabled browser and usable profile policy', async () => {
+        const { evaluateBrowserTargetPolicy } = await import('./evaluate');
+        expect(evaluateBrowserTargetPolicy({
+            target: { kind: 'streamedBrowser', targetId: 'source_1', streamId: 'source_1' },
+            profile: sessionProfile, browserFeatureDecision: enabledBrowserDecision,
+        })).toMatchObject({ state: 'allowed', disabledReasons: [] });
+    });
     it('fails closed when the browser feature decision is missing or disabled', async () => {
         const mod = await loadPolicyModule();
 

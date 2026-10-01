@@ -14,10 +14,10 @@ vi.mock('@/voice/context/resolveActiveLocalVoiceAgentBinding', () => ({
     resolveActiveLocalVoiceAgentBinding: () => localVoiceAgentBinding.current,
 }));
 
-import type { Message } from '@/sync/domains/messages/messageTypes';
+import type { Message } from "@happier-dev/session-core/messages";
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { settingsDefaults } from '@/sync/domains/settings/settings';
-import { createReducer } from '@/sync/reducer/reducer';
+import { createReducer } from "@happier-dev/session-core/reducer";
 import { storage } from '@/sync/domains/state/storage';
 import { useVoiceTargetStore } from '@/voice/runtime/voiceTargetStore';
 import type { SessionMessages } from '@/sync/store/domains/messages';

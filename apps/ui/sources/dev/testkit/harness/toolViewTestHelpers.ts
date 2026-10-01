@@ -1,5 +1,5 @@
 import type { ReactTestInstance, ReactTestRenderer } from 'react-test-renderer';
-import type { ToolCall } from '@/sync/domains/messages/messageTypes';
+import type { ToolCall } from "@happier-dev/session-core/messages";
 import type { ToolViewProps } from '@/components/tools/renderers/core/_registry';
 
 export function makeToolCall(overrides: Partial<ToolCall> = {}): ToolCall {

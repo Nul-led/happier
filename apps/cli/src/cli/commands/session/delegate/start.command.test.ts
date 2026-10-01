@@ -151,7 +151,7 @@ describe('happier session delegate start command', () => {
           sessionId: 'sess-delegate-1',
           includeDisabled: true,
         },
-        { surface: 'cli', authority: 'present_user', defaultSessionId: 'sess-delegate-1' },
+        { surface: 'cli', defaultSessionId: 'sess-delegate-1' },
       );
 
       if (expectedKey) {
@@ -165,7 +165,7 @@ describe('happier session delegate start command', () => {
             runClass: 'bounded',
             ioMode: 'request_response',
           },
-          { authority: 'present_user', defaultSessionId: 'sess-delegate-1' },
+          { defaultSessionId: 'sess-delegate-1' },
         );
         expect(output.json()).toEqual(expect.objectContaining({
           ok: true,
@@ -211,7 +211,7 @@ describe('happier session delegate start command', () => {
           ioMode: 'request_response',
           modelId: 'model-a',
         },
-        { authority: 'present_user', defaultSessionId: 'sess-delegate-1' },
+        { defaultSessionId: 'sess-delegate-1' },
       );
     } finally {
       output.restore();
@@ -272,7 +272,7 @@ describe('happier session delegate start command', () => {
           sessionId: 'sess-delegate-1',
           includeDisabled: true,
         },
-        { surface: 'cli', authority: 'present_user', defaultSessionId: 'sess-delegate-1' },
+        { surface: 'cli', defaultSessionId: 'sess-delegate-1' },
       );
       expect(execute).toHaveBeenNthCalledWith(
         2,
@@ -284,7 +284,7 @@ describe('happier session delegate start command', () => {
           runClass: 'bounded',
           ioMode: 'request_response',
         },
-        { authority: 'present_user', defaultSessionId: 'sess-delegate-1' },
+        { defaultSessionId: 'sess-delegate-1' },
       );
       expect(output.json()).toEqual(expect.objectContaining({
         ok: true,

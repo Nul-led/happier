@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createRuntimeSessionClientDurableMutationOutbox } from './createRuntimeSessionClientDurableMutationOutbox';
 
 import type {
     RegisteredSessionStateFieldMutationV1,
@@ -431,7 +432,7 @@ describe('createRuntimeSessionClientDurableMutationOutbox', () => {
             }));
             await outbox.flush('flush');
 
-            expect(transcriptResult).toEqual({ persisted: true, delivered: false });
+            expect(transcriptResult).toEqual({ persisted: true, delivered: false, localId: 'offline-required-transcript' });
             const persisted = persistenceMocks.save.mock.calls.at(-1)?.[1];
             expect(persisted).toEqual(expect.arrayContaining([
                 expect.objectContaining({
@@ -500,7 +501,7 @@ describe('createRuntimeSessionClientDurableMutationOutbox', () => {
                 localId,
                 sidechainId: null,
                 text: `retained ${localId}`,
-            }))).resolves.toEqual({ persisted: true, delivered: false });
+            }))).resolves.toEqual({ persisted: true, delivered: false, localId });
         }
         const connectionContract = await resolveSessionClientConnectionContract({
             serverContract: {
@@ -525,6 +526,246 @@ describe('createRuntimeSessionClientDurableMutationOutbox', () => {
         ))).toHaveLength(3);
         expect(persistenceMocks.save.mock.calls.at(-1)?.[1]).toEqual([]);
         await outbox.close();
+    });
+
+    it('waits for exact transcript delivery through a failed flush before allowing ordered input acceptance', async () => {
+        persistenceMocks.save.mockResolvedValue(undefined);
+        const socket = createConnectedSocket();
+        const acknowledge = socket.emitWithAck;
+        let recoveryEnabled = false;
+        const order: string[] = [];
+        socket.emitWithAck = async (event, payload) => {
+            if (event === SESSION_TRANSCRIPT_OBSERVATION_EVENT_V1) {
+                if (!recoveryEnabled) {
+                    throw new Error('transport disconnected before output commit');
+                }
+                order.push('output-server-commit');
+            }
+            return await acknowledge(event, payload);
+        };
+        const outbox = createRuntimeSessionClientDurableMutationOutbox({
+            token: 'token', sessionId: 'session-1', flushOnReady: false,
+            getSocket: () => socket, requestReconnect: () => undefined,
+        });
+        const controller = new AbortController();
+        try {
+            await outbox.setSessionSyncPendingInputServerContract(serverContract('session_sync_v2_pending_input_v1'));
+            const admission = { signal: controller.signal, requireDelivery: true };
+            const pending = outbox.enqueueTranscriptMessage(createTranscriptMutation({
+                localId: 'ordered-output', sidechainId: null, text: 'before the steer',
+            }), { admission }).then((result) => {
+                order.push('input-may-accept');
+                return result;
+            });
+            void pending.catch(() => undefined);
+            await vi.waitFor(() => expect(persistenceMocks.save.mock.calls.some(([, rows]) => (
+                (rows as Array<{ attempts: number }>).some((row) => row.attempts === 1)
+            ))).toBe(true));
+            await drainAsyncWork();
+            expect(order).toEqual([]);
+            recoveryEnabled = true;
+            await outbox.flush('flush');
+            await expect(pending).resolves.toMatchObject({ persisted: true, delivered: true, localId: 'ordered-output' });
+            expect(order).toEqual(['output-server-commit', 'input-may-accept']);
+        } finally {
+            controller.abort();
+            await outbox.close();
+        }
+    });
+
+    it.each(['abort', 'close'] as const)('settles a required transcript delivery wait on %s without losing durable custody', async (cancellation) => {
+        persistenceMocks.save.mockResolvedValue(undefined);
+        const socket = createConnectedSocket();
+        socket.connected = false;
+        const outbox = createRuntimeSessionClientDurableMutationOutbox({
+            token: 'token', sessionId: 'session-1', flushOnReady: false,
+            getSocket: () => socket, requestReconnect: () => undefined,
+        });
+        const controller = new AbortController();
+        const mutation = createTranscriptMutation({ localId: 'cancelled-output', sidechainId: null, text: 'retained output' });
+        const admission = { signal: controller.signal, requireDelivery: true };
+        let settled = false;
+        const pending = outbox.enqueueTranscriptMessage(mutation, { admission });
+        void pending.then(() => { settled = true; }, () => { settled = true; });
+        try {
+            await vi.waitFor(() => expect(persistenceMocks.save).toHaveBeenCalled());
+            await drainAsyncWork();
+            expect(settled).toBe(false);
+            if (cancellation === 'abort') controller.abort();
+            else await outbox.close();
+            await expect(pending).rejects.toMatchObject({ code: 'committed_transcript_admission_expired' });
+            expect(persistenceMocks.save.mock.calls.at(-1)?.[1]).toEqual(expect.arrayContaining([
+                expect.objectContaining({ payload: expect.objectContaining({ localId: mutation.localId }) }),
+            ]));
+            if (cancellation === 'abort') {
+                const retry = outbox.enqueueTranscriptMessage(mutation, {
+                    admission: { signal: new AbortController().signal, requireDelivery: true },
+                });
+                socket.connected = true;
+                await outbox.setSessionSyncPendingInputServerContract(serverContract('session_sync_v2_pending_input_v1'));
+                await outbox.flush('flush');
+                await expect(retry).resolves.toMatchObject({ delivered: true, localId: mutation.localId });
+            }
+        } finally {
+            controller.abort();
+            await outbox.close();
+        }
+    });
+
+    it('cancels a replaced handle while its transcript ACK is in flight without cancelling shared delivery', async () => {
+        persistenceMocks.save.mockResolvedValue(undefined);
+        const started = createDeferred();
+        const acknowledgment = createDeferred();
+        const socket = createConnectedSocket();
+        const acknowledge = socket.emitWithAck;
+        socket.emitWithAck = async (event, payload) => {
+            if (event === SESSION_TRANSCRIPT_OBSERVATION_EVENT_V1) {
+                started.resolve();
+                await acknowledgment.promise;
+            }
+            return await acknowledge(event, payload);
+        };
+        const options = {
+            token: 'token', sessionId: 'session-1', flushOnReady: false,
+            getSocket: () => socket, requestReconnect: () => undefined,
+        };
+        const replaced = createRuntimeSessionClientDurableMutationOutbox(options);
+        const current = createRuntimeSessionClientDurableMutationOutbox(options);
+        const mutation = createTranscriptMutation({ localId: 'shared-output', sidechainId: null, text: 'observed once' });
+        try {
+            await replaced.setSessionSyncPendingInputServerContract(serverContract('session_sync_v2_pending_input_v1'));
+            const pending = replaced.enqueueTranscriptMessage(mutation, {
+                admission: { signal: new AbortController().signal, requireDelivery: true },
+            });
+            void pending.catch(() => undefined);
+            await started.promise;
+            await replaced.close();
+            await expect(pending).rejects.toMatchObject({ code: 'committed_transcript_admission_expired' });
+            acknowledgment.resolve();
+            await current.flush('flush');
+            await expect(current.enqueueTranscriptMessage(mutation, {
+                admission: { signal: new AbortController().signal, requireDelivery: true },
+            })).resolves.toMatchObject({ persisted: true, delivered: true, localId: mutation.localId });
+        } finally {
+            acknowledgment.resolve();
+            await replaced.close();
+            await current.close();
+        }
+    });
+
+    it('rejects required transcript delivery when the server terminally rejects the observation', async () => {
+        persistenceMocks.save.mockResolvedValue(undefined);
+        const socket = {
+            connected: true,
+            emit: () => undefined,
+            emitWithAck: async () => ({ ok: false, error: 'invalid_observation' }),
+        };
+        const outbox = createRuntimeSessionClientDurableMutationOutbox({
+            token: 'token', sessionId: 'session-1', flushOnReady: false,
+            getSocket: () => socket, requestReconnect: () => undefined,
+        });
+        try {
+            await outbox.setSessionSyncPendingInputServerContract(serverContract('session_sync_v2_pending_input_v1'));
+            await expect(outbox.enqueueTranscriptMessage(createTranscriptMutation({
+                localId: 'invalid-output', sidechainId: null, text: 'rejected output',
+            }), { admission: { signal: new AbortController().signal, requireDelivery: true } })).rejects.toThrow(
+                'transcript_message_invalid_observation',
+            );
+        } finally {
+            await outbox.close();
+        }
+    });
+
+    it('recovers exact delivery when an existing flush acknowledges before a repeated admission finishes saving', async () => {
+        persistenceMocks.save.mockResolvedValue(undefined);
+        const firstDelivery = createDeferred();
+        const firstAcknowledgment = createDeferred();
+        const admissionStarted = createDeferred();
+        const admissionSaved = createDeferred();
+        const socket = createConnectedSocket();
+        socket.connected = false;
+        const acknowledge = socket.emitWithAck;
+        const order: string[] = [];
+        let first = true;
+        socket.emitWithAck = async (event, payload) => {
+            if (event === SESSION_TRANSCRIPT_OBSERVATION_EVENT_V1) {
+                if (first) {
+                    first = false;
+                    firstDelivery.resolve();
+                    await firstAcknowledgment.promise;
+                    order.push('first-server-commit');
+                } else {
+                    order.push('exact-server-replay');
+                }
+            }
+            return await acknowledge(event, payload);
+        };
+        const outbox = createRuntimeSessionClientDurableMutationOutbox({
+            token: 'token', sessionId: 'session-1', flushOnReady: false,
+            getSocket: () => socket, requestReconnect: () => undefined,
+        });
+        const controller = new AbortController();
+        try {
+            await outbox.setSessionSyncPendingInputServerContract(serverContract('session_sync_v2_pending_input_v1'));
+            const mutation = createTranscriptMutation({ localId: 'repeated-output', sidechainId: null, text: 'same output' });
+            await outbox.enqueueTranscriptMessage(mutation);
+            socket.connected = true;
+            const flush = outbox.flush('flush');
+            await firstDelivery.promise;
+            persistenceMocks.save.mockImplementationOnce(async () => {
+                admissionStarted.resolve();
+                await admissionSaved.promise;
+            });
+            const repeated = outbox.enqueueTranscriptMessage(mutation, {
+                admission: { signal: controller.signal, requireDelivery: true },
+            }).then((result) => { order.push('ordered-import-released'); return result; });
+            void repeated.catch(() => undefined);
+            await admissionStarted.promise;
+            firstAcknowledgment.resolve();
+            await drainAsyncWork();
+            expect(order).toEqual(['first-server-commit']);
+            admissionSaved.resolve();
+            await flush;
+            await expect(repeated).resolves.toMatchObject({ delivered: true, localId: mutation.localId });
+            expect(order).toEqual(['first-server-commit', 'exact-server-replay', 'ordered-import-released']);
+        } finally {
+            controller.abort();
+            firstAcknowledgment.resolve();
+            admissionSaved.resolve();
+            await outbox.close();
+        }
+    });
+
+    it('expires required delivery at the caller admission deadline while retaining queued output', async () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(1_000);
+        persistenceMocks.save.mockResolvedValue(undefined);
+        const socket = createConnectedSocket();
+        socket.connected = false;
+        const outbox = createRuntimeSessionClientDurableMutationOutbox({
+            token: 'token', sessionId: 'session-1', flushOnReady: false,
+            getSocket: () => socket, requestReconnect: () => undefined,
+        });
+        const controller = new AbortController();
+        try {
+            await outbox.awaitReady();
+            let settled = false;
+            const pending = outbox.enqueueTranscriptMessage(createTranscriptMutation({
+                localId: 'deadline-output', sidechainId: null, text: 'retained for recovery',
+            }), { admission: { signal: controller.signal, deadlineAtMs: 2_000, requireDelivery: true } });
+            void pending.then(() => { settled = true; }, () => { settled = true; });
+            await vi.advanceTimersByTimeAsync(0);
+            expect(settled).toBe(false);
+            await vi.advanceTimersByTimeAsync(1_000);
+            await expect(pending).rejects.toMatchObject({ code: 'committed_transcript_admission_expired' });
+            expect(persistenceMocks.save.mock.calls.at(-1)?.[1]).toEqual(expect.arrayContaining([
+                expect.objectContaining({ payload: expect.objectContaining({ localId: 'deadline-output' }) }),
+            ]));
+        } finally {
+            controller.abort();
+            await outbox.close();
+            vi.useRealTimers();
+        }
     });
 
     it('keeps an inactive transcript admission unattempted until activation', async () => {
@@ -561,7 +802,7 @@ describe('createRuntimeSessionClientDurableMutationOutbox', () => {
             localId: 'inactive-1',
             sidechainId: null,
             text: 'retained while inactive',
-        }))).resolves.toEqual({ persisted: true, delivered: false });
+        }))).resolves.toEqual({ persisted: true, delivered: false, localId: 'inactive-1' });
         await outbox.flush('flush');
 
         const inactiveRows = persistenceMocks.save.mock.calls.at(-1)?.[1] as Array<{
@@ -635,6 +876,7 @@ describe('createRuntimeSessionClientDurableMutationOutbox', () => {
         await expect(outbox.enqueueTranscriptMessage(mutation)).resolves.toEqual({
             persisted: true,
             delivered: false,
+            localId: mutation.localId,
         });
         await outbox.setSessionSyncPendingInputServerContract(serverContract('session_sync_v2_pending_input_v1'));
         await outbox.activateDelivery();
@@ -733,7 +975,7 @@ describe('createRuntimeSessionClientDurableMutationOutbox', () => {
             text: 'invalid at canonical route',
         }));
 
-        expect(result).toEqual({ persisted: true, delivered: false });
+        expect(result).toEqual({ persisted: true, delivered: false, localId: 'invalid-transcript' });
         expect(persistenceMocks.save.mock.calls.at(-1)?.[1]).toEqual([]);
         expect(persistenceMocks.appendDeadLetters).toHaveBeenCalledWith(
             'session-1',
@@ -789,7 +1031,7 @@ describe('createRuntimeSessionClientDurableMutationOutbox', () => {
             localId: 'append-failure',
             sidechainId: null,
             text: 'terminal row must retain custody',
-        }))).resolves.toEqual({ persisted: true, delivered: false });
+        }))).resolves.toEqual({ persisted: true, delivered: false, localId: 'append-failure' });
 
         expect(persistenceMocks.appendDeadLetters).toHaveBeenCalledTimes(1);
         expect(persistenceMocks.save.mock.calls.at(-1)?.[1]).toEqual([
@@ -1409,7 +1651,7 @@ describe('createRuntimeSessionClientDurableMutationOutbox', () => {
         firstPersistence.resolve();
 
         await expect(conflicting).rejects.toThrow(/sidechain/i);
-        await expect(first).resolves.toEqual({ persisted: true, delivered: true });
+        await expect(first).resolves.toEqual({ persisted: true, delivered: true, localId: 'same-local-id', committedSequence: 1 });
     });
 
     it('validates a deferred voice-turn enqueue against the prior committed candidate', async () => {

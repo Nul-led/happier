@@ -265,12 +265,14 @@ test.describe('ui e2e: web onboarding journey', () => {
         await advanceS1ToS2UsingE2eRelay(page);
         await createAnonymousAccountAtS2(page);
         await expectBeat(page, 'S3');
-        await expect(page.getByTestId('setupWizard-machine-arrival')).toHaveCount(1, { timeout: 120_000 });
-        await expect(page.getByTestId('machine-arrival-card-status:variant:neutral')).toHaveCount(1, { timeout: 120_000 });
-        await expect(page.getByTestId('onboarding-journey-desktop-config-primary')).toBeDisabled({ timeout: 120_000 });
+        await expect(page.getByTestId('onboarding-journey-machine-add')).toBeVisible({ timeout: 120_000 });
+        await expect(page.getByTestId('onboarding-journey-machine-add.pane.watch')).toBeVisible({ timeout: 120_000 });
+        await expect(page.getByTestId('onboarding-journey-desktop-config-primary')).toHaveCount(0);
 
         await registerArrivingMachine(page);
         await expectBeat(page, 'S4');
+        await expect(page.getByTestId('machine-agents')).toBeVisible({ timeout: 120_000 });
+        await expect(page.getByTestId('onboarding-journey-machine-add')).toHaveCount(0);
         await clickJourneyPrimary(page);
         await expectBeat(page, 'S5');
         await clickJourneyPrimary(page);

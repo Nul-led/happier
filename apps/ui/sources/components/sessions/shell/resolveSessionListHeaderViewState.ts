@@ -1,3 +1,4 @@
+import { resolveNewSessionGroupTarget, type NewSessionGroupTarget } from './resolveSessionListHeaderActionHandlers';
 import type { SessionListIndexItem } from '@/sync/domains/sessionList/sessionListIndex';
 import { LruMap } from '@/utils/cache/lruMap';
 
@@ -15,6 +16,8 @@ export type SessionListHeaderViewState =
         hasCustomLabel: boolean;
         legacyWorkspaceKey: string;
         scopeHint: WorkspaceScopeHint | null;
+        /** Where this group's "New session" starts (its folder, or its machine's Chats). */
+        newSessionTarget: NewSessionGroupTarget | null;
         seedSessionId: string | null;
         workspaceRefId: string | null;
     }>
@@ -44,6 +47,7 @@ export function resolveSessionListHeaderViewState(input: Readonly<{
         const collapseKey = viewModel?.collapseKey ?? groupKey;
         const legacyWorkspaceKey = viewModel?.legacyWorkspaceKey ?? String(input.item.workspaceKey ?? '').trim();
         const scopeHint = viewModel?.scopeHint ?? input.item.workspaceScopeHint ?? null;
+        const newSessionTarget = resolveNewSessionGroupTarget({ workspaceScopeHint: scopeHint, workspace: input.item.workspace });
         const rawSeedSessionId = viewModel?.seedSessionId ?? String(input.item.seedSessionId ?? '').trim();
         const seedSessionId = rawSeedSessionId ? rawSeedSessionId : null;
         const workspaceRefId = viewModel?.workspaceRefId ?? null;
@@ -61,6 +65,7 @@ export function resolveSessionListHeaderViewState(input: Readonly<{
             scopeHint?.serverId ?? null,
             scopeHint?.machineId ?? null,
             scopeHint?.rootPath ?? null,
+            newSessionTarget && !('rootPath' in newSessionTarget) ? newSessionTarget.machineId : null,
             seedSessionId,
         ]);
         const cached = PROJECT_HEADER_VIEW_STATE_CACHE.get(cacheKey);
@@ -76,6 +81,7 @@ export function resolveSessionListHeaderViewState(input: Readonly<{
             hasCustomLabel,
             legacyWorkspaceKey,
             scopeHint,
+            newSessionTarget,
             seedSessionId,
             workspaceRefId,
         };

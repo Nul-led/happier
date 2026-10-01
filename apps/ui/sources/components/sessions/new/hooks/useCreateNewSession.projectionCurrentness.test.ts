@@ -161,7 +161,6 @@ async function setupHarness() {
               title: 'Acme Review Provider',
             },
           },
-          backendsById: {},
           installedPackagesById: {},
           actionsById: {},
           toolsById: {},

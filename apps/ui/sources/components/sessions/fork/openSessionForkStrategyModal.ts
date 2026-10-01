@@ -1,4 +1,5 @@
 import { Modal } from '@/modal';
+import type { Router } from 'expo-router';
 import { t } from '@/text';
 import type { SessionForkStrategyAvailability } from '@/sync/domains/sessionFork/forkUiSupport';
 import type { SessionForkStrategyRequest } from '@/sync/domains/sessionFork/useSessionForkStrategyFlow';
@@ -14,6 +15,7 @@ export type OpenSessionForkStrategyModalParams = Readonly<{
     /** Short quotation of the message this fork branches from, when there is one. */
     sourcePreview?: string | null;
     navigate: (childSessionId: string, options?: Readonly<{ serverId?: string }>) => void | Promise<void>;
+    navigation: Pick<Router, 'push'>;
     /**
      * Navigates to the canonical New Session screen with this fork point
      * attached, or `null` when `sessions.agentSwitching` is closed for this
@@ -39,6 +41,7 @@ export function openSessionForkStrategyModal(params: OpenSessionForkStrategyModa
             availability: params.availability,
             sourcePreview: params.sourcePreview ?? null,
             navigate: params.navigate,
+            navigation: params.navigation,
             onConfigureNewSession: params.configureNewSession ?? null,
         },
         chrome: {

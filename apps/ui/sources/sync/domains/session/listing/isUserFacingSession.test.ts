@@ -83,10 +83,7 @@ describe('isUserFacingSession', () => {
             access: {
                 role: 'recipient',
                 level: 'view',
-                capabilities: {
-                    readTranscript: true, sendInput: false, manageAccess: false,
-                    approvePermissions: false, manageSession: false,
-                },
+                capabilities: projectLegacySessionAccessCapabilitiesV1({ level: 'view' }),
             },
         })).toBe(true);
     });
@@ -99,10 +96,7 @@ describe('isUserFacingSession', () => {
             access: {
                 role: 'recipient',
                 level: 'view',
-                capabilities: {
-                    readTranscript: true, sendInput: false, manageAccess: false,
-                    approvePermissions: false, manageSession: false,
-                },
+                capabilities: projectLegacySessionAccessCapabilitiesV1({ level: 'view' }),
             },
         })).toBe(false);
     });
@@ -116,10 +110,7 @@ describe('isUserFacingSession', () => {
             access: {
                 role: 'owner',
                 level: 'owner',
-                capabilities: {
-                    readTranscript: true, sendInput: true, manageAccess: true,
-                    approvePermissions: true, manageSession: true,
-                },
+                capabilities: projectLegacySessionAccessCapabilitiesV1({ level: 'owner' }),
             },
         })).toBe(false);
     });

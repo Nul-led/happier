@@ -5,13 +5,10 @@ import {
     MACHINE_LIVE_STREAM_RELAY_AUTHORIZATION_AUDIENCE_V1,
     type FeaturesResponse,
     type MachineLiveStreamRelayAuthorizationV1,
-    type PeerLoopbackEndpointCandidateV1,
-    type SignedDirectRouteGrantV1,
 } from '@happier-dev/protocol';
 
 const getReadyServerFeaturesSpy = vi.hoisted(() => vi.fn());
 const TOKEN_A = 'header.eyJzdWIiOiJhY2NvdW50LTEifQ.signature';
-const DATA_KEY_TOKEN = 'header.eyJzdWIiOiJhY2NvdW50LTEifQ.data-key-signature';
 const getCredentialsForServerUrlSpy = vi.hoisted(() => vi.fn());
 const getActiveServerSnapshotSpy = vi.hoisted(() => vi.fn());
 const captureAuthoritySpy = vi.hoisted(() => vi.fn());
@@ -97,7 +94,11 @@ vi.mock('@/sync/domains/state/storage', () => {
             typeof selector === 'function' ? selector(storageSnapshot.state) : storageSnapshot.state
         ),
         {
-            getState: () => storageSnapshot.state,
+            getState: () => ({
+                settingsScope: { serverId: 'server-a', accountId: 'account-1' },
+                settings: { peerMediationPreferencesV1: { v: 1, flows: {}, byMachineId: {} } },
+                ...storageSnapshot.state,
+            }),
             getInitialState: () => storageSnapshot.state,
             setState: () => undefined,
             subscribe: () => () => undefined,
@@ -143,36 +144,6 @@ function createFeaturePayload(): FeaturesResponse {
     });
 }
 
-function createGrant(): SignedDirectRouteGrantV1 {
-    return {
-        payload: {
-            v: 1,
-            grantId: 'grant_stream_1',
-            grantFamilyId: 'grant_family_stream_1',
-            accountId: 'account_1',
-            machineId: 'machine_source',
-            flowKind: 'live_stream',
-            routeKind: 'loopback_direct',
-            scope: {
-                kind: 'live_stream',
-                streamId: 'stream_1',
-                streamFamily: 'screen',
-                maxBitrateBps: 64_000,
-                maxDurationMs: 60_000,
-                maxTotalBytes: 128_000,
-            },
-            iat: 1_000,
-            exp: 601_000,
-            aud: 'happier-daemon-route-grant',
-            endpointFingerprint: 'endpoint_stream_1',
-        },
-        signature: {
-            keyId: 'grant_key_1',
-            alg: 'Ed25519',
-            valueBase64Url: 'AbCdEf012_-',
-        },
-    };
-}
 
 function createRelayAuthorization(): MachineLiveStreamRelayAuthorizationV1 {
     return {
@@ -223,6 +194,7 @@ describe('production peer mediation live-stream route adapter', () => {
         listServerProfilesSpy.mockReset();
         captureAuthoritySpy.mockReset();
         vi.unstubAllGlobals();
+        storageSnapshot.state = { machines: {}, machineListByServerId: {} };
         getActiveServerSnapshotSpy.mockReturnValue({
             serverId: 'server-a',
             serverUrl: 'https://server-a.example.test',
@@ -241,267 +213,96 @@ describe('production peer mediation live-stream route adapter', () => {
         }));
     });
 
-    it('starts a direct live stream through server grant, nonce proof, loopback probe, and loopback start', async () => {
-        const endpoint: PeerLoopbackEndpointCandidateV1 = {
-            v: 1,
-            routeKind: 'loopback_direct',
-            url: 'http://127.0.0.1:46021/peer-mediation/v1/probe',
-            endpointFingerprint: 'endpoint_stream_1',
-            expiresAt: Date.now() + 60_000,
-        };
-        storageSnapshot.state = {
-            machines: {
-                machine_source: {
-                    id: 'machine_source',
-                    daemonState: {
-                        peerMediation: {
-                            loopback: { endpoint },
-                        },
-                    },
-                },
-            },
-            machineListByServerId: {},
-        };
-        const grant = createGrant();
-        const fetchSpy = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
-            const parsed = new URL(String(url));
-            if (parsed.pathname === '/v1/machines/peer/mediation/route-grants') {
-                expect(JSON.parse(String(init?.body))).toMatchObject({
-                    machineId: 'machine_source',
-                    flowKind: 'live_stream',
-                    routeKind: 'loopback_direct',
-                    endpointFingerprint: 'endpoint_stream_1',
-                    scope: {
-                        kind: 'live_stream',
-                        streamId: 'stream_1',
-                    },
-                });
-                return responseJson({
-                    ok: true,
-                    receipt: PEER_MEDIATION_RECEIPTS.routeGrantMinted,
-                    grant,
-                });
-            }
-            if (parsed.pathname === '/peer-mediation/v1/probe') {
-                return responseJson({
-                    v: 1,
-                    ok: true,
-                    receipt: PEER_MEDIATION_RECEIPTS.routeSelected,
-                    routeKind: 'loopback_direct',
-                    flowKind: 'live_stream',
-                    endpointFingerprint: 'endpoint_stream_1',
-                });
-            }
-            if (parsed.pathname === '/peer-mediation/v1/live-stream/start') {
-                expect(JSON.parse(String(init?.body))).toMatchObject({
-                    v: 1,
-                    streamId: 'stream_1',
-                    routeKind: 'loopback_direct',
-                    flowKind: 'live_stream',
-                    endpointFingerprint: 'endpoint_stream_1',
-                    grant,
-                    nonceProof: {
-                        v: 1,
-                        grantId: 'grant_stream_1',
-                        routeKind: 'loopback_direct',
-                        flowKind: 'live_stream',
-                        endpointFingerprint: 'endpoint_stream_1',
-                    },
-                    startRequest: {
-                        v: 1,
-                        streamId: 'stream_1',
-                        routeKind: 'loopback_direct',
-                        sourceMachineId: 'machine_source',
-                        targetMachineId: 'machine_target',
-                    },
-                });
-                return responseJson({
-                    v: 1,
-                    ok: true,
-                    receipt: PEER_MEDIATION_RECEIPTS.streamStarted,
-                    streamId: 'stream_1',
-                    routeKind: 'loopback_direct',
-                    expiresAtMs: 61_000,
-                });
-            }
-            throw new Error(`unexpected fetch ${parsed.pathname}`);
-        });
+    it('applies the canonical stream gate before minting an otherwise enabled relay', async () => {
+        const features = createFeaturePayload();
+        features.features.machines.liveStream.enabled = false;
+        getReadyServerFeaturesSpy.mockResolvedValue(features);
+        const fetchSpy = vi.fn(async () => responseJson({ ok: true, relayAuthorization: createRelayAuthorization() }));
         vi.stubGlobal('fetch', fetchSpy);
-
-        const module = await importProductionRoute();
-        expect(module).toHaveProperty('startProductionMachineLiveStream');
-        if ('importError' in module) throw module.importError;
-
-        const result = await module.startProductionMachineLiveStream({
-            serverId: 'server-a',
-            sourceMachineId: 'machine_source',
-            targetMachineId: 'machine_target',
-            routeKind: 'loopback_direct',
-            streamId: 'stream_1',
-            streamFamily: 'screen',
-            caps: {
-                maxBitrateBps: 64_000,
-                maxFramesPerSecond: 12,
-                maxFrameBytes: 32_000,
-                maxDurationMs: 60_000,
-                maxTotalBytes: 128_000,
-            },
-        });
-
-        expect(result).toEqual({
-            ok: true,
-            routeKind: 'loopback_direct',
-            response: {
-                v: 1,
-                ok: true,
-                receipt: PEER_MEDIATION_RECEIPTS.streamStarted,
-                streamId: 'stream_1',
-                routeKind: 'loopback_direct',
-                expiresAtMs: 61_000,
-            },
-        });
-        expect(fetchSpy).toHaveBeenCalledWith(
-            'http://127.0.0.1:46021/peer-mediation/v1/live-stream/start',
-            expect.objectContaining({ method: 'POST' }),
-        );
-        expect(fetchSpy.mock.calls.filter(([url]) =>
-            new URL(String(url)).pathname === '/v1/machines/peer/mediation/route-grants',
-        )).toHaveLength(1);
-    });
-
-    it.each([
-        ['advertised endpoint', true],
-        ['missing endpoint', false],
-    ])('reports typed data-key signing unavailability before %s topology or direct traffic', async (_label, hasEndpoint) => {
-        getCredentialsForServerUrlSpy.mockResolvedValue({
-            token: DATA_KEY_TOKEN,
-            encryption: { publicKey: 'public-key', machineKey: 'machine-key' },
-        });
-        storageSnapshot.state = hasEndpoint
-            ? {
-                machines: {
-                    machine_source: {
-                        id: 'machine_source',
-                        daemonState: {
-                            peerMediation: {
-                                loopback: {
-                                    endpoint: {
-                                        v: 1,
-                                        routeKind: 'loopback_direct',
-                                        url: 'http://127.0.0.1:46021/peer-mediation/v1/probe',
-                                        endpointFingerprint: 'endpoint_stream_1',
-                                        expiresAt: Date.now() + 60_000,
-                                    },
-                                },
-                            },
-                        },
-                    },
-                },
-                machineListByServerId: {},
-            }
-            : { machines: {}, machineListByServerId: {} };
-        const fetchSpy = vi.fn();
-        vi.stubGlobal('fetch', fetchSpy);
-
         const { startProductionMachineLiveStream } = await importProductionRoute();
         const result = await startProductionMachineLiveStream({
-            serverId: 'server-a',
-            sourceMachineId: 'machine_source',
-            targetMachineId: 'machine_target',
-            routeKind: 'loopback_direct',
-            streamId: 'stream_1',
-            streamFamily: 'screen',
-            caps: {
-                maxBitrateBps: 64_000,
-                maxFramesPerSecond: 12,
-                maxFrameBytes: 32_000,
-                maxDurationMs: 60_000,
-                maxTotalBytes: 128_000,
-            },
+            sourceMachineId: 'machine_source', targetMachineId: 'machine_target',
+            routeKind: 'server_relay', streamId: 'stream_1', streamFamily: 'screen',
+            caps: { maxBitrateBps: 64_000, maxFramesPerSecond: 12, maxFrameBytes: 32_000, maxDurationMs: 60_000 },
         });
-
-        expect(result).toEqual({
-            ok: false,
-            reasonCode: 'peer_route_signing_identity_unavailable',
-            requiredCapability: 'peer_route_signing_identity_v1',
-        });
+        expect(result).toEqual({ ok: false, reasonCode: 'stream_unsupported' });
         expect(fetchSpy).not.toHaveBeenCalled();
     });
 
-    it('starts data-key live stream with V2 only when server mint and daemon verifier intersect', async () => {
-        const key32 = Buffer.from(new Uint8Array(32).fill(1)).toString('base64url');
-        const signature64 = Buffer.from(new Uint8Array(64).fill(2)).toString('base64url');
-        getCredentialsForServerUrlSpy.mockResolvedValue({
-            token: DATA_KEY_TOKEN,
-            encryption: { publicKey: 'public-key', machineKey: 'machine-key' },
+    it('uses the grant owner effective caps and negotiated codec in the daemon start', async () => {
+        const authorization = createRelayAuthorization();
+        authorization.payload.codecId = 'image.mjpeg';
+        authorization.payload.viewerCodecs = ['image.mjpeg'];
+        let mintBody: unknown;
+        vi.stubGlobal('fetch', vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+            mintBody = JSON.parse(String(init?.body));
+            return responseJson({ ok: true, relayAuthorization: authorization });
+        }));
+        const { startProductionMachineLiveStream } = await importProductionRoute();
+        const result = await startProductionMachineLiveStream({
+            sourceMachineId: 'machine_source', targetMachineId: 'machine_target',
+            routeKind: 'server_relay', streamId: 'stream_1', streamFamily: 'screen',
+            caps: {}, codecId: 'image.mjpeg', viewerCodecs: ['image.mjpeg'],
         });
-        const baseFeatures = createFeaturePayload();
-        getReadyServerFeaturesSpy.mockResolvedValue(FeaturesResponseSchema.parse({
-            ...baseFeatures,
-            capabilities: {
-                ...baseFeatures.capabilities,
-                machines: {
-                    ...baseFeatures.capabilities.machines,
-                    peerMediation: { directRouteGrantProofMintVersions: [2] },
+        expect(result).toMatchObject({ ok: true, routeKind: 'server_relay', startRequest: {
+            maxBitrateBps: authorization.payload.maxBitrateBps,
+            maxFramesPerSecond: authorization.payload.maxFramesPerSecond,
+            maxFrameBytes: authorization.payload.maxFrameBytes,
+            maxDurationMs: authorization.payload.maxDurationMs,
+            codecId: 'image.mjpeg', viewerCodecs: ['image.mjpeg'],
+        } });
+        expect(mintBody).toMatchObject({ codecId: 'image.mjpeg', viewerCodecs: ['image.mjpeg'] });
+    });
+
+    it('does not mint a direct grant when the carrier is unavailable even with stored preferences', async () => {
+        storageSnapshot.state = {
+            settingsScope: { serverId: 'server-a', accountId: 'account-1' },
+            settings: {
+                peerMediationPreferencesV1: {
+                    v: 1,
+                    flows: { live_stream: { direct: 'enabled' } },
+                    byMachineId: { machine_source: { flows: { live_stream: { direct: 'disabled' } } } },
                 },
             },
-        }));
+            machines: {}, machineListByServerId: {},
+        };
+        const fetchSpy = vi.fn();
+        vi.stubGlobal('fetch', fetchSpy);
+        const { startProductionMachineLiveStream } = await importProductionRoute();
+        const result = await startProductionMachineLiveStream({
+            sourceMachineId: 'machine_source', targetMachineId: 'machine_target',
+            routeKind: 'loopback_direct', streamId: 'stream_1', streamFamily: 'screen',
+            caps: { maxBitrateBps: 64_000, maxFramesPerSecond: 12, maxFrameBytes: 32_000, maxDurationMs: 60_000 },
+        });
+        expect(result).toEqual({ ok: false, reasonCode: 'topology_unavailable' });
+        expect(fetchSpy).not.toHaveBeenCalled();
+    });
+
+
+
+    it('does not admit a published direct endpoint without a complete delivery carrier', async () => {
         storageSnapshot.state = {
             machines: {
                 machine_source: {
                     id: 'machine_source',
                     daemonState: { peerMediation: { loopback: { endpoint: {
                         v: 1, routeKind: 'loopback_direct',
-                        url: 'http://127.0.0.1:46021/peer-mediation/v1/probe',
+                        url: 'http://127.0.0.1:46021',
                         endpointFingerprint: 'endpoint_stream_1', expiresAt: Date.now() + 60_000,
-                        directRouteGrantProofVerifierVersions: [2],
                     } } } },
                 },
             },
             machineListByServerId: {},
         };
-        const fetchSpy = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
-            const path = new URL(String(url)).pathname;
-            if (path === '/v1/machines/peer/mediation/route-grants') {
-                const body = JSON.parse(String(init?.body)) as { ephemeralPublicKeyBase64Url: string };
-                expect(body).toMatchObject({ v: 2, kind: 'ephemeral_ed25519', flowKind: 'live_stream' });
-                return responseJson({
-                    ok: true,
-                    grant: {
-                        payload: {
-                            v: 2, grantId: 'grant_v2', accountId: 'account_1', machineId: 'machine_source',
-                            flowKind: 'live_stream', routeKind: 'loopback_direct',
-                            scope: { kind: 'live_stream', streamId: 'stream_1', streamFamily: 'screen', maxBitrateBps: 64_000, maxDurationMs: 60_000, maxTotalBytes: 128_000 },
-                            iat: 1_000, exp: 601_000, aud: 'happier-daemon-route-grant', endpointFingerprint: 'endpoint_stream_1',
-                            proofKind: 'ephemeral_ed25519', ephemeralPublicKeyBase64Url: body.ephemeralPublicKeyBase64Url,
-                        },
-                        signature: { keyId: 'key_1', alg: 'Ed25519', valueBase64Url: signature64 },
-                    },
-                });
-            }
-            if (path === '/peer-mediation/v2/live-stream/start') {
-                expect(JSON.parse(String(init?.body))).toMatchObject({
-                    v: 2, grant: { payload: { v: 2 } }, proof: { v: 2, kind: 'ephemeral_ed25519' },
-                });
-                return responseJson({
-                    v: 2, ok: true, receipt: PEER_MEDIATION_RECEIPTS.streamStarted,
-                    streamId: 'stream_1', routeKind: 'loopback_direct', expiresAtMs: 61_000,
-                });
-            }
-            throw new Error(`unexpected fetch ${path}`);
-        });
+        const fetchSpy = vi.fn();
         vi.stubGlobal('fetch', fetchSpy);
-
         const { startProductionMachineLiveStream } = await importProductionRoute();
         const result = await startProductionMachineLiveStream({
             serverId: 'server-a', sourceMachineId: 'machine_source', targetMachineId: 'machine_target',
-            routeKind: 'loopback_direct', streamId: 'stream_1', streamFamily: 'screen',
-            caps: { maxBitrateBps: 64_000, maxFramesPerSecond: 12, maxFrameBytes: 32_000, maxDurationMs: 60_000, maxTotalBytes: 128_000 },
+            routeKind: 'loopback_direct', streamId: 'stream_1', streamFamily: 'screen', caps: {},
         });
-
-        expect(result).toMatchObject({ ok: true, routeKind: 'loopback_direct', response: { v: 2, ok: true } });
-        expect(fetchSpy).toHaveBeenCalledTimes(2);
-        expect(key32).toHaveLength(43);
+        expect(result).toEqual({ ok: false, reasonCode: 'topology_unavailable' });
+        expect(fetchSpy).not.toHaveBeenCalled();
     });
 
     it('requests relay authorization before building the server-relay start request', async () => {

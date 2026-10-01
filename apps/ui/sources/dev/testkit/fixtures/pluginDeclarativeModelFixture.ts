@@ -9,13 +9,13 @@ import {
 export function createPluginDeclarativeModelFixture(input: Readonly<{
     pluginId: string;
     localId: string;
-    generation: string;
+    occurrenceId: string;
     document: Parameters<typeof normalizePluginDeclarativeDocumentV1>[0]['document'];
 }>) {
     const identity = createPluginContributionIdentity({ pluginId: input.pluginId, localId: input.localId });
     const normalized = normalizePluginDeclarativeDocumentV1({
         pluginId: input.pluginId,
-        generation: input.generation,
+        occurrenceId: input.occurrenceId,
         actions: [],
         document: input.document,
     });
@@ -23,7 +23,7 @@ export function createPluginDeclarativeModelFixture(input: Readonly<{
         identity: {
             ...identity,
             qualifiedId: buildQualifiedPluginContributionKey(identity),
-            generation: input.generation,
+            occurrenceId: input.occurrenceId,
         },
         visible: true,
         requiredHostMethods: [],

@@ -2,8 +2,8 @@ import React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import renderer, { act } from 'react-test-renderer';
 
-import { pressTestInstanceAsync, renderScreen } from '@/dev/testkit';
-import { installPermissionShellCommonModuleMocks } from './permissionShellTestHelpers';
+import { pressTestInstanceAsync } from '@/dev/testkit';
+import { installPermissionShellCommonModuleMocks, createPermissionShellRenderer } from './permissionShellTestHelpers';
 
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -18,9 +18,11 @@ const runtime = vi.hoisted(() => ({
 }));
 
 const ops = vi.hoisted(() => ({
-    sessionDeny: vi.fn(async (..._args: unknown[]) => {}),
-    sessionAbort: vi.fn(async (..._args: unknown[]) => {}),
+    deny: vi.fn(async (..._args: unknown[]) => {}),
+    abort: vi.fn(async (..._args: unknown[]) => {}),
 }));
+const renderScreen = createPermissionShellRenderer(ops);
+
 
 const sessionStore = vi.hoisted(() => ({
     updateSessionPermissionMode: vi.fn((..._args: unknown[]) => {}),
@@ -44,12 +46,7 @@ installPermissionShellCommonModuleMocks({
     },
 });
 
-vi.mock('@/sync/ops', () => ({
-    sessionAllow: vi.fn(async () => {}),
-    sessionAllowWithPermissionUpdates: vi.fn(async () => {}),
-    sessionDeny: ops.sessionDeny,
-    sessionAbort: ops.sessionAbort,
-}));
+
 
 vi.mock('@/sync/sync', () => ({
     sync: {
@@ -98,8 +95,8 @@ describe('PermissionFooter deny action', () => {
         },
     ])('denies permission without aborting the run ($name)', async ({ protocol, flavor, toolName, toolInput }) => {
         runtime.setProtocol(protocol, flavor);
-        ops.sessionDeny.mockClear();
-        ops.sessionAbort.mockClear();
+        ops.deny.mockClear();
+        ops.abort.mockClear();
         sessionStore.updateSessionPermissionMode.mockClear();
 
         const { PermissionFooter } = await import('../permissions/PermissionFooter');
@@ -126,9 +123,9 @@ describe('PermissionFooter deny action', () => {
             await pressTestInstanceAsync(noButton, 'common.no');
         });
 
-        expect(ops.sessionDeny).toHaveBeenCalledTimes(1);
-        expect(ops.sessionDeny.mock.calls[0]?.[4]).toBe('denied');
-        expect(ops.sessionAbort).not.toHaveBeenCalled();
+        expect(ops.deny).toHaveBeenCalledTimes(1);
+        expect(ops.deny.mock.calls[0]?.[0]).toMatchObject({ decision: 'denied' });
+        expect(ops.abort).not.toHaveBeenCalled();
         expect(sessionStore.updateSessionPermissionMode).not.toHaveBeenCalled();
     });
 });

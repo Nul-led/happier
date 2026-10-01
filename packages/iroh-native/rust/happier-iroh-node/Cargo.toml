@@ -10,7 +10,7 @@ name = "happier_iroh_node"
 crate-type = ["cdylib"]
 
 [features]
-test-relay-fixture = ["happier-iroh-native/test-relay-fixture"]
+test-relay-fixture = ["happier-iroh-native/test-relay-fixture", "dep:serde_json"]
 
 [dependencies]
 # Lifecycle-only Node/Bun binding over the existing public JSON C ABI. The
@@ -23,6 +23,7 @@ happier-iroh-native = { path = "../happier-iroh-native" }
 # resolves, so both addons stay on one audited release line.
 napi = { version = "3.12.1", default-features = false, features = ["napi8"] }
 napi-derive = "3.6.3"
+serde_json = { version = "1", optional = true }
 
 [build-dependencies]
 napi-build = "2.4.1"

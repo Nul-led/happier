@@ -1,4 +1,5 @@
 import { Platform } from 'react-native';
+import { isEmbedWindowContext } from '@/embed/isEmbedWindowContext';
 import { getPersistenceStorage } from '@/sync/domains/state/persistenceStorage';
 import { listBrowserRecords, updateBrowserRecord } from '@/sync/domains/state/browserRecordStorage';
 import { mergeSerializedSessionDraftScope, parseSerializedSessionDraftScope } from './sessionDraftSerializedScope';
@@ -117,7 +118,7 @@ export function createSessionDraftPersistenceStorage({ legacy, records }: Depend
 let browserStorage: ReturnType<typeof createSessionDraftPersistenceStorage> | undefined;
 
 export function getSessionDraftPersistenceStorage() {
-    if (Platform.OS !== 'web') return getPersistenceStorage();
+    if (isEmbedWindowContext() || Platform.OS !== 'web') return getPersistenceStorage();
     browserStorage ??= createSessionDraftPersistenceStorage({
         legacy: getPersistenceStorage(),
         records: {

@@ -6,7 +6,7 @@ import { startServerLight, type StartedServer } from '../../src/testkit/process/
 import { resolveUiWebBeforeAllTimeoutMs, startUiWeb, type StartedUiWeb } from '../../src/testkit/process/uiWeb';
 import { installFakeTauriDesktopBridge, navigateSpa } from '../../src/testkit/uiE2e/fakeTauriDesktop';
 import {
-    createAccountAndReachSetupWizardState,
+    createAccountAndReachMachineAddDraftState,
     gotoCommittedWithRetries,
     normalizeLoopbackBaseUrl,
 } from '../../src/testkit/uiE2e/pageNavigation';
@@ -63,7 +63,7 @@ test.describe('ui e2e: setup control panel flow (deterministic runner)', () => {
         await server?.stop().catch(() => {});
     });
 
-    test('runs local machine setup and shows deterministic progress + success', async ({ page }) => {
+    test('runs local machine setup from the collection draft and shows its task progress', async ({ page }) => {
         test.setTimeout(420_000);
         if (!uiBaseUrl) throw new Error('missing ui base url');
 
@@ -75,15 +75,15 @@ test.describe('ui e2e: setup control panel flow (deterministic runner)', () => {
         // Instead, load the web app normally first, then switch setup routes into desktop mode
         // by toggling isDesktopHost() for subsequent renders without a full-page reload.
         await installFakeTauriDesktopBridge(page);
-        await createAccountAndReachSetupWizardState({ page });
+        await createAccountAndReachMachineAddDraftState({ page });
 
-        await expect(page.getByTestId('setupWizard-setup-this-computer')).toHaveCount(1, { timeout: 120_000 });
-        await expect(page.getByTestId('setupWizard-setup-this-computer-checklist-row-setup.thisComputer.stage.confirmRelay')).toHaveCount(1, { timeout: 120_000 });
-        await expect(page.getByTestId('setupWizard-setup-this-computer-checklist-row-setup.thisComputer.stage.resolveBackgroundService')).toHaveCount(1, { timeout: 120_000 });
-        await expect(page.getByTestId('setupWizard-setup-this-computer-checklist-row-setup.thisComputer.stage.registerComputer')).toHaveCount(1, { timeout: 120_000 });
-        await expect(page.getByTestId('setupWizard-setup-this-computer-checklist-row-setup.thisComputer.stage.enableBackgroundService')).toHaveCount(1, { timeout: 120_000 });
-        await expect(page.getByTestId('setupWizard-setup-this-computer-checklist-row-setup.thisComputer.stage.verifyReady')).toHaveCount(1, { timeout: 120_000 });
-        await expect(page.getByTestId('setupWizard.surface-primary')).toBeEnabled({ timeout: 120_000 });
+        const start = page.getByTestId('settings.machines.draft.form.pane.start');
+        await expect(start).toBeEnabled({ timeout: 120_000 });
+        await start.click();
+        for (const stage of ['confirmRelay', 'resolveBackgroundService', 'registerComputer', 'enableBackgroundService', 'verifyReady']) {
+            await expect(page.getByTestId(`settings.machines.draft.form.pane.steps-row-setup.thisComputer.stage.${stage}`))
+                .toHaveCount(1, { timeout: 120_000 });
+        }
     });
 
     test('shows the host relay checklist with satisfied rows in desktop mode', async ({ page }) => {
@@ -103,17 +103,12 @@ test.describe('ui e2e: setup control panel flow (deterministic runner)', () => {
         await gotoCommittedWithRetries(page, `${uiBaseUrl}/?happier_hmr=0`, 180_000);
         await waitForInitialAppUi({ page, timeoutMs: 180_000 });
         await installFakeTauriDesktopBridge(page);
-        await createAccountAndReachSetupWizardState({ page });
-        await navigateSpa(page, '/setup/wizard?step=setup_chooser');
+        await createAccountAndReachMachineAddDraftState({ page });
+        await navigateSpa(page, '/settings/server/add?path=server_home');
 
-        await expect(page.getByTestId('setupWizard-branch:relayLocal')).toHaveCount(1, { timeout: 120_000 });
-        await page.getByTestId('setupWizard-branch:relayLocal').click();
-        await expect(page.getByTestId('setupWizard.surface-primary')).toBeEnabled({ timeout: 120_000 });
-        await page.getByTestId('setupWizard.surface-primary').click();
-
-        await expect(page.getByTestId('setupWizard-relay-host-local')).toBeVisible({ timeout: 120_000 });
-        await expect(page.getByTestId('setupWizard-relay-host-local-checklist-row-installRelayRuntime')).toBeVisible({ timeout: 120_000 });
-        await expect(page.getByTestId('setupWizard-relay-host-local-checklist-row-startRelayRuntime')).toBeVisible({ timeout: 120_000 });
-        await expect(page.getByTestId('setupWizard-relay-host-local-checklist-row-enableSecureAccess')).toHaveCount(0);
+        await expect(page.getByTestId('settings.homes.draft.form.serverHome.thisComputer')).toBeVisible({ timeout: 120_000 });
+        await expect(page.getByTestId('settings.homes.draft.form.serverHome.thisComputer-checklist-row-installRelayRuntime')).toBeVisible({ timeout: 120_000 });
+        await expect(page.getByTestId('settings.homes.draft.form.serverHome.thisComputer-checklist-row-startRelayRuntime')).toBeVisible({ timeout: 120_000 });
+        await expect(page.getByTestId('settings.homes.draft.form.serverHome.thisComputer-checklist-row-enableSecureAccess')).toHaveCount(0);
     });
 });

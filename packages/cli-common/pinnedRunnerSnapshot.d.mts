@@ -8,7 +8,8 @@ export type PinnedRunnerSnapshotLocation = Readonly<{
   workspaceRuntimeIdentity: string;
 }>;
 
-export const PINNED_RUNNER_LAYOUT_VERSION: 'package-dist-v6';
+export const PINNED_RUNNER_LAYOUT_VERSION: 'package-dist-v7';
+export function readPinnedRunnerSnapshotPublicationIdentity(runtimeRoot: string): string | null;
 export const PINNED_RUNNER_MANAGED_PROVIDER_RUNTIME_RELATIVE_PATH: readonly string[];
 export const PINNED_RUNNER_NO_MANAGED_PROVIDER_RUNTIME_SHA256: string;
 
@@ -44,6 +45,12 @@ export function listReadyPinnedRunnerSnapshots(
   entrypoint: string,
   options?: PinnedRunnerSnapshotReadOptions,
 ): ReadonlyArray<Readonly<{ location: PinnedRunnerSnapshotLocation; mtimeMs: number }>>;
+
+export function resolvePublishedPinnedRunnerSnapshotById(
+  entrypoint: string,
+  snapshotId: string,
+  options?: Readonly<{ snapshotsDir?: string | null }>,
+): PinnedRunnerSnapshotLocation | null;
 
 export function resolveNewestReadyPinnedRunnerSnapshot(
   entrypoint: string,

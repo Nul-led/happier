@@ -3,6 +3,8 @@ import {
     type SessionDiscussionMessageContentV1,
 } from '@happier-dev/protocol';
 
+import type { ComposerStructuredInputMention } from '@/components/sessions/agentInput/structuredInputMentions';
+
 export type DiscussionMentionSpan = Readonly<{
     start: number;
     end: number;
@@ -78,16 +80,6 @@ export function parseDiscussionMentionSpans(
     });
 }
 
-export function readActiveDiscussionMentionQuery(
-    text: string,
-    cursor: number,
-): Readonly<{ start: number; query: string }> | null {
-    const prefix = text.slice(0, cursor);
-    const match = /(?:^|\s)@([^\s@]*)$/u.exec(prefix);
-    if (!match) return null;
-    return { start: cursor - match[1]!.length - 1, query: match[1]! };
-}
-
 function readChangedRange(previousText: string, nextText: string): Readonly<{
     previousStart: number;
     previousEnd: number;
@@ -153,41 +145,6 @@ export function reconcileDiscussionMentionSpans(params: Readonly<{
     });
 }
 
-export function insertDiscussionMention(params: Readonly<{
-    text: string;
-    mentions: readonly DiscussionMentionSpan[];
-    queryStart: number;
-    selectionEnd: number;
-    visibleToken: string;
-    accountId: string;
-}>): Readonly<{
-    text: string;
-    mentions: readonly DiscussionMentionSpan[];
-    selection: Readonly<{ start: number; end: number }>;
-}> {
-    const suffix = params.text.slice(params.selectionEnd);
-    const separator = /^\s/u.test(suffix) ? '' : ' ';
-    const text = `${params.text.slice(0, params.queryStart)}${params.visibleToken}${separator}${suffix}`;
-    const mentions = reconcileDiscussionMentionSpans({
-        previousText: params.text,
-        nextText: text,
-        mentions: params.mentions,
-    });
-    const cursor = params.queryStart + params.visibleToken.length + 1;
-    return {
-        text,
-        mentions: [
-            ...mentions,
-            {
-                start: params.queryStart,
-                end: params.queryStart + params.visibleToken.length,
-                accountId: params.accountId,
-            },
-        ].sort((left, right) => left.start - right.start),
-        selection: { start: cursor, end: cursor },
-    };
-}
-
 export function buildSessionDiscussionContent(
     text: string,
     mentions: readonly DiscussionMentionSpan[],
@@ -222,4 +179,51 @@ export function buildSessionDiscussionContentFromPendingText(input: Readonly<{
         nextText: input.pendingText,
         mentions: input.mentions,
     }));
+}
+
+/**
+ * An Account mention inside the one composer (`AgentInput`). It is the discussion's own reference:
+ * the `accountMention` suggestion kind produces it and only this adapter reads it back, as the
+ * `{ start, end, accountId }` span the draft stores and the `mention` part the wire carries. It is
+ * never an agent message reference (no `MentionRefV1` kind), so it never leaves the discussion.
+ */
+export const DISCUSSION_ACCOUNT_MENTION_KIND = 'happier.account';
+const DISCUSSION_ACCOUNT_MENTION_REF_PREFIX = 'account:';
+
+/** What the `accountMention` kind hands the composer; the composer adds the token and its range. */
+export function buildDiscussionAccountMentionPayload(accountId: string, label: string): Readonly<{
+    kind: string;
+    ref: string;
+    label: string;
+}> {
+    return { kind: DISCUSSION_ACCOUNT_MENTION_KIND, ref: `${DISCUSSION_ACCOUNT_MENTION_REF_PREFIX}${accountId}`, label };
+}
+
+/** The draft's spans as the composer's mentions, each bound to the visible token it covers. */
+export function discussionComposerMentionsFromSpans(
+    text: string,
+    spans: readonly DiscussionMentionSpan[],
+): ComposerStructuredInputMention[] {
+    return spans.map((span) => ({
+        kind: DISCUSSION_ACCOUNT_MENTION_KIND,
+        ref: `${DISCUSSION_ACCOUNT_MENTION_REF_PREFIX}${span.accountId}`,
+        tokenText: text.slice(span.start, span.end),
+        start: span.start,
+        end: span.end,
+    }));
+}
+
+/**
+ * The composer's Account mentions as draft spans. Any other kind, and an Account reference that
+ * does not carry a valid Account id, stays ordinary text: identity is never inferred.
+ */
+export function discussionMentionSpansFromComposerMentions(
+    mentions: readonly ComposerStructuredInputMention[],
+): DiscussionMentionSpan[] {
+    return mentions.flatMap((mention): DiscussionMentionSpan[] => {
+        if (mention.kind !== DISCUSSION_ACCOUNT_MENTION_KIND || !('ref' in mention) || typeof mention.ref !== 'string') return [];
+        if (!mention.ref.startsWith(DISCUSSION_ACCOUNT_MENTION_REF_PREFIX)) return [];
+        const accountId = SessionDiscussionAccountIdSchema.safeParse(mention.ref.slice(DISCUSSION_ACCOUNT_MENTION_REF_PREFIX.length));
+        return accountId.success ? [{ start: mention.start, end: mention.end, accountId: accountId.data }] : [];
+    });
 }

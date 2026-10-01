@@ -1,6 +1,10 @@
 function psDoubleQuote(s: string): string {
-  // PowerShell double-quoted string escape: `"
-  return String(s ?? '').replaceAll('`', '``').replaceAll('"', '`"');
+  // PowerShell double-quoted string escapes use the backtick. Escape the
+  // escape character first so later escapes remain syntactic.
+  return String(s ?? '')
+    .replaceAll('`', '``')
+    .replaceAll('$', '`$')
+    .replaceAll('"', '`"');
 }
 
 function psQuoted(s: string): string {
@@ -111,11 +115,13 @@ export type WindowsScheduledTaskStatusSnapshot = Readonly<{
   lastRunTime: string;
   lastTaskResult: number | null;
   taskToRun: string;
+  autostart?: boolean | null;
 }>;
 
 export function buildReadWindowsScheduledTaskStatusPowerShellCommand(params: Readonly<{
   taskName: string;
   taskPath?: string;
+  includeAutostart?: boolean;
 }>): string {
   const taskName = String(params.taskName ?? '').trim();
   const taskPath = String(params.taskPath ?? '\\Happier\\').trim() || '\\Happier\\';
@@ -136,7 +142,8 @@ export function buildReadWindowsScheduledTaskStatusPowerShellCommand(params: Rea
     '$lastRunTime = if ($null -ne $taskInfo.LastRunTime) { $taskInfo.LastRunTime.ToString("o") } else { "" }',
     '$lastTaskResult = if ($null -ne $taskInfo.LastTaskResult) { [int64]$taskInfo.LastTaskResult } else { $null }',
     '$taskToRun = (@($task.Actions | ForEach-Object { $execute = if ($null -ne $_.Execute) { $_.Execute.ToString() } else { "" }; $arguments = if ($null -ne $_.Arguments) { $_.Arguments.ToString() } else { "" }; if ($execute.Trim()) { ($execute + " " + $arguments).Trim() } else { $_.ToString() } }) -join "; ")',
-    '[pscustomobject]@{ exists = $true; enabled = $enabled; active = $active; stateLabel = $stateLabel; stateValue = $stateValue; lastRunTime = $lastRunTime; lastTaskResult = $lastTaskResult; taskToRun = $taskToRun } | ConvertTo-Json -Compress',
+    ...(params.includeAutostart ? ['$autostart = @($task.Triggers | Where-Object { $_.Enabled -ne $false -and $_.CimClass.CimClassName -in @("MSFT_TaskLogonTrigger", "MSFT_TaskBootTrigger") }).Count -gt 0'] : []),
+    `[pscustomobject]@{ exists = $true; enabled = $enabled; active = $active; stateLabel = $stateLabel; stateValue = $stateValue; lastRunTime = $lastRunTime; lastTaskResult = $lastTaskResult; taskToRun = $taskToRun${params.includeAutostart ? '; autostart = $autostart' : ''} } | ConvertTo-Json -Compress`,
   ].join('; ');
 }
 
@@ -153,6 +160,7 @@ export function parseWindowsScheduledTaskStatusPowerShellJson(text: string): Win
       lastRunTime?: unknown;
       lastTaskResult?: unknown;
       taskToRun?: unknown;
+      autostart?: unknown;
     };
     const stateValue = typeof parsed.stateValue === 'number' && Number.isInteger(parsed.stateValue)
       ? parsed.stateValue
@@ -169,6 +177,7 @@ export function parseWindowsScheduledTaskStatusPowerShellJson(text: string): Win
       lastRunTime: typeof parsed.lastRunTime === 'string' ? parsed.lastRunTime.trim() : '',
       lastTaskResult,
       taskToRun: typeof parsed.taskToRun === 'string' ? parsed.taskToRun.trim() : '',
+      ...('autostart' in parsed ? { autostart: typeof parsed.autostart === 'boolean' ? parsed.autostart : null } : {}),
     };
   } catch {
     return null;

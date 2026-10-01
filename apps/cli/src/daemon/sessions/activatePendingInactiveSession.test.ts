@@ -70,6 +70,27 @@ function createSession(active: boolean) {
 }
 
 describe('activatePendingInactiveSession', () => {
+  it('leaves the queued prompt in custody when the managed session directory is missing', async () => {
+    const session = createSession(false);
+    session.metadata = JSON.stringify({
+      machineId: 'machine-1', path: '/repo',
+      acpConfiguredBackendV1: { v: 1, updatedAt: 1, backendId: 'my-acp', title: 'My ACP' },
+      sessionDirectoryV1: { v: 1, kind: 'managed' },
+    });
+    vi.mocked(fetchSessionByIdCompat).mockResolvedValue(session);
+    vi.mocked(readPendingQueueV2ActivationEligibilityFromServer).mockResolvedValue('eligible');
+    const spawnSession = vi.fn(async () => ({
+      type: 'error' as const,
+      errorCode: 'SESSION_DIRECTORY_MISSING' as const,
+      errorMessage: 'Session folder is missing',
+    }));
+    await expect(activatePendingInactiveSession({
+      credentials: tokenOnlyCredentials, machineId: 'machine-1', sessionId: 'session-1',
+      requestId: 'pending-after-ui-death', pendingVersion: 9, spawnSession,
+    })).resolves.toEqual({ status: 'not-needed', reason: 'session-directory-missing' });
+    expect(reportPendingSessionActivationFailure).not.toHaveBeenCalled();
+  });
+
   beforeEach(() => {
     vi.mocked(fetchSessionByIdCompat).mockReset();
     vi.mocked(readPendingQueueV2ActivationEligibilityFromServer).mockReset();

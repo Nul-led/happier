@@ -50,6 +50,7 @@ const serverBasis = {
 };
 const response = {
     ref,
+    sourceResolution: { recordId: 'pau-record' },
     content: {
         t: 'plain',
         v: {},
@@ -79,7 +80,7 @@ describe('qualifiedConnectedAccountQuotaTransport', () => {
         openQuotaMock.mockReturnValue(snapshot);
     });
 
-    it('uses one admitted and server-pinned owner to read and open V4 quota', async () => {
+    it('reads and opens V4 quota from the pinned server without a daemon admission', async () => {
         const callOrder: string[] = [];
         const assertOperationAllowed = vi.fn(async () => {
             callOrder.push('admit');
@@ -97,10 +98,10 @@ describe('qualifiedConnectedAccountQuotaTransport', () => {
             ref,
             serverBasis,
             assertOperationAllowed,
-        })).resolves.toBe(snapshot);
+        })).resolves.toEqual({ snapshot, recordId: 'pau-record' });
 
-        expect(callOrder).toEqual(['admit', 'request']);
-        expect(assertOperationAllowed).toHaveBeenCalledWith('quota_read');
+        expect(callOrder).toEqual(['request']);
+        expect(assertOperationAllowed).not.toHaveBeenCalled();
         expect(getQuotaMock).toHaveBeenCalledWith(credentials, ref, {
             expectedActiveServer: serverBasis,
         });
@@ -122,7 +123,7 @@ describe('qualifiedConnectedAccountQuotaTransport', () => {
             ref,
             serverBasis,
             assertOperationAllowed,
-        })).resolves.toBe(snapshot);
+        })).resolves.toEqual({ snapshot, recordId: 'pau-record' });
 
         expect(resolveMaterialMock).not.toHaveBeenCalled();
         expect(openQuotaMock).toHaveBeenCalledWith({
@@ -132,7 +133,7 @@ describe('qualifiedConnectedAccountQuotaTransport', () => {
         });
     });
 
-    it('fails closed before read or refresh effects when admission rejects', async () => {
+    it('fails closed before the daemon-executed refresh when admission rejects, while the server read proceeds', async () => {
         const admissionError = Object.assign(new Error('unsupported'), {
             code: 'connected_account_v4_operation_unsupported',
         });
@@ -149,7 +150,7 @@ describe('qualifiedConnectedAccountQuotaTransport', () => {
             ref,
             serverBasis,
             assertOperationAllowed,
-        })).rejects.toBe(admissionError);
+        })).resolves.toEqual({ snapshot, recordId: 'pau-record' });
         await expect(refreshQualifiedConnectedAccountQuota({
             credentials,
             ref,
@@ -157,7 +158,7 @@ describe('qualifiedConnectedAccountQuotaTransport', () => {
             assertOperationAllowed,
         })).rejects.toBe(admissionError);
 
-        expect(getQuotaMock).not.toHaveBeenCalled();
+        expect(getQuotaMock).toHaveBeenCalledTimes(1);
         expect(requestRefreshMock).not.toHaveBeenCalled();
     });
 });

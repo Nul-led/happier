@@ -5,10 +5,10 @@ import { SessionDiscussionMessageContentV1Schema } from '@happier-dev/protocol';
 import {
     buildSessionDiscussionContent,
     buildSessionDiscussionContentFromPendingText,
-    insertDiscussionMention,
+    discussionComposerMentionsFromSpans,
+    discussionMentionSpansFromComposerMentions,
     parseDiscussionMentionSpans,
     reconcileDiscussionMentionSpans,
-    readActiveDiscussionMentionQuery,
     resolveSessionDiscussionCreationTitle,
 } from './discussionComposerDocument';
 
@@ -36,10 +36,35 @@ describe('discussion composer document', () => {
         })).toBeNull();
     });
 
-    it('recognizes only the active mention token at the cursor', () => {
-        expect(readActiveDiscussionMentionQuery('hello @bo later', 9)).toEqual({ start: 6, query: 'bo' });
-        expect(readActiveDiscussionMentionQuery('email@example.com', 17)).toBeNull();
-        expect(readActiveDiscussionMentionQuery('hello @bo later', 15)).toBeNull();
+    it('carries Account mentions between the one composer and the discussion draft unchanged', () => {
+        const text = 'Hi @Alice Ng and @bob!';
+        const spans = [
+            { start: 3, end: 12, accountId: 'account-a' },
+            { start: 17, end: 21, accountId: 'account-b' },
+        ];
+
+        const mentions = discussionComposerMentionsFromSpans(text, spans);
+
+        expect(mentions).toEqual([
+            { kind: 'happier.account', ref: 'account:account-a', tokenText: '@Alice Ng', start: 3, end: 12 },
+            { kind: 'happier.account', ref: 'account:account-b', tokenText: '@bob', start: 17, end: 21 },
+        ]);
+        expect(discussionMentionSpansFromComposerMentions(mentions)).toEqual(spans);
+        expect(buildSessionDiscussionContent(text, discussionMentionSpansFromComposerMentions(mentions)).parts).toEqual([
+            { t: 'text', text: 'Hi ' },
+            { t: 'mention', accountId: 'account-a' },
+            { t: 'text', text: ' and ' },
+            { t: 'mention', accountId: 'account-b' },
+            { t: 'text', text: '!' },
+        ]);
+    });
+
+    it('never reads an Account out of another mention kind or a malformed Account reference', () => {
+        expect(discussionMentionSpansFromComposerMentions([
+            { kind: 'happier.file', ref: 'file:account-a', tokenText: '@a', start: 0, end: 2 },
+            { kind: 'happier.account', ref: 'session:account-a', tokenText: '@b', start: 3, end: 5 },
+            { kind: 'happier.account', ref: 'account: account-spoof ', tokenText: '@c', start: 6, end: 8 },
+        ])).toEqual([]);
     });
 
     it('preserves and shifts exact mention spans around an ordinary edit', () => {
@@ -73,24 +98,6 @@ describe('discussion composer document', () => {
                 { start: 13, end: 17, accountId: 'account-b' },
             ],
         })).toEqual([{ start: 14, end: 18, accountId: 'account-b' }]);
-    });
-
-    it('replaces the selected mention query and shifts later structured mentions', () => {
-        expect(insertDiscussionMention({
-            text: 'Ask @al then @Bob!',
-            mentions: [{ start: 13, end: 17, accountId: 'account-b' }],
-            queryStart: 4,
-            selectionEnd: 7,
-            visibleToken: '@Alex',
-            accountId: 'account-a',
-        })).toEqual({
-            text: 'Ask @Alex then @Bob!',
-            selection: { start: 10, end: 10 },
-            mentions: [
-                { start: 4, end: 9, accountId: 'account-a' },
-                { start: 15, end: 19, accountId: 'account-b' },
-            ],
-        });
     });
 
     it('builds strict authored content in visible order', () => {

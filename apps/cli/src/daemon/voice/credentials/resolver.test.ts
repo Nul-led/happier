@@ -488,6 +488,7 @@ describe('Voice credential resolver', () => {
     })).rejects.toMatchObject({
       code: 'credential_unavailable',
       materialStatus: 'repair_required',
+      admissionReason: 'reference_stale',
     });
 
     // 3. An admitted operation runs against the material the Home returned,

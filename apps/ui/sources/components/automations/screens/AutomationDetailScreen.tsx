@@ -1,6 +1,6 @@
 import React from 'react';
 import { Platform, View } from 'react-native';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useDestinationParams, useDestinationRouter } from '@/components/appShell/workspace/DestinationInstanceHost';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import {
     type AutomationEventSourceStatusV1,
@@ -15,6 +15,7 @@ import {
     storage,
     useActiveServerAccountScope,
     useAllMachines,
+    useIsActiveMachineListSettled,
     useAutomation,
     useAutomationRunNextCursor,
     useAutomationRuns,
@@ -36,11 +37,14 @@ import {
 } from '@/components/automations/list/automationListFormatting';
 import { useAutomationRunNowController } from '@/components/automations/list/useAutomationRunNowController';
 import { ItemList } from '@/components/ui/lists/ItemList';
+import { ListPresentationProvider } from '@/components/ui/lists/listPresentation';
+import { PageHeader } from '@/components/ui/layout/PageHeader';
+import { PageHeaderMenu, PageHeaderStateSwitch, type PageHeaderMenuAction } from '@/components/ui/layout/PageHeaderEntityParts';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
+import { AttentionBanner } from '@/components/ui/lists/AttentionBanner';
 import { Item } from '@/components/ui/lists/Item';
 import { VirtualizedList } from '@/components/ui/lists/virtualized';
 import { Switch } from '@/components/ui/forms/Switch';
-import { Text } from '@/components/ui/text/Text';
 import { layout } from '@/components/ui/layout/layout';
 import { t } from '@/text';
 import { navigateWithBlurOnWeb } from '@/utils/platform/deferOnWeb';
@@ -78,15 +82,14 @@ const stylesheet = StyleSheet.create((theme) => ({
         alignItems: 'center',
         justifyContent: 'center',
     },
-    emptyRuns: {
-        alignItems: 'center',
-        justifyContent: 'center',
-        paddingVertical: 24,
-        gap: 8,
+    page: {
+        flex: 1,
+        backgroundColor: theme.colors.surface.base,
     },
-    emptyRunsText: {
-        color: theme.colors.text.secondary,
-        fontSize: 13,
+    headerActions: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 12,
     },
 }));
 
@@ -246,6 +249,8 @@ function formatAutomationSourceCatalogStatusSubtitle(
 function AutomationTriggerOverview(props: Readonly<{
     trigger: AutomationTriggerListItem;
     machines: ReadonlyArray<Machine>;
+    /** The active Home's machine list has been read (an absent watcher machine has really left). */
+    machineListSettled: boolean;
     unknownDate: string;
     isCurrentRoute: () => boolean;
     rereadAutomationStatus: () => Promise<void>;
@@ -386,7 +391,7 @@ function AutomationTriggerOverview(props: Readonly<{
         ? props.machines.find((candidate) => candidate.id === watcher.machineId)
         : undefined;
     const watcherHealth = watcher
-        ? resolveAutomationWatcherHealth({ watcher, machine: watcherMachine })
+        ? resolveAutomationWatcherHealth({ watcher, machine: watcherMachine, machineListSettled: props.machineListSettled })
         : null;
     const endpointMaterializationRef = trigger.observation.kind === 'durablePush'
         ? trigger.observation.endpointMaterializationRef
@@ -396,9 +401,8 @@ function AutomationTriggerOverview(props: Readonly<{
         : undefined;
     const observerRuntimeHealth = trigger.observation.kind !== 'durablePush'
         ? resolveAutomationEventObserverRuntimeHealth({
-            projection: eventProjection.inputs?.pluginProjectionV2,
-            eventPluginId: trigger.eventRef.pluginId,
-            reporterImmutableGenerationId: trigger.sourceStatus?.reporterImmutableGenerationId,
+            currentSourceCustody: currentEligibleEvent?.event.sourceCustody,
+            reporterSourceCustody: trigger.sourceStatus?.reporterSourceCustody,
         })
         : null;
     const watcherImpediment = watcherHealth && !canPresentAutomationSourceSummary(watcherHealth)
@@ -567,8 +571,8 @@ type AutomationDetailRunHistoryRow =
 export function AutomationDetailScreen() {
     const { theme } = useUnistyles();
     const styles = stylesheet;
-    const router = useRouter();
-    const params = useLocalSearchParams<{ id?: string }>();
+    const router = useDestinationRouter();
+    const params = useDestinationParams<{ id?: string }>();
     const automationId = typeof params.id === 'string' ? params.id : '';
     const activeAccountScope = useActiveServerAccountScope();
     const accountScopeKey = activeAccountScope
@@ -608,6 +612,7 @@ export function AutomationDetailScreen() {
     const runs = useAutomationRuns(automationId);
     const nextRunCursor = useAutomationRunNextCursor(automationId);
     const machines = useAllMachines();
+    const machineListSettled = useIsActiveMachineListSettled();
     const machineTitleCounts = React.useMemo(() => {
         const counts = new Map<string, number>();
         for (const machine of machines) {
@@ -809,8 +814,8 @@ export function AutomationDetailScreen() {
     }, [automationId, isCurrentRoute, routeGeneration, runHistoryAnchors]);
 
     const handleRunNow = React.useCallback(async () => {
-        if (!automationId || !mutationsEnabled) return;
-        const admitted = await runNowController.runNow(automationId, {
+        if (!automationId || !automation || !mutationsEnabled) return;
+        const admitted = await runNowController.runNow(automationId, automation.targetType, {
             isInvocationCurrent: () => isCurrentRoute(automationId, routeGeneration),
         });
         // Navigation follows the receipt's declared correspondence, never the
@@ -818,7 +823,7 @@ export function AutomationDetailScreen() {
         const route = createAdmittedWorkflowRunRoute(admitted?.workflowRun);
         if (route === null || !isCurrentRoute(automationId, routeGeneration)) return;
         navigateWithBlurOnWeb(() => router.push(route as never));
-    }, [automationId, isCurrentRoute, mutationsEnabled, routeGeneration, router, runNowController]);
+    }, [automation, automationId, isCurrentRoute, mutationsEnabled, routeGeneration, router, runNowController]);
 
     const handleOpenRun = React.useCallback((runId: string) => {
         if (!automationId || !automation) return;
@@ -1059,19 +1064,19 @@ export function AutomationDetailScreen() {
 
     if (!automationId) {
         return (
-            <ItemList>
-                <View style={{ maxWidth: layout.maxWidth, alignSelf: 'center', width: '100%' }}>
-                    <View style={styles.emptyRuns}>
-                        <Text style={styles.emptyRunsText}>{t('automations.detail.invalidId')}</Text>
-                    </View>
-                </View>
+            <ItemList presentation="page">
+                <SurfaceStateCard
+                    testID="automation-detail-invalid-id"
+                    kind="unavailable"
+                    title={t('automations.detail.invalidId')}
+                />
             </ItemList>
         );
     }
 
     if (loading && !automation) {
         return (
-            <ItemList>
+            <ItemList presentation="page">
                 <View style={styles.loading}>
                     <ActivitySpinner size="small" color={theme.colors.text.secondary} />
                 </View>
@@ -1082,7 +1087,7 @@ export function AutomationDetailScreen() {
     if (!automation) {
         if (refreshFailed) {
             return (
-                <ItemList>
+                <ItemList presentation="page">
                     <SurfaceStateCard
                         testID="automation-detail-refresh-error"
                         kind="error"
@@ -1098,13 +1103,12 @@ export function AutomationDetailScreen() {
             );
         }
         return (
-            <ItemList>
-                <View style={{ maxWidth: layout.maxWidth, alignSelf: 'center', width: '100%' }}>
-                    <View style={styles.emptyRuns}>
-                        <Icon name="warning-circle" size={32} color={theme.colors.text.secondary} />
-                        <Text style={styles.emptyRunsText}>{t('automations.detail.notFound')}</Text>
-                    </View>
-                </View>
+            <ItemList presentation="page">
+                <SurfaceStateCard
+                    testID="automation-detail-not-found"
+                    kind="unavailable"
+                    title={t('automations.detail.notFound')}
+                />
             </ItemList>
         );
     }
@@ -1119,83 +1123,99 @@ export function AutomationDetailScreen() {
         sessions,
     });
 
+    const automationDescription = typeof automation.description === 'string' && automation.description.trim().length > 0
+        ? automation.description.trim()
+        : t('automationPages.detail.description');
+    // Rare operations live in the header's `⋯`; the state switch sits beside it.
+    const menuActions: readonly PageHeaderMenuAction[] = [
+        {
+            id: 'clear-history',
+            testID: 'automation-detail-clear-history',
+            title: t('automations.detail.clearHistory'),
+            destructive: true,
+            loading: clearingRunHistory,
+            disabled: !mutationsEnabled || clearingRunHistory,
+            onSelect: () => handleClearRunHistory(),
+        },
+        {
+            id: 'delete',
+            testID: 'automation-detail-delete',
+            title: t('automations.detail.deleteAutomation'),
+            destructive: true,
+            disabled: !mutationsEnabled,
+            onSelect: () => handleDelete(),
+        },
+    ];
+    const pageHeader = (
+        <PageHeader
+            testID="automation-detail-header"
+            alwaysShowTitle
+            title={automation.name}
+            description={automationDescription}
+            meta={[
+                {
+                    key: 'status',
+                    testID: 'automation-detail-status',
+                    text: automation.enabled ? t('automations.detail.status.active') : t('automations.detail.status.paused'),
+                },
+                {
+                    key: 'triggers',
+                    text: automation.triggers.length === 0
+                        ? t('automations.list.noAutomaticTriggers')
+                        : t('automationPages.detail.triggerCount', { count: automation.triggers.length }),
+                },
+            ]}
+            actions={(
+                <View style={styles.headerActions}>
+                    <PageHeaderStateSwitch
+                        testID="automation-detail-enabled"
+                        label={t('automations.detail.status.active')}
+                        value={automation.enabled}
+                        onValueChange={() => { if (mutationsEnabled) void handleToggleEnabled(); }}
+                        disabled={!mutationsEnabled}
+                        busy={enabledMutationPending}
+                        accessibilityLabel={automation.enabled
+                            ? t('automations.detail.pauseAutomation')
+                            : t('automations.detail.resumeAutomation')}
+                    />
+                    <PageHeaderMenu testID="automation-detail-menu" actions={menuActions} />
+                </View>
+            )}
+        />
+    );
+
     return (
+        <ListPresentationProvider value="page">
         <VirtualizedList
             testID="automation-detail-history"
             data={runHistoryRows}
             keyExtractor={(item) => item.key}
             renderItem={renderRunHistoryRow}
-            style={{ flex: 1 }}
+            style={styles.page}
             contentContainerStyle={{ paddingBottom: Platform.OS === 'ios' ? 34 : 16 }}
             backendPreference="auto"
             initialNumToRender={4}
             ListHeaderComponent={(
+                <>
+                {pageHeader}
                 <View style={{ maxWidth: layout.maxWidth, alignSelf: 'center', width: '100%' }}>
                 {refreshFailed ? (
-                    <ItemGroup>
-                        <Item
-                            testID="automation-detail-stale-refresh-error"
-                            title={t('automations.detail.refreshFailed')}
-                            icon={<Icon name="warning" size={20} color={theme.colors.state.warning.foreground} />}
-                            mode="info"
-                            showChevron={false}
-                            accessibilityRole="alert"
-                            accessibilityLiveRegion="assertive"
-                            webRole="alert"
-                        />
-                        <Item
-                            testID="automation-detail-stale-refresh-retry"
-                            title={t('common.retry')}
-                            icon={<Icon name="arrow-clockwise" size={20} color={theme.colors.accent.blue} />}
-                            onPress={() => { void refresh(); }}
-                            showChevron={false}
-                        />
-                    </ItemGroup>
+                    <AttentionBanner
+                        testID="automation-detail-stale-refresh-error"
+                        title={t('automations.detail.refreshFailed')}
+                        announce="alert"
+                        accessibilityLiveRegion="assertive"
+                        action={{ label: t('common.retry'), onPress: () => { void refresh(); }, testID: 'automation-detail-stale-refresh-retry' }}
+                    />
                 ) : null}
-                <ItemGroup title={t('automations.detail.overviewGroupTitle')}>
-                    <Item title={t('automations.detail.overview.nameTitle')} detail={automation.name} showChevron={false} />
-                    <Item
-                        title={t('automations.detail.overview.statusTitle')}
-                        detail={automation.enabled ? t('automations.detail.status.active') : t('automations.detail.status.paused')}
-                        showChevron={false}
-                    />
-                    <Item
-                        title={t('automations.detail.overview.triggersTitle')}
-                        detail={automation.triggers.length === 0
-                            ? t('automations.list.noAutomaticTriggers')
-                            : String(automation.triggers.length)}
-                        showChevron={false}
-                    />
-                    <Item
-                        testID="automation-detail-target-summary"
-                        title={t('automations.form.trigger.target')}
-                        detail={targetSummary}
-                        showChevron={false}
-                    />
-
-                </ItemGroup>
-
-                {automation.triggers.map((trigger) => (
-                    <AutomationTriggerOverview
-                        key={trigger.id}
-                        trigger={trigger}
-                        machines={machines}
-                        unknownDate={unknownDate}
-                        automation={automation}
-                        isCurrentRoute={() => isCurrentRoute(automationId, routeGeneration)}
-                        rereadAutomationStatus={rereadAutomationStatus}
-                        mutationsEnabled={mutationsEnabled}
-                    />
-                ))}
-
-                <ItemGroup title={t('automations.detail.actionsGroupTitle')}>
-                    {/*
-                      * The lock below is expected progress, not a failure, so
-                      * it is announced politely and only while the
-                      * authoritative read is actually in flight. The failure
-                      * case has its own assertive alert above.
-                      */}
-                    {!mutationsEnabled && !refreshFailed ? (
+                {/*
+                  * The lock below is expected progress, not a failure, so it is
+                  * announced politely and only while the authoritative read is
+                  * actually in flight. The failure case has its own assertive
+                  * alert above.
+                  */}
+                {!mutationsEnabled && !refreshFailed ? (
+                    <ItemGroup>
                         <Item
                             testID="automation-detail-mutations-refreshing"
                             title={t('automations.detail.mutationsRefreshingTitle')}
@@ -1206,10 +1226,23 @@ export function AutomationDetailScreen() {
                             showChevron={false}
                             accessibilityLiveRegion="polite"
                         />
-                    ) : null}
+                    </ItemGroup>
+                ) : null}
+
+                <ItemGroup
+                    title={t('automations.detail.overviewGroupTitle')}
+                    description={t('automationPages.detail.overviewDescription')}
+                >
+                    <Item
+                        testID="automation-detail-target-summary"
+                        title={t('automations.form.trigger.target')}
+                        detail={targetSummary}
+                        showChevron={false}
+                    />
                     <Item
                         testID="automation-detail-run-now"
                         title={t('automations.detail.runNowTitle')}
+                        subtitle={t('automationPages.detail.runNowSubtitle')}
                         onPress={mutationsEnabled ? () => void handleRunNow() : undefined}
                         disabled={!mutationsEnabled || runNowPending}
                         loading={runNowPending}
@@ -1223,41 +1256,33 @@ export function AutomationDetailScreen() {
                         showChevron={false}
                     />
                     <Item
-                        title={automation.enabled ? t('automations.detail.pauseAutomation') : t('automations.detail.resumeAutomation')}
-                        onPress={mutationsEnabled ? () => void handleToggleEnabled() : undefined}
-                        disabled={!mutationsEnabled || enabledMutationPending}
-                        loading={enabledMutationPending}
-                        showChevron={false}
-                    />
-                    <Item
+                        testID="automation-detail-edit"
                         title={t('automations.detail.editAutomation')}
+                        subtitle={t('automationPages.detail.editSubtitle')}
                         onPress={mutationsEnabled ? handleEditAutomation : undefined}
                         disabled={!mutationsEnabled}
-                        showChevron={false}
-                    />
-                    <Item
-                        testID="automation-detail-clear-history"
-                        title={t('automations.detail.clearHistory')}
-                        subtitle={t('automations.detail.clearHistorySubtitle')}
-                        subtitleLines={0}
-                        destructive
-                        onPress={mutationsEnabled ? () => void handleClearRunHistory() : undefined}
-                        disabled={!mutationsEnabled || clearingRunHistory}
-                        loading={clearingRunHistory}
-                        showChevron={false}
-                    />
-                    <Item
-                        title={t('automations.detail.deleteAutomation')}
-                        destructive
-                        onPress={mutationsEnabled ? () => void handleDelete() : undefined}
-                        disabled={!mutationsEnabled}
-                        showChevron={false}
                     />
                 </ItemGroup>
 
+                {automation.triggers.map((trigger) => (
+                    <AutomationTriggerOverview
+                        key={trigger.id}
+                        trigger={trigger}
+                        machines={machines}
+                        machineListSettled={machineListSettled}
+                        unknownDate={unknownDate}
+                        automation={automation}
+                        isCurrentRoute={() => isCurrentRoute(automationId, routeGeneration)}
+                        rereadAutomationStatus={rereadAutomationStatus}
+                        mutationsEnabled={mutationsEnabled}
+                    />
+                ))}
+
                 <ItemGroup
                     title={t('automations.detail.machineAssignmentsTitle')}
-                    footer={hasEnabledAssignments ? undefined : t('automations.detail.machineAssignmentsFooter')}
+                    description={hasEnabledAssignments
+                        ? t('automationPages.detail.machineAssignmentsDescription')
+                        : t('automations.detail.machineAssignmentsFooter')}
                 >
                     {machines.length === 0 ? (
                         <Item title={t('newSession.machinePicker.emptyMessage')} showChevron={false} />
@@ -1296,7 +1321,9 @@ export function AutomationDetailScreen() {
                     })}
                 </ItemGroup>
                 </View>
+                </>
             )}
         />
+        </ListPresentationProvider>
     );
 }

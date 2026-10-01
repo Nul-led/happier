@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SessionListRenderableSession } from '@/sync/domains/session/listing/sessionListRenderable';
 import type { ConcurrentSessionListCacheByServerId } from '../../domains/session/listing/concurrentSessionListCache';
 import type { SessionListIndexItem } from '../../domains/sessionList/sessionListIndex';
-import type { NormalizedMessage } from '../../typesRaw';
+import type { NormalizedMessage } from "@happier-dev/session-core/raw";
 import type { Session } from '../../domains/state/storageTypes';
 import type { StoreGet, StoreSet } from './_shared';
 import type { MessagesDomain } from './messages';

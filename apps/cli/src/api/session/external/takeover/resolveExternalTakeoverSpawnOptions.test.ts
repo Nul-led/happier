@@ -12,6 +12,10 @@ import type {
 } from '@happier-dev/plugin-sdk/sessions/external';
 
 import type { ResolvedExecutablePluginRuntimeRegistry } from '@/plugins/runtime/resolveExecutablePluginRuntimeRegistry';
+import {
+  createPluginRuntimeOccurrenceId,
+  type PluginRuntimeOccurrenceId,
+} from '@/plugins/runtime/runtimeSlots';
 import { prepareExecuteSpawnSessionRequest } from '@/daemon/startup/prepareExecuteSpawnSessionRequest';
 import { logger } from '@/ui/logger';
 import type { ActivationTarget } from '@/plugins/runtime/lifecycle/activation/targets';
@@ -22,6 +26,7 @@ import {
 } from '@/plugins/runtime/lifecycle/contributions/targetAgents';
 import type { LoadedLinkedExternalSession } from './loadLinkedExternalSession';
 import {
+  resolveExternalTakeoverSpawnOptions,
   resolveExternalTakeoverSpawnOptionsFromRuntimeRegistry,
   spawnResolvedExternalTakeoverSessionFromRuntimeRegistry,
 } from './resolveExternalTakeoverSpawnOptions';
@@ -33,6 +38,35 @@ vi.mock('@/ui/logger', () => ({
     info: vi.fn(),
     warn: vi.fn(),
   },
+}));
+
+type ResolveSessionDefaults = typeof import(
+  '@/session/services/spawnConnectedServicesDefaults'
+)['resolveSessionSpawnConnectedServicesDefaultsPayload'];
+
+const outerResolutionMocks = vi.hoisted(() => ({
+  acquireRuntimeRegistryLease: vi.fn(),
+  readStoredCredentials: vi.fn(),
+  resolveRuntimeSnapshot: vi.fn(async () => ({})),
+  resolveSessionDefaults: vi.fn<ResolveSessionDefaults>(async () => null),
+}));
+
+vi.mock('@/plugins/runtime/reload/runtimeLease', () => ({
+  acquireAuthoritativePluginRuntimeRegistryLease:
+    outerResolutionMocks.acquireRuntimeRegistryLease,
+}));
+vi.mock('@/persistence', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@/persistence')>(),
+  readStoredCredentials: outerResolutionMocks.readStoredCredentials,
+}));
+vi.mock('@/daemon/connectedServices/externalSessionRuntimeSnapshotRecovery', () => ({
+  resolveConnectedServiceRuntimeSnapshotForExternalSession:
+    outerResolutionMocks.resolveRuntimeSnapshot,
+}));
+vi.mock('@/session/services/spawnConnectedServicesDefaults', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@/session/services/spawnConnectedServicesDefaults')>(),
+  resolveSessionSpawnConnectedServicesDefaultsPayload:
+    outerResolutionMocks.resolveSessionDefaults,
 }));
 
 const PLUGIN_ID = 'happier.agent.fixture';
@@ -86,6 +120,7 @@ function runtimeRegistry(params: Readonly<{
   hasPrimaryRuntime?: boolean;
   isCurrent?: () => boolean;
   generation?: string;
+  occurrenceId?: PluginRuntimeOccurrenceId;
 }>): ResolvedExecutablePluginRuntimeRegistry {
   const factory: AgentRuntimeFactory = async () => ({
     sessions: {
@@ -96,6 +131,9 @@ function runtimeRegistry(params: Readonly<{
       }),
     },
   });
+  const occurrenceId = params.occurrenceId ?? createPluginRuntimeOccurrenceId(
+    `${PLUGIN_ID}:${params.generation ?? GENERATION}`,
+  );
   const agentRuntimesByAgentId = new Map(createTargetAgentRuntimeRegistry({
     agents: [{
       id: AGENT_ID,
@@ -104,7 +142,7 @@ function runtimeRegistry(params: Readonly<{
     activationTargets: [target()],
     targetRegistrations: [{
       pluginId: PLUGIN_ID,
-      generation: params.generation ?? GENERATION,
+      occurrenceId,
       registration: {
         family: 'agents',
         localId: AGENT_ID,
@@ -115,7 +153,11 @@ function runtimeRegistry(params: Readonly<{
         },
       } as ContributionRuntimeRegistration,
     }],
-    isGenerationActive: params.isCurrent ?? (() => true),
+    readPluginOccurrenceId: (pluginId) => pluginId === PLUGIN_ID ? occurrenceId : null,
+    readPluginSourceCustody: (pluginId) => pluginId === PLUGIN_ID
+      ? { kind: 'development', registeredRootId: `/plugins/${PLUGIN_ID}` }
+      : null,
+    isOccurrenceCurrent: params.isCurrent ?? (() => true),
     retirementSignal: new AbortController().signal,
     onDuplicate: vi.fn(),
   }));
@@ -146,6 +188,10 @@ function runtimeRegistry(params: Readonly<{
       agentDefinitionsById: new Map([[AGENT_ID, targetAgent]]),
     },
     agentRuntimesByAgentId,
+    readPluginOccurrenceId: (pluginId: string) => pluginId === PLUGIN_ID ? occurrenceId : null,
+    isPluginOccurrenceCurrent: (pluginId: string, candidate: PluginRuntimeOccurrenceId) => (
+      pluginId === PLUGIN_ID && candidate === occurrenceId
+    ),
     activateContributionsOnDemand: vi.fn(async () => []),
   } as unknown as ResolvedExecutablePluginRuntimeRegistry;
 }
@@ -162,6 +208,10 @@ function replaceRuntimeLease(
     string,
     AgentRuntimeRegistrationLease
   >).set(AGENT_ID, replacement);
+  Object.assign(targetRegistry, {
+    readPluginOccurrenceId: sourceRegistry.readPluginOccurrenceId,
+    isPluginOccurrenceCurrent: sourceRegistry.isPluginOccurrenceCurrent,
+  });
 }
 
 function contributions(params: Readonly<{
@@ -230,6 +280,92 @@ function contributions(params: Readonly<{
 }
 
 describe('External Session takeover launch consumption', () => {
+  it('applies the canonical account auth default when the Agent launch plan opts in', async () => {
+    const fixture = contributions({
+      resolveLaunch: async () => ({
+        ok: true as const,
+        value: {
+          environmentVariables: { FIXTURE_HOME: '/fresh/runtime' },
+          applyConnectedAccountDefaults: true,
+        },
+      }),
+    });
+    const registry = runtimeRegistry(fixture);
+    outerResolutionMocks.acquireRuntimeRegistryLease.mockResolvedValueOnce({
+      registry,
+      release: vi.fn(async () => undefined),
+    });
+    const credentials = { token: 'token', encryption: null };
+    outerResolutionMocks.readStoredCredentials.mockResolvedValueOnce(credentials);
+    outerResolutionMocks.resolveRuntimeSnapshot.mockResolvedValueOnce({});
+    outerResolutionMocks.resolveSessionDefaults.mockResolvedValueOnce({
+      connectedServices: {
+        v: 2,
+        bindingsByServiceId: {
+          'fixture.plugin/service': {
+            source: 'connected',
+            selection: 'group',
+            groupId: 'default-pool',
+          },
+        },
+      },
+      connectedServicesUpdatedAt: 1_718_719_700_000,
+    });
+
+    const result = await resolveExternalTakeoverSpawnOptions({
+      linked: linked(),
+      sessionId: 'linked-session-1',
+      targetDirectory: TARGET_DIRECTORY,
+    });
+
+    expect(outerResolutionMocks.resolveSessionDefaults).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: AGENT_ID, credentials }),
+    );
+    expect(result).toMatchObject({
+      ok: true,
+      value: {
+        options: {
+          connectedServices: {
+            v: 2,
+            bindingsByServiceId: {
+              'fixture.plugin/service': {
+                source: 'connected',
+                selection: 'group',
+                groupId: 'default-pool',
+              },
+            },
+          },
+          connectedServicesUpdatedAt: 1_718_719_700_000,
+        },
+      },
+    });
+  });
+  it.each(['direct', 'persisted'] as const)('preserves terminal preferences through the runtime registry and %s spawn', async (transcriptStorage) => {
+    const fixture = contributions();
+    const registry = runtimeRegistry(fixture);
+    const terminal = { mode: 'tmux' as const, tmux: { sessionName: 'takeover', isolated: true, tmpDir: '/tmp/takeover-tmux' } };
+    const result = await resolveExternalTakeoverSpawnOptionsFromRuntimeRegistry({
+      registry,
+      linked: linked(),
+      sessionId: 'linked-session-1',
+      targetDirectory: TARGET_DIRECTORY,
+      transcriptStorage,
+      terminal,
+      signal: new AbortController().signal,
+    });
+    if (!result.ok) throw new Error(`Unexpected resolution failure: ${result.code}`);
+    const spawnSession = vi.fn(async () => ({ type: 'success' as const, sessionId: 'linked-session-1' }));
+    await expect(spawnResolvedExternalTakeoverSessionFromRuntimeRegistry({
+      registry,
+      resolved: result.value,
+      options: { transcriptStorage },
+      signal: new AbortController().signal,
+      spawnSession,
+    })).resolves.toEqual({ ok: true, value: { type: 'success', sessionId: 'linked-session-1' } });
+    expect(spawnSession).toHaveBeenCalledWith(expect.objectContaining({ terminal, transcriptStorage }));
+    expect(fixture.resolveLaunch).toHaveBeenCalledWith(expect.objectContaining({ transcriptStorage }));
+  });
+
   it('uses fresh identity from the same generation immediately before resolving the launch plan', async () => {
     const fixture = contributions();
     const registry = runtimeRegistry(fixture);
@@ -270,7 +406,7 @@ describe('External Session takeover launch consumption', () => {
         origin: {
           agentId: AGENT_ID,
           pluginId: PLUGIN_ID,
-          generation: GENERATION,
+          occurrenceId: registry.readPluginOccurrenceId?.(PLUGIN_ID),
         },
       },
     });
@@ -561,7 +697,9 @@ describe('External Session takeover launch consumption', () => {
     });
     expect(spawnSession).not.toHaveBeenCalled();
 
-    const projected = runtimeRegistry(fixture);
+    const occurrenceId = auxiliary.readPluginOccurrenceId?.(PLUGIN_ID);
+    if (!occurrenceId) throw new Error('Expected the auxiliary runtime occurrence');
+    const projected = runtimeRegistry({ ...fixture, occurrenceId });
     replaceRuntimeLease(auxiliary, projected);
     await expect(spawnResolvedExternalTakeoverSessionFromRuntimeRegistry({
       registry: auxiliary,

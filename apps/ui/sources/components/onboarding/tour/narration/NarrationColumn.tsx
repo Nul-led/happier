@@ -42,7 +42,7 @@ export function NarrationColumn(props: NarrationColumnProps): React.ReactElement
             <SlideTransitionSwitch
                 contentKey={props.beat.id}
                 direction={props.direction ?? 'replace'}
-                preset="soft"
+                preset="signature"
                 blur
                 reducedMotion={props.reducedMotion}
                 style={styles.transition}

@@ -1,6 +1,7 @@
 import {
   ComposerContentHandleV1Schema,
   ComposerContentInspectRequestV1Schema,
+  SessionIdSchema,
   type ComposerContentHandleV1,
 } from '@happier-dev/protocol';
 
@@ -14,6 +15,7 @@ import type { DownloadTransferSource } from './downloadTransferSource';
 
 export type ComposerMediaStageDownloadInitRequest = Readonly<{
   t: 'composer_media_stage_inspect_v1';
+  sessionId?: string;
   handle: unknown;
   offset: unknown;
   maxBytes: unknown;
@@ -50,9 +52,11 @@ function readRequest(value: ComposerMediaStageDownloadInitRequest): ParsedCompos
     'offset',
     'maxBytes',
     'recipientPublicKeyBase64',
+    ...(value.sessionId === undefined ? [] : ['sessionId']),
   ]) || value.t !== 'composer_media_stage_inspect_v1') {
     return null;
   }
+  if (value.sessionId !== undefined && !SessionIdSchema.safeParse(value.sessionId).success) return null;
   const handle = ComposerContentHandleV1Schema.safeParse(value.handle);
   const inspection = ComposerContentInspectRequestV1Schema.safeParse({
     offset: value.offset,

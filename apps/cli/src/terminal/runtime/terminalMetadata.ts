@@ -1,7 +1,17 @@
 import type { Metadata } from '@/api/types';
 import type { TerminalHostHandle } from '@happier-dev/agents';
+import type { TerminalHostAttachmentInfo } from '@/terminal/attachment/terminalAttachmentInfo';
 
 import type { TerminalRuntimeFlags } from './terminalRuntimeFlags';
+
+function buildTerminalControlServiceability(
+  attachmentId: string | undefined,
+): NonNullable<Metadata['terminal']>['controlServiceabilityV1'] | undefined {
+  const normalized = attachmentId?.trim();
+  return normalized
+    ? { v: 1, attachmentId: normalized, state: 'servable', observedAt: Date.now() }
+    : undefined;
+}
 
 export function buildTerminalHostProbeHandleFromMetadata(
   terminal: NonNullable<Metadata['terminal']>,
@@ -34,11 +44,83 @@ export function buildTerminalHostProbeHandleFromMetadata(
   };
 }
 
+export function buildActiveTerminalHostHandleFromMetadata(
+  terminal: NonNullable<Metadata['terminal']>,
+): TerminalHostHandle | null {
+  if (terminal.controlServiceabilityV1?.retired === true) return null;
+  const attachmentId = terminal.controlServiceabilityV1?.attachmentId?.trim();
+  const common = {
+    ...(attachmentId ? { attachmentId: attachmentId as NonNullable<TerminalHostHandle['attachmentId']> } : {}),
+    attachMetadata: {
+      attachStrategy: 'terminal_host' as const,
+      topology: 'shared' as const,
+      locality: 'same_machine' as const,
+      maxClients: null,
+      requiresLocalAttachmentInfo: true,
+      liveProbe: 'required' as const,
+    },
+  };
+  if (terminal.mode === 'tmux') {
+    const handle = buildTerminalHostProbeHandleFromMetadata(terminal);
+    return handle ? { ...handle, ...common } : null;
+  }
+  if (terminal.mode === 'zellij') {
+    const sessionName = terminal.zellij?.sessionName?.trim() ?? '';
+    const paneId = terminal.zellij?.paneId?.trim() ?? '';
+    if (!sessionName || !paneId) return null;
+    return {
+      kind: 'zellij',
+      sessionName,
+      paneId,
+      ...(terminal.zellij?.socketDirV1?.trim() ? { socketDir: terminal.zellij.socketDirV1.trim() } : {}),
+      ...common,
+    };
+  }
+  if (terminal.mode === 'herdr') {
+    const sessionName = terminal.herdr?.sessionName?.trim() ?? '';
+    const socketPath = terminal.herdr?.socketPath?.trim() ?? '';
+    const terminalId = terminal.herdr?.terminalId?.trim() ?? '';
+    if (!sessionName || !socketPath || !terminalId) return null;
+    return {
+      kind: 'herdr',
+      sessionName,
+      socketPath,
+      terminalId,
+      ...(terminal.herdr?.paneId?.trim() ? { paneId: terminal.herdr.paneId.trim() } : {}),
+      ...common,
+    };
+  }
+  return null;
+}
+
+export function resolveExistingTerminalHostLifecycle(
+  metadata: Readonly<Pick<Metadata, 'terminal' | 'startedBy'>> | null | undefined,
+  attachmentInfo?: TerminalHostAttachmentInfo | null,
+): 'owned' | 'borrowed' | null {
+  const handle = metadata?.terminal
+    ? buildActiveTerminalHostHandleFromMetadata(metadata.terminal)
+    : null;
+  if (!handle) return null;
+  if (
+    attachmentInfo && attachmentInfo.version !== 1
+    && attachmentInfo.attachmentId === handle.attachmentId
+    && attachmentInfo.handle.kind === handle.kind
+  ) {
+    return attachmentInfo.version === 3 ? 'borrowed' : 'owned';
+  }
+  // Only Herdr dispatch establishes an inherited current-pane context.
+  // An explicit CLI-created tmux/zellij host is owned regardless of launch source.
+  return handle.kind === 'herdr' && metadata?.startedBy !== 'daemon' ? 'borrowed' : 'owned';
+}
+
 export function buildTerminalMetadataFromHostHandle(
   handle: TerminalHostHandle,
 ): NonNullable<Metadata['terminal']> {
+  const controlServiceabilityV1 = buildTerminalControlServiceability(handle.attachmentId);
+  const binding = controlServiceabilityV1 ? { controlServiceabilityV1 } : {};
   if (handle.kind === 'tmux') {
     return {
+      ...binding,
       mode: 'tmux',
       tmux: {
         target: handle.paneId
@@ -51,6 +133,7 @@ export function buildTerminalMetadataFromHostHandle(
 
   if (handle.kind === 'windows_console') {
     return {
+      ...binding,
       mode: 'windows_console',
       windows: {
         host: 'console',
@@ -59,7 +142,31 @@ export function buildTerminalMetadataFromHostHandle(
     };
   }
 
-  return { mode: 'zellij' };
+  if (handle.kind === 'herdr') {
+    if (!handle.socketPath?.trim() || !handle.terminalId?.trim()) {
+      throw new Error('Herdr terminal identity is incomplete');
+    }
+    return {
+      ...binding,
+      mode: 'herdr',
+      herdr: {
+        sessionName: handle.sessionName,
+        socketPath: handle.socketPath,
+        terminalId: handle.terminalId,
+        ...(handle.paneId ? { paneId: handle.paneId } : {}),
+      },
+    };
+  }
+
+  return {
+    ...binding,
+    mode: 'zellij',
+    zellij: {
+      sessionName: handle.sessionName,
+      ...(handle.paneId ? { paneId: handle.paneId } : {}),
+      ...(handle.socketDir ? { socketDirV1: handle.socketDir } : {}),
+    },
+  };
 }
 
 export function buildTerminalMetadataFromRuntimeFlags(
@@ -68,26 +175,20 @@ export function buildTerminalMetadataFromRuntimeFlags(
   if (!flags) return undefined;
 
   const mode = flags.mode;
-  if (mode !== 'plain' && mode !== 'tmux' && mode !== 'zellij' && mode !== 'windows_terminal' && mode !== 'windows_console') return undefined;
+  if (mode !== 'plain' && mode !== 'tmux' && mode !== 'zellij' && mode !== 'herdr' && mode !== 'windows_terminal' && mode !== 'windows_console') return undefined;
 
   const terminal: NonNullable<Metadata['terminal']> = {
     mode,
   };
 
-  const attachmentId = typeof flags.attachmentId === 'string' ? flags.attachmentId.trim() : '';
-  if (attachmentId) {
-    terminal.controlServiceabilityV1 = {
-      v: 1,
-      attachmentId,
-      state: 'servable',
-      observedAt: Date.now(),
-    };
-  }
+  const controlServiceabilityV1 = buildTerminalControlServiceability(flags.attachmentId);
+  if (controlServiceabilityV1) terminal.controlServiceabilityV1 = controlServiceabilityV1;
 
   if (
     flags.requested === 'plain'
     || flags.requested === 'tmux'
     || flags.requested === 'zellij'
+    || flags.requested === 'herdr'
     || flags.requested === 'windows_terminal'
     || flags.requested === 'console'
   ) {
@@ -102,6 +203,28 @@ export function buildTerminalMetadataFromRuntimeFlags(
       ...(typeof flags.tmuxTmpDir === 'string' && flags.tmuxTmpDir.trim().length > 0
         ? { tmpDir: flags.tmuxTmpDir }
         : {}),
+    };
+  }
+
+  if (mode === 'herdr') {
+    const sessionName = flags.herdrSessionName?.trim();
+    const socketPath = flags.herdrSocketPath?.trim();
+    const terminalId = flags.herdrTerminalId?.trim();
+    if (sessionName && socketPath && terminalId) {
+      terminal.herdr = {
+        sessionName,
+        socketPath,
+        terminalId,
+        ...(flags.herdrPaneId?.trim() ? { paneId: flags.herdrPaneId.trim() } : {}),
+      };
+    }
+  }
+
+  if (mode === 'zellij' && flags.zellijSessionName?.trim() && flags.zellijPaneId?.trim()) {
+    terminal.zellij = {
+      sessionName: flags.zellijSessionName.trim(),
+      paneId: flags.zellijPaneId.trim(),
+      ...(flags.zellijSocketDir?.trim() ? { socketDirV1: flags.zellijSocketDir.trim() } : {}),
     };
   }
 

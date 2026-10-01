@@ -18,12 +18,14 @@ import { useDaemonMergedProjectionInputs } from '@/agents/backendCatalog/useDaem
 import { PluginContextualResourceStoreProvider } from '@/components/plugins/surfaces/PluginContextualResourceStoreProvider';
 import { resolveSessionComposerSuggestions } from '@/components/sessions/agentInput/sessionComposerSuggestions';
 import { AgentInput } from '@/components/sessions/agentInput';
+import { AppSessionTranscriptSourceProvider } from '@/components/sessions/transcript/source/appSessionTranscriptSource';
 import {
     projectAgentInputAttachmentRowItems,
     type AgentInputAttachmentsRowItem,
     type AgentInputExtraActionChip,
 } from '@/components/sessions/agentInput/agentInputContracts';
 import type { AgentInputSendOptions } from '@/components/sessions/agentInput/agentInputSendOptions';
+import type { AgentInputChipPickerOption } from '@/components/sessions/agentInput/components/AgentInputChipPickerTypes';
 import { createAttachmentActionChip } from '@/components/sessions/agentInput/sessionActions/createAttachmentActionChip';
 import {
     buildStructuredInputMetaOverrides,
@@ -98,7 +100,10 @@ export type ParticipantComposerPreparedSubmission = Readonly<{
     recipient?: ParticipantRecipientV1;
     requestedAction?: PendingRequestedActionV1;
     draft: ParticipantComposerDocument;
-    onOutboundHandoff: () => void;
+    /** Reads the live source document without accepting or clearing the captured submission. */
+    readCurrentDraft: () => ParticipantComposerDocument;
+    /** Clears the accepted capture and returns the source owner's live residual for destination promotion. */
+    onOutboundHandoff: () => ParticipantComposerDocument;
 }>;
 
 // R-9: participant composers offer file, vendor-plugin, and daemon composer references plus
@@ -110,6 +115,20 @@ const PARTICIPANT_COMPOSER_SUGGESTION_KINDS: readonly ComposerSuggestionKindId[]
     'slashCommand',
 ];
 
+/**
+ * The composer's engine chip for a start (lab `convo-S2/S3`): the one engine popover, listing who can
+ * answer, with the Roles rail at its head when the host offers roles. The host owns what a choice
+ * means; the composer only draws it.
+ */
+export type ParticipantComposerEngine = Readonly<{
+    agentType: string;
+    label: string;
+    title: string;
+    options: ReadonlyArray<AgentInputChipPickerOption>;
+    selectedOptionId: string | null;
+    onSelect: (optionId: string) => void;
+}>;
+
 export type ParticipantComposerDocument = Readonly<{
     text: string;
     mentions: readonly ComposerStructuredInputMention[];
@@ -119,7 +138,7 @@ export type ParticipantComposerDocument = Readonly<{
     attachments: readonly ComposerAttachmentDraftV1[];
 }>;
 
-export const SessionParticipantComposer = React.memo((props: Readonly<{
+type SessionParticipantComposerProps = Readonly<{
     sessionId: string;
     /** Exact Home route scope when the parent already owns qualified navigation. */
     serverId?: string | null;
@@ -134,13 +153,27 @@ export const SessionParticipantComposer = React.memo((props: Readonly<{
     initialLocalId?: string;
     /** Rowless first-send identity; a known Run naturally uses its Run id. */
     draftOccurrenceId?: string;
+    /** Reports this mounted composer's exact presentation ref to its host. */
+    onComposerRefAvailable?: (ref: Extract<ComposerRefV1, { kind: 'participantMessage' }> | null) => void;
     /**
      * Optional orchestration port for a destination that must be created before
      * canonical Session input admission. The composer still owns capture,
      * attachment preparation, browser/reference metadata and accepted clearing.
      */
     submitPreparedMessage?: (submission: ParticipantComposerPreparedSubmission) => Promise<void>;
-}>) => {
+    /** Who answers, when the host lets the person choose (a start); absent for a known target. */
+    engine?: ParticipantComposerEngine | null;
+    /** What the empty input says ("Reply to GPT-6 Sol…"); the generic prompt otherwise. */
+    placeholder?: string;
+}>;
+
+export const SessionParticipantComposer = React.memo((props: SessionParticipantComposerProps) => (
+    <AppSessionTranscriptSourceProvider sessionId={props.sessionId} serverId={props.serverId}>
+        <SessionParticipantComposerContent {...props} />
+    </AppSessionTranscriptSourceProvider>
+));
+
+function SessionParticipantComposerContent(props: SessionParticipantComposerProps) {
     const preferredServerId = usePreferredServerIdForSession({
         serverId: props.serverId,
         sessionId: props.sessionId,
@@ -309,7 +342,7 @@ export const SessionParticipantComposer = React.memo((props: Readonly<{
     const participantComposerAttachmentEntriesById = participantComposerPresentation.attachmentEntriesById;
     const attachmentsUploadConfig = useAttachmentsUploadConfig();
     const attachmentsUploadsFeatureEnabled = useFeatureEnabled('attachments.uploads');
-    const attachmentsUploadsTransferAvailable = useSessionFileUploadAvailability(props.sessionId, participantServerId);
+    const attachmentsUploadsTransferAvailable = useSessionFileUploadAvailability(props.sessionId, participantServerId, 'attachment');
     const attachmentsUploadsEnabled = attachmentsUploadsFeatureEnabled
         && attachmentsUploadsTransferAvailable
         && composerAccountLifetime !== null;
@@ -344,14 +377,37 @@ export const SessionParticipantComposer = React.memo((props: Readonly<{
         writeSessionAttachmentDrafts(transferDraftScope, transferDraftManager.drafts);
     }, [attachmentsUploadsEnabled, transferDraftManager.drafts, transferDraftScope]);
     React.useEffect(() => {
-        if (activeTransferDraftScopeRef.current === transferDraftScope) return;
+        const previousScope = activeTransferDraftScopeRef.current;
+        if (previousScope === transferDraftScope) return;
         activeTransferDraftScopeRef.current = transferDraftScope;
+        // The same person's same unsent staging can be handed a new draft occurrence
+        // when its launcher starts another attempt. Only an Account, Home or Session
+        // change replaces the owner of these process-local bytes, so the mounted
+        // drafts move with the composer instead of being dropped for an empty one.
+        if (
+            attachmentsUploadsEnabled
+            && previousScope
+            && transferDraftScope
+            && previousScope.serverId === transferDraftScope.serverId
+            && previousScope.accountId === transferDraftScope.accountId
+            && previousScope.sessionId === transferDraftScope.sessionId
+        ) {
+            const carried = transferDraftManager.getDraftsSnapshot();
+            clearSessionAttachmentDrafts(previousScope);
+            if (carried.length > 0) writeSessionAttachmentDrafts(transferDraftScope, carried);
+            return;
+        }
         transferDraftManager.replaceDrafts(
             transferDraftScope && attachmentsUploadsEnabled
                 ? readSessionAttachmentDrafts(transferDraftScope)
                 : [],
         );
-    }, [attachmentsUploadsEnabled, transferDraftManager.replaceDrafts, transferDraftScope]);
+    }, [
+        attachmentsUploadsEnabled,
+        transferDraftManager.getDraftsSnapshot,
+        transferDraftManager.replaceDrafts,
+        transferDraftScope,
+    ]);
 
     React.useLayoutEffect(() => {
         mountedRef.current = true;
@@ -473,6 +529,11 @@ export const SessionParticipantComposer = React.memo((props: Readonly<{
     } satisfies ComposerPresentationTarget);
 
     React.useEffect(() => registerComposerPresentationTarget(composerRef, composerTarget), [composerRef, composerTarget]);
+
+    React.useEffect(() => {
+        props.onComposerRefAvailable?.(composerRef);
+        return () => props.onComposerRefAvailable?.(null);
+    }, [composerRef, props.onComposerRefAvailable]);
 
     React.useEffect(() => {
         notifyComposerPresentationTargetChanged(composerRef);
@@ -670,11 +731,12 @@ export const SessionParticipantComposer = React.memo((props: Readonly<{
                                     }),
                                     attachments: submittedSnapshot.attachments.map(composerAttachmentViewToDraft),
                                 },
+                                readCurrentDraft: readParticipantDocument,
                                 onOutboundHandoff: () => {
                                     if (!props.submitPreparedMessage) initialLocalIdRef.current = null;
-                                    const accepted = handoff.accept();
+                                    handoff.accept();
                                     clearSubmittedTransferDrafts();
-                                    return accepted;
+                                    return readParticipantDocument();
                                 },
                             } satisfies ParticipantComposerPreparedSubmission;
                             if (props.submitPreparedMessage) {
@@ -707,11 +769,12 @@ export const SessionParticipantComposer = React.memo((props: Readonly<{
                                 }),
                                 attachments: submittedSnapshot.attachments.map(composerAttachmentViewToDraft),
                             },
+                            readCurrentDraft: readParticipantDocument,
                             onOutboundHandoff: () => {
                                 if (!props.submitPreparedMessage) initialLocalIdRef.current = null;
-                                const accepted = handoff.accept();
+                                handoff.accept();
                                 clearSubmittedTransferDrafts();
-                                return accepted;
+                                return readParticipantDocument();
                             },
                         } satisfies ParticipantComposerPreparedSubmission;
                         if (props.submitPreparedMessage) {
@@ -797,7 +860,15 @@ export const SessionParticipantComposer = React.memo((props: Readonly<{
         <PluginContextualResourceStoreProvider>
             {participantComposerPresentation.beforeComposer}
             <AgentInput
-                placeholder={props.canSendMessages ? t('session.inputPlaceholder') : t('session.sharing.viewOnlyMode')}
+                placeholder={props.canSendMessages ? props.placeholder ?? t('session.inputPlaceholder') : t('session.sharing.viewOnlyMode')}
+                {...(props.engine ? {
+                    agentType: props.engine.agentType,
+                    agentLabel: props.engine.label,
+                    agentPickerTitle: props.engine.title,
+                    agentPickerOptions: props.engine.options,
+                    agentPickerSelectedOptionId: props.engine.selectedOptionId,
+                    onAgentPickerSelect: props.engine.onSelect,
+                } : {})}
                 value={document.text}
                 onComposerFocusChange={onComposerFocusChange}
                 onComposerFocusRequestChange={onComposerFocusRequestChange}
@@ -847,4 +918,4 @@ export const SessionParticipantComposer = React.memo((props: Readonly<{
             ) : null}
         </PluginContextualResourceStoreProvider>
     );
-});
+}

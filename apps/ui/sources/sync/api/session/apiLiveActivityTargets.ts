@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { TokenStorage } from '@/auth/storage/tokenStorage';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { getServerProfileById } from '@/sync/domains/server/serverProfiles';
-import { serverFetch } from '@/sync/http/client';
+import { serverFetch, type ExpectedActiveServerFetchBasis } from '@/sync/http/client';
 import { runtimeFetchWithServerReachability } from '@/sync/runtime/connectivity/serverReachabilityRuntimeFetch';
 
 const LIVE_ACTIVITY_TARGETS_PATH = '/v1/live-activity-targets';
@@ -43,6 +43,13 @@ type RequestTarget =
     | Readonly<{
         kind: 'active';
         serverUrl: string;
+        /**
+         * The exact active-Home basis this target was resolved against. The
+         * transport re-reads the active snapshot at call time, so without it a
+         * Home switch between resolution and dispatch would silently send this
+         * Home's body and ids to the next Home under its credentials.
+         */
+        expectedActiveServer: ExpectedActiveServerFetchBasis;
     }>
     | Readonly<{
         kind: 'explicit';
@@ -66,6 +73,10 @@ async function resolveRequestTarget(serverId: string): Promise<RequestTarget> {
         return {
             kind: 'active',
             serverUrl: normalizeBaseUrl(activeSnapshot.serverUrl),
+            expectedActiveServer: {
+                serverId: activeSnapshot.serverId,
+                generation: activeSnapshot.generation,
+            },
         };
     }
 
@@ -95,7 +106,10 @@ async function fetchLiveActivityTargetRoute(
     init: RequestInit,
 ): Promise<Response> {
     if (target.kind === 'active') {
-        return serverFetch(path, init, { retry: 'none' });
+        return serverFetch(path, init, {
+            retry: 'none',
+            expectedActiveServer: target.expectedActiveServer,
+        });
     }
 
     return runtimeFetchWithServerReachability({

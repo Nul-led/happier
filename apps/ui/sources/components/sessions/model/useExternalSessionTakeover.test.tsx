@@ -2,6 +2,7 @@ import { createDeferred, renderHook } from '@/dev/testkit';
 import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ServerAccountScopeLifetime } from '@/sync/domains/scope/serverAccountScope';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -81,6 +82,7 @@ type ExternalSessionRuntimeLike = Parameters<typeof import('./useExternalSession
 
 async function renderHarness(
   externalSessionRuntime: ExternalSessionRuntimeLike,
+  accountLifetime?: ServerAccountScopeLifetime | null,
 ): Promise<{
   getCurrent: () => HookValue;
   rerender: (runtime: ExternalSessionRuntimeLike) => Promise<void>;
@@ -93,6 +95,7 @@ async function renderHarness(
     (runtime: ExternalSessionRuntimeLike) =>
       useExternalSessionTakeover({
         sessionId: 's1',
+        accountLifetime,
         hasWriteAccess: true,
         externalSessionRuntime: runtime,
         targetMachineHomeDir: TARGET_HOME_DIRECTORY,
@@ -175,7 +178,12 @@ describe('useExternalSessionTakeover', () => {
 
   it('uses the owning session server when footer takeover is requested after an active-server switch', async () => {
     const refreshNow = vi.fn(async () => status);
-    const harness = await renderHarness({ externalSessionLink, status, refreshNow, sessionServerId: 'server-owned' });
+    const accountLifetime = {
+      scope: { serverId: 'server-owned', accountId: 'account-owned' },
+      isCurrent: () => true,
+      onRetire: () => ({ dispose() {} }),
+    };
+    const harness = await renderHarness({ externalSessionLink, status, refreshNow, sessionServerId: 'server-owned' }, accountLifetime);
 
     activeServerId = 'server-2';
     await act(async () => {
@@ -191,7 +199,7 @@ describe('useExternalSessionTakeover', () => {
           targetDirectory: TARGET_DIRECTORY,
         }),
       },
-      { serverId: 'server-owned' },
+      { serverId: 'server-owned', accountLifetime },
     );
     await harness.unmount();
   });
@@ -214,6 +222,17 @@ describe('useExternalSessionTakeover', () => {
       },
       { serverId: 'server-runtime' },
     );
+    await harness.unmount();
+  });
+
+  it('does not fall back to the focused Account when the owning session lifetime is unavailable', async () => {
+    const harness = await renderHarness({ externalSessionLink, status, refreshNow: async () => status, sessionServerId: 'server-owned' }, null);
+    let accepted = true;
+    await act(async () => {
+      accepted = await harness.getCurrent().requestTakeover('direct', TARGET_DIRECTORY);
+    });
+    expect(accepted).toBe(false);
+    expect(machineExternalSessionTakeoverSpy).not.toHaveBeenCalled();
     await harness.unmount();
   });
 

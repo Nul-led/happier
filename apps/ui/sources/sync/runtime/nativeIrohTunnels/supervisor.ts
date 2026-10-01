@@ -1,6 +1,9 @@
 import {
     createIrohNativeAdapter,
     createOptionalIrohNativeAdapter,
+    IROH_HOME_TUNNEL_PROBE_FAILED_ERROR,
+    IROH_HOME_TUNNEL_STALE_GENERATION_ERROR,
+    IROH_HOME_TUNNEL_SUSPENDED_ERROR,
     type IrohHomeTunnelLease as IrohNativeHomeTunnelLease,
     type IrohNativeAdapter,
 } from '@happier-dev/iroh-native';
@@ -15,11 +18,6 @@ import type {
 } from '@/sync/runtime/nativeLoopbackTunnels/types';
 
 import { createDesktopIrohLifecycleModule } from './desktopLifecycle';
-import {
-    IROH_HOME_TUNNEL_PROBE_FAILED_ERROR,
-    IROH_HOME_TUNNEL_STALE_GENERATION_ERROR,
-    IROH_HOME_TUNNEL_SUSPENDED_ERROR,
-} from './fallback';
 import { probeIrohHomeTunnelOrigin, type IrohHomeTunnelProbeFailureReason } from './probe';
 import {
     createInitialIrohHomeTransportDiagnostics,

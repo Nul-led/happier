@@ -1,12 +1,14 @@
 import { Modal } from '@/modal';
 import { subscribeActionOperationByRequestId } from '@/sync/domains/actionOperations/subscribeActionOperationByRequestId';
 import type { ActionOperationStore } from '@/sync/domains/actionOperations/actionOperationStore';
+import type { ExecuteSessionHandoffActionResult } from '@/sync/domains/sessionHandoff/executeSessionHandoffAction';
 
 import { SessionHandoffProgressModal } from './SessionHandoffProgressModal';
 
 export type SessionHandoffProgressPresentation = Readonly<{
     close: () => void;
     isAttached: () => boolean;
+    showRequestFailure: (failure: Extract<ExecuteSessionHandoffActionResult, { ok: false }>) => void;
 }>;
 
 export function openObservedSessionHandoffProgressModal(params: Readonly<{
@@ -16,6 +18,8 @@ export function openObservedSessionHandoffProgressModal(params: Readonly<{
     accountId: string;
     workspaceSyncEnabled?: boolean;
     store?: ActionOperationStore;
+    onOpenConflicts?: (blockedRelationshipId: string | null) => void;
+    onDismiss?: () => void;
 }>): SessionHandoffProgressPresentation {
     let attached = true;
     let unsubscribe = () => {};
@@ -27,9 +31,11 @@ export function openObservedSessionHandoffProgressModal(params: Readonly<{
     const modalId = Modal.show({
         component: SessionHandoffProgressModal,
         props: {
+            serverId: params.serverId,
             ...(params.workspaceSyncEnabled ? { workspaceSyncEnabled: true } : {}),
+            ...(params.onOpenConflicts ? { onOpenConflicts: params.onOpenConflicts } : {}),
         },
-        onRequestClose: detach,
+        onRequestClose: () => { detach(); params.onDismiss?.(); },
         closeOnBackdrop: false,
     });
     unsubscribe = subscribeActionOperationByRequestId({
@@ -48,5 +54,8 @@ export function openObservedSessionHandoffProgressModal(params: Readonly<{
             Modal.hide(modalId);
         },
         isAttached: () => attached,
+        showRequestFailure: (failure) => {
+            if (attached) Modal.update(modalId, { requestFailure: failure });
+        },
     });
 }

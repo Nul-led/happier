@@ -1,3 +1,4 @@
+import type { ScmRemotePolicy } from '@happier-dev/protocol/scm';
 import * as React from 'react';
 
 import type { ScmWorkingSnapshot } from '@/sync/domains/state/storageTypes';
@@ -20,6 +21,11 @@ import { useMountedRef } from '@/hooks/ui/useMountedRef';
 
 export type RunScmRemoteOperationOptions = Readonly<{
     skipConfirmation?: boolean;
+    /**
+     * An explicit choice for this one pull (never remembered): keep uncommitted changes aside first, or let Git
+     * decide overlap; rebase or merge when the branch and origin have both moved. Omitted: refuse / fast-forward only.
+     */
+    policy?: Readonly<Pick<ScmRemotePolicy, 'dirtyPolicy' | 'reconcile'>>;
 }>;
 
 const SCM_REMOTE_POST_OPERATION_REFRESH_TIMEOUT_MS = 5_000;
@@ -86,7 +92,14 @@ export function useScmRemoteOperations(input: {
     const setScmRemoteOperationStatusSafe = React.useCallback((value: string | null) => {
         if (!mountedRef.current) return;
         setScmRemoteOperationStatus(value);
-    }, [mountedRef]);
+        if (value) {
+            const state = storage.getState();
+            const operation = state.getSessionProjectScmInFlightOperation(sessionId, serverId);
+            if (operation && (operation.operation === 'fetch' || operation.operation === 'pull' || operation.operation === 'push')) {
+                state.updateSessionProjectScmOperationProgress(sessionId, operation.id, value, serverId);
+            }
+        }
+    }, [mountedRef, sessionId, serverId]);
 
     const pullPreflight = React.useMemo(
         () =>
@@ -143,6 +156,8 @@ export function useScmRemoteOperations(input: {
                         ? await sessionScmRemotePull(sessionId, {
                             remote: remoteTarget.remote,
                             branch: remoteTarget.branch ?? undefined,
+                            ...(options?.policy?.dirtyPolicy ? { dirtyPolicy: options.policy.dirtyPolicy } : {}),
+                            ...(options?.policy?.reconcile ? { reconcile: options.policy.reconcile } : {}),
                         }, serverId)
                         : await sessionScmRemotePush(sessionId, {
                             remote: remoteTarget.remote,
@@ -150,7 +165,7 @@ export function useScmRemoteOperations(input: {
                         }, serverId);
             },
             removeIndexLock: (request) => sessionScmRepositoryRemoveIndexLock(sessionId, request, serverId),
-            reportOperation: ({ operation, status, detail, rawError, errorCode }) => {
+            reportOperation: ({ operation, status, detail, rawError, errorCode, outcome }) => {
                 reportSessionScmOperation({
                     state: storage.getState(),
                     sessionId, serverId,
@@ -159,6 +174,8 @@ export function useScmRemoteOperations(input: {
                     detail,
                     rawError,
                     errorCode,
+                    // The typed outcome carries what can be done next (choose a dirty policy, reconcile, …).
+                    ...(outcome ? { outcome } : {}),
                     surface,
                     tracking,
                 });
@@ -179,6 +196,8 @@ export function useScmRemoteOperations(input: {
             },
             shouldContinue: () => mountedRef.current,
             skipConfirmation: options?.skipConfirmation,
+            // The session Git pane renders every terminal result in its outcome line.
+            failureFeedback: 'outcomeLine',
         });
     }, [
         loadCommitHistory,

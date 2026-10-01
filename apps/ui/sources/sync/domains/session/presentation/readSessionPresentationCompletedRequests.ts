@@ -1,8 +1,4 @@
-import {
-    SESSION_METADATA_LAYOUT_VERSION_V1,
-    SessionActionConfirmationsV1Schema,
-    SessionSharedMetadataV1Schema,
-} from '@happier-dev/protocol';
+import { readSharedMetadataPresentationCompletedRequests } from '@happier-dev/session-core/pending';
 
 import type { Session } from '@/sync/domains/state/storageTypes';
 import { isSessionAccessRecipient } from '@/sync/engine/sessions/normalizeSessionAccessProjection';
@@ -11,36 +7,6 @@ type PresentationSession = Pick<
     Session,
     'accessLevel' | 'access' | 'agentState' | 'metadata' | 'metadataLayoutVersion'
 >;
-
-export function readSharedMetadataPresentationCompletedRequests(
-    metadata: unknown,
-    metadataLayoutVersion: unknown,
-): Record<string, unknown> | null {
-    if (metadataLayoutVersion !== SESSION_METADATA_LAYOUT_VERSION_V1) {
-        return null;
-    }
-    const sharedMetadata = SessionSharedMetadataV1Schema.safeParse(metadata);
-    if (!sharedMetadata.success) return null;
-    const completedRequests = {
-        ...(sharedMetadata.data.publicAgentState?.completedRequests ?? {}),
-        ...(sharedMetadata.data.actionConfirmationsV1?.completedRequests ?? {}),
-    };
-    return Object.keys(completedRequests).length > 0 ? completedRequests : null;
-}
-
-export function readSharedMetadataActionConfirmationState(
-    metadata: unknown,
-    metadataLayoutVersion: unknown,
-) {
-    if (metadataLayoutVersion !== SESSION_METADATA_LAYOUT_VERSION_V1) return null;
-    const sharedMetadata = SessionSharedMetadataV1Schema.safeParse(metadata);
-    if (sharedMetadata.success) return sharedMetadata.data.actionConfirmationsV1 ?? null;
-    if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return null;
-    const actionState = SessionActionConfirmationsV1Schema.safeParse(
-        (metadata as Record<string, unknown>).actionConfirmationsV1,
-    );
-    return actionState.success ? actionState.data : null;
-}
 
 /**
  * Completion facts used only to render transcript request state.

@@ -35,6 +35,7 @@ import {
 import { createServerUrlComparableKey } from '@happier-dev/protocol';
 import {
   completeServerSelectionMutation,
+  readServerSelectionBackgroundServiceFollowUp,
   type ServerSelectionMutationMode,
 } from '../backgroundServiceFollowUp.js';
 
@@ -82,6 +83,8 @@ type ServerProfileSummary = Readonly<{
   localServerUrl?: string;
   webappUrl: string;
   lastUsedAt?: number;
+  /** The Home identity recorded for this profile; profiles may share one endpoint (RV-11). */
+  homeServerIdentityId?: string;
 }>;
 
 function assertNoUnknownServerFlags(params: Readonly<{
@@ -140,6 +143,9 @@ function summarizeProfile(p: any): ServerProfileSummary {
       : {}),
     webappUrl: String(p.webappUrl ?? ''),
     ...(typeof p.lastUsedAt === 'number' ? { lastUsedAt: p.lastUsedAt } : {}),
+    ...(typeof p.homeConnectionDescriptor?.homeServerIdentityId === 'string'
+      ? { homeServerIdentityId: p.homeConnectionDescriptor.homeServerIdentityId }
+      : {}),
   };
   return out;
 }
@@ -427,6 +433,16 @@ async function cmdAdd(args: string[], options: ServerSubcommandOptions): Promise
   }
 }
 
+/**
+ * A `--json` caller that just changed the selection cannot be prompted, so it is told the
+ * background-service follow-up instead of silently skipping it (absent when nothing is due).
+ */
+async function readJsonSelectionFollowUp(options: ServerSubcommandOptions) {
+  if ((options.selectionMutationMode ?? 'standalone') !== 'standalone') return {};
+  const backgroundService = await readServerSelectionBackgroundServiceFollowUp();
+  return backgroundService ? { backgroundService } : {};
+}
+
 async function cmdUse(args: string[], options: ServerSubcommandOptions): Promise<void> {
   const json = wantsJson(args);
   const identifier = String(args[0] ?? '').trim();
@@ -434,7 +450,11 @@ async function cmdUse(args: string[], options: ServerSubcommandOptions): Promise
   const active = await useServerProfile(identifier);
   reloadConfiguration();
   if (json) {
-    await printJsonEnvelope({ ok: true, kind: 'server_use', data: { active: summarizeProfile(active) } });
+    await printJsonEnvelope({
+      ok: true,
+      kind: 'server_use',
+      data: { active: summarizeProfile(active), ...await readJsonSelectionFollowUp(options) },
+    });
     return;
   }
   console.log(chalk.green(`✓ Active relay: ${active.name} (${active.id})`));
@@ -500,9 +520,12 @@ async function cmdSet(args: string[], options: ServerSubcommandOptions): Promise
     args,
     commandName: 'set',
     valueFlags: ['--server-id', '--server-url', '--local-server-url', '--public-server-url', '--webapp-url'],
-    booleanFlags: ['--json'],
+    booleanFlags: ['--json', '--no-use'],
   });
   const json = wantsJson(args);
+  // `--no-use` records the relay profile without selecting it, so a caller that targets this
+  // relay explicitly (`--server <id>`) never switches the terminal's active relay.
+  const shouldUse = !args.includes('--no-use');
   const serverId = argvValue(args, '--server-id');
   const hasExplicitLocalServerUrl = args.some((arg) => arg === '--local-server-url' || arg.startsWith('--local-server-url='));
   let serverUrlRaw = argvValue(args, '--server-url');
@@ -572,12 +595,31 @@ async function cmdSet(args: string[], options: ServerSubcommandOptions): Promise
         serverUrl,
         ...(hasExplicitLocalServerUrl ? { localServerUrl } : {}),
         webappUrl,
-        use: true,
+        use: shouldUse,
       })
-    : await upsertServerProfileByUrl({ name: 'custom', serverUrl, ...(localServerUrl ? { localServerUrl } : {}), webappUrl, use: true });
+    : await upsertServerProfileByUrl({ name: 'custom', serverUrl, ...(localServerUrl ? { localServerUrl } : {}), webappUrl, use: shouldUse });
+  if (!shouldUse) {
+    const active = await getActiveServerProfile();
+    if (json) {
+      await printJsonEnvelope({
+        ok: true,
+        kind: 'server_set',
+        data: { profile: summarizeProfile(created), active: summarizeProfile(active), used: false },
+      });
+      return;
+    }
+    console.log(chalk.green(`✓ Saved relay profile: ${created.name} (${created.id})`));
+    console.log(chalk.gray(`  ${created.serverUrl}`));
+    console.log(chalk.gray(`  Active relay is still: ${active.name} (${active.id})`));
+    return;
+  }
   reloadConfiguration();
   if (json) {
-    await printJsonEnvelope({ ok: true, kind: 'server_set', data: { active: summarizeProfile(created) } });
+    await printJsonEnvelope({
+      ok: true,
+      kind: 'server_set',
+      data: { profile: summarizeProfile(created), active: summarizeProfile(created), used: true, ...await readJsonSelectionFollowUp(options) },
+    });
     return;
   }
   console.log(chalk.green(`✓ Active relay: ${created.name} (${created.id})`));

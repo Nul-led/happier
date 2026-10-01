@@ -77,11 +77,11 @@ try {
         manifestPath: `${pluginRoot}/.happier-plugin/plugin.json`,
       },
       compatibility: { status: 'compatible', diagnostics: [] },
-      install: { mode: 'link', manifestVersion: '1.0.0', trust, updatePolicy: 'reviewEveryUpdate' },
+      install: { mode: 'link', manifestVersion: '1.0.0', trust, updatePolicy: 'allowed' },
       state: { enabled: true },
     },
     trust,
-    updatePolicy: 'reviewEveryUpdate',
+    updatePolicy: 'allowed',
     optionalAccess: [],
   });
 } finally {

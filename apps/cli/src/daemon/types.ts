@@ -5,7 +5,10 @@
 import { Metadata, type SessionCreationOutcome } from '@/api/types';
 import type { SpawnSessionOptions, SpawnSessionResult } from '@/session/shared/spawnSessionContract';
 import { ChildProcess } from 'child_process';
-import type { AgentSessionStartupInstructionsMarkerV1 } from '@happier-dev/protocol';
+import type {
+  AgentSessionStartupInstructionsMarkerV1,
+  PluginSourceCustodyV1,
+} from '@happier-dev/protocol';
 import type { CancelStartupLaunch } from './spawn/startupLaunchCancellation';
 import type {
   ExactWindowsProcessCancellationIdentity,
@@ -83,6 +86,13 @@ export interface TrackedSession {
    * tracked object immediately, but durable/reporting effects wait for acceptance.
    */
   acceptedSpawnMarkerGate?: Promise<boolean>;
+  /** Transient correlated marker-write custody; actual exit closes it before draining producers. */
+  reportMarkerCustody?: { pending: Promise<void>; retiring: boolean };
+  /** Transient startup completion consumed only by canonical actual-exit retirement. */
+  startupCustody?: Readonly<{
+    finalization: Promise<void>;
+    observeExit: (exit: Readonly<{ reason: string; code: number | null; signal: string | null }>) => void;
+  }>;
   /**
    * In-memory-only fresh-session activation that consumes the canonical server
    * session id reported by the child before startup is acknowledged.
@@ -117,8 +127,8 @@ export interface TrackedSession {
    * daemon-service authority is installed for this fresh runner.
    */
   runnerAgentBootstrapIdentity?: RunnerAgentBootstrapIdentity;
-  /** Non-secret byte-retention facts persisted in the exact runner marker. */
-  runnerAgentImmutableGenerationId?: string;
+  /** Exact non-secret source custody persisted in the exact runner marker. */
+  runnerAgentSourceCustodyV1?: PluginSourceCustodyV1;
   runnerManagedDependencyRetentionV1?:
     RunnerManagedDependencyRetentionV1;
   /**
@@ -208,4 +218,6 @@ export interface TrackedSession {
    * Prevents repeated capability probes when the runner reports unrelated metadata later.
    */
   publishedTerminalControlServiceabilityAttachmentId?: string;
+  /** Lifecycle of the exact attachment whose serviceability was published. */
+  publishedTerminalControlServiceabilityAttachmentLifecycle?: 'owned' | 'borrowed';
 }

@@ -1,11 +1,12 @@
 import type { ExecutionRunsBackendSnapshotEntry } from '@/sync/domains/reviews/reviewEngineCatalog';
+import { PluginSourceCustodyV1Schema, type PluginSourceCustodyV1 } from '@happier-dev/protocol';
 
 export type ExecutionRunProfileCapability = Readonly<{
   id: string;
   intent: string;
   title: string;
   compatibleAgentIds: readonly string[];
-  generationId: string;
+  sourceCustody: PluginSourceCustodyV1;
   available: boolean;
   unavailableCode?: string;
   defaults: Readonly<{ retention: string; runClass: string; io: string }>;
@@ -44,7 +45,7 @@ export function extractExecutionRunProfilesFromMachineCapabilitiesState(state: u
     if (!isRecord(raw)) return [];
     const id = typeof raw.id === 'string' ? raw.id.trim() : '';
     const intent = typeof raw.intent === 'string' ? raw.intent.trim() : '';
-    const generationId = typeof raw.generationId === 'string' ? raw.generationId.trim() : '';
+    const sourceCustody = PluginSourceCustodyV1Schema.safeParse(raw.sourceCustody);
     const compatibleAgentIds = Array.isArray(raw.compatibleAgents)
       ? raw.compatibleAgents.map((agentId) => typeof agentId === 'string' ? agentId.trim() : '').filter(Boolean)
       : [];
@@ -52,7 +53,7 @@ export function extractExecutionRunProfilesFromMachineCapabilitiesState(state: u
     if (
       !id.includes('/')
       || !intent
-      || !generationId
+      || !sourceCustody.success
       || compatibleAgentIds.length === 0
       || !defaults
       || typeof defaults.retention !== 'string'
@@ -64,7 +65,7 @@ export function extractExecutionRunProfilesFromMachineCapabilitiesState(state: u
       intent,
       title: readProfileTitle(raw.title, id),
       compatibleAgentIds: Object.freeze(compatibleAgentIds),
-      generationId,
+      sourceCustody: sourceCustody.data,
       available: raw.available === true,
       ...(typeof raw.unavailableCode === 'string' && raw.unavailableCode.trim()
         ? { unavailableCode: raw.unavailableCode.trim() }

@@ -1,4 +1,4 @@
-import type { Message } from '@/sync/domains/messages/messageTypes';
+import type { Message } from "@happier-dev/session-core/messages";
 
 export function readStructuredUserMessageText(message: Message): string | null {
     if (message.kind !== 'user-text') return null;

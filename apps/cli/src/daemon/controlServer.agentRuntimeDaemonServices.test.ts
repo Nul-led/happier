@@ -34,7 +34,11 @@ function createRetainedAgent() {
     pluginVersion: '1.2.3',
     agentId: 'acme-agent',
     localAgentId: 'acme-agent',
-    immutableGenerationId: `sha256:${'1'.repeat(64)}`,
+    sourceCustody: {
+      kind: 'managed',
+      immutableGenerationId: `sha256:${'1'.repeat(64)}`,
+      installSource: 'npm',
+    },
     locator: {
       module: './runtime.mjs',
       export: 'createRuntime',
@@ -98,7 +102,7 @@ describe('daemon control server: runner-scoped Agent runtime services', () => {
         processCommandHash: runner.processCommandHash,
         agentRuntimeDaemonServiceAuthorityFilePath: authorityPath,
         agentRuntimeDaemonServiceCapabilityHash: authority.capabilityDigest,
-        runnerAgentImmutableGenerationId: retainedAgent.immutableGenerationId,
+        runnerAgentSourceCustodyV1: retainedAgent.sourceCustody,
         runnerAgentInvocationContext: Object.freeze({
           cwd: '/workspace',
           environment: Object.freeze({}),
@@ -108,11 +112,15 @@ describe('daemon control server: runner-scoped Agent runtime services', () => {
           v: 1,
           adoptedManagedProviderAuthority: {
             pluginId: 'acme.provider',
-            immutableGenerationId: 'provider-generation',
+            sourceCustody: {
+              kind: 'managed',
+              immutableGenerationId: 'provider-generation',
+              installSource: 'npm',
+            },
             manifestAuthority: 'external',
             hardRevocationRevisionAtAdmission: 11,
           },
-          sourceGenerationIds: [],
+          sourceCustodies: [],
           qualifiedDependencyIds: [],
         },
       };
@@ -230,7 +238,7 @@ describe('daemon control server: runner-scoped Agent runtime services', () => {
       processCommandHash: runner.processCommandHash,
       agentRuntimeDaemonServiceAuthorityFilePath: authorityPath,
       agentRuntimeDaemonServiceCapabilityHash: authority.capabilityDigest,
-      runnerAgentImmutableGenerationId: retainedAgent.immutableGenerationId,
+      runnerAgentSourceCustodyV1: retainedAgent.sourceCustody,
       runnerAgentInvocationContext: Object.freeze({
         cwd: '/workspace',
         environment: Object.freeze({}),
@@ -240,11 +248,15 @@ describe('daemon control server: runner-scoped Agent runtime services', () => {
         v: 1,
         adoptedManagedProviderAuthority: {
           pluginId: 'acme.provider',
-          immutableGenerationId: 'provider-generation',
+          sourceCustody: {
+            kind: 'managed',
+            immutableGenerationId: 'provider-generation',
+            installSource: 'npm',
+          },
           manifestAuthority: 'external',
           hardRevocationRevisionAtAdmission: 11,
         },
-        sourceGenerationIds: [],
+        sourceCustodies: [],
         qualifiedDependencyIds: [],
       },
     };
@@ -253,11 +265,15 @@ describe('daemon control server: runner-scoped Agent runtime services', () => {
         v: 1,
         adoptedManagedProviderAuthority: {
           pluginId: 'acme.provider.next',
-          immutableGenerationId: 'provider-generation-next',
+          sourceCustody: {
+            kind: 'managed',
+            immutableGenerationId: 'provider-generation-next',
+            installSource: 'npm',
+          },
           manifestAuthority: 'external',
           hardRevocationRevisionAtAdmission: 19,
         },
-        sourceGenerationIds: [],
+        sourceCustodies: [],
         qualifiedDependencyIds: [],
       };
       return {
@@ -358,8 +374,7 @@ describe('daemon control server: runner-scoped Agent runtime services', () => {
       agentRuntimeDaemonServiceAuthorityFilePath: authorityPath,
       agentRuntimeDaemonServiceCapabilityHash:
         authority.capabilityDigest,
-      runnerAgentImmutableGenerationId:
-        retainedAgent.immutableGenerationId,
+      runnerAgentSourceCustodyV1: retainedAgent.sourceCustody,
       runnerAgentInvocationContext: invocationContext,
     };
     const dispatch = vi.fn(async (
@@ -581,13 +596,15 @@ describe('daemon control server: runner-scoped Agent runtime services', () => {
       expect(
         (await resolveEndpoint('foreign-input')).statusCode,
       ).toBe(403);
-      tracked.runnerAgentImmutableGenerationId =
-        'forged-generation';
+      tracked.runnerAgentSourceCustodyV1 = {
+        kind: 'managed',
+        immutableGenerationId: 'forged-generation',
+        installSource: 'npm',
+      };
       expect(
         (await resolveEndpoint('input-1')).statusCode,
       ).toBe(403);
-      tracked.runnerAgentImmutableGenerationId =
-        retainedAgent.immutableGenerationId;
+      tracked.runnerAgentSourceCustodyV1 = retainedAgent.sourceCustody;
       tracked.agentRuntimeDaemonServiceAdmittedUserMessageSeqs = [8];
       expect(
         (await resolveEndpoint('input-1')).statusCode,

@@ -196,6 +196,12 @@ describe('prepareRunnerAgentSessionBootstrapForLease', () => {
                 agentId: 'ohMyPi',
                 generation: 'activation-generation-1',
                 immutableGenerationId: 'immutable-generation-1',
+                occurrenceId: 'occurrence:happier.agent.ohmypi:1',
+                sourceCustody: {
+                    kind: 'managed',
+                    immutableGenerationId: 'immutable-generation-1',
+                    installSource: 'localPath',
+                },
                 hasPrimaryRuntime: true,
             }]]),
             runtimeCapabilitiesByPluginId:
@@ -248,7 +254,10 @@ describe('prepareRunnerAgentSessionBootstrapForLease', () => {
         const registry = {
             contributes: { agentDefinitionsById: new Map([['legacy-routing-id', agent]]), voiceProviders: [] },
             agentRuntimesByAgentId: new Map([['legacy-routing-id', {
-                pluginId, pluginVersion: '1.0.0', agentId: 'legacy-routing-id', generation: 'g1', hasPrimaryRuntime: true,
+                pluginId, pluginVersion: '1.0.0', agentId: 'legacy-routing-id', generation: 'g1',
+                occurrenceId: `occurrence:${pluginId}:1`,
+                sourceCustody: { kind: 'development', registeredRootId: 'test-root' },
+                hasPrimaryRuntime: true,
             }]]),
             runtimeCapabilitiesByPluginId: new Map([[pluginId, new Set()]]),
             activateContributionsOnDemand: async () => [],
@@ -309,6 +318,12 @@ describe('prepareRunnerAgentSessionBootstrapForLease', () => {
                 localAgentId,
                 generation: `generation-${entry.pluginId}`,
                 immutableGenerationId: `immutable-${entry.pluginId}`,
+                occurrenceId: `occurrence:${entry.pluginId}:1`,
+                sourceCustody: {
+                    kind: 'managed' as const,
+                    immutableGenerationId: `immutable-${entry.pluginId}`,
+                    installSource: 'localPath' as const,
+                },
                 hasPrimaryRuntime: true,
             },
         ]));
@@ -425,7 +440,6 @@ describe('prepareRunnerAgentSessionBootstrapForLease', () => {
                         },
                         client: {
                             artifactId: 'claude-realtime',
-                            modulePath: './voice',
                             exportName: 'activate',
                         },
                     },
@@ -437,6 +451,12 @@ describe('prepareRunnerAgentSessionBootstrapForLease', () => {
                 agentId: 'claude',
                 generation: 'activation-generation-1',
                 immutableGenerationId: 'immutable-generation-1',
+                occurrenceId: 'occurrence:happier.agent.claude:1',
+                sourceCustody: {
+                    kind: 'managed',
+                    immutableGenerationId: 'immutable-generation-1',
+                    installSource: 'localPath',
+                },
                 hasPrimaryRuntime: true,
             }]]),
             runtimeCapabilitiesByPluginId: new Map([[
@@ -463,8 +483,12 @@ describe('prepareRunnerAgentSessionBootstrapForLease', () => {
         expect(prepared?.authorization.descriptor).toEqual(expect.objectContaining({
             pluginId: 'happier.agent.claude',
             agentId: 'claude',
-            generation: 'activation-generation-1',
-            immutableGenerationId: 'immutable-generation-1',
+            occurrenceId: 'occurrence:happier.agent.claude:1',
+            sourceCustody: {
+                kind: 'managed',
+                immutableGenerationId: 'immutable-generation-1',
+                installSource: 'localPath',
+            },
             agentDeclaration: {
                 provenance: 'first_party',
                 source: { kind: 'bundled' },

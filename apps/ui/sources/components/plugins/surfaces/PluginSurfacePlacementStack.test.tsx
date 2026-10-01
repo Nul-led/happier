@@ -57,6 +57,7 @@ function placement(input: Readonly<{
     return Object.freeze({
         id: input.id,
         pluginId: 'acme.preview',
+        occurrenceId: `preview-${input.destinationId}-occurrence`,
         contributionKind: 'surfacePlacement' as const,
         descriptorId: input.destinationId,
         binding: binding(input.destinationId),
@@ -83,6 +84,7 @@ function servicesPlacement(): PluginUiSurfacePlacementProjection {
     return Object.freeze({
         id: 'surfacePlacement:acme.services:health',
         pluginId: 'acme.services',
+        occurrenceId: 'services-health-occurrence',
         contributionKind: 'surfacePlacement' as const,
         descriptorId: 'health',
         binding: normalized,

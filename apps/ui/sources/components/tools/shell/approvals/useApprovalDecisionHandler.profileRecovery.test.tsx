@@ -27,20 +27,33 @@ vi.mock('@/sync/runtime/orchestration/serverScopedRpc/resolvePreferredServerIdFo
     resolvePreferredServerIdForSessionId: () => null,
 }));
 
-vi.mock('@/sync/domains/server/serverProfiles', () => ({
-    resolveServerProfileForPortableIdentity: (serverIdentityId: string) => boundary.profileId
-        ? {
-            kind: 'resolved',
-            serverIdentityId,
-            profile: { id: boundary.profileId, serverIdentityId },
-        }
-        : { kind: 'missing', serverIdentityId },
-    getServerProfilesGeneration: () => boundary.profileGeneration,
-    subscribeServerProfiles: (listener: (generation: number) => void) => {
-        boundary.profileListeners.add(listener);
-        return () => boundary.profileListeners.delete(listener);
-    },
-}));
+vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
+    const { createPartialServerProfilesModuleMock } = await import('@/dev/testkit/mocks/serverProfiles');
+    return createPartialServerProfilesModuleMock(importOriginal, {
+        overrides: {
+            resolveServerProfileForPortableIdentity: (serverIdentityId: string) => boundary.profileId
+                ? {
+                    kind: 'resolved',
+                    serverIdentityId,
+                    profile: {
+                        id: boundary.profileId,
+                        serverIdentityId,
+                        name: 'Test Home',
+                        serverUrl: 'https://home.example.test',
+                        createdAt: 0,
+                        updatedAt: 0,
+                        lastUsedAt: 0,
+                    },
+                }
+                : { kind: 'missing', serverIdentityId },
+            getServerProfilesGeneration: () => boundary.profileGeneration,
+            subscribeServerProfiles: (listener: (generation: number) => void) => {
+                boundary.profileListeners.add(listener);
+                return () => boundary.profileListeners.delete(listener);
+            },
+        },
+    });
+});
 
 function daemonApprovalRequest(): ApprovalRequestV2 {
     return {
@@ -82,7 +95,7 @@ afterEach(() => {
 describe('useApprovalDecisionHandler portable Home recovery', () => {
     it('makes the immutable replay route available after the matching profile arrives without remounting', async () => {
         const approval = daemonApprovalRequest();
-        const artifact = { id: 'approval-1', header: { kind: 'approval_request.v1' as const } };
+        const artifact = { id: 'approval-1', header: { kind: 'approval_request.v1' as const, title: null } };
         const { useApprovalDecisionHandler } = await import('./useApprovalDecisionHandler');
         const hook = await renderHook(() => useApprovalDecisionHandler(artifact, approval, 'session-1'));
 
@@ -100,6 +113,23 @@ describe('useApprovalDecisionHandler portable Home recovery', () => {
             'approval.request.decide',
             { artifactId: 'approval-1', decision: 'approve' },
             { surface: 'ui', serverId: 'current-local-home' },
+        );
+    });
+
+    it('approves an agent’s window choice with the window the person picked, as the present user', async () => {
+        boundary.profileId = 'current-local-home';
+        const approval = { ...daemonApprovalRequest(), actionId: 'computer.target.select' as const,
+            actionArgs: { machineId: 'machine-exact', requestedTarget: 'Safari' } };
+        const artifact = { id: 'approval-2', header: { kind: 'approval_request.v1' as const, title: null } };
+        const { useApprovalDecisionHandler } = await import('./useApprovalDecisionHandler');
+        const hook = await renderHook(() => useApprovalDecisionHandler(artifact, approval, 'session-1'));
+        const chosen = { kind: 'window', displayId: ':0', pid: 10, windowId: 3 } as const;
+
+        await expect(hook.getCurrent()('approve', { computerTarget: chosen, computerAccess: 'see' })).resolves.toBe(true);
+        expect(boundary.execute).toHaveBeenCalledExactlyOnceWith(
+            'approval.request.decide',
+            { artifactId: 'approval-2', decision: 'approve', computerTarget: chosen, computerAccess: 'see' },
+            { surface: 'ui', authority: 'present_user', serverId: 'current-local-home' },
         );
     });
 });

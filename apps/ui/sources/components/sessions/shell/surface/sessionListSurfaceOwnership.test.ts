@@ -26,6 +26,16 @@ describe('sessionListSurfaceOwnership', () => {
         });
     });
 
+    it('returns one object per ownership, so a surface re-rendering with the same ownership passes the same value down', () => {
+        const first = normalizeSessionListSurfaceOwnership({ ownerKey: 'sidebar', visible: true, dataActive: true, interactive: true });
+        const again = normalizeSessionListSurfaceOwnership({ ownerKey: 'sidebar', visible: true, dataActive: true, interactive: true });
+        const other = normalizeSessionListSurfaceOwnership({ ownerKey: 'sidebar', visible: true, dataActive: true, interactive: false });
+
+        expect(again).toBe(first);
+        expect(other).not.toBe(first);
+        expect(other).toEqual({ ownerKey: 'sidebar', visible: true, dataActive: true, interactive: false });
+    });
+
     it('keeps hidden surfaces inactive even when interaction is requested', () => {
         expect(normalizeSessionListSurfaceOwnership({
             ownerKey: 'phone-root',

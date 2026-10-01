@@ -223,7 +223,7 @@ export async function writeSessionOrganizationFolders(params: Readonly<{
 }>): Promise<void> {
     const currentById = new Map(params.current.folders.map((folder) => [folder.id, folder]));
     const nextById = new Map(params.next.folders.map((folder) => [folder.id, folder]));
-    const writes: Promise<void>[] = [];
+    const writes: Promise<unknown>[] = [];
 
     for (const folder of nextById.values()) {
         const current = currentById.get(folder.id);

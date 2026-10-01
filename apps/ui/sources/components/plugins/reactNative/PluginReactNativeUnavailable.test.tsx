@@ -1,8 +1,10 @@
 import * as React from 'react';
+import { act } from 'react-test-renderer';
 import { describe, expect, it, vi } from 'vitest';
 
 import { renderScreen } from '@/dev/testkit';
 import { t } from '@/text';
+import { PluginReactNativeUnavailable } from './PluginReactNativeUnavailable';
 
 vi.mock('react-native', async () => {
     const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
@@ -16,39 +18,46 @@ vi.mock('react-native-unistyles', async () => {
     return createUnistylesMock();
 });
 
-describe('PluginReactNativeUnavailable crash-reset feedback', () => {
-    it('renders the daemon-owned request, projection wait, and failure states with distinct safe card semantics', async () => {
-        const { PluginReactNativeUnavailable } = await import('./PluginReactNativeUnavailable');
-        const onReset = () => {};
-
-        const requested = await renderScreen(
-            <PluginReactNativeUnavailable resetStatus="reset_requested" onReset={onReset} />,
+describe('PluginReactNativeUnavailable', () => {
+    it('preserves unavailable, Retry, and pending accessibility semantics', async () => {
+        const unavailable = await renderScreen(
+            <PluginReactNativeUnavailable diagnostics={['artifact_unavailable']} />,
         );
-        expect(requested.getTextContent()).toContain(t('pluginReactNative.reset.requested.title'));
-        expect(requested.getTextContent()).toContain(t('pluginReactNative.reset.requested.reason'));
-        expect(requested.getTextContent()).not.toContain('reset_requested');
-        expect(requested.findByTestId('plugin-rn-ui-unavailable-loading-spinner')).toBeTruthy();
-        expect(requested.findByTestId('plugin-rn-ui-unavailable')?.props.accessibilityLiveRegion).toBe('polite');
-        expect(requested.findByTestId('plugin-rn-ui-unavailable-action')).toBeNull();
+        expect(unavailable.findByTestId('plugin-rn-ui-unavailable')?.props.accessibilityLiveRegion).toBe('polite');
+        expect(unavailable.findByTestId('plugin-rn-ui-unavailable-action')).toBeNull();
 
-        const awaitingProjection = await renderScreen(
-            <PluginReactNativeUnavailable resetStatus="awaiting_new_projection" onReset={onReset} />,
-        );
-        expect(awaitingProjection.getTextContent()).toContain(t('pluginReactNative.reset.awaitingProjection.title'));
-        expect(awaitingProjection.getTextContent()).toContain(t('pluginReactNative.reset.awaitingProjection.reason'));
-        expect(awaitingProjection.getTextContent()).not.toContain('awaiting_new_projection');
-        expect(awaitingProjection.findByTestId('plugin-rn-ui-unavailable-loading-spinner')).toBeTruthy();
-        expect(awaitingProjection.findByTestId('plugin-rn-ui-unavailable')?.props.accessibilityLiveRegion).toBe('polite');
-        expect(awaitingProjection.findByTestId('plugin-rn-ui-unavailable-action')).toBeNull();
-
-        const failed = await renderScreen(
-            <PluginReactNativeUnavailable resetStatus="reset_failed" onReset={onReset} />,
-        );
-        expect(failed.getTextContent()).toContain(t('pluginReactNative.reset.failed.title'));
-        expect(failed.getTextContent()).toContain(t('pluginReactNative.reset.failed.reason'));
-        expect(failed.getTextContent()).not.toContain('reset_failed');
-        expect(failed.findByTestId('plugin-rn-ui-unavailable-loading-spinner')).toBeNull();
+        const onRetry = vi.fn();
+        const failed = await renderScreen(<PluginReactNativeUnavailable onRetry={onRetry} />);
         expect(failed.findByTestId('plugin-rn-ui-unavailable')?.props.accessibilityLiveRegion).toBe('assertive');
-        expect(failed.findByTestId('plugin-rn-ui-unavailable-action')?.props.accessibilityLabel).toBe(t('common.reset'));
+        expect(failed.findByTestId('plugin-rn-ui-unavailable-action')?.props.accessibilityLabel).toBe(t('common.retry'));
+        await act(async () => {
+            failed.pressByTestId('plugin-rn-ui-unavailable-action');
+        });
+        expect(onRetry).toHaveBeenCalledOnce();
+
+        const retrying = await renderScreen(<PluginReactNativeUnavailable onRetry={onRetry} retrying />);
+        expect(retrying.findByTestId('plugin-rn-ui-unavailable-loading-spinner')).toBeTruthy();
+        expect(retrying.findByTestId('plugin-rn-ui-unavailable')?.props.accessibilityLiveRegion).toBe('polite');
+        expect(retrying.findByTestId('plugin-rn-ui-unavailable-action')).toBeNull();
+    });
+
+    it.each([
+        ['artifact_source_integrity_invalid', 'settingsPlugins.managePlugin'],
+        ['artifact_incompatible', 'common.update'],
+        ['module_instantiation_failed', 'settingsPlugins.managePlugin'],
+    ] as const)('routes %s through the existing route recovery action as %s', async (diagnostic, labelKey) => {
+        const onPress = vi.fn();
+        const screen = await renderScreen(
+            <PluginReactNativeUnavailable
+                diagnostics={[diagnostic]}
+                recoveryAction={{ label: 'route fallback', onPress }}
+            />,
+        );
+
+        expect(screen.findByTestId('plugin-rn-ui-unavailable-action')?.props.accessibilityLabel).toBe(t(labelKey));
+        await act(async () => {
+            screen.pressByTestId('plugin-rn-ui-unavailable-action');
+        });
+        expect(onPress).toHaveBeenCalledOnce();
     });
 });

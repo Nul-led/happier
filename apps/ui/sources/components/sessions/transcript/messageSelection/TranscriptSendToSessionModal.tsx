@@ -48,17 +48,6 @@ const styles = StyleSheet.create((theme) => ({
         flex: 1,
         minHeight: 0,
     },
-    subtitle: {
-        paddingHorizontal: 16,
-        paddingTop: 12,
-        paddingBottom: 8,
-        color: theme.colors.text.secondary,
-        fontSize: 13,
-    },
-    empty: {
-        padding: 16,
-        color: theme.colors.text.secondary,
-    },
     newSessionIcon: {
         width: 20,
         alignItems: 'center',
@@ -189,6 +178,8 @@ export const TranscriptSendToSessionModal = React.memo(function TranscriptSendTo
     }), [keyboardHeight, windowDimensions.height, windowDimensions.width]);
     const chrome = React.useMemo(() => ({
         kind: 'card' as const,
+        title: t('transcript.selection.sendTo.modalTitle'),
+        subtitle: t('transcript.selection.sendTo.modalSubtitle'),
         dimensions: {
             width: TRANSCRIPT_SEND_TO_SESSION_MODAL_WIDTH,
             maxHeightRatio: modalLayout.maxHeightRatio,
@@ -274,36 +265,29 @@ export const TranscriptSendToSessionModal = React.memo(function TranscriptSendTo
 
     return (
         <View testID="transcript-send-to-session-modal-body" style={styles.body}>
-            <Text style={styles.subtitle}>{t('transcript.selection.sendTo.modalSubtitle')}</Text>
-            {options.length > 0 ? (
-                <SelectionList
-                    testID="transcript-send-to-session-list"
-                    rootStep={rootStep}
-                    onSelect={(id) => {
-                        if (id === NEW_SESSION_DESTINATION_ID) {
-                            onResolve({ kind: 'newSession' });
-                            onClose();
-                            return;
-                        }
-                        const selected = targets.find((target) => target.id === id);
-                        onResolve(selected ? { kind: 'existingSession', sessionId: selected.id, serverId: selected.serverId } : null);
+            <SelectionList
+                testID="transcript-send-to-session-list"
+                rootStep={rootStep}
+                onSelect={(id) => {
+                    if (id === NEW_SESSION_DESTINATION_ID) {
+                        onResolve({ kind: 'newSession' });
                         onClose();
-                    }}
-                    onRequestClose={() => {
-                        onResolve(null);
-                        onClose();
-                    }}
-                    autoFocusInputOnWeb
-                    keyboardHintsEnabled
-                    maxHeight={modalLayout.listMaxHeight}
-                    heightBehavior="fixedToMaxHeight"
-                    showsVerticalScrollIndicator
-                />
-            ) : (
-                <Text testID="transcript-send-to-session-empty" style={styles.empty}>
-                    {t('transcript.selection.sendTo.noResults')}
-                </Text>
-            )}
+                        return;
+                    }
+                    const selected = targets.find((target) => target.id === id);
+                    onResolve(selected ? { kind: 'existingSession', sessionId: selected.id, serverId: selected.serverId } : null);
+                    onClose();
+                }}
+                onRequestClose={() => {
+                    onResolve(null);
+                    onClose();
+                }}
+                autoFocusInputOnWeb
+                keyboardHintsEnabled
+                maxHeight={modalLayout.listMaxHeight}
+                heightBehavior="fixedToMaxHeight"
+                showsVerticalScrollIndicator
+            />
         </View>
     );
 });

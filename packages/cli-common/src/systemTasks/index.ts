@@ -40,8 +40,11 @@ export {
 export {
   DEFAULT_HAPPIER_CLI_ENV_VAR_NAMES,
   ensureLocalFirstPartyComponentCommand,
+  updateManagedLocalFirstPartyComponent,
   resolveExplicitOrInstalledLocalFirstPartyCommand,
+  resolveRepoLocalFirstPartyCommandPath,
   createLocalHappierJsonExecutor,
+  resolveLocalHappierCommandTimeoutMs,
   type HappierJsonExecutor,
   type LocalFirstPartyCommandProvenance,
   type ResolvedLocalFirstPartyCommand,
@@ -57,7 +60,31 @@ export {
 } from './executors/openSshHappierJsonExecutor.js';
 
 export {
+  readLocalCliUpdateFact,
+  type LocalCliUpdateFact,
+} from './executors/cliUpdateFact.js';
+
+export {
+  readLocalServerProfileScope,
+  selectServingDaemonService,
+  isInstalledDaemonServiceOfHappierHomeAndRing,
+  isAppManagedDaemonService,
+  readAppManagedDaemonServices,
+  scopeHappierJsonExecutor,
+  convergeHappierHomeServicesOntoCli,
+  disconnectHappierHomeService,
+  isVerifiedDaemonServiceOfHappierHome,
+  readCurrentHappierServices,
+  type HappierHomeServiceConvergence,
+  type HappierHomeServiceDisconnect,
+  type HappierServiceFollowingScope,
+  type HappierServerScope,
+  type LocalServerProfileScope,
+} from './executors/serverScope.js';
+
+export {
   createSetupMachineRecipeExecutorFromHappierJsonExecutor,
+  serverHelpSupportsExplicitHomeSetup,
   type SetupMachineRecipeExecutorOptions,
 } from './executors/setupMachineRecipeExecutor.js';
 
@@ -68,6 +95,8 @@ export {
   type SetupMachineRecipeExecutor,
   type SetupMachineRecipeEvent,
   type SetupMachineRecipeResult,
+  type SetupMachineServiceAction,
+  type SetupMachineServiceCommandOptions,
   type SetupMachineRecipeStepIds,
   type SetupMachineRecipeSteps,
   type SetupMachineRelayProfile,
@@ -89,6 +118,7 @@ export {
   resolveBackgroundServiceSetupReconciliationDisposition,
   resolveBackgroundServiceSetupServicesRequiringReplacement,
   type BackgroundServiceSetupReconciliationAction,
+  type BackgroundServiceSetupServiceTarget,
   type BackgroundServiceSetupGuidance,
   type BackgroundServiceSetupGuidanceService,
 } from './setupServiceGuidance/buildBackgroundServiceSetupGuidance.js';

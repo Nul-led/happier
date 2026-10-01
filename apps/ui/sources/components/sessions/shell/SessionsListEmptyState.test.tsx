@@ -3,8 +3,11 @@ import * as React from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { renderScreen, standardCleanup } from '@/dev/testkit';
-import { buildMachineSetupWizardHref } from '@/utils/routes/setupWizardHref';
 import type { Machine } from '@/sync/domains/state/storageTypes';
+import { DestinationInstanceHost } from '@/components/appShell/workspace/DestinationInstanceHost';
+import { Item } from '@/components/ui/lists/Item';
+import { act } from 'react-test-renderer';
+import { buildMachineAddHref } from '@/components/settings/machines/collection/machineCollectionModel';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -119,6 +122,24 @@ describe('SessionsListEmptyState', () => {
         machinesMock = [];
     });
 
+    it('opens machine setup through the Home tab that owns the pressed empty state', async () => {
+        const { SessionsListEmptyState } = await import('./SessionsListEmptyState');
+        const pushes = [vi.fn(), vi.fn()];
+        const screen = await renderScreen(<>
+            {pushes.map((push, index) => <DestinationInstanceHost key={index}
+                tabId={`home-${index}`} ref={{ kind: 'sessions', params: {} }} pathname="/"
+                focused={index === 0} visible navigation={{ push, replace: () => {}, back: () => {} }}>
+                <SessionsListEmptyState kind="connect_machine" targetLabel="Computer" />
+            </DestinationInstanceHost>)}
+        </>);
+        const actions = screen.root.findAllByType(Item).filter((node) => node.props.testID === 'sessions-empty-state-open-setup');
+        expect(actions).toHaveLength(2);
+        await act(async () => { actions.forEach((node) => node.props.onPress()); });
+        expect(pushes[0]).toHaveBeenCalledWith(buildMachineAddHref({ path: 'thisComputer' }));
+        expect(pushes[1]).toHaveBeenCalledWith(buildMachineAddHref({ path: 'thisComputer' }));
+        expect(routerPushSpy).not.toHaveBeenCalled();
+    });
+
     it('renders one start-session action per online machine and keeps the CLI guidance inline', async () => {
         const nowMs = Date.now();
         machinesMock = [
@@ -164,7 +185,7 @@ describe('SessionsListEmptyState', () => {
         });
     });
 
-    it('renders the connect action below the tile for never-connected accounts and routes it to the setup wizard', async () => {
+    it('renders the connect action below the tile for never-connected accounts and routes it to the machine draft', async () => {
         const { SessionsListEmptyState } = await import('./SessionsListEmptyState');
         const screen = await renderScreen(<SessionsListEmptyState kind="connect_machine" targetLabel="leeroy-mbp" />);
 
@@ -180,10 +201,7 @@ describe('SessionsListEmptyState', () => {
 
         await screen.pressByTestIdAsync('sessions-empty-state-open-setup');
 
-        expect(routerPushSpy).toHaveBeenCalledWith(buildMachineSetupWizardHref({
-            action: 'local',
-            step: 'setup_this_computer',
-        }));
+        expect(routerPushSpy).toHaveBeenCalledWith(buildMachineAddHref({ path: 'thisComputer' }));
     });
 
     it('renders the reconnect action below the tile when a machine exists but is offline', async () => {
@@ -202,10 +220,7 @@ describe('SessionsListEmptyState', () => {
 
         await screen.pressByTestIdAsync('sessions-empty-state-open-setup');
 
-        expect(routerPushSpy).toHaveBeenCalledWith(buildMachineSetupWizardHref({
-            action: 'local',
-            step: 'setup_this_computer',
-        }));
+        expect(routerPushSpy).toHaveBeenCalledWith(buildMachineAddHref({ path: 'thisComputer' }));
     });
 
     it('renders select-session as the browse-style summary without setup actions', async () => {

@@ -331,7 +331,7 @@ describe('SessionsListWrapper (empty state)', () => {
         const screen = await renderScreen(<SessionsListWrapper pathname="/" />);
 
         expect(sessionListState.paneCalls).toEqual([]);
-        expect(screen.findByType('ActivitySpinner' as any)).toBeTruthy();
+        expect(screen.findByTestId('session-list-skeleton')).toBeTruthy();
         expect(() => screen.findByType('SessionsListView' as any)).toThrow();
 
         await screen.unmount();
@@ -344,7 +344,7 @@ describe('SessionsListWrapper (empty state)', () => {
         const screen = await renderScreen(<SessionsListWrapper pathname="/" />);
 
         expect(sessionListState.paneCalls).toEqual([]);
-        expect(screen.findByType('ActivitySpinner' as any)).toBeTruthy();
+        expect(screen.findByTestId('session-list-skeleton')).toBeTruthy();
         expect(() => screen.findByType('SessionsListView' as any)).toThrow();
 
         await screen.unmount();
@@ -482,7 +482,7 @@ describe('SessionsListWrapper (empty state)', () => {
 
         expect(sessionListState.paneCalls).toEqual([]);
         expect(() => inactiveScreen.findByType('SessionsListView' as any)).toThrow();
-        expect(inactiveScreen.findByType('ActivitySpinner' as any)).toBeTruthy();
+        expect(inactiveScreen.findByTestId('session-list-skeleton')).toBeTruthy();
 
         await inactiveScreen.unmount();
     });
@@ -542,7 +542,7 @@ describe('SessionsListWrapper (empty state)', () => {
 
         expect(sessionListState.paneCalls).toEqual([]);
         expect(() => inactiveScreen.findByType('SessionsListView' as any)).toThrow();
-        expect(inactiveScreen.findByType('ActivitySpinner' as any)).toBeTruthy();
+        expect(inactiveScreen.findByTestId('session-list-skeleton')).toBeTruthy();
 
         await inactiveScreen.unmount();
     });

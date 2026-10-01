@@ -91,6 +91,7 @@ function createExternalSpeechProjection(input: Readonly<{
             [providerId]: Object.freeze({
                 id: providerId,
                 pluginId: input.pluginId,
+                occurrenceId: `${input.pluginId}-occurrence-${input.generation}`,
                 generation: input.generation,
                 contributionKey: providerId,
                 definition: declaration,

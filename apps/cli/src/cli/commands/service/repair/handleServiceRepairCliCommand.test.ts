@@ -478,6 +478,67 @@ describe('handleServiceRepairCliCommand', () => {
     }
   });
 
+  it('names every service repair --yes removes and keeps pinned services of other servers', async () => {
+    resolveDaemonServiceCliRuntimeFromEnvMock.mockImplementation(() => ({
+      platform: 'linux',
+      channel: 'stable',
+      targetMode: 'default-following',
+      instanceId: 'cloud',
+      uid: 1000,
+      userHomeDir: '/tmp/user',
+      happierHomeDir: '/tmp/user/.happier',
+      serverUrl: 'https://example.test',
+      publicServerUrl: 'https://example.test',
+      webappUrl: 'https://app.example.test',
+      nodePath: '/usr/bin/node',
+      entryPath: '/opt/happier/index.mjs',
+    }));
+    resolveDaemonServiceListEntriesMock.mockImplementation(async (_runtime: unknown, options?: unknown) => {
+      const normalizedOptions = options as { mode?: 'user' | 'system' } | undefined;
+      if (normalizedOptions?.mode === 'system') {
+        return [];
+      }
+      const unit = (serverId: string, targetMode: 'pinned' | 'default-following') => ({
+        serverId,
+        name: serverId,
+        installed: true,
+        path: `/tmp/user/.config/systemd/user/happier-daemon.${serverId}.service`,
+        platform: 'linux' as const,
+        mode: 'user' as const,
+        happierHomeDir: '/tmp/user/.happier',
+        releaseChannel: 'stable' as const,
+        label: `happier-daemon.${serverId}`,
+        targetMode,
+      });
+      return [
+        unit('default', 'default-following'),
+        unit('cloud', 'pinned'),
+        unit('company', 'pinned'),
+      ];
+    });
+
+    const { handleServiceRepairCliCommand } = await import('./handleServiceRepairCliCommand');
+    const output = captureConsoleText();
+    try {
+      await handleServiceRepairCliCommand({
+        argv: ['repair', '--yes'],
+        commandPath: 'happier doctor',
+      });
+    } finally {
+      output.restore();
+      resolveDaemonServiceCliRuntimeFromEnvMock.mockReset();
+    }
+
+    const appliedPlan = applyBackgroundServiceRepairPlanMock.mock.calls[0]?.[0] as
+      | { actions: ReadonlyArray<{ kind: string; service?: { label: string } }> }
+      | undefined;
+    const removedLabels = (appliedPlan?.actions ?? []).flatMap((action) =>
+      action.kind === 'remove-service' && action.service ? [action.service.label] : []);
+    expect(removedLabels).toEqual(['happier-daemon.cloud']);
+    expect(output.text()).toContain('happier-daemon.cloud');
+    expect(output.text()).not.toContain('happier-daemon.company');
+  });
+
   it('renders report-only mode without prompting even when repair actions exist', async () => {
     isInteractiveTerminalMock.mockReturnValue(true);
     resolveDaemonServiceListEntriesMock.mockImplementation(async (_runtime: unknown, options?: unknown) => {

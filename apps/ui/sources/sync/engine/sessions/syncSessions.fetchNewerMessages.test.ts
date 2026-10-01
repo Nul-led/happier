@@ -1,9 +1,10 @@
+import { type SessionMessageV1 } from '@happier-dev/protocol';
 import { describe, expect, it, vi } from 'vitest';
-import type { ApiMessage } from '@/sync/api/types/apiTypes';
-import type { NormalizedMessage } from '@/sync/typesRaw';
+
+import type { NormalizedMessage } from "@happier-dev/session-core/raw";
 import { fetchAndApplyNewerMessages } from './syncSessions';
 
-function buildApiMessage(id: string, seq: number): ApiMessage {
+function buildApiMessage(id: string, seq: number): SessionMessageV1 {
     return {
         id,
         seq,
@@ -18,7 +19,7 @@ function buildApiMessage(id: string, seq: number): ApiMessage {
     };
 }
 
-function buildPlainApiMessage(id: string, seq: number): ApiMessage {
+function buildPlainApiMessage(id: string, seq: number): SessionMessageV1 {
   return {
     id,
     seq,
@@ -262,7 +263,7 @@ describe('fetchAndApplyNewerMessages', () => {
       { status: 200, headers: { 'Content-Type': 'application/json' } },
     ));
 
-    const decryptMessages = vi.fn(async (apiMessages: ApiMessage[]) =>
+    const decryptMessages = vi.fn(async (apiMessages: SessionMessageV1[]) =>
       apiMessages.map((message) => ({
         id: message.id,
         seq: message.seq,
@@ -309,7 +310,7 @@ describe('fetchAndApplyNewerMessages', () => {
       { status: 200, headers: { 'Content-Type': 'application/json' } },
     ));
 
-    const decryptMessages = vi.fn(async (apiMessages: ApiMessage[]) =>
+    const decryptMessages = vi.fn(async (apiMessages: SessionMessageV1[]) =>
       apiMessages.map((message) => ({
         id: message.id,
         seq: message.seq,

@@ -21,7 +21,7 @@ import {
 } from '@/sync/engine/pending/pendingInputServerWireContract';
 import { getServerFeaturesSnapshot } from '@/sync/api/capabilities/serverFeaturesClient';
 import { getSyncSingleton } from '@/sync/runtime/getSyncSingleton';
-import type { RawRecord } from '@/sync/typesRaw';
+import type { RawRecord } from "@happier-dev/session-core/raw";
 import { randomUUID } from '@/platform/randomUUID';
 import { readMachineControlTargetForSession } from '@/sync/ops/sessionMachineTarget';
 import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
@@ -29,9 +29,10 @@ import { resolveSessionMachineId } from '@/sync/domains/session/external/resolve
 
 import { createServerRequestForResolvedServerScope } from './createServerRequestWithServerScope';
 import { normalizeServerScopeId } from './localSessionRouteReadiness';
-import { initializeScopedSessionReader, resolveScopedSessionCryptoContext } from './resolveScopedSessionDataKey';
-import { resolveServerAccountRequestContext, type ResolvedServerAccountRequestContext } from './resolveServerAccountRequestContext';
+import { resolveScopedSessionEncryption } from './resolveScopedSessionDataKey';
+import { resolveServerAccountRequestContext } from './resolveServerAccountRequestContext';
 import { fetchSessionByIdWithServerScope } from './fetchSessionByIdWithServerScope';
+import { DEFAULT_SERVER_SCOPED_RPC_TIMEOUT_MS } from './serverScopedRpcTypes';
 
 type ScopedSessionEncryptionLike = Readonly<{
   encryptRawRecord: (record: RawRecord) => Promise<string>;
@@ -68,36 +69,7 @@ async function defaultGetScopedSessionEncryption(params: Readonly<{
   sessionId: string;
 }>): Promise<ScopedSessionEncryptionLike> {
   if (params.context.scope !== 'scoped') throw new Error('Expected scoped context');
-  const context = params.context as Extract<ResolvedServerAccountRequestContext, { scope: 'scoped' }>;
-  const encryption = context.encryption;
-  if (!encryption) {
-    throw new Error(`Session encryption is unavailable for ${params.sessionId}`);
-  }
-  const existing = encryption.getSessionEncryption(params.sessionId);
-  if (existing) return existing as unknown as ScopedSessionEncryptionLike;
-  const cryptoContext = await resolveScopedSessionCryptoContext({
-    serverId: context.targetServerId,
-    serverUrl: context.targetServerUrl,
-    ...(context.runtimeOrigin ? { runtimeOrigin: context.runtimeOrigin } : {}),
-    ...(context.homeCarrier ? { homeCarrier: context.homeCarrier } : {}),
-    token: context.token,
-    ...(context.credentials ? { credentials: context.credentials } : {}),
-    sessionId: params.sessionId,
-    timeoutMs: context.timeoutMs,
-    decryptEncryptionKey: (value) => encryption.decryptEncryptionKey(value),
-  });
-  // Only a standalone DEK or the owner-only historical reader may seal this Session's input;
-  // an unavailable envelope must never become the Account-scoped reader by passing `null`.
-  const installed = await initializeScopedSessionReader({
-    sessionId: params.sessionId,
-    serverId: context.targetServerId,
-    context: cryptoContext,
-    encryption,
-  });
-  if (!installed) throw new Error(`Session encryption is unavailable for ${params.sessionId}`);
-  const sessionEncryption = encryption.getSessionEncryption(params.sessionId);
-  if (!sessionEncryption) throw new Error(`Session encryption not found for ${params.sessionId}`);
-  return sessionEncryption as unknown as ScopedSessionEncryptionLike;
+  return await resolveScopedSessionEncryption({ context: params.context, sessionId: params.sessionId });
 }
 
 function resolveServerScopedPendingRequestedAction(params: Readonly<{
@@ -180,7 +152,7 @@ export function createServerScopedSessionSendMessage(deps?: Partial<ServerScoped
 
       const context = await d.resolveContext({
         serverId: args.serverId,
-        timeoutMs: typeof args.timeoutMs === 'number' && args.timeoutMs > 0 ? args.timeoutMs : 30_000,
+        timeoutMs: typeof args.timeoutMs === 'number' && args.timeoutMs > 0 ? args.timeoutMs : DEFAULT_SERVER_SCOPED_RPC_TIMEOUT_MS,
       });
       try {
       if (args.signal?.aborted) {

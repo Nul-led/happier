@@ -73,6 +73,11 @@ export function resolveFirstPartyInstallLayout(params: Readonly<{
   };
 }
 
+/** The home-wide activation lock's target (`<home>/first-party-activation`; lock file `.lock`). */
+export function resolveFirstPartyActivationLockTarget(layout: Pick<FirstPartyInstallLayout, 'happyHomeDir'>): string {
+  return joinPathForPathShape(layout.happyHomeDir, 'first-party-activation');
+}
+
 export function resolveFirstPartyVersionInstallPath(params: Readonly<{
   componentId: FirstPartyComponentId;
   versionId: string;

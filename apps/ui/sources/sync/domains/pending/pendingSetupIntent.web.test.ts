@@ -31,10 +31,9 @@ async function importFreshWeb() {
     return await import('./pendingSetupIntent.web');
 }
 
-async function activateServerAccount(serverUrl: string, accountId: string) {
+async function applyActiveServer(serverUrl: string) {
     const { upsertAndActivateServer } = await import('@/sync/domains/server/serverRuntime');
-    const { createServerAccountScope } = await import('@/sync/domains/scope/serverAccountScope');
-    const { registerStorageStateReader } = await import('@/sync/domains/state/storageStateReaderBridge');
+    const { switchConnectionToActiveServer } = await import('@/sync/runtime/orchestration/connectionManager');
 
     const server = await upsertAndActivateServer({
         serverUrl,
@@ -42,21 +41,27 @@ async function activateServerAccount(serverUrl: string, accountId: string) {
         scope: 'device',
         replaceEquivalentStoredUrl: true,
     });
+    // The Account scope follows the applied Home, not only the selected profile. With the empty
+    // credential store this runs the real connection owner without starting authenticated Sync or
+    // issuing network requests (the composition `pendingQueueV2.testHelpers.ts` relies on).
+    await switchConnectionToActiveServer();
+    return server;
+}
+
+async function activateServerAccount(serverUrl: string, accountId: string) {
+    const { createServerAccountScope } = await import('@/sync/domains/scope/serverAccountScope');
+    const { registerStorageStateReader } = await import('@/sync/domains/state/storageStateReaderBridge');
+
+    const server = await applyActiveServer(serverUrl);
     const scope = createServerAccountScope(server.id, accountId);
     expect(scope).not.toBeNull();
     registerStorageStateReader(() => ({ profileScope: scope } as unknown as StorageState));
 }
 
 async function activateServerWithoutAccount(serverUrl: string) {
-    const { upsertAndActivateServer } = await import('@/sync/domains/server/serverRuntime');
     const { registerStorageStateReader } = await import('@/sync/domains/state/storageStateReaderBridge');
 
-    upsertAndActivateServer({
-        serverUrl,
-        source: 'manual',
-        scope: 'device',
-        replaceEquivalentStoredUrl: true,
-    });
+    await applyActiveServer(serverUrl);
     registerStorageStateReader(() => ({ profileScope: null } as unknown as StorageState));
 }
 
@@ -289,5 +294,29 @@ describe('pendingSetupIntent.web', () => {
             phase: 'awaiting_auth',
             relayUrl: 'https://shared.example.test',
         });
+    });
+    it('hands a Home-scoped intent to the first account that reads it, never to the next account on web', async () => {
+        const { clearPendingSetupIntent, getPendingSetupIntent, setPendingSetupIntent } = await importFreshWeb();
+
+        await activateServerWithoutAccount('https://shared.example.test');
+        clearPendingSetupIntent();
+        setPendingSetupIntent({
+            branch: 'thisComputer',
+            phase: 'dismissed',
+            relayUrl: 'https://shared.example.test',
+        });
+
+        await activateServerAccount('https://shared.example.test', 'account-a');
+        expect(getPendingSetupIntent()).toEqual({
+            branch: 'thisComputer',
+            phase: 'dismissed',
+            relayUrl: 'https://shared.example.test',
+        });
+
+        await activateServerAccount('https://shared.example.test', 'account-b');
+        expect(getPendingSetupIntent()).toBeNull();
+
+        await activateServerAccount('https://shared.example.test', 'account-a');
+        expect(getPendingSetupIntent()?.phase).toBe('dismissed');
     });
 });

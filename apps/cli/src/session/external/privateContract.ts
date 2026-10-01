@@ -43,11 +43,21 @@ export type HostExternalTranscriptItem = Readonly<{
   data: JsonValue;
 }>;
 
+export type HostExternalTerminalSourceObservation = Readonly<{
+  id: string;
+  localId?: never;
+  sidechainId?: never;
+  timestampMs: number;
+  kind: 'source_observation';
+  data: JsonValue;
+}>;
+
 export type HostExternalTranscriptFollowEvent =
   | Readonly<{
       kind: 'data';
       phase?: 'initial_replay';
-      items: readonly HostExternalTranscriptItem[];
+      providerSessionId?: string;
+      items: readonly (HostExternalTranscriptItem | HostExternalTerminalSourceObservation)[];
       fromCursor: string | null;
       nextCursor: string;
     }>
@@ -225,6 +235,8 @@ export interface ExternalSessionsCompositionPort {
       cursor?: string;
       /** Private terminal bootstrap fact; never projected through the public author service. */
       initialReplay?: boolean;
+      projection?: 'terminal';
+      replay?: 'fresh';
       /** One absolute deadline shared by the complete replay-to-live admission sequence. */
       admissionDeadlineAtMs?: number;
       signal?: AbortSignal;

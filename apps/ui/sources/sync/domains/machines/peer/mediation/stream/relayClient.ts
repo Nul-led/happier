@@ -1,4 +1,4 @@
-import type { MachineLiveStreamCapsV1, MachineLiveStreamStartRequestV1 } from '@happier-dev/protocol';
+import type { MachineLiveStreamCapsV1, MachineLiveStreamCodecIdV1, MachineLiveStreamStartRequestV1 } from '@happier-dev/protocol';
 
 import type { ProductionMachineLiveStreamStartResult } from './productionRoute';
 import type { MachineLiveStreamRelayStartRpcResult } from './relayStartRpc';
@@ -10,8 +10,11 @@ type StartProductionMachineLiveStreamInput = Readonly<{
     routeKind: 'loopback_direct' | 'server_relay';
     streamId: string;
     streamFamily: string;
+    sourceId?: string;
     viewerSocketId?: string | null;
     caps: MachineLiveStreamCapsV1;
+    codecId?: MachineLiveStreamCodecIdV1;
+    viewerCodecs?: readonly MachineLiveStreamCodecIdV1[];
     timeoutMs?: number;
 }>;
 
@@ -59,50 +62,52 @@ async function defaultStartDaemonRelay(
  * construction — the relay handler always rejected it with `source_machine_mismatch` — and has
  * been deleted.
  */
-export async function openMachineLiveStreamRelayClient(input: Readonly<{
+export type MachineLiveStreamRelayClientInput = Readonly<{
     serverId?: string | null;
     sourceMachineId: string;
     targetMachineId: string;
     streamId: string;
     streamFamily: string;
+    sourceId?: string;
     viewerSocketId?: string | null;
     caps: MachineLiveStreamCapsV1;
+    codecId?: MachineLiveStreamCodecIdV1;
+    viewerCodecs?: readonly MachineLiveStreamCodecIdV1[];
     timeoutMs?: number;
     startProduction?: StartProductionMachineLiveStream;
     startDaemonRelay?: StartDaemonRelay;
-}>): Promise<OpenMachineLiveStreamRelayClientResult> {
+    onAuthorized?: (startRequest: MachineLiveStreamStartRequestV1) => void;
+}>;
+
+export async function renewMachineLiveStreamRelayClient(input: MachineLiveStreamRelayClientInput): Promise<ProductionMachineLiveStreamStartResult> {
     const start = input.startProduction ?? defaultStartProductionMachineLiveStream;
-    const startRoute = async (
-        routeKind: StartProductionMachineLiveStreamInput['routeKind'],
-    ): Promise<ProductionMachineLiveStreamStartResult> => await start({
+    return await start({
         serverId: input.serverId,
         sourceMachineId: input.sourceMachineId,
         targetMachineId: input.targetMachineId,
-        routeKind,
+        // The current direct HTTP start has no receive/control carrier. Only a
+        // complete carrier may become a preferred route in the shared policy fold.
+        routeKind: 'server_relay',
         streamId: input.streamId,
         streamFamily: input.streamFamily,
+        ...(input.sourceId ? { sourceId: input.sourceId } : {}),
         ...(input.viewerSocketId ? { viewerSocketId: input.viewerSocketId } : {}),
         caps: input.caps,
+        ...(input.codecId ? { codecId: input.codecId } : {}),
+        ...(input.viewerCodecs ? { viewerCodecs: input.viewerCodecs } : {}),
         timeoutMs: input.timeoutMs,
     } satisfies Parameters<StartProductionMachineLiveStream>[0]);
+}
 
-    const directStarted = await startRoute('loopback_direct');
-    if (directStarted.ok) {
-        if (directStarted.routeKind !== 'loopback_direct') {
-            return { ok: false, reasonCode: 'unexpected_route_kind' };
-        }
-        if (!directStarted.response.ok) return { ok: false, reasonCode: directStarted.response.reasonCode };
-        return { ok: true, streamId: directStarted.response.streamId };
-    }
-
-    const started = await startRoute('server_relay');
+export async function openMachineLiveStreamRelayClient(input: MachineLiveStreamRelayClientInput): Promise<OpenMachineLiveStreamRelayClientResult> {
+    const started = await renewMachineLiveStreamRelayClient(input);
 
     if (!started.ok) {
-        return directStarted.requiredCapability
+        return started.requiredCapability
             ? {
                 ok: false,
-                reasonCode: directStarted.reasonCode,
-                requiredCapability: directStarted.requiredCapability,
+                reasonCode: started.reasonCode,
+                requiredCapability: started.requiredCapability,
             }
             : { ok: false, reasonCode: started.reasonCode };
     }
@@ -116,5 +121,6 @@ export async function openMachineLiveStreamRelayClient(input: Readonly<{
         ...(typeof input.timeoutMs === 'number' ? { timeoutMs: input.timeoutMs } : {}),
     });
     if (!daemonStarted.ok) return { ok: false, reasonCode: daemonStarted.reasonCode };
+    input.onAuthorized?.(started.startRequest);
     return { ok: true, streamId: started.startRequest.streamId };
 }

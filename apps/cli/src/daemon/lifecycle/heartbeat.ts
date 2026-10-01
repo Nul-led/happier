@@ -150,6 +150,17 @@ export function startDaemonHeartbeatLoop(params: Readonly<{
 
       // Prune stale sessions
       for (const [pid, tracked] of pidToTrackedSession.entries()) {
+        // The child handle remains authoritative until Node reports its exit.
+        // A process-table observation can race that notification.
+        const childProcess = tracked.childProcess;
+        if (
+          tracked.startedBy === 'daemon'
+          && childProcess?.pid === pid
+          && childProcess.exitCode === null
+          && childProcess.signalCode === null
+        ) {
+          continue;
+        }
         if (!isPidPresent(pid)) {
           if (isShuttingDown?.() === true) {
             return;

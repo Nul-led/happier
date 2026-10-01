@@ -9,9 +9,9 @@ describe('sessionModelSelectionKey', () => {
         const connectionB = ProviderConnectionIdSchema.parse('pc_b');
         const values = [
             null,
-            { agentTargetKey: 'backend:codex', providerConnectionId: null, modelId: 'same' },
-            { agentTargetKey: 'backend:codex', providerConnectionId: connectionA, modelId: 'same' },
-            { agentTargetKey: 'backend:codex', providerConnectionId: connectionB, modelId: 'same' },
+            { agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: null, modelId: 'same' },
+            { agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: connectionA, modelId: 'same' },
+            { agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: connectionB, modelId: 'same' },
         ] as const;
 
         expect(new Set(values.map(sessionModelSelectionKey)).size).toBe(values.length);

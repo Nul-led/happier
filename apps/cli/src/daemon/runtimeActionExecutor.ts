@@ -1,5 +1,6 @@
 import {
   createUnavailableRuntimeActionExecutor,
+  resolveRuntimeActionExecutionFamily,
   type RuntimeActionExecute,
 } from '@happier-dev/protocol';
 
@@ -29,15 +30,23 @@ import {
   type DaemonPeerMediationObservabilityRuntimeActionContext,
 } from './peer/mediation/observability/runtimeActionExecutor';
 import type { CliServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
+import type { ComputerRoutes } from './computer/routes';
+
+export type BrowserUiAutomationRouteOwner = Readonly<{
+  ownsAutomationView: (view: Readonly<{ browserSessionId: string; viewId: string }>) => boolean;
+  uiAutomation: RuntimeActionExecute;
+}>;
 
 /**
  * Daemon-owned routes for runtime Action families. Consumers provide their current daemon route
  * owners; this module alone composes family fallbacks and refreshes their feature gates.
  */
 export type DaemonRuntimeActionRouteOwners = Readonly<{
+  computer?: ComputerRoutes | null;
   browserControl?: BrowserDaemonControlRoutes | null;
   browserContext?: BrowserContextRoutes | null;
   browserAutomation?: BrowserAutomationRoutes | null;
+  browserUiAutomation?: BrowserUiAutomationRouteOwner | null;
   /**
    * Provisions the managed browser runtime when an agent asks for automation and no route exists
    * (user ruling, 2026-08-23: install on first automation attempt, never at daemon startup).
@@ -63,8 +72,8 @@ export type CreateDaemonRuntimeActionExecutorInput = Readonly<{
 }>;
 
 /**
- * The canonical daemon runtime-Action composition. It deliberately accepts only daemon-owned
- * route owners: browser actions never reach a UI-rendered view owner through this path.
+ * The canonical daemon runtime-Action composition. Physical browser ownership chooses the daemon
+ * route or the exact mounted UI owner; feature decisions and family fallbacks stay here.
  */
 export function createDaemonRuntimeActionExecutor(
   input: CreateDaemonRuntimeActionExecutorInput,
@@ -85,6 +94,12 @@ export function createDaemonRuntimeActionExecutor(
 
   return async (args) => {
     args.context.signal?.throwIfAborted();
+    // Native target availability/OS grants and consent have their own canonical owners;
+    // browser/server feature bits do not decide native computer-use admission.
+    if (resolveRuntimeActionExecutionFamily(args.actionId) === 'computer') {
+      const routes = input.resolveRouteOwners().computer;
+      return routes ? await routes.dispatch(args.actionId, args.input, args.context) : unavailableRuntimeActionExecutor(args);
+    }
     // The browser executor falls back to local services, simulator, and peer mediation. Refresh all
     // of their caches before selecting a leaf so every family remains fail-closed on server-disable.
     await Promise.all([
@@ -136,6 +151,9 @@ export function createDaemonRuntimeActionExecutor(
       ...(routes.browserControl ? { control: routes.browserControl } : {}),
       ...(routes.browserContext ? { context: routes.browserContext } : {}),
       ...(routes.browserAutomation ? { automation: routes.browserAutomation } : {}),
+      // Without a current daemon ownership source, an unknown view must never provision Chromium.
+      ownsAutomationView: routes.browserUiAutomation?.ownsAutomationView ?? (() => false),
+      ...(routes.browserUiAutomation ? { uiAutomation: routes.browserUiAutomation.uiAutomation } : {}),
       ...(routes.provisionBrowserAutomationRuntime
         ? { provisionAutomationRuntime: routes.provisionBrowserAutomationRuntime }
         : {}),

@@ -48,7 +48,7 @@ vi.mock('./NewSessionDraftsSection', () => ({
     }),
 }));
 vi.mock('@/components/ui/lists/Item', () => ({
-    Item: (props: any) => React.createElement('Item', props, props.title),
+    Item: (props: any) => React.createElement('Item', props, props.title, props.rightElement),
 }));
 vi.mock('@/components/ui/lists/ItemGroup', () => ({
     ItemGroup: (props: any) => React.createElement('ItemGroup', props, props.children),
@@ -62,7 +62,7 @@ describe('SessionListVirtualizedContent filtered no-results state', () => {
         standardCleanup();
     });
 
-    it('renders accessible feedback when active filters leave only headers', async () => {
+    it('says an ordinary list filtered to nothing in one quiet line on the rows\' edge', async () => {
         const { SessionListVirtualizedContent } = await import('./sessionListVirtualizedContent');
 
         const screen = await renderScreen(React.createElement(SessionListVirtualizedContent as any, {
@@ -73,7 +73,6 @@ describe('SessionListVirtualizedContent filtered no-results state', () => {
             renderItem: ({ item }: any) => React.createElement('Row', { testID: `row:${item.id}` }),
             rowExtraData: null,
             onStopScrollEventPropagationOnWeb: vi.fn(),
-            onPressArchivedSessions: vi.fn(),
             folderFocus: null,
             onClearFolderFocus: vi.fn(),
             onSelectFolderBreadcrumb: vi.fn(),
@@ -81,12 +80,12 @@ describe('SessionListVirtualizedContent filtered no-results state', () => {
         }));
 
         expect(screen.getTextContent()).toContain('directSessions.browseNoSearchResults');
-        expect(screen.findByProps({ accessibilityLiveRegion: 'polite' })).toBeTruthy();
+        expect(screen.findByTestId('session-list-filtered-no-results')?.props.accessibilityLiveRegion).toBe('polite');
         expect(screen.findByTestId('session-drafts-section')).toBeTruthy();
         expect(screen.findByTestId('session-drafts-section')?.props.density).toBe('minimal');
     });
 
-    it('omits waiting drafts and the archived shortcut when the host is rendering the archived corpus', async () => {
+    it('omits waiting drafts and any archived shortcut when the host is rendering the archived corpus', async () => {
         const { SessionListVirtualizedContent } = await import('./sessionListVirtualizedContent');
 
         const screen = await renderScreen(React.createElement(SessionListVirtualizedContent as any, {
@@ -96,12 +95,10 @@ describe('SessionListVirtualizedContent filtered no-results state', () => {
             renderItem: () => null,
             rowExtraData: null,
             onStopScrollEventPropagationOnWeb: vi.fn(),
-            onPressArchivedSessions: vi.fn(),
             folderFocus: null,
             onClearFolderFocus: vi.fn(),
             onSelectFolderBreadcrumb: vi.fn(),
             showDrafts: false,
-            showArchivedShortcut: false,
         }));
 
         expect(screen.findByTestId('session-drafts-section')).toBeNull();
@@ -129,7 +126,6 @@ describe('SessionListVirtualizedContent filtered no-results state', () => {
             renderItem: () => null,
             rowExtraData: null,
             onStopScrollEventPropagationOnWeb: vi.fn(),
-            onPressArchivedSessions: vi.fn(),
             folderFocus: null,
             onClearFolderFocus: vi.fn(),
             onSelectFolderBreadcrumb: vi.fn(),

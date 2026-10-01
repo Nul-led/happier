@@ -1,6 +1,7 @@
 import { win32 as windowsPath } from 'node:path';
 
 import { execFileWithDeadline, isPidPresent } from '@happier-dev/cli-common/process';
+import { processIdentityMatches } from '@happier-dev/cli-common/processInstance';
 import {
   taskkillWindowsProcessTree,
 } from '@/subprocess/supervision/taskkillWindowsProcessTree';
@@ -159,15 +160,15 @@ export function createExactWindowsProcessCancellation(
           : { status: 'stopped' as const };
       }
       if (
-        before.processStartTimeMs !== params.processStartTimeMs
-        || (
-          params.processCommandHash
-          && (
-            !before.command?.trim()
-            || hashProcessCommand(before.command)
-              !== params.processCommandHash
-          )
-        )
+        !processIdentityMatches({
+          pid: params.pid,
+          processStartTimeMs: params.processStartTimeMs,
+          processCommandHash: params.processCommandHash,
+        }, {
+          pid: before.pid ?? params.pid,
+          processStartTimeMs: before.processStartTimeMs,
+          processCommandHash: before.command?.trim() ? hashProcessCommand(before.command) : undefined,
+        })
       ) {
         return {
           status: 'incomplete' as const,
@@ -196,15 +197,15 @@ export function createExactWindowsProcessCancellation(
           : { status: 'stopped' as const };
       }
       if (
-        after.processStartTimeMs !== params.processStartTimeMs
-        || (
-          params.processCommandHash
-          && (
-            !after.command?.trim()
-            || hashProcessCommand(after.command)
-              !== params.processCommandHash
-          )
-        )
+        !processIdentityMatches({
+          pid: params.pid,
+          processStartTimeMs: params.processStartTimeMs,
+          processCommandHash: params.processCommandHash,
+        }, {
+          pid: after.pid ?? params.pid,
+          processStartTimeMs: after.processStartTimeMs,
+          processCommandHash: after.command?.trim() ? hashProcessCommand(after.command) : undefined,
+        })
       ) {
         return pidAliveAfterDisposition
           ? {

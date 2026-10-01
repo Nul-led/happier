@@ -207,6 +207,8 @@ describe('computeConnectedServiceQuotaGaugeViewModel', () => {
 
         expect(viewModel?.detailRightLabel).toBe('18% left · resets in outdated');
         expect(viewModel?.allMeterRows[0]?.resetLabel).toBe('outdated');
+        // The row keeps the reset instant so a quota row can say when it comes back.
+        expect(viewModel?.allMeterRows[0]?.resetsAt).toBe(1_000);
     });
 
     it('summarizes available recovery credits on the canonical quota gauge view-model', () => {

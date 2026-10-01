@@ -116,4 +116,29 @@ describe('Reopening a waiting Temporary computer draft', () => {
         expect(hook.getCurrent().status).toBe('idle');
         await hook.unmount();
     });
+
+    it('keeps a draft without an activation reference editable when its recovery read cannot answer', async () => {
+        // Observed on web: the mount-time by-draft read fails in transport while
+        // the page boots, and the composer froze behind "setup needs attention"
+        // for a draft the user never sent to a temporary computer.
+        let rejectRead!: (reason: unknown) => void;
+        const readByDraft = vi.fn(() => new Promise((_resolve, reject) => { rejectRead = reject; }));
+        const hook = await renderHook(() => useTemporaryComputerLaunch({
+            serverId: 'server-1',
+            client: { readByDraft } as unknown as RunnerActivationClient,
+            draftId: 'draft-fresh-offline',
+            existingPublicRef: null,
+            prepareActivation: vi.fn(),
+            persistPublicRef: vi.fn(),
+            onMaterialized: vi.fn(),
+        }));
+
+        await vi.waitFor(() => expect(readByDraft).toHaveBeenCalled());
+        await act(async () => {
+            rejectRead(new RunnerActivationClientError('request_failed', 0, true));
+        });
+        expect(hook.getCurrent().status).toBe('idle');
+        expect(hook.getCurrent().error).toBeNull();
+        await hook.unmount();
+    });
 });

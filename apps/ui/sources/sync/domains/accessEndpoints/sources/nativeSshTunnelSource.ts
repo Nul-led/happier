@@ -1,4 +1,5 @@
 import type { NativeSshTunnelSnapshot, NativeSshTunnelStatus } from '@/sync/runtime/nativeSshTunnels/types';
+import { isLoopbackHostname } from '@happier-dev/protocol';
 
 import type { AccessEndpoint, AccessEndpointDiagnostic, AccessEndpointStatus } from '../model';
 import { createScopedAccessEndpointRemediationAction } from '../remediation';
@@ -93,7 +94,7 @@ export function buildNativeSshTunnelAccessEndpoints(params: Readonly<{
 function isLoopbackHttpUrl(value: string): boolean {
     try {
         const parsed = new URL(value);
-        return parsed.hostname === '127.0.0.1' || parsed.hostname === 'localhost';
+        return parsed.protocol === 'http:' && isLoopbackHostname(parsed.hostname);
     } catch {
         return false;
     }

@@ -698,6 +698,7 @@ describe('createSessionClientInteractionApi diagnostics', () => {
   });
 
   it('settles collaborator provenance and protected authority before projection or provider delivery', async () => {
+    const callerInputConstraints = { models: [{ agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: null, modelId: 'A' }], permissionModes: null };
     const socket = createSocketStub();
     const contractResult = {
       mode: 'session_sync_v2_pending_input_v1' as const,
@@ -717,6 +718,7 @@ describe('createSessionClientInteractionApi diagnostics', () => {
       t: 'plain' as const,
       v: {
         role: 'user',
+        callerInputConstraints: { models: null, permissionModes: null },
         content: { type: 'text', text: 'protected prompt' },
         localId: 'protected-local',
         meta: {
@@ -742,6 +744,7 @@ describe('createSessionClientInteractionApi diagnostics', () => {
           inputAdmissionReceipt: {
             v: 1,
             issuer: 'authenticatedAccount',
+            callerInputConstraints,
             actorAccountId: 'collaborator-account',
             sessionRelationship: 'sharedEditor',
           },
@@ -821,6 +824,7 @@ describe('createSessionClientInteractionApi diagnostics', () => {
       }),
     }));
     expect(deliver).toHaveBeenCalledWith(expect.objectContaining({
+      callerInputConstraints,
       meta: expect.objectContaining({
         happierProvenanceV1: {
           v: 1,

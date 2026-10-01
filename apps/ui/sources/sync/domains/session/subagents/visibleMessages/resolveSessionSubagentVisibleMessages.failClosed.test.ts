@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type { Message, ToolCallMessage } from '@/sync/domains/messages/messageTypes';
+import type { Message, ToolCallMessage } from "@happier-dev/session-core/messages";
 
 vi.mock('@/agents/registry/generatedBundledPluginEntries.visibleMessageResolvers', () => ({
     BUNDLED_SESSION_SUBAGENT_VISIBLE_MESSAGE_DESCRIPTORS: [],

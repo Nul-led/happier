@@ -23,6 +23,37 @@ function createMetadata(
 }
 
 describe('createSessionMetadata', () => {
+    it.each([undefined, 'path', 'Managed', ' managed ', 'invalid'])('does not classify an invalid directory marker %s as managed', (value) => {
+        const processEnvironment: NodeJS.ProcessEnv = { HAPPIER_SESSION_DIRECTORY_KIND: value };
+        const launchControlMetadata = captureSessionLaunchControlMetadata({ processEnvironment });
+        const { metadata } = createMetadata({
+            flavor: 'test-agent',
+            machineId: 'machine-1',
+            directory: '/tmp/path-session',
+            launchControlMetadata,
+        });
+        expect(launchControlMetadata).toMatchObject({ sessionDirectoryKind: 'path' });
+        expect(metadata).not.toHaveProperty('sessionDirectoryV1');
+        expect(processEnvironment.HAPPIER_SESSION_DIRECTORY_KIND).toBeUndefined();
+    });
+
+    it('captures the directory kind once before the environment changes', () => {
+        const processEnvironment: NodeJS.ProcessEnv = { HAPPIER_SESSION_DIRECTORY_KIND: 'path' };
+        const launchControlMetadata = captureSessionLaunchControlMetadata({
+            explicitEnvironment: { HAPPIER_SESSION_DIRECTORY_KIND: 'managed' },
+            processEnvironment,
+        });
+        processEnvironment.HAPPIER_SESSION_DIRECTORY_KIND = 'path';
+        const { metadata } = createMetadata({
+            flavor: 'test-agent',
+            machineId: 'machine-1',
+            directory: '/tmp/managed-session',
+            launchControlMetadata,
+        });
+        expect(launchControlMetadata).toMatchObject({ sessionDirectoryKind: 'managed' });
+        expect(metadata).toHaveProperty('sessionDirectoryV1', { v: 1, kind: 'managed' });
+    });
+
     it('uses an explicit non-secret launch-control snapshot instead of conflicting ambient state', () => {
         const previousProfileId = process.env.HAPPIER_SESSION_PROFILE_ID;
         const previousMcpSelection = process.env.HAPPIER_SESSION_MCP_SELECTION_JSON;
@@ -104,7 +135,7 @@ describe('createSessionMetadata', () => {
                 v: 1,
                 updatedAt: 123,
                 selection: {
-                    agentTargetKey: 'backend:codex',
+                    agentTargetKey: 'agent:happier.agent.codex/codex',
                     providerConnectionId: 'pc_work',
                     modelId: 'gpt-5-codex-high',
                 },
@@ -115,7 +146,7 @@ describe('createSessionMetadata', () => {
             v: 1,
             updatedAt: 123,
             selection: {
-                agentTargetKey: 'backend:codex',
+                agentTargetKey: 'agent:happier.agent.codex/codex',
                 providerConnectionId: 'pc_work',
                 modelId: 'gpt-5-codex-high',
             },
@@ -254,9 +285,9 @@ describe('createSessionMetadata', () => {
     it('seeds connected service bindings from the daemon-provided environment override', () => {
         const previous = process.env[HAPPIER_SESSION_CONNECTED_SERVICES_BINDINGS_ENV_KEY];
         process.env[HAPPIER_SESSION_CONNECTED_SERVICES_BINDINGS_ENV_KEY] = JSON.stringify({
-            v: 1,
+            v: 2,
             bindingsByServiceId: {
-                'openai-codex': {
+                'happier.agent.codex/openai-codex': {
                     source: 'connected',
                     selection: 'profile',
                     profileId: 'happier',
@@ -272,9 +303,9 @@ describe('createSessionMetadata', () => {
             });
 
             expect((metadata as Record<string, unknown>).connectedServices).toEqual({
-                v: 1,
+                v: 2,
                 bindingsByServiceId: {
-                    'openai-codex': {
+                    'happier.agent.codex/openai-codex': {
                         source: 'connected',
                         selection: 'profile',
                         profileId: 'happier',

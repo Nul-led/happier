@@ -1,155 +1,114 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { API_TOKEN_FULL_GRANT_V1, type AccountApiTokensListActionOutputV1 } from '@happier-dev/protocol';
 
 const mocks = vi.hoisted(() => ({
-  coordinate: vi.fn(async () => ({ state: 'succeeded' as const })),
-  recover: vi.fn(async () => {}),
-  createCoordinator: vi.fn(),
-  createRecovery: vi.fn(),
-  createActionExecutor: vi.fn(() => ({ execute: vi.fn() })),
-  createStorage: vi.fn(() => ({ execute: vi.fn() })),
-  bootstrapAccountSettings: vi.fn(),
-  readMachineCapabilities: vi.fn(),
+  fetchSessionById: vi.fn(),
+  lookupSessionsByTags: vi.fn<typeof import('@/session/transport/http/sessionsHttp')['lookupSessionsByTags']>(),
+  fetchSessionsPage: vi.fn<typeof import('@/session/transport/http/sessionsHttp')['fetchSessionsPage']>(),
+  fetchSessionsQueryPage: vi.fn<typeof import('@/session/transport/http/sessionsHttp')['fetchSessionsQueryPage']>(),
+  fetchAccountEncryptionCurrentness: vi.fn(),
+  callSessionRpc: vi.fn(),
 }));
 
-vi.mock('./production', () => ({
-  createProductionWorkflowRunCoordinator: mocks.createCoordinator,
+// HTTP responses are the system boundary; resolution, opening and owner
+// metadata projection beneath these adapters remain real.
+vi.mock('@/session/transport/http/sessionsHttp', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@/session/transport/http/sessionsHttp')>(),
+  fetchSessionById: mocks.fetchSessionById,
+  lookupSessionsByTags: mocks.lookupSessionsByTags,
+  fetchSessionsPage: mocks.fetchSessionsPage,
+  fetchSessionsQueryPage: mocks.fetchSessionsQueryPage,
 }));
-vi.mock('./recovery', () => ({
-  createWorkflowRunRecoveryReader: mocks.createRecovery,
+vi.mock('@/api/client/connectedServiceCredentialApi', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@/api/client/connectedServiceCredentialApi')>(),
+  fetchAccountEncryptionCurrentness: mocks.fetchAccountEncryptionCurrentness,
 }));
-vi.mock('./workflowRunStorageClient', () => ({
-  createWorkflowRunStorageClient: mocks.createStorage,
-}));
-vi.mock('@/api/machine/machineOperationProtocolCapabilities', () => ({
-  readMachineOperationProtocolCapabilitiesV1: mocks.readMachineCapabilities,
-}));
-vi.mock('@/session/actions/createCliActionExecutorFromCredentials', () => ({
-  createCliActionExecutorFromCredentials: mocks.createActionExecutor,
-}));
-vi.mock('@/daemon/automation/automationWorker', () => ({
-  resolveAutomationWorkerAccountEncryption: vi.fn(),
-}));
-vi.mock('@/plugins/runtime/reload/runtimeLease', () => ({
-  acquireAuthoritativePluginRuntimeRegistryLease: vi.fn(),
-}));
-vi.mock('@/settings/accountSettings/activeAccountSettingsSnapshot', () => ({
-  getActiveAccountSettingsSnapshot: () => ({ settings: { workspaceRefsV1: [] } }),
-}));
-vi.mock('@/settings/accountSettings/bootstrapAccountSettingsContext', () => ({
-  bootstrapAccountSettingsContext: mocks.bootstrapAccountSettings,
-}));
+vi.mock('@/session/transport/rpc/sessionRpc', () => ({ callSessionRpc: mocks.callSessionRpc }));
 
 import {
-  createProductionDaemonWorkflowRuntime,
   createWorkflowAcceptedAuthorizationCurrentness,
   createWorkflowInvocationRecoveryObserver,
+  resolveWorkflowSessionConversation,
+  withdrawWorkflowOriginSessionInput,
+  cancelDispatchedWorkflowOriginSessionInput,
 } from './daemonRuntime';
+
+describe('workflow actual Session reuse metadata', () => {
+  const sessionId = 'c123456789012345678901234';
+  const credentials = { token: 'token', encryption: null } as const;
+  const session = {
+    id: sessionId, active: true, activeAt: 1, createdAt: 1, updatedAt: 1,
+    encryptionMode: 'plain', metadataLayoutVersion: 1, metadata: JSON.stringify({ v: 1 }),
+    ownerMetadata: { t: 'plain', v: { v: 1, workspace: { path: '/owner/checkout', machineId: 'machine-1' } } },
+  };
+
+  beforeEach(() => {
+    mocks.fetchAccountEncryptionCurrentness.mockResolvedValue({
+      mode: 'plain', version: 1, signingKeyFingerprint: null, contentKeyFingerprint: null, updatedAt: 1,
+    });
+    mocks.fetchSessionById.mockResolvedValue(session);
+    mocks.lookupSessionsByTags.mockImplementation(async ({ tags }) => ({ state: 'available', tags, sessions: [] }));
+    mocks.fetchSessionsPage.mockResolvedValue({ sessions: [], nextCursor: null, hasNext: false });
+    mocks.fetchSessionsQueryPage.mockResolvedValue({ sessions: [], nextCursor: null, hasNext: false,
+      attentionNextCursor: null, attentionHasNext: false });
+  });
+
+  it('uses the authorized owner cwd and rejects another Machine before preparation', async () => {
+    await expect(resolveWorkflowSessionConversation({ credentials, sessionId, machineId: 'machine-1' }))
+      .resolves.toMatchObject({ sessionId, machineId: 'machine-1', directory: '/owner/checkout' });
+    await expect(resolveWorkflowSessionConversation({ credentials, sessionId, machineId: 'machine-2' })).resolves.toBeNull();
+  });
+
+  it('projects authoritative workflow Session origin and depth from the Session record', async () => {
+    mocks.fetchSessionById.mockResolvedValue({ ...session, origin: { kind: 'run_step', runId: 'run-1' }, workDepth: 3 });
+    await expect(resolveWorkflowSessionConversation({ credentials, sessionId, machineId: 'machine-1' }))
+      .resolves.toMatchObject({ origin: { kind: 'run_step', runId: 'run-1' }, workDepth: 3 });
+  });
+
+  it('refuses missing owner metadata rather than using presentation or plaintext as owner authority', async () => {
+    mocks.fetchSessionById.mockResolvedValue({ ...session, ownerMetadata: undefined,
+      metadata: JSON.stringify({ v: 1, summary: { text: '/invented/path', updatedAt: 1 } }) });
+    await expect(resolveWorkflowSessionConversation({ credentials, sessionId, machineId: 'machine-1' })).resolves.toBeNull();
+    mocks.fetchSessionById.mockResolvedValue({ ...session, ownerMetadata: { t: 'encrypted', c: 'invalid' } });
+    await expect(resolveWorkflowSessionConversation({ credentials, sessionId, machineId: 'machine-1' })).resolves.toBeNull();
+  });
+
+  it('accepts only the origin input owner withdrawal answer and never infers it from absence', async () => {
+    mocks.callSessionRpc.mockResolvedValue('withdrawn');
+    await expect(withdrawWorkflowOriginSessionInput({ credentials, sessionId, machineId: 'machine-1', localInputId: 'step-1' }))
+      .resolves.toBe('withdrawn');
+    mocks.callSessionRpc.mockResolvedValue('dispatched');
+    await expect(withdrawWorkflowOriginSessionInput({ credentials, sessionId, machineId: 'machine-1', localInputId: 'step-1' }))
+      .resolves.toBe('dispatched');
+    mocks.callSessionRpc.mockResolvedValue({ ok: false, error: 'unsupported' });
+    await expect(withdrawWorkflowOriginSessionInput({ credentials, sessionId, machineId: 'machine-1', localInputId: 'step-1' }))
+      .rejects.toMatchObject({ code: 'workflow_origin_input_withdrawal_unavailable' });
+    mocks.fetchSessionById.mockResolvedValue(null);
+    await expect(withdrawWorkflowOriginSessionInput({ credentials, sessionId, machineId: 'machine-1', localInputId: 'step-1' }))
+      .rejects.toMatchObject({ code: 'workflow_conversation_unavailable' });
+  });
+
+  it('requests only the dispatched origin exact turn and keeps non-current replies unresolved', async () => {
+    mocks.callSessionRpc.mockResolvedValue({ ok: true, status: 'cancelled', sessionId, localId: 'step-1' });
+    await expect(cancelDispatchedWorkflowOriginSessionInput({ credentials, sessionId, machineId: 'machine-1', localInputId: 'step-1' }))
+      .resolves.toBeUndefined();
+    expect(mocks.callSessionRpc).toHaveBeenLastCalledWith(expect.objectContaining({
+      request: { sessionId, localId: 'step-1' },
+    }));
+    mocks.callSessionRpc.mockResolvedValue({ ok: false, status: 'notCurrent', sessionId, localId: 'step-1' });
+    await expect(cancelDispatchedWorkflowOriginSessionInput({ credentials, sessionId, machineId: 'machine-1', localInputId: 'step-1' }))
+      .rejects.toMatchObject({ code: 'workflow_origin_input_stop_unavailable' });
+  });
+});
 
 describe('production daemon Workflow bootstrap', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.createCoordinator.mockReturnValue(mocks.coordinate);
-    mocks.createRecovery.mockReturnValue(mocks.recover);
-    mocks.bootstrapAccountSettings.mockResolvedValue({ settings: { workspaceRefsV1: [] } });
-    mocks.readMachineCapabilities.mockResolvedValue(null);
-  });
-
-  it('constructs callable coordinator and recovery factories for the connected machine', async () => {
-    const runtime = createProductionDaemonWorkflowRuntime({
-      credentials: { token: 'token' } as never,
-      accountId: 'account-1',
-      serverId: 'server-1',
-    });
-    const machineAdmissionTransport = vi.fn();
-    const coordinate = runtime.createCoordinatorForMachine({
-      machineId: 'machine-1',
-      machineAdmissionTransport,
-      machineActionDirectTargetTransport: { machineId: 'machine-1', invoke: vi.fn() },
-    });
-    const recover = runtime.createRecoveryForMachine({ machineId: 'machine-1', machineAdmissionTransport });
-
-    await coordinate({ runId: 'run-1', attempt: 0, expectedRevision: 0,
-      accountCurrentness: { mode: 'plain', version: 1, contentKeyFingerprint: null } });
-    await recover('startup');
-
-    expect(mocks.createCoordinator).toHaveBeenCalledWith(expect.objectContaining({
-      accountId: 'account-1',
-      machineId: 'machine-1',
-      execution: expect.objectContaining({ machineAdmissionTransport }),
-    }));
-    expect(mocks.createActionExecutor).toHaveBeenCalledWith(expect.objectContaining({
-      workflowAcceptedAuthorizationCurrentness: runtime.isAcceptedAuthorizationCurrent,
-    }));
-    expect(mocks.coordinate).toHaveBeenCalledOnce();
-    expect(mocks.createRecovery).toHaveBeenCalledWith(expect.objectContaining({
-      accountId: 'account-1',
-      machineId: 'machine-1',
-      storage: expect.any(Object),
-    }));
-    expect(mocks.recover).toHaveBeenCalledWith('startup');
-  });
-
-  it('provides a force-refreshed workspace reference resolver to the process-lifetime coordinator', async () => {
-    const runtime = createProductionDaemonWorkflowRuntime({
-      credentials: { token: 'token' } as never,
-      accountId: 'account-1',
-      serverId: 'server-1',
-    });
-    runtime.createCoordinatorForMachine({
-      machineId: 'machine-1',
-      machineAdmissionTransport: vi.fn(),
-      machineActionDirectTargetTransport: { machineId: 'machine-1', invoke: vi.fn() },
-    });
-    const currentWorkspaceRefs = [{
-      id: 'workspace-1', serverId: 'server-1', machineId: 'machine-1',
-      rootPath: '/current-root', createdAtMs: 2,
-    }];
-    mocks.bootstrapAccountSettings.mockResolvedValueOnce({
-      settings: { workspaceRefsV1: currentWorkspaceRefs },
-    });
-    const coordinatorParams = mocks.createCoordinator.mock.calls[0]?.[0];
-
-    await expect(coordinatorParams.resolveCurrentWorkspaceRefs()).resolves.toBe(currentWorkspaceRefs);
-    expect(mocks.bootstrapAccountSettings).toHaveBeenCalledWith({
-      credentials: { token: 'token' },
-      mode: 'blocking',
-      refresh: 'force',
-    });
-  });
-
-  it('binds the coordinator to fresh exact-target capability reads instead of local advertised capabilities', async () => {
-    const runtime = createProductionDaemonWorkflowRuntime({
-      credentials: { token: 'token' } as never,
-      accountId: 'account-1',
-      serverId: 'server-1',
-    });
-    runtime.createCoordinatorForMachine({
-      machineId: 'machine-1',
-      machineAdmissionTransport: vi.fn(),
-      machineActionDirectTargetTransport: { machineId: 'machine-1', invoke: vi.fn() },
-    });
-    const coordinatorParams = mocks.createCoordinator.mock.calls[0]?.[0];
-    const supported = { sessionInputAdmission: { protocolVersions: [1, 2] } };
-    mocks.readMachineCapabilities
-      .mockResolvedValueOnce({ capabilities: supported, revision: 1 })
-      .mockResolvedValueOnce(null);
-
-    await expect(
-      coordinatorParams.execution.resolveMachineOperationProtocolCapabilities(),
-    ).resolves.toBe(supported);
-    await expect(
-      coordinatorParams.execution.resolveMachineOperationProtocolCapabilities(),
-    ).resolves.toBeNull();
-    expect(mocks.readMachineCapabilities).toHaveBeenNthCalledWith(1, {
-      credentials: { token: 'token' },
-      machineId: 'machine-1',
-    });
-    expect(mocks.readMachineCapabilities).toHaveBeenCalledTimes(2);
   });
 
   it('revalidates only revocable API and plugin principals at the canonical owners', async () => {
     const tokenId = '8f250f0e-4f31-4f7d-8f68-61638b73b526';
-    const listAccountApiTokens = vi.fn(async () => ({
+    const listAccountApiTokens = vi.fn(async (): Promise<AccountApiTokensListActionOutputV1> => ({
       tokens: [{
         tokenId,
         label: 'automation',
@@ -159,16 +118,26 @@ describe('production daemon Workflow bootstrap', () => {
         expiresAt: '2026-01-03T00:00:00.000Z',
         hasEncryptionAccess: false,
         hasUnattendedTeamAccess: false,
+        grant: API_TOKEN_FULL_GRANT_V1,
+        parentTokenId: null,
+        activeChildCount: 0,
+        embedConfig: null,
       }],
     }));
-    const resolveCurrentPluginImmutableGenerationId = vi.fn(
+    const resolveCurrentPluginOccurrenceId = vi.fn(
       async (): Promise<string | null> => 'generation-1',
     );
+    const pluginSourceCustody = {
+      kind: 'development' as const,
+      registeredRootId: 'happier-example-root',
+    };
+    const resolveCurrentPluginSourceCustody = vi.fn(async () => pluginSourceCustody);
     const isMediatedSourceCurrent = vi.fn(async (): Promise<boolean> => true);
     const isCurrent = createWorkflowAcceptedAuthorizationCurrentness({
       accountId: 'account-1',
       listAccountApiTokens,
-      resolveCurrentPluginImmutableGenerationId,
+      resolveCurrentPluginOccurrenceId,
+      resolveCurrentPluginSourceCustody,
       isMediatedSourceCurrent,
       now: () => Date.parse('2026-01-02T00:00:00.000Z'),
     });
@@ -194,7 +163,8 @@ describe('production daemon Workflow bootstrap', () => {
     const afterExpiry = createWorkflowAcceptedAuthorizationCurrentness({
       accountId: 'account-1',
       listAccountApiTokens,
-      resolveCurrentPluginImmutableGenerationId,
+      resolveCurrentPluginOccurrenceId,
+      resolveCurrentPluginSourceCustody,
       isMediatedSourceCurrent,
       now: () => Date.parse('2026-01-04T00:00:00.000Z'),
     });
@@ -207,13 +177,13 @@ describe('production daemon Workflow bootstrap', () => {
     await expect(isCurrent({
       authorization: {
         admittedPermissionCeiling: 'default',
-        principal: { kind: 'plugin', pluginId: 'happier.example', immutableGenerationId: 'generation-1' },
+        principal: { kind: 'plugin', pluginId: 'happier.example', sourceCustody: pluginSourceCustody },
       },
     })).resolves.toBe(true);
     await expect(isCurrent({
       authorization: {
         admittedPermissionCeiling: 'default',
-        principal: { kind: 'plugin', pluginId: 'happier.example' },
+        principal: { kind: 'plugin', pluginId: 'happier.example' } as never,
       },
     })).resolves.toBe(false);
     await expect(isCurrent({
@@ -244,7 +214,7 @@ describe('production daemon Workflow bootstrap', () => {
         },
       },
     })).resolves.toBe(false);
-    resolveCurrentPluginImmutableGenerationId.mockResolvedValueOnce(null);
+    resolveCurrentPluginOccurrenceId.mockResolvedValueOnce(null);
     await expect(isCurrent({
       authorization: {
         admittedPermissionCeiling: 'read-only',
@@ -258,7 +228,8 @@ describe('production daemon Workflow bootstrap', () => {
       },
     })).resolves.toBe(false);
     expect(listAccountApiTokens).toHaveBeenCalledTimes(2);
-    expect(resolveCurrentPluginImmutableGenerationId).toHaveBeenCalledTimes(4);
+    expect(resolveCurrentPluginOccurrenceId).toHaveBeenCalledTimes(3);
+    expect(resolveCurrentPluginSourceCustody).toHaveBeenCalledTimes(2);
     expect(isMediatedSourceCurrent).toHaveBeenCalledTimes(2);
   });
 
@@ -356,7 +327,7 @@ describe('production daemon Workflow bootstrap', () => {
         blockKind: 'step',
         attempt: '0',
         logicalInvocationRecordId: '2aaf1a39-4c48-4904-83a4-7eae318dfc2c',
-        execution: { kind: 'attached_run', sessionId: 'session-1', runId: 'execution-run-1', localInputId: 'input-1' },
+        execution: { kind: 'detached_run', runId: 'execution-run-1', localInputId: 'input-1', runtimeSelection: {} },
       },
     })).resolves.toEqual({ kind: 'unresolved', code: 'workflow_outcome_unresolved' });
     expect(execute.mock.calls.map(([actionId]) => actionId)).toEqual([
@@ -365,10 +336,10 @@ describe('production daemon Workflow bootstrap', () => {
       'execution.run.get',
     ]);
     expect(execute).toHaveBeenNthCalledWith(1, 'execution.run.get', {
-      sessionId: 'session-1', runId: 'execution-run-1', includeStructured: false,
+      sessionId: null, runId: 'execution-run-1', includeStructured: false,
     }, expect.objectContaining({ executionRunTargetMachineId: 'machine-1' }));
     expect(execute).toHaveBeenNthCalledWith(2, 'execution.run.stop', {
-      sessionId: 'session-1', runId: 'execution-run-1',
+      sessionId: null, runId: 'execution-run-1',
     }, expect.objectContaining({ executionRunTargetMachineId: 'machine-1' }));
     expect(execute.mock.calls[1]?.[2]).not.toHaveProperty('signal');
     expect(execute.mock.calls[2]?.[2]).not.toHaveProperty('signal');

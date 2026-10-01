@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
+import { t } from '@/text';
+
 import type { MachineDisplayRenderable } from '@/sync/domains/machines/machineDisplayRenderable';
 import type { SessionListRenderableSession } from '@/sync/domains/session/listing/sessionListRenderable';
 
@@ -160,9 +162,49 @@ describe('buildSessionListViewData (project grouping)', () => {
         );
         expect(projectHeaders).toHaveLength(2);
         expect(projectHeaders.map((item) => item.machine?.id).sort()).toEqual(['m_new', 'm_old']);
-        expect(projectHeaders.map((item) => item.subtitle)).toEqual([host, host]);
+        // Two machines on the same host are still two machines: the naming owner tells them apart.
+        const subtitles = projectHeaders.map((item) => item.subtitle ?? '');
+        expect(subtitles.every((subtitle) => subtitle.startsWith(`${host} · `))).toBe(true);
+        expect(new Set(subtitles).size).toBe(2);
 
         const sessionRows = list.filter((item) => item.type === 'session');
         expect(sessionRows).toHaveLength(2);
+    });
+
+    it('groups a machine’s no-folder sessions under one “Chats” group, never one group per private folder', () => {
+        const managed = { v: 1, kind: 'managed' } as const;
+        const sessions: Record<string, SessionListRenderableSession> = {
+            chat_a: makeRenderableSession({
+                id: 'chat_a',
+                createdAt: 10,
+                metadata: { machineId: 'm1', path: '/home/u/.happier/servers/s/session-directories/aaa', homeDir: '/home/u', sessionDirectoryV1: managed },
+            }),
+            chat_b: makeRenderableSession({
+                id: 'chat_b',
+                createdAt: 11,
+                metadata: { machineId: 'm1', path: '/home/u/.happier/servers/s/session-directories/bbb', homeDir: '/home/u', sessionDirectoryV1: managed },
+            }),
+            repo: makeRenderableSession({
+                id: 'repo',
+                createdAt: 9,
+                metadata: { machineId: 'm1', path: '/home/u/repo', homeDir: '/home/u' },
+            }),
+        };
+        const machines: Record<string, MachineDisplayRenderable> = {
+            m1: makeMachineDisplay({ id: 'm1', active: true, metadata: { host: 'mbp', homeDir: '/home/u', displayName: 'MacBook Pro' } }),
+        };
+
+        const list = buildSessionListViewData(sessions, machines, {
+            activeGroupingV1: 'project',
+            inactiveGroupingV1: 'project',
+        });
+
+        const headers = list.filter(isProjectHeader);
+        expect(headers.map((header) => header.title).sort()).toEqual([t('session.folderless.chats'), '~/repo'].sort());
+        const chats = headers.find((header) => header.title === t('session.folderless.chats'));
+        // No workspace (and so no project, no "Add as project") is derived from a private folder.
+        expect(chats?.workspaceScopeHint ?? null).toBeNull();
+        expect(JSON.stringify(headers)).not.toContain('session-directories');
+        expect(list.filter((item) => item.type === 'session')).toHaveLength(3);
     });
 });

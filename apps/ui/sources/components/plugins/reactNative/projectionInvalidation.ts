@@ -20,6 +20,7 @@ import {
     readPluginUiReactNativeBundleCacheIdentity,
 } from '@/sync/domains/plugins/ui/artifactAdoption';
 import type { ActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
+import { PluginUiArtifactsManifestEntryV2Schema } from '@happier-dev/protocol/plugins/ui';
 
 export type PluginUiReactNativeRuntimeProjectionReconcilerTargets = Readonly<{
     cache: Pick<PluginReactNativeBundleCache, 'reconcileActiveProjectionIdentities'>;
@@ -94,10 +95,18 @@ export function createPluginUiReactNativeRuntimeProjectionReconciler(
                     continue;
                 }
 
-                const identity = readPluginUiReactNativeBundleCacheIdentity(runtime?.cacheIdentity);
                 const cacheKey = readNonEmptyString(runtime?.cacheKey);
                 const pluginId = readNonEmptyString(entry?.pluginId);
                 const contributionId = readNonEmptyString(entry?.contributionId);
+                const graph = PluginUiArtifactsManifestEntryV2Schema.safeParse(entry?.artifactGraph);
+                const identity = pluginId && contributionId && graph.success && graph.data.tier === 'reactNative'
+                    ? readPluginUiReactNativeBundleCacheIdentity(runtime?.cacheIdentity, {
+                        pluginId,
+                        contributionId,
+                        artifactId: graph.data.artifactId,
+                        platform: 'web',
+                    })
+                    : null;
                 if (
                     !identity
                     || !cacheKey
@@ -105,7 +114,6 @@ export function createPluginUiReactNativeRuntimeProjectionReconciler(
                     || !contributionId
                     || identity.pluginId !== pluginId
                     || identity.contributionId !== contributionId
-                    || identity.projectionGeneration !== snapshot.projection.generation
                     || cacheKey !== derivePluginReactNativeBundleCacheKey(identity)
                 ) {
                     continue;

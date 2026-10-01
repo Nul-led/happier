@@ -47,6 +47,7 @@ const scope = Object.freeze({ serverId: 'server-a', accountId: 'account-a' });
 const slot = Object.freeze({
     pluginId: 'com.acme.hosted',
     contributionId: 'hosted',
+    artifactId: 'acme',
     tier: 'hostedWeb' as const,
     platform: 'web' as const,
 });
@@ -73,9 +74,6 @@ function fixture(current: boolean) {
         { relativePath: entryPath, bytes: entryBytes },
         { relativePath: scriptPath, bytes: scriptBytes },
     ]);
-    const compatibility = {
-        hostUiApiVersion: '1.0.0',
-    };
     const response: PluginAccountAvailabilityIntentReadResponseV1 = {
         availabilityCursor: 1,
         packageAssets: [],
@@ -103,10 +101,11 @@ function fixture(current: boolean) {
             collectionContracts: [],
             uiSlots: [{
                 contributionId: slot.contributionId,
+                artifactId: slot.artifactId,
                 tier: slot.tier,
                 platform: slot.platform,
                 artifactDigest: digest,
-                compatibility,
+                hostUiApiRange: '^1.0.0',
             }],
             packageAssetArchive: {
                 archiveDigestSha256: `sha256:${'d'.repeat(64)}`,
@@ -117,21 +116,19 @@ function fixture(current: boolean) {
     };
     return Object.freeze({
         snapshot: {
-            availabilityCursor: 1,
+            availabilityCursor: current ? 1 : 2,
             intentReads: current ? [{ pluginId: slot.pluginId, response }] : [],
             materializations: [],
             snapshots: [],
         } satisfies PluginAccountAvailabilitySnapshot,
         graph: {
-            contributionId: slot.contributionId,
+            artifactId: slot.artifactId,
             tier: slot.tier,
-            platform: slot.platform,
             entry: entryPath,
             files,
             digest,
-            builtWith: { bundler: 'vite' as const, version: '7.0.0' },
-            hostUiApiVersion: '1.0.0',
-            compat: {},
+            builtWith: { staging: 'staticDirectory' as const },
+            hostUiApiRange: '^1.0.0',
         },
         bytesByPath: new Map<string, Uint8Array>([
             [entryPath, entryBytes],
@@ -153,7 +150,7 @@ async function acquireFixtureLease(input: Readonly<{
         artifactGraph: current.graph,
         sources: [{
             kind: sourceKind,
-            readFile: async ({ relativePath }) => current.bytesByPath.get(relativePath) ?? null,
+            fetch: async () => current.bytesByPath,
         }],
     });
     if (acquired.kind !== 'available') throw new Error('expected current Artifact lease');
@@ -343,11 +340,6 @@ describe('native Artifact resource bridge', () => {
         }));
         expect(registry.isPersistentArtifactIdentityInUse(derivePluginUiPersistentArtifactKey({
             accountScope: scope,
-            releaseVersion: lease.artifact.releaseVersion,
-            pluginId: lease.artifact.pluginId,
-            contributionId: lease.artifact.contributionId,
-            tier: lease.artifact.tier,
-            platform: lease.artifact.platform,
             artifactDigest: lease.artifact.digest,
         }))).toBe(false);
         result.handle.dispose();
@@ -364,7 +356,7 @@ describe('native Artifact resource bridge', () => {
         const { lifetime } = createLifetime();
         const store: PluginNativeArtifactPersistentStore = Object.freeze({
             ...createPersistentStore([]),
-            write: async () => 'notPersistedCapacity',
+            write: async () => 'notPersistedCapacity' as const,
             describeNativeResource: vi.fn(async () => null),
         });
         const materialize = () => registry.materialize({
@@ -396,11 +388,6 @@ describe('native Artifact resource bridge', () => {
         const { lifetime } = createLifetime();
         const identityKey = derivePluginUiPersistentArtifactKey({
             accountScope: scope,
-            releaseVersion: lease.artifact.releaseVersion,
-            pluginId: lease.artifact.pluginId,
-            contributionId: lease.artifact.contributionId,
-            tier: lease.artifact.tier,
-            platform: lease.artifact.platform,
             artifactDigest: lease.artifact.digest,
         });
 
@@ -567,7 +554,7 @@ describe('native Artifact resource bridge', () => {
         });
         if (result.kind !== 'available') throw new Error('expected native Artifact handle');
 
-        readerStore.replace({ scope, snapshot: fixture(false).snapshot });
+        readerStore.retire([slot.pluginId]);
 
         expect(result.handle.isCurrent()).toBe(false);
         expect(unregister).toHaveBeenCalledTimes(1);
@@ -607,7 +594,7 @@ describe('native Artifact resource bridge', () => {
         });
 
         await nativeRegistrationEntered;
-        readerStore.replace({ scope, snapshot: fixture(false).snapshot });
+        readerStore.retire([slot.pluginId]);
         resolveNativeRegistration?.(nativeRegistrationAccepted);
 
         await expect(pending).resolves.toEqual({ kind: 'unavailable', code: 'artifact_lease_revoked' });
@@ -648,7 +635,7 @@ describe('native Artifact resource bridge', () => {
             locallyRevoked = true;
         });
 
-        first.readerStore.replace({ scope, snapshot: fixture(false).snapshot });
+        first.readerStore.retire([slot.pluginId]);
         expect(locallyRevoked).toBe(true);
         expect(unregister).toHaveBeenCalledTimes(1);
 
@@ -708,7 +695,7 @@ describe('native Artifact resource bridge', () => {
             locallyRevoked = true;
         });
 
-        first.readerStore.replace({ scope, snapshot: fixture(false).snapshot });
+        first.readerStore.retire([slot.pluginId]);
         expect(locallyRevoked).toBe(true);
         expect(unregister).toHaveBeenCalledTimes(1);
         // The pending acknowledgement is not a failure.
@@ -779,15 +766,10 @@ describe('native Artifact resource bridge', () => {
         if (materialized.kind !== 'available') throw new Error('expected native Artifact handle');
         const identity = {
             accountScope: scope,
-            releaseVersion: first.lease.artifact.releaseVersion,
-            pluginId: first.lease.artifact.pluginId,
-            contributionId: first.lease.artifact.contributionId,
-            tier: first.lease.artifact.tier,
-            platform: first.lease.artifact.platform,
             artifactDigest: first.lease.artifact.digest,
         };
 
-        first.readerStore.replace({ scope, snapshot: fixture(false).snapshot });
+        first.readerStore.retire([slot.pluginId]);
 
         await expect(store.remove(identity)).rejects.toThrow('native_artifact_revocation_pending');
         expect(remove).not.toHaveBeenCalled();

@@ -94,6 +94,18 @@ function e2eeCurrentness(credentials: Readonly<{
 }
 
 describe('updateSessionMetadataWithRetry', () => {
+  it('normalizes additive legacy host metadata at the real tuple-reader boundary before an owner mutation', () => {
+    const snapshot = readSessionMetadataTupleWriterSnapshot({
+      credentials: { token: 'token-1', encryption: null }, accountEncryptionCurrentness: plainCurrentness,
+      rawSession: { encryptionMode: 'plain', metadataLayoutVersion: 0, metadataVersion: 1, agentStateVersion: 0, agentState: null, ownerMetadata: null, metadata: JSON.stringify({
+        path: '/repo', host: 'machine', providerExtension: { retained: true },
+        terminal: { mode: 'plain', hostKind: 'herdr', requested: 'plain', requestedHostKind: 'herdr', herdr: { sessionName: 'work', socketPath: '/tmp/herdr.sock', terminalId: 'term_1' } },
+      }) },
+    });
+    expect(snapshot.value.metadata).toMatchObject({ terminal: { mode: 'herdr', requested: 'herdr' }, providerExtension: { retained: true } });
+    expect(snapshot.value.metadata.terminal).not.toHaveProperty('hostKind');
+  });
+
   beforeEach(() => {
     fetchSessionByIdCompatMock.mockReset();
     patchSessionMetadataEnvelopeTupleMock.mockReset();

@@ -2,13 +2,15 @@ import { existsSync } from 'node:fs'
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createHappierMcpBridge } from '@/agent/runtime/createHappierMcpBridge'
+import { resolveRunnerMcpServers } from '@/mcp/runtime/resolveRunnerMcpServers'
+import type { HappyMcpSessionClient } from '@/mcp/startHappyServer'
 import { normalizeActionsSettingsV1 } from '@happier-dev/protocol'
 
 const { requireJavaScriptRuntimeExecutableMock } = vi.hoisted(() => ({
   requireJavaScriptRuntimeExecutableMock: vi.fn(async (): Promise<string> => process.execPath),
 }))
 const { startHappyServerMock } = vi.hoisted(() => ({
-  startHappyServerMock: vi.fn(async () => ({
+  startHappyServerMock: vi.fn(async (_session: HappyMcpSessionClient) => ({
     url: 'http://127.0.0.1:12345',
     supportedSessionReadActions: [],
     stop: vi.fn(),
@@ -62,6 +64,46 @@ describe('createHappierMcpBridge', () => {
       delete process.env.HAPPIER_ACTIONS_SETTINGS_V1
     } else {
       process.env.HAPPIER_ACTIONS_SETTINGS_V1 = originalActionSettingsEnv
+    }
+  })
+
+  it('binds the Run absolute depth without borrowing its parent Session depth', async () => {
+    vi.mocked(existsSync).mockImplementation((pathLike) => (
+      String(pathLike).endsWith('/package-dist/mcp/bridges/happierMcpStdioBridge.mjs')
+    ))
+    const session = {
+      sessionId: 'session-a',
+      getServerBinding: () => ({ serverId: 'home-a', serverUrl: 'https://home-a.test' }),
+      getWorkDepth: () => 1,
+      rpcHandlerManager: {
+        registerHandler: () => undefined,
+        invokeLocal: async () => ({}),
+      },
+      updateMetadata: () => undefined,
+    } satisfies HappyMcpSessionClient
+    const binding = await resolveRunnerMcpServers({
+      session,
+      credentials: { token: 'plain-token', encryption: null },
+      accountSettings: null,
+      machineId: 'machine-a',
+      directory: '/repo',
+      env: {},
+      executionRun: {
+        runId: 'run-a',
+        workDepth: 4,
+        cwd: '/run',
+        signal: new AbortController().signal,
+        isCurrent: () => true,
+        readActiveTurnAdmissionWitness: () => null,
+        readCurrentRunOccurrence: () => null,
+      },
+    })
+    try {
+      const boundClient = startHappyServerMock.mock.calls.at(-1)?.[0]
+      expect(boundClient?.getWorkDepth?.()).toBe(4)
+      expect(session.getWorkDepth()).toBe(1)
+    } finally {
+      binding.happierMcpServer.stop()
     }
   })
 
@@ -157,6 +199,8 @@ describe('createHappierMcpBridge', () => {
 
     expect(startHappyServerMock).toHaveBeenCalledWith(session, {
       credentials: null,
+      sessionCredentials: null,
+      authorityScope: 'account',
       accountSettings,
       getAccountSettings: null,
     })
@@ -309,6 +353,8 @@ describe('createHappierMcpBridge', () => {
 
     expect(startHappyServerMock).toHaveBeenCalledWith(session, {
       credentials,
+      sessionCredentials: credentials,
+      authorityScope: 'account',
       accountSettings: null,
       getAccountSettings: null,
     })

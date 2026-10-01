@@ -12,7 +12,6 @@ import {
     readPluginUiContributionOrigin,
 } from '@/sync/domains/plugins/ui/projectionUnion';
 import { launchPluginSurfaceAction } from './launchPluginSurfaceAction';
-import { createPluginActionCurrentIntentHandler } from './pluginSurfaceFeedback';
 import type { PluginSurfaceScopedLaunchFacts } from './pluginSurfaceLaunchAuthority';
 import type {
     PluginSurfaceActionDispatchOutcome,
@@ -46,11 +45,11 @@ import type { ActiveServerAccountScopeLifetime } from '@/sync/domains/scope/acti
 /**
  * Semantic commands are not a second scope resolver. The registered scope
  * already owns whether its retained projection is current and exactly which
- * machine/server/generation admitted it. A retained descriptor stays
+ * machine/server admitted it. A retained descriptor stays
  * displayable, but it is not interaction authority once that owner revokes it.
  */
 export function resolveCurrentPluginSemanticCommandScope(
-    projection: PluginUiProjectionModel,
+    _projection: PluginUiProjectionModel,
     scopedLaunchFacts: PluginSurfaceScopedLaunchFacts | null | undefined,
 ): PluginSurfaceScopedLaunchFacts | null {
     if (
@@ -58,9 +57,6 @@ export function resolveCurrentPluginSemanticCommandScope(
         || scopedLaunchFacts.interactionEnabled !== true
         || !scopedLaunchFacts.machineId
         || scopedLaunchFacts.machineId.trim().length === 0
-        || scopedLaunchFacts.generation === null
-        || !Number.isFinite(scopedLaunchFacts.generation)
-        || projection.generation !== scopedLaunchFacts.generation
     ) {
         return null;
     }
@@ -69,13 +65,10 @@ export function resolveCurrentPluginSemanticCommandScope(
 
 /** Client-target Actions retain the projection's currentness without a daemon address. */
 export function isCurrentPluginSemanticCommandProjection(
-    projection: PluginUiProjectionModel,
+    _projection: PluginUiProjectionModel,
     scopedLaunchFacts: PluginSurfaceScopedLaunchFacts | null | undefined,
 ): boolean {
-    return scopedLaunchFacts?.interactionEnabled === true
-        && scopedLaunchFacts.generation !== null
-        && Number.isFinite(scopedLaunchFacts.generation)
-        && projection.generation === scopedLaunchFacts.generation;
+    return scopedLaunchFacts?.interactionEnabled === true;
 }
 
 function hasContributionOriginField(entry: unknown): boolean {
@@ -94,19 +87,22 @@ function resolveProjectedActionExecutionScope(
     }
     if (!isCurrentPluginSemanticCommandProjection(projection, scopedLaunchFacts)) return null;
     const origin = readPluginUiContributionOrigin(projectedAction);
+    const executionOrigin = origin?.executionOrigin ?? null;
     if (
         !origin
         || origin.phase !== 'current'
         || origin.interactionEnabled !== true
-        || origin.generation === null
-        || !Number.isFinite(origin.generation)
-        || origin.executionOrigin?.materializationRef.pluginId !== projectedAction.pluginId
-        || origin.executionOrigin.materializationRef.machineId !== origin.machineId
+        || (
+            executionOrigin !== null
+            && (
+                executionOrigin.materializationRef.pluginId !== projectedAction.pluginId
+                || executionOrigin.materializationRef.machineId !== origin.machineId
+            )
+        )
     ) return null;
     return Object.freeze({
         serverId: origin.serverId,
         machineId: origin.machineId,
-        generation: origin.generation,
         interactionEnabled: true,
     });
 }
@@ -164,34 +160,12 @@ export async function dispatchPluginResolvedSemanticCommand(
         input.scopedLaunchFacts,
     );
     const scopedMachineId = scopedAuthority?.machineId;
-    const scopedGeneration = scopedAuthority?.generation;
-    // App-scope projections may be unions whose generation fences the whole
-    // catalog but does not identify any member registration. The Action's
-    // resolved origin is the one address used by client executable activation,
-    // just as it already is for daemon dispatch.
-    const clientActionGeneration = projectedAction.execution.target === 'client'
-        ? scopedGeneration
-        : null;
     if (
         projectedAction.execution.target === 'daemon'
-        && (!scopedAuthority || !scopedMachineId || typeof scopedGeneration !== 'number')
+        && (!scopedAuthority || !scopedMachineId)
     ) {
         return { ok: false, code: 'unavailable', reason: 'plugin_ui_action_unavailable' };
     }
-    const isCurrent = input.scopeIsCurrent ?? (() => true);
-    const requestCurrentIntent = projectedAction.execution.target === 'client'
-        && typeof clientActionGeneration === 'number'
-        ? createPluginActionCurrentIntentHandler({
-            requester: {
-                pluginId: projectedAction.pluginId,
-                contributionId: projectedAction.id,
-                generationId: String(clientActionGeneration),
-                invocationId: `ui-action:${clientActionGeneration}`,
-            },
-            isCurrent,
-            pluginUiProjection: projection,
-        })
-        : undefined;
     const launched = await launchPluginSurfaceAction({
         callerPluginId: input.callerPluginId,
         // Structured, never the qualified string: a bare string would be offered
@@ -201,29 +175,24 @@ export async function dispatchPluginResolvedSemanticCommand(
         action: command.action,
         ...(command.input === undefined ? {} : { input: command.input }),
         resolveContributedAction,
+        pluginUiProjection: projection,
         ...(input.signal ? { signal: input.signal } : {}),
         ...(projectedAction.execution.target === 'daemon'
             ? {
                 contributedAction: {
                     machineId: scopedMachineId!,
                     serverId: scopedAuthority!.serverId,
-                    expectedGeneration: String(scopedGeneration),
                     ...(input.sessionId ? { sessionId: input.sessionId } : {}),
                     ...(input.execute ? { execute: input.execute } : {}),
                 },
             }
             : {}),
         ...(projectedAction.execution.target === 'client'
-            && typeof clientActionGeneration === 'number'
-            && Number.isInteger(clientActionGeneration)
-            && clientActionGeneration >= 0
             ? {
                 clientAction: {
-                    projectionGeneration: clientActionGeneration,
                     ...(input.execute ? { execute: input.execute } : {}),
                     ...(input.sessionId ? { sessionId: input.sessionId } : {}),
                     ...(input.openSurface ? { openSurface: input.openSurface } : {}),
-                    ...(requestCurrentIntent ? { requestCurrentIntent } : {}),
                     ...(input.readCurrentUiContext
                         ? { currentUiContext: input.readCurrentUiContext }
                         : {}),

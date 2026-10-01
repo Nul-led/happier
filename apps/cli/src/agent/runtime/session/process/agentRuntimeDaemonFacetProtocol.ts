@@ -5,12 +5,14 @@ import {
   AgentExternalSessionTranscriptRawRecordSchema,
   AgentIdV1Schema,
   ExternalSessionTranscriptItemIdV1Schema,
+  ExternalSessionTerminalSourceObservationV1Schema,
   ExternalSessionTranscriptSourceTimestampV1Schema,
   ExternalSessionUserProjectionSchema,
   ExternalSessionOperationStateV1Schema,
   ExternalSessionTranscriptRawMessageV1Schema,
   ExternalSessionsSourceSchema,
   PluginContributionIdentityV1Schema,
+  PluginSourceCustodyV1Schema,
   SidechainIdSchema,
   VoiceProviderContributionSchema,
   RuntimeDescriptorV1Schema,
@@ -94,6 +96,13 @@ const ExternalSessionTranscriptItemSchema = z.object({
     });
   }
 });
+const ExternalSessionTerminalObservationSchema = z.object({
+  id: ExternalSessionTranscriptItemIdV1Schema,
+  timestampMs: ExternalSessionTranscriptSourceTimestampV1Schema,
+  kind: z.literal('source_observation'),
+  data: ExternalSessionTerminalSourceObservationV1Schema.shape.raw.shape.content,
+}).strict();
+
 const AgentSessionRealtimeVoiceDeclarationV1Schema =
   VoiceProviderContributionSchema.transform(
     (declaration, context) => {
@@ -118,7 +127,8 @@ export const AgentRuntimeDaemonExternalSessionFollowEventV1Schema =
     z.object({
       kind: z.literal('data'),
       phase: z.literal('initial_replay').optional(),
-      items: z.array(ExternalSessionTranscriptItemSchema).max(200),
+      providerSessionId: ExternalSessionRemoteIdSchema.optional(),
+      items: z.array(z.union([ExternalSessionTranscriptItemSchema, ExternalSessionTerminalObservationSchema])).max(200),
       fromCursor:
         RunnerAgentDaemonExternalSessionCursorV1Schema.nullable(),
       nextCursor: RunnerAgentDaemonExternalSessionCursorV1Schema,
@@ -288,7 +298,7 @@ const ExternalSessionLinkIdentitySchema = z.object({
 }).strict();
 
 const ExternalSessionTranscriptPageSchema = z.object({
-  items: z.array(ExternalSessionTranscriptRawMessageV1Schema).max(5_000),
+  items: z.array(z.union([ExternalSessionTranscriptRawMessageV1Schema, ExternalSessionTerminalSourceObservationV1Schema])).max(5_000),
   nextCursor:
     RunnerAgentDaemonExternalSessionCursorV1Schema.nullable(),
   tailCursor:
@@ -303,7 +313,7 @@ const ExternalSessionTranscriptReadAfterSchema = z.discriminatedUnion(
     z.object({ outcome: z.literal('already_current') }).strict(),
     z.object({
       outcome: z.literal('advanced'),
-      items: z.array(ExternalSessionTranscriptRawMessageV1Schema).max(5_000),
+      items: z.array(z.union([ExternalSessionTranscriptRawMessageV1Schema, ExternalSessionTerminalSourceObservationV1Schema])).max(5_000),
       nextCursor: RunnerAgentDaemonExternalSessionCursorV1Schema,
       boundary: BoundedIdSchema,
       hasMore: z.boolean(),
@@ -336,6 +346,7 @@ export const RunnerAgentDaemonExternalSessionFollowProviderRequestV1Schema =
     }).strict(),
     z.object({
       kind: z.literal('pageTranscript'),
+      projection: z.literal('terminal').optional(),
       source: ExternalSessionsSourceSchema,
       remoteSessionId: ExternalSessionRemoteIdSchema,
       direction: z.enum(['older', 'newer']),
@@ -346,6 +357,7 @@ export const RunnerAgentDaemonExternalSessionFollowProviderRequestV1Schema =
     }).strict(),
     z.object({
       kind: z.literal('readAfterTranscript'),
+      projection: z.literal('terminal').optional(),
       source: ExternalSessionsSourceSchema,
       remoteSessionId: ExternalSessionRemoteIdSchema,
       cursor: RunnerAgentDaemonExternalSessionCursorV1Schema,
@@ -409,6 +421,8 @@ export const RUNNER_AGENT_DAEMON_FACET_OPERATION_SCHEMAS = [
     cursor:
       RunnerAgentDaemonExternalSessionCursorV1Schema.optional(),
     initialReplay: z.boolean().optional(),
+    projection: z.literal('terminal').optional(),
+    replay: z.literal('fresh').optional(),
     admissionDeadlineAtMs:
       z.number().int().nonnegative().safe().optional(),
     witness:
@@ -483,7 +497,7 @@ export const RunnerAgentDaemonFacetResultV1Schema:
     }).strict(),
     z.object({
       kind: z.literal('voice.authority.snapshot'),
-      agentGeneration: BoundedIdSchema,
+      agentSourceCustody: PluginSourceCustodyV1Schema,
       providers: z.array(
         z.object({
           provider: HostPluginContributionIdentityV1Schema,
@@ -533,7 +547,7 @@ export type RunnerAgentDaemonFacetResultV1 =
   }>
   | Readonly<{
     kind: 'voice.authority.snapshot';
-    agentGeneration: string;
+    agentSourceCustody: z.infer<typeof PluginSourceCustodyV1Schema>;
     providers: readonly Readonly<{
       provider: PluginContributionIdentityV1;
       providerGeneration: string;

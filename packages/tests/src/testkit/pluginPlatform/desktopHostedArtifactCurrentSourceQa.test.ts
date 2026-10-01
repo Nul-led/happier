@@ -3,8 +3,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
-  PLUGIN_UI_ARTIFACT_GRAMMAR_VERSION_V1,
-  PluginUiArtifactsManifestV1Schema,
+  PLUGIN_UI_ARTIFACT_GRAMMAR_VERSION_V2,
+  PluginUiArtifactsManifestV2Schema,
   computePluginUiArtifactFileSetSha256DigestV1,
   computePluginUiArtifactSha256DigestV1,
 } from '@happier-dev/protocol/plugins/ui';
@@ -32,7 +32,7 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map(async (root) => rm(root, { recursive: true, force: true })));
 });
 
-const HOSTED_ARTIFACT_ID = 'examples.production-hosted-reference/dashboard';
+const HOSTED_ARTIFACT_ID = 'review-hosted';
 const GENERATION = 'generation-7';
 const FILE_BYTES = new TextEncoder().encode('<html><body>current-source hosted artifact</body></html>');
 
@@ -40,27 +40,27 @@ async function writeCurrentSourcePluginRoot(): Promise<string> {
   const pluginRoot = await mkdtemp(join(tmpdir(), 'hosted-artifact-qa-plugin-'));
   roots.push(pluginRoot);
   const artifactDir = join(pluginRoot, 'dist', 'happier-plugin-ui');
-  await mkdir(artifactDir, { recursive: true });
-  await writeFile(join(artifactDir, 'index.html'), FILE_BYTES);
+  const entryPath = `hosted-web/${HOSTED_ARTIFACT_ID}/index.html`;
+  await mkdir(join(artifactDir, 'hosted-web', HOSTED_ARTIFACT_ID), { recursive: true });
+  await writeFile(join(artifactDir, ...entryPath.split('/')), FILE_BYTES);
   const entryDigest = computePluginUiArtifactFileSetSha256DigestV1([Object.freeze({
-    relativePath: 'index.html',
+    relativePath: entryPath,
     bytes: FILE_BYTES,
   })]);
-  const manifest = PluginUiArtifactsManifestV1Schema.parse({
-    version: PLUGIN_UI_ARTIFACT_GRAMMAR_VERSION_V1,
+  const manifest = PluginUiArtifactsManifestV2Schema.parse({
+    version: PLUGIN_UI_ARTIFACT_GRAMMAR_VERSION_V2,
     entries: [{
-      contributionId: HOSTED_ARTIFACT_ID,
+      artifactId: HOSTED_ARTIFACT_ID,
       tier: 'hostedWeb',
-      entry: 'index.html',
+      entry: entryPath,
       files: [{
-        relativePath: 'index.html',
+        relativePath: entryPath,
         digest: computePluginUiArtifactSha256DigestV1(FILE_BYTES),
         byteSize: FILE_BYTES.byteLength,
       }],
       digest: entryDigest,
-      builtWith: { bundler: 'vite', version: '0.0.0-test' },
-      hostUiApiVersion: 'v1',
-      compat: {},
+      builtWith: { staging: 'staticDirectory' },
+      hostUiApiRange: '^1.0.0',
     }],
   });
   await writeFile(join(artifactDir, 'ui-artifacts.json'), `${JSON.stringify(manifest, null, 2)}\n`);

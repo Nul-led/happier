@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderScreen } from '@/dev/testkit';
 import { VoiceEnergyProvider } from '@/components/voice/light/useVoiceEnergy';
 
-import { TactilePressable } from './VoiceControls';
+import { TactilePressable } from '@/components/ui/interactions/TactilePressable';
 
 const motion = vi.hoisted(() => ({ reduced: false }));
 const timingCalls = vi.hoisted(() => [] as unknown[]);

@@ -8,6 +8,12 @@ import {
 const METADATA = Object.freeze({ path: '/Users/tester/project', host: 'tester.local' });
 
 describe('resolveSessionOwnerMetadataViewRead', () => {
+    it('respects an explicitly unavailable legacy owner view without treating bounded input as full metadata', () => {
+        expect(resolveSessionOwnerMetadataViewRead({ metadataLayoutVersion: 0, metadata: METADATA, ownerMetadataView: null }))
+            .toEqual({ kind: 'not_projected' });
+        expect(readSessionOwnerMetadataView({ metadataLayoutVersion: 0, metadata: METADATA, ownerMetadataView: null })).toBeNull();
+        expect(readSessionOwnerMetadataView({ metadataLayoutVersion: 0, metadata: METADATA })).toBe(METADATA);
+    });
     it('separates a not-yet-projected owner view from a layout this build cannot read', () => {
         expect(resolveSessionOwnerMetadataViewRead({
             metadataLayoutVersion: 1,

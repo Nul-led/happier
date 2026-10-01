@@ -1,12 +1,29 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act } from 'react-test-renderer';
 
-import { createMachineFixture, renderHook, standardCleanup } from '@/dev/testkit';
+import { createMachineFixture } from '@/dev/testkit/fixtures/machineFixtures';
+import { renderHook } from '@/dev/testkit/hooks/renderHook';
+import { standardCleanup } from '@/dev/testkit/cleanup/standardCleanup';
 import { storage } from '@/sync/domains/state/storageStore';
+import { removeServerProfile, upsertServerProfile } from '@/sync/domains/server/serverProfiles';
 
-import { useAwaitedMachineArrival } from './useAwaitedMachineArrival';
+import { createAwaitedMachineArrivalBaseline, useAwaitedMachineArrival, type AwaitedMachineArrivalBaseline } from './useAwaitedMachineArrival';
+
+// Native navigation is an external boundary; this test only consumes the real machine feed.
+vi.mock('expo-router/build/link/href', () => ({ resolveHref: vi.fn() }));
+vi.mock('@/config', () => ({ config: { variant: 'production', identityVariant: 'stable' } }));
+// Canonical UI presentation boundaries; internal task/feed/arrival decisions remain real.
+vi.mock('@/text', async () => {
+    const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
+    return createTextModuleMock();
+});
+vi.mock('@/modal', async () => {
+    const { createModalModuleMock } = await import('@/dev/testkit/mocks/modal');
+    return createModalModuleMock().module;
+});
 
 afterEach(() => {
+    vi.restoreAllMocks();
     standardCleanup();
 });
 
@@ -25,6 +42,61 @@ async function applyMachine(machine: Parameters<typeof createMachineFixture>[0],
 }
 
 describe('useAwaitedMachineArrival', () => {
+    it('accepts a fresh supplied baseline for a second wait on the same Home and ignores revoked arrivals', async () => {
+        const previousState = storage.getState();
+        try {
+            seedMachines();
+            const hook = await renderHook(({ baseline }: { baseline: AwaitedMachineArrivalBaseline | null }) => useAwaitedMachineArrival({ baseline }), { initialProps: { baseline: null } });
+            await applyMachine({ id: 'first', activeAt: Date.now() });
+            expect(hook.getCurrent().machine?.id).toBe('first');
+            await hook.rerender({ baseline: createAwaitedMachineArrivalBaseline('', Object.values(storage.getState().machines)) });
+            expect(hook.getCurrent().status).toBe('waiting');
+            await applyMachine({ id: 'revoked', activeAt: Date.now(), revokedAt: Date.now() });
+            expect(hook.getCurrent().status).toBe('waiting');
+            await hook.unmount();
+        } finally { storage.setState(previousState); }
+    });
+    it('never substitutes the active Home list for an explicitly named Home that is still loading', async () => {
+        const previousState = storage.getState();
+        const home = await upsertServerProfile({ serverUrl: 'https://loading.example.test', name: 'Loading' });
+        try {
+            seedMachines({ id: 'other-home', activeAt: Date.now() });
+            storage.setState({ machineListByServerId: {} });
+            let baseline: AwaitedMachineArrivalBaseline | null = null;
+            const hook = await renderHook(() => useAwaitedMachineArrival({
+                serverId: home.id, serverUrl: home.serverUrl,
+                onBaselineCaptured: (next) => { baseline = next; },
+            }));
+            expect(baseline).toBeNull();
+            await act(async () => storage.setState({ machineListByServerId: {
+                [home.id]: [createMachineFixture({ id: 'already-there', activeAt: Date.now() })],
+            } }));
+            expect(hook.getCurrent().status).toBe('waiting');
+            await act(async () => storage.setState({ machineListByServerId: {
+                [home.id]: [createMachineFixture({ id: 'new-here', activeAt: Date.now() })],
+            } }));
+            expect(hook.getCurrent().machine?.id).toBe('new-here');
+            await hook.unmount();
+        } finally {
+            storage.setState(previousState);
+            await removeServerProfile(home.id);
+        }
+    });
+    it('starts a fresh baseline only when an enabled watch begins', async () => {
+        const previousState = storage.getState();
+        try {
+            seedMachines();
+            const hook = await renderHook(({ enabled }: { enabled: boolean }) => useAwaitedMachineArrival({ enabled }), { initialProps: { enabled: false } });
+            await applyMachine({ id: 'before-watch', activeAt: Date.now() });
+            await hook.rerender({ enabled: true });
+            expect(hook.getCurrent().status).toBe('waiting');
+            await applyMachine({ id: 'after-watch', activeAt: Date.now() });
+            expect(hook.getCurrent().machine?.id).toBe('after-watch');
+            await hook.rerender({ enabled: false });
+            expect(hook.getCurrent().status).toBe('waiting');
+            await hook.unmount();
+        } finally { storage.setState(previousState); }
+    });
     it('stays waiting when a socket reconnect replays a machine already online in the snapshot', async () => {
         const previousState = storage.getState();
         const now = Date.now();
@@ -91,17 +163,19 @@ describe('useAwaitedMachineArrival', () => {
         }
     });
 
-    it('resets the snapshot when serverUrl changes', async () => {
+    it('watches the machine list of the server it was given by URL, keyed by that server profile', async () => {
         const previousState = storage.getState();
         const now = Date.now();
+        const one = await upsertServerProfile({ serverUrl: 'https://one.example.test', name: 'One' });
+        const two = await upsertServerProfile({ serverUrl: 'https://two.example.test', name: 'Two' });
         try {
             storage.setState((state) => ({
                 ...state,
                 isDataReady: true,
                 machines: {},
                 machineListByServerId: {
-                    'https://one.example.test': [createMachineFixture({ id: 'm-one', active: true, activeAt: now, updatedAt: now })],
-                    'https://two.example.test': [],
+                    [one.id]: [createMachineFixture({ id: 'm-one', active: true, activeAt: now, updatedAt: now })],
+                    [two.id]: [],
                 },
             }));
 
@@ -118,7 +192,7 @@ describe('useAwaitedMachineArrival', () => {
             await hook.rerender({ serverUrl: 'https://two.example.test' });
             await applyMachine(
                 { id: 'm-two', active: true, activeAt: now + 1000, updatedAt: now + 1000 },
-                'https://two.example.test',
+                two.id,
             );
 
             expect(hook.getCurrent().status).toBe('arrived');
@@ -126,22 +200,93 @@ describe('useAwaitedMachineArrival', () => {
             await hook.unmount();
         } finally {
             storage.setState(previousState);
+            await removeServerProfile(one.id);
+            await removeServerProfile(two.id);
         }
     });
 
-    it('can recover an arrival after remount when since predates the machine heartbeat', async () => {
+    it('recovers an arrival after remount from the wait baseline, whatever the client clock says', async () => {
         const previousState = storage.getState();
-        const since = Date.now();
-        const activeAt = since + 1000;
+        // Server-stamped registration times far behind a skewed-ahead client clock.
+        const clientNow = Date.now() + 24 * 60 * 60_000;
+        vi.spyOn(Date, 'now').mockReturnValue(clientNow);
         try {
-            seedMachines({ id: 'm-arrived-before-remount', active: true, activeAt, updatedAt: activeAt });
+            seedMachines({ id: 'm-existing', active: true, createdAt: 1_000, activeAt: clientNow, updatedAt: clientNow });
 
-            const hook = await renderHook(() => useAwaitedMachineArrival({ since }), {
+            let baseline: AwaitedMachineArrivalBaseline | null = null;
+            const onBaselineCaptured = (next: AwaitedMachineArrivalBaseline) => {
+                baseline = next;
+            };
+            const first = await renderHook(() => useAwaitedMachineArrival({ onBaselineCaptured }), {
+                flushOptions: { cycles: 1, turns: 4 },
+            });
+            expect(first.getCurrent().status).toBe('waiting');
+            await first.unmount();
+
+            // The awaited computer registers while the card is unmounted.
+            await applyMachine({ id: 'm-arrived-while-unmounted', active: true, createdAt: 2_000, activeAt: clientNow, updatedAt: clientNow });
+
+            const remounted = await renderHook(() => useAwaitedMachineArrival({ baseline, onBaselineCaptured }), {
                 flushOptions: { cycles: 1, turns: 4 },
             });
 
-            expect(hook.getCurrent().status).toBe('arrived');
-            expect(hook.getCurrent().machine?.id).toBe('m-arrived-before-remount');
+            expect(remounted.getCurrent().status).toBe('arrived');
+            expect(remounted.getCurrent().machine?.id).toBe('m-arrived-while-unmounted');
+            await remounted.unmount();
+        } finally {
+            storage.setState(previousState);
+        }
+    });
+
+    it('never counts a computer already in the wait baseline, even when its registration time is ahead of the client clock', async () => {
+        const previousState = storage.getState();
+        // Server-stamped registration time far ahead of a skewed-behind client clock.
+        const clientNow = Date.now();
+        const serverRegisteredAt = clientNow + 60 * 60_000;
+        try {
+            seedMachines({ id: 'm-other-computer', active: true, createdAt: serverRegisteredAt, activeAt: serverRegisteredAt, updatedAt: serverRegisteredAt });
+
+            let baseline: AwaitedMachineArrivalBaseline | null = null;
+            const onBaselineCaptured = (next: AwaitedMachineArrivalBaseline) => {
+                baseline = next;
+            };
+            const first = await renderHook(() => useAwaitedMachineArrival({ onBaselineCaptured }), {
+                flushOptions: { cycles: 1, turns: 4 },
+            });
+            expect(first.getCurrent().status).toBe('waiting');
+            await first.unmount();
+
+            await applyMachine({ id: 'm-other-computer', active: true, createdAt: serverRegisteredAt, activeAt: serverRegisteredAt + 5_000, updatedAt: serverRegisteredAt + 5_000 });
+
+            const remounted = await renderHook(() => useAwaitedMachineArrival({ baseline, onBaselineCaptured }), {
+                flushOptions: { cycles: 1, turns: 4 },
+            });
+
+            expect(baseline).not.toBeNull();
+            expect(remounted.getCurrent()).toMatchObject({ status: 'waiting', machine: undefined, isOnline: false });
+            await remounted.unmount();
+        } finally {
+            storage.setState(previousState);
+        }
+    });
+
+    it('does not count an already-online computer that only appears once the machine list loads', async () => {
+        const previousState = storage.getState();
+        const now = Date.now();
+        try {
+            storage.setState((state) => ({ ...state, isDataReady: true, machines: {}, machineListByServerId: {} }));
+
+            const hook = await renderHook(() => useAwaitedMachineArrival(), {
+                flushOptions: { cycles: 1, turns: 4 },
+            });
+
+            await act(async () => {
+                storage.getState().applyMachines([
+                    createMachineFixture({ id: 'm-loaded-late', active: true, createdAt: now + 60 * 60_000, activeAt: now + 1000, updatedAt: now + 1000 }),
+                ], true);
+            });
+
+            expect(hook.getCurrent()).toMatchObject({ status: 'waiting', machine: undefined, isOnline: false });
             await hook.unmount();
         } finally {
             storage.setState(previousState);

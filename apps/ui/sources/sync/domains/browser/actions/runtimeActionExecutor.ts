@@ -7,6 +7,7 @@ import {
     createUnavailableRuntimeActionExecutor,
     getActionSpec,
     resolveRuntimeActionExecutionFamily,
+    resolveBrowserAutomationActionRequester,
     type ActionExecuteResult,
     type BrowserAutomationActionRequestV1,
     type BrowserCommandV1,
@@ -19,8 +20,8 @@ import {
     dispatchBrowserControlCommand,
     type BrowserControlCommandDispatchResult,
     type BrowserControlCommandEffect,
-    type BrowserControlState,
-} from '../control';
+} from '../control/commands';
+import type { BrowserControlState } from '../control/state';
 import {
     createBrowserRecordingAttachExecutor,
     type BrowserRecordingAttachAdapter,
@@ -288,6 +289,9 @@ async function executeBrowserAutomationAction(
     if (args.actionId === 'browser.automation.cancelActive') {
         const viewInput = readBrowserViewInput(parsed.input);
         if (!viewInput) return invalidParametersResult;
+        if (args.context?.authority !== 'present_user') {
+            return BrowserAutomationCancelActiveResultV1Schema.parse({ v: 1, outcome: 'owner_mismatch', canceledCount: 0 });
+        }
         const controlService = (input.automation ?? input.resolveAutomation?.(viewInput))?.controlService;
         if (!controlService) {
             return browserRuntimeActionDisabledResult('browser_automation_unavailable');
@@ -303,8 +307,14 @@ async function executeBrowserAutomationAction(
     if (!controlService) {
         return browserRuntimeActionDisabledResult('browser_automation_unavailable');
     }
-    const result = await controlService.executeAction(request.data);
-    return serializeAutomationActionResult(request.data, result, controlService);
+    if (args.actionId === 'browser.automation.status') {
+        return controlService.getStatus(request.data) ?? browserRuntimeActionDisabledResult('browser_view_unavailable');
+    }
+    const requestedBy = resolveBrowserAutomationActionRequester(request.data.requestedBy, args.context?.authority);
+    if (!requestedBy) return invalidParametersResult;
+    const admitted = { ...request.data, requestedBy };
+    const result = await controlService.executeAction(admitted);
+    return serializeAutomationActionResult(admitted, result, controlService);
 }
 
 export function createBrowserRuntimeActionExecutor(

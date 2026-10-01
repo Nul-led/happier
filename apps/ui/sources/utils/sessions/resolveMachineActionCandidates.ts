@@ -1,6 +1,7 @@
 import type { Machine } from '@/sync/domains/state/storageTypes';
 
-import { getMachineDisplayName, isMachineOnline } from '@/utils/sessions/machineUtils';
+import { readMachineName } from '@/utils/sessions/machineDisplayNames';
+import { isMachineOnline } from '@/utils/sessions/machineUtils';
 
 function compareMachinesForPicker(a: Machine, b: Machine): number {
     if (a.active !== b.active) return a.active ? 1 : -1;
@@ -26,7 +27,8 @@ export function resolveMachineActionCandidates(
     for (const machine of allMachines) {
         if (onlineOnly && !isMachineOnline(machine, nowMs)) continue;
 
-        const label = (getMachineDisplayName(machine) ?? machine.metadata?.host ?? machine.id).trim();
+        // A dedupe key, not a display name: machines without a name stay distinct by id.
+        const label = (readMachineName(machine) ?? machine.id).trim();
         if (!label) continue;
 
         const existing = bestByLabel.get(label);

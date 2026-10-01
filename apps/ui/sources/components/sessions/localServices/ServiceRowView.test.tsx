@@ -7,6 +7,10 @@ import { pressTestInstanceAsync, renderScreen } from '@/dev/testkit';
 import type { IModal } from '@/modal/types';
 import type { ServiceRow } from '@/sync/domains/local/services/serviceRow';
 import type { LocalServiceLaunchTarget } from '@/sync/domains/local/services/launch';
+import {
+    applyLocalServicePublicPreviewSnapshot,
+    createLocalServicePublicPreviewState,
+} from '@/sync/domains/local/services/publicPreview/store';
 
 const modalSpies = vi.hoisted(() => ({
     confirm: vi.fn<IModal['confirm']>(async () => true),
@@ -58,6 +62,7 @@ function serviceRow(overrides: Partial<ServiceRow> = {}): ServiceRow {
         primaryAction: null,
         terminateIdentityConfidence: null,
         target,
+        internal: false,
         ...overrides,
     };
 }
@@ -126,7 +131,45 @@ describe('ServiceRowView', () => {
             />,
         );
 
-        expect(dotHaloBackground(screen)).toBe('transparent');
+        // The soft ring belongs to a live service only.
+        expect(screen.findByTestId('row-dot-halo')).toBeNull();
+    });
+
+    /**
+     * Healthy is quiet (DESIGN: "no indefinite decorative animation on routine surfaces"; H-UX F-11).
+     * A running service keeps its dot still; only `starting` — a state that is actually in progress —
+     * moves. On the native path a pulsing dot is the one whose opacity is driven by an animation.
+     */
+    function dotStyle(screen: Awaited<ReturnType<typeof renderScreen>>): Record<string, unknown> {
+        return flattenStyle(screen.findByTestId('row-dot')?.props.style);
+    }
+
+    it('keeps a running service still: its dot does not pulse', async () => {
+        const screen = await renderScreen(
+            <ServiceRowView row={serviceRow({ status: 'running', reasonCode: null })} testID="row" />,
+        );
+
+        expect(screen.findByTestId('row-dot')).not.toBeNull();
+        expect(dotStyle(screen).opacity).toBeUndefined();
+    });
+
+    it('pulses the dot only while a service is starting', async () => {
+        const screen = await renderScreen(
+            <ServiceRowView row={serviceRow({ status: 'starting', reasonCode: null })} testID="row" />,
+        );
+
+        expect(dotStyle(screen).opacity).toBeDefined();
+    });
+
+    it('announces the status once: the dot is hidden because the row says it in words', async () => {
+        const screen = await renderScreen(
+            <ServiceRowView row={serviceRow({ status: 'running', reasonCode: null })} testID="row" />,
+        );
+
+        const dot = screen.findByTestId('row-dot');
+        expect(dot?.props.accessibilityLabel).toBeUndefined();
+        expect(dot?.props.accessibilityElementsHidden).toBe(true);
+        expect(screen.findByTestId('row-status-running')).not.toBeNull();
     });
 
     it('renders a human caption for an inert reason code, never the raw code', async () => {
@@ -167,6 +210,8 @@ describe('ServiceRowView', () => {
                     target: openTarget,
                 })}
                 onOpenServiceInBrowser={onOpen}
+                expanded
+                onExpandedChange={vi.fn()}
                 testID="row"
             />,
         );
@@ -176,7 +221,7 @@ describe('ServiceRowView', () => {
         expect(screen.findAllByTestId('row-start')).toHaveLength(0);
     });
 
-    it('copies the concrete service address from the row without requiring the public-preview card', async () => {
+    it('copies the concrete service address from the expanded row without requiring a public link', async () => {
         const target = launchTarget({
             id: 'inventory:entry-a',
             source: 'inventory_entry',
@@ -199,6 +244,8 @@ describe('ServiceRowView', () => {
                     sourceLabel: 'localServices.source.detected',
                     target,
                 })}
+                expanded
+                onExpandedChange={vi.fn()}
                 testID="row"
             />,
         );
@@ -207,6 +254,39 @@ describe('ServiceRowView', () => {
 
         expect(clipboardSpies.setClipboardStringSafe).toHaveBeenCalledExactlyOnceWith('http://127.0.0.1:5173');
         expect(screen.findByTestId('row-copy-address-feedback')).toBeTruthy();
+    });
+
+    it('shows and copies a wildcard-bound service as localhost, never as its bind address', async () => {
+        const target = launchTarget({
+            id: 'inventory:entry-a',
+            source: 'inventory_entry',
+            state: 'available',
+            actions: ['open'],
+            unavailableReason: undefined,
+        });
+        const screen = await renderScreen(
+            <ServiceRowView
+                row={serviceRow({
+                    id: 'inventory:entry-a',
+                    scope: 'workspace',
+                    title: 'cupsd',
+                    portLabel: ':631',
+                    scheme: 'https',
+                    host: '0.0.0.0',
+                    status: 'running',
+                    reasonCode: null,
+                    sourceLabel: 'localServices.source.detected',
+                    target,
+                })}
+                expanded
+                onExpandedChange={vi.fn()}
+                testID="row"
+            />,
+        );
+
+        expect(screen.getTextContent()).not.toContain('0.0.0.0');
+        await pressTestInstanceAsync(screen.findByTestId('row-copy-address'), 'row-copy-address');
+        expect(clipboardSpies.setClipboardStringSafe).toHaveBeenCalledExactlyOnceWith('https://localhost:631');
     });
 
     /**
@@ -252,6 +332,8 @@ describe('ServiceRowView', () => {
             <ServiceRowView
                 row={detectedTerminateRow()}
                 onTerminateDetectedService={vi.fn()}
+                expanded
+                onExpandedChange={vi.fn()}
                 testID="row"
             />,
         );
@@ -280,6 +362,8 @@ describe('ServiceRowView', () => {
             <ServiceRowView
                 row={detectedTerminateRow()}
                 onTerminateDetectedService={onTerminate}
+                expanded
+                onExpandedChange={vi.fn()}
                 testID="row"
             />,
         );
@@ -298,53 +382,169 @@ describe('ServiceRowView', () => {
     // the row it rendered could not exist on any machine (RU2 surfaces finalization, DEC-6 /
     // LSV-2). `serviceSurfaceClosure.test.ts` now guards the removal.
 
-    /**
-     * Public-preview controls are no longer mounted per row.
-     *
-     * They were rendered inside EVERY qualifying row, which repeated the group heading down the
-     * pane and made `activeExposureCount` rescan the whole exposure set once per row (U-10). The
-     * group is now mounted once at pane level, so the capability is preserved and relocated, not
-     * removed — `DetectedLocalServicesPane.test.tsx` owns its coverage. The row must no longer
-     * render any exposure affordance of its own.
-     */
-    it('renders no public-preview affordance of its own', async () => {
+    function openableRow() {
         const target = launchTarget({
-            id: 'inventory:entry-a',
-            source: 'inventory_entry',
+            id: 'preview:preview_1',
+            source: 'registered_preview',
             state: 'available',
             actions: ['open'],
             unavailableReason: undefined,
             browserTarget: {
-                kind: 'externalUrl',
-                targetId: 'inventory-loopback:entry-a',
-                url: 'http://127.0.0.1:5173/',
-                display: { title: 'Vite', addressLabel: 'localhost:5173' },
+                kind: 'localServicePreview',
+                targetId: 'preview_1',
+                sessionId: 'session-a',
+                machineId: 'machine-a',
             },
         });
+        return serviceRow({
+            id: 'preview:preview_1',
+            scope: 'thisSession',
+            title: 'Vite',
+            portLabel: ':5173',
+            host: '127.0.0.1',
+            status: 'running',
+            reasonCode: null,
+            sourceLabel: 'localServices.source.preview',
+            primaryAction: { kind: 'open', openTarget: target },
+            target,
+        });
+    }
 
+    const exposure = {
+        exposureId: 'public_preview_1',
+        previewId: 'preview_1',
+        sessionId: 'session-a',
+        machineId: 'machine-a',
+        mode: 'secret_link' as const,
+        state: 'active' as const,
+        publicUrl: 'https://preview.example.test/s/public_preview_1',
+        issuedAt: 1_000,
+        expiresAt: Date.now() + 42 * 60_000,
+        auditEventIds: ['audit_1'],
+        rateLimitProfileId: 'default',
+    };
+
+    function publicPreviewStateWithExposure() {
+        return applyLocalServicePublicPreviewSnapshot(createLocalServicePublicPreviewState(), {
+            v: 1,
+            machineId: 'machine-a',
+            sessionId: 'session-a',
+            generatedAt: 4_000,
+            refreshState: 'idle',
+            policy: {
+                enabled: true,
+                allowedModes: ['secret_link'],
+                maxTtlMs: 3_600_000,
+                maxConcurrentExposures: 2,
+                dnsTlsRequired: true,
+                auditRequired: true,
+                rateLimitProfileIds: ['default'],
+            },
+            exposures: [exposure],
+            diagnostics: [],
+        });
+    }
+
+    /**
+     * Lab S's signature: the row grows in place into its controls and its live public link. A
+     * collapsed row draws none of that (no repeated public-preview heading down the pane, U-10);
+     * only the one expanded row shows the link it owns.
+     */
+    /**
+     * One tap (H-UX F-8, services lab O): the signature action of a running row is a trailing Open,
+     * like ▶ on a row that can be started. It opens without expanding the row, and the expansion
+     * does not repeat it.
+     */
+    it('opens a running service in one tap from the collapsed row', async () => {
+        const row = openableRow();
+        const onOpen = vi.fn();
+        const onExpandedChange = vi.fn();
         const screen = await renderScreen(
             <ServiceRowView
-                row={serviceRow({
-                    id: 'inventory:entry-a',
-                    scope: 'thisSession',
-                    title: 'Vite',
-                    portLabel: ':5173',
-                    host: '127.0.0.1',
-                    status: 'running',
-                    reasonCode: null,
-                    sourceLabel: 'localServices.source.detected',
-                    primaryAction: { kind: 'open', openTarget: target },
-                    target,
-                })}
-                onOpenServiceInBrowser={vi.fn()}
+                row={row}
+                onOpenServiceInBrowser={onOpen}
+                expanded={false}
+                onExpandedChange={onExpandedChange}
                 testID="row"
             />,
         );
 
-        expect(screen.findAll((node) => String(node.props?.testID ?? '').includes('public-preview'))).toHaveLength(0);
-        expect(screen.findAll((node) => String(node.props?.testID ?? '').endsWith('-create'))).toHaveLength(0);
-        // The row still shows the service itself: the address is the control now, mono and copyable.
+        expect(screen.findByTestId('row-open')).not.toBeNull();
+        await pressTestInstanceAsync(screen.findByTestId('row-open'), 'row-open');
+        expect(onOpen).toHaveBeenCalledExactlyOnceWith(row.primaryAction?.kind === 'open' ? row.primaryAction.openTarget : null);
+        expect(onExpandedChange).not.toHaveBeenCalled();
+    });
+
+    it('keeps one Open when the row is expanded: the expansion does not repeat it', async () => {
+        const screen = await renderScreen(
+            <ServiceRowView
+                row={openableRow()}
+                onOpenServiceInBrowser={vi.fn()}
+                expanded
+                onExpandedChange={vi.fn()}
+                testID="row"
+            />,
+        );
+
+        expect(screen.findByTestId('row-open')).not.toBeNull();
+        const expansion = screen.findByTestId('row-expansion');
+        expect(expansion?.findAll((node) => node.props?.testID === 'row-open')).toHaveLength(0);
         expect(screen.findByTestId('row-copy-address')).toBeTruthy();
-        expect(screen.getTextContent()).toContain('127.0.0.1:5173');
+    });
+
+    it('keeps a collapsed row quiet and grows the expanded row into Copy address and its live link', async () => {
+        const row = openableRow();
+        const actions = { create: vi.fn(), copyUrl: vi.fn(async () => true), revoke: vi.fn() };
+        const collapsed = await renderScreen(
+            <ServiceRowView
+                row={row}
+                onOpenServiceInBrowser={vi.fn()}
+                publicPreviewState={publicPreviewStateWithExposure()}
+                publicPreviewActions={actions}
+                expanded={false}
+                onExpandedChange={vi.fn()}
+                testID="row"
+            />,
+        );
+        expect(collapsed.findAll((node) => String(node.props?.testID ?? '').includes('public-preview'))).toHaveLength(0);
+        expect(collapsed.findAllByTestId('row-copy-address')).toHaveLength(0);
+        await collapsed.unmount();
+
+        const expanded = await renderScreen(
+            <ServiceRowView
+                row={row}
+                onOpenServiceInBrowser={vi.fn()}
+                publicPreviewState={publicPreviewStateWithExposure()}
+                publicPreviewActions={actions}
+                expanded
+                onExpandedChange={vi.fn()}
+                testID="row"
+            />,
+        );
+        expect(expanded.findByTestId('row-copy-address')).toBeTruthy();
+        expect(expanded.findByTestId('row-public-preview-exposure:public_preview_1-countdown')).toBeTruthy();
+        expect(expanded.getTextContent()).toContain('Public link');
+        // The secret link stays masked until the user reveals it, and so does its QR code.
+        expect(expanded.findAllByTestId('row-public-preview-exposure:public_preview_1-qr')).toHaveLength(0);
+        await pressTestInstanceAsync(
+            expanded.findByTestId('row-public-preview-exposure:public_preview_1-reveal'),
+            'reveal',
+        );
+        expect(expanded.findByTestId('row-public-preview-exposure:public_preview_1-qr')).toBeTruthy();
+    });
+
+    it('asks to be expanded when the collapsed row is pressed', async () => {
+        const onExpandedChange = vi.fn();
+        const screen = await renderScreen(
+            <ServiceRowView
+                row={openableRow()}
+                onOpenServiceInBrowser={vi.fn()}
+                expanded={false}
+                onExpandedChange={onExpandedChange}
+                testID="row"
+            />,
+        );
+        await pressTestInstanceAsync(screen.findByTestId('row-item'), 'row-item');
+        expect(onExpandedChange).toHaveBeenCalledWith(true);
     });
 });

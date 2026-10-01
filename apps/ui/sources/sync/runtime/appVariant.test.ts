@@ -1,11 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import {
-    resolveAppEnvironmentBadge,
-    resolveAppVariant,
-    resolveExpoReleaseChannel,
-    resolveVisibleAppEnvironmentBadge,
-} from './appVariant';
+import { resolveAppVariant, resolveExpoReleaseChannel } from './appVariant';
 
 describe('resolveExpoReleaseChannel', () => {
     it('prefers explicit updates releaseChannel when present', () => {
@@ -110,81 +105,5 @@ describe('resolveAppVariant', () => {
                 envExpoPublicAppEnv: null,
             }),
         ).toBeNull();
-    });
-});
-
-describe('resolveAppEnvironmentBadge', () => {
-    it('prefers stack context over all other signals', () => {
-        expect(
-            resolveAppEnvironmentBadge({
-                appVariant: 'development',
-                isStackContext: true,
-                isUsingCustomServer: true,
-            }),
-        ).toBe('STACK');
-    });
-
-    it('uses self-host badge when running against a custom server', () => {
-        expect(
-            resolveAppEnvironmentBadge({
-                appVariant: 'preview',
-                isStackContext: false,
-                isUsingCustomServer: true,
-            }),
-        ).toBe('SELF');
-    });
-
-    it('uses dev badge when variant resolves to development', () => {
-        expect(
-            resolveAppEnvironmentBadge({
-                appVariant: 'development',
-                isStackContext: false,
-                isUsingCustomServer: false,
-            }),
-        ).toBe('DEV');
-    });
-
-    it('uses prev badge when variant resolves to preview', () => {
-        expect(
-            resolveAppEnvironmentBadge({
-                appVariant: 'preview',
-                isStackContext: false,
-                isUsingCustomServer: false,
-            }),
-        ).toBe('PREV');
-    });
-
-    it('returns null for default production cloud environment', () => {
-        expect(
-            resolveAppEnvironmentBadge({
-                appVariant: 'production',
-                isStackContext: false,
-                isUsingCustomServer: false,
-            }),
-        ).toBeNull();
-    });
-});
-
-describe('resolveVisibleAppEnvironmentBadge', () => {
-    it('returns null when user setting disables environment badges', () => {
-        expect(
-            resolveVisibleAppEnvironmentBadge({
-                showEnvironmentBadge: false,
-                appVariant: 'preview',
-                isStackContext: false,
-                isUsingCustomServer: false,
-            }),
-        ).toBeNull();
-    });
-
-    it('returns resolved badge when setting allows environment badges', () => {
-        expect(
-            resolveVisibleAppEnvironmentBadge({
-                showEnvironmentBadge: true,
-                appVariant: 'preview',
-                isStackContext: false,
-                isUsingCustomServer: false,
-            }),
-        ).toBe('PREV');
     });
 });

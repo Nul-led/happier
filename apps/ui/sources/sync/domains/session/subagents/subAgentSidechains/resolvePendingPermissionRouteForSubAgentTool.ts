@@ -1,5 +1,5 @@
-import { buildToolCallMessageRouteId } from '@/sync/domains/messages/messageRouteIds';
-import type { Message, ToolCallMessage } from '@/sync/domains/messages/messageTypes';
+import { buildToolCallMessageRouteId } from "@happier-dev/session-core/messages";
+import type { Message, ToolCallMessage } from "@happier-dev/session-core/messages";
 import { isGenericSubAgentToolName } from '@happier-dev/protocol/tools/v2';
 
 function readNonEmptyString(value: unknown): string | null {

@@ -302,7 +302,7 @@ export async function startVoiceAgentTurnStream(args: Readonly<{
 
 export async function readVoiceAgentTurnStream(args: Readonly<{
   runId: string;
-  params: Readonly<{ streamId: string; cursor: number; maxEvents?: number }>;
+  params: Readonly<{ streamId: string; cursor: number; maxEvents?: number; waitForEvents?: boolean; signal?: AbortSignal }>;
   runs: ReadonlyMap<string, ExecutionRunState>;
   controllers: ReadonlyMap<string, ExecutionRunController>;
   voiceAgentManager: VoiceAgentManager;
@@ -339,15 +339,20 @@ export async function readVoiceAgentTurnStream(args: Readonly<{
     }
     let read = cachedTerminalRead?.result ?? null;
     if (!read) {
-      let readInFlight = ctrl.readInFlightByExternalStreamId.get(externalStreamId) ?? null;
+      // Waiting reads observe independently: aborting one caller must not
+      // cancel another observer of the same producer cursor.
+      let readInFlight = args.params.waitForEvents
+        ? null : ctrl.readInFlightByExternalStreamId.get(externalStreamId) ?? null;
       if (!readInFlight) {
         readInFlight = args.voiceAgentManager.readTurnStream({
           voiceAgentId: ctrl.voiceAgentId,
           streamId: internalStreamId,
           cursor: args.params.cursor,
           maxEvents: args.params.maxEvents,
+          waitForEvents: args.params.waitForEvents,
+          signal: args.params.signal,
         });
-        ctrl.readInFlightByExternalStreamId.set(externalStreamId, readInFlight);
+        if (!args.params.waitForEvents) ctrl.readInFlightByExternalStreamId.set(externalStreamId, readInFlight);
       }
       try {
         read = await readInFlight;
@@ -370,7 +375,11 @@ export async function readVoiceAgentTurnStream(args: Readonly<{
     await args.writeActivityMarker(args.runId, args.getNowMs(), { force: true });
 
     if (read.done) {
-      clearExternalTurnState(ctrl, externalStreamId, internalStreamId);
+      // Reading the terminal page consumes the manager's active stream, but
+      // the caller still owns this external handle until its existing release
+      // operation. Retain the canonical identity and terminal result so release
+      // does not attempt to cancel an already-completed provider turn.
+      ctrl.pendingTranscriptTurnByExternalStreamId.delete(externalStreamId);
     }
 
     return {
@@ -415,6 +424,10 @@ export async function cancelVoiceAgentTurnStream(args: Readonly<{
   if (!internalStreamId) return { ok: false, errorCode: 'execution_run_stream_not_found', error: 'Not found' };
 
   try {
+    if (ctrl.terminalReadByExternalStreamId.get(externalStreamId)?.result.done) {
+      clearExternalTurnState(ctrl, externalStreamId, internalStreamId);
+      return { ok: true };
+    }
     await args.voiceAgentManager.cancelTurnStream({ voiceAgentId: ctrl.voiceAgentId, streamId: internalStreamId });
     clearExternalTurnState(ctrl, externalStreamId, internalStreamId);
     return { ok: true };

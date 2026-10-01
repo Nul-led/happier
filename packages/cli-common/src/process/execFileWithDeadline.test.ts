@@ -1,4 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import { createServer } from 'node:http';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import { execFileWithDeadline } from './execFileWithDeadline.js';
 
@@ -60,6 +64,120 @@ const survivorShellArgs = (foreground: string): readonly string[] => ([
 ]);
 
 describe('execFileWithDeadline', () => {
+  it.skipIf(process.platform === 'win32').each([false, true])('reports an owned deadline even when the terminated command handles SIGTERM and exits zero (supplied terminator: %s)', async (suppliedTerminator) => {
+    let terminatorCalled = false;
+    const pending = execFileWithDeadline('/bin/sh', ['-c', 'trap "exit 0" TERM; echo started; while :; do sleep 0.1; done'], {
+      timeout: 250,
+      ...(suppliedTerminator ? { terminateOnAbort: async (child: import('node:child_process').ChildProcess) => { terminatorCalled = true; child.kill(); } } : {}),
+    });
+    await expect(pending).rejects.toMatchObject({ killed: true, stdout: expect.stringContaining('started') });
+    expect(terminatorCalled).toBe(suppliedTerminator);
+  });
+  it('preserves an injected cancellation failure instead of reporting cancellation success', async () => {
+    const controller = new AbortController();
+    const failure = new Error('fixture termination failed');
+    const server = createServer((_req, res) => { res.end(); controller.abort(); });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    try {
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('Missing fixture address');
+      const pending = execFileWithDeadline(process.execPath, ['-e', `
+        require('node:http').get('http://127.0.0.1:${address.port}', res => res.resume());
+        setTimeout(() => {}, 1000);
+      `], {
+        signal: controller.signal,
+        terminateOnAbort: async (child) => { child.kill(); throw failure; },
+      });
+      await expect(pending).rejects.toMatchObject({ name: 'ExecFileTerminationError', cause: failure });
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it.skipIf(process.platform === 'win32').each(['abort', 'deadline'] as const)('awaits the supplied termination owner and prevents a descendant from writing after %s', async (mode) => {
+    const root = await mkdtemp(join(tmpdir(), 'exec-tree-cancel-'));
+    const marker = join(root, 'late-write');
+    const controller = new AbortController();
+    let terminationFinished = false;
+    let descendantPid: number | undefined;
+    let observeDescendant: () => void = () => {};
+    const descendantReady = new Promise<void>((resolve) => { observeDescendant = resolve; });
+    const server = createServer((req, res) => {
+      descendantPid = Number(new URL(req.url ?? '/', 'http://fixture').searchParams.get('pid'));
+      observeDescendant();
+      res.end();
+      if (mode === 'abort') controller.abort();
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    try {
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('Missing fixture address');
+      const descendant = `
+        require('node:http').get('http://127.0.0.1:${address.port}/?pid=' + process.pid, res => res.resume());
+        setTimeout(() => { require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'written'); process.exit(0); }, ${mode === 'deadline' ? 1000 : 300});
+      `;
+      const pending = execFileWithDeadline(process.execPath, ['-e', `
+        require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(descendant)}], { stdio: 'ignore' });
+        setTimeout(() => {}, 2000);
+      `], {
+        signal: controller.signal,
+        ...(mode === 'deadline' ? { timeout: 500 } : {}),
+        // The owning host supplies its real platform tree terminator at this OS boundary.
+        terminateOnAbort: async (child) => {
+          // Child startup may outlast the fixture's deadline on a saturated host. The
+          // injected OS terminator waits for its exact descendant identity before signalling.
+          await descendantReady;
+          if (!descendantPid || descendantPid <= 1) throw new Error('Missing descendant pid');
+          process.kill(descendantPid, 'SIGTERM');
+          child.kill();
+          await new Promise<void>((resolve) => setTimeout(resolve, 100));
+          terminationFinished = true;
+        },
+      });
+      await expect(pending).rejects.toMatchObject(mode === 'abort' ? { name: 'AbortError' } : { killed: true });
+      expect(terminationFinished).toBe(true);
+      await new Promise<void>((resolve) => setTimeout(resolve, mode === 'deadline' ? 600 : 400));
+      await expect(readFile(marker)).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      // The finite descendant can exit even on RED before its fixture home is removed.
+      await new Promise<void>((resolve) => setTimeout(resolve, mode === 'deadline' ? 600 : 400));
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')('waits for the cancelled command to exit before rejecting', async () => {
+    const controller = new AbortController();
+    let cleanupObserved = false;
+    let observeCleanup: () => void = () => {};
+    const cleanup = new Promise<void>((resolve) => { observeCleanup = resolve; });
+    const server = createServer((req, res) => {
+      res.end();
+      if (req.url === '/ready') controller.abort();
+      else { cleanupObserved = true; observeCleanup(); }
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    try {
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('Missing fixture address');
+      const url = `http://127.0.0.1:${address.port}`;
+      const pending = execFileWithDeadline(process.execPath, ['-e', `
+        const http = require('node:http');
+        process.on('SIGTERM', () => setTimeout(() => {
+          http.get(${JSON.stringify(url)} + '/cleaned', res => { res.resume(); res.on('end', () => process.exit(0)); });
+        }, 100));
+        http.get(${JSON.stringify(url)} + '/ready', res => res.resume());
+        setInterval(() => {}, 1000);
+      `], { signal: controller.signal });
+      await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+      expect(cleanupObserved).toBe(true);
+    } finally {
+      // Even an early rejection must let the signalled fixture finish cancellation cleanup.
+      await cleanup;
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   it('supports caller cancellation without imposing a command deadline', async () => {
     const result = await execFileWithDeadline(process.execPath, [
       '-e', 'setTimeout(() => process.stdout.write("finished"), 50)',
@@ -72,7 +190,7 @@ describe('execFileWithDeadline', () => {
     await rejected;
   });
 
-  it('delivers the output a finished child already produced when the deadline expires late on a stalled event loop', async () => {
+  it.each([false, true])('delivers the output a finished child already produced when the deadline expires late on a stalled event loop (supplied terminator: %s)', async (suppliedTerminator) => {
     // The child writes and exits in milliseconds; the loop then stalls far past the budget, so
     // the deadline can only fire after the child is already gone. Node's own `execFile` timeout
     // destroys the child's stdout stream from the timers phase — which runs BEFORE poll — and
@@ -82,6 +200,7 @@ describe('execFileWithDeadline', () => {
     const pending = execFileWithDeadline(echoCommand, echoArgs, {
       timeout: 200,
       maxBuffer: 1024 * 1024,
+      ...(suppliedTerminator ? { terminateOnAbort: async (child: import('node:child_process').ChildProcess) => { child.kill(); } } : {}),
     });
 
     stallEventLoop(1_500);

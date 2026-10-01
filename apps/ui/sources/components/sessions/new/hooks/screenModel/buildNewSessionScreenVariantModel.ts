@@ -1,4 +1,5 @@
 import type { View } from 'react-native';
+import type { NewSessionTemporaryComputerLaunch } from '../../components/NewSessionLaunchSurface';
 
 import type { NewSessionSimplePanelProps } from '@/components/sessions/new/components/NewSessionSimplePanel';
 import type {
@@ -19,6 +20,7 @@ export function buildNewSessionScreenVariantModel(params: Readonly<{
     useEnhancedSessionWizard: boolean;
     popoverBoundaryRef: React.RefObject<View>;
     launchOverlay: React.ReactNode | null;
+    temporaryComputerLaunch?: NewSessionTemporaryComputerLaunch;
     launchOnRequestClose?: () => void;
     overlayPresentation?: 'card' | 'screen';
     overlayFocusReturnRef?: React.RefObject<View | null>;
@@ -45,6 +47,7 @@ export function buildNewSessionScreenVariantModel(params: Readonly<{
             variant: 'simple',
             popoverBoundaryRef: params.popoverBoundaryRef,
             launchOverlay: params.launchOverlay,
+            temporaryComputerLaunch: params.temporaryComputerLaunch,
             launchOnRequestClose: params.launchOnRequestClose ?? (() => undefined),
             overlayPresentation: params.overlayPresentation,
             overlayFocusReturnRef: params.overlayFocusReturnRef,
@@ -57,6 +60,7 @@ export function buildNewSessionScreenVariantModel(params: Readonly<{
         variant: 'wizard',
         popoverBoundaryRef: params.popoverBoundaryRef,
         launchOverlay: params.launchOverlay,
+        temporaryComputerLaunch: params.temporaryComputerLaunch,
         launchOnRequestClose: params.launchOnRequestClose ?? (() => undefined),
         overlayPresentation: params.overlayPresentation,
         overlayFocusReturnRef: params.overlayFocusReturnRef,

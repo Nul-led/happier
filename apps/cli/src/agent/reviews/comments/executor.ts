@@ -5,7 +5,8 @@ import tweetnacl from 'tweetnacl';
 
 import {
     createReviewCommentPrincipalSigningInputV1,
-    buildReviewCommentMutationEventEnvelopeV1,
+    buildReviewCommentPlainMutationTransportInputV1,
+    executeReviewCommentTransportV1,
     buildReviewCommentPublicationTransportRequestV1,
     openReviewCommentPublicationTransportResponseV1,
     type ReviewCommentPublicationCryptoContextV1,
@@ -28,7 +29,7 @@ import {
 
 import { createHttpStatusError, isAuthenticationStatus } from '@/api/client/httpStatusError';
 import { createConnectedServiceCredentialApi } from '@/api/client/connectedServiceCredentialApi';
-import { decodeJwtPayload } from '@/cloud/decodeJwtPayload';
+import { readAccountIdFromToken } from '@/cloud/decodeJwtPayload';
 import { configuration } from '@/configuration';
 import { readOrCreateInstallationIdentity } from '@/daemon/identity/store';
 import { readSettings, type StoredCredentials } from '@/persistence';
@@ -72,8 +73,7 @@ function asRecord(value: unknown): JsonRecord {
 }
 
 function resolveAccountIdFromToken(token: string): string {
-    const payload = decodeJwtPayload(token);
-    const accountId = typeof payload?.sub === 'string' ? payload.sub.trim() : '';
+    const accountId = readAccountIdFromToken(token);
     if (!accountId) throw new Error('review_comment_account_identity_unavailable');
     return accountId;
 }
@@ -117,17 +117,6 @@ function createReviewCommentHttpRequest(
 ): ReviewCommentHttpRequest {
     if (actionId === 'reviews.comments.create') {
         return { method: 'post', path: '/v1/reviews/comments', body: input };
-    }
-    if (actionId === 'reviews.comments.list') {
-        return { method: 'get', path: '/v1/reviews/comments', query: input };
-    }
-    if (actionId === 'reviews.comments.get') {
-        const commentId = readRequiredString(input, 'commentId');
-        return {
-            method: 'get',
-            path: `/v1/reviews/comments/${encodePathSegment(commentId)}`,
-            query: omitKeys(input, ['commentId']),
-        };
     }
     if (actionId === 'reviews.comments.edit') {
         const commentId = readRequiredString(input, 'commentId');
@@ -357,6 +346,40 @@ export function createCliReviewCommentActionExecutorFromCredentials(
     return async (actionId, input, options) => {
         const parsedActionId = ReviewCommentActionIdV1Schema.parse(actionId);
         const parsedInput = asRecord(ReviewCommentActionInputSchemasV1[parsedActionId].parse(input));
+        if (parsedActionId === 'reviews.comments.get' || parsedActionId === 'reviews.comments.list'
+            || isReviewCommentMutationAction(parsedActionId)) {
+            const mode = await (params.resolveAccountEncryptionMode
+                ? params.resolveAccountEncryptionMode() : accountModeApi!.getAccountEncryptionMode());
+            if (mode === 'unknown') throw new Error('review_comment_encryption_mode_unavailable');
+            if (mode === 'e2ee' || parsedActionId === 'reviews.comments.get' || parsedActionId === 'reviews.comments.list') {
+                const accountId = (params.resolveAccountId ?? resolveAccountIdFromToken)(params.credentials.token);
+                const originalPrincipal = options?.principal;
+                if (mode === 'e2ee' && originalPrincipal?.currentIntent
+                    && originalPrincipal.currentIntent.effectBodySha256Base64Url !== createReviewCommentPrincipalBodyHash(omitKeys(parsedInput, ['eventEnvelope']))) {
+                    throw Object.assign(new Error('review_comment_permission_denied'), { code: 'review_comment_permission_denied' });
+                }
+                return executeReviewCommentTransportV1({
+                    actionId: parsedActionId, input: parsedInput,
+                    context: { accountId, mode, material: mode === 'plain' ? null : resolveAccountScopedMaterial(params.credentials) },
+                    actor: originalPrincipal?.actor ?? { kind: 'user', userId: accountId },
+                    randomBytes: params.randomBytes ?? ((length) => nodeRandomBytes(length)),
+                    request: async (request) => {
+                        const principal = originalPrincipal?.currentIntent && request.contentCommitment
+                            ? { ...originalPrincipal, currentIntent: { ...originalPrincipal.currentIntent,
+                                effectBodySha256Base64Url: request.contentCommitment } }
+                            : originalPrincipal;
+                        const principalHeader = principal ? await encodeReviewCommentPrincipalHeader({
+                            principal, request,
+                            ...(params.resolvePrincipalSigningContext ? { resolvePrincipalSigningContext: params.resolvePrincipalSigningContext } : {}),
+                            assertPrincipalCurrent: () => { if (originalPrincipal) params.assertPrincipalCurrent?.(originalPrincipal); },
+                        }) : undefined;
+                        if (originalPrincipal) params.assertPrincipalCurrent?.(originalPrincipal);
+                        return executeReviewCommentHttpRequest({ credentials: params.credentials, request,
+                            ...(principalHeader ? { principalHeader } : {}), ...(options?.signal ? { signal: options.signal } : {}) });
+                    },
+                });
+            }
+        }
         let requestInput = parsedInput;
         let publicationContext: ReviewCommentPublicationCryptoContextV1 | null = null;
         if (parsedActionId === 'reviews.comments.claimPublicationDispatch') {
@@ -375,35 +398,14 @@ export function createCliReviewCommentActionExecutorFromCredentials(
         }
         if (isReviewCommentMutationAction(parsedActionId)) {
             const accountId = (params.resolveAccountId ?? resolveAccountIdFromToken)(params.credentials.token);
-            const mode = await (params.resolveAccountEncryptionMode
-                ? params.resolveAccountEncryptionMode()
-                : accountModeApi!.getAccountEncryptionMode());
-            if (mode === 'unknown') {
-                throw new Error('review_comment_encryption_mode_unavailable');
-            }
             const actor = options?.principal?.actor ?? { kind: 'user' as const, userId: accountId };
-            const material = resolveAccountScopedMaterial(params.credentials);
-            if (mode === 'e2ee' && !material) {
-                throw new Error('review_comment_encryption_material_unavailable');
-            }
-            const eventEnvelope = mode === 'plain'
-                ? buildReviewCommentMutationEventEnvelopeV1({
-                    accountId,
-                    actor,
-                    actionId: parsedActionId,
-                    input: parsedInput,
-                    mode: 'plain',
-                })
-                : buildReviewCommentMutationEventEnvelopeV1({
-                    accountId,
-                    actor,
-                    actionId: parsedActionId,
-                    input: parsedInput,
-                    mode: 'e2ee',
-                    material: material!,
-                    randomBytes: params.randomBytes ?? ((length) => nodeRandomBytes(length)),
-                });
-            requestInput = { ...parsedInput, eventEnvelope };
+            requestInput = buildReviewCommentPlainMutationTransportInputV1({
+                accountId,
+                actor,
+                actionId: parsedActionId,
+                input: parsedInput,
+                mode: 'plain',
+            });
         }
         const request = createReviewCommentHttpRequest(parsedActionId, requestInput);
         const principalHeader = options?.principal

@@ -4,16 +4,20 @@ import {
     readAiLaunchProfileCollection,
     type AIBackendProfile,
     type AiLaunchProfile,
+    type AiLaunchProfileSourceV1,
+    type AiLaunchProfileCollectionReadResult,
+    type ArtifactSharingResourceV1,
 } from '@happier-dev/protocol';
+import type { DecryptedArtifact } from '@/sync/domains/artifacts/artifactTypes';
 
-export function projectAiLaunchProfileForLegacyUi(profile: AiLaunchProfile): AIBackendProfile {
+export function projectAiLaunchProfileForLegacyUi(profile: AiLaunchProfile): AIBackendProfile & AiLaunchProfileSourceV1 {
     if (!isLaunchProfileV2(profile)) return profile;
-    return AIBackendProfileSchema.parse({
+    const projected = AIBackendProfileSchema.parse({
         id: profile.id,
         name: profile.name,
         ...(profile.description !== undefined ? { description: profile.description } : {}),
         environmentVariables: profile.extraEnvironmentVariables,
-        envVarRequirements: [],
+        envVarRequirements: profile.envVarRequirements ?? [],
         defaultPermissionModeByTargetKey: profile.defaultPermissionModeByTargetKey,
         defaultPersistenceModeByTargetKey: profile.defaultPersistenceModeByTargetKey,
         compatibilityByTargetKey: profile.compatibilityByTargetKey,
@@ -24,6 +28,11 @@ export function projectAiLaunchProfileForLegacyUi(profile: AiLaunchProfile): AIB
         updatedAt: profile.updatedAt,
         version: '2.0.0',
     });
+    return { ...projected, ...(profile.artifactId ? { artifactId: profile.artifactId } : {}),
+        ...(profile.secretBindings ? { secretBindings: profile.secretBindings } : {}),
+        ...(profile.shared !== undefined ? { shared: profile.shared } : {}),
+        ...(profile.viewOnly !== undefined ? { viewOnly: profile.viewOnly } : {}),
+        ...(profile.revision ? { revision: profile.revision } : {}) };
 }
 
 export type UiAiLaunchProfileSnapshot = Readonly<{
@@ -31,10 +40,21 @@ export type UiAiLaunchProfileSnapshot = Readonly<{
     unreadableCount: number;
 }>;
 
-export function readUiAiLaunchProfileSnapshot(raw: unknown): UiAiLaunchProfileSnapshot {
+export function readUiAiLaunchProfileSnapshot(raw: unknown, artifacts: Readonly<Record<string, DecryptedArtifact>> = {}): UiAiLaunchProfileSnapshot {
+    const artifactsById = new Map<string, ArtifactSharingResourceV1>();
+    for (const artifact of Object.values(artifacts)) {
+        if (!artifact.isDecrypted || artifact.header?.kind !== 'launch-profile.v1' || artifact.body === undefined) continue;
+        artifactsById.set(artifact.id, { artifactId: artifact.id, header: artifact.header, body: artifact.body,
+            ...(artifact.access ? { access: artifact.access } : {}),
+            ...(artifact.bodyVersion !== undefined ? { revision: { headerVersion: artifact.headerVersion, bodyVersion: artifact.bodyVersion } } : {}) });
+    }
+    return projectUiAiLaunchProfileSnapshot(readAiLaunchProfileCollection(raw, { artifactsById, includeShared: true }));
+}
+
+export function projectUiAiLaunchProfileSnapshot(collection: AiLaunchProfileCollectionReadResult): UiAiLaunchProfileSnapshot {
     const profiles: AiLaunchProfile[] = [];
     let unreadableCount = 0;
-    for (const entry of readAiLaunchProfileCollection(raw).entries) {
+    for (const entry of collection.entries) {
         if (entry.kind === 'opaque') {
             unreadableCount += 1;
         } else {
@@ -44,8 +64,8 @@ export function readUiAiLaunchProfileSnapshot(raw: unknown): UiAiLaunchProfileSn
     return { profiles, unreadableCount };
 }
 
-export function readUiAiLaunchProfiles(raw: unknown): readonly AiLaunchProfile[] {
-    return readUiAiLaunchProfileSnapshot(raw).profiles;
+export function readUiAiLaunchProfiles(raw: unknown, artifacts?: Readonly<Record<string, DecryptedArtifact>>): readonly AiLaunchProfile[] {
+    return readUiAiLaunchProfileSnapshot(raw, artifacts).profiles;
 }
 
 /**
@@ -53,8 +73,8 @@ export function readUiAiLaunchProfiles(raw: unknown): readonly AiLaunchProfile[]
  * conversion beside the Protocol-owned collection reader so opaque retained
  * rows never reach a legacy UI consumer as executable profile data.
  */
-export function readUiAiLaunchProfilesForLegacyUi(raw: unknown): AIBackendProfile[] {
-    return readUiAiLaunchProfiles(raw).map(projectAiLaunchProfileForLegacyUi);
+export function readUiAiLaunchProfilesForLegacyUi(raw: unknown, artifacts?: Readonly<Record<string, DecryptedArtifact>>): (AIBackendProfile & AiLaunchProfileSourceV1)[] {
+    return readUiAiLaunchProfiles(raw, artifacts).map(projectAiLaunchProfileForLegacyUi);
 }
 
 function asRawCollection(raw: unknown): readonly unknown[] {
@@ -101,10 +121,9 @@ function removeRecordKey(value: unknown, key: string): unknown {
 /**
  * The single Account Settings mutation for deleting a Launch Profile.
  *
- * Profile rows and their preference/binding residue are one user-visible
- * entity. Apply the deletion against the current CAS winner so Settings and
- * New Session cannot leave different subsets behind or overwrite concurrent
- * sibling settings.
+ * Profile rows and their Account-owned preference/binding residue are removed
+ * against the current CAS winner without overwriting siblings. The authoring
+ * writer clears remembered profile state through its separate row CAS owner.
  */
 export function removeAiLaunchProfileFromAccountSettings(
     raw: Readonly<Record<string, unknown>>,
@@ -113,7 +132,6 @@ export function removeAiLaunchProfileFromAccountSettings(
     return {
         ...raw,
         profiles: removeAiLaunchProfile(raw.profiles, profileId),
-        ...(raw.lastUsedProfile === profileId ? { lastUsedProfile: null } : {}),
         ...(Array.isArray(raw.favoriteProfiles)
             ? { favoriteProfiles: raw.favoriteProfiles.filter((entry) => entry !== profileId) }
             : {}),

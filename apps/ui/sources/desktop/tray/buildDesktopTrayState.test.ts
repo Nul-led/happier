@@ -107,4 +107,36 @@ describe('buildDesktopTrayState', () => {
             detail: 'status.online · 2/2',
         });
     });
+    it('carries the Updates item label and its enabled bit, and omits both when there is nothing to update', () => {
+        const health = {
+            kind: 'healthy',
+            machineCount: 1,
+            onlineCount: 1,
+            statusLabelKey: 'status.connected',
+            machineLabelKey: 'status.online',
+        } as const;
+
+        expect(buildDesktopTrayState({
+            health,
+            updates: { label: 'Updates available (2)…', enabled: true },
+            t: translate,
+        })).toEqual({
+            status: 'healthy',
+            label: 'status.connected',
+            detail: 'status.online · 1/1',
+            updatesLabel: 'Updates available (2)…',
+            updatesEnabled: true,
+        });
+
+        expect(buildDesktopTrayState({
+            health,
+            relayDriftBannerTitle: 'Relay drift detected',
+            updates: { label: 'Updating…', enabled: false },
+            t: translate,
+        })).toMatchObject({ status: 'attention_required', updatesLabel: 'Updating…', updatesEnabled: false });
+
+        const idle = buildDesktopTrayState({ health, updates: null, t: translate });
+        expect(idle).not.toHaveProperty('updatesLabel');
+        expect(idle).not.toHaveProperty('updatesEnabled');
+    });
 });

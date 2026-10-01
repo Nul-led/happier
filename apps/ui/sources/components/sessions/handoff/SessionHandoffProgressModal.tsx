@@ -1,6 +1,8 @@
 import * as React from 'react';
 import { View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
+import { HappierProgress } from '@happier-dev/plugin-ui/presentation';
+import { projectPluginUiTheme } from '@/components/plugins/surfaces/pluginUiThemeProjection';
 import {
     SessionHandoffProgressCheckpointSchema,
     SessionHandoffActionResultV1Schema,
@@ -26,14 +28,19 @@ import { ExpandableItem } from '@/components/ui/lists/ExpandableItem';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ActionOperationDetailControls } from '@/components/inbox/actionOperations/ActionOperationDetailControls';
+import { resolveWorkspaceSyncErrorTranslationKey } from '@/sync/domains/sessionHandoff/workspaceSyncPresentation';
+import type { ExecuteSessionHandoffActionResult } from '@/sync/domains/sessionHandoff/executeSessionHandoffAction';
 
 type Props = CustomModalInjectedProps & Readonly<{
     title?: string;
     message?: string;
     status?: SessionHandoffStatus;
     operation?: ActionOperationSnapshotV1;
+    serverId?: string | null;
     onResume?: () => Promise<void> | void;
     workspaceSyncEnabled?: boolean;
+    requestFailure?: Extract<ExecuteSessionHandoffActionResult, { ok: false }>;
+    onOpenConflicts?: (blockedRelationshipId: string | null) => void;
 }>;
 
 type PrimaryProgressStepId = 'preparing' | 'moving' | 'ready';
@@ -143,18 +150,6 @@ const stylesheet = StyleSheet.create((theme) => ({
         color: theme.colors.text.primary,
         ...Typography.default(),
         textAlign: 'right',
-    },
-    progressTrack: {
-        height: 6,
-        borderRadius: 999,
-        backgroundColor: theme.colors.border.default,
-        overflow: 'hidden',
-    },
-    progressFill: {
-        height: '100%',
-        borderRadius: 999,
-        backgroundColor: theme.colors.accent.blue,
-        minWidth: 6,
     },
     progressMetaRow: {
         flexDirection: 'row',
@@ -403,6 +398,8 @@ function translateWorkspaceOutcome(outcome: HandoffWorkspaceOutcomeV1): string |
             return outcome.created
                 ? t('sessionHandoff.workspaceOutcome.relationshipCreated')
                 : t('sessionHandoff.workspaceOutcome.relationshipReused');
+        case 'linked_workspace':
+            return t('sessionHandoff.workspaceOutcome.linked');
     }
 }
 
@@ -440,8 +437,9 @@ function translateCheckpoint(checkpoint: SessionHandoffProgressCheckpoint): stri
     }
 }
 
-export function SessionHandoffProgressModal({ onClose, setChrome, title, message, status, operation, onResume }: Props) {
+export function SessionHandoffProgressModal({ onClose, setChrome, title, message, status, operation, serverId, onResume, requestFailure, onOpenConflicts }: Props) {
     const { theme } = useUnistyles();
+    const presentationTheme = React.useMemo(() => projectPluginUiTheme(theme), [theme]);
     const styles = stylesheet;
 
     // Keep a monotonic "effective" status so the checkpoint selection never regresses when
@@ -517,7 +515,7 @@ export function SessionHandoffProgressModal({ onClose, setChrome, title, message
     const hasLegacyStatus = effectiveStatus !== undefined;
     const operationFailed = !hasLegacyStatus && operation?.state === 'failed';
     const operationCancelled = !hasLegacyStatus && operation?.state === 'cancelled';
-    const isFailureState = effectiveStatus?.status === 'failed' || effectiveStatus?.status === 'aborted' || effectiveStatus?.status === 'awaiting_recovery' || operationFailed;
+    const isFailureState = effectiveStatus?.status === 'failed' || effectiveStatus?.status === 'aborted' || effectiveStatus?.status === 'awaiting_recovery' || operationFailed || Boolean(requestFailure);
     const isReadyForCutover = effectiveStatus?.status === 'ready_for_cutover';
     const isCompleted = effectiveStatus?.status === 'completed';
     const canShowActiveProgress = !isFailureState && !isReadyForCutover && !operationCancelled;
@@ -562,6 +560,9 @@ export function SessionHandoffProgressModal({ onClose, setChrome, title, message
                 : operationCancelled
                     ? t('sessionHandoff.cancelled.title')
                     : t('sessionHandoff.progress.title'));
+    const operationFailureTranslationKey = operationFailed || requestFailure
+        ? resolveWorkspaceSyncErrorTranslationKey(requestFailure?.errorCode ?? operation?.error?.errorCode)
+        : null;
     const resolvedMessage =
         message
         ?? (outcomeLabel && !isFailureState
@@ -571,7 +572,7 @@ export function SessionHandoffProgressModal({ onClose, setChrome, title, message
             : isAwaitingUserResume
                 ? t('externalSessions.operationStatusNeedsResume')
                 : isFailureState
-                    ? t('sessionHandoff.failure.message')
+                    ? t(operationFailureTranslationKey ?? 'sessionHandoff.failure.message')
                     : operationCancelled
                         ? t('sessionHandoff.cancelled.message')
                         : t('sessionHandoff.progress.message'));
@@ -612,10 +613,13 @@ export function SessionHandoffProgressModal({ onClose, setChrome, title, message
     }, [onResume]);
     // A committed workspace outcome is itself a terminal reading, so the footer
     // must offer Done rather than a cancel control the daemon can no longer honor.
-    const operationTerminal = Boolean(operation?.state === 'succeeded'
+    const operationTerminal = Boolean(requestFailure || operation?.state === 'succeeded'
         || operation?.state === 'failed'
         || operation?.state === 'cancelled'
         || outcomeLabel);
+    const operationStopTarget = React.useMemo(() => (
+        operation && serverId ? { serverId, snapshot: operation } : undefined
+    ), [operation, serverId]);
 
     const chrome = React.useMemo(() => ({
         kind: 'card' as const,
@@ -625,14 +629,14 @@ export function SessionHandoffProgressModal({ onClose, setChrome, title, message
         dimensions: { width: 420, maxHeightRatio: 0.92 },
         footer: (
             <ActionOperationDetailControls
-                operation={operation}
+                operation={operationStopTarget}
                 terminal={operationTerminal}
-                canCancel={!operationTerminal && operation?.cancellation === 'supported'}
+                canCancel={!operationTerminal && operation?.cancellation === 'supported' && operationStopTarget !== undefined}
                 onClose={onClose}
                 placement="modal-footer"
             />
         ),
-    }), [onClose, operation, operationTerminal, resolvedTitle]);
+    }), [onClose, operation, operationStopTarget, operationTerminal, resolvedTitle]);
 
     useModalCardChrome(setChrome, chrome);
 
@@ -650,6 +654,21 @@ export function SessionHandoffProgressModal({ onClose, setChrome, title, message
                     {resolvedMessage}
                 </Text>
             </View>
+            {requestFailure && onOpenConflicts ? (
+                <View style={styles.actionRow}>
+                    <RoundButton
+                        testID="session-handoff-open-conflicts"
+                        title={t('workspaceSync.conflictsTitle')}
+                        accessibilityHint={t('sessionHandoff.failure.partialLinked')}
+                        onPress={() => onOpenConflicts(requestFailure.workspacePreparation?.blockedRelationshipId ?? null)}
+                    />
+                </View>
+            ) : null}
+            {requestFailure?.workspacePreparation?.completed.length ? (
+                <Text style={styles.outcomeWarningText}>
+                    {t('workspaceSync.review.completedLinks', { count: requestFailure.workspacePreparation.completed.length })}
+                </Text>
+            ) : null}
             {isAwaitingUserResume && onResume ? (
                 <View style={styles.actionRow}>
                     <RoundButton
@@ -690,15 +709,13 @@ export function SessionHandoffProgressModal({ onClose, setChrome, title, message
                                     </Text>
                                     {isCurrent && primaryProgressFraction !== null ? (
                                         <>
-                                            <View
+                                            <HappierProgress
                                                 testID={operation ? 'session-handoff-operation-progress-bar' : 'session-handoff-progress-bar'}
-                                                style={styles.progressTrack}
-                                                accessibilityRole="progressbar"
-                                                accessibilityLabel={translatePrimaryProgressStep(step)}
-                                                accessibilityValue={{ min: 0, max: 100, now: Math.round(primaryProgressFraction * 100) }}
-                                            >
-                                                <View style={[styles.progressFill, { width: `${Math.max(primaryProgressFraction * 100, 4)}%` }]} />
-                                            </View>
+                                                label={translatePrimaryProgressStep(step)} value={primaryProgressFraction}
+                                                minimumVisibleFraction={0.04} minimumFillWidth={6} height={6}
+                                                theme={presentationTheme} fillColor={theme.colors.accent.blue}
+                                                trackColor={theme.colors.border.default}
+                                            />
                                             <Text
                                                 testID={operation ? 'session-handoff-operation-progress-percent' : 'session-handoff-progress-percent'}
                                                 style={styles.progressMetaText}

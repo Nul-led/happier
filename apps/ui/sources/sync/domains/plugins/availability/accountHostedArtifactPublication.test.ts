@@ -13,16 +13,10 @@ vi.mock('@/sync/api/plugins/availability/activePluginAccountHostedArtifactRead',
         activeAccountHostedArtifact.publish(input)
     ),
 }));
-vi.mock('./reactNativeArtifactDaemonTransport', () => ({
-    fetchReactNativeExactArtifactBytesViaMachineRpc: vi.fn(() => {
-        throw new Error('The daemon transport is supplied explicitly by this test.');
-    }),
-}));
 
 import {
     computePluginUiArtifactFileSetSha256DigestV1,
     computePluginUiArtifactSha256DigestV1,
-    derivePluginUiNativeCapabilitiesDigestV1,
     PluginUiArtifactDigestV1Schema,
 } from '@happier-dev/protocol/plugins/ui';
 import {
@@ -33,7 +27,6 @@ import {
 
 import { encodeBase64 } from '@/encryption/base64';
 import type {
-    DaemonPluginReactNativeCrashBindingTokenV1,
     DaemonPluginUiArtifactBytesReadResponse,
 } from '@happier-dev/protocol';
 
@@ -56,11 +49,11 @@ const accountLifetime: ActiveServerAccountScopeLifetime = Object.freeze({
 
 const inactiveAppExactSource = Object.freeze({
     kind: 'appExact' as const,
-    readFile: async () => null,
+    fetch: async () => null,
 });
 const inactiveAccountHostedSource = Object.freeze({
     kind: 'accountHosted' as const,
-    readFile: async () => null,
+    fetch: async () => null,
 });
 
 beforeEach(() => {
@@ -77,46 +70,24 @@ function fixture(input: Readonly<{
     offlineUiHosting?: 'enabled' | 'disabled';
     hostingCapabilityEnabled?: boolean;
     alreadyHosted?: boolean;
-    nativeCapabilitiesDigest?: `sha256:${string}`;
 }> = {}) {
     const offlineUiHosting = input.offlineUiHosting ?? 'enabled';
     const hostingCapabilityEnabled = input.hostingCapabilityEnabled ?? true;
     const alreadyHosted = input.alreadyHosted ?? false;
     const contributionId = 'native-preview';
-    const entryPath = 'react-native/acme/ios.bundle';
-    const chunkPath = 'react-native/acme/chunk.js';
+    const artifactId = 'native-preview-artifact';
+    const entryPath = `react-native/${artifactId}/entry.cjs.bundle`;
     const entryBytes = new TextEncoder().encode('globalThis.__acmeEntry = true;');
-    const chunkBytes = new TextEncoder().encode('globalThis.__acmeChunk = true;');
     const files = [
         {
             relativePath: entryPath,
             digest: computePluginUiArtifactSha256DigestV1(entryBytes),
             byteSize: entryBytes.byteLength,
         },
-        {
-            relativePath: chunkPath,
-            digest: computePluginUiArtifactSha256DigestV1(chunkBytes),
-            byteSize: chunkBytes.byteLength,
-        },
     ] as const;
     const artifactDigest = computePluginUiArtifactFileSetSha256DigestV1([
         { relativePath: entryPath, bytes: entryBytes },
-        { relativePath: chunkPath, bytes: chunkBytes },
     ]);
-    const compatibility = {
-        hostUiApiVersion: '1.0.0',
-        reactVersion: '19.0.0',
-        reactNativeVersion: '0.83.4',
-        expoRuntimeVersion: '0.2.0-native',
-        hermesVersion: '0.15.0',
-    };
-    const adoptionCompatibility = {
-        ...compatibility,
-        hostAppVersion: '2.0.0',
-        platform: 'ios' as const,
-        channel: 'internal',
-        nativeCapabilities: [],
-    };
     const release = PluginReleaseFactsV1Schema.parse({
         ref: { pluginId: 'com.acme.preview', version: '1.2.3' },
         archiveDigestSha256: PluginUiArtifactDigestV1Schema.parse(`sha256:${'a'.repeat(64)}`),
@@ -132,10 +103,11 @@ function fixture(input: Readonly<{
         collectionContracts: [],
         uiSlots: [{
             contributionId,
+            artifactId,
             tier: 'reactNative',
             platform: 'ios',
             artifactDigest,
-            compatibility,
+            hostUiApiRange: '^1.0.0',
         }],
         packageAssetArchive: {
             archiveDigestSha256: `sha256:${'d'.repeat(64)}`,
@@ -151,7 +123,14 @@ function fixture(input: Readonly<{
         sourceClass: 'versionedArchive',
         portableRelease: true,
         archiveDigestSha256: PluginUiArtifactDigestV1Schema.parse(`sha256:${'a'.repeat(64)}`),
-        uiArtifacts: [{ contributionId, tier: 'reactNative', platform: 'ios', artifactDigest }],
+        uiArtifacts: [{
+            contributionId,
+            artifactId,
+            tier: 'reactNative',
+            platform: 'ios',
+            artifactDigest,
+            hostUiApiRange: '^1.0.0',
+        }],
         enabled: true,
         trustState: 'trusted',
         observedAt: 1,
@@ -162,6 +141,7 @@ function fixture(input: Readonly<{
             pluginId: materialization.pluginId,
             response: PluginAccountAvailabilityIntentReadResponseV1Schema.parse({
                 availabilityCursor: 7,
+                packageAssets: [],
                 hostingCapability: hostingCapabilityEnabled
                     ? { enabled: true, maxArtifactBytes: 1024, maxAccountBytes: 2048 }
                     : { enabled: false },
@@ -178,11 +158,12 @@ function fixture(input: Readonly<{
                     ? [{
                         release: { pluginId: materialization.pluginId, version: materialization.version },
                         contributionId,
+                        artifactId,
                         tier: 'reactNative' as const,
                         platform: 'ios' as const,
-                        artifactId: '00000000-0000-4000-8000-000000000001',
+                        accountArtifactId: '00000000-0000-4000-8000-000000000001',
                         artifactDigest,
-                        compatibility: adoptionCompatibility,
+                        hostUiApiRange: '^1.0.0',
                     }]
                     : [],
             }),
@@ -191,7 +172,6 @@ function fixture(input: Readonly<{
         snapshots: [{
             serverIdentityId: materialization.serverIdentityId,
             machineId: materialization.machineId,
-            revision: 1,
             materializations: [materialization],
         }],
     } satisfies PluginAccountAvailabilitySnapshot;
@@ -199,35 +179,19 @@ function fixture(input: Readonly<{
     const cacheIdentity = {
         pluginId: materialization.pluginId,
         contributionId,
+        artifactId,
         artifactDigest,
-        hostAppVersion: adoptionCompatibility.hostAppVersion,
-        hostUiApiVersion: compatibility.hostUiApiVersion,
-        reactVersion: compatibility.reactVersion,
-        reactNativeVersion: compatibility.reactNativeVersion,
-        expoRuntimeVersion: compatibility.expoRuntimeVersion,
-        hermesVersion: compatibility.hermesVersion,
-        platform: adoptionCompatibility.platform,
-        channel: adoptionCompatibility.channel,
-        nativeCapabilitiesDigest: input.nativeCapabilitiesDigest
-            ?? derivePluginUiNativeCapabilitiesDigestV1([]),
-        projectionGeneration: 12,
+        platform: 'ios' as const,
     } satisfies PluginReactNativeBundleCacheIdentity;
     const graph = {
-        contributionId,
+        artifactId,
         tier: 'reactNative' as const,
-        platform: 'ios' as const,
         entry: entryPath,
         files,
         digest: artifactDigest,
-        builtWith: { bundler: 'repack' as const, version: '5.0.0' },
-        repack: { containerName: 'acme_preview', modulePath: './renderSurface', exportName: 'renderSurface' },
-        hostUiApiVersion: compatibility.hostUiApiVersion,
-        compat: {
-            react: compatibility.reactVersion,
-            reactNative: compatibility.reactNativeVersion,
-            expoRuntime: compatibility.expoRuntimeVersion,
-            hermes: compatibility.hermesVersion,
-        },
+        builtWith: { bundler: 'esbuild' as const, version: '0.25.0' },
+        executable: { exports: ['renderSurface'] as const },
+        hostUiApiRange: '^1.0.0',
     };
     const origin = {
         serverIdentityId: materialization.serverIdentityId,
@@ -237,24 +201,11 @@ function fixture(input: Readonly<{
             pluginId: materialization.pluginId,
         },
     } as const;
-    const crashStateToken: DaemonPluginReactNativeCrashBindingTokenV1 = {
-        mount: {
-            kind: 'destination' as const,
-            destination: { pluginId: cacheIdentity.pluginId, localId: 'native-destination' },
-        },
-        renderer: { pluginId: cacheIdentity.pluginId, localId: contributionId },
-        artifactDigest,
-        crashStateEpoch: 4,
-    };
     const daemonResponse: DaemonPluginUiArtifactBytesReadResponse = {
         ok: true as const,
         artifactFamily: 'reactNative' as const,
-        artifactOwnerKind: 'renderer' as const,
-        cacheIdentity,
-        crashStateToken,
+        cacheIdentity: { artifactDigest },
         artifact: {
-            pluginId: cacheIdentity.pluginId,
-            contributionId,
             artifactKind: 'reactNativeBundle' as const,
             digest: artifactDigest,
             format: 'plainJs' as const,
@@ -263,7 +214,6 @@ function fixture(input: Readonly<{
         bytesBase64: encodeBase64(entryBytes),
         files: [
             { ...files[0], bytesBase64: encodeBase64(entryBytes) },
-            { ...files[1], bytesBase64: encodeBase64(chunkBytes) },
         ],
     };
     return {
@@ -271,16 +221,11 @@ function fixture(input: Readonly<{
         cacheIdentity,
         graph,
         origin,
-        crashStateToken,
         daemonResponse,
         contributionId,
         artifactDigest,
-        compatibility,
-        adoptionCompatibility,
         entryPath,
-        chunkPath,
         entryBytes,
-        chunkBytes,
     };
 }
 
@@ -291,13 +236,8 @@ async function acquireFromDaemon(current: ReturnType<typeof fixture>) {
         cacheIdentity: current.cacheIdentity,
         accountLifetime,
         appExact: inactiveAppExactSource,
-        artifactOwnerKind: 'renderer',
-        crashStateToken: current.crashStateToken,
-        daemon: {
-            origin: current.origin,
-            serverId: scope.serverId,
-            fetchArtifactBytes: async () => current.daemonResponse,
-        },
+        daemon: { machineId: current.origin.materializationRef.machineId, serverId: scope.serverId },
+        fetchDaemonArtifactBytes: async () => current.daemonResponse,
     });
 }
 
@@ -315,17 +255,16 @@ describe('Account-hosted plugin UI Artifact publication', () => {
             release: { pluginId: 'com.acme.preview', version: '1.2.3' },
             slot: {
                 contributionId: current.contributionId,
+                artifactId: 'native-preview-artifact',
                 tier: 'reactNative',
                 platform: 'ios',
                 artifactDigest: current.artifactDigest,
-                compatibility: current.compatibility,
+                hostUiApiRange: '^1.0.0',
             },
-            hostCompatibility: current.adoptionCompatibility,
             artifactGraph: current.graph,
         });
         expect(published.files).toEqual([
             { relativePath: current.entryPath, bytes: current.entryBytes },
-            { relativePath: current.chunkPath, bytes: current.chunkBytes },
         ]);
     });
 
@@ -347,14 +286,6 @@ describe('Account-hosted plugin UI Artifact publication', () => {
 
     it('does not republish a slot whose exact qualified Artifact link is already committed', async () => {
         const current = fixture({ alreadyHosted: true });
-
-        const acquired = await acquireFromDaemon(current);
-        expect(acquired.kind).toBe('available');
-        expect(activeAccountHostedArtifact.publish).not.toHaveBeenCalled();
-    });
-
-    it('refuses publication when the host cannot describe its own native capability set', async () => {
-        const current = fixture({ nativeCapabilitiesDigest: `sha256:${'b'.repeat(64)}` });
 
         const acquired = await acquireFromDaemon(current);
         expect(acquired.kind).toBe('available');

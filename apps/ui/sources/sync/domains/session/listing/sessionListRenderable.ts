@@ -1,9 +1,11 @@
+import { readSessionDirectoryKind } from '@happier-dev/protocol';
 import {
     hasUnreadActivityForSessionViewer,
     isSessionPersonallyTrackedForViewer,
     normalizeSessionViewerCompatibility,
 } from '@/sync/domains/session/readState/sessionViewer';
-import type { AgentState, Metadata, Session } from '@/sync/domains/state/storageTypes';
+import type { Session } from '@/sync/domains/state/storageTypes';
+import type { AgentState, Metadata } from '@happier-dev/session-core/state';
 import {
     SessionSharedMetadataV1Schema,
     readSessionWorkStateV1FromMetadata,
@@ -19,9 +21,10 @@ import {
     type SessionViewerProjectionV1,
 } from '@happier-dev/protocol';
 import { readSessionMetadataLayoutVersion } from '@/sync/engine/sessions/parsePlainSessionPayload';
-import { isSessionAccessOwner, isSessionAccessRecipient } from '@/sync/engine/sessions/normalizeSessionAccessProjection';
-import { computeHasUnreadActivity } from '@/sync/domains/messages/unread';
-import type { Message } from '@/sync/domains/messages/messageTypes';
+import { isSessionAccessRecipient } from '@/sync/engine/sessions/normalizeSessionAccessProjection';
+import { isSessionListRenderableOwnerProjection } from './sessionListRenderableSessionProjection';
+import { computeHasUnreadActivity } from "@happier-dev/session-core/messages";
+import type { Message } from "@happier-dev/session-core/messages";
 import { deriveExternalSessionAttentionHasUnread } from '@/sync/domains/session/external/readExternalSessionAttention';
 import { readExternalSessionLink } from '@/sync/domains/session/external/readExternalSessionLink';
 import {
@@ -78,6 +81,8 @@ export interface SessionListRenderableMetadata {
         updatedAt: number;
     } | null;
     hiddenSystemSession?: boolean;
+    /** The no-folder marker, carried so the one classifier (`readSessionDirectoryKind`) reads rows too. */
+    sessionDirectoryV1?: Readonly<{ v: 1; kind: 'managed' }> | null;
     terminalControlServiceabilityV1?: {
         v: 1;
         state: 'servable' | 'recoverable_unservable' | 'unknown';
@@ -126,6 +131,12 @@ export interface SessionListRenderableSession {
     runtimeActivityObservedAt?: number | null;
     runtimeActivityRevision?: number | null;
     lastTurnCompletedAt?: number | null;
+    /** The Session this one reports to (ORC R-03), for the list tree. */
+    reportsTo?: Session['reportsTo'];
+    origin?: Session['origin'];
+    workDepth?: Session['workDepth'];
+    /** Direct reports, counted by the server (the lead row's sub-session chip). */
+    reports?: Session['reports'];
     metadataLayoutVersion?: number;
     metadataVersion: number;
     agentStateVersion: number;
@@ -356,7 +367,6 @@ export function deriveSessionListRenderableHasUnreadMessagesFromMetadataPatch(pa
     if (
         params.recomputeUnread === true
         || params.metadata !== undefined
-        || typeof params.nextLastViewedSessionSeq === 'number'
     ) {
         return computeHasUnreadActivity({
             sessionSeq: resolveSessionListReadableSeq({
@@ -447,8 +457,15 @@ function applyTransientUserMessageTitleFallback(
     };
 }
 
+/**
+ * The input of the one row projector. `metadataUndecided` is set only by a list refresh that
+ * opened no key: its Session carries no decrypted projection, so an owner view is undecided rather
+ * than unavailable, and the projection the previous row holds for the same layout is kept.
+ */
+export type SessionListRenderableSource = Session & Readonly<{ metadataUndecided?: true }>;
+
 export function buildSessionListRenderableFromSession(
-    session: Session,
+    session: SessionListRenderableSource,
     previous?: SessionListRenderableSession,
     messages?: ReadonlyArray<Message>,
     transcriptAggregate?: TranscriptRenderableAggregate | null,
@@ -468,9 +485,11 @@ export function buildSessionListRenderableFromSession(
     })();
     const statesCache: TranscriptRequestStatesCache = aggregate ? { states: aggregate.requestStates } : {};
     const renderableSourceMetadata = readSessionListRenderableSourceMetadata(session);
+    const ownerProjection = isSessionListRenderableOwnerProjection(session);
+    const metadataUndecided = session.metadataUndecided === true;
     const layout1OwnerMetadataUnavailable =
-        session.metadataLayoutVersion === 1
-        && isSessionAccessOwner(session.access, session.accessLevel)
+        ownerProjection
+        && !metadataUndecided
         && renderableSourceMetadata == null;
     const preserveMetadata =
         !layout1OwnerMetadataUnavailable
@@ -511,7 +530,19 @@ export function buildSessionListRenderableFromSession(
     const titleFallbackMessages = aggregate
         ? (aggregate.firstUserTextMessage ? [aggregate.firstUserTextMessage] : [])
         : messages;
-    const projectedMetadata = applyTransientUserMessageTitleFallback(nextMetadata, previousMetadata, titleFallbackMessages);
+    const lockedDisplayTitle = session.metadataLayoutVersion === 1
+        && isSessionAccessRecipient(session.access, session.accessLevel)
+        ? normalizeTransientTitleText(session.lockedDisplayTitle)
+        : null;
+    const projectedMetadata = applyTransientUserMessageTitleFallback(
+        nextMetadata ?? (
+            lockedDisplayTitle && previousMetadata
+                ? { ...previousMetadata, summaryText: lockedDisplayTitle }
+                : null
+        ),
+        previousMetadata,
+        titleFallbackMessages,
+    );
     const readableActivity: SessionListReadableActivitySummary | undefined = aggregate
         ? {
             latestCommittedMessageSeq: aggregate.latestCommittedMessageSeq,
@@ -586,6 +617,15 @@ export function buildSessionListRenderableFromSession(
         runtimeActivityObservedAt: session.runtimeActivityObservedAt ?? null,
         runtimeActivityRevision: session.runtimeActivityRevision ?? null,
         lastTurnCompletedAt: session.lastTurnCompletedAt ?? null,
+        origin: previous?.origin?.kind === session.origin?.kind && previous?.origin?.runId === session.origin?.runId
+            ? previous?.origin ?? session.origin : session.origin,
+        workDepth: session.workDepth,
+        reportsTo: session.reportsTo?.sessionId === previous?.reportsTo?.sessionId
+            ? previous?.reportsTo ?? session.reportsTo ?? null
+            : session.reportsTo ?? null,
+        reports: JSON.stringify(previous?.reports ?? null) === JSON.stringify(session.reports ?? null)
+            ? previous?.reports ?? null
+            : session.reports ?? null,
         metadataLayoutVersion: preserveMetadata && previous
             ? previous.metadataLayoutVersion
             : session.metadataLayoutVersion,
@@ -624,8 +664,12 @@ export function buildSessionListRenderableFromSession(
             ...session,
             latestReadyEventSeq,
         }, readableActivity),
-        metadataUnavailable: session.metadataLayoutVersion === 1 && isSessionAccessOwner(session.access, session.accessLevel)
-            ? layout1OwnerMetadataUnavailable
+        // An owner row states whether its owner view is readable; an undecided one states it only
+        // when it kept a previous projection, and otherwise leaves hydration to settle it.
+        metadataUnavailable: ownerProjection
+            ? metadataUndecided
+                ? preserveMetadata ? false : undefined
+                : layout1OwnerMetadataUnavailable
             : undefined,
     };
 
@@ -856,6 +900,11 @@ export function areSessionListRenderablesEqual(
         && (previous.runtimeActivityObservedAt ?? null) === (next.runtimeActivityObservedAt ?? null)
         && (previous.runtimeActivityRevision ?? null) === (next.runtimeActivityRevision ?? null)
         && (previous.lastTurnCompletedAt ?? null) === (next.lastTurnCompletedAt ?? null)
+        && (previous.reportsTo?.sessionId ?? null) === (next.reportsTo?.sessionId ?? null)
+        && previous.origin?.kind === next.origin?.kind
+        && previous.origin?.runId === next.origin?.runId
+        && previous.workDepth === next.workDepth
+        && JSON.stringify(previous.reports ?? null) === JSON.stringify(next.reports ?? null)
         && readSessionMetadataLayoutVersion(previous.metadataLayoutVersion)
             === readSessionMetadataLayoutVersion(next.metadataLayoutVersion)
         && previous.metadataVersion === next.metadataVersion
@@ -923,6 +972,7 @@ export function didSessionListRenderableStructuralFieldsChange(
         nextMeta?.externalSessionV1,
     )) return true;
     if ((prevMeta?.hiddenSystemSession === true) !== (nextMeta?.hiddenSystemSession === true)) return true;
+    if (readSessionDirectoryKind(prevMeta) !== readSessionDirectoryKind(nextMeta)) return true;
 
     return false;
 }
@@ -939,6 +989,7 @@ export function didSessionListRenderableProjectGroupingFieldsChange(
 
     if (prevParts.pathKey !== nextParts.pathKey) return true;
     if (prevParts.machineGroupId !== nextParts.machineGroupId) return true;
+    if (prevParts.bucket !== nextParts.bucket) return true;
 
     return false;
 }
@@ -1017,6 +1068,7 @@ export function didSessionListRenderableWarmCacheFieldsChange(
     if ((prevMeta?.machineId ?? null) !== (nextMeta?.machineId ?? null)) return true;
     if ((prevMeta?.flavor ?? null) !== (nextMeta?.flavor ?? null)) return true;
     if ((prevMeta?.hiddenSystemSession === true) !== (nextMeta?.hiddenSystemSession === true)) return true;
+    if (readSessionDirectoryKind(prevMeta) !== readSessionDirectoryKind(nextMeta)) return true;
     if (!areSessionListRenderableExternalSessionIdentitiesEqual(
         prevMeta?.externalSessionV1,
         nextMeta?.externalSessionV1,

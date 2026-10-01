@@ -14,7 +14,7 @@ function nativeModelSelection(modelId: string, updatedAt: number) {
     v: 1 as const,
     updatedAt,
     ref: {
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       providerConnectionId: null,
       modelId,
     },
@@ -40,7 +40,7 @@ const sessionCreationCorrespondence: SessionCreationCorrespondenceV1 = {
     creationKey: 'session-spawn-args-test',
   }),
   recipe: {
-    execution: { machineId: 'machine-1', directory: '/workspace/project' },
+    execution: { machineId: 'machine-1', directory: { kind: 'path', path: '/workspace/project' } },
     organization: { folderId: null, tagIds: [] },
     agentTarget: { kind: 'agent', identity: { pluginId: 'happier.agent.codex', localId: 'codex' } },
     modelSelection: null,
@@ -96,7 +96,7 @@ describe('buildHappySessionControlArgs', () => {
       v: 1,
       updatedAt: 456,
       ref: {
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         providerConnectionId: 'pc_work',
         modelId: 'default',
       },

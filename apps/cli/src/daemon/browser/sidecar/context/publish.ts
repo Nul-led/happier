@@ -1,5 +1,7 @@
 import {
     BrowserContextItemV1Schema,
+    resolveBrowserContextPrivacyDenial,
+    type BrowserContextPrivacyState,
     type BrowserContextAttachmentV1,
     type BrowserContextItemV1,
     type BrowserContextLifecycleStateV1,
@@ -23,11 +25,12 @@ type SidecarContextGateInput = Readonly<{
     featureEnabled: boolean;
     policyAllowed: boolean;
     runtimeAvailable: boolean;
+    privacyState?: BrowserContextPrivacyState | null;
 }>;
 
 type SidecarContextUnavailableLifecycleState = Extract<
     BrowserContextLifecycleStateV1,
-    'adapterUnavailable' | 'captureFailed' | 'policyDenied' | 'sensitiveOrigin'
+    'adapterUnavailable' | 'captureFailed' | 'policyDenied' | 'sensitiveOrigin' | 'sensitiveFieldsPresent' | 'ephemeralOnly'
 >;
 
 type SidecarContextPublisherDeps = Readonly<{
@@ -52,7 +55,7 @@ type SidecarContextBlockedResult = Readonly<{
     status: 'blocked';
     reason: 'policy_denied' | 'adapter_unavailable';
     published: false;
-    lifecycleState: BrowserContextLifecycleStateV1;
+    lifecycleState: SidecarContextUnavailableLifecycleState;
     disabledReason: string;
 }>;
 
@@ -113,6 +116,8 @@ function denied(): SidecarContextDeniedResult {
 }
 
 function resolveUnavailableLifecycleState(input: SidecarContextGateInput): SidecarContextUnavailableLifecycleState | null {
+    const privacy = resolveBrowserContextPrivacyDenial(input.privacyState);
+    if (privacy) return privacy.lifecycleState;
     if (!input.featureEnabled || !input.policyAllowed) return 'policyDenied';
     if (!input.runtimeAvailable) return 'adapterUnavailable';
     return null;
@@ -129,6 +134,18 @@ function blockedReasonFor(lifecycleState: BrowserContextLifecycleStateV1): Sidec
     return lifecycleState === 'adapterUnavailable' || lifecycleState === 'captureFailed'
         ? 'adapter_unavailable'
         : 'policy_denied';
+}
+
+/** Shared capture/egress decision: denied context must not be read or persisted first. */
+export function resolveSidecarContextGateDenial(input: SidecarContextGateInput): SidecarContextBlockedResult | null {
+    const lifecycleState = resolveUnavailableLifecycleState(input);
+    return lifecycleState ? {
+        status: 'blocked',
+        reason: blockedReasonFor(lifecycleState),
+        published: false,
+        lifecycleState,
+        disabledReason: disabledReasonFor(input),
+    } : null;
 }
 
 function buildPageReferenceUnavailableItem(
@@ -189,9 +206,9 @@ export function createSidecarContextPublisher(deps: SidecarContextPublisherDeps)
         publishPageReference: (input) => {
             if (!isOwner(input)) return denied();
 
-            const lifecycleState = resolveUnavailableLifecycleState(input);
-            if (lifecycleState) {
-                return publishItem(buildPageReferenceUnavailableItem(input, lifecycleState));
+            const denial = resolveSidecarContextGateDenial(input);
+            if (denial) {
+                return publishItem(buildPageReferenceUnavailableItem(input, denial.lifecycleState));
             }
 
             return publishItem(buildSidecarPageReferenceContextItem(input));
@@ -199,16 +216,8 @@ export function createSidecarContextPublisher(deps: SidecarContextPublisherDeps)
         publishScreenshotReference: (input) => {
             if (!isOwner(input)) return denied();
 
-            const lifecycleState = resolveUnavailableLifecycleState(input);
-            if (lifecycleState) {
-                return {
-                    status: 'blocked',
-                    reason: blockedReasonFor(lifecycleState),
-                    published: false,
-                    lifecycleState,
-                    disabledReason: disabledReasonFor(input),
-                };
-            }
+            const denial = resolveSidecarContextGateDenial(input);
+            if (denial) return denial;
             if (input.lifecycleState) {
                 return {
                     status: 'blocked',

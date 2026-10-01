@@ -1,4 +1,4 @@
-import type { NormalizedMessage } from '@/sync/typesRaw';
+import type { NormalizedMessage } from "@happier-dev/session-core/raw";
 import { resolveToolMutationClassification } from '@/sync/domains/tools/toolMutationClassification';
 
 export type WorkspaceMutationExtractionResult = Readonly<{

@@ -1,7 +1,7 @@
 import type { MachineInstallationProofPayloadV1 } from '@happier-dev/protocol';
 
 import type { MachineRegistrationIdentity } from '@/api/types';
-import { decodeJwtPayload } from '@/cloud/decodeJwtPayload';
+import { readAccountIdFromToken } from '@/cloud/decodeJwtPayload';
 import { buildInstallationProofForMachine } from '@/daemon/identity/proof';
 import { readOrCreateInstallationIdentity } from '@/daemon/identity/store';
 
@@ -10,18 +10,6 @@ import { readMachineReplacementCandidateForActiveServer } from './machineReplace
 export type ResolvedMachineRegistrationIdentity = MachineRegistrationIdentity & Readonly<{
     payload: MachineInstallationProofPayloadV1;
 }>;
-
-export function readAccountIdFromToken(token: string): string | null {
-    try {
-        const payload = decodeJwtPayload(token);
-        if (!payload || typeof payload !== 'object') {
-            return null;
-        }
-        return typeof payload.sub === 'string' && payload.sub.trim() ? payload.sub.trim() : null;
-    } catch {
-        return null;
-    }
-}
 
 export async function resolveMachineRegistrationIdentity(params: Readonly<{
     machineId: string;

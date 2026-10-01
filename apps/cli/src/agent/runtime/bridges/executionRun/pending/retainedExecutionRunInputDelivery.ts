@@ -18,6 +18,7 @@ import {
 } from '@/agent/runtime/session/input/providerInputOutcome';
 import { readAdmittedSessionMediaInputForDispatchV1 } from '@/session/services/admitSessionStructuredInputV1';
 import { resolveStructuredInputProviderDispatchContext } from '@/agent/runtime/turns/resolveStructuredInputProviderContext';
+import { projectExecutionRunWorkflowInputAcceptance } from '../executionRunWorkflowObservation';
 
 import type {
     ExecutionRunPendingInputDelivery,
@@ -82,6 +83,7 @@ export function createRetainedExecutionRunInputDelivery(
     const unsubscribeRuntimeEvents = controller.backend.subscribeRuntimeEvents?.((event) => {
         if (controller.cancelled) return;
         if (event.kind === 'input-accepted') {
+            projectExecutionRunWorkflowInputAcceptance(controller, runId, event);
             const previous = controller.currentInputTurn;
             const inputIds = previous?.turnId === event.delivery.turnId
                 ? [...new Set([...previous.inputIds, ...event.inputIds])]

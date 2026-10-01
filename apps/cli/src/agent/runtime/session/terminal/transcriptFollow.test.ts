@@ -9,6 +9,12 @@ import type { HostExternalTranscriptFollowEvent } from '@/session/external/priva
 
 import { createHostTerminalTranscriptFollowService } from './transcriptFollow';
 
+type FollowProviderSession = Parameters<typeof createHostTerminalTranscriptFollowService>[0]['followProviderSession'];
+
+const emitEmptyInitialReplay = async (listener: Parameters<FollowProviderSession>[1]) => {
+    await listener({ kind: 'data', phase: 'initial_replay', items: [], fromCursor: null, nextCursor: 'current-tail' });
+};
+
 const loadCompleteBaseline = async () => ({
     localIds: new Set<string>(),
     complete: true,
@@ -156,11 +162,14 @@ describe('createHostTerminalTranscriptFollowService', () => {
 
     it('fails closed before provider follow when the stable-id baseline exceeds the bounded read', async () => {
         const publish = vi.fn(async () => undefined);
-        const followProviderSession = vi.fn(async () => ({
+        const followProviderSession = vi.fn(async (_request: Parameters<FollowProviderSession>[0], listener: Parameters<FollowProviderSession>[1]) => {
+            await emitEmptyInitialReplay(listener);
+            return {
             status: 'following' as const,
             startingCursor: 'cursor-1',
             subscription: { dispose: vi.fn(async () => undefined) },
-        }));
+        };
+        });
         const service = createHostTerminalTranscriptFollowService({
             loadCommittedLocalIdBaseline: vi.fn(async () => ({
                 localIds: new Set(
@@ -193,8 +202,9 @@ describe('createHostTerminalTranscriptFollowService', () => {
             loadCommittedLocalIdBaseline: vi.fn(async () => {
                 throw new Error('baseline transport unavailable');
             }),
-            followProviderSession: vi.fn(async (request) => {
+            followProviderSession: vi.fn(async (request, listener) => {
                 requests.push(request);
+                await emitEmptyInitialReplay(listener);
                 return {
                     status: 'following' as const,
                     startingCursor: 'current-tail',
@@ -221,11 +231,14 @@ describe('createHostTerminalTranscriptFollowService', () => {
     it('mints the whole admission deadline before loading the committed baseline', async () => {
         let nowMs = 10_000;
         const now = vi.spyOn(Date, 'now').mockImplementation(() => nowMs);
-        const followProviderSession = vi.fn(async () => ({
+        const followProviderSession = vi.fn(async (_request: Parameters<FollowProviderSession>[0], listener: Parameters<FollowProviderSession>[1]) => {
+            await emitEmptyInitialReplay(listener);
+            return {
             status: 'following' as const,
             startingCursor: 'current-tail',
             subscription: { dispose: vi.fn(async () => undefined) },
-        }));
+        };
+        });
         const service = createHostTerminalTranscriptFollowService({
             loadCommittedLocalIdBaseline: async () => {
                 nowMs = 10_001;
@@ -259,11 +272,14 @@ describe('createHostTerminalTranscriptFollowService', () => {
     it('does not begin provider follow when baseline loading consumes the whole admission deadline', async () => {
         let nowMs = 10_000;
         const now = vi.spyOn(Date, 'now').mockImplementation(() => nowMs);
-        const followProviderSession = vi.fn(async () => ({
+        const followProviderSession = vi.fn(async (_request: Parameters<FollowProviderSession>[0], listener: Parameters<FollowProviderSession>[1]) => {
+            await emitEmptyInitialReplay(listener);
+            return {
             status: 'following' as const,
             startingCursor: 'current-tail',
             subscription: { dispose: vi.fn(async () => undefined) },
-        }));
+        };
+        });
         const publish = vi.fn(async () => undefined);
         const service = createHostTerminalTranscriptFollowService({
             loadCommittedLocalIdBaseline: async () => {
@@ -311,11 +327,14 @@ describe('createHostTerminalTranscriptFollowService', () => {
             signal: AbortSignal;
             deadlineAtMs: number;
         }>> = [];
-        const followProviderSession = vi.fn(async () => ({
+        const followProviderSession = vi.fn(async (_request: Parameters<FollowProviderSession>[0], listener: Parameters<FollowProviderSession>[1]) => {
+            await emitEmptyInitialReplay(listener);
+            return {
             status: 'following' as const,
             startingCursor: 'current-tail',
             subscription: { dispose: vi.fn(async () => undefined) },
-        }));
+        };
+        });
         const publish = vi.fn(async () => undefined);
         const lifecycle = new AbortController();
         const service = createHostTerminalTranscriptFollowService({
@@ -566,14 +585,24 @@ describe('createHostTerminalTranscriptFollowService', () => {
             }],
             account: { connectedServicesV2: [] },
             basis: {
-                contributionGenerationId: 'registry:g1',
                 accountSettingsRevision: 'account:1',
             },
             readCurrentBasis: () => ({
-                contributionGenerationId: 'registry:g1',
                 accountSettingsRevision: 'account:1',
             }),
             isCurrent: () => true,
+            resolveAgentOccurrence: (agentId) => agentId === 'antigravity'
+                ? { occurrenceId: 'antigravity:1', isCurrent: () => true }
+                : null,
+            resolveAgentSourceCustody: (agentId) => agentId === 'antigravity'
+                ? {
+                    kind: 'bundled_first_party',
+                    packagedRuntime: {
+                        kind: 'cli_version_root',
+                        versionRootId: 'cli-version-root:transcript-follow',
+                    },
+                }
+                : null,
             resolveProviderOps: async () => ({
                 validateSource: async ({ source }) => ({ ok: true as const, source }),
                 listCandidates,
@@ -668,16 +697,19 @@ describe('createHostTerminalTranscriptFollowService', () => {
             (lifecycle: AbortController, _caller: AbortController) => lifecycle.abort(),
         ],
     ] as const)(
-        'settles a held committed baseline on %s without provider follow',
+        'settles a held committed baseline on %s without publication',
         async (_reason, abort) => {
             const lifecycle = new AbortController();
             const caller = new AbortController();
             const baselineSignals: AbortSignal[] = [];
-            const followProviderSession = vi.fn(async () => ({
+            const followProviderSession = vi.fn(async (_request: Parameters<FollowProviderSession>[0], listener: Parameters<FollowProviderSession>[1]) => {
+                await emitEmptyInitialReplay(listener);
+                return {
                 status: 'following' as const,
                 startingCursor: 'current-tail',
                 subscription: { dispose: vi.fn(async () => undefined) },
-            }));
+            };
+            });
             const publish = vi.fn(async () => undefined);
             const service = createHostTerminalTranscriptFollowService({
                 loadCommittedLocalIdBaseline: async ({ signal }) => {
@@ -719,11 +751,14 @@ describe('createHostTerminalTranscriptFollowService', () => {
     );
 
     it('fails closed when no committed-baseline reader was installed', async () => {
-        const followProviderSession = vi.fn(async () => ({
+        const followProviderSession = vi.fn(async (_request: Parameters<FollowProviderSession>[0], listener: Parameters<FollowProviderSession>[1]) => {
+            await emitEmptyInitialReplay(listener);
+            return {
             status: 'following' as const,
             startingCursor: 'current-tail',
             subscription: { dispose: vi.fn(async () => undefined) },
-        }));
+        };
+        });
         const service = createHostTerminalTranscriptFollowService({
             followProviderSession,
             signal: new AbortController().signal,
@@ -745,11 +780,14 @@ describe('createHostTerminalTranscriptFollowService', () => {
         const dispose = vi.fn(async () => undefined);
         const service = createHostTerminalTranscriptFollowService({
             loadCommittedLocalIdBaseline: loadCompleteBaseline,
-            followProviderSession: vi.fn(async () => ({
+            followProviderSession: vi.fn(async (_request: Parameters<FollowProviderSession>[0], listener: Parameters<FollowProviderSession>[1]) => {
+                await emitEmptyInitialReplay(listener);
+                return {
                 status: 'following' as const,
                 startingCursor: null,
                 subscription: { dispose },
-            })),
+            };
+            }),
             signal: lifecycle.signal,
             publish: vi.fn(),
         });
@@ -778,12 +816,15 @@ describe('createHostTerminalTranscriptFollowService', () => {
         });
         const service = createHostTerminalTranscriptFollowService({
             loadCommittedLocalIdBaseline: loadCompleteBaseline,
-            followProviderSession: vi.fn(async () => ({
+            followProviderSession: vi.fn(async (_request: Parameters<FollowProviderSession>[0], listener: Parameters<FollowProviderSession>[1]) => {
+                await emitEmptyInitialReplay(listener);
+                return {
                 status: 'following' as const,
                 startingCursor: null,
                 failure,
                 subscription: { dispose: vi.fn(async () => undefined) },
-            })),
+            };
+            }),
             signal: new AbortController().signal,
             publish: vi.fn(),
         });
@@ -811,6 +852,7 @@ describe('createHostTerminalTranscriptFollowService', () => {
             loadCommittedLocalIdBaseline: loadCompleteBaseline,
             followProviderSession: vi.fn(async (_request, listener) => {
                 deliver = listener;
+                await emitEmptyInitialReplay(listener);
                 return {
                     status: 'following' as const,
                     startingCursor: null,
@@ -818,8 +860,8 @@ describe('createHostTerminalTranscriptFollowService', () => {
                 };
             }),
             signal: new AbortController().signal,
-            publish: vi.fn(async () => {
-                throw projectorFailure;
+            publish: vi.fn(async (event) => {
+                if (event.kind !== 'data' || event.phase !== 'initial_replay') throw projectorFailure;
             }),
         });
         const result = await service.bindProviderSession({
@@ -851,6 +893,7 @@ describe('createHostTerminalTranscriptFollowService', () => {
             loadCommittedLocalIdBaseline: loadCompleteBaseline,
                 followProviderSession: vi.fn(async (_request, listener) => {
                     deliver = listener;
+                    await emitEmptyInitialReplay(listener);
                     return {
                         status: 'following' as const,
                         startingCursor: null,
@@ -897,6 +940,7 @@ describe('createHostTerminalTranscriptFollowService', () => {
             loadCommittedLocalIdBaseline: loadCompleteBaseline,
                 followProviderSession: vi.fn(async (_request, listener) => {
                     deliver = listener;
+                    await emitEmptyInitialReplay(listener);
                     return {
                         status: 'following' as const,
                         startingCursor: null,
@@ -937,11 +981,14 @@ describe('createHostTerminalTranscriptFollowService', () => {
             .mockResolvedValueOnce(undefined);
         const service = createHostTerminalTranscriptFollowService({
             loadCommittedLocalIdBaseline: loadCompleteBaseline,
-            followProviderSession: vi.fn(async () => ({
+            followProviderSession: vi.fn(async (_request: Parameters<FollowProviderSession>[0], listener: Parameters<FollowProviderSession>[1]) => {
+                await emitEmptyInitialReplay(listener);
+                return {
                 status: 'following' as const,
                 startingCursor: null,
                 subscription: { dispose },
-            })),
+            };
+            }),
             signal: new AbortController().signal,
             publish: vi.fn(),
         });
@@ -969,6 +1016,7 @@ describe('createHostTerminalTranscriptFollowService', () => {
         });
         const followTranscript = vi.fn(async (input: Readonly<{
             source: Readonly<Record<string, unknown>>;
+            listener: Parameters<FollowProviderSession>[1];
         }>) => {
             if (
                 input.source.brainDir !== '/home/user/.gemini/antigravity-cli/brain'
@@ -980,6 +1028,7 @@ describe('createHostTerminalTranscriptFollowService', () => {
                     code: 'plugin_external_follow_identity_mismatch',
                 };
             }
+            await emitEmptyInitialReplay(input.listener);
             return {
                 status: 'following' as const,
                 startingCursor: 'cursor-0',

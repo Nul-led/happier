@@ -24,6 +24,7 @@ import { createTargetActionHostBindingResolver } from '@/plugins/runtime/hostAcc
 import { createTargetActionInvocationRegistry } from '@/plugins/runtime/invocation/targetActionRegistry';
 import { createUnavailablePluginServicesFactory } from '@/plugins/runtime/invocation/services/factory';
 import type { ResolvedExecutablePluginRuntimeRegistry } from '@/plugins/runtime/resolveExecutablePluginRuntimeRegistry';
+import { createPluginRuntimeOccurrenceId } from '@/plugins/runtime/runtimeSlots';
 
 import { registerPeerMediationMachineRpcDirectRoutes } from './registerRoutes';
 
@@ -368,7 +369,7 @@ describe('registerPeerMediationMachineRpcDirectRoutes V2 grant admission', () =>
             actions: [{
                 pluginId: 'acme.direct',
                 pluginVersion: '1.0.0',
-                generation: '7',
+                occurrenceId: createPluginRuntimeOccurrenceId('acme.direct'),
                 localId: 'run',
                 definition: {
                     id: 'run',
@@ -403,9 +404,9 @@ describe('registerPeerMediationMachineRpcDirectRoutes V2 grant admission', () =>
             }],
             resolveAuthorizationFacts: (action) => ({
                 generation: {
-                    targetGeneration: action.generation,
-                    desiredGeneration: action.generation,
-                    appliedGeneration: action.generation,
+                    targetGeneration: action.occurrenceId,
+                    desiredGeneration: action.occurrenceId,
+                    appliedGeneration: action.occurrenceId,
                 },
                 resourceSelections: [],
                 scopedGrants: [],
@@ -456,7 +457,7 @@ describe('registerPeerMediationMachineRpcDirectRoutes V2 grant admission', () =>
             });
             const params = {
                 machineId: 'machine_1',
-                expectedGeneration: '7',
+                expectedContributorOccurrenceId: '7',
                 qualifiedActionId: actionId,
                 input: { title: 'Cancel me' },
                 executionSurface: 'ui',

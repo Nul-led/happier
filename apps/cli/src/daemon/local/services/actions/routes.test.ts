@@ -36,6 +36,39 @@ const inventorySnapshot: NormalizedLocalServiceInventorySnapshot = {
 };
 
 describe('createLocalServiceActionRoutes', () => {
+    it('undoes Forget through the same action after rescanning and restarting the inventory owner', async () => {
+        let annotations: import('../inventory/registry').LocalServiceInventoryAnnotationsV1 | null = null;
+        const store = { read: () => annotations, write: (next: NonNullable<typeof annotations>) => { annotations = next; } };
+        const first = createLocalServiceInventoryRegistry({ annotations: store });
+        first.replaceSnapshot(inventorySnapshot);
+        const target = { kind: 'inventory_entry', inventoryEntryId: 'entry-a', machineId: 'machine-a' } as const;
+        const request = { requestId: 'forget', target, action: 'forget', force: false } as const;
+        const forgotten = await createLocalServiceActionRoutes({ machineId: 'machine-a', inventoryRegistry: first }).execute(request);
+        const undoKey = 'machine-a:tcp:loopback:127.0.0.1:5173';
+        const restarted = createLocalServiceInventoryRegistry({ annotations: store });
+        restarted.replaceSnapshot({
+            ...inventorySnapshot,
+            generatedAt: 3_000,
+            entries: [{ ...inventorySnapshot.entries[0], id: 'entry-b', lastSeenAt: 3_000 }],
+        });
+        expect(restarted.getSnapshot().entries).toEqual([]);
+        const routes = createLocalServiceActionRoutes({ machineId: 'machine-a', inventoryRegistry: restarted });
+        const undoRequest = { ...request, requestId: 'undo', undoKey, target: { ...target, inventoryEntryId: undoKey } };
+        expect(await routes.execute({ ...undoRequest, target: { ...target, inventoryEntryId: 'another-entry' } }))
+            .toMatchObject({ status: 'denied', reasonCode: 'wrong_target_kind' });
+        expect(restarted.getSnapshot().entries).toEqual([]);
+        expect(store.read()?.forgottenFallbackKeys).toHaveLength(1);
+        expect(await routes.execute(undoRequest)).toMatchObject({ status: 'succeeded' });
+        expect(forgotten).toMatchObject({ status: 'succeeded', undoKey });
+        expect(restarted.getSnapshot().entries).toMatchObject([{ id: 'entry-b', lastSeenAt: 3_000 }]);
+        expect(store.read()?.forgottenFallbackKeys).toEqual([]);
+        const restored = createLocalServiceInventoryRegistry({ annotations: store });
+        restored.replaceSnapshot(inventorySnapshot);
+        expect(restored.getSnapshot().entries).toHaveLength(1);
+        expect(await routes.execute({ ...undoRequest, target: { ...target, machineId: 'machine-b' } }))
+            .toMatchObject({ status: 'denied', reasonCode: 'wrong_machine' });
+    });
+
     it('executes forget by hiding the canonical inventory target and future matching snapshots', async () => {
         const inventoryRegistry = createLocalServiceInventoryRegistry();
         inventoryRegistry.replaceSnapshot(inventorySnapshot);

@@ -59,4 +59,15 @@ describe('waitForDaemonRunningWithinBudget', () => {
     expect(shouldAbort).toHaveBeenCalledTimes(2);
     expect(sleep).toHaveBeenCalledTimes(1);
   });
+
+  it('backs off repeated misses while respecting the startup budget', async () => {
+    const sleeps: number[] = [];
+    await expect(waitForDaemonRunningWithinBudget({
+      isRunning: async () => false,
+      timeoutMs: 2_600,
+      pollMs: 100,
+      sleep: async (ms) => { sleeps.push(ms); },
+    })).resolves.toBe(false);
+    expect(sleeps).toEqual([100, 200, 400, 800, 1_000, 100]);
+  });
 });

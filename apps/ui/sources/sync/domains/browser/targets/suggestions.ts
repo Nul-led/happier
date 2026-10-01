@@ -2,7 +2,6 @@ import {
     BrowserViewTargetV1Schema,
     type BrowserViewTargetV1,
     type LocalServiceLauncherSnapshotV1,
-    type LocalServiceLaunchTargetV1,
 } from '@happier-dev/protocol';
 
 import { resolvePluginBrowserPolicyDecision } from '@/sync/domains/plugins/browser/policy';
@@ -16,14 +15,14 @@ import type {
     PluginBrowserTargetProjection,
 } from '@/sync/domains/plugins/browser/targets';
 import {
-    selectLocalServicePreviewRows,
-    type LocalServicePreviewRow,
-    type LocalServicePreviewState,
-} from '@/sync/domains/local/services/preview/store';
+    buildLocalServiceRows,
+    groupLocalServiceRowsBySection,
+    type ServiceRow,
+} from '@/sync/domains/local/services/serviceRow';
 
 import type { BrowserRecentTarget } from './recents';
 
-export type BrowserLaunchpadSection = 'running' | 'managed' | 'plugin' | 'recent' | 'unavailable';
+export type BrowserLaunchpadSection = 'running' | 'plugin' | 'recent' | 'unavailable';
 
 export type BrowserLaunchpadRowSourceKind = 'localService' | 'hostedPluginWeb' | 'pluginExternalUrl' | 'recent';
 
@@ -41,16 +40,21 @@ export type BrowserLaunchpadRow = Readonly<{
     profileMode?: 'ephemeral' | 'session' | 'user' | 'plugin';
     disabledReason: string | null;
     lastSeenAt: number;
+    /**
+     * A running local service: the Local services row itself, from the one row model
+     * (`buildLocalServiceRows`). The launchpad renders it with `ServiceRowView`, so a running preview
+     * looks and behaves the same in Local services and in the phone Browser tab (lab W).
+     */
+    serviceRow?: ServiceRow;
 }>;
 
 type UnknownRecord = Readonly<Record<string, unknown>>;
 
 const SECTION_WEIGHT: Readonly<Record<BrowserLaunchpadSection, number>> = {
     running: 0,
-    managed: 1,
-    plugin: 2,
-    recent: 3,
-    unavailable: 4,
+    plugin: 1,
+    recent: 2,
+    unavailable: 3,
 };
 
 function asRecord(value: unknown): UnknownRecord | null {
@@ -90,77 +94,34 @@ function parseTarget(value: unknown): BrowserViewTargetV1 | null {
     return result.success ? result.data : null;
 }
 
-function sectionForLaunchTarget(target: LocalServiceLaunchTargetV1): BrowserLaunchpadSection {
-    if (target.state !== 'available') {
-        return 'unavailable';
-    }
-    return target.source === 'managed_service' ? 'managed' : 'running';
-}
-
-function disabledReasonForLaunchTarget(target: LocalServiceLaunchTargetV1): string | null {
-    if (target.state !== 'available') {
-        return target.unavailableReason ?? target.state;
-    }
-    if (!target.browserTarget) {
-        return 'browser_target_unavailable';
-    }
-    return null;
-}
-
-function rowFromLaunchTarget(
-    target: LocalServiceLaunchTargetV1,
-    lastSeenAt: number,
-): BrowserLaunchpadRow {
-    return {
-        id: `localService:${target.id}`,
-        section: sectionForLaunchTarget(target),
-        sourceKind: 'localService',
-        title: target.title,
-        subtitle: target.subtitle,
-        detail: target.kind ?? target.source,
-        target: target.browserTarget ?? null,
-        disabledReason: disabledReasonForLaunchTarget(target),
-        lastSeenAt,
-    };
-}
-
-function rowFromLocalServicePreview(
-    row: LocalServicePreviewRow,
-    nowMs: number,
-    lastSeenAt: number,
-): BrowserLaunchpadRow {
-    const target: BrowserViewTargetV1 = row.resource.browserTarget ?? {
-        kind: 'localServicePreview',
-        targetId: row.previewId,
-        sessionId: row.resource.sessionId,
-        machineId: row.resource.machineId,
-        display: {
-            title: row.resource.display.title,
-            addressLabel: row.resource.display.addressLabel,
-            ...(row.resource.display.folderLabel ? { folderLabel: row.resource.display.folderLabel } : {}),
-            ...(row.resource.display.iconToken ? { iconToken: row.resource.display.iconToken } : {}),
-            ...(row.resource.display.tone ? { tone: row.resource.display.tone } : {}),
-        },
-    };
-    const endpointExpired = typeof row.expiresAt === 'number' && row.expiresAt <= nowMs;
-    const disabledReason = !row.accessUrl
-        ? 'local_preview_url_unavailable'
-        : endpointExpired
-            ? 'local_preview_url_expired'
-            : null;
-    return {
-        id: `localServicePreview:${row.previewId}`,
-        section: disabledReason ? 'unavailable' : 'running',
-        sourceKind: 'localService',
-        title: row.resource.display.title,
-        subtitle: row.resource.display.addressLabel,
-        detail: 'registered_preview',
-        target,
-        ...(disabledReason === null && row.accessUrl ? { currentUrl: row.accessUrl } : {}),
-        ...(disabledReason === null && typeof row.expiresAt === 'number' ? { currentUrlExpiresAt: row.expiresAt } : {}),
-        disabledReason,
-        lastSeenAt,
-    };
+/**
+ * Running previews: the Local services "Running" rows that are actually up. Stale and stopped
+ * listeners stay in Local services with their own state; the launchpad lists what someone can open.
+ */
+function rowsFromRunningServices(snapshot: LocalServiceLauncherSnapshotV1 | null | undefined): BrowserLaunchpadRow[] {
+    if (!snapshot || snapshot.targets.length === 0) return [];
+    const serviceRows = buildLocalServiceRows({
+        inventoryRows: [],
+        launchTargets: snapshot.targets,
+        sessionId: snapshot.sessionId ?? null,
+        scope: 'workspace',
+    });
+    const running = groupLocalServiceRowsBySection(serviceRows).find((entry) => entry.section === 'running')?.rows ?? [];
+    return running
+        .filter((serviceRow) => serviceRow.status === 'running' || serviceRow.status === 'starting')
+        .map((serviceRow) => ({
+            id: `service:${serviceRow.id}`,
+            section: 'running',
+            sourceKind: 'localService',
+            title: serviceRow.title,
+            detail: serviceRow.target.source,
+            target: serviceRow.primaryAction?.kind === 'open'
+                ? serviceRow.primaryAction.openTarget.browserTarget ?? null
+                : null,
+            disabledReason: null,
+            lastSeenAt: snapshot.updatedAt,
+            serviceRow,
+        }));
 }
 
 function rowFromPluginTarget(
@@ -284,7 +245,6 @@ function dedupeRows(rows: readonly BrowserLaunchpadRow[]): readonly BrowserLaunc
 
 export function buildBrowserLaunchpadRows(input: Readonly<{
     launcherSnapshot?: LocalServiceLauncherSnapshotV1 | null;
-    localServicePreviewState?: LocalServicePreviewState | null;
     pluginBrowserProjection?: PluginBrowserProjectionModel | null;
     pluginBrowserPolicyContext?: PluginUiPolicyEvaluationContext;
     localizePluginText?: PluginLocalizedTextResolver;
@@ -292,16 +252,7 @@ export function buildBrowserLaunchpadRows(input: Readonly<{
     nowMs?: number;
 }>): readonly BrowserLaunchpadRow[] {
     const nowMs = input.nowMs ?? Date.now();
-    const localPreviewRows = (input.localServicePreviewState
-        ? selectLocalServicePreviewRows(input.localServicePreviewState)
-        : []
-    ).map((row) => rowFromLocalServicePreview(
-        row,
-        nowMs,
-        input.localServicePreviewState?.generatedAt ?? nowMs,
-    ));
-    const launcherRows = (input.launcherSnapshot?.targets ?? [])
-        .map((target) => rowFromLaunchTarget(target, input.launcherSnapshot?.updatedAt ?? nowMs));
+    const serviceRows = rowsFromRunningServices(input.launcherSnapshot);
     const pluginRows = Object.values(input.pluginBrowserProjection?.targetsById ?? {})
         .map((entry) => rowFromPluginTarget(
             entry,
@@ -311,5 +262,5 @@ export function buildBrowserLaunchpadRows(input: Readonly<{
         ))
         .filter((row): row is BrowserLaunchpadRow => Boolean(row));
     const recentRows = (input.recents ?? []).map(rowFromRecent);
-    return dedupeRows([...localPreviewRows, ...launcherRows, ...pluginRows, ...recentRows].sort(rankRows));
+    return dedupeRows([...serviceRows, ...pluginRows, ...recentRows].sort(rankRows));
 }

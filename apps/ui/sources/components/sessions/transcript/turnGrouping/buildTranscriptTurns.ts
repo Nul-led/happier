@@ -1,4 +1,4 @@
-import type { Message, ToolCallMessage, UserTextMessage } from '@/sync/domains/messages/messageTypes';
+import type { Message, ToolCallMessage, UserTextMessage } from "@happier-dev/session-core/messages";
 import type { DiscardedPendingMessage, PendingMessage } from '@/sync/domains/state/storageTypes';
 import { isToolCallMessageGroupableInTranscript } from '@/components/sessions/transcript/toolCalls/isToolCallMessageGroupableInTranscript';
 import { filterVisibleContextCompactionLifecycleMessageIds } from '@/components/sessions/transcript/events/contextCompactionLifecycleProjection';
@@ -302,7 +302,7 @@ function applyStickyTurnIdsFromPreviousBuild(params: Readonly<{
 
 export function buildTranscriptTurnsCached(opts: {
     cache: TranscriptTurnsBuildCache | null;
-    messageIdsOldestFirst: string[];
+    messageIdsOldestFirst: readonly string[];
     messagesById: Readonly<Record<string, Message>>;
     pendingMessages?: readonly PendingMessage[] | null;
     discardedMessages?: readonly DiscardedPendingMessage[] | null;
@@ -460,7 +460,7 @@ export function buildTranscriptTurnsCached(opts: {
 }
 
 export function buildTranscriptTurns(opts: {
-    messageIdsOldestFirst: string[];
+    messageIdsOldestFirst: readonly string[];
     messagesById: Readonly<Record<string, Message>>;
     pendingMessages?: readonly PendingMessage[] | null;
     discardedMessages?: readonly DiscardedPendingMessage[] | null;

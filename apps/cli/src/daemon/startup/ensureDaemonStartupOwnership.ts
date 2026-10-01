@@ -10,6 +10,7 @@ import {
 } from '@/daemon/ownership/daemonServiceInventory';
 import {
   buildDaemonTakeoverNotice,
+  readStartingServiceTargetModeFromEnv,
   resolveDaemonTakeoverDecision,
 } from '@/daemon/ownership/resolveDaemonTakeoverDecision';
 import { resolveDaemonOwnershipConflictExitCode } from '@/daemon/ownership/resolveDaemonOwnershipConflictExitCode';
@@ -37,6 +38,7 @@ export async function ensureDaemonStartupOwnership(
     ownership,
     takeoverRequested: params.takeoverRequested,
     startupSource,
+    serviceTargetMode: readStartingServiceTargetModeFromEnv(process.env),
   });
   if (takeoverDecision.kind === 'conflict') {
     const error = new DaemonOwnershipConflictError({
@@ -67,6 +69,15 @@ export async function ensureDaemonStartupOwnership(
     process.stderr.write(`${message.title}\n`);
     process.stderr.write(`${message.lines.map((line) => `  ${line.trimStart()}`).join('\n')}\n`);
     return exitAfterFlushingOwnershipDiagnostic(1, exitProcess);
+  }
+
+  if (takeoverDecision.kind === 'default-following-owner-yield') {
+    logger.warn('[DAEMON RUN] This server has its own background service; stopping the default background service daemon serving it', {
+      runtimeId: params.runtimeId,
+      ownerServiceLabel: takeoverDecision.owner.state.serviceLabel,
+    });
+    await stopDaemon();
+    return { action: 'continue' };
   }
 
   if (takeoverDecision.kind === 'manual-owner-takeover' || takeoverDecision.kind === 'manual-owner-replace') {

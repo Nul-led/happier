@@ -9,65 +9,22 @@ import { getModelOptionsForAgentTypeOrPreflight } from './modelOptions';
 import { parsePreflightModelListFromProbeModelsResult } from './parsePreflightModelListFromProbeModelsResult';
 
 describe('modelOptions preflight', () => {
-    it('merges preflight models with canonical agent models instead of dropping catalog options', () => {
+    it('enriches advertised models without restoring missing membership or capabilities', () => {
         const out = getModelOptionsForAgentTypeOrPreflight({
             agentType: 'claude',
-            preflight: {
-                availableModels: [
-                    { id: 'claude-opus-4-8', name: 'Claude Opus 4.8' },
-                    { id: 'claude-opus-4-7', name: 'Claude Opus 4.7' },
-                    { id: 'claude-opus-4-6', name: 'Claude Opus 4.6' },
-                    { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6' },
-                    { id: 'claude-haiku-4-5', name: 'Claude Haiku 4.5' },
-                ],
-                supportsFreeform: true,
-            },
+            preflight: { availableModels: [{ id: 'claude-sonnet-4-6', name: 'Sonnet' }], supportsFreeform: true },
         });
+        expect(out.map((option) => option.value)).toEqual(['default', 'claude-sonnet-4-6']);
+        expect(out[1]?.description).not.toBe('');
+        expect(out[1]?.modelOptions).toBeUndefined();
+        expect(out[1]?.extendedContextModelId).toBeUndefined();
+    });
 
-        expect(out.map((option) => option.value)).toEqual([
-            'default',
-            'claude-opus-4-8',
-            'claude-opus-4-7',
-            'claude-opus-4-6',
-            'claude-sonnet-4-6',
-            'claude-haiku-4-5',
-            'claude-opus-5',
-            'claude-fable-5',
-            'claude-opus-4-5',
-            'claude-sonnet-4-5',
-        ]);
-
-        // Preflight model lists often omit per-model option metadata; we must preserve catalog
-        // options so controls like Claude "Thinking" can still render.
-        expect(out.find((option) => option.value === 'claude-opus-4-8')).toMatchObject({
-            modelOptions: expect.arrayContaining([
-                expect.objectContaining({
-                    id: 'reasoning_effort',
-                    currentValue: 'high',
-                    options: expect.arrayContaining([
-                        expect.objectContaining({ value: 'xhigh' }),
-                    ]),
-                }),
-            ]),
-        });
-        expect(out.find((option) => option.value === 'claude-opus-4-7')).toMatchObject({
-            modelOptions: expect.arrayContaining([
-                expect.objectContaining({
-                    id: 'reasoning_effort',
-                    currentValue: 'xhigh',
-                    options: expect.arrayContaining([
-                        expect.objectContaining({ value: 'xhigh' }),
-                    ]),
-                }),
-            ]),
-        });
-        expect(out.find((option) => option.value === 'claude-opus-4-6')).toMatchObject({
-            modelOptions: expect.arrayContaining([
-                expect.objectContaining({ id: 'reasoning_effort' }),
-            ]),
-        });
-        expect(out.find((option) => option.value === 'claude-sonnet-4-6')?.extendedContextModelId)
-            .toBe('claude-sonnet-4-6[1m]');
+    it('treats a successful empty catalog as authoritative while no observation uses fallback', () => {
+        expect(getModelOptionsForAgentTypeOrPreflight({
+            agentType: 'claude', preflight: { availableModels: [], supportsFreeform: false },
+        }).map((option) => option.value)).toEqual(['default']);
+        expect(getModelOptionsForAgentTypeOrPreflight({ agentType: 'claude', preflight: null }).length).toBeGreaterThan(1);
     });
 
     it('carries an extended-context id authored by a dynamic model source', () => {
@@ -134,11 +91,24 @@ describe('modelOptions preflight', () => {
         expect(out.some((option) => option.value === 'gpt-5.1-codex-max')).toBe(false);
     });
 
+    it('keeps trusted static models selectable when dynamic discovery is unavailable', () => {
+        const out = getModelOptionsForAgentTypeOrPreflight({
+            agentType: 'codex',
+            preflight: {
+                availableModels: [],
+                supportsFreeform: false,
+                unavailable: true,
+            },
+        });
+
+        expect(out.some((option) => option.value === 'default')).toBe(true);
+    });
+
     it('ignores a dynamic preflight list from a different backend target', () => {
         const out = getModelOptionsForAgentTypeOrPreflight({
             agentType: 'gemini',
-            currentTargetKey: 'backend:gemini',
-            preflightTargetKey: 'backend:opencode',
+            currentTargetKey: 'agent:happier.agent.gemini/gemini',
+            preflightTargetKey: 'agent:happier.agent.opencode/opencode',
             preflight: {
                 availableModels: [
                     { id: 'gpt-5.5', name: 'GPT 5.5' },
@@ -164,7 +134,7 @@ describe('modelOptions preflight', () => {
     it('ignores an unscoped dynamic preflight list when the current backend target is known', () => {
         const out = getModelOptionsForAgentTypeOrPreflight({
             agentType: 'gemini',
-            currentTargetKey: 'backend:gemini',
+            currentTargetKey: 'agent:happier.agent.gemini/gemini',
             preflight: {
                 availableModels: [
                     { id: 'gpt-5.5', name: 'GPT 5.5' },
@@ -210,6 +180,7 @@ describe('modelOptions preflight', () => {
             preflight: {
                 availableModels: [
                     { id: 'claude-opus-4-5-20251101', name: 'Opus 4.5' },
+                    { id: 'claude-opus-4-5', name: 'Opus 4.5' },
                     { id: 'claude-opus-4-6', name: 'Opus 4.6' },
                 ],
                 supportsFreeform: true,

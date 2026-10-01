@@ -194,17 +194,13 @@ describe('ApiMachineClient daemon quiescence admission', () => {
     it('round-trips connected-client RPC as plaintext without encryption material', async () => {
         const socket = createApiSessionSocketStub({
             connected: true,
-            emit: (event, args) => {
+            emitWithAck: (event, payload) => {
                 expect(event).toBe(SOCKET_RPC_EVENTS.CALL);
-                expect(args[0]).toMatchObject({
+                expect(payload).toMatchObject({
                     method: 'machine-plain-1:ui.demo',
                     params: { hello: 'ui' },
                 });
-                const callback = args[1];
-                if (typeof callback !== 'function') {
-                    throw new Error('expected RPC acknowledgement callback');
-                }
-                callback({ ok: true, result: { hello: 'daemon' } });
+                return { ok: true, result: { hello: 'daemon' } };
             },
         });
         const client = new ApiMachineClient('token', createPlainMachine(), undefined, {
@@ -224,13 +220,9 @@ describe('ApiMachineClient daemon quiescence admission', () => {
     it('fails a connected-client RPC closed when the machine socket disconnects before the acknowledgement settles', async () => {
         const socket = createApiSessionSocketStub({
             connected: true,
-            emit: (_event, args, activeSocket) => {
-                const callback = args[1];
-                if (typeof callback !== 'function') {
-                    throw new Error('expected RPC acknowledgement callback');
-                }
+            emitWithAck: (_event, _payload, activeSocket) => {
                 activeSocket.connected = false;
-                callback({ ok: true, result: { hello: 'stale-client' } });
+                return { ok: true, result: { hello: 'stale-client' } };
             },
         });
         const client = new ApiMachineClient('token', createPlainMachine(), undefined, {

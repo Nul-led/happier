@@ -3,6 +3,29 @@ import { describe, expect, it } from 'vitest';
 import { buildSessionListProjectHeaderViewModels } from './sessionListProjectHeaderViewModels';
 
 describe('buildSessionListProjectHeaderViewModels', () => {
+    it('keeps the Chats identity despite an inherited legacy workspace label', () => {
+        const inheritedLabel = buildSessionListProjectHeaderViewModels({
+            listItems: [{
+                type: 'header', title: 'Chats', headerKind: 'project',
+                groupKey: 'managed-chats', workspaceKey: 'managed-label',
+            }],
+            workspaceRefs: [],
+            workspaceLabels: { 'managed-label': 'Old custom label' },
+        });
+        expect(inheritedLabel.projectHeaderViewModelByGroupKey.get('managed-chats')?.displayTitle).toBe('Old custom label');
+        const result = buildSessionListProjectHeaderViewModels({
+            listItems: [{
+                type: 'header', title: 'Chats', headerKind: 'project',
+                groupKey: 'managed-chats', workspaceKey: 'managed-label',
+                workspace: { t: 'managedSessions', serverId: 'server-a', machineId: 'machine-a' },
+            }],
+            workspaceRefs: [],
+            workspaceLabels: { 'managed-label': 'Old custom label' },
+        });
+        expect(result.projectHeaderViewModelByGroupKey.get('managed-chats')).toMatchObject({
+            displayTitle: 'Chats', hasCustomLabel: false, workspaceRefId: null, scopeHint: null,
+        });
+    });
     it('reuses a shared empty state when there are no project headers', () => {
         const first = buildSessionListProjectHeaderViewModels({
             listItems: [],

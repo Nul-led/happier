@@ -1,5 +1,5 @@
 import { storage } from '@/sync/domains/state/storage';
-import { readStoredSessionMessages } from '@/sync/domains/messages/readStoredSessionMessages';
+import { readStoredSessionMessages } from "@happier-dev/session-core/messages";
 
 export type AssistantTextMessageBaseline = Readonly<{
   baselineIds: Set<string>;

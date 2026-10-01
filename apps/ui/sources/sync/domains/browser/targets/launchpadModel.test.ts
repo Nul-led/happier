@@ -1,0 +1,61 @@
+import type { BrowserViewTargetV1, LocalServiceLauncherSnapshotV1 } from '@happier-dev/protocol';
+import { describe, expect, it } from 'vitest';
+
+const previewTarget = {
+    kind: 'localServicePreview',
+    targetId: 'preview_vite',
+    sessionId: 'session_1',
+    machineId: 'machine_1',
+    display: { title: 'Vite app', addressLabel: 'localhost:5173' },
+} satisfies BrowserViewTargetV1;
+
+const launcherSnapshot = {
+    v: 1,
+    machineId: 'machine_1',
+    sessionId: 'session_1',
+    updatedAt: 1_000,
+    targets: [{
+        id: 'preview:preview_vite',
+        source: 'registered_preview',
+        machineId: 'machine_1',
+        sessionId: 'session_1',
+        title: 'Vite app',
+        subtitle: 'localhost:5173',
+        confidence: 'high',
+        state: 'available',
+        actions: ['open_preview'],
+        browserTarget: previewTarget,
+    }, {
+        id: 'inventory:old',
+        source: 'inventory_entry',
+        machineId: 'machine_1',
+        sessionId: 'session_1',
+        title: 'Old service',
+        subtitle: 'localhost:4000',
+        confidence: 'medium',
+        state: 'stale',
+        unavailableReason: 'stale_service',
+        actions: ['open_preview'],
+        browserTarget: { ...previewTarget, targetId: 'preview_stale' },
+    }],
+} satisfies LocalServiceLauncherSnapshotV1;
+
+describe('buildBrowserLaunchpadModel', () => {
+    /**
+     * Lab W: the phone launchpad's Running previews ARE the Local services rows. One row model owns a
+     * running service (`buildLocalServiceRows`); the launchpad no longer derives its own local-service
+     * rows, sections or unavailable reasons from the same launcher snapshot.
+     */
+    it('lists running local services as Services rows and keeps them out of its own rows', async () => {
+        const { buildBrowserLaunchpadModel } = await import('./launchpadModel');
+
+        const model = buildBrowserLaunchpadModel({ launcherSnapshot, nowMs: 2_000 });
+
+        const running = model.rows.filter((row) => row.section === 'running');
+        expect(running.map((row) => row.serviceRow?.title)).toEqual(['Vite app']);
+        expect(running[0]?.serviceRow?.status).toBe('running');
+        expect(running[0]?.serviceRow?.primaryAction?.kind).toBe('open');
+        // A stale service is not a preview anyone can open here: no dead row for it either.
+        expect(model.rows.some((row) => row.title === 'Old service')).toBe(false);
+    });
+});

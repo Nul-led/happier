@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
     normalizeRelayAccessCanonicalPublicServerUrl,
     resolveRelayAccessConfiguredCanonicalPublicServerUrl,
+    resolveRelayAccessConfiguredPublicAccess,
 } from './publicUrl.js';
 
 vi.mock('../tailscale/index.js', async () => {
@@ -70,6 +71,12 @@ describe('relayAccess publicUrl', () => {
             await expect(
             resolveRelayAccessConfiguredCanonicalPublicServerUrl({ HOME: homeDir }),
             ).resolves.toBeNull();
+            // The configured method and its public exposure are still known without a share URL.
+            await expect(resolveRelayAccessConfiguredPublicAccess({ HOME: homeDir })).resolves.toEqual({
+                providerId: 'tailscaleFunnel',
+                exposure: 'public',
+                shareUrl: null,
+            });
             expect(runTailscaleFunnelStatus).toHaveBeenCalledTimes(0);
             expect(runTailscaleStatusJson).toHaveBeenCalledTimes(0);
         } finally {

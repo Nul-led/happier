@@ -4,26 +4,34 @@ import {
     resolveHomeGovernanceViewState,
     type HomeGovernanceViewState,
 } from '@/components/settings/home/governance/homeGovernanceViewState';
-import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
+import { resolveHomeDisplayLabel } from '@/components/settings/server/homeDisplayName';
+import type { ServerAccountScope, ServerAccountScopeLifetime } from '@/sync/domains/scope/serverAccountScope';
 import { getServerProfileById } from '@/sync/domains/server/serverProfiles';
 
-import { useServerCredentialAccountScopeResolution } from '@/sync/domains/scope/useServerCredentialAccountScopes';
+import { useServerCredentialAccountScopeBinding } from '@/sync/domains/scope/useServerCredentialAccountScopes';
 import { useHomeGovernanceSnapshot } from './useHomeGovernanceSnapshot';
 
 /**
  * What this device can currently say about one explicitly addressed Home.
  *
- * `unknown_home` and `signed_out` are facts about this device's saved Homes,
- * not answers from the Home, and are deliberately distinct from every state the
- * Home itself reports.
+ * `unknown_home`, `signed_out` and `credential_unreadable` are facts about this
+ * device's saved Homes, not answers from the Home, and are deliberately distinct
+ * from every state the Home itself reports. `credential_unreadable` is settled:
+ * this device failed to read its saved credential, and only a re-read helps.
  */
 export type HomeAdministrationBinding =
     | Readonly<{ kind: 'resolving' }>
     | Readonly<{ kind: 'unknown_home' }>
     | Readonly<{ kind: 'signed_out'; homeName: string }>
+    | Readonly<{ kind: 'credential_unreadable'; serverId: string }>
     | Readonly<{
         kind: 'bound';
         scope: ServerAccountScope;
+        /**
+         * The credential lifetime of `scope` while it is current (`null` while a refresh re-checks
+         * it). A destructive confirmation captures it and acts only if it is still current.
+         */
+        lifetime: ServerAccountScopeLifetime | null;
         homeName: string;
         state: HomeGovernanceViewState;
     }>;
@@ -48,9 +56,9 @@ export function useHomeAdministration(serverIdRaw: string): HomeAdministrationBi
         () => (serverId ? getServerProfileById(serverId) : null),
         [serverId],
     );
-    const homeName = (profile?.name ?? '').trim() || (profile?.serverUrl ?? '');
+    const homeName = resolveHomeDisplayLabel(profile, '');
 
-    const resolution = useServerCredentialAccountScopeResolution(serverId);
+    const { resolution, binding } = useServerCredentialAccountScopeBinding(serverId);
     const scope: ServerAccountScope | null = resolution.kind === 'bound' ? resolution.scope : null;
 
     // Subscribing is what declares this screen a live consumer of that exact
@@ -61,6 +69,8 @@ export function useHomeAdministration(serverIdRaw: string): HomeAdministrationBi
         switch (resolution.kind) {
             case 'resolving':
                 return RESOLVING;
+            case 'unavailable':
+                return Object.freeze({ kind: 'credential_unreadable' as const, serverId });
             case 'unknown_home':
                 return UNKNOWN_HOME;
             case 'signed_out':
@@ -69,9 +79,10 @@ export function useHomeAdministration(serverIdRaw: string): HomeAdministrationBi
                 return Object.freeze({
                     kind: 'bound' as const,
                     scope: resolution.scope,
+                    lifetime: binding,
                     homeName,
                     state: resolveHomeGovernanceViewState(snapshot),
                 });
         }
-    }, [resolution, homeName, snapshot]);
+    }, [resolution, binding, homeName, snapshot, serverId]);
 }

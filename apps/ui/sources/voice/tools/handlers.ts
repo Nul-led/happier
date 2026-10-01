@@ -17,7 +17,7 @@ import { sendSessionMessageWithServerScope } from '@/sync/runtime/orchestration/
 import { sync } from '@/sync/sync';
 import { storage } from '@/sync/domains/state/storage';
 import type { Session } from '@/sync/domains/state/storageTypes';
-import { readStoredSessionMessages } from '@/sync/domains/messages/readStoredSessionMessages';
+import { readStoredSessionMessages } from "@happier-dev/session-core/messages";
 import {
   listPendingSessionRequests,
   type SessionPendingRequest,

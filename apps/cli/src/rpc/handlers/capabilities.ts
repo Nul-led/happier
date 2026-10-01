@@ -27,7 +27,7 @@ import { probeAgentModelsBestEffort } from '@/capabilities/probes/agentModelsPro
 import { probeAgentModesBestEffort } from '@/capabilities/probes/agentModesProbe';
 import { probeAgentConfigOptionsBestEffort } from '@/capabilities/probes/agentConfigOptionsProbe';
 import { configuration } from '@/configuration';
-import { getAgentModelConfig, type AgentId } from '@happier-dev/agents';
+import { getAgentModelConfig } from '@happier-dev/agents';
 import {
     CodexPassiveRealtimeSetupResultV1Schema,
     ConnectedServiceBindingsV2IngressSchema,
@@ -57,12 +57,14 @@ import {
     withPreflightSessionControlsProbeEnvironment,
 } from '@/capabilities/probes/preflightSessionControlsProbeEnvironment';
 import { resolveProfileProbeEnvironment } from '@/capabilities/probes/resolveProfileProbeEnvironment';
-import { resolveCatalogAgentConnectedServiceIds } from '@/agent/catalog/registry';
+import { readDeclaredCatalogConnectedServiceIds, resolveCatalogAgentConnectedServiceIds } from '@/agent/catalog/registry';
+import { withAgentPreflightCatalog } from '@/capabilities/probes/withAgentPreflightCatalog';
 import { resolveConnectedServiceAuthForSpawn } from '@/daemon/connectedServices/resolveConnectedServiceAuthForSpawn';
 import { generateConnectedServiceMaterializationIdentityV1 } from '@/daemon/connectedServices/materialization/identity';
 import { resolveConnectedServiceMaterializedRootDir } from '@/daemon/connectedServices/materialize/resolveConnectedServiceMaterializedRootDir';
 import { HAPPIER_CONNECTED_SERVICE_SELECTIONS_ENV_KEY } from '@/daemon/connectedServices/connectedServiceChildEnvironment';
-import { invokeAgentCliInstall as invokeSharedProviderCliInstall } from '@/packagedRuntime/managedTools/invokeAgentCliInstall';
+import { invokeAgentCliInstallCapability } from '@/capabilities/cliUpdate/invokeAgentCliInstallCapability';
+import { withAgentCliUpdateFacts } from '@/capabilities/cliUpdate/agentCliUpdates';
 import {
     getResolvedContributionRegistry,
     resolveMergedContributionRegistry,
@@ -89,6 +91,30 @@ import { resolveInvokerName } from '@/cli/runtime/resolveInvokerName';
 
 const DEFAULT_PROBE_MODELS_TIMEOUT_MS = 30_000;
 
+/** Installed inventory served to the Plugins UI; omit daemon-only catalog detail. */
+type InstalledPluginCapabilityEntry = Omit<
+    PluginCatalogEntry,
+    'manifest' | 'manifestPath' | 'contributionIntrospection'
+>;
+
+function projectInstalledPluginCapabilityEntry(entry: PluginCatalogEntry): InstalledPluginCapabilityEntry {
+    return {
+        pluginId: entry.pluginId,
+        desiredGeneration: entry.desiredGeneration,
+        appliedGeneration: entry.appliedGeneration,
+        admittedIntegrity: entry.admittedIntegrity,
+        rollbackAvailability: entry.rollbackAvailability,
+        title: entry.title,
+        description: entry.description,
+        version: entry.version,
+        enabled: entry.enabled,
+        source: entry.source,
+        install: entry.install,
+        compatibility: entry.compatibility,
+        diagnostics: entry.diagnostics,
+    };
+}
+
 /** Plugin reload generation of this process; fences registry snapshots against in-process reloads. */
 function readPluginReloadGeneration(): number {
     try {
@@ -104,6 +130,8 @@ type ConnectedServiceProbeCredentials = NonNullable<
 type ConnectedServiceProbeApi = Parameters<typeof resolveConnectedServiceAuthForSpawn>[0]['api'];
 
 type CliProbeDependencies = Readonly<{
+    agentCatalogEntry?: AgentCatalogEntry | null;
+    agentRuntimeCacheKey?: string;
     createApiClient?: (credentials: ConnectedServiceProbeCredentials) => Promise<ConnectedServiceProbeApi>;
     getAgentCatalogObservation?: () => Readonly<{
         machineId: string;
@@ -170,6 +198,7 @@ async function resolveConnectedServiceProbeEnvironment(params: Readonly<{
                 agentId: params.agentId,
                 bindings,
                 contributions: registry,
+                catalogEntry: params.dependencies.agentCatalogEntry,
             }),
         ...(params.dependencies.activatePurposeBindings && consumer
             ? {
@@ -263,7 +292,11 @@ async function invokeCliProbeOrInstallMethod(
     requestContext: Readonly<{ signal?: AbortSignal }> = {},
 ): Promise<CapabilitiesInvokeResponse | null> {
     if (method === 'install') {
-        return invokeAgentCliInstall(agentId, params);
+        return invokeAgentCliInstallCapability(
+            agentId,
+            params,
+            dependencies.agentRegistrySnapshot?.agents.find((entry) => entry.id === agentId)?.runtimeSpec,
+        );
     }
 
     if (
@@ -275,14 +308,49 @@ async function invokeCliProbeOrInstallMethod(
         return null;
     }
 
+    return await withAgentPreflightCatalog({
+        agentId,
+        signal: requestContext.signal,
+        isCurrent: dependencies.isAgentRegistryCurrent,
+    }, async (catalog) => {
+        const result = await invokeCliPreflightMethod(agentId, method, params, {
+            ...dependencies,
+            ...(catalog.registrySnapshot ? {
+                agentCatalogEntry: catalog.catalogEntry,
+                agentRuntimeCacheKey: catalog.runtimeCacheKey,
+                agentRegistrySnapshot: catalog.registrySnapshot,
+            } : {}),
+            isAgentRegistryCurrent: catalog.isCurrent,
+        }, requestContext);
+        if (method === 'probeModels' && params?.runtimeDescriptorV1 != null && result.ok
+            && result.result !== null && typeof result.result === 'object' && !Array.isArray(result.result)) {
+            // A successful model response has validated the requested descriptor
+            // and used that context. Predecessor daemons omit this acknowledgement.
+            return { ...result, result: { ...result.result, runtimeDescriptorV1Accepted: true } };
+        }
+        return result;
+    });
+}
+
+async function invokeCliPreflightMethod(
+    agentId: AgentCatalogEntry['id'],
+    method: string,
+    params: Record<string, unknown> | undefined,
+    dependencies: CliProbeDependencies,
+    requestContext: Readonly<{ signal?: AbortSignal }>,
+): Promise<CapabilitiesInvokeResponse> {
     const { cwd, timeoutMs } = resolveCliProbeInvokeParams(params);
     const parsedConnectedServices = ConnectedServiceBindingsV2IngressSchema.safeParse(params?.connectedServices);
     const connectedServices = parsedConnectedServices.success ? parsedConnectedServices.data : null;
     const materializationAgentId =
-        resolveCatalogAgentConnectedServiceIds(agentId).length > 0
+        (dependencies.agentCatalogEntry === undefined
+            ? resolveCatalogAgentConnectedServiceIds(agentId)
+            : readDeclaredCatalogConnectedServiceIds(dependencies.agentCatalogEntry)).length > 0
             ? agentId
             : null;
-    const preflightAdapter = await resolvePreflightSessionControlsProbeAdapter(agentId).catch(() => null);
+    const preflightAdapter = method === 'probePassiveRealtimeSetup'
+        ? await resolvePreflightSessionControlsProbeAdapter(agentId, dependencies.agentCatalogEntry).catch(() => null)
+        : null;
     if (
         method === 'probePassiveRealtimeSetup'
         && (
@@ -298,7 +366,7 @@ async function invokeCliProbeOrInstallMethod(
     );
     const probeContext = await resolveProbeBackendContext(
         { ...params, agentId },
-        { requireCredentials: requiresMaterializedAuth },
+        { requireCredentials: requiresMaterializedAuth, catalogEntry: dependencies.agentCatalogEntry },
     );
     const modelConfig = method === 'probeModels' ? getAgentModelConfig(agentId) : null;
     if (method === 'probeModels' && !isDynamicModelProbeEnabled({
@@ -308,7 +376,12 @@ async function invokeCliProbeOrInstallMethod(
     })) {
         return { ok: true, result: await probeAgentModelsBestEffort({
             agentId,
+            catalogEntry: dependencies.agentCatalogEntry,
+            runtimeCacheKey: dependencies.agentRuntimeCacheKey,
+            ...(requestContext.signal ? { signal: requestContext.signal } : {}),
             backendTarget: probeContext.backendTarget,
+            runtimeDescriptorV1: probeContext.runtimeDescriptorV1,
+            runtimeKindOverride: probeContext.runtimeKindOverride,
             cwd,
             timeoutMs,
             accountSettings: probeContext.accountSettings,
@@ -376,7 +449,12 @@ async function invokeCliProbeOrInstallMethod(
     })).env;
     const commonProbeArgs = {
         agentId,
+        catalogEntry: dependencies.agentCatalogEntry,
+        runtimeCacheKey: dependencies.agentRuntimeCacheKey,
+        ...(requestContext.signal ? { signal: requestContext.signal } : {}),
         backendTarget: probeContext.backendTarget,
+        runtimeDescriptorV1: probeContext.runtimeDescriptorV1,
+        runtimeKindOverride: probeContext.runtimeKindOverride,
         cwd,
         timeoutMs,
         accountSettings: probeContext.accountSettings,
@@ -398,6 +476,8 @@ async function invokeCliProbeOrInstallMethod(
           if (!preflightAdapter?.probePassiveRealtimeSetupRaw) return { v: 1, status: 'unavailable' } as const;
           const raw = await preflightAdapter.probePassiveRealtimeSetupRaw({
             backendTarget: probeContext.backendTarget,
+            runtimeDescriptorV1: probeContext.runtimeDescriptorV1,
+            runtimeKindOverride: probeContext.runtimeKindOverride,
             probeKind: 'passiveRealtimeSetup',
             cwd,
             timeoutMs,
@@ -427,6 +507,7 @@ async function invokeCliProbeOrInstallMethod(
                 agentId,
                 bindings: bindings.data,
                 contributions: registry,
+                catalogEntry: dependencies.agentCatalogEntry,
             }) : null;
             const qualifiedPurpose = snapshot?.purposes.find((candidate) =>
                 candidate.purpose === observation.purpose
@@ -466,11 +547,13 @@ async function invokeCliProbeOrInstallMethod(
                         ],
                         supportsFreeform: modelConfig?.supportsSelection === true && modelConfig.supportsFreeform === true,
                         source: result.source,
+                        observedAt: result.observedAt,
+                        refreshError: result.refreshError ?? (result.source === 'static' || result.stale),
                     },
                 };
             }
             const nativeContext = observation.nativeBearer
-                ? resolveNativeCatalogObservationContext({ agentId, observation, registry })
+                ? resolveNativeCatalogObservationContext({ agentId, observation, registry, catalogEntry: dependencies.agentCatalogEntry })
                 : null;
             if (nativeContext && observation.nativeBearer) {
                 const credential = await (dependencies.resolveNativeCatalogBearer ?? resolveNativeCatalogBearer)({
@@ -503,12 +586,14 @@ async function invokeCliProbeOrInstallMethod(
                             ],
                             supportsFreeform: modelConfig?.supportsSelection === true && modelConfig.supportsFreeform === true,
                             source: result.source,
+                        observedAt: result.observedAt,
+                        refreshError: result.refreshError ?? (result.source === 'static' || result.stale),
                         },
                     };
                 }
             }
         }
-          return { ok: true, result: await probeAgentModelsBestEffort(commonProbeArgs) };
+          return { ok: true, result: await probeAgentModelsBestEffort({ ...commonProbeArgs, bypassCache: params?.bypassCache === true }) };
       }
       if (method === 'probeModes') {
           return { ok: true, result: await probeAgentModesBestEffort(commonProbeArgs) };
@@ -517,67 +602,6 @@ async function invokeCliProbeOrInstallMethod(
     } finally {
       await connectedServiceProbeEnvironment.cleanup?.();
     }
-}
-
-async function invokeAgentCliInstall(
-    agentId: AgentCatalogEntry['id'],
-    params?: Record<string, unknown>,
-): Promise<CapabilitiesInvokeResponse> {
-    const dryRun = params?.dryRun === true;
-    const allowVendorRecipeExecution = params?.allowVendorRecipeExecution === true;
-    const sharedParams = {
-        ...(params?.intent === 'update' ? { intent: 'update' as const } : {}),
-        ...(typeof params?.skipIfInstalled === 'boolean' ? { skipIfInstalled: params.skipIfInstalled } : {}),
-        ...(typeof params?.platform === 'string' && params.platform.trim().length > 0 ? { platform: params.platform.trim() } : {}),
-        ...(allowVendorRecipeExecution ? { allowVendorRecipeExecution: true } : {}),
-    };
-
-    if (!dryRun) {
-        const preview = await invokeSharedProviderCliInstall({
-            agentId: agentId as AgentId,
-            params: { ...sharedParams, dryRun: true },
-            env: process.env,
-            nodePlatform: process.platform,
-        });
-
-        if (!preview.ok) {
-            return {
-                ok: false,
-                error: { message: preview.errorMessage, code: preview.errorCode },
-                ...(preview.logPath ? { logPath: preview.logPath } : {}),
-            };
-        }
-
-        if (preview.plan.installMode === 'vendor_recipe' && !allowVendorRecipeExecution) {
-            return {
-                ok: false,
-                error: {
-                    message: `Installing ${preview.plan.title} requires explicit confirmation before running vendor install commands.`,
-                    code: 'install-confirmation-required',
-                },
-            };
-        }
-    }
-
-    const result = await invokeSharedProviderCliInstall({
-        agentId: agentId as AgentId,
-        params: {
-            ...sharedParams,
-            ...(dryRun ? { dryRun: true } : {}),
-        },
-        env: process.env,
-        nodePlatform: process.platform,
-    });
-
-    if (!result.ok) {
-        return {
-            ok: false,
-            error: { message: result.errorMessage, code: result.errorCode },
-            ...(result.logPath ? { logPath: result.logPath } : {}),
-        };
-    }
-
-    return { ok: true, result: { plan: result.plan, alreadyInstalled: result.alreadyInstalled, logPath: result.logPath ?? null } };
 }
 
 type PluginMarketplaceCapabilityMethod =
@@ -1123,7 +1147,7 @@ function createPluginMarketplaceCapability(
             // read the app already refreshes, instead of requiring the id to
             // travel out of band.
             return {
-                installedPlugins,
+                installedPlugins: installedPlugins.map(projectInstalledPluginCapabilityEntry),
                 developmentActions: { create: true, develop: true, unregister: true },
                 developmentStatus: developmentResult.status,
                 pendingChanges: pendingChanges.changes,
@@ -1159,9 +1183,16 @@ export async function createCliCapabilitiesService(dependencies: Readonly<{
             ?? (() => readPluginReloadGeneration() === snapshotReloadGeneration),
     };
 
+    // Every `cli.<agentId>` capability carries K6 update facts, not a software mutation;
+    // the variation lives in each agent's manifest `cli.install` facts.
     const cliCapabilities = await Promise.all(
         resolvedContributionRegistry.agents.map(async (entry) =>
-            await createGenericCliCapability(entry.id, cliProbeDependencies)),
+            withAgentCliUpdateFacts(await createGenericCliCapability(entry.id, cliProbeDependencies), entry.id, {
+                resolveRuntimeSpec: () => {
+                    if (!entry.runtimeSpec) throw new Error('Agent CLI runtime is unavailable.');
+                    return entry.runtimeSpec;
+                },
+            })),
     );
 
     const explicitCapabilities: Capability[] = [

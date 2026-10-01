@@ -4,6 +4,11 @@ import { Pressable } from 'react-native';
 import type { AgentInputExtraActionChip } from '@/components/sessions/agentInput/agentInputContracts';
 import type { SelectionListStep } from '@/components/ui/selectionList';
 import { buildSessionTagsMenuContent } from '@/components/sessions/organization/SessionTagsMenuContent';
+import {
+    SESSION_FOLDER_SELECTION_ROOT_ID,
+    buildSessionFolderSelectionOptions,
+    resolveSessionFolderSelectionLabel,
+} from '@/components/sessions/organization/sessionFolderSelectionOptions';
 import { Icon } from '@/components/ui/icons/Icon';
 import { Text } from '@/components/ui/text/Text';
 import { normalizeNodeForView } from '@/components/ui/rendering/normalizeNodeForView';
@@ -66,23 +71,18 @@ export function createNewSessionOrganizationPlacementActionChips(params: Readonl
     onTagCreate?: (label: string) => void;
 }>): readonly AgentInputExtraActionChip[] {
     if (!params.enabled) return [];
-    const folderLabel = params.folderId
-        ? params.folderTargets.find((folder) => folder.folderId === params.folderId)?.title ?? t('common.unavailable')
-        : t('sessionsList.moveToWorkspaceRoot');
+    const folderLabel = resolveSessionFolderSelectionLabel(params.folderId, params.folderTargets);
     const folderRoot: SelectionListStep = {
         id: 'new-session-folder-root',
         title: t('sessionsList.moveToFolder'),
         sections: [{
             kind: 'static',
             id: 'new-session-folders',
-            options: [
-                { id: 'root', label: t('sessionsList.moveToWorkspaceRoot'), onSelect: () => params.onFolderSelect(null) },
-                ...params.folderTargets.map((folder) => ({
-                    id: folder.folderId,
-                    label: folder.title,
-                    onSelect: () => params.onFolderSelect(folder.folderId),
-                })),
-            ],
+            options: buildSessionFolderSelectionOptions(params.folderTargets).map((option) => ({
+                id: option.id,
+                label: option.label,
+                onSelect: () => params.onFolderSelect(option.folderId),
+            })),
         }],
     };
     const tagContent = buildSessionTagsMenuContent({
@@ -99,7 +99,7 @@ export function createNewSessionOrganizationPlacementActionChips(params: Readonl
             label: folderLabel,
             icon: 'folder',
             rootStep: folderRoot,
-            selectedOptionId: params.folderId ?? 'root',
+            selectedOptionId: params.folderId ?? SESSION_FOLDER_SELECTION_ROOT_ID,
         }),
         createPlacementChip({
             key: 'organization-tags',

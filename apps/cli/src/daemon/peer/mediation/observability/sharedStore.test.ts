@@ -53,7 +53,7 @@ function emitFlow(
 
 describe('peer-mediation observability shared store (writer emitter ↔ reader executor)', () => {
     it('exposes writer-emitted flows through the reader executor snapshot', async () => {
-        const runtime = createDaemonPeerMediationObservabilityRuntime({ nowMs: () => 1_000 });
+        const runtime = createDaemonPeerMediationObservabilityRuntime({ nowMs: () => 1_000, isEnabled: () => true });
         const executor = createPeerMediationObservabilityDaemonRuntimeActionExecutor({
             store: runtime.store,
             accountId: ACCOUNT_ID,
@@ -79,7 +79,7 @@ describe('peer-mediation observability shared store (writer emitter ↔ reader e
     });
 
     it('forwards writer-emitted deltas to a reader subscription', async () => {
-        const runtime = createDaemonPeerMediationObservabilityRuntime({ nowMs: () => 2_000 });
+        const runtime = createDaemonPeerMediationObservabilityRuntime({ nowMs: () => 2_000, isEnabled: () => true });
         const deltas: PeerMediationObservabilityDeltaV1[] = [];
         const executor = createPeerMediationObservabilityDaemonRuntimeActionExecutor({
             store: runtime.store,

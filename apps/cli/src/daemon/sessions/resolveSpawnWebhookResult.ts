@@ -1,8 +1,8 @@
 import { SPAWN_SESSION_ERROR_CODES, type SpawnSessionResult } from '@/session/shared/spawnSessionContract';
 import type { TrackedSession } from '@/daemon/types';
 
-function isPidPlaceholderSessionId(value: string): boolean {
-  return /^PID-\d+$/.test(value);
+export function isCanonicalSpawnSessionId(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0 && !/^PID-\d+$/.test(value.trim());
 }
 
 export function resolveSpawnWebhookResult(params: Readonly<{
@@ -38,7 +38,7 @@ export function resolveSpawnWebhookResult(params: Readonly<{
     );
     return params.result;
   }
-  if (trackedSessionId && !isPidPlaceholderSessionId(trackedSessionId)) {
+  if (isCanonicalSpawnSessionId(trackedSessionId)) {
     params.warn(
       `[DAEMON RUN] Session webhook timed out for PID ${params.pid}, but a canonical session id is already tracked; continuing`,
     );

@@ -2,36 +2,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { TRANSFER_RELAY_V2_SOCKET_EVENT } from '@happier-dev/protocol';
 import type { Encryption } from '@/sync/encryption/encryption';
+import { createSocketIoBoundaryStub } from '@/dev/testkit/mocks/socketIo';
 
-type SocketEventHandler = (...args: any[]) => void;
-
-function createSocketStub(): Readonly<{
-    socket: any;
-    emitEvent: (event: string, payload: unknown) => void;
-}> {
-    let onAnyHandler: SocketEventHandler | null = null;
-    const socket = {
-        connected: false,
-        on: vi.fn(),
-        off: vi.fn(),
-        onAny: vi.fn((handler: SocketEventHandler) => {
-            onAnyHandler = handler;
-            return socket;
-        }),
-        connect: vi.fn(),
-        disconnect: vi.fn(),
-        emit: vi.fn(),
-        emitWithAck: vi.fn(),
-        removeAllListeners: vi.fn(),
-        timeout: vi.fn(() => socket),
-    };
-
-    return {
-        socket,
-        emitEvent(event, payload) {
-            onAnyHandler?.(event, payload);
-        },
-    };
+function createSocketStub() {
+    const boundary = createSocketIoBoundaryStub();
+    return { ...boundary, emitEvent: boundary.trigger };
 }
 
 afterEach(() => {
@@ -64,33 +39,7 @@ describe('apiSocket transfer relay listeners', () => {
             };
         });
 
-        vi.doMock('@/sync/api/session/connection/createSyncSocketTransport', () => {
-            const connectedListeners = new Set<() => void>();
-            const transport = {
-                async connect() {
-                    socketStub.socket.connected = true;
-                    connectedListeners.forEach((listener) => listener());
-                },
-                async disconnect() {},
-                async destroy() {},
-                isConnected() {
-                    return true;
-                },
-                onConnected(listener: () => void) {
-                    connectedListeners.add(listener);
-                    return () => connectedListeners.delete(listener);
-                },
-                onDisconnected() {
-                    return () => {};
-                },
-                onError() {
-                    return () => {};
-                },
-            };
-            return {
-                createSyncSocketTransport: () => ({ socket: socketStub.socket, transport }),
-            };
-        });
+        vi.doMock('socket.io-client', () => ({ io: () => socketStub.socket }));
 
         const { apiSocket } = await import('./apiSocket');
         apiSocket.initialize(
@@ -125,7 +74,7 @@ describe('apiSocket transfer relay listeners', () => {
 
         socketStub.emitEvent(TRANSFER_RELAY_V2_SOCKET_EVENT, payload);
 
-        expect(firstListener).toHaveBeenCalledWith(payload);
-        expect(secondListener).toHaveBeenCalledWith(payload);
+        expect(firstListener).toHaveBeenCalledWith(payload, { serverId: null });
+        expect(secondListener).toHaveBeenCalledWith(payload, { serverId: null });
     });
 });

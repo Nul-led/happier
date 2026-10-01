@@ -26,7 +26,7 @@ export type ActivityRemoteAlertTarget = Readonly<{
     eventIdentity?: string;
 }>;
 
-const REMOTE_ALERT_EVENT_KIND: Record<ActivityRemoteAlert['event']['type'], ActivityAlertEventKind> = {
+export const REMOTE_ALERT_EVENT_KIND: Record<ActivityRemoteAlert['event']['type'], ActivityAlertEventKind> = {
     ready: 'ready',
     permission_request: 'permission_required',
     user_action_request: 'user_action_required',

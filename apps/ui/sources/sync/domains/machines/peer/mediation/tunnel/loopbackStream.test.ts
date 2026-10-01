@@ -76,6 +76,28 @@ const binaryResponse: PeerTcpTunnelOpenResponseV1 = {
 };
 
 describe('openPeerTcpTunnelLoopbackStream', () => {
+    it('keeps native authentication out of the URL and returns cleanup custody on peer closure', async () => {
+        const mod = await loadModule('./loopbackStream');
+        const openStream = mod.openPeerTcpTunnelLoopbackStream;
+        if (typeof openStream !== 'function') throw new Error('canonical stream owner missing');
+        const { getSocket, WebSocketCtor } = createWebSocketFixture();
+        let retired = 0;
+        const opening = openStream({
+            endpointUrl: 'http://127.0.0.1:48127', open, response: binaryResponse, WebSocketCtor,
+            webSocketProtocols: ['happier.iroh.cap.private'],
+            onRetired: () => { retired += 1; },
+        }) as Promise<TestStream>;
+        getSocket().onopen?.();
+        const stream = await opening;
+        expect(WebSocketCtor).toHaveBeenCalledWith(
+            'ws://127.0.0.1:48127/peer-mediation/v1/tunnel/stream', ['happier.iroh.cap.private'],
+        );
+        getSocket().onclose?.();
+        await stream.close();
+        expect(retired).toBe(1);
+        expect(() => stream.sendFrame({ v: 1, kind: 'data', tunnelId: 'tun_1', direction: 'client_to_daemon', sequence: 0, payload: new Uint8Array([1]) }))
+            .toThrow(expect.objectContaining({ code: 'peer_tunnel_stream_closed' }));
+    });
     it('closes exactly once when opening times out and ignores a late open event', async () => {
         const mod = await loadModule('./loopbackStream');
         const openLoopbackStream = mod.openPeerTcpTunnelLoopbackStream;

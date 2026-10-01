@@ -1,6 +1,6 @@
 import {
   buildProviderAccountUsageRecordId,
-  sealProviderAccountUsageSnapshotCiphertext,
+  sealProviderAccountUsageSnapshot,
   type ConnectedServiceUsageSourceV1,
   type ProviderAccountUsageSnapshotV1,
   type QualifiedConnectedAccountServiceRef,
@@ -20,7 +20,7 @@ const qualifiedService: QualifiedConnectedAccountServiceRef = {
 };
 
 const localGroupSource: ConnectedServiceUsageSourceV1 = {
-  serviceId: 'openai-codex',
+  serviceId: 'happier.agent.codex/openai-codex',
   profileId: 'work',
   bindingKind: 'group_member',
   groupId: 'team',
@@ -155,15 +155,22 @@ describe('hydrateProviderAccountUsageStoreFromCurrentSources', () => {
   });
 
   it('opens the V4 encrypted record envelope through the account-scoped cipher', async () => {
-    const snapshot = createSnapshot();
+    const snapshot = {
+      ...createSnapshot(),
+      subscription: {
+        status: 'subscribed' as const, renewal: 'off' as const,
+        observedAtMs: 900, staleAfterMs: 60_000,
+        currentPeriodEndAtMs: 1_800_000_000_000,
+      },
+    };
     const encryption = {
       type: 'dataKey' as const,
       publicKey: new Uint8Array(32).fill(8),
       machineKey: new Uint8Array(32).fill(7),
     };
-    const ciphertext = sealProviderAccountUsageSnapshotCiphertext({
+    const sealed = sealProviderAccountUsageSnapshot({
       material: encryption,
-      payload: snapshot,
+      snapshot,
       randomBytes: (length) => new Uint8Array(length).fill(6),
     });
     const store = createProviderAccountUsageStore();
@@ -180,7 +187,7 @@ describe('hydrateProviderAccountUsageStoreFromCurrentSources', () => {
       api: {
         getAccountEncryptionMode: async () => 'e2ee' as const,
         readProviderAccountUsageRecord: async () => ({
-          content: { t: 'encrypted' as const, c: ciphertext },
+          content: { t: 'encrypted' as const, c: sealed.ciphertext, subscription: sealed.subscription },
           metadata: {
             fetchedAt: snapshot.fetchedAtMs,
             staleAfterMs: snapshot.staleAfterMs,
@@ -196,6 +203,7 @@ describe('hydrateProviderAccountUsageStoreFromCurrentSources', () => {
 
     expect(result.hydratedRecordIds).toEqual([snapshot.recordId]);
     expect(store.resolveBySource(localGroupSource)?.recordId).toBe(snapshot.recordId);
+    expect(store.resolveBySource(localGroupSource)?.subscription).toEqual(snapshot.subscription);
   });
 
   it('hydrates future-dated evidence as stale and schedules a bounded refresh', async () => {

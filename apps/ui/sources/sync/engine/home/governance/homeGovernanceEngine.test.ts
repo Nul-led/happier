@@ -27,6 +27,7 @@ vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
 import { createServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
 import { resolveHomeGovernanceViewState } from '@/components/settings/home/governance/homeGovernanceViewState';
 import { setActiveServerId, upsertServerProfile } from '@/sync/domains/server/serverProfiles';
+import { HOME_GOVERNANCE_ACCOUNT_CHANGE_ENTITY_ID_V1 } from '@happier-dev/protocol';
 import { publishHomeAccountChange } from '@/sync/runtime/orchestration/homeAccountChange';
 import {
     getHomeGovernanceSnapshot,
@@ -173,6 +174,23 @@ describe('homeGovernanceEngine', () => {
             expect(governanceCallCount('https://home-a.example')).toBe(2);
             expect(getHomeGovernanceSnapshot(scope)?.data?.activeOwnerCount).toBe(2);
         });
+        release();
+    });
+
+    it('does not refetch administration for an exact change page that touches nothing it shows', async () => {
+        const home = await addHome('Home A', 'https://home-a.example');
+        await setActiveServerId(home, { scope: 'device' });
+        runtimeFetchMock.mockImplementation(async () => jsonResponse(projection(1)));
+        const scope = createServerAccountScope(home, 'account')!;
+
+        const release = observeHomeGovernance(scope);
+        await vi.waitFor(() => expect(governanceCallCount('https://home-a.example')).toBe(1));
+        publishHomeAccountChange(home, ['session-1', 'machine-1']);
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(governanceCallCount('https://home-a.example')).toBe(1);
+
+        publishHomeAccountChange(home, [HOME_GOVERNANCE_ACCOUNT_CHANGE_ENTITY_ID_V1]);
+        await vi.waitFor(() => expect(governanceCallCount('https://home-a.example')).toBe(2));
         release();
     });
 

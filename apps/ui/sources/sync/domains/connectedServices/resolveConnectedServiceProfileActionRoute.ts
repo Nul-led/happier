@@ -29,6 +29,6 @@ export function resolveConnectedServiceProfileActionRoute(
         entries,
     );
     return resolved
-        ? buildConnectedAccountSettingsRoute(resolved.service, resolved.focus)
+        ? buildConnectedAccountSettingsRoute(resolved.service, resolved.focus, { add: resolved.focus === null })
         : { pathname: '/(app)/settings/connected-services' };
 }

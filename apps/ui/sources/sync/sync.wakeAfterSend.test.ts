@@ -144,7 +144,7 @@ import {
     retireActiveServerAccountScopeLifetime,
 } from './domains/scope/activeServerAccountScope';
 import { readPersistedSessionViewport } from './domains/state/sessionViewportPersistence';
-import { currentPendingEnqueueAck } from './engine/pending/pendingQueueV2.testHelpers';
+import { activatePendingQueueScope, currentPendingEnqueueAck } from './engine/pending/pendingQueueV2.testHelpers';
 import { resolvePreferredServerIdForSessionId } from '@/sync/runtime/orchestration/serverScopedRpc/resolvePreferredServerIdForSessionId';
 
 const initialStorageState = storage.getState();
@@ -209,13 +209,19 @@ function createRpcMethodNotAvailableError(): RpcError {
 }
 
 describe('sync.sendMessage wake-after-send', () => {
-    beforeEach(() => {
+    beforeEach(async () => {
         vi.stubGlobal('indexedDB', new IDBFactory());
         storage.setState(initialStorageState, true);
-        storage.getState().activateProfileScope({
+        kvStore.clear();
+        const activeScope = {
             serverId: getActiveServerSnapshot().serverId,
             accountId: 'wake-after-send-account',
-        });
+        };
+        await activatePendingQueueScope(activeScope);
+        // These direct Sync tests bypass restore; bind its applied transport and Account.
+        const { sync } = await import('./sync');
+        Reflect.set(sync, 'appliedServerTarget', getActiveServerSnapshot());
+        Reflect.set(sync, 'serverID', activeScope.accountId);
         resetServerFeaturesClientForTests();
         primeServerFeaturesSnapshot({
             serverId: getActiveServerSnapshot().serverId,
@@ -236,12 +242,13 @@ describe('sync.sendMessage wake-after-send', () => {
             ...storage.getState().settings,
             codexBackendMode: 'appServer',
         }), 1);
-        kvStore.clear();
         appStateAddListener.mockClear();
         ensureSessionRuntimeForPendingInputSpy.mockClear();
     });
 
-    afterEach(() => {
+    afterEach(async () => {
+        const { sync } = await import('./sync');
+        sync.disconnectServer();
         vi.unstubAllGlobals();
         resetServerFeaturesClientForTests();
         vi.restoreAllMocks();
@@ -643,7 +650,8 @@ describe('sync.sendMessage wake-after-send', () => {
             getSessionEncryption: () => null,
             getMachineEncryption: () => ({}),
         };
-        const pendingPost = vi.spyOn(apiSocket, 'request').mockResolvedValue(new Response('{}', { status: 200 }));
+        const pendingPost = vi.spyOn(apiSocket, 'request').mockImplementation(async (_path, init) =>
+            currentPendingEnqueueAck(init));
         const sessionRpc = vi.spyOn(apiSocket, 'sessionRPC');
         const directSend = vi.spyOn(sync, 'sendMessage');
 
@@ -656,16 +664,14 @@ describe('sync.sendMessage wake-after-send', () => {
         expect(pendingPost).toHaveBeenCalledTimes(1);
         const localId = storage.getState().sessionPending[sessionId]?.messages[0]?.localId;
         expect(localId).toEqual(expect.any(String));
-        expect(pendingPost).toHaveBeenCalledWith(
-            `/v2/sessions/${sessionId}/pending`,
-            expect.objectContaining({
-                method: 'POST',
-                body: expect.stringContaining('"requestedAction":{"v":1,"kind":"send_now"}'),
-            }),
-        );
-        const pendingRequest = JSON.parse(String(pendingPost.mock.calls[0]?.[1]?.body ?? 'null')) as {
+        const [pendingPath, pendingInit] = pendingPost.mock.calls[0]!;
+        expect(pendingPath).toBe(`/v2/sessions/${sessionId}/pending`);
+        expect(pendingInit).toMatchObject({ method: 'POST' });
+        const pendingRequest = JSON.parse(String(pendingInit?.body ?? 'null')) as {
+            requestedAction?: unknown;
             content?: { t?: unknown; v?: { meta?: unknown } };
         };
+        expect(pendingRequest.requestedAction).toEqual({ v: 1, kind: 'send_now' });
         expect(pendingRequest.content).toMatchObject({
             t: 'plain',
             v: {

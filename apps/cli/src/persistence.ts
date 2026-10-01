@@ -23,7 +23,9 @@ import { isServerIdFilesystemSafe, sanitizeServerIdForFilesystem } from './serve
 import { isLocalishServerUrl } from './server/serverUrlClassification';
 import type { PublicReleaseRingLabel } from '@happier-dev/release-runtime/releaseRings';
 import { isPidPresent } from '@happier-dev/cli-common/process';
-import { createServerUrlComparableKey } from '@happier-dev/protocol';
+import { readProcessInstanceFingerprintSync } from '@happier-dev/cli-common/processInstance';
+import { processGenerationProvesReuse } from '@happier-dev/cli-common/processInstance';
+import { createServerUrlComparableKey } from '@happier-dev/protocol/server/urls';
 import * as z from 'zod';
 import { decodeBase64, encodeBase64 } from './api/encryption';
 import { logger } from './ui/logger';
@@ -32,6 +34,8 @@ import { cleanupAtomicWriteTempFiles, cleanupAtomicWriteTempFilesSync, writeJson
 import type { MachineReplacementReason } from '@happier-dev/protocol';
 import { reclaimJsonOwnerFileLockSnapshot } from './utils/fs/jsonOwnerFileLock';
 import { readProcessRunState } from './daemon/processRunState';
+import { decodeJwtPayload } from './cloud/decodeJwtPayload';
+import { readAuthTokenProvenance } from '@happier-dev/protocol';
 
 async function bestEffortChmod(path: string, mode: number): Promise<void> {
   if (process.platform === 'win32') return;
@@ -645,7 +649,7 @@ export async function updateSettings(
 //
 
 const credentialsSchema = z.object({
-  token: z.string(),
+  token: z.string().optional(),
   secret: z.string().base64().nullish(), // Legacy
   encryption: z.object({
     publicKey: z.string().base64(),
@@ -684,6 +688,15 @@ export type TokenOnlyCredentials = CredentialProvenanceMarker & {
 }
 
 export type StoredCredentials = Credentials | TokenOnlyCredentials;
+
+export class CliReloginRequiredError extends Error {
+  readonly code = 'cli_relogin_required';
+
+  constructor() {
+    super('Happier updated how the CLI signs in. Please run `happier auth login` again.');
+    this.name = 'CliReloginRequiredError';
+  }
+}
 
 function sameCredentialBytes(left: Uint8Array, right: Uint8Array): boolean {
   return left.byteLength === right.byteLength
@@ -740,13 +753,25 @@ export async function readStoredCredentials(): Promise<StoredCredentials | null>
     !existsSync(primaryPath);
 
   const path = existsSync(primaryPath) ? primaryPath : canUseLegacy ? legacyPath : null;
-  return path ? await readStoredCredentialsFile(path) : null;
+  return path ? await readStoredCredentialsFile(path, { invalidateAccountBearer: true }) : null;
 }
 
-async function readStoredCredentialsFile(path: string): Promise<StoredCredentials | null> {
+async function readStoredCredentialsFile(path: string, options?: Readonly<{ invalidateAccountBearer: boolean }>): Promise<StoredCredentials | null> {
   try {
     const keyBase64 = (await readFile(path, 'utf8'));
     const credentials = credentialsSchema.parse(JSON.parse(keyBase64));
+    if (!credentials.token) return null;
+    // This unsigned marker is used only to remove an obsolete bearer. The Home
+    // still verifies every credential; this read never grants authority.
+    const payload = decodeJwtPayload(credentials.token);
+    const provenance = payload && typeof payload.sub === 'string' && payload.sub.trim()
+      ? readAuthTokenProvenance(payload, { allowLegacyHome: true }) : null;
+    if (options?.invalidateAccountBearer && provenance?.provenance.kind === 'account') {
+      const { token: _obsoleteBearer, ...retainedMaterial } = credentials;
+      await writeFile(path, JSON.stringify(retainedMaterial, null, 2), { mode: 0o600 });
+      await bestEffortChmod(path, 0o600);
+      throw new CliReloginRequiredError();
+    }
     if (credentials.secret) {
       return {
         token: credentials.token,
@@ -772,7 +797,8 @@ async function readStoredCredentialsFile(path: string): Promise<StoredCredential
       encryption: null,
       credentialProvenance: 'stored_session',
     };
-  } catch {
+  } catch (error) {
+    if (error instanceof CliReloginRequiredError) throw error;
     return null
   }
 }
@@ -1148,10 +1174,11 @@ export async function clearDaemonStateForTestTeardown(
  * Returns the file handle to hold for the daemon's lifetime, or null if locked.
  */
 const DaemonLockRecordSchema = z.object({
-  t: z.literal('happier_daemon_lock_v1'),
+  t: z.literal('happier_daemon_lock_v2'),
   pid: z.number().int().positive(),
   ownerToken: z.string().uuid(),
   processStartedAtMs: z.number().int().nonnegative(),
+  processInstanceFingerprint: z.string().trim().min(1).max(512).optional(),
   createdAtMs: z.number().int().nonnegative(),
 }).strict();
 type DaemonLockRecord = z.infer<typeof DaemonLockRecordSchema>;
@@ -1161,7 +1188,6 @@ type DaemonLockSnapshot = Readonly<{
   record: DaemonLockRecord | null;
 }>;
 
-const currentProcessStartedAtMs = Math.max(0, Math.trunc(Date.now() - process.uptime() * 1_000));
 const daemonLockRawByHandle = new WeakMap<FileHandle, string>();
 
 export type DaemonStateOwner = Readonly<
@@ -1267,10 +1293,27 @@ function readDaemonLockSnapshot(): DaemonLockSnapshot | null {
     const parsed = DaemonLockRecordSchema.safeParse(JSON.parse(raw) as unknown);
     if (parsed.success) return { raw, pid: parsed.data.pid, record: parsed.data };
   } catch { }
+  // ../0.2 writes only a decimal PID. This is the sole predecessor parse
+  // branch; it cannot grant structured identity or compare process births.
   const legacyPid = /^\s*[1-9]\d*\s*$/u.test(raw) ? Number(raw.trim()) : null;
+  // A live undeployed v1 writer may still hold the development lock. Preserve
+  // its PID for liveness/classification, but never interpret its W3 birth as W1.
+  const unverifiedV1Pid = legacyPid === null && raw.includes('happier_daemon_lock_v1')
+    ? (() => {
+        try {
+          const candidate = JSON.parse(raw) as unknown;
+          if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return null;
+          const record = candidate as Record<string, unknown>;
+          return record.t === 'happier_daemon_lock_v1'
+            && Number.isSafeInteger(record.pid) && (record.pid as number) > 0
+            ? record.pid as number
+            : null;
+        } catch { return null; }
+      })()
+    : null;
   return {
     raw,
-    pid: legacyPid !== null && Number.isSafeInteger(legacyPid) ? legacyPid : null,
+    pid: legacyPid !== null && Number.isSafeInteger(legacyPid) ? legacyPid : unverifiedV1Pid,
     record: null,
   };
 }
@@ -1286,10 +1329,17 @@ export function readDaemonLockPid(): number | null {
 export function readDaemonLockOwnerIdentity(): Readonly<{
   pid: number;
   processStartedAtMs: number;
+  processInstanceFingerprint?: string;
 }> | null {
   const record = readDaemonLockSnapshot()?.record;
   return record
-    ? { pid: record.pid, processStartedAtMs: record.processStartedAtMs }
+    ? {
+        pid: record.pid,
+        processStartedAtMs: record.processStartedAtMs,
+        ...(record.processInstanceFingerprint
+          ? { processInstanceFingerprint: record.processInstanceFingerprint }
+          : {}),
+      }
     : null;
 }
 
@@ -1306,11 +1356,14 @@ async function inspectDaemonLockSnapshotOwner(snapshot: DaemonLockSnapshot): Pro
     return { status: 'starting', pid, evidence: 'live-unclassified' };
   }
 
-  if (
-    snapshot.record
-    && pid === process.pid
-    && Math.abs(snapshot.record.processStartedAtMs - currentProcessStartedAtMs) > 1_000
-  ) {
+  const currentIdentity = snapshot.record
+    ? await (await import('@/daemon/processIdentity')).readProcessIdentityByPid(pid)
+    : null;
+  if (snapshot.record && currentIdentity
+    && processGenerationProvesReuse(
+      snapshot.record.processStartedAtMs,
+      currentIdentity.processStartTimeMs,
+    )) {
     return { status: 'replaceable', pid, reason: 'unrelated' };
   }
 
@@ -1350,13 +1403,20 @@ export async function acquireDaemonLock(
 ): Promise<FileHandle | null> {
   await import('@/daemon/doctor');
   await mkdir(dirname(configuration.daemonLockFile), { recursive: true });
+  const { readProcessIdentityByPid } = await import('@/daemon/processIdentity');
+  const currentProcessStartedAtMs = (await readProcessIdentityByPid(process.pid))?.processStartTimeMs;
+  if (!Number.isSafeInteger(currentProcessStartedAtMs) || currentProcessStartedAtMs === undefined || currentProcessStartedAtMs < 0) {
+    throw new Error('Current daemon process generation is unavailable');
+  }
+  const processInstanceFingerprint = readProcessInstanceFingerprintSync(process.pid);
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const raw = JSON.stringify({
-      t: 'happier_daemon_lock_v1',
+      t: 'happier_daemon_lock_v2',
       pid: process.pid,
       ownerToken: randomUUID(),
       processStartedAtMs: currentProcessStartedAtMs,
+      ...(processInstanceFingerprint ? { processInstanceFingerprint } : {}),
       createdAtMs: Date.now(),
     } satisfies DaemonLockRecord);
     try {

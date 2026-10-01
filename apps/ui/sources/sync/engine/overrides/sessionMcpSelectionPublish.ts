@@ -6,7 +6,7 @@ import {
     type SessionMcpSelectionV1,
 } from '@happier-dev/protocol';
 
-import type { Metadata } from '@/sync/domains/state/storageTypes';
+import type { Metadata } from '@happier-dev/session-core/state';
 
 export function computeNextSessionMcpSelectionMetadata(
     metadata: Metadata,

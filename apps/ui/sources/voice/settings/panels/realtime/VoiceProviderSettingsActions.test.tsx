@@ -7,6 +7,7 @@ import {
   VoiceProviderContributionSchema,
 } from '@happier-dev/protocol';
 import type {
+  InteractionTransientRequesterV1,
   PluginSettingsActionDeclarationV2,
   VoiceProviderSettingsActionDeclaration,
 } from '@happier-dev/protocol';
@@ -32,6 +33,7 @@ const state = vi.hoisted(() => ({
 const PROVIDER_ID = vi.hoisted(() => 'happier.voice.elevenlabs/realtime-elevenlabs');
 
 const spies = vi.hoisted(() => ({
+  interactionRequesters: [] as InteractionTransientRequesterV1[],
   modalConfigs: [] as any[],
   show: vi.fn((config: any) => {
     spies.modalConfigs.push(config);
@@ -42,6 +44,17 @@ const spies = vi.hoisted(() => ({
   execute: vi.fn(async () => ({ patch: { agentId: 'agent-created' } })),
   log: vi.fn(),
 }));
+
+vi.mock('@/components/appShell/plugins/appShellQuestionInteractions', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/components/appShell/plugins/appShellQuestionInteractions')>();
+  return {
+    ...actual,
+    createAppShellTransientInteractions: (input: Parameters<typeof actual.createAppShellTransientInteractions>[0]) => {
+      spies.interactionRequesters.push(input.requester);
+      return actual.createAppShellTransientInteractions(input);
+    },
+  };
+});
 
 vi.mock('@/components/ui/lists/Item', () => ({
   Item: (props: any) => React.createElement('Item', props),
@@ -197,6 +210,7 @@ describe('VoiceProviderSettingsActions', () => {
     state.selectedProviderId = PROVIDER_ID;
     state.accountSettings = null;
     spies.modalConfigs.length = 0;
+    spies.interactionRequesters.length = 0;
     spies.show.mockClear();
     spies.hide.mockClear();
     spies.alertAsync.mockClear();
@@ -207,8 +221,76 @@ describe('VoiceProviderSettingsActions', () => {
       pluginId: 'happier.voice.elevenlabs',
       localId: 'realtime-elevenlabs',
       providerId: PROVIDER_ID,
+      occurrenceId: 'voice-occurrence-a',
       settingsActions: Object.freeze({ execute: spies.execute }),
     });
+  });
+
+  it('uses the producer occurrence as the transient requester identity and changes it on replacement', async () => {
+    const { VoiceProviderSettingsActions } = await import('./VoiceProviderSettingsActions');
+    const props = {
+      providerId: PROVIDER_ID,
+      owner,
+      actions: [action],
+      placement: { kind: 'afterField' as const, fieldId: 'agentId' },
+    };
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => {
+      tree = renderer.create(<VoiceProviderSettingsActions {...props} />);
+    });
+    await act(async () => {
+      tree.root.findByProps({ testID: 'voice-settings-action-create-agent' }).props.onPress();
+      await vi.waitFor(() => expect(spies.interactionRequesters).toHaveLength(1));
+    });
+    expect(spies.interactionRequesters[0]).toMatchObject({
+      pluginId: 'happier.voice.elevenlabs',
+      contributionId: 'realtime-elevenlabs',
+      occurrenceId: 'voice-occurrence-a',
+      invocationId: 'create-agent',
+    });
+
+    state.registration = Object.freeze({
+      ...state.registration,
+      token: Object.freeze({}),
+      occurrenceId: 'voice-occurrence-b',
+    });
+    await act(async () => {
+      tree.update(<VoiceProviderSettingsActions {...props} />);
+    });
+    await act(async () => {
+      await vi.waitFor(() => expect(tree.root.findByProps({
+        testID: 'voice-settings-action-create-agent',
+      }).props.loading).toBe(false));
+    });
+    await act(async () => {
+      tree.root.findByProps({ testID: 'voice-settings-action-create-agent' }).props.onPress();
+      await vi.waitFor(() => expect(spies.interactionRequesters).toHaveLength(2));
+    });
+    expect(spies.interactionRequesters[1]).toMatchObject({
+      occurrenceId: 'voice-occurrence-b',
+      invocationId: 'create-agent',
+    });
+    await act(async () => {
+      tree.unmount();
+    });
+  });
+
+  it('fails closed when a settings-action registration has no producer occurrence', async () => {
+    state.registration = Object.freeze({
+      ...state.registration,
+      occurrenceId: undefined,
+    });
+    const { VoiceProviderSettingsActions } = await import('./VoiceProviderSettingsActions');
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => {
+      tree = renderer.create(<VoiceProviderSettingsActions
+        providerId={PROVIDER_ID}
+        owner={owner}
+        actions={[action]}
+        placement={{ kind: 'afterField', fieldId: 'agentId' }}
+      />);
+    });
+    expect(tree.toJSON()).toBeNull();
   });
 
   it('enables a declared nonempty action only after its setting has a value', async () => {
@@ -543,6 +625,7 @@ describe('VoiceProviderSettingsActions', () => {
       pluginId: PLUGIN_MANIFEST.id,
       localId: declaration.id,
       providerId: PROVIDER_ID,
+      occurrenceId: 'voice-occurrence-composed',
       settingsActions: Object.freeze({
         async execute(input: Parameters<typeof runtimeActions.execute>[0] & Readonly<{
           signal: AbortSignal;
@@ -733,6 +816,7 @@ describe('VoiceProviderSettingsActions', () => {
       pluginId: 'happier.voice.elevenlabs',
       localId: 'realtime-elevenlabs',
       providerId: PROVIDER_ID,
+      occurrenceId: 'voice-occurrence-b',
       settingsActions: Object.freeze({ execute: spies.execute }),
     });
     await act(async () => {
@@ -801,6 +885,7 @@ describe('VoiceProviderSettingsActions', () => {
       pluginId: 'happier.voice.elevenlabs',
       localId: 'realtime-elevenlabs',
       providerId: PROVIDER_ID,
+      occurrenceId: 'voice-occurrence-b',
       settingsActions: Object.freeze({ execute: spies.execute }),
     });
     await act(async () => {
@@ -810,6 +895,11 @@ describe('VoiceProviderSettingsActions', () => {
     expect(spies.execute).not.toHaveBeenCalled();
     expect(state.mutationApplied).toBe(false);
 
+    await act(async () => {
+      await vi.waitFor(() => expect(tree.root.findByProps({
+        testID: 'voice-settings-action-create-agent',
+      }).props.loading).toBe(false));
+    });
     await act(async () => {
       tree.root.findByProps({ testID: 'voice-settings-action-create-agent' }).props.onPress();
       await vi.waitFor(() => expect(spies.modalConfigs).toHaveLength(2));

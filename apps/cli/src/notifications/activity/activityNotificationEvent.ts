@@ -3,11 +3,20 @@ import type { WorkflowRunUpdateNotificationV1 } from '@happier-dev/protocol';
 export type ActivityNotificationEvent =
   | WorkflowRunUpdateNotificationV1
   | Readonly<{
+    topic: 'notify_me';
+    message: string;
+    title?: string;
+    open?: Readonly<{ kind: 'session'; sessionId: string }> | Readonly<{ kind: 'workflow_run'; runId: string }>;
+    actionRequestId?: string;
+  }>
+  | Readonly<{
     topic: 'ready';
     sessionId: string;
     sessionTitle?: string | null;
     waitingForCommandLabel: string;
     assistantPreviewText?: string | null;
+    committedLocalId?: string;
+    committedSequence?: number;
   }>
   | Readonly<{
     topic: 'permission_request' | 'user_action_request';

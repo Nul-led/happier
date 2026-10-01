@@ -22,8 +22,12 @@ export type ConfiguredExternalSessionSourceEntry = Readonly<{
 }>;
 
 export type ConfiguredExternalSessionSourceSnapshotBasis = Readonly<{
-  contributionGenerationId: string;
   accountSettingsRevision: string;
+}>;
+
+export type ConfiguredExternalSessionSourceOccurrence = Readonly<{
+  occurrenceId: string;
+  isCurrent(): boolean;
 }>;
 
 /**
@@ -36,7 +40,7 @@ export type ConfiguredExternalSessionSourceSnapshotBasis = Readonly<{
  * here instead of aborting the whole snapshot. Every host-decided failure
  * (`invalid_basis`, `malformed_source`, `source_undeclared`,
  * `agent_source_mismatch`, `agent_unavailable`, `duplicate_source_key`,
- * `retired_generation`, `account_settings_drift`) still fails the snapshot
+ * `retired_occurrence`, `account_settings_drift`) still fails the snapshot
  * closed: those mean the host's own basis, settings bytes, declaration index, or
  * key identity is untrustworthy, and a partial snapshot built on one of them
  * would silently publish an incomplete or order-dependent view of the user's
@@ -54,7 +58,6 @@ export type ConfiguredExternalSessionSourceRefusal = Readonly<{
 }>;
 
 export type ConfiguredExternalSessionSourceSnapshot = Readonly<{
-  contributionGenerationId: string;
   accountSettingsRevision: string;
   /** Candidates refused by their own Agent; see the type doc for the line drawn. */
   refusals: readonly ConfiguredExternalSessionSourceRefusal[];
@@ -77,7 +80,7 @@ export class ConfiguredExternalSessionSourceRegistryError extends Error {
     | 'provider_source_invalid'
     | 'malformed_canonical_source'
     | 'duplicate_source_key'
-    | 'retired_generation'
+    | 'retired_occurrence'
     | 'account_settings_drift';
 
   constructor(
@@ -91,10 +94,10 @@ export class ConfiguredExternalSessionSourceRegistryError extends Error {
 }
 
 function requireSnapshotBasis(basis: ConfiguredExternalSessionSourceSnapshotBasis): void {
-  if (!basis.contributionGenerationId.trim() || !basis.accountSettingsRevision.trim()) {
+  if (!basis.accountSettingsRevision.trim()) {
     throw new ConfiguredExternalSessionSourceRegistryError(
       'invalid_basis',
-      'Configured external-session sources require contribution generation and account-settings revision identifiers',
+      'Configured external-session sources require an account-settings revision identifier',
     );
   }
 }
@@ -152,15 +155,8 @@ function cloneConfiguredSourceData<T>(
 function assertSnapshotCurrent(
   expected: ConfiguredExternalSessionSourceSnapshotBasis,
   actual: ConfiguredExternalSessionSourceSnapshotBasis,
-  isCurrent: boolean,
 ): void {
   requireSnapshotBasis(actual);
-  if (!isCurrent || actual.contributionGenerationId !== expected.contributionGenerationId) {
-    throw new ConfiguredExternalSessionSourceRegistryError(
-      'retired_generation',
-      'Configured external-session source snapshot belongs to a retired contribution generation',
-    );
-  }
   if (actual.accountSettingsRevision !== expected.accountSettingsRevision) {
     throw new ConfiguredExternalSessionSourceRegistryError(
       'account_settings_drift',
@@ -201,7 +197,9 @@ export async function buildConfiguredExternalSessionSourceSnapshot(params: Reado
   basis: ConfiguredExternalSessionSourceSnapshotBasis;
   candidates: readonly ConfiguredExternalSessionSourceCandidate[];
   readCurrentBasis?: () => ConfiguredExternalSessionSourceSnapshotBasis;
-  isCurrent?: () => boolean;
+  resolveAgentOccurrence: (
+    agentId: string,
+  ) => ConfiguredExternalSessionSourceOccurrence | null;
   resolveSource: (
     agentId: string,
     source: unknown,
@@ -213,32 +211,32 @@ export async function buildConfiguredExternalSessionSourceSnapshot(params: Reado
   requireSnapshotBasis(params.basis);
   const assertBuildCurrent = (): void => {
     let currentBasis: ConfiguredExternalSessionSourceSnapshotBasis;
-    let current: boolean;
     try {
       currentBasis = params.readCurrentBasis?.() ?? params.basis;
-      current = params.isCurrent?.() ?? true;
     } catch {
       throw new ConfiguredExternalSessionSourceRegistryError(
-        'retired_generation',
-        'Configured external-session source snapshot belongs to a retired contribution generation',
+        'account_settings_drift',
+        'Configured external-session source snapshot account settings are unavailable',
       );
     }
-    assertSnapshotCurrent(params.basis, currentBasis, current);
+    assertSnapshotCurrent(params.basis, currentBasis);
   };
   assertBuildCurrent();
   const entries: ConfiguredExternalSessionSourceEntry[] = [];
   const refusals: ConfiguredExternalSessionSourceRefusal[] = [];
   const entriesByIdentity = new Map<string, ConfiguredExternalSessionSourceEntry>();
+  const occurrenceByIdentity = new Map<string, ConfiguredExternalSessionSourceOccurrence>();
   const providerOpsByAgentId = new Map<ExternalSessionAgentId, Pick<ExternalSessionProviderOps, 'validateSource'>>();
 
   /**
    * Canonicalizes one already-declared candidate through its own Agent's provider
    * leaf. Every failure raised here is decided inside that one participant, so
    * the caller converts it into a refusal instead of aborting the snapshot.
-   * Generation retirement still escapes as `retired_generation`.
+   * Occurrence retirement still escapes as `retired_occurrence`.
    */
   const admitThroughProviderLeaf = async (
     agentId: ExternalSessionAgentId,
+    occurrence: ConfiguredExternalSessionSourceOccurrence,
     parsed: Extract<ResolvedExternalSessionSourceProjection, { ok: true }>,
   ): Promise<Readonly<{ sourceKey: ExternalSessionSourceId; source: ExternalSessionsSource }>> => {
     let providerOps = providerOpsByAgentId.get(agentId) ?? null;
@@ -247,12 +245,24 @@ export async function buildConfiguredExternalSessionSourceSnapshot(params: Reado
         providerOps = await params.resolveProviderOps(agentId);
       } catch {
         assertBuildCurrent();
+        if (!occurrence.isCurrent()) {
+          throw new ConfiguredExternalSessionSourceRegistryError(
+            'retired_occurrence',
+            `Configured external-session source for Agent '${agentId}' belongs to a retired occurrence`,
+          );
+        }
         throw new ConfiguredExternalSessionSourceRegistryError(
           'provider_ops_unavailable',
           `External-session Agent operations are unavailable for '${agentId}'`,
         );
       }
       assertBuildCurrent();
+      if (!occurrence.isCurrent()) {
+        throw new ConfiguredExternalSessionSourceRegistryError(
+          'retired_occurrence',
+          `Configured external-session source for Agent '${agentId}' belongs to a retired occurrence`,
+        );
+      }
     }
     if (!providerOps) {
       throw new ConfiguredExternalSessionSourceRegistryError(
@@ -269,12 +279,24 @@ export async function buildConfiguredExternalSessionSourceSnapshot(params: Reado
       });
     } catch {
       assertBuildCurrent();
+      if (!occurrence.isCurrent()) {
+        throw new ConfiguredExternalSessionSourceRegistryError(
+          'retired_occurrence',
+          `Configured external-session source for Agent '${agentId}' belongs to a retired occurrence`,
+        );
+      }
       throw new ConfiguredExternalSessionSourceRegistryError(
         'provider_source_invalid',
         `Configured external-session source for agent '${agentId}' was rejected by its provider`,
       );
     }
     assertBuildCurrent();
+    if (!occurrence.isCurrent()) {
+      throw new ConfiguredExternalSessionSourceRegistryError(
+        'retired_occurrence',
+        `Configured external-session source for Agent '${agentId}' belongs to a retired occurrence`,
+      );
+    }
     const safeValidation = cloneConfiguredSourceData(
       validation,
       'malformed_canonical_source',
@@ -321,6 +343,9 @@ export async function buildConfiguredExternalSessionSourceSnapshot(params: Reado
       );
     }
     const agentId = parsedAgentId.data;
+    const occurrence = params.resolveAgentOccurrence(agentId);
+    if (!occurrence) continue;
+    if (!occurrence.occurrenceId.trim() || !occurrence.isCurrent()) continue;
     const candidateSource = cloneConfiguredSourceData(
       candidate.source,
       'malformed_source',
@@ -330,8 +355,14 @@ export async function buildConfiguredExternalSessionSourceSnapshot(params: Reado
     if (!parsed.ok) throw projectionError(agentId, 'configured', parsed);
     let admitted: Readonly<{ sourceKey: ExternalSessionSourceId; source: ExternalSessionsSource }>;
     try {
-      admitted = await admitThroughProviderLeaf(agentId, parsed);
+      admitted = await admitThroughProviderLeaf(agentId, occurrence, parsed);
     } catch (error) {
+      if (
+        error instanceof ConfiguredExternalSessionSourceRegistryError
+        && error.code === 'retired_occurrence'
+      ) {
+        continue;
+      }
       const refusal = readParticipantRefusal(agentId, error);
       if (!refusal) throw error;
       if (!refusals.some((existing) => (
@@ -357,21 +388,27 @@ export async function buildConfiguredExternalSessionSourceSnapshot(params: Reado
     });
     entries.push(entry);
     entriesByIdentity.set(identityKey, entry);
+    occurrenceByIdentity.set(identityKey, occurrence);
   }
 
   assertBuildCurrent();
 
   const immutableEntries = Object.freeze(entries);
   const assertCurrent = (basis: ConfiguredExternalSessionSourceSnapshotBasis): void => {
-    assertSnapshotCurrent(params.basis, basis, true);
+    assertSnapshotCurrent(params.basis, basis);
   };
   return Object.freeze({
-    contributionGenerationId: params.basis.contributionGenerationId,
     accountSettingsRevision: params.basis.accountSettingsRevision,
     refusals: Object.freeze(refusals),
     list: (basis: ConfiguredExternalSessionSourceSnapshotBasis) => {
       assertCurrent(basis);
-      return immutableEntries;
+      const currentEntries = immutableEntries.filter((entry) => (
+        occurrenceByIdentity.get(configuredSourceIdentityKey(entry.agentId, entry.sourceKey))
+          ?.isCurrent() === true
+      ));
+      return currentEntries.length === immutableEntries.length
+        ? immutableEntries
+        : Object.freeze(currentEntries);
     },
     resolve: (
       agentId: ExternalSessionAgentId,
@@ -379,7 +416,9 @@ export async function buildConfiguredExternalSessionSourceSnapshot(params: Reado
       basis: ConfiguredExternalSessionSourceSnapshotBasis,
     ) => {
       assertCurrent(basis);
-      return entriesByIdentity.get(configuredSourceIdentityKey(agentId, sourceKey)) ?? null;
+      const identityKey = configuredSourceIdentityKey(agentId, sourceKey);
+      if (occurrenceByIdentity.get(identityKey)?.isCurrent() !== true) return null;
+      return entriesByIdentity.get(identityKey) ?? null;
     },
   });
 }

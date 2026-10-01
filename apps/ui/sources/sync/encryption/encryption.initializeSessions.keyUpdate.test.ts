@@ -1,4 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
+import * as platformCrypto from 'rn-encryption';
+import { createDeferred } from '@/dev/testkit';
 import { encodeBase64 } from '@/encryption/base64';
 import { Encryption } from './encryption';
 import { createFakeCryptoWorker } from './nativeCryptoWorker/fakeCryptoWorker';
@@ -31,6 +33,94 @@ function expectGenerationScopeReader(encryption: Encryption): EncryptionGenerati
 }
 
 describe('Encryption.initializeSessions (key updates)', () => {
+  it.each(['individual', 'snapshot'] as const)(
+    'does not republish retired %s plaintext into a same-version regrant',
+    async (readKind) => {
+      const encryption = await Encryption.create(new Uint8Array(32).fill(1));
+      encryption.configureNativeCryptoWorker({ routing: { mode: 'off' } });
+      const dataKey = new Uint8Array(32).fill(2);
+      const scope = { accountId: 'account-a', serverId: 'server-a' };
+      await encryption.initializeSessions(new Map([['retired', dataKey], ['retained', dataKey]]), scope);
+      const retired = encryption.getSessionEncryption('retired')!;
+      const retained = encryption.getSessionEncryption('retained')!;
+      const oldMetadata = await retired.encryptMetadata({ path: '/old', host: 'machine' });
+      const oldState = await retired.encryptAgentState({ controlledByUser: true });
+      const retainedMetadata = await retained.encryptMetadata({ path: '/retained', host: 'machine' });
+      const decryptStarted = createDeferred<void>();
+      const releaseDecrypt = createDeferred<void>();
+      const originalDecrypt = platformCrypto.decryptAsyncAES;
+      // Delay the real platform crypto result; SessionEncryption and its cache stay real.
+      const decryptSpy = vi.spyOn(platformCrypto, 'decryptAsyncAES').mockImplementation(async (...args) => {
+        const plaintext = await originalDecrypt(...args);
+        decryptStarted.resolve();
+        await releaseDecrypt.promise;
+        return plaintext;
+      });
+      const pending = readKind === 'snapshot'
+        ? retired.decryptSessionSnapshotState(1, oldMetadata, 1, oldState)
+        : Promise.all([retired.decryptMetadata(1, oldMetadata), retired.decryptAgentState(1, oldState)])
+            .then(([metadata, agentState]) => ({ metadata, agentState }));
+
+      try {
+        await decryptStarted.promise;
+        encryption.removeSessionEncryption('retired');
+        await encryption.initializeSessions(new Map([['retired', dataKey]]), scope);
+        const regranted = encryption.getSessionEncryption('retired')!;
+        const newMetadata = await regranted.encryptMetadata({ path: '/new', host: 'machine' });
+        const newState = await regranted.encryptAgentState({ controlledByUser: false });
+        releaseDecrypt.resolve();
+        const retiredResult = await pending;
+
+        expect(await regranted.decryptSessionSnapshotState(1, newMetadata, 1, newState)).toEqual({
+          metadata: { path: '/new', host: 'machine' },
+          agentState: { controlledByUser: false },
+        });
+        expect(retiredResult).toEqual({ metadata: null, agentState: {} });
+        expect(await retired.decryptMetadata(1, newMetadata)).toBeNull();
+        expect(await retained.decryptMetadata(1, retainedMetadata)).toEqual({ path: '/retained', host: 'machine' });
+      } finally {
+        releaseDecrypt.resolve();
+        decryptSpy.mockRestore();
+        await pending;
+      }
+    },
+  );
+
+  it('does not republish retired transcript plaintext after a replacement key is installed', async () => {
+    const encryption = await Encryption.create(new Uint8Array(32).fill(1));
+    encryption.configureNativeCryptoWorker({ routing: { mode: 'off' } });
+    await encryption.initializeSessions(new Map([['retired', new Uint8Array(32).fill(2)]]));
+    const retired = encryption.getSessionEncryption('retired')!;
+    const ciphertext = await retired.encryptRaw({ role: 'user', content: { type: 'text', text: 'retired content' } });
+    const message = { id: 'message-1', seq: 1, createdAt: 1, content: { t: 'encrypted' as const, c: ciphertext } };
+    const decryptStarted = createDeferred<void>();
+    const releaseDecrypt = createDeferred<void>();
+    const originalDecrypt = platformCrypto.decryptAsyncAES;
+    // Preserve real AES and delay only the platform completion boundary.
+    const decryptSpy = vi.spyOn(platformCrypto, 'decryptAsyncAES').mockImplementationOnce(async (...args) => {
+      const plaintext = await originalDecrypt(...args);
+      decryptStarted.resolve();
+      await releaseDecrypt.promise;
+      return plaintext;
+    });
+    const pending = retired.decryptMessages([message]);
+
+    try {
+      await decryptStarted.promise;
+      await encryption.initializeSessions(new Map([['retired', new Uint8Array(32).fill(3)]]));
+      releaseDecrypt.resolve();
+      const retiredResult = await pending;
+
+      const regranted = encryption.getSessionEncryption('retired')!;
+      expect((await regranted.decryptMessage(message))?.content).toBeNull();
+      expect(retiredResult).toEqual([null]);
+    } finally {
+      releaseDecrypt.resolve();
+      decryptSpy.mockRestore();
+      await pending;
+    }
+  });
+
   it('updates session encryption when a data key becomes available later', async () => {
     const masterSecret = new Uint8Array(32).fill(1);
     const sessionDataKey = new Uint8Array(32).fill(2);
@@ -164,7 +254,7 @@ describe('Encryption.initializeSessions (key updates)', () => {
     });
     vi.spyOn(encryption, 'openEncryption').mockImplementation(async (dataKey, scope) => {
       const opened = await originalOpenEncryption(dataKey, scope);
-      if (scope.accountId === 'account-a') {
+      if (scope?.accountId === 'account-a') {
         accountAStarted();
         await accountAGate;
       }

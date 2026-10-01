@@ -31,6 +31,9 @@ import { createTmuxSingleWindowAttachPlan } from '@/terminal/attachment/tmuxSing
 import { isTmuxAvailable, normalizeExitCode } from '@/integrations/tmux';
 import { focusWindowsTerminalWindow } from '@/terminal/attachment/windowsTerminalAttach';
 import { focusWindowsConsoleWindow } from '@/terminal/attachment/windowsConsoleAttach';
+import { runHerdrAttach } from '@/terminal/attachment/herdrAttach';
+import { runZellijAttach } from '@/terminal/attachment/zellijAttach';
+import { runTerminalHostAttach } from '@/terminal/attachment/runTerminalHostAttach';
 import { canUseInkSelector, runSessionActionSelector } from '@/ui/ink/runSessionActionSelector';
 import type { SessionActionSelectorRow } from '@/ui/ink/SessionActionSelector';
 import { buildAttachSelectionModel, formatAttachIneligibilityFooter } from './attachInteractiveSelection';
@@ -86,6 +89,8 @@ type AttachCommandDeps = Readonly<{
     sessionId: string;
     terminal: NonNullable<TerminalAttachmentInfo['terminal']>;
   }) => Promise<number>;
+  runHerdrAttachFn?: typeof runHerdrAttach;
+  runZellijAttachFn?: typeof runZellijAttach;
   runProviderAttachFn?: (params: {
     agentId: CatalogAgentId;
     backendId: string;
@@ -352,6 +357,8 @@ export async function handleAttachCommand(
   }));
   const runWindowsTerminalAttachFn = deps.runWindowsTerminalAttachFn ?? defaultRunWindowsTerminalAttach;
   const runWindowsConsoleAttachFn = deps.runWindowsConsoleAttachFn ?? defaultRunWindowsConsoleAttach;
+  const runHerdrAttachFn = deps.runHerdrAttachFn ?? runHerdrAttach;
+  const runZellijAttachFn = deps.runZellijAttachFn ?? runZellijAttach;
   const runProviderAttachFn = deps.runProviderAttachFn ?? (async ({ backendId, sessionId, metadata }) => {
     const providerAttachSurface = (await getSessionHostBridge().resolveExecutionSurfaces(backendId)).attach;
     if (!providerAttachSurface) return 1;
@@ -515,27 +522,29 @@ export async function handleAttachCommand(
       return;
     }
 
-    let exitCode = 0;
-    switch (eligibility.plan.type) {
-      case 'tmux':
-        exitCode = await runTmuxAttachFn({
-          sessionId: resolvedSessionId,
-          terminal: eligibility.terminal,
-          refreshRemoteControl: shouldRefreshRemoteControlOnAttach(eligibility.metadata),
-        });
-        break;
-      case 'windows_terminal_host':
-        exitCode = await runWindowsTerminalAttachFn({
-          sessionId: resolvedSessionId,
-          terminal: eligibility.terminal,
-        });
-        break;
-      case 'windows_console_host':
-        exitCode = await runWindowsConsoleAttachFn({
-          sessionId: resolvedSessionId,
-          terminal: eligibility.terminal,
-        });
-        break;
+    const hostExitCode = await runTerminalHostAttach({
+      sessionId: resolvedSessionId,
+      terminal: eligibility.terminal,
+      refreshRemoteControl: shouldRefreshRemoteControlOnAttach(eligibility.metadata),
+    }, { runTmuxAttachFn, runZellijAttachFn, runHerdrAttachFn });
+    let exitCode = hostExitCode ?? 0;
+    if (hostExitCode === null) {
+      switch (eligibility.plan.type) {
+        case 'windows_terminal_host':
+          exitCode = await runWindowsTerminalAttachFn({
+            sessionId: resolvedSessionId,
+            terminal: eligibility.terminal,
+          });
+          break;
+        case 'windows_console_host':
+          exitCode = await runWindowsConsoleAttachFn({
+            sessionId: resolvedSessionId,
+            terminal: eligibility.terminal,
+          });
+          break;
+        default:
+          throw new Error('No terminal attach implementation is available for this session.');
+      }
     }
     if (exitCode !== 0) process.exit(exitCode);
     return;
@@ -547,16 +556,21 @@ export async function handleAttachCommand(
     process.exit(1);
   }
 
-  let exitCode = 0;
-  if (terminal.mode === 'tmux') {
-    exitCode = await runTmuxAttachFn({ sessionId: resolvedSessionId, terminal });
-  } else if (terminal.mode === 'windows_terminal') {
-    exitCode = await runWindowsTerminalAttachFn({ sessionId: resolvedSessionId, terminal });
-  } else if (terminal.mode === 'windows_console') {
-    exitCode = await runWindowsConsoleAttachFn({ sessionId: resolvedSessionId, terminal });
-  } else {
-    console.error(chalk.red('Error:'), 'Session was not started in tmux.');
-    process.exit(1);
+  const hostExitCode = await runTerminalHostAttach({ sessionId: resolvedSessionId, terminal }, {
+    runTmuxAttachFn,
+    runZellijAttachFn,
+    runHerdrAttachFn,
+  });
+  let exitCode = hostExitCode ?? 0;
+  if (hostExitCode === null) {
+    if (terminal.mode === 'windows_terminal') {
+      exitCode = await runWindowsTerminalAttachFn({ sessionId: resolvedSessionId, terminal });
+    } else if (terminal.mode === 'windows_console') {
+      exitCode = await runWindowsConsoleAttachFn({ sessionId: resolvedSessionId, terminal });
+    } else {
+      console.error(chalk.red('Error:'), 'Session was not started in an attachable terminal host.');
+      process.exit(1);
+    }
   }
   if (exitCode !== 0) process.exit(exitCode);
 }

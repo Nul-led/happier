@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { View } from 'react-native';
 
-import type { ToolCallMessage } from '@/sync/domains/messages/messageTypes';
+import type { ToolCallMessage } from "@happier-dev/session-core/messages";
 
 import { TranscriptEnterWrapper } from '@/components/sessions/transcript/motion/TranscriptEnterWrapper';
 import { TRANSCRIPT_WEB_TOOL_GROUP_PREPEND_ANCHOR_TEST_ID_PREFIX } from '@/components/sessions/transcript/webTranscriptPrependAnchor';
@@ -28,7 +28,7 @@ type ToolCallsGroupUnitHeaderRowProps = ToolCallsGroupUnitRowCommonProps & Reado
 export const ToolCallsGroupUnitHeaderRow = React.memo(function ToolCallsGroupUnitHeaderRow(
     props: ToolCallsGroupUnitHeaderRowProps,
 ) {
-    const transcriptSessionCommon = useTranscriptSessionCommon(props.sessionId);
+    const transcriptSessionCommon = useTranscriptSessionCommon();
 
     return (
         <ToolCallsGroupUnitHeaderRowWithSessionCommon

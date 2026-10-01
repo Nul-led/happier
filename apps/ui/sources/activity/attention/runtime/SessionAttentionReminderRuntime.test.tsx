@@ -13,6 +13,32 @@ import {
 } from './sessionAttentionReminderScheduler';
 
 describe('SessionAttentionReminderRuntime', () => {
+    it('leaves retryable hydration eligible on the next owner wake without polling or repeating successful hydration', async () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(2_000);
+        let hydrated = false;
+        let attempts = 0;
+        const hook = await renderHook(() => useSessionAttentionReminderRefresh({
+            connectedByServerId: { 'home-a': true },
+            invalidateSessionListQueryHome: async () => undefined,
+            refreshReminderInventory: async () => ({ kind: 'retryable_failure' as const }),
+            refreshSession: async () => {
+                attempts += 1;
+                if (attempts === 1) return { kind: 'retryable_failure' as const, sessionId: 's1', cause: 'network' as const };
+                hydrated = true;
+                return { kind: 'available' as const, sessionId: 's1' };
+            },
+            reminders: [{ address: { serverId: 'home-a', sessionId: 's1' }, remindAt: 1_000 }],
+        }));
+        expect(hydrated).toBe(false);
+        await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+        expect(attempts).toBe(1);
+        await hook.rerender();
+        expect(hydrated).toBe(true);
+        await hook.rerender();
+        expect(attempts).toBe(2);
+    });
+
     afterEach(() => {
         vi.useRealTimers();
         standardCleanup();
@@ -47,13 +73,13 @@ describe('SessionAttentionReminderRuntime', () => {
     it('wakes at the nearest deadline and refreshes the exact Home-qualified Session', async () => {
         vi.useFakeTimers();
         vi.setSystemTime(1_000);
-        const refreshSession = vi.fn(async (_address: SessionAddress) => undefined);
+        const refreshSession = vi.fn(async (address: SessionAddress) => ({ kind: 'available' as const, ...address }));
         const invalidateSessionListQueryHome = vi.fn(async (_serverId: string) => undefined);
 
         await renderHook(() => useSessionAttentionReminderRefresh({
             connectedByServerId: { 'home-a': true, 'home-b': true },
             invalidateSessionListQueryHome,
-            refreshReminderInventory: async () => undefined,
+            refreshReminderInventory: async () => ({ kind: 'loaded' as const }),
             refreshSession,
             reminders: [
                 { address: { serverId: 'home-a', sessionId: 'same-session' }, remindAt: 3_000 },
@@ -80,14 +106,14 @@ describe('SessionAttentionReminderRuntime', () => {
         vi.setSystemTime(2_000);
         const appState = createReactNativeAppStateEmitter('active');
         const restoreAppState = appState.install(AppState);
-        const refreshSession = vi.fn(async (_address: SessionAddress) => undefined);
+        const refreshSession = vi.fn(async (address: SessionAddress) => ({ kind: 'available' as const, ...address }));
         let connectedByServerId: Readonly<Record<string, boolean>> = { 'home-a': false };
 
         try {
             const hook = await renderHook(() => useSessionAttentionReminderRefresh({
                 connectedByServerId,
                 invalidateSessionListQueryHome: async () => undefined,
-                refreshReminderInventory: async () => undefined,
+                refreshReminderInventory: async () => ({ kind: 'loaded' as const }),
                 refreshSession,
                 reminders: [{ address: { serverId: 'home-a', sessionId: 'session-a' }, remindAt: 1_000 }],
             }));
@@ -120,7 +146,7 @@ describe('SessionAttentionReminderRuntime', () => {
         vi.setSystemTime(2_000);
         const appState = createReactNativeAppStateEmitter('active');
         const restoreAppState = appState.install(AppState);
-        const refreshReminderInventory = vi.fn(async (_serverId: string) => undefined);
+        const refreshReminderInventory = vi.fn(async (_serverId: string) => ({ kind: 'loaded' as const }));
         let connectedByServerId: Readonly<Record<string, boolean>> = {
             'home-a': true,
             'home-b': false,
@@ -131,7 +157,7 @@ describe('SessionAttentionReminderRuntime', () => {
                 connectedByServerId,
                 invalidateSessionListQueryHome: async () => undefined,
                 refreshReminderInventory,
-                refreshSession: async () => undefined,
+                refreshSession: async (address) => ({ kind: 'available', ...address }),
                 reminders: [],
             }));
 
@@ -159,16 +185,50 @@ describe('SessionAttentionReminderRuntime', () => {
         }
     });
 
+    it('does not mark an inventory refresh loaded when the credential is unavailable', async () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(2_000);
+        const refreshReminderInventory = vi.fn(async () => ({ kind: 'retryable_failure' as const }));
+        const appState = createReactNativeAppStateEmitter('active');
+        const restoreAppState = appState.install(AppState);
+
+        try {
+            const hook = await renderHook(() => useSessionAttentionReminderRefresh({
+                connectedByServerId: { 'home-a': true },
+                invalidateSessionListQueryHome: async () => undefined,
+                refreshReminderInventory,
+                refreshSession: async (address) => ({ kind: 'available', ...address }),
+                reminders: [],
+            }));
+
+            await act(async () => Promise.resolve());
+            expect(refreshReminderInventory).toHaveBeenCalledTimes(1);
+
+            await hook.rerender();
+            await act(async () => Promise.resolve());
+            expect(refreshReminderInventory).toHaveBeenCalledTimes(2);
+
+            await act(async () => {
+                appState.emit('background');
+                appState.emit('active');
+                await Promise.resolve();
+            });
+            expect(refreshReminderInventory).toHaveBeenCalledTimes(3);
+        } finally {
+            restoreAppState();
+        }
+    });
+
     it('cancels a scheduled wake when the persisted reminder is cleared', async () => {
         vi.useFakeTimers();
         vi.setSystemTime(1_000);
-        const refreshSession = vi.fn(async (_address: SessionAddress) => undefined);
+        const refreshSession = vi.fn(async (address: SessionAddress) => ({ kind: 'available' as const, ...address }));
         const invalidateSessionListQueryHome = vi.fn(async (_serverId: string) => undefined);
         let reminders = [{ address: { serverId: 'home-a', sessionId: 'session-a' }, remindAt: 2_000 }];
         const hook = await renderHook(() => useSessionAttentionReminderRefresh({
             connectedByServerId: { 'home-a': true },
             invalidateSessionListQueryHome,
-            refreshReminderInventory: async () => undefined,
+            refreshReminderInventory: async () => ({ kind: 'loaded' as const }),
             refreshSession,
             reminders,
         }));
@@ -188,7 +248,7 @@ describe('SessionAttentionReminderRuntime', () => {
         vi.setSystemTime(2_000);
         const first = { serverId: 'https://home.example/a', sessionId: 'b:c' };
         const second = { serverId: 'https://home.example/a:b', sessionId: 'c' };
-        const refreshSession = vi.fn(async (_address: SessionAddress) => undefined);
+        const refreshSession = vi.fn(async (address: SessionAddress) => ({ kind: 'available' as const, ...address }));
         let connectedByServerId: Readonly<Record<string, boolean>> = {
             [first.serverId]: true,
             [second.serverId]: true,
@@ -201,7 +261,7 @@ describe('SessionAttentionReminderRuntime', () => {
         const hook = await renderHook(() => useSessionAttentionReminderRefresh({
             connectedByServerId,
             invalidateSessionListQueryHome: async () => undefined,
-            refreshReminderInventory: async () => undefined,
+            refreshReminderInventory: async () => ({ kind: 'loaded' as const }),
             refreshSession,
             reminders,
         }));

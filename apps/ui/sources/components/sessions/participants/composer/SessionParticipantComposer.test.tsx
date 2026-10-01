@@ -19,13 +19,14 @@ import {
     markBrowserContextViewNavigation,
     type BrowserContextState,
 } from '@/sync/domains/browser/context';
-import type {
-    BrowserAdapterCapabilitiesV1,
-    BrowserContextCapabilities,
-    DaemonPluginUiComposerSurfaceCatalogEntryV1,
-    PluginProjectionV2,
-    PluginProjectedComposerAttachmentEntryV1,
-    PluginProjectedComposerRegionEntryV1,
+import {
+    DaemonPluginUiComposerSurfaceCatalogEntryV1Schema,
+    type BrowserAdapterCapabilitiesV1,
+    type BrowserContextCapabilities,
+    type DaemonPluginUiComposerSurfaceCatalogEntryV1,
+    type PluginProjectionV2,
+    type PluginProjectedComposerAttachmentEntryV1,
+    type PluginProjectedComposerRegionEntryV1,
 } from '@happier-dev/protocol';
 
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
@@ -37,6 +38,12 @@ import {
     clearSessionAttachmentDrafts,
     readSessionAttachmentDrafts,
 } from '@/components/sessions/attachments/sessionAttachmentDraftStore';
+import {
+    createEphemeralComposerDocumentOwner,
+    promoteAcceptedComposerDocument,
+    type MutableComposerDocumentOwner,
+} from '@/components/sessions/composer/composerDocumentOwner';
+import type { ParticipantComposerPreparedSubmission } from './SessionParticipantComposer';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -65,7 +72,7 @@ const issueAttachmentCatalogEntry = {
     id: 'acme.issues/issue',
     pluginId: 'acme.issues',
     identity: { pluginId: 'acme.issues', localId: 'issue' },
-    immutableGenerationId: 'issues-generation-1',
+    occurrenceId: 'issues-generation-1',
     definition: {
         id: 'issue',
         title: 'Issue',
@@ -84,7 +91,7 @@ const participantRegion = {
     id: 'acme.issues/participant-region',
     pluginId: 'acme.issues',
     identity: { pluginId: 'acme.issues', localId: 'participant-region' },
-    immutableGenerationId: 'issues-generation-1',
+    occurrenceId: 'issues-generation-1',
     definition: {
         id: 'participant-region',
         placement: 'beforeComposer',
@@ -94,9 +101,9 @@ const participantRegion = {
 } satisfies PluginProjectedComposerRegionEntryV1;
 
 function createParticipantComposerCatalogEntry(): DaemonPluginUiComposerSurfaceCatalogEntryV1 {
-    return {
+    return DaemonPluginUiComposerSurfaceCatalogEntryV1Schema.parse({
         contribution: participantRegion.identity,
-        immutableGenerationId: participantRegion.immutableGenerationId,
+        occurrenceId: participantRegion.occurrenceId,
         projectionGeneration: 7,
         role: 'region',
         rendererChain: [{ pluginId: 'acme.issues', localId: 'participant-region-renderer' }],
@@ -105,12 +112,11 @@ function createParticipantComposerCatalogEntry(): DaemonPluginUiComposerSurfaceC
             renderer: {
                 kind: 'declarative',
                 contributionId: 'participant-region-renderer',
-                model: { visible: true },
             },
             availability: { state: 'available', reason: 'available', diagnostics: [] },
         },
         executionOrigin: {
-            serverIdentityId: 'server-1',
+            serverIdentityId: 'srv_server-1',
             materializationRef: {
                 machineId: 'machine-1',
                 materializationId: 'issues-materialization-1',
@@ -119,10 +125,14 @@ function createParticipantComposerCatalogEntry(): DaemonPluginUiComposerSurfaceC
         },
         resourceCapability: { readable: true, dynamic: true },
         contributorTargetedContributions: {
-            target: { pluginId: 'acme.issues', immutableGenerationId: 'issues-generation-1' },
+            target: {
+                pluginId: 'acme.issues',
+                occurrenceId: 'issues-generation-1',
+                sourceCustody: { kind: 'development', registeredRootId: 'issues-root' },
+            },
             points: [],
         },
-    } as DaemonPluginUiComposerSurfaceCatalogEntryV1;
+    });
 }
 
 function currentParticipantDaemonProjection(entriesById: Readonly<Record<string, PluginProjectedComposerAttachmentEntryV1>>) {
@@ -131,7 +141,6 @@ function currentParticipantDaemonProjection(entriesById: Readonly<Record<string,
         generation: 7,
         installedPackagesById: {},
         agentsById: {},
-        backendsById: {},
         actionsById: {},
         toolsById: {},
         commandsById: {},
@@ -157,8 +166,8 @@ function currentParticipantDaemonProjection(entriesById: Readonly<Record<string,
                     localId: 'issues',
                 },
                 progression: { declared: true, normalized: true, merged: true },
-                registration: { requirement: 'required', state: 'bound', generation: '7' },
-                activation: { state: 'active', generation: '7' },
+                registration: { requirement: 'required', state: 'bound', occurrenceId: '7' },
+                activation: { state: 'active', occurrenceId: '7' },
                 projection: { state: 'projected' },
                 presentation: {
                     kind: 'composerReference',
@@ -234,7 +243,7 @@ async function seedParticipantComposerSemanticSnapshot() {
             ref: participantComposerRef,
             admittedContributor: {
                 identity: { pluginId: 'acme.issues', localId: 'composer-control' },
-                immutableGenerationId: 'issues-generation-1',
+                occurrenceId: 'issues-generation-1',
             },
             transaction: {
                 expectedRevision: withReference.revision,
@@ -527,7 +536,7 @@ describe('SessionParticipantComposer', () => {
     it('uploads an immediately attached file through the ordinary Session transfer owner before admitting the exact Run input', async () => {
         const { SessionParticipantComposer } = await import('./SessionParticipantComposer');
         syncSubmitMessageSpy.mockImplementation(async (...args) => {
-            args[4]?.onOutboundHandoff?.();
+            args[4]?.onOutboundHandoff?.({ persistence: 'pending', localId: 'first-input-1' });
             return undefined;
         });
 
@@ -578,6 +587,87 @@ describe('SessionParticipantComposer', () => {
         );
     });
 
+    it('hands a post-capture edit to the known Run document after a delayed upload admits the captured input', async () => {
+        const upload = createDeferred<{
+            success: true;
+            path: string;
+            sizeBytes: number;
+            sha256: string;
+        }>();
+        sessionAttachmentsUploadFileSpy.mockReturnValueOnce(upload.promise);
+        const runOwner: { current: MutableComposerDocumentOwner | null } = { current: null };
+        let admittedDraft: ParticipantComposerPreparedSubmission['draft'] | null = null;
+        const submitPreparedMessage = vi.fn(async (submission: ParticipantComposerPreparedSubmission) => {
+            admittedDraft = submission.draft;
+            const destination = createEphemeralComposerDocumentOwner({
+                ref: { kind: 'participantMessage', sessionId: 's1', instanceId: 'run-1' },
+                capabilities: { text: true, references: true, attachments: true, submit: true },
+                initialDocument: {
+                    text: submission.draft.text,
+                    structuredInputMentions: submission.draft.mentions,
+                    composerAttachments: submission.draft.attachments,
+                },
+            });
+            const destinationAcceptedCurrentness = destination.captureCurrentness();
+            const residual = submission.onOutboundHandoff();
+            promoteAcceptedComposerDocument({
+                residual: {
+                    text: residual.text,
+                    structuredInputMentions: residual.mentions,
+                    composerAttachments: residual.attachments,
+                },
+                destination,
+                destinationAcceptedCurrentness,
+            });
+            runOwner.current = destination;
+        });
+        const { SessionParticipantComposer } = await import('./SessionParticipantComposer');
+
+        await renderScreen(<SessionParticipantComposer
+            sessionId="s1"
+            serverId="server-1"
+            canSendMessages
+            recipient={null}
+            initialLocalId="first-input-1"
+            draftOccurrenceId="rowless-draft-1"
+            submitPreparedMessage={submitPreparedMessage}
+        />);
+
+        let input = agentInputSpy.mock.lastCall?.[0] as {
+            onAttachmentsAdded: (files: readonly File[]) => void;
+            onChangeText: (text: string) => void;
+            onSend: () => void;
+        };
+        await act(async () => {
+            input.onAttachmentsAdded([new File(['hello'], 'notes.txt', { type: 'text/plain' })]);
+            input.onChangeText('A');
+        });
+        input = agentInputSpy.mock.lastCall?.[0] as typeof input;
+        act(() => input.onSend());
+        await act(async () => {
+            await Promise.resolve();
+        });
+        expect(submitPreparedMessage).not.toHaveBeenCalled();
+
+        input = agentInputSpy.mock.lastCall?.[0] as typeof input;
+        await act(async () => {
+            input.onChangeText('B');
+        });
+        upload.resolve({
+            success: true,
+            path: '.happier/uploads/messages/first-input-1/notes.txt',
+            sizeBytes: 5,
+            sha256: 'sha-notes',
+        });
+        await act(async () => {
+            await flushHookEffects({ cycles: 4, turns: 2 });
+        });
+
+        expect(admittedDraft).toMatchObject({ text: 'A' });
+        expect(runOwner.current?.read().document.text).toBe('B');
+        expect(readComposerPresentationSnapshot(participantComposerRef)?.text).toBe('B');
+    });
+
     it('rehydrates process-local file drafts instead of carrying them across an Account switch', async () => {
         const { SessionParticipantComposer } = await import('./SessionParticipantComposer');
         const accountOneScope = {
@@ -598,6 +688,10 @@ describe('SessionParticipantComposer', () => {
             initialLocalId="first-input-1"
             draftOccurrenceId="run-draft-1"
         />);
+        const { SessionTranscriptSourceProvider } = await import('@/components/sessions/transcript/source/SessionTranscriptSourceContext');
+        expect(screen.findAllByType(SessionTranscriptSourceProvider).map((root) => root.props.source)).toEqual([
+            expect.objectContaining({ kind: 'app', sessionId: 's1', serverId: 'server-1' }),
+        ]);
         const firstProps = agentInputSpy.mock.lastCall?.[0] as {
             onAttachmentsAdded: (files: readonly File[]) => void;
         };
@@ -627,6 +721,65 @@ describe('SessionParticipantComposer', () => {
         expect(secondProps.attachmentRowItems ?? []).toEqual([]);
         clearSessionAttachmentDrafts(accountOneScope);
         clearSessionAttachmentDrafts(accountTwoScope);
+    });
+
+    it('carries staged transfer drafts and unsent text into a new draft occurrence for the same Session', async () => {
+        const { SessionParticipantComposer } = await import('./SessionParticipantComposer');
+        const firstOccurrence = {
+            serverId: 'server-1',
+            accountId: 'account-1',
+            sessionId: 's1',
+            occurrenceId: 'draft-occurrence-1',
+        } as const;
+        const secondOccurrence = { ...firstOccurrence, occurrenceId: 'draft-occurrence-2' } as const;
+        clearSessionAttachmentDrafts(firstOccurrence);
+        clearSessionAttachmentDrafts(secondOccurrence);
+
+        const screen = await renderScreen(<SessionParticipantComposer
+            sessionId="s1"
+            serverId="server-1"
+            canSendMessages
+            recipient={null}
+            initialLocalId="first-input-1"
+            draftOccurrenceId="draft-occurrence-1"
+        />);
+        let composerProps = agentInputSpy.mock.lastCall?.[0] as {
+            onAttachmentsAdded: (files: readonly File[]) => void;
+            onChangeText: (text: string) => void;
+        };
+        await act(async () => {
+            composerProps.onChangeText('Still unsent');
+        });
+        composerProps = agentInputSpy.mock.lastCall?.[0] as typeof composerProps;
+        await act(async () => {
+            composerProps.onAttachmentsAdded([new File(['notes'], 'notes.txt', { type: 'text/plain' })]);
+            await flushHookEffects({ cycles: 3, turns: 1 });
+        });
+        expect(readSessionAttachmentDrafts(firstOccurrence)).toHaveLength(1);
+
+        await screen.update(<SessionParticipantComposer
+            sessionId="s1"
+            serverId="server-1"
+            canSendMessages
+            recipient={null}
+            initialLocalId="first-input-1"
+            draftOccurrenceId="draft-occurrence-2"
+        />);
+        await flushHookEffects({ cycles: 3, turns: 1 });
+
+        // A launcher starting another attempt rotates the draft occurrence. The unsent
+        // text and staged file belong to the person, not to the abandoned attempt, and
+        // the abandoned occurrence keeps no copy of those process-local bytes.
+        const carriedProps = agentInputSpy.mock.lastCall?.[0] as {
+            attachmentRowItems?: readonly unknown[];
+            value?: string;
+        };
+        expect(carriedProps.value).toBe('Still unsent');
+        expect(carriedProps.attachmentRowItems ?? []).toHaveLength(1);
+        expect(readSessionAttachmentDrafts(secondOccurrence)).toHaveLength(1);
+        expect(readSessionAttachmentDrafts(firstOccurrence)).toEqual([]);
+        clearSessionAttachmentDrafts(firstOccurrence);
+        clearSessionAttachmentDrafts(secondOccurrence);
     });
 
     it('reuses the mounted draft identity across an outcome-unknown retry', async () => {
@@ -808,7 +961,7 @@ describe('SessionParticipantComposer', () => {
             serverId: 'server-1',
             method: RPC_METHODS.DAEMON_PLUGIN_COMPOSER_REFERENCE_SEARCH,
             payload: expect.objectContaining({
-                expectedGeneration: '7',
+                expectedContributorOccurrenceId: '7',
                 reference: { pluginId: 'acme.issues', localId: 'issues' },
                 trigger: '@',
                 query: 'issue',
@@ -883,7 +1036,7 @@ describe('SessionParticipantComposer', () => {
                 ref,
                 admittedContributor: {
                     identity: { pluginId: 'acme.issues', localId: 'composer-control' },
-                    immutableGenerationId: 'issues-generation-1',
+                    occurrenceId: 'issues-generation-1',
                 },
                 transaction: {
                     expectedRevision: initial.revision,
@@ -957,7 +1110,7 @@ describe('SessionParticipantComposer', () => {
                 ref,
                 admittedContributor: {
                     identity: { pluginId: 'acme.issues', localId: 'composer-control' },
-                    immutableGenerationId: 'issues-generation-1',
+                    occurrenceId: 'issues-generation-1',
                 },
                 transaction: {
                     expectedRevision: initial.revision,
@@ -1015,7 +1168,7 @@ describe('SessionParticipantComposer', () => {
 
         const reinstalled = {
             ...issueAttachmentCatalogEntry,
-            immutableGenerationId: 'issues-generation-2',
+            occurrenceId: 'issues-generation-2',
         };
         participantDaemonProjectionState.current = currentParticipantDaemonProjection({
             [reinstalled.id]: reinstalled,
@@ -1036,7 +1189,7 @@ describe('SessionParticipantComposer', () => {
         participantDaemonProjectionState.current = currentParticipantDaemonProjection({
             [issueAttachmentCatalogEntry.id]: {
                 ...issueAttachmentCatalogEntry,
-                immutableGenerationId: 'issues-generation-3',
+                occurrenceId: 'issues-generation-3',
                 definition: {
                     ...issueAttachmentCatalogEntry.definition,
                     valueSchema: {
@@ -1090,7 +1243,7 @@ describe('SessionParticipantComposer', () => {
         const handlers = createComposerPresentationHostHandlers({
             owner: {
                 identity: { pluginId: 'acme.fixture', localId: 'composer-tools' },
-                immutableGenerationId: 'generation-1',
+                occurrenceId: 'generation-1',
                 surfaceInstanceKey: 'mounted-1',
             },
         });
@@ -1189,7 +1342,7 @@ describe('SessionParticipantComposer', () => {
         const handlers = createComposerPresentationHostHandlers({
             owner: {
                 identity: { pluginId: 'acme.fixture', localId: 'composer-tools' },
-                immutableGenerationId: 'generation-1',
+                occurrenceId: 'generation-1',
                 surfaceInstanceKey: 'mounted-1',
             },
         });
@@ -1388,7 +1541,7 @@ describe('SessionParticipantComposer', () => {
                 ref,
                 admittedContributor: {
                     identity: { pluginId: 'acme.issues', localId: 'composer-control' },
-                    immutableGenerationId: 'issues-generation-1',
+                    occurrenceId: 'issues-generation-1',
                 },
                 transaction: {
                     expectedRevision: withReference.revision,
@@ -1526,7 +1679,7 @@ describe('SessionParticipantComposer', () => {
                 ref: participantComposerRef,
                 admittedContributor: {
                     identity: { pluginId: 'acme.issues', localId: 'composer-control' },
-                    immutableGenerationId: 'issues-generation-1',
+                    occurrenceId: 'issues-generation-1',
                 },
                 transaction: {
                     expectedRevision: submitted.revision,
@@ -1620,7 +1773,7 @@ describe('SessionParticipantComposer', () => {
                 ref,
                 admittedContributor: {
                     identity: { pluginId: 'acme.issues', localId: 'composer-control' },
-                    immutableGenerationId: 'issues-generation-1',
+                    occurrenceId: 'issues-generation-1',
                 },
                 transaction: {
                     expectedRevision: initial.revision,

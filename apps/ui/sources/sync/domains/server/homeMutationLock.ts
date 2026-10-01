@@ -1,4 +1,5 @@
 import { readStorageScopeFromEnv, scopedStorageId } from '@/utils/system/storageScope';
+import { isEmbedWindowContext } from '@/embed/isEmbedWindowContext';
 
 const HOME_MUTATION_LOCK_PREFIX = 'happier:server-state-v1';
 const HOME_MUTATION_AUTHORITY = Symbol('HomeMutationAuthority');
@@ -45,7 +46,7 @@ export async function withHomeMutationAuthority<T>(
         }
     };
 
-    if (!isWebRuntime()) return await run();
+    if (isEmbedWindowContext() || !isWebRuntime()) return await run();
     const lockManager = typeof navigator === 'undefined' ? null : navigator.locks ?? null;
     if (!lockManager) throw new Error('Browser storage locking is unavailable');
     return await lockManager.request(lockName(), run);

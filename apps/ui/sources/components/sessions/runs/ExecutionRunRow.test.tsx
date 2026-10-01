@@ -84,4 +84,17 @@ describe('ExecutionRunRow', () => {
         expect(style.minHeight).toBeUndefined();
         standardCleanup();
     });
+
+    it('says the run\'s state in the roster\'s words and tone, never the raw wire token', async () => {
+        const failed = await renderScreen(React.createElement(ExecutionRunRow, { run: { ...run, status: 'timeout' } as any }));
+        const text = failed.getTextContent();
+        expect(text).toContain('sessionAgentActivity.status.timedOut');
+        expect(text).not.toContain('timeout');
+        standardCleanup();
+
+        const crashed = await renderScreen(React.createElement(ExecutionRunRow, { run: { ...run, status: 'failed' } as any }));
+        expect(crashed.findByTestId('execution-run-row-status:variant:danger')).not.toBeNull();
+        standardCleanup();
+    });
 });
+

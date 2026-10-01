@@ -7,6 +7,7 @@ import {
 import {
   presentQualifiedConnectedAccountTarget,
 } from './qualifiedConnectedAccountTargetPresentation';
+import { presentConnectedAccountIdentity } from './maskAccountEmail';
 
 const service = Object.freeze({
   pluginId: 'example.external.gateway',
@@ -29,6 +30,23 @@ const group = Object.freeze({
 });
 
 describe('presentQualifiedConnectedAccountTarget', () => {
+  it('preserves whether a primary identity is a provider id or a user name for privacy', () => {
+    const idOnlyAccount = { ref: account.ref, providerIdentity: { accountId: 'provider-account-42' } };
+    const present = (accountLabel?: string) => {
+      const target = presentQualifiedConnectedAccountTarget({
+        target: { kind: 'account', account: account.ref },
+        accounts: [idOnlyAccount], groups: [], labelsByKey: {}, accountLabel,
+        serviceTitle: 'External Gateway',
+      });
+      return presentConnectedAccountIdentity({
+        hidden: true, label: target.primaryLabel, labelKind: target.primaryLabelKind,
+        email: null, accountId: idOnlyAccount.providerIdentity.accountId,
+      }).label;
+    };
+    expect(present()).toBe('provi•••42');
+    // A user-assigned name is a name even if its text matches the provider id.
+    expect(present('provider-account-42')).toBe('provider-account-42');
+  });
   it('uses an author-provided service title and stable identities without exposing credentials', () => {
     const presentation = presentQualifiedConnectedAccountTarget({
       target: { kind: 'account', account: account.ref },

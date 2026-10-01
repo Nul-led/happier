@@ -14,6 +14,8 @@ import type { getConnectedServiceQuotaSnapshotPlain } from '@/sync/api/account/a
 import type { getQualifiedConnectedAccountQuotaV4 } from '@/sync/api/account/apiQualifiedConnectedAccountsV4';
 
 import { renderHookAndCollectValues } from '../serverFeatureHookHarness.testHelpers';
+import { __resetConnectedServiceQuotaSnapshotStore } from './connectedServiceQuotaSnapshotStore';
+import { __resetQualifiedConnectedAccountQuotaSnapshotStore } from './qualifiedConnectedAccountQuotaSnapshotStore';
 
 const stableCredentials = { token: 't', secret: Buffer.from(new Uint8Array(32).fill(3)).toString('base64url') } as const;
 
@@ -110,7 +112,8 @@ vi.mock('@/sync/ops/connectedAccounts/connectedAccountDaemon', () => ({
     })),
 }));
 
-vi.mock('@/sync/api/account/apiAccountEncryptionMode', () => ({
+vi.mock('@/sync/api/account/apiAccountEncryptionMode', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/sync/api/account/apiAccountEncryptionMode')>(),
     fetchAccountEncryptionMode: fetchAccountEncryptionModeSpy,
 }));
 
@@ -127,16 +130,12 @@ vi.mock('@/sync/api/account/apiQualifiedConnectedAccountsV4', () => ({
 }));
 
 describe('useConnectedServiceQuotaSummaries', () => {
-    beforeEach(async () => {
+    beforeEach(() => {
         vi.clearAllMocks();
         serverFeaturesState.current.features.capabilities.connectedServices.qualifiedAccounts = undefined;
         // The quota store is module-level: without this reset a later case
         // silently reads the previous case's cached snapshot.
-        const { __resetConnectedServiceQuotaSnapshotStore } = await import('./connectedServiceQuotaSnapshotStore');
         __resetConnectedServiceQuotaSnapshotStore();
-        const { __resetQualifiedConnectedAccountQuotaSnapshotStore } = await import(
-            './qualifiedConnectedAccountQuotaSnapshotStore'
-        );
         __resetQualifiedConnectedAccountQuotaSnapshotStore();
     });
 
@@ -218,6 +217,7 @@ describe('useConnectedServiceQuotaSummaries', () => {
         expect(seen.at(-1)?.summaries[0]).toMatchObject({
             service: ref.service,
             profileId: 'work',
+            fetchedAt: 1,
         });
         expect(getQualifiedConnectedAccountQuotaV4Spy).toHaveBeenCalledWith(
             stableCredentials,
@@ -228,6 +228,171 @@ describe('useConnectedServiceQuotaSummaries', () => {
         );
         expect(getConnectedServiceQuotaSnapshotPlainSpy).not.toHaveBeenCalled();
         expect(getConnectedServiceQuotaSnapshotSealedSpy).not.toHaveBeenCalled();
+    });
+
+    it('carries each account\'s name, email and id as they are (the one presenter hides them) and groups it under its provider', async () => {
+        const ref = { service: { pluginId: 'acme.connected.accounts', localId: 'gateway' }, accountId: 'acct_9f2c' } as const;
+        const account = {
+            ref,
+            status: 'connected',
+            authenticationModeId: 'api-key',
+            revisionSemantics: 'revisioned',
+            credentialRevision: 'revision-1',
+            configurationReady: true,
+            configurationRevision: null,
+            scopes: [],
+            providerIdentity: { email: 'kevin@gmail.com' },
+        } satisfies QualifiedConnectedAccountProfileV4;
+        const snapshot = QualifiedConnectedAccountQuotaSnapshotV4Schema.parse({
+            v: 1, ref, fetchedAt: 5, staleAfterMs: 60_000, planLabel: 'Pro', accountLabel: null, activeAccountId: 'acct_9f2c',
+            meters: [{
+                meterId: 'weekly', label: 'Weekly', used: 40, limit: 100, unit: 'count', utilizationPct: null,
+                resetsAt: null, status: 'ok', confidence: 'exact', details: { limitCategory: 'usage_limit' },
+            }],
+        });
+        getQualifiedConnectedAccountQuotaV4Spy.mockResolvedValue(QualifiedConnectedAccountQuotaResponseV4Schema.parse({
+            ref,
+            sourceResolution: {
+                source: { ref, bindingKind: 'account' },
+                recordId: buildProviderAccountUsageRecordId({
+                    providerId: 'acme', accountSubjectId: 'acct_9f2c', subjectKind: 'account', quotaScope: 'account',
+                }),
+                providerAccountId: 'acct_9f2c',
+                fetchedAt: 5,
+                staleAfterMs: 60_000,
+            },
+            content: { t: 'plain', v: snapshot },
+            metadata: { fetchedAt: 5, staleAfterMs: 60_000, status: 'ok' },
+        }));
+        serverFeaturesState.current.features.capabilities.connectedServices.qualifiedAccounts = { protocolVersion: 4 };
+        useProfileSpy.mockReturnValue({ connectedAccountsV4: [account], connectedServicesV2: [] });
+
+        const { useConnectedServiceQuotaSummaries } = await import('./useConnectedServiceQuotaSummaries');
+        const seen = await renderHookAndCollectValues(() => useConnectedServiceQuotaSummaries({ fetchPolicy: 'once' }));
+
+        // Identity display follows the device's "Hide account emails and IDs" through
+        // `presentConnectedAccountIdentity`; the summary never masks on its own.
+        expect(seen.at(-1)?.summaries[0]).toMatchObject({
+            accountLabel: null,
+            accountEmail: 'kevin@gmail.com',
+            accountId: 'acct_9f2c',
+            serviceGroupKey: 'acme.connected.accounts/gateway',
+        });
+    });
+
+    it('says which connected accounts have no usage yet: still being read, or read and unavailable', async () => {
+        const ref = { service: { pluginId: 'acme.connected.accounts', localId: 'gateway' }, accountId: 'work' } as const;
+        const account = {
+            ref,
+            status: 'connected',
+            authenticationModeId: 'api-key',
+            revisionSemantics: 'revisioned',
+            credentialRevision: 'revision-1',
+            configurationReady: true,
+            configurationRevision: null,
+            scopes: [],
+        } satisfies QualifiedConnectedAccountProfileV4;
+        serverFeaturesState.current.features.capabilities.connectedServices.qualifiedAccounts = { protocolVersion: 4 };
+        useProfileSpy.mockReturnValue({ connectedAccountsV4: [account], connectedServicesV2: [] });
+        const { useConnectedServiceQuotaSummaries } = await import('./useConnectedServiceQuotaSummaries');
+
+        // The provider answers without usage: the read settled, so the account is unavailable.
+        getQualifiedConnectedAccountQuotaV4Spy.mockResolvedValue(null);
+        const settled = await renderHookAndCollectValues(() => useConnectedServiceQuotaSummaries({ fetchPolicy: 'once' }));
+        expect(settled.at(-1)?.accountsWithoutUsage).toEqual([
+            expect.objectContaining({ accountLabel: null, accountId: 'work', serviceGroupKey: 'acme.connected.accounts/gateway', state: 'unavailable' }),
+        ]);
+
+        // A read still in flight is loading, never "unavailable".
+        const { __resetQualifiedConnectedAccountQuotaSnapshotStore } = await import('./qualifiedConnectedAccountQuotaSnapshotStore');
+        __resetQualifiedConnectedAccountQuotaSnapshotStore();
+        getQualifiedConnectedAccountQuotaV4Spy.mockImplementation(() => new Promise(() => {}));
+        const pending = await renderHookAndCollectValues(() => useConnectedServiceQuotaSummaries({ fetchPolicy: 'once' }));
+        expect(pending.at(-1)?.accountsWithoutUsage).toEqual([expect.objectContaining({ state: 'loading' })]);
+    });
+
+    it('names the accounts that need a new sign-in, counts keys that report no limits, and marks the account a pool uses now', async () => {
+        const service = { pluginId: 'acme.connected.accounts', localId: 'gateway' } as const;
+        const profile = (accountId: string, fields: Partial<QualifiedConnectedAccountProfileV4>): QualifiedConnectedAccountProfileV4 => ({
+            ref: { service, accountId },
+            status: 'connected',
+            authenticationModeId: 'oauth',
+            revisionSemantics: 'revisioned',
+            credentialRevision: 'revision-1',
+            configurationReady: true,
+            configurationRevision: null,
+            scopes: [],
+            ...fields,
+        } as QualifiedConnectedAccountProfileV4);
+        const signedOut = profile('work', { status: 'needs_reauth', providerIdentity: { email: 'leeroy@company.com' } });
+        const key = profile('build', { kind: 'token' });
+        const personal = profile('personal', {});
+        serverFeaturesState.current.features.capabilities.connectedServices.qualifiedAccounts = { protocolVersion: 4 };
+        useProfileSpy.mockReturnValue({
+            connectedAccountsV4: [signedOut, key, personal],
+            connectedServicesV2: [],
+            connectedAccountGroupsV4: [{ ref: { service, groupId: 'pool' }, activeConnectedAccountId: 'personal', members: [] }],
+        } as never);
+        getQualifiedConnectedAccountQuotaV4Spy.mockResolvedValue(null);
+        const { useConnectedServiceQuotaSummaries } = await import('./useConnectedServiceQuotaSummaries');
+
+        const seen = await renderHookAndCollectValues(() => useConnectedServiceQuotaSummaries({ fetchPolicy: 'once' }));
+        const last = seen.at(-1)!;
+
+        expect(last.accountsNeedingSignIn).toEqual([
+            expect.objectContaining({ accountEmail: 'leeroy@company.com', accountId: 'work', ref: { service, accountId: 'work' } }),
+        ]);
+        // A key reports no limits: counted once, never listed as "unavailable".
+        expect(last.keysWithoutLimits).toBe(1);
+        expect(last.accountsWithoutUsage.map((account) => account.accountId)).toEqual(['personal']);
+        expect(last.inUseAccountKeys).toEqual(new Set(['acme.connected.accounts%2Fgateway/personal']));
+    });
+
+    it('reads only the cache when asked, never the server, and says when each summary was read', async () => {
+        const ref = { service: { pluginId: 'acme.connected.accounts', localId: 'gateway' }, accountId: 'work' } as const;
+        const account = {
+            ref,
+            status: 'connected',
+            authenticationModeId: 'api-key',
+            revisionSemantics: 'revisioned',
+            credentialRevision: 'revision-1',
+            configurationReady: true,
+            configurationRevision: null,
+            scopes: [],
+        } satisfies QualifiedConnectedAccountProfileV4;
+        serverFeaturesState.current.features.capabilities.connectedServices.qualifiedAccounts = { protocolVersion: 4 };
+        useProfileSpy.mockReturnValue({ connectedAccountsV4: [account], connectedServicesV2: [] });
+
+        const { useConnectedServiceQuotaSummaries } = await import('./useConnectedServiceQuotaSummaries');
+        const seen = await renderHookAndCollectValues(() => useConnectedServiceQuotaSummaries({ fetchPolicy: 'cache_only' }));
+
+        expect(seen.at(-1)?.hasConnectedProfiles).toBe(true);
+        expect(seen.at(-1)?.summaries).toEqual([]);
+        // Nothing was read, so nothing is claimed about the account.
+        expect(seen.at(-1)?.accountsWithoutUsage).toEqual([]);
+        expect(getQualifiedConnectedAccountQuotaV4Spy).not.toHaveBeenCalled();
+    });
+
+    it('reads the server once per launch when asked to load once, however many surfaces mount', async () => {
+        const ref = { service: { pluginId: 'acme.connected.accounts', localId: 'gateway' }, accountId: 'work' } as const;
+        const account = {
+            ref,
+            status: 'connected',
+            authenticationModeId: 'api-key',
+            revisionSemantics: 'revisioned',
+            credentialRevision: 'revision-1',
+            configurationReady: true,
+            configurationRevision: null,
+            scopes: [],
+        } satisfies QualifiedConnectedAccountProfileV4;
+        serverFeaturesState.current.features.capabilities.connectedServices.qualifiedAccounts = { protocolVersion: 4 };
+        useProfileSpy.mockReturnValue({ connectedAccountsV4: [account], connectedServicesV2: [] });
+
+        const { useConnectedServiceQuotaSummaries } = await import('./useConnectedServiceQuotaSummaries');
+        await renderHookAndCollectValues(() => useConnectedServiceQuotaSummaries({ fetchPolicy: 'once' }));
+        await renderHookAndCollectValues(() => useConnectedServiceQuotaSummaries({ fetchPolicy: 'once' }));
+
+        expect(getQualifiedConnectedAccountQuotaV4Spy).toHaveBeenCalledTimes(1);
     });
 
     it('preserves pinned meter order for primary summaries', async () => {

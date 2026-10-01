@@ -1,4 +1,4 @@
-import type { Metadata } from '@/sync/domains/state/storageTypes';
+import type { Metadata } from '@happier-dev/session-core/state';
 import type { PermissionMode } from '@/sync/domains/permissions/permissionTypes';
 import { publishUiSessionStateFieldToMetadata } from './publishField';
 

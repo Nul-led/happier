@@ -157,7 +157,11 @@ describe('sessionRegistry', () => {
     );
     const retention = {
       v: 1 as const,
-      sourceGenerationIds: ['registry:dependency'],
+      sourceCustodies: [{
+        kind: 'managed' as const,
+        immutableGenerationId: 'registry:dependency',
+        installSource: 'localPath' as const,
+      }],
       qualifiedDependencyIds: ['acme.plugin/dependency'],
     };
     await writeSessionMarker({
@@ -176,7 +180,9 @@ describe('sessionRegistry', () => {
         },
         providerSessionId: 'provider-session-1',
       },
-      runnerAgentImmutableGenerationId: 'registry:agent',
+      runnerAgentSourceCustodyV1: {
+        kind: 'managed', immutableGenerationId: 'registry:agent', installSource: 'localPath',
+      },
       runnerManagedDependencyRetentionV1: retention,
     });
 
@@ -187,7 +193,9 @@ describe('sessionRegistry', () => {
         processCommandHash,
         processStartTimeMs,
         authorityFilePath,
-        immutableGenerationId: 'registry:agent',
+        sourceCustody: {
+          kind: 'managed', immutableGenerationId: 'registry:agent', installSource: 'localPath',
+        },
         retention,
       }),
     ).resolves.toBe(true);
@@ -206,7 +214,7 @@ describe('sessionRegistry', () => {
       'agentRuntimeDaemonServiceSessionOpenAttestation',
     );
     expect(cleared).not.toHaveProperty(
-      'runnerAgentImmutableGenerationId',
+      'runnerAgentSourceCustodyV1',
     );
     expect(cleared).not.toHaveProperty(
       'runnerManagedDependencyRetentionV1',
@@ -220,7 +228,9 @@ describe('sessionRegistry', () => {
       processCommandHash,
       processStartTimeMs,
       agentRuntimeDaemonServiceAuthorityFilePath: authorityFilePath,
-      runnerAgentImmutableGenerationId: 'registry:agent',
+      runnerAgentSourceCustodyV1: {
+        kind: 'managed', immutableGenerationId: 'registry:agent', installSource: 'localPath',
+      },
       runnerManagedDependencyRetentionV1: retention,
     });
     await expect(
@@ -234,7 +244,9 @@ describe('sessionRegistry', () => {
     ).resolves.toBe(true);
     await expect(listSessionMarkers()).resolves.toEqual([
       expect.objectContaining({
-        runnerAgentImmutableGenerationId: 'registry:agent',
+        runnerAgentSourceCustodyV1: {
+          kind: 'managed', immutableGenerationId: 'registry:agent', installSource: 'localPath',
+        },
         runnerManagedDependencyRetentionV1: retention,
       }),
     ]);
@@ -250,7 +262,9 @@ describe('sessionRegistry', () => {
       processCommandHash,
       processStartTimeMs,
       agentRuntimeDaemonServiceAuthorityFilePath: authorityFilePath,
-      runnerAgentImmutableGenerationId: 'registry:agent',
+      runnerAgentSourceCustodyV1: {
+        kind: 'managed', immutableGenerationId: 'registry:agent', installSource: 'localPath',
+      },
       runnerManagedDependencyRetentionV1: retention,
     });
     await expect(
@@ -260,17 +274,23 @@ describe('sessionRegistry', () => {
         processCommandHash,
         processStartTimeMs,
         authorityFilePath,
-        immutableGenerationId: 'registry:agent',
+        sourceCustody: {
+          kind: 'managed', immutableGenerationId: 'registry:agent', installSource: 'localPath',
+        },
         retention: {
           ...retention,
-          sourceGenerationIds: ['registry:other-dependency'],
+          sourceCustodies: [{
+            kind: 'managed', immutableGenerationId: 'registry:other-dependency', installSource: 'localPath',
+          }],
         },
       }),
     ).resolves.toBe(false);
     await expect(listSessionMarkers()).resolves.toEqual([
       expect.objectContaining({
         agentRuntimeDaemonServiceAuthorityFilePath: authorityFilePath,
-        runnerAgentImmutableGenerationId: 'registry:agent',
+        runnerAgentSourceCustodyV1: {
+          kind: 'managed', immutableGenerationId: 'registry:agent', installSource: 'localPath',
+        },
         runnerManagedDependencyRetentionV1: retention,
       }),
     ]);
@@ -292,7 +312,7 @@ describe('sessionRegistry', () => {
       processStartTimeMs,
       runnerManagedDependencyRetentionV1: {
         v: 1,
-        sourceGenerationIds: ['registry:g'],
+        sourceCustodies: [{ kind: 'managed', immutableGenerationId: 'registry:g', installSource: 'localPath' }],
         qualifiedDependencyIds: ['acme.plugin/tool-g'],
       },
     });
@@ -301,15 +321,15 @@ describe('sessionRegistry', () => {
       updateSessionMarkerRunnerManagedDependencyRetention({
         pid: 12349,
         sessionId: 'session-managed-dependency-retention',
-        processCommandHash,
+        processCommandHash: 'd'.repeat(64),
         processStartTimeMs,
         retention: {
           v: 1,
-          sourceGenerationIds: ['registry:h'],
+          sourceCustodies: [{ kind: 'managed', immutableGenerationId: 'registry:h', installSource: 'localPath' }],
           qualifiedDependencyIds: ['acme.plugin/tool-h'],
           adoptedManagedProviderAuthority: {
             pluginId: 'acme.plugin',
-            immutableGenerationId: 'provider-generation-stale',
+            sourceCustody: { kind: 'managed', immutableGenerationId: 'provider-generation-stale', installSource: 'localPath' },
             manifestAuthority: 'external',
             hardRevocationRevisionAtAdmission: 0,
           },
@@ -324,7 +344,7 @@ describe('sessionRegistry', () => {
         processStartTimeMs: processStartTimeMs + 1,
         retention: {
           v: 1,
-          sourceGenerationIds: ['registry:must-not-write'],
+          sourceCustodies: [{ kind: 'managed', immutableGenerationId: 'registry:must-not-write', installSource: 'localPath' }],
           qualifiedDependencyIds: ['acme.plugin/must-not-write'],
         },
       }),
@@ -334,7 +354,10 @@ describe('sessionRegistry', () => {
     expect(marker).toMatchObject({
       runnerManagedDependencyRetentionV1: {
         v: 1,
-        sourceGenerationIds: ['registry:g', 'registry:h'],
+        sourceCustodies: [
+          { kind: 'managed', immutableGenerationId: 'registry:g', installSource: 'localPath' },
+          { kind: 'managed', immutableGenerationId: 'registry:h', installSource: 'localPath' },
+        ],
         qualifiedDependencyIds: [
           'acme.plugin/tool-g',
           'acme.plugin/tool-h',
@@ -363,13 +386,13 @@ describe('sessionRegistry', () => {
     } as const;
     const providerP = {
       pluginId: 'acme.provider.p',
-      immutableGenerationId: 'registry:provider-p',
+      sourceCustody: { kind: 'managed', immutableGenerationId: 'registry:provider-p', installSource: 'localPath' },
       manifestAuthority: 'bundled_first_party',
       hardRevocationRevisionAtAdmission: 7,
     } as const;
     const providerQ = {
       pluginId: 'acme.provider.q',
-      immutableGenerationId: 'registry:provider-q',
+      sourceCustody: { kind: 'managed', immutableGenerationId: 'registry:provider-q', installSource: 'localPath' },
       manifestAuthority: 'external',
       hardRevocationRevisionAtAdmission: 11,
     } as const;
@@ -385,7 +408,7 @@ describe('sessionRegistry', () => {
       processStartTimeMs,
       runnerManagedDependencyRetentionV1: {
         v: 1,
-        sourceGenerationIds: ['registry:dependency'],
+        sourceCustodies: [{ kind: 'managed', immutableGenerationId: 'registry:dependency', installSource: 'localPath' }],
         qualifiedDependencyIds: ['acme.plugin/dependency'],
       },
     });
@@ -429,7 +452,7 @@ describe('sessionRegistry', () => {
         runnerManagedDependencyRetentionV1: {
           v: 1,
           adoptedManagedProviderAuthority: providerP,
-          sourceGenerationIds: ['registry:dependency'],
+          sourceCustodies: [{ kind: 'managed', immutableGenerationId: 'registry:dependency', installSource: 'localPath' }],
           qualifiedDependencyIds: ['acme.plugin/dependency'],
         },
       }),
@@ -446,7 +469,7 @@ describe('sessionRegistry', () => {
       expect.objectContaining({
         runnerManagedDependencyRetentionV1: {
           v: 1,
-          sourceGenerationIds: ['registry:dependency'],
+          sourceCustodies: [{ kind: 'managed', immutableGenerationId: 'registry:dependency', installSource: 'localPath' }],
           qualifiedDependencyIds: ['acme.plugin/dependency'],
         },
       }),
@@ -462,7 +485,7 @@ describe('sessionRegistry', () => {
   it('pins one exact non-authorizing Runner Agent generation for each process identity', async () => {
     const {
       listSessionMarkers,
-      updateSessionMarkerRunnerAgentImmutableGenerationId,
+      updateSessionMarkerRunnerAgentSourceCustody,
       writeSessionMarker,
     } = await import('./sessionRegistry');
     const processCommandHash = 'd'.repeat(64);
@@ -476,30 +499,30 @@ describe('sessionRegistry', () => {
     });
 
     await expect(
-      updateSessionMarkerRunnerAgentImmutableGenerationId({
+      updateSessionMarkerRunnerAgentSourceCustody({
         pid: 12350,
         sessionId: 'session-runner-agent-generation',
         processCommandHash,
         processStartTimeMs,
-        immutableGenerationId: 'registry:g',
+        sourceCustody: { kind: 'managed', immutableGenerationId: 'registry:g', installSource: 'localPath' },
       }),
     ).resolves.toBe(true);
     await expect(
-      updateSessionMarkerRunnerAgentImmutableGenerationId({
+      updateSessionMarkerRunnerAgentSourceCustody({
         pid: 12350,
         sessionId: 'session-runner-agent-generation',
         processCommandHash,
         processStartTimeMs,
-        immutableGenerationId: 'registry:g',
+        sourceCustody: { kind: 'managed', immutableGenerationId: 'registry:g', installSource: 'localPath' },
       }),
     ).resolves.toBe(true);
     await expect(
-      updateSessionMarkerRunnerAgentImmutableGenerationId({
+      updateSessionMarkerRunnerAgentSourceCustody({
         pid: 12350,
         sessionId: 'session-runner-agent-generation',
         processCommandHash,
         processStartTimeMs,
-        immutableGenerationId: 'registry:h',
+        sourceCustody: { kind: 'managed', immutableGenerationId: 'registry:h', installSource: 'localPath' },
       }),
     ).resolves.toBe(false);
 
@@ -516,17 +539,17 @@ describe('sessionRegistry', () => {
       startedBy: 'daemon',
       processCommandHash: 'e'.repeat(64),
       processStartTimeMs: processStartTimeMs + 1,
-      runnerAgentImmutableGenerationId: 'registry:h',
+      runnerAgentSourceCustodyV1: { kind: 'managed', immutableGenerationId: 'registry:h', installSource: 'localPath' },
     });
 
     expect(await listSessionMarkers()).toEqual(expect.arrayContaining([
       expect.objectContaining({
         pid: 12350,
-        runnerAgentImmutableGenerationId: 'registry:g',
+        runnerAgentSourceCustodyV1: { kind: 'managed', immutableGenerationId: 'registry:g', installSource: 'localPath' },
       }),
       expect.objectContaining({
         pid: 12351,
-        runnerAgentImmutableGenerationId: 'registry:h',
+        runnerAgentSourceCustodyV1: { kind: 'managed', immutableGenerationId: 'registry:h', installSource: 'localPath' },
       }),
     ]));
   });
@@ -576,6 +599,10 @@ describe('sessionRegistry', () => {
         command: 'happier codex --started-by daemon',
       }),
       trackedSession,
+      expectedProcessIdentity: {
+        processStartTimeMs: 1_717_171_717_000,
+        processCommandHash: 'a'.repeat(64),
+      },
     });
 
     await expect(listSessionMarkers()).resolves.toEqual([
@@ -684,6 +711,85 @@ describe('sessionRegistry', () => {
     })).rejects.toThrow(
       'session_marker_canonical_adoption_ownership_mismatch',
     );
+  });
+
+  it('adopts the same process generation after its launch command becomes the runner command', async () => {
+    const { hashProcessCommand, listSessionMarkers, writeSessionMarker } = await import('./sessionRegistry');
+    const pid = 2142560;
+    const processStartTimeMs = 22_214_900;
+    const launchCommand = 'systemd-run --user --scope -- /usr/bin/node runner.mjs codex';
+    const runnerCommand = '/usr/bin/node runner.mjs codex';
+    const respawn = { version: 1 as const, directory: '/tmp/project', spawnNonce: 'nonce-exec-same-generation' };
+
+    await writeSessionMarker({
+      pid,
+      happySessionId: `PID-${pid}`,
+      startedBy: 'daemon',
+      processCommand: launchCommand,
+      processCommandHash: hashProcessCommand(launchCommand),
+      processStartTimeMs,
+      respawn,
+    });
+
+    await expect(writeSessionMarker({
+      pid,
+      happySessionId: 'session-after-exec',
+      startedBy: 'daemon',
+      processCommand: runnerCommand,
+      processCommandHash: hashProcessCommand(runnerCommand),
+      processStartTimeMs,
+      respawn,
+    }, { adoptCanonicalSessionIdFromPidPlaceholder: true })).resolves.toBeUndefined();
+    await expect(listSessionMarkers()).resolves.toEqual([
+      expect.objectContaining({
+        pid,
+        happySessionId: 'session-after-exec',
+        processCommandHash: hashProcessCommand(runnerCommand),
+        processStartTimeMs,
+      }),
+    ]);
+
+    await expect(writeSessionMarker({
+      pid,
+      happySessionId: 'session-after-exec',
+      startedBy: 'daemon',
+      processCommand: runnerCommand,
+      processCommandHash: hashProcessCommand(runnerCommand),
+      processStartTimeMs: processStartTimeMs + 10,
+      respawn,
+    }, { adoptCanonicalSessionIdFromPidPlaceholder: true })).rejects.toThrow(
+      'session_marker_canonical_adoption_ownership_mismatch',
+    );
+    await expect(writeSessionMarker({
+      pid,
+      happySessionId: 'session-after-exec',
+      startedBy: 'daemon',
+      processCommand: runnerCommand,
+      processCommandHash: hashProcessCommand(runnerCommand),
+      processStartTimeMs,
+      respawn: { ...respawn, spawnNonce: 'foreign-spawn' },
+    }, { adoptCanonicalSessionIdFromPidPlaceholder: true })).rejects.toThrow(
+      'session_marker_canonical_adoption_ownership_mismatch',
+    );
+
+    const refreshedCommand = `${runnerCommand} --runtime-ready`;
+    await writeSessionMarker({
+      pid,
+      happySessionId: 'session-after-exec',
+      startedBy: 'daemon',
+      processCommand: refreshedCommand,
+      processCommandHash: hashProcessCommand(refreshedCommand),
+      processStartTimeMs,
+    });
+    await expect(listSessionMarkers()).resolves.toEqual([
+      expect.objectContaining({
+        pid,
+        happySessionId: 'session-after-exec',
+        processCommandHash: hashProcessCommand(refreshedCommand),
+        processStartTimeMs,
+        respawn,
+      }),
+    ]);
   });
 
   it('persists and clears only the exact active turn and causal input custody for the matching session marker', async () => {
@@ -1300,7 +1406,10 @@ describe('sessionRegistry', () => {
       expect.objectContaining({
         respawn: expect.objectContaining({
           version: 1,
-          backendTarget: { kind: 'builtInAgent', agentId: 'ohMyPi' },
+          agentTarget: {
+            kind: 'agent',
+            identity: { pluginId: 'happier.agent.ohmypi', localId: 'ohmypi' },
+          },
           runtimeDescriptorV1: expect.objectContaining({
             agentId: 'ohMyPi',
           }),

@@ -1,3 +1,4 @@
+import { renderWithSessionTranscriptSource, createTestSessionTranscriptSource } from '@/dev/testkit';
 import React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act } from 'react-test-renderer';
@@ -5,7 +6,6 @@ import { act } from 'react-test-renderer';
 import {
     createDeferred,
     flushHookEffects,
-    renderScreen,
     standardCleanup,
 } from '@/dev/testkit';
 import { installToolShellCommonModuleMocks, makeToolCall } from './ToolView.testHelpers';
@@ -13,7 +13,7 @@ import { createUseSettingMock } from '@/dev/testkit/mocks/storage';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
-const ensureSidechainMessagesLoadedMock = vi.fn(async () => 'loaded');
+const ensureSidechainMessagesLoadedMock = vi.fn(async (_sessionId: string, _sidechainId: string): Promise<'loaded' | 'not_ready' | 'in_flight'> => 'loaded');
 
 vi.mock('@/sync/sync', () => ({
     sync: {
@@ -137,7 +137,7 @@ describe('ToolView (tap action: expand)', () => {
             result: { file: { content: 'hello' } },
         });
 
-        const screen = await renderScreen(React.createElement(ToolView, { tool, metadata: null }));
+        const screen = await renderWithSessionTranscriptSource(React.createElement(ToolView, { tool, metadata: null }), createTestSessionTranscriptSource({ navigate: pushSpy, loadSidechain: (sidechainId) => ensureSidechainMessagesLoadedMock('s1', sidechainId) }));
 
         expect(screen.findAllByType('SpecificToolView' as any)).toHaveLength(0);
 
@@ -164,9 +164,8 @@ describe('ToolView (tap action: expand)', () => {
             result: null,
         });
 
-        const screen = await renderScreen(
-            React.createElement(ToolView, { tool, metadata: null, sessionId: 's1', messageId: 'm1' }),
-        );
+        const screen = await renderWithSessionTranscriptSource(
+            React.createElement(ToolView, { tool, metadata: null, sessionId: 's1', messageId: 'm1' }), createTestSessionTranscriptSource({ navigate: pushSpy, loadSidechain: (sidechainId) => ensureSidechainMessagesLoadedMock('s1', sidechainId) }),);
 
         expect(ensureSidechainMessagesLoadedMock).not.toHaveBeenCalled();
 
@@ -195,9 +194,8 @@ describe('ToolView (tap action: expand)', () => {
             result: null,
         });
 
-        const screen = await renderScreen(
-            React.createElement(ToolView, { tool, metadata: null, sessionId: 's1', messageId: 'm1', messages: [] }),
-        );
+        const screen = await renderWithSessionTranscriptSource(
+            React.createElement(ToolView, { tool, metadata: null, sessionId: 's1', messageId: 'm1', messages: [] }), createTestSessionTranscriptSource({ navigate: pushSpy, loadSidechain: (sidechainId) => ensureSidechainMessagesLoadedMock('s1', sidechainId) }),);
 
         await act(async () => {
             screen.pressByTestId('tool-view-header-primary');
@@ -233,9 +231,8 @@ describe('ToolView (tap action: expand)', () => {
                 result: null,
             });
 
-            const screen = await renderScreen(
-                React.createElement(ToolView, { tool, metadata: null, sessionId: 's1', messageId: 'm1', messages: [] }),
-            );
+            const screen = await renderWithSessionTranscriptSource(
+                React.createElement(ToolView, { tool, metadata: null, sessionId: 's1', messageId: 'm1', messages: [] }), createTestSessionTranscriptSource({ navigate: pushSpy, loadSidechain: (sidechainId) => ensureSidechainMessagesLoadedMock('s1', sidechainId) }),);
 
             await act(async () => {
                 screen.pressByTestId('tool-view-header-primary');
@@ -271,9 +268,8 @@ describe('ToolView (tap action: expand)', () => {
             result: { sidechainId: 'sidechain_run_123' },
         });
 
-        const screen = await renderScreen(
-            React.createElement(ToolView, { tool, metadata: null, sessionId: 's1', messageId: 'm1' }),
-        );
+        const screen = await renderWithSessionTranscriptSource(
+            React.createElement(ToolView, { tool, metadata: null, sessionId: 's1', messageId: 'm1' }), createTestSessionTranscriptSource({ navigate: pushSpy, loadSidechain: (sidechainId) => ensureSidechainMessagesLoadedMock('s1', sidechainId) }),);
 
         expect(ensureSidechainMessagesLoadedMock).not.toHaveBeenCalled();
 
@@ -300,9 +296,8 @@ describe('ToolView (tap action: expand)', () => {
             result: { file: { content: 'hello' } },
         });
 
-        const screen = await renderScreen(
-            React.createElement(ToolView, { tool, metadata: null, sessionId: 's1', messageId: 'm1' }),
-        );
+        const screen = await renderWithSessionTranscriptSource(
+            React.createElement(ToolView, { tool, metadata: null, sessionId: 's1', messageId: 'm1' }), createTestSessionTranscriptSource({ navigate: pushSpy, loadSidechain: (sidechainId) => ensureSidechainMessagesLoadedMock('s1', sidechainId) }),);
 
         const secondaryAction = screen.findByTestId('tool-view-header-secondary');
         expect(secondaryAction?.props.hitSlop).toBe(15);
@@ -323,15 +318,14 @@ describe('ToolView (tap action: expand)', () => {
             result: { file: { content: 'hello' } },
         });
 
-        const screen = await renderScreen(
+        const screen = await renderWithSessionTranscriptSource(
             React.createElement(ToolView, {
                 tool,
                 metadata: null,
                 sessionId: 's1',
                 serverId: 'home-b',
                 messageId: 'server:server-msg-1',
-            }),
-        );
+            }), createTestSessionTranscriptSource({ navigate: pushSpy, loadSidechain: (sidechainId) => ensureSidechainMessagesLoadedMock('s1', sidechainId) }),);
 
         const secondaryAction = screen.findByTestId('tool-view-header-secondary');
         expect(secondaryAction).toBeTruthy();
@@ -359,14 +353,13 @@ describe('ToolView (tap action: expand)', () => {
             result: { sidechainId: 'sidechain_run_1' },
         });
 
-        const screen = await renderScreen(
+        const screen = await renderWithSessionTranscriptSource(
             React.createElement(ToolView, {
                 tool,
                 metadata: null,
                 sessionId: 's1',
-                interaction: { canSendMessages: true, canApprovePermissions: true, disableToolNavigation: true },
-            }),
-        );
+                interaction: { canSendMessages: true, canApprovePermissions: true },
+            }), createTestSessionTranscriptSource({ navigate: null, loadSidechain: null }));
 
         expect(screen.findByTestId('tool-view-header-secondary')).toBeNull();
 

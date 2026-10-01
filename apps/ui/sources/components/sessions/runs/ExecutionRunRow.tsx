@@ -3,11 +3,17 @@ import { Platform, Pressable, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import type { ExecutionRunPublicState } from '@happier-dev/protocol';
-import { ExecutionRunStatusPill } from './ExecutionRunStatusPill';
+import {
+    readExecutionRunAgentActivityStatus,
+    resolveAgentActivityStatusPresentation,
+} from '@/components/sessions/agents/presentation/sessionAgentActivityPresentation';
+import { resolveWorkStatusTone, WORK_STATUS_PILL_VARIANT } from '@/components/work/status/resolveWorkStatusTone';
+import { StatusPill } from '@/components/ui/status/StatusPill';
 import { Text } from '@/components/ui/text/Text';
 import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
 import { resolveExecutionRunBackendLabel } from '@/components/sessions/runs/resolveExecutionRunBackendLabel';
 import { t } from '@/text';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 
 export type ExecutionRunRowRun =
@@ -27,6 +33,12 @@ export const ExecutionRunRow = React.memo((props: Readonly<{
     const interactiveTargetSize = resolveMinimumInteractiveTargetSize(Platform.OS);
     const subtitle = typeof props.subtitle === 'string' ? props.subtitle : run.runId;
     const backendLabel = resolveExecutionRunBackendLabel(run.backendTarget);
+    // The run's state in the roster's words (sessionAgentActivityPresentation) and the shared tone (I3).
+    const activityStatus = readExecutionRunAgentActivityStatus(run.status);
+    const status = resolveWorkStatusTone({
+        kind: 'agent_activity',
+        facts: { status: activityStatus, word: resolveAgentActivityStatusPresentation(activityStatus).label },
+    });
     const title =
         (run.display && typeof run.display === 'object' && typeof (run.display as any).title === 'string' && String((run.display as any).title).trim().length > 0)
             ? String((run.display as any).title).trim()
@@ -56,7 +68,7 @@ export const ExecutionRunRow = React.memo((props: Readonly<{
                 borderWidth: 1,
                 borderColor: props.selected ? theme.colors.text.link : theme.colors.border.default,
                 gap: 8,
-                opacity: pressed ? 0.8 : 1,
+                opacity: pressed ? motionTokens.press.opacitySubtle : 1,
                 ...(actionable
                     ? { minWidth: interactiveTargetSize, minHeight: interactiveTargetSize, justifyContent: 'center' as const }
                     : {}),
@@ -67,7 +79,13 @@ export const ExecutionRunRow = React.memo((props: Readonly<{
                     {title}
                 </Text>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                    <ExecutionRunStatusPill status={run.status} />
+                    <StatusPill
+                        testID="execution-run-row-status"
+                        variant={WORK_STATUS_PILL_VARIANT[status.tone]}
+                        label={status.word}
+                        labelVariant="micro"
+                        hideDot
+                    />
                     {props.rightAccessory ?? null}
                 </View>
             </View>

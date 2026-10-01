@@ -27,6 +27,7 @@ import {
     createRegisteredSessionStateFieldMutation,
     createTranscriptMessageAppendMutation,
     type DaemonUsageLimitRecoveryFieldMutation,
+    type DaemonWorkStateFieldMutation,
 } from './sessionClientDurableMutationTypes';
 import {
     createSessionClientDurableMutationPersistenceContext,
@@ -45,6 +46,35 @@ describe('daemon session client durable mutation outbox', () => {
     afterEach(async () => {
         await resetSessionClientDurableMutationOutboxStateForTests();
         await rm(configurationMock.activeServerDir, { recursive: true, force: true });
+    });
+
+    it('journals and delivers daemon work-state through the registered field owner', async () => {
+        const deliverWorkState = vi.fn(async () => true);
+        const outbox = createDaemonSessionClientDurableMutationOutbox({
+            token: 'token',
+            sessionId: 's1',
+            getSocket: () => null,
+            requestReconnect: () => undefined,
+            deliverWorkState,
+        });
+        const workState = createRegisteredSessionStateFieldMutation({
+            sessionId: 's1',
+            fieldId: 'runtime.workState',
+            source: 'daemon',
+            observedAt: 100,
+            op: { kind: 'set', value: { v: 1, backendId: 'codex', updatedAt: 100, items: [] } },
+        }) as DaemonWorkStateFieldMutation;
+        await outbox.enqueueWorkState(workState);
+        const paths = resolveSessionClientDurableMutationJournalPaths({
+            activeServerDir: configurationMock.activeServerDir,
+            custody: 'daemon',
+            sessionId: 's1',
+        });
+        const persisted = JSON.parse(await readFile(paths.queuePath, 'utf8')) as { mutations: unknown[] };
+        expect(persisted.mutations).toEqual([expect.objectContaining({ payload: workState })]);
+        await outbox.flush('flush');
+        expect(deliverWorkState).toHaveBeenCalledWith(workState);
+        await outbox.close();
     });
 
     it('durably accepts an exact turn end only in the daemon journal', async () => {
@@ -372,6 +402,7 @@ describe('daemon session client durable mutation outbox', () => {
         await expect(first.enqueueTranscriptMessage(mutation)).resolves.toEqual({
             persisted: true,
             delivered: false,
+            localId: mutation.localId,
         });
         const paths = resolveSessionClientDurableMutationJournalPaths({
             activeServerDir: configurationMock.activeServerDir,

@@ -1,6 +1,6 @@
 import { t } from '@/text';
 
-import type { UnsupportedContentKind } from './unsupportedContentMeta';
+import type { UnsupportedContentKind } from '@happier-dev/session-core/messages';
 
 export function resolveUnsupportedContentLabel(kind: UnsupportedContentKind): string {
     switch (kind) {

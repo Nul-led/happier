@@ -252,7 +252,6 @@ describe('VoiceGlobalConnectedServicesBindingField', () => {
         },
         client: {
           artifactId: 'voice-runtime-web',
-          modulePath: './voiceRuntime',
           exportName: 'activate',
         },
       }],

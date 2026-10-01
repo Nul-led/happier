@@ -58,7 +58,7 @@ export type MachineCapabilitiesDetectResult =
 export async function machineCapabilitiesDetect(
     machineId: string,
     request: CapabilitiesDetectRequest,
-    options?: { timeoutMs?: number; serverId?: string | null; signal?: AbortSignal },
+    options?: { timeoutMs?: number; serverId?: string | null; accountId?: string | null; signal?: AbortSignal },
 ): Promise<MachineCapabilitiesDetectResult> {
     if (isDemoModeActive()) {
         return { supported: false, reason: 'not-supported' };
@@ -71,6 +71,7 @@ export async function machineCapabilitiesDetect(
                 method: RPC_METHODS.CAPABILITIES_DETECT,
                 payload: request,
                 serverId: options?.serverId,
+                accountId: options?.accountId,
                 timeoutMs,
                 ...(options?.signal ? { signal: options.signal } : {}),
             }),

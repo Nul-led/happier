@@ -62,7 +62,7 @@ describe('workflow document CLI commands', () => {
           definition: DOCUMENT.definition,
           metadata: { title: 'Review workflow' },
         },
-        expect.objectContaining({ surface: 'cli', authority: 'present_user' }),
+        expect.objectContaining({ surface: 'cli' }),
       );
       expect(output.json()).toMatchObject({
         ok: true,
@@ -101,7 +101,7 @@ describe('workflow document CLI commands', () => {
           definition: DOCUMENT.definition,
           metadata: { title: 'Review workflow' },
         },
-        expect.objectContaining({ surface: 'cli', authority: 'present_user' }),
+        expect.objectContaining({ surface: 'cli' }),
       );
     } finally {
       output.restore();
@@ -128,7 +128,7 @@ describe('workflow document CLI commands', () => {
       expect(harness.execute).toHaveBeenCalledWith(
         'workflow.definition.get',
         { definitionId: 'workflow-definition-1' },
-        expect.objectContaining({ surface: 'cli', authority: 'present_user' }),
+        expect.objectContaining({ surface: 'cli' }),
       );
       expect(output.json()).toEqual(DOCUMENT);
     } finally {

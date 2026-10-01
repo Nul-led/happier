@@ -29,7 +29,7 @@ export async function runAutomationAsNewSession(params: {
   if (checkoutCreationDraft !== undefined) {
     const prepared = await prepareSessionCreationTarget({
       request: {
-        directory: rawSpawnTemplate.directory,
+        directory: { kind: 'path', path: rawSpawnTemplate.directory },
         checkoutCreationDraft,
       },
     });

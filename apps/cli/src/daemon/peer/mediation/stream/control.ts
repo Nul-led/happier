@@ -3,6 +3,7 @@ import {
     type MachineLiveStreamControlLeaseV1,
     type MachineLiveStreamControlSidebandV1,
     type MachineLiveStreamControlSourceV1,
+    type MachineLiveStreamCaptureSourceKindV1,
 } from '@happier-dev/protocol';
 
 export type MachineLiveStreamControlDispatchResult = Readonly<
@@ -12,6 +13,7 @@ export type MachineLiveStreamControlDispatchResult = Readonly<
 
 export async function dispatchMachineLiveStreamControl(input: Readonly<{
     source: MachineLiveStreamControlSourceV1;
+    sourceKind?: MachineLiveStreamCaptureSourceKindV1;
     control: MachineLiveStreamControlSidebandV1;
     activeLease: MachineLiveStreamControlLeaseV1 | null;
     nowMs: number;
@@ -19,6 +21,7 @@ export async function dispatchMachineLiveStreamControl(input: Readonly<{
 }>): Promise<MachineLiveStreamControlDispatchResult> {
     const leaseValidation = validateMachineLiveStreamControlLeaseV1({
         source: input.source,
+        sourceKind: input.sourceKind,
         control: input.control,
         activeLease: input.activeLease,
         nowMs: input.nowMs,

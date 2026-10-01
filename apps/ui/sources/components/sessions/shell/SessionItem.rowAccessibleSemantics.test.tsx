@@ -29,10 +29,14 @@ const ROW_STATUS_COPY: Readonly<Record<string, string>> = {
     'status.keptInAttention': 'kept in attention',
     'status.backgroundActive': 'working in background',
     'status.unknown': 'unknown',
-    'sessionsList.attentionSectionTitle': 'Needs attention',
+    'workStatus.buckets.needs_you': 'Needs you',
 };
 
-vi.mock('react-native-reanimated', () => ({}));
+// The shared press owner's motion tokens build their easing curves at import.
+vi.mock('react-native-reanimated', async () => {
+    const { createReanimatedModuleMock } = await import('@/dev/testkit/mocks/reanimated');
+    return createReanimatedModuleMock();
+});
 vi.mock('react-native-gesture-handler', () => ({
     Swipeable: (props: Record<string, unknown>) => React.createElement('Swipeable', props),
     GestureDetector: (props: React.PropsWithChildren) => React.createElement('GestureDetector', props, props.children),
@@ -193,6 +197,8 @@ describe('SessionItem outer row accessible semantics', () => {
                     selected: false,
                     busy: testCase.busy === true,
                 });
+                expect(row.props['aria-pressed']).toBe(false);
+                expect(row.props['aria-busy']).toBe(testCase.busy === true);
                 const accessibilityLabel = String(row.props.accessibilityLabel ?? '');
                 expect(accessibilityLabel).toBe(
                     testCase.spoken === null ? 'Row name' : `Row name. ${testCase.spoken}`,
@@ -255,5 +261,34 @@ describe('SessionItem outer row accessible semantics', () => {
         ));
         expect(rowPressables).toHaveLength(1);
         expect(rowPressables[0].props.accessibilityLabel).toBe(row.props.accessibilityLabel);
+    });
+
+    it('colours the status word by the shared work-status tone: healthy work stays quiet, needs-you and trouble speak', async () => {
+        const { lightTheme } = await import('@/theme');
+        const { workStatusWordStyle } = await import('@/components/work/status/workStatusTreatment');
+        const quiet = lightTheme.colors.text.secondary;
+        const attention = (workStatusWordStyle('attention') as { color: string }).color;
+        const danger = (workStatusWordStyle('danger') as { color: string }).color;
+        const expectations: Readonly<Record<string, string>> = {
+            // Working and ready used to be drawn blue and green; a healthy row is quiet (INT §5.3).
+            working: quiet,
+            ready: quiet,
+            'permission required': attention,
+            'action required': attention,
+            failed: danger,
+        };
+        for (const [label, color] of Object.entries(expectations)) {
+            const testCase = ROW_STATE_CASES.find((entry) => entry.label === label)!;
+            const id = `row-tone-${label.replace(/\s+/g, '-')}`;
+            const { screen } = await renderRow({ testCase, id, density: 'default', secondaryLineMode: 'status' });
+            const word = screen.findAll((node) => (
+                typeof node.props?.testID === 'string'
+                && node.props.testID.startsWith(`session-list-status-subtitle-text-${id}-`)
+            ))[0];
+            expect(word, label).toBeDefined();
+            const flat = Object.assign({}, ...[word!.props.style].flat(Infinity).filter(Boolean));
+            expect([label, flat.color]).toEqual([label, color]);
+            standardCleanup();
+        }
     });
 });

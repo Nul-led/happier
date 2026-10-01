@@ -77,9 +77,9 @@ export function arePluginEventAutomationEligibleSetupPresentationsEqual(
     right: DaemonContributionRegistryProjectionAutomationEligibleEventV1,
 ): boolean {
     return arePluginContributionIdentitiesEqual(left.event.identity, right.event.identity)
-        && left.event.immutableGenerationId === right.event.immutableGenerationId
+        && left.event.occurrenceId === right.event.occurrenceId
         && arePluginContributionIdentitiesEqual(left.setupAction.identity, right.setupAction.identity)
-        && left.setupAction.immutableGenerationId === right.setupAction.immutableGenerationId
+        && left.setupAction.occurrenceId === right.setupAction.occurrenceId
         && sameSetupSurface(left.setupSurface, right.setupSurface);
 }
 
@@ -89,7 +89,7 @@ function sameSetupSurface(
 ): boolean {
     if (left === undefined || right === undefined) return left === right;
     return arePluginContributionIdentitiesEqual(left.contribution, right.contribution)
-        && left.immutableGenerationId === right.immutableGenerationId
+        && left.occurrenceId === right.occurrenceId
         && left.projectionGeneration === right.projectionGeneration
         && arePluginContributionIdentitiesEqual(
             left.selectedRenderer.identity,
@@ -109,14 +109,14 @@ export function getPluginEventAutomationEligibleSetupPresentationKey(
     return JSON.stringify([
         event.event.identity.pluginId,
         event.event.identity.localId,
-        event.event.immutableGenerationId,
+        event.event.occurrenceId,
         event.setupAction.identity.pluginId,
         event.setupAction.identity.localId,
-        event.setupAction.immutableGenerationId,
+        event.setupAction.occurrenceId,
         surface ? [
             surface.contribution.pluginId,
             surface.contribution.localId,
-            surface.immutableGenerationId,
+            surface.occurrenceId,
             surface.projectionGeneration,
             surface.selectedRenderer.identity.pluginId,
             surface.selectedRenderer.identity.localId,
@@ -134,12 +134,12 @@ function hasExactCurrentSetupPresentation(
 ): boolean {
     if (
         event.event.identity.pluginId !== event.setupAction.identity.pluginId
-        || event.event.immutableGenerationId !== event.setupAction.immutableGenerationId
+        || event.event.occurrenceId !== event.setupAction.occurrenceId
     ) return false;
     const surface = event.setupSurface;
     return surface === undefined || (
         arePluginContributionIdentitiesEqual(surface.contribution, event.event.identity)
-        && surface.immutableGenerationId === event.event.immutableGenerationId
+        && surface.occurrenceId === event.event.occurrenceId
         && surface.selectedRenderer.identity.pluginId === event.event.identity.pluginId
         && surface.executionOrigin.materializationRef.pluginId === event.event.identity.pluginId
         && surface.executionOrigin.serverIdentityId === origin.origin.serverIdentityId
@@ -154,7 +154,6 @@ type CurrentSetupSnapshot = Readonly<{
     inputs: DaemonMergedProjectionInputs;
     event: DaemonContributionRegistryProjectionAutomationEligibleEventV1;
     origin: FreshPluginMachineExecutionOriginV1;
-    expectedGeneration: string;
     actionSnapshot: PluginContributedActionCurrentSnapshot;
 }>;
 
@@ -186,8 +185,6 @@ function resolveCurrentSetupSnapshot(params: Readonly<{
         !plugin
         || plugin.pluginId !== event.setupAction.identity.pluginId
         || plugin.enabled !== true
-        || plugin.generation === null
-        || plugin.immutableGenerationId !== event.setupAction.immutableGenerationId
     ) {
         return { kind: 'stale', reason: 'event_retired' };
     }
@@ -202,7 +199,6 @@ function resolveCurrentSetupSnapshot(params: Readonly<{
         host: {
             machineId: origin.machineTarget.target.machineId,
             serverId: origin.machineTarget.serverId,
-            expectedGeneration: String(plugin.generation),
             signal: params.signal,
             accountLifetime: params.accountLifetime,
             isCurrent: () => {
@@ -224,7 +220,6 @@ function resolveCurrentSetupSnapshot(params: Readonly<{
         inputs,
         event,
         origin,
-        expectedGeneration: String(plugin.generation),
         actionSnapshot,
     };
 }
@@ -317,7 +312,7 @@ export async function configurePluginEventAutomationSetup(params: Readonly<{
         });
         const selection = await controller.selectExactBoundActionInput({
             action: initial.event.setupAction.identity,
-            expectedImmutableGenerationId: initial.event.setupAction.immutableGenerationId,
+            expectedOccurrenceId: initial.event.setupAction.occurrenceId,
         });
         const settled = selection.kind === 'form'
             ? await (async () => {
@@ -384,8 +379,6 @@ export async function configurePluginEventAutomationSetup(params: Readonly<{
             contributedAction: {
                 machineId: current.origin.machineTarget.target.machineId,
                 serverId: current.origin.machineTarget.serverId,
-                expectedGeneration: current.expectedGeneration,
-                expectedImmutableGenerationId: current.event.setupAction.immutableGenerationId,
             },
             signal: operationScope.signal,
             isCurrent: current.actionSnapshot.host.isCurrent,

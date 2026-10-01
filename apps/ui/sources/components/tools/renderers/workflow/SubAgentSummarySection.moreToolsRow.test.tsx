@@ -1,8 +1,9 @@
+import { renderWithSessionTranscriptSource, createTestSessionTranscriptSource } from '@/dev/testkit';
 import React from 'react';
 import renderer, { act } from 'react-test-renderer';
 import { describe, expect, it, vi } from 'vitest';
 
-import type { Message, ToolCall, ToolCallMessage } from '@/sync/domains/messages/messageTypes';
+import type { Message, ToolCall, ToolCallMessage } from "@happier-dev/session-core/messages";
 import { renderScreen } from '@/dev/testkit';
 import { installWorkflowRendererCommonModuleMocks } from './workflowRendererTestHelpers';
 
@@ -92,14 +93,14 @@ describe('SubAgentSummarySection (+N more tools row)', () => {
         const toolMessages: Message[] = [];
 
         let tree: renderer.ReactTestRenderer | null = null;
-        tree = (await renderScreen(<SubAgentSummarySection
+        tree = (await renderWithSessionTranscriptSource(<SubAgentSummarySection
                     tool={taskTool}
                     metadata={null}
                     messages={toolMessages}
                     detailLevel="title"
                     sessionId="s1"
                     messageId="msg-task-1"
-                />)).tree;
+                />, createTestSessionTranscriptSource({ navigate: pushSpy }))).tree;
 
         expect(() => {
             act(() => {
@@ -133,14 +134,14 @@ describe('SubAgentSummarySection (+N more tools row)', () => {
         const toolMessages: Message[] = [];
 
         let tree: renderer.ReactTestRenderer | null = null;
-        tree = (await renderScreen(<SubAgentSummarySection
+        tree = (await renderWithSessionTranscriptSource(<SubAgentSummarySection
                     tool={emptyTool}
                     metadata={null}
                     messages={toolMessages}
                     detailLevel="summary"
                     sessionId="s1"
                     messageId="msg-task-1"
-                />)).tree;
+                />, createTestSessionTranscriptSource({ navigate: pushSpy }))).tree;
 
         expect(() => {
             act(() => {
@@ -180,14 +181,14 @@ describe('SubAgentSummarySection (+N more tools row)', () => {
             makeToolCallMessage('m5', makeToolCall({ name: 'LS', input: { path: '.' }, createdAt: 15 })),
         ];
 
-        const screen = await renderScreen(<SubAgentSummarySection
+        const screen = await renderWithSessionTranscriptSource(<SubAgentSummarySection
             tool={taskTool}
             metadata={null}
             messages={toolMessages}
             detailLevel="summary"
             sessionId="s1"
             messageId="msg-task-1"
-        />);
+        />, createTestSessionTranscriptSource({ navigate: pushSpy }));
 
         const moreRow = screen.findByTestId('task-like-summary-more-tools');
         expect(typeof moreRow?.props?.onPress).toBe('function');

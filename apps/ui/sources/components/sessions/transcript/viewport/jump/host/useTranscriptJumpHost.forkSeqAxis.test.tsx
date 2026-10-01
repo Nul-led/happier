@@ -1,3 +1,15 @@
+import * as TranscriptTestReact from 'react';
+import { createTestSessionTranscriptSource as createHostTestSource, wrapWithSessionTranscriptSource as wrapHostTestSource } from '@/dev/testkit';
+import { sync as transcriptHistorySync } from '@/sync/sync';
+
+const transcriptHostTestSource = createHostTestSource({ sessionId: 's1', history: {
+    loadOlder: (options) => transcriptHistorySync.loadOlderMessagesForkAware('s1', options),
+    loadTargetWindow: (target, options) => transcriptHistorySync.loadTargetWindowMessages('s1', target, options),
+} });
+function TranscriptHostTestProvider(props: TranscriptTestReact.PropsWithChildren) {
+    return wrapHostTestSource(props.children as TranscriptTestReact.ReactElement, transcriptHostTestSource);
+}
+
 /**
  * `seq` counts from each session's own origin. A forked transcript renders its read-only
  * ancestor context in the same list as its own rows, so two rows there can carry the same seq
@@ -12,7 +24,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { renderHook } from '@/dev/testkit';
-import type { Message } from '@/sync/domains/messages/messageTypes';
+import type { Message } from "@happier-dev/session-core/messages";
 import type { ChatTranscriptListItem } from '@/components/sessions/transcript/chatListTypes';
 
 import { useTranscriptJumpWindowFacts } from './useTranscriptJumpHost';
@@ -70,7 +82,7 @@ async function renderFacts(forkMessageMetadataById: Record<string, { originSessi
         } as Record<string, Message>)[messageId] ?? null,
         messagesById: { 'own-40': OWN, 'ancestor-40': ANCESTOR, 'ancestor-9000': ANCESTOR_HIGH },
         sessionId: SESSION_ID,
-    }));
+    }), { wrapper: TranscriptHostTestProvider });
 }
 
 describe('useTranscriptJumpWindowFacts fork seq axis', () => {

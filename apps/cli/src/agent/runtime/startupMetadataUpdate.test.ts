@@ -42,7 +42,7 @@ describe('startupMetadataUpdate', () => {
       v: 1,
       updatedAt: 123,
       ref: {
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         providerConnectionId: ProviderConnectionIdSchema.parse('pc_work'),
         modelId: 'gpt-5-codex-high',
       },
@@ -50,7 +50,7 @@ describe('startupMetadataUpdate', () => {
       v: 1,
       updatedAt: 123,
       selection: {
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         providerConnectionId: 'pc_work',
         modelId: 'gpt-5-codex-high',
       },
@@ -148,7 +148,7 @@ describe('startupMetadataUpdate', () => {
         v: 1,
         updatedAt: 123,
         selection: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: ProviderConnectionIdSchema.parse('pc_work'),
           modelId: 'gpt-5-codex-high',
         },
@@ -159,7 +159,7 @@ describe('startupMetadataUpdate', () => {
       v: 1,
       updatedAt: 123,
       selection: {
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         providerConnectionId: 'pc_work',
         modelId: 'gpt-5-codex-high',
       },

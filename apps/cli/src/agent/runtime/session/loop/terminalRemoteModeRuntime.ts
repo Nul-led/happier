@@ -15,6 +15,12 @@ export type HostSessionTerminalRemoteResumeReadiness = Readonly<{
 }>;
 
 export type HostSessionTerminalRemoteModeLoop = RunTerminalRemoteSessionModeLoopOptions & Readonly<{
+  /** Local-control ownership used by the pending-input handoff owner. */
+  topology?: 'exclusive' | 'shared';
+  /** A shared provider session can remain writable from Happier while its CLI is attached. */
+  remoteWritable?: boolean;
+  /** The local pass uses this runner's stdio, so the host display must yield it. */
+  ownsCurrentTerminalDisplay?: boolean;
   getResumeReadiness?: () => HostSessionTerminalRemoteResumeReadiness;
   requestGracefulRemoteHandoff?: (
     reason: HostSessionTerminalRemoteHandoffReason,

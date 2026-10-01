@@ -1,3 +1,4 @@
+import { renderWithSessionTranscriptSource, createTestSessionTranscriptSource } from '@/dev/testkit';
 import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -12,9 +13,15 @@ import type { DecryptedArtifact } from '@/sync/domains/artifacts/artifactTypes';
 const executeSpy = vi.fn(async () => ({ ok: true as const, result: {} }));
 const replayApprovalRequestAtExactDaemonSpy = vi.fn(async (): Promise<unknown> => ({ ok: true, result: {} }));
 const createDefaultActionExecutorSpy = vi.fn((_opts?: unknown) => ({ execute: executeSpy }));
-const sessionAllowSpy = vi.fn(async (..._args: unknown[]) => {});
-const sessionDenySpy = vi.fn(async (..._args: unknown[]) => {});
+const runtimePermissionDecisionSpy = vi.fn(async () => {});
 const routerPushSpy = vi.fn();
+function createApprovalTestSource() {
+    return createTestSessionTranscriptSource({
+        sessionId: 'session-1', navigate: routerPushSpy,
+        interaction: { canSendMessages: true, canApprovePermissions: true },
+        actions: { respondToPermission: runtimePermissionDecisionSpy, answerUserAction: async () => {}, abort: async () => {}, submitMessage: async () => {} },
+    });
+}
 let portableProfileResolution: any = {
     kind: 'resolved',
     serverIdentityId: 'stable-home-a',
@@ -82,11 +89,6 @@ vi.mock('@/sync/domains/server/serverProfiles', () => ({
 
 vi.mock('@/hooks/server/useServerProfilesGeneration', () => ({
     useServerProfilesGeneration: () => 1,
-}));
-
-vi.mock('@/sync/ops', () => ({
-    sessionAllow: (...args: unknown[]) => sessionAllowSpy(...args),
-    sessionDeny: (...args: unknown[]) => sessionDenySpy(...args),
 }));
 
 function approvalRequest(): ApprovalRequestV1 {
@@ -192,18 +194,25 @@ describe('ApprovalPromptCard', () => {
             profile: { id: 'ui-A', serverIdentityId: 'stable-home-a' },
         };
     });
+    it('denies decisions when the source withholds actions even if interaction props permit approval', async () => {
+        const { ApprovalPromptCard } = await import('./ApprovalPromptCard');
+        const screen = await renderWithSessionTranscriptSource(<ApprovalPromptCard
+            artifact={approvalArtifact('server-1')} approval={localUiApprovalRequest()} sessionId="session-1" canApprove
+        />, createTestSessionTranscriptSource({ interaction: { canSendMessages: true, canApprovePermissions: true } }));
+        expect(screen.findByTestId('approval-prompt-approve')?.props.disabled).toBe(true);
+        expect(screen.findByTestId('approval-prompt-reject')?.props.disabled).toBe(true);
+    });
     it('renders the action approval summary in inline chrome', async () => {
         const { ApprovalPromptCard } = await import('./ApprovalPromptCard');
 
-        const screen = await renderScreen(
+        const screen = await renderWithSessionTranscriptSource(
             <ApprovalPromptCard
                 chrome="inline"
                 artifact={approvalArtifact('server-1')}
                 approval={approvalRequest()}
                 sessionId="session-1"
                 canApprove={true}
-            />,
-        );
+            />, createApprovalTestSource(),);
 
         expect(screen.findByTestId('approval-prompt-card')).toBeTruthy();
         expect(screen.getTextContent()).toContain('List sessions before continuing');
@@ -214,14 +223,13 @@ describe('ApprovalPromptCard', () => {
         const { ApprovalPromptCard } = await import('./ApprovalPromptCard');
         executeSpy.mockClear();
 
-        const screen = await renderScreen(
+        const screen = await renderWithSessionTranscriptSource(
             <ApprovalPromptCard
                 artifact={approvalArtifact('server-1')}
                 approval={approvalRequest()}
                 sessionId="session-1"
                 canApprove={true}
-            />,
-        );
+            />, createApprovalTestSource(),);
 
         expect(screen.findByTestId('approval-prompt-approve')?.props).toMatchObject({
             disabled: true,
@@ -259,14 +267,13 @@ describe('ApprovalPromptCard', () => {
             },
         });
 
-        const screen = await renderScreen(
+        const screen = await renderWithSessionTranscriptSource(
             <ApprovalPromptCard
                 artifact={approvalArtifact('server-1')}
                 approval={approval}
                 sessionId="session-1"
                 canApprove={true}
-            />,
-        );
+            />, createApprovalTestSource(),);
 
         expect(screen.getTextContent()).toContain('Acme Platform');
         expect(screen.getTextContent()).toContain('a•••@example.com');
@@ -278,14 +285,13 @@ describe('ApprovalPromptCard', () => {
         const { ApprovalPromptCard } = await import('./ApprovalPromptCard');
         executeSpy.mockClear();
 
-        const screen = await renderScreen(
+        const screen = await renderWithSessionTranscriptSource(
             <ApprovalPromptCard
                 artifact={approvalArtifact('server-1')}
                 approval={invitationApprovalRequest()}
                 sessionId="session-1"
                 canApprove={true}
-            />,
-        );
+            />, createApprovalTestSource(),);
 
         expect(screen.findByTestId('approvals.unrepresentable-details')).not.toBeNull();
         expect(screen.getTextContent()).toContain('approvals.unsafeDetailsTitle');
@@ -310,15 +316,14 @@ describe('ApprovalPromptCard', () => {
         const { ApprovalPromptCard } = await import('./ApprovalPromptCard');
         routerPushSpy.mockClear();
 
-        const screen = await renderScreen(
+        const screen = await renderWithSessionTranscriptSource(
             <ApprovalPromptCard
                 artifact={approvalArtifact('server-1')}
                 approval={approvalRequest()}
                 sessionId="session-1"
                 canApprove={true}
                 location={{ kind: 'top', messageId: 'tool:tool-1', seq: 10 }}
-            />,
-        );
+            />, createApprovalTestSource(),);
 
         await act(async () => {
             await screen.pressByTestIdAsync('approval-prompt-view-tool');
@@ -330,14 +335,13 @@ describe('ApprovalPromptCard', () => {
     it('places the primary approve action before the reject action', async () => {
         const { ApprovalPromptCard } = await import('./ApprovalPromptCard');
 
-        const screen = await renderScreen(
+        const screen = await renderWithSessionTranscriptSource(
             <ApprovalPromptCard
                 artifact={approvalArtifact('server-1')}
                 approval={approvalRequest()}
                 sessionId="session-1"
                 canApprove={true}
-            />,
-        );
+            />, createApprovalTestSource(),);
 
         const testIdOrder = collectRenderedTestIds(screen.tree.toJSON());
 
@@ -352,17 +356,15 @@ describe('ApprovalPromptCard', () => {
         const { ApprovalPromptCard } = await import('./ApprovalPromptCard');
         executeSpy.mockClear();
         createDefaultActionExecutorSpy.mockClear();
-        sessionAllowSpy.mockClear();
-        sessionDenySpy.mockClear();
+        runtimePermissionDecisionSpy.mockClear();
 
-        const screen = await renderScreen(
+        const screen = await renderWithSessionTranscriptSource(
             <ApprovalPromptCard
                 artifact={approvalArtifact('server-1')}
                 approval={localUiApprovalRequest()}
                 sessionId="session-1"
                 canApprove={true}
-            />,
-        );
+            />, createApprovalTestSource(),);
 
         await act(async () => {
             await screen.pressByTestIdAsync('approval-prompt-approve');
@@ -374,24 +376,21 @@ describe('ApprovalPromptCard', () => {
             { artifactId: 'approval-1', decision: 'approve' },
             expect.objectContaining({ surface: 'ui', serverId: 'server-1' }),
         );
-        expect(sessionAllowSpy).not.toHaveBeenCalled();
-        expect(sessionDenySpy).not.toHaveBeenCalled();
+        expect(runtimePermissionDecisionSpy).not.toHaveBeenCalled();
     });
 
     it('rejects through approval.request.decide using the default action executor', async () => {
         const { ApprovalPromptCard } = await import('./ApprovalPromptCard');
         executeSpy.mockClear();
-        sessionAllowSpy.mockClear();
-        sessionDenySpy.mockClear();
+        runtimePermissionDecisionSpy.mockClear();
 
-        const screen = await renderScreen(
+        const screen = await renderWithSessionTranscriptSource(
             <ApprovalPromptCard
                 artifact={approvalArtifact()}
                 approval={approvalRequest()}
                 sessionId="session-1"
                 canApprove={true}
-            />,
-        );
+            />, createApprovalTestSource(),);
 
         await act(async () => {
             await screen.pressByTestIdAsync('approval-prompt-reject');
@@ -402,8 +401,7 @@ describe('ApprovalPromptCard', () => {
             { artifactId: 'approval-1', decision: 'reject' },
             expect.objectContaining({ surface: 'ui', serverId: 'server-from-session' }),
         );
-        expect(sessionAllowSpy).not.toHaveBeenCalled();
-        expect(sessionDenySpy).not.toHaveBeenCalled();
+        expect(runtimePermissionDecisionSpy).not.toHaveBeenCalled();
     });
 
     it('routes a V2 durable approval through this device profile for the same stable Home', async () => {
@@ -411,14 +409,13 @@ describe('ApprovalPromptCard', () => {
         executeSpy.mockClear();
         replayApprovalRequestAtExactDaemonSpy.mockClear();
 
-        const screen = await renderScreen(
+        const screen = await renderWithSessionTranscriptSource(
             <ApprovalPromptCard
                 artifact={approvalArtifact('server-header')}
                 approval={daemonApprovalRequest()}
                 sessionId="session-1"
                 canApprove={true}
-            />,
-        );
+            />, createApprovalTestSource(),);
 
         await act(async () => {
             await screen.pressByTestIdAsync('approval-prompt-approve');
@@ -440,14 +437,13 @@ describe('ApprovalPromptCard', () => {
             result: { ok: true, status: 'failed', execution: { ok: false, errorCode: 'approval_stale' } },
         });
 
-        const screen = await renderScreen(
+        const screen = await renderWithSessionTranscriptSource(
             <ApprovalPromptCard
                 artifact={approvalArtifact('server-header')}
                 approval={daemonApprovalRequest()}
                 sessionId="session-1"
                 canApprove={true}
-            />,
-        );
+            />, createApprovalTestSource(),);
 
         await act(async () => {
             await screen.pressByTestIdAsync('approval-prompt-approve');
@@ -465,14 +461,13 @@ describe('ApprovalPromptCard', () => {
         executeSpy.mockClear();
         replayApprovalRequestAtExactDaemonSpy.mockClear();
 
-        const screen = await renderScreen(
+        const screen = await renderWithSessionTranscriptSource(
             <ApprovalPromptCard
                 artifact={approvalArtifact('server-header')}
                 approval={unplacedApiApprovalRequest()}
                 sessionId="session-1"
                 canApprove={true}
-            />,
-        );
+            />, createApprovalTestSource(),);
 
         await act(async () => {
             await screen.pressByTestIdAsync('approval-prompt-approve');
@@ -492,14 +487,13 @@ describe('ApprovalPromptCard', () => {
             profile: { id: 'ui-wrong', serverIdentityId: 'stable-home-b' },
         };
 
-        const screen = await renderScreen(
+        const screen = await renderWithSessionTranscriptSource(
             <ApprovalPromptCard
                 artifact={approvalArtifact('ui-wrong')}
                 approval={daemonApprovalRequest()}
                 sessionId="session-1"
                 canApprove={true}
-            />,
-        );
+            />, createApprovalTestSource(),);
 
         await act(async () => {
             await screen.pressByTestIdAsync('approval-prompt-approve');
@@ -517,14 +511,13 @@ describe('ApprovalPromptCard', () => {
         executeSpy.mockClear();
         replayApprovalRequestAtExactDaemonSpy.mockClear();
 
-        const screen = await renderScreen(
+        const screen = await renderWithSessionTranscriptSource(
             <ApprovalPromptCard
                 artifact={approvalArtifact('server-header')}
                 approval={localUiApprovalRequest()}
                 sessionId="session-1"
                 canApprove={true}
-            />,
-        );
+            />, createApprovalTestSource(),);
 
         await act(async () => {
             await screen.pressByTestIdAsync('approval-prompt-approve');
@@ -543,14 +536,13 @@ describe('ApprovalPromptCard', () => {
         executeSpy.mockClear();
         replayApprovalRequestAtExactDaemonSpy.mockClear();
 
-        const screen = await renderScreen(
+        const screen = await renderWithSessionTranscriptSource(
             <ApprovalPromptCard
                 artifact={approvalArtifact('v1-route')}
                 approval={approvalRequest()}
                 sessionId="session-1"
                 canApprove={true}
-            />,
-        );
+            />, createApprovalTestSource(),);
         await act(async () => {
             await screen.pressByTestIdAsync('approval-prompt-reject');
         });

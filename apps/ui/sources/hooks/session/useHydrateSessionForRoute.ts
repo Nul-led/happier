@@ -7,7 +7,6 @@ import type {
 } from '@/sync/domains/session/sessionRouteHydrationState';
 import { storage } from '@/sync/domains/state/storage';
 import { sync } from '@/sync/sync';
-import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
 import { fireAndForget } from '@/utils/system/fireAndForget';
 import { hasAuthoritativeSessionRouteData } from '@/sync/domains/session/hasAuthoritativeSessionRouteData';
@@ -102,27 +101,11 @@ function readHydratedRouteServerId(sessionId: string, serverId?: string): string
         return hydratedServerId || undefined;
     }
 
-    if (!serverId) return null;
-    const sessionServerId = normalizeRouteId(storage.getState().sessions[sessionId]?.serverId);
-    const activeServerId = normalizeRouteId(getActiveServerSnapshot().serverId);
-    if (!sessionServerId || !activeServerId) return null;
-    if (!areRouteServerIdsEqual(sessionServerId, activeServerId)) return null;
-    return hasAuthoritativeHydratedSessionForRoute(sessionId, sessionServerId) ? sessionServerId : null;
+    return null;
 }
 
 function readHydratedRouteSnapshot(sessionId: string, serverId?: string): boolean {
     return readHydratedRouteServerId(sessionId, serverId) !== null;
-}
-
-function uniqueRouteServerIds(...serverIds: readonly unknown[]): string[] {
-    const result: string[] = [];
-    for (const rawServerId of serverIds) {
-        const serverId = normalizeRouteId(rawServerId);
-        if (!serverId) continue;
-        if (result.some((existing) => areRouteServerIdsEqual(existing, serverId))) continue;
-        result.push(serverId);
-    }
-    return result;
 }
 
 function resolveHydratedServerIdForRouteResult(
@@ -130,15 +113,7 @@ function resolveHydratedServerIdForRouteResult(
     routeServerId: string | undefined,
     resultServerId: string | null | undefined,
 ): string | undefined | null {
-    for (const candidateServerId of uniqueRouteServerIds(routeServerId, resultServerId)) {
-        if (readHydratedRouteSnapshot(sessionId, candidateServerId)) {
-            return candidateServerId;
-        }
-    }
-    if (!routeServerId && readHydratedRouteSnapshot(sessionId, undefined)) {
-        return undefined;
-    }
-    return null;
+    return readHydratedRouteServerId(sessionId, routeServerId ?? (normalizeRouteId(resultServerId) || undefined));
 }
 
 /**
@@ -216,7 +191,7 @@ export function useHydrateSessionForRoute(
                             routeKey,
                             state: createMissingState(
                                 normalizedSessionId,
-                                normalizeRouteId(result.serverId) || routeServerId,
+                                routeServerId ?? (normalizeRouteId(result.serverId) || undefined),
                                 result.cause,
                             ),
                         });

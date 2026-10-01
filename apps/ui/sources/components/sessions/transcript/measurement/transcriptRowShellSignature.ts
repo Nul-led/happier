@@ -16,7 +16,7 @@ import {
 import { resolveSessionActionDraftHeightBearingPaint } from '@/components/sessions/actions/sessionActionDraftPresentation';
 import type { ResolveSessionActionFieldOptions } from '@/components/sessions/actions/sessionActionFieldOptions';
 import { resolveToolStatusIndicatorKind } from '@/components/tools/shell/presentation/resolveToolStatusIndicatorKind';
-import type { Message } from '@/sync/domains/messages/messageTypes';
+import type { Message } from "@happier-dev/session-core/messages";
 import type { SessionActionDraft } from '@/sync/domains/sessionActions/sessionActionDraftTypes';
 import type { DiscardedPendingMessage, PendingMessage } from '@/sync/domains/state/storageTypes';
 
@@ -631,7 +631,7 @@ function buildActionDraftPresentationKey(
 ): string {
     const paint = resolveSessionActionDraftHeightBearingPaint({
         draft,
-        sessionId: draft.sessionId,
+        sessionId: draft.address.sessionId,
         resolveFieldOptions,
     });
     return [

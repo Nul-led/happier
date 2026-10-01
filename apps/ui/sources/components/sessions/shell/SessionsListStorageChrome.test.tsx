@@ -11,6 +11,14 @@ import { resolveSessionListDensityViewState } from './resolveSessionListDensityV
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 const routerPushSpy = vi.hoisted(() => vi.fn());
+// The one `sessions.direct` decision the Sessions list and its destinations read.
+const externalSessionsState = vi.hoisted(() => ({ enabled: true }));
+
+vi.mock('@/hooks/server/useFeatureDecision', () => ({
+    useFeatureDecision: (featureId: string) => (featureId === 'sessions.direct' && externalSessionsState.enabled
+        ? { featureId, state: 'enabled' }
+        : null),
+}));
 
 vi.mock('expo-router', async () => {
     const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
@@ -64,15 +72,13 @@ describe('SessionsListStorageChrome', () => {
     beforeEach(() => {
         standardCleanup();
         routerPushSpy.mockReset();
+        externalSessionsState.enabled = true;
     });
 
     it('renders the external browse action above every unified-list filter and routes it to the canonical browse screen', async () => {
         const { SessionsListStorageChrome } = await import('./SessionsListStorageChrome');
         const screen = await renderScreen(
-            <SessionsListStorageChrome
-                externalSessionsEnabled={true}
-                storageKind="all"
-            />,
+            <SessionsListStorageChrome storageKind="all" />,
         );
 
         const itemGroups = screen.findAllByType('ItemGroup' as never);
@@ -96,8 +102,11 @@ describe('SessionsListStorageChrome', () => {
         expect(browseItem.props.showChevron).toBe(false);
         expect(browseItem.props.showDivider).toBe(false);
         // `pressableStyle` lands on the Pressable, not the row container, so a height set there
-        // leaves dead space around the row box. The height belongs on `style`.
-        expect(browseItem.props.pressableStyle).toBeUndefined();
+        // leaves dead space around the row box. The height belongs on `style`; the pressable only
+        // carries the fill's shape.
+        const pressableStyle = flattenStyle(browseItem.props.pressableStyle);
+        expect(pressableStyle.height).toBeUndefined();
+        expect(pressableStyle.minHeight).toBeUndefined();
         const browseRowStyle = flattenStyle(browseItem.props.style);
         const sessionRowHeight = resolveSessionListDensityViewState(
             settingsDefaults.sessionListDensity,
@@ -113,14 +122,8 @@ describe('SessionsListStorageChrome', () => {
         );
         expect(browseContainerStyle.maxWidth).toBeUndefined();
         expect(browseContainerStyle.backgroundColor).toBeUndefined();
-        const browseSurfaceStyle = flattenStyle(itemGroups[0]?.props.containerStyle);
-        expect(browseSurfaceStyle.backgroundColor).toBe('transparent');
-        expect(browseSurfaceStyle.borderColor).toBe('transparent');
-        expect(browseSurfaceStyle.borderWidth).toBe(0);
-        expect(browseSurfaceStyle.borderTopWidth).toBe(0);
-        expect(browseSurfaceStyle.boxShadow).toBe('none');
-        expect(browseSurfaceStyle.shadowOpacity).toBe(0);
-        expect(browseSurfaceStyle.elevation).toBe(0);
+        // Destinations are not sessions: quiet navigation rows on the column's surface, never a sheet.
+        expect(itemGroups[0]?.props.surface).toBe('none');
 
         await screen.pressByTestIdAsync('external-sessions-browse-button');
 
@@ -128,9 +131,10 @@ describe('SessionsListStorageChrome', () => {
     });
 
     it('hides only the external browse action when the feature is disabled', async () => {
+        externalSessionsState.enabled = false;
         const { SessionsListStorageChrome } = await import('./SessionsListStorageChrome');
         const screen = await renderScreen(
-            <SessionsListStorageChrome externalSessionsEnabled={false} storageKind="all" />,
+            <SessionsListStorageChrome storageKind="all" />,
         );
 
         expect(screen.findAllByProps({ testID: 'external-sessions-browse-button' })).toHaveLength(0);

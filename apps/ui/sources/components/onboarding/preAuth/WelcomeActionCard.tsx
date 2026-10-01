@@ -43,6 +43,12 @@ export const WelcomeActionCard = React.memo(function WelcomeActionCard(props: Re
      * happens to look primary.
      */
     selectionRole?: 'radio';
+    /**
+     * The action cannot run right now (its service is unreachable, or still being checked). The card
+     * keeps saying what it is for — the subtitle carries why it cannot — and stops being a button:
+     * `accessory` (Retry, a spinner) is its only control, so no disabled button wraps a live one.
+     */
+    unavailable?: Readonly<{ accessory?: React.ReactNode }>;
     selected?: boolean;
     controlRef?: React.ComponentProps<typeof HappierPressable>['controlRef'];
     onPress: () => Promise<void> | void;
@@ -62,6 +68,21 @@ export const WelcomeActionCard = React.memo(function WelcomeActionCard(props: Re
     const accent = accentColor && accentColor !== 'transparent' && isValidThemeProfileColorValue(accentColor)
         ? accentColor
         : null;
+
+    if (props.unavailable) {
+        return (
+            <View
+                testID={props.testID}
+                style={[styles.card, { backgroundColor: theme.colors.surface.base, borderColor: theme.colors.border.default }]}
+            >
+                <View testID={`${props.testID}-text`} style={[styles.textBlock, styles.unavailableText]}>
+                    <Text testID={`${props.testID}-title`} style={[styles.title, { color: theme.colors.text.primary }]}>{props.title}</Text>
+                    {props.subtitle ? <Text testID={`${props.testID}-subtitle`} style={[styles.subtitle, { color: theme.colors.text.secondary }]}>{props.subtitle}</Text> : null}
+                </View>
+                {props.unavailable.accessory ?? null}
+            </View>
+        );
+    }
 
     return (
         <HappierPressable
@@ -131,6 +152,8 @@ const stylesheet = StyleSheet.create((theme) => ({
         gap: 16,
     },
     textBlock: { flex: 1, gap: 0 },
+    // The same frame, quieter: its words still read while its action waits.
+    unavailableText: { opacity: 0.6 },
     accentMark: {
         width: 32,
         height: 32,

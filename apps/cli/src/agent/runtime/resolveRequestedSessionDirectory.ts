@@ -4,6 +4,7 @@ import { expandHomeDirPath } from '@/utils/path/expandHomeDirPath';
 
 export const SESSION_REQUESTED_DIRECTORY_ENV = 'HAPPIER_SESSION_REQUESTED_DIRECTORY' as const;
 export const SESSION_MACHINE_WORKSPACE_PATH_ENV = 'HAPPIER_SESSION_MACHINE_WORKSPACE_PATH' as const;
+export const SESSION_DIRECTORY_KIND_ENV = 'HAPPIER_SESSION_DIRECTORY_KIND' as const;
 export const STACK_INVOKED_CWD_ENV = 'HAPPIER_STACK_INVOKED_CWD' as const;
 
 function normalizeNonEmptyString(value: string | undefined | null): string | null {

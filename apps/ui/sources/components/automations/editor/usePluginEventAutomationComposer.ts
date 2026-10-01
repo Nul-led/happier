@@ -82,7 +82,7 @@ export type PluginEventAutomationPluginPresentation = Readonly<{
     displayName: string;
     availability: 'available' | 'unavailable';
     installedPackage: PluginProjectionInstalledPackageV2 | null;
-    expectedGeneration: string | null;
+    expectedOccurrenceId: string | null;
     machineId: string | null;
     serverId: string | null;
     accountLifetime: ActiveServerAccountScopeLifetime | null;
@@ -173,11 +173,7 @@ function readPluginEventAutomationPluginPresentationFacts(
     const projectionEntry = state.projectionInputs?.pluginProjectionById[pluginId] ?? null;
     const candidatePackage = state.projectionInputs?.pluginProjectionV2?.installedPackagesById[pluginId] ?? null;
     const installedPackage = candidatePackage?.id === pluginId ? candidatePackage : null;
-    const expectedGeneration = currentEvent?.event.immutableGenerationId ?? null;
-    const hasExactInstalledGeneration = expectedGeneration !== null
-        && installedPackage?.immutableGenerationId === expectedGeneration
-        && projectionEntry?.pluginId === pluginId
-        && projectionEntry.immutableGenerationId === expectedGeneration;
+    const expectedOccurrenceId = currentEvent?.event.occurrenceId ?? null;
     const hasCurrentTarget = typeof state.machineId === 'string' && state.machineId.trim().length > 0;
     const available = state.projectionPhase === 'ready'
         && state.projectionInputs?.automationEligibleEvents !== undefined
@@ -186,7 +182,7 @@ function readPluginEventAutomationPluginPresentationFacts(
         && state.accountLifetime?.isCurrent() === true
         && installedPackage?.enabled === true
         && projectionEntry?.enabled === true
-        && hasExactInstalledGeneration;
+        && expectedOccurrenceId !== null;
 
     return Object.freeze({
         eventKey: eventPresentationKey(event),
@@ -195,7 +191,7 @@ function readPluginEventAutomationPluginPresentationFacts(
         // The package-brand owner must never receive an unavailable or stale
         // package binding merely to paint decorative chrome.
         installedPackage: available ? installedPackage : null,
-        expectedGeneration: available ? expectedGeneration : null,
+        expectedOccurrenceId: available ? expectedOccurrenceId : null,
         machineId: state.machineId,
         serverId: state.serverId,
         accountLifetime: state.accountLifetime,
@@ -327,12 +323,12 @@ export function usePluginEventAutomationComposer(params: Readonly<{
         const current = matches.length === 1 ? matches[0]! : null;
         if (
             !current
-            || current.event.immutableGenerationId !== selected.event.immutableGenerationId
+            || current.event.occurrenceId !== selected.event.occurrenceId
             || !arePluginContributionIdentitiesEqual(
                 current.setupAction.identity,
                 selected.setupAction.identity,
             )
-            || current.setupAction.immutableGenerationId !== selected.setupAction.immutableGenerationId
+            || current.setupAction.occurrenceId !== selected.setupAction.occurrenceId
         ) {
             setSelectedEvent(null);
             setConfiguredSetup(null);
@@ -374,7 +370,7 @@ export function usePluginEventAutomationComposer(params: Readonly<{
                 displayName: event.event.identity.pluginId,
                 availability: 'unavailable' as const,
                 installedPackage: null,
-                expectedGeneration: null,
+                expectedOccurrenceId: null,
                 machineId: null,
                 serverId: null,
                 accountLifetime: null,

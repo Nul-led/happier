@@ -26,8 +26,9 @@ function createFixture(
         contributionId: 'acme-agent',
         runtimeId: 'acme.agent/runtime',
         sessionId: 'session-1',
-        generationId: 'generation-1',
+        occurrenceId: 'occurrence-1',
         immutableGenerationId: 'immutable-generation-1',
+        sourceCustody: { kind: 'managed', immutableGenerationId: 'immutable-generation-1', installSource: 'npm' },
         interactionDeadlineMs: 1_000,
         isCurrent: () => true,
         signal: new AbortController().signal,
@@ -309,7 +310,7 @@ describe('native Agent current-session interactions', () => {
         expect(handleToolCall).not.toHaveBeenCalled();
     });
 
-    it('distinguishes requester abort, session end, and generation retirement', async () => {
+    it('distinguishes requester abort, session end, and occurrence retirement', async () => {
         const handleToolCall = vi.fn((
             _requestId: string,
             _toolName: string,
@@ -344,10 +345,10 @@ describe('native Agent current-session interactions', () => {
         }).current.request(authorRequest);
         current = false;
         retired.abort();
-        await expect(retiredPending).resolves.toMatchObject({ status: 'generationRetired' });
+        await expect(retiredPending).resolves.toMatchObject({ status: 'occurrenceRetired' });
     });
 
-    it('fences before presentation and after an in-flight generation retires', async () => {
+    it('fences before presentation and after an in-flight occurrence retires', async () => {
         let current = false;
         let resolveHost!: (result: { decision: 'approved' }) => void;
         const handleToolCall = vi.fn(() => new Promise<{ decision: 'approved' }>((resolve) => {
@@ -356,7 +357,7 @@ describe('native Agent current-session interactions', () => {
         const fixture = createFixture(handleToolCall, { isCurrent: () => current });
         const request: HostSessionConfirmationRequest = { kind: 'confirmation', message: 'Continue?' };
 
-        await expect(fixture.current.request(request)).resolves.toMatchObject({ status: 'generationRetired' });
+        await expect(fixture.current.request(request)).resolves.toMatchObject({ status: 'occurrenceRetired' });
         expect(handleToolCall).not.toHaveBeenCalled();
 
         current = true;
@@ -364,7 +365,7 @@ describe('native Agent current-session interactions', () => {
         await vi.waitFor(() => expect(handleToolCall).toHaveBeenCalledOnce());
         current = false;
         resolveHost({ decision: 'approved' });
-        await expect(pending).resolves.toMatchObject({ status: 'generationRetired' });
+        await expect(pending).resolves.toMatchObject({ status: 'occurrenceRetired' });
     });
 
     it('host-stamps authenticated requester attribution into the permission owner', async () => {
@@ -378,7 +379,7 @@ describe('native Agent current-session interactions', () => {
             requester: {
                 pluginId: 'caller.plugin',
                 contributionId: 'caller-action',
-                generationId: 'caller-generation',
+                occurrenceId: 'caller-occurrence',
                 invocationId: 'native-agent-runtime',
             },
         });

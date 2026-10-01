@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { PluginAgentContributionV2 } from '@happier-dev/protocol';
+import type {
+  PluginAgentContributionV2,
+  PluginSourceCustodyV1,
+} from '@happier-dev/protocol';
 
 import type { ExternalSessionExecutionSurface } from '@/session/external/providerOps';
 import type { ResolvedAgentContribution } from '@/plugins/projection/registry/types';
@@ -41,7 +44,7 @@ describe('resolveExternalSessionSurfaceOps', () => {
   it('demands the exact Agent and resolves ordinary operations from the held current lease', async () => {
     const retirement = new AbortController();
     const runtimeLease = {
-      generation: 'plugin-generation-1',
+      occurrenceId: 'plugin-occurrence-1',
       retirementSignal: retirement.signal,
       isCurrent: () => true,
       externalSessions: {},
@@ -98,7 +101,7 @@ describe('resolveExternalSessionSurfaceOps', () => {
     } as unknown as ResolvedAgentContribution;
     const retirement = new AbortController();
     const runtimeLease = {
-      generation: 'plugin-generation-g',
+      occurrenceId: 'plugin-occurrence-g',
       retirementSignal: retirement.signal,
       isCurrent: () => true,
       externalSessions: {},
@@ -141,7 +144,7 @@ describe('resolveExternalSessionSurfaceOps', () => {
       const retirement = new AbortController();
       if (state === 'retired') retirement.abort();
       const runtimeLease = {
-        generation: 'plugin-generation-1',
+        occurrenceId: 'plugin-occurrence-1',
         retirementSignal: retirement.signal,
         isCurrent: () => state !== 'stale',
         ...(state === 'absent' ? {} : { externalSessions: {} }),
@@ -175,7 +178,7 @@ describe('resolveExternalSessionSurfaceOps', () => {
     const retirement = new AbortController();
     const release = vi.fn(async () => {});
     const runtimeLease = {
-      generation: 'plugin-generation-1',
+      occurrenceId: 'plugin-occurrence-1',
       retirementSignal: retirement.signal,
       isCurrent: () => true,
     };
@@ -190,9 +193,9 @@ describe('resolveExternalSessionSurfaceOps', () => {
       externalSession: {} satisfies ExternalSessionExecutionSurface,
     });
 
-    const { resolveGenerationBoundExternalSessionFollowSurface } =
+    const { resolveOccurrenceBoundExternalSessionFollowSurface } =
       await import('./providerOpsResolution');
-    await expect(resolveGenerationBoundExternalSessionFollowSurface(
+    await expect(resolveOccurrenceBoundExternalSessionFollowSurface(
       'opencode',
       'link-generation-1',
     )).rejects.toThrow(/missing current external-session Agent operations/i);
@@ -207,16 +210,16 @@ describe('resolveExternalSessionSurfaceOps', () => {
       release,
     });
 
-    const { resolveGenerationBoundExternalSessionFollowSurface } =
+    const { resolveOccurrenceBoundExternalSessionFollowSurface } =
       await import('./providerOpsResolution');
-    const absent = await resolveGenerationBoundExternalSessionFollowSurface(
+    const absent = await resolveOccurrenceBoundExternalSessionFollowSurface(
       'opencode',
       'link-generation-1',
     ).then(() => null, (error: unknown) => error);
     expect(absent).toMatchObject({
       name: 'ExternalSessionFollowFailureError',
       kind: 'agent_unavailable',
-      message: expect.stringMatching(/missing current external-session Agent generation/i),
+      message: expect.stringMatching(/missing current external-session Agent occurrence/i),
     });
 
     const retirement = new AbortController();
@@ -226,23 +229,34 @@ describe('resolveExternalSessionSurfaceOps', () => {
       .mockReturnValue(false);
     acquireAuthoritativePluginRuntimeRegistryLeaseMock.mockResolvedValue({
       registry: {
+        contributes: {
+          agentDefinitionsById: new Map([['opencode', {
+            identity: { pluginId: 'acme.opencode', localId: 'opencode' },
+          }]]),
+        },
         agentRuntimesByAgentId: new Map([['opencode', {
-          generation: 'plugin-generation-1',
+          pluginId: 'acme.opencode',
+          occurrenceId: 'plugin-generation-1',
           retirementSignal: retirement.signal,
           isCurrent,
           externalSessions: {},
         }]]),
+        readPluginOccurrenceId: () => 'occurrence-1',
+        readPluginSourceCustody: () => ({
+          kind: 'development',
+          registeredRootId: 'source-root-1',
+        }),
       },
       release,
     });
-    const retired = await resolveGenerationBoundExternalSessionFollowSurface(
+    const retired = await resolveOccurrenceBoundExternalSessionFollowSurface(
       'opencode',
       'link-generation-1',
     ).then(() => null, (error: unknown) => error);
     expect(retired).toMatchObject({
       name: 'ExternalSessionFollowFailureError',
       kind: 'source_changed',
-      message: expect.stringMatching(/generation retired while resolving/i),
+      message: expect.stringMatching(/occurrence retired while resolving/i),
     });
     expect(release).toHaveBeenCalledTimes(2);
   });
@@ -251,14 +265,24 @@ describe('resolveExternalSessionSurfaceOps', () => {
     const retirement = new AbortController();
     const release = vi.fn(async () => {});
     const runtimeLease = {
-      generation: 'plugin-generation-1',
+      occurrenceId: 'plugin-occurrence-1',
       immutableGenerationId: 'immutable-plugin-generation-1',
       retirementSignal: retirement.signal,
       isCurrent: () => true,
       externalSessions: {},
     };
     const registry = {
+      contributes: {
+        agentDefinitionsById: new Map([['opencode', {
+          identity: { pluginId: 'acme.opencode', localId: 'opencode' },
+        }]]),
+      },
       agentRuntimesByAgentId: new Map([['opencode', runtimeLease]]),
+      readPluginOccurrenceId: () => 'occurrence-1',
+      readPluginSourceCustody: () => ({
+        kind: 'managed',
+        immutableGenerationId: 'immutable-plugin-generation-1',
+      }),
     };
     acquireAuthoritativePluginRuntimeRegistryLeaseMock.mockResolvedValue({
       registry,
@@ -267,9 +291,9 @@ describe('resolveExternalSessionSurfaceOps', () => {
     const fallbackOps: ExternalSessionExecutionSurface = {};
     resolveExecutionSurfacesMock.mockResolvedValue({ externalSession: fallbackOps });
 
-    const { resolveGenerationBoundExternalSessionFollowSurface } =
+    const { resolveOccurrenceBoundExternalSessionFollowSurface } =
       await import('./providerOpsResolution');
-    const resolved = await resolveGenerationBoundExternalSessionFollowSurface(
+    const resolved = await resolveOccurrenceBoundExternalSessionFollowSurface(
       'opencode',
       'link-generation-1',
     );
@@ -277,17 +301,76 @@ describe('resolveExternalSessionSurfaceOps', () => {
     expect(resolved.providerOps.externalLinkedTakeoverWriterSafety).toBe('unsupported');
     expect(resolved.resource).toEqual({
       linkGeneration: 'link-generation-1',
-      pluginGeneration: 'plugin-generation-1',
+      occurrenceId: 'occurrence-1',
       retirementSignal: retirement.signal,
     });
-    expect(resolved.immutablePluginGenerationId).toBe(
-      'immutable-plugin-generation-1',
-    );
+    expect(resolved.occurrenceId).toBe('occurrence-1');
+    expect(resolved.sourceCustody).toEqual({
+      kind: 'managed',
+      immutableGenerationId: 'immutable-plugin-generation-1',
+    });
+    expect(resolved).not.toHaveProperty('immutablePluginGenerationId');
     expect(activateAgentRuntimeContributionOnDemandMock).toHaveBeenCalledWith(
       registry,
       'opencode',
     );
     expect(resolveExecutionSurfacesMock).not.toHaveBeenCalled();
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    {
+      label: 'bundled first-party',
+      custody: {
+        kind: 'bundled_first_party',
+        packagedRuntime: {
+          kind: 'cli_version_root',
+          versionRootId: 'cli-version-root-1',
+        },
+      } satisfies PluginSourceCustodyV1,
+    },
+    {
+      label: 'development',
+      custody: {
+        kind: 'development',
+        registeredRootId: 'development-root-1',
+      } satisfies PluginSourceCustodyV1,
+    },
+  ])('resolves a current $label follow occurrence without an immutable generation', async ({ custody }) => {
+    const retirement = new AbortController();
+    const release = vi.fn(async () => {});
+    const runtimeLease = {
+      occurrenceId: 'runtime-occurrence-1',
+      retirementSignal: retirement.signal,
+      isCurrent: () => true,
+      externalSessions: {},
+      sourceCustody: custody,
+    };
+    const registry = {
+      contributes: {
+        agentDefinitionsById: new Map([['opencode', {
+          identity: { pluginId: 'acme.opencode', localId: 'opencode' },
+        }]]),
+      },
+      agentRuntimesByAgentId: new Map([['opencode', runtimeLease]]),
+      readPluginOccurrenceId: () => 'occurrence-1',
+      readPluginSourceCustody: () => custody,
+    };
+    acquireAuthoritativePluginRuntimeRegistryLeaseMock.mockResolvedValue({
+      registry,
+      release,
+    });
+
+    const { resolveOccurrenceBoundExternalSessionFollowSurface } =
+      await import('./providerOpsResolution');
+    const resolved = await resolveOccurrenceBoundExternalSessionFollowSurface(
+      'opencode',
+      'link-generation-1',
+    );
+
+    expect(resolved.occurrenceId).toBe('occurrence-1');
+    expect(resolved.sourceCustody).toEqual(custody);
+    expect(resolved).not.toHaveProperty('immutablePluginGenerationId');
     expect(release).toHaveBeenCalledTimes(1);
   });
 

@@ -33,7 +33,7 @@ export type AdmittedDeclarativeSetting = Readonly<{
 export type AdmittedDeclarativeStaticModel = Readonly<{
     model: DeclarativeStaticRecord;
     root: DeclarativeStaticRecord;
-    generation: string;
+    occurrenceId: string;
     qualifiedId: string;
     actions: ReadonlyMap<string, AdmittedDeclarativeAction>;
     destinations: ReadonlyMap<string, AdmittedDeclarativeDestination>;
@@ -60,7 +60,7 @@ export function declarativeCollectionUiQueryKey(collectionId: string, uiQueryId:
 function readQualifiedReference(input: Readonly<{
     value: unknown;
     pluginId: string;
-    generation: string;
+    occurrenceId: string;
 }>): AdmittedDeclarativeDestination | null {
     const value = record(input.value);
     const identity = PluginContributionIdentityV1Schema.safeParse(value?.identity);
@@ -68,7 +68,7 @@ function readQualifiedReference(input: Readonly<{
     if (
         !identity.success
         || identity.data.pluginId !== input.pluginId
-        || value?.generation !== input.generation
+        || value?.occurrenceId !== input.occurrenceId
         || qualifiedId !== buildQualifiedPluginContributionKey(identity.data)
     ) {
         return null;
@@ -79,7 +79,7 @@ function readQualifiedReference(input: Readonly<{
 /**
  * The one immutable UI admission view over the daemon's static declarative
  * projection. This is a value decoder, never a registry: callers retain no
- * authority outside the exact model/generation supplied here.
+ * authority outside the exact model/occurrenceId supplied here.
  */
 export function admitDeclarativeStaticModel(input: Readonly<{
     model: unknown;
@@ -88,7 +88,7 @@ export function admitDeclarativeStaticModel(input: Readonly<{
     // Structural admission belongs to the one strict Protocol-owned projected
     // model contract — the same schema the daemon wire enforces. This UI
     // admission keeps only the relational/currentness checks that own the
-    // mounted plugin/generation/Settings lifetimes.
+    // mounted plugin/occurrenceId/Settings lifetimes.
     const structural = PluginDeclarativeProjectedModelV1Schema.safeParse(input.model);
     if (!structural.success) return null;
     const model = record(structural.data);
@@ -97,7 +97,7 @@ export function admitDeclarativeStaticModel(input: Readonly<{
         pluginId: identity?.pluginId,
         localId: identity?.localId,
     });
-    const generation = nonemptyString(identity?.generation);
+    const occurrenceId = nonemptyString(identity?.occurrenceId);
     const qualifiedId = nonemptyString(identity?.qualifiedId);
     const root = record(model?.root);
     if (
@@ -105,7 +105,7 @@ export function admitDeclarativeStaticModel(input: Readonly<{
         || model.visible !== true
         || !contributionIdentity.success
         || contributionIdentity.data.pluginId !== input.expectedPluginId
-        || !generation
+        || !occurrenceId
         || qualifiedId !== buildQualifiedPluginContributionKey(contributionIdentity.data)
         || !root
     ) {
@@ -135,7 +135,7 @@ export function admitDeclarativeStaticModel(input: Readonly<{
 
     for (const value of actionEntries) {
         const entry = record(value);
-        const reference = readQualifiedReference({ value, pluginId: input.expectedPluginId, generation });
+        const reference = readQualifiedReference({ value, pluginId: input.expectedPluginId, occurrenceId });
         if (!entry || !reference || actions.has(reference.qualifiedId)) return null;
         const title = nonemptyString(entry.title);
         const icon = nonemptyString(entry.icon);
@@ -148,7 +148,7 @@ export function admitDeclarativeStaticModel(input: Readonly<{
     }
 
     for (const value of destinationEntries) {
-        const reference = readQualifiedReference({ value, pluginId: input.expectedPluginId, generation });
+        const reference = readQualifiedReference({ value, pluginId: input.expectedPluginId, occurrenceId });
         if (!reference || destinations.has(reference.qualifiedId)) return null;
         destinations.set(reference.qualifiedId, reference);
     }
@@ -222,7 +222,7 @@ export function admitDeclarativeStaticModel(input: Readonly<{
     return Object.freeze({
         model,
         root,
-        generation,
+        occurrenceId,
         qualifiedId,
         actions,
         destinations,

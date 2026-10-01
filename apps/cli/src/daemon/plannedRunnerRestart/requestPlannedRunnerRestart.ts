@@ -53,7 +53,6 @@ export async function requestPlannedRunnerRestart(
   if (
     !Number.isInteger(expectedPid)
     || expectedPid <= 0
-    || !expectedProcessCommandHash
     || !Number.isInteger(expectedProcessStartTimeMs)
     || (expectedProcessStartTimeMs ?? -1) < 0
   ) {
@@ -80,7 +79,7 @@ export async function requestPlannedRunnerRestart(
       }
       if (
         params.tracked.pid !== expectedPid
-        || params.tracked.processCommandHash?.trim()
+        || (params.tracked.processCommandHash?.trim() ?? '')
           !== expectedProcessCommandHash
         || params.tracked.processStartTimeMs
           !== expectedProcessStartTimeMs

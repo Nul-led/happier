@@ -55,7 +55,7 @@ const staticModel: Model = Object.freeze({
         pluginId: 'acme.dashboard',
         localId: 'dashboard',
         qualifiedId: 'acme.dashboard/dashboard',
-        generation: '7',
+        occurrenceId: '7',
     }),
     visible: true,
     requiredHostMethods: Object.freeze([]),
@@ -74,7 +74,7 @@ const staticModelWithRefreshAction: Model = Object.freeze({
         actions: Object.freeze([{
             identity: Object.freeze({ pluginId: 'acme.dashboard', localId: 'refresh' }),
             qualifiedId: 'acme.dashboard/refresh',
-            generation: '7',
+            occurrenceId: '7',
             enabled: true,
         }]),
         destinations: Object.freeze([]),
@@ -115,13 +115,13 @@ const staticModelWithOpenTasksRowCommands: Model = Object.freeze({
         actions: Object.freeze([{
             identity: Object.freeze({ pluginId: 'acme.dashboard', localId: 'refresh' }),
             qualifiedId: 'acme.dashboard/refresh',
-            generation: '7',
+            occurrenceId: '7',
             enabled: true,
         }]),
         destinations: Object.freeze([{
             identity: Object.freeze({ pluginId: 'acme.dashboard', localId: 'task-details' }),
             qualifiedId: 'acme.dashboard/task-details',
-            generation: '7',
+            occurrenceId: '7',
         }]),
         settings: Object.freeze([]),
         uiQueries: Object.freeze([openTasksQuery]),
@@ -234,8 +234,8 @@ function readTargetedSurfaceGeneration(model: unknown): string | null {
     if (!surface || typeof surface !== 'object' || Array.isArray(surface)) return null;
     const contributor = (surface as Readonly<Record<string, unknown>>).contributor;
     return contributor && typeof contributor === 'object' && !Array.isArray(contributor)
-        && typeof (contributor as Readonly<Record<string, unknown>>).immutableGenerationId === 'string'
-        ? (contributor as Readonly<Record<string, unknown>>).immutableGenerationId as string
+        && typeof (contributor as Readonly<Record<string, unknown>>).occurrenceId === 'string'
+        ? (contributor as Readonly<Record<string, unknown>>).occurrenceId as string
         : null;
 }
 
@@ -256,6 +256,9 @@ function createDocumentHost(input: Readonly<{
         }),
         context: async () => unexpectedHostApiCall('context'),
         watchContext: async () => unexpectedHostApiCall('watchContext'),
+        readSession: async () => unexpectedHostApiCall('readSession'),
+        watchSession: async () => unexpectedHostApiCall('watchSession'),
+        respondToSessionPermission: async () => unexpectedHostApiCall('respondToSessionPermission'),
         publishCurrentUiContext: () => unexpectedHostApiCall('publishCurrentUiContext'),
         settleEphemeralInput: async () => unexpectedHostApiCall('settleEphemeralInput'),
         activeComposer: async () => unexpectedHostApiCall('activeComposer'),
@@ -319,13 +322,13 @@ const PluginHostApiProviderWithPrivateResourceBinding = PluginHostApiProvider as
 function attachDocumentResourceScope(
     hostApi: PluginUiHostApi,
     accountLifetime: DocumentAccountLifetime,
-    generation = '7',
+    occurrenceId = '7',
 ): PluginUiHostApi {
     Object.defineProperty(hostApi, Symbol.for('happier.pluginUi.privateResourceStoreScope.v1'), {
         value: Object.freeze({
             pluginId: 'acme.dashboard',
             accountLifetime,
-            generation,
+            occurrenceId,
         }),
         enumerable: false,
         configurable: false,
@@ -459,7 +462,7 @@ function renderProbeWithPrivateResourceBinding(
         <PluginHostApiProviderWithPrivateResourceBinding
             hostApi={hostApi}
             accountLifetime={accountLifetime}
-            resourceStoreGeneration={mountScope.generation}
+            resourceStoreGeneration={mountScope.occurrenceId}
             mountedPluginId={mountScope.pluginId}
         >
             <Probe mountScope={mountScope} />
@@ -613,7 +616,7 @@ describe('useDeclarativeDocumentSource', () => {
         const retirement = createRetirableDocumentAccountLifetime();
         const mountScope: DeclarativeDocumentSourceMountScope = Object.freeze({
             pluginId: 'acme.dashboard',
-            generation: '7',
+            occurrenceId: '7',
             accountLifetime: retirement.lifetime,
             mountLifetime: retirement.lifetime,
         });
@@ -656,7 +659,7 @@ describe('useDeclarativeDocumentSource', () => {
         const accountLifetime = createCurrentDocumentAccountLifetime();
         const mountScope: DeclarativeDocumentSourceMountScope = Object.freeze({
             pluginId: 'acme.dashboard',
-            generation: '7',
+            occurrenceId: '7',
             accountLifetime,
             mountLifetime: mountRetirement.lifetime,
         });
@@ -775,7 +778,8 @@ describe('useDeclarativeDocumentSource', () => {
                 contributor: {
                     pluginId: 'acme.review',
                     contributionId: 'detail',
-                    immutableGenerationId: 'review-generation-a',
+                    occurrenceId: 'review-occurrenceId-a',
+                    sourceCustody: { kind: 'development', registeredRootId: 'review-root' },
                 },
                 role: 'detail',
                 presentation: 'content',
@@ -794,12 +798,12 @@ describe('useDeclarativeDocumentSource', () => {
         expect(tree.root.findByType('output').props).toMatchObject({
             value: null,
             targetedSurfaceInstanceKey: expect.stringMatching(/^targeted-surface:v1:[a-f0-9]{64}$/u),
-            targetedSurfaceGeneration: 'review-generation-a',
+            targetedSurfaceGeneration: 'review-occurrenceId-a',
             invalidDocument: false,
         });
     });
 
-    it('re-normalizes an adopted targeted Surface when its mounted-target generation changes', async () => {
+    it('re-normalizes an adopted targeted Surface when its mounted-target occurrenceId changes', async () => {
         const dynamicDocument = {
             version: 1,
             root: {
@@ -813,14 +817,15 @@ describe('useDeclarativeDocumentSource', () => {
                 instanceKey: 'review-42',
             },
         };
-        const inventoryFor = (immutableGenerationId: string) => [prepareTargetedSurfaceInventoryEntry({
+        const inventoryFor = (occurrenceId: string) => [prepareTargetedSurfaceInventoryEntry({
             targetPluginId: 'acme.dashboard',
             handle: {
                 point: { pointId: 'details', protocol: { id: 'review-detail', version: 1 } },
                 contributor: {
                     pluginId: 'acme.review',
                     contributionId: 'detail',
-                    immutableGenerationId,
+                    occurrenceId,
+                    sourceCustody: { kind: 'development', registeredRootId: 'review-root' },
                 },
                 role: 'detail',
                 presentation: 'content',
@@ -835,18 +840,18 @@ describe('useDeclarativeDocumentSource', () => {
         let tree!: ReturnType<typeof create>;
 
         await act(async () => {
-            tree = create(renderProbe(hostApi, staticModel, undefined, undefined, inventoryFor('review-generation-a')));
+            tree = create(renderProbe(hostApi, staticModel, undefined, undefined, inventoryFor('review-occurrenceId-a')));
             await flushMicrotasks();
         });
-        expect(tree.root.findByType('output').props.targetedSurfaceGeneration).toBe('review-generation-a');
+        expect(tree.root.findByType('output').props.targetedSurfaceGeneration).toBe('review-occurrenceId-a');
 
         await act(async () => {
-            tree.update(renderProbe(hostApi, staticModel, undefined, undefined, inventoryFor('review-generation-b')));
+            tree.update(renderProbe(hostApi, staticModel, undefined, undefined, inventoryFor('review-occurrenceId-b')));
             await flushMicrotasks();
         });
 
         expect(tree.root.findByType('output').props).toMatchObject({
-            targetedSurfaceGeneration: 'review-generation-b',
+            targetedSurfaceGeneration: 'review-occurrenceId-b',
             invalidDocument: false,
         });
     });
@@ -1141,13 +1146,13 @@ describe('useDeclarativeDocumentSource', () => {
         const accountBLifetime = createCurrentDocumentAccountLifetime();
         const accountAScope: DeclarativeDocumentSourceMountScope = Object.freeze({
             pluginId: 'acme.dashboard',
-            generation: '7',
+            occurrenceId: '7',
             accountLifetime: accountALifetime,
             mountLifetime: accountALifetime,
         });
         const accountBScope: DeclarativeDocumentSourceMountScope = Object.freeze({
             pluginId: 'acme.dashboard',
-            generation: '7',
+            occurrenceId: '7',
             accountLifetime: accountBLifetime,
             mountLifetime: accountBLifetime,
         });
@@ -1199,7 +1204,7 @@ describe('useDeclarativeDocumentSource', () => {
         const account = createRetirableDocumentAccountLifetime();
         const mountScope: DeclarativeDocumentSourceMountScope = Object.freeze({
             pluginId: 'acme.dashboard',
-            generation: '7',
+            occurrenceId: '7',
             accountLifetime: account.lifetime,
             mountLifetime: account.lifetime,
         });
@@ -1231,11 +1236,11 @@ describe('useDeclarativeDocumentSource', () => {
         });
     });
 
-    it('keeps an adopted dynamic document across a reconnect host replacement for the same current Account and generation', async () => {
+    it('keeps an adopted dynamic document across a reconnect host replacement for the same current Account and occurrenceId', async () => {
         const accountLifetime = createCurrentDocumentAccountLifetime();
         const mountScope: DeclarativeDocumentSourceMountScope = Object.freeze({
             pluginId: 'acme.dashboard',
-            generation: '7',
+            occurrenceId: '7',
             accountLifetime,
             mountLifetime: accountLifetime,
         });
@@ -1288,7 +1293,7 @@ describe('useDeclarativeDocumentSource', () => {
         const accountLifetime = createCurrentDocumentAccountLifetime();
         const mountScope: DeclarativeDocumentSourceMountScope = Object.freeze({
             pluginId: 'acme.dashboard',
-            generation: '7',
+            occurrenceId: '7',
             accountLifetime,
             mountLifetime: accountLifetime,
         });
@@ -1315,7 +1320,7 @@ describe('useDeclarativeDocumentSource', () => {
         await act(async () => {
             // A daemon/settings placement update can reconstruct the same
             // admitted static model object. It is not a new document or
-            // Account/generation lifetime, so it must not flash static LKG.
+            // Account/occurrenceId lifetime, so it must not flash static LKG.
             tree.update(renderProbe(hostApi, Object.freeze({ ...staticModel }), mountScope, onCommit));
             await flushMicrotasks();
         });
@@ -1328,7 +1333,7 @@ describe('useDeclarativeDocumentSource', () => {
         const accountLifetime = createCurrentDocumentAccountLifetime();
         const mountScope: DeclarativeDocumentSourceMountScope = Object.freeze({
             pluginId: 'acme.dashboard',
-            generation: '7',
+            occurrenceId: '7',
             accountLifetime,
             mountLifetime: accountLifetime,
         });

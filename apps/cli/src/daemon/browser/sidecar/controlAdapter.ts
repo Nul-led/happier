@@ -1,9 +1,16 @@
 import {
     browserViewKey,
+    BrowserEventV1Schema,
+    BrowserHttpUrlV1Schema,
+    BrowserTitleChangedEventV1Schema,
+    type BrowserEventV1,
     type BrowserCommandDispatchResultV1,
     type BrowserCommandErrorCodeV1,
     type BrowserCommandV1,
     type BrowserSidecarErrorCodeV1,
+    type BrowserProfileV1,
+    type BrowserViewTargetV1,
+    type BrowserPlatformV1,
 } from '@happier-dev/protocol';
 
 import {
@@ -16,13 +23,19 @@ export type BrowserSidecarCdpPageHandle = Readonly<{
     sessionId?: string;
 }>;
 
+export type BrowserSidecarCdpCommandScope = Readonly<{
+    /** Containing operation's absolute deadline, in Date.now() milliseconds. */
+    deadlineMs?: number;
+    signal?: AbortSignal;
+}>;
+
 export type BrowserSidecarCdpControlTransport = Readonly<{
-    openPage(input: Readonly<{ url: string; focus: boolean }>): Promise<BrowserSidecarCdpPageHandle>;
-    dispatchPageCommand(input: BrowserSidecarCdpPageHandle & Readonly<{
+    openPage(input: BrowserSidecarCdpCommandScope & Readonly<{ url: string; focus: boolean }>): Promise<BrowserSidecarCdpPageHandle>;
+    dispatchPageCommand(input: BrowserSidecarCdpCommandScope & BrowserSidecarCdpPageHandle & Readonly<{
         method: string;
         params?: Record<string, unknown>;
     }>): Promise<unknown>;
-    dispatchBrowserCommand(input: Readonly<{
+    dispatchBrowserCommand(input: BrowserSidecarCdpCommandScope & Readonly<{
         method: string;
         params?: Record<string, unknown>;
     }>): Promise<unknown>;
@@ -78,6 +91,8 @@ export type BrowserSidecarContextCaptureSurface = Readonly<{
     resolvePageHandle(
         view: Readonly<{ browserSessionId: string; viewId: string }>,
     ): BrowserSidecarCdpPageHandle | null;
+    /** Profile of the same owned view; callers cannot supply a different profile policy. */
+    resolveProfile?(view: Readonly<{ browserSessionId: string; viewId: string }>): BrowserProfileV1 | null;
     /**
      * Optional live CDP event stream over the SAME transport, used by the offline-diagnostics lane
      * to feed the daemon diagnostics ring. Present only for the real CDP sidecar; absent for
@@ -89,6 +104,8 @@ export type BrowserSidecarContextCaptureSurface = Readonly<{
      * a per-view event source the moment a view's CDP page handle exists (and detach on close).
      */
     subscribeViewLifecycle?(listener: BrowserSidecarViewLifecycleSubscriber): () => void;
+    getNavigationState?(view: Readonly<{ browserSessionId: string; viewId: string }>): BrowserSidecarNavigationState | null;
+    subscribeBrowserEvents?(listener: (event: BrowserEventV1) => void): () => void;
 }>;
 
 export type BrowserSidecarControlAdapterFactoryResult =
@@ -111,7 +128,7 @@ export type BrowserSidecarControlAdapterFactory = (
 type BrowserSidecarCdpControlAdapterInput = Readonly<{
     browserSessionId: string;
     sidecarId: string;
-    transport: BrowserSidecarCdpControlTransport;
+    transport: BrowserSidecarCdpEventCapableTransport;
 }>;
 
 /**
@@ -121,6 +138,8 @@ type BrowserSidecarCdpControlAdapterInput = Readonly<{
  * the binding state. Returns `null` for an unbound view so the producer stays fail-closed.
  */
 export type BrowserSidecarCdpControlAdapter = BrowserDaemonControlAdapter & Readonly<{
+    getNavigationState(view: Readonly<{ browserSessionId: string; viewId: string }>): BrowserSidecarNavigationState | null;
+    subscribeBrowserEvents(listener: (event: BrowserEventV1) => void): () => void;
     resolvePageHandle(
         view: Readonly<{ browserSessionId: string; viewId: string }>,
     ): BrowserSidecarCdpPageHandle | null;
@@ -129,14 +148,30 @@ export type BrowserSidecarCdpControlAdapter = BrowserDaemonControlAdapter & Read
      * unsubscribe handle. Listener errors never break control dispatch.
      */
     subscribeViewLifecycle(listener: BrowserSidecarViewLifecycleSubscriber): () => void;
+    /** Invalidates all bindings before the owning connection/process is torn down. */
+    dispose(): void;
 }>;
 
-type BoundView = BrowserSidecarCdpPageHandle & Readonly<{
+export type BrowserSidecarNavigationState = Readonly<{
+    navigationGeneration: number;
+    currentUrl?: string;
+    title?: string;
+    loadingState: 'idle' | 'loading' | 'ready' | 'failed';
+    canGoBack: boolean;
+    canGoForward: boolean;
+}>;
+
+type BoundView = BrowserSidecarCdpPageHandle & {
     browserSessionId: string;
     viewId: string;
-}>;
+    target: BrowserViewTargetV1;
+    platform: BrowserPlatformV1;
+    state: BrowserSidecarNavigationState;
+    loaderId?: string;
+    frameId?: string;
+};
 
-function dispatched(command: BrowserCommandV1): BrowserCommandDispatchResultV1 {
+function dispatched(command: BrowserCommandV1): Extract<BrowserCommandDispatchResultV1, { status: 'dispatched' }> {
     return {
         v: 1,
         commandId: command.commandId,
@@ -200,6 +235,72 @@ export function createBrowserSidecarCdpControlAdapter(
 ): BrowserSidecarCdpControlAdapter {
     const boundViews = new Map<string, BoundView>();
     const lifecycleListeners = new Set<BrowserSidecarViewLifecycleSubscriber>();
+    const eventListeners = new Set<(event: BrowserEventV1) => void>();
+    let eventSequence = 0;
+    let disposed = false;
+
+    function stateEvent(view: BoundView): BrowserEventV1 {
+        return BrowserEventV1Schema.parse({ kind: 'navigationStateChanged', eventId: `cdp:${++eventSequence}`,
+            browserSessionId: view.browserSessionId, viewId: view.viewId, occurredAt: Date.now(), ...view.state });
+    }
+    function publishState(view: BoundView): void {
+        const event = stateEvent(view);
+        for (const listener of [...eventListeners]) { try { listener(event); } catch { /* Observer cannot break control. */ } }
+    }
+    async function refreshHistory(view: BoundView, scope: BrowserSidecarCdpCommandScope = {}): Promise<void> {
+        const generation = view.state.navigationGeneration;
+        try {
+            const history = recordValue(await input.transport.dispatchPageCommand({ ...scope, targetId: view.targetId, ...(view.sessionId ? { sessionId: view.sessionId } : {}), method: 'Page.getNavigationHistory' }));
+            if (disposed || boundViews.get(browserViewKey(view)) !== view || view.state.navigationGeneration !== generation) return;
+            const entries = history?.entries;
+            const index = history?.currentIndex;
+            if (!Array.isArray(entries) || typeof index !== 'number') return;
+            const entry = recordValue(entries[index]);
+            const title = BrowserTitleChangedEventV1Schema.shape.title.safeParse(entry?.title);
+            view.state = { ...view.state, canGoBack: index > 0, canGoForward: index < entries.length - 1, ...(title.success ? { title: title.data } : {}) };
+            publishState(view);
+        } catch { /* Preserve the last engine state when the transport is unavailable. */ }
+    }
+    function updateFrame(view: BoundView, frame: Record<string, unknown>, bootstrap = false): void {
+        if (disposed || boundViews.get(browserViewKey(view)) !== view || frame.parentId) return;
+        // A live main-frame commit outranks the earlier bootstrap query's eventual reply.
+        if (bootstrap && view.frameId !== undefined) return;
+        const loaderId = typeof frame.loaderId === 'string' ? frame.loaderId : undefined;
+        const changedDocument = !bootstrap && loaderId !== undefined && loaderId !== view.loaderId;
+        view.loaderId = loaderId ?? view.loaderId;
+        view.frameId = typeof frame.id === 'string' ? frame.id : view.frameId;
+        const url = BrowserHttpUrlV1Schema.safeParse(frame.url);
+        view.state = { ...view.state, navigationGeneration: view.state.navigationGeneration + (changedDocument ? 1 : 0),
+            ...(url.success ? { currentUrl: url.data } : {}), loadingState: bootstrap ? view.state.loadingState : 'loading' };
+        publishState(view);
+    }
+    const unsubscribeCdp = input.transport.subscribeCdpEvents?.(notification => {
+        if (disposed) return;
+        const params = notification.params ?? {};
+        const target = recordValue(params.targetInfo);
+        const view = [...boundViews.values()].find(candidate => notification.method === 'Target.targetInfoChanged'
+            ? candidate.targetId === target?.targetId
+            : candidate.sessionId !== undefined && candidate.sessionId === notification.sessionId);
+        if (!view) return;
+        if (notification.method === 'Page.frameNavigated') {
+            const frame = recordValue(params.frame); if (frame) updateFrame(view, frame);
+        } else if (notification.method === 'Page.navigatedWithinDocument' && params.frameId === view.frameId) {
+            const url = BrowserHttpUrlV1Schema.safeParse(params.url);
+            view.state = { ...view.state, navigationGeneration: view.state.navigationGeneration + 1, ...(url.success ? { currentUrl: url.data } : {}) };
+            publishState(view);
+        } else if ((notification.method === 'Page.frameStartedLoading' || notification.method === 'Page.frameStoppedLoading') && params.frameId === view.frameId) {
+            view.state = { ...view.state, loadingState: notification.method === 'Page.frameStartedLoading' ? 'loading' : 'ready' }; publishState(view);
+            if (notification.method === 'Page.frameStoppedLoading') void refreshHistory(view);
+        } else if (notification.method === 'Target.targetInfoChanged') {
+            const title = BrowserTitleChangedEventV1Schema.shape.title.safeParse(target?.title);
+            view.state = { ...view.state, ...(title.success ? { title: title.data } : {}) };
+            publishState(view);
+        }
+    });
+    function dispatchState(command: BrowserCommandV1): BrowserCommandDispatchResultV1 {
+        const view = 'viewId' in command ? boundViews.get(browserViewKey(command)) : undefined;
+        return { ...dispatched(command), events: view ? [stateEvent(view)] : [] };
+    }
 
     function emitLifecycle(event: BrowserSidecarViewLifecycleEvent): void {
         for (const listener of [...lifecycleListeners]) {
@@ -220,6 +321,7 @@ export function createBrowserSidecarCdpControlAdapter(
         command: Extract<BrowserCommandV1, { browserSessionId: string; viewId: string }>,
         method: string,
         params?: Record<string, unknown>,
+        scope: BrowserSidecarCdpCommandScope = {},
     ): Promise<BrowserCommandDispatchResultV1> {
         const boundView = readBoundView(command);
         if (!boundView) {
@@ -227,13 +329,16 @@ export function createBrowserSidecarCdpControlAdapter(
         }
 
         try {
+            scope.signal?.throwIfAborted();
             await input.transport.dispatchPageCommand({
+                // Once issued, abort must not discard the CDP acknowledgement before drain.
+                ...(scope.deadlineMs !== undefined ? { deadlineMs: scope.deadlineMs } : {}),
                 targetId: boundView.targetId,
                 ...(boundView.sessionId ? { sessionId: boundView.sessionId } : {}),
                 method,
                 ...(params ? { params } : {}),
             });
-            return dispatched(command);
+            return dispatchState(command);
         } catch {
             return cdpFailure(command);
         }
@@ -242,6 +347,7 @@ export function createBrowserSidecarCdpControlAdapter(
     async function dispatchHistoryNavigation(
         command: Extract<BrowserCommandV1, { kind: 'goBack' | 'goForward' }>,
         offset: -1 | 1,
+        scope: BrowserSidecarCdpCommandScope = {},
     ): Promise<BrowserCommandDispatchResultV1> {
         const boundView = readBoundView(command);
         if (!boundView) {
@@ -249,7 +355,9 @@ export function createBrowserSidecarCdpControlAdapter(
         }
 
         try {
+            scope.signal?.throwIfAborted();
             const history = await input.transport.dispatchPageCommand({
+                ...(scope.deadlineMs !== undefined ? { deadlineMs: scope.deadlineMs } : {}),
                 targetId: boundView.targetId,
                 ...(boundView.sessionId ? { sessionId: boundView.sessionId } : {}),
                 method: 'Page.getNavigationHistory',
@@ -258,13 +366,15 @@ export function createBrowserSidecarCdpControlAdapter(
             if (entryId === null) {
                 return failed(command, 'unsupported_command', 'Browser sidecar history entry is unavailable.');
             }
+            scope.signal?.throwIfAborted();
             await input.transport.dispatchPageCommand({
+                ...(scope.deadlineMs !== undefined ? { deadlineMs: scope.deadlineMs } : {}),
                 targetId: boundView.targetId,
                 ...(boundView.sessionId ? { sessionId: boundView.sessionId } : {}),
                 method: 'Page.navigateToHistoryEntry',
                 params: { entryId },
             });
-            return dispatched(command);
+            return dispatchState(command);
         } catch {
             return cdpFailure(command);
         }
@@ -273,6 +383,7 @@ export function createBrowserSidecarCdpControlAdapter(
     async function dispatchBrowserTargetCommand(
         command: Extract<BrowserCommandV1, { browserSessionId: string; viewId: string }>,
         method: 'Target.activateTarget' | 'Target.closeTarget',
+        scope: BrowserSidecarCdpCommandScope = {},
     ): Promise<BrowserCommandDispatchResultV1> {
         const boundView = readBoundView(command);
         if (!boundView) {
@@ -281,18 +392,23 @@ export function createBrowserSidecarCdpControlAdapter(
 
         try {
             await input.transport.dispatchBrowserCommand({
+                ...scope,
                 method,
                 params: { targetId: boundView.targetId },
             });
             if (command.kind === 'closeView') {
+                const event: BrowserEventV1 = { kind: 'viewClosed', eventId: `cdp:${++eventSequence}`, occurredAt: Date.now(),
+                    browserSessionId: command.browserSessionId, viewId: command.viewId, navigationGeneration: boundView.state.navigationGeneration };
+                for (const listener of [...eventListeners]) { try { listener(event); } catch { /* Observers cannot break close. */ } }
                 boundViews.delete(browserViewKey(command));
                 emitLifecycle({
                     type: 'unbound',
                     browserSessionId: command.browserSessionId,
                     viewId: command.viewId,
                 });
+                return { ...dispatched(command), events: [event] };
             }
-            return dispatched(command);
+            return dispatchState(command);
         } catch {
             return cdpFailure(command);
         }
@@ -300,12 +416,30 @@ export function createBrowserSidecarCdpControlAdapter(
 
     return {
         adapterKind: 'chromiumSidecar',
+        dispose() {
+            if (disposed) return;
+            disposed = true;
+            unsubscribeCdp?.();
+            eventListeners.clear();
+            const views = [...boundViews.values()];
+            boundViews.clear();
+            for (const view of views) emitLifecycle({ type: 'unbound', browserSessionId: view.browserSessionId, viewId: view.viewId });
+            lifecycleListeners.clear();
+        },
         subscribeViewLifecycle(listener) {
             lifecycleListeners.add(listener);
             return () => {
                 lifecycleListeners.delete(listener);
             };
         },
+        subscribeBrowserEvents(listener) { eventListeners.add(listener); return () => { eventListeners.delete(listener); }; },
+        listViews(browserSessionId) {
+            if (disposed || browserSessionId !== input.browserSessionId) return [];
+            return [...boundViews.values()].map(view => ({ browserSessionId: view.browserSessionId, viewId: view.viewId,
+                sourceId: browserViewKey(view), target: view.target, platform: view.platform,
+                adapterKind: 'chromiumSidecar' as const, events: [stateEvent(view)] }));
+        },
+        getNavigationState(view) { return boundViews.get(browserViewKey(view))?.state ?? null; },
         resolvePageHandle(view) {
             if (view.browserSessionId !== input.browserSessionId) return null;
             const bound = boundViews.get(browserViewKey(view));
@@ -319,9 +453,10 @@ export function createBrowserSidecarCdpControlAdapter(
             return ownerInput.browserSessionId === input.browserSessionId && boundViews.has(browserViewKey(ownerInput));
         },
         supportsOpenView(command) {
-            return supportsOpenViewCommand(command, input.browserSessionId);
+            return !disposed && supportsOpenViewCommand(command, input.browserSessionId);
         },
-        async dispatchCommand(command) {
+        async dispatchCommand(command, scope = {}) {
+            if (disposed) return cdpFailure(command);
             switch (command.kind) {
                 case 'openView': {
                     if (command.browserSessionId !== input.browserSessionId || command.target.kind !== 'externalUrl') {
@@ -329,12 +464,17 @@ export function createBrowserSidecarCdpControlAdapter(
                     }
                     try {
                         const page = await input.transport.openPage({
+                            ...scope,
                             url: command.target.url,
                             focus: command.focus ?? true,
                         });
+                        if (disposed) return cdpFailure(command);
                         boundViews.set(browserViewKey(command), {
                             browserSessionId: command.browserSessionId,
                             viewId: command.viewId,
+                            target: command.target,
+                            platform: command.platform,
+                            state: { navigationGeneration: 0, currentUrl: command.target.url, loadingState: 'loading', canGoBack: false, canGoForward: false },
                             targetId: page.targetId,
                             ...(page.sessionId ? { sessionId: page.sessionId } : {}),
                         });
@@ -343,27 +483,49 @@ export function createBrowserSidecarCdpControlAdapter(
                             browserSessionId: command.browserSessionId,
                             viewId: command.viewId,
                         });
-                        return dispatched(command);
+                        const bound = boundViews.get(browserViewKey(command));
+                        if (bound && input.transport.subscribeCdpEvents) {
+                            try {
+                                await input.transport.dispatchBrowserCommand({ ...scope, method: 'Target.setDiscoverTargets', params: { discover: true } });
+                                await input.transport.dispatchPageCommand({ ...scope, ...page, method: 'Page.enable' });
+                                const tree = recordValue(await input.transport.dispatchPageCommand({ ...scope, ...page, method: 'Page.getFrameTree' }));
+                                const frame = recordValue(recordValue(tree?.frameTree)?.frame);
+                                if (frame) updateFrame(bound, frame, true);
+                                await refreshHistory(bound, scope);
+                            } catch {
+                                if (boundViews.get(browserViewKey(command)) === bound) {
+                                    boundViews.delete(browserViewKey(command));
+                                    emitLifecycle({ type: 'unbound', browserSessionId: command.browserSessionId, viewId: command.viewId });
+                                }
+                                try { await input.transport.dispatchBrowserCommand({ method: 'Target.closeTarget', params: { targetId: page.targetId } }); }
+                                catch { /* Disconnected transport cannot acknowledge cleanup; the open still fails. */ }
+                                return cdpFailure(command);
+                            }
+                        }
+                        return dispatchState(command);
                     } catch {
                         return cdpFailure(command);
                     }
                 }
                 case 'closeView':
-                    return dispatchBrowserTargetCommand(command, 'Target.closeTarget');
+                    return dispatchBrowserTargetCommand(command, 'Target.closeTarget', scope);
                 case 'focusView':
-                    return dispatchBrowserTargetCommand(command, 'Target.activateTarget');
+                    return dispatchBrowserTargetCommand(command, 'Target.activateTarget', scope);
                 case 'navigate':
-                    return dispatchPage(command, 'Page.navigate', { url: command.url });
+                    return dispatchPage(command, 'Page.navigate', { url: command.url }, scope);
                 case 'goBack':
-                    return dispatchHistoryNavigation(command, -1);
+                    return dispatchHistoryNavigation(command, -1, scope);
                 case 'goForward':
-                    return dispatchHistoryNavigation(command, 1);
+                    return dispatchHistoryNavigation(command, 1, scope);
                 case 'reload':
-                    return dispatchPage(command, 'Page.reload');
+                    return dispatchPage(command, 'Page.reload', undefined, scope);
                 case 'stop':
-                    return dispatchPage(command, 'Page.stopLoading');
+                    return dispatchPage(command, 'Page.stopLoading', undefined, scope);
                 case 'setTarget':
                     return failed(command, 'unsupported_command', 'Browser sidecar CDP setTarget is not backed.');
+                case 'takeControl':
+                case 'handBack':
+                    return failed(command, 'unsupported_command', 'Controller commands belong to the automation owner.');
             }
         },
     };

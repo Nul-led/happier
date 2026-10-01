@@ -99,6 +99,7 @@ type WaitForNextInputOptions<Mode, Message> = SessionProviderInputConsumerOption
   waitUntilAdmitted: (abortSignal: AbortSignal) => Promise<boolean>;
   waitForAdmissionChange: (abortSignal: AbortSignal) => Promise<boolean>;
   takeReservedBatch: () => MessageBatch<Mode, Message> | null;
+  takeDeferredContextOnlyBatch: () => MessageBatch<Mode, Message> | null;
   reserveBatch: (batch: MessageBatch<Mode, Message>) => void;
   hasLocalInputCustody: () => boolean;
   isAdmitted: () => boolean;
@@ -185,6 +186,7 @@ export function createSessionProviderInputConsumer<Mode, Message>(
   let waitForNextInputTurn: Promise<void> = Promise.resolve();
   let pendingMaterializationTurn: Promise<void> = Promise.resolve();
   let reservedBatch: MessageBatch<Mode, Message> | null = null;
+  let deferredContextOnlyBatch: MessageBatch<Mode, Message> | null = null;
   const admissionKey = (scope: ProviderInputActionRequiredDisposition) =>
     `${scope.reason}\u0000${scope.serviceId}\u0000${scope.groupId}`;
   const admissions = new Map<string, ProviderInputActionRequiredDisposition>();
@@ -404,6 +406,18 @@ export function createSessionProviderInputConsumer<Mode, Message>(
   };
 
   return {
+    async finalizeContextOnlyInput(finalizeOpts) {
+      if (finalizeOpts.abortSignal.aborted || !await finalizeOpts.recheck()) return 'withdrawn';
+      if (finalizeOpts.abortSignal.aborted) return 'withdrawn';
+      // No await between this queue check and commit invocation: queue arrivals and
+      // workflow withdrawal share the same event-loop ordering point.
+      if (readAdmission() || hasLocalInputCustody() || opts.session.hasPendingProviderInput?.()) {
+        deferredContextOnlyBatch = finalizeOpts.batch;
+        markPassDirty();
+        return 'deferred';
+      }
+      return await finalizeOpts.commit() ? 'committed' : 'withdrawn';
+    },
     async enforceProviderInputAdmission(disposition) {
       admissions.set(admissionKey(disposition), disposition);
       markPassDirty();
@@ -479,6 +493,11 @@ export function createSessionProviderInputConsumer<Mode, Message>(
             const batch = reservedBatch;
             reservedBatch = null;
             if (batch) markPassDirty();
+            return batch;
+          },
+          takeDeferredContextOnlyBatch: () => {
+            const batch = deferredContextOnlyBatch;
+            deferredContextOnlyBatch = null;
             return batch;
           },
           reserveBatch: (batch) => {
@@ -626,7 +645,12 @@ async function waitForNextInput<Mode, Message>(
         return await returnBatch(opts, materializedBatch, refreshBeforeQueuedBatch);
       }
 
-      const contextOnlyBatch = await opts.takeContextOnlyInput?.(opts.abortSignal);
+      // A taken context-only item is retained outside the user queue, after both
+      // direct and Pending input have had the opportunity to run.
+      const contextOnlyBatch = opts.session.hasPendingProviderInput?.()
+        ? null
+        : opts.takeDeferredContextOnlyBatch()
+          ?? await opts.takeContextOnlyInput?.(opts.abortSignal);
       if (contextOnlyBatch) {
         controller.abort('sessionProviderInputConsumer-context-only');
         return contextOnlyBatch;

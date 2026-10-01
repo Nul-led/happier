@@ -56,7 +56,7 @@ type BuildSessionListIndexWithServerScopeParams = Readonly<{
     activeGroupingV1?: 'project' | 'date';
     inactiveGroupingV1?: 'project' | 'date';
     sectionModeV1?: 'activity' | 'single';
-    getProjectForSession?: (sessionId: string) => ProjectLookupResult;
+    getProjectForSession?: (sessionId: string, serverId?: string | null) => ProjectLookupResult;
     previousIndex?: ReadonlyArray<SessionListIndexItem> | null;
     serverScope: Readonly<{
         serverId?: string | null;
@@ -67,14 +67,16 @@ type BuildSessionListIndexWithServerScopeParams = Readonly<{
 export function buildSessionListIndexWithServerScope(
     params: BuildSessionListIndexWithServerScopeParams,
 ): SessionListIndexItem[] {
+    const normalizedServerId = normalizeTrimmedString(params.serverScope.serverId) ?? '';
     const reachableSessions = applyReachableTargetsToSessionListRenderables({
         sessions: params.sessions,
         sessionRecords: params.sessionRecords,
         machineRecords: params.machineRecords,
-        getProjectForSession: params.getProjectForSession,
+        getProjectForSession: params.getProjectForSession && normalizedServerId
+            ? (sessionId) => params.getProjectForSession?.(sessionId, normalizedServerId) ?? null
+            : params.getProjectForSession,
     });
 
-    const normalizedServerId = normalizeTrimmedString(params.serverScope.serverId) ?? '';
     const normalizedServerName = normalizeTrimmedString(params.serverScope.serverName);
     const serverScope = normalizedServerId
         ? {
@@ -100,9 +102,12 @@ export function buildSessionListIndexWithServerScope(
                         ? { [normalizedServerId]: Object.keys(reachableSessions) }
                         : {},
                     machines: params.machineRecords,
+                    machineListByServerId: normalizedServerId
+                        ? { [normalizedServerId]: Object.values(params.machineRecords) }
+                        : {},
                     getProjectForSession: params.getProjectForSession
-                        ? (sessionId: string) =>
-                            normalizeSessionTargetProjectLookupResult(params.getProjectForSession?.(sessionId) ?? null)
+                        ? (sessionId: string, serverId?: string | null) =>
+                            normalizeSessionTargetProjectLookupResult(params.getProjectForSession?.(sessionId, serverId) ?? null)
                         : undefined,
                 }
                 : undefined,

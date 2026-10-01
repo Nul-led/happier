@@ -29,7 +29,7 @@ type ActiveRequest = (
  * decides whether the invocation may still publish a result.
  */
 export async function runWithSessionDraftRepositoryScopedRuntime<TResult>(params: Readonly<{
-    binding: ServerCredentialAccountScopeBinding;
+    binding: Pick<ServerCredentialAccountScopeBinding, 'scope' | 'isCurrent'>;
     activeRequest: ActiveRequest;
     operation: (input: Readonly<{
         scope: ServerAccountScope;

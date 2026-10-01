@@ -13,7 +13,7 @@ const {
     loadPersistedLinkedExternalSessionMock,
     readCredentialsMock,
     resolveExternalSessionObservationLinkInputMock,
-    resolveGenerationBoundExternalSessionFollowSurfaceMock,
+    resolveOccurrenceBoundExternalSessionFollowSurfaceMock,
     updateSessionMetadataWithExternalSessionFollowPolicyMock,
     validateExternalMachineSourceMock,
 } = vi.hoisted(() => ({
@@ -23,7 +23,7 @@ const {
     loadPersistedLinkedExternalSessionMock: vi.fn(),
     readCredentialsMock: vi.fn(),
     resolveExternalSessionObservationLinkInputMock: vi.fn(),
-    resolveGenerationBoundExternalSessionFollowSurfaceMock: vi.fn(),
+    resolveOccurrenceBoundExternalSessionFollowSurfaceMock: vi.fn(),
     updateSessionMetadataWithExternalSessionFollowPolicyMock: vi.fn(),
     validateExternalMachineSourceMock: vi.fn(),
 }));
@@ -62,8 +62,8 @@ vi.mock('@/api/session/external/backgroundFollow/externalSessionBackgroundFollow
 }));
 
 vi.mock('./providerOpsResolution', () => ({
-    resolveGenerationBoundExternalSessionFollowSurface:
-        (...args: unknown[]) => resolveGenerationBoundExternalSessionFollowSurfaceMock(...args),
+    resolveOccurrenceBoundExternalSessionFollowSurface:
+        (...args: unknown[]) => resolveOccurrenceBoundExternalSessionFollowSurfaceMock(...args),
 }));
 
 import {
@@ -120,7 +120,7 @@ describe('external-session follow lease actions', () => {
             resource: {
                 pluginId: 'happier.opencode',
                 agentLocalId: 'opencode',
-                pluginGeneration: 'plugin-1',
+                occurrenceId: 'plugin-1',
                 resourceKey: 'resource-1',
             },
             link: {
@@ -184,7 +184,7 @@ describe('external-session follow lease actions', () => {
         expect(validateExternalMachineSourceMock).not.toHaveBeenCalled();
         expect(attach).not.toHaveBeenCalled();
         expect(reconcileTranscriptDemand).not.toHaveBeenCalled();
-        expect(resolveGenerationBoundExternalSessionFollowSurfaceMock)
+        expect(resolveOccurrenceBoundExternalSessionFollowSurfaceMock)
             .not.toHaveBeenCalled();
     });
 
@@ -232,7 +232,7 @@ describe('external-session follow lease actions', () => {
 
     it('routes two viewers through one generation-qualified physical follower', async () => {
         const retirement = new AbortController();
-        resolveGenerationBoundExternalSessionFollowSurfaceMock.mockResolvedValue({
+        resolveOccurrenceBoundExternalSessionFollowSurfaceMock.mockResolvedValue({
             providerOps: {
                 pageTranscript: vi.fn(async () => ({
                     items: [],
@@ -245,7 +245,7 @@ describe('external-session follow lease actions', () => {
             },
             resource: {
                 linkGeneration: 'link-1',
-                pluginGeneration: 'plugin-1',
+                occurrenceId: 'plugin-1',
                 retirementSignal: retirement.signal,
             },
         });
@@ -303,7 +303,7 @@ describe('external-session follow lease actions', () => {
     });
 
     it('preserves a provider failure from initial viewer follow acquisition', async () => {
-        resolveGenerationBoundExternalSessionFollowSurfaceMock.mockResolvedValue({
+        resolveOccurrenceBoundExternalSessionFollowSurfaceMock.mockResolvedValue({
             providerOps: {
                 pageTranscript: vi.fn(async () => {
                     throw new ExternalSessionProviderFailureError({
@@ -317,7 +317,7 @@ describe('external-session follow lease actions', () => {
             },
             resource: {
                 linkGeneration: 'link-1',
-                pluginGeneration: 'plugin-1',
+                occurrenceId: 'plugin-1',
             },
         });
         const followLeaseManager = createExternalSessionFollowLeaseManager();
@@ -369,7 +369,7 @@ describe('external-session follow lease actions', () => {
             resource: {
                 pluginId: 'happier.agent.codex',
                 agentLocalId: 'codex',
-                pluginGeneration: 'plugin-codex-1',
+                occurrenceId: 'plugin-codex-1',
                 resourceKey: '/tmp/codex-home',
             },
             link: {
@@ -397,7 +397,7 @@ describe('external-session follow lease actions', () => {
                 linkGeneration: 'link-codex-1',
             },
         });
-        resolveGenerationBoundExternalSessionFollowSurfaceMock.mockResolvedValueOnce({
+        resolveOccurrenceBoundExternalSessionFollowSurfaceMock.mockResolvedValueOnce({
             providerOps: {
                 pageTranscript: vi.fn(async () => ({
                     items: [],
@@ -412,7 +412,7 @@ describe('external-session follow lease actions', () => {
             },
             resource: {
                 linkGeneration: 'link-codex-1',
-                pluginGeneration: 'plugin-codex-1',
+                occurrenceId: 'plugin-codex-1',
             },
         });
         const reconcileTranscriptDemand = vi.fn(async (
@@ -461,9 +461,9 @@ describe('external-session follow lease actions', () => {
     it('admits a cursor-qualified OpenCode viewer without a physical follow lease', async () => {
         const resource = {
             linkGeneration: 'link-1',
-            pluginGeneration: 'plugin-1',
+            occurrenceId: 'plugin-1',
         };
-        resolveGenerationBoundExternalSessionFollowSurfaceMock.mockResolvedValue({
+        resolveOccurrenceBoundExternalSessionFollowSurfaceMock.mockResolvedValue({
             providerOps: {
                 pageTranscript: vi.fn(async () => ({
                     items: [],
@@ -547,9 +547,9 @@ describe('external-session follow lease actions', () => {
     it('maps viewer capacity exhaustion to a stable typed availability response', async () => {
         const resource = {
             linkGeneration: 'link-1',
-            pluginGeneration: 'plugin-1',
+            occurrenceId: 'plugin-1',
         };
-        resolveGenerationBoundExternalSessionFollowSurfaceMock.mockResolvedValue({
+        resolveOccurrenceBoundExternalSessionFollowSurfaceMock.mockResolvedValue({
             providerOps: {
                 pageTranscript: vi.fn(),
                 readAfterTranscript: vi.fn(),
@@ -630,21 +630,21 @@ describe('external-session follow lease actions', () => {
         loadLinkedExternalSessionFromRawMock.mockResolvedValueOnce(
             loadedOhMyPiSession,
         );
-        resolveGenerationBoundExternalSessionFollowSurfaceMock.mockResolvedValueOnce({
+        resolveOccurrenceBoundExternalSessionFollowSurfaceMock.mockResolvedValueOnce({
             providerOps: {
                 pageTranscript: vi.fn(),
                 readAfterTranscript: vi.fn(),
             },
             resource: {
                 linkGeneration: 'link-omp',
-                pluginGeneration: 'plugin-omp',
+                occurrenceId: 'plugin-omp',
             },
         });
         resolveExternalSessionObservationLinkInputMock.mockResolvedValueOnce({
             resource: {
                 pluginId: 'happier.ohmypi',
                 agentLocalId: 'ohmypi',
-                pluginGeneration: 'plugin-omp',
+                occurrenceId: 'plugin-omp',
                 resourceKey: '/tmp/omp',
             },
             link: {
@@ -690,7 +690,7 @@ describe('external-session follow lease actions', () => {
     });
 
     it('preserves a provider failure from initial background-follow acquisition', async () => {
-        resolveGenerationBoundExternalSessionFollowSurfaceMock.mockResolvedValue({
+        resolveOccurrenceBoundExternalSessionFollowSurfaceMock.mockResolvedValue({
             providerOps: {
                 pageTranscript: vi.fn(async () => {
                     throw new ExternalSessionProviderFailureError({
@@ -704,7 +704,7 @@ describe('external-session follow lease actions', () => {
             },
             resource: {
                 linkGeneration: 'link-1',
-                pluginGeneration: 'plugin-1',
+                occurrenceId: 'plugin-1',
             },
         });
         const followLeaseManager = createExternalSessionFollowLeaseManager();
@@ -787,7 +787,7 @@ describe('external-session follow lease actions', () => {
                 },
             },
         });
-        resolveGenerationBoundExternalSessionFollowSurfaceMock
+        resolveOccurrenceBoundExternalSessionFollowSurfaceMock
             .mockRejectedValueOnce(new Error('Agent unavailable'));
         const reconcilePassiveFollowSession = vi.fn(async () => ({
             status: 'settled' as const,
@@ -818,7 +818,7 @@ describe('external-session follow lease actions', () => {
         }));
 
         expect(
-            resolveGenerationBoundExternalSessionFollowSurfaceMock,
+            resolveOccurrenceBoundExternalSessionFollowSurfaceMock,
         ).not.toHaveBeenCalled();
         expect(validateExternalMachineSourceMock).not.toHaveBeenCalled();
         expect(loadLinkedExternalSessionMock).not.toHaveBeenCalled();
@@ -850,7 +850,7 @@ describe('external-session follow lease actions', () => {
                 },
             },
         });
-        resolveGenerationBoundExternalSessionFollowSurfaceMock
+        resolveOccurrenceBoundExternalSessionFollowSurfaceMock
             .mockRejectedValueOnce(new Error('Agent unavailable'));
         const reconcilePassiveFollowSession = vi.fn(async () => ({
             status: 'settled' as const,
@@ -877,7 +877,7 @@ describe('external-session follow lease actions', () => {
         }));
 
         expect(
-            resolveGenerationBoundExternalSessionFollowSurfaceMock,
+            resolveOccurrenceBoundExternalSessionFollowSurfaceMock,
         ).not.toHaveBeenCalled();
         expect(validateExternalMachineSourceMock).not.toHaveBeenCalled();
         expect(loadLinkedExternalSessionMock).not.toHaveBeenCalled();
@@ -977,14 +977,14 @@ describe('external-session follow lease actions', () => {
                 },
             },
         });
-        resolveGenerationBoundExternalSessionFollowSurfaceMock.mockResolvedValue({
+        resolveOccurrenceBoundExternalSessionFollowSurfaceMock.mockResolvedValue({
             providerOps: {
                 pageTranscript: vi.fn(),
                 readAfterTranscript: vi.fn(),
             },
             resource: {
                 linkGeneration: 'link-1',
-                pluginGeneration: 'plugin-1',
+                occurrenceId: 'plugin-1',
                 retirementSignal: retirement.signal,
             },
         });
@@ -1033,14 +1033,14 @@ describe('external-session follow lease actions', () => {
                 },
             },
         });
-        resolveGenerationBoundExternalSessionFollowSurfaceMock.mockResolvedValue({
+        resolveOccurrenceBoundExternalSessionFollowSurfaceMock.mockResolvedValue({
             providerOps: {
                 pageTranscript: vi.fn(),
                 readAfterTranscript: vi.fn(),
             },
             resource: {
                 linkGeneration: 'link-1',
-                pluginGeneration: 'plugin-1',
+                occurrenceId: 'plugin-1',
             },
         });
         let finishPassiveReconcile!: () => void;
@@ -1096,8 +1096,8 @@ describe('external-session follow lease actions', () => {
     });
 
     it('reports an attach with no current Agent generation as a typed availability failure', async () => {
-        resolveGenerationBoundExternalSessionFollowSurfaceMock.mockReset();
-        resolveGenerationBoundExternalSessionFollowSurfaceMock.mockRejectedValue(
+        resolveOccurrenceBoundExternalSessionFollowSurfaceMock.mockReset();
+        resolveOccurrenceBoundExternalSessionFollowSurfaceMock.mockRejectedValue(
             new ExternalSessionFollowFailureError(
                 'agent_unavailable',
                 'Missing current external-session Agent generation for opencode',
@@ -1125,13 +1125,13 @@ describe('external-session follow lease actions', () => {
     });
 
     it('reports an attach whose linked source changed during acquisition as a typed source-changed failure', async () => {
-        resolveGenerationBoundExternalSessionFollowSurfaceMock.mockReset();
-        resolveGenerationBoundExternalSessionFollowSurfaceMock.mockResolvedValue({
+        resolveOccurrenceBoundExternalSessionFollowSurfaceMock.mockReset();
+        resolveOccurrenceBoundExternalSessionFollowSurfaceMock.mockResolvedValue({
             providerOps: {
                 pageTranscript: vi.fn(),
                 readAfterTranscript: vi.fn(),
             },
-            resource: { linkGeneration: 'link-1', pluginGeneration: 'plugin-1' },
+            resource: { linkGeneration: 'link-1', occurrenceId: 'plugin-1' },
         });
         const attach = vi.fn(async () => {
             throw new ExternalSessionFollowFailureError(
@@ -1159,13 +1159,13 @@ describe('external-session follow lease actions', () => {
     });
 
     it('reports an attach whose live follow was not admitted as a typed follow-unavailable failure', async () => {
-        resolveGenerationBoundExternalSessionFollowSurfaceMock.mockReset();
-        resolveGenerationBoundExternalSessionFollowSurfaceMock.mockResolvedValue({
+        resolveOccurrenceBoundExternalSessionFollowSurfaceMock.mockReset();
+        resolveOccurrenceBoundExternalSessionFollowSurfaceMock.mockResolvedValue({
             providerOps: {
                 pageTranscript: vi.fn(),
                 readAfterTranscript: vi.fn(),
             },
-            resource: { linkGeneration: 'link-1', pluginGeneration: 'plugin-1' },
+            resource: { linkGeneration: 'link-1', occurrenceId: 'plugin-1' },
         });
         const attach = vi.fn(async () => {
             throw new ExternalSessionFollowFailureError(
@@ -1193,13 +1193,13 @@ describe('external-session follow lease actions', () => {
     });
 
     it('reports an attach against a disposed follow-lease owner as a typed daemon failure', async () => {
-        resolveGenerationBoundExternalSessionFollowSurfaceMock.mockReset();
-        resolveGenerationBoundExternalSessionFollowSurfaceMock.mockResolvedValue({
+        resolveOccurrenceBoundExternalSessionFollowSurfaceMock.mockReset();
+        resolveOccurrenceBoundExternalSessionFollowSurfaceMock.mockResolvedValue({
             providerOps: {
                 pageTranscript: vi.fn(),
                 readAfterTranscript: vi.fn(),
             },
-            resource: { linkGeneration: 'link-1', pluginGeneration: 'plugin-1' },
+            resource: { linkGeneration: 'link-1', occurrenceId: 'plugin-1' },
         });
         const followLeaseManager = createExternalSessionFollowLeaseManager();
         await followLeaseManager.dispose();
@@ -1253,8 +1253,8 @@ describe('external-session follow lease actions', () => {
     });
 
     it('keeps a genuinely unexpected attach throw on the opaque internal-error envelope', async () => {
-        resolveGenerationBoundExternalSessionFollowSurfaceMock.mockReset();
-        resolveGenerationBoundExternalSessionFollowSurfaceMock.mockRejectedValue(
+        resolveOccurrenceBoundExternalSessionFollowSurfaceMock.mockReset();
+        resolveOccurrenceBoundExternalSessionFollowSurfaceMock.mockRejectedValue(
             new Error('unexpected follow surface defect'),
         );
         const attach = vi.fn();
@@ -1278,8 +1278,8 @@ describe('external-session follow lease actions', () => {
     });
 
     it('reports a typed background-follow failure with the same corridor classification', async () => {
-        resolveGenerationBoundExternalSessionFollowSurfaceMock.mockReset();
-        resolveGenerationBoundExternalSessionFollowSurfaceMock.mockRejectedValue(
+        resolveOccurrenceBoundExternalSessionFollowSurfaceMock.mockReset();
+        resolveOccurrenceBoundExternalSessionFollowSurfaceMock.mockRejectedValue(
             new ExternalSessionFollowFailureError(
                 'source_changed',
                 'External-session Agent generation retired while resolving opencode',

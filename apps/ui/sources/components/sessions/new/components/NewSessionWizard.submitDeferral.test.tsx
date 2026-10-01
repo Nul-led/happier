@@ -191,8 +191,6 @@ describe('NewSessionWizard submit deferral', () => {
                         tmuxRequested: false,
                         enabledAgentIds: ['codex'],
                         isAgentSelectable: () => true,
-                        isCliBannerDismissed: () => true,
-                        dismissCliBanner: () => {},
                         agentType: 'codex',
                         setAgentType: () => {},
                         selectedIndicatorColor: '#000',

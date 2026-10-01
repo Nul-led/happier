@@ -1,5 +1,5 @@
 import type { ReactTestRenderer } from 'react-test-renderer';
-import type { ToolCall } from '@/sync/domains/messages/messageTypes';
+import type { ToolCall } from "@happier-dev/session-core/messages";
 import { collectHostText, makeToolCall } from '@/dev/testkit';
 
 export function makeCompletedTool(

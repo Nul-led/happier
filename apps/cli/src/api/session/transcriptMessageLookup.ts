@@ -9,6 +9,7 @@ import { configuration } from '@/configuration';
 import { resolveServerHttpBaseUrl } from '../client/serverHttpBaseUrl';
 import { SessionMessageContentSchema, type SessionMessageContent } from '../types';
 import { readAuthenticationStatus, readHttpStatus } from '@/api/client/httpStatusError';
+import { isNetworkConnectionErrorCode } from '@/api/client/classifyServerEndpointError';
 import { TranscriptRecoveryCoordinator, type TranscriptRecoveryResult } from './recovery/TranscriptRecoveryCoordinator';
 
 const KEEP_ALIVE_HTTP_AGENT = new HttpAgent({ keepAlive: true, maxSockets: 16 });
@@ -108,17 +109,7 @@ function isTimeoutError(error: unknown): boolean {
 
 function isNetworkError(error: unknown): boolean {
     const code = readErrorCode(error);
-    if (
-        code === 'ECONNREFUSED'
-        || code === 'ECONNRESET'
-        || code === 'ENOTFOUND'
-        || code === 'EAI_AGAIN'
-        || code === 'ENETUNREACH'
-        || code === 'EHOSTUNREACH'
-        || code === 'ERR_NETWORK'
-    ) {
-        return true;
-    }
+    if (isNetworkConnectionErrorCode(code)) return true;
     return axios.isAxiosError(error) && !error.response;
 }
 
@@ -220,6 +211,7 @@ export async function findTranscriptEncryptedMessageByLocalId(params: {
     localId: string;
     onError?: (error: unknown) => void;
     timeoutMs?: number;
+    signal?: AbortSignal;
     resolveAuthorizationHeaders?: ResolveTranscriptLookupAuthorizationHeaders;
 }): Promise<TranscriptMessageLookupResult | null> {
     const serverUrl = resolveServerHttpBaseUrl();
@@ -229,6 +221,7 @@ export async function findTranscriptEncryptedMessageByLocalId(params: {
         sessionId: params.sessionId,
         localId: params.localId,
         timeoutMs: params.timeoutMs,
+        ...(params.signal ? { signal: params.signal } : {}),
         ...(params.resolveAuthorizationHeaders
             ? { resolveAuthorizationHeaders: params.resolveAuthorizationHeaders }
             : {}),

@@ -87,7 +87,12 @@ export function initializeSessionClientConnection(
     const userSocket = params.userScopedAccountUpdates
         ? params.transport.createAccountUpdatesSocket?.() ?? null
         : null;
-    userSocket?.on('update', (data: Update) => params.handleUserScopedUpdate(data, userSocket));
+    userSocket?.on('update', (data: Update) => {
+        // Content-free AccountChange wakes trigger the same re-observation owner
+        // as reconnect/relation hints; they never convey source read authority.
+        if (data.body?.t === 'account-change') params.onSessionFollowInvalidated?.();
+        params.handleUserScopedUpdate(data, userSocket);
+    });
     userSocket?.on('session', () => {});
 
     let currentTransportSocket: Socket<ServerToClientEvents, ClientToServerEvents> | null = null;

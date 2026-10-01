@@ -6,12 +6,12 @@ import { requiresProviderSafeModelSelectionRpc } from './providerDaemonSessionCo
 
 describe('requiresProviderSafeModelSelectionRpc', () => {
     const nativeSelection = ProviderBoundModelRefSchema.parse({
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         providerConnectionId: null,
         modelId: 'native-model',
     });
     const providerSelection = ProviderBoundModelRefSchema.parse({
-        agentTargetKey: 'backend:opencode',
+        agentTargetKey: 'agent:happier.agent.opencode/opencode',
         providerConnectionId: 'voice-openai-compatible-chat',
         modelId: 'provider-model',
     });

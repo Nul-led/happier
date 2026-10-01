@@ -1,3 +1,4 @@
+import { renderWithSessionTranscriptSource as renderBoundScreen, createTestSessionTranscriptSource } from '@/dev/testkit';
 import React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -13,6 +14,13 @@ vi.mock('@expo/vector-icons', () => ({
 }));
 
 const routerPush = vi.fn();
+function renderWithSessionTranscriptSource(element: React.ReactElement) {
+    return renderBoundScreen(element, createTestSessionTranscriptSource({
+        sessionId: 'session-1', navigate: routerPush,
+        interaction: { canSendMessages: true, canApprovePermissions: true },
+        actions: { respondToPermission: async () => {}, answerUserAction: async () => {}, abort: async () => {}, submitMessage: async () => {} },
+    }));
+}
 
 installToolShellCommonModuleMocks({
     expoRouter: async () => {
@@ -63,11 +71,6 @@ vi.mock('@/components/tools/shell/views/ToolInlineBody', () => ({
     ToolInlineBody: (props: any) => React.createElement('ToolInlineBody', props),
 }));
 
-vi.mock('@/sync/ops', () => ({
-    sessionAllow: vi.fn(async () => {}),
-    sessionDeny: vi.fn(async () => {}),
-}));
-
 describe('UserActionPromptCard (preview)', () => {
     it('hides the open-details action when the prompt location is not durably addressable', async () => {
         const { UserActionPromptCard } = await import('./UserActionPromptCard');
@@ -79,7 +82,7 @@ describe('UserActionPromptCard (preview)', () => {
             arguments: { question: 'Continue?' },
         } as PendingPermissionRequest;
 
-        const screen = await renderScreen(<UserActionPromptCard
+        const screen = await renderWithSessionTranscriptSource(<UserActionPromptCard
             request={request}
             location={{
                 kind: 'top',
@@ -105,7 +108,7 @@ describe('UserActionPromptCard (preview)', () => {
             arguments: { question: 'Continue?' },
         } as PendingPermissionRequest;
 
-        const screen = await renderScreen(
+        const screen = await renderWithSessionTranscriptSource(
             <UserActionPromptCard
                 request={request}
                 location={null}
@@ -119,10 +122,48 @@ describe('UserActionPromptCard (preview)', () => {
         expect(screen.findAllByTestId('user-action-prompt-card')).toHaveLength(0);
     });
 
+    it('updates an inactive card to active on the same instance without a hook-order error', async () => {
+        const { UserActionPromptCard } = await import('./UserActionPromptCard');
+
+        const request = {
+            id: 'ua1',
+            tool: 'ask_user',
+            kind: 'user_action',
+            arguments: { question: 'Continue?' },
+        } as PendingPermissionRequest;
+
+        const screen = await renderWithSessionTranscriptSource(
+            <UserActionPromptCard
+                request={request}
+                location={null}
+                sessionId="session-1"
+                metadata={null}
+                canApprovePermissions={false}
+                disabledReason="inactive"
+            />,
+        );
+        expect(screen.findAllByTestId('user-action-prompt-card')).toHaveLength(0);
+
+        // The same card instance becomes actionable when its Session activates.
+        // A hook declared after the inactive early return would change the
+        // render's hook count here and crash the update.
+        await screen.update(
+            <UserActionPromptCard
+                request={request}
+                location={null}
+                sessionId="session-1"
+                metadata={null}
+                canApprovePermissions={true}
+            />,
+        );
+
+        expect(screen.findAllByTestId('user-action-prompt-card')).toHaveLength(1);
+    });
+
     it('uses the distinct Action confirmation presentation for canonical Action requests', async () => {
         const { UserActionPromptCard } = await import('./UserActionPromptCard');
 
-        const screen = await renderScreen(
+        const screen = await renderWithSessionTranscriptSource(
             <UserActionPromptCard
                 request={{
                     id: 'action:request-1',

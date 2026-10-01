@@ -3,6 +3,10 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { createTempDir, removeTempDir } from '@/testkit/fs/tempDir';
+import { reloadConfiguration } from '@/configuration';
+// Load the real CLI graph during collection, not inside each timed stop operation.
+// Configuration has an explicit reload boundary for the per-test Happier home.
+import './requestSessionStop';
 
 const {
   fetchSessionByIdCompatMock,
@@ -77,9 +81,9 @@ describe('requestSessionStop', () => {
   const previousHappyHomeDir = process.env.HAPPIER_HOME_DIR;
 
   beforeEach(async () => {
-    vi.resetModules();
     happyHomeDir = await createTempDir('happier-request-session-stop-');
     process.env.HAPPIER_HOME_DIR = happyHomeDir;
+    reloadConfiguration();
 
     fetchSessionByIdCompatMock.mockReset();
     isPidSafeHappySessionProcessMock.mockReset();
@@ -500,12 +504,23 @@ describe('requestSessionStop', () => {
     });
   });
 
-  it('does not let an ambiguous retry destroy an attachment installed after the daemon request began', async () => {
+  it.each(['owned', 'borrowed'] as const)('does not let an ambiguous retry destroy an attachment replacing a %s host after the daemon request began', async (lifecycle) => {
     const sessionId = 'sess_transport_replaced_during_request';
     const originalAttachmentId = 'attachment-before-daemon-stop';
     const replacementAttachmentId = 'attachment-after-daemon-stop';
     await configureExactTransportAmbiguousHost({ sessionId, attachmentId: originalAttachmentId });
     const descriptorPath = join(happyHomeDir, 'terminal', 'sessions', `${sessionId}.host.json`);
+    if (lifecycle === 'borrowed') {
+      await writeFile(descriptorPath, JSON.stringify({
+        version: 3, lifecycle, attachmentId: originalAttachmentId, sessionId,
+        handle: {
+          attachmentId: originalAttachmentId, kind: 'zellij', sessionName: 'preserved-host',
+          paneId: 'terminal_1', socketDir: '/tmp/preserved-zellij',
+          attachMetadata: { attachStrategy: 'terminal_host', topology: 'shared', locality: 'same_machine', liveProbe: 'required' },
+        },
+        updatedAt: 1,
+      }), 'utf8');
+    }
     stopDaemonSessionMock.mockImplementation(async () => {
       await writeFile(descriptorPath, JSON.stringify({
         version: 2,

@@ -85,24 +85,6 @@ vi.mock('@/components/onboarding/state/usePendingSetupIntent', () => ({
     usePendingSetupIntent: () => null,
 }));
 
-vi.mock('@/components/onboarding/surfaces/useSetupWizardController', () => ({
-    useSetupWizardController: () => ({
-        stepId: 'setup_this_computer',
-        body: null,
-        onPrimary: () => {},
-        primaryLabel: 'Continue',
-        primaryDisabled: false,
-        onBack: () => {},
-        backLabel: 'Back',
-        showBack: true,
-        onSkip: () => {},
-        skipLabel: 'Skip',
-        skipDisabled: false,
-        showSkip: true,
-        footerHint: null,
-        goToStep: () => {},
-    }),
-}));
 
 vi.mock('@/sync/store/settingsWriters', () => ({
     useApplySettings: () => () => {},
@@ -191,27 +173,6 @@ function createWizardSurfaceProps(): OnboardingWizardSurfaceProps {
             serverAvailability: 'ready',
             serverUrlForCopy: 'https://relay.example.test',
             showAuthActions: true,
-            showProviderSignup: false,
-            showAnonymousSignup: false,
-            showMtlsLogin: false,
-            showKeylessProviderLogin: false,
-            providerId: null,
-            keylessProviderId: null,
-            providerSignupTitle: '',
-            providerKeylessTitle: '',
-            anonymousSignupTitle: '',
-            mtlsTitle: '',
-            primaryAction: null,
-            mtlsPrimary: false,
-            keylessPrimary: false,
-            autoRedirect: {
-                enabled: false,
-                providerId: null,
-                toKeyedProvision: false,
-                toKeylessLogin: false,
-                toMtls: false,
-                toLegacySignupProvider: false,
-            },
             retryServerCheck: () => undefined,
         },
         accountContinuationIntent: { kind: 'enter', target: { kind: 'automatic' } },

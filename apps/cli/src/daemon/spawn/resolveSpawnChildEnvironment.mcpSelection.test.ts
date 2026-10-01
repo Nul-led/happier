@@ -2,8 +2,60 @@ import { describe, expect, it } from 'vitest';
 
 import { resolveSpawnChildEnvironment } from './resolveSpawnChildEnvironment';
 import type { SpawnSessionOptions } from '@/rpc/handlers/registerSessionHandlers';
+import { buildSpawnChildProcessEnv } from './buildSpawnChildProcessEnv';
+import { captureSessionLaunchControlMetadata, createSessionMetadata } from '@/agent/runtime/createSessionMetadata';
 
 describe('resolveSpawnChildEnvironment (mcp selection)', () => {
+  it.each(['managed', 'path'] as const)('publishes the %s directory kind solely from the private spawn option', async (directoryKind) => {
+    const options: SpawnSessionOptions & { directoryKind: 'managed' | 'path' } = {
+      directory: '/tmp/session-working-directory',
+      directoryKind,
+      environmentVariables: { HAPPIER_SESSION_DIRECTORY_KIND: 'managed' },
+    };
+    const processEnv = {
+      HAPPIER_SESSION_DIRECTORY_KIND: 'managed',
+      happier_session_directory_kind: 'managed',
+    };
+    const result = await resolveSpawnChildEnvironment({
+      options,
+      profileEnvironmentVariables: { HAPPIER_SESSION_DIRECTORY_KIND: 'managed' },
+      daemonSpawnHooks: null,
+      processEnv,
+      logDebug: () => {},
+      logInfo: () => {},
+      logWarn: () => {},
+      connectedServiceAuth: null,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const childEnvironment = buildSpawnChildProcessEnv({ processEnv, extraEnv: result.extraEnvForChild });
+    expect(childEnvironment.HAPPIER_SESSION_DIRECTORY_KIND).toBe(directoryKind === 'managed' ? 'managed' : undefined);
+    expect(childEnvironment.happier_session_directory_kind).toBeUndefined();
+    const launchControlMetadata = captureSessionLaunchControlMetadata({ processEnvironment: childEnvironment });
+    expect(launchControlMetadata).toMatchObject({ sessionDirectoryKind: directoryKind });
+    expect(childEnvironment.HAPPIER_SESSION_DIRECTORY_KIND).toBeUndefined();
+    const { metadata } = createSessionMetadata({
+      flavor: 'test-agent',
+      machineId: 'machine-1',
+      directory: options.directory,
+      launchControlMetadata,
+    });
+    expect(metadata).toMatchObject({
+      path: options.directory,
+      sessionWorkspaceLocationV1: {
+        machineId: 'machine-1',
+        machinePath: options.directory,
+        agentPath: options.directory,
+      },
+    });
+    if (directoryKind === 'managed') {
+      expect(metadata).toHaveProperty('sessionDirectoryV1', { v: 1, kind: 'managed' });
+    } else {
+      expect(metadata).not.toHaveProperty('sessionDirectoryV1');
+    }
+  });
+
   it('exports session-scoped MCP selection JSON for the spawned runner', async () => {
     const options: SpawnSessionOptions = {
       directory: '.',

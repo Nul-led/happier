@@ -1,8 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { Session } from '@/sync/domains/state/storageTypes';
+import type { SessionListRenderableSession } from '@/sync/domains/session/listing/sessionListRenderable';
+import type { EncryptionScopeInput } from '@/sync/encryption/encryption';
 import { storage } from '@/sync/domains/state/storage';
 import { syncPerformanceTelemetry } from '@/sync/runtime/syncPerformanceTelemetry';
+import { createSessionAccessFixture, createSessionListRenderableSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
 import {
   buildNewSessionFromSocketUpdate,
   buildUpdatedSessionFromSocketUpdate,
@@ -42,8 +45,123 @@ function createDeferred<T>(): {
 }
 
 describe('buildUpdatedSessionFromSocketUpdate (plaintext)', () => {
+  it('does not admit a malformed layout into a list row when the Session tuple owner rejects it', async () => {
+    const renderable = createSessionListRenderableSessionFixture({
+      metadataLayoutVersion: 0, metadataVersion: 1,
+      metadata: { path: '/current', name: 'Current' },
+    });
+    const patch = await buildUpdatedSessionListRenderablePatchFromSocketUpdate({
+      renderable,
+      updateBody: {
+        metadataLayoutVersion: -1,
+        metadata: { version: 2, value: JSON.stringify({ path: '/invalid', name: 'Invalid' }) },
+      },
+      updateSeq: 2, updateCreatedAt: 2, sessionEncryption: null,
+    });
+    expect(patch.metadataVersion).not.toBe(2);
+    expect(patch.metadata).not.toMatchObject({ name: 'Invalid' });
+  });
+  it('keeps an owner-projected layout-1 list row intact until its by-id refresh', async () => {
+    const renderable = createSessionListRenderableSessionFixture({
+      metadataLayoutVersion: 1,
+      metadataVersion: 1,
+      metadata: { path: '/worktree', host: 'machine', name: 'My session' },
+    });
+    const patch = await buildUpdatedSessionListRenderablePatchFromSocketUpdate({
+      renderable,
+      updateBody: {
+        metadataLayoutVersion: 1,
+        metadata: { version: 2, value: JSON.stringify({ v: 1, summary: { text: 'Shared summary', updatedAt: 2 } }) },
+      },
+      updateSeq: 2,
+      updateCreatedAt: 2,
+      sessionEncryption: null,
+    });
+
+    // The retained projection is revision 1's, so the row keeps revision 1: stamping it with 2
+    // would let the warm cache and the next list refresh treat the stale owner title as current.
+    expect(patch.metadataVersion).toBe(1);
+    expect(patch.metadataLayoutVersion).toBe(1);
+    expect(patch.metadata).toBe(renderable.metadata);
+  });
+
+  // A row without an access projection is the legacy owner shape. The rule that says its
+  // composed metadata is the owner view (`buildSessionFromListRenderable`) must be the same
+  // rule that decides whether a shared-only frame may replace it.
+  it('keeps a legacy owner layout-1 list row intact until its by-id refresh', async () => {
+    const renderable = createSessionListRenderableSessionFixture({
+      access: undefined,
+      accessLevel: undefined,
+      metadataLayoutVersion: 1,
+      metadataVersion: 1,
+      metadata: { path: '/worktree', host: 'machine', name: 'My session' },
+    });
+    const patch = await buildUpdatedSessionListRenderablePatchFromSocketUpdate({
+      renderable,
+      updateBody: {
+        metadataLayoutVersion: 1,
+        metadata: { version: 2, value: JSON.stringify({ v: 1, summary: { text: 'Shared summary', updatedAt: 2 } }) },
+      },
+      updateSeq: 2,
+      updateCreatedAt: 2,
+      sessionEncryption: null,
+    });
+
+    // The retained projection is revision 1's, so the row keeps revision 1: stamping it with 2
+    // would let the warm cache and the next list refresh treat the stale owner title as current.
+    expect(patch.metadataVersion).toBe(1);
+    expect(patch.metadataLayoutVersion).toBe(1);
+    expect(patch.metadata).toBe(renderable.metadata);
+  });
+
+  it('still projects a layout-1 recipient shared-metadata update', async () => {
+    const renderable = createSessionListRenderableSessionFixture({
+      access: createSessionAccessFixture('view'),
+      metadataLayoutVersion: 1,
+      metadata: { path: '', summaryText: 'Old summary' },
+    });
+    const patch = await buildUpdatedSessionListRenderablePatchFromSocketUpdate({
+      renderable,
+      updateBody: {
+        metadataLayoutVersion: 1,
+        metadata: { version: 2, value: JSON.stringify({ v: 1, summary: { text: 'New summary', updatedAt: 2 } }) },
+      },
+      updateSeq: 2,
+      updateCreatedAt: 2,
+      sessionEncryption: null,
+    });
+
+    expect(patch.metadata?.summaryText).toBe('New summary');
+  });
+
+  // The cache-only recipient patch and the full-Session row builder read shared metadata through
+  // one projection: strict shared schema, Agent presentation as the row's flavor.
+  it('projects a recipient shared-metadata frame through the same projection as the row builder', async () => {
+    const renderable = createSessionListRenderableSessionFixture({
+      access: createSessionAccessFixture('view'),
+      metadataLayoutVersion: 1,
+      metadata: { path: '', summaryText: 'Old summary', flavor: 'codex' },
+    });
+    const patch = await buildUpdatedSessionListRenderablePatchFromSocketUpdate({
+      renderable,
+      updateBody: {
+        metadataLayoutVersion: 1,
+        metadata: {
+          version: 2,
+          value: JSON.stringify({ v: 1, summary: { text: 'New summary', updatedAt: 2 }, agentPresentation: { agentId: 'codex' } }),
+        },
+      },
+      updateSeq: 2,
+      updateCreatedAt: 2,
+      sessionEncryption: null,
+    });
+
+    expect(patch.metadata?.summaryText).toBe('New summary');
+    expect(patch.metadata?.flavor).toBe('codex');
+  });
+
   it('projects a newer Agent headline into the exact list-row socket patch', async () => {
-    const renderable = {
+    const renderable: SessionListRenderableSession = {
       ...createSession({ sessionId: 'same-id', encryptionMode: 'plain' }),
       agentActivityHeadline: { v: 1, backendId: 'claude', updatedAt: 1, activeEntries: [] },
     };
@@ -190,7 +308,10 @@ describe('buildUpdatedSessionFromSocketUpdate (plaintext)', () => {
   });
 
   it('rejects an explicitly malformed new-session encryption mode instead of inferring E2EE from its envelope', async () => {
-    const initializeSessions = vi.fn(async () => {});
+    const initializeSessions = vi.fn(async (
+        _sessions: Map<string, Uint8Array | null>,
+        _scopeInput?: EncryptionScopeInput,
+    ) => null);
     const decryptMetadata = vi.fn(async () => ({ path: '/must-not-open', host: 'must-not-open' }));
     const nextSession = await buildNewSessionFromSocketUpdate({
       updateBody: {
@@ -355,6 +476,31 @@ describe('buildUpdatedSessionFromSocketUpdate (plaintext)', () => {
     });
     expect(JSON.stringify(nextSession)).not.toMatch(/private-native-id|private-tool-arguments|private-worktree/);
     expect(JSON.stringify(renderablePatch)).not.toMatch(/private-native-id|private-worktree/);
+  });
+
+  // A Session created by an external-session import arrives over the socket as `machine_only`.
+  // Dropping the field let the transcript authority fall back to "legacy linked session".
+  it('keeps the storage state a new-session socket payload carries', async () => {
+    const build = (currentStorageState?: string) => buildNewSessionFromSocketUpdate({
+      updateBody: {
+        t: 'new-session',
+        id: 's_imported',
+        metadataLayoutVersion: 0,
+        metadataVersion: 1,
+        metadata: JSON.stringify({ path: '/tmp/project', host: 'mac' }),
+        agentStateVersion: 1,
+        agentState: null,
+        encryptionMode: 'plain',
+        ...(currentStorageState === undefined ? {} : { currentStorageState }),
+      } as never,
+      updateSeq: 1,
+      updateCreatedAt: 1,
+      encryption: null,
+    });
+
+    expect((await build('machine_only'))?.currentStorageState).toBe('machine_only');
+    // An unknown value is not guessed into a state.
+    expect((await build('bogus'))?.currentStorageState).toBeUndefined();
   });
 
   it('treats a layout-v1 new-session socket payload as a recipient projection with an Agent tombstone', async () => {

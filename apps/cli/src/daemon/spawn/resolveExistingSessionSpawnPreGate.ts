@@ -11,8 +11,15 @@ type ResolveExistingSessionSpawnPreGateResult = Readonly<{
 
 export type ExistingSessionAlreadyRunningDecision =
   | Readonly<{ action: 'use_existing' }>
-  | Readonly<{ action: 'spawn_replacement' }>
+  | Readonly<{
+      action: 'wait_for_exit';
+      timeoutResult: Extract<SpawnSessionResult, { type: 'error' }>;
+    }>
   | Readonly<{ action: 'error'; result: Extract<SpawnSessionResult, { type: 'error' }> }>;
+
+function sleep(delayMs: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, Math.max(0, delayMs)));
+}
 
 export async function resolveExistingSessionSpawnPreGate(params: Readonly<{
   existingSessionId: string | undefined;
@@ -58,13 +65,16 @@ export async function resolveExistingSessionSpawnPreGate(params: Readonly<{
     return { shortCircuitResult: null };
   }
 
-  if (params.waitForExitTimeoutMs > 0) {
+  const waitStartedAtMs = Date.now();
+  const waitBudgetMs = Math.max(0, params.waitForExitTimeoutMs);
+  const remainingWaitMs = (): number => Math.max(0, waitBudgetMs - (Date.now() - waitStartedAtMs));
+
+  if (waitBudgetMs > 0) {
     try {
       await waitForExistingSessionExitIfStopRequested({
         sessionId: normalizedExistingSessionId,
         pidToTrackedSession: params.pidToTrackedSession,
-        isSessionRunnerActive: params.isSessionRunnerActive,
-        timeoutMs: params.waitForExitTimeoutMs,
+        timeoutMs: remainingWaitMs(),
         pollIntervalMs: params.waitForExitPollIntervalMs,
       });
     } catch {
@@ -77,9 +87,19 @@ export async function resolveExistingSessionSpawnPreGate(params: Readonly<{
   }
 
   params.logDebug('[DAEMON RUN] Resume target is already running');
-  const decision = await params.onAlreadyRunning?.(normalizedExistingSessionId);
-  if (decision?.action === 'spawn_replacement') {
-    return { shortCircuitResult: null };
+  let decision = await params.onAlreadyRunning?.(normalizedExistingSessionId);
+  while (decision?.action === 'wait_for_exit' && remainingWaitMs() > 0) {
+    await sleep(Math.min(
+      Math.max(1, params.waitForExitPollIntervalMs),
+      remainingWaitMs(),
+    ));
+    if (!(await probeExistingSessionRunnerActive())) {
+      return { shortCircuitResult: null };
+    }
+    decision = await params.onAlreadyRunning?.(normalizedExistingSessionId);
+  }
+  if (decision?.action === 'wait_for_exit') {
+    return { shortCircuitResult: decision.timeoutResult };
   }
   if (decision?.action === 'error') {
     return { shortCircuitResult: decision.result };

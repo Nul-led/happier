@@ -28,7 +28,7 @@ import {
     type AuthBootstrapStorageSnapshot,
 } from '../../src/testkit/uiE2e/readLegacyAuthSecretFromLocalStorage';
 import {
-    dismissSetupWizardIfVisible,
+    discardMachineAddDraftIfVisible,
     gotoDomContentLoadedWithPathFallback,
     normalizeLoopbackBaseUrl,
 } from '../../src/testkit/uiE2e/pageNavigation';
@@ -485,7 +485,7 @@ test.describe('ui e2e: daemon STT batch transcription', () => {
             '/',
             120_000,
         );
-        await dismissSetupWizardIfVisible({ page });
+        await discardMachineAddDraftIfVisible({ page });
         const seededVoice = await configureVoiceDaemonSttSettings({
             page,
             packId: sttPackId,
@@ -596,7 +596,7 @@ test.describe('ui e2e: daemon STT batch transcription', () => {
             '/',
             120_000,
         );
-        await dismissSetupWizardIfVisible({ page });
+        await discardMachineAddDraftIfVisible({ page });
 
         await gotoDomContentLoadedWithPathFallback(
             page,

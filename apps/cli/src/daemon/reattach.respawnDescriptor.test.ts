@@ -16,6 +16,92 @@ import {
 import { readOrCreateDeviceLocalSecretStorage } from './deviceLocalSecretStorage';
 
 describe('adoptSessionsFromMarkers respawn descriptor', () => {
+  it('adopts the proven authority marker before a stripped marker for the same session', () => {
+    const sessionId = 'sess-full-authority';
+    const command = `happier codex --happy-starting-mode remote --started-by daemon --existing-session ${sessionId}`;
+    const thin = {
+      pid: 117,
+      happySessionId: sessionId,
+      happyHomeDir: '/tmp/happy-home',
+      createdAt: 1,
+      updatedAt: 2,
+      startedBy: 'daemon' as const,
+      processCommandHash: hashProcessCommand(command),
+      processCommand: command,
+    };
+    const full = {
+      ...thin,
+      pid: 118,
+      updatedAt: 1,
+      processStartTimeMs: 1_000,
+      cwd: '/workspace',
+      respawn: {
+        version: 1 as const,
+        directory: '/workspace',
+        backendTarget: { kind: 'backend' as const, backendId: 'codex', sourceKind: 'built_in' as const },
+      },
+      agentRuntimeDaemonServiceAuthorityFilePath: '/tmp/runner-authority.json',
+    };
+    const pidToTrackedSession = new Map<number, TrackedSession>();
+    const result = adoptSessionsFromMarkers({
+      markers: [thin, full],
+      happyProcesses: [thin, full].map((marker) => ({
+        pid: marker.pid,
+        command,
+        type: 'daemon-spawned-session',
+      } as never)),
+      processIdentityByPid: new Map([[full.pid, {
+        pid: full.pid,
+        processStartTimeMs: 1_000,
+        command,
+      }]]),
+      pidToTrackedSession,
+    });
+
+    expect(result.adopted).toBe(1);
+    expect([...pidToTrackedSession.keys()]).toEqual([full.pid]);
+    expect(pidToTrackedSession.get(full.pid)).toMatchObject({
+      agentRuntimeDaemonServiceAuthorityFilePath: full.agentRuntimeDaemonServiceAuthorityFilePath,
+      spawnOptions: { backendTarget: { backendId: 'codex' } },
+    });
+  });
+
+  it('checks a predecessor Linux marker fingerprint before adopting the same PID and command', () => {
+    const command = 'happier claude --started-by daemon --existing-session predecessor-session';
+    const marker = {
+      pid: 119,
+      happySessionId: 'predecessor-session',
+      happyHomeDir: '/tmp/happy-home',
+      createdAt: 1,
+      updatedAt: 1,
+      startedBy: 'daemon' as const,
+      processCommandHash: hashProcessCommand(command),
+      processInstanceFingerprint: 'linux-proc:19',
+      processCommand: command,
+    };
+    const pidToTrackedSession = new Map<number, TrackedSession>();
+    const input = {
+      markers: [marker],
+      happyProcesses: [{ pid: marker.pid, command, type: 'daemon-spawned-session' } as never],
+      processIdentityByPid: new Map([[marker.pid, { pid: marker.pid, processStartTimeMs: 190, command }]]),
+      pidToTrackedSession,
+    };
+
+    const mismatch = adoptSessionsFromMarkers({
+      ...input,
+      readProcessInstanceFingerprintFn: () => 'linux-proc:20',
+    });
+    expect(mismatch.adopted).toBe(0);
+    expect(pidToTrackedSession.size).toBe(0);
+
+    const match = adoptSessionsFromMarkers({
+      ...input,
+      readProcessInstanceFingerprintFn: () => 'linux-proc:19',
+    });
+    expect(match.adopted).toBe(1);
+    expect(pidToTrackedSession.get(marker.pid)?.processStartTimeMs).toBe(190);
+  });
+
   it('does not persist fresh grants or Team context in a runner respawn descriptor', () => {
     const descriptor = buildSessionRunnerRespawnDescriptorV1FromSpawnOptions({
       directory: '/workspace',
@@ -59,6 +145,28 @@ describe('adoptSessionsFromMarkers respawn descriptor', () => {
       processStartTimeMs: 1_000,
       processCommandHash: hashProcessCommand(runningCommand),
     });
+  });
+
+  it('adopts a start-witness marker even when its command hash is absent', () => {
+    const pid = 120;
+    const command = 'happier claude --resume sess-start-witness';
+    const map = new Map<number, TrackedSession>();
+    const { adopted } = adoptSessionsFromMarkers({
+      markers: [{
+        pid,
+        happySessionId: 'sess-start-witness',
+        happyHomeDir: '/tmp/happy-home',
+        createdAt: 1,
+        updatedAt: 1,
+        startedBy: 'terminal',
+        processStartTimeMs: 1_000,
+      }],
+      happyProcesses: [{ pid, command, type: 'user-session' } as never],
+      processIdentityByPid: new Map([[pid, { pid, processStartTimeMs: 1_000, command }]]),
+      pidToTrackedSession: map,
+    });
+    expect(adopted).toBe(1);
+    expect(map.get(pid)?.processStartTimeMs).toBe(1_000);
   });
 
   it('does not represent a surviving Agent-runtime marker as usable or its interrupted turn as active', () => {
@@ -154,7 +262,7 @@ describe('adoptSessionsFromMarkers respawn descriptor', () => {
       v: 1 as const,
       updatedAt: 9,
       ref: {
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         providerConnectionId: providerBindingMetadataV1.connectionId,
         modelId: 'vendor/model',
       },
@@ -329,17 +437,17 @@ describe('adoptSessionsFromMarkers respawn descriptor', () => {
 
   it.each([
     ['same Provider connection and a different model', {
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       providerConnectionId: 'pc_gateway',
       modelId: 'provider/model-next',
     }],
     ['a different Provider connection', {
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       providerConnectionId: 'pc_other',
       modelId: 'other/model',
     }],
     ['native selection', {
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       providerConnectionId: null,
       modelId: 'native-newer',
     }],
@@ -391,7 +499,7 @@ describe('adoptSessionsFromMarkers respawn descriptor', () => {
           v: 1 as const,
           updatedAt: 9,
           ref: {
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             providerConnectionId: providerBindingMetadataV1.connectionId,
             modelId: 'provider/model',
           },
@@ -409,7 +517,7 @@ describe('adoptSessionsFromMarkers respawn descriptor', () => {
 
     expect(adopted).toBe(1);
     expect(map.get(marker.pid)?.spawnOptions?.modelSelection?.ref).toEqual({
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       providerConnectionId: 'pc_gateway',
       modelId: 'provider/model',
     });
@@ -437,7 +545,7 @@ describe('adoptSessionsFromMarkers respawn descriptor', () => {
           v: 1,
           updatedAt: 10,
           selection: {
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             providerConnectionId: 'pc_gateway',
             modelId: 'provider/model',
           },

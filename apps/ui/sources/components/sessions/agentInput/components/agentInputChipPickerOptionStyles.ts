@@ -1,6 +1,7 @@
 import Color from "color";
 
 import { shadowLevelStyle, type ShadowElevationToken } from "@/shadowElevation";
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 export const AGENT_INPUT_CHIP_PICKER_OPTION_ICON_SIZE = 16;
 export const AGENT_INPUT_CHIP_PICKER_OPTION_ROW_RADIUS = 12;
@@ -46,7 +47,7 @@ export function createAgentInputChipPickerOptionTransientStyles(
             })(),
         },
         optionRowPressed: {
-            opacity: 0.82,
+            opacity: motionTokens.press.opacitySubtle,
         },
         optionRowDisabled: {
             opacity: 0.45,

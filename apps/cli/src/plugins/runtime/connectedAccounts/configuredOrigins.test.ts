@@ -351,7 +351,7 @@ describe('connected-account configured origins', () => {
         const resolution = await resolveConnectedAccountConfiguredOrigins({
             pluginId: 'acme.accounts',
             service,
-            generation: 'process-4',
+            occurrenceId: 'process-4',
             configuration,
             hostAccessRequests: [
                 networkRequest({
@@ -372,7 +372,7 @@ describe('connected-account configured origins', () => {
                 configuredEndpoint('https://api.example.test'),
             ],
             isConfigurationCurrent: () => configurationCurrent,
-            isGenerationCurrent: () => generationCurrent,
+            isOccurrenceCurrent: () => generationCurrent,
             resolveNetworkAddresses,
         });
         const binding = bindConnectedAccountConfiguredOrigins(
@@ -480,7 +480,7 @@ describe('connected-account configured origins', () => {
         const resolution = await resolveConnectedAccountConfiguredOrigins({
             pluginId: service.pluginId,
             service,
-            generation: 'process-fixed-provenance',
+            occurrenceId: 'process-fixed-provenance',
             configuration: configured,
             hostAccessRequests: [fixedGrant, freeConfiguredGrant],
             resolveHostOwnedConfiguredEndpoints: () => (
@@ -491,7 +491,7 @@ describe('connected-account configured origins', () => {
                 })
             ),
             isConfigurationCurrent: () => true,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             resolveNetworkAddresses,
         });
 
@@ -516,12 +516,12 @@ describe('connected-account configured origins', () => {
         await expect(resolveConnectedAccountConfiguredOrigins({
             pluginId: 'acme.accounts',
             service,
-            generation: 'process-4',
+            occurrenceId: 'process-4',
             configuration,
             hostAccessRequests: [networkRequest({ id: 'read' })],
             resolveHostOwnedConfiguredEndpoints: () => [configuredEndpoint(origin)],
             isConfigurationCurrent: () => true,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             resolveNetworkAddresses,
         })).rejects.toThrow(/configured origin/i);
     });
@@ -534,7 +534,7 @@ describe('connected-account configured origins', () => {
         const resolution = await resolveConnectedAccountConfiguredOrigins({
             pluginId: 'acme.accounts',
             service,
-            generation: 'process-4',
+            occurrenceId: 'process-4',
             configuration,
             hostAccessRequests: [{
                 request: PluginHostAccessRequestV2Schema.parse({
@@ -551,7 +551,7 @@ describe('connected-account configured origins', () => {
             }],
             resolveHostOwnedConfiguredEndpoints,
             isConfigurationCurrent: () => true,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             resolveNetworkAddresses,
             configurationRevocationSignal: configurationRevocation.signal,
         });
@@ -591,7 +591,7 @@ describe('connected-account configured origins', () => {
         const resolve = async (privateNetwork: boolean) => await resolveConnectedAccountConfiguredOrigins({
             pluginId: 'acme.accounts',
             service,
-            generation: 'process-private-client',
+            occurrenceId: 'process-private-client',
             configuration,
             hostAccessRequests: [{
                 request: request(privateNetwork),
@@ -600,7 +600,7 @@ describe('connected-account configured origins', () => {
             }],
             resolveHostOwnedConfiguredEndpoints: () => [configuredEndpoint('https://localhost:4311')],
             isConfigurationCurrent: () => true,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             resolveNetworkAddresses,
         });
 
@@ -622,7 +622,7 @@ describe('connected-account configured origins', () => {
         const resolve = async (privateNetwork: boolean) => await resolveConnectedAccountConfiguredOrigins({
             pluginId: 'acme.accounts',
             service,
-            generation: 'process-resolved-private',
+            occurrenceId: 'process-resolved-private',
             configuration,
             hostAccessRequests: [networkRequest({
                 id: privateNetwork ? 'resolved-private-allowed' : 'resolved-private-denied',
@@ -630,7 +630,7 @@ describe('connected-account configured origins', () => {
             })],
             resolveHostOwnedConfiguredEndpoints: () => [configuredEndpoint('https://git.internal.example')],
             isConfigurationCurrent: () => true,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             resolveNetworkAddresses,
         });
 
@@ -648,7 +648,7 @@ describe('connected-account configured origins', () => {
         const resolve = async (privateNetwork: boolean) => await resolveConnectedAccountConfiguredOrigins({
             pluginId: 'acme.accounts',
             service,
-            generation: 'process-resolved-private-fixed',
+            occurrenceId: 'process-resolved-private-fixed',
             configuration,
             hostAccessRequests: [networkRequest({
                 id: privateNetwork ? 'fixed-private-allowed' : 'fixed-private-denied',
@@ -657,7 +657,7 @@ describe('connected-account configured origins', () => {
             })],
             resolveHostOwnedConfiguredEndpoints: () => [],
             isConfigurationCurrent: () => true,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             resolveNetworkAddresses,
         });
 

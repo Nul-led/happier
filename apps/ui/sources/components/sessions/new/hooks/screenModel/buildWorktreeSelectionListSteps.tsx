@@ -93,18 +93,24 @@ export type WorktreeSelectionListBuilderParams = Readonly<{
     /**
      * Stable suggested name (generated once per session by the owning chip).
      * Pre-populates the "name your worktree" step and is the fallback when the
-     * user commits an empty or git-invalid name.
+     * user commits an empty or git-invalid name. Only a creating host needs it.
      */
-    worktreeNameSuggestion: string;
+    worktreeNameSuggestion?: string;
     onSelectCurrentDir: () => void;
     onSelectExistingWorktree: (worktreePath: string) => void;
     /**
      * Create a new worktree on a NEW branch named `selection.name`, based on
      * `selection.baseRef`. Invoked from the "name your worktree" value step
      * (pushed after a base branch is chosen), so the name is already resolved.
+     *
+     * Optional together with {@link onReuseExistingWorktreeForBranch}: a host
+     * whose target can only name an existing checkout — a Workflow project,
+     * whose new worktrees are authored as a workspace policy instead — omits
+     * both, and the picker then offers no creation branch at all rather than a
+     * create row that could not be honoured.
      */
-    onCreateWorktreeWithName: (selection: WorktreeCreateSelection) => void;
-    onReuseExistingWorktreeForBranch: (info: Readonly<{
+    onCreateWorktreeWithName?: (selection: WorktreeCreateSelection) => void;
+    onReuseExistingWorktreeForBranch?: (info: Readonly<{
         worktreePath: string;
         branch: string;
     }>) => void;
@@ -215,7 +221,7 @@ export function buildWorktreeNameStep(params: Readonly<{
     sourceKind: WorktreeBranchSourceKind;
     worktreeNameSuggestion: string;
     rowIconColor: string;
-    onCreateWorktreeWithName: WorktreeSelectionListBuilderParams['onCreateWorktreeWithName'];
+    onCreateWorktreeWithName: NonNullable<WorktreeSelectionListBuilderParams['onCreateWorktreeWithName']>;
 }>): SelectionListStep {
     const { baseRef, sourceKind, worktreeNameSuggestion, rowIconColor, onCreateWorktreeWithName } = params;
     const create = (name: string) => onCreateWorktreeWithName({ baseRef, sourceKind, name });
@@ -300,8 +306,8 @@ export function buildWorktreeReuseOrCreateStep(params: Readonly<{
     sourceKind: WorktreeBranchSourceKind;
     worktreeNameSuggestion: string;
     rowIconColor: string;
-    onCreateWorktreeWithName: WorktreeSelectionListBuilderParams['onCreateWorktreeWithName'];
-    onReuseExistingWorktreeForBranch: WorktreeSelectionListBuilderParams['onReuseExistingWorktreeForBranch'];
+    onCreateWorktreeWithName: NonNullable<WorktreeSelectionListBuilderParams['onCreateWorktreeWithName']>;
+    onReuseExistingWorktreeForBranch: NonNullable<WorktreeSelectionListBuilderParams['onReuseExistingWorktreeForBranch']>;
 }>): SelectionListStep {
     return {
         id: 'worktree-reuse-or-create',
@@ -371,8 +377,8 @@ export function buildWorktreeBranchOption(params: Readonly<{
     remoteNames?: ReadonlyArray<string>;
     rowIconColor: string;
     worktreeNameSuggestion: string;
-    onCreateWorktreeWithName: WorktreeSelectionListBuilderParams['onCreateWorktreeWithName'];
-    onReuseExistingWorktreeForBranch: WorktreeSelectionListBuilderParams['onReuseExistingWorktreeForBranch'];
+    onCreateWorktreeWithName: NonNullable<WorktreeSelectionListBuilderParams['onCreateWorktreeWithName']>;
+    onReuseExistingWorktreeForBranch: NonNullable<WorktreeSelectionListBuilderParams['onReuseExistingWorktreeForBranch']>;
 }>): SelectionListOption {
     const sourceKind: WorktreeBranchSourceKind = params.branch.type === 'remote' ? 'remote' : 'local';
     const remoteNames = params.remoteNames ?? resolveRemoteNamesFromSnapshot(params.snapshot);
@@ -441,7 +447,14 @@ export function buildWorktreeBranchOption(params: Readonly<{
     };
 }
 
-function buildBranchesResolver(params: WorktreeSelectionListBuilderParams, opts: Readonly<{ includeRemotes: boolean }>) {
+/** Builder params for a host that offers worktree creation. */
+type WorktreeCreationBuilderParams = WorktreeSelectionListBuilderParams & Readonly<{
+    onCreateWorktreeWithName: NonNullable<WorktreeSelectionListBuilderParams['onCreateWorktreeWithName']>;
+    onReuseExistingWorktreeForBranch: NonNullable<WorktreeSelectionListBuilderParams['onReuseExistingWorktreeForBranch']>;
+    worktreeNameSuggestion: string;
+}>;
+
+function buildBranchesResolver(params: WorktreeCreationBuilderParams, opts: Readonly<{ includeRemotes: boolean }>) {
     const remoteNames = resolveRemoteNamesFromSnapshot(params.snapshot);
     const mainWorktreeBranch = params.snapshot?.repo.worktrees
         ?.find((worktree) => worktree.isMain === true)
@@ -489,7 +502,7 @@ function buildBranchesResolver(params: WorktreeSelectionListBuilderParams, opts:
     };
 }
 
-function buildCreateWorktreeStep(params: WorktreeSelectionListBuilderParams): SelectionListStep {
+function buildCreateWorktreeStep(params: WorktreeCreationBuilderParams): SelectionListStep {
     const localResolver = buildBranchesResolver(params, { includeRemotes: false });
     const remoteResolver = buildBranchesResolver(params, { includeRemotes: true });
     // FR3-6: scope the dynamic-section cache (cross-mount cache key in
@@ -565,7 +578,17 @@ function buildCreateWorktreeStep(params: WorktreeSelectionListBuilderParams): Se
 }
 
 export function buildWorktreeSelectionListSteps(params: WorktreeSelectionListBuilderParams): SelectionListStep {
-    const createStep = buildCreateWorktreeStep(params);
+    const { onCreateWorktreeWithName, onReuseExistingWorktreeForBranch, worktreeNameSuggestion } = params;
+    const createStep = onCreateWorktreeWithName === undefined
+        || onReuseExistingWorktreeForBranch === undefined
+        || worktreeNameSuggestion === undefined
+        ? null
+        : buildCreateWorktreeStep({
+            ...params,
+            onCreateWorktreeWithName,
+            onReuseExistingWorktreeForBranch,
+            worktreeNameSuggestion,
+        });
 
     const quickActions: SelectionListOption[] = [
         {
@@ -575,13 +598,13 @@ export function buildWorktreeSelectionListSteps(params: WorktreeSelectionListBui
             icon: <Icon name="folder" size={WORKTREE_ROW_ICON_SIZE} color={params.rowIconColor} />,
             onSelect: params.onSelectCurrentDir,
         },
-        {
+        ...(createStep === null ? [] : [{
             id: 'create_git_worktree',
             label: t('newSession.checkout.newWorktree'),
             subtitle: t('newSession.checkout.newWorktreeSubtitle'),
             icon: <Icon name="plus-circle" size={WORKTREE_ROW_ICON_SIZE} color={params.rowIconColor} />,
             openStep: createStep,
-        },
+        }]),
     ];
 
     const existingOptions = buildExistingWorktreeOptions(params);

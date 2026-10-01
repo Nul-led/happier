@@ -112,6 +112,7 @@ describe('resolveBackendRuntimeCore Session Run read Actions', () => {
       },
       sessionOwnedRunScope: {
         runId: 'run-a',
+        workDepth: 0,
         sidechainId: 'sidechain-a',
         readCurrentRunOccurrence: () => null,
         publishSupportedSessionReadActions,

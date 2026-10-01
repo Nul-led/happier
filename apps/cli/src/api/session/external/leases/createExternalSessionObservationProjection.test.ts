@@ -97,7 +97,7 @@ function observationLinkInput(linkGeneration = 'link-generation-1') {
         resource: {
             pluginId: 'happier.opencode',
             agentLocalId: 'opencode',
-            pluginGeneration: 'plugin-generation-1',
+            occurrenceId: 'plugin-generation-1',
             resourceKey: 'endpoint-one',
         },
         link: {
@@ -231,7 +231,7 @@ describe('createExternalSessionObservationProjection', () => {
                 ...observationLinkInput(),
                 resource: {
                     ...observationLinkInput().resource,
-                    pluginGeneration: 'plugin-generation-2',
+                    occurrenceId: 'plugin-generation-2',
                 },
             };
             const passiveDemand = {
@@ -276,7 +276,7 @@ describe('createExternalSessionObservationProjection', () => {
 
             expect(reconcileLink).toHaveBeenLastCalledWith(expect.objectContaining({
                 resource: expect.objectContaining({
-                    pluginGeneration: 'plugin-generation-2',
+                    occurrenceId: 'plugin-generation-2',
                 }),
                 demand: {
                     passiveEvent: true,
@@ -1146,7 +1146,7 @@ describe('createExternalSessionObservationProjection', () => {
             resource: {
                 pluginId: 'happier.opencode',
                 agentLocalId: 'opencode',
-                pluginGeneration: 'plugin-generation-1',
+                occurrenceId: 'plugin-generation-1',
                 resourceKey: 'endpoint-one',
             },
             link: {
@@ -1332,7 +1332,7 @@ describe('createExternalSessionObservationProjection', () => {
             resource: {
                 pluginId: 'happier.opencode',
                 agentLocalId: 'opencode',
-                pluginGeneration: 'plugin-generation-1',
+                occurrenceId: 'plugin-generation-1',
                 resourceKey: 'endpoint-one',
             },
             link: {

@@ -61,8 +61,12 @@ export function buildBrowserContextMessageMetaOverrides(args: Readonly<{
         };
     }
 
-    const contexts = attachments.flatMap((attachment) => {
-        const item = args.state.itemsById[attachment.contextId];
+    const contextIds = new Set(attachments.flatMap((attachment) => [
+        attachment.contextId,
+        ...(attachment.structuredBlock?.contextIds ?? []),
+    ]));
+    const contexts = [...contextIds].flatMap((contextId) => {
+        const item = args.state.itemsById[contextId];
         return item ? [item] : [];
     });
 

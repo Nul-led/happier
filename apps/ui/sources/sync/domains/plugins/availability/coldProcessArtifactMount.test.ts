@@ -6,11 +6,6 @@ vi.mock('@/sync/api/plugins/availability/activePluginAccountHostedArtifactRead',
         activeAccountHostedArtifactSource.create(input)
     ),
 }));
-vi.mock('./reactNativeArtifactDaemonTransport', () => ({
-    fetchReactNativeExactArtifactBytesViaMachineRpc: vi.fn(() => {
-        throw new Error('daemon transport must not be reachable in a cold process');
-    }),
-}));
 
 import {
     computePluginUiArtifactFileSetSha256DigestV1,
@@ -41,8 +36,8 @@ const accountLifetime: ActiveServerAccountScopeLifetime = Object.freeze({
     onRetire: () => Object.freeze({ dispose: () => {} }),
 });
 
-const inactiveAppExactSource = Object.freeze({ kind: 'appExact' as const, readFile: async () => null });
-const inactiveAccountHostedSource = Object.freeze({ kind: 'accountHosted' as const, readFile: async () => null });
+const inactiveAppExactSource = Object.freeze({ kind: 'appExact' as const, fetch: async () => null });
+const inactiveAccountHostedSource = Object.freeze({ kind: 'accountHosted' as const, fetch: async () => null });
 
 /**
  * The device's persistent Artifact custody survives a process restart. This
@@ -77,34 +72,20 @@ function createDurableCacheStorage(): CacheStorage {
 
 function fixture() {
     const artifactContributionId = 'native-preview';
-    const entryPath = 'react-native/acme/ios.bundle';
-    const chunkPath = 'react-native/acme/chunk.js';
+    const artifactId = 'native-preview-artifact';
+    const entryPath = `react-native/${artifactId}/entry.cjs.bundle`;
     const entryBytes = new TextEncoder().encode('// entry bundle bytes');
-    const chunkBytes = new TextEncoder().encode('// async chunk bytes');
     const files = [
         {
             relativePath: entryPath,
             digest: computePluginUiArtifactSha256DigestV1(entryBytes),
             byteSize: entryBytes.byteLength,
         },
-        {
-            relativePath: chunkPath,
-            digest: computePluginUiArtifactSha256DigestV1(chunkBytes),
-            byteSize: chunkBytes.byteLength,
-        },
     ] as const;
     const artifactDigest = computePluginUiArtifactFileSetSha256DigestV1([
         { relativePath: entryPath, bytes: entryBytes },
-        { relativePath: chunkPath, bytes: chunkBytes },
     ]);
     const archiveDigestSha256 = PluginUiArtifactDigestV1Schema.parse(`sha256:${'a'.repeat(64)}`);
-    const compatibility = {
-        hostUiApiVersion: '1.0.0',
-        reactVersion: '19.0.0',
-        reactNativeVersion: '0.83.4',
-        expoRuntimeVersion: '0.2.0-native',
-        hermesVersion: '0.15.0',
-    };
     const release = PluginReleaseFactsV1Schema.parse({
         ref: { pluginId: 'com.acme.preview', version: '1.2.3' },
         archiveDigestSha256,
@@ -120,10 +101,11 @@ function fixture() {
         collectionContracts: [],
         uiSlots: [{
             contributionId: artifactContributionId,
+            artifactId,
             tier: 'reactNative',
             platform: 'ios',
             artifactDigest,
-            compatibility,
+            hostUiApiRange: '^1.0.0',
         }],
         packageAssetArchive: { archiveDigestSha256: `sha256:${'d'.repeat(64)}`, resources: [] },
     });
@@ -138,9 +120,11 @@ function fixture() {
         archiveDigestSha256,
         uiArtifacts: [{
             contributionId: artifactContributionId,
+            artifactId,
             tier: 'reactNative',
             platform: 'ios',
             artifactDigest,
+            hostUiApiRange: '^1.0.0',
         }],
         enabled: true,
         trustState: 'trusted',
@@ -173,7 +157,6 @@ function fixture() {
         snapshots: [{
             serverIdentityId: materialization.serverIdentityId,
             machineId: materialization.machineId,
-            revision: 1,
             materializations: [materialization],
         }],
     } satisfies PluginAccountAvailabilitySnapshot;
@@ -181,38 +164,19 @@ function fixture() {
     const cacheIdentity = {
         pluginId: materialization.pluginId,
         contributionId: artifactContributionId,
+        artifactId,
         artifactDigest,
-        hostAppVersion: '2.0.0',
-        hostUiApiVersion: compatibility.hostUiApiVersion,
-        reactVersion: compatibility.reactVersion,
-        reactNativeVersion: compatibility.reactNativeVersion,
-        expoRuntimeVersion: compatibility.expoRuntimeVersion,
-        hermesVersion: compatibility.hermesVersion,
-        platform: 'ios',
-        channel: 'internal',
-        nativeCapabilitiesDigest: `sha256:${'b'.repeat(64)}`,
-        projectionGeneration: 12,
+        platform: 'ios' as const,
     } satisfies PluginReactNativeBundleCacheIdentity;
-    const crashStateToken = Object.freeze({
-        mount: Object.freeze({
-            kind: 'destination' as const,
-            destination: Object.freeze({ pluginId: cacheIdentity.pluginId, localId: 'native-destination' }),
-        }),
-        renderer: Object.freeze({ pluginId: cacheIdentity.pluginId, localId: cacheIdentity.contributionId }),
-        artifactDigest: cacheIdentity.artifactDigest,
-        crashStateEpoch: 4,
-    });
     const artifactGraph = {
-        contributionId: artifactContributionId,
+        artifactId,
         tier: 'reactNative' as const,
-        platform: cacheIdentity.platform,
         entry: entryPath,
         files,
         digest: artifactDigest,
-        builtWith: { bundler: 'repack' as const, version: '5.0.0' },
-        repack: { containerName: 'acme_preview', modulePath: './renderSurface', exportName: 'renderSurface' },
-        hostUiApiVersion: cacheIdentity.hostUiApiVersion,
-        compat: { react: cacheIdentity.reactVersion, reactNative: cacheIdentity.reactNativeVersion },
+        builtWith: { bundler: 'esbuild' as const, version: '0.25.0' },
+        executable: { exports: ['renderSurface'] as const },
+        hostUiApiRange: '^1.0.0',
     };
     const origin = {
         serverIdentityId: materialization.serverIdentityId,
@@ -225,12 +189,9 @@ function fixture() {
     const daemonResponse = {
         ok: true as const,
         artifactFamily: 'reactNative' as const,
-        artifactOwnerKind: 'renderer' as const,
-        cacheIdentity,
-        crashStateToken,
+       
+        cacheIdentity: { artifactDigest },
         artifact: {
-            pluginId: cacheIdentity.pluginId,
-            contributionId: cacheIdentity.contributionId,
             artifactKind: 'reactNativeBundle' as const,
             digest: artifactDigest,
             format: 'plainJs' as const,
@@ -239,10 +200,9 @@ function fixture() {
         bytesBase64: encodeBase64(entryBytes),
         files: [
             { ...files[0], bytesBase64: encodeBase64(entryBytes) },
-            { ...files[1], bytesBase64: encodeBase64(chunkBytes) },
         ],
     };
-    return { reader, cacheIdentity, crashStateToken, artifactGraph, origin, daemonResponse };
+    return { reader, cacheIdentity, artifactGraph, origin, daemonResponse };
 }
 
 describe('cold process Artifact mount with every daemon unreachable', () => {
@@ -267,9 +227,7 @@ describe('cold process Artifact mount with every daemon unreachable', () => {
             artifactGraph: current.artifactGraph,
             cacheIdentity: current.cacheIdentity,
             accountLifetime,
-            artifactOwnerKind: 'renderer',
-            crashStateToken: current.crashStateToken,
-            daemon: { origin: current.origin, serverId: scope.serverId },
+            daemon: { machineId: current.origin.materializationRef.machineId, serverId: scope.serverId },
             isCurrent: () => true,
         });
         expect(warm.kind).toBe('available');
@@ -291,8 +249,6 @@ describe('cold process Artifact mount with every daemon unreachable', () => {
             artifactGraph: current.artifactGraph,
             cacheIdentity: current.cacheIdentity,
             accountLifetime,
-            artifactOwnerKind: 'renderer',
-            crashStateToken: current.crashStateToken,
             isCurrent: () => true,
         });
         expect(cold.kind).toBe('available');
@@ -306,8 +262,6 @@ describe('cold process Artifact mount with every daemon unreachable', () => {
             artifactGraph: current.artifactGraph,
             cacheIdentity: current.cacheIdentity,
             accountLifetime,
-            artifactOwnerKind: 'renderer',
-            crashStateToken: current.crashStateToken,
             isCurrent: () => true,
         });
         expect(emptied).toMatchObject({ kind: 'unavailable', code: 'artifact_source_unavailable' });

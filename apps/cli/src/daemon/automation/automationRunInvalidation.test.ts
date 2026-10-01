@@ -9,6 +9,44 @@ import {
 
 describe('getAutomationRunInvalidationAction', () => {
   const active = { runId: 'run-active', attempt: 3 };
+  const updateIdentity = { id: 'update-1', seq: 1, createdAt: 123 };
+
+  it('refreshes review holds only for the exact live claim without aborting it', () => {
+    let refreshed = 0;
+    const controller = new AbortController();
+    const execution = { ...active, controller, refreshReviewHolds: () => { refreshed += 1; } };
+    const body = { t: 'automation-run-updated' as const, runId: active.runId, automationId: null,
+      state: 'running' as const, machineId: 'machine-1', targetMachineId: 'machine-1', attempt: active.attempt,
+      scheduledAt: 123, updatedAt: 123,
+      workflowControl: 'review_resolved' as const };
+    expect(invalidateActiveAutomationRun({ update: { ...updateIdentity, body } satisfies Update, active: execution, machineId: 'machine-1' })).toBe('review-resolved');
+    expect(refreshed).toBe(1);
+    expect(controller.signal.aborted).toBe(false);
+    expect(invalidateActiveAutomationRun({ update: { ...updateIdentity, body: { ...body, attempt: 2 } } satisfies Update, active: execution, machineId: 'machine-1' })).toBe('none');
+    expect(invalidateActiveAutomationRun({ update: { ...updateIdentity, body: { ...body, targetMachineId: 'machine-2' } } satisfies Update, active: execution, machineId: 'machine-1' })).toBe('none');
+    expect(refreshed).toBe(1);
+  });
+
+  it('delivers an exact targeted Cancel hint without invalidating a draining Pause lease', () => {
+    const body = { t: 'automation-run-updated' as const, runId: active.runId, automationId: null,
+      state: 'running' as const, machineId: 'machine-1', targetMachineId: 'machine-1', attempt: active.attempt,
+      scheduledAt: 123, updatedAt: 123 };
+    expect(getAutomationRunInvalidationAction({ update: { ...updateIdentity, body: { ...body, workflowControl: 'cancel_requested' } } satisfies Update,
+      active, machineId: 'machine-1' })).toBe('authoritative-cancellation');
+    // The server projects a draining pause as running on this bounded hint.
+    expect(getAutomationRunInvalidationAction({ update: { ...updateIdentity, body } satisfies Update,
+      active, machineId: 'machine-1' })).toBe('none');
+    expect(getAutomationRunInvalidationAction({ update: { ...updateIdentity, body: { ...body, attempt: 2, workflowControl: 'cancel_requested' } } satisfies Update,
+      active, machineId: 'machine-1' })).toBe('none');
+    expect(getAutomationRunInvalidationAction({ update: { ...updateIdentity, body: { ...body, targetMachineId: 'machine-2', workflowControl: 'cancel_requested' } } satisfies Update,
+      active, machineId: 'machine-1' })).toBe('none');
+    const controller = new AbortController();
+    expect(invalidateActiveAutomationRun({ update: { ...updateIdentity, body } satisfies Update, active: { ...active, controller }, machineId: 'machine-1' })).toBe('none');
+    expect(controller.signal.aborted).toBe(false);
+    expect(invalidateActiveAutomationRun({ update: { ...updateIdentity, body: { ...body, workflowControl: 'cancel_requested' } } satisfies Update,
+      active: { ...active, controller }, machineId: 'machine-1' })).toBe('authoritative-cancellation');
+    expect(isAuthoritativeAutomationRunCancellation(controller.signal)).toBe(true);
+  });
 
   it.each([
     [

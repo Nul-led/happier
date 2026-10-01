@@ -4,11 +4,11 @@ import { describe, expect, it, vi } from 'vitest';
 import { renderScreen } from '@/dev/testkit';
 import { VOICE_SETTINGS_INTENTS } from '@/voice/settings/voiceSettingsIntents';
 
-vi.mock('expo-router', () => ({
-  useLocalSearchParams: () => ({}),
-  usePathname: () => '/settings/voice',
-  useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
-}));
+vi.mock('expo-router', async () => {
+  // The page header (SettingsPageHeader) reads the navigation chrome, so the full router boundary is needed.
+  const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
+  return createExpoRouterMock({ pathname: () => '/settings/voice' }).module;
+});
 
 vi.mock('@/components/ui/lists/Item', () => ({
   Item: (props: any) => React.createElement('Item', props),

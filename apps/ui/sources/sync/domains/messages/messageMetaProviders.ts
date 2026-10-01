@@ -4,7 +4,7 @@ import {
 } from '@/agents/registry/registryUiBehavior';
 import { BUNDLED_CANONICAL_AGENT_PREDECESSOR_MESSAGE_META_WRITERS } from '@/agents/registry/generatedBundledPluginEntries.uiBehaviorOverrides';
 
-import type { MessageMeta } from '@/sync/domains/messages/messageMetaTypes';
+import type { MessageMeta } from "@happier-dev/session-core/messages";
 
 function mergePredecessorMessageMeta(
     metaOverrides: Partial<MessageMeta> | undefined,

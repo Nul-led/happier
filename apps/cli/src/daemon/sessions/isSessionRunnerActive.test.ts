@@ -1,9 +1,20 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { TrackedSession } from '../types';
-import { isSessionRunnerActive, probeSessionRunnerServiceability } from './isSessionRunnerActive';
+import { isSessionRunnerActive, probeSessionRunnerServiceability, resolveSessionRunnerResumeDecision } from './isSessionRunnerActive';
 
 describe('probeSessionRunnerServiceability', () => {
+  it('waits for a live runner whose exact controls fail during resume', () => {
+    expect(resolveSessionRunnerResumeDecision({
+      state: 'runner_present',
+      control: { state: 'unknown', reason: 'rpc_failed' },
+    })).toEqual({ action: 'wait_for_exit', reason: 'rpc_failed' });
+    expect(resolveSessionRunnerResumeDecision({
+      state: 'runner_present',
+      control: { state: 'recoverable_unservable', reason: 'rpc_method_unavailable' },
+    })).toEqual({ action: 'wait_for_exit', reason: 'rpc_method_unavailable' });
+  });
+
   it('retains live process presence when exact-session controls are unservable', async () => {
     const tracked: TrackedSession = { startedBy: 'daemon', pid: 456, happySessionId: 'sess_1' };
     await expect(probeSessionRunnerServiceability({

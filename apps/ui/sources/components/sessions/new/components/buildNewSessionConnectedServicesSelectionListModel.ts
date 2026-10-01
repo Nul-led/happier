@@ -15,10 +15,6 @@ import {
     areTeamResourceConnectedServiceSelectionsEqual,
     type ConnectedServicesServiceBinding,
 } from '@/sync/domains/connectedServices/connectedServicesAgentOptionStateBindings';
-import {
-    formatConnectedServiceIdentityVisibleLabel,
-    resolveConnectedServiceProfileIdentityDisplay,
-} from '@/components/settings/connectedServices/model/resolveConnectedServiceProfileIdentityDisplay';
 import { teamCredentialRecoveryPresentation } from '@/components/settings/teams/credentials/teamCredentialPresentation';
 import type { TranslationParams } from '@/text';
 
@@ -85,6 +81,8 @@ export type BuildNewSessionConnectedServicesSelectionListModelParams = Readonly<
     groupOptionsByServiceId: ConnectedServicesAccountGroupOptionsByServiceId;
     bindingsByServiceId: Readonly<Record<string, ConnectedServicesServiceBinding | undefined>>;
     teamCredentialResources?: readonly TeamCredentialResourceCatalogEntryV1[];
+    /** Exact currentness projection from the Home catalog; stale rows stay visible but cannot be selected. */
+    teamCredentialResourceCurrentKeys?: ReadonlySet<string>;
     teamNameById?: Readonly<Record<string, string>>;
     onRecoverTeamCredentialResource?: (resource: TeamCredentialResourceCatalogEntryV1) => void;
     defaultProfileIdByServiceId?: Readonly<Record<string, string | undefined>>;
@@ -138,28 +136,25 @@ export function createTeamResourceServiceOptionId(
         : 'brokered'}`;
 }
 
-function resolveProfileTitle(option: ConnectedServicesProfileOption): string {
+function resolveProfileTitle(option: ConnectedServicesProfileOption, serviceTitle: string): string {
     const label = (option.label ?? '').trim();
     if (label) return label;
 
     const providerEmail = (option.providerEmail ?? '').trim();
     if (providerEmail) return providerEmail;
 
-    return option.profileId;
+    return serviceTitle;
 }
 
 function resolveProfileSubtitle(option: ConnectedServicesProfileOption): string | undefined {
     const label = (option.label ?? '').trim();
     const providerEmail = (option.providerEmail ?? '').trim();
 
-    if (label && providerEmail) return `${option.profileId} · ${providerEmail}`;
-    if (label) return option.profileId;
-    if (providerEmail && providerEmail !== option.profileId) return option.profileId;
-    return undefined;
+    return label && providerEmail && label !== providerEmail ? providerEmail : undefined;
 }
 
 function resolveGroupSubtitle(params: Readonly<{
-    serviceId: string;
+    serviceTitle: string;
     activeProfileId: string;
     profiles: ReadonlyArray<ConnectedServicesProfileOption>;
     translate: ConnectedServicesSelectionListTranslate;
@@ -167,14 +162,8 @@ function resolveGroupSubtitle(params: Readonly<{
     const activeProfile = params.profiles.find((option) => option.profileId.trim() === params.activeProfileId) ?? null;
     if (!activeProfile) return params.translate('connectedServices.authModal.groupSubtitle');
 
-    const display = resolveConnectedServiceProfileIdentityDisplay({
-        serviceId: params.serviceId,
-        profileId: params.activeProfileId,
-        labelsByKey: {},
-        profile: activeProfile,
-    });
     return params.translate('connectedServices.detail.groups.activeMember', {
-        profileId: formatConnectedServiceIdentityVisibleLabel(display),
+        profileId: resolveProfileTitle(activeProfile, params.serviceTitle),
     });
 }
 
@@ -259,7 +248,7 @@ export function buildNewSessionConnectedServicesSelectionListModel(
                 id: optionId,
                 label,
                 subtitle: availability.subtitle ?? resolveGroupSubtitle({
-                    serviceId,
+                    serviceTitle,
                     activeProfileId,
                     profiles: connectedProfiles,
                     translate: params.translate,
@@ -283,7 +272,9 @@ export function buildNewSessionConnectedServicesSelectionListModel(
             // a current selection and leave the person without the Home's
             // recovery instruction. Only the Home's recovery is presented here;
             // repair authority is decided again by the destination it names.
-            const selectable = resource.readiness.kind === 'available';
+            const resourceCurrent = params.teamCredentialResourceCurrentKeys === undefined
+                || params.teamCredentialResourceCurrentKeys.has(`${resource.teamId}:${resource.id}`);
+            const selectable = resourceCurrent && resource.readiness.kind === 'available';
             const recovery = selectable
                 ? null
                 : teamCredentialRecoveryPresentation(resource.recoveryAction, { isSourceCustodian: false });
@@ -312,6 +303,7 @@ export function buildNewSessionConnectedServicesSelectionListModel(
                     label: resource.displayName,
                     subtitle: availability.subtitle ?? [
                         teamName,
+                        resourceCurrent ? null : params.translate('teams.unavailable.retry'),
                         selectable ? params.translate(selection.deliveryMode === 'brokered'
                             ? 'teams.credentials.delivery.brokered'
                             : 'teams.credentials.delivery.direct') : null,
@@ -336,7 +328,10 @@ export function buildNewSessionConnectedServicesSelectionListModel(
                 && buildQualifiedPluginContributionKey(resource.sourcePresentation.service) === serviceId
             ));
             const retainedRecovery = retainedResource?.readiness.kind === 'available'
-                ? null
+                ? (params.teamCredentialResourceCurrentKeys === undefined
+                    || params.teamCredentialResourceCurrentKeys.has(`${retainedResource.teamId}:${retainedResource.id}`)
+                    ? null
+                    : { labelKey: 'teams.unavailable.retry' as const })
                 : teamCredentialRecoveryPresentation(retainedResource?.recoveryAction, { isSourceCustodian: false });
             const retainedTeamName = retainedResource
                 ? params.teamNameById?.[retainedResource.teamId]?.trim()
@@ -378,7 +373,7 @@ export function buildNewSessionConnectedServicesSelectionListModel(
             if (selected && firstSelectedOptionId === null) firstSelectedOptionId = optionId;
             const profileKey = connectedServiceProfileKey({ serviceId, profileId });
             const quotaBadges = params.quotaBadgesByKey[profileKey] ?? [];
-            const label = resolveProfileTitle(option);
+            const label = resolveProfileTitle(option, serviceTitle);
 
             options.push({
                 id: optionId,
@@ -398,7 +393,7 @@ export function buildNewSessionConnectedServicesSelectionListModel(
             const profileId = option.profileId.trim();
             if (!profileId) continue;
             const unsupportedKind = option.status === 'unsupported_kind';
-            const label = resolveProfileTitle(option);
+            const label = resolveProfileTitle(option, serviceTitle);
             options.push({
                 id: createReauthServiceOptionId(serviceId, profileId),
                 label,

@@ -606,11 +606,11 @@ describe('DeclarativeCollectionList', () => {
     });
 
     it('keeps unaffected embedded row commands stable when one composed Action becomes pending', async () => {
-        const generation = 'composed-locality-generation';
+        const occurrenceId = 'composed-locality-occurrence';
         const action = Object.freeze({
             identity: Object.freeze({ pluginId: 'acme.tasks', localId: 'inspect' }),
             qualifiedId: 'acme.tasks/inspect',
-            generation,
+            occurrenceId,
         });
         const collectionNode = Object.freeze({
             ...node,
@@ -640,7 +640,7 @@ describe('DeclarativeCollectionList', () => {
                         pluginId: 'acme.tasks',
                         localId: 'tasks',
                         qualifiedId: 'acme.tasks/tasks',
-                        generation,
+                        occurrenceId,
                     },
                     requiredHostMethods: [],
                     declarativeInventory: {

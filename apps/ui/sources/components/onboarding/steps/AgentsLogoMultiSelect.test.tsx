@@ -19,6 +19,7 @@ const catalogIconState = vi.hoisted(() => ({
 vi.mock('@/agents/catalog/catalog', () => ({
     getAgentIconSvgXml: (agentId: string) => (catalogIconState.iconIds.has(agentId) ? '<svg/>' : null),
     getAgentIconSource: () => null,
+    hasAgentIconMark: (agentId: string) => catalogIconState.iconIds.has(agentId),
 }));
 
 function flattenStyle(style: unknown): Record<string, unknown> {

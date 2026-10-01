@@ -6,6 +6,12 @@ import {
   buildSessionSpawnInitialInputLocalIdV1,
   hasSessionInputContentV1,
   sessionCreationCorrespondenceMatchesV1,
+  SessionInputAdmissionRejectionCodeV1Schema,
+  DEFAULT_SESSION_WEBHOOK_TIMEOUT_MS,
+  DEFAULT_SPAWN_INITIAL_INPUT_ADMISSION_TIMEOUT_MS,
+  SessionRolesV1Schema,
+  SessionForkFilesNotCopiedV1Schema,
+  supportsMachineSessionSpawnProtocolVersionV1,
   type BackendTargetRefV2,
   type MachinePoolSelectionOriginV1,
   type SessionCreationCorrespondenceV1,
@@ -16,11 +22,16 @@ import {
   type SessionModelSelectionV1,
   type SpawnSessionNonceResolution,
   type PluginSessionInputAttachmentV1,
+  type RawIngressStructuredInputV1,
+  type SessionForkFilesNotCopiedV1,
 } from '@happier-dev/protocol';
+import type { SessionSpawnNewInitialInputV1 } from '@happier-dev/protocol/sessions/creation/sessionSpawnNewInputV2';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 import { isRpcMethodNotAvailableError, isRpcMethodNotFoundError } from '@happier-dev/protocol/rpcErrors';
 import { randomUUID } from 'node:crypto';
+import { isDefiniteReplaySeededPreAdmissionRejection } from './spawnPreAdmissionRejection';
 import os from 'node:os';
+import { pickSessionCreateOriginFields } from '@/session/shared/sessionCreateOrigin';
 
 import { createAuthenticationHttpStatusError, isAuthenticationStatus } from '@/api/client/httpStatusError';
 import { validateStoredAuthTokenAgainstActiveServer } from '@/auth/validateStoredAuthTokenAgainstActiveServer';
@@ -31,6 +42,7 @@ import {
 } from '@/rpc/handlers/spawnSessionOptionsContract';
 import type { SpawnSessionOptions } from '@/session/shared/spawnSessionContract';
 import { fetchAccountEncryptionCurrentness } from '@/api/client/connectedServiceCredentialApi';
+import { readMachineOperationProtocolCapabilitiesV1 } from '@/api/machine/machineOperationProtocolCapabilities';
 import {
   fetchSessionById,
   fetchSessionOrganizationPlacement,
@@ -39,12 +51,14 @@ import {
 } from '@/session/transport/http/sessionsHttp';
 import { tryDecryptSessionOwnerMetadataView } from '@/session/transport/encryption/sessionEncryptionContext';
 import { callMachineRpc } from '@/session/transport/rpc/machineRpc';
-import { DEFAULT_SESSION_WEBHOOK_TIMEOUT_MS } from '@/daemon/spawn/sessionWebhookTimeoutPolicy';
 import { updateSessionMetadataWithRetry } from '@/session/metadata/updateSessionMetadataWithRetry';
 import { summarizeSessionRecord, type SessionSummary } from '@/cli/output/session/sessionSummary';
 import { delay } from '@/utils/time';
 import { logger } from '@/utils/logger';
 import { sendSessionMessage } from './sendSessionMessage';
+import { ensureSessionMachineAccessKeyBinding } from '@/api/session/ensureSessionMachineAccessKeyBinding';
+import { resolveServerHttpBaseUrl } from '@/session/transport/http/serverHttpBaseUrl';
+import { resolveSessionUserMessageRequestedAction } from './resolveSessionUserMessageRequestedAction';
 import { abandonSpawnedSessionBestEffort, awaitSpawnedSessionId } from './awaitSpawnedSessionId';
 import { archiveSessionOnceInactive } from './archiveSessionOnceInactive';
 import { requestSessionStop } from './requestSessionStop';
@@ -62,7 +76,7 @@ import {
 export type DirectSpawnedSessionTransport = Readonly<{
   spawn: (
     request: SpawnDaemonSessionRequest,
-    options?: Readonly<{ signal?: AbortSignal }>,
+    options?: Readonly<{ signal?: AbortSignal }> & Pick<SpawnSessionOptions, 'creationAuthorization' | 'callerInputConstraints'>,
   ) => Promise<unknown>;
   resolveSpawnSessionByNonce: (
     spawnNonce: string,
@@ -106,9 +120,10 @@ export type ReplaySeededSessionCreationV1 = Readonly<{
   sourceRecipe: ReplaySeededCreationSourceRecipe;
 }>;
 
-export type CreateSpawnedSessionParams = Readonly<{
+export type CreateSpawnedSessionParams = Readonly<import('@happier-dev/protocol').SessionCreateOriginFieldsV1 & {
   credentials: StoredCredentials;
   directory: string;
+  directoryKind?: 'path' | 'managed';
   /**
    * Session creation is always dispatched to this exact machine.
    *
@@ -125,6 +140,9 @@ export type CreateSpawnedSessionParams = Readonly<{
   placementOrigin?: MachinePoolSelectionOriginV1;
   organizationPlacement?: SessionOrganizationPlacementV1;
   initialAccess?: import('@happier-dev/protocol').SessionInitialAccessDraftV1;
+  reportsTo?: import('@happier-dev/protocol').SessionReportsToV1;
+  /** Canonical Action host's resolved snapshot; never accepted from raw public Action input. */
+  initialSessionRolesV1?: import('@happier-dev/protocol').SessionRolesV1;
   primaryTeamId?: string | null;
   modelSelection?: SessionModelSelectionV1;
   /** Mutable presentation written only through the fresh create envelope. */
@@ -138,6 +156,8 @@ export type CreateSpawnedSessionParams = Readonly<{
   initialInput?: Readonly<{
     text?: string;
     attachments?: readonly PluginSessionInputAttachmentV1[];
+    structuredInput?: RawIngressStructuredInputV1;
+    reviewComments?: SessionSpawnNewInitialInputV1['reviewComments'];
   }>;
   buildInitialInputHandoff?: (localId: string) => Readonly<{
     meta?: Record<string, unknown>;
@@ -180,6 +200,8 @@ export type CreateSpawnedSessionParams = Readonly<{
 } & Partial<Pick<
   SpawnSessionOptions,
   | 'permissionMode'
+  | 'creationAuthorization'
+  | 'callerInputConstraints'
   | 'permissionModeUpdatedAt'
   | 'agentModeId'
   | 'agentModeUpdatedAt'
@@ -204,7 +226,16 @@ export type CreateSpawnedSessionParams = Readonly<{
   | 'runtimeDescriptorV1'
   | 'agentSessionStartupInstructionsV1'
   | 'agentTarget'
+  | 'managedDirectorySeed'
 >>>;
+
+function readForkFilesNotCopied(metadata: unknown): SessionForkFilesNotCopiedV1 | undefined {
+  if (!metadata || typeof metadata !== 'object' || !('forkV1' in metadata)) return undefined;
+  const fork = metadata.forkV1;
+  if (!fork || typeof fork !== 'object' || !('filesNotCopied' in fork)) return undefined;
+  const parsed = SessionForkFilesNotCopiedV1Schema.safeParse(fork.filesNotCopied);
+  return parsed.success ? parsed.data : undefined;
+}
 
 const DEFAULT_SPAWNED_SESSION_FETCH_TIMEOUT_MS = 10_000;
 const DEFAULT_SPAWNED_SESSION_FETCH_POLL_INTERVAL_MS = 200;
@@ -457,6 +488,7 @@ function validateExistingSessionCreationCandidate(params: Readonly<{
 async function submitSpawnInitialInput(params: Readonly<{
   credentials: StoredCredentials;
   sessionId: string;
+  targetMachineId?: string;
   initialInput?: CreateSpawnedSessionParams['initialInput'];
   localId: string;
   initialInputHandoff?: ReturnType<NonNullable<CreateSpawnedSessionParams['buildInitialInputHandoff']>>;
@@ -464,7 +496,8 @@ async function submitSpawnInitialInput(params: Readonly<{
   signal?: AbortSignal;
 }>): Promise<SessionSpawnNewInitialInputDispositionV1> {
   const text = typeof params.initialInput?.text === 'string' ? params.initialInput.text : '';
-  const attachmentCount = params.initialInput?.attachments?.length ?? 0;
+  const attachmentCount = (params.initialInput?.attachments?.length ?? 0)
+    + (params.initialInput?.structuredInput?.composerAttachments?.length ?? 0);
   if (!hasSessionInputContentV1({ text, attachmentCount })) return { status: 'notRequested' };
   // Session identity is already settled at this call site. A caller that
   // retired before Message admission began has a definite nested rejection,
@@ -480,28 +513,60 @@ async function submitSpawnInitialInput(params: Readonly<{
     );
   }
   const initialInputHandoff = params.initialInputHandoff;
+  const reviewComments = params.initialInput?.reviewComments;
+  const messageMeta = reviewComments
+    ? {
+        ...(initialInputHandoff.meta ?? {}),
+        displayText: reviewComments.displayText,
+        happier: {
+          kind: 'review_comments.v1',
+          payload: { sessionId: params.sessionId, comments: reviewComments.comments },
+        },
+      }
+    : initialInputHandoff.meta;
   try {
     const sent = await sendSessionMessage({
       credentials: params.credentials,
       idOrPrefix: params.sessionId,
       message: text,
       wait: false,
-      timeoutMs: 60_000,
+      timeoutMs: DEFAULT_SPAWN_INITIAL_INPUT_ADMISSION_TIMEOUT_MS,
       localId: params.localId,
       inputAdmission: initialInputHandoff.inputAdmission,
-      ...(initialInputHandoff.meta ? { messageMeta: initialInputHandoff.meta } : {}),
-      requestedAction: { v: 1, kind: 'send_now' },
+      ...(params.targetMachineId ? { targetMachineId: params.targetMachineId } : {}),
+      ...(messageMeta ? { messageMeta } : {}),
+      requestedAction: resolveSessionUserMessageRequestedAction({ deliveryIntent: 'runtime_bootstrap' }),
       ...(params.machineAdmissionTransport
         ? { machineAdmissionTransport: params.machineAdmissionTransport }
         : {}),
       ...(params.signal ? { signal: params.signal } : {}),
     });
-    return sent.admissionResult;
-  } catch {
+    const disposition = sent.admissionResult;
+    if (disposition.status === 'rejected' || disposition.status === 'outcomeUnknown') {
+      logger.warn('[SESSION SPAWN] Initial input admission did not accept the message', {
+        sessionId: params.sessionId,
+        localId: params.localId,
+        status: disposition.status,
+        code: disposition.code,
+        ...(!sent.ok && sent.message ? { reason: sent.message } : {}),
+      });
+    }
+    return disposition;
+  } catch (error) {
+    const parsedCause = SessionInputAdmissionRejectionCodeV1Schema.safeParse(
+      error !== null && typeof error === 'object' ? (error as { code?: unknown }).code : undefined,
+    );
+    const code = parsedCause.success ? parsedCause.data : 'session_input_action_execution_failed';
+    logger.warn('[SESSION SPAWN] Initial input admission failed', {
+      sessionId: params.sessionId,
+      localId: params.localId,
+      status: 'outcomeUnknown',
+      code,
+    });
     return {
       status: 'outcomeUnknown',
       localId: params.localId,
-      code: 'session_input_action_execution_failed',
+      code,
     };
   }
 }
@@ -509,21 +574,6 @@ async function submitSpawnInitialInput(params: Readonly<{
 // This is deliberately the creator's cleanup projection, not a second daemon
 // outcome model. Only these known producers reject before a runner can attach;
 // every other response, throw, or legacy code may still name a live child.
-const DEFINITE_REPLAY_SEEDED_PRE_ADMISSION_ERROR_CODES = new Set<string>([
-  SPAWN_SESSION_ERROR_CODES.INVALID_REQUEST,
-  SPAWN_SESSION_ERROR_CODES.INVALID_ENVIRONMENT_VARIABLES,
-  SPAWN_SESSION_ERROR_CODES.AUTH_ENV_UNEXPANDED,
-  SPAWN_SESSION_ERROR_CODES.RESUME_NOT_SUPPORTED,
-  SPAWN_SESSION_ERROR_CODES.RESUME_MISSING_ENCRYPTION_KEY,
-  SPAWN_SESSION_ERROR_CODES.DIRECTORY_CREATE_FAILED,
-  SPAWN_SESSION_ERROR_CODES.SPAWN_VALIDATION_FAILED,
-]);
-
-function isDefiniteReplaySeededPreAdmissionRejection(code: unknown): boolean {
-  return typeof code === 'string'
-    && DEFINITE_REPLAY_SEEDED_PRE_ADMISSION_ERROR_CODES.has(code);
-}
-
 /**
  * Dispatch the launch for an already-committed replay-seeded row.
  *
@@ -541,7 +591,13 @@ async function dispatchReplaySeededSpawn(args: Readonly<{
   const {
     placementOrigin: _creationOwnedPlacementOrigin,
     initialAccess: _creationOwnedInitialAccess,
+    reportsTo: _creationOwnedReportsTo,
+    initialSessionRolesV1: _creationOwnedRoles,
     primaryTeamId: _creationOwnedPrimaryTeamId,
+    originKind: _originKind,
+    originSessionId: _originSessionId,
+    originRunId: _originRunId,
+    workDepth: _workDepth,
     ...attachSpawnRequestInput
   } = args.spawnRequestInput;
   try {
@@ -549,6 +605,7 @@ async function dispatchReplaySeededSpawn(args: Readonly<{
       SpawnDaemonSessionRequestSchema.parse({
         ...attachSpawnRequestInput,
         existingSessionId: args.sessionId,
+        freshSessionCreation: args.createdHere,
       }),
     );
   } catch (error) {
@@ -584,6 +641,7 @@ async function createReplaySeededSpawnedSession(args: Readonly<{
   organizationPlacement: SessionOrganizationPlacementV1;
   initialInput: SessionSpawnNewInitialInputDispositionV1;
   session?: SessionSummary;
+  filesNotCopied?: SessionForkFilesNotCopiedV1;
 }>> {
   const { params, replaySeededCreation } = args;
   const tag = replaySeededCreation.tag.trim();
@@ -617,6 +675,8 @@ async function createReplaySeededSpawnedSession(args: Readonly<{
   // label and writes the same `tag` metadata field this creation already owns.
   // The two never co-occur: that replay path carries no source recipe.
   const created = await getOrCreateSessionByTag({
+    ...(params.creationAuthorization ? { creationAuthorizationToken: params.creationAuthorization.token } : {}),
+    ...pickSessionCreateOriginFields(params),
     credentials: params.credentials,
     tag,
     metadata: {
@@ -627,9 +687,16 @@ async function createReplaySeededSpawnedSession(args: Readonly<{
       ...(params.placementOrigin ? { placementOrigin: params.placementOrigin } : {}),
       ...replaySeededCreation.metadata,
       ...connectedServiceChildLaunch.metadata,
+      ...(params.directoryKind === 'managed' ? { sessionDirectoryV1: { v: 1, kind: 'managed' } } : {}),
+      ...(params.initialSessionRolesV1 ? { work: {
+        ...(replaySeededCreation.metadata.work && typeof replaySeededCreation.metadata.work === 'object'
+          ? replaySeededCreation.metadata.work : {}),
+        sessionRolesV1: SessionRolesV1Schema.parse(params.initialSessionRolesV1),
+      } } : {}),
     },
     agentState: null,
     ...(params.initialAccess !== undefined ? { initialAccess: params.initialAccess } : {}),
+    ...(params.reportsTo !== undefined ? { reportsTo: params.reportsTo } : {}),
     ...(params.primaryTeamId !== undefined ? { primaryTeamId: params.primaryTeamId } : {}),
     ...(params.teamCredentialBindings !== undefined ? { teamCredentialBindings: params.teamCredentialBindings } : {}),
     ...(params.organizationPlacement ? { organizationPlacement: params.organizationPlacement } : {}),
@@ -650,6 +717,7 @@ async function createReplaySeededSpawnedSession(args: Readonly<{
   // neither a transient currentness read nor an undecryptable row can turn a
   // source conflict into a seeded continuation of another Session. A row this
   // call just created cannot conflict with itself and needs no such evidence.
+  let filesNotCopied = readForkFilesNotCopied(replaySeededCreation.metadata);
   if (created.created !== true) {
     if (!accountEncryptionCurrentness) {
       throw createCodedError(
@@ -663,6 +731,7 @@ async function createReplaySeededSpawnedSession(args: Readonly<{
       accountEncryptionMode: accountEncryptionCurrentness.mode,
       rawSession: created.session,
     });
+    filesNotCopied = readForkFilesNotCopied(ownerMetadata);
     const candidateValidation = validateExistingSessionCreationCandidate({
       ownerMetadata,
       correspondence: params.sessionCreationCorrespondence,
@@ -721,6 +790,15 @@ async function createReplaySeededSpawnedSession(args: Readonly<{
     }
   }
 
+  // A reused tag is trusted only after its immutable recipe is authenticated.
+  // Bind before dispatch, since its first Message may race Session socket setup.
+  await ensureSessionMachineAccessKeyBinding({
+    serverUrl: resolveServerHttpBaseUrl(),
+    token: params.credentials.token,
+    sessionId,
+    machineId: params.machineId,
+  });
+
   const spawnResponse = await dispatchReplaySeededSpawn({
     token: params.credentials.token,
     sessionId,
@@ -775,6 +853,7 @@ async function createReplaySeededSpawnedSession(args: Readonly<{
   const initialInput = await submitSpawnInitialInput({
     credentials: params.credentials,
     sessionId,
+    targetMachineId: params.machineId,
     initialInput: params.initialInput,
     localId: args.initialInputLocalId,
     initialInputHandoff: args.initialInputHandoff,
@@ -786,6 +865,7 @@ async function createReplaySeededSpawnedSession(args: Readonly<{
     sessionId,
     organizationPlacement,
     initialInput,
+    ...(filesNotCopied ? { filesNotCopied } : {}),
     ...(accountEncryptionCurrentness
       ? {
         session: summarizeSessionRecord({
@@ -806,6 +886,7 @@ export async function createSpawnedSession(
   organizationPlacement: SessionOrganizationPlacementV1;
   initialInput: SessionSpawnNewInitialInputDispositionV1;
   session?: SessionSummary;
+  filesNotCopied?: SessionForkFilesNotCopiedV1;
 }>> {
   const exactMachineId = typeof params.machineId === 'string'
     ? params.machineId.trim()
@@ -836,7 +917,8 @@ export async function createSpawnedSession(
   const initialInputText = typeof params.initialInput?.text === 'string' ? params.initialInput.text : '';
   const initialInputRequested = hasSessionInputContentV1({
     text: initialInputText,
-    attachmentCount: params.initialInput?.attachments?.length ?? 0,
+    attachmentCount: (params.initialInput?.attachments?.length ?? 0)
+      + (params.initialInput?.structuredInput?.composerAttachments?.length ?? 0),
   });
   const initialInputLocalId = params.sessionCreationTag
     ? buildSessionSpawnInitialInputLocalIdV1({ sessionCreationTag: params.sessionCreationTag })
@@ -857,8 +939,13 @@ export async function createSpawnedSession(
     );
   }
   const spawnRequestInput = {
+    ...pickSessionCreateOriginFields(params),
     directory: params.directory,
+    ...(params.directoryKind ? { directoryKind: params.directoryKind } : {}),
+    ...(params.managedDirectorySeed ? { managedDirectorySeed: params.managedDirectorySeed } : {}),
     ...(params.initialAccess !== undefined ? { initialAccess: params.initialAccess } : {}),
+    ...(params.reportsTo !== undefined ? { reportsTo: params.reportsTo } : {}),
+    ...(params.initialSessionRolesV1 !== undefined ? { initialSessionRolesV1: params.initialSessionRolesV1 } : {}),
     ...(params.primaryTeamId !== undefined ? { primaryTeamId: params.primaryTeamId } : {}),
     ...(params.teamCredentialBindings !== undefined ? { teamCredentialBindings: params.teamCredentialBindings } : {}),
     spawnNonce,
@@ -916,6 +1003,26 @@ export async function createSpawnedSession(
   const isProviderBound = spawnRequest.modelSelection?.ref.providerConnectionId != null;
   await assertStoredAuthTokenValidForSpawn(params.credentials.token);
   params.signal?.throwIfAborted();
+  if (params.initialSessionRolesV1 && !params.directTransport && !params.machineActionTransport) {
+    // The moving 0.2 predecessor silently strips unknown spawn fields. Use the
+    // existing current spawn protocol at this remote boundary, before either
+    // normal dispatch or Replay row creation can lose the protected snapshot.
+    const target = await readMachineOperationProtocolCapabilitiesV1({
+      credentials: params.credentials,
+      machineId: exactMachineId,
+      ...(params.signal ? { signal: params.signal } : {}),
+    });
+    if (!supportsMachineSessionSpawnProtocolVersionV1(target?.capabilities, 2)) {
+      throw createCodedError(
+        'The selected daemon requires an update to create a Session with inherited roles',
+        SPAWN_SESSION_ERROR_CODES.SPAWN_FAILED,
+        {
+          kind: 'update_required', operation: 'session.spawn_new', component: 'daemon',
+          reason: 'session_roles_snapshot_update_required',
+        },
+      );
+    }
+  }
   if (params.sessionCreationTag && params.sessionCreationCorrespondence) {
     const lookup = await lookupSessionsByTags({
       token: params.credentials.token,
@@ -999,17 +1106,20 @@ export async function createSpawnedSession(
       const initialInput = await submitSpawnInitialInput({
         credentials: params.credentials,
         sessionId: existing.id,
+        targetMachineId: params.machineId,
         initialInput: params.initialInput,
         localId: initialInputLocalId,
         initialInputHandoff,
         machineAdmissionTransport: params.machineAdmissionTransport,
         ...(params.signal ? { signal: params.signal } : {}),
       });
+      const filesNotCopied = readForkFilesNotCopied(ownerMetadata);
       return {
         disposition: 'rejoined',
         sessionId: existing.id,
         organizationPlacement,
         initialInput,
+        ...(filesNotCopied ? { filesNotCopied } : {}),
         session: summarizeSessionRecord({
           credentials: params.credentials,
           accountEncryptionMode: accountEncryptionCurrentness.mode,
@@ -1020,6 +1130,9 @@ export async function createSpawnedSession(
   }
   const dispatchSpawnRequest = async (request: SpawnDaemonSessionRequest): Promise<unknown> => {
     try {
+      if ((params.creationAuthorization || params.callerInputConstraints) && !params.directTransport) {
+        throw new Error('Caller launch authority requires the exact host-private daemon transport');
+      }
       return params.directTransport
         ? await params.directTransport.spawn(
           // Released cli-v0.2.1 daemons do not read agentTarget. Keep the
@@ -1028,7 +1141,11 @@ export async function createSpawnedSession(
           (params.agentTarget && params.backendTarget
             ? { ...request, backendTarget: params.backendTarget }
             : request),
-          params.signal ? { signal: params.signal } : undefined,
+          {
+            ...(params.signal ? { signal: params.signal } : {}),
+            ...(params.creationAuthorization ? { creationAuthorization: params.creationAuthorization } : {}),
+            ...(params.callerInputConstraints ? { callerInputConstraints: params.callerInputConstraints } : {}),
+          },
         )
         : params.machineActionTransport
           ? await params.machineActionTransport(
@@ -1208,6 +1325,7 @@ export async function createSpawnedSession(
   const submitInitialInput = () => submitSpawnInitialInput({
     credentials: params.credentials,
     sessionId,
+    targetMachineId: params.machineId,
     initialInput: params.initialInput,
     localId: initialInputLocalId,
     initialInputHandoff,
@@ -1308,12 +1426,14 @@ export async function createSpawnedSession(
     });
   }
   const initialInput = await submitInitialInput();
+  const filesNotCopied = readForkFilesNotCopied(ownerMetadata);
 
   return {
     disposition: sessionCreationOutcome.disposition,
     sessionId,
     organizationPlacement: sessionCreationOutcome.organizationPlacement,
     initialInput,
+    ...(filesNotCopied ? { filesNotCopied } : {}),
     ...(accountEncryptionCurrentness
       ? {
           session: summarizeSessionRecord({

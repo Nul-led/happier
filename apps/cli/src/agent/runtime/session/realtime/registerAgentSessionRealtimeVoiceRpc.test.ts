@@ -51,7 +51,6 @@ const declaration = {
   },
   client: {
     artifactId: 'voice-runtime-web',
-    modulePath: './ui/voice',
     exportName: 'activate',
   },
 } satisfies VoiceProviderContribution;
@@ -150,7 +149,7 @@ function register(
   ),
   options?: Readonly<{
     getHappierSessionId?: () => string;
-    isGenerationCurrent?: () => boolean;
+    isOccurrenceCurrent?: () => boolean;
     retirementSignal?: AbortSignal;
     resolveRetirementSignal?: () => AbortSignal | null;
   }>,
@@ -169,8 +168,8 @@ function register(
     getHappierSessionId: options?.getHappierSessionId ?? (() => 'session-1'),
     ownerId: 'owner-1',
     agentGeneration: 'daemon-generation-1',
-    isGenerationCurrent: options?.isGenerationCurrent ?? (() => true),
-    resolveProviderGeneration: () => 'provider-generation-1',
+    isOccurrenceCurrent: options?.isOccurrenceCurrent ?? (() => true),
+    resolveProviderOccurrenceId: () => 'provider-generation-1',
     resolveRetirementSignal: options?.resolveRetirementSignal
       ?? (() => options?.retirementSignal ?? null),
     resolveConversation: ({ runtime: candidate, provider }) => (
@@ -262,8 +261,8 @@ describe('Agent-session realtime Voice session RPC', () => {
       getHappierSessionId: () => 'session-1',
       ownerId: 'owner-1',
       agentGeneration: 'daemon-generation-1',
-      isGenerationCurrent: () => true,
-      resolveProviderGeneration: () => 'provider-generation-1',
+      isOccurrenceCurrent: () => true,
+      resolveProviderOccurrenceId: () => 'provider-generation-1',
       resolveRetirementSignal: () => null,
       resolveConversation: ({ provider, runtime: candidate }) => (
         provider.pluginId === providerRef.pluginId
@@ -319,8 +318,8 @@ describe('Agent-session realtime Voice session RPC', () => {
       getHappierSessionId: () => 'session-1',
       ownerId: 'owner-1',
       agentGeneration: 'daemon-generation-1',
-      isGenerationCurrent: () => true,
-      resolveProviderGeneration: () => 'provider-generation-1',
+      isOccurrenceCurrent: () => true,
+      resolveProviderOccurrenceId: () => 'provider-generation-1',
       resolveRetirementSignal: () => null,
       resolveConversation: ({ runtime: candidate }) => ({
         conversation:
@@ -958,7 +957,7 @@ describe('Agent-session realtime Voice session RPC', () => {
     const retirement = new AbortController();
     const fixture = runtimeFixture();
     const handlers = register(fixture.runtime, undefined, {
-      isGenerationCurrent: () => generationCurrent,
+      isOccurrenceCurrent: () => generationCurrent,
       retirementSignal: retirement.signal,
     });
     const request = {
@@ -1001,7 +1000,7 @@ describe('Agent-session realtime Voice session RPC', () => {
     const fixture = runtimeFixture();
     const retirementOperations = trackStopRequiredRetirement(fixture);
     const handlers = register(fixture.runtime, undefined, {
-      isGenerationCurrent: () => generationCurrent,
+      isOccurrenceCurrent: () => generationCurrent,
       retirementSignal: retirement.signal,
     });
     const request = {

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { RunnerBrokerReadinessRequestV1Schema } from '@happier-dev/protocol/teams';
 
@@ -70,6 +70,27 @@ function harness(fetchImpl: typeof fetch) {
 }
 
 describe('Runner broker readiness client', () => {
+  beforeEach(() => vi.stubEnv('HAPPIER_HOME_CARRIER_POLICY', 'automatic'));
+  afterEach(() => vi.unstubAllEnvs());
+
+  it('reports broker unavailable without creating a native endpoint under Standard-only policy', async () => {
+    vi.stubEnv('HAPPIER_HOME_CARRIER_POLICY', 'standard_only');
+    const h = harness(vi.fn<typeof fetch>(async () => Response.json({
+      v: 1, binding, credentialSelectionBinding, readiness: { kind: 'available' },
+    })));
+
+    await expect(checkRunnerBrokerNonInferenceReadiness({
+      createRequest: () => request,
+      target: { endpointId: request.target.endpointId },
+      happyHomeDir: '/runner-home',
+      signal: new AbortController().signal,
+      createRuntime: h.createRuntime,
+      fetchImpl: h.fetchImpl,
+    })).resolves.toEqual({ kind: 'broker_unavailable' });
+    expect(h.createRuntime).not.toHaveBeenCalled();
+    expect(h.fetchImpl).not.toHaveBeenCalled();
+  });
+
   it('posts only the signed readiness request through the existing HTTP carrier and closes everything', async () => {
     const fetchImpl = vi.fn<typeof fetch>(async (_url, init) => {
       expect(init?.body).toBe(JSON.stringify(request));

@@ -143,16 +143,6 @@ export async function downloadDaemonPromptAsset(
         serverId: opts?.serverId,
         timeoutMs: opts?.timeoutMs ?? undefined,
         parsePayload: parsePromptAssetTransferPayload,
-        predecessorRpc: {
-            payloadWithRecipient: (recipientPublicKeyBase64) => ({
-                ...payload,
-                recipientPublicKeyBase64,
-            }),
-            initMethod: RPC_METHODS.DAEMON_PROMPT_ASSETS_DOWNLOAD_INIT,
-            chunkMethod: RPC_METHODS.DAEMON_PROMPT_ASSETS_DOWNLOAD_CHUNK,
-            finalizeMethod: RPC_METHODS.DAEMON_PROMPT_ASSETS_DOWNLOAD_FINALIZE,
-            abortMethod: RPC_METHODS.DAEMON_PROMPT_ASSETS_DOWNLOAD_ABORT,
-        },
         directExportRequest: {
             t: 'prompt_asset_download_v1',
             assetTypeId: payload.assetTypeId,

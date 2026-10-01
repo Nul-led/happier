@@ -9,9 +9,9 @@ import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactive
 import { SESSION_HEADER_ICON_SIZE_PX, SESSION_HEADER_ACTION_TAP_TARGET_PX } from '@/components/sessions/actions/sessionHeaderIconMetrics';
 import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
 import { useSessionHumanPresence } from '@/sync/domains/session/humanPresence/useSessionHumanPresence';
-import { useSessionListRenderableWithServerScope } from '@/sync/store/hooks';
 import { t } from '@/text';
 import { SessionViewerFacepile } from './SessionViewerFacepile';
+import { useSessionConversationAttentionReason } from './sessionConversationAttention';
 
 const styles = StyleSheet.create(() => ({
     attentionFrame: { position: 'relative' },
@@ -22,22 +22,6 @@ const styles = StyleSheet.create(() => ({
         zIndex: 1,
     },
 }));
-
-/**
- * The conversation half of the canonical personal attention projection. A mention
- * outranks ordinary unread discussion here for the same reason the Protocol reason
- * ladder declares it first: it is the one targeted signal, and collapsing it into
- * "unread" is what made this header announce a generic count for every reason.
- */
-function useConversationAttentionReason(
-    target: SessionAddress | null,
-): 'mentioned' | 'unread_discussion' | null {
-    const session = useSessionListRenderableWithServerScope(target?.serverId, target?.sessionId ?? '');
-    const viewer = session?.viewer;
-    if (viewer?.readState.state !== 'tracking' || !viewer.attention.needsAttention) return null;
-    if (viewer.attention.reasons.includes('mentioned')) return 'mentioned';
-    return viewer.attention.reasons.includes('unread_discussion') ? 'unread_discussion' : null;
-}
 
 export function useSessionCollaborationHasNamedViewers(target: SessionAddress | null): boolean {
     const presence = useSessionHumanPresence(target);
@@ -60,7 +44,7 @@ export function resolveSessionCollaborationHeaderPlacement(input: Readonly<{
  * conversation rows that carry real per-conversation counts, not to this header.
  */
 export function useSessionCollaborationAttentionLabel(target: SessionAddress | null): string | null {
-    const reason = useConversationAttentionReason(target);
+    const reason = useSessionConversationAttentionReason(target);
     if (reason === null) return null;
     return reason === 'mentioned'
         ? t('session.collaboration.discussion.mentioned')

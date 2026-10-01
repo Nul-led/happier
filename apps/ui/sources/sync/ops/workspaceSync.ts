@@ -1,6 +1,5 @@
 import {
     ActionApprovalRequestCreatedResultSchema,
-    DeleteWorkspaceSyncConflictLoserV1Schema,
     ReadWorkspaceSyncFileResultV1Schema,
     ReadWorkspaceSyncFileV1Schema,
     WorkspaceSyncConflictPageRequestV1Schema,
@@ -9,7 +8,13 @@ import {
     WorkspaceSyncLegacyStateInspectionV1Schema,
     WorkspaceSyncStatusV1Schema,
     WorkspaceSyncConflictResolveActionInputV1Schema,
-    type DeleteWorkspaceSyncConflictLoserV1,
+    WorkspaceSyncConflictResolutionResultV1Schema,
+    WorkspaceSyncConflictInspectRpcRequestV1Schema,
+    WorkspaceSyncConflictInspectRpcResultV1Schema,
+    type WorkspaceSyncConflictResolutionV1,
+    type WorkspaceSyncConflictResolutionResultV1,
+    type WorkspaceSyncConflictInspectRpcRequestV1,
+    type WorkspaceSyncConflictInspectRpcResultV1,
     type ReadWorkspaceSyncFileResultV1,
     type ReadWorkspaceSyncFileV1,
     type WorkspaceSyncConflictPageV1,
@@ -75,7 +80,7 @@ function parseApprovedWorkspaceSyncConflictResult(
     raw: unknown,
     method: string,
     subordinateRpcFailure: unknown,
-): WorkspaceSyncStatusV1 {
+): WorkspaceSyncConflictResolutionResultV1 {
     const decision = strictRecord(raw, ['ok', 'status', 'execution'], method);
     if (decision.ok !== true || (decision.status !== 'executed' && decision.status !== 'failed')) {
         return unsupported(method);
@@ -108,7 +113,7 @@ function parseApprovedWorkspaceSyncConflictResult(
     }
 
     if (executionRecord.ok !== true) return unsupported(method);
-    const parsed = WorkspaceSyncStatusV1Schema.safeParse(executionRecord.result);
+    const parsed = WorkspaceSyncConflictResolutionResultV1Schema.safeParse(executionRecord.result);
     return parsed.success ? parsed.data : unsupported(method);
 }
 
@@ -202,18 +207,28 @@ export async function listWorkspaceSyncConflicts(
     return parsed.success ? parsed.data : unsupported(method);
 }
 
+export async function inspectWorkspaceSyncConflict(
+    input: WorkspaceSyncControllerScope & Readonly<{ request: WorkspaceSyncConflictInspectRpcRequestV1 }>,
+): Promise<WorkspaceSyncConflictInspectRpcResultV1> {
+    const method = RPC_METHODS.DAEMON_WORKSPACE_SYNC_CONFLICT_INSPECT;
+    const request = WorkspaceSyncConflictInspectRpcRequestV1Schema.parse(input.request);
+    const parsed = WorkspaceSyncConflictInspectRpcResultV1Schema.safeParse(await callWorkspaceSync(input, method, request));
+    return parsed.success ? parsed.data : unsupported(method);
+}
+
 /**
  * Present-user adapter for the workspace conflict resolution Action. The
  * private daemon RPC is subordinate to the confirmed Action receipt.
  */
 export async function resolveWorkspaceSyncConflict(
-    input: WorkspaceSyncControllerScope & Readonly<{ request: DeleteWorkspaceSyncConflictLoserV1 }>,
-): Promise<WorkspaceSyncStatusV1> {
-    const method = RPC_METHODS.DAEMON_WORKSPACE_SYNC_CONFLICT_DELETE;
-    const actionInput = WorkspaceSyncConflictResolveActionInputV1Schema.parse({
-        controllerMachineId: input.controllerMachineId,
-        request: DeleteWorkspaceSyncConflictLoserV1Schema.parse(input.request),
-    });
+    input: WorkspaceSyncControllerScope & Readonly<{
+        request: WorkspaceSyncConflictResolutionV1;
+        onPhase?: (phase: 'requesting_approval' | 'applying') => void;
+    }>,
+): Promise<WorkspaceSyncConflictResolutionResultV1> {
+    const method = RPC_METHODS.DAEMON_WORKSPACE_SYNC_CONFLICT_RESOLVE;
+    const actionInput = WorkspaceSyncConflictResolveActionInputV1Schema.parse(input.request);
+    if (actionInput.controllerMachineId !== input.controllerMachineId) unsupported(method);
     let subordinateRpcFailure: unknown = null;
     const executor = createDefaultActionExecutor({
         workspaceSyncConflictResolve: async ({ actionReceiptId, input: approvedInput, signal }) => {
@@ -222,7 +237,7 @@ export async function resolveWorkspaceSyncConflict(
                     actionReceiptId,
                     actionInput: approvedInput,
                 });
-                const canonical = WorkspaceSyncStatusV1Schema.safeParse(raw);
+                const canonical = WorkspaceSyncConflictResolutionResultV1Schema.safeParse(raw);
                 return canonical.success ? canonical.data : unsupported(method);
             } catch (error) {
                 subordinateRpcFailure = error;
@@ -230,6 +245,7 @@ export async function resolveWorkspaceSyncConflict(
             }
         },
     });
+    input.onPhase?.('requesting_approval');
     const requested = await executor.execute('workspace.sync.conflict.resolve', actionInput, {
         serverId: input.serverId ?? undefined,
         surface: 'ui',
@@ -239,8 +255,9 @@ export async function resolveWorkspaceSyncConflict(
     if (!requested.ok) throw Object.assign(new Error(requested.error), { code: requested.errorCode });
     const approval = ActionApprovalRequestCreatedResultSchema.safeParse(requested.result);
     if (!approval.success) {
-        return WorkspaceSyncStatusV1Schema.parse(requested.result);
+        return WorkspaceSyncConflictResolutionResultV1Schema.parse(requested.result);
     }
+    input.onPhase?.('applying');
     const decided = await executor.execute('approval.request.decide', {
         artifactId: approval.data.artifactId,
         decision: 'approve',

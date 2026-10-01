@@ -128,6 +128,8 @@ export function SessionModelPicker(props: Readonly<{
     retryProjection?: (() => Promise<void> | void) | null;
     currentSelectionRecovery?: DaemonProviderCurrentSelectionRecoveryV1 | null;
     hiddenNativeModelKeys?: ReadonlySet<string>;
+    /** Default `true`; `false` drops the automatic option (a model-restricted embed). */
+    allowAutomatic?: boolean;
     selected: SessionModelPickerValue;
     effectiveLabel: string;
     reportedModel?: Readonly<{
@@ -136,6 +138,8 @@ export function SessionModelPicker(props: Readonly<{
         status: ReportedModelStatus;
     }> | null;
     canEnterCustomNativeValue?: boolean;
+    /** `false` removes custom entry for both native and Provider models in a restricted presentation. */
+    canEnterCustomValue?: boolean;
     notes?: readonly string[];
     probe?: OptionPickerProbeState;
     headerAccessory?: React.ReactNode;
@@ -167,6 +171,7 @@ export function SessionModelPicker(props: Readonly<{
         canConfirmExperimental,
         providerProjectionAuthoritative: props.providerProjectionAuthoritative,
         selected: props.selected,
+        allowAutomatic: props.allowAutomatic,
         selectedTeamCredentialModel: props.selectedTeamCredentialModel ?? undefined,
         currentSelectionRecovery: props.currentSelectionRecovery,
         teamCredentialResources: props.teamCredentialResources,
@@ -176,6 +181,7 @@ export function SessionModelPicker(props: Readonly<{
         onRecoverTeamCredentialResource: props.onRecoverTeamCredentialResource,
     }), [
         props.agentTargetKey,
+        props.allowAutomatic,
         props.currentSelectionRecovery,
         props.hiddenNativeModelKeys,
         props.nativeModels,
@@ -257,6 +263,14 @@ export function SessionModelPicker(props: Readonly<{
             }),
         ];
     }, [props.favoriteEntries, reportedModelPresentation.sections]);
+    // "Built-in" only tells the agent's own models apart from provider and team groups; over the
+    // only group it is noise (0.2 had none). A lone Favorites group keeps its label: it still says
+    // what the list is.
+    const labeledSections = React.useMemo(() => (
+        sections.length === 1 && sections[0]!.id === 'native'
+            ? [{ ...sections[0]!, title: undefined }]
+            : sections
+    ), [sections]);
     const favoriteOptions = React.useMemo<OptionPickerFavoriteOptions<SessionModelPickerOptionValue> | undefined>(() => {
         if (!props.favoriteKeys || !props.onToggleFavorite) return undefined;
         return {
@@ -268,6 +282,7 @@ export function SessionModelPicker(props: Readonly<{
         };
     }, [props.favoriteKeys, props.onToggleFavorite]);
     const customTarget = React.useMemo(() => {
+        if (props.canEnterCustomValue === false) return null;
         const selectedConnectionId = props.selected?.providerConnectionId ?? null;
         const selectedConnection = selectedConnectionId
             ? props.providerGroups.find((group) => group.connectionId === selectedConnectionId) ?? null
@@ -299,13 +314,19 @@ export function SessionModelPicker(props: Readonly<{
             connectionId: onlyEligibleConnection.connectionId,
             label: sessionModelConnectionTitle(onlyEligibleConnection),
         } : null;
-    }, [props.canEnterCustomNativeValue, props.providerGroups, props.selected]);
+    }, [props.canEnterCustomNativeValue, props.canEnterCustomValue, props.providerGroups, props.selected]);
+    // A discovery failure already has its own line (what failed + retry). The generic "discovery
+    // is unavailable" note would say the same thing a second time, so it yields to the error line.
+    const hasDiscoveryErrorLine = Boolean(props.projectionError) || (props.projectionFailures?.length ?? 0) > 0;
+    const unavailableNote = t('agentInput.model.unavailable');
     const notes = React.useMemo(() => buildSessionModelPickerNotes({
-        notes: props.notes ?? [],
+        notes: hasDiscoveryErrorLine
+            ? (props.notes ?? []).filter((note) => note !== unavailableNote)
+            : props.notes ?? [],
         groups: props.providerGroups,
         selected: props.selected,
         suppressionNote: t('settingsProviders.models.connectedServiceSuppressed'),
-    }), [props.notes, props.providerGroups, props.selected]);
+    }), [hasDiscoveryErrorLine, props.notes, props.providerGroups, props.selected, unavailableNote]);
     const commitSelection = React.useCallback((ref: SessionModelPickerOptionValue) => {
         props.experimentalConfirmation?.clear();
         if (isTeamCredentialProviderModelPickerValue(ref)) {
@@ -333,7 +354,7 @@ export function SessionModelPicker(props: Readonly<{
             effectiveLabel={props.effectiveLabel}
             notes={notes}
             options={[]}
-            sections={sections}
+            sections={labeledSections}
             selectedValue={props.selectedTeamCredentialModel ?? props.selected}
             getValueKey={sessionModelSelectionKey}
             emptyText={t('settingsProviders.models.empty')}
@@ -350,7 +371,7 @@ export function SessionModelPicker(props: Readonly<{
                 }),
             } : { canEnterCustomValue: false as const })}
             favoriteOptions={favoriteOptions}
-            probe={props.probe}
+            probe={hasDiscoveryErrorLine && props.probe?.failed ? { ...props.probe, failed: false } : props.probe}
             // A provider-connection model has no ACP config options, so the
             // CONTROL SET is withdrawn for it. That suppression lives here, on
             // the data, because "which options does this model expose" is a
@@ -381,10 +402,11 @@ export function SessionModelPicker(props: Readonly<{
                         />
                     ) : null}
                     {currentSelectionRecovery ? (
-                        <ProviderErrorItems error={currentSelectionRecovery.error} />
+                        <ProviderErrorItems presentation="line" error={currentSelectionRecovery.error} />
                     ) : null}
                     {props.projectionError ? (
                         <ProviderErrorItems
+                            presentation="line"
                             error={props.projectionError}
                             retry={props.retryProjection
                                 ? async () => { await props.retryProjection?.(); }
@@ -393,6 +415,7 @@ export function SessionModelPicker(props: Readonly<{
                     ) : null}
                     {props.projectionFailures?.map((failure) => (
                         <ProviderErrorItems
+                            presentation="line"
                             key={failure.connectionId}
                             error={failure.error}
                             retry={props.retryProjection
@@ -402,6 +425,7 @@ export function SessionModelPicker(props: Readonly<{
                     ))}
                     {props.experimentalConfirmation?.error ? (
                         <ProviderErrorItems
+                            presentation="line"
                             error={props.experimentalConfirmation.error}
                             retry={props.experimentalConfirmation.retry
                                 ? async () => { await props.experimentalConfirmation?.retry?.(); }

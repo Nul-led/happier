@@ -8,7 +8,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { act } from 'react-test-renderer';
 
-import { flushHookEffects, renderHook } from '@/dev/testkit';
+import { createTestSessionTranscriptSource, flushHookEffects, renderHookWithSessionTranscriptSource } from '@/dev/testkit';
+import type { RenderHookOptions } from '@/dev/testkit/hooks/renderHook';
 import type { WebTranscriptScrollMetrics } from '@/components/sessions/transcript/webTranscriptScrollMetrics';
 import { useCommittedTranscriptRef } from '@/components/sessions/transcript/viewport/lifecycle/host/useCommittedTranscriptRef';
 
@@ -17,15 +18,31 @@ import { useTranscriptJumpHost } from './useTranscriptJumpHost';
 
 const loadTargetWindowMessagesMock = vi.hoisted(() => vi.fn());
 
-vi.mock('@/sync/sync', () => ({
-    sync: {
-        loadOlderMessages: vi.fn(async () => ({ status: 'no_more' })),
-        loadOlderMessagesForkAware: vi.fn(async () => ({ status: 'no_more' })),
-        loadTargetWindowMessages: loadTargetWindowMessagesMock,
-    },
-}));
+vi.mock('@/sync/domains/plugins/availability/generatedBundledPluginUiArtifacts', async () => {
+    const { emptyBundledPluginUiAssetsModule } = await import('@/dev/testkit/mocks/bundledPluginUiAssets');
+    return emptyBundledPluginUiAssetsModule;
+});
 
 type JumpHostDeps = Parameters<typeof useTranscriptJumpHost>[0];
+
+function createJumpHostSource(sessionId: string) {
+    return createTestSessionTranscriptSource({ sessionId, history: {
+        loadOlder: async () => ({ status: 'no_more', loaded: 0, hasMore: false }),
+        loadTargetWindow: (target, options) => loadTargetWindowMessagesMock(sessionId, target, options),
+    } });
+}
+
+async function renderHook<Value>(useValue: (deps: JumpHostDeps) => Value, options: RenderHookOptions<JumpHostDeps>) {
+    let source = createJumpHostSource(options.initialProps.sessionId);
+    const hook = await renderHookWithSessionTranscriptSource(useValue, { ...options, source });
+    return {
+        ...hook,
+        rerender: (deps: JumpHostDeps = options.initialProps) => {
+            if (deps.sessionId !== source.sessionId) source = createJumpHostSource(deps.sessionId);
+            return hook.rerender(deps, source);
+        },
+    };
+}
 
 function createRef<T>(current: T): { current: T } {
     return { current };
@@ -55,6 +72,7 @@ function createStableMembers() {
         executeViewportCommand: vi.fn(() => true),
         executeViewportCommandWithAnimation: vi.fn(() => true),
         hasMoreOlderRef: createRef<boolean | null>(true),
+        observeOlderLoadResult: () => {},
         handleNativeRestoreIndexFailure: vi.fn(() => false),
         invalidateViewportAnchorCapture: vi.fn(),
         itemsRef: createRef([]),
@@ -148,17 +166,20 @@ describe('useTranscriptJumpHost identity stability', () => {
         members.onRouteJumpSettled.mockImplementation(() => {
             expect(members.endExplicitJumpWriteBarrier).toHaveBeenCalledTimes(1);
         });
-        loadTargetWindowMessagesMock.mockResolvedValue({
-            appliedSeqs: [50],
-            hasMoreNewer: true,
-            hasMoreOlder: true,
-            newerCursor: 60,
-            olderCursor: 40,
-            rawSeqs: [50],
-            status: 'loaded',
-            targetPresent: true,
-            targetSeq: 50,
-            windowId: 'window-50',
+        loadTargetWindowMessagesMock.mockImplementation(async () => {
+            members.canonicalWindowedItemsRef.current = [{ id: 'route-50', kind: 'message', seq: 50 }];
+            return {
+                appliedSeqs: [50],
+                hasMoreNewer: true,
+                hasMoreOlder: true,
+                newerCursor: 60,
+                olderCursor: 40,
+                rawSeqs: [50],
+                status: 'loaded',
+                targetPresent: true,
+                targetSeq: 50,
+                windowId: 'window-50',
+            };
         });
 
         const hook = await renderHook(
@@ -551,6 +572,45 @@ describe('useTranscriptJumpHost identity stability', () => {
         expect(loadTargetWindowMessagesMock).toHaveBeenCalledTimes(1);
         expect(releaseExplicitJumpTakeover).toHaveBeenCalledTimes(1);
         await hook.unmount();
+    });
+
+    it('waits for a loaded target to enter the committed window before scrolling on native', async () => {
+        const members = createStableMembers();
+        members.isTranscriptJumpTargetInRenderedWindow.mockImplementation(() =>
+            members.canonicalWindowedItemsRef.current.some((item) => item.seq === 500));
+        members.listRef.current = {
+            scrollToIndex: vi.fn(),
+            scrollToOffset: vi.fn(),
+        };
+        loadTargetWindowMessagesMock.mockResolvedValue({
+            status: 'loaded',
+            targetPresent: true,
+            windowId: 'target-500',
+            targetSeq: 500,
+            newerCursor: null,
+            hasMoreNewer: false,
+        });
+        const deps = { ...buildDeps(members), platformOS: 'ios' } as JumpHostDeps;
+        const hook = await renderHook(
+            (deps: JumpHostDeps) => useTranscriptJumpHost(deps),
+            { initialProps: deps },
+        );
+
+        try {
+            const pending = hook.getCurrent().jumpToTranscriptTarget(
+                { kind: 'seq', seq: 500 },
+                { preferTargetWindow: true },
+            );
+            await vi.waitFor(() => expect(members.activeTargetWindowTargetRef.current).toEqual({ kind: 'seq', seq: 500 }));
+            expect(members.executeViewportCommandWithAnimation).not.toHaveBeenCalled();
+
+            members.canonicalWindowedItemsRef.current = [{ id: 'target-500', kind: 'message', seq: 500 }];
+            await hook.rerender(deps);
+            await expect(pending).resolves.toMatchObject({ status: 'window-rendered' });
+            expect(members.executeViewportCommandWithAnimation).toHaveBeenCalledTimes(1);
+        } finally {
+            await hook.unmount();
+        }
     });
 
     it('loads a target window for a forked transcript, whose own segment is an ordinary seq range', async () => {

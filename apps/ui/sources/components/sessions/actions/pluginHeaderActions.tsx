@@ -137,11 +137,8 @@ export function resolvePluginSessionHeaderActionPresentations(params: Readonly<{
                     ? false
                     : actionTarget.execution.target === 'client'
                     ? projectionCurrent
-                        && params.scopedLaunchFacts?.generation !== null
-                        && params.scopedLaunchFacts?.generation !== undefined
                         && resolvePluginUiClientActionRegistration({
                             action: actionTarget,
-                            projectionGeneration: params.scopedLaunchFacts.generation,
                             platform: resolvePluginUiClientExecutablePlatform(),
                         }) !== null
                     : actionTarget?.execution.target === 'daemon' && scopedAuthority !== null

@@ -4,6 +4,7 @@ import type { Session } from '@/sync/domains/state/storageTypes';
 import type { ServerAccountScopeLifetime } from '@/sync/domains/scope/serverAccountScope';
 import type { DirectMessageSubmitResult, SessionSubmitPort } from './types';
 import { submitSessionUserMessage } from './submitSessionUserMessage';
+import { buildOutgoingUserTextRecord } from '@/sync/domains/messages/outgoingUserMessage';
 
 function createSession(overrides: Partial<Session> = {}): Session {
     return {
@@ -78,6 +79,24 @@ function createAccountLifetime(scope = { serverId: 'server-1', accountId: 'accou
 }
 
 describe('submitSessionUserMessage Pending action ownership', () => {
+    it.each([false, true])('admits the allowed permission mode through direct and pending submission (direct=%s)', async (forceImmediate) => {
+        const session = createSession({ permissionMode: 'yolo' });
+        let admittedMode: unknown;
+        const project: SessionSubmitPort['sendMessage'] = async (_sessionId, text, displayText, metaOverrides, options) => {
+            admittedMode = buildOutgoingUserTextRecord({
+                text, displayText, metaOverrides, session, agentId: 'codex', permissionMode: session.permissionMode ?? 'default', settings: {},
+                allowedPermissionModes: options?.allowedPermissionModes,
+            }).meta?.permissionMode;
+            return { localId: 'sent' };
+        };
+        const port: SessionSubmitPort = {
+            ...createPort().port,
+            sendMessage: project,
+            enqueuePendingMessage: project,
+        };
+        await submitSessionUserMessage(port, { ...submitOptions(session), forceImmediate, allowedPermissionModes: ['default'] });
+        expect(admittedMode).toBe('default');
+    });
     it.each([undefined, { v: 1 as const, kind: 'send_now' as const }])('preserves exact Run input and action %j without consulting parent delivery or waking it', async (requestedAction) => {
         const harness = createPort();
         const recipient = { kind: 'execution_run' as const, runId: 'run-a' };

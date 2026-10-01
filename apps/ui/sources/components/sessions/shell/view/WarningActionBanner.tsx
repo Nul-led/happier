@@ -3,12 +3,12 @@ import { Platform, Pressable, StyleSheet, useWindowDimensions, View, type ViewSt
 import { useUnistyles } from 'react-native-unistyles';
 import { HappierBanner, isHappierBannerUrgent } from '@happier-dev/plugin-ui/presentation';
 
-import { COMPOSER_SURFACE_RADIUS } from '@/components/sessions/agentInput/composerContentInset';
 import { ITEM_SUBTITLE_TEXT_METRICS, ITEM_TITLE_TEXT_METRICS } from '@/components/ui/lists/itemDensityMetrics';
 import { Text } from '@/components/ui/text/Text';
 import { Icon, type IconName } from '@/components/ui/icons/Icon';
 import { projectPluginUiTheme } from '@/components/plugins/surfaces/pluginUiThemeProjection';
 import type { Theme } from '@/theme';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 export type SessionBannerTone = 'warning' | 'neutral';
 
@@ -73,9 +73,6 @@ const ACTION_HIT_SLOP = {
     right: 4,
 } as const;
 
-// Concentric with the banner surface: inner radius = outer radius - the inset between them.
-const ACTION_RADIUS = COMPOSER_SURFACE_RADIUS - BANNER_PADDING_VERTICAL;
-
 const actionBaseStyle = {
     flexShrink: 0,
     maxWidth: '100%',
@@ -84,7 +81,6 @@ const actionBaseStyle = {
     justifyContent: 'center',
     paddingHorizontal: 12,
     paddingVertical: 4,
-    borderRadius: ACTION_RADIUS,
 } as const satisfies ViewStyle;
 
 export function resolveWarningActionBannerToneTokens(
@@ -160,9 +156,11 @@ export function WarningActionBanner(props: WarningActionBannerProps): React.Reac
                     onPress={action.disabled ? undefined : action.onPress}
                     style={({ pressed }) => ({
                         ...actionBaseStyle,
+                        // Concentric with the banner surface: inner radius = outer radius - the inset between them.
+                        borderRadius: theme.parts.composer.radius - BANNER_PADDING_VERTICAL,
                         paddingHorizontal: 10,
                         backgroundColor: theme.colors.button.secondary.background,
-                        opacity: action.disabled ? 0.45 : pressed ? 0.6 : 1,
+                        opacity: action.disabled ? 0.45 : pressed ? motionTokens.press.opacity : 1,
                     })}
                 >
                     <Text style={{
@@ -187,8 +185,10 @@ export function WarningActionBanner(props: WarningActionBannerProps): React.Reac
                     onPress={props.disabled ? undefined : props.onActionPress}
                     style={({ pressed }) => ({
                         ...actionBaseStyle,
+                        // Concentric with the banner surface: inner radius = outer radius - the inset between them.
+                        borderRadius: theme.parts.composer.radius - BANNER_PADDING_VERTICAL,
                         backgroundColor: theme.colors.button.primary.background,
-                        opacity: props.disabled ? 0.45 : pressed ? 0.8 : 1,
+                        opacity: props.disabled ? 0.45 : pressed ? motionTokens.press.opacitySubtle : 1,
                     })}
                 >
                     <Text style={{ fontSize: 12, color: theme.colors.button.primary.tint, fontWeight: '600' }}>
@@ -215,7 +215,8 @@ export function WarningActionBanner(props: WarningActionBannerProps): React.Reac
                     paddingHorizontal: BANNER_PADDING_HORIZONTAL,
                     paddingVertical: BANNER_PADDING_VERTICAL,
                     backgroundColor: toneTokens.background,
-                    borderRadius: COMPOSER_SURFACE_RADIUS,
+                    // The composer stack's radius: the banner and the panel below it round alike.
+                    borderRadius: theme.parts.composer.radius,
                     // Bounded exactly like the composer panel below it: hairline surface border,
                     // no cast shadow. The panel deliberately carries no drop shadow outside glass
                     // mode, so a shadow here would make the banner float off its own stack.

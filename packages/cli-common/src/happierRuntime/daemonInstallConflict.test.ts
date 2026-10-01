@@ -182,6 +182,55 @@ describe('resolveDaemonServiceInstallConflictPlan', () => {
     expect(plan.servicesToRemove).toEqual([]);
   });
 
+  it('only treats a pinned service for the followed server as competing when the followed server is known', () => {
+    // Daemons are per-server: a pinned service for another Home runs its own daemon beside a
+    // default-following one, so replacing "competing" services must never remove it.
+    const plan = resolveDaemonServiceInstallConflictPlan({
+      target: {
+        platform: 'linux',
+        backend: 'systemd-user',
+        targetMode: 'default-following',
+        ring: 'stable',
+        instanceId: null,
+        serverUrl: null,
+        followedServerId: 'cloud',
+      },
+      strategy: 'replace-all',
+      services: [
+        createDaemonService({
+          id: 'service:stable:company',
+          label: 'happier-daemon.company',
+          instanceId: 'company',
+          serverUrl: 'https://company.example.test',
+          publicServerUrl: 'https://company.example.test',
+        }),
+        createDaemonService({
+          id: 'service:stable:cloud',
+          label: 'happier-daemon.cloud',
+          instanceId: 'cloud',
+        }),
+        createDaemonService({
+          id: 'service:preview:default',
+          label: 'happier-daemon.preview.default',
+          targetMode: 'default-following',
+          ring: 'preview',
+          instanceId: 'default',
+          serverUrl: null,
+          publicServerUrl: null,
+        }),
+      ],
+    });
+
+    expect(plan.competingServices.map((service) => service.label).sort()).toEqual([
+      'happier-daemon.cloud',
+      'happier-daemon.preview.default',
+    ]);
+    expect(plan.servicesToRemove.map((service) => service.label).sort()).toEqual([
+      'happier-daemon.cloud',
+      'happier-daemon.preview.default',
+    ]);
+  });
+
   it('treats equivalent loopback relay aliases as the same pinned server target', () => {
     const plan = resolveDaemonServiceInstallConflictPlan({
       target: {

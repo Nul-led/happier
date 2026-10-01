@@ -6,6 +6,7 @@ import {
     adoptHomeProfile,
     areServerProfileIdentifiersEquivalent,
     clearTabActiveServerId,
+    defaultHomeNameForAddress,
     getDeviceDefaultServerId,
     getServerProfileById,
     getTabActiveServerId,
@@ -14,6 +15,7 @@ import type { ServerProfileSource } from './serverProfiles';
 import { canonicalizeServerUrl, createServerUrlComparableKey } from './url/serverUrlCanonical';
 
 export { upsertAndActivateServer } from './serverRuntime';
+export { defaultHomeNameForAddress as defaultServerNameFromUrl } from './serverProfiles';
 
 export type ActiveServerSwitchResult = 'switched' | 'already_active' | 'blocked';
 
@@ -35,17 +37,6 @@ async function serializeActiveServerSwitch<T>(run: () => Promise<T>): Promise<T>
 
 export function normalizeServerUrl(raw: string): string {
     return canonicalizeServerUrl(raw);
-}
-
-export function defaultServerNameFromUrl(rawUrl: string): string {
-    const url = normalizeServerUrl(rawUrl);
-    try {
-        const parsed = new URL(url);
-        if (!parsed.hostname) return url;
-        return parsed.port ? `${parsed.hostname}:${parsed.port}` : parsed.hostname;
-    } catch {
-        return url;
-    }
 }
 
 export function isSameServerUrl(left: string, right: string): boolean {
@@ -168,7 +159,7 @@ export async function upsertActivateAndSwitchServer(params: Readonly<{
                 await stageActiveServerAndSwitch(async () => {
                     await upsertAndActivateServer({
                         serverUrl: targetServerUrl,
-                        name: params.name ?? defaultServerNameFromUrl(targetServerUrl),
+                        name: params.name ?? defaultHomeNameForAddress(targetServerUrl),
                         source,
                         scope,
                     });

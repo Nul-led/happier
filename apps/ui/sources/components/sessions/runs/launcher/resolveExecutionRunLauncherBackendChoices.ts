@@ -4,7 +4,6 @@ import {
     convertBackendTargetRefV2ToV1,
     readLegacyConfiguredAcpBackendId,
     type AcpCatalogSettingsV1,
-    type BackendTargetRefV2,
     type PersistedBackendTargetRefV2,
 } from '@happier-dev/protocol';
 
@@ -19,7 +18,7 @@ import {
     LEGACY_COMPAT_PRIMARY_AGENT_ID,
 } from '@/agents/backendCatalog/legacyCompatAgents';
 import { resolveBackendTargetKeyV2 } from '@/agents/backendCatalog/backendTargetKeyV2';
-import { buildAvailableReviewEngineOptions, type ExecutionRunsBackendSnapshotEntry } from '@/sync/domains/reviews/reviewEngineCatalog';
+import { buildAvailableReviewEngineOptions, resolveReviewEngineTarget, type ExecutionRunsBackendSnapshotEntry } from '@/sync/domains/reviews/reviewEngineCatalog';
 import { resolveExecutionRunAvailableBackends } from '@/sync/domains/executionRuns/resolveExecutionRunAvailableBackends';
 
 export type ExecutionRunLauncherBackendChoice = Readonly<{
@@ -130,14 +129,17 @@ export function resolveExecutionRunLauncherBackendChoices(params: Readonly<{
                 mergedBackendProjectionById: params.mergedBackendProjectionById ?? null,
             }),
         }).map((option) => {
-            const target: BackendTargetRefV2 = { kind: 'backend', backendId: option.id };
-            const projectedAgentId = params.mergedBackendProjectionById?.[option.id]?.agentId?.trim()
-                || params.mergedProviderProjectionById?.[option.id]?.agentId?.trim()
-                || option.id;
+            const target = resolveReviewEngineTarget(option.id);
+            const backendId = target.kind === 'backend' ? target.backendId : option.id;
+            const projectedAgentId = target.kind === 'backend' && target.sourceKind === 'configured'
+                ? LEGACY_COMPAT_PRIMARY_AGENT_ID
+                : params.mergedBackendProjectionById?.[backendId]?.agentId?.trim()
+                    || params.mergedProviderProjectionById?.[backendId]?.agentId?.trim()
+                    || backendId;
             return {
                 backendTarget: target,
                 targetKey: resolveBackendTargetKeyV2(target),
-                backendId: option.id,
+                backendId,
                 agentId: projectedAgentId,
                 title: option.label,
                 disabled: option.disabled === true,

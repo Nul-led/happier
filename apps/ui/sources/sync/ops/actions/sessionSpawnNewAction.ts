@@ -2,6 +2,10 @@ import {
     RPC_ERROR_CODES,
     SessionCreationKeyV1Schema,
     SessionSpawnNewResultV1Schema,
+    projectSessionFollowSourceKeyPreparationAfterSetV1,
+    type SessionFollowSourceKeyPreparationResultV1,
+    SessionFollowSourceKeyPreparationResultV1Schema,
+    SESSION_FOLLOW_SOURCE_KEY_PREPARATION_WAITING_ACTION_ERROR_V1,
     type ActionExecuteResult,
     type ActionExecutorContext,
     type SessionSpawnNewInputV2,
@@ -17,7 +21,14 @@ import {
     type PersistedSpawnAttempt,
 } from '@/sync/domains/session/spawn/spawnAttemptNonceStore';
 
+import { RPC_METHODS } from '@happier-dev/protocol/rpc';
+import { readSpawnSessionRpcTimeoutMsFromEnv } from '@/sync/domains/session/spawn/spawnSessionRpcTimeout';
+import { machineRpcWithServerScope } from '@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc';
+import { isMachineRpcTimeoutError } from '@/sync/runtime/orchestration/serverScopedRpc/machineRpcTimeoutError';
+import { isSocketIoAckTimeoutError } from '@happier-dev/sync-client';
+
 import { createFrontDoorActionExecute } from './frontDoorRuntimeActionExecutor';
+import { prepareSessionFollowSourceKey } from '@/components/sessions/follow/prepareSessionFollowSourceKey';
 
 export type StrictSessionSpawnNewInput = SessionSpawnNewInputV2 & Readonly<{
     creationKey: NonNullable<SessionSpawnNewInputV2['creationKey']>;
@@ -28,6 +39,30 @@ export type SessionSpawnNewActionResult =
     | Extract<ActionExecuteResult, Readonly<{ ok: false }>>;
 
 export type ManualSessionSpawnNewActionCustody = PersistedSpawnAttempt;
+
+/** A waiting private-key transfer is not a failed creation; consume only its validated committed DTO. */
+export function readCommittedSessionSpawnNewActionResult(action: SessionSpawnNewActionResult):
+    Extract<SessionSpawnNewResultV1, Readonly<{ type: 'success' }>> | null {
+    if (action.ok) return action.result.type === 'success' ? action.result : null;
+    if (action.errorCode !== SESSION_FOLLOW_SOURCE_KEY_PREPARATION_WAITING_ACTION_ERROR_V1) return null;
+    const details = action.details;
+    if (!details || typeof details !== 'object') return null;
+    const record = details as Readonly<Record<string, unknown>>;
+    if (record.status !== 'waiting' || record.edgeCommitted !== true) return null;
+    const preparation = SessionFollowSourceKeyPreparationResultV1Schema.safeParse({ kind: 'waiting', reason: record.reason });
+    const committed = SessionSpawnNewResultV1Schema.safeParse(record.source);
+    return preparation.success && committed.success && committed.data.type === 'success' ? committed.data : null;
+}
+
+/**
+ * The one step that asks for a Session to be created. The UI's own Action executor is the
+ * default; a presentation host that owns creation itself (the embed's new chat, plan 05 §4.3.5)
+ * supplies its own. Custody, creation identity and retry stay with the manual launch owner.
+ */
+export type SessionSpawnNewActionExecutor = (
+    input: StrictSessionSpawnNewInput,
+    context: ActionExecutorContext,
+) => Promise<SessionSpawnNewActionResult>;
 
 export type ManualSessionSpawnNewActionExecutionResult =
     | Readonly<{
@@ -123,13 +158,75 @@ export function resolveSessionSpawnNewResultFailureMessageKey(
 export async function executeSessionSpawnNewAction(
     input: StrictSessionSpawnNewInput,
     context: ActionExecutorContext,
+    executor?: Parameters<typeof createFrontDoorActionExecute>[0],
 ): Promise<SessionSpawnNewActionResult> {
-    const result = await createFrontDoorActionExecute()('session.spawn_new', input, context);
+    const result = await createFrontDoorActionExecute(executor)('session.spawn_new', input, context);
     if (!result.ok) return result;
     return {
         ok: true,
         result: SessionSpawnNewResultV1Schema.parse(result.result),
     };
+}
+
+/**
+ * The Action executor's daemon transport for one strict spawn request.
+ *
+ * Creating a Session is a spawn lifecycle, so it waits for the daemon for the
+ * spawn budget every other spawn path uses (the Home relay honours the same
+ * value), not the generic 30 s machine RPC default: a daemon stalled past that
+ * default still creates the Session and admits the first message.
+ *
+ * When the deadline passes after the request was emitted, the daemon may
+ * already hold the Session. That is an unknown outcome, not a failure — the
+ * same settlement the daemon reports for its own lost acknowledgements — and
+ * only a retry with the same creation key can resolve it. Before issuance, a
+ * timeout is a retryable failure because no creation request reached the daemon.
+ */
+export async function dispatchSessionSpawnNewToMachine(params: Readonly<{
+    payload: SessionSpawnNewInputV2;
+    signal?: AbortSignal;
+}>): Promise<SessionSpawnNewResultV1> {
+    let issued = false;
+    try {
+        return await machineRpcWithServerScope<SessionSpawnNewResultV1, SessionSpawnNewInputV2>({
+            serverId: params.payload.executionTarget.serverId,
+            machineId: params.payload.executionTarget.machineId,
+            method: RPC_METHODS.SESSION_SPAWN_NEW,
+            payload: params.payload,
+            timeoutMs: readSpawnSessionRpcTimeoutMsFromEnv(),
+            signal: params.signal,
+            onIssued: () => { issued = true; },
+        });
+    } catch (error) {
+        if (isSocketIoAckTimeoutError(error) || isMachineRpcTimeoutError(error)) {
+            return issued
+                ? { type: 'pending', retryWithSameCreationKey: true, outcome: 'unknown' }
+                : { type: 'error', code: 'machine_offline', retryable: true };
+        }
+        throw error;
+    }
+}
+
+/** The durable creation result remains explicit when the attached lead's private material cannot be prepared. */
+export async function dispatchSessionSpawnNewWithReportsToPreparation(params: Readonly<{
+    payload: SessionSpawnNewInputV2;
+    signal?: AbortSignal;
+}>): Promise<SessionSpawnNewResultV1 | Extract<ActionExecuteResult, Readonly<{ ok: false }>>> {
+    const committed = await dispatchSessionSpawnNewToMachine(params);
+    const reportsTo = params.payload.reportsTo;
+    if (committed.type !== 'success' || !reportsTo) return committed;
+    let preparation: SessionFollowSourceKeyPreparationResultV1;
+    try {
+        preparation = await prepareSessionFollowSourceKey({
+            serverId: params.payload.executionTarget.serverId,
+            sourceSessionId: committed.sessionId,
+            destinationSessionId: reportsTo.sessionId,
+        });
+    } catch {
+        preparation = { kind: 'waiting', reason: 'runner_unreachable' };
+    }
+    const projected = projectSessionFollowSourceKeyPreparationAfterSetV1({ source: committed }, preparation);
+    return 'ok' in projected ? projected : committed;
 }
 
 /**
@@ -155,6 +252,7 @@ export async function executeManualSessionSpawnNewAction(
         machineHomeDir: string;
         userAttemptId: string;
         seedNonce?: string | null;
+        executeAction?: SessionSpawnNewActionExecutor;
     }>,
 ): Promise<ManualSessionSpawnNewActionExecutionResult> {
     const userAttemptId = params.userAttemptId.trim();
@@ -196,16 +294,19 @@ export async function executeManualSessionSpawnNewAction(
         return { status: 'custody_unavailable', reason: 'lock_unavailable' };
     }
 
-    const action = await executeSessionSpawnNewAction(input, context);
+    const action = await (params.executeAction ?? executeSessionSpawnNewAction)(input, context);
     let custody = submitted;
-    if (action.ok && action.result.type === 'success') {
+    const committed = readCommittedSessionSpawnNewActionResult(action);
+    if (committed
+        && committed.executionTarget.serverId === input.executionTarget.serverId
+        && committed.executionTarget.machineId === input.executionTarget.machineId) {
         custody = await markSpawnAttemptCreated({
             scope: params.scope,
             machineId: input.executionTarget.machineId,
             targetFingerprint,
             userAttemptId,
             nonce: submitted.nonce,
-            createdSessionId: action.result.sessionId,
+            createdSessionId: committed.sessionId,
         }) ?? submitted;
     }
     const terminalWithoutCommittedSession = (

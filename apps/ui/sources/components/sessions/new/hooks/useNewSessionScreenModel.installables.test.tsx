@@ -404,15 +404,6 @@ vi.mock('@/agents/hooks/useEnabledAgentIds', () => ({
     useEnabledAgentIds: () => enabledAgentIdsState.value,
 }));
 
-vi.mock('@/hooks/auth/useCLIDetection', () => ({
-    useCLIDetection: () => ({
-        ...cliAvailabilityDefaults,
-        ...cliAvailabilityState.value,
-        refresh: cliAvailabilityRefreshMock,
-        available: cliAvailabilityState.value.available ?? cliAvailabilityDefaults.available,
-        tmux: cliAvailabilityState.value.tmux ?? cliAvailabilityDefaults.tmux,
-    }),
-}));
 
 vi.mock('@/utils/sessions/machineUtils', () => ({
     isMachineOnline: () => true,
@@ -592,11 +583,6 @@ vi.mock('@/sync/domains/profiles/profileUtils', () => ({
     getProfileSupportedAgentIds: (profile: any) => profileCompatibilityState.getProfileSupportedAgentIds(profile),
     isProfileCompatibleWithAnyAgent: (profile: any, agentIds: readonly string[]) =>
         profileCompatibilityState.isProfileCompatibleWithAnyAgent(profile, agentIds),
-}));
-
-vi.mock('@/agents/runtime/cliWarnings', () => ({
-    applyCliWarningDismissal: () => ({}),
-    isCliWarningDismissed: () => false,
 }));
 
 vi.mock('@/utils/secrets/secretSatisfaction', () => ({

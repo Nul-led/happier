@@ -12,11 +12,6 @@ type ActiveDiagnosticsObservation = Readonly<{
     diagnostics: DoctorSnapshotHomeTransportDiagnostics;
 }>;
 
-type InactiveDiagnosticsObservation = Readonly<{
-    producerId: string;
-    diagnostics: DoctorSnapshotHomeTransportDiagnostics;
-}>;
-
 export type IrohHomeTransportDiagnosticsPublisher = DiagnosticsProducerIdentity & Readonly<{
     publish: (diagnostics: DoctorSnapshotHomeTransportDiagnostics) => void;
     release: (diagnostics: DoctorSnapshotHomeTransportDiagnostics) => void;
@@ -24,7 +19,7 @@ export type IrohHomeTransportDiagnosticsPublisher = DiagnosticsProducerIdentity 
 
 const activeObservationsByIdentity = new Map<string, ActiveDiagnosticsObservation>();
 const currentGenerationByIdentity = new Map<string, symbol>();
-const inactiveDiagnosticsByProducerAndHome = new Map<string, InactiveDiagnosticsObservation>();
+const inactiveDiagnosticsByProducerAndHome = new Map<string, DoctorSnapshotHomeTransportDiagnostics>();
 const diagnosticsListeners = new Set<() => void>();
 let diagnosticsRevision = 0;
 
@@ -67,14 +62,21 @@ function retainInactiveDiagnostics(
         }
         : diagnostics;
     const key = producerHomeKey(producerId, diagnostics.homeServerIdentityId);
-    const current = inactiveDiagnosticsByProducerAndHome.get(key)?.diagnostics;
+    const current = inactiveDiagnosticsByProducerAndHome.get(key);
     if (!current || transitionAtMs(current) <= transitionAtMs(retained)) {
-        inactiveDiagnosticsByProducerAndHome.set(key, { producerId, diagnostics: retained });
+        inactiveDiagnosticsByProducerAndHome.set(key, retained);
     }
 }
 
-function isAuthoritativeCurrent(diagnostics: DoctorSnapshotHomeTransportDiagnostics): boolean {
-    return diagnostics.state === 'connected' && diagnostics.current !== undefined;
+/**
+ * The diagnostics owner alone decides whether a retained observation is live.
+ * Consumers can combine this with their effective carrier without promoting
+ * last-known facts back to current state.
+ */
+export function isIrohHomeTransportDiagnosticsCurrent(
+    diagnostics: DoctorSnapshotHomeTransportDiagnostics | null | undefined,
+): boolean {
+    return diagnostics?.state === 'connected' && diagnostics.current !== undefined;
 }
 
 function materializeActiveHome(
@@ -82,8 +84,8 @@ function materializeActiveHome(
     inactiveDiagnostics: readonly DoctorSnapshotHomeTransportDiagnostics[],
 ): DoctorSnapshotHomeTransportDiagnostics {
     const ordered = [...observations].sort((left, right) => {
-        const authorityDifference = Number(isAuthoritativeCurrent(right.diagnostics))
-            - Number(isAuthoritativeCurrent(left.diagnostics));
+        const authorityDifference = Number(isIrohHomeTransportDiagnosticsCurrent(right.diagnostics))
+            - Number(isIrohHomeTransportDiagnosticsCurrent(left.diagnostics));
         if (authorityDifference !== 0) return authorityDifference;
         const currentDifference = Number(right.diagnostics.current !== undefined)
             - Number(left.diagnostics.current !== undefined);
@@ -159,23 +161,19 @@ export function createIrohHomeTransportDiagnosticsPublisher(
     };
 }
 
-export function readIrohHomeTransportDiagnostics(
-    filter: Readonly<{ producerId?: string }> = {},
-): readonly DoctorSnapshotHomeTransportDiagnostics[] {
+export function readIrohHomeTransportDiagnostics(): readonly DoctorSnapshotHomeTransportDiagnostics[] {
     const activeByHome = new Map<string, ActiveDiagnosticsObservation[]>();
     for (const observation of activeObservationsByIdentity.values()) {
-        if (filter.producerId && observation.identity.producerId !== filter.producerId) continue;
         const homeServerIdentityId = observation.diagnostics.homeServerIdentityId;
         const observations = activeByHome.get(homeServerIdentityId) ?? [];
         observations.push(observation);
         activeByHome.set(homeServerIdentityId, observations);
     }
     const inactiveByHome = new Map<string, DoctorSnapshotHomeTransportDiagnostics[]>();
-    for (const observation of inactiveDiagnosticsByProducerAndHome.values()) {
-        if (filter.producerId && observation.producerId !== filter.producerId) continue;
-        const homeServerIdentityId = observation.diagnostics.homeServerIdentityId;
+    for (const diagnostics of inactiveDiagnosticsByProducerAndHome.values()) {
+        const homeServerIdentityId = diagnostics.homeServerIdentityId;
         const observations = inactiveByHome.get(homeServerIdentityId) ?? [];
-        observations.push(observation.diagnostics);
+        observations.push(diagnostics);
         inactiveByHome.set(homeServerIdentityId, observations);
     }
     const materialized = new Map<string, DoctorSnapshotHomeTransportDiagnostics>();
@@ -191,18 +189,7 @@ export function readIrohHomeTransportDiagnostics(
             materializeActiveHome(observations, inactiveByHome.get(homeServerIdentityId) ?? []),
         );
     }
-    const values = filter.producerId
-        ? [
-            ...[...activeByHome.keys()]
-                .map((homeServerIdentityId) => materialized.get(homeServerIdentityId))
-                .filter((diagnostics): diagnostics is DoctorSnapshotHomeTransportDiagnostics => diagnostics !== undefined),
-            ...[...materialized.entries()]
-                .filter(([homeServerIdentityId]) => !activeByHome.has(homeServerIdentityId))
-                .map(([, diagnostics]) => diagnostics)
-                .sort((left, right) => transitionAtMs(right) - transitionAtMs(left)),
-        ]
-        : [...materialized.values()];
-    return values
+    return [...materialized.values()]
         .sort((left, right) => left.homeServerIdentityId.localeCompare(right.homeServerIdentityId));
 }
 
@@ -229,8 +216,8 @@ export function retireIrohHomeTransportDiagnostics(homeServerIdentityIdRaw: stri
         currentGenerationByIdentity.delete(key);
         changed = true;
     }
-    for (const [key, observation] of inactiveDiagnosticsByProducerAndHome) {
-        if (observation.diagnostics.homeServerIdentityId !== homeServerIdentityId) continue;
+    for (const [key, diagnostics] of inactiveDiagnosticsByProducerAndHome) {
+        if (diagnostics.homeServerIdentityId !== homeServerIdentityId) continue;
         inactiveDiagnosticsByProducerAndHome.delete(key);
         changed = true;
     }

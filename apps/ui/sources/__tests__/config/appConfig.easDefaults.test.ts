@@ -414,20 +414,18 @@ describe('app.config.js', () => {
             withAndroidManifest(config, (manifestConfig) => {
                 const applications = manifestConfig.modResults.manifest.application ?? [];
                 manifestConfig.modResults.manifest.application = applications;
-                if (applications.length === 0) applications.push({ $: {} });
+                if (applications.length === 0) applications.push({ $: { 'android:name': '.MainApplication' } });
                 const services = applications[0].service ?? [];
                 applications[0].service = services;
                 services.push({
                     $: {
                         'android:name': upstreamAudioService,
-                        'android:stopWithTask': 'true',
                         'android:foregroundServiceType': 'mediaPlayback',
                     },
                 });
                 services.push({
                     $: {
                         'android:name': upstreamAudioService,
-                        'android:stopWithTask': 'true',
                         'android:foregroundServiceType': 'mediaPlayback',
                     },
                 });
@@ -493,10 +491,16 @@ describe('app.config.js', () => {
 
         expect(exp.extra?.app?.variant).toBe('preview');
         // Production identity still enables universal links / app links.
-        expect(exp.ios?.associatedDomains).toEqual(['applinks:app.happier.dev']);
+        expect(exp.ios?.associatedDomains).toEqual([
+            'applinks:cloud.happier.dev',
+            'applinks:app.happier.dev',
+        ]);
         const data = exp.android?.intentFilters?.[0]?.data;
         const dataItems = Array.isArray(data) ? data : data ? [data] : [];
-        expect(dataItems[0]?.host).toBe('app.happier.dev');
+        expect(dataItems.map((item) => item?.host)).toEqual([
+            'cloud.happier.dev',
+            'app.happier.dev',
+        ]);
     });
 
     it('uses the ui package.json version for expo.version by default', () => {

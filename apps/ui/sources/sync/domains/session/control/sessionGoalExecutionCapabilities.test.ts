@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
     resolveMachineSessionGoalExecutionCapabilities,
     resolveSessionGoalExecutionCapabilities,
+    resolveSessionNativeGoalOwner,
 } from './sessionGoalExecutionCapabilities';
 
 describe('session goal execution capabilities', () => {
@@ -21,10 +22,14 @@ describe('session goal execution capabilities', () => {
         })).toEqual({ canSet: true, canClear: false });
     });
 
-    it('fails closed when an active runner does not publish goal controls', () => {
+    it('keeps the goal with the daemon when the opened runtime has no goal controls (Keep going owns continuation, F5/X16)', () => {
         expect(resolveSessionGoalExecutionCapabilities({
             session: { active: true, agentState: null },
             machine: { metadata: { daemonSessionGoalControlsSupported: true } },
+        })).toEqual({ canSet: true, canClear: true });
+        expect(resolveSessionGoalExecutionCapabilities({
+            session: { active: true, agentState: { capabilities: {} } },
+            machine: { metadata: {} },
         })).toEqual({ canSet: false, canClear: false });
     });
 
@@ -47,5 +52,21 @@ describe('session goal execution capabilities', () => {
             canSet: false,
             canClear: false,
         });
+    });
+
+    it('names the opened runtime the continuation owner only when it carries native goal controls (X16)', () => {
+        expect(resolveSessionNativeGoalOwner({
+            active: true,
+            agentState: { capabilities: { sessionGoalSetSupported: true, sessionGoalClearSupported: true } },
+        })).toBe(true);
+        expect(resolveSessionNativeGoalOwner({
+            active: true,
+            agentState: { capabilities: { sessionGoalSetSupported: true, sessionGoalClearSupported: false } },
+        })).toBe(false);
+        // A closed session has no opened runtime: Keep going is its continuation owner.
+        expect(resolveSessionNativeGoalOwner({
+            active: false,
+            agentState: { capabilities: { sessionGoalSetSupported: true, sessionGoalClearSupported: true } },
+        })).toBe(false);
     });
 });

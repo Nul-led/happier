@@ -1,41 +1,78 @@
 import * as React from 'react';
-import { View } from 'react-native';
-import { useRouter } from 'expo-router';
+import { Pressable, View } from 'react-native';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
+import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { announceAccessibilityMessage } from '@/components/ui/accessibility/announceAccessibilityMessage';
 import { Avatar } from '@/components/ui/avatar/Avatar';
 import { Icon } from '@/components/ui/icons/Icon';
-import { Item } from '@/components/ui/lists/Item';
-import { ItemGroup } from '@/components/ui/lists/ItemGroup';
+import { ITEM_SUBTITLE_TEXT_METRICS, ITEM_TITLE_TEXT_METRICS } from '@/components/ui/lists/itemDensityMetrics';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 import { Text } from '@/components/ui/text/Text';
 import { SelectionListSkeletonRow } from '@/components/ui/selectionList/SelectionListSkeletonRow';
+import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
 import { Typography } from '@/constants/Typography';
 import { t } from '@/text';
-import { useUnistyles } from 'react-native-unistyles';
 
 import { formatSessionResponsibilityName } from './formatSessionResponsibilityName';
 import type { SessionResponsibilityController } from './useSessionResponsibilityController';
 import type { SessionResponsibilityPickerHost } from './useSessionResponsibilityPickerHost';
 
+const styles = StyleSheet.create((theme) => ({
+    // The row sits inside the pane's foot block (user ruling 2026-09-29), which owns the frame; the
+    // row keeps the block's content inset so its flag lines up with the access marks above it.
+    frame: {},
+    row: {
+        minHeight: 40,
+        paddingLeft: 12,
+        paddingRight: 10,
+        paddingVertical: 8,
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+    },
+    pressed: { backgroundColor: theme.colors.surface.pressed },
+    label: {
+        ...Typography.default(),
+        ...ITEM_TITLE_TEXT_METRICS.compact,
+        color: theme.colors.text.secondary,
+    },
+    grow: { flex: 1 },
+    value: { flexDirection: 'row', alignItems: 'center', gap: 6, flexShrink: 1, minWidth: 0 },
+    valueText: {
+        ...Typography.default('semiBold'),
+        ...ITEM_TITLE_TEXT_METRICS.compact,
+        color: theme.colors.text.primary,
+        flexShrink: 1,
+    },
+    valueNone: { ...Typography.default(), color: theme.colors.text.secondary },
+    secondary: {
+        ...Typography.default(),
+        ...ITEM_SUBTITLE_TEXT_METRICS.compact,
+        color: theme.colors.text.secondary,
+        paddingHorizontal: 12,
+        paddingBottom: 8,
+    },
+    link: { color: theme.colors.text.link },
+}));
+
 /**
- * The one Responsibility section rendered inside the shared Collaboration
- * surface, on every responsive host that composes it.
- *
- * It is a quiet, text-led row: one avatar, one name, one chevron when the
- * viewer may change it. There is no second header control, no composer chip and
- * no card-inside-card treatment, because responsibility is a small workflow fact
- * beside access, not a feature of its own.
+ * The one Responsible row inside the shared Collaboration surface: the flag, the word, then the
+ * person and a chevron when the viewer may change it. It lives in the pane's foot block, under who has
+ * access (user ruling 2026-09-29), on every responsive host that composes it.
  *
  * One mounted controller owns candidate and mutation state; the surrounding
  * Collaboration surface creates it together with the picker host and hands both
  * to this row, because the compact host presents its step in place of that
  * surface's body rather than inside this section. The picker host owns only
  * which existing responsive selection host renders that shared model — the wide
- * anchored step or the compact pushed step — and it is bound to the surface's
- * exact `{serverId, accountId, sessionId}` target. The safe current assignee
- * comes from the canonical Session projection/Action response and stays visible
- * independently of candidate failure. Focus returns to the invoking row after
- * close.
+ * anchored step or the compact pushed step. The safe current assignee comes from
+ * the canonical Session projection and stays visible independently of candidate
+ * failure. Focus returns to the invoking row after close.
+ *
+ * It never collapses: while the Session is first read it reserves its row, and a Home that does
+ * not project responsibility gets one quiet line saying so — never "No one", which would be a
+ * confident, wrong statement.
  */
 export function SessionResponsibilitySection(props: Readonly<{
     /** The one mounted owner of candidate and mutation state for this Session. */
@@ -43,7 +80,7 @@ export function SessionResponsibilitySection(props: Readonly<{
     /** The one responsive presentation owner, created beside that controller. */
     pickerHost: SessionResponsibilityPickerHost;
     testID?: string;
-}>): React.ReactElement | null {
+}>): React.ReactElement {
     const { theme } = useUnistyles();
     const router = useRouter();
     const controller = props.controller;
@@ -54,8 +91,7 @@ export function SessionResponsibilitySection(props: Readonly<{
         ? formatSessionResponsibilityName(controller.responsibleAccount)
         : null;
     // Responsibility changes under the reader — their own commit, or someone
-    // else's arriving on the canonical projection — and the row is a quiet
-    // subtitle a screen reader has already passed. Announce only a committed
+    // else's arriving on the canonical projection. Announce only a committed
     // change observed while mounted, never the value that was there on arrival.
     const announcedAssignee = React.useRef<string | null | undefined>(undefined);
     React.useEffect(() => {
@@ -72,82 +108,86 @@ export function SessionResponsibilitySection(props: Readonly<{
 
     if (controller.availability === 'loading') {
         return (
-            <ItemGroup title={t('session.responsibilitySectionTitle')}>
+            <View style={styles.frame}>
                 <SelectionListSkeletonRow index={0} testID="session-responsibility-loading" />
-            </ItemGroup>
+            </View>
         );
     }
 
-    // A Home that does not project responsibility says nothing about it. It is
-    // never rendered as "No one": that would be a confident, wrong statement.
-    if (controller.availability === 'unsupported') return null;
+    if (controller.availability === 'unsupported') {
+        return (
+            <View style={styles.frame}>
+                <SurfaceStateCard
+                    testID="session-responsibility-unsupported"
+                    size="line"
+                    kind="unavailable"
+                    iconName="flag"
+                    title={t('session.collaboration.pane.responsibleUnsupported')}
+                />
+            </View>
+        );
+    }
 
     const assigned = responsibleAccountId;
-    const resolvedName = responsibleName;
     const displayName = assigned === null
         ? t('session.responsibilityNoOne')
-        : resolvedName ?? t('session.responsibilityUnnamedPerson');
+        : responsibleName ?? t('session.responsibilityUnnamedPerson');
     const accessibilityLabel = assigned === null && editable
         ? t('session.responsibilityA11yEmpty')
         : t(editable ? 'session.responsibilityA11yEditable' : 'session.responsibilityA11yReadOnly', { name: displayName });
 
     return (
-        <View ref={pickerHost.anchorRef} testID="session-responsibility-anchor">
-            <ItemGroup title={t('session.responsibilitySectionTitle')}>
-                <Item
-                    testID={props.testID ?? 'session-responsibility-row'}
-                    pressableRef={pickerHost.triggerRef}
-                    title={t('session.responsibilityRowTitle')}
-                    subtitle={displayName}
-                    subtitleTestID="session-responsibility-value"
-                    icon={assigned === null
-                        ? <Icon name="person" size={29} color={theme.colors.text.secondary} />
-                        : (
-                            <Avatar
-                                id={assigned}
-                                size={29}
-                                imageUrl={controller.responsibleAccount?.avatarUrl ?? null}
-                            />
-                        )}
-                    accessibilityLabel={accessibilityLabel}
-                    accessibilityRole={editable ? 'button' : 'text'}
-                    showChevron={editable}
-                    disabled={controller.pending}
-                    onPress={editable ? pickerHost.openPicker : undefined}
-                />
-                {controller.pendingApproval ? (
-                    // The canonical Action policy is holding this assignment for
-                    // confirmation. The row above still shows the committed
-                    // assignee; this row says what is waiting and opens the one
-                    // approval where it is decided.
-                    <Item
-                        testID="session-responsibility-approval"
-                        title={t('approvals.title')}
-                        subtitle={t('approvals.status.open')}
-                        accessibilityLiveRegion="polite"
-                        onPress={() => {
-                            const pendingApproval = controller.pendingApproval;
-                            if (!pendingApproval) return;
-                            router.push(`/inbox/approvals/${encodeURIComponent(pendingApproval.artifactId)}?serverId=${encodeURIComponent(pendingApproval.serverId)}`);
-                        }}
-                        showChevron={false}
-                    />
-                ) : null}
-                {controller.assignmentAutoFollowed ? (
+        <View ref={pickerHost.anchorRef} style={styles.frame} testID="session-responsibility-anchor">
+            <Pressable
+                ref={pickerHost.triggerRef}
+                testID={props.testID ?? 'session-responsibility-row'}
+                accessibilityRole={editable ? 'button' : 'text'}
+                accessibilityLabel={accessibilityLabel}
+                accessibilityState={{ disabled: controller.pending, busy: controller.pending }}
+                disabled={!editable || controller.pending}
+                onPress={editable ? pickerHost.openPicker : undefined}
+                style={({ pressed }) => [styles.row, pressed && editable ? [styles.pressed, { opacity: motionTokens.press.opacitySubtle }] : null]}
+            >
+                <Icon name="flag" size={15} color={theme.colors.text.secondary} />
+                <Text style={styles.label}>{t('session.responsibilityRowTitle')}</Text>
+                <View style={styles.grow} />
+                <View style={styles.value}>
+                    {assigned === null ? null : (
+                        <Avatar id={assigned} size={20} imageUrl={controller.responsibleAccount?.avatarUrl ?? null} />
+                    )}
                     <Text
-                        testID="session-responsibility-auto-follow-explanation"
-                        accessibilityRole="text"
-                        style={{
-                            color: theme.colors.text.secondary,
-                            paddingHorizontal: 16,
-                            paddingBottom: 12,
-                            ...Typography.default(),
-                        }}
+                        testID="session-responsibility-value"
+                        style={[styles.valueText, assigned === null ? styles.valueNone : null]}
+                        numberOfLines={1}
                     >
-                        {t('session.follow.assignedExplanation')}
+                        {displayName}
                     </Text>
-                ) : null}
-            </ItemGroup>
+                </View>
+                {editable ? <Icon name="caret-down" size={13} color={theme.colors.text.tertiary} /> : null}
+            </Pressable>
+            {controller.pendingApproval ? (
+                // The canonical Action policy is holding this assignment for
+                // confirmation. The row above still shows the committed
+                // assignee; this line says what is waiting and opens the one
+                // approval where it is decided.
+                <Pressable
+                    testID="session-responsibility-approval"
+                    accessibilityRole="link"
+                    accessibilityLiveRegion="polite"
+                    onPress={() => {
+                        const pendingApproval = controller.pendingApproval;
+                        if (!pendingApproval) return;
+                        router.push(`/inbox/approvals/${encodeURIComponent(pendingApproval.artifactId)}?serverId=${encodeURIComponent(pendingApproval.serverId)}`);
+                    }}
+                >
+                    <Text style={[styles.secondary, styles.link]}>{`${t('approvals.title')} · ${t('approvals.status.open')}`}</Text>
+                </Pressable>
+            ) : null}
+            {controller.assignmentAutoFollowed ? (
+                <Text testID="session-responsibility-auto-follow-explanation" accessibilityRole="text" style={styles.secondary}>
+                    {t('session.follow.assignedExplanation')}
+                </Text>
+            ) : null}
             {pickerHost.picker}
         </View>
     );

@@ -2,6 +2,7 @@ import {
     buildProviderAccountUsageRecordId,
     compareConnectedServiceQuotaObservationRecency,
     ConnectedServiceUsageSourceV1Schema,
+    mergeProviderAccountSubscription,
     ProviderAccountUsageSnapshotV1Schema,
     type ConnectedServiceUsageSourceV1,
     type ProviderAccountUsageRecordKeyV1,
@@ -188,8 +189,14 @@ export function createProviderAccountUsageStore(): ProviderAccountUsageStore {
             };
         }
 
+        const { subscription: incomingSubscription, ...usage } = parsed;
+        const subscription = mergeProviderAccountSubscription(
+            existing?.subscription,
+            incomingSubscription,
+        );
         const next = ProviderAccountUsageSnapshotV1Schema.parse({
-            ...parsed,
+            ...usage,
+            ...(subscription ? { subscription } : {}),
             recordId: targetRecordId,
             recordKey: targetRecordKey,
             providerId: targetRecordKey.providerId,

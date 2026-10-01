@@ -8,8 +8,10 @@ import { createSessionActionTarget } from './sessionActionContext';
 import {
     SESSION_ACTION_ARCHIVE_ID,
     SESSION_ACTION_DELETE_ID,
+    SESSION_ACTION_MAKE_ORCHESTRATOR_ID,
     SESSION_ACTION_MOVE_TO_FOLDER_ID,
     SESSION_ACTION_MARK_UNREAD_ID,
+    SESSION_ACTION_PUT_UNDER_ID,
     SESSION_ACTION_RENAME_ID,
     SESSION_ACTION_RESUME_ID,
     SESSION_ACTION_STOP_ID,
@@ -43,6 +45,29 @@ function createOwnedRawSession(overrides: Partial<Session> = {}): Session {
 }
 
 describe('session action availability', () => {
+    it('offers "Put under…" to whoever can send to the Session, in its menus, never when archived', () => {
+        const target = createSessionActionTarget({ session: createOwnedRawSession() });
+        for (const surface of ['rowMenu', 'nativeContextMenu', 'sessionHeader'] as const) {
+            expect(listVisibleSessionActionIds({ target, surface })).toContain(SESSION_ACTION_PUT_UNDER_ID);
+        }
+        const viewer = createSessionActionTarget({ session: createOwnedRawSession({ access: createSessionAccessFixture('view') }) });
+        expect(listVisibleSessionActionIds({ target: viewer, surface: 'rowMenu' })).not.toContain(SESSION_ACTION_PUT_UNDER_ID);
+        const archived = createSessionActionTarget({ session: createOwnedRawSession({ archivedAt: 5 }) });
+        expect(listVisibleSessionActionIds({ target: archived, surface: 'rowMenu' })).not.toContain(SESSION_ACTION_PUT_UNDER_ID);
+    });
+
+    it('offers "Make this an orchestrator" in the Session header menu to whoever may rename it, never on an archived Session', () => {
+        const target = createSessionActionTarget({ session: createOwnedRawSession() });
+        expect(listVisibleSessionActionIds({ target, surface: 'sessionHeader' })).toContain(SESSION_ACTION_MAKE_ORCHESTRATOR_ID);
+        expect(listVisibleSessionActionIds({ target, surface: 'rowMenu' })).not.toContain(SESSION_ACTION_MAKE_ORCHESTRATOR_ID);
+
+        const viewer = createSessionActionTarget({ session: createOwnedRawSession({ access: createSessionAccessFixture('view') }) });
+        expect(listVisibleSessionActionIds({ target: viewer, surface: 'sessionHeader' })).not.toContain(SESSION_ACTION_MAKE_ORCHESTRATOR_ID);
+
+        const archived = createSessionActionTarget({ session: createOwnedRawSession({ archivedAt: 5 }) });
+        expect(listVisibleSessionActionIds({ target: archived, surface: 'sessionHeader' })).not.toContain(SESSION_ACTION_MAKE_ORCHESTRATOR_ID);
+    });
+
     it('fails unavailable projections closed despite a matching legacy owner id', () => {
         const target = createSessionActionTarget({ session: createOwnedRawSession({ access: null }), currentUserId: 'current_user' });
         expect(target).toMatchObject({ isOwnedByCurrentUser: false, canUnarchive: false, canStop: false, canArchive: false, canRename: false, canResume: false, canDelete: false });
@@ -141,7 +166,7 @@ describe('session action availability', () => {
         const rowLifecycleActionIds = listVisibleSessionActionIds({
             target,
             surface: 'rowMenu',
-        }).filter((id) => id !== SESSION_ACTION_MOVE_TO_FOLDER_ID);
+        }).filter((id) => id !== SESSION_ACTION_MOVE_TO_FOLDER_ID && id !== SESSION_ACTION_PUT_UNDER_ID);
         const infoActionIds = listVisibleSessionActionIds({
             target,
             surface: 'sessionInfo',

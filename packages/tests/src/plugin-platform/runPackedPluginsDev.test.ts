@@ -53,9 +53,7 @@ test('reads each generated UI mode from its immutable artifact graph and rejects
     'happier-plugin-ui',
   );
   const artifacts = [
-    { relativePath: 'react-native/preview-native/ios.bundle', bytes: Buffer.from('ios bundle') },
-    { relativePath: 'react-native/preview-native/android.bundle', bytes: Buffer.from('android bundle') },
-    { relativePath: 'react-native-web/preview-native/entry.mjs.bundle', bytes: Buffer.from('web native entry') },
+    { relativePath: 'react-native/preview-native/entry.cjs.bundle', bytes: Buffer.from('universal bundle') },
     { relativePath: 'hosted-web/preview-hosted/index.html', bytes: Buffer.from('<main>hosted</main>') },
   ];
   const artifact = (relativePath: string) => {
@@ -68,38 +66,25 @@ test('reads each generated UI mode from its immutable artifact graph and rejects
     };
   };
   const entry = (input: Readonly<{
-    contributionId: string;
+    artifactId: string;
     tier: 'reactNative' | 'hostedWeb';
-    platform: 'ios' | 'android' | 'web';
     relativePath: string;
   }>) => {
     const file = artifact(input.relativePath);
-    const isNative = input.tier === 'reactNative' && input.platform !== 'web';
     return {
-      contributionId: input.contributionId,
+      artifactId: input.artifactId,
       tier: input.tier,
-      platform: input.platform,
-      ...(isNative ? {
-        repack: {
-          containerName: 'preview_native',
-          modulePath: './renderSurface',
-          exportName: 'renderSurface',
-        },
-      } : {}),
       entry: input.relativePath,
       files: [file],
       digest: computePluginUiArtifactFileSetSha256DigestV1([{
         relativePath: file.relativePath,
         bytes: artifacts.find((candidate) => candidate.relativePath === file.relativePath)?.bytes ?? Buffer.alloc(0),
       }]),
-      builtWith: {
-        bundler: isNative ? 'repack' : 'vite',
-        version: '1.0.0',
-      },
-      hostUiApiVersion: '1.0.0',
-      compat: input.tier === 'reactNative'
-        ? { react: '19.2.0', reactNative: '0.83.4' }
-        : {},
+      builtWith: input.tier === 'reactNative'
+        ? { bundler: 'esbuild', version: '0.27.2' }
+        : { staging: 'staticDirectory' },
+      ...(input.tier === 'reactNative' ? { executable: { exports: ['renderSurface'] } } : {}),
+      hostUiApiRange: '^1.0.0',
     };
   };
 
@@ -110,12 +95,10 @@ test('reads each generated UI mode from its immutable artifact graph and rejects
       await writeFile(outputPath, bytes);
     }));
     await writeFile(join(artifactRoot, 'ui-artifacts.json'), JSON.stringify({
-      version: 1,
+      version: 2,
       entries: [
-        entry({ contributionId: 'preview-native', tier: 'reactNative', platform: 'ios', relativePath: artifacts[0]!.relativePath }),
-        entry({ contributionId: 'preview-native', tier: 'reactNative', platform: 'android', relativePath: artifacts[1]!.relativePath }),
-        entry({ contributionId: 'preview-native', tier: 'reactNative', platform: 'web', relativePath: artifacts[2]!.relativePath }),
-        entry({ contributionId: 'preview-hosted', tier: 'hostedWeb', platform: 'web', relativePath: artifacts[3]!.relativePath }),
+        entry({ artifactId: 'preview-native', tier: 'reactNative', relativePath: artifacts[0]!.relativePath }),
+        entry({ artifactId: 'preview-hosted', tier: 'hostedWeb', relativePath: artifacts[1]!.relativePath }),
       ],
     }), 'utf8');
 
@@ -123,15 +106,15 @@ test('reads each generated UI mode from its immutable artifact graph and rejects
       readPackedPluginsDevUiArtifactEvidence({ happyHomeDir: root, generation, mode: 'reactNative' }),
       readPackedPluginsDevUiArtifactEvidence({ happyHomeDir: root, generation, mode: 'hostedWeb' }),
     ]);
-    assert.equal(native.contributionId, 'preview-native');
-    assert.deepEqual(native.artifacts.map((candidate) => candidate.platform), ['android', 'ios', 'web']);
-    assert.equal(hosted.contributionId, 'preview-hosted');
-    assert.deepEqual(hosted.artifacts.map((candidate) => candidate.platform), ['web']);
+    assert.equal(native.artifactId, 'preview-native');
+    assert.equal(native.artifacts.length, 1);
+    assert.equal(hosted.artifactId, 'preview-hosted');
+    assert.equal(hosted.artifacts.length, 1);
 
-    await writeFile(join(artifactRoot, ...artifacts[1]!.relativePath.split('/')), 'altered android bundle', 'utf8');
+    await writeFile(join(artifactRoot, ...artifacts[0]!.relativePath.split('/')), 'altered universal bundle', 'utf8');
     await assert.rejects(
       readPackedPluginsDevUiArtifactEvidence({ happyHomeDir: root, generation, mode: 'reactNative' }),
-      /artifact digest did not match emitted bytes for android/u,
+      /artifact digest did not match emitted bytes for preview-native/u,
     );
   } finally {
     await rm(root, { recursive: true, force: true });

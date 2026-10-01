@@ -48,13 +48,6 @@ export type PluginSurfacePresentationState =
     | 'unavailable'
     | 'failedRetry';
 
-/** Renderer facts may choose one of these centralized localized recovery variants. */
-export type PluginSurfacePresentationCopyVariant =
-    | 'pluginReactNativeResetRequested'
-    | 'pluginReactNativeResetAwaitingProjection'
-    | 'pluginReactNativeResetFailed'
-    | 'pluginReactNativeResetComplete';
-
 export type PluginSurfaceStatePresentation = Readonly<{
     state: PluginSurfacePresentationState;
     /** Whether the caller replaces, retains, or continues its current content. */
@@ -74,70 +67,51 @@ export type PluginSurfaceStatePresentation = Readonly<{
         reason: string;
         accessibilitySemantics: 'status';
     }> | null;
+    /** Semantic next step only; the route or renderer still owns the callback. */
+    recoveryAction: Readonly<{
+        kind: 'retry' | 'repair' | 'updateCompatible' | 'managePlugin' | 'enable';
+        label: string;
+    }> | null;
 }>;
 
 function resolvePluginSurfacePresentationCopy(input: Readonly<{
     state: PluginSurfacePresentationState;
-    copyVariant?: PluginSurfacePresentationCopyVariant;
     title?: string;
     reason: ResolvedReasonCopy;
 }>): Readonly<{
     title?: string;
     reason: string;
 }> {
-    switch (input.copyVariant) {
-        case 'pluginReactNativeResetRequested':
+    switch (input.state) {
+        case 'loading':
             return Object.freeze({
-                title: t('pluginReactNative.reset.requested.title'),
-                reason: t('pluginReactNative.reset.requested.reason'),
+                title: t('pluginSurfaces.state.loading.title'),
+                reason: t('pluginSurfaces.state.loading.reason'),
             });
-        case 'pluginReactNativeResetAwaitingProjection':
+        case 'refreshing':
             return Object.freeze({
-                title: t('pluginReactNative.reset.awaitingProjection.title'),
-                reason: t('pluginReactNative.reset.awaitingProjection.reason'),
+                title: t('pluginSurfaces.state.refreshing.title'),
+                reason: t('pluginSurfaces.state.refreshing.reason'),
             });
-        case 'pluginReactNativeResetFailed':
+        case 'stale':
             return Object.freeze({
-                title: t('pluginReactNative.reset.failed.title'),
-                reason: t('pluginReactNative.reset.failed.reason'),
+                title: t('pluginSurfaces.state.stale.title'),
+                reason: t('pluginSurfaces.state.stale.reason'),
             });
-        case 'pluginReactNativeResetComplete':
+        case 'offline':
             return Object.freeze({
-                title: t('pluginReactNative.reset.complete.title'),
-                reason: t('pluginReactNative.reset.complete.reason'),
+                title: t('pluginSurfaces.state.offline.title'),
+                reason: t('pluginSurfaces.state.offline.reason'),
             });
-        case undefined:
-            switch (input.state) {
-                case 'loading':
-                    return Object.freeze({
-                        title: t('pluginSurfaces.state.loading.title'),
-                        reason: t('pluginSurfaces.state.loading.reason'),
-                    });
-                case 'refreshing':
-                    return Object.freeze({
-                        title: t('pluginSurfaces.state.refreshing.title'),
-                        reason: t('pluginSurfaces.state.refreshing.reason'),
-                    });
-                case 'stale':
-                    return Object.freeze({
-                        title: t('pluginSurfaces.state.stale.title'),
-                        reason: t('pluginSurfaces.state.stale.reason'),
-                    });
-                case 'offline':
-                    return Object.freeze({
-                        title: t('pluginSurfaces.state.offline.title'),
-                        reason: t('pluginSurfaces.state.offline.reason'),
-                    });
-                case 'available':
-                case 'unavailable':
-                case 'failedRetry':
-                    break;
-            }
-            return Object.freeze({
-                title: input.title,
-                reason: input.reason.body,
-            });
+        case 'available':
+        case 'unavailable':
+        case 'failedRetry':
+            break;
     }
+    return Object.freeze({
+        title: input.title,
+        reason: input.reason.body,
+    });
 }
 
 /**
@@ -216,6 +190,8 @@ const LOCAL_SERVICE_ACTION_KEYS = {
     terminate_permission_denied: 'localServices.actions.failure.refused',
 
     // Unavailable: this machine cannot do this to this service, and retrying will not change it.
+    // Services Open refused before any tab was admitted (the target has no browser mapping).
+    browser_target_unavailable: 'localServices.actions.failure.unavailable',
     identity_changed: 'localServices.actions.failure.unavailable',
     launcher_start_unsupported: 'localServices.actions.failure.unavailable',
     low_signal_process: 'localServices.actions.failure.unavailable',
@@ -297,9 +273,11 @@ const STREAM_PLAYER_KEYS = {
  * `diagnosticCode` for QA channels.
  */
 const PLUGIN_RUNTIME_KEYS = {
+    details_destination_policy_unavailable: 'pluginRuntime.disabledByPolicy',
+    details_destination_platform_unavailable: 'pluginRuntime.disabledByPolicy',
     crash_threshold_reached: 'pluginRuntime.crashLoop',
-    crash_disabled: 'pluginRuntime.crashLoop',
     feature_disabled: 'pluginRuntime.disabledByPolicy',
+    disabled: 'pluginRuntime.disabledByPolicy',
     feature_gate_disabled: 'pluginRuntime.disabledByPolicy',
     required_feature_disabled: 'pluginRuntime.disabledByPolicy',
     channel_policy_denied: 'pluginRuntime.disabledByPolicy',
@@ -325,7 +303,20 @@ const PLUGIN_RUNTIME_KEYS = {
     required_permission_missing: 'pluginRuntime.missingRequirement',
     entry_missing: 'pluginRuntime.missingRequirement',
     runtime_mismatch: 'pluginRuntime.missingRequirement',
-    repack_script_manager_unavailable: 'pluginRuntime.missingRequirement',
+    artifact_source_integrity_invalid: 'pluginRuntime.integrityFailed',
+    artifact_integrity_invalid: 'pluginRuntime.integrityFailed',
+    integrity_failed: 'pluginRuntime.integrityFailed',
+    artifact_incompatible: 'pluginRuntime.incompatible',
+    update_required: 'pluginRuntime.incompatible',
+    host_ui_api_incompatible: 'pluginRuntime.incompatible',
+    module_instantiation_failed: 'pluginRuntime.authorFailure',
+    unknown_host_module: 'pluginRuntime.authorFailure',
+    invalid_executable_export: 'pluginRuntime.authorFailure',
+    invalid_surface_module: 'pluginRuntime.authorFailure',
+    plugin_revoked: 'pluginRuntime.retired',
+    plugin_uninstalled: 'pluginRuntime.retired',
+    revoked: 'pluginRuntime.retired',
+    uninstalled: 'pluginRuntime.retired',
 } as const satisfies Record<string, PluginRuntimeMessageKey>;
 
 type SimulatorPreviewMessageKey =
@@ -352,7 +343,70 @@ type PluginRuntimeMessageKey =
     | 'pluginRuntime.hostedWebBridgeTimeout'
     | 'pluginRuntime.hostedWebEndpointPolicyDenied'
     | 'pluginRuntime.missingRequirement'
+    | 'pluginRuntime.integrityFailed'
+    | 'pluginRuntime.incompatible'
+    | 'pluginRuntime.authorFailure'
+    | 'pluginRuntime.retired'
     | 'pluginRuntime.unavailableGeneric';
+
+/**
+ * The one reason → next-step classification for plugin surfaces.
+ *
+ * - `retry`: transient — asking again can change the answer (transport,
+ *   timeouts, a daemon projection error). Only offered when the caller owns a
+ *   real retry path for the failing phase.
+ * - `repair` / `updateCompatible` / `managePlugin` / `enable`: configuration —
+ *   the fix lives on the plugin's own management page.
+ * - `null`: neither a retry nor plugin management can fix it (unsupported
+ *   platform/channel/daemon, an invalid link, a policy denial); the card
+ *   explains the situation and offers no misleading button.
+ */
+function resolvePluginSurfaceRecoveryAction(
+    reasonCode: string | null | undefined,
+): PluginSurfaceStatePresentation['recoveryAction'] {
+    switch (reasonCode) {
+        case 'targeted_contributions_error':
+        case 'targeted_contributions_timeout':
+        case 'hosted_web_bridge_timeout':
+        case 'artifact_source_unavailable':
+        case 'source_unavailable':
+        case 'artifact_unavailable':
+        case 'transport_unavailable':
+        case 'load_timeout':
+        case 'load_error':
+        case 'local_artifact_failure':
+        case 'render_error':
+        case 'hosted_web_artifact_load_failed':
+            return Object.freeze({ kind: 'retry', label: t('common.retry') });
+        case 'artifact_source_integrity_invalid':
+        case 'artifact_integrity_invalid':
+        case 'integrity_failed':
+            return Object.freeze({ kind: 'repair', label: t('settingsPlugins.managePlugin') });
+        case 'artifact_incompatible':
+        case 'update_required':
+        case 'host_ui_api_incompatible':
+            return Object.freeze({ kind: 'updateCompatible', label: t('common.update') });
+        case 'required_permission_missing':
+        case 'plugin_app_page_unavailable':
+        case 'module_instantiation_failed':
+        case 'unknown_host_module':
+        case 'invalid_executable_export':
+        case 'invalid_surface_module':
+            return Object.freeze({ kind: 'managePlugin', label: t('settingsPlugins.managePlugin') });
+        case 'feature_disabled':
+        case 'disabled':
+        case 'plugin_disabled':
+            return Object.freeze({ kind: 'enable', label: t('common.enable') });
+        case 'plugin_revoked':
+        case 'plugin_uninstalled':
+        case 'revoked':
+        case 'uninstalled':
+        case 'artifact_lease_revoked':
+            return Object.freeze({ kind: 'managePlugin', label: t('settingsPlugins.managePlugin') });
+        default:
+            return null;
+    }
+}
 
 type LocalServiceLauncherMessageKey =
     | 'localServices.launcher.unavailableReason.launchUnavailable'
@@ -501,8 +555,6 @@ export function resolvePluginSurfaceStatePresentation(input: Readonly<{
     reasonCode?: string | null;
     /** A renderer may retain its established localized title without owning copy selection. */
     title?: string;
-    /** Renderer-local facts select only a centralized, localized recovery variant. */
-    copyVariant?: PluginSurfacePresentationCopyVariant;
     /** Only the factual content owner may assert that its last-known-good content is retained. */
     hasRetainedContent?: boolean;
 }>): PluginSurfaceStatePresentation {
@@ -512,7 +564,6 @@ export function resolvePluginSurfaceStatePresentation(input: Readonly<{
     });
     const copy = resolvePluginSurfacePresentationCopy({
         state: input.state,
-        copyVariant: input.copyVariant,
         title: input.title,
         reason,
     });
@@ -535,13 +586,7 @@ export function resolvePluginSurfaceStatePresentation(input: Readonly<{
         accessibilitySemantics: 'alert',
     });
     const contentNotice = input.state === 'available'
-        ? input.copyVariant === 'pluginReactNativeResetComplete'
-            ? Object.freeze({
-                title: copy.title ?? t('pluginReactNative.reset.complete.title'),
-                reason: copy.reason,
-                accessibilitySemantics: 'status' as const,
-            })
-            : null
+        ? null
         : input.hasRetainedContent
             ? Object.freeze({
                 title: copy.title
@@ -550,6 +595,10 @@ export function resolvePluginSurfaceStatePresentation(input: Readonly<{
                 accessibilitySemantics: 'status' as const,
             })
             : null;
+    // Loading is not a failure: nothing needs recovering while content is on its way.
+    const recoveryAction = input.state === 'loading' || input.state === 'refreshing'
+        ? null
+        : resolvePluginSurfaceRecoveryAction(input.reasonCode);
 
     if (input.state !== 'available' && input.hasRetainedContent) {
         return Object.freeze({
@@ -558,6 +607,7 @@ export function resolvePluginSurfaceStatePresentation(input: Readonly<{
             diagnosticCode: reason.diagnosticCode,
             card: null,
             contentNotice: contentNotice!,
+            recoveryAction,
         });
     }
 
@@ -569,6 +619,7 @@ export function resolvePluginSurfaceStatePresentation(input: Readonly<{
                 diagnosticCode: reason.diagnosticCode,
                 card: null,
                 contentNotice,
+                recoveryAction,
             });
         case 'refreshing':
             return Object.freeze({
@@ -577,6 +628,7 @@ export function resolvePluginSurfaceStatePresentation(input: Readonly<{
                 diagnosticCode: reason.diagnosticCode,
                 card: loadingCard(),
                 contentNotice: null,
+                recoveryAction,
             });
         case 'stale':
         case 'offline':
@@ -586,6 +638,7 @@ export function resolvePluginSurfaceStatePresentation(input: Readonly<{
                 diagnosticCode: reason.diagnosticCode,
                 card: unavailableCard(),
                 contentNotice: null,
+                recoveryAction,
             });
         case 'failedRetry':
             return Object.freeze({
@@ -594,6 +647,7 @@ export function resolvePluginSurfaceStatePresentation(input: Readonly<{
                 diagnosticCode: reason.diagnosticCode,
                 card: failedRetryCard(),
                 contentNotice: null,
+                recoveryAction,
             });
         case 'loading':
             return Object.freeze({
@@ -602,6 +656,7 @@ export function resolvePluginSurfaceStatePresentation(input: Readonly<{
                 diagnosticCode: reason.diagnosticCode,
                 card: loadingCard(),
                 contentNotice: null,
+                recoveryAction,
             });
         case 'unavailable':
             return Object.freeze({
@@ -610,6 +665,7 @@ export function resolvePluginSurfaceStatePresentation(input: Readonly<{
                 diagnosticCode: reason.diagnosticCode,
                 card: unavailableCard(),
                 contentNotice: null,
+                recoveryAction,
             });
     }
 }

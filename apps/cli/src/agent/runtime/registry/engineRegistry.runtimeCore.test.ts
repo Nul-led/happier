@@ -715,11 +715,20 @@ describe('resolveCliEngineRegistry runtimeCore', () => {
         });
     }
 
+    function createDeniedRunPermissionHandler() {
+        return {
+            handleToolCall: vi.fn(async () => ({ decision: 'denied' as const })),
+            // This boundary never leaves a permission prompt pending, so exact cancellation is settled.
+            abortPendingRequestAndFlush: vi.fn(async () => undefined),
+        };
+    }
+
     function createRuntimeRegistry(params: Readonly<{
         contributes: unknown;
         backendId: string;
         agentId?: string;
         pluginId: string;
+        sourceCustody?: RunnerAgentSessionRuntimeSource['identity']['sourceCustody'];
         createRuntime?: () => Promise<AgentRuntime> | AgentRuntime;
     }>): Record<string, unknown> {
         return {
@@ -731,7 +740,12 @@ describe('resolveCliEngineRegistry runtimeCore', () => {
                         pluginId: params.pluginId,
                         pluginVersion: '0.0.0',
                         agentId: params.agentId ?? params.backendId,
-                        generation: '1',
+                        occurrenceId: 'runtime-occurrence-1',
+                        sourceCustody: params.sourceCustody ?? {
+                            kind: 'managed',
+                            immutableGenerationId: '1',
+                            installSource: 'localPath',
+                        },
                         hasPrimaryRuntime: true,
                         isCurrent: () => true,
                         createRuntime: params.createRuntime,
@@ -853,8 +867,12 @@ describe('resolveCliEngineRegistry runtimeCore', () => {
                 pluginVersion: '1.0.0',
                 agentId: params.agent.id,
                 backendId: params.backendId,
-                generation: params.generation,
-                immutableGenerationId: params.generation,
+                occurrenceId: `occurrence:${params.generation}`,
+                sourceCustody: {
+                    kind: 'managed',
+                    immutableGenerationId: params.generation,
+                    installSource: 'localPath',
+                },
                 isCurrent: () => true,
             },
             agentContribution: params.agent,
@@ -1120,7 +1138,12 @@ describe('resolveCliEngineRegistry runtimeCore', () => {
                     pluginId: 'acme.sample',
                     pluginVersion: '1.2.3',
                     agentId: 'acme.sample.backend',
-                    generation: 'generation-1',
+                    occurrenceId: 'runtime-occurrence-1',
+                    sourceCustody: {
+                        kind: 'managed',
+                        immutableGenerationId: 'generation-1',
+                        installSource: 'localPath',
+                    },
                     isCurrent: () => true,
                     createRuntime: vi.fn(async () => nativeRuntime),
                 }],
@@ -1182,11 +1205,11 @@ describe('resolveCliEngineRegistry runtimeCore', () => {
             pluginId: 'acme.sample',
             pluginVersion: '1.2.3',
             agentId: 'acme.sample.backend',
-            generation: 'generation-1',
+            occurrenceId: 'runtime-occurrence-1',
             correlationId: 'run-1',
             cwd: '/repo',
             signal: expect.any(AbortSignal),
-            isGenerationCurrent: expect.any(Function),
+            isOccurrenceCurrent: expect.any(Function),
         });
         const finiteOnlyContext = open.mock.calls[0]?.[1];
         expect(finiteOnlyContext).toMatchObject({
@@ -1270,7 +1293,12 @@ describe('resolveCliEngineRegistry runtimeCore', () => {
                     pluginId: 'acme.sample',
                     pluginVersion: '1.2.3',
                     agentId: 'acme.sample.backend',
-                    generation: 'generation-1',
+                    occurrenceId: 'runtime-occurrence-1',
+                    sourceCustody: {
+                        kind: 'managed',
+                        immutableGenerationId: 'generation-1',
+                        installSource: 'localPath',
+                    },
                     isCurrent: () => true,
                     createRuntime: vi.fn(async () => nativeRuntime),
                 }],
@@ -1937,6 +1965,13 @@ describe('resolveCliEngineRegistry runtimeCore', () => {
             contributes,
             backendId,
             pluginId,
+            sourceCustody: {
+                kind: 'bundled_first_party',
+                packagedRuntime: {
+                    kind: 'cli_version_root',
+                    versionRootId: 'test-cli-version-root',
+                },
+            },
             createRuntime: createPluginRuntime,
         }));
 
@@ -1971,16 +2006,17 @@ describe('resolveCliEngineRegistry runtimeCore', () => {
                     policyAgentId: 'claude',
                 },
             });
-        const executionRuntime = resolution?.engineAdapter.runtimeCore.createExecutionRunBackend({
+        // Selecting the Session runtime does not grant its undeclared detached Run facet.
+        expect(() => resolution?.engineAdapter.runtimeCore.createExecutionRunBackend({
             cwd: '/repo',
             scope: 'detached',
             runId: 'run-plugin-owner',
             backendId,
             permissionMode: 'read_only',
             start: { intent: 'review' },
-        });
-        await expect(executionRuntime?.readResumeSupport()).resolves.toBe(false);
-        await executionRuntime?.dispose();
+        })).toThrow(expect.objectContaining({
+            executionRunErrorCode: 'execution_run_protocol_unsupported',
+        }));
         expect(createPluginRuntime).toHaveBeenCalledTimes(1);
     });
 
@@ -2021,7 +2057,12 @@ describe('resolveCliEngineRegistry runtimeCore', () => {
                     pluginVersion: '0.0.0',
                     agentId: 'claude',
                     backendId: 'acme.other.backend',
-                    generation: '1',
+                    occurrenceId: 'occurrence:1',
+                    sourceCustody: {
+                        kind: 'managed',
+                        immutableGenerationId: '1',
+                        installSource: 'localPath',
+                    },
                     isCurrent: () => true,
                 },
                 createRuntime: async () => ({
@@ -2070,8 +2111,13 @@ describe('resolveCliEngineRegistry runtimeCore', () => {
                     pluginVersion: '0.0.0',
                     agentId,
                     backendId,
-                    generation: '1',
-                    isCurrent: () => true,
+                    get occurrenceId(): never {
+                        throw new Error('Runner Agent canonical session authority has not been claimed');
+                    },
+                    get sourceCustody(): never {
+                        throw new Error('Runner Agent canonical session authority has not been claimed');
+                    },
+                    isCurrent: () => false,
                 },
                 createRuntime: async () => carriedRuntime,
                 createInvocationServices: () => {
@@ -2147,7 +2193,12 @@ describe('resolveCliEngineRegistry runtimeCore', () => {
                     pluginVersion: '0.0.0',
                     agentId,
                     backendId,
-                    generation: '1',
+                    occurrenceId: 'occurrence:1',
+                    sourceCustody: {
+                        kind: 'managed',
+                        immutableGenerationId: '1',
+                        installSource: 'localPath',
+                    },
                     isCurrent: () => true,
                 },
                 createRuntime,
@@ -2405,7 +2456,12 @@ describe('resolveCliEngineRegistry runtimeCore', () => {
                     pluginVersion: '0.0.0',
                     agentId,
                     backendId,
-                    generation: 'runner-generation-1',
+                    occurrenceId: 'runner-occurrence-1',
+                    sourceCustody: {
+                        kind: 'managed',
+                        immutableGenerationId: 'runner-generation-1',
+                        installSource: 'localPath',
+                    },
                     isCurrent: () => true,
                 },
                 createRuntime: runnerCreateRuntime,
@@ -2483,7 +2539,12 @@ describe('resolveCliEngineRegistry runtimeCore', () => {
                     pluginVersion: '0.0.0',
                     agentId,
                     backendId,
-                    generation: 'runner-generation-1',
+                    occurrenceId: 'runner-occurrence-1',
+                    sourceCustody: {
+                        kind: 'managed',
+                        immutableGenerationId: 'runner-generation-1',
+                        installSource: 'localPath',
+                    },
                     isCurrent: () => true,
                 },
                 createRuntime,
@@ -2570,7 +2631,14 @@ describe('resolveCliEngineRegistry runtimeCore', () => {
                     pluginVersion: '0.0.0',
                     agentId,
                     backendId,
-                    generation: 'runner-generation-1',
+                    occurrenceId: 'runner-occurrence-1',
+                    sourceCustody: {
+                        kind: 'bundled_first_party',
+                        packagedRuntime: {
+                            kind: 'cli_version_root',
+                            versionRootId: 'test-cli-version-root',
+                        },
+                    },
                     isCurrent: () => true,
                 },
                 createRuntime,
@@ -2623,7 +2691,12 @@ describe('resolveCliEngineRegistry runtimeCore', () => {
                     pluginVersion: '0.0.0',
                     agentId,
                     backendId,
-                    generation: 'runner-generation-1',
+                    occurrenceId: 'runner-occurrence-1',
+                    sourceCustody: {
+                        kind: 'managed',
+                        immutableGenerationId: 'runner-generation-1',
+                        installSource: 'localPath',
+                    },
                     isCurrent: () => true,
                 },
                 createRuntime,
@@ -2697,7 +2770,13 @@ describe('resolveCliEngineRegistry runtimeCore', () => {
                                 pluginVersion: '0.0.0',
                                 agentId,
                                 backendId: runnerBackendId,
-                                generation: 'runner-generation-1',
+                                occurrenceId: 'runner-occurrence-1',
+                                sourceCustody: {
+                                    kind: 'managed',
+                                    immutableGenerationId:
+                                        'runner-generation-1',
+                                    installSource: 'localPath',
+                                },
                                 isCurrent: () => true,
                             },
                             createRuntime: runnerCreateRuntime,
@@ -2750,10 +2829,11 @@ describe('resolveCliEngineRegistry runtimeCore', () => {
             enqueueAgentMessageCommitted: async () => ({ persisted: true, delivered: false }),
         };
         const host = resolution!.engineAdapter.runtimeCore.createExecutionRunBackend({
-            cwd: '/repo', runId: 'run-context', scope: 'session_owned', backendId, permissionMode: 'read_only',
+            cwd: '/repo', runId: 'run-context', controllerOccurrenceId: 'run-context-controller-1',
+            scope: 'session_owned', backendId, permissionMode: 'read_only',
             start: { intent: 'delegate', runClass: 'long_lived', retentionPolicy: 'resumable' },
             sessionInteractionHost: { session: parentSession, machineId: 'machine-1',
-                permissionHandler: { async handleToolCall() { return { decision: 'denied' as const }; } } },
+                permissionHandler: createDeniedRunPermissionHandler() },
         });
         try {
             await host.provisionRuntime();
@@ -2817,7 +2897,7 @@ describe('resolveCliEngineRegistry runtimeCore', () => {
                         interactions: createPluginInteractionsService({
                             currentSession: seed.currentSession ?? null,
                             signal: seed.signal,
-                            isGenerationCurrent: seed.isGenerationCurrent,
+                            isOccurrenceCurrent: seed.isOccurrenceCurrent,
                         }),
                     });
                 }) satisfies CreateAgentInvocationServices,
@@ -3045,7 +3125,12 @@ describe('resolveCliEngineRegistry runtimeCore', () => {
                     pluginVersion: '0.0.0',
                     agentId,
                     backendId,
-                    generation: 'runner-generation-1',
+                    occurrenceId: 'runner-occurrence-1',
+                    sourceCustody: {
+                        kind: 'managed',
+                        immutableGenerationId: 'runner-generation-1',
+                        installSource: 'localPath',
+                    },
                     isCurrent: () => true,
                 },
                 createRuntime: runnerCreateRuntime,
@@ -3119,9 +3204,7 @@ describe('resolveCliEngineRegistry runtimeCore', () => {
             ...createRuntimePlacementSessionClient('parent-session'),
             enqueueAgentMessageCommitted: vi.fn(async () => ({ persisted: true, delivered: false })),
         };
-        const handleToolCall = vi.fn(async () => ({
-            decision: 'denied' as const,
-        }));
+        const permissionHandler = createDeniedRunPermissionHandler();
         const executionRuntime = daemonResolution?.engineAdapter.runtimeCore
             .createExecutionRunBackend({
                 cwd: '/repo',
@@ -3136,7 +3219,7 @@ describe('resolveCliEngineRegistry runtimeCore', () => {
                 sessionInteractionHost: {
                     session: parentSession,
                     machineId: 'machine-1',
-                    permissionHandler: { handleToolCall },
+                    permissionHandler,
                 },
             });
         const messages: unknown[] = [];

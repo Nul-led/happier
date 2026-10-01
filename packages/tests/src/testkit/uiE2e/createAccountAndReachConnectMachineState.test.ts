@@ -3,8 +3,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   createAccountAndReachConnectMachineState,
-  createAccountAndReachSetupWizardState,
-  dismissSetupWizardIfVisible,
+  createAccountAndReachMachineAddDraftState,
+  discardMachineAddDraftIfVisible,
   type CreateAccountAndReachConnectMachineStatePage,
 } from './createAccountAndReachConnectMachineState';
 
@@ -102,7 +102,7 @@ function createFakePage(params: Readonly<{
 }
 
 function createBrandHeroThenWelcomePage(
-  afterWelcome: 'connect-machine' | 'setup-wizard',
+  afterWelcome: 'connect-machine' | 'machine-draft',
 ): CreateAccountAndReachConnectMachineStatePage {
   const visibleByTestId = new Map<string, boolean>([
     ['brand-hero-get-started', true],
@@ -129,7 +129,7 @@ function createBrandHeroThenWelcomePage(
         visibleByTestId.set('brand-hero-get-started', false);
         visibleByTestId.set('welcome-primary-start', true);
         visibleByTestId.set(
-          afterWelcome === 'connect-machine' ? 'session-getting-started-kind-connect_machine' : 'setupWizard.surface',
+          afterWelcome === 'connect-machine' ? 'session-getting-started-kind-connect_machine' : 'settings.machines.draft.form',
           true,
         );
         return;
@@ -161,12 +161,12 @@ describe('createAccountAndReachConnectMachineState', () => {
     vi.restoreAllMocks();
   });
 
-  it('reaches connect-machine directly when no setup wizard appears', async () => {
+  it('reaches connect-machine directly when no machine draft appears', async () => {
     const page = createFakePage({
       testIdCounts: {
         'welcome-create-account': [1, 0, 0, 0],
         'session-getting-started-kind-connect_machine': [0, 1, 1],
-        'setupWizard.surface': [0, 0],
+        'settings.machines.draft.form': [0, 0],
       },
     });
 
@@ -179,7 +179,7 @@ describe('createAccountAndReachConnectMachineState', () => {
         'welcome-create-account': [0, 0, 0, 0],
         'welcome-primary-start': [1, 0, 0, 0],
         'session-getting-started-kind-connect_machine': [0, 1, 1],
-        'setupWizard.surface': [0, 0],
+        'settings.machines.draft.form': [0, 0],
       },
     });
 
@@ -195,13 +195,13 @@ describe('createAccountAndReachConnectMachineState', () => {
     expect((page.getByTestId('welcome-primary-start') as FakeLocator).clickCalls).toBe(1);
   });
 
-  it('dismisses the setup wizard before requiring connect-machine', async () => {
+  it('dismisses the machine draft before requiring connect-machine', async () => {
     const page = createFakePage({
       testIdCounts: {
         'welcome-create-account': [1, 0, 0, 0, 0],
         'session-getting-started-kind-connect_machine': [0, 0, 1, 1],
-        'setupWizard.surface': [0, 1, 1, 0],
-        'setupWizard.surface-skip': [1, 1],
+        'settings.machines.draft.form': [0, 1, 1, 0],
+        'settings.machines.draft.discard': [1, 1],
       },
     });
 
@@ -213,7 +213,7 @@ describe('createAccountAndReachConnectMachineState', () => {
       testIdCounts: {
         'welcome-create-account': [0],
         'session-getting-started-kind-connect_machine': [1, 1],
-        'setupWizard.surface': [0],
+        'settings.machines.draft.form': [0],
       },
     });
 
@@ -225,12 +225,12 @@ describe('createAccountAndReachConnectMachineState', () => {
       testIdCounts: {
         'welcome-create-account': [1, 1, 1, 1],
         'session-getting-started-kind-connect_machine': [0, 1, 1],
-        'setupWizard.surface': [0, 0, 0],
+        'settings.machines.draft.form': [0, 0, 0],
       },
       testIdVisibility: {
         'welcome-create-account': [true, true, false, false],
         'session-getting-started-kind-connect_machine': [false, true, true],
-        'setupWizard.surface': [false, false, false],
+        'settings.machines.draft.form': [false, false, false],
       },
     });
 
@@ -242,7 +242,7 @@ describe('createAccountAndReachConnectMachineState', () => {
       testIdCounts: {
         'welcome-create-account': [1, 1, 1, 0, 0],
         'session-getting-started-kind-connect_machine': [1, 1, 1, 1, 1],
-        'setupWizard.surface': [0, 0, 0, 0],
+        'settings.machines.draft.form': [0, 0, 0, 0],
       },
     });
 
@@ -255,7 +255,7 @@ describe('createAccountAndReachConnectMachineState', () => {
       testIdCounts: {
         'welcome-create-account': [1, 0, 0, 0, 0],
         'session-getting-started-kind-connect_machine': [0, 1, 1, 1, 1],
-        'setupWizard.surface': [0, 0, 0, 0],
+        'settings.machines.draft.form': [0, 0, 0, 0],
       },
       evaluateResults: [false, false, true],
     });
@@ -269,7 +269,7 @@ describe('createAccountAndReachConnectMachineState', () => {
       testIdCounts: {
         'welcome-create-account': [1, 0, 0, 0, 0],
         'session-getting-started-kind-connect_machine': [0, 1, 1, 1, 1],
-        'setupWizard.surface': [0, 0, 0, 0],
+        'settings.machines.draft.form': [0, 0, 0, 0],
       },
       localStorageSnapshots: [
         {
@@ -321,7 +321,7 @@ describe('createAccountAndReachConnectMachineState', () => {
       testIdCounts: {
         'welcome-create-account': [1, 0, 0, 0],
         'sessions-empty-state-open-setup': [0, 1, 1, 1],
-        'setupWizard.surface': [0, 0, 0, 0],
+        'settings.machines.draft.form': [0, 0, 0, 0],
       },
       evaluateResults: Array.from({ length: 128 }, () => false),
     });
@@ -337,7 +337,7 @@ describe('createAccountAndReachConnectMachineState', () => {
         'welcome-create-account': [1, 0, 0, 0, 0],
         'session-getting-started-kind-connect_machine': [0, 0, 1, 1],
         'session-getting-started-kind-create_session': [0, 0, 1, 1],
-        'setupWizard.surface': [0, 0, 0, 0],
+        'settings.machines.draft.form': [0, 0, 0, 0],
         'tabbar-tab-sessions': [1, 1, 1],
       },
       evaluateResults: [true],
@@ -353,7 +353,7 @@ describe('createAccountAndReachConnectMachineState', () => {
         'welcome-create-account': [1, 0, 0, 0],
         'session-getting-started-kind-connect_machine': [0, 0, 0, 0],
         'session-getting-started-kind-create_session': [0, 1, 1, 1],
-        'setupWizard.surface': [0, 0, 0, 0],
+        'settings.machines.draft.form': [0, 0, 0, 0],
         'tabbar-tab-sessions': [1, 1, 1],
       },
       evaluateResults: [true],
@@ -368,7 +368,7 @@ describe('createAccountAndReachConnectMachineState', () => {
         'welcome-create-account': [1, 0, 0, 0],
         'session-getting-started-kind-connect_machine': [0, 0, 0, 0],
         'session-getting-started-kind-start_daemon': [0, 1, 1, 1],
-        'setupWizard.surface': [0, 0, 0, 0],
+        'settings.machines.draft.form': [0, 0, 0, 0],
         'tabbar-tab-sessions': [1, 1, 1],
       },
       evaluateResults: [true],
@@ -383,7 +383,7 @@ describe('createAccountAndReachConnectMachineState', () => {
         'welcome-create-account': [1, 0, 0, 0, 0],
         'session-getting-started-kind-connect_machine': [0, 0, 0, 0, 0],
         'session-getting-started-kind-start_daemon': [0, 1, 1, 1, 1],
-        'setupWizard.surface': [0, 0, 0, 0, 0],
+        'settings.machines.draft.form': [0, 0, 0, 0, 0],
         'tabbar-tab-sessions': [1, 1, 1, 1],
       },
       evaluateResults: [false, false, true],
@@ -393,70 +393,29 @@ describe('createAccountAndReachConnectMachineState', () => {
     expect(page.evaluate).toHaveBeenCalledTimes(3);
   });
 
-  it('dismisses setup wizard only when visible', async () => {
+  it('dismisses machine draft only when visible', async () => {
     const page = createFakePage({
       testIdCounts: {
-        'setupWizard.surface': [1, 1, 0],
-        'setupWizard.surface-skip': [1, 1],
+        'settings.machines.draft.form': [1, 1, 0],
+        'settings.machines.draft.discard': [1, 1],
       },
     });
 
-    await expect(dismissSetupWizardIfVisible({ page })).resolves.toBeUndefined();
+    await expect(discardMachineAddDraftIfVisible({ page })).resolves.toBeUndefined();
   });
 });
 
-describe('createAccountAndReachSetupWizardState', () => {
-  beforeEach(() => {
-    vi.restoreAllMocks();
-  });
-
-  it('clicks create-account and waits for the setup wizard', async () => {
-    const page = createFakePage({
-      testIdCounts: {
-        'welcome-create-account': [1, 1],
-        'setupWizard.surface': [0, 1, 1],
-      },
-    });
-
-    await expect(createAccountAndReachSetupWizardState({ page })).resolves.toBeUndefined();
-  });
-
-  it('dismisses the mobile brand hero before clicking the real welcome CTA', async () => {
-    const page = createBrandHeroThenWelcomePage('setup-wizard');
-
-    await expect(createAccountAndReachSetupWizardState({ page })).resolves.toBeUndefined();
-    expect((page.getByTestId('brand-hero-get-started') as FakeLocator).clickCalls).toBe(1);
-    expect((page.getByTestId('welcome-primary-start') as FakeLocator).clickCalls).toBe(1);
-  });
-
-  it('accepts an already-visible setup wizard without requiring create-account first', async () => {
-    const page = createFakePage({
-      testIdCounts: {
-        'welcome-create-account': [0],
-        'setupWizard.surface': [1, 1],
-      },
-    });
-
-    await expect(createAccountAndReachSetupWizardState({ page })).resolves.toBeUndefined();
-  });
-
-  it('navigates to the setup wizard when the authenticated shell is visible but the modal did not auto-open', async () => {
-    const testIdCounts = {
-      'welcome-create-account': [1, 1],
-      'setupWizard.surface': [0, 0, 0, 1],
-      'setup.postAuth': [0, 1, 1],
+describe('createAccountAndReachMachineAddDraftState', () => {
+  it('opens the collection draft after reaching the authenticated Home', async () => {
+    const counts: Record<string, number[]> = {
+      'session-getting-started-kind-create_session': [1],
+      'settings.machines.draft.form': [0],
     };
-
     const page = createFakePage({
-      testIdCounts: {
-        ...testIdCounts,
-      },
-      onEvaluate: () => {
-        testIdCounts['setupWizard.surface'] = [1, 1];
-      },
+      testIdCounts: counts,
+      onEvaluate: () => { counts['settings.machines.draft.form'] = [1]; },
     });
-
-    await expect(createAccountAndReachSetupWizardState({ page })).resolves.toBeUndefined();
-    expect(page.evaluate).toHaveBeenCalledTimes(1);
+    await expect(createAccountAndReachMachineAddDraftState({ page })).resolves.toBeUndefined();
+    expect(await page.getByTestId('settings.machines.draft.form').count()).toBe(1);
   });
 });

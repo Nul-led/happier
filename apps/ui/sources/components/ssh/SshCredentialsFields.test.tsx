@@ -90,12 +90,12 @@ describe('SshCredentialsFields', () => {
         }));
     });
 
-    it('renders the wizard layout without settings-style item groups', async () => {
+    it('renders the form layout without settings-style item groups', async () => {
         const onChange = vi.fn();
         const { SshCredentialsFields } = await import('./SshCredentialsFields');
         const screen = await renderScreen(React.createElement(SshCredentialsFields, {
             testIDPrefix: 'ssh-fields',
-            layoutVariant: 'wizard',
+            layoutVariant: 'form',
             value: {
                 username: 'dev',
                 host: 'example.test',
@@ -112,6 +112,24 @@ describe('SshCredentialsFields', () => {
         expect(screen.findByTestId('ssh-fields-sshHostInput')).toBeTruthy();
         expect(screen.findByTestId('ssh-fields-sshPortInput')).toBeTruthy();
         expect(screen.findByTestId('ssh-fields-sshPasswordInput')).toBeTruthy();
+    });
+
+    it('keeps every form authentication label at its content width in a horizontally reachable group', async () => {
+        const onChange = vi.fn();
+        const { SshCredentialsFields } = await import('./SshCredentialsFields');
+        const screen = await renderScreen(React.createElement(SshCredentialsFields, {
+            testIDPrefix: 'ssh-fields', layoutVariant: 'form',
+            value: { username: 'dev', host: 'example.test', port: '22', authMode: 'agent', identityFilePath: '', password: '' },
+            onChange,
+        }));
+
+        const authBar = screen.find((node) => node.props?.testIDPrefix === 'ssh-fields-sshAuthMethod' && Array.isArray(node.props?.tabs));
+        expect(authBar.props.segmentSizing).toBe('content');
+        expect(authBar.props.targetSize).toBe('platform');
+        expect(screen.findAll((node) => node.props?.horizontal === true && node.props?.testID === 'ssh-fields-sshAuthMethod-scroller')).toHaveLength(1);
+        const password = screen.findByTestId('ssh-fields-sshAuthMethod:password');
+        await password?.props.onPress?.();
+        expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ authMode: 'password' }));
     });
 
     it('can hide unsupported SSH auth modes', async () => {

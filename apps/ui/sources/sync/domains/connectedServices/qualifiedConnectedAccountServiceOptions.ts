@@ -10,7 +10,9 @@ import type {
     ConnectedServicesProfileOption,
 } from '@happier-dev/agents';
 
-import { connectedServiceProfileKey } from './connectedServiceProfilePreferences';
+import type { ConnectedAccountIdentityPresenter } from './maskAccountEmail';
+import { presentQualifiedConnectedAccountTarget } from './qualifiedConnectedAccountTargetPresentation';
+import { resolveQualifiedConnectedAccountLabel } from './connectedServiceProfilePreferences';
 
 /**
  * The one V4 → session-options projection shared by every Session
@@ -32,36 +34,33 @@ export function resolveProjectedConnectedAccountServiceKeys(
     return result;
 }
 
-function readAccountLabel(params: Readonly<{
-    account: QualifiedConnectedAccountProfileV4;
-    serviceKey: string;
-    labelsByKey: Record<string, string | undefined>;
-}>): string | null {
-    const displayName = (params.account.displayName ?? '').trim();
-    if (displayName) return displayName;
-    const storedLabel = params.labelsByKey[
-        connectedServiceProfileKey({ serviceId: params.serviceKey, profileId: params.account.ref.accountId })
-    ];
-    if (typeof storedLabel === 'string' && storedLabel.trim()) return storedLabel.trim();
-    return null;
-}
-
 export function buildQualifiedConnectedAccountProfileOptionsByServiceId(params: Readonly<{
     accounts: ReadonlyArray<QualifiedConnectedAccountProfileV4>;
     supportedServiceIds: ReadonlyArray<ConnectedAccountServiceKey>;
     labelsByKey: Record<string, string | undefined>;
+    presentIdentity?: ConnectedAccountIdentityPresenter;
 }>): Readonly<Record<string, ConnectedServicesProfileOption[]>> {
     const supported = new Set<string>(params.supportedServiceIds);
     const options: Record<string, ConnectedServicesProfileOption[]> = {};
     for (const account of params.accounts) {
         const serviceKey = buildQualifiedPluginContributionKey(account.ref.service);
         if (!supported.has(serviceKey)) continue;
+        const presentation = params.presentIdentity ? presentQualifiedConnectedAccountTarget({
+            target: { kind: 'account', account: account.ref }, accounts: [account], groups: [],
+            labelsByKey: params.labelsByKey, serviceTitle: null, presentIdentity: params.presentIdentity,
+        }) : null;
+        const email = account.providerIdentity?.email ?? null;
         (options[serviceKey] ??= []).push({
             profileId: account.ref.accountId,
             status: account.status,
             kind: account.kind ?? null,
-            providerEmail: account.providerIdentity?.email ?? null,
-            label: readAccountLabel({ account, serviceKey, labelsByKey: params.labelsByKey }),
+            providerEmail: params.presentIdentity ? params.presentIdentity({ email }).email : email,
+            // Without a device presentation policy this remains a transport projection:
+            // derived identities must not be promoted into a generic name field.
+            label: presentation ? presentation.primaryLabel
+                : resolveQualifiedConnectedAccountLabel({
+                    labelsByKey: params.labelsByKey, service: account.ref.service, accountId: account.ref.accountId,
+                }) ?? (account.displayName?.trim() || null),
         });
     }
     return options;

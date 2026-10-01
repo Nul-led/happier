@@ -1,4 +1,5 @@
 import { readNonBlankOpaqueIdentifier } from '@happier-dev/protocol';
+import { resolveSessionMachineWorkspacePath } from '@/session/machineControlLocality';
 import os from 'node:os';
 
 import type { SessionHandoffLocalMetadataSource } from '@/session/handoff/metadata/runtimeLocalSessionHandoffMetadata';
@@ -9,6 +10,7 @@ import type { TrackedSession } from '../types';
 function resolveTrackedSessionForHandoff(
   pidToTrackedSession: Map<number, TrackedSession>,
   sessionId: string,
+  allowProviderResumeIds = true,
 ): TrackedSession | null {
   const providerSessionId = readNonBlankOpaqueIdentifier(sessionId);
   if (!providerSessionId) {
@@ -22,6 +24,8 @@ function resolveTrackedSessionForHandoff(
       return trackedSession;
     }
 
+    if (!allowProviderResumeIds) continue;
+
     const trackedVendorResumeId = readNonBlankOpaqueIdentifier(trackedSession.vendorResumeId);
     const trackedSpawnResumeId = readNonBlankOpaqueIdentifier(trackedSession.spawnOptions?.resume);
     if (trackedVendorResumeId === providerSessionId || trackedSpawnResumeId === providerSessionId) {
@@ -30,6 +34,25 @@ function resolveTrackedSessionForHandoff(
   }
 
   return null;
+}
+
+export function createResolveHostedSessionWorkingDirectory(params: Readonly<{
+  pidToTrackedSession: Map<number, TrackedSession>;
+  getMachineId: () => string;
+}>): (sessionId: string) => Promise<string | null> {
+  const fallbackHomeDir = os.homedir();
+  return async (sessionId) => {
+    const trackedSession = resolveTrackedSessionForHandoff(params.pidToTrackedSession, sessionId, false);
+    if (!trackedSession) return null;
+    const machineId = params.getMachineId();
+    const metadata = await buildHandoffSessionMetadataFromTrackedSession({ trackedSession, machineId, fallbackHomeDir });
+    if (!metadata) return null;
+    return resolveSessionMachineWorkspacePath({
+      metadata: metadata.exportMetadata,
+      currentMachineId: machineId,
+      candidatePath: metadata.exportMetadata.path,
+    });
+  };
 }
 
 export function createLoadLocalSessionMetadataForHandoff(params: Readonly<{

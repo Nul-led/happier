@@ -1,4 +1,13 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { RPC_METHODS } from '@happier-dev/protocol/rpc';
+
+// The machine RPC is the system boundary: Action schemas are read per Action
+// from the daemon, never carried by the projection.
+const machineRpcWithServerScopeMock = vi.hoisted(() => vi.fn());
+vi.mock('@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc', () => ({
+    machineRpcWithServerScope: machineRpcWithServerScopeMock,
+}));
 
 import type {
     PluginProjectionAction,
@@ -7,10 +16,11 @@ import type {
 import {
     PluginProjectedActionV2Schema,
     PluginProjectionInstalledPackageV2Schema,
+    type PluginJsonSchemaV2,
     type PluginMachineExecutionOriginV1,
     type PluginProjectedActionV2,
 } from '@happier-dev/protocol';
-import { PluginUiArtifactsManifestEntryV1Schema } from '@happier-dev/protocol/plugins/ui';
+import { PluginUiArtifactsManifestEntryV2Schema } from '@happier-dev/protocol/plugins/ui';
 import type { PluginClientApi } from '@happier-dev/plugin-sdk';
 import type { PluginClientActionHandler } from '@happier-dev/plugin-sdk/actions';
 import { PLUGIN_UI_CONTRIBUTION_ORIGIN_KEY } from '@/sync/domains/plugins/ui/projectionUnion';
@@ -26,7 +36,10 @@ import type {
     DispatchPluginSurfaceActionInput,
     PluginSurfaceActionDispatchOutcome,
 } from '@/components/plugins/surfaces/pluginSurfaceActionDispatch';
-import type { MachinePluginActionFormConnectedAccountOptionsResult } from '@/sync/ops/machineContributionRegistryProjection';
+import {
+    resetMachineProjectionReadsForTests,
+    type MachinePluginActionFormConnectedAccountOptionsResult,
+} from '@/sync/ops/machineContributionRegistryProjection';
 import {
     EMPTY_PLUGIN_UI_PROJECTION,
     type PluginUiProjectionModel,
@@ -53,6 +66,15 @@ const GENERATION = 17;
 const TARGET_PLUGIN_ID = 'acme.target';
 const TARGET_POINT_ID = 'connection';
 const TARGET_IMMUTABLE_GENERATION_ID = 'target-generation-a';
+const TARGET_SOURCE_CUSTODY = Object.freeze({
+    kind: 'development' as const,
+    registeredRootId: 'target-development-root',
+});
+const CONTRIBUTOR_SOURCE_CUSTODY = Object.freeze({
+    kind: 'managed' as const,
+    immutableGenerationId: 'contributor-generation-a',
+    installSource: 'archive' as const,
+});
 const TARGET_POINT = {
     pointId: TARGET_POINT_ID,
     protocol: { id: 'provider', version: 1 },
@@ -63,18 +85,44 @@ const STABLE_ACCOUNT_LIFETIME = Object.freeze({
     onRetire: () => Object.freeze({ dispose() {} }),
 });
 
+/** Declared input schemas the daemon answers, by exact Action occurrence. */
+const actionInputSchemas = new Map<string, PluginJsonSchemaV2>();
+const actionSchemaKey = (localId: string, occurrenceId: string) => JSON.stringify([localId, occurrenceId]);
+
+beforeEach(() => {
+    actionInputSchemas.clear();
+    resetMachineProjectionReadsForTests();
+    machineRpcWithServerScopeMock.mockReset();
+    machineRpcWithServerScopeMock.mockImplementation(async (request: Readonly<{
+        method: string;
+        payload: Readonly<{ qualifiedActionId: string; expectedOccurrenceId: string }>;
+    }>) => {
+        if (request.method !== RPC_METHODS.DAEMON_PLUGIN_ACTION_SCHEMAS_READ) return undefined;
+        const localId = request.payload.qualifiedActionId.slice(request.payload.qualifiedActionId.indexOf('/') + 1);
+        const inputSchema = actionInputSchemas.get(actionSchemaKey(localId, request.payload.expectedOccurrenceId));
+        return inputSchema
+            ? { ok: true, inputSchema }
+            : { ok: false, code: 'plugin_occurrence_stale' };
+    });
+});
+
 function action(input: Partial<PluginProjectionAction> & Readonly<{
     id: string;
+    /** Declared by the daemon-side Action; answered by the schema read, not projected. */
+    inputSchema?: PluginJsonSchemaV2 | null;
 }>): PluginProjectionAction {
+    const occurrenceId = input.occurrenceId ?? 'contributor-generation-a';
+    // Every daemon Action declares an input schema; `{}` is the manifest default.
+    actionInputSchemas.set(actionSchemaKey(input.id, occurrenceId), input.inputSchema ?? {});
     return {
         id: input.id,
+        occurrenceId: input.occurrenceId ?? 'contributor-generation-a',
         title: input.title ?? input.id,
         description: input.description ?? null,
         icon: input.icon ?? null,
         scopes: input.scopes ?? ['session'],
         surfaces: input.surfaces ?? ['ui'],
         placementBindings: input.placementBindings ?? ['primary'],
-        inputSchema: input.inputSchema ?? null,
         inputHints: input.inputHints ?? null,
         ...(input.localizedPresentation ? { localizedPresentation: input.localizedPresentation } : {}),
         slash: input.slash ?? null,
@@ -98,6 +146,7 @@ function projectedDaemonAction(
     const projected = PluginProjectedActionV2Schema.safeParse({
         id: action.id,
         pluginId,
+        occurrenceId: action.occurrenceId,
         title: action.title,
         ...(action.description ? { description: action.description } : {}),
         ...(action.icon ? { icon: action.icon } : {}),
@@ -105,7 +154,6 @@ function projectedDaemonAction(
         surfaces: action.surfaces,
         execution: { target: 'daemon' },
         ...(action.placementBindings.length > 0 ? { placementBindings: action.placementBindings } : {}),
-        ...(action.inputSchema ? { inputSchema: action.inputSchema } : {}),
         ...(action.inputHints ? { inputHints: action.inputHints } : {}),
         ...(action.slash ? { slash: action.slash } : {}),
         priority: action.priority ?? 0,
@@ -146,14 +194,15 @@ function targetedOperation(input: Readonly<{
     pluginId?: string;
     localId?: string;
     role?: string;
-    immutableGenerationId?: string;
+    occurrenceId?: string;
 }> = {}): PluginUiTargetedContributionOperationV1 {
     return {
         point: TARGET_POINT,
         contributor: {
             pluginId: input.pluginId ?? 'acme.channels',
             contributionId: 'provider',
-            immutableGenerationId: input.immutableGenerationId ?? 'contributor-generation-a',
+            occurrenceId: input.occurrenceId ?? 'contributor-generation-a',
+            sourceCustody: CONTRIBUTOR_SOURCE_CUSTODY,
         },
         role: input.role ?? 'setup',
         action: {
@@ -170,7 +219,8 @@ function targetedContributions(
     return {
         target: {
             pluginId: targetPluginId,
-            immutableGenerationId: TARGET_IMMUTABLE_GENERATION_ID,
+            occurrenceId: TARGET_IMMUTABLE_GENERATION_ID,
+            sourceCustody: TARGET_SOURCE_CUSTODY,
         },
         points: [{
             pointId: TARGET_POINT.pointId,
@@ -230,7 +280,6 @@ function snapshot(
         host: {
             machineId: MACHINE_ID,
             serverId: SERVER_ID,
-            expectedGeneration: GENERATION,
             targetPluginId: TARGET_PLUGIN_ID,
             sessionId: SESSION_ID,
             accountLifetime: STABLE_ACCOUNT_LIFETIME,
@@ -262,7 +311,6 @@ const CLIENT_REGISTERED_PLUGIN_ID = 'acme.client-actions';
 const CLIENT_REGISTERED_LOCAL_ID = 'refresh-index';
 const CLIENT_REGISTERED_TARGET = Object.freeze({
     artifactId: 'client-action-bundle',
-    modulePath: './client/refreshIndex',
     exportName: 'activate',
     platform: 'web' as const,
 });
@@ -282,20 +330,19 @@ const CLIENT_REGISTERED_HOST_ORIGIN = Object.freeze({
     phase: 'current' as const,
     executionOrigin: CLIENT_REGISTERED_EXECUTION_ORIGIN,
 });
-const CLIENT_REGISTERED_ARTIFACT_GRAPH = PluginUiArtifactsManifestEntryV1Schema.parse({
-    contributionId: CLIENT_REGISTERED_TARGET.artifactId,
+const CLIENT_REGISTERED_ARTIFACT_GRAPH = PluginUiArtifactsManifestEntryV2Schema.parse({
+    artifactId: CLIENT_REGISTERED_TARGET.artifactId,
     tier: 'reactNative',
-    platform: CLIENT_REGISTERED_TARGET.platform,
-    entry: 'react-native/client-action-bundle/index.js',
+    entry: 'react-native/client-action-bundle/entry.cjs.bundle',
     files: [{
-        relativePath: 'react-native/client-action-bundle/index.js',
+        relativePath: 'react-native/client-action-bundle/entry.cjs.bundle',
         digest: 'sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
         byteSize: 10,
     }],
     digest: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-    builtWith: { bundler: 'vite', version: '7.0.0' },
-    hostUiApiVersion: '1.0.0',
-    compat: { react: '19.0.0', reactNative: '0.83.4' },
+    builtWith: { bundler: 'esbuild', version: '0.27.2' },
+    executable: { exports: [CLIENT_REGISTERED_TARGET.exportName] },
+    hostUiApiRange: '^1.0.0',
 });
 const CLIENT_REGISTERED_AUTHORIZATION = Object.freeze({
     generation: Object.freeze({
@@ -313,6 +360,7 @@ function clientRegisteredCacheIdentity(): PluginReactNativeBundleCacheIdentity {
     return Object.freeze({
         pluginId: CLIENT_REGISTERED_PLUGIN_ID,
         contributionId: CLIENT_REGISTERED_LOCAL_ID,
+        artifactId: CLIENT_REGISTERED_TARGET.artifactId,
         artifactDigest: CLIENT_REGISTERED_ARTIFACT_GRAPH.digest,
         hostAppVersion: '2.0.0',
         hostUiApiVersion: '1.0.0',
@@ -338,10 +386,13 @@ function createRegisteredClientActionFixture(
         placementBindings: ['commandPalette'],
     },
 ) {
+    // The Action's declared input schema is answered by the per-Action read.
+    actionInputSchemas.set(actionSchemaKey(CLIENT_REGISTERED_LOCAL_ID, 'client-registered-occurrence'), {});
     const projectedAction = Object.freeze({
         ...PluginProjectedActionV2Schema.parse({
             id: CLIENT_REGISTERED_LOCAL_ID,
             pluginId: CLIENT_REGISTERED_PLUGIN_ID,
+            occurrenceId: 'client-registered-occurrence',
             title: 'Refresh index',
             scopes: presentation.scopes,
             surfaces: ['ui'],
@@ -350,7 +401,6 @@ function createRegisteredClientActionFixture(
                 target: 'client',
                 client: {
                     artifactId: CLIENT_REGISTERED_TARGET.artifactId,
-                    modulePath: CLIENT_REGISTERED_TARGET.modulePath,
                     exportName: CLIENT_REGISTERED_TARGET.exportName,
                 },
                 platforms: [CLIENT_REGISTERED_TARGET.platform],
@@ -392,7 +442,7 @@ function createRegisteredClientActionFixture(
                 runtime: Object.freeze({
                     decision: Object.freeze({ state: 'load' }),
                     loadPolicy: Object.freeze({ source: 'installedArtifact' }),
-                    cacheIdentity,
+                    cacheIdentity: Object.freeze({ artifactDigest: cacheIdentity.artifactDigest }),
                 }),
                 [PLUGIN_UI_CONTRIBUTION_ORIGIN_KEY]: CLIENT_REGISTERED_HOST_ORIGIN,
             }),
@@ -416,20 +466,22 @@ function createRegisteredClientActionFixture(
         api.actions.register(CLIENT_REGISTERED_LOCAL_ID, handler);
     });
     const backend: PluginReactNativeLoaderBackend = Object.freeze({
-        backendId: 'reactNativeWebModule',
+        backendId: 'commonJs',
         available: true,
         loadInstalledBundle: vi.fn(async () => activate as PluginReactNativeExecutableExport),
     });
     return Object.freeze({
         action: projectedAction as PluginProjectedActionV2,
+        projection,
         composition: getInstalledPluginUiClientExecutableComposition(),
         activation: Object.freeze({
             pluginId: executable.pluginId,
+            occurrenceId: executable.occurrenceId,
+            hostUiApiRange: executable.hostUiApiRange,
             ...(executable.pluginVersion === undefined ? {} : { pluginVersion: executable.pluginVersion }),
             contributes: executable.contributes,
             target: executable.target,
             executionOrigin: executable.executionOrigin,
-            projectionGeneration: executable.projectionGeneration,
             cache,
             identity: executable.cacheIdentity,
             moduleReference: executable.moduleReference,
@@ -464,7 +516,7 @@ describe('plugin contributed Action controller', () => {
 
         await expect(controller.selectExactBoundActionInput({
             action: { pluginId: 'acme.channels', localId: 'automation/history-gap-reset' },
-            expectedImmutableGenerationId: 'contributor-generation-a',
+            expectedOccurrenceId: 'contributor-generation-a',
             draft: {
                 automationId: 'automation-a',
                 templateVersion: 3,
@@ -484,6 +536,22 @@ describe('plugin contributed Action controller', () => {
                 presentation: { connectedAccountLabel: null },
             },
         });
+        // The daemon-declared schema, read per Action, still rejects an invalid draft.
+        await expect(controller.selectExactBoundActionInput({
+            action: { pluginId: 'acme.channels', localId: 'automation/history-gap-reset' },
+            expectedOccurrenceId: 'contributor-generation-a',
+            draft: { automationId: 'automation-a', templateVersion: -1, sourceSelectorId: 'source-a' },
+        })).resolves.toMatchObject({ kind: 'unavailable' });
+        expect(machineRpcWithServerScopeMock).toHaveBeenCalledWith(expect.objectContaining({
+            machineId: MACHINE_ID,
+            serverId: SERVER_ID,
+            method: RPC_METHODS.DAEMON_PLUGIN_ACTION_SCHEMAS_READ,
+            payload: {
+                machineId: MACHINE_ID,
+                expectedOccurrenceId: 'contributor-generation-a',
+                qualifiedActionId: 'acme.channels/automation/history-gap-reset',
+            },
+        }));
     });
 
     it('selects one placementless plugin Action without dispatch and separates its Account ref', async () => {
@@ -568,10 +636,14 @@ describe('plugin contributed Action controller', () => {
             selection: {
                 target: {
                     pluginId: TARGET_PLUGIN_ID,
-                    immutableGenerationId: TARGET_IMMUTABLE_GENERATION_ID,
+                    sourceCustody: TARGET_SOURCE_CUSTODY,
                 },
                 point: TARGET_POINT,
-                contributor: operation.contributor,
+                contributor: {
+                    pluginId: operation.contributor.pluginId,
+                    contributionId: operation.contributor.contributionId,
+                    sourceCustody: operation.contributor.sourceCustody,
+                },
             },
             connectedAccount: {
                 kind: 'selected',
@@ -628,10 +700,11 @@ describe('plugin contributed Action controller', () => {
         const operation = targetedOperation({
             pluginId: 'acme.selected',
             localId: 'setup',
-            immutableGenerationId: 'selected-generation-a',
+            occurrenceId: 'selected-generation-a',
         });
         const selected = action({
             id: 'setup',
+            occurrenceId: 'selected-generation-a',
             scopes: ['settings'],
             surfaces: ['plugin'],
             placementBindings: [],
@@ -650,6 +723,11 @@ describe('plugin contributed Action controller', () => {
             resolveCurrent: () => ({
                 ...snapshot([], { targeted: targetedContributions(operation) }),
                 pluginProjectionById: projection,
+                resolveContributedAction: (identity) => (
+                    identity.pluginId === 'acme.selected' && identity.localId === selected.id
+                        ? projectedDaemonAction('acme.selected', selected)
+                        : null
+                ),
             }),
         });
 
@@ -662,10 +740,16 @@ describe('plugin contributed Action controller', () => {
                 selection: {
                     target: {
                         pluginId: TARGET_PLUGIN_ID,
-                        immutableGenerationId: TARGET_IMMUTABLE_GENERATION_ID,
+                        sourceCustody: TARGET_SOURCE_CUSTODY,
                     },
                     point: TARGET_POINT,
-                    contributor: operation.contributor,
+                    contributor: {
+                        pluginId: operation.contributor.pluginId,
+                        contributionId:
+                            operation.contributor.contributionId,
+                        sourceCustody:
+                            operation.contributor.sourceCustody,
+                    },
                 },
                 connectedAccount: { kind: 'none' },
                 presentation: {
@@ -680,38 +764,48 @@ describe('plugin contributed Action controller', () => {
         const alpha = targetedOperation({
             pluginId: 'acme.alpha',
             localId: 'setup',
-            immutableGenerationId: 'alpha-generation-a',
+            occurrenceId: 'alpha-generation-a',
         });
         const beta = targetedOperation({
             pluginId: 'acme.beta',
             localId: 'setup',
-            immutableGenerationId: 'beta-generation-a',
+            occurrenceId: 'beta-generation-a',
         });
-        const setup = action({
+        const alphaSetup = action({
             id: 'setup',
+            occurrenceId: 'alpha-generation-a',
             scopes: ['settings'],
             surfaces: ['plugin'],
             placementBindings: [],
             inputSchema: null,
             inputHints: null,
         });
+        const betaSetup = action({ ...alphaSetup, occurrenceId: 'beta-generation-a' });
         const current: PluginContributedActionCurrentSnapshot = {
             pluginProjectionById: {
                 'acme.alpha': plugin({
                     pluginId: 'acme.alpha',
                     immutableGenerationId: 'alpha-generation-a',
-                    actions: [setup],
+                    actions: [alphaSetup],
                 }),
                 'acme.beta': plugin({
                     pluginId: 'acme.beta',
                     immutableGenerationId: 'beta-generation-a',
-                    actions: [setup],
+                    actions: [betaSetup],
                 }),
             },
+            resolveContributedAction: (identity) => (
+                identity.pluginId === 'acme.alpha'
+                    ? projectedDaemonAction('acme.alpha', alphaSetup)
+                    : identity.pluginId === 'acme.beta'
+                        ? projectedDaemonAction('acme.beta', betaSetup)
+                        : null
+            ),
             targetedContributions: {
                 target: {
                     pluginId: TARGET_PLUGIN_ID,
-                    immutableGenerationId: TARGET_IMMUTABLE_GENERATION_ID,
+                    occurrenceId: TARGET_IMMUTABLE_GENERATION_ID,
+                    sourceCustody: TARGET_SOURCE_CUSTODY,
                 },
                 points: [{
                     pointId: TARGET_POINT.pointId,
@@ -748,9 +842,16 @@ describe('plugin contributed Action controller', () => {
                 kind: 'submitted',
                 action: alpha.action,
                 selection: {
-                    target: current.targetedContributions?.target,
+                    target: {
+                        pluginId: TARGET_PLUGIN_ID,
+                        sourceCustody: TARGET_SOURCE_CUSTODY,
+                    },
                     point: alpha.point,
-                    contributor: alpha.contributor,
+                    contributor: {
+                        pluginId: alpha.contributor.pluginId,
+                        contributionId: alpha.contributor.contributionId,
+                        sourceCustody: alpha.contributor.sourceCustody,
+                    },
                 },
             },
         });
@@ -760,9 +861,16 @@ describe('plugin contributed Action controller', () => {
                 kind: 'submitted',
                 action: beta.action,
                 selection: {
-                    target: current.targetedContributions?.target,
+                    target: {
+                        pluginId: TARGET_PLUGIN_ID,
+                        sourceCustody: TARGET_SOURCE_CUSTODY,
+                    },
                     point: beta.point,
-                    contributor: beta.contributor,
+                    contributor: {
+                        pluginId: beta.contributor.pluginId,
+                        contributionId: beta.contributor.contributionId,
+                        sourceCustody: beta.contributor.sourceCustody,
+                    },
                 },
             },
         });
@@ -799,7 +907,8 @@ describe('plugin contributed Action controller', () => {
                 ...targetedContributions(operation),
                 target: {
                     pluginId: TARGET_PLUGIN_ID,
-                    immutableGenerationId: 'target-generation-b',
+                    occurrenceId: 'target-generation-b',
+                    sourceCustody: TARGET_SOURCE_CUSTODY,
                 },
             },
         };
@@ -818,7 +927,7 @@ describe('plugin contributed Action controller', () => {
             pluginProjectionById: {
                 'acme.channels': plugin({
                     immutableGenerationId: 'contributor-generation-b',
-                    actions: [configure],
+                    actions: [{ ...configure, occurrenceId: 'contributor-generation-b' }],
                 }),
             },
         };
@@ -831,6 +940,7 @@ describe('plugin contributed Action controller', () => {
     it('settles an exact stale setup Action as unavailable without invoking or rejoining a same-local-id replacement', async () => {
         const configureSource = action({
             id: 'configure-source',
+            occurrenceId: 'alpha-generation-a',
             scopes: ['settings'],
             surfaces: ['plugin'],
             placementBindings: [],
@@ -866,7 +976,7 @@ describe('plugin contributed Action controller', () => {
         });
         const selected = await controller.selectExactBoundActionInput({
             action: { pluginId: 'acme.alpha', localId: 'configure-source' },
-            expectedImmutableGenerationId: 'alpha-generation-a',
+            expectedOccurrenceId: 'alpha-generation-a',
         });
         expect(selected).toMatchObject({ kind: 'form' });
         if (!selected || typeof selected !== 'object' || !('kind' in selected) || selected.kind !== 'form') {
@@ -880,7 +990,10 @@ describe('plugin contributed Action controller', () => {
                 'acme.alpha': plugin({
                     pluginId: 'acme.alpha',
                     immutableGenerationId: 'alpha-generation-b',
-                    actions: [configureSource],
+                    actions: [action({
+                        ...configureSource,
+                        occurrenceId: 'alpha-generation-b',
+                    })],
                 }),
             },
         };
@@ -896,7 +1009,7 @@ describe('plugin contributed Action controller', () => {
         expect(dispatch).not.toHaveBeenCalled();
         await expect(controller.selectExactBoundActionInput({
             action: { pluginId: 'acme.alpha', localId: 'configure-source' },
-            expectedImmutableGenerationId: 'alpha-generation-a',
+            expectedOccurrenceId: 'alpha-generation-a',
         })).resolves.toEqual({
             kind: 'unavailable',
             reason: 'action_not_found',
@@ -965,7 +1078,7 @@ describe('plugin contributed Action controller', () => {
         await expect(make([base], targetedOperation({
             pluginId: 'acme.absent',
             localId: 'setup',
-            immutableGenerationId: 'absent-generation-a',
+            occurrenceId: 'absent-generation-a',
         })).selectActionInput(selectionRequest(operation))).resolves.toEqual({ kind: 'unavailable', reason: 'action_not_found' });
         await expect(make([{ ...base, inputHints: { fields: [{ path: 'token', title: 'Token', widget: 'secret' }] } }]).selectActionInput(selectionRequest(operation))).resolves.toEqual({ kind: 'unavailable', reason: 'secret_input_unsupported' });
         const accountField = (path: string) => ({
@@ -1127,6 +1240,7 @@ describe('plugin contributed Action controller', () => {
                 ? {
                     id: 'refresh',
                     pluginId: 'acme.channels',
+                    occurrenceId: 'channels-occurrence-a',
                     title: 'Refresh',
                     scopes: ['session'],
                     surfaces: ['ui'],
@@ -1180,6 +1294,7 @@ describe('plugin contributed Action controller', () => {
         const projectedAction: PluginProjectedActionV2 = {
             id: 'refresh',
             pluginId: 'acme.channels',
+            occurrenceId: 'channels-occurrence-a',
             title: 'Refresh',
             scopes: ['global'],
             surfaces: ['ui'],
@@ -1187,7 +1302,6 @@ describe('plugin contributed Action controller', () => {
                 target: 'client',
                 client: {
                     artifactId: 'client-main',
-                    modulePath: './dist/client.js',
                     exportName: 'activate',
                 },
                 platforms: ['web'],
@@ -1213,6 +1327,7 @@ describe('plugin contributed Action controller', () => {
         })]);
         const current: PluginContributedActionCurrentSnapshot = {
             ...initial,
+            pluginUiProjection: initial.pluginUiProjection,
             resolveContributedAction: (identity) => (
                 identity.pluginId === projectedAction.pluginId && identity.localId === projectedAction.id
                     ? projectedAction
@@ -1285,6 +1400,7 @@ describe('plugin contributed Action controller', () => {
             })], { pluginId: CLIENT_REGISTERED_PLUGIN_ID });
             const current: PluginContributedActionCurrentSnapshot = {
                 ...initial,
+                pluginUiProjection: fixture.projection,
                 resolveContributedAction: () => fixture.action,
                 host: {
                     ...initial.host,
@@ -1550,7 +1666,6 @@ describe('plugin contributed Action controller', () => {
             contributedAction: {
                 machineId: MACHINE_ID,
                 serverId: SERVER_ID,
-                expectedGeneration: String(GENERATION),
                 sessionId: SESSION_ID,
             },
             invocation: {
@@ -2167,7 +2282,7 @@ describe('plugin contributed Action controller', () => {
 
         expect(resolveConnectedAccountOptions).toHaveBeenCalledWith(MACHINE_ID, expect.objectContaining({
             serverId: SERVER_ID,
-            expectedGeneration: String(GENERATION),
+            expectedOccurrenceId: 'contributor-generation-a',
             qualifiedActionId: 'acme.channels/configure-account',
             fieldPath: 'credentialRef',
         }));
@@ -2243,7 +2358,7 @@ describe('plugin contributed Action controller', () => {
 
         const opened = await controller.selectExactBoundActionInput({
             action: { pluginId: 'acme.channels', localId: 'configure-account' },
-            expectedImmutableGenerationId: 'contributor-generation-a',
+            expectedOccurrenceId: 'contributor-generation-a',
         });
         if (opened.kind !== 'form') throw new Error('expected an openable exact-bound Action form');
 
@@ -2369,6 +2484,51 @@ describe('plugin contributed Action controller', () => {
             kind: 'stale',
             reason: 'host_retired',
         });
+    });
+
+    it('keeps deferred Connected Account options current when only a peer changes the aggregate projection generation', async () => {
+        let settleOptions: (value: MachinePluginActionFormConnectedAccountOptionsResult) => void = () => {
+            throw new Error('Connected Account options promise was not initialized');
+        };
+        const pendingOptions = new Promise<MachinePluginActionFormConnectedAccountOptionsResult>((resolve) => {
+            settleOptions = resolve;
+        });
+        const resolveConnectedAccountOptions = vi.fn(async () => await pendingOptions);
+        const configure = action({
+            id: 'configure-account',
+            occurrenceId: 'configure-account-occurrence-a',
+            inputHints: {
+                fields: [{
+                    path: 'credentialRef',
+                    title: 'Account',
+                    widget: 'select',
+                    connectedAccountOptions: true,
+                }],
+            },
+        });
+        let current = snapshot([configure]);
+        const controller = createPluginContributedActionController({
+            resolveCurrent: () => current,
+            resolveConnectedAccountOptions,
+        });
+        const [entry] = controller.list({ placement: 'primary', scope: 'session' });
+        if (!entry) throw new Error('expected eligible Action');
+
+        const opening = controller.open(entry);
+        await vi.waitFor(() => expect(resolveConnectedAccountOptions).toHaveBeenCalledOnce());
+
+        const nextGeneration = GENERATION + 1;
+        const next = snapshot([configure]);
+        current = {
+            ...next,
+            pluginProjectionById: {
+                'acme.channels': plugin({ actions: [configure], generation: nextGeneration }),
+            },
+            host: next.host,
+        };
+        settleOptions({ supported: true, result: { ok: true, options: [] } });
+
+        await expect(opening).resolves.toMatchObject({ kind: 'form' });
     });
 
     it('does not let an opened message Action form migrate to a different Message reference', async () => {

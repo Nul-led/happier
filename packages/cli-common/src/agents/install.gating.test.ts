@@ -17,7 +17,9 @@ function asyncInstallCommand(spawn: typeof spawnSyncProcess) {
   return async (command: string, args: readonly string[], options: import('../process/execFileWithDeadline.js').ExecFileWithDeadlineOptions) => {
     const result = spawn(command, [...args], { ...options, encoding: 'utf8' });
     if (result.error) throw result.error;
-    if (result.status !== 0) throw Object.assign(new Error(String(result.stderr)), result);
+    if (result.status !== 0 || result.signal) {
+      throw Object.assign(new Error(String(result.stderr)), result, { code: result.status, signal: result.signal ?? null });
+    }
     return { stdout: result.stdout, stderr: result.stderr };
   };
 }
@@ -78,6 +80,24 @@ const originalPlatformDescriptor = Object.getOwnPropertyDescriptor(process, 'pla
 const originalArchDescriptor = Object.getOwnPropertyDescriptor(process, 'arch');
 
 describe('installAgentCli vendor_recipe execution gating', () => {
+  it('selects the declared PowerShell recipe for the injected Windows platform', () => {
+    const result = planAgentCliInstallForRuntime({
+      runtimeSpec: {
+        id: 'fixture', title: 'Fixture', binaryName: 'fixture', sourcePreferenceDefault: 'system-first',
+        acceptsJavaScriptFileOverride: false, managedInstall: null,
+        manualInstallKind: 'vendor_recipe',
+        manualInstallRecipes: {
+          linux: [{ cmd: 'sh', args: ['linux-install'] }],
+          win32: [{ cmd: 'powershell.exe', args: ['-NoProfile', '-Command', 'windows-install'] }],
+        },
+      },
+      platform: 'win32',
+    });
+    expect(result.ok && result.plan.commands).toEqual([{
+      cmd: 'powershell.exe', args: ['-NoProfile', '-Command', 'windows-install'], requiresAdmin: false, note: null,
+    }]);
+  });
+
   it('uses install guide URLs as install-plan documentation when docsUrl is absent', () => {
     const res = planAgentCliInstallForRuntime({
       runtimeSpec: {
@@ -187,8 +207,7 @@ describe('installAgentCli vendor_recipe execution gating', () => {
         deps: {
           ensureManagedPnpmCommand: async () => 'pnpm-does-not-exist',
           ensureManagedJavaScriptRuntimeCommand: async () => '/nonexistent/node',
-          // Intentionally inject a spawnSync implementation so tests never spawn real processes.
-          spawnSync: spawnSyncMock as unknown as SpawnSyncFn,
+          // Intentionally inject the process boundary so tests never spawn real processes.
           execFileWithDeadline: asyncInstallCommand(spawnSyncMock as unknown as SpawnSyncFn),
         },
       });
@@ -279,7 +298,6 @@ describe('installAgentCli vendor_recipe execution gating', () => {
         deps: {
           ensureManagedPnpmCommand: async () => 'C:\\happier\\managed\\pnpm.cmd',
           ensureManagedJavaScriptRuntimeCommand: async () => runtimeCommand,
-          spawnSync: spawnSyncMock as unknown as SpawnSyncFn,
           execFileWithDeadline: asyncInstallCommand(spawnSyncMock as unknown as SpawnSyncFn),
         },
       });
@@ -390,7 +408,6 @@ describe('installAgentCli vendor_recipe execution gating', () => {
         deps: {
           ensureManagedPnpmCommand: async () => '/happier/managed/pnpm',
           ensureManagedJavaScriptRuntimeCommand: async () => runtimeCommand,
-          spawnSync: spawnSyncMock as unknown as SpawnSyncFn,
           execFileWithDeadline: asyncInstallCommand(spawnSyncMock as unknown as SpawnSyncFn),
         },
       });
@@ -460,7 +477,6 @@ describe('installAgentCli vendor_recipe execution gating', () => {
         deps: {
           ensureManagedPnpmCommand: async () => 'pnpm-does-not-exist',
           ensureManagedJavaScriptRuntimeCommand: async () => '/nonexistent/node',
-          spawnSync: spawnSyncMock as unknown as SpawnSyncFn,
           execFileWithDeadline: asyncInstallCommand(spawnSyncMock as unknown as SpawnSyncFn),
         },
       });
@@ -1021,7 +1037,6 @@ describe('installAgentCli vendor_recipe execution gating', () => {
         deps: {
           ensureManagedPnpmCommand: async () => 'pnpm-does-not-exist',
           ensureManagedJavaScriptRuntimeCommand: async () => '/nonexistent/node',
-          spawnSync: spawnSyncMock as unknown as SpawnSyncFn,
           execFileWithDeadline: asyncInstallCommand(spawnSyncMock as unknown as SpawnSyncFn),
         },
       });
@@ -1080,7 +1095,6 @@ describe('installAgentCli vendor_recipe execution gating', () => {
         deps: {
           ensureManagedPnpmCommand: async () => 'pnpm-does-not-exist',
           ensureManagedJavaScriptRuntimeCommand: async () => runtimeCommand,
-          spawnSync: spawnSyncMock as unknown as SpawnSyncFn,
           execFileWithDeadline: asyncInstallCommand(spawnSyncMock as unknown as SpawnSyncFn),
         },
       });
@@ -1142,7 +1156,6 @@ describe('installAgentCli vendor_recipe execution gating', () => {
         skipIfInstalled: false,
         allowVendorRecipeExecution: true,
         deps: {
-          spawnSync: spawnSyncMock as unknown as SpawnSyncFn,
           execFileWithDeadline: asyncInstallCommand(spawnSyncMock as unknown as SpawnSyncFn),
         },
       });

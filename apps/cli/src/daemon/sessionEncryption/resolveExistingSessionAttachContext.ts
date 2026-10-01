@@ -11,6 +11,8 @@ import {
   type SessionOwnerMetadataEnvelopeV1,
   type SessionOwnerMetadataV1,
   type AccountEncryptionCurrentnessResponse,
+  type SessionReportsToV1,
+  type SessionAwarenessOriginV1,
 } from '@happier-dev/protocol';
 import type { SessionAttachFilePayload } from '@/agent/runtime/sessionAttachPayload';
 import type { AgentState, Metadata } from '@/api/types';
@@ -154,6 +156,8 @@ function tryReadExistingSessionAgentState(params: Readonly<{
 
 function buildAttachSnapshot(params: Readonly<{
   rawSession: Readonly<{
+    reportsTo?: SessionReportsToV1;
+    origin?: SessionAwarenessOriginV1;
     metadata?: unknown;
     metadataVersion?: unknown;
     agentState?: unknown;
@@ -182,6 +186,8 @@ function buildAttachSnapshot(params: Readonly<{
   const pendingExecutionRunIds = readPendingExecutionRunIds(params.rawSession);
 
   return {
+    ...(params.rawSession.reportsTo ? { reportsTo: params.rawSession.reportsTo } : {}),
+    ...(params.rawSession.origin ? { origin: params.rawSession.origin } : {}),
     metadata: params.metadataRecord as Metadata,
     metadataVersion,
     agentState,

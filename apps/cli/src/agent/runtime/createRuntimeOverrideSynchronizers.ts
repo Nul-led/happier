@@ -1,5 +1,5 @@
 import type { Metadata, PermissionMode } from '@/api/types';
-import type { ProviderBoundModelRef } from '@happier-dev/protocol';
+import type { ProviderBoundModelRef, SessionModelTransitionResultV1 } from '@happier-dev/protocol';
 import {
   isRuntimeConfigUpdateOutcomeApplied,
   type RuntimeConfigUpdateOutcomeV1,
@@ -9,9 +9,10 @@ import { createSessionConfigOptionOverrideSynchronizer } from './sessionConfigOp
 import { createSessionModeOverrideSynchronizer } from './sessionModeOverrideSync';
 import { createModelTransitionMetadataObserver } from './modelTransitionMetadataObserver';
 import { resolvePermissionIntentFromMetadataSnapshot } from './permissions/modeFromMetadata';
+import type { RuntimeTurnOperations } from './turns/runtimeTurnOperations';
 
 export type RuntimeOverrideTarget = Readonly<{
-  setSessionMode: (modeId: string) => Promise<void>;
+  setSessionMode: (modeId: string) => Promise<RuntimeConfigUpdateOutcomeV1 | void>;
   setSessionConfigOption: (
     configId: string,
     valueId: string | number | boolean | null,
@@ -24,6 +25,33 @@ export type RuntimeOverrideSynchronizers = Readonly<{
   syncFromMetadata: () => void;
   flushPendingAfterStart: () => Promise<void>;
 }>;
+
+/** The host loop's single adapter from runtime operations to metadata overrides. */
+export function createRuntimeOverrideTarget(params: Readonly<{
+  runtime: Pick<RuntimeTurnOperations, 'updateSessionRuntimeConfig'>;
+  transitionModelSelection: (
+    selection: ProviderBoundModelRef,
+    source: 'metadata',
+  ) => Promise<SessionModelTransitionResultV1>;
+}>): RuntimeOverrideTarget {
+  return {
+    setSessionMode: async (modeId) => {
+      return await params.runtime.updateSessionRuntimeConfig({ modeId });
+    },
+    setSessionModelSelection: async (selection) => {
+      const result = await params.transitionModelSelection(selection, 'metadata');
+      if (!result.ok) {
+        throw new Error(result.reason ?? `Session model transition failed: ${result.status}`);
+      }
+    },
+    setPermissionMode: async (permissionMode) => {
+      return await params.runtime.updateSessionRuntimeConfig({ permissionMode });
+    },
+    setSessionConfigOption: async (configId, value) => {
+      return await params.runtime.updateSessionRuntimeConfig({ configOption: { id: configId, value } });
+    },
+  };
+}
 
 function createPermissionModeOverrideSynchronizer(params: Readonly<{
   session: { getMetadataSnapshot: () => Metadata | null };

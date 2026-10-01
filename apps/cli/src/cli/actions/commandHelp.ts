@@ -103,7 +103,12 @@ function optionDescription(field: ActionCliField): string {
   return parts.join(' ');
 }
 
-function buildFieldOptionRows(fields: readonly ActionCliField[]): readonly ActionCliHelpRow[] {
+/**
+ * The option rows every Action-driven command documents its fields with — type,
+ * requiredness, conditions, choices and ranges — for built-in, generic-invoke and
+ * plugin-contributed commands alike.
+ */
+export function buildFieldOptionRows(fields: readonly ActionCliField[]): readonly ActionCliHelpRow[] {
   return Object.freeze(fields.map((field) => Object.freeze({
     label: optionLabel(field),
     description: optionDescription(field),

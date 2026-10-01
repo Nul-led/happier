@@ -10,10 +10,11 @@ import {
 
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
+import { AttentionBanner } from '@/components/ui/lists/AttentionBanner';
 import { ItemList } from '@/components/ui/lists/ItemList';
+import { PageHeader } from '@/components/ui/layout/PageHeader';
 import { layout } from '@/components/ui/layout/layout';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
-import { Icon } from '@/components/ui/icons/Icon';
 import {
     captureActiveServerAccountScopeLifetime,
     type ActiveServerAccountScopeLifetime,
@@ -36,6 +37,7 @@ import type {
 import type { AutomationDefinitionRun } from '@/sync/domains/automations/automationTypes';
 import { formatAutomationErrorMessage } from '@/components/automations/automationErrorFormatting';
 import { buildScopedSessionRouteHref } from '@/hooks/session/sessionRouteServerScope';
+import { Icon } from '@/components/ui/icons/Icon';
 
 const stylesheet = StyleSheet.create((theme) => ({
     loading: {
@@ -120,20 +122,54 @@ function formatPrivateDetailFailure(
     }
 }
 
-function formatRunTarget(target: AutomationRunDetailTarget): string {
+export function formatRunTarget(target: AutomationRunDetailTarget): string {
     switch (target.kind) {
         case 'existingSession':
             return t('automations.detail.runDetail.existingSession', { sessionId: target.sessionId });
         case 'newSession':
             return t('automations.detail.runDetail.newSession', {
                 machineId: target.spawn.executionTarget.machineId,
-                directory: target.spawn.directory,
+                directory: target.spawn.directory.kind === 'path'
+                    ? target.spawn.directory.path
+                    : t('session.folderless.privateToSession'),
             });
         case 'executionRun':
             return t('automations.detail.runDetail.executionRun', {
                 permissionMode: target.request.permissionMode,
             });
     }
+}
+
+export function AutomationRunLifecycleCauseItems(props: Readonly<{
+    cause: Extract<AutomationRunCause, Readonly<{ kind: 'trigger'; triggerKind: 'sessionLifecycle' }>>;
+}>): React.ReactElement {
+    const { cause } = props;
+    return (
+        <>
+            <Item
+                title={t('automations.pluralEditor.lifecycleEventsTitle')}
+                subtitle={t(`automations.pluralEditor.lifecycleEvent.${cause.evidence.event}`)}
+                showChevron={false}
+                mode="info"
+            />
+            <Item
+                title={t('automations.detail.trigger.sourceSession')}
+                subtitle={cause.evidence.sourceSessionId}
+                subtitleLines={0}
+                copy={cause.evidence.sourceSessionId}
+                showChevron={false}
+            />
+            {'sourceTurnId' in cause.evidence ? (
+                <Item
+                    title={t('automations.detail.trigger.sourceTurn')}
+                    subtitle={cause.evidence.sourceTurnId}
+                    subtitleLines={0}
+                    copy={cause.evidence.sourceTurnId}
+                    showChevron={false}
+                />
+            ) : null}
+        </>
+    );
 }
 
 function getRunTargetPrompt(target: AutomationRunDetailTarget): string {
@@ -764,8 +800,22 @@ export function AutomationRunDetailScreen(): React.ReactElement {
     const claimedByLabel = claimedByMachine ? getMachineDisplayName(claimedByMachine) : null;
 
     return (
-        <ItemList style={{ paddingTop: 0 }}>
+        <ItemList presentation="page">
             <Stack.Screen options={{ headerShown: true, headerTitle: title }} />
+            {/*
+              * The run's identity first: what state it is in, what started it and when. The
+              * facts keep their line while the run loads so nothing below moves.
+              */}
+            <PageHeader
+                testID="automation-run-detail-header"
+                title={title}
+                description={t('automationPages.run.description')}
+                meta={run ? [
+                    { key: 'state', text: formatAutomationRunStateLabel(run.state) },
+                    { key: 'cause', text: formatAutomationRunCauseLabel(run.cause) },
+                    { key: 'admitted', text: formatDate(run.createdAt, unknownDate) },
+                ] : []}
+            />
             <View style={{ maxWidth: layout.maxWidth, alignSelf: 'center', width: '100%' }}>
                 {/*
                   * A refresh that fails while a cached Run is on screen used to
@@ -776,25 +826,13 @@ export function AutomationRunDetailScreen(): React.ReactElement {
                   * carries the same retry the cold-load state offers.
                   */}
                 {loadFailed && run ? (
-                    <ItemGroup>
-                        <Item
-                            testID="automation-run-detail-stale-refresh-error"
-                            title={t('runs.runDetails.failedToLoad')}
-                            icon={<Icon name="warning" size={20} color={theme.colors.state.warning.foreground} />}
-                            mode="info"
-                            showChevron={false}
-                            accessibilityRole="alert"
-                            accessibilityLiveRegion="assertive"
-                            webRole="alert"
-                        />
-                        <Item
-                            testID="automation-run-detail-stale-refresh-retry"
-                            title={t('common.retry')}
-                            icon={<Icon name="arrow-clockwise" size={20} color={theme.colors.accent.blue} />}
-                            onPress={refresh}
-                            showChevron={false}
-                        />
-                    </ItemGroup>
+                    <AttentionBanner
+                        testID="automation-run-detail-stale-refresh-error"
+                        title={t('runs.runDetails.failedToLoad')}
+                        announce="alert"
+                        accessibilityLiveRegion="assertive"
+                        action={{ label: t('common.retry'), onPress: refresh, testID: 'automation-run-detail-stale-refresh-retry' }}
+                    />
                 ) : null}
                 {loading ? (
                     <View style={styles.loading}>
@@ -813,7 +851,7 @@ export function AutomationRunDetailScreen(): React.ReactElement {
                         accessibilitySemantics="alert"
                     />
                 ) : !automationId || !runId || !run ? (
-                    <ItemGroup title={t('automations.detail.recentRunsTitle')}>
+                    <ItemGroup>
                         <Item
                             title={t('runs.runDetails.failedToLoad')}
                             subtitle={t('runs.empty')}
@@ -825,91 +863,41 @@ export function AutomationRunDetailScreen(): React.ReactElement {
                     </ItemGroup>
                 ) : (
                     <>
-                        <ItemGroup title={t('automations.detail.recentRunsTitle')}>
+                        <ItemGroup
+                            title={t('automationPages.run.statusTitle')}
+                            description={t('automationPages.run.statusDescription')}
+                        >
                             <Item title={formatAutomationRunStateLabel(run.state)} showChevron={false} mode="info" />
-                            <Item
-                                title={t('automations.detail.runMeta.causeTitle')}
-                                detail={formatAutomationRunCauseLabel(run.cause)}
-                                showChevron={false}
-                                mode="info"
-                            />
-                            <Item
-                                title={formatRunCauseTime(run.cause, unknownDate)}
-                                showChevron={false}
-                                mode="info"
-                            />
-                            {triggerCause ? (
+                            {run.errorCode ? (
                                 <Item
-                                    title={t('automations.detail.runMeta.triggerIdentityTitle')}
-                                    subtitle={t('automations.detail.runMeta.triggerIdentity', {
-                                        id: triggerCause.triggerId,
-                                        revision: triggerCause.triggerRevision,
-                                    })}
-                                    subtitleLines={0}
-                                    copy={`${triggerCause.triggerId}@${triggerCause.triggerRevision}`}
-                                    showChevron={false}
-                                />
-                            ) : null}
-                            {triggerRetired ? (
-                                <Item
-                                    testID="automation-run-trigger-retired"
-                                    title={t('automations.detail.runMeta.triggerRetired')}
-                                    subtitle={t('automations.detail.runMeta.triggerRetiredSubtitle')}
+                                    title={t('automations.detail.runMeta.error', { message: run.errorCode })}
                                     subtitleLines={0}
                                     showChevron={false}
                                     mode="info"
                                 />
                             ) : null}
-                            {occurrenceKey ? (
+                            {run.errorCode === 'invalid_template' ? (
                                 <Item
-                                    title={t('automations.detail.runMeta.occurrenceTitle')}
-                                    subtitle={occurrenceKey}
-                                    subtitleLines={0}
-                                    copy={occurrenceKey}
+                                    title={t('automations.detail.runDetail.invalidTemplate')}
                                     showChevron={false}
+                                    mode="info"
                                 />
                             ) : null}
-                            {sourceSelectorId ? (
+                            {run.executionDispatchState === 'outcomeUnknown' ? (
                                 <Item
-                                    title={t('automations.detail.runMeta.sourceTitle')}
-                                    subtitle={sourceSelectorId}
-                                    subtitleLines={0}
-                                    copy={sourceSelectorId}
+                                    title={t('automations.detail.runDetail.outcomeUnknown')}
                                     showChevron={false}
+                                    mode="info"
                                 />
                             ) : null}
-                            {eventRef ? (
+                            {replyHandoffUnrecoverable ? (
                                 <Item
-                                    title={t('automations.detail.runMeta.eventReferenceTitle')}
-                                    subtitle={`${eventRef.pluginId}/${eventRef.localId}`}
-                                    subtitleLines={0}
-                                    copy={`${eventRef.pluginId}/${eventRef.localId}`}
+                                    testID="automation-run-reply-handoff-unrecoverable"
+                                    title={t('automations.detail.runMeta.replyHandoffUnrecoverableTitle')}
+                                    subtitle={t('automations.detail.runMeta.replyHandoffUnrecoverableSubtitle')}
                                     showChevron={false}
+                                    mode="info"
                                 />
-                            ) : null}
-                            {triggerCause?.triggerKind === 'sessionLifecycle' ? (
-                                <>
-                                    <Item
-                                        title={t('automations.pluralEditor.lifecycleEventsTitle')}
-                                        subtitle={t(`automations.pluralEditor.lifecycleEvent.${triggerCause.evidence.event}`)}
-                                        showChevron={false}
-                                        mode="info"
-                                    />
-                                    <Item
-                                        title={t('automations.detail.trigger.sourceSession')}
-                                        subtitle={triggerCause.evidence.sourceSessionId}
-                                        subtitleLines={0}
-                                        copy={triggerCause.evidence.sourceSessionId}
-                                        showChevron={false}
-                                    />
-                                    <Item
-                                        title={t('automations.detail.trigger.sourceTurn')}
-                                        subtitle={triggerCause.evidence.sourceTurnId}
-                                        subtitleLines={0}
-                                        copy={triggerCause.evidence.sourceTurnId}
-                                        showChevron={false}
-                                    />
-                                </>
                             ) : null}
                             <Item
                                 title={t('automations.detail.runMeta.admitted', {
@@ -1027,62 +1015,6 @@ export function AutomationRunDetailScreen(): React.ReactElement {
                                     showChevron={false}
                                 />
                             ) : null}
-                            {producedSessionId ? (
-                                <Item
-                                    testID="automation-run-detail-produced-session"
-                                    title={t('runs.openSession')}
-                                    subtitle={producedSessionId}
-                                    subtitleLines={0}
-                                    onPress={() => navigateWithBlurOnWeb(
-                                        // The Run was read under one Account scope; its produced
-                                        // Session lives on that Home, not the active one.
-                                        () => router.push(buildScopedSessionRouteHref({
-                                            sessionId: producedSessionId,
-                                            serverId: accountLifetime?.scope.serverId ?? null,
-                                        }) as never),
-                                    )}
-                                />
-                            ) : null}
-                            {run.errorCode ? (
-                                <Item
-                                    title={t('automations.detail.runMeta.error', { message: run.errorCode })}
-                                    subtitleLines={0}
-                                    showChevron={false}
-                                    mode="info"
-                                />
-                            ) : null}
-                            {run.errorCode === 'invalid_template' ? (
-                                <Item
-                                    title={t('automations.detail.runDetail.invalidTemplate')}
-                                    showChevron={false}
-                                    mode="info"
-                                />
-                            ) : null}
-                            {run.executionDispatchState === 'outcomeUnknown' ? (
-                                <Item
-                                    title={t('automations.detail.runDetail.outcomeUnknown')}
-                                    showChevron={false}
-                                    mode="info"
-                                />
-                            ) : null}
-                            {canCancel ? (
-                                <Item
-                                    title={t('common.cancel')}
-                                    destructive
-                                    onPress={() => void handleCancel()}
-                                    loading={cancelling}
-                                    showChevron={false}
-                                />
-                            ) : null}
-                            {replyHandoffUnrecoverable ? (
-                                <Item
-                                    testID="automation-run-reply-handoff-unrecoverable"
-                                    title={t('automations.detail.runMeta.replyHandoffUnrecoverableTitle')}
-                                    subtitle={t('automations.detail.runMeta.replyHandoffUnrecoverableSubtitle')}
-                                    showChevron={false}
-                                    mode="info"
-                                />
-                            ) : null}
                             {run.replyHandoffState === 'blocked' && !replyHandoffUnrecoverable ? (
                                 <Item
                                     testID="automation-run-retry-reply-handoff"
@@ -1102,6 +1034,100 @@ export function AutomationRunDetailScreen(): React.ReactElement {
                                     loading={redeliveringResult}
                                     showChevron={false}
                                 />
+                            ) : null}
+                            {producedSessionId ? (
+                                <Item
+                                    testID="automation-run-detail-produced-session"
+                                    icon={<Icon name="chat-circle-dots" />}
+                                    title={t('runs.openSession')}
+                                    subtitle={producedSessionId}
+                                    subtitleLines={0}
+                                    onPress={() => navigateWithBlurOnWeb(
+                                        // The Run was read under one Account scope; its produced
+                                        // Session lives on that Home, not the active one.
+                                        () => router.push(buildScopedSessionRouteHref({
+                                            sessionId: producedSessionId,
+                                            serverId: accountLifetime?.scope.serverId ?? null,
+                                        }) as never),
+                                    )}
+                                />
+                            ) : null}
+                            {canCancel ? (
+                                <Item
+                                    title={t('common.cancel')}
+                                    destructive
+                                    onPress={() => void handleCancel()}
+                                    loading={cancelling}
+                                    showChevron={false}
+                                />
+                            ) : null}
+                        </ItemGroup>
+                        <ItemGroup
+                            title={t('automationPages.run.causeTitle')}
+                            description={t('automationPages.run.causeDescription')}
+                        >
+                            <Item
+                                title={t('automations.detail.runMeta.causeTitle')}
+                                detail={formatAutomationRunCauseLabel(run.cause)}
+                                showChevron={false}
+                                mode="info"
+                            />
+                            <Item
+                                title={formatRunCauseTime(run.cause, unknownDate)}
+                                showChevron={false}
+                                mode="info"
+                            />
+                            {triggerCause ? (
+                                <Item
+                                    title={t('automations.detail.runMeta.triggerIdentityTitle')}
+                                    subtitle={t('automations.detail.runMeta.triggerIdentity', {
+                                        id: triggerCause.triggerId,
+                                        revision: triggerCause.triggerRevision,
+                                    })}
+                                    subtitleLines={0}
+                                    copy={`${triggerCause.triggerId}@${triggerCause.triggerRevision}`}
+                                    showChevron={false}
+                                />
+                            ) : null}
+                            {triggerRetired ? (
+                                <Item
+                                    testID="automation-run-trigger-retired"
+                                    title={t('automations.detail.runMeta.triggerRetired')}
+                                    subtitle={t('automations.detail.runMeta.triggerRetiredSubtitle')}
+                                    subtitleLines={0}
+                                    showChevron={false}
+                                    mode="info"
+                                />
+                            ) : null}
+                            {occurrenceKey ? (
+                                <Item
+                                    title={t('automations.detail.runMeta.occurrenceTitle')}
+                                    subtitle={occurrenceKey}
+                                    subtitleLines={0}
+                                    copy={occurrenceKey}
+                                    showChevron={false}
+                                />
+                            ) : null}
+                            {sourceSelectorId ? (
+                                <Item
+                                    title={t('automations.detail.runMeta.sourceTitle')}
+                                    subtitle={sourceSelectorId}
+                                    subtitleLines={0}
+                                    copy={sourceSelectorId}
+                                    showChevron={false}
+                                />
+                            ) : null}
+                            {eventRef ? (
+                                <Item
+                                    title={t('automations.detail.runMeta.eventReferenceTitle')}
+                                    subtitle={`${eventRef.pluginId}/${eventRef.localId}`}
+                                    subtitleLines={0}
+                                    copy={`${eventRef.pluginId}/${eventRef.localId}`}
+                                    showChevron={false}
+                                />
+                            ) : null}
+                            {triggerCause?.triggerKind === 'sessionLifecycle' ? (
+                                <AutomationRunLifecycleCauseItems cause={triggerCause} />
                             ) : null}
                         </ItemGroup>
                         {runHistory.length > 0 ? (

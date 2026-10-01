@@ -23,17 +23,7 @@ const selection = Object.freeze({
   account: Object.freeze({ service, accountId: 'account-a' }),
 });
 const cacheIdentity = Object.freeze({
-  pluginId: contribution.pluginId,
-  contributionId: contribution.localId,
   artifactDigest: `sha256:${'a'.repeat(64)}` as const,
-  hostAppVersion: '1.0.0',
-  hostUiApiVersion: '1',
-  reactVersion: '19.0.0',
-  reactNativeVersion: '0.79.0',
-  platform: 'web',
-  channel: 'stable',
-  nativeCapabilitiesDigest: `sha256:${'b'.repeat(64)}` as const,
-  projectionGeneration: 12,
 });
 
 function materializer(

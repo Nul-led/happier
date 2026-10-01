@@ -22,6 +22,8 @@ vi.mock('./connectedServicesServerApiTimeout', () => ({
 }));
 
 describe('Connected Account attempt transaction API', () => {
+  const scope = { machineId: 'machine-1', service: { pluginId: 'plugin', localId: 'service' },
+    modeId: 'oauth', intent: 'connect' as const, phase: 'starting' as const, createdAtMs: 1 };
   beforeEach(() => {
     vi.mocked(axios.get).mockReset();
     vi.mocked(axios.patch).mockReset();
@@ -64,6 +66,7 @@ describe('Connected Account attempt transaction API', () => {
       attemptId: 'attempt-1',
       content: record.content,
       expiresAtMs: record.expiresAtMs,
+      scope,
     })).resolves.toEqual(record);
     await expect(api.read({
       kind: 'oauth',
@@ -75,6 +78,7 @@ describe('Connected Account attempt transaction API', () => {
       expectedRevision: 1,
       content: { t: 'encrypted', c: 'opaque-replacement' },
       expiresAtMs: record.expiresAtMs,
+      scope,
     })).resolves.toEqual({
       ...record,
       revision: 2,
@@ -132,6 +136,7 @@ describe('Connected Account attempt transaction API', () => {
       expectedRevision: 1,
       content: { t: 'encrypted', c: 'opaque' },
       expiresAtMs: 123_456,
+      scope,
     })).rejects.toMatchObject({
       name: ConnectedAccountAttemptTransactionApiError.name,
       code: 'connected_account_attempt_transaction_conflict',
@@ -156,6 +161,7 @@ describe('Connected Account attempt transaction API', () => {
     await expect(api.create({
       kind: 'oauth',
       attemptId: 'retained-unreadable',
+      scope,
       content: { t: 'encrypted', c: 'opaque' },
       expiresAtMs: 123_456,
     })).rejects.toMatchObject({
@@ -172,6 +178,7 @@ describe('Connected Account attempt transaction API', () => {
     await expect(api.replace({
       kind: 'oauth',
       attemptId: 'retained-unreadable',
+      scope,
       expectedRevision: 1,
       content: { t: 'encrypted', c: 'opaque-replacement' },
       expiresAtMs: 123_456,

@@ -4,6 +4,10 @@ import { accountSettingsParse, type LiveActivityRemoteUpdateRequestV1 } from '@h
 
 import { sendReadyWithPushNotification } from '@/agent/runtime/notifications/sendReadyWithPushNotification'
 import { setActiveAccountSettingsSnapshot } from '@/settings/accountSettings/activeAccountSettingsSnapshot'
+import { createSessionNotificationContextFixture } from '@/testkit/backends/sessionFixtures'
+import * as pinnedHttp from '@/network/pinnedHttp'
+
+const fetchSessionNotificationContext = async (sessionId: string) => createSessionNotificationContextFixture(sessionId)
 
 function createSessionStub(sessionId = 'session-1') {
   return {
@@ -14,6 +18,7 @@ function createSessionStub(sessionId = 'session-1') {
 
 describe('sendReadyWithPushNotification', () => {
   afterEach(() => {
+    vi.restoreAllMocks()
     setActiveAccountSettingsSnapshot({
       source: 'none',
       settings: accountSettingsParse({}),
@@ -30,12 +35,13 @@ describe('sendReadyWithPushNotification', () => {
 
     await sendReadyWithPushNotification({
       session: session as any,
-      pushSender: { sendToAllDevices },
+      pushSender: { fetchSessionNotificationContext, sendToAllDevices },
       waitingForCommandLabel: 'Qwen Code',
       logPrefix: '[Qwen]',
     })
 
     expect(session.enqueueSessionEventCommitted).toHaveBeenCalledWith({ type: 'ready', ownerActivityDelivery: 'rich_sender' })
+    await vi.waitFor(() => expect(sendToAllDevices).toHaveBeenCalled())
     expect(sendToAllDevices).toHaveBeenCalledWith(
       'Qwen Code',
       'Qwen Code is waiting for your command',
@@ -49,7 +55,7 @@ describe('sendReadyWithPushNotification', () => {
 
     await sendReadyWithPushNotification({
       session: session as any,
-      pushSender: { sendToAllDevices },
+      pushSender: { fetchSessionNotificationContext, sendToAllDevices },
       waitingForCommandLabel: 'Qwen Code',
       logPrefix: '[Qwen]',
       sessionTitle: 'Review branch',
@@ -57,6 +63,7 @@ describe('sendReadyWithPushNotification', () => {
       includeAssistantPreviewText: true,
     })
 
+    await vi.waitFor(() => expect(sendToAllDevices).toHaveBeenCalled())
     expect(sendToAllDevices).toHaveBeenCalledWith(
       'Review branch',
       'The branch is ready to review.',
@@ -70,7 +77,7 @@ describe('sendReadyWithPushNotification', () => {
 
     await sendReadyWithPushNotification({
       session: session as any,
-      pushSender: { sendToAllDevices },
+      pushSender: { fetchSessionNotificationContext, sendToAllDevices },
       waitingForCommandLabel: 'Qwen Code',
       logPrefix: '[Qwen]',
       sessionTitle: 'Review branch',
@@ -78,6 +85,7 @@ describe('sendReadyWithPushNotification', () => {
       includeAssistantPreviewText: false,
     })
 
+    await vi.waitFor(() => expect(sendToAllDevices).toHaveBeenCalled())
     expect(sendToAllDevices).toHaveBeenCalledWith(
       'Review branch',
       'Qwen Code is waiting for your command',
@@ -91,7 +99,7 @@ describe('sendReadyWithPushNotification', () => {
 
     await sendReadyWithPushNotification({
       session: session as any,
-      pushSender: { sendToAllDevices },
+      pushSender: { fetchSessionNotificationContext, sendToAllDevices },
       waitingForCommandLabel: 'Codex',
       logPrefix: '[Codex]',
       shouldSendPush: () => false,
@@ -99,6 +107,27 @@ describe('sendReadyWithPushNotification', () => {
 
     expect(session.enqueueSessionEventCommitted).toHaveBeenCalledWith({ type: 'ready', ownerActivityDelivery: 'rich_sender' })
     expect(sendToAllDevices).not.toHaveBeenCalled()
+  })
+
+  it('does not hold ready publication behind the current Follow HTTP read without settings', async () => {
+    let resolveContext!: (context: ReturnType<typeof createSessionNotificationContextFixture>) => void
+    const context = new Promise<ReturnType<typeof createSessionNotificationContextFixture>>((resolve) => { resolveContext = resolve })
+    const sendToAllDevices = vi.fn()
+    let published = false
+    const publication = sendReadyWithPushNotification({
+      session: createSessionStub(),
+      pushSender: { sendToAllDevices, fetchSessionNotificationContext: () => context },
+      waitingForCommandLabel: 'Agent', logPrefix: '[test]',
+    }).then(() => { published = true })
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    try {
+      expect(published).toBe(true)
+      expect(sendToAllDevices).not.toHaveBeenCalled()
+    } finally {
+      resolveContext(createSessionNotificationContextFixture('session-1'))
+      await publication
+    }
+    await vi.waitFor(() => expect(sendToAllDevices).toHaveBeenCalledOnce())
   })
 
   it('honors unified attention policy when dispatching ready notifications', async () => {
@@ -126,7 +155,7 @@ describe('sendReadyWithPushNotification', () => {
 
     await sendReadyWithPushNotification({
       session: session as any,
-      pushSender: { sendToAllDevicesAsync },
+      pushSender: { fetchSessionNotificationContext, sendToAllDevicesAsync },
       waitingForCommandLabel: 'Codex',
       logPrefix: '[Codex]',
       sessionTitle: 'Review branch',
@@ -167,7 +196,7 @@ describe('sendReadyWithPushNotification', () => {
 
     await sendReadyWithPushNotification({
       session: session as any,
-      pushSender: {
+      pushSender: { fetchSessionNotificationContext,
         serverId: 'server-a',
         sendToAllDevicesAsync,
         sendLiveActivityRemoteUpdateAsync,
@@ -219,7 +248,7 @@ describe('sendReadyWithPushNotification', () => {
 
     await sendReadyWithPushNotification({
       session: session as any,
-      pushSender: {
+      pushSender: { fetchSessionNotificationContext,
         serverId: 'server-a',
         sendLiveActivityRemoteUpdateAsync,
       },
@@ -245,13 +274,14 @@ describe('sendReadyWithPushNotification', () => {
 
     await sendReadyWithPushNotification({
       session: session as any,
-      pushSender: { sendToAllDevices },
+      pushSender: { fetchSessionNotificationContext, sendToAllDevices },
       waitingForCommandLabel: 'OpenCode',
       logPrefix: '[OpenCode]',
       loggerDebug,
     })
 
     expect(session.enqueueSessionEventCommitted).toHaveBeenCalledWith({ type: 'ready', ownerActivityDelivery: 'rich_sender' })
+    await vi.waitFor(() => expect(loggerDebug).toHaveBeenCalled())
     expect(sendToAllDevices).toHaveBeenCalledTimes(1)
     const [, logged] = loggerDebug.mock.calls[0] ?? []
     expect(logged).toEqual(expect.objectContaining({
@@ -283,12 +313,13 @@ describe('sendReadyWithPushNotification', () => {
 
     await sendReadyWithPushNotification({
       session: session as any,
-      pushSender: { sendToAllDevices },
+      pushSender: { fetchSessionNotificationContext, sendToAllDevices },
       waitingForCommandLabel: 'Codex',
       logPrefix: '[Codex]',
       loggerDebug,
     })
 
+    await vi.waitFor(() => expect(loggerDebug).toHaveBeenCalled())
     const [, logged] = loggerDebug.mock.calls[0] ?? []
     expect(logged).toEqual(expect.objectContaining({
       name: 'AxiosError',
@@ -302,11 +333,11 @@ describe('sendReadyWithPushNotification', () => {
   })
 
   it('prefers the latest active account settings snapshot over stale ready gating inputs', async () => {
-    const fetchSpy = vi.fn(async () => ({
-      ok: true,
-      status: 202,
-    }))
-    vi.stubGlobal('fetch', fetchSpy)
+    const requests: pinnedHttp.PinnedHttpStreamRequest[] = []
+    vi.spyOn(pinnedHttp, 'openPinnedHttpStream').mockImplementation(async (request) => {
+      requests.push(request)
+      return { status: 202, headers: {}, contentLength: 0, read: async () => null, cancel: () => {} }
+    })
     const session = createSessionStub('session-321')
 
     setActiveAccountSettingsSnapshot({
@@ -318,7 +349,7 @@ describe('sendReadyWithPushNotification', () => {
             id: 'webhook-primary',
             kind: 'webhook',
             enabled: true,
-            url: 'https://hooks.example.test/happier',
+            url: 'https://93.184.216.34/happier',
             topics: {
               ready: true,
               permissionRequest: false,
@@ -335,7 +366,7 @@ describe('sendReadyWithPushNotification', () => {
 
     await sendReadyWithPushNotification({
       session: session as any,
-      pushSender: { sendToAllDevicesAsync: vi.fn(async () => {}) },
+      pushSender: { fetchSessionNotificationContext, sendToAllDevicesAsync: vi.fn(async () => {}) },
       waitingForCommandLabel: 'Codex',
       logPrefix: '[Codex]',
       accountSettings: accountSettingsParse({
@@ -355,13 +386,11 @@ describe('sendReadyWithPushNotification', () => {
     })
 
     await vi.waitFor(() => {
-      expect(fetchSpy).toHaveBeenCalledTimes(1)
+      expect(requests).toHaveLength(1)
     })
 
-    const url = fetchSpy.mock.calls.at(0)?.at(0)
-    const init = fetchSpy.mock.calls.at(0)?.at(1)
-    expect(url).toBe('https://hooks.example.test/happier')
-    expect(init).toMatchObject({
+    expect(requests[0]).toMatchObject({
+      url: 'https://93.184.216.34/happier',
       method: 'POST',
       headers: {
         'content-type': 'application/json',

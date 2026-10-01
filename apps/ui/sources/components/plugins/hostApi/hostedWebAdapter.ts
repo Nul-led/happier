@@ -121,7 +121,7 @@ export type PluginHostedWebHostMessageSink = (
  *
  * `watchContext` is answered from the mount's own surface fact, which this
  * adapter holds and pushes. `watchResource` (EU-4b) and a factual
- * `watchComposer` and Composer input locks are established through the
+ * `watchComposer`, Composer input locks and `watchSession` are established through the
  * mount's own host handlers, then use this same framed subscription lifecycle
  * for delivery or lease retirement. Neither is served unless the mount
  * actually installed it; the `satisfies` binding keeps this inside the
@@ -133,6 +133,7 @@ const HOSTED_WEB_PRODUCED_SUBSCRIPTION_METHODS = new Set<PluginUiHostMethodV1>(
         'watchResource',
         'watchComposer',
         'acquireComposerInputLock',
+        'watchSession',
     ] as const satisfies readonly PluginUiHostMethodV1[],
 );
 const HOSTED_WEB_HOST_RESOURCE_SUBSCRIPTION_METHODS = new Set<PluginUiHostMethodV1>(
@@ -140,6 +141,7 @@ const HOSTED_WEB_HOST_RESOURCE_SUBSCRIPTION_METHODS = new Set<PluginUiHostMethod
         'watchResource',
         'watchComposer',
         'acquireComposerInputLock',
+        'watchSession',
     ] as const satisfies readonly PluginUiHostMethodV1[],
 );
 const CANONICAL_SUBSCRIPTION_METHODS = new Set<PluginUiHostMethodV1>(
@@ -661,11 +663,14 @@ export function createHostedFrameHostApiBridgeHandler<TAuthority>(
                 if (!hasMountedRequestHandler) {
                     return canonicalRequestError(envelope, message, 'unavailable');
                 }
+                // The envelope owns the subscription identity: it is stamped
+                // after the guest payload, so admission, event routing and
+                // retirement all address the one watch the bridge tracks.
                 const requestPayload = {
-                    subscriptionId: message.subscriptionId,
                     ...(message.payload && typeof message.payload === 'object' && !Array.isArray(message.payload)
                         ? message.payload
                         : {}),
+                    subscriptionId: message.subscriptionId,
                 };
                 hostResourceSubscriptions.set(message.subscriptionId, 'pending');
                 const response = await settleMountedRequest({

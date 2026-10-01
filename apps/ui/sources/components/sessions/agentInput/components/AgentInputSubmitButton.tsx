@@ -13,6 +13,7 @@ import { useReducedMotionPreference } from '@/hooks/ui/useReducedMotionPreferenc
 import { t } from '@/text';
 import type { VoiceDictationSnapshot } from '@/voice/dictation/VoiceDictationController';
 import { Icon } from '@/components/ui/icons/Icon';
+import type { Theme } from '@/theme';
 
 import {
     resolveAgentContinuationSubmitPresentation,
@@ -101,6 +102,8 @@ function AgentInputSubmitShape(props: Readonly<{ children: React.ReactNode }>) {
 
 export const AgentInputSubmitButton = React.memo(function AgentInputSubmitButton(props: Readonly<{
     testID: string;
+    /** Resolved appearance for static composer previews; live inputs use the current theme. */
+    appearance?: Theme;
     sessionId?: string;
     submitAccessibilityLabel?: string;
     disabled: boolean;
@@ -134,7 +137,8 @@ export const AgentInputSubmitButton = React.memo(function AgentInputSubmitButton
     onSend: () => void;
     onStop?: () => void;
 }>) {
-    const { theme } = useUnistyles();
+    const { theme: currentTheme } = useUnistyles();
+    const theme = props.appearance ?? currentTheme;
     const dictationActive = props.dictationStatus !== 'idle';
     const dictationTranscribing = props.dictationStatus === 'transcribing';
     /*
@@ -256,6 +260,7 @@ export const AgentInputSubmitButton = React.memo(function AgentInputSubmitButton
     return (
         <AgentInputSubmitShape>
         <PrimaryCircleIconButton
+            appearance={props.appearance}
             testID={props.testID}
             active={props.hasSendableContent || props.isSending || showDictation || showStopWhenEmpty}
             loading={props.isSending || dictationTranscribing || (showStopWhenEmpty && props.isStopping)}

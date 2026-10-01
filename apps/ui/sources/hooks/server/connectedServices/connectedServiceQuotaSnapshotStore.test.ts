@@ -142,7 +142,7 @@ describe('connectedServiceQuotaSnapshotStore', () => {
         expect(getQuotaSnapshotEntry(key).snapshot?.fetchedAt).toBe(1_235);
     });
 
-    it('admits read, refresh, and recovery operations before every legacy network effect', async () => {
+    it('reads the server without a daemon admission, and admits the daemon-executed refresh and recovery before their effects', async () => {
         const {
             buildQuotaSnapshotScopeKey,
             consumeQuotaRecoveryCredit,
@@ -186,11 +186,11 @@ describe('connectedServiceQuotaSnapshotStore', () => {
         expect(assertOperationAllowed.mock.calls.map(([operation]) => (
             operation
         ))).toEqual([
-            'quota_read',
             'quota_refresh',
             'recovery_credit_consume',
         ]);
-        expect(getConnectedServiceQuotaSnapshotPlainSpy).not.toHaveBeenCalled();
+        // The read is the server's GET: the server decides the route and storage mode.
+        expect(getConnectedServiceQuotaSnapshotPlainSpy).toHaveBeenCalled();
         expect(getConnectedServiceQuotaSnapshotSealedSpy).not.toHaveBeenCalled();
         expect(
             requestConnectedServiceQuotaSnapshotRefreshSpy,
@@ -379,7 +379,7 @@ describe('connectedServiceQuotaSnapshotStore', () => {
         expect(getQuotaSnapshotEntry(secondKey).snapshot?.fetchedAt).toBe(2_001);
     });
 
-    it('resolves the legacy quota route before the final peer admission and network effect', async () => {
+    it('resolves the legacy quota route before the read, and before the refresh admission and effect', async () => {
         const {
             buildQuotaSnapshotScopeKey,
             refreshQuotaSnapshot,
@@ -430,8 +430,7 @@ describe('connectedServiceQuotaSnapshotStore', () => {
 
         resolveMode('plain');
         await flushAsyncTurns();
-        expect(calls.slice(0, 2)).toEqual([
-            'admit:quota_read',
+        expect(calls.slice(0, 1)).toEqual([
             'effect:quota_read',
         ]);
 

@@ -105,7 +105,8 @@ vi.mock('./sessionTagIcons', () => ({
 }));
 
 vi.mock('@/utils/sessions/sessionUtils', () => ({
-    getSessionName: () => 'status.unknown',
+    isUntitledSessionName: (name: string) => name === 'session.untitled',
+    getSessionName: () => 'session.untitled',
     getSessionSubtitle: () => '',
     getSessionAvatarId: () => 'avatar',
     getSessionStatus: () => ({
@@ -210,7 +211,7 @@ describe('SessionItem loading identity', () => {
         expect(screen.findByTestId('session-list-avatar-loading-sess_loading')).toBeTruthy();
         expect(screen.findByTestId('session-list-title-loading-sess_loading')).toBeTruthy();
         expect(screen.findByTestId('session-list-subtitle-loading-sess_loading')).toBeTruthy();
-        expect(screen.getTextContent()).not.toContain('status.unknown');
+        expect(screen.getTextContent()).not.toContain('session.untitled');
     });
 
     it('keeps compact identity placeholders in one static style entry before animated opacity', async () => {
@@ -329,7 +330,7 @@ describe('SessionItem loading identity', () => {
         expect(screen.findByTestId('session-list-avatar-loading-sess_unavailable')).toBeNull();
         expect(screen.findByTestId('session-list-title-loading-sess_unavailable')).toBeNull();
         expect(screen.findByTestId('session-list-subtitle-loading-sess_unavailable')).toBeNull();
-        expect(screen.getTextContent()).toContain('status.unknown');
+        expect(screen.getTextContent()).toContain('session.untitled');
     });
 
     it('does not fall back to hot row hooks when a row view model is missing', async () => {

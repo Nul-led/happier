@@ -7,7 +7,7 @@ import { useUnistyles } from 'react-native-unistyles';
 import { INSTRUMENT_DURATIONS, staggerDelayForIndex, useMotionPreferences } from '@/components/instrument';
 import { StatusDot } from '@/components/ui/status/StatusDot';
 import { Text } from '@/components/ui/text/Text';
-import type { Metadata } from '@/sync/domains/state/storageTypes';
+import type { Metadata } from '@happier-dev/session-core/state';
 import type { CurrentSessionRunnerProcessIdentity } from '@/sync/domains/models/resolveSessionModelSelectionDisposition';
 import { useSetting } from '@/sync/domains/state/storage';
 import type { ConnectedServiceQuotaGaugeViewModel } from '@/sync/domains/connectedServices/connectedServiceQuotaGauge';
@@ -63,6 +63,12 @@ export type SessionInstrumentStripProps = Readonly<{
     activeStatusBadgeKey?: string | null;
     onActiveStatusBadgeKeyChange?: (key: string | null) => void;
     onGitPress?: () => void;
+    /**
+     * With nothing to show, take no height instead of reserving the row. A host that places the
+     * composer in a page (Home) uses it so the card sits on the section's edge; `/new` and sessions
+     * keep the reserved row so status arriving later does not move the card.
+     */
+    collapseWhenEmpty?: boolean;
 }>;
 
 /**
@@ -199,6 +205,8 @@ export const SessionInstrumentStrip = React.memo(function SessionInstrumentStrip
                 <QuotaRingInstrument
                     key="quota"
                     viewModel={props.quota.viewModel}
+                    metadata={props.metadata}
+                    agentId={props.agentId}
                     onRecoveryCreditPress={props.quota.onRecoveryCreditPress}
                     recoveryCreditPending={props.quota.recoveryCreditPending}
                     showProviderGlyph={!compact}
@@ -250,7 +258,12 @@ export const SessionInstrumentStrip = React.memo(function SessionInstrumentStrip
         || props.statusTrailingActions != null;
     if (!hasAnything) {
         // Keep a measuring host so overflow can resolve once content appears.
-        return <View style={instrumentStripStyles.root} onLayout={onLayout} />;
+        return (
+            <View
+                style={[instrumentStripStyles.root, props.collapseWhenEmpty ? instrumentStripStyles.rootCollapsed : null]}
+                onLayout={onLayout}
+            />
+        );
     }
 
     return (

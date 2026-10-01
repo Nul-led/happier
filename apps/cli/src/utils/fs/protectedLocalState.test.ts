@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
+  ensureProtectedLocalStateDirectory,
   ensureProtectedLocalStateDirectorySync,
   ensureProtectedLocalStateFileSync,
   publishProtectedLocalStateFileIfAbsent,
@@ -22,6 +23,19 @@ afterEach(async () => {
 });
 
 describe('protected local state', () => {
+  it('repairs only existing owned directories when creation is forbidden', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'happier-protected-existing-'));
+    roots.push(root);
+    const directory = join(root, 'state');
+    await expect(ensureProtectedLocalStateDirectory(directory, {
+      authority: 'owned', createIfMissing: false,
+    })).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(stat(directory)).rejects.toMatchObject({ code: 'ENOENT' });
+    await mkdir(directory, { mode: 0o700 });
+    if (process.platform !== 'win32') await chmod(directory, 0o755);
+    await ensureProtectedLocalStateDirectory(directory, { authority: 'owned', createIfMissing: false });
+    if (process.platform !== 'win32') expect((await stat(directory)).mode & 0o777).toBe(0o700);
+  });
   it('uses the synchronous Windows ACL boundary for owner-managed database paths', async () => {
     const root = await mkdtemp(join(tmpdir(), 'happier-protected-local-state-sync-'));
     roots.push(root);

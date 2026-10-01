@@ -30,7 +30,7 @@ describe('streamVoiceAgentTurn', () => {
                 cancelTurnStream: vi.fn(async () => ({ ok: true as const })),
                 commit: vi.fn(), stop: vi.fn(),
             },
-        } satisfies VoiceAgentHandle;
+        } satisfies Omit<VoiceAgentHandle, 'accountLifetime' | 'metadataSessionId'>;
 
         const result = await streamVoiceAgentTurn({
             sessionId: 'sys_voice', handle, userText: 'hello', displayUserText: 'hello',
@@ -109,7 +109,7 @@ describe('streamVoiceAgentTurn', () => {
                 cancelTurnStream: vi.fn(async () => ({ ok: true as const })),
                 commit: vi.fn(), stop: vi.fn(),
             },
-        } satisfies VoiceAgentHandle;
+        } satisfies Omit<VoiceAgentHandle, 'accountLifetime' | 'metadataSessionId'>;
 
         const result = await streamVoiceAgentTurn({
             sessionId: 'sys_voice',
@@ -158,7 +158,7 @@ describe('streamVoiceAgentTurn', () => {
                 cancelTurnStream: vi.fn(async () => ({ ok: true as const })),
                 commit: vi.fn(), stop: vi.fn(),
             },
-        } satisfies VoiceAgentHandle;
+        } satisfies Omit<VoiceAgentHandle, 'accountLifetime' | 'metadataSessionId'>;
 
         await expect(streamVoiceAgentTurn({
             sessionId: 'sys_voice',
@@ -207,7 +207,7 @@ describe('streamVoiceAgentTurn', () => {
                 cancelTurnStream: vi.fn(async () => ({ ok: true as const })),
                 commit: vi.fn(), stop: vi.fn(),
             },
-        } satisfies VoiceAgentHandle;
+        } satisfies Omit<VoiceAgentHandle, 'accountLifetime' | 'metadataSessionId'>;
 
         await expect(streamVoiceAgentTurn({
             sessionId: 'sys_voice',
@@ -250,7 +250,7 @@ describe('streamVoiceAgentTurn', () => {
                 commit: vi.fn(),
                 stop: vi.fn(),
             },
-        } satisfies VoiceAgentHandle;
+        } satisfies Omit<VoiceAgentHandle, 'accountLifetime' | 'metadataSessionId'>;
 
         await expect(
             streamVoiceAgentTurn({
@@ -305,7 +305,7 @@ describe('streamVoiceAgentTurn', () => {
                 commit: vi.fn(),
                 stop: vi.fn(),
             },
-        } satisfies VoiceAgentHandle;
+        } satisfies Omit<VoiceAgentHandle, 'accountLifetime' | 'metadataSessionId'>;
 
         const turn = streamVoiceAgentTurn({
             sessionId: 'sys_voice',
@@ -349,7 +349,7 @@ describe('streamVoiceAgentTurn', () => {
                 commit: vi.fn(),
                 stop: vi.fn(),
             },
-        } satisfies VoiceAgentHandle;
+        } satisfies Omit<VoiceAgentHandle, 'accountLifetime' | 'metadataSessionId'>;
 
         await expect(streamVoiceAgentTurn({
             sessionId: 'sys_voice',

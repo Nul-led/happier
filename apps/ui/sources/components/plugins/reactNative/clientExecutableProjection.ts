@@ -2,27 +2,23 @@ import {
     arePluginMachineExecutionOriginsEqual,
     buildQualifiedPluginContributionKey,
     createPluginContributionIdentity,
+    DaemonPluginUiArtifactByteIdentityV1Schema,
     type PluginContributionClientPlatform,
     type PluginMachineExecutionOriginV1,
     type VoiceProviderContribution,
 } from '@happier-dev/protocol';
 import {
-    PluginUiArtifactsManifestEntryV1Schema,
-    type PluginUiArtifactsManifestEntryV1,
+    PluginUiArtifactsManifestEntryV2Schema,
+    type PluginUiArtifactsManifestEntryV2,
+    type PluginUiArtifactDigestV1,
 } from '@happier-dev/protocol/plugins/ui';
 
-import {
-    derivePluginUiFederatedContainerName,
-    type RepackInstalledArtifactModuleReference,
-} from './loader';
+import type { PluginReactNativeExecutableModuleReference } from './loader';
 import {
     getPluginUiClientExecutableTargetAddressKey,
     type PluginUiClientExecutableActivation,
     type PluginUiClientExecutableTarget,
 } from './clientExecutableContributions';
-import {
-    readPluginUiReactNativeBundleCacheIdentity,
-} from '@/sync/domains/plugins/ui/artifactAdoption';
 import {
     isPluginProjectedActionExecutable,
     type PluginUiProjectionModel,
@@ -78,23 +74,31 @@ export type PluginUiProjectedClientExecutableVoiceProvider = Readonly<{
  */
 export type PluginUiProjectedClientExecutableTarget = Readonly<{
     pluginId: string;
+    occurrenceId: string;
+    hostUiApiRange: string;
     pluginVersion?: string;
     immutableGenerationId?: string;
     actions: readonly PluginUiProjectionModel['actionsById'][string][];
     voiceProviders: readonly PluginUiProjectedClientExecutableVoiceProvider[];
     contributes: Readonly<Record<string, unknown>>;
     target: PluginUiClientExecutableTarget;
-    executionOrigin: PluginMachineExecutionOriginV1;
+    /**
+     * The materialization that owns effects, when the plugin has one. A
+     * bundled or development plugin has none; `authority` (the projecting
+     * daemon's transport) is then its only route, exactly as for bytes.
+     */
+    executionOrigin: PluginMachineExecutionOriginV1 | null;
     projectionGeneration: number;
     authority: PluginUiClientExecutableActivation['authority'];
-    artifactGraph: PluginUiArtifactsManifestEntryV1;
+    artifactGraph: PluginUiArtifactsManifestEntryV2;
     cacheIdentity: PluginReactNativeBundleCacheIdentity;
-    moduleReference: RepackInstalledArtifactModuleReference;
+    moduleReference: PluginReactNativeExecutableModuleReference;
     artifactAnchor: PluginUiClientExecutableArtifactAnchor;
+    artifactSelectionOwner?: 'accountRelease' | 'daemonProjection';
 }>;
 
 type ProjectedExecutableOrigin = Readonly<{
-    executionOrigin: PluginMachineExecutionOriginV1;
+    executionOrigin: PluginMachineExecutionOriginV1 | null;
     projectionGeneration: number;
     authority: PluginUiClientExecutableActivation['authority'];
 }>;
@@ -103,16 +107,23 @@ type ResolvedProjectedClientExecutableContribution = Readonly<{
     family: 'actions' | 'voiceProviders';
     localId: string;
     pluginId: string;
+    occurrenceId: string;
     pluginVersion?: string;
     immutableGenerationId?: string;
     target: PluginUiClientExecutableTarget;
-    executionOrigin: PluginMachineExecutionOriginV1;
+    /**
+     * The materialization that owns effects, when the plugin has one. A
+     * bundled or development plugin has none; `authority` (the projecting
+     * daemon's transport) is then its only route, exactly as for bytes.
+     */
+    executionOrigin: PluginMachineExecutionOriginV1 | null;
     projectionGeneration: number;
     authority: PluginUiClientExecutableActivation['authority'];
-    artifactGraph: PluginUiArtifactsManifestEntryV1;
+    artifactGraph: PluginUiArtifactsManifestEntryV2;
     cacheIdentity: PluginReactNativeBundleCacheIdentity;
-    moduleReference: RepackInstalledArtifactModuleReference;
+    moduleReference: PluginReactNativeExecutableModuleReference;
     artifactAnchor: PluginUiClientExecutableArtifactAnchor;
+    artifactSelectionOwner?: 'accountRelease' | 'daemonProjection';
     action?: PluginUiProjectionModel['actionsById'][string];
     voiceProvider?: PluginUiProjectedClientExecutableVoiceProvider;
 }>;
@@ -132,18 +143,23 @@ function asRecord(value: unknown): UnknownRecord | null {
 
 function isCurrentUnionOrigin(
     origin: PluginUiContributionOriginV1 | null,
-): origin is PluginUiContributionOriginV1 & Readonly<{
-    generation: number;
-    executionOrigin: PluginMachineExecutionOriginV1;
-}> {
+): origin is PluginUiContributionOriginV1 & Readonly<{ generation: number }> {
     return origin !== null
         && origin.phase === 'current'
         && origin.interactionEnabled
-        && origin.executionOrigin !== null
         && typeof origin.generation === 'number'
         && Number.isInteger(origin.generation)
         && origin.generation >= 0
-        && origin.executionOrigin.materializationRef.machineId === origin.machineId;
+        // The projecting daemon is the route. A materialization, when the
+        // plugin has one, must live on that same machine.
+        && (origin.executionOrigin === null
+            || origin.executionOrigin.materializationRef.machineId === origin.machineId);
+}
+
+/** A materialization, when present, must belong to the plugin it serves. */
+function originServesPlugin(origin: ProjectedExecutableOrigin, pluginId: string): boolean {
+    return origin.executionOrigin === null
+        || origin.executionOrigin.materializationRef.pluginId === pluginId;
 }
 
 function readCurrentProjectedExecutableOrigin(input: Readonly<{
@@ -160,19 +176,18 @@ function readCurrentProjectedExecutableOrigin(input: Readonly<{
             authority: Object.freeze({
                 serverId: unionOrigin.serverId,
                 machineId: unionOrigin.machineId,
-                projectionGeneration: unionOrigin.generation,
             }),
         });
     }
 
     const projectionGeneration = input.source.projection.generation;
-    const executionOrigin = readPluginUiProjectionEntryExecutionOrigin(input.entry);
+    const executionOrigin = readPluginUiProjectionEntryExecutionOrigin(input.entry) ?? null;
     if (
-        !executionOrigin
-        || typeof projectionGeneration !== 'number'
+        typeof projectionGeneration !== 'number'
         || !Number.isInteger(projectionGeneration)
         || projectionGeneration < 0
-        || executionOrigin.materializationRef.machineId !== directMachineAuthority.machineId
+        || (executionOrigin !== null
+            && executionOrigin.materializationRef.machineId !== directMachineAuthority.machineId)
     ) {
         return null;
     }
@@ -182,7 +197,6 @@ function readCurrentProjectedExecutableOrigin(input: Readonly<{
         authority: Object.freeze({
             serverId: directMachineAuthority.serverId,
             machineId: directMachineAuthority.machineId,
-            projectionGeneration,
         }),
     });
 }
@@ -191,24 +205,26 @@ function areProjectedExecutableOriginsEqual(
     left: ProjectedExecutableOrigin,
     right: ProjectedExecutableOrigin,
 ): boolean {
-    return left.projectionGeneration === right.projectionGeneration
-        && left.authority.serverId === right.authority.serverId
+    return left.authority.serverId === right.authority.serverId
         && left.authority.machineId === right.authority.machineId
-        && arePluginMachineExecutionOriginsEqual(left.executionOrigin, right.executionOrigin);
+        && (left.executionOrigin === null || right.executionOrigin === null
+            ? left.executionOrigin === right.executionOrigin
+            : arePluginMachineExecutionOriginsEqual(left.executionOrigin, right.executionOrigin));
 }
 
 function readRuntimeFacts(bundle: UnknownRecord): Readonly<{
     state: string | null;
     source: string | null;
-    cacheIdentity: PluginReactNativeBundleCacheIdentity | null;
+    artifactDigest: PluginUiArtifactDigestV1 | null;
 }> {
     const runtime = asRecord(bundle.runtime);
     const decision = asRecord(runtime?.decision);
     const loadPolicy = asRecord(runtime?.loadPolicy);
+    const identity = DaemonPluginUiArtifactByteIdentityV1Schema.safeParse(runtime?.cacheIdentity);
     return Object.freeze({
         state: typeof decision?.state === 'string' ? decision.state : null,
         source: typeof loadPolicy?.source === 'string' ? loadPolicy.source : null,
-        cacheIdentity: readPluginUiReactNativeBundleCacheIdentity(runtime?.cacheIdentity),
+        artifactDigest: identity.success ? identity.data.artifactDigest : null,
     });
 }
 
@@ -216,25 +232,12 @@ function readModuleReference(input: Readonly<{
     pluginId: string;
     artifactId: string;
     target: PluginUiClientExecutableTarget;
-    artifactGraph: PluginUiArtifactsManifestEntryV1;
-}>): RepackInstalledArtifactModuleReference | null {
-    const moduleReference = input.artifactGraph.repack
-        ? Object.freeze({
-            containerName: input.artifactGraph.repack.containerName,
-            modulePath: input.artifactGraph.repack.modulePath,
-            exportName: input.artifactGraph.repack.exportName,
-        })
-        : Object.freeze({
-            containerName: derivePluginUiFederatedContainerName({
-                pluginId: input.pluginId,
-                contributionId: input.artifactId,
-            }),
-            modulePath: input.target.modulePath,
-            exportName: input.target.exportName,
-        });
-    return moduleReference.modulePath === input.target.modulePath
-        && moduleReference.exportName === input.target.exportName
-        ? moduleReference
+    artifactGraph: PluginUiArtifactsManifestEntryV2;
+}>): PluginReactNativeExecutableModuleReference | null {
+    return input.artifactGraph.tier === 'reactNative'
+        && input.artifactGraph.artifactId === input.artifactId
+        && input.artifactGraph.executable.exports.includes(input.target.exportName)
+        ? Object.freeze({ exportName: input.target.exportName })
         : null;
 }
 
@@ -247,31 +250,16 @@ function readInstalledPluginVersion(
 }
 
 /**
- * Equivalent target names are not sufficient to share one activation: the
- * Artifact bytes, host compatibility, module entry, and package version must
- * all agree. Contribution id and generation select the individual producer,
- * not the executable bytes.
+ * Equivalent target names share executable evaluation only when their byte and
+ * ABI identities agree. Plugin/package occurrences select physical activation
+ * lifetimes; they are deliberately absent from this byte-sharing key.
  */
 function targetTechnicalKey(candidate: ResolvedProjectedClientExecutableContribution): string {
-    const identity = candidate.cacheIdentity;
     return [
-        candidate.artifactGraph.digest,
-        candidate.moduleReference.containerName,
-        candidate.moduleReference.modulePath,
+        candidate.cacheIdentity.artifactDigest,
         candidate.moduleReference.exportName,
-        identity.pluginId,
-        identity.artifactDigest,
-        identity.hostAppVersion,
-        identity.hostUiApiVersion,
-        identity.reactVersion,
-        identity.reactNativeVersion,
-        identity.expoRuntimeVersion ?? '',
-        identity.hermesVersion ?? '',
-        identity.platform,
-        identity.channel,
-        identity.nativeCapabilitiesDigest,
-        candidate.pluginVersion ?? '',
-        candidate.immutableGenerationId ?? '',
+        candidate.cacheIdentity.platform,
+        candidate.artifactGraph.hostUiApiRange,
     ].join('\u0000');
 }
 
@@ -285,7 +273,7 @@ function readActionCandidate(input: Readonly<{
     if (!action.execution.platforms.includes(input.platform)) return null;
 
     const origin = readCurrentProjectedExecutableOrigin({ entry: action, source: input.source });
-    if (!origin || origin.executionOrigin.materializationRef.pluginId !== action.pluginId) return null;
+    if (!origin || !originServesPlugin(origin, action.pluginId)) return null;
     const bundle = input.source.projection.reactNativeBundlesById[
         `reactNativeBundle:${action.pluginId}:${action.id}`
     ];
@@ -300,27 +288,36 @@ function readActionCandidate(input: Readonly<{
     const bundleOrigin = readCurrentProjectedExecutableOrigin({ entry: bundle, source: input.source });
     if (!bundleOrigin || !areProjectedExecutableOriginsEqual(origin, bundleOrigin)) return null;
 
-    const artifactGraph = PluginUiArtifactsManifestEntryV1Schema.safeParse(bundle.artifactGraph);
+    const artifactGraph = PluginUiArtifactsManifestEntryV2Schema.safeParse(bundle.artifactGraph);
     const runtime = readRuntimeFacts(bundle);
-    const cacheIdentity = runtime.cacheIdentity;
+    const cacheIdentity: PluginReactNativeBundleCacheIdentity | null = runtime.artifactDigest
+        ? Object.freeze({
+            pluginId: action.pluginId,
+            contributionId: action.id,
+            artifactId: action.execution.client.artifactId,
+            artifactDigest: runtime.artifactDigest,
+            platform: input.platform,
+        })
+        : null;
     if (
         !artifactGraph.success
         || runtime.state !== 'load'
         || runtime.source !== 'installedArtifact'
         || cacheIdentity === null
-        || artifactGraph.data.contributionId !== action.execution.client.artifactId
-        || artifactGraph.data.platform !== input.platform
+        || artifactGraph.data.tier !== 'reactNative'
+        || artifactGraph.data.artifactId !== action.execution.client.artifactId
         || cacheIdentity.pluginId !== action.pluginId
         || cacheIdentity.contributionId !== action.id
         || cacheIdentity.artifactDigest !== artifactGraph.data.digest
         || cacheIdentity.platform !== input.platform
-        || cacheIdentity.projectionGeneration !== origin.projectionGeneration
+        || (bundle.artifactSelectionOwner !== undefined
+            && bundle.artifactSelectionOwner !== 'accountRelease'
+            && bundle.artifactSelectionOwner !== 'daemonProjection')
     ) {
         return null;
     }
     const target = Object.freeze({
         artifactId: action.execution.client.artifactId,
-        modulePath: action.execution.client.modulePath,
         exportName: action.execution.client.exportName,
         platform: input.platform,
     });
@@ -336,6 +333,7 @@ function readActionCandidate(input: Readonly<{
         family: 'actions',
         localId: action.id,
         pluginId: action.pluginId,
+        occurrenceId: action.occurrenceId,
         immutableGenerationId: input.source.projection.installedPackagesById[action.pluginId]?.immutableGenerationId,
         ...(readInstalledPluginVersion(input.source.projection, action.pluginId) === undefined
             ? {}
@@ -354,6 +352,9 @@ function readActionCandidate(input: Readonly<{
                 action: Object.freeze({ pluginId: action.pluginId, localId: action.id }),
             }),
         }),
+        ...(bundle.artifactSelectionOwner
+            ? { artifactSelectionOwner: bundle.artifactSelectionOwner }
+            : {}),
         action,
     });
 }
@@ -365,7 +366,14 @@ function readVoiceCandidate(input: Readonly<{
 }>): ResolvedProjectedClientExecutableContribution | null {
     const { entry } = input;
     const declaration = entry.definition;
-    if (declaration.kind !== 'conversation' || !declaration.platforms.includes(input.platform)) return null;
+    const occurrenceId = typeof entry.occurrenceId === 'string' && entry.occurrenceId.trim().length > 0
+        ? entry.occurrenceId
+        : null;
+    if (
+        declaration.kind !== 'conversation'
+        || !declaration.platforms.includes(input.platform)
+        || occurrenceId === null
+    ) return null;
     const expectedId = buildQualifiedPluginContributionKey(createPluginContributionIdentity({
         pluginId: entry.pluginId,
         localId: declaration.id,
@@ -373,11 +381,7 @@ function readVoiceCandidate(input: Readonly<{
     if (entry.id !== expectedId || entry.contributionKey !== expectedId) return null;
 
     const origin = readCurrentProjectedExecutableOrigin({ entry, source: input.source });
-    if (
-        !origin
-        || origin.executionOrigin.materializationRef.pluginId !== entry.pluginId
-        || entry.generation !== origin.projectionGeneration
-    ) return null;
+    if (!origin || !originServesPlugin(origin, entry.pluginId)) return null;
     const bundle = input.source.projection.reactNativeBundlesById[
         `reactNativeBundle:${entry.pluginId}:${declaration.id}`
     ];
@@ -392,27 +396,36 @@ function readVoiceCandidate(input: Readonly<{
     const bundleOrigin = readCurrentProjectedExecutableOrigin({ entry: bundle, source: input.source });
     if (!bundleOrigin || !areProjectedExecutableOriginsEqual(origin, bundleOrigin)) return null;
 
-    const artifactGraph = PluginUiArtifactsManifestEntryV1Schema.safeParse(bundle.artifactGraph);
+    const artifactGraph = PluginUiArtifactsManifestEntryV2Schema.safeParse(bundle.artifactGraph);
     const runtime = readRuntimeFacts(bundle);
-    const cacheIdentity = runtime.cacheIdentity;
+    const cacheIdentity: PluginReactNativeBundleCacheIdentity | null = runtime.artifactDigest
+        ? Object.freeze({
+            pluginId: entry.pluginId,
+            contributionId: declaration.id,
+            artifactId: declaration.client.artifactId,
+            artifactDigest: runtime.artifactDigest,
+            platform: input.platform,
+        })
+        : null;
     if (
         !artifactGraph.success
         || runtime.state !== 'load'
         || runtime.source !== 'installedArtifact'
         || cacheIdentity === null
-        || artifactGraph.data.contributionId !== declaration.client.artifactId
-        || artifactGraph.data.platform !== input.platform
+        || artifactGraph.data.tier !== 'reactNative'
+        || artifactGraph.data.artifactId !== declaration.client.artifactId
         || cacheIdentity.pluginId !== entry.pluginId
         || cacheIdentity.contributionId !== declaration.id
         || cacheIdentity.artifactDigest !== artifactGraph.data.digest
         || cacheIdentity.platform !== input.platform
-        || cacheIdentity.projectionGeneration !== origin.projectionGeneration
+        || (bundle.artifactSelectionOwner !== undefined
+            && bundle.artifactSelectionOwner !== 'accountRelease'
+            && bundle.artifactSelectionOwner !== 'daemonProjection')
     ) {
         return null;
     }
     const target = Object.freeze({
         artifactId: declaration.client.artifactId,
-        modulePath: declaration.client.modulePath,
         exportName: declaration.client.exportName,
         platform: input.platform,
     });
@@ -428,6 +441,7 @@ function readVoiceCandidate(input: Readonly<{
         family: 'voiceProviders',
         localId: declaration.id,
         pluginId: entry.pluginId,
+        occurrenceId,
         immutableGenerationId: input.source.projection.installedPackagesById[entry.pluginId]?.immutableGenerationId,
         ...(readInstalledPluginVersion(input.source.projection, entry.pluginId) === undefined
             ? {}
@@ -440,6 +454,9 @@ function readVoiceCandidate(input: Readonly<{
         cacheIdentity,
         moduleReference,
         artifactAnchor: Object.freeze({ artifactOwnerKind: 'voiceProvider' as const }),
+        ...(bundle.artifactSelectionOwner
+            ? { artifactSelectionOwner: bundle.artifactSelectionOwner }
+            : {}),
         voiceProvider: Object.freeze({ entry, declaration, cacheIdentity }),
     });
 }
@@ -497,9 +514,12 @@ export function resolveProjectedPluginUiClientExecutables(input: Readonly<{
             continue;
         }
         existing.contributions.push(candidate);
-        if (existing.technicalKey !== technicalKey) {
+        if (
+            existing.technicalKey !== technicalKey
+            || existing.first.occurrenceId !== candidate.occurrenceId
+        ) {
             // A declared target name never permits mixing distinct bytes or
-            // package contracts into one activate(api) transaction.
+            // physical plugin occurrences into one activate(api) transaction.
             existing.conflict = true;
         }
     }
@@ -523,6 +543,8 @@ export function resolveProjectedPluginUiClientExecutables(input: Readonly<{
             const first = group.first;
             return Object.freeze({
                 pluginId: first.pluginId,
+                occurrenceId: first.occurrenceId,
+                hostUiApiRange: first.artifactGraph.hostUiApiRange,
                 ...(first.pluginVersion === undefined ? {} : { pluginVersion: first.pluginVersion }),
                 ...(first.immutableGenerationId === undefined ? {} : { immutableGenerationId: first.immutableGenerationId }),
                 actions,
@@ -536,6 +558,9 @@ export function resolveProjectedPluginUiClientExecutables(input: Readonly<{
                 cacheIdentity: first.cacheIdentity,
                 moduleReference: first.moduleReference,
                 artifactAnchor: first.artifactAnchor,
+                ...(first.artifactSelectionOwner
+                    ? { artifactSelectionOwner: first.artifactSelectionOwner }
+                    : {}),
             });
         })
         .sort((left, right) => (

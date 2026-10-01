@@ -1,6 +1,7 @@
 import * as React from 'react';
 
 import type { AcpConfigOptionOverridesV1 } from '@happier-dev/protocol';
+import type { ComposerOptionsInputV1 } from '@happier-dev/protocol/embed';
 
 import type { AgentInputChipPickerOption } from '@/components/sessions/agentInput/components/AgentInputChipPickerTypes';
 import {
@@ -18,7 +19,6 @@ import {
     resolveReportedModelStatus,
     type ReportedModelStatus,
 } from '@/components/sessions/modelPicker/reportedModelPresentation';
-import type { OptionPickerProbeState } from '@/components/sessions/pickers/OptionPickerOverlay';
 import { describeEffectiveModelMode } from '@/sync/domains/models/describeEffectiveModelMode';
 import { buildExtendedContextModelControl } from '@/sync/domains/models/extendedContextModelControl';
 import {
@@ -32,18 +32,19 @@ import {
     getPermissionModeBadgeLabelForAgentType,
     getPermissionModeLabelForAgentType,
     getPermissionModeOptionsForSession,
+    restrictPermissionModeOptions,
 } from '@/sync/domains/permissions/permissionModeOptions';
 import type { ModelMode, PermissionMode } from '@/sync/domains/permissions/permissionTypes';
 import {
     computeAcpConfigOptionControls,
     computeAcpConfigOptionControlsFromOverride,
+    resolveSessionConfigOptionOverridesFromMetadata,
     type AcpConfigOptionControl,
     type SessionConfigOptionInput,
 } from '@/sync/domains/sessionControl/configOptionsControl';
-import { readSessionModelsState } from '@/sync/domains/sessionControl/readSessionControlMetadata';
 import { computeSessionModePickerControl } from '@/sync/domains/sessionControl/sessionModeControl';
 import { useSetting } from '@/sync/domains/state/storage';
-import type { Metadata } from '@/sync/domains/state/storageTypes';
+import type { Metadata } from '@happier-dev/session-core/state';
 import { t } from '@/text';
 
 /**
@@ -65,7 +66,7 @@ type SessionModeOptionOverride = Readonly<{ id: string; name: string; descriptio
 
 export type SessionAuthoringSessionModeChipControl = Readonly<{
     options: ReadonlyArray<SessionModeOptionOverride>;
-    selectedId: string;
+    selectedId: string | null;
     label: string;
     isPending: boolean;
 }>;
@@ -80,10 +81,12 @@ export type SessionAuthoringControlsInput = Readonly<{
     /** The Agent identity whose static policy answers these questions. */
     agentId: string;
     metadata?: Metadata | null;
-    /** Changing session identity clears the sticky model-option memory. */
+    composerOptionsInput?: ComposerOptionsInputV1 | null;
     sessionId?: string;
     sessionActive?: boolean;
     permissionMode?: PermissionMode | null;
+    /** An embed's allowed modes (`grant.permissionModes`); the options narrow to them. `null` = all. */
+    allowedPermissionModes?: readonly PermissionMode[] | null;
     modelMode?: ModelMode | null;
     modelOptionsOverride?: readonly ModelOption[] | null;
     /** Capability facts, not handlers: the caller keeps its own mutation owner. */
@@ -98,7 +101,6 @@ export type SessionAuthoringControlsInput = Readonly<{
 
 export type SessionAuthoringControls = Readonly<{
     modelOptions: readonly ModelOption[];
-    sessionModelOptionsProbe: OptionPickerProbeState | null;
     permissionModeOptions: ReturnType<typeof getPermissionModeOptionsForSession>;
     permissionModeOrder: readonly PermissionMode[];
     effectivePermissionPolicy: ReturnType<typeof describeEffectivePermissionMode>;
@@ -129,81 +131,23 @@ export function useSessionAuthoringControls(
         canChangeConfigOption,
         canChangeModel,
         canChangeSessionMode,
-        sessionId,
     } = input;
     const metadata = input.metadata ?? null;
+    const composerOptionsInput = input.composerOptionsInput === undefined ? metadata : input.composerOptionsInput;
     const modelOptionsOverride = input.modelOptionsOverride ?? null;
     const acpConfigOptionsOverride = input.acpConfigOptionsOverride ?? null;
     const acpConfigOptionOverridesOverride = input.acpConfigOptionOverridesOverride ?? null;
 
     const sessionPermissionModeApplyTiming = useSetting('sessionPermissionModeApplyTiming');
 
-    // The last non-empty model list for THIS session, so a runner that briefly
-    // reports zero models does not blank the picker mid-session.
-    const lastNonEmptySessionModelOptionsRef = React.useRef<readonly ModelOption[] | null>(null);
-    React.useEffect(() => {
-        lastNonEmptySessionModelOptionsRef.current = null;
-    }, [sessionId, agentId]);
+    const modelOptions = React.useMemo(() => modelOptionsOverride
+        ?? getModelOptionsForSession(agentId, composerOptionsInput, { selectedModelId: input.modelMode }),
+    [agentId, composerOptionsInput, modelOptionsOverride, input.modelMode]);
 
-    const sessionModelsState = React.useMemo(() => {
-        if (modelOptionsOverride) return { hasSessionModelsState: false, availableCount: 0 };
-        const raw = readSessionModelsState(metadata);
-        const stateAgentId = typeof raw?.agentId === 'string' ? raw.agentId.trim() : '';
-        if (!stateAgentId || stateAgentId !== agentId) {
-            return { hasSessionModelsState: false, availableCount: 0 };
-        }
-        const available = Array.isArray(raw?.availableModels) ? raw.availableModels : [];
-        return { hasSessionModelsState: true, availableCount: available.length };
-    }, [agentId, metadata, modelOptionsOverride]);
-
-    const baseModelOptions = React.useMemo(() => {
-        if (modelOptionsOverride) return modelOptionsOverride;
-        return getModelOptionsForSession(agentId, metadata);
-    }, [agentId, metadata, modelOptionsOverride]);
-
-    const modelOptions = React.useMemo(() => {
-        if (modelOptionsOverride) return baseModelOptions;
-        if (sessionModelsState.hasSessionModelsState && sessionModelsState.availableCount === 0) {
-            const sticky = lastNonEmptySessionModelOptionsRef.current;
-            if (sticky && sticky.length > 0) return sticky;
-        }
-        return baseModelOptions;
-    }, [
-        baseModelOptions,
-        modelOptionsOverride,
-        sessionModelsState.availableCount,
-        sessionModelsState.hasSessionModelsState,
-    ]);
-
-    const sessionModelOptionsProbe = React.useMemo<OptionPickerProbeState | null>(() => {
-        if (modelOptionsOverride) return null;
-        if (!sessionModelsState.hasSessionModelsState) return null;
-        if (sessionModelsState.availableCount > 0) return null;
-        const phase: OptionPickerProbeState['phase'] = lastNonEmptySessionModelOptionsRef.current
-            ? 'refreshing'
-            : 'loading';
-        return { phase };
-    }, [modelOptionsOverride, sessionModelsState.availableCount, sessionModelsState.hasSessionModelsState]);
-
-    React.useEffect(() => {
-        if (modelOptionsOverride) return;
-        if (!sessionModelsState.hasSessionModelsState) {
-            lastNonEmptySessionModelOptionsRef.current = null;
-            return;
-        }
-        if (sessionModelsState.availableCount > 0 && modelOptions.length > 0) {
-            lastNonEmptySessionModelOptionsRef.current = modelOptions;
-        }
-    }, [
-        modelOptions,
-        modelOptionsOverride,
-        sessionModelsState.availableCount,
-        sessionModelsState.hasSessionModelsState,
-    ]);
-
+    const allowedPermissionModes = input.allowedPermissionModes ?? null;
     const permissionModeOptions = React.useMemo(() => {
-        return getPermissionModeOptionsForSession(agentId, metadata);
-    }, [agentId, metadata]);
+        return restrictPermissionModeOptions(getPermissionModeOptionsForSession(agentId, metadata), allowedPermissionModes);
+    }, [agentId, allowedPermissionModes, metadata]);
 
     const permissionModeOrder = React.useMemo(() => {
         return permissionModeOptions.map((option) => option.value);
@@ -231,8 +175,9 @@ export function useSessionAuthoringControls(
             agentType: agentId,
             selectedModelId: input.modelMode ?? 'default',
             metadata,
+            composerOptionsInput,
         });
-    }, [agentId, input.modelMode, metadata]);
+    }, [agentId, input.modelMode, metadata, composerOptionsInput]);
 
     const selectedModelLabel = React.useMemo(() => {
         const found = findModelOptionForEffectiveModelId(modelOptions, effectiveModelPolicy.selectedModelId);
@@ -272,8 +217,8 @@ export function useSessionAuthoringControls(
     }, [effectiveModelPolicy.notes, input.sessionActive]);
 
     const canEnterCustomModel = React.useMemo(() => {
-        return supportsFreeformModelSelectionForSession(agentId, metadata);
-    }, [agentId, metadata]);
+        return supportsFreeformModelSelectionForSession(agentId, composerOptionsInput);
+    }, [agentId, composerOptionsInput]);
 
     const shouldShowModelOptionDescriptions = React.useMemo(() => {
         return modelOptions.some((option) => {
@@ -324,7 +269,6 @@ export function useSessionAuthoringControls(
                 selectedId: (
                     sessionModePickerControl.requestedModeId
                     ?? sessionModePickerControl.effectiveModeId
-                    ?? 'default'
                 ),
                 label: sessionModePickerControl.effectiveModeName,
                 isPending: sessionModePickerControl.isPending,
@@ -416,7 +360,9 @@ export function useSessionAuthoringControls(
             ? [...(computeAcpConfigOptionControlsFromOverride({
                 agentId,
                 configOptions: selectedModelForControls.modelOptions,
-                overrides: acpConfigOptionOverridesOverride?.overrides ?? null,
+                overrides: acpConfigOptionOverridesOverride?.overrides ?? resolveSessionConfigOptionOverridesFromMetadata({
+                    metadata: composerOptionsInput, configOptions: selectedModelForControls.modelOptions,
+                }),
             }) ?? [])]
             : [];
         const extendedContextControl = canChangeModel
@@ -434,11 +380,11 @@ export function useSessionAuthoringControls(
         canChangeModel,
         effectiveModelPolicy.selectedModelId,
         selectedModelForControls,
+        composerOptionsInput,
     ]);
 
     return {
         modelOptions,
-        sessionModelOptionsProbe,
         permissionModeOptions,
         permissionModeOrder,
         effectivePermissionPolicy,

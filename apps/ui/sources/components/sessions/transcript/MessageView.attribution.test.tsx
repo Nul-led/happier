@@ -2,12 +2,13 @@ import * as React from 'react';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createSessionFixture, renderScreen, standardCleanup } from '@/dev/testkit';
 import { settingsDefaults } from '@/sync/domains/settings/settings';
-import type { UserTextMessage } from '@/sync/domains/messages/messageTypes';
+import type { UserTextMessage } from "@happier-dev/session-core/messages";
 import { installMessageViewCommonModuleMocks } from './messageViewTestHelpers';
 import { MessageView, MessageViewWithSessionCommon } from './MessageView';
 import { upsertServerProfile } from '@/sync/domains/server/serverProfiles';
 import { storage } from '@/sync/domains/state/storage';
 import type { Session } from '@/sync/domains/state/storageTypes';
+import type { SessionMessageProvenance } from '@happier-dev/protocol';
 
 installMessageViewCommonModuleMocks();
 afterEach(() => {
@@ -16,6 +17,64 @@ afterEach(() => {
 });
 
 describe('MessageView Account attribution', () => {
+    it.each([
+        [{ v: 1, kind: 'happierSession', sourceSessionId: 'session-source-a', via: 'mcp' }, 'message.provenanceFrom(source=Lead A)'],
+        [{ v: 1, kind: 'pluginSession', pluginId: 'acme.preview', contributionLocalId: 'inbound', surface: 'unspecified' }, 'message.pluginAttribution(pluginId=acme.preview)'],
+        [{ v: 1, kind: 'automation', automationId: 'automation-a', runId: 'run-a' }, 'message.provenanceFrom(source=message.provenanceAutomation)'],
+        [{ v: 2, kind: 'workflow_invocation', runId: 'run-a', invocationRecordId: 'invocation-a' }, 'message.provenanceFrom(source=message.provenanceWorkflow)'],
+    ] satisfies [SessionMessageProvenance, string][])('attributes %j to its producer', async (provenance, label) => {
+        storage.setState({ sessions: {
+            'session-source-a': createSessionFixture({
+                id: 'session-source-a', metadata: null, metadataLayoutVersion: 1,
+                ownerMetadataView: { ...createSessionFixture().metadata!, name: 'Lead A' },
+            }),
+        } });
+        const message: UserTextMessage = {
+            kind: 'user-text', id: 'producer-message', localId: null, createdAt: 1, text: 'Continue the work',
+            meta: { happierProvenanceV1: provenance },
+        };
+        const screen = await renderScreen(
+            <MessageViewWithSessionCommon
+                sessionId="session-b" metadata={null} message={message}
+                forkCommon={{ ...settingsDefaults, executionRunsEnabled: false, agentSwitchingEnabled: false, sessionForkSupportSource: null }}
+                messageDisplayCommon={{ ...settingsDefaults, workspacePath: null, debugInformationEnabled: false }}
+                toolChromeCommon={settingsDefaults} toolRouteCommon={{ messagesById: {}, reducerState: null }}
+            />,
+        );
+        const testId = provenance.kind === 'pluginSession' ? 'transcript-plugin-attribution:producer-message' : 'transcript-provenance-attribution:producer-message';
+        expect(screen.findHostByTestId(testId)?.props.accessibilityLabel).toBe(label);
+        expect(screen.findHostByTestId('transcript-account-attribution:producer-message')).toBeNull();
+    });
+
+    it('names the sending Session only from the transcript Home', async () => {
+        const homeA = await upsertServerProfile({ serverUrl: 'https://producer-home-a.example.test' });
+        const homeB = await upsertServerProfile({ serverUrl: 'https://producer-home-b.example.test' });
+        const sourceSession = (serverId: string, title: string) => createSessionFixture({
+            id: 'same-source-id', serverId, metadataLayoutVersion: 1,
+            metadata: { ...createSessionFixture().metadata!, name: title },
+        });
+        storage.setState({
+            sessions: { 'same-source-id': sourceSession(homeA.id, 'Other Home title') },
+            sessionListRowsByServerId: { [homeB.id]: { 'same-source-id': sourceSession(homeB.id, 'Lead B') } },
+            sessionListIndexByServerId: { [homeB.id]: [{ type: 'session', sessionId: 'same-source-id', serverId: homeB.id }] },
+        });
+        const screen = await renderScreen(
+            <MessageViewWithSessionCommon
+                sessionId="target" serverId={homeB.id} metadata={null}
+                message={{
+                    kind: 'user-text', id: 'home-scoped-producer', localId: null, createdAt: 1, text: 'Continue',
+                    meta: { happierProvenanceV1: { v: 1, kind: 'happierSession', sourceSessionId: 'same-source-id', via: 'mcp' } },
+                }}
+                forkCommon={{ ...settingsDefaults, executionRunsEnabled: false, agentSwitchingEnabled: false, sessionForkSupportSource: null }}
+                messageDisplayCommon={{ ...settingsDefaults, workspacePath: null, debugInformationEnabled: false }}
+                toolChromeCommon={settingsDefaults} toolRouteCommon={{ messagesById: {}, reducerState: null }}
+            />,
+        );
+        expect(screen.findHostByTestId('transcript-provenance-attribution:home-scoped-producer')?.props.accessibilityLabel)
+            .toBe('message.provenanceFrom(source=Lead B)');
+        expect(JSON.stringify(screen.tree.toJSON())).not.toContain('Other Home title');
+    });
+
     it('renders a single trusted human byline before the bubble while preserving recovered-history status', async () => {
         const message: UserTextMessage = {
             kind: 'user-text', id: 'actor-message', localId: null, createdAt: 1, text: 'Review the migration',
@@ -152,8 +211,8 @@ describe('MessageView Account attribution', () => {
                     },
                 },
                 sessionListIndexByServerId: {
-                    [homeA.id]: ['transcript'],
-                    [homeB.id]: ['transcript'],
+                    [homeA.id]: [{ type: 'session', sessionId: 'transcript', serverId: homeA.id }],
+                    [homeB.id]: [{ type: 'session', sessionId: 'transcript', serverId: homeB.id }],
                 },
             });
 

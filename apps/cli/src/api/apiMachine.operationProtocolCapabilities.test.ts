@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { Machine } from '@/api/types';
+import { createMachineContentCodec } from '@/api/machine/machineStoredContent';
 
 import { ApiMachineClient } from './apiMachine';
 
@@ -16,7 +17,68 @@ function createMachine(): Machine {
   };
 }
 
+function createCapabilityPublicationClient(): ApiMachineClient {
+  // Exercise the real publication owner without unrelated Session RPC constructor
+  // registration (currently blocked by unclassified transcript.unfollow).
+  return Object.assign(Object.create(ApiMachineClient.prototype), {
+    machine: createMachine(),
+    lifecycleDependencies: {},
+    currentIrohMachineEndpoint: null,
+    activeTransportGeneration: 1,
+  });
+}
+
 describe('ApiMachineClient operation protocol capability publication', () => {
+  it('advertises native preview only while the composed adapter is live', async () => {
+    const client = createCapabilityPublicationClient();
+    // Socket acknowledgement is the external Home boundary; projection and publication stay real.
+    const emitWithAck = vi.fn(async () => ({ v: 1, result: 'success', revision: 1 }));
+    Reflect.set(client, 'socket', { connected: true, timeout: () => ({ emitWithAck }) });
+    const internal = client as unknown as {
+      resolveCurrentMachineOperationProtocolCapabilitiesForPublication(): Promise<Record<string, unknown> | null>;
+    };
+    await expect(internal.resolveCurrentMachineOperationProtocolCapabilitiesForPublication()).resolves.toBeNull();
+    await client.setLocalServicePreviewNativeAccessLive(true);
+    expect(emitWithAck).toHaveBeenLastCalledWith('machine-update-operation-protocol-capabilities', {
+      machineId: 'machine-1', capabilities: { localServicePreviewNativeAccess: { protocolVersions: [1] } },
+    });
+    await expect(internal.resolveCurrentMachineOperationProtocolCapabilitiesForPublication()).resolves.toEqual({
+      localServicePreviewNativeAccess: { protocolVersions: [1] },
+    });
+    await client.setLocalServicePreviewNativeAccessLive(false);
+    expect(emitWithAck).toHaveBeenLastCalledWith('machine-update-operation-protocol-capabilities', {
+      machineId: 'machine-1', capabilities: {},
+    });
+    await expect(internal.resolveCurrentMachineOperationProtocolCapabilitiesForPublication()).resolves.toBeNull();
+  });
+
+  it('keeps native preview readiness truthful after a rejected publication and preserves endpoint authority', async () => {
+    const client = createCapabilityPublicationClient();
+    const endpoint = { endpointId: 'b'.repeat(64) };
+    Reflect.set(client, 'currentIrohMachineEndpoint', endpoint);
+    const emitWithAck = vi.fn(async () => ({ v: 1, result: 'success', revision: 2 }));
+    const socket = { connected: false, timeout: () => ({ emitWithAck }) };
+    Reflect.set(client, 'socket', socket);
+    const internal = client as unknown as {
+      resolveCurrentMachineOperationProtocolCapabilitiesForPublication(): Promise<Record<string, unknown> | null>;
+    };
+    await client.setLocalServicePreviewNativeAccessLive(true);
+    expect(emitWithAck).not.toHaveBeenCalled();
+    await expect(internal.resolveCurrentMachineOperationProtocolCapabilitiesForPublication()).resolves.toEqual({
+      irohMachineEndpoint: { protocolVersions: [1], ...endpoint },
+      localServicePreviewNativeAccess: { protocolVersions: [1] },
+    });
+    socket.connected = true;
+    emitWithAck.mockRejectedValueOnce(new Error('ack lost'));
+    await expect(client.setLocalServicePreviewNativeAccessLive(false)).rejects.toThrow('ack lost');
+    await expect(internal.resolveCurrentMachineOperationProtocolCapabilitiesForPublication()).resolves.toEqual({
+      irohMachineEndpoint: { protocolVersions: [1], ...endpoint },
+    });
+    await client.setLocalServicePreviewNativeAccessLive(false);
+    expect(emitWithAck).toHaveBeenLastCalledWith('machine-update-operation-protocol-capabilities', {
+      machineId: 'machine-1', capabilities: { irohMachineEndpoint: { protocolVersions: [1], ...endpoint } },
+    });
+  });
   it('publishes exact external-Action authorization independently of Session spawn readiness', async () => {
     const client = new ApiMachineClient('token', createMachine());
     const internal = client as unknown as {
@@ -274,7 +336,11 @@ describe('ApiMachineClient operation protocol capability publication', () => {
     await expect(client.updateDaemonState(() => ({
       status: 'running',
       peerMediation: {
-        iroh: { endpoint: { endpointId: 'a'.repeat(64) } },
+        iroh: { endpoint: {
+          endpointId: 'a'.repeat(64),
+          relayUrls: ['https://relay.example.test'],
+          directAddresses: ['192.0.2.10:443'],
+        } },
       },
     }))).resolves.toBe('published');
 
@@ -284,17 +350,131 @@ describe('ApiMachineClient operation protocol capability publication', () => {
         machineId: 'machine-1',
         capabilities: {
           sessionInputAdmission: { protocolVersions: [1, 2] },
-          sessionSpawn: { protocolVersions: [1] },
+          sessionSpawn: { protocolVersions: [1, 2] },
           sessionSpawnPlacementOrigin: { protocolVersions: [1] },
           pluginWebhookClaim: { protocolVersions: [1] },
-          externalActionExecutionAuthorization: { protocolVersions: [1] },
           sessionFollow: { contextV1: true, wakeOnHumanChangeV1: true },
           irohMachineEndpoint: {
             protocolVersions: [1],
             endpointId: 'a'.repeat(64),
+            relayUrls: ['https://relay.example.test'],
+            directAddresses: ['192.0.2.10:443'],
           },
         },
       },
+    );
+    emitWithAck.mockClear();
+    await expect(client.updateDaemonState(() => ({
+      status: 'running',
+      peerMediation: { iroh: { endpoint: {
+        endpointId: 'a'.repeat(64),
+        relayUrls: ['https://other-relay.example.test'],
+        directAddresses: ['192.0.2.10:443'],
+      } } },
+    }))).resolves.toBe('published');
+    expect(emitWithAck).toHaveBeenCalledWith(
+      'machine-update-operation-protocol-capabilities',
+      expect.objectContaining({ capabilities: expect.objectContaining({
+        irohMachineEndpoint: expect.objectContaining({
+          endpointId: 'a'.repeat(64),
+          relayUrls: ['https://other-relay.example.test'],
+        }),
+      }) }),
+    );
+  });
+
+  it('withdraws an endpoint retained only in persisted daemon state with an empty replace-all projection', async () => {
+    const machine = createMachine();
+    machine.daemonState = {
+      status: 'running',
+      peerMediation: { iroh: { endpoint: { endpointId: 'b'.repeat(64) } } },
+    };
+    const client = new ApiMachineClient('token', machine);
+    expect(machine.daemonState?.peerMediation?.iroh).toBeUndefined();
+    const emitWithAck = vi.fn(async (event: string, payload: { daemonState?: string }) => event === 'machine-update-state'
+      ? { result: 'success', version: 1, daemonState: payload.daemonState }
+      : { v: 1, result: 'success', revision: 4 });
+    (client as unknown as { socket: unknown }).socket = {
+      connected: true,
+      timeout: vi.fn(() => ({ emitWithAck })),
+    };
+
+    await expect(client.updateDaemonState((state) => ({
+      ...state!,
+      peerMediation: { ...state?.peerMediation, iroh: undefined },
+    }))).resolves.toBe('published');
+
+    expect(emitWithAck).toHaveBeenCalledWith(
+      'machine-update-operation-protocol-capabilities',
+      { machineId: 'machine-1', capabilities: {} },
+    );
+  });
+
+  it('keeps a freshly installed endpoint after discarding a persisted endpoint', async () => {
+    const machine = createMachine();
+    machine.daemonState = {
+      status: 'running',
+      peerMediation: { iroh: { endpoint: { endpointId: 'b'.repeat(64) } } },
+    };
+    const client = new ApiMachineClient('token', machine);
+    expect(machine.daemonState?.peerMediation?.iroh).toBeUndefined();
+    const emitWithAck = vi.fn(async (event: string, payload: { daemonState?: string }) => event === 'machine-update-state'
+      ? { result: 'success', version: 1, daemonState: payload.daemonState }
+      : { v: 1, result: 'success', revision: 4 });
+    (client as unknown as { socket: unknown }).socket = {
+      connected: true,
+      timeout: vi.fn(() => ({ emitWithAck })),
+    };
+
+    await expect(client.updateDaemonState((state) => ({
+      ...state!,
+      peerMediation: { iroh: { endpoint: { endpointId: 'c'.repeat(64) } } },
+    }))).resolves.toBe('published');
+
+    expect(emitWithAck).toHaveBeenCalledWith(
+      'machine-update-operation-protocol-capabilities',
+      expect.objectContaining({ capabilities: expect.objectContaining({
+        irohMachineEndpoint: expect.objectContaining({ endpointId: 'c'.repeat(64) }),
+      }) }),
+    );
+  });
+
+  it('does not rehydrate a stale endpoint from a version-mismatch response', async () => {
+    const machine = createMachine();
+    machine.daemonState = { status: 'running' };
+    const codec = createMachineContentCodec(machine);
+    const client = new ApiMachineClient('token', machine);
+    let stateAttempts = 0;
+    const emitWithAck = vi.fn(async (event: string, payload: { daemonState?: string }) => {
+      if (event === 'machine-update-state') {
+        stateAttempts += 1;
+        return stateAttempts === 1
+          ? {
+              result: 'version-mismatch',
+              version: 1,
+              daemonState: codec.encodeStored({
+                status: 'running',
+                peerMediation: { iroh: { endpoint: { endpointId: 'b'.repeat(64) } } },
+              }),
+            }
+          : { result: 'success', version: 2, daemonState: payload.daemonState };
+      }
+      return { v: 1, result: 'success', revision: 4 };
+    });
+    (client as unknown as { socket: unknown }).socket = {
+      connected: true,
+      timeout: vi.fn(() => ({ emitWithAck })),
+    };
+
+    await expect(client.updateDaemonState((state) => ({ ...state!, status: 'running' })))
+      .resolves.toBe('published');
+    expect(stateAttempts).toBe(2);
+    expect(machine.daemonState?.peerMediation?.iroh).toBeUndefined();
+    expect(emitWithAck).not.toHaveBeenCalledWith(
+      'machine-update-operation-protocol-capabilities',
+      expect.objectContaining({ capabilities: expect.objectContaining({
+        irohMachineEndpoint: expect.anything(),
+      }) }),
     );
   });
 });

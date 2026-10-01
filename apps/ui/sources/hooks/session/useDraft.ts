@@ -1,6 +1,6 @@
-import { useEffect, useRef, useCallback, useMemo, useLayoutEffect } from 'react';
+import { useEffect, useRef, useCallback, useMemo, useLayoutEffect, useSyncExternalStore } from 'react';
 import { AppState, AppStateStatus } from 'react-native';
-import { useIsFocused } from '@react-navigation/native';
+import { useDestinationFocus as useIsFocused } from '@/components/appShell/workspace/DestinationInstanceHost';
 import { sync } from '@/sync/sync';
 import { fireAndForget } from '@/utils/system/fireAndForget';
 import { clearForkInitialPromptV1, readForkInitialPromptV1 } from '@/sync/domains/sessionFork/forkInitialPromptV1';
@@ -9,6 +9,7 @@ import {
     readSessionInitialPromptV1,
     type SessionInitialPromptV1,
 } from '@/sync/domains/sessionInitialPrompt/sessionInitialPromptV1';
+import type { ComposerTextStore } from '@/components/sessions/agentInput/composerTextStore';
 import { containsLikelyNonWhitespace, isLargeTextInputValueLength } from '@/components/ui/forms/largeTextInputPolicy';
 import { useWebLifecycleFlush } from './useWebLifecycleFlush';
 import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
@@ -24,6 +25,8 @@ import {
 interface UseDraftOptions {
     /** Exact route credential authority. A missing or retired lifetime is local-only. */
     accountLifetime: ServerAccountScopeLifetime | null;
+    /** The authenticated frame keeps the same Account/document while replacing its Session child. */
+    retainProjectionOnAccountRetirement?: boolean;
     /** Exact Session projection selected by the route owner. */
     session: Session | null;
     autoSaveInterval?: number; // in milliseconds, default 2000
@@ -49,17 +52,23 @@ function normalizeSessionId(sessionId: string | null | undefined): string | null
     return normalizedSessionId.length > 0 ? normalizedSessionId : null;
 }
 
+/**
+ * Binds one Session's live composer text (`textStore`) to its canonical draft replica. The text
+ * store is the composer's live value; this owner adopts, seeds, persists, restores and clears it.
+ * It never renders its host for a keystroke: it subscribes only to a stored draft that differs
+ * from the text on screen, which the repository echo of this composer's own edits never does.
+ */
 export function useDraft(
     sessionId: string | null | undefined,
-    value: string,
-    onChange: (value: string) => void,
+    textStore: ComposerTextStore,
     options: UseDraftOptions,
 ) {
     const { autoSaveInterval = 2000 } = options;
+    const onChange = textStore.setPrompt;
     const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const lastSavedValue = useRef<string>('');
     const lastSessionId = useRef<string | null>(null);
-    const latestValue = useRef<string>(value);
+    const latestValue = useRef<string>(textStore.getPrompt());
     const autosaveSkip = useRef<Readonly<{ sessionId: string; value: string }> | null>(null);
     const routeFocused = useIsFocused();
     const active = options.active ?? routeFocused;
@@ -70,12 +79,22 @@ export function useDraft(
     ), [accountLifetime]);
     const resolvedSessionId = normalizeSessionId(sessionId);
     const session = resolvedSessionId ? options.session : null;
-    const repositoryDraft = resolvedSessionId && draftScope
-        ? getSessionDraftSnapshot(draftScope, { kind: 'session', sessionId: resolvedSessionId })
-        : null;
-    const storedDraft = typeof repositoryDraft?.document.composer.text.value === 'string'
-        ? repositoryDraft.document.composer.text.value
-        : null;
+    const subscribeStoredDraft = useCallback((listener: () => void) => (
+        resolvedSessionId && draftScope
+            ? subscribeSessionDraft(draftScope, { kind: 'session', sessionId: resolvedSessionId }, listener)
+            : () => undefined
+    ), [draftScope, resolvedSessionId]);
+    // A load trigger, not a text projection: only a stored draft that differs from the live text
+    // (a remote edit, a finished materialization) re-runs the load owner below. The repository echo
+    // of this composer's own edits equals the live text, so it neither renders the host per
+    // keystroke nor re-adopts the value that is still waiting for its debounced remote flush.
+    const readStoredDraftTrigger = useCallback((): string | null => {
+        if (!resolvedSessionId || !draftScope) return null;
+        const stored = getSessionDraftSnapshot(draftScope, { kind: 'session', sessionId: resolvedSessionId })
+            ?.document.composer.text.value;
+        return typeof stored === 'string' && stored !== textStore.getPrompt() ? stored : null;
+    }, [draftScope, resolvedSessionId, textStore]);
+    const storedDraft = useSyncExternalStore(subscribeStoredDraft, readStoredDraftTrigger, readStoredDraftTrigger);
     const ownerMetadata = session ? readSessionOwnerMetadataView(session) : null;
     const forkInitialPrompt = readForkInitialPromptV1(ownerMetadata);
     const forkInitialPromptText = forkInitialPrompt?.text ?? null;
@@ -107,16 +126,9 @@ export function useDraft(
         });
     }, [accountLifetime, active, draftScope, isDraftOwnerCurrent, resolvedSessionId]);
 
-    // Do not let a render that React later abandons become the imperative draft authority.
-    // Input handlers and draft lifecycle operations update this ref synchronously; controlled
-    // values are reconciled only once their render commits.
-    useLayoutEffect(() => {
-        latestValue.current = value;
-    }, [value]);
-
-    // Credential replacement retires the mounted repository owner synchronously. Clear only
-    // the controlled projection; subsequent edits remain ephemeral until a replacement exact
-    // binding is published and must never reach the retired Account replica.
+    // Credential replacement retires repository authority synchronously. Account switches
+    // clear their projection; the authenticated frame retains its same-Account document
+    // while replacing the Session child. Neither can write through the retired lifetime.
     useLayoutEffect(() => {
         if (!accountLifetime) return;
         const retirement = accountLifetime.onRetire(() => {
@@ -124,6 +136,7 @@ export function useDraft(
                 clearTimeout(saveTimeoutRef.current);
                 saveTimeoutRef.current = null;
             }
+            if (options.retainProjectionOnAccountRetirement) return;
             latestValue.current = '';
             lastSavedValue.current = '';
             lastSessionId.current = null;
@@ -131,7 +144,7 @@ export function useDraft(
             onChange('');
         });
         return () => retirement.dispose();
-    }, [accountLifetime, onChange]);
+    }, [accountLifetime, onChange, options.retainProjectionOnAccountRetirement]);
 
     const saveDraftForSession = useCallback((targetSessionId: string, draft: string) => {
         if (!draftScope || !isDraftOwnerCurrent()) return;
@@ -404,13 +417,8 @@ export function useDraft(
     }, [adoptPersistedDraftText, draftScope, isDraftOwnerCurrent, resolvedSessionId]);
 
     // Auto-save with smart debouncing
-    useEffect(() => {
+    const autosaveValue = useCallback((value: string) => {
         if (!resolvedSessionId) return;
-
-        // A later input/lifecycle operation can supersede this committed render before passive
-        // effects run. Its closed-over value is then historical and must not be persisted back
-        // over the canonical replica after an outbound handoff clear.
-        if (value !== latestValue.current) return;
 
         // Only save if value has changed
         const skip = autosaveSkip.current;
@@ -424,7 +432,23 @@ export function useDraft(
             saveDraft(value);
             scheduleDraftFlush(previousSavedValue, value);
         }
-    }, [resolvedSessionId, saveDraft, scheduleDraftFlush, value]);
+    }, [resolvedSessionId, saveDraft, scheduleDraftFlush]);
+
+    // This owner's own operations update `latestValue` before writing the text store. Any other
+    // writer (a Composer transaction applied through the document owner) is adopted here,
+    // synchronously, and persisted like an edit.
+    useLayoutEffect(() => textStore.subscribe(() => {
+        const next = textStore.getPrompt();
+        if (next === latestValue.current) return;
+        latestValue.current = next;
+        autosaveValue(next);
+    }), [autosaveValue, textStore]);
+
+    // A persistence target that becomes available (the exact Account scope binding) or changes
+    // receives the text typed before it.
+    useEffect(() => {
+        autosaveValue(latestValue.current);
+    }, [autosaveValue]);
 
     useEffect(() => () => {
         if (saveTimeoutRef.current) {

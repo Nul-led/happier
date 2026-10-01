@@ -147,7 +147,7 @@ describe('plugin Settings administration CLI', () => {
           localId: 'daemon-token',
           secretDaemonTarget: { kind: 'daemon', serverIdentityId: 'srv_settings_1', machineId: 'machine-1' },
         },
-        { surface: 'cli', authority: 'present_user', defaultSessionId: null },
+        { surface: 'cli', defaultSessionId: null },
       );
       expect(JSON.parse(output.text())).toMatchObject({
         ok: true,
@@ -200,7 +200,7 @@ describe('plugin Settings administration CLI', () => {
           value: 'dark',
           expectedRevision: '7',
         },
-        { surface: 'cli', authority: 'present_user', defaultSessionId: null },
+        { surface: 'cli', defaultSessionId: null },
       );
     } finally {
       output.restore();
@@ -273,13 +273,13 @@ describe('plugin Settings administration CLI', () => {
       expect(execute.mock.calls).toEqual([
         ['plugins.settings.list',
           { pluginId: 'acme.settings', scope: { kind: 'account' }, target: { kind: 'account' } },
-          { surface: 'cli', authority: 'present_user', defaultSessionId: null }],
+          { surface: 'cli', defaultSessionId: null }],
         ['plugins.settings.get', {
             pluginId: 'acme.settings', scope: { kind: 'account' }, target: { kind: 'account' }, localId: 'theme',
-          }, { surface: 'cli', authority: 'present_user', defaultSessionId: null }],
+          }, { surface: 'cli', defaultSessionId: null }],
         ['plugins.settings.reset', {
             pluginId: 'acme.settings', scope: { kind: 'account' }, target: { kind: 'account' }, localId: 'theme', expectedRevision: '8',
-          }, { surface: 'cli', authority: 'present_user', defaultSessionId: null }],
+          }, { surface: 'cli', defaultSessionId: null }],
       ]);
     } finally {
       output.restore();
@@ -321,7 +321,7 @@ describe('plugin Settings administration CLI', () => {
           localId: 'daemon-token',
           secretDaemonTarget: { kind: 'daemon', serverIdentityId: 'srv_settings_1', machineId: 'machine-1' },
         },
-        { surface: 'cli', authority: 'present_user', defaultSessionId: null },
+        { surface: 'cli', defaultSessionId: null },
       );
     } finally {
       output.restore();
@@ -424,7 +424,7 @@ describe('plugin Settings administration CLI', () => {
             value: 'dark',
             expectedRevision: '7',
           },
-          { surface: 'cli', authority: 'present_user', defaultSessionId: null },
+          { surface: 'cli', defaultSessionId: null },
         );
         expect(JSON.parse(output.text())).toMatchObject({ ok: true, kind: 'plugins.settings.set' });
       } finally {
@@ -457,7 +457,7 @@ describe('plugin Settings administration CLI', () => {
         expect(execute).toHaveBeenCalledWith(
           'plugins.settings.secret.bind',
           { pluginId: 'acme.settings', localId: 'daemon-token', savedSecretId: 'saved-1', expectedRevision: '5' },
-          { surface: 'cli', authority: 'present_user', defaultSessionId: null },
+          { surface: 'cli', defaultSessionId: null },
         );
       } finally {
         output.restore();
@@ -515,7 +515,7 @@ describe('plugin Settings administration CLI', () => {
         expect(execute).toHaveBeenCalledWith(
           'plugins.settings.secret.status',
           { pluginId: 'acme.settings', localId: 'token' },
-          { surface: 'cli', authority: 'present_user', defaultSessionId: null },
+          { surface: 'cli', defaultSessionId: null },
         );
       } finally {
         output.restore();

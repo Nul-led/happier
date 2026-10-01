@@ -91,7 +91,7 @@ describe('createSpawnNewSessionLifecycleActionHandler dev adaptation', () => {
         v: 1,
         updatedAt: 1710000000003,
         ref: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: null,
           modelId: 'gpt-5',
         },

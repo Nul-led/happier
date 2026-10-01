@@ -89,7 +89,7 @@ describe('ephemeral Runner logging custody', () => {
             })),
             submitConsent: vi.fn(async () => undefined),
             submitReadiness: vi.fn(async () => undefined),
-            decline: vi.fn(async () => undefined),
+            decline: vi.fn(async () => ({ status: 'declined' as const })),
             onConnectionState: () => () => undefined,
             close: vi.fn(async () => undefined),
           })),

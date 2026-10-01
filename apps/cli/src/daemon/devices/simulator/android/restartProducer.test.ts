@@ -108,8 +108,12 @@ function producerStartInput(input: Readonly<{
         negotiatedCodecId: 'h264.avcc',
         caps,
         startRequest: startRequest(),
-        emitFrame: input.emitFrame as SimulatorCaptureFrameProducerStartInput['emitFrame'],
+        emitFrame: (frame) => {
+            if (!('payload' in frame)) throw new Error('Raw Android producer emitted a ready-frame envelope');
+            input.emitFrame(frame);
+        },
         fail: input.fail ?? (() => undefined),
+        reportInputFailure: () => undefined,
     };
 }
 

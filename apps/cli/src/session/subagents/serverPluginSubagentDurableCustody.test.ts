@@ -8,7 +8,7 @@ import { createServerPluginSubagentDurableCustody } from './serverPluginSubagent
 const identity: PluginSubagentHostIdentity = {
   pluginId: 'acme.plugin',
   contributionId: 'assistant',
-  immutableGenerationId: 'generation-1',
+  sourceCustody: { kind: 'managed', immutableGenerationId: 'generation-1', installSource: 'npm' },
   parentSessionId: 'session-1',
 };
 const credentials = {
@@ -98,20 +98,20 @@ describe('server-backed plugin subagent custody', () => {
     await expect(custody.retire()).resolves.toBeUndefined();
     expect(post).toHaveBeenCalledTimes(2);
     for (const [url, body] of post.mock.calls) {
-      expect(String(url)).toContain('/v2/session-subagents/custody/generation-retirements');
-      expect(body).toEqual({ pluginId: 'acme.plugin', immutableGenerationId: 'generation-1' });
+      expect(String(url)).toContain('/v2/session-subagents/custody/source-retirements');
+      expect(body).toEqual({ pluginId: 'acme.plugin', sourceCustody: identity.sourceCustody });
     }
   });
 
-  it('maps a retired-scope mutation to the generation-retired failure', async () => {
+  it('maps a retired-scope mutation to the source-retired failure', async () => {
     vi.spyOn(axios, 'get').mockImplementation(async (url) => String(url).endsWith('/capability')
       ? { status: 200, data: capability } as never
       : { status: 200, data: { session: rawSession('plain') } } as never);
-    vi.spyOn(axios, 'post').mockResolvedValue({ status: 409, data: { error: 'generation-retired' } } as never);
+    vi.spyOn(axios, 'post').mockResolvedValue({ status: 409, data: { error: 'source-retired' } } as never);
 
     await expect(service().service.observe({
       observationId: 'child', status: 'running',
-    })).rejects.toMatchObject({ code: 'plugin_generation_retired' });
+    })).rejects.toMatchObject({ code: 'plugin_subagent_source_retired' });
   });
 
   it('fails an old server closed and does not create process-local durable state', async () => {
@@ -489,7 +489,7 @@ describe('server-backed plugin subagent custody', () => {
     });
     const body = post.mock.calls[0]![1] as Record<string, unknown>;
     expect(body.scope).toEqual({
-      pluginId: 'acme.plugin', contributionId: 'assistant', immutableGenerationId: 'generation-1',
+      pluginId: 'acme.plugin', contributionId: 'assistant', sourceCustody: identity.sourceCustody,
     });
     expect(String(body.operationId)).toMatch(/^plugin-subagent-observation-v1:sha256:[a-f0-9]{64}$/);
     expect(String(body.subagentId)).toMatch(/^plugin-subagent-v1:sha256:[a-f0-9]{64}$/);

@@ -1,5 +1,5 @@
-import type { Message } from '../../domains/messages/messageTypes';
-import { isRecoveredHistoryTranscriptObservation } from '../../domains/messages/transcriptObservationProvenance';
+import type { Message } from "@happier-dev/session-core/messages";
+import { isRecoveredHistoryTranscriptObservation } from "@happier-dev/session-core/messages";
 import type { DiscardedPendingMessage, PendingMessage } from '../../domains/state/storageTypes';
 import { shouldPreservePendingProjectionAfterCommittedUserLocalId } from '../../domains/pending/pendingTranscriptProjection';
 import { isPendingMessageForRecipient } from '../../domains/pending/pendingMessageRecipient';

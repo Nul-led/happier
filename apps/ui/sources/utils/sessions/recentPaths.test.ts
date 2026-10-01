@@ -282,4 +282,20 @@ describe('getRecentPathsForMachine', () => {
         expect(first).toEqual(['/Users/test/workspace/current']);
         expect(second).toEqual(first);
     });
+
+    it('never offers a no-folder session’s private folder as a recent folder', async () => {
+        const { getRecentPathsForMachine } = await import('./recentPaths');
+        const folder = createSession({ id: 'folder', machineId: 'machine-target', path: '/Users/test/repo', updatedAt: 5 });
+        const chat = createSession({ id: 'chat', machineId: 'machine-target', path: '/Users/test/.happier/servers/s/session-directories/abc', updatedAt: 9 });
+        const managedChat: Session = { ...chat, metadata: { ...chat.metadata!, sessionDirectoryV1: { v: 1, kind: 'managed' } } as Session['metadata'] };
+
+        const paths = getRecentPathsForMachine({
+            machineId: 'machine-target',
+            recentMachinePaths: [],
+            sessions: [folder, managedChat],
+            preferProvidedSessionMetadata: true,
+        });
+
+        expect(paths).toEqual(['/Users/test/repo']);
+    });
 });

@@ -1,4 +1,7 @@
-import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
+import {
+    getAppliedActiveServerSnapshot,
+    isAppliedActiveServerRuntimeAvailable,
+} from '@/sync/runtime/orchestration/connectionManager';
 import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
 import { readRegisteredStorageState } from '@/sync/domains/state/storageStateReaderBridge';
 
@@ -19,7 +22,8 @@ let activeLifetime: MutableActiveServerAccountScopeLifetime | null = null;
 const NOOP_DISPOSABLE = Object.freeze({ dispose(): void {} });
 
 export function getActiveServerAccountScope(): ServerAccountScope | null {
-    const activeServerId = String(getActiveServerSnapshot().serverId ?? '').trim();
+    if (!isAppliedActiveServerRuntimeAvailable()) return null;
+    const activeServerId = String(getAppliedActiveServerSnapshot().serverId ?? '').trim();
     const profileScope = readRegisteredStorageState()?.profileScope ?? null;
     if (!activeServerId || !profileScope) return null;
     return areServerProfileIdentifiersEquivalent(profileScope.serverId, activeServerId) ? profileScope : null;

@@ -4,7 +4,9 @@ import { applyFolderAssignmentChange } from './applyFolderAssignmentChange';
 
 describe('applyFolderAssignmentChange', () => {
     it('does not serialize mutations for distinct delimiter-bearing Session addresses', async () => {
-        let releaseFirst: (() => void) | null = null;
+        let releaseFirst: () => void = () => {
+            throw new Error('first mutation was not started');
+        };
         const firstPending = new Promise<void>((resolve) => {
             releaseFirst = resolve;
         });
@@ -29,7 +31,7 @@ describe('applyFolderAssignmentChange', () => {
             expect(secondStarted).toHaveBeenCalledTimes(1);
         });
 
-        releaseFirst?.();
+        releaseFirst();
         await Promise.all([first, second]);
     });
 });

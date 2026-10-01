@@ -1,7 +1,8 @@
 import * as React from 'react';
 
 import type { ResolvedAgentCatalogEntry } from '@/agents/backendCatalog/agentCatalogProjection';
-import { getAgentCore } from '@/agents/catalog/catalog';
+import { getAgentCore, hasAgentIconMark } from '@/agents/catalog/catalog';
+import { AgentIcon } from '@/agents/registry/AgentIcon';
 import { InstalledPluginBrandMark } from '@/components/plugins/shared/InstalledPluginBrandMark';
 import { useInstalledPluginBrandPresentation } from '@/components/plugins/shared/installedPluginBrandPresentation';
 import { Icon, type IconName } from '@/components/ui/icons/Icon';
@@ -24,14 +25,11 @@ export function AgentCatalogIdentityIcon(props: Readonly<{
 }>): React.ReactElement {
     const { theme } = useUnistyles();
     const color = props.color ?? theme.colors.text.secondary;
-    const packageGeneration = props.entry.installedPackage?.immutableGenerationId
-        ?? props.entry.projectionGeneration;
     const scope = React.useMemo(
         () => new AbortController(),
         [
             props.current,
             props.entry.installedPackage,
-            packageGeneration,
             props.entry.qualifiedId,
             props.machineId,
             props.serverId,
@@ -51,7 +49,6 @@ export function AgentCatalogIdentityIcon(props: Readonly<{
         installedPackage,
         machineId: props.machineId,
         serverId: props.serverId,
-        expectedGeneration: packageGeneration,
         signal: scope.signal,
         accountLifetime,
         isCurrent: () => props.current && !scope.signal.aborted,
@@ -74,6 +71,12 @@ export function AgentCatalogIdentityIcon(props: Readonly<{
                 testID={props.testID}
             />
         );
+    }
+
+    // A bundled Agent carries its own brand mark; the generic glyph is only the fallback.
+    const brandAgentId = props.entry.iconAgentId;
+    if (brandAgentId && hasAgentIconMark(brandAgentId, theme)) {
+        return <AgentIcon agentId={brandAgentId} size={props.size ?? 29} testID={props.testID} />;
     }
 
     const iconName = getAgentCore(props.entry.iconAgentId ?? '')?.ui.agentPickerIconName

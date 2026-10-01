@@ -1,15 +1,16 @@
+import { createHash } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
+import axios from 'axios';
 import type {
     DaemonLocalServicePreviewOpenOrCreateRequestV1,
     DaemonLocalServicePreviewOpenOrCreateResponseV1,
     DaemonLocalServicePreviewRevokeRequestV1,
     DaemonLocalServicePreviewRevokeResponseV1,
     LocalServicePreviewSnapshotV1,
+    LocalServicePreviewResourceV1,
 } from '@happier-dev/protocol';
 
-import {
-    projectLocalServicePreviewSnapshotRow,
-    projectLocalServicePreviewSnapshotRows,
-} from './previewAccessUrlOwner';
+import { createLocalServicePreviewServerRoutes, type LocalServicePreviewServerInput } from './serverRoutes';
 import {
     listLocalServicePreviewResources,
     registerLocalServicePreview,
@@ -20,12 +21,17 @@ import {
 import type { LocalServiceInventoryRegistry } from '../inventory/registry';
 import type { NormalizedLocalServiceInventoryEntry } from '../inventory/scanner';
 import { buildLocalServiceEndpointUrl } from '../inventory/endpoint';
+import { localServicePreviewDirectBindingV1, type LocalServicePreviewDirectBindingV1 } from '@happier-dev/protocol/local/services/preview/v1';
+import { startLocalServicePreviewNativeAdapter } from './nativeAdapter';
 
 export type LocalServicePreviewLifecycleResult<TResponse> =
     | Readonly<{ ok: true; response: TResponse }>
     | Readonly<{ ok: false; reasonCode: string }>;
 
 export type LocalServicePreviewRoutes = Readonly<{
+    acquireNativeApplication(binding: LocalServicePreviewDirectBindingV1, grantId: string, signal?: AbortSignal): Promise<Readonly<{
+        destination: Readonly<{ host: string; port: number }>; signal: AbortSignal; close: () => Promise<void>;
+    }>>;
     getSnapshot(): Promise<LocalServicePreviewSnapshotV1>;
     openOrCreate(
         request: DaemonLocalServicePreviewOpenOrCreateRequestV1,
@@ -35,8 +41,8 @@ export type LocalServicePreviewRoutes = Readonly<{
     ): Promise<LocalServicePreviewLifecycleResult<DaemonLocalServicePreviewRevokeResponseV1>>;
 }>;
 
-function previewIdForInventoryEntry(entryId: string): string {
-    return `lsv-preview:inventory:${entryId}`;
+function previewIdForInventoryEntry(accountId: string, machineId: string, sessionId: string | undefined, entryId: string): string {
+    return `preview-${createHash('sha256').update(JSON.stringify([accountId, machineId, sessionId ?? null, entryId])).digest('hex')}`;
 }
 
 /**
@@ -54,6 +60,7 @@ function resolveLoopbackHost(entry: NormalizedLocalServiceInventoryEntry): strin
 function buildInventoryPreviewInput(input: Readonly<{
     entry: NormalizedLocalServiceInventoryEntry;
     machineId: string;
+    accountId: string;
     sessionId: string | undefined;
     initialPath: DaemonLocalServicePreviewOpenOrCreateRequestV1['initialPath'];
 }>): RegisterLocalServicePreviewInput | null {
@@ -66,13 +73,13 @@ function buildInventoryPreviewInput(input: Readonly<{
         ?? input.entry.presentation?.pageTitle
         ?? addressLabel;
     return {
-        previewId: previewIdForInventoryEntry(input.entry.id),
-        sessionId: input.sessionId ?? `machine:${input.machineId}`,
+        previewId: previewIdForInventoryEntry(input.accountId, input.machineId, input.sessionId, input.entry.id),
+        ...(input.sessionId ? { sessionId: input.sessionId } : {}),
         machineId: input.machineId,
         owner: input.sessionId
             ? { kind: 'session', id: input.sessionId }
-            : { kind: 'user', id: input.machineId },
-        target: { scheme: endpoint.scheme, host: endpoint.host, port: endpoint.port },
+            : { kind: 'user', id: input.accountId },
+        target: { scheme: endpoint.scheme, host, port: endpoint.port },
         initialPath: input.initialPath ?? { pathname: '/', search: '' },
         display: { title, addressLabel },
         originMode: 'host',
@@ -81,11 +88,41 @@ function buildInventoryPreviewInput(input: Readonly<{
 
 export function createLocalServicePreviewRoutes(input: Readonly<{
     machineId: string;
+    accountId?: string;
+    server?: LocalServicePreviewServerInput;
     registry: LocalServicePreviewRegistry;
     inventoryRegistry?: LocalServiceInventoryRegistry;
     now?: () => number;
 }>): LocalServicePreviewRoutes {
     const now = input.now ?? (() => Date.now());
+    const server = input.server ? createLocalServicePreviewServerRoutes(input.server) : null;
+
+    function failureReason(error: unknown): string {
+        if (axios.isAxiosError(error) && error.response?.data && typeof error.response.data === 'object') {
+            const reason: unknown = error.response.data.reasonCode;
+            if (typeof reason === 'string') return reason;
+        }
+        return 'preview_registration_failed';
+    }
+
+    async function publish(resource: LocalServicePreviewResourceV1) {
+        try {
+            if (!server) throw new Error('preview_server_unavailable');
+            const preview = await server.registerPreview(resource);
+            input.registry.previewsById.set(resource.previewId, preview);
+            return { ok: true as const, preview };
+        } catch (error) {
+            const reasonCode = server ? failureReason(error) : 'preview_server_unavailable';
+            input.registry.previewsById.set(resource.previewId, {
+                previewId: resource.previewId,
+                resource,
+                accessUrl: null,
+                expiresAt: null,
+                diagnostics: [{ v: 1, code: 'preview_registration_failed', severity: 'error', scope: 'privatePreview', previewId: resource.previewId, details: { reasonCode } }],
+            });
+            return { ok: false as const, reasonCode };
+        }
+    }
 
     function buildSnapshot(): LocalServicePreviewSnapshotV1 {
         const resources = [...listLocalServicePreviewResources(input.registry)]
@@ -96,15 +133,35 @@ export function createLocalServicePreviewRoutes(input: Readonly<{
             generatedAt: now(),
             refreshState: 'idle',
             resources,
-            // Canonical render rows: each registered loopback resource projected with its
-            // minted private-preview `accessUrl` so the UI embed loads the real dev server.
-            previews: [...projectLocalServicePreviewSnapshotRows(resources)],
+            previews: resources.map((resource) => input.registry.previewsById.get(resource.previewId)!),
             diagnostics: [],
         };
     }
 
     return {
+        async acquireNativeApplication(binding, grantId, signal) {
+            const resource = input.registry.previewsById.get(binding.previewId)?.resource;
+            if (!server || !resource || binding.machineId !== input.machineId
+                || !isDeepStrictEqual(localServicePreviewDirectBindingV1(resource), binding)) {
+                throw new Error('preview_registration_unavailable');
+            }
+            const registration = await server.acquireNativeRegistration(binding, grantId, signal);
+            try {
+                const current = input.registry.previewsById.get(binding.previewId)?.resource;
+                if (!current || !isDeepStrictEqual(localServicePreviewDirectBindingV1(current), binding)) {
+                    throw new Error('preview_registration_changed');
+                }
+                const adapter = await startLocalServicePreviewNativeAdapter({ preview: resource, signal: registration.signal });
+                return {
+                    destination: { host: '127.0.0.1', port: adapter.port }, signal: registration.signal,
+                    close: async () => { registration.close(); await adapter.close(); },
+                };
+            } catch (error) { registration.close(); throw error; }
+        },
+
         async getSnapshot() {
+            // Reads project registration state. Each explicit Open requests its own one-use
+            // admission through openOrCreate; observing metadata must not mint credentials.
             return buildSnapshot();
         },
 
@@ -116,17 +173,20 @@ export function createLocalServicePreviewRoutes(input: Readonly<{
             // Already-registered target (managed/launch services register their own preview, or a
             // prior openOrCreate did): return it idempotently rather than double-registering.
             const existingId = request.inventoryEntryId
-                ? previewIdForInventoryEntry(request.inventoryEntryId)
+                ? previewIdForInventoryEntry(input.accountId ?? '', input.machineId, request.sessionId, request.inventoryEntryId)
                 : request.launchTargetId ?? request.managedServiceId ?? null;
-            if (existingId) {
-                const existing = input.registry.resourcesById.get(existingId);
+            if (existingId && !request.inventoryEntryId) {
+                const existing = input.registry.previewsById.get(existingId)?.resource;
                 if (existing) {
+                    if (existing.sessionId !== request.sessionId) return { ok: false, reasonCode: 'preview_session_mismatch' };
+                    const published = await publish({ ...existing, initialPath: request.initialPath ?? existing.initialPath });
+                    if (!published.ok) return published;
                     return {
                         ok: true,
                         response: {
                             protocolVersion: 1,
                             status: 'existing',
-                            preview: projectLocalServicePreviewSnapshotRow(existing),
+                            preview: published.preview,
                             snapshot: buildSnapshot(),
                         },
                     };
@@ -156,22 +216,27 @@ export function createLocalServicePreviewRoutes(input: Readonly<{
             const previewInput = buildInventoryPreviewInput({
                 entry,
                 machineId: input.machineId,
+                accountId: input.accountId ?? '',
                 sessionId: request.sessionId,
                 initialPath: request.initialPath,
             });
             if (!previewInput) {
                 return { ok: false, reasonCode: 'non_loopback_target' };
             }
+            if (!input.accountId) return { ok: false, reasonCode: 'preview_account_unavailable' };
+            const status = input.registry.previewsById.has(previewInput.previewId) ? 'existing' : 'created';
             const registration = registerLocalServicePreview(input.registry, previewInput);
             if (!registration.ok) {
                 return { ok: false, reasonCode: registration.reasonCode };
             }
+            const published = await publish(registration.resource);
+            if (!published.ok) return published;
             return {
                 ok: true,
                 response: {
                     protocolVersion: 1,
-                    status: 'created',
-                    preview: projectLocalServicePreviewSnapshotRow(registration.resource),
+                    status,
+                    preview: published.preview,
                     snapshot: buildSnapshot(),
                 },
             };
@@ -180,6 +245,11 @@ export function createLocalServicePreviewRoutes(input: Readonly<{
         async revoke(request) {
             if (request.machineId !== input.machineId) {
                 return { ok: false, reasonCode: 'wrong_machine' };
+            }
+            if (input.registry.previewsById.has(request.previewId)) {
+                if (!server) return { ok: false, reasonCode: 'preview_server_unavailable' };
+                try { await server.unregisterPreview(request.previewId); }
+                catch (error) { return { ok: false, reasonCode: failureReason(error) }; }
             }
             const result = unregisterLocalServicePreview(input.registry, request.previewId);
             return {

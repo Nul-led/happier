@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createSocketIoManagerBoundaryStub } from '@/dev/testkit/mocks/socketIo';
 
 /**
  * Composed transport authority gate: a non-focused Iroh-only Home must serve scoped
@@ -116,6 +117,7 @@ function mockVerifiedLease(): void {
 function createFakeSocket() {
     const listeners = new Map<string, Set<(...args: unknown[]) => void>>();
     const socket = {
+        io: createSocketIoManagerBoundaryStub(),
         connected: false,
         id: 'socket-1',
         on: (event: string, handler: (...args: unknown[]) => void) => {

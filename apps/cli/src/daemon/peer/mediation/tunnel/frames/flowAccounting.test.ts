@@ -2,12 +2,12 @@
  * alongside the module split of `frames.ts` (lane D3, 2026-08-23). Test bodies are unchanged. */
 
 import { describe, expect, it } from 'vitest';
+import * as framesModule from './index.js';
 
 type FramesModule = typeof import('./index');
 
 async function loadFramesModule(): Promise<FramesModule | null> {
-    const modulePath = './index.js';
-    return import(modulePath).catch(() => null) as Promise<FramesModule | null>;
+    return framesModule;
 }
 
 describe('peer TCP tunnel frame accounting', () => {

@@ -145,6 +145,15 @@ export const Animated = {
             cb?.({ finished: true });
         },
     }),
+    stagger: (_delay: number, steps: Array<{ start?: (cb?: (result: { finished: boolean }) => void) => void; stop?: () => void }>) => ({
+        start: (cb?: (result: { finished: boolean }) => void) => {
+            for (const step of steps) step.start?.();
+            cb?.({ finished: true });
+        },
+        stop: () => {
+            for (const step of steps) step.stop?.();
+        },
+    }),
     loop: (animation: { start?: (cb?: (result: { finished: boolean }) => void) => void }) => ({
         start: (cb?: (result: { finished: boolean }) => void) => {
             animation?.start?.();

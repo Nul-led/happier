@@ -1,6 +1,6 @@
 import React from 'react';
 import { act } from 'react-test-renderer';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { collectUnexpectedRawTextNodes, renderScreen } from '@/dev/testkit';
 import { VoiceCaptureBusyError } from '@/voice/runtime/input/VoiceCaptureAdmissionController';
 import { installAgentInputCommonModuleMocks } from './agentInputTestHelpers';
@@ -8,6 +8,8 @@ import type { AutocompleteSuggestion } from '@/components/autocomplete/autocompl
 import type { AgentInputAttachmentsRowItem } from './agentInputContracts';
 
 type MultiTextInputSelection = { start: number; end: number };
+// Cold imports belong to fixture setup, not the timeout of the first selected interaction test.
+beforeAll(async () => { await import('./AgentInput'); }, 600_000);
 type MultiTextInputState = { text: string; selection: MultiTextInputSelection };
 type ActiveSuggestionsResult = readonly [
     readonly AutocompleteSuggestion[],
@@ -118,7 +120,7 @@ installAgentInputCommonModuleMocks({
         });
     },
     storageStore: async () => {
-        const state = { sessionMessages: {}, localSettings: { uiFontScale: 1, uiContentWidthMode: null } };
+        const state = { sessionMessages: {}, artifacts: {}, localSettings: { uiFontScale: 1, uiContentWidthMode: null } };
         const store = Object.assign(
             (selector: any) => selector(state),
             {
@@ -189,6 +191,7 @@ vi.mock('@/sync/domains/permissions/permissionModeOptions', () => ({
     getPermissionModeLabelForAgentType: () => 'Default',
     getPermissionModeOptionsForSession: () => [{ value: 'default', label: 'Default' }],
     getPermissionModeTitleForAgentType: () => 'Permissions',
+    restrictPermissionModeOptions: (options: readonly unknown[]) => options,
 }));
 
 vi.mock('@/sync/domains/permissions/describeEffectivePermissionMode', () => ({
@@ -357,6 +360,55 @@ describe('AgentInput (send button accessibility)', () => {
             autocompleteSuggestions,
             expect.objectContaining({ wrapAround: true }),
         );
+
+        await screen.unmount();
+    });
+
+    /**
+     * A host that mounts several composers names each one. The name has to
+     * land on the real text input — a label on a wrapper view is never read
+     * when assistive technology focuses the field itself.
+     */
+    /**
+     * A host that grants a Session control (an embed's Change model) without text submission
+     * keeps the composer's controls and drops the field and send entirely; no text box is shown
+     * that could never be sent.
+     */
+    it('renders only its controls in the controls-only presentation', async () => {
+        const { AgentInput } = await import('./AgentInput');
+
+        const screen = await renderScreen(<AgentInput
+            sessionId="session-1"
+            value=""
+            placeholder="Type"
+            inputPresentation="controlsOnly"
+            onChangeText={() => {}}
+            onSend={() => {}}
+            autocompleteKinds={[]}
+            autocompleteSuggestions={async () => []}
+        />);
+
+        expect(screen.root.findAllByType('MultiTextInput' as any)).toHaveLength(0);
+        expect(screen.root.findAll((node) => node.props.testID === 'session-composer-send')).toHaveLength(0);
+
+        await screen.unmount();
+    });
+
+    it('names the real text input with the host-supplied input label', async () => {
+        const { AgentInput } = await import('./AgentInput');
+
+        const screen = await renderScreen(<AgentInput
+            value=""
+            placeholder="Type"
+            inputAccessibilityLabel="Analyze, step 1 of 2"
+            onChangeText={() => {}}
+            onSend={() => {}}
+            autocompleteKinds={[]}
+            autocompleteSuggestions={async () => []}
+        />);
+
+        const input = screen.root.findByType('MultiTextInput' as any);
+        expect(input.props.accessibilityLabel).toBe('Analyze, step 1 of 2');
 
         await screen.unmount();
     });

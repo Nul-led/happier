@@ -42,6 +42,7 @@ import {
 import {
     createConnectedAccountContributionRegistry,
 } from './contributionRegistry';
+import { createPluginRuntimeOccurrenceId } from '../runtimeSlots';
 import {
     createConnectedAccountHostRuntimeInvoker,
     type ConnectedAccountRuntimeEstablishedOperation,
@@ -67,6 +68,14 @@ const testResolveNetworkAddresses = async (hostname: string): Promise<readonly s
 const service = Object.freeze({
     pluginId: 'acme.accounts',
     localId: 'work',
+});
+const runtimeIdentity = Object.freeze({
+    occurrenceId: createPluginRuntimeOccurrenceId(service.pluginId),
+    sourceCustody: Object.freeze({
+        kind: 'managed' as const,
+        immutableGenerationId: 'artifact-1',
+        installSource: 'archive' as const,
+    }),
 });
 const mode = PluginConnectedAccountAuthenticationModeV2Schema.parse({
     id: 'manual',
@@ -133,8 +142,7 @@ function createEstablishedInvoker(
         resolveNetworkAddresses: testResolveNetworkAddresses,
         resolveRuntime: async () => Object.freeze({
             ref: service,
-            generation: 'generation-1',
-            immutableGenerationId: 'artifact-1',
+            ...runtimeIdentity,
             descriptor: { ...descriptor, ...(declaresRecoveryCredits ? { recoveryCredits: { supported: true as const } } : {}) },
             runtime: registeredRuntime,
             isCurrent,
@@ -147,7 +155,7 @@ function createEstablishedInvoker(
             hostAccess: Object.freeze([]),
             serviceBinding:
                 createLoggerAndEventsAvailablePluginInvocationServiceBinding(
-                    'generation-1',
+                    runtimeIdentity.occurrenceId,
                     'producer',
                     [],
                 ),
@@ -256,8 +264,7 @@ describe('connected-account runtime invoker', () => {
             admission: Object.freeze({
                 service,
                 descriptor: mode,
-                generation: 'generation-1',
-                immutableGenerationId: 'artifact-1',
+                ...runtimeIdentity,
                 modeId: mode.id,
             }),
             operation: Object.freeze({
@@ -699,8 +706,7 @@ describe('connected-account runtime invoker', () => {
             resolveNetworkAddresses: testResolveNetworkAddresses,
             resolveRuntime: async () => Object.freeze({
                 ref: service,
-                generation: 'generation-1',
-                immutableGenerationId: 'artifact-1',
+                ...runtimeIdentity,
                 descriptor,
                 runtime: registeredRuntime,
                 isCurrent: () => true,
@@ -712,7 +718,7 @@ describe('connected-account runtime invoker', () => {
             resolveHostPolicy: () => Object.freeze({
                 hostAccess: Object.freeze([]),
                 serviceBinding: owners.createOrdinaryServiceBinding(
-                    'generation-1',
+                    runtimeIdentity.occurrenceId,
                     'connected-runtime',
                 ),
             }),
@@ -757,7 +763,7 @@ describe('connected-account runtime invoker', () => {
         expect(records).toHaveLength(1);
         retained.logger?.info('must not log after settlement');
         expect(records).toHaveLength(1);
-        await owners.retireGeneration('generation-1', service.pluginId);
+        await owners.retireGeneration(runtimeIdentity.occurrenceId, service.pluginId);
     });
 
     it('redacts secret manual-auth fields before cross-plugin interception while preserving terminal HTTP bytes', async () => {
@@ -808,7 +814,7 @@ describe('connected-account runtime invoker', () => {
             interceptorRegistry,
             redactInterceptorText: ({ seed, value }) => owners.redactDiagnosticText({
                 pluginId: seed.plugin.id,
-                generation: seed.generation,
+                occurrenceId: seed.occurrenceId,
                 correlationId: seed.correlationId,
             }, value),
         });
@@ -874,8 +880,7 @@ describe('connected-account runtime invoker', () => {
             resolveNetworkAddresses: testResolveNetworkAddresses,
             resolveRuntime: async () => Object.freeze({
                 ref: service,
-                generation: 'generation-1',
-                immutableGenerationId: 'artifact-1',
+                ...runtimeIdentity,
                 descriptor,
                 runtime: registeredRuntime,
                 isCurrent: () => true,
@@ -892,7 +897,7 @@ describe('connected-account runtime invoker', () => {
                     requestFingerprint: 'test-fingerprint',
                 }]),
                 serviceBinding: createLoggerAndEventsAvailablePluginInvocationServiceBinding(
-                    'generation-1',
+                    runtimeIdentity.occurrenceId,
                     'telegram-producer',
                     [networkRequest],
                 ),
@@ -902,7 +907,7 @@ describe('connected-account runtime invoker', () => {
             redactDiagnosticText(seed, value) {
                 return owners.redactDiagnosticText({
                     pluginId: seed.plugin.id,
-                    generation: seed.generation,
+                    occurrenceId: seed.occurrenceId,
                     correlationId: seed.correlationId,
                 }, value);
             },
@@ -917,8 +922,7 @@ describe('connected-account runtime invoker', () => {
             admission: Object.freeze({
                 service,
                 descriptor: mode,
-                generation: 'generation-1',
-                immutableGenerationId: 'artifact-1',
+                ...runtimeIdentity,
                 modeId: mode.id,
             }),
             operation: Object.freeze({
@@ -999,8 +1003,7 @@ describe('connected-account runtime invoker', () => {
             resolveNetworkAddresses: testResolveNetworkAddresses,
             resolveRuntime: async () => Object.freeze({
                 ref: service,
-                generation: 'generation-1',
-                immutableGenerationId: 'artifact-1',
+                ...runtimeIdentity,
                 descriptor,
                 runtime: registeredRuntime,
                 isCurrent: () => true,
@@ -1012,7 +1015,7 @@ describe('connected-account runtime invoker', () => {
             resolveHostPolicy: () => Object.freeze({
                 hostAccess: Object.freeze([]),
                 serviceBinding: createLoggerAndEventsAvailablePluginInvocationServiceBinding(
-                    'generation-1',
+                    runtimeIdentity.occurrenceId,
                     'refresh-producer',
                     [],
                 ),
@@ -1100,8 +1103,7 @@ describe('connected-account runtime invoker', () => {
             resolveNetworkAddresses: testResolveNetworkAddresses,
             resolveRuntime: async () => Object.freeze({
                 ref: service,
-                generation: 'generation-1',
-                immutableGenerationId: 'artifact-1',
+                ...runtimeIdentity,
                 descriptor,
                 runtime: registeredRuntime,
                 isCurrent: () => true,
@@ -1113,7 +1115,7 @@ describe('connected-account runtime invoker', () => {
             resolveHostPolicy: () => Object.freeze({
                 hostAccess: Object.freeze([]),
                 serviceBinding: createLoggerAndEventsAvailablePluginInvocationServiceBinding(
-                    'generation-1',
+                    runtimeIdentity.occurrenceId,
                     'oauth-producer',
                     [],
                 ),
@@ -1140,8 +1142,7 @@ describe('connected-account runtime invoker', () => {
         const admission = Object.freeze({
             service,
             descriptor: oauthMode,
-            generation: 'generation-1',
-            immutableGenerationId: 'artifact-1',
+            ...runtimeIdentity,
             modeId: oauthMode.id,
         });
 
@@ -1210,19 +1211,17 @@ describe('connected-account runtime invoker', () => {
             definition: descriptor,
         };
         const registry = createConnectedAccountContributionRegistry({
-            generation: 'generation-1',
-            immutableGenerationIdsByPluginId: new Map([
-                [service.pluginId, 'artifact-1'],
-            ]),
+                        readPluginOccurrenceId: () => runtimeIdentity.occurrenceId,
+            readPluginSourceCustody: () => runtimeIdentity.sourceCustody,
+            isPluginOccurrenceCurrent: () => true,
             descriptors: [contribution],
             activateOnDemand: async () => {},
             readRegistrations: () => [{
                 pluginId: service.pluginId,
-                generation: 'generation-1',
+                occurrenceId: runtimeIdentity.occurrenceId,
                 localId: service.localId,
                 runtime: registeredRuntime,
             }],
-            isGenerationCurrent: () => true,
         });
         const admittedLease = await registry.resolve(service);
         if (!admittedLease) throw new Error('Expected a resolvable connected-account lease');
@@ -1247,7 +1246,7 @@ describe('connected-account runtime invoker', () => {
                 hostAccess: Object.freeze([]),
                 serviceBinding:
                     createLoggerAndEventsAvailablePluginInvocationServiceBinding(
-                        'generation-1',
+                        runtimeIdentity.occurrenceId,
                         'producer',
                         [],
                     ),
@@ -1280,9 +1279,8 @@ describe('connected-account runtime invoker', () => {
                 admit: async () => Object.freeze({
                     service,
                     descriptor: mode,
-                    generation: admittedLease.generation,
-                    immutableGenerationId:
-                        admittedLease.immutableGenerationId,
+                    occurrenceId: admittedLease.occurrenceId,
+                    sourceCustody: admittedLease.sourceCustody,
                 }),
                 isCurrent: async () => admittedLease.isCurrent(),
                 invoke: async (input) => await invoker.invokeAuthentication({
@@ -1391,19 +1389,17 @@ describe('connected-account runtime invoker', () => {
                 definition: oauthDescriptor,
             };
             const registry = createConnectedAccountContributionRegistry({
-                generation: 'generation-1',
-                immutableGenerationIdsByPluginId: new Map([
-                    [service.pluginId, 'artifact-1'],
-                ]),
+                                readPluginOccurrenceId: () => runtimeIdentity.occurrenceId,
+                readPluginSourceCustody: () => runtimeIdentity.sourceCustody,
+                isPluginOccurrenceCurrent: () => true,
                 descriptors: [contribution],
                 activateOnDemand: async () => {},
                 readRegistrations: () => [{
                     pluginId: service.pluginId,
-                    generation: 'generation-1',
+                    occurrenceId: runtimeIdentity.occurrenceId,
                     localId: service.localId,
                     runtime: registeredRuntime,
                 }],
-                isGenerationCurrent: () => true,
             });
             const admittedLease = await registry.resolve(service);
             if (!admittedLease) throw new Error('Expected a resolvable connected-account lease');
@@ -1428,7 +1424,7 @@ describe('connected-account runtime invoker', () => {
                     hostAccess: Object.freeze([]),
                     serviceBinding:
                         createLoggerAndEventsAvailablePluginInvocationServiceBinding(
-                            'generation-1',
+                            runtimeIdentity.occurrenceId,
                             'producer',
                             [],
                         ),
@@ -1459,9 +1455,8 @@ describe('connected-account runtime invoker', () => {
                     admit: async () => Object.freeze({
                         service,
                         descriptor: oauthMode,
-                        generation: admittedLease.generation,
-                        immutableGenerationId:
-                            admittedLease.immutableGenerationId,
+                        occurrenceId: admittedLease.occurrenceId,
+                        sourceCustody: admittedLease.sourceCustody,
                     }),
                     isCurrent: async () => admittedLease.isCurrent(),
                     invoke: async (input) =>
@@ -1590,8 +1585,7 @@ describe('connected-account runtime invoker', () => {
                 resolveNetworkAddresses: testResolveNetworkAddresses,
                 resolveRuntime: async () => Object.freeze({
                     ref: service,
-                    generation: 'generation-1',
-                    immutableGenerationId: 'artifact-1',
+                    ...runtimeIdentity,
                     descriptor,
                     runtime: deniedRuntime,
                     isCurrent: () => true,
@@ -1609,7 +1603,7 @@ describe('connected-account runtime invoker', () => {
                     }]),
                     serviceBinding:
                         createLoggerAndEventsAvailablePluginInvocationServiceBinding(
-                            'generation-1',
+                            runtimeIdentity.occurrenceId,
                             'producer',
                             [networkRequest],
                         ),
@@ -1622,8 +1616,7 @@ describe('connected-account runtime invoker', () => {
             admission: Object.freeze({
                 service,
                 descriptor: mode,
-                generation: 'generation-1',
-                immutableGenerationId: 'artifact-1',
+                ...runtimeIdentity,
                 modeId: mode.id,
             }),
             operation: Object.freeze({
@@ -1696,8 +1689,7 @@ describe('connected-account runtime invoker', () => {
             resolveNetworkAddresses: testResolveNetworkAddresses,
             resolveRuntime: async () => Object.freeze({
                 ref: service,
-                generation: 'generation-1',
-                immutableGenerationId: 'artifact-1',
+                ...runtimeIdentity,
                 descriptor,
                 runtime: runtime((context) => {
                     expect(context.services).toBeDefined();
@@ -1717,7 +1709,7 @@ describe('connected-account runtime invoker', () => {
                 }]),
                 serviceBinding:
                     createLoggerAndEventsAvailablePluginInvocationServiceBinding(
-                        'generation-1',
+                        runtimeIdentity.occurrenceId,
                         'producer',
                         [networkRequest],
                     ),
@@ -1731,8 +1723,7 @@ describe('connected-account runtime invoker', () => {
             admission: Object.freeze({
                 service,
                 descriptor: mode,
-                generation: 'generation-1',
-                immutableGenerationId: 'artifact-1',
+                ...runtimeIdentity,
                 modeId: mode.id,
             }),
             operation: Object.freeze({

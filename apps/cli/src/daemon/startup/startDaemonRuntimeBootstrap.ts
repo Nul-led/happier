@@ -99,6 +99,7 @@ import type { PromptRegistryRegistry } from '@/prompts/registries/createPromptRe
 import type { DaemonStartupSource } from '../ownership/daemonOwnershipMetadata';
 import { isDaemonStartupSourceServiceManaged } from '../ownership/daemonOwnershipMetadata';
 import type { TrackedSession } from '../types';
+import { createResolveHostedSessionWorkingDirectory } from '../sessions/createLoadLocalSessionMetadataForHandoff';
 
 type LoggerLike = Readonly<{
   debug: (message: string, details?: unknown) => void;
@@ -272,6 +273,12 @@ export async function startDaemonRuntimeBootstrap(
 
   const directPeerServerLifecycle = directPeerServerEnabled
     ? createDirectTransferServerLifecycle({
+        attachmentUpload: {
+          resolveSessionWorkingDirectory: createResolveHostedSessionWorkingDirectory({
+            pidToTrackedSession: params.pidToTrackedSession,
+            getMachineId: params.machineIdProvider,
+          }),
+        },
         bindPort: directPeerRuntimeConfig.directPeer.bindPort,
         bindHost: directPeerRuntimeConfig.directPeer.bindHost,
         listenerClasses: directPeerTransferListenerClasses,

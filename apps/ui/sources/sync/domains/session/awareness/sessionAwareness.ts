@@ -1,3 +1,4 @@
+import { readSessionDirectoryKind } from '@happier-dev/protocol';
 import {
     projectSessionAwarenessV1,
     readSessionTerminalControlServiceabilityStateV1,
@@ -14,6 +15,7 @@ import { readSessionListRenderableSourceMetadata, type SessionListRenderableSess
 import { deriveLatestPendingRequestObservedAtFromSession, derivePendingRequestFlagsFromSession } from '../pending/listPendingSessionRequests';
 import { readSessionOwnerMetadataView } from '../readSessionOwnerMetadataView';
 import { toAwarenessRuntimeInput } from '../attention/runtimePresentation';
+import { readSessionContentAvailability } from '../encryptedContentAvailability';
 
 export type UiSessionAwarenessOptions = Readonly<{
     hasPendingUserMessages?: boolean;
@@ -26,8 +28,9 @@ export type UiSessionAwarenessOptions = Readonly<{
 function readUiSessionContentAvailability(
     session: Session | SessionListRenderableSession,
 ): SessionContentAvailabilityInputV1 {
-    if (session.encryptionMode === 'plain') return { mode: 'plain' };
-    switch (session.encryptedContentAvailability) {
+    const availability = readSessionContentAvailability(session);
+    if (session.encryptionMode === 'plain' && availability === 'ready') return { mode: 'plain' };
+    switch (availability) {
         case 'ready':
             return { mode: 'e2ee', keyState: 'opened' };
         case 'encrypted_access_pending':
@@ -38,7 +41,8 @@ function readUiSessionContentAvailability(
             return { mode: 'e2ee', keyState: 'content_unavailable' };
         case 'recipient_encryption_setup_required':
             return { mode: 'e2ee', keyState: 'setup_required' };
-        default:
+        case null:
+            // Unsettled: no decryption owner has decided yet, so nothing content-derived shows.
             return { mode: 'e2ee', keyState: 'unknown' };
     }
 }
@@ -86,13 +90,17 @@ export function createUiSessionAwarenessInput(
     });
     return {
         sessionId: session.id,
+        origin: session.origin,
         nowMs,
         title: readSessionDisplayTitleField({ metadata }).value ?? metadata?.name,
         ...components,
         content: readUiSessionContentAvailability(session),
         work: hydrated ? metadata ? readSessionWorkStateV1FromMetadata(metadata) : null : session.workState,
         workflowHeadline: hydrated ? workflow?.success ? workflow.data : null : session.workflowHeadline,
-        workspace: metadata ? { path: metadata.path, machineId: metadata.machineId ?? undefined } : null,
+        // A no-folder session's private folder is not a workspace to show or reuse.
+        workspace: metadata && readSessionDirectoryKind(metadata) !== 'managed'
+            ? { path: metadata.path, machineId: metadata.machineId ?? undefined }
+            : null,
         lineage: fork ? { relation: 'fork', sourceSessionId: fork.parentSessionId } : null,
         currentness: resolveAwarenessCurrentnessV1({
             lifecycle: components.lifecycle,

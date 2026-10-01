@@ -377,8 +377,8 @@ describe('AgentInput (machine chip)', () => {
         expect(machineChip?.props.accessibilityLabel).toContain(fullMachineName);
     });
 
-    it('renders a select-path label when path is not yet selected (new-session bootstrap)', async () => {
-        tree = (await renderScreen(React.createElement(AgentInput, {
+    it('shows the folder as loading, never “Add folder”, while the path is not yet resolved (new-session bootstrap)', async () => {
+        const screen = await renderScreen(React.createElement(AgentInput, {
                     value: 'hello',
                     placeholder: 'placeholder',
                     onChangeText: () => {},
@@ -388,10 +388,12 @@ describe('AgentInput (machine chip)', () => {
                     onMachineClick: () => {},
                     currentPath: '',
                     onPathClick: () => {},
-                }))).tree;
+                }));
 
-        const text = collectText(tree?.toJSON());
-        expect(text.join(' ')).toContain('newSession.selectPathTitle');
+        // One folder chip in the layout, whichever row renders it.
+        expect(screen.findAllHostsByTestId('agent-input-path-chip')).toHaveLength(1);
+        expect(screen.findByTestId('agent-input-path-chip')?.props.accessibilityLabel).toBe('newSession.folder.a11y.loading');
+        expect(screen.getTextContent()).not.toContain('newSession.folder.addFolder');
     });
 
     it('exposes a stable testID for the connection status text (UI e2e locator)', async () => {

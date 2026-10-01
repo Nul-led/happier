@@ -1,8 +1,8 @@
-import type { Message, ToolCall } from '@/sync/domains/messages/messageTypes';
-import type { Metadata } from '@/sync/domains/state/storageTypes';
+import type { Message, ToolCall } from "@happier-dev/session-core/messages";
+import type { Metadata } from '@happier-dev/session-core/state';
 import { isGenericSubAgentToolName } from '@happier-dev/protocol/tools/v2';
 
-import { normalizeToolCallForRendering } from '@/components/tools/normalization/core/normalizeToolCallForRendering';
+import { normalizeToolCallForRendering } from "@happier-dev/session-core/tools";
 import { resolveToolHeaderTextPresentation } from '@/components/tools/shell/presentation/resolveToolHeaderTextPresentation';
 
 export interface FilteredTool {

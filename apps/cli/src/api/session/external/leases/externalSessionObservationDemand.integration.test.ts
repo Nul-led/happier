@@ -392,7 +392,7 @@ describe('composed External Session observation demand', () => {
                 resource: {
                     pluginId: 'happier.opencode',
                     agentLocalId: 'opencode',
-                    pluginGeneration: 'plugin-generation-1',
+                    occurrenceId: 'plugin-generation-1',
                     resourceKey: grouping.resourceKey,
                 },
                 link: {
@@ -533,7 +533,7 @@ describe('composed External Session observation demand', () => {
         });
         const followResource = {
             linkGeneration: 'link-demanded',
-            pluginGeneration: 'plugin-generation-1',
+            occurrenceId: 'plugin-generation-1',
         };
         await manager.attach({
             sessionId: 'session-demanded',
@@ -568,7 +568,7 @@ describe('composed External Session observation demand', () => {
         const resource = {
             pluginId: 'happier.opencode',
             agentLocalId: 'opencode',
-            pluginGeneration: 'plugin-generation-1',
+            occurrenceId: 'plugin-generation-1',
             resourceKey: 'resource-1',
         };
         const reconcile = async (
@@ -706,7 +706,7 @@ describe('composed External Session observation demand', () => {
             resourceKey: string;
             resource: Readonly<{
                 linkGeneration: string;
-                pluginGeneration: string;
+                occurrenceId: string;
                 retirementSignal: AbortSignal;
             }>;
             observation: ExternalSessionObservationLinkInput;
@@ -727,14 +727,14 @@ describe('composed External Session observation demand', () => {
             };
             const resource = {
                 linkGeneration,
-                pluginGeneration: 'plugin-generation-real-follow',
+                occurrenceId: 'plugin-generation-real-follow',
                 retirementSignal: generation.signal,
             };
             const observation: ExternalSessionObservationLinkInput = {
                 resource: {
                     pluginId: 'happier.opencode',
                     agentLocalId: 'opencode',
-                    pluginGeneration: resource.pluginGeneration,
+                    occurrenceId: resource.occurrenceId,
                     resourceKey,
                     retirementSignal: generation.signal,
                 },

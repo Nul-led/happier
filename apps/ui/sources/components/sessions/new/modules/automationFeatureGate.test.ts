@@ -16,7 +16,12 @@ describe('automationFeatureGate', () => {
                 definition: {
                     kind: 'schedule' as const,
                     enabled: true,
-                    schedule: { kind: 'interval' as const, everyMs: 30 * 60_000 },
+                    schedule: {
+                        kind: 'interval' as const,
+                        scheduleExpr: null,
+                        everyMs: 30 * 60_000,
+                        timezone: null,
+                    },
                 },
             }],
         };
@@ -38,7 +43,12 @@ describe('automationFeatureGate', () => {
                 definition: {
                     kind: 'schedule' as const,
                     enabled: true,
-                    schedule: { kind: 'interval' as const, everyMs: 30 * 60_000 },
+                    schedule: {
+                        kind: 'interval' as const,
+                        scheduleExpr: null,
+                        everyMs: 30 * 60_000,
+                        timezone: null,
+                    },
                 },
             }],
         };

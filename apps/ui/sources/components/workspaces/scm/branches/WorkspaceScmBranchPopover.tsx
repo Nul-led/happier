@@ -3,7 +3,6 @@ import { Pressable, ScrollView, View } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
 import { Popover } from '@/components/ui/popover';
-import { SegmentedTabBar, type SegmentedTab } from '@/components/ui/navigation/SegmentedTabBar';
 import { SelectableMenuResults } from '@/components/ui/forms/dropdown/SelectableMenuResults';
 import type { SelectableMenuItem } from '@/components/ui/forms/dropdown/selectableMenuTypes';
 import { CREATE_ITEM_ID, useSelectableMenu } from '@/components/ui/forms/dropdown/useSelectableMenu';
@@ -11,8 +10,7 @@ import { Text, TextInput } from '@/components/ui/text/Text';
 import { Typography } from '@/constants/Typography';
 import { t } from '@/text';
 import { Icon } from '@/components/ui/icons/Icon';
-
-export type WorkspaceScmBranchPopoverTabId = 'branches' | 'worktrees';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 export type WorkspaceScmBranchPopoverControls = Readonly<{
     closeMenu: () => void;
@@ -28,43 +26,29 @@ export type WorkspaceScmBranchPopoverProps = Readonly<{
     worktreeItems: ReadonlyArray<SelectableMenuItem>;
     onSelectItem: (itemId: string, controls: WorkspaceScmBranchPopoverControls) => void | Promise<void>;
     onCreateBranch?: ((query: string) => void | Promise<void>) | null;
+    /**
+     * `title`: the branch name as a standalone title (project pane). `line`: the pane header's live-line door
+     * (Git lab BR): a branch glyph, the name as the line's one emphasised noun, a small chevron.
+     */
+    triggerAppearance?: 'title' | 'line';
+    /** Asks the search field to take focus (a "New branch…" row); bump the value to ask again. */
+    focusSearchRequest?: number;
     testID?: string;
 }>;
-
-function buildTabDescriptors(props: Pick<WorkspaceScmBranchPopoverProps, 'branchItems' | 'worktreeItems'>): ReadonlyArray<SegmentedTab<WorkspaceScmBranchPopoverTabId>> {
-    const tabs: Array<SegmentedTab<WorkspaceScmBranchPopoverTabId>> = [];
-    if (props.branchItems.length > 0) {
-        tabs.push({ id: 'branches', label: t('files.branchMenu.category.branches') });
-    }
-    if (props.worktreeItems.length > 0) {
-        tabs.push({ id: 'worktrees', label: t('files.branchMenu.category.worktrees') });
-    }
-    if (tabs.length === 0) {
-        tabs.push({ id: 'branches', label: t('files.branchMenu.category.branches') });
-    }
-    return tabs;
-}
 
 export function WorkspaceScmBranchPopover(props: WorkspaceScmBranchPopoverProps): React.ReactElement {
     const { theme } = useUnistyles();
     const disabled = props.disabled === true;
     const anchorRef = React.useRef<View>(null);
     const triggerTestId = props.testID ?? 'scm-branch-menu-trigger';
-    const tabs = React.useMemo(() => buildTabDescriptors(props), [props]);
-    const [activeTabId, setActiveTabId] = React.useState<WorkspaceScmBranchPopoverTabId>(tabs[0]?.id ?? 'branches');
-
-    React.useEffect(() => {
-        if (tabs.some((tab) => tab.id === activeTabId)) return;
-        setActiveTabId(tabs[0]?.id ?? 'branches');
-    }, [activeTabId, tabs]);
-
-    const items = activeTabId === 'worktrees' ? props.worktreeItems : props.branchItems;
-    const allowCreateBranch = activeTabId === 'branches' ? (props.onCreateBranch ?? null) : null;
+    // Git lab BR: one list read top to bottom (current, branches, kept aside, worktrees, start something new).
+    const items = React.useMemo(() => [...props.branchItems, ...props.worktreeItems], [props.branchItems, props.worktreeItems]);
+    const allowCreateBranch = props.onCreateBranch ?? null;
     const { searchQuery, selectedIndex, filteredCategories, inputRef, handleSearchChange, handleKeyPress, setSelectedIndex } = useSelectableMenu({
         items,
         onRequestClose: () => props.onOpenChange(false),
         open: props.open,
-        initialSelectedId: activeTabId === 'branches' && props.currentBranch ? `branch:${props.currentBranch}` : null,
+        initialSelectedId: props.currentBranch ? `branch:${props.currentBranch}` : null,
         onCreateItem: allowCreateBranch
             ? (query) => {
                 void allowCreateBranch(query);
@@ -79,6 +63,11 @@ export function WorkspaceScmBranchPopover(props: WorkspaceScmBranchPopoverProps)
             : null,
         allowEmptySelection: false,
     });
+
+    React.useEffect(() => {
+        if (!props.open || !props.focusSearchRequest) return;
+        inputRef.current?.focus();
+    }, [inputRef, props.focusSearchRequest, props.open]);
 
     const closeMenu = React.useCallback(() => props.onOpenChange(false), [props]);
     const reopenMenu = React.useCallback(() => props.onOpenChange(true), [props]);
@@ -95,24 +84,49 @@ export function WorkspaceScmBranchPopover(props: WorkspaceScmBranchPopoverProps)
     return (
         <>
             <View ref={anchorRef} collapsable={false}>
-                <Pressable
-                    testID={triggerTestId}
-                    accessibilityRole="button"
-                    accessibilityLabel={t('files.branchMenu.openA11y')}
-                    onPress={() => props.onOpenChange(!props.open)}
-                    disabled={disabled}
-                    style={({ pressed }) => ({
-                        flexDirection: 'row',
-                        alignItems: 'center',
-                        gap: 6,
-                        opacity: disabled ? 0.6 : pressed ? 0.82 : 1,
-                    })}
-                >
-                    <Text numberOfLines={1} style={{ fontSize: 14, color: theme.colors.text.primary, ...Typography.default('semiBold') }}>
-                        {props.currentBranch || t('files.detachedHead')}
-                    </Text>
-                    <Icon name={props.open ? 'caret-up' : 'caret-down'} size={14} color={theme.colors.text.secondary} />
-                </Pressable>
+                {props.triggerAppearance === 'line' ? (
+                    <Pressable
+                        testID={triggerTestId}
+                        accessibilityRole="button"
+                        accessibilityLabel={t('sessionGitBranches.openA11y', { branch: props.currentBranch || t('files.detachedHead') })}
+                        accessibilityState={{ expanded: props.open, disabled }}
+                        onPress={() => props.onOpenChange(!props.open)}
+                        disabled={disabled}
+                        hitSlop={6}
+                        style={({ pressed }) => ({
+                            flexDirection: 'row',
+                            alignItems: 'center',
+                            gap: 4,
+                            maxWidth: '100%',
+                            opacity: pressed ? motionTokens.press.opacitySubtle : 1,
+                        })}
+                    >
+                        <Icon name="git-branch" size={13} color={theme.colors.text.secondary} />
+                        <Text numberOfLines={1} style={{ flexShrink: 1, fontSize: 13, color: theme.colors.text.primary, ...Typography.default('semiBold') }}>
+                            {props.currentBranch || t('files.detachedHead')}
+                        </Text>
+                        <Icon name={props.open ? 'caret-up' : 'caret-down'} size={11} color={theme.colors.text.tertiary} />
+                    </Pressable>
+                ) : (
+                    <Pressable
+                        testID={triggerTestId}
+                        accessibilityRole="button"
+                        accessibilityLabel={t('files.branchMenu.openA11y')}
+                        onPress={() => props.onOpenChange(!props.open)}
+                        disabled={disabled}
+                        style={({ pressed }) => ({
+                            flexDirection: 'row',
+                            alignItems: 'center',
+                            gap: 6,
+                            opacity: disabled ? 0.6 : pressed ? motionTokens.press.opacitySubtle : 1,
+                        })}
+                    >
+                        <Text numberOfLines={1} style={{ fontSize: 14, color: theme.colors.text.primary, ...Typography.default('semiBold') }}>
+                            {props.currentBranch || t('files.detachedHead')}
+                        </Text>
+                        <Icon name={props.open ? 'caret-up' : 'caret-down'} size={14} color={theme.colors.text.secondary} />
+                    </Pressable>
+                )}
             </View>
             <Popover
                 open={props.open}
@@ -137,23 +151,12 @@ export function WorkspaceScmBranchPopover(props: WorkspaceScmBranchPopoverProps)
                             overflow: 'hidden',
                         }}
                     >
-                        {tabs.length > 1 ? (
-                            <View style={{ paddingHorizontal: 12, paddingTop: 12, paddingBottom: 10 }}>
-                                <SegmentedTabBar
-                                    tabs={tabs}
-                                    activeTabId={activeTabId}
-                                    onSelectTab={setActiveTabId}
-                                    testIDPrefix="workspace-scm-branch-popover-tab"
-                                    compact
-                                />
-                            </View>
-                        ) : null}
-                        <View style={{ paddingHorizontal: 12, paddingBottom: 10 }}>
+                        <View style={{ paddingHorizontal: 12, paddingTop: 12, paddingBottom: 10 }}>
                             <TextInput
                                 ref={inputRef}
                                 value={searchQuery}
                                 onChangeText={handleSearchChange}
-                                placeholder={t('files.branchMenu.searchPlaceholder')}
+                                placeholder={t('sessionGitBranches.searchPlaceholder')}
                                 placeholderTextColor={theme.colors.text.secondary}
                                 testID="workspace-scm-branch-popover-search"
                                 onKeyPress={(event) => {

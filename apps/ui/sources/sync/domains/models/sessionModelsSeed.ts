@@ -1,4 +1,4 @@
-import type { Metadata } from '@/sync/domains/state/storageTypes';
+import type { Metadata } from '@happier-dev/session-core/state';
 import { readSessionModelsState } from '@/sync/domains/sessionControl/readSessionControlMetadata';
 import type { AcpConfigOption } from '@/sync/domains/sessionControl/configOptionsControl';
 import type { PreflightModelList } from './modelOptions';

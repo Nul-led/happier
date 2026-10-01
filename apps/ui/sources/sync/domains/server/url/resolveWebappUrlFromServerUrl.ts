@@ -1,3 +1,5 @@
+import { DEFAULT_HAPPIER_CLOUD_SERVER_URL } from '@happier-dev/cli-common/happierCloud';
+
 export function resolveWebappUrlFromServerUrl(serverUrl: string): string {
     const normalized = String(serverUrl ?? '').trim();
     if (!normalized) return normalized;
@@ -8,12 +10,11 @@ export function resolveWebappUrlFromServerUrl(serverUrl: string): string {
             return normalized;
         }
         const origin = parsed.origin.replace(/\/+$/, '');
-        if (origin === 'https://api.happier.dev') {
-            return 'https://app.happier.dev';
+        if (origin === DEFAULT_HAPPIER_CLOUD_SERVER_URL) {
+            return 'https://cloud.happier.dev';
         }
         return origin;
     } catch {
         return normalized;
     }
 }
-

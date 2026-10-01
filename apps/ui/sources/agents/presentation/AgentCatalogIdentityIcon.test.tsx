@@ -2,7 +2,7 @@ import * as React from 'react';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { createResolvedAgentCatalogEntryFixture } from '@/dev/testkit';
+import { createResolvedAgentCatalogEntryFixture } from '@/dev/testkit/fixtures/agentCatalogFixtures';
 
 import { AgentCatalogIdentityIcon } from './AgentCatalogIdentityIcon';
 
@@ -50,6 +50,10 @@ vi.mock('@/components/plugins/shared/InstalledPluginBrandMark', () => ({
 
 vi.mock('@/components/ui/icons/Icon', () => ({
     Icon: (props: Record<string, unknown>) => React.createElement('Icon', props),
+}));
+
+vi.mock('@/agents/registry/AgentIcon', () => ({
+    AgentIcon: (props: Record<string, unknown>) => React.createElement('AgentIcon', props),
 }));
 
 function renderIcon(
@@ -116,6 +120,13 @@ describe('AgentCatalogIdentityIcon', () => {
         accountScopeState.current = true;
     });
 
+    it('renders a bundled Agent with its own brand mark rather than a generic glyph', () => {
+        const tree = renderIcon(createResolvedAgentCatalogEntryFixture({ agentId: 'claude' }));
+
+        expect(tree.root.findByType('AgentIcon' as never).props.agentId).toBe('claude');
+        expect(tree.root.findAllByType('Icon' as never)).toHaveLength(0);
+    });
+
     it('keeps an external Agent neutral when its exact package identity is unavailable', () => {
         const tree = renderIcon(createResolvedAgentCatalogEntryFixture({
             agentId: 'acme/ultracode',
@@ -146,12 +157,11 @@ describe('AgentCatalogIdentityIcon', () => {
         const mark = tree.root.findByType('InstalledPluginBrandMark' as never);
         expect(mark.props.brand).toMatchObject({ displayName: 'UltraCode' });
         expect(tree.root.findAllByType('Icon' as never)).toHaveLength(0);
-        // The brand read is machine-scoped and paired with the package's own
-        // immutable generation, not the projection generation alone.
+        // The brand read is machine-scoped and retains the package occurrence
+        // through the installed-package projection plus the owner currentness predicate.
         expect(brandPresentationState.input).toMatchObject({
             machineId: 'machine-1',
             serverId: 'server-1',
-            expectedGeneration: 'gen-11',
         });
         expect(brandPresentationState.input?.installedPackage).toMatchObject({ id: 'acme.plugin' });
         expect(typeof (brandPresentationState.input as { isCurrent?: unknown } | null)?.isCurrent).toBe('function');

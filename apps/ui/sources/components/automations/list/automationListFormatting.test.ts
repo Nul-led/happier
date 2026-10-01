@@ -116,7 +116,7 @@ describe('formatAutomationTriggerLabel', () => {
                     materializationId: 'materialization-1',
                     pluginId: 'happier.scm.github',
                 },
-                reporterImmutableGenerationId: 'generation-1',
+                reporterSourceCustody: { kind: "development", registeredRootId: 'generation-1' },
                 state: 'backingOff',
                 code: 'rateLimited',
                 observedCount: 2,

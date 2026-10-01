@@ -1,19 +1,20 @@
+import { useSessionTranscriptSource } from '@/components/sessions/transcript/source/SessionTranscriptSourceContext';
 import * as React from 'react';
 import { View, Platform, Pressable } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
-import { useRouter } from 'expo-router';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 
-import type { Message, ToolCall } from '@/sync/domains/messages/messageTypes';
-import type { Metadata } from '@/sync/domains/state/storageTypes';
+import type { Message, ToolCall } from "@happier-dev/session-core/messages";
+import type { Metadata } from '@happier-dev/session-core/state';
 import { t } from '@/text';
 import type { TranscriptInteraction } from '@/utils/sessions/deriveTranscriptInteraction';
 import { Text } from '@/components/ui/text/Text';
 import { collectSubAgentSummaryTools } from './collectSubAgentSummaryTools';
-import { buildToolCallMessageRouteId } from '@/sync/domains/messages/messageRouteIds';
+import { buildToolCallMessageRouteId } from "@happier-dev/session-core/messages";
 import { navigateWithBlurOnWeb } from '@/utils/platform/navigateWithBlurOnWeb';
 import { Icon } from '@/components/ui/icons/Icon';
 import { buildScopedSessionRouteHref } from '@/hooks/session/sessionRouteServerScope';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 
 type TaskOperation = 'run' | 'create' | 'list' | 'update' | 'unknown';
@@ -133,7 +134,7 @@ export const SubAgentSummarySection = React.memo<{
 }>(function SubAgentSummarySection({ tool, metadata, messages, detailLevel = 'summary', sessionId, serverId, messageId, interaction, opts }) {
     const { theme } = useUnistyles();
     const styles = stylesheet;
-    const router = useRouter();
+    const transcriptSource = useSessionTranscriptSource();
 
     const filtered = React.useMemo(
         () => (detailLevel === 'title' ? [] : collectSubAgentSummaryTools({ tool, messages, metadata })),
@@ -148,17 +149,17 @@ export const SubAgentSummarySection = React.memo<{
 
     const canOpenDetails = Boolean(sessionId && routeMessageId)
         && detailLevel !== 'full'
-        && interaction?.disableToolNavigation !== true;
+        && transcriptSource.navigate !== null;
     const handleOpenDetails = React.useCallback(() => {
-        if (!sessionId || !routeMessageId || interaction?.disableToolNavigation === true) return;
+        if (!sessionId || !routeMessageId || transcriptSource.navigate === null) return;
         navigateWithBlurOnWeb(() => {
-            router.push(buildScopedSessionRouteHref({
+            transcriptSource.navigate?.(buildScopedSessionRouteHref({
                 sessionId,
                 serverId,
                 suffix: `/message/${encodeURIComponent(routeMessageId)}`,
             }));
         });
-    }, [interaction?.disableToolNavigation, routeMessageId, router, serverId, sessionId]);
+    }, [routeMessageId, transcriptSource, serverId, sessionId]);
 
     if (detailLevel === 'title') return null;
 
@@ -201,7 +202,7 @@ export const SubAgentSummarySection = React.memo<{
                         testID="task-like-summary-more-tools"
                         accessibilityRole="button"
                         onPress={handleOpenDetails}
-                        style={({ pressed }) => [styles.moreToolsItem, pressed && { opacity: 0.8 }]}
+                        style={({ pressed }) => [styles.moreToolsItem, pressed && { opacity: motionTokens.press.opacitySubtle }]}
                     >
                         <Text style={styles.moreToolsText}>
                             {t('tools.taskView.moreTools', { count: remainingCount })}

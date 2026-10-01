@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type { Metadata } from '../state/storageTypes';
+import type { Metadata } from '@happier-dev/session-core/state';
 
 vi.mock('@/text', async () => {
     const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
@@ -19,6 +19,20 @@ function createMetadata(overrides: Partial<Metadata> = {}): Metadata {
 }
 
 describe('sessionModeControl', () => {
+  it('keeps known native choices selectable when current is unknown, without accepting desired state or stale V1 current', async () => {
+    const { computeSessionModePickerControl } = await import('./sessionModeControl');
+    const metadata = createMetadata({
+      sessionModesV2: { v: 2, agentId: 'opencode', updatedAt: 3, currentModeId: null, availableModes: [{ id: 'plan', name: 'Plan' }] },
+      sessionModesV1: { v: 1, agentId: 'opencode', updatedAt: 1, currentModeId: 'build', availableModes: [{ id: 'build', name: 'Build' }] },
+    });
+    expect(computeSessionModePickerControl({ agentId: 'opencode', metadata })).toMatchObject({
+      options: [{ id: 'plan', name: 'Plan' }], currentModeId: null, effectiveModeId: null, isPending: false,
+    });
+    metadata.sessionModeOverrideV1 = { v: 1, updatedAt: 4, modeId: 'plan' };
+    expect(computeSessionModePickerControl({ agentId: 'opencode', metadata })).toMatchObject({ currentModeId: null, requestedModeId: 'plan', effectiveModeId: 'plan', isPending: true });
+    metadata.sessionModesV2 = { ...metadata.sessionModesV2!, availableModes: [] };
+    expect(computeSessionModePickerControl({ agentId: 'opencode', metadata })).toBeNull();
+  });
   it('supportsSessionModeOverrides reflects agent catalog intent', async () => {
     const { supportsSessionModeOverrides } = await import('./sessionModeControl');
     expect(supportsSessionModeOverrides('opencode')).toBe(true);

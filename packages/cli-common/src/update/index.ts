@@ -1,6 +1,8 @@
 import { spawnSync, spawn } from 'node:child_process';
-import { mkdirSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs';
-import { basename, dirname } from 'node:path';
+import { closeSync, mkdirSync, openSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs';
+import { basename, dirname, join } from 'node:path';
+
+import { resolvePublicReleaseRingLabelForId, type PublicReleaseRingId } from '@happier-dev/release-runtime/releaseRings';
 
 import { resolveWindowsCommandInvocation } from '../process/index.js';
 
@@ -184,6 +186,38 @@ export function shouldNotifyUpdate(params: Readonly<{
   return now - last > interval;
 }
 
+/**
+ * The one location of the CLI's per-channel update-check cache, written by `happier self check`
+ * and read by the update notice, `doctor repair`, and the desktop's status facts.
+ */
+export function resolveCliUpdateCachePath(params: Readonly<{
+  happierHomeDir: string;
+  /** Public channel label: `stable`, `preview`, or `dev`. */
+  channelLabel: string;
+}>): string {
+  const fileName = params.channelLabel === 'stable' ? 'update.json' : `update.${params.channelLabel}.json`;
+  return join(params.happierHomeDir, 'cache', fileName);
+}
+
+/** The single-flight lock that keeps one background `self check` per channel. */
+export function resolveCliUpdateCheckLockPath(params: Readonly<{
+  happierHomeDir: string;
+  channelLabel: string;
+}>): string {
+  const fileName = params.channelLabel === 'stable' ? 'update.check.lock.json' : `update.check.${params.channelLabel}.lock.json`;
+  return join(params.happierHomeDir, 'cache', fileName);
+}
+
+/** How long a `self check` result stays fresh before the background refresh runs again. */
+export const CLI_UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * How long one background `self check` holds its per-channel single-flight lock before another may
+ * start. One value for every starter — the terminal notice (which lets
+ * `HAPPIER_CLI_UPDATE_CHECK_LOCK_TTL_MS` override it) and the desktop's status fact (plan R13 S-1).
+ */
+export const CLI_UPDATE_CHECK_LOCK_TTL_MS = 2 * 60 * 1000;
+
 export function readUpdateCache(path: string): UpdateCache | null {
   try {
     const raw = readFileSync(path, 'utf-8');
@@ -218,22 +252,67 @@ export function resolveSpawnDetachedNodeInvocation(params: Readonly<{ execPath: 
   return { file: execPath, args: [...params.args], isRuntime };
 }
 
-export function spawnDetachedNode(params: Readonly<{ script: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv }>): void {
+export type DetachedSpawnResult = Readonly<{
+  started: boolean;
+  /** The child's report pipe when `admissionFdEnvName` was given. */
+  admission: NodeJS.ReadableStream | null;
+}>;
+
+/**
+ * Start this program (the running binary, or `script` under the running Node/Bun) detached, so it
+ * outlives the caller: the background update check, and the daemon-started CLI updater, which must
+ * survive the service restart it performs. Output is discarded, or appended to `logPath`. Never
+ * throws; reports whether the process started.
+ */
+export function spawnDetachedNode(params: Readonly<{
+  script: string;
+  args: string[];
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  logPath?: string;
+  /**
+   * Give the child one extra pipe (fd 3, named to it by `admissionFdEnvName`) for a single report
+   * back to this process — stdout/stderr stay on `logPath`, so the child never writes to a pipe
+   * whose reader may be gone once it outlives this process.
+   */
+  admissionFdEnvName?: string;
+}>): DetachedSpawnResult {
+  let logFd: number | null = null;
   try {
     const resolved = resolveSpawnDetachedNodeInvocation({
       execPath: process.execPath,
       script: params.script,
       args: params.args,
     });
+    if (params.logPath) {
+      mkdirSync(dirname(params.logPath), { recursive: true });
+      logFd = openSync(params.logPath, 'a');
+    }
+    const output = logFd === null ? 'ignore' : logFd;
     const child = spawn(resolved.file, resolved.args, {
-      stdio: 'ignore',
+      stdio: params.admissionFdEnvName ? ['ignore', output, output, 'pipe'] : ['ignore', output, output],
       cwd: resolved.isRuntime ? params.cwd : process.cwd(),
-      env: { ...params.env },
+      env: { ...params.env, ...(params.admissionFdEnvName ? { [params.admissionFdEnvName]: '3' } : {}) },
       detached: true,
+      windowsHide: true,
+    });
+    child.on('error', () => {
+      // Reported through the return value's absent pid; never an unhandled error event.
     });
     child.unref();
+    if (typeof child.pid !== 'number') return { started: false, admission: null };
+    const admission = params.admissionFdEnvName ? child.stdio[3] : null;
+    return { started: true, admission: admission && 'on' in admission ? admission as NodeJS.ReadableStream : null };
   } catch {
-    // ignore
+    return { started: false, admission: null };
+  } finally {
+    if (logFd !== null) {
+      try {
+        closeSync(logFd);
+      } catch {
+        // The child holds its own copy of the descriptor.
+      }
+    }
   }
 }
 
@@ -319,4 +398,84 @@ export function formatUpdateNotice(params: Readonly<{
   const to = String(params.to ?? '').trim() || 'latest';
   const cmd = String(params.updateCommand ?? '').trim() || 'self update';
   return `[${tool}] update available: ${from} -> ${to} (run: ${cmd})`;
+}
+
+/**
+ * The one owner of "is a newer Happier CLI available on this ring?" as cached on disk (plan R13
+ * S-1). `happier self check` is the only writer (`recordCliUpdateCheck`); the terminal notice,
+ * doctor repair, the desktop's status fact and the per-machine update facts all read through
+ * `readCachedCliUpdateState`.
+ *
+ * The `next` npm dist-tag is shared by preview and dev, so a looked-up version can belong to the
+ * other ring. A version belongs to a ring by its prerelease identifier: none for stable,
+ * `preview.*` for preview, `dev.*` for dev.
+ */
+export function doesVersionMatchReleaseRing(version: string | null | undefined, ring: PublicReleaseRingId): boolean {
+  const value = String(version ?? '').trim().toLowerCase();
+  const parsed = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9a-z.-]+))?(?:\+.*)?$/.exec(value);
+  if (!parsed) return false;
+  const prerelease = parsed[4] ?? '';
+  if (ring === 'stable') return prerelease === '';
+  if (ring === 'preview') return prerelease.startsWith('preview.');
+  return prerelease.startsWith('dev.');
+}
+
+export type CachedCliUpdateState = Readonly<{
+  currentVersion: string;
+  /** The ring's newest version from the last check; `null` when unknown or from another ring. */
+  latestVersion: string | null;
+  updateAvailable: boolean;
+  /** When that check ran (epoch ms); `null` when the cache does not say. */
+  checkedAt: number | null;
+}>;
+
+function ringCachePath(happierHomeDir: string, ring: PublicReleaseRingId): string {
+  return resolveCliUpdateCachePath({ happierHomeDir, channelLabel: resolvePublicReleaseRingLabelForId(ring) });
+}
+
+/**
+ * The running CLI's update state from the ring's cached check. Read-only and offline. `latest` is
+ * filtered to the ring and compared with the version actually running (never the cached
+ * `updateAvailable`), so a CLI updated since the check reports no update and a cache an older
+ * writer filled with another ring's version reads as unknown. `null` when nothing was cached.
+ */
+export function readCachedCliUpdateState(params: Readonly<{
+  happierHomeDir: string;
+  publicReleaseRing: PublicReleaseRingId;
+  currentVersion: string;
+}>): CachedCliUpdateState | null {
+  const cached = readUpdateCache(ringCachePath(params.happierHomeDir, params.publicReleaseRing));
+  if (!cached) return null;
+  const cachedLatest = typeof cached.latest === 'string' ? cached.latest.trim() : null;
+  const latestVersion = doesVersionMatchReleaseRing(cachedLatest, params.publicReleaseRing) ? cachedLatest : null;
+  return {
+    currentVersion: params.currentVersion,
+    latestVersion,
+    updateAvailable: Boolean(latestVersion && compareVersions(latestVersion, params.currentVersion) > 0),
+    checkedAt: typeof cached.checkedAt === 'number' ? cached.checkedAt : null,
+  };
+}
+
+/** Record one update check (`happier self check`, the only writer), keeping the notice time. */
+export function recordCliUpdateCheck(params: Readonly<{
+  happierHomeDir: string;
+  publicReleaseRing: PublicReleaseRingId;
+  /** What the lookup answered; another ring's version is recorded as unknown. */
+  latest: string | null;
+  current: string | null;
+  runtimeVersion: string | null;
+  invokerVersion: string | null;
+  nowMs?: number;
+}>): void {
+  const cachePath = ringCachePath(params.happierHomeDir, params.publicReleaseRing);
+  const latest = doesVersionMatchReleaseRing(params.latest, params.publicReleaseRing) ? params.latest : null;
+  writeUpdateCache(cachePath, {
+    checkedAt: params.nowMs ?? Date.now(),
+    latest,
+    current: params.current,
+    runtimeVersion: params.runtimeVersion,
+    invokerVersion: params.invokerVersion,
+    updateAvailable: Boolean(params.current && latest && compareVersions(latest, params.current) > 0),
+    notifiedAt: readUpdateCache(cachePath)?.notifiedAt ?? null,
+  });
 }

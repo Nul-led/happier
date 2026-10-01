@@ -1,8 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
+import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { join, relative, resolve } from 'node:path';
+
 import {
     deriveSessionContentAvailability,
     isSessionContentReadable,
+    readBlockedSessionContentAvailability,
+    readSessionContentAvailability,
 } from './encryptedContentAvailability';
 
 describe('deriveSessionContentAvailability', () => {
@@ -90,5 +95,73 @@ describe('deriveSessionContentAvailability', () => {
         expect(isSessionContentReadable('recipient_encryption_setup_required')).toBe(false);
         expect(isSessionContentReadable('encrypted_access_needs_repair')).toBe(false);
         expect(isSessionContentReadable('encrypted_content_unavailable')).toBe(false);
+    });
+    it('reports unsettled content as neither readable nor blocked', () => {
+        expect(isSessionContentReadable(null)).toBe(false);
+        expect(readBlockedSessionContentAvailability(null)).toBeNull();
+        expect(readBlockedSessionContentAvailability('ready')).toBeNull();
+        expect(readBlockedSessionContentAvailability('encrypted_access_pending')).toBe('encrypted_access_pending');
+    });
+});
+
+describe('readSessionContentAvailability', () => {
+    it('defaults plain content to ready but honors a settled owner-metadata lock', () => {
+        expect(readSessionContentAvailability({ encryptionMode: 'plain' })).toBe('ready');
+        expect(readSessionContentAvailability({ encryptionMode: 'plain', encryptedContentAvailability: null })).toBe('ready');
+        expect(readSessionContentAvailability({
+            encryptionMode: 'plain',
+            encryptedContentAvailability: 'encrypted_content_unavailable',
+        })).toBe('encrypted_content_unavailable');
+    });
+
+    it('returns the settled fact of an encrypted Session', () => {
+        expect(readSessionContentAvailability({
+            encryptionMode: 'e2ee',
+            encryptedContentAvailability: 'encrypted_content_unavailable',
+        })).toBe('encrypted_content_unavailable');
+        expect(readSessionContentAvailability({ encryptionMode: 'e2ee', encryptedContentAvailability: 'ready' })).toBe('ready');
+    });
+
+    it('reads an absent fact as unsettled, with or without a known mode', () => {
+        expect(readSessionContentAvailability({ encryptionMode: 'e2ee' })).toBeNull();
+        expect(readSessionContentAvailability({})).toBeNull();
+        expect(readSessionContentAvailability({ encryptedContentAvailability: 'ready' })).toBe('ready');
+    });
+});
+
+/**
+ * Four surfaces once decided "locked" with four predicates that disagreed on an unset fact. Every
+ * decision now goes through the reader above; this fails when a surface compares the raw field again.
+ * Writers (assignments, projections that copy the field) are not decisions and are not matched.
+ */
+describe('content availability decision sites', () => {
+    const sourcesRoot = resolve(__dirname, '../../..');
+    const owner = 'sync/domains/session/encryptedContentAvailability.ts';
+    const rawDecision = /encryptedContentAvailability\s*(?:===|!==|&&|\?(?![?.:])|\)\s*(?:===|!==))|(?:===|!==)\s*[\w.?]*encryptedContentAvailability\b|(?:if|while)\s*\(\s*!?[\w.?]*encryptedContentAvailability\s*\)|switch\s*\([\w.?]*encryptedContentAvailability\)/;
+    // Writers that compare only to copy the fact or to skip a redundant write of it.
+    const allowedWriters = new Set([
+        'sync/domains/state/warmCacheAdapters.ts',
+        'sync/sync.ts',
+        'sync/domains/session/listing/sessionListRenderable.ts',
+        'sync/domains/session/listing/sessionListRenderableSessionProjection.ts',
+    ]);
+
+    function listSources(dir: string): string[] {
+        const files: string[] = [];
+        for (const entry of readdirSync(dir)) {
+            if (entry === 'node_modules' || entry.startsWith('.')) continue;
+            const full = join(dir, entry);
+            if (statSync(full).isDirectory()) files.push(...listSources(full));
+            else if (/\.(ts|tsx)$/.test(entry) && !/\.(test|spec)\.tsx?$/.test(entry)) files.push(full);
+        }
+        return files;
+    }
+
+    it('has no second reader of the raw fact', () => {
+        const offenders = listSources(sourcesRoot)
+            .map((file) => relative(sourcesRoot, file).split('\\').join('/'))
+            .filter((file) => file !== owner && !allowedWriters.has(file))
+            .filter((file) => rawDecision.test(readFileSync(join(sourcesRoot, file), 'utf8')));
+        expect(offenders).toEqual([]);
     });
 });

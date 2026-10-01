@@ -19,6 +19,7 @@ import {
 } from '@/sync/api/account/apiAccountEncryptionMode';
 import type { ActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
 import { getPreferredLanguage } from '@/text';
+import { useAppShellColumn } from '@/components/navigation/shell/appRail/appShellColumnContext';
 import type { PluginSurfaceTargetKind } from '@/sync/domains/plugins/ui/surfacePlacementSelectors';
 import type { PluginSurfaceTargetUndeclaredReason } from '@/sync/domains/plugins/ui/scope/resolveResourceScope';
 
@@ -45,6 +46,7 @@ export type PluginSurfaceEnvironment = Readonly<{
     screenReaderEnabled: boolean;
     safeAreaInsets: SurfaceContext['safeAreaInsets'];
     theme: SurfaceContext['theme'];
+    columnVisible: boolean;
 }>;
 
 /**
@@ -202,6 +204,7 @@ export function usePluginSurfaceEnvironment(
     const reducedMotion = useReducedMotionPreference();
     const screenReaderEnabled = useScreenReaderEnabled();
     const highContrast = useHighContrastPreference();
+    const columnVisible = useAppShellColumn().columnVisible;
     const locale = getPreferredLanguage();
     const resolvedPlatform = normalizePluginSurfacePlatform(platform);
     const pluginTheme = React.useMemo(() => projectPluginUiTheme(theme), [theme]);
@@ -221,7 +224,9 @@ export function usePluginSurfaceEnvironment(
             left: rt.insets.left,
         }),
         theme: pluginTheme,
+        columnVisible,
     }), [
+        columnVisible,
         highContrast,
         locale,
         pluginTheme,
@@ -256,6 +261,9 @@ export function createPluginSurfaceContext(input: Readonly<{
     return Object.freeze({
         mount: input.mount,
         target: input.target,
+        ...(input.mount.kind === 'destination' && input.mount.container === 'appPage'
+            ? { page: Object.freeze({ columnVisible: input.environment.columnVisible }) }
+            : {}),
         accountEncryptionMode: input.accountEncryptionMode,
         platform: input.environment.platform,
         locale: input.environment.locale,
@@ -274,6 +282,7 @@ export function createPluginSurfaceContext(input: Readonly<{
 
 type ResolvedAccountEncryptionMode = Readonly<{
     accountLifetime: ActiveServerAccountScopeLifetime;
+    credentials: AuthCredentials;
     cacheRevision: number;
     mode: SurfaceContext['accountEncryptionMode'];
 }>;
@@ -305,7 +314,13 @@ export function usePluginSurfaceAccountEncryptionMode(input: Readonly<{
         const credentials = input.credentials;
         const requestRevision = requestRevisionRef.current + 1;
         requestRevisionRef.current = requestRevision;
-        setResolved(null);
+        setResolved((previous) => (
+            previous?.accountLifetime === accountLifetime
+            && previous.credentials === credentials
+            && previous.cacheRevision === cacheRevision
+                ? previous
+                : null
+        ));
 
         if (
             !accountLifetime
@@ -331,7 +346,7 @@ export function usePluginSurfaceAccountEncryptionMode(input: Readonly<{
                 ) {
                     return;
                 }
-                setResolved({ accountLifetime, cacheRevision, mode });
+                setResolved({ accountLifetime, credentials, cacheRevision, mode });
             },
             () => {
                 if (
@@ -347,10 +362,11 @@ export function usePluginSurfaceAccountEncryptionMode(input: Readonly<{
             requestRevisionRef.current += 1;
             retirement.dispose();
         };
-    }, [cacheRevision, input.accountLifetime, input.credentials]);
+    }, [cacheRevision, input.accountLifetime, input.credentials, input.isCurrent]);
 
     return resolved
         && resolved.accountLifetime === input.accountLifetime
+        && resolved.credentials === input.credentials
         && resolved.cacheRevision === cacheRevision
         && input.accountLifetime?.isCurrent() === true
         && isCurrentRef.current()

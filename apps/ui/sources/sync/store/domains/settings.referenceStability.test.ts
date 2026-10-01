@@ -4,6 +4,7 @@ import { settingsDefaults, type Settings } from '@/sync/domains/settings/setting
 import type { AccountSettingsScope } from '@/sync/domains/settings/scope/accountSettingsScope';
 import { loadAccountSettings } from '@/sync/domains/state/accountSettingsPersistence';
 import { clearPersistence } from '@/sync/domains/state/persistence';
+import { createInitialSessionSplitCanvasSnapshot } from '@/sync/domains/session/sessionSplitCanvasPersistence';
 
 const store = vi.hoisted(() => new Map<string, string>());
 
@@ -106,9 +107,9 @@ describe('createSettingsDomain settings projection reference stability', () => {
         store.clear();
     });
 
-    it('keeps the settings projection reference when a server echo carries structurally identical settings', () => {
+    it('keeps the settings projection reference when a server echo carries structurally identical settings', async () => {
         const { getState } = createTestStore();
-        getState().activateSettingsScope(scope);
+        await getState().activateSettingsScope(scope);
         getState().applySettingsForScope(scope, buildServerEchoSettings(), 1);
 
         const settingsBeforeEcho = getState().settings;
@@ -122,9 +123,9 @@ describe('createSettingsDomain settings projection reference stability', () => {
         expect(loadAccountSettings(scope).version).toBe(2);
     });
 
-    it('lands a genuine remote change while preserving references for the keys that did not change', () => {
+    it('lands a genuine remote change while preserving references for the keys that did not change', async () => {
         const { getState } = createTestStore();
-        getState().activateSettingsScope(scope);
+        await getState().activateSettingsScope(scope);
         getState().applySettingsForScope(scope, buildServerEchoSettings(), 1);
 
         const settingsBeforeEcho = getState().settings;
@@ -142,9 +143,9 @@ describe('createSettingsDomain settings projection reference stability', () => {
         });
     });
 
-    it('lands a remote scalar change that arrives alongside otherwise identical settings', () => {
+    it('lands a remote scalar change that arrives alongside otherwise identical settings', async () => {
         const { getState } = createTestStore();
-        getState().activateSettingsScope(scope);
+        await getState().activateSettingsScope(scope);
         getState().applySettingsForScope(scope, buildServerEchoSettings(), 1);
 
         getState().applySettingsForScope(scope, buildServerEchoSettings({ analyticsOptOut: true }), 2);
@@ -153,9 +154,9 @@ describe('createSettingsDomain settings projection reference stability', () => {
         expect(getState().settingsVersion).toBe(2);
     });
 
-    it('still applies a local write that changes a nested collection', () => {
+    it('still applies a local write that changes a nested collection', async () => {
         const { getState } = createTestStore();
-        getState().activateSettingsScope(scope);
+        await getState().activateSettingsScope(scope);
         getState().applySettingsForScope(scope, buildServerEchoSettings(), 1);
 
         const settingsBeforeLocalWrite = getState().settings;
@@ -167,9 +168,9 @@ describe('createSettingsDomain settings projection reference stability', () => {
         expect(getState().settings.favoriteMachines).toBe(settingsBeforeLocalWrite.favoriteMachines);
     });
 
-    it('does not resurrect a previous value when a local write re-sets an equal collection', () => {
+    it('does not resurrect a previous value when a local write re-sets an equal collection', async () => {
         const { getState } = createTestStore();
-        getState().activateSettingsScope(scope);
+        await getState().activateSettingsScope(scope);
         getState().applySettingsForScope(scope, buildServerEchoSettings(), 1);
 
         const favoritesBeforeLocalWrite = getState().settings.favoriteDirectories;
@@ -178,5 +179,25 @@ describe('createSettingsDomain settings projection reference stability', () => {
 
         expect(getState().settings.favoriteDirectories).toEqual(['~/code/happier']);
         expect(getState().settings.favoriteDirectories).toBe(favoritesBeforeLocalWrite);
+    });
+
+    it('restores device layout and Administration memory only for their exact Account and Home', async () => {
+        const { getState } = createTestStore();
+        const targets = { agents: { serverIdentityId: 'srv_one', machineId: 'machine-a' } };
+        const layouts = { workspace: createInitialSessionSplitCanvasSnapshot({ sessionId: 'session-a', maxLeaves: 4 }) };
+        await getState().activateSettingsScope(scope);
+        getState().applySettingsLocal({ machineAdministrationTargetsLocalV1: targets, sessionSplitCanvasLayoutsV1: layouts });
+
+        for (const otherScope of [
+            { ...scope, accountId: 'account-b' },
+            { ...scope, serverId: 'server-b' },
+        ]) {
+            await getState().activateSettingsScope(otherScope);
+            expect(getState().settings.machineAdministrationTargetsLocalV1).toEqual({});
+            expect(getState().settings.sessionSplitCanvasLayoutsV1).toEqual({});
+        }
+        await getState().activateSettingsScope(scope);
+        expect(getState().settings.machineAdministrationTargetsLocalV1).toEqual(targets);
+        expect(getState().settings.sessionSplitCanvasLayoutsV1).toEqual(layouts);
     });
 });

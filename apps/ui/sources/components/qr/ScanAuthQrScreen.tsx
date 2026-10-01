@@ -40,11 +40,17 @@ export function ScanAuthQrScreen(props: ScanAuthQrScreenProps) {
     const handleBack = React.useCallback(() => {
         safeRouterBack({ router, navigation, fallbackHref: props.fallbackHref });
     }, [navigation, props.fallbackHref, router]);
+    const showQrInstead = React.useCallback(() => {
+        router.replace('/settings/add-phone');
+    }, [router]);
     const processorOptions = props.allowedUrlKind === 'account'
         ? {
             allowedUrlKind: props.allowedUrlKind,
             homeQrEntryIntent: props.homeQrEntryIntent,
             onSuccess: handleBack,
+            // A legacy account link cannot be approved here; this device's own
+            // QR is the recovery the signed-in scanner can actually offer.
+            onShowQrInstead: showQrInstead,
         } as const
         : {
             allowedUrlKind: props.allowedUrlKind,

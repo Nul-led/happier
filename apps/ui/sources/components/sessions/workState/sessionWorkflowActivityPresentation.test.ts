@@ -22,7 +22,6 @@ import {
 import {
     resolveWorkflowMeterTone,
     resolveWorkflowProgressFraction,
-    resolveWorkflowRollupTone,
     resolveWorkflowRunTone,
 } from '@/components/workflows/presentation/workflowPresentation';
 
@@ -211,24 +210,23 @@ describe('buildWorkflowActivityRows', () => {
 });
 
 describe('tone + progress helpers', () => {
-    it('run tone: failed/blocked warns, active is active, complete is complete', () => {
-        expect(resolveWorkflowRunTone('failed')).toBe('warning');
-        expect(resolveWorkflowRunTone('blocked')).toBe('warning');
-        expect(resolveWorkflowRunTone('stopped')).toBe('warning');
-        expect(resolveWorkflowRunTone('active')).toBe('active');
-        expect(resolveWorkflowRunTone('complete')).toBe('complete');
-        expect(resolveWorkflowRunTone('cancelled')).toBe('neutral');
+    it('run tone comes from the one work-status owner: healthy is neutral, only a failure is trouble (INT T4)', () => {
+        for (const status of ['active', 'complete', 'cancelled', 'unknown'] as const) {
+            expect(resolveWorkflowRunTone(status)).toBe('neutral');
+        }
+        // A phase waiting on a dependency, or a run stopped with its process, is not alarm.
+        expect(resolveWorkflowRunTone('blocked')).toBe('neutral');
+        expect(resolveWorkflowRunTone('stopped')).toBe('neutral');
+        expect(resolveWorkflowRunTone('failed')).toBe('danger');
     });
 
-    it('rollup tone reflects worst-case agent status', () => {
+    it('meter stays neutral while healthy and turns danger on a failed agent', () => {
         const rollup = (over: Partial<ReturnType<typeof computeWorkflowPhaseRollup>>) => ({
             total: 0, complete: 0, failed: 0, blocked: 0, active: 0, pending: 0, cancelled: 0, unknown: 0, ...over,
         });
-        expect(resolveWorkflowRollupTone(rollup({ total: 2, failed: 1 }))).toBe('warning');
-        expect(resolveWorkflowRollupTone(rollup({ total: 2, active: 1 }))).toBe('active');
-        expect(resolveWorkflowRollupTone(rollup({ total: 2, complete: 2 }))).toBe('complete');
         expect(resolveWorkflowMeterTone(rollup({ total: 2, failed: 1 }))).toBe('danger');
-        expect(resolveWorkflowMeterTone(rollup({ total: 2, blocked: 1 }))).toBe('warning');
+        expect(resolveWorkflowMeterTone(rollup({ total: 2, active: 1 }))).toBe('neutral');
+        expect(resolveWorkflowMeterTone(rollup({ total: 2, complete: 2 }))).toBe('neutral');
     });
 
     it('progress fraction clamps to 0..1', () => {

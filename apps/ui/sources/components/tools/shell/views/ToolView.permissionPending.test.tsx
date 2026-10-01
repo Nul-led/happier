@@ -2,6 +2,8 @@ import React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
     createUseSettingMock,
+    createTestSessionTranscriptSource,
+    renderWithSessionTranscriptSource,
     renderScreen,
     standardCleanup,
 } from '@/dev/testkit';
@@ -92,7 +94,7 @@ vi.mock('../presentation/ToolError', () => ({
 }));
 
 vi.mock('../permissions/PermissionFooter', () => ({
-    PermissionFooter: () => React.createElement('PermissionFooter', null),
+    PermissionFooter: (props: { canApprovePermissions?: boolean }) => React.createElement('PermissionFooter', props),
 }));
 
 vi.mock('@/agents/catalog/catalog', () => ({
@@ -107,6 +109,29 @@ describe('ToolView (permission pending)', () => {
         standardCleanup();
     });
 
+    it('rejects a pending permission surface without its transcript source', async () => {
+        const { ToolView } = await import('./ToolView');
+        const tool = makeToolCall({
+            state: 'running',
+            completedAt: null,
+            permission: { id: 'perm1', status: 'pending' },
+        });
+        await expect(renderScreen(React.createElement(ToolView, {
+            tool, metadata: null, messages: [], sessionId: 's1',
+        }))).rejects.toMatchObject({ name: 'SessionTranscriptSourceMissingError' });
+    });
+
+    it('keeps pending permissions closed with a read-only source when the interaction prop is absent', async () => {
+        const { ToolView } = await import('./ToolView');
+        const screen = await renderWithSessionTranscriptSource(React.createElement(ToolView, {
+            tool: makeToolCall({ state: 'running', completedAt: null, permission: { id: 'perm1', status: 'pending' } }),
+            metadata: null, messages: [], sessionId: 's1',
+        }), createTestSessionTranscriptSource());
+        const footers = screen.findAllByType('PermissionFooter');
+        expect(footers).toHaveLength(1);
+        expect(footers[0]?.props.canApprovePermissions).toBe(false);
+    });
+
     it('does not show elapsed time while waiting for permission', async () => {
         const { ToolView } = await import('./ToolView');
 
@@ -119,7 +144,7 @@ describe('ToolView (permission pending)', () => {
             permission: { id: 'perm1', status: 'pending' },
         });
 
-        const screen = await renderScreen(
+        const screen = await renderWithSessionTranscriptSource(
             React.createElement(ToolView, { tool, metadata: null, messages: [], sessionId: 's1', messageId: 'm1' }),
         );
 
@@ -138,7 +163,7 @@ describe('ToolView (permission pending)', () => {
             permission: undefined,
         });
 
-        const screen = await renderScreen(
+        const screen = await renderWithSessionTranscriptSource(
             React.createElement(ToolView, { tool, metadata: null, messages: [], sessionId: 's1', messageId: 'm1' }),
         );
 
@@ -157,7 +182,7 @@ describe('ToolView (permission pending)', () => {
             permission: { id: 'perm1', status: 'pending' },
         });
 
-        const screen = await renderScreen(
+        const screen = await renderWithSessionTranscriptSource(
             React.createElement(ToolView, { tool, metadata: null, messages: [], sessionId: 's1', messageId: 'm1' }),
         );
 
@@ -176,7 +201,7 @@ describe('ToolView (permission pending)', () => {
             permission: { id: 'perm1', status: 'pending' },
         });
 
-        const screen = await renderScreen(
+        const screen = await renderWithSessionTranscriptSource(
             React.createElement(ToolView, {
                 tool,
                 metadata: null,

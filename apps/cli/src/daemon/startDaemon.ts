@@ -5,6 +5,7 @@ import { serializeAxiosErrorForLog } from '@/api/client/serializeAxiosErrorForLo
 import { ensureSessionMachineAccessKeyBinding } from '@/api/session/ensureSessionMachineAccessKeyBinding';
 import { readHttpStatus } from '@/api/client/httpStatusError';
 import type { ApiMachineClient } from '@/api/apiMachine';
+import { installDaemonMachineAdmissionTransport } from './machineAdmissionTransport';
 import { TrackedSession } from './types';
 import { MachineMetadata } from '@/api/types';
 import type { DaemonState } from '@/api/types';
@@ -44,6 +45,7 @@ import { startDaemonHeartbeatLoop } from './lifecycle/heartbeat';
 
 import { initialMachineMetadata } from './machine/metadata';
 import { createDaemonShutdownController } from './lifecycle/shutdown';
+import { getDaemonAgentInstallJobOwner } from '@/capabilities/installJobs/agentInstallJobOwner';
 import { createBeforeShutdownDrain } from './lifecycle/createBeforeShutdownDrain';
 import { startDaemonRuntimeBootstrap } from './startup/startDaemonRuntimeBootstrap';
 import { notifyActiveAccountConnectedServicesProjection } from '@/settings/accountSettings/activeAccountSettingsSnapshot';
@@ -56,7 +58,6 @@ export { buildTmuxSpawnConfig, buildTmuxWindowEnv } from './platform/tmux/spawnC
 import { SPAWN_SESSION_ERROR_CODES } from '@/session/shared/spawnSessionContract';
 import { resolveWaitForAuthConfig } from './startup/waitForAuthConfig';
 import { waitForInitialCredentials } from './startup/waitForInitialCredentials';
-import { resolveDaemonDiagnosticSubsystemGates } from './startup/diagnosticSubsystemGates';
 import { createDaemonEventLoopStallMonitor } from './diagnostics/daemonEventLoopStallMonitor';
 import { ensureDaemonStartupOwnership } from './startup/ensureDaemonStartupOwnership';
 import { startDaemonMachineRegistrationRuntime } from './startup/startDaemonMachineRegistrationRuntime';
@@ -155,7 +156,12 @@ import {
   requestDaemonSelfRestartWithLockHandoff,
   resolveDaemonSelfRestartEnvironment,
 } from './lifecycle/requestDaemonSelfRestartWithLockHandoff';
-import { readDaemonRestartVerifyPollMs, readDaemonRestartVerifyTimeoutMs } from './startupWaitDefaults';
+import {
+  DEFAULT_DAEMON_START_WAIT_POLL_MS,
+  readDaemonRestartVerifyPollMs,
+  readDaemonRestartVerifyTimeoutMs,
+  readDaemonStartWaitTimeoutMs,
+} from './startupWaitDefaults';
 import { pluginReloadController } from '@/plugins/runtime/reload/singleton';
 import { acquireAuthoritativePluginRuntimeRegistryLease } from '@/plugins/runtime/reload/runtimeLease';
 import type { DaemonPluginChangeOwner } from '@/plugins/daemon/changeService';
@@ -188,6 +194,7 @@ import {
 } from '@happier-dev/protocol/teams';
 import {
   daemonExternalProviderRequestPolicyAcceptsResource,
+  revalidateExternalProviderBrokerAuthorization,
   resolveRunnerCredentialSelectionCurrentness,
   startDaemonProviderBrokerRuntime,
 } from '@/providers/broker/daemonProviderBrokerRuntime';
@@ -302,6 +309,8 @@ export async function startDaemon(
   // 4. When it resolves we can cleanup and exit
   //
   const { requestShutdown, resolvesWhenShutdownRequested } = createDaemonShutdownController();
+  const homeTransportCancellation = new AbortController();
+  void resolvesWhenShutdownRequested.then(() => homeTransportCancellation.abort());
 
   logger.debug('[DAEMON RUN] Starting daemon process...');
   // Which bytes this daemon is about to run. `startedWithCliVersion` is identical across
@@ -313,7 +322,6 @@ export async function startDaemon(
     + ` built ${runningRuntime.builtAt ?? '(unverified)'}`,
   );
   logger.debugLargeJson('[DAEMON RUN] Environment', getEnvironmentInfo());
-  const diagnosticSubsystemGates = resolveDaemonDiagnosticSubsystemGates(process.env);
 
   const isInteractive = Boolean(process.stdin.isTTY && process.stdout.isTTY);
   const { waitForAuthEnabled, waitForAuthTimeoutMs } = resolveWaitForAuthConfig(process.env);
@@ -404,6 +412,7 @@ export async function startDaemon(
           }
         }
         preparedIrohState.home = await prepareDaemonHomeIrohTransport({
+          signal: homeTransportCancellation.signal,
           runtime: preparedIrohState.machine,
           profile: await getActiveServerProfile(),
           applicationCarrierEligibility,
@@ -422,6 +431,11 @@ export async function startDaemon(
         }
       },
     });
+    // Home reachability and explicit wait-for-auth are separate admission
+    // lifecycles. Start the cold plugin readiness budget after Home verification
+    // so a transient outage cannot exhaust it before any plugin phase starts.
+    const startupDeadlineAtMs = Date.now()
+      + readDaemonStartWaitTimeoutMs() - DEFAULT_DAEMON_START_WAIT_POLL_MS;
     machineIrohRuntime = preparedIrohState.machine;
     homeIrohTransport = preparedIrohState.home;
     daemonLockHandle = bootstrapContext.daemonLockHandle;
@@ -457,6 +471,20 @@ export async function startDaemon(
     let reconcileTeamCredentialDirectMaterialAfterSourceChange = (): void => {};
     let daemonServerWorkScheduler: DaemonServerWorkScheduler | null = null;
     let apiMachineForSessions: ApiMachineClient | null = null;
+    const machineAdmissionTransport = async (
+      request: Parameters<ApiMachineClient['enqueueSessionPendingByMachine']>[0],
+      options?: Parameters<ApiMachineClient['enqueueSessionPendingByMachine']>[1],
+    ) => {
+      const currentApiMachine = apiMachineForSessions;
+      if (!currentApiMachine) {
+        return { status: 'rejected' as const, code: 'session_input_target_unavailable' as const };
+      }
+      return await currentApiMachine.enqueueSessionPendingByMachine(request, options);
+    };
+    const releaseMachineAdmissionTransport = installDaemonMachineAdmissionTransport({
+      serverId: configuration.activeServerId,
+      transport: machineAdmissionTransport,
+    });
     let apiMachine: ApiMachineClient | null = null;
     let homeTransportReplacementPending = false;
     const eventLoopStallMonitor = createDaemonEventLoopStallMonitor({
@@ -466,6 +494,8 @@ export async function startDaemon(
     });
     eventLoopStallMonitor.start();
     let localServiceInventoryRoutes: Pick<LocalServiceInventoryRoutes, 'getSnapshot'> | null = null;
+    let localServiceSummary: Parameters<typeof createDaemonMachineBootstrapRuntime>[0]['localServiceSummary'];
+    let acquireLocalServicePreviewApplication: Parameters<typeof createDaemonMachineBootstrapRuntime>[0]['acquireLocalServicePreviewApplication'];
     let providerManagedCatalogRuntimeOwner: ProviderManagedCatalogRuntimeOwner | null = null;
     const persistedTakeoverAdmissionWaiter =
       createPersistedTakeoverAdmissionWaiter();
@@ -491,7 +521,13 @@ export async function startDaemon(
     // provider bridge below so the runtime-action dispatch (read-path) returns LIVE counters from the
     // SAME store. The daemon's own scope is derived from the credential subject; without it the bridge
     // stays unregistered and the read-path executor fails closed.
-    const peerMediationObservabilityRuntime = createDaemonPeerMediationObservabilityRuntime();
+    const peerMediationObservabilityRuntime = createDaemonPeerMediationObservabilityRuntime({
+      isEnabled: () => {
+        const snapshot = serverFeaturesSnapshotStore.getSnapshot();
+        return snapshot?.status === 'ready'
+          && readServerEnabledBit(snapshot.features, 'machines.peerMediation.observability') === true;
+      },
+    });
     installPeerMediationObservabilityRuntimeActionContextProvider({
       api,
       credentialsToken: credentials.token,
@@ -728,6 +764,7 @@ export async function startDaemon(
           'startup_retirement_incomplete:exit_cleanup_incomplete',
       }),
       drainBackgroundServerWork: async () => {
+        await getDaemonAgentInstallJobOwner().shutdown();
         await stopWorkspaceSyncRuntime();
         pluginWebhookWakeCleanup?.();
         pluginWebhookWakeCleanup = null;
@@ -759,6 +796,7 @@ export async function startDaemon(
     });
     const {
       loadLocalSessionMetadataForHandoff,
+      resolveHostedSessionWorkingDirectory,
     } = createDaemonSessionHandoffMetadataBridge({
       pidToTrackedSession,
       getMachineId: () => machineId,
@@ -961,8 +999,15 @@ export async function startDaemon(
       },
     });
     const requestControlServerSelfRestart = async (
-      { successorDistClosureFingerprint }: { successorDistClosureFingerprint?: string } = {},
+      {
+        successorDistClosureFingerprint,
+        onReplacementConfirmed,
+    }: {
+      successorDistClosureFingerprint?: string;
+      onReplacementConfirmed?: () => Promise<void>;
+    } = {},
     ): Promise<void> => {
+      const restartVerifyTimeoutMs = readDaemonRestartVerifyTimeoutMs();
       const result = await requestDaemonSelfRestartWithLockHandoff({
         getCurrentDaemonLockHandle: () => daemonLockHandle,
         setCurrentDaemonLockHandle: (lockHandle) => {
@@ -976,13 +1021,15 @@ export async function startDaemon(
           runtimeId,
           expectedCliVersion: '',
           ownPid: process.pid,
-          timeoutMs: readDaemonRestartVerifyTimeoutMs(),
+          timeoutMs: restartVerifyTimeoutMs,
+          deadlineAtMs: Date.now() + restartVerifyTimeoutMs,
           pollMs: readDaemonRestartVerifyPollMs(),
           postConfirmationOverlapMs: resolvePositiveIntEnv(
             process.env.HAPPIER_DAEMON_RESTART_OVERLAP_EXIT_GRACE_MS,
             1_000,
             { min: 0, max: 5_000 },
           ),
+          ...(onReplacementConfirmed ? { onReplacementConfirmed } : {}),
           takeover: true,
           env: resolveDaemonSelfRestartEnvironment(successorDistClosureFingerprint),
         },
@@ -1011,6 +1058,7 @@ export async function startDaemon(
         attemptTransactions:
           createQualifiedConnectedAccountAttemptTransactionAdapters({
             credentials,
+            getMachineId: () => machineId,
             getAccountEncryptionMode: async () =>
               await api.getAccountEncryptionMode(),
           }),
@@ -1161,16 +1209,11 @@ export async function startDaemon(
       });
     const browserRuntimeActionExecute = api.createBrowserRuntimeActionExecutor();
     const pluginRuntimeOwner = createDaemonPluginRuntimeOwner({
+      startupDeadlineAtMs,
       happyHomeDir: configuration.happyHomeDir,
       daemonDatabaseLimits: DEFAULT_PLUGIN_DAEMON_DATABASE_LIMITS_POLICY,
       resolveCurrentMachineId: () => machineId,
-      machineAdmissionTransport: async (request, options) => {
-        const currentApiMachine = apiMachineForSessions;
-        if (!currentApiMachine) {
-          return { status: 'rejected', code: 'session_input_target_unavailable' };
-        }
-        return await currentApiMachine.enqueueSessionPendingByMachine(request, options);
-      },
+      machineAdmissionTransport,
       resolveComposerMediaStageTransferRpcHandler: () => (
         apiMachineForSessions?.getPeerMediationMachineRpcHandlerManager() ?? null
       ),
@@ -1546,6 +1589,7 @@ export async function startDaemon(
       spawnSession,
       stopSession,
       isSessionAlreadyRunning,
+      sessionRunnerStatus,
       onChildExited,
       controlPort,
       controlToken,
@@ -1631,11 +1675,13 @@ export async function startDaemon(
       pidToAwaiter,
       pidToSpawnResultResolver,
       pidToSpawnWebhookTimeout,
+      persistedTakeoverAdmissionWaiter,
       getApiMachineForSessions: () => apiMachineForSessions,
       onLocalServicesRoutesReady: (routes) => {
         localServiceInventoryRoutes = routes.localServicesInventory ?? null;
         machineRpcRouteAttachments.attachLocalServicesRoutes(routes);
       },
+      onLocalServicesSummaryReady: (source) => { localServiceSummary = source; },
       onProviderManagedCatalogRuntimeOwnerReady: (owner) => {
         providerManagedCatalogRuntimeOwner = owner;
       },
@@ -1648,7 +1694,10 @@ export async function startDaemon(
       onManagedServiceSessionClientAccessResolverReady: (resolver) => {
         managedServiceSessionClientAccessResolver = resolver;
       },
-      onLocalServicesPreviewRoutesReady: machineRpcRouteAttachments.attachLocalServicesPreviewRoutes,
+      onLocalServicesPreviewRoutesReady: (routes) => {
+        machineRpcRouteAttachments.attachLocalServicesPreviewRoutes(routes);
+        acquireLocalServicePreviewApplication = routes.acquireNativeApplication;
+      },
       onBrowserControlRoutesReady: machineRpcRouteAttachments.attachBrowserControlRoutes,
       onBrowserContextRoutesReady: machineRpcRouteAttachments.attachBrowserContextRoutes,
       onBrowserDiagnosticsRoutesReady: machineRpcRouteAttachments.attachBrowserDiagnosticsRoutes,
@@ -2293,13 +2342,20 @@ export async function startDaemon(
                     requestFacts: request.requestFacts,
                   }, { signal: request.request.signal }),
                   revalidateExternalAuthorization: async (request) => (
-                    await authorizeExternalAuthorization(request)
-                  ).ok,
-                  retireExternalApiKey: async ({ externalApiKeyId, application }) =>
+                    revalidateExternalProviderBrokerAuthorization(
+                      await authorizeExternalAuthorization(request),
+                    )
+                  ),
+                  retireExternalApiKey: async ({ externalApiKeyId, operationId, application }) =>
                     await brokerManagedProviderCustody.retireExternalApiKey({
                       identity: application.implementationIdentity,
                       externalApiKeyId,
+                      operationId,
                     }),
+                  retireExternalOperation: async ({ externalApiKeyId, operationId, brokerMachineId }) => {
+                    if (brokerMachineId !== registeredMachineId) throw new Error('Broker Machine changed');
+                    await brokerApiMachine.retireTeamCredentialExternalProviderOperation({ externalApiKeyId, operationId });
+                  },
                   recordExternalTerminalUsage: async (request) =>
                     await api.recordTeamCredentialExternalProviderTerminalUsage(request),
                   resolveResourceTestRequestPolicy: async ({ binding, request }) => {
@@ -2411,7 +2467,6 @@ export async function startDaemon(
             });
           });
         },
-        diagnosticSubsystemGates,
         runtimeId,
         publicReleaseChannel,
         startupSource,
@@ -2419,10 +2474,12 @@ export async function startDaemon(
         transferRuntimeStatePublisher,
         spawnSession,
         stopSession,
+        sessionRunnerStatus,
         awaitAgentSessionOpen,
         installExternalSessionHostOperations,
         isSessionAlreadyRunning,
         loadLocalSessionMetadataForHandoff,
+        resolveHostedSessionWorkingDirectory,
         beforeShutdown,
         requestShutdown,
         directPeerServerLifecycle,
@@ -2463,6 +2520,8 @@ export async function startDaemon(
         resolvePeerMediationTrustRoots,
         refreshServerFeaturesSnapshot: () => serverFeaturesSnapshotStore.refresh(),
         readLocalServiceInventorySnapshot: async () => localServiceInventoryRoutes?.getSnapshot() ?? null,
+        localServiceSummary,
+        acquireLocalServicePreviewApplication,
         managedCatalogRuntime: {
           launch: async (input) => {
             if (providerManagedCatalogRuntimeOwner) {
@@ -2778,7 +2837,11 @@ export async function startDaemon(
       releaseDaemonLock,
     });
     await cleanupAndShutdown(shutdownRequest.source, shutdownRequest.errorMessage);
+    releaseMachineAdmissionTransport();
   } catch (error) {
+    await getDaemonAgentInstallJobOwner().shutdown().catch(() => {
+      logger.debug('[DAEMON RUN] Agent installer process cleanup could not be verified during shutdown');
+    });
     await cleanupDaemonHomeMachineWorkspace({
       stopWorkspaceSync: stopWorkspaceSyncRuntime,
       stopMachineAcceptor: stopMachineIrohAcceptor,

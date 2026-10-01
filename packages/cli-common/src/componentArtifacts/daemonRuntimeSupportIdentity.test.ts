@@ -103,14 +103,80 @@ module.exports = { unpackTools };
   await writeFixtureFile(join(root, 'packages', 'plugins', 'cliproxyapi', 'managed-runtime', 'licenses', 'CLIProxyAPI-LICENSE'), 'license\n');
   await writeFixtureFile(join(root, 'packages', 'plugins', 'cliproxyapi', 'managed-runtime', 'licenses', 'THIRD-PARTY-NOTICES'), 'notices\n');
   await writeFixtureFile(join(root, 'apps', 'cli', 'native', 'processcustody', 'main.go'), 'package main\n');
+  await writeFixtureFile(join(root, 'apps', 'cli', 'scripts', 'buildSharedDeps.mjs'), `
+import { cp, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+
+function sourcePackageDir(repoRoot, packageName) {
+  const workspaceName = packageName.split('/').at(-1);
+  if (workspaceName.startsWith('plugins-')) {
+    return join(repoRoot, 'packages', 'plugins', workspaceName.slice('plugins-'.length));
+  }
+  return join(repoRoot, 'packages', workspaceName);
+}
+
+export async function buildBundledWorkspaceDependenciesForCli({
+  repoRoot,
+  ensureWorkspacePackagesBuiltByNameImpl,
+  publicationMode,
+}) {
+  if (publicationMode !== 'artifact') {
+    throw new Error('fixture binary closure must request artifact publication mode');
+  }
+  const cliPackage = JSON.parse(await readFile(join(repoRoot, 'apps', 'cli', 'package.json'), 'utf8'));
+  const packageNames = Array.isArray(cliPackage.bundledDependencies)
+    ? cliPackage.bundledDependencies
+    : [];
+  await ensureWorkspacePackagesBuiltByNameImpl?.(repoRoot, packageNames, {
+    includeDevDependencies: false,
+    publicationMode: 'artifact',
+  });
+
+  const publicationFixturePath = join(repoRoot, '.project', 'fixture-bundled-plugin-publication.json');
+  let publicationFixture = null;
+  if (existsSync(publicationFixturePath)) {
+    const fixture = JSON.parse(await readFile(publicationFixturePath, 'utf8'));
+    const sourceDir = sourcePackageDir(repoRoot, fixture.packageName);
+    const eventPath = join(repoRoot, '.project', 'fixture-bundled-plugin-publication-events.json');
+    const requiredPaths = fixture.requiredRelativePaths.map((relativePath) => join(sourceDir, relativePath));
+    if (requiredPaths.some((path) => existsSync(path))) {
+      throw new Error('fixture expects archived bundled-plugin runtime outputs to be absent before publication');
+    }
+    await mkdir(join(eventPath, '..'), { recursive: true });
+    await writeFile(eventPath, JSON.stringify(['publisher-started']), 'utf8');
+    for (const path of requiredPaths) {
+      await mkdir(join(path, '..'), { recursive: true });
+      await writeFile(path, 'published bundled plugin artifact\\n', 'utf8');
+    }
+    publicationFixture = { fixture, eventPath };
+  }
+
+  for (const packageName of packageNames) {
+    await cp(
+      sourcePackageDir(repoRoot, packageName),
+      join(repoRoot, 'apps', 'cli', 'node_modules', ...packageName.split('/')),
+      { recursive: true, force: true },
+    );
+  }
+  if (publicationFixture) {
+    const installedDir = join(repoRoot, 'apps', 'cli', 'node_modules', ...publicationFixture.fixture.packageName.split('/'));
+    if (publicationFixture.fixture.requiredRelativePaths.some((relativePath) => !existsSync(join(installedDir, relativePath)))) {
+      throw new Error('fixture canonical bundled-plugin verifier found an incomplete installed closure');
+    }
+    await writeFile(publicationFixture.eventPath, JSON.stringify(['publisher-started', 'publisher-verified']), 'utf8');
+  }
+}
+`);
 
   for (const relativePath of [
     'packages/cli-common/src/componentArtifacts/buildCliBinaryArtifactPayload.ts',
     'packages/cli-common/src/componentArtifacts/copyCliNodeRuntimePayload.ts',
     'packages/cli-common/src/componentArtifacts/finalizeRuntimeArtifactPayload.ts',
+    'packages/cli-common/src/componentArtifacts/targets.ts',
+    'packages/cli-common/nodePtySpawnHelperPermissions.cjs',
     'packages/cli-common/src/componentArtifacts/stageCliProxyApiManagedRuntime.ts',
     'packages/cli-common/src/componentArtifacts/stageProcessCustodyRuntime.ts',
-    'packages/cli-common/src/componentArtifacts/deferredVoiceRuntimePackages.ts',
     'packages/cli-common/src/componentArtifacts/cliRuntimeSidecars.ts',
     'packages/cli-common/src/workspaces/index.ts',
     'packages/cli-common/workspaceRuntimeDependencies.mjs',
@@ -167,6 +233,48 @@ describe('daemon runtime support identity', () => {
     expect(changedTool.fingerprint).not.toBe(changedRuntimeDependency.fingerprint);
     expect(changedSidecar.fingerprint).not.toBe(changedTool.fingerprint);
     expect(changedSidecar.workspaceRuntimeIdentity).toBe(initial.workspaceRuntimeIdentity);
+  });
+
+  it('derives managed support identity from workspace source before installed outputs are refreshed', async () => {
+    const root = await makeTempRepo();
+    await createSupportIdentityFixture(root);
+    const input = {
+      repoRoot: root,
+      target: targetForHost(),
+      goVersion: 'go version go1.fixture',
+      workspaceSourceFingerprint: 'a'.repeat(64),
+    };
+    const initial = readCliBinaryArtifactSupportIdentity(input);
+    await writeFixtureFile(
+      join(root, 'apps', 'cli', 'node_modules', '@happier-dev', 'cli-common', 'dist', 'index.js'),
+      'export const stale = true;\n',
+    );
+    const staleInstalledOutput = readCliBinaryArtifactSupportIdentity(input);
+    const changedSource = readCliBinaryArtifactSupportIdentity({
+      ...input,
+      workspaceSourceFingerprint: 'b'.repeat(64),
+    });
+
+    expect(staleInstalledOutput.fingerprint).toBe(initial.fingerprint);
+    expect(changedSource.fingerprint).not.toBe(initial.fingerprint);
+  });
+
+  it('changes when ignored bundled-plugin failure diagnostics change', async () => {
+    const root = await makeTempRepo();
+    await createSupportIdentityFixture(root);
+    const input = {
+      repoRoot: root,
+      target: targetForHost(),
+      goVersion: 'go version go1.fixture',
+      workspaceSourceFingerprint: 'a'.repeat(64),
+    };
+    const before = readCliBinaryArtifactSupportIdentity(input);
+    await writeFixtureFile(join(root, 'apps', 'cli', '.project', 'tmp', 'bundled-plugin-publication', 'failures.json'), '[]\n');
+    const empty = readCliBinaryArtifactSupportIdentity(input);
+    await writeFixtureFile(join(root, 'apps', 'cli', '.project', 'tmp', 'bundled-plugin-publication', 'failures.json'), '[{"pluginId":"happier.inspector"}]\n');
+    const failed = readCliBinaryArtifactSupportIdentity(input);
+    expect(empty.fingerprint).not.toBe(before.fingerprint);
+    expect(failed.fingerprint).not.toBe(empty.fingerprint);
   });
 
   it('binds native custody provisioning so a helper-less payload cannot share a fingerprint', async () => {
@@ -236,6 +344,10 @@ describe('daemon runtime support identity', () => {
   it('stages only daemon support entries and verifies the same owner-local identity', async () => {
     const root = await makeTempRepo();
     await createSupportIdentityFixture(root);
+    await writeFixtureFile(
+      join(root, 'apps', 'cli', 'node_modules', '@happier-dev', 'cli-common', 'dist', 'index.d.ts.map'),
+      '{"version":3}\n',
+    );
     const prebuiltRuntimePath = join(root, 'prebuilt', 'happier-cliproxyapi-managed');
     const prebuiltCustodyPath = join(root, 'prebuilt', 'happier-process-custody');
     await writeFixtureFile(prebuiltRuntimePath, 'prebuilt runtime\n');
@@ -359,11 +471,89 @@ describe('daemon runtime support identity', () => {
 
     expect(built.entrypoint).toBe('happier');
     await expect(readFile(join(payloadDir, 'happier'), 'utf8')).resolves.toBe('compiled daemon binary\n');
+    await expect(readFile(join(payloadDir, 'package.json'), 'utf8'))
+      .resolves.toContain('"name":"@happier-dev/cli"');
     await expect(readFile(join(payloadDir, 'package-dist', 'index.mjs'), 'utf8'))
       .resolves.toContain('daemonCode');
     expect(existsSync(join(payloadDir, 'node_modules'))).toBe(false);
     expect(existsSync(join(payloadDir, 'tools'))).toBe(false);
     expect(existsSync(join(payloadDir, 'scripts'))).toBe(false);
+  });
+
+  it('publishes and verifies ignored bundled-plugin daemon, UI, and runtime artifacts before binary closure assembly', async () => {
+    const root = await makeTempRepo();
+    await createSupportIdentityFixture(root);
+    const packageName = '@happier-dev/plugins-fixture';
+    const requiredRelativePaths = [
+      '.happier-plugin/daemon.js',
+      '.happier-plugin/happier-plugin-ui/ui-artifacts.json',
+      '.happier-plugin/runtime/runner.mjs',
+    ];
+    const pluginSourceDir = join(root, 'packages', 'plugins', 'fixture');
+    const cliPackageJsonPath = join(root, 'apps', 'cli', 'package.json');
+    const cliPackage = JSON.parse(await readFile(cliPackageJsonPath, 'utf8')) as {
+      bundledDependencies: string[];
+      dependencies: Record<string, string>;
+    };
+    cliPackage.bundledDependencies.push(packageName);
+    cliPackage.dependencies[packageName] = '1.0.0';
+    await writeFixtureFile(cliPackageJsonPath, JSON.stringify(cliPackage));
+    await writeFixtureFile(join(pluginSourceDir, 'package.json'), JSON.stringify({
+      name: packageName,
+      version: '1.0.0',
+      main: './dist/index.js',
+      files: ['dist', '.happier-plugin'],
+    }));
+    await writeFixtureFile(join(pluginSourceDir, 'dist', 'index.js'), 'export const fixturePlugin = true;\n');
+    await writeFixtureFile(join(pluginSourceDir, '.happier-plugin', 'plugin.json'), JSON.stringify({
+      id: 'com.happier.fixture',
+      version: '1.0.0',
+      contributes: { resources: [] },
+    }));
+    await writeFixtureFile(join(root, '.project', 'fixture-bundled-plugin-publication.json'), JSON.stringify({
+      packageName,
+      requiredRelativePaths,
+    }));
+
+    expect(requiredRelativePaths.every((relativePath) => (
+      !existsSync(join(pluginSourceDir, relativePath))
+    ))).toBe(true);
+
+    const genericBuildCalls: string[][] = [];
+    const closurePathsSeenByCompiler: boolean[][] = [];
+    await buildCliBinaryArtifactCodePayload({
+      repoRoot: root,
+      payloadDir: join(root, 'artifacts', 'daemon', 'code-only', 'payload'),
+      target: targetForHost(),
+      commandProbe: (command) => command === 'bun' || command === 'yarn',
+      ensureWorkspacePackagesBuiltByName: async (_repoRoot, packageNames) => {
+        genericBuildCalls.push(packageNames);
+        return { ok: true, built: [], skipped: packageNames };
+      },
+      runCommand: async () => {
+        const entrypoint = join(root, 'apps', 'cli', 'dist', 'index.mjs');
+        await writeFixtureFile(entrypoint, 'export const daemonCode = true;\n');
+        const workspaceRuntime = readCliNodeWorkspaceRuntimeIdentity({ repoRoot: root });
+        cliDistBuildManifest.writeCliDistBuildManifest(entrypoint, {
+          workspaceRuntimeIdentity: workspaceRuntime.fingerprint,
+          workspaceRuntimePackages: workspaceRuntime.packageNames,
+        });
+      },
+      compileBinary: async ({ outfile }) => {
+        const installedPluginDir = join(root, 'apps', 'cli', 'node_modules', ...packageName.split('/'));
+        closurePathsSeenByCompiler.push(requiredRelativePaths.map((relativePath) => (
+          existsSync(join(installedPluginDir, relativePath))
+        )));
+        await writeFixtureFile(outfile, 'compiled daemon binary\n');
+      },
+    });
+
+    expect(genericBuildCalls).toEqual([['@happier-dev/cli-common', packageName]]);
+    expect(closurePathsSeenByCompiler).toEqual([[true, true, true]]);
+    await expect(readFile(
+      join(root, '.project', 'fixture-bundled-plugin-publication-events.json'),
+      'utf8',
+    )).resolves.toBe(JSON.stringify(['publisher-started', 'publisher-verified']));
   });
 
   it('settles a stale installed workspace publication before support identity capture', async () => {
@@ -386,9 +576,13 @@ describe('daemon runtime support identity', () => {
       skipped: packageNames,
     });
 
-    await prepareCliBinaryArtifactWorkspacePublication({
+    let workspacePreparationCalls = 0;
+    const preparedWorkspacePublication = await prepareCliBinaryArtifactWorkspacePublication({
       repoRoot: root,
-      ensureWorkspacePackagesBuiltByName,
+      ensureWorkspacePackagesBuiltByName: async (repoRoot, packageNames) => {
+        workspacePreparationCalls += 1;
+        return await ensureWorkspacePackagesBuiltByName(repoRoot, packageNames);
+      },
     });
     const settledBytes = await readFile(installedDistPath, 'utf8');
     expect(settledBytes).toBe('export {};\n');
@@ -405,7 +599,10 @@ describe('daemon runtime support identity', () => {
       payloadDir,
       target: identityInput.target,
       commandProbe: (command) => command === 'bun' || command === 'yarn',
-      ensureWorkspacePackagesBuiltByName,
+      preparedWorkspacePublication,
+      ensureWorkspacePackagesBuiltByName: async () => {
+        throw new Error('daemon code payload must reuse the settled workspace publication');
+      },
       runCommand: async () => {
         const entrypoint = join(root, 'apps', 'cli', 'dist', 'index.mjs');
         await writeFixtureFile(entrypoint, 'export const daemonCode = true;\n');
@@ -420,6 +617,7 @@ describe('daemon runtime support identity', () => {
       },
     });
 
+    expect(workspacePreparationCalls).toBe(1);
     expect(await readFile(installedDistPath, 'utf8')).toBe(settledBytes);
     expect(readCliBinaryArtifactSupportIdentity(identityInput).fingerprint)
       .toBe(settledIdentity.fingerprint);

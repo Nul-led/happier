@@ -1,4 +1,5 @@
-import type { Metadata } from '@/sync/domains/state/storageTypes';
+import { readSessionDirectoryKind } from '@happier-dev/protocol';
+import type { Metadata } from '@happier-dev/session-core/state';
 import {
     readExternalAgentObservationSessionState,
     type ExternalAgentObservationSnapshotV1,
@@ -41,6 +42,7 @@ export type SessionListRenderableMetadataComparison = Readonly<{
         updatedAt: number;
     }> | null;
     hiddenSystemSession: boolean;
+    sessionDirectoryV1: SessionListRenderableMetadata['sessionDirectoryV1'];
     terminalControlServiceabilityV1: SessionListRenderableMetadata['terminalControlServiceabilityV1'];
 }>;
 
@@ -56,8 +58,11 @@ type SessionListRenderableMetadataComparisonSnapshot = Readonly<{
     externalAgentObservationV1?: unknown;
     readStateV1: unknown;
     hiddenSystemSession: boolean;
+    sessionDirectoryV1?: SessionListRenderableMetadata['sessionDirectoryV1'];
     terminalControlServiceabilityV1?: unknown;
 }>;
+
+const MANAGED_SESSION_DIRECTORY_MARKER = Object.freeze({ v: 1 as const, kind: 'managed' as const });
 
 function readExternalSessionRenderableMetadata(
     candidate: SessionListRenderableExternalSessionIdentity | null,
@@ -194,6 +199,7 @@ function isSessionListRenderableMetadataComparisonSnapshotEqual(
         && (previous.machineId ?? null) === snapshot.machineId
         && (previous.flavor ?? null) === snapshot.flavor
         && (previous.hiddenSystemSession === true) === snapshot.hiddenSystemSession
+        && (previous.sessionDirectoryV1 ?? null) === (snapshot.sessionDirectoryV1 ?? null)
         && previous.externalSessionV1 === nextExternalSessionV1
         && previous.externalAgentObservationV1 === nextExternalAgentObservationV1
         && previous.readStateV1 === nextReadStateV1
@@ -255,6 +261,7 @@ export function normalizeSessionListRenderableMetadataComparison(
         externalAgentObservationV1: nextExternalAgentObservationV1,
         readStateV1: nextReadStateV1,
         hiddenSystemSession: normalizedSnapshot.hiddenSystemSession,
+        sessionDirectoryV1: normalizedSnapshot.sessionDirectoryV1 ?? null,
         terminalControlServiceabilityV1: normalizedSnapshot.terminalControlServiceabilityV1 as SessionListRenderableMetadataComparison['terminalControlServiceabilityV1'],
     };
 
@@ -281,6 +288,8 @@ export function readSessionListRenderableMetadataComparison(
         externalAgentObservationV1: metadata.externalAgentObservationV1,
         readStateV1: (metadata as Readonly<{ readStateV1?: unknown }>).readStateV1,
         hiddenSystemSession: metadata.systemSessionV1?.hidden === true,
+        // One shared value, so equal rows keep their identity; see `readSessionDirectoryKind`.
+        sessionDirectoryV1: readSessionDirectoryKind(metadata) === 'managed' ? MANAGED_SESSION_DIRECTORY_MARKER : null,
         terminalControlServiceabilityV1: metadata.terminal?.controlServiceabilityV1 ?? null,
     }, previous);
 }
@@ -302,6 +311,7 @@ export function readSessionListRenderableMetadataComparisonFromRenderable(
         externalAgentObservationV1: metadata.externalAgentObservationV1 ?? null,
         readStateV1: metadata.readStateV1 ?? null,
         hiddenSystemSession: metadata.hiddenSystemSession === true,
+        sessionDirectoryV1: readSessionDirectoryKind(metadata) === 'managed' ? MANAGED_SESSION_DIRECTORY_MARKER : null,
         terminalControlServiceabilityV1: metadata.terminalControlServiceabilityV1 ?? null,
     });
 }
@@ -332,6 +342,7 @@ export function areSessionListRenderableMetadataComparisonsEqual(
         && (previous.machineId ?? null) === (next.machineId ?? null)
         && (previous.flavor ?? null) === (next.flavor ?? null)
         && (previous.hiddenSystemSession === true) === (next.hiddenSystemSession === true)
+        && readSessionDirectoryKind(previous) === readSessionDirectoryKind(next)
         && areSessionListRenderableExternalSessionIdentitiesEqual(
             previous.externalSessionV1,
             next.externalSessionV1,

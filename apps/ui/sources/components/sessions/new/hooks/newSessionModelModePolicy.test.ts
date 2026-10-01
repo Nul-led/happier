@@ -1,9 +1,27 @@
 import { describe, expect, it } from 'vitest';
+import { ProviderConnectionIdSchema } from '@happier-dev/protocol';
 
 import { coerceNewSessionModelMode, resolveInitialNewSessionModelMode } from './newSessionModelModePolicy';
 import type { NewSessionModelConfig } from './newSessionModelModePolicy';
 
 describe('newSessionModelModePolicy', () => {
+    it('preserves a connection-bound model when the native discovery is unavailable or excludes it', () => {
+        const modelSelection = {
+            v: 1 as const, updatedAt: 1,
+            ref: {
+                agentTargetKey: 'agent:happier.agent.codex/codex',
+                providerConnectionId: ProviderConnectionIdSchema.parse('pc_work'), modelId: 'gateway/only',
+            },
+        };
+        const input = {
+            modelSelection, modelMode: modelSelection.ref.modelId,
+            modelConfig: { defaultMode: 'native', allowedModes: ['native'], supportsFreeform: false },
+            preflight: { availableModels: [], supportsFreeform: false, unavailable: true },
+        };
+        expect(coerceNewSessionModelMode(input)).toBe('gateway/only');
+        expect(coerceNewSessionModelMode({ ...input, preflight: null })).toBe('gateway/only');
+    });
+
     it('prefers draft modelMode when supportsFreeform is enabled', () => {
         const out = resolveInitialNewSessionModelMode({
             draftModelMode: 'custom-model-id',

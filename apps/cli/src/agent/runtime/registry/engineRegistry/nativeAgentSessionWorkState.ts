@@ -212,7 +212,7 @@ export function createNativeAgentSessionWorkStateService(params: Readonly<{
     pluginId: string;
     contributionId: string;
     agentId: string;
-    generationId: string;
+    occurrenceId: string;
     /** Optional retained-Run scope; keeps source truncation/replacement isolated across Runs. */
     executionRunId?: string;
     declarations: readonly WorkStateSourceDeclaration[];
@@ -244,7 +244,7 @@ export function createNativeAgentSessionWorkStateService(params: Readonly<{
             const state: PublisherState = {
                 sourceSequence: -1,
                 fingerprint: null,
-                revision: `${params.generationId}:0`,
+                revision: `${params.occurrenceId}:0`,
                 queue: Promise.resolve(),
             };
             const publisher: WorkStatePublisher = Object.freeze({
@@ -375,7 +375,7 @@ export function createNativeAgentSessionWorkStateService(params: Readonly<{
                         }
                         state.sourceSequence = request.sourceSequence;
                         state.fingerprint = normalized.fingerprint;
-                        state.revision = `${params.generationId}:${++revisionOrdinal}`;
+                        state.revision = `${params.occurrenceId}:${++revisionOrdinal}`;
                         resolveResult({
                             status: 'applied',
                             revision: state.revision,

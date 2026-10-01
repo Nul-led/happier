@@ -12,11 +12,14 @@ import { persistUsageLimitRecoveryFieldDurably } from '@/session/usageLimitRecov
 import {
   createTranscriptMessageAppendMutation,
   type DaemonUsageLimitRecoveryFieldMutation,
+  type DaemonWorkStateFieldMutation,
 } from '@/api/session/client/transport/mutations/sessionClientDurableMutationTypes';
 import { AccountEncryptionMaterialUnavailableError } from '@/api/client/encryptionKey';
 import {
   SessionStoredMessageContentSchema,
+  SessionStateWorkStateValueSchema,
   SESSION_USAGE_LIMIT_RECOVERY_METADATA_KEY,
+  writeSessionWorkStateV1ToMetadata,
   type SessionUsageLimitRecoveryV1,
   type SessionStoredMessageContent,
 } from '@happier-dev/protocol';
@@ -35,11 +38,22 @@ export type DaemonSessionMutationCustody = Readonly<{
     mutation: DaemonUsageLimitRecoveryFieldMutation;
     rawSession: RawSessionRecord;
   }>): Promise<void>;
+  stageWorkState(input: Readonly<{
+    mutation: DaemonWorkStateFieldMutation;
+    rawSession: RawSessionRecord;
+  }>): Promise<void>;
   stageTranscriptEvent(input: Readonly<{
     sessionId: string;
     eventId: string;
     data: Readonly<Record<string, unknown>>;
     usageLimitRecovery?: SessionUsageLimitRecoveryV1;
+    observedAt?: number;
+  }>): Promise<Readonly<{ persisted: true; delivered: boolean }>>;
+  stageTranscriptMessage(input: Readonly<{
+    sessionId: string;
+    localId: string;
+    payload: Readonly<Record<string, unknown>>;
+    messageRole: 'user' | 'agent' | 'event';
     observedAt?: number;
   }>): Promise<Readonly<{ persisted: true; delivered: boolean }>>;
   bindRecoveredJournals(sessionIds: readonly string[]): Promise<Readonly<{
@@ -91,6 +105,19 @@ export function createDaemonSessionMutationCustody(params: Readonly<{
         });
         return true;
       },
+      deliverWorkState: async (mutation) => {
+        await updateSessionMetadataWithRetry({
+          token: params.credentials.token,
+          credentials: params.credentials,
+          sessionId,
+          rawSession: custody.rawSession,
+          updater: (metadata) => writeSessionWorkStateV1ToMetadata(
+            metadata,
+            mutation.op.kind === 'clear' ? null : SessionStateWorkStateValueSchema.parse(mutation.op.value),
+          ),
+        });
+        return true;
+      },
       deliverTranscriptMessage: async (mutation) => {
         const content = SessionStoredMessageContentSchema.parse(mutation.content);
         const committed = await commitSessionStoredMessage({
@@ -107,21 +134,18 @@ export function createDaemonSessionMutationCustody(params: Readonly<{
     return custody;
   };
 
-  return {
-    async stage({ mutation, rawSession }) {
-      if (closed) throw new Error('daemon_usage_limit_recovery_custody_closed');
-      const sessionId = mutation.sessionId.trim();
-      if (!sessionId || rawSession.id !== sessionId) {
-        throw new Error('daemon_usage_limit_recovery_session_mismatch');
-      }
-      retainedSessionIds.delete(sessionId);
-      await resolveSessionCustody(sessionId, rawSession).outbox.enqueueUsageLimitRecovery(mutation);
-    },
-    async stageTranscriptEvent({ sessionId: rawSessionId, eventId: rawEventId, data, observedAt, usageLimitRecovery }) {
+  async function stageTranscriptMessage({ sessionId: rawSessionId, localId: rawLocalId, payload, messageRole, observedAt, usageLimitRecovery }: Readonly<{
+    sessionId: string;
+    localId: string;
+    payload: Readonly<Record<string, unknown>>;
+    messageRole: 'user' | 'agent' | 'event';
+    observedAt?: number;
+    usageLimitRecovery?: SessionUsageLimitRecoveryV1;
+  }>): Promise<Readonly<{ persisted: true; delivered: boolean }>> {
       if (closed) throw new Error('daemon_session_mutation_custody_closed');
       const sessionId = rawSessionId.trim();
-      const eventId = rawEventId.trim();
-      if (!sessionId || !eventId) {
+      const localId = rawLocalId.trim();
+      if (!sessionId || !localId) {
         throw new DaemonSessionMutationAdmissionError('session_unavailable');
       }
       const resolved = await (params.resolveSessionTransportContext ?? resolveSessionTransportContext)({
@@ -137,14 +161,6 @@ export function createDaemonSessionMutationCustody(params: Readonly<{
       if (resolved.sessionId !== sessionId || resolved.rawSession.id !== sessionId) {
         throw new DaemonSessionMutationAdmissionError('session_unavailable');
       }
-      const payload = {
-        role: 'agent',
-        content: {
-          type: 'event',
-          id: eventId,
-          data,
-        },
-      };
       const content: SessionStoredMessageContent = sealSessionStoredContent({
         ...resolved,
         payload,
@@ -164,8 +180,8 @@ export function createDaemonSessionMutationCustody(params: Readonly<{
       const result = await custody.outbox.enqueueTranscriptMessage(
         createTranscriptMessageAppendMutation({
           sessionId,
-          localId: eventId,
-          messageRole: 'event',
+          localId,
+          messageRole,
           content,
           createdAt: observedAt,
           updatedAt: observedAt,
@@ -176,6 +192,37 @@ export function createDaemonSessionMutationCustody(params: Readonly<{
         throw new Error('daemon_session_mutation_journal_admission_failed');
       }
       return { persisted: true, delivered: result.delivered };
+  }
+
+  return {
+    async stage({ mutation, rawSession }) {
+      if (closed) throw new Error('daemon_usage_limit_recovery_custody_closed');
+      const sessionId = mutation.sessionId.trim();
+      if (!sessionId || rawSession.id !== sessionId) {
+        throw new Error('daemon_usage_limit_recovery_session_mismatch');
+      }
+      retainedSessionIds.delete(sessionId);
+      await resolveSessionCustody(sessionId, rawSession).outbox.enqueueUsageLimitRecovery(mutation);
+    },
+    async stageWorkState({ mutation, rawSession }) {
+      if (closed) throw new Error('daemon_session_mutation_custody_closed');
+      const sessionId = mutation.sessionId.trim();
+      if (!sessionId || rawSession.id !== sessionId) {
+        throw new Error('daemon_work_state_session_mismatch');
+      }
+      retainedSessionIds.delete(sessionId);
+      await resolveSessionCustody(sessionId, rawSession).outbox.enqueueWorkState(mutation);
+    },
+    stageTranscriptMessage,
+    async stageTranscriptEvent({ sessionId, eventId, data, observedAt, usageLimitRecovery }) {
+      return await stageTranscriptMessage({
+        sessionId,
+        localId: eventId,
+        messageRole: 'event',
+        payload: { role: 'agent', content: { type: 'event', id: eventId.trim(), data } },
+        observedAt,
+        usageLimitRecovery,
+      });
     },
     async bindRecoveredJournals(sessionIds) {
       if (closed) return { boundSessionIds: [], retainedSessionIds: [] };

@@ -1,23 +1,29 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { createCdpBrowserContextSource } from './source';
-import type { BrowserContextRegionRect } from '../capture';
+import { createBrowserContextRoutes } from '../routes';
+import { createBrowserContextCaptureService, type BrowserContextRegionRect } from '../capture';
+import type { BrowserSidecarCdpCommandScope } from '../../sidecar/controlAdapter';
 import type { BrowserContextCdpPageHandle } from './transport';
 import type { BrowserContextScreenshotMediaWriter } from './screenshotMedia';
 
 const VIEW = { browserSessionId: 'browser_session_1', viewId: 'view_1', navigationGeneration: 3 } as const;
 const HANDLE: BrowserContextCdpPageHandle = { targetId: 'target_1', sessionId: 'cdp_session_1' };
 
-type DispatchResponder = (method: string, params: Record<string, unknown> | undefined) => unknown;
+type DispatchResponder = (
+    method: string,
+    params: Record<string, unknown> | undefined,
+    scope: BrowserSidecarCdpCommandScope,
+) => unknown;
 
 function fakeTransport(responder: DispatchResponder) {
     const calls: Array<{ method: string; params?: Record<string, unknown> }> = [];
     return {
         calls,
         transport: {
-            dispatchPageCommand: vi.fn(async (input: { method: string; params?: Record<string, unknown> }) => {
+            dispatchPageCommand: vi.fn(async (input: BrowserSidecarCdpCommandScope & { method: string; params?: Record<string, unknown> }) => {
                 calls.push({ method: input.method, ...(input.params ? { params: input.params } : {}) });
-                return responder(input.method, input.params);
+                return responder(input.method, input.params, input);
             }),
         },
     };
@@ -44,6 +50,123 @@ function fakeMediaWriter(): BrowserContextScreenshotMediaWriter & { writes: unkn
 }
 
 describe('cdp browser context source', () => {
+    it('retains a privacy denial discovered at screenshot egress', async () => {
+        let passwordPresent = false;
+        const { transport } = fakeTransport(method => {
+            if (method === 'Runtime.evaluate') return { result: { type: 'boolean', value: passwordPresent } };
+            if (method === 'Page.captureScreenshot') {
+                passwordPresent = true;
+                return { data: 'AQID' };
+            }
+            return {};
+        });
+        const service = createBrowserContextCaptureService({ ownerAccountId: 'owner',
+            source: createCdpBrowserContextSource({ transport, resolveView: () => HANDLE, screenshotMediaWriter: fakeMediaWriter() }),
+            resolveGate: () => ({ featureEnabled: true, policyAllowed: true, runtimeAvailable: true }),
+        });
+        expect(await service.captureScreenshot({ ...VIEW, requesterAccountId: 'owner', contextId: 'egress_capture' }))
+            .toMatchObject({ status: 'unavailable', item: { lifecycleState: 'sensitiveFieldsPresent', redactionLevel: 'blocked' } });
+    });
+
+    it('blocks a password-bearing page before pixels or media are read through the capture owner', async () => {
+        const writer = fakeMediaWriter();
+        const { transport, calls } = fakeTransport((method, params) => {
+            if (method === 'Runtime.evaluate') {
+                const document = { querySelector: (selector: string) => selector === 'input[type="password"]' ? {} : null };
+                const value: unknown = Function('document', `return ${String(params?.expression)};`)(document);
+                return { result: { type: typeof value, value } };
+            }
+            if (method === 'Page.captureScreenshot') return { data: 'AQID' };
+            return {};
+        });
+        const service = createBrowserContextCaptureService({ ownerAccountId: 'owner',
+            source: createCdpBrowserContextSource({ transport, resolveView: () => HANDLE, screenshotMediaWriter: writer }),
+            resolveGate: () => ({ featureEnabled: true, policyAllowed: true, runtimeAvailable: true }),
+        });
+        expect(await service.captureScreenshot({ ...VIEW, requesterAccountId: 'owner', contextId: 'password_capture' }))
+            .toMatchObject({ status: 'unavailable' });
+        expect(calls.some(call => call.method === 'Page.captureScreenshot')).toBe(false);
+        expect(writer.writes).toEqual([]);
+    });
+
+    it('does not return a rich snapshot when the containing action is cancelled at the CDP boundary', async () => {
+        const controller = new AbortController();
+        controller.abort();
+        const writer = fakeMediaWriter();
+        let receivedScope: BrowserSidecarCdpCommandScope | undefined;
+        const { transport } = fakeTransport((method, _params, scope) => {
+            // The actual CDP connection rejects aborted commands. Keep that external behavior
+            // here while exercising the real route, service, and context producer beneath it.
+            receivedScope = scope;
+            if (scope.signal?.aborted) throw new Error('CDP command aborted');
+            if (method === 'Page.getNavigationHistory') {
+                return { currentIndex: 0, entries: [{ url: 'https://example.test', title: 'Example' }] };
+            }
+            if (method === 'Page.captureScreenshot') return { data: 'QkFTRTY0UE5H' };
+            return {};
+        });
+        const routes = createBrowserContextRoutes({
+            ownerAccountId: 'owner',
+            source: createCdpBrowserContextSource({
+                transport,
+                resolveView: () => HANDLE,
+                screenshotMediaWriter: writer,
+            }),
+            resolveGate: () => ({ featureEnabled: true, policyAllowed: true, runtimeAvailable: true }),
+        });
+
+        const result = await routes.captureSnapshot?.({ ...VIEW, contextId: 'context_1' }, {
+            signal: controller.signal,
+            deadlineMs: 0,
+        });
+
+        expect(result).toMatchObject({ ok: false, errorCode: 'runtime_action_disabled' });
+        expect(writer.writes).toEqual([]);
+        expect(receivedScope?.signal).toBe(controller.signal);
+        expect(receivedScope?.deadlineMs).toBe(0);
+    });
+
+    it('denies every context operation before reading CDP or persisting media when policy disallows capture', async () => {
+        // CDP and filesystem persistence are the external boundaries; capture orchestration and
+        // the CDP source are real so a late publish-only gate cannot satisfy this privacy floor.
+        const { transport, calls } = fakeTransport((method) => {
+            if (method === 'Page.captureScreenshot') return { data: 'QkFTRTY0UE5H' };
+            if (method === 'Page.getNavigationHistory') {
+                return { currentIndex: 0, entries: [{ url: 'https://example.test', title: 'Example' }] };
+            }
+            return { result: { type: 'string', value: 'Sensitive page contents' } };
+        });
+        const writer = fakeMediaWriter();
+        const service = createBrowserContextCaptureService({
+            ownerAccountId: 'owner',
+            source: createCdpBrowserContextSource({
+                transport,
+                resolveView: () => HANDLE,
+                screenshotMediaWriter: writer,
+            }),
+            resolveGate: () => ({ featureEnabled: true, policyAllowed: false, runtimeAvailable: true }),
+        });
+        const request = { ...VIEW, requesterAccountId: 'owner', contextId: 'context_1' };
+
+        const results = await Promise.all([
+            service.capturePage(request),
+            service.captureScreenshot(request),
+            service.captureSummary({ ...request, kind: 'browserDomSnapshotSummary' }),
+            service.captureSelectedElement(request),
+            service.captureAnnotationRegion({ ...request, rect: { x: 0, y: 0, width: 20, height: 20 } }),
+            service.captureAnnotationElement({ ...request, selector: 'button' }),
+            service.captureSnapshot(request),
+        ]);
+
+        expect(results[0]).toMatchObject({
+            status: 'captured', item: { lifecycleState: 'policyDenied', redactionLevel: 'blocked' },
+        });
+        expect(results[1]).toMatchObject({ status: 'unavailable' });
+        expect(results.slice(2)).toEqual(Array.from({ length: 5 }, () => ({ status: 'denied' })));
+        expect(calls).toEqual([]);
+        expect(writer.writes).toEqual([]);
+    });
+
     describe('capturePage', () => {
         it('reads url/title/favicon via CDP and reports the externalUrl target kind', async () => {
             const { transport, calls } = fakeTransport((method) => {

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { AccountProfile } from '@happier-dev/protocol';
 
-import type { Metadata } from '@/sync/domains/state/storageTypes';
+import type { Metadata } from '@happier-dev/session-core/state';
 
 import {
     resolveConnectedServiceQuotaProfileRefForSession,

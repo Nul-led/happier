@@ -8,12 +8,15 @@ import type { SpawnSessionResult } from '@/rpc/handlers/registerSessionHandlers'
 import { SPAWN_SESSION_ERROR_CODES } from '@/rpc/handlers/registerSessionHandlers';
 import { hashProcessCommand } from '../sessionRegistry';
 import { spawnWindowsHostedSessionAndWaitForWebhook } from './spawnWindowsHostedSessionAndWaitForWebhook';
+import { createOnHappySessionWebhook } from '../sessions/onHappySessionWebhook';
+import { configuration } from '@/configuration';
 
 const mocks = vi.hoisted(() => {
   const visibleConsoleCancel = vi.fn(async () => ({
     status: 'stopped' as const,
   }));
   return {
+  reportVisibleSession: null as ((pid: number) => void) | null,
   visibleConsoleCancel,
   startHappySessionInVisibleWindowsConsole: vi.fn(async (): Promise<
     | {
@@ -23,12 +26,10 @@ const mocks = vi.hoisted(() => {
         cancel: () => Promise<{ status: 'stopped' }>;
       }
     | { ok: false; errorMessage: string }
-  > => ({
-    ok: true,
-    pid: 7777,
-    processStartTimeMs: 1_717_171_717_777,
-    cancel: visibleConsoleCancel,
-  })),
+  > => {
+    setImmediate(() => mocks.reportVisibleSession?.(7777));
+    return { ok: true, pid: 7777, processStartTimeMs: 1_717_171_717_777, cancel: visibleConsoleCancel };
+  }),
   startHappySessionInWindowsTerminal: vi.fn(async (params: {
     onDispatcherSpawned?: (
       pid: number,
@@ -55,11 +56,7 @@ const mocks = vi.hoisted(() => {
       custodyPid: 8888,
     };
   }),
-  waitForVisibleConsoleSessionWebhook: vi.fn(async (params: { pid: number }): Promise<SpawnSessionResult> => ({
-    type: 'success',
-    sessionId: `session-${params.pid}`,
-  })),
-  writeTerminalAttachmentInfo: vi.fn(async () => {}),
+  writeTerminalAttachmentInfo: vi.fn<typeof import('@/terminal/attachment/terminalAttachmentInfo')['writeTerminalAttachmentInfo']>(async () => {}),
   };
 });
 
@@ -79,14 +76,6 @@ vi.mock('@/daemon/platform/windows/spawnHappyCliWindowsTerminal', () => ({
   startHappySessionInWindowsTerminal: mocks.startHappySessionInWindowsTerminal,
 }));
 
-vi.mock('../sessions/visibleConsoleSpawnWaiter', () => ({
-  waitForVisibleConsoleSessionWebhook: mocks.waitForVisibleConsoleSessionWebhook,
-}));
-
-vi.mock('@/daemon/sessions/visibleConsoleSpawnWaiter', () => ({
-  waitForVisibleConsoleSessionWebhook: mocks.waitForVisibleConsoleSessionWebhook,
-}));
-
 vi.mock('@/terminal/attachment/terminalAttachmentInfo', () => ({
   writeTerminalAttachmentInfo: mocks.writeTerminalAttachmentInfo,
 }));
@@ -99,7 +88,7 @@ function createParams(overrides: Partial<Parameters<typeof import('./spawnWindow
     ?? vi.fn(async (pid: number) => {
       pidToTrackedSession.delete(pid);
     });
-  return {
+  const input = {
     windowsLaunchMode: 'console' as const,
     args: ['codex', '--happy-starting-mode', 'remote', '--started-by', 'daemon'],
     agentCommand: 'codex',
@@ -146,6 +135,17 @@ function createParams(overrides: Partial<Parameters<typeof import('./spawnWindow
     },
     ...overrides,
   };
+  const report = createOnHappySessionWebhook({ pidToTrackedSession: input.pidToTrackedSession, pidToAwaiter: input.pidToAwaiter,
+    readProcessIdentityByPidFn: async () => null, findHappyProcessByPidFn: async () => null,
+    readCredentialsFn: async () => null, writeSessionMarkerFn: async () => {} });
+  // Simulate only the child's network report after the external launcher returns;
+  // the real visible monitor, shared waiter and attachment finalizer remain active.
+  mocks.reportVisibleSession = (pid) => {
+    void report(`session-${pid}`, { path: input.directory, host: 'fixture', homeDir: input.happyHomeDir,
+      happyHomeDir: configuration.happyHomeDir, happyLibDir: input.happyHomeDir, happyToolsDir: input.happyHomeDir,
+      hostPid: pid, startedBy: 'daemon', machineId: 'fixture-machine' }).catch(() => {});
+  };
+  return input;
 }
 
 async function resolveWindowsTerminalWebhook(
@@ -179,6 +179,40 @@ async function resolveWindowsTerminalWebhook(
 }
 
 describe('spawnWindowsHostedSessionAndWaitForWebhook', () => {
+  it('refuses readiness when the required local Windows attachment cannot commit', async () => {
+    await withTempDir('happier-windows-attachment-denied-', async (home) => {
+      const blockedHome = join(home, 'not-a-directory');
+      writeFileSync(blockedHome, 'fixture');
+      const [{ configuration }, actualAttachment] = await Promise.all([
+        import('@/configuration'),
+        vi.importActual<typeof import('@/terminal/attachment/terminalAttachmentInfo')>('@/terminal/attachment/terminalAttachmentInfo'),
+      ]);
+      const previousHome = configuration.happyHomeDir;
+      Object.defineProperty(configuration, 'happyHomeDir', { value: home });
+      mocks.writeTerminalAttachmentInfo.mockImplementationOnce(actualAttachment.writeTerminalAttachmentInfo);
+      const input = createParams({ happyHomeDir: blockedHome });
+      mocks.reportVisibleSession = null;
+      const pending = spawnWindowsHostedSessionAndWaitForWebhook(input);
+      try {
+        await vi.waitFor(() => expect(input.pidToAwaiter.has(7777)).toBe(true));
+        const report = createOnHappySessionWebhook({
+          pidToTrackedSession: input.pidToTrackedSession, pidToAwaiter: input.pidToAwaiter,
+          readProcessIdentityByPidFn: async () => null, findHappyProcessByPidFn: async () => null,
+          readCredentialsFn: async () => null, writeSessionMarkerFn: async () => {},
+        });
+        await report('session-required-windows-attachment', {
+          path: home, host: 'fixture', homeDir: home, happyHomeDir: home, happyLibDir: home, happyToolsDir: home,
+          hostPid: 7777, startedBy: 'daemon', machineId: 'fixture-machine',
+        });
+        await expect(pending).resolves.toMatchObject({ type: 'error', errorCode: SPAWN_SESSION_ERROR_CODES.SPAWN_FAILED });
+      } finally {
+        input.pidToSpawnResultResolver.get(7777)?.({ type: 'error', errorCode: SPAWN_SESSION_ERROR_CODES.CHILD_EXITED_BEFORE_WEBHOOK, errorMessage: 'Fixture cleanup' });
+        await Promise.allSettled([pending]);
+        for (const timeout of input.pidToSpawnWebhookTimeout.values()) clearTimeout(timeout);
+        Object.defineProperty(configuration, 'happyHomeDir', { value: previousHome });
+      }
+    });
+  });
   const envScope = createSpawnHappyCliEnvScope();
   const originalPlatformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
   const originalSessionWebhookTimeoutMs =
@@ -210,7 +244,12 @@ describe('spawnWindowsHostedSessionAndWaitForWebhook', () => {
           pluginVersion: '1.0.0',
           agentId: 'agent',
           backendId: 'agent',
-          generation: 'generation-1',
+          occurrenceId: 'occurrence:plugin.acme:1',
+          sourceCustody: {
+            kind: 'managed',
+            immutableGenerationId: 'generation-1',
+            installSource: 'npm',
+          },
         },
       },
       runnerAgentInvocationContext: Object.freeze({
@@ -361,16 +400,11 @@ describe('spawnWindowsHostedSessionAndWaitForWebhook', () => {
           persistAcceptedSpawnMarker,
         },
       });
-      mocks.waitForVisibleConsoleSessionWebhook.mockImplementationOnce(
-        async ({ pid }: { pid: number }) => {
-          order.push('waiter-installed');
-          return { type: 'success', sessionId: `session-${pid}` };
-        },
-      );
 
       const pending = spawnWindowsHostedSessionAndWaitForWebhook(input);
       await vi.waitFor(() => {
-        expect(order).toEqual(['marker-start', 'waiter-installed']);
+        expect(order).toEqual(['marker-start']);
+        expect(input.pidToAwaiter.has(7777)).toBe(true);
       });
       expect(
         input.pidToTrackedSession.get(7777)?.acceptedSpawnMarkerGate,
@@ -383,7 +417,6 @@ describe('spawnWindowsHostedSessionAndWaitForWebhook', () => {
       });
       expect(order).toEqual([
         'marker-start',
-        'waiter-installed',
         'marker-end',
       ]);
     });
@@ -432,8 +465,8 @@ describe('spawnWindowsHostedSessionAndWaitForWebhook', () => {
   it('retires the exact Windows-hosted startup owner when canonical readiness is refused', async () => {
     await withPackagedWindowsCli(async () => {
       const input = createParams();
-      mocks.waitForVisibleConsoleSessionWebhook.mockImplementationOnce(
-        async ({ pid }: { pid: number }) => {
+      const deliverReport = mocks.reportVisibleSession;
+      mocks.reportVisibleSession = (pid) => {
           const tracked = input.pidToTrackedSession.get(pid);
           Object.assign(tracked!, {
             happySessionId: 'session-windows-readiness-refused',
@@ -443,9 +476,8 @@ describe('spawnWindowsHostedSessionAndWaitForWebhook', () => {
               errorMessage: 'managed_provider_request_auth_activation_failed',
             },
           });
-          return tracked!.spawnStartupReadinessFailure!;
-        },
-      );
+          deliverReport?.(pid);
+      };
 
       await expect(
         spawnWindowsHostedSessionAndWaitForWebhook(input),

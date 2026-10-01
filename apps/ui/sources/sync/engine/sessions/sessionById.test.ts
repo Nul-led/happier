@@ -6,11 +6,14 @@ import {
   projectSessionSharedMetadataV1,
   sealSessionOwnerMetadataEnvelopeV1,
   SessionOwnerMetadataV1Schema,
+  sealEncryptedDataKeyEnvelopeV1,
   type AccountEncryptionCurrentnessResponse,
 } from '@happier-dev/protocol';
 
-import { encodeBase64 } from '@/encryption/base64';
+import { decodeBase64, encodeBase64 } from '@/encryption/base64';
+import { createEmbedEncryption } from '@/embed/encryption/createEmbedEncryption';
 import type { Session } from '@/sync/domains/state/storageTypes';
+import { storage } from '@/sync/domains/state/storage';
 import {
   fetchAndApplySessionById as fetchAndApplySessionByIdSource,
   type SessionByIdEncryption,
@@ -100,6 +103,117 @@ function createDeferred<T>(): {
 }
 
 describe('fetchAndApplySessionById', () => {
+  it('returns a scoped Session refusal for an embed detail 403 without Account auth recovery', async () => {
+    const frame = await createEmbedEncryption();
+    try {
+      const result = await fetchAndApplySessionByIdSource({
+        sessionId: 'embed', credentials: { token: 'hap_v1_child' }, sessionKey: null,
+        encryption: frame.encryption, composerOptionsInput: null, sessionDataKeys: new Map(),
+        request: async () => Response.json({ error: 'forbidden' }, { status: 403 }),
+        applySessions: () => {}, log: { log: () => {} },
+      });
+      expect(result).toMatchObject({ ok: false, errorCode: 'forbidden', httpStatus: 403 });
+    } finally { frame.dispose(); }
+  });
+  it('uses the embed envelope at the hydration producer and never opens the Account row envelope', async () => {
+    const frame = await createEmbedEncryption();
+    const otherFrame = await createEmbedEncryption();
+    const seal = (publicKey: string) => encodeBase64(sealEncryptedDataKeyEnvelopeV1({
+      dataKey: sessionDataKey(), recipientPublicKey: decodeBase64(publicKey, 'base64url'),
+      randomBytes: (length) => new Uint8Array(length).fill(5),
+    }), 'base64');
+    const result = await fetchAndApplySessionByIdSource({
+      sessionId: 'embed', credentials: { token: 'hap_v1_child' },
+      sessionKey: seal(otherFrame.embedPublicKey), composerOptionsInput: null,
+      encryption: frame.encryption,
+      sessionDataKeys: new Map(), sessionDataKeyEnvelopes: new Map(),
+      request: async () => Response.json({ session: {
+        id: 'embed', createdAt: 1, updatedAt: 1, seq: 0, active: false, activeAt: 0,
+        encryptionMode: 'e2ee', dataEncryptionKey: seal(frame.embedPublicKey), metadataLayoutVersion: 0,
+        metadataVersion: 1, metadata: 'encrypted', agentStateVersion: 0, agentState: null, share: null,
+      } }),
+      applySessions: () => {}, log: { log: () => {} },
+    });
+    expect(result.sessionDataKeyHydration?.states.get('embed')).toBe('unopenable_envelope');
+    expect(result).toMatchObject({ ok: false, errorCode: 'session_key_invalid' });
+    expect(frame.encryption.getSessionEncryption('embed')).toBeNull();
+    frame.dispose();
+    otherFrame.dispose();
+  });
+  it('settles a missing embed envelope without Account readiness or legacy fallback', async () => {
+    const frame = await createEmbedEncryption();
+    const paths: string[] = [];
+    const result = await fetchAndApplySessionByIdSource({
+      sessionId: 'embed', credentials: OWNER_TEST_CREDENTIALS, sessionKey: null,
+      encryption: frame.encryption, composerOptionsInput: null,
+      sessionDataKeys: new Map(),
+      request: async (path) => {
+        paths.push(path);
+        if (path !== '/v2/sessions/embed') throw new Error('Account request escaped embed scope');
+        return Response.json({ session: {
+          id: 'embed', createdAt: 1, updatedAt: 1, seq: 0, active: false, activeAt: 0,
+          encryptionMode: 'e2ee', dataEncryptionKey: null, metadataLayoutVersion: 0,
+          metadataVersion: 1, metadata: 'encrypted', agentStateVersion: 0, agentState: null, share: null,
+        } });
+      },
+      applySessions: () => {}, log: { log: () => {} },
+    });
+    expect(paths).toEqual(['/v2/sessions/embed']);
+    expect(result.sessionDataKeyHydration?.states.get('embed')).toBe('missing_envelope');
+    expect(result).toMatchObject({ ok: false, errorCode: 'session_key_unavailable' });
+    expect(frame.encryption.getSessionEncryption('embed')).toBeNull();
+    frame.dispose();
+  });
+  it('does not label an unexpected request failure as a connectivity failure', async () => {
+    const result = await fetchAndApplySessionById({
+      sessionId: 's_request_bug', accountCurrentness: PLAIN_ACCOUNT_CURRENTNESS,
+      credentials: { token: 't' }, encryption: PLAINTEXT_ACCOUNT_SESSION_ENCRYPTION,
+      sessionDataKeys: new Map(),
+      request: async () => { throw new Error('unexpected request adapter failure'); },
+      applySessions: vi.fn(), log: { log: () => {} },
+    });
+    expect(result).toMatchObject({ ok: false, errorCode: 'request_failed' });
+  });
+  it('admits a mixed-version response so the Session store can merge its newer metadata', async () => {
+    const initialState = storage.getState();
+    const stored = {
+      id: 's_mixed', serverId: 'server-a', createdAt: 1, updatedAt: 3, seq: 4,
+      active: false, activeAt: 2, encryptionMode: 'plain' as const,
+      metadataLayoutVersion: 0, metadataVersion: 3,
+      metadata: { name: 'Old title' }, agentStateVersion: 9,
+      agentState: { controlledByUser: true }, thinking: false, thinkingAt: 0,
+    } as Session;
+    storage.setState({ sessions: { ...initialState.sessions, [stored.id]: stored } });
+    const applySessions = vi.fn(storage.getState().applySessions);
+    try {
+      const result = await fetchAndApplySessionById({
+      sessionId: 's_mixed', serverId: 'server-a',
+      accountCurrentness: PLAIN_ACCOUNT_CURRENTNESS,
+      credentials: { token: 't' },
+      encryption: PLAINTEXT_ACCOUNT_SESSION_ENCRYPTION,
+      sessionDataKeys: new Map(),
+      request: async () => Response.json({ session: {
+        id: 's_mixed', createdAt: 1, updatedAt: 4, seq: 5,
+        active: false, activeAt: 2, encryptionMode: 'plain', dataEncryptionKey: null,
+        metadataLayoutVersion: 0, metadataVersion: 4,
+        metadata: JSON.stringify({ name: 'New title' }),
+        agentStateVersion: 8, agentState: JSON.stringify({ controlledByUser: false }),
+        share: null,
+      } }),
+      applySessions, getExistingSession: () => storage.getState().sessions[stored.id],
+      includeTurnsProjection: false,
+      log: { log: () => {} },
+    });
+      expect(result.ok).toBe(true);
+      expect(applySessions).toHaveBeenCalledWith([
+        expect.objectContaining({ metadataVersion: 4, agentStateVersion: 8 }),
+      ]);
+      expect(result.session).toMatchObject({ metadataVersion: 4, agentStateVersion: 9 });
+      expect(storage.getState().sessions[stored.id]).toMatchObject({ metadataVersion: 4, agentStateVersion: 9 });
+    } finally {
+      storage.setState(initialState, true);
+    }
+  });
   it('refuses a plaintext session before parsing or applying it when this client requires E2EE', async () => {
     const applySessions = vi.fn();
     const request = vi.fn(async () => new Response(JSON.stringify({
@@ -537,13 +651,24 @@ describe('fetchAndApplySessionById', () => {
       log: { log: () => {} },
     });
 
-    expect(result).toEqual({
-      ok: false,
-      session: null,
-      errorCode: 'owner_metadata_unavailable',
+    expect(result).toMatchObject({
+      ok: true,
+      session: {
+        metadata: null,
+        ownerMetadataView: null,
+        agentState: null,
+        encryptedContentAvailability: 'encrypted_content_unavailable',
+      },
     });
     expect(decryptAgentState).not.toHaveBeenCalled();
-    expect(applySessions).not.toHaveBeenCalled();
+    expect(applySessions).toHaveBeenCalledWith([
+      expect.objectContaining({
+        metadata: null,
+        ownerMetadataView: null,
+        agentState: null,
+        encryptedContentAvailability: 'encrypted_content_unavailable',
+      }),
+    ]);
   });
 
   it.each([
@@ -1121,7 +1246,11 @@ describe('fetchAndApplySessionById', () => {
 
   it('announces new fetched agent requests relative to existing session state', async () => {
     onAgentRequest.mockReset();
-    const applySessions = vi.fn();
+    let currentSession = {
+      id: 's1',
+      agentState: { controlledByUser: true, requests: {}, completedRequests: {} },
+    } as Session;
+    const applySessions = vi.fn(([session]: Session[]) => { currentSession = session; });
     const request = vi.fn(async () => new Response(JSON.stringify({
       session: {
         id: 's1',
@@ -1163,14 +1292,7 @@ describe('fetchAndApplySessionById', () => {
       sessionDataKeys: new Map<string, Uint8Array>(),
       request,
       applySessions,
-      getExistingSession: () => ({
-        id: 's1',
-        agentState: {
-          controlledByUser: true,
-          requests: {},
-          completedRequests: {},
-        },
-      } as any),
+      getExistingSession: () => currentSession,
       log: { log: () => {} },
     });
 
@@ -1480,6 +1602,7 @@ describe('fetchAndApplySessionById', () => {
 
     const hydration = fetchAndApplySessionById({
       sessionId: 'stale-account-session',
+      serverId: 'server-a',
       credentials: { token: 'account-a-token', secret: 'account-a-secret' } as any,
       encryption: {
         decryptEncryptionKey: async () => sessionDataKey(),
@@ -1489,6 +1612,22 @@ describe('fetchAndApplySessionById', () => {
       sessionDataKeys,
       request,
       applySessions,
+      getExistingSession: () => ({
+        id: 'stale-account-session',
+        serverId: 'server-a',
+        createdAt: 1,
+        updatedAt: 3,
+        seq: 4,
+        active: false,
+        activeAt: 2,
+        encryptionMode: 'e2ee',
+        metadataVersion: 2,
+        metadata: null,
+        agentStateVersion: 2,
+        agentState: null,
+        thinking: false,
+        thinkingAt: 0,
+      }),
       isCurrent: () => current,
       log: { log: () => {} },
     });
@@ -1711,7 +1850,7 @@ describe('fetchAndApplySessionById', () => {
     expect(decryptMetadata).not.toHaveBeenCalled();
   });
 
-  it('does not let deferred owner tuple decryption overwrite a newer applied tuple', async () => {
+  it('treats a newer stored owner tuple as visible after store admission of the older by-id response', async () => {
     onAgentRequest.mockClear();
     const staleSharedMetadata = projectSessionSharedMetadataV1({
       metadata: {
@@ -1761,6 +1900,7 @@ describe('fetchAndApplySessionById', () => {
 
     const fetchPromise = fetchAndApplySessionById({
       sessionId: 's_stale_decrypt',
+      serverId: 'server-a',
       credentials: OWNER_TEST_CREDENTIALS as never,
       encryption: {
         decryptEncryptionKey: async () => sessionDataKey(),
@@ -1786,6 +1926,7 @@ describe('fetchAndApplySessionById', () => {
     ).toBe(1);
     currentSession = {
       id: 's_stale_decrypt',
+      serverId: 'server-a',
       createdAt: 1,
       updatedAt: 2,
       seq: 2,
@@ -1800,7 +1941,7 @@ describe('fetchAndApplySessionById', () => {
         host: 'newer-host',
         summary: { text: 'Newer', updatedAt: 2 },
       },
-      agentStateVersion: 2,
+      agentStateVersion: 1,
       agentState: {
         requests: {
           newerRequest: {
@@ -1817,17 +1958,17 @@ describe('fetchAndApplySessionById', () => {
     metadataDeferred.resolve(staleSharedMetadata);
 
     await expect(fetchPromise).resolves.toMatchObject({
-      ok: false,
-      session: null,
-      errorCode: 'stale_response',
+      ok: true,
+      session: currentSession,
+      metadataTupleMutationSnapshot: null,
     });
-    expect(applySessions).not.toHaveBeenCalled();
+    expect(applySessions).toHaveBeenCalledTimes(1);
     expect(onAgentRequest).not.toHaveBeenCalled();
     expect(currentSession.metadata).toEqual(newerSharedMetadata);
     expect(currentSession.ownerMetadataView).toMatchObject({
       path: '/newer/private',
     });
-    expect(currentSession.agentStateVersion).toBe(2);
+    expect(currentSession.agentStateVersion).toBe(1);
   });
 
   it('coalesces concurrent session detail HTTP reads for the same request transport', async () => {

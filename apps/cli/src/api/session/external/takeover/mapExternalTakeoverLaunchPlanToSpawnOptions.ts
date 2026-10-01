@@ -33,6 +33,7 @@ export function mapExternalTakeoverLaunchPlanToSpawnOptions(params: Readonly<{
      * but never choose the process working directory.
      */
     targetDirectory: string;
+    terminal?: SpawnSessionOptions['terminal'];
     resolvedIdentity: AgentExternalSessionsResolvedIdentity;
     linkedSessionId: string;
     targetAgent: ExternalTakeoverTargetAgent;
@@ -66,6 +67,7 @@ export function mapExternalTakeoverLaunchPlanToSpawnOptions(params: Readonly<{
         existingSessionId: params.linkedSessionId,
         resume: params.resolvedIdentity.remoteSessionId,
         approvedNewDirectoryCreation: true,
+        ...(params.terminal ? { terminal: params.terminal } : {}),
         ...(runtimeDescriptorV1 ? { runtimeDescriptorV1 } : {}),
         ...(environmentVariables
             ? { environmentVariables: { ...environmentVariables } }

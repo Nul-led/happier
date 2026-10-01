@@ -58,6 +58,16 @@ const snapshot = {
 } satisfies LocalServicePublicPreviewSnapshotV1;
 
 describe('local service public preview actions', () => {
+    it('creates a link directly from a browser preview target through the same action owner', async () => {
+        const runtimeActionExecute = vi.fn(async () => ({ protocolVersion: 1 as const, exposure, snapshot }));
+        const { createLocalServicePublicPreviewActions } = await import('./publicPreviewActions');
+        const actions = createLocalServicePublicPreviewActions({ runtimeActionExecute, serverId: 'server_1' });
+        await expect(actions.create(target.browserTarget)).resolves.toMatchObject({ exposure });
+        expect(runtimeActionExecute).toHaveBeenCalledWith(expect.objectContaining({
+            actionId: 'localServices.publicPreview.create',
+            input: expect.objectContaining({ machineId: 'machine_1', sessionId: 'session_1', previewId: 'preview_1', confirmation: { acknowledged: true } }),
+        }));
+    });
     it('creates a public preview for daemon-backed local preview targets through the runtime executor', async () => {
         const runtimeActionExecute = vi.fn(async () => ({
             protocolVersion: 1 as const,

@@ -9,6 +9,7 @@ import { withConfiguredDaemonTestHome, writeDaemonSettingsFixture } from '@/daem
 import { createEnvKeyScope } from '@/testkit/env/envScope';
 import { withTempDir } from '@/testkit/fs/tempDir';
 import { captureStderr, captureStdout, captureStdoutJsonOutput } from '@/testkit/logger/captureOutput';
+import { mockCurrentProcessAsDaemonLifecycleOwner } from '@/testkit/process/daemonLifecycleOwner';
 import type { DaemonLocallyPersistedState } from '@/persistence';
 import type { DaemonStopResult } from '@/daemon/controlClient';
 import { planDaemonServiceInstall } from './plan';
@@ -46,6 +47,9 @@ const SCOPED_ENV_KEYS = [
   'HAPPIER_LOCAL_SERVER_URL',
   'HAPPIER_WEBAPP_URL',
   'HAPPIER_HOME_DIR',
+  'HAPPIER_IROH_RELAY_POLICY',
+  'HAPPIER_IROH_RELAY_URLS',
+  'HAPPIER_HOME_CARRIER_POLICY',
   'HAPPIER_DAEMON_SERVICE_OWNERSHIP_WAIT_TIMEOUT_MS',
   'HAPPIER_DAEMON_SERVICE_OWNERSHIP_ACTIVE_GRACE_TIMEOUT_MS',
   'HAPPIER_DAEMON_SERVICE_OWNERSHIP_WAIT_POLL_MS',
@@ -127,6 +131,7 @@ describe('runDaemonServiceCliCommand', () => {
     vi.doUnmock('node:child_process');
     vi.doUnmock('./commandExistsInPath');
     vi.doUnmock('@/daemon/controlClient');
+    vi.doUnmock('@/daemon/doctor');
     vi.doUnmock('@/daemon/restartDaemonAndWait');
     vi.doUnmock('@/daemon/waitForDaemonRunningWithinBudget');
     vi.unmock('node:child_process');
@@ -1568,7 +1573,12 @@ describe('runDaemonServiceCliCommand', () => {
     });
   });
 
-  it('stops the current Windows service owner before reinstalling the same service label', async () => {
+  it.each([
+    { keepDisabled: false, hasDaemonOwner: true },
+    { keepDisabled: true, hasDaemonOwner: true },
+    { keepDisabled: true, hasDaemonOwner: false },
+  ])('preserves a running Windows service across install and retry ($keepDisabled, $hasDaemonOwner)', async ({ keepDisabled, hasDaemonOwner }) => {
+    mockCurrentProcessAsDaemonLifecycleOwner();
     await withTempDir('happier-service-install-win32-same-owner-', async (homeDir) => {
       const happierHomeDir = `${homeDir}/.happier`;
       const lifecycleEvents: string[] = [];
@@ -1642,7 +1652,7 @@ describe('runDaemonServiceCliCommand', () => {
       const currentPublicReleaseChannel = runtime.channel === 'publicdev' ? 'dev' : runtime.channel;
       mkdirSync(dirname(paths.installedPath), { recursive: true });
       writeValidInstalledWindowsDaemonServiceFile(paths.installedPath);
-      writeDaemonState({
+      if (hasDaemonOwner) writeDaemonState({
         pid: process.pid,
         httpPort: 43140,
         startedAt: Date.now(),
@@ -1655,7 +1665,7 @@ describe('runDaemonServiceCliCommand', () => {
 
       const output = captureStdoutJsonOutput<{ ok: boolean; platform: string }>();
       try {
-        await runDaemonServiceCliCommand({ argv: ['install', '--yes', '--json'] });
+        await runDaemonServiceCliCommand({ argv: ['install', '--yes', '--json', ...(keepDisabled ? ['--keep-disabled'] : [])] });
         const payload = output.json();
         expect(payload.ok).toBe(true);
         expect(payload.platform).toBe('win32');
@@ -1666,9 +1676,24 @@ describe('runDaemonServiceCliCommand', () => {
       const stopIndex = lifecycleEvents.indexOf('stopDaemon');
       const createIndex = lifecycleEvents.indexOf('/Create');
       const runIndex = lifecycleEvents.indexOf('/Run');
-      expect(stopIndex).toBeGreaterThanOrEqual(0);
+      if (hasDaemonOwner) expect(stopIndex).toBeGreaterThanOrEqual(0);
+      else expect(stopIndex).toBe(-1);
       expect(createIndex).toBeGreaterThan(stopIndex);
       expect(runIndex).toBeGreaterThan(createIndex);
+
+      const repeated = captureStdoutJsonOutput<{ ok: boolean }>();
+      try {
+        await runDaemonServiceCliCommand({ argv: ['install', '--yes', '--json', ...(keepDisabled ? ['--keep-disabled'] : [])] });
+        expect(repeated.json().ok).toBe(true);
+        const { readDaemonState } = await import('@/persistence');
+        expect(await readDaemonState()).toMatchObject({ runtimeId: 'runtime-win32-install' });
+        const repeatedStopIndex = lifecycleEvents.lastIndexOf('stopDaemon');
+        const repeatedRunIndex = lifecycleEvents.lastIndexOf('/Run');
+        expect(repeatedStopIndex).toBeGreaterThan(stopIndex);
+        expect(repeatedRunIndex).toBeGreaterThan(repeatedStopIndex);
+      } finally {
+        repeated.restore();
+      }
     });
   });
 
@@ -3061,8 +3086,8 @@ describe('runDaemonServiceCliCommand', () => {
           serviceManaged?: boolean;
           startupSource?: string | null;
           serviceLabel?: string | null;
-          startedWithCliVersion?: string | null;
-          startedWithPublicReleaseChannel?: string | null;
+          cliVersion?: string | null;
+          publicReleaseChannel?: string | null;
           currentInvocationMatches?: boolean;
         } | null;
       }>();
@@ -3071,12 +3096,18 @@ describe('runDaemonServiceCliCommand', () => {
 
         const payload = output.json();
         expect(payload.ok).toBe(true);
+        // Setup reads this owner through the one protocol ownership reader; the emitted field
+        // names must be the ones that reader understands, or every owner fact reads as absent.
+        const { readMachineDaemonOwnershipMetadataFromSocketAuth } = await import('@happier-dev/protocol');
+        expect(readMachineDaemonOwnershipMetadataFromSocketAuth(payload.owner)).toEqual(expect.objectContaining({
+          serviceManaged: true,
+          cliVersion: '0.0.0-other',
+          publicReleaseChannel: 'preview',
+        }));
         expect(payload.owner).toEqual(expect.objectContaining({
           serviceManaged: true,
           startupSource: 'background-service',
           serviceLabel: paths.label,
-          startedWithCliVersion: '0.0.0-other',
-          startedWithPublicReleaseChannel: 'preview',
           currentInvocationMatches: false,
         }));
       } finally {
@@ -3955,4 +3986,110 @@ describe('runDaemonServiceCliCommand', () => {
       output.restore();
     }
   });
+
+  it.each(['restart', 'start'] as const)(
+    'reports a default-following service %s as standing by when the selected Home has its own running pinned service',
+    async (action) => {
+      // RV3-C1: the daemon of the default-following service yields to the pinned one (exit 0), so
+      // the ownership wait for the default label would never succeed; the lifecycle reports the
+      // same decision instead of timing out.
+      await withTempDir('happier-service-default-standing-by-', async (homeDir) => {
+        const happierHomeDir = `${homeDir}/.happier`;
+        const serverScope = createEnvKeyScope(['HAPPIER_ACTIVE_SERVER_ID']);
+        envScope.patch({
+          HAPPIER_HOME_DIR: happierHomeDir,
+          HAPPIER_SERVER_URL: undefined,
+          HAPPIER_PUBLIC_SERVER_URL: undefined,
+          HAPPIER_WEBAPP_URL: undefined,
+          HAPPIER_DAEMON_SERVICE_PLATFORM: 'linux',
+          HAPPIER_DAEMON_SERVICE_USER_HOME_DIR: homeDir,
+          HAPPIER_DAEMON_SERVICE_HAPPIER_HOME_DIR: happierHomeDir,
+          HAPPIER_DAEMON_SERVICE_TARGET_MODE: 'default-following',
+          HAPPIER_DAEMON_START_WAIT_TIMEOUT_MS: '50',
+          HAPPIER_DAEMON_START_WAIT_POLL_MS: '10',
+          HAPPIER_DAEMON_SERVICE_OWNERSHIP_WAIT_TIMEOUT_MS: '120',
+          HAPPIER_DAEMON_SERVICE_OWNERSHIP_ACTIVE_GRACE_TIMEOUT_MS: '120',
+          HAPPIER_DAEMON_SERVICE_OWNERSHIP_WAIT_POLL_MS: '10',
+          HAPPIER_DAEMON_SERVICE_OWNERSHIP_STABLE_MS: '20',
+        });
+        serverScope.patch({ HAPPIER_ACTIVE_SERVER_ID: undefined });
+        try {
+          vi.resetModules();
+          const serviceCommands: string[][] = [];
+          vi.doMock('node:child_process', async (importOriginal) => {
+            const actual = await importOriginal<typeof import('node:child_process')>();
+            return {
+              ...actual,
+              spawnSync: vi.fn((command: string, args: readonly string[] = []) => {
+                if (command === 'systemctl') serviceCommands.push([...args]);
+                if (command === 'systemctl' && args.includes('show') && args.includes('happier-daemon.home.service')) {
+                  return { status: 0, stdout: 'ActiveState=active\nSubState=running\n', stderr: '' };
+                }
+                return { status: 0, stdout: Buffer.from(''), stderr: Buffer.from('') };
+              }),
+            };
+          });
+          vi.doMock('./commandExistsInPath', () => ({
+            commandExistsInPath: vi.fn(() => true),
+          }));
+          // The Home's pinned service owns the Home's daemon lock and answers its control socket.
+          const pinnedDaemonState: DaemonLocallyPersistedState = {
+            pid: process.pid,
+            httpPort: 43131,
+            startedAt: Date.now(),
+            startedWithCliVersion: 'set-below',
+            startupSource: 'background-service',
+            serviceLabel: 'happier-daemon.home',
+          };
+          vi.doMock('@/daemon/controlClient', async (importOriginal) => ({
+            ...await importOriginal<typeof import('@/daemon/controlClient')>(),
+            inspectDaemonRunningStateAndCleanupStaleState: vi.fn(async () => ({ status: 'running', state: pinnedDaemonState })),
+          }));
+
+          const [{ runDaemonServiceCliCommand }, { writeSettings }, { reloadConfiguration, configuration }, { writeInstalledLinuxDaemonService }] = await Promise.all([
+            loadCliModule(),
+            import('@/persistence'),
+            import('@/configuration'),
+            import('./installedDaemonServices.testkit'),
+          ]);
+          const profile = (id: string) => ({
+            id,
+            name: id,
+            serverUrl: `https://${id}.example.test`,
+            webappUrl: `https://${id}.example.test`,
+            createdAt: 1,
+            updatedAt: 1,
+            lastUsedAt: 1,
+          });
+          await writeSettings({
+            schemaVersion: 6,
+            onboardingCompleted: false,
+            activeServerId: 'home',
+            servers: { home: profile('home'), work: profile('work') },
+            machineIdByServerId: {},
+            machineIdByServerIdByAccountId: {},
+            lastTokenSubByServerId: {},
+            machineIdConfirmedByServerByServerId: {},
+            lastChangesCursorByServerIdByAccountId: {},
+          });
+          reloadConfiguration();
+          writeInstalledLinuxDaemonService({ userHomeDir: homeDir, happierHomeDir, targetMode: 'default-following' });
+          writeInstalledLinuxDaemonService({ userHomeDir: homeDir, happierHomeDir, targetMode: 'pinned', serverId: 'home', serverUrl: 'https://home.example.test' });
+          pinnedDaemonState.startedWithCliVersion = configuration.currentCliVersion;
+
+          const output = captureStdoutJsonOutput<{ ok: boolean; standingBy?: { servedByPinnedService: string } }>();
+          try {
+            await runDaemonServiceCliCommand({ argv: [action, '--json'] });
+            expect(output.json()).toMatchObject({ ok: true, standingBy: { servedByPinnedService: 'happier-daemon.home' } });
+          } finally {
+            output.restore();
+          }
+          // The lifecycle still ran: the default service stops serving the relay the terminal left.
+          expect(serviceCommands.some((args) => (args.includes('start') || args.includes('restart')) && args.includes('happier-daemon.default.service'))).toBe(true);
+        } finally {
+          serverScope.restore();
+        }
+      });
+    },
+  );
 });

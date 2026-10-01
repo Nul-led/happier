@@ -1,7 +1,6 @@
-import { storage } from '@/sync/domains/state/storage';
+import { captureActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
 import {
     resolveVoiceAgentRunBackendId,
-    type VoiceAssistantAction,
 } from '@happier-dev/protocol';
 import type { VoiceAgentHandle } from '@/voice/agent/types';
 import { VOICE_AGENT_GLOBAL_SESSION_ID } from '@/voice/agent/voiceAgentGlobalSessionId';
@@ -15,8 +14,6 @@ import {
     persistVoiceAgentRunMetadata,
     resolveVoiceRunMetadataSessionId,
 } from '@/voice/agent/voiceAgentRunState';
-
-type SendTurnResult = Readonly<{ assistantText: string; actions: VoiceAssistantAction[] }>;
 
 export function createVoiceRunRecovery(args: Readonly<{
     createHandle: (sessionId: string) => Promise<VoiceAgentHandle>;
@@ -33,7 +30,7 @@ export function createVoiceRunRecovery(args: Readonly<{
     getVoiceAgentHandle: (sessionId: string) => Promise<VoiceAgentHandle>;
     isActive: (sessionId: string) => boolean;
     resetCachedHandle: (sessionId: string) => void;
-    stop: (sessionId: string) => Promise<void>;
+    stop: (sessionId: string, beforeStop?: () => Promise<void>) => Promise<void>;
 }> {
     const getVoiceAgentHandle = async (sessionId: string): Promise<VoiceAgentHandle> => {
         const existing = args.voiceAgentBySessionId.get(sessionId);
@@ -45,10 +42,12 @@ export function createVoiceRunRecovery(args: Readonly<{
         args.voiceAgentInitBySessionId.set(sessionId, init);
         try {
             const handle = await init;
-            args.voiceAgentBySessionId.set(sessionId, handle);
+            if (args.voiceAgentInitBySessionId.get(sessionId) === init && handle.accountLifetime.isCurrent()) {
+                args.voiceAgentBySessionId.set(sessionId, handle);
+            }
             return handle;
         } finally {
-            args.voiceAgentInitBySessionId.delete(sessionId);
+            if (args.voiceAgentInitBySessionId.get(sessionId) === init) args.voiceAgentInitBySessionId.delete(sessionId);
         }
     };
 
@@ -62,24 +61,19 @@ export function createVoiceRunRecovery(args: Readonly<{
             });
 
             if (handle.backend === 'daemon') {
-                const persistedRuntimeState = readPersistedVoiceConversationRuntimeState({
-                    managedSessionId: sessionId,
-                    conversationSessionId: handle.rpcSessionId,
-                });
-                const metadataSessionId =
-                    persistedRuntimeState?.metadataSessionId
-                    ?? resolveVoiceRunMetadataSessionId(sessionId, handle.backend);
+                const metadataSessionId = handle.metadataSessionId;
                 if (metadataSessionId) {
                     try {
                         const getRes = await sessionExecutionRunGet(handle.rpcSessionId, {
                             runId: handle.voiceAgentId,
                             includeStructured: false,
-                        });
+                        }, { scope: handle.accountLifetime.scope });
                         if ('run' in getRes) {
                             await persistVoiceAgentRunMetadata(metadataSessionId, {
                                 runId: handle.voiceAgentId,
                                 backendTarget: getRes.run.backendTarget,
                                 resumeHandle: getRes.run.resumeHandle ?? null,
+                                accountLifetime: handle.accountLifetime,
                             });
                         }
                     } catch {
@@ -101,7 +95,8 @@ export function createVoiceRunRecovery(args: Readonly<{
         }
     };
 
-    const stop = async (sessionId: string): Promise<void> => {
+    const stop = async (sessionId: string, beforeStop?: () => Promise<void>): Promise<void> => {
+        const admittedLifetime = captureActiveServerAccountScopeLifetime();
         const persistedRuntimeState = readPersistedVoiceConversationRuntimeState({
             managedSessionId: sessionId,
         });
@@ -112,6 +107,11 @@ export function createVoiceRunRecovery(args: Readonly<{
         const existingHandle = args.voiceAgentBySessionId.get(sessionId) ?? null;
         const pendingInit = args.voiceAgentInitBySessionId.get(sessionId) ?? null;
         args.voiceAgentInitBySessionId.delete(sessionId);
+        args.voiceAgentBySessionId.delete(sessionId);
+        args.voiceAttemptExplicitContextBySessionId.delete(sessionId);
+        args.deferredTargetSessionContextBySessionId.delete(sessionId);
+        args.latestAutomaticUiContextBySessionId.delete(sessionId);
+        await beforeStop?.();
 
         const handle = existingHandle
             ? existingHandle
@@ -119,10 +119,10 @@ export function createVoiceRunRecovery(args: Readonly<{
                 ? await pendingInit.catch(() => null)
                 : null;
 
-        args.voiceAgentBySessionId.delete(sessionId);
-        args.voiceAttemptExplicitContextBySessionId.delete(sessionId);
-        args.deferredTargetSessionContextBySessionId.delete(sessionId);
-        args.latestAutomaticUiContextBySessionId.delete(sessionId);
+        const accountLifetime = handle?.accountLifetime ?? admittedLifetime;
+        if (!accountLifetime) return;
+        const runOptions = { scope: accountLifetime.scope };
+        const cleanupMetadataSessionId = handle ? handle.metadataSessionId : metadataSessionId;
 
         const fallbackRpcSessionId =
             sessionId === VOICE_AGENT_GLOBAL_SESSION_ID
@@ -142,11 +142,11 @@ export function createVoiceRunRecovery(args: Readonly<{
                 // best-effort only
             }
         } else if (persistedRunMeta?.runId) {
-            await sessionExecutionRunStop(fallbackRpcSessionId, { runId: persistedRunMeta.runId }).catch(() => {});
+            await sessionExecutionRunStop(fallbackRpcSessionId, { runId: persistedRunMeta.runId }, runOptions).catch(() => {});
         }
 
         if (daemonBackendId) {
-            const listed = await Promise.resolve(sessionExecutionRunList(daemonRpcSessionId, {})).catch(() => null);
+            const listed = await Promise.resolve(sessionExecutionRunList(daemonRpcSessionId, {}, runOptions)).catch(() => null);
             const runs = listed && 'runs' in listed ? listed.runs : [];
             const matchingRunIds: string[] = Array.from(
                 new Set(
@@ -160,11 +160,11 @@ export function createVoiceRunRecovery(args: Readonly<{
                 ),
             );
             for (const runId of matchingRunIds) {
-                await sessionExecutionRunStop(daemonRpcSessionId, { runId }).catch(() => {});
+                await sessionExecutionRunStop(daemonRpcSessionId, { runId }, runOptions).catch(() => {});
             }
         }
 
-        await clearVoiceAgentRunMetadata(metadataSessionId).catch(() => {});
+        await clearVoiceAgentRunMetadata(cleanupMetadataSessionId, accountLifetime).catch(() => {});
     };
 
     const appendAttemptContextUpdate = (sessionId: string, update: string): void => {

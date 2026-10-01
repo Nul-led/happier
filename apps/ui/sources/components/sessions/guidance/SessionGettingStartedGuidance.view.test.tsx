@@ -7,6 +7,7 @@ import { installSessionGuidanceCommonModuleMocks } from './sessionGuidanceTestHe
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 const routerPushSpy = vi.fn();
+const reachabilityState = vi.hoisted(() => ({ unavailable: false }));
 
 const mockEnv = vi.hoisted(() => ({
   iconsRenderAsText: false,
@@ -36,13 +37,6 @@ vi.mock('@expo/vector-icons', () => ({
 
 vi.mock('expo-image', () => ({
   Image: (props: any) => React.createElement('Image', props, null),
-}));
-
-vi.mock('@/constants/Typography', () => ({
-  Typography: {
-    default: () => ({}),
-    mono: () => ({}),
-  },
 }));
 
 vi.mock('./SessionGettingStartedSummary', async (importOriginal) => {
@@ -86,7 +80,38 @@ vi.mock('@/config', () => ({
   config: mockAppConfig,
 }));
 
+// The Home reachability owner: while it reports the Home unavailable, its loading gate settles.
+vi.mock('@/components/navigation/connectionStatus/HomeReachabilityGate', () => ({
+  HomeReachabilityGate: (props: { variant: string; children: React.ReactNode }) => (reachabilityState.unavailable
+    ? React.createElement('HomeUnreachable', { variant: props.variant })
+    : React.createElement(React.Fragment, null, props.children)),
+}));
+
 describe('SessionGettingStartedGuidanceView', () => {
+  // An unreachable Home never blocks: the "Loading… Fetching your machines and sessions" state
+  // settles into the reachability owner's "Can't reach {Home} · Retry" on every surface.
+  it.each([['sidebar', 'line'], ['primaryPane', 'pane'], ['newSessionBlocking', 'pane']] as const)(
+    'settles its loading state through the Home reachability owner (%s)',
+    async (variant, gateVariant) => {
+      reachabilityState.unavailable = true;
+      try {
+        const { SessionGettingStartedGuidanceView } = await import('./SessionGettingStartedGuidance');
+        const screen = await renderScreen(
+          <SessionGettingStartedGuidanceView
+            variant={variant}
+            model={{ kind: 'loading', targetLabel: 'Company', serverUrl: '', serverName: 'company', showServerSetup: false }}
+          />,
+        );
+        const settled = screen.findAllByType('HomeUnreachable' as any);
+        expect(settled).toHaveLength(1);
+        expect(settled[0]!.props.variant).toBe(gateVariant);
+        expect(screen.getTextContent()).not.toContain('sessionGettingStarted.subtitle.loading');
+      } finally {
+        reachabilityState.unavailable = false;
+      }
+    },
+  );
+
   it('renders only the setup wizard CTA for connect_machine on phone surfaces', async () => {
     const { SessionGettingStartedGuidanceView } = await import('./SessionGettingStartedGuidance');
     const screen = await renderScreen(

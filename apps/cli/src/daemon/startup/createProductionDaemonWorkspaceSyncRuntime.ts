@@ -13,14 +13,20 @@ import type {
   WorkspaceSyncTargetBootstrapPrepareV1,
   WorkspaceSyncLegacyStateInspectionV1,
   WorkspaceSyncConflictResolveActionInputV1,
+  WorkspaceSyncPrepareBetweenRequestV1,
+  WorkspaceSyncPrepareBetweenResultV1,
 } from '@happier-dev/protocol';
 import {
   ApprovalRequestV2Schema,
   WorkspaceSyncConflictResolveActionInputV1Schema,
   WorkspaceSyncStatusV1Schema,
+  getActionSpec,
+  resolveWorkspaceSyncTransferRoute,
+  WorkspaceSyncPrepareBetweenResultV1Schema,
 } from '@happier-dev/protocol';
 import { TransferEndpointCandidateSchema, type TransferEndpointCandidate } from '@happier-dev/protocol';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
+import { isRpcMethodNotAvailableError, isRpcMethodNotFoundError } from '@happier-dev/protocol/rpcErrors';
 
 import type { MachineWorkspaceSyncRpcService } from '@/api/machine/rpcHandlers.workspaceSync';
 import type { StoredCredentials } from '@/persistence';
@@ -46,7 +52,8 @@ import {
   type WorkspaceSyncMachineIngress,
 } from '@/workspaces/sync/workspaceSyncTargetAuthority';
 import { prepareWorkspaceSyncGitTarget } from '@/workspaces/sync/workspaceSyncTargetBootstrap';
-import { createWorkspaceSyncSeedExport, materializeLocalWorkspaceSyncSeed, materializeWorkspaceSyncSeedExport } from '@/workspaces/sync/workspaceSyncSeedTransfer';
+import { prepareWorkspaceSyncBetween } from '@/workspaces/sync/workspaceSyncPreparation';
+import { createWorkspaceSyncSeedExport, materializeLocalWorkspaceSyncSeed, materializeWorkspaceSyncSeedExport, resolveWorkspaceSyncSeedTransfer as resolveSeedWorkspaceTransfer } from '@/workspaces/sync/workspaceSyncSeedTransfer';
 import { materializeWorkspaceExportArtifactsWithScmWorkspace } from '@/scm/workspace/workspaceExportMaterialization';
 import { buildDirectPeerTransferEndpointPath } from '@/machines/transfer/directPeerTransport';
 import { createWorkspaceSyncPeerIdentityValidator } from '@/workspaces/sync/transport/workspaceSyncPeerIdentity';
@@ -61,6 +68,10 @@ import {
   createWorkspaceSyncRelationshipOwner,
   type WorkspaceSyncRelationshipOwner,
 } from '@/workspaces/sync/workspaceSyncRelationshipOwner';
+import {
+  createWorkspaceSyncRelationshipForProject,
+  type WorkspaceSyncRelationshipCreateDependencies,
+} from '@/workspaces/sync/workspaceSyncRelationshipCreate';
 import type { WorkspaceSyncMachineTunnelOpen } from '@/workspaces/sync/workspaceSyncMachineCarrierStream';
 import { createDaemonWorkspaceSyncBroker } from './createDaemonWorkspaceSyncBroker';
 import {
@@ -90,6 +101,7 @@ export type ProductionDaemonWorkspaceSyncFactories = Readonly<{
   inspectLegacyState: typeof inspectRetiredWorkspaceReplicationState;
   prepareGitTarget: typeof prepareWorkspaceSyncGitTarget;
   createRelationshipOwner: typeof createWorkspaceSyncRelationshipOwner;
+  createRelationshipForProject: typeof createWorkspaceSyncRelationshipForProject;
   refreshSettings: typeof refreshAccountSettingsForMinimumVersion;
   prepareSourceSeedExport: typeof createWorkspaceSyncSeedExport;
   materializeSeedExport: typeof materializeWorkspaceSyncSeedExport;
@@ -120,44 +132,13 @@ const defaultFactories: ProductionDaemonWorkspaceSyncFactories = {
   inspectLegacyState: inspectRetiredWorkspaceReplicationState,
   prepareGitTarget: prepareWorkspaceSyncGitTarget,
   createRelationshipOwner: createWorkspaceSyncRelationshipOwner,
+  createRelationshipForProject: createWorkspaceSyncRelationshipForProject,
   refreshSettings: refreshAccountSettingsForMinimumVersion,
   prepareSourceSeedExport: createWorkspaceSyncSeedExport,
   materializeSeedExport: materializeWorkspaceSyncSeedExport,
   materializeLocalSeed: materializeLocalWorkspaceSyncSeed,
   warn: (message, error) => logger.warn(message, error),
 };
-
-/**
- * Projects the bounded workspace content policy onto the finite seed transfer
- * request. `extraIncludePatterns` are the paths the user explicitly opted back
- * in past Git's ignore rules: dropping them here would silently seed a target
- * that is missing content the persistent relationship is required to carry.
- */
-function resolveSeedWorkspaceTransfer(
-  contentPolicy: WorkspaceContentPolicyV1,
-): Readonly<{
-  includeIgnoredMode: 'exclude' | 'include_selected';
-  ignoredIncludeGlobs: readonly string[];
-  includeAllIgnored?: boolean;
-  extraIgnorePatterns: readonly string[];
-}> {
-  const ignoredIncludeGlobs = [...contentPolicy.extraIncludePatterns];
-  if (contentPolicy.selection === 'all_files') {
-    // Keep include-all separate from explicit re-includes. The latter are
-    // applied after the ignore overlay, while include-all is not an override.
-    return {
-      includeIgnoredMode: ignoredIncludeGlobs.length > 0 ? 'include_selected' : 'exclude',
-      ignoredIncludeGlobs,
-      includeAllIgnored: true,
-      extraIgnorePatterns: [...contentPolicy.extraIgnorePatterns],
-    };
-  }
-  return {
-    includeIgnoredMode: ignoredIncludeGlobs.length > 0 ? 'include_selected' : 'exclude',
-    ignoredIncludeGlobs,
-    extraIgnorePatterns: [...contentPolicy.extraIgnorePatterns],
-  };
-}
 
 function compositionError(code: string, message: string): Error {
   return Object.assign(new Error(message), { code });
@@ -167,7 +148,7 @@ async function requireExecutingWorkspaceActionReceipt(input: Readonly<{
   approvalsGet: NonNullable<ActionExecutorDeps['approvalsGet']>;
   serverId: string;
   actionReceiptId: string;
-  actionId: 'workspace.sync.conflict.resolve' | 'session.handoff';
+  actionId: 'workspace.sync.conflict.resolve' | 'session.handoff' | 'workspace.sync.relationship.create';
   actionInput: unknown;
   expectedExecutionMachineId?: string;
   expectedExecutionRequestId?: string;
@@ -228,6 +209,74 @@ export function createWorkspaceSyncConflictResolutionAuthorizer(input: Readonly<
       actionId: 'workspace.sync.conflict.resolve',
       actionInput,
       expectedExecutionMachineId: actionInput.controllerMachineId,
+    });
+  };
+}
+
+/**
+ * The exact Action families whose approved input may authorize a destructive
+ * workspace destination, and the extra origin facts each one binds.
+ *
+ * Membership is decided by parsing against the canonical Action input schema —
+ * never by trusting an Action id carried alongside the proof. An input that
+ * matches neither closed family authorizes nothing, so an unrelated Action's
+ * similarly shaped approval cannot be replayed here.
+ */
+type WorkspaceDestinationActionAdmission = Readonly<{
+  actionId: 'session.handoff' | 'workspace.sync.relationship.create';
+  expectedExecutionSessionId?: string;
+}>;
+
+function admitWorkspaceDestinationActionInput(actionInput: unknown): WorkspaceDestinationActionAdmission | null {
+  const createSpec = getActionSpec('workspace.sync.relationship.create');
+  if (createSpec.inputSchema.safeParse(actionInput).success) {
+    return { actionId: 'workspace.sync.relationship.create' };
+  }
+  const handoffSpec = getActionSpec('session.handoff');
+  const handoff = handoffSpec.inputSchema.safeParse(actionInput);
+  if (!handoff.success) return null;
+  const sessionId = typeof (handoff.data as { sessionId?: unknown }).sessionId === 'string'
+    ? (handoff.data as { sessionId: string }).sessionId.trim()
+    : '';
+  return {
+    actionId: 'session.handoff',
+    ...(sessionId ? { expectedExecutionSessionId: sessionId } : {}),
+  };
+}
+
+/**
+ * Canonical destination-approval receipt validator, shared by every workspace
+ * target that must prove a destructive destination was actually approved. The
+ * approvals store stays the injected persistence boundary so production and
+ * composed tests exercise the same admission decision.
+ */
+export function createWorkspaceDestinationApprovalAuthorizer(input: Readonly<{
+  approvalsGet: NonNullable<ActionExecutorDeps['approvalsGet']>;
+  serverId: string;
+}>): (
+  actionReceiptId: string,
+  actionInput: unknown,
+  approval: HandoffTargetReplacementApprovalV1,
+) => Promise<void> {
+  return async (actionReceiptId, actionInput, approval) => {
+    const admitted = admitWorkspaceDestinationActionInput(actionInput);
+    if (!admitted) {
+      throw compositionError(
+        'approval_stale',
+        'Workspace destination approval does not belong to a destination-choosing Action',
+      );
+    }
+    await requireExecutingWorkspaceActionReceipt({
+      approvalsGet: input.approvalsGet,
+      serverId: input.serverId,
+      actionReceiptId,
+      actionId: admitted.actionId,
+      actionInput,
+      expectedExecutionRequestId: approval.operationId,
+      ...(admitted.expectedExecutionSessionId
+        ? { expectedExecutionSessionId: admitted.expectedExecutionSessionId }
+        : {}),
+      expectedTargetReplacementApproval: approval,
     });
   };
 }
@@ -330,6 +379,39 @@ function resolveBootstrapPrepareRequest(
             targetReplacementApprovalActionInput: input.targetReplacementApprovalActionInput,
           }
         : {}),
+      ...(input.signal ? { signal: input.signal } : {}),
+    };
+  }
+
+  if (input.action.kind === 'linked_workspace') {
+    if (!input.sourceWorkspaceRefId || !input.targetWorkspaceRefId) {
+      throw compositionError('workspace_ref_not_ready', 'Linked workspace endpoints are unavailable');
+    }
+    const route = resolveWorkspaceSyncTransferRoute({
+      workspaceRefs: snapshot?.settings.workspaceRefsV1 ?? [],
+      relationships: snapshot?.settings.workspaceSyncRelationshipsV1 ?? [],
+      sourceWorkspaceRefId: input.sourceWorkspaceRefId,
+      targetWorkspaceRefId: input.targetWorkspaceRefId,
+    });
+    if (!route.ok || route.kind === 'same_workspace') {
+      throw compositionError(route.ok ? 'route_not_found' : route.code, 'Linked workspace route is unavailable');
+    }
+    const finalRelationship = route.relationships.at(-1)!;
+    const endpointRole = finalRelationship.alphaWorkspaceRefId === input.targetWorkspaceRefId
+      ? 'alpha'
+      : finalRelationship.betaWorkspaceRefId === input.targetWorkspaceRefId
+        ? 'beta'
+        : null;
+    if (!endpointRole) throw compositionError('route_not_found', 'Linked target is not on the final relationship');
+    return {
+      v: 1,
+      bootstrapOperationId: input.operationId,
+      owner: { kind: 'relationship', relationshipId: finalRelationship.relationshipId },
+      targetWorkspaceRefId: input.targetWorkspaceRefId,
+      targetMachineId: input.targetMachineId,
+      endpointRole,
+      policyDigest: finalRelationship.contentPolicy.policyDigest,
+      createIfMissing: false,
       ...(input.signal ? { signal: input.signal } : {}),
     };
   }
@@ -441,28 +523,10 @@ export async function createProductionDaemonWorkspaceSyncRuntime(
     approvalsGet: approvalsStore.approvalsGet,
     serverId: input.activeServerId ?? configuration.activeServerId,
   });
-  const assertTargetReplacementAuthorized = async (
-    actionReceiptId: string,
-    actionInput: unknown,
-    approval: HandoffTargetReplacementApprovalV1,
-  ): Promise<void> => {
-    const actionInputRecord = actionInput && typeof actionInput === 'object' && !Array.isArray(actionInput)
-      ? actionInput as Readonly<Record<string, unknown>>
-      : null;
-    const sessionId = typeof actionInputRecord?.sessionId === 'string'
-      ? actionInputRecord.sessionId.trim()
-      : '';
-    await requireExecutingWorkspaceActionReceipt({
-      approvalsGet: approvalsStore.approvalsGet,
-      serverId: input.activeServerId ?? configuration.activeServerId,
-      actionReceiptId,
-      actionId: 'session.handoff',
-      actionInput,
-      expectedExecutionRequestId: approval.operationId,
-      ...(sessionId ? { expectedExecutionSessionId: sessionId } : {}),
-      expectedTargetReplacementApproval: approval,
-    });
-  };
+  const assertTargetReplacementAuthorized = createWorkspaceDestinationApprovalAuthorizer({
+    approvalsGet: approvalsStore.approvalsGet,
+    serverId: input.activeServerId ?? configuration.activeServerId,
+  });
   const targetAuthority = factories.createTargetAuthority({
     localServerId: input.activeServerId ?? configuration.activeServerId,
     localMachineId: input.localMachineId,
@@ -485,6 +549,83 @@ export async function createProductionDaemonWorkspaceSyncRuntime(
         sourcePath,
         workspaceTransfer: resolveSeedWorkspaceTransfer(contentPolicy),
       }));
+    },
+    resolutionMaterialDirectory: join(input.activeServerDir, 'workspace-sync', 'resolution'),
+    resolveLocalResolutionEndpoint: async (relationshipId, workspaceRefId) => await runtime?.managedWorkspaceSync.resolveLocalResolutionEndpoint(
+      relationshipId, workspaceRefId,
+    ) ?? null,
+    requestResolutionExport: async (request) => {
+      if (!input.requestDirectTransferPayloadFile) {
+        throw compositionError('agent_unavailable', 'Reviewed workspace conflict transfer is unavailable');
+      }
+      if (request.sourceMachineId !== input.localMachineId && !input.openMachineCarrierTunnel) {
+        throw compositionError('machine_carrier_unavailable', 'Reviewed workspace conflict source Machine carrier is unavailable');
+      }
+      const { signal: exportSignal, ...wireRequest } = request;
+      const preparedRaw = await factories.callMachineRpc({
+        credentials: input.credentials,
+        machineId: request.sourceMachineId,
+        method: RPC_METHODS.DAEMON_DIRECT_TRANSFER_EXPORT_PREPARE,
+        request: { t: 'workspace_sync_resolution_v1', ...wireRequest },
+        ...(exportSignal ? { signal: exportSignal } : {}),
+      });
+      if (!preparedRaw || typeof preparedRaw !== 'object' || (preparedRaw as { success?: unknown }).success !== true) {
+        const code = preparedRaw && typeof preparedRaw === 'object' && 'code' in preparedRaw
+          ? (preparedRaw as { code?: unknown }).code
+          : null;
+        throw compositionError(code === 'conflict_changed' || code === 'approval_stale' || code === 'approval_required'
+          ? code : 'peer_unavailable', 'Reviewed workspace conflict source is unavailable');
+      }
+      const prepared = preparedRaw as Readonly<Record<string, unknown>>;
+      if (prepared.transferId !== request.operationId
+        || typeof prepared.sizeBytes !== 'number' || !Number.isSafeInteger(prepared.sizeBytes) || prepared.sizeBytes < 0
+        || typeof prepared.manifestHash !== 'string' || !Array.isArray(prepared.endpointCandidates)) {
+        throw compositionError('peer_unavailable', 'Reviewed workspace conflict export is invalid');
+      }
+      const sourceCandidates = prepared.endpointCandidates.map((candidate) => TransferEndpointCandidateSchema.parse(candidate));
+      const sourceCandidate = sourceCandidates[0];
+      if (!sourceCandidate) throw compositionError('peer_unavailable', 'Reviewed workspace conflict export has no finite transfer endpoint');
+      return {
+        requestPayload: async ({ transferId, destinationPath, expectedSizeBytes, expectedManifestHash }) => {
+          const tunnel = request.sourceMachineId === input.localMachineId
+            ? null
+            : await input.openMachineCarrierTunnel!({
+              sourceMachineId: input.localMachineId,
+              targetMachineId: request.sourceMachineId,
+              flow: 'file_transfer',
+              ...(exportSignal ? { signal: exportSignal } : {}),
+            });
+          try {
+            const url = new URL(sourceCandidate.url);
+            url.protocol = 'http:';
+            url.hostname = '127.0.0.1';
+            if (tunnel) url.port = String(tunnel.localPort);
+            url.pathname = buildDirectPeerTransferEndpointPath(transferId);
+            await input.requestDirectTransferPayloadFile!({
+              transferId,
+              endpointCandidates: [{ ...sourceCandidate, kind: 'http' as const, url: url.toString() }],
+              destinationPath,
+              ...(transferId === request.operationId
+                ? { expectedSizeBytes: prepared.sizeBytes as number, expectedManifestHash: prepared.manifestHash as string }
+                : {
+                  ...(expectedSizeBytes === undefined ? {} : { expectedSizeBytes }),
+                  ...(expectedManifestHash === undefined ? {} : { expectedManifestHash }),
+                }),
+              ...(exportSignal ? { signal: exportSignal } : {}),
+            });
+          } finally {
+            await tunnel?.close();
+          }
+        },
+        release: async () => {
+          await factories.callMachineRpc({
+            credentials: input.credentials,
+            machineId: request.sourceMachineId,
+            method: RPC_METHODS.DAEMON_DIRECT_TRANSFER_EXPORT_RELEASE,
+            request: { transferId: request.operationId },
+          });
+        },
+      };
     },
     bootstrap: {
       materializationDirectory: join(input.activeServerDir, 'workspace-sync', 'materialization'),
@@ -596,6 +737,74 @@ export async function createProductionDaemonWorkspaceSyncRuntime(
     }),
   });
 
+  const currentRoute = (request: WorkspaceSyncPrepareBetweenRequestV1) => {
+    const snapshot = factories.getSettingsSnapshot();
+    const serverId = input.activeServerId ?? configuration.activeServerId;
+    return resolveWorkspaceSyncTransferRoute({
+      workspaceRefs: (snapshot?.settings.workspaceRefsV1 ?? []).filter((ref) => ref.serverId === serverId),
+      relationships: snapshot?.settings.workspaceSyncRelationshipsV1 ?? [],
+      sourceWorkspaceRefId: request.sourceWorkspaceRefId,
+      targetWorkspaceRefId: request.targetWorkspaceRefId,
+    });
+  };
+  const routeFailure = (route: Extract<ReturnType<typeof currentRoute>, { ok: false }>): WorkspaceSyncPrepareBetweenResultV1 => ({
+    ok: false,
+    errorCode: route.code,
+    completed: [],
+    ...('relationshipId' in route ? { blockedRelationshipId: route.relationshipId } : {}),
+  });
+  const prepareBetweenAtController = async (
+    request: WorkspaceSyncPrepareBetweenRequestV1,
+    signal?: AbortSignal,
+  ): Promise<WorkspaceSyncPrepareBetweenResultV1> => {
+    if (!runtime) throw controllerUnavailable();
+    const route = currentRoute(request);
+    if (!route.ok) return routeFailure(route);
+    if (route.kind !== 'same_workspace' && route.controllerMachineId !== input.localMachineId) {
+      throw compositionError('workspace_sync_controller_mismatch', 'Linked workspace route belongs to another controller');
+    }
+    return await prepareWorkspaceSyncBetween({
+      ...request,
+      readCurrent: async () => {
+        const snapshot = factories.getSettingsSnapshot();
+        if (!snapshot) throw compositionError('workspace_sync_settings_unavailable', 'Workspace sync settings are unavailable');
+        return {
+          workspaceRefs: snapshot.settings.workspaceRefsV1.filter((ref) => (
+            ref.serverId === (input.activeServerId ?? configuration.activeServerId)
+          )),
+          relationships: snapshot.settings.workspaceSyncRelationshipsV1,
+        };
+      },
+      flush: async (relationshipId, flushSignal) => await runtime!.managedWorkspaceSync.flush(relationshipId, flushSignal),
+      ...(signal ? { signal } : {}),
+    });
+  };
+  const handoffPrepareBetween = async (
+    request: WorkspaceSyncPrepareBetweenRequestV1,
+    signal?: AbortSignal,
+  ): Promise<WorkspaceSyncPrepareBetweenResultV1> => {
+    const route = currentRoute(request);
+    if (!route.ok) return routeFailure(route);
+    if (route.kind === 'same_workspace' || route.controllerMachineId === input.localMachineId) {
+      return await prepareBetweenAtController(request, signal);
+    }
+    try {
+      const result = await factories.callMachineRpc({
+        credentials: input.credentials,
+        machineId: route.controllerMachineId,
+        method: RPC_METHODS.DAEMON_WORKSPACE_SYNC_PREPARE_BETWEEN,
+        request,
+        ...(signal ? { signal } : {}),
+      });
+      return WorkspaceSyncPrepareBetweenResultV1Schema.parse(result);
+    } catch (error) {
+      if (isRpcMethodNotAvailableError(error) || isRpcMethodNotFoundError(error)) {
+        return { ok: false, errorCode: 'workspace_sync_update_required', completed: [] };
+      }
+      throw error;
+    }
+  };
+
   runtime = factories.createDaemonRuntime({
     daemonDataRoot,
     localServerId: input.activeServerId ?? configuration.activeServerId,
@@ -609,6 +818,7 @@ export async function createProductionDaemonWorkspaceSyncRuntime(
       return ref ? { serverId: ref.serverId, machineId: ref.machineId, rootPath: ref.rootPath } : null;
     },
     rootOwnershipManager,
+    borrowLinkedSourceRoot: async (operationId, workspaceRefId) => await targetAuthority.borrowSourceRootForCopy({ operationId, workspaceRefId }),
     prepareRelationshipTarget: async (relationship, signal, preparation) => {
       const target = resolveRelationshipBootstrapTarget(factories.getSettingsSnapshot(), relationship);
       const prepared = await targetAuthority.prepareBootstrapAtTarget({
@@ -697,12 +907,14 @@ export async function createProductionDaemonWorkspaceSyncRuntime(
         }
       },
     },
+    handoffPrepareBetween,
     bootstrap: async (bootstrapInput) => {
       const prepareRequest = resolveBootstrapPrepareRequest(
         bootstrapInput,
         factories.getSettingsSnapshot(),
       );
       let sourceOwnership: WorkspaceRootOwnershipHandle | null = null;
+      let releaseSourceOwnership: (() => Promise<void>) | null = null;
       let copySourceWorkspaceRefId: string | null = null;
       let copyTargetWorkspaceRefId: string | null = null;
       if (bootstrapInput.action.kind === 'copy_once') {
@@ -720,15 +932,24 @@ export async function createProductionDaemonWorkspaceSyncRuntime(
         if (!sourceRef || sourceRef.machineId !== input.localMachineId) {
           throw compositionError('peer_unavailable', 'Workspace sync source endpoint is unavailable on this daemon');
         }
-        const acquired = await rootOwnershipManager.tryAcquire({
-          ownerId: bootstrapInput.operationId,
-          canonicalRoot: sourceRef.rootPath,
-          operation: 'handoff',
-        });
-        if ('kind' in acquired) {
-          throw compositionError('workspace_root_in_use', 'Workspace sync source root overlaps an active operation');
+        const loan = await runtime?.managedWorkspaceSync.borrowSourceRootForCopy(
+          bootstrapInput.operationId, sourceWorkspaceRefId,
+        ) ?? null;
+        if (loan) {
+          sourceOwnership = loan.handle;
+          releaseSourceOwnership = loan.release;
+        } else {
+          const acquired = await rootOwnershipManager.tryAcquire({
+            ownerId: bootstrapInput.operationId,
+            canonicalRoot: sourceRef.rootPath,
+            operation: 'handoff',
+          });
+          if ('kind' in acquired) {
+            throw compositionError('workspace_root_in_use', 'Workspace sync source root overlaps an active operation');
+          }
+          sourceOwnership = acquired;
+          releaseSourceOwnership = async () => await acquired.release();
         }
-        sourceOwnership = acquired;
       }
       let targetOwnershipHandles: readonly WorkspaceRootOwnershipHandle[] = [];
       try {
@@ -746,7 +967,7 @@ export async function createProductionDaemonWorkspaceSyncRuntime(
           : await prepareTarget();
         targetOwnershipHandles = preparedTarget.ownershipHandles ?? [];
       } catch (error) {
-        await sourceOwnership?.release();
+        await releaseSourceOwnership?.();
         throw error;
       }
       let released = false;
@@ -774,7 +995,7 @@ export async function createProductionDaemonWorkspaceSyncRuntime(
             }
           } finally {
             if (!sourceReleased) {
-              await sourceOwnership?.release();
+              await releaseSourceOwnership?.();
               sourceReleased = true;
             }
           }
@@ -792,8 +1013,13 @@ export async function createProductionDaemonWorkspaceSyncRuntime(
     ...(input.openMachineCarrierTunnel
       ? { openMachineCarrierTunnel: input.openMachineCarrierTunnel }
       : {}),
-    deleteConflictLoserAtTarget: targetAuthority.deleteConflictLoserAtTarget,
+    stageConflictResolutionAtTarget: targetAuthority.stageConflictResolutionAtTarget,
+    applyStagedConflictResolutionAtTarget: targetAuthority.applyStagedConflictResolutionAtTarget,
+    discardStagedConflictResolutionAtTarget: targetAuthority.discardStagedConflictResolutionAtTarget,
+    releaseConflictResolutionCaptureAtSource: targetAuthority.releaseConflictResolutionCaptureAtSource,
+    recoverConflictResolutionAtTarget: targetAuthority.recoverConflictResolutionAtTarget,
     readFileAtTarget: targetAuthority.readFileAtTarget,
+    observeEntryAtTarget: targetAuthority.observeEntryAtTarget,
     assertConflictResolutionAuthorized,
     getSettingsSnapshot: factories.getSettingsSnapshot,
     assertLegacyStateAvailable,
@@ -877,15 +1103,44 @@ export async function createProductionDaemonWorkspaceSyncRuntime(
     },
   );
 
+  const committedRelationshipOwner = relationshipOwner;
+  const relationshipCreateDependencies: WorkspaceSyncRelationshipCreateDependencies = {
+    localServerId: input.activeServerId ?? configuration.activeServerId,
+    localMachineId: input.localMachineId,
+    resolveWorkspaceRef: (workspaceRefId) => {
+      const ref = resolveWorkspaceRefById(
+        factories.getSettingsSnapshot()?.settings.workspaceRefsV1 ?? [],
+        workspaceRefId,
+      );
+      return ref ? { serverId: ref.serverId, machineId: ref.machineId, rootPath: ref.rootPath } : null;
+    },
+    relationshipOwner: committedRelationshipOwner,
+  };
+
   const workspaceSync: MachineWorkspaceSyncRpcService = {
     controller: runtime.managedWorkspaceSync,
-    relationshipOwner,
-    deleteConflictLoserAtTarget: targetAuthority.deleteConflictLoserHere,
+    prepareBetween: prepareBetweenAtController,
+    relationshipOwner: {
+      setEnabled: async (relationshipId, enabled, signal) => await committedRelationshipOwner.setEnabled(relationshipId, enabled, signal),
+      stop: async (relationshipId, signal) => await committedRelationshipOwner.stop(relationshipId, signal),
+      create: async (request, signal) => await factories.createRelationshipForProject(
+        relationshipCreateDependencies,
+        request,
+        signal,
+      ),
+    },
+    stageConflictResolutionAtTarget: targetAuthority.stageConflictResolutionHere,
+    applyStagedConflictResolutionAtTarget: targetAuthority.applyStagedConflictResolutionHere,
+    discardStagedConflictResolutionAtTarget: targetAuthority.discardStagedConflictResolutionHere,
+    releaseConflictResolutionCaptureHere: targetAuthority.releaseConflictResolutionCaptureHere,
+    recoverConflictResolutionAtTarget: targetAuthority.recoverConflictResolutionHere,
     readFileAtTarget: targetAuthority.readFileHere,
+    observeEntryAtTarget: targetAuthority.observeEntryHere,
     preflightHandoffTargetReplacement: targetAuthority.preflightHandoffTargetReplacementHere,
     prepareBootstrapAtTarget: targetAuthority.prepareBootstrapHere,
     releaseBootstrapAtTarget: targetAuthority.releaseBootstrapHere,
     prepareSourceSeedExport: targetAuthority.prepareSourceSeedExport,
+    prepareConflictResolutionExport: targetAuthority.prepareConflictResolutionExport,
     assertConflictResolutionAuthorized,
     inspectRetiredState: async (signal): Promise<WorkspaceSyncLegacyStateInspectionV1> => {
       signal?.throwIfAborted();

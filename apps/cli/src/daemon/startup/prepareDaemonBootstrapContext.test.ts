@@ -5,6 +5,7 @@ import { join } from 'node:path';
 
 const mocks = vi.hoisted(() => ({
   authAndSetupMachineIfNeeded: vi.fn(),
+  authAndPrepareDaemonMachineIfNeeded: vi.fn(),
   createApiClient: vi.fn(),
   ensureMachineRegistered: vi.fn(),
   getPreferredHostName: vi.fn(),
@@ -20,6 +21,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('@/ui/auth', () => ({
   authAndSetupMachineIfNeeded: mocks.authAndSetupMachineIfNeeded,
+  authAndPrepareDaemonMachineIfNeeded: mocks.authAndPrepareDaemonMachineIfNeeded,
 }));
 
 vi.mock('@/api/api', () => ({
@@ -64,7 +66,7 @@ vi.mock('../deviceLocalSecretStorage', () => ({
 describe('prepareDaemonBootstrapContext', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.authAndSetupMachineIfNeeded.mockResolvedValue({
+    mocks.authAndPrepareDaemonMachineIfNeeded.mockResolvedValue({
       credentials: { token: 'token', encryption: { key: 'enc' } },
       machineId: 'machine-1',
     });
@@ -120,7 +122,7 @@ describe('prepareDaemonBootstrapContext', () => {
   it('prepares a persisted trusted Home transport before fresh daemon authentication and API construction', async () => {
     const { prepareDaemonBootstrapContext } = await import('./prepareDaemonBootstrapContext');
     const order: string[] = [];
-    mocks.authAndSetupMachineIfNeeded.mockImplementation(async () => {
+    mocks.authAndPrepareDaemonMachineIfNeeded.mockImplementation(async () => {
       order.push('auth');
       return {
         credentials: { token: 'token', encryption: { key: 'enc' } },
@@ -153,7 +155,7 @@ describe('prepareDaemonBootstrapContext', () => {
     mocks.isDaemonRunningCurrentlyInstalledHappyVersion.mockResolvedValue(false);
     mocks.acquireDaemonLock.mockResolvedValue({ kind: 'acquired-lock' });
     const order: string[] = [];
-    mocks.authAndSetupMachineIfNeeded.mockImplementation(async () => {
+    mocks.authAndPrepareDaemonMachineIfNeeded.mockImplementation(async () => {
       order.push('auth');
       return {
         credentials: { token: 'fresh-token', encryption: { key: 'enc' } },

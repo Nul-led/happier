@@ -4,6 +4,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { TokenStorage } from '@/auth/storage/tokenStorage';
 import {
     resolveSessionAttentionReminderDeadline,
+    type SessionAttentionReminderInventoryRefreshResult,
     type SessionAttentionReminderDeadline,
     useSessionAttentionReminderRefresh,
 } from '@/activity/attention/runtime/sessionAttentionReminderScheduler';
@@ -44,11 +45,11 @@ function readCredentialAccountId(token: string): string | null {
 export async function refreshSessionAttentionReminderInventory(params: Readonly<{
     serverId: string;
     serverUrl: string;
-}>): Promise<void> {
+}>): Promise<SessionAttentionReminderInventoryRefreshResult> {
     const credentials = await TokenStorage.getCredentialsForServerUrl(params.serverUrl, { serverId: params.serverId });
-    if (!credentials) return;
+    if (!credentials) return { kind: 'retryable_failure' };
     const scope = createServerAccountScope(params.serverId, readCredentialAccountId(credentials.token));
-    if (!scope) return;
+    if (!scope) return { kind: 'retryable_failure' };
     const staleError = () => new Error('Reminder inventory Account is no longer current for this Home');
     await runWithServerAccountScopeRequestGuard({ scope, staleError }, async ({ check, isCurrent }) => {
         // The guard subscribes after the first read; re-read so a replacement that
@@ -64,6 +65,7 @@ export async function refreshSessionAttentionReminderInventory(params: Readonly<
         });
         check();
     });
+    return { kind: 'loaded' };
 }
 
 export function SessionAttentionReminderRuntime(): React.ReactElement | null {
@@ -100,7 +102,7 @@ export function SessionAttentionReminderRuntime(): React.ReactElement | null {
         }),
     ), [organizationByServerId]);
     const refreshSession = React.useCallback(async (address: SessionAddress) => {
-        await sync.ensureSessionVisibleForMessageRoute(address.sessionId, {
+        return await sync.ensureSessionVisibleForMessageRoute(address.sessionId, {
             serverId: address.serverId,
             forceRefresh: true,
         });
@@ -109,8 +111,8 @@ export function SessionAttentionReminderRuntime(): React.ReactElement | null {
         const profile = serverProfilesByScopeId.get(serverId);
         const serverUrl = profile?.serverUrl
             ?? (activeServerId === serverId ? activeServer.serverUrl : null);
-        if (!serverUrl) return;
-        await refreshSessionAttentionReminderInventory({ serverId, serverUrl });
+        if (!serverUrl) return { kind: 'retryable_failure' as const };
+        return await refreshSessionAttentionReminderInventory({ serverId, serverUrl });
     }, [activeServer.serverUrl, activeServerId, serverProfilesByScopeId]);
 
     useSessionAttentionReminderRefresh({

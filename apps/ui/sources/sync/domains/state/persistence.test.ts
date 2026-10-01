@@ -888,7 +888,7 @@ describe('persistence', () => {
                 v: 1,
                 updatedAt: 42,
                 ref: {
-                    agentTargetKey: 'backend:codex',
+                    agentTargetKey: 'agent:happier.agent.codex/codex',
                     providerConnectionId: null,
                     modelId: 'gpt-5.5',
                 },
@@ -920,7 +920,7 @@ describe('persistence', () => {
                         v: 1,
                         updatedAt: 42,
                         ref: {
-                            agentTargetKey: 'backend:ohMyPi',
+                            agentTargetKey: 'agent:happier.agent.ohmypi/ohmypi',
                             providerConnectionId: null,
                             modelId: 'anthropic/claude-sonnet-4-6',
                         },
@@ -978,12 +978,14 @@ describe('persistence', () => {
             expect(loadNewSessionDraft()?.modelSelection).toBeNull();
         });
 
-        it('refuses a canonical selection whose agent target does not match the draft target', () => {
+        it('keeps the draft but drops a stored selection whose agent target does not match the draft target', () => {
+            // A stale selection for another Agent must not be sent, and must not
+            // cost the user the draft or raise an app error on load.
             const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
             store.set(
                 'new-session-draft-v1',
                 JSON.stringify({
-                    input: 'keep this draft fail-closed',
+                    input: 'keep this draft',
                     selectedMachineId: null,
                     selectedPath: null,
                     selectedProfileId: null,
@@ -993,7 +995,7 @@ describe('persistence', () => {
                         v: 1,
                         updatedAt: 42,
                         ref: {
-                            agentTargetKey: 'backend:claude',
+                            agentTargetKey: 'agent:happier.agent.claude/claude',
                             providerConnectionId: 'pc_01J00000000000000000000000',
                             modelId: 'claude-sonnet-4-6',
                         },
@@ -1002,8 +1004,10 @@ describe('persistence', () => {
                 }),
             );
 
-            expect(loadNewSessionDraft()).toBeNull();
-            expect(consoleError).toHaveBeenCalled();
+            const draft = loadNewSessionDraft();
+            expect(draft?.input).toBe('keep this draft');
+            expect(draft?.modelSelection).toBeNull();
+            expect(consoleError).not.toHaveBeenCalled();
             consoleError.mockRestore();
         });
 
@@ -1128,7 +1132,7 @@ describe('persistence', () => {
 
             const draft = loadNewSessionDraft();
             expect(draft?.modelSelection?.ref).toEqual({
-                agentTargetKey: 'backend:claude',
+                agentTargetKey: 'agent:happier.agent.claude/claude',
                 providerConnectionId: null,
                 modelId: 'adaptiveUsage',
             });
@@ -1152,7 +1156,7 @@ describe('persistence', () => {
 
             const draft = loadNewSessionDraft();
             expect(draft?.modelSelection?.ref).toEqual({
-                agentTargetKey: 'backend:claude',
+                agentTargetKey: 'agent:happier.agent.claude/claude',
                 providerConnectionId: null,
                 modelId: 'claude-3-5-sonnet-latest',
             });

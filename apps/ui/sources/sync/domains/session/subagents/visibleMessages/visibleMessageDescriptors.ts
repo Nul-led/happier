@@ -1,4 +1,4 @@
-import type { Message } from '@/sync/domains/messages/messageTypes';
+import type { Message } from "@happier-dev/session-core/messages";
 import type { AgentUiSessionDeclarationV1 } from '@happier-dev/protocol';
 import {
     createUiProjectionDiagnostic,

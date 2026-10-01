@@ -4,6 +4,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { logger } from '@/ui/logger';
 import { withToolTraceFile } from '@/testkit/logger/toolTraceFile';
 import { createSessionClientTranscriptApi } from './sessionClientTranscriptApi';
+import { API_TOKEN_FULL_GRANT_V1 } from '@happier-dev/protocol';
 
 function createTranscriptApi(params?: Readonly<{
     transformSessionInputBeforeCommit?: (payload: Record<string, unknown>) => Promise<Record<string, unknown>>;
@@ -15,6 +16,7 @@ function createTranscriptApi(params?: Readonly<{
         observedAt: number;
     }> | null;
     getActiveLocalTurnProgressAt?: () => number | null;
+    onPresence?: (presence: Readonly<{ thinking: boolean; mode: 'local' | 'remote' }>) => void;
     findPersistedSessionUserMessageAdmission?: Parameters<typeof createSessionClientTranscriptApi>[0]['findPersistedSessionUserMessageAdmission'];
 }>) {
     const enqueueCommittedTranscriptMessage = vi.fn(async () => ({ persisted: true, delivered: false }));
@@ -40,6 +42,7 @@ function createTranscriptApi(params?: Readonly<{
         }),
         getLatestTurnSnapshot: params?.getLatestTurnSnapshot ?? (() => null),
         getActiveLocalTurnProgressAt: params?.getActiveLocalTurnProgressAt ?? (() => null),
+        onPresence: params?.onPresence,
         getSessionConnectionSupervisor: () => null,
         getMetadataSnapshot: () => null,
         updateAgentState: vi.fn(async () => undefined),
@@ -74,6 +77,24 @@ function createTranscriptApi(params?: Readonly<{
 }
 
 describe('createSessionClientTranscriptApi hook dispatch', () => {
+    it('keeps verified per-input authorization through pre-persistence admission', async () => {
+        const authorization = { v: 1 as const, token: 'verified-home-proof', binding: {
+            serverIdentityId: 'home', accountId: 'account', principalId: 'account',
+            credentialId: '11111111-1111-4111-8111-111111111111', machineId: 'machine',
+            actionId: 'session.message.send', requestId: 'rpc-request', requestEnvelopeDigest: 'A'.repeat(43),
+            target: { kind: 'session' as const, sessionId: 'session-1' }, grant: API_TOKEN_FULL_GRANT_V1,
+        } };
+        // Admission is the external authenticated persistence boundary.
+        const { api } = createTranscriptApi({ admitSessionUserMessage: async (request) =>
+            request.callerInputAuthorization === authorization
+                ? { status: 'accepted', localId: request.localId }
+                : { status: 'rejected', code: 'session_input_unauthorized' },
+        });
+        await expect(api.enqueueSessionUserMessageWithDisposition({
+            text: 'bound input', localId: 'bound-input', callerInputAuthorization: authorization,
+        })).resolves.toEqual({ status: 'accepted', localId: 'bound-input' });
+    });
+
     it.each([
         {
             label: 'task completion',
@@ -329,6 +350,25 @@ describe('createSessionClientTranscriptApi hook dispatch', () => {
             api.keepAlive(true, 'remote');
 
             expect(socketEmit).toHaveBeenLastCalledWith('session-alive', expect.objectContaining({ thinking: false }));
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('exposes the guarded local presence used by other terminal projections', () => {
+        vi.useFakeTimers();
+        try {
+            vi.setSystemTime(0);
+            const onPresence = vi.fn();
+            const { api } = createTranscriptApi({
+                onPresence,
+                getLatestTurnSnapshot: () => ({ status: 'completed', observedAt: 1 }),
+                getActiveLocalTurnProgressAt: () => 0,
+            });
+            api.keepAlive(true, 'remote');
+            vi.setSystemTime(15_001);
+            api.keepAlive(true, 'remote');
+            expect(onPresence).toHaveBeenLastCalledWith({ thinking: false, mode: 'remote' });
         } finally {
             vi.useRealTimers();
         }

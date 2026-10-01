@@ -1,9 +1,10 @@
-import type { NormalizedMessage, RawMessageNormalizationSequenceState } from '@/sync/typesRaw';
-import { applyTranscriptAccountActorMetadata, qualifyTranscriptAccountActor } from '@/sync/domains/messages/transcriptAccountActor';
-import { normalizeRawMessage, normalizeRawMessageInSequence } from '@/sync/typesRaw';
+import { type SessionMessageV1 } from '@happier-dev/protocol';
+import type { NormalizedMessage, RawMessageNormalizationSequenceState } from "@happier-dev/session-core/raw";
+import { applyTranscriptAccountActorMetadata, qualifyTranscriptAccountActor } from "@happier-dev/session-core/messages";
+import { normalizeRawMessage, normalizeRawMessageInSequence } from "@happier-dev/session-core/raw";
 import { computeNextSessionSeqFromUpdate } from '@/sync/domains/session/sequence/realtimeSessionSeq';
 import type { Session } from '@/sync/domains/state/storageTypes';
-import type { ApiMessage } from '@/sync/api/types/apiTypes';
+
 import { readStoredSessionMessage } from '@/sync/runtime/readStoredSessionContent';
 import { markStreamingMessagesAppliedForSessionUiTelemetry } from '@/sync/runtime/performance/sessionUiTelemetry';
 import { recordRealtimeFanoutSocketMessageRoute } from '@/sync/runtime/performance/realtimeFanoutTelemetry';
@@ -11,7 +12,7 @@ import { syncPerformanceTelemetry } from '@/sync/runtime/syncPerformanceTelemetr
 import {
     storedSessionMessageAttentionImpact,
     storedSessionMessageAttentionImpactOrNull,
-} from '@/sync/domains/messages/messageUserAttention';
+} from "@happier-dev/session-core/messages";
 import type {
     SessionRealtimeProjectionCandidate,
     SessionRealtimeProjectionMode,
@@ -23,11 +24,11 @@ import {
     advanceSessionReceivedMessageCurrentness,
     isSessionMessageRowCurrent,
     type SessionReceivedMessages,
-} from './sessionMessageCurrentness';
+} from "@happier-dev/session-core/transcript";
 import {
     applyTranscriptObservationMetadata,
     isRecoveredHistoryTranscriptObservation,
-} from '@/sync/domains/messages/transcriptObservationProvenance';
+} from "@happier-dev/session-core/messages";
 
 type SessionMessageEncryption = {
     decryptMessage: (message: any) => Promise<any>;
@@ -122,7 +123,7 @@ type HandleSessionMessageSocketUpdateParams = {
     applyCacheOnlySessionProjectionPatch?: (params: Readonly<{
         sessionId: string;
         updateData: any;
-        rawMessage: ApiMessage | undefined;
+        rawMessage: SessionMessageV1 | undefined;
         messageSeq: number | null;
         updateType: 'new-message' | 'message-updated';
     }>) => boolean;
@@ -160,7 +161,7 @@ type HandleSessionMessageSocketUpdateParams = {
      */
     onTranscriptSkippedDurableMessage?: (params: Readonly<{
         sessionId: string;
-        rawMessage: ApiMessage | undefined;
+        rawMessage: SessionMessageV1 | undefined;
         updateType: 'new-message' | 'message-updated';
     }>) => void;
 };
@@ -211,7 +212,7 @@ function applyProjectionOnlySessionPatch(params: Readonly<{
     session: Session | undefined;
     sessionId: string;
     updateData: any;
-    rawMessage: ApiMessage | undefined;
+    rawMessage: SessionMessageV1 | undefined;
     messageSeq: number | null;
     updateType: 'new-message' | 'message-updated';
     applySessions: HandleSessionMessageSocketUpdateParams['applySessions'];
@@ -281,7 +282,7 @@ function finiteNumber(value: unknown): number | null {
 function applyAlreadyLoadedReplayProjectionPatch(params: Readonly<{
     session: Session | undefined;
     updateData: any;
-    rawMessage: ApiMessage | undefined;
+    rawMessage: SessionMessageV1 | undefined;
     messageSeq: number | null;
     applySessions: HandleSessionMessageSocketUpdateParams['applySessions'];
 }>): void {
@@ -312,7 +313,7 @@ function hasSessionProjectionPatch(patch: SessionProjectionPatch): boolean {
 function buildMessageSessionProjectionPatch(params: Readonly<{
     session: Session;
     updateData: any;
-    rawMessage: ApiMessage | undefined;
+    rawMessage: SessionMessageV1 | undefined;
     messageSeq: number | null;
     updateType: 'new-message' | 'message-updated';
 }>): SessionProjectionPatch {
@@ -387,7 +388,7 @@ async function handleSessionMessageSocketUpdate(params: HandleSessionMessageSock
     const messageSeq = (body as any).message?.seq;
     const normalizedMessageSeq = normalizeMessageSeq(messageSeq);
     const rawMessage = 'message' in body
-        ? (body as { message?: ApiMessage }).message
+        ? (body as { message?: SessionMessageV1 }).message
         : undefined;
     const isRecoveredHistory = isRecoveredHistoryTranscriptObservation(rawMessage);
     const updateType = inferLifecycle ? 'new-message' : 'message-updated';
@@ -549,6 +550,7 @@ async function handleSessionMessageSocketUpdate(params: HandleSessionMessageSock
     if (rawMessage) {
         const readMessage = () => readStoredSessionMessage({
             message: rawMessage,
+            sessionEncryptionMode: session?.encryptionMode ?? 'e2ee',
             decryptMessage: encryption ? (message) => encryption.decryptMessage(message) : undefined,
         });
         const decrypted = telemetryFields
@@ -756,7 +758,6 @@ async function handleSessionMessageSocketUpdate(params: HandleSessionMessageSock
 
             if (
                 typeof messageSeq === 'number' &&
-                prevMaterializedMaxSeq > 0 &&
                 messageSeq > prevMaterializedMaxSeq + 1 &&
                 isSessionMessagesLoaded(sessionId)
             ) {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { ResolvedBackendCatalogEntry } from '@/agents/backendCatalog/getResolvedBackendCatalogEntries';
-import { createResolvedAgentCatalogEntryFixture } from '@/dev/testkit';
+import { createResolvedAgentCatalogEntryFixture } from '@/dev/testkit/fixtures/agentCatalogFixtures';
 
 import { readRuntimeCapabilitiesForSession } from '@happier-dev/agents';
 
@@ -36,7 +36,7 @@ function builtInEntry(
 }
 
 const eligibleSource: SessionAgentContinuationSourceState = {
-    currentBackendTargetKey: 'backend:claude',
+    currentBackendTargetKey: 'agent:happier.agent.claude/claude',
     storageKind: 'persisted',
     canEditSession: true,
     machinePresence: 'online',

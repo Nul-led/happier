@@ -150,6 +150,7 @@ function createMountedSurface(
         machineId: 'machine-1',
         serverId: null,
         projectionGeneration: 7,
+        occurrenceId: 'occurrence-7',
         resourceCapability: { readable: true, dynamic: true },
         accountLifetime: CURRENT_ACCOUNT_LIFETIME,
         interactionEnabled: true,
@@ -183,7 +184,7 @@ describe('mounted plugin surface live resource invalidation (EU-4b)', () => {
             resource: {
                 machineId: 'machine-1',
                 serverId: null,
-                expectedGeneration: '7',
+                expectedCallerOccurrenceId: 'occurrence-7',
                 context: { kind: 'session', sessionId: 'session-a' },
             },
             subscriptionIdPrefix: 'transcript-activity:session-a',
@@ -214,7 +215,7 @@ describe('mounted plugin surface live resource invalidation (EU-4b)', () => {
             resource: {
                 machineId: 'machine-1',
                 serverId: null,
-                expectedGeneration: '7',
+                expectedCallerOccurrenceId: 'occurrence-7',
                 context: { kind: 'session', sessionId: 'session-a' },
             },
             subscriptionIdPrefix: 'transcript-activity:session-a',
@@ -250,7 +251,7 @@ describe('mounted plugin surface live resource invalidation (EU-4b)', () => {
             resource: {
                 machineId: 'machine-1',
                 serverId: null,
-                expectedGeneration: '7',
+                expectedCallerOccurrenceId: 'occurrence-7',
                 context: { kind: 'session', sessionId: 'session-a' },
             },
             subscriptionIdPrefix: 'transcript-activity:session-a',
@@ -470,7 +471,7 @@ describe('mounted plugin surface live resource invalidation (EU-4b)', () => {
         daemon.setOpenResult({ supported: false, reason: 'error' });
         const transientClient = createPluginContextualResourceWatchClient({
             pluginId: 'acme.preview',
-            resource: { machineId: 'machine-1', serverId: null, expectedGeneration: '7' },
+            resource: { machineId: 'machine-1', serverId: null, expectedCallerOccurrenceId: 'occurrence-7' },
             subscriptionIdPrefix: 'initial-open-transient',
             transport: daemon.transport,
         });
@@ -495,7 +496,7 @@ describe('mounted plugin surface live resource invalidation (EU-4b)', () => {
         });
         const unavailableClient = createPluginContextualResourceWatchClient({
             pluginId: 'acme.preview',
-            resource: { machineId: 'machine-1', serverId: null, expectedGeneration: '7' },
+            resource: { machineId: 'machine-1', serverId: null, expectedCallerOccurrenceId: 'occurrence-7' },
             subscriptionIdPrefix: 'initial-open-unavailable',
             transport: unavailableDaemon.transport,
         });
@@ -516,7 +517,7 @@ describe('mounted plugin surface live resource invalidation (EU-4b)', () => {
         });
         const undeclaredClient = createPluginContextualResourceWatchClient({
             pluginId: 'acme.preview',
-            resource: { machineId: 'machine-1', serverId: null, expectedGeneration: '7' },
+            resource: { machineId: 'machine-1', serverId: null, expectedCallerOccurrenceId: 'occurrence-7' },
             subscriptionIdPrefix: 'initial-open-undeclared',
             transport: undeclaredDaemon.transport,
         });
@@ -530,7 +531,7 @@ describe('mounted plugin surface live resource invalidation (EU-4b)', () => {
         terminalDaemon.setOpenResult({ supported: false, reason: 'not-supported' });
         const terminalClient = createPluginContextualResourceWatchClient({
             pluginId: 'acme.preview',
-            resource: { machineId: 'machine-1', serverId: null, expectedGeneration: '7' },
+            resource: { machineId: 'machine-1', serverId: null, expectedCallerOccurrenceId: 'occurrence-7' },
             subscriptionIdPrefix: 'initial-open-terminal',
             transport: terminalDaemon.transport,
         });
@@ -579,7 +580,7 @@ describe('mounted plugin surface live resource invalidation (EU-4b)', () => {
 
         await daemon.answerNext({
             supported: true,
-            result: { ok: false, code: 'plugin_generation_stale', reason: 'stale_generation' },
+            result: { ok: false, code: 'plugin_occurrence_stale', reason: 'stale_occurrence' },
         });
 
         await vi.waitFor(() => { expect(events).toHaveLength(1); });

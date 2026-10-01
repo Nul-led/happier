@@ -10,11 +10,12 @@ import {
   type BrowserAutomationTimelineEntryV1,
 } from '@happier-dev/protocol';
 
-import type { BrowserAutomationAdapter } from './adapters/types';
+import type { BrowserAutomationAdapter, BrowserAutomationAdapterExecutionContext, BrowserAutomationAdapterExecuteResult } from './adapters/types';
 
 export type BrowserAutomationActionOutcome = Readonly<{
   result: BrowserAutomationActionResultV1;
   timelineEntry: BrowserAutomationTimelineEntryV1;
+  interruptionCompletion?: 'stopped' | 'uncertain';
 }>;
 
 function redactDetails(
@@ -43,20 +44,25 @@ export async function executeBrowserAutomationAction(input: Readonly<{
   controlEpoch: number;
   navigationGenerationBefore: number;
   navigationGenerationAfter?: number;
+  getNavigationGenerationAfter?: () => number;
   now?: () => number;
+  executionContext?: BrowserAutomationAdapterExecutionContext;
   generateTimelineEntryId: () => string;
 }>): Promise<BrowserAutomationActionOutcome> {
   const now = input.now ?? (() => Date.now());
   const queuedAtMs = now();
   const startedAtMs = now();
-  const adapterResult = await input.adapter.execute(input.request);
+  let adapterResult: BrowserAutomationAdapterExecuteResult;
+  try { adapterResult = await input.adapter.execute(input.request, input.executionContext); }
+  catch { adapterResult = { status: input.executionContext?.signal?.aborted ? 'canceled' : 'failed', fidelity: 'unavailable', trustedInput: false,
+    errorCode: input.executionContext?.signal?.aborted ? 'user_canceled' : 'runtime_unavailable', interruptionCompletion: 'uncertain' }; }
   const finishedAtMs = now();
   const durationMs = Math.max(0, finishedAtMs - startedAtMs);
 
   const navigationGenerationBefore = input.navigationGenerationBefore;
-  const navigationGenerationAfter = isBrowserAutomationMutatingActionKind(input.request.actionKind)
+  const navigationGenerationAfter = input.getNavigationGenerationAfter?.() ?? (isBrowserAutomationMutatingActionKind(input.request.actionKind)
     ? input.navigationGenerationAfter ?? navigationGenerationBefore
-    : navigationGenerationBefore;
+    : navigationGenerationBefore);
 
   const status: BrowserAutomationActionStatusV1 = adapterResult.status;
   const resultSummary = redactDetails(adapterResult.resultSummary, { preserveLocatorValues: true });
@@ -105,5 +111,5 @@ export async function executeBrowserAutomationAction(input: Readonly<{
     ...(adapterResult.errorCode ? { reasonCode: adapterResult.errorCode } : {}),
   });
 
-  return { result, timelineEntry };
+  return { result, timelineEntry, ...(adapterResult.interruptionCompletion ? { interruptionCompletion: adapterResult.interruptionCompletion } : {}) };
 }

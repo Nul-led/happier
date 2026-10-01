@@ -15,6 +15,7 @@ export type ExecutionRunBackendStartContext = Readonly<{
   runClass?: import('@happier-dev/protocol').ExecutionRunClass;
   ioMode?: import('@happier-dev/protocol').ExecutionRunIoMode;
   profileId?: string;
+  profileSourceCustody?: import('@happier-dev/protocol').PluginSourceCustodyV1;
   acpSessionModeId?: string;
   runtimeDescriptorV1?: import('@happier-dev/protocol').PortableRuntimeDescriptorV1;
   /**

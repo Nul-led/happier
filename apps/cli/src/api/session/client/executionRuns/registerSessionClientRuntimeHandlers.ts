@@ -4,7 +4,7 @@ import { resolveAgentIdFromSessionMetadata, resolvePermissionIntentFromSessionMe
 import { parseSessionPermissionModeAlias, SessionAccessGrantSetActionInputV1Schema, SessionModelSelectionV2Schema, type AccountSettings, type ActionExecutorDeps, type TeamCredentialProviderModelSelectionV1 } from '@happier-dev/protocol';
 import { configuration } from '@/configuration';
 import { notifyDaemonConnectedServiceUsageLimitWaitResumeCancel } from '@/daemon/controlClient';
-import { ExecutionBudgetRegistry } from '@/daemon/executionBudget/ExecutionBudgetRegistry';
+import { createExecutionBudgetRegistry } from '@/daemon/executionBudget/createExecutionBudgetRegistry';
 import type { StoredCredentials } from '@/persistence';
 import {
     createActionSettingsProvider,
@@ -14,17 +14,23 @@ import { bootstrapAccountSettingsContext } from '@/settings/accountSettings/boot
 import { resolveAccountSettingsScopeKeyForToken } from '@/settings/accountSettings/accountSettingsScopeKey';
 import { refreshSavedSecretCatalogForOperation } from '@/settings/secrets/hydrateSavedSecretCatalog';
 import { resolveRunnerMcpServers } from '@/mcp/runtime/resolveRunnerMcpServers';
-import { applyRunnerMcpSessionContext } from '@/mcp/runtime/applyRunnerMcpSessionContext';
+import { applyRunnerMcpSessionContext, type RunnerMcpSessionWithContext } from '@/mcp/runtime/applyRunnerMcpSessionContext';
 import { toAgentSessionMcpLaunchConfigs } from '@/agent/runtime/registry/engineRegistry/nativeAgentSession';
 import type { HappyMcpSessionClient } from '@/mcp/startHappyServer';
 import type { NativeAgentSessionRunToolBindingRequest } from '@/agent/runtime/registry/engineRegistryTypes';
 
 import { registerSessionHandlers } from '@/rpc/handlers/registerSessionHandlers';
+import { registerSessionRoleConfigurationHandler } from '@/rpc/handlers/sessionRoleConfiguration';
+import { registerActionSpecRpcHandlers } from '@/rpc/handlers/registerActionSpecRpcHandlers';
+import { ROLE_ACTION_IDS_V1 } from '@happier-dev/protocol';
+import type { RoleSourceReader } from '@/session/roles/roleSources';
+import type { RoleWorkspaceWritesPolicyPreparer } from '@/session/actions/roleActions';
 import type { registerCapabilitiesHandlers } from '@/rpc/handlers/capabilities';
 import type { SessionRuntimeControls } from '@/rpc/handlers/sessionControls';
 import { registerExecutionRunHandlers } from '@/rpc/handlers/executionRuns';
 import { createExecutionRunRpcApprovalDeps } from '@/rpc/handlers/executionRuns/createExecutionRunRpcApprovalDeps';
 import { createCliActionExecutor } from '@/session/actions/createCliActionExecutor';
+import { createCliActionDeps } from '@/session/actions/createCliActionDeps';
 import {
     createRestrictedCurrentSessionListActionDependency,
     createSessionListActionDependency,
@@ -33,6 +39,7 @@ import { createAccountServerActionDeps } from '@/api/accountServerActionDeps';
 import type { BrowserDaemonControlRoutes } from '@/daemon/browser/control/routes';
 import type { BrowserContextRoutes } from '@/daemon/browser/context/routes';
 import type { BrowserAutomationRoutes } from '@/daemon/browser/automation/routes';
+import type { BrowserUiAutomationRouteOwner } from '@/daemon/runtimeActionExecutor';
 import type { BrowserDiagnosticsActionRoutes } from '@/daemon/browser/diagnostics/actionRoutes';
 import type { BrowserRecordingRoutes } from '@/daemon/browser/recording/routes';
 import type {
@@ -65,6 +72,7 @@ import type { EphemeralSendResult } from '@/api/session/client/transcript/epheme
 import type { VoiceAgentTranscriptTurnCommitParams } from '@/api/session/client/transcript/sessionClientTranscriptApi';
 import type { SessionStoredContentCryptoContext } from '@/session/transport/encryption/sessionEncryptionContext';
 import { createExecutionRunTranscriptCustodyError } from '@/agent/runtime/bridges/executionRun/executionRunTranscriptPublisher';
+import { resolveExecutionRunPublicBackendId } from '@/agent/runtime/bridges/executionRun/backendTargets';
 import type { ApiSessionClient } from '@/api/session/sessionClient';
 import { createProviderEnforcedPermissionHandler } from '@/agent/permissions/providerEnforced/createHandler';
 import type { ExecutionRunHostBridgeContract } from '@/agent/runtime/bridges/executionRun/executionRunBridgeContract';
@@ -86,29 +94,6 @@ export function resolveSessionClientParentProvider(metadata: unknown): ACPProvid
     if (agentId) return agentId;
 
     throw new Error('Missing canonical session parent provider identity');
-}
-
-function createExecutionBudgetRegistry(): ExecutionBudgetRegistry | undefined {
-    const hasBudgetCaps =
-        configuration.executionRunsMaxConcurrentPerSession !== null
-        || configuration.oneShotTasksMaxConcurrentPerSession !== null
-        || typeof configuration.executionBudgetMaxConcurrentTotalPerSession === 'number'
-        || (configuration.executionBudgetMaxConcurrentByClass && Object.keys(configuration.executionBudgetMaxConcurrentByClass).length > 0);
-    if (!hasBudgetCaps) {
-        return undefined;
-    }
-
-    return new ExecutionBudgetRegistry({
-        maxConcurrentExecutionRuns: configuration.executionRunsMaxConcurrentPerSession,
-        maxConcurrentOneShotTasks: configuration.oneShotTasksMaxConcurrentPerSession,
-        ...(typeof configuration.executionBudgetMaxConcurrentTotalPerSession === 'number'
-            ? { maxConcurrentTotal: configuration.executionBudgetMaxConcurrentTotalPerSession }
-            : {}),
-        ...(configuration.executionBudgetMaxConcurrentByClass
-            && Object.keys(configuration.executionBudgetMaxConcurrentByClass).length > 0
-            ? { maxConcurrentByClass: configuration.executionBudgetMaxConcurrentByClass }
-            : {}),
-    });
 }
 
 export function registerSessionClientRuntimeHandlers(
@@ -133,10 +118,15 @@ export function registerSessionClientRuntimeHandlers(
         metadataPath: string;
         metadata: unknown;
         sessionId: string;
-        session?: ApiSessionClient;
+        session?: RunnerMcpSessionWithContext<ApiSessionClient>;
         getSessionMetadata: () => Metadata | null;
+        readRoleSources?: RoleSourceReader;
+        getCurrentResolvedRoles?: () => import('@happier-dev/protocol').ResolvedRolesSnapshotV1;
+        getCurrentWorkspaceWrites?: () => 'allow' | 'deny' | undefined;
+        prepareWorkspaceWritesPolicy?: RoleWorkspaceWritesPolicyPreparer;
         sessionRuntimeControls?: SessionRuntimeControls | null;
         enqueueSessionUserMessage: (request: Readonly<{
+            callerInputAuthorization?: import('@happier-dev/protocol').ExternalActionExecutionAuthorizationV1;
             text: string;
             localId?: string;
             meta?: Record<string, unknown>;
@@ -172,6 +162,7 @@ export function registerSessionClientRuntimeHandlers(
         getBrowserDaemonControlRoutes?: (() => BrowserDaemonControlRoutes | null) | null;
         getBrowserDaemonContextRoutes?: (() => BrowserContextRoutes | null) | null;
         getBrowserDaemonAutomationRoutes?: (() => BrowserAutomationRoutes | null) | null;
+        getBrowserUiAutomation?: (() => BrowserUiAutomationRouteOwner | null) | null;
         getBrowserDiagnosticsActionRoutes?: (() => BrowserDiagnosticsActionRoutes | null) | null;
         getBrowserRecordingRoutes?: (() => BrowserRecordingRoutes | null) | null;
         attachBrowserRecordingToComposer?: (
@@ -188,7 +179,7 @@ export function registerSessionClientRuntimeHandlers(
         socketEmitExecutionRunUpdated: (run: unknown) => void;
         observeExecutionRunPublicState?: (run: unknown) => void;
     }>,
-): void {
+): ReturnType<typeof registerSessionHandlers> {
     const readOwnerAccountCredentials = params.readOwnerAccountCredentials;
     const actionsSettingsProvider = params.actionsSettingsProvider ?? createActionSettingsProvider({
         scopeKey: resolveAccountSettingsScopeKeyForToken(params.token),
@@ -364,6 +355,7 @@ export function registerSessionClientRuntimeHandlers(
                     rpcHandlerManager: params.rpcHandlerManager,
                     updateMetadata: (updater) => parentSessionForTools.updateMetadata(updater),
                     getMetadataSnapshot: () => parentSessionForTools.getMetadataSnapshot(),
+                    getBackendTarget: () => parentSessionForTools.getBackendTarget?.() ?? null,
                     getServerBinding: () => ({
                         serverId: approvalServerId,
                         serverUrl: approvalServerApiUrl,
@@ -392,6 +384,9 @@ export function registerSessionClientRuntimeHandlers(
                         : {}),
                     ...(accountSettingsSnapshot?.savedSecretResources
                         ? { savedSecretResources: accountSettingsSnapshot.savedSecretResources }
+                        : {}),
+                    ...(accountSettingsSnapshot?.savedSecretCatalogState
+                        ? { savedSecretCatalogState: accountSettingsSnapshot.savedSecretCatalogState }
                         : {}),
                     machineId: sessionMachineId,
                     // The parent Session directory owns the configured server selection.
@@ -474,6 +469,16 @@ export function registerSessionClientRuntimeHandlers(
     const transcriptActionExecutor = createCliActionExecutor({
         token: params.token,
         sessionId: params.sessionId,
+        getCurrentSessionMetadata: params.getSessionMetadata,
+        readRoleSources: params.readRoleSources ?? parentSessionForTools?.readRoleSources,
+        getCurrentResolvedRoles: params.getCurrentResolvedRoles ?? (parentSessionForTools?.getCurrentResolvedRoles
+            ? () => parentSessionForTools.getCurrentResolvedRoles!() : undefined),
+        getCurrentWorkspaceWrites: params.getCurrentWorkspaceWrites ?? (parentSessionForTools?.getCurrentWorkspaceWrites
+            ? () => parentSessionForTools.getCurrentWorkspaceWrites!() : undefined),
+        prepareWorkspaceWritesPolicy: params.prepareWorkspaceWritesPolicy ?? parentSessionForTools?.prepareWorkspaceWritesPolicy,
+        ...(params.enqueueRegisteredSessionStateFieldMutation ? {
+            stageSessionStateMutation: async (mutation) => { await params.enqueueRegisteredSessionStateFieldMutation!(mutation); },
+        } : {}),
         actionsSettingsProvider,
         isApprovalExecutionOriginCurrent,
         ...transcriptTransportContext,
@@ -481,7 +486,8 @@ export function registerSessionClientRuntimeHandlers(
         transcriptStore: createServerBackedSessionTranscriptStore({
             token: params.token,
             sessionId: params.sessionId,
-            ctx: transcriptTransportContext.ctx,
+            ...transcriptTransportContext,
+            ...(parentSessionForTools ? { readOpenedSessionState: (versions) => parentSessionForTools.readOpenedSessionStateSnapshot(versions) } : {}),
         }),
         // A.13 watcher bound floor: idle TTL must be >= 600_000 ms (10 min) per packet body section 2.
         transcriptFollowLeaseRegistry: createSessionTranscriptFollowLeaseRegistry({
@@ -500,7 +506,23 @@ export function registerSessionClientRuntimeHandlers(
         },
     });
 
-    registerSessionHandlers(params.rpcHandlerManager, workingDirectory, {
+    registerActionSpecRpcHandlers({
+        rpcHandlerManager: params.rpcHandlerManager,
+        actionExecutor: transcriptActionExecutor,
+        actionIds: ROLE_ACTION_IDS_V1.filter((actionId) => actionId.startsWith('session.')),
+    });
+    registerSessionRoleConfigurationHandler({
+        rpcHandlerManager: params.rpcHandlerManager,
+        sessionId: params.sessionId,
+        readSessionMetadata: params.getSessionMetadata,
+        readRoleSources: params.readRoleSources ?? parentSessionForTools?.readRoleSources,
+        prepareWorkspaceWritesPolicy: params.prepareWorkspaceWritesPolicy ?? parentSessionForTools?.prepareWorkspaceWritesPolicy,
+        readSettingsOverrides: async () => (await resolveOwnerAccountSettings())?.rolesV1.overrides ?? {},
+        ...(params.enqueueRegisteredSessionStateFieldMutation ? {
+            stageSessionStateMutation: async (mutation) => { await params.enqueueRegisteredSessionStateFieldMutation!(mutation); },
+        } : {}),
+    });
+    const sessionHandlersRegistration = registerSessionHandlers(params.rpcHandlerManager, workingDirectory, {
         sessionId: params.sessionId,
         ...(params.createCapabilitiesApiClient
             ? { createCapabilitiesApiClient: params.createCapabilitiesApiClient }
@@ -508,6 +530,7 @@ export function registerSessionClientRuntimeHandlers(
         getSessionMetadata: () => params.getSessionMetadata(),
         sessionRuntimeControls: params.sessionRuntimeControls ?? null,
         enqueueSessionUserMessage: (request: Readonly<{
+            callerInputAuthorization?: import('@happier-dev/protocol').ExternalActionExecutionAuthorizationV1;
             text: string;
             localId?: string;
             meta?: Record<string, unknown>;
@@ -587,7 +610,31 @@ export function registerSessionClientRuntimeHandlers(
 
     registerExecutionRunHandlers(params.rpcHandlerManager, {
         sessionId: params.sessionId,
+        readPromptCredentials: readOwnerAccountCredentials,
+        resolveAgentStartContext: async (context) => {
+            // Public Session RPC carries role identity, never private admission
+            // facts. Materialize them here from this exact Session/Home owner.
+            if (context.authority !== 'present_user') return null;
+            const credentials = await readOwnerAccountCredentials();
+            const deps = createCliActionDeps({
+                token: params.token,
+                ...(credentials ? { credentials } : {}),
+                serverId: approvalServerId, serverHttpBaseUrl: approvalServerApiUrl,
+                sessionId: params.sessionId,
+                rawSession: { machineId: sessionMachineId, path: workingDirectory, workDepth: 0 },
+                getCurrentSessionMetadata: params.getSessionMetadata,
+                getCurrentSessionBackendTarget: () => parentSessionForTools?.getBackendTarget?.() ?? null,
+                readRoleSources: params.readRoleSources ?? parentSessionForTools?.readRoleSources,
+                actionsSettingsProvider, ...transcriptTransportContext,
+            });
+            return await deps.resolveAgentStartContext?.({ ...context,
+                defaultSessionId: params.sessionId, callerPermissionMode: 'yolo' }) ?? null;
+        },
         serverId: approvalServerId,
+        resolveReviewCommentActor: () => {
+            const target = params.session?.getBackendTarget?.();
+            return target ? { kind: 'agent', agentId: resolveExecutionRunPublicBackendId(target), sessionId: params.sessionId } : null;
+        },
         sessionList,
         ...(runtimeAccountId ? { runtimeAccountId } : {}),
         cwd: workingDirectory,
@@ -595,7 +642,7 @@ export function registerSessionClientRuntimeHandlers(
             ? { machineId: sessionMachineId }
             : {}),
         ...(sessionInteractionHost ? { sessionInteractionHost } : {}),
-        grantAttachedRunTeamVisibility: async ({ sessionId, teamId }) => {
+        grantAttachedRunTeamVisibility: async ({ sessionId, teamId, requiredTeamCredential }) => {
             if (sessionId !== params.sessionId) {
                 return {
                     ok: false,
@@ -639,6 +686,7 @@ export function registerSessionClientRuntimeHandlers(
                         subject: { kind: 'team', teamId },
                         accessLevel: 'edit',
                         canApprovePermissions: false,
+                        requiredTeamCredential,
                     }),
                     context: {},
                 });
@@ -662,22 +710,18 @@ export function registerSessionClientRuntimeHandlers(
         },
         onManagerCreated: (manager) => {
             executionRunManager = manager;
+            params.session?.setExecutionRunWorkerUpdateSource(manager);
             if (parentSessionForTools?.subscribeExecutionRunPendingTarget) {
                 parentSessionForTools.subscribeExecutionRunPendingTarget((runId) =>
                     manager.reconcilePendingExecutionRunTarget(runId));
             }
-        },
-        enqueueParentSessionInput: async (input) => {
-            await params.enqueueSessionUserMessage({
-                ...input,
-                requestedAction: { v: 1, kind: 'steer_if_active' },
-            });
         },
         serverUrl: approvalServerApiUrl,
         parentProvider,
         browserControl: params.getBrowserDaemonControlRoutes?.() ?? null,
         browserContext: params.getBrowserDaemonContextRoutes?.() ?? null,
         browserAutomation: params.getBrowserDaemonAutomationRoutes?.() ?? null,
+        getBrowserUiAutomation: params.getBrowserUiAutomation ?? undefined,
         browserDiagnostics: params.getBrowserDiagnosticsActionRoutes?.() ?? null,
         browserRecording: params.getBrowserRecordingRoutes?.() ?? null,
         attachBrowserRecordingToComposer: params.attachBrowserRecordingToComposer,
@@ -748,7 +792,6 @@ export function registerSessionClientRuntimeHandlers(
             boundedTimeoutMs: configuration.executionRunsBoundedTimeoutMs,
             reviewBoundedTimeoutMs: configuration.executionRunsReviewBoundedTimeoutMs,
             maxTurns: configuration.executionRunsMaxTurns,
-            maxDepth: configuration.executionRunsMaxDepth,
         },
         resolveAccountSettings: async () => {
             return await resolveOwnerAccountSettings();
@@ -760,4 +803,5 @@ export function registerSessionClientRuntimeHandlers(
             isApprovalExecutionOriginCurrent,
         }),
     });
+    return sessionHandlersRegistration;
 }

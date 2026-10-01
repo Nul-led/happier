@@ -1,3 +1,4 @@
+import type { MachineDisplayRenderable } from '@/sync/domains/machines/machineDisplayRenderable';
 import type { SessionListIndexItem } from '@/sync/domains/sessionList/sessionListIndex';
 import type { SessionListReachabilityRenderable } from '@/sync/domains/state/storage';
 import { resolveSessionWorkspaceDisplayPresentation } from '@/sync/domains/session/listing/sessionWorkspaceDisplayPresentation';
@@ -8,6 +9,8 @@ import { readDisplayMachineTargetForSession } from '@/sync/ops/sessionMachineTar
 import { getMachineDisplayName } from '@/utils/sessions/machineUtils';
 import { sessionAddressKey } from '@/sync/domains/session/sessionAddress';
 import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
+
+type ReachabilityMachineDisplay = Readonly<Pick<MachineDisplayRenderable, 'id' | 'metadata' | 'replacedByMachineId'>>;
 
 type ReachableSessionDisplay = Readonly<{
     machineId: string | null;
@@ -25,7 +28,7 @@ type SessionDisplayRow = Readonly<{
 }>;
 
 type SessionListReachabilitySummaryCacheEntry = Readonly<{
-    machinesById: ReadonlyMap<string, unknown>;
+    machineDisplaySignature: string;
     renderable: SessionListReachabilityRenderable | null;
     row: SessionDisplayRow;
     serverId?: string | null;
@@ -84,7 +87,7 @@ function resolveRowCacheKey(item: Extract<SessionListIndexItem, { type: 'session
 
 function buildSessionDisplayRow(input: Readonly<{
     item: Extract<SessionListIndexItem, { type: 'session' }>;
-    machinesById: ReadonlyMap<string, unknown>;
+    machinesById: ReadonlyMap<string, ReachabilityMachineDisplay>;
     renderable: SessionListReachabilityRenderable | null;
     sessionId: string;
     workspaceRefs: ReadonlyArray<WorkspaceRefV1>;
@@ -94,11 +97,12 @@ function buildSessionDisplayRow(input: Readonly<{
     const metadata = input.renderable?.metadata ?? null;
     const machineTarget = readDisplayMachineTargetForSession({
         sessionId: input.sessionId,
+        serverId,
         metadata,
     });
     const machineId = machineTarget?.machineId ?? (String(metadata?.machineId ?? '').trim() || null);
     const machineLabel = machineId
-        ? getMachineDisplayName(input.machinesById.get(machineId) as Parameters<typeof getMachineDisplayName>[0])
+        ? getMachineDisplayName(input.machinesById.get(machineId))
             ?? String(metadata?.host ?? '').trim()
         : String(metadata?.host ?? '').trim();
     const workspaceDisplay = resolveSessionWorkspaceDisplayPresentation({
@@ -129,7 +133,7 @@ function buildSessionDisplayRow(input: Readonly<{
 function canReuseCacheEntry(input: Readonly<{
     cached: SessionListReachabilitySummaryCacheEntry | undefined;
     item: Extract<SessionListIndexItem, { type: 'session' }>;
-    machinesById: ReadonlyMap<string, unknown>;
+    machineDisplaySignature: string;
     renderable: SessionListReachabilityRenderable | null;
     sessionId: string;
     workspaceRefs: ReadonlyArray<WorkspaceRefV1>;
@@ -137,7 +141,7 @@ function canReuseCacheEntry(input: Readonly<{
 }>): input is Readonly<{
     cached: SessionListReachabilitySummaryCacheEntry;
     item: Extract<SessionListIndexItem, { type: 'session' }>;
-    machinesById: ReadonlyMap<string, unknown>;
+    machineDisplaySignature: string;
     renderable: SessionListReachabilityRenderable | null;
     sessionId: string;
     workspaceRefs: ReadonlyArray<WorkspaceRefV1>;
@@ -147,19 +151,31 @@ function canReuseCacheEntry(input: Readonly<{
         && input.cached.sessionId === input.sessionId
         && input.cached.serverId === input.item.serverId
         && input.cached.renderable === input.renderable
-        && input.cached.machinesById === input.machinesById
+        && input.cached.machineDisplaySignature === input.machineDisplaySignature
         && input.cached.workspaceRefs === input.workspaceRefs
         && input.cached.workspacePathDisplayModeV1 === input.workspacePathDisplayModeV1;
+}
+
+function buildReachabilityMachineDisplaySignature(machines: ReadonlyMap<string, ReachabilityMachineDisplay>): string {
+    // Display target resolution follows replacement links; labels use names and hosts.
+    // Presence and heartbeat timestamps belong to the live status projection. Workspace
+    // paths and home directories come from the separately cached session metadata.
+    return JSON.stringify([...machines.keys()].sort().map((key) => {
+        const machine = machines.get(key)!;
+        return [key, machine.id, machine.replacedByMachineId ?? null,
+            machine.metadata?.displayName ?? null, machine.metadata?.host ?? null];
+    }));
 }
 
 function buildSessionDisplayRows(input: Readonly<{
     cache?: SessionListReachabilitySummaryCache;
     listItems: ReadonlyArray<SessionListIndexItem>;
-    machinesById: ReadonlyMap<string, unknown>;
+    machinesById: ReadonlyMap<string, ReachabilityMachineDisplay>;
     workspaceRefs: ReadonlyArray<WorkspaceRefV1>;
     workspacePathDisplayModeV1?: WorkspacePathDisplayModeV1 | null;
     resolveSessionRenderable: (item: Extract<SessionListIndexItem, { type: 'session' }>) => SessionListReachabilityRenderable | null;
 }>): readonly SessionDisplayRow[] {
+    const machineDisplaySignature = buildReachabilityMachineDisplaySignature(input.machinesById);
     const rows: SessionDisplayRow[] = [];
     const nextCacheEntriesByKey = input.cache ? new Map<string, SessionListReachabilitySummaryCacheEntry>() : null;
 
@@ -176,7 +192,7 @@ function buildSessionDisplayRows(input: Readonly<{
         const canReuse = canReuseCacheEntry({
             cached,
             item,
-            machinesById: input.machinesById,
+            machineDisplaySignature,
             renderable,
             sessionId,
             workspaceRefs: input.workspaceRefs,
@@ -194,7 +210,7 @@ function buildSessionDisplayRows(input: Readonly<{
             });
         rows.push(row);
         nextCacheEntriesByKey?.set(rowCacheKey, {
-            machinesById: input.machinesById,
+            machineDisplaySignature,
             renderable,
             row,
             serverId: item.serverId,
@@ -243,7 +259,7 @@ function buildSummaryFromDisplayRows(rows: readonly SessionDisplayRow[]): Sessio
 
 export function buildSessionListReachabilitySummary(input: Readonly<{
     listItems: ReadonlyArray<SessionListIndexItem>;
-    machinesById: ReadonlyMap<string, unknown>;
+    machinesById: ReadonlyMap<string, ReachabilityMachineDisplay>;
     workspaceRefs: ReadonlyArray<WorkspaceRefV1>;
     workspacePathDisplayModeV1?: WorkspacePathDisplayModeV1 | null;
     resolveSessionRenderable: (item: Extract<SessionListIndexItem, { type: 'session' }>) => SessionListReachabilityRenderable | null;

@@ -7,7 +7,7 @@ import {
 } from '@happier-dev/protocol';
 import { deriveCanonicalPatchFileDiffs } from '@happier-dev/protocol/tools/v2';
 
-import type { Message } from '@/sync/domains/messages/messageTypes';
+import type { Message } from '@happier-dev/session-core/messages';
 
 type TurnChangeSetCandidate = Readonly<{
     kind: 'diff' | 'patch';

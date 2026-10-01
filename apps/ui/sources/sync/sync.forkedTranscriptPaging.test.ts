@@ -69,7 +69,7 @@ vi.mock('@/sync/api/session/apiSocket', () => ({
 
 import { storage } from './domains/state/storage';
 import type { Session } from './domains/state/storageTypes';
-import type { NormalizedMessage } from './typesRaw/normalize';
+import type { NormalizedMessage } from "@happier-dev/session-core/raw";
 import { getForkedTranscriptSnapshotCached } from './domains/sessionFork/forkedTranscriptSnapshot';
 import { insertForkDividersIntoTranscriptItems } from '@/components/sessions/transcript/forkContext/insertForkDividersIntoTranscriptItems';
 import { setActiveServerId, upsertServerProfile } from './domains/server/serverProfiles';

@@ -1,17 +1,23 @@
+import { type SessionMessageV1 } from '@happier-dev/protocol';
 import { describe, expect, it, vi } from 'vitest';
 
-import type { ApiMessage } from '@/sync/api/types/apiTypes';
+
 import {
     activateSessionMessagesWindow,
     createInactiveSessionMessagesWindowState,
     resetSessionMessagesWindowForLiveTail,
     type SessionMessagesWindowState,
 } from '@/sync/runtime/sessionMessagesWindowState';
-import type { NormalizedMessage } from '@/sync/typesRaw';
+import type { NormalizedMessage } from "@happier-dev/session-core/raw";
 
 import { fetchAndApplyTargetWindowMessages } from './fetchAndApplyTargetWindowMessages';
+import type { SessionMessagesEncryption } from './sessionMessagesPagePipeline';
 
-function buildEncryptedApiMessage(params: { id: string; seq: number; updatedAt?: number }): ApiMessage {
+function sessionEncryptionGetter(encryption: SessionMessagesEncryption) {
+    return () => encryption;
+}
+
+function buildEncryptedApiMessage(params: { id: string; seq: number; updatedAt?: number }): SessionMessageV1 {
     return {
         id: params.id,
         seq: params.seq,
@@ -26,7 +32,7 @@ function buildEncryptedApiMessage(params: { id: string; seq: number; updatedAt?:
     };
 }
 
-function buildTextContent(message: ApiMessage) {
+function buildTextContent(message: SessionMessageV1) {
     return {
         id: message.id,
         seq: message.seq,
@@ -39,7 +45,7 @@ function buildTextContent(message: ApiMessage) {
     };
 }
 
-function buildToolCallContent(message: ApiMessage, toolId: string) {
+function buildToolCallContent(message: SessionMessageV1, toolId: string) {
     return {
         id: message.id,
         seq: message.seq,
@@ -111,7 +117,7 @@ describe('fetchAndApplyTargetWindowMessages', () => {
             }
             throw new Error(`unexpected target-window request ${path}`);
         });
-        const decryptMessages = vi.fn(async (messages: ApiMessage[]) =>
+        const decryptMessages = vi.fn(async (messages: SessionMessageV1[]) =>
             messages.map((message) => buildTextContent(message)),
         );
         let windowState = createInactiveSessionMessagesWindowState();
@@ -123,7 +129,7 @@ describe('fetchAndApplyTargetWindowMessages', () => {
             direction: 'initial',
             limit: 1,
             scope: 'main',
-            getSessionEncryption: () => ({ decryptMessages }),
+            getSessionEncryption: sessionEncryptionGetter({ decryptMessages }),
             request,
             sessionReceivedMessages: new Map<string, Map<string, number>>(),
             applyMessages: vi.fn(),
@@ -181,7 +187,7 @@ describe('fetchAndApplyTargetWindowMessages', () => {
                 { status: 200, headers: { 'Content-Type': 'application/json' } },
             );
         });
-        const decryptMessages = vi.fn(async (messages: ApiMessage[]) =>
+        const decryptMessages = vi.fn(async (messages: SessionMessageV1[]) =>
             messages.map((message) => buildTextContent(message)),
         );
         const applyMessages = vi.fn<(sessionId: string, messages: NormalizedMessage[]) => void>();
@@ -206,7 +212,7 @@ describe('fetchAndApplyTargetWindowMessages', () => {
             direction: 'initial' as const,
             limit: 2,
             scope: 'main' as const,
-            getSessionEncryption: () => ({ decryptMessages }),
+            getSessionEncryption: sessionEncryptionGetter({ decryptMessages }),
             request,
             sessionReceivedMessages: new Map<string, Map<string, number>>(),
             applyMessages,
@@ -279,7 +285,7 @@ describe('fetchAndApplyTargetWindowMessages', () => {
                 { status: 200, headers: { 'Content-Type': 'application/json' } },
             );
         });
-        const decryptMessages = vi.fn(async (messages: ApiMessage[]) =>
+        const decryptMessages = vi.fn(async (messages: SessionMessageV1[]) =>
             messages.map((message) => buildTextContent(message)),
         );
         const sessionReceivedMessages = new Map<string, Map<string, number>>();
@@ -293,7 +299,7 @@ describe('fetchAndApplyTargetWindowMessages', () => {
             direction: 'initial',
             limit: 2,
             scope: 'main',
-            getSessionEncryption: () => ({ decryptMessages }),
+            getSessionEncryption: sessionEncryptionGetter({ decryptMessages }),
             request,
             sessionReceivedMessages,
             applyMessages: vi.fn(),
@@ -322,7 +328,7 @@ describe('fetchAndApplyTargetWindowMessages', () => {
         });
     });
 
-    it('does not activate a seq target window when the fetched target row is not applied', async () => {
+    it('keeps the target window retryable when decryption cannot materialize its target row', async () => {
         const target = buildEncryptedApiMessage({ id: 'target', seq: 100 });
         const older = buildEncryptedApiMessage({ id: 'older', seq: 99 });
         const request = vi.fn(async () => new Response(
@@ -333,23 +339,24 @@ describe('fetchAndApplyTargetWindowMessages', () => {
             }),
             { status: 200, headers: { 'Content-Type': 'application/json' } },
         ));
-        const decryptMessages = vi.fn(async (messages: ApiMessage[]) =>
+        const decryptMessages = vi.fn(async (messages: SessionMessageV1[]) =>
             messages.map((message) => (message.id === 'target' ? null : buildTextContent(message))),
         );
+        const encryption = { decryptMessages };
         const applyMessages = vi.fn<(sessionId: string, messages: NormalizedMessage[]) => void>();
         let windowState = createInactiveSessionMessagesWindowState();
         const setWindowState = vi.fn((next: SessionMessagesWindowState) => {
             windowState = next;
         });
 
-        const result = await fetchAndApplyTargetWindowMessages({
+        const load = fetchAndApplyTargetWindowMessages({
             sessionId: 's1',
             windowId: 'window-100',
             target: { kind: 'seq', seq: 100 },
             direction: 'initial',
             limit: 2,
             scope: 'main',
-            getSessionEncryption: () => ({ decryptMessages }),
+            getSessionEncryption: () => encryption,
             request,
             sessionReceivedMessages: new Map<string, Map<string, number>>(),
             applyMessages,
@@ -359,15 +366,9 @@ describe('fetchAndApplyTargetWindowMessages', () => {
             log: { log: () => {} },
         });
 
+        await expect(load).rejects.toMatchObject({ name: 'SessionMessagePageDecryptionError' });
         expect(decryptMessages.mock.calls[0]?.[0].map((message) => message.id)).toEqual(['older', 'target']);
         expect(applyMessages.mock.calls[0]?.[1].map((message) => message.seq)).toEqual([99]);
-        expect(result).toMatchObject({
-            status: 'not_found',
-            targetSeq: 100,
-            targetPresent: false,
-            rawSeqs: [100, 99],
-            appliedSeqs: [99],
-        });
         expect(setWindowState).not.toHaveBeenCalled();
         expect(windowState).toMatchObject({
             isWindowMode: false,
@@ -400,7 +401,7 @@ describe('fetchAndApplyTargetWindowMessages', () => {
             direction: 'initial',
             limit: 1,
             scope: 'main',
-            getSessionEncryption: () => ({ decryptMessages: vi.fn(async () => [buildTextContent(sameSeqWrongRoute)]) }),
+            getSessionEncryption: sessionEncryptionGetter({ decryptMessages: vi.fn(async () => [buildTextContent(sameSeqWrongRoute)]) }),
             request,
             sessionReceivedMessages: new Map<string, Map<string, number>>(),
             applyMessages: vi.fn(),
@@ -454,7 +455,7 @@ describe('fetchAndApplyTargetWindowMessages', () => {
             direction: 'initial',
             limit: 1,
             scope: 'main',
-            getSessionEncryption: () => ({ decryptMessages: vi.fn(async () => [buildToolCallContent(toolHost, 'read-src')]) }),
+            getSessionEncryption: sessionEncryptionGetter({ decryptMessages: vi.fn(async () => [buildToolCallContent(toolHost, 'read-src')]) }),
             request,
             sessionReceivedMessages: new Map<string, Map<string, number>>(),
             applyMessages: vi.fn(),
@@ -510,7 +511,7 @@ describe('fetchAndApplyTargetWindowMessages', () => {
             direction: 'initial',
             limit: 1,
             scope: 'main',
-            getSessionEncryption: () => ({ decryptMessages }),
+            getSessionEncryption: sessionEncryptionGetter({ decryptMessages }),
             isRouteMessageIdLoaded: (routeMessageId: string) => routeMessageId === 'tool:read-src',
             request,
             sessionReceivedMessages,
@@ -565,7 +566,7 @@ describe('fetchAndApplyTargetWindowMessages', () => {
             direction: 'older',
             limit: 2,
             scope: 'main',
-            getSessionEncryption: () => ({ decryptMessages: vi.fn(async (messages: ApiMessage[]) => messages.map(buildTextContent)) }),
+            getSessionEncryption: sessionEncryptionGetter({ decryptMessages: vi.fn(async (messages: SessionMessageV1[]) => messages.map(buildTextContent)) }),
             request,
             sessionReceivedMessages: new Map<string, Map<string, number>>(),
             applyMessages: vi.fn(),
@@ -632,7 +633,7 @@ describe('fetchAndApplyTargetWindowMessages', () => {
             direction: 'newer',
             limit: 2,
             scope: 'main',
-            getSessionEncryption: () => ({ decryptMessages: vi.fn(async (messages: ApiMessage[]) => messages.map(buildTextContent)) }),
+            getSessionEncryption: sessionEncryptionGetter({ decryptMessages: vi.fn(async (messages: SessionMessageV1[]) => messages.map(buildTextContent)) }),
             isRouteMessageIdLoaded: (routeMessageId) => routeMessageId === 'server:target',
             request,
             sessionReceivedMessages: new Map<string, Map<string, number>>(),
@@ -740,7 +741,7 @@ describe('fetchAndApplyTargetWindowMessages', () => {
             direction: 'newer',
             limit: 1,
             scope: 'main',
-            getSessionEncryption: () => ({ decryptMessages: vi.fn(async () => [buildTextContent(message)]) }),
+            getSessionEncryption: sessionEncryptionGetter({ decryptMessages: vi.fn(async () => [buildTextContent(message)]) }),
             request,
             sessionReceivedMessages: new Map<string, Map<string, number>>(),
             applyMessages: vi.fn(),
@@ -804,7 +805,7 @@ describe('fetchAndApplyTargetWindowMessages', () => {
             direction: 'older',
             limit: 1,
             scope: 'main',
-            getSessionEncryption: () => ({ decryptMessages: vi.fn(async () => [buildTextContent(older)]) }),
+            getSessionEncryption: sessionEncryptionGetter({ decryptMessages: vi.fn(async () => [buildTextContent(older)]) }),
             request,
             sessionReceivedMessages: new Map<string, Map<string, number>>(),
             applyMessages: vi.fn(),
@@ -853,7 +854,7 @@ describe('fetchAndApplyTargetWindowMessages', () => {
             direction: 'initial',
             limit: 1,
             scope: 'main',
-            getSessionEncryption: () => ({ decryptMessages: vi.fn(async () => [buildTextContent(target)]) }),
+            getSessionEncryption: sessionEncryptionGetter({ decryptMessages: vi.fn(async () => [buildTextContent(target)]) }),
             request,
             sessionReceivedMessages: new Map<string, Map<string, number>>(),
             applyMessages: vi.fn(),
@@ -922,7 +923,7 @@ describe('fetchAndApplyTargetWindowMessages', () => {
             direction: 'older',
             limit: 1,
             scope: 'main',
-            getSessionEncryption: () => ({ decryptMessages: vi.fn(async () => [buildTextContent(older)]) }),
+            getSessionEncryption: sessionEncryptionGetter({ decryptMessages: vi.fn(async () => [buildTextContent(older)]) }),
             request,
             sessionReceivedMessages: new Map<string, Map<string, number>>(),
             applyMessages: vi.fn(),
@@ -995,14 +996,14 @@ describe('fetchAndApplyTargetWindowMessages', () => {
             ...common,
             windowId: 'window-100',
             target: { kind: 'seq', seq: 100 },
-            getSessionEncryption: () => ({ decryptMessages: vi.fn(async () => [buildTextContent(firstTarget)]) }),
+            getSessionEncryption: sessionEncryptionGetter({ decryptMessages: vi.fn(async () => [buildTextContent(firstTarget)]) }),
             request: firstRequest,
         });
         const secondLoad = fetchAndApplyTargetWindowMessages({
             ...common,
             windowId: 'window-500',
             target: { kind: 'seq', seq: 500 },
-            getSessionEncryption: () => ({ decryptMessages: vi.fn(async () => [buildTextContent(secondTarget)]) }),
+            getSessionEncryption: sessionEncryptionGetter({ decryptMessages: vi.fn(async () => [buildTextContent(secondTarget)]) }),
             request: secondRequest,
         });
         expect(firstRequest).toHaveBeenCalledTimes(1);
@@ -1075,7 +1076,7 @@ describe('F1: cursor seed guards (wrong-window cursor isolation)', () => {
             direction: 'older',
             limit: 2,
             scope: 'main',
-            getSessionEncryption: () => ({ decryptMessages: vi.fn(async (messages: ApiMessage[]) => messages.map(buildTextContent)) }),
+            getSessionEncryption: sessionEncryptionGetter({ decryptMessages: vi.fn(async (messages: SessionMessageV1[]) => messages.map(buildTextContent)) }),
             request,
             sessionReceivedMessages: new Map<string, Map<string, number>>(),
             applyMessages: vi.fn(),

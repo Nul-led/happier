@@ -84,7 +84,7 @@ function createFeatures(input: Readonly<{
 const directEndpoint = {
     v: 1,
     routeKind: 'loopback_direct',
-    url: 'http://127.0.0.1:39001/peer-mediation/v1/probe',
+    url: 'http://127.0.0.1:39001',
     endpointFingerprint: 'fingerprint-1',
     expiresAt: Date.now() + 60_000,
 } satisfies PeerLoopbackEndpointCandidateV1;

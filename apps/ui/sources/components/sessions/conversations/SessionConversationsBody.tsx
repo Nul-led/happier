@@ -1,16 +1,18 @@
 import * as React from 'react';
 import { FlatList, Platform, Pressable, View } from 'react-native';
-import { StyleSheet } from 'react-native-unistyles';
+import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import type { SessionDiscussionOpenedSummaryV1 } from '@happier-dev/protocol';
 
-import { SessionDiscussionRow } from './SessionDiscussionRow';
+import { SessionDiscussionRow, SessionDiscussionRowSkeleton } from './SessionDiscussionRow';
 import { useOpenSessionDiscussion } from './useOpenSessionDiscussion';
 import { IconButton } from '@/components/ui/buttons/IconButton';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { Icon } from '@/components/ui/icons/Icon';
 import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
+import { CollectionListGroupLabel } from '@/components/ui/lists/collection/CollectionList';
+import { ITEM_SUBTITLE_TEXT_METRICS } from '@/components/ui/lists/itemDensityMetrics';
 import { Text } from '@/components/ui/text/Text';
-import { useSessionAgentActivityRoster } from '@/hooks/session/useSessionAgentActivity';
+import { Typography } from '@/constants/Typography';
 import { useSessionViewShellSession } from '@/components/sessions/shell/sessionViewStableSession';
 import { isSessionWriteKnownDenied } from '@/utils/sessions/deriveTranscriptInteraction';
 import { createSessionDiscussionClient } from '@/sync/api/session/sessionDiscussionActions';
@@ -24,54 +26,62 @@ import type { SessionDiscussionRepositoryStatus } from '@/sync/ops/sessionDiscus
 import { getSessionDiscussionRepository } from '@/sync/ops/sessionDiscussions/sessionDiscussionRepositoryRegistry';
 import { useSessionDiscussionRepositorySnapshot } from '@/sync/ops/sessionDiscussions/useSessionDiscussionRepositorySnapshot';
 import { t } from '@/text';
-import { SessionDiscussionAgentActivityReference } from './SessionDiscussionAgentActivityReference';
 import {
     buildSessionDiscussionActivityItems,
     sessionDiscussionActivityItemKey,
     type SessionDiscussionActivityItem,
 } from './sessionDiscussionActivityItems';
-import { useOpenSessionAgentConversation } from './useOpenSessionAgentConversation';
 import { useSessionConversationsAvailability } from './useSessionConversationsAvailability';
 import { motionTokens } from '@/components/ui/motion/motionTokens';
+import { SurfaceFreshnessLine } from '@/components/ui/surfaces/SurfaceFreshnessLine';
+import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
 
 const minimumInteractiveTargetSize = resolveMinimumInteractiveTargetSize(Platform.OS);
+const SKELETON_ROWS = [0, 1, 2] as const;
+
+/**
+ * The host's own invitation for an empty list, when it knows more than the list does (a Session
+ * shared with nobody yet invites sharing before conversation).
+ */
+export type SessionConversationsEmptyInvite = Readonly<{
+    testID: string;
+    title: string;
+    reason: string;
+    action: Readonly<{ label: string; onPress: () => void }>;
+    note?: string;
+}>;
 
 const styles = StyleSheet.create((theme) => ({
-    root: { flex: 1, minHeight: 0, minWidth: 0, backgroundColor: theme.colors.surface.base },
+    root: { flex: 1, minHeight: 0, minWidth: 0 },
     list: { flex: 1, minHeight: 0 },
-    listContent: { flexGrow: 1 },
-    sectionHeader: { minHeight: 52, flexDirection: 'row', alignItems: 'center', gap: 12, paddingLeft: 16, paddingRight: 8, backgroundColor: theme.colors.surface.base },
-    sectionHeaderFirst: { borderBottomWidth: 1, borderBottomColor: theme.colors.border.default },
-    sectionHeaderLater: { borderTopWidth: 1, borderTopColor: theme.colors.border.default, borderBottomWidth: 1, borderBottomColor: theme.colors.border.default, marginTop: 8 },
-    heading: { flex: 1, minWidth: 0, fontSize: 16, fontWeight: '700', color: theme.colors.text.primary },
-    quietAction: { minHeight: minimumInteractiveTargetSize, justifyContent: 'center', paddingHorizontal: 8 },
-    quietActionText: { color: theme.colors.accent.blue, fontSize: 13, fontWeight: '600' },
-    sectionEmpty: { paddingHorizontal: 16, paddingVertical: 14, color: theme.colors.text.secondary },
-    sectionNotice: { paddingHorizontal: 16, paddingBottom: 10, flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
-    center: { minHeight: 120, alignItems: 'center', justifyContent: 'center', padding: 24, gap: 12 },
-    status: { color: theme.colors.text.secondary },
-    retry: { minHeight: minimumInteractiveTargetSize, justifyContent: 'center', paddingHorizontal: 8 },
-    retryText: { color: theme.colors.accent.blue, fontWeight: '600' },
-    archivedSection: { borderTopWidth: 1, borderTopColor: theme.colors.border.default },
-    archivedDisclosure: { minHeight: minimumInteractiveTargetSize, paddingHorizontal: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
-    archivedLabel: { flex: 1, minWidth: 0, color: theme.colors.text.secondary, fontWeight: '600' },
-    archivedEmpty: { paddingHorizontal: 16, paddingVertical: 14, color: theme.colors.text.secondary },
+    listContent: { flexGrow: 1, paddingBottom: 8 },
+    sectionHeader: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingLeft: 8, paddingRight: 8 },
+    sectionLabel: { flex: 1, minWidth: 0 },
+    stateLine: { paddingHorizontal: 8 },
+    invite: { paddingTop: 20, paddingHorizontal: 12 },
+    freshness: { paddingHorizontal: 16, paddingBottom: 6 },
+    archivedDisclosure: {
+        minHeight: minimumInteractiveTargetSize,
+        marginTop: 4,
+        marginHorizontal: 8,
+        paddingHorizontal: 8,
+        borderRadius: 10,
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+    },
+    archivedLabel: {
+        ...Typography.default(),
+        ...ITEM_SUBTITLE_TEXT_METRICS.compact,
+        color: theme.colors.text.secondary,
+    },
+    center: { minHeight: 64, alignItems: 'center', justifyContent: 'center', padding: 16 },
     more: { minHeight: minimumInteractiveTargetSize, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 14 },
-    moreText: { color: theme.colors.accent.blue, fontWeight: '600' },
+    moreText: { ...Typography.default('semiBold'), ...ITEM_SUBTITLE_TEXT_METRICS.compact, color: theme.colors.text.link },
 }));
 
-/** The one sentence a section states about why it currently shows nothing new. */
-function readListNotice(status: SessionDiscussionRepositoryStatus): string | null {
-    switch (status) {
-        case 'offline': return t('session.collaboration.discussion.offline');
-        case 'revoked': return t('session.access.removedTitle');
-        case 'locked': return t('session.access.preparing');
-        case 'error': return t('session.collaboration.discussion.loadError');
-        default: return null;
-    }
-}
-
 type SessionDiscussionListItem = SessionDiscussionActivityItem
+    | Readonly<{ kind: 'read_only' }>
     | Readonly<{ kind: 'archived_disclosure' }>
     | Readonly<{ kind: 'archived_discussion'; discussion: SessionDiscussionOpenedSummaryV1 }>
     | Readonly<{ kind: 'archived_loading' | 'archived_empty' | 'archived_error' | 'archived_load_more' }>;
@@ -79,6 +89,7 @@ type SessionDiscussionListItem = SessionDiscussionActivityItem
 function sessionDiscussionListItemKey(item: SessionDiscussionListItem): string {
     switch (item.kind) {
         case 'archived_discussion': return `archived:${item.discussion.id}`;
+        case 'read_only':
         case 'archived_disclosure':
         case 'archived_loading':
         case 'archived_empty':
@@ -88,43 +99,71 @@ function sessionDiscussionListItemKey(item: SessionDiscussionListItem): string {
     }
 }
 
+/** The failures a read can end in that retain nothing new to show; the section says what failed. */
+function isUnreadable(status: SessionDiscussionRepositoryStatus): boolean {
+    return status === 'error' || status === 'offline' || status === 'locked' || status === 'revoked';
+}
+
+/** One sentence for a list that could not be read (the archived list and the active section's line). */
+function readFailureLine(status: SessionDiscussionRepositoryStatus, errorCode: string | null | undefined): string {
+    switch (status) {
+        case 'offline': return t('session.collaboration.discussion.offline');
+        case 'revoked': return t('session.collaboration.pane.revokedTitle');
+        case 'locked': return errorCode === 'session_discussion_encryption_mode_mismatch'
+            ? t('session.collaboration.discussion.modeMismatch')
+            : t('session.access.repairBody');
+        default: return t('session.collaboration.discussion.loadError');
+    }
+}
+
 /**
- * Lane 05 canonical Conversations body: the one component Lane 04's responsive
- * Collaboration host mounts for its Conversations mode.
+ * Lane 05 canonical Conversations body: the one component the Collaboration pane mounts for its
+ * conversations with people.
  *
- * This is the moved owner of the former Lane 04 temporary seed. Repository,
- * paging, and action decisions live here exactly once; Lane 04 owns placement,
- * modes, and responsive navigation, never list state.
+ * Repository, paging, and action decisions live here exactly once; the Collaboration surface owns
+ * placement (presence, Responsible and the access card around it), never list state.
  */
 export function SessionConversationsBody(props: Readonly<{
     address: SessionAddress;
     scope: ServerAccountScope;
-}>): React.ReactElement | null {
+    emptyInvite?: SessionConversationsEmptyInvite;
+}>): React.ReactElement {
     const requestedServerIds = React.useMemo(() => [props.address.serverId], [props.address.serverId]);
     const bindings = useServerCredentialAccountScopeBindings(requestedServerIds);
     const binding = React.useMemo(() => [...bindings.values()][0] ?? null, [bindings]);
     const available = useSessionConversationsAvailability(props.address.serverId);
-    if (!available || !binding || !areServerAccountScopesEqual(binding.scope, props.scope)) return null;
-    return <SessionConversationsBodyReady address={props.address} scope={props.scope} accountLifetime={binding} />;
+    const unavailableReason = !available
+        ? t('session.collaboration.discussion.featureUnavailable')
+        : !binding
+            ? t('session.collaboration.discussion.bindingUnavailable')
+            : !areServerAccountScopesEqual(binding.scope, props.scope)
+                ? t('session.collaboration.discussion.scopeMismatch')
+                : null;
+    if (unavailableReason) return <SurfaceStateCard
+        testID="session-conversations-unavailable"
+        kind="unavailable"
+        title={t('session.collaboration.discussion.unavailable')}
+        reason={unavailableReason}
+    />;
+    return <SessionConversationsBodyReady address={props.address} scope={props.scope} accountLifetime={binding} emptyInvite={props.emptyInvite} />;
 }
 
 /**
- * The Conversations body: one activity-ordered virtualized list with two
- * semantic sections.
+ * The Conversations list (lab `collab` C1): one virtualized list whose heading, rows, reserved
+ * first-load rows, invitation and archived disclosure are all list items, so exactly one scroller and
+ * virtualization owner sits under the surface's flex body.
  *
- * Both sections are projections, not stores. Human rows come from the discussion
- * repository and Agent conversations from the canonical Agent activity owner, so
- * this list never learns a second opinion about what exists or what state a Run
- * is in.
- *
- * Both headings and their distinct creation actions are list items, so exactly
- * one scroller and virtualization owner sits under the surface's flex body.
+ * Whole-list failures that leave nothing to read — locked encryption, removed access — replace the
+ * list with one pane state. A failure with conversations retained keeps them at full strength under
+ * one freshness line.
  */
 function SessionConversationsBodyReady(props: Readonly<{
     address: SessionAddress;
     scope: ServerAccountScope;
     accountLifetime: ServerCredentialAccountScopeBinding;
+    emptyInvite?: SessionConversationsEmptyInvite;
 }>): React.ReactElement {
+    const { theme } = useUnistyles();
     const client = React.useMemo(() => createSessionDiscussionClient({ session: props.address, availability: 'available' }), [props.address]);
     const repository = React.useMemo(() => getSessionDiscussionRepository({
         scope: props.scope,
@@ -134,19 +173,16 @@ function SessionConversationsBodyReady(props: Readonly<{
     }), [client, props.accountLifetime, props.address, props.scope]);
     const snapshot = useSessionDiscussionRepositorySnapshot(repository);
     const { openDiscussion, openNewDiscussion, activeDiscussionKey } = useOpenSessionDiscussion({ address: props.address, sourceSurface: 'collaboration' });
-    const { openAgentConversation, openNewAgentConversation } = useOpenSessionAgentConversation({ address: props.address });
-    const activity = useSessionAgentActivityRoster({
-        sessionId: props.address.sessionId,
-        serverId: props.address.serverId,
-    });
-    // Only a known refusal annotates the create affordance. An unloaded Session,
-    // a missing access projection or an offline Home leave it enabled with the
+    // Only a known refusal takes the create affordance away. An unloaded Session,
+    // a missing access projection or an offline Home leave it available with the
     // server as the authority, so a writer never loses the flow to a slow read.
     const session = useSessionViewShellSession(props.address.sessionId, props.address.serverId);
-    const createDenied = isSessionWriteKnownDenied(session);
+    const readOnly = isSessionWriteKnownDenied(session);
     const [archivedExpanded, setArchivedExpanded] = React.useState(false);
     const active = snapshot.lists.active;
     const archived = snapshot.lists.archived;
+    const viewerAccountId = props.scope.accountId;
+    const emptyInvite = props.emptyInvite;
 
     React.useEffect(() => {
         const unmount = repository.mount();
@@ -163,14 +199,15 @@ function SessionConversationsBodyReady(props: Readonly<{
     const toggleArchived = React.useCallback(() => {
         setArchivedExpanded((current) => !current);
     }, []);
+    const retryActive = React.useCallback(() => { void repository.refreshList('active'); }, [repository]);
 
     const items = React.useMemo<readonly SessionDiscussionListItem[]>(() => {
-        const primary = buildSessionDiscussionActivityItems({
+        const primary: SessionDiscussionListItem[] = [...buildSessionDiscussionActivityItems({
             discussions: active.items,
-            agentEntries: activity.entries,
-            readSubagentForEntry: activity.readSubagentForEntry,
             humanListPending: active.status === 'idle' || (active.status === 'loading' && active.items.length === 0),
-        });
+        })];
+        // Read only: the "+" leaves the header and one line under it says who can post.
+        if (readOnly) primary.splice(1, 0, { kind: 'read_only' });
         // The disclosure is a claim that there is something archived to open.
         // Only a proven-empty answer withdraws it; `unknown` keeps offering it,
         // because refusing to show it on an unanswered read would state an
@@ -182,76 +219,102 @@ function SessionConversationsBodyReady(props: Readonly<{
         }
         const archivedItems: SessionDiscussionListItem[] = [{ kind: 'archived_disclosure' }];
         if (archived.status === 'loading' && archived.items.length === 0) archivedItems.push({ kind: 'archived_loading' });
-        else if ((archived.status === 'error' || archived.status === 'offline' || archived.status === 'revoked') && archived.items.length === 0) archivedItems.push({ kind: 'archived_error' });
+        else if (isUnreadable(archived.status) && archived.items.length === 0) archivedItems.push({ kind: 'archived_error' });
         else if (archived.items.length === 0) archivedItems.push({ kind: 'archived_empty' });
         else {
             archivedItems.push(...archived.items.map((discussion) => ({ kind: 'archived_discussion' as const, discussion })));
             if (archived.nextCursor) archivedItems.push({ kind: 'archived_load_more' });
         }
         return [...primary, ...archivedItems];
-    }, [active.items, active.status, activity.entries, activity.readSubagentForEntry, archived.items, archived.nextCursor, archived.status, archivedExpanded, snapshot.archivedExistence]);
+    }, [active.items, active.status, archived.items, archived.nextCursor, archived.status, archivedExpanded, readOnly, snapshot.archivedExistence]);
 
-    const humanNotice = readListNotice(active.status);
+    const activeCount = active.nextCursor === null && active.items.length > 0 ? active.items.length : undefined;
     const renderItem = React.useCallback(({ item }: Readonly<{ item: SessionDiscussionListItem }>) => {
         switch (item.kind) {
             case 'human_section':
                 return (
-                    <View
-                        style={[styles.sectionHeader, styles.sectionHeaderFirst]}
-                        accessibilityRole="header"
-                        testID="session-human-conversations-section"
-                    >
-                        <Text style={styles.heading}>{t('session.collaboration.conversations')}</Text>
+                    <View style={styles.sectionHeader} testID="session-human-conversations-section">
+                        <View style={styles.sectionLabel}>
+                            <CollectionListGroupLabel title={t('session.collaboration.conversations')} count={activeCount} />
+                        </View>
                         {active.status === 'loading' && active.items.length > 0 ? <ActivitySpinner size="small" /> : null}
-                        <IconButton
-                            testID="session-discussion-new"
-                            iconName="plus"
-                            size={36}
-                            minimumInteractiveTargetSize={minimumInteractiveTargetSize}
-                            accessibilityLabel={t('session.collaboration.discussion.newDiscussion')}
-                            disabled={createDenied}
-                            disabledReason={createDenied ? t('session.collaboration.discussion.postDenied') : undefined}
-                            onPress={openNewDiscussion}
-                        />
+                        {readOnly ? null : (
+                            <IconButton
+                                testID="session-discussion-new"
+                                iconName="plus"
+                                size={28}
+                                iconSize={15}
+                                variant="plain"
+                                minimumInteractiveTargetSize={minimumInteractiveTargetSize}
+                                accessibilityLabel={t('session.collaboration.discussion.newDiscussion')}
+                                tooltip={t('session.collaboration.discussion.newDiscussion')}
+                                onPress={openNewDiscussion}
+                            />
+                        )}
+                    </View>
+                );
+            case 'read_only':
+                return (
+                    <View style={styles.stateLine}>
+                        <SurfaceStateCard testID="session-conversations-read-only" size="line" kind="denied" title={t('session.collaboration.pane.readOnly')} />
                     </View>
                 );
             case 'human_discussion':
                 return (
                     <SessionDiscussionRow
                         discussion={item.discussion}
+                        viewerAccountId={viewerAccountId}
                         selected={activeDiscussionKey === item.discussion.id}
                         onPress={() => openDiscussion(item.discussion.id, item.discussion.title)}
                     />
                 );
-            case 'human_empty':
-                return active.status === 'loading'
-                    ? <View style={styles.center}><ActivitySpinner size="small" /><Text style={styles.status}>{t('session.collaboration.discussion.loading')}</Text></View>
-                    : <Text style={styles.sectionEmpty}>{t('session.collaboration.discussion.emptyActive')}</Text>;
-            case 'agent_section':
+            case 'human_pending':
                 return (
-                    <View style={[styles.sectionHeader, styles.sectionHeaderLater]} accessibilityRole="header" testID="session-agent-conversations-section">
-                        <Text style={styles.heading}>{t('session.collaboration.agentConversations')}</Text>
-                        <Pressable
-                            testID="session-agent-conversation-new"
-                            accessibilityRole="button"
-                            accessibilityLabel={t('session.subagents.panel.newAgentConversation')}
-                            style={({ pressed }) => [styles.quietAction, pressed ? { opacity: motionTokens.press.opacity } : null]}
-                            onPress={openNewAgentConversation}
-                        >
-                            <Text style={styles.quietActionText}>{t('session.subagents.panel.newAgentConversation')}</Text>
-                        </Pressable>
+                    <View testID="session-conversations-loading" accessibilityRole="progressbar" accessibilityLabel={t('session.collaboration.discussion.loading')}>
+                        {SKELETON_ROWS.map((index) => <SessionDiscussionRowSkeleton key={index} index={index} />)}
                     </View>
                 );
-            case 'agent_conversation':
+            case 'human_empty':
+                if (isUnreadable(active.status)) {
+                    return (
+                        <View style={styles.stateLine}>
+                            <SurfaceStateCard
+                                testID="session-conversations-error"
+                                size="line"
+                                kind="error"
+                                title={readFailureLine(active.status, active.errorCode)}
+                                action={{ label: t('session.collaboration.discussion.retry'), onPress: retryActive }}
+                            />
+                        </View>
+                    );
+                }
+                if (emptyInvite && !readOnly) {
+                    return (
+                        <View style={styles.invite}>
+                            <SurfaceStateCard
+                                testID={emptyInvite.testID}
+                                kind="empty"
+                                iconName="users"
+                                title={emptyInvite.title}
+                                reason={emptyInvite.reason}
+                                action={emptyInvite.action}
+                                note={emptyInvite.note}
+                            />
+                        </View>
+                    );
+                }
                 return (
-                    <SessionDiscussionAgentActivityReference
-                        entry={item.entry}
-                        subagent={item.subagent}
-                        onPress={() => openAgentConversation(item.runId)}
-                    />
+                    <View style={styles.invite}>
+                        <SurfaceStateCard
+                            testID="session-conversations-empty"
+                            kind="empty"
+                            iconName="chat-circle"
+                            title={t('session.collaboration.pane.inviteTitle')}
+                            reason={t('session.collaboration.pane.inviteBody')}
+                            action={readOnly ? undefined : { label: t('session.collaboration.discussion.newDiscussion'), onPress: openNewDiscussion }}
+                        />
+                    </View>
                 );
-            case 'agent_empty':
-                return <Text style={styles.sectionEmpty}>{t('session.collaboration.emptyAgentConversations')}</Text>;
             case 'archived_disclosure':
                 return (
                     <Pressable
@@ -260,40 +323,80 @@ function SessionConversationsBodyReady(props: Readonly<{
                         accessibilityState={{ expanded: archivedExpanded }}
                         accessibilityLabel={t('session.collaboration.discussion.archivedDisclosure')}
                         onPress={toggleArchived}
-                        style={({ pressed }) => [styles.archivedSection, styles.archivedDisclosure, pressed ? { opacity: motionTokens.press.opacity } : null]}
+                        style={({ pressed }) => [styles.archivedDisclosure, pressed ? { opacity: motionTokens.press.opacity } : null]}
                     >
+                        <Icon name={archivedExpanded ? 'caret-down' : 'caret-right'} size={13} color={theme.colors.text.tertiary} />
                         <Text style={styles.archivedLabel}>{t('session.collaboration.discussion.archived')}</Text>
-                        <Icon name={archivedExpanded ? 'caret-up' : 'caret-down'} size={16} />
                     </Pressable>
                 );
             case 'archived_discussion':
-                return <SessionDiscussionRow discussion={item.discussion} selected={activeDiscussionKey === item.discussion.id} onPress={() => openDiscussion(item.discussion.id, item.discussion.title)} />;
+                return <SessionDiscussionRow discussion={item.discussion} viewerAccountId={viewerAccountId} selected={activeDiscussionKey === item.discussion.id} onPress={() => openDiscussion(item.discussion.id, item.discussion.title)} />;
             case 'archived_loading':
                 return <View style={styles.center}><ActivitySpinner size="small" /></View>;
             case 'archived_empty':
-                return <Text style={styles.archivedEmpty}>{t('session.collaboration.discussion.emptyArchived')}</Text>;
+                return (
+                    <View style={styles.stateLine}>
+                        <SurfaceStateCard size="line" kind="empty" title={t('session.collaboration.discussion.emptyArchived')} />
+                    </View>
+                );
             case 'archived_error':
-                return <View style={styles.center}><Text style={styles.status}>{readListNotice(archived.status) ?? t('session.collaboration.discussion.loadError')}</Text><Pressable style={styles.retry} accessibilityRole="button" onPress={() => void repository.refreshList('archived')}><Text style={styles.retryText}>{t('session.collaboration.discussion.retry')}</Text></Pressable></View>;
+                return (
+                    <View style={styles.stateLine}>
+                        <SurfaceStateCard
+                            testID="session-conversations-archived-error"
+                            size="line"
+                            kind="error"
+                            title={readFailureLine(archived.status, archived.errorCode)}
+                            action={{ label: t('session.collaboration.discussion.retry'), onPress: () => { void repository.refreshList('archived'); } }}
+                        />
+                    </View>
+                );
             case 'archived_load_more':
                 return <Pressable testID="session-discussion-archived-load-more" style={styles.more} accessibilityRole="button" onPress={() => void repository.loadMoreList('archived')}><Text style={styles.moreText}>{t('session.collaboration.discussion.loadMore')}</Text></Pressable>;
         }
-    }, [active.items.length, active.status, activeDiscussionKey, archived.status, archivedExpanded, createDenied, openAgentConversation, openDiscussion, openNewAgentConversation, openNewDiscussion, repository, toggleArchived]);
+    }, [active.errorCode, active.items.length, active.status, activeCount, activeDiscussionKey, archived.errorCode, archived.status, archivedExpanded, emptyInvite, openDiscussion, openNewDiscussion, readOnly, repository, retryActive, theme.colors.text.tertiary, toggleArchived, viewerAccountId]);
 
+    // Nothing retained and nothing readable: the whole list is one pane state.
+    if (active.items.length === 0 && active.status === 'locked') {
+        return (
+            <SurfaceStateCard
+                testID="session-conversations-locked"
+                kind="error"
+                iconName="lock"
+                title={t('session.collaboration.pane.lockedTitle')}
+                reason={active.errorCode === 'session_discussion_encryption_mode_mismatch'
+                    ? t('session.collaboration.pane.lockedBody')
+                    : t('session.access.repairBody')}
+                diagnosticCode={active.errorCode}
+                action={{ label: t('session.collaboration.discussion.retry'), onPress: retryActive }}
+                accessibilitySemantics="status"
+            />
+        );
+    }
+    if (active.status === 'revoked') {
+        return (
+            <SurfaceStateCard
+                testID="session-conversations-revoked"
+                kind="denied"
+                title={t('session.collaboration.pane.revokedTitle')}
+                reason={t('session.collaboration.pane.revokedBody')}
+                accessibilitySemantics="status"
+            />
+        );
+    }
+    const staleReason = active.items.length > 0 && isUnreadable(active.status)
+        ? active.status === 'offline' ? t('session.collaboration.pane.offline') : readFailureLine(active.status, active.errorCode)
+        : null;
     return (
         <View style={styles.root} testID="session-discussion-activity-list">
-            {humanNotice ? (
-                <View style={styles.sectionNotice} testID="session-discussion-list-notice">
-                    <Text style={styles.status}>{humanNotice}</Text>
-                    {active.status === 'error' || active.status === 'offline' ? (
-                        <Pressable
-                            testID="session-discussion-list-retry"
-                            accessibilityRole="button"
-                            style={styles.retry}
-                            onPress={() => void repository.refreshList('active')}
-                        >
-                            <Text style={styles.retryText}>{t('session.collaboration.discussion.retry')}</Text>
-                        </Pressable>
-                    ) : null}
+            {staleReason ? (
+                <View style={styles.freshness}>
+                    <SurfaceFreshnessLine
+                        testID="session-conversations-freshness"
+                        reason={staleReason}
+                        tone={active.status === 'offline' ? 'neutral' : 'warning'}
+                        action={{ label: t('session.collaboration.discussion.retry'), onPress: retryActive }}
+                    />
                 </View>
             ) : null}
             <FlatList

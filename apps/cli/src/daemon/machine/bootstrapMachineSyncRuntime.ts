@@ -2,9 +2,12 @@ import fs from 'fs/promises';
 import os from 'os';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
+import { readLocalHostIdentity } from '@happier-dev/cli-common/process';
 
 import type { ApiMachineClient } from '@/api/apiMachine';
+import type { MachineRpcHandlerDeps } from '@/api/machine/rpcHandlers';
 import type { ReadinessProbeResult } from '@happier-dev/connection-supervisor';
+import type { CliUpdateFacts } from '@happier-dev/protocol';
 import type { DaemonState, Machine, MachineMetadata } from '@/api/types';
 import type { SessionHandoffDirectPeerTransferHandle } from '@/api/machine/sessionHandoff/handlers';
 import { createFileTransferPayloadSource } from '@/machines/transfer/transferPayloadSource';
@@ -45,6 +48,8 @@ import { activateInactiveUsageLimitResume } from '@/daemon/sessions/activateInac
 import type { AutomationWorkerHandle } from '../automation/automationWorker';
 import type { MemoryWorkerHandle } from '../memory/memoryWorker';
 import { subscribeMemorySessionRemoval } from '../memory/subscribeMemorySessionRemoval';
+import { subscribeManagedSessionDirectoryRemoval } from '../sessions/subscribeManagedSessionDirectoryRemoval';
+import { createManagedSessionDirectories } from '@/session/creation/managedSessionDirectories';
 import type { VoiceInferenceWorkerHandle } from '../voiceInference/voiceInferenceWorker';
 import type { DaemonServerWorkScheduler } from '../serverWork';
 import { createDaemonConnectivityCoordinator } from '../connection/createDaemonConnectivityCoordinator';
@@ -90,9 +95,8 @@ import {
 } from '../peer/mediation/rpc/startLoopback';
 import { createMachineLiveStreamRelayTerminator } from '../peer/mediation/stream';
 import { registerMachinePeerTcpTunnelRelayRuntime } from './registerMachinePeerTcpTunnelRelayRuntime';
-import { createDaemonPeerMediationObservabilityRuntime } from './peerMediationObservabilityRuntime';
 import type { DaemonPeerMediationObservabilityEmitter } from '../peer/mediation/observability/events';
-import type { DirectRouteGrantTrustRoot } from '../peer/mediation/verifyDirectRouteGrantV1';
+import type { DirectRouteGrantTrustRoot } from '../peer/mediation/verifyDirectRouteGrant';
 import type { DaemonMachineIrohRuntime } from '../peer/iroh/daemonMachineIrohRuntime';
 import type {
   PeerTcpTunnelVoiceBinaryAppendConsumer,
@@ -221,7 +225,6 @@ type ConnectedServiceRefreshLoopHandle = Readonly<{
 
 type PeerMediationMachineRpcBootstrapConfig = Readonly<{
   accountId?: string | null;
-  accountSigningSeed?: Uint8Array | null;
   serverFeatures?: FeaturesResponse | null;
   nowMs?: () => number;
   // PMS-WIRE: the shared observability emitter supplied by startup so the relay terminators publish
@@ -284,23 +287,6 @@ function readUsageLimitRecoveryIntentFromControlResult(result: unknown) {
     (metadata as Record<string, unknown>)[SESSION_USAGE_LIMIT_RECOVERY_METADATA_KEY],
   );
   return parsed.success ? parsed.data : null;
-}
-
-function resolveAccountSigningSeed(params: Readonly<{
-  config: PeerMediationMachineRpcBootstrapConfig | undefined;
-  credentials: StoredCredentials | undefined;
-  machine: Machine;
-}>): Uint8Array | null {
-  if (params.config?.accountSigningSeed && params.config.accountSigningSeed.length > 0) {
-    return params.config.accountSigningSeed;
-  }
-  if (params.credentials?.encryption?.type === 'legacy') {
-    return params.credentials.encryption.secret;
-  }
-  if (params.machine.encryptionVariant === 'legacy' && params.machine.encryptionKey.length > 0) {
-    return params.machine.encryptionKey;
-  }
-  return null;
 }
 
 async function resolvePeerMediationMachineRpcServerFeatures(
@@ -373,6 +359,7 @@ async function maybeStartPeerMediationLoopback(params: Readonly<{
   machineIrohRuntime?: DaemonMachineIrohRuntime;
   directPeerServerLifecycle: DirectTransferServerLifecycle | null;
   acquireWorkspaceSyncMachineIngress?: BootstrapMachineSyncRuntimeParams['acquireWorkspaceSyncMachineIngress'];
+  acquireLocalServicePreviewApplication?: BootstrapMachineSyncRuntimeParams['acquireLocalServicePreviewApplication'];
   getServerFeaturesSnapshot?: BootstrapMachineSyncRuntimeParams['getServerFeaturesSnapshot'];
   resolvePeerMediationTrustRoots?: BootstrapMachineSyncRuntimeParams['resolvePeerMediationTrustRoots'];
 }>): Promise<StartedPeerMediationLoopback | null> {
@@ -381,21 +368,17 @@ async function maybeStartPeerMediationLoopback(params: Readonly<{
   const accountId = normalizeNonEmptyString(params.config?.accountId)
     ?? (params.credentials ? readAccountIdFromToken(params.credentials.token) : null);
   if (!accountId) return null;
-  const accountSigningSeed = resolveAccountSigningSeed({
-    config: params.config,
-    credentials: params.credentials,
-    machine: params.machine,
-  });
-  return await startPeerMediationLoopback({
+  let tcpTunnelApplicationPort: number | null = null;
+  const started = await startPeerMediationLoopback({
     accountId,
     machineId: params.machineId,
-    ...(accountSigningSeed ? { accountSigningSeed } : {}),
     serverFeatures,
     ...(params.resolvePeerMediationTrustRoots
       ? { resolveTrustRoots: params.resolvePeerMediationTrustRoots }
       : {}),
     rpcHandlerManager: params.connectedApiMachine.getPeerMediationMachineRpcHandlerManager(),
     tunnel: {
+      ...(params.acquireLocalServicePreviewApplication ? { acquirePreviewApplication: params.acquireLocalServicePreviewApplication } : {}),
       ...(params.voiceBinaryAppendConsumer ? { voiceBinaryAppendConsumer: params.voiceBinaryAppendConsumer } : {}),
       ...(params.voiceBinaryTerminalConsumer ? { voiceBinaryTerminalConsumer: params.voiceBinaryTerminalConsumer } : {}),
     },
@@ -418,21 +401,28 @@ async function maybeStartPeerMediationLoopback(params: Readonly<{
         role: 'acceptor' as const,
         // Machine-carrier handshake flows only. The provider-broker and runner
         // readiness branches are admitted by their own resolvers below.
-        allowedFlows: ['finite_transfer', 'workspace_sync'] as const,
+        allowedFlows: ['finite_transfer', 'workspace_sync', 'tcp_tunnel'] as const,
         resolveTrustRoots: params.resolvePeerMediationTrustRoots ?? (() => []),
         resolveApplicationTarget: async ({ handshake, signal }) => {
+          if (handshake.flow === 'tcp_tunnel') {
+            // The outer carrier always reaches the canonical tunnel listener.
+            // Signed destination/port admission and grant consumption stay in
+            // its inner open owner, never in this transport target resolver.
+            return tcpTunnelApplicationPort === null ? null : { port: tcpTunnelApplicationPort };
+          }
           if (handshake.flow === 'finite_transfer') {
             return params.directPeerServerLifecycle
               ? { port: await params.directPeerServerLifecycle.ensureListening() }
               : null;
           }
+          if (handshake.flow !== 'workspace_sync') return null;
           if (!params.acquireWorkspaceSyncMachineIngress) return null;
           if (handshake.initiator.kind !== 'machine') return null;
           const ingress = await params.acquireWorkspaceSyncMachineIngress({
             operationId: handshake.operationId,
             sourceMachineId: handshake.initiator.machineId,
             targetMachineId: handshake.target.machineId,
-            expiresAtMs: handshake.grant.payload.exp,
+            ...(handshake.grant.payload.exp !== null ? { expiresAtMs: handshake.grant.payload.exp } : {}),
             signal,
           });
           return { port: ingress.port, localCapability: ingress.localCapability };
@@ -452,6 +442,17 @@ async function maybeStartPeerMediationLoopback(params: Readonly<{
       },
     } : {}),
   });
+  if (!started) return null;
+  if (started.activeFlows.tcp_tunnel) {
+    tcpTunnelApplicationPort = Number(new URL(started.endpoint.url).port);
+  }
+  return {
+    ...started,
+    stop: async () => {
+      tcpTunnelApplicationPort = null;
+      await started.stop();
+    },
+  };
 }
 
 async function resolvePeerTcpTunnelRelayBootstrapContext(params: Readonly<{
@@ -581,6 +582,13 @@ export type BootstrapMachineSyncRuntimeParams = Readonly<{
   preferredHost: string;
   happyHomeDir: string;
   happyLibDir: string;
+  /** K5 (plan R13): this daemon's CLI update facts, published with its daemon-owned metadata. */
+  readCliUpdateFacts?: () => CliUpdateFacts;
+  /**
+   * Calls `onChange` whenever an update attempt records its end (`last-update.json`), so a remote
+   * update that ended without restarting this daemon is republished; returns the stop function.
+   */
+  watchCliUpdateRecord?: (onChange: () => void) => (() => void) | null;
   filesystemAccessPolicy: FilesystemAccessPolicy;
   takeoverRequested: boolean;
   isShuttingDown: () => boolean;
@@ -591,7 +599,8 @@ export type BootstrapMachineSyncRuntimeParams = Readonly<{
   startAutomationWorkerForMachine: (machineId: string) => AutomationWorkerHandle | null;
   startMemoryWorkerForMachine: (machineId: string) => Promise<MemoryWorkerHandle | null>;
   spawnSession: (options: SpawnSessionOptions) => Promise<SpawnSessionResult>;
-  stopSession: (sessionId: string) => Promise<StopSessionResult | boolean>;
+  stopSession: (sessionId: string) => Promise<StopSessionResult>;
+  sessionRunnerStatus?: MachineRpcHandlerDeps['sessionRunnerStatus'];
   awaitAgentSessionOpen?: SessionLifecycleMachineDeps['awaitAgentSessionOpen'];
   isSessionAlreadyRunning: (sessionId: string) => Promise<boolean>;
   loadLocalSessionMetadataForHandoff: (sessionId: string) => Promise<SessionHandoffLocalMetadataSource | null>;
@@ -601,6 +610,7 @@ export type BootstrapMachineSyncRuntimeParams = Readonly<{
   prepareWorkspaceSyncSeedExport?: NonNullable<import('@/api/machine/rpcHandlers.workspaceSync').MachineWorkspaceSyncRpcService['prepareSourceSeedExport']>;
   prepareWorkspaceSyncResolutionExport?: NonNullable<import('@/api/machine/rpcHandlers.workspaceSync').MachineWorkspaceSyncRpcService['prepareConflictResolutionExport']>;
   machineIrohRuntime?: DaemonMachineIrohRuntime;
+  acquireLocalServicePreviewApplication?: import('../local/services/preview/routes').LocalServicePreviewRoutes['acquireNativeApplication'];
   prepareServerTransportForReconnect?: () => Promise<ReadinessProbeResult>;
   acquireWorkspaceSyncMachineIngress?: (input: Readonly<{
     operationId: string;
@@ -994,6 +1004,16 @@ export async function bootstrapMachineSyncRuntime(
   inactiveUsageLimitRecoveryScheduler.hydratePassive();
 
   if (connectedApiMachine) {
+    if (storedCredentials) {
+      machineConnectionStateCleanup = await subscribeManagedSessionDirectoryRemoval({
+        directories: createManagedSessionDirectories(),
+        token: storedCredentials.token,
+        stopSession: params.stopSession,
+        onSessionDeletedChange: (listener) => connectedApiMachine.onSessionDeletedChange(listener),
+        onSessionAccessReset: (listener) => connectedApiMachine.onSessionAccessReset(listener),
+        onConnectionStateChange: (listener) => connectedApiMachine.onConnectionStateChange(listener),
+      });
+    }
     automationWorker = params.startAutomationWorkerForMachine(params.machineId);
     const activeAutomationWorker = automationWorker;
     memoryWorker = await params.startMemoryWorkerForMachine(params.machineId);
@@ -1205,6 +1225,7 @@ export async function bootstrapMachineSyncRuntime(
           : {}),
       },
       {
+        ...(params.sessionRunnerStatus ? { sessionRunnerStatus: params.sessionRunnerStatus } : {}),
         npmRegistryProfiles: {
           machineId: params.machineId,
           service: createNpmRegistryProfileService({
@@ -1287,6 +1308,9 @@ export async function bootstrapMachineSyncRuntime(
               stageUsageLimitRecoveryMutation: async (input) => {
                 await usageLimitRecoveryMutationCustody.stage(input);
               },
+              stageWorkStateMutation: async (input) => {
+                await usageLimitRecoveryMutationCustody.stageWorkState(input);
+              },
             }
           : {}),
         resumeInactiveSessionWhenUsageLimitReady: async ({ sessionId, rawSession, metadata }) =>
@@ -1350,12 +1374,8 @@ export async function bootstrapMachineSyncRuntime(
     // AND both relay terminators. In production startup hands in the shared emitter
     // (`params.peerMediationMachineRpc.observability`) whose store is also published onto the Api
     // provider bridge for the read-path executor, so the write-path and read-path bind to the SAME
-    // store. Narrow callers without an injected emitter fall back to a self-owned store (read-path
-    // stays empty, but the write-path still functions).
-    const peerMediationObservabilityEmitter = params.peerMediationMachineRpc?.observability
-      ?? createDaemonPeerMediationObservabilityRuntime({
-        nowMs: params.peerMediationMachineRpc?.nowMs ?? (() => Date.now()),
-      }).emitter;
+    // store. Narrow callers without that shared runtime do not collect into an unread fallback.
+    const peerMediationObservabilityEmitter = params.peerMediationMachineRpc?.observability;
 
     peerMediationLoopback = await maybeStartPeerMediationLoopback({
       config: params.peerMediationMachineRpc,
@@ -1366,6 +1386,7 @@ export async function bootstrapMachineSyncRuntime(
       machineId: params.machineId,
       ...(params.machineIrohRuntime ? { machineIrohRuntime: params.machineIrohRuntime } : {}),
       directPeerServerLifecycle: params.directPeerServerLifecycle,
+      ...(params.acquireLocalServicePreviewApplication ? { acquireLocalServicePreviewApplication: params.acquireLocalServicePreviewApplication } : {}),
       ...(params.acquireWorkspaceSyncMachineIngress
         ? { acquireWorkspaceSyncMachineIngress: params.acquireWorkspaceSyncMachineIngress }
         : {}),
@@ -1382,7 +1403,18 @@ export async function bootstrapMachineSyncRuntime(
       return null;
     });
     if (peerMediationLoopback) {
-      stopPeerMediationLoopbackServer = peerMediationLoopback.stop;
+      const startedPeerMediationLoopback = peerMediationLoopback;
+      const hasNativePreviewApplication = Boolean(
+        params.acquireLocalServicePreviewApplication && peerMediationLoopback.activeFlows.tcp_tunnel,
+      );
+      stopPeerMediationLoopbackServer = async () => {
+        if (hasNativePreviewApplication) {
+          await connectedApiMachine.setLocalServicePreviewNativeAccessLive(false).catch((error) => {
+            logger.warn('[DAEMON RUN] Failed to withdraw native preview capability', error);
+          });
+        }
+        await startedPeerMediationLoopback.stop();
+      };
       if (params.machineIrohRuntime) {
         const admissionPort = Number(new URL(peerMediationLoopback.endpoint.url).port);
         try {
@@ -1393,6 +1425,11 @@ export async function bootstrapMachineSyncRuntime(
             if (stopped) return;
             stopped = true;
             activeMachineIrohRuntime = undefined;
+            if (hasNativePreviewApplication) {
+              await connectedApiMachine.setLocalServicePreviewNativeAccessLive(false).catch((error) => {
+                logger.warn('[DAEMON RUN] Failed to withdraw native preview capability', error);
+              });
+            }
             await params.machineIrohRuntime!.stopActiveTunnels().catch((error) => {
               logger.warn('[DAEMON RUN] Failed to close active Iroh machine tunnels', error);
             });
@@ -1407,6 +1444,11 @@ export async function bootstrapMachineSyncRuntime(
           };
         } catch (error) {
           logger.warn('[DAEMON RUN] Failed to start Iroh machine acceptor', error);
+        }
+        if (activeMachineIrohRuntime && hasNativePreviewApplication) {
+          await connectedApiMachine.setLocalServicePreviewNativeAccessLive(true).catch((error) => {
+            logger.warn('[DAEMON RUN] Failed to publish native preview capability', error);
+          });
         }
       }
     }
@@ -1481,12 +1523,12 @@ export async function bootstrapMachineSyncRuntime(
       const cleanupMachineLiveStreamRelaySubscription = connectedApiMachine.onMachineLiveStreamRelayEnvelope((payload) => {
         // Starts arrive exclusively over the machine RPC above (SIM-P0-1). The server never
         // forwards `start` envelopes into machine rooms, so no start branch exists here.
-        if (payload.message.kind !== 'control' && payload.message.kind !== 'sideband_control') return;
+        if (payload.message.kind !== 'control' && payload.message.kind !== 'sideband_control' && payload.message.kind !== 'renew') return;
         const result = liveStreamRelayTerminator.applyControl(payload);
         if (result.ok) return;
         logger.warn('[DAEMON RUN] Live-stream relay control denied', {
           reasonCode: result.reasonCode,
-          streamId: payload.message.control.streamId,
+          streamId: payload.message.kind === 'renew' ? payload.message.startRequest.streamId : payload.message.control.streamId,
         });
       });
       let didCleanupMachineLiveStreamRelay = false;
@@ -1643,11 +1685,16 @@ export async function bootstrapMachineSyncRuntime(
       });
     });
     let didCleanupMachineConnectionState = false;
+    let stopWatchingCliUpdateRecord: (() => void) | null = null;
+    const cleanupManagedSessionDirectoryRemoval = machineConnectionStateCleanup;
     machineConnectionStateCleanup = () => {
       if (didCleanupMachineConnectionState) {
         return;
       }
       didCleanupMachineConnectionState = true;
+      cleanupManagedSessionDirectoryRemoval?.();
+      stopWatchingCliUpdateRecord?.();
+      stopWatchingCliUpdateRecord = null;
       cleanupDaemonConnectivityState();
       cleanupPluginConnectionStateSource();
       cleanupMachineLiveStreamRelay?.();
@@ -1655,6 +1702,7 @@ export async function bootstrapMachineSyncRuntime(
     };
 
     let didRefreshMachineMetadata = false;
+    let publishedCliUpdateFacts: string | null = null;
     let machineMetadataRefreshInFlight: Promise<void> | null = null;
     const refreshMachineMetadataPublication = async (): Promise<void> => {
       if (params.isShuttingDown() || didRefreshMachineMetadata) return;
@@ -1668,19 +1716,22 @@ export async function bootstrapMachineSyncRuntime(
 
       const operation = (async () => {
         try {
+          const cliUpdate = params.readCliUpdateFacts?.();
           const outcome = await connectedApiMachine.updateMachineMetadata((metadata) => {
             const base = (metadata ?? params.machine.metadata ?? {}) as Partial<MachineMetadata>;
             return refreshMachineMetadataForCurrentDaemon(base, {
               host: params.preferredHost,
-              platform: os.platform(),
+              platform: readLocalHostIdentity().platform,
               happyCliVersion: params.cliVersion,
               homeDir: os.homedir(),
               happyHomeDir: params.happyHomeDir,
               happyLibDir: params.happyLibDir,
+              ...(cliUpdate ? { cliUpdate } : {}),
             });
           });
           if (outcome !== 'suppressed') {
             didRefreshMachineMetadata = true;
+            publishedCliUpdateFacts = JSON.stringify(cliUpdate ?? null);
           }
         } catch (error) {
           logger.warn('[DAEMON RUN] Failed to refresh machine metadata on reconnect', error);
@@ -1693,8 +1744,26 @@ export async function bootstrapMachineSyncRuntime(
         if (machineMetadataRefreshInFlight === operation) {
           machineMetadataRefreshInFlight = null;
         }
+        // A result recorded while this publication was in flight runs now, as one trailing publish.
+        if (cliUpdateRepublishPending) void republishCliUpdateFactsIfChanged();
       }
     };
+    // K5: an update attempt that recorded its end republishes the facts (only when they changed).
+    // A change that arrives while a publication is in flight — or before the first one — stays
+    // pending and is published when that publication settles (the 0.2 publisher's behaviour).
+    let cliUpdateRepublishPending = false;
+    const republishCliUpdateFactsIfChanged = async (): Promise<void> => {
+      if (params.isShuttingDown() || !params.readCliUpdateFacts) return;
+      if (machineMetadataRefreshInFlight || publishedCliUpdateFacts === null) return;
+      cliUpdateRepublishPending = false;
+      if (JSON.stringify(params.readCliUpdateFacts()) === publishedCliUpdateFacts) return;
+      didRefreshMachineMetadata = false;
+      await refreshMachineMetadataPublication();
+    };
+    stopWatchingCliUpdateRecord = params.watchCliUpdateRecord?.(() => {
+      cliUpdateRepublishPending = true;
+      void republishCliUpdateFactsIfChanged();
+    }) ?? null;
     let hasPendingMachineConnectionPublications = false;
     let machineConnectionPublicationsInFlight: Promise<void> | null = null;
     const refreshMachineConnectionPublications = async (): Promise<void> => {
@@ -1795,7 +1864,7 @@ export async function bootstrapMachineSyncRuntime(
       },
     });
   } else {
-    logger.warn('[DAEMON RUN] Diagnostic gate enabled: machine sync disabled');
+    logger.warn('[DAEMON RUN] Machine sync client unavailable; machine-bound workers were not started');
   }
 
   return {

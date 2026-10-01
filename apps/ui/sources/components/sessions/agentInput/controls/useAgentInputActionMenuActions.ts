@@ -1,3 +1,4 @@
+import type { AgentInputFolderChipState } from '../definitions/AgentInputFolderChip';
 import * as React from 'react';
 
 import type { ActionListItem } from '@/components/ui/lists/ActionListSection';
@@ -7,9 +8,12 @@ import type { AgentInputExtraActionChip } from '../agentInputContracts';
 import { buildCollapsedExtraControlActions } from './buildCollapsedExtraControlActions';
 import type { IconName } from '@/components/ui/icons/Icon';
 import type { FocusReturnRef } from '@/keyboard/focusReturn';
+import type { AgentInputControlId } from './agentInputControlTypes';
 
 export function useAgentInputActionMenuActions(params: Readonly<{
     actionBarIsCollapsed: boolean;
+    /** Collapsed layout: the controls the host keeps on its bar (see `resolveRenderedAgentInputControls`). */
+    barControlIds?: readonly AgentInputControlId[];
     hasAnyActions: boolean;
     tint: string;
     agentId: string;
@@ -21,6 +25,8 @@ export function useAgentInputActionMenuActions(params: Readonly<{
     engineLabel?: string | null;
     machineName?: string | null;
     currentPath?: string | null;
+    folderChipState?: AgentInputFolderChipState;
+    onRemoveFolder?: () => void;
     resumeSessionId?: string | null;
     sessionId?: string;
     extraActionChips?: readonly AgentInputExtraActionChip[];
@@ -66,6 +72,8 @@ export function useAgentInputActionMenuActions(params: Readonly<{
             engineLabel: params.engineLabel,
             machineName: params.machineName,
             currentPath: params.currentPath,
+        folderChipState: params.folderChipState,
+        onRemoveFolder: params.onRemoveFolder,
             resumeSessionId: params.resumeSessionId,
             sessionId: params.sessionId,
             onProfileClick: params.onProfileClick,
@@ -80,11 +88,13 @@ export function useAgentInputActionMenuActions(params: Readonly<{
             canStop: params.canStop,
             onStop: params.onStop,
             extraControlActions,
+            ...(params.barControlIds ? { barControlIds: params.barControlIds } : {}),
             dismiss: params.dismissActionMenu,
             blurInput: params.blurInput,
         });
     }, [
         params.actionBarIsCollapsed,
+        params.barControlIds,
         params.actionMenuAnchorRef,
         params.agentId,
         params.agentIdentityIcon,
@@ -93,6 +103,8 @@ export function useAgentInputActionMenuActions(params: Readonly<{
         params.blurInput,
         params.canStop,
         params.currentPath,
+        params.folderChipState,
+        params.onRemoveFolder,
         params.dismissActionMenu,
         params.envVarsCount,
         params.extraActionChips,

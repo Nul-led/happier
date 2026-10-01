@@ -12,11 +12,18 @@ import type { ExecutionRunController } from '@/agent/executionRuns/controllers/t
 import { readBackendResumableRuntimeId } from '@/agent/executionRuns/controllers/types';
 import type { ExecutionRunState } from './executionRunTypes';
 import type { ExecutionBudgetRegistry } from '@/daemon/executionBudget/ExecutionBudgetRegistry';
-import { writeExecutionRunMarker } from '@/daemon/executionRunRegistry';
+import {
+  retainExecutionRunWorkerUpdate,
+  writeExecutionRunMarker,
+  type RetainedExecutionRunWorkerUpdate,
+} from '@/daemon/executionRunRegistry';
+import { composeExecutionRunWorkerUpdate } from './executionRunWorkerUpdate';
 import {
   AGENT_SESSION_RUNTIME_LIMITS_CANDIDATE_V1,
   projectExecutionRunRequestedConfiguration,
   readBackendTargetRefV2,
+  ReviewFindingsV1Schema,
+  ReviewFindingsV2Schema,
   type ExecutionRunResumeHandle,
 } from '@happier-dev/protocol';
 import type { ExecutionRunTranscriptPublisher } from './executionRunTranscriptPublisher';
@@ -25,6 +32,12 @@ import {
   isExecutionRunTranscriptCustodyError,
 } from './executionRunTranscriptPublisher';
 import { buildExecutionRunConnectedServicesCleanupReceipt } from './connectedServicesCleanupReceipt';
+import type { ReviewRunCommentService, ReviewRunMaterialization } from '@/agent/executionRuns/profiles/review/reviewComments';
+import { buildReviewFindingsV2Payload } from '@/agent/reviews/normalize/buildReviewFindingsV2Payload';
+
+// The same running state claims terminalization without exposing a terminal fact
+// before its required ReviewComment writes. This replaces the old early status claim.
+const terminalTransitionsInFlight = new WeakMap<Map<string, ExecutionRunState>, Set<string>>();
 
 type EnqueueMarkerWrite = (runId: string, write: () => Promise<void>) => Promise<void>;
 
@@ -56,6 +69,7 @@ type FinishRunNext = Omit<
     | 'depth'
     | 'intent'
     | 'profileId'
+    | 'profileSourceCustody'
     | 'backendTarget'
   | 'backendId'
   | 'instructions'
@@ -82,11 +96,80 @@ export async function finishExecutionRun(args: Readonly<{
   sendAcp: ExecutionRunTranscriptPublisher;
   enqueueMarkerWrite: EnqueueMarkerWrite;
   terminalMarkerWritePromises: Map<string, Promise<void>>;
+  onWorkerUpdateRetained?: (input: RetainedExecutionRunWorkerUpdate) => void;
   profileCatalog?: ExecutionRunProfileContributionCatalog;
+  reviewComments?: ReviewRunCommentService;
 }>): Promise<boolean> {
   const existing = args.runs.get(args.runId);
   if (!existing) return false;
   if (existing.status !== 'running') return false;
+  const claimed = terminalTransitionsInFlight.get(args.runs) ?? new Set<string>();
+  if (claimed.has(args.runId)) return false;
+  terminalTransitionsInFlight.set(args.runs, claimed);
+  claimed.add(args.runId);
+  try {
+  const terminalEventId = randomUUID();
+
+  let toolResult = args.toolResult;
+  let structuredMeta = args.structuredMeta;
+  let materialization: ReviewRunMaterialization | undefined;
+  const intentInput = existing.intentInput && typeof existing.intentInput === 'object' && !Array.isArray(existing.intentInput)
+    ? existing.intentInput as Readonly<Record<string, unknown>> : {};
+  const reviewedFingerprint = typeof intentInput.reviewedFingerprint === 'string' ? intentInput.reviewedFingerprint : null;
+  if (existing.intent === 'review') {
+    const output = toolResult.output && typeof toolResult.output === 'object' && !Array.isArray(toolResult.output)
+      ? toolResult.output as Record<string, unknown> : { result: toolResult.output };
+    // Failure, cancellation and malformed output still describe this launch's
+    // worktree; never replace its captured fingerprint with a later SCM read.
+    toolResult = { ...toolResult, output: { ...output, reviewedFingerprint } };
+  }
+  if (existing.intent === 'review' && args.next.status === 'succeeded') {
+    const parsed = structuredMeta?.kind === 'review_findings.v2'
+      ? ReviewFindingsV2Schema.safeParse(structuredMeta.payload)
+      : ReviewFindingsV1Schema.safeParse(structuredMeta?.payload);
+    if (parsed.success) {
+      const controller = args.controllers.get(args.runId);
+      const workflowRunId = controller?.kind === 'backend' ? controller.workflowRunId ?? controller.workflowObservation?.workflowRunId : undefined;
+      materialization = args.reviewComments
+        ? await args.reviewComments.materialize({ run: existing, findings: parsed.data.findings, reviewedFingerprint, ...(workflowRunId ? { workflowRunId } : {}) })
+        : {
+            engineId: existing.backendId, status: parsed.data.findings.length ? 'failed' : 'materialized',
+            commentIds: [], comments: [], failures: parsed.data.findings.map((finding) => ({ findingId: finding.id, errorCode: 'review_comment_materialization_unavailable' })),
+          };
+      const projection = {
+        engineId: existing.backendId,
+        reviewedFingerprint,
+        commentIds: materialization.commentIds,
+        materialization: materialization.status === 'materialized' ? { kind: 'complete' as const }
+          : { kind: materialization.status, errorCode: 'review_comment_materialization_failed' },
+        ...(materialization.failures.length ? { materializationFailures: materialization.failures } : {}),
+        perEngineOutcome: [{ key: existing.backendId, runId: existing.runId, outcome: materialization.status === 'materialized' ? 'completed' : 'failed' }],
+      };
+      const projectedFindings = parsed.data.findings.map((finding) => {
+        const materialized = materialization!.comments.find((entry) => entry.findingId === finding.id);
+        return materialized ? { ...finding, comment: materialized.comment } : finding;
+      });
+      const payload = structuredMeta?.kind === 'review_findings.v2' ? parsed.data
+        : buildReviewFindingsV2Payload({
+            runId: parsed.data.runRef.runId, callId: parsed.data.runRef.callId, backendId: parsed.data.runRef.backendId,
+            backendTarget: parsed.data.runRef.backendTarget, summary: parsed.data.summary, findings: projectedFindings,
+            triage: parsed.data.triage, limits: parsed.data.limits, generatedAtMs: parsed.data.generatedAtMs,
+          });
+      structuredMeta = { kind: 'review_findings.v2', payload: { ...payload, ...projection, findings: projectedFindings } };
+      const output = toolResult.output && typeof toolResult.output === 'object' && !Array.isArray(toolResult.output)
+        ? toolResult.output as Record<string, unknown> : { result: toolResult.output };
+      toolResult = { ...toolResult, output: { ...output, ...projection, findings: projectedFindings }, meta: { ...toolResult.meta, happier: structuredMeta } };
+    } else {
+      materialization = {
+        engineId: existing.backendId, status: 'failed', commentIds: [], comments: [],
+        failures: [{ findingId: existing.runId, errorCode: 'review_findings_invalid' }],
+      };
+      toolResult = {
+        ...toolResult, isError: true,
+        output: { result: args.toolResult.output, engineId: existing.backendId, reviewedFingerprint, commentIds: [], materialization: { kind: 'failed', errorCode: 'review_findings_invalid' }, perEngineOutcome: [{ key: existing.backendId, runId: existing.runId, outcome: 'failed' }] },
+      };
+    }
+  }
 
   const resumeHandle: ExecutionRunResumeHandle | null = (() => {
     if (existing.retentionPolicy !== 'resumable') return null;
@@ -99,22 +182,24 @@ export async function finishExecutionRun(args: Readonly<{
 
   let updated: ExecutionRunState = {
     ...existing,
-    status: args.next.status,
+    status: materialization && materialization.status !== 'materialized' ? 'failed' : args.next.status,
     summary: args.next.summary ?? existing.summary,
     finishedAtMs: args.next.finishedAtMs,
     ...(args.next.error ? { error: args.next.error } : {}),
-    ...(args.structuredMeta ? { structuredMeta: args.structuredMeta } : {}),
-    latestToolResult: args.toolResult.output,
+    ...(materialization && materialization.status !== 'materialized'
+      ? { error: { code: 'review_comment_materialization_failed', message: 'Review findings could not all be persisted' } }
+      : {}),
+    ...(structuredMeta ? { structuredMeta } : {}),
+    latestToolResult: toolResult.output,
     ...(existing.retentionPolicy === 'resumable' ? { resumeHandle } : {}),
   };
 
-  // Claim the single terminal transition before any publication await. Every competing
-  // terminalizer observes this state and converges without publishing another terminal fact.
+  // Required comment materialization has completed before any terminal observation.
   args.runs.set(args.runId, updated);
   args.budgetRegistry?.releaseExecutionRun(args.runId);
 
   const mergedMeta = (() => {
-    const base = args.toolResult.meta ? { ...args.toolResult.meta } : {};
+    const base = toolResult.meta ? { ...toolResult.meta } : {};
     if (resumeHandle) {
       (base as any).happierExecutionRun = {
         resumeHandle,
@@ -126,7 +211,12 @@ export async function finishExecutionRun(args: Readonly<{
   let shouldMaterializeInTranscript = false;
   try {
     const profile = args.profileCatalog
-      ? resolveExecutionRunIntentProfileFromCatalog(args.profileCatalog, existing.intent, existing.profileId)
+      ? resolveExecutionRunIntentProfileFromCatalog(
+          args.profileCatalog,
+          existing.intent,
+          existing.profileId,
+          existing.profileSourceCustody,
+        )
       : resolveExecutionRunIntentProfile(existing.intent);
     shouldMaterializeInTranscript = existing.sessionId !== null
       && profile.transcriptMaterialization !== 'none';
@@ -140,9 +230,9 @@ export async function finishExecutionRun(args: Readonly<{
         {
           type: 'tool-result',
           callId: existing.callId,
-          output: args.toolResult.output,
-          id: randomUUID(),
-          ...(args.toolResult.isError ? { isError: true } : {}),
+          output: toolResult.output,
+          id: terminalEventId,
+          ...(toolResult.isError || updated.status === 'failed' ? { isError: true } : {}),
         },
         Object.keys(mergedMeta).length > 0 ? { meta: mergedMeta } : undefined,
       );
@@ -173,7 +263,7 @@ export async function finishExecutionRun(args: Readonly<{
   }
   args.runs.set(args.runId, updated);
 
-  const resultSizeBytes = readExecutionRunMarkerResultSizeBytes(args.toolResult.output);
+  const resultSizeBytes = readExecutionRunMarkerResultSizeBytes(toolResult.output);
 
   // Best-effort: update daemon-visible marker for machine-wide run visibility.
   const cleanupReceipt = buildExecutionRunConnectedServicesCleanupReceipt(
@@ -183,6 +273,7 @@ export async function finishExecutionRun(args: Readonly<{
     modelId: updated.launch?.modelSelection?.modelId ?? updated.launch?.modelId,
     sessionConfigOptionOverrides: updated.launch?.sessionConfigOptionOverrides,
   });
+  const parentWorkerUpdate = composeExecutionRunWorkerUpdate(updated, terminalEventId);
   const markerPayload = {
     pid: process.pid,
     happySessionId: existing.sessionId,
@@ -210,16 +301,21 @@ export async function finishExecutionRun(args: Readonly<{
   } as const;
 
   const markerWritePromise = args.enqueueMarkerWrite(args.runId, async (): Promise<void> => {
+    if (parentWorkerUpdate) {
+      await retainExecutionRunWorkerUpdate(parentWorkerUpdate);
+      args.onWorkerUpdateRetained?.(parentWorkerUpdate);
+    }
     // Disk writes can fail transiently (e.g. rename contention on some platforms). Retry once.
     for (let attempt = 0; attempt < 2; attempt += 1) {
       try {
         await writeExecutionRunMarker(markerPayload);
         return;
-      } catch {
+      } catch (error) {
         if (attempt === 0) {
           await new Promise<void>((resolve) => setTimeout(resolve, 25));
           continue;
         }
+        if (parentWorkerUpdate) throw error;
         return;
       }
     }
@@ -234,6 +330,12 @@ export async function finishExecutionRun(args: Readonly<{
     ctrl.terminalMarkerWritePromise = trackedMarkerWritePromise;
   }
 
+  // A parent completion is durable input, not merely daemon visibility.
+  if (parentWorkerUpdate) await trackedMarkerWritePromise;
+
   if (terminalizationError) throw terminalizationError;
   return true;
+  } finally {
+    claimed.delete(args.runId);
+  }
 }

@@ -1,6 +1,6 @@
 import * as React from 'react';
 
-import type { Message, ToolCallMessage } from '@/sync/domains/messages/messageTypes';
+import type { Message, ToolCallMessage } from "@happier-dev/session-core/messages";
 import { getStorage } from '@/sync/domains/state/storage';
 import type { SessionViewportAnchorSnapshot } from '@/sync/sync';
 import type { TranscriptListOrientation } from '@/components/sessions/transcript/listOrientation';
@@ -21,7 +21,9 @@ import type { TranscriptTargetWindowState } from '@/components/sessions/transcri
 import { createTranscriptWindowGapItem } from '@/components/sessions/transcript/viewport/window/transcriptWindowGapItem';
 import {
     resolveTranscriptLiveTailAnchor,
+    collectTranscriptNavigationMessageIdsForItem,
 } from '@/components/sessions/transcript/viewport/lifecycle/transcriptRowClassification';
+import type { SessionMessagesTailBoundary } from '@/sync/runtime/sessionMessagesTailDiscontinuity';
 import {
     buildTranscriptRowShellSignature,
     resolveTranscriptItemActiveThinkingMessageId,
@@ -98,7 +100,7 @@ export type TranscriptItemsPipelineDeps = Readonly<{
     sessionActive: boolean;
     sessionId: string;
     sessionThinking: boolean;
-    tailContiguousFloorSeq?: number | null;
+    tailContiguousBoundary?: SessionMessagesTailBoundary | null;
     targetWindowActiveRef: Ref<boolean>;
     targetWindowState?: TranscriptTargetWindowState;
     transcriptToolCallsCollapsedPreviewCountSetting: unknown;
@@ -131,7 +133,7 @@ export function useTranscriptItemsPipeline(deps: TranscriptItemsPipelineDeps) {
         sessionActive,
         sessionId,
         sessionThinking,
-        tailContiguousFloorSeq,
+        tailContiguousBoundary,
         targetWindowActiveRef,
         targetWindowState,
         transcriptToolCallsCollapsedPreviewCountSetting,
@@ -195,7 +197,8 @@ export function useTranscriptItemsPipeline(deps: TranscriptItemsPipelineDeps) {
             listOrientation,
             resolveSeq: jumpWindowFacts.resolveTargetWindowItemSeq,
             sessionId,
-            tailContiguousFloorSeq: tailContiguousFloorSeq ?? null,
+            tailContiguousBoundary: tailContiguousBoundary ?? null,
+            resolveMessageIds: collectTranscriptNavigationMessageIdsForItem,
             targetWindowState: targetWindowState ?? jumpWindowFacts.sessionTargetWindowState,
         });
     }, [
@@ -203,7 +206,7 @@ export function useTranscriptItemsPipeline(deps: TranscriptItemsPipelineDeps) {
         jumpWindowFacts,
         listOrientation,
         sessionId,
-        tailContiguousFloorSeq,
+        tailContiguousBoundary,
         targetWindowState,
     ]);
 
@@ -618,6 +621,7 @@ export type TranscriptFirstPaintStateDeps = Readonly<{
     pinThresholdPx: number;
     platformOS: string;
     routeHydrationPending: boolean;
+    rendererDataKey: string;
     sessionId: string;
     sessionOpenLatch: SessionOpenLatch;
     transcriptInitialFillBudgetMs: number;
@@ -647,6 +651,7 @@ export function useTranscriptFirstPaintState(deps: TranscriptFirstPaintStateDeps
         pinThresholdPx,
         platformOS,
         routeHydrationPending,
+        rendererDataKey,
         sessionId,
         sessionOpenLatch,
         transcriptInitialFillBudgetMs,
@@ -664,7 +669,7 @@ export function useTranscriptFirstPaintState(deps: TranscriptFirstPaintStateDeps
         entryAnchorForRender != null
             ? createEntryPresentationKey({
                 platform: entryPresentationPlatform,
-                sessionId,
+                dataKey: rendererDataKey,
             })
             : null;
     const currentEntryPresentationKeyRef = React.useRef(entryPresentationKey);
@@ -689,7 +694,7 @@ export function useTranscriptFirstPaintState(deps: TranscriptFirstPaintStateDeps
         const currentKey = currentEntryPresentationKeyRef.current;
         if (currentKey !== createEntryPresentationKey({
             platform: event.platform,
-            sessionId: event.dataKey,
+            dataKey: event.dataKey,
         })) return;
         if (event.type === 'started') {
             transitionEntryPresentation({ type: 'renderer-started' });
@@ -709,9 +714,10 @@ export function useTranscriptFirstPaintState(deps: TranscriptFirstPaintStateDeps
         if (
             currentKey == null
             || entryPresentationPlatform == null
+            || params.sessionId !== sessionId
             || currentKey !== createEntryPresentationKey({
                 platform: entryPresentationPlatform,
-                sessionId: params.sessionId,
+                dataKey: rendererDataKey,
             })
         ) return;
         transitionEntryPresentation({
@@ -719,7 +725,7 @@ export function useTranscriptFirstPaintState(deps: TranscriptFirstPaintStateDeps
                 ? 'entry-confirmed'
                 : 'entry-fallback',
         });
-    }, [entryPresentationPlatform, transitionEntryPresentation]);
+    }, [entryPresentationPlatform, rendererDataKey, sessionId, transitionEntryPresentation]);
     const effectiveEntryPresentationState =
         entryPresentationState.key === entryPresentationKey
             ? entryPresentationState

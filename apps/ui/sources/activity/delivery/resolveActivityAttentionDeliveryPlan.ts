@@ -41,8 +41,19 @@ type ResolveActivityAttentionDeliveryPlanParams = Readonly<{
     updateBudget?: ActivityAttentionUpdateBudgetHint | null;
 }>;
 
+// Badge and delivery selectors resolve the policy on every store change, and a
+// full Account settings parse dominated those passes. Settings objects are
+// replaced, never mutated, so the parsed policy is cached by object identity;
+// callers receive their own copy because policy composition mutates its result.
+const accountPolicyBySettings = new WeakMap<object, AttentionDeliveryPolicyV1>();
+
 function readAccountPolicy(accountSettings: Partial<AccountSettings> | Readonly<Record<string, unknown>>): AttentionDeliveryPolicyV1 {
-    return accountSettingsParse(accountSettings).attentionDeliveryPolicyV1;
+    let policy = accountPolicyBySettings.get(accountSettings);
+    if (!policy) {
+        policy = accountSettingsParse(accountSettings).attentionDeliveryPolicyV1;
+        accountPolicyBySettings.set(accountSettings, policy);
+    }
+    return structuredClone(policy);
 }
 
 function setChannelEventEnabled(

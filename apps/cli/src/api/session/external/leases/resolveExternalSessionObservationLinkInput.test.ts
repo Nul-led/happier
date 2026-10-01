@@ -171,6 +171,11 @@ function installRuntime(options: Readonly<{
                     },
                 },
             ]]),
+            readPluginOccurrenceId: () => 'occurrence-1',
+            readPluginSourceCustody: () => ({
+                kind: 'development',
+                registeredRootId: 'source-root-1',
+            }),
         },
         release: mocks.release,
     });
@@ -240,6 +245,11 @@ function installConnectedRuntime(): void {
                     },
                 },
             ]]),
+            readPluginOccurrenceId: () => 'occurrence-1',
+            readPluginSourceCustody: () => ({
+                kind: 'development',
+                registeredRootId: 'source-root-1',
+            }),
         },
         release: mocks.release,
     });
@@ -271,7 +281,7 @@ describe('resolveExternalSessionObservationLinkInput', () => {
             resource: {
                 pluginId: 'happier.opencode',
                 agentLocalId: 'opencode',
-                pluginGeneration: 'plugin-generation-1',
+                occurrenceId: 'occurrence-1',
                 resourceKey: 'endpoint-default',
             },
             link: {
@@ -287,6 +297,10 @@ describe('resolveExternalSessionObservationLinkInput', () => {
             target: {
                 qualifiedLinkIdentity,
                 linkGeneration: '1000',
+            },
+            sourceCustody: {
+                kind: 'development',
+                registeredRootId: 'source-root-1',
             },
         });
         expect(mocks.release).toHaveBeenCalledOnce();
@@ -511,10 +525,14 @@ describe('resolveExternalSessionObservationLinkInput', () => {
             identity: {
                 pluginId: 'happier.opencode',
                 agentId: 'opencode',
-                generation: 'plugin-generation-1',
+                occurrenceId: 'plugin-occurrence-1',
                 contributionQualifiedId:
                     'happier.opencode/agents/opencode',
-                immutableGenerationId: 'immutable-generation-1',
+                sourceCustody: {
+                    kind: 'managed',
+                    immutableGenerationId: 'immutable-generation-1',
+                    installSource: 'localPath',
+                },
             },
             isCurrent: () => active,
             retirementSignal: retirement.signal,

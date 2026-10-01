@@ -32,7 +32,7 @@ import { configuration } from '@/configuration';
 import { createDefaultPluginInstallationPublisherHeader } from '@/plugins/installations/publisherProof';
 import {
   createPluginActionCallerCurrentnessCheck,
-  type RevalidatePluginActionCallerImmutableGeneration,
+  type RevalidatePluginActionCallerOccurrence,
   type RevalidatePluginActionCallerMaterialization,
 } from '@/plugins/runtime/invocation/services/actionCaller';
 import {
@@ -49,7 +49,8 @@ type ExecuteAutomationConversationAction = NonNullable<ActionExecutorDeps['autom
 type AutomationConversationActionCallerFrame = Readonly<{
   pluginId: string;
   contributionLocalId: string;
-  immutableGenerationId: string;
+  occurrenceId: string;
+  sourceCustody: import('@happier-dev/protocol').PluginSourceCustodyV1;
   materialization: PluginMachineMaterializationRefV1;
 }>;
 
@@ -114,7 +115,7 @@ export function createAutomationConversationActionExecutor(params: Readonly<{
   transport?: AutomationConversationActionTransport;
   revalidateCallerMaterialization?: RevalidatePluginActionCallerMaterialization;
   /** Rechecks the exact host-stamped admitted bytes; it never substitutes one. */
-  revalidateCallerImmutableGeneration?: RevalidatePluginActionCallerImmutableGeneration;
+  revalidateCallerOccurrence?: RevalidatePluginActionCallerOccurrence;
   resolveAccountId?: (signal?: AbortSignal) => Promise<string>;
   resolveAccountEncryptionCurrentness?: (
     signal?: AbortSignal,
@@ -126,7 +127,7 @@ export function createAutomationConversationActionExecutor(params: Readonly<{
 }>): ExecuteAutomationConversationAction {
   const transport = params.transport ?? createDefaultTransport(params.credentials);
   const revalidateCallerMaterialization = params.revalidateCallerMaterialization;
-  const revalidateCallerImmutableGeneration = params.revalidateCallerImmutableGeneration;
+  const revalidateCallerOccurrence = params.revalidateCallerOccurrence;
   const resolveAccountId = params.resolveAccountId
     ?? (async (signal?: AbortSignal) => await fetchChangesAccountId({
       token: params.credentials.token,
@@ -164,9 +165,10 @@ export function createAutomationConversationActionExecutor(params: Readonly<{
     if (!materialization.success || materialization.data.pluginId !== args.caller.pluginId) {
       return failure('automation_conversation_caller_materialization_unavailable');
     }
-    const immutableGenerationId = args.caller.immutableGenerationId;
-    if (immutableGenerationId === undefined || !revalidateCallerImmutableGeneration) {
-      return failure('automation_conversation_caller_generation_unavailable');
+    const occurrenceId = args.caller.occurrenceId;
+    const sourceCustody = args.caller.sourceCustody;
+    if (occurrenceId === undefined || sourceCustody === undefined || !revalidateCallerOccurrence) {
+      return failure('automation_conversation_caller_occurrence_unavailable');
     }
     if (!revalidateCallerMaterialization) {
       return failure('automation_conversation_caller_materialization_unavailable');
@@ -174,25 +176,26 @@ export function createAutomationConversationActionExecutor(params: Readonly<{
     const caller: AutomationConversationActionCallerFrame = {
       pluginId: args.caller.pluginId,
       contributionLocalId,
-      immutableGenerationId,
+      occurrenceId,
+      sourceCustody,
       materialization: materialization.data,
     };
     const revalidateCaller = createPluginActionCallerCurrentnessCheck({
       caller: {
         pluginId: args.caller.pluginId,
-        immutableGenerationId,
+        occurrenceId,
         materialization: materialization.data,
       },
       revalidateMaterialization: revalidateCallerMaterialization,
-      revalidateImmutableGeneration: revalidateCallerImmutableGeneration,
+      revalidateOccurrence: revalidateCallerOccurrence,
     });
     const callerNoLongerCurrent = async (): Promise<
       Readonly<{ ok: false; errorCode: string; error: string }> | null
     > => {
       const currentness = await revalidateCaller();
       if (currentness.kind === 'current') return null;
-      return failure(currentness.kind === 'generationUnavailable'
-        ? 'automation_conversation_caller_generation_unavailable'
+      return failure(currentness.kind === 'occurrenceUnavailable'
+        ? 'automation_conversation_caller_occurrence_unavailable'
         : 'automation_conversation_caller_materialization_unavailable');
     };
 

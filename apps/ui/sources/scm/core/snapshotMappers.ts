@@ -1,4 +1,4 @@
-import type { ScmWorkingSnapshot as ProtocolScmWorkingSnapshot } from '@happier-dev/protocol';
+import type { ScmWorkingSnapshotInput as ProtocolScmWorkingSnapshot } from '@happier-dev/protocol/scm';
 
 import type { ScmCapabilities, ScmWorkingEntry, ScmWorkingSnapshot } from '@/sync/domains/state/storageTypes';
 
@@ -55,19 +55,19 @@ export function mergeScmCapabilities(capabilities: Partial<ScmCapabilities> | nu
 export function mapProtocolEntryToUiEntry(entry: ProtocolScmWorkingSnapshot['entries'][number]): ScmWorkingEntry {
     return {
         path: entry.path,
-        previousPath: entry.previousPath,
+        previousPath: entry.previousPath ?? null,
         kind: entry.kind,
         includeStatus: entry.includeStatus,
         pendingStatus: entry.pendingStatus,
-        hasIncludedDelta: entry.hasIncludedDelta,
-        hasPendingDelta: entry.hasPendingDelta,
+        hasIncludedDelta: entry.hasIncludedDelta ?? false,
+        hasPendingDelta: entry.hasPendingDelta ?? false,
         stats: {
-            includedAdded: entry.stats.includedAdded,
-            includedRemoved: entry.stats.includedRemoved,
-            pendingAdded: entry.stats.pendingAdded,
-            pendingRemoved: entry.stats.pendingRemoved,
-            isBinary: entry.stats.isBinary,
-            ...(entry.stats.isComplete === undefined ? {} : { isComplete: entry.stats.isComplete }),
+            includedAdded: entry.stats?.includedAdded ?? 0,
+            includedRemoved: entry.stats?.includedRemoved ?? 0,
+            pendingAdded: entry.stats?.pendingAdded ?? 0,
+            pendingRemoved: entry.stats?.pendingRemoved ?? 0,
+            isBinary: entry.stats?.isBinary ?? false,
+            ...(entry.stats?.isComplete === undefined ? {} : { isComplete: entry.stats.isComplete }),
         },
     };
 }
@@ -85,7 +85,7 @@ export function mapProtocolSnapshotToUiSnapshot(
             backendId: snapshot.repo.backendId,
             mode: snapshot.repo.mode,
             defaultBranch: snapshot.repo.defaultBranch ?? null,
-            worktrees: snapshot.repo.worktrees,
+            worktrees: snapshot.repo.worktrees ?? [],
             remotes: snapshot.repo.remotes ?? [],
         },
         capabilities: mergeScmCapabilities(snapshot.capabilities),

@@ -1,671 +1,593 @@
 import * as React from 'react';
-import { Platform } from 'react-native';
 import { act } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { AIBackendProfileSchema, buildBackendTargetKeyV2, DaemonContributionRegistryProjectionDescribeResponseSchema, ExecutionRunPublicStateSchema, FeaturesResponseSchema, MACHINE_PLAIN_DATA_KEY_MARKER, PersistedBackendTargetRefV2Schema, V2SessionByIdResponseSchema } from '@happier-dev/protocol';
+import { RPC_ERROR_CODES, RPC_METHODS, SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc';
 
-import { flattenTestStyle, flushHookEffects, renderScreen, standardCleanup } from '@/dev/testkit';
-import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
-import type { ParticipantComposerPreparedSubmission } from '@/components/sessions/participants/composer/SessionParticipantComposer';
-import { SessionInteractiveExecutionRunDraftView } from './SessionInteractiveExecutionRunDraftView';
+import { changeTextTestInstance, createMachineFixture, createSessionFixture, renderScreen, standardCleanup } from '@/dev/testkit';
+import { serveActionHomes, type ServedHomeRequest } from '@/dev/testkit/harness/actionHomesHttpHarness';
+import { PLUGIN_PROVIDER_DAEMON_PROJECTION_FIXTURE } from '@/dev/testkit/fixtures/pluginProviderDaemonProjection';
+import { AgentInput } from '@/components/sessions/agentInput';
+import { SessionParticipantComposer } from '@/components/sessions/participants/composer/SessionParticipantComposer';
+import { getStorage } from '@/sync/domains/state/storageStore';
+import { settingsDefaults, type Settings } from '@/sync/domains/settings/settings';
+import { ensureSessionDraftRepositoryHydrated, getSessionDraftSnapshot, resetSessionDraftRepositoryForTests } from '@/sync/ops/sessionDrafts/sessionDraftRepository';
+import { retireActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
+import { invalidateAccountEncryptionModeCache } from '@/sync/api/account/apiAccountEncryptionMode';
+import { clearDaemonMergedProjectionCacheForTests } from '@/agents/backendCatalog/loadDaemonMergedProjectionInputs';
+import { invalidateRoleCatalog } from '@/components/roles/catalog/useRoleCatalog';
 import { t } from '@/text';
+import { SessionInteractiveExecutionRunDraftView } from './SessionInteractiveExecutionRunDraftView';
 
-const composerPropsSpy = vi.hoisted(() => vi.fn());
-const startSpy = vi.hoisted(() => vi.fn());
-const listSpy = vi.hoisted(() => vi.fn());
-const submitSpy = vi.hoisted(() => vi.fn());
-const writeDraftSpy = vi.hoisted(() => vi.fn());
-const clearAcceptedSpy = vi.hoisted(() => vi.fn());
-const randomUUIDSpy = vi.hoisted(() => vi.fn());
-const ensureActiveSpy = vi.hoisted(() => vi.fn());
-const secretOverlayFieldPropsSpy = vi.hoisted(() => vi.fn());
-const executionRunProtocolCheckSpy = vi.hoisted(() => vi.fn());
-const secretOverlayTestState = vi.hoisted(() => ({
-    unavailable: false,
-    overlay: null as null | Readonly<{
-        v: 1;
-        bindings: Readonly<Record<string, Readonly<{ ref: string; revision?: number }>>>;
-    }>,
-}));
-const exactSessionState = vi.hoisted(() => ({
-    current: { id: 'session_1', active: true, metadata: { flavor: 'claude' } } as Record<string, unknown> | null,
-}));
-const launcherCapabilityState = vi.hoisted(() => ({
-    enabledAgentIds: ['claude', 'codex'],
-    executionRunsBackends: {
-        claude: { available: true, intents: ['delegate'] },
-        codex: { available: true, intents: ['delegate'] },
-    } as Record<string, { available: boolean; intents: string[] }>,
-    mergedBackendProjectionById: {} as Record<string, {
-        backendId: string;
-        agentId: string;
-        title: string;
-        subtitle: string;
-        catalogAgentId: string | null;
-        iconAgentId: string | null;
-    }>,
-    mergedProviderProjectionById: {} as Record<string, {
-        agentId: string;
-        qualifiedId: string;
-        identity: { pluginId: string; localId: string };
-        title: string;
-        subtitle: string;
-        channel: 'plugin';
-        isBuiltIn: false;
-        catalogAgentId: null;
-        iconAgentId: null;
-    }>,
-}));
-
+// Platform, credentials, local persistence, HTTP and RPC are the boundaries. The composer,
+// capture/coordinator, draft repository, launcher options, role catalog, capability/feature
+// decisions, default Action executor and sync.submitMessage all run for real.
+// The common AgentInput installer deliberately supplies a small fake store. This journey needs
+// the whole real store, so install its canonical platform factories without that store override.
+vi.mock('react-native', async () => {
+    const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
+    return createReactNativeWebMock();
+});
 vi.mock('react-native-unistyles', async () => {
     const { createUnistylesMock } = await import('@/dev/testkit/mocks/unistyles');
     return createUnistylesMock();
 });
+vi.mock('@expo/vector-icons', async () => {
+    const { createExpoVectorIconsMock } = await import('@/dev/testkit/mocks/icons');
+    return createExpoVectorIconsMock();
+});
+vi.mock('@/text', async () => {
+    const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
+    return createTextModuleMock();
+});
+vi.mock('@/modal', async () => {
+    const { createModalModuleMock } = await import('@/dev/testkit/mocks/modal');
+    return createModalModuleMock({ spies: { alert: modal.alert, show: modal.show } }).module;
+});
+vi.mock('expo-image', () => ({ Image: (props: Record<string, unknown>) => React.createElement('Image', props) }));
+vi.mock('@/sync/domains/state/browserRecordStorage', async () => {
+    const { createBrowserRecordStorageModuleMock } = await import('@/dev/testkit/mocks/browserRecordStorage');
+    return createBrowserRecordStorageModuleMock();
+});
+type RpcRequest = Readonly<{ sessionId?: string; machineId?: string; serverId?: string | null; scope?: { serverId: string }; method: string; payload: unknown }>;
+const transport = vi.hoisted(() => ({ call: vi.fn<(request: RpcRequest) => Promise<unknown>>() }));
+vi.mock('socket.io-client', async () => {
+    const { createSocketIoBoundaryStub } = await import('@/dev/testkit/mocks/socketIo');
+    return { io: (url: string) => {
+        const { socket } = createSocketIoBoundaryStub();
+        socket.emitWithAck.mockImplementation(async (event, raw) => {
+            if (event !== 'rpc-call') return { v: 1, ok: true, admittedSessionIds: ['session_1'] };
+            const call = raw as { method: string; params: unknown };
+            const colon = call.method.indexOf(':');
+            const target = call.method.slice(0, colon);
+            const method = call.method.slice(colon + 1);
+            const { listServerProfiles } = await import('@/sync/domains/server/serverProfiles');
+            const serverId = listServerProfiles().find((profile) => profile.serverUrl === url)?.id;
+            return { ok: true, result: await transport.call({ method, payload: call.params, serverId,
+                ...(target === 'machine_1' ? { machineId: target } : { sessionId: target }) }) };
+        });
+        return socket;
+    } };
+});
+const modal = vi.hoisted(() => ({ alert: vi.fn(), show: vi.fn() }));
+const platform = vi.hoisted(() => ({ focus: vi.fn() }));
+const random = vi.hoisted(() => ({ next: 0 }));
+vi.mock('@/platform/randomUUID', () => ({ randomUUID: () => `identity_${++random.next}` }));
 
-vi.mock('@/components/ui/text/Text', () => ({
-    Text: (props: any) => React.createElement('Text', props, props.children),
-}));
+type Screen = Awaited<ReturnType<typeof renderScreen>>;
+type ComposerProps = React.ComponentProps<typeof SessionParticipantComposer>;
+type Chip = NonNullable<ComposerProps['extraActionChips']>[number];
+type Run = Readonly<Record<string, unknown>>;
+let home: Awaited<ReturnType<typeof serveActionHomes>>;
+let serverId = '';
+let sequence = 0;
+let screen: Screen;
+let backends: Record<string, { available: boolean; intents: string[] }>;
+let protocolSupported = true;
+let admissionFailure = false;
+let admissionGate: Promise<void> | null = null;
+let startResults: Array<unknown | Promise<unknown>>;
+let listedRuns: Run[];
+let listResult: Promise<unknown> | null;
+let emittedStarts: Array<Record<string, unknown>>;
+let outbound: ServedHomeRequest[];
+let pluginProjection = false;
 
-vi.mock('@/components/sessions/participants/composer/SessionParticipantComposer', () => ({
-    SessionParticipantComposer: (props: unknown) => {
-        composerPropsSpy(props);
-        return React.createElement('SessionParticipantComposer', props as object);
-    },
-}));
-
-vi.mock('@/components/sessions/browser/sessionBrowserContextRuntime', () => ({
-    useSessionBrowserContextRuntimeContext: () => ({ composerContext: { state: { selected: [] } } }),
-}));
-
-vi.mock('@/agents/hooks/useEnabledAgentIds', () => ({ useEnabledAgentIds: () => launcherCapabilityState.enabledAgentIds }));
-vi.mock('@/agents/catalog/enabled', () => ({ getEnabledAgentIds: () => launcherCapabilityState.enabledAgentIds }));
-vi.mock('@/agents/hooks/useResumeCapabilityOptions', () => ({ useResumeCapabilityOptions: () => ({ resumeCapabilityOptions: {} }) }));
-vi.mock('@/components/sessions/model/useSessionMachineReachability', () => ({ useSessionMachineReachability: () => ({ machineReachable: true }) }));
-vi.mock('@/components/sessions/model/useSessionMachineTarget', () => ({ useSessionMachineTarget: () => ({ machineId: 'machine_1', basePath: '/repo' }) }));
-vi.mock('@/sync/domains/state/storage', () => ({
-    useSession: () => ({ id: 'session_1', active: true, metadata: { flavor: 'claude' } }),
-    useSettings: () => ({ acpCatalogSettingsV1: { v: 2, backends: [] } }),
-}));
-vi.mock('@/sync/store/settingsWriters', () => ({
-    useAccountSettingsScope: () => ({ serverId: 'server_1', accountId: 'account_1' }),
-}));
-vi.mock('@/components/sessions/shell/sessionViewStableSession', () => ({
-    useSessionViewShellSession: () => exactSessionState.current,
-}));
-vi.mock('@/sync/domains/session/resolveSessionActionDefaultBackend', () => ({
-    resolveSessionActionDefaultBackend: () => ({
-        agentTarget: {
-            kind: 'agent',
-            identity: { pluginId: 'happier.agent.claude', localId: 'claude' },
-        },
-        backendTarget: null,
-        defaultAgentId: 'claude',
-        defaultBackendId: 'claude',
-        displayAgentType: 'claude',
-    }),
-    resolveSessionActionDefaultTarget: () => ({
-        kind: 'agent',
-        identity: { pluginId: 'happier.agent.claude', localId: 'claude' },
-    }),
-}));
-vi.mock('@/sync/runtime/orchestration/serverScopedRpc/usePreferredServerIdForSession', () => ({
-    usePreferredServerIdForSession: () => 'server_1',
-}));
-vi.mock('@/sync/domains/scope/useServerCredentialAccountScopes', () => ({
-    useServerCredentialAccountScopeBindings: () => new Map([['server_1', {
-        serverId: 'server_1',
-        accountId: 'account_1',
-        scope: { serverId: 'server_1', accountId: 'account_1' },
-        isCurrent: () => true,
-    }]]),
-}));
-vi.mock('@/sync/ops/sessionExecutionRuns', () => ({
-    sessionExecutionRunStart: (...args: unknown[]) => startSpy(...args),
-    sessionExecutionRunList: (...args: unknown[]) => listSpy(...args),
-}));
-vi.mock('@/sync/ops/actions/executionRunActionDeps', () => ({
-    createUiExecutionRunActionDeps: () => ({
-        executionRunCheckProtocolV2: (...args: unknown[]) => executionRunProtocolCheckSpy(...args),
-    }),
-}));
-vi.mock('@/hooks/session/useSessionExecutionRunLaunchability', () => ({
-    useSessionExecutionRunLaunchability: () => ({
-        canLaunchExecutionRuns: true,
-        canShowExecutionRunLauncher: true,
-        executionRunsBackends: launcherCapabilityState.executionRunsBackends,
-        executionRunsSupported: true,
-        sessionServerId: 'server_1',
-    }),
-}));
-vi.mock('@/hooks/server/useMachineCapabilitiesCache', () => ({
-    useMachineCapabilitiesCache: () => ({ state: { status: 'idle' } }),
-}));
-vi.mock('@/hooks/server/useFeatureEnabled', () => ({ useFeatureEnabled: () => false }));
-vi.mock('@/agents/backendCatalog/useDaemonMergedProjectionInputs', () => ({
-    useDaemonMergedProjectionInputs: () => ({
-        phase: 'ready',
-        inputs: {
-            mergedBackendProjectionById: launcherCapabilityState.mergedBackendProjectionById,
-            mergedProviderProjectionById: launcherCapabilityState.mergedProviderProjectionById,
-        },
-    }),
-}));
-vi.mock('@/sync/ops/sessionDrafts/sessionDraftRepository', () => ({
-    writeExistingSessionDraft: (...args: unknown[]) => writeDraftSpy(...args),
-}));
-vi.mock('@/components/sessions/composer/repositoryComposerDocumentOwner', () => ({
-    createRepositoryComposerDocumentOwner: () => ({
-        captureCurrentness: () => ({ revision: 1 }),
-        clearAccepted: (...args: unknown[]) => clearAcceptedSpy(...args),
-    }),
-}));
-vi.mock('@/platform/randomUUID', () => ({ randomUUID: () => randomUUIDSpy() }));
-vi.mock('@/sync/sync', () => ({ sync: { submitMessage: (...args: unknown[]) => submitSpy(...args) } }));
-vi.mock('./ensureExecutionRunHostSessionActive', () => ({
-    ensureExecutionRunHostSessionActive: (...args: unknown[]) => ensureActiveSpy(...args),
-}));
-vi.mock('./ExecutionRunSecretReferenceOverlayField', () => ({
-    ExecutionRunSecretReferenceOverlayField: (props: Record<string, unknown>) => {
-        secretOverlayFieldPropsSpy(props);
-        React.useEffect(() => {
-            const overlay = secretOverlayTestState.overlay;
-            (props.onChange as (value: unknown) => void)(secretOverlayTestState.unavailable
-                ? { readiness: { ok: false, reason: 'saved_secret_selection_unavailable' } }
-                : overlay
-                ? { readiness: { ok: true, secretReferenceOverlay: overlay }, overlay }
-                : { readiness: { ok: true } });
-        }, [props.onChange]);
-        return React.createElement('ExecutionRunSecretReferenceOverlayField', props);
-    },
-    resolveExecutionRunSessionLaunchProfile: () => null,
-}));
-
-function preparedSubmission(): ParticipantComposerPreparedSubmission {
-    return {
-        text: 'Inspect this',
-        displayText: 'Inspect this',
-        metaOverrides: { source: 'browser' },
-        draft: { text: 'Inspect this', mentions: [], attachments: [] },
-        onOutboundHandoff: vi.fn(),
-    };
+function record(value: unknown): Record<string, unknown> {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Expected boundary object');
+    return value as Record<string, unknown>;
+}
+function started(runId = 'run_1') { return { runId, callId: `call_${runId}`, sidechainId: `side_${runId}` }; }
+function uncertain() { return { ok: false, error: 'response lost', details: { executionRunStart: { v: 1, runCreation: 'outcomeUnknown' } } }; }
+function noRun() { return { ok: false, error: 'not started', details: { executionRunStart: { v: 1, runCreation: 'noRunCreated' } } }; }
+function run(runId: string, launchOrigin?: unknown): Run {
+    return ExecutionRunPublicStateSchema.parse({ ...started(runId), intent: 'delegate', backendTarget: { kind: 'builtInAgent', agentId: 'claude' }, permissionMode: 'read_only', status: 'running', startedAtMs: 1,
+        retentionPolicy: 'resumable', runClass: 'long_lived', ioMode: 'streaming', ...(launchOrigin ? { launchOrigin } : {}) });
+}
+function startedTargetKey(value: Record<string, unknown>) { return buildBackendTargetKeyV2(PersistedBackendTargetRefV2Schema.parse(value.backendTarget)); }
+function setSettings(patch: Partial<Settings>) {
+    getStorage().setState((state) => ({ settings: { ...state.settings, ...patch } }));
+}
+function composer(): ComposerProps { return screen.root.findByType(Reflect.get(SessionParticipantComposer, 'type')).props as ComposerProps; }
+function chip(key: string): Chip {
+    const found = composer().extraActionChips?.find((item) => item.key === key);
+    expect(found, key).toBeDefined();
+    return found!;
+}
+function input() {
+    const found = screen.root.findAll((node) => node.props.testID === 'session-composer-input' && typeof node.props.onChangeText === 'function').at(-1);
+    expect(found).toBeDefined();
+    return found!;
+}
+function sendButton() {
+    const found = screen.root.findAll((node) => node.props.testID === 'session-composer-send' && typeof node.props.onPress === 'function').at(-1);
+    expect(found).toBeDefined();
+    return found!;
+}
+async function settle() {
+    await act(async () => {});
+}
+async function waitFor(assertion: () => void) {
+    await vi.waitFor(async () => { await settle(); assertion(); });
+}
+async function mount(props: Partial<React.ComponentProps<typeof SessionInteractiveExecutionRunDraftView>> = {}) {
+    screen = await renderScreen(<SessionInteractiveExecutionRunDraftView sessionId="session_1" serverId={serverId} onRunStarted={vi.fn()} {...props} />, {
+        createNodeMock: (element) => element.type === 'TextInput'
+            ? { focus: platform.focus, blur: vi.fn(), setNativeProps: vi.fn() }
+            : null,
+    });
+    await settle();
+    return screen;
+}
+async function type(text: string) { await act(async () => changeTextTestInstance(input(), text)); }
+async function send(text = 'Inspect this', waitForCompletion = true) {
+    await type(text);
+    await waitFor(() => expect(composer().canSendMessages, JSON.stringify({ visible: screen.getTextContent(), rpc: transport.call.mock.calls.map(([request]) => request.method), http: home.requests.map((request) => request.path) })).toBe(true));
+    await act(async () => { await sendButton().props.onPress(); });
+    await settle();
+    if (waitForCompletion) await waitFor(() => expect(screen.findByTestId('execution-run-conversation-phase')).toBeNull());
+}
+async function selectEngine(id: string) { await act(async () => composer().engine?.onSelect(id)); }
+async function renderChipContent(key: string) {
+    return renderScreen(<>{chip(key).collapsedContentPopover?.renderContent({ requestClose: vi.fn() })}</>);
+}
+async function renderChip(key: string) {
+    return renderScreen(<>{chip(key).render({ chipStyle: () => ({}), showLabel: true, iconColor: '#000', textStyle: {}, countTextStyle: {}, popoverAnchorRef: React.createRef() })}</>);
+}
+async function reviewers() {
+    const choices = await renderChipContent('execution-run-start-reviewers-add');
+    const ids = [...new Set(choices.root.findAll((node) => typeof node.props.testID === 'string' && node.props.testID.startsWith('execution-run-launcher-target:')).map((node) => node.props.testID as string))];
+    for (const id of ids) await choices.pressByTestIdAsync(id);
+    await settle();
+    return ids;
+}
+function reviewerKeys() { return (composer().extraActionChips ?? []).map((item) => item.key).filter((key) => key.startsWith('execution-run-start-reviewer:')); }
+function draft(runId = 'run_1') { return getSessionDraftSnapshot({ serverId, accountId: 'account_1' }, { kind: 'run', sessionId: 'session_1', runId }); }
+function admitted() { return record(outbound.at(-1)?.body); }
+function admittedRunId() { return outbound.at(-1)?.path.split('/execution-runs/')[1]?.split('/')[0]; }
+function outboundText() {
+    const content = record(admitted().content);
+    return JSON.stringify(content);
 }
 
-describe('SessionInteractiveExecutionRunDraftView', () => {
-    beforeEach(() => {
-        composerPropsSpy.mockClear();
-        startSpy.mockReset();
-        listSpy.mockReset();
-        submitSpy.mockReset();
-        writeDraftSpy.mockClear();
-        clearAcceptedSpy.mockClear();
-        ensureActiveSpy.mockReset();
-        secretOverlayFieldPropsSpy.mockClear();
-        secretOverlayTestState.overlay = null;
-        secretOverlayTestState.unavailable = false;
-        executionRunProtocolCheckSpy.mockReset();
-        executionRunProtocolCheckSpy.mockResolvedValue({ ok: true, exactMachineId: 'machine_1' });
-        ensureActiveSpy.mockResolvedValue({ ok: true });
-        randomUUIDSpy.mockReset();
-        randomUUIDSpy.mockReturnValueOnce('correlation_1').mockReturnValueOnce('input_1');
-        submitSpy.mockResolvedValue({ localId: 'input_1' });
-        exactSessionState.current = { id: 'session_1', active: true, metadata: { flavor: 'claude' } };
-        launcherCapabilityState.enabledAgentIds = ['claude', 'codex'];
-        launcherCapabilityState.executionRunsBackends = {
-            claude: { available: true, intents: ['delegate'] },
-            codex: { available: true, intents: ['delegate'] },
-        };
-        launcherCapabilityState.mergedBackendProjectionById = {};
-        launcherCapabilityState.mergedProviderProjectionById = {};
-    });
-
-    afterEach(() => standardCleanup());
-
-    it('creates nothing until first Send, then admits the captured input to the exact new Run with one stable identity', async () => {
-        startSpy.mockResolvedValue({ runId: 'run_1' });
-        const onRunStarted = vi.fn();
-        await renderScreen(<SessionInteractiveExecutionRunDraftView sessionId="session_1" onRunStarted={onRunStarted} />);
-
-        expect(startSpy).not.toHaveBeenCalled();
-        const props = composerPropsSpy.mock.calls.at(-1)?.[0] as { submitPreparedMessage: (value: ParticipantComposerPreparedSubmission) => Promise<void> };
-        expect(composerPropsSpy).toHaveBeenLastCalledWith(expect.objectContaining({
-            serverId: 'server_1',
-            initialLocalId: 'input_1',
-            draftOccurrenceId: 'input_1',
-        }));
-        await act(async () => {
-            await props.submitPreparedMessage(preparedSubmission());
+describe('SessionInteractiveExecutionRunDraftView — real composer and Action path', () => {
+    beforeEach(async () => {
+        random.next = 0;
+        protocolSupported = true;
+        admissionFailure = false;
+        admissionGate = null;
+        pluginProjection = false;
+        backends = { claude: { available: true, intents: ['delegate', 'review', 'plan'] }, codex: { available: true, intents: ['delegate', 'review', 'plan'] } };
+        startResults = [];
+        listedRuns = [];
+        listResult = null;
+        emittedStarts = [];
+        outbound = [];
+        modal.alert.mockClear();
+        modal.show.mockClear();
+        platform.focus.mockClear();
+        resetSessionDraftRepositoryForTests();
+        retireActiveServerAccountScopeLifetime();
+        invalidateAccountEncryptionModeCache();
+        clearDaemonMergedProjectionCacheForTests();
+        transport.call.mockReset();
+        transport.call.mockImplementation(async (request) => {
+            if (request.method === RPC_METHODS.CAPABILITIES_DETECT) return {
+                protocolVersion: 1,
+                results: { 'tool.executionRuns': { ok: true, checkedAt: Date.now(), data: {
+                    available: true, backends, protocolVersion: 2,
+                    features: { detachedScope: true, startAndWait: true, exactInputResults: true, runScopedAgentBindings: protocolSupported, secretReferenceOverlay: protocolSupported },
+                } } },
+            };
+            if (request.method === SESSION_RPC_METHODS.EXECUTION_RUN_START) {
+                emittedStarts.push(record(request.payload));
+                return await (startResults.shift() ?? started());
+            }
+            if (request.method === SESSION_RPC_METHODS.EXECUTION_RUN_LIST) return await (listResult ?? { runs: listedRuns });
+            if (request.method === RPC_METHODS.DAEMON_MERGED_CONTRIBUTION_REGISTRY_PROJECTION_DESCRIBE && pluginProjection) return DaemonContributionRegistryProjectionDescribeResponseSchema.parse({
+                protocolVersion: 1,
+                projection: PLUGIN_PROVIDER_DAEMON_PROJECTION_FIXTURE,
+            });
+            return { errorCode: RPC_ERROR_CODES.METHOD_NOT_FOUND, error: 'Method not found' };
         });
-
-        expect(startSpy).toHaveBeenCalledWith('session_1', expect.objectContaining({
-            intent: 'delegate',
-            runClass: 'long_lived',
-            launchOrigin: expect.objectContaining({ draftCorrelationId: 'correlation_1' }),
-        }), { serverId: 'server_1', expectedMachineId: 'machine_1' });
-        expect(onRunStarted).toHaveBeenCalledWith('run_1');
-        expect(writeDraftSpy).toHaveBeenCalledWith(expect.objectContaining({ runId: 'run_1', patch: expect.objectContaining({ text: 'Inspect this' }) }));
-        expect(submitSpy).toHaveBeenCalledWith(
-            'session_1',
-            'Inspect this',
-            'Inspect this',
-            { source: 'browser' },
-            expect.objectContaining({
-                serverId: 'server_1',
-                recipient: { kind: 'execution_run', runId: 'run_1' },
-                localId: 'input_1',
-            }),
-        );
-    });
-
-    it('preflights and forwards a selected value-free overlay, and creates no Run when the exact daemon lacks support', async () => {
-        secretOverlayTestState.overlay = {
-            v: 1,
-            bindings: {
-                OPENAI_API_KEY: { ref: 'happier:shared-secret:v1:shared-1', revision: 7 },
+        home = await serveActionHomes({
+            homes: [{ key: 'home', serverUrl: `https://launcher-${++sequence}.example.test`, accountId: 'account_1' }],
+            route: async (request) => {
+                if (request.path === '/v1/features') return Response.json(FeaturesResponseSchema.parse({
+                    features: { execution: { runs: { enabled: true } }, encryption: { plaintextStorage: { enabled: true }, accountOptOut: { enabled: true } } },
+                    capabilities: { session: { pendingInput: { protocolVersion: 3 } }, accountStoredContentCompatibility: { v: 1, currentProtocolVersion: 3, minimumProtocolVersion: 3, declarationTransport: 'http-header-and-socket-auth-v1' } },
+                }));
+                if (request.path === '/v1/machines/machine_1') return Response.json({ machine: { id: 'machine_1', dataEncryptionKey: MACHINE_PLAIN_DATA_KEY_MARKER } });
+                if (request.path === '/v2/sessions/session_1') {
+                    const session = getStorage().getState().sessions.session_1!;
+                    return Response.json(V2SessionByIdResponseSchema.parse({ session: { ...session, metadata: JSON.stringify(session.metadata), dataEncryptionKey: null } }));
+                }
+                if (request.path.includes('/execution-runs/') && request.path.endsWith('/pending')) {
+                    if (request.method === 'GET') return Response.json({ pending: [], discarded: [], pendingVersion: 1, pendingCount: 0 });
+                    outbound.push(request);
+                    await admissionGate;
+                    if (admissionFailure) return Response.json({ error: 'execution_run_not_allowed' }, { status: 409 });
+                    const body = record(request.body);
+                    const recipient = { kind: 'execution_run', runId: request.path.split('/execution-runs/')[1]!.split('/')[0] };
+                    return Response.json({ didWrite: true, recipient, requestedAction: body.requestedAction,
+                        pending: { ...body, recipient, status: 'queued', position: 1, createdAt: 1, updatedAt: 1 }, pendingVersion: 1, pendingCount: 1 });
+                }
+                if (request.path === '/v1/artifacts') return Response.json({ artifacts: [] });
+                return undefined;
             },
-        };
-        executionRunProtocolCheckSpy.mockResolvedValue({
-            ok: false,
-            errorCode: 'execution_run_protocol_unsupported',
-            error: 'execution_run_protocol_unsupported',
         });
-        const screen = await renderScreen(
-            <SessionInteractiveExecutionRunDraftView sessionId="session_1" onRunStarted={vi.fn()} />,
-        );
-        await flushHookEffects({ cycles: 3 });
-        const composer = composerPropsSpy.mock.calls.at(-1)?.[0] as {
-            submitPreparedMessage: (value: ParticipantComposerPreparedSubmission) => Promise<void>;
-        };
-
-        await act(async () => {
-            await expect(composer.submitPreparedMessage(preparedSubmission()))
-                .rejects.toThrow('execution_run_secret_reference_overlay_update_required');
-        });
-
-        expect(executionRunProtocolCheckSpy).toHaveBeenCalledWith(
-            'session_1',
-            {
-                detachedScope: false,
-                startAndWait: false,
-                exactInputResults: false,
-                runScopedAgentBindings: false,
-                secretReferenceOverlay: true,
-            },
-            { serverId: 'server_1', targetMachineId: 'machine_1' },
-        );
-        expect(startSpy).not.toHaveBeenCalled();
-        // The presentation boundary resolves the code to copy; the raw snake_case code is never shown.
-        expect(screen.tree.root.findAll((node) => (
-            String(node.type) === 'Text'
-            && node.children.includes('execution_run_secret_reference_overlay_update_required')
-        ))).toHaveLength(0);
-        expect(screen.findByTestId('execution-run-conversation-error')?.props.children)
-            .toBe(t('sessionDrafts.executionRunStart.secretReferenceOverlayUpdateRequired'));
+        serverId = home.homes.home!.id;
+        const session = createSessionFixture({ id: 'session_1', serverId, active: true, pendingVersion: 3,
+            metadata: { path: '/repo', host: 'tester.local', homeDir: '/Users/tester', machineId: 'machine_1', flavor: 'claude' } });
+        const machine = createMachineFixture({ id: 'machine_1', activeAt: Date.now(), storageMode: 'plain' });
+        getStorage().setState({ sessions: { session_1: session }, machines: { machine_1: machine }, machineListByServerId: { [serverId]: [machine] },
+            settings: { ...settingsDefaults, experiments: true, featureToggles: { 'execution.runs': true }, backendEnabledByTargetKey: {}, sessionMessageSendMode: 'server_pending', currentSecretBindingsByProfileId: {} },
+            settingsScope: { serverId, accountId: 'account_1' }, profileScope: { serverId, accountId: 'account_1' } });
+        await ensureSessionDraftRepositoryHydrated({ serverId, accountId: 'account_1' });
     });
+    afterEach(async () => { await standardCleanup(); home?.dispose(); });
 
-    it('passes the reviewed overlay into the incumbent rowless Run start after exact-target acceptance', async () => {
-        secretOverlayTestState.overlay = {
-            v: 1,
-            bindings: {
-                OPENAI_API_KEY: { ref: 'happier:shared-secret:v1:shared-1', revision: 7 },
-            },
-        };
-        startSpy.mockResolvedValue({ runId: 'run_overlay' });
-        await renderScreen(<SessionInteractiveExecutionRunDraftView sessionId="session_1" onRunStarted={vi.fn()} />);
-        await flushHookEffects({ cycles: 3 });
-        const composer = composerPropsSpy.mock.calls.at(-1)?.[0] as {
-            submitPreparedMessage: (value: ParticipantComposerPreparedSubmission) => Promise<void>;
-        };
-
-        await act(async () => {
-            await composer.submitPreparedMessage(preparedSubmission());
-        });
-
-        expect(startSpy).toHaveBeenCalledWith('session_1', expect.objectContaining({
-            secretReferenceOverlay: secretOverlayTestState.overlay,
-        }), { serverId: 'server_1', expectedMachineId: 'machine_1' });
+    it('creates nothing until rendered Send, then admits captured text to the exact new Run', async () => {
+        const opened = vi.fn();
+        await mount({ onRunStarted: opened });
+        const inputId = composer().initialLocalId;
+        expect(emittedStarts).toEqual([]);
+        expect(outbound).toEqual([]);
+        await send();
+        expect(emittedStarts[0]).toMatchObject({ intent: 'delegate', runClass: 'long_lived', launchOrigin: { kind: 'session', sessionId: 'session_1', draftCorrelationId: expect.any(String) } });
+        await waitFor(() => expect(opened).toHaveBeenCalledWith('run_1', undefined, { title: 'Inspect this' }));
+        expect(outbound[0]).toMatchObject({ home: 'home', accountId: 'account_1', path: '/v2/sessions/session_1/execution-runs/run_1/pending' });
+        expect(admitted()).toMatchObject({ localId: inputId, targetMachineId: 'machine_1' });
+        expect(outboundText()).toContain('Inspect this');
     });
-
-
-    it('creates no rowless Run when a retained Saved Secret selection becomes stale or feature-unavailable', async () => {
-        secretOverlayTestState.unavailable = true;
-        await renderScreen(<SessionInteractiveExecutionRunDraftView sessionId="session_1" onRunStarted={vi.fn()} />);
-        await flushHookEffects({ cycles: 3 });
-        const composer = composerPropsSpy.mock.calls.at(-1)?.[0] as {
-            canSendMessages: boolean;
-            submitPreparedMessage: (value: ParticipantComposerPreparedSubmission) => Promise<void>;
-        };
-
-        expect(composer.canSendMessages).toBe(false);
-        await expect(composer.submitPreparedMessage(preparedSubmission())).rejects.toThrow();
-        expect(executionRunProtocolCheckSpy).not.toHaveBeenCalled();
-        expect(startSpy).not.toHaveBeenCalled();
+    it('clears the accepted Run draft before navigation retires the Account binding', async () => {
+        let atNavigation: unknown;
+        await mount({ onRunStarted: () => { atNavigation = draft()?.document.composer.text.value; retireActiveServerAccountScopeLifetime(); } });
+        await send();
+        await waitFor(() => expect(atNavigation).toBe(''));
+        expect(input().props.value).toBe('');
     });
-
-    it('clears the accepted Run draft before navigation can retire its exact Account binding', async () => {
-        startSpy.mockResolvedValue({ runId: 'run_1' });
-        submitSpy.mockImplementation(async (...args: unknown[]) => {
-            const options = args[4] as { onOutboundHandoff?: () => void };
-            options.onOutboundHandoff?.();
-            return { localId: 'input_1' };
-        });
-        const clearCountAtNavigation: number[] = [];
-        const onRunStarted = vi.fn(() => clearCountAtNavigation.push(clearAcceptedSpy.mock.calls.length));
-        await renderScreen(<SessionInteractiveExecutionRunDraftView sessionId="session_1" onRunStarted={onRunStarted} />);
-
-        const composer = composerPropsSpy.mock.calls.at(-1)?.[0] as {
-            submitPreparedMessage: (value: ParticipantComposerPreparedSubmission) => Promise<void>;
-        };
-        await act(async () => {
-            await composer.submitPreparedMessage(preparedSubmission());
-        });
-
-        expect(clearAcceptedSpy).toHaveBeenCalledTimes(1);
-        expect(clearCountAtNavigation).toEqual([1]);
+    it('preserves text authored after capture when admission hands off before navigation retires the binding', async () => {
+        let acknowledge!: () => void;
+        admissionGate = new Promise((resolve) => { acknowledge = resolve; });
+        let atNavigation: unknown;
+        await mount({ onRunStarted: () => { atNavigation = draft()?.document.composer.text.value; retireActiveServerAccountScopeLifetime(); } });
+        await send('Inspect this', false);
+        await waitFor(() => expect(outbound).toHaveLength(1));
+        await type('Typed after capture');
+        expect(outboundText()).toContain('Inspect this');
+        expect(outboundText()).not.toContain('Typed after capture');
+        await act(async () => acknowledge());
+        await waitFor(() => expect(atNavigation).toBe('Typed after capture'));
+        expect(input().props.value).toBe('Typed after capture');
     });
-
-    it('starts the first message with the one eligible Agent selected in the shared launcher options', async () => {
-        startSpy.mockResolvedValue({ runId: 'run_codex' });
-        const screen = await renderScreen(
-            <SessionInteractiveExecutionRunDraftView sessionId="session_1" onRunStarted={vi.fn()} />,
-        );
-
-        await screen.pressByTestIdAsync('execution-run-launcher-target:agent:codex');
-        const composer = composerPropsSpy.mock.calls.at(-1)?.[0] as {
-            submitPreparedMessage: (value: ParticipantComposerPreparedSubmission) => Promise<void>;
-        };
-        await act(async () => {
-            await composer.submitPreparedMessage(preparedSubmission());
-        });
-
-        expect(startSpy).toHaveBeenCalledWith('session_1', expect.objectContaining({
-            backendTarget: {
-                kind: 'agent',
-                identity: { pluginId: 'happier.agent.codex', localId: 'codex' },
-            },
-            permissionMode: expect.any(String),
-            retentionPolicy: 'resumable',
-            runClass: 'long_lived',
-            ioMode: 'streaming',
-        }), { serverId: 'server_1', expectedMachineId: 'machine_1' });
-        expect(submitSpy).toHaveBeenCalledWith(
-            'session_1',
-            expect.anything(),
-            expect.anything(),
-            expect.anything(),
-            expect.objectContaining({ recipient: { kind: 'execution_run', runId: 'run_codex' } }),
-        );
+    it('starts with the eligible Agent selected in the real launcher options', async () => {
+        await mount();
+        const codex = composer().engine!.options.find((option) => option.id.includes('codex'))!;
+        await selectEngine(codex.id);
+        await send();
+        expect(startedTargetKey(emittedStarts[0]!)).toBe(codex.id);
+        expect(admittedRunId()).toBe('run_1');
     });
-
-    it('does not let an unavailable default Agent hide another eligible built-in or installed-plugin Agent', async () => {
-        launcherCapabilityState.executionRunsBackends = {
-            claude: { available: false, intents: ['delegate'] },
-            'acme.external/worker': { available: true, intents: ['delegate'] },
-        };
-        launcherCapabilityState.enabledAgentIds = ['claude', 'acme.external/worker'];
-        launcherCapabilityState.mergedBackendProjectionById = {
-            'acme.external/worker': {
-                backendId: 'acme.external/worker',
-                agentId: 'acme.external/worker',
-                title: 'External Worker',
-                subtitle: 'acme.external/worker',
-                catalogAgentId: null,
-                iconAgentId: null,
-            },
-        };
-        launcherCapabilityState.mergedProviderProjectionById = {
-            'acme.external/worker': {
-                agentId: 'acme.external/worker',
-                qualifiedId: 'acme.external/worker',
-                identity: { pluginId: 'acme.external', localId: 'worker' },
-                title: 'External Worker',
-                subtitle: 'acme.external/worker',
-                channel: 'plugin',
-                isBuiltIn: false,
-                catalogAgentId: null,
-                iconAgentId: null,
-            },
-        };
-        startSpy.mockResolvedValue({ runId: 'run_external' });
-
-        await renderScreen(
-            <SessionInteractiveExecutionRunDraftView sessionId="session_1" onRunStarted={vi.fn()} />,
-        );
-        await flushHookEffects();
-        const composer = composerPropsSpy.mock.calls.at(-1)?.[0] as {
-            canSendMessages: boolean;
-            submitPreparedMessage: (value: ParticipantComposerPreparedSubmission) => Promise<void>;
-        };
-        expect(composer.canSendMessages).toBe(true);
-        await act(async () => {
-            await composer.submitPreparedMessage(preparedSubmission());
-        });
-
-        expect(startSpy).toHaveBeenCalledWith('session_1', expect.objectContaining({
-            backendTarget: {
-                kind: 'agent',
-                identity: { pluginId: 'acme.external', localId: 'worker' },
-            },
-        }), { serverId: 'server_1', expectedMachineId: 'machine_1' });
+    it('does not let an unavailable default Agent hide an eligible Agent', async () => {
+        backends.claude = { available: false, intents: ['delegate'] };
+        await mount();
+        expect(composer().engine!.options.some((option) => option.id.includes('codex'))).toBe(true);
+        const codex = composer().engine!.options.find((option) => option.id.includes('codex'))!;
+        await send();
+        expect(startedTargetKey(emittedStarts[0]!)).toBe(codex.id);
     });
-
-    it('re-joins exactly one correlated Run after an outcome-unknown start and never starts another automatically', async () => {
-        startSpy.mockResolvedValue({ ok: false, error: 'unknown', details: { executionRunStart: { v: 1, runCreation: 'outcomeUnknown' } } });
-        listSpy.mockResolvedValue({ runs: [{ runId: 'run_rejoined', launchOrigin: { kind: 'session', sessionId: 'session_1', draftCorrelationId: 'correlation_1' } }] });
-        await renderScreen(<SessionInteractiveExecutionRunDraftView sessionId="session_1" onRunStarted={vi.fn()} />);
-
-        const props = composerPropsSpy.mock.calls.at(-1)?.[0] as { submitPreparedMessage: (value: ParticipantComposerPreparedSubmission) => Promise<void> };
-        await act(async () => {
-            await props.submitPreparedMessage(preparedSubmission());
-        });
-
-        expect(startSpy).toHaveBeenCalledTimes(1);
-        expect(listSpy).toHaveBeenCalledTimes(1);
-        expect(submitSpy).toHaveBeenCalledWith(
-            'session_1', expect.anything(), expect.anything(), expect.anything(),
-            expect.objectContaining({ recipient: { kind: 'execution_run', runId: 'run_rejoined' }, localId: 'input_1' }),
-        );
+    it('starts an eligible installed-plugin Agent even when the default Agent is unavailable', async () => {
+        pluginProjection = true;
+        backends = { claude: { available: false, intents: ['delegate'] }, 'acme.review.provider': { available: true, intents: ['delegate'] } };
+        await mount();
+        await send();
+        expect(emittedStarts[0]).toMatchObject({ backendTarget: { kind: 'agent', identity: { pluginId: 'acme.review', localId: 'provider' } } });
     });
-
-    it('does not guess when correlation has zero matches and leaves the composer draft unaccepted', async () => {
-        startSpy.mockResolvedValue({ ok: false, error: 'unknown', details: { executionRunStart: { v: 1, runCreation: 'outcomeUnknown' } } });
-        listSpy.mockResolvedValue({ runs: [] });
-        const submission = preparedSubmission();
-        const screen = await renderScreen(<SessionInteractiveExecutionRunDraftView sessionId="session_1" onRunStarted={vi.fn()} />);
-
-        const props = composerPropsSpy.mock.calls.at(-1)?.[0] as { submitPreparedMessage: (value: ParticipantComposerPreparedSubmission) => Promise<void> };
-        await act(async () => {
-            await expect(props.submitPreparedMessage(submission)).rejects.toThrow();
-        });
-
-        expect(startSpy).toHaveBeenCalledTimes(1);
-        expect(submitSpy).not.toHaveBeenCalled();
-        expect(submission.onOutboundHandoff).not.toHaveBeenCalled();
-        const startAnother = screen.findByTestId('execution-run-conversation-start-another');
-        expect(startAnother?.props).toEqual(expect.objectContaining({
-            accessibilityRole: 'button',
-            accessibilityLabel: 'Start another',
-        }));
-        // The shared platform policy owns this number; asserting a literal here is
-        // how a Run-local 44 survived next to it and under-sized Android.
-        const recoveryTargetSize = resolveMinimumInteractiveTargetSize(Platform.OS);
-        expect(flattenTestStyle(startAnother?.props.style)).toEqual(expect.objectContaining({
-            minWidth: recoveryTargetSize,
-            minHeight: recoveryTargetSize,
-        }));
-        // An unknown outcome is not a failure: the copy must say the outcome is unknown and warn that
-        // starting another may create a second conversation, never "Request failed.".
-        expect(screen.findByTestId('execution-run-conversation-error')?.props.children)
-            .toBe(t('sessionDrafts.executionRunStart.unresolved'));
-        expect(screen.tree.root.findAll((node) => (
-            String(node.type) === 'Text' && node.children.includes(t('common.requestFailed'))
-        ))).toHaveLength(0);
+    it('rejoins exactly one correlated Run after an uncertain start without starting another', async () => {
+        startResults.push(uncertain());
+        await mount();
+        const baseTransport = transport.call.getMockImplementation()!;
+        transport.call.mockImplementation(async (request) => request.method === SESSION_RPC_METHODS.EXECUTION_RUN_LIST
+            ? { runs: [run('run_found', emittedStarts[0]?.launchOrigin)] }
+            : baseTransport(request));
+        await send();
+        expect(emittedStarts).toHaveLength(1);
+        await waitFor(() => expect(admittedRunId()).toBe('run_found'));
     });
-
-    it('says it is checking whether the conversation started and offers no second Start while reconciling', async () => {
-        startSpy.mockResolvedValue({ ok: false, error: 'unknown', details: { executionRunStart: { v: 1, runCreation: 'outcomeUnknown' } } });
-        let resolveList: (value: unknown) => void = () => undefined;
-        listSpy.mockReturnValue(new Promise((resolve) => { resolveList = resolve; }));
-        const screen = await renderScreen(<SessionInteractiveExecutionRunDraftView sessionId="session_1" onRunStarted={vi.fn()} />);
-
-        const props = composerPropsSpy.mock.calls.at(-1)?.[0] as { submitPreparedMessage: (value: ParticipantComposerPreparedSubmission) => Promise<void> };
-        let submission: Promise<void> = Promise.resolve();
-        await act(async () => {
-            submission = props.submitPreparedMessage(preparedSubmission());
-            submission.catch(() => undefined);
-            await flushHookEffects({ cycles: 2 });
-        });
-
-        expect(listSpy).toHaveBeenCalledTimes(1);
-        expect(screen.findByTestId('execution-run-conversation-phase')?.props.children)
-            .toBe(t('sessionDrafts.executionRunStart.reconciling'));
-        expect(screen.findByTestId('execution-run-conversation-start-another')).toBeNull();
-
-        await act(async () => {
-            resolveList({ runs: [] });
-            await expect(submission).rejects.toThrow();
-        });
-        expect(screen.findByTestId('execution-run-conversation-error')?.props.children)
-            .toBe(t('sessionDrafts.executionRunStart.unresolved'));
-        expect(screen.findByTestId('execution-run-conversation-start-another')).not.toBeNull();
+    it('does not guess when correlation has zero matches and leaves authored text intact', async () => {
+        startResults.push(uncertain());
+        await mount();
+        await send();
+        expect(outbound).toEqual([]);
+        expect(input().props.value).toBe('Inspect this');
+        await waitFor(() => expect(screen.findByTestId('execution-run-conversation-retry')).not.toBeNull());
+        listedRuns = [run('run_recovered', emittedStarts[0]?.launchOrigin)];
+        await screen.pressByTestIdAsync('execution-run-conversation-retry');
+        await settle();
+        expect(emittedStarts).toHaveLength(1);
+        await waitFor(() => expect(admittedRunId()).toBe('run_recovered'));
     });
-
-    it('uses a fresh start correlation and input identity only after explicit unresolved-start recovery', async () => {
-        randomUUIDSpy.mockReset();
-        randomUUIDSpy
-            .mockReturnValueOnce('correlation_1')
-            .mockReturnValueOnce('input_1')
-            .mockReturnValueOnce('correlation_2')
-            .mockReturnValueOnce('input_2');
-        startSpy
-            .mockResolvedValueOnce({ ok: false, error: 'unknown', details: { executionRunStart: { v: 1, runCreation: 'outcomeUnknown' } } })
-            .mockResolvedValueOnce({ runId: 'run_2' });
-        listSpy.mockResolvedValue({ runs: [] });
-        const screen = await renderScreen(
-            <SessionInteractiveExecutionRunDraftView sessionId="session_1" onRunStarted={vi.fn()} />,
-        );
-        const composer = composerPropsSpy.mock.calls.at(-1)?.[0] as {
-            submitPreparedMessage: (value: ParticipantComposerPreparedSubmission) => Promise<void>;
-        };
-
-        await act(async () => {
-            await expect(composer.submitPreparedMessage(preparedSubmission())).rejects.toThrow();
-        });
-        expect(startSpy).toHaveBeenCalledTimes(1);
-
+    it('offers no second Start while reconciliation is pending', async () => {
+        startResults.push(uncertain());
+        let resolveList!: (result: unknown) => void;
+        listResult = new Promise((resolve) => { resolveList = resolve; });
+        await mount();
+        await send('Inspect this', false);
+        expect(composer().canSendMessages).toBe(false);
+        expect(screen.findByTestId('execution-run-conversation-retry')).toBeNull();
+        await act(async () => resolveList({ runs: [] }));
+        await settle();
+        await waitFor(() => expect(screen.findByTestId('execution-run-conversation-retry')).not.toBeNull());
+    });
+    it('uses fresh correlation and input identities only after explicit Start another', async () => {
+        startResults.push(uncertain(), started('run_new'));
+        await mount();
+        const initialInputId = composer().initialLocalId;
+        await send();
         await screen.pressByTestIdAsync('execution-run-conversation-start-another');
-        const recoveredComposer = composerPropsSpy.mock.calls.at(-1)?.[0] as {
-            submitPreparedMessage: (value: ParticipantComposerPreparedSubmission) => Promise<void>;
-        };
-        await act(async () => {
-            await recoveredComposer.submitPreparedMessage(preparedSubmission());
-        });
-
-        expect(startSpy).toHaveBeenCalledTimes(2);
-        expect(startSpy.mock.calls[0]?.[1]).toEqual(expect.objectContaining({
-            launchOrigin: expect.objectContaining({ draftCorrelationId: 'correlation_1' }),
-        }));
-        expect(startSpy.mock.calls[1]?.[1]).toEqual(expect.objectContaining({
-            launchOrigin: expect.objectContaining({ draftCorrelationId: 'correlation_2' }),
-        }));
-        expect(submitSpy).toHaveBeenCalledWith(
-            'session_1', expect.anything(), expect.anything(), expect.anything(),
-            expect.objectContaining({ localId: 'input_2' }),
-        );
+        await settle();
+        await send();
+        expect(record(emittedStarts[0]?.launchOrigin).draftCorrelationId).not.toBe(record(emittedStarts[1]?.launchOrigin).draftCorrelationId);
+        expect(admitted().localId).not.toBe(initialInputId);
     });
-
-    it('preserves the selected Agent and stable draft correlation across a deliberate no-run retry', async () => {
-        startSpy
-            .mockResolvedValueOnce({ ok: false, error: 'not started', details: { executionRunStart: { v: 1, runCreation: 'noRunCreated' } } })
-            .mockResolvedValueOnce({ runId: 'run_codex_retry' });
-        const screen = await renderScreen(
-            <SessionInteractiveExecutionRunDraftView sessionId="session_1" onRunStarted={vi.fn()} />,
-        );
-        await screen.pressByTestIdAsync('execution-run-launcher-target:agent:codex');
-        const composer = composerPropsSpy.mock.calls.at(-1)?.[0] as {
-            submitPreparedMessage: (value: ParticipantComposerPreparedSubmission) => Promise<void>;
-        };
-        await act(async () => {
-            await expect(composer.submitPreparedMessage(preparedSubmission())).rejects.toThrow('not started');
-        });
-        await act(async () => {
-            await composer.submitPreparedMessage(preparedSubmission());
-        });
-
-        expect(startSpy).toHaveBeenCalledTimes(2);
-        expect(startSpy.mock.calls[0]?.[1]).toEqual(expect.objectContaining({
-            backendTarget: {
-                kind: 'agent',
-                identity: { pluginId: 'happier.agent.codex', localId: 'codex' },
-            },
-            launchOrigin: expect.objectContaining({ draftCorrelationId: 'correlation_1' }),
-        }));
-        expect(startSpy.mock.calls[1]?.[1]).toEqual(expect.objectContaining({
-            backendTarget: {
-                kind: 'agent',
-                identity: { pluginId: 'happier.agent.codex', localId: 'codex' },
-            },
-            launchOrigin: expect.objectContaining({ draftCorrelationId: 'correlation_1' }),
-        }));
+    it('preserves selected Agent and correlation across a known no-run retry', async () => {
+        startResults.push(noRun(), started());
+        await mount();
+        await selectEngine(composer().engine!.options.find((option) => option.id.includes('codex'))!.id);
+        await send();
+        await send();
+        expect(emittedStarts.map(startedTargetKey)).toEqual([composer().engine!.selectedOptionId, composer().engine!.selectedOptionId]);
+        expect(emittedStarts[0]?.launchOrigin).toEqual(emittedStarts[1]?.launchOrigin);
     });
-
     it('does not guess when correlation has multiple matches', async () => {
-        startSpy.mockResolvedValue({ ok: false, error: 'unknown', details: { executionRunStart: { v: 1, runCreation: 'outcomeUnknown' } } });
-        listSpy.mockResolvedValue({
-            runs: [
-                { runId: 'run_a', launchOrigin: { kind: 'session', sessionId: 'session_1', draftCorrelationId: 'correlation_1' } },
-                { runId: 'run_b', launchOrigin: { kind: 'session', sessionId: 'session_1', draftCorrelationId: 'correlation_1' } },
-            ],
-        });
-        const submission = preparedSubmission();
-        await renderScreen(<SessionInteractiveExecutionRunDraftView sessionId="session_1" onRunStarted={vi.fn()} />);
-
-        const props = composerPropsSpy.mock.calls.at(-1)?.[0] as { submitPreparedMessage: (value: ParticipantComposerPreparedSubmission) => Promise<void> };
-        await act(async () => {
-            await expect(props.submitPreparedMessage(submission)).rejects.toThrow();
-        });
-
-        expect(startSpy).toHaveBeenCalledTimes(1);
-        expect(listSpy).toHaveBeenCalledTimes(1);
-        expect(submitSpy).not.toHaveBeenCalled();
-        expect(submission.onOutboundHandoff).not.toHaveBeenCalled();
+        startResults.push(uncertain());
+        await mount();
+        const baseTransport = transport.call.getMockImplementation()!;
+        transport.call.mockImplementation(async (request) => request.method === SESSION_RPC_METHODS.EXECUTION_RUN_LIST
+            ? { runs: [run('run_a', emittedStarts[0]?.launchOrigin), run('run_b', emittedStarts[0]?.launchOrigin)] }
+            : baseTransport(request));
+        await send();
+        expect(emittedStarts).toHaveLength(1);
+        expect(outbound).toEqual([]);
+        expect(input().props.value).toBe('Inspect this');
+    });
+    it('retains the materialized Run and exact draft when HTTP admission refuses custody', async () => {
+        admissionFailure = true;
+        const opened = vi.fn();
+        await mount({ onRunStarted: opened });
+        const inputId = composer().initialLocalId;
+        await send();
+        await waitFor(() => expect(opened).toHaveBeenCalledWith('run_1', { retryInputLocalId: inputId }, { title: 'Inspect this' }));
+        expect(draft()?.document.composer.text.value).toBe('Inspect this');
+    });
+    it('does not start from an ambient same-id Session in another Home', async () => {
+        getStorage().setState((state) => ({ sessions: { session_1: { ...state.sessions.session_1!, serverId: 'wrong_home' } } }));
+        await mount();
+        await type('Keep my draft');
+        expect(composer().canSendMessages).toBe(false);
+        expect(input().props.value).toBe('Keep my draft');
+        expect(emittedStarts).toEqual([]);
+    });
+    it('keeps the actual mounted composer and unsent content across Start another', async () => {
+        startResults.push(uncertain());
+        await mount();
+        const owner = screen.root.findByType(Reflect.get(AgentInput, 'type'));
+        await send();
+        await screen.pressByTestIdAsync('execution-run-conversation-start-another');
+        await settle();
+        expect(screen.root.findByType(Reflect.get(AgentInput, 'type'))).toBe(owner);
+        expect(input().props.value).toBe('Inspect this');
+    });
+    it('announces launch and reconciliation through the polite status owner', async () => {
+        let resolveStart!: (result: unknown) => void;
+        startResults.push(new Promise((resolve) => { resolveStart = resolve; }));
+        await mount();
+        await send('Inspect this', false);
+        expect(screen.findHostByTestId('execution-run-conversation-accessibility-status')?.props.accessibilityLiveRegion).toBe('polite');
+        await act(async () => resolveStart(uncertain()));
+        await settle();
+        expect(screen.findByTestId('execution-run-conversation-phase')).not.toBeNull();
+    });
+    it('registers the actual composer focus target only when autofocus is requested', async () => {
+        await mount({ autoFocusComposer: true });
+        expect(platform.focus).toHaveBeenCalled();
+        await screen.unmount();
+        platform.focus.mockClear();
+        await mount({ autoFocusComposer: false });
+        expect(platform.focus).not.toHaveBeenCalled();
+    });
+    it('keeps Ask Agent selection as context and sends it ahead of the typed question', async () => {
+        await mount({ initialText: 'Selected discussion messages', launchOrigin: { kind: 'session_discussion', sessionId: 'session_1', discussionId: 'discussion_1', messageIds: ['message_1'], draftCorrelationId: 'selection_1' } });
+        expect(input().props.value).toBe('');
+        await send('Why did this fail?');
+        expect(outboundText()).toContain('Selected discussion messages');
+        expect(outboundText()).toContain('Why did this fail?');
+        expect(emittedStarts[0]).toMatchObject({ launchOrigin: { discussionId: 'discussion_1', draftCorrelationId: 'selection_1' } });
+    });
+    it('titles the new Run by the captured question', async () => {
+        const opened = vi.fn();
+        await mount({ onRunStarted: opened });
+        await send('Explain this race');
+        await waitFor(() => expect(opened).toHaveBeenCalledWith('run_1', undefined, { title: 'Explain this race' }));
+        expect(emittedStarts[0]).toMatchObject({ display: { title: 'Explain this race' } });
+    });
+    it('keeps Discussion provenance after explicit unresolved recovery', async () => {
+        startResults.push(uncertain(), started());
+        await mount({ initialText: 'Selection', launchOrigin: { kind: 'session_discussion', sessionId: 'session_1', discussionId: 'discussion_1', messageIds: ['message_1'], draftCorrelationId: 'selection_1' } });
+        await send();
+        await screen.pressByTestIdAsync('execution-run-conversation-start-another');
+        await settle();
+        await send();
+        expect(emittedStarts[1]).toMatchObject({ launchOrigin: { kind: 'session_discussion', discussionId: 'discussion_1', messageIds: ['message_1'] } });
+        expect(record(emittedStarts[1]?.launchOrigin).draftCorrelationId).not.toBe('selection_1');
+    });
+    it('forwards the Report chip selection on a plain conversation', async () => {
+        await mount();
+        expect(chip('execution-run-start-report').stabilityKey).toMatch(/^false:/);
+        const report = await renderChip('execution-run-start-report');
+        const toggle = report.root.findAll((node) => node.props.testID === 'execution-run-start-report-switch' && typeof node.props.onValueChange === 'function').at(-1)!;
+        await act(async () => toggle.props.onValueChange(true));
+        await send();
+        expect(emittedStarts[0]).toMatchObject({ notifyParentOnCompletion: true });
+    });
+    it('starts all selected reviewers through real review.start and accepts the typed instructions', async () => {
+        const opened = vi.fn();
+        startResults.push(started('run_claude'), started('run_codex'));
+        await mount({ intent: 'review', onRunStarted: opened });
+        expect(composer().canSendMessages).toBe(false);
+        expect(await reviewers()).toHaveLength(2);
+        expect(reviewerKeys()).toHaveLength(2);
+        await send();
+        expect(emittedStarts).toHaveLength(2);
+        expect(emittedStarts.map((value) => value.intent)).toEqual(['review', 'review']);
+        for (const start of emittedStarts) expect(start).toMatchObject({ instructions: 'Inspect this', notifyParentOnCompletion: true, retentionPolicy: 'resumable' });
+        expect(record(emittedStarts[0]?.display).groupId).toBe(record(emittedStarts[1]?.display).groupId);
+        expect(input().props.value).toBe('');
+        await waitFor(() => expect(opened).toHaveBeenCalledWith('run_claude', undefined, { title: 'Inspect this' }));
+    });
+    it('removes one chosen reviewer from its real removable chip', async () => {
+        await mount({ intent: 'review' });
+        await reviewers();
+        const first = reviewerKeys()[0]!;
+        const reviewer = await renderChip(first);
+        await reviewer.pressByTestIdAsync(`${first}:remove`);
+        await send();
+        expect(emittedStarts).toHaveLength(1);
+    });
+    it('opens a partially started review and names the reviewer that failed', async () => {
+        startResults.push(started('run_claude'), { ok: false, error: 'review_engine_unavailable', errorCode: 'review_engine_unavailable' });
+        const opened = vi.fn();
+        await mount({ intent: 'review', onRunStarted: opened });
+        await reviewers();
+        await send();
+        await waitFor(() => expect(opened).toHaveBeenCalledWith('run_claude', undefined, { title: 'Inspect this' }));
+        await waitFor(() => expect(modal.alert).toHaveBeenCalledWith(t('runPage.review.reviewersNotStarted', { count: 1 }), expect.any(String)));
+        const failureMessage = modal.alert.mock.calls.at(-1)![1] as string;
+        expect(failureMessage).toContain('Codex');
+        expect(failureMessage).not.toContain('Claude');
+        expect(input().props.value).toBe('');
+    });
+    it('keeps the typed draft when the real plan Action refuses every start', async () => {
+        startResults.push({ ok: false, error: 'backend_unavailable' });
+        const opened = vi.fn();
+        await mount({ intent: 'plan', onRunStarted: opened });
+        await send();
+        expect(emittedStarts[0]).toMatchObject({ intent: 'plan', instructions: 'Inspect this', notifyParentOnCompletion: true });
+        expect(opened).not.toHaveBeenCalled();
+        expect(input().props.value).toBe('Inspect this');
+        expect(screen.findByTestId('execution-run-conversation-error')).not.toBeNull();
+    });
+    it('keeps a written draft while execution runs are disabled', async () => {
+        setSettings({ featureToggles: { 'execution.runs': false } });
+        await mount({ intent: 'review' });
+        await type('Keep this');
+        expect(composer().canSendMessages).toBe(false);
+        expect(screen.findByTestId('execution-run-start-blocked')).not.toBeNull();
+        expect(input().props.value).toBe('Keep this');
     });
 
-    it('keeps the materialized Run and exact Run draft when input admission fails before durable handoff', async () => {
-        startSpy.mockResolvedValue({ runId: 'run_1' });
-        submitSpy.mockRejectedValue(new Error('input rejected'));
-        const submission = preparedSubmission();
-        const onRunStarted = vi.fn();
-        await renderScreen(<SessionInteractiveExecutionRunDraftView sessionId="session_1" onRunStarted={onRunStarted} />);
-
-        const props = composerPropsSpy.mock.calls.at(-1)?.[0] as { submitPreparedMessage: (value: ParticipantComposerPreparedSubmission) => Promise<void> };
-        await act(async () => {
-            await expect(props.submitPreparedMessage(submission)).rejects.toThrow('input rejected');
-        });
-
-        expect(onRunStarted).toHaveBeenCalledWith('run_1', { retryInputLocalId: 'input_1' });
-        expect(writeDraftSpy).toHaveBeenCalledWith(expect.objectContaining({ runId: 'run_1' }));
-        expect(submission.onOutboundHandoff).not.toHaveBeenCalled();
-        expect(clearAcceptedSpy).not.toHaveBeenCalled();
+    async function chooseRole(roleId: string) {
+        const rail = composer().engine!.options[0]!;
+        expect(rail.id).toBe('roles');
+        const choices = await renderScreen(<>{rail.renderDetailContent?.({ onRequestClose: vi.fn() })}</>);
+        await settle();
+        await choices.pressByTestIdAsync(`roles-rail-option:${roleId}`);
+        await settle();
+    }
+    it('chooses Planner from the real Roles rail and carries roleId through plan admission', async () => {
+        await mount({ intent: 'plan' });
+        await chooseRole('planner');
+        await send();
+        expect(emittedStarts[0]).toMatchObject({ intent: 'plan', roleId: 'planner' });
+    });
+    it('moves the selected Agent when the chosen role names another Agent', async () => {
+        await mount({ intent: 'delegate' });
+        const codex = composer().engine!.options.find((option) => option.id.includes('codex'))!;
+        setSettings({ rolesV1: { overrides: { scout: { engine: { agentTargetKey: codex.id } } } } });
+        invalidateRoleCatalog();
+        await settle();
+        await chooseRole('scout');
+        expect(composer().engine!.selectedOptionId).toBe(codex.id);
+    });
+    it('names the implicit Reviewer role while leaving an unchosen roleId absent from the start', async () => {
+        await mount({ intent: 'review' });
+        const role = await renderChipContent('execution-run-start-role');
+        expect(role.getTextContent()).toContain('Reviewer');
+        await reviewers();
+        await send();
+        expect(emittedStarts[0]).not.toHaveProperty('roleId');
+    });
+    it('starts Second opinion through the real review Action with its explicit role', async () => {
+        await mount({ intent: 'review', roleId: 'second_opinion' });
+        await reviewers();
+        await send();
+        expect(emittedStarts[0]).toMatchObject({ intent: 'review', roleId: 'second_opinion' });
+    });
+    it('carries a chosen conversation role after the exact daemon confirms binding support', async () => {
+        await mount();
+        await chooseRole('scout');
+        await send();
+        expect(transport.call.mock.calls.some(([request]) => request.method === RPC_METHODS.CAPABILITIES_DETECT && request.machineId === 'machine_1' && request.serverId === serverId)).toBe(true);
+        expect(emittedStarts[0]).toMatchObject({ roleId: 'scout' });
     });
 
-    it('does not start a Run from an ambient same-ID Session when the exact Home Session is unavailable', async () => {
-        exactSessionState.current = null;
-        startSpy.mockResolvedValue({ runId: 'run_wrong_home' });
-        await renderScreen(
-            <SessionInteractiveExecutionRunDraftView
-                sessionId="session_1"
-                serverId="server_exact"
-                onRunStarted={vi.fn()}
-            />,
-        );
-
-        const props = composerPropsSpy.mock.calls.at(-1)?.[0] as {
-            submitPreparedMessage: (value: ParticipantComposerPreparedSubmission) => Promise<void>;
-        };
-        await act(async () => {
-            await expect(props.submitPreparedMessage(preparedSubmission())).rejects.toThrow();
-        });
-
-        expect(startSpy).not.toHaveBeenCalled();
-        expect(submitSpy).not.toHaveBeenCalled();
+    async function configureSecret() {
+        const profile = AIBackendProfileSchema.parse({ id: 'work', name: 'Work', envVarRequirements: [{ name: 'ANTHROPIC_API_KEY', required: true, kind: 'secret' }] });
+        setSettings({ profiles: [profile], secrets: [{ id: 'personal-secret', name: 'Personal secret', kind: 'token', encryptedValue: { _isSecretValue: true, value: 'sealed-secret' }, createdAt: 1, updatedAt: 1 }] });
+        getStorage().setState((state) => ({ sessions: { session_1: { ...state.sessions.session_1!, metadata: { ...state.sessions.session_1!.metadata!, profileId: 'work' } } } }));
+        await mount();
+        await screen.pressByTestIdAsync('execution-run-secret-overlay-edit');
+        const params = record(modal.show.mock.calls.at(-1)?.[0]);
+        const onResolve = record(params.props).onResolve as (value: unknown) => void;
+        await act(async () => onResolve({ action: 'selectSaved', envVarName: 'ANTHROPIC_API_KEY', secretId: 'personal-secret' }));
+        await settle();
+    }
+    it('preflights a selected Saved Secret and creates no Run when the daemon lacks support', async () => {
+        protocolSupported = false;
+        await configureSecret();
+        await send();
+        expect(emittedStarts).toEqual([]);
+        expect(screen.findByTestId('execution-run-conversation-error')?.props.children).toBe(t('sessionDrafts.executionRunStart.secretReferenceOverlayUpdateRequired'));
+        expect(composer().canSendMessages).toBe(true);
+        protocolSupported = true;
+        await send();
+        expect(emittedStarts).toHaveLength(1);
+        expect(emittedStarts[0]).toMatchObject({ secretReferenceOverlay: { v: 1, bindings: { ANTHROPIC_API_KEY: { ref: 'personal-secret' } } } });
+    });
+    it('forwards a value-free Saved Secret overlay after exact-target acceptance', async () => {
+        await configureSecret();
+        await send();
+        expect(emittedStarts[0]).toMatchObject({ secretReferenceOverlay: { v: 1, bindings: { ANTHROPIC_API_KEY: { ref: 'personal-secret' } } } });
+        expect(JSON.stringify(emittedStarts)).not.toContain('sealed-secret');
+    });
+    it('does not create a Run when a Saved Secret selection becomes unavailable', async () => {
+        await configureSecret();
+        await act(async () => setSettings({ secrets: [] }));
+        await settle();
+        await type('Keep this secret-bound draft');
+        expect(composer().canSendMessages).toBe(false);
+        expect(emittedStarts).toEqual([]);
+        expect(input().props.value).toBe('Keep this secret-bound draft');
     });
 });

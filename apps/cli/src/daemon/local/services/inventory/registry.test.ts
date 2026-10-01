@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { LocalServiceInventoryUpdateEventV1Schema } from '@happier-dev/protocol';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { LocalServiceInventoryUpdateEventV1Schema } from '@happier-dev/protocol/local/services/inventory';
+import { createLocalServiceInventoryAnnotationsFileStore } from './annotationsFile';
 
 import {
     createLocalServiceInventoryRegistry,
@@ -102,7 +106,7 @@ describe('createLocalServiceInventoryRegistry', () => {
         expect(registry.getSnapshot().entries[0]?.labels.map((label) => label.text)).toEqual(['Web app']);
     });
 
-    it('stops suppressing a dismissed endpoint when a new process run owns the same port', () => {
+    it('stops suppressing a dismissed endpoint when a new process run owns the same port and inventory id', () => {
         const registry = createLocalServiceInventoryRegistry();
         const firstRun = {
             ...snapshot,
@@ -122,7 +126,7 @@ describe('createLocalServiceInventoryRegistry', () => {
         } as const;
         registry.replaceSnapshot(firstRun);
 
-        expect(registry.forgetEntry({ inventoryId: 'entry-pid-400-start-1000', updatedAt: 1_500 })).toEqual({ ok: true });
+        expect(registry.forgetEntry({ inventoryId: 'entry-pid-400-start-1000', updatedAt: 1_500 })).toMatchObject({ ok: true });
         expect(registry.getSnapshot().entries).toEqual([]);
 
         registry.replaceSnapshot({
@@ -130,7 +134,7 @@ describe('createLocalServiceInventoryRegistry', () => {
             generatedAt: 2_000,
             entries: [{
                 ...snapshot.entries[0],
-                id: 'entry-pid-400-start-2000',
+                id: 'entry-pid-400-start-1000',
                 lastSeenAt: 2_000,
                 provenance: {
                     process: {
@@ -144,33 +148,75 @@ describe('createLocalServiceInventoryRegistry', () => {
             }],
         });
 
-        expect(registry.getSnapshot().entries.map((entry) => entry.id)).toEqual(['entry-pid-400-start-2000']);
+        expect(registry.getSnapshot().entries.map((entry) => entry.id)).toEqual(['entry-pid-400-start-1000']);
     });
 
-    it('bounds forgotten suppression state by capacity', () => {
-        const registry = createLocalServiceInventoryRegistry({ maxForgottenEntries: 2 });
+    it('retains forgotten services beyond the former count and time cutoffs across restart', () => {
+        const annotations = createAnnotationStoreDouble();
+        const registry = createLocalServiceInventoryRegistry({ annotations });
         const entryFor = (index: number) => ({
             ...snapshot.entries[0],
             id: `entry-${index}`,
             port: 5_170 + index,
         });
 
-        for (const index of [1, 2, 3]) {
+        for (let index = 1; index <= 513; index += 1) {
             registry.replaceSnapshot({
                 ...snapshot,
                 generatedAt: 1_000 + index,
                 entries: [entryFor(index)],
             });
-            expect(registry.forgetEntry({ inventoryId: `entry-${index}`, updatedAt: 1_100 + index })).toEqual({ ok: true });
+            expect(registry.forgetEntry({ inventoryId: `entry-${index}`, updatedAt: 1_100 + index })).toMatchObject({ ok: true });
         }
 
-        registry.replaceSnapshot({
+        const restarted = createLocalServiceInventoryRegistry({ annotations });
+        restarted.replaceSnapshot({
             ...snapshot,
-            generatedAt: 2_000,
+            generatedAt: 31 * 60_000,
             entries: [entryFor(1)],
         });
 
-        expect(registry.getSnapshot().entries.map((entry) => entry.id)).toEqual(['entry-1']);
+        expect(restarted.getSnapshot().entries).toEqual([]);
+    });
+
+    it('acknowledges label and Forget only after the latest complete annotations are on disk', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'happier-inventory-annotations-'));
+        try {
+            const annotations = createLocalServiceInventoryAnnotationsFileStore({ path: join(dir, 'annotations.json') });
+            const registry = createLocalServiceInventoryRegistry({ annotations });
+            registry.replaceSnapshot(snapshot);
+            expect(registry.applyLabelPatch({ inventoryId: 'entry-1', text: 'First', source: 'user', updatedAt: 2_000 })).toEqual({ ok: true });
+            expect(registry.applyLabelPatch({ inventoryId: 'entry-1', text: 'Latest', source: 'user', updatedAt: 3_000 })).toEqual({ ok: true });
+            expect(registry.forgetEntry({ inventoryId: 'entry-1', updatedAt: 4_000 })).toMatchObject({ ok: true });
+            const stored = annotations.read();
+            expect(stored?.labelsByFallbackKey[0]?.[1][0]?.text).toBe('Latest');
+            expect(stored?.forgottenFallbackKeys).toHaveLength(1);
+            const restarted = createLocalServiceInventoryRegistry({ annotations });
+            restarted.replaceSnapshot({ ...snapshot, generatedAt: 31 * 60_000 });
+            expect(restarted.getSnapshot().entries).toEqual([]);
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    it('surfaces disk failure without publishing or retaining a failed annotation mutation', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'happier-inventory-annotations-failure-'));
+        try {
+            const blocker = join(dir, 'not-a-directory');
+            writeFileSync(blocker, 'block writes');
+            const annotations = createLocalServiceInventoryAnnotationsFileStore({ path: join(blocker, 'annotations.json') });
+            const registry = createLocalServiceInventoryRegistry({ annotations });
+            registry.replaceSnapshot(snapshot);
+            const events: unknown[] = [];
+            registry.subscribe((event) => events.push(event));
+            expect(() => registry.applyLabelPatch({ inventoryId: 'entry-1', text: 'Failed', source: 'user', updatedAt: 2_000 })).toThrow();
+            expect(() => registry.forgetEntry({ inventoryId: 'entry-1', updatedAt: 3_000 })).toThrow();
+            registry.replaceSnapshot(snapshot);
+            expect(registry.getSnapshot().entries).toEqual(snapshot.entries);
+            expect(events).toHaveLength(1); // Only the later census, no acknowledged mutation.
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
     });
     it('carries a user label across a daemon restart (tunnels audit 4.8)', () => {
         const annotations = createAnnotationStoreDouble();
@@ -199,7 +245,7 @@ describe('createLocalServiceInventoryRegistry', () => {
         const annotations = createAnnotationStoreDouble();
         const first = createLocalServiceInventoryRegistry({ annotations });
         first.replaceSnapshot(snapshot);
-        expect(first.forgetEntry({ inventoryId: 'entry-1', updatedAt: 2_000 })).toEqual({ ok: true });
+        expect(first.forgetEntry({ inventoryId: 'entry-1', updatedAt: 2_000 })).toMatchObject({ ok: true });
         expect(first.getSnapshot().entries).toHaveLength(0);
 
         const restarted = createLocalServiceInventoryRegistry({ annotations });
@@ -223,5 +269,34 @@ describe('createLocalServiceInventoryRegistry', () => {
             updatedAt: 2_000,
         })).toEqual({ ok: true });
         expect(registry.getSnapshot().entries[0]?.labels.map((label) => label.text)).toEqual(['Storefront']);
+    });
+
+    it('does not acknowledge a failed Undo write or revive an entry absent from the latest scan', () => {
+        const stored = createAnnotationStoreDouble();
+        let rejectWrites = false;
+        const registry = createLocalServiceInventoryRegistry({ annotations: {
+            read: stored.read,
+            write: (next) => {
+                if (rejectWrites) throw new Error('disk unavailable');
+                stored.write(next);
+            },
+        } });
+        registry.replaceSnapshot(snapshot);
+        const forgotten = registry.forgetEntry({ inventoryId: 'entry-1', updatedAt: 2_000 });
+        expect(forgotten.ok).toBe(true);
+        if (!forgotten.ok) throw new Error('Forget must succeed');
+        const events: unknown[] = [];
+        registry.subscribe((event) => events.push(event));
+        rejectWrites = true;
+        expect(() => registry.undoForget(forgotten.undoKey)).toThrow('disk unavailable');
+        expect(events).toEqual([]);
+        expect(stored.read()?.forgottenFallbackKeys).toHaveLength(1);
+        registry.replaceSnapshot({ ...snapshot, generatedAt: 3_000, entries: [] });
+        rejectWrites = false;
+        expect(registry.undoForget(forgotten.undoKey)).toEqual({ ok: true });
+        expect(registry.getSnapshot().entries).toEqual([]);
+        expect(stored.read()?.forgottenFallbackKeys).toEqual([]);
+        registry.replaceSnapshot(snapshot);
+        expect(registry.getSnapshot().entries).toHaveLength(1);
     });
 });

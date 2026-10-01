@@ -1,27 +1,32 @@
 import { getAgentCore, isBundledAgentId } from '@/agents/catalog/catalog';
 import { buildSendMessageMeta } from '@/sync/domains/messages/buildSendMessageMeta';
-import type { MessageMeta } from '@/sync/domains/messages/messageMetaTypes';
+import type { MessageMeta } from "@happier-dev/session-core/messages";
 import { resolveSentFrom } from '@/sync/domains/messages/sentFrom';
 import type { ModelMode, PermissionMode } from '@/sync/domains/permissions/permissionTypes';
 import { storage } from '@/sync/domains/state/storage';
 import type { PendingMessage, Session } from '@/sync/domains/state/storageTypes';
 import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
-import type { TranscriptAccountActor } from '@/sync/domains/messages/transcriptAccountActor';
+import type { TranscriptAccountActor } from "@happier-dev/session-core/messages";
 import { nowServerMs } from '@/sync/runtime/time';
-import type { RawRecord } from '@/sync/typesRaw';
+import type { RawRecord } from "@happier-dev/session-core/raw";
 import type { SessionMessageHostAdmissionOrigin } from '@/sync/domains/session/input/types';
 import {
     buildTrustedHostSessionInputAdmissionV1,
     projectSessionMessageModelSelectionToLegacyModelV1,
     SESSION_INPUT_REQUEST_META_KEY,
     SESSION_MESSAGE_PROVENANCE_META_KEY,
+    resolveEffectiveApiTokenModelRefV1,
+    resolveEffectiveApiTokenPermissionModeV1,
     stripSessionInputProtectedMeta,
     withSessionMessageModelSelectionV1,
+    type ProviderBoundModelRef,
     type SentFrom,
     type SessionModelSelectionV1,
 } from '@happier-dev/protocol';
 import { resolveBackendTargetKeyV2 } from '@/agents/backendCatalog/backendTargetKeyV2';
 import { getModelOverrideForSpawn } from '@/sync/domains/models/modelOverride';
+import { buildAgentUniverseBackendTargetKey } from '@/agents/catalog/agentUniverse';
+import { readSessionPresentationAgentId } from '@/sync/domains/session/presentation/readSessionPresentationAgentId';
 import {
     resolveSessionActionDefaultBackend,
     resolveSessionActionDefaultTarget,
@@ -60,12 +65,38 @@ function resolveStructuredOutgoingModelSelection(sessionValue: unknown): Session
     const session = sessionValue as Session;
     const defaultBackend = resolveSessionActionDefaultBackend({ session });
     const defaultTarget = resolveSessionActionDefaultTarget(defaultBackend);
-    if (!defaultTarget) return null;
+    const agentId = readSessionPresentationAgentId(session);
+    const agentTargetKey = defaultTarget ? resolveBackendTargetKeyV2(defaultTarget)
+        : agentId ? buildAgentUniverseBackendTargetKey(agentId) : null;
+    if (!agentTargetKey) return null;
     const modelOverride = getModelOverrideForSpawn(
         session,
-        resolveBackendTargetKeyV2(defaultTarget),
+        agentTargetKey,
     );
     return modelOverride?.modelSelection ?? null;
+}
+
+/**
+ * The model a message runs on when its sender may use only `allowedModels` (an embed's grant, or a
+ * presentation that narrows the picker): the Session's own choice when it is allowed, else the first
+ * allowed model (plan 04 §4.6, the same rule new chats use). The grant decision is the protocol's
+ * (`resolveEffectiveApiTokenModelRefV1`); with no list the Session's choice, Automatic included, stands.
+ */
+function constrainOutgoingModelSelection(
+    selection: SessionModelSelectionV1 | null,
+    allowedModels: readonly ProviderBoundModelRef[] | null | undefined,
+): SessionModelSelectionV1 | null {
+    if (!allowedModels) return selection;
+    const effective = resolveEffectiveApiTokenModelRefV1({ models: [...allowedModels] }, selection?.ref ?? 'automatic');
+    if (effective === null || effective === 'automatic') return selection;
+    if (selection && sameModelRef(selection.ref, effective)) return selection;
+    return { v: 1, updatedAt: nowServerMs(), ref: effective };
+}
+
+function sameModelRef(left: ProviderBoundModelRef, right: ProviderBoundModelRef): boolean {
+    return left.agentTargetKey === right.agentTargetKey
+        && left.providerConnectionId === right.providerConnectionId
+        && left.modelId === right.modelId;
 }
 
 function stripOutgoingUserMessageProtectedMeta(
@@ -95,8 +126,15 @@ export function buildOutgoingUserTextRecord(params: Readonly<{
     metaOverrides?: Record<string, unknown> | Partial<MessageMeta> | null;
     hostAdmissionOrigin?: SessionMessageHostAdmissionOrigin;
     sentFrom?: SentFrom;
+    /** The models this sender may run (an embed's grant or a narrowing presentation); `null`: any. */
+    allowedModels?: readonly ProviderBoundModelRef[] | null;
+    /** Per-input permission grant; absent/null retains the unrestricted sender's policy. */
+    allowedPermissionModes?: readonly PermissionMode[] | null;
 }>): RawRecord {
-    const structuredModelSelection = resolveStructuredOutgoingModelSelection(params.session);
+    const structuredModelSelection = constrainOutgoingModelSelection(
+        resolveStructuredOutgoingModelSelection(params.session),
+        params.allowedModels,
+    );
     const callerMeta = stripOutgoingUserMessageProtectedMeta(params.metaOverrides);
     const mergedMeta = buildSendMessageMeta({
         sentFrom: params.sentFrom ?? resolveSentFrom(),
@@ -112,6 +150,14 @@ export function buildOutgoingUserTextRecord(params: Readonly<{
         session: params.session,
         metaOverrides: callerMeta as Partial<MessageMeta>,
     });
+    if (params.allowedPermissionModes) {
+        const effectiveMode = resolveEffectiveApiTokenPermissionModeV1(
+            { permissionModes: [...params.allowedPermissionModes] },
+            mergedMeta.permissionMode ?? params.permissionMode,
+        );
+        if (effectiveMode === null) throw Object.assign(new Error('permission_mode_not_granted'), { code: 'permission_mode_not_granted' });
+        mergedMeta.permissionMode = effectiveMode;
+    }
     const meta = {
         ...stripOutgoingUserMessageProtectedMeta(mergedMeta),
         ...buildHostAdmissionMeta(params.hostAdmissionOrigin),

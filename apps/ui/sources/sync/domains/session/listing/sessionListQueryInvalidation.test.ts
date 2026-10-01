@@ -55,6 +55,11 @@ describe('filtered-list Account-change invalidation', () => {
         publishHomeAccountChange('home-a');
         expect(invalidate).toHaveBeenCalledTimes(2);
 
+        // Row-level Session writes reach only corpora whose structural selection may move.
+        publishHomeAccountChange('home-a', ['session-1'], { sessionListQueryAffects: 'structural' });
+        expect(invalidate).toHaveBeenCalledTimes(3);
+        expect(invalidate).toHaveBeenLastCalledWith('structural');
+
         dispose();
     });
 });

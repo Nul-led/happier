@@ -2,6 +2,7 @@ import { resolveCliFeatureDecision, type CliServerFeaturesSnapshot } from '@/fea
 import { startSingleFlightIntervalLoop, type SingleFlightIntervalLoopHandle } from '@/daemon/lifecycle/singleFlightIntervalLoop';
 import { listSessionMarkers } from '@/daemon/sessionRegistry';
 import { logger } from '@/ui/logger';
+import { localServiceListenerGroupKey, type LocalServiceMachineSummaryV1 } from '@happier-dev/protocol/local/services/inventory';
 import {
     DEFAULT_LOCAL_SERVICE_CAPABILITIES,
     type FeatureDecision,
@@ -18,10 +19,10 @@ import { createLocalServiceInventoryRoutes, type LocalServiceInventoryRoutes } f
 import {
     createLocalServicePreviewRegistry,
     registerLocalServicePreview,
-    unregisterLocalServicePreview,
     type LocalServicePreviewRegistry,
 } from './preview/registry';
 import { createLocalServicePreviewRoutes, type LocalServicePreviewRoutes } from './preview/routes';
+import type { LocalServicePreviewServerInput } from './preview/serverRoutes';
 import { createLocalServiceActionRoutes, type LocalServiceActionRoutes } from './actions/routes';
 import {
     createTerminateDetectedService,
@@ -91,6 +92,8 @@ export type LocalServicesDaemonRuntime = Readonly<{
     previewRoutes: LocalServicePreviewRoutes;
     actionRoutes: LocalServiceActionRoutes;
     refreshInventoryNow(): Promise<NormalizedLocalServiceInventorySnapshot>;
+    getSummary(): LocalServiceMachineSummaryV1;
+    subscribeSummary(subscriber: (summary: LocalServiceMachineSummaryV1) => void): () => void;
     syncHostedWebStaticAssets(
         contributions: readonly HostedWebStaticAssetLifecycleContribution[],
     ): Promise<HostedWebStaticAssetLifecycleSyncResult>;
@@ -196,6 +199,8 @@ async function readDaemonSessionWorkspaceFacts(machineId: string): Promise<reado
 
 export function createLocalServicesDaemonRuntime(params: Readonly<{
     machineId: string;
+    accountId?: string;
+    previewServer?: LocalServicePreviewServerInput;
     processEnv?: NodeJS.ProcessEnv;
     inventoryEnabled?: () => boolean;
     /**
@@ -219,6 +224,8 @@ export function createLocalServicesDaemonRuntime(params: Readonly<{
     onError?: (error: unknown) => void;
     workspaceFacts?: LocalServiceWorkspaceFactsProvider;
     terminalRegistry?: TerminalProcessRegistry;
+    internalProcessPids?: () => readonly number[];
+    internalEndpointUrls?: () => readonly string[];
     runTargets?: () => Promise<readonly LocalServiceRunTarget[]> | readonly LocalServiceRunTarget[];
     resolveSessionWorkspacePaths?: (sessionId: string) => Promise<readonly string[]> | readonly string[];
     hostedWebStaticAssets?: Omit<HostedWebStaticAssetLifecycleOptions, 'registerPreview' | 'unregisterPreview'>;
@@ -264,6 +271,33 @@ export function createLocalServicesDaemonRuntime(params: Readonly<{
         ...(cachedServerFeaturesSnapshot ? { serverSnapshot: cachedServerFeaturesSnapshot } : {}),
     });
     const isInventoryEnabled = params.inventoryEnabled ?? (() => resolveDecision().state === 'enabled');
+    const summarySubscribers = new Set<(summary: LocalServiceMachineSummaryV1) => void>();
+    let summary: LocalServiceMachineSummaryV1 = { v: 1, state: 'unknown' };
+    const unsubscribeInventorySummary = inventoryRegistry.subscribe(() => {
+        const snapshot = inventoryRegistry.getSnapshot();
+        let next: LocalServiceMachineSummaryV1;
+        if (snapshot.refreshState === 'error') {
+            next = {
+                v: 1,
+                state: snapshot.diagnostics.some((diagnostic) => diagnostic.code === 'local_services_inventory_probe_failed')
+                    ? 'unknown' : 'error',
+            };
+        } else if (snapshot.diagnostics.some((diagnostic) => diagnostic.code.startsWith('local_services_inventory_'))) {
+            next = { v: 1, state: 'disabled' };
+        } else if (snapshot.generatedAt === 0) {
+            next = { v: 1, state: 'unknown' };
+        } else {
+            const listeners = new Set(snapshot.entries
+                .filter((entry) => entry.state === 'listening' && entry.classification?.kind !== 'happier')
+                .map(localServiceListenerGroupKey));
+            next = { v: 1, state: 'ready', runningCount: listeners.size };
+        }
+        if (summary.state === next.state && (
+            summary.state !== 'ready' || next.state !== 'ready' || summary.runningCount === next.runningCount
+        )) return;
+        summary = next;
+        for (const subscriber of summarySubscribers) subscriber(summary);
+    });
     // Refresh the cached server-features snapshot from the daemon-supplied provider. Best-effort:
     // a thrown/failed provider keeps the previous snapshot (or none), so the gate stays fail-closed
     // rather than flapping. Skipped entirely when a deterministic `inventoryEnabled` gate is set.
@@ -276,11 +310,35 @@ export function createLocalServicesDaemonRuntime(params: Readonly<{
             params.onError?.(error);
         }
     };
+    const previewRoutes = createLocalServicePreviewRoutes({
+        machineId: params.machineId,
+        accountId: params.accountId,
+        server: params.previewServer,
+        registry: previewRegistry,
+        inventoryRegistry,
+        now,
+    });
     const hostedWebStaticAssets: HostedWebStaticAssetLifecycle | null = params.hostedWebStaticAssets
         ? createHostedWebStaticAssetLifecycle({
             ...params.hostedWebStaticAssets,
-            registerPreview: (resource) => registerLocalServicePreview(previewRegistry, resource),
-            unregisterPreview: (previewId) => unregisterLocalServicePreview(previewRegistry, previewId),
+            registerPreview: async (resource) => {
+                const registered = registerLocalServicePreview(previewRegistry, resource);
+                if (!registered.ok) throw new Error(registered.reasonCode);
+                // Activation owns publication. Snapshot readers only observe its result.
+                const published = await previewRoutes.openOrCreate({
+                    machineId: params.machineId,
+                    ...(resource.sessionId ? { sessionId: resource.sessionId } : {}),
+                    launchTargetId: resource.previewId,
+                });
+                if (!published.ok) throw new Error(published.reasonCode);
+                return registered;
+            },
+            unregisterPreview: async (previewId) => {
+                const result = await previewRoutes.revoke({ machineId: params.machineId, previewId });
+                if (!result.ok) {
+                    throw new Error(result.reasonCode);
+                }
+            },
         })
         : null;
 
@@ -300,7 +358,7 @@ export function createLocalServicesDaemonRuntime(params: Readonly<{
             // boundary used to produce: a surface that confidently reports no services while they
             // are running. A decided gate (the server turned the product off) IS an answer and stays
             // authoritative.
-            const snapshot = decision.state === 'unknown'
+            const snapshot = decision.state === 'unknown' && !params.inventoryEnabled
                 ? nonAuthoritativeInventorySnapshot({
                     previous,
                     machineId: params.machineId,
@@ -351,6 +409,8 @@ export function createLocalServicesDaemonRuntime(params: Readonly<{
             workspaces: mergeLocalServiceWorkspaceFacts(result.workspaces, daemonWorkspaces),
             terminalRegistry,
             staleAfterMs,
+            internalProcessPids: params.internalProcessPids?.() ?? [process.pid],
+            internalEndpointUrls: params.internalEndpointUrls?.(),
         });
         let snapshotWithDiagnostics: NormalizedLocalServiceInventorySnapshot = {
             ...snapshot,
@@ -382,6 +442,14 @@ export function createLocalServicesDaemonRuntime(params: Readonly<{
         currentRefresh = (async () => {
             try {
                 return await runInventoryRefresh();
+            } catch (error) {
+                inventoryRegistry.replaceSnapshot(nonAuthoritativeInventorySnapshot({
+                    previous: inventoryRegistry.getSnapshot(),
+                    machineId: params.machineId,
+                    now: now(),
+                    diagnostics: [{ code: 'local_services_inventory_scan_failed', severity: 'error' }],
+                }));
+                throw error;
             } finally {
                 currentRefresh = null;
             }
@@ -411,7 +479,7 @@ export function createLocalServicesDaemonRuntime(params: Readonly<{
         : startSingleFlightIntervalLoop({
             intervalMs: scanIntervalMs,
             task: async () => {
-                if (activeInventoryWatchers === 0) {
+                if (activeInventoryWatchers === 0 && summarySubscribers.size === 0) {
                     return;
                 }
                 await refreshInventoryNow();
@@ -427,12 +495,6 @@ export function createLocalServicesDaemonRuntime(params: Readonly<{
         onWatcherCountChanged: (count) => {
             activeInventoryWatchers = count;
         },
-    });
-    const previewRoutes = createLocalServicePreviewRoutes({
-        machineId: params.machineId,
-        registry: previewRegistry,
-        inventoryRegistry,
-        now,
     });
     // Workspace-scoped package-script discovery (LSV-6). Reads package.json files only
     // (binary-safe: no node/package-manager spawn). Single-flighted + short-TTL cached so
@@ -538,6 +600,12 @@ export function createLocalServicesDaemonRuntime(params: Readonly<{
         previewRoutes,
         actionRoutes,
         refreshInventoryNow,
+        getSummary: () => summary,
+        subscribeSummary(subscriber) {
+            summarySubscribers.add(subscriber);
+            subscriber(summary);
+            return () => { summarySubscribers.delete(subscriber); };
+        },
         syncHostedWebStaticAssets: async (contributions) => {
             if (!hostedWebStaticAssets) {
                 return hostedWebStaticAssetsUnavailableSnapshot(contributions);
@@ -552,6 +620,8 @@ export function createLocalServicesDaemonRuntime(params: Readonly<{
         },
         async stop() {
             loop?.stop();
+            unsubscribeInventorySummary();
+            summarySubscribers.clear();
             try {
                 await hostedWebStaticAssets?.stop();
             } catch (error) {

@@ -100,6 +100,7 @@ describe('resolveAgentScopedPluginSettingsDeclarations', () => {
             },
             pluginProjectionById: {
                 'plugin.alpha': {
+                    occurrenceId: 'alpha-occurrence',
                     immutableGenerationId: 'alpha-generation',
                     editableSettingsGroups: [{
                         scope: { kind: 'account' },
@@ -108,6 +109,7 @@ describe('resolveAgentScopedPluginSettingsDeclarations', () => {
                     }],
                 },
                 'plugin.beta': {
+                    occurrenceId: 'beta-occurrence',
                     immutableGenerationId: 'beta-generation',
                     editableSettingsGroups: [{
                         scope: { kind: 'account' },
@@ -129,11 +131,11 @@ describe('resolveAgentScopedPluginSettingsDeclarations', () => {
 
         expect(alpha.account).toMatchObject({
             pluginId: 'plugin.alpha',
-            sourceLifetimeIdentity: 'agent-settings:plugin.alpha/agent:account:alpha-generation',
+            sourceLifetimeIdentity: 'agent-settings:plugin.alpha/agent:account:alpha-occurrence',
         });
         expect(beta.account).toMatchObject({
             pluginId: 'plugin.beta',
-            sourceLifetimeIdentity: 'agent-settings:plugin.beta/agent:account:beta-generation',
+            sourceLifetimeIdentity: 'agent-settings:plugin.beta/agent:account:beta-occurrence',
         });
         expect(alpha.account?.fields).toHaveLength(1);
         expect(beta.account?.fields).toHaveLength(1);

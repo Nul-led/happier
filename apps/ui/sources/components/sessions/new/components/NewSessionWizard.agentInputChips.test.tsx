@@ -202,8 +202,6 @@ function buildProps() {
             tmuxRequested: false,
             enabledAgentIds: ['codex'],
             isAgentSelectable: () => true,
-            isCliBannerDismissed: () => true,
-            dismissCliBanner: () => {},
             agentType: 'codex',
             setAgentType: () => {},
             selectedIndicatorColor: '#000',
@@ -324,10 +322,10 @@ describe('NewSessionWizard agent input chips', () => {
             agentLabel: 'Gemini',
             setAgentType,
             agentPickerOptions: [
-                { id: 'backend:gemini', label: 'Gemini' },
-                { id: 'backend:pi', label: 'Pi', onSelectImmediate: selectPiImmediately },
+                { id: 'agent:happier.agent.gemini/gemini', label: 'Gemini' },
+                { id: 'agent:happier.agent.pi/pi', label: 'Pi', onSelectImmediate: selectPiImmediately },
             ],
-            agentPickerSelectedOptionId: 'backend:gemini',
+            agentPickerSelectedOptionId: 'agent:happier.agent.gemini/gemini',
             onAgentPickerSelect,
         } as any;
 
@@ -343,13 +341,13 @@ describe('NewSessionWizard agent input chips', () => {
         ))[0];
 
         expect(dropdown?.props?.items?.map((item: any) => ({ id: item.id, title: item.title }))).toEqual([
-            { id: 'backend:gemini', title: 'Gemini' },
-            { id: 'backend:pi', title: 'Pi' },
+            { id: 'agent:happier.agent.gemini/gemini', title: 'Gemini' },
+            { id: 'agent:happier.agent.pi/pi', title: 'Pi' },
         ]);
-        expect(dropdown?.props?.selectedId).toBe('backend:gemini');
+        expect(dropdown?.props?.selectedId).toBe('agent:happier.agent.gemini/gemini');
 
         await act(async () => {
-            dropdown?.props?.onSelect?.('backend:pi');
+            dropdown?.props?.onSelect?.('agent:happier.agent.pi/pi');
         });
 
         expect(selectPiImmediately).toHaveBeenCalledTimes(1);

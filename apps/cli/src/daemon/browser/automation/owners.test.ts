@@ -6,6 +6,30 @@ const view = { browserSessionId: 'browser_session_1', viewId: 'view_1' } as cons
 const otherView = { browserSessionId: 'browser_session_1', viewId: 'view_2' } as const;
 
 describe('browser automation owner registry', () => {
+  it('projects interruption settlement and clears uncertainty after a fresh human observation', async () => {
+    const registry = createBrowserAutomationOwnerRegistry();
+    const control = registry.getInputControl(view);
+    let finish: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => { finish = resolve; });
+    const pending = control.execute({ requestedBy: 'agent', effect: async () => { await gate; }, classifyCompletion: () => 'unknown' });
+    const takeover = control.takeOver();
+    expect(registry.getControllerState(view)).toMatchObject({ controller: 'human', interruptionSettling: true });
+    finish();
+    await pending;
+    await takeover;
+    expect(registry.getControllerState(view)).toMatchObject({ controller: 'human', interruptionSettling: false, uncertain: true });
+    expect(control.observe(control.getStatus().controlEpoch)).toBe(true);
+    expect(registry.getControllerState(view)).toMatchObject({ uncertain: false });
+  });
+  it('holds human control after the active action drains until explicit hand back', () => {
+    const registry = createBrowserAutomationOwnerRegistry();
+    registry.takeOver(view);
+    expect(registry.getControllerState(view).controller).toBe('human');
+    expect(registry.getControllerState(view, { controller: 'agent', activeAutomationRequestId: 'old' }).controller).toBe('human');
+    registry.handBack(view);
+    expect(registry.getControllerState(view)).toMatchObject({ controller: 'none', controlEpoch: 2 });
+    expect(registry.getControllerState(otherView).controlEpoch).toBe(0);
+  });
   it('reports an idle view as uncontrolled with no active request', () => {
     const registry = createBrowserAutomationOwnerRegistry();
 
@@ -16,12 +40,18 @@ describe('browser automation owner registry', () => {
       viewId: 'view_1',
       controller: 'none',
       controlEpoch: 0,
+      interruptionSettling: false,
+      uncertain: false,
     });
     expect(state.activeAutomationRequestId).toBeUndefined();
   });
 
-  it('projects the service-owned active request as the controller', () => {
+  it('projects browser request metadata during a shared input flight', async () => {
     const registry = createBrowserAutomationOwnerRegistry();
+    let finish: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => { finish = resolve; });
+    const pending = registry.getInputControl(view).execute({ requestedBy: 'agent',
+      effect: async () => { await gate; return 'done'; }, classifyCompletion: () => 'known' });
 
     const state = registry.getControllerState(view, {
       controller: 'agent',
@@ -30,24 +60,28 @@ describe('browser automation owner registry', () => {
 
     expect(state.controller).toBe('agent');
     expect(state.activeAutomationRequestId).toBe('req_1');
+    finish();
+    await pending;
   });
 
-  it('reports no controller when the service reports no active request, whatever kind is passed', () => {
+  it('does not let stale browser request metadata claim control after the input owner is idle', () => {
     const registry = createBrowserAutomationOwnerRegistry();
 
-    // The active request is the single source of "someone is driving". A stale controller kind
-    // cannot resurrect a finished action into a busy view.
     const state = registry.getControllerState(view, {
       controller: 'agent',
-      activeAutomationRequestId: null,
+      activeAutomationRequestId: 'settled_request',
     });
 
     expect(state.controller).toBe('none');
     expect(state.activeAutomationRequestId).toBeUndefined();
   });
 
-  it('keeps control state per view rather than per session', () => {
+  it('keeps control state per view rather than per session', async () => {
     const registry = createBrowserAutomationOwnerRegistry();
+    let finish: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => { finish = resolve; });
+    const pending = registry.getInputControl(view).execute({ requestedBy: 'agent',
+      effect: async () => { await gate; return 'done'; }, classifyCompletion: () => 'known' });
 
     const first = registry.getControllerState(view, {
       controller: 'system',
@@ -58,6 +92,8 @@ describe('browser automation owner registry', () => {
     expect(first.controller).toBe('system');
     expect(second.controller).toBe('none');
     expect(second.viewId).toBe('view_2');
+    finish();
+    await pending;
   });
 
   it('exposes a control epoch that the status route can report', () => {

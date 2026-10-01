@@ -102,14 +102,6 @@ export function wizardReducer(state: WizardState, action: WizardAction): WizardS
                     authIntent: action.authIntent,
                 },
             };
-        case 'wizard/setSetupAction':
-            return {
-                ...state,
-                context: {
-                    ...state.context,
-                    setupAction: action.setupAction,
-                },
-            };
         case 'wizard/setScanStepEnabled':
             return {
                 ...state,

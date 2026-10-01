@@ -8,13 +8,10 @@ import {
   PEER_TCP_TUNNEL_OPEN_PATH,
   PEER_TCP_TUNNEL_OPEN_PATH_V2,
   PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT,
-  PeerLoopbackProbeResponseV1Schema,
   PeerTcpTunnelOpenResponseV1Schema,
   PeerTcpTunnelRelayAuthorizationV2Schema,
-  SignedDirectRouteGrantV1Schema,
   SignedDirectRouteGrantV2Schema,
   createEphemeralPeerRouteProofHandleV2,
-  createPeerRouteNonceSigningInputV1,
   createVoiceMediaRelayTunnelId,
   createPeerApplicationAuthorityDigestV1,
   createSpeechTranscriptionApplicationAuthorityDigestV1,
@@ -25,39 +22,24 @@ import {
   readServerEnabledBit,
   type MachineTunnelCapabilities,
   type PeerLoopbackEndpointCandidateV1,
-  type PeerLoopbackProbeRequestV1,
-  type PeerLoopbackProbeResponseV1,
-  type PeerRouteNonceProofV1,
   type PeerTcpTunnelDestinationV1,
   type PeerTcpTunnelOpenV1,
   type PeerTcpTunnelOpenV2,
   type PeerTcpTunnelRelayEnvelope,
   type PeerTcpTunnelRelayAuthorizationV2,
-  type SignedDirectRouteGrantV1,
   type SignedDirectRouteGrantV2,
   type PeerRouteEphemeralProofV2,
   type PeerApplicationEncryptionAuthorityBindingV1,
   type VoiceMediaApplicationAuthorityV1,
 } from '@happier-dev/protocol';
-import { createPeerRouteViabilityCache } from '@happier-dev/peer-mediation';
+import { resolveEffectivePeerDirectRoutePolicy } from '@happier-dev/peer-mediation';
 
-import { isLegacyAuthCredentials, TokenStorage, type AuthCredentials } from '@/auth/storage/tokenStorage';
-import { decodeBase64, encodeBase64 } from '@/encryption/base64';
-import sodium from '@/encryption/libsodium.lib';
+import { TokenStorage, type AuthCredentials } from '@/auth/storage/tokenStorage';
 import { getRandomBytes } from '@/platform/cryptoRandom';
 import { getReadyServerFeatures } from '@/sync/api/capabilities/getReadyServerFeatures';
 import { apiSocket } from '@/sync/api/session/apiSocket';
 import { resolveRuntimeFeatureDecision } from '@/sync/domains/features/featureDecisionInputs';
-import {
-  createPeerRouteSigningIdentityUnavailableError,
-  resolvePeerRouteSigningReadiness,
-  type PeerRouteSigningIdentityUnavailable,
-} from '@/sync/domains/machines/peer/mediation/identity/signingReadiness';
-import { resolvePeerRouteCallerProofNegotiation } from '@/sync/domains/machines/peer/mediation/identity/proofNegotiation';
-import {
-  resolvePeerLoopbackRouteAvailability,
-  type PeerLoopbackRouteAvailabilityResult,
-} from '@/sync/domains/machines/peer/mediation/loopback/resolvePeerLoopbackRouteAvailability';
+import type { PeerLoopbackRouteAvailabilityResult } from '@/sync/domains/machines/peer/mediation/loopback/routeAvailability';
 import { openPeerTcpTunnel, type PeerTcpTunnelClientStream } from '@/sync/domains/machines/peer/mediation/tunnel/client';
 import {
   readEndpointFromMachineState,
@@ -65,6 +47,8 @@ import {
   type TargetServer,
 } from '@/sync/domains/machines/peer/mediation/stream/productionRouteHttp';
 import { storage } from '@/sync/domains/state/storage';
+import { resolvePeerMediationDirectPreferencesForScope } from '@/sync/domains/settings/peerMediationPreferences';
+import { parseToken } from '@/utils/auth/parseToken';
 import { createServerScopedRelaySocket } from '@/sync/runtime/orchestration/serverScopedRpc/serverScopedRelaySocket';
 
 import { createDaemonSpeechStreamCarrierAdapter } from './DaemonSpeechStreamCarrier';
@@ -79,7 +63,6 @@ import type { DaemonSpeechStreamTransport } from './DaemonSpeechStreamSender';
 
 export const VOICE_MEDIA_TUNNEL_REQUEST_TIMEOUT_MS = 5_000;
 const VOICE_STT_TUNNEL_FETCH_TIMEOUT_MS = VOICE_MEDIA_TUNNEL_REQUEST_TIMEOUT_MS;
-const VOICE_STT_TUNNEL_NONCE_BYTES = 16;
 
 // The server mints voice-media route grants behind these same bits (`resolvePeerRouteFeatureId`
 // is the single owner), so attempting a route this client is allowed to use is exactly the set
@@ -92,26 +75,13 @@ const VOICE_MEDIA_SERVER_RELAY_FEATURE_ID = resolvePeerRouteFeatureId({
   flowKind: 'voice_media',
   routeKind: 'server_relay',
 });
-const VOICE_STT_TUNNEL_CACHE_POSITIVE_TTL_MS = 30_000;
-const VOICE_STT_TUNNEL_CACHE_NEGATIVE_TTL_MS = 5_000;
 
-const voiceSttTunnelRouteAvailabilityCache = createPeerRouteViabilityCache({
-  now: Date.now,
-  positiveTtlMs: VOICE_STT_TUNNEL_CACHE_POSITIVE_TTL_MS,
-  negativeTtlMs: VOICE_STT_TUNNEL_CACHE_NEGATIVE_TTL_MS,
-});
 
 type OperationResult<T> =
   | Readonly<{ ok: true; value: T }>
   | Readonly<{ ok: false; reasonCode: string }>;
 
 type PreparedDirectTunnelRoute = Readonly<{
-  version: 1;
-  endpoint: PeerLoopbackEndpointCandidateV1;
-  grant: SignedDirectRouteGrantV1;
-  nonceProof: PeerRouteNonceProofV1;
-  availability: Extract<PeerLoopbackRouteAvailabilityResult, { kind: 'selected' }>;
-}> | Readonly<{
   version: 2;
   endpoint: PeerLoopbackEndpointCandidateV1;
   grant: SignedDirectRouteGrantV2;
@@ -251,64 +221,6 @@ async function fetchJson(params: Readonly<{
   }
 }
 
-async function requestTcpTunnelRouteGrant(input: Readonly<{
-  server: TargetServer;
-  credentials: AuthCredentials;
-  machineId: string;
-  tunnelId: string;
-  authority: VoiceMediaApplicationAuthorityV1;
-  endpointFingerprint: string;
-  destination: PeerTcpTunnelDestinationV1;
-  maxIdleMs: number;
-  maxDurationMs: number;
-  maxTotalBytes?: number;
-  timeoutMs?: number;
-  signal?: AbortSignal | null;
-}>): Promise<OperationResult<SignedDirectRouteGrantV1>> {
-  try {
-    const response = await fetchJson({
-      url: joinBaseAndPath(input.server.serverUrl, '/v1/machines/peer/mediation/route-grants'),
-      timeoutMs: input.timeoutMs,
-      signal: input.signal,
-      init: {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${input.credentials.token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          machineId: input.machineId,
-          flowKind: 'voice_media',
-          routeKind: 'loopback_direct',
-          endpointFingerprint: input.endpointFingerprint,
-          ttlMs: DIRECT_ROUTE_GRANT_TTL_MS.directLiveStream,
-          scope: {
-            kind: 'voice_media',
-            tunnelId: input.tunnelId,
-            applicationKind: input.authority.applicationKind,
-            applicationAttemptId: input.authority.applicationAttemptId,
-            applicationAuthorityDigest: input.authority.applicationAuthorityDigest,
-            maxIdleMs: input.maxIdleMs,
-            maxDurationMs: input.maxDurationMs,
-            ...(input.maxTotalBytes ? { maxTotalBytes: input.maxTotalBytes } : {}),
-          },
-        }),
-      },
-    });
-    if (!response.ok) return { ok: false, reasonCode: 'grant_missing' };
-    const body = response.body as { ok?: unknown; reasonCode?: unknown; grant?: unknown } | null;
-    if (body?.ok !== true) {
-      return {
-        ok: false,
-        reasonCode: typeof body?.reasonCode === 'string' ? body.reasonCode : 'grant_missing',
-      };
-    }
-    const parsed = SignedDirectRouteGrantV1Schema.safeParse(body.grant);
-    return parsed.success ? { ok: true, value: parsed.data } : { ok: false, reasonCode: 'grant_invalid' };
-  } catch {
-    return { ok: false, reasonCode: 'grant_missing' };
-  }
-}
 
 async function requestTcpTunnelRouteGrantV2(input: Readonly<{
   server: TargetServer;
@@ -424,84 +336,6 @@ async function requestTcpTunnelRelayAuthorization(input: Readonly<{
   }
 }
 
-function createTcpTunnelNonceProof(input: Readonly<{
-  credentials: AuthCredentials;
-  grant: SignedDirectRouteGrantV1;
-  endpointFingerprint: string;
-}>): OperationResult<PeerRouteNonceProofV1> {
-  if (!isLegacyAuthCredentials(input.credentials)) {
-    return { ok: false, reasonCode: 'nonce_invalid' };
-  }
-  try {
-    const seed = decodeBase64(input.credentials.secret);
-    const keyPair = sodium.crypto_sign_seed_keypair(seed);
-    const nonceBase64Url = encodeBase64(getRandomBytes(VOICE_STT_TUNNEL_NONCE_BYTES), 'base64url');
-    const signingInput = createPeerRouteNonceSigningInputV1({
-      grantId: input.grant.payload.grantId,
-      routeKind: 'loopback_direct',
-      flowKind: 'voice_media',
-      endpointFingerprint: input.endpointFingerprint,
-      nonceBase64Url,
-    });
-    const signature = sodium.crypto_sign_detached(new TextEncoder().encode(signingInput), keyPair.privateKey);
-    return {
-      ok: true,
-      value: {
-        v: 1,
-        grantId: input.grant.payload.grantId,
-        routeKind: 'loopback_direct',
-        flowKind: 'voice_media',
-        endpointFingerprint: input.endpointFingerprint,
-        nonceBase64Url,
-        signatureBase64Url: encodeBase64(signature, 'base64url'),
-      },
-    };
-  } catch {
-    return { ok: false, reasonCode: 'nonce_invalid' };
-  }
-}
-
-async function postTcpTunnelLoopbackProbe(input: Readonly<{
-  url: string;
-  request: PeerLoopbackProbeRequestV1;
-  timeoutMs?: number;
-  signal?: AbortSignal | null;
-}>): Promise<PeerLoopbackProbeResponseV1> {
-  try {
-    const response = await fetchJson({
-      url: input.url,
-      timeoutMs: input.timeoutMs,
-      signal: input.signal,
-      init: {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(input.request),
-      },
-    });
-    if (!response.ok) {
-      return {
-        v: 1,
-        ok: false,
-        receipt: PEER_MEDIATION_RECEIPTS.routeFallback,
-        reasonCode: 'grant_invalid',
-      };
-    }
-    const parsed = PeerLoopbackProbeResponseV1Schema.safeParse(response.body);
-    return parsed.success ? parsed.data : {
-      v: 1,
-      ok: false,
-      receipt: PEER_MEDIATION_RECEIPTS.routeFallback,
-      reasonCode: 'grant_invalid',
-    };
-  } catch {
-    return {
-      v: 1,
-      ok: false,
-      receipt: PEER_MEDIATION_RECEIPTS.routeFallback,
-      reasonCode: 'grant_invalid',
-    };
-  }
-}
 
 async function postTcpTunnelOpen(input: Readonly<{
   endpoint: PeerLoopbackEndpointCandidateV1;
@@ -525,79 +359,6 @@ async function postTcpTunnelOpen(input: Readonly<{
   return PeerTcpTunnelOpenResponseV1Schema.parse(response.body);
 }
 
-async function prepareDirectTunnelRoute(params: TunnelAttemptParams & Readonly<{
-  credentials: AuthCredentials;
-  endpoint: PeerLoopbackEndpointCandidateV1 | null;
-  caps: MachineTunnelCapabilities;
-}>): Promise<PreparedDirectTunnelRoute | null> {
-  const endpoint = params.endpoint;
-  if (!endpoint) return null;
-  if (!params.caps.directPeer.allowedPorts.includes(params.destination.port)) return null;
-
-  const requestGrant = async () => await requestTcpTunnelRouteGrant({
-    server: params.server,
-    credentials: params.credentials,
-    machineId: params.input.machineTarget.machineId,
-    tunnelId: params.tunnelId,
-    authority: params.input.authority,
-    endpointFingerprint: endpoint.endpointFingerprint,
-    destination: params.destination,
-    maxIdleMs: params.caps.directPeer.maxIdleMs,
-    maxDurationMs: params.caps.directPeer.maxDurationMs,
-    timeoutMs: VOICE_STT_TUNNEL_FETCH_TIMEOUT_MS,
-    signal: params.input.signal,
-  });
-  const createProof = (grant: SignedDirectRouteGrantV1) => createTcpTunnelNonceProof({
-    credentials: params.credentials,
-    grant,
-    endpointFingerprint: endpoint.endpointFingerprint,
-  });
-  const availability = await resolvePeerLoopbackRouteAvailability({
-    serverId: params.server.serverId,
-    targetMachineId: params.input.machineTarget.machineId,
-    flowKind: 'voice_media',
-    routeKind: 'loopback_direct',
-    endpoint,
-    cache: voiceSttTunnelRouteAvailabilityCache,
-    requestGrant: async () => {
-      const grant = await requestGrant();
-      return grant.ok ? { ok: true, grant: grant.value } : grant;
-    },
-    createNonceProof: async ({ grant }) => {
-      const nonceProof = createProof(grant);
-      return nonceProof.ok ? { ok: true, nonceProof: nonceProof.value } : nonceProof;
-    },
-    postProbe: async ({ url, request }) => await postTcpTunnelLoopbackProbe({
-      url,
-      request,
-      timeoutMs: VOICE_STT_TUNNEL_FETCH_TIMEOUT_MS,
-      signal: params.input.signal,
-    }),
-  }).catch((): PeerLoopbackRouteAvailabilityResult => ({
-    kind: 'fallback',
-    receipt: PEER_MEDIATION_RECEIPTS.routeFallback,
-    reasonCode: 'topology_unavailable',
-  }));
-  if (availability.kind === 'fallback') return null;
-
-  const grant = availability.grant
-    ? { ok: true as const, value: availability.grant }
-    : await requestGrant();
-  if (!grant.ok) return null;
-
-  const nonceProof = availability.nonceProof
-    ? { ok: true as const, value: availability.nonceProof }
-    : createProof(grant.value);
-  if (!nonceProof.ok) return null;
-
-  return {
-    version: 1,
-    endpoint: params.endpoint,
-    grant: grant.value,
-    nonceProof: nonceProof.value,
-    availability,
-  };
-}
 
 async function prepareDirectTunnelRouteV2(params: TunnelAttemptParams & Readonly<{
   credentials: AuthCredentials;
@@ -772,14 +533,7 @@ async function tryOpenDirectTunnel(
     serverId: params.server.serverId,
     timeoutMs: VOICE_STT_TUNNEL_FETCH_TIMEOUT_MS,
   }).catch(() => null);
-  const base = createBinaryOpenBase({
-    tunnelId: params.tunnelId,
-    machineId: params.input.machineTarget.machineId,
-    routeKind: 'loopback_direct',
-    destination: params.destination,
-  });
-  const open: PeerTcpTunnelOpenV1 | PeerTcpTunnelOpenV2 = params.direct.version === 2
-    ? {
+  const open: PeerTcpTunnelOpenV2 = {
         v: 2,
         kind: 'open',
         tunnelId: params.tunnelId,
@@ -790,11 +544,6 @@ async function tryOpenDirectTunnel(
         proof: params.direct.proof,
         supportedEncodings: [PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2],
         selectedEncoding: PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2,
-      }
-    : {
-        ...base,
-        grant: params.direct.grant,
-        nonceProof: params.direct.nonceProof,
       };
   const result = await openPeerTcpTunnel({
     open,
@@ -1008,45 +757,25 @@ export async function openProductionVoiceMediaTunnel(
   const directPeerEnabled = serverFeatures
     ? readServerEnabledBit(serverFeatures, VOICE_MEDIA_DIRECT_ROUTE_FEATURE_ID) === true
     : false;
-  const shouldAttemptDirect = directPeerEnabled && input.requiredRouteKind !== 'server_relay';
-  let signingUnavailable: PeerRouteSigningIdentityUnavailable | null = null;
-  let directProofVersion: 1 | 2 | null = null;
-  let negotiatedEndpoint: PeerLoopbackEndpointCandidateV1 | null = null;
-  if (shouldAttemptDirect) {
-    const signingReadiness = resolvePeerRouteSigningReadiness(credentials);
-    if (signingReadiness.status === 'unavailable') {
-      const preflight = resolvePeerRouteCallerProofNegotiation({ credentials, serverFeatures });
-      if (preflight.kind === 'ephemeral_v2_endpoint_required') {
-        negotiatedEndpoint = readEndpointFromMachineState({
-          serverId: server.serverId,
-          machineId: input.machineTarget.machineId,
-        });
-      }
-      const negotiation = preflight.kind === 'ephemeral_v2_endpoint_required'
-        ? resolvePeerRouteCallerProofNegotiation({
-            credentials,
-            serverFeatures,
-            endpoint: negotiatedEndpoint,
-          })
-        : preflight;
-      if (negotiation.kind === 'ephemeral_v2') {
-        directProofVersion = 2;
-      } else if (negotiation.kind === 'unavailable' && negotiation.reasonCode === signingReadiness.reasonCode) {
-        signingUnavailable = signingReadiness;
-      }
-    } else {
-      directProofVersion = 1;
-    }
-  }
+  let accountId: string;
+  try { accountId = parseToken(credentials.token); } catch { return null; }
+  const directPolicy = resolveEffectivePeerDirectRoutePolicy({
+    flowKind: 'voice_media', routeKind: 'loopback_direct',
+    serverGateEnabled: directPeerEnabled, daemonPolicy: null,
+    ...resolvePeerMediationDirectPreferencesForScope({
+      scope: { serverId: server.serverId, accountId },
+      machineId: input.machineTarget.machineId,
+      flowKind: 'tcp_tunnel',
+    }),
+    productDefaultPreference: 'enabled', grant: { status: 'valid' },
+  });
+  const shouldAttemptDirect = directPolicy.allowed && input.requiredRouteKind !== 'server_relay';
 
   const port = readDaemonHttpPort({
     serverId: server.serverId,
     machineId: input.machineTarget.machineId,
   });
   if (!port) {
-    if (signingUnavailable) {
-      throw createPeerRouteSigningIdentityUnavailableError(signingUnavailable);
-    }
     return null;
   }
 
@@ -1058,12 +787,12 @@ export async function openProductionVoiceMediaTunnel(
     machineId: input.machineTarget.machineId,
     requestId: input.requestId,
   });
-  if (shouldAttemptDirect && directProofVersion !== null) {
-      const endpoint = negotiatedEndpoint ?? readEndpointFromMachineState({
+  if (shouldAttemptDirect) {
+      const endpoint = readEndpointFromMachineState({
         serverId: server.serverId,
         machineId: input.machineTarget.machineId,
       });
-      const direct = directProofVersion === 2 && endpoint
+      const direct = endpoint
         ? await prepareDirectTunnelRouteV2({
           input,
           server,
@@ -1073,15 +802,7 @@ export async function openProductionVoiceMediaTunnel(
           tunnelId,
           caps,
         })
-        : await prepareDirectTunnelRoute({
-        input,
-        server,
-        credentials,
-        endpoint,
-        destination,
-        tunnelId,
-        caps,
-      });
+        : null;
       const selection = direct ? await tryOpenDirectTunnel({
         input,
         server,
@@ -1103,9 +824,6 @@ export async function openProductionVoiceMediaTunnel(
       serverFeatures,
     });
   if (relaySelection) return relaySelection;
-  if (signingUnavailable) {
-    throw createPeerRouteSigningIdentityUnavailableError(signingUnavailable);
-  }
   return null;
 }
 

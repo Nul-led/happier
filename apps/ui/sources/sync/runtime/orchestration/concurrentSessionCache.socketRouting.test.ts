@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createSocketIoManagerBoundaryStub } from '@/dev/testkit/mocks/socketIo';
 
 vi.mock('react-native-enriched-markdown/lib/module/web/streamingReveal.js', () => ({
     splitStreamingRevealTextParts: (text: string) => [{ text, revealed: true }],
@@ -24,6 +25,7 @@ type SocketEventHandler = (...args: unknown[]) => void;
 function createSocketStub() {
     const listeners = new Map<string, Set<SocketEventHandler>>();
     const socket = {
+        io: createSocketIoManagerBoundaryStub(),
         connected: false,
         on: vi.fn((event: string, handler: SocketEventHandler) => {
             const bucket = listeners.get(event) ?? new Set<SocketEventHandler>();

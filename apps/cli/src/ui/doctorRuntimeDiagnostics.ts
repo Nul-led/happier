@@ -3,6 +3,7 @@ import { join } from 'node:path';
 
 import { projectPath } from '@/projectPath';
 import { isEmbeddedBunBundlePath } from '@/packagedRuntime/js/isEmbeddedBunBundlePath';
+import { resolveRunningCliRuntimeIdentity } from '@/packagedRuntime/resolveRunningCliRuntimeIdentity';
 import { getRuntime, type Runtime } from '@/utils/runtime';
 
 export type DoctorRuntimeDiagnostics = Readonly<{
@@ -23,6 +24,7 @@ export function buildDoctorRuntimeDiagnostics(params?: Readonly<{
   bunVersion?: string | null;
   nodeVersion?: string | null;
   projectRoot?: string;
+  moduleUrl?: string;
   exists?: (path: string) => boolean;
 }>): DoctorRuntimeDiagnostics {
   const runtime = params?.runtime ?? getRuntime();
@@ -52,7 +54,7 @@ export function buildDoctorRuntimeDiagnostics(params?: Readonly<{
   }
 
   const wrapperPath = join(resolvedProjectRoot, 'bin', 'happier.mjs');
-  const cliEntrypointPath = join(resolvedProjectRoot, 'dist', 'index.mjs');
+  const cliEntrypointPath = resolveRunningCliRuntimeIdentity(params?.moduleUrl ?? import.meta.url).entrypoint;
 
   return {
     runtime,
@@ -63,7 +65,7 @@ export function buildDoctorRuntimeDiagnostics(params?: Readonly<{
     wrapperPath,
     cliEntrypointPath,
     wrapperExists: exists(wrapperPath),
-    cliEntrypointExists: exists(cliEntrypointPath),
+    cliEntrypointExists: cliEntrypointPath ? exists(cliEntrypointPath) : null,
   };
 }
 

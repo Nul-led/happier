@@ -31,7 +31,7 @@ const mocks = vi.hoisted(() => ({
     readCredentials: vi.fn(),
     readStoredCredentials: vi.fn(),
     resolveExternalSessionObservationLinkInput: vi.fn(),
-    resolveGenerationBoundExternalSessionFollowSurface: vi.fn(),
+    resolveOccurrenceBoundExternalSessionFollowSurface: vi.fn(),
 }));
 
 vi.mock('@/api/session/external/takeover/loadLinkedExternalSession', () => ({
@@ -46,8 +46,8 @@ vi.mock('@/api/session/external/leases/resolveExternalSessionObservationLinkInpu
         mocks.resolveExternalSessionObservationLinkInput,
 }));
 vi.mock('@/session/actions/externalSessions/providerOpsResolution', () => ({
-    resolveGenerationBoundExternalSessionFollowSurface:
-        mocks.resolveGenerationBoundExternalSessionFollowSurface,
+    resolveOccurrenceBoundExternalSessionFollowSurface:
+        mocks.resolveOccurrenceBoundExternalSessionFollowSurface,
 }));
 
 import { createExternalSessionFollowHostOperation } from './followHostOperation';
@@ -144,7 +144,7 @@ describe('Antigravity External Session follow host operation', () => {
         }
         const linkedSource = resolvedIdentity.value;
         const grouping = observationContribution.describeResource(linkedSource);
-        const pluginGeneration = 'antigravity-plugin-generation';
+        const pluginOccurrenceId = 'antigravity-plugin-generation';
         const linkGeneration = 'antigravity-link-generation';
         const sessionId = 'antigravity-host-session';
         const qualifiedLinkIdentity =
@@ -159,7 +159,7 @@ describe('Antigravity External Session follow host operation', () => {
             resource: {
                 pluginId: qualifiedLinkIdentity.agent.pluginId,
                 agentLocalId: qualifiedLinkIdentity.agent.localId,
-                pluginGeneration,
+                occurrenceId: pluginOccurrenceId,
                 resourceKey: grouping.resourceKey,
             },
             link: {
@@ -175,7 +175,7 @@ describe('Antigravity External Session follow host operation', () => {
         } as const;
         const resource = {
             linkGeneration,
-            pluginGeneration,
+            occurrenceId: pluginOccurrenceId,
         } as const;
         const linkedSession = {
             agentId: 'antigravity',
@@ -196,10 +196,10 @@ describe('Antigravity External Session follow host operation', () => {
         mocks.resolveExternalSessionObservationLinkInput.mockResolvedValue(
             observation,
         );
-        mocks.resolveGenerationBoundExternalSessionFollowSurface
+        mocks.resolveOccurrenceBoundExternalSessionFollowSurface
             .mockResolvedValue({
                 resource,
-                immutablePluginGenerationId: pluginGeneration,
+                occurrenceId: pluginOccurrenceId,
                 providerOps: {
                     pageTranscript: async (request: Readonly<{
                         source: typeof linkedSource.source;
@@ -323,7 +323,7 @@ describe('Antigravity External Session follow host operation', () => {
                         pluginId: qualifiedLinkIdentity.agent.pluginId,
                         contributionId:
                             qualifiedLinkIdentity.agent.localId,
-                        generationId: pluginGeneration,
+                        occurrenceId: pluginOccurrenceId,
                         sessionId,
                         machineId: 'machine-1',
                         ref: {

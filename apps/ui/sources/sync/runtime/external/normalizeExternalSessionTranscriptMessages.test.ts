@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { createReducer, reducer } from '@/sync/reducer/reducer';
+import { createReducer, reducer } from "@happier-dev/session-core/reducer";
 import { AgentExternalSessionTranscriptRawRecordSchema } from '@happier-dev/protocol';
 
 import { projectClaudeJsonlLineToDirectMessages } from '../../../../../../packages/plugins/claude/src/agent/transcripts/projection';

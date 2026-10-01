@@ -75,6 +75,7 @@ describe('sessionOrganizationApi', () => {
             { includeAuth: false },
         );
         const requestUrl = new URL(String(mocks.serverFetch.mock.calls[0]?.[0]), 'http://localhost');
+        expect(requestUrl.searchParams.get('projectionVersion')).toBe('2');
         expect(requestUrl.searchParams.get('includeFolders')).toBe('true');
         expect(requestUrl.searchParams.get('includeTags')).toBe('true');
         expect(requestUrl.searchParams.get('includeLabels')).toBe('true');
@@ -86,6 +87,20 @@ describe('sessionOrganizationApi', () => {
         expect(JSON.parse(String(requestUrl.searchParams.get('orderScopes')))).toEqual([
             { scopeKind: 'folder', scopeKey: 'folder-a' },
         ]);
+    });
+
+    it('consumes every standing in a current snapshot without truncating the released-reader boundary', async () => {
+        const { fetchSessionOrganizationSnapshot } = await import('./sessionOrganizationApi');
+        const attentionStandings = Array.from({ length: 501 }, (_, index) => ({
+            sessionId: `session-${index}`, standing: true, updatedAt: 1,
+        }));
+        mocks.serverFetch.mockResolvedValueOnce(jsonResponse({ snapshot: {
+            ...organizationSnapshotResponse().snapshot, attentionStandings,
+        } }));
+        const response = await fetchSessionOrganizationSnapshot({ credentials });
+        expect(response.snapshot.attentionStandings).toEqual(attentionStandings);
+        const requestUrl = new URL(String(mocks.serverFetch.mock.calls[0]?.[0]), 'http://localhost');
+        expect(requestUrl.searchParams.get('projectionVersion')).toBe('2');
     });
 
     it('uses the row server URL when mutating tag assignments outside the active server', async () => {

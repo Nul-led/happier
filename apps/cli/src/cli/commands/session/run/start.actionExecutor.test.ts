@@ -106,7 +106,7 @@ describe('happier session run start (action executor)', () => {
           runClass: 'bounded',
           ioMode: 'request_response',
         },
-        expect.objectContaining({ surface: 'cli', authority: 'present_user', defaultSessionId: 'sess-1' }),
+        expect.objectContaining({ surface: 'cli', defaultSessionId: 'sess-1' }),
       );
 
       expect(output.json()).toEqual(expect.objectContaining({
@@ -148,7 +148,7 @@ describe('happier session run start (action executor)', () => {
           intent: 'review',
           backendTarget: { kind: 'backend', backendId: 'com.acme.review/review-bot', sourceKind: 'built_in' },
         }),
-        expect.objectContaining({ surface: 'cli', authority: 'present_user', defaultSessionId: 'sess-1' }),
+        expect.objectContaining({ surface: 'cli', defaultSessionId: 'sess-1' }),
       );
       expect(output.json()).toEqual(expect.objectContaining({ ok: true, kind: 'session_run_start' }));
     } finally {

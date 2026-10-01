@@ -1,7 +1,7 @@
 import type { SessionMessageRole } from '@happier-dev/protocol';
 
-import { buildSessionMessagesPath } from '@/sync/api/session/sessionMessagesApi';
-import type { NormalizedMessage } from '@/sync/typesRaw';
+import { buildSessionMessagesPath } from '@happier-dev/protocol';
+import type { NormalizedMessage } from "@happier-dev/session-core/raw";
 
 import {
     runSessionMessagesPagePipeline,

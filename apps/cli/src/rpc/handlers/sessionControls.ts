@@ -1,3 +1,5 @@
+import { z } from 'zod';
+
 import {
   ReviewStartInputSchema,
   HAPPIER_STRUCTURED_INPUT_METADATA_KEY_V1,
@@ -59,6 +61,14 @@ import {
 } from '@/session/usageLimitRecoveryControls/sessionUsageLimitRecoveryOperationResult';
 
 export type SessionRuntimeControls = {
+  /** Host-owned effective configuration, not caller metadata or provider guesses. */
+  readEffectiveInputConfiguration?: () => Readonly<{
+    modelSelection: import('@happier-dev/protocol').ProviderBoundModelRef | null;
+    permissionMode: import('@happier-dev/protocol').SessionPermissionMode;
+  }>;
+  /** FIN's coordinator withdraws only an exact prepared workflow step at its Session queue owner. */
+  withdrawWorkflowStepInput?: (input: Readonly<{ localInputId: string }>) =>
+    'withdrawn' | 'dispatched' | Promise<'withdrawn' | 'dispatched'>;
   /** Current-generation Composer reference resolver, scoped by the owning Session runtime. */
   resolveComposerReference?: StructuredInputComposerReferenceResolver['resolve'];
   /** Current-generation Composer attachment resolver, scoped by the owning Session runtime. */
@@ -175,6 +185,10 @@ function unsupported(method: string): Readonly<{ ok: false; errorCode: string; e
   };
 }
 
+const workflowStepWithdrawRequestSchema = z.object({
+  localInputId: z.string().min(1).refine((value) => value.trim().length > 0),
+}).strict();
+
 function pendingWakeUnavailable() {
   return { ok: false as const, error: 'pending_materialization_wake_unavailable' as const, errorCode: 'runtime_upgrade_required' as const };
 }
@@ -273,6 +287,14 @@ export function registerSessionControlHandlers(
     }>) => Promise<unknown> | unknown) | null;
   }>,
 ): void {
+  rpc.registerHandler(SESSION_RPC_METHODS.SESSION_WORKFLOW_STEP_WITHDRAW, async (raw: unknown) => {
+    const parsed = workflowStepWithdrawRequestSchema.safeParse(raw);
+    if (!parsed.success) return invalidInput();
+    const withdraw = opts.sessionRuntimeControls?.withdrawWorkflowStepInput;
+    if (!withdraw) return unsupported(SESSION_RPC_METHODS.SESSION_WORKFLOW_STEP_WITHDRAW);
+    return await withdraw(parsed.data);
+  });
+
   const isUsageLimitRecoveryEnabled = async (): Promise<boolean> => {
     if (typeof opts.isUsageLimitRecoveryEnabled === 'function') {
       return await opts.isUsageLimitRecoveryEnabled();
@@ -372,6 +394,15 @@ export function registerSessionControlHandlers(
   rpc.registerHandler(SESSION_RPC_METHODS.SESSION_GOAL_GET, async (raw: unknown) => {
     const parsed = SessionGoalGetRequestV1Schema.safeParse(raw);
     if (!parsed.success) return invalidInput();
+    if (parsed.data.capabilitiesOnly === true) {
+      // The opened runtime exposes these controls only after its native
+      // direct-goal facet and per-open support signal agree. Inactive adapters
+      // never register on this live Session RPC path.
+      const nativeGoalOwner = typeof opts.sessionRuntimeControls?.refreshGoal === 'function'
+        && typeof opts.sessionRuntimeControls?.setGoal === 'function'
+        && typeof opts.sessionRuntimeControls?.clearGoal === 'function';
+      return { workState: readWorkState(opts.getSessionMetadata), nativeGoalOwner };
+    }
     if (typeof opts.sessionRuntimeControls?.refreshGoal !== 'function') {
       return unsupported(SESSION_RPC_METHODS.SESSION_GOAL_GET);
     }

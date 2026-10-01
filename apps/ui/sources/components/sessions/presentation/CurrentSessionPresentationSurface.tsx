@@ -119,7 +119,7 @@ export const CurrentSessionPresentationSurface = React.memo(function CurrentSess
                 </View>
             ) : null}
             {props.renderComposerRegion ? composerRegions.map((region) => (
-                <React.Fragment key={`composer-region:${region.id}:${region.immutableGenerationId}`}>
+                <React.Fragment key={`composer-region:${region.id}:${region.occurrenceId}`}>
                     {props.renderComposerRegion!(region)}
                 </React.Fragment>
             )) : null}

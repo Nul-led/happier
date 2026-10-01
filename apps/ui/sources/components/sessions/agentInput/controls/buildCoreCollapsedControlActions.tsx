@@ -1,3 +1,4 @@
+import type { AgentInputFolderChipState } from '../definitions/AgentInputFolderChip';
 import * as React from 'react';
 
 import { getAgentCore } from '@/agents/catalog/catalog';
@@ -11,6 +12,7 @@ import type { AgentInputControlId } from './agentInputControlTypes';
 import { resolveSessionModeChipPresentation } from './resolveSessionModeChipPresentation';
 import { formatResumeChipLabel, RESUME_CHIP_ICON_NAME, RESUME_CHIP_ICON_SIZE } from '../layout/ResumeChip';
 import { Icon, type IconName, ICON_SIZE } from '@/components/ui/icons/Icon';
+import { resolveAgentInputFolderChipState } from '../definitions/AgentInputFolderChip';
 
 /**
  * An externally installed Agent has no bundled display-name key; its own id is
@@ -32,6 +34,8 @@ export function buildCoreCollapsedControlActions(opts: Readonly<{
     engineLabel?: string | null;
     machineName?: string | null;
     currentPath?: string | null;
+    folderChipState?: AgentInputFolderChipState;
+    onRemoveFolder?: () => void;
     resumeSessionId?: string | null;
     sessionId?: string;
     onProfileClick?: () => void;
@@ -140,19 +144,39 @@ export function buildCoreCollapsedControlActions(opts: Readonly<{
     }
 
     if (opts.onPathClick) {
-        const pathLabel = (typeof opts.currentPath === 'string' && opts.currentPath.length > 0)
-            ? opts.currentPath
-            : t('newSession.selectPathTitle');
-        controlActionsById.path = [{
+        // The menu entry mirrors the folder chip (one state owner), and offers removal as its own row.
+        const folderState = resolveAgentInputFolderChipState(opts.currentPath, opts.folderChipState);
+        const labelState = folderState.kind === 'machine_unavailable' ? folderState.label : folderState;
+        const pathLabel = labelState.kind === 'folder'
+            ? labelState.path
+            : labelState.kind === 'none'
+                ? t('newSession.folder.addFolder')
+                : labelState.lastKnownPath ?? t('newSession.folder.a11y.loading');
+        const pathActions: ActionListItem[] = [{
             id: 'path',
             label: pathLabel,
-            icon: <Icon name="folder" size={16} color={opts.tint} />,
+            icon: <Icon name={labelState.kind === 'none' ? 'folder-plus' : 'folder'} size={16} color={opts.tint} />,
+            disabled: folderState.kind === 'machine_unavailable',
             onPress: () => {
                 hapticsLight();
                 opts.dismiss();
                 opts.onPathClick?.();
             },
         }];
+        if (folderState.kind === 'folder' && opts.onRemoveFolder) {
+            const onRemoveFolder = opts.onRemoveFolder;
+            pathActions.push({
+                id: 'path-remove',
+                label: t('newSession.folder.removeFolder'),
+                icon: <Icon name="x" size={16} color={opts.tint} />,
+                onPress: () => {
+                    hapticsLight();
+                    opts.dismiss();
+                    onRemoveFolder();
+                },
+            });
+        }
+        controlActionsById.path = pathActions;
     }
 
     if (opts.onResumeClick) {

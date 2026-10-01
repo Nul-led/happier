@@ -63,6 +63,30 @@ describe('externalSessionBackgroundFollowMetadata', () => {
         expect(updated).not.toHaveProperty('directSessionV1');
     });
 
+    it('keeps follow error timestamps stable across retries of the same failure', () => {
+        const metadata = {
+            externalSessionV1: {
+                v: 1,
+                agentId: 'claude',
+                machineId: 'machine-1',
+                remoteSessionId: 'remote-1',
+                source: { kind: 'claudeConfig', configDir: '/tmp/claude' },
+                linkedAtMs: 1,
+                followStatusV1: { v: 1, status: 'error', reason: 'follow_refresh_read_failed', updatedAtMs: 100 },
+                lastFollowIssueV1: { v: 1, code: 'follow_refresh_read_failed', retryable: true, observedAtMs: 100 },
+            },
+        };
+        const repeated = updateMetadataWithExternalSessionFollowStatus(metadata as never, {
+            followStatusV1: { v: 1, status: 'error', reason: 'follow_refresh_read_failed', updatedAtMs: 200 },
+            lastFollowIssueV1: { v: 1, code: 'follow_refresh_read_failed', retryable: true, observedAtMs: 200 },
+            expectedLinkGeneration: '1',
+        });
+        expect(repeated).toMatchObject({ externalSessionV1: {
+            followStatusV1: { updatedAtMs: 100 },
+            lastFollowIssueV1: { observedAtMs: 100 },
+        } });
+    });
+
     it('rejects a stale follow-status generation without mutating canonical or rollback metadata', () => {
         const canonical = {
             v: 1,

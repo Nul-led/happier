@@ -1,16 +1,16 @@
-import { io, type Socket } from 'socket.io-client';
+import type { Socket } from 'socket.io-client';
+import { createHappierSocket } from '@happier-dev/sync-client';
 
 import type { ManagedConnectionTransport } from '@happier-dev/connection-supervisor';
 
 import { normalizeServerHttpBaseUrl, resolveServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
 import type { ClientToServerEvents, ServerToClientEvents } from '@/api/types';
-import { createSocketTransportAdapter } from '@/api/connection/createSocketTransportAdapter';
 import { configuration } from '@/configuration';
 import { ensureSessionMachineAccessKeyBinding } from '@/api/session/ensureSessionMachineAccessKeyBinding';
 import { getSocketIoProxyOptions } from '@/utils/proxy/socketIoProxy';
 import { resolveSessionControlSocketConnectTimeoutMs } from '@/session/transport/shared/sessionTimeouts';
+import { buildTerminalAuthorityCeiling } from '@/settings/accountSettings/resolveEffectiveTerminalPresentUserPolicy';
 import {
-    buildCurrentSessionRunnerCompatibilityHttpHeaders,
     buildCurrentSessionRunnerCompatibilitySocketAuth,
 } from '@/api/clientCompatibility/cliClientCompatibility';
 
@@ -33,25 +33,22 @@ export function createSessionSocketTransport(params: Readonly<{
     const transports = params.transports ?? configuration.socketIoTransports;
     const env = params.env ?? process.env;
 
-    const socket = io(serverUrl, {
-        ...(transports ? { transports } : null),
-        auth: {
-            token: params.token,
-            clientType: 'session-scoped' as const,
-            sessionId: params.sessionId,
-            ...(params.machineId ? { machineId: params.machineId } : null),
+    const { socket: sharedSocket, transport: socketTransport } = createHappierSocket({
+        endpoint: serverUrl,
+        token: params.token,
+        clientType: 'session-scoped',
+        sessionId: params.sessionId,
+        ...(params.machineId ? { machineId: params.machineId } : {}),
+        authExtras: {
             ...buildCurrentSessionRunnerCompatibilitySocketAuth(),
+            ...buildTerminalAuthorityCeiling({ token: params.token, serverHttpBaseUrl: serverUrl }),
         },
-        path: '/v1/updates/',
-        reconnection: false,
-        withCredentials: true,
-        autoConnect: false,
-        ...getSocketIoProxyOptions({ targetUrl: serverUrl, env }),
-    });
-
-    const socketTransport = createSocketTransportAdapter(socket, {
         connectTimeoutMs: resolveSessionControlSocketConnectTimeoutMs(),
+        ...(transports ? { transports } : null),
+        withCredentials: true,
+        engineOptions: getSocketIoProxyOptions({ targetUrl: serverUrl, env }),
     });
+    const socket = sharedSocket as Socket<ServerToClientEvents, ClientToServerEvents>;
     const transport: ManagedConnectionTransport = {
         ...socketTransport,
         async connect(): Promise<void> {

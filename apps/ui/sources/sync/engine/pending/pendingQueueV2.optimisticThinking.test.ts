@@ -80,7 +80,7 @@ async function persistLocalPending(params: Readonly<{
 }
 
 describe('pendingQueueV2 optimistic thinking', () => {
-    beforeEach(() => {
+    beforeEach(async () => {
         vi.useFakeTimers();
         await resetPendingQueueState(testOutboxScope);
     });
@@ -164,7 +164,7 @@ describe('pendingQueueV2 optimistic thinking', () => {
     ] as const)('preserves typed target rejection before released route-absence fallback ($expectedCode)', async ({ status, body, expectedCode }) => {
         const sessionId = `target-rejection-${status}-${expectedCode}`;
         storage.getState().applySessions([buildSession({ sessionId, overrides: { encryptionMode: 'plain' } })]);
-        const request = vi.fn(async () => Response.json(body, { status }));
+        const request = vi.fn(async (_path: string, _init?: RequestInit) => Response.json(body, { status }));
 
         await expect(enqueuePendingMessageV2Impl({
             sessionId, text: 'private', localId: `target-${status}-${expectedCode}`, encryption: null,
@@ -178,7 +178,7 @@ describe('pendingQueueV2 optimistic thinking', () => {
 
     it('submits Run input through real Pending despite an inactive parent, without parent resume or direct send', async () => {
         const sessionId = 'inactive-parent';
-        const session = buildSession({ sessionId, overrides: { encryptionMode: 'plain', active: false, presence: 'offline' } });
+        const session = buildSession({ sessionId, overrides: { encryptionMode: 'plain', active: false, presence: 0 } });
         storage.getState().applySessions([session]);
         const recipient = { kind: 'execution_run' as const, runId: 'run-a' };
         const paths: string[] = [];

@@ -2,6 +2,7 @@ import type { Session } from '@/sync/domains/state/storageTypes';
 
 type SessionMetadataCarrier = Readonly<{
     metadata?: unknown;
+    lockedDisplayTitle?: unknown;
 }>;
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -21,7 +22,9 @@ export function readSessionDisplayTitleField(session: SessionMetadataCarrier | n
         ? rawValue
         : typeof metadata?.summaryText === 'string'
             ? metadata.summaryText.trim()
-            : '';
+            : typeof session?.lockedDisplayTitle === 'string'
+                ? session.lockedDisplayTitle.trim()
+                : '';
     return {
         value: rawRenderableValue || null,
         updatedAt: typeof summary?.updatedAt === 'number' && Number.isFinite(summary.updatedAt)

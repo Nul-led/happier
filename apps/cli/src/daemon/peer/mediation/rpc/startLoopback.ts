@@ -7,7 +7,6 @@ import {
   type FeaturesResponse,
   type PeerLoopbackEndpointCandidateV1,
 } from '@happier-dev/protocol';
-import tweetnacl from 'tweetnacl';
 
 import type { DaemonPeerMediationObservabilityEmitter } from '../observability/events';
 import {
@@ -16,7 +15,7 @@ import {
   type StartPeerMediationLoopbackServerOptions,
 } from '../loopback/server';
 import type { PeerMachineLiveStreamDirectRuntimeOptions } from '../stream/registerRoutes';
-import type { DirectRouteGrantTrustRoot } from '../verifyDirectRouteGrantV1';
+import type { DirectRouteGrantTrustRoot } from '../verifyDirectRouteGrant';
 import type { PeerMediationLoopbackIrohMachineAdmissionOptions } from '../loopback/irohMachineAdmission';
 import type { PeerMachineRpcDirectHandlerManager } from './registerRoutes';
 
@@ -27,7 +26,6 @@ const PEER_MEDIATION_MACHINE_RPC_ENDPOINT_FINGERPRINT_BYTES = 16;
 export type StartPeerMediationLoopbackInput = Readonly<{
   accountId: string;
   machineId: string;
-  accountSigningSeed?: Uint8Array;
   serverFeatures: FeaturesResponse;
   /** Current authenticated Home authority. Startup features remain eligibility evidence only. */
   resolveTrustRoots?: () => readonly DirectRouteGrantTrustRoot[];
@@ -88,14 +86,6 @@ function resolveGrantTrustRoots(input: Readonly<{
     }));
 }
 
-function resolveAccountPublicKey(accountSigningSeed: Uint8Array | undefined): string | null {
-  if (!accountSigningSeed || accountSigningSeed.length !== tweetnacl.sign.seedLength) {
-    return null;
-  }
-  const keyPair = tweetnacl.sign.keyPair.fromSeed(accountSigningSeed);
-  return Buffer.from(keyPair.publicKey).toString('base64url');
-}
-
 export async function startPeerMediationLoopback(
   input: StartPeerMediationLoopbackInput,
 ): Promise<StartedPeerMediationLoopback | null> {
@@ -129,13 +119,6 @@ export async function startPeerMediationLoopback(
     return null;
   }
 
-  const accountPublicKey = resolveAccountPublicKey(input.accountSigningSeed);
-  const supportsEphemeralProofV2 = input.serverFeatures.capabilities.machines.peerMediation
-    .directRouteGrantProofMintVersions.includes(2);
-  if (!accountPublicKey && !supportsEphemeralProofV2) {
-    return null;
-  }
-
   const endpointFingerprint = input.endpointFingerprint?.() ?? createPeerMediationMachineRpcEndpointFingerprint();
   const machineRpcExpected = {
     accountId: input.accountId,
@@ -143,7 +126,6 @@ export async function startPeerMediationLoopback(
     flowKind: 'machine_rpc' as const,
     routeKind: 'loopback_direct' as const,
     endpointFingerprint,
-    ...(accountPublicKey ? { accountPublicKey } : {}),
   };
   const tcpTunnelExpected = {
     accountId: input.accountId,
@@ -151,7 +133,6 @@ export async function startPeerMediationLoopback(
     flowKind: 'tcp_tunnel' as const,
     routeKind: 'loopback_direct' as const,
     endpointFingerprint,
-    ...(accountPublicKey ? { accountPublicKey } : {}),
   };
   const voiceMediaExpected = {
     ...tcpTunnelExpected,
@@ -163,7 +144,6 @@ export async function startPeerMediationLoopback(
     flowKind: 'live_stream' as const,
     routeKind: 'loopback_direct' as const,
     endpointFingerprint,
-    ...(accountPublicKey ? { accountPublicKey } : {}),
   };
   // `expected` also supplies the shared app's local account/machine binding.
   // Iroh-only startup registers no legacy route, so this placeholder is never
@@ -195,7 +175,6 @@ export async function startPeerMediationLoopback(
     trustRoots,
     ...(input.resolveTrustRoots ? { resolveTrustRoots: input.resolveTrustRoots } : {}),
     endpointExpiresAt: now + (input.endpointTtlMs ?? defaultEndpointTtlMs),
-    directRouteGrantProofVerifierVersions: supportsEphemeralProofV2 ? [2] : [],
     host: input.host ?? PEER_MEDIATION_MACHINE_RPC_DEFAULT_HOST,
     port: input.port ?? PEER_MEDIATION_MACHINE_RPC_DEFAULT_PORT,
     ...(rpcEnabled

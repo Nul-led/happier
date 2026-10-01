@@ -145,6 +145,48 @@ describe('PathSelectionList', () => {
         act(() => screen.tree.unmount());
     });
 
+    it('offers “No folder” as the first row, above saved folders, and marks it when chosen', async () => {
+        const { PathSelectionList } = await import('./PathSelectionList');
+        const onSelectNoFolder = vi.fn();
+        const onCommit = vi.fn();
+        const render = (selected: boolean) => renderScreen(
+            <PathSelectionList
+                initialValue=""
+                initialSuggestionMode="history"
+                favorites={[{ path: '/Users/leeroy/fav-one' }]}
+                recents={[{ path: '/Users/leeroy/recent-one', lastUsedAt: 1 }]}
+                machineHomeDir="/Users/leeroy"
+                machineId="m-1"
+                serverId={null}
+                machinePlatform="unix"
+                onCommit={onCommit}
+                onRequestClose={() => {}}
+                noFolderOption={{ selected, onSelect: onSelectNoFolder }}
+            />,
+        );
+        const screen = await render(false);
+        const optionIds = screen.tree.root
+            .findAll((node) => typeof node.props?.testID === 'string'
+                && node.props.testID.startsWith('path-selection-list:path-root:option:')
+                && !node.props.testID.includes(':favorite-toggle'))
+            .map((node) => node.props.testID as string);
+        expect(optionIds[0]).toBe('path-selection-list:path-root:option:no-folder');
+        const noFolderWrapper = screen.findByTestId('path-selection-list:path-root:option-wrapper:no-folder');
+        expect(readProps<OptionWrapperLikeProps>(noFolderWrapper!)['aria-selected']).toBe(false);
+
+        await act(async () => {
+            readProps<PressableLikeProps>(screen.findByTestId('path-selection-list:path-root:option:no-folder')!).onPress?.();
+        });
+        expect(onSelectNoFolder).toHaveBeenCalledTimes(1);
+        expect(onCommit).not.toHaveBeenCalled();
+        act(() => screen.tree.unmount());
+
+        const selectedScreen = await render(true);
+        const selectedWrapper = selectedScreen.findByTestId('path-selection-list:path-root:option-wrapper:no-folder');
+        expect(readProps<OptionWrapperLikeProps>(selectedWrapper!)['aria-selected']).toBe(true);
+        act(() => selectedScreen.tree.unmount());
+    });
+
     it('omits recent rows that resolve to visible favorites and dedupes recent path variants', async () => {
         const { PathSelectionList } = await import('./PathSelectionList');
         const recentRowTestId = 'path-selection-list:path-root:option:recent:/Users/leeroy/recent';

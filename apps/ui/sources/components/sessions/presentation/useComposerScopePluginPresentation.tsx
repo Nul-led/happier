@@ -235,33 +235,35 @@ export function useComposerScopePluginPresentation(
     physicalTargetRef.current = params.physicalTarget;
     const resourceContextRef = React.useRef(params.resourceContext);
     resourceContextRef.current = params.resourceContext;
+    const scopeKey = React.useMemo(() => composerRefV1Key(params.composer), [params.composer]);
+    const canonicalComposer = React.useMemo(() => params.composer, [scopeKey]);
+    // Keyed on the target's values, not its object identity: callers rebuild an equal target on
+    // every render, and a new address here re-creates the whole Composer scope (snapshot, surface
+    // lifetime, every surface controller), whose committed publication re-renders the caller.
+    const physicalTargetSessionId = params.physicalTarget.kind === 'session'
+        ? params.physicalTarget.sessionId
+        : null;
     const exactSessionAddress = React.useMemo(() => (
-        params.physicalTarget.kind === 'session'
-        && params.composer.kind === 'session'
-        && params.composer.sessionId === params.physicalTarget.sessionId
+        physicalTargetSessionId !== null
+        && canonicalComposer.kind === 'session'
+        && canonicalComposer.sessionId === physicalTargetSessionId
         && params.serverId
-            ? { serverId: params.serverId, sessionId: params.physicalTarget.sessionId }
+            ? { serverId: params.serverId, sessionId: physicalTargetSessionId }
             : null
-    ), [params.composer, params.physicalTarget, params.serverId]);
+    ), [canonicalComposer, physicalTargetSessionId, params.serverId]);
     const readCurrentComposerSnapshot = React.useCallback((): ComposerSnapshotV1 | null => {
-        if (params.composer.kind !== 'session') {
-            return readComposerPresentationSnapshot(params.composer);
+        if (canonicalComposer.kind !== 'session') {
+            return readComposerPresentationSnapshot(canonicalComposer);
         }
         if (
             !exactSessionAddress
-            || params.composer.kind !== 'session'
-            || params.composer.sessionId !== exactSessionAddress.sessionId
+            || canonicalComposer.sessionId !== exactSessionAddress.sessionId
         ) {
             return null;
         }
         return readSessionComposerPresentationTargetAtAddress(exactSessionAddress)?.readSnapshot?.() ?? null;
-    }, [exactSessionAddress, params.composer]);
-    const scopeKey = React.useMemo(() => composerRefV1Key(params.composer), [params.composer]);
-    const physicalTargetKey = React.useMemo(() => (
-        params.physicalTarget.kind === 'session'
-            ? `session:${params.physicalTarget.sessionId}`
-            : 'app'
-    ), [params.physicalTarget]);
+    }, [canonicalComposer, exactSessionAddress]);
+    const physicalTargetKey = physicalTargetSessionId !== null ? `session:${physicalTargetSessionId}` : 'app';
     const resourceContextKey = React.useMemo(() => JSON.stringify(params.resourceContext), [params.resourceContext]);
     const scopeAbort = React.useMemo(() => new AbortController(), [
         params.accountLifetime,
@@ -304,7 +306,6 @@ export function useComposerScopePluginPresentation(
             host: {
                 machineId: params.machineId,
                 serverId: params.serverId ?? null,
-                expectedGeneration: generation,
                 ...(physicalTarget.kind === 'session'
                     ? { sessionId: physicalTarget.sessionId }
                     : {}),
@@ -454,7 +455,6 @@ export function useComposerScopePluginPresentation(
             || !projection
             || !surfaceLifetime
             || !surfaceLifetime.isCurrent()
-            || String(projection.generation) !== String(snapshot.host.expectedGeneration)
         ) {
             return null;
         }
@@ -496,7 +496,7 @@ export function useComposerScopePluginPresentation(
     ]);
     const renderAttachmentPickerSurface = React.useCallback((
         identity: PluginContributionIdentityV1,
-        immutableGenerationId: string,
+        occurrenceId: string,
         instanceKey: string,
     ): React.ReactNode => {
         if (!params.attachmentsEnabled) return null;
@@ -504,7 +504,7 @@ export function useComposerScopePluginPresentation(
         if (!snapshot) return null;
         return renderComposerSurface({
             contribution: identity,
-            immutableGenerationId,
+            occurrenceId,
             role: 'attachmentPicker',
             input: {
                 v: 1,
@@ -526,7 +526,7 @@ export function useComposerScopePluginPresentation(
                 : 'controlInteraction';
             return renderComposerSurface({
                 contribution: presentation.control.identity,
-                immutableGenerationId: presentation.control.immutableGenerationId,
+                occurrenceId: presentation.control.occurrenceId,
                 role,
                 input: {
                     v: 1,
@@ -536,6 +536,11 @@ export function useComposerScopePluginPresentation(
                     state: presentation.state,
                 },
                 instanceKey: `composer:${role}:${presentation.control.id}`,
+                // A compact renderer sits inside the chip's button: when it cannot mount, the host
+                // draws the chip's own content instead of its unavailable card.
+                ...(presentation.role === 'compact' && presentation.fallback !== undefined
+                    ? { fallback: presentation.fallback }
+                    : {}),
             });
         }
         if (!params.attachmentsEnabled) return null;
@@ -547,7 +552,7 @@ export function useComposerScopePluginPresentation(
         const attachment = attachments[0]!;
         return renderAttachmentPickerSurface(
             attachment.identity,
-            attachment.immutableGenerationId,
+            attachment.occurrenceId,
             `composer:attachmentPicker:${attachment.id}`,
         );
     }, [
@@ -558,10 +563,10 @@ export function useComposerScopePluginPresentation(
         renderComposerSurface,
     ]);
     const renderComposerRegion = React.useCallback((region: PluginProjectedComposerRegionEntryV1): React.ReactNode => {
-        if (!region.immutableGenerationId) return null;
+        if (!region.occurrenceId) return null;
         return renderComposerSurface({
             contribution: region.identity,
-            immutableGenerationId: region.immutableGenerationId,
+            occurrenceId: region.occurrenceId,
             role: 'region',
             input: {
                 v: 1,
@@ -614,7 +619,7 @@ export function useComposerScopePluginPresentation(
         if (input.catalog.preview?.kind !== 'surface') return null;
         return renderComposerSurface({
             contribution: input.catalog.identity,
-            immutableGenerationId: input.catalog.immutableGenerationId,
+            occurrenceId: input.catalog.occurrenceId,
             role: 'attachmentPreview',
             input: {
                 v: 1,
@@ -632,7 +637,7 @@ export function useComposerScopePluginPresentation(
         if (input.catalog.display?.kind !== 'surface') return undefined;
         const renderedContent = renderComposerSurface({
             contribution: input.catalog.identity,
-            immutableGenerationId: input.catalog.immutableGenerationId,
+            occurrenceId: input.catalog.occurrenceId,
             role: 'attachmentDisplay',
             input: {
                 v: 1,
@@ -697,7 +702,7 @@ export function useComposerScopePluginPresentation(
             onPress: (context) => {
                 const content = renderAttachmentPickerSurface(
                     input.catalog.identity,
-                    input.catalog.immutableGenerationId,
+                    input.catalog.occurrenceId,
                     `composer:attachmentPicker:${input.attachment.instanceId}`,
                 );
                 if (content === null || content === undefined) return;
@@ -723,14 +728,11 @@ export function useComposerScopePluginPresentation(
             const snapshot = actionSnapshotRef.current;
             const accountLifetime = snapshot?.host.accountLifetime;
             const machineId = snapshot?.host.machineId;
-            const expectedGeneration = snapshot?.host.expectedGeneration;
             if (
                 !resource
                 || !snapshot
                 || !accountLifetime
                 || !machineId
-                || expectedGeneration === null
-                || expectedGeneration === undefined
                 || surfaceLifetime?.isCurrent() !== true
             ) {
                 return children(null, null);
@@ -742,7 +744,7 @@ export function useComposerScopePluginPresentation(
                         pluginId: control.identity.pluginId,
                         machineId,
                         serverId: snapshot.host.serverId ?? null,
-                        expectedGeneration: String(expectedGeneration),
+                        expectedCallerOccurrenceId: control.occurrenceId,
                         context: resourceContextRef.current,
                     }}
                     resource={resource}
@@ -793,7 +795,7 @@ export function useComposerScopePluginPresentation(
                 ref: params.composer,
                 admittedContributor: {
                     identity: control.identity,
-                    immutableGenerationId: control.immutableGenerationId,
+                    occurrenceId: control.occurrenceId,
                 },
                 transaction: {
                     expectedRevision: snapshot.revision,

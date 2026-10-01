@@ -11,6 +11,78 @@ async function drainAsyncWork(cycles = 3): Promise<void> {
 }
 
 describe('createOnChildExited', () => {
+  it('does not register disconnected terminal recovery after an owned startup launch was cancelled before acknowledgement', async () => {
+    const pid = 121;
+    const tracked = {
+      pid,
+      startedBy: 'daemon',
+      happySessionId: `PID-${pid}`,
+    };
+    const pidToTrackedSession = new Map<number, any>([[pid, tracked]]);
+    const onFinalTrackedSessionExitStaged = vi.fn(async () => {
+      throw new Error('startup terminal has already been disposed');
+    });
+    const removeSessionMarkerFn = vi.fn(async () => undefined);
+    const onChildExited = createOnChildExited({
+      pidToTrackedSession,
+      spawnResourceCleanupByPid: new Map<number, () => void>(),
+      sessionAttachCleanupByPid: new Map<number, () => Promise<void>>(),
+      getApiMachineForSessions: () => null,
+      removeSessionMarkerFn,
+      stageObservedExitFn: vi.fn(async () => undefined),
+      onFinalTrackedSessionExitStaged,
+    } as any);
+
+    await onChildExited(pid, {
+      reason: 'startup-cancelled-before-ack',
+      code: null,
+      signal: 'SIGTERM',
+    });
+
+    expect(onFinalTrackedSessionExitStaged).not.toHaveBeenCalled();
+    expect(pidToTrackedSession.has(pid)).toBe(false);
+  });
+
+  it('cleans a PID-only pre-webhook exit without session recovery or respawn', async () => {
+    const pid = 120;
+    const tracked = {
+      pid,
+      startedBy: 'daemon',
+      happySessionId: `PID-${pid}`,
+      hostedTerminal: { mode: 'herdr' },
+    };
+    const pidToTrackedSession = new Map<number, any>([[pid, tracked]]);
+    const removeSessionMarkerFn = vi.fn(async () => undefined);
+    const beforeUnexpectedExitSettlement = vi.fn(async () => undefined);
+    const onUnexpectedExit = vi.fn(async () => undefined);
+    const onFinalTrackedSessionExitStaged = vi.fn(async () => {
+      throw new Error('PID-only sessions have no terminal attachment');
+    });
+    const onChildExited = createOnChildExited({
+      pidToTrackedSession,
+      spawnResourceCleanupByPid: new Map<number, () => void>(),
+      sessionAttachCleanupByPid: new Map<number, () => Promise<void>>(),
+      getApiMachineForSessions: () => null,
+      removeSessionMarkerFn,
+      beforeUnexpectedExitSettlement,
+      onUnexpectedExit,
+      shouldPreserveSessionMarkerOnExit: () => true,
+      onFinalTrackedSessionExitStaged,
+    } as any);
+
+    await onChildExited(pid, {
+      reason: 'process-exited-before-webhook',
+      code: 1,
+      signal: null,
+    });
+
+    expect(beforeUnexpectedExitSettlement).not.toHaveBeenCalled();
+    expect(onUnexpectedExit).not.toHaveBeenCalled();
+    expect(onFinalTrackedSessionExitStaged).not.toHaveBeenCalled();
+    expect(removeSessionMarkerFn).toHaveBeenCalledWith(pid);
+    expect(pidToTrackedSession.has(pid)).toBe(false);
+  });
+
   it('retains startup tracking, marker evidence, and cleanup custody when exact launch cleanup fails', async () => {
     const pid = 122;
     const tracked = {

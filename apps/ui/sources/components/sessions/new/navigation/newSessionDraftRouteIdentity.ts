@@ -24,12 +24,14 @@ export function resolveNewSessionDraftRouteIdentity(params: Readonly<{
 
 export function resolveNewSessionDraftRouteScope(input: Readonly<{
     activeScope: ServerAccountScope | null;
+    hostScope?: ServerAccountScope;
     draftServerId: string | string[] | undefined;
     draftAccountId: string | string[] | undefined;
     requestedScopeResolution:
         | Readonly<{ kind: 'bound'; scope: ServerAccountScope }>
-        | Readonly<{ kind: 'resolving' | 'unknown_home' | 'signed_out' }>;
+        | Readonly<{ kind: 'resolving' | 'unknown_home' | 'unavailable' | 'signed_out' }>;
 }>): ServerAccountScope | null {
+    if (input.hostScope) return input.hostScope;
     const draftServerId = typeof input.draftServerId === 'string' ? input.draftServerId.trim() : '';
     const draftAccountId = typeof input.draftAccountId === 'string' ? input.draftAccountId.trim() : '';
     if (!draftServerId) return input.activeScope;

@@ -2,6 +2,8 @@ import { readFile } from 'node:fs/promises';
 
 import { RPC_METHODS, SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc';
 import { SPAWN_SESSION_ERROR_CODES } from '@/session/shared/spawnSessionContract';
+import { getSessionHostBridge } from '@/agent/runtime/bridges/session/SessionHostBridge';
+import { createForkSessionLifecycleActionHandler } from '@/session/actions/lifecycle/createForkSessionLifecycleActionHandler';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { RpcActionExecutor } from './_actionDispatchAdapter';
@@ -79,6 +81,26 @@ const SESSION_LIFECYCLE_RPC_CASES = [
 ] as const;
 
 describe('session lifecycle RPC handlers', () => {
+    it('refuses an invalid fork sequence with an explicit context lacking cancellation without OS effects', async () => {
+        // The real handler and bridge validate admission; only OS process effects are boundaries.
+        const spawnSession = vi.fn(async () => { throw new Error('Invalid forks must not spawn'); });
+        const stopSession = vi.fn(async () => { throw new Error('Invalid forks must not stop'); });
+        const handler = createForkSessionLifecycleActionHandler({
+            sessionHostBridge: getSessionHostBridge(),
+            handlers: { spawnSession, stopSession },
+        });
+
+        await expect(handler({
+            parentSessionId: 'session-1',
+            forkPoint: { type: 'seq', upToSeqInclusive: 0 },
+        }, {})).resolves.toMatchObject({
+            ok: false,
+            errorCode: SPAWN_SESSION_ERROR_CODES.INVALID_REQUEST,
+        });
+        expect(spawnSession).not.toHaveBeenCalled();
+        expect(stopSession).not.toHaveBeenCalled();
+    });
+
     it('forwards the transport cancellation context to the handoff action handler', async () => {
         const handoff = vi.fn(async () => ({ ok: false, errorCode: 'cancelled' }));
         const executor = createSessionLifecycleRpcActionExecutor({
@@ -90,11 +112,12 @@ describe('session lifecycle RPC handlers', () => {
         await executor.execute(
             'session.handoff',
             input,
-            { surface: 'rpc', signal: controller.signal },
+            { surface: 'rpc', authority: 'present_user', signal: controller.signal },
         );
 
         expect(handoff).toHaveBeenCalledWith(input, {
             signal: controller.signal,
+            callerAuthority: 'present_user',
         });
     });
 
@@ -134,10 +157,7 @@ describe('session lifecycle RPC handlers', () => {
                 context: {
                     ...(typeof defaultSessionId === 'string' ? { defaultSessionId } : {}),
                     surface: 'rpc',
-                    // The lifecycle registrar narrows the RPC surface's authority
-                    // to the present user; dispatchActionFromRpc stamps whatever
-                    // the registrar supplies (_actionDispatchAdapter.ts:73).
-                    authority: 'present_user',
+                    authority: 'account_automation',
                 },
             };
         }));
@@ -165,7 +185,7 @@ describe('session lifecycle RPC handlers', () => {
         const input = {
             creationKey: 'manual:create-1',
             executionTarget: { serverId: 'server-1', machineId: 'machine-1' },
-            directory: '/tmp/project',
+            directory: { kind: 'path' as const, path: '/tmp/project' },
             organizationPlacement: { folderId: null, tagIds: [] },
             agentTarget: {
                 kind: 'agent' as const,
@@ -199,7 +219,7 @@ describe('session lifecycle RPC handlers', () => {
         expect(actionExecutor.execute).toHaveBeenCalledWith(
             'session.spawn_new',
             input,
-            { surface: 'rpc', authority: 'present_user', signal: controller.signal },
+            { surface: 'rpc', authority: 'account_automation', signal: controller.signal },
         );
         expect(rawSpawnLifecycleHandler).not.toHaveBeenCalled();
 
@@ -267,12 +287,19 @@ describe('session lifecycle RPC handlers', () => {
       spawnNonce: 'spawn-nonce-1',
       sessionIdStatus: 'pending',
     });
-    await expect(
-      handlers.get(RPC_METHODS.SPAWN_HAPPY_SESSION)?.(input),
-    ).resolves.toEqual({
-      type: 'success',
-      sessionId: 'session-1',
-    });
+    // The resolver receives a remaining budget, so this exact-budget
+    // assertion must control the real clock boundary, not elapsed wall time.
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(1_000);
+    try {
+      await expect(
+        handlers.get(RPC_METHODS.SPAWN_HAPPY_SESSION)?.(input),
+      ).resolves.toEqual({
+        type: 'success',
+        sessionId: 'session-1',
+      });
+    } finally {
+      clock.mockRestore();
+    }
     // The registrar forwards the RPC handler context (the cancellation carrier)
     // as the handler's second argument; invoking the handler without one leaves
     // it undefined (sessionLifecycle.ts:232-245).

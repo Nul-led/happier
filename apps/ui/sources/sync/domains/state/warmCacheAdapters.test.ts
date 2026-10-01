@@ -156,6 +156,86 @@ describe('warmCacheAdapters', () => {
         }).hasUnreadMessages).toBe(false);
     });
 
+    it('keeps a layout-1 row readable and visible across a cold restore, hidden-system rows included', async () => {
+        const { isUserFacingSession } = await import('@/sync/domains/session/listing/isUserFacingSession');
+        // The list row carries this viewer's projected metadata (the owner view for an owner,
+        // the shared view for a recipient). That projection is what the warm cache must keep:
+        // without it every current-layout row reloads as "metadata unavailable" and the owner's
+        // offline list comes back empty.
+        const owner = createSessionListRenderableSessionFixture({
+            id: 'layout-1-owner',
+            metadataLayoutVersion: 1,
+            metadataUnavailable: false,
+            metadata: { name: 'Owner title', path: '/home/u/repo', host: 'box', machineId: 'machine-1', flavor: 'codex' },
+        });
+        const reloaded = buildSessionListRenderableFromCacheEntry(buildSessionListCacheEntryFromRenderable(owner));
+        expect(reloaded.metadataUnavailable).toBe(false);
+        expect(reloaded.metadata).toMatchObject({ name: 'Owner title', path: '/home/u/repo', machineId: 'machine-1' });
+        expect(isUserFacingSession(reloaded)).toBe(true);
+
+        const hidden = createSessionListRenderableSessionFixture({
+            id: 'layout-1-hidden-system',
+            metadataLayoutVersion: 1,
+            metadataUnavailable: false,
+            metadata: { path: '/home/u/voice', hiddenSystemSession: true },
+        });
+        const reloadedHidden = buildSessionListRenderableFromCacheEntry(buildSessionListCacheEntryFromRenderable(hidden));
+        expect(isUserFacingSession(reloadedHidden)).toBe(false);
+    });
+
+    it('keeps the settled content fact across a cold restore so an own readable row never reads as locked', async () => {
+        const { projectUiSessionAwareness } = await import('@/sync/domains/session/awareness/sessionAwareness');
+        const { isSessionAwarenessContentReadableV1 } = await import('@happier-dev/protocol');
+        const roundtrip = (renderable: SessionListRenderableSession) => {
+            const entry = SessionListCacheEntryV1Schema.parse(
+                JSON.parse(JSON.stringify(buildSessionListCacheEntryFromRenderable(renderable))),
+            );
+            return buildSessionListRenderableFromCacheEntry(entry);
+        };
+        const readable = (renderable: SessionListRenderableSession) =>
+            isSessionAwarenessContentReadableV1(projectUiSessionAwareness(renderable, 1_000).encryption);
+
+        const ownE2ee = roundtrip(createSessionListRenderableSessionFixture({
+            id: 'own-e2ee',
+            metadataLayoutVersion: 1,
+            metadataUnavailable: false,
+            encryptionMode: 'e2ee',
+            encryptedContentAvailability: 'ready',
+            metadata: { path: '/home/u/repo' },
+        }));
+        expect(ownE2ee.encryptionMode).toBe('e2ee');
+        expect(ownE2ee.encryptedContentAvailability).toBe('ready');
+        expect(readable(ownE2ee)).toBe(true);
+
+        const plain = roundtrip(createSessionListRenderableSessionFixture({
+            id: 'plain',
+            encryptionMode: 'plain',
+            encryptedContentAvailability: 'ready',
+            metadata: { path: '/home/u/plain' },
+        }));
+        expect(readable(plain)).toBe(true);
+
+        // A settled locked answer stays locked across the restore; nothing is upgraded to ready.
+        const locked = roundtrip(createSessionListRenderableSessionFixture({
+            id: 'locked',
+            encryptionMode: 'e2ee',
+            encryptedContentAvailability: 'encrypted_access_pending',
+            metadata: null,
+        }));
+        expect(locked.encryptedContentAvailability).toBe('encrypted_access_pending');
+        expect(readable(locked)).toBe(false);
+
+        // An unsettled row stays unsettled: the cache never invents a fact.
+        const unsettled = roundtrip(createSessionListRenderableSessionFixture({
+            id: 'unsettled',
+            encryptionMode: 'e2ee',
+            encryptedContentAvailability: undefined,
+            metadata: { path: '/home/u/other' },
+        }));
+        expect(unsettled.encryptedContentAvailability).toBeUndefined();
+        expect(readable(unsettled)).toBe(false);
+    });
+
     it('does not preserve or resurrect legacy private cache fields after the privacy layout contracts', () => {
         const previousEntry: SessionListCacheEntryV1 = {
             sessionId: 'privacy-contraction',

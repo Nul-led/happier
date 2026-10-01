@@ -171,7 +171,7 @@ function createContextualResourceWatchOwner(input: Readonly<{
     const daemon = Object.freeze({
         machineId: input.resource.machineId,
         serverId: input.resource.serverId ?? null,
-        expectedGeneration: input.resource.expectedGeneration,
+        expectedCallerOccurrenceId: input.resource.expectedCallerOccurrenceId,
     });
 
     async function openAtDaemon(
@@ -181,7 +181,7 @@ function createContextualResourceWatchOwner(input: Readonly<{
     ): Promise<WatchOpenResult> {
         const outcome = await open(daemon.machineId, {
             serverId: daemon.serverId,
-            expectedGeneration: daemon.expectedGeneration,
+            expectedCallerOccurrenceId: daemon.expectedCallerOccurrenceId,
             callerPluginId: input.pluginId,
             subscriptionId,
             resource: { pluginId: input.pluginId, localId: resourceId },
@@ -219,7 +219,7 @@ function createContextualResourceWatchOwner(input: Readonly<{
             while (!watch.closed && isCurrent()) {
                 const outcome = await next(daemon.machineId, {
                     serverId: daemon.serverId,
-                    expectedGeneration: daemon.expectedGeneration,
+                    expectedCallerOccurrenceId: daemon.expectedCallerOccurrenceId,
                     callerPluginId: input.pluginId,
                     subscriptionId: watch.subscriptionId,
                     signal: watch.controller.signal,
@@ -240,7 +240,7 @@ function createContextualResourceWatchOwner(input: Readonly<{
                     watch.deliver(event);
                     return;
                 }
-                if (outcome.supported && !outcome.result.ok && outcome.result.reason === 'stale_generation') {
+                if (outcome.supported && !outcome.result.ok && outcome.result.reason === 'stale_occurrence') {
                     watch.closed = true;
                     watches.delete(watch.subscriptionId);
                     watch.deliver(terminalEvent(watch.subscriptionId, 'expired_resource', outcome.result.code));

@@ -242,6 +242,7 @@ vi.mock('@/sync/domains/state/storage', async (importOriginal) => {
     const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
     return createStorageModuleStub({
         useSession: () => null,
+        useSessionListPreferredMetadata: () => null,
         useProjectForSession: () => null,
         useSetting: () => null,
         useSessionProjectScmSnapshot: () => null,
@@ -258,6 +259,20 @@ vi.mock('@/sync/domains/state/storage', async (importOriginal) => {
 });
 
 describe('WorkspaceFileDetailsView (workspace SCM snapshot)', () => {
+    it('states that file details are unavailable when the machine scope is missing', async () => {
+        const { WorkspaceFileDetailsView } = await import('./WorkspaceFileDetailsView');
+        const screen = await renderScreen(
+            <WorkspaceFileDetailsView
+                scopeId="session:offline-session"
+                scope={null}
+                filePath="src/a.txt"
+                sessionIdForAugmentation="offline-session"
+            />,
+        );
+        expect(screen.findByTestId('file-details-scope-unavailable')).not.toBeNull();
+        expect(screen.getTextContent()).toContain('errors.daemonUnavailableBody');
+    });
+
     beforeEach(() => {
         canUseLineSelectionMock.mockReset();
         canUseLineSelectionMock.mockReturnValue(false);

@@ -343,7 +343,7 @@ describe('ExecutionRunHostBridge detached task scope', () => {
     } as unknown as AgentRuntime;
     const lease = {
       pluginId: 'acme.agent', pluginVersion: '1.0.0', agentId: 'acme.agent/default',
-      localAgentId: 'default', isCurrent: () => true,
+      localAgentId: 'default', occurrenceId: 'fixture-occurrence', isCurrent: () => true,
     };
     runtimeFactoryMock.createExecutionRunBridgeRuntime.mockImplementation((options: Record<string, unknown>) => {
       const createExecutionRunContext = createNativeAgentExecutionRunContextLeaseFactory({

@@ -94,28 +94,7 @@ const authEntryOptionsState: { current: AuthEntryOptions } = vi.hoisted(() => ({
         authEntryUnavailable: false,
         serverUrlForCopy: 'https://home-a.example.test',
         showAuthActions: true,
-        showProviderSignup: true,
-        showAnonymousSignup: true,
-        showMtlsLogin: false,
-        showKeylessProviderLogin: false,
-        providerId: 'github',
-        keylessProviderId: null,
-        providerSignupTitle: 'Continue with GitHub',
-        providerKeylessTitle: '',
-        anonymousSignupTitle: 'Create account',
-        mtlsTitle: '',
-        primaryAction: { kind: 'provider-keyed', title: 'Continue with GitHub' },
-        mtlsPrimary: false,
-        keylessPrimary: false,
-        retentionSummary: null as string | null,
-        autoRedirect: {
-            enabled: false,
-            providerId: null,
-            toKeyedProvision: false,
-            toKeylessLogin: false,
-            toMtls: false,
-            toLegacySignupProvider: false,
-        },
+        retentionDisclosure: null as { kind: 'summary'; summary: string } | null,
         retryServerCheck: () => {},
     },
 }));
@@ -228,8 +207,9 @@ vi.mock('@/components/onboarding/unauthShell', () => ({
     useApplyBrandHeroSeen: () => vi.fn(),
 }));
 
-vi.mock('@/components/ui/feedback/AppUpdateStatusTag', () => ({
-    AppUpdateStatusTag: (props: Record<string, unknown>) => React.createElement('AppUpdateStatusTag', props),
+vi.mock('@/components/updates/UpdatesPopoverButton', () => ({
+    UpdatesEntry: (props: Record<string, unknown>) => React.createElement('UpdatesEntry', props),
+    UpdatesPopoverButton: (props: Record<string, unknown>) => React.createElement('UpdatesPopoverButton', props),
 }));
 
 vi.mock('@/text', async () => {
@@ -333,16 +313,6 @@ describe('PreAuthOnboardingWizardEntry — Account Service welcome sign-in', () 
         authEntryOptionsState.current = {
             ...baseAuthEntryOptions,
             homeTransport: { homeCarrier },
-            showAnonymousSignup: true,
-            showMtlsLogin: false,
-            autoRedirect: {
-                enabled: false,
-                providerId: null,
-                toKeyedProvision: false,
-                toKeylessLogin: false,
-                toMtls: false,
-                toLegacySignupProvider: false,
-            },
         };
         wizardControllerMock.lastProps = null;
         vi.stubGlobal('window', {
@@ -408,16 +378,6 @@ describe('PreAuthOnboardingWizardEntry — Account Service welcome sign-in', () 
     it('does not let the active Home auto-redirect while the selected Account Service owns Welcome', async () => {
         authEntryOptionsState.current = {
             ...authEntryOptionsState.current,
-            showAnonymousSignup: false,
-            showMtlsLogin: true,
-            autoRedirect: {
-                enabled: true,
-                providerId: null,
-                toKeyedProvision: false,
-                toKeylessLogin: false,
-                toMtls: true,
-                toLegacySignupProvider: false,
-            },
         };
 
         await renderEntry();
@@ -466,7 +426,7 @@ describe('PreAuthOnboardingWizardEntry — Account Service welcome sign-in', () 
             canonicalServerUrl: SELECTED_SERVICE_URL,
             providerId: 'github',
             entryIntent: { kind: 'enter', target: { kind: 'automatic' } },
-            returnTo: '/setup/wizard',
+            returnTo: '/homes/sign-in',
             accountEntryReturnTo: '/',
         });
         expect(locationAssignMock).toHaveBeenCalledWith(

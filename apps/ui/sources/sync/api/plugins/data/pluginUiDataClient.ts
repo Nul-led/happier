@@ -4,10 +4,10 @@ import {
     type PluginCollectionContractRefV1,
 } from '@happier-dev/protocol';
 import {
-    projectPluginAccountCollectionDeclaration,
     PluginError,
     type JsonValue,
 } from '@happier-dev/plugin-sdk';
+import { projectPluginAccountCollectionDeclaration } from '@happier-dev/plugin-sdk/host/registration';
 import type {
     PluginAccountCollectionDefinition,
     PluginAccountCollectionValue,

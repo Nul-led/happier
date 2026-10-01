@@ -1,8 +1,15 @@
 import * as React from 'react';
-import { Platform, Pressable, View } from 'react-native';
+import { Animated, Platform, Pressable, View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
 import { Text } from '@/components/ui/text/Text';
+import { Typography } from '@/constants/Typography';
+import {
+    resolveOverlayMotionPreset,
+    useOverlayMotionAnimation,
+    useOverlayPresence,
+} from '@/components/ui/overlays/motion/overlayMotion';
+import { shadowLevelStyle } from '@/shadowElevation';
 import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
 import { resolveOverlayPointerEvents } from '@/components/ui/overlays/resolveOverlayPointerEvents';
 import { useOptionalSafeAreaInsets } from '@/hooks/ui/useOptionalSafeAreaInsets';
@@ -28,6 +35,8 @@ import {
 
 /** Distance from the top of the usable window; the notch is added on top of it. */
 const NOTICE_TOP_MARGIN_PX = 12;
+/** It hangs from the top of the window: it drops in from that edge and lifts back into it. */
+const NOTICE_MOTION = resolveOverlayMotionPreset({ kind: 'popover', direction: 'bottom' });
 
 const stylesheet = StyleSheet.create((theme) => ({
     noticeHost: {
@@ -48,10 +57,13 @@ const stylesheet = StyleSheet.create((theme) => ({
         flexDirection: 'row',
         alignItems: 'center',
         gap: 12,
+        ...shadowLevelStyle(theme.colors.shadowLevels[3]),
     },
     noticeText: {
+        // The row title's size and rhythm, in the body's regular weight: the message is read, not scanned.
+        ...Typography.rowTitle(),
+        ...Typography.default('regular'),
         color: theme.colors.text.primary,
-        fontSize: 14,
         flexShrink: 1,
     },
     undoControl: {
@@ -66,9 +78,8 @@ const stylesheet = StyleSheet.create((theme) => ({
         backgroundColor: theme.colors.surface.pressed,
     },
     undoLabel: {
+        ...Typography.rowTitle(),
         color: theme.colors.text.link,
-        fontSize: 14,
-        fontWeight: '600',
     },
 }));
 
@@ -79,6 +90,12 @@ export const PresentationNoticeHost = React.memo(function PresentationNoticeHost
         readPresentationNotice,
         readPresentationNotice,
     );
+    // A retired notice leaves the way it came, still saying what it said, and takes no presses while
+    // it goes; a newer notice replaces the words in place.
+    const lastShownRef = React.useRef(notice);
+    if (notice) lastShownRef.current = notice;
+    const motion = useOverlayMotionAnimation({ visible: notice !== null, preset: NOTICE_MOTION });
+    const { present } = useOverlayPresence(notice !== null, motion.exitMs);
     // The notice floats over whatever the app is showing, so it consumes the
     // window's own safe region. Without it the card sits under the notch, the
     // status bar or a rounded corner on the exact devices that have one.
@@ -111,9 +128,12 @@ export const PresentationNoticeHost = React.memo(function PresentationNoticeHost
     // testing, so only `box-none` expresses that; the platform seam itself lives
     // in the overlay owner every other host here already consumes.
     const hostPointerEvents = resolveOverlayPointerEvents('box-none');
-    const noticePointerEvents = resolveOverlayPointerEvents(undo ? 'auto' : 'none');
+    const shown = notice ?? lastShownRef.current;
+    const leaving = notice === null;
+    const noticePointerEvents = resolveOverlayPointerEvents(undo && !leaving ? 'auto' : 'none');
 
-    if (!notice) return null;
+    if (!present || !shown) return null;
+    const shownUndo = leaving ? shown.undo ?? null : undo;
     return (
         <View
             style={[
@@ -122,20 +142,23 @@ export const PresentationNoticeHost = React.memo(function PresentationNoticeHost
                 hostPointerEvents.webStyle,
             ]}
             pointerEvents={hostPointerEvents.nativePointerEvents}
-            testID="current-session-presentation-notice"
+            testID={leaving ? 'current-session-presentation-notice-leaving' : 'current-session-presentation-notice'}
+            aria-hidden={leaving ? true : undefined}
+            accessibilityElementsHidden={leaving}
+            importantForAccessibility={leaving ? 'no-hide-descendants' : 'auto'}
         >
-            <View
-                style={[styles.notice, noticePointerEvents.webStyle]}
+            <Animated.View
+                style={[styles.notice, motion.style, noticePointerEvents.webStyle]}
                 pointerEvents={noticePointerEvents.nativePointerEvents}
-                accessibilityRole={notice.severity === 'error' ? 'alert' : 'text'}
-                accessibilityLiveRegion={notice.severity === 'error' ? 'assertive' : 'polite'}
+                accessibilityRole={shown.severity === 'error' ? 'alert' : 'text'}
+                accessibilityLiveRegion={leaving ? 'none' : shown.severity === 'error' ? 'assertive' : 'polite'}
             >
-                <Text style={styles.noticeText}>{notice.message}</Text>
-                {undo ? (
+                <Text style={styles.noticeText}>{shown.message}</Text>
+                {shownUndo ? (
                     <Pressable
-                        testID="current-session-presentation-notice-undo"
+                        testID={leaving ? undefined : 'current-session-presentation-notice-undo'}
                         accessibilityRole="button"
-                        accessibilityLabel={undo.label}
+                        accessibilityLabel={shownUndo.label}
                         hitSlop={8}
                         onPress={onUndoPress}
                         onFocus={() => setUndoControlEngaged(true)}
@@ -144,10 +167,10 @@ export const PresentationNoticeHost = React.memo(function PresentationNoticeHost
                         onHoverOut={() => setUndoControlEngaged(false)}
                         style={({ pressed }) => [styles.undoControl, pressed && styles.undoControlActive]}
                     >
-                        <Text style={styles.undoLabel}>{undo.label}</Text>
+                        <Text style={styles.undoLabel}>{shownUndo.label}</Text>
                     </Pressable>
                 ) : null}
-            </View>
+            </Animated.View>
         </View>
     );
 });

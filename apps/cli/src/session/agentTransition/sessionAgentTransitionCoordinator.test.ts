@@ -179,7 +179,7 @@ describe('runSessionAgentTransition — pre-stop failures leave the source untou
 
     expect(result).toEqual({ type: 'rejected', code: 'target_unavailable', sourceEffect: 'none' });
     expect(definitiveRejection).toHaveBeenCalledWith({
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       agentId: 'codex',
       selection,
     });

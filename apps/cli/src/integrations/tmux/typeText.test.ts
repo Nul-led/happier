@@ -151,7 +151,7 @@ describe('pasteTextViaTmuxBuffer', () => {
     ]);
   });
 
-  it('re-sends Enter once when post-submit evidence still shows the current collapsed paste marker', async () => {
+  it('waits for the pending composer to clear without resending Enter', async () => {
     const calls: readonly string[][] = [];
     let verifyCount = 0;
     const executor: TmuxCommandExecutor = async (args) => {
@@ -165,6 +165,7 @@ describe('pasteTextViaTmuxBuffer', () => {
       text: 'line one\nline two',
       bufferName: 'happier-test-buffer',
       wait: async () => undefined,
+      timeoutMs: 1_000,
       verifyAfterSubmit: async () => {
         verifyCount += 1;
         return verifyCount === 1;
@@ -172,7 +173,6 @@ describe('pasteTextViaTmuxBuffer', () => {
     })).resolves.toEqual({ success: true });
 
     expect(calls.filter((args) => args[0] === 'send-keys')).toEqual([
-      ['send-keys', '-t', 'happy:claude.1', 'C-m'],
       ['send-keys', '-t', 'happy:claude.1', 'C-m'],
     ]);
   });

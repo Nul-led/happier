@@ -8,11 +8,6 @@ import type { PluginUiPersistentArtifactIdentity } from './artifactByteCache';
 
 const identity: PluginUiPersistentArtifactIdentity = Object.freeze({
     accountScope: Object.freeze({ serverId: 'server-a', accountId: 'account-a' }),
-    releaseVersion: '1.2.3',
-    pluginId: 'com.acme.hosted',
-    contributionId: 'artifact',
-    tier: 'hostedWeb',
-    platform: 'web',
     artifactDigest: `sha256:${'a'.repeat(64)}`,
 });
 

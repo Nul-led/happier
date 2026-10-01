@@ -165,15 +165,14 @@ function reconcileProjectedExternalSpeechProviders(input: Readonly<{
       previousToken ?? null,
       token,
       new Map(Object.values(projection.voiceProvidersById).map((entry) => (
-        [entry.id, String(entry.generation)] as const
+        [entry.id, entry.occurrenceId] as const
       ))),
     );
     projectedVoiceProjectionTokens.set(input.executableHost, token);
     for (const entry of Object.values(projection.voiceProvidersById)) {
       const declaration = entry.definition;
       if (
-        entry.generation !== projection.generation
-        || declaration.kind !== 'speech'
+        declaration.kind !== 'speech'
       ) {
         continue;
       }
@@ -188,7 +187,7 @@ function reconcileProjectedExternalSpeechProviders(input: Readonly<{
         pluginId: entry.pluginId,
         localId: declaration.id,
         providerId: entry.id,
-        projectionGeneration: String(entry.generation),
+        occurrenceId: entry.occurrenceId,
         descriptor,
         adapter: null,
         ...(declaration.settings.actions?.length
@@ -248,7 +247,7 @@ function createVoiceDerivedScope(input: Readonly<{
     .map((provider) => provider.declaration);
   const scope = createExternalVoiceProviderActivationScope({
     pluginId: input.target.pluginId,
-    generation: String(input.target.projectionGeneration),
+    occurrenceId: input.target.occurrenceId,
     declarations,
     registrationScope: input.registrationScope,
     clientRuntimeIdentitiesByLocalId: Object.freeze(Object.fromEntries(

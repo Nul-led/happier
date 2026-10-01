@@ -3,20 +3,13 @@ import { View, type StyleProp, type ViewStyle } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
 import { StatusDot } from '@/components/ui/status/StatusDot';
-import { useReducedMotionPreference } from '@/hooks/ui/useReducedMotionPreference';
 import type { LiveStreamPlayerPhase } from '@/sync/domains/machines/peer/mediation/stream/player';
 
-import { streamPlayerStyles } from './styles';
-
 /**
- * Stream-domain status indicator. Maps a semantic stream `variant` to a themed
- * state token + soft halo and delegates the cross-platform dot (and its pulse)
- * to the canonical `StatusDot` primitive — no duplicated pulse logic lives here.
- *
- * Only the `live` variant pulses, and only when reduced-motion is off, so a
- * stalled / errored / idle stream never reads as a live one. Under the OS
- * reduced-motion preference the dot is static. Colors are Unistyles theme
- * tokens (no raw hex).
+ * Stream-domain status indicator: maps a semantic stream `variant` to its themed state token and
+ * draws the canonical `StatusDot` with its soft ring (the one halo composition). It never pulses — a
+ * playing stream already moves, and a stalled or failed one must not read as live (H-UX F-10/F-11).
+ * The dot always sits beside its status in words, so it carries no label of its own.
  */
 
 export type StreamStatusDotVariant = 'live' | 'stale' | 'error' | 'idle';
@@ -57,35 +50,19 @@ export function resolveStreamStatusDotVariant(
 
 export function StreamStatusDot(props: Readonly<{
     variant: StreamStatusDotVariant;
-    /** Override the OS reduced-motion preference (defaults to the live setting). */
-    reducedMotion?: boolean;
     size?: number;
     style?: StyleProp<ViewStyle>;
     testID?: string;
 }>): React.ReactElement {
     const { theme } = useUnistyles();
-    const systemReducedMotion = useReducedMotionPreference();
-    const reducedMotion = props.reducedMotion ?? systemReducedMotion;
-    const color = theme.colors.state[VARIANT_TO_STATE_TOKEN[props.variant]].foreground;
-    const isPulsing = props.variant === 'live' && !reducedMotion;
-    const size = props.size ?? 8;
-
+    const token = theme.colors.state[VARIANT_TO_STATE_TOKEN[props.variant]];
     return (
-        <View
-            testID={props.testID}
-            accessibilityRole="image"
-            style={[streamPlayerStyles.statusDot, props.style]}
-        >
-            <View
-                testID={props.testID ? `${props.testID}:halo` : undefined}
-                pointerEvents="none"
-                style={[streamPlayerStyles.statusDotHalo, { backgroundColor: color }]}
-            />
+        <View testID={props.testID} pointerEvents="none" style={props.style}>
             <StatusDot
                 testID={props.testID ? `${props.testID}:dot` : undefined}
-                color={color}
-                isPulsing={isPulsing}
-                size={size}
+                color={token.foreground}
+                halo={token.background}
+                size={props.size ?? 8}
             />
         </View>
     );

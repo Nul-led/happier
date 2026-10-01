@@ -3,7 +3,7 @@ import {
     SESSION_AGENT_ACTIVITY_ATTENTION_KINDS,
     type SessionAgentActivityAttentionKind,
 } from '@/sync/domains/session/agentActivity/types';
-import type { Message } from '@/sync/domains/messages/messageTypes';
+import type { Message } from "@happier-dev/session-core/messages";
 
 import type { SessionSubagent } from './types';
 
@@ -82,19 +82,36 @@ function readPendingAttentionKind(params: Readonly<{
     return null;
 }
 
+/** Pending prompts by permission id, in first-seen order. */
+type PendingPromptMap = Map<string, SessionAgentActivityAttentionKind>;
+
+function recordPending(
+    found: PendingPromptMap,
+    permission: SidechainToolPermissionLike,
+    kind: SessionAgentActivityAttentionKind,
+): void {
+    const id = typeof permission?.id === 'string' ? permission.id.trim() : '';
+    // A pending record without an id still counts toward attention; it just cannot be answered in
+    // place, so it gets a key that can never match a Session request.
+    found.set(id.length > 0 ? id : `anonymous:${found.size}`, kind);
+}
+
 function collectFromMessages(params: Readonly<{
     messages: readonly Message[];
     reducerState: SidechainStateLike;
-    found: Set<SessionAgentActivityAttentionKind>;
+    found: PendingPromptMap;
 }>): void {
     for (const message of params.messages) {
         if (message.kind !== 'tool-call') continue;
 
+        const permission = message.tool.permission;
+        if (!permission) continue;
+
         const kind = readPendingAttentionKind({
-            permission: message.tool.permission,
+            permission,
             reducerState: params.reducerState,
         });
-        if (kind) params.found.add(kind);
+        if (kind) recordPending(params.found, permission, kind);
 
         collectFromMessages({
             messages: message.children,
@@ -126,18 +143,21 @@ function findSubagentToolChildren(params: Readonly<{
 }
 
 function toCanonicalOrder(
-    found: ReadonlySet<SessionAgentActivityAttentionKind>,
+    found: ReadonlyMap<string, SessionAgentActivityAttentionKind>,
 ): readonly SessionAgentActivityAttentionKind[] {
     if (found.size === 0) return NO_SESSION_AGENT_ACTIVITY_ATTENTION;
-    return SESSION_AGENT_ACTIVITY_ATTENTION_KINDS.filter((kind) => found.has(kind));
+    const kinds = new Set(found.values());
+    return SESSION_AGENT_ACTIVITY_ATTENTION_KINDS.filter((kind) => kinds.has(kind));
 }
 
-export function deriveSessionSubagentPendingAttentionKinds(params: Readonly<{
+type PendingPromptScanParams = Readonly<{
     subagent: SessionSubagent;
     reducerState: SidechainStateLike;
     messages?: readonly Message[];
-}>): readonly SessionAgentActivityAttentionKind[] {
-    const found = new Set<SessionAgentActivityAttentionKind>();
+}>;
+
+function scanPendingPrompts(params: PendingPromptScanParams): PendingPromptMap {
+    const found: PendingPromptMap = new Map();
 
     const sidechainId = params.subagent.transcript.sidechainId?.trim();
     const sidechainMessages = sidechainId ? params.reducerState?.sidechains?.get(sidechainId) : null;
@@ -146,13 +166,14 @@ export function deriveSessionSubagentPendingAttentionKinds(params: Readonly<{
         // The loaded sidechain is the complete record for this subagent, so it answers on its own —
         // walking the parent transcript as well would double-count a prompt already seen here.
         for (const sidechainMessage of sidechainMessages) {
+            const permission = sidechainMessage?.tool?.permission ?? null;
             const kind = readPendingAttentionKind({
-                permission: sidechainMessage?.tool?.permission,
+                permission,
                 reducerState: params.reducerState,
             });
-            if (kind) found.add(kind);
+            if (kind) recordPending(found, permission, kind);
         }
-        return toCanonicalOrder(found);
+        return found;
     }
 
     const toolId = params.subagent.transcript.toolId?.trim() || null;
@@ -170,5 +191,27 @@ export function deriveSessionSubagentPendingAttentionKinds(params: Readonly<{
         }
     }
 
-    return toCanonicalOrder(found);
+    return found;
+}
+
+export function deriveSessionSubagentPendingAttentionKinds(
+    params: PendingPromptScanParams,
+): readonly SessionAgentActivityAttentionKind[] {
+    return toCanonicalOrder(scanPendingPrompts(params));
+}
+
+export type SessionSubagentPendingPrompt = Readonly<{
+    /** The permission id, which is also the Session request id that answers it. */
+    id: string;
+    kind: SessionAgentActivityAttentionKind;
+}>;
+
+/**
+ * The prompts this subagent is waiting on, by the ids a Session request carries — the same scan the
+ * attention kinds come from, so a row that says "Needs approval" can always name what it waits on.
+ */
+export function listSessionSubagentPendingPrompts(
+    params: PendingPromptScanParams,
+): readonly SessionSubagentPendingPrompt[] {
+    return [...scanPendingPrompts(params)].map(([id, kind]) => ({ id, kind }));
 }

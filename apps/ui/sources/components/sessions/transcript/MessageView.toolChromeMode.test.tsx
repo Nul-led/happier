@@ -2,7 +2,7 @@ import React from 'react';
 import { describe, expect, it, vi, afterEach } from 'vitest';
 import { createPartialStorageModuleMock, renderScreen, standardCleanup } from '@/dev/testkit';
 import { createReactNativeWebMock } from '@/dev/testkit/mocks/reactNative';
-import { createReducer } from '@/sync/reducer/reducer';
+import { createReducer } from "@happier-dev/session-core/reducer";
 import { installMessageViewCommonModuleMocks } from './messageViewTestHelpers';
 
 let toolChromeMode: 'cards' | 'activity_feed' = 'cards';

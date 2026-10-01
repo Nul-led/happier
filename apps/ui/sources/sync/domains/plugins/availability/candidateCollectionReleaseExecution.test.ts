@@ -1,11 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
     PluginMachineMaterializationV1Schema,
     PluginProjectionV2Schema,
 } from '@happier-dev/protocol';
 import { PluginReleaseFactsV1Schema } from '@happier-dev/protocol/plugins/availability';
-import { PluginUiArtifactsManifestEntryV1Schema } from '@happier-dev/protocol/plugins/ui';
+import { PluginUiArtifactsManifestEntryV2Schema } from '@happier-dev/protocol/plugins/ui';
 
 import type { ActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
 import type { PluginAccountAvailabilityReader } from './reader';
@@ -14,33 +14,25 @@ import {
     resolveCandidateCollectionReleaseExecution,
 } from './candidateCollectionReleaseExecution';
 
+vi.mock('./generatedBundledPluginUiArtifacts', () => ({
+    BUNDLED_PLUGIN_UI_APP_ARTIFACTS: Object.freeze([]),
+}));
+
 const pluginId = 'example.tasks';
 const version = '2.0.0';
 const archiveDigest = `sha256:${'a'.repeat(64)}`;
 const artifactDigest = `sha256:${'b'.repeat(64)}`;
 const fileDigest = `sha256:${'c'.repeat(64)}`;
-const nativeCapabilitiesDigest = `sha256:${'d'.repeat(64)}`;
 
-const artifactGraph = PluginUiArtifactsManifestEntryV1Schema.parse({
-    contributionId: 'tasks-collections',
+const artifactGraph = PluginUiArtifactsManifestEntryV2Schema.parse({
+    artifactId: 'tasks-collections',
     tier: 'reactNative',
-    platform: 'ios',
-    entry: 'entry.mjs.bundle',
-    files: [{ relativePath: 'entry.mjs.bundle', digest: fileDigest, byteSize: 1 }],
+    entry: 'react-native/tasks-collections/entry.cjs.bundle',
+    files: [{ relativePath: 'react-native/tasks-collections/entry.cjs.bundle', digest: fileDigest, byteSize: 1 }],
     digest: artifactDigest,
-    builtWith: { bundler: 'repack', version: '1.0.0' },
-    repack: {
-        containerName: 'tasks_collections',
-        modulePath: './entry',
-        exportName: 'renderSurface',
-    },
-    collectionMigrations: {
-        containerName: 'tasks_collections',
-        modulePath: './entry',
-        exportName: 'collectionMigrations',
-    },
-    hostUiApiVersion: '1.0.0',
-    compat: { react: '19.0.0', reactNative: '0.83.4' },
+    builtWith: { bundler: 'esbuild', version: '0.25.0' },
+    executable: { exports: ['collectionMigrations', 'renderSurface'] },
+    hostUiApiRange: '^1.0.0',
 });
 
 const facts = PluginReleaseFactsV1Schema.parse({
@@ -53,19 +45,38 @@ const facts = PluginReleaseFactsV1Schema.parse({
         displayName: 'Example tasks',
         engines: { happier: '^1.0.0' },
         runtime: { apiVersion: 1 },
-        contributes: {},
+        contributes: {
+            accountCollections: [{
+                id: 'tasks-collections',
+                schemaVersion: 2,
+                schema: {
+                    type: 'object',
+                    properties: { id: { type: 'string' } },
+                    required: ['id'],
+                    additionalProperties: true,
+                },
+                rowIdField: 'id',
+                serverReadable: ['id'],
+                indexes: [],
+                uiQueries: [],
+                relations: [],
+                readableSchemaVersions: [1],
+                migrations: [{ id: 'v1-v2', fromSchemaVersion: 1, toSchemaVersion: 2 }],
+                migrationArtifact: {
+                    artifactId: artifactGraph.artifactId,
+                    exportName: 'collectionMigrations',
+                },
+            }],
+        },
     },
     collectionContracts: [],
     uiSlots: [{
-        contributionId: artifactGraph.contributionId,
+        contributionId: 'tasks-collections',
+        artifactId: artifactGraph.artifactId,
         tier: artifactGraph.tier,
-        platform: artifactGraph.platform,
+        platform: 'ios',
         artifactDigest: artifactGraph.digest,
-        compatibility: {
-            hostUiApiVersion: artifactGraph.hostUiApiVersion,
-            reactVersion: artifactGraph.compat.react,
-            reactNativeVersion: artifactGraph.compat.reactNative,
-        },
+        hostUiApiRange: artifactGraph.hostUiApiRange,
     }],
     packageAssetArchive: {
         archiveDigestSha256: archiveDigest,
@@ -83,10 +94,12 @@ const materialization = PluginMachineMaterializationV1Schema.parse({
     portableRelease: true,
     archiveDigestSha256: archiveDigest,
     uiArtifacts: [{
-        contributionId: artifactGraph.contributionId,
+        contributionId: 'tasks-collections',
+        artifactId: artifactGraph.artifactId,
         tier: artifactGraph.tier,
-        platform: artifactGraph.platform,
+        platform: 'ios',
         artifactDigest: artifactGraph.digest,
+        hostUiApiRange: artifactGraph.hostUiApiRange,
     }],
     enabled: true,
     trustState: 'trusted',
@@ -95,17 +108,12 @@ const materialization = PluginMachineMaterializationV1Schema.parse({
 
 const cacheIdentity = {
     pluginId,
-    contributionId: artifactGraph.contributionId,
+    contributionId: 'tasks-collections',
+    artifactId: artifactGraph.artifactId,
     artifactDigest: artifactGraph.digest,
-    hostAppVersion: '1.0.0',
-    hostUiApiVersion: artifactGraph.hostUiApiVersion,
-    reactVersion: artifactGraph.compat.react,
-    reactNativeVersion: artifactGraph.compat.reactNative,
-    platform: artifactGraph.platform,
-    channel: 'internal',
-    nativeCapabilitiesDigest,
-    projectionGeneration: 4,
+    platform: 'ios',
 } as const;
+const projectedByteIdentity = { artifactDigest: artifactGraph.digest } as const;
 
 function createProjection(entries: Readonly<Record<string, unknown>> = {}) {
     return PluginProjectionV2Schema.parse({
@@ -120,11 +128,12 @@ function createProjection(entries: Readonly<Record<string, unknown>> = {}) {
                         pluginId,
                         pluginVersion: version,
                         contributionKind: 'reactNativeBundle',
-                        contributionId: artifactGraph.contributionId,
+                        contributionId: 'tasks-collections',
                         generatedV2: true,
                         generatedOwnerKind: 'collectionMigrations',
+                        occurrenceId: 'example.tasks-occurrence-a',
                         artifactGraph,
-                        runtime: { cacheIdentity },
+                        runtime: { cacheIdentity: projectedByteIdentity },
                         serverIdentityId: materialization.serverIdentityId,
                         materializationRef: {
                             machineId: materialization.machineId,
@@ -148,7 +157,6 @@ function createReader(currentMaterialization = materialization): PluginAccountAv
             snapshots: [{
                 serverIdentityId: currentMaterialization.serverIdentityId,
                 machineId: currentMaterialization.machineId,
-                revision: 1,
                 materializations: [currentMaterialization],
             }],
         }),
@@ -220,11 +228,12 @@ describe('candidate Collection release execution resolver', () => {
             pluginId,
             pluginVersion: version,
             contributionKind: 'reactNativeBundle',
-            contributionId: artifactGraph.contributionId,
+            contributionId: 'tasks-collections',
             generatedV2: true,
             generatedOwnerKind: 'collectionMigrations',
+            occurrenceId: 'example.tasks-occurrence-b',
             artifactGraph,
-            runtime: { cacheIdentity },
+            runtime: { cacheIdentity: projectedByteIdentity },
             serverIdentityId: materialization.serverIdentityId,
             materializationRef: {
                 machineId: materialization.machineId,

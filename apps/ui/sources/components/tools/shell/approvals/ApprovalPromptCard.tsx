@@ -1,12 +1,12 @@
+import { useSessionTranscriptSource } from '@/components/sessions/transcript/source/SessionTranscriptSourceContext';
 import * as React from 'react';
 import { Platform, Pressable, View } from 'react-native';
 import type { ApprovalRequest } from '@happier-dev/protocol';
-import { getActionSpec, resolveApprovalRequestApproveAdmission } from '@happier-dev/protocol/actions';
+import { listActionSpecs, resolveApprovalRequestApproveAdmission } from '@happier-dev/protocol/actions';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
-import { useRouter } from 'expo-router';
 
 import type { DecryptedArtifact } from '@/sync/domains/artifacts/artifactTypes';
-import type { Metadata } from '@/sync/domains/state/storageTypes';
+import type { Metadata } from '@happier-dev/session-core/state';
 import type { PermissionToolCallMessageLocation } from '@/utils/sessions/permissions/permissionToolCallLocationTypes';
 import { Text } from '@/components/ui/text/Text';
 import { t } from '@/text';
@@ -17,6 +17,9 @@ import { ApprovalDecisionFooter } from './ApprovalDecisionFooter';
 import { isApprovalReplayRouteUnavailable, useApprovalDecisionHandler } from './useApprovalDecisionHandler';
 import { Icon } from '@/components/ui/icons/Icon';
 import { ActionApprovalFieldsCard } from '@/components/approvals/ActionApprovalFieldsCard';
+import { ComputerActionApprovalCard } from '@/components/approvals/ComputerActionApprovalCard';
+import { useComputerApprovalChoice } from '@/components/approvals/useComputerApprovalChoice';
+import type { TranscriptPermissionDisabledReason } from '@/utils/sessions/deriveTranscriptInteraction';
 
 const PROMPT_CARD_HORIZONTAL_PADDING = 12;
 const PROMPT_CARD_ICON_SIZE = 18;
@@ -34,12 +37,12 @@ function getPreviewSummary(preview: unknown): string | null {
     return summary || null;
 }
 
+function resolveDeferredComputerPicker() {
+    return (require('../../../computer/openComputerTargetPickerForSession') as typeof import('../../../computer/openComputerTargetPickerForSession')).openComputerTargetPickerForSession;
+}
+
 function resolveActionTitle(approval: ApprovalRequest): string {
-    try {
-        return getActionSpec(approval.actionId).title || approval.actionId;
-    } catch {
-        return approval.actionId;
-    }
+    return listActionSpecs().find((spec) => spec.id === approval.actionId)?.title || approval.actionId;
 }
 
 export const ApprovalPromptCard = React.memo(function ApprovalPromptCard(props: Readonly<{
@@ -50,11 +53,11 @@ export const ApprovalPromptCard = React.memo(function ApprovalPromptCard(props: 
     location?: PermissionToolCallMessageLocation | null;
     canApprovePermissions?: boolean;
     canApprove?: boolean;
-    disabledReason?: 'public' | 'readOnly' | 'notGranted' | 'inactive';
+    disabledReason?: TranscriptPermissionDisabledReason;
     chrome?: 'card' | 'inline';
 }>) {
     const { theme } = useUnistyles();
-    const router = useRouter();
+    const transcriptSource = useSessionTranscriptSource();
     const decide = useApprovalDecisionHandler(props.artifact, props.approval, props.sessionId);
     const [isDeciding, setIsDeciding] = React.useState(false);
     const chrome = props.chrome ?? 'card';
@@ -65,24 +68,43 @@ export const ApprovalPromptCard = React.memo(function ApprovalPromptCard(props: 
         [props.approval],
     );
     const actionFields = approveAdmission.presentation;
+    const sessionId = props.sessionId;
+    const computerChoice = useComputerApprovalChoice({
+        actionId: String(props.approval.actionId),
+        actionArgs: props.approval.actionArgs,
+        preview: props.approval.preview,
+        sessionId,
+        // Loaded on the press: the picker reads the Session and the store, which this card never does.
+        resolveOpenPicker: resolveDeferredComputerPicker,
+    });
+    const computerAction = computerChoice.presentation;
+    const chooseComputerTarget = computerChoice.chooseTarget;
     const approvalWithheld = approveAdmission.status === 'unavailable';
-    const canApprove = props.canApprovePermissions ?? props.canApprove ?? true;
+    const sourceInteraction = transcriptSource.useInteraction();
+    const canApprove = transcriptSource.actions !== null
+        && (props.canApprovePermissions ?? props.canApprove ?? sourceInteraction.canApprovePermissions)
+        && sourceInteraction.canApprovePermissions;
     const approvalRouteUnavailable = isApprovalReplayRouteUnavailable(props.approval);
     const accessDisabled = !canApprove || Boolean(props.disabledReason);
     const decisionDisabled = accessDisabled || approvalRouteUnavailable;
-    const canOpenToolRoute = canOpenPermissionToolCallRoute(props.location ?? null);
+    const canOpenToolRoute = transcriptSource.navigate !== null && canOpenPermissionToolCallRoute(props.location ?? null);
 
     const onViewTool = React.useCallback(() => {
         navigateWithBlurOnWeb(() => {
-            router.push(buildPermissionToolCallRoute({ sessionId: props.sessionId, location: props.location ?? null }));
+            transcriptSource.navigate?.(buildPermissionToolCallRoute({ sessionId: props.sessionId, location: props.location ?? null }));
         });
-    }, [props.location, props.sessionId, router]);
+    }, [props.location, props.sessionId, transcriptSource]);
 
     const onDecision = React.useCallback(async (decision: 'approve' | 'reject') => {
         if (decisionDisabled || isDeciding || (decision === 'approve' && approvalWithheld)) return;
         try {
             setIsDeciding(true);
-            const ok = await decide(decision);
+            // An agent's window choice is approved with the exact window the person picked.
+            if (decision === 'approve' && computerChoice.needsChoiceBeforeApprove) {
+                computerChoice.chooseTarget();
+                return;
+            }
+            const ok = await decide(decision, decision === 'approve' ? computerChoice.decisionOptions : undefined);
             if (!ok) {
                 Modal.alert(t('common.error'), t('approvals.decisionError'));
             }
@@ -91,7 +113,7 @@ export const ApprovalPromptCard = React.memo(function ApprovalPromptCard(props: 
         } finally {
             setIsDeciding(false);
         }
-    }, [approvalWithheld, decisionDisabled, decide, isDeciding]);
+    }, [approvalWithheld, computerChoice, decisionDisabled, decide, isDeciding]);
 
     if (props.disabledReason === 'inactive') {
         return null;
@@ -128,6 +150,14 @@ export const ApprovalPromptCard = React.memo(function ApprovalPromptCard(props: 
                 <View style={styles.preview}>
                     <Text style={styles.previewText}>{previewSummary}</Text>
                 </View>
+            ) : null}
+            {computerAction ? (
+                <ComputerActionApprovalCard
+                    presentation={computerAction}
+                    onChooseTarget={canApprove ? chooseComputerTarget : undefined}
+                    style={styles.fields}
+                    testID="approval-prompt-computer-action"
+                />
             ) : null}
             {actionFields.rows.length > 0 ? (
                 <View style={styles.fields}>

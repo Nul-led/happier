@@ -8,6 +8,7 @@ import { BrandPanel } from './BrandPanel';
 import { StagePane } from './StagePane';
 import { WorkflowPanel, type WorkflowPanelPresentation } from './WorkflowPanel';
 import { useUnauthShellLayout } from './useUnauthShellLayout';
+import type { RelayRetentionDisclosureState } from './RelayRetentionDisclosure';
 
 export type UnauthenticatedWorkflowPresentation = WorkflowPanelPresentation;
 
@@ -32,8 +33,11 @@ export type UnauthenticatedSplitShellProps = Readonly<{
      */
     isWelcomeStep: boolean;
 
+    /** Shows the compact mobile product mark without turning the step into welcome content. */
+    showMobileWordmark?: boolean;
+
     /** Compact server-owned retention disclosure shown above the welcome footer links. */
-    retentionSummary?: string | null;
+    retentionDisclosure?: RelayRetentionDisclosureState | null;
 
     /**
      * Whether the one-time mobile brand hero may be shown on this step.
@@ -114,7 +118,8 @@ export const UnauthenticatedSplitShell = React.memo(function UnauthenticatedSpli
                 <WorkflowPanel
                     variant="desktop"
                     isWelcomeStep={props.isWelcomeStep}
-                    retentionSummary={props.retentionSummary}
+                    showMobileWordmark={props.showMobileWordmark}
+                    retentionDisclosure={props.retentionDisclosure}
                     onOpenRelayCustomFlow={props.onOpenRelayCustomFlow}
                     onBack={props.onBack}
                     transitionKey={props.stepId}
@@ -150,7 +155,8 @@ export const UnauthenticatedSplitShell = React.memo(function UnauthenticatedSpli
             <WorkflowPanel
                 variant="mobile"
                 isWelcomeStep={props.isWelcomeStep}
-                retentionSummary={props.retentionSummary}
+                showMobileWordmark={props.showMobileWordmark}
+                retentionDisclosure={props.retentionDisclosure}
                 onOpenRelayCustomFlow={props.onOpenRelayCustomFlow}
                 onBack={props.onBack}
                 transitionKey={props.stepId}

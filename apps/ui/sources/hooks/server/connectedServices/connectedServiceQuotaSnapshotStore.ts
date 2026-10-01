@@ -46,6 +46,8 @@ export type QuotaSnapshotStoreEntry = Readonly<{
     error: string | null;
     /** True for the lifetime of a `refreshQuotaSnapshot` (server refresh + poll). */
     refreshing: boolean;
+    /** A read has completed (with or without a snapshot): "no snapshot" is then an answer, not a wait. */
+    read: boolean;
 }>;
 
 export type LegacyQuotaSnapshotLoadContext = Readonly<{
@@ -96,7 +98,7 @@ const REFRESH_RELOAD_DELAYS_MS = [0, 250, 500, 1_000, 2_000, 3_000, 4_000] as co
 const QUOTA_SNAPSHOT_POLL_MS = 30_000;
 const QUOTA_SNAPSHOT_MISS_RETRY_MS = 30_000;
 
-const EMPTY_VIEW: QuotaSnapshotStoreEntry = { snapshot: null, loading: false, error: null, refreshing: false };
+const EMPTY_VIEW: QuotaSnapshotStoreEntry = { snapshot: null, loading: false, error: null, refreshing: false, read: false };
 
 const entries = new Map<string, InternalEntry>();
 const listenersByKey = new Map<string, Set<() => void>>();
@@ -141,7 +143,13 @@ function notify(key: string): void {
 }
 
 function publish(key: string, entry: InternalEntry): void {
-    entry.view = { snapshot: entry.snapshot, loading: entry.loading, error: entry.error, refreshing: entry.refreshing };
+    entry.view = {
+        snapshot: entry.snapshot,
+        loading: entry.loading,
+        error: entry.error,
+        refreshing: entry.refreshing,
+        read: entry.loadAttempted && !entry.loading,
+    };
     notify(key);
 }
 
@@ -274,8 +282,8 @@ async function runLoad(key: string, ctx: QuotaSnapshotLoadContext): Promise<Conn
         try {
             const mode = await ctx.resolveAccountMode();
             if (!isScopeActive(ctx.credentialScope)) return null;
-            await ctx.assertOperationAllowed('quota_read');
-            if (!isScopeActive(ctx.credentialScope)) return null;
+            // A read is the server's GET: the server decides the route and storage mode (404/409),
+            // so no machine is asked. Daemon-executed operations (refresh, recovery) stay admitted.
 
             if (mode === 'plain') {
                 const opened = await getConnectedServiceQuotaSnapshotPlain(ctx.credentials, {
@@ -338,6 +346,22 @@ async function runLoad(key: string, ctx: QuotaSnapshotLoadContext): Promise<Conn
 
     entry.loadPromise = promise;
     return promise;
+}
+
+/**
+ * Read an account's snapshot once per launch (if nothing was read yet) without polling; the credential
+ * scope stays live while the caller is mounted so the answer lands.
+ */
+export function retainQuotaSnapshotOnce(key: string, ctx: QuotaSnapshotLoadContext): () => void {
+    const releaseCredentialScope = retainCredentialScope(ctx.credentialScope);
+    const entry = getOrCreateEntry(key);
+    entry.credentialScope = ctx.credentialScope;
+    evictEntriesOutsideCredentialScope(ctx.credentialScope);
+    if (!entry.loadAttempted) {
+        entry.loadAttempted = true;
+        void runLoad(key, ctx);
+    }
+    return releaseCredentialScope;
 }
 
 export function retainQuotaSnapshotPolling(key: string, ctx: QuotaSnapshotLoadContext): () => void {

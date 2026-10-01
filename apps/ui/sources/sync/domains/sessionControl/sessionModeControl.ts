@@ -1,18 +1,17 @@
 import { getAgentCore } from '@/agents/catalog/catalog';
-import type { Metadata } from '@/sync/domains/state/storageTypes';
+import type { Metadata } from '@happier-dev/session-core/state';
 import {
-    LEGACY_ACP_SESSION_MODES_STATE_KEY,
     LEGACY_ACP_SESSION_MODE_OVERRIDE_KEY,
     parsePermissionIntentAlias,
     readAcpSessionModeIntentFromMetadata,
     readMetadataAliasValue,
-    SESSION_MODES_STATE_KEY,
     SESSION_MODE_OVERRIDE_KEY,
 } from '@happier-dev/agents';
 import { resolveRequestedSessionModeId } from '@happier-dev/protocol';
 import { tLoose } from '@/text';
 
-import { parseSessionModesState, parseSessionModeOverrideState } from './schema';
+import { parseSessionModeOverrideState } from './schema';
+import { readSessionModesState } from './readSessionControlMetadata';
 
 export function supportsSessionModeOverrides(agentId: string): boolean {
     // An Agent with no bundled core contributes its session modes through its
@@ -29,11 +28,11 @@ export type SessionModeOption = Readonly<{
 
 export type SessionModePickerControl = Readonly<{
     options: readonly SessionModeOption[];
-    currentModeId: string;
+    currentModeId: string | null;
     currentModeName: string;
     requestedModeId: string | null;
     requestedModeName: string | null;
-    effectiveModeId: string;
+    effectiveModeId: string | null;
     effectiveModeName: string;
     isPending: boolean;
 }>;
@@ -104,16 +103,13 @@ function computeDynamicSessionModePickerControlInternal(params: {
     agentId: string;
     metadata: Metadata | null | undefined;
 }): SessionModePickerControl | null {
-    const state = parseSessionModesState(
-        readMetadataAliasValue((params.metadata as any) ?? {}, SESSION_MODES_STATE_KEY, LEGACY_ACP_SESSION_MODES_STATE_KEY),
-    );
+    const state = readSessionModesState(params.metadata);
     if (!state) return null;
     if (state.agentId !== params.agentId) return null;
     if (state.availableModes.length === 0) return null;
 
     const options = state.availableModes;
     const currentModeId = state.currentModeId;
-    if (!currentModeId) return null;
 
     const modeOverride = readAcpSessionModeIntentFromMetadata((params.metadata as any) ?? {})
         ?? parseSessionModeOverrideState(
@@ -126,16 +122,16 @@ function computeDynamicSessionModePickerControlInternal(params: {
     const currentMode = options.find((mode) => mode.id === currentModeId) ?? null;
     const requestedMode = requestedModeId ? options.find((mode) => mode.id === requestedModeId) ?? null : null;
     const effectiveMode = options.find((mode) => mode.id === effectiveModeId) ?? null;
-    const isPending = Boolean(requestedModeId && currentModeId && requestedModeId !== currentModeId);
+    const isPending = Boolean(requestedModeId && requestedModeId !== currentModeId);
 
     return {
         options,
         currentModeId,
-        currentModeName: currentMode?.name ?? currentModeId,
+        currentModeName: currentMode?.name ?? currentModeId ?? tLoose('agentInput.mode.sectionTitle'),
         requestedModeId,
         requestedModeName: requestedMode?.name ?? requestedModeId,
         effectiveModeId,
-        effectiveModeName: effectiveMode?.name ?? effectiveModeId,
+        effectiveModeName: effectiveMode?.name ?? effectiveModeId ?? tLoose('agentInput.mode.sectionTitle'),
         isPending,
     };
 }

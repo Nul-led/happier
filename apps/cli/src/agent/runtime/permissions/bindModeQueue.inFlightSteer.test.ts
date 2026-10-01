@@ -3,6 +3,9 @@ import { describe, expect, it, vi } from 'vitest';
 import { MessageQueue2 } from '@/agent/runtime/modeMessageQueue';
 import { registerPermissionModeMessageQueueBinding } from './bindModeQueue';
 import { createUnsettledReplaySeedRetirement } from '../replaySeed/unsettledReplaySeedRetirement';
+import type { ApiSessionClient } from '@/api/session/sessionClient';
+import { createSessionFollowContextReconciler } from '@/agent/runtime/session/follow/sessionFollowContextReconciler';
+import { createSessionFollowSourceHydrator } from '@/agent/runtime/session/follow/sessionFollowSourceHydrator';
 import type {
   PermissionModeQueuedPrompt,
   PermissionModeQueuedPromptMode,
@@ -60,6 +63,25 @@ function createQueue() {
 }
 
 describe('registerPermissionModeMessageQueueBinding (in-flight steer)', () => {
+  it('keeps session role instructions out of the steer context slot', async () => {
+    const { session, emitUserMessage } = createSessionHarness();
+    const { queue } = createQueue();
+    const steerText = vi.fn(async (_text: string) => {});
+    registerPermissionModeMessageQueueBinding({
+      session, queue, getCurrentPermissionMode: () => 'default', setCurrentPermissionMode: () => {},
+      inFlightSteer: {
+        isTurnInFlight: () => true, supportsInFlightSteer: () => true, steerText,
+        registerProviderAcceptedEffect: () => undefined,
+      },
+    });
+    emitUserMessage({ content: { text: 'FIRST_INPUT' }, localId: 'role-steer-first', meta: {} });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(steerText.mock.calls[0]?.[0]).toBe(renderLegacyUnknownProviderPrompt('FIRST_INPUT'));
+    emitUserMessage({ content: { text: 'SECOND_INPUT' }, localId: 'role-steer-second', meta: {} });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(steerText.mock.calls[1]?.[0]).toBe(renderLegacyUnknownProviderPrompt('SECOND_INPUT'));
+  });
+
   it.each([
     ['steer capability is unavailable', { supportsInFlightSteer: () => false }],
     ['the active turn is no longer steerable', { canSteerPrompt: () => false }],
@@ -598,7 +620,7 @@ describe('registerPermissionModeMessageQueueBinding (in-flight steer)', () => {
 
     registerPermissionModeMessageQueueBinding({
       session,
-      agentTargetKey: 'backend:opencode',
+      agentTargetKey: 'agent:happier.agent.opencode/opencode',
       queue,
       getCurrentPermissionMode: () => 'default',
       setCurrentPermissionMode: () => {},
@@ -618,7 +640,7 @@ describe('registerPermissionModeMessageQueueBinding (in-flight steer)', () => {
           v: 1,
           updatedAt: 42,
           ref: {
-            agentTargetKey: 'backend:opencode',
+            agentTargetKey: 'agent:happier.agent.opencode/opencode',
             providerConnectionId: null,
             modelId: 'opencode/big-pickle',
           },
@@ -639,7 +661,7 @@ describe('registerPermissionModeMessageQueueBinding (in-flight steer)', () => {
         permissionMode: 'default',
         inputContextBlock: LEGACY_UNKNOWN_INPUT_CONTEXT,
         modelSelection: {
-          agentTargetKey: 'backend:opencode',
+          agentTargetKey: 'agent:happier.agent.opencode/opencode',
           providerConnectionId: null,
           modelId: 'opencode/big-pickle',
         },
@@ -789,11 +811,116 @@ describe('registerPermissionModeMessageQueueBinding (in-flight steer)', () => {
     expect(finalMeta?.replaySeedV1?.appliedToLocalId).toBe('local-1');
   });
 
+  it.each([
+    { exact: false, change: 'turn ends' },
+    { exact: true, change: 'turn ends' },
+    { exact: false, change: 'Session binding changes' },
+    { exact: true, change: 'Session binding changes' },
+  ])('does not dispatch after $change during Follow preparation (exact steer: $exact)', async ({ exact, change }) => {
+    const first = createSessionHarness();
+    const second = createSessionHarness();
+    const { queue, spyPush, spyIsolate } = createQueue();
+    first.setMetadataSnapshot({
+      replaySeedV1: {
+        v: 1,
+        seedText: 'SEED',
+        sourceSessionId: 'parent',
+        sourceCutoffSeqInclusive: 3,
+        createdAtMs: 123,
+      },
+    });
+    let releaseObservation!: () => void;
+    const observationGate = new Promise<void>((resolve) => { releaseObservation = resolve; });
+    const observePendingSessionFollow = vi.fn(async () => {
+      await observationGate;
+      return { ok: true, v: 1, sessionId: 'destination', publisherGeneration: '1', observations: [] };
+    });
+    const acknowledgeSessionFollow = vi.fn();
+    // Session network methods are the boundary; preparation and hydration remain real owners.
+    const followSession = {
+      sessionId: 'destination',
+      observePendingSessionFollow,
+      acknowledgeSessionFollow,
+    } as unknown as ApiSessionClient;
+    const prepareHostContext = createSessionFollowContextReconciler({
+      session: followSession,
+      hydrateObservation: createSessionFollowSourceHydrator({
+        session: followSession,
+        credentials: { token: 'test-token', encryption: null },
+      }),
+      maxFollowContextUtf8Bytes: 4096,
+    });
+    let steerable = true;
+    const steerText = vi.fn(async () => {});
+    const rejectPromptBeforeProvider = vi.fn();
+    const registerProviderAcceptedEffect = vi.fn();
+    const binding = registerPermissionModeMessageQueueBinding({
+      session: {
+        ...first.session,
+        readDurableProviderInputAcceptanceV1: async () => 'not_accepted' as const,
+      },
+      queue,
+      getCurrentPermissionMode: () => 'default',
+      setCurrentPermissionMode: () => {},
+      inFlightSteer: {
+        isTurnInFlight: () => steerable,
+        supportsInFlightSteer: () => true,
+        canSteerPrompt: () => steerable,
+        prepareHostContext,
+        registerProviderAcceptedEffect,
+        rejectPromptBeforeProvider,
+        steerText,
+      },
+    });
+    first.emitUserMessage({
+      role: 'user',
+      content: { type: 'text', text: 'raw steer' },
+      localId: 'pending-follow-steer',
+      meta: {},
+      ...(exact ? {
+        pendingProviderAction: 'steer',
+        pendingRequestedAction: { v: 1, kind: 'steer_if_active' },
+      } : {}),
+    });
+    await vi.waitFor(() => expect(observePendingSessionFollow).toHaveBeenCalledOnce());
+    expect(first.session.getMetadataSnapshot().replaySeedV1.dispatchedToLocalId).toBe('pending-follow-steer');
+    if (change === 'turn ends') steerable = false;
+    else binding.bindSession(second.session);
+    releaseObservation();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(steerText).not.toHaveBeenCalled();
+    expect(registerProviderAcceptedEffect).not.toHaveBeenCalled();
+    expect(acknowledgeSessionFollow).not.toHaveBeenCalled();
+    expect(first.session.getMetadataSnapshot().replaySeedV1).toMatchObject({ seedText: 'SEED' });
+    expect(first.session.getMetadataSnapshot().replaySeedV1.dispatchedToLocalId).toBeUndefined();
+    expect(spyIsolate).not.toHaveBeenCalled();
+    if (exact) {
+      expect(rejectPromptBeforeProvider).toHaveBeenCalledExactlyOnceWith({
+        localIds: ['pending-follow-steer'],
+        userMessageSeq: null,
+        reason: 'conditional_steer_unavailable',
+      });
+      expect(spyPush).not.toHaveBeenCalled();
+    } else if (change === 'turn ends') {
+      expect(rejectPromptBeforeProvider).not.toHaveBeenCalled();
+      expect(spyPush).toHaveBeenCalledWith(
+        expect.objectContaining({ text: 'raw steer' }),
+        expect.objectContaining({ permissionMode: 'default' }),
+      );
+    } else {
+      expect(rejectPromptBeforeProvider).not.toHaveBeenCalled();
+      expect(spyPush).not.toHaveBeenCalled();
+      expect(second.session.getMetadataSnapshot()).toBeNull();
+    }
+  });
+
   it('composes Follow into an in-flight steer and acknowledges only on exact provider acceptance', async () => {
     const { session, emitUserMessage } = createSessionHarness();
     const { queue, spyPush } = createQueue();
     const acknowledgeAccepted = vi.fn();
-    const prepareSessionFollowContext = vi.fn(async ({ requiredPrompt }: { requiredPrompt: string }) => {
+    const prepareHostContext = vi.fn(async ({ requiredPrompt }: { requiredPrompt: string }) => {
       expect(requiredPrompt).toContain('steer with context');
       return {
         updates: [{
@@ -833,7 +960,7 @@ describe('registerPermissionModeMessageQueueBinding (in-flight steer)', () => {
         registerProviderAcceptedEffect: (_localId: string, onAccepted: (() => void) | null) => {
           accept = onAccepted;
         },
-        prepareSessionFollowContext,
+        prepareHostContext,
         steerText,
       },
     } as any);
@@ -854,6 +981,7 @@ describe('registerPermissionModeMessageQueueBinding (in-flight steer)', () => {
     expect(accept).toBeTypeOf('function');
     (accept as unknown as () => void)();
     expect(acknowledgeAccepted).toHaveBeenCalledWith({
+      kind: 'admitted_input',
       localInputId: 'steer-follow',
       userMessageSeq: null,
     });

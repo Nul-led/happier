@@ -8,6 +8,37 @@ import {
 type WindowsHostedActualMode = 'windows_terminal' | 'windows_console';
 type WindowsHostedRequestedMode = 'windows_terminal' | 'console';
 
+export function resolveWindowsHostedIdentity(
+  terminal: Metadata['terminal'] | undefined,
+):
+  | Readonly<{ mode: 'windows_terminal'; windowId: string; title: string }>
+  | Readonly<{ mode: 'windows_console' }>
+  | null {
+  if (terminal?.mode === 'windows_console' && terminal.windows?.host === 'console') {
+    return { mode: 'windows_console' };
+  }
+  if (terminal?.mode !== 'windows_terminal' || terminal.windows?.host !== 'windows_terminal') return null;
+  const windowId = typeof terminal.windows.windowId === 'string' ? terminal.windows.windowId.trim() : '';
+  const title = typeof terminal.windows.title === 'string' ? terminal.windows.title.trim() : '';
+  return windowId && title ? { mode: 'windows_terminal', windowId, title } : null;
+}
+
+export function windowsHostedAttachmentMatchesRunner(params: Readonly<{
+  expected: Metadata['terminal'] | undefined;
+  actual: Metadata['terminal'] | undefined;
+  runnerPid: number;
+}>): boolean {
+  const expected = resolveWindowsHostedIdentity(params.expected);
+  const actual = resolveWindowsHostedIdentity(params.actual);
+  if (!expected || !actual || expected.mode !== actual.mode) return false;
+  if (expected.mode === 'windows_terminal' && actual.mode === 'windows_terminal') {
+    return expected.windowId === actual.windowId && expected.title === actual.title;
+  }
+  return Number.isInteger(params.runnerPid) && params.runnerPid > 0
+    && params.expected?.windows?.pid === params.runnerPid
+    && params.actual?.windows?.pid === params.runnerPid;
+}
+
 export function normalizeWindowsTerminalWindowName(value: unknown): string {
   return normalizeProtocolWindowsTerminalWindowName(value);
 }

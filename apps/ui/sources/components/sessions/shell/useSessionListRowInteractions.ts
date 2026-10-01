@@ -14,7 +14,10 @@ import {
     type TreeDropOverlaySharedValues,
     type TreeViewportMetrics,
 } from '@/components/ui/treeDragDrop';
+import { canDropSessionUnder } from '@/components/sessions/work/putUnderCandidates';
+import { putSessionUnderLead } from '@/components/sessions/work/putSessionUnderLead';
 import { useHappyAction } from '@/hooks/ui/useHappyAction';
+import { getStorage } from '@/sync/domains/state/storage';
 import type { SessionFoldersV1 } from '@/sync/domains/session/folders';
 import type { SessionListIndexItem } from '@/sync/domains/sessionList/sessionListIndex';
 import { resolveSessionListSessionRowDragPolicy } from '@/sync/domains/session/listing/sessionListLayout';
@@ -54,6 +57,11 @@ import type {
     RegisterSessionListTreeRowBounds,
     UnregisterSessionListTreeRowBounds,
 } from './SessionListHeaderFrame';
+
+/** Drag rule for the `reportsTo` tree (R-03), read against the live Sessions on every move. */
+function canPutSessionUnder(sessionId: string, leadSessionId: string): boolean {
+    return canDropSessionUnder(getStorage().getState().sessions, sessionId, leadSessionId);
+}
 
 const IDLE_RESOLVED_DROP: UseSessionInlineDragResolvedDrop = Object.freeze({
     result: Object.freeze({
@@ -376,6 +384,7 @@ export function useSessionListRowInteractions(input: UseSessionListRowInteractio
                 setSessionListGroupOrderV1: commitSessionListGroupOrderV1,
                 setSessionWorkspaceOrderV1: commitSessionWorkspaceOrderV1,
                 setSessionFolderAssignment: persistSessionFolderAssignmentByIds,
+                putSessionUnder: putSessionUnderLead,
             },
         })
     ), [
@@ -405,6 +414,7 @@ export function useSessionListRowInteractions(input: UseSessionListRowInteractio
                 pointer: event.pointer,
                 viewport: readViewportMetrics(),
                 canReorderSessionSiblings,
+                canPutSessionUnder,
             });
         } catch {
             return IDLE_RESOLVED_DROP;

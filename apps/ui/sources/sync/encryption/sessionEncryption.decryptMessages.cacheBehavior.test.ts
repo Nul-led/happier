@@ -1,9 +1,10 @@
+import { type SessionMessageV1 } from '@happier-dev/protocol';
 import { describe, it, expect, vi } from 'vitest';
 import { encodeBase64 } from '@/encryption/base64';
 import { EncryptionCache } from './encryptionCache';
 import { SessionEncryption } from './sessionEncryption';
 import { AES256Encryption } from './encryptor';
-import type { ApiMessage } from '../api/types/apiTypes';
+
 import {
   NATIVE_CRYPTO_WORKER_PROBE_FAILURE_REASON,
   type CryptoWorkerScope,
@@ -255,7 +256,7 @@ describe('SessionEncryption.decryptMessages (cache behavior)', () => {
       createdAt: 1,
       updatedAt: 1,
       content: { t: 'encrypted' as const, c: ciphertextB64 },
-    } satisfies ApiMessage;
+    } satisfies SessionMessageV1;
 
     const result = await sessionEnc.decryptMessages([message]);
 

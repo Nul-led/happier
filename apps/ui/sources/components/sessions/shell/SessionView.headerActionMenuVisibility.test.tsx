@@ -1,19 +1,16 @@
 import * as React from 'react';
+import { createReactNavigationNativeMock } from '@/dev/testkit/mocks/reactNavigation';
 import type { ReactTestInstance } from 'react-test-renderer';
 import type { PluginMachineExecutionOriginV1 } from '@happier-dev/protocol';
 import type { TeamCredentialResourceCatalogEntryV1 } from '@happier-dev/protocol/teams';
 import { normalizePluginUiDestinationBindingV1 } from '@happier-dev/protocol/plugins/ui';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { AppPaneProvider } from '@/components/appShell/panes/AppPaneProvider';
-import {
-  flushHookEffects,
-  pressTestInstance,
-  renderScreen,
-  standardCleanup,
-  type RenderScreenResult,
-} from '@/dev/testkit';
+import { flushHookEffects } from '@/dev/testkit/hooks/flushHookEffects';
+import { pressTestInstance, renderScreen, type RenderScreenResult } from '@/dev/testkit/render/renderScreen';
+import { standardCleanup } from '@/dev/testkit/cleanup/standardCleanup';
 import {
   EMPTY_PLUGIN_UI_PROJECTION,
+  isPluginUiDestinationSurfacePlacementProjection,
   type PluginUiProjectionModel,
   type PluginUiSurfacePlacementProjection,
 } from '@/sync/domains/plugins/ui/projection';
@@ -48,7 +45,7 @@ const paneScopeState = vi.hoisted(() => ({
     right: { isOpen: boolean };
   },
 }));
-const appPaneSurfaceOpenSpy = vi.hoisted(() => vi.fn(async () => ({ ok: true as const })));
+const appPaneSurfaceOpenSpy = vi.hoisted(() => vi.fn<PluginSurfaceOpenHandler>(async () => ({ ok: true as const })));
 const freshPaneBridgeFixture = vi.hoisted(() => ({ enabled: false }));
 const scopedPluginProjectionState = vi.hoisted(() => ({
   projection: null as PluginUiProjectionModel | null,
@@ -148,6 +145,7 @@ vi.mock('@happier-dev/agents', async (importOriginal) => {
 });
 
 vi.mock('@react-navigation/native', () => ({
+    ...createReactNavigationNativeMock(),
   useFocusEffect: () => {},
   useIsFocused: () => true,
 }));
@@ -162,12 +160,13 @@ vi.mock('@/components/appShell/panes/AppPaneScopeHost', () => ({
   AppPaneScopeHost: (props: any) => {
     const projection = scopedPluginProjectionState.projection;
     const binding = React.useMemo(() => createPluginSurfaceDestinationNavigationBinding({
-      placements: projection ? Object.values(projection.surfacePlacementsById) : [],
+      placements: projection
+        ? Object.values(projection.surfacePlacementsById).filter(isPluginUiDestinationSurfacePlacementProjection)
+        : [],
       targetKind: 'session',
       scopedLaunchFacts: {
         serverId: 'server-1',
         machineId: 'machine-1',
-        generation: projection?.generation ?? null,
         interactionEnabled: true,
       },
     }), [projection]);
@@ -404,9 +403,6 @@ vi.mock('@/agents/catalog/agentUniverse', () => ({
 }));
 vi.mock('@/utils/platform/navigateWithBlurOnWeb', () => ({
   navigateWithBlurOnWeb: navigateWithBlurOnWebSpy,
-}));
-vi.mock('@/hooks/auth/useCLIDetection', () => ({
-  useCLIDetection: () => ({ authStatus: {} }),
 }));
 vi.mock('@/utils/platform/responsive', () => ({
   useDeviceType: () => responsiveState.deviceType,
@@ -675,6 +671,7 @@ function createSessionSurfacePlacement(input: Readonly<{
   return {
     id: `surfacePlacement:acme.preview:${input.descriptorId}`,
     pluginId: 'acme.preview',
+    occurrenceId: 'acme-preview-occurrence',
     contributionKind: 'surfacePlacement',
     descriptorId: input.descriptorId,
     binding,
@@ -701,6 +698,8 @@ function projectionWith(...placements: readonly PluginUiSurfacePlacementProjecti
     surfacePlacementsById: Object.fromEntries(placements.map((placement) => [placement.id, placement])),
   };
 }
+
+const { AppPaneProvider } = await import('@/components/appShell/panes/AppPaneProvider');
 
 describe('SessionView header action menu visibility', () => {
   afterEach(() => {
@@ -762,6 +761,22 @@ describe('SessionView header action menu visibility', () => {
       writable: true,
       configurable: true,
     });
+  });
+
+  it('seats the session header in the transcript column, not across the side panes and rail', async () => {
+    platformState.os = 'web';
+    responsiveState.deviceType = 'tablet';
+    windowDimensionsState.width = 1440;
+    const screen = await renderSessionView();
+    const header = screen.findAll((node) => (node.type as unknown) === 'ChatHeaderView')[0];
+    expect(header).toBeTruthy();
+    const paneHost = screen.findAll((node) => (node.type as unknown) === 'AppPaneScopeHost')[0];
+    expect(paneHost).toBeTruthy();
+    // The header is part of the pane host's main column, so its width is the transcript's width.
+    let ancestor = header?.parent ?? null;
+    while (ancestor && (ancestor.type as unknown) !== 'AppPaneScopeHost') ancestor = ancestor.parent;
+    expect(ancestor).toBe(paneHost);
+    expect(screen.findAll((node) => (node.type as unknown) === 'ChatHeaderView')).toHaveLength(1);
   });
 
   it('hides the open runs button when execution runs are unsupported for the session', async () => {
@@ -903,7 +918,8 @@ describe('SessionView header action menu visibility', () => {
     const props = headerActionMenuSpy.mock.calls.at(0)?.[0] as any;
     const extraItems = props?.extraItems ?? [];
     const extraIds = extraItems.map((it: any) => it?.id).filter(Boolean);
-    expect(extraIds).toContain('header.openRuns');
+    // Runs are listed by the Agents roster; there is no second "Runs" entry.
+    expect(extraIds).not.toContain('header.openRuns');
     expect(extraIds).toContain('header.openAutomations');
     expect(extraIds).toContain('header.openSubagents');
 
@@ -923,24 +939,6 @@ describe('SessionView header action menu visibility', () => {
     expect(rerenderedProps?.extraItems).toBe(extraItems);
     const rerenderedHeaderProps = chatHeaderSpy.mock.calls.at(-1)?.[0] as any;
     expect(rerenderedHeaderProps?.badges).toEqual(firstBadges);
-  });
-
-  it('routes folded runs menu action through the scoped session href', async () => {
-    platformState.os = 'web';
-    responsiveState.deviceType = 'phone';
-    responsiveState.isLandscape = false;
-    windowDimensionsState.width = 420;
-    executionRunsFeatureState.enabled = true;
-    sessionExecutionRunsSupportedState.supported = true;
-    executionRunsBackendsState.backends = null;
-
-    await renderSessionView();
-
-    const props = headerActionMenuSpy.mock.calls.at(-1)?.[0] as any;
-    const handled = props?.onSelectExtraItem?.('header.openRuns');
-
-    expect(handled).toBe(true);
-    expect(routerPushSpy).toHaveBeenCalledWith('/session/s1/runs?serverId=server-1');
   });
 
   it('routes folded automations menu action through the scoped session href', async () => {
@@ -1114,7 +1112,7 @@ describe('SessionView header action menu visibility', () => {
         projectionGeneration: 3,
         catalogAgentId: 'codex',
         iconAgentId: 'codex',
-        backendTargetKey: 'builtInAgent:codex',
+        backendTargetKey: 'agent:happier.agent.codex/codex',
         title: 'Codex',
         subtitle: null,
         iconName: 'terminal',
@@ -1128,8 +1126,11 @@ describe('SessionView header action menu visibility', () => {
         cliAuthBackgroundCheckSafe: true,
         connectedAccounts: [connectedAccount],
       },
-      backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
-      backendTargetKey: 'builtInAgent:codex',
+      backendTarget: {
+        kind: 'agent',
+        identity: { pluginId: 'happier.agent.codex', localId: 'codex' },
+      },
+      backendTargetKey: 'agent:happier.agent.codex/codex',
       kind: 'builtInAgent',
       backendId: 'codex',
       agentId: 'codex',
@@ -1274,7 +1275,9 @@ describe('SessionView header action menu visibility', () => {
 
     await renderSessionView();
     const props = headerActionMenuSpy.mock.calls.at(-1)?.[0] as any;
-    expect((props?.extraItems ?? []).map((item: any) => item?.id)).toContain('header.openRuns');
+    const ids = (props?.extraItems ?? []).map((item: any) => item?.id);
+    expect(ids).toContain('header.openSubagents');
+    expect(ids).not.toContain('header.openRuns');
   });
 
   it('renders a header subagents button when the transcript contains subagent activity', async () => {

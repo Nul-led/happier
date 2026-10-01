@@ -1,131 +1,110 @@
 import * as React from 'react';
-import { View } from 'react-native';
-import { StyleSheet, useUnistyles } from 'react-native-unistyles';
+import { HappierWorkSummary } from '@happier-dev/plugin-ui/presentation';
+import { useUnistyles } from 'react-native-unistyles';
 
-import { resolveRecipientAccentColor } from '@/components/sessions/agentInput/routing/resolveRecipientAccentColor';
-import { Icon } from '@/components/ui/icons/Icon';
-import { StatusPill } from '@/components/ui/status/StatusPill';
+import { ExecutionRunAgentMark } from '@/components/sessions/runs/ExecutionRunAgentMark';
+import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { Text } from '@/components/ui/text/Text';
+import { useWorkTheme, WORK_HOST } from '@/components/work/map/WorkMapView';
+import { workStatusWordStyle } from '@/components/work/status/workStatusTreatment';
+import { Typography } from '@/constants/Typography';
+import { formatShortRelativeTime } from '@/utils/time/formatShortRelativeTime';
 
-import type { SessionAgentActivityPresentation } from './sessionAgentActivityPresentation';
+import { useAgentActivityClockNow } from './agentActivityClock';
+import {
+    formatAgentActivityElapsed,
+    type SessionAgentActivityPresentation,
+} from './sessionAgentActivityPresentation';
 
 /**
- * One unit of Session agent work, drawn the same way everywhere.
+ * One unit of Session agent work, drawn the same way everywhere (agents lab AG1).
  *
- * Deliberately a LEAF, not a card: it owns the identity block (icon, title, one state badge, the
- * secondary facts line) and nothing else — no surface, no padding, no border, no press behaviour.
- * The roster row, the Details overview card and a conversation's run reference each wrap it in
- * their own legitimate geometry and add only their own controls, which is what keeps them from
- * drifting without turning one component into a `compact`/`showActions` switchboard.
+ * Deliberately a LEAF, not a card: it owns the identity block — the Agent's mark with its state in
+ * the corner (a live ring while working, an amber dot while it waits on a person), the title, and
+ * one line that says where it stands — and nothing else: no surface, no padding, no press
+ * behaviour. The roster row, the Details overview card and a conversation's run reference each wrap
+ * it in their own geometry.
  *
- * **One badge, not two.** Attention replaces status rather than sitting beside it: attention only
- * exists while the entry is `waiting`, so "Waiting · Needs approval" states the same fact twice and
- * costs a dense row the horizontal space its title needs. The status is still spoken — the
- * resolver's `accessibilityLabel` names title, status and every pending attention kind.
+ * **One line, one loud fact.** The subtitle leads with the fact that matters: what the agent needs
+ * from you, how long it has been working (a live clock), or how it ended — in the one work-status
+ * treatment, so a timeout asks for attention and a failure reads as trouble here as on every surface.
+ * The remaining facts follow quietly. Nothing is a pill: a dense roster of pills cannot be scanned.
+ *
+ * The leaf's anatomy is the shared `HappierWorkSummary` (`@happier-dev/plugin-ui/presentation`, the
+ * owner plugin authors use too); this binding supplies core's Agent mark, activity spinner, live
+ * clock, theme and text owner, and decides which fact leads.
  */
 
-const stylesheet = StyleSheet.create((theme) => ({
-    summary: {
-        flexDirection: 'row',
-        alignItems: 'flex-start',
-        gap: 12,
-        minWidth: 0,
-    },
-    leadingIcon: {
-        width: 28,
-        height: 28,
-        // Concentric with nothing, because a circle has no corner to match — the marker reads as a
-        // token rather than as a nested surface.
-        borderRadius: 999,
-        alignItems: 'center',
-        justifyContent: 'center',
-        backgroundColor: theme.colors.surface.base,
-        borderWidth: 1,
-        borderColor: theme.colors.border.default,
-    },
-    copy: {
-        flex: 1,
-        minWidth: 0,
-        gap: 4,
-    },
-    titleRow: {
-        flexDirection: 'row',
-        // Centred on the title's line box, so a badge sits on the type rather than on the block.
-        alignItems: 'center',
-        gap: 8,
-        minWidth: 0,
-    },
-    title: {
-        color: theme.colors.text.primary,
-        // Title yields first: the badge is a fixed, short, load-bearing token, and a long title
-        // pushing it off the row is how a row stops saying what state it is in.
-        flexShrink: 1,
-        minWidth: 0,
-        fontSize: 14,
-        fontWeight: '600',
-    },
-    facts: {
-        color: theme.colors.text.secondary,
-        fontSize: 12,
-    },
-}));
+const MARK_SIZE = 30;
 
-const FACT_SEPARATOR = ' · ';
+/** A running clock, re-rendering only itself once a second. */
+const ElapsedClock = React.memo((props: Readonly<{ startedAtMs: number; testID?: string }>) => {
+    const nowMs = useAgentActivityClockNow();
+    return (
+        <Text testID={props.testID} style={Typography.tabular()}>
+            {formatAgentActivityElapsed(nowMs - props.startedAtMs)}
+        </Text>
+    );
+});
 
 export const SessionAgentActivitySummary = React.memo((props: Readonly<{
     presentation: SessionAgentActivityPresentation;
     /** Prefix for this instance's test ids, so a host keeps its existing addressing. */
     testID?: string;
+    /** Dates a waiting or finished row at the trailing edge (the roster); detail hosts omit it. */
+    showTime?: boolean;
+    /**
+     * The owner's state word at the trailing edge (Work rows, unified-work lab `session-A`): the row
+     * then says where the work stands once, on the right, and the line keeps only its facts.
+     */
+    trailingState?: Readonly<{ word: string; tone: 'neutral' | 'attention' | 'danger' }>;
 }>) => {
-    const styles = stylesheet;
     const { theme } = useUnistyles();
-    const { presentation } = props;
-    const accentColor = presentation.accentName
-        ? resolveRecipientAccentColor({ theme, accentName: presentation.accentName })
-        : undefined;
-    const facts = presentation.facts.length > 0 ? presentation.facts.join(FACT_SEPARATOR) : null;
-    const badge = presentation.attention ?? {
-        label: presentation.statusLabel,
-        variant: presentation.statusVariant,
-    };
+    const workTheme = useWorkTheme();
+    const { presentation, testID } = props;
+    const { phase } = presentation;
+
+    // Running is said by the ring and the clock; any other in-progress state (queued, starting,
+    // blocked on a dependency) is still named, because the ring alone would claim it is working.
+    const trailingState = props.trailingState ?? null;
+    const lead = trailingState ? null : phase === 'attention' && presentation.attention
+        ? <Text testID={testID ? `${testID}:state:label` : undefined} style={workStatusWordStyle('attention')}>{presentation.attention.label}</Text>
+        : phase === 'live' && presentation.statusShownByActivity !== true
+            ? <Text testID={testID ? `${testID}:state:label` : undefined}>{presentation.statusLabel}</Text>
+            : null;
+    const ending = trailingState ? null : phase === 'finished'
+        ? (
+            <Text
+                testID={testID ? `${testID}:state:label` : undefined}
+                style={workStatusWordStyle(presentation.statusTone)}
+            >
+                {presentation.statusLabel}
+            </Text>
+        )
+        : phase === 'live' && presentation.startedAtMs !== null
+            ? <ElapsedClock startedAtMs={presentation.startedAtMs} testID={testID ? `${testID}:elapsed` : undefined} />
+            : null;
+    const facts: React.ReactNode[] = [];
+    if (lead) facts.push(lead);
+    for (const fact of presentation.facts) facts.push(fact);
+    if (ending) facts.push(ending);
+    const trailingTime = props.showTime === true && phase !== 'live' && presentation.atMs !== null
+        ? formatShortRelativeTime(presentation.atMs)
+        : null;
 
     return (
-        <View
-            testID={props.testID}
-            accessible
+        <HappierWorkSummary
+            testID={testID}
             accessibilityLabel={presentation.accessibilityLabel}
-            style={styles.summary}
-        >
-            <View style={[styles.leadingIcon, accentColor ? { borderColor: accentColor } : null]}>
-                <Icon
-                    name={presentation.iconName}
-                    size={16}
-                    color={accentColor ?? theme.colors.text.secondary}
-                />
-            </View>
-            <View style={styles.copy}>
-                <View style={styles.titleRow}>
-                    <Text numberOfLines={1} style={styles.title}>{presentation.title}</Text>
-                    <StatusPill
-                        testID={props.testID ? `${props.testID}:state` : undefined}
-                        variant={badge.variant}
-                        label={badge.label}
-                        // A phrase like "Needs your answer" reads as chrome type; a one-word status
-                        // token keeps the tracked micro-label it was designed for.
-                        labelVariant={presentation.attention ? 'phrase' : 'micro'}
-                        hideDot
-                    />
-                </View>
-                {facts ? (
-                    <Text
-                        testID={props.testID ? `${props.testID}:facts` : undefined}
-                        numberOfLines={2}
-                        style={styles.facts}
-                    >
-                        {facts}
-                    </Text>
-                ) : null}
-            </View>
-        </View>
+            title={presentation.title}
+            phase={phase}
+            mark={<ExecutionRunAgentMark agentId={presentation.agentId} size={MARK_SIZE} />}
+            liveIndicator={<ActivitySpinner size={9} color={theme.colors.text.secondary} />}
+            facts={facts}
+            trailingTime={trailingTime}
+            trailingState={trailingState}
+            theme={workTheme}
+            host={WORK_HOST}
+        />
     );
 });

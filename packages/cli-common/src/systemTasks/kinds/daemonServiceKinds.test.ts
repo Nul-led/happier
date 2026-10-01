@@ -25,6 +25,11 @@ async function waitForResult(
   throw new Error(`Expected final result for ${params.taskId}: ${JSON.stringify(latest)}`);
 }
 
+const defaultDaemonServiceStatusDetails = {
+  daemonAccountLabel: null,
+  cliUpdate: null,
+} satisfies Pick<DaemonServiceStatusSnapshot, 'daemonAccountLabel' | 'cliUpdate'>;
+
 describe('daemonServiceKinds', () => {
   it('rejects invalid daemon service params', () => {
     try {
@@ -45,6 +50,7 @@ describe('daemonServiceKinds', () => {
       daemonComparableKey: 'https://relay.example.test',
       daemonAccountId: 'acct_123',
       daemonMachineRegistered: true,
+      ...defaultDaemonServiceStatusDetails,
     };
 
     const kind = createDaemonServiceStatusTaskKind({
@@ -89,6 +95,8 @@ describe('daemonServiceKinds', () => {
         daemonComparableKey: 'https://relay.example.test',
         daemonAccountId: 'acct_123',
         daemonMachineRegistered: true,
+        daemonAccountLabel: null,
+        cliUpdate: null,
       },
     });
   });
@@ -105,6 +113,7 @@ describe('daemonServiceKinds', () => {
         daemonComparableKey: null,
         daemonAccountId: null,
         daemonMachineRegistered: null,
+        ...defaultDaemonServiceStatusDetails,
       }),
       startService: async () => {
         throw new Error('startService should not be called');
@@ -154,6 +163,7 @@ describe('daemonServiceKinds', () => {
         daemonComparableKey: null,
         daemonAccountId: null,
         daemonMachineRegistered: null,
+        ...defaultDaemonServiceStatusDetails,
       }),
       startService: async () => {
         throw new Error('startService should not be called');
@@ -203,6 +213,7 @@ describe('daemonServiceKinds', () => {
         daemonComparableKey: 'https://relay.example.test',
         daemonAccountId: null,
         daemonMachineRegistered: false,
+        ...defaultDaemonServiceStatusDetails,
       }),
       startService: async () => {
         throw new Error('startService should not be called');
@@ -255,6 +266,7 @@ describe('daemonServiceKinds', () => {
           daemonComparableKey: 'https://relay.example.test',
           daemonAccountId: 'acct_123',
           daemonMachineRegistered: true,
+          ...defaultDaemonServiceStatusDetails,
         };
       },
       startService: async () => undefined,
@@ -325,6 +337,7 @@ describe('daemonServiceKinds', () => {
           daemonComparableKey: 'https://relay.example.test',
           daemonAccountId: 'acct_123',
           daemonMachineRegistered: true,
+          ...defaultDaemonServiceStatusDetails,
         };
       },
       startService: async () => {

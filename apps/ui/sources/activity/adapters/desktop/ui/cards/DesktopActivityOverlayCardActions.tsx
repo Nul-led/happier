@@ -20,6 +20,7 @@ import {
     resolveDesktopActivityOverlayCardActionInstanceTestID,
     resolveDesktopActivityOverlayCardActionKindTestID,
 } from '../shared/desktopActivityOverlaySelectors.mjs';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 function resolveActionPalette(
     theme: ReturnType<typeof useUnistyles>['theme'],
@@ -113,7 +114,7 @@ export function DesktopActivityOverlayCardActions(props: Readonly<{
                                     }),
                                     action.tone !== 'secondary' ? { backgroundColor: palette.backgroundColor } : null,
                                     hovered ? { opacity: 0.98 } : null,
-                                    state.pressed ? { opacity: 0.9 } : null,
+                                    state.pressed ? { opacity: motionTokens.press.opacitySubtle } : null,
                                     inlineTextActionDisabled ? styles.disabledAction : null,
                                     interaction.focused === true ? createDesktopActivityOverlayFocusRingStyle(theme) : null,
                                 ];

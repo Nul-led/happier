@@ -5,18 +5,20 @@
 
 import { logger as defaultLogger } from '@/ui/logger';
 import { decodeBase64, encodeBase64, encrypt, decrypt } from '@/api/encryption';
-import {
+import { socketRpcCodec, type SocketRpcContent } from '@happier-dev/sync-client';
+import type {
     RpcHandler,
     RpcHandlerMap,
     RpcRequest,
     RpcHandlerConfig,
-    type RpcHandlerActiveExecution,
+    RpcHandlerActiveExecution,
 } from './types';
-import { Socket } from 'socket.io-client';
+import type { Socket } from 'socket.io-client';
 import {
     SOCKET_RPC_EVENTS,
     SocketRpcCancellationPayloadSchema,
     SocketRpcRequestIdSchema,
+    SessionTransferRoutingV1Schema,
     SOCKET_RPC_TRANSPORT_RESPONSE_ENVELOPE_VERSION_V1,
     type SocketRpcTransportAcknowledgementV1,
 } from '@happier-dev/protocol/socketRpc';
@@ -31,8 +33,12 @@ import {
     isSocketRpcSessionServerStartServerOriginAuthorizationContext,
     RPC_ERROR_CODES,
     RPC_ERROR_MESSAGES,
+    RPC_METHODS,
+    SESSION_RPC_METHODS,
 } from '@happier-dev/protocol/rpc';
 import { readRpcErrorCode } from '@happier-dev/protocol/rpcErrors';
+import { CallerInputConstraintsV1Schema } from '@happier-dev/protocol/auth/apiTokenGrant';
+import { ExternalActionExecutionAuthorizationV1Schema, computeExternalActionSocketRpcRequestDigestV1 } from '@happier-dev/protocol/actions';
 
 type OwnedHandlerRegistrationContext = {
     ownerId: string;
@@ -57,6 +63,8 @@ type RegistrationReadinessWaiter = Readonly<{
 export class RpcHandlerManager {
     private handlers: RpcHandlerMap = new Map();
     private readonly scopePrefix: string;
+    private readonly localMachineId: string | null;
+    private readonly rpcContent: SocketRpcContent;
     private readonly transport:
         | Readonly<{ mode: 'plain' }>
         | Readonly<{
@@ -94,6 +102,7 @@ export class RpcHandlerManager {
 
     constructor(config: RpcHandlerConfig) {
         this.scopePrefix = config.scopePrefix;
+        this.localMachineId = config.localMachineId ?? null;
         this.transport = config.encryptionMode === 'plain'
             ? { mode: 'plain' }
             : {
@@ -101,6 +110,14 @@ export class RpcHandlerManager {
                 encryptionKey: config.encryptionKey,
                 encryptionVariant: config.encryptionVariant,
             };
+        const transport = this.transport;
+        this.rpcContent = transport.mode === 'plain' ? transport : {
+            mode: 'e2ee',
+            cipher: {
+                encryptRaw: async (value) => encodeBase64(encrypt(transport.encryptionKey, transport.encryptionVariant, value)),
+                decryptRaw: async (ciphertext) => decrypt(transport.encryptionKey, transport.encryptionVariant, decodeBase64(ciphertext)),
+            },
+        };
         this.authorizeRequest = config.authorizeRequest;
         this.projectTransportAcknowledgement =
             config.projectTransportAcknowledgement;
@@ -146,11 +163,27 @@ export class RpcHandlerManager {
     async handleRequest(
         request: RpcRequest,
     ): Promise<any> {
+        const parsedTransferRouting = request.transferRouting === undefined
+            ? null : SessionTransferRoutingV1Schema.safeParse(request.transferRouting);
+        if (parsedTransferRouting && (!parsedTransferRouting.success
+            || parsedTransferRouting.data.sessionId !== this.scopePrefix
+            || request.method !== `${parsedTransferRouting.data.sessionId}:${parsedTransferRouting.data.method}`)) {
+            return await this.encodeTransportResponse(request, { error: 'Invalid Session transfer routing', errorCode: RPC_ERROR_CODES.FORBIDDEN });
+        }
+        const parsedConstraints = request.callerInputConstraints === undefined
+            ? null
+            : CallerInputConstraintsV1Schema.safeParse(request.callerInputConstraints);
+        if (parsedConstraints && !parsedConstraints.success) {
+            return await this.encodeTransportResponse(request, {
+                error: 'Invalid RPC caller input constraints',
+                errorCode: RPC_ERROR_CODES.FORBIDDEN,
+            });
+        }
         const parsedRequestId = request.requestId === undefined
             ? null
             : SocketRpcRequestIdSchema.safeParse(request.requestId);
         if (parsedRequestId && !parsedRequestId.success) {
-            return this.encodeTransportResponse(request, {
+            return await this.encodeTransportResponse(request, {
                 error: 'Invalid RPC request correlation',
                 errorCode: RPC_ERROR_CODES.FORBIDDEN,
             });
@@ -158,10 +191,34 @@ export class RpcHandlerManager {
         const requestId = parsedRequestId && parsedRequestId.success
             ? parsedRequestId.data
             : null;
+        const parsedInputAuthorization = request.callerInputAuthorization === undefined
+            ? null : ExternalActionExecutionAuthorizationV1Schema.safeParse(request.callerInputAuthorization);
+        if (parsedInputAuthorization) {
+            let matchesRequest = false;
+            if (parsedInputAuthorization.success && requestId) {
+                const binding = parsedInputAuthorization.data.binding;
+                try {
+                    matchesRequest = binding.actionId === 'session.message.send'
+                        && binding.requestId === requestId
+                        && binding.machineId === this.localMachineId
+                        && binding.target.kind === 'session'
+                        && binding.target.sessionId === this.scopePrefix
+                        && request.method === `${this.scopePrefix}:${SESSION_RPC_METHODS.SESSION_USER_MESSAGE_SEND}`
+                        && binding.requestEnvelopeDigest === computeExternalActionSocketRpcRequestDigestV1({
+                            method: request.method, requestId, params: request.params, target: binding.target,
+                        });
+                } catch { matchesRequest = false; }
+            }
+            if (!matchesRequest) {
+                return await this.encodeTransportResponse(request, {
+                    error: 'Invalid RPC caller input authorization', errorCode: RPC_ERROR_CODES.FORBIDDEN,
+                });
+            }
+        }
         if (requestId && this.activeTransportRequestControllersByRequestId.has(requestId)) {
             // A duplicate target-side id must not replace the first controller:
             // doing so would let one cancel event abort the wrong live effect.
-            return this.encodeTransportResponse(request, {
+            return await this.encodeTransportResponse(request, {
                 error: 'RPC request correlation collision',
                 errorCode: RPC_ERROR_CODES.FORBIDDEN,
             });
@@ -198,7 +255,7 @@ export class RpcHandlerManager {
                 || isServerOriginSessionServerStart
                 || isServerOriginActionApi;
             if (isReservedServerOriginRequest && !isServerOriginReservedRequest) {
-                return this.encodeTransportResponse(request, {
+                return await this.encodeTransportResponse(request, {
                     error: RPC_ERROR_MESSAGES.FORBIDDEN,
                     errorCode: RPC_ERROR_CODES.FORBIDDEN,
                 });
@@ -209,28 +266,31 @@ export class RpcHandlerManager {
             if (!handler) {
                 this.logger('[RPC] [ERROR] Method not found', { method: request.method });
                 const errorResponse = { error: RPC_ERROR_MESSAGES.METHOD_NOT_FOUND, errorCode: RPC_ERROR_CODES.METHOD_NOT_FOUND };
-                return this.encodeTransportResponse(request, errorResponse);
+                return await this.encodeTransportResponse(request, errorResponse);
             }
 
             // Decrypt the incoming params (unless session is plaintext).
-            const decryptedParams = isServerOriginReservedRequest || this.transport.mode === 'plain'
-              ? request.params
-              : typeof request.params === 'string'
-                ? decrypt(
-                    this.transport.encryptionKey,
-                    this.transport.encryptionVariant,
-                    decodeBase64(request.params),
-                )
-                : null;
-            if (
-                !isServerOriginReservedRequest
-                && this.transport.mode !== 'plain'
-                && decryptedParams === null
-            ) {
-              const errorResponse = {
-                error: 'Invalid RPC params',
-              };
-              return this.encodeTransportResponse(request, errorResponse);
+            let decryptedParams: unknown;
+            try {
+                decryptedParams = await socketRpcCodec.decodeRequestParams(
+                    isServerOriginReservedRequest ? { mode: 'plain' } : this.rpcContent,
+                    request.params,
+                );
+            } catch {
+                // Preserve the released responder's error carrier; the shared codec owns opening.
+                return await this.encodeTransportResponse(request, { error: 'Invalid RPC params' });
+            }
+
+            if (parsedTransferRouting?.success) {
+                const routing = parsedTransferRouting.data;
+                const isInit = routing.method === RPC_METHODS.DAEMON_TRANSFER_UPLOAD_INIT
+                    || routing.method === RPC_METHODS.DAEMON_TRANSFER_DOWNLOAD_INIT;
+                if (isInit && (!decryptedParams || typeof decryptedParams !== 'object' || Array.isArray(decryptedParams)
+                    || (decryptedParams as Record<string, unknown>).t !== routing.t
+                    || (routing.t === 'session_attachment_upload_v1'
+                        && (decryptedParams as Record<string, unknown>).sessionId !== routing.sessionId))) {
+                    return await this.encodeTransportResponse(request, { error: 'Session transfer payload does not match routing', errorCode: RPC_ERROR_CODES.FORBIDDEN });
+                }
             }
 
             if (this.authorizeRequest) {
@@ -241,7 +301,7 @@ export class RpcHandlerManager {
                     transportResponseEnvelopeVersion: request.transportResponseEnvelopeVersion,
                 });
                 if (!authorization.ok) {
-                    return this.encodeTransportResponse(request, {
+                    return await this.encodeTransportResponse(request, {
                         error: authorization.error,
                         ...(authorization.errorCode ? { errorCode: authorization.errorCode } : {}),
                     });
@@ -255,6 +315,14 @@ export class RpcHandlerManager {
             );
             const result = await handler(decryptedParams, Object.freeze({
                 signal: controller.signal,
+                callerAuthority: request.callerAuthority === 'present_user' ? request.callerAuthority : 'account_automation',
+                ...(parsedInputAuthorization?.success ? {
+                    callerInputAuthorization: parsedInputAuthorization.data,
+                    callerInputConstraints: {
+                        models: parsedInputAuthorization.data.binding.grant.models,
+                        permissionModes: parsedInputAuthorization.data.binding.grant.permissionModes,
+                    },
+                } : parsedConstraints?.success ? { callerInputConstraints: parsedConstraints.data } : {}),
                 ...(requestId ? { transportRequestId: requestId } : {}),
                 ...(request.authorization ? { authorization: request.authorization } : {}),
             }));
@@ -266,7 +334,7 @@ export class RpcHandlerManager {
                 decryptedParams,
                 result,
             );
-            const response = this.encodeTransportResponse(request, result, acknowledgement);
+            const response = await this.encodeTransportResponse(request, result, acknowledgement);
             if (this.transport.mode !== 'plain') {
                 const encodedResult = request.transportResponseEnvelopeVersion
                     === SOCKET_RPC_TRANSPORT_RESPONSE_ENVELOPE_VERSION_V1
@@ -296,7 +364,7 @@ export class RpcHandlerManager {
                 error: error instanceof Error ? error.message : 'Unknown error',
                 ...(rpcErrorCode ? { errorCode: rpcErrorCode } : {}),
             };
-            return this.encodeTransportResponse(request, errorResponse);
+            return await this.encodeTransportResponse(request, errorResponse);
         } finally {
             if (handlerExecutionId !== null) {
                 this.activeHandlerExecutions.delete(handlerExecutionId);
@@ -587,26 +655,19 @@ export class RpcHandlerManager {
         this.logger('Cleared all RPC handlers');
     }
 
-    private encodeResponse(request: RpcRequest, response: unknown): unknown {
-        if (
-            this.transport.mode === 'plain'
-            || this.isServerOriginReservedRequest(request)
-        ) {
-            return response;
-        }
-        return encodeBase64(encrypt(
-            this.transport.encryptionKey,
-            this.transport.encryptionVariant,
+    private encodeResponse(request: RpcRequest, response: unknown): Promise<unknown> {
+        return socketRpcCodec.encodeResponse(
+            this.isServerOriginReservedRequest(request) ? { mode: 'plain' } : this.rpcContent,
             response,
-        ));
+        );
     }
 
-    private encodeTransportResponse(
+    private async encodeTransportResponse(
         request: RpcRequest,
         result: unknown,
         acknowledgement: SocketRpcTransportAcknowledgementV1 | null = null,
-    ): unknown {
-        const encodedResult = this.encodeResponse(request, result);
+    ): Promise<unknown> {
+        const encodedResult = await this.encodeResponse(request, result);
         if (
             request.transportResponseEnvelopeVersion
             !== SOCKET_RPC_TRANSPORT_RESPONSE_ENVELOPE_VERSION_V1

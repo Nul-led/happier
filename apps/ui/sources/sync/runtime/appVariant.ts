@@ -1,16 +1,4 @@
 export type AppVariant = 'development' | 'preview' | 'production';
-export type AppEnvironmentBadgeLabel = 'DEV' | 'PREV' | 'STACK' | 'SELF';
-export type AppEnvironmentBadgeInput = {
-    appVariant?: unknown;
-    updatesReleaseChannel?: unknown;
-    updatesChannel?: unknown;
-    manifestReleaseChannel?: unknown;
-    expoConfigReleaseChannel?: unknown;
-    envAppEnv?: unknown;
-    envExpoPublicAppEnv?: unknown;
-    isStackContext?: boolean;
-    isUsingCustomServer?: boolean;
-};
 
 function toNonEmptyString(value: unknown): string | null {
     if (typeof value !== 'string') {
@@ -86,28 +74,4 @@ export function resolveAppVariant(input: {
         normalizeAppVariant(input.envExpoPublicAppEnv) ??
         null
     );
-}
-
-export function resolveAppEnvironmentBadge(input: AppEnvironmentBadgeInput): AppEnvironmentBadgeLabel | null {
-    if (input.isStackContext) return 'STACK';
-    if (input.isUsingCustomServer) return 'SELF';
-
-    const variant = resolveAppVariant({
-        appVariant: input.appVariant,
-        updatesReleaseChannel: input.updatesReleaseChannel,
-        updatesChannel: input.updatesChannel,
-        manifestReleaseChannel: input.manifestReleaseChannel,
-        expoConfigReleaseChannel: input.expoConfigReleaseChannel,
-        envAppEnv: input.envAppEnv,
-        envExpoPublicAppEnv: input.envExpoPublicAppEnv,
-    });
-
-    if (variant === 'development') return 'DEV';
-    if (variant === 'preview') return 'PREV';
-    return null;
-}
-
-export function resolveVisibleAppEnvironmentBadge(input: AppEnvironmentBadgeInput & { showEnvironmentBadge?: boolean }): AppEnvironmentBadgeLabel | null {
-    if (input.showEnvironmentBadge === false) return null;
-    return resolveAppEnvironmentBadge(input);
 }

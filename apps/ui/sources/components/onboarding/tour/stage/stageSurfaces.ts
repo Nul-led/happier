@@ -119,9 +119,9 @@ const loadSessionViewStageSurface = cacheStageSurfaceLoader<StageSurfaceModule>(
 const SessionViewStageSurface = React.lazy(loadSessionViewStageSurface);
 
 const loadRelaySettingsStageSurface = cacheStageSurfaceLoader<StageSurfaceModule>(async () => {
-    const serverSettingsModule = await import('@/components/settings/server/screens/ServerSettingsScreen');
+    const homesModule = await import('@/components/settings/server/collection/HomesSettingsIndex');
 
-    return { default: serverSettingsModule.ServerSettingsScreen };
+    return { default: homesModule.HomesSettingsStageSurface };
 });
 
 const RelaySettingsStageSurface = React.lazy(loadRelaySettingsStageSurface);
@@ -149,8 +149,8 @@ const loadSourceControlStageSurface = cacheStageSurfaceLoader<StageSurfaceModule
 const SourceControlStageSurface = React.lazy(loadSourceControlStageSurface);
 
 const loadMcpServersStageSurface = cacheStageSurfaceLoader<StageSurfaceModule>(async () => {
-    const module = await import('@/components/settings/mcpServers/McpServersSettingsScreen');
-    return { default: module.McpServersSettingsScreen };
+    const module = await import('@/components/settings/mcpServers/collection/McpServerCollection');
+    return { default: () => React.createElement(module.McpServerCollection, { variant: 'page' }) };
 });
 const McpServersStageSurface = React.lazy(loadMcpServersStageSurface);
 

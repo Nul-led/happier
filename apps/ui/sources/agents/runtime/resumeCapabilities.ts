@@ -26,7 +26,7 @@ import {
     supportsCurrentProjectedAgentSessionOpen,
     type CurrentProjectedAgentCapabilities,
 } from '@/agents/backendCatalog/currentAgentCapabilities';
-import { normalizeAcpCatalogSettingsV1 } from '@/sync/domains/acpCatalog/normalizeAcpCatalogSettingsV1';
+import { normalizeAcpCatalogSettingsV1 } from '@happier-dev/protocol';
 import { readExternalSessionLink } from '@/sync/domains/session/external/readExternalSessionLink';
 
 export type ResumeCapabilityOptions = {

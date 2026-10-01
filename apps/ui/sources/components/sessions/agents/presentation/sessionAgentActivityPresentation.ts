@@ -1,7 +1,8 @@
-import type { AgentActivityStatusV1 } from '@happier-dev/protocol';
+import { isInProgressAgentActivityStatus, type AgentActivityStatusV1 } from '@happier-dev/protocol';
 
 import type { IconName } from '@/components/ui/icons/Icon';
 import type { StatusPillVariant } from '@/components/ui/status/StatusPill';
+import { resolveWorkStatusTone, WORK_STATUS_PILL_VARIANT, type WorkStatusTone } from '@/components/work/status/resolveWorkStatusTone';
 import type {
     AgentActivityEntry,
     AgentActivityEntryKind,
@@ -41,8 +42,22 @@ export type SessionAgentActivityAttentionPresentation = Readonly<{
     description: string;
 }>;
 
+/**
+ * Where a unit of work stands for the person reading the roster: waiting on them, still working, or
+ * finished. It decides the mark's corner (amber dot, live ring, none), the subtitle's lead and
+ * whether time reads as a running clock or as "when".
+ */
+export type SessionAgentActivityPhase = 'attention' | 'live' | 'finished';
+
 export type SessionAgentActivityPresentation = Readonly<{
     title: string;
+    phase: SessionAgentActivityPhase;
+    /** The Agent behind the work, for its brand mark; `null` draws the neutral glyph. */
+    agentId: string | null;
+    /** When the work started, for a live row's running clock. */
+    startedAtMs: number | null;
+    /** The moment a finished or waiting row is dated by. */
+    atMs: number | null;
     /**
      * Secondary facts in canonical order, deduplicated, for the one line under the title.
      *
@@ -51,7 +66,10 @@ export type SessionAgentActivityPresentation = Readonly<{
      */
     facts: readonly string[];
     statusLabel: string;
-    statusVariant: StatusPillVariant;
+    /** The one work-status tone for this status (INT §5.3): the word's colour wherever it is drawn. */
+    statusTone: WorkStatusTone;
+    /** Running is said by the activity ring and the clock, so its word is not repeated beside them. */
+    statusShownByActivity?: boolean;
     /** Present only while a person is the blocker. */
     attention: SessionAgentActivityAttentionPresentation | null;
     iconName: IconName;
@@ -75,24 +93,17 @@ const STATUS_LABEL_KEYS = {
 } as const satisfies Record<AgentActivityStatusV1, string>;
 
 /**
- * How a status is coloured, exhaustively.
- *
- * `timedOut` and `cancelled` share `warning` with `waiting` and `blocked` because all four are
- * interrupted rather than wrong: `danger` is reserved for `failed`, where there is an error to read.
- * A new status member fails to compile here instead of defaulting to a colour that would lie.
+ * How a status is coloured: its tone comes from the one work-status owner (INT I3), so a roster row,
+ * a Work row and a run card agree. Healthy work is neutral; waiting and a timeout ask for attention
+ * and only a failure is danger.
  */
-const STATUS_VARIANTS = {
-    queued: 'neutral',
-    starting: 'neutral',
-    running: 'info',
-    waiting: 'warning',
-    blocked: 'warning',
-    succeeded: 'success',
-    failed: 'danger',
-    timedOut: 'warning',
-    cancelled: 'warning',
-    unknown: 'neutral',
-} as const satisfies Record<AgentActivityStatusV1, StatusPillVariant>;
+function statusTone(status: AgentActivityStatusV1): WorkStatusTone {
+    return resolveWorkStatusTone({ kind: 'agent_activity', facts: { status, word: '' } }).tone;
+}
+
+function statusVariant(status: AgentActivityStatusV1): StatusPillVariant {
+    return WORK_STATUS_PILL_VARIANT[statusTone(status)];
+}
 
 const KIND_ICON_NAMES = {
     execution_run: 'play-circle',
@@ -101,6 +112,32 @@ const KIND_ICON_NAMES = {
     workflow_run: 'stack-simple',
     workflow_agent: 'stack-simple',
 } as const satisfies Record<AgentActivityEntryKind, IconName>;
+
+/**
+ * An execution run's canonical status (`running`, `timeout`, …) read into the agent-activity
+ * vocabulary every roster row speaks. A status the run owner has not defined reads as `unknown`.
+ */
+export function readExecutionRunAgentActivityStatus(status: unknown): AgentActivityStatusV1 {
+    switch (status) {
+        case 'running': return 'running';
+        case 'succeeded': return 'succeeded';
+        case 'failed': return 'failed';
+        case 'cancelled': return 'cancelled';
+        case 'timeout': return 'timedOut';
+        default: return 'unknown';
+    }
+}
+
+/**
+ * The words and colour of one canonical status, for surfaces that show a status without a roster
+ * entry around it (the running Agent conversation's header). Same vocabulary as every roster row.
+ */
+export function resolveAgentActivityStatusPresentation(status: AgentActivityStatusV1): Readonly<{
+    label: string;
+    variant: StatusPillVariant;
+}> {
+    return { label: t(STATUS_LABEL_KEYS[status]), variant: statusVariant(status) };
+}
 
 function resolveAttention(
     attentionKinds: readonly SessionAgentActivityAttentionKind[],
@@ -137,19 +174,45 @@ function resolveTitle(entry: AgentActivityEntry, subagent: SessionSubagent | nul
     return entryTitle.length > 0 ? entryTitle : entry.id;
 }
 
-function resolveFacts(entry: AgentActivityEntry, subagent: SessionSubagent | null): readonly string[] {
+/**
+ * What kind of work a Run is, in the person's words: an interactive Agent conversation, a Review, a
+ * Plan. Read from the Run's canonical intent and class; a Run with neither keeps the generic kind.
+ */
+function resolveRunKindLabel(subagent: SessionSubagent): string | null {
+    if (subagent.kind !== 'execution_run') return null;
+    const intent = subagent.runRef?.intent?.trim();
+    if (intent === 'review') return t('sessionAgentActivity.runKind.review');
+    if (intent === 'plan') return t('sessionAgentActivity.runKind.plan');
+    if (intent === 'delegate' && subagent.runRef?.runClass?.trim() === 'long_lived') {
+        return t('sessionAgentActivity.runKind.conversation');
+    }
+    return null;
+}
+
+function resolveFacts(
+    entry: AgentActivityEntry,
+    subagent: SessionSubagent | null,
+    originLabel: string | null,
+): readonly string[] {
     const teamLabel = subagent?.kind === 'agent_team_member'
         ? subagent.display.groupLabel?.trim()
             || subagent.display.groupKey?.trim()
             || (subagent.recipient?.kind === 'agent_team_member' ? subagent.recipient.teamId.trim() : null)
         : null;
+    const intent = subagent?.runRef?.intent?.trim() ?? null;
+    const subtitle = subagent?.display.subtitle?.trim() ?? entry.metaDetail?.trim() ?? null;
+    const title = resolveTitle(entry, subagent);
+    const runId = entry.runId?.trim() ?? null;
 
     const candidates = [
-        subagent ? t(resolveSessionSubagentKindLabelKey(subagent.kind)) : null,
+        subagent ? resolveRunKindLabel(subagent) ?? t(resolveSessionSubagentKindLabelKey(subagent.kind)) : null,
+        originLabel?.trim() || null,
         subagent?.display.providerLabel?.trim() || subagent?.runRef?.backendId?.trim() || null,
         teamLabel,
-        subagent?.display.subtitle?.trim() ?? entry.metaDetail?.trim() ?? null,
-        entry.runId?.trim() ?? null,
+        // A Run's subtitle is its raw intent token (`delegate`); the kind above already says it in words.
+        subtitle && subtitle !== intent ? subtitle : null,
+        // The run id only when it is the one thing naming the row; a named row keeps it in Run details.
+        runId && title === runId ? runId : null,
     ];
 
     const facts: string[] = [];
@@ -164,22 +227,69 @@ function resolveFacts(entry: AgentActivityEntry, subagent: SessionSubagent | nul
     return facts;
 }
 
+function resolvePhase(
+    status: AgentActivityStatusV1,
+    attention: SessionAgentActivityAttentionPresentation | null,
+): SessionAgentActivityPhase {
+    if (attention) return 'attention';
+    return isInProgressAgentActivityStatus(status) ? 'live' : 'finished';
+}
+
+/**
+ * The Agent whose mark the row carries. A Run names its own backend; every other unit (a Task
+ * subagent, a teammate) is run by the Session's own Agent, which the host passes in.
+ */
+function resolveAgentId(subagent: SessionSubagent | null, sessionAgentId: string | null): string | null {
+    const backendId = subagent?.runRef?.backendId?.trim();
+    if (backendId) return backendId;
+    const trimmed = sessionAgentId?.trim();
+    return trimmed ? trimmed : null;
+}
+
+function readFiniteMs(value: number | null | undefined): number | null {
+    return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null;
+}
+
+/** A running clock: `0:41`, `4:03`, `1:02:07`. Tabular, so a ticking row never shifts. */
+export function formatAgentActivityElapsed(elapsedMs: number): string {
+    const totalSeconds = Math.max(0, Math.floor(elapsedMs / 1000));
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+    const ss = String(seconds).padStart(2, '0');
+    return hours > 0 ? `${hours}:${String(minutes).padStart(2, '0')}:${ss}` : `${minutes}:${ss}`;
+}
+
 export function resolveSessionAgentActivityPresentation(params: Readonly<{
     entry: AgentActivityEntry;
     /** The locally derived row behind the entry, when this host loaded one. */
     subagent?: SessionSubagent | null;
+    /** Where the work came from ("from Relay retry plan"), when the host resolved it. */
+    originLabel?: string | null;
+    /** The Session's own Agent, which runs every unit that does not name its own backend. */
+    sessionAgentId?: string | null;
 }>): SessionAgentActivityPresentation {
     const { entry } = params;
     const subagent = params.subagent ?? null;
     const title = resolveTitle(entry, subagent);
     const statusLabel = t(STATUS_LABEL_KEYS[entry.status]);
     const attention = resolveAttention(entry.attentionKinds);
+    const phase = resolvePhase(entry.status, attention);
+    const startedAtMs = readFiniteMs(entry.startedAtMs) ?? readFiniteMs(subagent?.timestamps.startedAtMs);
+    const endedAtMs = readFiniteMs(entry.endedAtMs) ?? readFiniteMs(subagent?.timestamps.finishedAtMs);
 
     return {
         title,
-        facts: resolveFacts(entry, subagent),
+        phase,
+        agentId: resolveAgentId(subagent, params.sessionAgentId ?? null),
+        startedAtMs,
+        atMs: phase === 'finished'
+            ? endedAtMs ?? readFiniteMs(subagent?.timestamps.updatedAtMs) ?? startedAtMs
+            : readFiniteMs(subagent?.timestamps.updatedAtMs) ?? startedAtMs,
+        facts: resolveFacts(entry, subagent, params.originLabel ?? null),
         statusLabel,
-        statusVariant: STATUS_VARIANTS[entry.status],
+        statusTone: statusTone(entry.status),
+        statusShownByActivity: entry.status === 'running',
         attention,
         iconName: KIND_ICON_NAMES[entry.kind],
         accentName: subagent?.display.accentName?.trim() || null,

@@ -530,8 +530,14 @@ export function createIrohNodeNativeModule(addon: IrohNodeNativeAddon): NodeIroh
       const result = await callOperation(addon.getMachineAcceptorStatus(serializeRequest({ endpointHandle })));
       return result === null ? null : validateAcceptorStatus(result);
     },
-    startMachineTunnel: async (request: IrohNodeStartMachineTunnelRequest) =>
-      validateMachineTunnelStarted(await callOperation(addon.startMachineTunnel(serializeRequest({ ...request })))),
+    startMachineTunnel: async (request: IrohNodeStartMachineTunnelRequest) => {
+      const result = validateMachineTunnelStarted(await callOperation(addon.startMachineTunnel(serializeRequest({ ...request }))));
+      if (request.nativeHttpLease && result.localCapability !== undefined) {
+        await requireNullResult(callOperation(addon.stopMachineTunnel(serializeRequest({ machineTunnelId: result.machineTunnelId }))), 'stopMachineTunnel');
+        throw new IrohError('unknown', 'Guest HTTP lease must not disclose a native capability');
+      }
+      return result;
+    },
     startMachineHttpTunnel: async (request: IrohNodeStartMachineHttpTunnelRequest) => {
       const { handshakeProvider, ...serialized } = request;
       if (!handshakeProvider) {

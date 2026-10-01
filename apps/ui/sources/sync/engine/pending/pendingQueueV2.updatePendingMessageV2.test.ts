@@ -1473,6 +1473,7 @@ describe('pendingQueueV2 updatePendingMessageV2', () => {
         });
 
         let patchBody: Record<string, unknown> | null = null;
+        const readPatchBody = (): Record<string, unknown> | null => patchBody;
         const result = await updatePendingMessageV2({
             sessionId,
             pendingId: 'p1',
@@ -1505,7 +1506,7 @@ describe('pendingQueueV2 updatePendingMessageV2', () => {
         });
         // The finalizer's canonical metadata must travel with the accepted fact and
         // be written to the Pending row atomically with its durable media references.
-        expect(patchBody?.content).toMatchObject({
+        expect(readPatchBody()?.content).toMatchObject({
             t: 'plain',
             v: {
                 meta: {
@@ -1550,6 +1551,7 @@ describe('pendingQueueV2 updatePendingMessageV2', () => {
         });
 
         let patchBody: Record<string, unknown> | null = null;
+        const readPatchBody = (): Record<string, unknown> | null => patchBody;
         const accepted = await updatePendingMessageV2({
             sessionId,
             pendingId: 'p1',
@@ -1567,7 +1569,7 @@ describe('pendingQueueV2 updatePendingMessageV2', () => {
         });
 
         expect(accepted?.sessionMediaMetadata).toEqual({ key: 'happierMedia', envelope });
-        expect(patchBody?.content).toMatchObject({
+        expect(readPatchBody()?.content).toMatchObject({
             t: 'plain',
             v: {
                 meta: {

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type { Decryptor, Encryptor } from './encryptor';
+import { SecretBoxEncryption, type Decryptor, type Encryptor } from './encryptor';
+import { decodeBase64 } from '@/encryption/base64';
 import { EncryptionCache } from './encryptionCache';
 import { SessionEncryption } from './sessionEncryption';
 
@@ -21,6 +22,20 @@ function createBase64Decryptor(
 }
 
 describe('SessionEncryption metadata in-flight dedupe', () => {
+    it('seals a released-UI-safe flat Herdr projection and opens only the canonical host selectors', async () => {
+        const metadata = {
+            path: '/repo', host: 'machine', name: 'renamed',
+            terminal: { mode: 'herdr', requested: 'herdr', herdr: { sessionName: 'work', socketPath: '/tmp/herdr.sock', terminalId: 'term_1' } },
+            providerExtension: { retained: true },
+        } as const;
+        const crypto = new SecretBoxEncryption(new Uint8Array(32));
+        const sessionEncryption = new SessionEncryption('session-1', crypto, new EncryptionCache());
+        const encrypted = await sessionEncryption.encryptMetadata(metadata);
+        const [wire] = await crypto.decrypt([decodeBase64(encrypted, 'base64')]);
+        expect(wire).toMatchObject({ terminal: { mode: 'plain', hostKind: 'herdr', requested: 'plain', requestedHostKind: 'herdr' } });
+        await expect(sessionEncryption.decryptMetadata(2, encrypted)).resolves.toEqual(metadata);
+    });
+
     it('returns the exact raw metadata envelope for layout-aware strict parsing', async () => {
         const sharedMetadata = {
             v: 1,

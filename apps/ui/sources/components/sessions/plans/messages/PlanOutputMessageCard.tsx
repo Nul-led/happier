@@ -1,19 +1,33 @@
 import React from 'react';
-import { Pressable, View } from 'react-native';
+import { View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
 import type { PlanOutputV1 } from '@happier-dev/protocol';
-import { sync } from '@/sync/sync';
-import { fireAndForget } from '@/utils/system/fireAndForget';
+import {
+    ExecutionRunResultLayout,
+    type ExecutionRunResultPresentation,
+} from '@/components/sessions/runs/ExecutionRunResultLayout';
+import { RoundButton } from '@/components/ui/buttons/RoundButton';
 import { Text } from '@/components/ui/text/Text';
+import { Typography } from '@/constants/Typography';
+import { sync } from '@/sync/sync';
 import { t } from '@/text';
+import { fireAndForget } from '@/utils/system/fireAndForget';
 
-
+/**
+ * A plan's result: its summary in words, its sections, risks and milestones, and one primary —
+ * Adopt plan. The transcript shows it as a card (`message`); the Run page shows it as the page
+ * itself with Adopt plan pinned at its foot (`page`, agents lab RP1).
+ */
 export function PlanOutputMessageCard(props: Readonly<{
     payload: PlanOutputV1;
     sessionId: string;
     canSendMessages: boolean;
+    presentation?: ExecutionRunResultPresentation;
+    /** Page only: what closes the result's body (the Run's steps disclosure). */
+    after?: React.ReactNode;
 }>) {
+    const styles = stylesheet;
     const [error, setError] = React.useState<string | null>(null);
     const [isSending, setIsSending] = React.useState(false);
     const canSendMessagesRef = React.useRef(props.canSendMessages === true);
@@ -53,13 +67,30 @@ export function PlanOutputMessageCard(props: Readonly<{
     }, [props.payload, props.sessionId]);
 
     return (
-        <View style={styles.container}>
-            <Text selectable style={styles.headerText}>{t('session.planOutput.title')}</Text>
-            <Text selectable style={styles.summaryText}>{props.payload.summary}</Text>
+        <ExecutionRunResultLayout
+            presentation={props.presentation ?? 'message'}
+            testID="plan-output"
+            after={props.after}
+            footActions={props.canSendMessages === true ? (
+                <RoundButton
+                    testID="adopt-plan-button"
+                    size="small"
+                    title={isSending ? t('session.planOutput.sending') : t('session.planOutput.adoptPlan')}
+                    accessibilityLabel={t('session.planOutput.a11y.adoptPlan')}
+                    disabled={isSending}
+                    loading={isSending}
+                    onPress={handleAdopt}
+                />
+            ) : null}
+        >
+            {props.presentation === 'page' ? null : (
+                <Text selectable accessibilityRole="header" style={styles.headerText}>{t('session.planOutput.title')}</Text>
+            )}
+            <Text selectable style={styles.lead}>{props.payload.summary}</Text>
 
             {sections.slice(0, 10).map((section) => (
                 <View key={section.title} style={styles.section}>
-                    <Text selectable style={styles.sectionTitle}>{section.title}</Text>
+                    <Text selectable accessibilityRole="header" style={styles.sectionTitle}>{section.title}</Text>
                     {section.items.slice(0, 12).map((item, idx) => (
                         <Text selectable key={`${section.title}-${idx}`} style={styles.sectionItem}>
                             {item}
@@ -70,14 +101,14 @@ export function PlanOutputMessageCard(props: Readonly<{
 
             {props.payload.recommendedBackendId ? (
                 <View style={styles.section}>
-                    <Text selectable style={styles.sectionTitle}>{t('session.planOutput.recommendedBackend')}</Text>
+                    <Text selectable accessibilityRole="header" style={styles.sectionTitle}>{t('session.planOutput.recommendedBackend')}</Text>
                     <Text selectable style={styles.sectionItem}>{props.payload.recommendedBackendId}</Text>
                 </View>
             ) : null}
 
             {risks.length > 0 ? (
                 <View style={styles.section}>
-                    <Text selectable style={styles.sectionTitle}>{t('session.planOutput.risks')}</Text>
+                    <Text selectable accessibilityRole="header" style={styles.sectionTitle}>{t('session.planOutput.risks')}</Text>
                     {risks.slice(0, 12).map((risk, idx) => (
                         <Text selectable key={`risk-${idx}`} style={styles.sectionItem}>
                             {risk}
@@ -88,10 +119,10 @@ export function PlanOutputMessageCard(props: Readonly<{
 
             {milestones.length > 0 ? (
                 <View style={styles.section}>
-                    <Text selectable style={styles.sectionTitle}>{t('session.planOutput.milestones')}</Text>
+                    <Text selectable accessibilityRole="header" style={styles.sectionTitle}>{t('session.planOutput.milestones')}</Text>
                     {milestones.slice(0, 12).map((m, idx) => (
-                        <View key={`ms-${idx}`} style={{ gap: 2 }}>
-                            <Text selectable style={styles.sectionItem}>{m.title}</Text>
+                        <View key={`ms-${idx}`} style={styles.milestone}>
+                            <Text selectable style={styles.milestoneTitle}>{m.title}</Text>
                             {m.details ? <Text selectable style={styles.sectionItem}>{m.details}</Text> : null}
                         </View>
                     ))}
@@ -99,77 +130,47 @@ export function PlanOutputMessageCard(props: Readonly<{
             ) : null}
 
             {error ? <Text selectable style={styles.errorText}>{error}</Text> : null}
-
-            {props.canSendMessages === true ? (
-                <Pressable
-                    accessibilityRole="button"
-                    testID="adopt-plan-button"
-                    accessibilityLabel={t('session.planOutput.a11y.adoptPlan')}
-                    onPress={handleAdopt}
-                    disabled={isSending}
-                    style={[styles.adoptButton, isSending && styles.adoptButtonDisabled]}
-                >
-                    <Text style={styles.adoptButtonText}>
-                        {isSending ? t('session.planOutput.sending') : t('session.planOutput.adoptPlan')}
-                    </Text>
-                </Pressable>
-            ) : null}
-        </View>
+        </ExecutionRunResultLayout>
     );
 }
 
-const styles = StyleSheet.create((theme) => ({
-    container: {
-        padding: 12,
-        borderRadius: 10,
-        backgroundColor: theme.colors.surface.elevated,
-        borderWidth: 1,
-        borderColor: theme.colors.border.default,
-        gap: 10,
-    },
+const stylesheet = StyleSheet.create((theme) => ({
     headerText: {
+        ...Typography.default('semiBold'),
         color: theme.colors.text.primary,
         fontSize: 15,
-        fontWeight: '600',
     },
-    summaryText: {
-        color: theme.colors.text.secondary,
-        fontSize: 13,
+    lead: {
+        ...Typography.default(),
+        color: theme.colors.text.primary,
+        fontSize: 15,
+        lineHeight: 22,
     },
     section: {
         gap: 6,
-        paddingTop: 8,
-        borderTopWidth: 1,
-        borderTopColor: theme.colors.border.default,
     },
     sectionTitle: {
+        ...Typography.default('semiBold'),
         color: theme.colors.text.primary,
-        fontSize: 13,
-        fontWeight: '600',
+        fontSize: 14,
     },
     sectionItem: {
+        ...Typography.default(),
         color: theme.colors.text.secondary,
-        fontSize: 12,
-        fontFamily: 'Menlo',
+        fontSize: 13.5,
+        lineHeight: 19,
     },
-    adoptButton: {
-        marginTop: 2,
-        paddingVertical: 10,
-        paddingHorizontal: 12,
-        borderRadius: 10,
-        backgroundColor: theme.colors.text.link,
-        alignItems: 'center',
+    milestone: {
+        gap: 2,
     },
-    adoptButtonDisabled: {
-        opacity: 0.6,
-    },
-    adoptButtonText: {
-        color: '#fff',
-        fontSize: 13,
-        fontWeight: '600',
+    milestoneTitle: {
+        ...Typography.default('semiBold'),
+        color: theme.colors.text.primary,
+        fontSize: 13.5,
     },
     errorText: {
-        color: theme.colors.text.secondary,
-        fontSize: 12,
+        ...Typography.default(),
+        color: theme.colors.state.danger.foreground,
+        fontSize: 13,
     },
 }));

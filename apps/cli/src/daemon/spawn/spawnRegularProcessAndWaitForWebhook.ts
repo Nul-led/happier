@@ -1,3 +1,4 @@
+import type { PersistedTakeoverAdmissionWaitRegistration } from './persistedTakeoverAdmission';
 import { spawn as spawnChildProcess } from 'node:child_process';
 import { isPidPresent } from '@happier-dev/cli-common/process';
 
@@ -22,6 +23,7 @@ import { shouldUseSystemdUserSessionResourceGovernor } from '../platform/linux/s
 import type { SpawnLifecycleCallbacks } from './createSpawnLifecycleCallbacks';
 import {
   tombstoneTrackedSessionWebhookPids,
+  armSessionWebhookStartupCustody,
   waitForSessionWebhook,
 } from './waitForSessionWebhook';
 import type { SpawnCommitRevalidation } from './spawnCommitRevalidation';
@@ -78,6 +80,7 @@ export async function spawnRegularProcessAndWaitForWebhook(params: Readonly<{
   pidToAwaiter: Map<number, (session: TrackedSession) => void>;
   pidToSpawnResultResolver: Map<number, (result: SpawnSessionResult) => void>;
   pidToSpawnWebhookTimeout: Map<number, NodeJS.Timeout>;
+  takeoverAdmission?: PersistedTakeoverAdmissionWaitRegistration;
   resolveCanonicalTrackedSessionId: (pid: number) => string;
   onChildExited: (pid: number, exit: ChildExit) => void | Promise<void>;
   spawnLifecycleCallbacks: SpawnLifecycleCallbacks;
@@ -239,7 +242,6 @@ export async function spawnRegularProcessAndWaitForWebhook(params: Readonly<{
       if (process.platform === 'win32') {
         if (
           trackedSession.processStartTimeMs === undefined
-          || !trackedSession.processCommandHash
         ) {
           return {
             status: 'incomplete' as const,
@@ -337,7 +339,7 @@ export async function spawnRegularProcessAndWaitForWebhook(params: Readonly<{
     if (terminalObservation) return;
     terminalObservation = { failure, exit };
 
-    if (markerPublished || custodyDenied) {
+    if (params.pidToTrackedSession.get(pid) === trackedSession) {
       const observation = delegateTerminalObservationIfStillOwned(exit);
       if (observation) {
         terminalObservationPromise = observation.then(() => {
@@ -355,9 +357,7 @@ export async function spawnRegularProcessAndWaitForWebhook(params: Readonly<{
         return;
       }
     }
-    if (!markerPublished && !custodyDenied) {
-      return;
-    }
+    if (!markerPublished && !custodyDenied) return;
     settleProvisionalSpawnResult(failure);
   };
 
@@ -393,10 +393,13 @@ export async function spawnRegularProcessAndWaitForWebhook(params: Readonly<{
   });
 
   params.pidToTrackedSession.set(pid, trackedSession);
+  params.spawnLifecycleCallbacks.consumeSessionAttachCleanupForPid(pid);
+  params.spawnLifecycleCallbacks.registerSpawnResourceCleanupForPid(pid);
   params.logDebug(`[DAEMON RUN] Waiting for session webhook for PID ${pid}`);
   const spawnResultPromise = waitForSessionWebhook({
     pid,
     pidToAwaiter: params.pidToAwaiter,
+    takeoverAdmission: params.takeoverAdmission,
     pidToSpawnResultResolver: params.pidToSpawnResultResolver,
     pidToSpawnWebhookTimeout: params.pidToSpawnWebhookTimeout,
     pidToTrackedSession: params.pidToTrackedSession,
@@ -415,9 +418,17 @@ export async function spawnRegularProcessAndWaitForWebhook(params: Readonly<{
     }
     clearExactProvisionalWaiterCustody();
   };
+  const acceptedRegistration = params.spawnLifecycleCallbacks.persistAcceptedSpawnMarker(trackedSession).then(() => {
+    const acceptedPid = trackedSession.pid;
+    if (params.pidToTrackedSession.get(acceptedPid) !== trackedSession) return;
+    params.spawnLifecycleCallbacks.registerConnectedServiceSpawnTarget(acceptedPid);
+    trackedSession.acceptedSpawnMarkerGate = undefined;
+    resolveAcceptedSpawnMarker(true);
+  });
+  armSessionWebhookStartupCustody(trackedSession, spawnResultPromise, acceptedRegistration);
 
   try {
-    await params.spawnLifecycleCallbacks.persistAcceptedSpawnMarker(trackedSession);
+    await acceptedRegistration;
   } catch (error) {
     spawnRequestSettled = true;
     custodyDenied = true;
@@ -448,7 +459,7 @@ export async function spawnRegularProcessAndWaitForWebhook(params: Readonly<{
     exit: ChildExit;
   }>;
   if (pendingTerminalObservation) {
-    const observation = delegateTerminalObservationIfStillOwned(
+    const observation = terminalObservationPromise ?? delegateTerminalObservationIfStillOwned(
       pendingTerminalObservation.exit,
     );
     terminalObservationPromise = observation;
@@ -488,13 +499,6 @@ export async function spawnRegularProcessAndWaitForWebhook(params: Readonly<{
       errorMessage: `Spawn custody for PID ${pid} was superseded before marker acceptance completed`,
     };
   }
-  const acceptedPid = trackedSession.pid;
-  params.spawnLifecycleCallbacks.consumeSessionAttachCleanupForPid(acceptedPid);
-  params.spawnLifecycleCallbacks.registerConnectedServiceSpawnTarget(acceptedPid);
-  params.spawnLifecycleCallbacks.registerSpawnResourceCleanupForPid(acceptedPid);
-  trackedSession.acceptedSpawnMarkerGate = undefined;
-  resolveAcceptedSpawnMarker(true);
-
   const spawnResult = await spawnResultPromise;
   spawnRequestSettled = true;
   if (

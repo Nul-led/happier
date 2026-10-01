@@ -17,6 +17,7 @@ import {
 } from '@happier-dev/protocol/ephemeralRunner/endpoint';
 import { signRunnerConsentV1, type RunnerConsentV1 } from '@happier-dev/protocol/ephemeralRunner/consent';
 import type { RunnerReadinessV1 } from '@happier-dev/protocol/ephemeralRunner/readiness';
+import type { RunnerEndpointDeclineResponseV1 } from '@happier-dev/protocol/ephemeralRunner/endpointProjection';
 import type { PluginInstallationReview } from '@happier-dev/protocol/marketplace/internal';
 import type { PluginRegistryProfileRequirement, PluginResourceSelection } from '@/plugins/daemon/changeContract';
 import type { RunnerActivationProgressPhaseV1 } from '@happier-dev/protocol/ephemeralRunner/progress';
@@ -55,7 +56,7 @@ export type EphemeralRunnerConnectionState = 'connected' | 'reconnecting';
  * only kind that may name one, because by then it really exists.
  */
 export type EphemeralRunnerEndpointFailure = Readonly<{
-  kind: 'before_session' | 'before_session_terminal' | 'session_runtime_or_stop';
+  kind: 'before_session' | 'before_session_terminal' | 'session_runtime_or_stop' | 'activation_close_unconfirmed';
 }>;
 
 export type EphemeralRunnerEndpointSnapshot = Readonly<{
@@ -93,7 +94,7 @@ export type EphemeralRunnerControlPlaneConnection<Manifest> = Readonly<{
   }>): Promise<VerifiedEphemeralRunnerReview<Manifest>>;
   submitConsent(input: Readonly<{ consent: RunnerConsentV1; signal: AbortSignal }>): Promise<void>;
   submitReadiness(input: Readonly<{ readiness: RunnerReadinessV1; signal: AbortSignal }>): Promise<void>;
-  decline(input: Readonly<{ claim: RunnerClaimV1; signal: AbortSignal }>): Promise<void>;
+  decline(input: Readonly<{ claim: RunnerClaimV1; signal: AbortSignal }>): Promise<RunnerEndpointDeclineResponseV1>;
   onConnectionState(listener: (state: EphemeralRunnerConnectionState) => void): () => void;
   close(): Promise<void>;
 }>;
@@ -209,6 +210,8 @@ export type EphemeralRunnerDependencies<Manifest, Materialized, Preparation> = R
     runnerBoxSecretKey: Uint8Array;
     preparation: Preparation;
     signal: AbortSignal;
+    /** Recovery must settle locally when the Home cannot confirm projection. */
+    retryTransportErrors?: boolean;
   }>): Promise<Materialized>;
   startSession(input: Readonly<{
     binding: RunnerActivationBindingV1;
@@ -326,8 +329,12 @@ export function createEphemeralRunnerController<Manifest, Materialized, Preparat
 }>) {
   const lifetime = new AbortController();
   let externalStopRequested = false;
+  let recoveryAbort: AbortController | null = null;
+  let declineAbort: AbortController | null = null;
   const externalAbort = () => {
     externalStopRequested = true;
+    recoveryAbort?.abort(input.signal?.reason);
+    declineAbort?.abort(input.signal?.reason);
     lifetime.abort(input.signal?.reason);
   };
   input.signal?.addEventListener('abort', externalAbort, { once: true });
@@ -351,6 +358,13 @@ export function createEphemeralRunnerController<Manifest, Materialized, Preparat
   let unsubscribeConnection: (() => void) | null = null;
   let unbindUiControls: (() => void) | null = null;
   let closeDecisionPromise: Promise<'kept_open' | 'stopped'> | null = null;
+  let declinePromise: Promise<void> | null = null;
+  let declineResult:
+    | Readonly<{ ok: true; outcome: RunnerEndpointDeclineResponseV1 }>
+    | Readonly<{ ok: false; error: Error }>
+    | null = null;
+  let closeUnconfirmed = false;
+  let recoverMaterializedForStop: (() => Promise<void>) | null = null;
 
   const present = (nextPhase: EphemeralRunnerEndpointPhase, canRetry?: boolean) => {
     phase = nextPhase;
@@ -358,7 +372,9 @@ export function createEphemeralRunnerController<Manifest, Materialized, Preparat
       phase,
       connection: connectionState,
       ...(nextPhase === 'failed' && canRetry !== undefined
-        ? { failure: endpointFailure({ canRetry, sessionExists: materialized !== null }) }
+        ? { failure: closeUnconfirmed
+          ? { kind: 'activation_close_unconfirmed' as const }
+          : endpointFailure({ canRetry, sessionExists: materialized !== null }) }
         : {}),
       ...(canRetry !== undefined ? { canRetry } : {}),
     }));
@@ -411,10 +427,55 @@ export function createEphemeralRunnerController<Manifest, Materialized, Preparat
     }
   };
 
+  const beginDecline = () => {
+    if (declinePromise || !connection || !activeClaim || materialized !== null) return;
+    declineAbort = new AbortController();
+    declinePromise = connection.decline({ claim: activeClaim, signal: declineAbort.signal }).then(
+      (outcome) => { declineResult = { ok: true, outcome }; },
+      (error: unknown) => { declineResult = { ok: false, error: asError(error) }; },
+    );
+  };
+
+  const settleDecline = async (cancelPending: boolean) => {
+    if (!declinePromise) return;
+    // Local work has unwound before this boundary. A Home response already
+    // observed is reconciled below; otherwise local exit cancels the request
+    // rather than keeping the window and signing custody alive for an ack.
+    if (cancelPending && declineResult === null) {
+      declineAbort?.abort(new Error('Ephemeral Runner local close'));
+    }
+    await declinePromise;
+    if (declineResult?.ok && declineResult.outcome.status === 'unavailable' && declineResult.outcome.reason === 'already_materialized') {
+      if (!recoverMaterializedForStop) {
+        stopFailure ??= new Error('runner_materialized_stop_context_unavailable');
+        closeUnconfirmed = true;
+        return;
+      }
+      await recoverMaterializedForStop();
+      return;
+    }
+    if (declineResult && (!declineResult.ok
+      || declineResult.outcome.status === 'conflict'
+      || (declineResult.outcome.status === 'unavailable'
+        && (declineResult.outcome.reason === 'creator_unavailable' || declineResult.outcome.reason === 'recipient_mismatch')))) {
+      // Currentness can be refused before the Home checks materialization.
+      // Neither refusal proves that no Session exists or that it was stopped.
+      closeUnconfirmed = true;
+      stopFailure ??= declineResult.ok ? new Error('runner_activation_close_unconfirmed') : declineResult.error;
+    }
+  };
+
+  const declineActivation = async () => {
+    beginDecline();
+    await settleDecline(false);
+    if (stopFailure) throw stopFailure;
+  };
+
   const stop = async () => {
     if (stopPromise) return stopPromise;
     stopPromise = (async () => {
       if (phase !== 'completed' && phase !== 'failed') present('stopping');
+      beginDecline();
       lifetime.abort(new Error('Ephemeral Runner stop requested'));
       // The ordinary Session/process terminal path owns server revocation. The
       // endpoint only settles its local runtime and bootstrap custody.
@@ -434,13 +495,6 @@ export function createEphemeralRunnerController<Manifest, Materialized, Preparat
           stopFailure ??= asError(error);
         }
       }
-      else if (connection && activeClaim) {
-        try {
-          await connection.decline({ claim: activeClaim, signal: new AbortController().signal });
-        } catch (error) {
-          stopFailure = asError(error);
-        }
-      }
       if (stopFailure) throw stopFailure;
     })();
     return stopPromise;
@@ -457,7 +511,11 @@ export function createEphemeralRunnerController<Manifest, Materialized, Preparat
         if (decision === 'keep_open') return 'kept_open';
       }
       externalStopRequested = true;
-      await stop();
+      recoveryAbort?.abort(new Error('Ephemeral Runner close requested'));
+      // An in-content Decline may be awaiting a response. The existing close
+      // control is the local escape; it never starts a competing request.
+      declineAbort?.abort(new Error('Ephemeral Runner close requested'));
+      await stop().catch(() => undefined);
       if (runPromise !== null) await runPromise;
       return 'stopped';
     })();
@@ -540,7 +598,7 @@ export function createEphemeralRunnerController<Manifest, Materialized, Preparat
           // endpoint's explicit Cancel request (or a dead native shell), and is
           // the only folder-step input that closes this claimed activation.
           if (selectedDirectory === null) {
-            await connection.decline({ claim, signal: lifetime.signal });
+            await declineActivation();
             return { status: 'declined' };
           }
           directory = selectedDirectory;
@@ -624,7 +682,7 @@ export function createEphemeralRunnerController<Manifest, Materialized, Preparat
             signal: lifetime.signal,
           });
           if (registryDecision === null) {
-            await connection.decline({ claim, signal: lifetime.signal });
+            await declineActivation();
             return { status: 'declined' };
           }
           prepared = await prepared.selectRegistryProfile({
@@ -633,24 +691,54 @@ export function createEphemeralRunnerController<Manifest, Materialized, Preparat
           });
         }
         pluginAcquisition = prepared;
-        const decision = await input.ui.reviewAndRequestConsent({
-          review,
-          pluginInstallation: pluginAcquisition.review,
-          signal: lifetime.signal,
-        });
-        if (!decision.allow) {
-          await connection.decline({ claim, signal: lifetime.signal });
-          return { status: 'declined' };
+        let decision: Awaited<ReturnType<typeof input.ui.reviewAndRequestConsent>> | null = null;
+        let reviewNeedsConsent = true;
+        while (true) {
+          if (reviewNeedsConsent) {
+            decision = await input.ui.reviewAndRequestConsent({
+              review,
+              pluginInstallation: pluginAcquisition.review,
+              signal: lifetime.signal,
+            });
+            if (!decision.allow) {
+              await declineActivation();
+              return { status: 'declined' };
+            }
+            reviewNeedsConsent = false;
+          }
+          // Allow installs the exact committed generation before the consent
+          // signature exists, so a failed acquisition can be repaired against
+          // the same claim without manufacturing a second activation.
+          present('installing_agent');
+          if (decision === null) throw new Error('runner_consent_decision_unavailable');
+          try {
+            await pluginAcquisition.apply({
+              signal: lifetime.signal,
+              optionalSelections: decision.optionalSelections,
+            });
+            break;
+          } catch (error) {
+            if (lifetime.signal.aborted) throw error;
+            await pluginAcquisition.release().catch(() => undefined);
+            recoveryAbort = new AbortController();
+            const recovery = await input.ui.requestFailureRecovery({
+              failure: endpointFailure({ canRetry: true, sessionExists: false }),
+              canRetry: true,
+              signal: recoveryAbort.signal,
+            }).catch(() => 'exit' as const);
+            recoveryAbort = null;
+            if (recovery !== 'retry') throw error;
+            const previousReview = pluginAcquisition.review;
+            const replacement = await input.dependencies.prepareReviewedPluginAcquisition({
+              manifest: review.manifest,
+              homeDirectory: input.localState.homeDirectory,
+              signal: lifetime.signal,
+            });
+            if ('kind' in replacement) throw new Error('runner_plugin_registry_selection_required');
+            pluginAcquisition = replacement;
+            reviewNeedsConsent = JSON.stringify(previousReview) !== JSON.stringify(replacement.review);
+          }
         }
-        // Allow installs the exact committed generation before the consent
-        // signature exists, so a refused or failed acquisition still declines
-        // this activation cleanly instead of consenting to a launch that
-        // cannot run.
-        present('installing_agent');
-        await pluginAcquisition.apply({
-          signal: lifetime.signal,
-          optionalSelections: decision.optionalSelections,
-        });
         lifetime.signal.throwIfAborted();
         const consentInstallationKey = decodeBase64(input.installation.privateKey, 'base64url');
         let consent: RunnerConsentV1;
@@ -672,77 +760,128 @@ export function createEphemeralRunnerController<Manifest, Materialized, Preparat
         await connection.submitConsent({ consent, signal: lifetime.signal });
 
         present('installing_agent');
-        preparation = await input.dependencies.prepareAgent({
-          manifest: review.manifest,
-          environment: input.localState.environment,
-          homeDirectory: input.localState.homeDirectory,
-          signal: lifetime.signal,
-        });
-        lifetime.signal.throwIfAborted();
-        present('checking_ai_access');
-        await connection.reportProgress({ phase: 'checking_ai_access', signal: lifetime.signal });
-        const readinessInstallationKey = decodeBase64(input.installation.privateKey, 'base64url');
-        let readiness: Awaited<ReturnType<typeof input.dependencies.checkNonInferenceReadiness>>;
-        try {
-          readiness = await input.dependencies.checkNonInferenceReadiness({
-            binding: input.activation.binding,
-            claim,
-            consent,
-            manifest: review.manifest,
-            launchManifestCommitment: review.launchManifestCommitment,
-            runnerBoxSecretKey: runnerBox.secretKey,
-            activationSecretKey: input.activation.activationSecretKey,
-            installationSecretKey: readinessInstallationKey,
-            homeDirectory: input.localState.homeDirectory,
-            preparation,
-            signal: lifetime.signal,
-          });
-        } finally {
-          readinessInstallationKey.fill(0);
+        while (preparation === null) {
+          try {
+            preparation = await input.dependencies.prepareAgent({
+              manifest: review.manifest,
+              environment: input.localState.environment,
+              homeDirectory: input.localState.homeDirectory,
+              signal: lifetime.signal,
+            });
+          } catch (error) {
+            if (lifetime.signal.aborted) throw error;
+            present('failed', true);
+            recoveryAbort = new AbortController();
+            const recovery = await input.ui.requestFailureRecovery({
+              failure: endpointFailure({ canRetry: true, sessionExists: false }),
+              canRetry: true,
+              signal: recoveryAbort.signal,
+            }).catch(() => 'exit' as const);
+            recoveryAbort = null;
+            if (recovery !== 'retry') throw error;
+            present('installing_agent');
+          }
         }
-        if (readiness.status !== 'ready') throw new Error(`AI access is ${readiness.status}: ${readiness.reason}`);
-        await connection.submitReadiness({ readiness: readiness.readiness, signal: lifetime.signal });
-        present('waiting_for_materialization');
-        materialized = await input.dependencies.materialize({
+        lifetime.signal.throwIfAborted();
+        const preparedAgent = preparation;
+        const materializationInput = {
           binding: input.activation.binding,
           claim,
           consent,
           manifest: review.manifest,
           launchManifestCommitment: review.launchManifestCommitment,
           runnerBoxSecretKey: runnerBox.secretKey,
-          preparation,
+          preparation: preparedAgent,
+        };
+        const startMaterializedRuntime = async (value: Materialized) => {
+          runtimeStartPromise = input.dependencies.startSession({
+            binding: input.activation.binding,
+            manifest: review.manifest,
+            materialized: value,
+            preparation: preparedAgent,
+            localState: input.localState,
+            installationPrivateKey: input.installation.privateKey,
+            signal: lifetime.signal,
+            onRuntimeStopReady: (stopOwner) => {
+              runtimeStopOwner ??= stopOwner;
+              if (lifetime.signal.aborted) void stopRuntimeOnce();
+            },
+            onRuntimeConnectionState: (next) => {
+              unsubscribeConnection?.();
+              unsubscribeConnection = null;
+              if (connectionState === next) return;
+              connectionState = next;
+              input.ui.present(Object.freeze({ phase, connection: connectionState }));
+            },
+          });
+          if (lifetime.signal.aborted) await stopRuntimeOnce();
+          runtime = await runtimeStartPromise;
+          return runtime;
+        };
+        recoverMaterializedForStop = async () => {
+          // A confirmed materialization winner is no longer an activation
+          // cancellation. Reuse its existing bootstrap and the ordinary Stop
+          // owner; the aborted run signal prevents Agent admission.
+          materialized ??= await input.dependencies.materialize({
+            ...materializationInput,
+            signal: new AbortController().signal,
+            retryTransportErrors: false,
+          });
+          if (runtimeStartPromise === null) {
+            await startMaterializedRuntime(materialized).catch((error: unknown) => {
+              if (runtimeStopOwner === null) throw error;
+            });
+          }
+          await stopRuntimeOnce();
+          if (stopFailure) throw stopFailure;
+          await releaseMaterializedOnce();
+        };
+        let readiness: Awaited<ReturnType<typeof input.dependencies.checkNonInferenceReadiness>>;
+        while (true) {
+          try {
+            present('checking_ai_access');
+            await connection.reportProgress({ phase: 'checking_ai_access', signal: lifetime.signal });
+            const readinessInstallationKey = decodeBase64(input.installation.privateKey, 'base64url');
+            try {
+              readiness = await input.dependencies.checkNonInferenceReadiness({
+                binding: input.activation.binding,
+                claim,
+                consent,
+                manifest: review.manifest,
+                launchManifestCommitment: review.launchManifestCommitment,
+                runnerBoxSecretKey: runnerBox.secretKey,
+                activationSecretKey: input.activation.activationSecretKey,
+                installationSecretKey: readinessInstallationKey,
+                homeDirectory: input.localState.homeDirectory,
+                preparation,
+                signal: lifetime.signal,
+              });
+            } finally {
+              readinessInstallationKey.fill(0);
+            }
+            if (readiness.status !== 'ready') throw new Error(`AI access is ${readiness.status}: ${readiness.reason}`);
+            await connection.submitReadiness({ readiness: readiness.readiness, signal: lifetime.signal });
+            break;
+          } catch (error) {
+            if (lifetime.signal.aborted) throw error;
+            present('failed', true);
+            recoveryAbort = new AbortController();
+            const recovery = await input.ui.requestFailureRecovery({
+              failure: endpointFailure({ canRetry: true, sessionExists: false }),
+              canRetry: true,
+              signal: recoveryAbort.signal,
+            }).catch(() => 'exit' as const);
+            recoveryAbort = null;
+            if (recovery !== 'retry') throw error;
+          }
+        }
+        present('waiting_for_materialization');
+        materialized = await input.dependencies.materialize({
+          ...materializationInput,
           signal: lifetime.signal,
         });
         if (!lifetime.signal.aborted) present('starting');
-        runtimeStartPromise = input.dependencies.startSession({
-          binding: input.activation.binding,
-          manifest: review.manifest,
-          materialized,
-          preparation,
-          localState: input.localState,
-          installationPrivateKey: input.installation.privateKey,
-          signal: lifetime.signal,
-          onRuntimeStopReady: (stopOwner) => {
-            runtimeStopOwner ??= stopOwner;
-            if (lifetime.signal.aborted) {
-              void stopRuntimeOnce();
-            }
-          },
-          onRuntimeConnectionState: (next) => {
-            // The activation control connection stops being the truth the
-            // moment the Session runs, so its subscription is released and the
-            // runtime becomes the one connectivity source the window shows.
-            unsubscribeConnection?.();
-            unsubscribeConnection = null;
-            if (connectionState === next) return;
-            connectionState = next;
-            input.ui.present(Object.freeze({ phase, connection: connectionState }));
-          },
-        });
-        if (lifetime.signal.aborted) {
-          await stopRuntimeOnce();
-        }
-        runtime = await runtimeStartPromise;
+        const runningRuntime = await startMaterializedRuntime(materialized);
         // The endpoint can be stopped while the canonical runtime owner is
         // still constructing. Do not let a late successful construction
         // escape the already-settled Stop and become invisible work.
@@ -758,7 +897,7 @@ export function createEphemeralRunnerController<Manifest, Materialized, Preparat
           lifetime.signal.throwIfAborted();
         }
         present('running');
-        const terminal = await runtime.terminal;
+        const terminal = await runningRuntime.terminal;
         await stop();
         if (externalStopRequested) return { status: 'cancelled' };
         if (terminal.status === 'failed') throw terminal.error;
@@ -768,6 +907,10 @@ export function createEphemeralRunnerController<Manifest, Materialized, Preparat
         const normalized = asError(error);
         const wasCancelled = externalStopRequested;
         await stop().catch(() => undefined);
+        await settleDecline(wasCancelled).catch((declineError: unknown) => {
+          stopFailure ??= asError(declineError);
+          closeUnconfirmed = true;
+        });
         if (wasCancelled && materialized !== null) {
           try {
             await releaseMaterializedOnce();
@@ -783,16 +926,21 @@ export function createEphemeralRunnerController<Manifest, Materialized, Preparat
         // declined that activation, so a second run can only be rejected.
         // Offering Retry there is an invitation into a guaranteed failure loop.
         const canRetry = materialized === null && activeClaim === null;
-        const publicFailure = endpointFailure({ canRetry, sessionExists: materialized !== null });
+        const publicFailure = closeUnconfirmed
+          ? { kind: 'activation_close_unconfirmed' as const }
+          : endpointFailure({ canRetry, sessionExists: materialized !== null });
         present('failed', canRetry);
-        const recovery = await input.ui.requestFailureRecovery({
+        recoveryAbort = new AbortController();
+        const recovery = externalStopRequested ? 'exit' : await input.ui.requestFailureRecovery({
           failure: publicFailure,
           canRetry,
-          signal: new AbortController().signal,
+          signal: recoveryAbort.signal,
         }).catch(() => 'exit' as const);
+        recoveryAbort = null;
         if (recovery === 'retry' && materialized === null) return { status: 'retry_requested' };
         return { status: 'failed', error: failure };
       } finally {
+        declineAbort?.abort();
         runnerBox.secretKey.fill(0);
         await cleanup();
       }
@@ -805,6 +953,8 @@ export function createEphemeralRunnerController<Manifest, Materialized, Preparat
     requestClose,
     stop: async () => {
       externalStopRequested = true;
+      recoveryAbort?.abort(new Error('Ephemeral Runner stop requested'));
+      declineAbort?.abort(new Error('Ephemeral Runner stop requested'));
       await stop();
     },
   });

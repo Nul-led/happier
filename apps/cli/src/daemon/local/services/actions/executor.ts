@@ -8,7 +8,7 @@ export type ResolvedLocalServiceActionTarget =
     Readonly<{ kind: 'inventory_entry'; entry: NormalizedLocalServiceInventoryEntry }>;
 
 export type LocalServiceActionExecutionOutcome =
-    | Readonly<{ status: 'succeeded' }>
+    | Readonly<{ status: 'succeeded'; undoKey?: string }>
     | Readonly<{ status: 'denied' | 'failed'; reasonCode: string }>;
 
 export async function executeLocalServiceAction(input: Readonly<{
@@ -37,7 +37,7 @@ export async function executeLocalServiceAction(input: Readonly<{
                 .some((entry) => entry.id === forgottenEntryId);
             return stillVisible
                 ? { status: 'failed', reasonCode: 'forget_verification_failed' }
-                : { status: 'succeeded' };
+                : { status: 'succeeded', undoKey: result.undoKey };
         }
         // `stop_managed` / `restart_managed` remain in the published action catalog but the
         // managed local-service runtime they executed against was removed with its producerless

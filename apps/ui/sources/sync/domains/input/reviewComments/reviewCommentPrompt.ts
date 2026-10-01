@@ -1,6 +1,9 @@
-import type { WorkspaceAnchorResolutionV1 } from '@happier-dev/protocol';
+import {
+    REVIEW_FINDINGS_VERIFY_AND_FIX_INSTRUCTIONS_V1,
+    renderReviewFindingsForVerifyV1,
+} from '@happier-dev/protocol';
 
-import type { ReviewCommentAnchor, ReviewCommentDraft, ReviewCommentSnapshot } from './reviewCommentTypes';
+import type { ReviewCommentDraft } from './reviewCommentTypes';
 import {
     formatReviewCommentDraftAnchorLabel,
     getReviewCommentDraftAnchorPrimaryLine,
@@ -14,43 +17,7 @@ export function filterReviewCommentDraftsIncludedInPrompt(drafts: readonly Revie
     return drafts.filter(isReviewCommentDraftIncludedInPrompt);
 }
 
-function formatAnchor(draft: ReviewCommentDraft): string {
-    return formatReviewCommentDraftAnchorLabel(draft.anchor);
-}
-
-function formatResolvedAnchor(anchor: WorkspaceAnchorResolutionV1['resolvedAnchor']): string | null {
-    if (!anchor) return null;
-    return formatReviewCommentDraftAnchorLabel(anchor as ReviewCommentAnchor);
-}
-
-function formatSnapshot(snapshot: ReviewCommentSnapshot): string {
-    const snapshotLines = [
-        ...snapshot.beforeContext,
-        ...snapshot.selectedLines,
-        ...snapshot.afterContext,
-    ];
-    return snapshotLines.length > 0
-        ? `   - snippet:\n${snapshotLines.map((l) => `     ${l}`).join('\n')}\n`
-        : '';
-}
-
-function formatResolution(resolution: WorkspaceAnchorResolutionV1 | undefined): string {
-    if (!resolution) return '';
-    const resolvedAnchor = formatResolvedAnchor(resolution.resolvedAnchor);
-    const statusLine = resolvedAnchor
-        ? `   - resolved: ${resolution.status} ${resolvedAnchor}`
-        : `   - resolved: ${resolution.status}`;
-    const details = [
-        statusLine,
-        `   - confidence: ${resolution.confidence}`,
-        resolution.reason ? `   - reason: ${resolution.reason}` : '',
-        resolution.preview ? formatSnapshot(resolution.preview).trimEnd() : '',
-    ].filter(Boolean);
-    return details.length > 0 ? details.join('\n') : '';
-}
-
 export function buildReviewCommentsPromptText(params: {
-    sessionId: string;
     drafts: readonly ReviewCommentDraft[];
     additionalMessage: string;
 }): string {
@@ -62,21 +29,20 @@ export function buildReviewCommentsPromptText(params: {
         return a.createdAt - b.createdAt;
     });
 
-    const header = 'Review comments:\n';
-    const blocks = drafts.map((draft, index) => {
-        const snapshot = formatSnapshot(draft.snapshot);
-        return [
-            `${index + 1}) ${draft.filePath} (${formatAnchor(draft)})`,
-            formatResolution(draft.anchorResolution),
-            snapshot.trimEnd(),
-            `   - comment: ${draft.body}`,
-        ].filter(Boolean).join('\n');
-    });
+    const rendered = renderReviewFindingsForVerifyV1(drafts.map((draft) => ({
+        id: draft.id,
+        title: `${draft.filePath} (${formatReviewCommentDraftAnchorLabel(draft.anchor)})`,
+        filePath: draft.filePath,
+        summary: draft.body,
+        anchor: draft.anchor,
+        snapshot: draft.snapshot,
+        anchorResolution: draft.anchorResolution,
+    })));
 
     const message = params.additionalMessage.trim();
     const messageBlock = message.length > 0 ? `\n\nAdditional message:\n${message}` : '';
 
-    return `${header}\n${blocks.join('\n\n')}${messageBlock}`.trimEnd() + '\n';
+    return `${REVIEW_FINDINGS_VERIFY_AND_FIX_INSTRUCTIONS_V1}\n\n${rendered}${messageBlock}`.trimEnd() + '\n';
 }
 
 export function buildReviewCommentsDisplayText(params: { drafts: readonly ReviewCommentDraft[] }): string {

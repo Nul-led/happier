@@ -2,7 +2,7 @@ import {
     ScmBackendCapabilitiesSchema,
     ScmRepoModeSchema,
     type ScmBackendContribution,
-} from '@happier-dev/protocol';
+} from '@happier-dev/protocol/scm';
 import type { BackendRuntimeRegistration as ScmBackendRuntimeRegistration } from '@happier-dev/plugin-sdk/scm/backend';
 import type { HostingProviderRuntimeServices as ScmHostingProviderRuntimeServices } from '@happier-dev/plugin-sdk/scm/hosting';
 
@@ -71,7 +71,11 @@ const EXECUTABLE_SUPPORTED_LEAVES: readonly SupportedLeaf[] = [
     { key: 'changeSet.include', hasHandler: (registration) => typeof registration.handlers.changeSet?.include === 'function' },
     { key: 'changeSet.exclude', hasHandler: (registration) => typeof registration.handlers.changeSet?.exclude === 'function' },
     { key: 'changeSet.discard', hasHandler: (registration) => typeof registration.handlers.changeSet?.discard === 'function' },
+    { key: 'changeSet.stashCreate', hasHandler: (registration) => typeof registration.handlers.stash?.create === 'function' },
+    { key: 'hosting.pullRequestDraftCreate', hasHandler: (registration) => typeof registration.handlers.hosting?.pullRequestOpenOrReuse === 'function' },
     { key: 'commit.create', hasHandler: (registration) => typeof registration.handlers.commit?.create === 'function' },
+    { key: 'commit.amend', hasHandler: (registration) => typeof registration.handlers.commit?.create === 'function' },
+    { key: 'commit.signOff', hasHandler: (registration) => typeof registration.handlers.commit?.create === 'function' },
     { key: 'commit.pathSelection', hasHandler: (registration) => typeof registration.handlers.commit?.create === 'function' },
     { key: 'commit.lineSelection', hasHandler: (registration) => typeof registration.handlers.commit?.create === 'function' },
     { key: 'commit.backout', hasHandler: (registration) => typeof registration.handlers.commit?.backout === 'function' },
@@ -82,6 +86,14 @@ const EXECUTABLE_SUPPORTED_LEAVES: readonly SupportedLeaf[] = [
     { key: 'remote.pull', hasHandler: (registration) => typeof registration.handlers.remote?.pull === 'function' },
     { key: 'remote.push', hasHandler: (registration) => typeof registration.handlers.remote?.push === 'function' },
     { key: 'remote.publish', hasHandler: (registration) => typeof registration.handlers.remote?.publish === 'function' },
+    {
+        key: 'remote.policies',
+        hasHandler: (registration) => (
+            typeof registration.handlers.remote?.pull === 'function'
+            && typeof registration.handlers.remote?.push === 'function'
+        ),
+    },
+    { key: 'remote.forceWithLease', hasHandler: (registration) => typeof registration.handlers.remote?.push === 'function' },
     { key: 'branch.create', hasHandler: (registration) => typeof registration.handlers.branch?.create === 'function' },
     { key: 'branch.checkout', hasHandler: (registration) => typeof registration.handlers.branch?.checkout === 'function' },
     { key: 'branch.merge', hasHandler: (registration) => typeof registration.handlers.branch?.merge === 'function' },
@@ -91,6 +103,14 @@ const EXECUTABLE_SUPPORTED_LEAVES: readonly SupportedLeaf[] = [
         hasHandler: (registration) => (
             typeof registration.handlers.branch?.operationContinue === 'function'
             && typeof registration.handlers.branch?.operationAbort === 'function'
+        ),
+    },
+    { key: 'branch.operationSkip', hasHandler: (registration) => typeof registration.handlers.branch?.operationSkip === 'function' },
+    {
+        key: 'branch.conflictResolution',
+        hasHandler: (registration) => (
+            typeof registration.handlers.branch?.conflictAcceptSide === 'function'
+            && typeof registration.handlers.branch?.conflictMarkResolved === 'function'
         ),
     },
     { key: 'worktree.create', hasHandler: (registration) => typeof registration.handlers.worktree?.create === 'function' },

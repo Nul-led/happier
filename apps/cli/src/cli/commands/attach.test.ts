@@ -985,6 +985,72 @@ describe('happier attach', () => {
     }));
   });
 
+  it('attaches to the owned Herdr terminal instead of starting another provider client', async () => {
+    const credentials: Credentials = {
+      token: 'token-1',
+      encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
+    };
+    const terminal = {
+      mode: 'herdr' as const,
+      requested: 'herdr' as const,
+      herdr: { sessionName: 'default', socketPath: '/tmp/herdr.sock', terminalId: 'term_1' },
+    };
+    const rawSession = createSessionRecordFixture({
+      id: 'sid_herdr_opencode_1',
+      active: true,
+      encryptionMode: 'plain',
+      metadata: JSON.stringify({
+        machineId: 'machine-local', path: '/tmp/repo', host: 'test', flavor: 'opencode',
+        opencodeSessionId: 'opencode-1', opencodeBackendMode: 'server', terminal,
+      }),
+    });
+    const runHerdrAttachFn = vi.fn(async () => 0);
+    const runProviderAttachFn = vi.fn(async () => 0);
+    await (handleAttachCommand as any)(['sid_herdr_opencode_1'], {
+      readCredentialsFn: async () => credentials,
+      readSettingsFn: async () => localSettings,
+      fetchSessionByIdFn: async () => rawSession,
+      readTerminalAttachmentInfoFn: async () => ({
+        version: 1, sessionId: 'sid_herdr_opencode_1', updatedAt: Date.now(), terminal,
+      }),
+      runHerdrAttachFn,
+      runProviderAttachFn,
+      isTmuxAvailableFn: async () => true,
+    });
+    expect(runHerdrAttachFn).toHaveBeenCalledWith({ terminal });
+    expect(runProviderAttachFn).not.toHaveBeenCalled();
+  });
+
+  it('dispatches a Zellij-hosted session through terminal attach', async () => {
+    const credentials: Credentials = {
+      token: 'token-1', encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
+    };
+    const terminal = {
+      mode: 'zellij' as const,
+      requested: 'zellij' as const,
+      zellij: { sessionName: 'happier', paneId: '9' },
+    };
+    const rawSession = createSessionRecordFixture({
+      id: 'sid_zellij_claude_1', active: true, encryptionMode: 'plain',
+      metadata: JSON.stringify({ machineId: 'machine-local', path: '/tmp/repo', host: 'test', flavor: 'claude', terminal }),
+    });
+    const runZellijAttachFn = vi.fn(async () => 0);
+    await (handleAttachCommand as any)(['sid_zellij_claude_1'], {
+      readCredentialsFn: async () => credentials,
+      readSettingsFn: async () => localSettings,
+      fetchSessionByIdFn: async () => rawSession,
+      readTerminalAttachmentInfoFn: async () => ({
+        version: 1, sessionId: 'sid_zellij_claude_1', updatedAt: Date.now(), terminal,
+      }),
+      runZellijAttachFn,
+      isTmuxAvailableFn: async () => true,
+    });
+    expect(runZellijAttachFn).toHaveBeenCalledWith({
+      sessionId: 'sid_zellij_claude_1',
+      terminal,
+    });
+  });
+
   it('requests a remote-control banner refresh when attaching to daemon-started tmux sessions', async () => {
     const credentials: Credentials = {
       token: 'token-1',

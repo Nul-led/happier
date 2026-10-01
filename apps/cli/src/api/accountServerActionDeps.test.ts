@@ -4,6 +4,7 @@ import fastify from 'fastify';
 import tweetnacl from 'tweetnacl';
 
 import {
+  API_TOKEN_FULL_GRANT_V1,
   createActionExecutor,
   deriveBoxPublicKeyFromSeed,
   decodeBase64,
@@ -14,6 +15,8 @@ import {
   EXTERNAL_ACTION_RESOLVED_TARGET_HEADER,
   encodeExternalActionResolvedTargetV1,
   openEncryptedDataKeyEnvelopeV1,
+  openAccountScopedBlobCiphertext,
+  sealAccountScopedBlobCiphertext,
   openPublicShareEncryptedDataKeyEnvelopeV0,
   PUBLIC_SHARE_ENCRYPTED_DATA_KEY_CURRENT_V0_BYTES,
   PUBLIC_SHARE_KEY_DERIVATION_PATH_V1,
@@ -148,6 +151,44 @@ describe('Account API token HTTP adapter', () => {
   });
   afterEach(async () => { restore(); await app.close(); });
 
+  it('executes token access updates and terminal policy changes through the declared Home owners', async () => {
+    const requests: unknown[] = [];
+    const tokenId = '12345678-1234-4234-8234-123456789abc';
+    const grant = { ...API_TOKEN_FULL_GRANT_V1, approve: true };
+    app.post('/v1/auth/api-tokens/update', async (request) => {
+      requests.push(request.body);
+      return { apiToken: {
+        tokenId, label: 'Edited', displayPrefix: 'hap_v1_12345678', createdAt: '2026-09-30T00:00:00Z',
+        lastUsedAt: null, expiresAt: null, hasEncryptionAccess: false, hasUnattendedTeamAccess: false,
+        grant, parentTokenId: null, activeChildCount: 0, embedConfig: null,
+      } };
+    });
+    app.post('/v1/account/security/terminal-present-user', async (request) => {
+      requests.push(request.body);
+      return { policy: 'disallowed' };
+    });
+    const deps = createAccountServerActionDeps({ token: 'interactive', serverId: 'home', serverHttpBaseUrl: 'http://account.test' });
+    const executor = createActionExecutor(deps as Parameters<typeof createActionExecutor>[0]);
+    const automationContext = { surface: 'cli' as const, authority: 'account_automation' as const };
+    expect(await executor.execute('account.apiTokens.update', { tokenId, label: 'Edited', grant }, automationContext))
+      .toMatchObject({ ok: false, errorCode: 'present_user_required' });
+    expect(await executor.execute('account.security.terminalPresentUser.set', { policy: 'disallowed' }, automationContext))
+      .toMatchObject({ ok: false, errorCode: 'present_user_required' });
+    expect(requests).toEqual([]);
+    const context = { surface: 'cli' as const, authority: 'present_user' as const };
+    expect(await executor.execute('account.apiTokens.update', { tokenId, label: 'Edited', grant }, {
+      ...context,
+      presentUserConfirmation: { actionId: 'account.apiTokens.update' },
+    }))
+      .toMatchObject({ ok: true, result: { apiToken: { tokenId, label: 'Edited', grant } } });
+    expect(await executor.execute('account.security.terminalPresentUser.set', { policy: 'disallowed' }, {
+      ...context,
+      presentUserConfirmation: { actionId: 'account.security.terminalPresentUser.set' },
+    }))
+      .toMatchObject({ ok: true, result: { policy: 'disallowed' } });
+    expect(requests).toEqual([{ tokenId, label: 'Edited', grant }, { policy: 'disallowed' }]);
+  });
+
   it('rejects a fixed Home endpoint without its matching Home identity', () => {
     const partialFixedHome = { token: 'bound-home-token', serverHttpBaseUrl: 'http://account.test' };
     // @ts-expect-error -- Untyped JavaScript callers can still provide a partial fixed-Home binding.
@@ -185,12 +226,14 @@ describe('Account API token HTTP adapter', () => {
       .resolves.toEqual({ ok: false, errorCode: 'present_user_required', error: 'present_user_required' });
   });
 
-  it('refuses API-token management addressed to a different selected Home before sending credentials', async () => {
+  it('refuses account management addressed to a different selected Home before sending credentials', async () => {
     let requests = 0;
     app.post('/v1/auth/api-tokens/list', async () => {
       requests += 1;
       return { tokens: [] };
     });
+    app.post('/v1/auth/api-tokens/update', async () => { requests += 1; return {}; });
+    app.post('/v1/account/security/terminal-present-user', async () => { requests += 1; return {}; });
     const deps = createAccountServerActionDeps({
       token: 'bound-home-token',
       serverId: 'home-a',
@@ -205,6 +248,14 @@ describe('Account API token HTTP adapter', () => {
       errorCode: 'server_target_mismatch',
       error: 'server_target_mismatch',
     });
+    await expect(deps.accountApiTokensUpdateAction!({
+      input: { tokenId: '12345678-1234-4234-8234-123456789abc', label: 'Edited' },
+      context: { surface: 'cli', serverId: 'home-b' },
+    })).resolves.toMatchObject({ ok: false, errorCode: 'server_target_mismatch' });
+    await expect(deps.accountSecurityTerminalPresentUserSetAction!({
+      input: { policy: 'disallowed' },
+      context: { surface: 'cli', serverId: 'home-b' },
+    })).resolves.toMatchObject({ ok: false, errorCode: 'server_target_mismatch' });
     expect(requests).toBe(0);
   });
 
@@ -236,6 +287,7 @@ describe('Account API token HTTP adapter', () => {
 
   it('settles malformed API-token acknowledgements from each ActionSpec side-effect class', async () => {
     app.post('/v1/auth/api-tokens/create', async () => ({}));
+    app.post('/v1/auth/api-tokens/update', async () => ({}));
     app.post('/v1/auth/api-tokens/list', async () => ({}));
     app.post('/v1/auth/api-tokens/revoke', async () => ({}));
     app.post('/v1/auth/api-tokens/revoke-all', async () => ({}));
@@ -247,6 +299,10 @@ describe('Account API token HTTP adapter', () => {
     const context = { surface: 'cli' as const, serverId: 'home-a' };
 
     await expect(deps.accountApiTokensCreateAction!({
+      input: { tokenId: '12345678-1234-4234-8234-123456789abc', label: 'malformed' },
+      context,
+    })).resolves.toEqual({ ok: false, errorCode: 'outcome_unknown', error: 'outcome_unknown' });
+    await expect(deps.accountApiTokensUpdateAction!({
       input: { tokenId: '12345678-1234-4234-8234-123456789abc', label: 'malformed' },
       context,
     })).resolves.toEqual({ ok: false, errorCode: 'outcome_unknown', error: 'outcome_unknown' });
@@ -598,6 +654,64 @@ describe('Account API token HTTP adapter', () => {
     })).rejects.toThrow();
   });
 
+  it('materializes folder and tag resource displays for the exact E2EE Home and opens listed labels', async () => {
+    const machineKey = new Uint8Array(32).fill(37);
+    const token = 'selected-home-token';
+    const material = { type: 'dataKey' as const, machineKey };
+    const credentials = { token, encryption: { type: 'dataKey' as const, machineKey,
+      publicKey: tweetnacl.box.keyPair.fromSecretKey(machineKey).publicKey } };
+    const display = { t: 'plain' as const, v: { name: 'Research' } };
+    const tagDisplay = { t: 'plain' as const, v: { label: 'Research' } };
+    const encrypted = { t: 'encrypted' as const, c: sealAccountScopedBlobCiphertext({
+      kind: 'session_organization_display', material, payload: display.v, randomBytes: tweetnacl.randomBytes,
+    }) };
+    const folder = { folderId: 'folder-1', folderKey: 'folder-key', parentFolderId: null,
+      parentFolderKey: null, sortKey: null, display: encrypted, archivedAt: null, createdAt: 1, updatedAt: 1 };
+    const tag = { tagId: 'tag-1', tagKey: 'tag-key', sortKey: null, display: {
+      t: 'encrypted' as const, c: sealAccountScopedBlobCiphertext({ kind: 'session_organization_display',
+        material, payload: tagDisplay.v, randomBytes: tweetnacl.randomBytes }),
+    },
+      archivedAt: null, createdAt: 1, updatedAt: 1 };
+    const stored: unknown[] = [];
+    app.get('/v1/account/encryption', async () => ({ mode: 'e2ee', updatedAt: 1 }));
+    app.post('/v2/session-organization/folders', async (request, reply) => {
+      const parsed = (await import('@happier-dev/protocol')).CreateOrUpdateSessionOrganizationFolderRequestSchema.parse(request.body);
+      stored.push(parsed.display);
+      if (parsed.display?.t !== 'encrypted') return reply.code(409).send({ error: 'session_organization_display_mode_mismatch' });
+      return { folder: { ...folder, display: parsed.display } };
+    });
+    app.post('/v2/session-organization/tags', async (request, reply) => {
+      const parsed = (await import('@happier-dev/protocol')).CreateOrUpdateSessionOrganizationTagRequestSchema.parse(request.body);
+      stored.push(parsed.display);
+      if (parsed.display?.t !== 'encrypted') return reply.code(409).send({ error: 'session_organization_display_mode_mismatch' });
+      return { tag: { ...tag, display: parsed.display } };
+    });
+    app.get('/v2/session-organization', async () => ({ snapshot: {
+      schemaVersion: 1, version: 1, pins: [], folders: [folder], tags: [tag],
+      folderAssignments: [], tagAssignments: [], orderEntries: [], labels: [],
+    } }));
+    const executor = createActionExecutor(createAccountServerActionDeps({ token, credentials,
+      serverId: 'home', serverHttpBaseUrl: 'http://account.test' }) as Parameters<typeof createActionExecutor>[0]);
+    const context = { surface: 'mcp' as const, authority: 'account_automation' as const, serverId: 'home' };
+    const created = await executor.execute('session.folders.create', { folderKey: folder.folderKey,
+      parentFolderId: null, parentFolderKey: null, sortKey: null, display }, context);
+    expect(created.ok ? undefined : created.errorCode).toBeUndefined();
+    expect(created).toMatchObject({ ok: true });
+    expect(await executor.execute('session.tags.rename', { tagId: tag.tagId, tagKey: tag.tagKey,
+      sortKey: null, display: tagDisplay }, context)).toMatchObject({ ok: true });
+    expect(stored.map(envelope => envelope && typeof envelope === 'object' && 'c' in envelope
+      ? openAccountScopedBlobCiphertext({ kind: 'session_organization_display', material, ciphertext: String(envelope.c) })?.value
+      : null)).toEqual([display.v, tagDisplay.v]);
+    expect(await executor.execute('session.folders.list', {}, context)).toMatchObject({
+      ok: true, result: { snapshot: { folders: [{ display }], tags: [{ display: tagDisplay }] } },
+    });
+    const withoutKey = createActionExecutor(createAccountServerActionDeps({ token,
+      serverId: 'home', serverHttpBaseUrl: 'http://account.test' }) as Parameters<typeof createActionExecutor>[0]);
+    expect(await withoutKey.execute('session.tags.create', { tagKey: 'new-key', sortKey: null, display }, context))
+      .toMatchObject({ ok: false, errorCode: 'account_key_unavailable' });
+    expect(stored).toHaveLength(2);
+  });
+
   it('carries the complete managed provider lifecycle through exact Home routes with redacted typed output', async () => {
     const provider = managedIdentityProviderFixture();
     const lifecycleInput = {
@@ -701,6 +815,7 @@ describe('Account API token HTTP adapter', () => {
         accountId: 'account-1',
         principalId: 'principal-1',
         credentialId: 'credential-1',
+        grant: API_TOKEN_FULL_GRANT_V1,
         machineId: 'machine-1',
         actionId: 'teams.archive',
         requestId: 'request-1',
@@ -783,6 +898,7 @@ describe('Account API token HTTP adapter', () => {
             accountId: 'account-1',
             principalId: 'principal-1',
             credentialId: 'credential-1',
+            grant: API_TOKEN_FULL_GRANT_V1,
             machineId: 'machine-1',
             actionId: 'teams.archive',
             requestId: 'request-1',
@@ -839,7 +955,7 @@ describe('Session access HTTP adapter', () => {
       status: 'ready' as const,
       features: FeaturesResponseSchema.parse({
         features: {
-          sessions: { enabled: true, collaboration: { enabled: true } },
+          sessions: { enabled: true },
           sharing: { session: { enabled: true } },
         },
         capabilities: {},

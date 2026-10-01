@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from 'node:util';
+
 import {
   doesExternalSessionDestructiveQuiescencePermitAdmissionV1,
   ExternalSessionDestructiveQuiescenceResultV1Schema,
@@ -9,6 +11,7 @@ import {
 
 import {
   verifySessionMarkerProcessLiveness,
+  verifyProcessLiveness,
   type VerifiedProcessLiveness,
 } from '@/daemon/processLivenessVerifier';
 import {
@@ -16,7 +19,7 @@ import {
   type DaemonSessionMarker,
 } from '@/daemon/sessionRegistry';
 
-import { findTrustedExternalSessionOwner } from './findTrustedExternalSessionOwner';
+import { findTrustedExternalSessionOwners } from './findTrustedExternalSessionOwners';
 import type { LoadedLinkedExternalSession } from './loadLinkedExternalSession';
 
 type DestructiveQuiescenceLinkedSession = Pick<
@@ -43,6 +46,7 @@ export async function inspectExternalSessionDestructiveQuiescence(params: Readon
   linkedSessionId: string;
   machineId: string;
   observedAtMs?: number;
+  retainedQuiescence?: ExternalSessionDestructiveQuiescenceResultV1;
   listSessionMarkersFn?: typeof listSessionMarkers;
   verifySessionMarkerProcessLivenessFn?: (
     marker: DaemonSessionMarker,
@@ -65,32 +69,13 @@ export async function inspectExternalSessionDestructiveQuiescence(params: Readon
   const sourceKey = params.linked.canonicalResolvedSourceKey ?? null;
   if (!sourceKey) return unknown(null);
 
-  const markers = await (params.listSessionMarkersFn ?? listSessionMarkers)().catch(() => null);
+  const markers = await (params.listSessionMarkersFn ?? listSessionMarkers)({ requireComplete: true }).catch(() => null);
   if (!markers) return unknown(null);
-  const ownerMarker = findTrustedExternalSessionOwner({
+  const ownerMarkers = findTrustedExternalSessionOwners({
     markers,
     agentId: params.linked.agentId,
     remoteSessionId: params.linked.remoteSessionId,
   });
-  if (
-    !ownerMarker
-    || !ownerMarker.processCommandHash
-    || ownerMarker.processStartTimeMs === undefined
-  ) {
-    return unknown(ownerMarker);
-  }
-
-  const liveness = await (
-    params.verifySessionMarkerProcessLivenessFn ?? verifySessionMarkerProcessLiveness
-  )(ownerMarker).catch(() => null);
-  if (
-    !liveness
-    || liveness.pid !== ownerMarker.pid
-    || liveness.processStartTimeMs !== ownerMarker.processStartTimeMs
-  ) {
-    return unknown(ownerMarker);
-  }
-
   const sourceIdentity = {
     machineId: params.machineId,
     linkedSessionId: params.linkedSessionId,
@@ -99,32 +84,66 @@ export async function inspectExternalSessionDestructiveQuiescence(params: Readon
     sourceKey,
     qualifiedIdentity: persistedLink.qualifiedIdentity,
   };
-  const processIdentity = {
-    machineId: params.machineId,
-    pid: ownerMarker.pid,
-    startedAtMs: ownerMarker.processStartTimeMs,
-  };
-  const parsed = ExternalSessionDestructiveQuiescenceResultV1Schema.safeParse({
-    status: liveness.status,
-    sourceIdentity,
-    processIdentity,
-    evidence: {
-      kind: 'operating_system_process_state',
-      processState: liveness.status,
-      observedAtMs,
+  const retained = ExternalSessionDestructiveQuiescenceResultV1Schema.safeParse(
+    params.retainedQuiescence,
+  );
+  // A current owner always wins, including an owner whose liveness is unknown.
+  // A retained observation supplies identity only; restart never revives its
+  // old liveness verdict. A live/reused PID cannot be admitted without a marker.
+  const retainedIdentity = ownerMarkers.length === 0
+    && retained.success
+    && retained.data.status === 'verified_stopped'
+    && isDeepStrictEqual(retained.data.sourceIdentity, sourceIdentity)
+      ? retained.data.processIdentity
+      : null;
+  if (ownerMarkers.length === 0 && !retainedIdentity) return unknown(null);
+  let admitted: ExternalSessionDestructiveQuiescenceInspection | null = null;
+  // Several Happier processes can resume the same provider Session. Every
+  // matching owner must be stopped; a newer dead marker cannot hide a writer.
+  for (const ownerMarker of ownerMarkers.length > 0 ? ownerMarkers : [null]) {
+    if (ownerMarker && ownerMarker.processStartTimeMs === undefined) return unknown(ownerMarker);
+    const pid = ownerMarker?.pid ?? retainedIdentity!.pid;
+    const startedAtMs = ownerMarker?.processStartTimeMs ?? retainedIdentity!.startedAtMs;
+    const liveness = ownerMarker
+      ? await (params.verifySessionMarkerProcessLivenessFn ?? verifySessionMarkerProcessLiveness)(ownerMarker).catch(() => null)
+      : await verifyProcessLiveness({
+          pid,
+          processStartTimeMs: startedAtMs,
+          verifyIdentity: async () => 'unknown',
+        });
+    if (!liveness || liveness.pid !== pid || liveness.processStartTimeMs !== startedAtMs) {
+      return unknown(ownerMarker);
+    }
+    const processIdentity = {
+      machineId: params.machineId,
+      pid,
+      startedAtMs,
+    };
+    const parsed = ExternalSessionDestructiveQuiescenceResultV1Schema.safeParse({
+      status: liveness.status,
       sourceIdentity,
       processIdentity,
-    },
-  });
-  if (!parsed.success) return unknown(ownerMarker);
+      evidence: {
+        kind: 'operating_system_process_state',
+        processState: liveness.status,
+        observedAtMs,
+        sourceIdentity,
+        processIdentity,
+      },
+    });
+    if (!parsed.success) return unknown(ownerMarker);
 
-  return {
-    status: parsed.data.status,
-    permitsAdmission: doesExternalSessionDestructiveQuiescencePermitAdmissionV1(parsed.data),
-    protocolResult: parsed.data,
-    ownerMarker,
-    observedAtMs,
-  };
+    const inspection: ExternalSessionDestructiveQuiescenceInspection = {
+      status: parsed.data.status,
+      permitsAdmission: doesExternalSessionDestructiveQuiescencePermitAdmissionV1(parsed.data),
+      protocolResult: parsed.data,
+      ownerMarker,
+      observedAtMs,
+    };
+    if (!inspection.permitsAdmission) return inspection;
+    admitted ??= inspection;
+  }
+  return admitted ?? unknown(null);
 }
 
 export function externalSessionTakeoverSafetyFailureFromInspection(

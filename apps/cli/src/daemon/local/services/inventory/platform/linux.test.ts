@@ -105,7 +105,7 @@ describe('readLinuxLocalServiceListeners', () => {
         expect(result.processes.get(321)).toEqual({
             pid: 321,
             ppid: 300,
-            processStartTimeMs: 1_717_171_823_450,
+            processStartTimeMs: 123_450,
             command: 'node ./node_modules/vite/bin/vite.js --host 127.0.0.1',
             cwd: '/repo/web',
             processOwnership: 'self',
@@ -161,13 +161,12 @@ describe('readLinuxLocalServiceListeners', () => {
 });
 
 describe('readLinuxProcessFacts', () => {
-    it('reads only the requested PID, its owner uid, and the boot-time owner', async () => {
+    it('reads only the requested PID and its owner uid', async () => {
         const readPaths: string[] = [];
         const processes = await readLinuxProcessFacts({
             daemonUserId: '501',
             readFile: async (path) => {
                 readPaths.push(path);
-                if (path === '/proc/stat') return 'btime 1717171700\n';
                 if (path === '/proc/321/stat') {
                     return '321 (node) S 300 321 321 0 -1 4194304 0 0 0 0 0 0 0 0 20 0 1 0 12345 1 1';
                 }
@@ -187,13 +186,12 @@ describe('readLinuxProcessFacts', () => {
         expect(processes.get(321)).toEqual({
             pid: 321,
             ppid: 300,
-            processStartTimeMs: 1_717_171_823_450,
+            processStartTimeMs: 123_450,
             command: 'node happier --resume abc',
             cwd: '/repo',
             processOwnership: 'self',
         });
         expect(readPaths).toEqual([
-            '/proc/stat',
             '/proc/321/stat',
             '/proc/321/cmdline',
             '/proc/321/status',

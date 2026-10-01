@@ -1,13 +1,15 @@
 import * as React from 'react';
 import { Linking, Pressable, View } from 'react-native';
+import Animated from 'react-native-reanimated';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { Text } from '@/components/ui/text/Text';
 import { Typography } from '@/constants/Typography';
 import { t } from '@/text';
 import { Icon } from '@/components/ui/icons/Icon';
+import { usePressFeedback } from '@/components/ui/interactions/usePressFeedback';
 
-import { RelayRetentionDisclosure } from './RelayRetentionDisclosure';
+import { RelayRetentionDisclosure, type RelayRetentionDisclosureState } from './RelayRetentionDisclosure';
 
 const DOCS_URL = 'https://docs.happier.dev';
 const GITHUB_URL = 'https://github.com/happier-dev/happier';
@@ -16,7 +18,7 @@ const MINIMUM_TOUCH_TARGET_STYLE = { minWidth: 44, minHeight: 44 } as const;
 
 export type WelcomeFooterLinksProps = Readonly<{
     variant: 'desktop' | 'mobile';
-    retentionSummary?: string | null;
+    retentionDisclosure?: RelayRetentionDisclosureState | null;
 }>;
 
 /**
@@ -34,7 +36,9 @@ export const WelcomeFooterLinks = React.memo(function WelcomeFooterLinks(props: 
 
     const labelColor = { color: theme.colors.text.secondary };
     const actionColor = { color: theme.colors.text.primary };
-    const actionPressedStyle = { opacity: 0.7 };
+    const githubFeedback = usePressFeedback({ glyph: true });
+    const discordFeedback = usePressFeedback({ glyph: true });
+    const docsFeedback = usePressFeedback({ glyph: true });
     const iconColor = theme.colors.text.primary;
     const isMobile = props.variant === 'mobile';
     const footerGroupStyle = isMobile ? styles.groupMobile : styles.groupDesktop;
@@ -44,10 +48,10 @@ export const WelcomeFooterLinks = React.memo(function WelcomeFooterLinks(props: 
             style={isMobile ? styles.containerMobile : styles.containerDesktop}
             testID="welcome-footer-links"
         >
-            {props.retentionSummary ? (
+            {props.retentionDisclosure ? (
                 <RelayRetentionDisclosure
                     testID="welcome-footer-retention"
-                    summary={props.retentionSummary}
+                    disclosure={props.retentionDisclosure}
                 />
             ) : null}
             <View style={isMobile ? styles.linksMobile : styles.linksDesktop}>
@@ -62,9 +66,13 @@ export const WelcomeFooterLinks = React.memo(function WelcomeFooterLinks(props: 
                             accessibilityLabel={t('welcome.welcomeFooterGithubLabel')}
                             testID="welcome-footer-github-action"
                             hitSlop={6}
-                            style={({ pressed }) => [MINIMUM_TOUCH_TARGET_STYLE, styles.iconButton, pressed ? actionPressedStyle : null]}
+                            onPressIn={githubFeedback.onPressIn}
+                            onPressOut={githubFeedback.onPressOut}
+                            style={[MINIMUM_TOUCH_TARGET_STYLE, styles.iconButton]}
                         >
-                            <Icon name="github-logo" size={16} color={iconColor} />
+                            <Animated.View style={githubFeedback.animatedStyle}>
+                                <Icon name="github-logo" size={16} color={iconColor} />
+                            </Animated.View>
                         </Pressable>
                         <Pressable
                             onPress={openDiscord}
@@ -72,18 +80,26 @@ export const WelcomeFooterLinks = React.memo(function WelcomeFooterLinks(props: 
                             accessibilityLabel={t('welcome.welcomeFooterDiscordLabel')}
                             testID="welcome-footer-discord-action"
                             hitSlop={6}
-                            style={({ pressed }) => [MINIMUM_TOUCH_TARGET_STYLE, styles.iconButton, pressed ? actionPressedStyle : null]}
+                            onPressIn={discordFeedback.onPressIn}
+                            onPressOut={discordFeedback.onPressOut}
+                            style={[MINIMUM_TOUCH_TARGET_STYLE, styles.iconButton]}
                         >
-                            <Icon name="discord-logo" size={16} color={iconColor} />
+                            <Animated.View style={discordFeedback.animatedStyle}>
+                                <Icon name="discord-logo" size={16} color={iconColor} />
+                            </Animated.View>
                         </Pressable>
                         <Pressable
                             onPress={openDocs}
                             accessibilityRole="link"
                             accessibilityLabel={t('welcome.welcomeFooterDocsAction')}
                             testID="welcome-footer-docs-action"
-                            style={({ pressed }) => [MINIMUM_TOUCH_TARGET_STYLE, styles.textButton, pressed ? actionPressedStyle : null]}
+                            onPressIn={docsFeedback.onPressIn}
+                            onPressOut={docsFeedback.onPressOut}
+                            style={[MINIMUM_TOUCH_TARGET_STYLE, styles.textButton]}
                         >
-                            <Text style={[styles.action, actionColor]}>{t('welcome.welcomeFooterDocsAction')}</Text>
+                            <Animated.View style={docsFeedback.animatedStyle}>
+                                <Text style={[styles.action, actionColor]}>{t('welcome.welcomeFooterDocsAction')}</Text>
+                            </Animated.View>
                         </Pressable>
                     </View>
                 </View>

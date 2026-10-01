@@ -54,6 +54,20 @@ describe('IrohTestController', () => {
     expect(native.calls).toEqual(['relay', 'direct', 'relay', 'automatic']);
   });
 
+  it('passes an external stock relay to the one native forced-relay owner', async () => {
+    const native = {
+      ...createNativeFixture(),
+      async forceRelayOnly(relayUrl?: string) {
+        this.calls.push(`relay:${relayUrl ?? 'local'}`);
+        this.relayUrl = relayUrl ?? 'http://127.0.0.1:4919';
+      },
+    };
+    const controller = new IrohTestController(native);
+    await controller.forceRelayOnly('http://127.0.0.1:51327');
+    expect(native.calls).toEqual(['relay:http://127.0.0.1:51327']);
+    expect(controller.getTestRelayUrl()).toBe('http://127.0.0.1:51327');
+  });
+
   it('reports no relay URL without a native test-feature boundary', () => {
     const controller = new IrohTestController(null);
     expect(controller.getTestRelayUrl()).toBeNull();
@@ -63,13 +77,15 @@ describe('IrohTestController', () => {
     let relayUrl: string | null = null;
     const controller = createIrohTestControllerFromNativeAddon({
       async forceDirectOnly() { relayUrl = null; return JSON.stringify({ ok: true }); },
-      async forceRelayOnly() { relayUrl = 'http://127.0.0.1:4919'; return JSON.stringify({ ok: true }); },
+      async forceRelayOnly(externalUrl?: string) { relayUrl = externalUrl ?? 'http://127.0.0.1:4919'; return JSON.stringify({ ok: true }); },
       async restoreAutomatic() { relayUrl = null; return JSON.stringify({ ok: true }); },
       getObservedPath() { return 'unknown'; },
       getTestRelayUrl() { return relayUrl; },
     });
     await controller.forceRelayOnly();
     expect(controller.getTestRelayUrl()).toBe('http://127.0.0.1:4919');
+    await controller.forceRelayOnly('http://127.0.0.1:51327');
+    expect(controller.getTestRelayUrl()).toBe('http://127.0.0.1:51327');
     await controller.restoreAutomatic();
     expect(controller.getTestRelayUrl()).toBeNull();
   });

@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { createReactNavigationNativeMock } from '@/dev/testkit/mocks/reactNavigation';
 import { act } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -8,13 +9,16 @@ import {
   StrictJsonValueSchema,
 } from '@happier-dev/protocol';
 
-import { AppPaneProvider } from '@/components/appShell/panes/AppPaneProvider';
 import {
   computeExistingSessionComposerInputMaxHeight,
   computeExistingSessionComposerPanelMaxHeight,
 } from '@/components/sessions/agentInput/inputMaxHeight';
 import { readComposerPresentationSnapshot } from '@/components/sessions/presentation/sessionComposerPresentationTargets';
-import { createDeferred, flushHookEffects, renderScreen, standardCleanup } from '@/dev/testkit';
+import { createDeferred } from '@/dev/testkit/hooks/createDeferred';
+import { createSessionAccessFixture } from '@/dev/testkit/fixtures/sessionFixtures';
+import { flushHookEffects } from '@/dev/testkit/hooks/flushHookEffects';
+import { renderScreen } from '@/dev/testkit/render/renderScreen';
+import { standardCleanup } from '@/dev/testkit/cleanup/standardCleanup';
 import { localSettingsDefaults, type LocalSettings } from '@/sync/domains/settings/localSettings';
 import { settingsDefaults, type Settings } from '@/sync/domains/settings/settings';
 import type { StorageState } from '@/sync/store/types';
@@ -27,6 +31,11 @@ import {
 } from '@/sync/ops/sessionDrafts/sessionDraftRepository';
 import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
 import { installSessionShellCommonModuleMocks } from './sessionShellTestHelpers';
+
+vi.mock('@/sync/domains/plugins/availability/generatedBundledPluginUiArtifacts', async () => {
+  const { emptyBundledPluginUiAssetsModule } = await import('@/dev/testkit/mocks/bundledPluginUiAssets');
+  return emptyBundledPluginUiAssetsModule;
+});
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 (globalThis as any).__DEV__ = false;
@@ -173,6 +182,7 @@ const storageState = vi.hoisted(() => ({
   sessions: {
     s1: {
       id: 's1',
+      serverId: 'server-canonical',
       seq: 1,
       encryptionMode: 'plain',
       presence: 'offline',
@@ -201,7 +211,7 @@ const storageState = vi.hoisted(() => ({
   sessionPending: {} as Record<string, unknown>,
   sessionListRowsByServerId: {} as Record<string, Record<string, unknown>>,
   ordinarySessionListMembershipByServerId: {} as Record<string, readonly string[]>,
-  sessionTailContiguousFloorSeq: {} as Record<string, unknown>,
+  sessionTailContiguousBoundary: {} as Record<string, unknown>,
   sessionTranscriptLoadIssues: {} as Record<string, unknown>,
   artifacts: {} as Record<string, any>,
   profile: {
@@ -376,6 +386,7 @@ installSessionShellCommonModuleMocks({
 });
 
 vi.mock('@react-navigation/native', () => ({
+    ...createReactNavigationNativeMock(),
   useFocusEffect: () => {},
   useIsFocused: () => focusState.current,
 }));
@@ -648,6 +659,8 @@ function syncShellStorageStore() {
   } as unknown as StorageState, true);
 }
 
+const { AppPaneProvider } = await import('@/components/appShell/panes/AppPaneProvider');
+
 describe('SessionView (direct sessions)', () => {
   const canonicalDraftScope: ServerAccountScope = {
     serverId: 'server-canonical',
@@ -835,6 +848,7 @@ describe('SessionView (direct sessions)', () => {
     preferredServerIdState.current = 'server-canonical';
     storageState.sessions.s1 = {
       id: 's1',
+      serverId: 'server-canonical',
       seq: 1,
       encryptionMode: 'plain',
       presence: 'offline',
@@ -842,6 +856,7 @@ describe('SessionView (direct sessions)', () => {
       currentStorageState: 'machine_only',
       accessLevel: 'edit',
       canApprovePermissions: false,
+      access: createSessionAccessFixture('edit', { approveRuntimePermissions: false }),
       metadata: {
         machineId: 'machine-1',
         host: 'happy-host',
@@ -907,6 +922,7 @@ describe('SessionView (direct sessions)', () => {
   it('keeps external control footer status conservative and exposes one explicit takeover preflight', async () => {
     await renderSessionView();
 
+    expect(chatListPropsSpy).toHaveBeenCalled();
     const latestChatListProps = chatListPropsSpy.mock.calls.at(-1)?.[0];
     expect(latestChatListProps?.externalControlFooter).toEqual({
       externalAgentPresentation: {
@@ -1154,10 +1170,39 @@ describe('SessionView (direct sessions)', () => {
       await Promise.resolve();
     });
     expect(syncRefreshSessionMessagesSpy).toHaveBeenCalledTimes(1);
-    expect(syncRefreshSessionMessagesSpy).toHaveBeenCalledWith('s1');
+    expect(syncRefreshSessionMessagesSpy).toHaveBeenCalledWith('s1', { awaitQueue: false });
     refresh.resolve();
     await act(async () => {
       await refresh.promise;
+    });
+  });
+
+  it('tells a transcript read that timed out apart from an unavailable Agent', async () => {
+    const session = storageState.sessions.s1 as any;
+    session.seq = 0;
+    sessionTranscriptRenderState.current = { ids: [], isLoaded: false };
+
+    await renderSessionViewAndSettle();
+
+    const shellStorageStore = shellStorageStoreState.current;
+    if (!shellStorageStore) throw new Error('Expected SessionView test storage to be mounted');
+    await act(async () => {
+      shellStorageStore.setState((state) => ({
+        ...state,
+        sessionTranscriptLoadIssues: {
+          ...state.sessionTranscriptLoadIssues,
+          s1: { kind: 'read_failed', errorCode: 'agent_timeout' },
+        },
+      }));
+    });
+    await settleExternalSessionView();
+
+    const banners = warningActionBannerPropsSpy.mock.calls
+      .map(([props]) => props)
+      .filter((props) => props?.testID === 'session.externalTranscript.loadIssue');
+    expect(banners.at(-1)).toMatchObject({
+      body: 'externalSessions.browseAgentTimedOut',
+      actionLabel: 'common.retry',
     });
   });
 
@@ -1294,7 +1339,8 @@ describe('SessionView (direct sessions)', () => {
       }),
     );
     const resolveServerIdForSessionId = createDefaultActionExecutorMock.mock.calls[0]?.[0]?.resolveServerIdForSessionId;
-    expect(resolveServerIdForSessionId?.('s1')).toBeNull();
+    expect(resolveServerIdForSessionId?.('s1')).toBe('server-canonical');
+    expect(resolveServerIdForSessionId?.('unknown-session')).toBeNull();
   });
 
   it('does not pass pending user action requests to AgentInput', async () => {
@@ -3030,7 +3076,6 @@ describe('SessionView (direct sessions)', () => {
     useCanonicalDraftScope();
     clearCanonicalSessionDraft();
     writeCanonicalSessionDraft({
-      text: 'restore this prompt $restored',
       recipient,
       executionRunRequestedAction: { v: 1, kind: 'send_now' },
       mentions: [mention],
@@ -3114,7 +3159,6 @@ describe('SessionView (direct sessions)', () => {
     useCanonicalDraftScope();
     clearCanonicalSessionDraft();
     writeCanonicalSessionDraft({
-      text: 'send to $old target',
       recipient: oldRecipient,
       executionRunRequestedAction: { v: 1, kind: 'send_now' },
       mentions: [oldMention],

@@ -4,7 +4,7 @@ import {
     updateMetadataWithViewedExternalSessionProgress,
 } from '@/sync/domains/session/external/externalSessionAttentionMetadata';
 import { getFocusedSessionId } from '@/sync/domains/session/sessionSurfaceVisibility';
-import { hasUnreadActivityForSessionViewer, isSessionPersonallyTrackedForViewer } from '@/sync/domains/session/readState/sessionViewer';
+import { hasUnreadActivityForSessionViewer } from '@/sync/domains/session/readState/sessionViewer';
 import type { SessionListRenderableSession } from '@/sync/domains/session/listing/sessionListRenderable';
 import {
     clearManualUnreadHold,
@@ -17,7 +17,8 @@ import {
     type SessionViewerProjectionV1,
 } from '@happier-dev/protocol';
 import { storage } from '@/sync/domains/state/storage';
-import type { Metadata, Session } from '@/sync/domains/state/storageTypes';
+import type { Session } from '@/sync/domains/state/storageTypes';
+import type { Metadata } from '@happier-dev/session-core/state';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
 import { resolvePreferredServerIdForSessionId } from '@/sync/runtime/orchestration/serverScopedRpc/resolvePreferredServerIdForSessionId';
@@ -193,10 +194,11 @@ export async function sessionSetManualReadStateWithServerScope(
             ? current.sessions[sessionId] ?? current.sessionListRowsByServerId?.[targetServerId]?.[sessionId]
             : current.sessionListRowsByServerId?.[targetServerId]?.[sessionId];
     };
+    // The Home admits an explicit mark-read/mark-unread from any reader of the
+    // transcript and seeds the actor's own row when none exists, so a cached
+    // `not_started` viewer is not a reason to refuse the request locally. A
+    // Home that does refuse still answers `session_not_tracked`, handled below.
     const cachedSession = readCachedSession();
-    if (cachedSession && !isSessionPersonallyTrackedForViewer(cachedSession)) {
-        return { success: false, message: 'session_not_tracked' };
-    }
     try {
         if (!isCurrentAccount()) return { success: false, message: 'session_account_changed' };
         const outcome = await executeManualReadStateAction({
@@ -222,10 +224,6 @@ export async function sessionSetManualReadStateWithServerScope(
             return { success: false, message: outcome.error };
         }
         const parsed = outcome.value;
-        const currentSession = readCachedSession();
-        if (currentSession && !isSessionPersonallyTrackedForViewer(currentSession)) {
-            return { success: false, message: 'session_not_tracked' };
-        }
         sync.invalidateSessionListSnapshot(targetServerId);
         applyReadStateToLocalState({
             sessionId,

@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { type PersistedBackendTargetRefV2, type SessionModelSelectionV1 } from '@happier-dev/protocol';
 
-import { type AgentId } from '@/agents/catalog/catalog';
+import type { MachineAgent } from '@/agents/machineAgents/machineAgentTypes';
 import {
     isBackendEntrySelectableForNewSession,
     resolveNextSelectableBackendEntryForNewSession,
@@ -13,11 +13,6 @@ import type { AIBackendProfile } from '@/sync/domains/profiles/profileCompatibil
 import { getBuiltInProfile } from '@/sync/domains/profiles/profileUtils';
 import { runAfterInteractionsWithFallback } from '@/utils/timing/runAfterInteractionsWithFallback';
 
-type AgentAvailabilityById = Readonly<Partial<Record<AgentId, boolean | null>>>;
-type AgentAuthStatusById = Readonly<Partial<Record<AgentId, { state: 'logged_in' | 'logged_out' | 'unknown'; checkedAt: number } | null>>>;
-type InstallableDepKeyCountByAgentId = Readonly<Partial<Record<AgentId, number>>>;
-type SelectableWithoutCliByAgentId = Readonly<Partial<Record<AgentId, boolean>>>;
-
 export function useNewSessionProfileBackendReconciliation(params: Readonly<{
     useProfiles: boolean;
     selectedProfileId: string | null;
@@ -26,11 +21,7 @@ export function useNewSessionProfileBackendReconciliation(params: Readonly<{
     getCompatibleProfileBackendEntries: (profile: AIBackendProfile) => readonly NewSessionSelectableBackendEntry[];
     selectedBackendTargetKey: string;
     setBackendTarget: React.Dispatch<React.SetStateAction<PersistedBackendTargetRefV2>>;
-    cliAvailabilityTimestamp: number;
-    cliAvailabilityByAgentId: AgentAvailabilityById;
-    cliAuthStatusByAgentId: AgentAuthStatusById;
-    installableDepKeyCountByAgentId: InstallableDepKeyCountByAgentId;
-    selectableWithoutCliByAgentId: SelectableWithoutCliByAgentId;
+    machineAgentsById: Readonly<Record<string, MachineAgent | undefined>>;
     hasUserSelectedPermissionModeRef: React.MutableRefObject<boolean>;
     permissionModeRef: React.MutableRefObject<PermissionMode>;
     applyPermissionMode: (mode: PermissionMode, source: 'user' | 'auto') => void;
@@ -60,17 +51,9 @@ export function useNewSessionProfileBackendReconciliation(params: Readonly<{
     ) => resolveNextSelectableBackendEntryForNewSession({
         candidateBackendEntries: compatibleBackendEntries,
         currentTargetKey: params.selectedBackendTargetKey,
-        detectionTimestamp: params.cliAvailabilityTimestamp,
-        availabilityById: params.cliAvailabilityByAgentId,
-        authStatusById: params.cliAuthStatusByAgentId,
-        installableDepKeyCountByAgentId: params.installableDepKeyCountByAgentId,
-        selectableWithoutCliByAgentId: params.selectableWithoutCliByAgentId,
+        machineAgentsById: params.machineAgentsById,
     }), [
-        params.cliAvailabilityByAgentId,
-        params.cliAuthStatusByAgentId,
-        params.cliAvailabilityTimestamp,
-        params.installableDepKeyCountByAgentId,
-        params.selectableWithoutCliByAgentId,
+        params.machineAgentsById,
         params.selectedBackendTargetKey,
     ]);
 
@@ -84,18 +67,10 @@ export function useNewSessionProfileBackendReconciliation(params: Readonly<{
 
         return isBackendEntrySelectableForNewSession({
             entry: currentEntry,
-            detectionTimestamp: params.cliAvailabilityTimestamp,
-            availabilityById: params.cliAvailabilityByAgentId,
-            authStatusById: params.cliAuthStatusByAgentId,
-            installableDepKeyCountByAgentId: params.installableDepKeyCountByAgentId,
-            selectableWithoutCliByAgentId: params.selectableWithoutCliByAgentId,
+            machineAgentsById: params.machineAgentsById,
         });
     }, [
-        params.cliAvailabilityByAgentId,
-        params.cliAuthStatusByAgentId,
-        params.cliAvailabilityTimestamp,
-        params.installableDepKeyCountByAgentId,
-        params.selectableWithoutCliByAgentId,
+        params.machineAgentsById,
         params.selectedBackendTargetKey,
     ]);
 
@@ -113,11 +88,7 @@ export function useNewSessionProfileBackendReconciliation(params: Readonly<{
                 .find((entry) => entry.backendTargetKey === authoringIntent.preferredAgentTargetKey) ?? null;
             if (preferredEntry && isBackendEntrySelectableForNewSession({
                 entry: preferredEntry,
-                detectionTimestamp: params.cliAvailabilityTimestamp,
-                availabilityById: params.cliAvailabilityByAgentId,
-                authStatusById: params.cliAuthStatusByAgentId,
-                installableDepKeyCountByAgentId: params.installableDepKeyCountByAgentId,
-                selectableWithoutCliByAgentId: params.selectableWithoutCliByAgentId,
+                machineAgentsById: params.machineAgentsById,
             })) {
                 params.setBackendTarget(preferredEntry.backendTarget);
             }
@@ -130,17 +101,13 @@ export function useNewSessionProfileBackendReconciliation(params: Readonly<{
         }
         params.setSelectedProfileId(profileId);
     }, [
-        params.cliAvailabilityByAgentId,
-        params.cliAuthStatusByAgentId,
-        params.cliAvailabilityTimestamp,
+        params.machineAgentsById,
         params.getCompatibleProfileBackendEntries,
         params.hasUserTouchedProfileSelectionRef,
-        params.installableDepKeyCountByAgentId,
         params.prepareSecretPromptForProfileSelection,
         params.profileMap,
         params.resolveProfileAuthoringIntent,
         params.selectedProfileId,
-        params.selectableWithoutCliByAgentId,
         params.setBackendTarget,
         params.setModelSelectionForBackendTarget,
         params.setSelectedProfileId,
@@ -170,11 +137,7 @@ export function useNewSessionProfileBackendReconciliation(params: Readonly<{
             const preferredEntrySelectable = preferredEntry
                 ? isBackendEntrySelectableForNewSession({
                     entry: preferredEntry,
-                    detectionTimestamp: params.cliAvailabilityTimestamp,
-                    availabilityById: params.cliAvailabilityByAgentId,
-                    authStatusById: params.cliAuthStatusByAgentId,
-                    installableDepKeyCountByAgentId: params.installableDepKeyCountByAgentId,
-                    selectableWithoutCliByAgentId: params.selectableWithoutCliByAgentId,
+                    machineAgentsById: params.machineAgentsById,
                 })
                 : false;
 

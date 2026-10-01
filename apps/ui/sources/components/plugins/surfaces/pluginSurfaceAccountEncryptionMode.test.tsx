@@ -94,6 +94,32 @@ describe('usePluginSurfaceAccountEncryptionMode', () => {
         invalidateAccountEncryptionModeCache();
     });
 
+    it('retries cached disclosure when a successor mount currentness fence replaces a retired controller', async () => {
+        const account = createLifetime('account-a');
+        accountModeTransport.serverFetch.mockResolvedValue(response('plain'));
+        const retiredControllerIsCurrent = () => false;
+        const successorControllerIsCurrent = () => true;
+        const hook = await renderHook((input: Readonly<{
+            isCurrent: () => boolean;
+        }>) => usePluginSurfaceAccountEncryptionMode({
+            accountLifetime: account.lifetime,
+            credentials: credentialsA,
+            isCurrent: input.isCurrent,
+        }), {
+            initialProps: { isCurrent: retiredControllerIsCurrent },
+        });
+
+        expect(hook.getCurrent()).toBeNull();
+
+        await hook.rerender({ isCurrent: successorControllerIsCurrent });
+        await flushHookEffects();
+
+        expect(hook.getCurrent()).toBe('plain');
+        expect(accountModeTransport.serverFetch).toHaveBeenCalledTimes(1);
+
+        await hook.unmount();
+    });
+
     it('withholds stale Account A and invalidated snapshots until the current Account mode resolves', async () => {
         const accountA = createLifetime('account-a');
         const accountB = createLifetime('account-b');

@@ -64,6 +64,13 @@ import {
 import type { ZodType } from 'zod';
 
 import { machineRpcWithServerScope } from '@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc';
+import type { ServerAccountScopeLifetime } from '@/sync/domains/scope/serverAccountScope';
+import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
+import { resolveReplacementAwareMachineRpcTarget, type ReplacementAwareMachineRpcTarget } from '@/sync/domains/machines/identity/resolveReplacementAwareMachineRpcTarget';
+import { areAccountSettingsScopesEqual } from '@/sync/domains/settings/scope/accountSettingsScope';
+import { resolveTerminalSpawnOptions } from '@/sync/domains/settings/terminalSettings';
+import { readAccountSettingsForScope } from '@/sync/domains/state/accountSettingsPersistence';
+import { storage } from '@/sync/domains/state/storage';
 import { readReplacementAwareMachineRpcTarget } from './machineRpcTarget';
 
 type MachineExternalSessionsOpts = Readonly<{
@@ -75,6 +82,9 @@ type MachineExternalSessionsOpts = Readonly<{
 type ExternalSessionTakeoverOperationRequest = Readonly<{
     machineId: string;
 }> & ExternalSessionTakeoverStartInputV1;
+type MachineExternalSessionTakeoverOpts = MachineExternalSessionsOpts & Readonly<{
+    accountLifetime?: ServerAccountScopeLifetime;
+}>;
 type ExternalSessionMaterializeOperationRequest = Readonly<{
     machineId: string;
 }> & ExternalSessionMaterializeStartInputV1;
@@ -86,9 +96,27 @@ function throwUnsupportedResponse(method: string): never {
     throw new Error(`Unsupported response from machine RPC (${method})`);
 }
 
-function mapReleasedExternalSessionResponseToCanonical(response: unknown): unknown {
+function mapReleasedExternalSessionResponseToCanonical(response: unknown, method: string): unknown {
     if (!response || typeof response !== 'object' || Array.isArray(response)) return response;
     const record = response as Record<string, unknown>;
+    const isLegacyReadAfter = method === RPC_METHODS.DAEMON_DIRECT_SESSION_TRANSCRIPT_READ_AFTER_LEGACY;
+    if ((isLegacyReadAfter || method === RPC_METHODS.DAEMON_DIRECT_SESSION_TRANSCRIPT_PAGE_LEGACY) && record.ok === true) {
+        // The prospective ../0.2 transcript owners distinguish page limits from
+        // source resets while preserving each released provider's `truncated`
+        // boolean. Translate that seam into the current continuation facts;
+        // missing/unknown reasons retain the released conservative behavior.
+        const { truncationReason, ...released } = record;
+        if (truncationReason === 'page_limit') {
+            return { ...released, truncated: false, ...(isLegacyReadAfter ? { hasMore: true } : {}) };
+        }
+        if (truncationReason === 'source_discontinuity') {
+            return {
+                ...released,
+                truncated: true,
+                diagnostics: [{ code: 'external_session_source_diagnostic', severity: 'required', count: 1, positions: [] }],
+            };
+        }
+    }
     if (record.ok !== false || record.errorCode !== 'provider_unavailable') return response;
     // cli-v0.2.1, cli-v0.2.2-preview.1775586717.26498, and the inspected
     // remote-dev predecessor use the provider-named literal. Keep that spelling
@@ -110,9 +138,14 @@ async function callExternalSessionMachineRpc<Request, Response>(params: Readonly
         fallbackOnRelayMethodUnavailable?: true;
     }>;
     opts?: MachineExternalSessionsOpts;
+    accountId?: string;
+    routeTarget?: ReplacementAwareMachineRpcTarget | null;
+    onIssued?: () => void;
 }>): Promise<Response> {
     const payload = params.requestSchema.parse(params.input);
-    const routeTarget = readReplacementAwareMachineRpcTarget(params.machineId);
+    const routeTarget = params.routeTarget === undefined
+        ? readReplacementAwareMachineRpcTarget(params.machineId)
+        : params.routeTarget;
     if (!routeTarget) {
         throw new Error(`Machine RPC target is unavailable (${params.method})`);
     }
@@ -121,6 +154,8 @@ async function callExternalSessionMachineRpc<Request, Response>(params: Readonly
         response = await machineRpcWithServerScope<unknown, Request>({
             machineId: routeTarget.machineId,
             serverId: params.opts?.serverId,
+            ...(params.accountId ? { accountId: params.accountId } : {}),
+            ...(params.onIssued ? { onIssued: params.onIssued } : {}),
             timeoutMs: params.opts?.timeoutMs ?? undefined,
             ...(params.opts?.signal ? { signal: params.opts.signal } : {}),
             method: params.method,
@@ -147,7 +182,7 @@ async function callExternalSessionMachineRpc<Request, Response>(params: Readonly
             method: params.legacy.method,
             payload: params.legacy.input,
         });
-        response = mapReleasedExternalSessionResponseToCanonical(response);
+        response = mapReleasedExternalSessionResponseToCanonical(response, params.legacy.method);
     }
     const parsed = params.responseSchema.safeParse(response);
     if (!parsed.success) {
@@ -514,18 +549,23 @@ export async function machineExternalSessionTranscriptRefreshReadAfter(
  * Applies the one Protocol read-after continuation decision to a released
  * direct-session read-after response. Current daemons answer the released
  * shape with additive rich facts (`hasMore`, bounded `diagnostics`); released
- * daemons omit them, so this degrades to the released lossy semantics: a
- * truncated response — and only that — forces the full resync refetch. The
- * empty, non-advancing `ok` response is the released collapse of
- * `already_current` and stays a clean no-op; a page without any continuation
- * cursor counts as the shared decision's stalled read and resyncs.
+ * daemons omit them, so a released truncated response still conservatively
+ * requires a resync. An empty `ok` response without incompleteness or
+ * diagnostics is the released collapse of `already_current`, including a null
+ * or omitted cursor from an initial tail probe. It stays a clean no-op.
+ * Rich stalled pages and nonempty pages without a continuation cursor
+ * remain subject to the shared decision's resync requirement.
  */
 export function externalSessionTranscriptReadAfterRequiresResyncV1(
     response: Extract<ExternalSessionTranscriptReadAfterResponse, { ok: true }>,
     requestCursor: string,
+    options?: Readonly<{ allowAdjacentPage?: boolean }>,
 ): boolean {
     if (response.truncated === true) return true;
-    if (response.items.length === 0 && response.nextCursor === requestCursor) {
+    if (response.items.length === 0
+        && (response.nextCursor === requestCursor || (requestCursor === 'tail' && response.nextCursor == null))
+        && response.hasMore !== true
+        && (response.diagnostics?.length ?? 0) === 0) {
         return false;
     }
     return shouldResyncExternalSessionTranscriptReadAfterV1({
@@ -533,21 +573,51 @@ export function externalSessionTranscriptReadAfterRequiresResyncV1(
         nextCursor: response.nextCursor ?? requestCursor,
         hasMore: response.hasMore === true,
         diagnostics: response.diagnostics,
+        allowAdjacentPage: options?.allowAdjacentPage,
     });
 }
 
 export async function machineExternalSessionTakeoverStart(
     input: ExternalSessionTakeoverOperationRequest,
-    opts?: MachineExternalSessionsOpts,
+    opts?: MachineExternalSessionTakeoverOpts,
 ): Promise<ExternalSessionOperationActionResponseV1> {
+    const lifetime = opts?.accountLifetime;
+    const assertAccountCurrent = (): void => {
+        if (lifetime && (!lifetime.isCurrent()
+            || (opts?.serverId != null
+                && !areServerProfileIdentifiersEquivalent(opts.serverId, lifetime.scope.serverId)))) {
+            throw Object.assign(new Error('Takeover Account scope is no longer current'), {
+                code: 'session_account_scope_retired',
+            });
+        }
+    };
+    assertAccountCurrent();
+    const state = storage.getState();
+    const settings = lifetime
+        ? readAccountSettingsForScope({ scope: lifetime.scope, focusedScope: state.settingsScope, focusedSettings: state.settings })
+        : state.settings;
+    // A background Account's machine id must not follow another Account's
+    // replacement projection. Keep the canonical target when its scope is known.
+    const routeTarget = resolveReplacementAwareMachineRpcTarget({
+        machineId: input.machineId,
+        machines: lifetime && !areAccountSettingsScopesEqual(lifetime.scope, state.settingsScope)
+            ? []
+            : Object.values(state.machines),
+    });
+    const terminal = input.request.terminal ?? resolveTerminalSpawnOptions({
+        settings,
+        machineId: routeTarget?.machineId ?? input.machineId,
+    });
     try {
         return await callExternalSessionMachineRpc({
             machineId: input.machineId,
             method: RPC_METHODS.DAEMON_EXTERNAL_SESSION_TAKEOVER_START,
-            input: { request: input.request },
+            input: { request: { ...input.request, ...(terminal ? { terminal } : {}) } },
             requestSchema: ExternalSessionTakeoverStartInputV1Schema,
             responseSchema: ExternalSessionOperationActionResponseV1Schema,
-            opts,
+            opts: lifetime ? { ...opts, serverId: lifetime.scope.serverId } : opts,
+            ...(lifetime ? { accountId: lifetime.scope.accountId, onIssued: assertAccountCurrent } : {}),
+            routeTarget,
         });
     } catch (error) {
         if (!isRpcMethodNotFoundError(error)) throw error;
@@ -563,7 +633,7 @@ export async function machineExternalSessionTakeoverStart(
 
 export async function machineExternalSessionTakeoverPersist(
     input: ExternalSessionTakeoverOperationRequest,
-    opts?: MachineExternalSessionsOpts,
+    opts?: MachineExternalSessionTakeoverOpts,
 ): Promise<ExternalSessionOperationActionResponseV1> {
     return await machineExternalSessionTakeoverStart(input, opts);
 }

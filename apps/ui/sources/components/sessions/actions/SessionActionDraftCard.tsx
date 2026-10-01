@@ -2,7 +2,7 @@ import * as React from 'react';
 import { Pressable, View } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 import { getActionSpec } from '@happier-dev/protocol';
-import { useRouter } from 'expo-router';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 
 import { storage } from '@/sync/domains/state/storage';
 import { createDefaultActionExecutor } from '@/sync/ops/actions/defaultActionExecutor';
@@ -16,6 +16,7 @@ import { ActionInputFields } from './ActionInputFields';
 import { resolveSessionActionDraftHeightBearingPaint } from './sessionActionDraftPresentation';
 import { useSessionActionFieldOptions } from './useSessionActionFieldOptions';
 import { normalizeActionInput, normalizeActionInputPatch } from '@/sync/domains/actions/normalizeActionInputPatch';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 
 export function SessionActionDraftCard(props: Readonly<{ draft: SessionActionDraft }>) {
@@ -171,7 +172,7 @@ export function SessionActionDraftCard(props: Readonly<{ draft: SessionActionDra
                 paddingVertical: 10,
                 paddingHorizontal: 12,
                 borderRadius: 10,
-                opacity: props.draft.status === 'running' || isSubmitting ? 0.4 : pressed ? 0.7 : 1,
+                opacity: props.draft.status === 'running' || isSubmitting ? 0.4 : pressed ? motionTokens.press.opacity : 1,
               })}
             >
               <Text style={{ color: theme.colors.text.secondary }}>{t('common.cancel')}</Text>
@@ -185,7 +186,7 @@ export function SessionActionDraftCard(props: Readonly<{ draft: SessionActionDra
                 paddingHorizontal: 12,
                 borderRadius: 10,
                 backgroundColor: theme.colors.button.primary.background,
-                opacity: startDisabled ? 0.5 : pressed ? 0.8 : 1,
+                opacity: startDisabled ? 0.5 : pressed ? motionTokens.press.opacitySubtle : 1,
               })}
             >
               <Text style={{ color: theme.colors.button.primary.tint, fontWeight: '600' }}>{t('common.start')}</Text>

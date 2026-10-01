@@ -16,31 +16,17 @@ type ReadBundledAssetBytes = (
     asset: BundledPluginUiAppArtifact['files'][number]['asset'],
 ) => Promise<Uint8Array | null>;
 
-function matchesImmutableArtifact(
-    candidate: BundledPluginUiAppArtifact,
-    artifact: PluginSelectedArtifactIdentity,
-): boolean {
-    return candidate.pluginId === artifact.pluginId
-        && candidate.contributionId === artifact.contributionId
-        && candidate.tier === artifact.tier
-        && candidate.platform === artifact.platform
-        && candidate.digest === artifact.digest
-        && candidate.releaseVersion === artifact.releaseVersion;
-}
-
 function findExactArtifact(
     inventory: BundledPluginUiAppArtifactInventory,
     artifact: PluginSelectedArtifactIdentity,
 ): BundledPluginUiAppArtifact | null {
-    const matches = inventory.filter((candidate) => matchesImmutableArtifact(candidate, artifact));
+    const matches = inventory.filter((candidate) => candidate.digest === artifact.digest);
     return matches.length === 1 ? matches[0]! : null;
 }
 
 /**
- * Narrow app-package source adapter. It has no cache, daemon, Account,
- * selection, currentness, integrity, or graph-validation authority; the
- * Artifact lease owns all of those concerns and passes only a selected exact
- * identity plus a declared path here.
+ * The app-package byte source: the preseeded file set for the selected digest.
+ * It has no selection, currentness, or integrity authority.
  */
 export function createBundledPluginUiAppExactArtifactSourceFromInventory(input: Readonly<{
     inventory: BundledPluginUiAppArtifactInventory;
@@ -48,14 +34,16 @@ export function createBundledPluginUiAppExactArtifactSourceFromInventory(input: 
 }>): BundledPluginUiAppExactArtifactSource {
     return Object.freeze({
         kind: 'appExact' as const,
-        readFile: async ({ artifact, relativePath }) => {
+        fetch: async ({ artifact }) => {
             const candidate = findExactArtifact(input.inventory, artifact);
             if (!candidate) return null;
-            const file = candidate.files.find((entry) => entry.relativePath === relativePath);
-            if (!file) return null;
-            const bytes = await input.readBundledAssetBytes(file.asset);
-            if (!bytes) return null;
-            return new Uint8Array(bytes);
+            const files = new Map<string, Uint8Array>();
+            for (const file of candidate.files) {
+                const bytes = await input.readBundledAssetBytes(file.asset);
+                if (!bytes) return null;
+                files.set(file.relativePath, bytes);
+            }
+            return files;
         },
     });
 }

@@ -136,7 +136,8 @@ export async function resolveBackendRuntimeCore(params: Readonly<{
         pluginVersion: string;
         agentId: string;
         localAgentId?: string;
-        generation: string;
+        occurrenceId: string;
+        sourceCustody?: import('@happier-dev/protocol').PluginSourceCustodyV1;
         immutableGenerationId?: string | null;
         runtimeAuthority?: PluginRuntimeAuthoritySnapshotV1;
         retirementSignal?: AbortSignal;
@@ -174,28 +175,24 @@ export async function resolveBackendRuntimeCore(params: Readonly<{
                 if (!nativeIdentity) {
                     throw new Error('Native Agent runtime identity is unavailable');
                 }
-                const runtimeLease: NativeAgentRuntimeLeaseIdentity = engineEntry ?? Object.freeze({
-                    pluginId: nativeIdentity.pluginId,
-                    pluginVersion: nativeIdentity.pluginVersion,
-                    agentId: nativeIdentity.agentId,
-                    localAgentId: params.nativeAgentRuntimeIdentity?.localAgentId
-                        ?? params.agent.identity?.localId
-                        ?? nativeIdentity.agentId,
-                    isCurrent: nativeIdentity.isCurrent,
-                });
                 const agentRetirementSignal =
                     nativeIdentity.retirementSignal
                     ?? engineEntry?.retirementSignal;
                 const agentSessionRealtimeVoiceAuthority =
                     params.nativeAgentRuntimeVoiceAuthority
-                    ?? resolveAgentSessionRealtimeVoiceAuthority({
-                        runtimeRegistry: params.runtimeRegistry,
-                        policyAgentRef: params.agent.identity ?? null,
-                        agentRuntimeIdentity: nativeIdentity,
-                        ...(agentRetirementSignal
-                            ? { agentRetirementSignal }
-                            : {}),
-                    });
+                    ?? (params.agent.identity && nativeIdentity.sourceCustody
+                        ? resolveAgentSessionRealtimeVoiceAuthority({
+                            runtimeRegistry: params.runtimeRegistry,
+                            policyAgentRef: params.agent.identity,
+                            agentRuntimeIdentity: {
+                                ...nativeIdentity,
+                                sourceCustody: nativeIdentity.sourceCustody,
+                            },
+                            ...(agentRetirementSignal
+                                ? { agentRetirementSignal }
+                                : {}),
+                        })
+                        : null);
                 const runtimeCore: CliRuntimeCore = Object.freeze({
                     async createSessionRuntime(sessionParams: unknown) {
                         const plan =
@@ -294,8 +291,14 @@ export async function resolveBackendRuntimeCore(params: Readonly<{
                                     ...(hostRuntimeParams.accountSettings !== undefined
                                         ? { accountSettings: hostRuntimeParams.accountSettings }
                                         : {}),
+                                    ...(hostRuntimeParams.accountSettingsAuthority
+                                        ? { accountSettingsAuthority: hostRuntimeParams.accountSettingsAuthority }
+                                        : {}),
                                     permissionHandler: hostRuntimeParams.permissionHandler,
                                 },
+                                ...(hostRuntimeParams.currentTerminalMetadata
+                                    ? { currentTerminalMetadata: hostRuntimeParams.currentTerminalMetadata }
+                                    : {}),
                                 sessionId,
                                 directory,
                                 signal,
@@ -333,8 +336,8 @@ export async function resolveBackendRuntimeCore(params: Readonly<{
                                                         .pluginVersion,
                                                 agentId:
                                                     nativeIdentity.agentId,
-                                                generation:
-                                                    nativeIdentity.generation,
+                                                occurrenceId:
+                                                    nativeIdentity.occurrenceId,
                                                 correlationId,
                                                 cwd,
                                                 environment,
@@ -343,7 +346,7 @@ export async function resolveBackendRuntimeCore(params: Readonly<{
                                                 signal,
                                                 session,
                                                 readActiveTurnAdmissionWitness,
-                                                isGenerationCurrent:
+                                                isOccurrenceCurrent:
                                                     nativeIdentity.isCurrent,
                                             }),
                                 }
@@ -355,7 +358,7 @@ export async function resolveBackendRuntimeCore(params: Readonly<{
                                         pluginId: engineEntry.pluginId,
                                         pluginVersion: engineEntry.pluginVersion,
                                         agentId: engineEntry.agentId,
-                                        generation: engineEntry.generation,
+                                        occurrenceId: engineEntry.occurrenceId,
                                         correlationId,
                                         cwd,
                                         environment,
@@ -364,7 +367,7 @@ export async function resolveBackendRuntimeCore(params: Readonly<{
                                         signal,
                                         session,
                                         readActiveTurnAdmissionWitness,
-                                        isGenerationCurrent: engineEntry.isCurrent,
+                                        isOccurrenceCurrent: engineEntry.isCurrent,
                                     })
                                 ),
                             }
@@ -443,6 +446,16 @@ export async function resolveBackendRuntimeCore(params: Readonly<{
                                 'Daemon execution-run runtime is unavailable',
                             );
                         }
+                        const runtimeLease: NativeAgentRuntimeLeaseIdentity = engineEntry ?? Object.freeze({
+                            pluginId: nativeIdentity.pluginId,
+                            pluginVersion: nativeIdentity.pluginVersion,
+                            agentId: nativeIdentity.agentId,
+                            localAgentId: params.nativeAgentRuntimeIdentity?.localAgentId
+                                ?? params.agent.identity?.localId
+                                ?? nativeIdentity.agentId,
+                            occurrenceId: nativeIdentity.occurrenceId,
+                            isCurrent: nativeIdentity.isCurrent,
+                        });
                         const openCapabilities = readAgentExecutionRunCapabilities(
                             params.agent.richDefinition?.definition,
                         )?.open;
@@ -472,16 +485,19 @@ export async function resolveBackendRuntimeCore(params: Readonly<{
                                 pluginId: engineEntry.pluginId,
                                 pluginVersion: engineEntry.pluginVersion,
                                 agentId: engineEntry.agentId,
-                                generation: engineEntry.generation,
+                                occurrenceId: engineEntry.occurrenceId,
                                 correlationId: runId,
                                 cwd: options.cwd,
                                 ...(options.isolation?.env ? { environment: options.isolation.env } : {}),
                                 signal: engineEntry.retirementSignal,
-                                isGenerationCurrent: engineEntry.isCurrent,
+                                isOccurrenceCurrent: engineEntry.isCurrent,
                             })
                             : undefined;
                         const effectiveSessionCapabilities = params.nativeAgentSessionCapabilities
                             ?? readAgentSessionCapabilities(params.agent.richDefinition?.definition);
+                        if (options.workspaceWrites === 'deny' && effectiveSessionCapabilities?.workspaceWrites !== 'deny') {
+                            throw createExecutionRunCodedError('role_policy_unenforceable', 'Agent cannot enforce the role workspace-write policy');
+                        }
                         const sessionOpenCapabilities = effectiveSessionCapabilities?.open;
                         const detachedSessionPrimary = options.scope === 'detached'
                             && nativeAgentRuntime.sessions !== undefined;
@@ -599,6 +615,7 @@ export async function resolveBackendRuntimeCore(params: Readonly<{
                                         runToolBinding = runScope && host.composeRunToolBinding
                                             ? await host.composeRunToolBinding({
                                                 runId: runScope.runId,
+                                                workDepth: runScope.workDepth,
                                                 cwd: options.cwd,
                                                 signal,
                                                 isCurrent: () => (
@@ -627,13 +644,15 @@ export async function resolveBackendRuntimeCore(params: Readonly<{
                                             )?.delivery.includes('steer') === true
                                                 || effectiveSessionCapabilities?.delivery.includes('steer') === true,
                                         });
+                                        const sourceCustody = nativeIdentity.sourceCustody;
                                         const currentSession = createNativeAgentCurrentSessionUiServices({
                                             permissionHandler: executionPermissionHandler,
                                             pluginId: nativeIdentity.pluginId,
                                             contributionId,
                                             runtimeId: `agent-session-projection:${options.runId ?? sessionId}`,
                                             sessionId,
-                                            generationId: nativeIdentity.generation,
+                                            occurrenceId: nativeIdentity.occurrenceId,
+                                            ...(sourceCustody ? { sourceCustody } : {}),
                                             isCurrent: nativeIdentity.isCurrent,
                                             signal,
                                             readPermissionMode: () => options.permissionMode,
@@ -644,14 +663,14 @@ export async function resolveBackendRuntimeCore(params: Readonly<{
                                                 pluginId: engineEntry.pluginId,
                                                 pluginVersion: engineEntry.pluginVersion,
                                                 agentId: engineEntry.agentId,
-                                                generation: engineEntry.generation,
+                                                occurrenceId: engineEntry.occurrenceId,
                                                 correlationId: runId,
                                                 cwd: options.cwd,
                                                 ...(options.isolation?.env ? { environment: options.isolation.env } : {}),
                                                 signal,
                                                 session: { id: sessionId, current: currentSession },
                                                 readActiveTurnAdmissionWitness,
-                                                isGenerationCurrent: engineEntry.isCurrent,
+                                                isOccurrenceCurrent: engineEntry.isCurrent,
                                             })
                                             : fallbackServices;
                                         const nativeHome = await resolveNativeAgentSessionNativeHomeService({
@@ -684,7 +703,7 @@ export async function resolveBackendRuntimeCore(params: Readonly<{
                                         const ui = createPluginInvocationPresentation({
                                             currentSession,
                                             signal,
-                                            isGenerationCurrent: nativeIdentity.isCurrent,
+                                            isOccurrenceCurrent: nativeIdentity.isCurrent,
                                         });
                                         const protocols = createPublicAcpRuntimeProtocols({
                                             pluginId: nativeIdentity.pluginId,
@@ -719,7 +738,7 @@ export async function resolveBackendRuntimeCore(params: Readonly<{
                                                 pluginId: nativeIdentity.pluginId,
                                                 contributionId,
                                                 agentId: params.agent.id,
-                                                generationId: nativeIdentity.generation,
+                                                occurrenceId: nativeIdentity.occurrenceId,
                                                 declarations: readAgentSessionCapabilities(
                                                     params.agent.richDefinition?.definition,
                                                 )?.workStateSources ?? [],
@@ -786,6 +805,7 @@ export async function resolveBackendRuntimeCore(params: Readonly<{
                                 machineId: options.machineId ?? '',
                                 accountSettings: options.accountSettings ?? null,
                                 permissionMode: options.permissionMode,
+                                workspaceWrites: options.workspaceWrites,
                                 start: options.start ?? {},
                                 ...(options.getPermissionRequestStore
                                     ? { getPermissionRequestStore: options.getPermissionRequestStore }
@@ -811,7 +831,7 @@ export async function resolveBackendRuntimeCore(params: Readonly<{
                                             pluginId: engineEntry.pluginId,
                                             pluginVersion: engineEntry.pluginVersion,
                                             agentId: engineEntry.agentId,
-                                            generation: engineEntry.generation,
+                                            occurrenceId: engineEntry.occurrenceId,
                                             correlationId: options.runId!,
                                             cwd: options.cwd,
                                             ...(options.isolation?.env
@@ -822,7 +842,7 @@ export async function resolveBackendRuntimeCore(params: Readonly<{
                                             ...(readActiveTurnAdmissionWitness
                                                 ? { readActiveTurnAdmissionWitness }
                                                 : {}),
-                                            isGenerationCurrent: engineEntry.isCurrent,
+                                            isOccurrenceCurrent: engineEntry.isCurrent,
                                         }),
                                     }
                                     : {}),

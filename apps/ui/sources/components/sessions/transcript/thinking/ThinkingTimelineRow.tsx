@@ -6,6 +6,7 @@ import { Text } from '@/components/ui/text/Text';
 import { ThinkingPulseLabel } from '@/components/sessions/transcript/motion/ThinkingPulseLabel';
 import { Typography } from '@/constants/Typography';
 import { Icon } from '@/components/ui/icons/Icon';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 export const ThinkingTimelineRow = React.memo(function ThinkingTimelineRow(props: {
     id: string;
@@ -101,7 +102,7 @@ const styles = StyleSheet.create((theme) => ({
         gap: 8,
     },
     headerPressed: {
-        opacity: 0.92,
+        opacity: motionTokens.press.opacitySubtle,
     },
     labelContainer: {
         flex: 1,

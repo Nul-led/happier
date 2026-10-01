@@ -11,6 +11,7 @@ import {
 } from '@/dev/testkit/harness/chatListHarness';
 import { installChatListHarnessCommonModuleMocks } from '@/dev/testkit/harness/chatListHarnessModuleMocks';
 import type { OpenApprovalArtifactForSession } from '@/sync/domains/artifacts/approvalArtifacts';
+import { sessionAddressKey } from '@/sync/domains/session/sessionAddress';
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -89,6 +90,7 @@ describe('ChatList composed Legend affordances', () => {
         const { ChatList } = await import('./ChatList');
         return renderChatList(React.createElement(ChatList, {
             session: { ...chatListHarnessState.sessionState },
+            sessionSurfaceKey: sessionAddressKey({ serverId: 'test-server', sessionId: 'session-1' }),
         }), { flushOptions: { cycles: 0 } });
     }
 
@@ -176,6 +178,7 @@ describe('ChatList composed Legend affordances', () => {
         const { ChatList } = await import('./ChatList');
         await screen.update(React.createElement(ChatList, {
             session: { ...chatListHarnessState.sessionState },
+            sessionSurfaceKey: sessionAddressKey({ serverId: 'test-server', sessionId: 'session-1' }),
             approvalRequests,
         }));
         const after = requireCapturedLegendListProps();

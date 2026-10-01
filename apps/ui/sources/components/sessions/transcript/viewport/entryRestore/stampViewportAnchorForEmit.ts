@@ -1,4 +1,4 @@
-import type { Message } from '@/sync/domains/messages/messageTypes';
+import type { Message } from "@happier-dev/session-core/messages";
 import type { SessionViewportAnchorSnapshot } from '@/sync/sync';
 import type { TranscriptRowShellItem } from '@/components/sessions/transcript/measurement/transcriptRowShellSignature';
 import { collectTranscriptNavigationMessageIdsForItem } from '@/components/sessions/transcript/viewport/lifecycle/transcriptRowClassification';

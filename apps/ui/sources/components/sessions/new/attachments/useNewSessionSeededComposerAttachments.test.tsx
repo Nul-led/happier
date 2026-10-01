@@ -30,7 +30,7 @@ const entry = {
     id: 'happier.triage/entry',
     pluginId: 'happier.triage',
     identity: { pluginId: 'happier.triage', localId: 'entry' },
-    immutableGenerationId: 'triage-generation-1',
+    occurrenceId: 'triage-generation-1',
     definition: {
         id: 'entry',
         title: { key: 'attachment.entry', fallback: 'Entry' },

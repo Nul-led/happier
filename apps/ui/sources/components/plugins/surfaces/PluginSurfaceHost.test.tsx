@@ -15,7 +15,6 @@ import {
     PluginProjectionV2Schema,
     type DaemonPluginUiTargetedSurfaceMountV1,
     type DaemonContributionRegistryProjectionAutomationEligibleEventSetupSurfaceV1,
-    type DaemonPluginReactNativeCrashStateV1,
     type BrowserLocalServicePreviewTargetV1,
     type ComposerSnapshotV1,
     type PluginProjectionV2,
@@ -80,28 +79,17 @@ import {
 import {
     createPluginReactNativeWatchdog,
     type PluginReactNativeWatchdog,
-    type PluginReactNativeWatchdogPersistence,
-    type PluginReactNativeWatchdogSnapshot,
 } from '../reactNative/watchdog';
-
-/** A durable store that answers, exactly as the real storage adapter does. */
-function createMemoryWatchdogPersistence(): PluginReactNativeWatchdogPersistence {
-    let persisted: PluginReactNativeWatchdogSnapshot | null = null;
-    return {
-        readSnapshot: () => persisted === null ? null : { snapshot: persisted },
-        writeSnapshot: (snapshot) => {
-            persisted = snapshot;
-        },
-    };
-}
 
 import {
     createDeferred,
+    createSessionFixture,
     createPlainAccountEncryptionCurrentnessFixture,
     flushHookEffects,
     renderScreen,
 } from '@/dev/testkit';
 import { createTestMessageChannel } from '@/dev/testkit/mocks/messageChannel';
+import { createPluginLocalizedTextResolver } from '@/sync/domains/plugins/ui/i18n';
 import { PluginSurfaceFocusEligibilityProvider } from '@/components/ui/presentation/PluginSurfaceFocusEligibility';
 import { DropdownMenu } from '@/components/ui/forms/dropdown/DropdownMenu';
 import { darkTheme, lightTheme } from '@/theme';
@@ -124,6 +112,7 @@ import {
 import { serverAccountScopeKeySuffix } from '@/sync/domains/scope/serverAccountScope';
 import {
     createPluginAccountAvailabilityReader,
+    createPluginAccountAvailabilityReaderStore,
     type PluginAccountAvailabilitySnapshot,
 } from '@/sync/domains/plugins/availability/reader';
 import { recordAccountStoredContentServerRequirements } from '@/sync/http/accountStoredContentCompatibility';
@@ -185,6 +174,9 @@ const EXPECTED_GENERIC_DESTINATION_HOST_METHODS = [
     'focusComposer',
     'setComposerDecorations',
     'acquireComposerInputLock',
+    'readSession',
+    'watchSession',
+    'respondToSessionPermission',
 ] as const satisfies readonly PluginUiHostMethodV1[];
 
 const {
@@ -304,6 +296,10 @@ describe('external targeted source products through the bound surface host', () 
     const targetPluginId = 'fixture.physical-copy-target';
     const contributorPluginId = 'fixture.physical-copy-contributor';
     const contributorGeneration = 'physical-copy-contributor-generation-a';
+    const contributorSourceCustody = Object.freeze({
+        kind: 'development' as const,
+        registeredRootId: 'fixture-physical-copy-contributor-root',
+    });
     const point = Object.freeze({
         pointId: 'sources',
         protocol: Object.freeze({ id: 'physical-copy-sources', version: 1 }),
@@ -311,7 +307,8 @@ describe('external targeted source products through the bound surface host', () 
     const contributor = Object.freeze({
         pluginId: contributorPluginId,
         contributionId: 'physical-copy-source',
-        immutableGenerationId: contributorGeneration,
+        occurrenceId: contributorGeneration,
+        sourceCustody: contributorSourceCustody,
     });
     const surface = Object.freeze({
         point,
@@ -345,14 +342,18 @@ describe('external targeted source products through the bound surface host', () 
     }>) {
         const mountedTarget = Object.freeze({
             pluginId: targetPluginId,
-            immutableGenerationId: input.targetGeneration,
+            occurrenceId: input.targetGeneration,
+            sourceCustody: Object.freeze({
+                kind: 'development' as const,
+                registeredRootId: 'fixture-physical-copy-target-test-root',
+            }),
         });
         const exposedSurface = input.variant === 'mismatched'
             ? Object.freeze({
                 ...surface,
                 contributor: Object.freeze({
                     ...contributor,
-                    immutableGenerationId: 'physical-copy-contributor-generation-stale',
+                    occurrenceId: 'physical-copy-contributor-generation-stale',
                 }),
             })
             : surface;
@@ -429,7 +430,8 @@ describe('external targeted source products through the bound surface host', () 
             contributorTargetedContributions: {
                 target: {
                     pluginId: contributor.pluginId,
-                    immutableGenerationId: contributor.immutableGenerationId,
+                    occurrenceId: contributor.occurrenceId,
+                    sourceCustody: contributor.sourceCustody,
                 },
                 points: [],
             },
@@ -439,7 +441,6 @@ describe('external targeted source products through the bound surface host', () 
             generation: input.generation,
             installedPackagesById: {},
             agentsById: {},
-            backendsById: {},
             actionsById: {},
             toolsById: {},
             commandsById: {},
@@ -464,7 +465,7 @@ describe('external targeted source products through the bound surface host', () 
         });
     }
 
-    function externalTargetReactPlacement(): PluginUiSurfacePlacementProjection {
+function externalTargetReactPlacement(occurrenceId: string): PluginUiSurfacePlacementProjection {
         const destinationId = 'physical-copy-target-surface';
         const placement = surfacePlacementFixture({
             binding: {
@@ -480,27 +481,14 @@ describe('external targeted source products through the bound surface host', () 
                 requiredHostMethods: ['context'],
             },
             display: { label: 'Physical copy React target' },
-            runtime: {
-                reactNativeCrashState: {
-                    token: {
-                        mount: {
-                            kind: 'destination',
-                            destination: { pluginId: targetPluginId, localId: destinationId },
-                        },
-                        renderer: { pluginId: targetPluginId, localId: targetReactRendererId },
-                        artifactDigest: targetArtifactDigest,
-                        crashStateEpoch: 1,
-                    },
-                    disabled: false,
-                },
-            },
+            occurrenceId,
         });
         return Object.freeze({ ...placement, generatedV2: true }) as PluginUiSurfacePlacementProjection;
     }
 
     function externalTargetReactProjection(generation: number): PluginUiProjectionModel {
         const bundleId = `reactNativeBundle:${targetPluginId}:${targetReactRendererId}`;
-        const entry = 'react-native/physical-copy-target/index.js';
+        const entry = `react-native/${targetReactRendererId}/entry.cjs.bundle`;
         const fileDigest = PluginUiArtifactDigestV1Schema.parse(`sha256:${'2'.repeat(64)}`);
         return {
             ...EMPTY_PLUGIN_UI_PROJECTION,
@@ -515,9 +503,8 @@ describe('external targeted source products through the bound surface host', () 
                     generatedV2: true,
                     hostApi: { minVersion: '1.0.0', methods: ['context'] },
                     artifactGraph: {
-                        contributionId: targetReactRendererId,
+                        artifactId: targetReactRendererId,
                         tier: 'reactNative',
-                        platform: 'web',
                         entry,
                         files: [{
                             relativePath: entry,
@@ -525,28 +512,16 @@ describe('external targeted source products through the bound surface host', () 
                             byteSize: 16,
                         }],
                         digest: targetArtifactDigest,
-                        builtWith: { bundler: 'vite', version: '7.0.0' },
-                        hostUiApiVersion: '1.0.0',
-                        compat: { react: '19.2.0', reactNative: '0.83.4' },
+                        builtWith: { bundler: 'esbuild', version: '0.27.2' },
+                        executable: { exports: ['renderSurface'] },
+                        hostUiApiRange: '^1.0.0',
                     },
                     runtime: {
                         decision: { state: 'load', reason: 'compatible', diagnostics: [] },
                         loadPolicy: { source: 'installedArtifact' },
                         cacheKey: `physical-copy-target-${generation}`,
                         cacheIdentity: {
-                            pluginId: targetPluginId,
-                            contributionId: targetReactRendererId,
                             artifactDigest: targetArtifactDigest,
-                            hostAppVersion: '2.0.0',
-                            hostUiApiVersion: '1.0.0',
-                            reactVersion: '19.2.0',
-                            reactNativeVersion: '0.83.4',
-                            platform: 'web',
-                            channel: 'internal',
-                            nativeCapabilitiesDigest: PluginUiArtifactDigestV1Schema.parse(
-                                `sha256:${'3'.repeat(64)}`,
-                            ),
-                            projectionGeneration: generation,
                         },
                     },
                 },
@@ -554,7 +529,7 @@ describe('external targeted source products through the bound surface host', () 
         } as unknown as PluginUiProjectionModel;
     }
 
-    function externalTargetDeclarativePlacement(root: unknown): PluginUiSurfacePlacementProjection {
+function externalTargetDeclarativePlacement(root: unknown, occurrenceId: string): PluginUiSurfacePlacementProjection {
         return surfacePlacementFixture({
             binding: {
                 pluginId: targetPluginId,
@@ -572,13 +547,14 @@ describe('external targeted source products through the bound surface host', () 
                         pluginId: targetPluginId,
                         localId: targetDeclarativeRendererId,
                         qualifiedId: `${targetPluginId}/${targetDeclarativeRendererId}`,
-                        generation: '1',
+                        occurrenceId: '1',
                     },
                     nodes: [],
                     root,
                 }),
             },
             display: { label: 'Physical copy declarative target' },
+            occurrenceId,
         });
     }
 
@@ -592,7 +568,7 @@ describe('external targeted source products through the bound surface host', () 
         });
     }
 
-    it('mounts the public React/RNW target only after its exact cold snapshot', async () => {
+    it('presents exact-target projection phases and mounts React/RNW only after its exact snapshot', async () => {
         const { renderPhysicalCopyTargetSurface } = await import(
             '../../../../../../packages/plugin-sdk/fixtures/external-targeted-packages/target/src/surface',
         );
@@ -609,31 +585,43 @@ describe('external targeted source products through the bound surface host', () 
             renderSurface: renderPhysicalCopyTargetSurface,
         });
         const projection = projectionFor(externalTargetReactProjection(501), exact.targetFixture);
-        const render = (currentProjection: PluginUiProjectionModel) => (
+        const render = (currentProjection: PluginUiProjectionModel, occurrenceId: string) => (
             <PluginSurfacePlacementHost
-                placement={externalTargetReactPlacement()}
+                placement={externalTargetReactPlacement(occurrenceId)}
                 pluginUiProjection={currentProjection}
                 machineId="machine_1"
                 serverId="server_1"
                 sessionId="session_1"
                 platform="web"
                 reactNativeLoaderBackend={{
-                    backendId: 'reactNativeWebModule',
+                    backendId: 'commonJs',
                     available: true,
                     loadInstalledBundle: vi.fn(async () => () => null),
                 }}
             />
         );
-        const screen = await renderScreen(render(projection), { flushOptions: { cycles: 0 } });
+        const screen = await renderScreen(render(
+            projection,
+            exact.targetFixture.mountedTarget.occurrenceId,
+        ), { flushOptions: { cycles: 0 } });
 
-        await vi.waitFor(() => expect(contributionProjectionDescribeMock).toHaveBeenCalledWith(
+        // The mount asks only for its target slice, by plugin; the daemon tags
+        // the answer with its current occurrence.
+        await vi.waitFor(() => expect(targetedContributionsReadMock).toHaveBeenCalledWith(
             'machine_1',
             expect.objectContaining({
                 serverId: 'server_1',
-                mountedTarget: exact.targetFixture.mountedTarget,
+                pluginId: exact.targetFixture.mountedTarget.pluginId,
             }),
         ));
         expect(screen.findByTestId('plugin-surface-unavailable')).toBeTruthy();
+        expect(screen.findByTestId('plugin-surface-unavailable-loading-skeleton')).toBeTruthy();
+        // Merely loading: no alarming card, no Manage/Retry detour.
+        expect(screen.findByTestId('plugin-surface-unavailable-action')).toBeNull();
+        expect(screen.findByTestId('plugin-surface-unavailable-title')).toBeNull();
+        expect(screen.findByTestId(
+            'plugin-surface-unavailable-diagnostic-targeted_contributions_loading',
+        )).toBeTruthy();
         expect(screen.findByTestId(exactTargetedReadyTestId)).toBeNull();
         expect(reactNativeSurfaceProps).toHaveLength(0);
 
@@ -663,10 +651,10 @@ describe('external targeted source products through the bound surface host', () 
             variant: 'mismatched',
         });
         contributionProjectionDescribeMock.mockResolvedValue(wrong.response);
-        await screen.update(render(projectionFor(
-            externalTargetReactProjection(502),
-            wrong.targetFixture,
-        )));
+        await screen.update(render(
+            projectionFor(externalTargetReactProjection(502), wrong.targetFixture),
+            wrong.targetFixture.mountedTarget.occurrenceId,
+        ));
         await vi.waitFor(() => {
             expect(screen.root.findAll((node) => (
                 typeof node.props.testID === 'string'
@@ -674,9 +662,100 @@ describe('external targeted source products through the bound surface host', () 
             ))).toHaveLength(0);
             expect(screen.getTextContent()).not.toContain('External source contributor detail');
         });
+        const invalid = createTargetedFixture({
+            generation: 503,
+            targetGeneration: 'physical-copy-target-generation-react-invalid',
+            variant: 'exact',
+        });
+        contributionProjectionDescribeMock.mockResolvedValue({
+            ...invalid.response,
+            targetedContributions: {
+                target: {
+                    ...invalid.targetFixture.mountedTarget,
+                    occurrenceId: 'physical-copy-target-generation-react-stale',
+                },
+                points: [],
+            },
+        });
+        await screen.update(render(
+            projectionFor(externalTargetReactProjection(503), invalid.targetFixture),
+            invalid.targetFixture.mountedTarget.occurrenceId,
+        ));
+        // A read tagged with a newer occurrence is a plugin reload, not an
+        // error: the mount waits for the shell projection to follow and
+        // shows loading, never `targeted_contributions_error`.
+        await vi.waitFor(() => expect(screen.findByTestId(
+            'plugin-surface-unavailable-diagnostic-targeted_contributions_loading',
+        )).toBeTruthy());
+        expect(screen.findByTestId(
+            'plugin-surface-unavailable-diagnostic-targeted_contributions_error',
+        )).toBeNull();
+
+        const timedOut = createTargetedFixture({
+            generation: 506,
+            targetGeneration: 'physical-copy-target-generation-react-timeout',
+            variant: 'exact',
+        });
+        contributionProjectionDescribeMock.mockResolvedValue({ supported: false, reason: 'timeout' });
+        await screen.update(render(
+            projectionFor(externalTargetReactProjection(506), timedOut.targetFixture),
+            timedOut.targetFixture.mountedTarget.occurrenceId,
+        ));
+        // A classified timeout keeps its own reason for honest copy.
+        await vi.waitFor(() => expect(screen.findByTestId(
+            'plugin-surface-unavailable-diagnostic-targeted_contributions_timeout',
+        )).toBeTruthy());
+
+        const unsupported = createTargetedFixture({
+            generation: 504,
+            targetGeneration: 'physical-copy-target-generation-react-unsupported',
+            variant: 'exact',
+        });
+        contributionProjectionDescribeMock.mockResolvedValue({ supported: false, reason: 'not-supported' });
+        await screen.update(render(
+            projectionFor(externalTargetReactProjection(504), unsupported.targetFixture),
+            unsupported.targetFixture.mountedTarget.occurrenceId,
+        ));
+        await vi.waitFor(() => expect(screen.findByTestId(
+            'plugin-surface-unavailable-diagnostic-targeted_contributions_unsupported',
+        )).toBeTruthy());
+        expect(screen.findByTestId('plugin-surface-unavailable-loading-skeleton')).toBeNull();
+        // Asking the same daemon again cannot add support: no Retry.
+        expect(screen.findByTestId('plugin-surface-unavailable-action')).toBeNull();
+
+        const failed = createTargetedFixture({
+            generation: 505,
+            targetGeneration: 'physical-copy-target-generation-react-error',
+            variant: 'exact',
+        });
+        contributionProjectionDescribeMock.mockResolvedValue({ supported: false, reason: 'error' });
+        await screen.update(render(
+            projectionFor(externalTargetReactProjection(505), failed.targetFixture),
+            failed.targetFixture.mountedTarget.occurrenceId,
+        ));
+        await vi.waitFor(() => expect(screen.findByTestId(
+            'plugin-surface-unavailable-diagnostic-targeted_contributions_error',
+        )).toBeTruthy());
+        expect(screen.findByTestId('plugin-surface-unavailable-loading-skeleton')).toBeNull();
+        // A failed daemon answer is transient: Retry re-asks for this exact
+        // target through the projection owner and the page recovers in place.
+        const { t } = await import('@/text');
+        expect(screen.findByTestId('plugin-surface-unavailable-action')?.props.accessibilityLabel)
+            .toBe(t('common.retry'));
+        const describeCallsBeforeRetry = contributionProjectionDescribeMock.mock.calls.length;
+        contributionProjectionDescribeMock.mockResolvedValue(failed.response);
+        await act(async () => {
+            screen.pressByTestId('plugin-surface-unavailable-action');
+        });
+        await vi.waitFor(() => {
+            expect(contributionProjectionDescribeMock.mock.calls.length).toBeGreaterThan(describeCallsBeforeRetry);
+            expect(screen.findByTestId(
+                'plugin-surface-unavailable-diagnostic-targeted_contributions_error',
+            )).toBeNull();
+        });
 
         contributionProjectionDescribeMock.mockResolvedValue(exact.response);
-        await screen.update(render(projection));
+        await screen.update(render(projection, exact.targetFixture.mountedTarget.occurrenceId));
         await vi.waitFor(() => {
             expect(screen.findByTestId(exactTargetedReadyTestId)).toBeTruthy();
             expect(screen.getTextContent()).toContain('External source contributor detail');
@@ -705,14 +784,14 @@ describe('external targeted source products through the bound surface host', () 
         });
         const screen = await renderScreen(
             <PluginSurfacePlacementHost
-                placement={externalTargetReactPlacement()}
+                placement={externalTargetReactPlacement(fixture.targetFixture.mountedTarget.occurrenceId)}
                 pluginUiProjection={projectionFor(externalTargetReactProjection(generation), fixture.targetFixture)}
                 machineId="machine_1"
                 serverId="server_1"
                 sessionId="session_1"
                 platform="web"
                 reactNativeLoaderBackend={{
-                    backendId: 'reactNativeWebModule',
+                    backendId: 'commonJs',
                     available: true,
                     loadInstalledBundle: vi.fn(async () => () => null),
                 }}
@@ -770,7 +849,7 @@ describe('external targeted source products through the bound surface host', () 
         if (!inputNormalizer) throw new Error('Expected canonical Surface schema to rehydrate');
         const admittedModel = normalizePluginDeclarativeDocumentV1({
             pluginId: targetPluginId,
-            generation: String(fixture.response.projection.generation),
+            occurrenceId: fixture.targetFixture.mountedTarget.occurrenceId,
             actions: [],
             document: { version: 1, root: physicalCopyTargetDetailNode },
             preparedTargetedSurfaces: [{
@@ -783,7 +862,10 @@ describe('external targeted source products through the bound surface host', () 
         });
         const screen = await renderScreen(
             <PluginSurfacePlacementHost
-                placement={externalTargetDeclarativePlacement(admittedModel.root)}
+                placement={externalTargetDeclarativePlacement(
+                    admittedModel.root,
+                    fixture.targetFixture.mountedTarget.occurrenceId,
+                )}
                 pluginUiProjection={projectionFor({
                     ...EMPTY_PLUGIN_UI_PROJECTION,
                     generation: 505,
@@ -843,6 +925,9 @@ const pluginArtifactCacheStorage = vi.hoisted((): Readonly<{
 const observedDeclarativeHostApis = vi.hoisted(() => [] as PluginUiHostApi[]);
 const declarativeSettingsGetMock = vi.hoisted(() => vi.fn());
 const declarativeSettingsSetMock = vi.hoisted(() => vi.fn());
+const declarativeSecretStatusMock = vi.hoisted(() => vi.fn());
+const declarativeSecretSetMock = vi.hoisted(() => vi.fn());
+const declarativeSecretDeleteMock = vi.hoisted(() => vi.fn());
 const declarativeActionExecuteMock = vi.hoisted(() => vi.fn());
 const createActivePluginCollectionUiQueryPagerMock = vi.hoisted(() => vi.fn());
 const pluginDataTransport = vi.hoisted(() => ({
@@ -895,10 +980,8 @@ const resourceWatchCloseMock = vi.hoisted(() => vi.fn(async () => undefined));
 const activePluginAvailability = vi.hoisted(() => ({
     reader: null as unknown,
 }));
-const reactNativeCrashReports = vi.hoisted(() => ({
-    submit: vi.fn(),
-}));
 const contributionProjectionDescribeMock = vi.hoisted(() => vi.fn());
+const targetedContributionsReadMock = vi.hoisted(() => vi.fn());
 const accountEncryptionModeCredentials = vi.hoisted(() => ({
     value: { token: 'plugin-surface-account-mode-test-token' } as Readonly<{ token: string }> | null,
 }));
@@ -915,12 +998,16 @@ vi.mock('@/sync/ops/machineContributionRegistryProjection', async (importOrigina
     ...(await importOriginal<typeof import('@/sync/ops/machineContributionRegistryProjection')>()),
     machinePluginSettingsGet: (...args: unknown[]) => declarativeSettingsGetMock(...args),
     machinePluginSettingsSet: (...args: unknown[]) => declarativeSettingsSetMock(...args),
+    machinePluginSecretStatus: (...args: unknown[]) => declarativeSecretStatusMock(...args),
+    machinePluginSecretSet: (...args: unknown[]) => declarativeSecretSetMock(...args),
+    machinePluginSecretDelete: (...args: unknown[]) => declarativeSecretDeleteMock(...args),
     machinePluginStructuredMessageActionExecute: (...args: unknown[]) => declarativeActionExecuteMock(...args),
     machinePluginUiResourceRead: (...args: never[]) => (resourceReadMock as (...a: unknown[]) => unknown)(...args),
     machinePluginUiResourceWatchOpen: (...args: never[]) => (resourceWatchOpenMock as (...a: unknown[]) => unknown)(...args),
     machinePluginUiResourceWatchNext: (...args: never[]) => (resourceWatchNextMock as (...a: unknown[]) => unknown)(...args),
     machinePluginUiResourceWatchClose: (...args: never[]) => (resourceWatchCloseMock as (...a: unknown[]) => unknown)(...args),
     machineContributionRegistryProjectionDescribe: (...args: unknown[]) => contributionProjectionDescribeMock(...args),
+    machinePluginUiTargetedContributionsRead: (...args: unknown[]) => targetedContributionsReadMock(...args),
 }));
 
 vi.mock('@/sync/api/plugins/data/queryPluginCollectionUiQuery', () => ({
@@ -943,6 +1030,22 @@ vi.mock('@/sync/store/hooks', async (importOriginal) => ({
 
 vi.mock('@/sync/domains/scope/activeServerAccountScope', () => ({
     captureActiveServerAccountScopeLifetime: () => pluginSurfaceAccountLifetime.value,
+}));
+
+// The production merged-projection hook resolves routed Homes through this
+// credential-scope boundary when a serverId is supplied. Keep that boundary
+// truthful in host tests so generic mounts can consume the same machine
+// projection as the target read; the account lifetime itself remains the
+// fixture's existing currentness owner.
+vi.mock('@/sync/domains/scope/useServerCredentialAccountScopes', () => ({
+    useServerCredentialAccountScopeBindings: (serverIds: readonly string[]) => new Map(
+        serverIds.flatMap((serverId) => {
+            const binding = pluginSurfaceAccountLifetime.value;
+            return binding?.scope.serverId === serverId
+                ? [[serverId, binding] as const]
+                : [];
+        }),
+    ),
 }));
 
 vi.mock('@/sync/http/client', async (importOriginal) => {
@@ -997,9 +1100,6 @@ vi.mock('@/sync/domains/plugins/availability/projection', async (importOriginal)
     useActivePluginAccountAvailabilityReader: () => activePluginAvailability.reader,
 }));
 
-vi.mock('@/sync/domains/plugins/ui/reactNativeCrashReports', () => ({
-    submitReactNativeCrashReportViaMachineRpc: (...args: unknown[]) => reactNativeCrashReports.submit(...args),
-}));
 
 vi.mock('@/log', async (importOriginal) => {
     const original = await importOriginal<typeof import('@/log')>();
@@ -1102,6 +1202,9 @@ vi.mock('@/text', async () => {
             empty: 'Nothing to show',
             error: 'Something went wrong',
             moreActions: 'More actions',
+            details: 'Details',
+            choose: 'Choose…',
+            back: 'Back',
         },
         es: {
             submit: 'Enviar',
@@ -1114,6 +1217,9 @@ vi.mock('@/text', async () => {
             empty: 'Nada que mostrar',
             error: 'Algo salió mal',
             moreActions: 'Más acciones',
+            details: 'Detalles',
+            choose: 'Elegir…',
+            back: 'Atrás',
         },
     } as const;
     return {
@@ -1130,6 +1236,9 @@ vi.mock('@/text', async () => {
                 if (key === 'ui.pluginUi.empty') return chrome?.empty ?? key;
                 if (key === 'ui.pluginUi.error') return chrome?.error ?? key;
                 if (key === 'ui.pluginUi.moreActions') return chrome?.moreActions ?? key;
+                if (key === 'common.details') return chrome?.details ?? key;
+                if (key === 'common.choose') return chrome?.choose ?? key;
+                if (key === 'common.back') return chrome?.back ?? key;
                 return key;
             },
             translateLoose: (key) => key,
@@ -1194,6 +1303,9 @@ afterEach(async () => {
     pluginSurfaceConnectivity.daemonStateVersion = 1;
     declarativeSettingsGetMock.mockReset();
     declarativeSettingsSetMock.mockReset();
+    declarativeSecretStatusMock.mockReset();
+    declarativeSecretSetMock.mockReset();
+    declarativeSecretDeleteMock.mockReset();
     declarativeActionExecuteMock.mockReset();
     createActivePluginCollectionUiQueryPagerMock.mockReset();
     pluginDataTransport.enabled = false;
@@ -1221,7 +1333,6 @@ afterEach(async () => {
     }
     pluginSurfaceAccountLifetime.reset();
     activePluginAvailability.reader = null;
-    reactNativeCrashReports.submit.mockReset();
     accountEncryptionModeFetch.mockReset();
     accountEncryptionModeCredentials.value = null;
 });
@@ -1270,6 +1381,32 @@ beforeEach(async () => {
     vi.stubGlobal('caches', pluginArtifactCacheStorage.cacheStorage);
     contributionProjectionDescribeMock.mockReset();
     contributionProjectionDescribeMock.mockResolvedValue({ supported: false, reason: 'not-supported' });
+    // Fixtures describe one daemon answer per case: the machine projection
+    // plus the current slice for the mounted target. The per-mount read
+    // returns only that slice, exactly as the daemon's target read does.
+    targetedContributionsReadMock.mockReset();
+    targetedContributionsReadMock.mockImplementation(async (
+        machineId: string,
+        options: Readonly<{ serverId?: string | null; pluginId: string }>,
+    ) => {
+        const answer = await contributionProjectionDescribeMock(machineId, {
+            serverId: options.serverId,
+            targetPluginId: options.pluginId,
+        }) as Readonly<{
+            supported?: boolean;
+            reason?: string;
+            targetedContributions?: unknown;
+            targetedSurfaceMounts?: readonly unknown[];
+        }> | undefined;
+        if (!answer || answer.supported !== true) return answer ?? { supported: false, reason: 'error' };
+        if (!answer.targetedContributions) return { supported: false, reason: 'invalid-response' };
+        return {
+            supported: true,
+            targetedContributions: answer.targetedContributions,
+            targetedSurfaceMounts: answer.targetedSurfaceMounts ?? [],
+        };
+    });
+    (await import('@/agents/backendCatalog/loadDaemonMergedProjectionInputs')).clearDaemonMergedProjectionCacheForTests();
     accountEncryptionModeCredentials.value = { token: 'plugin-surface-account-mode-test-token' };
     // Mutate the genuine singleton boundary: a module-replacement Proxy can
     // leave cyclic imports holding the original, credential-less Sync object.
@@ -1294,6 +1431,10 @@ const target: BrowserLocalServicePreviewTargetV1 = {
     sessionId: 'session_1',
     machineId: 'machine_1',
 };
+
+function developmentSourceCustody(registeredRootId: `${string}-test-root`) {
+    return Object.freeze({ kind: 'development' as const, registeredRootId });
+}
 
 function mountedExecutionOrigin(
     pluginId: string,
@@ -1332,7 +1473,8 @@ function destinationBinding(input: PluginUiDestinationBindingInputV1): PluginUiD
  */
 function admittedDeclarativeModelFixture(model: Readonly<Record<string, unknown>>) {
     const cloned = JSON.parse(JSON.stringify(model)) as Record<string, unknown>;
-    const identity = cloned.identity as { pluginId: string; localId: string; generation: string };
+    const identity = cloned.identity as { pluginId: string; localId: string; occurrenceId?: string };
+    const occurrenceId = identity.occurrenceId ?? `${identity.pluginId}:${identity.localId}:fixture-occurrence`;
     const contribution = createPluginContributionIdentity({ pluginId: identity.pluginId, localId: identity.localId });
     const settingsInventory: Array<Record<string, unknown>> = [];
     const walk = (node: unknown): void => {
@@ -1376,7 +1518,7 @@ function admittedDeclarativeModelFixture(model: Readonly<Record<string, unknown>
         uiQueries: existingInventory.uiQueries ?? [],
     };
     return PluginDeclarativeProjectedModelV1Schema.parse({
-        identity: { ...contribution, qualifiedId: buildQualifiedPluginContributionKey(contribution), generation: identity.generation },
+        identity: { ...contribution, qualifiedId: buildQualifiedPluginContributionKey(contribution), occurrenceId },
         visible: cloned.visible,
         requiredHostMethods: cloned.requiredHostMethods ?? [],
         declarativeInventory: cloned.declarativeInventory,
@@ -1394,11 +1536,13 @@ function surfacePlacementFixture(input: Readonly<{
     display?: Readonly<Record<string, unknown>>;
     runtime?: Readonly<Record<string, unknown>>;
     id?: string;
+    occurrenceId?: string;
 }>): PluginUiSurfacePlacementProjection {
     const binding = destinationBinding(input.binding);
     return Object.freeze({
         id: input.id ?? `surfacePlacement:${binding.destination.pluginId}:${binding.destination.localId}`,
         pluginId: binding.destination.pluginId,
+        occurrenceId: input.occurrenceId ?? `${binding.destination.pluginId}-test-occurrence`,
         contributionKind: 'surfacePlacement',
         descriptorId: binding.destination.localId,
         binding,
@@ -1450,7 +1594,7 @@ function declarativeDocumentPlacement(): PluginUiSurfacePlacementProjection {
                     pluginId: 'acme.live-dashboard',
                     localId: 'dashboard',
                     qualifiedId: 'acme.live-dashboard/dashboard',
-                    generation: '7',
+                    occurrenceId: '7',
                 },
                 visible: true,
                 requiredHostMethods: [],
@@ -1465,6 +1609,7 @@ function declarativeDocumentPlacement(): PluginUiSurfacePlacementProjection {
             }),
         },
         runtime: { resourceCapability: { readable: true, dynamic: true } },
+        occurrenceId: 'live-dashboard-generation-7',
     });
 }
 
@@ -1506,6 +1651,7 @@ const hostedWebProjection: PluginUiProjectionModel = {
         'hostedWeb:acme.browser:panel': {
             id: 'hostedWeb:acme.browser:panel',
             pluginId: 'acme.browser',
+            occurrenceId: 'acme-browser-occurrence-1',
             contributionKind: 'hostedWeb',
             contributionId: 'panel',
             service: { kind: 'sessionEndpoint', endpointIdPath: '/endpointId' },
@@ -1528,22 +1674,22 @@ const hostedWebProjection: PluginUiProjectionModel = {
 
 const generatedHostedWebArtifactFixture = Object.freeze({
     pluginId: 'acme.browser',
+    contributionId: 'panel',
+    platform: 'web' as const,
     releaseVersion: '1.2.3',
     projectionGeneration: 11,
     graph: Object.freeze({
-        contributionId: 'panel',
+        artifactId: 'panel',
         tier: 'hostedWeb' as const,
-        platform: 'web' as const,
-        entry: 'hosted-web/browser/index.html',
+        entry: 'hosted-web/panel/index.html',
         files: Object.freeze([Object.freeze({
-            relativePath: 'hosted-web/browser/index.html',
+            relativePath: 'hosted-web/panel/index.html',
             digest: PluginUiArtifactDigestV1Schema.parse(`sha256:${'b'.repeat(64)}`),
             byteSize: 16,
         })]),
         digest: PluginUiArtifactDigestV1Schema.parse(`sha256:${'a'.repeat(64)}`),
-        builtWith: Object.freeze({ bundler: 'vite' as const, version: '7.0.0' }),
-        hostUiApiVersion: '1.0.0',
-        compat: Object.freeze({}),
+        builtWith: Object.freeze({ staging: 'staticDirectory' as const }),
+        hostUiApiRange: '^1.0.0',
     }),
 });
 
@@ -1559,7 +1705,7 @@ function createGeneratedHostedWebArtifactProjection(input: Readonly<{
 }>): PluginUiProjectionModel {
     const targetFixture = primeExactTargetedContributions({
         pluginId: generatedHostedWebArtifactFixture.pluginId,
-        immutableGenerationId: 'browser-hosted-artifact-generation-11',
+        occurrenceId: 'browser-hosted-artifact-generation-11',
         projectionGeneration: generatedHostedWebArtifactFixture.projectionGeneration,
     });
     return withMountedTargetPackage({
@@ -1568,6 +1714,7 @@ function createGeneratedHostedWebArtifactProjection(input: Readonly<{
         hostedWebById: {
             'hostedWeb:acme.browser:panel': {
                 ...hostedWebProjection.hostedWebById['hostedWeb:acme.browser:panel']!,
+                occurrenceId: targetFixture.mountedTarget.occurrenceId,
                 generatedV2: true,
                 pluginVersion: generatedHostedWebArtifactFixture.releaseVersion,
                 service: { kind: 'staticAssets', assetRootId: 'hosted-web/browser' },
@@ -1600,11 +1747,7 @@ function createGeneratedHostedWebArtifactProjection(input: Readonly<{
                     diagnostics: [],
                     decision: { state: 'render', reason: 'available', diagnostics: [] },
                     artifactReadIdentity: {
-                        pluginId: generatedHostedWebArtifactFixture.pluginId,
-                        contributionId: generatedHostedWebArtifactFixture.graph.contributionId,
                         artifactDigest: generatedHostedWebArtifactFixture.graph.digest,
-                        platform: 'web',
-                        projectionGeneration: generatedHostedWebArtifactFixture.projectionGeneration,
                     },
                 },
             },
@@ -1616,7 +1759,7 @@ function createGeneratedHostedWebArtifactProjection(input: Readonly<{
 }
 
 function prepareGeneratedHostedWebArtifactFrame(): void {
-    const { graph, pluginId, releaseVersion } = generatedHostedWebArtifactFixture;
+    const { graph, pluginId, contributionId, platform, releaseVersion } = generatedHostedWebArtifactFixture;
     activePluginAvailability.reader = createPluginAccountAvailabilityReader({
         scope: { serverId: 'server-a', accountId: 'account-a' },
         snapshot: {
@@ -1655,11 +1798,12 @@ function prepareGeneratedHostedWebArtifactFrame(): void {
                         }),
                         collectionContracts: [],
                         uiSlots: [{
-                            contributionId: graph.contributionId,
+                            contributionId,
+                            artifactId: graph.artifactId,
                             tier: graph.tier,
-                            platform: graph.platform,
+                            platform,
                             artifactDigest: graph.digest,
-                            compatibility: { hostUiApiVersion: graph.hostUiApiVersion },
+                            hostUiApiRange: graph.hostUiApiRange,
                         }],
                         packageAssetArchive: {
                             archiveDigestSha256: `sha256:${'c'.repeat(64)}`,
@@ -1668,18 +1812,13 @@ function prepareGeneratedHostedWebArtifactFrame(): void {
                     },
                     uiArtifacts: [{
                         release: { pluginId, version: releaseVersion },
-                        contributionId: graph.contributionId,
+                        contributionId,
+                        artifactId: graph.artifactId,
                         tier: graph.tier,
-                        platform: graph.platform,
-                        artifactId: '00000000-0000-4000-8000-000000000011',
+                        platform,
+                        accountArtifactId: '00000000-0000-4000-8000-000000000011',
                         artifactDigest: graph.digest,
-                        compatibility: {
-                            hostAppVersion: '1.0.0',
-                            hostUiApiVersion: graph.hostUiApiVersion,
-                            platform: graph.platform,
-                            channel: 'internal',
-                            nativeCapabilities: [],
-                        },
+                        hostUiApiRange: graph.hostUiApiRange,
                     }],
                 }),
             }],
@@ -1716,6 +1855,7 @@ const browserHostedWebPlacement = surfacePlacementFixture({
     // negotiation tests below assert that only this selected member grants the
     // dynamic methods; renderer declarations remain admission-only.
     runtime: { resourceCapability: { readable: true, dynamic: true } },
+    occurrenceId: 'browser-hosted-artifact-generation-11',
 });
 
 /**
@@ -1756,6 +1896,7 @@ const staticAssetHostedWebProjection: PluginUiProjectionModel = {
         'hostedWeb:acme.docs:panel': {
             id: 'hostedWeb:acme.docs:panel',
             pluginId: 'acme.docs',
+            occurrenceId: 'acme-docs-occurrence-1',
             contributionKind: 'hostedWeb',
             contributionId: 'panel',
             service: { kind: 'staticAssets', assetRootId: 'hosted-web/docs' },
@@ -1806,11 +1947,7 @@ const generatedArtifactHostedWebProjection: PluginUiProjectionModel = {
                     diagnostics: ['hosted_web_frame_adapter_unavailable'],
                 },
                 artifactReadIdentity: {
-                    pluginId: 'acme.docs',
-                    contributionId: 'panel',
                     artifactDigest: `sha256:${'a'.repeat(64)}`,
-                    platform: 'web',
-                    projectionGeneration: 11,
                 },
             },
         },
@@ -1858,18 +1995,12 @@ function createStaticAssetPreviewState() {
 const reactNativeCacheIdentity = {
     pluginId: 'acme.browser',
     contributionId: 'native-panel',
+    artifactId: 'native-panel-artifact',
     artifactDigest: PluginUiArtifactDigestV1Schema.parse('sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd'),
-    hostAppVersion: '2.0.0',
-    hostUiApiVersion: '1.0.0',
-    reactVersion: '19.2.0',
-    reactNativeVersion: '0.83.4',
     // `browserPanel` is an admitted desktop/web destination. Keep this static
     // RN fixture on desktop so the test exercises its loader rather than the
     // binding's deliberate native-platform rejection.
-    platform: 'desktop',
-    channel: 'internal',
-    nativeCapabilitiesDigest: 'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
-    projectionGeneration: 12,
+    platform: 'web',
 } as const;
 
 const defaultReactNativeModuleReference = {
@@ -1902,7 +2033,7 @@ const reactNativeProjection: PluginUiProjectionModel = {
                     loaderBackendAvailable: true,
                 },
                 cacheKey: 'native-cache-key',
-                cacheIdentity: reactNativeCacheIdentity,
+                cacheIdentity: { artifactDigest: reactNativeCacheIdentity.artifactDigest },
             },
         },
     },
@@ -1918,58 +2049,40 @@ const browserReactNativePlacement = surfacePlacementFixture({
     },
     renderer: { kind: 'reactNative', contributionId: 'native-panel' },
     display: { label: 'Native panel' },
-    // Normal generated-RN fixtures reuse this descriptor. The projected
-    // binding is deliberately exact even though legacy RN projections ignore
-    // it, so a generated contribution cannot mount through an unbound test
-    // descriptor.
-    runtime: {
-        reactNativeCrashState: {
-            token: {
-                mount: {
-                    kind: 'destination',
-                    destination: { pluginId: 'acme.browser', localId: 'native-panel' },
-                },
-                renderer: { pluginId: 'acme.browser', localId: 'native-panel' },
-                artifactDigest: PluginUiArtifactDigestV1Schema.parse(`sha256:${'e'.repeat(64)}`),
-                crashStateEpoch: 7,
-            },
-            disabled: false,
-        },
-    },
 });
+
+function browserReactNativePlacementFor(occurrenceId: string): PluginUiSurfacePlacementProjection {
+    return Object.freeze({ ...browserReactNativePlacement, occurrenceId });
+}
 
 const generatedReactNativeCacheIdentity = {
     ...reactNativeCacheIdentity,
     artifactDigest: PluginUiArtifactDigestV1Schema.parse(`sha256:${'e'.repeat(64)}`),
     platform: 'web',
-    projectionGeneration: 44,
 } as const;
 
 const generatedReactNativeArtifactGraph = {
-    contributionId: generatedReactNativeCacheIdentity.contributionId,
+    artifactId: generatedReactNativeCacheIdentity.artifactId,
     tier: 'reactNative' as const,
-    platform: generatedReactNativeCacheIdentity.platform,
-    entry: 'react-native/native-panel/index.js',
+    entry: `react-native/${generatedReactNativeCacheIdentity.artifactId}/entry.cjs.bundle`,
     files: [{
-        relativePath: 'react-native/native-panel/index.js',
+        relativePath: `react-native/${generatedReactNativeCacheIdentity.artifactId}/entry.cjs.bundle`,
         digest: PluginUiArtifactDigestV1Schema.parse(`sha256:${'f'.repeat(64)}`),
         byteSize: 16,
     }],
     digest: generatedReactNativeCacheIdentity.artifactDigest,
-    builtWith: { bundler: 'vite' as const, version: '7.0.0' },
-    hostUiApiVersion: generatedReactNativeCacheIdentity.hostUiApiVersion,
-    compat: {
-        react: generatedReactNativeCacheIdentity.reactVersion,
-        reactNative: generatedReactNativeCacheIdentity.reactNativeVersion,
-    },
+    builtWith: { bundler: 'esbuild' as const, version: '0.27.2' },
+    executable: { exports: ['renderSurface'] },
+    hostUiApiRange: '^1.0.0',
 } as const;
 
 const generatedReactNativeProjection = {
     ...reactNativeProjection,
-    generation: generatedReactNativeCacheIdentity.projectionGeneration,
+    generation: 44,
     reactNativeBundlesById: {
         'reactNativeBundle:acme.browser:native-panel': {
             ...reactNativeProjection.reactNativeBundlesById['reactNativeBundle:acme.browser:native-panel'],
+            occurrenceId: 'acme.browser-test-occurrence',
             generatedV2: true,
             pluginVersion: '3.2.1',
             artifactGraph: generatedReactNativeArtifactGraph,
@@ -1977,48 +2090,13 @@ const generatedReactNativeProjection = {
                 decision: { state: 'load', reason: 'compatible', diagnostics: [] },
                 loadPolicy: { source: 'installedArtifact' },
                 cacheKey: 'generated-native-cache-key',
-                cacheIdentity: generatedReactNativeCacheIdentity,
+                cacheIdentity: { artifactDigest: generatedReactNativeCacheIdentity.artifactDigest },
             },
         },
     },
 } as unknown as PluginUiProjectionModel;
 
-function generatedReactNativeCrashState(input: Readonly<{
-    artifactDigest?: string;
-    destinationId?: string;
-    rendererId?: string;
-    disabled?: boolean;
-}> = {}): DaemonPluginReactNativeCrashStateV1 {
-    return {
-        token: {
-            mount: {
-                kind: 'destination',
-                destination: {
-                    pluginId: 'acme.browser',
-                    localId: input.destinationId ?? 'native-panel',
-                },
-            },
-            renderer: {
-                pluginId: 'acme.browser',
-                localId: input.rendererId ?? 'native-panel',
-            },
-            artifactDigest: PluginUiArtifactDigestV1Schema.parse(
-                input.artifactDigest ?? generatedReactNativeCacheIdentity.artifactDigest,
-            ),
-            crashStateEpoch: 7,
-        },
-        disabled: input.disabled ?? false,
-    };
-}
-
-function generatedReactNativePlacement(input: Readonly<{
-    /** `undefined` supplies the normal daemon projection; `null` models omission. */
-    crashState?: DaemonPluginReactNativeCrashStateV1 | null;
-    disabled?: boolean;
-}> = {}): PluginUiSurfacePlacementProjection {
-    const crashState = input.crashState === undefined
-        ? generatedReactNativeCrashState({ disabled: input.disabled })
-        : input.crashState;
+function generatedReactNativePlacement(input: Readonly<{ occurrenceId?: string }> = {}): PluginUiSurfacePlacementProjection {
     const placement = surfacePlacementFixture({
         binding: {
             pluginId: 'acme.browser',
@@ -2029,22 +2107,11 @@ function generatedReactNativePlacement(input: Readonly<{
         },
         renderer: { kind: 'reactNative', contributionId: 'native-panel' },
         display: { label: 'Native panel' },
-        ...(crashState
-            ? { runtime: { reactNativeCrashState: crashState } }
-            : {}),
+        occurrenceId: input.occurrenceId ?? 'acme.browser-test-occurrence',
     });
     return Object.freeze({
         ...placement,
         generatedV2: true,
-        ...(input.disabled
-            ? {
-                availability: {
-                    state: 'disabled' as const,
-                    reason: 'crash_disabled',
-                    diagnostics: ['crash_threshold_reached'],
-                },
-            }
-            : {}),
     }) as unknown as PluginUiSurfacePlacementProjection;
 }
 
@@ -2055,7 +2122,7 @@ function generatedReactNativePlacement(input: Readonly<{
  */
 function primeExactTargetedContributions(input: Readonly<{
     pluginId: string;
-    immutableGenerationId: string;
+    occurrenceId: string;
     projectionGeneration?: number;
     /** Exact response-local B projection; never the broad A presentation map. */
     projection?: PluginProjectionV2;
@@ -2066,7 +2133,11 @@ function primeExactTargetedContributions(input: Readonly<{
 }>) {
     const mountedTarget = Object.freeze({
         pluginId: input.pluginId,
-        immutableGenerationId: input.immutableGenerationId,
+        occurrenceId: input.occurrenceId,
+        sourceCustody: Object.freeze({
+            kind: 'development' as const,
+            registeredRootId: `${input.pluginId}-test-root`,
+        }),
     });
     const targetedContributions = input.targetedContributions ?? Object.freeze({
         target: mountedTarget,
@@ -2078,7 +2149,6 @@ function primeExactTargetedContributions(input: Readonly<{
             generation: input.projectionGeneration ?? 1,
             installedPackagesById: {},
             agentsById: {},
-            backendsById: {},
             actionsById: input.actionsById ?? {},
             toolsById: {},
             commandsById: {},
@@ -2115,15 +2185,34 @@ function withMountedTargetPackage(
     const { mountedTarget } = targetFixture;
     return {
         ...projection,
+        hostedWebById: Object.fromEntries(Object.entries(projection.hostedWebById).map(([id, entry]) => [
+            id,
+            entry.pluginId === mountedTarget.pluginId
+                ? Object.freeze({ ...entry, occurrenceId: mountedTarget.occurrenceId })
+                : entry,
+        ])),
+        reactNativeBundlesById: Object.fromEntries(Object.entries(projection.reactNativeBundlesById).map(([id, entry]) => [
+            id,
+            entry.pluginId === mountedTarget.pluginId
+                ? Object.freeze({ ...entry, occurrenceId: mountedTarget.occurrenceId })
+                : entry,
+        ])),
+        surfacePlacementsById: Object.fromEntries(Object.entries(projection.surfacePlacementsById).map(([id, entry]) => [
+            id,
+            entry.pluginId === mountedTarget.pluginId
+                ? Object.freeze({ ...entry, occurrenceId: mountedTarget.occurrenceId })
+                : entry,
+        ])),
         installedPackagesById: {
             ...projection.installedPackagesById,
             [mountedTarget.pluginId]: {
                 id: mountedTarget.pluginId,
+                occurrenceId: mountedTarget.occurrenceId,
                 displayName: input.displayName,
                 version: input.version,
                 enabled: true,
                 source: { kind: 'bundled', locator: mountedTarget.pluginId },
-                immutableGenerationId: mountedTarget.immutableGenerationId,
+                immutableGenerationId: `artifact-for:${mountedTarget.occurrenceId}`,
                 brand: { state: 'missing' },
             },
         },
@@ -2145,6 +2234,7 @@ function projectedDaemonUiAction(input: Readonly<{
     return PluginProjectedActionV2Schema.parse({
         id: input.localId,
         pluginId: input.pluginId,
+        occurrenceId: `${input.pluginId}-test-occurrence`,
         title: input.localId,
         scopes: ['global'],
         surfaces: ['ui'],
@@ -2170,7 +2260,7 @@ function projectedDaemonUiAction(input: Readonly<{
 function withExactGeneratedMountedTarget(input: Readonly<{
     projection: PluginUiProjectionModel;
     pluginId: string;
-    immutableGenerationId: string;
+    occurrenceId: string;
     projectionGeneration: number;
     displayName: string;
     version: string;
@@ -2180,7 +2270,7 @@ function withExactGeneratedMountedTarget(input: Readonly<{
 }> {
     const targetFixture = primeExactTargetedContributions({
         pluginId: input.pluginId,
-        immutableGenerationId: input.immutableGenerationId,
+        occurrenceId: input.occurrenceId,
         projectionGeneration: input.projectionGeneration,
     });
     return Object.freeze({
@@ -2201,7 +2291,7 @@ function withExactGeneratedMountedTarget(input: Readonly<{
 function declarativeDocumentProjection(): PluginUiProjectionModel {
     const targetFixture = primeExactTargetedContributions({
         pluginId: 'acme.live-dashboard',
-        immutableGenerationId: 'live-dashboard-generation-7',
+        occurrenceId: 'live-dashboard-generation-7',
         projectionGeneration: 7,
     });
     return withMountedTargetPackage({
@@ -2215,34 +2305,19 @@ function declarativeDocumentProjection(): PluginUiProjectionModel {
 
 function reactNativeSurfacePlacementFixture(
     binding: PluginUiDestinationBindingInputV1,
+    occurrenceId = `${binding.pluginId}-test-occurrence`,
 ): PluginUiSurfacePlacementProjection {
     return surfacePlacementFixture({
         binding,
         renderer: { kind: 'reactNative', contributionId: binding.rendererId },
         display: { label: 'Native panel' },
-        // The generated context fixtures below share the default Artifact
-        // identity. Keep the token bound to each fixture's normalized
-        // destination/renderer pair so those fixtures exercise the same
-        // fail-closed descriptor contract as production.
-        runtime: {
-            reactNativeCrashState: {
-                token: {
-                    mount: {
-                        kind: 'destination',
-                        destination: { pluginId: binding.pluginId, localId: binding.destinationId },
-                    },
-                    renderer: { pluginId: binding.pluginId, localId: binding.rendererId },
-                    artifactDigest: PluginUiArtifactDigestV1Schema.parse(`sha256:${'e'.repeat(64)}`),
-                    crashStateEpoch: 7,
-                },
-                disabled: false,
-            },
-        },
+        occurrenceId,
     });
 }
 
 function reactNativeInlineSurfacePlacementFixture(
     input: PluginUiInlineSurfaceBindingInputV1,
+    occurrenceId = `${input.pluginId}-test-occurrence`,
 ): PluginUiPhysicalSurfacePlacementProjection {
     const binding = normalizePluginUiInlineSurfaceBindingV1({
         ...input,
@@ -2254,6 +2329,7 @@ function reactNativeInlineSurfacePlacementFixture(
     return Object.freeze({
         id: `surfacePlacement:${binding.surface.pluginId}:${binding.surface.localId}`,
         pluginId: binding.surface.pluginId,
+        occurrenceId,
         contributionKind: 'surfacePlacement' as const,
         descriptorId: binding.surface.localId,
         binding,
@@ -2262,21 +2338,6 @@ function reactNativeInlineSurfacePlacementFixture(
         display: { label: 'Native inline surface' },
         availability: { state: 'available' as const, reason: 'available', diagnostics: [] },
         headerActions: [],
-        runtime: {
-            reactNativeCrashState: {
-                token: {
-                    mount: {
-                        kind: 'inline' as const,
-                        surface: binding.surface,
-                        role: binding.role,
-                    },
-                    renderer: { pluginId: input.pluginId, localId: input.rendererId },
-                    artifactDigest: PluginUiArtifactDigestV1Schema.parse(`sha256:${'e'.repeat(64)}`),
-                    crashStateEpoch: 7,
-                },
-                disabled: false,
-            },
-        },
     });
 }
 
@@ -2306,7 +2367,7 @@ function daemonSettingsPageFixture(): PluginUiSettingsPageProjection {
                     pluginId: 'acme.settings-target',
                     localId: 'settings-form',
                     qualifiedId: 'acme.settings-target/settings-form',
-                    generation: '1',
+                    occurrenceId: '1',
                 },
                 visible: true,
                 root: {
@@ -2451,7 +2512,7 @@ describe('PluginSurfacePlacementHost', () => {
                         pluginId: 'acme.settings-page',
                         localId: 'settings-form',
                         qualifiedId: 'acme.settings-page/settings-form',
-                        generation: '1',
+                        occurrenceId: '1',
                     },
                     visible: true,
                     root: {
@@ -2530,10 +2591,14 @@ describe('PluginSurfacePlacementHost', () => {
         });
         declarativeSettingsGetMock.mockResolvedValue({ supported: true, snapshot: { protocolVersion: 1, pluginId: 'acme.forms', scope: { kind: 'daemon' }, revision: '0', values: { name: 'Before', count: 2, mode: 'safe', enabled: true, token: 'must-not-render' }, redactedKeys: ['token'] } });
         declarativeSettingsSetMock.mockResolvedValue({ supported: true, snapshot: { protocolVersion: 1, pluginId: 'acme.forms', scope: { kind: 'daemon' }, revision: '1', values: { name: 'After', count: 3, mode: 'fast', enabled: true }, redactedKeys: ['token'] } });
+        declarativeSecretStatusMock.mockResolvedValue({ supported: true, result: { protocolVersion: 1, pluginId: 'acme.forms', secretId: 'token', state: 'configured', revision: 'secret-0' } });
+        declarativeSecretSetMock.mockResolvedValue({ supported: true, result: { protocolVersion: 1, pluginId: 'acme.forms', secretId: 'token', state: 'configured', revision: 'secret-1' } });
+        declarativeSecretDeleteMock.mockResolvedValue({ supported: true, result: { protocolVersion: 1, pluginId: 'acme.forms', secretId: 'token', state: 'missing', revision: 'secret-2' } });
         declarativeActionExecuteMock.mockResolvedValue({ supported: true, result: { ok: true, result: null } });
         const { PluginSurfacePlacementHost } = await import('./PluginSurfaceHost');
         const placement = {
             id: 'surfacePlacement:acme.forms:settings', pluginId: 'acme.forms', pluginVersion: '1.0.0',
+            occurrenceId: 'forms-generation-7',
             contributionKind: 'surfacePlacement', descriptorId: 'settings', generatedV2: true,
             target: { kind: 'app' }, display: { developerFallback: 'Settings' },
             binding: destinationBinding({
@@ -2546,13 +2611,13 @@ describe('PluginSurfacePlacementHost', () => {
                 'materialization-forms-current',
             ),
             renderer: { kind: 'declarative', contributionId: 'form', model: admittedDeclarativeModelFixture({
-                identity: { pluginId: 'acme.forms', localId: 'form', qualifiedId: 'acme.forms/form', generation: 'generation-7' },
+                identity: { pluginId: 'acme.forms', localId: 'form', qualifiedId: 'acme.forms/form', occurrenceId: 'generation-7' },
                 visible: true, requiredHostMethods: ['executeAction'], nodes: [],
                 root: { kind: 'group', path: 'root', order: 0, title: 'Profile', children: [
                     { kind: 'field', path: 'root.children[0]', order: 1, label: 'Name', control: { kind: 'text', settingId: 'name' }, setting: { id: 'name', contributionId: 'profile', qualifiedId: 'acme.forms/settings/profile/fields/name', descriptor: { id: 'name', title: 'Name', target: { kind: 'plugin' }, scope: 'daemon', schema: { type: 'string' } } } },
                     { kind: 'status', path: 'root.children[1]', order: 2, label: 'State', value: 'Ready', tone: 'success' },
-                    { kind: 'action', path: 'root.children[2]', order: 3, action: { identity: { pluginId: 'acme.forms', localId: 'save' }, qualifiedId: 'acme.forms/save', generation: 'generation-7' }, label: 'Save', enabled: true },
-                    { kind: 'action', path: 'root.children[3]', order: 4, action: { identity: { pluginId: 'acme.forms', localId: 'delete' }, qualifiedId: 'acme.forms/delete', generation: 'generation-7' }, label: 'Delete', enabled: false },
+                    { kind: 'action', path: 'root.children[2]', order: 3, action: { identity: { pluginId: 'acme.forms', localId: 'save' }, qualifiedId: 'acme.forms/save', occurrenceId: 'generation-7' }, label: 'Save', enabled: true },
+                    { kind: 'action', path: 'root.children[3]', order: 4, action: { identity: { pluginId: 'acme.forms', localId: 'delete' }, qualifiedId: 'acme.forms/delete', occurrenceId: 'generation-7' }, label: 'Delete', enabled: false },
                     { kind: 'stack', path: 'root.children[4]', order: 5, direction: 'vertical', children: [
                         { kind: 'text', path: 'root.children[4].children[0]', order: 6, text: 'Plain text' },
                         { kind: 'markdown', path: 'root.children[4].children[1]', order: 7, text: '**Formatted**' },
@@ -2561,7 +2626,7 @@ describe('PluginSurfacePlacementHost', () => {
                     { kind: 'field', path: 'root.children[6]', order: 9, label: 'Mode', control: { kind: 'select', settingId: 'mode', options: [{ value: 'safe', label: 'Safe' }, { value: 'fast', label: 'Fast' }] }, setting: { id: 'mode', descriptor: { scope: 'daemon', schema: { type: 'string' } } } },
                     { kind: 'field', path: 'root.children[7]', order: 10, label: 'Enabled', control: { kind: 'toggle', settingId: 'enabled' }, setting: { id: 'enabled', descriptor: { scope: 'daemon', schema: { type: 'boolean' } } } },
                     { kind: 'field', path: 'root.children[8]', order: 11, label: 'Token', control: { kind: 'secret', settingId: 'token' }, setting: { id: 'token', descriptor: { scope: 'daemon', secret: true, schema: { type: 'string' } } } },
-                    { kind: 'action', path: 'root.children[9]', order: 12, action: { identity: { pluginId: 'acme.shared', localId: 'reset' }, qualifiedId: 'acme.shared/reset', generation: 'generation-7' }, input: null, label: 'Reset', enabled: true },
+                    { kind: 'action', path: 'root.children[9]', order: 12, action: { identity: { pluginId: 'acme.shared', localId: 'reset' }, qualifiedId: 'acme.shared/reset', occurrenceId: 'generation-7' }, input: null, label: 'Reset', enabled: true },
                     { kind: 'field', path: 'root.children[10]', order: 13, label: 'Account token', control: { kind: 'secret', settingId: 'account-token' }, setting: { id: 'account-token', descriptor: { scope: 'account', secret: true, schema: { type: 'string' } } } },
                 ] },
             }) },
@@ -2584,7 +2649,7 @@ describe('PluginSurfacePlacementHost', () => {
         } satisfies PluginProjectionV2['actionsById'];
         const targetFixture = primeExactTargetedContributions({
             pluginId: 'acme.forms',
-            immutableGenerationId: 'forms-generation-7',
+            occurrenceId: 'forms-generation-7',
             projectionGeneration: 7,
             actionsById: exactActionsById,
         });
@@ -2623,15 +2688,15 @@ describe('PluginSurfacePlacementHost', () => {
         const omittedSaveInput = declarativeActionExecuteMock.mock.calls.at(-1)?.[1] as Readonly<Record<string, unknown>> | undefined;
         expect(omittedSaveInput).toEqual({
             serverId: 'server-a',
-            // Action dispatch is fenced by the bound projection generation,
-            // rather than the declarative model's source-label generation.
-            expectedGeneration: '7',
+            expectedContributorOccurrenceId: 'acme.forms-test-occurrence',
             qualifiedActionId: 'acme.forms/save',
             executionSurface: 'ui',
             invocation: {
                 kind: 'mountedPluginSurface',
                 mountedBinding: {
+                    pluginId: 'acme.forms',
                     contributionLocalId: 'settings',
+                    occurrenceId: 'forms-generation-7',
                     materializationRef: {
                         machineId: 'machine-1',
                         materializationId: 'materialization-forms-current',
@@ -2658,13 +2723,21 @@ describe('PluginSurfacePlacementHost', () => {
         const fieldSaveStyle = screen.findByTestId('plugin-declarative-field-save:root.children[8]')?.props.style;
         expect(typeof fieldSaveStyle).toBe('function');
         expect(fieldSaveStyle?.({ pressed: false })).toMatchObject({ minHeight: 48 });
-        // Secret deletion is explicit. An empty field save is still data and
-        // must cross the shared scoped Settings adapter as a normal set.
+        // The redacted blank is untouched until the user edits it. Empty Save
+        // remains data, and Delete is a separate daemon-secret mutation.
+        expect(screen.findByTestId('plugin-declarative-field-save:root.children[8]')?.props.disabled).toBe(true);
         await act(async () => { screen.changeTextByTestId('plugin-declarative-field:root.children[8]', ''); });
         await act(async () => { screen.pressByTestId('plugin-declarative-field-save:root.children[8]'); });
-        expect(declarativeSettingsSetMock).toHaveBeenLastCalledWith('machine-1', expect.objectContaining({
-            fieldId: 'token',
-            mutation: { kind: 'set', value: '' },
+        expect(declarativeSecretSetMock).toHaveBeenCalledWith('machine-1', expect.objectContaining({
+            secretId: 'token',
+            value: '',
+            expectedRevision: 'secret-0',
+        }));
+        expect(declarativeSettingsSetMock).not.toHaveBeenCalledWith('machine-1', expect.objectContaining({ fieldId: 'token' }));
+        await act(async () => { screen.pressByTestId('plugin-declarative-field-delete:root.children[8]'); });
+        expect(declarativeSecretDeleteMock).toHaveBeenCalledWith('machine-1', expect.objectContaining({
+            secretId: 'token',
+            expectedRevision: 'secret-1',
         }));
         await act(async () => { screen.changeTextByTestId('plugin-declarative-field:root.children[5]', '42'); });
         await act(async () => { screen.pressByTestId('plugin-declarative-field-save:root.children[5]'); });
@@ -2680,7 +2753,7 @@ describe('PluginSurfacePlacementHost', () => {
         await act(async () => { screen.pressByTestId('plugin-declarative-action:acme.shared/reset'); });
         expect(declarativeActionExecuteMock).toHaveBeenCalledWith('machine-1', {
             serverId: 'server-a',
-            expectedGeneration: '7',
+            expectedContributorOccurrenceId: 'acme.shared-test-occurrence',
             qualifiedActionId: 'acme.shared/reset',
             input: null,
             executionSurface: 'ui',
@@ -2689,7 +2762,9 @@ describe('PluginSurfacePlacementHost', () => {
             invocation: {
                 kind: 'mountedPluginSurface',
                 mountedBinding: {
+                    pluginId: 'acme.forms',
                     contributionLocalId: 'settings',
+                    occurrenceId: 'forms-generation-7',
                     materializationRef: {
                         machineId: 'machine-1',
                         materializationId: 'materialization-forms-current',
@@ -2731,7 +2806,7 @@ describe('PluginSurfacePlacementHost', () => {
 
         expect(resourceReadMock).toHaveBeenCalledWith('machine-1', expect.objectContaining({
             serverId: 'server-a',
-            expectedGeneration: '7',
+            expectedCallerOccurrenceId: 'live-dashboard-generation-7',
             callerPluginId: 'acme.live-dashboard',
             resource: { pluginId: 'acme.live-dashboard', localId: 'live-dashboard' },
         }));
@@ -2762,12 +2837,12 @@ describe('PluginSurfacePlacementHost', () => {
         const action = {
             identity: { pluginId, localId: 'inspect' },
             qualifiedId: `${pluginId}/inspect`,
-            generation,
+            occurrenceId: generation,
         };
         const destination = {
             identity: { pluginId, localId: 'task-details' },
             qualifiedId: `${pluginId}/task-details`,
-            generation,
+            occurrenceId: generation,
         };
         const row = {
             context: {
@@ -2818,7 +2893,7 @@ describe('PluginSurfacePlacementHost', () => {
                         pluginId,
                         localId: 'tasks',
                         qualifiedId: `${pluginId}/tasks`,
-                        generation,
+                        occurrenceId: generation,
                     },
                     visible: true,
                     requiredHostMethods: [],
@@ -2939,7 +3014,7 @@ describe('PluginSurfacePlacementHost', () => {
                         pluginId: 'acme.targeted-fill',
                         localId: 'fill',
                         qualifiedId: 'acme.targeted-fill/fill',
-                        generation: 'fill-generation',
+                        occurrenceId: 'fill-generation',
                     },
                     visible: true,
                     root: {
@@ -2951,7 +3026,8 @@ describe('PluginSurfacePlacementHost', () => {
                             contributor: {
                                 pluginId: 'acme.fill-contributor',
                                 contributionId: 'fill',
-                                immutableGenerationId: 'fill-contributor-generation',
+                                occurrenceId: 'fill-contributor-generation',
+                                sourceCustody: developmentSourceCustody('acme-fill-contributor-test-root'),
                             },
                             role: 'detail',
                             presentation: 'fill',
@@ -3232,6 +3308,7 @@ describe('PluginSurfacePlacementHost', () => {
         const { PluginSurfacePlacementHost } = await import('./PluginSurfaceHost');
         const placement = {
             id: 'surfacePlacement:acme.actionsonly:tab', pluginId: 'acme.actionsonly', pluginVersion: '1.0.0',
+            occurrenceId: 'actionsonly-generation-7',
             contributionKind: 'surfacePlacement', descriptorId: 'tab', generatedV2: true,
             target: { kind: 'app' }, display: { developerFallback: 'Tab' },
             binding: destinationBinding({
@@ -3244,10 +3321,10 @@ describe('PluginSurfacePlacementHost', () => {
                 'materialization-actionsonly-current',
             ),
             renderer: { kind: 'declarative', contributionId: 'decl', model: admittedDeclarativeModelFixture({
-                identity: { pluginId: 'acme.actionsonly', localId: 'decl', qualifiedId: 'acme.actionsonly/decl', generation: 'generation-7' },
+                identity: { pluginId: 'acme.actionsonly', localId: 'decl', qualifiedId: 'acme.actionsonly/decl', occurrenceId: 'generation-7' },
                 visible: true, requiredHostMethods: ['executeAction'], nodes: [],
                 root: { kind: 'group', path: 'root', order: 0, title: 'Actions', children: [
-                    { kind: 'action', path: 'root.children[0]', order: 1, action: { identity: { pluginId: 'acme.actionsonly', localId: 'run' }, qualifiedId: 'acme.actionsonly/run', generation: 'generation-7' }, label: 'Run', enabled: true },
+                    { kind: 'action', path: 'root.children[0]', order: 1, action: { identity: { pluginId: 'acme.actionsonly', localId: 'run' }, qualifiedId: 'acme.actionsonly/run', occurrenceId: 'generation-7' }, label: 'Run', enabled: true },
                 ] },
             }) },
             availability: { state: 'available', reason: 'available', diagnostics: [] },
@@ -3263,7 +3340,7 @@ describe('PluginSurfacePlacementHost', () => {
         } satisfies PluginProjectionV2['actionsById'];
         const targetFixture = primeExactTargetedContributions({
             pluginId: 'acme.actionsonly',
-            immutableGenerationId: 'actionsonly-generation-7',
+            occurrenceId: 'actionsonly-generation-7',
             projectionGeneration: 7,
             actionsById: exactActionsById,
         });
@@ -3281,13 +3358,15 @@ describe('PluginSurfacePlacementHost', () => {
         const actionExecute = declarativeActionExecuteMock.mock.calls[0]?.[1];
         expect(actionExecute).toMatchObject({
             serverId: 'server-a',
-            expectedGeneration: '7',
+            expectedContributorOccurrenceId: 'acme.actionsonly-test-occurrence',
             qualifiedActionId: 'acme.actionsonly/run',
             executionSurface: 'ui',
             invocation: {
                 kind: 'mountedPluginSurface',
                 mountedBinding: {
+                    pluginId: 'acme.actionsonly',
                     contributionLocalId: 'tab',
+                    occurrenceId: 'actionsonly-generation-7',
                     materializationRef: {
                         machineId: 'machine-1',
                         materializationId: 'materialization-actionsonly-current',
@@ -3301,6 +3380,65 @@ describe('PluginSurfacePlacementHost', () => {
         expect(Object.prototype.hasOwnProperty.call(actionExecute!, 'input')).toBe(false);
     });
 
+    it('mounts no plugin surface beneath an embedded Session presentation (plan 05 SC-R6)', async () => {
+        declarativeSettingsGetMock.mockResolvedValue({ supported: false, reason: 'error' });
+        const { PluginSurfacePlacementHost } = await import('./PluginSurfaceHost');
+        const { PluginSurfaceNestingBoundary } = await import('./pluginSurfaceNesting');
+        const placement = {
+            id: 'surfacePlacement:acme.nested:tab', pluginId: 'acme.nested', pluginVersion: '1.0.0',
+            occurrenceId: 'nested-generation-7',
+            contributionKind: 'surfacePlacement', descriptorId: 'tab', generatedV2: true,
+            target: { kind: 'app' }, display: { developerFallback: 'Tab' },
+            binding: destinationBinding({
+                pluginId: 'acme.nested', destinationId: 'tab', rendererId: 'decl',
+                container: 'settingsPage', target: { kind: 'app' },
+            }),
+            ...mountedExecutionOrigin('acme.nested', 'machine-1', 'materialization-nested-current'),
+            renderer: { kind: 'declarative', contributionId: 'decl', model: admittedDeclarativeModelFixture({
+                identity: { pluginId: 'acme.nested', localId: 'decl', qualifiedId: 'acme.nested/decl', occurrenceId: 'generation-7' },
+                visible: true, requiredHostMethods: ['executeAction'], nodes: [],
+                root: { kind: 'group', path: 'root', order: 0, title: 'Actions', children: [
+                    { kind: 'action', path: 'root.children[0]', order: 1, action: { identity: { pluginId: 'acme.nested', localId: 'run' }, qualifiedId: 'acme.nested/run', occurrenceId: 'generation-7' }, label: 'Run', enabled: true },
+                ] },
+            }) },
+            availability: { state: 'available', reason: 'available', diagnostics: [] },
+            headerActions: [],
+        } as const;
+        const exactActionsById = {
+            'acme.nested/run': projectedDaemonUiAction({
+                pluginId: 'acme.nested',
+                localId: 'run',
+                machineId: 'machine-1',
+                materializationId: 'materialization-nested-current',
+            }),
+        } satisfies PluginProjectionV2['actionsById'];
+        const targetFixture = primeExactTargetedContributions({
+            pluginId: 'acme.nested',
+            occurrenceId: 'nested-generation-7',
+            projectionGeneration: 7,
+            actionsById: exactActionsById,
+        });
+        const projectedUi = withMountedTargetPackage({
+            ...EMPTY_PLUGIN_UI_PROJECTION,
+            generation: 7,
+            actionsById: exactActionsById,
+        }, targetFixture, { displayName: 'Nested', version: '1.0.0' });
+        const host = (
+            <PluginSurfacePlacementHost placement={placement} machineId="machine-1" serverId="server-a" pluginUiProjection={projectedUi} platform="web" />
+        );
+
+        const open = await renderScreen(host);
+        await act(async () => {});
+        expect(open.findByTestId('plugin-declarative-action:acme.nested/run')).not.toBeNull();
+        await act(async () => { open.tree.unmount(); });
+        declarativeSettingsGetMock.mockClear();
+
+        const nested = await renderScreen(<PluginSurfaceNestingBoundary>{host}</PluginSurfaceNestingBoundary>);
+        await act(async () => {});
+        expect(nested.findByTestId('plugin-declarative-action:acme.nested/run')).toBeNull();
+        expect(declarativeSettingsGetMock).not.toHaveBeenCalled();
+    });
+
     it('renders declarative tone and action variant through canonical theme tokens', async () => {
         declarativeSettingsGetMock.mockResolvedValue({ supported: true, snapshot: { protocolVersion: 1, pluginId: 'acme.tone', scope: { kind: 'daemon' }, revision: '0', values: {}, redactedKeys: [] } });
         const { PluginSurfacePlacementHost } = await import('./PluginSurfaceHost');
@@ -3310,7 +3448,7 @@ describe('PluginSurfacePlacementHost', () => {
         } = await import('./DeclarativePluginSurface');
         const node = (path: string, extra: Record<string, unknown>) => ({ path, order: 1, ...extra });
         const placement = {
-            id: 'surfacePlacement:acme.tone:panel', pluginId: 'acme.tone', contributionKind: 'surfacePlacement',
+            id: 'surfacePlacement:acme.tone:panel', pluginId: 'acme.tone', occurrenceId: 'tone-panel-occurrence-a', contributionKind: 'surfacePlacement',
             descriptorId: 'panel', generatedV2: true, target: { kind: 'app' },
             display: { developerFallback: 'Tone' }, availability: { state: 'available', reason: 'available', diagnostics: [] }, headerActions: [],
             binding: destinationBinding({
@@ -3318,15 +3456,15 @@ describe('PluginSurfacePlacementHost', () => {
                 container: 'settingsPage', target: { kind: 'app' },
             }),
             renderer: { kind: 'declarative', contributionId: 'panel', model: admittedDeclarativeModelFixture({
-                identity: { pluginId: 'acme.tone', localId: 'panel', qualifiedId: 'acme.tone/panel', generation: 'g1' },
+                identity: { pluginId: 'acme.tone', localId: 'panel', qualifiedId: 'acme.tone/panel', occurrenceId: 'g1' },
                 visible: true, requiredHostMethods: [], nodes: [],
                 root: { kind: 'group', path: 'root', order: 0, children: [
                     node('root.children[0]', { kind: 'text', text: 'Danger text', tone: 'danger' }),
                     node('root.children[1]', { kind: 'text', text: 'Muted text', tone: 'muted' }),
                     node('root.children[2]', { kind: 'text', text: 'Plain text' }),
                     node('root.children[3]', { kind: 'status', label: 'State', value: 'Degraded', tone: 'warning' }),
-                    node('root.children[4]', { kind: 'action', action: { identity: { pluginId: 'acme.tone', localId: 'wipe' }, qualifiedId: 'acme.tone/wipe', generation: 'g1' }, label: 'Wipe', variant: 'destructive', enabled: true }),
-                    node('root.children[5]', { kind: 'action', action: { identity: { pluginId: 'acme.tone', localId: 'save' }, qualifiedId: 'acme.tone/save', generation: 'g1' }, label: 'Save', variant: 'primary', enabled: true }),
+                    node('root.children[4]', { kind: 'action', action: { identity: { pluginId: 'acme.tone', localId: 'wipe' }, qualifiedId: 'acme.tone/wipe', occurrenceId: 'g1' }, label: 'Wipe', variant: 'destructive', enabled: true }),
+                    node('root.children[5]', { kind: 'action', action: { identity: { pluginId: 'acme.tone', localId: 'save' }, qualifiedId: 'acme.tone/save', occurrenceId: 'g1' }, label: 'Save', variant: 'primary', enabled: true }),
                 ] },
             }) },
         } as const;
@@ -3413,7 +3551,7 @@ describe('PluginSurfacePlacementHost', () => {
         const reference = (localId: string) => ({
             identity: { pluginId: 'acme.repos', localId },
             qualifiedId: `acme.repos/${localId}`,
-            generation: 'g1',
+            occurrenceId: 'g1',
         });
         const repositoryEntries = [
             { kind: 'item' as const, path: 'root.c0.c0.c0', order: 3, title: 'happier', subtitle: 'Main repository', detail: '42', icon: 'file' as const, action: reference('open'), input: { id: 'happier' }, enabled: true },
@@ -3422,6 +3560,7 @@ describe('PluginSurfacePlacementHost', () => {
         ];
         const placement = {
             id: 'surfacePlacement:acme.repos:list', pluginId: 'acme.repos', contributionKind: 'surfacePlacement',
+            occurrenceId: 'repos-generation-1',
             descriptorId: 'list', generatedV2: true,
             target: { kind: 'session', sessionId: 'session-1' },
             display: { developerFallback: 'Repositories' },
@@ -3437,7 +3576,7 @@ describe('PluginSurfacePlacementHost', () => {
                 'materialization-repos-current',
             ),
             renderer: { kind: 'declarative', contributionId: 'list', model: admittedDeclarativeModelFixture({
-                identity: { pluginId: 'acme.repos', localId: 'list', qualifiedId: 'acme.repos/list', generation: 'g1' },
+                identity: { pluginId: 'acme.repos', localId: 'list', qualifiedId: 'acme.repos/list', occurrenceId: 'g1' },
                 visible: true, requiredHostMethods: [], nodes: [],
                 // Shaped exactly as the manifest grammar allows: `list` holds
                 // sections/rows/states, and `metadata`/`actionPanel` are siblings
@@ -3477,7 +3616,7 @@ describe('PluginSurfacePlacementHost', () => {
         } satisfies PluginProjectionV2['actionsById'];
         const targetFixture = primeExactTargetedContributions({
             pluginId: 'acme.repos',
-            immutableGenerationId: 'repos-generation-1',
+            occurrenceId: 'repos-generation-1',
             projectionGeneration: 1,
             actionsById: exactActionsById,
         });
@@ -3506,14 +3645,16 @@ describe('PluginSurfacePlacementHost', () => {
         expect(declarativeActionExecuteMock).toHaveBeenCalledWith('machine-1', {
             serverId: 'server-a',
             sessionId: 'session-1',
-            expectedGeneration: '1',
+            expectedContributorOccurrenceId: 'acme.repos-test-occurrence',
             qualifiedActionId: 'acme.repos/open',
             input: { id: 'happier' },
             executionSurface: 'ui',
             invocation: {
                 kind: 'mountedPluginSurface',
                 mountedBinding: {
+                    pluginId: 'acme.repos',
                     contributionLocalId: 'list',
+                    occurrenceId: 'repos-generation-1',
                     materializationRef: {
                         machineId: 'machine-1',
                         materializationId: 'materialization-repos-current',
@@ -3594,7 +3735,7 @@ describe('PluginSurfacePlacementHost', () => {
         });
         const { PluginSurfacePlacementHost } = await import('./PluginSurfaceHost');
         const placement = (hostOrigin?: Readonly<Record<string, unknown>>) => ({
-            id: 'surfacePlacement:acme.forms:origin', pluginId: 'acme.forms', contributionKind: 'surfacePlacement', descriptorId: 'origin', generatedV2: true,
+            id: 'surfacePlacement:acme.forms:origin', pluginId: 'acme.forms', occurrenceId: 'forms-origin-occurrence-a', contributionKind: 'surfacePlacement', descriptorId: 'origin', generatedV2: true,
             target: { kind: 'app' }, display: { developerFallback: 'Origin' }, availability: { state: 'available', reason: 'available', diagnostics: [] }, headerActions: [],
             binding: destinationBinding({
                 pluginId: 'acme.forms', destinationId: 'origin', rendererId: 'form',
@@ -3602,7 +3743,7 @@ describe('PluginSurfacePlacementHost', () => {
             }),
             ...(hostOrigin ? { hostOrigin } : {}),
             renderer: { kind: 'declarative', contributionId: 'form', model: admittedDeclarativeModelFixture({
-                identity: { pluginId: 'acme.forms', localId: 'form', qualifiedId: 'acme.forms/form', generation: 'generation-1' }, visible: true, requiredHostMethods: [], nodes: [],
+                identity: { pluginId: 'acme.forms', localId: 'form', qualifiedId: 'acme.forms/form', occurrenceId: 'generation-1' }, visible: true, requiredHostMethods: [], nodes: [],
                 root: { kind: 'group', path: 'root', order: 0, children: [
                     { kind: 'field', path: 'root.children[0]', order: 1, label: 'Name', control: { kind: 'text', settingId: 'name' }, setting: { id: 'name', descriptor: { scope: 'daemon', schema: { type: 'string' } } } },
                 ] },
@@ -3848,15 +3989,15 @@ describe('PluginSurfacePlacementHost', () => {
         // pager remains opaque to this host test after that handoff.
         createActivePluginCollectionUiQueryPagerMock.mockReturnValue(accountCollectionPager);
         const { PluginSurfacePlacementHost } = await import('./PluginSurfaceHost');
-        const placement = (generation: string) => ({
-            id: 'surfacePlacement:acme.forms:recovery', pluginId: 'acme.forms', contributionKind: 'surfacePlacement', descriptorId: 'recovery', generatedV2: true,
+        const placement = (occurrenceId: string) => ({
+            id: 'surfacePlacement:acme.forms:recovery', pluginId: 'acme.forms', occurrenceId, contributionKind: 'surfacePlacement', descriptorId: 'recovery', generatedV2: true,
             target: { kind: 'app' }, display: { developerFallback: 'Recovery' }, availability: { state: 'available', reason: 'available', diagnostics: [] }, headerActions: [],
             binding: destinationBinding({
                 pluginId: 'acme.forms', destinationId: 'recovery', rendererId: 'form',
                 container: 'settingsPage', target: { kind: 'app' },
             }),
             renderer: { kind: 'declarative', contributionId: 'form', model: admittedDeclarativeModelFixture({
-                identity: { pluginId: 'acme.forms', localId: 'form', qualifiedId: 'acme.forms/form', generation }, visible: true, requiredHostMethods: [], nodes: [],
+                identity: { pluginId: 'acme.forms', localId: 'form', qualifiedId: 'acme.forms/form', occurrenceId }, visible: true, requiredHostMethods: [], nodes: [],
                 declarativeInventory: {
                     actions: [],
                     destinations: [],
@@ -3865,7 +4006,7 @@ describe('PluginSurfacePlacementHost', () => {
                 },
                 root: { kind: 'group', path: 'root', order: 0, children: [
                     { kind: 'field', path: 'root.children[0]', order: 1, label: 'Name', control: { kind: 'text', settingId: 'name' }, setting: { id: 'name', descriptor: { scope: 'daemon', schema: { type: 'string' } } } },
-                    { kind: 'action', path: 'root.children[1]', order: 2, action: { identity: { pluginId: 'acme.forms', localId: 'save' }, qualifiedId: 'acme.forms/save', generation }, label: 'Save', enabled: true },
+                    { kind: 'action', path: 'root.children[1]', order: 2, action: { identity: { pluginId: 'acme.forms', localId: 'save' }, qualifiedId: 'acme.forms/save', occurrenceId }, label: 'Save', enabled: true },
                     { kind: 'field', path: 'root.children[2]', order: 3, label: 'Account endpoint', control: { kind: 'text', settingId: 'endpoint' }, setting: { id: 'endpoint', descriptor: { scope: 'account', schema: { type: 'string' } } } },
                     {
                         kind: 'collectionList',
@@ -3878,10 +4019,10 @@ describe('PluginSurfacePlacementHost', () => {
                 ] },
             }) },
         } as const);
-        const renderPlacement = (generation: string, machineId?: string) => (
+        const renderPlacement = (occurrenceId: string, machineId?: string) => (
             <PluginSurfaceFocusEligibilityProvider active>
                 <PluginSurfacePlacementHost
-                    placement={placement(generation)}
+                    placement={placement(occurrenceId)}
                     machineId={machineId}
                     serverId={daemonProfile.id}
                     pluginUiProjection={EMPTY_PLUGIN_UI_PROJECTION}
@@ -4001,6 +4142,7 @@ describe('PluginSurfacePlacementHost', () => {
         const placement = {
             id: 'surfacePlacement:acme.missing-account-lifetime:settings',
             pluginId: 'acme.missing-account-lifetime',
+            occurrenceId: 'missing-account-lifetime-occurrence-a',
             contributionKind: 'surfacePlacement',
             descriptorId: 'settings',
             generatedV2: true,
@@ -4023,7 +4165,7 @@ describe('PluginSurfacePlacementHost', () => {
                         pluginId: 'acme.missing-account-lifetime',
                         localId: 'form',
                         qualifiedId: 'acme.missing-account-lifetime/form',
-                        generation: 'generation-1',
+                        occurrenceId: 'generation-1',
                     },
                     visible: true,
                     requiredHostMethods: [],
@@ -4048,7 +4190,7 @@ describe('PluginSurfacePlacementHost', () => {
                                 action: {
                                     identity: { pluginId: 'acme.missing-account-lifetime', localId: 'save' },
                                     qualifiedId: 'acme.missing-account-lifetime/save',
-                                    generation: 'generation-1',
+                                    occurrenceId: 'generation-1',
                                 },
                                 label: 'Save',
                                 enabled: true,
@@ -4100,14 +4242,14 @@ describe('PluginSurfacePlacementHost', () => {
             .mockResolvedValueOnce({ supported: true, snapshot: { protocolVersion: 1, pluginId: 'acme.forms', scope: { kind: 'daemon' }, revision: '3', values: { name: 'Retried', mode: 'fast' }, redactedKeys: [] } });
         const { PluginSurfacePlacementHost } = await import('./PluginSurfaceHost');
         const placement = {
-            id: 'surfacePlacement:acme.forms:writes', pluginId: 'acme.forms', contributionKind: 'surfacePlacement', descriptorId: 'writes', generatedV2: true,
+            id: 'surfacePlacement:acme.forms:writes', pluginId: 'acme.forms', occurrenceId: 'forms-writes-occurrence-a', contributionKind: 'surfacePlacement', descriptorId: 'writes', generatedV2: true,
             target: { kind: 'app' }, display: { developerFallback: 'Writes' }, availability: { state: 'available', reason: 'available', diagnostics: [] }, headerActions: [],
             binding: destinationBinding({
                 pluginId: 'acme.forms', destinationId: 'writes', rendererId: 'form',
                 container: 'settingsPage', target: { kind: 'app' },
             }),
             renderer: { kind: 'declarative', contributionId: 'form', model: admittedDeclarativeModelFixture({
-                identity: { pluginId: 'acme.forms', localId: 'form', qualifiedId: 'acme.forms/form', generation: 'generation-1' }, visible: true, requiredHostMethods: [], nodes: [],
+                identity: { pluginId: 'acme.forms', localId: 'form', qualifiedId: 'acme.forms/form', occurrenceId: 'generation-1' }, visible: true, requiredHostMethods: [], nodes: [],
                 root: { kind: 'group', path: 'root', order: 0, children: [
                     { kind: 'field', path: 'root.children[0]', order: 1, label: 'Name', control: { kind: 'text', settingId: 'name' }, setting: { id: 'name', descriptor: { scope: 'daemon', schema: { type: 'string' } } } },
                     { kind: 'field', path: 'root.children[1]', order: 2, label: 'Mode', control: { kind: 'select', settingId: 'mode', options: [{ value: 'safe', label: 'Safe' }, { value: 'fast', label: 'Fast' }] }, setting: { id: 'mode', descriptor: { scope: 'daemon', schema: { type: 'string' } } } },
@@ -4197,7 +4339,7 @@ describe('PluginSurfacePlacementHost', () => {
                         pluginId: 'acme.forms',
                         localId: 'form',
                         qualifiedId: 'acme.forms/form',
-                        generation: 'generation-1',
+                        occurrenceId: 'generation-1',
                     },
                     visible: true,
                     requiredHostMethods: [],
@@ -4255,14 +4397,14 @@ describe('PluginSurfacePlacementHost', () => {
             .mockResolvedValueOnce({ supported: true, snapshot: { protocolVersion: 1, pluginId: 'acme.forms', scope: { kind: 'daemon' }, revision: '3', values: { name: 'Unexpected', mode: 'fast' }, redactedKeys: [] } });
         const { PluginSurfacePlacementHost } = await import('./PluginSurfaceHost');
         const placement = {
-            id: 'surfacePlacement:acme.forms:write-reconnect', pluginId: 'acme.forms', contributionKind: 'surfacePlacement', descriptorId: 'write-reconnect', generatedV2: true,
+            id: 'surfacePlacement:acme.forms:write-reconnect', pluginId: 'acme.forms', occurrenceId: 'forms-write-reconnect-occurrence-a', contributionKind: 'surfacePlacement', descriptorId: 'write-reconnect', generatedV2: true,
             target: { kind: 'app' }, display: { developerFallback: 'Write reconnect' }, availability: { state: 'available', reason: 'available', diagnostics: [] }, headerActions: [],
             binding: destinationBinding({
                 pluginId: 'acme.forms', destinationId: 'write-reconnect', rendererId: 'form',
                 container: 'settingsPage', target: { kind: 'app' },
             }),
             renderer: { kind: 'declarative', contributionId: 'form', model: admittedDeclarativeModelFixture({
-                identity: { pluginId: 'acme.forms', localId: 'form', qualifiedId: 'acme.forms/form', generation: 'generation-1' }, visible: true, requiredHostMethods: [], nodes: [],
+                identity: { pluginId: 'acme.forms', localId: 'form', qualifiedId: 'acme.forms/form', occurrenceId: 'generation-1' }, visible: true, requiredHostMethods: [], nodes: [],
                 root: { kind: 'group', path: 'root', order: 0, children: [
                     { kind: 'field', path: 'root.children[0]', order: 1, label: 'Name', control: { kind: 'text', settingId: 'name' }, setting: { id: 'name', descriptor: { scope: 'daemon', schema: { type: 'string' } } } },
                     { kind: 'field', path: 'root.children[1]', order: 2, label: 'Mode', control: { kind: 'select', settingId: 'mode', options: [{ value: 'safe', label: 'Safe' }, { value: 'fast', label: 'Fast' }] }, setting: { id: 'mode', descriptor: { scope: 'daemon', schema: { type: 'string' } } } },
@@ -4319,13 +4461,13 @@ describe('PluginSurfacePlacementHost', () => {
     it('renders unavailable instead of a blank surface for a mismatched evaluated model', async () => {
         const { PluginSurfacePlacementHost } = await import('./PluginSurfaceHost');
         const placement = {
-            id: 'surfacePlacement:acme.forms:mismatch', pluginId: 'acme.forms', contributionKind: 'surfacePlacement', descriptorId: 'mismatch', generatedV2: true,
+            id: 'surfacePlacement:acme.forms:mismatch', pluginId: 'acme.forms', occurrenceId: 'forms-mismatch-occurrence-a', contributionKind: 'surfacePlacement', descriptorId: 'mismatch', generatedV2: true,
             target: { kind: 'app' }, display: { developerFallback: 'Mismatch' }, availability: { state: 'available', reason: 'available', diagnostics: [] }, headerActions: [],
             binding: destinationBinding({
                 pluginId: 'acme.forms', destinationId: 'mismatch', rendererId: 'form',
                 container: 'settingsPage', target: { kind: 'app' },
             }),
-            renderer: { kind: 'declarative', contributionId: 'form', model: admittedDeclarativeModelFixture({ identity: { pluginId: 'other.plugin', localId: 'form', qualifiedId: 'other.plugin/form', generation: 'generation-1' }, visible: true, requiredHostMethods: [], nodes: [], root: { kind: 'text', path: 'root', order: 0, text: 'Must not render' } }) },
+            renderer: { kind: 'declarative', contributionId: 'form', model: admittedDeclarativeModelFixture({ identity: { pluginId: 'other.plugin', localId: 'form', qualifiedId: 'other.plugin/form', occurrenceId: 'generation-1' }, visible: true, requiredHostMethods: [], nodes: [], root: { kind: 'text', path: 'root', order: 0, text: 'Must not render' } }) },
         } as const;
         const screen = await renderScreen(<PluginSurfacePlacementHost placement={placement} machineId="machine-1" pluginUiProjection={EMPTY_PLUGIN_UI_PROJECTION} platform="web" />);
         expect(screen.findByTestId('plugin-surface-unavailable')).toBeTruthy();
@@ -4370,6 +4512,7 @@ describe('PluginSurfacePlacementHost', () => {
         const declarativePlacement = {
             id: 'surfacePlacement:acme.forms:settings',
             pluginId: 'acme.forms',
+            occurrenceId: 'forms-settings-source-occurrence-a',
             contributionKind: 'surfacePlacement',
             descriptorId: 'settings',
             generatedV2: true,
@@ -4438,10 +4581,11 @@ describe('PluginSurfacePlacementHost', () => {
                     requiredHostMethods: ['context'],
                     requestedCapabilities: { networkOrigins: ['https://api.example.com'] },
                 },
+                occurrenceId: 'inline-html-generation',
             });
             const targetFixture = primeExactTargetedContributions({
                 pluginId: placement.pluginId,
-                immutableGenerationId: 'inline-html-generation',
+                occurrenceId: 'inline-html-generation',
             });
             const projection = withMountedTargetPackage(EMPTY_PLUGIN_UI_PROJECTION, targetFixture, {
                 displayName: 'Inline destination',
@@ -4807,6 +4951,11 @@ describe('PluginSurfacePlacementHost', () => {
                 },
             );
             await vi.waitFor(() => expect(screen.root.findAllByType('iframe')).toHaveLength(1));
+            await act(async () => {
+                screen.root.findByType('iframe').props.onLoad?.();
+                await Promise.resolve();
+            });
+            await flushHookEffects({ cycles: 2 });
             const frameUrl = new URL(String(screen.root.findByType('iframe').props.src));
             const instanceId = frameUrl.searchParams.get('happierInstanceId');
             const mountNonce = frameUrl.searchParams.get('happierBridgeNonce');
@@ -5000,6 +5149,10 @@ describe('PluginSurfacePlacementHost', () => {
             requiredHostMethods: ['context', 'executeAction'],
             allowedMessageKinds: ['ready', 'hostApi'],
         });
+        const exactTargetResponse = await contributionProjectionDescribeMock();
+        contributionProjectionDescribeMock.mockClear();
+        const pendingTarget = createDeferred<typeof exactTargetResponse>();
+        contributionProjectionDescribeMock.mockImplementation(() => pendingTarget.promise);
         const generatedPlacement = {
             ...browserHostedWebPlacement,
             generatedV2: true,
@@ -5022,6 +5175,7 @@ describe('PluginSurfacePlacementHost', () => {
                     platform="web"
                 />,
                 {
+                    flushOptions: { cycles: 0 },
                     createNodeMock: (element) => (
                         (element as { type?: string }).type === 'iframe'
                             ? { contentWindow: iframeSource }
@@ -5029,9 +5183,25 @@ describe('PluginSurfacePlacementHost', () => {
                     ),
                 },
             );
+            await vi.waitFor(() => expect(contributionProjectionDescribeMock).toHaveBeenCalled());
+            expect(screen.root.findAllByType('iframe')).toHaveLength(0);
+            expect(screen.findByTestId('plugin-surface-unavailable-loading-skeleton')).toBeTruthy();
+            expect(screen.findByTestId(
+                'plugin-surface-unavailable-diagnostic-targeted_contributions_loading',
+            )).toBeTruthy();
+
+            await act(async () => {
+                pendingTarget.resolve(exactTargetResponse);
+                await pendingTarget.promise;
+            });
             await vi.waitFor(() => expect(screen.root.findAllByType('iframe')).toHaveLength(1));
             const frame = screen.root.findByType('iframe');
-            const frameUrl = new URL(String(frame.props.src));
+            await act(async () => {
+                frame.props.onLoad?.();
+                await Promise.resolve();
+            });
+            await flushHookEffects({ cycles: 2 });
+            const frameUrl = new URL(String(screen.root.findByType('iframe').props.src));
             expect(frameUrl.searchParams.has('happierPluginVersion')).toBe(false);
             expect(frameUrl.searchParams.has('happierViewId')).toBe(false);
             expect(frameUrl.searchParams.has('happierGeneration')).toBe(false);
@@ -5166,6 +5336,11 @@ describe('PluginSurfacePlacementHost', () => {
                 },
             );
             await vi.waitFor(() => expect(screen.root.findAllByType('iframe')).toHaveLength(1));
+            await act(async () => {
+                screen.root.findByType('iframe').props.onLoad?.();
+                await Promise.resolve();
+            });
+            await flushHookEffects({ cycles: 2 });
             const frameUrl = new URL(String(screen.root.findByType('iframe').props.src));
             const frameIdentity = {
                 instanceId: frameUrl.searchParams.get('happierInstanceId'),
@@ -5566,24 +5741,24 @@ describe('PluginSurfacePlacementHost', () => {
         const previousLocation = (globalThis as any).location;
         (globalThis as any).window = new EventTarget();
         (globalThis as any).location = { origin: 'https://host.happier.test' };
+        const contributionId = 'panel';
+        const platform = 'web' as const;
         const graph = {
-            contributionId: 'panel',
+            artifactId: 'panel',
             tier: 'hostedWeb',
-            platform: 'web',
-            entry: 'hosted-web/docs/index.html',
+            entry: 'hosted-web/panel/index.html',
             files: [{
-                relativePath: 'hosted-web/docs/index.html',
+                relativePath: 'hosted-web/panel/index.html',
                 digest: `sha256:${'b'.repeat(64)}`,
                 byteSize: 16,
             }],
             digest: `sha256:${'a'.repeat(64)}`,
-            builtWith: { bundler: 'vite', version: '7.0.0' },
-            hostUiApiVersion: '1.0.0',
-            compat: {},
+            builtWith: { staging: 'staticDirectory' },
+            hostUiApiRange: '^1.0.0',
         } as const;
         const targetedFixture = primeExactTargetedContributions({
             pluginId: 'acme.docs',
-            immutableGenerationId: 'docs-generation-11',
+            occurrenceId: 'docs-generation-11',
             projectionGeneration: 11,
         });
         const generatedProjection = withMountedTargetPackage({
@@ -5647,13 +5822,12 @@ describe('PluginSurfacePlacementHost', () => {
                             }),
                             collectionContracts: [],
                             uiSlots: [{
-                                contributionId: graph.contributionId,
+                                contributionId,
+                                artifactId: graph.artifactId,
                                 tier: graph.tier,
-                                platform: graph.platform,
+                                platform,
                                 artifactDigest: graph.digest,
-                                compatibility: {
-                                    hostUiApiVersion: graph.hostUiApiVersion,
-                                },
+                                hostUiApiRange: graph.hostUiApiRange,
                             }],
                             packageAssetArchive: {
                                 archiveDigestSha256: `sha256:${'c'.repeat(64)}`,
@@ -5662,24 +5836,20 @@ describe('PluginSurfacePlacementHost', () => {
                         },
                         uiArtifacts: [{
                             release: { pluginId: 'acme.docs', version: releaseVersion },
-                            contributionId: graph.contributionId,
+                            contributionId,
+                            artifactId: graph.artifactId,
                             tier: graph.tier,
-                            platform: graph.platform,
-                            artifactId: '00000000-0000-4000-8000-000000000001',
+                            platform,
+                            accountArtifactId: '00000000-0000-4000-8000-000000000001',
                             artifactDigest: graph.digest,
-                            compatibility: {
-                                hostAppVersion: '1.0.0',
-                                hostUiApiVersion: graph.hostUiApiVersion,
-                                platform: graph.platform,
-                                channel: 'internal',
-                                nativeCapabilities: [],
-                            },
+                            hostUiApiRange: graph.hostUiApiRange,
                         }],
                     }),
                 }],
             } satisfies PluginAccountAvailabilitySnapshot,
         });
         pluginDataTransport.enabled = true;
+        const iframeSource = { postMessage: vi.fn() } as unknown as WindowProxy;
         let issuedCount = 0;
         pluginDataTransport.request.mockImplementation(async (path: string) => {
             if (path !== PluginAvailabilityActionHttpPathsV1[
@@ -5705,7 +5875,10 @@ describe('PluginSurfacePlacementHost', () => {
         try {
             const renderBrowserArtifactFrame = async () => await renderScreen(
                 <PluginSurfacePlacementHost
-                    placement={staticAssetHostedWebPlacement}
+                    placement={Object.freeze({
+                        ...staticAssetHostedWebPlacement,
+                        occurrenceId: targetedFixture.mountedTarget.occurrenceId,
+                    })}
                     machineId="machine_docs"
                     serverId="server-a"
                     sessionId="session_docs"
@@ -5716,7 +5889,7 @@ describe('PluginSurfacePlacementHost', () => {
                 {
                     createNodeMock: (element) => (
                         (element as { type?: string }).type === 'iframe'
-                            ? { contentWindow: { postMessage: vi.fn() } }
+                            ? { contentWindow: iframeSource }
                             : null
                     ),
                 },
@@ -5739,9 +5912,10 @@ describe('PluginSurfacePlacementHost', () => {
             ]);
             expect(JSON.parse(String(init?.body))).toEqual({
                 release: { pluginId: 'acme.docs', version: releaseVersion },
-                contributionId: graph.contributionId,
+                contributionId,
+                artifactId: graph.artifactId,
                 tier: graph.tier,
-                platform: graph.platform,
+                platform,
                 expectedArtifactDigest: graph.digest,
             });
 
@@ -5756,6 +5930,31 @@ describe('PluginSurfacePlacementHost', () => {
             expect(frameUrl.searchParams.has('happierSubPath')).toBe(false);
             expect(frame.props.sandbox).toBe('allow-scripts');
             expect(frame.props.csp).toBeUndefined();
+
+            const frameIdentity = {
+                instanceId: frameUrl.searchParams.get('happierInstanceId'),
+                mountNonce: frameUrl.searchParams.get('happierBridgeNonce'),
+            };
+            const documentChannel = createTestMessageChannel();
+            await act(async () => {
+                frame.props.onLoad?.();
+                const ready = new Event('message') as MessageEvent;
+                Object.defineProperties(ready, {
+                    origin: { value: 'null' },
+                    source: { value: iframeSource },
+                    ports: { value: [documentChannel.port1] },
+                    data: { value: {
+                        version: 1,
+                        identity: frameIdentity,
+                        sequence: 1,
+                        kind: 'ready',
+                        payload: { ready: true },
+                    } },
+                });
+                (globalThis as any).window.dispatchEvent(ready);
+                await Promise.resolve();
+            });
+            await flushHookEffects({ cycles: 6 });
 
             await act(async () => {
                 await vi.advanceTimersByTimeAsync(10_000);
@@ -5776,9 +5975,10 @@ describe('PluginSurfacePlacementHost', () => {
             expect(screen.root.findAllByType('iframe')).toHaveLength(1);
             expect(JSON.parse(String(pluginDataTransport.request.mock.calls[2]?.[1]?.body))).toEqual({
                 release: { pluginId: 'acme.docs', version: releaseVersion },
-                contributionId: graph.contributionId,
+                contributionId,
+                artifactId: graph.artifactId,
                 tier: graph.tier,
-                platform: graph.platform,
+                platform,
                 expectedArtifactDigest: graph.digest,
             });
             const replacementFrameUrl = new URL(String(screen.root.findByType('iframe').props.src));
@@ -5822,7 +6022,7 @@ describe('PluginSurfacePlacementHost', () => {
                 pluginUiProjection={reactNativeProjection}
                 platform="desktop"
                 reactNativeLoaderBackend={{
-                    backendId: 'repackScriptManager',
+                    backendId: 'commonJs',
                     available: true,
                     loadInstalledBundle,
                 }}
@@ -5841,330 +6041,6 @@ describe('PluginSurfacePlacementHost', () => {
         expect(loadInstalledBundle).not.toHaveBeenCalled();
     });
 
-    it('binds one exact generated crash state to the surface report and reset operations', async () => {
-        pluginSurfaceAccountLifetime.setScope({ serverId: 'server_1', accountId: 'account-a' });
-        reactNativeSurfaceProps.length = 0;
-        const crashState = generatedReactNativeCrashState();
-        reactNativeCrashReports.submit.mockResolvedValue({
-            ok: true,
-            token: crashState.token,
-            disabled: false,
-        });
-        const mountedProjection = withExactGeneratedMountedTarget({
-            projection: generatedReactNativeProjection,
-            pluginId: 'acme.browser',
-            immutableGenerationId: 'browser-crash-state-generation-44',
-            projectionGeneration: 44,
-            displayName: 'Browser Inspector',
-            version: '3.2.1',
-        }).projection;
-        const { PluginSurfacePlacementHost } = await import('./PluginSurfaceHost');
-
-        await renderScreen(
-            <PluginSurfacePlacementHost
-                placement={generatedReactNativePlacement({ crashState })}
-                resourceBrowserTarget={target}
-                machineId="machine_1"
-                serverId="server_1"
-                pluginUiProjection={mountedProjection}
-                platform="web"
-            />,
-            { flushOptions: { cycles: 0 } },
-        );
-        await vi.waitFor(() => expect(reactNativeSurfaceProps).not.toHaveLength(0));
-
-        const props = reactNativeSurfaceProps.at(-1) as {
-            crashStateToken?: DaemonPluginReactNativeCrashStateV1['token'];
-            crashStateDisabled?: boolean;
-            reportFailure?: (failure: Readonly<{
-                token: DaemonPluginReactNativeCrashStateV1['token'];
-                failureOccurrenceId: string;
-                failure: 'render_error';
-            }>) => Promise<unknown>;
-            resetCrashState?: () => Promise<unknown>;
-        };
-        const failure = {
-            token: crashState.token,
-            failureOccurrenceId: '6f46e1ba-4e7e-4e7e-8de8-6e8bc4ceac12',
-            failure: 'render_error' as const,
-        };
-
-        expect(props.crashStateToken).toEqual(crashState.token);
-        expect(props.crashStateDisabled).toBe(false);
-        await expect(props.reportFailure?.(failure)).resolves.toEqual({
-            ok: true,
-            token: crashState.token,
-            disabled: false,
-        });
-        await expect(props.resetCrashState?.()).resolves.toEqual({
-            ok: true,
-            token: crashState.token,
-            disabled: false,
-        });
-        expect(reactNativeCrashReports.submit).toHaveBeenNthCalledWith(1, {
-            machineId: 'machine_1',
-            serverId: 'server_1',
-            report: {
-                kind: 'reportFailure',
-                token: crashState.token,
-                failureOccurrenceId: failure.failureOccurrenceId,
-                failure: failure.failure,
-            },
-        });
-        expect(reactNativeCrashReports.submit).toHaveBeenNthCalledWith(2, {
-            machineId: 'machine_1',
-            serverId: 'server_1',
-            report: { kind: 'reset', token: crashState.token },
-        });
-    });
-
-    it('reconciles one persisted crash occurrence through the real host, unavailable card, report, and rejoined surface', async () => {
-        reactNativeSurfaceProps.length = 0;
-        const crashState = generatedReactNativeCrashState();
-        const mountedProjection = withExactGeneratedMountedTarget({
-            projection: generatedReactNativeProjection,
-            pluginId: 'acme.browser',
-            immutableGenerationId: 'browser-crash-scope-generation-44',
-            projectionGeneration: 44,
-            displayName: 'Browser Inspector',
-            version: '3.2.1',
-        }).projection;
-        const { PluginSurfacePlacementHost } = await import('./PluginSurfaceHost');
-
-        // First let the Host produce its canonical target/Account scope. The
-        // normal proxy branch deliberately keeps this setup mount inert.
-        const sourceScreen = await renderScreen(
-            <PluginSurfacePlacementHost
-                placement={generatedReactNativePlacement({ crashState })}
-                resourceBrowserTarget={target}
-                machineId="machine-a"
-                serverId="server-a"
-                pluginUiProjection={mountedProjection}
-                platform="web"
-            />,
-            { flushOptions: { cycles: 0 } },
-        );
-        await vi.waitFor(() => expect(reactNativeSurfaceProps).not.toHaveLength(0));
-        const sourceScopeKey = (reactNativeSurfaceProps.at(-1) as {
-            crashReportScopeKey?: string;
-        }).crashReportScopeKey;
-        expect(sourceScopeKey).toBe(JSON.stringify([
-            'machine-a',
-            serverAccountScopeKeySuffix({ serverId: 'server-a', accountId: 'account-a' }),
-        ]));
-        await sourceScreen.unmount();
-
-        const persistence = createMemoryWatchdogPersistence();
-        const sourceWatchdog = createPluginReactNativeWatchdog({
-            persistence,
-            createFailureOccurrenceId: () => '6f46e1ba-4e7e-4e7e-8de8-6e8bc4ceac12',
-        });
-        const pending = sourceWatchdog.recordFailure({
-            token: crashState.token,
-            scopeKey: sourceScopeKey!,
-            failure: 'render_error',
-        });
-        const restartedWatchdog = createPluginReactNativeWatchdog({
-            persistence,
-        });
-        const completedReport = createDeferred<{
-            ok: true;
-            token: DaemonPluginReactNativeCrashStateV1['token'];
-            disabled: boolean;
-        }>();
-        reactNativeCrashReports.submit.mockImplementation(() => completedReport.promise);
-        reactNativeSurfaceRuntime.enabled = true;
-        reactNativeSurfaceRuntime.watchdog = restartedWatchdog;
-        reactNativeSurfaceRuntime.module = Object.freeze({
-            renderSurface: defineUiSurface(() => React.createElement(
-                'View',
-                { testID: 'plugin-rn-crash-rejoined-surface' },
-            )),
-        });
-
-        const screen = await renderScreen(
-            <PluginSurfacePlacementHost
-                placement={generatedReactNativePlacement({ crashState })}
-                resourceBrowserTarget={target}
-                machineId="machine-a"
-                serverId="server-a"
-                pluginUiProjection={mountedProjection}
-                platform="web"
-                reactNativeLoaderBackend={{
-                    backendId: 'reactNativeWebModule',
-                    available: true,
-                    loadInstalledBundle: vi.fn(async () => () => null),
-                }}
-            />,
-            { flushOptions: { cycles: 0 } },
-        );
-
-        await vi.waitFor(() => expect(reactNativeCrashReports.submit).toHaveBeenCalledTimes(1));
-        expect(screen.findByTestId('plugin-rn-ui-unavailable')).toBeTruthy();
-        expect(screen.getTextContent()).toContain('pluginReactNative.unavailable');
-        expect(screen.findByTestId('plugin-rn-crash-rejoined-surface')).toBeNull();
-        expect(reactNativeCrashReports.submit).toHaveBeenCalledWith({
-            machineId: 'machine-a',
-            serverId: 'server-a',
-            report: {
-                kind: 'reportFailure',
-                token: crashState.token,
-                failureOccurrenceId: pending.failureOccurrenceId,
-                failure: pending.failure,
-            },
-        });
-
-        await act(async () => {
-            completedReport.resolve({ ok: true, token: crashState.token, disabled: false });
-            await completedReport.promise;
-        });
-        await flushHookEffects({ cycles: 2, turns: 2 });
-
-        await vi.waitFor(() => {
-            expect(screen.findByTestId('plugin-rn-crash-rejoined-surface')).toBeTruthy();
-            expect(screen.findByTestId('plugin-rn-ui-unavailable')).toBeNull();
-        });
-        expect(createPluginReactNativeWatchdog({
-            persistence,
-        }).readPending({ token: crashState.token, scopeKey: sourceScopeKey! })).toEqual([]);
-        await screen.unmount();
-    });
-
-    it('does not replay a persisted crash occurrence when only its machine, server, or Account changes', async () => {
-        const crashState = generatedReactNativeCrashState();
-        const mountedProjection = withExactGeneratedMountedTarget({
-            projection: generatedReactNativeProjection,
-            pluginId: 'acme.browser',
-            immutableGenerationId: 'browser-crash-scope-isolation-generation-44',
-            projectionGeneration: 44,
-            displayName: 'Browser Inspector',
-            version: '3.2.1',
-        }).projection;
-        const { PluginSurfacePlacementHost } = await import('./PluginSurfaceHost');
-        const rejoinedModule = Object.freeze({
-            renderSurface: defineUiSurface(() => React.createElement(
-                'View',
-                { testID: 'plugin-rn-crash-scope-successor-surface' },
-            )),
-        });
-        const scenarios = [
-            {
-                source: {
-                    machineId: 'machine-a',
-                    serverId: 'server-a',
-                    account: { serverId: 'server-a', accountId: 'account-a' },
-                },
-                successor: {
-                    machineId: 'machine-b',
-                    serverId: 'server-a',
-                    account: { serverId: 'server-a', accountId: 'account-a' },
-                },
-            },
-            {
-                source: {
-                    machineId: 'machine-a',
-                    serverId: 'server-a',
-                    account: { serverId: 'server-a', accountId: 'account-a' },
-                },
-                successor: {
-                    machineId: 'machine-a',
-                    serverId: 'server-b',
-                    account: { serverId: 'server-b', accountId: 'account-a' },
-                },
-            },
-            {
-                source: {
-                    machineId: 'machine-a',
-                    serverId: 'server-a',
-                    account: { serverId: 'server-a', accountId: 'account-a' },
-                },
-                successor: {
-                    machineId: 'machine-a',
-                    serverId: 'server-a',
-                    account: { serverId: 'server-a', accountId: 'account-b' },
-                },
-            },
-        ] as const;
-
-        for (const scenario of scenarios) {
-            pluginSurfaceAccountLifetime.setScope(scenario.source.account);
-            reactNativeSurfaceProps.length = 0;
-            reactNativeSurfaceRuntime.enabled = false;
-            const sourceScreen = await renderScreen(
-                <PluginSurfacePlacementHost
-                    placement={generatedReactNativePlacement({ crashState })}
-                    resourceBrowserTarget={target}
-                    machineId={scenario.source.machineId}
-                    serverId={scenario.source.serverId}
-                    pluginUiProjection={mountedProjection}
-                    platform="web"
-                />,
-                { flushOptions: { cycles: 0 } },
-            );
-            await vi.waitFor(() => expect(reactNativeSurfaceProps).not.toHaveLength(0));
-            const sourceScopeKey = (reactNativeSurfaceProps.at(-1) as {
-                crashReportScopeKey?: string;
-            }).crashReportScopeKey;
-            expect(sourceScopeKey).toBeDefined();
-            await sourceScreen.unmount();
-
-            const persistence = createMemoryWatchdogPersistence();
-            const sourceWatchdog = createPluginReactNativeWatchdog({
-                persistence,
-                createFailureOccurrenceId: () => '6f46e1ba-4e7e-4e7e-8de8-6e8bc4ceac12',
-            });
-            const pending = sourceWatchdog.recordFailure({
-                token: crashState.token,
-                scopeKey: sourceScopeKey!,
-                failure: 'render_error',
-            });
-            const restartedWatchdog = createPluginReactNativeWatchdog({
-                persistence,
-            });
-
-            pluginSurfaceAccountLifetime.setScope(scenario.successor.account);
-            reactNativeSurfaceProps.length = 0;
-            reactNativeCrashReports.submit.mockReset();
-            reactNativeCrashReports.submit.mockResolvedValue({
-                ok: true,
-                token: crashState.token,
-                disabled: false,
-            });
-            reactNativeSurfaceRuntime.enabled = true;
-            reactNativeSurfaceRuntime.watchdog = restartedWatchdog;
-            reactNativeSurfaceRuntime.module = rejoinedModule;
-            const successorScreen = await renderScreen(
-                <PluginSurfacePlacementHost
-                    placement={generatedReactNativePlacement({ crashState })}
-                    resourceBrowserTarget={target}
-                    machineId={scenario.successor.machineId}
-                    serverId={scenario.successor.serverId}
-                    pluginUiProjection={mountedProjection}
-                    platform="web"
-                    reactNativeLoaderBackend={{
-                        backendId: 'reactNativeWebModule',
-                        available: true,
-                        loadInstalledBundle: vi.fn(async () => () => null),
-                    }}
-                />,
-                { flushOptions: { cycles: 0 } },
-            );
-            await vi.waitFor(() => {
-                expect(successorScreen.findByTestId('plugin-rn-crash-scope-successor-surface')).toBeTruthy();
-            });
-            const successorScopeKey = (reactNativeSurfaceProps.at(-1) as {
-                crashReportScopeKey?: string;
-            }).crashReportScopeKey;
-            expect(successorScopeKey).not.toBe(sourceScopeKey);
-            expect(reactNativeCrashReports.submit).not.toHaveBeenCalled();
-            expect(restartedWatchdog.readPending({
-                token: crashState.token,
-                scopeKey: sourceScopeKey!,
-            })).toEqual([pending]);
-            await successorScreen.unmount();
-        }
-    });
-
     it('retires the mounted author tree on Account replacement while the successor Account read is unavailable', async () => {
         // UI-NAV-REQ-12 through the real bound host: A -> B -> A with B's read
         // never settling. The author holds last-known-good rows in its own
@@ -6172,23 +6048,13 @@ describe('PluginSurfacePlacementHost', () => {
         // would keep Account A's private binding rendered under Account B. A
         // successor that resolved instantly could not tell the two apart.
         //
-        // The mount is a `devHotReload` source with no projected crash state:
-        // the host admits that shape (`requiresGeneratedCrashState` covers only
-        // installed/disabled artifacts), and it is exactly the shape whose
-        // watchdog scope key — the incidental carrier of the Account today —
-        // is absent, so only a real Account boundary can retire this tree.
+        // The mount uses the canonical installed CommonJS Artifact path; the
+        // Account lifetime, not an executable-source mode, owns tree retirement.
         reactNativeSurfaceProps.length = 0;
         const { PluginSurfacePlacementHost } = await import('./PluginSurfaceHost');
-        const devUrl = 'http://127.0.0.1:8082/index.bundle?platform=ios&dev=true';
         const nativeCacheIdentity = {
             ...generatedReactNativeCacheIdentity,
             platform: 'ios',
-        } as const;
-        const nativeArtifactGraph = {
-            ...generatedReactNativeArtifactGraph,
-            platform: 'ios',
-            builtWith: { bundler: 'repack', version: '5.0.0' },
-            repack: defaultReactNativeModuleReference,
         } as const;
         const nativePlacement = Object.freeze({
             ...surfacePlacementFixture({
@@ -6202,30 +6068,25 @@ describe('PluginSurfacePlacementHost', () => {
                 renderer: { kind: 'reactNative', contributionId: 'native-panel' },
                 display: { label: 'Native dev panel' },
                 runtime: {},
+                occurrenceId: 'browser-account-author-boundary-generation-44',
             }),
             generatedV2: true,
         }) as unknown as PluginUiSurfacePlacementProjection;
         const targetedFixture = primeExactTargetedContributions({
             pluginId: 'acme.browser',
-            immutableGenerationId: 'browser-account-author-boundary-generation-44',
-            projectionGeneration: generatedReactNativeCacheIdentity.projectionGeneration,
+            occurrenceId: 'browser-account-author-boundary-generation-44',
+            projectionGeneration: 44,
         });
         const devProjection = withMountedTargetPackage({
             ...generatedReactNativeProjection,
             reactNativeBundlesById: {
                 'reactNativeBundle:acme.browser:native-panel': {
                     ...generatedReactNativeProjection.reactNativeBundlesById['reactNativeBundle:acme.browser:native-panel'],
-                    artifactGraph: nativeArtifactGraph,
                     runtime: {
                         decision: { state: 'load', reason: 'compatible', diagnostics: [] },
-                        loadPolicy: {
-                            source: 'devHotReload',
-                            devUrl,
-                            featureEnabled: true,
-                            loaderBackendAvailable: true,
-                        },
+                        loadPolicy: { source: 'installedArtifact' },
                         cacheKey: 'generated-native-account-boundary-cache-key',
-                        cacheIdentity: nativeCacheIdentity,
+                        cacheIdentity: { artifactDigest: nativeCacheIdentity.artifactDigest },
                     },
                 },
             },
@@ -6260,9 +6121,8 @@ describe('PluginSurfacePlacementHost', () => {
                 platform="ios"
                 formFactor="tablet"
                 reactNativeLoaderBackend={{
-                    backendId: 'repackScriptManager',
+                    backendId: 'commonJs',
                     available: true,
-                    loadDevServerBundle: vi.fn(async () => () => null),
                 }}
             />
         );
@@ -6276,10 +6136,6 @@ describe('PluginSurfacePlacementHost', () => {
             expect(readAuthorRows()).toBe('account-a-private-binding');
         });
         expect(authorMounts).toBe(1);
-        expect((reactNativeSurfaceProps.at(-1) as {
-            crashReportScopeKey?: string;
-        }).crashReportScopeKey).toBeUndefined();
-
         // Control: an ordinary re-render inside ONE Account lifetime must NOT
         // retire the author tree. Without this arm the assertions below would
         // also pass for a host that remounts the plugin on every render, which
@@ -6308,214 +6164,6 @@ describe('PluginSurfacePlacementHost', () => {
         await screen.unmount();
     });
 
-    it('does not let a late old-scope report completion alter the current surface', async () => {
-        reactNativeSurfaceProps.length = 0;
-        const crashState = generatedReactNativeCrashState();
-        const mountedProjection = withExactGeneratedMountedTarget({
-            projection: generatedReactNativeProjection,
-            pluginId: 'acme.browser',
-            immutableGenerationId: 'browser-crash-late-completion-generation-44',
-            projectionGeneration: 44,
-            displayName: 'Browser Inspector',
-            version: '3.2.1',
-        }).projection;
-        const { PluginSurfacePlacementHost } = await import('./PluginSurfaceHost');
-        const sourceScopeProbe = await renderScreen(
-            <PluginSurfacePlacementHost
-                placement={generatedReactNativePlacement({ crashState })}
-                resourceBrowserTarget={target}
-                machineId="machine-a"
-                serverId="server-a"
-                pluginUiProjection={mountedProjection}
-                platform="web"
-            />,
-            { flushOptions: { cycles: 0 } },
-        );
-        await vi.waitFor(() => expect(reactNativeSurfaceProps).not.toHaveLength(0));
-        const sourceScopeKey = (reactNativeSurfaceProps.at(-1) as {
-            crashReportScopeKey?: string;
-        }).crashReportScopeKey;
-        expect(sourceScopeKey).toBeDefined();
-        await sourceScopeProbe.unmount();
-
-        const persistence = createMemoryWatchdogPersistence();
-        const sourceWatchdog = createPluginReactNativeWatchdog({
-            persistence,
-            createFailureOccurrenceId: () => '6f46e1ba-4e7e-4e7e-8de8-6e8bc4ceac12',
-        });
-        const pending = sourceWatchdog.recordFailure({
-            token: crashState.token,
-            scopeKey: sourceScopeKey!,
-            failure: 'render_error',
-        });
-        const restartedWatchdog = createPluginReactNativeWatchdog({
-            persistence,
-        });
-        const lateReport = createDeferred<{
-            ok: true;
-            token: DaemonPluginReactNativeCrashStateV1['token'];
-            disabled: boolean;
-        }>();
-        reactNativeCrashReports.submit.mockImplementation(() => lateReport.promise);
-        reactNativeSurfaceRuntime.enabled = true;
-        reactNativeSurfaceRuntime.watchdog = restartedWatchdog;
-        reactNativeSurfaceRuntime.module = Object.freeze({
-            renderSurface: defineUiSurface(() => React.createElement(
-                'View',
-                { testID: 'plugin-rn-current-after-late-report' },
-            )),
-        });
-        const screen = await renderScreen(
-            <PluginSurfacePlacementHost
-                placement={generatedReactNativePlacement({ crashState })}
-                resourceBrowserTarget={target}
-                machineId="machine-a"
-                serverId="server-a"
-                pluginUiProjection={mountedProjection}
-                platform="web"
-                reactNativeLoaderBackend={{
-                    backendId: 'reactNativeWebModule',
-                    available: true,
-                    loadInstalledBundle: vi.fn(async () => () => null),
-                }}
-            />,
-            { flushOptions: { cycles: 0 } },
-        );
-        await vi.waitFor(() => expect(reactNativeCrashReports.submit).toHaveBeenCalledTimes(1));
-        expect(screen.findByTestId('plugin-rn-ui-unavailable')).toBeTruthy();
-
-        pluginSurfaceAccountLifetime.setScope({ serverId: 'server-b', accountId: 'account-b' });
-        await screen.update(
-            <PluginSurfacePlacementHost
-                placement={generatedReactNativePlacement({ crashState })}
-                resourceBrowserTarget={target}
-                machineId="machine-b"
-                serverId="server-b"
-                pluginUiProjection={mountedProjection}
-                platform="web"
-                reactNativeLoaderBackend={{
-                    backendId: 'reactNativeWebModule',
-                    available: true,
-                    loadInstalledBundle: vi.fn(async () => () => null),
-                }}
-            />,
-        );
-        await vi.waitFor(() => {
-            expect(screen.findByTestId('plugin-rn-current-after-late-report')).toBeTruthy();
-            expect(screen.findByTestId('plugin-rn-ui-unavailable')).toBeNull();
-        });
-
-        await act(async () => {
-            // A result that would disable the source binding must not mutate
-            // the successor after the source effect has been cancelled.
-            lateReport.resolve({ ok: true, token: crashState.token, disabled: true });
-            await lateReport.promise;
-        });
-        await flushHookEffects({ cycles: 2, turns: 2 });
-
-        expect(reactNativeCrashReports.submit).toHaveBeenCalledTimes(1);
-        expect(screen.findByTestId('plugin-rn-current-after-late-report')).toBeTruthy();
-        expect(screen.findByTestId('plugin-rn-ui-unavailable')).toBeNull();
-        expect(restartedWatchdog.readPending({
-            token: crashState.token,
-            scopeKey: sourceScopeKey!,
-        })).toEqual([pending]);
-        await screen.unmount();
-    });
-
-    it('fails closed before generated Artifact adoption when its crash state is missing or mismatched', async () => {
-        reactNativeSurfaceProps.length = 0;
-        const { PluginSurfacePlacementHost } = await import('./PluginSurfaceHost');
-        const mountedProjection = withExactGeneratedMountedTarget({
-            projection: generatedReactNativeProjection,
-            pluginId: 'acme.browser',
-            immutableGenerationId: 'browser-crash-state-rejection-generation-44',
-            projectionGeneration: 44,
-            displayName: 'Browser Inspector',
-            version: '3.2.1',
-        }).projection;
-        const mismatchedArtifactState = generatedReactNativeCrashState({
-            artifactDigest: `sha256:${'a'.repeat(64)}`,
-        });
-
-        for (const placement of [
-            generatedReactNativePlacement({ crashState: null }),
-            generatedReactNativePlacement({ crashState: mismatchedArtifactState }),
-        ]) {
-            const screen = await renderScreen(
-                <PluginSurfacePlacementHost
-                    placement={placement}
-                    resourceBrowserTarget={target}
-                    machineId="machine_1"
-                    serverId="server_1"
-                    pluginUiProjection={mountedProjection}
-                    platform="web"
-                />,
-                { flushOptions: { cycles: 0 } },
-            );
-            await vi.waitFor(() => {
-                expect(screen.findByTestId('plugin-surface-unavailable')).toBeTruthy();
-                expect(screen.findByTestId('plugin-surface-unavailable-diagnostic-react_native_crash_state_unavailable')).toBeTruthy();
-                expect(screen.getTextContent()).not.toContain('react_native_crash_state_unavailable');
-            });
-        }
-
-        expect(reactNativeSurfaceProps).toHaveLength(0);
-    });
-
-    it('admits a disabled generated binding only to expose its exact reset operation', async () => {
-        pluginSurfaceAccountLifetime.setScope({ serverId: 'server_1', accountId: 'account-a' });
-        reactNativeSurfaceProps.length = 0;
-        const crashState = generatedReactNativeCrashState({ disabled: true });
-        reactNativeCrashReports.submit.mockResolvedValue({
-            ok: true,
-            token: crashState.token,
-            disabled: false,
-        });
-        const mountedProjection = withExactGeneratedMountedTarget({
-            projection: generatedReactNativeProjection,
-            pluginId: 'acme.browser',
-            immutableGenerationId: 'browser-crash-reset-generation-44',
-            projectionGeneration: 44,
-            displayName: 'Browser Inspector',
-            version: '3.2.1',
-        }).projection;
-        const { PluginSurfacePlacementHost } = await import('./PluginSurfaceHost');
-
-        await renderScreen(
-            <PluginSurfacePlacementHost
-                placement={generatedReactNativePlacement({ crashState, disabled: true })}
-                resourceBrowserTarget={target}
-                machineId="machine_1"
-                serverId="server_1"
-                pluginUiProjection={mountedProjection}
-                platform="web"
-            />,
-            { flushOptions: { cycles: 0 } },
-        );
-        await vi.waitFor(() => expect(reactNativeSurfaceProps).not.toHaveLength(0));
-
-        const props = reactNativeSurfaceProps.at(-1) as {
-            crashStateToken?: DaemonPluginReactNativeCrashStateV1['token'];
-            crashStateDisabled?: boolean;
-            load?: unknown;
-            resetCrashState?: () => Promise<unknown>;
-        };
-        expect(props.crashStateToken).toEqual(crashState.token);
-        expect(props.crashStateDisabled).toBe(true);
-        expect(props.load).toBeUndefined();
-        await expect(props.resetCrashState?.()).resolves.toEqual({
-            ok: true,
-            token: crashState.token,
-            disabled: false,
-        });
-        expect(reactNativeCrashReports.submit).toHaveBeenCalledWith({
-            machineId: 'machine_1',
-            serverId: 'server_1',
-            report: { kind: 'reset', token: crashState.token },
-        });
-    });
-
     it('withholds a generated mount and Host API context until the current Account mode resolves', async () => {
         pluginSurfaceAccountLifetime.setScope({ serverId: 'server_1', accountId: 'account-a' });
         reactNativeSurfaceProps.length = 0;
@@ -6527,7 +6175,7 @@ describe('PluginSurfacePlacementHost', () => {
         const mountedProjection = withExactGeneratedMountedTarget({
             projection: generatedReactNativeProjection,
             pluginId: 'acme.browser',
-            immutableGenerationId: 'browser-account-mode-generation-44',
+            occurrenceId: 'browser-account-mode-generation-44',
             projectionGeneration: 44,
             displayName: 'Browser Inspector',
             version: '3.2.1',
@@ -6535,7 +6183,7 @@ describe('PluginSurfacePlacementHost', () => {
         const { PluginSurfacePlacementHost } = await import('./PluginSurfaceHost');
         const screen = await renderScreen(
             <PluginSurfacePlacementHost
-                placement={generatedReactNativePlacement()}
+                placement={generatedReactNativePlacement({ occurrenceId: 'browser-account-mode-generation-44' })}
                 resourceBrowserTarget={target}
                 machineId="machine_1"
                 serverId="server_1"
@@ -6574,12 +6222,12 @@ describe('PluginSurfacePlacementHost', () => {
         surfaceEnvironment.highContrast = true;
         const targetedFixture = primeExactTargetedContributions({
             pluginId: 'acme.browser',
-            immutableGenerationId: 'browser-rnw-generation-44',
+            occurrenceId: 'browser-rnw-generation-44',
             projectionGeneration: 44,
         });
         const { PluginSurfacePlacementHost } = await import('./PluginSurfaceHost');
         const { getInstalledPluginReactNativeBundleCache } = await import('@/components/plugins/reactNative/bundleCache');
-        const entryRelativePath = 'react-native/native-panel/index.js';
+        const entryRelativePath = `react-native/${reactNativeCacheIdentity.artifactId}/entry.cjs.bundle`;
         const entryBytes = new TextEncoder().encode('export function renderSurface() { return null; }');
         const entryDigest = computePluginUiArtifactSha256DigestV1(entryBytes);
         const artifactDigest = computePluginUiArtifactFileSetSha256DigestV1([
@@ -6588,16 +6236,8 @@ describe('PluginSurfacePlacementHost', () => {
         const generatedIdentity = {
             ...reactNativeCacheIdentity,
             artifactDigest,
-            platform: 'web',
-            projectionGeneration: 44,
+            platform: 'web' as const,
         };
-        const artifactCompatibility = {
-            hostUiApiVersion: '1.0.0',
-            reactVersion: '19.2.0',
-            reactNativeVersion: '0.83.4',
-            expoRuntimeVersion: '0.2.0-native',
-            hermesVersion: '0.15.0',
-        } as const;
         const generatedProjection = {
             ...reactNativeProjection,
             generation: 44,
@@ -6608,7 +6248,7 @@ describe('PluginSurfacePlacementHost', () => {
                     version: '3.2.1',
                     enabled: true,
                     source: { kind: 'bundled', locator: 'acme.browser' },
-                    immutableGenerationId: targetedFixture.mountedTarget.immutableGenerationId,
+                    immutableGenerationId: 'browser-rnw-artifact-generation-44',
                     brand: {
                         state: 'available',
                         resource: { pluginId: 'acme.browser', localId: 'brand-mark' },
@@ -6640,9 +6280,8 @@ describe('PluginSurfacePlacementHost', () => {
                     generatedV2: true,
                     pluginVersion: '3.2.1',
                     artifactGraph: {
-                        contributionId: 'native-panel-artifact',
+                        artifactId: generatedIdentity.artifactId,
                         tier: 'reactNative',
-                        platform: 'web',
                         entry: entryRelativePath,
                         files: [{
                             relativePath: entryRelativePath,
@@ -6650,9 +6289,9 @@ describe('PluginSurfacePlacementHost', () => {
                             byteSize: entryBytes.byteLength,
                         }],
                         digest: artifactDigest,
-                        builtWith: { bundler: 'vite', version: '7.0.0' },
-                        hostUiApiVersion: '1.0.0',
-                        compat: { react: '19.2.0', reactNative: '0.83.4' },
+                        builtWith: { bundler: 'esbuild', version: '0.27.2' },
+                        executable: { exports: ['renderSurface'] },
+                        hostUiApiRange: '^1.0.0',
                     },
                     hostApi: {
                         minVersion: '1.0.0',
@@ -6662,7 +6301,7 @@ describe('PluginSurfacePlacementHost', () => {
                         decision: { state: 'load', reason: 'compatible', diagnostics: [] },
                         loadPolicy: { source: 'installedArtifact' },
                         cacheKey: 'generated-native-cache-key',
-                        cacheIdentity: generatedIdentity,
+                        cacheIdentity: { artifactDigest: generatedIdentity.artifactDigest },
                     },
                 },
             },
@@ -6672,7 +6311,7 @@ describe('PluginSurfacePlacementHost', () => {
             accountScope: { serverId: 'server_1', accountId: 'account-a' },
             releaseVersion: '3.2.1',
             pluginId: generatedIdentity.pluginId,
-            contributionId: 'native-panel-artifact',
+            contributionId: generatedIdentity.contributionId,
             tier: 'reactNative' as const,
             platform: 'web' as const,
             artifactDigest,
@@ -6727,11 +6366,12 @@ describe('PluginSurfacePlacementHost', () => {
                             }),
                             collectionContracts: [],
                             uiSlots: [{
-                                contributionId: 'native-panel-artifact',
+                                contributionId: generatedIdentity.contributionId,
+                                artifactId: generatedIdentity.artifactId,
                                 tier: 'reactNative',
                                 platform: 'web',
                                 artifactDigest,
-                                compatibility: artifactCompatibility,
+                                hostUiApiRange: '^1.0.0',
                             }],
                             packageAssetArchive: {
                                 archiveDigestSha256: `sha256:${'c'.repeat(64)}`,
@@ -6747,13 +6387,13 @@ describe('PluginSurfacePlacementHost', () => {
         const renderSurface = () => React.createElement('PluginNativeSurface');
         const loadInstalledBundle = vi.fn(async () => renderSurface);
         const reactNativeLoaderBackend = {
-            backendId: 'reactNativeWebModule' as const,
+            backendId: 'commonJs' as const,
             available: true,
             loadInstalledBundle,
         };
         const handleRequest = vi.fn(async () => ({ accepted: true }));
         const generatedPlacement = generatedReactNativePlacement({
-            crashState: generatedReactNativeCrashState({ artifactDigest }),
+            occurrenceId: targetedFixture.mountedTarget.occurrenceId,
         });
 
         // The mount no longer takes a host API: `connected` now drives the REAL
@@ -6862,7 +6502,7 @@ describe('PluginSurfacePlacementHost', () => {
         expect(props.privateHostBindings?.accountLifetime).toEqual(expect.objectContaining({
             isCurrent: expect.any(Function),
         }));
-        expect(props.privateHostBindings?.resourceStoreGeneration).toBe('44');
+        expect(props.privateHostBindings?.resourceStoreGeneration).toBe('browser-rnw-generation-44');
         expect(props.privateHostBindings?.dataClient).toEqual(expect.objectContaining({
             collection: expect.any(Function),
             openCollectionQuery: expect.any(Function),
@@ -6889,15 +6529,15 @@ describe('PluginSurfacePlacementHost', () => {
         await expect(props.renderContext?.hostApi.context()).resolves.toEqual(props.renderContext?.surface);
         // §3.1: the author's own API is the bound controller's. The exact
         // target snapshot admits the mount, but this fixture deliberately
-        // carries no caller contribution, so contributed Action dispatch stays
-        // typed-unavailable rather than inventing a caller (UI-D08). The
+        // carries no Action projection, so contributed Action dispatch stays
+        // typed-unavailable rather than inventing an Action (UI-D08). The
         // successful daemon round trip is proven per placement by the EU-2
         // cross-path block below.
         await expect(props.renderContext?.hostApi.executeAction('open', { source: 'generated' }))
             .rejects.toMatchObject({
                 code: 'unavailable',
                 diagnostics: [{
-                    code: 'plugin_mounted_caller_unavailable',
+                    code: 'plugin_surface_action_projection_unavailable',
                     severity: 'error',
                 }],
             });
@@ -6908,9 +6548,7 @@ describe('PluginSurfacePlacementHost', () => {
         await expect(props.load?.()).resolves.toEqual({ renderSurface });
         expect(loadInstalledBundle).toHaveBeenCalledTimes(1);
 
-        const projectionWithMalformedRawCacheDigest = (
-            field: 'artifactDigest' | 'nativeCapabilitiesDigest',
-        ): PluginUiProjectionModel => {
+        const projectionWithMalformedRawCacheDigest = (): PluginUiProjectionModel => {
             const projection = structuredClone(generatedProjection);
             const bundle = projection.reactNativeBundlesById['reactNativeBundle:acme.browser:native-panel'];
             const runtime = bundle?.runtime;
@@ -6920,31 +6558,28 @@ describe('PluginSurfacePlacementHost', () => {
             if (!cacheIdentity || typeof cacheIdentity !== 'object') {
                 throw new Error('Fixture must retain the projected raw cache identity.');
             }
-            const digest = Reflect.get(cacheIdentity, field);
+            const digest = Reflect.get(cacheIdentity, 'artifactDigest');
             if (typeof digest !== 'string') {
-                throw new Error(`Fixture must retain a raw ${field}.`);
+                throw new Error('Fixture must retain a raw artifactDigest.');
             }
             // This models corrupt projection input at the host boundary without
             // weakening the typed fixture or adding a test-only digest parser.
-            Reflect.set(cacheIdentity, field, digest.toUpperCase());
+            Reflect.set(cacheIdentity, 'artifactDigest', digest.toUpperCase());
             return projection;
         };
-        const expectMalformedRawCacheDigestToFailClosed = async (
-            field: 'artifactDigest' | 'nativeCapabilitiesDigest',
-        ) => {
+        const expectMalformedRawCacheDigestToFailClosed = async () => {
             const renderedSurfaceCount = reactNativeSurfaceProps.length;
-            await screen.update(renderPlacement(projectionWithMalformedRawCacheDigest(field)));
+            await screen.update(renderPlacement(projectionWithMalformedRawCacheDigest()));
             // Invalid raw identities fail before a new physical RN surface is
             // mounted. The retained array entry belongs to the preceding
             // admitted render and must not be reinterpreted as malformed props.
-            expect(reactNativeSurfaceProps, field).toHaveLength(renderedSurfaceCount);
-            expect(loadInstalledBundle, field).toHaveBeenCalledTimes(1);
+            expect(reactNativeSurfaceProps).toHaveLength(renderedSurfaceCount);
+            expect(loadInstalledBundle).toHaveBeenCalledTimes(1);
         };
 
-        // Negative controls: both Protocol-branded digests must survive the
-        // raw Host projection boundary before an installed Artifact can load.
-        await expectMalformedRawCacheDigestToFailClosed('artifactDigest');
-        await expectMalformedRawCacheDigestToFailClosed('nativeCapabilitiesDigest');
+        // Negative control: the Protocol-branded Artifact digest must survive
+        // the raw Host projection boundary before installed bytes can load.
+        await expectMalformedRawCacheDigestToFailClosed();
         await screen.update(renderPlacement());
         // The fail-closed malformed projections physically retire the prior
         // renderer. Continue the equivalence checks from the newly admitted
@@ -7068,18 +6703,21 @@ describe('PluginSurfacePlacementHost', () => {
         await expect(props.renderContext?.hostApi.executeAction('open', { source: 'offline' }))
             .rejects.toMatchObject({ code: 'unavailable' });
 
-        const renderedSurfaceCountBeforeStaleProjection = reactNativeSurfaceProps.length;
+        const renderedSurfaceCountBeforeProjectionRefresh = reactNativeSurfaceProps.length;
+        const projectionGeneration = generatedProjection.generation;
+        if (projectionGeneration === null) {
+            throw new Error('generated projection fixture must have a concrete generation');
+        }
         await screen.update(renderPlacement({
             ...generatedProjection,
-            generation: generatedIdentity.projectionGeneration + 1,
+            generation: projectionGeneration + 1,
         }));
-        // Artifact admission owns the projection-generation fence. A stale
-        // generation is rejected before another physical RN renderer receives
-        // props; the previous array entry must not be mistaken for an inert
-        // stale-generation mount.
-        expect(reactNativeSurfaceProps).toHaveLength(renderedSurfaceCountBeforeStaleProjection);
-        expect(screen.findByTestId('plugin-react-native-surface-proxy')).toBeNull();
-        expect(screen.findByTestId('plugin-surface-unavailable')).toBeTruthy();
+        // A broad projection generation is not the mounted occurrence. An
+        // equivalent selected placement and Artifact remain mounted while the
+        // daemon refreshes unrelated projection state.
+        expect(reactNativeSurfaceProps.length).toBeGreaterThan(renderedSurfaceCountBeforeProjectionRefresh);
+        expect(screen.findByTestId('plugin-react-native-surface-proxy')).toBeTruthy();
+        expect(screen.findByTestId('plugin-surface-unavailable')).toBeNull();
 
         await screen.update(renderPlacement(generatedProjection, true, true));
         const revalidatedProps = reactNativeSurfaceProps.at(-1) as typeof props;
@@ -7144,7 +6782,7 @@ describe('PluginSurfacePlacementHost', () => {
             schemaVersion: contract.schemaVersion,
             contractDigest: contract.contractDigest,
         };
-        activePluginAvailability.reader = createPluginAccountAvailabilityReader({
+        const admittingAvailabilityReader = createPluginAccountAvailabilityReader({
             scope: { serverId: 'server-a', accountId: 'account-a' },
             snapshot: {
                 availabilityCursor: 1,
@@ -7275,11 +6913,10 @@ describe('PluginSurfacePlacementHost', () => {
                     requiredHostMethods: ['readResource'],
                     runtime: {
                         decision: { state: 'load', reason: 'compatible', diagnostics: [] },
-                        loadPolicy: { source: 'devHotReload', devUrl: 'http://127.0.0.1:8082/index.bundle', featureEnabled: true, loaderBackendAvailable: true },
+                        loadPolicy: { source: 'installedArtifact' },
                         cacheKey: 'account-data-offline-rn-cache-key',
                         cacheIdentity: {
-                            ...generatedReactNativeCacheIdentity,
-                            projectionGeneration: 91,
+                            artifactDigest: generatedReactNativeCacheIdentity.artifactDigest,
                         },
                     },
                 },
@@ -7288,7 +6925,7 @@ describe('PluginSurfacePlacementHost', () => {
         const exactTarget = withExactGeneratedMountedTarget({
             projection: baseProjection,
             pluginId: 'acme.browser',
-            immutableGenerationId: 'browser-account-data-offline-generation-91',
+            occurrenceId: 'browser-account-data-offline-generation-91',
             projectionGeneration: 91,
             displayName: 'Browser Inspector',
             version: '3.2.1',
@@ -7305,7 +6942,7 @@ describe('PluginSurfacePlacementHost', () => {
                     version: '3.2.1',
                     enabled: true,
                     source: { kind: 'bundled', locator: 'acme.browser' },
-                    immutableGenerationId: exactTarget.targetFixture.mountedTarget.immutableGenerationId,
+                    immutableGenerationId: 'browser-account-data-offline-artifact-generation-91',
                     brand: { state: 'missing' },
                 },
             },
@@ -7316,6 +6953,7 @@ describe('PluginSurfacePlacementHost', () => {
                         'translations:acme.browser': {
                             id: 'translations:acme.browser',
                             pluginId: 'acme.browser',
+                            occurrenceId: exactTarget.targetFixture.mountedTarget.occurrenceId,
                             contributionKind: 'translations',
                             locales: ['en'],
                             bundles: { en: { title: 'Browser Inspector' } },
@@ -7334,7 +6972,8 @@ describe('PluginSurfacePlacementHost', () => {
                         contributor: {
                             pluginId: 'acme.browser',
                             contributionId: 'account-data',
-                            immutableGenerationId: exactTarget.targetFixture.mountedTarget.immutableGenerationId,
+                            occurrenceId: exactTarget.targetFixture.mountedTarget.occurrenceId,
+                            sourceCustody: exactTarget.targetFixture.mountedTarget.sourceCustody,
                         },
                         protocol: { id: 'account/data', version: 1 },
                         operations: [],
@@ -7367,18 +7006,11 @@ describe('PluginSurfacePlacementHost', () => {
             targetedContributions: retainedTargetedContributions,
         });
         const placement = {
-            ...generatedReactNativePlacement({
-                crashState: generatedReactNativeCrashState({
-                    artifactDigest: generatedReactNativeCacheIdentity.artifactDigest,
-                }),
-            }),
+            ...generatedReactNativePlacement({ occurrenceId: exactTarget.targetFixture.mountedTarget.occurrenceId }),
             runtime: {
-                reactNativeCrashState: generatedReactNativeCrashState({
-                    artifactDigest: generatedReactNativeCacheIdentity.artifactDigest,
-                }),
                 resourceCapability: { readable: true, dynamic: false },
             },
-            binding: generatedReactNativePlacement().binding,
+            binding: generatedReactNativePlacement({ occurrenceId: exactTarget.targetFixture.mountedTarget.occurrenceId }).binding,
         } as PluginUiSurfacePlacementProjection;
         const renderPlacement = (connected: boolean) => {
             pluginSurfaceConnectivity.endpointStatus = connected ? 'online' : 'offline';
@@ -7392,21 +7024,41 @@ describe('PluginSurfacePlacementHost', () => {
                     pluginUiProjection={projection}
                     platform="web"
                     reactNativeLoaderBackend={{
-                        backendId: 'reactNativeWebModule',
+                        backendId: 'commonJs',
                         available: true,
-                        loadDevServerBundle: vi.fn(async () => () => null),
                     }}
                 />
             );
         };
 
+        // A cold start can mount the retained renderer before the Account's
+        // Availability projection has loaded. Its Data client cannot admit
+        // anything yet, and a surface that read on mount has already been
+        // told its Account is unreachable.
+        activePluginAvailability.reader = createPluginAccountAvailabilityReaderStore()
+            .bind({ serverId: 'server-a', accountId: 'account-a' });
         const screen = await renderScreen(renderPlacement(false));
         await vi.waitFor(() => expect(reactNativeSurfaceProps).not.toHaveLength(0));
-        const offlineProps = reactNativeSurfaceProps.at(-1) as {
+        const notLoadedProps = reactNativeSurfaceProps.at(-1) as {
             interactionEnabled?: boolean;
             renderContext?: RenderContext;
             privateHostBindings?: { dataClient?: PluginUiDataClient };
         };
+        const notLoadedDataClient = notLoadedProps.privateHostBindings?.dataClient;
+        expect(notLoadedDataClient).toBeDefined();
+        await expect(notLoadedDataClient!.collection(collectionDefinition).get('account-item-1'))
+            .rejects.toMatchObject({ code: 'plugin_account_storage_unavailable' });
+
+        // When Availability then admits this plugin's Account Data, the mount
+        // hands its surface a new Data client: that identity change is the one
+        // signal a consumer keyed on its client has to read again, instead of
+        // keeping the not-yet-loaded refusal until a manual retry.
+        activePluginAvailability.reader = admittingAvailabilityReader;
+        await screen.update(renderPlacement(false));
+        await vi.waitFor(() => expect(
+            (reactNativeSurfaceProps.at(-1) as typeof notLoadedProps).privateHostBindings?.dataClient,
+        ).not.toBe(notLoadedDataClient));
+        const offlineProps = reactNativeSurfaceProps.at(-1) as typeof notLoadedProps;
         expect(offlineProps.interactionEnabled).toBe(true);
         expect(offlineProps.renderContext).toBeDefined();
         expect(offlineProps.privateHostBindings?.dataClient).toBeDefined();
@@ -7533,7 +7185,7 @@ describe('PluginSurfacePlacementHost', () => {
         });
         expect(resourceReadMock).toHaveBeenCalledWith('machine_1', expect.objectContaining({
             serverId: 'server-a',
-            expectedGeneration: '91',
+            expectedCallerOccurrenceId: 'browser-account-data-offline-generation-91',
             callerPluginId: 'acme.browser',
             resource: { pluginId: 'acme.browser', localId: 'snapshot' },
         }));
@@ -7566,23 +7218,16 @@ describe('PluginSurfacePlacementHost', () => {
             },
         });
         const placement = {
-            ...generatedReactNativePlacement({
-                crashState: generatedReactNativeCrashState({
-                    artifactDigest: generatedReactNativeCacheIdentity.artifactDigest,
-                }),
-            }),
+            ...generatedReactNativePlacement({ occurrenceId: 'browser-host-api-currentness-generation-91' }),
             runtime: {
-                reactNativeCrashState: generatedReactNativeCrashState({
-                    artifactDigest: generatedReactNativeCacheIdentity.artifactDigest,
-                }),
                 resourceCapability: { readable: true, dynamic: false },
             },
-            binding: generatedReactNativePlacement().binding,
+            binding: generatedReactNativePlacement({ occurrenceId: 'browser-host-api-currentness-generation-91' }).binding,
         } as PluginUiSurfacePlacementProjection;
         const projection = withExactGeneratedMountedTarget({
             projection: generatedReactNativeProjection,
             pluginId: 'acme.browser',
-            immutableGenerationId: 'browser-host-api-currentness-generation-91',
+            occurrenceId: 'browser-host-api-currentness-generation-91',
             projectionGeneration: 91,
             displayName: 'Browser Inspector',
             version: '3.2.1',
@@ -7599,9 +7244,8 @@ describe('PluginSurfacePlacementHost', () => {
                     pluginUiProjection={projection}
                     platform="web"
                     reactNativeLoaderBackend={{
-                        backendId: 'reactNativeWebModule',
+                        backendId: 'commonJs',
                         available: true,
-                        loadDevServerBundle: vi.fn(async () => () => null),
                     }}
                 />
             );
@@ -7638,13 +7282,12 @@ describe('PluginSurfacePlacementHost', () => {
         reactNativeSurfaceProps.length = 0;
         const { PluginSurfacePlacementHost } = await import('./PluginSurfaceHost');
         const { getInstalledPluginReactNativeBundleCache } = await import('@/components/plugins/reactNative/bundleCache');
-        const entryRelativePath = 'react-native/native-panel/index.js';
+        const entryRelativePath = `react-native/${reactNativeCacheIdentity.artifactId}/entry.cjs.bundle`;
         const entryBytes = new TextEncoder().encode('export function renderSurface() { return null; }');
         const generatedIdentity = {
             ...reactNativeCacheIdentity,
             artifactDigest: PluginUiArtifactDigestV1Schema.parse('sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc'),
-            platform: 'web',
-            projectionGeneration: 52,
+            platform: 'web' as const,
         };
         const baseProjection = {
             ...reactNativeProjection,
@@ -7655,9 +7298,8 @@ describe('PluginSurfacePlacementHost', () => {
                     generatedV2: true,
                     pluginVersion: '3.2.1',
                     artifactGraph: {
-                        contributionId: 'native-panel-artifact',
+                        artifactId: generatedIdentity.artifactId,
                         tier: 'reactNative',
-                        platform: 'web',
                         entry: entryRelativePath,
                         files: [{
                             relativePath: entryRelativePath,
@@ -7665,15 +7307,15 @@ describe('PluginSurfacePlacementHost', () => {
                             byteSize: entryBytes.byteLength,
                         }],
                         digest: generatedIdentity.artifactDigest,
-                        builtWith: { bundler: 'vite', version: '7.0.0' },
-                        hostUiApiVersion: '1.0.0',
-                        compat: { react: '19.2.0', reactNative: '0.83.4' },
+                        builtWith: { bundler: 'esbuild', version: '0.27.2' },
+                        executable: { exports: ['renderSurface'] },
+                        hostUiApiRange: '^1.0.0',
                     },
                     runtime: {
                         decision: { state: 'load', reason: 'compatible', diagnostics: [] },
                         loadPolicy: { source: 'installedArtifact' },
                         cacheKey: 'launch-input-cache-key',
-                        cacheIdentity: generatedIdentity,
+                        cacheIdentity: { artifactDigest: generatedIdentity.artifactDigest },
                     },
                 },
             },
@@ -7681,7 +7323,7 @@ describe('PluginSurfacePlacementHost', () => {
         const generatedProjection = withExactGeneratedMountedTarget({
             projection: baseProjection,
             pluginId: 'acme.browser',
-            immutableGenerationId: 'browser-launch-input-generation-52',
+            occurrenceId: 'browser-launch-input-generation-52',
             projectionGeneration: 52,
             displayName: 'Browser Inspector',
             version: '3.2.1',
@@ -7701,11 +7343,7 @@ describe('PluginSurfacePlacementHost', () => {
         const handleRequest = vi.fn(async () => null);
         const renderPlacement = (launchInput?: unknown) => (
             <PluginSurfacePlacementHost
-                placement={generatedReactNativePlacement({
-                    crashState: generatedReactNativeCrashState({
-                        artifactDigest: generatedIdentity.artifactDigest,
-                    }),
-                })}
+                placement={generatedReactNativePlacement({ occurrenceId: 'browser-launch-input-generation-52' })}
                 resourceBrowserTarget={target}
                 machineId="machine_1"
                 serverId="server_1"
@@ -7714,7 +7352,7 @@ describe('PluginSurfacePlacementHost', () => {
                 platform="web"
                 launchInput={launchInput as never}
                 reactNativeLoaderBackend={{
-                    backendId: 'reactNativeWebModule',
+                    backendId: 'commonJs',
                     available: true,
                     loadInstalledBundle: vi.fn(async () => () => null),
                 }}
@@ -7777,14 +7415,10 @@ describe('PluginSurfacePlacementHost', () => {
         expect(plain.has('happierLaunchInput')).toBe(false);
     });
 
-    it('RN-2: mounts a devHotReload source loadable from the projected dev-server URL', async () => {
+    it('RN-2: does not revive the retired devHotReload executable source', async () => {
         pluginSurfaceAccountLifetime.setScope({ serverId: 'server_1', accountId: 'account-a' });
         reactNativeSurfaceProps.length = 0;
         const { PluginSurfacePlacementHost } = await import('./PluginSurfaceHost');
-        const module = {
-            renderSurface: () => React.createElement('PluginNativeSurface', { testID: 'plugin-native-surface' }),
-        };
-        const loadDevServerBundle = vi.fn(async () => module.renderSurface);
         const devUrl = 'http://127.0.0.1:8082/index.bundle?platform=ios&dev=true';
         const nativeCacheIdentity = {
             ...generatedReactNativeCacheIdentity,
@@ -7807,27 +7441,13 @@ describe('PluginSurfacePlacementHost', () => {
                 },
                 renderer: { kind: 'reactNative', contributionId: 'native-panel' },
                 display: { label: 'Native dev panel' },
-                runtime: {
-                    reactNativeCrashState: {
-                        token: {
-                            mount: {
-                                kind: 'destination',
-                                destination: { pluginId: 'acme.browser', localId: 'native-dev-panel' },
-                            },
-                            renderer: { pluginId: 'acme.browser', localId: 'native-panel' },
-                            artifactDigest: nativeArtifactGraph.digest,
-                            crashStateEpoch: 7,
-                        },
-                        disabled: false,
-                    },
-                },
             }),
             generatedV2: true,
         }) as unknown as PluginUiSurfacePlacementProjection;
         const targetedFixture = primeExactTargetedContributions({
             pluginId: 'acme.browser',
-            immutableGenerationId: 'browser-dev-generation-44',
-            projectionGeneration: generatedReactNativeCacheIdentity.projectionGeneration,
+            occurrenceId: 'browser-dev-generation-44',
+            projectionGeneration: 44,
         });
         const devProjection = withMountedTargetPackage({
             ...generatedReactNativeProjection,
@@ -7844,7 +7464,7 @@ describe('PluginSurfacePlacementHost', () => {
                             loaderBackendAvailable: true,
                         },
                         cacheKey: 'generated-native-dev-cache-key',
-                        cacheIdentity: nativeCacheIdentity,
+                        cacheIdentity: { artifactDigest: nativeCacheIdentity.artifactDigest },
                     },
                 },
             },
@@ -7853,7 +7473,7 @@ describe('PluginSurfacePlacementHost', () => {
             version: '3.2.1',
         });
 
-        await renderScreen(
+        const screen = await renderScreen(
             <PluginSurfacePlacementHost
                 placement={nativePlacement}
                 machineId="machine_1"
@@ -7863,28 +7483,15 @@ describe('PluginSurfacePlacementHost', () => {
                 platform="ios"
                 formFactor="tablet"
                 reactNativeLoaderBackend={{
-                    backendId: 'repackScriptManager',
+                    backendId: 'commonJs',
                     available: true,
-                    loadDevServerBundle,
                 }}
             />,
             { flushOptions: { cycles: 0 } },
         );
 
-        await vi.waitFor(() => expect(reactNativeSurfaceProps).not.toHaveLength(0));
-
-        const props = reactNativeSurfaceProps.at(-1) as {
-            loadPolicy?: { source?: string; devUrl?: string };
-            load?: () => Promise<unknown>;
-        };
-        expect(props.loadPolicy).toEqual(expect.objectContaining({ source: 'devHotReload', devUrl }));
-        await expect(props.load?.()).resolves.toEqual(module);
-        expect(loadDevServerBundle).toHaveBeenCalledWith({
-            devUrl,
-            pluginId: 'acme.browser',
-            contributionId: 'native-panel',
-            moduleReference: defaultReactNativeModuleReference,
-        });
+        expect(reactNativeSurfaceProps).toHaveLength(0);
+        expect(screen.findByTestId('plugin-surface-unavailable')).toBeTruthy();
     });
 
     it('RN-2: does not build a dev load path for a denied devHotReload projection (no dev URL / fallback)', async () => {
@@ -7893,8 +7500,8 @@ describe('PluginSurfacePlacementHost', () => {
         const { PluginSurfacePlacementHost } = await import('./PluginSurfaceHost');
         const targetedFixture = primeExactTargetedContributions({
             pluginId: 'acme.browser',
-            immutableGenerationId: 'browser-dev-denied-generation-44',
-            projectionGeneration: generatedReactNativeCacheIdentity.projectionGeneration,
+            occurrenceId: 'browser-dev-denied-generation-44',
+            projectionGeneration: 44,
         });
         const deniedProjection = withMountedTargetPackage({
             ...generatedReactNativeProjection,
@@ -7905,7 +7512,7 @@ describe('PluginSurfacePlacementHost', () => {
                         decision: { state: 'fallback', reason: 'channel_policy_denied', diagnostics: ['dev_hot_reload_denied'] },
                         loadPolicy: { source: 'devHotReload', featureEnabled: true, loaderBackendAvailable: true },
                         cacheKey: 'generated-native-dev-denied-cache-key',
-                        cacheIdentity: generatedReactNativeCacheIdentity,
+                        cacheIdentity: { artifactDigest: generatedReactNativeCacheIdentity.artifactDigest },
                     },
                 },
             },
@@ -7916,7 +7523,7 @@ describe('PluginSurfacePlacementHost', () => {
 
         await renderScreen(
             <PluginSurfacePlacementHost
-                placement={generatedReactNativePlacement()}
+                placement={generatedReactNativePlacement({ occurrenceId: targetedFixture.mountedTarget.occurrenceId })}
                 resourceBrowserTarget={target}
                 machineId="machine_1"
                 serverId="server_1"
@@ -7941,8 +7548,8 @@ describe('PluginSurfacePlacementHost', () => {
         const { PluginSurfacePlacementHost } = await import('./PluginSurfaceHost');
         const targetedFixture = primeExactTargetedContributions({
             pluginId: 'acme.browser',
-            immutableGenerationId: 'browser-runtime-unavailable-generation-44',
-            projectionGeneration: generatedReactNativeCacheIdentity.projectionGeneration,
+            occurrenceId: 'browser-runtime-unavailable-generation-44',
+            projectionGeneration: 44,
         });
         const projection = withMountedTargetPackage({
             ...generatedReactNativeProjection,
@@ -7963,7 +7570,7 @@ describe('PluginSurfacePlacementHost', () => {
                             loaderBackendAvailable: true,
                         },
                         cacheKey: 'generated-native-runtime-unavailable-cache-key',
-                        cacheIdentity: generatedReactNativeCacheIdentity,
+                        cacheIdentity: { artifactDigest: generatedReactNativeCacheIdentity.artifactDigest },
                     },
                 },
             },
@@ -7975,7 +7582,7 @@ describe('PluginSurfacePlacementHost', () => {
         const screen = await renderScreen(
             <PluginSurfacePlacementHost
                 placement={{
-                    ...generatedReactNativePlacement(),
+                    ...generatedReactNativePlacement({ occurrenceId: targetedFixture.mountedTarget.occurrenceId }),
                     renderer: {
                         kind: 'reactNative',
                         contributionId: 'native-panel',
@@ -8009,8 +7616,8 @@ describe('PluginSurfacePlacementHost', () => {
         const { PluginSurfacePlacementHost } = await import('./PluginSurfaceHost');
         const targetedFixture = primeExactTargetedContributions({
             pluginId: 'acme.browser',
-            immutableGenerationId: 'browser-required-host-method-generation-44',
-            projectionGeneration: generatedReactNativeCacheIdentity.projectionGeneration,
+            occurrenceId: 'browser-required-host-method-generation-44',
+            projectionGeneration: 44,
         });
         const entry = generatedReactNativeProjection.reactNativeBundlesById['reactNativeBundle:acme.browser:native-panel'];
         const { hostApi: _legacyHostApi, ...entryWithoutLegacyHostApi } = entry;
@@ -8031,8 +7638,8 @@ describe('PluginSurfacePlacementHost', () => {
         const screen = await renderScreen(
             <PluginSurfacePlacementHost
                 placement={{
-                    ...generatedReactNativePlacement(),
-                    binding: generatedReactNativePlacement().binding,
+                    ...generatedReactNativePlacement({ occurrenceId: targetedFixture.mountedTarget.occurrenceId }),
+                    binding: generatedReactNativePlacement({ occurrenceId: targetedFixture.mountedTarget.occurrenceId }).binding,
                 }}
                 resourceBrowserTarget={target}
                 machineId="machine_1"
@@ -8170,7 +7777,7 @@ describe('PluginSurfacePlacementHost', () => {
                         pluginId: 'acme.tablet',
                         localId: 'tablet-renderer',
                         qualifiedId: 'acme.tablet/tablet-renderer',
-                        generation: 'tablet-generation',
+                        occurrenceId: 'tablet-generation',
                     },
                     visible: true,
                     requiredHostMethods: [],
@@ -8234,7 +7841,7 @@ describe('PluginSurfacePlacementHost', () => {
                         pluginId: 'acme.tablet',
                         localId: 'tablet-renderer',
                         qualifiedId: 'acme.tablet/tablet-renderer',
-                        generation: 'tablet-generation',
+                        occurrenceId: 'tablet-generation',
                     },
                     visible: true,
                     requiredHostMethods: [],
@@ -8354,13 +7961,12 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
         pluginSurfaceAccountLifetime.setScope({ serverId: 'server_1', accountId: 'account-a' });
     });
 
-    const generatedArtifactEntry = 'react-native/native-panel/index.js';
+    const generatedArtifactEntry = `react-native/${reactNativeCacheIdentity.artifactId}/entry.cjs.bundle`;
     const generatedArtifactBytes = new TextEncoder().encode('export function renderSurface() { return null; }');
     const generatedIdentity = {
         ...reactNativeCacheIdentity,
         artifactDigest: PluginUiArtifactDigestV1Schema.parse('sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'),
-        platform: 'web',
-        projectionGeneration: 77,
+        platform: 'web' as const,
     };
     const generatedFileDigest = 'sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff';
 
@@ -8376,9 +7982,8 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
                     generatedV2: true,
                     pluginVersion: '3.2.1',
                     artifactGraph: {
-                        contributionId: 'native-panel-artifact',
+                        artifactId: generatedIdentity.artifactId,
                         tier: 'reactNative',
-                        platform: 'web',
                         entry: generatedArtifactEntry,
                         files: [{
                             relativePath: generatedArtifactEntry,
@@ -8386,16 +7991,16 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
                             byteSize: generatedArtifactBytes.byteLength,
                         }],
                         digest: generatedIdentity.artifactDigest,
-                        builtWith: { bundler: 'vite', version: '7.0.0' },
-                        hostUiApiVersion: '1.0.0',
-                        compat: { react: '19.2.0', reactNative: '0.83.4' },
+                        builtWith: { bundler: 'esbuild', version: '0.27.2' },
+                        executable: { exports: ['renderSurface'] },
+                        hostUiApiRange: '^1.0.0',
                     },
                     hostApi: { minVersion: '1.0.0', methods: ['context', 'executeAction'] },
                     runtime: {
                         decision: { state: 'load', reason: 'compatible', diagnostics: [] },
                         loadPolicy: { source: 'installedArtifact' },
                         cacheKey: 'generated-context-cache-key',
-                        cacheIdentity: generatedIdentity,
+                        cacheIdentity: { artifactDigest: generatedIdentity.artifactDigest },
                     },
                 },
             },
@@ -8524,7 +8129,7 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
         });
 
         const basePlacement = generatedReactNativePlacement({
-            crashState: generatedReactNativeCrashState({ destinationId: 'notes' }),
+            occurrenceId: 'browser-current-ui-location-generation-77',
         });
         const appPagePlacement = Object.freeze({
             ...basePlacement,
@@ -8567,7 +8172,7 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
                 },
             } as PluginUiProjectionModel,
             pluginId: 'acme.browser',
-            immutableGenerationId: 'browser-current-ui-location-generation-77',
+            occurrenceId: 'browser-current-ui-location-generation-77',
             projectionGeneration: 77,
             displayName: 'Browser Inspector',
             version: '3.2.1',
@@ -8583,7 +8188,7 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
                     platform="web"
                     subPath={subPath}
                     reactNativeLoaderBackend={{
-                        backendId: 'reactNativeWebModule',
+                        backendId: 'commonJs',
                         available: true,
                         loadInstalledBundle: vi.fn(async () => () => null),
                     }}
@@ -8671,7 +8276,7 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
             renderSurface: (context: RenderContext) => React.createElement(CurrentUiContextProbe, { context }),
         });
         const basePlacement = generatedReactNativePlacement({
-            crashState: generatedReactNativeCrashState({ destinationId: 'notes' }),
+            occurrenceId: 'browser-current-ui-lifecycle-generation-77',
         });
         const appPagePlacement = Object.freeze({
             ...basePlacement,
@@ -8705,14 +8310,14 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
                 },
             } as PluginUiProjectionModel,
             pluginId: 'acme.browser',
-            immutableGenerationId: 'browser-current-ui-lifecycle-generation-77',
+            occurrenceId: 'browser-current-ui-lifecycle-generation-77',
             projectionGeneration: 77,
             displayName: 'Browser Inspector',
             version: '3.2.1',
         }).projection;
         const { PluginSurfacePlacementHost } = await import('./PluginSurfaceHost');
         const loaderBackend = Object.freeze({
-            backendId: 'reactNativeWebModule',
+            backendId: 'commonJs',
             available: true,
             loadInstalledBundle: vi.fn(async () => () => null),
         });
@@ -8761,7 +8366,8 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
         reactNativeSurfaceProps.length = 0;
         const mountedTarget = {
             pluginId: 'acme.browser',
-            immutableGenerationId: 'browser-generation-42',
+            occurrenceId: 'browser-generation-42',
+            sourceCustody: developmentSourceCustody('acme-browser-test-root'),
         } as const;
         const targetedContributions = {
             target: mountedTarget,
@@ -8774,7 +8380,6 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
                 generation: 77,
                 installedPackagesById: {},
                 agentsById: {},
-                backendsById: {},
                 actionsById: {},
                 toolsById: {},
                 commandsById: {},
@@ -8793,7 +8398,7 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
                     version: '3.2.1',
                     enabled: true,
                     source: { kind: 'bundled', locator: 'acme.browser' },
-                    immutableGenerationId: mountedTarget.immutableGenerationId,
+                    immutableGenerationId: 'browser-mounted-context-artifact-generation-77',
                     brand: { state: 'missing' },
                 },
             },
@@ -8812,14 +8417,14 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
 
         await renderScreen(
             <PluginSurfacePlacementHost
-                placement={browserReactNativePlacement}
+                placement={browserReactNativePlacementFor(mountedTarget.occurrenceId)}
                 resourceBrowserTarget={target}
                 machineId="machine_1"
                 serverId="server_1"
                 pluginUiProjection={projection}
                 platform="web"
                 reactNativeLoaderBackend={{
-                    backendId: 'reactNativeWebModule',
+                    backendId: 'commonJs',
                     available: true,
                     loadInstalledBundle: vi.fn(async () => () => null),
                 }}
@@ -8833,9 +8438,9 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
             await Promise.resolve();
         });
 
-        expect(contributionProjectionDescribeMock).toHaveBeenCalledWith('machine_1', expect.objectContaining({
+        expect(targetedContributionsReadMock).toHaveBeenCalledWith('machine_1', expect.objectContaining({
             serverId: 'server_1',
-            mountedTarget,
+            pluginId: mountedTarget.pluginId,
         }));
         expect(readMountedSurface().targetedContributions).toEqual(targetedContributions);
     });
@@ -8859,7 +8464,8 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
 
         const mountedTarget = {
             pluginId: 'acme.browser',
-            immutableGenerationId: 'browser-cold-custody-generation-77',
+            occurrenceId: 'browser-cold-custody-generation-77',
+            sourceCustody: developmentSourceCustody('acme-browser-test-root'),
         } as const;
         // A retained admission must be a positive fact: an empty point list is
         // valid live data but is never last-known-good offline authority, so
@@ -8874,7 +8480,8 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
                         contributor: {
                             pluginId: 'acme.review',
                             contributionId: 'detail',
-                            immutableGenerationId: 'review-generation-a',
+                            occurrenceId: 'review-generation-a',
+                            sourceCustody: developmentSourceCustody('acme-review-test-root'),
                         },
                         protocol: { id: 'review/detail', version: 1 },
                         operations: [],
@@ -8889,7 +8496,7 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
             version: '3.2.1',
             enabled: true,
             source: { kind: 'bundled', locator: 'acme.browser' },
-            immutableGenerationId: mountedTarget.immutableGenerationId,
+            immutableGenerationId: 'browser-cold-custody-artifact-generation-77',
             brand: { state: 'missing' },
         } as const;
         // The exact daemon projection the machine-wide currentness owner
@@ -8906,6 +8513,7 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
                         'translations:acme.browser': {
                             id: 'translations:acme.browser',
                             pluginId: 'acme.browser',
+                            occurrenceId: mountedTarget.occurrenceId,
                             contributionKind: 'translations',
                             locales: ['en'],
                             bundles: { en: { title: 'Browser Inspector' } },
@@ -8930,14 +8538,14 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
         const { PluginSurfacePlacementHost } = await import('./PluginSurfaceHost');
         const renderPlacement = () => (
             <PluginSurfacePlacementHost
-                placement={browserReactNativePlacement}
+                placement={browserReactNativePlacementFor(mountedTarget.occurrenceId)}
                 resourceBrowserTarget={target}
                 machineId="machine_1"
                 serverId="server-a"
                 pluginUiProjection={projection}
                 platform="web"
                 reactNativeLoaderBackend={{
-                    backendId: 'reactNativeWebModule',
+                    backendId: 'commonJs',
                     available: true,
                     loadInstalledBundle: vi.fn(async () => () => null),
                 }}
@@ -9012,7 +8620,8 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
                         contributor: {
                             pluginId: 'acme.review',
                             contributionId: 'detail',
-                            immutableGenerationId: 'review-generation-b',
+                            occurrenceId: 'review-generation-b',
+                            sourceCustody: developmentSourceCustody('acme-review-test-root'),
                         },
                         protocol: { id: 'review/detail', version: 1 },
                         operations: [],
@@ -9073,7 +8682,7 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
         });
         expect(reactNativeSurfaceProps).toHaveLength(0);
         expect(emptyTarget.findByTestId(
-            'plugin-surface-unavailable-diagnostic-targeted_contributions_unavailable',
+            'plugin-surface-unavailable-diagnostic-targeted_contributions_error',
         )).toBeTruthy();
         await emptyTarget.unmount();
 
@@ -9089,7 +8698,7 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
         });
         expect(reactNativeSurfaceProps).toHaveLength(0);
         expect(emptied.findByTestId(
-            'plugin-surface-unavailable-diagnostic-targeted_contributions_unavailable',
+            'plugin-surface-unavailable-diagnostic-targeted_contributions_error',
         )).toBeTruthy();
     });
 
@@ -9097,7 +8706,8 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
         reactNativeSurfaceProps.length = 0;
         const mountedTarget = Object.freeze({
             pluginId: 'acme.browser',
-            immutableGenerationId: 'browser-targeted-react-generation-77',
+            occurrenceId: 'browser-targeted-react-generation-77',
+            sourceCustody: developmentSourceCustody('acme-browser-test-root'),
         });
         const surface = Object.freeze({
             point: Object.freeze({
@@ -9107,7 +8717,8 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
             contributor: Object.freeze({
                 pluginId: 'acme.review',
                 contributionId: 'detail',
-                immutableGenerationId: 'review-generation-b',
+                occurrenceId: 'review-generation-b',
+                sourceCustody: developmentSourceCustody('acme-review-test-root'),
             }),
             role: 'detail',
             presentation: 'content' as const,
@@ -9153,7 +8764,7 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
                             pluginId: surface.contributor.pluginId,
                             localId: surface.contributor.contributionId,
                             qualifiedId: `${surface.contributor.pluginId}/${surface.contributor.contributionId}`,
-                            generation: '77',
+                            occurrenceId: '77',
                         }),
                         requiredHostMethods: Object.freeze([]),
                         nodes: Object.freeze([]),
@@ -9169,7 +8780,8 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
                                     contributor: Object.freeze({
                                         pluginId: 'acme.nested-review',
                                         contributionId: 'nested-detail',
-                                        immutableGenerationId: 'nested-generation-c',
+                                        occurrenceId: 'nested-generation-c',
+                                        sourceCustody: developmentSourceCustody('acme-nested-review-test-root'),
                                     }),
                                     role: 'detail',
                                     presentation: 'content',
@@ -9193,14 +8805,15 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
             contributorTargetedContributions: Object.freeze({
                 target: Object.freeze({
                     pluginId: surface.contributor.pluginId,
-                    immutableGenerationId: surface.contributor.immutableGenerationId,
+                    occurrenceId: surface.contributor.occurrenceId,
+                    sourceCustody: surface.contributor.sourceCustody,
                 }),
                 points: Object.freeze([]),
             }),
         });
         const targetFixture = primeExactTargetedContributions({
             pluginId: mountedTarget.pluginId,
-            immutableGenerationId: mountedTarget.immutableGenerationId,
+            occurrenceId: mountedTarget.occurrenceId,
             projectionGeneration: 77,
             targetedContributions,
             targetedSurfaceMounts: [targetedMount],
@@ -9213,14 +8826,14 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
 
         const parent = await renderScreen(
             <PluginSurfacePlacementHost
-                placement={browserReactNativePlacement}
+                placement={browserReactNativePlacementFor(targetFixture.mountedTarget.occurrenceId)}
                 resourceBrowserTarget={target}
                 machineId="machine_1"
                 serverId="server_1"
                 pluginUiProjection={projection}
                 platform="web"
                 reactNativeLoaderBackend={{
-                    backendId: 'reactNativeWebModule',
+                    backendId: 'commonJs',
                     available: true,
                     loadInstalledBundle: vi.fn(async () => () => null),
                 }}
@@ -9228,9 +8841,9 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
             { flushOptions: { cycles: 0 } },
         );
         await vi.waitFor(() => {
-            expect(contributionProjectionDescribeMock).toHaveBeenCalledWith('machine_1', expect.objectContaining({
+            expect(targetedContributionsReadMock).toHaveBeenCalledWith('machine_1', expect.objectContaining({
                 serverId: 'server_1',
-                mountedTarget: targetFixture.mountedTarget,
+                pluginId: targetFixture.mountedTarget.pluginId,
             }));
             expect(reactNativeSurfaceProps.at(-1)).toBeTruthy();
         });
@@ -9274,7 +8887,8 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
         reactNativeSurfaceProps.length = 0;
         const mountedTarget = Object.freeze({
             pluginId: 'acme.browser',
-            immutableGenerationId: 'browser-targeted-crash-generation-77',
+            occurrenceId: 'browser-targeted-crash-generation-77',
+            sourceCustody: developmentSourceCustody('acme-browser-test-root'),
         });
         // The app receives the structural Protocol identity after the public
         // nominal author edge (covered by the SDK authoring-inference fixture).
@@ -9286,7 +8900,8 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
             contributor: Object.freeze({
                 pluginId: 'acme.review',
                 contributionId: 'detail',
-                immutableGenerationId: 'review-generation-b',
+                occurrenceId: 'review-generation-b',
+                sourceCustody: developmentSourceCustody('acme-review-test-root'),
             }),
             role: 'detail',
             presentation: 'content' as const,
@@ -9310,7 +8925,7 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
         // mount for it. An exact valid mount would render B, not this fallback.
         const targetFixture = primeExactTargetedContributions({
             pluginId: mountedTarget.pluginId,
-            immutableGenerationId: mountedTarget.immutableGenerationId,
+            occurrenceId: mountedTarget.occurrenceId,
             projectionGeneration: 77,
             targetedContributions,
             targetedSurfaceMounts: [],
@@ -9319,11 +8934,6 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
             displayName: 'Browser Inspector',
             version: '3.2.1',
         });
-        reactNativeCrashReports.submit.mockResolvedValue({
-            ok: true,
-            token: generatedReactNativeCrashState().token,
-            disabled: false,
-        });
         const { PluginSurfacePlacementHost } = await import('./PluginSurfaceHost');
         const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
         let screen: Awaited<ReturnType<typeof renderScreen>> | undefined;
@@ -9331,14 +8941,14 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
         try {
             screen = await renderScreen(
                 <PluginSurfacePlacementHost
-                    placement={generatedReactNativePlacement()}
+                    placement={generatedReactNativePlacement({ occurrenceId: mountedTarget.occurrenceId })}
                     resourceBrowserTarget={target}
                     machineId="machine_1"
                     serverId="server_1"
                     pluginUiProjection={projection}
                     platform="web"
                     reactNativeLoaderBackend={{
-                        backendId: 'reactNativeWebModule',
+                        backendId: 'commonJs',
                         available: true,
                         loadInstalledBundle: vi.fn(async () => () => null),
                     }}
@@ -9347,9 +8957,9 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
             );
 
             await vi.waitFor(() => {
-                expect(contributionProjectionDescribeMock).toHaveBeenCalledWith('machine_1', expect.objectContaining({
+                expect(targetedContributionsReadMock).toHaveBeenCalledWith('machine_1', expect.objectContaining({
                     serverId: 'server_1',
-                    mountedTarget: targetFixture.mountedTarget,
+                    pluginId: targetFixture.mountedTarget.pluginId,
                 }));
                 expect(reactNativeSurfaceProps.at(-1)).toBeTruthy();
             });
@@ -9387,7 +8997,6 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
             });
             expect(screen?.findByTestId('plugin-rn-ui-unavailable')).toBeNull();
             expect(child?.findByTestId('plugin-rn-ui-unavailable')).toBeNull();
-            expect(reactNativeCrashReports.submit).not.toHaveBeenCalled();
             // This fixture's mount installs no `diagnostic` handler, so the
             // host must stay silent: an unresolved declarative B publishes no
             // surface diagnostic and never borrows a capability it does not
@@ -9405,7 +9014,8 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
         reactNativeSurfaceProps.length = 0;
         const mountedTarget = Object.freeze({
             pluginId: 'acme.browser',
-            immutableGenerationId: 'browser-targeted-fallback-generation-77',
+            occurrenceId: 'browser-targeted-fallback-generation-77',
+            sourceCustody: developmentSourceCustody('acme-browser-test-root'),
         });
         const surface = Object.freeze({
             point: Object.freeze({
@@ -9415,7 +9025,8 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
             contributor: Object.freeze({
                 pluginId: 'acme.review',
                 contributionId: 'detail',
-                immutableGenerationId: 'review-generation-b',
+                occurrenceId: 'review-generation-b',
+                sourceCustody: developmentSourceCustody('acme-review-test-root'),
             }),
             role: 'detail',
             presentation: 'content' as const,
@@ -9452,7 +9063,8 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
             contributorTargetedContributions: Object.freeze({
                 target: Object.freeze({
                     pluginId: surface.contributor.pluginId,
-                    immutableGenerationId: surface.contributor.immutableGenerationId,
+                    occurrenceId: surface.contributor.occurrenceId,
+                    sourceCustody: surface.contributor.sourceCustody,
                 }),
                 points: Object.freeze([]),
             }),
@@ -9520,7 +9132,8 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
         reactNativeSurfaceProps.length = 0;
         const mountedTarget = Object.freeze({
             pluginId: 'acme.browser',
-            immutableGenerationId: 'browser-targeted-hosted-generation-77',
+            occurrenceId: 'browser-targeted-hosted-generation-77',
+            sourceCustody: developmentSourceCustody('acme-browser-test-root'),
         });
         const surface = Object.freeze({
             point: Object.freeze({
@@ -9530,7 +9143,8 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
             contributor: Object.freeze({
                 pluginId: 'acme.review',
                 contributionId: 'detail',
-                immutableGenerationId: 'review-generation-b',
+                occurrenceId: 'review-generation-b',
+                sourceCustody: developmentSourceCustody('acme-review-test-root'),
             }),
             role: 'detail',
             presentation: 'content' as const,
@@ -9552,23 +9166,22 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
         });
         const artifactDigest = `sha256:${'d'.repeat(64)}`;
         const artifactGraph = Object.freeze({
-            contributionId: surface.contributor.contributionId,
+            artifactId: surface.contributor.contributionId,
             tier: 'hostedWeb' as const,
-            platform: 'web' as const,
-            entry: 'hosted-web/review/index.html',
+            entry: `hosted-web/${surface.contributor.contributionId}/index.html`,
             files: Object.freeze([Object.freeze({
-                relativePath: 'hosted-web/review/index.html',
+                relativePath: `hosted-web/${surface.contributor.contributionId}/index.html`,
                 digest: `sha256:${'e'.repeat(64)}`,
                 byteSize: 16,
             })]),
             digest: artifactDigest,
-            builtWith: Object.freeze({ bundler: 'vite' as const, version: '7.0.0' }),
-            hostUiApiVersion: '1.0.0',
-            compat: Object.freeze({}),
+            builtWith: Object.freeze({ staging: 'staticDirectory' as const }),
+            hostUiApiRange: '^1.0.0',
         });
         const artifactProjection = Object.freeze({
             id: 'hostedWeb:acme.review:detail',
             pluginId: surface.contributor.pluginId,
+            occurrenceId: surface.contributor.occurrenceId,
             contributionKind: 'hostedWeb',
             contributionId: surface.contributor.contributionId,
             generatedV2: true,
@@ -9606,11 +9219,7 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
                     diagnostics: Object.freeze(['hosted_web_frame_adapter_unavailable']),
                 }),
                 artifactReadIdentity: Object.freeze({
-                    pluginId: surface.contributor.pluginId,
-                    contributionId: surface.contributor.contributionId,
                     artifactDigest,
-                    platform: 'web' as const,
-                    projectionGeneration: 77,
                 }),
             }),
         });
@@ -9648,14 +9257,15 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
             contributorTargetedContributions: Object.freeze({
                 target: Object.freeze({
                     pluginId: surface.contributor.pluginId,
-                    immutableGenerationId: surface.contributor.immutableGenerationId,
+                    occurrenceId: surface.contributor.occurrenceId,
+                    sourceCustody: surface.contributor.sourceCustody,
                 }),
                 points: Object.freeze([]),
             }),
         });
         const targetFixture = primeExactTargetedContributions({
             pluginId: mountedTarget.pluginId,
-            immutableGenerationId: mountedTarget.immutableGenerationId,
+            occurrenceId: mountedTarget.occurrenceId,
             projectionGeneration: 77,
             targetedContributions,
             targetedSurfaceMounts: [targetedMount],
@@ -9706,13 +9316,12 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
                             }),
                             collectionContracts: [],
                             uiSlots: [{
-                                contributionId: artifactGraph.contributionId,
+                                contributionId: surface.contributor.contributionId,
+                                artifactId: artifactGraph.artifactId,
                                 tier: artifactGraph.tier,
-                                platform: artifactGraph.platform,
+                                platform: 'web',
                                 artifactDigest: artifactGraph.digest,
-                                compatibility: {
-                                    hostUiApiVersion: artifactGraph.hostUiApiVersion,
-                                },
+                                hostUiApiRange: artifactGraph.hostUiApiRange,
                             }],
                             packageAssetArchive: {
                                 archiveDigestSha256: `sha256:${'f'.repeat(64)}`,
@@ -9721,18 +9330,13 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
                         },
                         uiArtifacts: [{
                             release: { pluginId: surface.contributor.pluginId, version: releaseVersion },
-                            contributionId: artifactGraph.contributionId,
+                            contributionId: surface.contributor.contributionId,
+                            artifactId: artifactGraph.artifactId,
                             tier: artifactGraph.tier,
-                            platform: artifactGraph.platform,
-                            artifactId: '00000000-0000-4000-8000-000000000077',
+                            platform: 'web',
+                            accountArtifactId: '00000000-0000-4000-8000-000000000077',
                             artifactDigest: artifactGraph.digest,
-                            compatibility: {
-                                hostAppVersion: '1.0.0',
-                                hostUiApiVersion: artifactGraph.hostUiApiVersion,
-                                platform: artifactGraph.platform,
-                                channel: 'internal',
-                                nativeCapabilities: [],
-                            },
+                            hostUiApiRange: artifactGraph.hostUiApiRange,
                         }],
                     }),
                 }],
@@ -9753,7 +9357,7 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
         const { PluginSurfacePlacementHost } = await import('./PluginSurfaceHost');
         const parent = await renderScreen(
             <PluginSurfacePlacementHost
-                placement={browserReactNativePlacement}
+                placement={browserReactNativePlacementFor(targetFixture.mountedTarget.occurrenceId)}
                 resourceBrowserTarget={target}
                 machineId="machine_1"
                 serverId="server-a"
@@ -9762,7 +9366,7 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
                 localServicePreviewState={createLocalServicePreviewState()}
                 platform="web"
                 reactNativeLoaderBackend={{
-                    backendId: 'reactNativeWebModule',
+                    backendId: 'commonJs',
                     available: true,
                     loadInstalledBundle: vi.fn(async () => () => null),
                 }}
@@ -9808,9 +9412,10 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
             ]);
             expect(JSON.parse(String(init?.body))).toEqual({
                 release: { pluginId: surface.contributor.pluginId, version: releaseVersion },
-                contributionId: artifactGraph.contributionId,
+                contributionId: surface.contributor.contributionId,
+                artifactId: artifactGraph.artifactId,
                 tier: artifactGraph.tier,
-                platform: artifactGraph.platform,
+                platform: 'web',
                 expectedArtifactDigest: artifactGraph.digest,
             });
             const frame = child.findByType('iframe');
@@ -9823,7 +9428,10 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
             expect(src.searchParams.has('happierContributionId')).toBe(false);
             expect(src.searchParams.has('happierSurfaceId')).toBe(false);
             await act(async () => {
-                await vi.advanceTimersByTimeAsync(30_000);
+                frame?.props.onLoad?.();
+            });
+            await act(async () => {
+                await vi.advanceTimersByTimeAsync(60_000);
             });
             expect(
                 child.findByTestId('targeted-hosted-ready-timeout-fallback'),
@@ -9899,7 +9507,8 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
         });
         const mountedTarget = Object.freeze({
             pluginId: 'acme.browser',
-            immutableGenerationId: 'browser-targeted-native-generation-77',
+            occurrenceId: 'browser-targeted-native-generation-77',
+            sourceCustody: developmentSourceCustody('acme-browser-test-root'),
         });
         const surface = Object.freeze({
             point: Object.freeze({
@@ -9909,7 +9518,8 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
             contributor: Object.freeze({
                 pluginId: 'acme.review',
                 contributionId: 'detail',
-                immutableGenerationId: 'review-generation-b',
+                occurrenceId: 'review-generation-b',
+                sourceCustody: developmentSourceCustody('acme-review-test-root'),
             }),
             role: 'detail',
             presentation: 'fill' as const,
@@ -9935,24 +9545,24 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
         const artifactProjection = Object.freeze({
             id: 'reactNativeBundle:acme.review:detail',
             pluginId: surface.contributor.pluginId,
+            occurrenceId: surface.contributor.occurrenceId,
             contributionKind: 'reactNativeBundle',
             contributionId: surface.contributor.contributionId,
             generatedV2: true,
             pluginVersion: '4.0.0',
             artifactGraph: Object.freeze({
-                contributionId: surface.contributor.contributionId,
+                artifactId: surface.contributor.contributionId,
                 tier: 'reactNative' as const,
-                platform: 'web' as const,
-                entry: 'react-native/review/index.js',
+                entry: `react-native/${surface.contributor.contributionId}/entry.cjs.bundle`,
                 files: Object.freeze([Object.freeze({
-                    relativePath: 'react-native/review/index.js',
+                    relativePath: `react-native/${surface.contributor.contributionId}/entry.cjs.bundle`,
                     digest: PluginUiArtifactDigestV1Schema.parse(`sha256:${'c'.repeat(64)}`),
                     byteSize: 16,
                 })]),
                 digest: artifactDigest,
-                builtWith: Object.freeze({ bundler: 'vite' as const, version: '7.0.0' }),
-                hostUiApiVersion: '1.0.0',
-                compat: Object.freeze({ react: '19.2.0', reactNative: '0.83.4' }),
+                builtWith: Object.freeze({ bundler: 'esbuild' as const, version: '0.27.2' }),
+                executable: Object.freeze({ exports: Object.freeze(['renderSurface']) }),
+                hostUiApiRange: '^1.0.0',
             }),
             hostApi: Object.freeze({
                 minVersion: '1.0.0',
@@ -9963,38 +9573,9 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
                 loadPolicy: Object.freeze({ source: 'installedArtifact' }),
                 cacheKey: 'review-native-cache-key',
                 cacheIdentity: Object.freeze({
-                    pluginId: surface.contributor.pluginId,
-                    contributionId: surface.contributor.contributionId,
                     artifactDigest,
-                    hostAppVersion: '2.0.0',
-                    hostUiApiVersion: '1.0.0',
-                    reactVersion: '19.2.0',
-                    reactNativeVersion: '0.83.4',
-                    platform: 'web',
-                    channel: 'internal',
-                    nativeCapabilitiesDigest: PluginUiArtifactDigestV1Schema.parse(`sha256:${'d'.repeat(64)}`),
-                    projectionGeneration: 77,
                 }),
             }),
-        });
-        const crashState = Object.freeze({
-            token: Object.freeze({
-                mount: Object.freeze({
-                    kind: 'targetedSurface' as const,
-                    target: mountedTarget,
-                    point: surface.point,
-                    contributor: surface.contributor,
-                    role: surface.role,
-                    presentation: surface.presentation,
-                }),
-                renderer: Object.freeze({
-                    pluginId: surface.contributor.pluginId,
-                    localId: surface.contributor.contributionId,
-                }),
-                artifactDigest,
-                crashStateEpoch: 9,
-            }),
-            disabled: false,
         });
         const targetedMount = DaemonPluginUiTargetedSurfaceMountV1Schema.parse({
             kind: 'targetedSurface' as const,
@@ -10018,7 +9599,6 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
                     contributionId: surface.contributor.contributionId,
                 }),
                 artifactProjection,
-                crashState,
                 availability: Object.freeze({ state: 'available' as const, reason: 'available', diagnostics: Object.freeze([]) }),
             }),
             executionOrigin: mountedExecutionOrigin('acme.review', 'machine_1', 'review-materialization-b'),
@@ -10026,7 +9606,8 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
             contributorTargetedContributions: Object.freeze({
                 target: Object.freeze({
                     pluginId: surface.contributor.pluginId,
-                    immutableGenerationId: surface.contributor.immutableGenerationId,
+                    occurrenceId: surface.contributor.occurrenceId,
+                    sourceCustody: surface.contributor.sourceCustody,
                 }),
                 points: Object.freeze([]),
             }),
@@ -10041,7 +9622,7 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
                     version: '4.0.0',
                     enabled: true,
                     source: { kind: 'bundled', locator: 'acme.review' },
-                    immutableGenerationId: surface.contributor.immutableGenerationId,
+                    immutableGenerationId: 'review-detail-artifact-generation-4',
                     brand: {
                         state: 'available',
                         resource: { pluginId: 'acme.review', localId: 'review-brand-mark' },
@@ -10052,7 +9633,6 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
                 },
             },
             agentsById: {},
-            backendsById: {},
             actionsById: {},
             toolsById: {},
             commandsById: {},
@@ -10065,6 +9645,7 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
                         'translations:acme.review': {
                             id: 'translations:acme.review',
                             pluginId: 'acme.review',
+                            occurrenceId: surface.contributor.occurrenceId,
                             contributionKind: 'translations',
                             locales: ['en'],
                             bundles: { en: { 'review.title': 'Exact B review title' } },
@@ -10076,7 +9657,7 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
         });
         const targetFixture = primeExactTargetedContributions({
             pluginId: mountedTarget.pluginId,
-            immutableGenerationId: mountedTarget.immutableGenerationId,
+            occurrenceId: mountedTarget.occurrenceId,
             projectionGeneration: 77,
             projection: exactBPresentationProjection,
             targetedContributions,
@@ -10087,6 +9668,7 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
                 'acme.browser': {
                     id: 'translations:acme.browser',
                     pluginId: 'acme.browser',
+                    occurrenceId: mountedTarget.occurrenceId,
                     contributionKind: 'translations',
                     locales: ['en'],
                     bundles: { en: { 'review.title': 'Wrong ambient A title' } },
@@ -10113,7 +9695,7 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
         const renderParent = (nestedTargetedSurface?: React.ReactNode) => (
             <PluginSurfaceFocusEligibilityProvider active currentUiContextActive>
                 <PluginSurfacePlacementHost
-                    placement={browserReactNativePlacement}
+                    placement={browserReactNativePlacementFor(mountedTarget.occurrenceId)}
                     resourceBrowserTarget={target}
                     machineId="machine_1"
                     serverId="server_1"
@@ -10121,7 +9703,7 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
                     pluginUiProjection={projection}
                     platform="web"
                     reactNativeLoaderBackend={{
-                        backendId: 'reactNativeWebModule',
+                        backendId: 'commonJs',
                         available: true,
                         loadInstalledBundle: vi.fn(async () => () => null),
                     }}
@@ -10170,7 +9752,6 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
             surfaceId?: string;
             mountInstanceKey?: string;
             focusEligible?: boolean;
-            crashStateToken?: unknown;
             targetedFallback?: React.ReactNode;
             onCrash?: (surfaceId: string, error: Error) => void;
             renderContext?: RenderContext;
@@ -10187,10 +9768,10 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
         const targetedReadyTestId = [
             'plugin-targeted-surface-ready',
             mountedTarget.pluginId,
-            mountedTarget.immutableGenerationId,
+            mountedTarget.occurrenceId,
             surface.contributor.pluginId,
             surface.contributor.contributionId,
-            surface.contributor.immutableGenerationId,
+            surface.contributor.occurrenceId,
             targetedMount.selectedRenderer.identity.pluginId,
             targetedMount.selectedRenderer.identity.localId,
             targetedMount.selectedRenderer.renderer.kind,
@@ -10201,7 +9782,6 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
         expect(childProps.mountInstanceKey).toBe(instanceKey);
         expect(childProps.focusEligible).toBe(false);
         expect(childProps.renderContext?.launchInput).toEqual({ reviewId: 'review-native-42' });
-        expect(childProps.crashStateToken).toEqual(crashState.token);
         expect(childProps.targetedFallback).toBe(targetedFallback);
         expect(childProps.onCrash).toEqual(expect.any(Function));
         expect(childProps.privateHostBindings?.presentationHost?.renderTargetedSurface).toBeUndefined();
@@ -10254,7 +9834,7 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
         expect(resourceReadMock).toHaveBeenCalledWith('machine_1', expect.objectContaining({
             serverId: 'server_1',
             callerPluginId: surface.contributor.pluginId,
-            expectedGeneration: '77',
+            expectedCallerOccurrenceId: 'review-generation-b',
             resource: { pluginId: surface.contributor.pluginId, localId: 'review-summary' },
             context: {
                 kind: 'surface',
@@ -10337,7 +9917,7 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
         const { PluginSurfacePlacementHost } = await import('./PluginSurfaceHost');
         const targetedFixture = primeExactTargetedContributions({
             pluginId: 'acme.browser',
-            immutableGenerationId: 'browser-target-lifecycle-generation-77',
+            occurrenceId: 'browser-target-lifecycle-generation-77',
             projectionGeneration: 77,
         });
         const projection = withMountedTargetPackage(createGeneratedProjection(), targetedFixture, {
@@ -10362,7 +9942,7 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
             url: string;
         }>) => (
             <PluginSurfacePlacementHost
-                placement={browserReactNativePlacement}
+                placement={browserReactNativePlacementFor(targetedFixture.mountedTarget.occurrenceId)}
                 resourceBrowserTarget={resourceBrowserTarget}
                 machineId="machine_1"
                 serverId="server_1"
@@ -10370,7 +9950,7 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
                 platform="web"
                 sessionId="session-theme"
                 reactNativeLoaderBackend={{
-                    backendId: 'reactNativeWebModule',
+                    backendId: 'commonJs',
                     available: true,
                     loadInstalledBundle: vi.fn(async () => () => null),
                 }}
@@ -10427,12 +10007,13 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
             '@/sync/ops/machineContributionRegistryProjection'
         );
         const { PluginSurfacePlacementHost } = await import('./PluginSurfaceHost');
-        const targetFor = (immutableGenerationId: string) => Object.freeze({
+        const targetFor = (occurrenceId: string) => Object.freeze({
             pluginId: 'acme.browser',
-            immutableGenerationId,
+            occurrenceId,
+            sourceCustody: developmentSourceCustody('acme-browser-test-root'),
         });
-        const responseFor = (immutableGenerationId: string) => {
-            const mountedTarget = targetFor(immutableGenerationId);
+        const responseFor = (occurrenceId: string) => {
+            const mountedTarget = targetFor(occurrenceId);
             return Object.freeze({
                 supported: true as const,
                 projection: PluginProjectionV2Schema.parse({
@@ -10440,7 +10021,6 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
                     generation: 77,
                     installedPackagesById: {},
                     agentsById: {},
-                    backendsById: {},
                     actionsById: {},
                     toolsById: {},
                     commandsById: {},
@@ -10455,8 +10035,8 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
                 }),
             });
         };
-        const projectionFor = (immutableGenerationId: string) => {
-            const mountedTarget = targetFor(immutableGenerationId);
+        const projectionFor = (occurrenceId: string) => {
+            const mountedTarget = targetFor(occurrenceId);
             return withMountedTargetPackage(createGeneratedProjection(), {
                 mountedTarget,
                 targetedContributions: Object.freeze({
@@ -10470,23 +10050,26 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
         };
         let currentResponse = responseFor('browser-signal-generation-a');
         contributionProjectionDescribeMock.mockImplementation(async () => currentResponse);
-        const render = (pluginUiProjection: PluginUiProjectionModel) => (
+        const render = (pluginUiProjection: PluginUiProjectionModel, occurrenceId: string) => (
             <PluginSurfacePlacementHost
-                placement={browserReactNativePlacement}
+                placement={browserReactNativePlacementFor(occurrenceId)}
                 resourceBrowserTarget={target}
                 machineId="machine_1"
                 serverId="server_1"
                 pluginUiProjection={pluginUiProjection}
                 platform="web"
                 reactNativeLoaderBackend={{
-                    backendId: 'reactNativeWebModule',
+                    backendId: 'commonJs',
                     available: true,
                     loadInstalledBundle: vi.fn(async () => () => null),
                 }}
             />
         );
 
-        const screen = await renderScreen(render(projectionFor('browser-signal-generation-a')), {
+        const screen = await renderScreen(render(
+            projectionFor('browser-signal-generation-a'),
+            'browser-signal-generation-a',
+        ), {
             flushOptions: { cycles: 0 },
         });
         await vi.waitFor(() => expect(reactNativeSurfaceProps.at(-1)).toBeTruthy());
@@ -10497,6 +10080,7 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
         const initialSignal = initialProps.renderContext!.signal;
         const initialHostApi = initialProps.renderContext!.hostApi;
         const renderedBeforeRefresh = reactNativeSurfaceProps.length;
+        const targetedReadsBeforeRefresh = targetedContributionsReadMock.mock.calls.length;
 
         // A daemon invalidation reconstructs its response-local object graph.
         // This replacement is structurally equal and leaves the canonical bound
@@ -10511,7 +10095,7 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
             await Promise.resolve();
         });
         await vi.waitFor(() => {
-            expect(contributionProjectionDescribeMock).toHaveBeenCalledTimes(2);
+            expect(targetedContributionsReadMock.mock.calls.length).toBeGreaterThan(targetedReadsBeforeRefresh);
             expect(reactNativeSurfaceProps.length).toBeGreaterThan(renderedBeforeRefresh);
         });
         const equivalentRefreshProps = reactNativeSurfaceProps.at(-1) as typeof initialProps;
@@ -10525,12 +10109,16 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
         // replacement. The controller owns this currentness boundary, so the
         // old author signal must retire exactly with it.
         currentResponse = responseFor('browser-signal-generation-b');
-        await screen.update(render(projectionFor('browser-signal-generation-b')));
+        await screen.update(render(
+            projectionFor('browser-signal-generation-b'),
+            'browser-signal-generation-b',
+        ));
         await vi.waitFor(() => {
             const current = reactNativeSurfaceProps.at(-1) as typeof initialProps;
             expect(current.renderContext?.surface.targetedContributions?.target).toEqual({
                 pluginId: 'acme.browser',
-                immutableGenerationId: 'browser-signal-generation-b',
+                occurrenceId: 'browser-signal-generation-b',
+                sourceCustody: developmentSourceCustody('acme-browser-test-root'),
             });
         });
         const replacementProps = reactNativeSurfaceProps.at(-1) as typeof initialProps;
@@ -10547,7 +10135,7 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
         const { PluginSurfacePlacementHost } = await import('./PluginSurfaceHost');
         const targetedFixture = primeExactTargetedContributions({
             pluginId: 'acme.browser',
-            immutableGenerationId: 'browser-resource-methods-generation-77',
+            occurrenceId: 'browser-resource-methods-generation-77',
             projectionGeneration: 77,
         });
         const projection = withMountedTargetPackage(createGeneratedProjection(), targetedFixture, {
@@ -10563,7 +10151,7 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
                 pluginUiProjection={projection}
                 platform="web"
                 reactNativeLoaderBackend={{
-                    backendId: 'reactNativeWebModule',
+                    backendId: 'commonJs',
                     available: true,
                     loadInstalledBundle: vi.fn(async () => () => null),
                 }}
@@ -10579,21 +10167,21 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
             return props.renderContext!.hostApi.version().methods;
         };
         const readableStaticPlacement = {
-            ...browserReactNativePlacement,
+            ...browserReactNativePlacementFor(targetedFixture.mountedTarget.occurrenceId),
             runtime: {
                 ...browserReactNativePlacement.runtime,
                 resourceCapability: { readable: true, dynamic: false },
             },
         } as PluginUiSurfacePlacementProjection;
         const dynamicPlacement = {
-            ...browserReactNativePlacement,
+            ...browserReactNativePlacementFor(targetedFixture.mountedTarget.occurrenceId),
             runtime: {
                 ...browserReactNativePlacement.runtime,
                 resourceCapability: { readable: true, dynamic: true },
             },
         } as PluginUiSurfacePlacementProjection;
         const noResourceProducerPlacement = {
-            ...browserReactNativePlacement,
+            ...browserReactNativePlacementFor(targetedFixture.mountedTarget.occurrenceId),
             runtime: { ...browserReactNativePlacement.runtime },
         } as PluginUiSurfacePlacementProjection;
 
@@ -10619,7 +10207,7 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
         const { PluginSurfacePlacementHost } = await import('./PluginSurfaceHost');
         const targetedFixture = primeExactTargetedContributions({
             pluginId: 'acme.browser',
-            immutableGenerationId: 'browser-target-context-generation-77',
+            occurrenceId: 'browser-target-context-generation-77',
             projectionGeneration: 77,
         });
         const projection = withMountedTargetPackage(createGeneratedProjection(), targetedFixture, {
@@ -10672,7 +10260,7 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
                 expected: { kind: 'session', sessionId: 'session-79' },
             },
             {
-                placement: browserReactNativePlacement,
+                placement: browserReactNativePlacementFor(targetedFixture.mountedTarget.occurrenceId),
                 props: {
                     resourceBrowserTarget: {
                         kind: 'externalUrl',
@@ -10698,7 +10286,7 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
                 expected: { kind: 'session', sessionId: 'session-78' },
             },
             {
-                placement: browserReactNativePlacement,
+                placement: browserReactNativePlacementFor(targetedFixture.mountedTarget.occurrenceId),
                 props: { resourceBrowserTarget: target },
                 expected: { kind: 'browser', targetId: target.targetId },
             },
@@ -10708,13 +10296,16 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
         for (const testCase of cases) {
             await renderScreen(
                 <PluginSurfacePlacementHost
-                    placement={testCase.placement as never}
+                    placement={Object.freeze({
+                        ...testCase.placement,
+                        occurrenceId: targetedFixture.mountedTarget.occurrenceId,
+                    })}
                     machineId="machine_1"
                     serverId="server_1"
                     pluginUiProjection={projection}
                     platform="web"
                         reactNativeLoaderBackend={{
-                        backendId: 'reactNativeWebModule',
+                        backendId: 'commonJs',
                         available: true,
                         loadInstalledBundle: vi.fn(async () => () => React.createElement('PluginNativeSurface')),
                     }}
@@ -10732,7 +10323,7 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
         const { PluginSurfacePlacementHost } = await import('./PluginSurfaceHost');
         const targetedFixture = primeExactTargetedContributions({
             pluginId: 'acme.browser',
-            immutableGenerationId: 'browser-inline-context-generation-77',
+            occurrenceId: 'browser-inline-context-generation-77',
             projectionGeneration: 77,
         });
         const projection = withMountedTargetPackage(createGeneratedProjection(), targetedFixture, {
@@ -10745,7 +10336,7 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
             rendererId: 'native-panel',
             role: 'sessionInfoSection',
             target: { kind: 'session', sessionIdPath: '/sessionId' },
-        });
+        }, targetedFixture.mountedTarget.occurrenceId);
 
         const screen = await renderScreen(
             <PluginSurfacePlacementHost
@@ -10757,7 +10348,7 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
                 pluginUiProjection={projection}
                 platform="web"
                 reactNativeLoaderBackend={{
-                    backendId: 'reactNativeWebModule',
+                    backendId: 'commonJs',
                     available: true,
                     loadInstalledBundle: vi.fn(async () => () => React.createElement('PluginNativeSurface')),
                 }}
@@ -10776,6 +10367,44 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
         await screen.unmount();
     });
 
+    it('mounts an App widget through the registry App context', async () => {
+        reactNativeSurfaceProps.length = 0;
+        await primeGeneratedArtifact();
+        const { PluginSurfacePlacementHost } = await import('./PluginSurfaceHost');
+        const targetedFixture = primeExactTargetedContributions({
+            pluginId: 'acme.browser',
+            occurrenceId: 'browser-app-widget-occurrence-77',
+            projectionGeneration: 77,
+        });
+        const projection = withMountedTargetPackage(createGeneratedProjection(), targetedFixture, {
+            displayName: 'Browser Inspector', version: '3.2.1',
+        });
+        const placement = reactNativeInlineSurfacePlacementFixture({
+            pluginId: 'acme.browser', surfaceId: 'home-widget', rendererId: 'native-panel',
+            role: 'widget', target: { kind: 'app' },
+        }, targetedFixture.mountedTarget.occurrenceId);
+        const screen = await renderScreen(
+            <PluginSurfacePlacementHost
+                placement={placement}
+                inlineMount={{ role: 'widget', presentation: 'content' }}
+                machineId="machine_1"
+                serverId="server_1"
+                pluginUiProjection={projection}
+                platform="web"
+                reactNativeLoaderBackend={{
+                    backendId: 'commonJs', available: true,
+                    loadInstalledBundle: vi.fn(async () => () => React.createElement('PluginNativeSurface')),
+                }}
+            />,
+        );
+        await vi.waitFor(() => expect(reactNativeSurfaceProps).not.toHaveLength(0));
+        const props = reactNativeSurfaceProps.at(-1) as { renderContext?: RenderContext };
+        expect(props.renderContext?.surface.mount).toMatchObject({
+            kind: 'embedded', role: 'widget', presentation: 'content',
+        });
+        await screen.unmount();
+    });
+
     it.each([
         ['sessionSubagentLaunch', 'content'],
         ['sessionSubagentDetails', 'fill'],
@@ -10786,7 +10415,7 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
         const { PluginSurfacePlacementHost } = await import('./PluginSurfaceHost');
         const targetedFixture = primeExactTargetedContributions({
             pluginId: 'acme.browser',
-            immutableGenerationId: `browser-inline-nested-${role}`,
+            occurrenceId: `browser-inline-nested-${role}`,
             projectionGeneration: 77,
         });
         const projection = withMountedTargetPackage(createGeneratedProjection(), targetedFixture, {
@@ -10799,7 +10428,7 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
             rendererId: 'native-panel',
             role,
             target: { kind: 'session', sessionIdPath: '/sessionId' },
-        });
+        }, targetedFixture.mountedTarget.occurrenceId);
 
         const screen = await renderScreen(
             <PluginSurfacePlacementHost
@@ -10811,7 +10440,7 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
                 pluginUiProjection={projection}
                 platform="web"
                 reactNativeLoaderBackend={{
-                    backendId: 'reactNativeWebModule',
+                    backendId: 'commonJs',
                     available: true,
                     loadInstalledBundle: vi.fn(async () => () => React.createElement('PluginNativeSurface')),
                 }}
@@ -10845,6 +10474,7 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
         const placement = Object.freeze({
             id: `surfacePlacement:acme.browser:session-info-inline-declarative-${role.toLowerCase()}`,
             pluginId: 'acme.browser',
+            occurrenceId: `browser-inline-${role.toLowerCase()}-occurrence-a`,
             contributionKind: 'surfacePlacement' as const,
             descriptorId: `session-info-inline-declarative-${role.toLowerCase()}`,
             binding,
@@ -10858,7 +10488,7 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
                         pluginId: 'acme.browser',
                         localId: 'declarative-panel',
                         qualifiedId: 'acme.browser/declarative-panel',
-                        generation: '77',
+                        occurrenceId: '77',
                     },
                     requiredHostMethods: [],
                     nodes: [],
@@ -10871,7 +10501,8 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
                             contributor: {
                                 pluginId: 'acme.child',
                                 contributionId: 'detail',
-                                immutableGenerationId: 'child-generation',
+                                occurrenceId: 'child-generation',
+                                sourceCustody: developmentSourceCustody('acme-child-test-root'),
                             },
                             role: 'detail',
                             presentation: 'content',
@@ -10936,7 +10567,7 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
         const { PluginSurfacePlacementHost } = await import('./PluginSurfaceHost');
         const targetedFixture = primeExactTargetedContributions({
             pluginId: 'acme.browser',
-            immutableGenerationId: `browser-inline-rejection-${placement.descriptorId}`,
+            occurrenceId: `browser-inline-rejection-${placement.descriptorId}`,
             projectionGeneration: 77,
         });
         const projection = withMountedTargetPackage(createGeneratedProjection(), targetedFixture, {
@@ -10946,7 +10577,10 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
 
         const screen = await renderScreen(
             <PluginSurfacePlacementHost
-                placement={placement}
+                placement={Object.freeze({
+                    ...placement,
+                    occurrenceId: targetedFixture.mountedTarget.occurrenceId,
+                })}
                 inlineMount={inlineMount}
                 sessionId="session-inline-77"
                 machineId="machine_1"
@@ -10954,7 +10588,7 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
                 pluginUiProjection={projection}
                 platform="web"
                 reactNativeLoaderBackend={{
-                    backendId: 'reactNativeWebModule',
+                    backendId: 'commonJs',
                     available: true,
                     loadInstalledBundle: vi.fn(async () => () => React.createElement('PluginNativeSurface')),
                 }}
@@ -11050,7 +10684,7 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
                     pluginUiProjection={createGeneratedProjection()}
                     platform="web"
                     reactNativeLoaderBackend={{
-                        backendId: 'reactNativeWebModule',
+                        backendId: 'commonJs',
                         available: true,
                         loadInstalledBundle: vi.fn(async () => () => React.createElement('PluginNativeSurface')),
                     }}
@@ -11089,6 +10723,7 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
                 'acme.browser': {
                     id: 'translations:acme.browser',
                     pluginId: 'acme.browser',
+                    occurrenceId: 'browser-theme-context-generation-77',
                     contributionKind: 'translations',
                     locales: ['en', 'es'],
                     bundles: {
@@ -11114,7 +10749,7 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
         const projection = withExactGeneratedMountedTarget({
             projection: baseProjection,
             pluginId: 'acme.browser',
-            immutableGenerationId: 'browser-theme-context-generation-77',
+            occurrenceId: 'browser-theme-context-generation-77',
             projectionGeneration: 77,
             displayName: 'Browser Inspector',
             version: '3.2.1',
@@ -11127,14 +10762,14 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
                     rendererId: 'native-panel',
                     container: 'bottomPane',
                     target: { kind: 'session', sessionIdPath: '/sessionId' },
-                })}
+                }, 'browser-theme-context-generation-77')}
                 pluginUiProjection={projection}
                 machineId="machine_1"
                 serverId="server_1"
                 sessionId="session-theme"
                 platform="web"
                 reactNativeLoaderBackend={{
-                    backendId: 'reactNativeWebModule',
+                    backendId: 'commonJs',
                     available: true,
                     loadInstalledBundle: vi.fn(async () => () => React.createElement('PluginNativeSurface')),
                 }}
@@ -11158,7 +10793,20 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
             'happier.plugin-ui.state.loading': 'Loading',
             'happier.plugin-ui.state.empty': 'Nothing to show',
             'happier.plugin-ui.state.error': 'Something went wrong',
+            'happier.plugin-ui.state.details': 'Details',
             'happier.plugin-ui.list.moreActions': 'More actions',
+            'happier.plugin-ui.select.choose': 'Choose…',
+            'happier.plugin-ui.detailsPane.back': 'Back',
+            'happier.plugin-ui.presence.stopping': 'Stopping {agent}…',
+            'happier.plugin-ui.presence.stoppingDetail': 'Finishing its last action',
+            'happier.plugin-ui.presence.youHaveControl': 'You have control',
+            'happier.plugin-ui.presence.pausedUntilHandBack': '{agent} is paused until you hand back',
+            'happier.plugin-ui.presence.stopUnconfirmed': 'Couldn’t confirm the stop',
+            'happier.plugin-ui.presence.lastActionMayHaveLanded': '{agent}’s last action may have landed',
+            'happier.plugin-ui.presence.takeControl': 'Take control',
+            'happier.plugin-ui.presence.handBack': 'Hand back',
+            'happier.plugin-ui.presence.checkAgain': 'Check again',
+            'happier.plugin-ui.presence.watch': 'Watch',
         });
 
         // A locale change moves BOTH the locale fact and the resolved bundle;
@@ -11179,7 +10827,20 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
             'happier.plugin-ui.state.loading': 'Cargando',
             'happier.plugin-ui.state.empty': 'Nada que mostrar',
             'happier.plugin-ui.state.error': 'Algo salió mal',
+            'happier.plugin-ui.state.details': 'Detalles',
             'happier.plugin-ui.list.moreActions': 'Más acciones',
+            'happier.plugin-ui.select.choose': 'Elegir…',
+            'happier.plugin-ui.detailsPane.back': 'Atrás',
+            'happier.plugin-ui.presence.stopping': 'Deteniendo a {agent}…',
+            'happier.plugin-ui.presence.stoppingDetail': 'Terminando su última acción',
+            'happier.plugin-ui.presence.youHaveControl': 'Tienes el control',
+            'happier.plugin-ui.presence.pausedUntilHandBack': '{agent} está en pausa hasta que le devuelvas el control',
+            'happier.plugin-ui.presence.stopUnconfirmed': 'No se pudo confirmar la parada',
+            'happier.plugin-ui.presence.lastActionMayHaveLanded': 'Puede que la última acción de {agent} se haya realizado',
+            'happier.plugin-ui.presence.takeControl': 'Tomar el control',
+            'happier.plugin-ui.presence.handBack': 'Devolver',
+            'happier.plugin-ui.presence.checkAgain': 'Volver a comprobar',
+            'happier.plugin-ui.presence.watch': 'Ver',
         });
 
         // A theme change moves the projected values, not just `colorScheme`.
@@ -11195,13 +10856,17 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
 
 describe('Composer physical surface mount', () => {
     it('consumes one exact admitted composer catalog row through the embedded renderer pipeline', async () => {
-        const contribution = Object.freeze({ pluginId: 'acme.compose', localId: 'summary' });
+        const contribution = Object.freeze({
+            pluginId: 'acme.compose',
+            localId: 'summary',
+            sourceCustody: developmentSourceCustody('acme-compose-test-root'),
+        });
         const rendererIdentity = Object.freeze({ pluginId: 'acme.compose', localId: 'summary-view' });
         const applyComposer = vi.fn(async () => ({ status: 'applied' as const, revision: 5 }));
         const mount = Object.freeze({
             kind: 'composer' as const,
             contribution,
-            immutableGenerationId: 'compose-generation-a',
+            occurrenceId: 'compose-generation-a',
             projectionGeneration: 7,
             role: 'region' as const,
             selectedRenderer: rendererIdentity,
@@ -11224,7 +10889,7 @@ describe('Composer physical surface mount', () => {
                     pluginId: contribution.pluginId,
                     localId: rendererIdentity.localId,
                     qualifiedId: `${contribution.pluginId}/${rendererIdentity.localId}`,
-                    generation: '7',
+                    occurrenceId: '7',
                 }),
                 nodes: Object.freeze([]),
                 root: Object.freeze({
@@ -11256,7 +10921,7 @@ describe('Composer physical surface mount', () => {
         });
         const catalogEntry = Object.freeze({
             contribution,
-            immutableGenerationId: mount.immutableGenerationId,
+            occurrenceId: mount.occurrenceId,
             projectionGeneration: mount.projectionGeneration,
             role: mount.role,
             rendererChain: mount.rendererChain,
@@ -11270,7 +10935,8 @@ describe('Composer physical surface mount', () => {
             contributorTargetedContributions: Object.freeze({
                 target: Object.freeze({
                     pluginId: contribution.pluginId,
-                    immutableGenerationId: mount.immutableGenerationId,
+                    occurrenceId: mount.occurrenceId,
+                    sourceCustody: contribution.sourceCustody,
                 }),
                 points: Object.freeze([]),
             }),
@@ -11280,7 +10946,6 @@ describe('Composer physical surface mount', () => {
             generation: 7,
             installedPackagesById: Object.freeze({}),
             agentsById: Object.freeze({}),
-            backendsById: Object.freeze({}),
             actionsById: Object.freeze({}),
             toolsById: Object.freeze({}),
             commandsById: Object.freeze({}),
@@ -11333,358 +10998,7 @@ describe('Composer physical surface mount', () => {
         }), undefined);
     });
 
-    it('mounts a Composer RN catalog selection only with its exact crash binding', async () => {
-        reactNativeSurfaceProps.length = 0;
-        const contribution = Object.freeze({ pluginId: 'acme.browser', localId: 'summary' });
-        const rendererIdentity = Object.freeze({ pluginId: 'acme.browser', localId: 'native-panel' });
-        const mount = ComposerSurfaceMountBindingV1Schema.parse({
-            kind: 'composer',
-            contribution,
-            immutableGenerationId: 'browser-compose-generation-44',
-            projectionGeneration: generatedReactNativeCacheIdentity.projectionGeneration,
-            role: 'region',
-            selectedRenderer: rendererIdentity,
-            rendererChain: [rendererIdentity],
-            composer: { kind: 'session', sessionId: 'session-a' },
-            instanceKey: 'composer-region:session-a:summary',
-            input: {
-                v: 1,
-                role: 'region',
-                composer: { kind: 'session', sessionId: 'session-a' },
-                regionLocalId: contribution.localId,
-            },
-        });
-        const artifactProjection = generatedReactNativeProjection.reactNativeBundlesById[
-            'reactNativeBundle:acme.browser:native-panel'
-        ];
-        if (!artifactProjection) throw new Error('expected generated Composer RN artifact projection');
-        const crashState: DaemonPluginReactNativeCrashStateV1 = {
-            token: {
-                mount: {
-                    kind: 'composer',
-                    contribution,
-                    immutableGenerationId: mount.immutableGenerationId,
-                    role: mount.role,
-                },
-                renderer: rendererIdentity,
-                artifactDigest: generatedReactNativeCacheIdentity.artifactDigest,
-                crashStateEpoch: 7,
-            },
-            disabled: false,
-        };
-        const catalogEntry = DaemonPluginUiComposerSurfaceCatalogEntryV1Schema.parse({
-            contribution,
-            immutableGenerationId: mount.immutableGenerationId,
-            projectionGeneration: mount.projectionGeneration,
-            role: mount.role,
-            rendererChain: mount.rendererChain,
-            selectedRenderer: {
-                identity: rendererIdentity,
-                renderer: { kind: 'reactNative', contributionId: rendererIdentity.localId },
-                artifactProjection,
-                crashState,
-                availability: { state: 'available', reason: 'available', diagnostics: [] },
-            },
-            executionOrigin: mountedExecutionOrigin(contribution.pluginId, 'machine-compose', 'compose-materialization-a'),
-            resourceCapability: { readable: true, dynamic: true },
-            contributorTargetedContributions: {
-                target: {
-                    pluginId: contribution.pluginId,
-                    immutableGenerationId: mount.immutableGenerationId,
-                },
-                points: [],
-            },
-        });
-        const rawProjection = PluginProjectionV2Schema.parse({
-            v: 2,
-            generation: mount.projectionGeneration,
-            installedPackagesById: {},
-            agentsById: {},
-            backendsById: {},
-            actionsById: {},
-            toolsById: {},
-            commandsById: {},
-            resourcesById: {},
-            settingsById: {},
-            familiesById: {},
-            diagnostics: [],
-        });
-        const readBinding = (entry: typeof catalogEntry) => readPluginSurfaceComposerMountBinding({
-            mount,
-            catalogEntries: [entry],
-        });
-        const createComposerMount = (entry: typeof catalogEntry) => {
-            const binding = readBinding(entry);
-            if (!binding) return null;
-            return Object.freeze({
-                mount: binding,
-                physicalTarget: Object.freeze({ kind: 'session' as const, sessionId: 'session-a' }),
-                parentLifetime: Object.freeze({
-                    isCurrent: () => true,
-                    onRetire: () => Object.freeze({ dispose() {} }),
-                }),
-                pluginProjectionById: Object.freeze({}),
-                pluginProjectionV2: rawProjection,
-                daemonProjectionReady: true,
-            });
-        };
-        const { PluginSurfaceHost } = await import('./PluginSurfaceHost');
-        const renderComposer = (entry: typeof catalogEntry) => {
-            const composerMount = createComposerMount(entry);
-            if (!composerMount) throw new Error('expected valid Composer mount');
-            return React.createElement(PluginSurfaceHost as unknown as React.ComponentType<
-                Readonly<Record<string, unknown>>
-            >, {
-                composerMount,
-                serverId: 'server-a',
-                sessionId: 'session-a',
-                platform: 'web',
-                channel: 'internal',
-            });
-        };
-        const failure = {
-            token: crashState.token,
-            failureOccurrenceId: '825a302d-791a-4c26-9f9d-3d7c9ad971cd',
-            failure: 'render_error' as const,
-        };
-        reactNativeCrashReports.submit.mockResolvedValue({
-            ok: true,
-            token: crashState.token,
-            disabled: false,
-        });
-
-        const screen = await renderScreen(renderComposer(catalogEntry), { flushOptions: { cycles: 0 } });
-        await vi.waitFor(() => expect(reactNativeSurfaceProps).not.toHaveLength(0));
-        const props = reactNativeSurfaceProps.at(-1) as {
-            crashStateToken?: DaemonPluginReactNativeCrashStateV1['token'];
-            crashStateDisabled?: boolean;
-            reportFailure?: (input: typeof failure) => Promise<unknown>;
-            resetCrashState?: () => Promise<unknown>;
-        };
-
-        expect(props.crashStateToken).toEqual(crashState.token);
-        expect(props.crashStateDisabled).toBe(false);
-        await expect(props.reportFailure?.(failure)).resolves.toEqual({
-            ok: true,
-            token: crashState.token,
-            disabled: false,
-        });
-        await expect(props.resetCrashState?.()).resolves.toEqual({
-            ok: true,
-            token: crashState.token,
-            disabled: false,
-        });
-        expect(reactNativeCrashReports.submit).toHaveBeenNthCalledWith(1, {
-            machineId: 'machine-compose',
-            serverId: 'server-a',
-            report: {
-                kind: 'reportFailure',
-                token: crashState.token,
-                failureOccurrenceId: failure.failureOccurrenceId,
-                failure: failure.failure,
-            },
-        });
-        expect(reactNativeCrashReports.submit).toHaveBeenNthCalledWith(2, {
-            machineId: 'machine-compose',
-            serverId: 'server-a',
-            report: { kind: 'reset', token: crashState.token },
-        });
-
-        // The physical host keeps the Protocol comparator as the sole report
-        // fence: a stale RN callback cannot be rewritten to the current token.
-        for (const crashMount of [
-            {
-                kind: 'composer' as const,
-                contribution,
-                immutableGenerationId: 'browser-compose-generation-45',
-                role: mount.role,
-            },
-            {
-                kind: 'composer' as const,
-                contribution,
-                immutableGenerationId: mount.immutableGenerationId,
-                role: 'attachmentPreview' as const,
-            },
-        ]) {
-            await expect(props.reportFailure?.({
-                ...failure,
-                token: { ...crashState.token, mount: crashMount },
-            })).resolves.toEqual({ ok: false, reason: 'binding_token_mismatch' });
-        }
-        expect(reactNativeCrashReports.submit).toHaveBeenCalledTimes(2);
-
-        // The public Composer mount must not join a new static catalog row
-        // after either of its immutable scope fences changes.
-        expect(readBinding({
-            ...catalogEntry,
-            immutableGenerationId: 'browser-compose-generation-45',
-        })).toBeNull();
-        expect(readBinding({
-            ...catalogEntry,
-            role: 'attachmentPreview',
-        })).toBeNull();
-
-        for (const crashMount of [
-            {
-                kind: 'composer' as const,
-                contribution,
-                immutableGenerationId: 'browser-compose-generation-45',
-                role: mount.role,
-            },
-            {
-                kind: 'composer' as const,
-                contribution,
-                immutableGenerationId: mount.immutableGenerationId,
-                role: 'attachmentPreview' as const,
-            },
-        ]) {
-            reactNativeSurfaceProps.length = 0;
-            const mismatchedEntry = DaemonPluginUiComposerSurfaceCatalogEntryV1Schema.parse({
-                ...catalogEntry,
-                selectedRenderer: {
-                    ...catalogEntry.selectedRenderer,
-                    crashState: {
-                        ...crashState,
-                        token: {
-                            ...crashState.token,
-                            mount: crashMount,
-                        },
-                    },
-                },
-            });
-
-            await screen.update(renderComposer(mismatchedEntry));
-            expect(screen.findByTestId('plugin-surface-unavailable')).toBeTruthy();
-            expect(reactNativeSurfaceProps).toHaveLength(0);
-        }
-    });
-
-    it('mounts an Automation setup RN surface only with its exact embedded crash binding', async () => {
-        reactNativeSurfaceProps.length = 0;
-        const contribution = Object.freeze({ pluginId: 'acme.browser', localId: 'repository-updated' });
-        const rendererIdentity = Object.freeze({ pluginId: 'acme.browser', localId: 'native-panel' });
-        const immutableGenerationId = 'automation-generation-44';
-        const artifactProjection = generatedReactNativeProjection.reactNativeBundlesById[
-            'reactNativeBundle:acme.browser:native-panel'
-        ];
-        if (!artifactProjection) throw new Error('expected generated Automation RN artifact projection');
-        const crashState: DaemonPluginReactNativeCrashStateV1 = {
-            token: {
-                mount: {
-                    kind: 'automationEventSetupSurface',
-                    contribution,
-                    immutableGenerationId,
-                },
-                renderer: rendererIdentity,
-                artifactDigest: generatedReactNativeCacheIdentity.artifactDigest,
-                crashStateEpoch: 9,
-            },
-            disabled: false,
-        };
-        const setupSurface = DaemonContributionRegistryProjectionAutomationEligibleEventSetupSurfaceV1Schema.parse({
-            contribution,
-            immutableGenerationId,
-            projectionGeneration: generatedReactNativeCacheIdentity.projectionGeneration,
-            rendererChain: [rendererIdentity],
-            selectedRenderer: {
-                identity: rendererIdentity,
-                renderer: Object.freeze({ kind: 'reactNative' as const, contributionId: rendererIdentity.localId }),
-                artifactProjection,
-                crashState,
-                availability: { state: 'available', reason: 'available', diagnostics: [] },
-            },
-            executionOrigin: mountedExecutionOrigin(contribution.pluginId, 'machine-automation', 'automation-materialization-a'),
-            resourceCapability: Object.freeze({ readable: true, dynamic: true }),
-            contributorTargetedContributions: {
-                target: {
-                    pluginId: contribution.pluginId,
-                    immutableGenerationId,
-                },
-                points: [],
-            },
-        });
-        const rawProjection = PluginProjectionV2Schema.parse({
-            v: 2,
-            generation: setupSurface.projectionGeneration,
-            installedPackagesById: {},
-            agentsById: {},
-            backendsById: {},
-            actionsById: {},
-            toolsById: {},
-            commandsById: {},
-            resourcesById: {},
-            settingsById: {},
-            familiesById: {},
-            diagnostics: [],
-        });
-        const renderAutomation = (
-            surface: DaemonContributionRegistryProjectionAutomationEligibleEventSetupSurfaceV1,
-        ) => {
-            const binding = readPluginSurfaceEphemeralMountBinding(surface);
-            if (!binding) throw new Error('expected valid Automation setup surface mount');
-            return React.createElement(PluginSurfaceHost as unknown as React.ComponentType<Readonly<Record<string, unknown>>>, {
-                ephemeralMount: Object.freeze({
-                    mount: binding,
-                    physicalTarget: Object.freeze({ kind: 'app' as const }),
-                    parentLifetime: Object.freeze({
-                        isCurrent: () => true,
-                        onRetire: () => Object.freeze({ dispose() {} }),
-                    }),
-                    pluginProjectionById: Object.freeze({}),
-                    pluginProjectionV2: rawProjection,
-                    daemonProjectionReady: true,
-                }),
-                machineId: 'machine-automation',
-                serverId: 'server-a',
-                platform: 'web',
-                channel: 'internal',
-            });
-        };
-        const { PluginSurfaceHost } = await import('./PluginSurfaceHost');
-        const screen = await renderScreen(renderAutomation(setupSurface), { flushOptions: { cycles: 0 } });
-        await vi.waitFor(() => expect(reactNativeSurfaceProps).not.toHaveLength(0));
-        expect((reactNativeSurfaceProps.at(-1) as { crashStateToken?: unknown }).crashStateToken)
-            .toEqual(crashState.token);
-
-        reactNativeSurfaceProps.length = 0;
-        await screen.update(renderAutomation(Object.freeze({
-            ...setupSurface,
-            selectedRenderer: Object.freeze({
-                ...setupSurface.selectedRenderer,
-                crashState: Object.freeze({
-                    ...crashState,
-                    token: Object.freeze({
-                        ...crashState.token,
-                        mount: Object.freeze({
-                            kind: 'automationEventSetupSurface' as const,
-                            contribution,
-                            immutableGenerationId: 'automation-generation-retired',
-                        }),
-                    }),
-                }),
-            }),
-        })));
-        expect(screen.findByTestId('plugin-surface-unavailable')).toBeTruthy();
-        expect(reactNativeSurfaceProps).toHaveLength(0);
-
-        await screen.update(renderAutomation(Object.freeze({
-            ...setupSurface,
-            selectedRenderer: Object.freeze({
-                identity: rendererIdentity,
-                renderer: Object.freeze({ kind: 'reactNative' as const, contributionId: rendererIdentity.localId }),
-                artifactProjection,
-                availability: Object.freeze({
-                    state: 'fallback' as const,
-                    reason: 'crash_state_unavailable',
-                    diagnostics: ['crash_state_unavailable'],
-                }),
-            }),
-        })));
-        expect(screen.findByTestId('plugin-surface-unavailable')).toBeTruthy();
-        expect(reactNativeSurfaceProps).toHaveLength(0);
-    });
-
-    it('keeps equivalent Composer requests on one physical RN controller and retires it for generation or projection changes', async () => {
+    it('keeps equivalent Composer requests on one physical RN controller, ignores aggregate projection changes, and retires on occurrence replacement', async () => {
         reactNativeSurfaceProps.length = 0;
         const contribution = Object.freeze({ pluginId: 'acme.browser', localId: 'summary' });
         const rendererIdentity = Object.freeze({ pluginId: 'acme.browser', localId: 'native-panel' });
@@ -11721,7 +11035,6 @@ describe('Composer physical surface mount', () => {
             generation: projectionGeneration,
             installedPackagesById: {},
             agentsById: {},
-            backendsById: {},
             actionsById: {},
             toolsById: {},
             commandsById: {},
@@ -11739,9 +11052,9 @@ describe('Composer physical surface mount', () => {
             throw new Error('expected generated Composer RN artifact runtime');
         }
         const { ComposerPluginSurface } = await import('@/components/sessions/presentation/ComposerPluginSurface');
-        const requestFor = (immutableGenerationId: string) => Object.freeze({
+        const requestFor = (occurrenceId: string) => Object.freeze({
             contribution: Object.freeze({ ...contribution }),
-            immutableGenerationId,
+            occurrenceId,
             role: 'region' as const,
             input: Object.freeze({
                 v: 1 as const,
@@ -11751,10 +11064,10 @@ describe('Composer physical surface mount', () => {
             }),
             instanceKey: 'composer-region:session-composer-stability:summary',
         });
-        const catalogEntryFor = (immutableGenerationId: string, projectionGeneration: number) => (
+        const catalogEntryFor = (occurrenceId: string, projectionGeneration: number) => (
             DaemonPluginUiComposerSurfaceCatalogEntryV1Schema.parse({
                 contribution: Object.freeze({ ...contribution }),
-                immutableGenerationId,
+                occurrenceId,
                 projectionGeneration,
                 role: 'region',
                 rendererChain: [Object.freeze({ ...rendererIdentity })],
@@ -11766,24 +11079,9 @@ describe('Composer physical surface mount', () => {
                         runtime: {
                             ...artifactRuntime,
                             cacheIdentity: {
-                                ...generatedReactNativeCacheIdentity,
-                                projectionGeneration,
+                                artifactDigest: generatedReactNativeCacheIdentity.artifactDigest,
                             },
                         },
-                    },
-                    crashState: {
-                        token: {
-                            mount: {
-                                kind: 'composer',
-                                contribution,
-                                immutableGenerationId,
-                                role: 'region',
-                            },
-                            renderer: rendererIdentity,
-                            artifactDigest: generatedReactNativeCacheIdentity.artifactDigest,
-                            crashStateEpoch: 7,
-                        },
-                        disabled: false,
                     },
                     availability: { state: 'available', reason: 'available', diagnostics: [] },
                 },
@@ -11794,17 +11092,21 @@ describe('Composer physical surface mount', () => {
                 ),
                 resourceCapability: { readable: true, dynamic: true },
                 contributorTargetedContributions: {
-                    target: { pluginId: contribution.pluginId, immutableGenerationId },
+                    target: {
+                        pluginId: contribution.pluginId,
+                        occurrenceId,
+                        sourceCustody: developmentSourceCustody('acme-compose-test-root'),
+                    },
                     points: [],
                 },
             })
         );
-        const renderComposer = (immutableGenerationId: string, projectionGeneration: number) => (
+        const renderComposer = (occurrenceId: string, projectionGeneration: number) => (
             <ComposerPluginSurface
-                request={requestFor(immutableGenerationId)}
+                request={requestFor(occurrenceId)}
                 physicalTarget={physicalTarget}
                 projectionGeneration={projectionGeneration}
-                catalogEntries={[catalogEntryFor(immutableGenerationId, projectionGeneration)]}
+                catalogEntries={[catalogEntryFor(occurrenceId, projectionGeneration)]}
                 pluginProjectionById={{}}
                 pluginProjectionV2={rawProjectionFor(projectionGeneration)}
                 machineId="machine-compose"
@@ -11867,9 +11169,9 @@ describe('Composer physical surface mount', () => {
             await vi.waitFor(() => expect(reactNativeSurfaceProps.length)
                 .toBeGreaterThan(rendersBeforeProjectionReplacement));
             const projectionReplacementProps = reactNativeSurfaceProps.at(-1) as typeof initialProps;
-            expect(projectionReplacementProps.renderContext?.hostApi).not.toBe(generationReplacementHostApi);
-            expect(projectionReplacementProps.renderContext?.signal).not.toBe(generationReplacementSignal);
-            expect(generationReplacementSignal?.aborted).toBe(true);
+            expect(projectionReplacementProps.renderContext?.hostApi).toBe(generationReplacementHostApi);
+            expect(projectionReplacementProps.renderContext?.signal).toBe(generationReplacementSignal);
+            expect(generationReplacementSignal?.aborted).toBe(false);
         } finally {
             observation?.dispose();
             await screen?.unmount();
@@ -11878,12 +11180,16 @@ describe('Composer physical surface mount', () => {
     });
 
     it('keeps a nested declarative targeted Surface at its Composer fallback instead of creating a second embedded owner', async () => {
-        const contribution = Object.freeze({ pluginId: 'acme.compose', localId: 'summary' });
+        const contribution = Object.freeze({
+            pluginId: 'acme.compose',
+            localId: 'summary',
+            sourceCustody: developmentSourceCustody('acme-compose-test-root'),
+        });
         const rendererIdentity = Object.freeze({ pluginId: 'acme.compose', localId: 'summary-view' });
         const mount = Object.freeze({
             kind: 'composer' as const,
             contribution,
-            immutableGenerationId: 'compose-generation-a',
+            occurrenceId: 'compose-generation-a',
             projectionGeneration: 7,
             role: 'region' as const,
             selectedRenderer: rendererIdentity,
@@ -11906,7 +11212,7 @@ describe('Composer physical surface mount', () => {
                     pluginId: contribution.pluginId,
                     localId: rendererIdentity.localId,
                     qualifiedId: `${contribution.pluginId}/${rendererIdentity.localId}`,
-                    generation: '7',
+                    occurrenceId: '7',
                 }),
                 nodes: Object.freeze([]),
                 root: Object.freeze({
@@ -11918,7 +11224,8 @@ describe('Composer physical surface mount', () => {
                         contributor: Object.freeze({
                             pluginId: 'acme.child',
                             contributionId: 'detail',
-                            immutableGenerationId: 'child-generation-a',
+                            occurrenceId: 'child-generation-a',
+                            sourceCustody: developmentSourceCustody('acme-child-test-root'),
                         }),
                         role: 'detail',
                         presentation: 'content',
@@ -11937,7 +11244,7 @@ describe('Composer physical surface mount', () => {
         });
         const catalogEntry = Object.freeze({
             contribution,
-            immutableGenerationId: mount.immutableGenerationId,
+            occurrenceId: mount.occurrenceId,
             projectionGeneration: mount.projectionGeneration,
             role: mount.role,
             rendererChain: mount.rendererChain,
@@ -11951,7 +11258,8 @@ describe('Composer physical surface mount', () => {
             contributorTargetedContributions: Object.freeze({
                 target: Object.freeze({
                     pluginId: contribution.pluginId,
-                    immutableGenerationId: mount.immutableGenerationId,
+                    occurrenceId: mount.occurrenceId,
+                    sourceCustody: contribution.sourceCustody,
                 }),
                 points: Object.freeze([]),
             }),
@@ -11961,7 +11269,6 @@ describe('Composer physical surface mount', () => {
             generation: 7,
             installedPackagesById: Object.freeze({}),
             agentsById: Object.freeze({}),
-            backendsById: Object.freeze({}),
             actionsById: Object.freeze({}),
             toolsById: Object.freeze({}),
             commandsById: Object.freeze({}),
@@ -12005,11 +11312,14 @@ describe('Composer physical surface mount', () => {
 
     it('tells a Composer-embedded React Native mount that a nested targeted Surface is unsupported', async () => {
         reactNativeSurfaceProps.length = 0;
-        const contribution = Object.freeze({ pluginId: 'acme.browser', localId: 'summary' });
+        const contribution = Object.freeze({
+            pluginId: 'acme.browser',
+            localId: 'summary',
+        });
         const rendererIdentity = Object.freeze({ pluginId: 'acme.browser', localId: 'native-panel' });
         const composerRef = Object.freeze({ kind: 'session' as const, sessionId: 'session-composer-nested-target' });
         const physicalTarget = Object.freeze({ kind: 'session' as const, sessionId: composerRef.sessionId });
-        const immutableGenerationId = 'composer-generation-nested-target';
+        const occurrenceId = 'composer-generation-nested-target';
         const projectionGeneration = 44;
         const parentLifetime = Object.freeze({
             isCurrent: () => true,
@@ -12048,7 +11358,7 @@ describe('Composer physical surface mount', () => {
         const { ComposerPluginSurface } = await import('@/components/sessions/presentation/ComposerPluginSurface');
         const catalogEntry = DaemonPluginUiComposerSurfaceCatalogEntryV1Schema.parse({
             contribution: Object.freeze({ ...contribution }),
-            immutableGenerationId,
+            occurrenceId,
             projectionGeneration,
             role: 'region',
             rendererChain: [Object.freeze({ ...rendererIdentity })],
@@ -12060,24 +11370,9 @@ describe('Composer physical surface mount', () => {
                     runtime: {
                         ...artifactRuntime,
                         cacheIdentity: {
-                            ...generatedReactNativeCacheIdentity,
-                            projectionGeneration,
+                            artifactDigest: generatedReactNativeCacheIdentity.artifactDigest,
                         },
                     },
-                },
-                crashState: {
-                    token: {
-                        mount: {
-                            kind: 'composer',
-                            contribution,
-                            immutableGenerationId,
-                            role: 'region',
-                        },
-                        renderer: rendererIdentity,
-                        artifactDigest: generatedReactNativeCacheIdentity.artifactDigest,
-                        crashStateEpoch: 7,
-                    },
-                    disabled: false,
                 },
                 availability: { state: 'available', reason: 'available', diagnostics: [] },
             },
@@ -12088,7 +11383,11 @@ describe('Composer physical surface mount', () => {
             ),
             resourceCapability: { readable: true, dynamic: true },
             contributorTargetedContributions: {
-                target: { pluginId: contribution.pluginId, immutableGenerationId },
+                target: {
+                    pluginId: contribution.pluginId,
+                    occurrenceId,
+                    sourceCustody: developmentSourceCustody('acme-browser-test-root'),
+                },
                 points: [],
             },
         });
@@ -12098,7 +11397,7 @@ describe('Composer physical surface mount', () => {
                 <ComposerPluginSurface
                     request={Object.freeze({
                         contribution: Object.freeze({ ...contribution }),
-                        immutableGenerationId,
+                        occurrenceId,
                         role: 'region' as const,
                         input: Object.freeze({
                             v: 1 as const,
@@ -12117,7 +11416,6 @@ describe('Composer physical surface mount', () => {
                         generation: projectionGeneration,
                         installedPackagesById: {},
                         agentsById: {},
-                        backendsById: {},
                         actionsById: {},
                         toolsById: {},
                         commandsById: {},
@@ -12155,7 +11453,7 @@ describe('Composer physical surface mount', () => {
         const { PluginSurfacePlacementHost } = await import('./PluginSurfaceHost');
         const contribution = { pluginId: 'acme.browser', localId: 'summary' };
         const rendererIdentity = { pluginId: 'acme.browser', localId: 'panel' };
-        const immutableGenerationId = 'inline-composer-generation';
+        const occurrenceId = 'inline-composer-generation';
         let snapshot: ComposerSnapshotV1 = {
             revision: 1, ref: { kind: 'session', sessionId: 'session-a' }, text: 'Initial', references: [], attachments: [],
             layout: 'wrap', capabilities: { text: true, references: true, attachments: true, submit: true },
@@ -12167,7 +11465,7 @@ describe('Composer physical surface mount', () => {
         onTestFinished(unregister);
         const catalogEntry = DaemonPluginUiComposerSurfaceCatalogEntryV1Schema.parse({
             contribution,
-            immutableGenerationId,
+            occurrenceId,
             projectionGeneration: 11,
             role: 'region',
             rendererChain: [rendererIdentity],
@@ -12178,20 +11476,31 @@ describe('Composer physical surface mount', () => {
             },
             executionOrigin: mountedExecutionOrigin(contribution.pluginId, 'machine_1', 'compose-materialization-a'),
             resourceCapability: { readable: true, dynamic: true },
-            contributorTargetedContributions: { target: { pluginId: contribution.pluginId, immutableGenerationId }, points: [] },
+            contributorTargetedContributions: {
+                target: {
+                    pluginId: contribution.pluginId,
+                    occurrenceId,
+                    sourceCustody: developmentSourceCustody('acme-browser-test-root'),
+                },
+                points: [],
+            },
         });
         const hostWindow = new EventTarget();
         const iframeSource = { postMessage: vi.fn() };
         vi.stubGlobal('window', hostWindow);
         vi.stubGlobal('location', { origin: 'https://host.happier.test' });
         onTestFinished(() => { vi.unstubAllGlobals(); });
-        const targetFixture = primeExactTargetedContributions({ pluginId: contribution.pluginId, immutableGenerationId });
+        const targetFixture = primeExactTargetedContributions({ pluginId: contribution.pluginId, occurrenceId });
         const projection = withMountedTargetPackage(EMPTY_PLUGIN_UI_PROJECTION, targetFixture, { displayName: 'Inline', version: '1.0.0' });
         const screen = await renderScreen(surface === 'destination' ? <PluginSurfacePlacementHost
-            placement={{ ...appPageHostedWebPlacement, renderer: { kind: 'hostedHtml', contributionId: 'panel', source: { kind: 'html', html: '<p>Composer</p>' } } }}
+            placement={{
+                ...appPageHostedWebPlacement,
+                occurrenceId,
+                renderer: { kind: 'hostedHtml', contributionId: 'panel', source: { kind: 'html', html: '<p>Composer</p>' } },
+            }}
             machineId="machine_1" pluginUiProjection={projection} platform="web"
         /> : <ComposerPluginSurface
-            request={{ contribution, immutableGenerationId, role: 'region', instanceKey: 'inline-composer', input: {
+            request={{ contribution, occurrenceId, role: 'region', instanceKey: 'inline-composer', input: {
                 v: 1, role: 'region', composer: { kind: 'session', sessionId: 'session-a' }, regionLocalId: 'summary',
             } }}
             physicalTarget={{ kind: 'session', sessionId: 'session-a' }}
@@ -12199,7 +11508,7 @@ describe('Composer physical surface mount', () => {
             catalogEntries={[catalogEntry]}
             pluginProjectionById={{}}
             pluginProjectionV2={PluginProjectionV2Schema.parse({
-                v: 2, generation: 11, installedPackagesById: {}, agentsById: {}, backendsById: {}, actionsById: {},
+                v: 2, generation: 11, installedPackagesById: {}, agentsById: {}, actionsById: {},
                 toolsById: {}, commandsById: {}, resourcesById: {}, settingsById: {}, familiesById: {}, diagnostics: [],
             })}
             machineId="machine_1"
@@ -12253,12 +11562,16 @@ describe('Composer physical surface mount', () => {
     });
 
     it('lends the exact hosted Composer bridge publisher only while its embedded mount is alive', async () => {
-        const contribution = Object.freeze({ pluginId: 'acme.browser', localId: 'summary' });
+        const contribution = Object.freeze({
+            pluginId: 'acme.browser',
+            localId: 'summary',
+            sourceCustody: developmentSourceCustody('acme-browser-test-root'),
+        });
         const rendererIdentity = Object.freeze({ pluginId: 'acme.browser', localId: 'panel' });
         const mount = Object.freeze({
             kind: 'composer' as const,
             contribution,
-            immutableGenerationId: 'browser-hosted-artifact-generation-11',
+            occurrenceId: 'browser-hosted-artifact-generation-11',
             projectionGeneration: generatedHostedWebArtifactFixture.projectionGeneration,
             role: 'region' as const,
             selectedRenderer: rendererIdentity,
@@ -12284,7 +11597,7 @@ describe('Composer physical surface mount', () => {
         });
         const catalogEntry = Object.freeze({
             contribution,
-            immutableGenerationId: mount.immutableGenerationId,
+            occurrenceId: mount.occurrenceId,
             projectionGeneration: mount.projectionGeneration,
             role: mount.role,
             rendererChain: mount.rendererChain,
@@ -12299,7 +11612,8 @@ describe('Composer physical surface mount', () => {
             contributorTargetedContributions: Object.freeze({
                 target: Object.freeze({
                     pluginId: contribution.pluginId,
-                    immutableGenerationId: mount.immutableGenerationId,
+                    occurrenceId: mount.occurrenceId,
+                    sourceCustody: contribution.sourceCustody,
                 }),
                 points: Object.freeze([]),
             }),
@@ -12309,7 +11623,6 @@ describe('Composer physical surface mount', () => {
             generation: mount.projectionGeneration,
             installedPackagesById: Object.freeze({}),
             agentsById: Object.freeze({}),
-            backendsById: Object.freeze({}),
             actionsById: Object.freeze({}),
             toolsById: Object.freeze({}),
             commandsById: Object.freeze({}),
@@ -12391,19 +11704,144 @@ describe('Composer physical surface mount', () => {
  * hand-constructed. Only the daemon RPC (a genuine transport boundary) is
  * mocked, and it is asserted on.
  */
+describe('installed Session widget through the mounted plugin controller', () => {
+    it.each([true, false])('runs public native input with selected Resource grant=%s, safe Action, and retirement', async (resourceGranted) => {
+        reactNativeSurfaceProps.length = 0;
+        const { InstalledWidgetSurface } = await import('@/components/widgets/InstalledWidgetSurface');
+        const { publicAuthoringDefinition } = await import('../../../../../../packages/plugin-sdk/examples/public-authoring/definition');
+        const { renderSurface } = await import('../../../../../../packages/plugin-sdk/examples/public-authoring/ui/reviewPanel.native');
+        const { normalizePluginUiProjection } = await import('@/sync/domains/plugins/ui/projection');
+        const pluginId = publicAuthoringDefinition.id;
+        const declaration = publicAuthoringDefinition.ui?.views?.find((view) => view.id === 'review-status-widget');
+        if (!declaration || declaration.container !== 'widget') throw new Error('Public widget declaration is required');
+        const binding = normalizePluginUiInlineSurfaceBindingV1({
+            pluginId,
+            surfaceId: declaration.id,
+            rendererId: declaration.renderer,
+            fallbackRendererIds: declaration.fallbackRenderers,
+            role: declaration.container,
+            target: declaration.target,
+        });
+        if (!binding) throw new Error('Public widget binding must be admitted');
+        const occurrenceId = `${pluginId}-test-occurrence`;
+        const action = projectedDaemonUiAction({
+            pluginId, localId: 'review-summary', machineId: 'machine_1',
+            materializationId: 'public-widget-materialization', serverIdentityId: 'srv_server_1',
+        });
+        const actionsById = { [`${pluginId}/review-summary`]: action };
+        const target = primeExactTargetedContributions({ pluginId, occurrenceId, actionsById });
+        const placementId = `surfacePlacement:${pluginId}:${declaration.id}`;
+        const bundleId = `reactNativeBundle:${pluginId}:${declaration.renderer}`;
+        const identity = { ...generatedReactNativeCacheIdentity, pluginId, contributionId: declaration.renderer };
+        const artifactGraph = generatedReactNativeArtifactGraph;
+        const model = withMountedTargetPackage(normalizePluginUiProjection(PluginProjectionV2Schema.parse({
+            v: 2, generation: 1, actionsById,
+            familiesById: { pluginUi: { family: 'pluginUi', entriesById: {
+                [placementId]: {
+                    id: placementId, pluginId, occurrenceId, contributionKind: 'surfacePlacement',
+                    descriptorId: declaration.id, binding, target: binding.target,
+                    ...mountedExecutionOrigin(pluginId, 'machine_1', 'public-widget-materialization', 'srv_server_1'),
+                    renderer: { kind: 'reactNative', contributionId: declaration.renderer },
+                    runtime: { resourceCapability: { readable: resourceGranted, dynamic: resourceGranted } },
+                    display: { title: 'Review status' },
+                    availability: { state: 'available', reason: 'available', diagnostics: [] },
+                },
+                [bundleId]: {
+                    id: bundleId, pluginId, occurrenceId, contributionKind: 'reactNativeBundle',
+                    contributionId: declaration.renderer, generatedV2: true, pluginVersion: '0.1.0',
+                    hostApi: { minVersion: '1.0.0', methods: ['context', 'executeAction', 'readResource', 'watchResource'] },
+                    artifactGraph,
+                    runtime: {
+                        decision: { state: 'load', reason: 'compatible', diagnostics: [] },
+                        loadPolicy: { source: 'installedArtifact' }, cacheKey: 'public-widget-native',
+                        cacheIdentity: { artifactDigest: identity.artifactDigest },
+                    },
+                },
+            } } },
+        })), target, { displayName: createPluginLocalizedTextResolver({ projection: null, locale: 'en' })(pluginId, publicAuthoringDefinition.displayName), version: publicAuthoringDefinition.version });
+        const { getInstalledPluginReactNativeBundleCache } = await import('@/components/plugins/reactNative/bundleCache');
+        // Supply installed executable bytes at the platform cache boundary. The
+        // incumbent native mount executes the actual public development source.
+        const bytes = new TextEncoder().encode('exports.renderSurface = function () { return null; };');
+        getInstalledPluginReactNativeBundleCache().putInstalledArtifact({
+            identity, bytes, entryRelativePath: artifactGraph.entry, format: 'plainJs',
+            files: [{ ...artifactGraph.files[0], bytes }],
+        });
+        reactNativeSurfaceRuntime.enabled = true;
+        reactNativeSurfaceRuntime.module = { renderSurface };
+        pluginSurfaceAccountLifetime.setScope({ serverId: 'server_1', accountId: 'account-a' });
+        resourceReadMock.mockResolvedValue({ supported: true, result: {
+            ok: true, contentType: 'text/plain', digest: `sha256:${'0'.repeat(64)}`,
+            bytesBase64: encodeBase64(new TextEncoder().encode('Ready for the public widget review')),
+        } });
+        declarativeActionExecuteMock.mockResolvedValue({ supported: true, result: { ok: true, result: { summary: 'Reviewed' } } });
+        const runtime = {
+            pluginUiProjection: model, pluginBrowserProjection: null,
+            phase: 'current' as const, interactionEnabled: true,
+            machineId: 'machine_1', serverId: 'server_1', platform: 'web' as const,
+        };
+        const session = createSessionFixture({ id: 'session-widget', serverId: 'server_1' });
+        const render = (current = runtime) => <InstalledWidgetSurface
+            target={{ kind: 'session', sessionId: session.id, session }} recordRevision="item-revision-1"
+            source={{ kind: 'installedSurface', surface: { pluginId, localId: declaration.id } }}
+            input={{ view: 'detail' }} presentation="content" runtime={current} testID="public-widget"
+        />;
+        const screen = await renderScreen(render());
+        await vi.waitFor(() => expect(reactNativeSurfaceProps.length).toBeGreaterThan(0));
+        const context = (reactNativeSurfaceProps.at(-1) as { renderContext: RenderContext }).renderContext;
+        if (!resourceGranted) {
+            expect(context.hostApi.version().methods).not.toContain('readResource');
+            expect(context.hostApi.version().methods).not.toContain('watchResource');
+            await vi.waitFor(() => expect(screen.getTextContent()).toContain('Review status is unavailable'));
+            expect(resourceReadMock).not.toHaveBeenCalled();
+            expect(resourceWatchOpenMock).not.toHaveBeenCalled();
+            await screen.unmount();
+            return;
+        }
+        await vi.waitFor(() => expect(screen.getTextContent()).toContain('Ready for the public widget review'));
+        const statusText = screen.findAll((node) => node.props.value === 'Ready for the public widget review')[0];
+        expect(statusText).toBeTruthy();
+        // `detail` must reach the author component, whose summary view truncates
+        // this same Resource to three lines.
+        expect(statusText!.props.numberOfLines).toBeUndefined();
+        expect(context.launchInput).toEqual({ view: 'detail' });
+        expect(context.surface.mount).toMatchObject({ kind: 'embedded', role: 'widget', presentation: 'content' });
+        expect(context.surface.target).toMatchObject({ kind: 'session', sessionId: session.id });
+        expect(resourceReadMock).toHaveBeenCalledWith('machine_1', expect.objectContaining({
+            serverId: 'server_1', callerPluginId: pluginId, expectedCallerOccurrenceId: occurrenceId,
+            resource: { pluginId, localId: 'review-session-status' },
+        }));
+        await vi.waitFor(() => expect(resourceWatchOpenMock).toHaveBeenCalledWith('machine_1', expect.objectContaining({
+            serverId: 'server_1', callerPluginId: pluginId, expectedCallerOccurrenceId: occurrenceId,
+            resource: { pluginId, localId: 'review-session-status' },
+        })));
+        const summarize = screen.findAll((node) => (node.props.role === 'button' || node.props.accessibilityRole === 'button')
+            && node.props.accessibilityLabel === 'Summarize review')[0];
+        expect(summarize).toBeTruthy();
+        await act(async () => { await summarize!.props.onPress(); });
+        await vi.waitFor(() => expect(declarativeActionExecuteMock).toHaveBeenCalledWith('machine_1', expect.objectContaining({
+            qualifiedActionId: `${pluginId}/review-summary`, input: { transcript: 'Ready for the public widget review' },
+            executionSurface: 'ui', expectedContributorOccurrenceId: occurrenceId,
+        })));
+        await screen.unmount();
+        expect(context.signal.aborted).toBe(true);
+        await expect(context.hostApi.readResource('review-session-status')).rejects.toMatchObject({ code: 'stale_surface' });
+        await expect(context.hostApi.executeAction('review-summary', { transcript: 'late' })).rejects.toMatchObject({ code: 'stale_surface' });
+    });
+});
+
 describe('canonical action dispatch reaches every mounted placement (EU-2)', () => {
     beforeEach(() => {
         pluginSurfaceAccountLifetime.setScope({ serverId: 'server-1', accountId: 'account-a' });
     });
 
-    const crossPathEntry = 'react-native/cross-path/index.js';
+    const crossPathEntry = `react-native/${reactNativeCacheIdentity.artifactId}/entry.cjs.bundle`;
     const crossPathBytes = new TextEncoder().encode('export function renderSurface() { return null; }');
     const crossPathFileDigest = 'sha256:1111111111111111111111111111111111111111111111111111111111111111';
     const crossPathIdentity = {
         ...reactNativeCacheIdentity,
         artifactDigest: PluginUiArtifactDigestV1Schema.parse('sha256:2222222222222222222222222222222222222222222222222222222222222222'),
-        platform: 'web',
-        projectionGeneration: 91,
+        platform: 'web' as const,
     };
 
     async function primeCrossPathArtifact(): Promise<void> {
@@ -12447,7 +11885,7 @@ describe('canonical action dispatch reaches every mounted placement (EU-2)', () 
         } satisfies PluginProjectionV2['actionsById'];
         const targetFixture = primeExactTargetedContributions({
             pluginId: binding.destination.pluginId,
-            immutableGenerationId: 'browser-cross-path-generation-91',
+            occurrenceId: 'browser-cross-path-generation-91',
             projectionGeneration: 91,
             actionsById: exactActionsById,
             ...(options.exactProjection === undefined ? {} : { projection: options.exactProjection }),
@@ -12457,7 +11895,6 @@ describe('canonical action dispatch reaches every mounted placement (EU-2)', () 
             generation: 91,
             installedPackagesById: {},
             agentsById: {},
-            backendsById: {},
             actionsById: exactActionsById,
             toolsById: {},
             commandsById: {},
@@ -12471,6 +11908,7 @@ describe('canonical action dispatch reaches every mounted placement (EU-2)', () 
                         [placementId]: {
                             id: placementId,
                             pluginId: binding.destination.pluginId,
+                            occurrenceId: 'browser-cross-path-generation-91',
                             contributionKind: 'surfacePlacement',
                             descriptorId: binding.destination.localId,
                             binding,
@@ -12483,40 +11921,20 @@ describe('canonical action dispatch reaches every mounted placement (EU-2)', () 
                             ),
                             renderer: { kind: 'reactNative', contributionId: binding.renderer.localId },
                             display: { titleKey: 'crossPath.title', developerFallback: 'Cross-path panel' },
-                            runtime: {
-                                reactNativeCrashState: {
-                                    token: {
-                                        mount: {
-                                            kind: 'destination',
-                                            destination: {
-                                                pluginId: binding.destination.pluginId,
-                                                localId: binding.destination.localId,
-                                            },
-                                        },
-                                        renderer: {
-                                            pluginId: binding.destination.pluginId,
-                                            localId: binding.renderer.localId,
-                                        },
-                                        artifactDigest: crossPathIdentity.artifactDigest,
-                                        crashStateEpoch: 7,
-                                    },
-                                    disabled: false,
-                                },
-                            },
                             availability: { state: 'available', reason: 'available', diagnostics: [] },
                         },
                         'reactNativeBundle:acme.browser:native-panel': {
                             id: 'reactNativeBundle:acme.browser:native-panel',
                             pluginId: 'acme.browser',
+                            occurrenceId: 'browser-cross-path-generation-91',
                             contributionKind: 'reactNativeBundle',
                             contributionId: 'native-panel',
                             generatedV2: true,
                             pluginVersion: '3.2.1',
                             hostApi: { minVersion: '1.0.0', methods: ['context', 'executeAction'] },
                             artifactGraph: {
-                                contributionId: 'native-panel-artifact',
+                                artifactId: crossPathIdentity.artifactId,
                                 tier: 'reactNative',
-                                platform: 'web',
                                 entry: crossPathEntry,
                                 files: [{
                                     relativePath: crossPathEntry,
@@ -12524,15 +11942,15 @@ describe('canonical action dispatch reaches every mounted placement (EU-2)', () 
                                     byteSize: crossPathBytes.byteLength,
                                 }],
                                 digest: crossPathIdentity.artifactDigest,
-                                builtWith: { bundler: 'vite', version: '7.0.0' },
-                                hostUiApiVersion: '1.0.0',
-                                compat: { react: '19.2.0', reactNative: '0.83.4' },
+                                builtWith: { bundler: 'esbuild', version: '0.27.2' },
+                                executable: { exports: ['renderSurface'] },
+                                hostUiApiRange: '^1.0.0',
                             },
                             runtime: {
                                 decision: { state: 'load', reason: 'compatible', diagnostics: [] },
                                 loadPolicy: { source: 'installedArtifact' },
                                 cacheKey: `cross-path-${binding.destination.localId}`,
-                                cacheIdentity: crossPathIdentity,
+                                cacheIdentity: { artifactDigest: crossPathIdentity.artifactDigest },
                             },
                         },
                     },
@@ -12634,7 +12052,7 @@ describe('canonical action dispatch reaches every mounted placement (EU-2)', () 
                     platform="web"
                     {...testCase.props}
                     reactNativeLoaderBackend={{
-                        backendId: 'reactNativeWebModule',
+                        backendId: 'commonJs',
                         available: true,
                         loadInstalledBundle: vi.fn(async () => () => null),
                     }}
@@ -12656,7 +12074,7 @@ describe('canonical action dispatch reaches every mounted placement (EU-2)', () 
 
             expect(declarativeActionExecuteMock).toHaveBeenCalledWith('machine_1', expect.objectContaining({
                 serverId: 'server-1',
-                expectedGeneration: '91',
+                expectedContributorOccurrenceId: 'acme.browser-test-occurrence',
                 qualifiedActionId: 'acme.browser/refresh-index',
                 input: { reason: testCase.name },
                 // UI-D26: the stamp is the dispatcher's invariant, so it is present
@@ -12665,7 +12083,9 @@ describe('canonical action dispatch reaches every mounted placement (EU-2)', () 
                 invocation: {
                     kind: 'mountedPluginSurface',
                     mountedBinding: {
+                        pluginId: testCase.binding.pluginId,
                         contributionLocalId: testCase.binding.destinationId,
+                        occurrenceId: 'browser-cross-path-generation-91',
                         materializationRef: {
                             machineId: 'machine_1',
                             materializationId: 'materialization-cross-path-current',
@@ -12719,7 +12139,7 @@ describe('canonical action dispatch reaches every mounted placement (EU-2)', () 
                     sessionId="session-generic-destination"
                     platform="web"
                     reactNativeLoaderBackend={{
-                        backendId: 'reactNativeWebModule',
+                        backendId: 'commonJs',
                         available: true,
                         loadInstalledBundle: vi.fn(async () => () => null),
                     }}
@@ -12802,7 +12222,6 @@ describe('canonical action dispatch reaches every mounted placement (EU-2)', () 
             generation: 91,
             installedPackagesById: {},
             agentsById: {},
-            backendsById: {},
             toolsById: {},
             commandsById: {},
             resourcesById: {},
@@ -12818,7 +12237,7 @@ describe('canonical action dispatch reaches every mounted placement (EU-2)', () 
                                 pluginId: 'acme.browser',
                                 localId: 'generic-composer-attachment',
                             },
-                            immutableGenerationId: attachmentGeneration,
+                            occurrenceId: attachmentGeneration,
                             definition: {
                                 id: 'generic-composer-attachment',
                                 title: 'Generic issue',
@@ -12834,7 +12253,7 @@ describe('canonical action dispatch reaches every mounted placement (EU-2)', () 
         });
         const mountedTarget = Object.freeze({
             pluginId: 'acme.browser',
-            immutableGenerationId: 'browser-cross-path-generation-91',
+            occurrenceId: 'browser-cross-path-generation-91',
         });
         let currentExactProjection = exactProjectionFor('browser-cross-path-generation-wrong');
         let currentResponse = Object.freeze({
@@ -12868,7 +12287,7 @@ describe('canonical action dispatch reaches every mounted placement (EU-2)', () 
                     sessionId="session-generic-attachment"
                     platform="web"
                     reactNativeLoaderBackend={{
-                        backendId: 'reactNativeWebModule',
+                        backendId: 'commonJs',
                         available: true,
                         loadInstalledBundle: vi.fn(async () => () => null),
                     }}
@@ -12903,7 +12322,7 @@ describe('canonical action dispatch reaches every mounted placement (EU-2)', () 
             // attachment authority map becomes valid. The existing physical
             // RN bridge remains mounted while the canonical controller retires
             // only its stale semantic handler lifetime.
-            currentExactProjection = exactProjectionFor(mountedTarget.immutableGenerationId);
+            currentExactProjection = exactProjectionFor(mountedTarget.occurrenceId);
             currentResponse = Object.freeze({
                 supported: true as const,
                 projection: currentExactProjection,
@@ -13013,7 +12432,7 @@ describe('canonical action dispatch reaches every mounted placement (EU-2)', () 
                 sessionId="session-91"
                 platform="web"
                 reactNativeLoaderBackend={{
-                    backendId: 'reactNativeWebModule',
+                    backendId: 'commonJs',
                     available: true,
                     loadInstalledBundle: vi.fn(async () => () => null),
                 }}
@@ -13044,7 +12463,7 @@ describe('canonical action dispatch reaches every mounted placement (EU-2)', () 
                         pluginId: 'acme.review',
                         localId: 'nested-detail',
                         qualifiedId: 'acme.review/nested-detail',
-                        generation: 'nested-generation-b',
+                        occurrenceId: 'nested-generation-b',
                     },
                     nodes: [],
                     root: {
@@ -13056,7 +12475,8 @@ describe('canonical action dispatch reaches every mounted placement (EU-2)', () 
                             contributor: {
                                 pluginId: 'acme.child',
                                 contributionId: 'child-detail',
-                                immutableGenerationId: 'child-generation-c',
+                                occurrenceId: 'child-generation-c',
+                                sourceCustody: developmentSourceCustody('acme-child-test-root'),
                             },
                             role: 'detail',
                             presentation: 'content',

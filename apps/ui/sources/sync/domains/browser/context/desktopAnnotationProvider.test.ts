@@ -16,9 +16,15 @@ const request: BrowserAnnotationCaptureRequest = {
 };
 
 const pngBase64 = Buffer.from(new Uint8Array([0x89, 0x50, 0x4e, 0x47])).toString('base64');
+const storedSnapshotMedia = ({ snapshot }: { snapshot: { width: number; height: number; sizeBytes: number } }) => ({
+    mediaId: 'stored-snapshot', mediaKind: 'image' as const, width: snapshot.width, height: snapshot.height, sizeBytes: snapshot.sizeBytes,
+});
+
+// The native WebView bridge is an OS boundary. Each case supplies its native capture outcome.
+vi.mock('@/sync/domains/browser/adapters/desktopWebViewBridge', () => ({ captureDesktopBrowserSnapshot: vi.fn() }));
 
 describe('desktop browser annotation capture provider', () => {
-    it('captures the native snapshot and produces a content-addressed media reference', async () => {
+    it('captures the native snapshot and returns only the persisted media reference', async () => {
         const captureSnapshot = vi.fn(async () => ({
             ok: true as const,
             availability: { available: true } as never,
@@ -35,7 +41,10 @@ describe('desktop browser annotation capture provider', () => {
                 bytesBase64: pngBase64,
             },
         }));
-        const provider = createDesktopBrowserAnnotationCaptureProvider({ available: true, captureSnapshot });
+        // The registrar is the attachment transfer boundary, not a second media-id owner.
+        const storedMedia = { mediaId: 'persisted-media', mediaKind: 'image' as const, width: 1024, height: 768, sizeBytes: 65_536 };
+        const registerMedia = vi.fn(async () => storedMedia);
+        const provider = createDesktopBrowserAnnotationCaptureProvider({ available: true, captureSnapshot, registerMedia });
         expect(provider.available).toBe(true);
 
         const result = await provider.captureAnnotation(request);
@@ -47,12 +56,30 @@ describe('desktop browser annotation capture provider', () => {
             pageTitle: 'Example',
         });
         if (result.status !== 'captured') return;
-        expect(result.media.mediaId).toContain('browser_annotation_media');
+        expect(result.media).toEqual(storedMedia);
+        expect(registerMedia).toHaveBeenCalledWith(expect.objectContaining({
+            snapshot: expect.objectContaining({ bytes: new Uint8Array([0x89, 0x50, 0x4e, 0x47]) }),
+        }));
         expect(captureSnapshot).toHaveBeenCalledWith(expect.objectContaining({
             browserSessionId: 'browser_session_1',
             viewId: 'view_1',
             navigationGeneration: 2,
         }));
+    });
+
+    it('refuses successful capture when the bytes cannot be persisted', async () => {
+        const provider = createDesktopBrowserAnnotationCaptureProvider({
+            available: true,
+            captureSnapshot: async () => ({
+                ok: true,
+                availability: { available: true } as never,
+                snapshot: { browserSessionId: request.browserSessionId, viewId: request.viewId,
+                    navigationGeneration: 2, captureRequestId: 'req', capturedAtMs: 1000,
+                    mimeType: 'image/png', width: 10, height: 10, sizeBytes: 4, bytesBase64: pngBase64 },
+            }),
+            registerMedia: async () => null,
+        });
+        expect(await provider.captureAnnotation(request)).toMatchObject({ status: 'unavailable', reason: { lifecycleState: 'captureFailed' } });
     });
 
     it('forwards the union-of-targets crop clip and returns cropped media (ANNO-3)', async () => {
@@ -73,7 +100,7 @@ describe('desktop browser annotation capture provider', () => {
                 bytesBase64: pngBase64,
             },
         }));
-        const provider = createDesktopBrowserAnnotationCaptureProvider({ available: true, captureSnapshot });
+        const provider = createDesktopBrowserAnnotationCaptureProvider({ available: true, captureSnapshot, registerMedia: storedSnapshotMedia });
 
         const result = await provider.captureAnnotation({
             ...request,
@@ -109,7 +136,7 @@ describe('desktop browser annotation capture provider', () => {
                 bytesBase64: pngBase64,
             },
         }));
-        const provider = createDesktopBrowserAnnotationCaptureProvider({ available: true, captureSnapshot });
+        const provider = createDesktopBrowserAnnotationCaptureProvider({ available: true, captureSnapshot, registerMedia: storedSnapshotMedia });
         await provider.captureAnnotation(request);
         // No crop rect supplied ⇒ the native command is invoked without a clip (full-frame capture).
         expect(captureSnapshot).toHaveBeenCalledWith(expect.not.objectContaining({ clip: expect.anything() }));
@@ -123,6 +150,7 @@ describe('desktop browser annotation capture provider', () => {
                 availability: { available: true } as never,
                 errorCode: 'staleNavigation' as const,
             }),
+            registerMedia: storedSnapshotMedia,
         });
         const result = await provider.captureAnnotation(request);
         expect(result.status).toBe('unavailable');

@@ -109,9 +109,11 @@ function usedFlags(
   draftInput: Readonly<Record<string, unknown>>,
 ): ReadonlySet<string> {
   const used = new Set<string>();
+  const committedFlagNames = new Set<string>();
   for (const token of committed) {
     if (!token.startsWith('--')) continue;
     const name = token.includes('=') ? token.slice(0, token.indexOf('=')) : token;
+    committedFlagNames.add(name);
     const field = command.fields.find((candidate) => (
       acceptedSpellings(candidate).includes(name)
     ));
@@ -121,6 +123,17 @@ function usedFlags(
     if (field && (field.kind !== 'string_list' || name === `${field.flag}-json`)) {
       for (const spelling of acceptedSpellings(field)) used.add(spelling);
     }
+  }
+  // A field already supplied positionally or by whole-input JSON is a source
+  // the parser will refuse to combine with its flag, so its flag is not offered.
+  // Only a list collected through its own repeatable spelling stays open.
+  for (const field of command.fields) {
+    if (!resolveActionCliFieldState(field, draftInput).present) continue;
+    if (
+      field.kind === 'string_list'
+      && [field.flag, ...field.aliases].some((spelling) => committedFlagNames.has(spelling))
+    ) continue;
+    for (const spelling of acceptedSpellings(field)) used.add(spelling);
   }
   for (const field of command.fields) {
     if (field.maxSelections === null) continue;

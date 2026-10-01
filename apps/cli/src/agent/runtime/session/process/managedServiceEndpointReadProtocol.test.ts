@@ -34,7 +34,7 @@ function runtimeBindingBasis(): ProviderRuntimeBindingBasisV1 {
             },
             purposeBindings: { v: 1, bindings: [] },
         },
-        agentTargetKey: 'backend:claude',
+        agentTargetKey: 'agent:happier.agent.claude/claude',
         connectionId: ProviderConnectionIdSchema.parse('connection-p'),
         contributionKey: 'acme.providers/gateway',
         endpoint: {
@@ -74,8 +74,12 @@ function exactHandleRoute() {
         runtimeBindingBasis: runtimeBindingBasis(),
         pluginId: 'acme.providers',
         providerLocalId: 'gateway',
-        activationGeneration: 'provider-p',
-        immutableGenerationId: 'provider-p',
+        occurrenceId: 'provider-occurrence-p',
+        sourceCustody: {
+            kind: 'managed',
+            immutableGenerationId: 'provider-p',
+            installSource: 'npm',
+        },
         manifestAuthority: 'external',
         operationClaimId: 'session-demand:session-one:provider-p',
     };
@@ -95,7 +99,11 @@ function endpointProjectionRoute() {
             contributionId: 'opencode/agent',
             serverId: 'opencode-server',
             instanceId: 'instance-one',
-            immutableGenerationId: 'immutable-generation-one',
+            sourceCustody: {
+                kind: 'managed',
+                immutableGenerationId: 'immutable-generation-one',
+                installSource: 'npm',
+            },
             custodyOwner: 'sessionRunner',
             mode: 'managedSpawn',
             endpoint: {

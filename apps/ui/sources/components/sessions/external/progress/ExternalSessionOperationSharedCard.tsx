@@ -16,7 +16,7 @@ import {
     isExternalSessionOperationDismissibleStatus,
 } from './externalSessionOperationProgressPresentation';
 import { presentExternalSessionOperationShared } from './externalSessionOperationSharedPresentation';
-import { ExternalSessionOperationAccessibilityStatus } from './ExternalSessionOperationAccessibilityStatus';
+import { PoliteAccessibilityStatus } from '@/components/ui/accessibility/PoliteAccessibilityStatus';
 
 export const ExternalSessionOperationSharedCard = React.memo(
     function ExternalSessionOperationSharedCard(props: Readonly<{
@@ -69,7 +69,7 @@ export const ExternalSessionOperationSharedCard = React.memo(
         ].join(':');
         return (
             <View testID="external-session-operation-shared-card">
-                <ExternalSessionOperationAccessibilityStatus
+                <PoliteAccessibilityStatus
                     announcement={accessibilityAnnouncement}
                     statusTestID="external-session-operation-shared-a11y-status"
                     transitionKey={accessibilityTransitionKey}

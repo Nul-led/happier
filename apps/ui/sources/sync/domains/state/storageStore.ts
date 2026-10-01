@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 
 import { createArtifactsDomain } from '../../store/domains/artifacts';
+import { createAuthoringMemoryDomain } from '../../store/domains/authoringMemory';
 import { createAutomationsDomain } from '../../store/domains/automations';
 import { createFeedDomain } from '../../store/domains/feed';
 import { createFriendsDomain } from '../../store/domains/friends';
@@ -25,6 +26,7 @@ export type { SessionListViewItem } from '../session/listing/sessionListViewData
 
 export const storage = create<StorageState>()((set, get) => {
     const settingsDomain = createSettingsDomain<StorageState>({ set, get });
+    const authoringMemoryDomain = createAuthoringMemoryDomain<StorageState>({ set, get });
     const profileDomain = createProfileDomain<StorageState>({ set, get });
     const todosDomain = createTodosDomain<StorageState>({ set, get });
     const machinesDomain = createMachinesDomain<StorageState>({ set, get });
@@ -44,6 +46,7 @@ export const storage = create<StorageState>()((set, get) => {
 
     return {
         ...settingsDomain,
+        ...authoringMemoryDomain,
         ...profileDomain,
         ...sessionsDomain,
         ...sessionOrganizationDomain,

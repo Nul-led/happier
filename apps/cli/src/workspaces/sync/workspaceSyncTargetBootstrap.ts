@@ -286,31 +286,30 @@ export async function rehydrateWorkspaceSyncTargetBootstrap(input: Readonly<{
   const readyPath = finalReadyPath(input.materializationDirectory, input.relationshipId, input.endpointRole);
   if (input.requireMaterializationReceipt
     && !(await lstat(receiptPath).catch(() => null))?.isFile()) return null;
-  const canonicalRoot = await realpath(input.rootPath).catch(() => {
-    throw bootstrapError('root_changed', 'Workspace sync target root is unavailable');
+  const requested = normalize(resolve(input.rootPath));
+  if (requested === resolve('/')) throw bootstrapError('workspace_root_unsafe', 'workspace sync target root is invalid');
+  const existingBeforeRecovery = await lstat(requested).catch((error: unknown) => {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
   });
-  const fingerprint = await computeWorkspaceSyncRootFingerprint(canonicalRoot).catch(() => {
-    throw bootstrapError('root_changed', 'Workspace sync target root identity changed');
-  });
+  if (existingBeforeRecovery && (!existingBeforeRecovery.isDirectory() || existingBeforeRecovery.isSymbolicLink())) {
+    throw bootstrapError('workspace_root_unsafe', 'workspace sync target root must be a real directory');
+  }
+  const canonicalRootCandidate = existingBeforeRecovery
+    ? await realpath(requested)
+    : await realpath(dirname(requested)).then((parent) => normalize(join(parent, basename(requested)))).catch(() => null);
+  if (typeof canonicalRootCandidate !== 'string' || canonicalRootCandidate === resolve('/')) {
+    throw bootstrapError('workspace_root_unsafe', 'workspace sync target parent is unavailable');
+  }
+  const canonicalRoot = canonicalRootCandidate;
   const ownership = await input.rootOwnershipManager.tryAcquire({
     ownerId: input.relationshipId,
     canonicalRoot,
     operation: 'bootstrap',
+    deferRootIdentityBinding: true,
   });
   if ('kind' in ownership) {
     throw bootstrapError('workspace_root_in_use', 'Workspace sync target root overlaps an active operation');
-  }
-  let fingerprintAfterOwnership: string;
-  try {
-    const canonicalRootAfterOwnership = await realpath(input.rootPath);
-    fingerprintAfterOwnership = await computeWorkspaceSyncRootFingerprint(canonicalRootAfterOwnership);
-  } catch {
-    await ownership.release();
-    throw bootstrapError('root_changed', 'Workspace sync target root identity changed during restart rehydration');
-  }
-  if (fingerprintAfterOwnership !== fingerprint) {
-    await ownership.release();
-    throw bootstrapError('root_changed', 'Workspace sync target root identity changed during restart rehydration');
   }
   const materializationCustody = await (dependencies.rehydrateMaterializationFromReceiptPath
     ?? rehydrateWorkspaceTargetMaterializationFromReceiptPath)({
@@ -321,29 +320,45 @@ export async function rehydrateWorkspaceSyncTargetBootstrap(input: Readonly<{
     await ownership.release();
     throw bootstrapError('target_bootstrap_required', 'Workspace sync target rollback receipt is unsafe');
   });
-  const readyFact = {
-    v: 1,
-    relationshipId: input.relationshipId,
-    endpointRole: input.endpointRole,
-    targetWorkspaceRefId: input.targetWorkspaceRefId,
-    canonicalRoot,
-    rootFingerprint: fingerprint,
-    policyDigest: input.policyDigest,
-  } as const;
-  const exactReady = await hasExactReadyFact(readyPath, readyFact);
-  const publishReady = async (): Promise<void> => await writeReadyFact(readyPath, readyFact);
-  if (materializationCustody && !exactReady) {
-    try {
-      await materializationCustody.abort();
-    } catch (error) {
-      await ownership.release();
+  let exactReady = false;
+  let materializationSettled = false;
+  try {
+    const currentRootStat = await lstat(requested).catch((error: unknown) => {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
       throw error;
+    });
+    const currentRoot = currentRootStat?.isDirectory() && !currentRootStat.isSymbolicLink()
+      ? await realpath(requested).catch(() => null)
+      : null;
+    const fingerprint = currentRoot === canonicalRoot
+      ? await computeWorkspaceSyncRootFingerprint(currentRoot).catch(() => null)
+      : null;
+    const readyFact = fingerprint === null
+      ? null
+      : {
+          v: 1,
+          relationshipId: input.relationshipId,
+          endpointRole: input.endpointRole,
+          targetWorkspaceRefId: input.targetWorkspaceRefId,
+          canonicalRoot,
+          rootFingerprint: fingerprint,
+          policyDigest: input.policyDigest,
+        } as const;
+    exactReady = readyFact !== null && await hasExactReadyFact(readyPath, readyFact);
+    if (materializationCustody && !exactReady) {
+      await materializationCustody.abort();
+      materializationSettled = true;
+      await ownership.release();
+      return null;
     }
-    await ownership.release();
-    return null;
-  }
-  if (input.contentSelection === 'git_worktree') {
-    try {
+    if (!exactReady || readyFact === null) {
+      if (currentRoot === null && !materializationCustody) {
+        throw bootstrapError('root_changed', 'Workspace sync target root is unavailable');
+      }
+      await ownership.release();
+      return null;
+    }
+    if (input.contentSelection === 'git_worktree') {
       if (input.prepareGitTarget) {
         await input.prepareGitTarget({
           canonicalRoot,
@@ -361,27 +376,30 @@ export async function rehydrateWorkspaceSyncTargetBootstrap(input: Readonly<{
       } else {
         await prepareExistingGitWorkspaceSyncTarget({ canonicalRoot, targetState: 'nonempty' });
       }
-    } catch (error) {
-      await ownership.release();
-      throw error;
     }
-  }
-  if (!materializationCustody && !exactReady) {
+    await ownership.bindCurrentRootIdentity();
+    return {
+      canonicalRoot,
+      created: false,
+      state: 'READY',
+      rootFingerprint: readyFact.rootFingerprint,
+      policyDigest: input.policyDigest,
+      ownershipHandles: [ownership],
+      ...(materializationCustody ? { materializationCustody } : {}),
+      readyPublished: true,
+      publishReady: async (): Promise<void> => await writeReadyFact(readyPath, readyFact),
+      release: ownership.release,
+    };
+  } catch (error) {
+    if (materializationCustody && !materializationSettled) {
+      await (exactReady ? materializationCustody.commit() : materializationCustody.abort()).then(
+        () => { materializationSettled = true; },
+        () => undefined,
+      );
+    }
     await ownership.release();
-    return null;
+    throw error;
   }
-  return {
-    canonicalRoot,
-    created: false,
-    state: 'READY',
-    rootFingerprint: fingerprint,
-    policyDigest: input.policyDigest,
-    ownershipHandles: [ownership],
-    ...(materializationCustody ? { materializationCustody } : {}),
-    readyPublished: true,
-    publishReady,
-    release: ownership.release,
-  };
 }
 
 export async function workspaceSyncTargetBootstrap(
@@ -443,6 +461,7 @@ export async function workspaceSyncTargetBootstrap(
   });
   if ('kind' in ownership) throw bootstrapError('workspace_root_in_use', 'workspace sync target root overlaps an active operation');
   let materializationCustody: WorkspaceExportMaterializationCustody | undefined;
+  let trustedReadyRequiresCommitOnlyCleanup = false;
   try {
     const interruptedCustody = await (dependencies.rehydrateMaterializationFromReceiptPath
       ?? rehydrateWorkspaceTargetMaterializationFromReceiptPath)({
@@ -471,6 +490,8 @@ export async function workspaceSyncTargetBootstrap(
       const restartReady = restartReadyFact !== null
         && await hasExactReadyFact(readyPath, restartReadyFact);
       if (restartReady && restartReadyFact) {
+        materializationCustody = interruptedCustody;
+        trustedReadyRequiresCommitOnlyCleanup = true;
         if (input.contentSelection === 'git_worktree') {
           await input.prepareGitTarget!({
             canonicalRoot,
@@ -663,6 +684,11 @@ export async function workspaceSyncTargetBootstrap(
       ...(retainedMaterializationCustody ? { materializationCustody: retainedMaterializationCustody } : {}),
     };
   } catch (error) {
+    if (trustedReadyRequiresCommitOnlyCleanup) {
+      if (materializationCustody) await materializationCustody.commit().catch(() => undefined);
+      await ownership.release();
+      throw error;
+    }
     let materializationAborted = materializationCustody === undefined;
     if (materializationCustody) {
       await materializationCustody.abort().then(

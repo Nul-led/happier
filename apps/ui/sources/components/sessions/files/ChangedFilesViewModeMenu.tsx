@@ -11,6 +11,7 @@ import {
 import { t } from '@/text';
 import { StyleSheet as RNStyleSheet } from 'react-native';
 import { Icon, type IconName } from '@/components/ui/icons/Icon';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 type ChangedFilesViewModeMenuProps = Readonly<{
     theme: any;
@@ -125,7 +126,7 @@ export const ChangedFilesViewModeMenu = React.memo((props: ChangedFilesViewModeM
                             gap: 6,
                         },
                         props.triggerStyle,
-                        { opacity: pressed ? 0.78 : 1 },
+                        { opacity: pressed ? motionTokens.press.opacity : 1 },
                     ]}
                 >
                     <Icon name={getModeIcon(selectedMode)} size={14} color={props.theme.colors.text.secondary} />

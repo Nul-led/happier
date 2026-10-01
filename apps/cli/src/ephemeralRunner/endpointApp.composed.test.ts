@@ -181,7 +181,7 @@ describe('shipped Happier Runner composition', () => {
         }),
         submitConsent: vi.fn(async () => { events.push('consent'); }),
         submitReadiness: vi.fn(async () => { events.push('readiness.publish'); }),
-        decline: vi.fn(async () => { events.push('decline'); }),
+        decline: vi.fn(async () => { events.push('decline'); return { status: 'declined' as const }; }),
         onConnectionState: () => () => undefined,
         close: vi.fn(async () => { events.push('connection.close'); }),
       })),
@@ -373,7 +373,7 @@ describe('shipped Happier Runner composition', () => {
     })).rejects.toThrow();
   });
 
-  it('binds the production Personal Home carrier to activation-local endpoint identity custody', async () => {
+  it('opens the Personal Home carrier with the activation Home and cancellation', async () => {
     const root = await mkdtemp(join(tmpdir(), 'happier-runner-home-carrier-'));
     roots.push(root);
     const activationFilePath = join(root, 'happier-runner.activation.json');
@@ -451,7 +451,6 @@ describe('shipped Happier Runner composition', () => {
       expect.objectContaining({ homeServerIdentityId: 'srv_runner_home' }),
       undefined,
       signal,
-      { happyHomeDir: activationHome },
     );
     await connection.close();
   });

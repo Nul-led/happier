@@ -5,13 +5,16 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { Text } from '@/components/ui/text/Text';
 import { t } from '@/text';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
+import type { TranscriptPermissionDisabledReason } from '@/utils/sessions/deriveTranscriptInteraction';
+import { resolvePermissionDisabledMessage } from '@/components/tools/shell/permissions/permissionDisabledMessage';
 
 export const ApprovalDecisionFooter = React.memo(function ApprovalDecisionFooter(props: Readonly<{
     disabled?: boolean;
     decisionDisabled?: boolean;
     approveDisabled?: boolean;
     approveAccessibilityHint?: string;
-    disabledReason?: 'public' | 'readOnly' | 'notGranted' | 'inactive';
+    disabledReason?: TranscriptPermissionDisabledReason;
     isDeciding: boolean;
     onApprove: () => void;
     onReject: () => void;
@@ -26,11 +29,7 @@ export const ApprovalDecisionFooter = React.memo(function ApprovalDecisionFooter
 
     if (props.disabled === true) {
         const disabledMessage =
-            props.disabledReason === 'public'
-                ? t('session.sharing.permissionApprovalsDisabledPublic')
-                : props.disabledReason === 'readOnly'
-                    ? t('session.sharing.permissionApprovalsDisabledReadOnly')
-                    : t('session.sharing.permissionApprovalsDisabledNotGranted');
+            resolvePermissionDisabledMessage(props.disabledReason);
         return (
             <View style={styles.disabledNotice}>
                 <Text style={styles.disabledTitle}>{t('session.sharing.permissionApprovalsDisabledTitle')}</Text>
@@ -96,7 +95,7 @@ const styles = StyleSheet.create((theme) => ({
         justifyContent: 'center',
     },
     buttonPressed: {
-        opacity: 0.72,
+        opacity: motionTokens.press.opacity,
     },
     buttonDisabled: {
         opacity: 0.5,

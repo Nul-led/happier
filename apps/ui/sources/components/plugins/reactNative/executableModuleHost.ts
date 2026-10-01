@@ -2,7 +2,7 @@ import type { PluginReactNativeBundleCache } from './bundleCache';
 import { raceWithTimeout } from '@happier-dev/plugin-sdk/async';
 import type {
     PluginReactNativeLoaderBackend,
-    RepackInstalledArtifactModuleReference,
+    PluginReactNativeExecutableModuleReference,
 } from './loader';
 import { loadPluginReactNativeBundleExport } from './loader';
 import type { PluginReactNativeBundleCacheIdentity } from '@/sync/domains/plugins/ui/reactNativeRuntime';
@@ -20,7 +20,6 @@ export type PluginUiExecutableActivationScope<TApi> = Readonly<{
 export type PluginUiExecutableAuthority = Readonly<{
     serverId: string | null;
     machineId: string;
-    projectionGeneration: number | null;
 }>;
 
 export type PluginUiExecutableModuleActivationResult =
@@ -32,7 +31,7 @@ export type PluginUiExecutableModuleActivationResult =
             | 'artifact_cache_miss'
             | 'invalid_executable_export'
             | 'platform_mismatch'
-            | 'stale_projection_generation'
+            | 'artifact_replaced'
             | 'activation_failed';
         diagnostics: readonly string[];
     }>;
@@ -41,7 +40,7 @@ export type PluginUiExecutableModuleHost = Readonly<{
     activate<TApi>(input: Readonly<{
         cache: PluginReactNativeBundleCache;
         identity: PluginReactNativeBundleCacheIdentity;
-        moduleReference: RepackInstalledArtifactModuleReference;
+        moduleReference: PluginReactNativeExecutableModuleReference;
         backend: PluginReactNativeLoaderBackend;
         hostPlatform: string;
         authority: PluginUiExecutableAuthority;
@@ -50,7 +49,7 @@ export type PluginUiExecutableModuleHost = Readonly<{
     replaceAuthority(authority: PluginUiExecutableAuthority | null): Promise<void>;
     invalidateActivation(input: Readonly<{
         identity: PluginReactNativeBundleCacheIdentity;
-        moduleReference: RepackInstalledArtifactModuleReference;
+        moduleReference: PluginReactNativeExecutableModuleReference;
     }>): Promise<void>;
     invalidatePlugin(pluginId: string): Promise<void>;
     unload(): Promise<void>;
@@ -87,31 +86,26 @@ export function createPluginUiExecutableModuleHost(): PluginUiExecutableModuleHo
         left === right
         || (left !== null && right !== null
             && left.serverId === right.serverId
-            && left.machineId === right.machineId
-            && left.projectionGeneration === right.projectionGeneration)
+            && left.machineId === right.machineId)
     );
 
     const activationKey = (input: Readonly<{
         identity: PluginReactNativeBundleCacheIdentity;
-        moduleReference: RepackInstalledArtifactModuleReference;
+        moduleReference: PluginReactNativeExecutableModuleReference;
     }>) => [
         input.identity.pluginId,
         input.identity.contributionId,
-        input.moduleReference.modulePath,
         input.moduleReference.exportName,
     ].join('\u0000');
 
     const activationFingerprint = (input: Readonly<{
         identity: PluginReactNativeBundleCacheIdentity;
-        moduleReference: RepackInstalledArtifactModuleReference;
+        moduleReference: PluginReactNativeExecutableModuleReference;
         authorityRevision: number;
     }>) => [
         input.identity.artifactDigest,
+        input.identity.artifactId,
         input.identity.platform,
-        input.identity.channel,
-        String(input.identity.projectionGeneration),
-        input.moduleReference.containerName,
-        input.moduleReference.modulePath,
         input.moduleReference.exportName,
         String(input.authorityRevision),
     ].join('\u0000');
@@ -166,7 +160,7 @@ export function createPluginUiExecutableModuleHost(): PluginUiExecutableModuleHo
     async function activate<TApi>(input: Readonly<{
         cache: PluginReactNativeBundleCache;
         identity: PluginReactNativeBundleCacheIdentity;
-        moduleReference: RepackInstalledArtifactModuleReference;
+        moduleReference: PluginReactNativeExecutableModuleReference;
         backend: PluginReactNativeLoaderBackend;
         hostPlatform: string;
         authority: PluginUiExecutableAuthority;
@@ -175,19 +169,18 @@ export function createPluginUiExecutableModuleHost(): PluginUiExecutableModuleHo
         if (!authorityInitialized) {
             return Object.freeze({
                 ok: false,
-                code: 'stale_projection_generation',
-                diagnostics: Object.freeze(['projection_authority_not_initialized']),
+                code: 'artifact_replaced',
+                diagnostics: Object.freeze(['artifact_authority_not_initialized']),
             });
         }
         if (
             authority === null
             || !sameAuthority(authority, input.authority)
-            || input.identity.projectionGeneration !== input.authority.projectionGeneration
         ) {
             return Object.freeze({
                 ok: false,
-                code: 'stale_projection_generation',
-                diagnostics: Object.freeze(['stale_projection_generation']),
+                code: 'artifact_replaced',
+                diagnostics: Object.freeze(['artifact_replaced']),
             });
         }
 
@@ -242,8 +235,8 @@ export function createPluginUiExecutableModuleHost(): PluginUiExecutableModuleHo
             if (!isCurrent()) {
                 return Object.freeze({
                     ok: false,
-                    code: 'stale_projection_generation',
-                    diagnostics: Object.freeze(['stale_projection_generation']),
+                    code: 'artifact_replaced',
+                    diagnostics: Object.freeze(['artifact_replaced']),
                 });
             }
 
@@ -288,8 +281,8 @@ export function createPluginUiExecutableModuleHost(): PluginUiExecutableModuleHo
                 });
                 return Object.freeze({
                     ok: false,
-                    code: 'stale_projection_generation',
-                    diagnostics: Object.freeze(['stale_projection_generation']),
+                    code: 'artifact_replaced',
+                    diagnostics: Object.freeze(['artifact_replaced']),
                 });
             }
 
@@ -320,8 +313,8 @@ export function createPluginUiExecutableModuleHost(): PluginUiExecutableModuleHo
                 });
                 return Object.freeze({
                     ok: false,
-                    code: 'stale_projection_generation',
-                    diagnostics: Object.freeze(['stale_projection_generation']),
+                    code: 'artifact_replaced',
+                    diagnostics: Object.freeze(['artifact_replaced']),
                 });
             }
 

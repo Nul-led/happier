@@ -122,6 +122,23 @@ function createExecutionRunGetResponse(overrides?: Record<string, unknown>) {
 }
 
 installSessionExecutionRunDetailsCommonModuleMocks({
+    text: async () => {
+        const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
+        return createTextModuleMock({
+            translate: (key, values) => {
+                if (key === 'sessionPages.newRun.transcriptReadOnly') {
+                    return 'This is saved history. Reconnect to this Home to continue the conversation.';
+                }
+                if (key === 'sessionPages.newRun.daemonReadOnly') {
+                    return 'This history comes from the agent process. Reconnect to this Home to continue the conversation.';
+                }
+                if (key === 'executionRuns.details.labels.statusValue' && values?.value) {
+                    return `Status: ${String(values.value)}`;
+                }
+                return values ? `${key}(${Object.entries(values).map(([name, value]) => `${name}=${String(value)}`).join(',')})` : key;
+            },
+        });
+    },
     storage: async () => {
         const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
         return createStorageModuleStub({
@@ -202,6 +219,7 @@ vi.mock('@/sync/ops/machineExecutionRuns', () => ({
 }));
 
 vi.mock('@/sync/domains/scope/useServerCredentialAccountScopes', () => ({
+    useServerCredentialAccountScopeBindings: () => new Map(),
     useServerCredentialAccountScopeResolution: (serverId: string | null | undefined) => serverId
         ? { kind: 'bound', scope: { serverId, accountId: 'account-1' } }
         : { kind: 'resolving' },
@@ -210,7 +228,21 @@ vi.mock('@/sync/domains/scope/useServerCredentialAccountScopes', () => ({
 vi.mock('@/components/sessions/runs/details/SessionExecutionRunInfoCard', () => ({
     SessionExecutionRunInfoCard: (props: any) => {
         executionRunInfoCardSpy(props);
-        return React.createElement('SessionExecutionRunInfoCard', props);
+        return React.createElement(
+            'SessionExecutionRunInfoCard',
+            props,
+            props.stopAction ? React.createElement('Pressable', {
+                testID: 'session-run-details-stop',
+                accessibilityState: { disabled: props.stopAction.stopping, busy: props.stopAction.stopping },
+                onPress: props.stopAction.onStop,
+            }) : null,
+            // Cancel response lives in the header's ⋯ menu; the stand-in exposes the same control.
+            props.cancelResponseAction ? React.createElement('Pressable', {
+                testID: 'session-run-details-cancel-turn',
+                accessibilityState: { disabled: props.cancelResponseAction.pending, busy: props.cancelResponseAction.pending },
+                onPress: props.cancelResponseAction.onCancel,
+            }) : null,
+        );
     },
 }));
 
@@ -282,8 +314,22 @@ vi.mock('@/utils/system/fireAndForget', () => ({
     fireAndForget: (promise: Promise<unknown>) => void promise,
 }));
 
-vi.mock('@/sync/domains/messages/messageRouteIds', () => ({
-    buildToolCallMessageRouteId: ({ toolId }: { toolId: string | null }) => (toolId ? `tool:${toolId}` : ''),
+const machineStopSessionSpy = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => ({ ok: true })));
+vi.mock('@/sync/ops/machines', () => ({
+    machineStopSession: (...args: unknown[]) => machineStopSessionSpy(...args),
+}));
+// The session's live agent counts are a store projection; the stop fallback only reads `counts.live`.
+const liveAgentCountState = vi.hoisted(() => ({ current: 1 }));
+// The roster's merged entry per Run: the canonical attention the Run header reads.
+const rosterRunEntryState = vi.hoisted(() => ({ current: null as null | Record<string, unknown> }));
+vi.mock('@/hooks/session/useSessionAgentActivity', () => ({
+    useSessionAgentActivity: () => ({ entries: [], counts: { live: liveAgentCountState.current, total: liveAgentCountState.current } }),
+    useSessionAgentActivityRoster: () => ({
+        entries: [],
+        subagents: [],
+        readSubagentForEntry: () => null,
+        readExecutionRunEntry: (runId: string) => rosterRunEntryState.current?.runId === runId ? rosterRunEntryState.current : null,
+    }),
 }));
 
 describe('SessionExecutionRunDetailsView', () => {
@@ -366,6 +412,25 @@ describe('SessionExecutionRunDetailsView', () => {
         tree = null;
     });
 
+    it('hands the header the Run waiting on a person, from the roster attention, so it says Needs your answer', async () => {
+        rosterRunEntryState.current = {
+            id: 'execution_run:run_1', kind: 'execution_run', status: 'waiting', title: 'Run', metaDetail: null,
+            startedAtMs: 1, endedAtMs: null, provenance: 'merged', detailState: 'loaded', parentId: null,
+            runId: 'run_1', sidechainId: null, subagentId: 'execution_run:run_1', attentionKinds: ['user_action'],
+        };
+        try {
+            const { SessionExecutionRunDetailsView } = await import('./SessionExecutionRunDetailsView');
+            const screen = await renderScreen(<SessionExecutionRunDetailsView sessionId="s1" runId="run_1" presentation="panel" />);
+            tree = screen.tree;
+
+            expect(executionRunInfoCardSpy).toHaveBeenLastCalledWith(expect.objectContaining({
+                attention: expect.objectContaining({ label: 'sessionAgentActivity.attention.userAction' }),
+            }));
+        } finally {
+            rosterRunEntryState.current = null;
+        }
+    });
+
     it('renders transcript details alongside the execution-run info card when the run has a transcript tool route', async () => {
         const { SessionExecutionRunDetailsView } = await import('./SessionExecutionRunDetailsView');
 
@@ -377,6 +442,10 @@ describe('SessionExecutionRunDetailsView', () => {
         tree = screen.tree;
 
         expect(tree).toBeTruthy();
+        const { SessionTranscriptSourceProvider } = await import('@/components/sessions/transcript/source/SessionTranscriptSourceContext');
+        expect(screen.findAllByType(SessionTranscriptSourceProvider).map((root) => root.props.source)).toEqual([
+            expect.objectContaining({ kind: 'app', sessionId: 's1' }),
+        ]);
         expect(executionRunInfoCardSpy).toHaveBeenCalledWith(expect.objectContaining({
             run: expect.objectContaining({
                 runId: 'run_1',
@@ -765,6 +834,27 @@ describe('SessionExecutionRunDetailsView', () => {
         );
     });
 
+    it('shows the canonical waiting state before a Run has a transcript marker or queued rows', async () => {
+        sessionMessagesState.messages = [];
+        getRunSpy.mockResolvedValueOnce(createExecutionRunGetResponse({
+            callId: undefined,
+            sidechainId: undefined,
+            interaction: undefined,
+            status: 'running',
+        }));
+        const { SessionExecutionRunDetailsView } = await import('./SessionExecutionRunDetailsView');
+
+        const screen = await renderScreen(<SessionExecutionRunDetailsView
+            sessionId="s1"
+            runId="run_1"
+            presentation="panel"
+        />);
+        tree = screen.tree;
+
+        expect(screen.findByTestId('session-run-details-pre-marker-state')).toBeTruthy();
+        expect(screen.getTextContent()).toContain('status.awaitingUpdates');
+    });
+
     it('renders the committed direct-start Run transcript with its exact pending queue and one composer', async () => {
         sessionMessagesState.messages = [];
         sidechainMessagesState.current = [
@@ -997,6 +1087,30 @@ describe('SessionExecutionRunDetailsView', () => {
         }));
     });
 
+    it('shows a finished review as its result, with no conversation composer (lab convo-R1)', async () => {
+        getRunSpy.mockImplementation(async () => ({
+            ...createExecutionRunGetResponse({ status: 'succeeded', finishedAtMs: 2, runClass: 'bounded' }),
+            structuredMeta: {
+                kind: 'review_findings.v2',
+                payload: {
+                    runRef: { runId: 'run_1', callId: 'toolu_1', backendId: 'codex' },
+                    summary: 'Two findings, one high.',
+                    overviewMarkdown: 'The retry banner can double-charge.',
+                    findings: [],
+                    generatedAtMs: 2,
+                },
+            },
+        }));
+        const { SessionExecutionRunDetailsView } = await import('./SessionExecutionRunDetailsView');
+
+        const screen = await renderScreen(<SessionExecutionRunDetailsView sessionId="s1" runId="run_1" presentation="panel" />);
+        tree = screen.tree;
+
+        expect(JSON.stringify(screen.tree.toJSON())).toContain('Two findings, one high.');
+        expect(screen.root.findAllByType('SessionParticipantComposer' as never)).toHaveLength(0);
+        expect(messageDetailsSpy).not.toHaveBeenCalledWith(expect.objectContaining({ showComposer: true }));
+    });
+
     it('skips the execution-run info card when embedded under the subagent details header', async () => {
         const { SessionExecutionRunDetailsView } = await import('./SessionExecutionRunDetailsView');
         executionRunInfoCardSpy.mockClear();
@@ -1199,6 +1313,7 @@ describe('SessionExecutionRunDetailsView', () => {
         tree = screen.tree;
 
         expect(loadOlderMessagesSpy).toHaveBeenCalledWith('s1');
+        expect(screen.findByTestId('session-run-details-load-error-action')).toBeTruthy();
     });
 
     it('does not query daemon execution-run markers without an exact Home', async () => {
@@ -1289,6 +1404,33 @@ describe('SessionExecutionRunDetailsView', () => {
         expect(screen.findByTestId('session-run-details-cancel-turn')).toBeNull();
         expect(screen.findByTestId('session-run-details-resume')).toBeNull();
         expect(screen.findByTestId('session-run-details-stop')).toBeNull();
+        expect(screen.findByTestId('session-run-details-read-only-reason')?.props.children)
+            .toBe('This is saved history. Reconnect to this Home to continue the conversation.');
+    });
+
+    it('announces one semantic Run-status change without re-speaking an unchanged refresh', async () => {
+        getRunSpy
+            .mockResolvedValueOnce(createExecutionRunGetResponse({ status: 'running' }))
+            .mockResolvedValueOnce(createExecutionRunGetResponse({ status: 'succeeded', finishedAtMs: 2 }))
+            .mockResolvedValueOnce(createExecutionRunGetResponse({ status: 'succeeded', finishedAtMs: 2 }));
+        const { notifyExecutionRunActivity } = await import('@/sync/runtime/executionRuns/executionRunActivityBus');
+        const { SessionExecutionRunDetailsView } = await import('./SessionExecutionRunDetailsView');
+        const screen = await renderScreen(<SessionExecutionRunDetailsView sessionId="s1" serverId="server-a" runId="run_1" presentation="panel" />);
+        tree = screen.tree;
+
+        await act(async () => {
+            notifyExecutionRunActivity({ serverId: 'server-a', sessionId: 's1' }, { runId: 'run_1' });
+            await flushHookEffects({ cycles: 2 });
+        });
+        const first = screen.findByTestId('session-run-details-accessibility-status');
+        expect(first?.props.children.props.children).toContain('succeeded');
+        const firstAnnouncementNode = first?.props.children;
+
+        await act(async () => {
+            notifyExecutionRunActivity({ serverId: 'server-a', sessionId: 's1' }, { runId: 'run_1' });
+            await flushHookEffects({ cycles: 2 });
+        });
+        expect(screen.findByTestId('session-run-details-accessibility-status')?.props.children).toBe(firstAnnouncementNode);
     });
 
 
@@ -1314,17 +1456,20 @@ describe('SessionExecutionRunDetailsView', () => {
         />);
         tree = screen.tree;
 
-        expect(screen.getTextContent()).toContain('Home unreachable');
-        expect(screen.findByTestId('session-run-details-retry-load')).toBeTruthy();
+        // Pane-states lab 0 "X": what failed in words and one recovery; the raw failure is a
+        // diagnostic behind the collapsed Details, never the headline.
+        expect(screen.findByTestId('session-run-details-load-error')).toBeTruthy();
+        expect(screen.getTextContent()).not.toContain('Home unreachable');
+        expect(screen.findByTestId('session-run-details-load-error-diagnostic-Home unreachable')).toBeTruthy();
         expect(executionRunInfoCardSpy).not.toHaveBeenCalled();
 
         await act(async () => {
-            await screen.pressByTestIdAsync('session-run-details-retry-load');
+            await screen.pressByTestIdAsync('session-run-details-load-error-action');
             await flushHookEffects({ cycles: 2, turns: 1 });
         });
 
         expect(getRunSpy).toHaveBeenCalledTimes(2);
-        expect(screen.findByTestId('session-run-details-retry-load')).toBeNull();
+        expect(screen.findByTestId('session-run-details-load-error')).toBeNull();
         expect(executionRunInfoCardSpy).toHaveBeenCalledWith(expect.objectContaining({
             run: expect.objectContaining({ runId: 'run_1' }),
         }));
@@ -1339,19 +1484,17 @@ describe('SessionExecutionRunDetailsView', () => {
         />);
         tree = screen.tree;
 
-        expect(screen.findByTestId('session-run-details-retry-load')).toBeNull();
+        expect(screen.findByTestId('session-run-details-load-error')).toBeNull();
     });
 
     it('gives every actionable Run control the shared platform interactive target', async () => {
+        // The view's own control (Resume); Stop, Cancel response and ⋯ belong to the header owner
+        // and its menu rows, which carry their own target policy.
         getRunSpy.mockResolvedValue(createExecutionRunGetResponse({
             runClass: 'long_lived',
             retentionPolicy: 'resumable',
-            lifecycle: { v: 1, state: 'current' },
-            interaction: RETAINED_INTERACTION,
-            inputTurns: {
-                occurrenceId: 'occurrence-1',
-                current: { turnId: 'turn-1', inputIds: ['input-1'], state: 'active' },
-            },
+            status: 'succeeded',
+            lifecycle: { v: 1, state: 'recoverable' },
         }));
         const { SessionExecutionRunDetailsView } = await import('./SessionExecutionRunDetailsView');
         // `react-native` is mocked by a shared helper at runtime, so this file's
@@ -1371,8 +1514,7 @@ describe('SessionExecutionRunDetailsView', () => {
                 const targetSize = resolveMinimumInteractiveTargetSize(platform);
 
                 for (const testID of [
-                    'session-run-details-cancel-turn',
-                    'session-run-details-stop',
+                    'session-run-details-resume',
                 ]) {
                     const target = screen.findByTestId(testID);
                     expect(target, testID).not.toBeNull();
@@ -1388,37 +1530,83 @@ describe('SessionExecutionRunDetailsView', () => {
         }
     });
 
-    it('sizes the inline load-recovery action by the same shared platform policy', async () => {
+
+    it('names the wait while it opens, and where it is reading from', async () => {
         getRunSpy.mockReset();
-        getRunSpy.mockResolvedValue({ ok: false, error: 'Home unreachable', errorCode: 'unavailable' });
-        sessionMessagesState.messages = [];
+        getRunSpy.mockImplementation(() => new Promise(() => undefined));
         const { SessionExecutionRunDetailsView } = await import('./SessionExecutionRunDetailsView');
-        // `react-native` is mocked by a shared helper at runtime, so this file's
-        // static import would bind the unmocked stub. Read the mocked module.
-        const { Platform } = await import('react-native');
-        const originalPlatform = Platform.OS;
+        const screen = await renderScreen(<SessionExecutionRunDetailsView
+            sessionId="s1"
+            runId="run_1"
+            presentation="panel"
+            openingTitle="Review the settings modal fix"
+        />);
+        tree = screen.tree;
 
-        try {
-            for (const platform of ['android', 'ios', 'web'] as const) {
-                Object.defineProperty(Platform, 'OS', { configurable: true, value: platform });
-                const screen = await renderScreen(<SessionExecutionRunDetailsView
-                    sessionId="s1"
-                    runId="run_1"
-                    presentation="panel"
-                />);
-                const targetSize = resolveMinimumInteractiveTargetSize(platform);
+        const text = screen.getTextContent();
+        expect(screen.findByTestId('session-run-details-loading')).toBeTruthy();
+        expect(text).toContain('surfaceState.opening(name=Review the settings modal fix)');
+        expect(text).toContain('runPage.opening.reading(machine=runPage.thisMachine)');
+    });
 
-                const style = flattenTestStyle(
-                    screen.findByTestId('session-run-details-retry-load')?.props.style,
-                );
-                expect(style.minWidth).toBe(targetSize);
-                expect(style.minHeight).toBe(targetSize);
+    it('says the run is gone, with a way out, instead of spinning when neither its host nor the transcript has it', async () => {
+        getRunSpy.mockReset();
+        getRunSpy.mockResolvedValue({ ok: false, error: 'Run not found', errorCode: 'execution_run_not_found' });
+        sessionMessagesState.messages = [];
+        const onRequestClose = vi.fn();
+        const { SessionExecutionRunDetailsView } = await import('./SessionExecutionRunDetailsView');
+        const screen = await renderScreen(<SessionExecutionRunDetailsView
+            sessionId="s1"
+            runId="run_1"
+            presentation="panel"
+            onRequestClose={onRequestClose}
+        />);
+        tree = screen.tree;
 
-                await screen.unmount();
-            }
-        } finally {
-            Object.defineProperty(Platform, 'OS', { configurable: true, value: originalPlatform });
-        }
+        await vi.waitFor(() => {
+            expect(screen.findByTestId('session-run-details-gone')).toBeTruthy();
+        });
+        expect(screen.findByTestId('session-run-details-loading')).toBeNull();
+        expect(screen.findByTestId('session-run-details-load-error')).toBeNull();
+        expect(screen.getTextContent()).toContain('runPage.gone.title(machine=runPage.thisMachine)');
+        await act(async () => {
+            await screen.pressByTestIdAsync('session-run-details-gone-action');
+        });
+        expect(onRequestClose).toHaveBeenCalledTimes(1);
+    });
+
+    it('says what stopping the whole session would also stop when the run does not confirm its stop', async () => {
+        const sessionExecutionRuns = await import('@/sync/ops/sessionExecutionRuns');
+        const stopSpy = vi.mocked(sessionExecutionRuns.sessionExecutionRunStop);
+        stopSpy.mockResolvedValueOnce({ ok: false, error: 'timed out', errorCode: 'rpc_timeout' } as any);
+        machineStopSessionSpy.mockClear();
+        liveAgentCountState.current = 4;
+        exactSessionState.current = { ...exactSessionState.current!, metadata: { flavor: 'codex', machineId: 'm1' } };
+        const { Modal } = await import('@/modal');
+        vi.mocked(Modal.confirm).mockResolvedValueOnce(true);
+        const { SessionExecutionRunDetailsView } = await import('./SessionExecutionRunDetailsView');
+        const screen = await renderScreen(<SessionExecutionRunDetailsView
+            sessionId="s1"
+            runId="run_1"
+            presentation="panel"
+        />);
+        tree = screen.tree;
+
+        await act(async () => {
+            await screen.pressByTestIdAsync('session-run-details-stop');
+            await flushHookEffects({ cycles: 1, turns: 1 });
+        });
+        await vi.waitFor(() => {
+            expect(screen.findByTestId('session-run-details-stop-failed')).toBeTruthy();
+        });
+        // The consequence is said before it happens: this run plus 3 others.
+        expect(screen.getTextContent()).toContain('count=3');
+        await act(async () => {
+            await screen.pressByTestIdAsync('session-run-details-stop-failed-secondary-action');
+            await flushHookEffects({ cycles: 1, turns: 1 });
+        });
+        expect(machineStopSessionSpy).toHaveBeenCalledWith('m1', 's1', expect.anything());
+        liveAgentCountState.current = 1;
     });
 
 });

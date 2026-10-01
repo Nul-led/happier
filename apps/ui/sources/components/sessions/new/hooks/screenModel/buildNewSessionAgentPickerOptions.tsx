@@ -12,9 +12,13 @@ import type { Settings } from '@/sync/domains/settings/settings';
 import type { NewSessionAgentPickerViewV1 } from '@/sync/domains/settings/registry/account/accountSessionCreationSettingDefinitions';
 import type { SessionModelSelectionV1 } from '@happier-dev/protocol';
 import type { SessionModelPickerExperimentalConfirmationController } from '@/components/sessions/modelPicker/SessionModelPicker';
+import type { NewSessionEngineOptionDetailProps } from '@/components/sessions/new/components/NewSessionEngineOptionDetail';
 import { Icon } from '@/components/ui/icons/Icon';
 import { t } from '@/text';
 import { buildSessionAgentPickerOptions } from '@/components/sessions/agentPicker/buildSessionAgentPickerOptions';
+import type { MachineAgent } from '@/agents/machineAgents/machineAgentTypes';
+import { resolveMachineAgentPickerPlacement, type MachineAgentPickerPlacement } from '@/components/machines/agents/machineAgentPresentation';
+import { MachineAgentPickerMarker } from '@/components/machines/agents/MachineAgentPickerMarker';
 import type { SessionAgentPickerSelection } from '@/components/sessions/agentPicker/buildSessionAgentPickerDetailContent';
 import { buildNewSessionAgentPickerOptionInteractions } from './buildNewSessionAgentPickerOptionInteractions';
 import {
@@ -63,7 +67,14 @@ type BuildNewSessionAgentPickerOptionsParams = Readonly<{
     onToggleFavoriteBackendTarget?: (targetKey: string) => void;
     onRemoveFavoriteModelSelection?: (favorite: FavoriteModelSelectionV1) => void;
     onRememberAgentPickerView?: (view: NewSessionAgentPickerViewV1) => void;
+    providerProjection?: NewSessionEngineOptionDetailProps['providerProjection'];
     experimentalConfirmation?: SessionModelPickerExperimentalConfirmationController;
+    /** The agent on the composer's machine, from the one inventory owner (null: nothing known yet). */
+    getBackendEntryMachineAgent?: (entry: ResolvedBackendCatalogEntry) => MachineAgent | null;
+    /** The compact setup form for an agent that isn't ready here, shown in the right pane instead of its models. */
+    renderMachineAgentSetup?: (entry: ResolvedBackendCatalogEntry, agent: MachineAgent) => React.ReactNode;
+    /** The composer's machine name, for the rail group headings. */
+    selectedMachineName?: string | null;
 }>;
 
 export type NewSessionAgentPickerOptionsState = Readonly<{
@@ -144,6 +155,19 @@ export function buildNewSessionAgentPickerOptions(
             favoriteBackendTargetKeys: params.favoriteBackendTargetKeys ?? [],
             leadingOptions: favoriteOption ? [favoriteOption] : [],
             resolvePresentation: (entry) => {
+                const setup = resolveMachineAgentSetupOption(params, entry);
+                if (setup) {
+                    return {
+                        disabled: false,
+                        muted: setup.placement.group !== 'onMachine',
+                        ...(setup.placement.group === 'onMachine' ? {} : {
+                            section: setup.placement.group === 'notOnMachine'
+                                ? { id: 'notOnMachine', label: t('machineAgents.notOnMachineYet', { machine: params.selectedMachineName ?? '' }), rank: 1 }
+                                : { id: 'cantRun', label: t('machineAgents.cantRunOn', { machine: params.selectedMachineName ?? '' }), rank: 2 },
+                        }),
+                        statusMarker: <MachineAgentPickerMarker marker={setup.placement.marker} />,
+                    };
+                }
                 const selectable = params.isBackendEntrySelectable(entry);
                 return resolveNewSessionAgentPickerOptionPresentation({
                     entry,
@@ -166,7 +190,19 @@ export function buildNewSessionAgentPickerOptions(
                     params.onToggleFavoriteBackendTarget?.(entry.backendTargetKey);
                 },
             } : undefined),
-            resolveBehavior: ({ entry, presentation, favorite }) => buildNewSessionAgentPickerOptionInteractions({
+            resolveBehavior: ({ entry, presentation, favorite }) => {
+                // Not ready on this machine: the row shows its setup in the right pane and is never
+                // applied as the session's agent (no immediate select, no apply); once the inventory
+                // says ready, the row turns back into its models and can be chosen.
+                const setup = resolveMachineAgentSetupOption(params, entry);
+                if (setup && params.renderMachineAgentSetup) {
+                    const renderSetup = params.renderMachineAgentSetup;
+                    return {
+                        closeOnSelectImmediate: false,
+                        renderDetailContent: () => renderSetup(entry, setup.agent),
+                    };
+                }
+                return buildNewSessionAgentPickerOptionInteractions({
                 entry,
                 disabled: presentation.disabled,
                 selectedMachineId: params.selectedMachineId,
@@ -182,12 +218,24 @@ export function buildNewSessionAgentPickerOptions(
                         params.onToggleFavoriteBackendTarget?.(entry.backendTargetKey);
                     },
                 } : undefined,
+                ...(params.providerProjection ? { providerProjection: params.providerProjection } : {}),
                 experimentalConfirmation: params.experimentalConfirmation,
                 onRememberAgentPickerView: params.onRememberAgentPickerView,
                 getEngineSelectionForTargetKey: params.getEngineSelectionForTargetKey,
                 selectEngineSelection: params.selectEngineSelection,
-            }),
+                });
+            },
         }),
         selectableBackendEntries,
     };
+}
+
+function resolveMachineAgentSetupOption(
+    params: Pick<BuildNewSessionAgentPickerOptionsParams, 'getBackendEntryMachineAgent' | 'renderMachineAgentSetup'>,
+    entry: ResolvedBackendCatalogEntry,
+): Readonly<{ agent: MachineAgent; placement: MachineAgentPickerPlacement }> | null {
+    if (!params.renderMachineAgentSetup) return null;
+    const agent = params.getBackendEntryMachineAgent?.(entry) ?? null;
+    const placement = resolveMachineAgentPickerPlacement(agent);
+    return agent && placement.opensSetup ? { agent, placement } : null;
 }

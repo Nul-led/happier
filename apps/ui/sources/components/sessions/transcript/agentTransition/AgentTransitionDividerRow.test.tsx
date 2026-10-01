@@ -1,9 +1,9 @@
 import * as React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
-import { renderScreen } from '@/dev/testkit';
+import { renderWithSessionTranscriptSource as renderScreen } from '@/dev/testkit';
 import { t } from '@/text';
-import type { AgentEvent } from '@/sync/typesRaw';
+import type { AgentEvent } from "@happier-dev/session-core/raw";
 
 import { TranscriptEventRow } from '@/components/sessions/transcript/events/TranscriptEventRow';
 

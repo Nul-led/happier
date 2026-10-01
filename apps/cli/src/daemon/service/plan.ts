@@ -1,10 +1,17 @@
 import { basename, join, win32 as win32Path } from 'node:path';
 
 import { getReleaseRingCatalogEntry, type PublicReleaseRingId } from '@happier-dev/release-runtime/releaseRings';
+import {
+  IROH_RELAY_POLICY_ENV_KEY,
+  IROH_RELAY_URLS_ENV_KEY,
+  type IrohRelayEnvConfig,
+} from '@happier-dev/iroh-native/node';
+import { HOME_CARRIER_POLICY_ENV_KEY, type HomeApplicationCarrierEligibility } from '@happier-dev/cli-common/homeEnrollment';
 
 import { buildLaunchAgentPlistXml, buildLaunchdPath } from './darwin';
 import {
   buildServicePath,
+  buildSetWindowsScheduledTaskEnabledPowerShellCommand,
   HAPPIER_CRITICAL_SLICE_NAME,
   planServiceAction,
   renderSystemdServiceUnit,
@@ -15,6 +22,41 @@ import { isServerIdFilesystemSafe } from '@/server/serverId';
 export type DaemonServicePlatform = 'darwin' | 'linux' | 'win32';
 export type DaemonServiceMode = 'user' | 'system';
 export type DaemonServiceTargetMode = 'pinned' | 'default-following';
+/** Login-start preference; manual service start/stop remains independent. */
+export type DaemonServiceAutostartMode = 'at-login' | 'on-demand';
+export const DAEMON_SERVICE_AUTOSTART_ENV_KEY = 'HAPPIER_DAEMON_SERVICE_AUTOSTART';
+export const DAEMON_SERVICE_BUNDLE_ID_ENV_KEY = 'HAPPIER_DAEMON_SERVICE_BUNDLE_ID';
+
+export function parseDaemonServiceBundleId(raw: string | null | undefined): string | null {
+  const value = String(raw ?? '').trim();
+  if (!value) return null;
+  if (/^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$/.test(value)) return value;
+  throw new Error(`invalid ${DAEMON_SERVICE_BUNDLE_ID_ENV_KEY}: ${value} (expected a reverse-DNS bundle identifier)`);
+}
+
+export function parseDaemonServiceAutostartMode(raw: string | null | undefined): DaemonServiceAutostartMode | null {
+  const value = String(raw ?? '').trim();
+  if (!value) return null;
+  if (value === 'at-login' || value === 'on-demand') return value;
+  throw new Error(`Invalid --autostart value ${JSON.stringify(value)} (expected at-login|on-demand)`);
+}
+
+/**
+ * Who manages an installed service. `desktop`: the desktop app created it (its setup or repair for
+ * a server) and may change or remove it. `null`: no marker — the user installed it, and the app
+ * leaves it alone. Requested on `service install` through the same-named env key and recorded in
+ * the definition itself, so every later rewrite keeps it.
+ */
+export type DaemonServiceManagedBy = 'desktop';
+export const DAEMON_SERVICE_MANAGED_BY_ENV_KEY = 'HAPPIER_DAEMON_SERVICE_MANAGED_BY';
+
+/** `null` for an absent value; throws for anything but `desktop`, so a typo never installs a user-owned service silently. */
+export function parseDaemonServiceManagedBy(raw: string | null | undefined): DaemonServiceManagedBy | null {
+  const value = String(raw ?? '').trim();
+  if (!value) return null;
+  if (value === 'desktop') return 'desktop';
+  throw new Error(`invalid ${DAEMON_SERVICE_MANAGED_BY_ENV_KEY}: ${value} (expected "desktop")`);
+}
 
 export type DaemonServicePlannedFile = Readonly<{
   path: string;
@@ -26,6 +68,8 @@ export type DaemonServicePlannedCommand = Readonly<{
   cmd: string;
   args: readonly string[];
   ignoreFailure?: boolean;
+  /** Restore service state even if an earlier required command failed. */
+  runOnFailure?: boolean;
 }>;
 
 export type DaemonServiceInstallPlan = Readonly<{
@@ -249,6 +293,8 @@ function resolvePinnedActiveServerId(params: Readonly<{
   return activeServerId;
 }
 
+export type DaemonServiceInstallEnablement = 'enabled' | 'disabled';
+
 export function planDaemonServiceInstall(params: Readonly<{
   platform: DaemonServicePlatform;
   mode?: DaemonServiceMode;
@@ -256,6 +302,17 @@ export function planDaemonServiceInstall(params: Readonly<{
   channel?: PublicReleaseRingId;
   targetMode?: DaemonServiceTargetMode;
   darwinInstallMode?: 'rebootstrap' | 'kickstart';
+  autostart?: DaemonServiceAutostartMode;
+  /** A proven trigger-only rewrite need not restart the Linux daemon. */
+  autostartTriggerChangeOnly?: boolean;
+  bundleId?: string | null;
+  /**
+   * `disabled` keeps a service the person turned off at login turned off (R12 convergence rewrites
+   * its launcher only). A stopped service stays stopped; a running one can be restarted below.
+   */
+  enablement?: DaemonServiceInstallEnablement;
+  /** Preserve a running OS service independently from its login enablement. */
+  preserveRunningWhenDisabled?: boolean;
   instanceId: string;
   activeServerId?: string | null;
   userHomeDir: string;
@@ -265,12 +322,18 @@ export function planDaemonServiceInstall(params: Readonly<{
   publicServerUrl: string;
   nodePath: string;
   entryPath: string;
+  irohRelayConfig?: IrohRelayEnvConfig;
+  homeCarrierEligibility?: HomeApplicationCarrierEligibility;
+  /** Recorded in the definition when set; see `DaemonServiceManagedBy`. */
+  managedBy?: DaemonServiceManagedBy | null;
   uid?: number;
 }>): DaemonServiceInstallPlan {
   const rawInstanceId = String(params.instanceId ?? '').trim();
   const instanceId = sanitizeServiceInstanceId(rawInstanceId);
   const channel: PublicReleaseRingId = params.channel ?? 'stable';
   const targetMode: DaemonServiceTargetMode = params.targetMode ?? 'pinned';
+  const autostart = params.autostart ?? 'at-login';
+  const bundleId = parseDaemonServiceBundleId(params.bundleId);
   const activeServerId = resolvePinnedActiveServerId({
     targetMode,
     activeServerId: params.activeServerId,
@@ -296,6 +359,22 @@ export function planDaemonServiceInstall(params: Readonly<{
     HAPPIER_NO_BROWSER_OPEN: '1',
     HAPPIER_DAEMON_WAIT_FOR_AUTH: '1',
     HAPPIER_DAEMON_WAIT_FOR_AUTH_TIMEOUT_MS: '0',
+    ...(params.irohRelayConfig?.explicitlyConfigured
+      ? {
+          [IROH_RELAY_POLICY_ENV_KEY]: params.irohRelayConfig.relayPolicy,
+          ...(params.irohRelayConfig.relayUrls.length > 0
+            ? { [IROH_RELAY_URLS_ENV_KEY]: params.irohRelayConfig.relayUrls.join(',') }
+            : {}),
+        }
+      : {}),
+    ...(params.homeCarrierEligibility
+      ? { [HOME_CARRIER_POLICY_ENV_KEY]: params.homeCarrierEligibility }
+      : {}),
+    ...(params.managedBy ? { [DAEMON_SERVICE_MANAGED_BY_ENV_KEY]: params.managedBy } : {}),
+    // An explicit preference makes trigger-only changes visible to definition convergence.
+    // Omitted legacy/terminal defaults keep their existing serialization.
+    ...(params.autostart ? { [DAEMON_SERVICE_AUTOSTART_ENV_KEY]: params.autostart } : {}),
+    ...(bundleId ? { [DAEMON_SERVICE_BUNDLE_ID_ENV_KEY]: bundleId } : {}),
   };
   const pinnedTargetEnv: Record<string, string> = targetMode === 'default-following'
     ? {}
@@ -325,11 +404,20 @@ export function planDaemonServiceInstall(params: Readonly<{
       stderrPath,
       abandonProcessGroup: true,
       workingDirectory: '/tmp',
+      runAtLoad: autostart === 'at-login',
+      // SuccessfulExit KeepAlive implicitly arms RunAtLoad on macOS.
+      keepAliveOnFailure: autostart === 'at-login',
+      ...(bundleId ? { associatedBundleIdentifiers: [bundleId] } : {}),
     });
 
     const uid = params.uid;
     const commands: DaemonServicePlannedCommand[] = [];
-    if (typeof uid === 'number' && uid > 0) {
+    if (typeof uid === 'number' && uid > 0 && params.enablement === 'disabled' && !params.preserveRunningWhenDisabled) {
+      // launchd keeps "disabled" in its override database (`launchctl disable`, read back by
+      // `launchctl print-disabled`); a disabled job cannot be loaded, so it is unloaded and stays off.
+      commands.push({ cmd: 'launchctl', args: ['bootout', `gui/${uid}/${label}`], ignoreFailure: true });
+      commands.push({ cmd: 'launchctl', args: ['disable', `gui/${uid}/${label}`] });
+    } else if (typeof uid === 'number' && uid > 0) {
       if (params.darwinInstallMode === 'kickstart') {
         commands.push({ cmd: 'launchctl', args: ['kickstart', '-k', `gui/${uid}/${label}`] });
       } else {
@@ -342,6 +430,9 @@ export function planDaemonServiceInstall(params: Readonly<{
         commands.push({ cmd: 'launchctl', args: ['enable', `gui/${uid}/${label}`] });
         commands.push({ cmd: 'launchctl', args: ['bootstrap', `gui/${uid}`, plistPath] });
         commands.push({ cmd: 'launchctl', args: ['kickstart', '-k', `gui/${uid}/${label}`] });
+      }
+      if (params.enablement === 'disabled') {
+        commands.push({ cmd: 'launchctl', args: ['disable', `gui/${uid}/${label}`], runOnFailure: true });
       }
     }
 
@@ -385,7 +476,7 @@ export function planDaemonServiceInstall(params: Readonly<{
       definitionPath: wrapperPath,
       definitionContents: wrapper,
       taskName,
-      persistent: true,
+      persistent: autostart === 'at-login',
     });
 
     const commands: DaemonServicePlannedCommand[] = [];
@@ -395,7 +486,20 @@ export function planDaemonServiceInstall(params: Readonly<{
       commands.push({ cmd: 'schtasks', args: ['/Delete', '/F', '/TN', `Happier\\${legacyUnitLabel}`], ignoreFailure: true });
       // Note: legacy wrapper path is best-effort removed via filesToRemove on uninstall.
     }
-    commands.push(...basePlan.commands.map((c) => ({ cmd: c.cmd, args: c.args })));
+    if (params.enablement === 'disabled') {
+      // Restore login enablement independently from whether the existing task was running.
+      commands.push(...basePlan.commands
+        .filter((c) => params.preserveRunningWhenDisabled || !(c.cmd === 'schtasks' && c.args[0] === '/Run'))
+        .map((c) => ({ cmd: c.cmd, args: c.args })));
+      commands.push({
+        cmd: 'powershell.exe',
+        runOnFailure: true,
+        args: ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command',
+          buildSetWindowsScheduledTaskEnabledPowerShellCommand({ qualifiedTaskName: taskName, enabled: false })],
+      });
+    } else {
+      commands.push(...basePlan.commands.map((c) => ({ cmd: c.cmd, args: c.args })));
+    }
 
     return {
       platform: 'win32',
@@ -443,8 +547,14 @@ export function planDaemonServiceInstall(params: Readonly<{
       ignoreFailure: true,
     });
   }
-  commands.push({ cmd: 'systemctl', args: [...prefix, 'enable', unitName] });
-  commands.push({ cmd: 'systemctl', args: [...prefix, 'restart', unitName] });
+  if (params.enablement === 'disabled') {
+    // Stays off at login; a unit the person started by hand anyway picks up the new definition.
+    commands.push({ cmd: 'systemctl', args: [...prefix, 'disable', unitName] });
+    commands.push({ cmd: 'systemctl', args: [...prefix, 'try-restart', unitName] });
+  } else {
+    commands.push({ cmd: 'systemctl', args: [...prefix, autostart === 'at-login' ? 'enable' : 'disable', unitName] });
+    if (!params.autostartTriggerChangeOnly) commands.push({ cmd: 'systemctl', args: [...prefix, 'restart', unitName] });
+  }
 
   return {
     platform: 'linux',

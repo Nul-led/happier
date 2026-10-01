@@ -1,3 +1,4 @@
+import { useSessionTranscriptSource } from '@/components/sessions/transcript/source/SessionTranscriptSourceContext';
 import * as React from 'react';
 import {
     getStorage,
@@ -5,9 +6,9 @@ import {
 } from '@/sync/domains/state/storage';
 import { Dimensions, findNodeHandle, Platform, View } from 'react-native';
 import { useCallback } from 'react';
-import type { Message } from '@/sync/domains/messages/messageTypes';
+import type { Message } from "@happier-dev/session-core/messages";
 import { sync, type SessionViewportAnchorSnapshot } from '@/sync/sync';
-import { useSessionCatchingUpNewer, useSessionTailContiguousFloorSeq } from '@/sync/store/hooks';
+import { useSessionCatchingUpNewer, useSessionTailContiguousBoundary } from '@/sync/store/hooks';
 import { useSessionScreenIsFocused } from '@/components/sessions/shell/useSessionScreenIsFocused';
 import { fireAndForget } from '@/utils/system/fireAndForget';
 import { useTranscriptMotionConfig } from '@/components/sessions/transcript/motion/useTranscriptMotionConfig';
@@ -144,6 +145,7 @@ import { TranscriptFirstPaintPlaceholder } from '@/components/sessions/transcrip
 import { JumpToBottomButton } from '@/components/sessions/transcript/scroll/JumpToBottomButton';
 import { ComposerKeyboardFloatingInset } from '@/components/sessions/keyboardAvoidance';
 import { TranscriptNavigationRail } from '@/components/sessions/transcript/navigation/TranscriptNavigationRail';
+import { TranscriptNavigationReturnPill } from '@/components/sessions/transcript/navigation/TranscriptNavigationReturnPill';
 import {
     TranscriptListShell,
     type TranscriptListShellRef,
@@ -222,6 +224,7 @@ type ExplicitJumpTakeoverApplyEffect = TranscriptLifecycleHostExplicitJumpPlan['
 type FollowBottomIntentTakeoverApplyEffect = TranscriptLifecycleHostFollowBottomIntentPlan['followBottomIntentTakeoverEffects'][number];
 const TRANSCRIPT_SCROLL_USER_INTENT_RECENT_MS = 500;
 export const ChatListInternal = React.memo((props: ChatListInternalProps) => {
+    const transcriptSource = useSessionTranscriptSource();
     // Historical Agent attribution, resolved once for the whole transcript.
     // A Session can change Agent without changing identity, and every tool row
     // below this point needs to know which Agent produced it. Rows look the
@@ -231,7 +234,6 @@ export const ChatListInternal = React.memo((props: ChatListInternalProps) => {
     const transcriptMessageSelection = useOptionalTranscriptSelectionState();
     const transcriptContentMaxWidth = useLayoutMaxWidth();
     const [isLoadingOlder, setIsLoadingOlder] = React.useState(false);
-    const [hasMoreOlder, setHasMoreOlder] = React.useState<boolean | null>(null);
     const [listLayoutHeight, setListLayoutHeight] = React.useState(0);
     const [listLayoutWidthPx, setListLayoutWidthPx] = React.useState(() => {
         const width = Dimensions.get('window')?.width;
@@ -245,6 +247,7 @@ export const ChatListInternal = React.memo((props: ChatListInternalProps) => {
     const nativeMountSettleDeadlineReachedRef = React.useRef(false);
     const loadOlderInFlight = React.useRef(false);
     const hasMoreOlderRef = React.useRef<boolean | null>(null);
+    const observeOlderLoadResultRef = React.useRef<((result: TranscriptPrependOlderLoadResult | null) => void) | null>(null);
     const olderLoadSpinnerDelayTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
     const nativeFirstPaintFallbackReleaseTimeoutRef = React.useRef<{
         sessionId: string;
@@ -576,7 +579,6 @@ export const ChatListInternal = React.memo((props: ChatListInternalProps) => {
     }, []);
     const isPinnedRef = React.useRef(true);
     const resetOlderPaginationForSessionEntry = React.useCallback(() => {
-        hasMoreOlderRef.current = null;
         resetOlderPaginationRef.current();
     }, []);
     const sessionEntryViewportRef = React.useRef<SessionEntryViewportRefValue>(null);
@@ -944,7 +946,7 @@ export const ChatListInternal = React.memo((props: ChatListInternalProps) => {
     const isCatchingUpNewer = useSessionCatchingUpNewer(props.sessionId);
     // Tail-reset discontinuity floor: bounds the tail display to content contiguous with
     // the live tail while an older-page walk is filling a catch-up hole.
-    const tailContiguousFloorSeq = useSessionTailContiguousFloorSeq(props.sessionId);
+    const tailContiguousBoundary = useSessionTailContiguousBoundary(props.sessionId);
     const listOrientation: TranscriptListOrientation = resolveTranscriptListPresentation({
         platformIsWeb: Platform.OS === 'web',
     }).orientation;
@@ -1014,7 +1016,7 @@ export const ChatListInternal = React.memo((props: ChatListInternalProps) => {
         sessionActive: props.sessionActive,
         sessionId: props.sessionId,
         sessionThinking: props.sessionThinking,
-        tailContiguousFloorSeq,
+        tailContiguousBoundary,
         targetWindowActiveRef,
         transcriptToolCallsCollapsedPreviewCountSetting,
     });
@@ -1352,7 +1354,7 @@ export const ChatListInternal = React.memo((props: ChatListInternalProps) => {
         props.isLoaded &&
         listData.length > 0;
     const initialRichContentPresentationIdentity =
-        `${props.sessionId}\0${initialRichContentPresentationEnabled ? 'enabled' : 'disabled'}`;
+        `${props.sessionSurfaceKey}\0${initialRichContentPresentationEnabled ? 'enabled' : 'disabled'}`;
     const initialRichContentPresentationControllerRef = React.useRef<Readonly<{
         controller: InitialRichContentPresentationController;
         identity: string;
@@ -1365,7 +1367,7 @@ export const ChatListInternal = React.memo((props: ChatListInternalProps) => {
         initialRichContentPresentationControllerRef.current = {
             controller: createInitialRichContentPresentationController({
                 enabled: initialRichContentPresentationEnabled,
-                generation: props.sessionId,
+                generation: props.sessionSurfaceKey,
             }),
             identity: initialRichContentPresentationIdentity,
         };
@@ -1400,6 +1402,7 @@ export const ChatListInternal = React.memo((props: ChatListInternalProps) => {
         pinThresholdPx,
         platformOS: Platform.OS,
         routeHydrationPending: props.routeHydrationPending === true,
+        rendererDataKey: props.sessionSurfaceKey,
         sessionId: props.sessionId,
         sessionOpenLatch,
         transcriptInitialFillBudgetMs: sync.getSyncTuning().transcriptInitialFillBudgetMs,
@@ -1545,6 +1548,7 @@ export const ChatListInternal = React.memo((props: ChatListInternalProps) => {
     const viewportAnchorCaptureHost = useTranscriptViewportAnchorCaptureHost({
         cancelScheduledViewportAnchorCapture,
         currentSessionIdRef,
+        rendererDataKey: props.sessionSurfaceKey,
         debounceMs: sync.getSyncTuning().transcriptViewportAnchorCaptureDebounceMs,
         emitViewportChange,
         isEntryViewportCommandActive,
@@ -1572,35 +1576,30 @@ export const ChatListInternal = React.memo((props: ChatListInternalProps) => {
     }, [viewportAnchorCaptureHost.captureAtExit]);
     const observeNativePrependOwner = prependHost.observeNative;
     const loadOlder = useCallback(async (options: TranscriptPrependOlderLoadOptions = {}): Promise<TranscriptPrependOlderLoadResult | null> => {
+        if (transcriptSource.history.loadOlder === null) return null;
         const loadOlderOptions = options.preservePrependViewport === undefined
             ? { ...options, preservePrependViewport: false }
             : options;
-        return await runTranscriptPrependOlderLoad({
+        const observeLoadResult = observeOlderLoadResultRef.current;
+        const result = await runTranscriptPrependOlderLoad({
             clearOlderLoadSpinnerDelay,
-            hasMoreOlder,
-            hasMoreOlderRef,
             hideOlderLoadSpinner,
             isReady: props.isLoaded || props.forkedTranscriptEnabled === true,
             loadOlderInFlight,
-            loadOlderMessages: async (syncLoadOlderOptions) => props.forkedTranscriptEnabled
-                ? (syncLoadOlderOptions
-                    ? await sync.loadOlderMessagesForkAware(props.sessionId, syncLoadOlderOptions)
-                    : await sync.loadOlderMessagesForkAware(props.sessionId))
-                : (syncLoadOlderOptions
-                    ? await sync.loadOlderMessages(props.sessionId, syncLoadOlderOptions)
-                    : await sync.loadOlderMessages(props.sessionId)),
+            loadOlderMessages: (syncLoadOlderOptions) => transcriptSource.history.loadOlder!(syncLoadOlderOptions ?? undefined),
             olderLoadSpinnerDelayTimeoutRef,
             options: loadOlderOptions,
             prependHost,
             resolveSyncLoadOlderOptions: () => resolveSyncLoadOlderOptions() ?? null,
-            setHasMoreOlder,
             setIsLoadingOlder,
             showOlderLoadSpinner,
         });
+        if (currentSessionIdRef.current === props.sessionId) observeLoadResult?.(result);
+        return result;
     }, [
         clearOlderLoadSpinnerDelay,
-        hasMoreOlder,
         hideOlderLoadSpinner,
+        transcriptSource.history.loadOlder,
         pinThresholdPx,
         prependHost,
         props.committedMessagesCount,
@@ -1611,9 +1610,6 @@ export const ChatListInternal = React.memo((props: ChatListInternalProps) => {
         showOlderLoadSpinner,
     ]);
     const paginationLoadOlder = React.useCallback(async () => {
-        if (hasMoreOlderRef.current === false) {
-            return { loaded: 0, hasMore: false, status: 'no_more' as const };
-        }
         // The hook owns pacing and the loading indicator (plan D2/D3).
         return await loadOlder({ showLoadingIndicator: false });
     }, [loadOlder]);
@@ -1626,7 +1622,11 @@ export const ChatListInternal = React.memo((props: ChatListInternalProps) => {
         spinnerDelayMs: sync.getSyncTuning().transcriptOlderLoadSpinnerDelayMs,
         isFillDone: () => sessionOpenLatch.initialFillStatus() === 'done',
         isTransactionOpen: () => viewportCommandController.activeOwner() !== 'follow',
+        readHasMoreAfterExhaustion: () => sync.getSessionTailDiscontinuityOlderAvailability(props.sessionId),
     });
+    // Navigation consumes the pager's result; it does not own another exhaustion cache.
+    useCommittedTranscriptRef(observeOlderLoadResultRef, olderPagination.observeLoadResult);
+    useCommittedTranscriptRef(hasMoreOlderRef, olderPagination.hasMore);
     useCommittedTranscriptRef(
         olderPaginationSnapshotRef,
         olderPagination.getSnapshot(),
@@ -1775,6 +1775,7 @@ export const ChatListInternal = React.memo((props: ChatListInternalProps) => {
         executeViewportCommandWithAnimation,
         forkedTranscriptEnabled: props.forkedTranscriptEnabled,
         hasMoreOlderRef,
+        observeOlderLoadResult: olderPagination.observeLoadResult,
         invalidateViewportAnchorCapture,
         isLoaded: props.isLoaded,
         isPinnedRef,
@@ -1874,9 +1875,7 @@ export const ChatListInternal = React.memo((props: ChatListInternalProps) => {
     // exist, but a short viewport cannot produce the threshold observation that normally arms
     // pagination. Keep the reader action in the existing pager rather than adding another
     // cursor, retry path, or fill loop here.
-    const canContinueOlderPagination = hasMoreOlder === true
-        && olderPagination.hasMore
-        && !isScrollable();
+    const canContinueOlderPagination = !targetWindowActive && olderPagination.hasMore && !isScrollable();
     const edgeReachedThresholdRatio = React.useMemo(() => {
         if (!Number.isFinite(listLayoutHeight) || listLayoutHeight <= 0) {
             return TRANSCRIPT_EDGE_PREFETCH_FALLBACK_VIEWPORT_RATIO;
@@ -2117,6 +2116,11 @@ export const ChatListInternal = React.memo((props: ChatListInternalProps) => {
                     sessionId={props.sessionId}
                     transcriptContentWidthPx={Math.min(listLayoutWidthPx, transcriptContentMaxWidth)}
                     transcriptMaxWidthPx={transcriptContentMaxWidth}
+                />
+                <TranscriptNavigationReturnPill
+                    sessionId={props.sessionId}
+                    entries={props.transcriptNavigationEntries}
+                    onJumpToEntry={handleTranscriptNavigationRailJump}
                 />
                 {showFirstPaintPlaceholder ? (
                     <TranscriptFirstPaintPlaceholder reducedMotion={reducedMotionPreferred} />

@@ -1,15 +1,18 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rename, rm, utimes, writeFile } from 'node:fs/promises';
-import { createHash } from 'node:crypto';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
 
-import cliDistBuildManifest from '../cliDistBuildManifest.cjs';
-import { CLI_RUNTIME_SIDECAR_ENTRIES } from '../cliRuntimeSidecars.mjs';
+import { publishPinnedRunnerSnapshotFixture } from './pinnedRunnerSnapshot.fixture.mjs';
+import { BUNDLED_PLUGIN_PUBLICATION_FAILURES_RELATIVE_PATH } from '../bundledPluginPublicationPolicy.mjs';
 import {
   PINNED_RUNNER_LAYOUT_VERSION,
+  PINNED_RUNNER_MANAGED_PROVIDER_RUNTIME_RELATIVE_PATH,
+  isPinnedRunnerSnapshotReady,
+  readPinnedRunnerSnapshotPublicationIdentity,
   resolveNewestReadyPinnedRunnerSnapshot,
+  resolvePublishedPinnedRunnerSnapshotById,
 } from '../pinnedRunnerSnapshot.mjs';
 
 async function writeReadySnapshot({
@@ -17,56 +20,22 @@ async function writeReadySnapshot({
   workspaceRuntimeIdentity,
   mtimeMs,
   layoutVersion = PINNED_RUNNER_LAYOUT_VERSION,
+  publicationFailuresBytes = '[]',
+  includeManagedRuntime = true,
 }) {
   const stagingRoot = join(cliDir, '.runner-snapshots', '.staging');
-  const stagingEntrypoint = join(stagingRoot, 'package-dist', 'index.mjs');
-  await mkdir(dirname(stagingEntrypoint), { recursive: true });
-  await writeFile(join(stagingRoot, 'package.json'), '{"name":"@happier-dev/cli"}\n', 'utf8');
-  await writeFile(stagingEntrypoint, 'export {};\n', 'utf8');
-  const writtenManifest = cliDistBuildManifest.writeCliDistBuildManifest(stagingEntrypoint, {
-    outputDir: dirname(stagingEntrypoint),
-    builtAt: '2026-08-14T00:00:00.000Z',
-    workspaceRuntimeIdentity,
-  });
-  for (const sidecar of CLI_RUNTIME_SIDECAR_ENTRIES) {
-    const sidecarPath = join(stagingRoot, 'scripts', ...sidecar);
-    if (sidecar.length === 1 && (sidecar[0] === 'runtime' || sidecar[0] === 'shims')) {
-      await mkdir(sidecarPath, { recursive: true });
-    } else {
-      await mkdir(dirname(sidecarPath), { recursive: true });
-      await writeFile(sidecarPath, `module.exports = ${JSON.stringify(sidecar.at(-1))};\n`, 'utf8');
-    }
+  const managedRuntimePath = join(stagingRoot, ...PINNED_RUNNER_MANAGED_PROVIDER_RUNTIME_RELATIVE_PATH);
+  if (includeManagedRuntime) {
+    await mkdir(dirname(managedRuntimePath), { recursive: true });
+    await writeFile(managedRuntimePath, 'managed-runtime\n', 'utf8');
   }
-  const managedRuntimePath = join(
+  return publishPinnedRunnerSnapshotFixture({
     stagingRoot,
-    'tools',
-    'unpacked',
-    `happier-cliproxyapi-managed${process.platform === 'win32' ? '.exe' : ''}`,
-  );
-  await mkdir(dirname(managedRuntimePath), { recursive: true });
-  await writeFile(managedRuntimePath, 'managed-runtime\n', 'utf8');
-  const runtimeAsset = cliDistBuildManifest.writeCliRuntimeAssetBuildManifest({
-    runtimeRoot: stagingRoot,
-    entrypoint: stagingEntrypoint,
-    relativePath: [
-      'tools',
-      'unpacked',
-      `happier-cliproxyapi-managed${process.platform === 'win32' ? '.exe' : ''}`,
-    ].join('/'),
-  }).runtimeAsset;
-  const runtimeAssetIdentity = createHash('sha256')
-    .update('managed-runtime\n')
-    .digest('hex');
-  assert.equal(runtimeAsset.sha256, runtimeAssetIdentity);
-  const fingerprint = writtenManifest.manifest.fingerprint;
-  const snapshotIdentity = `${fingerprint}-${runtimeAssetIdentity}-${workspaceRuntimeIdentity}-${layoutVersion}`;
-  const snapshotRoot = join(cliDir, '.runner-snapshots', snapshotIdentity);
-  await rename(stagingRoot, snapshotRoot);
-  const snapshotEntrypoint = join(snapshotRoot, 'package-dist', 'index.mjs');
-  await writeFile(join(snapshotRoot, '.fingerprint'), `${fingerprint}\n`, 'utf8');
-  await writeFile(join(snapshotRoot, '.workspace-runtime-identity'), `${workspaceRuntimeIdentity}\n`, 'utf8');
-  await utimes(snapshotRoot, mtimeMs / 1000, mtimeMs / 1000);
-  return { fingerprint, snapshotIdentity, snapshotRoot, snapshotEntrypoint };
+    workspaceRuntimeIdentity,
+    publicationFailuresBytes,
+    layoutVersion,
+    mtimeMs,
+  });
 }
 
 async function writeBundledPlugin(snapshotRoot, {
@@ -111,14 +80,12 @@ test('selects the newest structurally ready immutable runner and ignores a newer
     workspaceRuntimeIdentity: 'b'.repeat(64),
     mtimeMs: 1_000,
   });
-  const newerPartialRoot = join(
+  const newerPartial = await writeReadySnapshot({
     cliDir,
-    '.runner-snapshots',
-    `${'d'.repeat(16)}-${'e'.repeat(64)}-${'f'.repeat(64)}-package-dist-v4`,
-  );
-  await mkdir(join(newerPartialRoot, 'package-dist'), { recursive: true });
-  await writeFile(join(newerPartialRoot, 'package-dist', 'index.mjs'), 'export {};\n', 'utf8');
-  await utimes(newerPartialRoot, 2, 2);
+    workspaceRuntimeIdentity: 'f'.repeat(64),
+    mtimeMs: 2_000,
+  });
+  await rm(join(newerPartial.snapshotRoot, '.fingerprint'));
 
   assert.deepEqual(resolveNewestReadyPinnedRunnerSnapshot(mutableEntrypoint), {
     snapshotsDir: join(cliDir, '.runner-snapshots'),
@@ -126,9 +93,33 @@ test('selects the newest structurally ready immutable runner and ignores a newer
     snapshotRoot: older.snapshotRoot,
     snapshotEntrypoint: older.snapshotEntrypoint,
     fingerprint: older.fingerprint,
-    runtimeAssetIdentity: createHash('sha256').update('managed-runtime\n').digest('hex'),
+    runtimeAssetIdentity: older.runtimeAssetIdentity,
     workspaceRuntimeIdentity: 'b'.repeat(64),
   });
+});
+
+test('selects the newer of two ready runner snapshots by publication time', async (t) => {
+  const cliDir = await mkdtemp(join(tmpdir(), 'happier-pinned-runner-newest-ready-'));
+  t.after(async () => rm(cliDir, { recursive: true, force: true }));
+  const mutableEntrypoint = join(cliDir, 'dist', 'index.mjs');
+  await mkdir(dirname(mutableEntrypoint), { recursive: true });
+  await writeFile(mutableEntrypoint, 'export {};\n', 'utf8');
+
+  await writeReadySnapshot({
+    cliDir,
+    workspaceRuntimeIdentity: 'b'.repeat(64),
+    mtimeMs: 1_000,
+  });
+  const newer = await writeReadySnapshot({
+    cliDir,
+    workspaceRuntimeIdentity: 'c'.repeat(64),
+    mtimeMs: 2_000,
+  });
+
+  assert.equal(
+    resolveNewestReadyPinnedRunnerSnapshot(mutableEntrypoint)?.snapshotIdentity,
+    newer.snapshotIdentity,
+  );
 });
 
 test('selects ready snapshots from an explicit snapshot store override', async (t) => {
@@ -159,10 +150,45 @@ test('selects ready snapshots from an explicit snapshot store override', async (
       snapshotRoot: ready.snapshotRoot,
       snapshotEntrypoint: ready.snapshotEntrypoint,
       fingerprint: ready.fingerprint,
-      runtimeAssetIdentity: createHash('sha256').update('managed-runtime\n').digest('hex'),
+      runtimeAssetIdentity: ready.runtimeAssetIdentity,
       workspaceRuntimeIdentity: 'b'.repeat(64),
     },
   );
+});
+
+test('pinned runner admission requires the publication set and binds its bytes to snapshot identity', async (t) => {
+  const cliDir = await mkdtemp(join(tmpdir(), 'happier-pinned-publication-'));
+  t.after(async () => rm(cliDir, { recursive: true, force: true }));
+  const failures = JSON.stringify([{
+    packageName: '@happier-dev/plugins-inspector', pluginId: 'happier.inspector',
+    diagnostic: { code: 'plugin_package_build_failed', message: 'optional package failed' },
+  }]);
+  const location = await writeReadySnapshot({
+    cliDir,
+    workspaceRuntimeIdentity: 'a'.repeat(64),
+    mtimeMs: 1_000,
+    publicationFailuresBytes: failures,
+    includeManagedRuntime: false,
+  });
+  const failuresPath = join(location.snapshotRoot, BUNDLED_PLUGIN_PUBLICATION_FAILURES_RELATIVE_PATH);
+  await rm(failuresPath);
+  assert.equal(readPinnedRunnerSnapshotPublicationIdentity(location.snapshotRoot), null);
+  assert.equal(isPinnedRunnerSnapshotReady(location), false, 'missing publication state is unknown');
+  await writeFile(failuresPath, '{', 'utf8');
+  assert.equal(readPinnedRunnerSnapshotPublicationIdentity(location.snapshotRoot), null);
+  assert.equal(isPinnedRunnerSnapshotReady(location), false, 'invalid publication state is unknown');
+  await writeFile(failuresPath, failures, 'utf8');
+  await writeBundledPlugin(location.snapshotRoot, {
+    packageName: 'plugins-inspector',
+    resources: [{ path: 'unpublished.png' }],
+  });
+  assert.equal(isPinnedRunnerSnapshotReady(location), true);
+  assert.equal(
+    resolvePublishedPinnedRunnerSnapshotById(join(cliDir, 'dist', 'index.mjs'), location.snapshotIdentity)?.snapshotRoot,
+    location.snapshotRoot,
+  );
+  await writeFile(failuresPath, '[]', 'utf8');
+  assert.equal(isPinnedRunnerSnapshotReady(location), false, 'different publication bytes cannot reuse the pinned identity');
 });
 
 test('rejects a newer snapshot missing a required runtime sidecar', async (t) => {
@@ -208,12 +234,7 @@ test('rejects a newer snapshot whose recorded managed runtime asset is no longer
     mtimeMs: 2_000,
   });
   await writeFile(
-    join(
-      newer.snapshotRoot,
-      'tools',
-      'unpacked',
-      `happier-cliproxyapi-managed${process.platform === 'win32' ? '.exe' : ''}`,
-    ),
+    join(newer.snapshotRoot, ...PINNED_RUNNER_MANAGED_PROVIDER_RUNTIME_RELATIVE_PATH),
     'corrupt-managed-runtime\n',
     'utf8',
   );

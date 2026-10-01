@@ -1,9 +1,11 @@
 import * as React from 'react';
-import type { DaemonContributionRegistryProjectionMountedTargetV1 } from '@happier-dev/protocol';
+import { getPreferredLanguage } from '@/text';
+import { useSetting } from '@/sync/domains/state/storage';
 
 import {
     getMachineContributionRegistryProjectionRevision,
     subscribeMachineContributionRegistryProjectionInvalidation,
+    type MachineContributionRegistryProjectionFailureReason,
 } from '@/sync/ops/machineContributionRegistryProjection';
 import {
     captureActiveServerAccountScopeLifetime,
@@ -12,10 +14,9 @@ import {
 import { useServerCredentialAccountScopeBindings } from '@/sync/domains/scope/useServerCredentialAccountScopes';
 
 import {
-    entryIsFresh,
     loadDaemonMergedProjectionCacheEntry,
     readCachedDaemonMergedProjectionCacheEntry,
-    retainMountedTargetProjectionCacheScope,
+    readReusableDaemonMergedProjectionCacheEntry,
     type DaemonMergedProjectionInputs,
 } from './loadDaemonMergedProjectionInputs';
 
@@ -29,6 +30,8 @@ export type DaemonMergedProjectionPhase = 'idle' | 'loading' | 'ready' | 'unsupp
 export type DaemonMergedProjectionInputsState = Readonly<{
     phase: DaemonMergedProjectionPhase;
     inputs: DaemonMergedProjectionInputs | null;
+    /** Present with `phase: 'error'`: the classified reason the read failed. */
+    failureReason?: MachineContributionRegistryProjectionFailureReason;
 }>;
 
 function normalizeKeyPart(value: string | null | undefined): string {
@@ -41,14 +44,20 @@ export function useDaemonMergedProjectionInputs(params: Readonly<{
     enabled?: boolean;
     staleMs?: number;
     refreshKey?: unknown;
-    /** One exact target key for a cold-admitted contribution snapshot. */
-    mountedTarget?: DaemonContributionRegistryProjectionMountedTargetV1;
     /**
      * Keeps the last projection available as stale metadata while a route-driven scope
      * replacement loads. Callers must gate daemon-authoritative mutations on `phase === 'ready'`.
      */
     retainInputsAcrossScopeChange?: boolean;
+    /**
+     * `false`: serve only what is already cached and never ask the machine (a summary on a page
+     * that should not start daemon work). Defaults to loading when stale or missing.
+     */
+    load?: boolean;
 }>): DaemonMergedProjectionInputsState {
+    // Settings updates also arrive remotely; subscribe only to the language field.
+    useSetting('preferredLanguage');
+    const locale = getPreferredLanguage();
     const enabled = params.enabled !== false;
     const machineId = normalizeKeyPart(params.machineId);
     const serverId = normalizeKeyPart(params.serverId);
@@ -56,31 +65,14 @@ export function useDaemonMergedProjectionInputs(params: Readonly<{
         ? Math.max(0, Math.floor(params.staleMs))
         : 60_000;
     const routedBindings = useServerCredentialAccountScopeBindings(
-        !params.mountedTarget && serverId ? [serverId] : [],
+        serverId ? [serverId] : [],
     );
-    const routedBinding = routedBindings.values().next().value ?? null;
-    const routedAccountLifetime = React.useMemo<ActiveServerAccountScopeLifetime | null>(() => (
-        routedBinding
-            ? Object.freeze({
-                scope: Object.freeze({ serverId: routedBinding.serverId, accountId: routedBinding.accountId }),
-                isCurrent: routedBinding.isCurrent,
-                onRetire: routedBinding.onRetire,
-            })
-            : null
-    ), [routedBinding]);
-    // Targeted projections retain the incumbent active Account lifetime. A
-    // machine-wide routed projection instead uses that Home's credential-bound
-    // lifetime, even while another Home is focused.
-    const accountLifetime = params.mountedTarget
-        ? captureActiveServerAccountScopeLifetime()
-        : serverId
-            ? routedAccountLifetime
-            : captureActiveServerAccountScopeLifetime();
-    const targetRequest = React.useMemo(() => (
-        params.mountedTarget
-            ? Object.freeze({ mountedTarget: params.mountedTarget, accountLifetime })
-            : null
-    ), [accountLifetime, params.mountedTarget?.immutableGenerationId, params.mountedTarget?.pluginId]);
+    // A routed projection uses that Home's credential-bound lifetime, even
+    // while another Home is focused. The binding is itself the lifetime.
+    const routedAccountLifetime: ActiveServerAccountScopeLifetime | null = routedBindings.values().next().value ?? null;
+    const accountLifetime = serverId
+        ? routedAccountLifetime
+        : captureActiveServerAccountScopeLifetime();
     const hasProjectionScope = enabled && Boolean(machineId);
     const projectionScope = React.useMemo(() => (
         enabled && machineId
@@ -105,10 +97,10 @@ export function useDaemonMergedProjectionInputs(params: Readonly<{
 
     const refreshKeyRef = React.useRef(params.refreshKey);
     const projectionRevisionRef = React.useRef(projectionRevision);
+    const localeRef = React.useRef(locale);
     const machineIdRef = React.useRef(machineId);
     const serverIdRef = React.useRef(serverId);
     const hasProjectionScopeRef = React.useRef(hasProjectionScope);
-    const targetRequestRef = React.useRef(targetRequest);
 
     const [state, setState] = React.useState<DaemonMergedProjectionInputsState>(() => {
         if (!hasProjectionScope) {
@@ -117,59 +109,39 @@ export function useDaemonMergedProjectionInputs(params: Readonly<{
         if (!accountLifetime) {
             return { phase: 'loading', inputs: null };
         }
-        const cached = readCachedDaemonMergedProjectionCacheEntry({
+        const cached = readReusableDaemonMergedProjectionCacheEntry({
             machineId,
             serverId: serverId || null,
-            ...(targetRequest ?? (accountLifetime ? { accountLifetime } : {})),
+            accountLifetime,
+            staleMs,
         });
         if (!cached) {
-            return { phase: 'loading', inputs: null };
+            const stale = readCachedDaemonMergedProjectionCacheEntry({ machineId, serverId: serverId || null });
+            return { phase: 'loading', inputs: stale?.kind === 'ready' || stale?.kind === 'error' ? stale.inputs ?? null : null };
         }
         if (cached.kind === 'ready') {
             return { phase: 'ready', inputs: cached.inputs };
         }
-        if (cached.kind === 'error') {
-            // A cached failure is not an authoritative answer: revalidate instead of
-            // serving it, while keeping any stale inputs as inert metadata.
-            return { phase: 'loading', inputs: cached.inputs ?? null };
-        }
         return { phase: cached.kind, inputs: null };
     });
-    // A target cache response is never visible under a successor Account. The
-    // effect below publishes the new Account's state; this render-time fence
-    // prevents one stale render before that effect has run.
+    // A response is never visible under a successor Account. The effect below
+    // publishes the new Account's state; this render-time fence prevents one
+    // stale render before that effect has run.
     const stateAccountLifetimeRef = React.useRef<ActiveServerAccountScopeLifetime | null>(accountLifetime);
-
-    // Keep the target-generation cache resident for the mounted host's own
-    // lifetime, independently of revision/refresh fetch effects. In
-    // particular, a refresh of G must retain G's already compiled validator;
-    // replacement by H or unmount retires the exact target entry.
-    React.useEffect(() => {
-        if (!hasProjectionScope || !machineId || !targetRequest?.accountLifetime) return;
-        return retainMountedTargetProjectionCacheScope({
-            machineId,
-            serverId: serverId || null,
-            ...targetRequest,
-        });
-    }, [
-        hasProjectionScope,
-        machineId,
-        serverId,
-        targetRequest,
-    ]);
 
     React.useEffect(() => {
         const forceReload = refreshKeyRef.current !== params.refreshKey
-            || projectionRevisionRef.current !== projectionRevision;
+            || projectionRevisionRef.current !== projectionRevision
+            || localeRef.current !== locale;
         const previousMachineId = machineIdRef.current;
         const previousServerId = serverIdRef.current;
         const accountLifetimeChanged = stateAccountLifetimeRef.current !== accountLifetime;
         refreshKeyRef.current = params.refreshKey;
         projectionRevisionRef.current = projectionRevision;
+        localeRef.current = locale;
         machineIdRef.current = machineId;
         serverIdRef.current = serverId;
         hasProjectionScopeRef.current = hasProjectionScope;
-        targetRequestRef.current = targetRequest;
         if (!hasProjectionScope || !machineId) {
             stateAccountLifetimeRef.current = accountLifetime;
             setState({ phase: 'idle', inputs: null });
@@ -184,11 +156,25 @@ export function useDaemonMergedProjectionInputs(params: Readonly<{
         const cached = readCachedDaemonMergedProjectionCacheEntry({
             machineId,
             serverId: serverId || null,
-            ...(targetRequest ?? (accountLifetime ? { accountLifetime } : {})),
         });
+        const reusable = readReusableDaemonMergedProjectionCacheEntry({
+            machineId,
+            serverId: serverId || null,
+            accountLifetime,
+            staleMs,
+        });
+        if (params.load === false) {
+            stateAccountLifetimeRef.current = accountLifetime;
+            setState(reusable?.kind === 'ready'
+                ? { phase: 'ready', inputs: reusable.inputs }
+                : reusable?.kind === 'unsupported'
+                    ? { phase: 'unsupported', inputs: null }
+                    : { phase: 'idle', inputs: cached?.kind === 'ready' || cached?.kind === 'error' ? cached.inputs ?? null : null });
+            return;
+        }
         if (cached) {
             stateAccountLifetimeRef.current = accountLifetime;
-            if (forceReload || cached.kind === 'error') {
+            if (forceReload || !reusable) {
                 setState({
                     phase: 'loading',
                     inputs: cached.kind === 'ready' || cached.kind === 'error'
@@ -202,14 +188,14 @@ export function useDaemonMergedProjectionInputs(params: Readonly<{
             }
             // `unsupported` is a real daemon answer and keeps the freshness gate;
             // a cached failure never suppresses revalidation.
-            if (!forceReload && cached.kind !== 'error' && entryIsFresh(cached, staleMs)) {
+            if (!forceReload && reusable) {
                 return;
             }
         } else {
             stateAccountLifetimeRef.current = accountLifetime;
             setState((previous) => ({
                 phase: 'loading',
-                inputs: params.retainInputsAcrossScopeChange === true && !params.mountedTarget
+                inputs: params.retainInputsAcrossScopeChange === true
                     || (!accountLifetimeChanged
                         && previousMachineId === machineId
                         && previousServerId === serverId)
@@ -223,7 +209,7 @@ export function useDaemonMergedProjectionInputs(params: Readonly<{
                 const entry = await loadDaemonMergedProjectionCacheEntry({
                     machineId,
                     serverId: serverId || null,
-                    ...(targetRequest ?? (accountLifetime ? { accountLifetime } : {})),
+                    ...(accountLifetime ? { accountLifetime } : {}),
                 });
                 if (!alive || !entry) return;
                 stateAccountLifetimeRef.current = accountLifetime;
@@ -233,6 +219,7 @@ export function useDaemonMergedProjectionInputs(params: Readonly<{
                     setState((previous) => ({
                         phase: 'error',
                         inputs: entry.inputs ?? previous.inputs,
+                        failureReason: entry.reason,
                     }));
                 } else {
                     setState({ phase: entry.kind, inputs: null });
@@ -253,19 +240,20 @@ export function useDaemonMergedProjectionInputs(params: Readonly<{
     }, [
         accountLifetime,
         hasProjectionScope,
+        locale,
         machineId,
+        params.load,
         params.refreshKey,
         params.retainInputsAcrossScopeChange,
         projectionRevision,
         serverId,
         staleMs,
-        targetRequest,
     ]);
 
     if (hasProjectionScope && stateAccountLifetimeRef.current !== accountLifetime) {
         return {
             phase: 'loading',
-            inputs: params.retainInputsAcrossScopeChange === true && !params.mountedTarget ? state.inputs : null,
+            inputs: params.retainInputsAcrossScopeChange === true ? state.inputs : null,
         };
     }
     // Scope/revision changes are first visible during render; the effect that
@@ -273,17 +261,17 @@ export function useDaemonMergedProjectionInputs(params: Readonly<{
     // consumer cannot start work for B with A's still-ready projection.
     const scopeChanged = hasProjectionScopeRef.current !== hasProjectionScope
         || machineIdRef.current !== machineId
-        || serverIdRef.current !== serverId
-        || targetRequestRef.current !== targetRequest;
+        || serverIdRef.current !== serverId;
     if (scopeChanged) {
         return {
             phase: 'loading',
-            inputs: params.retainInputsAcrossScopeChange === true && !params.mountedTarget ? state.inputs : null,
+            inputs: params.retainInputsAcrossScopeChange === true ? state.inputs : null,
         };
     }
     if (
         refreshKeyRef.current !== params.refreshKey
         || projectionRevisionRef.current !== projectionRevision
+        || localeRef.current !== locale
     ) {
         return { phase: 'loading', inputs: state.inputs };
     }

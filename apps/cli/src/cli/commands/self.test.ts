@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
+import { doesVersionMatchReleaseRing as doesVersionMatchChannel } from '@happier-dev/cli-common/update';
+
 import {
   computeSelfUpdateSpec,
   detectInstallSource,
-  doesVersionMatchChannel,
   packageJsonPathForNodeModules,
   parseSelfChannel,
   resolveSelfUpdateCommandForRing,

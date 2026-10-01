@@ -67,6 +67,21 @@ function dropMismatchedServerScopedIntent(storage: Storage, activeServerScopedKe
     }
 }
 
+/**
+ * An intent written before an account was known (pre-auth, or before the profile loaded) belongs
+ * to the first account that reads it on this Home, never to the next one: move the record, byte
+ * for byte, into that account's scope. No change notification — the value itself is unchanged.
+ */
+function adoptServerScopedIntent(storage: Storage, serverScopedKey: string, accountScopedKey: string): void {
+    try {
+        const raw = storage.getItem(serverScopedKey);
+        if (raw) storage.setItem(accountScopedKey, raw);
+        storage.removeItem(serverScopedKey);
+    } catch {
+        // ignore storage failures
+    }
+}
+
 export function setPendingSetupIntent(value: PendingSetupIntent): void {
     const storage = getStorage();
     if (!storage) return;
@@ -101,7 +116,12 @@ export function getPendingSetupIntent(): PendingSetupIntent | null {
     }
     const serverScopedKey = resolveActiveServerScopedKey();
     const record = serverScopedKey ? readRecord(storage, serverScopedKey) : null;
-    if (record) return record;
+    if (record) {
+        if (activeScope && serverScopedKey) {
+            adoptServerScopedIntent(storage, serverScopedKey, serverAccountScopedStorageKey(STORAGE_KEY_PREFIX, activeScope));
+        }
+        return record;
+    }
     if (activeScope) {
         dropMismatchedServerScopedIntent(storage, serverScopedKey);
     }

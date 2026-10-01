@@ -3,9 +3,9 @@ import { act } from 'react-test-renderer';
 import { describe, expect, it, vi } from 'vitest';
 import { ProviderConnectionIdSchema, type SessionModelSelectionV1 } from '@happier-dev/protocol';
 
+import { createResolvedAgentCatalogEntryFixture } from '@/dev/testkit/fixtures/agentCatalogFixtures';
 import {
     createCapturingLegendListMock,
-    createResolvedAgentCatalogEntryFixture,
     renderScreen,
     withPopoverWebGlobals,
 } from '@/dev/testkit';
@@ -33,7 +33,7 @@ vi.mock('@legendapp/list/react-native', () => ({
 }));
 
 const CONNECTION_ID = ProviderConnectionIdSchema.parse('pc_large_catalog');
-const TARGET_KEY = 'backend:codex';
+const TARGET_KEY = 'agent:happier.agent.codex/codex';
 const CODEX_BACKEND_ENTRY: ResolvedBackendCatalogEntry = {
     agentCatalogEntry: createResolvedAgentCatalogEntryFixture({ agentId: 'codex' }),
     backendTarget: { kind: 'backend', backendId: 'codex', sourceKind: 'built_in' },

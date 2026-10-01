@@ -96,15 +96,17 @@ function registerExternalSettingsOwner(
 ): void {
   if (!descriptor) throw new Error('expected external Voice descriptor');
   const token = {};
-  commitExternalVoiceProviderRegistration({
+  const registration = {
     token,
     pluginId,
     localId,
     providerId: `${pluginId}/${localId}`,
     descriptor,
     adapter: null,
-    ...(settingsActions ? { settingsActions } : {}),
-  });
+  };
+  commitExternalVoiceProviderRegistration(settingsActions
+    ? { ...registration, occurrenceId: `${pluginId}-occurrence`, settingsActions }
+    : registration);
   onTestFinished(() => removeExternalVoiceProviderRegistration(token));
 }
 
@@ -378,6 +380,20 @@ vi.mock('@/components/ui/text/Text', () => ({
 
 vi.mock('@expo/vector-icons', () => ({ Ionicons: 'Ionicons' }));
 
+/** The inline field of a manifest row (the row is a mocked Item, so its field is its right element). */
+function rowField(rendered: Awaited<ReturnType<typeof renderScreen>>, title: string): React.ReactElement<any> {
+  const row = rendered.tree.root.findAllByType('Item' as never)
+    .find((node) => node.props.title === title && node.props.rightElement !== undefined);
+  if (!row) throw new Error(`missing field row ${title}`);
+  return row.props.rightElement;
+}
+
+async function typeIntoRow(rendered: Awaited<ReturnType<typeof renderScreen>>, title: string, text: string) {
+  await act(async () => { rowField(rendered, title).props.onChangeText(text); });
+  await act(async () => { rowField(rendered, title).props.onBlur(); });
+  await act(async () => { await Promise.all(fireAndForgetPromises); });
+}
+
 describe('BundledSpeechSettings', () => {
   beforeEach(() => {
     executionMachine.machineId = 'machine-a';
@@ -580,7 +596,7 @@ describe('BundledSpeechSettings', () => {
     expect(setVoice).not.toHaveBeenCalled();
   });
 
-  it('prompts for a bounded manifest text field and writes its canonical provider envelope', async () => {
+  it('edits a bounded manifest text field inline and writes its canonical provider envelope', async () => {
     const declaration = parseSpeechDeclaration({
       id: 'stt-text',
       title: 'OpenAI-compatible Speech-to-Text',
@@ -664,7 +680,6 @@ describe('BundledSpeechSettings', () => {
     const setStt = vi.fn();
     const setVoice = vi.fn();
     const voiceSettings = voiceWithRootProviderConfig(providerId, { endpointUrl: '', model: 'whisper-1' });
-    prompt.mockResolvedValueOnce(' https://speech.example/v1 ');
     const rendered = await renderScreen(React.createElement(spec!.Settings, {
       cfgStt: {
         provider: providerId,
@@ -675,10 +690,7 @@ describe('BundledSpeechSettings', () => {
       setVoice,
       popoverBoundaryRef: null,
     }));
-    const endpoint = rendered.tree.root.findAllByType('Item' as never)
-      .find((row) => row.props.title === 'settingsVoice.local.sttBaseUrl');
-
-    await act(async () => endpoint!.props.onPress());
+    await typeIntoRow(rendered, 'settingsVoice.local.sttBaseUrl', ' https://speech.example/v1 ');
     await vi.waitFor(() => expect(setVoice).toHaveBeenCalledWith(expect.objectContaining({
       providers: {
         ...voiceSettings.providers,
@@ -689,12 +701,44 @@ describe('BundledSpeechSettings', () => {
       },
     })));
 
-    prompt.mockResolvedValueOnce('');
-    const model = rendered.tree.root.findAllByType('Item' as never)
-      .find((row) => row.props.title === 'settingsVoice.local.sttModel');
-    await act(async () => model!.props.onPress());
+    await typeIntoRow(rendered, 'settingsVoice.local.sttModel', '');
     expect(alert).toHaveBeenCalledWith('common.error');
     expect(setVoice).toHaveBeenCalledTimes(1);
+    expect(rowField(rendered, 'settingsVoice.local.sttModel').props.value).toBe('whisper-1');
+    expect(prompt).not.toHaveBeenCalled();
+  });
+
+  it('edits a signed manifest number inline within its declared bounds', async () => {
+    const { createBundledLocalTtsProviderSpec } = await import('./BundledSpeechSettings');
+    const spec = createBundledLocalTtsProviderSpec(createDefaultVoiceProviderRegistry().get(GOOGLE_CLOUD_TTS_ID)!);
+    const setVoice = vi.fn();
+    const voiceSettings = voiceWithRootProviderConfig(GOOGLE_CLOUD_TTS_ID, {
+      voiceName: '', languageCode: '', format: 'mp3', speakingRate: 1, pitch: 0,
+    });
+    const rendered = await renderScreen(React.createElement(spec!.Settings, {
+      cfgTts: {
+        provider: GOOGLE_CLOUD_TTS_ID,
+        providers: { [GOOGLE_CLOUD_TTS_ID]: { schemaVersion: 2, config: { voiceName: null, languageCode: null, format: 'mp3', speakingRate: null, pitch: null } } },
+      },
+      setTts: vi.fn(),
+      voice: voiceSettings,
+      setVoice,
+      networkTimeoutMs: 15_000,
+      popoverBoundaryRef: null,
+    } as never));
+    await act(async () => undefined);
+
+    await typeIntoRow(rendered, 'settingsVoice.local.googleCloudTts.pitch.title', '25');
+    expect(alert).toHaveBeenCalled();
+    expect(setVoice).not.toHaveBeenCalled();
+
+    await typeIntoRow(rendered, 'settingsVoice.local.googleCloudTts.pitch.title', '-2.5');
+    expect(setVoice).toHaveBeenLastCalledWith(expect.objectContaining({
+      providers: expect.objectContaining({
+        [GOOGLE_CLOUD_TTS_ID]: expect.objectContaining({ config: expect.objectContaining({ pitch: -2.5 }) }),
+      }),
+    }));
+    expect(prompt).not.toHaveBeenCalled();
   });
 
   it('renders package-owned TTS fields and writes voice selection without a vendor panel', async () => {

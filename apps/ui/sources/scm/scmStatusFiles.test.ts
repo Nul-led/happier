@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
 import type { ScmWorkingSnapshot } from '@/sync/domains/state/storageTypes';
-import { snapshotToScmStatusFiles } from './scmStatusFiles';
+import { selectScmChangedFiles, selectScmConflictFiles, snapshotToScmStatusFiles } from './scmStatusFiles';
+import { snapshotToScmStatus } from './scmRepositoryService';
+import { gitScmUiPlugin } from './backends/git/plugin';
 
 describe('snapshotToScmStatusFiles', () => {
     it('splits staged and unstaged entries from canonical snapshot', () => {
@@ -161,5 +163,73 @@ describe('snapshotToScmStatusFiles', () => {
         const first = snapshotToScmStatusFiles(snapshot);
         const second = snapshotToScmStatusFiles(snapshot);
         expect(second).toBe(first);
+    });
+});
+
+describe('one changed-file truth', () => {
+    function entry(path: string, kind: ScmWorkingSnapshot['entries'][number]['kind'], deltas: { included: boolean; pending: boolean }): ScmWorkingSnapshot['entries'][number] {
+        return {
+            path,
+            previousPath: null,
+            kind,
+            includeStatus: deltas.included ? 'M' : '.',
+            pendingStatus: kind === 'untracked' ? '?' : deltas.pending ? 'M' : '.',
+            hasIncludedDelta: deltas.included,
+            hasPendingDelta: deltas.pending,
+            stats: { includedAdded: 0, includedRemoved: 0, pendingAdded: 1, pendingRemoved: 0, isBinary: false },
+        };
+    }
+
+    const snapshot: ScmWorkingSnapshot = {
+        projectKey: 'machine:/repo',
+        fetchedAt: 1,
+        repo: { isRepo: true, rootPath: '/repo' },
+        branch: { head: 'main', upstream: null, ahead: 0, behind: 0, detached: false },
+        stashCount: 0,
+        hasConflicts: false,
+        entries: [
+            // Staged and then edited again: one file, present in both areas.
+            entry('src/partly-staged.ts', 'modified', { included: true, pending: true }),
+            entry('src/edited.ts', 'modified', { included: false, pending: true }),
+            entry('notes.md', 'untracked', { included: false, pending: true }),
+            // An untracked directory collapsed by porcelain: not a file row.
+            entry('scratch/', 'untracked', { included: false, pending: true }),
+        ],
+        totals: {
+            includedFiles: 1,
+            pendingFiles: 4,
+            untrackedFiles: 2,
+            includedAdded: 0,
+            includedRemoved: 0,
+            pendingAdded: 4,
+            pendingRemoved: 0,
+        },
+    };
+
+    it('lists each changed file once, including untracked files and excluding collapsed directories', () => {
+        expect(selectScmChangedFiles(snapshot).map((file) => file.fullPath)).toEqual([
+            'notes.md',
+            'src/edited.ts',
+            'src/partly-staged.ts',
+        ]);
+    });
+
+    it('gives the aggregate status (badge, tooltip, headers) the same count as the list', () => {
+        expect(snapshotToScmStatus(snapshot).changedFileCount).toBe(selectScmChangedFiles(snapshot).length);
+        expect(snapshotToScmStatus(snapshot).changedFileCount).toBe(3);
+        // The composer's source-control instrument reads the backend's status summary.
+        expect(gitScmUiPlugin.statusSummaryMapper(snapshot)?.changedFiles).toBe(3);
+    });
+
+    it('lists openable conflict files from the same changed-file membership', () => {
+        const conflicts: ScmWorkingSnapshot = {
+            ...snapshot,
+            hasConflicts: true,
+            entries: [
+                ...snapshot.entries,
+                entry('src/conflict.ts', 'conflicted', { included: true, pending: true }),
+            ],
+        };
+        expect(selectScmConflictFiles(conflicts)).toEqual([{ path: 'src/conflict.ts', openPath: 'src/conflict.ts' }]);
     });
 });

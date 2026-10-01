@@ -1,6 +1,7 @@
 import {
   BrowserAutomationActionRequestV1Schema,
   BrowserAutomationActionResultV1Schema,
+  resolveBrowserAutomationActionRequester,
   BrowserAutomationCancelActiveResultV1Schema,
   getActionSpec,
   type BrowserAutomationActionResultV1,
@@ -111,12 +112,13 @@ export function createBrowserAutomationRoutes(input: Readonly<{
             canceledCount: 0,
           });
         }
-        const canceled = input.service.cancelActive({ ...view, authority: 'present_user' });
+        const canceled = await input.service.cancelActive({ ...view, authority: context.authority });
         return canceled.ok
           ? BrowserAutomationCancelActiveResultV1Schema.parse({
               v: 1,
               outcome: 'canceled',
               canceledCount: 1,
+              completion: canceled.completion,
             })
           : BrowserAutomationCancelActiveResultV1Schema.parse({
               v: 1,
@@ -130,7 +132,9 @@ export function createBrowserAutomationRoutes(input: Readonly<{
       const request = BrowserAutomationActionRequestV1Schema.safeParse(parsed.data);
       if (!request.success) return invalidParameters;
 
-      return input.service.execute(request.data);
+      const requestedBy = resolveBrowserAutomationActionRequester(request.data.requestedBy, context?.authority);
+      if (!requestedBy) return invalidParameters;
+      return input.service.execute({ ...request.data, requestedBy }, { signal: context?.signal });
     },
   };
 }

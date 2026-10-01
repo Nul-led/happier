@@ -8,7 +8,7 @@ import {
     renderToolCallsGroupView,
     standardCleanup,
 } from '@/dev/testkit';
-import { createReducer } from '@/sync/reducer/reducer';
+import { createReducer } from "@happier-dev/session-core/reducer";
 import { installToolCallsGroupViewCommonModuleMocks } from './toolCallsGroupViewTestHelpers';
 import { createUseSettingMock } from '@/dev/testkit/mocks/storage';
 

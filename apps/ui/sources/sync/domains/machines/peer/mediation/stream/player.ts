@@ -59,6 +59,7 @@ export type LiveStreamPlayerEvent =
         droppedFrames: number;
     }>
     | Readonly<{ type: 'frame_dropped'; count: number; bufferedBytes: number; reasonCode: string }>
+    | Readonly<{ type: 'frame_decoded' }>
     | Readonly<{ type: 'startup_timeout'; reasonCode: string }>
     | Readonly<{ type: 'decoder_reconfigured'; width?: number; height?: number; orientation?: SimulatorOrientationV1 }>
     | Readonly<{ type: 'reconnecting'; reasonCode: string }>
@@ -261,6 +262,9 @@ export function reduceLiveStreamPlayerState(
                 requiresKeyframe: false,
             };
         }
+        case 'frame_decoded':
+            if (state.phase === 'error' || state.phase === 'stopped' || state.selectedCodec !== 'h264.avcc' || state.activeRenderer !== 'webcodecs') return state;
+            return { ...state, phase: 'playing', decodedFrames: state.decodedFrames + 1, bufferedBytes: 0, diagnostic: undefined, requiresKeyframe: false };
         case 'frame_dropped':
             return {
                 ...state,

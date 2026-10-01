@@ -20,10 +20,6 @@ export function canSkipWizardStep(context: WizardContext, stepId: WizardStepId):
     return getWizardStepDefinition(stepId).canSkip;
 }
 
-export function getSelectedSetupAction(context: WizardContext): 'local' | 'relayLocal' | 'remote' | null {
-    return context.setupAction;
-}
-
 export function getNextWizardStepId(context: WizardContext, stepId: WizardStepId): WizardStepId | null {
     const visibleStepIds = getVisibleWizardStepIds(context);
     const currentIndex = visibleStepIds.indexOf(stepId);

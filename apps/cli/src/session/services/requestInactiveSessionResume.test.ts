@@ -54,7 +54,7 @@ const providerMetadata = {
     v: 1,
     updatedAt: 100,
     selection: {
-      agentTargetKey: 'backend:claude',
+      agentTargetKey: 'agent:happier.agent.claude/claude',
       providerConnectionId: 'pc_work',
       modelId: 'provider-model',
     },
@@ -105,6 +105,29 @@ function metadataWithLaunchCorrespondence() {
 }
 
 describe('requestInactiveSessionResume', () => {
+  it('sends explicit fresh-folder consent without granting automatic managed-folder recreation', async () => {
+    callMachineRpc.mockResolvedValue({ type: 'success' });
+    const request = {
+      credentials, sessionId: 'session-1', localId: 'fresh-folder-1', rawSession: rawSession(),
+      metadata: { ...metadata, sessionDirectoryV1: { v: 1, kind: 'managed' } },
+      approvedNewDirectoryCreation: true,
+    };
+    await expect(requestInactiveSessionResume(request)).resolves.toEqual({ ok: true });
+    expect(callMachineRpc.mock.calls[0]?.[0]?.request).toMatchObject({ approvedNewDirectoryCreation: true });
+    callMachineRpc.mockClear();
+    const { approvedNewDirectoryCreation: _consent, ...withoutConsent } = request;
+    await requestInactiveSessionResume(withoutConsent);
+    expect(callMachineRpc.mock.calls[0]?.[0]?.request.approvedNewDirectoryCreation).not.toBe(true);
+  });
+
+  it('preserves the missing-directory recovery outcome', async () => {
+    callMachineRpc.mockResolvedValue({ type: 'error', errorCode: 'SESSION_DIRECTORY_MISSING', errorMessage: 'Missing folder' });
+    await expect(requestInactiveSessionResume({
+      credentials, sessionId: 'session-1', localId: 'local-1', rawSession: rawSession(),
+      metadata: { ...metadata, sessionDirectoryV1: { v: 1, kind: 'managed' } },
+    })).resolves.toMatchObject({ ok: false, code: 'SESSION_DIRECTORY_MISSING' });
+  });
+
   afterEach(() => {
     callMachineRpc.mockReset();
     vi.unstubAllEnvs();

@@ -62,8 +62,9 @@ describe('useSessionListMoveSheet', () => {
         await vi.waitFor(() => {
             expect(modalMock.show).toHaveBeenCalled();
         });
+        // The card names the move in the shared title band (with its close button).
         expect(modalMock.show).toHaveBeenCalledWith(expect.objectContaining({
-            chrome: { kind: 'card' },
+            chrome: expect.objectContaining({ kind: 'card', title: 'sessionsList.moveSheetTitle' }),
         }));
         const config = modalMock.show.mock.calls[0]?.[0] as { props?: { onSelectTarget?: (target: SessionListMoveSheetTarget) => void } };
         await act(async () => {

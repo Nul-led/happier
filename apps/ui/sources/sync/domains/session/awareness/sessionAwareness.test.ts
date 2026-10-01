@@ -14,6 +14,16 @@ describe('UI Session awareness acquisition adapter', () => {
         expect(row.title).toBe(detail.title);
     });
 
+    it('preserves public step origin across locked detail and list projections', () => {
+        const session = createSessionFixture({ encryptionMode: 'e2ee', metadata: null,
+            origin: { kind: 'run_step', runId: 'workflow-run' }, workDepth: 3 });
+        const row = buildSessionListRenderableFromSession(session, undefined, []);
+        expect(projectUiSessionAwareness(session, 1_000).origin).toEqual({ kind: 'run_step', runId: 'workflow-run' });
+        expect(projectUiSessionAwareness(row, 1_000).origin).toEqual({ kind: 'run_step', runId: 'workflow-run' });
+        expect(buildSessionListRenderableFromSession(session, row, [])).toBe(row);
+        expect(projectUiSessionAwareness(row, 1_000)).not.toHaveProperty('lineage');
+    });
+
     it('projects readable metadata in detail and list and omits it when locked', () => {
         const session = createSessionFixture({ encryptionMode: 'plain', metadata: {
             path: '/work', host: 'host', name: 'Private workspace',
@@ -185,6 +195,22 @@ describe('UI Session awareness acquisition adapter', () => {
                 encryptedContentAvailability,
                 metadata: { name: 'Private title', path: '/private', host: 'host' },
             }), 1_000).encryption).toBe(encryption);
+        }
+    });
+
+    it('keeps a plain Session with unavailable Account owner metadata locked in list and detail awareness', () => {
+        const session = createSessionFixture({
+            encryptionMode: 'plain',
+            encryptedContentAvailability: 'encrypted_content_unavailable',
+            metadata: null,
+            ownerMetadataView: null,
+            agentState: null,
+        });
+        for (const source of [session, buildSessionListRenderableFromSession(session, undefined, [])]) {
+            const projection = projectUiSessionAwareness(source, 1_000);
+            expect(projection.encryption).toBe('content_unavailable');
+            expect(projection.title).toBeUndefined();
+            expect(projection.workspace).toBeUndefined();
         }
     });
 

@@ -64,7 +64,6 @@ function conversation(
       : {}),
     client: {
       artifactId: 'installed-voice-runtime',
-      modulePath: './voice',
       exportName: 'activate',
     },
   };
@@ -77,7 +76,7 @@ describe('resolveAgentSessionRealtimeVoiceAuthority', () => {
     const resolveVoiceProviderRuntimeLifecycle = vi.fn((identity: PluginContributionIdentityV1) => (
       identity.pluginId === installedProvider.pluginId && identity.localId === installedProvider.localId
         ? {
-            generation: 'installed-provider-generation',
+            occurrenceId: 'installed-provider-occurrence',
             isCurrent: () => current,
             retirementSignal: retirement.signal,
           }
@@ -114,19 +113,23 @@ describe('resolveAgentSessionRealtimeVoiceAuthority', () => {
       agentRuntimeIdentity: {
         pluginId: selectedAgent.pluginId,
         agentId: selectedAgent.localId,
-        generation: 'agent-generation',
-        immutableGenerationId: 'installed-agent-generation',
+        occurrenceId: 'agent-occurrence',
+        sourceCustody: {
+          kind: 'managed',
+          immutableGenerationId: 'installed-agent-generation',
+          installSource: 'npm',
+        },
         isCurrent: () => current,
       },
       agentRetirementSignal: retirement.signal,
     });
 
     expect(authority).not.toBeNull();
-    expect(authority?.generation).toBe('installed-agent-generation');
+    expect(authority?.occurrenceId).toBe('agent-occurrence');
     expect(authority?.resolveDeclaration(installedProvider)?.id).toBe(
       installedProvider.localId,
     );
-    expect(authority?.resolveProviderGeneration(installedProvider)).toBe(
+    expect(authority?.resolveProviderOccurrenceId(installedProvider)).toBe(
       'installed-provider-generation',
     );
     expect(authority?.isCurrent(installedProvider)).toBe(true);
@@ -152,7 +155,11 @@ describe('resolveAgentSessionRealtimeVoiceAuthority', () => {
       agentRuntimeIdentity: {
         pluginId: selectedAgent.pluginId,
         agentId: 'other',
-        generation: 'agent-generation',
+        occurrenceId: 'agent-occurrence',
+        sourceCustody: {
+          kind: 'development',
+          registeredRootId: 'development-root-1',
+        },
         isCurrent: () => true,
       },
     })).toBeNull();
@@ -174,7 +181,7 @@ describe('resolveAgentSessionRealtimeVoiceAuthority', () => {
           }],
         },
         resolveVoiceProviderRuntimeLifecycle: () => ({
-          generation: 'installed-provider-generation',
+          occurrenceId: 'installed-provider-occurrence',
           isCurrent: () => !providerRetirement.signal.aborted,
           retirementSignal: providerRetirement.signal,
         }),
@@ -183,7 +190,11 @@ describe('resolveAgentSessionRealtimeVoiceAuthority', () => {
       agentRuntimeIdentity: {
         pluginId: selectedAgent.pluginId,
         agentId: selectedAgent.localId,
-        generation: 'agent-generation',
+        occurrenceId: 'agent-occurrence',
+        sourceCustody: {
+          kind: 'development',
+          registeredRootId: 'development-root-1',
+        },
         isCurrent: () => true,
       },
     });
@@ -206,7 +217,7 @@ describe('resolveAgentSessionRealtimeVoiceAuthority', () => {
       agentRuntimesByAgentId: new Map([['codex-session', {
         pluginId: selectedAgent.pluginId,
         agentId: 'codex-session',
-        generation: 'agent-generation-G',
+        occurrenceId: 'agent-occurrence-G',
         immutableGenerationId: 'installed-agent-generation-G',
         sessionRunnerFactoryBinding: {
           pluginId: selectedAgent.pluginId,
@@ -218,7 +229,7 @@ describe('resolveAgentSessionRealtimeVoiceAuthority', () => {
         retirementSignal: new AbortController().signal,
       }]]),
       resolveVoiceProviderRuntimeLifecycle: () => ({
-        generation: 'installed-provider-generation',
+        occurrenceId: 'installed-provider-occurrence',
         isCurrent: () => true,
         retirementSignal: new AbortController().signal,
       }),
@@ -242,7 +253,11 @@ describe('resolveAgentSessionRealtimeVoiceAuthority', () => {
       pluginVersion: '1.2.3',
       agentId: 'codex-session',
       localAgentId: selectedAgent.localId,
-      immutableGenerationId: 'installed-agent-generation-G',
+      sourceCustody: {
+        kind: 'managed',
+        immutableGenerationId: 'installed-agent-generation-G',
+        installSource: 'npm',
+      },
       locator: {
         module: './agent/runtime.js',
         export: 'createAgentRuntime',
@@ -262,7 +277,7 @@ describe('resolveAgentSessionRealtimeVoiceAuthority', () => {
       agentRuntimesByAgentId: new Map([['codex-session', {
         pluginId: selectedAgent.pluginId,
         agentId: 'codex-session',
-        generation: 'agent-generation-H',
+        occurrenceId: 'agent-occurrence-H',
         immutableGenerationId: 'installed-agent-generation-H',
         sessionRunnerFactoryBinding: {
           pluginId: selectedAgent.pluginId,
@@ -274,7 +289,7 @@ describe('resolveAgentSessionRealtimeVoiceAuthority', () => {
         retirementSignal: new AbortController().signal,
       }]]),
       resolveVoiceProviderRuntimeLifecycle: () => ({
-        generation: 'installed-provider-generation',
+        occurrenceId: 'installed-provider-occurrence',
         isCurrent: () => !providerRetirement.signal.aborted,
         retirementSignal: providerRetirement.signal,
       }),
@@ -285,7 +300,9 @@ describe('resolveAgentSessionRealtimeVoiceAuthority', () => {
     });
 
     const retirementSignal = authority?.resolveRetirementSignal(installedProvider);
-    expect(authority?.generation).toBe('installed-agent-generation-G');
+    expect(authority?.occurrenceId).toBe(
+      JSON.stringify(retainedAgent.sourceCustody),
+    );
     expect(authority?.isCurrent(installedProvider)).toBe(true);
     expect(retirementSignal?.aborted).toBe(false);
 

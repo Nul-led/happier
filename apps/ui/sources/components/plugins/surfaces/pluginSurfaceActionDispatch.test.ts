@@ -1,17 +1,26 @@
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createPluginUiHostApiClient } from '@happier-dev/plugin-sdk/ui/client';
 import type { PluginUiHostApi, SurfaceContext } from '@happier-dev/plugin-sdk/ui';
 import {
+    ApprovalRequestV2Schema,
+    createActionExecutor,
+    decideApprovalRequestTransition,
     DaemonPluginStructuredMessageActionExecuteRequestSchema,
+    isApprovalRequiredByActionsSettings,
+    normalizeActionsSettingsV1,
     PLUGIN_INVOCABLE_ACTION_IDS,
     PluginProjectionInstalledPackageV2Schema,
     PluginProjectedActionV2Schema,
     PluginJsonValueV2Schema,
+    pluginSourceCustodyV1Equal,
+    type ActionExecutorDeps,
+    type ApprovalRequest,
     type PluginActionCurrentIntentResult,
     type PluginContributionIdentityV1,
     type PluginMachineExecutionOriginV1,
     type PluginProjectedActionV2,
+    type PluginSourceCustodyV1,
 } from '@happier-dev/protocol';
 import type { PluginClientApi } from '@happier-dev/plugin-sdk';
 import type { PluginClientActionHandler } from '@happier-dev/plugin-sdk/actions';
@@ -22,7 +31,7 @@ import {
     defineProtocolString,
 } from '@happier-dev/protocol/plugins/actions/protocol-composable-schema';
 import {
-    PluginUiArtifactsManifestEntryV1Schema,
+    PluginUiArtifactsManifestEntryV2Schema,
     PluginHostedWebBridgeEnvelopeV1Schema,
     PluginUiExecuteActionRequestV1Schema,
     PluginUiJsonValueV1Schema,
@@ -32,9 +41,11 @@ import {
     PluginUiHostApiRequestEnvelopeV1,
     PluginUiJsonValueV1,
     PluginUiSurfaceContextV1,
+    type PluginUiArtifactsManifestEntryV2,
 } from '@happier-dev/protocol/plugins/ui';
 
 import { createPluginHostedWebHostApiBridgeHandler } from '@/components/plugins/hostApi/hostedWebAdapter';
+import { resetMachineProjectionReadsForTests } from '@/sync/ops/machineContributionRegistryProjection';
 import { resolveThemeProfile } from '@/theme/profiles/resolveThemeProfile';
 
 import { projectPluginUiTheme } from './pluginUiThemeProjection';
@@ -67,6 +78,7 @@ import { createBoundPluginSurfaceController } from './boundPluginSurfaceControll
 import { dispatchPluginResolvedSemanticCommand } from './dispatchPluginResolvedSemanticCommand';
 import { getPluginUiEphemeralSharedScope } from './pluginUiEphemeralSharedScope';
 import type { ActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
+import { getStorage } from '@/sync/domains/state/storageStore';
 
 // The dispatcher and serializer stay real. The server-scoped RPC is the
 // system boundary that terminates this UI-side transport path.
@@ -76,6 +88,29 @@ vi.mock('@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc', (
     machineRpcWithServerScope: machineRpcWithServerScopeMock,
 }));
 
+/**
+ * Action schemas are not in the projection; the daemon answers them per Action.
+ * Fixtures declare them here and the machine-RPC boundary serves them.
+ */
+const clientActionSchemasByQualifiedId = new Map<string, Readonly<{ inputSchema: object; outputSchema?: object }>>();
+
+function answerActionSchemasRead(request: unknown): unknown {
+    const { method, payload } = request as Readonly<{
+        method?: string;
+        payload?: Readonly<{ qualifiedActionId?: string }>;
+    }>;
+    if (method !== RPC_METHODS.DAEMON_PLUGIN_ACTION_SCHEMAS_READ) return undefined;
+    const schemas = clientActionSchemasByQualifiedId.get(payload?.qualifiedActionId ?? '');
+    return schemas
+        ? { ok: true, ...schemas }
+        : { ok: false, code: 'plugin_action_schemas_unavailable' };
+}
+
+beforeEach(() => {
+    resetMachineProjectionReadsForTests();
+    machineRpcWithServerScopeMock.mockImplementation(async (request: unknown) => answerActionSchemasRead(request));
+});
+
 // Semantic routing keeps the real transient-interaction owner; only its
 // platform dialog boundary is substituted in this non-rendering suite.
 vi.mock('@/modal', async () => {
@@ -84,6 +119,8 @@ vi.mock('@/modal', async () => {
 });
 
 const CALLER_PLUGIN_ID = 'happier.inspector';
+const TARGET_SOURCE_CUSTODY = { kind: 'development', registeredRootId: 'inspector-root' } as const;
+const CONTRIBUTOR_SOURCE_CUSTODY = { kind: 'development', registeredRootId: 'reviewer-root' } as const;
 const CALLER_MATERIALIZATION = {
     pluginId: CALLER_PLUGIN_ID,
     machineId: 'machine-1',
@@ -93,6 +130,7 @@ const CALLER_MATERIALIZATION = {
 function mountedCallerBinding(input: Readonly<{
     pluginId?: string;
     contributionLocalId?: string;
+    occurrenceId?: string;
     machineId?: string;
     materializationId?: string;
 }> = {}) {
@@ -100,7 +138,9 @@ function mountedCallerBinding(input: Readonly<{
     const contributionLocalId = input.contributionLocalId ?? 'inspector-app';
     const machineId = input.machineId ?? 'machine-1';
     return {
+        pluginId,
         contributionLocalId,
+        occurrenceId: input.occurrenceId ?? `${pluginId}:current`,
         materializationRef: {
             pluginId,
             machineId,
@@ -109,19 +149,14 @@ function mountedCallerBinding(input: Readonly<{
     } as const;
 }
 
-function mountedActionBinding(input: Readonly<{
-    machineId?: string;
-    expectedGeneration?: string;
-}> = {}) {
+function mountedActionBinding(input: Readonly<{ machineId?: string }> = {}) {
     return {
         machineId: input.machineId ?? 'machine-1',
-        expectedGeneration: input.expectedGeneration ?? '9',
     } as const;
 }
 
 const CLIENT_ACTION_TARGET = Object.freeze({
     artifactId: 'client-action-bundle',
-    modulePath: './actions/clientAction',
     exportName: 'execute',
     platform: 'web' as const,
 });
@@ -151,20 +186,19 @@ function clientAccountLifetime() {
         },
     } satisfies ActiveServerAccountScopeLifetime & { retire(): void };
 }
-const CLIENT_ACTION_ARTIFACT_GRAPH = PluginUiArtifactsManifestEntryV1Schema.parse({
-    contributionId: CLIENT_ACTION_TARGET.artifactId,
+const CLIENT_ACTION_ARTIFACT_GRAPH = PluginUiArtifactsManifestEntryV2Schema.parse({
+    artifactId: CLIENT_ACTION_TARGET.artifactId,
     tier: 'reactNative',
-    platform: CLIENT_ACTION_TARGET.platform,
-    entry: 'react-native/client-action-bundle/index.js',
+    entry: 'react-native/client-action-bundle/entry.cjs.bundle',
     files: [{
-        relativePath: 'react-native/client-action-bundle/index.js',
+        relativePath: 'react-native/client-action-bundle/entry.cjs.bundle',
         digest: 'sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
         byteSize: 10,
     }],
     digest: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-    builtWith: { bundler: 'vite', version: '7.0.0' },
-    hostUiApiVersion: '1.0.0',
-    compat: { react: '19.0.0', reactNative: '0.83.4' },
+    builtWith: { bundler: 'esbuild', version: '0.27.2' },
+    executable: { exports: [CLIENT_ACTION_TARGET.exportName] },
+    hostUiApiRange: '^1.0.0',
 });
 const CLIENT_ACTION_HOST_ORIGIN = Object.freeze({
     machineId: CLIENT_ACTION_ORIGIN.materializationRef.machineId,
@@ -191,11 +225,13 @@ function clientActionExecutionOrigin(pluginId: string): PluginMachineExecutionOr
 function clientActionIdentity(
     localId: string,
     pluginId = CALLER_PLUGIN_ID,
+    artifactGraph = CLIENT_ACTION_ARTIFACT_GRAPH,
 ): PluginReactNativeBundleCacheIdentity {
     return Object.freeze({
         pluginId,
         contributionId: localId,
-        artifactDigest: CLIENT_ACTION_ARTIFACT_GRAPH.digest,
+        artifactId: CLIENT_ACTION_TARGET.artifactId,
+        artifactDigest: artifactGraph.digest,
         hostAppVersion: '2.0.0',
         hostUiApiVersion: '1.0.0',
         reactVersion: '19.0.0',
@@ -222,14 +258,13 @@ function createClientTargetAction(input: Readonly<{
     identity: PluginContributionIdentityV1;
     dangerLevel?: 'safe' | 'writesRemote';
     surfaces?: readonly ('ui' | 'voice')[];
-    inputSchema?: object;
-    outputSchema?: object;
 }>): PluginProjectedActionV2 {
     const dangerLevel = input.dangerLevel ?? 'safe';
     const executionOrigin = clientActionExecutionOrigin(input.identity.pluginId);
     return PluginProjectedActionV2Schema.parse({
         id: input.identity.localId,
         pluginId: input.identity.pluginId,
+        occurrenceId: `occurrence-${input.identity.pluginId}`,
         title: input.identity.localId,
         scopes: ['global'],
         surfaces: input.surfaces ?? ['ui'],
@@ -238,16 +273,13 @@ function createClientTargetAction(input: Readonly<{
             target: 'client',
             client: {
                 artifactId: CLIENT_ACTION_TARGET.artifactId,
-                modulePath: CLIENT_ACTION_TARGET.modulePath,
-                exportName: CLIENT_ACTION_TARGET.exportName,
+                                exportName: CLIENT_ACTION_TARGET.exportName,
             },
             platforms: [CLIENT_ACTION_TARGET.platform],
         },
         serverIdentityId: executionOrigin.serverIdentityId,
         materializationRef: executionOrigin.materializationRef,
         dangerLevel,
-        ...(input.inputSchema ? { inputSchema: input.inputSchema } : {}),
-        ...(input.outputSchema ? { outputSchema: input.outputSchema } : {}),
         ...(dangerLevel === 'safe'
             ? {}
             : {
@@ -270,7 +302,8 @@ function createClientActionActivation(input: Readonly<{
     outputSchema?: object;
     handler: PluginClientActionHandler;
     accountLifetime?: ActiveServerAccountScopeLifetime;
-    immutableGenerationId?: string;
+    occurrenceId?: string;
+    artifactGraph?: PluginUiArtifactsManifestEntryV2;
 }>) {
     const pluginId = input.pluginId ?? CALLER_PLUGIN_ID;
     const localId = input.localId ?? 'refresh-index';
@@ -284,12 +317,16 @@ function createClientActionActivation(input: Readonly<{
         identity: { pluginId, localId },
         dangerLevel: input.dangerLevel,
         surfaces: input.surfaces,
-        inputSchema: input.inputSchema,
-        outputSchema: input.outputSchema,
     });
-    const identity = clientActionIdentity(localId, pluginId);
+    clientActionSchemasByQualifiedId.set(`${pluginId}/${localId}`, {
+        inputSchema: input.inputSchema ?? {},
+        ...(input.outputSchema ? { outputSchema: input.outputSchema } : {}),
+    });
+    const artifactGraph = input.artifactGraph ?? CLIENT_ACTION_ARTIFACT_GRAPH;
+    const identity = clientActionIdentity(localId, pluginId, artifactGraph);
     const projectedAction = Object.freeze({
         ...action,
+        occurrenceId: input.occurrenceId ?? `occurrence-${pluginId}`,
         serverIdentityId: executionOrigin.serverIdentityId,
         materializationRef: executionOrigin.materializationRef,
         [PLUGIN_UI_CONTRIBUTION_ORIGIN_KEY]: hostOrigin,
@@ -303,7 +340,6 @@ function createClientActionActivation(input: Readonly<{
                 id: pluginId,
                 displayName: 'Happier Inspector',
                 version: '1.2.3',
-                immutableGenerationId: input.immutableGenerationId ?? `generation-${pluginId}`,
                 enabled: true,
                 source: { kind: 'localPath', locator: pluginId },
             }),
@@ -315,14 +351,15 @@ function createClientActionActivation(input: Readonly<{
             [bundleId]: Object.freeze({
                 id: bundleId,
                 pluginId,
+                occurrenceId: projectedAction.occurrenceId,
                 contributionKind: 'reactNativeBundle' as const,
                 contributionId: localId,
                 generatedOwnerKind: 'clientContribution' as const,
-                artifactGraph: CLIENT_ACTION_ARTIFACT_GRAPH,
+                artifactGraph,
                 runtime: Object.freeze({
                     decision: Object.freeze({ state: 'load' }),
                     loadPolicy: Object.freeze({ source: 'installedArtifact' }),
-                    cacheIdentity: identity,
+                    cacheIdentity: Object.freeze({ artifactDigest: artifactGraph.digest }),
                 }),
                 [PLUGIN_UI_CONTRIBUTION_ORIGIN_KEY]: hostOrigin,
             }),
@@ -348,24 +385,24 @@ function createClientActionActivation(input: Readonly<{
         api.actions.register(localId, input.handler);
     });
     const backend: PluginReactNativeLoaderBackend = Object.freeze({
-        backendId: 'reactNativeWebModule',
+        backendId: 'commonJs',
         available: true,
         loadInstalledBundle: vi.fn(async () => activate as PluginReactNativeExecutableExport),
     });
     const activation = Object.freeze({
         pluginId: resolvedAction.pluginId,
         ...(resolvedAction.pluginVersion === undefined ? {} : { pluginVersion: resolvedAction.pluginVersion }),
+        hostUiApiRange: resolvedAction.hostUiApiRange,
         contributes: resolvedAction.contributes,
         target: resolvedAction.target,
         executionOrigin: resolvedAction.executionOrigin,
-        projectionGeneration: resolvedAction.projectionGeneration,
         cache,
         identity: resolvedAction.cacheIdentity,
         moduleReference: resolvedAction.moduleReference,
         backend,
         authority: resolvedAction.authority,
         accountLifetime: input.accountLifetime,
-        immutableGenerationId: resolvedAction.immutableGenerationId,
+        occurrenceId: projectedAction.occurrenceId,
         isCurrent: () => true,
     });
     return Object.freeze({
@@ -391,6 +428,7 @@ function resolveDaemonTargetAction(
     return {
         id: identity.localId,
         pluginId: identity.pluginId,
+        occurrenceId: `occurrence-${identity.pluginId}`,
         title: identity.localId,
         scopes: ['session'],
         surfaces: ['ui'],
@@ -449,6 +487,70 @@ function executeActionRequest(payload: PluginUiJsonValueV1): PluginUiHostApiRequ
     };
 }
 
+async function runMountedHomeApproval(custody: PluginSourceCustodyV1, retireBeforeReplay = false) {
+    let stored: ApprovalRequest | null = null;
+    let currentCustody = custody;
+    const effects: Parameters<NonNullable<ActionExecutorDeps['homeDomainAction']>>[0][] = [];
+    const settings = normalizeActionsSettingsV1(retireBeforeReplay ? {
+        v: 1,
+        approvalWaivedSurfaces: { 'teams.members.remove': ['plugin'] },
+        actions: { 'teams.members.remove': { approvalRequiredSurfaces: ['plugin'] } },
+    } : { v: 1 });
+    // Only persistence and Home/daemon request boundaries are substituted. The
+    // public dispatcher, policy, Artifact transitions and replay remain real.
+    const deps = {
+        isActionApprovalRequired: (actionId, context) => isApprovalRequiredByActionsSettings(actionId, settings, context),
+        homeDomainAction: async (request) => {
+            effects.push(request);
+            return { status: 'removed', membershipId: 'membership-1' };
+        },
+        approvalsCreate: async ({ request }) => {
+            stored = ApprovalRequestV2Schema.parse(request);
+            return { artifactId: 'approval-home-1' };
+        },
+        approvalsGet: async () => stored,
+        approvalsUpdate: async ({ request }) => {
+            if (!stored) throw new Error('Approval not created');
+            const transition = decideApprovalRequestTransition(stored, request);
+            if (!transition.ok) return transition;
+            stored = ApprovalRequestV2Schema.parse(request);
+            return { ok: true as const };
+        },
+        isApprovalExecutionOriginCurrent: async ({ origin }) => origin.caller.kind === 'plugin'
+            && origin.caller.pluginId === CALLER_PLUGIN_ID
+            && pluginSourceCustodyV1Equal(origin.caller.sourceCustody, currentCustody),
+    } satisfies Partial<ActionExecutorDeps>;
+    // This boundary fixture intentionally omits unrelated Session/Agent ports; only the exercised external ports are supplied.
+    const executor = createActionExecutor(deps as unknown as ActionExecutorDeps);
+    const api = createPluginSurfaceActionHostApi({
+        surfaceContext: surfaceContext(),
+        callerBinding: mountedCallerBinding(),
+        callerSourceCustody: custody,
+        hostAction: {
+            execute: executor.execute,
+            context: {
+                serverId: 'home-1', runtimeAccountId: 'account-1',
+                actionRequestId: 'request-home-1', executionRunTargetMachineId: 'machine-1',
+            },
+        },
+    });
+    try {
+        const response = await api.handleRequest(executeActionRequest({
+            action: 'teams.members.remove',
+            input: { v: 1, teamId: 'team-1', membershipId: 'membership-1' },
+        }));
+        expect(response).toMatchObject({ kind: 'approval_request_created', artifactId: 'approval-home-1' });
+        expect(effects).toEqual([]);
+        if (retireBeforeReplay) currentCustody = { kind: 'development', registeredRootId: 'replacement-root' };
+        const decision = await executor.execute('approval.request.decide', {
+            artifactId: 'approval-home-1', decision: 'approve',
+        }, { surface: 'ui', authority: 'present_user', serverId: 'home-1' });
+        return { response, decision, effects, stored: () => stored };
+    } finally {
+        api.dispose?.();
+    }
+}
+
 describe('plugin-surface action branch selection', () => {
     it('reads the current UI snapshot only after current-intent approval for a writes-remote client Action', async () => {
         const snapshotAtDispatch: CurrentUiContextSnapshotV1 = {
@@ -492,10 +594,9 @@ describe('plugin-surface action branch selection', () => {
                 input: null,
                 resolveContributedAction: resolveExactClientAction(activation.action),
                 clientAction: {
-                    projectionGeneration: CLIENT_ACTION_GENERATION,
                     currentUiContext: readCurrentUiContext,
-                    requestCurrentIntent,
                 },
+                requestCurrentIntent,
             });
             await currentIntentRequestedPromise;
             expect(readCurrentUiContext).not.toHaveBeenCalled();
@@ -555,7 +656,6 @@ describe('plugin-surface action branch selection', () => {
                     execute: contributed,
                 },
                 clientAction: {
-                    projectionGeneration: CLIENT_ACTION_GENERATION,
                 },
             })).resolves.toEqual({
                 ok: true,
@@ -576,7 +676,6 @@ describe('plugin-surface action branch selection', () => {
 
             expect(resolvePluginUiClientActionRegistration({
                 action,
-                projectionGeneration: CLIENT_ACTION_GENERATION,
                 platform: CLIENT_ACTION_TARGET.platform,
                 reader: activation.composition,
             })).not.toBeNull();
@@ -593,12 +692,9 @@ describe('plugin-surface action branch selection', () => {
         await activation.composition.unload();
         try {
             await activation.composition.reconcile([activation.activation]);
-            const unionGeneration = 999;
-
             await expect(dispatchPluginResolvedSemanticCommand({
                 projection: Object.freeze({
                     ...activation.projection,
-                    generation: unionGeneration,
                 }),
                 callerPluginId: CALLER_PLUGIN_ID,
                 command: {
@@ -608,7 +704,6 @@ describe('plugin-surface action branch selection', () => {
                 scopedLaunchFacts: {
                     serverId: null,
                     machineId: null,
-                    generation: unionGeneration,
                     interactionEnabled: true,
                 },
                 scopeIsCurrent: () => true,
@@ -647,11 +742,13 @@ describe('plugin-surface action branch selection', () => {
             expect(observed).toEqual({ ok: true, result: { rows: ['observed'] } });
             expect(transport).toHaveBeenCalledWith(CLIENT_ACTION_ORIGIN.materializationRef.machineId, expect.objectContaining({
                 serverId: CLIENT_ACTION_HOST_ORIGIN.serverId,
-                expectedGeneration: String(CLIENT_ACTION_GENERATION),
+                expectedContributorOccurrenceId: activation.action.occurrenceId,
                 invocation: {
                     kind: 'clientPluginAction',
                     clientActionBinding: {
+                        pluginId: activation.action.pluginId,
                         contributionLocalId: activation.action.id,
+                        occurrenceId: activation.action.occurrenceId,
                         materializationRef: CLIENT_ACTION_ORIGIN.materializationRef,
                     },
                 },
@@ -675,7 +772,7 @@ describe('plugin-surface action branch selection', () => {
             localId: TRIAGE_SEARCH_ENTRIES_ACTION_LOCAL_ID_V1,
             handler: (value, context) => handler(PluginSearchQueryV1Schema.parse(value), context),
             accountLifetime,
-            immutableGenerationId: 'triage-cold-search-generation',
+            occurrenceId: 'triage-cold-search-generation',
         });
         const entryRef = testkitEntryRef();
         const result = TriageListEntriesResultV1Schema.parse({
@@ -704,7 +801,7 @@ describe('plugin-surface action branch selection', () => {
         const mountedScope = getPluginUiEphemeralSharedScope({
             accountLifetime,
             pluginId: 'happier.triage',
-            immutableGenerationId: 'triage-cold-search-generation',
+            occurrenceId: 'triage-cold-search-generation',
             executionOrigin: clientActionExecutionOrigin('happier.triage'),
             isCurrent: accountLifetime.isCurrent,
         });
@@ -723,7 +820,7 @@ describe('plugin-surface action branch selection', () => {
                 ...activation.projection.installedPackagesById,
                 'happier.triage': {
                     ...activation.projection.installedPackagesById['happier.triage']!,
-                    immutableGenerationId: 'triage-cold-search-generation',
+                    occurrenceId: 'triage-cold-search-generation',
                 },
             },
             actionsById: { ...activation.projection.actionsById, [`happier.triage/${list.id}`]: list },
@@ -801,7 +898,7 @@ describe('plugin-surface action branch selection', () => {
                 action: activation.action.id,
                 input: null,
                 resolveContributedAction: resolveExactClientAction(activation.action),
-                clientAction: { projectionGeneration: CLIENT_ACTION_GENERATION, openSurface: navigation },
+                clientAction: { openSurface: navigation },
                 signal: abort.signal,
                 isCurrent: () => true,
             });
@@ -857,7 +954,6 @@ describe('plugin-surface action branch selection', () => {
                     execute: contributed,
                 },
                 clientAction: {
-                    projectionGeneration: CLIENT_ACTION_GENERATION,
                 },
             });
             expect(nestedError).toBeUndefined();
@@ -871,7 +967,9 @@ describe('plugin-surface action branch selection', () => {
             }).invocation).toEqual({
                 kind: 'clientPluginAction',
                 clientActionBinding: {
+                    pluginId: CALLER_PLUGIN_ID,
                     contributionLocalId: 'refresh-index',
+                    occurrenceId: activation.action.occurrenceId,
                     materializationRef: CLIENT_ACTION_ORIGIN.materializationRef,
                 },
             });
@@ -886,7 +984,7 @@ describe('plugin-surface action branch selection', () => {
         const targetScope = getPluginUiEphemeralSharedScope({
             accountLifetime,
             pluginId: targetPluginId,
-            immutableGenerationId: `generation-${targetPluginId}`,
+            occurrenceId: `occurrence-${targetPluginId}`,
             executionOrigin: clientActionExecutionOrigin(targetPluginId),
             isCurrent: () => true,
         });
@@ -898,6 +996,14 @@ describe('plugin-surface action branch selection', () => {
         const target = createClientActionActivation({
             pluginId: targetPluginId,
             localId: 'target-action',
+            surfaces: ['ui', 'voice'],
+            // This is a different installed plugin module. Giving it distinct
+            // bytes keeps the fixture from asking the canonical composition
+            // to coalesce two unrelated activate() functions as one module.
+            artifactGraph: Object.freeze({
+                ...CLIENT_ACTION_ARTIFACT_GRAPH,
+                digest: 'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+            }),
             handler: targetHandler,
             accountLifetime,
         });
@@ -920,7 +1026,6 @@ describe('plugin-surface action branch selection', () => {
                     candidate.pluginId === identity.pluginId && candidate.id === identity.localId
                 )) ?? null,
                 clientAction: {
-                    projectionGeneration: CLIENT_ACTION_GENERATION,
                 },
             });
             expect(outcome).toEqual({
@@ -952,7 +1057,7 @@ describe('plugin-surface action branch selection', () => {
             expect(await dispatchPluginSurfaceAction({
                 action: { pluginId: CALLER_PLUGIN_ID, localId: activation.action.id },
                 resolveContributedAction: resolveExactClientAction(activation.action),
-                clientAction: { projectionGeneration: CLIENT_ACTION_GENERATION },
+                clientAction: {},
             })).toEqual({ ok: true, result: { value: 'account-a' } });
             accountLifetime.retire();
             expect(dispose).toHaveBeenCalledOnce();
@@ -964,7 +1069,7 @@ describe('plugin-surface action branch selection', () => {
         }
     });
 
-    it('rehydrates manifest schemas for carrierless client Action dispatch', async () => {
+    it('validates client Action input against the per-Action daemon schema and returns trusted plugin output as-is', async () => {
         const inputSchema = defineProtocolObject({
             title: defineProtocolString({ minLength: 1 }),
         }, { policy: 'additive-open/drop' }).jsonSchema;
@@ -985,32 +1090,42 @@ describe('plugin-surface action branch selection', () => {
             outputSchema,
         });
         const action = activation.action;
+        const rpcCallsBefore = machineRpcWithServerScopeMock.mock.calls.length;
+        // The bulk projection carries no schemas; dispatch reads them per Action.
+        expect(action).not.toHaveProperty('inputSchema');
+        expect(action).not.toHaveProperty('outputSchema');
         await activation.composition.unload();
         try {
             await activation.composition.reconcile([activation.activation]);
-            const registration = resolvePluginUiClientActionRegistration({
-                action,
-                projectionGeneration: CLIENT_ACTION_GENERATION,
-                platform: CLIENT_ACTION_TARGET.platform,
-                reader: activation.composition,
-            });
-            expect(registration).not.toBeNull();
-            if (!registration) throw new Error('client Action registration missing');
-            expect(registration.handler).not.toHaveProperty('inputParser');
-            expect(registration.handler).not.toHaveProperty('resultParser');
-
-            await expect(dispatchPluginSurfaceAction({
+            const dispatchInput = (input: PluginUiJsonValueV1) => dispatchPluginSurfaceAction({
                 callerPluginId: CALLER_PLUGIN_ID,
                 action: 'refresh-index',
-                input: { title: 'Release', privateInput: true },
+                input,
                 resolveContributedAction: resolveExactClientAction(action),
-                clientAction: { projectionGeneration: CLIENT_ACTION_GENERATION },
-            })).resolves.toEqual({
-                ok: true,
-                result: { accepted: true },
+                clientAction: {},
             });
 
+            await expect(dispatchInput({ title: '' })).resolves.toMatchObject({ ok: false });
+            expect(handler).not.toHaveBeenCalled();
+            await expect(dispatchInput({ title: 'Release', privateInput: true })).resolves.toEqual({
+                ok: true,
+                result: { accepted: true, privateResult: { title: 'Release' } },
+            });
             expect(handler).toHaveBeenCalledWith({ title: 'Release' });
+            const schemaReads = machineRpcWithServerScopeMock.mock.calls
+                .slice(rpcCallsBefore)
+                .map(([request]) => request as Readonly<{ method: string; machineId: string; serverId: string | null; payload: unknown }>)
+                .filter((request) => request.method === RPC_METHODS.DAEMON_PLUGIN_ACTION_SCHEMAS_READ);
+            // One read per Action occurrence, from the Action's own authority.
+            expect(schemaReads).toEqual([expect.objectContaining({
+                machineId: CLIENT_ACTION_HOST_ORIGIN.machineId,
+                serverId: CLIENT_ACTION_HOST_ORIGIN.serverId,
+                payload: {
+                    machineId: CLIENT_ACTION_HOST_ORIGIN.machineId,
+                    expectedOccurrenceId: action.occurrenceId,
+                    qualifiedActionId: `${CALLER_PLUGIN_ID}/refresh-index`,
+                },
+            })]);
         } finally {
             await activation.composition.unload();
         }
@@ -1031,7 +1146,7 @@ describe('plugin-surface action branch selection', () => {
                 input: null,
                 resolveContributedAction: resolveExactClientAction(action),
                 invocationSurface: 'voice',
-                clientAction: { projectionGeneration: CLIENT_ACTION_GENERATION },
+                clientAction: {},
             })).resolves.toEqual({
                 ok: false,
                 code: 'unavailable',
@@ -1061,7 +1176,7 @@ describe('plugin-surface action branch selection', () => {
                 action: 'refresh-index',
                 input: null,
                 resolveContributedAction: resolveExactClientAction(action),
-                clientAction: { projectionGeneration: CLIENT_ACTION_GENERATION },
+                clientAction: {},
             } as const;
             await expect(dispatchPluginSurfaceAction(common)).resolves.toEqual({
                 ok: true,
@@ -1078,7 +1193,6 @@ describe('plugin-surface action branch selection', () => {
             expect(handler).toHaveBeenCalledTimes(2);
             expect(resolvePluginUiClientActionRegistration({
                 action,
-                projectionGeneration: CLIENT_ACTION_GENERATION,
                 platform: CLIENT_ACTION_TARGET.platform,
                 reader: activation.composition,
             })).not.toBeNull();
@@ -1109,12 +1223,10 @@ describe('plugin-surface action branch selection', () => {
                 action: 'refresh-index',
                 input: { source: 'surface' },
                 resolveContributedAction: resolveExactClientAction(action),
-                clientAction: {
-                    projectionGeneration: CLIENT_ACTION_GENERATION,
-                    requestCurrentIntent: ({ fingerprint }: Readonly<{ fingerprint: string }>) => {
-                        intentRequested();
-                        return new Promise((resolve) => { resolveIntent = resolve; });
-                    },
+                clientAction: {},
+                requestCurrentIntent: () => {
+                    intentRequested();
+                    return new Promise((resolve) => { resolveIntent = resolve; });
                 },
             });
             await intentRequestedPromise;
@@ -1155,7 +1267,7 @@ describe('plugin-surface action branch selection', () => {
                 input: null,
                 resolveContributedAction: resolveExactClientAction(action),
                 signal: cancellation.signal,
-                clientAction: { projectionGeneration: CLIENT_ACTION_GENERATION },
+                clientAction: {},
             });
             await handlerReturnedPromise;
             cancellation.abort(new Error('caller stopped after the client effect settled'));
@@ -1186,7 +1298,7 @@ describe('plugin-surface action branch selection', () => {
                 input: null,
                 resolveContributedAction: resolveExactClientAction(action),
                 signal: cancellation.signal,
-                clientAction: { projectionGeneration: CLIENT_ACTION_GENERATION },
+                clientAction: {},
             });
             await handlerEnteredPromise;
             cancellation.abort(new Error('caller stopped after the client handler started'));
@@ -1221,10 +1333,8 @@ describe('plugin-surface action branch selection', () => {
                 action: 'refresh-index',
                 input: null,
                 resolveContributedAction: resolveExactClientAction(action),
-                clientAction: {
-                    projectionGeneration: CLIENT_ACTION_GENERATION,
-                    requestCurrentIntent,
-                },
+                clientAction: {},
+                requestCurrentIntent,
             })).resolves.toEqual({
                 // A decline is a decision, not an absence. It must NOT settle as
                 // `unavailable`: an autonomous caller reads that as a transient
@@ -1254,7 +1364,8 @@ describe('plugin-surface action branch selection', () => {
             contributor: {
                 pluginId: CALLER_PLUGIN_ID,
                 contributionId: 'github-connection',
-                immutableGenerationId: 'contributor-generation-a',
+                occurrenceId: 'contributor-generation-a',
+                sourceCustody: CONTRIBUTOR_SOURCE_CUSTODY,
             },
             role: 'setup',
             action: { pluginId: CALLER_PLUGIN_ID, localId: 'refresh-index' },
@@ -1270,10 +1381,16 @@ describe('plugin-surface action branch selection', () => {
             selection: {
                 target: {
                     pluginId: CALLER_PLUGIN_ID,
-                    immutableGenerationId: 'target-generation-a',
+                    occurrenceId: 'target-generation-a',
+                    sourceCustody: TARGET_SOURCE_CUSTODY,
                 },
                 point: targetedOperation.point,
-                contributor: targetedOperation.contributor,
+                contributor: {
+                    pluginId: targetedOperation.contributor.pluginId,
+                    contributionId: targetedOperation.contributor.contributionId,
+                    occurrenceId: targetedOperation.contributor.occurrenceId,
+                    sourceCustody: targetedOperation.contributor.sourceCustody,
+                },
             },
             connectedAccount: {
                 kind: 'selected' as const,
@@ -1287,12 +1404,13 @@ describe('plugin-surface action branch selection', () => {
         };
         const dispatch = (overrides: Partial<DispatchPluginSurfaceActionInput> = {}) => dispatchPluginSurfaceAction({
             callerPluginId: CALLER_PLUGIN_ID,
+            callerSourceCustody: TARGET_SOURCE_CUSTODY,
             callerContributionLocalId: 'inspector-app',
             callerBinding: mountedCallerBinding(),
             action: { pluginId: CALLER_PLUGIN_ID, localId: 'refresh-index' },
             input: { repository: 'happier-dev/happier' },
             resolveContributedAction: resolveExactClientAction(action),
-            clientAction: { projectionGeneration: CLIENT_ACTION_GENERATION },
+            clientAction: {},
             targetedOperation,
             selectedActionInput,
             ...overrides,
@@ -1327,7 +1445,27 @@ describe('plugin-surface action branch selection', () => {
                     ...selectedActionInput,
                     selection: {
                         ...selectedActionInput.selection,
-                        target: { pluginId: 'other.plugin', immutableGenerationId: 'target-generation-a' },
+                        target: { pluginId: 'other.plugin', sourceCustody: TARGET_SOURCE_CUSTODY },
+                    },
+                },
+            })).resolves.toEqual({
+                ok: false,
+                code: 'invalid_payload',
+                reason: 'plugin_surface_targeted_selection_invalid',
+            });
+
+            await expect(dispatch({
+                selectedActionInput: {
+                    ...selectedActionInput,
+                    selection: {
+                        ...selectedActionInput.selection,
+                        target: {
+                            pluginId: CALLER_PLUGIN_ID,
+                            sourceCustody: {
+                                kind: 'development',
+                                registeredRootId: 'different-inspector-root',
+                            },
+                        },
                     },
                 },
             })).resolves.toEqual({
@@ -1399,6 +1537,46 @@ describe('plugin-surface action branch selection', () => {
         expect(PLUGIN_INVOCABLE_ACTION_IDS).not.toContain('refresh-index');
     });
 
+    it.each([
+        { kind: 'bundled_first_party', packagedRuntime: { kind: 'cli_version_root', versionRootId: 'cli-current' } },
+        { kind: 'managed', immutableGenerationId: 'installed-current', installSource: 'archive' },
+        { kind: 'development', registeredRootId: 'inspector-root' },
+    ] satisfies PluginSourceCustodyV1[])(
+        'keeps $kind mounted custody through default Home approval and current replay',
+        async (custody) => {
+            const result = await runMountedHomeApproval(custody);
+            expect(result.decision).toMatchObject({
+                ok: true, result: { status: 'executed', execution: {
+                    ok: true, result: { status: 'removed', membershipId: 'membership-1' },
+                } },
+            });
+            expect(result.effects).toEqual([expect.objectContaining({
+                actionId: 'teams.members.remove',
+                input: { v: 1, teamId: 'team-1', membershipId: 'membership-1' },
+                context: expect.objectContaining({ serverId: 'home-1' }),
+            })]);
+            expect(result.stored()).toMatchObject({
+                status: 'executed',
+                executionOriginV1: { caller: {
+                    kind: 'plugin', pluginId: CALLER_PLUGIN_ID,
+                    contributionLocalId: 'inspector-app', sourceCustody: custody,
+                } },
+            });
+        },
+    );
+
+    it('honors explicit Home approval over a plugin waiver and refuses retired source custody at replay', async () => {
+        const result = await runMountedHomeApproval(TARGET_SOURCE_CUSTODY, true);
+        expect(result.decision).toMatchObject({ ok: true, result: {
+            status: 'failed', execution: { ok: false, errorCode: 'approval_stale' },
+        } });
+        expect(result.effects).toEqual([]);
+        expect(result.stored()).toMatchObject({
+            status: 'failed', execution: { errorCode: 'approval_stale' },
+            executionOriginV1: { caller: { sourceCustody: TARGET_SOURCE_CUSTODY } },
+        });
+    });
+
     it('routes a plugin-surfaced ActionSpec id to the host executor with the host-stamped caller', async () => {
         const execute = vi.fn(async () => ({ ok: true as const, result: { reloaded: true } }));
         const contributed = vi.fn<PluginSurfaceContributedActionTransport>();
@@ -1424,6 +1602,7 @@ describe('plugin-surface action branch selection', () => {
                 kind: 'plugin',
                 pluginId: CALLER_PLUGIN_ID,
                 contributionLocalId: 'inspector-app',
+                occurrenceId: `${CALLER_PLUGIN_ID}:current`,
                 materialization: CALLER_MATERIALIZATION,
             },
         });
@@ -1452,6 +1631,7 @@ describe('plugin-surface action branch selection', () => {
                 kind: 'plugin',
                 pluginId: CALLER_PLUGIN_ID,
                 contributionLocalId: 'inspector-app',
+                occurrenceId: `${CALLER_PLUGIN_ID}:current`,
                 materialization: CALLER_MATERIALIZATION,
             },
         });
@@ -1542,7 +1722,7 @@ describe('plugin-surface action branch selection', () => {
 
         expect(contributed).toHaveBeenCalledWith('machine-1', {
             serverId: 'server-1',
-            expectedGeneration: '9',
+            expectedContributorOccurrenceId: 'occurrence-acme.reviewer',
             qualifiedActionId: 'acme.reviewer/refresh-index',
             input: { reason: 'cross-plugin' },
             executionSurface: 'ui',
@@ -1580,7 +1760,7 @@ describe('plugin-surface action branch selection', () => {
 
         expect(contributed).toHaveBeenCalledWith('machine-1', {
             serverId: null,
-            expectedGeneration: '9',
+            expectedContributorOccurrenceId: 'occurrence-acme.reviewer',
             qualifiedActionId: 'acme.reviewer/refresh-index',
             input: { reason: 'message-action' },
             executionSurface: 'ui',
@@ -1614,7 +1794,6 @@ describe('plugin-surface action branch selection', () => {
             contributedAction: {
                 machineId: 'machine-1',
                 serverId: 'server-1',
-                expectedGeneration: '7',
                 messageActionReference,
                 execute: contributed,
             },
@@ -1622,7 +1801,7 @@ describe('plugin-surface action branch selection', () => {
 
         expect(contributed).toHaveBeenCalledWith('machine-1', {
             serverId: 'server-1',
-            expectedGeneration: '7',
+            expectedContributorOccurrenceId: 'occurrence-acme.preview',
             qualifiedActionId: 'acme.preview/open-preview',
             input: {},
             executionSurface: 'ui',
@@ -1644,7 +1823,6 @@ describe('plugin-surface action branch selection', () => {
             input: {},
             contributedAction: {
                 machineId: 'machine-1',
-                expectedGeneration: '7',
                 execute: contributed,
             },
         })).resolves.toEqual({
@@ -1716,7 +1894,7 @@ describe('plugin-surface action branch selection', () => {
             ...wire,
         })).toEqual({
             machineId: 'machine-wire',
-            expectedGeneration: '9',
+            expectedContributorOccurrenceId: 'occurrence-acme.reviewer',
             qualifiedActionId: 'acme.reviewer/refresh-index',
             input: { reason: 'wire' },
             sessionId: 'session-wire',
@@ -1728,7 +1906,7 @@ describe('plugin-surface action branch selection', () => {
         });
     });
 
-    it('retains an exact catalog Action immutable generation for an unmounted host invocation', async () => {
+    it('retains an exact catalog Action occurrence for an unmounted host invocation', async () => {
         const contributed = vi.fn<PluginSurfaceContributedActionTransport>(async () => ({
             supported: true as const,
             result: { ok: true as const, result: { configured: true } },
@@ -1739,8 +1917,6 @@ describe('plugin-surface action branch selection', () => {
             input: { repository: 'happier-dev/happier' },
             contributedAction: {
                 machineId: 'machine-1',
-                expectedGeneration: '9',
-                expectedImmutableGenerationId: 'events-generation-a',
                 execute: contributed,
             },
         })).resolves.toEqual({
@@ -1750,7 +1926,7 @@ describe('plugin-surface action branch selection', () => {
 
         expect(contributed).toHaveBeenCalledWith('machine-1', expect.objectContaining({
             qualifiedActionId: 'acme.events/configure-source',
-            expectedContributorImmutableGenerationId: 'events-generation-a',
+            expectedContributorOccurrenceId: 'occurrence-acme.events',
         }));
     });
 
@@ -1766,7 +1942,9 @@ describe('plugin-surface action branch selection', () => {
             contributionLocalId: 'message-preview',
         };
         const mountedBinding = {
+            pluginId: caller.pluginId,
             contributionLocalId: caller.contributionLocalId,
+            occurrenceId: 'acme.preview:current',
             materializationRef: {
                 machineId: 'machine-default',
                 materializationId: 'materialization-preview-current',
@@ -1776,7 +1954,6 @@ describe('plugin-surface action branch selection', () => {
         const contributedAction = {
             machineId: 'machine-default',
             serverId: 'server-default',
-            expectedGeneration: '7',
         };
 
         await expect(dispatchPluginSurfaceAction({
@@ -1804,7 +1981,6 @@ describe('plugin-surface action branch selection', () => {
             contributedAction: {
                 machineId: contributedAction.machineId,
                 serverId: contributedAction.serverId,
-                expectedGeneration: contributedAction.expectedGeneration,
             },
         })).resolves.toEqual({ ok: true, result: { route: 'unmounted' } });
 
@@ -1814,7 +1990,7 @@ describe('plugin-surface action branch selection', () => {
             method: RPC_METHODS.DAEMON_PLUGIN_STRUCTURED_MESSAGE_ACTION_EXECUTE,
             payload: {
                 machineId: 'machine-default',
-                expectedGeneration: '7',
+                expectedContributorOccurrenceId: 'occurrence-acme.preview',
                 qualifiedActionId: 'acme.preview/open-preview',
                 input: { route: 'same' },
                 executionSurface: 'ui',
@@ -1830,7 +2006,7 @@ describe('plugin-surface action branch selection', () => {
             method: RPC_METHODS.DAEMON_PLUGIN_STRUCTURED_MESSAGE_ACTION_EXECUTE,
             payload: {
                 machineId: 'machine-default',
-                expectedGeneration: '7',
+                expectedContributorOccurrenceId: 'occurrence-acme.reviewer',
                 qualifiedActionId: 'acme.reviewer/publish',
                 input: { route: 'cross' },
                 executionSurface: 'ui',
@@ -1846,7 +2022,7 @@ describe('plugin-surface action branch selection', () => {
             method: RPC_METHODS.DAEMON_PLUGIN_STRUCTURED_MESSAGE_ACTION_EXECUTE,
             payload: {
                 machineId: 'machine-default',
-                expectedGeneration: '7',
+                expectedContributorOccurrenceId: 'occurrence-acme.preview',
                 qualifiedActionId: 'acme.preview/open-preview',
                 input: { route: 'unmounted' },
                 executionSurface: 'ui',
@@ -1869,7 +2045,6 @@ describe('plugin-surface action branch selection', () => {
             input: {},
             contributedAction: {
                 machineId: 'machine-1',
-                expectedGeneration: '9',
                 execute: contributed,
             },
         })).resolves.toEqual({
@@ -1904,7 +2079,6 @@ describe('plugin-surface action branch selection', () => {
             signal: controller.signal,
             contributedAction: {
                 machineId: 'machine-1',
-                expectedGeneration: '9',
                 execute: contributed,
             },
         })).resolves.toEqual({
@@ -1925,7 +2099,6 @@ describe('plugin-surface action branch selection', () => {
             isCurrent: () => false,
             contributedAction: {
                 machineId: 'machine-1',
-                expectedGeneration: '9',
                 execute: contributed,
             },
         })).resolves.toEqual({
@@ -1953,7 +2126,6 @@ describe('plugin-surface action branch selection', () => {
             isCurrent: () => current,
             contributedAction: {
                 machineId: 'machine-1',
-                expectedGeneration: '9',
                 execute: contributed,
             },
         })).resolves.toEqual({ ok: true, result: { applied: 1 } });
@@ -1973,7 +2145,6 @@ describe('plugin-surface action branch selection', () => {
             isCurrent: () => current,
             contributedAction: {
                 machineId: 'machine-1',
-                expectedGeneration: '9',
                 execute: contributed,
             },
         })).resolves.toEqual({
@@ -1995,7 +2166,6 @@ describe('plugin-surface action branch selection', () => {
             input: {},
             contributedAction: {
                 machineId: 'machine-1',
-                expectedGeneration: '9',
                 execute: contributed,
             },
         })).resolves.toEqual({
@@ -2018,7 +2188,6 @@ describe('plugin-surface action branch selection', () => {
             invocationSurface: 'voice',
             contributedAction: {
                 machineId: 'machine-1',
-                expectedGeneration: '9',
                 execute: contributed,
             },
         })).resolves.toEqual({
@@ -2026,6 +2195,148 @@ describe('plugin-surface action branch selection', () => {
             code: 'timeout',
             reason: 'plugin_ui_action_outcome_unknown',
         });
+    });
+});
+
+function resolveConfirmedDaemonTargetAction(
+    identity: PluginContributionIdentityV1,
+): PluginProjectedActionV2 {
+    return PluginProjectedActionV2Schema.parse({
+        ...resolveDaemonTargetAction(identity),
+        scopes: ['global'],
+        dangerLevel: 'writesRemote',
+        confirmation: {
+            title: 'Publish the release?',
+            body: 'This changes remote state.',
+        },
+    });
+}
+
+// One present-user confirmation owner for both placements (PPS §9 ruling d):
+// the UI asks the person, then carries the settled intent on the daemon RPC.
+// No daemon or server round trip may stand in for that local decision.
+describe('present-user confirmation for daemon-target Actions', () => {
+    it('confirms locally before the daemon RPC and carries the settled present intent', async () => {
+        const order: string[] = [];
+        const requestCurrentIntent = vi.fn(async ({ fingerprint }: Readonly<{ fingerprint: string }>) => {
+            order.push('confirm');
+            return { status: 'approved' as const, fingerprint };
+        });
+        const contributed = vi.fn<PluginSurfaceContributedActionTransport>(async () => {
+            order.push('transport');
+            return { supported: true as const, result: { ok: true as const, result: { published: true } } };
+        });
+
+        await expect(dispatchPluginSurfaceAction({
+            action: { pluginId: 'acme.releases', localId: 'publish' },
+            input: { tag: 'v1' },
+            resolveContributedAction: resolveConfirmedDaemonTargetAction,
+            requestCurrentIntent,
+            contributedAction: { machineId: 'machine-1', execute: contributed },
+        })).resolves.toEqual({ ok: true, result: { published: true } });
+
+        expect(order).toEqual(['confirm', 'transport']);
+        expect(requestCurrentIntent).toHaveBeenCalledWith(expect.objectContaining({
+            action: expect.objectContaining({ pluginId: 'acme.releases', id: 'publish' }),
+            invocationSurface: 'ui',
+        }));
+        expect(contributed).toHaveBeenCalledWith('machine-1', expect.objectContaining({
+            qualifiedActionId: 'acme.releases/publish',
+            executionSurface: 'ui',
+            presentUserIntent: 'confirmed',
+        }));
+    });
+
+    it('runs nothing and leaves nothing pending when the person cancels the local confirmation', async () => {
+        const requestCurrentIntent = vi.fn(async () => ({
+            status: 'rejected' as const,
+            code: 'plugin_action_current_intent_rejected',
+        }));
+        const contributed = vi.fn<PluginSurfaceContributedActionTransport>();
+        const onDaemonActionOperationAdmitted = vi.fn();
+
+        await expect(dispatchPluginSurfaceAction({
+            action: { pluginId: 'acme.releases', localId: 'publish' },
+            input: { tag: 'v1' },
+            actionRequestId: 'request-cancelled',
+            onDaemonActionOperationAdmitted,
+            resolveContributedAction: (identity) => PluginProjectedActionV2Schema.parse({
+                ...resolveConfirmedDaemonTargetAction(identity),
+                operation: {
+                    version: 1,
+                    visibility: 'activity',
+                    progress: 'indeterminate',
+                    presentation: { onStart: 'activity' },
+                },
+            }),
+            requestCurrentIntent,
+            contributedAction: { machineId: 'machine-1', execute: contributed },
+        })).resolves.toEqual({
+            ok: false,
+            code: 'denied',
+            reason: 'plugin_action_current_intent_rejected',
+        });
+
+        expect(requestCurrentIntent).toHaveBeenCalledTimes(1);
+        expect(contributed).not.toHaveBeenCalled();
+        expect(onDaemonActionOperationAdmitted).not.toHaveBeenCalled();
+    });
+
+    it('sends a safe daemon Action without asking and without a present intent', async () => {
+        const requestCurrentIntent = vi.fn();
+        const contributed = vi.fn<PluginSurfaceContributedActionTransport>(async () => ({
+            supported: true as const,
+            result: { ok: true as const, result: {} },
+        }));
+
+        await dispatchPluginSurfaceAction({
+            action: { pluginId: 'acme.releases', localId: 'refresh' },
+            input: {},
+            requestCurrentIntent,
+            contributedAction: { machineId: 'machine-1', execute: contributed },
+        });
+
+        expect(requestCurrentIntent).not.toHaveBeenCalled();
+        expect(contributed.mock.calls[0]?.[1]).not.toHaveProperty('presentUserIntent');
+    });
+
+    it('asks locally for a safe daemon Action when the Ask-first Action setting requires approval', async () => {
+        const storage = getStorage();
+        const previous = storage.getState();
+        storage.setState((state) => ({
+            ...state,
+            settings: {
+                ...state.settings,
+                actionsSettingsV1: normalizeActionsSettingsV1({
+                    v: 1,
+                    actions: { 'acme.releases/actions/refresh': { approvalRequiredSurfaces: ['ui'] } },
+                }),
+            },
+        }));
+        try {
+            const requestCurrentIntent = vi.fn(async ({ fingerprint }: Readonly<{ fingerprint: string }>) => ({
+                status: 'approved' as const,
+                fingerprint,
+            }));
+            const contributed = vi.fn<PluginSurfaceContributedActionTransport>(async () => ({
+                supported: true as const,
+                result: { ok: true as const, result: {} },
+            }));
+
+            await dispatchPluginSurfaceAction({
+                action: { pluginId: 'acme.releases', localId: 'refresh' },
+                input: {},
+                requestCurrentIntent,
+                contributedAction: { machineId: 'machine-1', execute: contributed },
+            });
+
+            expect(requestCurrentIntent).toHaveBeenCalledTimes(1);
+            expect(contributed).toHaveBeenCalledWith('machine-1', expect.objectContaining({
+                presentUserIntent: 'confirmed',
+            }));
+        } finally {
+            storage.setState(previous, true);
+        }
     });
 });
 
@@ -2037,10 +2348,10 @@ describe('mounted executeAction handler', () => {
         }));
         const api = createPluginSurfaceActionHostApi({
             surfaceContext: surfaceContext(),
+            callerSourceCustody: TARGET_SOURCE_CUSTODY,
             callerBinding: mountedCallerBinding(),
             contributedAction: {
                 machineId: 'machine-1',
-                expectedGeneration: '9',
                 execute: contributed,
             },
         });
@@ -2068,10 +2379,10 @@ describe('mounted executeAction handler', () => {
         }));
         const api = createPluginSurfaceActionHostApi({
             surfaceContext: surfaceContext(),
+            callerSourceCustody: TARGET_SOURCE_CUSTODY,
             callerBinding: mountedCallerBinding(),
             contributedAction: {
                 machineId: 'machine-1',
-                expectedGeneration: '9',
                 execute: contributed,
             },
         });
@@ -2080,7 +2391,8 @@ describe('mounted executeAction handler', () => {
             contributor: {
                 pluginId: 'acme.reviewer',
                 contributionId: 'github-connection',
-                immutableGenerationId: 'contributor-generation-a',
+                occurrenceId: 'contributor-generation-a',
+                sourceCustody: CONTRIBUTOR_SOURCE_CUSTODY,
             },
             role: 'setup',
             action: { pluginId: 'acme.reviewer', localId: 'prepare-v1' },
@@ -2096,10 +2408,14 @@ describe('mounted executeAction handler', () => {
             selection: {
                 target: {
                     pluginId: CALLER_PLUGIN_ID,
-                    immutableGenerationId: 'target-generation-a',
+                    sourceCustody: TARGET_SOURCE_CUSTODY,
                 },
                 point: targetedOperation.point,
-                contributor: targetedOperation.contributor,
+                contributor: {
+                    pluginId: targetedOperation.contributor.pluginId,
+                    contributionId: targetedOperation.contributor.contributionId,
+                    sourceCustody: targetedOperation.contributor.sourceCustody,
+                },
             },
             connectedAccount: {
                 kind: 'selected' as const,
@@ -2118,7 +2434,7 @@ describe('mounted executeAction handler', () => {
         )).resolves.toEqual({ applied: true });
         expect(contributed).toHaveBeenCalledWith('machine-1', expect.objectContaining({
             qualifiedActionId: 'acme.reviewer/prepare-v1',
-            expectedContributorImmutableGenerationId: 'contributor-generation-a',
+            expectedContributorOccurrenceId: 'occurrence-acme.reviewer',
             input: {
                 repository: 'happier-dev/happier',
                 credentialRef: account,
@@ -2204,7 +2520,6 @@ describe('mounted executeAction handler', () => {
             callerBinding: mountedCallerBinding(),
             contributedAction: {
                 machineId: 'machine-1',
-                expectedGeneration: '9',
                 execute: contributed,
             },
         });
@@ -2241,6 +2556,7 @@ describe('mounted executeAction handler', () => {
                 kind: 'plugin',
                 pluginId: 'acme.other-app-surface',
                 contributionLocalId: 'inspector-app',
+                occurrenceId: 'acme.other-app-surface:current',
                 materialization: {
                     pluginId: 'acme.other-app-surface',
                     machineId: 'machine-1',
@@ -2261,7 +2577,6 @@ describe('mounted executeAction handler', () => {
             surfaceContext: surfaceContext(),
             contributedAction: {
                 machineId: 'machine-cancel',
-                expectedGeneration: '5',
                 execute: contributed,
             },
         });
@@ -2295,7 +2610,9 @@ const COMPOSED_IDENTITY = {
 const COMPOSED_BRIDGE_NONCE = 'composed-bridge-nonce';
 const COMPOSED_SURFACE = surfaceContext();
 const COMPOSED_MOUNTED_BINDING = {
+    pluginId: COMPOSED_SURFACE.pluginId,
     contributionLocalId: COMPOSED_SURFACE.contributionId,
+    occurrenceId: `${COMPOSED_SURFACE.pluginId}:current`,
     materializationRef: {
         machineId: 'machine-composed',
         materializationId: 'materialization-composed-current',
@@ -2307,7 +2624,8 @@ const COMPOSED_TARGETED_OPERATION = {
     contributor: {
         pluginId: 'acme.reviewer',
         contributionId: 'github-connection',
-        immutableGenerationId: 'contributor-generation-composed',
+        occurrenceId: 'contributor-generation-composed',
+        sourceCustody: CONTRIBUTOR_SOURCE_CUSTODY,
     },
     role: 'setup',
     action: { pluginId: 'acme.reviewer', localId: 'prepare-v1' },
@@ -2318,7 +2636,8 @@ const COMPOSED_TARGETED_OPERATION = {
 const COMPOSED_TARGETED_CONTRIBUTIONS = PluginUiTargetedContributionsV1Schema.parse({
     target: {
         pluginId: CALLER_PLUGIN_ID,
-        immutableGenerationId: 'target-generation-composed',
+        occurrenceId: 'target-generation-composed',
+        sourceCustody: TARGET_SOURCE_CUSTODY,
     },
     points: [{
         pointId: 'connection',
@@ -2328,7 +2647,8 @@ const COMPOSED_TARGETED_CONTRIBUTIONS = PluginUiTargetedContributionsV1Schema.pa
                 contributor: {
                     pluginId: 'acme.reviewer',
                     contributionId: 'github-connection',
-                    immutableGenerationId: 'contributor-generation-composed',
+                    occurrenceId: 'contributor-generation-composed',
+                    sourceCustody: CONTRIBUTOR_SOURCE_CUSTODY,
                 },
                 protocol: { id: 'connection', version: 1 },
                 operations: [{
@@ -2339,7 +2659,8 @@ const COMPOSED_TARGETED_CONTRIBUTIONS = PluginUiTargetedContributionsV1Schema.pa
                     contributor: {
                         pluginId: 'acme.reviewer',
                         contributionId: 'github-connection',
-                        immutableGenerationId: 'contributor-generation-composed',
+                        occurrenceId: 'contributor-generation-composed',
+                        sourceCustody: CONTRIBUTOR_SOURCE_CUSTODY,
                     },
                     role: 'setup',
                     action: { pluginId: 'acme.reviewer', localId: 'prepare-v1' },
@@ -2460,12 +2781,12 @@ describe('composed public SDK client to canonical plugin-surface dispatcher', ()
         };
         const hostApi = createPluginSurfaceActionHostApi({
             surfaceContext: COMPOSED_SURFACE,
+            callerSourceCustody: TARGET_SOURCE_CUSTODY,
             callerBinding: COMPOSED_MOUNTED_BINDING,
             hostAction: { execute: executeHostAction, context: { serverId: 'server-composed' } },
             contributedAction: {
                 machineId: 'machine-composed',
                 serverId: 'server-composed',
-                expectedGeneration: '9',
                 execute: contributedActionExecute,
             },
             selectActionInput: async (request): Promise<PluginUiJsonValueV1> => {
@@ -2478,9 +2799,16 @@ describe('composed public SDK client to canonical plugin-surface dispatcher', ()
                     action: COMPOSED_TARGETED_OPERATION.action,
                     input: { repository: 'happier-dev/happier' },
                     selection: {
-                        target: COMPOSED_TARGETED_CONTRIBUTIONS.target,
+                        target: {
+                            pluginId: COMPOSED_TARGETED_CONTRIBUTIONS.target.pluginId,
+                            sourceCustody: COMPOSED_TARGETED_CONTRIBUTIONS.target.sourceCustody,
+                        },
                         point: COMPOSED_TARGETED_OPERATION.point,
-                        contributor: COMPOSED_TARGETED_OPERATION.contributor,
+                        contributor: {
+                            pluginId: COMPOSED_TARGETED_OPERATION.contributor.pluginId,
+                            contributionId: COMPOSED_TARGETED_OPERATION.contributor.contributionId,
+                            sourceCustody: COMPOSED_TARGETED_OPERATION.contributor.sourceCustody,
+                        },
                     },
                     connectedAccount: { kind: 'none' },
                     presentation: {
@@ -2564,7 +2892,9 @@ describe('composed public SDK client to canonical plugin-surface dispatcher', ()
                 kind: 'plugin',
                 pluginId: CALLER_PLUGIN_ID,
                 contributionLocalId: COMPOSED_SURFACE.contributionId,
+                occurrenceId: COMPOSED_MOUNTED_BINDING.occurrenceId,
                 materialization: COMPOSED_MOUNTED_BINDING.materializationRef,
+                sourceCustody: TARGET_SOURCE_CUSTODY,
             },
             signal: expect.any(AbortSignal),
             surface: 'plugin',
@@ -2607,7 +2937,7 @@ describe('composed public SDK client to canonical plugin-surface dispatcher', ()
         expect(executeHostAction).not.toHaveBeenCalled();
         expect(contributedActionExecute).toHaveBeenCalledWith('machine-composed', {
             serverId: 'server-composed',
-            expectedGeneration: '9',
+            expectedContributorOccurrenceId: 'occurrence-acme.reviewer',
             qualifiedActionId: 'acme.reviewer/refresh-index',
             input: { reason: 'composed-seam' },
             executionSurface: 'ui',
@@ -2615,7 +2945,7 @@ describe('composed public SDK client to canonical plugin-surface dispatcher', ()
                 kind: 'mountedPluginSurface',
                 mountedBinding: COMPOSED_MOUNTED_BINDING,
             },
-            signal: expect.any(AbortSignal),
+            signal: expect.anything(),
         });
     });
 
@@ -2632,9 +2962,16 @@ describe('composed public SDK client to canonical plugin-surface dispatcher', ()
             action: COMPOSED_TARGETED_OPERATION.action,
             input: { repository: 'happier-dev/happier' },
             selection: {
-                target: COMPOSED_TARGETED_CONTRIBUTIONS.target,
+                target: {
+                    pluginId: COMPOSED_TARGETED_CONTRIBUTIONS.target.pluginId,
+                    sourceCustody: COMPOSED_TARGETED_CONTRIBUTIONS.target.sourceCustody,
+                },
                 point: COMPOSED_TARGETED_OPERATION.point,
-                contributor: COMPOSED_TARGETED_OPERATION.contributor,
+                contributor: {
+                    pluginId: COMPOSED_TARGETED_OPERATION.contributor.pluginId,
+                    contributionId: COMPOSED_TARGETED_OPERATION.contributor.contributionId,
+                    sourceCustody: COMPOSED_TARGETED_OPERATION.contributor.sourceCustody,
+                },
             },
             connectedAccount: { kind: 'none' },
             presentation: {
@@ -2654,8 +2991,7 @@ describe('composed public SDK client to canonical plugin-surface dispatcher', ()
         expect(emittedTargetedOperations).toEqual([COMPOSED_TARGETED_OPERATION]);
         expect(contributedActionExecute).toHaveBeenCalledWith('machine-composed', {
             serverId: 'server-composed',
-            expectedGeneration: '9',
-            expectedContributorImmutableGenerationId: 'contributor-generation-composed',
+            expectedContributorOccurrenceId: 'occurrence-acme.reviewer',
             qualifiedActionId: 'acme.reviewer/prepare-v1',
             input: { repository: 'happier-dev/happier' },
             executionSurface: 'ui',
@@ -2663,7 +2999,7 @@ describe('composed public SDK client to canonical plugin-surface dispatcher', ()
                 kind: 'mountedPluginSurface',
                 mountedBinding: COMPOSED_MOUNTED_BINDING,
             },
-            signal: expect.any(AbortSignal),
+            signal: expect.anything(),
         });
     });
 
@@ -2684,7 +3020,7 @@ describe('composed public SDK client to canonical plugin-surface dispatcher', ()
         expect(executeHostAction).not.toHaveBeenCalled();
         expect(contributedActionExecute).toHaveBeenCalledWith('machine-composed', {
             serverId: 'server-composed',
-            expectedGeneration: '9',
+            expectedContributorOccurrenceId: `occurrence-${CALLER_PLUGIN_ID}`,
             qualifiedActionId: `${CALLER_PLUGIN_ID}/refresh-index`,
             input: { reason: 'local-ref' },
             executionSurface: 'ui',
@@ -2692,7 +3028,7 @@ describe('composed public SDK client to canonical plugin-surface dispatcher', ()
                 kind: 'mountedPluginSurface',
                 mountedBinding: COMPOSED_MOUNTED_BINDING,
             },
-            signal: expect.any(AbortSignal),
+            signal: expect.anything(),
         });
     });
 
@@ -2742,7 +3078,6 @@ describe('composed public SDK client to canonical plugin-surface dispatcher', ()
             action: { pluginId: CALLER_PLUGIN_ID, localId: 'refresh-index' },
             contributedAction: {
                 machineId: 'machine-1',
-                expectedGeneration: '9',
                 execute,
             },
         })).resolves.toEqual({
@@ -2801,7 +3136,8 @@ describe('composed React Native host API to canonical plugin-surface dispatcher'
         targetedContributions: {
             target: {
                 pluginId: CALLER_PLUGIN_ID,
-                immutableGenerationId: 'target-generation-a',
+                occurrenceId: 'target-generation-a',
+                sourceCustody: TARGET_SOURCE_CUSTODY,
             },
             points: [],
         },
@@ -2813,7 +3149,9 @@ describe('composed React Native host API to canonical plugin-surface dispatcher'
     }>) {
         const requestSurface = surfaceContext();
         const mountedBinding = {
+            pluginId: requestSurface.pluginId,
             contributionLocalId: requestSurface.contributionId,
+            occurrenceId: `${requestSurface.pluginId}:current`,
             materializationRef: {
                 machineId: 'machine-rn',
                 materializationId: 'materialization-rn-current',
@@ -2827,7 +3165,6 @@ describe('composed React Native host API to canonical plugin-surface dispatcher'
             contributedAction: {
                 machineId: 'machine-rn',
                 serverId: 'server-rn',
-                expectedGeneration: '9',
                 execute: input.contributedActionExecute,
             },
         });
@@ -2865,6 +3202,7 @@ describe('composed React Native host API to canonical plugin-surface dispatcher'
                 kind: 'plugin',
                 pluginId: CALLER_PLUGIN_ID,
                 contributionLocalId: surfaceContext().contributionId,
+                occurrenceId: `${CALLER_PLUGIN_ID}:current`,
                 materialization: {
                     machineId: 'machine-rn',
                     materializationId: 'materialization-rn-current',
@@ -2877,14 +3215,16 @@ describe('composed React Native host API to canonical plugin-surface dispatcher'
             .resolves.toEqual({ refreshed: true });
         expect(contributedActionExecute).toHaveBeenCalledWith('machine-rn', {
             serverId: 'server-rn',
-            expectedGeneration: '9',
+            expectedContributorOccurrenceId: `occurrence-${CALLER_PLUGIN_ID}`,
             qualifiedActionId: `${CALLER_PLUGIN_ID}/refresh-index`,
             input: { reason: 'rn' },
             executionSurface: 'ui',
             invocation: {
                 kind: 'mountedPluginSurface',
                 mountedBinding: {
+                    pluginId: CALLER_PLUGIN_ID,
                     contributionLocalId: surfaceContext().contributionId,
+                    occurrenceId: `${CALLER_PLUGIN_ID}:current`,
                     materializationRef: {
                         machineId: 'machine-rn',
                         materializationId: 'materialization-rn-current',

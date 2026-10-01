@@ -25,6 +25,15 @@ describe('resolveSystemTaskFailureMessage', () => {
         })).toBe('machine.backgroundServicePrompt.channelSwitchDeclined');
     });
 
+    it('says in app copy when the one-CLI question (R12) went unanswered or the kept CLI is gone', async () => {
+        const { resolveSystemTaskFailureMessage } = await import('./resolveSystemTaskFailureMessage');
+
+        expect(resolveSystemTaskFailureMessage({ code: 'cli_choice_unanswered', message: 'Setup stopped before changing anything.' }))
+            .toBe('machine.thisComputer.cliChoice.unanswered');
+        expect(resolveSystemTaskFailureMessage({ code: 'cli_own_missing', message: 'The Happier CLI this computer keeps is no longer at /x.' }))
+            .toBe('machine.thisComputer.cliChoice.ownMissing');
+    });
+
     it('keeps the task message for other failures and returns undefined when there is nothing to show', async () => {
         const { resolveSystemTaskFailureMessage } = await import('./resolveSystemTaskFailureMessage');
 

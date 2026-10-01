@@ -63,31 +63,31 @@ describe('persisted takeover strict admission waiter', () => {
     pending.cancel();
   });
 
-  it('fails a still-pending exact attempt on timeout', async () => {
+  it('cancels a still-pending exact attempt with its owning operation', async () => {
     vi.useFakeTimers();
     try {
-      const waiter = createPersistedTakeoverAdmissionWaiter({ timeoutMs: 10 });
+      const waiter = createPersistedTakeoverAdmissionWaiter();
       const pending = waiter.register({
         mode: 'persisted',
         operationId: 'operation-1',
         attemptId: 'attempt-1',
       });
 
-      await vi.advanceTimersByTimeAsync(10);
+      pending.cancel();
 
       await expect(pending.outcome).resolves.toEqual({
         status: 'failed',
-        errorCode: 'persisted_takeover_admission_timeout',
+        errorCode: 'persisted_takeover_admission_cancelled',
       });
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it('keeps runtime_bound reservation bounded by the exact attempt deadline', async () => {
+  it('revokes a runtime_bound reservation when its owning operation ends', async () => {
     vi.useFakeTimers();
     try {
-      const waiter = createPersistedTakeoverAdmissionWaiter({ timeoutMs: 10 });
+      const waiter = createPersistedTakeoverAdmissionWaiter();
       const correlation = {
         mode: 'persisted' as const,
         operationId: 'operation-1',
@@ -99,21 +99,21 @@ describe('persisted takeover strict admission waiter', () => {
       const duplicate = waiter.reserveRuntimeBound(correlation);
       expect(duplicate.status).toBe('already_reserved');
 
-      await vi.advanceTimersByTimeAsync(10);
+      pending.cancel();
       expect(pending.readOutcome()).toEqual({
         status: 'failed',
-        errorCode: 'persisted_takeover_admission_timeout',
+        errorCode: 'persisted_takeover_admission_cancelled',
       });
       await expect(pending.outcome).resolves.toEqual({
         status: 'failed',
-        errorCode: 'persisted_takeover_admission_timeout',
+        errorCode: 'persisted_takeover_admission_cancelled',
       });
       if (duplicate.status !== 'already_reserved') {
         throw new Error('Expected duplicate runtime-bound reservation');
       }
       await expect(duplicate.outcome).resolves.toEqual({
         status: 'failed',
-        errorCode: 'persisted_takeover_admission_timeout',
+        errorCode: 'persisted_takeover_admission_cancelled',
       });
       if (reserved.status !== 'reserved') {
         throw new Error('Expected runtime-bound reservation');
@@ -124,10 +124,10 @@ describe('persisted takeover strict admission waiter', () => {
     }
   });
 
-  it('clears the timeout when a runtime-bound reservation commits', async () => {
+  it('does not allocate a timer when a runtime-bound reservation commits', async () => {
     vi.useFakeTimers();
     try {
-      const waiter = createPersistedTakeoverAdmissionWaiter({ timeoutMs: 10 });
+      const waiter = createPersistedTakeoverAdmissionWaiter();
       const correlation = {
         mode: 'persisted' as const,
         operationId: 'operation-1',

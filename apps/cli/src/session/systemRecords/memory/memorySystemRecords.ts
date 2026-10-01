@@ -82,7 +82,7 @@ export function openMemorySystemRecordPayload(params: Readonly<{
   namespace?: SessionSystemRecordNamespace;
   mode: SessionStoredContentEncryptionMode;
   kind: MemorySessionSystemRecordKind;
-  content: SessionSystemRecordContent;
+  content: unknown;
   ctx?: SessionEncryptionContext;
 }>): MemorySystemRecordPayload | null {
   if (params.namespace && params.namespace !== MEMORY_SYSTEM_RECORD_NAMESPACE) return null;

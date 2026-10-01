@@ -4,6 +4,8 @@ import {
   sendSessionMessage,
   waitForSessionInputResult,
   type SessionInputResultObservationV1,
+  type SessionInputResultV1,
+  type SessionInputUsageV1,
   type WaitForSessionInputResult,
 } from '@/session/services/sendSessionMessage';
 import type { SessionMessageModelSelectionInput } from '@/session/services/resolveSessionMessageModel';
@@ -14,8 +16,6 @@ import {
   deriveWorkflowSessionInputLocalIdV2,
   ExecutionRunGetResponseSchema,
   HAPPIER_STRUCTURED_INPUT_METADATA_KEY_V1,
-  supportsMachineSessionInputAdmissionProtocolVersion,
-  WORKFLOW_INPUT_ADMISSION_UPDATE_REQUIRED,
   type MentionRefV1,
   type PortableComposerAttachmentV1,
   type ExecutionRunResultContractV1,
@@ -23,6 +23,37 @@ import {
   type SessionInputSourceAuthorityV1,
   type SessionInputWorkflowV2,
 } from '@happier-dev/protocol';
+
+export type WorkflowSessionInputObservation =
+  | Readonly<{ kind: 'pending' }>
+  | Readonly<{ kind: 'completed'; result: string; usage?: SessionInputUsageV1 }>
+  | Readonly<{ kind: 'failed'; code: string; message: string; usage?: SessionInputUsageV1 }>
+  | Readonly<{ kind: 'cancelled'; usage?: SessionInputUsageV1 }>;
+
+/** Classifies the exact Session outcome; cancellation custody stays with its caller. */
+export function classifyWorkflowSessionInputResult(
+  result: SessionInputResultV1,
+): WorkflowSessionInputObservation {
+  switch (result.kind) {
+    case 'pending': return { kind: 'pending' };
+    case 'final_text': return {
+      kind: 'completed', result: result.text,
+      ...(result.usage ? { usage: result.usage } : {}),
+    };
+    case 'terminal_no_result': return {
+      kind: 'completed', result: '',
+      ...(result.usage ? { usage: result.usage } : {}),
+    };
+    case 'failed': return {
+      kind: 'failed', code: 'session_input_failed', message: result.message,
+      ...(result.usage ? { usage: result.usage } : {}),
+    };
+    case 'cancelled': return {
+      kind: 'cancelled',
+      ...(result.usage ? { usage: result.usage } : {}),
+    };
+  }
+}
 
 export type WorkflowDetachedExecutionRunObservation =
   | Readonly<{ kind: 'pending' }>
@@ -115,6 +146,19 @@ export async function sendWorkflowDetachedExecutionRunInput(params: Readonly<{
   });
 }
 
+/** Current/last turn correspondence belongs to the native observation owner. */
+export function resolveWorkflowDetachedExecutionRunInputTurn(
+  run: ReturnType<typeof ExecutionRunGetResponseSchema.parse>['run'],
+  runId: string,
+  localInputId: string,
+) {
+  if (run.runId !== runId) return null;
+  const turns = run.inputTurns;
+  return turns?.current?.inputIds.includes(localInputId)
+    ? turns.current
+    : turns?.last?.inputIds.includes(localInputId) ? turns.last : null;
+}
+
 /** One-shot exact-turn observation for restart/rejoin; scheduling and polling stay outside. */
 export async function observeWorkflowDetachedExecutionRunInput(params: Readonly<{
   runId: string;
@@ -125,12 +169,10 @@ export async function observeWorkflowDetachedExecutionRunInput(params: Readonly<
     runId: params.runId,
     includeStructured: false,
   }));
-  const turns = response.run.inputTurns;
-  const turn = turns?.current?.inputIds.includes(params.localInputId)
-    ? turns.current
-    : turns?.last?.inputIds.includes(params.localInputId)
-      ? turns.last
-      : null;
+  if (response.run.runId !== params.runId) {
+    return { kind: 'outcome_uncertain', code: 'execution_run_correspondence_mismatch' };
+  }
+  const turn = resolveWorkflowDetachedExecutionRunInputTurn(response.run, params.runId, params.localInputId);
   if (!turn) {
     // An attached Workflow input is first durably admitted by Session Pending.
     // Until that owner delivers it into the retained Run, absence from the
@@ -156,45 +198,18 @@ export async function observeWorkflowDetachedExecutionRunInput(params: Readonly<
   return { kind: 'completed', result: turn.result.value };
 }
 
-export type WorkflowSessionInputAdmissionPreflightV2 =
-  | Readonly<{ ok: true }>
-  | Readonly<{
-      ok: false;
-      code: typeof WORKFLOW_INPUT_ADMISSION_UPDATE_REQUIRED;
-    }>;
-
-export type WorkflowSessionInputAdmissionOutcomeV2 =
-  | SessionInputAdmissionResultV1
-  | Readonly<{
-      status: 'update_required';
-      code: typeof WORKFLOW_INPUT_ADMISSION_UPDATE_REQUIRED;
-    }>;
+export type WorkflowSessionInputAdmissionOutcomeV2 = SessionInputAdmissionResultV1;
 
 /**
- * Operation-scoped compatibility gate. Callers use this before creating a new
- * Session as well as before enqueueing into an existing one.
- */
-export function preflightWorkflowSessionInputAdmissionV2(
-  machineOperationProtocolCapabilities: unknown,
-): WorkflowSessionInputAdmissionPreflightV2 {
-  return supportsMachineSessionInputAdmissionProtocolVersion(
-    machineOperationProtocolCapabilities,
-    2,
-  )
-    ? { ok: true }
-    : { ok: false, code: WORKFLOW_INPUT_ADMISSION_UPDATE_REQUIRED };
-}
-
-/**
- * Shared Session arm for both a workflow child invocation and direct final
- * result delivery. Pending admission and permission settlement remain owned by
- * the incumbent Session sender/materializer.
+ * Session arm for a workflow child invocation. Pending admission and permission
+ * settlement remain owned by the incumbent Session sender/materializer.
  */
 export async function enqueueWorkflowSessionInput(params: Readonly<{
   credentials: StoredCredentials;
   sessionId: string;
-  machineOperationProtocolCapabilities: unknown;
   workflow: SessionInputWorkflowV2;
+  /** Accepted Workflow depth supplied by the host, not portable authored input. */
+  workDepth?: number;
   executionRunTarget?: Readonly<{
     runId: string;
     resultContract: ExecutionRunResultContractV1;
@@ -209,16 +224,17 @@ export async function enqueueWorkflowSessionInput(params: Readonly<{
   sourceAuthority?: SessionInputSourceAuthorityV1;
   /** Coordinator-resolved authoring selection; Session owns model normalization. */
   modelSelectionInput?: SessionMessageModelSelectionInput;
+  /** Frozen identity from the accepted Run. When supplied it must equal the canonical derivation. */
+  localInputId?: string;
   signal?: AbortSignal;
   machineAdmissionTransport: NonNullable<Parameters<typeof sendSessionMessage>[0]['machineAdmissionTransport']>;
 }>): Promise<WorkflowSessionInputAdmissionOutcomeV2> {
-  const preflight = preflightWorkflowSessionInputAdmissionV2(
-    params.machineOperationProtocolCapabilities,
-  );
-  if (!preflight.ok) return { status: 'update_required', code: preflight.code };
-
   if (!params.text.trim()) return { status: 'rejected', code: 'session_input_invalid' };
-  const localId = deriveWorkflowSessionInputLocalIdV2(params.workflow);
+  const derivedLocalId = deriveWorkflowSessionInputLocalIdV2(params.workflow);
+  if (params.localInputId !== undefined && params.localInputId !== derivedLocalId) {
+    return { status: 'rejected', code: 'session_input_invalid' };
+  }
+  const localId = params.localInputId ?? derivedLocalId;
   const requestedPermissionCeiling = params.permissionMode
     ? parsePermissionIntentAlias(params.permissionMode)
     : null;
@@ -226,7 +242,9 @@ export async function enqueueWorkflowSessionInput(params: Readonly<{
     return { status: 'rejected', code: 'session_input_invalid' };
   }
   const inputAdmission = buildWorkflowSessionInputAdmissionV2(
-    params.workflow,
+    params.workDepth !== undefined
+      ? { ...params.workflow, workDepth: params.workDepth }
+      : params.workflow,
     {
       ...(requestedPermissionCeiling ? { requestedPermissionCeiling } : {}),
       ...(params.sourceAuthority ? { sourceAuthority: params.sourceAuthority } : {}),
@@ -273,46 +291,28 @@ export async function enqueueWorkflowSessionInput(params: Readonly<{
     ?? { status: 'outcomeUnknown', localId, code: 'session_input_admission_result_missing' };
 }
 
-/**
- * Direct Session result-delivery arm. Durable custody remains the server Run
- * owner's responsibility; this function only admits/rejoins its stable input.
- */
-export async function deliverWorkflowResultToOriginatingSession(params: Readonly<{
-  credentials: StoredCredentials;
-  sessionId: string;
-  machineOperationProtocolCapabilities: unknown;
-  runId: string;
-  text: string;
-  signal?: AbortSignal;
-  machineAdmissionTransport: NonNullable<Parameters<typeof sendSessionMessage>[0]['machineAdmissionTransport']>;
-}>): Promise<WorkflowSessionInputAdmissionOutcomeV2> {
-  return await enqueueWorkflowSessionInput({
-    credentials: params.credentials,
-    sessionId: params.sessionId,
-    machineOperationProtocolCapabilities: params.machineOperationProtocolCapabilities,
-    workflow: { purpose: 'result_delivery', runId: params.runId },
-    text: params.text,
-    machineAdmissionTransport: params.machineAdmissionTransport,
-    ...(params.signal ? { signal: params.signal } : {}),
-  });
-}
-
 /** Observe an already-authored Workflow Session input without resetting time. */
 export async function observeWorkflowSessionInputResult(params: Readonly<{
   credentials: StoredCredentials;
   sessionId: string;
   localId: string;
   deadlineMs?: number;
+  timeoutAfterInputMs?: number;
+  beforeInputObservation?: () => Promise<void>;
+  onInputMaterialized?: (acceptedAtMs: number) => Promise<void>;
   signal?: AbortSignal;
 }>): Promise<WaitForSessionInputResult> {
   const observation: SessionInputResultObservationV1 = params.deadlineMs === undefined
-    ? { kind: 'no_deadline' }
+    ? params.timeoutAfterInputMs === undefined ? { kind: 'no_deadline' }
+      : { kind: 'after_input', timeoutMs: params.timeoutAfterInputMs }
     : { kind: 'absolute_deadline', deadlineMs: params.deadlineMs };
   return await waitForSessionInputResult({
     credentials: params.credentials,
     idOrPrefix: params.sessionId,
     localId: params.localId,
     observation,
+    ...(params.beforeInputObservation ? { beforeInputObservation: params.beforeInputObservation } : {}),
+    ...(params.onInputMaterialized ? { onInputMaterialized: params.onInputMaterialized } : {}),
     ...(params.signal ? { signal: params.signal } : {}),
   });
 }

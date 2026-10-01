@@ -119,8 +119,8 @@ type NativePluginPlatformQaCandidate = MobilePluginPlatformQaArtifacts &
   }>;
 
 type NativePluginPlatformInspectorArtifacts = Readonly<{
-  ios: Awaited<ReturnType<typeof attestPackedInspectorArtifacts>>['platforms']['ios'];
-  android: Awaited<ReturnType<typeof attestPackedInspectorArtifacts>>['platforms']['android'];
+  ios: Awaited<ReturnType<typeof attestPackedInspectorArtifacts>>['artifact'];
+  android: Awaited<ReturnType<typeof attestPackedInspectorArtifacts>>['artifact'];
 }>;
 
 type PreparedNativePluginPlatformCandidateQa = Readonly<{
@@ -331,7 +331,6 @@ async function configureNativeFixture(input: Readonly<{
   fixtureRoot: string;
   sdkTarballPath: string;
   version: string;
-  repackVersion: string;
   reactVersion: string;
   reactNativeVersion: string;
   containerName: string;
@@ -352,21 +351,13 @@ async function configureNativeFixture(input: Readonly<{
     react: input.reactVersion,
     'react-native': input.reactNativeVersion,
   };
-  packageJson.devDependencies = {
+  packageJson.exports = {
     ...(
-      packageJson.devDependencies && typeof packageJson.devDependencies === 'object'
-        ? packageJson.devDependencies as Record<string, unknown>
+      packageJson.exports && typeof packageJson.exports === 'object'
+        ? packageJson.exports as Record<string, unknown>
         : {}
     ),
-    '@babel/core': '^7.25.2',
-    '@callstack/repack': input.repackVersion,
-    '@react-native-community/cli': '20.1.2',
-    '@react-native-community/cli-platform-android': '20.1.2',
-    '@react-native-community/cli-platform-ios': '20.1.2',
-    '@react-native/metro-config': input.reactNativeVersion,
-    '@rspack/core': '2.1.3',
-    '@swc/helpers': PUBLIC_TOOLCHAIN_SCAFFOLD_BINDINGS_V1.devDependencies['@swc/helpers'],
-    '@types/react': input.reactVersion,
+    [`./happier-plugin-ui/${NATIVE_CONTRIBUTION_ID}`]: './src/ui/renderSurface.tsx',
   };
   pluginManifest.version = input.version;
   const contributes = pluginManifest.contributes as {
@@ -378,73 +369,9 @@ async function configureNativeFixture(input: Readonly<{
   view.target = { kind: 'app' };
   delete view.placement;
 
-  const moduleIdentity = `{
-  containerName: '${input.containerName}',
-  modulePath: './renderSurface',
-  exportName: 'renderSurface',
-}`;
   await Promise.all([
     writeFile(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`, 'utf8'),
     writeFile(manifestPath, `${JSON.stringify(pluginManifest, null, 2)}\n`, 'utf8'),
-    writeFile(join(input.fixtureRoot, 'pluginUiBuild.mjs'), `import { defineBuildConfig } from '@happier-dev/plugin-sdk/ui/build';
-
-export default defineBuildConfig({
-  projectRoot: '.',
-  outDir: 'node_modules/.cache/happier-plugin-ui',
-  targets: [{
-    rendererId: '${NATIVE_CONTRIBUTION_ID}',
-    entry: 'ui/renderSurface.tsx',
-    kind: 'reactNative',
-    platforms: ['ios', 'android'],
-    module: ${moduleIdentity},
-  }],
-});
-`, 'utf8'),
-    writeFile(join(input.fixtureRoot, 'rspack.config.mjs'), `import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import * as Repack from '@callstack/repack';
-import { createReactNativeRepackResolveOptions } from '@happier-dev/plugin-sdk/ui/build';
-
-const projectRoot = dirname(fileURLToPath(import.meta.url));
-const moduleIdentity = ${moduleIdentity};
-export default function config(env) {
-  const { platform = 'ios', mode = 'production' } = env;
-  return {
-    mode,
-    context: projectRoot,
-    entry: {},
-    resolve: { ...createReactNativeRepackResolveOptions(Repack.getResolveOptions(platform)) },
-    output: {
-      uniqueName: moduleIdentity.containerName,
-      path: join(projectRoot, 'node_modules', '.cache', 'happier-plugin-ui', 'react-native', '${NATIVE_CONTRIBUTION_ID}', platform),
-      publicPath: 'noop:///',
-      chunkFilename: '[name].chunk.bundle',
-    },
-    module: {
-      rules: [
-        ...Repack.getJsTransformRules({ codegen: { enabled: false } }),
-        ...Repack.getAssetTransformRules(),
-      ],
-    },
-    plugins: [
-      new Repack.plugins.RepackTargetPlugin(),
-      new Repack.plugins.ModuleFederationPlugin({
-        name: moduleIdentity.containerName,
-        filename: \`\${platform}.bundle\`,
-        exposes: { [moduleIdentity.modulePath]: './src/ui/renderSurface.tsx' },
-        shared: {
-          react: { singleton: true, eager: false, import: false },
-          'react-native': { singleton: true, eager: false, import: false },
-        },
-      }),
-    ],
-  };
-}
-`, 'utf8'),
-    writeFile(join(input.fixtureRoot, 'react-native.config.cjs'), `module.exports = {
-  commands: require('@callstack/repack/commands/rspack'),
-};
-`, 'utf8'),
     writeFile(join(input.fixtureRoot, 'src', 'ui', 'renderSurface.tsx'), `import * as React from 'react';
 import type { RenderContext } from '@happier-dev/plugin-sdk/ui';
 import { Pressable, Text, View } from 'react-native';
@@ -507,8 +434,8 @@ async function buildNativeFixture(
   fixtureRoot: string,
   cliEntrypoint: string,
   env: NodeJS.ProcessEnv,
-  containerName: string,
-): Promise<Readonly<{ iosDigest: string; androidDigest: string }>> {
+  _containerName: string,
+): Promise<Readonly<{ artifactDigest: string }>> {
   await runCandidateCli({
     cliEntrypoint,
     cwd: fixtureRoot,
@@ -542,26 +469,18 @@ async function buildNativeFixture(
     join(fixtureRoot, 'dist', 'happier-plugin-ui', 'ui-artifacts.json'),
     'utf8',
   )) as { entries?: Array<Record<string, unknown>> };
-  const nativeEntry = (platform: 'ios' | 'android'): Record<string, unknown> | null => (
-    artifactManifest.entries?.find((entry) => (
-      entry.contributionId === NATIVE_CONTRIBUTION_ID
-      && entry.platform === platform
+  const nativeEntry = artifactManifest.entries?.find((entry) => (
+      entry.artifactId === NATIVE_CONTRIBUTION_ID
       && entry.builtWith
       && typeof entry.builtWith === 'object'
-      && (entry.builtWith as { bundler?: unknown }).bundler === 'repack'
-      && entry.repack
-      && typeof entry.repack === 'object'
-      && (entry.repack as { containerName?: unknown }).containerName === containerName
-    )) ?? null
-  );
-  const ios = nativeEntry('ios');
-  const android = nativeEntry('android');
-  if (!ios || !android || typeof ios.digest !== 'string' || typeof android.digest !== 'string') {
+      && (entry.builtWith as { bundler?: unknown }).bundler === 'esbuild'
+    )) ?? null;
+  if (!nativeEntry || typeof nativeEntry.digest !== 'string') {
     throw new Error(
-      'Exact candidate author build did not emit explicit iOS and Android Re.Pack artifact identities.',
+      'Exact candidate author build did not emit its universal CommonJS artifact identity.',
     );
   }
-  return { iosDigest: ios.digest, androidDigest: android.digest };
+  return { artifactDigest: nativeEntry.digest };
 }
 
 async function preparePackedTargetedFixtureProject(input: Readonly<{
@@ -572,7 +491,6 @@ async function preparePackedTargetedFixtureProject(input: Readonly<{
   nativeCompatibility: Readonly<{
     reactVersion: string;
     reactNativeVersion: string;
-    repackVersion: string;
   }>;
 }>): Promise<void> {
   await cp(
@@ -618,7 +536,6 @@ async function preparePackedTargetedFixtureProject(input: Readonly<{
       ? {
           devDependencies: {
             ...devDependencies,
-            '@callstack/repack': input.nativeCompatibility.repackVersion,
             '@types/react': input.nativeCompatibility.reactVersion,
           },
         }
@@ -701,7 +618,6 @@ async function preparePackedTargetedNativeArchives(input: Readonly<{
   nativeCompatibility: Readonly<{
     reactVersion: string;
     reactNativeVersion: string;
-    repackVersion: string;
   }>;
 }>): Promise<Readonly<{
   targetArchivePath: string;
@@ -828,8 +744,8 @@ async function prepareRowLocalNativePluginPlatformQa(input: Readonly<{
       cliEntrypoint: prepared.attestation.cliEntrypoint,
       cleanup: prepared.cleanup,
       inspectorArtifacts: Object.freeze({
-        ios: inspector.platforms.ios,
-        android: inspector.platforms.android,
+        ios: inspector.artifact,
+        android: inspector.artifact,
       }),
     });
   } catch (error) {
@@ -1028,9 +944,8 @@ async function main(): Promise<void> {
       fixtureRoot,
       sdkTarballPath: prepared.candidate.sdk.tarballPath,
       version: '1.0.0',
-      repackVersion: prepared.inspectorArtifacts.ios.builtWith.version,
-      reactVersion: prepared.inspectorArtifacts.ios.compat.react,
-      reactNativeVersion: prepared.inspectorArtifacts.ios.compat.reactNative,
+      reactVersion: PUBLIC_TOOLCHAIN_SCAFFOLD_BINDINGS_V1.dependencies.react,
+      reactNativeVersion: PUBLIC_TOOLCHAIN_SCAFFOLD_BINDINGS_V1.dependencies['react-native'],
       containerName,
       sentinelId: sentinelV1,
     });
@@ -1056,9 +971,8 @@ async function main(): Promise<void> {
       fixtureRoot,
       sdkTarballPath: prepared.candidate.sdk.tarballPath,
       version: '1.1.0',
-      repackVersion: prepared.inspectorArtifacts.ios.builtWith.version,
-      reactVersion: prepared.inspectorArtifacts.ios.compat.react,
-      reactNativeVersion: prepared.inspectorArtifacts.ios.compat.reactNative,
+      reactVersion: PUBLIC_TOOLCHAIN_SCAFFOLD_BINDINGS_V1.dependencies.react,
+      reactNativeVersion: PUBLIC_TOOLCHAIN_SCAFFOLD_BINDINGS_V1.dependencies['react-native'],
       containerName,
       sentinelId: sentinelV2,
     });
@@ -1069,10 +983,9 @@ async function main(): Promise<void> {
       containerName,
     );
     if (
-      v1NativeArtifacts.iosDigest === v2NativeArtifacts.iosDigest
-      || v1NativeArtifacts.androidDigest === v2NativeArtifacts.androidDigest
+      v1NativeArtifacts.artifactDigest === v2NativeArtifacts.artifactDigest
     ) {
-      throw new Error('Candidate native fixture update did not replace both platform artifact digests.');
+      throw new Error('Candidate native fixture update did not replace the universal artifact digest.');
     }
     await runCandidateCli({
       cliEntrypoint: prepared.cliEntrypoint,
@@ -1106,9 +1019,8 @@ async function main(): Promise<void> {
         },
         workRoot,
         nativeCompatibility: {
-          reactVersion: prepared.inspectorArtifacts.ios.compat.react,
-          reactNativeVersion: prepared.inspectorArtifacts.ios.compat.reactNative,
-          repackVersion: prepared.inspectorArtifacts.ios.builtWith.version,
+          reactVersion: PUBLIC_TOOLCHAIN_SCAFFOLD_BINDINGS_V1.dependencies.react,
+          reactNativeVersion: PUBLIC_TOOLCHAIN_SCAFFOLD_BINDINGS_V1.dependencies['react-native'],
         },
       });
 

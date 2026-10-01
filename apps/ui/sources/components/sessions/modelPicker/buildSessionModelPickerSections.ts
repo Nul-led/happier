@@ -109,6 +109,11 @@ export function buildSessionModelPickerSections(input: Readonly<{
     canConfirmExperimental?: boolean;
     providerProjectionAuthoritative: boolean;
     selected?: SessionModelPickerValue;
+    /**
+     * Default `true`. `false` removes the automatic/default native option, which maps to no model ref
+     * and so cannot be hidden by the visibility keys (an embed that restricts models, plan 04 §4.6).
+     */
+    allowAutomatic?: boolean;
     currentSelectionRecovery?: DaemonProviderCurrentSelectionRecoveryV1 | null;
     teamCredentialResources?: readonly TeamCredentialResourceCatalogEntryV1[];
     teamNameById?: Readonly<Record<string, string>>;
@@ -131,6 +136,7 @@ export function buildSessionModelPickerSections(input: Readonly<{
         : input.nativeModels;
     const nativeOptions = nativeModels.flatMap((model): OptionPickerOption<SessionModelPickerValue>[] => {
         const value = nativeModelRef(input.agentTargetKey, model.value);
+        if (value === null && input.allowAutomatic === false) return [];
         const hidden = value !== null && input.hiddenNativeModelKeys.has(serializeModelVisibilityRefV1({
             scope: 'agent',
             agentTargetKey: input.agentTargetKey,

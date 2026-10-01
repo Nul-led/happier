@@ -25,6 +25,7 @@ import { logger } from '@/ui/logger';
 import type { LoadedLinkedExternalSession } from '@/api/session/external/takeover/loadLinkedExternalSession';
 import {
   resolveExternalTakeoverSpawnOptionsFromRuntimeRegistry,
+  spawnResolvedExternalTakeoverSession,
   spawnResolvedExternalTakeoverSessionFromRuntimeRegistry,
 } from '@/api/session/external/takeover/resolveExternalTakeoverSpawnOptions';
 
@@ -54,6 +55,8 @@ import {
 } from './sourceGenerationAnchor';
 import { createExternalSessionHostOperationOwner } from '@/session/external/hostOperationOwner';
 import { deriveExternalSessionPluginOperationDurableKey } from '@/session/external/pluginOperationDurableKey';
+import { createPersistedTakeoverAdmissionWaiter } from '@/daemon/spawn/persistedTakeoverAdmission';
+import { createExternalSessionPersistedTakeoverAdmissionOwner } from './persistedTakeoverAdmission';
 
 const fetchSessionByIdMock = vi.fn();
 const fetchSessionsPageMock = vi.fn();
@@ -115,7 +118,7 @@ const MALFORMED_SOURCE = Object.freeze({ kind: 'syntheticProductRoute', scope: '
 const OVERSIZED_SOURCE = Object.freeze({ kind: 'syntheticProductRoute', scope: 'scope-oversized' });
 
 function productionTakeoverRecord(input: Readonly<{
-  contributionGeneration: string;
+  sourceCustody: ExternalSessionPersistedTakeoverImportRecord['request']['source']['sourceCustody'];
   targetStorageMode: 'external-linked' | 'persisted';
 }>): ExternalSessionPersistedTakeoverImportRecord {
   const sourceCursor = 'source-cursor-product-route';
@@ -133,7 +136,7 @@ function productionTakeoverRecord(input: Readonly<{
       },
       linkGeneration: '41',
       sourceGeneration: createExternalSessionSourceGenerationAnchor(sourceCursor),
-      contributionGeneration: input.contributionGeneration,
+      sourceCustody: input.sourceCustody,
     },
     plan: 'takeover' as const,
     targetStorageMode: input.targetStorageMode,
@@ -417,12 +420,10 @@ async function materializeAuxiliaryOnlyPlugin(
       });
       ${includeTakeover ? `
       api.agents.registerExternalSessionTakeover('${AGENT_LOCAL_ID}', {
-        async resolveLaunch(request) {
+        async resolveLaunch() {
           return {
             ok: true,
-            value: {
-              directory: request.linkedDirectory ?? '/tmp/synthetic-product-route',
-            },
+            value: {},
           };
         },
       });
@@ -567,16 +568,18 @@ describe('non-bundled auxiliary-only Agent ordinary External Sessions routes', (
       await runtimeRegistry.activateContributionsOnDemand([{
         pluginId: AUTHOR_PLUGIN_ID, family: 'agents', localId: AUTHOR_AGENT_LOCAL_ID,
       }]);
+      const authorOccurrenceId = runtimeRegistry.readPluginOccurrenceId?.(AUTHOR_PLUGIN_ID);
+      if (!authorOccurrenceId) throw new Error('Expected admitted author plugin occurrence');
       let authorCallerGenerationCurrent = true;
       const services = await runtimeRegistry.createAgentInvocationServices({
         pluginId: AUTHOR_PLUGIN_ID,
         pluginVersion: '1.0.0',
         agentId: AUTHOR_AGENT_ID,
-        generation: String(runtimeRegistry.generation),
+        occurrenceId: authorOccurrenceId,
         correlationId: 'author-only-current-global',
         cwd: happyHomeDir,
         signal: new AbortController().signal,
-        isGenerationCurrent: () => authorCallerGenerationCurrent,
+        isOccurrenceCurrent: () => authorCallerGenerationCurrent,
       });
       const external = services.sessions.external;
       expect(Reflect.ownKeys(external).sort()).toEqual([
@@ -727,10 +730,9 @@ describe('non-bundled auxiliary-only Agent ordinary External Sessions routes', (
       controllerOwnsRegistry = true;
       const runtimeRegistry = unownedRegistry;
       unownedRegistry = null;
-      const contributionGeneration =
-        runtimeRegistry.agentRuntimesByAgentId.get(AGENT_ID)?.generation;
-      if (!contributionGeneration) {
-        throw new Error('Expected the synthetic Agent contribution generation');
+      const sourceCustody = runtimeRegistry.readPluginSourceCustody?.(PLUGIN_ID);
+      if (!sourceCustody || sourceCustody.kind !== 'development') {
+        throw new Error('Expected the synthetic Agent development source custody');
       }
       const sourceKeyOwner = await resolveExternalSessionSourceKeyOwner(
         ExternalSessionsAgentIdSchema.parse(AGENT_ID),
@@ -780,11 +782,11 @@ describe('non-bundled auxiliary-only Agent ordinary External Sessions routes', (
       listSessionMarkersMock.mockResolvedValue([]);
 
       const persistedRecord = productionTakeoverRecord({
-        contributionGeneration,
+        sourceCustody,
         targetStorageMode: 'persisted',
       });
       const externalLinkedRecord = productionTakeoverRecord({
-        contributionGeneration,
+        sourceCustody,
         targetStorageMode: 'external-linked',
       }) as unknown as Parameters<
         typeof loadCurrentExternalSessionExternalLinkedTakeoverSource
@@ -815,7 +817,10 @@ describe('non-bundled auxiliary-only Agent ordinary External Sessions routes', (
       expect(listSessionMarkersMock).not.toHaveBeenCalled();
 
       const staleGenerationRecord = productionTakeoverRecord({
-        contributionGeneration: `${contributionGeneration}:retired`,
+        sourceCustody: {
+          kind: 'development',
+          registeredRootId: `${sourceCustody.registeredRootId}:retired`,
+        },
         targetStorageMode: 'external-linked',
       }) as unknown as Parameters<
         typeof loadCurrentExternalSessionExternalLinkedTakeoverSource
@@ -879,6 +884,116 @@ describe('non-bundled auxiliary-only Agent ordinary External Sessions routes', (
       await unownedRegistry?.dispose();
       await rm(happyHomeDir, { recursive: true, force: true });
       await rm(unavailableHappyHomeDir, { recursive: true, force: true });
+      await rm(pluginRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('prepares only an idle hosted persisted takeover retry with requested terminal placement', async () => {
+    const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-hosted-takeover-home-'));
+    const pluginRoot = await mkdtemp(join(tmpdir(), 'happier-hosted-takeover-plugin-'));
+    let unownedRegistry: Awaited<ReturnType<typeof resolveExecutablePluginRuntimeRegistry>> | null = null;
+    try {
+      await materializeAuxiliaryOnlyPlugin(pluginRoot, '1.0.0', PLUGIN_ID, true, true);
+      await seedCurrentLocalPathPluginFixture({
+        happyHomeDir, pluginRoot, pluginId: PLUGIN_ID, manifestVersion: '1.0.0',
+      });
+      unownedRegistry = await resolveExecutablePluginRuntimeRegistry({
+        happyHomeDir, pluginIds: [PLUGIN_ID],
+      });
+      const sourceCustody = unownedRegistry.readPluginSourceCustody?.(PLUGIN_ID);
+      if (!sourceCustody) {
+        throw new Error('Expected the installed synthetic Agent source custody');
+      }
+      await pluginReloadController.adoptPreparedRuntimeRegistry({
+        registry: unownedRegistry,
+        changedPluginIds: [PLUGIN_ID],
+        durableRevision: 1,
+        runningSessionDisposition: 'retainRunningSessions',
+      });
+      controllerOwnsRegistry = true;
+      unownedRegistry = null;
+      const initial = productionTakeoverRecord({ sourceCustody, targetStorageMode: 'persisted' });
+      const terminal = { mode: 'tmux' as const, tmux: { sessionName: 'takeover-retry', isolated: true } };
+      const record = {
+        ...initial,
+        request: { ...initial.request, terminal },
+        status: 'running' as const,
+        phase: 'spawning' as const,
+        currentStorageState: 'hosted' as const,
+        publication: undefined,
+        bindings: { operationClaimId: 'retry-claim', targetRuntimeAttemptId: 'retry-attempt' },
+      };
+      readCredentialsMock.mockResolvedValue({
+        token: 'token', encryption: { type: 'legacy', secret: new Uint8Array([1]) },
+      });
+      fetchAccountEncryptionCurrentnessMock.mockResolvedValue({
+        mode: 'plain', version: 1, signingKeyFingerprint: null,
+        contentKeyFingerprint: null, updatedAt: 1,
+      });
+      const rawSession = {
+        id: record.request.sessionId,
+        currentStorageState: 'hosted',
+        encryptionMode: 'plain',
+        metadataVersion: record.canonicalOwnerEvidence.linkedSessionRevision + 1,
+        active: true,
+        thinking: false,
+        acceptedThroughServerSeq: null,
+        metadata: JSON.stringify({
+          path: '/tmp/synthetic-product-route',
+          externalHistoryImportV1: {
+            v: 1, agentId: AGENT_ID, remoteSessionId: record.request.source.remoteSessionId,
+            importedAtMs: 100, source: SOURCE,
+          },
+        }),
+      };
+      const unexpectedAdmission = () => {
+        throw new Error('Hosted retry must not repeat snapshot admission');
+      };
+      const owner = createExternalSessionPersistedTakeoverAdmissionOwner({
+        activeServerDir: happyHomeDir,
+        admissionWaiter: createPersistedTakeoverAdmissionWaiter(),
+        isFollowSuspended: unexpectedAdmission,
+        suspendFollow: unexpectedAdmission,
+        sendHistoricalCommand: unexpectedAdmission,
+      });
+      // Keep target loading, plugin invocation, and launch mapping real. Only the
+      // HTTP session/account responses and stored credential boundary are stubbed.
+      for (const state of [
+        { active: true, thinking: false, allowed: true },
+        { active: true, thinking: true, allowed: false },
+        { active: false, thinking: false, allowed: false },
+      ]) {
+        fetchSessionByIdMock.mockResolvedValue({ ...rawSession, active: state.active, thinking: state.thinking });
+        const prepared = owner.prepareSpawn(record, new AbortController().signal);
+        if (!state.allowed) {
+          await expect(prepared).rejects.toThrow('persisted_takeover_retry_hosted_target_mismatch');
+          continue;
+        }
+        await expect(prepared).resolves.toMatchObject({
+          options: {
+            directory: record.request.targetDirectory,
+            existingSessionId: record.request.sessionId,
+            resume: record.request.source.remoteSessionId,
+            terminal,
+          },
+        });
+        const spawnSession = vi.fn(async () => ({
+          type: 'success' as const,
+          sessionId: record.request.sessionId,
+        }));
+        await expect(spawnResolvedExternalTakeoverSession({
+          resolved: await prepared,
+          options: { transcriptStorage: 'persisted' },
+          spawnSession,
+        })).resolves.toEqual({
+          ok: true,
+          value: { type: 'success', sessionId: record.request.sessionId },
+        });
+        expect(spawnSession).toHaveBeenCalledWith(expect.objectContaining({ terminal }));
+      }
+    } finally {
+      await unownedRegistry?.dispose();
+      await rm(happyHomeDir, { recursive: true, force: true });
       await rm(pluginRoot, { recursive: true, force: true });
     }
   });
@@ -1086,11 +1201,13 @@ describe('non-bundled auxiliary-only Agent ordinary External Sessions routes', (
           const identity = await resolveCurrentExternalSessionAgentIdentity(
             ExternalSessionsAgentIdSchema.parse(AGENT_ID),
           );
+          const agentSourceCustody = runtimeRegistry.readPluginSourceCustody?.(PLUGIN_ID) ?? null;
           let candidateQuery: unknown = null;
-          if (validated.ok && listCandidates && identity) {
+          if (validated.ok && listCandidates && identity && agentSourceCustody) {
             try {
               candidateQuery = await executeExternalSessionCandidateQuery({
                 activeServerDir: configuration.activeServerDir,
+                agentSourceCustody,
                 agentIdentity: identity.identity,
                 source: validated.source,
                 searchTerm: 'fixture',
@@ -1317,13 +1434,12 @@ describe('non-bundled auxiliary-only Agent ordinary External Sessions routes', (
 
       const contribution = runtimeRegistry.contributes.agentDefinitionsById.get(AGENT_ID);
       expect(contribution).toBeDefined();
-      const contributionGenerationId = runtimeLease.generation;
-      expect(contributionGenerationId).toEqual(expect.any(String));
-      if (!contributionGenerationId) {
-        throw new Error('Expected the current Agent runtime lease to expose its generation');
+      const occurrenceId = runtimeLease.occurrenceId;
+      expect(occurrenceId).toEqual(expect.any(String));
+      if (!occurrenceId) {
+        throw new Error('Expected the current Agent runtime lease to expose its occurrence');
       }
       const basis = Object.freeze({
-        contributionGenerationId,
         accountSettingsRevision: 'account:product-route',
       });
       const configured = await createConfiguredPluginExternalSessionsAdapter({
@@ -1332,6 +1448,12 @@ describe('non-bundled auxiliary-only Agent ordinary External Sessions routes', (
         basis,
         readCurrentBasis: () => basis,
         isCurrent: () => runtimeLease.isCurrent(),
+        resolveAgentOccurrence: (agentId) => agentId === AGENT_ID
+          ? { occurrenceId: runtimeLease.occurrenceId, isCurrent: runtimeLease.isCurrent }
+          : null,
+        resolveAgentSourceCustody: (agentId) => agentId === AGENT_ID
+          ? runtimeLease.sourceCustody
+          : null,
         retirementSignal: runtimeLease.retirementSignal,
         resolveProviderOps: async (agentId) => {
           const providerOps = await resolveExternalSessionSurfaceOps(

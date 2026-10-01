@@ -1,4 +1,4 @@
-import type { NormalizedMessage } from '@/sync/typesRaw';
+import type { NormalizedMessage } from "@happier-dev/session-core/raw";
 
 function normalizeSeq(seq: unknown): number | null {
     return typeof seq === 'number' && Number.isFinite(seq) ? Math.trunc(seq) : null;

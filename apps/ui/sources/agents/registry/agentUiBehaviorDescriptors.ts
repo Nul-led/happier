@@ -4,7 +4,7 @@ import type { DetailsTab } from '@/components/appShell/panes/model/appPaneReduce
 import type { AgentInputExtraActionChip } from '@/components/sessions/agentInput/agentInputContracts';
 import { resolveSessionModelSelectionDisposition } from '@/sync/domains/models/resolveSessionModelSelectionDisposition';
 import type { Settings } from '@/sync/domains/settings/settings';
-import type { Metadata } from '@/sync/domains/state/storageTypes';
+import type { Metadata } from '@happier-dev/session-core/state';
 import type { SessionSubagent } from '@/sync/domains/session/subagents/types';
 import { tLoose, type TranslationKey } from '@/text';
 import {
@@ -41,7 +41,10 @@ import {
 import { readAgentUiSetting } from './agentUiSettingLookup';
 import { readSessionMetadataLayoutVersion } from '@/sync/engine/sessions/parsePlainSessionPayload';
 import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
-import { resolveSessionGoalExecutionCapabilities } from '@/sync/domains/session/control/sessionGoalExecutionCapabilities';
+import {
+    hasRuntimeSessionGoalControls,
+    resolveSessionGoalExecutionCapabilities,
+} from '@/sync/domains/session/control/sessionGoalExecutionCapabilities';
 
 export function readOwnerMetadataFromSessionLike(session: unknown): Record<string, unknown> | null {
     if (!isRecord(session)) return null;
@@ -673,15 +676,24 @@ function createWorkStateBehavior(
 ): AgentUiBehavior['workState'] | undefined {
     const editableGoals = readEditableGoalsDescriptor(descriptor.workState?.editableGoals, agentId, diagnostics);
     if (!editableGoals) return undefined;
-    const supportsEditableGoals = (ctx: { agentId: string; session: EditableGoalsSession }): boolean => {
+    const supportsEditableGoals = (ctx: {
+        agentId: string;
+        session: EditableGoalsSession;
+        daemonGoalControlsSupported?: boolean;
+    }): boolean => {
         if (ctx.agentId !== editableGoals.providerId) return false;
         const session = ctx.session;
         const metadata = readOwnerMetadataFromSessionLike(session);
         if (editableGoals.capabilityDriven) {
             // Active sessions trust the live session RPC registry, not a semantic provider signal
-            // such as `/goal` discovery or a persisted goal item. Detached sessions retain the
-            // persisted item capability so resume-oriented surfaces keep their semantic context.
-            if (session.active === true) return readLiveGoalActionCapabilityProfile(session) !== null;
+            // such as `/goal` discovery or a persisted goal item. An opened runtime without goal
+            // controls of its own keeps the goal with the daemon (Keep going continues it, F5/X16).
+            // Detached sessions retain the persisted item capability so resume-oriented surfaces
+            // keep their semantic context.
+            if (session.active === true) {
+                return readLiveGoalActionCapabilityProfile(session) !== null
+                    || (!hasRuntimeSessionGoalControls(session) && ctx.daemonGoalControlsSupported === true);
+            }
             return hasEditableGoalCapability(metadata, editableGoals);
         }
         if (editableGoals.activeWhenNoPersistedMode && session.active === true) return true;
@@ -699,11 +711,11 @@ function createWorkStateBehavior(
         // (Codex) supply no profile → full control, unchanged.
         ...(editableGoals.capabilityDriven
             ? {
-                resolveGoalActionCapabilityProfile: ({ agentId, session }) => {
+                resolveGoalActionCapabilityProfile: ({ agentId, session, daemonGoalControlsSupported }) => {
                     if (agentId !== editableGoals.providerId) return null;
-                    const liveProfile = readLiveGoalActionCapabilityProfile(session);
-                    if (session.active === true) return liveProfile;
-                    if (!supportsEditableGoals({ agentId, session })) return null;
+                    if (hasRuntimeSessionGoalControls(session)) return readLiveGoalActionCapabilityProfile(session);
+                    // A daemon-held goal (closed session, or an opened runtime without goal controls).
+                    if (!supportsEditableGoals({ agentId, session, daemonGoalControlsSupported })) return null;
                     return { canEdit: true, canStop: false, canClear: true, canConfigureBudget: false };
                 },
             }
@@ -1220,6 +1232,43 @@ function createTeammateLauncherDetailsTab(
     };
 }
 
+function createLaunchDetailsTab(
+    detailsDescriptor: ComponentSlotDescriptor,
+    launchDescriptor: ComponentSlotDescriptor,
+    subagents: readonly SessionSubagent[],
+    pluginId: string,
+    agentId: string,
+    resolvePluginTranslation?: (pluginId: string, key: string) => string | null,
+): DetailsTab | null {
+    const resourceKind = readString(detailsDescriptor.resourceKind);
+    const keyPrefix = readString(detailsDescriptor.tab?.keyPrefix);
+    const titleKey = readString(detailsDescriptor.tab?.titleKey);
+    const surfaceId = readString(launchDescriptor.surfaceId);
+    if (!resourceKind || !keyPrefix || !titleKey || !surfaceId) return null;
+    return {
+        key: `${keyPrefix}:launch`,
+        kind: resourceKind,
+        title: resolvePluginTranslation?.(pluginId, titleKey) ?? tLoose(titleKey),
+        ...(detailsDescriptor.tab?.subtitleKey
+            ? {
+                subtitle: resolvePluginTranslation?.(pluginId, detailsDescriptor.tab.subtitleKey)
+                    ?? tLoose(detailsDescriptor.tab.subtitleKey),
+            }
+            : {}),
+        resource: {
+            kind: resourceKind,
+            mode: 'launch',
+            pluginInlineSurface: {
+                pluginId,
+                agentId,
+                surfaceId,
+                iconName: readString(detailsDescriptor.iconName),
+            },
+            teamIds: collectSubagentGroupKeys(subagents, launchDescriptor),
+        },
+    };
+}
+
 function createSessionSubagentsBehaviorFromComponents(
     components: ComponentSlotsDescriptor | undefined,
     diagnostics: UiProjectionDiagnostic[],
@@ -1250,6 +1299,26 @@ function createSessionSubagentsBehaviorFromComponents(
                         }));
                     }
                     return rendered;
+                },
+            }
+            : {}),
+        ...(detailsTabSlots.length > 0 && launchCardSlots.length > 0
+            ? {
+                createLaunchDetailsTab: ({ subagents }) => {
+                    for (const detailsSlot of detailsTabSlots) {
+                        for (const launchSlot of launchCardSlots) {
+                            const tab = createLaunchDetailsTab(
+                                detailsSlot,
+                                launchSlot,
+                                subagents,
+                                pluginId,
+                                agentId,
+                                resolvePluginTranslation,
+                            );
+                            if (tab) return tab;
+                        }
+                    }
+                    return null;
                 },
             }
             : {}),

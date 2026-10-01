@@ -1,9 +1,12 @@
 import { z } from 'zod'
 import { UsageSchema } from './usage'
+import { LocalServiceMachineSummaryV1Schema } from '@happier-dev/protocol/local/services/inventory';
 import { SOCKET_RPC_EVENTS } from '@happier-dev/protocol/socketRpc'
 import type { SocketRpcRequestPayload as ProtocolSocketRpcRequestPayload } from '@happier-dev/protocol/socketRpc'
 import {
   ACCEPTED_PENDING_SETTLEMENT_EVENT_V1,
+  CliUpdateFactsSchema,
+  CallerInputConstraintsV1Schema,
   SESSION_PENDING_ADMISSION_SETTLEMENT_EVENT_V1,
   SESSION_PENDING_EXECUTION_RUN_MATERIALIZE_NEXT_EVENT_V2,
   SESSION_PENDING_EXECUTION_RUN_ACCEPTED_EVENT_V2,
@@ -20,9 +23,11 @@ import type {
   MachineOperationProtocolCapabilitiesV1,
   PrimaryTurnStatusV1,
   SessionOwnerMetadataEnvelopeV1,
+  SessionOwnerMetadataV1,
   SessionPendingAdmissionSettlementRequestV1,
   SessionPendingAdmissionSettlementResponseV1,
   SessionWorkspaceLocationV1,
+  SessionDirectoryV1,
   SessionRuntimeActivitySnapshotAck,
   SessionRuntimeActivitySnapshotRequest,
   SessionTurnMutationV1,
@@ -335,6 +340,9 @@ export interface ClientToServerEvents {
  */
 type SessionSharedFields = Readonly<{
   id: string;
+  reportsTo?: import('@happier-dev/protocol').SessionReportsToV1;
+  origin?: import('@happier-dev/protocol').SessionAwarenessOriginV1;
+  workDepth?: number;
   seq: number;
   initialTranscriptAfterSeq?: number;
   metadata: Metadata;
@@ -386,6 +394,8 @@ export const MachineMetadataSchema = z.object({
   happyLibDir: z.string(),
   daemonTerminalSessionAttachSupported: z.boolean().optional(),
   daemonSessionGoalControlsSupported: z.boolean().optional(),
+  /** K5 (plan R13): this daemon's first-party CLI update facts, published on connect and on each update outcome. */
+  cliUpdate: CliUpdateFactsSchema.optional(),
 })
 
 export type MachineMetadata = z.infer<typeof MachineMetadataSchema>
@@ -491,6 +501,7 @@ export const DaemonStateSchema = z.object({
   transfer: DaemonTransferRuntimeStateSchema.optional(),
   peerMediation: DaemonPeerMediationStateSchema.optional(),
   workspaceSync: WorkspaceSyncRuntimeEventV1Schema.optional(),
+  localServices: LocalServiceMachineSummaryV1Schema.optional(),
 })
 
 export type DaemonState = z.infer<typeof DaemonStateSchema>
@@ -584,6 +595,7 @@ export const CreateSessionResponseSchema = z.object({
 export type CreateSessionResponse = z.infer<typeof CreateSessionResponseSchema>
 
 export const UserMessageSchema = z.object({
+  callerInputConstraints: CallerInputConstraintsV1Schema.optional(),
   role: z.literal('user'),
   content: z.object({
     type: z.literal('text'),
@@ -695,6 +707,8 @@ export type Metadata = Readonly<Partial<RuntimeDescriptorMetadataCarrier>> & {
   },
   machineId?: string,
   sessionWorkspaceLocationV1?: SessionWorkspaceLocationV1,
+  /** Presentation/routing marker; managed filesystem ownership remains daemon-owned. */
+  sessionDirectoryV1?: SessionDirectoryV1,
   /** Immutable create-or-rejoin recipe supplied only by the Session creation owner. */
   sessionCreationCorrespondenceV1?: import('@happier-dev/protocol').SessionCreationCorrespondenceV1,
   /** Informational creation origin; never execution authority. */
@@ -770,6 +784,7 @@ export type Metadata = Readonly<Partial<RuntimeDescriptorMetadataCarrier>> & {
       description?: string,
     }>,
   },
+  sessionModesV2?: import('@happier-dev/protocol').SessionOwnerModeCatalogV2,
   sessionUsageLimitRecoveryV1?: SessionUsageLimitRecoveryV1,
   [SESSION_RUNNER_RUNTIME_METADATA_KEY]?: SessionRunnerRuntimeStateV1,
   /**
@@ -906,6 +921,9 @@ export type Metadata = Readonly<Partial<RuntimeDescriptorMetadataCarrier>> & {
    * even when there are no user messages carrying meta.permissionMode yet (e.g. local-only start).
    */
   permissionMode?: PermissionMode,
+  approvalReviewerEnabled?: boolean,
+  /** Owner-only work metadata; role content never projects into shared metadata. */
+  work?: SessionOwnerMetadataV1['work'],
   /** Timestamp (ms) for permissionMode, used for "latest wins" arbitration across devices. */
   permissionModeUpdatedAt?: number,
   sessionRollbackRangesV1?: SessionRollbackRangesV1,
@@ -947,23 +965,6 @@ export type AgentState = {
     remoteWritable?: boolean | null | undefined
     canAttach?: boolean | null | undefined
     canDetach?: boolean | null | undefined
-  } | null | undefined
-  terminalControl?: {
-    pendingHandoffV1?: {
-      v: 1,
-      status:
-        | 'none'
-        | 'deferred_until_terminal_turn_finishes'
-        | 'switching_to_remote'
-        | 'blocked_waiting_for_resume_identity'
-        | 'switch_failed'
-        | 'manual_action_required',
-      pendingCount: number,
-      updatedAtMs: number,
-      lastTerminalState?: unknown,
-      interruptRequired?: boolean,
-      detail?: string,
-    } | null | undefined
   } | null | undefined
   capabilities?: {
     askUserQuestionAnswersInPermission?: boolean | null | undefined
@@ -1058,6 +1059,8 @@ export type AgentState = {
          * to rejoin a completed request.
          */
         permissionDecisionActorV1?: unknown
+        /** Strict request-only reviewer decision, retained after the outstanding claim clears. */
+        permissionDecisionClaimV1?: import('@happier-dev/protocol').SessionPermissionApprovalReviewerClaimV1
         /** Non-authorizing pointer to the remote settlement row, when present. */
         remoteMediationSettlementId?: string
       }

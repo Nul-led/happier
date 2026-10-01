@@ -36,9 +36,9 @@ export type PluginEventAutomationObservationDraft =
 
 export type PluginEventAutomationAuthoringDraft = Readonly<{
     eventRef: Readonly<{ pluginId: string; localId: string }>;
-    expectedEventImmutableGenerationId: string;
+    expectedEventOccurrenceId: string;
     setupActionRef: Readonly<{ pluginId: string; localId: string }>;
-    expectedSetupActionImmutableGenerationId: string;
+    expectedSetupActionOccurrenceId: string;
     source: PluginEventAutomationSetupResultV1;
     /**
      * The selected plugin execution origin. It is the checkpointed-pull
@@ -94,9 +94,9 @@ function isExactEligibleEventForDraft(
     const setupActionRef = eligibleEvent.event.automation.source.setupActionRef;
     return supportsPluginEventAutomationObservationTransport(eligibleEvent, draft.observation.kind)
         && arePluginContributionIdentitiesEqual(eligibleEvent.event.identity, draft.eventRef)
-        && eligibleEvent.event.immutableGenerationId === draft.expectedEventImmutableGenerationId
+        && eligibleEvent.event.occurrenceId === draft.expectedEventOccurrenceId
         && arePluginContributionIdentitiesEqual(eligibleEvent.setupAction.identity, draft.setupActionRef)
-        && eligibleEvent.setupAction.immutableGenerationId === draft.expectedSetupActionImmutableGenerationId
+        && eligibleEvent.setupAction.occurrenceId === draft.expectedSetupActionOccurrenceId
         && setupActionRef !== undefined
         && arePluginContributionIdentitiesEqual(setupActionRef, eligibleEvent.setupAction.identity)
         && eligibleEvent.setupAction.identity.pluginId === eligibleEvent.event.identity.pluginId
@@ -198,9 +198,9 @@ export function createPluginEventAutomationAuthoringDraft(params: Readonly<{
 
     return Object.freeze({
         eventRef: Object.freeze({ ...params.eligibleEvent.event.identity }),
-        expectedEventImmutableGenerationId: params.eligibleEvent.event.immutableGenerationId,
+        expectedEventOccurrenceId: params.eligibleEvent.event.occurrenceId,
         setupActionRef: Object.freeze({ ...params.eligibleEvent.setupAction.identity }),
-        expectedSetupActionImmutableGenerationId: params.eligibleEvent.setupAction.immutableGenerationId,
+        expectedSetupActionOccurrenceId: params.eligibleEvent.setupAction.occurrenceId,
         source: source.result,
         watcherOrigin: watcherOrigin.data,
         observation,

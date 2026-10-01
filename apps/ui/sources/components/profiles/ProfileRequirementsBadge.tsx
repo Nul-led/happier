@@ -10,6 +10,7 @@ import { Text } from '@/components/ui/text/Text';
 import { normalizeNodeForView } from '@/components/ui/rendering/normalizeNodeForView';
 import { Icon } from '@/components/ui/icons/Icon';
 import { HappierBadge, HappierPressable } from '@happier-dev/plugin-ui/presentation';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 
 export interface ProfileRequirementsBadgeProps {
@@ -83,7 +84,7 @@ export function ProfileRequirementsBadge(props: ProfileRequirementsBadgeProps) {
             }}
             style={({ pressed }) => [
                 {
-                    opacity: pressed ? 0.85 : 1,
+                    opacity: pressed ? motionTokens.press.opacitySubtle : 1,
                 },
             ]}
         >

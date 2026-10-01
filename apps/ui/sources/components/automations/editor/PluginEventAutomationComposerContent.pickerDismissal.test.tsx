@@ -88,7 +88,8 @@ function createEvent(index?: number) {
         event: {
             id: eventId,
             identity: { pluginId: 'acme.github', localId },
-            immutableGenerationId: `event-generation-${index ?? 'a'}`,
+            occurrenceId: `event-occurrence-${index ?? 'a'}`,
+            sourceCustody: { kind: 'development', registeredRootId: 'event-root-a' },
             title: index === undefined ? 'Repository changed' : `Repository event ${index}`,
             description: 'A repository changed',
             payloadSchema: {
@@ -110,7 +111,7 @@ function createEvent(index?: number) {
         setupAction: {
             id: 'acme.github/setup-source',
             identity: { pluginId: 'acme.github', localId: 'setup-source' },
-            immutableGenerationId: `event-generation-${index ?? 'a'}`,
+            occurrenceId: `event-occurrence-${index ?? 'a'}`,
             title: 'Set up source',
             description: null,
             inputSchema: { type: 'object', additionalProperties: false },
@@ -148,7 +149,7 @@ function createModel(event: ReturnType<typeof createEvent>): PluginEventAutomati
             displayName: 'Acme GitHub',
             availability: 'available',
             installedPackage: null,
-            expectedGeneration: null,
+            expectedOccurrenceId: null,
             machineId: null,
             serverId: null,
             accountLifetime: null,

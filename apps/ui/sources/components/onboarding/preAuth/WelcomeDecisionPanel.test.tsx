@@ -6,6 +6,7 @@ import { renderScreen } from '@/dev/testkit';
 import type { AccountServiceEntryOptions } from '@/components/account/auth/useAccountServiceEntryOptions';
 import type { AuthEntryOptions } from '@/components/account/auth/useAuthEntryOptions';
 import { buildServerFeaturesResponse } from '@/hooks/server/serverFeaturesTestUtils';
+import { t } from '@/text';
 
 import { WelcomeDecisionPanel } from './WelcomeDecisionPanel';
 
@@ -31,30 +32,6 @@ const baseOptions: AuthEntryOptions = {
     authEntryUnavailable: false,
     serverUrlForCopy: 'https://relay.example.test',
     showAuthActions: true,
-    showProviderSignup: false,
-    showAnonymousSignup: true,
-    showMtlsLogin: false,
-    showKeylessProviderLogin: false,
-    providerId: null,
-    keylessProviderId: null,
-    providerSignupTitle: '',
-    providerKeylessTitle: '',
-    anonymousSignupTitle: 'Create account',
-    mtlsTitle: 'Sign in with certificate',
-    primaryAction: {
-        kind: 'anonymous',
-        title: 'Create account',
-    },
-    mtlsPrimary: false,
-    keylessPrimary: false,
-    autoRedirect: {
-        enabled: false,
-        providerId: null,
-        toKeyedProvision: false,
-        toKeylessLogin: false,
-        toMtls: false,
-        toLegacySignupProvider: false,
-    },
     retryServerCheck: () => {},
 };
 
@@ -76,38 +53,7 @@ function renderPanel(
     overrides: Partial<AuthEntryOptions> = {},
     accountServiceEntry?: AccountServiceEntryOptions,
 ) {
-    const rawOptions = { ...baseOptions, ...overrides };
-    let authenticationActions = rawOptions.authenticationActions;
-    if (!('authenticationActions' in overrides) && (
-        'showAnonymousSignup' in overrides
-        || 'showProviderSignup' in overrides
-        || 'showKeylessProviderLogin' in overrides
-        || 'showMtlsLogin' in overrides
-    )) {
-        authenticationActions = [
-            ...(rawOptions.showAnonymousSignup ? [{
-                method: { id: 'key_challenge', enabledActions: [{ id: 'provision' as const, mode: 'keyed' as const }] },
-                action: { id: 'provision' as const, mode: 'keyed' as const },
-                execution: { kind: 'generated_key' as const },
-            }] : []),
-            ...(rawOptions.showProviderSignup && rawOptions.providerId ? [{
-                method: { id: rawOptions.providerId, enabledActions: [{ id: 'provision' as const, mode: 'keyed' as const }] },
-                action: { id: 'provision' as const, mode: 'keyed' as const },
-                execution: { kind: 'oauth' as const, providerId: rawOptions.providerId, mode: 'keyed' as const },
-            }] : []),
-            ...(rawOptions.showMtlsLogin ? [{
-                method: { id: 'mtls', enabledActions: [{ id: 'login' as const, mode: 'keyless' as const }] },
-                action: { id: 'login' as const, mode: 'keyless' as const },
-                execution: { kind: 'mtls' as const },
-            }] : []),
-            ...(rawOptions.showKeylessProviderLogin && rawOptions.keylessProviderId ? [{
-                method: { id: rawOptions.keylessProviderId, enabledActions: [{ id: 'login' as const, mode: 'keyless' as const }] },
-                action: { id: 'login' as const, mode: 'keyless' as const },
-                execution: { kind: 'oauth' as const, providerId: rawOptions.keylessProviderId, mode: 'keyless' as const },
-            }] : []),
-        ];
-    }
-    const options: AuthEntryOptions = { ...rawOptions, authenticationActions };
+    const options: AuthEntryOptions = { ...baseOptions, ...overrides };
     const callbacks = {
         onContinueWithHomeAuthentication: vi.fn(),
         onOpenRestore: vi.fn(),
@@ -215,6 +161,31 @@ function readyAccountServiceEntry(
 }
 
 describe('WelcomeDecisionPanel', () => {
+    it.each(['ready', 'unavailable'] as const)('shows only the chosen service methods when the unrelated Home is %s', async (availability) => {
+        const baseService = readyAccountServiceEntry(['github'], { oauthAction: 'provision' });
+        const url = 'https://signin.example.test';
+        const service: AccountServiceEntryOptions = {
+            ...baseService,
+            endpoint: { url, source: 'user' },
+            discovery: { ...baseService.discovery!, endpointUrl: url, accountServiceDisplayName: null },
+        };
+        const { screenPromise, callbacks } = renderPanel({
+            requestedHomeTarget: undefined,
+            serverAvailability: availability,
+            authEntryUnavailable: true,
+        }, service);
+        const screen = await screenPromise;
+        expect(screen.findAllByTestId('welcome-primary-start')).toHaveLength(0);
+        expect(screen.findAllByTestId('welcome-auth-blocked')).toHaveLength(0);
+        expect(screen.findAllByTestId('welcome-auth-entry-degraded')).toHaveLength(0);
+        expect(screen.findAllByTestId('welcome-signup-disabled')).toHaveLength(0);
+        expect(screen.findByTestId('welcome-account-service-provider-github')?.props.accessibilityHint).toContain('signin.example.test');
+        await screen.pressByTestIdAsync('welcome-account-service-provider-github');
+        expect(callbacks.onContinueWithAccountServiceProvider).toHaveBeenCalledWith(expect.objectContaining({
+            authority: { purpose: 'account_service', service: expect.objectContaining({ endpointUrl: url }) }, intendedHome: null,
+        }));
+        expect(callbacks.onContinueWithHomeAuthentication).not.toHaveBeenCalled();
+    });
     it('keeps a true no-target entry free of Home methods and offers service selection', async () => {
         const noTargetOptions = { ...baseOptions };
         delete noTargetOptions.homeTarget;
@@ -233,7 +204,7 @@ describe('WelcomeDecisionPanel', () => {
         expect(screen.findByTestId('welcome-account-service-choose')).toBeTruthy();
     });
 
-    it('keeps fallback Home authentication without treating the seeded profile as a requested target', async () => {
+    it('targets the default sign-in service without duplicating the unrelated seeded Home methods', async () => {
         const fallbackOptions = { ...baseOptions };
         delete fallbackOptions.requestedHomeTarget;
         const onContinueWithAccountServiceProvider = vi.fn();
@@ -249,7 +220,7 @@ describe('WelcomeDecisionPanel', () => {
             />,
         );
 
-        expect(screen.findByTestId('welcome-primary-start')).toBeTruthy();
+        expect(screen.findAllByTestId('welcome-primary-start')).toHaveLength(0);
         await screen.pressByTestIdAsync('welcome-account-service-provider-github');
         expect(onContinueWithAccountServiceProvider).toHaveBeenCalledWith(expect.objectContaining({ intendedHome: null }));
     });
@@ -269,7 +240,8 @@ describe('WelcomeDecisionPanel', () => {
         expect(screen.findByTestId('welcome-primary-start-title')?.props.children).toBe('New here?');
         expect(screen.findByTestId('welcome-scan-existing-home-title')?.props.children).toBe('Scan a QR or paste a Home link');
         expect(screen.findByTestId('welcome-use-different-home-title')?.props.children).toBe('Use a different Home');
-        const primaryStyle = flattenStyle(screen.findByTestId('welcome-primary-start')?.props.style);
+        // The card chrome is the animated frame inside the pressable hit area.
+        const primaryStyle = flattenStyle(screen.findByTestId('welcome-primary-start-text')?.parent?.props.style);
         const textBlockStyle = flattenStyle(screen.findByTestId('welcome-primary-start-text')?.props.style);
         expect(primaryStyle.minHeight).toBe(66);
         expect(primaryStyle.paddingHorizontal).toBe(18);
@@ -294,14 +266,11 @@ describe('WelcomeDecisionPanel', () => {
 
     it('uses provider signup without rendering anonymous private-key copy', async () => {
         const { callbacks, screenPromise } = renderPanel({
-            showAnonymousSignup: false,
-            showProviderSignup: true,
-            providerId: 'github',
-            providerSignupTitle: 'Continue with GitHub',
-            primaryAction: {
-                kind: 'provider-keyed',
-                title: 'Continue with GitHub',
-            },
+            authenticationActions: [{
+                method: { id: 'github', enabledActions: [{ id: 'provision', mode: 'keyed' }] },
+                action: { id: 'provision', mode: 'keyed' },
+                execution: { kind: 'oauth', providerId: 'github', mode: 'keyed' },
+            }],
         });
         const screen = await screenPromise;
 
@@ -317,15 +286,11 @@ describe('WelcomeDecisionPanel', () => {
 
     it('uses keyless provider login without rendering anonymous private-key copy', async () => {
         const { callbacks, screenPromise } = renderPanel({
-            showAnonymousSignup: false,
-            showKeylessProviderLogin: true,
-            keylessPrimary: true,
-            keylessProviderId: 'github',
-            providerKeylessTitle: 'Continue with GitHub',
-            primaryAction: {
-                kind: 'keyless',
-                title: 'Continue with GitHub',
-            },
+            authenticationActions: [{
+                method: { id: 'github', enabledActions: [{ id: 'login', mode: 'keyless' }] },
+                action: { id: 'login', mode: 'keyless' },
+                execution: { kind: 'oauth', providerId: 'github', mode: 'keyless' },
+            }],
         });
         const screen = await screenPromise;
 
@@ -341,15 +306,7 @@ describe('WelcomeDecisionPanel', () => {
 
     it('keeps a visible secondary keyless provider login when anonymous signup remains primary', async () => {
         const { callbacks, screenPromise } = renderPanel({
-            showAnonymousSignup: true,
-            showKeylessProviderLogin: true,
-            keylessPrimary: false,
-            keylessProviderId: 'github',
-            providerKeylessTitle: 'Continue with GitHub',
-            primaryAction: {
-                kind: 'anonymous',
-                title: 'Create account',
-            },
+            authenticationActions: [...baseOptions.authenticationActions!, { method: { id: 'github', enabledActions: [{ id: 'login', mode: 'keyless' }] }, action: { id: 'login', mode: 'keyless' }, execution: { kind: 'oauth', providerId: 'github', mode: 'keyless' } }],
         });
         const screen = await screenPromise;
 
@@ -365,13 +322,11 @@ describe('WelcomeDecisionPanel', () => {
 
     it('uses mTLS login without rendering anonymous private-key copy', async () => {
         const { callbacks, screenPromise } = renderPanel({
-            showAnonymousSignup: false,
-            showMtlsLogin: true,
-            mtlsPrimary: true,
-            primaryAction: {
-                kind: 'mtls',
-                title: 'Sign in with certificate',
-            },
+            authenticationActions: [{
+                method: { id: 'mtls', enabledActions: [{ id: 'login', mode: 'keyless' }] },
+                action: { id: 'login', mode: 'keyless' },
+                execution: { kind: 'mtls' },
+            }],
         });
         const screen = await screenPromise;
 
@@ -385,9 +340,9 @@ describe('WelcomeDecisionPanel', () => {
 
     it('shows Home loading inline while keeping independent recovery navigation available', async () => {
         const { callbacks, screenPromise } = renderPanel({
+            authenticationActions: [],
             serverAvailability: 'loading',
             showAuthActions: false,
-            showAnonymousSignup: false,
         });
         const screen = await screenPromise;
 
@@ -404,9 +359,9 @@ describe('WelcomeDecisionPanel', () => {
     it('keeps retry and relay-change actions available when the server is unavailable', async () => {
         const retryServerCheck = vi.fn();
         const { callbacks, screenPromise } = renderPanel({
+            authenticationActions: [],
             serverAvailability: 'unavailable',
             showAuthActions: false,
-            showAnonymousSignup: false,
             retryServerCheck,
         });
         const screen = await screenPromise;
@@ -452,7 +407,18 @@ describe('WelcomeDecisionPanel', () => {
         expect(callbacks.onOpenRestore).toHaveBeenCalledTimes(1);
     });
 
-    it('does not advertise scan or paste navigation when the caller reports no capability', async () => {
+    it('keeps paste-based Home entry available when camera capability is not reported', async () => {
+        const callbacks = {
+            onContinueWithHomeAuthentication: vi.fn(),
+            onOpenRestore: vi.fn(),
+            onChangeRelay: vi.fn(),
+        };
+        const screen = await renderScreen(<WelcomeDecisionPanel authEntryOptions={baseOptions} {...callbacks} />);
+
+        expect(screen.findByTestId('welcome-scan-existing-home')).toBeTruthy();
+    });
+
+    it('keeps paste-based Home entry available when the caller cannot scan', async () => {
         const callbacks = {
             onContinueWithHomeAuthentication: vi.fn(),
             onOpenRestore: vi.fn(),
@@ -464,7 +430,11 @@ describe('WelcomeDecisionPanel', () => {
             canScanQr={false}
         />);
 
-        expect(screen.findAllByTestId('welcome-scan-existing-home')).toHaveLength(0);
+        expect(screen.findByTestId('welcome-scan-existing-home')).toBeTruthy();
+        expect(screen.findByTestId('welcome-scan-existing-home-title')?.props.children)
+            .toBe('Enter URL manually');
+        expect(screen.findByTestId('welcome-scan-existing-home-subtitle')?.props.children)
+            .toBe('Paste the pairing link shown on the other device.');
         expect(screen.findByTestId('welcome-use-different-home')).toBeTruthy();
     });
 
@@ -493,7 +463,7 @@ describe('WelcomeDecisionPanel', () => {
 
     it('offers the selected sign-in service methods as familiar provider actions and keeps QR entry', async () => {
         const { callbacks, screenPromise } = renderPanel(
-            { showAnonymousSignup: true, showProviderSignup: true, providerId: 'github' },
+            { authenticationActions: [...baseOptions.authenticationActions!, { method: { id: 'github', enabledActions: [{ id: 'provision', mode: 'keyed' }] }, action: { id: 'provision', mode: 'keyed' }, execution: { kind: 'oauth', providerId: 'github', mode: 'keyed' } }] },
             readyAccountServiceEntry(['github', 'google']),
         );
         const screen = await screenPromise;
@@ -503,6 +473,7 @@ describe('WelcomeDecisionPanel', () => {
         expect(screen.findByTestId('welcome-account-service-provider-google')).toBeTruthy();
         // Named-account methods augment the exact Home methods instead of replacing them.
         expect(screen.findByTestId('welcome-primary-start')).toBeTruthy();
+        expect(screen.findByTestId('welcome-login-provider')).toBeTruthy();
         expect(screen.findAllByTestId('welcome-private-key-copy')).toHaveLength(0);
         // Direct QR entry stays available.
         expect(screen.findByTestId('welcome-scan-existing-home')).toBeTruthy();
@@ -535,7 +506,7 @@ describe('WelcomeDecisionPanel', () => {
 
     it('keeps provider provisioning new-here while presenting its keyless execution truthfully', async () => {
         const { callbacks, screenPromise } = renderPanel(
-            {},
+            { requestedHomeTarget: undefined },
             readyAccountServiceEntry(['github'], {
                 oauthAction: 'provision',
                 oauthMode: 'keyless',
@@ -556,7 +527,7 @@ describe('WelcomeDecisionPanel', () => {
 
     it('offers the advertised key method for a key-only selected sign-in service', async () => {
         const { callbacks, screenPromise } = renderPanel(
-            { showAnonymousSignup: true },
+            {},
             readyAccountServiceEntry([], { keyLoginAvailable: true }),
         );
         const screen = await screenPromise;
@@ -577,7 +548,7 @@ describe('WelcomeDecisionPanel', () => {
 
     it('keeps Home authentication usable when the optional service is methodless', async () => {
         const { screenPromise } = renderPanel(
-            { showAnonymousSignup: true },
+            {},
             readyAccountServiceEntry([], { keyLoginAvailable: false }),
         );
         const screen = await screenPromise;
@@ -646,7 +617,7 @@ describe('WelcomeDecisionPanel', () => {
         const notice = screen.findByTestId('welcome-account-service-recovery');
         expect(notice?.props.accessibilityLiveRegion).toBe('polite');
         expect(screen.getTextContent()).toContain('Acme ID');
-        expect(screen.getTextContent()).toContain('Retry or choose another sign-in service');
+        expect(screen.getTextContent()).toContain('You can still use this Home');
     });
 
     it('shows one Loading block while both first-paint probes are in flight', async () => {
@@ -681,9 +652,7 @@ describe('WelcomeDecisionPanel', () => {
 
     it('promotes login and explains the policy when the server exposes no signup action', async () => {
         const { callbacks, screenPromise } = renderPanel({
-            showAnonymousSignup: false,
-            showProviderSignup: false,
-            primaryAction: null,
+            authenticationActions: [],
         });
         const screen = await screenPromise;
 
@@ -696,5 +665,17 @@ describe('WelcomeDecisionPanel', () => {
         await screen.pressByTestIdAsync('welcome-scan-existing-home');
 
         expect(callbacks.onOpenRestore).toHaveBeenCalledTimes(1);
+    });
+
+    it('explains closed signup as an intentional Personal Home policy without redirecting the owner to an admin', async () => {
+        const { screenPromise } = renderPanel({
+            authenticationActions: [],
+            isPersonalHome: true,
+        });
+        const screen = await screenPromise;
+        const notice = screen.findByTestId('welcome-signup-disabled');
+
+        expect(notice?.props.children).toBe(t('personalHome.auth.signupClosed'));
+        expect(notice?.props.children).not.toBe(t('errors.signupDisabled'));
     });
 });

@@ -14,10 +14,14 @@ import {
 import { readSessionAccessRole } from '@/sync/engine/sessions/normalizeSessionAccessProjection';
 import { buildSessionDetailAccessProjectionQuery } from '@/sync/api/session/sessionDetailAccessProjection';
 import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
+import type { SessionEncryption } from '@/sync/encryption/sessionEncryption';
+import { createSessionEncryptionUnavailableError } from '@/sync/encryption/sessionEncryptionUnavailableError';
 
 import { getOrCreateScopedCacheTokenKey, resetScopedCacheTokenKeysForTests } from './scopedCacheTokenKey';
 import { createScopedResolutionSingleFlight } from './scopedResolutionSingleFlight';
 import { createServerRequestForExplicitServerScope } from './createServerRequestWithServerScope';
+import type { ResolvedServerAccountRequestContext } from './resolveServerAccountRequestContext';
+import { DEFAULT_SERVER_SCOPED_RPC_TIMEOUT_MS } from './serverScopedRpcTypes';
 
 function normalizeId(raw: unknown): string {
   return String(raw ?? '').trim();
@@ -62,7 +66,6 @@ export async function initializeScopedSessionReader(params: Readonly<{
   return true;
 }
 
-const sessionCryptoContextCache = new Map<string, ScopedSessionCryptoContext>();
 const sessionCryptoContextResolutions = createScopedResolutionSingleFlight<ScopedSessionCryptoContext>();
 
 function readMaxSessionKeyCacheEntriesFromEnv(): number {
@@ -71,26 +74,6 @@ function readMaxSessionKeyCacheEntriesFromEnv(): number {
   const parsed = Number.parseInt(raw, 10);
   if (!Number.isFinite(parsed)) return 256;
   return Math.max(1, Math.min(10_000, parsed));
-}
-
-function getSessionCryptoContextFromCache(cacheKey: string): ScopedSessionCryptoContext | undefined {
-  const existing = sessionCryptoContextCache.get(cacheKey);
-  if (existing === undefined) return undefined;
-  // Refresh LRU ordering.
-  sessionCryptoContextCache.delete(cacheKey);
-  sessionCryptoContextCache.set(cacheKey, existing);
-  return existing;
-}
-
-function setSessionCryptoContextCache(cacheKey: string, value: ScopedSessionCryptoContext): void {
-  sessionCryptoContextCache.set(cacheKey, value);
-
-  const max = readMaxSessionKeyCacheEntriesFromEnv();
-  while (sessionCryptoContextCache.size > max) {
-    const oldest = sessionCryptoContextCache.keys().next();
-    if (oldest.done) break;
-    sessionCryptoContextCache.delete(oldest.value);
-  }
 }
 
 async function fetchSessionCryptoContext(params: Readonly<SessionAddress & {
@@ -182,7 +165,7 @@ export async function resolveScopedSessionCryptoContext(params: Readonly<Session
   runtimeOrigin?: string;
   homeCarrier?: HomeCarrier;
   token: string;
-  /** The exact scope's stored credentials; the bearer `token` identifies them for the cache. */
+  /** The exact scope's stored credentials; the bearer `token` identifies the in-flight operation. */
   credentials?: AuthCredentials;
   decryptEncryptionKey?: (value: string) => Promise<Uint8Array | null>;
   timeoutMs?: number;
@@ -190,16 +173,13 @@ export async function resolveScopedSessionCryptoContext(params: Readonly<Session
   const sessionId = normalizeId(params.sessionId);
   const serverId = normalizeId(params.serverId);
   const token = String(params.token ?? '');
-  const timeoutMs = typeof params.timeoutMs === 'number' && params.timeoutMs > 0 ? params.timeoutMs : 30_000;
+  const timeoutMs = typeof params.timeoutMs === 'number' && params.timeoutMs > 0 ? params.timeoutMs : DEFAULT_SERVER_SCOPED_RPC_TIMEOUT_MS;
   const keyCacheKey = toSessionDataKeyCacheKey(serverId, sessionId, token);
 
-  const cached = getSessionCryptoContextFromCache(keyCacheKey);
-  if (cached !== undefined) {
-    return cached;
-  }
-
-  // Coalesce concurrent callers for the same session; the cache is read-await-write, so
-  // without this each one repeats the by-id fetch and its asymmetric envelope open.
+  // Coalesce concurrent callers for the same operation; without this, a burst of
+  // callers repeats the by-id fetch and asymmetric envelope open. Settled results
+  // deliberately do not survive the operation: the Home may repair or rotate the
+  // published envelope while the bearer remains unchanged.
   // `keyCacheKey` covers the target server, the session and the bearer token, and the
   // token determines the credentials behind the caller's `decryptEncryptionKey`, so a
   // joiner can only ever adopt a result computed from its own inputs.
@@ -215,16 +195,66 @@ export async function resolveScopedSessionCryptoContext(params: Readonly<Session
       decryptEncryptionKey: params.decryptEncryptionKey,
       timeoutMs,
     });
-    // Cache only stable outcomes; transient fetch failures should be retried.
-    if (context.encryptionMode !== 'unknown') {
-      setSessionCryptoContextCache(keyCacheKey, context);
-    }
     return context;
   });
 }
 
+type ScopedSessionEncryptionContext = Extract<ResolvedServerAccountRequestContext, { scope: 'scoped' }>;
+
+/**
+ * The Session reader for one Session under a captured Account authority.
+ *
+ * Every scoped context carries a fresh Account encryption owner with no Session readers
+ * installed, so a reader is hydrated on demand from the Session's published data-key
+ * envelope (or the owner-only historical reader) and installed on that same owner. A
+ * Session with no openable reader fails with the typed unavailable error: it is never
+ * reported as missing, and never sealed with the Account-scoped reader or as plaintext.
+ */
+export async function resolveScopedSessionEncryption(params: Readonly<{
+  context: ScopedSessionEncryptionContext;
+  sessionId: string;
+}>): Promise<SessionEncryption> {
+  const { context, sessionId } = params;
+  const encryption = context.encryption;
+  if (!encryption) throw createSessionEncryptionUnavailableError(sessionId, 'scoped_session_encryption_unavailable');
+  const existing = encryption.getSessionEncryption(sessionId);
+  if (existing) return existing;
+  const cryptoContext = await resolveScopedSessionCryptoContext({
+    serverId: context.targetServerId,
+    serverUrl: context.targetServerUrl,
+    ...(context.runtimeOrigin ? { runtimeOrigin: context.runtimeOrigin } : {}),
+    ...(context.homeCarrier ? { homeCarrier: context.homeCarrier } : {}),
+    token: context.token,
+    ...(context.credentials ? { credentials: context.credentials } : {}),
+    sessionId,
+    timeoutMs: context.timeoutMs,
+    decryptEncryptionKey: (value) => encryption.decryptEncryptionKey(value),
+  });
+  const installed = await initializeScopedSessionReader({
+    sessionId,
+    serverId: context.targetServerId,
+    context: cryptoContext,
+    encryption,
+  });
+  const sessionEncryption = installed ? encryption.getSessionEncryption(sessionId) : null;
+  if (!sessionEncryption) throw createSessionEncryptionUnavailableError(sessionId, 'scoped_session_encryption_unavailable');
+  return sessionEncryption;
+}
+
+/**
+ * A Session-reader source for consumers that seal or open one Session's content under a
+ * captured Account authority. `null` for a token-only Account, which has no E2EE material.
+ */
+export function createScopedSessionEncryptionSource(context: ScopedSessionEncryptionContext): Readonly<{
+  getSessionEncryption: (sessionId: string) => Promise<SessionEncryption>;
+}> | null {
+  if (!context.encryption) return null;
+  return {
+    getSessionEncryption: (sessionId) => resolveScopedSessionEncryption({ context, sessionId }),
+  };
+}
+
 export function resetScopedSessionDataKeyCacheForTests(): void {
-  sessionCryptoContextCache.clear();
   sessionCryptoContextResolutions.reset();
   resetScopedCacheTokenKeysForTests();
 }

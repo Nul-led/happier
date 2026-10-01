@@ -1,10 +1,14 @@
 import * as React from 'react';
 import renderer, { act } from 'react-test-renderer';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createPartialStorageModuleMock, renderScreen } from '@/dev/testkit';
 import type { Session } from '@/sync/domains/state/storageTypes';
 import type { ReviewCommentV1 } from '@happier-dev/protocol';
 import { installSessionFilesViewCommonModuleMocks } from './sessionFilesViewsTestHelpers';
+import { serveActionHomes, type ServedHomeRequest } from '@/dev/testkit/harness/actionHomesHttpHarness';
+import { storePlainReviewCommentFixture } from '@/dev/testkit/fixtures/reviewComments';
+import { invalidateAccountEncryptionModeCache } from '@/sync/api/account/apiAccountEncryptionMode';
+import { retireActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -19,9 +23,11 @@ const invalidateFromAutoRefreshSpy = vi.hoisted(() => vi.fn());
 const invalidateFromAutoRefreshAndAwaitSpy = vi.hoisted(() => vi.fn());
 const invalidateFromMutationAndAwaitSpy = vi.hoisted(() => vi.fn());
 const invalidateFromUserSpy = vi.hoisted(() => vi.fn());
-const serverFetchSpy = vi.hoisted(() => vi.fn());
 const reviewCommentsSurfaceSpy = vi.hoisted(() => vi.fn());
-const frontDoorActionExecuteSpy = vi.hoisted(() => vi.fn());
+let homeRequests: ServedHomeRequest[] = [];
+let servedReviewComments: readonly ReviewCommentV1[] = [];
+let disposeHome: (() => void) | null = null;
+let servedHomeId = '';
 
 const mockSession = {
     id: 'session-1',
@@ -69,14 +75,6 @@ vi.mock('@/components/ui/text/Text', () => ({
 
 vi.mock('@/agents/registry/generatedBundledPluginEntries.uiBehaviorOverrides', () => ({
     BUNDLED_CANONICAL_AGENT_UI_BEHAVIOR_DESCRIPTORS: {},
-}));
-
-vi.mock('@/sync/http/client', () => ({
-    serverFetch: serverFetchSpy,
-}));
-
-vi.mock('@/sync/ops/actions/frontDoorRuntimeActionExecutor', () => ({
-    createFrontDoorUiActionExecutor: () => frontDoorActionExecuteSpy,
 }));
 
 vi.mock('@/components/reviews/ReviewCommentsSessionSurface', () => ({
@@ -223,15 +221,18 @@ function reviewComment(overrides: Partial<ReviewCommentV1> = {}): ReviewCommentV
     };
 }
 
-function jsonResponse(body: unknown): Response {
-    return new Response(JSON.stringify(body), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-    });
-}
-
 describe('SessionScmReviewDetailsView (snapshot SWR)', () => {
-    beforeEach(() => {
+    beforeEach(async () => {
+        servedReviewComments = [];
+        const served = await serveActionHomes({
+            homes: [{ key: 'scm', serverUrl: 'https://scm-review.test', accountId: 'account-1' }],
+            route: (request) => request.path === '/v1/reviews/comments'
+                ? Response.json({ items: servedReviewComments.map(storePlainReviewCommentFixture), cursor: null })
+                : undefined,
+        });
+        homeRequests = served.requests;
+        servedHomeId = served.homes.scm!.id;
+        disposeHome = served.dispose;
         mockProject = null;
         reviewCommentsFeatureEnabled = false;
         scmWriteOperationsFeatureEnabled = false;
@@ -245,12 +246,17 @@ describe('SessionScmReviewDetailsView (snapshot SWR)', () => {
         invalidateFromAutoRefreshAndAwaitSpy.mockClear();
         invalidateFromMutationAndAwaitSpy.mockClear();
         invalidateFromUserSpy.mockClear();
-        serverFetchSpy.mockReset();
-        frontDoorActionExecuteSpy.mockReset();
         reviewCommentsSurfaceSpy.mockClear();
         reviewDraftHandlers.onUpsertReviewCommentDraft.mockClear();
         reviewDraftHandlers.onDeleteReviewCommentDraft.mockClear();
         reviewDraftHandlers.onReviewCommentError.mockClear();
+    });
+
+    afterEach(() => {
+        disposeHome?.();
+        disposeHome = null;
+        retireActiveServerAccountScopeLifetime();
+        invalidateAccountEncryptionModeCache();
     });
 
     it('registers the mounted review surface as a realtime SCM transcript consumer', async () => {
@@ -331,7 +337,7 @@ describe('SessionScmReviewDetailsView (snapshot SWR)', () => {
         await renderScreen(<SessionScmReviewDetailsView sessionId="s1" scopeId="session:s1" />);
 
         expect(invalidateFromAutoRefreshSpy).toHaveBeenCalledTimes(1);
-        expect(invalidateFromAutoRefreshSpy).toHaveBeenCalledWith('s1');
+        expect(invalidateFromAutoRefreshSpy.mock.calls[0]?.[0]).toBe('s1');
         expect(invalidateFromUserSpy).not.toHaveBeenCalled();
     });
 
@@ -370,13 +376,10 @@ describe('SessionScmReviewDetailsView (snapshot SWR)', () => {
         }));
     });
 
-    it('mounts durable review comments in the session SCM review surface', async () => {
+    it.each([{ id: 'project-1' }, null])('mounts durable review comments with optional Project %j', async (selectedProject) => {
         reviewCommentsFeatureEnabled = true;
-        mockProject = { id: 'project-1' };
-        frontDoorActionExecuteSpy.mockResolvedValue({
-            items: [reviewComment({ body: 'Durable session review comment.' })],
-            cursor: null,
-        });
+        mockProject = selectedProject;
+        servedReviewComments = [reviewComment({ body: 'Durable session review comment.', workspace: { machineId: 'machine-1', path: '/tmp/repo' } })];
         const { SessionScmReviewDetailsView } = await import('./SessionScmReviewDetailsView');
 
         mockSnapshot = {
@@ -399,11 +402,12 @@ describe('SessionScmReviewDetailsView (snapshot SWR)', () => {
             },
         };
 
-        const screen = await renderScreen(<SessionScmReviewDetailsView sessionId="s1" scopeId="session:s1:0" />);
+        const screen = await renderScreen(<SessionScmReviewDetailsView serverId={servedHomeId} sessionId="s1" scopeId="session:s1:0" />);
         expect(screen.getTextContent()).not.toContain('Durable session review comment.');
 
         expect(reviewCommentsSurfaceSpy).toHaveBeenCalledWith(expect.objectContaining({
-            projectId: 'project-1',
+            projectId: selectedProject?.id,
+            workspace: { machineId: 'machine-1', path: '/tmp/repo' },
             sessionId: 's1',
             directWriteGrants: [],
             pendingDirectWriteGrantRequests: [],
@@ -415,15 +419,15 @@ describe('SessionScmReviewDetailsView (snapshot SWR)', () => {
         const surfaceProps = reviewCommentsSurfaceSpy.mock.calls.at(-1)?.[0];
         await expect(surfaceProps.execute('reviews.comments.list', {
             projectId: surfaceProps.projectId,
+            workspace: surfaceProps.workspace,
             includeHistory: true,
         })).resolves.toEqual({
             items: [expect.objectContaining({ body: 'Durable session review comment.' })],
             cursor: null,
         });
-        expect(frontDoorActionExecuteSpy).toHaveBeenCalledWith('reviews.comments.list', {
-            projectId: 'project-1',
-            includeHistory: true,
-        });
+        expect(homeRequests.filter((request) => request.path === '/v1/reviews/comments')).toEqual([
+            expect.objectContaining({ home: 'scm', accountId: 'account-1', method: 'GET' }),
+        ]);
     });
 
     it('keeps review callbacks stable across unrelated parent rerenders', async () => {

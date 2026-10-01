@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { AutomationRunCauseSchema, deriveAutomationOccurrenceKeyV1 } from '@happier-dev/protocol';
+import { AutomationRunCauseSchema, deriveAutomationOccurrenceKeyV1, WorkflowValueReferenceSchema } from '@happier-dev/protocol';
 
 import {
   bindAutomationWorkflowInputs,
@@ -26,7 +26,99 @@ const runtime: WorkflowValueResolutionRuntime = {
   }),
 };
 
+const contextGoal = { id: 'goal', kind: 'goal' as const, origin: 'happier' as const, status: 'active' as const,
+  title: 'Finish', updatedAt: 1, tokenBudget: 100 };
+
 describe('workflow input materialization', () => {
+  it('enforces declared string choices for occurrence evidence, constants, and defaults', () => {
+    const definition = { inputs: [{ name: 'apply', valueType: 'string' as const, required: false,
+      default: 'fix', enum: ['fix', 'report'] }] };
+    expect(bindAutomationWorkflowInputs({ definition, evidence: {} })).toEqual({ apply: 'fix' });
+    expect(bindAutomationWorkflowInputs({ definition, evidence: { apply: 'report' } })).toEqual({ apply: 'report' });
+    for (const source of [{ evidence: { apply: 'anything' } }, { evidence: {}, constants: { apply: 'anything' } }]) {
+      expect(() => bindAutomationWorkflowInputs({ definition, ...source })).toThrowError('invalid_input');
+    }
+  });
+  it('selects the last completed iteration result for a bounded repair workflow final output', async () => {
+    await expect(resolveWorkflowValueReference({ kind: 'result', producer: { blockId: 'repairs', scope: { kind: 'current' } },
+      path: ['last', 'check'] }, { ...runtime, resolveResult: async () => [
+        { check: { passed: false, failures: 'First attempt failed' } },
+        { check: { passed: true, failures: '' } },
+      ] })).resolves.toEqual({ passed: true, failures: '' });
+  });
+  it('projects an item field for Action CAS bindings and distinguishes missing fields in conditions', async () => {
+    const reference = { kind: 'item' as const, field: 'value' as const, path: ['path'] };
+    expect(WorkflowValueReferenceSchema.safeParse(reference).success).toBe(true);
+    await expect(resolveWorkflowValueReference(reference, runtime)).resolves.toBe('a.ts');
+    await expect(evaluateWorkflowCondition({ kind: 'exists', value: { ...reference, path: ['projectId'] } }, runtime)).resolves.toBe(false);
+    await expect(resolveWorkflowValueReference({ ...reference, path: ['projectId'] }, runtime)).rejects.toMatchObject({ code: 'missing_reference' });
+    await expect(resolveWorkflowValueReference({ kind: 'item', field: 'index' }, runtime)).resolves.toBe(0);
+  });
+  it.each(['gte', 'neq'] as const)('does not hold %s comparisons on unavailable context fields but propagates reader failures', async (operator) => {
+    const condition = { kind: 'compare' as const, operator,
+      left: { kind: 'session_context_field' as const, field: 'usage.tokensUsed' as const },
+      right: { kind: 'literal' as const, value: 0 } };
+    await expect(evaluateWorkflowCondition(condition, { ...runtime, resolveSessionContextField: async () => {
+      throw new WorkflowInputResolutionError('missing_reference');
+    } })).resolves.toBe(false);
+    await expect(evaluateWorkflowCondition(condition, { ...runtime, resolveSessionContextField: async () => {
+      throw new WorkflowInputResolutionError('workflow_session_context_unavailable');
+    } })).rejects.toMatchObject({ code: 'workflow_session_context_unavailable' });
+  });
+  it('keeps inline input token text, labels its resolved value, and forwards only Session-owned references', async () => {
+    const workflowToken = { kind: 'happier.workflowInput', ref: 'workflowInput:1', token: '@analysis' };
+    const fileMention = { kind: 'happier.file', ref: 'file:README.md', token: '@README.md' };
+    const unknownMention = { kind: 'example.ticket', ref: 'ticket:123', token: '@ticket' };
+    const text = 'Review @analysis alongside @README.md and @ticket';
+    const materialized = await materializeWorkflowStepInput({
+      document: { text, references: [workflowToken, fileMention, unknownMention], attachments: [] },
+      references: [{ kind: 'literal', value: 'unrelated' }, { kind: 'input', name: 'topic' }],
+      runtime,
+    });
+    expect(materialized.text.split('\n\n**Workflow inputs**\n\n')[0]).toBe(text);
+    expect(JSON.parse(materialized.text.split('\n\n**Workflow inputs**\n\n')[1]!)).toEqual([
+      { reference: { kind: 'literal', value: 'unrelated' }, value: 'unrelated' },
+      { token: '@analysis', reference: { kind: 'input', name: 'topic' }, value: 'typed value' },
+    ]);
+    expect(materialized.references).toEqual([fileMention, unknownMention]);
+  });
+
+  it('reads origin context independently of conversation and condition fields at evaluation time', async () => {
+    const context = { goal: contextGoal, usage: { kind: 'accounted' as const, tokensUsed: 80 },
+      turns: [{ initiator: 'workflow' as const, text: 'Continue' }], truncated: false };
+    const contextualRuntime = { ...runtime, resolveSessionContext: async () => context,
+      resolveSessionContextField: async (field: string) => field === 'usage.tokensUsed' ? 80 : 100 };
+    await expect(resolveWorkflowValueReference({ kind: 'session_context', recentTurns: 1 }, contextualRuntime)).resolves.toEqual(context);
+    await expect(evaluateWorkflowCondition({ kind: 'compare', operator: 'gte',
+      left: { kind: 'session_context_field', field: 'usage.tokensUsed' },
+      right: { kind: 'session_context_field', field: 'goal.tokenBudget' } }, contextualRuntime)).resolves.toBe(false);
+    await expect(evaluateWorkflowCondition({ kind: 'exists', value: { kind: 'session_context_field', field: 'usage.tokensUsed' } },
+      { ...runtime, resolveSessionContextField: async () => { throw new WorkflowInputResolutionError('missing_reference'); } })).resolves.toBe(false);
+    await expect(evaluateWorkflowCondition({ kind: 'exists', value: { kind: 'session_context_field', field: 'usage.tokensUsed' } },
+      { ...runtime, resolveSessionContextField: async () => { throw new WorkflowInputResolutionError('workflow_session_context_unavailable'); } }))
+      .rejects.toMatchObject({ code: 'workflow_session_context_unavailable' });
+  });
+
+  it('drops oldest context turns to fit the complete rendered input while preserving the goal and other inputs', async () => {
+    const context = { goal: contextGoal, usage: { kind: 'unavailable' as const },
+      turns: [{ initiator: 'user' as const, text: 'old'.repeat(50_000) }, { initiator: 'workflow' as const, text: 'recent' }], truncated: false };
+    const materialized = await materializeWorkflowStepInput({
+      document: { text: 'Prompt'.repeat(20_000), references: [], attachments: [] },
+      references: [{ kind: 'session_context', recentTurns: 2 }, { kind: 'literal', value: 'other'.repeat(4_000) }],
+      runtime: { ...runtime, resolveSessionContext: async () => context },
+    });
+    expect(Buffer.byteLength(materialized.text, 'utf8')).toBeLessThanOrEqual(256 * 1024);
+    expect(materialized.values[0]).toEqual({ ...context, turns: [context.turns[1]], truncated: true });
+    expect(context.turns).toHaveLength(2);
+    expect(materialized.values[1]).toBe('other'.repeat(4_000));
+  });
+
+  it('retains the input-too-large failure when the goal and prompt cannot fit without turns', async () => {
+    await expect(materializeWorkflowStepInput({ document: { text: 'x'.repeat(256 * 1024), references: [], attachments: [] },
+      references: [{ kind: 'session_context', recentTurns: 1 }], runtime: { ...runtime, resolveSessionContext: async () => ({
+        goal: contextGoal, usage: { kind: 'unavailable' }, turns: [{ initiator: 'user', text: 'drop' }], truncated: false,
+      }) } })).rejects.toMatchObject({ code: 'workflow_input_too_large' });
+  });
   it('projects the immutable schedule occurrence into the named workflow input seed', () => {
     expect(resolveAutomationWorkflowOccurrenceSeed({
       cause: AutomationRunCauseSchema.parse({
@@ -42,7 +134,7 @@ describe('workflow input materialization', () => {
         evidence: { scheduledFor: 1_714_000_000_000 },
       }),
       openedEvidence: null,
-    })).toEqual({ scheduledFor: 1_714_000_000_000 });
+    })).toEqual({ scheduledFor: 1_714_000_000_000, triggerId: 'trigger-1' });
   });
 
   it('keeps plugin and conversation occurrence evidence opaque and exact', () => {
@@ -69,7 +161,7 @@ describe('workflow input materialization', () => {
         },
       }),
       openedEvidence: evidence,
-    })).toBe(evidence);
+    })).toEqual({ ...evidence, triggerId: 'trigger-1' });
   });
 
   it('binds Automation evidence by declared name, applies defaults, and rejects gaps', () => {
@@ -84,6 +176,18 @@ describe('workflow input materialization', () => {
     expect(bindAutomationWorkflowInputs({ definition, evidence: { event: { id: 'evt-1' } } }))
       .toEqual({ event: { id: 'evt-1' }, attempt: 1 });
     expect(() => bindAutomationWorkflowInputs({ definition, evidence: {} })).toThrowError('missing_required_input');
+  });
+
+  it('binds occurrence values before trigger constants, then definition defaults', () => {
+    const definition = { inputs: [
+      { name: 'topic', valueType: 'string' as const, required: true, default: 'default' },
+      { name: 'limit', valueType: 'number' as const, required: true, default: 1 },
+      { name: 'fallback', valueType: 'json' as const, required: false, default: null },
+    ] };
+    expect(bindAutomationWorkflowInputs({ definition, evidence: { topic: 'event' }, constants: { topic: 'constant', limit: 3 } }))
+      .toEqual({ topic: 'event', limit: 3, fallback: null });
+    expect(() => bindAutomationWorkflowInputs({ definition, evidence: {}, constants: { limit: 'bad' } }))
+      .toThrowError('invalid_input');
   });
 
   it('ignores undeclared schedule evidence for a zero-input workflow', () => {
@@ -103,7 +207,7 @@ describe('workflow input materialization', () => {
       }),
       openedEvidence: null,
     });
-    expect(seed).toEqual({ scheduledFor });
+    expect(seed).toEqual({ scheduledFor, triggerId: 'trigger-1' });
     const definition = { version: 1 as const, inputs: [], defaults: {}, blocks: [] };
     expect(bindAutomationWorkflowInputs({ definition, evidence: seed })).toEqual({});
   });
@@ -180,6 +284,12 @@ describe('workflow input materialization', () => {
   });
 
   it('uses strict condition semantics without JavaScript coercion', async () => {
+    await expect(evaluateWorkflowCondition({
+      kind: 'compare', operator: 'eq',
+      left: { kind: 'literal', value: { count: -0, nested: [false, null] } },
+      right: { kind: 'literal', value: { nested: [false, null], count: 0 } },
+    }, runtime)).resolves.toBe(true);
+
     await expect(evaluateWorkflowCondition({
       kind: 'all',
       conditions: [

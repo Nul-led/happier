@@ -6,14 +6,15 @@ import { renderScreen } from '@/dev/testkit';
 import { listTeamGroups } from '@/sync/ops/teams/teamGroupOperations';
 import { listTeamMembers } from '@/sync/ops/teams/teamMemberOperations';
 import { runTeamAction } from '@/sync/ops/teams/teamActionClient';
-import { searchSessionAccessAccountPage } from '@/sync/api/session/sessionAccessLegacyAdapter';
+import { searchSessionAccessAccountPage } from '@/sync/api/session/sessionAccessApi';
 import { useTeamGroups } from '@/hooks/teams/useTeamGroups';
 import { useTeamMembersRoster } from '@/hooks/teams/useTeamMembersRoster';
 
 import type { SessionAccessCandidateRowModel, SessionAccessGrantOperationModel } from './sessionAccessEditorTypes';
 import { useSessionAccessDirectory, type SessionAccessDirectory } from './useSessionAccessDirectory';
 
-vi.mock('@/sync/api/session/sessionAccessLegacyAdapter', () => ({
+vi.mock('@/sync/api/session/sessionAccessApi', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/sync/api/session/sessionAccessApi')>(),
     searchSessionAccessAccountPage: vi.fn(),
 }));
 vi.mock('@/sync/ops/teams/teamActionClient', () => ({ runTeamAction: vi.fn() }));
@@ -37,7 +38,7 @@ function Probe(props: Readonly<{
 }>) {
     const value = useSessionAccessDirectory({
         scope,
-        availability: 'full_collaboration',
+        availability: 'available',
         contextTeams: [],
         operations: props.operations ?? NO_OPERATIONS,
         revision: 1,

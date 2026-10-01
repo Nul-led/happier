@@ -14,7 +14,7 @@ import {
 import type { SessionDraftRepositoryCipher } from '@/sync/ops/sessionDrafts/sessionDraftRepository';
 import { SessionDraftContextUnavailableError } from '@/sync/ops/sessionDrafts/sessionDraftCipherError';
 
-import { openSessionStoredContent, sealSessionStoredContent, type SessionContentEncryption } from './sessionStoredContent';
+import { openSessionStoredContent, sealSessionStoredContent, type SessionContentEncryption } from '@happier-dev/sync-client';
 
 type SessionDraftCipherOptions = Readonly<{
     accountMode: 'plain' | 'e2ee';

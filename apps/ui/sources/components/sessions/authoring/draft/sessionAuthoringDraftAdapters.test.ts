@@ -434,14 +434,51 @@ describe('sessionAuthoringDraftAdapters', () => {
             permissionMode: 'default',
             configurationUpdatedAtMs: 999,
             initialMessage: 'Review this',
+            initialStructuredInput: { v: 1, mentions: [{ kind: 'partner.reference', ref: 'partner:issue-42', token: '@issue' }] },
         })).toMatchObject({
             initialAccess: { grants: [{ subject: { kind: 'account', accountId: 'recipient-a' }, accessLevel: 'view', canApprovePermissions: false }] },
-            initialInput: { text: 'Review this' },
+            initialInput: {
+                text: 'Review this',
+                structuredInput: { v: 1, mentions: [{ kind: 'partner.reference', ref: 'partner:issue-42', token: '@issue' }] },
+            },
             modelSelection: modelSelection('agent:com.acme.mercury/mercury', 'mercury-pro', 789),
             configuration: {
                 model: { value: 'mercury-pro', updatedAtMs: 789 },
             },
         });
+        const semanticAttachment = {
+            v: 1,
+            instanceId: 'issue-42',
+            attachment: { pluginId: 'acme.issues', localId: 'issue' },
+            key: '42',
+            value: { issueId: 42 },
+            presentation: { label: 'Issue #42', typeLabel: 'Issue' },
+        } as const;
+        expect(buildSessionSpawnNewInputV2FromAuthoringDraft({
+            draft,
+            creationKey: 'attempt-semantic-attachment',
+            permissionMode: 'default',
+            configurationUpdatedAtMs: 999,
+            initialMessage: null,
+            initialStructuredInput: { v: 1, composerAttachments: [semanticAttachment] },
+        }).initialInput).toEqual({ structuredInput: { v: 1, composerAttachments: [semanticAttachment] } });
+        const reviewComments = {
+            displayText: 'Review comments (1)',
+            comments: [{
+                id: 'review-1', filePath: 'src/a.ts', source: 'file' as const,
+                anchor: { kind: 'fileLine' as const, startLine: 1 },
+                snapshot: { selectedLines: ['code'], beforeContext: [], afterContext: [] },
+                body: 'Check this', createdAt: 1,
+            }],
+        };
+        expect(buildSessionSpawnNewInputV2FromAuthoringDraft({
+            draft,
+            creationKey: 'attempt-review-comment',
+            permissionMode: 'default',
+            configurationUpdatedAtMs: 999,
+            initialMessage: 'Review comments:\n\n1) src/a.ts',
+            initialReviewComments: reviewComments,
+        }).initialInput).toEqual({ text: 'Review comments:\n\n1) src/a.ts', reviewComments });
     });
 
     it('carries the exact revision-bound Team credential intent onto the strict spawn input', () => {
@@ -456,6 +493,7 @@ describe('sessionAuthoringDraftAdapters', () => {
             acpSessionModeId: null, sessionConfigOptionOverrides: null, automation: null,
             teamCredentialBindings: [{
                 v: 1, slot: { kind: 'provider_model' }, resourceId: 'resource-1', expectedResourceRevision: 7,
+                deliveryMode: 'brokered',
             }],
         });
 
@@ -463,6 +501,7 @@ describe('sessionAuthoringDraftAdapters', () => {
             draft, creationKey: 'attempt-team-resource', permissionMode: 'default', configurationUpdatedAtMs: 999,
         }).teamCredentialBindings).toEqual([{
             v: 1, slot: { kind: 'provider_model' }, resourceId: 'resource-1', expectedResourceRevision: 7,
+            deliveryMode: 'brokered',
         }]);
     });
 

@@ -1,20 +1,22 @@
 import { FileBrowserToolbarIconButton } from '@/components/ui/filesystemBrowser/FileBrowserToolbar';
 import { Icon } from '@/components/ui/icons/Icon';
 import * as React from 'react';
-import { Pressable, ScrollView, View } from 'react-native';
+import { ScrollView, View } from 'react-native';
 
 import { FileActionToolbar, type FileDisplayMode } from '@/components/workspaces/files/file/FileActionToolbar';
 import { FileBinaryState, FileErrorState, FileLoadingState } from '@/components/workspaces/files/file/FileScreenState';
 import { FileContentPanel } from '@/components/workspaces/files/file/FileContentPanel';
 import { FileEditorPanel } from '@/components/workspaces/files/file/editor/FileEditorPanel';
 import { SessionPaneLazyLoader } from '@/components/sessions/panes/SessionPaneLazyLoader';
+import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
 import { WorkspaceFileDownloadButton } from '@/components/workspaces/files/file/WorkspaceFileDownloadButton';
 import { WorkspaceAugmentedScmChangeDiscardButton } from '@/components/workspaces/files/details/sessionAugmentation/WorkspaceAugmentedScmChangeDiscardButton';
 
 import { useUnistyles, StyleSheet } from 'react-native-unistyles';
 import { layout } from '@/components/ui/layout/layout';
-import { Text } from '@/components/ui/text/Text';
-import { Typography } from '@/constants/Typography';
+import { SurfaceFreshnessLine } from '@/components/ui/surfaces/SurfaceFreshnessLine';
+import { useDetailsTabChrome } from '@/components/appShell/panes/details/workspace/detailsTabChrome';
+import type { ScmEntryKind } from '@happier-dev/protocol';
 import { getPreferredLanguage, t } from '@/text';
 
 import { buildFileLineSelectionFingerprint, canStartLineSelection, canUseLineSelection } from '@/scm/scmLineSelection';
@@ -144,6 +146,27 @@ function toBuiltinDetailsTab(tab: DetailsTabState): DetailsTab {
 
 function detailsTabIntent(tab: DetailsTabState): 'pinned' | 'preview' {
     return tab.isPreview ? 'preview' : 'pinned';
+}
+
+function resolveFileStatusLabel(kind: ScmEntryKind): string {
+    switch (kind) {
+        case 'added': return t('detailsSurface.file.statusAdded');
+        case 'deleted': return t('detailsSurface.file.statusDeleted');
+        case 'renamed': return t('detailsSurface.file.statusRenamed');
+        case 'copied': return t('detailsSurface.file.statusCopied');
+        case 'untracked': return t('detailsSurface.file.statusUntracked');
+        case 'conflicted': return t('detailsSurface.file.statusConflicted');
+        default: return t('detailsSurface.file.statusModified');
+    }
+}
+
+function countTextLines(text: string): number {
+    if (text.length === 0) return 0;
+    let lines = 1;
+    for (let index = 0; index < text.length; index += 1) {
+        if (text.charCodeAt(index) === 10) lines += 1;
+    }
+    return text.endsWith('\n') ? lines - 1 : lines;
 }
 
 function unavailableViewerChoiceId(choice: Extract<WorkspaceFileViewerChoice, { kind: 'unavailable' }>): string {
@@ -501,7 +524,7 @@ export function WorkspaceFileDetailsView(props: WorkspaceFileDetailsViewProps) {
     const ownerMetadata = useSessionListPreferredMetadata(sessionAddress ?? sessionId);
     const project = useProjectForSession(sessionId, scope?.serverId);
     const sessionPath = resolveSessionWorkspacePath({
-        sessionPath: ownerMetadata?.path ?? null,
+        sessionPath: typeof ownerMetadata?.path === 'string' ? ownerMetadata.path : null,
         projectPath: project?.key?.rootPath ?? (scope?.rootPath ?? null),
     });
     const downloadActionsAvailable = Boolean(scope);
@@ -792,6 +815,12 @@ export function WorkspaceFileDetailsView(props: WorkspaceFileDetailsViewProps) {
         persistedDraft: persistedDraft ?? null,
         persistDraft,
     });
+    // The tab strip shows this tab's unsaved dot; the editor state is the only owner of that fact.
+    const detailsTabChrome = useDetailsTabChrome();
+    React.useEffect(() => {
+        detailsTabChrome.setUnsaved(editorDirty);
+    }, [detailsTabChrome, editorDirty]);
+    React.useEffect(() => () => detailsTabChrome.setUnsaved(false), [detailsTabChrome]);
     const openableContentViewerEligible = isWorkspaceFileOpenableContentViewerEligible({
         isEditingFile,
         hasPersistedEditingDraft: persistedDraft?.isEditingFile === true,
@@ -951,18 +980,32 @@ export function WorkspaceFileDetailsView(props: WorkspaceFileDetailsViewProps) {
     const imagePreviewUri = imagePreview.status === 'loaded' ? imagePreview.uri : null;
 
     if (!scope) {
-        return <FileLoadingState theme={theme} filePath={filePath} />;
+        return <SurfaceStateCard
+            testID="file-details-scope-unavailable"
+            kind="unavailable"
+            title={t('common.unavailable')}
+            reason={t('errors.daemonUnavailableBody')}
+        />;
     }
 
     if (isLoading) {
-        return <FileLoadingState theme={theme} filePath={filePath} />;
+        return <FileLoadingState filePath={filePath} />;
     }
 
     if (fatalError) {
-        return <FileErrorState theme={theme} filePath={filePath} error={error ?? t('common.error')} onRetry={onRefresh} />;
+        return <FileErrorState filePath={filePath} error={error} onRetry={onRefresh} />;
     }
 
     const isBinaryFile = fileContent?.isBinary === true;
+    // The header's facts (details lab 2): how the file changed and by how much, or, for an unchanged
+    // file, that nothing changed and how long it is.
+    const headerStatusLabel = fileEntry ? resolveFileStatusLabel(fileEntry.kind) : null;
+    const headerDiffStat = fileStatusForHeaderActions
+        ? { added: fileStatusForHeaderActions.linesAdded, removed: fileStatusForHeaderActions.linesRemoved }
+        : null;
+    const headerSummaryFacts = !fileEntry && !hasPendingDelta && !hasIncludedDelta && typeof fileContent?.content === 'string' && !isBinaryFile
+        ? [t('detailsSurface.file.noChanges'), t('detailsSurface.file.lines', { count: countTextLines(fileContent.content) })]
+        : null;
     const showDownloadAction = downloadActionsAvailable && (previewTooLarge || isBinaryFile);
     const showDiscardAction = Boolean(
         sessionId
@@ -1059,6 +1102,28 @@ export function WorkspaceFileDetailsView(props: WorkspaceFileDetailsViewProps) {
                     onMarkdownEditMode={onMarkdownEditMode}
                     markdownRichEligible={markdownRichEligible}
                     markdownRichDisabledReason={markdownRichDisabledReason}
+                    statusLabel={headerStatusLabel}
+                    diffStat={headerDiffStat}
+                    summaryFacts={headerSummaryFacts}
+                    notice={(
+                        <>
+                            {error ? (
+                                <SurfaceFreshnessLine
+                                    testID="file-preview-unavailable-banner"
+                                    tone="warning"
+                                    reason={error}
+                                    action={{ label: t('common.retry'), onPress: onRefresh }}
+                                />
+                            ) : null}
+                            {fileChangedExternally ? (
+                                <SurfaceFreshnessLine
+                                    testID="file-editor-external-change-banner"
+                                    tone="warning"
+                                    reason={t('files.fileChangedExternally')}
+                                />
+                            ) : null}
+                        </>
+                    )}
                 />
                 {props.openableContentViewer && openableContentViewerEligible ? (
                     <WorkspaceFileOpenableContentViewerControls
@@ -1066,29 +1131,6 @@ export function WorkspaceFileDetailsView(props: WorkspaceFileDetailsViewProps) {
                         filePath={filePath}
                         host={props.openableContentViewer}
                     />
-                ) : null}
-                {error ? (
-                    <View
-                        testID="file-preview-unavailable-banner"
-                        style={styles.noticeBanner}
-                    >
-                        <Text style={styles.noticeBannerText}>
-                            {error}
-                        </Text>
-                        <Pressable accessibilityRole="button" onPress={onRefresh}>
-                            <Text style={styles.noticeBannerText}>{t('common.retry')}</Text>
-                        </Pressable>
-                    </View>
-                ) : null}
-                {fileChangedExternally ? (
-                    <View
-                        testID="file-editor-external-change-banner"
-                        style={styles.noticeBanner}
-                    >
-                        <Text style={styles.noticeBannerText}>
-                            {t('files.fileChangedExternally')}
-                        </Text>
-                    </View>
                 ) : null}
             </View>
 
@@ -1102,7 +1144,7 @@ export function WorkspaceFileDetailsView(props: WorkspaceFileDetailsViewProps) {
                 }}
             >
                 {(displayMode === 'diff' && !diffContent && isDiffLoading) || (displayMode !== 'diff' && !fileContent && !error) ? (
-                    <FileLoadingState theme={theme} filePath={filePath} />
+                    <FileLoadingState filePath={filePath} />
                 ) : displayMode === 'file' && isEditingFile && showMarkdownEditToggle ? (
                     // Plain `.md` editing: Raw<->Rich can swap, so crossfade the body
                     // switch keyed on `markdownEditMode` (R-A20 / §4.5). Only the active
@@ -1113,7 +1155,7 @@ export function WorkspaceFileDetailsView(props: WorkspaceFileDetailsViewProps) {
                         direction={markdownEditMode === 'rich' ? 'forward' : 'backward'}
                     >
                         {markdownEditMode === 'rich' && markdownRichEligibilityPending ? (
-                            <FileLoadingState theme={theme} filePath={filePath} />
+                            <FileLoadingState filePath={filePath} />
                         ) : useRichMarkdownEditor ? (
                             <SessionPaneLazyLoader
                                 testID="file-details-rich-editor-loading"
@@ -1223,20 +1265,5 @@ const styles = StyleSheet.create((theme) => ({
         flex: 1,
         minHeight: 0,
         backgroundColor: theme.colors.surface.base,
-    },
-    noticeBanner: {
-        marginHorizontal: 16,
-        marginBottom: 12,
-        paddingHorizontal: 12,
-        paddingVertical: 10,
-        borderRadius: 12,
-        borderWidth: 1,
-        borderColor: theme.colors.border.default,
-        backgroundColor: theme.colors.surface.inset,
-    },
-    noticeBannerText: {
-        fontSize: 13,
-        color: theme.colors.text.secondary,
-        ...Typography.default(),
     },
 }));

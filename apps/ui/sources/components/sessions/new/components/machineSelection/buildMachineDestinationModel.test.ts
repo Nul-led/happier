@@ -176,7 +176,7 @@ describe('buildMachineDestinationModel', () => {
         const model = buildMachineDestinationModel({
             groups: [
                 group(),
-                group({ serverId: 'server-b', serverName: 'Server B', loading: true, machines: [] }),
+                group({ serverId: 'server-b', loading: true, machines: [] }),
             ],
             poolGroups: [
                 { serverId: 'server-a', pools: [], status: 'idle', projectionReady: true },

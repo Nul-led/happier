@@ -1,4 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import axios from 'axios';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 
 import type { Credentials } from '@/persistence';
 
@@ -53,7 +57,7 @@ vi.mock('./archiveSessionOnceInactive', () => ({ archiveSessionOnceInactive }));
 vi.mock('./setSessionArchivedState', () => ({ archiveSessionByIdBestEffort }));
 
 import { createSpawnedSession, type CreateSpawnedSessionParams } from './createSpawnedSession';
-import { DEFAULT_SESSION_WEBHOOK_TIMEOUT_MS } from '@/daemon/spawn/sessionWebhookTimeoutPolicy';
+import { DEFAULT_SESSION_WEBHOOK_TIMEOUT_MS } from '@happier-dev/protocol';
 import { SPAWN_SESSION_ERROR_CODES } from '@/session/shared/spawnSessionContract';
 import {
   ConnectedServiceMaterializationIdentityV1Schema,
@@ -63,11 +67,16 @@ import {
   SessionOwnerMetadataV1Schema,
   deriveSessionCreationTagV1,
   buildSessionSpawnInitialInputLocalIdV1,
+  snapshotSessionRolesAtSpawnV1,
+  BUILT_IN_ROLES_V1,
   type SessionInitialAccessDraftV1,
 } from '@happier-dev/protocol';
 import { RPC_ERROR_CODES, RPC_METHODS } from '@happier-dev/protocol/rpc';
 import { createRpcCallError } from '@happier-dev/protocol/rpcErrors';
 import { buildSessionSpawnInitialInputAdmissionForLocalIdV1 } from './sessionInputAdmissionIdentity';
+import { createProductionFreshWorkflowSessionConversation } from '@/daemon/workflows/sessionStepExecutor';
+import { readSessionWorkspaceWritesV1, type ResolvedRoleV1 } from '@happier-dev/protocol';
+import { SpawnDaemonSessionRequestSchema } from '@/rpc/handlers/spawnSessionOptionsContract';
 
 const initialAccess: SessionInitialAccessDraftV1 = {
   grants: [{ subject: { kind: 'team', teamId: 'team-1' }, accessLevel: 'edit', canApprovePermissions: false }],
@@ -128,6 +137,49 @@ describe('createSpawnedSession settlement', () => {
     expect(validateStoredAuthTokenAgainstActiveServer).not.toHaveBeenCalled();
   });
 
+  it.each([undefined, { sessionSpawn: { protocolVersions: [1] } }])(
+    'refuses a remote role-bearing spawn before creation when the target lacks current spawn support (%j)',
+    async (operationProtocolCapabilities) => {
+      getOrCreateSessionByTag.mockClear();
+      const machineRead = vi.spyOn(axios, 'get').mockResolvedValue({
+        status: 200,
+        data: {
+          machine: {
+            id: 'machine-1', revokedAt: null, replacedByMachineId: null,
+            operationProtocolCapabilitiesRevision: 1,
+            ...(operationProtocolCapabilities ? { operationProtocolCapabilities } : {}),
+          },
+        },
+      });
+      try {
+        await expect(createSpawnedSession({
+          credentials,
+          machineId: 'machine-1',
+          directory: '/repo',
+          backendTarget: { kind: 'backend', backendId: 'codex', sourceKind: 'built_in' },
+          initialSessionRolesV1: {
+            ...snapshotSessionRolesAtSpawnV1({
+              leadSessionId: 'lead-session',
+              sameAccount: false,
+              roles: { builder: { ...BUILT_IN_ROLES_V1.builder, roleId: 'builder' } },
+            }),
+            roleId: 'builder',
+          },
+        })).rejects.toMatchObject({
+          code: SPAWN_SESSION_ERROR_CODES.SPAWN_FAILED,
+          details: {
+            kind: 'update_required', operation: 'session.spawn_new', component: 'daemon',
+            reason: 'session_roles_snapshot_update_required',
+          },
+        });
+        expect(callMachineRpc).not.toHaveBeenCalled();
+        expect(getOrCreateSessionByTag).not.toHaveBeenCalled();
+      } finally {
+        machineRead.mockRestore();
+      }
+    },
+  );
+
   it('submits the initial input through Message admission after spawn settlement and never through the daemon spawn request', async () => {
     const cancellation = new AbortController();
     const machineAdmissionTransport = vi.fn(async () => ({
@@ -158,7 +210,7 @@ describe('createSpawnedSession settlement', () => {
       v: 1,
       sessionCreationTag,
       recipe: {
-        execution: { machineId: 'machine-1', directory: '/repo' },
+        execution: { machineId: 'machine-1', directory: { kind: 'path', path: '/repo' } },
         organization: { folderId: null, tagIds: [] },
         agentTarget: {
           kind: 'agent',
@@ -226,7 +278,7 @@ describe('createSpawnedSession settlement', () => {
       modelSelection: {
         v: 1,
         ref: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: null,
           modelId: 'gpt-5',
         },
@@ -268,6 +320,7 @@ describe('createSpawnedSession settlement', () => {
     expect(buildInitialInputHandoff).toHaveBeenCalledTimes(1);
     expect(sendSessionMessage).toHaveBeenCalledWith(expect.objectContaining({
       idOrPrefix: 'session-created',
+      targetMachineId: 'machine-1',
       localId: expectedInitialInputLocalId,
       inputAdmission: expect.any(Object),
       requestedAction: { v: 1, kind: 'send_now' },
@@ -285,6 +338,38 @@ describe('createSpawnedSession settlement', () => {
     expect(callMachineRpc.mock.invocationCallOrder[0]).toBeLessThan(fetchSessionById.mock.invocationCallOrder[0]);
     expect(fetchSessionById.mock.invocationCallOrder[0]).toBeLessThan(sendSessionMessage.mock.invocationCallOrder[0]);
     expect(spawnDaemonSession).not.toHaveBeenCalled();
+  });
+
+  it('creates fresh Workflow steps with the accepted depth and frozen role workspace ceiling through the canonical creator', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'workflow-frozen-role-'));
+    const machineRead = vi.spyOn(axios, 'get').mockResolvedValue({ status: 200, data: { machine: {
+      id: 'machine-1', revokedAt: null, replacedByMachineId: null, operationProtocolCapabilitiesRevision: 1,
+      operationProtocolCapabilities: { sessionSpawn: { protocolVersions: [1, 2] } },
+    } } });
+    callMachineRpc.mockResolvedValue({ success: true, sessionId: 'frozen-step', sessionCreationOutcome: creationOutcome });
+    fetchSessionById.mockResolvedValue({ id: 'frozen-step', createdAt: 1, updatedAt: 1, active: true, activeAt: 1,
+      pendingCount: 0, metadataVersion: 1, metadata: { path: directory, host: 'host' } });
+    const role: ResolvedRoleV1 = { ...BUILT_IN_ROLES_V1.reviewer, roleId: 'reviewer',
+      engine: { agentTargetKey: 'agent:happier.agent.claude/claude' }, workspaceWrites: 'deny', instructions: 'Frozen review' };
+    try {
+      const create = createProductionFreshWorkflowSessionConversation({ credentials, serverId: 'server-1', machineId: 'machine-1',
+        workDepth: 2, originRunId: 'workflow-run', machineAdmissionTransport: async () => ({ status: 'accepted', localId: 'unused' }),
+      });
+      await expect(create({ selection: {
+        agentTarget: { kind: 'agent', identity: { pluginId: 'happier.agent.claude', localId: 'claude' } },
+        connectedServices: { v: 2, bindingsByServiceId: {} }, permissionMode: 'read_only',
+      }, workspace: { machineId: 'machine-1', directory, checkoutRootPath: directory },
+        creationKey: 'workflow:workflow-run:invocation', frozenRole: role,
+      })).resolves.toMatchObject({ sessionId: 'frozen-step' });
+      const transmitted = SpawnDaemonSessionRequestSchema.parse(callMachineRpc.mock.calls[0]?.[0].request);
+      expect(transmitted).toMatchObject({ workDepth: 3, originKind: 'run_step', originRunId: 'workflow-run',
+        initialSessionRolesV1: { roleId: 'reviewer', sessionRoles: { reviewer: role } },
+      });
+      expect(readSessionWorkspaceWritesV1({ work: { sessionRolesV1: transmitted.initialSessionRolesV1 } })).toBe('deny');
+    } finally {
+      machineRead.mockRestore();
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   it('keeps a committed create successful when legacy metadata-label persistence fails', async () => {
@@ -358,7 +443,7 @@ describe('createSpawnedSession settlement', () => {
       v: 1,
       sessionCreationTag,
       recipe: {
-        execution: { machineId: 'machine-1', directory: '/repo' },
+        execution: { machineId: 'machine-1', directory: { kind: 'path', path: '/repo' } },
         organization: { folderId: 'folder-1', tagIds: ['tag-1'] },
         agentTarget: {
           kind: 'agent',
@@ -435,7 +520,18 @@ describe('createSpawnedSession settlement', () => {
       organizationPlacement: { folderId: 'folder-1', tagIds: ['tag-1'] },
       legacyMetadataLabel: 'predecessor metadata label',
       environmentVariables: { TOKEN: 'rejoin-value-that-must-not-dispatch' },
-      initialInput: { text: 'Inspect this repo' },
+      initialInput: {
+        text: 'Review comments:\n\n1) src/a.ts',
+        reviewComments: {
+          displayText: 'Review comments (1)',
+          comments: [{
+            id: 'draft-1', filePath: 'src/a.ts', source: 'file',
+            anchor: { kind: 'fileLine', startLine: 1 },
+            snapshot: { selectedLines: ['code'], beforeContext: [], afterContext: [] },
+            body: 'Check this', createdAt: 1,
+          }],
+        },
+      },
       buildInitialInputHandoff: () => initialInputAdmission,
       machineAdmissionTransport,
     });
@@ -461,6 +557,14 @@ describe('createSpawnedSession settlement', () => {
     });
     expect(sendSessionMessage).toHaveBeenCalledWith(expect.objectContaining({
       idOrPrefix: 'session-existing',
+      targetMachineId: 'machine-1',
+      messageMeta: {
+        displayText: 'Review comments (1)',
+        happier: {
+          kind: 'review_comments.v1',
+          payload: { sessionId: 'session-existing', comments: [expect.objectContaining({ id: 'draft-1' })] },
+        },
+      },
       localId: buildSessionSpawnInitialInputLocalIdV1({ sessionCreationTag }),
       inputAdmission: initialInputAdmission.inputAdmission,
       requestedAction: { v: 1, kind: 'send_now' },
@@ -484,7 +588,7 @@ describe('createSpawnedSession settlement', () => {
       v: 1,
       sessionCreationTag,
       recipe: {
-        execution: { machineId: 'machine-1', directory: '/repo' },
+        execution: { machineId: 'machine-1', directory: { kind: 'path', path: '/repo' } },
         organization: { folderId: 'folder-created', tagIds: ['tag-created'] },
         agentTarget: {
           kind: 'agent',
@@ -507,7 +611,7 @@ describe('createSpawnedSession settlement', () => {
       v: 1,
       sessionCreationTag,
       recipe: {
-        execution: { machineId: 'machine-1', directory: '/another-repository' },
+        execution: { machineId: 'machine-1', directory: { kind: 'path', path: '/another-repository' } },
         organization: { folderId: 'folder-created', tagIds: ['tag-created'] },
         agentTarget: {
           kind: 'agent',
@@ -589,7 +693,7 @@ describe('createSpawnedSession settlement', () => {
       v: 1,
       sessionCreationTag,
       recipe: {
-        execution: { machineId: 'machine-1', directory: '/repo' },
+        execution: { machineId: 'machine-1', directory: { kind: 'path', path: '/repo' } },
         organization: { folderId: 'folder-created', tagIds: ['tag-created'] },
         agentTarget: {
           kind: 'agent',
@@ -675,7 +779,7 @@ describe('createSpawnedSession settlement', () => {
       v: 1,
       sessionCreationTag,
       recipe: {
-        execution: { machineId: 'machine-1', directory: '/repo' },
+        execution: { machineId: 'machine-1', directory: { kind: 'path', path: '/repo' } },
         organization: { folderId: 'folder-created', tagIds: ['tag-created'] },
         agentTarget: {
           kind: 'agent',
@@ -761,7 +865,7 @@ describe('createSpawnedSession settlement', () => {
       v: 1,
       sessionCreationTag,
       recipe: {
-        execution: { machineId: 'machine-1', directory: '/repo' },
+        execution: { machineId: 'machine-1', directory: { kind: 'path', path: '/repo' } },
         organization: { folderId: null, tagIds: [] },
         agentTarget: {
           kind: 'agent',
@@ -784,7 +888,7 @@ describe('createSpawnedSession settlement', () => {
       ...requestedCorrespondence,
       recipe: {
         ...requestedCorrespondence.recipe,
-        execution: { machineId: 'machine-1', directory: '/different-repo' },
+        execution: { machineId: 'machine-1', directory: { kind: 'path', path: '/different-repo' } },
       },
     });
     callMachineRpc.mockResolvedValue({
@@ -834,7 +938,7 @@ describe('createSpawnedSession settlement', () => {
       v: 1,
       sessionCreationTag,
       recipe: {
-        execution: { machineId: 'machine-1', directory: '/repo' },
+        execution: { machineId: 'machine-1', directory: { kind: 'path', path: '/repo' } },
         organization: { folderId: null, tagIds: [] },
         agentTarget: {
           kind: 'agent',
@@ -959,7 +1063,7 @@ describe('createSpawnedSession settlement', () => {
       modelSelection: {
         v: 1,
         ref: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: null,
           modelId: 'gpt-5',
         },
@@ -1205,7 +1309,10 @@ describe('createSpawnedSession settlement', () => {
       metadataVersion: 1,
       metadata: { path: '/repo', host: 'host' },
     });
-    sendSessionMessage.mockRejectedValue(new Error('Session Message setup failed'));
+    sendSessionMessage.mockRejectedValue(Object.assign(
+      new Error('Private Session Message setup detail'),
+      { code: 'session_input_target_unavailable' },
+    ));
 
     await expect(createSpawnedSession({
       credentials,
@@ -1221,10 +1328,19 @@ describe('createSpawnedSession settlement', () => {
       initialInput: {
         status: 'outcomeUnknown',
         localId: 'spawn-first-turn:direct-message-setup-failed',
-        code: 'session_input_action_execution_failed',
+        code: 'session_input_target_unavailable',
       },
     });
     expect(sendSessionMessage).toHaveBeenCalledTimes(1);
+    expect(loggerWarn).toHaveBeenCalledWith(
+      '[SESSION SPAWN] Initial input admission failed',
+      expect.objectContaining({
+        sessionId: 'session-direct-message-setup-failed',
+        localId: 'spawn-first-turn:direct-message-setup-failed',
+        code: 'session_input_target_unavailable',
+      }),
+    );
+    expect(JSON.stringify(loggerWarn.mock.calls)).not.toContain('Private Session Message setup detail');
   });
 
   it('classifies a generic settled-Session visibility failure without hiding it as eventual visibility', async () => {
@@ -1393,7 +1509,7 @@ describe('createSpawnedSession settlement', () => {
       modelSelection: {
         v: 1,
         ref: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId,
           modelId: 'shared-model',
         },
@@ -1415,7 +1531,7 @@ describe('createSpawnedSession settlement', () => {
         modelSelection: {
           v: 1,
           ref: {
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             providerConnectionId,
             modelId: 'shared-model',
           },
@@ -1451,7 +1567,7 @@ describe('createSpawnedSession settlement', () => {
       modelSelection: {
         v: 1,
         ref: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId,
           modelId: 'shared-model',
         },
@@ -1496,7 +1612,7 @@ describe('createSpawnedSession settlement', () => {
       modelSelection: {
         v: 1,
         ref: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId,
           modelId: 'shared-model',
         },
@@ -1534,7 +1650,7 @@ describe('createSpawnedSession settlement', () => {
       modelSelection: {
         v: 1,
         ref: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId,
           modelId: 'shared-model',
         },
@@ -1774,6 +1890,8 @@ describe('createSpawnedSession replay-seeded creation', () => {
   }
 
   beforeEach(() => {
+    vi.spyOn(axios, 'get').mockResolvedValue({ status: 200, data: { accessKey: 'existing' } } as never);
+    vi.spyOn(axios, 'post').mockResolvedValue({ status: 200, data: { success: true } } as never);
     spawnDaemonSession.mockReset();
     resolveDaemonSpawnSessionByNonce.mockReset();
     fetchSessionById.mockReset();
@@ -1793,7 +1911,41 @@ describe('createSpawnedSession replay-seeded creation', () => {
     getOrCreateSessionByTag.mockResolvedValue({ session: { id: 'replay-child' }, created: true });
   });
 
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('binds a replay child only after its creation identity is trusted and before dispatch', async () => {
+    getOrCreateSessionByTag.mockResolvedValue({ session: { id: 'replay-child-bind-order' }, created: true });
+    vi.mocked(axios.get).mockResolvedValue({ status: 200, data: { accessKey: null } } as never);
+    const order: string[] = [];
+    vi.mocked(axios.post).mockImplementation(async () => {
+      order.push('access-key');
+      return { status: 200, data: { success: true } } as never;
+    });
+    const directSpawn = vi.fn(async () => {
+      order.push('spawn');
+      return { type: 'success', sessionId: 'replay-child-bind-order' };
+    });
+
+    await createSpawnedSession(replaySeededParams({
+      directTransport: {
+        spawn: directSpawn,
+        resolveSpawnSessionByNonce: async () => ({ status: 'unsupported' as const }),
+      },
+    }));
+
+    expect(order).toEqual(['access-key', 'spawn']);
+    expect(vi.mocked(axios.get).mock.calls[0]?.[0]).toContain('/v1/access-keys/replay-child-bind-order/machine-1');
+  });
+
   it('commits the row from the recipe and attaches the launched runner to it', async () => {
+    const initialSessionRolesV1 = { ...snapshotSessionRolesAtSpawnV1({
+      leadSessionId: 'lead-1', sameAccount: true, notes: 'Preserve launch notes',
+      roles: { builder: { roleId: 'builder', name: 'Builder', instructions: 'Complete role instructions',
+        engine: { agentTargetKey: 'agent:codex', modelId: 'worker-model' }, runsAs: { kind: 'session' },
+        workspaceWrites: 'allow', secondOpinion: 'off', enabled: true } },
+    }), roleId: 'builder' };
     const directSpawn = vi.fn(async (
       _request: Parameters<NonNullable<CreateSpawnedSessionParams['directTransport']>['spawn']>[0],
     ) => ({ type: 'success', sessionId: 'replay-child' }));
@@ -1801,6 +1953,7 @@ describe('createSpawnedSession replay-seeded creation', () => {
     const created = await createSpawnedSession(replaySeededParams({
       initialAccess,
       primaryTeamId: 'team-1',
+      initialSessionRolesV1,
       directTransport: {
         spawn: directSpawn,
         resolveSpawnSessionByNonce: async () => ({ status: 'unsupported' as const }),
@@ -1814,20 +1967,43 @@ describe('createSpawnedSession replay-seeded creation', () => {
     expect(creationCall).toMatchObject({ initialAccess, primaryTeamId: 'team-1' });
     expect(directSpawn.mock.calls[0]?.[0]).not.toHaveProperty('initialAccess');
     expect(directSpawn.mock.calls[0]?.[0]).not.toHaveProperty('primaryTeamId');
+    expect(directSpawn.mock.calls[0]?.[0]).not.toHaveProperty('initialSessionRolesV1');
     expect(creationCall.metadata).toMatchObject({
       tag: 'replay:parent-session:12:attempt',
       path: '/repo',
       flavor: 'codex',
       forkV1: replayMetadata.forkV1,
       replaySeedV1: replayMetadata.replaySeedV1,
+      work: { sessionRolesV1: initialSessionRolesV1 },
     });
     expect(directSpawn.mock.calls[0]?.[0]).toMatchObject({
       existingSessionId: 'replay-child',
+      freshSessionCreation: true,
       spawnNonce: 'replay:parent-session:12:attempt',
     });
     // Identity is already committed by the row creation, so the creator must
     // not fall back to nonce settlement for it.
     expect(resolveDaemonSpawnSessionByNonce).not.toHaveBeenCalled();
+  });
+
+  it('reports the persisted empty cross-machine managed fork and never sends a source seed', async () => {
+    const directSpawn = vi.fn(async (
+      _request: Parameters<NonNullable<CreateSpawnedSessionParams['directTransport']>['spawn']>[0],
+    ) => ({ type: 'success', sessionId: 'replay-child' }));
+    const created = await createSpawnedSession(replaySeededParams({
+      directory: '/private/child', directoryKind: 'managed',
+      replaySeededCreation: {
+        tag: 'replay:parent-session:12:attempt', flavor: 'codex',
+        metadata: { ...replayMetadata, forkV1: { ...replayMetadata.forkV1, filesNotCopied: { reason: 'cross_machine' } } },
+        sourceRecipe: { sourceSessionId: 'parent-session', cutoffSeqInclusive: 12 },
+      },
+      directTransport: { spawn: directSpawn, resolveSpawnSessionByNonce: async () => ({ status: 'unsupported' }) },
+    }));
+    expect(created).toMatchObject({ disposition: 'created', filesNotCopied: { reason: 'cross_machine' } });
+    expect(directSpawn.mock.calls[0]?.[0]).not.toHaveProperty('managedDirectorySeed');
+    expect(getOrCreateSessionByTag.mock.calls[0]?.[0].metadata).toMatchObject({
+      sessionDirectoryV1: { v: 1, kind: 'managed' }, forkV1: { filesNotCopied: { reason: 'cross_machine' } },
+    });
   });
 
   it('submits replay-created initial input once through Message admission after the runner attaches', async () => {
@@ -1862,6 +2038,14 @@ describe('createSpawnedSession replay-seeded creation', () => {
       sessionId: 'replay-child',
       initialInput: { status: 'rejected', code: 'session_input_idempotency_conflict' },
     });
+    expect(loggerWarn).toHaveBeenCalledWith(
+      '[SESSION SPAWN] Initial input admission did not accept the message',
+      expect.objectContaining({
+        sessionId: 'replay-child',
+        status: 'rejected',
+        code: 'session_input_idempotency_conflict',
+      }),
+    );
     expect(directSpawn.mock.calls[0]?.[0]).not.toHaveProperty('pendingFirstInput');
     expect(buildInitialInputHandoff).toHaveBeenCalledTimes(1);
     expect(sendSessionMessage).toHaveBeenCalledTimes(1);
@@ -1931,7 +2115,7 @@ describe('createSpawnedSession replay-seeded creation', () => {
   it('rejects a reused creation identity whose persisted source recipe differs', async () => {
     getOrCreateSessionByTag.mockResolvedValue({
       session: {
-        id: 'replay-child',
+        id: 'replay-child-untrusted',
         encryptionMode: 'plain',
         metadataLayoutVersion: 1,
         metadata: JSON.stringify({ v: 1 }),
@@ -1964,6 +2148,8 @@ describe('createSpawnedSession replay-seeded creation', () => {
       },
     }))).rejects.toMatchObject({ code: 'creation_conflict' });
     expect(directSpawn).not.toHaveBeenCalled();
+    expect(vi.mocked(axios.get)).not.toHaveBeenCalled();
+    expect(vi.mocked(axios.post)).not.toHaveBeenCalled();
   });
 
   it('rejects a reused creationKey whose committed Session names another source recipe', async () => {
@@ -1975,7 +2161,7 @@ describe('createSpawnedSession replay-seeded creation', () => {
       v: 1,
       sessionCreationTag,
       recipe: {
-        execution: { machineId: 'machine-1', directory: '/repo' },
+        execution: { machineId: 'machine-1', directory: { kind: 'path', path: '/repo' } },
         organization: { folderId: null, tagIds: [] },
         agentTarget: {
           kind: 'agent',
@@ -2047,7 +2233,7 @@ describe('createSpawnedSession replay-seeded creation', () => {
       v: 1,
       sessionCreationTag,
       recipe: {
-        execution: { machineId: 'machine-1', directory: '/repo' },
+        execution: { machineId: 'machine-1', directory: { kind: 'path', path: '/repo' } },
         organization: { folderId: null, tagIds: [] },
         agentTarget: {
           kind: 'agent',
@@ -2080,6 +2266,7 @@ describe('createSpawnedSession replay-seeded creation', () => {
             workspace: { path: '/repo', host: 'host' },
             system: { sessionCreationCorrespondenceV1: sessionCreationCorrespondence },
             history: {
+              forkV1: { ...replayMetadata.forkV1, filesNotCopied: { reason: 'cross_machine' } },
               replaySeedV1: {
                 v: 1,
                 seedText: '',
@@ -2107,6 +2294,7 @@ describe('createSpawnedSession replay-seeded creation', () => {
     }))).resolves.toMatchObject({
       disposition: 'rejoined',
       sessionId: 'existing-child',
+      filesNotCopied: { reason: 'cross_machine' },
     });
 
     await expect(createSpawnedSession(replaySeededParams({
@@ -2148,7 +2336,7 @@ describe('createSpawnedSession replay-seeded creation', () => {
       v: 1,
       sessionCreationTag,
       recipe: {
-        execution: { machineId: 'machine-1', directory: '/repo' },
+        execution: { machineId: 'machine-1', directory: { kind: 'path', path: '/repo' } },
         organization: { folderId: null, tagIds: [] },
         agentTarget: {
           kind: 'agent',
@@ -2171,7 +2359,7 @@ describe('createSpawnedSession replay-seeded creation', () => {
       ...requestedCorrespondence,
       recipe: {
         ...requestedCorrespondence.recipe,
-        execution: { machineId: 'machine-1', directory: '/different-repo' },
+        execution: { machineId: 'machine-1', directory: { kind: 'path', path: '/different-repo' } },
       },
     });
     // The first tag lookup observed no child. The atomic get-or-create then
@@ -2297,7 +2485,7 @@ describe('createSpawnedSession replay-seeded creation', () => {
       v: 1,
       sessionCreationTag,
       recipe: {
-        execution: { machineId: 'machine-1', directory: '/repo' },
+        execution: { machineId: 'machine-1', directory: { kind: 'path', path: '/repo' } },
         organization: { folderId: null, tagIds: [] },
         agentTarget: {
           kind: 'agent',
@@ -2340,6 +2528,26 @@ describe('createSpawnedSession replay-seeded creation', () => {
     }))).rejects.toMatchObject({ code: 'creation_conflict' });
     expect(getOrCreateSessionByTag).not.toHaveBeenCalled();
   });
+
+  it.each([SPAWN_SESSION_ERROR_CODES.AGENT_CLI_MISSING, SPAWN_SESSION_ERROR_CODES.AGENT_SIGNED_OUT])(
+    'archives the fresh replay row rejected by %s before admission', async (errorCode) => {
+      const realArchive = await vi.importActual<typeof import('./archiveSessionOnceInactive')>('./archiveSessionOnceInactive');
+      archiveSessionOnceInactive.mockImplementation(realArchive.archiveSessionOnceInactive);
+      let archived = false;
+      vi.mocked(axios.post).mockImplementation(async (url) => {
+        if (String(url).endsWith('/archive')) archived = true;
+        // Axios transport boundary fixture; the real archive owner reads status and data only.
+        return { status: 200, data: { archivedAt: 1, success: true } } as never;
+      });
+      await expect(createSpawnedSession(replaySeededParams({
+        directTransport: {
+          spawn: async () => ({ type: 'error', errorCode, agentId: 'codex', errorMessage: 'Agent setup is required.' }),
+          resolveSpawnSessionByNonce: async () => ({ status: 'unsupported' as const }),
+        },
+      }))).rejects.toMatchObject({ code: errorCode });
+      expect(archived).toBe(true);
+    },
+  );
 
   it('settles the orphan once on a definite launch failure and never on an ambiguous one', async () => {
     const definiteSpawn = vi.fn(async () => ({
@@ -2494,6 +2702,7 @@ describe('createSpawnedSession replay-seeded creation', () => {
 
     expect(created.sessionId).toBe('replay-child');
     expect(directSpawn).toHaveBeenCalledTimes(1);
+    expect(directSpawn).toHaveBeenCalledWith(expect.objectContaining({ freshSessionCreation: false }), expect.anything());
   });
 
   it('still commits a fresh row when Account currentness is unavailable', async () => {

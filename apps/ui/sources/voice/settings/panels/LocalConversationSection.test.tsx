@@ -342,7 +342,7 @@ describe('LocalConversationSection', () => {
     const nextVoice = setVoice.mock.calls[0]?.[0] as VoiceSettings;
     expect(readLocalConversationVoiceSettings(nextVoice).agent).toMatchObject({
       agentId: 'codex',
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       agentIdentity: null,
     });
   });
@@ -412,12 +412,12 @@ describe('LocalConversationSection', () => {
       providerChat: {
         status: 'configured',
         chat: {
-          agentTargetKey: 'backend:opencode',
+          agentTargetKey: 'agent:happier.agent.opencode/opencode',
           providerConnectionId: 'voice-openai-compatible-chat',
           modelId: 'qwen-chat',
         },
         commit: {
-          agentTargetKey: 'backend:opencode',
+          agentTargetKey: 'agent:happier.agent.opencode/opencode',
           providerConnectionId: 'voice-openai-compatible-chat',
           modelId: 'qwen-commit',
         },
@@ -447,12 +447,12 @@ describe('LocalConversationSection', () => {
         providerChat: {
           status: 'configured',
           chat: {
-            agentTargetKey: 'backend:opencode',
+            agentTargetKey: 'agent:happier.agent.opencode/opencode',
             providerConnectionId: ProviderConnectionIdSchema.parse('voice-openai-compatible-chat'),
             modelId: 'provider-chat-model',
           },
           commit: {
-            agentTargetKey: 'backend:opencode',
+            agentTargetKey: 'agent:happier.agent.opencode/opencode',
             providerConnectionId: ProviderConnectionIdSchema.parse('voice-openai-compatible-chat'),
             modelId: 'provider-commit-model',
           },

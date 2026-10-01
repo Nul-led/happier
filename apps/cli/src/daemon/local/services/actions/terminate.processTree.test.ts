@@ -48,10 +48,12 @@ function isAlive(pid: number): boolean {
     }
 }
 
-async function spawnProcessTree(): Promise<SpawnedTree> {
+async function spawnProcessTree(resistantChild = false): Promise<SpawnedTree> {
     const dir = await mkdtemp(join(tmpdir(), 'happier-terminate-tree-'));
     const scriptPath = join(dir, 'tree.sh');
-    await writeFile(scriptPath, TREE_SCRIPT, 'utf8');
+    await writeFile(scriptPath, resistantChild
+        ? TREE_SCRIPT.replace('sleep 120 &\necho "child:$!"', () => "sh -c 'trap \"\" TERM; echo \"child:$$\"; exec sleep 120' &")
+        : TREE_SCRIPT, 'utf8');
     const root = spawn('/bin/sh', [scriptPath], { stdio: ['ignore', 'pipe', 'ignore'] });
     const rootPid = root.pid;
     if (typeof rootPid !== 'number') {
@@ -154,6 +156,27 @@ afterEach(async () => {
 });
 
 describe.skipIf(process.platform === 'win32')('terminate_detected against a real process tree', () => {
+    it('kills a TERM-resistant child even after its listener parent exits', async () => {
+        const tree = await spawnProcessTree(true);
+        spawned = tree;
+        const control = createOsProcessControl({
+            refreshInventory: async () => ({
+                v: 1 as const,
+                machineId: 'machine-a',
+                generatedAt: Date.now(),
+                refreshState: 'idle' as const,
+                entries: isAlive(tree.pids.root) ? [inventoryEntry(tree.pids.root)] : [],
+                diagnostics: [],
+            }),
+        });
+        const terminate = createTerminateDetectedService(control, { graceMs: 300, verifyPollMs: 50, verifyAttempts: 20 });
+
+        const result = await terminate({ request: request(), entry: inventoryEntry(tree.pids.root), now: Date.now() });
+
+        expect(result).toEqual({ status: 'succeeded' });
+        expect(Object.values(tree.pids).map(isAlive)).toEqual([false, false, false, false]);
+    });
+
     it('kills the listener process and every descendant, then reports success', async () => {
         const tree = await spawnProcessTree();
         spawned = tree;

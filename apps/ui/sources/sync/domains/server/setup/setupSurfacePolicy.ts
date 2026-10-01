@@ -1,5 +1,6 @@
 import { getFeatureBuildPolicyDecision } from '@/sync/domains/features/featureBuildPolicy';
 import { readConfiguredServerUrlEnv } from '../readConfiguredServerUrlEnv';
+import { desktopHostKind } from '@/utils/platform/desktopHost';
 
 export type SetupSurfacePolicy = Readonly<{
     relay: Readonly<{
@@ -52,4 +53,22 @@ export function resolveSetupSurfacePolicy(): SetupSurfacePolicy {
             allowCloudflareTunnel: isAllowedByBuildPolicy('setup.relayAccess.allowCloudflareTunnel'),
         },
     };
+}
+
+/**
+ * Whether this device can create and run a Personal Home: only the desktop app hosts one, and only
+ * where the build lets the person choose a Home and host it locally. Every "Create a Personal Home"
+ * entry (welcome, the Add a Home sheet) asks this one question.
+ */
+export function canHostPersonalHomeHere(policy: SetupSurfacePolicy = resolveSetupSurfacePolicy()): boolean {
+    return desktopHostKind() === 'tauri'
+        && policy.relay.allowRelaySelection
+        && policy.relay.allowLocalRelayHost;
+}
+
+/** Server Home setup also allows the desktop SSH relay-host task. */
+export function canSetUpServerHomeHere(policy: SetupSurfacePolicy = resolveSetupSurfacePolicy()): boolean {
+    return desktopHostKind() === 'tauri'
+        && policy.relay.allowRelaySelection
+        && (policy.relay.allowLocalRelayHost || policy.relay.allowRemoteSshRelayHost);
 }

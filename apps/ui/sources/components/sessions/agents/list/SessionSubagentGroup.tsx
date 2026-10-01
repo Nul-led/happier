@@ -1,88 +1,75 @@
 import * as React from 'react';
-import { Pressable, View } from 'react-native';
-import { StyleSheet } from 'react-native-unistyles';
+import { View } from 'react-native';
+import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import type { SessionAgentActivityRow } from '@/components/sessions/agents/presentation/sessionAgentActivityRows';
-import type { SessionSubagent } from '@/sync/domains/session/subagents/types';
+import { IconButton } from '@/components/ui/buttons/IconButton';
+import { DropdownMenu, type DropdownMenuItem } from '@/components/ui/forms/dropdown/DropdownMenu';
+import { Icon } from '@/components/ui/icons/Icon';
 import { Text } from '@/components/ui/text/Text';
+import { Typography } from '@/constants/Typography';
 import { resolveSubagentStructuredSend } from '@/sync/domains/input/subagents/resolveSubagentStructuredSend';
+import type { SessionSubagent } from '@/sync/domains/session/subagents/types';
+import type { Session } from '@/sync/domains/state/storageTypes';
 import { sync } from '@/sync/sync';
 import { t } from '@/text';
 import { fireAndForget } from '@/utils/system/fireAndForget';
 
+import { SessionAgentNeedsYouItem } from './SessionAgentNeedsYouItem';
 import { SessionSubagentRow } from './SessionSubagentRow';
 
 const stylesheet = StyleSheet.create((theme) => ({
     container: {
-        gap: 10,
+        gap: 0,
     },
+    // A quiet line above its members, not a card and not a second section title.
     header: {
         flexDirection: 'row',
         alignItems: 'center',
-        justifyContent: 'space-between',
-        gap: 8,
+        gap: 6,
+        minHeight: 24,
+        marginTop: 6,
+        marginBottom: 2,
+        paddingLeft: 12,
     },
-    headerActions: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 8,
-    },
-    title: {
-        color: theme.colors.text.secondary,
-        fontSize: 12,
-        fontWeight: '600',
-    },
-    titleRow: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 8,
-        minWidth: 0,
+    label: {
+        ...Typography.default(),
         flex: 1,
+        minWidth: 0,
+        color: theme.colors.text.tertiary,
+        fontSize: 11.5,
+        lineHeight: 16,
     },
-    countPill: {
-        minWidth: 22,
-        height: 22,
-        paddingHorizontal: 8,
-        borderRadius: 999,
-        borderWidth: 1,
-        borderColor: theme.colors.border.default,
-        backgroundColor: theme.colors.surface.base,
-        alignItems: 'center',
-        justifyContent: 'center',
-    },
-    countText: {
-        color: theme.colors.text.secondary,
-        fontSize: 11,
-        fontWeight: '700',
-    },
-    deleteButton: {
-        paddingHorizontal: 8,
-        paddingVertical: 4,
-        borderRadius: 8,
-        borderWidth: 1,
-        borderColor: theme.colors.border.default,
-        backgroundColor: theme.colors.surface.inset,
-    },
-    deleteButtonText: {
-        color: theme.colors.text.secondary,
-        fontSize: 11,
-        fontWeight: '600',
+    members: {
+        paddingLeft: 12,
     },
 }));
+
+type TeamCommand = 'add-teammate' | 'delete-team';
 
 export const SessionSubagentGroup = React.memo((props: Readonly<{
     sessionId: string;
     serverId?: string | null;
+    session?: Session | null;
+    sessionAgentId?: string | null;
     label: string | null;
     rows: readonly SessionAgentActivityRow[];
     activityPreviewById: ReadonlyMap<string, string>;
+    /** Where each row came from ("from Relay retry plan"), keyed by subagent id. */
+    originLabelById?: ReadonlyMap<string, string>;
     onOpenPreview: (subagent: SessionSubagent) => void;
     onOpenFull: (subagent: SessionSubagent) => void;
     onOpenAdvanced: (subagent: SessionSubagent) => void;
     onLaunchTeammate?: ((teamId: string) => void) | null;
+    /** Rows here wait on a person and open in place instead of opening the work (Needs you). */
+    expandable?: boolean;
+    expandedId?: string | null;
+    onToggleExpanded?: (subagentId: string) => void;
 }>) => {
     const styles = stylesheet;
-    const deletableTeamId = React.useMemo(() => {
+    const { theme } = useUnistyles();
+    const [menuOpen, setMenuOpen] = React.useState(false);
+    const liveTeamId = React.useMemo(() => {
         for (const { subagent } of props.rows) {
             if (subagent.kind !== 'agent_team_member' || subagent.status !== 'running') continue;
             const teamId = subagent.display.groupKey?.trim();
@@ -90,86 +77,103 @@ export const SessionSubagentGroup = React.memo((props: Readonly<{
         }
         return null;
     }, [props.rows]);
-    const launchableTeamId = React.useMemo(() => {
-        if (typeof props.onLaunchTeammate !== 'function') return null;
-        for (const { subagent } of props.rows) {
-            if (subagent.kind !== 'agent_team_member' || subagent.status !== 'running') continue;
-            const teamId = subagent.display.groupKey?.trim();
-            if (teamId) return teamId;
-        }
-        return null;
-    }, [props.onLaunchTeammate, props.rows]);
+    const canLaunchTeammate = liveTeamId !== null && typeof props.onLaunchTeammate === 'function';
 
-    const deleteTeam = React.useCallback(() => {
-        if (!deletableTeamId) return;
+    const teamItems = React.useMemo((): readonly DropdownMenuItem[] => {
+        if (!liveTeamId) return [];
+        const items: DropdownMenuItem[] = [];
+        if (canLaunchTeammate) {
+            items.push({ id: 'add-teammate', testID: `session-subagent-team-add:${liveTeamId}`, title: t('session.subagents.panel.launchTeammateAction') });
+        }
+        items.push({ id: 'delete-team', testID: `session-subagent-team-delete:${liveTeamId}`, title: t('session.subagents.messages.command.deleteTeamTitle'), destructive: true });
+        return items;
+    }, [canLaunchTeammate, liveTeamId]);
+
+    const { onLaunchTeammate, sessionId } = props;
+    const runTeamCommand = React.useCallback((command: TeamCommand) => {
+        if (!liveTeamId) return;
+        if (command === 'add-teammate') {
+            onLaunchTeammate?.(liveTeamId);
+            return;
+        }
         const structured = resolveSubagentStructuredSend({
             envelopeKind: 'subagent_command.v1',
-            payload: {
-                kind: 'agent_team_delete',
-                teamId: deletableTeamId,
-            },
+            payload: { kind: 'agent_team_delete', teamId: liveTeamId },
         });
         fireAndForget(
-            sync.submitMessage(props.sessionId, structured.text, structured.displayText, structured.metaOverrides, {
+            sync.submitMessage(sessionId, structured.text, structured.displayText, structured.metaOverrides, {
                 callerSurface: 'subagent_command',
                 forceImmediate: true,
             }),
             { tag: 'SessionSubagentGroup.deleteTeam' },
         );
-    }, [deletableTeamId, props.sessionId]);
-    const launchTeammate = React.useCallback(() => {
-        if (!launchableTeamId || typeof props.onLaunchTeammate !== 'function') return;
-        props.onLaunchTeammate(launchableTeamId);
-    }, [launchableTeamId, props.onLaunchTeammate]);
+    }, [liveTeamId, onLaunchTeammate, sessionId]);
+
+    const renderRow = (row: SessionAgentActivityRow) => {
+        const { subagent } = row;
+        const shared = {
+            sessionId: props.sessionId,
+            serverId: props.serverId,
+            row,
+            activityPreview: props.activityPreviewById.get(subagent.id) ?? null,
+            originLabel: props.originLabelById?.get(subagent.id) ?? null,
+            sessionAgentId: props.sessionAgentId ?? null,
+            onOpenFull: () => props.onOpenFull(subagent),
+            onOpenAdvanced: subagent.capabilities.canOpenAdvancedRun ? () => props.onOpenAdvanced(subagent) : null,
+        };
+        if (props.expandable && props.onToggleExpanded) {
+            return (
+                <SessionAgentNeedsYouItem
+                    key={subagent.id}
+                    {...shared}
+                    session={props.session ?? null}
+                    expanded={props.expandedId === subagent.id}
+                    onToggle={props.onToggleExpanded}
+                    onOpen={props.onOpenPreview}
+                />
+            );
+        }
+        return <SessionSubagentRow key={subagent.id} {...shared} onPress={() => props.onOpenPreview(subagent)} />;
+    };
+
+    if (!props.label) {
+        return <View style={styles.container}>{props.rows.map(renderRow)}</View>;
+    }
 
     return (
         <View style={styles.container}>
-            {props.label ? (
-                <View style={styles.header}>
-                    <View style={styles.titleRow}>
-                        <Text style={styles.title}>{props.label}</Text>
-                        <View testID={`session-subagent-group-count:${props.label}`} style={styles.countPill}>
-                            <Text style={styles.countText}>{t('session.subagents.panel.groupCount', { count: props.rows.length })}</Text>
-                        </View>
-                    </View>
-                    <View style={styles.headerActions}>
-                        {launchableTeamId ? (
-                            <Pressable
-                                testID={`session-subagent-team-add:${launchableTeamId}`}
-                                accessibilityRole="button"
-                                accessibilityLabel={t('session.subagents.panel.launchTeammateA11y')}
-                                onPress={launchTeammate}
-                                style={({ pressed }) => [styles.deleteButton, { opacity: pressed ? 0.7 : 1 }]}
-                            >
-                                <Text style={styles.deleteButtonText}>{t('session.subagents.panel.launchTeammateAction')}</Text>
-                            </Pressable>
-                        ) : null}
-                        {deletableTeamId ? (
-                            <Pressable
-                                testID={`session-subagent-team-delete:${deletableTeamId}`}
-                                accessibilityRole="button"
-                                accessibilityLabel={t('session.subagents.panel.delete')}
-                                onPress={deleteTeam}
-                                style={({ pressed }) => [styles.deleteButton, { opacity: pressed ? 0.7 : 1 }]}
-                            >
-                                <Text style={styles.deleteButtonText}>{t('session.subagents.panel.delete')}</Text>
-                            </Pressable>
-                        ) : null}
-                    </View>
-                </View>
-            ) : null}
-            {props.rows.map((row) => (
-                <SessionSubagentRow
-                    key={row.subagent.id}
-                    sessionId={props.sessionId}
-                    serverId={props.serverId}
-                    row={row}
-                    activityPreview={props.activityPreviewById.get(row.subagent.id) ?? null}
-                    onOpenPreview={() => props.onOpenPreview(row.subagent)}
-                    onOpenFull={(() => props.onOpenFull(row.subagent))}
-                    onOpenAdvanced={row.subagent.capabilities.canOpenAdvancedRun ? (() => props.onOpenAdvanced(row.subagent)) : null}
-                />
-            ))}
+            <View testID={`session-subagent-group:${props.label}`} style={styles.header}>
+                <Icon name="users" size={12} color={theme.colors.text.tertiary} />
+                <Text numberOfLines={1} style={styles.label}>
+                    {t('sessionAgentActivity.roster.teamLabel', { team: props.label, count: props.rows.length })}
+                </Text>
+                {teamItems.length > 0 ? (
+                    <DropdownMenu
+                        testID={`session-subagent-team-actions:${props.label}`}
+                        open={menuOpen}
+                        onOpenChange={setMenuOpen}
+                        items={teamItems}
+                        matchTriggerWidth={false}
+                        onSelect={(itemId) => {
+                            setMenuOpen(false);
+                            runTeamCommand(itemId as TeamCommand);
+                        }}
+                        trigger={({ toggle }) => (
+                            <IconButton
+                                testID={`session-subagent-team-menu:${props.label}`}
+                                iconName="dots-three"
+                                iconSize={14}
+                                size={24}
+                                variant="plain"
+                                accessibilityLabel={t('sessionAgentActivity.roster.teamActionsA11y')}
+                                tooltip={t('sessionAgentActivity.roster.teamActionsA11y')}
+                                onPress={toggle}
+                            />
+                        )}
+                    />
+                ) : null}
+            </View>
+            <View style={styles.members}>{props.rows.map(renderRow)}</View>
         </View>
     );
 });

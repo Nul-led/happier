@@ -41,6 +41,7 @@ export type VoiceProviderSettingsActionOwner = Readonly<{
 type ActionContext = Readonly<{
   actionId: string;
   providerId: string;
+  occurrenceId: string;
   owner: VoiceProviderSettingsActionOwner;
   registration: ExternalVoiceProviderRegistration;
   settingsScope: AccountSettingsScope | null;
@@ -199,17 +200,6 @@ function settingsActionFailureBody(
   return facts.length === 0 ? headline : `${headline}\n\n${facts.join('\n')}`;
 }
 
-const registrationGenerations = new WeakMap<object, number>();
-let nextRegistrationGeneration = 1;
-
-function registrationGeneration(token: object): number {
-  const existing = registrationGenerations.get(token);
-  if (existing) return existing;
-  const generation = nextRegistrationGeneration++;
-  registrationGenerations.set(token, generation);
-  return generation;
-}
-
 function localized(value: string | Readonly<{ key: string; fallback: string }>): string {
   return typeof value === 'string' ? value : value.fallback;
 }
@@ -241,7 +231,7 @@ const settingsActionInvoker = createHostPluginSettingsActionInvoker<ActionContex
       requester: {
         pluginId: context.registration.pluginId,
         contributionId: context.registration.localId,
-        generationId: String(registrationGeneration(context.registration.token)),
+        occurrenceId: context.occurrenceId,
         invocationId: context.actionId,
       },
       signal,
@@ -399,7 +389,8 @@ export function VoiceProviderSettingsActions(props: Readonly<{
       ? action.placement.kind === 'contributionFooter'
       : action.placement.kind === 'afterField' && action.placement.fieldId === props.placement.fieldId
   ));
-  if (!registration?.settingsActions || actions.length === 0) return null;
+  if (!registration?.settingsActions || !registration.occurrenceId || actions.length === 0) return null;
+  const occurrenceId = registration.occurrenceId;
 
   return <>
     {actions.map((action) => {
@@ -421,6 +412,7 @@ export function VoiceProviderSettingsActions(props: Readonly<{
             const context = Object.freeze({
               actionId: action.id,
               providerId: props.providerId,
+              occurrenceId,
               owner: props.owner,
               registration,
               settingsScope,
@@ -429,7 +421,7 @@ export function VoiceProviderSettingsActions(props: Readonly<{
             fireAndForget((async () => {
               try {
                 await settingsActionInvoker.invoke({
-                  key: `${props.providerId}/${registrationGeneration(registration.token)}/${action.id}`,
+                  key: `${props.providerId}/${occurrenceId}/${action.id}`,
                   declaration: action,
                   userGesture: true,
                   signal,

@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
+import nacl from 'tweetnacl';
+import { deriveAccountMachineKeyFromRecoverySecret, sealEncryptedDataKeyEnvelopeV1 } from '@happier-dev/protocol';
 
 import type { Credentials, StoredCredentials } from '@/persistence';
+import { encodeBase64 } from '@/api/encryption';
 import { buildSessionMetadataEnvelopeFields } from '@/session/metadata/buildSessionMetadataEnvelopeCreateFields';
 import { createApiSessionSocketStub } from '@/testkit/backends/apiSessionSocketHarness';
 import { createSessionRecordFixture } from '@/testkit/backends/sessionFixtures';
@@ -265,6 +268,13 @@ describe('createAgentAttachStatePublisher', () => {
 
   it('publishes layout-1 attach state through the canonical owner tuple adapter', async () => {
     const ownerSecret = new Uint8Array(32).fill(3);
+    const sessionDataKey = new Uint8Array(32).fill(7);
+    const recipientPublicKey = nacl.box.keyPair.fromSecretKey(deriveAccountMachineKeyFromRecoverySecret(ownerSecret)).publicKey;
+    const dataEncryptionKey = encodeBase64(sealEncryptedDataKeyEnvelopeV1({
+      dataKey: sessionDataKey,
+      recipientPublicKey,
+      randomBytes: (length) => new Uint8Array(length).fill(11),
+    }));
     const credentials: Credentials = {
       token: 'token-1',
       encryption: { type: 'legacy', secret: ownerSecret },
@@ -281,12 +291,13 @@ describe('createAgentAttachStatePublisher', () => {
       metadata,
       agentState,
       storedContentMode: 'e2ee',
-      encryptionKey: ownerSecret,
-      encryptionVariant: 'legacy',
+      encryptionKey: sessionDataKey,
+      encryptionVariant: 'dataKey',
     });
     const rawSession = createSessionRecordFixture({
       id: 'sid_opencode_layout_1',
       encryptionMode: 'e2ee',
+      dataEncryptionKey,
       metadataLayoutVersion: 1,
       metadata: tuple.sharedMetadata.ciphertext,
       metadataVersion: 4,

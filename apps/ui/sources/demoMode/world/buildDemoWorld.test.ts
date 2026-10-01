@@ -3,11 +3,13 @@ import {
     isConnectedServiceCredentialHealthStatusUsable,
     readNonAuthoritativeLinkedExternalSessionV1FromMetadata,
     readServerEnabledBit,
+    RoleArtifactV1Schema,
+    RolesV1Schema,
+    parseBackendTargetKeyV2,
 } from '@happier-dev/protocol';
 import { describe, expect, it } from 'vitest';
 
 import { profileDefaults } from '@/sync/domains/profiles/profile';
-import { coerceExecutionRunsGuidanceEntries } from '@/sync/domains/settings/executionRunsGuidance';
 import { readSessionWorkspaceContext } from '@/sync/domains/session/readSessionWorkspaceContext';
 import { ThemeProfilesLocalStateSchema } from '@/theme/profiles/themeProfilePersistence';
 import { projectUiSessionRuntimeAwareness } from '@/sync/domains/session/attention/runtimePresentation';
@@ -175,16 +177,20 @@ describe('buildDemoWorld', () => {
     it('seeds every feature the dream beats claim on their own stage', () => {
         const world = buildDemoWorld();
 
-        // A5 "One session. A whole team of agents." — the sub-agent screen renders
-        // the disabled stub unless the execution-runs substrate is on AND guidance
-        // rules exist, so the seed owns both.
-        expect(world.settings.executionRunsGuidanceEnabled).toBe(true);
-        const guidanceEntries = coerceExecutionRunsGuidanceEntries(world.settings.executionRunsGuidanceEntries);
-        expect(guidanceEntries.length).toBeGreaterThanOrEqual(3);
-        for (const entry of guidanceEntries) {
-            expect(entry.enabled).not.toBe(false);
-            expect(entry.title?.trim()).toBeTruthy();
-            expect(entry.suggestedBackendTarget?.backendId).toBeTruthy();
+        // A5 uses the canonical Roles settings root and role documents.
+        expect(world.settings).toHaveProperty('rolesV1', { overrides: {} });
+        expect(RolesV1Schema.safeParse(world.settings.rolesV1).success).toBe(true);
+        expect(world.settings).not.toHaveProperty('executionRunsGuidanceEntries');
+        expect(world.settings).not.toHaveProperty('executionRunsGuidanceEnabled');
+        expect(world.settings).not.toHaveProperty('executionRunsGuidanceMaxChars');
+        expect(world.artifacts).toHaveLength(3);
+        for (const artifact of world.artifacts) {
+            expect(artifact.header?.kind).toBe('role.v1');
+            const role = RoleArtifactV1Schema.parse(JSON.parse(artifact.body ?? 'null'));
+            expect(role.enabled).toBe(true);
+            expect(role.engine?.agentTargetKey).toBeTruthy();
+            expect(parseBackendTargetKeyV2(role.engine!.agentTargetKey)).not.toBeNull();
+            expect(role.runsAs.kind).toBe('background_run');
         }
 
         // A12 "Pool your accounts." — connected accounts plus at least one

@@ -8,11 +8,12 @@ import {
     releaseActiveServerRuntimeOrigin,
 } from '@/sync/domains/server/serverRuntime';
 import { ServerScopedTransportUnavailableError } from './serverScopedRpc/resolveServerScopedTransport';
-import { sync, syncRestore, syncSwitchServer } from '@/sync/sync';
+import { sync, syncHydrateLocalState, syncRestore, syncSwitchServer } from '@/sync/sync';
 import { abortServerFetches } from '@/sync/http/client';
 import { getIrohHomeTunnelRuntime } from '@/sync/runtime/nativeIrohTunnels/runtime';
 import {
     acquireEligibleHomeCarrier,
+    readHomeApplicationCarrierEligibility,
     type AcquiredHomeCarrier,
 } from '@/sync/runtime/homeCarrierPolicy';
 import { startNativeLoopbackTunnelRuntimeAppStateLifecycle } from '@/sync/runtime/nativeLoopbackTunnels/runtime';
@@ -21,11 +22,30 @@ import { fireAndForget } from '@/utils/system/fireAndForget';
 import { createServerUrlComparableKey } from '@/sync/domains/server/url/serverUrlCanonical';
 
 let activeSwitchPromise: Promise<AuthCredentials | null> | null = null;
+// The cold restore's transport phase. Boot paints once restore's local phase has
+// run, so the UI can ask for a switch, retry or disconnect while the carrier is
+// still pending; those wait here instead of racing a second bootstrap.
+let coldRestorePromise: Promise<void> | null = null;
+
+async function awaitColdRestore(): Promise<void> {
+    if (coldRestorePromise) await coldRestorePromise.catch(() => undefined);
+}
 let lastAppliedGeneration = -1;
+// The bearer the singleton Sync runtime was last applied with (`null` = signed
+// out). Signing in or out keeps the same Home and generation, so the applied
+// runtime is reusable only while it still holds the credential now stored for
+// that Home; otherwise a sign-in inside a running tab never starts Sync and a
+// sign-out leaves the previous Account's socket running.
+let appliedCredentialToken: string | null = null;
 let requestedGeneration = -1;
 let activeRecoveryPromise: Promise<void> | null = null;
 let recoveryRuntime: IrohHomeTunnelRuntime | null = null;
 let recoveryUnsubscribe: (() => void) | null = null;
+
+function readCredentialToken(credentials: AuthCredentials | null): string | null {
+    const token = credentials?.token?.trim() ?? '';
+    return token || null;
+}
 
 function startActiveIrohRecoveryLifecycle(runtime: IrohHomeTunnelRuntime): void {
     if (recoveryRuntime === runtime && recoveryUnsubscribe) return;
@@ -291,9 +311,12 @@ async function ensureIrohHomeTunnelForActiveSwitch(
         return;
     }
 
+    if (readHomeApplicationCarrierEligibility() === 'standard_only') {
+        await getIrohHomeTunnelRuntime().releaseActiveHomeTunnels();
+    }
+
     const acquired = await acquireEligibleHomeCarrier({
-        mode,
-        applicationCarrierEligibility: 'automatic',
+        mode: readHomeApplicationCarrierEligibility() === 'standard_only' ? 'initial_selection' : mode,
         descriptor,
         verification: { kind: 'authenticated', token },
         credentials,
@@ -373,7 +396,9 @@ export async function retryActiveServerConnection(): Promise<void> {
             snapshot,
             credentials,
             publicationTarget,
-            snapshot.carrier === 'iroh' ? 'pinned_recovery' : 'initial_selection',
+            snapshot.carrier === 'iroh' && readHomeApplicationCarrierEligibility() !== 'standard_only'
+                ? 'pinned_recovery'
+                : 'initial_selection',
         );
         if (!isPublicationTargetCurrent(publicationTarget)) return;
         sync.retryNow();
@@ -386,27 +411,27 @@ export async function retryActiveServerConnection(): Promise<void> {
 }
 
 async function applyPendingServerSwitches(): Promise<AuthCredentials | null> {
+    await awaitColdRestore();
     while (true) {
         const snapshot = getActiveServerSnapshot();
         const targetGeneration = Math.max(requestedGeneration, snapshot.generation);
 
+        const credentials = await resolveCredentialsForActiveServer(snapshot);
+        if (!isActiveSwitchTargetCurrent(snapshot, targetGeneration)) continue;
         const canReuseAppliedRuntime = (
             targetGeneration <= lastAppliedGeneration
             && appliedActiveServerRuntimeAvailable
             && readAppliedActiveServerSnapshot().serverId === snapshot.serverId
             && readAppliedActiveServerSnapshot().serverUrl === snapshot.serverUrl
             && readAppliedActiveServerSnapshot().generation === targetGeneration
+            && appliedCredentialToken === readCredentialToken(credentials)
         );
         if (canReuseAppliedRuntime) {
-            const credentials = await resolveCredentialsForActiveServer(snapshot);
-            if (!isActiveSwitchTargetCurrent(snapshot, targetGeneration)) continue;
             return credentials;
         }
 
         requestedGeneration = targetGeneration;
         abortServerFetches();
-        const credentials = await resolveCredentialsForActiveServer(snapshot);
-        if (!isActiveSwitchTargetCurrent(snapshot, targetGeneration)) continue;
         const publicationTarget = capturePublicationTargetForSnapshot(snapshot);
         if (!publicationTarget) continue;
         await ensureIrohHomeTunnelForActiveSwitch(snapshot, credentials, publicationTarget, 'initial_selection');
@@ -427,6 +452,7 @@ async function applyPendingServerSwitches(): Promise<AuthCredentials | null> {
             throw error;
         }
         lastAppliedGeneration = targetGeneration;
+        appliedCredentialToken = readCredentialToken(credentials);
         publishAppliedActiveServerSnapshot(syncTarget);
     }
 }
@@ -451,6 +477,7 @@ export async function switchConnectionToActiveServer(): Promise<AuthCredentials 
  * custody, so the ordinary switch operation must not be used for retirement.
  */
 export async function disconnectActiveServerConnection(): Promise<void> {
+    await awaitColdRestore();
     if (activeSwitchPromise) {
         await activeSwitchPromise.catch(() => null);
     }
@@ -463,6 +490,7 @@ export async function disconnectActiveServerConnection(): Promise<void> {
     await ensureIrohHomeTunnelForActiveSwitch(snapshot, null, publicationTarget, 'initial_selection');
     await syncSwitchServer(null);
     lastAppliedGeneration = Math.max(lastAppliedGeneration, snapshot.generation);
+    appliedCredentialToken = null;
     publishAppliedActiveServerSnapshot(snapshot, false);
 }
 
@@ -492,9 +520,32 @@ export async function disconnectActiveServerConnectionIfCurrent(target: Readonly
     return true;
 }
 
-/** Cold-restore entrypoint: prepare the verified carrier before Sync reads its origin. */
-export async function restoreConnectionToActiveServer(credentials: AuthCredentials): Promise<void> {
+/**
+ * Cold-restore entrypoint. The local phase runs synchronously, before this returns:
+ * this Account/Home's warm cache reaches the store before the carrier is asked for,
+ * so an unreachable Home still paints its last-known list. The returned promise is
+ * the transport phase: the verified carrier is prepared before Sync reads its origin.
+ */
+export function restoreConnectionToActiveServer(credentials: AuthCredentials): Promise<void> {
     const snapshot = getActiveServerSnapshot();
+    syncHydrateLocalState(credentials, {
+        serverId: snapshot.serverId,
+        serverUrl: snapshot.serverUrl,
+        generation: snapshot.generation,
+    });
+    const transport = restoreTransportToActiveServer(credentials, snapshot);
+    const clearColdRestore = (): void => {
+        if (coldRestorePromise === transport) coldRestorePromise = null;
+    };
+    coldRestorePromise = transport;
+    void transport.then(clearColdRestore, clearColdRestore);
+    return transport;
+}
+
+async function restoreTransportToActiveServer(
+    credentials: AuthCredentials,
+    snapshot: ReturnType<typeof getActiveServerSnapshot>,
+): Promise<void> {
     const publicationTarget = capturePublicationTargetForSnapshot(snapshot);
     if (!publicationTarget) throw new ServerScopedTransportUnavailableError();
     abortServerFetches();
@@ -504,5 +555,6 @@ export async function restoreConnectionToActiveServer(credentials: AuthCredentia
     publishApplyingActiveServerId(syncTarget.serverId, syncTarget.generation);
     await syncRestore(credentials, syncTarget);
     lastAppliedGeneration = Math.max(lastAppliedGeneration, snapshot.generation);
+    appliedCredentialToken = readCredentialToken(credentials);
     publishAppliedActiveServerSnapshot(syncTarget);
 }

@@ -31,7 +31,7 @@ import type {
 export type ExternalSessionFollowTargetHostOperationRequest = Readonly<{
     pluginId: string;
     contributionId: string;
-    generationId: string;
+    occurrenceId: string;
     sessionId: string;
     machineId: string;
     accountRevision: string;
@@ -63,13 +63,13 @@ export type ExternalSessionHostOperationSet = Readonly<{
 export type ExternalSessionHostOperationBinding = Readonly<{
     pluginId: string;
     agentId: string;
-    generationId: string;
+    occurrenceId: string;
     sessionId: string;
     machineId: string;
     readAccountRevision(): string | null;
     sessionSignal?: AbortSignal;
-    generationRetirementSignal?: AbortSignal;
-    isGenerationCurrent(): boolean;
+    occurrenceRetirementSignal?: AbortSignal;
+    isOccurrenceCurrent(): boolean;
     agentContribution?: ConfiguredExternalSessionSourceAgentContribution;
 }>;
 
@@ -314,8 +314,8 @@ export function createExternalSessionHostOperationOwner(): ExternalSessionHostOp
                     identityInput.agentId,
                     'plugin_external_operation_identity_invalid',
                 ),
-                generationId: readIdentity(
-                    identityInput.generationId,
+                occurrenceId: readIdentity(
+                    identityInput.occurrenceId,
                     'plugin_external_operation_identity_invalid',
                 ),
                 sessionId: readIdentity(
@@ -329,9 +329,9 @@ export function createExternalSessionHostOperationOwner(): ExternalSessionHostOp
                 accountRevision,
                 readAccountRevision: identityInput.readAccountRevision,
                 sessionSignal: identityInput.sessionSignal,
-                generationRetirementSignal:
-                    identityInput.generationRetirementSignal,
-                isGenerationCurrent: identityInput.isGenerationCurrent,
+                occurrenceRetirementSignal:
+                    identityInput.occurrenceRetirementSignal,
+                isOccurrenceCurrent: identityInput.isOccurrenceCurrent,
                 agentContribution: identityInput.agentContribution,
             });
             const boundGeneration = currentGeneration;
@@ -343,8 +343,8 @@ export function createExternalSessionHostOperationOwner(): ExternalSessionHostOp
                     ? [boundGeneration.retirement.signal]
                     : []),
                 ...(identity.sessionSignal ? [identity.sessionSignal] : []),
-                ...(identity.generationRetirementSignal
-                    ? [identity.generationRetirementSignal]
+                ...(identity.occurrenceRetirementSignal
+                    ? [identity.occurrenceRetirementSignal]
                     : []),
             ]);
 
@@ -359,7 +359,7 @@ export function createExternalSessionHostOperationOwner(): ExternalSessionHostOp
                 }
                 try {
                     return (
-                        identity.isGenerationCurrent() === true
+                        identity.isOccurrenceCurrent() === true
                         && readCurrentAccountRevision(
                             identity.readAccountRevision,
                         )
@@ -599,7 +599,7 @@ export function createExternalSessionHostOperationOwner(): ExternalSessionHostOp
                         result = await operation.execute({
                             pluginId: identity.pluginId,
                             contributionId: identity.agentId,
-                            generationId: identity.generationId,
+                            occurrenceId: identity.occurrenceId,
                             sessionId: identity.sessionId,
                             machineId: identity.machineId,
                             ref: request.ref,
@@ -690,7 +690,7 @@ export function createExternalSessionHostOperationOwner(): ExternalSessionHostOp
                     const target: unknown = await operation.execute({
                         pluginId: identity.pluginId,
                         contributionId: identity.agentId,
-                        generationId: identity.generationId,
+                        occurrenceId: identity.occurrenceId,
                         sessionId: identity.sessionId,
                         machineId: identity.machineId,
                         accountRevision: identity.accountRevision,

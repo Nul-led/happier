@@ -1,3 +1,4 @@
+import { createStoppedTakeoverQuiescenceFixture } from '@/testkit/backends/externalSessionFixtures';
 import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -110,7 +111,7 @@ const qualifiedIdentity = {
   source: { kind: 'jsonl', contractVersion: 1 as const },
 };
 
-function request() {
+function request(): ExternalSessionOperationRecordV1['request'] {
   return {
     v: 1 as const,
     idempotencyKey: 'materialize-request-1',
@@ -121,7 +122,7 @@ function request() {
       qualifiedIdentity,
       linkGeneration: 'link-1',
       sourceGeneration: 'source-1',
-      contributionGeneration: 'contribution-1',
+      sourceCustody: { kind: 'development', registeredRootId: 'contribution-1' },
     },
     plan: 'materialize' as const,
     targetStorageMode: 'external-linked' as const,
@@ -129,7 +130,7 @@ function request() {
   };
 }
 
-function persistedTakeoverRequest() {
+function persistedTakeoverRequest(): ExternalSessionOperationRecordV1['request'] {
   const sourceSnapshotEvidenceRef = 'takeover-source-cursor-1';
   return {
     v: 1 as const,
@@ -143,7 +144,7 @@ function persistedTakeoverRequest() {
       sourceGeneration: createExternalSessionSourceGenerationAnchor(
         sourceSnapshotEvidenceRef,
       ),
-      contributionGeneration: 'contribution-1',
+      sourceCustody: { kind: 'development', registeredRootId: 'contribution-1' },
     },
     plan: 'takeover' as const,
     targetStorageMode: 'persisted' as const,
@@ -436,7 +437,7 @@ describe('external session materialize action', () => {
     const acquire = vi.fn().mockResolvedValue({
       status: 'converged' as const,
       active: {
-        schemaVersion: 1 as const,
+        schemaVersion: 2 as const,
         claimId: 'unobservable-owner',
         ownerId: 'prior-owner',
         request: {
@@ -498,7 +499,7 @@ describe('external session materialize action', () => {
       .mockResolvedValueOnce({
         status: 'converged' as const,
         active: {
-          schemaVersion: 1 as const,
+          schemaVersion: 2 as const,
           claimId: 'empty-prior-owner',
           ownerId: 'prior-owner',
           request: {
@@ -5614,6 +5615,7 @@ describe('external session materialize action', () => {
       },
     };
     const preparePersistedTakeover = vi.fn(async () => ({
+      destructiveQuiescence: createStoppedTakeoverQuiescenceFixture(initial),
       workingDirectory: takeoverWorkingDirectory,
       resumeFollowOnFailure,
     }));
@@ -5833,6 +5835,7 @@ describe('external session materialize action', () => {
     await writeExternalSessionOperationRecord(activeServerDir, crashed);
 
     const preparePersistedTakeover = vi.fn(async () => ({
+      destructiveQuiescence: createStoppedTakeoverQuiescenceFixture(validating),
       workingDirectory: '/workspace',
       resumeFollowOnFailure: async () => undefined,
     }));
@@ -6106,6 +6109,7 @@ describe('external session materialize action', () => {
         },
       }),
       preparePersistedTakeover: async () => ({
+        destructiveQuiescence: createStoppedTakeoverQuiescenceFixture(initial),
         workingDirectory: '/workspace',
         resumeFollowOnFailure: async () => undefined,
       }),

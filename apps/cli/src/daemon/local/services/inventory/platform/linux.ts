@@ -1,3 +1,5 @@
+import { parseLinuxProcStartTimeMs } from '@happier-dev/cli-common/processInstance';
+
 import { LOCAL_SERVICE_PROCESS_LINEAGE_MAX_DEPTH, type LocalServiceProcessFact } from '../provenance';
 import type { LocalServiceListenerFact } from '../scanner';
 import type { LocalServiceInventoryDiagnostic } from '../scanner';
@@ -153,16 +155,16 @@ function parseNumericPid(raw: string): number | null {
     return Number.isInteger(pid) && pid > 0 ? pid : null;
 }
 
-function parseProcStatFacts(content: string): Readonly<{ ppid?: number; startTicks?: number }> {
+function parseProcStatFacts(content: string): Readonly<{ ppid?: number; processStartTimeMs?: number }> {
     const trimmed = content.trim();
     const commandEnd = trimmed.lastIndexOf(')');
     const afterCommand = commandEnd >= 0 ? trimmed.slice(commandEnd + 1).trim() : '';
     const fields = afterCommand.split(/\s+/u);
     const ppid = Number(fields[1]);
-    const startTicks = Number(fields[19]);
+    const processStartTimeMs = parseLinuxProcStartTimeMs(content);
     return {
         ...(Number.isInteger(ppid) && ppid > 0 ? { ppid } : {}),
-        ...(Number.isFinite(startTicks) && startTicks >= 0 ? { startTicks } : {}),
+        ...(processStartTimeMs !== null ? { processStartTimeMs } : {}),
     };
 }
 
@@ -189,28 +191,10 @@ async function readOptionalLink(boundary: LinuxProcfsBoundary, path: string): Pr
     }
 }
 
-function parseLinuxBootTimeMs(content: string): number | undefined {
-    const match = /^btime\s+(\d+)\s*$/mu.exec(content);
-    const seconds = Number(match?.[1]);
-    return Number.isFinite(seconds) && seconds >= 0 ? Math.trunc(seconds * 1_000) : undefined;
-}
-
-function processStartTimeFromTicks(input: Readonly<{
-    bootTimeMs: number | undefined;
-    startTicks: number | undefined;
-}>): number | undefined {
-    if (typeof input.bootTimeMs !== 'number' || typeof input.startTicks !== 'number') return undefined;
-    // Linux exposes process start time in clock ticks since boot. Most supported
-    // Linux targets report 100 ticks/sec; this value is only used for identity
-    // equality across adjacent scans, not for user-visible wall-clock display.
-    return Math.trunc(input.bootTimeMs + input.startTicks * 10);
-}
-
 async function readProcessFact(
     boundary: LinuxProcfsBoundary,
     procRoot: string,
     pid: number,
-    bootTimeMs: number | undefined,
     daemonUserId: string | undefined,
 ): Promise<LocalServiceProcessFact | null> {
     try {
@@ -222,10 +206,6 @@ async function readProcessFact(
         ]);
         const command = parseProcCmdline(String(cmdline));
         const statFacts = parseProcStatFacts(String(stat));
-        const processStartTimeMs = processStartTimeFromTicks({
-            bootTimeMs,
-            startTicks: statFacts.startTicks,
-        });
         const cwd = await readOptionalLink(boundary, joinProcPath(base, 'cwd'));
         const processOwnership = classifyProcessOwnershipByIdentity(
             parseProcStatusRealUserId(String(status)),
@@ -234,7 +214,7 @@ async function readProcessFact(
         return {
             pid,
             ...(statFacts.ppid ? { ppid: statFacts.ppid } : {}),
-            ...(typeof processStartTimeMs === 'number' ? { processStartTimeMs } : {}),
+            ...(typeof statFacts.processStartTimeMs === 'number' ? { processStartTimeMs: statFacts.processStartTimeMs } : {}),
             command: command || 'unknown',
             ...(cwd ? { cwd } : {}),
             ...(processOwnership ? { processOwnership } : {}),
@@ -250,13 +230,10 @@ export async function readLinuxProcessFacts(
 ): Promise<ReadonlyMap<number, LocalServiceProcessFact>> {
     const procRoot = boundary.procRoot ?? '/proc';
     const daemonUserId = boundary.daemonUserId ?? resolveDaemonPosixUserId();
-    const bootTimeMs = parseLinuxBootTimeMs(String(
-        await boundary.readFile(joinProcPath(procRoot, 'stat'), 'utf8').catch(() => ''),
-    ));
     const processes = new Map<number, LocalServiceProcessFact>();
     await Promise.all([...new Set(pids)].map(async (pid) => {
         if (!Number.isInteger(pid) || pid <= 0) return;
-        const processFact = await readProcessFact(boundary, procRoot, pid, bootTimeMs, daemonUserId);
+        const processFact = await readProcessFact(boundary, procRoot, pid, daemonUserId);
         if (processFact) {
             processes.set(pid, processFact);
         }

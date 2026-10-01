@@ -61,7 +61,7 @@ async function installRuntimeMocks(
 }
 
 describe('React Native host runtime identity resolver', () => {
-    it('resolves source-backed native runtime identity and reports ScriptManager not-integrated by default', async () => {
+    it('resolves the source-backed native runtime identity', async () => {
         await installRuntimeMocks('ios');
         const { resolveNativeReactNativeHostRuntimeIdentity } = await import('./hostRuntimeIdentity');
 
@@ -75,26 +75,6 @@ describe('React Native host runtime identity resolver', () => {
             nativeApplicationVersion: '0.2.0',
             nativeBuildVersion: '101',
             applicationId: 'dev.happier.app',
-            reactNativeVersion: '0.83.4',
-            expoRuntimeVersion: 'runtime-55',
-            availableNativeCapabilities: [],
-        });
-        // Default probe under the test runtime resolves no native client, so
-        // readiness is omitted (fail-closed).
-        expect(identity).not.toHaveProperty('scriptManagerRuntime');
-    });
-
-    it('reports ScriptManager readiness integrated when the real loader-backend probe is available', async () => {
-        await installRuntimeMocks('ios');
-        const { resolveNativeReactNativeHostRuntimeIdentity } = await import('./hostRuntimeIdentity');
-
-        const identity = resolveNativeReactNativeHostRuntimeIdentity({
-            resolveLoaderBackend: () => ({ available: true }),
-        });
-
-        expect(identity?.scriptManagerRuntime).toEqual({
-            integrated: true,
-            installedArtifactLoaderAvailable: true,
         });
     });
 
@@ -105,39 +85,12 @@ describe('React Native host runtime identity resolver', () => {
         });
         const { resolveNativeReactNativeHostRuntimeIdentity } = await import('./hostRuntimeIdentity');
 
-        expect(resolveNativeReactNativeHostRuntimeIdentity({
-            resolveLoaderBackend: () => ({ available: true }),
-        })).toMatchObject({
+        expect(resolveNativeReactNativeHostRuntimeIdentity()).toMatchObject({
             platform: 'ios',
             channel: 'development',
             appVersion: '0.2.10',
             nativeApplicationVersion: '0.2.10',
         });
-    });
-
-    it('omits ScriptManager readiness when the loader-backend probe reports unavailable', async () => {
-        await installRuntimeMocks('ios');
-        const { resolveNativeReactNativeHostRuntimeIdentity } = await import('./hostRuntimeIdentity');
-
-        const identity = resolveNativeReactNativeHostRuntimeIdentity({
-            resolveLoaderBackend: () => ({ available: false }),
-        });
-
-        expect(identity).not.toHaveProperty('scriptManagerRuntime');
-    });
-
-    it('stays fail-closed when the loader-backend probe throws', async () => {
-        await installRuntimeMocks('ios');
-        const { resolveNativeReactNativeHostRuntimeIdentity } = await import('./hostRuntimeIdentity');
-
-        const identity = resolveNativeReactNativeHostRuntimeIdentity({
-            resolveLoaderBackend: () => {
-                throw new Error('probe boom');
-            },
-        });
-
-        expect(identity).not.toBeNull();
-        expect(identity).not.toHaveProperty('scriptManagerRuntime');
     });
 
     it.each([

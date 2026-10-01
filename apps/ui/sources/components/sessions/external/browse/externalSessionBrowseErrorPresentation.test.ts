@@ -17,6 +17,10 @@ describe('externalSessionBrowseErrorPresentation', () => {
     it('distinguishes an unavailable selected Agent or source from machine and daemon connectivity failures', () => {
         expect(resolveExternalSessionBrowseRpcErrorMessage('agent_unavailable', 'list'))
             .toBe('externalSessions.browseAgentUnavailable');
+        expect(resolveExternalSessionBrowseRpcErrorMessage('agent_timeout', 'list'))
+            .toBe('externalSessions.browseAgentTimedOut');
+        expect(resolveExternalSessionBrowseRpcErrorMessage('agent_error', 'list'))
+            .toBe('externalSessions.browseAgentFailed');
         expect(resolveExternalSessionBrowseRpcErrorMessage('machine_offline', 'list'))
             .toBe('newSession.machineOfflineInlineBody');
         expect(resolveExternalSessionBrowseThrownErrorMessage(

@@ -16,7 +16,6 @@ function projectionWithScmFamilies(params: Readonly<{
         generation: params.generation,
         installedPackagesById: {},
         agentsById: {},
-        backendsById: {},
         actionsById: {},
         toolsById: {},
         commandsById: {},

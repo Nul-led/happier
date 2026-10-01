@@ -26,7 +26,7 @@ const capability = 'reviews.comments.write.direct';
 const subjectA = { kind: 'general' } as const;
 const subjectB = {
     kind: 'credential_access_disclosure',
-    contribution: { pluginId: 'review-coderabbit', localId: 'voice' },
+    contribution: { pluginId: 'happier.review.coderabbit', localId: 'voice' },
     credentialSlotId: 'api_key',
     purpose: 'voice.realtime',
     accessDeclarationDigest: 'a'.repeat(64),
@@ -34,6 +34,20 @@ const subjectB = {
     selectedRawAccessDigest: 'd'.repeat(64),
     installedGenerationId: 'generation-1',
     installReviewPrincipalDigest: 'b'.repeat(64),
+} as const;
+const reorderedSubjectB = {
+    installReviewPrincipalDigest: subjectB.installReviewPrincipalDigest,
+    installedGenerationId: subjectB.installedGenerationId,
+    selectedRawAccessDigest: subjectB.selectedRawAccessDigest,
+    selectedAuthorityDigest: subjectB.selectedAuthorityDigest,
+    accessDeclarationDigest: subjectB.accessDeclarationDigest,
+    purpose: subjectB.purpose,
+    credentialSlotId: subjectB.credentialSlotId,
+    contribution: {
+        localId: subjectB.contribution.localId,
+        pluginId: subjectB.contribution.pluginId,
+    },
+    kind: subjectB.kind,
 } as const;
 
 function pendingRequest(overrides: Record<string, unknown> = {}) {
@@ -200,5 +214,19 @@ describe('plugin permission grant UI state', () => {
         expect(store.hasPluginPermissionGrant(loaded, { subject: subjectB })).toBe(false);
         expect(store.selectPluginPermissionPendingRequests(loaded, { subject: subjectA })).toHaveLength(1);
         expect(store.selectPluginPermissionPendingRequests(loaded, { subject: subjectB })).toHaveLength(0);
+
+        const credentialLoaded = store.applyPluginPermissionGrantList(store.createEmptyPluginPermissionGrantState(), {
+            grants: [grant({ targetScope: { kind: 'account' }, subject: subjectB })],
+            pendingRequests: [pendingRequest({ targetScope: { kind: 'account' }, subject: subjectB })],
+        });
+        expect(JSON.stringify(subjectB)).not.toBe(JSON.stringify(reorderedSubjectB));
+        expect(store.hasPluginPermissionGrant(credentialLoaded, { subject: reorderedSubjectB })).toBe(true);
+        expect(store.selectPluginPermissionPendingRequests(
+            credentialLoaded,
+            { subject: reorderedSubjectB },
+        )).toHaveLength(1);
+        expect(store.hasPluginPermissionGrant(credentialLoaded, {
+            subject: { ...reorderedSubjectB, selectedAuthorityDigest: 'e'.repeat(64) },
+        })).toBe(false);
     });
 });

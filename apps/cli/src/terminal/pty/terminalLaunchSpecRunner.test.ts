@@ -1,6 +1,9 @@
 import { EventEmitter } from 'node:events';
 import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { createRequire } from 'node:module';
+import { join, resolve } from 'node:path';
 import vm from 'node:vm';
 
 import { describe, expect, it, vi } from 'vitest';
@@ -27,6 +30,7 @@ function createRunnerScriptHarness() {
     if (id === 'node:child_process') return { spawn };
     if (id === 'node:fs/promises') return require(id);
     if (id === 'node:path') return require(id);
+    if (id === './process_tree.cjs') return createRequire(scriptPath)(id);
     throw new Error(`unexpected require: ${id}`);
   }, { main: {} });
 
@@ -42,6 +46,23 @@ function createRunnerScriptHarness() {
 }
 
 describe('terminal_launch_spec_runner.cjs', () => {
+  it('preserves validated Windows shim argument custody through the private launch file', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'happier-terminal-launch-'));
+    const specPath = join(directory, 'launch.json');
+    const spec = { command: 'C:\\Windows\\System32\\cmd.exe', args: ['/d', '/s', '/c', '"C:\\agent.cmd" "opaque arg"'], cwd: 'C:\\workspace', env: {}, windowsVerbatimArguments: true };
+    await writeFile(specPath, JSON.stringify(spec));
+    try {
+      const { module, child, spawn } = createRunnerScriptHarness();
+      const readSpec = module.exports.readLaunchSpecFile as (path: string) => Promise<typeof spec>;
+      const run = module.exports.runLaunchSpec as (input: typeof spec) => Promise<number>;
+      const loaded = await readSpec(specPath);
+      const result = run(loaded);
+      expect(spawn).toHaveBeenCalledWith(spec.command, spec.args, expect.objectContaining({ windowsVerbatimArguments: true }));
+      child.emit('close', 0, null);
+      await expect(result).resolves.toBe(0);
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+
   it('ignores terminal interrupt signals while the child is alive', async () => {
     const { child, fakeProcess, module, spawn } = createRunnerScriptHarness();
     const runLaunchSpec = module.exports.runLaunchSpec as (spec: {

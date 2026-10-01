@@ -1,6 +1,7 @@
+import { renderWithSessionTranscriptSource } from '@/dev/testkit';
 import React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { flattenTestStyle, renderScreen, standardCleanup } from '@/dev/testkit';
+import { flattenTestStyle, standardCleanup } from '@/dev/testkit';
 
 import { installToolShellCommonModuleMocks, makeToolCall } from './ToolView.testHelpers';
 import { createUseSettingMock } from '@/dev/testkit/mocks/storage';
@@ -105,7 +106,7 @@ describe('ToolView (embedded group spacing)', () => {
         const { ToolView } = await import('./ToolView');
         const tool = makeToolCall({ name: 'edit', state: 'running', input: {}, description: null, result: null });
 
-        const screen = await renderScreen(React.createElement(ToolView, { tool, metadata: null, messages: [] }));
+        const screen = await renderWithSessionTranscriptSource(React.createElement(ToolView, { tool, metadata: null, messages: [] }));
 
         const container = screen.findByTestId('tool-view-container') as any;
         expect(flatten(container?.props.style).marginVertical).toBe(4);
@@ -115,7 +116,7 @@ describe('ToolView (embedded group spacing)', () => {
         const { ToolView } = await import('./ToolView');
         const tool = makeToolCall({ name: 'edit', state: 'running', input: {}, description: null, result: null });
 
-        const screen = await renderScreen(
+        const screen = await renderWithSessionTranscriptSource(
             React.createElement(ToolView, { tool, metadata: null, messages: [], embedded: true }),
         );
 

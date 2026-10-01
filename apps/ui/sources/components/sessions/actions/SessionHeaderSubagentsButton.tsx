@@ -9,6 +9,7 @@ import { useOptionalSessionScreenTestId } from '../shell/sessionScreenTestIds';
 import { SESSION_HEADER_ICON_SIZE_PX } from '@/components/sessions/actions/sessionHeaderIconMetrics';
 import { SessionHeaderIconWithCount } from '@/components/sessions/actions/SessionHeaderIconWithCount';
 import { ICON_SIZE, Icon } from '@/components/ui/icons/Icon';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 /**
  * A live indicator: present exactly while agents are running in this session. `activeCount` is the
@@ -40,7 +41,7 @@ export const SessionHeaderSubagentsButton = React.memo((props: Readonly<{
                 height: 44,
                 alignItems: 'center',
                 justifyContent: 'center',
-                opacity: pressed ? 0.7 : 1,
+                opacity: pressed ? motionTokens.press.opacity : 1,
             })}
             accessibilityRole="button"
             accessibilityLabel={t('session.openSubagents', { count: props.activeCount })}

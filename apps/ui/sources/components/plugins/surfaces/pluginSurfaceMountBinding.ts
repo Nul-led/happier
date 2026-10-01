@@ -191,7 +191,7 @@ export function readPluginSurfaceEphemeralMountBinding(
         surface.contribution.pluginId !== selected.identity.pluginId
         || surface.executionOrigin.materializationRef.pluginId !== surface.contribution.pluginId
         || surface.contributorTargetedContributions.target.pluginId !== surface.contribution.pluginId
-        || surface.contributorTargetedContributions.target.immutableGenerationId !== surface.immutableGenerationId
+        || surface.contributorTargetedContributions.target.occurrenceId !== surface.occurrenceId
         || surface.rendererChain.some((identity) => identity.pluginId !== surface.contribution.pluginId)
         || selected.renderer.contributionId !== selected.identity.localId
         || !surface.rendererChain.some((identity) => (
@@ -257,7 +257,7 @@ function matchesComposerSurfaceCatalogEntry(
     catalogEntry: DaemonPluginUiComposerSurfaceCatalogEntryV1,
 ): boolean {
     return sameContributionIdentity(mount.contribution, catalogEntry.contribution)
-        && mount.immutableGenerationId === catalogEntry.immutableGenerationId
+        && mount.occurrenceId === catalogEntry.occurrenceId
         && mount.projectionGeneration === catalogEntry.projectionGeneration
         && mount.role === catalogEntry.role
         && sameContributionIdentity(mount.selectedRenderer, catalogEntry.selectedRenderer.identity)

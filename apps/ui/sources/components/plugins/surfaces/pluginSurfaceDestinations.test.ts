@@ -21,6 +21,7 @@ function createPlacement(): PluginUiSurfacePlacementProjection {
     return {
         id: 'surfacePlacement:acme.review:dashboard',
         pluginId: 'acme.review',
+        occurrenceId: 'review-dashboard-occurrence-a',
         contributionKind: 'surfacePlacement',
         descriptorId: 'dashboard',
         binding,
@@ -35,7 +36,7 @@ function createPlacement(): PluginUiSurfacePlacementProjection {
                 developerFallback: 'Preview',
                 tone: 'accent',
             },
-            groupHint: 'sessions',
+            placement: { kind: 'column', column: 'sessions' },
             rankHint: -25,
         },
         availability: { state: 'available', reason: 'available', diagnostics: [] },
@@ -54,7 +55,7 @@ describe('resolvePluginSurfaceDestinations', () => {
             id: 'plugin:acme.review:dashboard',
             icon: 'gear',
             badge: { label: 'Preview', tone: 'accent' },
-            groupHint: 'sessions',
+            requestedPlacement: { kind: 'column', column: 'sessions' },
             rankHint: -25,
             order: Number.MAX_SAFE_INTEGER,
         });

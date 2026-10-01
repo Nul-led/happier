@@ -1,11 +1,12 @@
 import type { Session } from '@/sync/domains/state/storageTypes';
+import { createTranscriptStreamSegmentAssembler, type TranscriptStreamSegmentAssembler } from '@happier-dev/session-core/live';
 import type {
     AnyTranscriptStreamSegmentEphemeralUpdate,
     TranscriptStreamSegmentSessionMessageEncryption,
 } from '@/sync/engine/sessions/handleTranscriptStreamSegmentEphemeralUpdate';
 import { handleTranscriptStreamSegmentEphemeralUpdate } from '@/sync/engine/sessions/handleTranscriptStreamSegmentEphemeralUpdate';
 import type { SessionMessageApplyCoalescerConfig } from '@/sync/engine/sessions/sessionMessageApplyCoalescer';
-import type { NormalizedMessage, RawMessageNormalizationSequenceState } from '@/sync/typesRaw';
+import type { NormalizedMessage, RawMessageNormalizationSequenceState } from "@happier-dev/session-core/raw";
 
 type TranscriptStreamSegmentHandler = typeof handleTranscriptStreamSegmentEphemeralUpdate;
 type TimerHandle = ReturnType<typeof setTimeout>;
@@ -35,6 +36,7 @@ export type TranscriptStreamSegmentSocketQueueEntry = Readonly<{
 }>;
 
 export function createTranscriptStreamSegmentSocketQueueController(params: Readonly<{
+    assembler?: TranscriptStreamSegmentAssembler;
     getConfig: () => SessionMessageApplyCoalescerConfig;
     isSessionVisible: (sessionId: string, sourceServerId?: string | null) => boolean;
     messageCoalescer: TranscriptStreamSegmentMessageCoalescer;
@@ -48,6 +50,7 @@ export function createTranscriptStreamSegmentSocketQueueController(params: Reado
     drop: (sessionId: string) => void;
 }> {
     const handleTranscriptStreamSegment = params.handleTranscriptStreamSegment ?? handleTranscriptStreamSegmentEphemeralUpdate;
+    const assembler = params.assembler ?? createTranscriptStreamSegmentAssembler();
     const queues = new Map<string, DeferredTranscriptStreamSegmentQueueState>();
 
     function getOrCreateQueue(sessionId: string): DeferredTranscriptStreamSegmentQueueState {
@@ -76,6 +79,7 @@ export function createTranscriptStreamSegmentSocketQueueController(params: Reado
         }
         params.prepareApplyEntry?.(entry);
         await handleTranscriptStreamSegment({
+            assembler,
             update: entry.update,
             getSessionEncryption: entry.getSessionEncryption,
             getSession: entry.getSession,

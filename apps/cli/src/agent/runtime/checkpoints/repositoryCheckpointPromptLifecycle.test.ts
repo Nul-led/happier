@@ -5,11 +5,16 @@ import { promisify } from 'node:util';
 import { mkdir, mkdtemp, rename, rm, writeFile } from 'node:fs/promises';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { compareTurnChangeSetChronology, mergeTurnChangeSets } from '@happier-dev/protocol';
 
 import type { ACPMessageData } from '@/api/session/sessionMessageTypes';
 import type { ApiSessionClient } from '@/api/session/sessionClient';
 import { createMutableApiSessionClientFixture } from '@/testkit/backends/sessionFixtures';
 import { buildRepositoryCheckpointRefs } from '@/scm/checkpoints';
+import { NormalizedToolTurnChangeTracker } from '@/agent/tools/diff/normalizedToolTurnChangeTracker';
+import { buildTurnChangeSetDiffInput } from '@/agent/tools/diff/buildTurnChangeSetDiffInput';
+import { deriveTurnChangeSetsFromMessages } from '../../../../../ui/sources/sync/domains/session/changes/derivation/deriveTurnChangeSetsFromMessages';
+import type { Message } from '@happier-dev/session-core';
 
 import { createRepositoryCheckpointPromptLifecycle } from './repositoryCheckpointPromptLifecycle';
 import { createWorktreeAttributionRegistry } from './worktreeAttributionRegistry';
@@ -93,6 +98,55 @@ describe('createRepositoryCheckpointPromptLifecycle', () => {
     afterEach(() => {
         checkpointBoundaryHooks.beforeFinalCapture = null;
         checkpointBoundaryHooks.beforeDiff = null;
+    });
+
+    it.each([false, true])('orders tool and checkpoint-only turns by runtime chronology despite delayed publication (checkpoint first: %s)', async (checkpointFirst) => {
+        const repoRoot = await createGitRepo();
+        const { session, messages } = createMessageCapturingSession('chronology');
+        const lifecycle = createRepositoryCheckpointPromptLifecycle({
+            session, runtimeDirectory: repoRoot, provider: 'codex', protocol: 'codex',
+        });
+        const tracker = new NormalizedToolTurnChangeTracker({ provider: 'codex' });
+        try {
+            const checkpointSequence = checkpointFirst ? 10 : 30;
+            const toolSequence = checkpointFirst ? 30 : 10;
+            if (!checkpointFirst) await writeFile(join(repoRoot, 'tracked.txt'), 'tool\n');
+            await lifecycle.onBeforePromptDispatch?.({ messageId: 'message-checkpoint', prompt: 'edit with shell' });
+            await lifecycle.onTurnStarted?.({ messageId: 'message-checkpoint', turnId: 'checkpoint', sequence: checkpointSequence });
+            await writeFile(join(repoRoot, 'tracked.txt'), 'checkpoint\n');
+            await lifecycle.onTurnFinal?.({ messageId: 'message-checkpoint', turnId: 'checkpoint', status: 'completed', sequence: checkpointSequence + 2 });
+
+            tracker.beginTurn({ turnId: 'tool', agentTurnId: 'native-tool', sequence: toolSequence });
+            tracker.observeToolCall({ callId: 'edit', toolName: 'Edit', args: {
+                file_path: 'tracked.txt', old_string: checkpointFirst ? 'checkpoint\n' : 'initial\n', new_string: 'tool\n',
+            } });
+            tracker.observeToolResult({ callId: 'edit', isError: false });
+            const toolTurn = tracker.completeTurn({ sessionId: session.sessionId, status: 'completed', sequence: toolSequence + 2 });
+            expect(toolTurn).not.toBeNull();
+            const checkpointInput = messages.find((message) => message.type === 'tool-call');
+            if (!checkpointInput || checkpointInput.type !== 'tool-call' || !toolTurn) throw new Error('Missing turn evidence');
+            const toolInput = buildTurnChangeSetDiffInput({ turnChangeSet: toolTurn, protocol: 'codex', rawToolName: 'Edit' });
+            const toMessage = (id: string, input: unknown, createdAt: number): Message => ({
+                kind: 'tool-call', id, localId: null, createdAt, children: [],
+                tool: { name: 'Diff', state: 'completed', input, createdAt, startedAt: createdAt,
+                    completedAt: createdAt, description: null, result: { status: 'completed' } },
+            });
+            // Publish the older turn last, with a newer publication timestamp: arrival is not turn order.
+            const earlier = checkpointFirst ? checkpointInput.input : toolInput;
+            const later = checkpointFirst ? toolInput : checkpointInput.input;
+            const turns = deriveTurnChangeSetsFromMessages([toMessage('later', later, 100), toMessage('earlier', earlier, 200)]);
+            const ordered = [...turns].sort(compareTurnChangeSetChronology);
+            expect(ordered.map((turn) => turn.turnId)).toEqual(checkpointFirst ? ['checkpoint', 'tool'] : ['tool', 'checkpoint']);
+            expect(ordered.at(-1)?.turnId).toBe(checkpointFirst ? 'tool' : 'checkpoint');
+            if (checkpointFirst) expect(ordered.at(-1)?.files[0]?.newText).toBe('tool\n');
+            else expect(ordered.at(-1)?.files[0]?.unifiedDiff).toContain('+checkpoint');
+            const aggregate = mergeTurnChangeSets({ sessionId: session.sessionId, turns });
+            expect(aggregate.files).toHaveLength(1);
+            expect(aggregate.files[0]?.turns).toEqual(checkpointFirst ? ['checkpoint', 'tool'] : ['tool', 'checkpoint']);
+        } finally {
+            await lifecycle.onSessionEnd?.();
+            await rm(repoRoot, { recursive: true, force: true });
+        }
     });
 
     it('uses resolved Git roots for nested directories while keeping linked worktrees separate', async () => {

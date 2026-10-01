@@ -595,6 +595,14 @@ export class WorkspaceSyncBroker {
         return;
       }
       stream.external = external;
+      external.once('error', (error: unknown) => {
+        if (stream.attached) {
+          void this.closePending(stream);
+          return;
+        }
+        const failure = typedError(error, 'peer_unavailable', 'external stream failed');
+        this.failPending(stream, failure.code, failure.message);
+      });
       // Darwin's sockaddr_un path ceiling is only 104 bytes and its temporary
       // directory prefix is long. The stream UUID is broker-generated, so a
       // 64-bit filename token remains ample for the bounded active-stream set
@@ -699,7 +707,6 @@ export class WorkspaceSyncBroker {
     external.once('end', () => { if (!data.destroyed) data.end(); });
     data.once('close', () => { void this.closePending(stream); });
     external.once('close', () => { void this.closePending(stream); });
-    external.once('error', () => { void this.closePending(stream); });
   }
 
   private sendError(socket: Socket, requestId: string | undefined, code: string, message: string): void {

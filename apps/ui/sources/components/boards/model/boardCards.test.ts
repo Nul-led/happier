@@ -1,0 +1,175 @@
+import { describe, expect, it, vi } from 'vitest';
+import type { BoardItemRefV1 } from '@happier-dev/protocol';
+
+vi.mock('@/text', async () => {
+    const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
+    return createTextModuleMock({
+        translate: (key: string, params?: Record<string, unknown>) => (params && 'count' in params ? `${key}:${String(params.count)}` : key),
+    });
+});
+
+import { createMachineFixture } from '@/dev/testkit/fixtures/machineFixtures';
+import { createSessionListRenderableSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
+import { createWorkflowRunSummaryFixture } from '@/dev/testkit/fixtures/workflowRunFixtures';
+import { workflowRunRowFromSummary } from '@/sync/store/domains/workflowRuns';
+
+import {
+    buildBoardCards,
+    countSessionsByMachine,
+    describeBoardColumnLine,
+    groupBoardCardsByStatus,
+    reconcileBoardCards,
+    type BoardCardFacts,
+} from './boardCards';
+import type { BoardMember } from './boardMembership';
+
+const NOW = 1_000_000;
+
+function member(ref: BoardItemRefV1, available = true): BoardMember {
+    return { key: JSON.stringify([ref.kind, ref.qualifiedId.serverId, ref.qualifiedId.id]), ref, picked: true, sourced: false, available };
+}
+
+const permissionSession = createSessionListRenderableSessionFixture({
+    id: 's-need',
+    active: true,
+    activeAt: NOW,
+    hasPendingPermissionRequests: true,
+    pendingRequestObservedAt: NOW,
+    metadata: { path: '/repo', host: 'mbp', homeDir: '/u', machineId: 'm1' },
+});
+const workingSession = createSessionListRenderableSessionFixture({
+    id: 's-work',
+    active: true,
+    activeAt: NOW,
+    thinking: true,
+    thinkingAt: NOW,
+    metadata: { path: '/repo', host: 'mbp', homeDir: '/u', machineId: 'm1' },
+});
+
+describe('board cards', () => {
+    it('counts running and needs-you sessions per machine from the loaded rows, through the shared status owner', () => {
+        const machineKey = (serverId: string, id: string) => JSON.stringify(['machine', serverId, id]);
+        // The same machine id on two Homes is two machines: each counts only its own Home's rows.
+        const counts = countSessionsByMachine([
+            ['home-a', [permissionSession, workingSession]],
+            ['home-b', [{ ...workingSession, id: 's-work-b' }]],
+        ], NOW);
+        expect(counts.get(machineKey('home-a', 'm1'))).toEqual({ running: 1, needsYou: 1 });
+        expect(counts.get(machineKey('home-b', 'm1'))).toEqual({ running: 1, needsYou: 0 });
+    });
+
+    it('gives every kind one status vocabulary and groups all kinds By status, Finished rather than Done', () => {
+        const facts: BoardCardFacts = {
+            nowMs: NOW,
+            session: (ref) => (ref.qualifiedId.id === 's-need' ? permissionSession : null),
+            workflowRun: () => workflowRunRowFromSummary(createWorkflowRunSummaryFixture({ id: 'r1', state: 'succeeded' }), null),
+            machine: (ref) => (ref.qualifiedId.id === 'm1'
+                ? createMachineFixture({ id: 'm1', active: true, activeAt: NOW })
+                : createMachineFixture({ id: 'm2', active: false, activeAt: 1 })),
+            machineSessionCounts: new Map([[JSON.stringify(['machine', 'home-a', 'm1']), { running: 1, needsYou: 1 }]]),
+            accountScopedHome: () => true,
+            workflow: () => ({ title: 'Nightly release check', summary: { needsYouCount: 0, lastRun: null } }),
+        };
+        const cards = buildBoardCards([
+            member({ kind: 'session', qualifiedId: { serverId: 'home-a', id: 's-need' } }),
+            member({ kind: 'workflow_run', qualifiedId: { serverId: 'home-a', id: 'r1' } }),
+            member({ kind: 'machine', qualifiedId: { serverId: 'home-a', id: 'm1' } }),
+            member({ kind: 'machine', qualifiedId: { serverId: 'home-a', id: 'm2' } }),
+            member({ kind: 'workflow', qualifiedId: { serverId: 'home-a', id: 'wf1' } }),
+        ], facts);
+
+        expect(cards.map((card) => [card.ref.kind, card.status.bucket])).toEqual([
+            ['session', 'needs_you'],
+            ['workflow_run', 'finished'],
+            ['machine', 'needs_you'],
+            ['machine', 'offline'],
+            ['workflow', 'idle'],
+        ]);
+        const groups = groupBoardCardsByStatus(cards);
+        expect(groups.map((group) => [group.bucket, group.cards.length])).toEqual([
+            ['needs_you', 2], ['working', 0], ['finished', 1], ['idle', 1], ['offline', 1],
+        ]);
+    });
+
+    it('shows an item from a Home that is not mounted as unavailable, not as missing work', () => {
+        const [card] = buildBoardCards([member({ kind: 'session', qualifiedId: { serverId: 'home-off', id: 's9' } }, false)], {
+            nowMs: NOW,
+            session: () => null,
+            workflowRun: () => null,
+            machine: () => null,
+            machineSessionCounts: new Map(),
+            workflow: () => null,
+            accountScopedHome: () => true,
+        });
+        expect(card!.availability).toBe('home_unavailable');
+        expect(card!.status.bucket).toBe('offline');
+    });
+
+    it('never reads another Home\'s workflow or run from the focused Home\'s same-id item', () => {
+        const run = (serverId: string) => member({ kind: 'workflow_run', qualifiedId: { serverId, id: 'r1' } });
+        const workflow = (serverId: string) => member({ kind: 'workflow', qualifiedId: { serverId, id: 'wf1' } });
+        const cards = buildBoardCards([run('home-a'), run('home-b'), workflow('home-a'), workflow('home-b')], {
+            nowMs: NOW,
+            session: () => null,
+            // The Account-scoped stores hold the focused Home's (home-a) r1 and wf1, keyed by bare id.
+            workflowRun: () => workflowRunRowFromSummary(createWorkflowRunSummaryFixture({ id: 'r1', state: 'running' }), null),
+            machine: () => null,
+            machineSessionCounts: new Map(),
+            workflow: () => ({ title: 'Nightly release check', summary: { needsYouCount: 0, lastRun: null } }),
+            accountScopedHome: (serverId) => serverId === 'home-a',
+        });
+        expect(cards.map((card) => [card.ref.qualifiedId.serverId, card.ref.kind, card.availability])).toEqual([
+            ['home-a', 'workflow_run', 'ready'],
+            ['home-b', 'workflow_run', 'home_unavailable'],
+            ['home-a', 'workflow', 'ready'],
+            ['home-b', 'workflow', 'home_unavailable'],
+        ]);
+    });
+
+    it('on a populated board, a store update on one item gives a new card to that item only', () => {
+        // 40 cards mixing kinds (INT §7.3); one Session then asks for a permission.
+        const rows = new Map(Array.from({ length: 20 }, (_, index) => [`s${index}`, createSessionListRenderableSessionFixture({
+            id: `s${index}`, active: true, activeAt: NOW, metadata: { path: '/repo', host: 'mbp', homeDir: '/u', machineId: 'm1' },
+        })] as const));
+        const members = [
+            ...Array.from({ length: 20 }, (_, index) => member({ kind: 'session', qualifiedId: { serverId: 'home-a', id: `s${index}` } })),
+            ...Array.from({ length: 10 }, (_, index) => member({ kind: 'workflow_run', qualifiedId: { serverId: 'home-a', id: `r${index}` } })),
+            ...Array.from({ length: 10 }, (_, index) => member({ kind: 'machine', qualifiedId: { serverId: 'home-a', id: `m${index}` } })),
+        ];
+        const facts = (sessionRows: ReadonlyMap<string, ReturnType<typeof createSessionListRenderableSessionFixture>>): BoardCardFacts => ({
+            nowMs: NOW,
+            session: (ref) => sessionRows.get(ref.qualifiedId.id) ?? null,
+            workflowRun: (ref) => workflowRunRowFromSummary(createWorkflowRunSummaryFixture({ id: ref.qualifiedId.id, state: 'running' }), null),
+            machine: (ref) => createMachineFixture({ id: ref.qualifiedId.id, active: true, activeAt: NOW }),
+            machineSessionCounts: new Map(),
+            workflow: () => null,
+            accountScopedHome: () => true,
+        });
+        const before = buildBoardCards(members, facts(rows));
+        expect(before).toHaveLength(40);
+        const updated = new Map(rows);
+        updated.set('s7', { ...rows.get('s7')!, hasPendingPermissionRequests: true, pendingRequestObservedAt: NOW });
+        const after = reconcileBoardCards(before, buildBoardCards(members, facts(updated)));
+
+        const changed = after.filter((card, index) => card !== before[index]);
+        expect(changed.map((card) => card.ref.qualifiedId.id)).toEqual(['s7']);
+        expect(changed[0]!.status.bucket).toBe('needs_you');
+        // Nothing changed at all: the previous list itself is kept.
+        expect(reconcileBoardCards(after, buildBoardCards(members, facts(updated)))).toBe(after);
+    });
+
+    it('says in the column what a board holds right now: who needs you, then how many items (lab boards-B1)', () => {
+        const status = (bucket: 'needs_you' | 'working') => ({ bucket, tone: bucket === 'needs_you' ? 'attention' as const : 'neutral' as const, word: bucket });
+        const cards = [status('needs_you'), status('needs_you'), status('working')].map((value, index) => ({
+            key: `k${index}`,
+            ref: { kind: 'session' as const, qualifiedId: { serverId: 'home-a', id: `s${index}` } },
+            picked: true,
+            availability: 'ready' as const,
+            title: `s${index}`,
+            status: value,
+            body: { kind: 'none' as const },
+        }));
+        expect(describeBoardColumnLine(cards)).toEqual({ needYou: 2, text: 'boards.meta.needYou:2 · boards.meta.items:3' });
+        expect(describeBoardColumnLine(cards.slice(2))).toEqual({ needYou: 0, text: 'boards.meta.items:1' });
+    });
+});

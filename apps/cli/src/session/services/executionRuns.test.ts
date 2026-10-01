@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BackendTargetRefV2Input } from '@happier-dev/protocol';
-import { markRpcRequestDisposition } from '@/session/transport/rpc/rpcRequestDisposition';
+import { markRpcRequestDisposition } from '@happier-dev/sync-client';
 
 const { callSessionRpc, listExecutionRunMarkers, readRawSessionHistoryRows } = vi.hoisted(() => ({
     callSessionRpc: vi.fn(),

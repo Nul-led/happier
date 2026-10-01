@@ -48,6 +48,7 @@ export function createReactNavigationNativeMock(options: CreateReactNavigationNa
             fonts: {},
         },
         NavigationContext: React.createContext<Readonly<Record<string, unknown>> | undefined>(undefined),
+        NavigationRouteContext: React.createContext<Readonly<{ key?: string; name?: string }> | undefined>(undefined),
         NavigationContainer: passThrough,
         NavigationIndependentTree: passThrough,
         ThemeProvider: passThrough,

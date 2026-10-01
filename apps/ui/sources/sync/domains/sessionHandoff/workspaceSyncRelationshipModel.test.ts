@@ -4,8 +4,11 @@ import { computeWorkspaceSyncPolicyDigest } from '@happier-dev/protocol';
 import {
     projectWorkspaceSyncRelationships,
     projectWorkspaceSyncRelationshipSummaries,
-    resolveWorkspaceSyncConflictCountForWorkspaceRef,
+    resolveWorkspaceSyncSetAttention,
+    projectWorkspaceSyncSetAttentionByWorkspaceRefId,
     selectWorkspaceSyncRelationshipSummariesForHandoff,
+    selectWorkspaceSyncLinkedHandoffChoice,
+    selectWorkspaceSyncAddMachineHub,
 } from './workspaceSyncRelationshipModel';
 
 const policyFields = {
@@ -20,6 +23,56 @@ const policy = {
 };
 
 describe('projectWorkspaceSyncRelationships', () => {
+    it('selects the actual controller hub when Add machine starts from a beta-controlled editable spoke', () => {
+        const refs = [
+            { id: 'spoke', serverId: 'server-1', machineId: 'machine-c', rootPath: '/spoke', createdAtMs: 1 },
+            { id: 'hub', serverId: 'server-1', machineId: 'machine-a', rootPath: '/hub', createdAtMs: 1 },
+        ];
+        const relationship = {
+            v: 1 as const, relationshipId: 'a-c', controllerMachineId: 'machine-a',
+            alphaWorkspaceRefId: 'spoke', betaWorkspaceRefId: 'hub',
+            mode: 'keep_both_in_sync' as const, contentPolicy: policy, enabled: true,
+            createdAtMs: 1, updatedAtMs: 1,
+        };
+        const summaries = projectWorkspaceSyncRelationshipSummaries({
+            relationships: projectWorkspaceSyncRelationships([relationship]),
+            workspaceRefs: refs, statuses: [],
+        });
+        expect(selectWorkspaceSyncAddMachineHub(summaries, 'spoke')).toEqual(refs[1]);
+    });
+
+    it('offers the existing destination through its hub only for a directional two-link route', () => {
+        const refs = [
+            { id: 'hub', serverId: 'server-1', machineId: 'machine-a', rootPath: '/hub', createdAtMs: 1 },
+            { id: 'source', serverId: 'server-1', machineId: 'machine-c', rootPath: '/source', createdAtMs: 1 },
+            { id: 'target', serverId: 'server-1', machineId: 'machine-b', rootPath: '/target', createdAtMs: 1 },
+        ];
+        const sourceLink = { v: 1 as const, relationshipId: 'a-c', controllerMachineId: 'machine-a', alphaWorkspaceRefId: 'hub', betaWorkspaceRefId: 'source', mode: 'keep_both_in_sync' as const, contentPolicy: policy, enabled: true, createdAtMs: 1, updatedAtMs: 1 };
+        const targetLink = { ...sourceLink, relationshipId: 'a-b', betaWorkspaceRefId: 'target', mode: 'keep_synced' as const };
+        const summaries = projectWorkspaceSyncRelationshipSummaries({
+            relationships: projectWorkspaceSyncRelationships([sourceLink, targetLink]),
+            workspaceRefs: refs,
+            statuses: [],
+            machineNamesById: { 'machine-a': 'Mac Studio' },
+        });
+        const choice = selectWorkspaceSyncLinkedHandoffChoice(summaries, {
+            source: { serverId: 'server-1', machineId: 'machine-c', rootPath: '/source/packages/app' },
+            target: { serverId: 'server-1', machineId: 'machine-b', rootPath: '/target' },
+        });
+        expect(choice).toMatchObject({
+            sourceWorkspaceRefId: 'source', targetWorkspaceRefId: 'target',
+            hubMachineName: 'Mac Studio', relationshipIds: ['a-c', 'a-b'],
+        });
+        const receiveOnlySource = projectWorkspaceSyncRelationshipSummaries({
+            relationships: projectWorkspaceSyncRelationships([{ ...sourceLink, mode: 'keep_synced' }, targetLink]),
+            workspaceRefs: refs, statuses: [],
+        });
+        expect(selectWorkspaceSyncLinkedHandoffChoice(receiveOnlySource, {
+            source: { serverId: 'server-1', machineId: 'machine-c', rootPath: '/source/packages/app' },
+            target: { serverId: 'server-1', machineId: 'machine-b', rootPath: '/target' },
+        })).toBeNull();
+    });
+
     it('keeps one strict enabled relationship model and reports malformed entries without defaulting them', () => {
         const result = projectWorkspaceSyncRelationships([
             {
@@ -113,10 +166,9 @@ describe('projectWorkspaceSyncRelationships', () => {
                 { id: 'workspace-gamma', serverId: 'server-1', machineId: 'machine-gamma', rootPath: '/gamma', label: null, createdAtMs: 1 },
             ],
             statuses: [
-                { relationshipId: 'relationship-1', controllerMachineId: 'machine-alpha', state: 'conflicted', alphaPath: '/alpha', betaPath: '/beta', mode: 'keep_both_in_sync', changedFiles: 2, conflictCount: 3, lastSuccessfulSyncAtMs: 4 },
+                { relationshipId: 'relationship-1', controllerMachineId: 'machine-alpha', state: 'conflicted', alphaPath: '/alpha', betaPath: '/beta', mode: 'keep_both_in_sync', endpointStates: { alpha: { connected: true, scanned: true, scanProblemCount: 0, transitionProblemCount: 0 }, beta: { connected: true, scanned: true, scanProblemCount: 0, transitionProblemCount: 0 } }, conflictCount: 3, lastCycleObservedAtMs: 4 },
                 // A repeated status observation must never double the session-header count.
-                { relationshipId: 'relationship-1', controllerMachineId: 'machine-alpha', state: 'conflicted', alphaPath: '/alpha', betaPath: '/beta', mode: 'keep_both_in_sync', changedFiles: 2, conflictCount: 3, lastSuccessfulSyncAtMs: 4 },
-                { relationshipId: 'relationship-2', controllerMachineId: 'machine-alpha', state: 'watching', alphaPath: '/alpha', betaPath: '/gamma', mode: 'keep_synced', changedFiles: 0, conflictCount: 2, lastSuccessfulSyncAtMs: 5 },
+                { relationshipId: 'relationship-1', controllerMachineId: 'machine-alpha', state: 'conflicted', alphaPath: '/alpha', betaPath: '/beta', mode: 'keep_both_in_sync', endpointStates: { alpha: { connected: true, scanned: true, scanProblemCount: 0, transitionProblemCount: 0 }, beta: { connected: true, scanned: true, scanProblemCount: 0, transitionProblemCount: 0 } }, conflictCount: 3, lastCycleObservedAtMs: 4 },
             ],
             machineNamesById: {
                 'machine-alpha': 'Alpha Mac',
@@ -133,8 +185,13 @@ describe('projectWorkspaceSyncRelationships', () => {
             beta: { machineName: 'Beta workstation' },
         });
         expect(summaries[1]?.beta.machineName).toBeNull();
-        expect(resolveWorkspaceSyncConflictCountForWorkspaceRef(summaries, 'workspace-alpha')).toBe(5);
-        expect(resolveWorkspaceSyncConflictCountForWorkspaceRef(summaries, 'workspace-beta')).toBe(3);
+        const attention = { conflictedLinkCount: 1, unknownLinkCount: 1 };
+        expect(resolveWorkspaceSyncSetAttention(summaries, 'workspace-alpha')).toEqual(attention);
+        expect(resolveWorkspaceSyncSetAttention(summaries, 'workspace-beta')).toEqual(attention);
+        expect(resolveWorkspaceSyncSetAttention(summaries, 'workspace-gamma')).toEqual(attention);
+        expect(projectWorkspaceSyncSetAttentionByWorkspaceRefId(summaries)).toEqual(new Map([
+            ['workspace-alpha', attention], ['workspace-beta', attention], ['workspace-gamma', attention],
+        ]));
     });
 
     it('selects only enabled relationships that safely match the current handoff endpoint direction', () => {

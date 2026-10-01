@@ -1,5 +1,6 @@
 import type { AgentType } from '@/sync/domains/models/modelOptions';
-import type { Metadata } from '@/sync/domains/state/storageTypes';
+import type { Metadata } from '@happier-dev/session-core/state';
+import type { ComposerOptionsInputV1 } from '@happier-dev/protocol/embed';
 import { getAgentCore, resolveAgentIdFromFlavor } from '@/agents/catalog/catalog';
 import { buildAgentUniverseBackendTargetKey } from '@/agents/catalog/agentUniverse';
 import { hasDynamicModelListForSession, getSelectableModelIdsForSession, supportsFreeformModelSelectionForSession } from '@/sync/domains/models/modelOptions';
@@ -50,6 +51,7 @@ export function describeEffectiveModelMode(params: {
     agentType: AgentType;
     selectedModelId: string | null | undefined;
     metadata: Metadata | null;
+    composerOptionsInput?: ComposerOptionsInputV1 | null;
 }): EffectiveModelModeDescription {
     const agentId = typeof params.agentType === 'string' ? params.agentType.trim() : '';
     const staticAgentId = resolveAgentIdFromFlavor(agentId);
@@ -65,7 +67,8 @@ export function describeEffectiveModelMode(params: {
         metadata: params.metadata,
     })?.modelId ?? null;
 
-    const isAcpSession = Boolean(readSessionModesState(params.metadata) || readSessionModelsState(params.metadata));
+    const composerOptionsInput = params.composerOptionsInput === undefined ? params.metadata : params.composerOptionsInput;
+    const isAcpSession = Boolean(readSessionModesState(params.metadata) || readSessionModelsState(composerOptionsInput));
 
     let applyScope: ModelApplyScope = isAcpSession ? 'live' : (core?.model?.nonAcpApplyScope ?? 'next_prompt');
     const notes: string[] = [];
@@ -77,9 +80,9 @@ export function describeEffectiveModelMode(params: {
         notes.push('This provider restarts the underlying session when switching models (context is preserved when possible).');
     }
 
-    const hasDynamicList = hasDynamicModelListForSession(agentId, params.metadata);
-    if (hasExplicitSelection && !hasDynamicList && supportsFreeformModelSelectionForSession(agentId, params.metadata)) {
-        const known = getSelectableModelIdsForSession(agentId, params.metadata);
+    const hasDynamicList = hasDynamicModelListForSession(agentId, composerOptionsInput);
+    if (hasExplicitSelection && !hasDynamicList && supportsFreeformModelSelectionForSession(agentId, composerOptionsInput)) {
+        const known = getSelectableModelIdsForSession(agentId, composerOptionsInput);
         if (!known.includes(effectiveModelId)) {
             notes.push('This session accepts custom model IDs (not validated).');
         }

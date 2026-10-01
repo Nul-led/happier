@@ -502,6 +502,59 @@ describe('ephemeral Runner terminal endpoint presentation', () => {
     unbind();
   });
 
+  it('accepts Stop again after Keep open without another presentation event', async () => {
+    const answers = ['s', 'k', 's', 's'];
+    const decisions: string[] = [];
+    const ui = createEphemeralRunnerTerminalUi({
+      activation: {
+        homeServerIdentityId: 'srv_acme_home',
+        creatorAccountId: 'alice-account',
+        artifact: manifest.binding.artifact,
+      },
+      interactive: true,
+      write: vi.fn(),
+      readInput: async () => {
+        const answer = answers.shift();
+        if (answer === undefined) throw new Error('unexpected_prompt');
+        return answer;
+      },
+    });
+    const unbind = ui.bindControls({ requestStop: async () => {
+      const decision = await ui.confirmActiveClose({ phase: 'running', signal: new AbortController().signal });
+      decisions.push(decision);
+      if (decision === 'stop') ui.present({ phase: 'stopping', connection: 'connected' });
+      return decision === 'keep_open' ? 'kept_open' : 'stopped';
+    } });
+    try {
+      ui.present({ phase: 'running', connection: 'connected' });
+      await vi.waitFor(() => expect(decisions).toEqual(['keep_open', 'stop']));
+      expect(answers).toEqual([]);
+    } finally {
+      unbind();
+    }
+  });
+
+  it('keeps connection wording consistent through running reconnect and recovery', () => {
+    const writes: string[] = [];
+    const ui = createEphemeralRunnerTerminalUi({
+      activation: {
+        homeServerIdentityId: 'srv_acme_home',
+        creatorAccountId: 'alice-account',
+        artifact: manifest.binding.artifact,
+      },
+      interactive: false,
+      write: (value) => writes.push(value),
+    });
+    for (const connection of ['connected', 'reconnecting', 'connected'] as const) {
+      writes.length = 0;
+      ui.present({ phase: 'running', connection });
+      const presentation = resolveEphemeralRunnerEndpointPresentation({ phase: 'running', connection });
+      expect(writes.join('')).toContain(presentation.status);
+      expect(writes.join('')).toContain('[ Stop Session ]');
+      if (connection === 'reconnecting') expect(writes.join('')).not.toContain('Connected.');
+    }
+  });
+
   it('returns a cancelled native folder dialog to the chooser without offering a Home fallback', async () => {
     const answers = ['c', 'c'];
     const selectNativeDirectory = vi.fn()
@@ -723,9 +776,11 @@ describe('ephemeral Runner terminal endpoint presentation', () => {
     expect(valueOf('plugin_package')).toContain('@acme/reviewed-external');
     expect(valueOf('plugin_package')).toContain('1.2.3');
     expect(valueOf('plugin_integrity')).toContain('sha512-');
-    expect(valueOf('plugin_publisher')).toContain('Acme');
+    expect(valueOf('plugin_publisher')).toMatch(/Acme.*unverified/i);
     expect(valueOf('plugin_update_channel')).toContain('registry.npmjs.org');
-    expect(valueOf('plugin_curation')).toContain('unreviewed');
+    expect(valueOf('plugin_curation')).toMatch(/unreviewed/i);
+    expect(valueOf('plugin_signature')).toBe('Not provided');
+    expect(valueOf('plugin_provenance')).toBe('Not provided');
     expect(valueOf('plugin_executable_code')).toContain('daemon');
     expect(valueOf('plugin_required_access')).toContain('files');
 

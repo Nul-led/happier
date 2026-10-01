@@ -8,7 +8,7 @@ import { createLiveStorageStoreMock, createStorageModuleMock, createStorageStore
 import { renderScreen, type RenderScreenResult } from '../render/renderScreen';
 import type { RenderWithAppProvidersOptions } from '../render/renderWithAppProviders';
 import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
-import { createReducer } from '@/sync/reducer/reducer';
+import { createReducer } from "@happier-dev/session-core/reducer";
 import { createInactiveSessionMessagesWindowState } from '@/sync/runtime/sessionMessagesWindowState';
 import { loadSyncTuning, type SyncTuning } from '@/sync/runtime/syncTuning';
 import { sessionAddressKey } from '@/sync/domains/session/sessionAddress';
@@ -210,6 +210,7 @@ function createChatListHarnessMessagesSnapshot() {
     );
 
     return {
+        deletedSessionIds: {},
         profileScope: chatListHarnessState.activeServerAccountScope,
         sessionCatchUpNewerInFlight: chatListHarnessState.sessionCatchingUpNewer ? { [sessionId]: 1 } : {},
         sessionMessages: {
@@ -486,6 +487,7 @@ export function createChatListHarnessSyncModuleMock(
             loadOlderMessages: async () => ({ loaded: 0, hasMore: false, status: 'no_more' as const }),
             loadNewerMessages,
             hasDeferredNewerMessages,
+            getSessionTailDiscontinuityOlderAvailability: (_sessionId: string) => false,
             getSyncTuning: () => chatListHarnessState.syncTuningState,
             // Stable identity: ChatList consumes this through useSyncExternalStore.
             getSessionTargetWindowState: () => inactiveSessionMessagesWindowState,

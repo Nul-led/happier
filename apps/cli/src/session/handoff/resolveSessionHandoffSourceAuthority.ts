@@ -1,6 +1,7 @@
 import {
   normalizeSessionHandoffWorkspaceRootPath,
   resolveLinkedExternalSessionAuthorityV1,
+  readSessionDirectoryKind,
   type SessionHandoffStorageMode,
 } from '@happier-dev/protocol';
 
@@ -12,6 +13,7 @@ export type SessionHandoffSourceAuthority =
       ok: true;
       sourceMachineId: string;
       sourceRootPath?: string;
+      directoryKind?: 'path' | 'managed';
       sessionStorageMode: SessionHandoffStorageMode;
     }>
   | Readonly<{
@@ -101,5 +103,6 @@ export function resolveSessionHandoffSourceAuthority(
     sourceMachineId,
     ...(sourceRootPath ? { sourceRootPath } : {}),
     sessionStorageMode: transcriptAuthority.transcriptStorage,
+    ...(readSessionDirectoryKind(ownerMetadata) === 'managed' ? { directoryKind: 'managed' as const } : {}),
   };
 }

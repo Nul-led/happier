@@ -1,19 +1,17 @@
-import { deflateRawSync, inflateRawSync } from 'node:zlib';
+import { deflateRawSync } from 'node:zlib';
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('node:zlib', async () => {
-  const actual = await vi.importActual<typeof import('node:zlib')>('node:zlib');
-  return {
-    ...actual,
-    inflateRawSync: vi.fn(actual.inflateRawSync),
-  };
-});
-
 import { extractExactWheelAsset } from './extract.js';
+
+// Filesystem reads are the genuine OS boundary; other operations stay real.
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return { ...actual, readFile: vi.fn(actual.readFile) };
+});
 
 const tempDirs = new Set<string>();
 
@@ -103,7 +101,7 @@ describe('extractExactWheelAsset', () => {
 
   it('treats a wheel as a zip archive and extracts only the exact configured member', async () => {
     const wheelPath = await writeWheel([
-      { name: 'google/antigravity/bin/localharness', data: 'binary' },
+      { name: 'google/antigravity/bin/localharness', data: 'binary', compressionMethod: 8 },
       { name: 'google/antigravity/bin/other', data: 'do not extract' },
     ]);
     const outputDir = await mkdtemp(join(tmpdir(), 'happier-wheel-output-'));
@@ -119,6 +117,41 @@ describe('extractExactWheelAsset', () => {
 
     await expect(readFile(outputPath, 'utf8')).resolves.toBe('binary');
     await expect(stat(join(outputPath, '..', 'other'))).rejects.toThrow();
+  });
+
+  it('cancels an in-flight extraction without publishing the executable', async () => {
+    const wheelPath = await writeWheel([{ name: 'google/antigravity/bin/localharness', data: 'candidate', compressionMethod: 8 }]);
+    const outputDir = await mkdtemp(join(tmpdir(), 'happier-wheel-output-'));
+    tempDirs.add(outputDir);
+    const outputPath = join(outputDir, 'localharness');
+    const controller = new AbortController();
+    const reason = new Error('cancelled');
+    const extraction = extractExactWheelAsset({
+      wheelPath,
+      assetPath: 'google/antigravity/bin/localharness',
+      outputPath,
+      maxAssetSizeBytes: 16,
+      signal: controller.signal,
+    });
+    controller.abort(reason);
+    await expect(extraction).rejects.toBe(reason);
+    await expect(stat(outputPath)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('preserves a filesystem failure when cancellation arrives with the failed read', async () => {
+    const wheelPath = await writeWheel([{ name: 'google/antigravity/bin/localharness', data: 'candidate' }]);
+    const outputPath = join(wheelPath, '..', 'localharness');
+    const controller = new AbortController();
+    const readFailure = Object.assign(new Error('wheel read failed'), { code: 'ENOENT' });
+    vi.mocked(readFile).mockImplementationOnce(async () => {
+      controller.abort(new Error('cancelled concurrently'));
+      throw readFailure;
+    });
+    await expect(extractExactWheelAsset({
+      wheelPath, outputPath, assetPath: 'google/antigravity/bin/localharness', maxAssetSizeBytes: 16, signal: controller.signal,
+    })).rejects.toBe(readFailure);
+    expect(controller.signal.aborted).toBe(true);
+    await expect(stat(outputPath)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('uses a bounded inflate output length for oversized deflated wheel assets', async () => {
@@ -141,9 +174,7 @@ describe('extractExactWheelAsset', () => {
       maxAssetSizeBytes: 8,
     })).rejects.toMatchObject({ code: 'wheel_asset_oversize' });
 
-    const inflateRawSyncMock = vi.mocked(inflateRawSync);
-    expect(inflateRawSyncMock).toHaveBeenCalledTimes(1);
-    expect(inflateRawSyncMock.mock.calls[0]?.[1]).toMatchObject({ maxOutputLength: 8 });
+    await expect(stat(outputPath)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('bounds inflate output even when central directory metadata underreports the expansion size', async () => {
@@ -166,10 +197,7 @@ describe('extractExactWheelAsset', () => {
       maxAssetSizeBytes: 8,
     })).rejects.toMatchObject({ code: 'wheel_asset_oversize' });
 
-    const inflateRawSyncMock = vi.mocked(inflateRawSync);
-    expect(inflateRawSyncMock).toHaveBeenCalled();
-    const options = inflateRawSyncMock.mock.calls.at(-1)?.[1];
-    expect(options).toMatchObject({ maxOutputLength: 8 });
+    await expect(stat(outputPath)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it.each([

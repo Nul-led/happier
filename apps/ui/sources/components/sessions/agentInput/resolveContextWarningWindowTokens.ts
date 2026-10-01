@@ -4,7 +4,7 @@ import { resolveAgentUiBehavior, type AgentUiBehavior } from '@/agents/registry/
 import { resolveSessionMachineId } from '@/sync/domains/session/external/resolveSessionMachineId';
 import { resolveSessionModelSelectionDisposition } from '@/sync/domains/models/resolveSessionModelSelectionDisposition';
 import type { CurrentSessionRunnerProcessIdentity } from '@/sync/domains/models/resolveSessionModelSelectionDisposition';
-import type { Metadata } from '@/sync/domains/state/storageTypes';
+import type { Metadata } from '@happier-dev/session-core/state';
 import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
 import { readSessionModelsState } from '@/sync/domains/sessionControl/readSessionControlMetadata';
 import { getAgentStaticModels } from '@happier-dev/agents';

@@ -27,6 +27,7 @@ const preflightMock = vi.hoisted(() => ({
         accountMismatch: false,
         pairingRequired: true,
         relayDriftBanner: null as RelayDriftBanner | null,
+        thisComputerConnection: null,
     },
 }));
 

@@ -7,6 +7,10 @@ import {
   type WorkspaceSyncStatusV1,
 } from '@happier-dev/protocol';
 import type { DaemonState } from '@/api/types';
+import type { ApiMachineClient } from '@/api/apiMachine';
+import type { ManagedConnectionState } from '@happier-dev/connection-supervisor';
+import { createLocalServicesDaemonRuntime } from '../local/services/runtime';
+import type { LocalServiceListenerFact } from '../local/services/inventory/scanner';
 
 import type { MachineLiveStreamCaptureAdapter } from '../peer/mediation/stream/captureAdapter';
 import { createMachineLiveStreamCaptureRegistry } from '../peer/mediation/stream/captureRegistry';
@@ -59,10 +63,6 @@ function createBaseRuntimeParams(overrides: Partial<Parameters<typeof createDaem
     },
     deviceLocalSecretStorage,
     workspaceSyncHandoffAdapter,
-    diagnosticSubsystemGates: {
-      disableMachineSync: false,
-      disableAutomationWorker: false,
-    },
     runtimeId: 'runtime_1',
     publicReleaseChannel: 'dev' as const,
     startupSource: 'manual',
@@ -89,6 +89,74 @@ function createBaseRuntimeParams(overrides: Partial<Parameters<typeof createDaem
 }
 
 describe('createDaemonMachineBootstrapRuntime', () => {
+  it('publishes summary changes once and republishes on reconnect and API replacement', async () => {
+    let scanListeners: readonly LocalServiceListenerFact[] = [];
+    const scan = vi.fn(async () => ({ listeners: scanListeners, processes: new Map(), workspaces: [], diagnostics: [] }));
+    const services = createLocalServicesDaemonRuntime({ machineId: 'machine-a', inventoryEnabled: () => true, scan, startLoop: false });
+    const publications: unknown[] = [];
+    const listeners = new Set<(state: ManagedConnectionState) => void>();
+    let delayPublication = false;
+    const pendingPublications: Array<() => void> = [];
+    const stateFor = (phase: ManagedConnectionState['phase']): ManagedConnectionState => ({ phase, reason: null, attempt: 0, nextRetryAt: null, lastConnectedAt: null, lastDisconnectedAt: null, lastErrorMessage: null });
+    const apiMachine = () => {
+      let state: DaemonState | null = null;
+      return {
+        onConnectionStateChange(listener: (state: ManagedConnectionState) => void) {
+          listeners.add(listener);
+          listener(stateFor('idle'));
+          return () => { listeners.delete(listener); };
+        },
+        async updateDaemonState(handler: Parameters<ApiMachineClient['updateDaemonState']>[0]) {
+          if (delayPublication) {
+            await new Promise<void>((resolve) => pendingPublications.push(() => {
+              state = handler(state);
+              publications.push(state.localServices);
+              resolve();
+            }));
+            return 'published' as const;
+          }
+          state = handler(state);
+          publications.push(state.localServices);
+          return 'published' as const;
+        },
+      };
+    };
+    const runtime = createDaemonMachineBootstrapRuntime(createBaseRuntimeParams({
+      // API socket publication is the genuine external boundary; inventory and projection are real.
+      api: { machineSyncClient: vi.fn(apiMachine) } as never,
+      localServiceSummary: services,
+    }));
+    const connection = (phase: ManagedConnectionState['phase']) => { for (const listener of listeners) listener(stateFor(phase)); };
+    await runtime.createConnectedApiMachine({ id: 'machine-a' } as never);
+    expect(publications).toEqual([]);
+    connection('online');
+    await vi.waitFor(() => expect(publications.at(-1)).toEqual({ v: 1, state: 'ready', runningCount: 0 }));
+    delayPublication = true;
+    scanListeners = [{ address: '127.0.0.1', port: 5173, protocol: 'tcp' }];
+    await services.refreshInventoryNow();
+    scanListeners = [];
+    await services.refreshInventoryNow();
+    expect(pendingPublications).toHaveLength(2);
+    // A transport/CAS attempt may execute after a newer scan. Even the older handler
+    // must read the current owner rather than reverting the machine to its captured count.
+    pendingPublications.shift()?.();
+    expect(publications.at(-1)).toEqual({ v: 1, state: 'ready', runningCount: 0 });
+    pendingPublications.shift()?.();
+    delayPublication = false;
+    const published = publications.length;
+    await services.refreshInventoryNow();
+    expect(publications).toHaveLength(published);
+    connection('offline');
+    connection('online');
+    await vi.waitFor(() => expect(publications).toHaveLength(published + 1));
+    await runtime.createConnectedApiMachine({ id: 'machine-a' } as never);
+    connection('online');
+    await vi.waitFor(() => expect(publications).toHaveLength(published + 2));
+    expect(listeners.size).toBe(1);
+    await runtime.beforeShutdown?.();
+    expect(listeners.size).toBe(0);
+    await services.stop();
+  });
   it('authorizes the exact Runner broker readiness request before publishing the fixed application target', async () => {
     const request = {
       v: 1 as const,
@@ -263,7 +331,6 @@ describe('createDaemonMachineBootstrapRuntime', () => {
     };
     const workspaceSync = {
       controller: {},
-      deleteConflictLoserAtTarget: vi.fn(),
       readFileAtTarget: vi.fn(),
     } as never;
     const serverFeaturesSnapshot = { status: 'ready', features: { capabilities: {} } } as const;
@@ -318,7 +385,6 @@ describe('createDaemonMachineBootstrapRuntime', () => {
     };
     const workspaceSync = {
       controller: {},
-      deleteConflictLoserAtTarget: vi.fn(),
       readFileAtTarget: vi.fn(),
     } as never;
     const createWorkspaceSyncRuntime = vi.fn(async ({ machineId, onReadinessPublished, onStatusPublished }: Readonly<{
@@ -337,9 +403,12 @@ describe('createDaemonMachineBootstrapRuntime', () => {
         alphaPath: '/alpha',
         betaPath: '/beta',
         mode: 'keep_synced',
-        changedFiles: 0,
+        endpointStates: {
+          alpha: { connected: true, scanned: true, scanProblemCount: 0, transitionProblemCount: 0 },
+          beta: { connected: true, scanned: true, scanProblemCount: 0, transitionProblemCount: 0 },
+        },
         conflictCount: 0,
-        lastSuccessfulSyncAtMs: null,
+        lastCycleObservedAtMs: null,
       });
       return {
         handoffAdapter,
@@ -394,9 +463,12 @@ describe('createDaemonMachineBootstrapRuntime', () => {
           alphaPath: '/alpha',
           betaPath: '/beta',
           mode: 'keep_synced',
-          changedFiles: 0,
+          endpointStates: {
+            alpha: { connected: true, scanned: true, scanProblemCount: 0, transitionProblemCount: 0 },
+            beta: { connected: true, scanned: true, scanProblemCount: 0, transitionProblemCount: 0 },
+          },
           conflictCount: 0,
-          lastSuccessfulSyncAtMs: null,
+          lastCycleObservedAtMs: null,
         },
       },
     });
@@ -465,18 +537,16 @@ describe('createDaemonMachineBootstrapRuntime', () => {
     expect(runtime.awaitAgentSessionOpen).toBe(awaitAgentSessionOpen);
   });
 
-  it('does not publish an automation worker when the diagnostic gate disables it', () => {
-    const onAutomationWorkerStarted = vi.fn();
+  it('connects the registered machine through the canonical API client', async () => {
+    const apiMachine = { enqueueSessionPendingByMachine: vi.fn() };
     const runtime = createDaemonMachineBootstrapRuntime(createBaseRuntimeParams({
-      diagnosticSubsystemGates: {
-        disableMachineSync: false,
-        disableAutomationWorker: true,
-      },
-      onAutomationWorkerStarted,
+      api: { machineSyncClient: () => apiMachine } as never,
     }));
-
-    expect(runtime.startAutomationWorkerForMachine('machine_1')).toBeNull();
-    expect(onAutomationWorkerStarted).not.toHaveBeenCalled();
+    const machine = {
+      id: 'machine_1', encryptionKey: new Uint8Array(32), encryptionVariant: 'legacy' as const,
+      metadata: null, metadataVersion: 0, daemonState: null, daemonStateVersion: 0,
+    };
+    expect(await runtime.createConnectedApiMachine(machine)).toBe(apiMachine);
   });
 
   it('publishes the worker to shutdown ownership before downstream bootstrap can continue', async () => {

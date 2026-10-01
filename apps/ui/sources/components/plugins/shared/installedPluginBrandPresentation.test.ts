@@ -112,12 +112,14 @@ function portablePackageAssets(input: Readonly<{
 function installedPackage(input: Readonly<{
     enabled?: boolean;
     brand?: unknown;
+    occurrenceId?: string;
 }> = {}) {
     return PluginProjectionInstalledPackageV2Schema.parse({
         id: PLUGIN_ID,
         displayName: 'Acme Brand',
         version: '1.0.0',
         enabled: input.enabled ?? true,
+        occurrenceId: input.occurrenceId ?? 'brand-occurrence-7',
         source: { kind: 'localPath', locator: PLUGIN_ID },
         ...(input.brand === undefined
             ? {}
@@ -128,6 +130,7 @@ function installedPackage(input: Readonly<{
 function availableBrand(input: Readonly<{
     digest?: PluginUiArtifactDigestV1;
     pluginId?: string;
+    monochrome?: boolean;
 }> = {}) {
     return {
         state: 'available' as const,
@@ -138,6 +141,7 @@ function availableBrand(input: Readonly<{
         width: 128,
         height: 128,
         digest: input.digest ?? BRAND_DIGEST,
+        ...(input.monochrome === undefined ? {} : { monochrome: input.monochrome }),
     };
 }
 
@@ -182,7 +186,6 @@ function brandReadResult(input: Readonly<{
 
 function readInput(input: Readonly<{
     accountLifetime?: ActiveServerAccountScopeLifetime | null;
-    expectedGeneration?: string | number | null;
     machineId?: string | null;
     installedPackage?: ReturnType<typeof installedPackage> | null;
     isCurrent?: () => boolean;
@@ -195,7 +198,6 @@ function readInput(input: Readonly<{
             : input.installedPackage,
         machineId: input.machineId === undefined ? 'machine-a' : input.machineId,
         serverId: 'server-a',
-        expectedGeneration: input.expectedGeneration ?? 7,
         signal: input.signal ?? new AbortController().signal,
         accountLifetime: input.accountLifetime ?? createLifetime().lifetime,
         isCurrent: input.isCurrent ?? (() => true),
@@ -211,13 +213,16 @@ describe('installed package brand presentation', () => {
     it('reads the admitted same-plugin PNG through the canonical contextual Resource authority', async () => {
         rpc.read.mockResolvedValue(brandReadResult());
 
-        await expect(readInstalledPluginBrandPresentation(readInput())).resolves.toEqual({
+        await expect(readInstalledPluginBrandPresentation(readInput({
+            installedPackage: installedPackage({ brand: availableBrand({ monochrome: true }) }),
+        }))).resolves.toEqual({
             displayName: 'Acme Brand',
             bytes: createValidPluginBrandPngFixture(),
+            monochrome: true,
         });
         expect(rpc.read).toHaveBeenCalledWith('machine-a', expect.objectContaining({
             serverId: 'server-a',
-            expectedGeneration: '7',
+            expectedCallerOccurrenceId: 'brand-occurrence-7',
             callerPluginId: PLUGIN_ID,
             resource: BRAND_RESOURCE,
         }));
@@ -228,12 +233,12 @@ describe('installed package brand presentation', () => {
 
         await expect(readInstalledPluginBrandPresentation(readInput({
             machineId: null,
-            expectedGeneration: null,
             packageAssets: portable.packageAssets,
-            installedPackage: installedPackage({ brand: availableBrand({ digest: portable.digest }) }),
+            installedPackage: installedPackage({ brand: availableBrand({ digest: portable.digest, monochrome: true }) }),
         }))).resolves.toEqual({
             displayName: 'Acme Brand',
             bytes: createValidPluginBrandPngFixture(),
+            monochrome: true,
         });
         expect(portable.source.readArchive).toHaveBeenCalledTimes(1);
         expect(rpc.read).not.toHaveBeenCalled();
@@ -313,8 +318,8 @@ describe('installed package brand presentation', () => {
             supported: true,
             result: {
                 ok: false,
-                code: 'plugin_generation_stale',
-                reason: 'stale_generation',
+                code: 'plugin_occurrence_stale',
+                reason: 'stale_occurrence',
             },
         } satisfies MachinePluginUiResourceReadResult);
         await expect(readInstalledPluginBrandPresentation(readInput())).resolves.toEqual({ displayName: 'Acme Brand' });
@@ -388,6 +393,22 @@ describe('installed package brand presentation', () => {
         await hook.unmount();
     });
 
+    it('does not re-render an empty mark when its captured request signal aborts', async () => {
+        const abortController = new AbortController();
+        const input = readInput({ installedPackage: null, accountLifetime: null, signal: abortController.signal });
+        let renders = 0;
+        const hook = await renderHook(() => { renders += 1; return useInstalledPluginBrandPresentation(input); });
+        expect(hook.getCurrent()).toBeNull();
+        const before = renders;
+
+        await act(async () => { abortController.abort(); });
+
+        expect(hook.getCurrent()).toBeNull();
+        expect(renders).toBe(before);
+        expect(rpc.read).not.toHaveBeenCalled();
+        await hook.unmount();
+    });
+
     it('clears an already-mounted mark when its captured request signal aborts', async () => {
         const abortController = new AbortController();
         rpc.read.mockResolvedValue(brandReadResult());
@@ -406,7 +427,7 @@ describe('installed package brand presentation', () => {
         await hook.unmount();
     });
 
-    it('adopts a new target, generation, and Account lifetime before publishing that target\'s bytes', async () => {
+    it('adopts a new target occurrence and Account lifetime before publishing that target\'s bytes', async () => {
         const targetPluginId = 'acme.next-brand';
         const targetResource = Object.freeze({ pluginId: targetPluginId, localId: 'assets/brand' });
         const targetPackage = PluginProjectionInstalledPackageV2Schema.parse({
@@ -414,6 +435,7 @@ describe('installed package brand presentation', () => {
             displayName: 'Next Brand',
             version: '2.0.0',
             enabled: true,
+            occurrenceId: 'next-brand-occurrence-8',
             source: { kind: 'localPath', locator: targetPluginId },
             brand: {
                 state: 'available',
@@ -454,7 +476,6 @@ describe('installed package brand presentation', () => {
 
         await hook.rerender(readInput({
             installedPackage: targetPackage,
-            expectedGeneration: 8,
             accountLifetime: secondLifetime.lifetime,
             signal: secondAbortController.signal,
         }));

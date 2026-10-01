@@ -9,6 +9,19 @@ export function hasMachineDaemonStateAdvanced(
         && next.daemonStateVersion > (previous?.daemonStateVersion ?? 0);
 }
 
+/**
+ * A machine this store already knew now reports a newer daemon: the daemon was
+ * replaced or restarted, so it is a different endpoint. The first observation
+ * of a machine is not a replacement: a reader that already asked the machine
+ * asked the daemon this observation reports.
+ */
+export function hasMachineDaemonBeenReplaced(
+    previous: Machine | null | undefined,
+    next: Machine,
+): boolean {
+    return previous != null && hasMachineDaemonStateAdvanced(previous, next);
+}
+
 export function areStoredMachinesEqual(
     previous: Machine | null | undefined,
     next: Machine | null | undefined,

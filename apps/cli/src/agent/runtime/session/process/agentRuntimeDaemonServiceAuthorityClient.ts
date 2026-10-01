@@ -34,6 +34,7 @@ import {
 } from './agentRuntimeDaemonPluginServicesProtocol';
 import { PluginError } from '@happier-dev/plugin-sdk';
 import { TeamCredentialDirectMaterialOperationError } from '@/daemon/connectedServices/directMaterial/teamCredentialDirectMaterialClient';
+import { isProvenPreDispatchConnectionFailure } from '@/api/client/classifyServerEndpointError';
 
 const DEFAULT_AGENT_RUNTIME_DAEMON_SERVICE_TIMEOUT_MS = 300_000;
 
@@ -81,23 +82,6 @@ function unknownOutcomeResponse(): AgentRuntimeDaemonServiceResponseV1 {
         'Native Agent privileged effect outcome is unknown after dispatch',
     },
   };
-}
-
-function isProvenBeforeDispatchConnectionFailure(
-  error: unknown,
-): boolean {
-  if (!error || typeof error !== 'object') return false;
-  const code = Reflect.get(error, 'code');
-  if (
-    code === 'ECONNREFUSED'
-    || code === 'EHOSTUNREACH'
-    || code === 'ENETUNREACH'
-  ) {
-    return true;
-  }
-  const cause = Reflect.get(error, 'cause');
-  return cause !== error
-    && isProvenBeforeDispatchConnectionFailure(cause);
 }
 
 async function didCurrentRunnerAuthorityRotate(
@@ -342,13 +326,18 @@ export async function admitCurrentRunnerSessionInput(
       code: 'machine_admission_daemon_response_unknown',
     };
   }
+  if (!response.ok) {
+    if (response.error.code === NATIVE_AGENT_SESSION_EFFECT_AUTHORITY_UNAVAILABLE_CODE) {
+      return { status: 'rejected', code: 'session_input_target_unavailable' };
+    }
+    if (response.error.code === 'agent_runtime_daemon_service_generation_not_current') {
+      return { status: 'rejected', code: 'session_input_source_authority_mismatch' };
+    }
+  }
   return {
-    status: 'rejected',
-    code: response.ok
-      ? 'session_input_target_update_required'
-      : response.error.code === NATIVE_AGENT_SESSION_EFFECT_AUTHORITY_UNAVAILABLE_CODE
-        ? 'session_input_target_unavailable'
-        : 'session_input_target_update_required',
+    status: 'outcomeUnknown',
+    localId: input.request.localId,
+    code: 'machine_admission_daemon_response_unknown',
   };
 }
 
@@ -786,7 +775,7 @@ export async function dispatchCurrentAgentRuntimeDaemonServiceRequest(
     })) {
       throw createRunnerAgentRuntimeDaemonServiceAuthorityTransitionError();
     }
-    if (isProvenBeforeDispatchConnectionFailure(error)) {
+    if (isProvenPreDispatchConnectionFailure(error)) {
       return unavailableResponse();
     }
     return unknownOutcomeResponse();

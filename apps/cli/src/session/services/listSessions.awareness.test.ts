@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { SessionAwarenessListResultV1Schema, parseSessionListQueryActionResultV1 } from '@happier-dev/protocol';
 
 import { resetInMemoryAccountSettingsContextForTests } from '@/settings/accountSettings/bootstrapAccountSettingsContext';
 import { createAccountEncryptionCurrentnessFixture, createSessionRecordFixture } from '@/testkit/backends/sessionFixtures';
@@ -16,6 +17,94 @@ describe('Session awareness Action acquisition', () => {
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
     resetInMemoryAccountSettingsContextForTests();
+  });
+
+  it.each(['summary', 'awareness'] as const)('preserves metadata omissions in an exhausted %s Action page', async (view) => {
+    vi.spyOn(axios, 'get').mockImplementation(async (url) => {
+      const path = new URL(String(url)).pathname;
+      if (path === '/v1/account/encryption/currentness') {
+        return { status: 200, data: createAccountEncryptionCurrentnessFixture() };
+      }
+      if (path === '/v2/sessions') {
+        return { status: 200, data: {
+          sessions: [], nextCursor: null, hasNext: false, metadataUpgradeRequiredCount: 1,
+        } };
+      }
+      throw new Error(`Unexpected HTTP request: ${path}`);
+    });
+    const list = createSessionListActionDependency({ credentials: { token: 'token', encryption: null } });
+    const result = await list({
+      context: { surface: 'cli', authority: 'present_user' }, view, includeSystem: true,
+    });
+
+    expect(result).toMatchObject({
+      sessions: [], nextCursor: null, hasNext: false, metadataUpgradeRequiredCount: 1,
+    });
+    if (view === 'awareness') expect(SessionAwarenessListResultV1Schema.parse(result)).toEqual(result);
+  });
+
+  it.each(['summary', 'awareness'] as const)('retains metadata omissions when refilling a %s page with readable rows', async (view) => {
+    const row = createSessionRecordFixture({ id: 'readable-session', encryptionMode: 'plain', metadata: '{}' });
+    const cursors: Array<string | null> = [];
+    vi.spyOn(axios, 'get').mockImplementation(async (url) => {
+      const parsed = new URL(String(url));
+      if (parsed.pathname === '/v1/account/encryption/currentness') {
+        return { status: 200, data: createAccountEncryptionCurrentnessFixture() };
+      }
+      if (parsed.pathname === '/v2/sessions') {
+        const cursor = parsed.searchParams.get('cursor');
+        cursors.push(cursor);
+        if (cursor === null) return { status: 200, data: {
+          sessions: [], nextCursor: 'cursor_v1_omitted', hasNext: true, metadataUpgradeRequiredCount: 2,
+        } };
+        if (cursor === 'cursor_v1_omitted') return { status: 200, data: {
+          sessions: [], nextCursor: 'cursor_v1_readable', hasNext: true, metadataUpgradeRequiredCount: 1,
+        } };
+        if (cursor === 'cursor_v1_readable') return { status: 200, data: {
+          sessions: [row], nextCursor: null, hasNext: false,
+        } };
+      }
+      throw new Error(`Unexpected HTTP request: ${url}`);
+    });
+    const result = await listSessions({
+      credentials: { token: 'token', encryption: null }, view,
+      activeOnly: false, includeSystem: false, resumableOnly: false, limit: 1,
+    });
+
+    // Counts cover omissions across consumed pages, not unique missing Sessions.
+    expect(result).toMatchObject({ nextCursor: null, hasNext: false, metadataUpgradeRequiredCount: 3 });
+    expect(result.sessions).toHaveLength(1);
+    expect(cursors).toEqual([null, 'cursor_v1_omitted', 'cursor_v1_readable']);
+    if (view === 'awareness') expect(SessionAwarenessListResultV1Schema.parse(result)).toEqual(result);
+  });
+
+  it.each(['summary', 'awareness'] as const)('preserves metadata omissions alongside strict-query continuation in %s output', async (view) => {
+    vi.spyOn(axios, 'get').mockImplementation(async (url) => {
+      const path = new URL(String(url)).pathname;
+      if (path === '/v1/account/encryption/currentness') {
+        return { status: 200, data: createAccountEncryptionCurrentnessFixture() };
+      }
+      throw new Error(`Unexpected GET request: ${path}`);
+    });
+    vi.spyOn(axios, 'post').mockResolvedValue({ status: 200, data: {
+      sessions: [], nextCursor: null, hasNext: false,
+      attentionNextCursor: 'cursor_v1_attention', attentionHasNext: true, metadataUpgradeRequiredCount: 1,
+    } });
+    const result = await listSessions({
+      credentials: { token: 'token', encryption: null }, view, includeSystem: true, resumableOnly: false,
+      query: {
+        v: 1, storage: 'active', includeInactive: true, scope: 'all_accessible', attention: 'any',
+        audiences: [], tagIds: [], includeAttention: true,
+      },
+    });
+
+    expect(result).toMatchObject({
+      sessions: [], nextCursor: null, hasNext: false,
+      attentionNextCursor: 'cursor_v1_attention', attentionHasNext: true, metadataUpgradeRequiredCount: 1,
+    });
+    expect(view === 'awareness'
+      ? SessionAwarenessListResultV1Schema.parse(result)
+      : parseSessionListQueryActionResultV1(result)).toEqual(result);
   });
 
   it('projects a marked page from actual V2 rows without requesting transcript content', async () => {

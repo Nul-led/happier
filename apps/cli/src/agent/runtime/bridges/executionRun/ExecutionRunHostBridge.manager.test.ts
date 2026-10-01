@@ -1130,203 +1130,6 @@ describe('ExecutionRunManager (review intent)', () => {
     expect(prompts[1]).toContain('Do not wrap it in markdown code fences');
   });
 
-  it('can apply review triage and re-emit review_findings.v2 meta updates', async () => {
-    const sent: Array<{ provider: string; body: unknown; meta?: Record<string, unknown> }> = [];
-    const commits: Array<{ provider: string; body: unknown; localId: string; meta?: Record<string, unknown> }> = [];
-    const manager = createExecutionRunManager({
-      parentProvider: TEST_PRIMARY_BACKEND_ID,
-      cwd: process.cwd(),
-      createRuntime: (_opts: { backendId: string; permissionMode: string }) =>
-        createStaticJsonRuntime(
-          JSON.stringify({
-            findings: [
-              {
-                id: 'f1',
-                title: 'Example',
-                severity: 'low',
-                category: 'style',
-                summary: 'One paragraph.',
-              },
-            ],
-            summary: 'Summary.',
-          }),
-        ),
-      sendAcp: async (provider: string, body: ACPMessageData, opts?: { meta?: Record<string, unknown> }) => {
-        sent.push({ provider, body, meta: opts?.meta });
-      },
-      streamedTranscriptSession: {
-        enqueueAgentMessageCommitted: async (provider, body, opts) => {
-          commits.push({ provider, body, localId: opts.localId, meta: opts.meta });
-          return { persisted: true, delivered: false };
-        },
-      },
-      getNowMs: () => 1_700_000_000_000,
-    });
-
-    const started = await manager.start({
-      sessionId: 'parent_session_1',
-      intent: 'review',
-      backendTarget: { kind: 'builtInAgent', agentId: TEST_PRIMARY_BACKEND_ID },
-      instructions: 'Review this repo.',
-      permissionMode: 'read_only',
-      retentionPolicy: 'ephemeral',
-      runClass: 'bounded',
-      ioMode: 'request_response',
-    });
-    await manager.waitForTerminal(started.runId);
-
-    const result = await manager.applyAction(started.runId, {
-      actionId: 'review.triage',
-      input: {
-        findings: [{ id: 'f1', status: 'accept', comment: 'Ship it.' }],
-      },
-    });
-    expect(result.ok).toBe(true);
-
-    const toolResult = [...commits].reverse().find((m) => (m.body as any)?.type === 'tool-result' && m.meta);
-    expect(toolResult).toBeTruthy();
-    const meta = toolResult?.meta as any;
-    expect(meta?.happier?.kind).toBe('review_findings.v2');
-    expect(meta?.happier?.payload?.triage?.findings?.[0]?.status).toBe('accept');
-  });
-
-  it('commits review triage tool-result meta updates durably when a transcript commit session is available', async () => {
-    const sent: Array<{ provider: string; body: unknown; meta?: Record<string, unknown> }> = [];
-    const commits: Array<{ provider: string; body: unknown; localId: string; meta?: Record<string, unknown> }> = [];
-    const manager = createExecutionRunManager({
-      parentProvider: TEST_PRIMARY_BACKEND_ID,
-      cwd: process.cwd(),
-      createRuntime: (_opts: { backendId: string; permissionMode: string }) =>
-        createStaticJsonRuntime(
-          JSON.stringify({
-            findings: [
-              {
-                id: 'f1',
-                title: 'Example',
-                severity: 'low',
-                category: 'style',
-                summary: 'One paragraph.',
-              },
-            ],
-            summary: 'Summary.',
-          }),
-        ),
-      sendAcp: async (provider: string, body: ACPMessageData, opts?: { meta?: Record<string, unknown> }) => {
-        sent.push({ provider, body, meta: opts?.meta });
-      },
-      streamedTranscriptSession: {
-        enqueueAgentMessageCommitted: async (provider, body, opts) => {
-          commits.push({ provider, body, localId: opts.localId, meta: opts.meta });
-          return { persisted: true, delivered: false };
-        },
-      },
-      getNowMs: () => 1_700_000_000_000,
-    });
-
-    const started = await manager.start({
-      sessionId: 'parent_session_1',
-      intent: 'review',
-      backendTarget: { kind: 'builtInAgent', agentId: TEST_PRIMARY_BACKEND_ID },
-      instructions: 'Review this repo.',
-      permissionMode: 'read_only',
-      retentionPolicy: 'ephemeral',
-      runClass: 'bounded',
-      ioMode: 'request_response',
-    });
-    await manager.waitForTerminal(started.runId);
-    const sentBeforeAction = sent.length;
-    const commitsBeforeAction = commits.length;
-
-    const result = await manager.applyAction(started.runId, {
-      actionId: 'review.triage',
-      input: {
-        findings: [{ id: 'f1', status: 'reject', comment: 'Ignore for now.' }],
-      },
-    });
-    expect(result.ok).toBe(true);
-
-    const committedToolResult = commits
-      .slice(commitsBeforeAction)
-      .reverse()
-      .find((m) => (m.body as any)?.type === 'tool-result' && m.meta);
-    expect(committedToolResult).toBeTruthy();
-    const committedMeta = committedToolResult?.meta as any;
-    expect(committedMeta?.happier?.kind).toBe('review_findings.v2');
-    expect(committedMeta?.happier?.payload?.triage?.findings?.[0]?.status).toBe('reject');
-
-    const bestEffortMetaToolResult = sent
-      .slice(sentBeforeAction)
-      .reverse()
-      .find((m) => (m.body as any)?.type === 'tool-result' && m.meta);
-    expect(bestEffortMetaToolResult).toBeUndefined();
-  });
-
-  it('fails closed without a best-effort review triage fallback when durable transcript admission fails', async () => {
-    const sent: Array<{ provider: string; body: unknown; meta?: Record<string, unknown> }> = [];
-    const commits: Array<{ provider: string; body: unknown; localId: string; meta?: Record<string, unknown> }> = [];
-    const manager = createExecutionRunManager({
-      parentProvider: TEST_PRIMARY_BACKEND_ID,
-      cwd: process.cwd(),
-      createRuntime: (_opts: { backendId: string; permissionMode: string }) =>
-        createStaticJsonRuntime(
-          JSON.stringify({
-            findings: [
-              {
-                id: 'f1',
-                title: 'Example',
-                severity: 'low',
-                category: 'style',
-                summary: 'One paragraph.',
-              },
-            ],
-            summary: 'Summary.',
-          }),
-        ),
-      sendAcp: async (provider: string, body: ACPMessageData, opts?: { meta?: Record<string, unknown> }) => {
-        sent.push({ provider, body, meta: opts?.meta });
-      },
-      streamedTranscriptSession: {
-        enqueueAgentMessageCommitted: async (provider, body, opts) => {
-          commits.push({ provider, body, localId: opts.localId, meta: opts.meta });
-          return { persisted: false, delivered: false };
-        },
-      },
-      getNowMs: () => 1_700_000_000_000,
-    });
-
-    const started = await manager.start({
-      sessionId: 'parent_session_1',
-      intent: 'review',
-      backendTarget: { kind: 'builtInAgent', agentId: TEST_PRIMARY_BACKEND_ID },
-      instructions: 'Review this repo.',
-      permissionMode: 'read_only',
-      retentionPolicy: 'ephemeral',
-      runClass: 'bounded',
-      ioMode: 'request_response',
-    });
-    await manager.waitForTerminal(started.runId);
-    const sentBeforeAction = sent.length;
-    const commitsBeforeAction = commits.length;
-
-    const result = await manager.applyAction(started.runId, {
-      actionId: 'review.triage',
-      input: {
-        findings: [{ id: 'f1', status: 'needs_refinement', comment: 'Need more evidence.' }],
-      },
-    });
-    expect(result).toEqual(expect.objectContaining({
-      ok: false,
-      errorCode: 'execution_run_transcript_custody_unavailable',
-    }));
-    expect(commits.slice(commitsBeforeAction)).toHaveLength(1);
-
-    const fallbackToolResult = sent
-      .slice(sentBeforeAction)
-      .reverse()
-      .find((m) => (m.body as any)?.type === 'tool-result' && m.meta);
-    expect(fallbackToolResult).toBeUndefined();
-  });
-
   it('starts a resumable review follow-up child run that reuses the original vendor session', async () => {
     const sent: Array<{ provider: string; body: unknown; meta?: Record<string, unknown> }> = [];
     const { runtime, prompts, loadSessionCalls, providerSessionId } = createReviewResumeRuntime();
@@ -1373,7 +1176,65 @@ describe('ExecutionRunManager (review intent)', () => {
     expect((manager.getStructuredMeta(followUpRunId) as any)?.payload?.requestMarkdown).toBe('Please clarify why this matters.');
   });
 
-  it('falls back to a linked child review run without resume support and reconstructs follow-up context', async () => {
+  it('refuses review follow-up while running and after cancellation', async () => {
+    const manager = createExecutionRunManager({
+      parentProvider: TEST_PRIMARY_BACKEND_ID,
+      cwd: process.cwd(),
+      createRuntime: () => createDelayedJsonRuntime(JSON.stringify({ summary: 'Late', findings: [] }), 50_000),
+      sendAcp: async () => {},
+    });
+    try {
+      const started = await manager.start({
+        sessionId: 'parent_session_1', intent: 'review',
+        backendTarget: { kind: 'builtInAgent', agentId: TEST_PRIMARY_BACKEND_ID },
+        instructions: 'Review.', permissionMode: 'read_only',
+        retentionPolicy: 'resumable', runClass: 'bounded', ioMode: 'streaming',
+      });
+      const request = { actionId: 'review.follow_up', input: { findingIds: ['f1'], messageMarkdown: 'Why?' } };
+      expect(await manager.applyAction(started.runId, request)).toMatchObject({
+        ok: false, errorCode: 'execution_run_busy',
+      });
+      await manager.stop(started.runId);
+      await manager.waitForTerminal(started.runId);
+      expect(await manager.applyAction(started.runId, request)).toMatchObject({
+        ok: false, errorCode: 'review_follow_up_ended',
+      });
+    } finally {
+      await manager.dispose();
+    }
+  });
+
+  it('refuses a retained review handle for a different Agent target', async () => {
+    const { runtime, loadSessionCalls } = createReviewResumeRuntime();
+    const manager = createExecutionRunManager({
+      parentProvider: TEST_PRIMARY_BACKEND_ID, cwd: process.cwd(),
+      createRuntime: () => runtime, sendAcp: async () => {},
+    });
+    try {
+      const started = await manager.start({
+        sessionId: 'parent_session_1', intent: 'review',
+        backendTarget: { kind: 'builtInAgent', agentId: TEST_PRIMARY_BACKEND_ID },
+        instructions: 'Review.', permissionMode: 'read_only',
+        retentionPolicy: 'resumable', runClass: 'bounded', ioMode: 'streaming',
+      });
+      await manager.waitForTerminal(started.runId);
+      const run = manager.get(started.runId);
+      expect(run?.resumeHandle?.kind).toBe('provider_session.v1');
+      if (!run?.resumeHandle) throw new Error('Expected retained provider handle');
+      // Characterize a retained-state target mismatch through the real lifecycle owner.
+      Object.assign(run, { resumeHandle: { ...run.resumeHandle, backendTarget: {
+        kind: 'backend', backendId: TEST_SECONDARY_BACKEND_ID, sourceKind: 'built_in',
+      } } });
+      expect(await manager.applyAction(started.runId, {
+        actionId: 'review.follow_up', input: { findingIds: ['f1'], messageMarkdown: 'Why?' },
+      })).toMatchObject({ ok: false, errorCode: 'review_follow_up_resume_unavailable' });
+      expect(loadSessionCalls).toEqual([]);
+    } finally {
+      await manager.dispose();
+    }
+  });
+
+  it('refuses a fresh-child fallback for a non-resumable review', async () => {
     const prompts: string[] = [];
     const manager = createExecutionRunManager({
       parentProvider: TEST_PRIMARY_BACKEND_ID,
@@ -1438,18 +1299,11 @@ describe('ExecutionRunManager (review intent)', () => {
         messageMarkdown: 'Please clarify the impact.',
       },
     });
-    expect(followUp.ok).toBe(true);
-
-    const followUpRunId = String((followUp as any).result?.runId ?? '');
-    await manager.waitForTerminal(followUpRunId);
-
-    expect(prompts.at(-1)).toContain('Current review summary:');
-    expect(prompts.at(-1)).toContain('Please clarify the impact.');
-    expect(prompts.at(-1)).toContain('"id": "f1"');
-    expect(manager.getStructuredMeta(followUpRunId)?.kind).toBe('review_follow_up.v1');
+    expect(followUp).toMatchObject({ ok: false, errorCode: 'review_follow_up_not_resumable' });
+    expect(prompts).toHaveLength(1);
   });
 
-  it('falls back to a linked child review run for provider-specific backends without resume support', async () => {
+  it('refuses a fresh-child fallback when a reviewer has no resume support', async () => {
     const prompts: string[] = [];
     const manager = createExecutionRunManager({
       parentProvider: TEST_PRIMARY_BACKEND_ID,
@@ -1516,7 +1370,8 @@ describe('ExecutionRunManager (review intent)', () => {
         messageMarkdown: 'Please clarify the impact.',
       },
     });
-    expect(followUp.ok).toBe(true);
+    expect(followUp).toMatchObject({ ok: false, errorCode: 'review_follow_up_resume_unavailable' });
+    expect(prompts).toHaveLength(1);
   });
 
   it('can stop a running execution run and emit a terminal tool-result', async () => {

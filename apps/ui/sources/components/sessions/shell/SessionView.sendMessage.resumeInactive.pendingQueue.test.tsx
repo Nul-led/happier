@@ -1,11 +1,14 @@
 import * as React from 'react';
+import { createReactNavigationNativeMock } from '@/dev/testkit/mocks/reactNavigation';
 import { act } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
     type PluginProjectedComposerAttachmentEntryV1,
 } from '@happier-dev/protocol';
 
-import { flushHookEffects, renderScreen, standardCleanup } from '@/dev/testkit';
+import { flushHookEffects } from '@/dev/testkit/hooks/flushHookEffects';
+import { renderScreen } from '@/dev/testkit/render/renderScreen';
+import { standardCleanup } from '@/dev/testkit/cleanup/standardCleanup';
 import { findTestInstanceByTypeWithProps } from '@/dev/testkit/render/renderScreen';
 import type { createModalModuleMock } from '@/dev/testkit/mocks/modal';
 import type { ResumeSessionResult } from '@/sync/ops/sessions';
@@ -39,6 +42,7 @@ const resumeSessionSpy = vi.hoisted(() =>
     })),
 );
 const routerPushSpy = vi.hoisted(() => vi.fn());
+const sessionSwitchSpy = vi.hoisted(() => vi.fn(async () => true));
 const canResumeSessionWithOptionsSpy = vi.hoisted(() =>
     vi.fn((_metadata: unknown, options: { machineId?: string | null } | null | undefined) => options?.machineId === 'm-target'),
 );
@@ -172,7 +176,7 @@ const issueAttachmentCatalogEntry = {
     id: 'acme.issues/issue',
     pluginId: 'acme.issues',
     identity: { pluginId: 'acme.issues', localId: 'issue' },
-    immutableGenerationId: 'issues-generation-1',
+    occurrenceId: 'issues-generation-1',
     definition: {
         id: 'issue',
         title: 'Issue',
@@ -225,6 +229,7 @@ vi.mock('react-native-safe-area-context', () => ({
     useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
 }));
 vi.mock('@react-navigation/native', () => ({
+    ...createReactNavigationNativeMock(),
     useFocusEffect: () => {},
     useIsFocused: () => true,
 }));
@@ -482,22 +487,6 @@ vi.mock('@/components/sessions/agentInput', () => ({
 vi.mock('@/hooks/server/useFeatureEnabled', () => ({
     useFeatureEnabled: () => false,
 }));
-vi.mock('@/hooks/auth/useCLIDetection', () => ({
-    useCLIDetection: (_machineId: string | null, options?: { serverId?: string | null }) => {
-        cliDetectionServerIds.push(typeof options?.serverId === 'string' ? options.serverId : '');
-        return {
-            available: {},
-            login: {},
-            authStatus: {},
-            resolvedPath: {},
-            resolutionSource: {},
-            tmux: null,
-            isDetecting: false,
-            timestamp: 1,
-            refresh: vi.fn(),
-        };
-    },
-}));
 vi.mock('@/utils/platform/responsive', () => ({
     getDeviceType: () => 'phone',
     useDeviceType: () => 'phone',
@@ -506,7 +495,9 @@ vi.mock('@/utils/platform/responsive', () => ({
     useIsTablet: () => false,
 }));
 vi.mock('@/hooks/session/useDraft', () => ({
-    useDraft: (_sessionId: string, value: string, onChange: (text: string) => void) => {
+    useDraft: (_sessionId: string, textStore: Readonly<{ getPrompt: () => string; setPrompt: (text: string) => void }>) => {
+        const value = textStore.getPrompt();
+        const onChange = textStore.setPrompt;
         draftHookSpies.valuesBySessionId.set(_sessionId, value);
         const update = (text: string) => {
             draftHookSpies.valuesBySessionId.set(_sessionId, text);
@@ -640,6 +631,7 @@ vi.mock('@/sync/ops', async (importOriginal) => {
         importOriginal,
         overrides: {
             sessionAbort: vi.fn(),
+            sessionSwitch: sessionSwitchSpy,
             resumeSession: (...args: any[]) => resumeSessionSpy(...args),
             ensureSessionRuntimeForPendingInput: (...args: any[]) => resumeSessionSpy(...args),
             sessionAttachmentsUploadFile: vi.fn(),
@@ -704,10 +696,10 @@ vi.mock('@/sync/domains/permissions/permissionModeApply', () => ({
 vi.mock('@/sync/acp/sessionModeControl', () => ({
     supportsSessionModeOverrides: () => false,
 }));
-vi.mock('@/sync/domains/session/control/localControlSwitch', () => ({
+vi.mock('@/sync/domains/session/control/localControlSwitch', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/sync/domains/session/control/localControlSwitch')>(),
     shouldRenderChatTimelineForSession: () => true,
     shouldRequestRemoteControl: () => false,
-    shouldRequestRemoteControlAfterPendingEnqueue: () => false,
 }));
 vi.mock('@/sync/runtime/time', () => ({
     nowServerMs: () => 0,
@@ -857,6 +849,7 @@ describe('SessionView (sendMessage resumeInactive pendingQueue)', () => {
             errorMessage: 'Daemon RPC is not available',
         }));
         routerPushSpy.mockReset();
+        sessionSwitchSpy.mockClear();
         ensureAgentInstallablesBackgroundSpy.mockClear();
         modalMockState.current?.spies.alert.mockReset();
         modalMockState.current?.spies.confirm.mockReset();
@@ -1029,7 +1022,7 @@ describe('SessionView (sendMessage resumeInactive pendingQueue)', () => {
 
             const reinstalled = {
                 ...issueAttachmentCatalogEntry,
-                immutableGenerationId: 'issues-generation-2',
+                occurrenceId: 'issues-generation-2',
             };
             await act(async () => {
                 setComposerAttachmentProjection({ [reinstalled.id]: reinstalled }, 3);
@@ -1038,7 +1031,7 @@ describe('SessionView (sendMessage resumeInactive pendingQueue)', () => {
 
             const incompatible = {
                 ...issueAttachmentCatalogEntry,
-                immutableGenerationId: 'issues-generation-3',
+                occurrenceId: 'issues-generation-3',
             definition: {
                 ...issueAttachmentCatalogEntry.definition,
                 valueSchema: {
@@ -1405,7 +1398,33 @@ describe('SessionView (sendMessage resumeInactive pendingQueue)', () => {
         await screen.unmount();
     });
 
-    it('enqueues when the send action explicitly requests the server pending queue', async () => {
+    it('enqueues signed-in locally attached input when the send action explicitly requests the server pending queue', async () => {
+        const { TokenStorage } = await import('@/auth/storage/tokenStorage');
+        const { upsertServerProfile } = await import('@/sync/domains/server/serverProfiles');
+        const { serverAccountScopedResourceKey } = await import('@/sync/domains/scope/serverAccountScope');
+        const { machineAgentInventoryStore } = await import('@/agents/machineAgents/machineAgentInventoryStore');
+        const { useMachineAgent } = await import('@/agents/machineAgents/useMachineAgents');
+        const { renderHook } = await import('@/dev/testkit/hooks/renderHook');
+        const profile = await upsertServerProfile({ serverUrl: 'https://server-cache' });
+        const accountId = 'pending-local-control-account';
+        const inventoryKey = serverAccountScopedResourceKey({ serverId: profile.id, accountId }, 'machine-agents', 'm-target');
+        // Secure credential storage is the boundary; the Account binding and machine-agent hook stay real.
+        const credentialsRead = vi.spyOn(TokenStorage, 'getCredentialsForServerUrl').mockResolvedValue({
+            token: `header.${Buffer.from(JSON.stringify({ sub: accountId })).toString('base64')}.signature`,
+            secret: 's',
+        });
+        machineAgentInventoryStore.publish(inventoryKey, {
+            status: 'ready',
+            lastCheckedAt: Date.now(),
+            items: [{
+                agentId: 'codex', title: 'Codex', installed: true, version: '1', latestVersion: '1',
+                update: { supported: false, command: null },
+                signIn: { status: 'signedIn', loginSupport: 'status_only' },
+                platform: { supported: true },
+                install: { available: false, mode: 'manual', sizeBytes: null, guideUrl: null },
+                dependencies: [],
+            }],
+        });
         settingsState.current = {
             experiments: true,
             featureToggles: {},
@@ -1418,7 +1437,7 @@ describe('SessionView (sendMessage resumeInactive pendingQueue)', () => {
             presence: 'online',
             agentStateVersion: 1,
             agentState: {
-                controlledByUser: false,
+                controlledByUser: true,
                 capabilities: {
                     inFlightSteer: true,
                     inFlightSteerSupported: true,
@@ -1427,29 +1446,43 @@ describe('SessionView (sendMessage resumeInactive pendingQueue)', () => {
             },
         };
 
-        const screen = await renderSessionView({ routeServerId: 'server-cache' });
-        pendingFireAndForget.length = 0;
+        const auth = await renderHook(() => useMachineAgent({ serverId: profile.id, machineId: 'm-target', agentId: 'codex', load: false }));
+        try {
+            await vi.waitFor(() => expect(auth.getCurrent()?.signIn.status).toBe('signedIn'));
+            const screen = await renderSessionView({ routeServerId: profile.id });
+            try {
+                pendingFireAndForget.length = 0;
+                pendingFireAndForgetTags.length = 0;
 
-        const agentInput = findAgentInput(screen);
+                const agentInput = findAgentInput(screen);
 
-        await act(async () => {
-            agentInput.props.onChangeText('queue me');
-        });
-        await act(async () => {
-            agentInput.props.onSend({ deliveryIntent: 'server_pending' });
-        });
+                await act(async () => {
+                    agentInput.props.onChangeText('queue me');
+                });
+                await act(async () => {
+                    agentInput.props.onSend({ deliveryIntent: 'server_pending' });
+                });
 
-        expect(pendingFireAndForget.length).toBeGreaterThan(0);
-        await act(async () => {
-            await pendingFireAndForget[0];
-        });
+                const dispatchIndex = pendingFireAndForgetTags.lastIndexOf('SessionView.composer.dispatch');
+                expect(dispatchIndex).toBeGreaterThanOrEqual(0);
+                await act(async () => {
+                    await pendingFireAndForget[dispatchIndex];
+                });
 
-        expect(enqueuePendingMessageSpy).toHaveBeenCalledTimes(1);
-        expect(enqueuePendingMessageSpy.mock.calls[0]?.[0]).toBe('s1');
-        expect(enqueuePendingMessageSpy.mock.calls[0]?.[1]).toBe('queue me');
-        expect(submitMessageSpy).not.toHaveBeenCalled();
-
-        await screen.unmount();
+                expect(enqueuePendingMessageSpy).toHaveBeenCalledTimes(1);
+                expect(enqueuePendingMessageSpy.mock.calls[0]?.[0]).toBe('s1');
+                expect(enqueuePendingMessageSpy.mock.calls[0]?.[1]).toBe('queue me');
+                expect(submitMessageSpy).not.toHaveBeenCalled();
+                expect(sessionSwitchSpy).not.toHaveBeenCalled();
+                expect(modalMockState.current?.spies.alert).not.toHaveBeenCalled();
+            } finally {
+                await screen.unmount();
+            }
+        } finally {
+            await auth.unmount();
+            credentialsRead.mockRestore();
+            machineAgentInventoryStore.publish(inventoryKey, { status: 'ready', items: [], descriptors: [], lastCheckedAt: null });
+        }
     });
 
     it('shows an offline queued banner and authorizes the exact durable row for processing when online', async () => {
@@ -1599,6 +1632,40 @@ describe('SessionView (sendMessage resumeInactive pendingQueue)', () => {
             expect.objectContaining({ serverId: 'server-cache' }),
         );
 
+        await screen.unmount();
+    });
+
+    it('keeps the queued message accepted while exposing missing-folder recovery after an automatic wake', async () => {
+        machineEncryptionAvailable.current = true;
+        sessionMetadataOverrides.current = { sessionDirectoryV1: { v: 1, kind: 'managed' } };
+        resumeSessionSpy.mockResolvedValueOnce({ type: 'error', errorCode: 'SESSION_DIRECTORY_MISSING', errorMessage: 'missing' });
+        const screen = await renderSessionView();
+        const input = findAgentInput(screen);
+        await act(async () => { input.props.onChangeText('keep this prompt'); });
+        await act(async () => { input.props.onSend(); });
+        await act(async () => { await Promise.all(pendingFireAndForget); });
+        expect(enqueuePendingMessageSpy).toHaveBeenCalledTimes(1);
+        expect(screen.findByTestId('session-directory-missing')).toBeTruthy();
+        expect(modalMockState.current?.spies.alert).not.toHaveBeenCalled();
+        expect(updatePendingRequestedActionSpy).not.toHaveBeenCalled();
+        await screen.unmount();
+    });
+
+    it('offers fresh-folder recovery inline and requests recreation only after explicit consent', async () => {
+        sessionMetadataOverrides.current = { sessionDirectoryV1: { v: 1, kind: 'managed' } };
+        resumeSessionSpy.mockResolvedValueOnce({
+            type: 'error', errorCode: 'SESSION_DIRECTORY_MISSING', errorMessage: 'Session folder is missing',
+        }).mockResolvedValueOnce({ type: 'success', sessionId: 's1' });
+        const screen = await renderSessionView();
+        await act(async () => { await emitSessionResumeRequest('s1'); });
+        expect(resumeSessionSpy).toHaveBeenCalledTimes(1);
+        expect(resumeSessionSpy.mock.calls[0]?.[0]).not.toMatchObject({ approvedNewDirectoryCreation: true });
+        const notice = screen.findByTestId('session-directory-missing');
+        expect(notice).toBeTruthy();
+        expect(modalMockState.current?.spies.alert).not.toHaveBeenCalled();
+        await screen.pressByTestIdAsync('session-directory-missing-continue');
+        expect(resumeSessionSpy).toHaveBeenCalledTimes(2);
+        expect(resumeSessionSpy.mock.calls[1]?.[0]).toMatchObject({ approvedNewDirectoryCreation: true });
         await screen.unmount();
     });
 });

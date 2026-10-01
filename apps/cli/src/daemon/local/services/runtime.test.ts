@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { AxiosError, AxiosHeaders } from 'axios';
 import { createLocalServiceActionConfirmationNonceV1, FeaturesResponseSchema, type LocalServiceActionRequestV1 } from '@happier-dev/protocol';
 import { buildPluginHostedWebStaticAssetPreviewId } from '@happier-dev/protocol/plugins/ui';
 
@@ -6,8 +7,39 @@ import { createLocalServicesDaemonRuntime } from './runtime';
 import {
     listLocalServicePreviewResources,
     registerLocalServicePreview,
+    unregisterLocalServicePreview,
 } from './preview/registry';
 import type { NormalizedLocalServiceInventorySnapshot } from './inventory/scanner';
+import { LocalServicePreviewResourceV1Schema } from '@happier-dev/protocol/local/services/preview/v1';
+
+function previewServerBoundary() {
+    const registrations = new Map<string, unknown>();
+    return {
+        registrations,
+        input: {
+            token: 'daemon-token', serverBaseUrl: 'https://home.example.test',
+            http: {
+                async post(_url: string, body: unknown) {
+                    const resource = LocalServicePreviewResourceV1Schema.parse(body);
+                    registrations.set(resource.previewId, resource);
+                    return { data: { resource, accessUrl: `https://preview.example.test${resource.initialPath.pathname}${resource.initialPath.search}`, expiresAt: 65_000 } };
+                },
+                async delete(url: string) {
+                    if (!registrations.delete(decodeURIComponent(new URL(url).pathname.split('/').at(-1) ?? ''))) {
+                        throw new AxiosError('Preview not found', undefined, undefined, undefined, {
+                            status: 404,
+                            statusText: 'Not Found',
+                            headers: {},
+                            config: { headers: new AxiosHeaders() },
+                            data: { error: 'preview_not_found', reasonCode: 'preview_not_found' },
+                        });
+                    }
+                    return { data: { ok: true } };
+                },
+            },
+        },
+    };
+}
 
 function buildSnapshot(
     overrides: Partial<NormalizedLocalServiceInventorySnapshot> = {},
@@ -56,6 +88,120 @@ function buildSnapshot(
 }
 
 describe('createLocalServicesDaemonRuntime', () => {
+    it('never projects an unavailable scan or a disabled feature as a ready zero', async () => {
+        const failed = createLocalServicesDaemonRuntime({
+            machineId: 'machine-a', startLoop: false, inventoryEnabled: () => true,
+            scan: async () => ({ listeners: [], processes: new Map(), workspaces: [], diagnostics: [{ code: 'windows_netstat_scan_failed', severity: 'error' as const }] }),
+        });
+        expect(failed.subscribeSummary).toBeTypeOf('function');
+        const errors: unknown[] = [];
+        const unsubscribeFailed = failed.subscribeSummary((summary) => errors.push(summary));
+        await failed.refreshInventoryNow();
+        expect(errors.at(-1)).toEqual({ v: 1, state: 'error' });
+        unsubscribeFailed();
+        await failed.stop();
+        const disabled = createLocalServicesDaemonRuntime({ machineId: 'machine-a', startLoop: false, inventoryEnabled: () => false });
+        const summaries: unknown[] = [];
+        const unsubscribeDisabled = disabled.subscribeSummary((summary) => summaries.push(summary));
+        await disabled.refreshInventoryNow();
+        expect(summaries.at(-1)).toEqual({ v: 1, state: 'disabled' });
+        unsubscribeDisabled();
+        await disabled.stop();
+    });
+    it('invalidates a ready summary when the scanner throws and recovers on the next scan', async () => {
+        let failScan = false;
+        const runtime = createLocalServicesDaemonRuntime({
+            machineId: 'machine-a', startLoop: false, inventoryEnabled: () => true,
+            scan: async () => {
+                if (failScan) throw new Error('OS scan unavailable');
+                return { listeners: [], processes: new Map(), workspaces: [], diagnostics: [] };
+            },
+        });
+        const summaries: unknown[] = [];
+        const unsubscribe = runtime.subscribeSummary((summary) => summaries.push(summary));
+        await runtime.refreshInventoryNow();
+        failScan = true;
+        await expect(runtime.refreshInventoryNow()).rejects.toThrow('OS scan unavailable');
+        expect(summaries.at(-1)).toEqual({ v: 1, state: 'error' });
+        failScan = false;
+        await runtime.refreshInventoryNow();
+        expect(summaries.at(-1)).toEqual({ v: 1, state: 'ready', runningCount: 0 });
+        unsubscribe();
+        await runtime.stop();
+    });
+    it('pushes one stable machine summary from the inventory and distinguishes scan failure from zero', async () => {
+        const scan = vi.fn(async () => ({ listeners: [], processes: new Map(), workspaces: [], diagnostics: [] }));
+        const runtime = createLocalServicesDaemonRuntime({ machineId: 'machine-a', inventoryEnabled: () => true, scan, startLoop: false });
+        const summaries: unknown[] = [];
+        expect(runtime.subscribeSummary).toBeTypeOf('function');
+        const unsubscribe = runtime.subscribeSummary((summary) => summaries.push(summary));
+        await runtime.refreshInventoryNow();
+        expect(summaries).toEqual([{ v: 1, state: 'unknown' }, { v: 1, state: 'ready', runningCount: 0 }]);
+        const snapshot = buildSnapshot();
+        runtime.inventoryRegistry.replaceSnapshot({ ...snapshot, entries: [
+            ...snapshot.entries,
+            { ...snapshot.entries[0]!, id: 'wildcard', address: { kind: 'wildcard', host: '::', family: 'ipv6' } },
+            { ...snapshot.entries[0]!, id: 'internal', port: 3000, classification: { kind: 'happier', signals: [] } },
+        ] });
+        expect(summaries.at(-1)).toEqual({ v: 1, state: 'ready', runningCount: 1 });
+        const last = summaries.at(-1);
+        runtime.inventoryRegistry.replaceSnapshot({ ...runtime.inventoryRegistry.getSnapshot(), generatedAt: 2_000 });
+        expect(summaries.at(-1)).toBe(last);
+        expect(summaries).toHaveLength(3);
+        runtime.inventoryRegistry.replaceSnapshot({ ...runtime.inventoryRegistry.getSnapshot(), refreshState: 'error' });
+        expect(summaries.at(-1)).toEqual({ v: 1, state: 'error' });
+        await runtime.refreshInventoryNow();
+        expect(summaries.at(-1)).toEqual({ v: 1, state: 'ready', runningCount: 0 });
+        unsubscribe();
+        await runtime.stop();
+    });
+
+    it('uses the existing scan loop for summary demand and stops scanning when its last reader leaves', async () => {
+        vi.useFakeTimers();
+        try {
+            const scan = vi.fn(async () => ({ listeners: [], processes: new Map(), workspaces: [], diagnostics: [] }));
+            const runtime = createLocalServicesDaemonRuntime({ machineId: 'machine-a', inventoryEnabled: () => true, scan, refreshIntervalMs: 1_000 });
+            await vi.advanceTimersByTimeAsync(3_000);
+            expect(scan).not.toHaveBeenCalled();
+            expect(runtime.subscribeSummary).toBeTypeOf('function');
+            const unsubscribe = runtime.subscribeSummary(() => {});
+            await vi.advanceTimersByTimeAsync(3_000);
+            expect(scan.mock.calls.length).toBeGreaterThan(1);
+            unsubscribe();
+            const count = scan.mock.calls.length;
+            await vi.advanceTimersByTimeAsync(3_000);
+            expect(scan.mock.calls.length).toBe(count);
+            await runtime.stop();
+        } finally { vi.useRealTimers(); }
+    });
+
+    it('does not treat registered preview access as evidence of a running listener', async () => {
+        const runtime = createLocalServicesDaemonRuntime({
+            machineId: 'machine-a', inventoryEnabled: () => true, startLoop: false,
+            scan: async () => ({ listeners: [], processes: new Map(), workspaces: [], diagnostics: [] }),
+        });
+        const summaries: unknown[] = [];
+        expect(runtime.subscribeSummary).toBeTypeOf('function');
+        const unsubscribe = runtime.subscribeSummary((summary) => summaries.push(summary));
+        await runtime.refreshInventoryNow();
+        const registered = registerLocalServicePreview(runtime.previewRegistry, {
+            previewId: 'preview-a', sessionId: 'session-a', machineId: 'machine-a',
+            owner: { kind: 'session', id: 'session-a' }, target: { scheme: 'http', host: '127.0.0.1', port: 5173 },
+            initialPath: { pathname: '/', search: '' }, display: { title: 'App', addressLabel: 'localhost:5173' }, originMode: 'host',
+        });
+        expect(registered.ok).toBe(true);
+        expect(summaries.at(-1)).toEqual({ v: 1, state: 'ready', runningCount: 0 });
+        runtime.inventoryRegistry.replaceSnapshot(buildSnapshot());
+        expect(summaries).toHaveLength(3);
+        expect(summaries.at(-1)).toEqual({ v: 1, state: 'ready', runningCount: 1 });
+        runtime.inventoryRegistry.replaceSnapshot(buildSnapshot({ entries: [] }));
+        expect(summaries).toHaveLength(4);
+        unregisterLocalServicePreview(runtime.previewRegistry, 'preview-a');
+        expect(summaries.at(-1)).toEqual({ v: 1, state: 'ready', runningCount: 0 });
+        unsubscribe();
+        await runtime.stop();
+    });
+
     it('keeps the last known services when the inventory gate never resolved, without claiming to have looked', async () => {
         const scan = vi.fn(async () => ({
             listeners: [],
@@ -149,8 +295,10 @@ describe('createLocalServicesDaemonRuntime', () => {
     });
 
     it('keeps launcher targets openable after a non-authoritative inventory scan failure', async () => {
+        const server = previewServerBoundary();
         const runtime = createLocalServicesDaemonRuntime({
             machineId: 'machine-a',
+            accountId: 'account-a', previewServer: server.input,
             inventoryEnabled: () => true,
             scan: async () => ({
                 listeners: [],
@@ -166,6 +314,11 @@ describe('createLocalServicesDaemonRuntime', () => {
             startLoop: false,
         });
         runtime.inventoryRegistry.replaceSnapshot(buildSnapshot());
+        const opened = await runtime.previewRoutes.openOrCreate({
+            machineId: 'machine-a', inventoryEntryId: 'entry-1',
+        });
+        expect(opened.ok).toBe(true);
+        if (!opened.ok) throw new Error(opened.reasonCode);
 
         await runtime.refreshInventoryNow();
         const launcherSnapshot = await runtime.launcherRoutes.getSnapshot();
@@ -173,9 +326,18 @@ describe('createLocalServicesDaemonRuntime', () => {
 
         expect(target).toMatchObject({
             state: 'available',
-            actions: ['open'],
-            browserTarget: { kind: 'externalUrl' },
+            browserTarget: { kind: 'localServicePreview' },
         });
+        expect(target?.browserTarget).toEqual(opened.response.preview.resource.browserTarget);
+        const reopened = await runtime.previewRoutes.openOrCreate({
+            machineId: 'machine-a', inventoryEntryId: 'entry-1',
+        });
+        expect(reopened.ok).toBe(true);
+        if (!reopened.ok) throw new Error(reopened.reasonCode);
+        expect(reopened.response.status).toBe('existing');
+        expect(reopened.response.preview.resource.previewId).toBe(opened.response.preview.resource.previewId);
+        expect(reopened.response.preview.accessUrl).toBeTruthy();
+        await runtime.stop();
     });
 
     it('runs the inventory scan when the server reports localServices inventory enabled', async () => {
@@ -399,8 +561,10 @@ describe('createLocalServicesDaemonRuntime', () => {
     });
 
     it('owns one registered preview registry and exposes it as a snapshot route', async () => {
+        const server = previewServerBoundary();
         const runtime = createLocalServicesDaemonRuntime({
             machineId: 'machine-a',
+            accountId: 'account-a', previewServer: server.input,
             inventoryEnabled: () => true,
             scan: async () => ({
                 listeners: [],
@@ -450,8 +614,10 @@ describe('createLocalServicesDaemonRuntime', () => {
     });
 
     it('activates hosted-web static asset previews through the daemon-owned preview registry', async () => {
+        const server = previewServerBoundary();
         const runtime = createLocalServicesDaemonRuntime({
             machineId: 'machine-a',
+            accountId: 'account-a', previewServer: server.input,
             inventoryEnabled: () => false,
             now: () => 5_000,
             startLoop: false,
@@ -467,7 +633,7 @@ describe('createLocalServicesDaemonRuntime', () => {
                         target: { scheme: 'http' as const, host: '127.0.0.1', port: 51515 },
                         initialPath: { pathname: '/', search: '' },
                         display: { title: input.preview.title, addressLabel: '127.0.0.1:51515' },
-                        originMode: 'path' as const,
+                        originMode: 'host' as const,
                     };
                     return {
                         baseUrl: 'http://127.0.0.1:51515',
@@ -482,7 +648,7 @@ describe('createLocalServicesDaemonRuntime', () => {
             },
         });
 
-        const result = await runtime.syncHostedWebStaticAssets([{
+        const contributions: Parameters<typeof runtime.syncHostedWebStaticAssets>[0] = [{
             pluginId: 'acme.preview',
             contributionId: 'preview-web',
             sessionId: 'session-a',
@@ -491,15 +657,14 @@ describe('createLocalServicesDaemonRuntime', () => {
             installedRoot: '/plugin/root/dist/happier-plugin-ui',
             runtimeMode: {
                 kind: 'installedStaticAssets',
-                artifactId: 'preview-web-artifact',
+                artifactId: 'preview-web',
                 assetRootId: 'hosted-web/preview-web',
             },
             artifactManifest: {
-                version: 1,
+                version: 2,
                 entries: [{
-                    contributionId: 'preview-web',
+                    artifactId: 'preview-web',
                     tier: 'hostedWeb',
-                    platform: 'web',
                     entry: 'hosted-web/preview-web/index.html',
                     files: [{
                         relativePath: 'hosted-web/preview-web/index.html',
@@ -507,9 +672,8 @@ describe('createLocalServicesDaemonRuntime', () => {
                         byteSize: 1,
                     }],
                     digest: `sha256:${'a'.repeat(64)}`,
-                    builtWith: { bundler: 'vite', version: '6.0.0' },
-                    hostUiApiVersion: '1.0.0',
-                    compat: {},
+                    builtWith: { staging: 'staticDirectory' },
+                    hostUiApiRange: '^1.0.0',
                 }],
             },
             security: {
@@ -526,9 +690,18 @@ describe('createLocalServicesDaemonRuntime', () => {
                 sourceMaps: 'disabled',
                 mixedContent: 'deny',
             },
-        }]);
+        }];
 
-        expect(result.active).toHaveLength(1);
+        const result = await runtime.syncHostedWebStaticAssets(contributions);
+        expect(result).toMatchObject({ active: [expect.anything()], diagnostics: [] });
+        // Explicit activation publishes the registration; observing a snapshot is read-only.
+        expect(server.registrations.size).toBe(1);
+        expect([...runtime.previewRegistry.previewsById.values()][0]?.accessUrl).toBe('https://preview.example.test/');
+        expect(await runtime.syncHostedWebStaticAssets([])).toMatchObject({ active: [], diagnostics: [] });
+        expect(listLocalServicePreviewResources(runtime.previewRegistry)).toEqual([]);
+        expect(await runtime.syncHostedWebStaticAssets(contributions)).toMatchObject({ active: [expect.anything()], diagnostics: [] });
+        await runtime.previewRoutes.getSnapshot();
+        expect(server.registrations.size).toBe(1);
         expect(listLocalServicePreviewResources(runtime.previewRegistry)).toEqual([
             expect.objectContaining({
                 previewId: 'plugin-static:acme.preview:preview-web:session-a:machine-a',
@@ -537,10 +710,22 @@ describe('createLocalServicesDaemonRuntime', () => {
             }),
         ]);
 
-        runtime.stop();
+        await runtime.syncHostedWebStaticAssets([]);
+        const publish = server.input.http.post;
+        server.input.http.post = async () => { throw new Error('Preview server unavailable'); };
+        expect(await runtime.syncHostedWebStaticAssets(contributions)).toMatchObject({
+            active: [], diagnostics: [{ code: 'static_asset_server_start_failed' }],
+        });
+        expect((await runtime.previewRoutes.getSnapshot()).previews).toEqual([
+            expect.objectContaining({ accessUrl: null, diagnostics: [expect.objectContaining({ code: 'preview_registration_failed' })] }),
+        ]);
+        server.input.http.post = publish;
+        expect(await runtime.syncHostedWebStaticAssets(contributions)).toMatchObject({ active: [expect.anything()], diagnostics: [] });
 
+        await runtime.stop();
         await expect(runtime.stopHostedWebStaticAssets()).resolves.toBeUndefined();
         expect(listLocalServicePreviewResources(runtime.previewRegistry)).toEqual([]);
+        expect(server.registrations.size).toBe(0);
     });
 
     it('scans only while an inventory watch is parked, and serves an unwatched reader on demand', async () => {

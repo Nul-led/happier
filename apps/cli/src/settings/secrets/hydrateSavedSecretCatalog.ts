@@ -30,6 +30,7 @@ import { resolveAccountSettingsScopeKeyForToken } from '@/settings/accountSettin
 import { deriveKey } from '@/utils/deriveKey';
 import {
   createSavedSecretMaterializerFromSnapshotV1,
+  type SavedSecretResolutionFailureStatusV1,
   type SavedSecretCatalogResourceInputV1,
   type SavedSecretCatalogState,
 } from './savedSecretCatalog';
@@ -42,8 +43,58 @@ export type HydratedSavedSecretCatalog = Readonly<{
 export type SavedSecretOperationAdmissionFailureReason =
   | 'reference_missing'
   | 'reference_unavailable'
+  | 'reference_forbidden'
+  | 'reference_deleted'
+  | 'reference_mode_incompatible'
+  | 'reference_repair_required'
+  | 'reference_corrupt'
   | 'reference_stale'
   | 'reference_collision_migration_required';
+
+/** Maps canonical materializer/admission failures to the consumer status vocabulary. */
+export function savedSecretOperationAdmissionStatus(
+  reason: SavedSecretOperationAdmissionFailureReason,
+): SavedSecretResolutionFailureStatusV1 {
+  switch (reason) {
+    case 'reference_missing':
+      return 'missing';
+    case 'reference_unavailable':
+      return 'temporarily_unavailable';
+    case 'reference_forbidden':
+      return 'forbidden';
+    case 'reference_deleted':
+      return 'deleted';
+    case 'reference_mode_incompatible':
+      return 'mode_incompatible';
+    case 'reference_repair_required':
+    case 'reference_stale':
+    case 'reference_collision_migration_required':
+      return 'repair_required';
+    case 'reference_corrupt':
+      return 'corrupt';
+  }
+}
+
+function savedSecretOperationAdmissionReason(
+  status: SavedSecretResolutionFailureStatusV1,
+): SavedSecretOperationAdmissionFailureReason {
+  switch (status) {
+    case 'missing':
+      return 'reference_missing';
+    case 'temporarily_unavailable':
+      return 'reference_unavailable';
+    case 'forbidden':
+      return 'reference_forbidden';
+    case 'deleted':
+      return 'reference_deleted';
+    case 'mode_incompatible':
+      return 'reference_mode_incompatible';
+    case 'repair_required':
+      return 'reference_repair_required';
+    case 'corrupt':
+      return 'reference_corrupt';
+  }
+}
 
 export type SavedSecretOperationReferenceV1 = Readonly<{
   ref: string;
@@ -270,9 +321,7 @@ export async function refreshSavedSecretCatalogForOperation(input: Readonly<{
     const resolved = materializer.resolve(reference.ref);
     if (resolved.status !== 'ready') {
       throw new SavedSecretOperationAdmissionError({
-        reason: resolved.status === 'temporarily_unavailable'
-          ? 'reference_unavailable'
-          : 'reference_missing',
+        reason: savedSecretOperationAdmissionReason(resolved.status),
         reference: reference.ref,
       });
     }

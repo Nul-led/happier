@@ -6,7 +6,7 @@ import {
     type ExternalSessionObservedProgress,
 } from '@happier-dev/protocol';
 
-import type { Metadata } from '@/sync/domains/state/storageTypes';
+import type { Metadata } from '@happier-dev/session-core/state';
 
 import { readExternalSessionAttention } from './readExternalSessionAttention';
 export { deriveExternalSessionObservedProgress } from '@happier-dev/protocol';

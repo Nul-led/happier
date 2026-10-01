@@ -10,7 +10,7 @@ vi.mock('@/text', async () => {
 import { buildNewSessionAgentPickerOptions } from './buildNewSessionAgentPickerOptions';
 import { formatBackendTargetKeyV2 } from '@/agents/backendCatalog/backendTargetKeyV2';
 import type { ResolvedBackendCatalogEntry } from '@/agents/backendCatalog/getResolvedBackendCatalogEntries';
-import { createResolvedAgentCatalogEntryFixture } from '@/dev/testkit';
+import { createResolvedAgentCatalogEntryFixture } from '@/dev/testkit/fixtures/agentCatalogFixtures';
 
 function createEntry(params: Readonly<{
     backendId: string;

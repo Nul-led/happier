@@ -44,9 +44,16 @@ const caller = {
   materializationId: 'materialization-current',
 } as const satisfies PluginMachineMaterializationRefV1;
 const immutableGenerationId = 'github-generation-current';
+const occurrenceId = 'github-occurrence-current';
+const sourceCustody = {
+  kind: 'managed' as const,
+  immutableGenerationId,
+  installSource: 'archive' as const,
+};
 const actionCaller = {
   pluginId: caller.pluginId,
-  immutableGenerationId,
+  occurrenceId,
+  sourceCustody,
   materialization: caller,
 } as const;
 const triggerId = AutomationTriggerIdSchema.parse('trigger-repository-event');
@@ -191,7 +198,8 @@ describe('Automation Event adopted-definition host factory', () => {
     const immutableGenerationId = 'github-generation-current';
     const stampedCaller = {
       pluginId: caller.pluginId,
-      immutableGenerationId,
+      occurrenceId,
+  sourceCustody,
       materialization: caller,
     } as const;
     const revalidateCaller = vi.fn(async () => true);
@@ -252,12 +260,13 @@ describe('Automation Event adopted-definition host factory', () => {
     const owner = createAutomationEventAdoptedDefinitionSetHostV1({
       credentials,
       caller,
-      immutableGenerationId,
+      occurrenceId,
+  sourceCustody,
       transport: { kind: 'checkpointedPull' },
-      generationSignal: new AbortController().signal,
-      isGenerationCurrent: () => true,
+      occurrenceSignal: new AbortController().signal,
+      isOccurrenceCurrent: () => true,
       revalidateCallerMaterialization: async () => true,
-      revalidateCallerImmutableGeneration: async () => true,
+      revalidateCallerOccurrence: async () => true,
       readStoredDefinitions: async ({ input }) => input.knownRevision === '7'
         ? { kind: 'unchanged', revision: '7', eventDeclarationRelease }
         : page,
@@ -306,12 +315,13 @@ describe('Automation Event adopted-definition host factory', () => {
     const encryptedOwner = createAutomationEventAdoptedDefinitionSetHostV1({
       credentials,
       caller,
-      immutableGenerationId,
+      occurrenceId,
+  sourceCustody,
       transport: { kind: 'checkpointedPull' },
-      generationSignal: new AbortController().signal,
-      isGenerationCurrent: () => true,
+      occurrenceSignal: new AbortController().signal,
+      isOccurrenceCurrent: () => true,
       revalidateCallerMaterialization: async () => true,
-      revalidateCallerImmutableGeneration: async () => true,
+      revalidateCallerOccurrence: async () => true,
       readStoredDefinitions: async () => ({
         kind: 'page',
         revision: '8',
@@ -367,12 +377,13 @@ describe('Automation Event adopted-definition host factory', () => {
     const owner = createAutomationEventAdoptedDefinitionSetHostV1({
       credentials,
       caller,
-      immutableGenerationId,
+      occurrenceId,
+  sourceCustody,
       transport: { kind: 'checkpointedPull' },
-      generationSignal: new AbortController().signal,
-      isGenerationCurrent: () => true,
+      occurrenceSignal: new AbortController().signal,
+      isOccurrenceCurrent: () => true,
       revalidateCallerMaterialization: async () => true,
-      revalidateCallerImmutableGeneration: async () => true,
+      revalidateCallerOccurrence: async () => true,
       readStoredDefinitions,
       resolveAccountEncryptionCurrentness: plainCurrentness,
       resolveAccountEncryptionMaterial: async () => null,
@@ -436,12 +447,13 @@ describe('Automation Event adopted-definition host factory', () => {
     const owner = createAutomationEventAdoptedDefinitionSetHostV1({
       credentials,
       caller,
-      immutableGenerationId,
+      occurrenceId,
+  sourceCustody,
       transport: { kind: 'checkpointedPull' },
-      generationSignal: new AbortController().signal,
-      isGenerationCurrent: () => true,
+      occurrenceSignal: new AbortController().signal,
+      isOccurrenceCurrent: () => true,
       revalidateCallerMaterialization: async () => true,
-      revalidateCallerImmutableGeneration: async () => true,
+      revalidateCallerOccurrence: async () => true,
       readStoredDefinitions: async ({ input }) => input.knownRevision === '11'
         ? { kind: 'unchanged', revision: '11', eventDeclarationRelease }
         : { kind: 'page', revision: '11', eventDeclarationRelease, definitions, nextCursor: null },
@@ -503,12 +515,13 @@ describe('Automation Event adopted-definition host factory', () => {
     const owner = createAutomationEventAdoptedDefinitionSetHostV1({
       credentials,
       caller,
-      immutableGenerationId,
+      occurrenceId,
+  sourceCustody,
       transport: { kind: 'durablePush' },
-      generationSignal: new AbortController().signal,
-      isGenerationCurrent: () => true,
+      occurrenceSignal: new AbortController().signal,
+      isOccurrenceCurrent: () => true,
       revalidateCallerMaterialization: async () => true,
-      revalidateCallerImmutableGeneration: async () => true,
+      revalidateCallerOccurrence: async () => true,
       readStoredDefinitions: async ({ input }) => {
         expect(input.transport).toEqual({ kind: 'durablePush' });
         if (input.knownRevision === '9') {
@@ -567,12 +580,13 @@ describe('Automation Event adopted-definition host factory', () => {
     const owner = createAutomationEventAdoptedDefinitionSetHostV1({
       credentials,
       caller,
-      immutableGenerationId,
+      occurrenceId,
+  sourceCustody,
       transport: { kind: 'durablePush' },
-      generationSignal: new AbortController().signal,
-      isGenerationCurrent: () => true,
+      occurrenceSignal: new AbortController().signal,
+      isOccurrenceCurrent: () => true,
       revalidateCallerMaterialization: async () => true,
-      revalidateCallerImmutableGeneration: async () => true,
+      revalidateCallerOccurrence: async () => true,
       readStoredDefinitions,
       resolveAccountEncryptionCurrentness: plainCurrentness,
       resolveAccountEncryptionMaterial: async () => null,
@@ -630,12 +644,13 @@ describe('Automation Event adopted-definition host factory', () => {
     const owner = createAutomationEventAdoptedDefinitionSetHostV1({
       credentials,
       caller,
-      immutableGenerationId,
+      occurrenceId,
+  sourceCustody,
       transport: { kind: 'durablePush' },
-      generationSignal: new AbortController().signal,
-      isGenerationCurrent: () => true,
+      occurrenceSignal: new AbortController().signal,
+      isOccurrenceCurrent: () => true,
       revalidateCallerMaterialization: async () => true,
-      revalidateCallerImmutableGeneration: async () => true,
+      revalidateCallerOccurrence: async () => true,
       readStoredDefinitions,
       resolveAccountEncryptionCurrentness: plainCurrentness,
       resolveAccountEncryptionMaterial: async () => null,
@@ -708,12 +723,13 @@ describe('Automation Event adopted-definition host factory', () => {
     const owner = createAutomationEventAdoptedDefinitionSetHostV1({
       credentials,
       caller,
-      immutableGenerationId,
+      occurrenceId,
+  sourceCustody,
       transport: { kind: 'checkpointedPull' },
-      generationSignal: new AbortController().signal,
-      isGenerationCurrent: () => true,
+      occurrenceSignal: new AbortController().signal,
+      isOccurrenceCurrent: () => true,
       revalidateCallerMaterialization: async () => true,
-      revalidateCallerImmutableGeneration: async () => true,
+      revalidateCallerOccurrence: async () => true,
       readStoredDefinitions: async ({ input }) => input.knownRevision === '9'
         ? { kind: 'unchanged', revision: '9', eventDeclarationRelease }
         : {
@@ -857,12 +873,13 @@ describe('Automation Event adopted-definition host factory', () => {
     const owner = createAutomationEventAdoptedDefinitionSetHostV1({
       credentials,
       caller,
-      immutableGenerationId,
+      occurrenceId,
+  sourceCustody,
       transport: { kind: 'checkpointedPull' },
-      generationSignal: new AbortController().signal,
-      isGenerationCurrent: () => true,
+      occurrenceSignal: new AbortController().signal,
+      isOccurrenceCurrent: () => true,
       revalidateCallerMaterialization: async () => true,
-      revalidateCallerImmutableGeneration: async () => true,
+      revalidateCallerOccurrence: async () => true,
       // The catalog is served exactly as the canonical page contract allows:
       // three progressing pages at the page maximum, one stable revision, and
       // distinct opaque cursors.
@@ -1005,12 +1022,13 @@ describe('Automation Event adopted-definition host factory', () => {
     const owner = createAutomationEventAdoptedDefinitionSetHostV1({
       credentials,
       caller,
-      immutableGenerationId,
+      occurrenceId,
+  sourceCustody,
       transport: { kind: 'checkpointedPull' },
-      generationSignal: new AbortController().signal,
-      isGenerationCurrent: () => true,
+      occurrenceSignal: new AbortController().signal,
+      isOccurrenceCurrent: () => true,
       revalidateCallerMaterialization: async () => true,
-      revalidateCallerImmutableGeneration: async () => true,
+      revalidateCallerOccurrence: async () => true,
       readStoredDefinitions: async ({ input }) => input.knownRevision === '8'
         ? { kind: 'unchanged', revision: '8', eventDeclarationRelease }
         : {
@@ -1078,12 +1096,13 @@ describe('adopted definition set Account-currentness cost', () => {
       const owner = createAutomationEventAdoptedDefinitionSetHostV1({
         credentials,
         caller,
-        immutableGenerationId,
+        occurrenceId,
+  sourceCustody,
         transport: { kind: 'checkpointedPull' },
-        generationSignal: new AbortController().signal,
-        isGenerationCurrent: () => true,
+        occurrenceSignal: new AbortController().signal,
+        isOccurrenceCurrent: () => true,
         revalidateCallerMaterialization: async () => true,
-        revalidateCallerImmutableGeneration: async () => true,
+        revalidateCallerOccurrence: async () => true,
         readStoredDefinitions: async (): Promise<AutomationEventStoredDefinitionsReadResultV1> => ({
           kind: 'page',
           revision: '7',

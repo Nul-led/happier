@@ -5,11 +5,11 @@ import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
+import { DEFAULT_CURATED_MARKETPLACE_SOURCE_URL } from '@happier-dev/protocol/marketplace';
 import {
   HOST_PRIVATE_PLUGIN_INSTALL_DECISION_RPC_METHOD,
   HostPrivateMarketplaceSourceRegistryMutationResponseV1Schema,
 } from '@happier-dev/protocol/marketplace/internal';
-import { createEnvKeyScope } from '@/testkit/env/envScope';
 
 import { registerMachineMarketplaceSourcesRpcHandlers } from './rpcHandlers.marketplaceSources';
 import type { PluginChangeDecision, PluginChangeDecisionResult } from '@/plugins/daemon/changeContract';
@@ -59,13 +59,12 @@ describe('rpcHandlers (marketplace sources)', () => {
     });
   });
 
-  it('forwards a source-root trust decision as `trustSourceRoot`, never as an install-and-trust commit', async () => {
-    // A pending source-root review can only be advanced by the daemon change
-    // service's `trustSourceRoot` decision. Forwarding it as `installAndTrust`
-    // is rejected there with `plugin_source_trust_required`, so a wrong
-    // implementation that reuses the positive branch is observable here.
-    const decideChange = vi.fn(async (_decision: PluginChangeDecision): Promise<PluginChangeDecisionResult> => ({
-      kind: 'reviewRequired',
+  it('forwards project trust through the one install-and-trust decision', async () => {
+    const decideChange = vi.fn(async (_decision: PluginChangeDecision): Promise<Extract<
+      PluginChangeDecisionResult,
+      Readonly<{ kind: 'reviewRequired'; reviewKind: 'installation' }>
+    >> => ({
+      kind: 'reviewRequired', reviewKind: 'installation', reason: 'firstInstall', currentVersion: null, authorityExpansion: [],
       pendingChangeId: 'pending-source-1',
       review: {
         pluginId: 'acme.example',
@@ -76,7 +75,9 @@ describe('rpcHandlers (marketplace sources)', () => {
         optionalHostAccess: [],
         contributions: [],
         trustChange: 'newPlugin',
-      } as unknown as Extract<PluginChangeDecisionResult, { kind: 'reviewRequired' }>['review'],
+      } as unknown as Extract<PluginChangeDecisionResult, {
+        kind: 'reviewRequired'; reviewKind: 'installation';
+      }>['review'],
     }));
     const mgr = createRpcHandlerManager();
     registerMachineMarketplaceSourcesRpcHandlers({
@@ -91,11 +92,11 @@ describe('rpcHandlers (marketplace sources)', () => {
     await expect(decide?.({
       v: 1,
       pendingChangeId: 'pending-source-1',
-      decision: 'trustSourceRoot',
-    })).resolves.toMatchObject({ kind: 'reviewRequired', pendingChangeId: 'pending-source-1' });
+      decision: 'installAndTrust', optionalSelections: [],
+    })).resolves.toMatchObject({ kind: 'reviewRequired', reviewKind: 'installation', reason: 'firstInstall', currentVersion: null, authorityExpansion: [], pendingChangeId: 'pending-source-1' });
     expect(decideChange).toHaveBeenCalledWith({
       pendingChangeId: 'pending-source-1',
-      decision: 'trustSourceRoot',
+      decision: 'installAndTrust', optionalSelections: [],
     });
   });
 
@@ -164,11 +165,6 @@ describe('rpcHandlers (marketplace sources)', () => {
 
   it('reads and atomically mutates the shared marketplace source registry file', async () => {
     const happyHomeDir = mkdtempSync(join(tmpdir(), 'happier-marketplace-rpc-'));
-    const envScope = createEnvKeyScope(['HAPPIER_HOME_DIR', 'HAPPIER_MARKETPLACE_CURATED_SOURCE_URL']);
-    envScope.patch({
-      HAPPIER_HOME_DIR: happyHomeDir,
-      HAPPIER_MARKETPLACE_CURATED_SOURCE_URL: 'https://marketplace.example.test/catalog.json',
-    });
     try {
       const mgr = createRpcHandlerManager();
       registerMachineMarketplaceSourcesRpcHandlers({
@@ -192,7 +188,7 @@ describe('rpcHandlers (marketplace sources)', () => {
         sources: [
           expect.objectContaining({
             title: 'Happier curated marketplace',
-            sourceUrl: 'https://marketplace.example.test/catalog.json',
+            sourceUrl: DEFAULT_CURATED_MARKETPLACE_SOURCE_URL,
             enabled: true,
             origin: 'curated',
             description: 'Official curated source',
@@ -255,7 +251,6 @@ describe('rpcHandlers (marketplace sources)', () => {
         error: 'invalid_request',
       });
     } finally {
-      envScope.restore();
       rmSync(happyHomeDir, { recursive: true, force: true });
     }
   });

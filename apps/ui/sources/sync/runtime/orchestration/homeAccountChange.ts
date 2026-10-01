@@ -21,13 +21,14 @@ export type HomeAccountChangeEvent = Readonly<{
     /**
      * Detailed focused-Home catch-up may publish the incumbent change planner's
      * exact Session-list decision. Socket-only concurrent-Home wakes omit it and
-     * remain conservative.
+     * remain conservative. `'structural'` means only row-level Session writes: a
+     * corpus the ordinary list can answer is unaffected, a structural filter may move.
      */
-    sessionListQueryAffects?: boolean;
+    sessionListQueryAffects?: boolean | 'structural';
 }>;
 
 type HomeAccountChangeDetails = Readonly<{
-    sessionListQueryAffects?: boolean;
+    sessionListQueryAffects?: boolean | 'structural';
 }>;
 
 /** Focused changes that can alter Home administration eligibility or rows. */

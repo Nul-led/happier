@@ -5,6 +5,7 @@ import type { FavoriteModelSelectionV1 } from '@/sync/domains/models/favoriteMod
 import type { Settings } from '@/sync/domains/settings/settings';
 import type { NewSessionAgentPickerViewV1 } from '@/sync/domains/settings/registry/account/accountSessionCreationSettingDefinitions';
 import type { SessionModelPickerExperimentalConfirmationController } from '@/components/sessions/modelPicker/SessionModelPicker';
+import type { NewSessionEngineOptionDetailProps } from '@/components/sessions/new/components/NewSessionEngineOptionDetail';
 
 import type { SessionAgentPickerSelection } from '@/components/sessions/agentPicker/buildSessionAgentPickerDetailContent';
 import { buildSessionAgentPickerDetailContent } from '@/components/sessions/agentPicker/buildSessionAgentPickerDetailContent';
@@ -24,6 +25,7 @@ type BuildNewSessionAgentPickerOptionInteractionsParams = Readonly<{
         favorite: boolean;
         onToggle: () => void;
     }>;
+    providerProjection?: NewSessionEngineOptionDetailProps['providerProjection'];
     experimentalConfirmation?: SessionModelPickerExperimentalConfirmationController;
     onRememberAgentPickerView?: (view: NewSessionAgentPickerViewV1) => void;
     getEngineSelectionForTargetKey: (targetKey: string) => SessionAgentPickerSelection;
@@ -80,6 +82,7 @@ export function buildNewSessionAgentPickerOptionInteractions(
                     ? (model) => params.onToggleFavoriteModel?.(params.entry, model)
                     : undefined,
                 favoriteEngine: params.favoriteEngine,
+                ...(params.providerProjection ? { providerProjection: params.providerProjection } : {}),
                 experimentalConfirmation: params.experimentalConfirmation,
                 onSelectionChange: (nextSelection) => {
                     params.selectEngineSelection(params.entry, nextSelection);

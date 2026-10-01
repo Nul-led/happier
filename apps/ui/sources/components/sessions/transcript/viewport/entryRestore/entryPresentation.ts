@@ -16,9 +16,9 @@ export type EntryPresentationEvent =
 
 export function createEntryPresentationKey(params: Readonly<{
     platform: EntryPresentationPlatform;
-    sessionId: string;
+    dataKey: string;
 }>): string {
-    return `${params.platform}\0${params.sessionId}`;
+    return `${params.platform}\0${params.dataKey}`;
 }
 
 export function createEntryPresentationState(key: string | null): EntryPresentationState {

@@ -6,9 +6,12 @@ import { decodeBase64, decrypt, encodeBase64, encrypt } from '../encryption';
 import { deriveActivitySummaryFromAgentState } from './deriveActivitySummaryFromAgentState';
 import {
     projectSessionMetadataAgentVocabularyWriteCompatibilityV1,
+    projectSessionMetadataForWire,
+    normalizeSessionMetadataForRead,
     SESSION_RUNTIME_ACTIVITY_SNAPSHOT_EVENT,
     SessionRuntimeActivitySnapshotAckSchema,
     SessionRuntimeActivitySnapshotRequestSchema,
+    readSessionModesMetadata,
 } from '@happier-dev/protocol';
 
 type AckableSocket = {
@@ -53,18 +56,7 @@ function describeAckFailure(answer: any): string {
 }
 
 function readLoggedCurrentModeId(metadata: Record<string, unknown> | null | undefined): string | null {
-    const genericCurrentModeId = typeof metadata?.sessionModesV1 === 'object'
-        && typeof (metadata as any).sessionModesV1?.currentModeId === 'string'
-        ? (metadata as any).sessionModesV1.currentModeId
-        : null;
-    if (genericCurrentModeId) {
-        return genericCurrentModeId;
-    }
-
-    return typeof metadata?.acpSessionModesV1 === 'object'
-        && typeof (metadata as any).acpSessionModesV1?.currentModeId === 'string'
-        ? (metadata as any).acpSessionModesV1.currentModeId
-        : null;
+    return readSessionModesMetadata(metadata)?.currentModeId ?? null;
 }
 
 export async function updateSessionMetadataWithAck(opts: {
@@ -96,9 +88,9 @@ export async function updateSessionMetadataWithAck(opts: {
         const current = opts.getMetadata() ?? ({} as Metadata);
         const updated = opts.handler(current);
         const wireMetadata =
-            projectSessionMetadataAgentVocabularyWriteCompatibilityV1(
+            projectSessionMetadataForWire(projectSessionMetadataAgentVocabularyWriteCompatibilityV1(
                 updated,
-            );
+            ));
         logger.debug('[API] updateMetadata attempting', {
             expectedVersion: opts.getMetadataVersion(),
             hasModeOverride: Boolean((updated as Record<string, unknown> | null)?.acpSessionModeOverrideV1),
@@ -144,10 +136,10 @@ export async function updateSessionMetadataWithAck(opts: {
         if (answer.result === 'version-mismatch') {
             if (answer.version > opts.getMetadataVersion()) {
                 opts.setMetadataVersion(answer.version);
-                const next =
+                const next = normalizeSessionMetadataForRead(
                     opts.sessionEncryptionMode === 'plain'
                         ? JSON.parse(String(answer.metadata ?? 'null'))
-                        : decrypt(opts.encryptionKey, opts.encryptionVariant, decodeBase64(answer.metadata));
+                        : decrypt(opts.encryptionKey, opts.encryptionVariant, decodeBase64(answer.metadata)));
                 logger.debug('[API] updateMetadata version-mismatch', {
                     version: answer.version,
                     hasModeOverride: Boolean((next as Record<string, unknown> | null)?.acpSessionModeOverrideV1),
@@ -173,6 +165,13 @@ export async function updateSessionMetadataWithAck(opts: {
             'metadata_update_failed',
             false,
         );
+    }).catch((error: unknown) => {
+        logger.infoFile('[API] session_metadata_update_failed', {
+            phase: 'terminal_failure',
+            operation: 'update-metadata',
+            sessionId: opts.sessionId,
+        });
+        throw error;
     });
 }
 

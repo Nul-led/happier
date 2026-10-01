@@ -294,7 +294,7 @@ describe('creator Runner review and materialization', () => {
             payload: {
                 v: 1, purpose: 'happier.ephemeral-session-runner.readiness', claim: fixture.claim.payload,
                 launchManifestCommitment: prepared.review.launchManifestCommitment,
-                installation: { agentTarget: preparedAuthoring.authoring.agentTarget!, managedInstallationId: 'managed-a', executablePath: '/runner/agent', authoritativeVersion: null },
+                installation: { agentTarget: preparedAuthoring.authoring.agentTarget!, agentRuntimeId: 'codex', executablePath: '/runner/agent', authoritativeVersion: null },
                 credentialSelectionBinding: prepared.review.credentialSelectionBinding,
                 brokerReadinessRequest: brokerReadinessRequest(
                     fixture,
@@ -558,7 +558,7 @@ describe('creator Runner review and materialization', () => {
                 launchManifestCommitment: prepared.review.launchManifestCommitment,
                 installation: {
                     agentTarget: { kind: 'agent', identity: { pluginId: 'happier.opencode', localId: 'opencode' } },
-                    managedInstallationId: 'managed-b',
+                    agentRuntimeId: 'opencode',
                     executablePath: '/runner/opencode',
                     authoritativeVersion: null,
                 },
@@ -612,7 +612,7 @@ describe('creator Runner review and materialization', () => {
                 launchManifestCommitment: prepared.review.launchManifestCommitment,
                 installation: {
                     agentTarget: preparedAuthoring.authoring.agentTarget!,
-                    managedInstallationId: 'managed-a',
+                    agentRuntimeId: 'codex',
                     executablePath: '/runner/agent',
                     authoritativeVersion: null,
                 },
@@ -674,7 +674,7 @@ describe('creator Runner review and materialization', () => {
             payload: {
                 v: 1, purpose: 'happier.ephemeral-session-runner.readiness', claim: fixture.claim.payload,
                 launchManifestCommitment: prepared.review.launchManifestCommitment,
-                installation: { agentTarget: preparedAuthoring.authoring.agentTarget!, managedInstallationId: 'managed-a', executablePath: '/runner/agent', authoritativeVersion: null },
+                installation: { agentTarget: preparedAuthoring.authoring.agentTarget!, agentRuntimeId: 'codex', executablePath: '/runner/agent', authoritativeVersion: null },
                 credentialSelectionBinding: prepared.review.credentialSelectionBinding,
                 brokerReadinessRequest: brokerReadinessRequest(
                     fixture,

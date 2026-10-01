@@ -54,18 +54,74 @@ const path = require('path');
 async function unpackTools(options = {}) {
   const platformDir = options.platformDir || 'unknown';
   const toolsDir = options.toolsDir || path.resolve(__dirname, '..', 'tools');
+  const requestedTools = options.tools || ['ripgrep', 'zellij'];
   const unpackedPath = path.join(toolsDir, 'unpacked');
   fs.mkdirSync(unpackedPath, { recursive: true });
-  const binaryName = platformDir === 'x64-win32' ? 'zellij.exe' : 'zellij';
-  fs.writeFileSync(path.join(unpackedPath, binaryName), 'zellij 0.44.3 for ' + platformDir + '\\n');
+  if (requestedTools.includes('ripgrep')) {
+    fs.writeFileSync(path.join(unpackedPath, platformDir === 'x64-win32' ? 'rg.exe' : 'rg'), 'ripgrep for ' + platformDir + '\\n');
+  }
+  if (requestedTools.includes('zellij')) {
+    const binaryName = platformDir === 'x64-win32' ? 'zellij.exe' : 'zellij';
+    fs.writeFileSync(path.join(unpackedPath, binaryName), 'zellij 0.44.3 for ' + platformDir + '\\n');
+  }
   fs.writeFileSync(path.join(unpackedPath, '.happier-tools-manifest.json'), JSON.stringify({
     platformDir,
-    tools: { zellij: { version: '0.44.3' } },
+    tools: Object.fromEntries(requestedTools.map((tool) => [tool, { version: tool === 'zellij' ? '0.44.3' : '0' }])),
   }, null, 2) + '\\n');
   return { success: true, alreadyUnpacked: false };
 }
 
 module.exports = { unpackTools };
+`, 'utf8');
+}
+
+function writeCliArtifactClosureOwnerFixture(repoRoot) {
+  const scriptPath = join(repoRoot, 'apps', 'cli', 'scripts', 'buildSharedDeps.mjs');
+  mkdirSync(join(scriptPath, '..'), { recursive: true });
+  writeFileSync(scriptPath, `
+import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+
+let inFlightBuild = null;
+
+function sourcePackageDir(repoRoot, packageName) {
+  const workspaceName = packageName.split('/').at(-1);
+  return workspaceName.startsWith('plugins-')
+    ? join(repoRoot, 'packages', 'plugins', workspaceName.slice('plugins-'.length))
+    : join(repoRoot, 'packages', workspaceName);
+}
+
+export async function buildBundledWorkspaceDependenciesForCli({
+  repoRoot,
+  publicationMode,
+  ensureWorkspacePackagesBuiltByNameImpl,
+}) {
+  if (publicationMode !== 'artifact') throw new Error('expected artifact publication');
+  if (inFlightBuild) return await inFlightBuild;
+  inFlightBuild = (async () => {
+    const cliDir = join(repoRoot, 'apps', 'cli');
+    const cliPackage = JSON.parse(await readFile(join(cliDir, 'package.json'), 'utf8'));
+    const packageNames = cliPackage.bundledDependencies ?? [];
+    await ensureWorkspacePackagesBuiltByNameImpl?.(repoRoot, packageNames, {
+      includeDevDependencies: false,
+      publicationMode: 'artifact',
+    });
+    for (const packageName of packageNames) {
+      const source = sourcePackageDir(repoRoot, packageName);
+      const destination = join(cliDir, 'node_modules', ...packageName.split('/'));
+      const sourcePackage = JSON.parse(await readFile(join(source, 'package.json'), 'utf8'));
+      await rm(destination, { recursive: true, force: true });
+      await mkdir(destination, { recursive: true });
+      await writeFile(join(destination, 'package.json'), JSON.stringify({ ...sourcePackage, files: ['dist'] }), 'utf8');
+      await cp(join(source, 'dist'), join(destination, 'dist'), { recursive: true, force: true });
+    }
+  })();
+  try {
+    return await inFlightBuild;
+  } finally {
+    inFlightBuild = null;
+  }
+}
 `, 'utf8');
 }
 
@@ -146,6 +202,7 @@ function writeCliArtifactFixtures(repoRoot) {
     'utf8',
   );
   writeCliToolUnpackFixture(repoRoot);
+  writeCliArtifactClosureOwnerFixture(repoRoot);
   writeWorkspacePackageFixture({ repoRoot, packageName: '@happier-dev/agents', relativeDir: ['packages', 'agents'] });
   writeWorkspacePackageFixture({ repoRoot, packageName: '@happier-dev/cli-common', relativeDir: ['packages', 'cli-common'] });
   writeWorkspacePackageFixture({ repoRoot, packageName: '@happier-dev/connection-supervisor', relativeDir: ['packages', 'connection-supervisor'] });
@@ -169,26 +226,6 @@ function writeCliArtifactFixtures(repoRoot) {
   writeFileSync(join(cliScriptsDir, 'terminal_launch_spec_runner.cjs'), 'console.log("terminal launch spec");\n', 'utf8');
   writeFileSync(join(cliScriptsDir, 'node_pty_relay.cjs'), 'console.log("node pty relay");\n', 'utf8');
   writeFileSync(join(cliRuntimeDir, 'loadTransformersFromRuntime.mjs'), 'export const env = {}; export async function pipeline() { return () => null; }\n', 'utf8');
-  writeFileSync(
-    join(cliRuntimeDir, 'loadVoiceInferenceRuntime.mjs'),
-    [
-      "try {",
-      "  await import('sherpa-onnx-node');",
-      "} catch (error) {",
-      "  const runtimeError = new Error(",
-      "    error instanceof Error && error.message.trim().length > 0",
-      "      ? `voice_inference_runtime_unavailable:${error.message}`",
-      "      : 'voice_inference_runtime_unavailable',",
-      '  );',
-      "  runtimeError.code = 'runtime_unavailable';",
-      '  throw runtimeError;',
-      '}',
-      '',
-      'export { voiceInferenceRuntimeEngine } from "../../package-dist/daemon/voiceInference/runtime/packagedVoiceInferenceRuntime.mjs";',
-      '',
-    ].join('\n'),
-    'utf8',
-  );
   writeFileSync(join(cliShimsDir, 'git'), '#!/bin/sh\nexit 0\n', 'utf8');
   writeFileSync(join(cliShimsDir, 'rg'), '#!/bin/sh\nexit 0\n', 'utf8');
   writeFileSync(
@@ -315,12 +352,13 @@ test('buildCliBinaryArtifactPayload reuses the first completed dist build across
     assert.equal(cliDistBuildCalls.length, 1);
     assert.equal(existsSync(join(payloadDirA, executableName)), true);
     assert.equal(existsSync(join(payloadDirB, executableName)), true);
-    assert.equal(existsSync(join(payloadDirA, 'scripts', 'runtime', 'loadVoiceInferenceRuntime.mjs')), true);
-    assert.equal(existsSync(join(payloadDirB, 'node_modules', 'ffmpeg-static')), false);
+    assert.equal(existsSync(join(payloadDirA, 'scripts', 'runtime', 'loadVoiceInferenceRuntime.mjs')), false);
+    assert.equal(existsSync(join(payloadDirB, 'node_modules', 'ffmpeg-static')), true);
     assert.equal(existsSync(join(payloadDirB, 'node_modules', 'sherpa-onnx-node')), false);
-    assert.equal(existsSync(join(payloadDirB, 'tools', 'archives', `voice-inference-runtime-${target.os}-${target.arch}.tar.gz`)), true);
-    assert.equal(existsSync(join(payloadDirA, 'tools', 'unpacked', target.os === 'windows' ? 'zellij.exe' : 'zellij')), true);
-    assert.equal(existsSync(join(payloadDirB, 'tools', 'unpacked', target.os === 'windows' ? 'zellij.exe' : 'zellij')), true);
+    assert.equal(existsSync(join(payloadDirB, 'node_modules', `sherpa-onnx-${target.os === 'windows' ? 'win' : target.os}-${target.arch}`)), false);
+    assert.equal(existsSync(join(payloadDirB, 'tools', 'archives', `voice-inference-runtime-${target.os}-${target.arch}.tar.gz`)), false);
+    assert.equal(existsSync(join(payloadDirA, 'tools', 'unpacked', target.os === 'windows' ? 'zellij.exe' : 'zellij')), target.os !== 'windows');
+    assert.equal(existsSync(join(payloadDirB, 'tools', 'unpacked', target.os === 'windows' ? 'zellij.exe' : 'zellij')), target.os !== 'windows');
   } finally {
     rmSync(tempRoot, { recursive: true, force: true });
   }

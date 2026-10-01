@@ -48,7 +48,7 @@ describe('session draft attachment bounds', () => {
     it('does not reconstruct an exact occurrence from a positionless continuation mention', () => {
         const localId = 'continuation-message-1';
         const parsed = SESSION_DRAFT_VALUE_SCHEMAS['routing.agentContinuation'].safeParse({
-            backendTargetKey: 'backend:codex',
+            backendTargetKey: 'agent:happier.agent.codex/codex',
             intent: {
                 v: 1,
                 mode: 'same_session',

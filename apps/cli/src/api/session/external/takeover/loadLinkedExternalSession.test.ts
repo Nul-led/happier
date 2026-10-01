@@ -1,17 +1,13 @@
-import { cp, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
-import { createRequire } from 'node:module';
+import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { basename, dirname, join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getResolvedContributionRegistry } from '@/plugins/projection/registry/createResolvedContributionRegistry';
-import { BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS } from '@/plugins/projection/registry/sources/generatedBundledPluginArtifacts';
 import type { PluginRuntimeRegistryLease } from '@/plugins/runtime/reload/controller';
 import { pluginReloadController } from '@/plugins/runtime/reload/singleton';
 import { resolveExecutablePluginRuntimeRegistry } from '@/plugins/runtime/resolveExecutablePluginRuntimeRegistry';
-import { createLocalPathPluginDistributionIdentity } from '@/plugins/store/install/trustIdentity';
-import { createImmutablePluginGenerationRecordFromSource } from '@/plugins/store/registry/generationStore';
 
 const fetchSessionByIdMock = vi.fn();
 const fetchAccountEncryptionCurrentnessMock = vi.fn();
@@ -26,44 +22,6 @@ const {
   resolveExternalSessionSourceKeyOwnerMock: vi.fn(),
 }));
 const temporaryRoots = new Set<string>();
-const generationRoots = new Set<string>();
-
-function bundledPluginPackageRoot(packageName: string): string {
-  const resolvePackage = createRequire(import.meta.url);
-  return dirname(dirname(resolvePackage.resolve(packageName)));
-}
-
-async function bundledFixtureGenerations(pluginIds: ReadonlySet<string>) {
-  return await Promise.all(
-    BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS
-      .filter((artifact) => pluginIds.has(artifact.record.pluginId))
-      .map(async (artifact) => {
-        const packageRoot = bundledPluginPackageRoot(artifact.packageName);
-        const rootPath = await mkdtemp(join(tmpdir(), 'happier-linked-generation-'));
-        generationRoots.add(rootPath);
-        await cp(packageRoot, rootPath, {
-          recursive: true,
-          filter: (source) => basename(source) !== 'node_modules',
-        });
-        const record = await createImmutablePluginGenerationRecordFromSource({
-          pluginId: artifact.record.pluginId,
-          sourceRootPath: rootPath,
-          manifestRelativePath: '.happier-plugin/plugin.json',
-          distribution: await createLocalPathPluginDistributionIdentity(rootPath),
-          updatePolicy: 'reviewEveryUpdate',
-          createdAtMs: 0,
-          immutableGenerationId: artifact.record.immutableGenerationId,
-        });
-        await symlink(join(process.cwd(), 'node_modules'), join(rootPath, 'node_modules'));
-        return [artifact.record.pluginId, {
-          pluginId: artifact.record.pluginId,
-          immutableGenerationId: record.immutableGenerationId,
-          rootPath,
-          record,
-        }] as const;
-      }),
-  );
-}
 
 vi.mock('@/session/transport/http/sessionsHttp', () => ({
   fetchSessionById: (...args: unknown[]) => fetchSessionByIdMock(...args),
@@ -136,16 +94,14 @@ describe('loadLinkedExternalSession', () => {
         ),
       ),
     };
-    const admittedPluginIds = new Set(pluginIds);
     runtimeRegistryLease = await pluginReloadController.acquireRuntimeRegistry({
       resolveRuntimeRegistry: async () => await resolveExecutablePluginRuntimeRegistry({
         contributes,
         pluginIds,
         generationAuthority: {
           commit: null,
-          generations: new Map(await bundledFixtureGenerations(admittedPluginIds)),
+          generations: new Map(),
           rejectedGenerations: new Map(),
-          unavailableBundledPackageNames: new Set(),
           isCurrent: async () => true,
         },
       }),
@@ -156,10 +112,6 @@ describe('loadLinkedExternalSession', () => {
     await runtimeRegistryLease?.release();
     runtimeRegistryLease = null;
     await pluginReloadController.shutdown({ timeoutMs: 5_000 });
-    await Promise.all([...generationRoots].map(
-      (root) => rm(root, { recursive: true, force: true }),
-    ));
-    generationRoots.clear();
   });
 
   beforeEach(() => {

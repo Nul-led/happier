@@ -1,12 +1,12 @@
 import * as React from 'react';
 import { Platform, Pressable, View } from 'react-native';
-import { Stack, useLocalSearchParams, useNavigation, useRouter, type Href } from 'expo-router';
-import { useIsFocused } from '@react-navigation/native';
+import { Stack, useLocalSearchParams, useNavigation, useRouter, useIsFocused, type Href } from '@/components/appShell/workspace/destinationRoute';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { useMobileWorkspaceExperienceState } from '@/components/workspaceCockpit/useMobileWorkspaceExperienceState';
 import { normalizeSessionMobileSurface } from '@/components/workspaceCockpit/session/sessionCockpitState';
-import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
+import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
+import { SurfaceStateSizeProvider } from '@/components/ui/surfaces/surfaceStateSize';
 import { Icon } from '@/components/ui/icons/Icon';
 import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
 import { createSessionRouteServerScope } from '@/hooks/session/sessionRouteServerScope';
@@ -30,7 +30,6 @@ const minimumInteractiveTargetSize = resolveMinimumInteractiveTargetSize(Platfor
 
 const styles = StyleSheet.create((theme) => ({
     root: { flex: 1, backgroundColor: theme.colors.background?.canvas ?? theme.colors.surface.base },
-    loading: { flex: 1, alignItems: 'center', justifyContent: 'center' },
     headerButton: { minWidth: minimumInteractiveTargetSize, minHeight: minimumInteractiveTargetSize, alignItems: 'center', justifyContent: 'center' },
 }));
 
@@ -106,8 +105,9 @@ export function SessionDiscussionRouteScreen(props: Readonly<{
     return (
         <View style={styles.root}>
             <Stack.Screen options={screenOptions} />
+            <SurfaceStateSizeProvider size="phone">
             {!hydrated && !missing ? (
-                <View style={styles.loading}><ActivitySpinner size="small" color={theme.colors.text.secondary} /></View>
+                <SurfaceStateCard testID="session-discussion-route-loading" kind="loading" title={t('sessionConversation.discussion.loadingTitle')} />
             ) : !validTarget || missing ? (
                 <SessionInvalidLinkFallback />
             ) : (
@@ -117,6 +117,7 @@ export function SessionDiscussionRouteScreen(props: Readonly<{
                         : { kind: 'discussion', address, discussionId: discussionId! }}
                     active={routeFocused}
                     standaloneSurface
+                    onClose={onBack}
                     onCreated={(discussion) => {
                         router.replace(buildSessionDiscussionRouteHref({
                             target: {
@@ -129,6 +130,7 @@ export function SessionDiscussionRouteScreen(props: Readonly<{
                     }}
                 />
             )}
+            </SurfaceStateSizeProvider>
         </View>
     );
 }

@@ -32,7 +32,7 @@ function readPositiveIntFromEnv(value: string | undefined, fallback: number): nu
   return parsed;
 }
 
-function resolvePayloadOwnerStopTimeoutMs(processEnv: NodeJS.ProcessEnv): number {
+export function resolvePayloadOwnerStopTimeoutMs(processEnv: NodeJS.ProcessEnv): number {
   return readPositiveIntFromEnv(
     processEnv.HAPPIER_INSTALLER_PRE_INSTALL_COMMAND_TIMEOUT_MS,
     DEFAULT_PAYLOAD_OWNER_STOP_TIMEOUT_MS,

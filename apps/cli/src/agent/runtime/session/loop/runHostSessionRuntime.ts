@@ -15,10 +15,13 @@ import type {
   SessionPendingMessageComposerAdmissionAbandonedRequestV1,
   SessionMetadataPublisherPreconditionV1,
   SessionContextUsageSnapshotV1,
+  WorkerUpdateV1,
+  TranscriptRawAgentEventV1,
 } from '@happier-dev/protocol';
 import type {
   AgentSessionHostServices,
   AgentSessionModelsSource,
+  AgentSessionModesSource,
   AgentSessionRuntime,
   AgentSessionRuntimeAuthControl,
 } from '@happier-dev/plugin-sdk/agents/runtime';
@@ -37,8 +40,18 @@ import {
   SessionModelSelectionV1Schema,
   SessionModelTransitionRequestV1Schema,
   SessionModelTransitionResultV1Schema,
+  renderWorkerUpdatePromptBlockV1,
+  readSessionRolesV1,
 } from '@happier-dev/protocol';
 import { readNonBlankOpaqueIdentifier } from '@happier-dev/protocol';
+import { WORKFLOW_STEP_INPUT_EVENT_MESSAGE, isSessionContextOnlyHostInput } from '@/session/shared/sessionTurnLifecycle';
+import { createWorkflowOriginContextInputPort } from '@/agent/runtime/session/contextOnly/workflowOriginInput';
+import { createWorkflowRunStorageClient } from '@/daemon/workflows/workflowRunStorageClient';
+import { resolveAutomationWorkerAccountEncryption } from '@/daemon/automation/automationWorker';
+import { findTranscriptEncryptedMessageByLocalIdV2 } from '@/api/session/transcriptMessageLookup';
+import { openSessionMessageContent } from '@/session/transport/encryption/sessionEncryptionContext';
+import { resolveServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
+import { clearInitialGoalFromEnv, readInitialGoalFromEnv } from '@/daemon/spawn/initialGoal';
 import { SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc';
 
 import type { ApiClient } from '@/api/api';
@@ -54,6 +67,7 @@ import type { PushNotificationClient } from '@/api/pushNotifications';
 import { createCurrentSessionTranscriptPort } from '@/api/session/createCurrentSessionTranscriptPort';
 import { connectionState } from '@/api/offline/serverConnectionErrors';
 import type { MachineMetadata, Metadata, PermissionMode } from '@/api/types';
+import { buildTerminalMetadataFromRuntimeFlags } from '@/terminal/runtime/terminalMetadata';
 import type { McpServerConfig } from '@/agent';
 import { createProviderEnforcedPermissionHandler } from '@/agent/permissions/providerEnforced/createHandler';
 import type { ProviderEnforcedPermissionHandler } from '@/agent/permissions/providerEnforced/handler';
@@ -96,6 +110,12 @@ import type { RuntimeActionSettingsProvider } from '@/settings/actionsSettingsPr
 import type { PluginRuntimeRegistryLease } from '@/plugins/runtime/reload/controller';
 import { resolveRunnerMcpServers } from '@/mcp/runtime/resolveRunnerMcpServers';
 import { applyRunnerMcpSessionContext } from '@/mcp/runtime/applyRunnerMcpSessionContext';
+import { createSessionRoleContext } from '@/session/roles/sessionRoleContext';
+import { createWorkspaceWritesPolicyPreparation } from '@/session/roles/workspaceWritesPolicyPreparation';
+import { createRoleSourceReader } from '@/session/roles/roleSources';
+import { createSessionPromptPlanResolver, type SessionPromptPlanResolver } from '@/agent/prompting/coding/sessionPromptPlan';
+import { createCredentialedAccountArtifactStore } from '@/api/artifacts/accountArtifactStore';
+import { readAccountIdFromToken } from '@/cloud/decodeJwtPayload';
 import { registerHappierSessionAgentToolRpc } from '@/mcp/startHappyServer';
 import { resolveCliMemoryRecallGuidanceEnabled } from '@/agent/prompts/library/resolveCliMemoryRecallGuidanceEnabled';
 import { resolveAgentToolsDelivery } from '@/agent/tools/happierTools/runtime/resolveAgentToolsDelivery';
@@ -129,6 +149,7 @@ import {
 import { createSwapAwareRpcHandlerRegistrar } from '@/agent/runtime/session/loop/createSwapAwareRpcHandlerRegistrar';
 import { createSessionProviderInputConsumer } from '@/agent/runtime/session/input/sessionProviderInputConsumer';
 import {
+  publishSessionFollowWakeInvalidation,
   readSessionFollowWakeInvalidationGeneration,
   waitForSessionFollowWakeInvalidation,
 } from '@/agent/runtime/session/follow/sessionFollowWakeSignal';
@@ -142,6 +163,7 @@ import { createSessionProviderInputConsumerSessionAdapter } from '@/agent/runtim
 import { commitRuntimeSessionEvent } from '@/agent/runtime/session/transcripts/publishRuntimeSessionEvent';
 import { resolveInitialHostSessionModelSelection } from '@/agent/runtime/session/loop/resolveInitialModelSelection';
 import { createSessionRuntimeModelsPublisher } from '@/agent/runtime/controls/sessionRuntimeModelsPublisher';
+import { createSessionRuntimeModesPublisher } from '@/agent/runtime/controls/sessionRuntimeModesPublisher';
 import type { RuntimeTurnOperations } from '@/agent/runtime/turns/runtimeTurnOperations';
 import {
   createInitialHostRuntimeActivityMutation,
@@ -205,13 +227,18 @@ import { resolveNativeAgentModelApplyPolicy } from '@/providers/sessions/resolve
 import { applyActiveModelFacts } from '@/providers/sessions/applyActiveModelFacts';
 import { readProcessIdentityByPid } from '@/daemon/processIdentity';
 import { notifyComposerAttachmentsAfterMessageAccepted } from '@/session/composer/notifyComposerAttachmentsAfterMessageAccepted';
-import type { SessionFollowPreparedContext } from '@/agent/runtime/session/follow/sessionFollowContextReconciler';
+import {
+  fitWorkerUpdateWithinHostContextAllowance,
+  type HostContextOnlyInputPort,
+  type HostPreparedContext,
+} from '@/agent/runtime/session/contextOnly/hostContextOnlyInput';
+import { createWorkflowStepWithdrawal } from '@/agent/runtime/session/contextOnly/workflowStepWithdrawal';
 import { createSessionFollowContextReconciler } from '@/agent/runtime/session/follow/sessionFollowContextReconciler';
 import {
   createSessionFollowSourceHydrator,
 } from '@/agent/runtime/session/follow/sessionFollowSourceHydrator';
 import type { SessionFollowSourceMaterialController } from '@/agent/runtime/session/follow/sessionFollowSourceMaterialResolver';
-import { resolveSessionFollowContextUtf8AllowanceV1 } from '@/agent/runtime/session/follow/sessionFollowContextBudget';
+import { measureSessionFollowUtf8Bytes, resolveSessionFollowContextUtf8AllowanceV1 } from '@/agent/runtime/session/follow/sessionFollowContextBudget';
 
 type TransformSessionInputBeforeCommit = NonNullable<
   ApiSessionClientOptions['transformSessionInputBeforeCommit']
@@ -409,6 +436,7 @@ export type HostSessionRuntimeHookRuntime = Readonly<{
   setRuntimeReplacementLifecycle?: (lifecycle: HostRuntimeReplacementLifecycle) => void;
   connectedServiceApplicationSettled?: AgentSessionRuntime['connectedServiceApplicationSettled'];
   models?: AgentSessionModelsSource;
+  modes?: AgentSessionModesSource;
   setOnPromptDeliveryOutcome: (
     handler: ((outcome: HostProviderInputOutcomeEvidence) => void) | null,
   ) => void;
@@ -471,6 +499,8 @@ export type HostSessionRuntimeHookRuntime = Readonly<{
 export type HostSessionRuntimeFactoryParams = Readonly<{
   directory: string;
   metadata: Metadata;
+  /** Verified invocation placement, never reconstructed from persisted Session metadata. */
+  currentTerminalMetadata?: Readonly<Pick<Metadata, 'terminal' | 'startedBy'>>;
   machineId: string;
   agentTargetKey: string;
   session: ApiSessionClient;
@@ -479,6 +509,10 @@ export type HostSessionRuntimeFactoryParams = Readonly<{
   messageBuffer: MessageBuffer;
   mcpServers: Record<string, McpServerConfig>;
   accountSettings?: AccountSettings | null;
+  /** Explicit scope for Account-settings consumers; Session scope is fail-closed. */
+  accountSettingsAuthority?: HostSessionRuntimeAuthority['scope'];
+  /** Explicit runtime credential reader for scoped compositions; ordinary hosts use their existing persistence reader. */
+  readCredentials?: () => Promise<import('@/persistence').StoredCredentials | null>;
   providerBindingMaterialization?: AgentProviderBindingLaunchMaterializationV1;
   /** True only for the exact matching local cross-agent native-return record. */
   strictNativeResumeIdentity?: boolean;
@@ -486,6 +520,8 @@ export type HostSessionRuntimeFactoryParams = Readonly<{
   pendingQueueDeliveryTiming?: AccountSettings['sessionPendingQueueDeliveryTiming'];
   permissionHandler: ProviderEnforcedPermissionHandler;
   getPermissionMode: () => PermissionMode;
+  getWorkspaceWrites?: () => 'allow' | 'deny' | undefined;
+  resolveFreshSessionSystemPrompt?: SessionPromptPlanResolver;
   // Effective thinking/keepalive is host-owned: the session loop's
   // `setThinkingState` is the single writer, because it is the only path that
   // also publishes the keepalive that carries the fact. Session-runtime
@@ -648,6 +684,8 @@ type TerminalDisplayController = Readonly<{
 
 export type HostSessionRuntimeRunOptions = {
   credentials: import('@/persistence').StoredCredentials;
+  /** Caller content is composed by the session PromptPlan owner, never delivered separately. */
+  agentSessionStartupInstructionsV1?: import('@happier-dev/protocol').AgentSessionStartupInstructionsV1;
   /** Opaque host-derived tag for an admitted create-or-rejoin request. */
   sessionCreationTag?: import('@happier-dev/protocol').SessionCreationTagV1;
   /** Immutable correspondence admitted with sessionCreationTag. */
@@ -696,6 +734,25 @@ export type CanonicalHostSessionRuntimeRunOptions = Omit<
 
 export type HostSessionRuntimePushSender = Pick<PushNotificationClient, 'sendToAllDevices' | 'sendToAllDevicesAsync'>;
 
+/**
+ * Explicit credentials and scope for host-owned Action/MCP composition.
+ * Ordinary runtimes omit this and retain Account authority; restricted
+ * runtimes provide their verified Session principal's transport credentials
+ * with no Account credential.
+ */
+export type HostSessionRuntimeAuthority = Readonly<{
+  sessionCredentials: import('@/persistence').StoredCredentials;
+} & (
+  | {
+      scope: 'account';
+      accountCredentials: import('@/persistence').StoredCredentials;
+    }
+  | {
+      scope: 'session';
+      accountCredentials: null;
+    }
+)>;
+
 export type HostSessionRuntimeStartupSeed = Readonly<{
   permissionMode: PermissionMode;
   permissionModeUpdatedAt: number;
@@ -726,6 +783,7 @@ export type HostSessionRuntimeConfig = {
   runtimeActivityApplicability: RuntimeActivityApplicability;
   /** Scoped source DEKs for restricted runtimes; ordinary runtimes omit this. */
   sessionFollowSourceMaterialResolver?: SessionFollowSourceMaterialController | null;
+  hostContextOnlyInput?: HostContextOnlyInputPort;
   machineMetadata: MachineMetadata;
   terminalDisplay: React.ComponentType<TerminalDisplayProps>;
   formatPromptErrorMessage: (error: unknown) => string;
@@ -762,6 +820,8 @@ export type HostSessionRuntimeConfig = {
   pluginRuntimeRegistryLease?: PluginRuntimeRegistryLease;
   /** Reviewed activation-local MCP material already resolved by the canonical owner. */
   resolvedMcpServers?: Record<string, McpServerConfig>;
+  /** Explicit host Action/MCP authority; absent for ordinary Account runtimes. */
+  runtimeAuthority?: HostSessionRuntimeAuthority;
   resolveKeepAliveMode?: () => HostSessionKeepAliveMode;
   resolvePermissionToolTrace?: (params: {
     opts: HostSessionRuntimeRunOptions;
@@ -960,7 +1020,19 @@ export async function runHostSessionRuntime(
       ?? persistedTakeoverAdmissionFromEnv
       ?? undefined,
   );
-  const runtimeOpts = createCanonicalHostSessionRuntimeRunOptions(opts);
+  const canonicalRuntimeOpts = createCanonicalHostSessionRuntimeRunOptions(opts);
+  const runtimeAuthority: HostSessionRuntimeAuthority = config.runtimeAuthority ?? {
+    scope: 'account',
+    sessionCredentials: canonicalRuntimeOpts.credentials,
+    accountCredentials: canonicalRuntimeOpts.credentials,
+  };
+  // A restricted Session/Runner runtime must not expose the hosting Account's
+  // settings through any downstream lifecycle or plugin callback. Sanitize the
+  // one canonical options object once, before any settings-dependent callback
+  // can run, instead of relying on every consumer to remember the scope.
+  const runtimeOpts = runtimeAuthority.scope === 'session'
+    ? { ...canonicalRuntimeOpts, accountSettingsContext: null }
+    : canonicalRuntimeOpts;
   const hasLateEnvironmentAdmission =
     typeof runtimeOpts.resolveLateEnvironment === 'function';
   // Canonicalization owns this scoped clone, so deletion prevents later launch projection
@@ -1444,6 +1516,7 @@ export async function runHostSessionRuntime(
       ...(runtimeOpts.sessionAttachFilePath ? { sessionAttachFilePath: runtimeOpts.sessionAttachFilePath } : {}),
       ...(runtimeOpts.sessionAttachSecret ? { sessionAttachSecret: runtimeOpts.sessionAttachSecret } : {}),
       uiLogPrefix: config.uiLogPrefix,
+      terminalAgentLabel: config.policyAgentId,
       startupMetadataOverrides: createStartupMetadataOverrides({
         permissionMode: startupSeed.permissionMode,
         permissionModeUpdatedAt: startupSeed.permissionModeUpdatedAt,
@@ -1706,6 +1779,48 @@ export async function runHostSessionRuntime(
     );
   });
   const currentLifecycleSession = createCurrentSessionClient(() => session, currentControlRpcRegistrar.registrar);
+  const accountCredentials = runtimeAuthority.accountCredentials;
+  const workflowAccountId = accountCredentials ? readAccountIdFromToken(accountCredentials.token) : null;
+  let currentWorkflowInput: Readonly<{ sessionId: string; port: HostContextOnlyInputPort }> | undefined;
+  const readWorkflowDispatchFact = async (localInputId: string, signal: AbortSignal) => {
+    const originSessionId = currentLifecycleSession.sessionId;
+    const lookup = await findTranscriptEncryptedMessageByLocalIdV2({
+      token: runtimeAuthority.sessionCredentials.token, serverUrl: resolveServerHttpBaseUrl(),
+      sessionId: originSessionId, localId: localInputId, signal,
+    });
+    if (currentLifecycleSession.sessionId !== originSessionId) throw new Error('workflow_origin_session_changed');
+    if (lookup.type === 'not_found') return 'not_dispatched' as const;
+    if (lookup.type !== 'found') throw lookup.error;
+    const crypto = session.getStoredContentEncryptionContext();
+    const content = openSessionMessageContent({ ...(crypto.mode === 'plain'
+      ? { mode: 'plain' as const, ctx: null } : crypto), content: lookup.message.content });
+    if (!isSessionContextOnlyHostInput(content)) throw new Error('workflow_origin_input_commitment_invalid');
+    return 'dispatched' as const;
+  };
+  const readWorkflowInputPort = (): HostContextOnlyInputPort | undefined => {
+    if (config.hostContextOnlyInput) return config.hostContextOnlyInput;
+    // Restricted ephemeral runners have no Account authority and are not persistent origin Sessions.
+    if (!accountCredentials || !workflowAccountId) return undefined;
+    const originSessionId = currentLifecycleSession.sessionId;
+    if (currentWorkflowInput?.sessionId !== originSessionId) {
+      currentWorkflowInput = { sessionId: originSessionId, port: createWorkflowOriginContextInputPort({
+        accountId: workflowAccountId, originSessionId, machineId,
+        storage: createWorkflowRunStorageClient({ token: accountCredentials.token, machineId }),
+        resolveEncryption: async (signal) => await resolveAutomationWorkerAccountEncryption({
+          token: accountCredentials.token, credentials: accountCredentials, signal,
+        }),
+        readDispatchFact: async (localInputId, signal) => {
+          if (currentLifecycleSession.sessionId !== originSessionId) throw new Error('workflow_origin_session_changed');
+          return await readWorkflowDispatchFact(localInputId, signal);
+        },
+        onDispatchedInput: (input) => workflowStepWithdrawal.observeWorkflowStepDispatched(input),
+        onError: (error) => logger.debug(`${config.uiLogPrefix} Workflow origin context unavailable`, {
+          error: error instanceof Error ? error.message : 'unknown_error',
+        }),
+      }) };
+    }
+    return currentWorkflowInput.port;
+  };
   // Canonical production Follow consumer: exactly one reconciler per host Session runtime,
   // bound to the destination-owned lifecycle proxy (so swaps/reconnects keep one owner and
   // never duplicate accepted context) and the canonical source-content hydrator. The server
@@ -1726,21 +1841,63 @@ export async function runHostSessionRuntime(
       sourceMaterialResolver: config.sessionFollowSourceMaterialResolver,
     }),
     sourceMaterialController: config.sessionFollowSourceMaterialResolver,
+    onRetryableTransportFailure: publishSessionFollowWakeInvalidation,
   });
-  const effectivePrepareSessionFollowContext = async ({ signal, requiredPrompt }: Readonly<{
+  const effectivePrepareHostContext = async ({ signal, requiredPrompt, contextOnlyWorkerUpdate, contextOnlyWorkerLocalId, deliveryIntent = 'natural' }: Readonly<{
     signal: AbortSignal;
     requiredPrompt: string;
-  }>): Promise<SessionFollowPreparedContext | null> => {
+    contextOnlyWorkerUpdate?: WorkerUpdateV1;
+    contextOnlyWorkerLocalId?: string;
+    deliveryIntent?: 'natural' | 'wake';
+  }>): Promise<HostPreparedContext | null> => {
     const activeModelId = modelTransitionCoordinator?.readActiveTarget().selection.modelId ?? null;
     const allowance = resolveSessionFollowContextUtf8AllowanceV1({
       requiredPrompt,
       activeModelId,
       contextUsage: latestSessionContextUsage,
     });
-    return await defaultSessionFollowContextReconciler({
-      signal,
-      maxFollowContextUtf8Bytes: allowance.maxUtf8Bytes,
+    const fittedWake = contextOnlyWorkerUpdate
+      ? fitWorkerUpdateWithinHostContextAllowance(contextOnlyWorkerUpdate, allowance.maxUtf8Bytes)
+      : undefined;
+    if (fittedWake === null) return {
+      updates: [], contextOnlyWorkerUpdate: null, acknowledgeAccepted: () => undefined,
+    };
+    let remainingBytes = Math.max(0, allowance.maxUtf8Bytes - (fittedWake
+      ? measureSessionFollowUtf8Bytes(renderWorkerUpdatePromptBlockV1(fittedWake)) + 2
+      : 0));
+    const workerCandidates = [
+      ...(await currentLifecycleSession.prepareExecutionRunWorkerUpdates?.({ signal, maxUtf8Bytes: remainingBytes }) ?? []),
+      ...(await readWorkflowInputPort()?.prepareWorkerUpdates?.({ signal, maxUtf8Bytes: remainingBytes }) ?? []),
+    ];
+    const workerItems = workerCandidates.flatMap((candidate) => {
+      if (candidate.localId === contextOnlyWorkerLocalId) return [];
+      const update = fitWorkerUpdateWithinHostContextAllowance(candidate.update, Math.max(0, remainingBytes - 2));
+      if (!update) return [];
+      remainingBytes -= measureSessionFollowUtf8Bytes(renderWorkerUpdatePromptBlockV1(update)) + 2;
+      return [{ ...candidate, update }];
     });
+    const follow = await defaultSessionFollowContextReconciler({
+      signal,
+      maxFollowContextUtf8Bytes: remainingBytes,
+      deliveryIntent: contextOnlyWorkerUpdate ? 'wake' : deliveryIntent,
+    });
+    if (!follow && workerItems.length === 0 && !fittedWake) return null;
+    return {
+      updates: follow?.updates ?? [],
+      workerUpdates: [...workerItems.map((item) => item.update), ...(follow?.workerUpdates ?? [])],
+      workerUpdateEvents: [...workerItems.map(({ localId, update }) => ({ localId, update })), ...(follow?.workerUpdateEvents ?? [])],
+      ...(follow?.wakeEventLocalId ? { wakeEventLocalId: follow.wakeEventLocalId } : {}),
+      ...(fittedWake ? { contextOnlyWorkerUpdate: fittedWake } : {}),
+      recheckAdmission: async (recheckSignal) => {
+        if (follow && !await follow.recheckAdmission(recheckSignal)) return false;
+        for (const item of workerItems) if (!await item.recheckAdmission(recheckSignal)) return false;
+        return !recheckSignal.aborted;
+      },
+      acknowledgeAccepted: (input) => {
+        follow?.acknowledgeAccepted(input);
+        for (const item of workerItems) item.acknowledgeAccepted();
+      },
+    };
   };
   let modelTransitionMetadataSession: Pick<
     ApiSessionClient,
@@ -1785,11 +1942,41 @@ export async function runHostSessionRuntime(
     ? 'rich_sender'
     : 'home_required';
   session.setOwnerActivityDelivery?.(ownerActivityDelivery);
+  const readRoleAccountSnapshot = () => {
+    if (runtimeAuthority.scope !== 'account') return null;
+    const current = getActiveAccountSettingsSnapshot();
+    const initial = runtimeOpts.accountSettingsContext;
+    return current && initial?.scopeKey && current.scopeKey === initial.scopeKey ? current : initial ?? null;
+  };
+  const readRoleSources = createRoleSourceReader(runtimeAuthority.scope === 'account' && runtimeAuthority.accountCredentials
+    ? { artifactStore: createCredentialedAccountArtifactStore(runtimeAuthority.accountCredentials),
+        accountId: readAccountIdFromToken(runtimeAuthority.accountCredentials.token) ?? undefined,
+        readRawAccountSettings: async () => readRoleAccountSnapshot()?.rawSettings ?? {}, }
+    : {});
+  const sessionRoleContext = createSessionRoleContext({
+    readMetadata: () => currentLifecycleSession.getMetadataSnapshot?.() ?? runtimeMetadata,
+    readRoleSources,
+    readSettings: () => readRoleAccountSnapshot()?.settings ?? null,
+    readDefaultEngine: () => ({ agentTargetKey: modelTargetKey }),
+    readOrganization: (signal) => session.readRolePromptOrganization(signal),
+  });
+  const prepareWorkspaceWritesPolicy = createWorkspaceWritesPolicyPreparation({
+    update: async (workspaceWrites) => await runtimeForInFlightSteer?.updateSessionRuntimeConfig({ workspaceWrites }),
+  });
+  const resolveSessionRolePromptContext = (signal?: AbortSignal) => sessionRoleContext.resolvePromptContext(signal);
+  const prepareSessionRolePromptPolicy = async () => {
+    const workspaceWrites = sessionRoleContext.readWorkspaceWrites();
+    if (workspaceWrites !== undefined && runtimeForInFlightSteer) {
+      const prepared = await prepareWorkspaceWritesPolicy(workspaceWrites);
+      if (!prepared.ok) throw Object.assign(new Error(prepared.errorCode), { code: prepared.errorCode });
+    }
+  };
   permissionHandler = createProviderEnforcedPermissionHandlerFn({
     session,
     logPrefix: config.uiLogPrefix,
     pushSender: activityPushSender,
     getAccountSettings: () => runtimeOpts.accountSettingsContext?.settings ?? null,
+    getWorkspaceWrites: sessionRoleContext.readWorkspaceWrites,
     getAccountSettingsSecretsReadKeys: () => runtimeOpts.accountSettingsContext?.settingsSecretsReadKeys ?? [],
     onAbortRequested: () => abortRequestedCallback?.(),
     toolTrace: config.resolvePermissionToolTrace?.({
@@ -1866,7 +2053,7 @@ export async function runHostSessionRuntime(
       return await consumer.runProviderInputDispatch(dispatchOpts);
     },
     registerProviderAcceptedEffect,
-    prepareSessionFollowContext: effectivePrepareSessionFollowContext,
+    prepareHostContext: effectivePrepareHostContext,
     steerText: async (text, options) => {
       const runtime = runtimeForInFlightSteer;
       if (!runtime?.steerPrompt) {
@@ -1957,12 +2144,33 @@ export async function runHostSessionRuntime(
     runtimeOpts.accountSettingsContext?.settings ?? null,
   );
   const readPendingQueueDeliveryTiming = () => resolveSessionPendingQueueDeliveryTiming(
-    getActiveAccountSettingsSnapshot()?.settings
-      ?? runtimeOpts.accountSettingsContext?.settings
-      ?? null,
+    runtimeAuthority.scope === 'session'
+      ? null
+      : getActiveAccountSettingsSnapshot()?.settings
+        ?? runtimeOpts.accountSettingsContext?.settings
+        ?? null,
   );
   const pendingQueueDeliveryTiming = readPendingQueueDeliveryTiming();
   let observedSessionFollowWakeGeneration = readSessionFollowWakeInvalidationGeneration() - 1;
+  const workflowStepWithdrawal = createWorkflowStepWithdrawal({
+    reportWithdrawn: async (input) => { await readWorkflowInputPort()?.reportWorkflowStepWithdrawn(input); },
+  });
+  const commitContextOnlyHostEvent = async (localId: string, event: TranscriptRawAgentEventV1): Promise<void> => {
+    await commitRuntimeSessionEvent({
+      session: currentLifecycleSession, agentId: config.agentMessageType, localId,
+      event,
+    });
+  };
+  const commitContextOnlyWorkerEvents = async (
+    localId: string, events: readonly Readonly<{ localId: string; update: WorkerUpdateV1 }>[], fallback: TranscriptRawAgentEventV1,
+  ): Promise<void> => {
+    if (!events.some((event) => event.localId === localId)) {
+      await commitContextOnlyHostEvent(localId, fallback);
+    }
+    for (const event of events) {
+      await commitContextOnlyHostEvent(event.localId, { type: 'worker-update', update: event.update });
+    }
+  };
   inputConsumer = createSessionProviderInputConsumer({
     messageQueue,
     session: createSessionProviderInputConsumerSessionAdapter(currentLifecycleSession),
@@ -1972,40 +2180,72 @@ export async function runHostSessionRuntime(
     refreshBeforeQueuedBatch: false,
     pendingDrainMaxPopPerWake: pendingQueueDrainMaxPopPerWake,
     waitForContextOnlyInputChange: async (signal) => {
-      return await waitForSessionFollowWakeInvalidation(observedSessionFollowWakeGeneration, signal);
+      const controller = new AbortController();
+      const abort = () => controller.abort(signal.reason);
+      signal.addEventListener('abort', abort, { once: true });
+      if (signal.aborted) abort();
+      try {
+        return await Promise.race([
+          waitForSessionFollowWakeInvalidation(observedSessionFollowWakeGeneration, controller.signal),
+          ...(currentLifecycleSession.waitForExecutionRunWorkerUpdateChange
+            ? [currentLifecycleSession.waitForExecutionRunWorkerUpdateChange(controller.signal)] : []),
+          ...(readWorkflowInputPort() ? [readWorkflowInputPort()!.waitForChange(controller.signal)] : []),
+        ]);
+      } finally {
+        controller.abort();
+        signal.removeEventListener('abort', abort);
+      }
     },
     takeContextOnlyInput: async (signal) => {
+      const source = await readWorkflowInputPort()?.take(signal)
+        ?? await currentLifecycleSession.takeExecutionRunWorkerUpdate?.(signal);
+      if (signal.aborted) return null;
+      if (source) {
+        const localId = source.kind === 'workflow_step' ? source.localInputId : source.localId;
+        const mode = {
+          permissionMode: permissionModeState.getCurrentPermissionMode() ?? initialPermissionMode,
+          suppressUserEcho: true, providerPromptAlreadyResolved: true,
+        };
+        if (source.kind === 'workflow_step') {
+          await workflowStepWithdrawal.offerWorkflowStepInput({ localInputId: localId });
+          return {
+            message: { text: source.text, localId, hostContextOnly: {
+              ...source, withdrawal: workflowStepWithdrawal,
+              isWorkflowStepDeliverable: async (input) => await readWorkflowInputPort()?.isWorkflowStepDeliverable(input) ?? false,
+              commitHostEvent: () => commitContextOnlyHostEvent(localId, { type: 'message', message: WORKFLOW_STEP_INPUT_EVENT_MESSAGE }),
+            } },
+            mode, isolate: true, hash: localId,
+          };
+        }
+        return {
+          message: { text: '', localId, hostContextOnly: {
+            kind: source.kind, update: source.update, recheckAdmission: source.recheckAdmission,
+            acknowledgeAccepted: source.acknowledgeAccepted,
+            commitHostEvent: (events) => commitContextOnlyWorkerEvents(localId, events ?? [{ localId, update: source.update }], { type: 'worker-update', update: source.update }),
+          } },
+          mode, isolate: true, hash: localId,
+        };
+      }
       const currentGeneration = readSessionFollowWakeInvalidationGeneration();
       if (currentGeneration === observedSessionFollowWakeGeneration) return null;
       observedSessionFollowWakeGeneration = currentGeneration;
-      const allowance = resolveSessionFollowContextUtf8AllowanceV1({
-        requiredPrompt: '',
-        activeModelId: modelTransitionCoordinator?.readActiveTarget().selection.modelId ?? null,
-        contextUsage: latestSessionContextUsage,
-      });
-      const prepared = await defaultSessionFollowContextReconciler({
+      const prepared = await effectivePrepareHostContext({
         signal,
-        maxFollowContextUtf8Bytes: allowance.maxUtf8Bytes,
+        requiredPrompt: '',
         deliveryIntent: 'wake',
       });
-      if (!prepared || signal.aborted) return null;
+      if (!prepared?.recheckAdmission || signal.aborted) return null;
       const localId = prepared.wakeEventLocalId;
       if (!localId) return null;
-      await commitRuntimeSessionEvent({
-        session: currentLifecycleSession,
-        agentId: config.agentMessageType,
-        localId,
-        event: {
-          type: 'message',
-          message: SESSION_FOLLOW_WAKE_EVENT_MESSAGE,
-        },
-      });
-      if (signal.aborted) return null;
       return {
         message: {
           text: '',
           localId,
-          hostContextOnly: { kind: 'session_follow', prepared },
+          hostContextOnly: {
+            kind: 'session_follow', prepared: { ...prepared, recheckAdmission: prepared.recheckAdmission },
+            commitHostEvent: (events) => commitContextOnlyWorkerEvents(localId, events ?? prepared.workerUpdateEvents ?? [],
+              { type: 'message', message: SESSION_FOLLOW_WAKE_EVENT_MESSAGE }),
+          },
         },
         mode: {
           permissionMode: permissionModeState.getCurrentPermissionMode() ?? initialPermissionMode,
@@ -2029,40 +2269,68 @@ export async function runHostSessionRuntime(
     },
   });
   let lastPendingQueueDeliveryTiming = pendingQueueDeliveryTiming;
-  const unsubscribePendingQueueDeliveryTiming = subscribeActiveAccountSettingsSnapshot(() => {
-    const nextPendingQueueDeliveryTiming = readPendingQueueDeliveryTiming();
-    const broadenedEligibility = lastPendingQueueDeliveryTiming === 'after_runtime_idle'
-      && nextPendingQueueDeliveryTiming === 'after_foreground_ready';
-    lastPendingQueueDeliveryTiming = nextPendingQueueDeliveryTiming;
-    if (broadenedEligibility) {
-      currentLifecycleSession.wakePendingMaterialization?.();
-    }
-  });
+  const unsubscribePendingQueueDeliveryTiming = runtimeAuthority.scope === 'session'
+    ? () => undefined
+    : subscribeActiveAccountSettingsSnapshot(() => {
+      const nextPendingQueueDeliveryTiming = readPendingQueueDeliveryTiming();
+      const broadenedEligibility = lastPendingQueueDeliveryTiming === 'after_runtime_idle'
+        && nextPendingQueueDeliveryTiming === 'after_foreground_ready';
+      lastPendingQueueDeliveryTiming = nextPendingQueueDeliveryTiming;
+      if (broadenedEligibility) {
+        currentLifecycleSession.wakePendingMaterialization?.();
+      }
+    });
   unsubscribePendingQueueDeliveryTimingForConstructionCleanup =
     unsubscribePendingQueueDeliveryTiming;
-  const runnerMcpAccountSettings = config.resolveRunnerMcpServersAccountSettings
+  const runnerMcpAccountSettings = runtimeAuthority.scope === 'account'
+    && config.resolveRunnerMcpServersAccountSettings
     ? config.resolveRunnerMcpServersAccountSettings({
       opts: runtimeOpts,
       session,
       metadata: runtimeSessionMetadataSnapshot ?? runtimeMetadata,
     })
-    : runtimeOpts.accountSettingsContext?.settings ?? null;
+    : runtimeAuthority.scope === 'account'
+      ? runtimeOpts.accountSettingsContext?.settings ?? null
+      : null;
+  // A Session-scoped runtime must never materialize Account settings or saved
+  // secrets. The explicit authority is the only owner of this distinction;
+  // absence of encryption material is not used as a scope signal.
+  const effectiveRunnerMcpAccountSettings = runtimeAuthority.accountCredentials
+    ? runnerMcpAccountSettings
+    : null;
   const activeRunnerMcpAccountSnapshot = getActiveAccountSettingsSnapshot();
-  const runnerMcpSavedSecretResources = activeRunnerMcpAccountSnapshot?.settings === runnerMcpAccountSettings
+  const runnerMcpSavedSecretResources = effectiveRunnerMcpAccountSettings !== null
+    && activeRunnerMcpAccountSnapshot?.settings === effectiveRunnerMcpAccountSettings
     ? activeRunnerMcpAccountSnapshot.savedSecretResources
-    : runtimeOpts.accountSettingsContext?.settings === runnerMcpAccountSettings
+    : effectiveRunnerMcpAccountSettings !== null
+      && runtimeOpts.accountSettingsContext?.settings === effectiveRunnerMcpAccountSettings
       ? runtimeOpts.accountSettingsContext.savedSecretResources
       : undefined;
-  const agentToolsDelivery = resolveAgentToolsDelivery(policyAgentId);
+  const agentToolsDelivery = resolveAgentToolsDelivery(
+    policyAgentId,
+    config.pluginRuntimeRegistryLease?.registry.contributes,
+  );
   const supportsMcpServers = (config.supportsMcpServers ?? true) && agentToolsDelivery === 'native_mcp';
   let activeAgentCompositionToolSelection: AgentCompositionToolSelection | null = null;
   const runnerMcpSession = applyRunnerMcpSessionContext(currentLifecycleSession, {
+    getCurrentResolvedRoles: sessionRoleContext.readResolvedRoles,
+    readRoleSources,
+    getCurrentWorkspaceWrites: sessionRoleContext.readWorkspaceWrites,
+    prepareWorkspaceWritesPolicy,
     getPermissionMode: () => permissionModeState.getCurrentPermissionMode() ?? initialPermissionMode,
     // The Session tool bridge is registered before the native runtime. This closure is
     // intentionally read at tool-call time: it is null before construction and
     // after the canonical active-turn witness is cleared.
-    getActiveTurnPermissionWitness: () =>
-      runtimeForInFlightSteer?.readActiveTurnPermissionWitness?.() ?? null,
+    getActiveTurnPermissionWitness: () => {
+      const witness = runtimeForInFlightSteer?.readActiveTurnPermissionWitness?.() ?? null;
+      if (!witness) return null;
+      const workDepth = currentLifecycleSession.getHostTurnWorkDepth?.(witness.turnId);
+      return {
+        turnId: witness.turnId,
+        ...(witness.causalPermissionAuthority ? { causalPermissionAuthority: witness.causalPermissionAuthority } : {}),
+        ...(workDepth === undefined ? {} : { workDepth }),
+      };
+    },
     getRuntimeLifetimeSignal: () => runtimeForInFlightSteer?.getRuntimeLifetimeSignal?.() ?? null,
     getBackendTarget: () => runtimeOpts.backendTarget
       ? runtimeOpts.backendTarget.kind === 'agent'
@@ -2078,10 +2346,18 @@ export async function runHostSessionRuntime(
   });
   if (agentToolsDelivery !== 'unsupported') {
     registerHappierSessionAgentToolRpc(runnerMcpSession, {
-      credentials: runtimeOpts.credentials,
-      accountSettings: runnerMcpAccountSettings,
-      getAccountSettings: () =>
-        getActiveAccountSettingsSnapshot()?.settings ?? runnerMcpAccountSettings,
+      sessionCredentials: runtimeAuthority.sessionCredentials,
+      credentials: runtimeAuthority.accountCredentials,
+      authorityScope: runtimeAuthority.scope,
+      accountSettings: effectiveRunnerMcpAccountSettings,
+      // An explicit Session-scoped authority is also the live settings
+      // authority. Do not let the getter fall back to the ambient Account
+      // snapshot after construction; that would make a later tool call regain
+      // Account policy even though the Runner was admitted only for its
+      // Session. Ordinary Account runtimes retain the existing snapshot path.
+      getAccountSettings: runtimeAuthority.scope === 'session'
+        ? () => effectiveRunnerMcpAccountSettings
+        : () => getActiveAccountSettingsSnapshot()?.settings ?? runnerMcpAccountSettings,
       ...(config.runtimeActionSettingsProvider
         ? { actionsSettingsProvider: config.runtimeActionSettingsProvider }
         : {}),
@@ -2093,8 +2369,9 @@ export async function runHostSessionRuntime(
   const { happierMcpServer, mcpServers } = supportsMcpServers
     ? await resolveRunnerMcpServersFn({
       session: runnerMcpSession,
-      credentials: runtimeOpts.credentials,
-      accountSettings: runnerMcpAccountSettings,
+      credentials: runtimeAuthority.sessionCredentials,
+      accountCredentials: runtimeAuthority.accountCredentials,
+      accountSettings: effectiveRunnerMcpAccountSettings,
       ...(config.runtimeActionSettingsProvider
         ? { actionsSettingsProvider: config.runtimeActionSettingsProvider }
         : {}),
@@ -2171,9 +2448,27 @@ export async function runHostSessionRuntime(
     });
     await clearTrackedNativeReturnIdentity();
   };
+  // Resolve an Artifact-backed selected role before the native process captures
+  // its launch-only ceiling; unknown sources must not launch with a guessed policy.
+  if (readSessionRolesV1(currentLifecycleSession.getMetadataSnapshot?.() ?? runtimeMetadata)?.roleId) {
+    await sessionRoleContext.resolveRoles();
+  }
+  const resolveFreshSessionSystemPrompt = createSessionPromptPlanResolver({
+    opts: runtimeOpts, session: currentLifecycleSession, agentId: policyAgentId,
+    machineId, directory: runtimeDirectory, memoryRecallGuidanceEnabled,
+    readNativeSessionId: () => runtimeForInFlightSteer?.readSessionIdentity().sessionId ?? null,
+    resolveRoleContext: resolveSessionRolePromptContext,
+    daemonBridge: daemonTurnContributionsBridge,
+  });
   const sessionRuntimeParams: HostSessionRuntimeFactoryParams = {
     directory: runtimeDirectory,
     metadata: runtimeMetadata,
+    ...(runtimeOpts.terminalRuntime ? {
+      currentTerminalMetadata: {
+        terminal: buildTerminalMetadataFromRuntimeFlags(runtimeOpts.terminalRuntime),
+        startedBy: runtimeOpts.startedBy ?? 'terminal',
+      },
+    } : {}),
     machineId,
     agentTargetKey: modelTargetKey,
     session: currentLifecycleSession,
@@ -2182,12 +2477,18 @@ export async function runHostSessionRuntime(
     messageBuffer,
     mcpServers,
     accountSettings: runnerMcpAccountSettings,
+    accountSettingsAuthority: runtimeAuthority.scope,
+    ...(runtimeAuthority.scope === 'session'
+      ? { readCredentials: async () => runtimeAuthority.sessionCredentials }
+      : {}),
     ...(providerBindingMaterialization ? { providerBindingMaterialization } : {}),
     ...(isTrackedNativeReturn ? { strictNativeResumeIdentity: true } : {}),
     pendingQueueDrainMaxPopPerWake,
     pendingQueueDeliveryTiming,
     permissionHandler,
     getPermissionMode: () => permissionModeState.getCurrentPermissionMode() ?? 'default',
+    getWorkspaceWrites: sessionRoleContext.readWorkspaceWrites,
+    resolveFreshSessionSystemPrompt,
     memoryRecallGuidanceEnabled,
     sessionState: sessionStateBridge.engine,
     runnerProcessIdentity,
@@ -2269,8 +2570,10 @@ export async function runHostSessionRuntime(
   let runtimeModelsPublisher:
     | ReturnType<typeof createSessionRuntimeModelsPublisher>
     | null = null;
+  let runtimeModesPublisher: ReturnType<typeof createSessionRuntimeModesPublisher> | null = null;
   const disposeRuntimeModelsPublisher = (): void => {
     runtimeModelsPublisher?.dispose();
+    runtimeModesPublisher?.dispose();
   };
   const initialActiveSelection = resolveHostActiveModelSelection({
     agentTargetKey: modelTargetKey,
@@ -2565,7 +2868,7 @@ export async function runHostSessionRuntime(
   });
   currentControlRpcRegistrar.registrar.registerHandler(
     SESSION_RPC_METHODS.SESSION_MODEL_TRANSITION,
-    async (rawRequest) => {
+    async (rawRequest, rpcContext) => {
       const request: SessionModelTransitionRequestV1 =
         SessionModelTransitionRequestV1Schema.parse(rawRequest);
       const authorityPreparation = claimedSessionAuthorityPreparation;
@@ -2589,6 +2892,7 @@ export async function runHostSessionRuntime(
       return SessionModelTransitionResultV1Schema.parse(
         await modelTransitionCoordinator!.submit(request.selection, {
           source: 'command',
+          ...(rpcContext?.callerInputConstraints ? { callerInputConstraints: rpcContext.callerInputConstraints } : {}),
         }),
       );
     },
@@ -2665,6 +2969,14 @@ export async function runHostSessionRuntime(
           });
         }
         await runtimeModelsPublisher?.flush();
+        if (!runtimeModesPublisher && hookRuntime.modes) {
+          runtimeModesPublisher = createSessionRuntimeModesPublisher({
+            agentId: config.policyAgentId,
+            session: currentLifecycleSession,
+            source: hookRuntime.modes,
+          });
+        }
+        await runtimeModesPublisher?.flush();
       }
       return publisherAuthority;
     } finally {
@@ -2681,15 +2993,37 @@ export async function runHostSessionRuntime(
     claimedSession,
     await preparation,
   );
-  if (commitPendingFirstInputAfterRuntimeReady) {
+  const initialGoal = readInitialGoalFromEnv();
+  if (initialGoal || commitPendingFirstInputAfterRuntimeReady) {
     startupCoordinatorStart = async () => {
+      if (initialGoal) {
+        if (typeof nativeRuntime?.setGoal !== 'function') {
+          throw new Error('Initial goal control is unavailable for the opened Agent runtime');
+        }
+        const goalOptions = {
+          ...(initialGoal.status && initialGoal.status !== 'active' && initialGoal.status !== 'pending'
+            ? { status: initialGoal.status }
+            : {}),
+          ...('tokenBudget' in initialGoal ? { tokenBudget: initialGoal.tokenBudget } : {}),
+        };
+        const result = await nativeRuntime.setGoal(
+          initialGoal.objective,
+          Object.keys(goalOptions).length > 0 ? goalOptions : undefined,
+        );
+        if (result && typeof result === 'object' && (
+          ('ok' in result && result.ok === false)
+          || ('status' in result && ['unavailable', 'unsupported', 'rejected'].includes(String(result.status)))
+        )) {
+          throw new Error('Initial goal was refused by the opened Agent runtime');
+        }
+        clearInitialGoalFromEnv();
+      }
       const commit = commitPendingFirstInputAfterRuntimeReady;
       commitPendingFirstInputAfterRuntimeReady = null;
       await commit?.();
     };
   }
 
-  await runtimeActivityProjection.reofferCurrentSnapshot();
   let runtimeReplacementEpoch = 0;
   let activeRuntimeReplacementEpoch: string | null = null;
   const admitSuccessorProviderBindingHandoff = async (
@@ -2802,14 +3136,24 @@ export async function runHostSessionRuntime(
           runtime: nativeRuntime,
           getHappierSessionId: () => session.sessionId,
           ownerId: sessionTag,
-          agentGeneration: voiceAuthority.generation,
-          isGenerationCurrent: voiceAuthority.isCurrent,
-          resolveProviderGeneration: voiceAuthority.resolveProviderGeneration,
+          agentGeneration: voiceAuthority.occurrenceId,
+          isOccurrenceCurrent: voiceAuthority.isCurrent,
+          resolveProviderOccurrenceId: voiceAuthority.resolveProviderOccurrenceId,
           resolveRetirementSignal: voiceAuthority.resolveRetirementSignal,
           resolveConversation: voiceAuthority.resolveConversation,
         }).dispose;
     }
     currentLifecycleSession.setSessionRuntimeControls({
+      readEffectiveInputConfiguration: () => ({
+        modelSelection: modelTransitionCoordinator?.readActiveTarget().selection ?? null,
+        permissionMode: permissionModeState.getCurrentPermissionMode() ?? initialPermissionMode,
+      }),
+      ...(readWorkflowInputPort() ? { withdrawWorkflowStepInput: async (input: Readonly<{ localInputId: string }>) => {
+        if (!config.hostContextOnlyInput && await readWorkflowDispatchFact(input.localInputId, new AbortController().signal) === 'dispatched') {
+          workflowStepWithdrawal.observeWorkflowStepDispatched(input);
+        }
+        return workflowStepWithdrawal.withdrawWorkflowStepInput(input);
+      } } : {}),
       ...(daemonTurnContributionsBridge
         ? {
             resolveComposerReference: async (input) =>
@@ -2877,6 +3221,9 @@ export async function runHostSessionRuntime(
     });
     await session.activateDurableMutationDelivery();
   }
+  // Activity publication waits for durable delivery, which takeover starts only
+  // after the exact runtime binding is acknowledged.
+  await runtimeActivityProjection.reofferCurrentSnapshot();
   const originalOnAfterStart = config.onAfterStart;
   config.onAfterStart = async (params) => {
     await originalOnAfterStart?.(params);
@@ -2957,6 +3304,9 @@ export async function runHostSessionRuntime(
         : null,
       runtimeState,
       registerProviderAcceptedEffect,
+      resolveSessionRolePromptContext,
+      resolveFreshSessionSystemPrompt,
+      prepareSessionRolePromptPolicy,
       setAbortRequestedCallback: (callback) => {
         abortRequestedCallback = callback;
       },
@@ -2994,12 +3344,13 @@ export async function runHostSessionRuntime(
         remoteOnlyTerminalDisplayComponent: deps.remoteOnlyTerminalDisplayComponent ?? deps.sessionLoopLifecycleDeps?.remoteOnlyTerminalDisplayComponent,
         onBeforeSessionClose: async (params) => {
           await runtimeModelsPublisher?.stopAndDrain();
+          await runtimeModesPublisher?.stopAndDrain();
           await deps.sessionLoopLifecycleDeps?.onBeforeSessionClose?.(params);
         },
         runPermissionModePromptLoopFn: async (loopParams) => await (deps.runPermissionModePromptLoopFn ?? runPermissionModePromptLoop)({
           ...loopParams,
           inputConsumer,
-          runtime: { ...loopParams.runtime, prepareSessionFollowContext: effectivePrepareSessionFollowContext },
+          prepareHostContext: effectivePrepareHostContext,
         }),
       },
       initialResumeId,

@@ -134,10 +134,11 @@ describe('Codex candidate index head', () => {
         for (let attempt = 0; attempt < 40; attempt += 1) {
             page = await executeExternalSessionCandidateQuery({
                 activeServerDir,
+                agentSourceCustody: { kind: 'development', registeredRootId: 'fixture-source-root' },
                 agentIdentity: {
                     pluginId: 'codex',
                     contributionId: 'codex',
-                    pluginGeneration: 'codex-index-head-1',
+                    pluginOccurrenceId: 'codex-index-head-1',
                 } as never,
                 source,
                 limit: 50,

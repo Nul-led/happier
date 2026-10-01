@@ -60,6 +60,7 @@ function registerAttachmentTransferHandlers(params: Readonly<{
   getAdditionalAllowedReadDirs?: () => ReadonlyArray<string>;
   getAdditionalAllowedWriteDirs?: () => ReadonlyArray<string>;
   sessionRpcTransferMaxBytes?: number | null;
+  resolveSessionWorkingDirectory?: (sessionId: string) => Promise<string | null>;
   attachmentUpload?: Readonly<{
     pathAllowanceRegistry: ReturnType<typeof createTransferPathAllowanceRegistry>;
   }>;
@@ -72,7 +73,11 @@ function registerAttachmentTransferHandlers(params: Readonly<{
     store,
     getAdditionalAllowedWriteDirs: params.getAdditionalAllowedWriteDirs,
     sessionRpcTransferMaxBytes: params.sessionRpcTransferMaxBytes ?? null,
-    ...(params.attachmentUpload ? { attachmentUpload: params.attachmentUpload } : {}),
+    ...(params.attachmentUpload ? { attachmentUpload: {
+      ...params.attachmentUpload,
+      resolveSessionWorkingDirectory: params.resolveSessionWorkingDirectory
+        ?? (async (sessionId: string) => sessionId === 'session-a' ? params.workingDirectory : null),
+    } } : {}),
   });
   registerTransferDownloadRpcHandlers(params.mgr as unknown as RpcHandlerManager, {
     workingDirectory: params.workingDirectory,
@@ -129,6 +134,7 @@ describe('attachments upload (chunked)', () => {
 
       const initRes = await init({
         t: 'session_attachment_upload_v1',
+        sessionId: 'session-a',
         messageLocalId: '../../escape',
         fileName: 'hello.txt',
         sizeBytes: 11,
@@ -180,6 +186,7 @@ describe('attachments upload (chunked)', () => {
 
       const initRes = await init({
         t: 'session_attachment_upload_v1',
+        sessionId: 'session-a',
         messageLocalId: 'message-1',
         fileName: 'hello.txt',
         sizeBytes: 5,
@@ -231,6 +238,7 @@ describe('attachments upload (chunked)', () => {
 
       const initRes = await init({
         t: 'session_attachment_upload_v1',
+        sessionId: 'session-a',
         messageLocalId: 'message-1',
         fileName: 'hello.txt',
         sizeBytes: 5,
@@ -278,6 +286,7 @@ describe('attachments upload (chunked)', () => {
 
       const initRes = await init({
         t: 'session_attachment_upload_v1',
+        sessionId: 'session-a',
         messageLocalId: 'message-1',
         fileName: 'hello.txt',
         sizeBytes: 11,
@@ -327,6 +336,7 @@ describe('attachments upload (chunked)', () => {
 
       const initRes = await init({
         t: 'session_attachment_upload_v1',
+        sessionId: 'session-a',
         messageLocalId: 'message-1',
         fileName: 'hello.txt',
         sizeBytes: 11,
@@ -379,6 +389,7 @@ describe('attachments upload (chunked)', () => {
 
       const initRes = await init({
         t: 'session_attachment_upload_v1',
+        sessionId: 'session-a',
         messageLocalId: 'message-1',
         fileName: 'hello.txt',
         sizeBytes: 11,
@@ -437,6 +448,7 @@ describe('attachments upload (chunked)', () => {
 
       const initResult: any = await init({
         t: 'session_attachment_upload_v1',
+        sessionId: 'session-a',
         messageLocalId: 'message-1',
         fileName: 'hello.txt',
         sizeBytes: 11,
@@ -489,6 +501,7 @@ describe('attachments upload (chunked)', () => {
       registerAttachmentTransferHandlers({
         mgr: mgr as unknown as RpcHandlerManager,
         workingDirectory: handlerWorkingDirectory,
+        resolveSessionWorkingDirectory: async (sessionId) => sessionId === 'session-a' ? sessionWorkspaceRoot : null,
         getAdditionalAllowedReadDirs: () => readAllowedDirs.current,
         getAdditionalAllowedWriteDirs: () => writeAllowedDirs.current,
         attachmentUpload: {
@@ -505,6 +518,7 @@ describe('attachments upload (chunked)', () => {
 
       const initResult: any = await init({
         t: 'session_attachment_upload_v1',
+        sessionId: 'session-a',
         messageLocalId: 'message-4',
         fileName: 'hello.txt',
         sizeBytes: 5,
@@ -579,6 +593,7 @@ describe('attachments upload (chunked)', () => {
 
       const initResult: any = await init({
         t: 'session_attachment_upload_v1',
+        sessionId: 'session-a',
         messageLocalId: 'message-2',
         fileName: 'note.txt',
         sizeBytes: 3,
@@ -665,6 +680,7 @@ describe('attachments upload (chunked)', () => {
 
       const initResult: any = await init({
         t: 'session_attachment_upload_v1',
+        sessionId: 'session-a',
         messageLocalId: 'message-3',
         fileName: 'big.bin',
         sizeBytes: 11,

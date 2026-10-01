@@ -107,7 +107,7 @@ function createExecutionRunActionsService() {
       plugin: { id: 'acme.execution', version: '1.0.0' },
       resolveCurrentPluginMaterializationRef:
         executionMaterialization.resolveCurrentPluginMaterializationRef,
-      generation: 'generation-1',
+      occurrenceId: 'generation-1',
       surface: 'agent',
       session: { id: 'session-1' },
       readActiveTurnAdmissionWitness: () => ({
@@ -121,7 +121,7 @@ function createExecutionRunActionsService() {
         },
       }),
       signal: retirement.signal,
-      isGenerationCurrent: () => !retirement.signal.aborted,
+      isOccurrenceCurrent: () => !retirement.signal.aborted,
     },
     actionExecutor,
     invokeContributedAction: vi.fn(),
@@ -130,6 +130,29 @@ function createExecutionRunActionsService() {
 }
 
 describe('createCliActionDeps execution-run plugin bindings', () => {
+  it('does not send an admitted write ceiling through a public machine request', async () => {
+    const credentials = { token: 'token', encryption: null };
+    const deps = createCliActionDeps({ token: 'token', credentials, sessionId: 'cli-global', mode: 'plain', ctx: null });
+    const result = await deps.executionRunStart(null, { instructions: 'Inspect' }, {
+      exactMachineId: 'machine-1', workspaceWrites: 'deny',
+    });
+    expect(result).toMatchObject({ ok: false, code: 'execution_run_target_unavailable', details: { runCreation: 'noRunCreated' } });
+    expect(callMachineRpc).not.toHaveBeenCalled();
+  });
+
+  it('carries admitted depth and write ceiling in the exact-daemon private context, not Run input', async () => {
+    const invoke = vi.fn(async () => ({ runId: 'run-1' }));
+    const credentials = { token: 'token', encryption: null };
+    const deps = createCliActionDeps({ token: 'token', credentials, sessionId: 'cli-global', mode: 'plain', ctx: null,
+      machineActionDirectTargetTransport: { machineId: 'machine-1', invoke },
+    });
+    await deps.executionRunStart(null, { instructions: 'Inspect' }, { exactMachineId: 'machine-1', workDepth: 3, workspaceWrites: 'deny' });
+    expect(invoke).toHaveBeenCalledWith(SESSION_RPC_METHODS.EXECUTION_RUN_START,
+      { instructions: 'Inspect' },
+      expect.objectContaining({ localActionContext: expect.objectContaining({ surface: 'agent', agentStartWorkDepth: 3, agentStartWorkspaceWrites: 'deny' }) }));
+    expect(callMachineRpc).not.toHaveBeenCalled();
+  });
+
   it('carries exact Workflow invocation services only through the local detached start', async () => {
     const permissionStore = {
       publishRequest: vi.fn(),
@@ -177,6 +200,13 @@ describe('createCliActionDeps execution-run plugin bindings', () => {
       executionRunTargetMachineId: 'machine-1',
       executionRunPermissionRequestStore: permissionStore,
       executionRunWorkflowObservationSink: workflowObservationSink,
+      callerPermissionMode: 'default',
+      causalPermissionAuthority: { kind: 'admittedSessionInputV1', admittedPermissionCeiling: 'default' },
+      agentStartContext: {
+        caller: { kind: 'originless', runId: 'workflow-1', runDepth: 2 },
+        baseline: { machineId: 'machine-1', directory: '/workspace' },
+        ledSubtreeSessionIds: [], workDepthLimit: 4, roles: {}, callerPermissionCeiling: 'default',
+      },
     })).resolves.toEqual(expect.objectContaining({ ok: true }));
 
     expect(invoke).toHaveBeenCalledWith(
@@ -185,6 +215,7 @@ describe('createCliActionDeps execution-run plugin bindings', () => {
       expect.objectContaining({
         executionRunPermissionRequestStore: permissionStore,
         executionRunWorkflowObservationSink: workflowObservationSink,
+        localActionContext: expect.objectContaining({ agentStartWorkDepth: 3 }),
       }),
     );
     expect(callMachineRpc).not.toHaveBeenCalled();
@@ -714,7 +745,7 @@ describe('createCliActionDeps execution-run plugin bindings', () => {
         plugin: { id: 'acme.execution', version: '1.0.0' },
         resolveCurrentPluginMaterializationRef:
           executionMaterialization.resolveCurrentPluginMaterializationRef,
-        generation: 'generation-1',
+        occurrenceId: 'generation-1',
         surface: 'agent',
         session: { id: 'session-1' },
         readActiveTurnAdmissionWitness: () => ({
@@ -728,7 +759,7 @@ describe('createCliActionDeps execution-run plugin bindings', () => {
           },
         }),
         signal: new AbortController().signal,
-        isGenerationCurrent: () => true,
+        isOccurrenceCurrent: () => true,
       },
       actionExecutor: createActionExecutor({
         ...deps,

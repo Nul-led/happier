@@ -12,6 +12,7 @@ import {
     useSessionCollaborationHeaderState,
 } from './SessionCollaborationHeaderEntry';
 import { STALE_PRESENCE_OPACITY } from './SessionViewerFacepile';
+import { SessionCollaborationRailBadge, useSessionConversationMentioned } from './sessionConversationAttention';
 import { SessionPresenceSection } from './SessionPresenceSection';
 
 const modal = vi.hoisted(() => ({ mock: null as ReturnType<typeof import('@/dev/testkit/mocks/modal').createModalModuleMock> | null }));
@@ -145,7 +146,7 @@ describe('Session presence surfaces', () => {
         // Unfocused, the row states presence but publishes no live region: an
         // unattended polite region speaks every viewer change of every Session.
         expect(screen.findByTestId('session-presence-status')?.props.accessibilityLiveRegion).toBeUndefined();
-        expect(screen.findByTestId('session-presence-status')?.props.children).toBe('Alice');
+        expect(screen.findByTestId('session-presence-title')?.props.children).toBe('Alice is here');
         expect(screen.findByTestId('session-presence-announcement')).toBeNull();
 
         await act(async () => { screen.findByTestId('session-presence-summary-anchor')?.props.onFocus?.(); });
@@ -158,7 +159,7 @@ describe('Session presence surfaces', () => {
             v: 1, sessionId: target.sessionId, observedAt: 4,
             viewers: [{ account: account('Alice'), typing: true }],
         }));
-        expect(screen.findByTestId('session-presence-status')?.props.children).toBe('Alice · Typing…');
+        expect(screen.findByTestId('session-presence-status')?.props.children).toBe('Alice is typing…');
         expect(announcement()).toBe('Viewing now: Alice');
 
         await act(async () => home!.receiveSnapshot({
@@ -239,15 +240,30 @@ describe('Session presence surfaces', () => {
         expect(parentRenderCount).toBe(1);
     });
 
-    it('distinguishes live-empty, unavailable and unsupported without dropping usable access chrome', async () => {
+    it('keeps one present line through connecting, just-you and unsupported, never collapsing the space', async () => {
         home = sessionHumanPresenceStore.attachHome(target.serverId, 'self');
         home.beginDeclaration([target.sessionId]);
         const screen = await renderScreen(<SessionPresenceSection {...target} />);
-        expect(screen.findByTestId('session-presence-status')?.props.children).toBe('Connecting…');
+        expect(screen.findByTestId('session-presence-title')?.props.children).toBe('Checking who’s here…');
         await act(async () => home!.receiveSnapshot({ v: 1, sessionId: target.sessionId, observedAt: 2, viewers: [] }));
-        expect(screen.findByTestId('session-presence-status')?.props.children).toBe('Just you');
+        expect(screen.findByTestId('session-presence-title')?.props.children).toBe('Just you here');
         await act(async () => home!.setStatus('unsupported'));
-        expect(screen.findByTestId('session-presence-section')).toBeNull();
+        // A Home without live presence still says so in the same line.
+        expect(screen.findByTestId('session-presence-section')).not.toBeNull();
+        expect(screen.findByTestId('session-presence-title')?.props.children).toBe('Live presence isn’t available on this Home');
+    });
+
+    it('says who is here and who is typing in one line', async () => {
+        home = sessionHumanPresenceStore.attachHome(target.serverId, 'self');
+        home.beginDeclaration([target.sessionId]);
+        const screen = await renderScreen(<SessionPresenceSection {...target} />);
+        await act(async () => home!.receiveSnapshot({
+            v: 1, sessionId: target.sessionId, observedAt: 2,
+            viewers: [{ account: account('Ana'), typing: false }, { account: account('Ben'), typing: true }],
+        }));
+        expect(screen.findByTestId('session-presence-title')?.props.children).toBe('Ana and Ben are here');
+        expect(screen.findByTestId('session-presence-status')?.props.children).toBe('Ben is typing…');
+        expect(screen.findByTestId('session-presence-summary')?.props.accessibilityLabel).toContain('Ben · Typing…');
     });
 
     it('de-emphasizes the stale summary like the facepile and returns focus to it from the viewer list', async () => {
@@ -273,7 +289,8 @@ describe('Session presence surfaces', () => {
         expect(screen.findByTestId('session-presence-summary-anchor')?.props.style).toBeFalsy();
 
         await act(async () => home!.setStatus('unavailable'));
-        expect(screen.findByTestId('session-presence-status')?.props.children).toBe('Alice · May be out of date');
+        expect(screen.findByTestId('session-presence-title')?.props.children).toBe('Alice is here');
+        expect(screen.findByTestId('session-presence-status')?.props.children).toBe('May be out of date');
         expect(screen.findByTestId('session-presence-summary-anchor')?.props.style)
             .toMatchObject({ opacity: STALE_PRESENCE_OPACITY });
 
@@ -387,3 +404,50 @@ describe('Session presence surfaces', () => {
         expect(screen.findByTestId('session-collaboration-attention')).toBeNull();
     });
 });
+
+describe('Collaboration rail mention dot', () => {
+    function MentionedProbe(props: Readonly<{ onRender: () => void }>) {
+        props.onRender();
+        const mentioned = useSessionConversationMentioned(target);
+        return <View testID="mentioned-probe" accessibilityLabel={mentioned ? 'mentioned' : 'quiet'} />;
+    }
+
+    it('shows a dot for an unread mention only, from the same attention the header facepile reads', async () => {
+        publishViewerAttention(['mentioned', 'unread_discussion']);
+        const screen = await renderScreen(<SessionCollaborationRailBadge target={target} />);
+        expect(screen.findByTestId('session-action-rail:collaboration:badge')).not.toBeNull();
+
+        // Plain unread conversations stay quiet on the rail.
+        await act(async () => publishViewerAttention(['unread_discussion']));
+        expect(screen.findByTestId('session-action-rail:collaboration:badge')).toBeNull();
+
+        await act(async () => publishViewerAttention(['mentioned'], false));
+        expect(screen.findByTestId('session-action-rail:collaboration:badge')).toBeNull();
+    });
+
+    it('re-renders always-mounted chrome only when the mention bit changes', async () => {
+        publishViewerAttention(['unread_discussion']);
+        let renders = 0;
+        const screen = await renderScreen(<MentionedProbe onRender={() => { renders += 1; }} />);
+        expect(screen.findByTestId('mentioned-probe')?.props.accessibilityLabel).toBe('quiet');
+        const baseline = renders;
+
+        // An unrelated change to the same row (its follow state) is not the rail's summary bit.
+        await act(async () => storage.setState((state) => {
+            const row = state.sessionListRowsByServerId[target.serverId]?.[target.sessionId];
+            if (!row?.viewer) return state;
+            return {
+                ...state,
+                sessionListRowsByServerId: {
+                    ...state.sessionListRowsByServerId,
+                    [target.serverId]: { [target.sessionId]: { ...row, viewer: { ...row.viewer, follow: { follows: true, notificationLevel: null } } } },
+                },
+            };
+        }));
+        expect(renders).toBe(baseline);
+
+        await act(async () => publishViewerAttention(['mentioned']));
+        expect(screen.findByTestId('mentioned-probe')?.props.accessibilityLabel).toBe('mentioned');
+    });
+});
+

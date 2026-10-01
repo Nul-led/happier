@@ -39,7 +39,7 @@ describe('createExternalSessionTerminalFollowProjector', () => {
         kind: 'transcript-message-committed',
         messageId: 'agent-1',
       }),
-      admission,
+      { ...admission, requireDelivery: true },
     );
   });
 
@@ -322,7 +322,7 @@ describe('createExternalSessionTerminalFollowProjector', () => {
   it('persists terminal-followed tool calls and results through the canonical writer without a delta bridge', async () => {
     const enqueueAgentMessageCommitted = vi.fn(async () => ({
       persisted: true as const,
-      delivered: false as const,
+      delivered: true as const,
     }));
     const session = {
       sessionId: 'session-1',
@@ -397,7 +397,7 @@ describe('createExternalSessionTerminalFollowProjector', () => {
       }),
       expect.objectContaining({
         provenance: { kind: 'non_dependent', source: 'external' },
-        admission,
+        admission: { ...admission, requireDelivery: true },
       }),
     );
     expect(enqueueAgentMessageCommitted).toHaveBeenNthCalledWith(
@@ -411,7 +411,7 @@ describe('createExternalSessionTerminalFollowProjector', () => {
       }),
       expect.objectContaining({
         provenance: { kind: 'non_dependent', source: 'external' },
-        admission,
+        admission: { ...admission, requireDelivery: true },
       }),
     );
   });

@@ -110,7 +110,9 @@ describe('file transfers (download)', () => {
     const workspace = mkdtempSync(join(tmpdir(), 'happier-files-download-'));
 
     const mgr = createRpcHandlerManager();
-    registerFileSystemHandlers(mgr as unknown as RpcHandlerManager, workspace);
+    registerFileSystemHandlers(mgr as unknown as RpcHandlerManager, workspace, {
+      resolveSessionWorkingDirectory: async (sessionId) => sessionId === 'session-a' ? workspace : null,
+    });
 
     const uploadInit = mgr.handlers.get(RPC_METHODS.DAEMON_TRANSFER_UPLOAD_INIT);
     const uploadChunk = mgr.handlers.get(RPC_METHODS.DAEMON_TRANSFER_UPLOAD_CHUNK);
@@ -124,6 +126,7 @@ describe('file transfers (download)', () => {
 
     const uploadInitResp = await uploadInit({
       t: 'session_attachment_upload_v1',
+      sessionId: 'session-a',
       messageLocalId: 'message-1',
       fileName: 'note.txt',
       sizeBytes: 3,

@@ -155,6 +155,8 @@ export type BundledVoiceRuntimeMachinePort = Readonly<{
 
 export type BundledRealtimeProviderRuntimeHost = Readonly<{
   globalVoiceSessionId: string;
+  /** Opaque process-local identity of this exact runtime-host occurrence. */
+  runtimeOccurrenceId?: string;
   /** Whether this host still owns live runtime admission for its generation. */
   isCurrentGeneration?(): boolean;
   /** Atomically starts a live runtime effect and reports whether it ran. */

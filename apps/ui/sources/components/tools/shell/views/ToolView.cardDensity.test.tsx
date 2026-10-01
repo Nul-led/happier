@@ -1,7 +1,7 @@
+import { renderWithSessionTranscriptSource } from '@/dev/testkit';
 import React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-    renderScreen,
     standardCleanup,
 } from '@/dev/testkit';
 
@@ -15,6 +15,11 @@ const toolViewDetailLevelDefaultSetting = vi.hoisted(() => ({
 }));
 
 installToolShellCommonModuleMocks({
+    unistyles: async () => {
+        const { createUnistylesMock } = await import('@/dev/testkit/mocks/unistyles');
+        // A distinctive part radius proves the component reads the theme's part token, not a constant.
+        return createUnistylesMock({ theme: { parts: { toolCard: { radius: 37 } } } });
+    },
     reactNative: async () => {
         const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
         return createReactNativeWebMock({
@@ -110,7 +115,7 @@ describe('ToolView (card density)', () => {
 
         const tool = makeToolCall({ name: 'edit', state: 'running', input: {}, description: null, result: null });
 
-        const screen = await renderScreen(React.createElement(ToolView, { tool, metadata: null, messages: [] }));
+        const screen = await renderWithSessionTranscriptSource(React.createElement(ToolView, { tool, metadata: null, messages: [] }));
 
         expect(screen.findAllByTestId('tool-card-subtitle').length).toBeGreaterThan(0);
     });
@@ -121,8 +126,27 @@ describe('ToolView (card density)', () => {
 
         const tool = makeToolCall({ name: 'edit', state: 'running', input: {}, description: null, result: null });
 
-        const screen = await renderScreen(React.createElement(ToolView, { tool, metadata: null, messages: [] }));
+        const screen = await renderWithSessionTranscriptSource(React.createElement(ToolView, { tool, metadata: null, messages: [] }));
 
         expect(screen.findAllByTestId('tool-card-subtitle')).toHaveLength(0);
     });
+
+    it('rounds the card with the theme tool card radius', async () => {
+        toolViewDetailLevelDefaultSetting.value = 'summary';
+        const { ToolView } = await import('./ToolView');
+
+        const tool = makeToolCall({ name: 'edit', state: 'running', input: {}, description: null, result: null });
+
+        const screen = await renderWithSessionTranscriptSource(React.createElement(ToolView, { tool, metadata: null, messages: [] }));
+
+        expect(findStyledNodes(screen.tree.root, 'borderRadius', 37).length).toBeGreaterThan(0);
+    });
 });
+
+function findStyledNodes(root: { findAll: (predicate: (node: any) => boolean) => any[] }, key: string, value: unknown) {
+    const flatten = (style: unknown): Record<string, unknown> => {
+        if (Array.isArray(style)) return Object.assign({}, ...style.map(flatten));
+        return style && typeof style === 'object' ? (style as Record<string, unknown>) : {};
+    };
+    return root.findAll((node) => typeof node.type === 'string' && flatten(node.props?.style)[key] === value);
+}

@@ -439,6 +439,104 @@ describe('workspace sync broker authentication and attach rules', () => {
     socket.destroy();
   });
 
+  it('owns an acquired external stream error while endpoint setup is pending and accepts the next request', async () => {
+    let external!: PeerStream;
+    let releaseFirstListen!: () => void;
+    const firstListenBlocked = new Promise<void>((resolve) => { releaseFirstListen = resolve; });
+    let resolveFirstRemoved!: () => void;
+    const firstRemoved = new Promise<void>((resolve) => { resolveFirstRemoved = resolve; });
+    let dataEndpointCount = 0;
+    const fixture = await useFixture(await startBroker({
+      openExternalStream: async () => {
+        const stream = new PeerStream();
+        if (!external) external = stream;
+        return stream;
+      },
+      createEndpoint: (endpointPath) => {
+        const native = createWorkspaceSyncBrokerEndpoint({ endpointPath });
+        if (!endpointPath.includes('/d-')) return native;
+        dataEndpointCount += 1;
+        if (dataEndpointCount !== 1) return native;
+        return {
+          ...native,
+          listen: async () => await firstListenBlocked,
+          remove: async () => {
+            await native.remove();
+            resolveFirstRemoved();
+          },
+        };
+      },
+    }));
+    const { socket, wire } = await openAuthenticatedRawControl(fixture);
+    socket.write(encodeBrokerControlFrame({
+      t: 'open_data',
+      requestId: 'req-external-error-before-attach',
+      endpointId: deriveWorkspaceSyncEndpointId('rel-external-error-before-attach', 'alpha'),
+      expiresAtMs: Date.now() + OPEN_REMOTE_DEADLINE_MS,
+    }));
+    await waitFor(() => external !== undefined && dataEndpointCount === 1, 'external acquisition before endpoint setup');
+    try {
+      expect(external.listenerCount('error')).toBeGreaterThan(0);
+      external.emit('error', new Error('peer failed during endpoint setup'));
+      const terminal = await wire.waitFor(
+        (frame) => frame.t === 'error' && frame.requestId === 'req-external-error-before-attach',
+        'external error terminal response',
+      );
+      expect(terminal).toMatchObject({ code: 'peer_unavailable' });
+      releaseFirstListen();
+      await firstRemoved;
+      expect(wire.frames.filter(
+        (frame) => frame.t === 'error' && frame.requestId === 'req-external-error-before-attach',
+      )).toHaveLength(1);
+
+      socket.write(encodeBrokerControlFrame({
+        t: 'open_data',
+        requestId: 'req-after-external-error',
+        endpointId: deriveWorkspaceSyncEndpointId('rel-after-external-error', 'beta'),
+        expiresAtMs: Date.now() + OPEN_REMOTE_DEADLINE_MS,
+      }));
+      await expect(wire.waitFor(
+        (frame) => frame.t === 'data_ready' && frame.requestId === 'req-after-external-error',
+        'next request data readiness',
+      )).resolves.toMatchObject({ t: 'data_ready' });
+    } finally {
+      releaseFirstListen();
+      socket.destroy();
+    }
+  });
+
+  it('closes an attached external stream without sending a second terminal control response', async () => {
+    const fixture = await useFixture(await startBroker());
+    const { socket, wire } = await openAuthenticatedRawControl(fixture);
+    socket.write(encodeBrokerControlFrame({
+      t: 'open_data', requestId: 'req-attached-error',
+      endpointId: deriveWorkspaceSyncEndpointId('rel-attached-error', 'alpha'),
+      expiresAtMs: Date.now() + OPEN_REMOTE_DEADLINE_MS,
+    }));
+    const ready = await wire.waitFor((frame) => frame.t === 'data_ready' && frame.requestId === 'req-attached-error', 'data_ready');
+    if (ready.t !== 'data_ready') throw new Error('unreachable');
+    const endpoint = createWorkspaceSyncBrokerEndpoint({ endpointPath: ready.dataEndpoint });
+    const data = await endpoint.connect(ready.dataEndpoint);
+    await once(data, 'connect');
+    socket.write(encodeBrokerControlFrame({ t: 'attach_data', streamId: ready.streamId, attachNonce: ready.attachNonce }));
+    await wire.waitFor((frame) => frame.t === 'data_ok' && frame.streamId === ready.streamId, 'data_ok');
+
+    fixture.externalStreams[0]!.emit('error', new Error('attached peer failed'));
+    await waitFor(() => data.destroyed, 'attached data stream cleanup');
+    socket.write(encodeBrokerControlFrame({
+      t: 'open_data', requestId: 'req-after-attached-error',
+      endpointId: deriveWorkspaceSyncEndpointId('rel-after-attached-error', 'beta'),
+      expiresAtMs: Date.now() + OPEN_REMOTE_DEADLINE_MS,
+    }));
+    await expect(wire.waitFor(
+      (frame) => frame.t === 'data_ready' && frame.requestId === 'req-after-attached-error',
+      'next data readiness',
+    )).resolves.toMatchObject({ t: 'data_ready' });
+    expect(wire.frames.some((frame) => frame.t === 'error' && frame.requestId === 'req-attached-error')).toBe(false);
+    socket.destroy();
+    data.destroy();
+  });
+
   it('does not head-of-line block an independent open while another remote open is stalled', async () => {
     const stalledEndpoint = deriveWorkspaceSyncEndpointId('rel-stalled', 'alpha');
     const readyEndpoint = deriveWorkspaceSyncEndpointId('rel-ready', 'beta');

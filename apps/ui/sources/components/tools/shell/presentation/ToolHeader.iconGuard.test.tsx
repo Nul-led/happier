@@ -18,10 +18,6 @@ vi.mock('@/components/tools/renderers/core/_registry', () => ({
     getToolViewComponent: () => null,
 }));
 
-vi.mock('@/components/tools/normalization/core/normalizeToolCallForRendering', () => ({
-    normalizeToolCallForRendering: (tool: any) => tool,
-}));
-
 vi.mock('@/components/tools/shell/presentation/resolveToolHeaderTextPresentation', () => ({
     resolveToolHeaderTextPresentation: () => ({
         normalizedToolName: 'test-tool',

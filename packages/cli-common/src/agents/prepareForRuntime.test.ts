@@ -1,5 +1,4 @@
 import { existsSync } from 'node:fs';
-import { spawnSync as spawnSyncProcess } from 'node:child_process';
 import { chmod, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -271,7 +270,7 @@ describe('prepareAgentCliForRuntime managed_only', () => {
         platform,
         sourcePolicy: 'managed_only',
         env: { ...process.env, PATH: binDir },
-        deps: { spawnSync: vendorRecipeSpawn as unknown as typeof spawnSyncProcess },
+        deps: { execFileWithDeadline: vendorRecipeSpawn as unknown as NonNullable<NonNullable<Parameters<typeof prepareAgentCliForRuntime>[0]['deps']>['execFileWithDeadline']> },
       });
 
       expect(prepared.ok).toBe(false);

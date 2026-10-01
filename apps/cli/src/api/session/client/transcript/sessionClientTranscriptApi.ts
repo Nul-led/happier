@@ -250,12 +250,15 @@ export type SessionClientTranscriptApiDeps = Readonly<{
         observedAt: number;
     }> | null;
     getActiveLocalTurnProgressAt: () => number | null;
+    onPresence?: (presence: SessionPresenceSnapshot) => void;
     getMetadataSnapshot: () => Metadata | null;
     updateAgentState: (handler: (metadata: AgentState) => AgentState) => Promise<void>;
     updateMetadata: (handler: (metadata: Metadata) => Metadata) => Promise<void>;
     enqueueCommittedTranscriptMessage: (params: EnqueueCommittedTranscriptMessageParams) => Promise<Readonly<{
         persisted: boolean;
         delivered: boolean;
+        localId?: string;
+        committedSequence?: number;
     }>>;
     enqueueCommittedVoiceAgentTranscriptTurn: (
         params: EnqueueCommittedVoiceAgentTranscriptTurnParams,
@@ -270,6 +273,7 @@ export type SessionClientTranscriptApiDeps = Readonly<{
         payload: Record<string, unknown>,
     ) => Promise<SessionInputTransformBeforeCommitResult> | SessionInputTransformBeforeCommitResult;
     admitSessionUserMessage: (params: Readonly<{
+        callerInputAuthorization?: import('@happier-dev/protocol').ExternalActionExecutionAuthorizationV1;
         localId: string;
         text: string;
         meta: Record<string, unknown>;
@@ -301,6 +305,7 @@ export type SessionClientTranscriptApi = Readonly<{
         opts: CommittedTranscriptMessageOptions,
     ) => Promise<Readonly<{ persisted: boolean; delivered: boolean }>>;
     enqueueSessionUserMessage: (params: Readonly<{
+        callerInputAuthorization?: import('@happier-dev/protocol').ExternalActionExecutionAuthorizationV1;
         text: string;
         localId?: string;
         meta?: Record<string, unknown>;
@@ -313,6 +318,7 @@ export type SessionClientTranscriptApi = Readonly<{
         }>;
     }>) => Promise<void>;
     enqueueSessionUserMessageWithDisposition: (params: Readonly<{
+        callerInputAuthorization?: import('@happier-dev/protocol').ExternalActionExecutionAuthorizationV1;
         text: string;
         localId: string;
         meta?: Record<string, unknown>;
@@ -374,7 +380,7 @@ export type SessionClientTranscriptApi = Readonly<{
     enqueueSessionEventCommitted: (
         event: SessionEventMessage,
         id?: string,
-    ) => Promise<Readonly<{ persisted: boolean; delivered: boolean }>>;
+    ) => Promise<Readonly<{ persisted: boolean; delivered: boolean; localId?: string; committedSequence?: number }>>;
     keepAlive: (thinking: boolean, mode: SessionAliveMode) => void;
     replayLatestPresence: () => void;
 }>;
@@ -721,6 +727,7 @@ export function createSessionClientTranscriptApi(
     };
 
     const enqueueSessionUserMessageWithDisposition = async (params: Readonly<{
+        callerInputAuthorization?: import('@happier-dev/protocol').ExternalActionExecutionAuthorizationV1;
         text: string;
         localId: string;
         meta?: Record<string, unknown>;
@@ -750,6 +757,7 @@ export function createSessionClientTranscriptApi(
                     preparedComposerAttachments: persisted.composerAttachments,
                 });
                 return await deps.admitSessionUserMessage({
+                    ...(params.callerInputAuthorization ? { callerInputAuthorization: params.callerInputAuthorization } : {}),
                     localId,
                     text: persisted.text,
                     meta: persisted.meta,
@@ -771,6 +779,7 @@ export function createSessionClientTranscriptApi(
                 : {}),
         });
         return await deps.admitSessionUserMessage({
+            ...(params.callerInputAuthorization ? { callerInputAuthorization: params.callerInputAuthorization } : {}),
             localId,
             text: transformed.text,
             meta: transformed.meta,
@@ -968,6 +977,7 @@ export function createSessionClientTranscriptApi(
                 logger.debug(`[API] Sending keep alive message: ${thinking}`);
             }
             latestSessionPresence = { thinking: resolveKeepAliveThinkingWithTerminalGuard(thinking, Date.now()), mode };
+            deps.onPresence?.(latestSessionPresence);
             // An open canonical turn keeps publisher presence reliable even when the provider's
             // foreground thinking projection is idle. The payload retains the original thinking
             // value, so presence transport cannot synthesize a working-state projection.

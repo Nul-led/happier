@@ -3,6 +3,9 @@
  */
 export interface Artifact {
     id: string;
+    /** Authenticated sharing projection; absent on older owner-only servers. */
+    ownerAccountId?: string;
+    access?: 'owner' | 'view' | 'edit' | 'admin';
     header: string;  // Base64 encoded encrypted JSON { "title": string | null }
     headerVersion: number;
     body?: string;  // Base64 encoded encrypted JSON { "body": string | null } - only in full fetch
@@ -53,6 +56,9 @@ export type ArtifactLockedReason =
     | 'invalid_stored_content';
 
 interface DecryptedArtifactBase {
+    /** Authenticated FIN grant projection, never inferred from a document header. */
+    access?: 'owner' | 'view' | 'edit' | 'admin';
+    ownerAccountId?: string;
     id: string;
     header?: ArtifactHeader | null;
     title: string | null;

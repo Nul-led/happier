@@ -6,6 +6,26 @@ import type { Metadata } from '@/api/types';
 import { createTerminalAttachPlan } from './terminalAttachPlan';
 
 describe('createTerminalAttachPlan', () => {
+  it('targets the stable Herdr terminal identity', () => {
+    expect(createTerminalAttachPlan({
+      terminal: {
+        mode: 'herdr',
+        herdr: { sessionName: 'default', socketPath: '/tmp/herdr.sock', terminalId: 'term_123' },
+      },
+      insideTmux: false,
+    })).toEqual({ type: 'herdr', sessionName: 'default', socketPath: '/tmp/herdr.sock', terminalId: 'term_123' });
+  });
+
+  it('targets an existing Zellij pane within its session', () => {
+    expect(createTerminalAttachPlan({
+      terminal: {
+        mode: 'zellij',
+        zellij: { sessionName: 'happier', paneId: '9' },
+      },
+      insideTmux: false,
+    })).toEqual({ type: 'zellij', sessionName: 'happier', paneId: '9' });
+  });
+
   it('returns not-attachable when terminal mode is plain', () => {
     const terminal: NonNullable<Metadata['terminal']> = { mode: 'plain' };
     const plan = createTerminalAttachPlan({ terminal, insideTmux: false });

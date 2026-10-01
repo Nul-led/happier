@@ -9,6 +9,7 @@ import * as tar from 'tar';
 import { describe, expect, it } from 'vitest';
 
 import { ensureManagedPnpmCommand, managedPnpmBinPath } from './managedPnpm.js';
+import type { AgentInstallProgressEvent } from './installProgress.js';
 
 function currentArchiveAssetName(): string {
   if (process.platform === 'darwin' && process.arch === 'arm64') return 'pnpm-darwin-arm64.tar.gz';
@@ -42,9 +43,10 @@ describe('managedPnpm binary-safe bootstrap', () => {
       );
       const archiveBytes = await readFile(archivePath);
       const digest = `sha256:${createHash('sha256').update(archiveBytes).digest('hex')}`;
+      const events: AgentInstallProgressEvent[] = [];
 
       const server = createServer((_request, response) => {
-        response.writeHead(200, { 'content-type': 'application/octet-stream' });
+        response.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': archiveBytes.length });
         response.end(archiveBytes);
       });
       await new Promise<void>((resolve, reject) => {
@@ -71,9 +73,10 @@ describe('managedPnpm binary-safe bootstrap', () => {
               digest,
             }],
           }),
-        });
+        }, { onProgress: (event) => events.push(event) });
 
         expect(command).toBe(managedPnpmBinPath(env));
+        expect(events).toContainEqual({ t: 'progress', bytesDone: archiveBytes.length, bytesTotal: archiveBytes.length });
         await expect(readFile(managedPnpmBinPath(env), 'utf8')).resolves.toContain('managed-pnpm');
         await expect(readFile(join(env.HAPPIER_HOME_DIR!, 'tools', 'pnpm', 'current', 'bin', 'dist', 'index.js'), 'utf8'))
           .resolves.toBe('managed-pnpm-support\n');

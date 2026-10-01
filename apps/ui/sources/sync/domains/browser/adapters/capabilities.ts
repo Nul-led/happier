@@ -16,6 +16,7 @@ import {
 } from './availability';
 import { browserNativeViewCaptureShapeSupported } from '../recording/nativeViewCaptureShape';
 import type { DesktopWebViewSupport } from './desktopWebView';
+import { INJECTED_PAGE_AUTOMATION_ACTIONS } from '../automation/injectedPageActions';
 
 type BuildBrowserAdapterCapabilitiesInput = Readonly<{
     adapterKind: BrowserSemanticAdapterKindV1;
@@ -35,6 +36,7 @@ type BuildBrowserAdapterCapabilitiesInput = Readonly<{
 
 type BrowserAutomationDisabledReasonCode =
     | BrowserAdapterUnavailableReasonCode
+    | 'runtime_unavailable'
     | 'desktop_webview_automation_unavailable'
     | 'hosted_plugin_automation_policy_unavailable';
 
@@ -107,11 +109,14 @@ function resolveUnavailableCapabilitiesReason(
     ) {
         return null;
     }
+    if (input.supportedRenderEngines.includes('streamedSurface')
+        && (input.adapterKind === 'chromiumSidecar' || input.adapterKind === 'streamedBrowserSurface')) {
+        return null;
+    }
     // Web external URLs render best-effort in the sandboxed `webIframe` engine; non-framable sites
     // fall back to the always-present open-in-system-browser escape. So `externalUrl + webIframe` is
     // AVAILABLE with usable address-bar navigation — it must not dead-end as "unavailable", or
-    // BrowserShell disables the address bar from `toolbar.canNavigate`. (chromiumSidecar /
-    // streamedBrowserSurface still require their runtimes and fall through to unavailable below.)
+    // BrowserShell disables the address bar from `toolbar.canNavigate`.
     //
     // R-2: `nativeWebView` is the SAME story on iOS/Android, and it was missing. `selectBrowserTargetAdapter`
     // maps an allowed external URL on ios/android to the RN `WebView`, which hosts arbitrary
@@ -133,10 +138,6 @@ function resolveUnavailableCapabilitiesReason(
     ) {
         return null;
     }
-    // DEC-5: `streamedBrowserSurface` has NO escape from this gate any more. There is no producer
-    // of a streamed target and no renderer for the kind, so a reachable daemon control transport
-    // was never evidence that a surface exists — it only made this adapter publish a full navigable
-    // capability set to agents and plugins for something that could not paint.
     return resolveBrowserAdapterUnavailableReason({
         adapterKind: input.adapterKind,
         targetKind: input.supportedTargetKinds[0] ?? defaultTargetKindForAdapter(input.adapterKind),
@@ -193,6 +194,62 @@ function buildBrowserAutomationActions(
     if (input.adapterKind === 'simulatorPreview' || primaryEngine === 'streamedSurface' || primaryEngine === 'unavailable') {
         return buildUnavailableAutomationActions('target_kind_unavailable');
     }
+    const unavailableReason = primaryEngine === 'desktopWebView'
+        ? 'desktop_webview_automation_unavailable'
+        : 'runtime_unavailable';
+    const actions = buildUnavailableAutomationActions(unavailableReason);
+    const injectedPageAvailable = primaryEngine === 'webIframe'
+        || primaryEngine === 'nativeWebView'
+        || (primaryEngine === 'desktopWebView' && input.desktopWebViewSupport?.automation === true);
+    const syntheticAction: BrowserAutomationActionCapabilityV1 = {
+        available: injectedPageAvailable,
+        fidelity: injectedPageAvailable ? 'injectedPage' : 'unavailable',
+        trustedInput: false,
+        disabledReasons: injectedPageAvailable ? [] : [unavailableReason],
+    };
+    for (const entry of INJECTED_PAGE_AUTOMATION_ACTIONS) {
+        actions[entry.capability] = syntheticAction;
+    }
+    // Human navigation and diagnostics picking have separate owners. Neither registers
+    // an executable action in this collector contribution.
+    const unsupportedAction: BrowserAutomationActionCapabilityV1 = {
+        available: false,
+        fidelity: 'unavailable',
+        trustedInput: false,
+        disabledReasons: ['unsupported_action'],
+    };
+    actions.navigate = unsupportedAction;
+    actions.elementPicker = unsupportedAction;
+    actions.evaluate = {
+        available: false,
+        fidelity: 'unavailable',
+        trustedInput: false,
+        disabledReasons: ['browser_automation_eval_disabled'],
+    };
+    actions.screenshotReference = {
+        available: false,
+        fidelity: 'unavailable',
+        trustedInput: false,
+        disabledReasons: ['screenshot_reference_unavailable'],
+    };
+    actions.recording = {
+        available: false,
+        fidelity: 'unavailable',
+        trustedInput: false,
+        disabledReasons: ['browser_recording_capture_adapter_missing'],
+    };
+    actions.trustedInput = {
+        available: false,
+        fidelity: 'unavailable',
+        trustedInput: false,
+        disabledReasons: ['trusted_input_unavailable'],
+    };
+    actions.crossOriginFrameAccess = {
+        available: false,
+        fidelity: 'unavailable',
+        trustedInput: false,
+        disabledReasons: ['cross_origin_frame_unavailable'],
+    };
     if (primaryEngine === 'desktopWebView') {
         const screenshotReference: BrowserAutomationActionCapabilityV1 = input.desktopWebViewSupport?.capture === true
             ? {
@@ -232,76 +289,12 @@ function buildBrowserAutomationActions(
                 disabledReasons: ['browser_recording_capture_adapter_missing'],
             };
         return {
-            ...buildUnavailableAutomationActions('desktop_webview_automation_unavailable'),
+            ...actions,
             screenshotReference,
             recording,
         } satisfies BrowserAutomationActionCapabilityMapV1;
     }
-
-    const injectedPageAvailable = primaryEngine === 'webIframe'
-        || primaryEngine === 'nativeWebView';
-    const syntheticAction: BrowserAutomationActionCapabilityV1 = {
-        available: injectedPageAvailable,
-        fidelity: injectedPageAvailable ? 'injectedPage' : 'unavailable',
-        trustedInput: false,
-        disabledReasons: injectedPageAvailable ? [] : ['runtime_unavailable'],
-    };
-    const navigationAvailable = primaryEngine === 'webIframe' || primaryEngine === 'nativeWebView';
-
-    return {
-        snapshot: syntheticAction,
-        semanticSnapshot: syntheticAction,
-        locatorQuery: syntheticAction,
-        click: syntheticAction,
-        tap: syntheticAction,
-        type: syntheticAction,
-        press: syntheticAction,
-        scroll: syntheticAction,
-        hover: syntheticAction,
-        // Injected-page `upload` attaches payload-supplied file content to a file input; it cannot
-        // read a host path from the page. `drag` synthesises the HTML5 drag sequence. Both are
-        // untrusted synthetic input, exactly like `click`/`type`.
-        upload: syntheticAction,
-        drag: syntheticAction,
-        waitFor: syntheticAction,
-        navigate: {
-            available: navigationAvailable,
-            fidelity: navigationAvailable ? (primaryEngine === 'nativeWebView' ? 'nativeWebView' : 'webIframe') : 'unavailable',
-            trustedInput: false,
-            disabledReasons: navigationAvailable ? [] : ['unsupported_action'],
-        } satisfies BrowserAutomationActionCapabilityV1,
-        evaluate: {
-            available: false,
-            fidelity: 'unavailable',
-            trustedInput: false,
-            disabledReasons: ['browser_automation_eval_disabled'],
-        } satisfies BrowserAutomationActionCapabilityV1,
-        elementPicker: syntheticAction,
-        screenshotReference: {
-            available: false,
-            fidelity: 'unavailable',
-            trustedInput: false,
-            disabledReasons: ['screenshot_reference_unavailable'],
-        } satisfies BrowserAutomationActionCapabilityV1,
-        recording: {
-            available: false,
-            fidelity: 'unavailable',
-            trustedInput: false,
-            disabledReasons: ['browser_recording_capture_adapter_missing'],
-        } satisfies BrowserAutomationActionCapabilityV1,
-        trustedInput: {
-            available: false,
-            fidelity: 'unavailable',
-            trustedInput: false,
-            disabledReasons: ['trusted_input_unavailable'],
-        } satisfies BrowserAutomationActionCapabilityV1,
-        crossOriginFrameAccess: {
-            available: false,
-            fidelity: 'unavailable',
-            trustedInput: false,
-            disabledReasons: ['cross_origin_frame_unavailable'],
-        } satisfies BrowserAutomationActionCapabilityV1,
-    };
+    return actions;
 }
 
 export function buildBrowserAdapterCapabilities(
@@ -325,6 +318,8 @@ export function buildBrowserAdapterCapabilities(
 
     const primaryEngine = input.supportedRenderEngines[0] ?? 'unavailable';
     const simulatorPreview = input.adapterKind === 'simulatorPreview';
+    const daemonNavigation = primaryEngine === 'streamedSurface'
+        && (input.adapterKind === 'chromiumSidecar' || input.adapterKind === 'streamedBrowserSurface');
     const desktopWebViewNavigation = primaryEngine === 'desktopWebView'
         ? input.desktopWebViewSupport
         : null;
@@ -334,32 +329,37 @@ export function buildBrowserAdapterCapabilities(
         supportedRenderEngines: input.supportedRenderEngines,
         navigation: {
             canNavigate: !simulatorPreview && (
-                primaryEngine === 'webIframe'
+                daemonNavigation
+                || primaryEngine === 'webIframe'
                 || primaryEngine === 'nativeWebView'
                 || desktopWebViewNavigation?.navigation === true
             ),
             canGoBack: !simulatorPreview && (
-                primaryEngine === 'nativeWebView'
+                daemonNavigation
+                || primaryEngine === 'nativeWebView'
                 || desktopWebViewNavigation?.goBackForward === true
             ),
             canGoForward: !simulatorPreview && (
-                primaryEngine === 'nativeWebView'
+                daemonNavigation
+                || primaryEngine === 'nativeWebView'
                 || desktopWebViewNavigation?.goBackForward === true
             ),
             canReload: !simulatorPreview && (
-                primaryEngine === 'webIframe'
+                daemonNavigation
+                || primaryEngine === 'webIframe'
                 || primaryEngine === 'nativeWebView'
                 || desktopWebViewNavigation?.reload === true
             ),
             canStop: !simulatorPreview && (
-                primaryEngine === 'nativeWebView'
+                daemonNavigation
+                || primaryEngine === 'nativeWebView'
                 || desktopWebViewNavigation?.stop === true
             ),
         },
         diagnosticsFidelityByFamily: buildDiagnosticsFidelityByFamily(input, primaryEngine),
         automationActions: buildBrowserAutomationActions(input, primaryEngine),
         contextKinds: ['browserPageReference'],
-        inputRouting: simulatorPreview
+        inputRouting: simulatorPreview || daemonNavigation
             ? 'pmsControlSideband'
             : primaryEngine === 'nativeWebView' || primaryEngine === 'desktopWebView' ? 'native' : 'none',
         supportsStreamingDisplay: simulatorPreview || primaryEngine === 'streamedSurface',

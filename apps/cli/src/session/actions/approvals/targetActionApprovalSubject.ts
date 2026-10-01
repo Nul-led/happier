@@ -19,7 +19,7 @@ function subject(request: TargetActionApprovalRequestV1): unknown {
     input: request.input,
     accountId: request.accountId,
     resourceId: request.resourceId,
-    generation: request.generation,
+    sourceCustody: request.sourceCustody,
     policyFingerprint: request.policyFingerprint,
     subjectFingerprint: request.subjectFingerprint,
     replayPlacement: request.replayPlacement,

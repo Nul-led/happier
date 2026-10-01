@@ -6,6 +6,7 @@ import { Text } from '@/components/ui/text/Text';
 import { Typography } from '@/constants/Typography';
 import { t } from '@/text';
 import { Icon } from '@/components/ui/icons/Icon';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 type SourceControlOperationsHistoryLoadMoreButtonProps = Readonly<{
     theme: any;
@@ -30,7 +31,7 @@ export const SourceControlOperationsHistoryLoadMoreButton = React.memo((props: S
                 borderWidth: 1,
                 borderColor: props.theme.colors.border.default,
                 backgroundColor,
-                opacity: props.historyLoading ? 0.6 : state.pressed ? 0.85 : 1,
+                opacity: props.historyLoading ? 0.6 : state.pressed ? motionTokens.press.opacitySubtle : 1,
             })}
         >
             <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>

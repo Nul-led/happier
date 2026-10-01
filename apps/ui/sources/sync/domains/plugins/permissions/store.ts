@@ -1,3 +1,5 @@
+import { pluginPermissionSubjectsEqualV1 } from '@happier-dev/protocol';
+
 import type {
     PluginPermissionGrant,
     PluginPermissionGrantApprovedResult,
@@ -163,7 +165,7 @@ function matchesIdentity(
     }
     if (
         Object.prototype.hasOwnProperty.call(filters, 'subject')
-        && JSON.stringify(value.subject ?? null) !== JSON.stringify(filters.subject ?? null)
+        && !permissionSubjectMatches(value.subject, filters.subject)
     ) {
         return false;
     }
@@ -174,6 +176,15 @@ function matchesIdentity(
         return false;
     }
     return true;
+}
+
+function permissionSubjectMatches(
+    value: PluginPermissionGrantIdentity['subject'],
+    filter: PluginPermissionGrantIdentity['subject'],
+): boolean {
+    if (!filter) return !value;
+    if (!value) return false;
+    return pluginPermissionSubjectsEqualV1(value, filter);
 }
 
 /**

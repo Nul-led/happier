@@ -1,10 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import {
-    defineProtocolNumber,
-    defineProtocolObject,
-    defineProtocolString,
-} from '@happier-dev/plugin-sdk/protocol';
 import type { ActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
+import { createMachineFixture } from '@/dev/testkit';
+import { clearDaemonMergedProjectionCacheForTests } from './loadDaemonMergedProjectionInputs';
 
 // Localization is a platform boundary; projection and descriptor logic stay real.
 vi.mock('@/text', async () => {
@@ -21,6 +18,8 @@ vi.mock('@/sync/ops/machineContributionRegistryProjection', () => ({
     machinePluginSecretStatus: vi.fn(async () => ({ supported: false, reason: 'not-supported' })),
     machinePluginSecretSet: vi.fn(async () => ({ supported: false, reason: 'not-supported' })),
     machinePluginSecretDelete: vi.fn(async () => ({ supported: false, reason: 'not-supported' })),
+    machinePluginSettingsGet: vi.fn(async () => ({ supported: false, reason: 'not-supported' })),
+    machinePluginSettingsSet: vi.fn(async () => ({ supported: false, reason: 'not-supported' })),
 }));
 
 function daemonProjection(generation: number) {
@@ -29,7 +28,6 @@ function daemonProjection(generation: number) {
         generation,
         installedPackagesById: {},
         agentsById: {},
-        backendsById: {},
         actionsById: {},
         toolsById: {},
         commandsById: {},
@@ -74,19 +72,11 @@ function createAccountLifetime(accountId: string, serverId = 'server-1'): Readon
 
 const retainedTestAccountLifetime = createAccountLifetime('account-default').lifetime;
 
-const emptyCanonicalInputSchema = defineProtocolObject({}, { policy: 'closed' }).jsonSchema;
-const reviewIdInputSchema = defineProtocolObject({
-    reviewId: defineProtocolString(),
-}, { policy: 'closed' }).jsonSchema;
-const numericReviewIdInputSchema = defineProtocolObject({
-    reviewId: defineProtocolNumber(),
-}, { policy: 'closed' }).jsonSchema;
-
 const automationEligibleEvents = [{
     event: {
         id: 'acme.events/repository/updated',
         identity: { pluginId: 'acme.events', localId: 'repository/updated' },
-        immutableGenerationId: 'event-generation-a',
+        occurrenceId: 'event-generation-a',
         title: 'Repository updated',
         description: null,
         payloadSchema: { type: 'object', additionalProperties: false },
@@ -104,7 +94,7 @@ const automationEligibleEvents = [{
     setupAction: {
         id: 'acme.events/configure-source',
         identity: { pluginId: 'acme.events', localId: 'configure-source' },
-        immutableGenerationId: 'event-generation-a',
+        occurrenceId: 'event-generation-a',
         title: 'Configure source',
         description: null,
         inputSchema: { type: 'object', additionalProperties: false },
@@ -114,7 +104,7 @@ const automationEligibleEvents = [{
 
 const composerSurfaceCatalog = [{
     contribution: { pluginId: 'acme.composer', localId: 'review-region' },
-    immutableGenerationId: 'composer-generation-a',
+    occurrenceId: 'composer-generation-a',
     projectionGeneration: 7,
     role: 'region' as const,
     rendererChain: [{ pluginId: 'acme.composer', localId: 'review-region-renderer' }],
@@ -137,7 +127,7 @@ const composerSurfaceCatalog = [{
     },
     resourceCapability: { readable: true, dynamic: true },
     contributorTargetedContributions: {
-        target: { pluginId: 'acme.composer', immutableGenerationId: 'composer-generation-a' },
+        target: { pluginId: 'acme.composer', occurrenceId: 'composer-generation-a' },
         points: [],
     },
 }] as const;
@@ -146,7 +136,6 @@ describe('loadDaemonMergedProjectionCacheEntry', () => {
     beforeEach(async () => {
         projectionDescribeMock.mockReset();
         projectionRevision.value = 0;
-        const { clearDaemonMergedProjectionCacheForTests } = await import('./loadDaemonMergedProjectionInputs');
         clearDaemonMergedProjectionCacheForTests();
     });
 
@@ -228,6 +217,7 @@ describe('loadDaemonMergedProjectionCacheEntry', () => {
             serverId: 'server-1',
         })).toMatchObject({
             kind: 'error',
+            reason: 'error',
             inputs: {
                 pluginProjectionV2: {
                     generation: 7,
@@ -253,1107 +243,202 @@ describe('loadDaemonMergedProjectionCacheEntry', () => {
         });
     });
 
-    it('shares one bounded failure between concurrent reads of the same target generation', async () => {
-        const mountedTarget = { pluginId: 'acme.preview', immutableGenerationId: 'target-generation-a' } as const;
-        let resolveProjection!: (value: unknown) => void;
-        projectionDescribeMock.mockImplementation(async () => await new Promise((resolve) => {
-            resolveProjection = resolve;
+    it('is the one per-machine owner: readers share one describe per projection revision', async () => {
+        let resolveDescribe!: (value: unknown) => void;
+        projectionDescribeMock.mockImplementationOnce(async () => await new Promise((resolve) => {
+            resolveDescribe = resolve;
         }));
         const {
             loadDaemonMergedProjectionCacheEntry,
-            retainMountedTargetProjectionCacheScope,
+            loadDaemonMergedProjectionInputs,
         } = await import('./loadDaemonMergedProjectionInputs');
-        const release = retainMountedTargetProjectionCacheScope({
-            machineId: 'machine-1',
-            serverId: 'server-1',
-            mountedTarget,
-            accountLifetime: retainedTestAccountLifetime,
+        const account = createAccountLifetime('account-a');
+
+        // The AppShell reader and a direct caller ask the same question at once.
+        const shellRead = loadDaemonMergedProjectionCacheEntry({ machineId: 'machine-1', serverId: 'server-1', accountLifetime: account.lifetime });
+        const directRead = loadDaemonMergedProjectionInputs({ machineId: 'machine-1', serverId: 'server-1', accountLifetime: account.lifetime });
+        await vi.waitFor(() => expect(projectionDescribeMock).toHaveBeenCalledTimes(1));
+        resolveDescribe({ supported: true, projection: daemonProjection(7) });
+        await expect(shellRead).resolves.toMatchObject({ kind: 'ready' });
+        await expect(directRead).resolves.toMatchObject({ pluginProjectionV2: { generation: 7 } });
+
+        // A later direct caller reuses the current revision's answer…
+        await expect(loadDaemonMergedProjectionInputs({ machineId: 'machine-1', serverId: 'server-1', accountLifetime: account.lifetime }))
+            .resolves.toMatchObject({ pluginProjectionV2: { generation: 7 } });
+        expect(projectionDescribeMock).toHaveBeenCalledTimes(1);
+
+        // …until the machine's projection revision advances.
+        projectionRevision.value += 1;
+        projectionDescribeMock.mockResolvedValueOnce({ supported: true, projection: daemonProjection(8) });
+        await expect(loadDaemonMergedProjectionInputs({ machineId: 'machine-1', serverId: 'server-1', accountLifetime: account.lifetime }))
+            .resolves.toMatchObject({ pluginProjectionV2: { generation: 8 } });
+        expect(projectionDescribeMock).toHaveBeenCalledTimes(2);
+        // The owner never asks the transport for a caller-chosen deadline.
+        for (const call of projectionDescribeMock.mock.calls) {
+            expect(call[1]).not.toHaveProperty('timeoutMs');
+            expect(call[1]).not.toHaveProperty('requestEpoch');
+        }
+    });
+
+    it('reuses a settled describe for another reader of the same Account until the projection changes', async () => {
+        const { loadDaemonMergedProjectionCacheEntry } = await import('./loadDaemonMergedProjectionInputs');
+        const { storage } = await import('@/sync/domains/state/storage');
+        const previousMachines = storage.getState().machines;
+        storage.setState({ machines: { ...previousMachines, 'machine-1': createMachineFixture({ id: 'machine-1', daemonStateVersion: 1 }) } });
+        const firstAccount = createAccountLifetime('account-a');
+        const sameAccount = createAccountLifetime('account-a');
+        const nextAccount = createAccountLifetime('account-b');
+        projectionDescribeMock
+            .mockResolvedValueOnce({ supported: true, projection: daemonProjection(7) })
+            .mockResolvedValueOnce({ supported: true, projection: daemonProjection(8) })
+            .mockResolvedValueOnce({ supported: true, projection: daemonProjection(9) })
+            .mockResolvedValueOnce({ supported: true, projection: daemonProjection(10) });
+
+        const read = (accountLifetime: ActiveServerAccountScopeLifetime) => loadDaemonMergedProjectionCacheEntry({
+            machineId: 'machine-1', serverId: 'server-1', accountLifetime, reuseFreshReady: true,
         });
-
         try {
-            const first = loadDaemonMergedProjectionCacheEntry({
-                machineId: 'machine-1',
-                serverId: 'server-1',
-                mountedTarget,
-                accountLifetime: retainedTestAccountLifetime,
-            });
-            const second = loadDaemonMergedProjectionCacheEntry({
-                machineId: 'machine-1',
-                serverId: 'server-1',
-                mountedTarget,
-                accountLifetime: retainedTestAccountLifetime,
-            });
-
-            await Promise.resolve();
+            await expect(read(firstAccount.lifetime)).resolves.toMatchObject({ kind: 'ready' });
+            await expect(read(sameAccount.lifetime)).resolves.toMatchObject({ kind: 'ready' });
             expect(projectionDescribeMock).toHaveBeenCalledTimes(1);
 
-            resolveProjection({ supported: false, reason: 'error' });
-            const [firstEntry, secondEntry] = await Promise.all([first, second]);
-            expect(firstEntry).toBe(secondEntry);
-            expect(firstEntry).toMatchObject({ kind: 'error' });
-        } finally {
-            release();
-        }
-    });
-
-    it('does not expose Account A target projection to Account B on the same server, machine, and target', async () => {
-        const mountedTarget = { pluginId: 'acme.preview', immutableGenerationId: 'target-generation-a' } as const;
-        const accountA = createAccountLifetime('account-a');
-        const accountB = createAccountLifetime('account-b');
-        projectionDescribeMock
-            .mockResolvedValueOnce({
-                supported: true,
-                projection: daemonProjection(7),
-                targetedContributions: { target: mountedTarget, points: [] },
-            })
-            .mockResolvedValueOnce({
-                supported: true,
-                projection: daemonProjection(8),
-                targetedContributions: { target: mountedTarget, points: [] },
+            await expect(read(nextAccount.lifetime)).resolves.toMatchObject({
+                kind: 'ready', inputs: { pluginProjectionV2: { generation: 8 } },
             });
-        const {
-            loadDaemonMergedProjectionCacheEntry,
-            readCachedDaemonMergedProjectionCacheEntry,
-            retainMountedTargetProjectionCacheScope,
-        } = await import('./loadDaemonMergedProjectionInputs');
-        const releaseA = retainMountedTargetProjectionCacheScope({
-            machineId: 'machine-1',
-            serverId: 'server-1',
-            mountedTarget,
-            accountLifetime: accountA.lifetime,
-        });
+            expect(projectionDescribeMock).toHaveBeenCalledTimes(2);
 
-        try {
-            const accountAEntry = await loadDaemonMergedProjectionCacheEntry({
-                machineId: 'machine-1',
-                serverId: 'server-1',
-                mountedTarget,
-                accountLifetime: accountA.lifetime,
+            storage.setState({ machines: { ...storage.getState().machines, 'machine-1': createMachineFixture({ id: 'machine-1', daemonStateVersion: 2 }) } });
+            await expect(read(nextAccount.lifetime)).resolves.toMatchObject({
+                kind: 'ready', inputs: { pluginProjectionV2: { generation: 9 } },
             });
-            expect(accountAEntry).toMatchObject({
-                kind: 'ready',
-                inputs: { pluginProjectionV2: { generation: 7 } },
-            });
-
-            accountA.retire();
-            const releaseB = retainMountedTargetProjectionCacheScope({
-                machineId: 'machine-1',
-                serverId: 'server-1',
-                mountedTarget,
-                accountLifetime: accountB.lifetime,
-            });
-            try {
-                expect(readCachedDaemonMergedProjectionCacheEntry({
-                    machineId: 'machine-1',
-                    serverId: 'server-1',
-                    mountedTarget,
-                    accountLifetime: accountB.lifetime,
-                })).toBeNull();
-
-                await expect(loadDaemonMergedProjectionCacheEntry({
-                    machineId: 'machine-1',
-                    serverId: 'server-1',
-                    mountedTarget,
-                    accountLifetime: accountB.lifetime,
-                })).resolves.toMatchObject({
-                    kind: 'ready',
-                    inputs: { pluginProjectionV2: { generation: 8 } },
-                });
-                expect(projectionDescribeMock).toHaveBeenCalledTimes(2);
-            } finally {
-                releaseB();
-            }
-        } finally {
-            releaseA();
-        }
-    });
-
-    it('compiles and retains one exact target surface binding for concurrent reads of G', async () => {
-        const mountedTarget = { pluginId: 'acme.preview', immutableGenerationId: 'target-generation-a' } as const;
-        const mountG = Object.freeze({
-            kind: 'targetedSurface' as const,
-            target: mountedTarget,
-            point: Object.freeze({ pointId: 'details', protocol: Object.freeze({ id: 'review-detail', version: 1 }) }),
-            contributor: Object.freeze({
-                pluginId: 'acme.review',
-                contributionId: 'detail',
-                immutableGenerationId: 'contributor-generation-g',
-            }),
-            role: 'detail',
-            presentation: 'content' as const,
-            inputSchema: reviewIdInputSchema,
-        });
-        let resolveProjection!: (value: unknown) => void;
-        projectionDescribeMock.mockImplementation(async () => await new Promise((resolve) => {
-            resolveProjection = resolve;
-        }));
-        const validation = await import('@happier-dev/protocol/plugins/actions/json-schema-validation');
-        const prepare = vi.spyOn(validation, 'preparePluginJsonSchema');
-        const {
-            loadDaemonMergedProjectionCacheEntry,
-            readCachedDaemonMergedProjectionCacheEntry,
-            retainMountedTargetProjectionCacheScope,
-        } = await import('./loadDaemonMergedProjectionInputs');
-        const release = retainMountedTargetProjectionCacheScope({
-            machineId: 'machine-1',
-            serverId: 'server-1',
-            mountedTarget,
-            accountLifetime: retainedTestAccountLifetime,
-        });
-
-        try {
-            const first = loadDaemonMergedProjectionCacheEntry({
-                machineId: 'machine-1',
-                serverId: 'server-1',
-                mountedTarget,
-                accountLifetime: retainedTestAccountLifetime,
-            });
-            const second = loadDaemonMergedProjectionCacheEntry({
-                machineId: 'machine-1',
-                serverId: 'server-1',
-                mountedTarget,
-                accountLifetime: retainedTestAccountLifetime,
-            });
-
-            await Promise.resolve();
-            expect(projectionDescribeMock).toHaveBeenCalledTimes(1);
-
-            resolveProjection({
-                supported: true,
-                projection: daemonProjection(7),
-                targetedSurfaceMounts: [mountG],
-            });
-            const [firstEntry, secondEntry] = await Promise.all([first, second]);
-
-            expect(prepare).toHaveBeenCalledTimes(1);
-            expect(firstEntry).toBe(secondEntry);
-            if (firstEntry?.kind !== 'ready' || secondEntry?.kind !== 'ready') {
-                throw new Error('Expected a retained G target binding.');
-            }
-            expect(firstEntry.inputs.preparedTargetedSurfaceMounts?.[0]?.inputValidation)
-                .toBe(secondEntry.inputs.preparedTargetedSurfaceMounts?.[0]?.inputValidation);
-            expect(readCachedDaemonMergedProjectionCacheEntry({
-                machineId: 'machine-1',
-                serverId: 'server-1',
-                mountedTarget,
-                accountLifetime: retainedTestAccountLifetime,
-            })).toBe(firstEntry);
-        } finally {
-            release();
-            prepare.mockRestore();
-        }
-    });
-
-    it('does not revive contributor G after contributor H has become current', async () => {
-        const mountedTarget = { pluginId: 'acme.preview', immutableGenerationId: 'target-generation-a' } as const;
-        const inputSchema = reviewIdInputSchema;
-        const mount = (immutableGenerationId: string) => Object.freeze({
-            kind: 'targetedSurface' as const,
-            target: mountedTarget,
-            point: Object.freeze({ pointId: 'details', protocol: Object.freeze({ id: 'review-detail', version: 1 }) }),
-            contributor: Object.freeze({
-                pluginId: 'acme.review',
-                contributionId: 'detail',
-                immutableGenerationId,
-            }),
-            role: 'detail',
-            presentation: 'content' as const,
-            inputSchema,
-        });
-        const mountG = mount('contributor-generation-g');
-        const mountH = mount('contributor-generation-h');
-        let resolveStaleG!: (value: unknown) => void;
-        let resolveH!: (value: unknown) => void;
-        projectionDescribeMock
-            .mockResolvedValueOnce({
-                supported: true,
-                projection: daemonProjection(7),
-                targetedSurfaceMounts: [mountG],
-            })
-            .mockImplementationOnce(async () => await new Promise((resolve) => {
-                resolveStaleG = resolve;
-            }))
-            .mockImplementationOnce(async () => await new Promise((resolve) => {
-                resolveH = resolve;
-            }));
-        const validation = await import('@happier-dev/protocol/plugins/actions/json-schema-validation');
-        const prepare = vi.spyOn(validation, 'preparePluginJsonSchema');
-        const {
-            loadDaemonMergedProjectionCacheEntry,
-            retainMountedTargetProjectionCacheScope,
-        } = await import('./loadDaemonMergedProjectionInputs');
-        const release = retainMountedTargetProjectionCacheScope({
-            machineId: 'machine-1',
-            serverId: 'server-1',
-            mountedTarget,
-            accountLifetime: retainedTestAccountLifetime,
-        });
-
-        try {
-            const initial = await loadDaemonMergedProjectionCacheEntry({
-                machineId: 'machine-1',
-                serverId: 'server-1',
-                mountedTarget,
-                accountLifetime: retainedTestAccountLifetime,
-            });
-            if (initial?.kind !== 'ready') throw new Error('Expected the initial G target snapshot.');
-            const gValidation = initial.inputs.preparedTargetedSurfaceMounts?.[0]?.inputValidation;
-            expect(gValidation).toBeDefined();
-            expect(prepare).toHaveBeenCalledTimes(1);
-
-            const staleG = loadDaemonMergedProjectionCacheEntry({
-                machineId: 'machine-1',
-                serverId: 'server-1',
-                mountedTarget,
-                accountLifetime: retainedTestAccountLifetime,
-            });
-            await Promise.resolve();
-
-            projectionRevision.value = 1;
-            const currentH = loadDaemonMergedProjectionCacheEntry({
-                machineId: 'machine-1',
-                serverId: 'server-1',
-                mountedTarget,
-                accountLifetime: retainedTestAccountLifetime,
-            });
-            await Promise.resolve();
             expect(projectionDescribeMock).toHaveBeenCalledTimes(3);
 
-            resolveH({
-                supported: true,
-                projection: daemonProjection(9),
-                targetedSurfaceMounts: [mountH],
+            projectionRevision.value += 1;
+            await expect(read(nextAccount.lifetime)).resolves.toMatchObject({
+                kind: 'ready', inputs: { pluginProjectionV2: { generation: 10 } },
             });
-            const hEntry = await currentH;
-            if (hEntry?.kind !== 'ready') throw new Error('Expected the current H target snapshot.');
-            const hValidation = hEntry.inputs.preparedTargetedSurfaceMounts?.[0]?.inputValidation;
-            expect(hValidation).toBeDefined();
-            expect(hValidation).not.toBe(gValidation);
-            expect(prepare).toHaveBeenCalledTimes(2);
-
-            resolveStaleG({
-                supported: true,
-                projection: daemonProjection(8),
-                targetedSurfaceMounts: [mountG],
-            });
-            await expect(staleG).resolves.toBe(hEntry);
-            expect(prepare).toHaveBeenCalledTimes(2);
+            expect(projectionDescribeMock).toHaveBeenCalledTimes(4);
         } finally {
-            release();
-            prepare.mockRestore();
+            storage.setState({ machines: previousMachines });
         }
     });
 
-    it('does not retain a rejected G schema for an unrelated H contributor generation', async () => {
-        const mountedTarget = { pluginId: 'acme.preview', immutableGenerationId: 'target-generation-a' } as const;
-        const mount = (immutableGenerationId: string, inputSchema: object) => Object.freeze({
-            kind: 'targetedSurface' as const,
-            target: mountedTarget,
-            point: Object.freeze({ pointId: 'details', protocol: Object.freeze({ id: 'review-detail', version: 1 }) }),
-            contributor: Object.freeze({
-                pluginId: 'acme.review',
-                contributionId: 'detail',
-                immutableGenerationId,
-            }),
-            role: 'detail',
-            presentation: 'content' as const,
-            inputSchema,
+    it('does not reuse a pre-inventory describe after the first daemon state is observed', async () => {
+        const { loadDaemonMergedProjectionCacheEntry } = await import('./loadDaemonMergedProjectionInputs');
+        const { storage } = await import('@/sync/domains/state/storage');
+        const previousMachines = storage.getState().machines;
+        const account = createAccountLifetime('account-a');
+        const read = () => loadDaemonMergedProjectionCacheEntry({
+            machineId: 'machine-1', serverId: 'server-1', accountLifetime: account.lifetime, reuseFreshReady: true,
         });
-        const invalidMountG = mount('contributor-generation-g', {
-            $schema: 'https://json-schema.org/draft/2020-12/schema',
-            type: 'object',
-        });
-        const mountH = mount('contributor-generation-h', reviewIdInputSchema);
-        projectionDescribeMock
-            .mockResolvedValueOnce({
-                supported: true,
-                projection: daemonProjection(7),
-                targetedSurfaceMounts: [invalidMountG],
-            })
-            .mockResolvedValueOnce({
-                supported: true,
-                projection: daemonProjection(8),
-                targetedSurfaceMounts: [mountH],
-            });
-        const validation = await import('@happier-dev/protocol/plugins/actions/json-schema-validation');
-        const prepare = vi.spyOn(validation, 'preparePluginJsonSchema');
-        const {
-            loadDaemonMergedProjectionCacheEntry,
-            retainMountedTargetProjectionCacheScope,
-        } = await import('./loadDaemonMergedProjectionInputs');
-        const release = retainMountedTargetProjectionCacheScope({
-            machineId: 'machine-1',
-            serverId: 'server-1',
-            mountedTarget,
-            accountLifetime: retainedTestAccountLifetime,
-        });
-
+        storage.setState({ machines: Object.fromEntries(Object.entries(previousMachines).filter(([id]) => id !== 'machine-1')) });
         try {
-            const failedG = await loadDaemonMergedProjectionCacheEntry({
-                machineId: 'machine-1',
-                serverId: 'server-1',
-                mountedTarget,
-                accountLifetime: retainedTestAccountLifetime,
-            });
-            expect(failedG).toMatchObject({
-                kind: 'ready',
-                inputs: { preparedTargetedSurfaceMounts: [] },
-            });
-            // Parser/normalizer admission rejects G before compiler ownership;
-            // no failed candidate can remain under its authority.
-            expect(prepare).toHaveBeenCalledTimes(0);
-
-            projectionRevision.value = 1;
-            const hEntry = await loadDaemonMergedProjectionCacheEntry({
-                machineId: 'machine-1',
-                serverId: 'server-1',
-                mountedTarget,
-                accountLifetime: retainedTestAccountLifetime,
-            });
-            if (hEntry?.kind !== 'ready') throw new Error('Expected the unrelated H target snapshot.');
-            const hMount = hEntry.inputs.preparedTargetedSurfaceMounts?.[0];
-            expect(hMount?.contributor.immutableGenerationId).toBe('contributor-generation-h');
-            expect(hMount?.inputValidation.validate).toEqual(expect.any(Function));
-            expect(prepare).toHaveBeenCalledTimes(1);
+            projectionDescribeMock.mockResolvedValue({ supported: true, projection: daemonProjection(7) });
+            await expect(read()).resolves.toMatchObject({ kind: 'ready' });
+            storage.setState({ machines: { ...storage.getState().machines, 'machine-1': createMachineFixture({ id: 'machine-1', daemonStateVersion: 1 }) } });
+            await expect(read()).resolves.toMatchObject({ kind: 'ready' });
+            expect(projectionDescribeMock).toHaveBeenCalledTimes(2);
         } finally {
-            release();
-            prepare.mockRestore();
+            storage.setState({ machines: previousMachines });
         }
     });
 
-    it('keeps target-scoped contribution snapshots in the incumbent cache only for their exact mounted target', async () => {
-        const targetA = { pluginId: 'acme.preview', immutableGenerationId: 'target-generation-a' } as const;
-        const targetB = { pluginId: 'acme.preview', immutableGenerationId: 'target-generation-b' } as const;
-        projectionDescribeMock.mockImplementation(async (_machineId: string, options?: Readonly<{
-            mountedTarget?: typeof targetA;
-        }>) => ({
-            supported: true,
-            projection: daemonProjection(7),
-            targetedContributions: {
-                target: options?.mountedTarget,
-                points: [],
-            },
-        }));
+    it('shares one describe between every reader of one Account, never with a successor Account', async () => {
+        // Each mounted reader holds its own lifetime handle for the same routed
+        // Account (one per credential-scope hook). They ask the same question.
+        const pending: Array<(value: unknown) => void> = [];
+        projectionDescribeMock.mockImplementation(() => new Promise((resolve) => { pending.push(resolve); }));
         const {
             loadDaemonMergedProjectionCacheEntry,
             readCachedDaemonMergedProjectionCacheEntry,
-            retainMountedTargetProjectionCacheScope,
         } = await import('./loadDaemonMergedProjectionInputs');
-        const releaseTargetA = retainMountedTargetProjectionCacheScope({
+        const shell = createAccountLifetime('account-a');
+        const palette = createAccountLifetime('account-a');
+        const surface = createAccountLifetime('account-a');
+        const successor = createAccountLifetime('account-b');
+
+        const reads = [shell, palette, surface].map((reader) => loadDaemonMergedProjectionCacheEntry({
             machineId: 'machine-1',
             serverId: 'server-1',
-            mountedTarget: targetA,
-            accountLifetime: retainedTestAccountLifetime,
-        });
-        const releaseTargetB = retainMountedTargetProjectionCacheScope({
+            accountLifetime: reader.lifetime,
+        }));
+        const successorRead = loadDaemonMergedProjectionCacheEntry({
             machineId: 'machine-1',
             serverId: 'server-1',
-            mountedTarget: targetB,
-            accountLifetime: retainedTestAccountLifetime,
+            accountLifetime: successor.lifetime,
         });
+        await vi.waitFor(() => expect(pending).toHaveLength(2));
+        expect(projectionDescribeMock).toHaveBeenCalledTimes(2);
 
-        try {
-            await loadDaemonMergedProjectionCacheEntry({
-                machineId: 'machine-1',
-                serverId: 'server-1',
-                mountedTarget: targetA,
-                accountLifetime: retainedTestAccountLifetime,
-            });
-            await loadDaemonMergedProjectionCacheEntry({
-                machineId: 'machine-1',
-                serverId: 'server-1',
-                mountedTarget: targetB,
-                accountLifetime: retainedTestAccountLifetime,
-            });
-
-            expect(projectionDescribeMock).toHaveBeenNthCalledWith(1, 'machine-1', expect.objectContaining({
-                mountedTarget: targetA,
-            }));
-            expect(projectionDescribeMock).toHaveBeenNthCalledWith(2, 'machine-1', expect.objectContaining({
-                mountedTarget: targetB,
-            }));
-            expect(readCachedDaemonMergedProjectionCacheEntry({
-                machineId: 'machine-1',
-                serverId: 'server-1',
-                mountedTarget: targetA,
-                accountLifetime: retainedTestAccountLifetime,
-            })).toMatchObject({
-                kind: 'ready',
-                inputs: { targetedContributions: { target: targetA } },
-            });
-            expect(readCachedDaemonMergedProjectionCacheEntry({
-                machineId: 'machine-1',
-                serverId: 'server-1',
-                mountedTarget: targetB,
-                accountLifetime: retainedTestAccountLifetime,
-            })).toMatchObject({
-                kind: 'ready',
-                inputs: { targetedContributions: { target: targetB } },
-            });
-        } finally {
-            releaseTargetA();
-            releaseTargetB();
-        }
+        // The reader that issued the shared describe leaves before it answers:
+        // the others still get the answer, published under a current lifetime.
+        shell.retire();
+        pending[0]!({ supported: true, projection: daemonProjection(7) });
+        await expect(reads[0]).resolves.toBeNull();
+        await expect(reads[1]).resolves.toMatchObject({ kind: 'ready', inputs: { pluginProjectionV2: { generation: 7 } } });
+        await expect(reads[2]).resolves.toMatchObject({ kind: 'ready', inputs: { pluginProjectionV2: { generation: 7 } } });
+        // The published answer outlives the departed reader's lifetime.
+        expect(readCachedDaemonMergedProjectionCacheEntry({ machineId: 'machine-1', serverId: 'server-1' }))
+            .toMatchObject({ kind: 'ready', inputs: { pluginProjectionV2: { generation: 7 } } });
+        pending[1]!({ supported: true, projection: daemonProjection(8) });
+        await expect(successorRead).resolves.toMatchObject({ kind: 'ready', inputs: { pluginProjectionV2: { generation: 8 } } });
     });
 
-    it('retains current target-scoped surface mounts beside their exact contribution snapshot', async () => {
-        const mountedTarget = { pluginId: 'acme.preview', immutableGenerationId: 'target-generation-a' } as const;
-        const targetedSurfaceMounts = [{
-            kind: 'targetedSurface',
-            target: mountedTarget,
-            point: { pointId: 'details', protocol: { id: 'review-detail', version: 1 } },
-            contributor: {
-                pluginId: 'acme.review',
-                contributionId: 'detail',
-                immutableGenerationId: 'contributor-generation-a',
-            },
-            role: 'detail',
-            presentation: 'content',
-            inputSchema: emptyCanonicalInputSchema,
-        }];
-        projectionDescribeMock.mockResolvedValueOnce({
-            supported: true,
-            projection: daemonProjection(7),
-            targetedContributions: { target: mountedTarget, points: [] },
-            targetedSurfaceMounts,
-        });
+    it('settles every read with the answer it got while newer revisions keep arriving', async () => {
+        // A daemon whose state keeps advancing while each describe is slow:
+        // every read must still settle with its own answer (tagged with its
+        // revision) instead of waiting on the next, newer read.
+        const pending: Array<(value: unknown) => void> = [];
+        projectionDescribeMock.mockImplementation(() => new Promise((resolve) => { pending.push(resolve); }));
         const { loadDaemonMergedProjectionCacheEntry } = await import('./loadDaemonMergedProjectionInputs');
 
-        const entry = await loadDaemonMergedProjectionCacheEntry({
-            machineId: 'machine-1',
-            serverId: 'server-1',
-            mountedTarget,
-            accountLifetime: retainedTestAccountLifetime,
-        });
+        const first = loadDaemonMergedProjectionCacheEntry({ machineId: 'machine-1', serverId: 'server-1' });
+        await vi.waitFor(() => expect(pending).toHaveLength(1));
+        projectionRevision.value += 1;
+        const second = loadDaemonMergedProjectionCacheEntry({ machineId: 'machine-1', serverId: 'server-1' });
+        await vi.waitFor(() => expect(pending).toHaveLength(2));
+        projectionRevision.value += 1;
 
-        expect(entry).toMatchObject({
+        pending[0]!({ supported: true, projection: daemonProjection(1) });
+        await expect(first).resolves.toMatchObject({
             kind: 'ready',
-            inputs: {
-                targetedContributions: { target: mountedTarget },
-                preparedTargetedSurfaceMounts: [expect.objectContaining({
-                    ...targetedSurfaceMounts[0],
-                    inputValidation: expect.objectContaining({
-                        jsonSchema: expect.any(Object),
-                        validate: expect.any(Function),
-                    }),
-                })],
-            },
-        });
-    });
-
-    it('retires a prepared target validator when its final mounted host releases the target scope', async () => {
-        const mountedTarget = { pluginId: 'acme.preview', immutableGenerationId: 'target-generation-a' } as const;
-        const targetedSurfaceMounts = [{
-            kind: 'targetedSurface' as const,
-            target: mountedTarget,
-            point: { pointId: 'details', protocol: { id: 'review-detail', version: 1 } },
-            contributor: {
-                pluginId: 'acme.review',
-                contributionId: 'detail',
-                immutableGenerationId: 'contributor-generation-a',
-            },
-            role: 'detail',
-            presentation: 'content' as const,
-            inputSchema: emptyCanonicalInputSchema,
-        }];
-        projectionDescribeMock.mockResolvedValueOnce({
-            supported: true,
-            projection: daemonProjection(7),
-            targetedSurfaceMounts,
-        });
-        const {
-            loadDaemonMergedProjectionCacheEntry,
-            readCachedDaemonMergedProjectionCacheEntry,
-            retainMountedTargetProjectionCacheScope,
-        } = await import('./loadDaemonMergedProjectionInputs');
-        const release = retainMountedTargetProjectionCacheScope({
-            machineId: 'machine-1',
-            serverId: 'server-1',
-            mountedTarget,
-            accountLifetime: retainedTestAccountLifetime,
+            projectionRevision: 0,
+            inputs: { pluginProjectionV2: { generation: 1 } },
         });
 
-        await loadDaemonMergedProjectionCacheEntry({
-            machineId: 'machine-1',
-            serverId: 'server-1',
-            mountedTarget,
-            accountLifetime: retainedTestAccountLifetime,
-        });
-        expect(readCachedDaemonMergedProjectionCacheEntry({
-            machineId: 'machine-1',
-            serverId: 'server-1',
-            mountedTarget,
-            accountLifetime: retainedTestAccountLifetime,
-        })).toMatchObject({
+        pending[1]!({ supported: true, projection: daemonProjection(2) });
+        await expect(second).resolves.toMatchObject({
             kind: 'ready',
-            inputs: {
-                preparedTargetedSurfaceMounts: [expect.objectContaining({
-                    inputValidation: expect.objectContaining({ validate: expect.any(Function) }),
-                })],
-            },
+            projectionRevision: 1,
+            inputs: { pluginProjectionV2: { generation: 2 } },
         });
-
-        release();
-        expect(readCachedDaemonMergedProjectionCacheEntry({
-            machineId: 'machine-1',
-            serverId: 'server-1',
-            mountedTarget,
-            accountLifetime: retainedTestAccountLifetime,
-        })).toBeNull();
+        // A late answer never replaces a newer one already published.
+        const { readCachedDaemonMergedProjectionCacheEntry } = await import('./loadDaemonMergedProjectionInputs');
+        expect(readCachedDaemonMergedProjectionCacheEntry({ machineId: 'machine-1', serverId: 'server-1' }))
+            .toMatchObject({ projectionRevision: 1 });
     });
 
-    it('does not prepare a target validator after its final mounted host retires during the RPC', async () => {
-        const mountedTarget = { pluginId: 'acme.preview', immutableGenerationId: 'target-generation-a' } as const;
-        const targetedSurfaceMounts = [{
-            kind: 'targetedSurface' as const,
-            target: mountedTarget,
-            point: { pointId: 'details', protocol: { id: 'review-detail', version: 1 } },
-            contributor: {
-                pluginId: 'acme.review',
-                contributionId: 'detail',
-                immutableGenerationId: 'contributor-generation-a',
-            },
-            role: 'detail',
-            presentation: 'content' as const,
-            inputSchema: emptyCanonicalInputSchema,
-        }];
-        let resolveProjection!: (value: unknown) => void;
-        projectionDescribeMock.mockImplementationOnce(async () => await new Promise((resolve) => {
-            resolveProjection = resolve;
-        }));
-        const validation = await import('@happier-dev/protocol/plugins/actions/json-schema-validation');
-        const prepare = vi.spyOn(validation, 'preparePluginJsonSchema');
-        const {
-            loadDaemonMergedProjectionCacheEntry,
-            readCachedDaemonMergedProjectionCacheEntry,
-            retainMountedTargetProjectionCacheScope,
-        } = await import('./loadDaemonMergedProjectionInputs');
-        const release = retainMountedTargetProjectionCacheScope({
-            machineId: 'machine-1',
-            serverId: 'server-1',
-            mountedTarget,
-            accountLifetime: retainedTestAccountLifetime,
-        });
-
-        try {
-            const load = loadDaemonMergedProjectionCacheEntry({
-                machineId: 'machine-1',
-                serverId: 'server-1',
-                mountedTarget,
-                accountLifetime: retainedTestAccountLifetime,
-            });
-            release();
-            resolveProjection({
-                supported: true,
-                projection: daemonProjection(7),
-                targetedSurfaceMounts,
-            });
-
-            await expect(load).resolves.toBeNull();
-            expect(prepare).not.toHaveBeenCalled();
-            expect(readCachedDaemonMergedProjectionCacheEntry({
-                machineId: 'machine-1',
-                serverId: 'server-1',
-                mountedTarget,
-                accountLifetime: retainedTestAccountLifetime,
-            })).toBeNull();
-        } finally {
-            prepare.mockRestore();
-        }
-    });
-
-    it('does not revive a retired target cache lifecycle when the same target key is immediately remounted', async () => {
-        const mountedTarget = { pluginId: 'acme.preview', immutableGenerationId: 'target-generation-a' } as const;
-        const account = createAccountLifetime('account-a');
-        const mount = (immutableGenerationId: string) => Object.freeze({
-            kind: 'targetedSurface' as const,
-            target: mountedTarget,
-            point: Object.freeze({ pointId: 'details', protocol: Object.freeze({ id: 'review-detail', version: 1 }) }),
-            contributor: Object.freeze({
-                pluginId: 'acme.review',
-                contributionId: 'detail',
-                immutableGenerationId,
-            }),
-            role: 'detail',
-            presentation: 'content' as const,
-            inputSchema: emptyCanonicalInputSchema,
-        });
-        const mountG = mount('contributor-generation-g');
-        const mountH = mount('contributor-generation-h');
-        let resolveG!: (value: unknown) => void;
-        let resolveH!: (value: unknown) => void;
+    it('keeps the classified reason of a failed read with the last good inputs', async () => {
         projectionDescribeMock
-            .mockImplementationOnce(async () => await new Promise((resolve) => {
-                resolveG = resolve;
-            }))
-            .mockImplementationOnce(async () => await new Promise((resolve) => {
-                resolveH = resolve;
-            }));
-        const validation = await import('@happier-dev/protocol/plugins/actions/json-schema-validation');
-        const prepare = vi.spyOn(validation, 'preparePluginJsonSchema');
-        const {
-            loadDaemonMergedProjectionCacheEntry,
-            readCachedDaemonMergedProjectionCacheEntry,
-            retainMountedTargetProjectionCacheScope,
-        } = await import('./loadDaemonMergedProjectionInputs');
-        const releaseG = retainMountedTargetProjectionCacheScope({
-            machineId: 'machine-1',
-            serverId: 'server-1',
-            mountedTarget,
-            accountLifetime: account.lifetime,
-        });
+            .mockResolvedValueOnce({ supported: true, projection: daemonProjection(3) })
+            .mockResolvedValueOnce({ supported: false, reason: 'timeout' });
+        const { loadDaemonMergedProjectionCacheEntry } = await import('./loadDaemonMergedProjectionInputs');
 
-        try {
-            const inFlightG = loadDaemonMergedProjectionCacheEntry({
-                machineId: 'machine-1',
-                serverId: 'server-1',
-                mountedTarget,
-                accountLifetime: account.lifetime,
+        await loadDaemonMergedProjectionCacheEntry({ machineId: 'machine-1', serverId: 'server-1' });
+        await expect(loadDaemonMergedProjectionCacheEntry({ machineId: 'machine-1', serverId: 'server-1' }))
+            .resolves.toMatchObject({
+                kind: 'error',
+                reason: 'timeout',
+                inputs: { pluginProjectionV2: { generation: 3 } },
             });
-            releaseG();
-            const releaseH = retainMountedTargetProjectionCacheScope({
-                machineId: 'machine-1',
-                serverId: 'server-1',
-                mountedTarget,
-                accountLifetime: account.lifetime,
-            });
-
-            try {
-                const replacement = loadDaemonMergedProjectionCacheEntry({
-                    machineId: 'machine-1',
-                    serverId: 'server-1',
-                    mountedTarget,
-                    accountLifetime: account.lifetime,
-                });
-                await Promise.resolve();
-                expect(projectionDescribeMock).toHaveBeenCalledTimes(2);
-
-                resolveH({
-                    supported: true,
-                    projection: daemonProjection(8),
-                    targetedSurfaceMounts: [mountH],
-                });
-                const replacementEntry = await replacement;
-                expect(replacementEntry).toMatchObject({
-                    kind: 'ready',
-                    inputs: {
-                        preparedTargetedSurfaceMounts: [expect.objectContaining({
-                            contributor: expect.objectContaining({ immutableGenerationId: 'contributor-generation-h' }),
-                        })],
-                    },
-                });
-                expect(prepare).toHaveBeenCalledTimes(1);
-
-                resolveG({
-                    supported: true,
-                    projection: daemonProjection(7),
-                    targetedSurfaceMounts: [mountG],
-                });
-                await expect(inFlightG).resolves.toBeNull();
-                expect(readCachedDaemonMergedProjectionCacheEntry({
-                    machineId: 'machine-1',
-                    serverId: 'server-1',
-                    mountedTarget,
-                    accountLifetime: account.lifetime,
-                })).toMatchObject({
-                    kind: 'ready',
-                    inputs: {
-                        preparedTargetedSurfaceMounts: [expect.objectContaining({
-                            contributor: expect.objectContaining({ immutableGenerationId: 'contributor-generation-h' }),
-                        })],
-                    },
-                });
-                expect(prepare).toHaveBeenCalledTimes(1);
-            } finally {
-                releaseH();
-            }
-        } finally {
-            prepare.mockRestore();
-        }
     });
 
-    it('still prepares a target validator when another mounted host retains the exact target scope', async () => {
-        const mountedTarget = { pluginId: 'acme.preview', immutableGenerationId: 'target-generation-a' } as const;
-        const targetedSurfaceMounts = [{
-            kind: 'targetedSurface' as const,
-            target: mountedTarget,
-            point: { pointId: 'details', protocol: { id: 'review-detail', version: 1 } },
-            contributor: {
-                pluginId: 'acme.review',
-                contributionId: 'detail',
-                immutableGenerationId: 'contributor-generation-a',
-            },
-            role: 'detail',
-            presentation: 'content' as const,
-            inputSchema: emptyCanonicalInputSchema,
-        }];
-        let resolveProjection!: (value: unknown) => void;
-        projectionDescribeMock.mockImplementationOnce(async () => await new Promise((resolve) => {
-            resolveProjection = resolve;
-        }));
-        const validation = await import('@happier-dev/protocol/plugins/actions/json-schema-validation');
-        const prepare = vi.spyOn(validation, 'preparePluginJsonSchema');
-        const {
-            loadDaemonMergedProjectionCacheEntry,
-            retainMountedTargetProjectionCacheScope,
-        } = await import('./loadDaemonMergedProjectionInputs');
-        const releaseFirst = retainMountedTargetProjectionCacheScope({
-            machineId: 'machine-1',
-            serverId: 'server-1',
-            mountedTarget,
-            accountLifetime: retainedTestAccountLifetime,
-        });
-        const releaseSecond = retainMountedTargetProjectionCacheScope({
-            machineId: 'machine-1',
-            serverId: 'server-1',
-            mountedTarget,
-            accountLifetime: retainedTestAccountLifetime,
-        });
-
-        try {
-            const load = loadDaemonMergedProjectionCacheEntry({
-                machineId: 'machine-1',
-                serverId: 'server-1',
-                mountedTarget,
-                accountLifetime: retainedTestAccountLifetime,
-            });
-            releaseFirst();
-            resolveProjection({
-                supported: true,
-                projection: daemonProjection(7),
-                targetedSurfaceMounts,
-            });
-
-            await expect(load).resolves.toMatchObject({ kind: 'ready' });
-            expect(prepare).toHaveBeenCalledTimes(1);
-        } finally {
-            releaseSecond();
-            prepare.mockRestore();
-        }
-    });
-
-    it('retains only the prepared launch-input validator while replacing same-generation private mount facts', async () => {
-        const mountedTarget = { pluginId: 'acme.preview', immutableGenerationId: 'target-generation-a' } as const;
-        const inputSchema = reviewIdInputSchema;
-        const mount = (immutableGenerationId: string, resourceReadable: boolean) => Object.freeze({
-            kind: 'targetedSurface' as const,
-            target: mountedTarget,
-            point: Object.freeze({ pointId: 'details', protocol: Object.freeze({ id: 'review-detail', version: 1 }) }),
-            contributor: Object.freeze({
-                pluginId: 'acme.review',
-                contributionId: 'detail',
-                immutableGenerationId,
-            }),
-            role: 'detail',
-            presentation: 'content' as const,
-            inputSchema,
-            resourceCapability: Object.freeze({ readable: resourceReadable, dynamic: resourceReadable }),
-        });
-        const mountGUnavailable = mount('contributor-generation-g', false);
-        const mountGAvailable = mount('contributor-generation-g', true);
-        const mountH = mount('contributor-generation-h', true);
-        projectionDescribeMock
-            .mockResolvedValueOnce({
-                supported: true,
-                projection: daemonProjection(7),
-                targetedSurfaceMounts: [mountGUnavailable],
-            })
-            .mockResolvedValueOnce({
-                supported: true,
-                projection: daemonProjection(8),
-                targetedSurfaceMounts: [mountGAvailable],
-            })
-            .mockResolvedValueOnce({
-                supported: true,
-                projection: daemonProjection(9),
-                targetedSurfaceMounts: [mountH],
-            });
-        const {
-            loadDaemonMergedProjectionCacheEntry,
-            retainMountedTargetProjectionCacheScope,
-        } = await import('./loadDaemonMergedProjectionInputs');
-        const release = retainMountedTargetProjectionCacheScope({
-            machineId: 'machine-1',
-            serverId: 'server-1',
-            mountedTarget,
-            accountLifetime: retainedTestAccountLifetime,
-        });
-
-        try {
-            const initial = await loadDaemonMergedProjectionCacheEntry({
-                machineId: 'machine-1',
-                serverId: 'server-1',
-                mountedTarget,
-                accountLifetime: retainedTestAccountLifetime,
-            });
-            const refresh = await loadDaemonMergedProjectionCacheEntry({
-                machineId: 'machine-1',
-                serverId: 'server-1',
-                mountedTarget,
-                accountLifetime: retainedTestAccountLifetime,
-            });
-
-            expect(initial).toMatchObject({ kind: 'ready' });
-            expect(refresh).toMatchObject({ kind: 'ready' });
-            if (initial?.kind !== 'ready' || refresh?.kind !== 'ready') throw new Error('Expected ready target snapshots.');
-            const initialValidator = initial.inputs.preparedTargetedSurfaceMounts?.[0]?.inputValidation;
-            const refreshValidator = refresh.inputs.preparedTargetedSurfaceMounts?.[0]?.inputValidation;
-            expect(initialValidator).toBeDefined();
-            expect(refreshValidator).toBe(initialValidator);
-            expect(initial.inputs.preparedTargetedSurfaceMounts?.[0]?.resourceCapability).toEqual({
-                readable: false,
-                dynamic: false,
-            });
-            expect(refresh.inputs.preparedTargetedSurfaceMounts?.[0]?.resourceCapability).toEqual({
-                readable: true,
-                dynamic: true,
-            });
-
-            const replacement = await loadDaemonMergedProjectionCacheEntry({
-                machineId: 'machine-1',
-                serverId: 'server-1',
-                mountedTarget,
-                accountLifetime: retainedTestAccountLifetime,
-            });
-
-            expect(replacement).toMatchObject({ kind: 'ready' });
-            if (replacement?.kind !== 'ready') throw new Error('Expected the H target snapshot.');
-            expect(replacement.inputs.preparedTargetedSurfaceMounts?.[0]?.inputValidation)
-                .not.toBe(initialValidator);
-        } finally {
-            release();
-        }
-    });
-
-    it('fails closed for schema and presentation drift under one exact admitted authority', async () => {
-        const mountedTarget = { pluginId: 'acme.preview', immutableGenerationId: 'target-generation-a' } as const;
-        const account = createAccountLifetime('account-a');
-        const canonicalSchema = reviewIdInputSchema;
-        const mount = Object.freeze({
-            kind: 'targetedSurface' as const,
-            target: mountedTarget,
-            point: Object.freeze({ pointId: 'details', protocol: Object.freeze({ id: 'review-detail', version: 1 }) }),
-            contributor: Object.freeze({
-                pluginId: 'acme.review',
-                contributionId: 'detail',
-                immutableGenerationId: 'contributor-generation-g',
-            }),
-            role: 'detail',
-            presentation: 'content' as const,
-            inputSchema: canonicalSchema,
-        });
-        const schemaDrift = Object.freeze({
-            ...mount,
-            inputSchema: numericReviewIdInputSchema,
-        });
-        const presentationDrift = Object.freeze({ ...mount, presentation: 'fill' as const });
-        projectionDescribeMock
-            .mockResolvedValueOnce({
-                supported: true,
-                projection: daemonProjection(7),
-                targetedSurfaceMounts: [mount, schemaDrift],
-            })
-            .mockResolvedValueOnce({
-                supported: true,
-                projection: daemonProjection(8),
-                targetedSurfaceMounts: [mount, presentationDrift],
-            });
-        const validation = await import('@happier-dev/protocol/plugins/actions/json-schema-validation');
-        const prepare = vi.spyOn(validation, 'preparePluginJsonSchema');
-        const {
-            loadDaemonMergedProjectionCacheEntry,
-            retainMountedTargetProjectionCacheScope,
-        } = await import('./loadDaemonMergedProjectionInputs');
-        const release = retainMountedTargetProjectionCacheScope({
-            machineId: 'machine-1',
-            serverId: 'server-1',
-            mountedTarget,
-            accountLifetime: account.lifetime,
-        });
-
-        try {
-            await expect(loadDaemonMergedProjectionCacheEntry({
-                machineId: 'machine-1',
-                serverId: 'server-1',
-                mountedTarget,
-                accountLifetime: account.lifetime,
-            })).resolves.toMatchObject({
-                kind: 'ready',
-                inputs: { preparedTargetedSurfaceMounts: [] },
-            });
-
-            projectionRevision.value = 1;
-            await expect(loadDaemonMergedProjectionCacheEntry({
-                machineId: 'machine-1',
-                serverId: 'server-1',
-                mountedTarget,
-                accountLifetime: account.lifetime,
-            })).resolves.toMatchObject({
-                kind: 'ready',
-                inputs: { preparedTargetedSurfaceMounts: [] },
-            });
-            expect(prepare).not.toHaveBeenCalled();
-        } finally {
-            release();
-            prepare.mockRestore();
-        }
-    });
-
-    it('retains a canonical validator through same-authority drift without mounting the drifted response', async () => {
-        const mountedTarget = { pluginId: 'acme.preview', immutableGenerationId: 'target-generation-a' } as const;
-        const account = createAccountLifetime('account-a');
-        const canonicalSchema = reviewIdInputSchema;
-        const canonicalMount = Object.freeze({
-            kind: 'targetedSurface' as const,
-            target: mountedTarget,
-            point: Object.freeze({ pointId: 'details', protocol: Object.freeze({ id: 'review-detail', version: 1 }) }),
-            contributor: Object.freeze({
-                pluginId: 'acme.review',
-                contributionId: 'detail',
-                immutableGenerationId: 'contributor-generation-g',
-            }),
-            role: 'detail',
-            presentation: 'content' as const,
-            inputSchema: canonicalSchema,
-        });
-        const driftedMount = Object.freeze({
-            ...canonicalMount,
-            inputSchema: numericReviewIdInputSchema,
-        });
-        projectionDescribeMock
-            .mockResolvedValueOnce({
-                supported: true,
-                projection: daemonProjection(7),
-                targetedSurfaceMounts: [canonicalMount],
-            })
-            .mockResolvedValueOnce({
-                supported: true,
-                projection: daemonProjection(8),
-                targetedSurfaceMounts: [driftedMount],
-            })
-            .mockResolvedValueOnce({
-                supported: true,
-                projection: daemonProjection(9),
-                targetedSurfaceMounts: [canonicalMount],
-            });
-        const validation = await import('@happier-dev/protocol/plugins/actions/json-schema-validation');
-        const prepare = vi.spyOn(validation, 'preparePluginJsonSchema');
-        const {
-            loadDaemonMergedProjectionCacheEntry,
-            retainMountedTargetProjectionCacheScope,
-        } = await import('./loadDaemonMergedProjectionInputs');
-        const release = retainMountedTargetProjectionCacheScope({
-            machineId: 'machine-1',
-            serverId: 'server-1',
-            mountedTarget,
-            accountLifetime: account.lifetime,
-        });
-
-        try {
-            const canonical = await loadDaemonMergedProjectionCacheEntry({
-                machineId: 'machine-1',
-                serverId: 'server-1',
-                mountedTarget,
-                accountLifetime: account.lifetime,
-            });
-            if (canonical?.kind !== 'ready') throw new Error('Expected the canonical G target snapshot.');
-            const canonicalValidator = canonical.inputs.preparedTargetedSurfaceMounts?.[0]?.inputValidation;
-            expect(canonicalValidator).toBeDefined();
-            expect(prepare).toHaveBeenCalledTimes(1);
-
-            projectionRevision.value = 1;
-            await expect(loadDaemonMergedProjectionCacheEntry({
-                machineId: 'machine-1',
-                serverId: 'server-1',
-                mountedTarget,
-                accountLifetime: account.lifetime,
-            })).resolves.toMatchObject({
-                kind: 'ready',
-                inputs: { preparedTargetedSurfaceMounts: [] },
-            });
-            expect(prepare).toHaveBeenCalledTimes(1);
-
-            projectionRevision.value = 2;
-            const cleanRetry = await loadDaemonMergedProjectionCacheEntry({
-                machineId: 'machine-1',
-                serverId: 'server-1',
-                mountedTarget,
-                accountLifetime: account.lifetime,
-            });
-            if (cleanRetry?.kind !== 'ready') throw new Error('Expected the clean G target retry.');
-            expect(cleanRetry.inputs.preparedTargetedSurfaceMounts?.[0]?.inputValidation).toBe(canonicalValidator);
-            expect(prepare).toHaveBeenCalledTimes(1);
-        } finally {
-            release();
-            prepare.mockRestore();
-        }
-    });
-
-    it('compiles one validator and reuses it for duplicate exact-authority rows in one response', async () => {
-        const mountedTarget = { pluginId: 'acme.preview', immutableGenerationId: 'target-generation-a' } as const;
-        const account = createAccountLifetime('account-a');
-        const inputSchema = reviewIdInputSchema;
-        const mount = Object.freeze({
-            kind: 'targetedSurface' as const,
-            target: mountedTarget,
-            point: Object.freeze({ pointId: 'details', protocol: Object.freeze({ id: 'review-detail', version: 1 }) }),
-            contributor: Object.freeze({
-                pluginId: 'acme.review',
-                contributionId: 'detail',
-                immutableGenerationId: 'contributor-generation-g',
-            }),
-            role: 'detail',
-            presentation: 'content' as const,
-            inputSchema,
-            resourceCapability: Object.freeze({ readable: false, dynamic: false }),
-        });
-        const duplicate = Object.freeze({
-            ...mount,
-            resourceCapability: Object.freeze({ readable: true, dynamic: true }),
-        });
-        projectionDescribeMock.mockResolvedValueOnce({
-            supported: true,
-            projection: daemonProjection(7),
-            targetedSurfaceMounts: [mount, duplicate],
-        });
-        const validation = await import('@happier-dev/protocol/plugins/actions/json-schema-validation');
-        const prepare = vi.spyOn(validation, 'preparePluginJsonSchema');
-        const {
-            loadDaemonMergedProjectionCacheEntry,
-            retainMountedTargetProjectionCacheScope,
-        } = await import('./loadDaemonMergedProjectionInputs');
-        const release = retainMountedTargetProjectionCacheScope({
-            machineId: 'machine-1',
-            serverId: 'server-1',
-            mountedTarget,
-            accountLifetime: account.lifetime,
-        });
-
-        try {
-            const entry = await loadDaemonMergedProjectionCacheEntry({
-                machineId: 'machine-1',
-                serverId: 'server-1',
-                mountedTarget,
-                accountLifetime: account.lifetime,
-            });
-            if (entry?.kind !== 'ready') throw new Error('Expected duplicate target rows to be retained.');
-            const prepared = entry.inputs.preparedTargetedSurfaceMounts;
-            expect(prepared).toHaveLength(2);
-            expect(prepared?.[0]?.inputValidation).toBe(prepared?.[1]?.inputValidation);
-            expect(prepared?.[0]?.resourceCapability).toEqual({ readable: false, dynamic: false });
-            expect(prepared?.[1]?.resourceCapability).toEqual({ readable: true, dynamic: true });
-            expect(prepare).toHaveBeenCalledTimes(1);
-        } finally {
-            release();
-            prepare.mockRestore();
-        }
-    });
-
-    describe('retained admission custody around a target-scoped answer', () => {
+    describe('retained admission custody around a machine answer', () => {
         const CUSTODY_TARGET = {
             pluginId: 'acme.preview',
-            immutableGenerationId: 'target-generation-a',
+            occurrenceId: 'target-generation-a',
         } as const;
+        const CUSTODY_IMMUTABLE_GENERATION_ID = 'preview-artifact-generation-7';
 
         function custodyProjection(generation: number) {
             return {
@@ -1365,7 +450,7 @@ describe('loadDaemonMergedProjectionCacheEntry', () => {
                         version: '1.0.0',
                         enabled: true,
                         source: { kind: 'bundled', locator: CUSTODY_TARGET.pluginId },
-                        immutableGenerationId: CUSTODY_TARGET.immutableGenerationId,
+                        immutableGenerationId: CUSTODY_IMMUTABLE_GENERATION_ID,
                         brand: { state: 'missing' },
                     },
                 },
@@ -1376,6 +461,7 @@ describe('loadDaemonMergedProjectionCacheEntry', () => {
                             [`translations:${CUSTODY_TARGET.pluginId}`]: {
                                 id: `translations:${CUSTODY_TARGET.pluginId}`,
                                 pluginId: CUSTODY_TARGET.pluginId,
+                                occurrenceId: CUSTODY_TARGET.occurrenceId,
                                 contributionKind: 'translations',
                                 locales: ['en'],
                                 bundles: { en: { title: 'Acme preview' } },
@@ -1385,26 +471,6 @@ describe('loadDaemonMergedProjectionCacheEntry', () => {
                 },
             };
         }
-
-        const custodyTargetedContributions = {
-            target: CUSTODY_TARGET,
-            points: [{
-                pointId: 'review-detail',
-                protocols: [{
-                    protocol: { id: 'review/detail', version: 1 },
-                    contributions: [{
-                        contributor: {
-                            pluginId: 'acme.review',
-                            contributionId: 'detail',
-                            immutableGenerationId: 'review-generation-a',
-                        },
-                        protocol: { id: 'review/detail', version: 1 },
-                        operations: [],
-                        surfaces: [],
-                    }],
-                }],
-            }],
-        } as const;
 
         async function warmCache() {
             const warm = await import('@/sync/domains/plugins/ui/projectionWarmCache');
@@ -1436,71 +502,41 @@ describe('loadDaemonMergedProjectionCacheEntry', () => {
             const custody = await warmCache();
             custody.reset();
             custody.savePresentation(7);
-            projectionDescribeMock.mockResolvedValueOnce({
-                supported: true,
-                projection: custodyProjection(7),
-                targetedContributions: custodyTargetedContributions,
-            });
-            const { loadDaemonMergedProjectionCacheEntry } = await import('./loadDaemonMergedProjectionInputs');
-            await loadDaemonMergedProjectionCacheEntry({
-                machineId: 'machine-1',
-                serverId: 'server-1',
-                mountedTarget: CUSTODY_TARGET,
-                accountLifetime: retainedTestAccountLifetime,
-            });
-            expect(custody.readEntry()?.targetedContributionsByPluginId?.[CUSTODY_TARGET.pluginId])
-                .toEqual(custodyTargetedContributions);
+            expect(custody.readEntry()).toBeDefined();
             return custody;
         }
 
-        it('retires the whole retained entry when the current target answer is method-not-found', async () => {
+        it('retires the whole retained entry when the machine answers method-not-found', async () => {
             const custody = await primeCustody();
-            const {
-                clearDaemonMergedProjectionCacheForTests,
-                loadDaemonMergedProjectionCacheEntry,
-            } = await import('./loadDaemonMergedProjectionInputs');
-            clearDaemonMergedProjectionCacheForTests();
+            const { loadDaemonMergedProjectionCacheEntry } = await import('./loadDaemonMergedProjectionInputs');
             projectionDescribeMock.mockResolvedValueOnce({ supported: false, reason: 'not-supported' });
 
             await expect(loadDaemonMergedProjectionCacheEntry({
                 machineId: 'machine-1',
                 serverId: 'server-1',
-                mountedTarget: CUSTODY_TARGET,
                 accountLifetime: retainedTestAccountLifetime,
             })).resolves.toMatchObject({ kind: 'unsupported' });
 
-            // This client sends one RPC for both shapes, so method-not-found is
-            // a machine fact: the presentation slice goes with the target row.
             expect(custody.readEntry()).toBeUndefined();
         });
 
-        it('keeps retained custody through a transient target transport failure', async () => {
+        it('keeps retained custody through a transient transport failure', async () => {
             const custody = await primeCustody();
-            const {
-                clearDaemonMergedProjectionCacheForTests,
-                loadDaemonMergedProjectionCacheEntry,
-            } = await import('./loadDaemonMergedProjectionInputs');
-            clearDaemonMergedProjectionCacheForTests();
+            const { loadDaemonMergedProjectionCacheEntry } = await import('./loadDaemonMergedProjectionInputs');
             projectionDescribeMock.mockResolvedValueOnce({ supported: false, reason: 'error' });
 
             await loadDaemonMergedProjectionCacheEntry({
                 machineId: 'machine-1',
                 serverId: 'server-1',
-                mountedTarget: CUSTODY_TARGET,
                 accountLifetime: retainedTestAccountLifetime,
             });
 
-            expect(custody.readEntry()?.targetedContributionsByPluginId?.[CUSTODY_TARGET.pluginId])
-                .toEqual(custodyTargetedContributions);
+            expect(custody.readEntry()).toBeDefined();
         });
 
-        it('does not let an old-endpoint method-not-found delete custody a newer machine answer established', async () => {
+        it('does not let an old-endpoint method-not-found delete custody a newer answer established', async () => {
             const custody = await primeCustody();
-            const {
-                clearDaemonMergedProjectionCacheForTests,
-                loadDaemonMergedProjectionCacheEntry,
-            } = await import('./loadDaemonMergedProjectionInputs');
-            clearDaemonMergedProjectionCacheForTests();
+            const { loadDaemonMergedProjectionCacheEntry } = await import('./loadDaemonMergedProjectionInputs');
 
             let settleStaleResponse!: (value: unknown) => void;
             projectionDescribeMock.mockImplementationOnce(async () => await new Promise((resolve) => {
@@ -1509,61 +545,18 @@ describe('loadDaemonMergedProjectionCacheEntry', () => {
             const stale = loadDaemonMergedProjectionCacheEntry({
                 machineId: 'machine-1',
                 serverId: 'server-1',
-                mountedTarget: CUSTODY_TARGET,
                 accountLifetime: retainedTestAccountLifetime,
             });
             await Promise.resolve();
 
-            // The machine's daemon state advanced, so the canonical projection
-            // revision advanced and a newer machine-wide answer re-established
-            // custody. The in-flight response belongs to the previous endpoint.
             projectionRevision.value += 1;
             custody.savePresentation(8);
 
             settleStaleResponse({ supported: false, reason: 'not-supported' });
-            await expect(stale).resolves.toBeNull();
-            expect(custody.readEntry()?.targetedContributionsByPluginId?.[CUSTODY_TARGET.pluginId])
-                .toEqual(custodyTargetedContributions);
-        });
-
-        it('does not persist or publish an old-endpoint target success after the projection revision advances', async () => {
-            const custody = await warmCache();
-            custody.reset();
-            custody.savePresentation(7);
-            const {
-                clearDaemonMergedProjectionCacheForTests,
-                loadDaemonMergedProjectionCacheEntry,
-                readCachedDaemonMergedProjectionCacheEntry,
-            } = await import('./loadDaemonMergedProjectionInputs');
-            clearDaemonMergedProjectionCacheForTests();
-
-            let settleStaleResponse!: (value: unknown) => void;
-            projectionDescribeMock.mockImplementationOnce(async () => await new Promise((resolve) => {
-                settleStaleResponse = resolve;
-            }));
-            const stale = loadDaemonMergedProjectionCacheEntry({
-                machineId: 'machine-1',
-                serverId: 'server-1',
-                mountedTarget: CUSTODY_TARGET,
-                accountLifetime: retainedTestAccountLifetime,
-            });
-            await Promise.resolve();
-            projectionRevision.value += 1;
-
-            settleStaleResponse({
-                supported: true,
-                projection: custodyProjection(7),
-                targetedContributions: custodyTargetedContributions,
-            });
-            await expect(stale).resolves.toBeNull();
-
-            expect(custody.readEntry()?.targetedContributionsByPluginId).toBeUndefined();
-            expect(readCachedDaemonMergedProjectionCacheEntry({
-                machineId: 'machine-1',
-                serverId: 'server-1',
-                mountedTarget: CUSTODY_TARGET,
-                accountLifetime: retainedTestAccountLifetime,
-            })).toBeNull();
+            // The late answer still settles, tagged with the revision it
+            // answered, but it may not retire custody for the current endpoint.
+            await expect(stale).resolves.toMatchObject({ kind: 'unsupported', projectionRevision: 0 });
+            expect(custody.readEntry()).toBeDefined();
         });
     });
 

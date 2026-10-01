@@ -111,6 +111,10 @@ function createActivitySource(sessions: readonly ReturnType<typeof createSession
     };
 }
 
+vi.mock('@/hooks/ui/useReducedMotionPreference', () => ({
+    useReducedMotionPreference: () => false,
+}));
+
 vi.mock('react-native', async () => {
     const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
     return createReactNativeWebMock({
@@ -120,10 +124,6 @@ vi.mock('react-native', async () => {
                 options.ios ?? options.native ?? options.default ?? options.android,
         },
         useWindowDimensions: () => dimensionsState,
-        AccessibilityInfo: {
-            isReduceMotionEnabled: vi.fn(async () => false),
-            addEventListener: vi.fn(() => ({ remove: vi.fn() })),
-        },
         AppState: {
             get currentState() {
                 return appStateHost.current;

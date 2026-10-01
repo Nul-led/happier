@@ -14,7 +14,7 @@ describe('parseSessionContinueWithReplayRpcParamsCompatIngress', () => {
     expect(parsed.success && parsed.data.modelSelection).toEqual({
       v: 1,
       updatedAt: 12,
-      ref: { agentTargetKey: 'backend:codex', providerConnectionId: null, modelId: 'legacy-native' },
+      ref: { agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: null, modelId: 'legacy-native' },
     });
   });
 

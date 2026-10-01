@@ -80,11 +80,11 @@ describe('useServerCredentialAccountScopes', () => {
             }
             expect(oldBinding.isCurrent()).toBe(false);
             expect(retired).toBe(true);
-            expect(storage.getState().sessionListRowsByServerId['home-b']).toBeUndefined();
-            expect(storage.getState().sessionListIndexByServerId['home-b']).toBeUndefined();
         });
 
         await vi.waitFor(() => expect(hook.getCurrent().get('home-b')?.accountId).toBe('account-b-next'));
+        expect(storage.getState().sessionListRowsByServerId['home-b']).toBeUndefined();
+        expect(storage.getState().sessionListIndexByServerId['home-b']).toBeUndefined();
         expect(hook.getCurrent().get('home-a')?.accountId).toBe('account-a');
     });
 

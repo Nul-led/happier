@@ -1,6 +1,8 @@
-import type { Metadata, Session } from '@/sync/domains/state/storageTypes';
+import type { Session } from '@/sync/domains/state/storageTypes';
+import type { Metadata } from '@happier-dev/session-core/state';
 import { readSessionMetadataLayoutVersion } from '@/sync/engine/sessions/parsePlainSessionPayload';
 import { isSessionAccessOwner } from '@/sync/engine/sessions/normalizeSessionAccessProjection';
+import { classifySessionTupleApplyCurrentness } from '@/sync/store/domains/sessionTupleApplyCurrentness';
 
 import type { SessionListRenderableSession } from './sessionListRenderable';
 
@@ -15,7 +17,43 @@ export function isSessionListRenderableNewerThanSession(
     session: Pick<Session, 'seq' | 'agentStateVersion'>,
 ): boolean {
     return normalizeProjectionSeq(renderable.seq) > normalizeProjectionSeq(session.seq)
-        || normalizeProjectionSeq(renderable.agentStateVersion) > normalizeProjectionSeq(session.agentStateVersion);
+        || !classifySessionTupleApplyCurrentness(renderable, {
+            ...renderable,
+            agentStateVersion: session.agentStateVersion,
+        }).agentStateCurrent;
+}
+
+/**
+ * Whether a list row's composed `metadata` is its owner view.
+ *
+ * A row has no separate owner field: the renderable builders compose this viewer's projection
+ * into `metadata` (the owner view for the owner, the shared projection for a recipient). So for a
+ * layout-1 owner row that metadata IS the owner view — the fact every row reader (display names,
+ * the renderable→Session projection) and every row writer (a shared-only socket frame must not
+ * replace it) has to agree on. One rule, so they cannot.
+ */
+type SessionListRenderableOwnerProjectionInput = Readonly<{
+    metadataLayoutVersion?: unknown;
+    access?: SessionListRenderableSession['access'];
+    accessLevel?: unknown;
+}>;
+
+export function isSessionListRenderableOwnerProjection(
+    renderable: SessionListRenderableOwnerProjectionInput,
+): boolean {
+    return readSessionMetadataLayoutVersion(renderable.metadataLayoutVersion) === 1
+        && isSessionAccessOwner(renderable.access, renderable.accessLevel);
+}
+
+/** A list row's owner metadata view, with the same layout rules as a hydrated Session's. */
+export function readSessionListRenderableOwnerMetadataView(
+    renderable: SessionListRenderableOwnerProjectionInput & Readonly<{ metadata: unknown }>,
+): Metadata | null {
+    const metadataLayoutVersion = readSessionMetadataLayoutVersion(renderable.metadataLayoutVersion);
+    if (metadataLayoutVersion === 0 || isSessionListRenderableOwnerProjection(renderable)) {
+        return renderable.metadata as Metadata | null;
+    }
+    return null;
 }
 
 function mergeRenderableMetadata(
@@ -49,7 +87,7 @@ export function buildSessionFromListRenderable(
     const hasRenderablePendingSummary = typeof renderable.hasPendingPermissionRequests === 'boolean'
         || typeof renderable.hasPendingUserActionRequests === 'boolean';
     const hasCurrentCanonicalAgentState = options.baseSession !== undefined
-        && options.baseSession.agentStateVersion >= renderable.agentStateVersion;
+        && classifySessionTupleApplyCurrentness(renderable, options.baseSession).agentStateCurrent;
     const agentState = hasCurrentCanonicalAgentState
         ? options.baseSession!.agentState
         : null;
@@ -59,8 +97,11 @@ export function buildSessionFromListRenderable(
     const metadataLayoutVersion = readSessionMetadataLayoutVersion(
         renderable.metadataLayoutVersion ?? options.baseSession?.metadataLayoutVersion,
     );
-    const ownerMetadataView = metadataLayoutVersion === 1
-        && isSessionAccessOwner(renderable.access, renderable.accessLevel)
+    const ownerMetadataView = isSessionListRenderableOwnerProjection({
+        metadataLayoutVersion,
+        access: renderable.access,
+        accessLevel: renderable.accessLevel,
+    })
         ? renderable.metadata as Metadata | null
         : null;
 
@@ -109,6 +150,10 @@ export function buildSessionFromListRenderable(
         runtimeActivityRevision: renderable.runtimeActivityRevision ?? null,
         lastRuntimeIssue: renderable.lastRuntimeIssue ?? null,
         lastTurnCompletedAt: renderable.lastTurnCompletedAt ?? null,
+        reportsTo: renderable.reportsTo ?? options.baseSession?.reportsTo ?? null,
+        origin: renderable.origin ?? options.baseSession?.origin,
+        workDepth: renderable.workDepth ?? options.baseSession?.workDepth,
+        reports: renderable.reports ?? options.baseSession?.reports ?? null,
         metadata: mergeRenderableMetadata(options.baseSession?.metadata, renderable.metadata),
         metadataLayoutVersion: metadataLayoutVersion || undefined,
         ownerMetadataView,

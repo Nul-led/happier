@@ -1,12 +1,16 @@
 import {
   MAX_AUTOMATION_MATERIALIZED_INPUT_UTF8_BYTES,
-  type AutomationRunCause,
+  sameStrictJsonValue,
+  WorkflowSessionContextV1Schema,
+  type WorkflowSessionContextV1,
   type WorkflowAuthoredProducerRef,
   type WorkflowCondition,
   type WorkflowDefinitionV1,
   type WorkflowStepComposerDocument,
   type WorkflowValueReference,
-} from '@happier-dev/protocol';
+} from '@happier-dev/protocol/workflows';
+import type { AutomationRunCause } from '@happier-dev/protocol/automations/run-cause';
+import { MENTION_KIND_V1, readMentionRefOpaqueForKindV1 } from '@happier-dev/protocol';
 
 export type WorkflowJsonValue = Extract<WorkflowValueReference, { kind: 'literal' }>['value'];
 
@@ -16,6 +20,7 @@ export type WorkflowInputResolutionErrorCode =
   | 'invalid_condition'
   | 'invalid_input'
   | 'missing_required_input'
+  | 'workflow_session_context_unavailable'
   | 'workflow_input_too_large';
 
 export class WorkflowInputResolutionError extends Error {
@@ -43,23 +48,27 @@ export function isWorkflowJsonObject(value: unknown): value is Readonly<Record<s
 export function resolveAutomationWorkflowOccurrenceSeed(params: Readonly<{
   cause: AutomationRunCause;
   openedEvidence: unknown | null;
+  diffFingerprint?: string;
 }>): Readonly<Record<string, WorkflowJsonValue>> {
+  const fingerprintEvidence: Readonly<Record<string, WorkflowJsonValue>> = params.diffFingerprint === undefined ? {} : { diffFingerprint: params.diffFingerprint };
   if (params.cause.kind === 'manual') {
     if (params.openedEvidence !== null) throw new WorkflowInputResolutionError('invalid_input');
-    return {};
+    return fingerprintEvidence;
   }
   if (params.cause.kind === 'trigger' && params.cause.triggerKind === 'schedule') {
     if (params.openedEvidence !== null) throw new WorkflowInputResolutionError('invalid_input');
-    return { scheduledFor: params.cause.evidence.scheduledFor };
+    return { scheduledFor: params.cause.evidence.scheduledFor, triggerId: params.cause.triggerId, ...fingerprintEvidence };
   }
   if (params.cause.kind === 'trigger' && params.cause.triggerKind === 'sessionLifecycle') {
     if (params.openedEvidence !== null) throw new WorkflowInputResolutionError('invalid_input');
-    return params.cause.evidence;
+    return { ...params.cause.evidence, triggerId: params.cause.triggerId, ...fingerprintEvidence };
   }
   if (!isWorkflowJsonObject(params.openedEvidence)) {
     throw new WorkflowInputResolutionError('invalid_input');
   }
-  return params.openedEvidence;
+  return params.cause.kind === 'trigger' || params.cause.triggerId !== undefined
+    ? { ...params.openedEvidence, triggerId: params.cause.triggerId!, ...fingerprintEvidence }
+    : { ...params.openedEvidence, ...fingerprintEvidence };
 }
 
 function matchesDeclaredInputType(value: WorkflowJsonValue, valueType: WorkflowDefinitionV1['inputs'][number]['valueType']): boolean {
@@ -78,16 +87,20 @@ function matchesDeclaredInputType(value: WorkflowJsonValue, valueType: WorkflowD
 export function bindAutomationWorkflowInputs(params: Readonly<{
   definition: Pick<WorkflowDefinitionV1, 'inputs'>;
   evidence: Readonly<Record<string, WorkflowJsonValue>>;
+  constants?: Readonly<Record<string, WorkflowJsonValue>>;
 }>): Readonly<Record<string, WorkflowJsonValue>> {
   const bound: Record<string, WorkflowJsonValue> = {};
   for (const input of params.definition.inputs) {
     const hasSuppliedValue = Object.prototype.hasOwnProperty.call(params.evidence, input.name);
-    const value = hasSuppliedValue ? params.evidence[input.name] : input.default;
+    const hasConstant = params.constants !== undefined && Object.prototype.hasOwnProperty.call(params.constants, input.name);
+    const value = hasSuppliedValue ? params.evidence[input.name]
+      : hasConstant ? params.constants![input.name] : input.default;
     if (value === undefined) {
       if (input.required) throw new WorkflowInputResolutionError('missing_required_input');
       continue;
     }
-    if (!matchesDeclaredInputType(value, input.valueType)) {
+    if (!matchesDeclaredInputType(value, input.valueType)
+      || (input.enum !== undefined && (typeof value !== 'string' || !input.enum.includes(value)))) {
       throw new WorkflowInputResolutionError('invalid_input');
     }
     bound[input.name] = value;
@@ -107,23 +120,33 @@ export type WorkflowValueResolutionRuntime = Readonly<{
   resolveResult: (
     producer: WorkflowAuthoredProducerRef,
   ) => Promise<WorkflowJsonValue>;
+  resolveResultPath?: (
+    producer: WorkflowAuthoredProducerRef,
+    path: readonly (string | number)[],
+  ) => Promise<WorkflowJsonValue>;
   resolveWorkspace: (
     producer: WorkflowAuthoredProducerRef,
   ) => Promise<Readonly<{ directory: string; checkoutRootPath: string }>>;
+  resolveLoopTrailingCount?: (
+    reference: Extract<WorkflowValueReference, { kind: 'loop_trailing_count' }>,
+  ) => Promise<number>;
+  resolveSessionContext?: (recentTurns: number) => Promise<WorkflowSessionContextV1>;
+  resolveSessionContextField?: (field: 'usage.tokensUsed' | 'goal.tokenBudget') => Promise<number>;
 }>;
 
-function selectWorkflowResultPath(
+export function selectWorkflowResultPath(
   value: WorkflowJsonValue,
   path: readonly (string | number)[],
+  missingCode: 'invalid_reference_scope' | 'missing_reference' = 'invalid_reference_scope',
 ): WorkflowJsonValue {
   let selected = value;
   for (const segment of path) {
     const next = Array.isArray(selected)
-      ? (typeof segment === 'number' ? selected[segment] : undefined)
+      ? (typeof segment === 'number' ? selected[segment] : segment === 'last' ? selected.at(-1) : undefined)
       : isWorkflowJsonObject(selected) && typeof segment === 'string'
         ? selected[segment]
         : undefined;
-    if (next === undefined) throw new WorkflowInputResolutionError('invalid_reference_scope');
+    if (next === undefined) throw new WorkflowInputResolutionError(missingCode);
     selected = next;
   }
   return selected;
@@ -136,6 +159,14 @@ export async function resolveWorkflowValueReference(
   switch (reference.kind) {
     case 'literal':
       return reference.value;
+    case 'session_context': {
+      if (!runtime.resolveSessionContext) throw new WorkflowInputResolutionError('invalid_reference_scope');
+      return WorkflowSessionContextV1Schema.parse(await runtime.resolveSessionContext(reference.recentTurns));
+    }
+    case 'session_context_field': {
+      if (!runtime.resolveSessionContextField) throw new WorkflowInputResolutionError('invalid_reference_scope');
+      return await runtime.resolveSessionContextField(reference.field);
+    }
     case 'input': {
       if (!Object.prototype.hasOwnProperty.call(runtime.inputs, reference.name)) {
         throw new WorkflowInputResolutionError('missing_reference');
@@ -143,6 +174,7 @@ export async function resolveWorkflowValueReference(
       return runtime.inputs[reference.name]!;
     }
     case 'result': {
+      if (runtime.resolveResultPath) return await runtime.resolveResultPath(reference.producer, reference.path);
       const result = await runtime.resolveResult(reference.producer);
       return selectWorkflowResultPath(result, reference.path);
     }
@@ -150,32 +182,19 @@ export async function resolveWorkflowValueReference(
       const workspace = await runtime.resolveWorkspace(reference.producer);
       return workspace[reference.field];
     }
+    case 'loop_trailing_count': {
+      if (!runtime.resolveLoopTrailingCount) throw new WorkflowInputResolutionError('invalid_reference_scope');
+      return await runtime.resolveLoopTrailingCount(reference);
+    }
     case 'item': {
       if (!runtime.item) throw new WorkflowInputResolutionError('invalid_reference_scope');
-      return runtime.item[reference.field];
+      return selectWorkflowResultPath(runtime.item[reference.field], reference.path ?? [], 'missing_reference');
     }
     case 'iteration': {
       if (!runtime.iteration) throw new WorkflowInputResolutionError('invalid_reference_scope');
       return runtime.iteration[reference.field];
     }
   }
-}
-
-function sameJsonValue(left: WorkflowJsonValue, right: WorkflowJsonValue): boolean {
-  if (Object.is(left, right)) return true;
-  if (left === null || right === null || typeof left !== typeof right) return false;
-  if (Array.isArray(left) || Array.isArray(right)) {
-    return Array.isArray(left)
-      && Array.isArray(right)
-      && left.length === right.length
-      && left.every((value, index) => sameJsonValue(value, right[index]!));
-  }
-  if (!isWorkflowJsonObject(left) || !isWorkflowJsonObject(right)) return false;
-  const leftKeys = Object.keys(left);
-  const rightKeys = Object.keys(right);
-  return leftKeys.length === rightKeys.length
-    && leftKeys.every((key) => Object.prototype.hasOwnProperty.call(right, key)
-      && sameJsonValue(left[key]!, right[key]!));
 }
 
 async function referenceExists(
@@ -187,6 +206,7 @@ async function referenceExists(
     return true;
   } catch (error) {
     if (error instanceof WorkflowInputResolutionError && error.code === 'missing_reference') return false;
+    if (error instanceof WorkflowInputResolutionError && error.code === 'workflow_session_context_unavailable') throw error;
     if (error instanceof WorkflowInputResolutionError) {
       throw new WorkflowInputResolutionError('invalid_condition');
     }
@@ -197,10 +217,12 @@ async function referenceExists(
 async function resolveConditionValue(
   reference: WorkflowValueReference,
   runtime: WorkflowValueResolutionRuntime,
-): Promise<WorkflowJsonValue> {
+): Promise<WorkflowJsonValue | undefined> {
   try {
     return await resolveWorkflowValueReference(reference, runtime);
   } catch (error) {
+    if (reference.kind === 'session_context_field' && error instanceof WorkflowInputResolutionError && error.code === 'missing_reference') return undefined;
+    if (error instanceof WorkflowInputResolutionError && error.code === 'workflow_session_context_unavailable') throw error;
     if (error instanceof WorkflowInputResolutionError) {
       throw new WorkflowInputResolutionError('invalid_condition');
     }
@@ -230,8 +252,9 @@ export async function evaluateWorkflowCondition(
     case 'compare': {
       const left = await resolveConditionValue(condition.left, runtime);
       const right = await resolveConditionValue(condition.right, runtime);
-      if (condition.operator === 'eq') return sameJsonValue(left, right);
-      if (condition.operator === 'neq') return !sameJsonValue(left, right);
+      if (left === undefined || right === undefined) return false;
+      if (condition.operator === 'eq') return sameStrictJsonValue(left, right);
+      if (condition.operator === 'neq') return !sameStrictJsonValue(left, right);
       // Ordering compares homogeneous operands only: two numbers numerically,
       // two strings by ordinary JavaScript lexical (UTF-16 code unit) order —
       // no locale transform, no coercion. This matches the Protocol
@@ -250,6 +273,18 @@ export async function evaluateWorkflowCondition(
   }
 }
 
+/** Uses ordinary short-circuit semantics and retains only the top-level winning arm. */
+export async function evaluateWorkflowStopCondition(
+  condition: WorkflowCondition,
+  runtime: WorkflowValueResolutionRuntime,
+): Promise<Readonly<{ matched: boolean; arm?: number }>> {
+  if (condition.kind !== 'any') return { matched: await evaluateWorkflowCondition(condition, runtime) };
+  for (const [arm, child] of condition.conditions.entries()) {
+    if (await evaluateWorkflowCondition(child, runtime)) return { matched: true, arm };
+  }
+  return { matched: false };
+}
+
 export type MaterializedWorkflowStepInput = Readonly<{
   text: string;
   references: WorkflowStepComposerDocument['references'];
@@ -261,24 +296,50 @@ export async function materializeWorkflowStepInput(params: Readonly<{
   document: WorkflowStepComposerDocument;
   references: readonly WorkflowValueReference[];
   runtime: WorkflowValueResolutionRuntime;
+  reviewContext?: Readonly<{ runId: string; invocationRecordId: string; contentRevision: string }>;
 }>): Promise<MaterializedWorkflowStepInput> {
   const values: WorkflowJsonValue[] = [];
-  for (const reference of params.references) {
-    values.push(await resolveWorkflowValueReference(reference, params.runtime));
+  const tokens = new Map<number, string>();
+  for (const mention of params.document.references) {
+    if (mention.kind !== MENTION_KIND_V1.workflowInput) continue;
+    const opaque = readMentionRefOpaqueForKindV1(MENTION_KIND_V1.workflowInput, mention.ref);
+    if (opaque === null || !/^\d+$/.test(opaque)) continue;
+    const index = Number(opaque);
+    if (!tokens.has(index)) tokens.set(index, mention.token);
   }
-  const resolvedInputs = params.references.map((reference, index) => ({
-    reference,
-    value: values[index]!,
-  }));
-  const text = values.length === 0
-    ? params.document.text
-    : `${params.document.text}\n\n**Workflow inputs**\n\n${JSON.stringify(resolvedInputs)}`;
-  if (Buffer.byteLength(text, 'utf8') > MAX_AUTOMATION_MATERIALIZED_INPUT_UTF8_BYTES) {
-    throw new WorkflowInputResolutionError('workflow_input_too_large');
+  const resolvedInputs: { token?: string; reference: WorkflowValueReference; value: WorkflowJsonValue }[] = [];
+  for (const [index, reference] of params.references.entries()) {
+    try {
+      const value = await resolveWorkflowValueReference(reference, params.runtime);
+      values.push(value);
+      const token = tokens.get(index);
+      resolvedInputs.push({ ...(token === undefined ? {} : { token }), reference, value });
+    } catch (error) {
+      if (reference.kind === 'result' && reference.optional === true
+        && error instanceof WorkflowInputResolutionError && error.code === 'missing_reference') continue;
+      throw error;
+    }
+  }
+  const render = () => {
+    const authored = values.length === 0 ? params.document.text
+      : `${params.document.text}\n\n**Workflow inputs**\n\n${JSON.stringify(resolvedInputs)}`;
+    return params.reviewContext === undefined ? authored
+      : `${authored}\n\nThis step requires human review. You may publish a provisional result with workflow.run.invocations.publish_draft using ${JSON.stringify({ runId: params.reviewContext.runId, invocation: { recordId: params.reviewContext.invocationRecordId }, expectedContentRevision: params.reviewContext.contentRevision })} and value. Read the exact invocation first if its content revision changed. Publishing does not approve the result or continue the workflow.`;
+  };
+  let text = render();
+  while (Buffer.byteLength(text, 'utf8') > MAX_AUTOMATION_MATERIALIZED_INPUT_UTF8_BYTES) {
+    const index = resolvedInputs.findIndex((entry) => entry.reference.kind === 'session_context'
+      && WorkflowSessionContextV1Schema.parse(entry.value).turns.length > 0);
+    if (index < 0) throw new WorkflowInputResolutionError('workflow_input_too_large');
+    const entry = resolvedInputs[index]!;
+    const context = WorkflowSessionContextV1Schema.parse(entry.value);
+    entry.value = { ...context, turns: context.turns.slice(1), truncated: true };
+    values[index] = entry.value;
+    text = render();
   }
   return {
     text,
-    references: params.document.references,
+    references: params.document.references.filter((mention) => mention.kind !== MENTION_KIND_V1.workflowInput),
     attachments: params.document.attachments,
     values,
   };

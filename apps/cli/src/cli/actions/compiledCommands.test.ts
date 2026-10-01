@@ -597,6 +597,20 @@ describe('one descriptor feeds parsing, help and completion', () => {
     expect(afterListJson).not.toContain('--tags-json');
   });
 
+  it('does not suggest a scalar flag already supplied positionally or by whole-input JSON', () => {
+    const commands = listCompiledActionCliCommands();
+    expect(resolveCompiledActionCliCompletionCandidates({
+      commands, committed: ['send', 'session_1', 'Hello'], prefix: '--mess',
+    })).not.toContain('--message');
+    expect(resolveCompiledActionCliCompletionCandidates({
+      commands, committed: ['send', '--input-json', '{"sessionId":"session_1","message":"Hello"}'], prefix: '--mess',
+    })).not.toContain('--message');
+    // Neighbor: a field nobody supplied yet is still offered.
+    expect(resolveCompiledActionCliCompletionCandidates({
+      commands, committed: ['send', 'session_1'], prefix: '--mess',
+    })).toContain('--message');
+  });
+
   it('suppresses conditionally unavailable fields and list flags at their declared selection ceiling', () => {
     const [hinted] = compileFixture(SEND_CLI, {
       inputSchema: CallerSchema.extend({ attempts: z.number().int().min(1).max(5).optional() }),
@@ -808,6 +822,76 @@ describe('parseActionCliInput without a declared command path', () => {
       });
     expect(parseActionCliInput(target, ['sess-1']))
       .toMatchObject({ ok: false, message: 'Unexpected argument: sess-1' });
+  });
+
+  function composeCompiled(path: readonly string[], tokens: readonly string[]) {
+    const command = findCompiledActionCliCommand([...path], listCompiledActionCliCommands())!;
+    const parsed = parseActionCliInput(command, tokens);
+    if (!parsed.ok) return parsed;
+    return composeActionCliInput({
+      parsed,
+      canonicalSchema: command.spec.inputSchema,
+      wholeInputSchema: command.wholeInputSchema,
+      callerSchema: command.callerSchema,
+      bindInput: command.spec.cli?.bindInput,
+      context: { actionId: command.actionId, invocationId: 'invocation_1', output: 'json' },
+    });
+  }
+
+  it('preserves declared settings scalar types and the optional page filter through the real parser', () => {
+    for (const value of [true, 1.1, 'compact', null]) {
+      expect(composeCompiled(['settings', 'set'], [
+        '--anchor', 'appearance.density', '--value-json', JSON.stringify(value),
+      ])).toMatchObject({ ok: true, input: { anchor: 'appearance.density', value } });
+    }
+    expect(composeCompiled(['settings', 'set'], [
+      '--anchor', 'appearance.density', '--value-json', '{"nested":true}',
+    ])).toMatchObject({ ok: false, code: 'invalid_arguments' });
+    expect(composeCompiled(['settings', 'set'], ['--anchor', 'appearance.density']))
+      .toMatchObject({ ok: false, code: 'invalid_arguments' });
+    expect(composeCompiled(['settings', 'list'], ['--page-id', 'appearance']))
+      .toMatchObject({ ok: true, input: { pageId: 'appearance' } });
+    expect(composeCompiled(['settings', 'list'], []))
+      .toMatchObject({ ok: true, input: {} });
+  });
+
+  it('keeps the friendly cross-field rules when a canonical JSON base is composed with flags', () => {
+    // Without JSON the real list caller schema refuses the combination.
+    expect(composeCompiled(['session', 'list'], ['--active', '--team', 'team1']))
+      .toMatchObject({ ok: false, code: 'invalid_arguments' });
+    // An empty JSON base must not switch that rule off: the list binder drops
+    // `activeOnly` once it builds the Team query, so no later check could see it.
+    expect(composeCompiled(['session', 'list'], ['--input-json', '{}', '--active', '--team', 'team1']))
+      .toMatchObject({ ok: false, code: 'invalid_arguments' });
+    // A valid partial composition still completes from both sources.
+    expect(composeCompiled(['session', 'send'], ['--input-json', '{"sessionId":"sess-1"}', '--message', 'Hello']))
+      .toMatchObject({ ok: true, input: { sessionId: 'sess-1', message: 'Hello' } });
+  });
+
+  it('preserves a canonical field a binder would only have defaulted, and refuses one the caller typed', () => {
+    // `--intent` derives run-shape defaults; they yield to the canonical JSON value.
+    expect(composeCompiled(['session', 'run', 'start'], [
+      '--input-json', JSON.stringify({ sessionId: 'session_1', retentionPolicy: 'resumable', runClass: 'long_lived' }),
+      '--intent', 'delegate', '--agent', 'codex',
+    ])).toMatchObject({
+      ok: true,
+      input: { retentionPolicy: 'resumable', runClass: 'long_lived', intent: 'delegate', permissionMode: 'workspace_write' },
+    });
+    // An explicitly typed `--retention` is a second source for the same canonical field.
+    expect(composeCompiled(['session', 'run', 'start'], [
+      '--input-json', JSON.stringify({ sessionId: 'session_1', retentionPolicy: 'resumable' }),
+      '--intent', 'delegate', '--agent', 'codex', '--retention', 'ephemeral',
+    ])).toMatchObject({ ok: false, code: 'invalid_arguments', message: expect.stringContaining('either with friendly arguments or with --input-json') });
+    // Without JSON the intent defaults and explicit overrides are unchanged.
+    expect(composeCompiled(['session', 'run', 'start'], ['session_1', '--intent', 'review', '--agent', 'codex']))
+      .toMatchObject({ ok: true, input: { retentionPolicy: 'ephemeral', permissionMode: 'read_only', runClass: 'bounded' } });
+    expect(composeCompiled(['session', 'run', 'start'], [
+      'session_1', '--intent', 'review', '--agent', 'codex', '--retention', 'resumable',
+    ])).toMatchObject({ ok: true, input: { retentionPolicy: 'resumable' } });
+    // A generated identity is a default too; a canonical one in JSON survives.
+    expect(composeCompiled(['session', 'send'], [
+      '--input-json', JSON.stringify({ sessionId: 'sess-1', localId: 'retry-1' }), '--message', 'Hello',
+    ])).toMatchObject({ ok: true, input: { localId: 'retry-1', message: 'Hello' } });
   });
 
   it('validates canonical JSON before binding and rejects transformed canonical overlap', () => {

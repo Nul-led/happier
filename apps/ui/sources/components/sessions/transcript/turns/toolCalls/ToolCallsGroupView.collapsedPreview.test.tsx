@@ -4,11 +4,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
     createToolCallMessageFixture,
+    createTestSessionTranscriptSource,
     renderToolCallsGroupView,
     standardCleanup,
 } from '@/dev/testkit';
-import type { ToolCallMessage } from '@/sync/domains/messages/messageTypes';
-import { createReducer } from '@/sync/reducer/reducer';
+import type { ToolCallMessage } from "@happier-dev/session-core/messages";
+import { createReducer } from "@happier-dev/session-core/reducer";
 import { installToolCallsGroupViewCommonModuleMocks } from './toolCallsGroupViewTestHelpers';
 import { createUseSettingMock } from '@/dev/testkit/mocks/storage';
 
@@ -193,7 +194,7 @@ describe('ToolCallsGroupView (collapsed preview)', () => {
     });
 
     it('renders with parent-provided transcript session common without row-local session storage subscriptions', async () => {
-        const { renderScreen } = await import('@/dev/testkit');
+        const { renderWithSessionTranscriptSource: renderScreen } = await import('@/dev/testkit');
         const { ToolCallsGroupViewWithSessionCommon } = await import('./ToolCallsGroupView');
         const reducerState = createReducer();
         const toolMessages: ToolCallMessage[] = [
@@ -488,7 +489,7 @@ describe('ToolCallsGroupView (collapsed preview)', () => {
         expect(setExpanded).not.toHaveBeenCalled();
     });
 
-    it('does not pass nested tool message ids when tool navigation is disabled', async () => {
+    it('preserves nested route identities while the source withholds navigation', async () => {
         const { ToolCallsGroupView } = await import('./ToolCallsGroupView');
         collapsedPreviewCount = 2;
 
@@ -500,13 +501,14 @@ describe('ToolCallsGroupView (collapsed preview)', () => {
 
         const screen = await renderToolCallsGroupView({
             toolMessages,
-            interaction: { canSendMessages: true, canApprovePermissions: true, disableToolNavigation: true },
+            interaction: { canSendMessages: true, canApprovePermissions: true },
+            source: createTestSessionTranscriptSource({ messages: toolMessages, navigate: null }),
             setExpanded: vi.fn(),
         });
 
         const previewRows = screen.findAllByType('ToolTimelineRow');
         expect(previewRows.length).toBeGreaterThan(0);
-        expect(previewRows.every((node) => node.props.messageId === undefined)).toBe(true);
+        expect(previewRows.every((node) => typeof node.props.messageId === 'string' && node.props.messageId.length > 0)).toBe(true);
 
         await act(async () => {
             await screen.update(
@@ -516,7 +518,7 @@ describe('ToolCallsGroupView (collapsed preview)', () => {
                     toolMessages={toolMessages}
                     metadata={null}
                     sessionId="s1"
-                    interaction={{ canSendMessages: true, canApprovePermissions: true, disableToolNavigation: true }}
+                    interaction={{ canSendMessages: true, canApprovePermissions: true }}
                     expanded={true}
                     setExpanded={vi.fn()}
                 />,
@@ -525,7 +527,7 @@ describe('ToolCallsGroupView (collapsed preview)', () => {
 
         const expandedRows = screen.findAllByType('ToolTimelineRow');
         expect(expandedRows.length).toBe(toolMessages.length);
-        expect(expandedRows.every((node) => node.props.messageId === undefined)).toBe(true);
+        expect(expandedRows.every((node) => typeof node.props.messageId === 'string' && node.props.messageId.length > 0)).toBe(true);
     });
 
     it('passes stable route ids to grouped tool rows when server ids exist', async () => {

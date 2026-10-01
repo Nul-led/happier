@@ -38,6 +38,33 @@ describe('adoptHomeProfileWithCredentials (real storage integration)', () => {
         vi.resetModules();
     });
 
+    it('publishes a usable Home after credential-first adoption to an already-started projection', async () => {
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = `adopt_usable_home_${Date.now()}_${Math.random()}`;
+        const localStorageMock = installLocalStorageMock();
+        restoreLocalStorage = localStorageMock.restore;
+
+        const { adoptHomeProfileWithCredentials } = await import('./adoptHomeProfile');
+        const projection = await import('@/sync/domains/scope/usableHomeServerIds');
+        const seen: Array<readonly string[] | null> = [];
+        const unsubscribe = projection.subscribeUsableHomeServerIds(() => {
+            seen.push(projection.readUsableHomeServerIds());
+        });
+        try {
+            await vi.waitFor(() => expect(projection.readUsableHomeServerIds()).toEqual([]));
+            const payload = Buffer.from(JSON.stringify({ sub: 'home-b-account' })).toString('base64url');
+            await adoptHomeProfileWithCredentials({
+                descriptor: HOME_B_DESCRIPTOR,
+                source: 'qr',
+                credentials: { token: `header.${payload}.signature` },
+            });
+
+            await vi.waitFor(() => expect(projection.readUsableHomeServerIds()).toEqual(['srv_home_b']));
+            expect(seen).toContainEqual(['srv_home_b']);
+        } finally {
+            unsubscribe();
+        }
+    });
+
     it('preflights Home B, writes B credentials before adoption, adopts without focus change, and reads B by stable identity while Home A stays byte-identical', async () => {
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = `adopt_real_storage_${Date.now()}_${Math.random()}`;
         const localStorageMock = installLocalStorageMock();
@@ -321,7 +348,7 @@ describe('adoptHomeProfileWithCredentials (real storage integration)', () => {
 
         const profiles = await import('@/sync/domains/server/serverProfiles');
         const { TokenStorage } = await import('@/auth/storage/tokenStorage');
-        const { adoptHomeProfileWithCanonicalUrlMigration } = await import('./adoptHomeProfile');
+        const { adoptHomeProfileWithCredentials } = await import('./adoptHomeProfile');
 
         const other = await profiles.adoptHomeProfile({
             source: 'qr',
@@ -341,6 +368,7 @@ describe('adoptHomeProfileWithCredentials (real storage integration)', () => {
 
         const moving = await profiles.adoptHomeProfile({
             source: 'qr',
+            suggestedName: 'Workshop Home',
             descriptor: {
                 v: 1,
                 homeServerIdentityId: 'srv_moving_home',
@@ -349,7 +377,6 @@ describe('adoptHomeProfileWithCredentials (real storage integration)', () => {
                 endpoints: [{ kind: 'https', url: 'https://moving-home-old.test' }],
             },
         });
-        await profiles.renameServerProfile(moving.id, 'Workshop Home');
         await expect(TokenStorage.setCredentialsForServerUrl(
             'https://moving-home-old.test',
             { serverId: 'srv_moving_home' },
@@ -366,7 +393,7 @@ describe('adoptHomeProfileWithCredentials (real storage integration)', () => {
         const groupsBefore = profiles.loadHomeViewState();
         const otherBefore = profiles.getServerProfileById(other.id);
 
-        const migrated = await adoptHomeProfileWithCanonicalUrlMigration({
+        const migrated = await adoptHomeProfileWithCredentials({
             source: 'qr',
             preserveUserLabel: true,
             credentials: { token: 'moving-home-new-token' },
@@ -379,15 +406,10 @@ describe('adoptHomeProfileWithCredentials (real storage integration)', () => {
             },
         });
 
-        expect(migrated).toMatchObject({
-            kind: 'migrated',
-            fromCanonicalServerUrl: 'https://moving-home-old.test',
-            toCanonicalServerUrl: 'https://moving-home-new.test',
-        });
-        expect(migrated.profile.id).toBe(moving.id);
-        expect(migrated.profile.name).toBe('Workshop Home');
-        expect(migrated.profile.serverIdentityId).toBe('srv_moving_home');
-        expect(migrated.profile.canonicalServerUrl ?? migrated.profile.serverUrl)
+        expect(migrated.id).toBe(moving.id);
+        expect(migrated.name).toBe('Workshop Home');
+        expect(migrated.serverIdentityId).toBe('srv_moving_home');
+        expect(migrated.canonicalServerUrl ?? migrated.serverUrl)
             .toBe('https://moving-home-new.test');
 
         // The exact bearer follows the identity to its destination and is no longer
@@ -419,7 +441,7 @@ describe('adoptHomeProfileWithCredentials (real storage integration)', () => {
 
         const profiles = await import('@/sync/domains/server/serverProfiles');
         const { TokenStorage } = await import('@/auth/storage/tokenStorage');
-        const { adoptHomeProfileWithCanonicalUrlMigration } = await import('./adoptHomeProfile');
+        const { adoptHomeProfileWithCredentials } = await import('./adoptHomeProfile');
 
         const moving = await profiles.adoptHomeProfile({
             source: 'qr',
@@ -441,7 +463,7 @@ describe('adoptHomeProfileWithCredentials (real storage integration)', () => {
             throw new Error('storage removal unavailable');
         });
 
-        await expect(adoptHomeProfileWithCanonicalUrlMigration({
+        await expect(adoptHomeProfileWithCredentials({
             source: 'qr',
             preserveUserLabel: true,
             credentials: { token: 'partial-home-new-token' },
@@ -477,7 +499,7 @@ describe('adoptHomeProfileWithCredentials (real storage integration)', () => {
 
         const profiles = await import('@/sync/domains/server/serverProfiles');
         const { TokenStorage } = await import('@/auth/storage/tokenStorage');
-        const { adoptHomeProfileWithCanonicalUrlMigration } = await import('./adoptHomeProfile');
+        const { adoptHomeProfileWithCredentials } = await import('./adoptHomeProfile');
 
         const moving = await profiles.adoptHomeProfile({
             source: 'qr',
@@ -496,9 +518,10 @@ describe('adoptHomeProfileWithCredentials (real storage integration)', () => {
         )).resolves.toBe(true);
         const destinationWrite = vi.spyOn(TokenStorage, 'setCredentialsForServerUrlWithRollback');
 
-        await expect(adoptHomeProfileWithCanonicalUrlMigration({
+        await expect(adoptHomeProfileWithCredentials({
             source: 'qr',
             preserveUserLabel: true,
+            credentials: { token: 'destination-failure-token' },
             descriptor: {
                 v: 1,
                 homeServerIdentityId: 'srv_destination_failure_home',
@@ -506,7 +529,10 @@ describe('adoptHomeProfileWithCredentials (real storage integration)', () => {
                 revision: 3,
                 endpoints: [{ kind: 'https', url: 'https://destination-failure-new.test' }],
             },
-        })).resolves.toMatchObject({ kind: 'migrated' });
+        })).resolves.toMatchObject({
+            canonicalServerUrl: 'https://destination-failure-new.test',
+            serverIdentityId: 'srv_destination_failure_home',
+        });
 
         expect(profiles.getServerProfileById(moving.id)?.canonicalServerUrl)
             .toBe('https://destination-failure-new.test');
@@ -530,7 +556,7 @@ describe('adoptHomeProfileWithCredentials (real storage integration)', () => {
         const { digest } = await import('@/platform/digest');
         const { encodeBase64 } = await import('@/encryption/base64');
         const { readStorageScopeFromEnv, scopedStorageId } = await import('@/utils/system/storageScope');
-        const { adoptHomeProfileWithCanonicalUrlMigration } = await import('./adoptHomeProfile');
+        const { adoptHomeProfileWithCredentials } = await import('./adoptHomeProfile');
         const oldUrl = 'https://cross-tab-old.test';
         const newUrl = 'https://cross-tab-new.test';
         const oldUrlHash = encodeBase64(
@@ -585,7 +611,7 @@ describe('adoptHomeProfileWithCredentials (real storage integration)', () => {
             });
         });
 
-        const migrated = await adoptHomeProfileWithCanonicalUrlMigration({
+        const migrated = await adoptHomeProfileWithCredentials({
             source: 'qr',
             credentials: { token: 'cross-tab-new-token' },
             descriptor: {
@@ -597,7 +623,7 @@ describe('adoptHomeProfileWithCredentials (real storage integration)', () => {
             },
         });
 
-        expect(migrated.kind).toBe('migrated');
+        expect(migrated.serverIdentityId).toBe('srv_cross_tab_home');
         expect(competingAdoption).not.toBeNull();
         expect(competingAdoptionCompleted).toBe(false);
         await expect(competingAdoption!).resolves.toMatchObject({

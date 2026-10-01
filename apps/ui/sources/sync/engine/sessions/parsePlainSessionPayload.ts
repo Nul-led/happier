@@ -1,4 +1,4 @@
-import { AgentStateSchema, MetadataSchema, type AgentState, type Metadata } from '@/sync/domains/state/storageTypes';
+import { AgentStateSchema, MetadataSchema, type AgentState, type Metadata } from '@happier-dev/session-core/state';
 import {
     SESSION_METADATA_LAYOUT_VERSION_V1,
     SessionSharedMetadataV1Schema,

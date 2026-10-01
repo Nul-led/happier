@@ -10,10 +10,8 @@ import { getScmUserFacingError } from '@/scm/operations/userFacingErrors';
 import { withSessionProjectScmOperationLock } from '@/scm/operations/withOperationLock';
 import { reportSessionScmOperation, type ScmOperationTracker, trackBlockedScmOperation } from '@/scm/operations/reporting';
 import { storage } from '@/sync/domains/state/storage';
-import { sessionScmCommitCreate, sessionScmRepositoryRemoveIndexLock } from '@/sync/ops';
-import { SCM_OPERATION_ERROR_CODES } from '@happier-dev/protocol';
-import { tryShowDaemonUnavailableAlertForRpcError } from '@/utils/errors/daemonUnavailableAlert';
-import { tryShowDaemonUnavailableAlertForScmOperationFailure } from '@/scm/operations/scmDaemonUnavailableAlert';
+import { sessionScmCommitCreate, sessionScmRepositoryRemoveIndexLock } from '@/sync/ops/sessionScm';
+import { SCM_OPERATION_ERROR_CODES, createScmOperationUnknownOutcome, normalizeScmOperationOutcome, type ScmOperationOutcome } from '@happier-dev/protocol/scm';
 import { runScmOperationWithGitIndexLockRecovery } from '@/scm/operations/gitIndexLockRecovery';
 
 export async function executeScmCommit(input: {
@@ -43,33 +41,14 @@ export async function executeScmCommit(input: {
             detail: refreshMessage,
             rawError: error instanceof Error ? error.message : String(error ?? ''),
             errorCode: SCM_OPERATION_ERROR_CODES.COMMAND_FAILED,
+            ...(createdCommitSha ? { outcome: {
+                v: 1, kind: 'effect_applied_with_warning', errorCode: SCM_OPERATION_ERROR_CODES.REPOSITORY_REFRESH_FAILED,
+                effect: { kind: 'commit', commitSha: createdCommitSha }, nextActions: [{ kind: 'refresh' }], message: refreshMessage,
+            } satisfies ScmOperationOutcome } : {}),
             surface: 'files',
             tracking: input.tracking,
         });
-        Modal.alert(t('files.commitCreated'), refreshMessage, [
-            { text: t('common.ok'), style: 'cancel' },
-            {
-                text: t('files.retryRefresh'),
-                onPress: async () => {
-                    if (input.shouldContinue?.() === false) return;
-                    const retryResult = await withSessionProjectScmOperationLock({
-                        state: storage.getState(),
-                        sessionId: input.sessionId, serverId: input.serverId,
-                        operation: 'refresh',
-                        run: async () => {
-                            input.setScmOperationBusy(true);
-                            try {
-                                await refreshRepository();
-                            } finally {
-                                input.setScmOperationBusy(false);
-                                input.setScmOperationStatus(null);
-                            }
-                        },
-                    });
-                    if (!retryResult.started) Modal.alert(t('common.error'), retryResult.message);
-                },
-            },
-        ]);
+        // The Git pane's outcome line shows this failed refresh with Try again; the commit itself stands.
     };
     const refreshRepository = async (): Promise<void> => {
         try {
@@ -107,7 +86,7 @@ export async function executeScmCommit(input: {
                     ...(includePatches ? { patches: input.commitSelectionPatches } : {}),
                 }, input.serverId);
                 let response = await createCommit();
-                if (!response.success && !response.commitSha) {
+                if (normalizeScmOperationOutcome(response).kind === 'failed' && !response.commitSha) {
                     response = await runScmOperationWithGitIndexLockRecovery({
                         cwd: input.repoPath,
                         failedResponse: response,
@@ -116,16 +95,8 @@ export async function executeScmCommit(input: {
                     });
                 }
 
-                if (!response.success) {
-                    const shownDaemonUnavailable = tryShowDaemonUnavailableAlertForScmOperationFailure({
-                        errorCode: response.errorCode,
-                        onRetry: () => {
-                            void executeScmCommit(input);
-                        },
-                        shouldContinue: input.shouldContinue ?? null,
-                    });
-                    if (shownDaemonUnavailable) return;
-
+                const outcome = normalizeScmOperationOutcome(response);
+                if (outcome.kind !== 'succeeded') {
                     const errorMessage = buildScmCommitFailureMessage({
                         errorCode: response.errorCode,
                         error: response.error,
@@ -136,13 +107,14 @@ export async function executeScmCommit(input: {
                         sessionId: input.sessionId, serverId: input.serverId,
                         operation: 'commit',
                         status: 'failed',
+                        outcome,
                         detail: errorMessage,
                         rawError: response.error,
                         errorCode: response.errorCode,
                         surface: 'files',
                         tracking: input.tracking,
                     });
-                    Modal.alert(t('common.error'), errorMessage);
+                    // Inline in the Git pane's outcome line (cause + one recovery); the message and selection stay.
                     return;
                 }
 
@@ -157,6 +129,7 @@ export async function executeScmCommit(input: {
                         sessionId: input.sessionId, serverId: input.serverId,
                         operation: 'commit',
                         status: 'success',
+                        outcome,
                         detail: response.commitSha || undefined,
                         surface: 'files',
                         tracking: input.tracking,
@@ -181,19 +154,10 @@ export async function executeScmCommit(input: {
                     detail: fallbackMessage,
                     rawError: error instanceof Error ? error.message : String(error ?? ''),
                     errorCode: SCM_OPERATION_ERROR_CODES.COMMAND_FAILED,
+                    outcome: createScmOperationUnknownOutcome({ kind: 'repository_status', cwd: input.repoPath }),
                     surface: 'files',
                     tracking: input.tracking,
                 });
-                const shownDaemonUnavailable = tryShowDaemonUnavailableAlertForRpcError({
-                    error,
-                    onRetry: () => {
-                        void executeScmCommit(input);
-                    },
-                    shouldContinue: input.shouldContinue ?? null,
-                });
-                if (!shownDaemonUnavailable) {
-                    Modal.alert(t('common.error'), fallbackMessage);
-                }
             } finally {
                 input.setScmOperationBusy(false);
                 input.setScmOperationStatus(null);

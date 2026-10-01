@@ -1,0 +1,31 @@
+import { vi } from 'vitest';
+import type { SystemTaskResult, SystemTaskSpec } from '@happier-dev/protocol';
+import { createSystemTaskRunner } from '@/components/systemTasks/createSystemTaskRunner';
+import type { SystemTaskBridgeListenerSet, SystemTaskRunner } from '@/components/systemTasks/types';
+
+/** Only the OS task bridge is simulated; snapshots, prompts and completion use the real runner. */
+export function createManualSystemTaskRunner(mode: SystemTaskRunner['mode'] = 'tauri') {
+    let nextTaskId = 1;
+    let nextTsMs = 1;
+    const listeners = new Map<string, SystemTaskBridgeListenerSet>();
+    const bridge = {
+        capabilities: {},
+        start: vi.fn(async (_spec: SystemTaskSpec) => `personal-home-task-${nextTaskId++}`),
+        subscribe: vi.fn(async (taskId: string, taskListeners: SystemTaskBridgeListenerSet) => {
+            listeners.set(taskId, taskListeners);
+            return () => { listeners.delete(taskId); };
+        }),
+        cancel: vi.fn(async () => undefined),
+        respond: vi.fn(async () => undefined),
+    };
+    return {
+        runner: createSystemTaskRunner({ bridge, mode }),
+        bridge,
+        emitResult(taskId: string, result: SystemTaskResult) {
+            listeners.get(taskId)?.onResult(result);
+        },
+        emitEvent(taskId: string, event: Record<string, unknown>) {
+            listeners.get(taskId)?.onEvent({ protocolVersion: 1, taskId, tsMs: nextTsMs++, ...event });
+        },
+    };
+}

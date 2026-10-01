@@ -4,7 +4,8 @@ import { connect as connectLoopback, type AddressInfo } from 'node:net';
 import { attach, type Server as EngineServer } from 'engine.io';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { createSyncSocketTransport } from '@/sync/api/session/connection/createSyncSocketTransport';
+import { createHappierSocket } from '@happier-dev/sync-client';
+import { buildAccountStoredContentCompatibilitySocketAuthV1, CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION } from '@happier-dev/protocol';
 import { createServerFetchAtEndpoint } from '@/sync/http/client';
 
 import type { BrowserIrohEndpointClient, BrowserIrohStream } from '../endpointClient';
@@ -218,10 +219,12 @@ describe('browser Iroh production Home vertical', () => {
     it('carries a live Socket.IO session through the same carrier without duplicating events', async () => {
         const carrier = await acquireCarrier(createLoopbackEndpointClient(() => port));
         const requestedUris: string[] = [];
-        const { socket, transport } = createSyncSocketTransport({
+        const { socket, transport } = createHappierSocket({
+            clientType: 'user-scoped',
+            clientPurpose: 'sync',
+            authExtras: buildAccountStoredContentCompatibilitySocketAuthV1(CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION),
             endpoint: CANONICAL_HOME_URL,
             token: 'home-token',
-            carrier: 'iroh',
             websocketFactory: (uri, protocols, options) => {
                 requestedUris.push(uri);
                 return carrier.createWebSocket(uri, protocols, options);
@@ -252,10 +255,12 @@ describe('browser Iroh production Home vertical', () => {
 
     it('reconnects over a fresh carrier stream after the Home drops the socket', async () => {
         const carrier = await acquireCarrier(createLoopbackEndpointClient(() => port));
-        const build = () => createSyncSocketTransport({
+        const build = () => createHappierSocket({
+            clientType: 'user-scoped',
+            clientPurpose: 'sync',
+            authExtras: buildAccountStoredContentCompatibilitySocketAuthV1(CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION),
             endpoint: CANONICAL_HOME_URL,
             token: 'home-token',
-            carrier: 'iroh',
             websocketFactory: (uri, protocols, options) => carrier.createWebSocket(uri, protocols, options),
         });
 

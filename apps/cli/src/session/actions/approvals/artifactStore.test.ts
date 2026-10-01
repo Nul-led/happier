@@ -574,7 +574,8 @@ describe('createCliApprovalsArtifactStore', () => {
     const request = TargetActionApprovalRequestV1Schema.parse({
       v: 1, kind: 'plugin_target_action', status: 'open', createdAtMs: 1, updatedAtMs: 1,
       createdBy: { surface: 'cli' }, requestedSurface: 'cli',
-      qualifiedActionId: 'acme.alpha/actions/run', input: { value: 'x' }, generation: '7',
+      qualifiedActionId: 'acme.alpha/actions/run', input: { value: 'x' },
+      sourceCustody: { kind: 'development', registeredRootId: 'root-7' },
       policyFingerprint: 'b'.repeat(64), subjectFingerprint: 'a'.repeat(64), summary: 'Approve run',
     });
     let payload: any;
@@ -692,7 +693,8 @@ describe('createCliApprovalsArtifactStore', () => {
     const request = TargetActionApprovalRequestV1Schema.parse({
       v: 1, kind: 'plugin_target_action', status: 'open', createdAtMs: 1, updatedAtMs: 1,
       createdBy: { surface: 'cli' }, requestedSurface: 'cli',
-      qualifiedActionId: 'acme.alpha/actions/run', input: { value: 'x' }, generation: '7',
+      qualifiedActionId: 'acme.alpha/actions/run', input: { value: 'x' },
+      sourceCustody: { kind: 'development', registeredRootId: 'root-7' },
       policyFingerprint: 'b'.repeat(64), subjectFingerprint: 'a'.repeat(64), summary: 'Approve run',
     });
     let payload: any;
@@ -703,7 +705,7 @@ describe('createCliApprovalsArtifactStore', () => {
       dataEncryptionKey: payload.dataEncryptionKey, seq: 1, createdAt: 1, updatedAt: 1,
     } }));
     const mutated = TargetActionApprovalRequestV1Schema.parse({
-      ...request, generation: '8', status: 'approved', updatedAtMs: 2,
+      ...request, sourceCustody: { kind: 'development', registeredRootId: 'root-8' }, status: 'approved', updatedAtMs: 2,
       decision: { kind: 'approve', decidedAtMs: 2 },
     });
     await expect(store.targetActionApprovalsUpdate({ artifactId: created.artifactId, request: mutated }))
@@ -717,7 +719,8 @@ describe('createCliApprovalsArtifactStore', () => {
     const open = TargetActionApprovalRequestV1Schema.parse({
       v: 1, kind: 'plugin_target_action', status: 'open', createdAtMs: 1, updatedAtMs: 1,
       createdBy: { surface: 'cli' }, requestedSurface: 'cli',
-      qualifiedActionId: 'acme.alpha/actions/run', input: { value: 'x' }, generation: '7',
+      qualifiedActionId: 'acme.alpha/actions/run', input: { value: 'x' },
+      sourceCustody: { kind: 'development', registeredRootId: 'root-7' },
       policyFingerprint: 'b'.repeat(64), subjectFingerprint: 'a'.repeat(64), summary: 'Approve run',
     });
     let createdPayload: any;

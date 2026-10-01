@@ -9,8 +9,9 @@ import { ApprovalPromptCard } from '@/components/tools/shell/approvals/ApprovalP
 import { Typography } from '@/constants/Typography';
 import type { PendingPermissionRequest } from '@/utils/sessions/sessionUtils';
 import type { PermissionToolCallMessageLocation } from '@/utils/sessions/permissions/permissionToolCallLocationTypes';
-import type { Metadata } from '@/sync/domains/state/storageTypes';
+import type { Metadata } from '@happier-dev/session-core/state';
 import type { OpenApprovalArtifactForSession } from '@/sync/domains/artifacts/approvalArtifacts';
+import type { TranscriptPermissionDisabledReason } from '@/utils/sessions/deriveTranscriptInteraction';
 
 type AttentionRequest =
     | Readonly<{ kind: 'permission'; request: PendingPermissionRequest }>
@@ -62,7 +63,7 @@ export const AgentInputPermissionRequests = React.memo(function AgentInputPermis
     approvalLocationsByArtifactId?: ReadonlyMap<string, PermissionToolCallMessageLocation | null>;
     metadata: Metadata | null;
     canApprovePermissions: boolean;
-    disabledReason?: 'public' | 'readOnly' | 'notGranted' | 'inactive';
+    disabledReason?: TranscriptPermissionDisabledReason;
     maxHeightPx: number;
     onContentSizeChange: (width: number, height: number) => void;
     onLayout: (event: LayoutChangeEvent) => void;

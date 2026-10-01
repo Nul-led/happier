@@ -42,7 +42,7 @@ describe('fresh spawn initial access transport', () => {
       sessionId: 'parent', mode: 'plain', ctx: null,
       sessionSpawnDirectTargetTransport: {
         machineId: 'machine-1',
-        prepare: async () => ({ ok: true, directory: '/workspace', directoryCreationRequired: false, checkout: null }),
+        prepare: async () => ({ ok: true, directory: '/workspace', directoryKind: 'path', directoryCreationRequired: false, checkout: null }),
         spawnedSession: {
           spawn: async (request) => { observed = request; throw new Error('transport unavailable'); },
           resolveSpawnSessionByNonce: async () => ({ status: 'not_found' }),
@@ -53,7 +53,7 @@ describe('fresh spawn initial access transport', () => {
       creationKey: SessionCreationKeyV1Schema.parse('access-authoring'),
       sessionCreationTag: deriveSessionCreationTagV1({ callerCreationNamespace: 'user', creationKey: 'access-authoring' }),
       executionTarget: { serverId: 'home', machineId: 'machine-1' },
-      directory: '/workspace',
+      directory: { kind: 'path', path: '/workspace' },
       agentTarget: { kind: 'agent', identity: { pluginId: 'happier.agent.codex', localId: 'codex' } },
       connectedServices: { v: 2, bindingsByServiceId: {} },
       actionCaller: { kind: 'host' },
@@ -90,7 +90,7 @@ describe('fresh spawn initial access transport', () => {
       creationKey: SessionCreationKeyV1Schema.parse('old-daemon-access'),
       sessionCreationTag: deriveSessionCreationTagV1({ callerCreationNamespace: 'user', creationKey: 'old-daemon-access' }),
       executionTarget: { serverId: configuration.activeServerId, machineId: 'old-daemon' },
-      directory: '/workspace',
+      directory: { kind: 'path', path: '/workspace' },
       agentTarget: { kind: 'agent', identity: { pluginId: 'happier.agent.codex', localId: 'codex' } },
       actionCaller: { kind: 'host' },
       initialAccess: { grants: [] },

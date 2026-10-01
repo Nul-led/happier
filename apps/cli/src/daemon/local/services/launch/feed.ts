@@ -6,8 +6,6 @@ import { listLocalServicePreviewResources, type LocalServicePreviewRegistry } fr
 import type { LocalServiceRunTarget } from './runTargets';
 import { buildLocalServiceLauncherSnapshot } from './suggestions';
 
-const DEFAULT_RUN_TARGETS_TIMEOUT_MS = 1_000;
-
 export type LocalServiceLauncherFeedSnapshotRequest = Readonly<{
     sessionId?: string;
     /** Explicit scope: `machine` skips workspace scoping; `workspace` (default) keeps it. */
@@ -37,59 +35,23 @@ export type CreateLocalServiceLauncherFeedInput = Readonly<{
     inventoryRegistry: LocalServiceInventoryRegistry;
     previewRegistry: LocalServicePreviewRegistry;
     runTargets?: readonly LocalServiceRunTarget[] | LocalServiceRunTargetsProvider;
-    runTargetsTimeoutMs?: number;
     onRunTargetsError?: (error: unknown) => void;
     terminateDetectedEnabled?: () => boolean;
     resolveSessionWorkspacePaths?: LocalServiceSessionWorkspacePathsResolver;
     now?: () => number;
 }>;
 
-function withoutActions(target: LocalServiceLaunchTargetV1): LocalServiceLaunchTargetV1 {
-    return target.actions.length === 0 ? target : { ...target, actions: [] };
-}
-
-function withoutPreviewActions(target: LocalServiceLaunchTargetV1): LocalServiceLaunchTargetV1 {
-    const actions = target.actions.filter((action) => action === 'terminate_detected');
+function withoutLaunchActions(target: LocalServiceLaunchTargetV1): LocalServiceLaunchTargetV1 {
+    const actions = target.actions.filter((action) => (
+        action === 'terminate_detected' || action === 'register_preview' || action === 'open_preview'
+    ));
     return actions.length === target.actions.length ? target : { ...target, actions };
 }
 
-function unavailable(
-    target: LocalServiceLaunchTargetV1,
-    unavailableReason: string,
-): LocalServiceLaunchTargetV1 {
-    const next = withoutActions(target);
-    const { browserTarget, ...rest } = next;
-    void browserTarget;
-    return {
-        ...rest,
-        state: 'unavailable',
-        unavailableReason,
-        actions: [],
-    };
-}
-
 function fenceExecutableAuthority(target: LocalServiceLaunchTargetV1): LocalServiceLaunchTargetV1 {
-    if (
-        target.source === 'inventory_entry'
-        && target.state === 'available'
-        && target.actions.includes('open')
-        && target.browserTarget
-    ) {
-        // Product-owned local open: a listening loopback entry carrying an externalUrl
-        // browserTarget + `open` action survives the fence intact, decoupled from preview/
-        // exposure gating. Only exposure (register_preview/open_preview) stays preview-gated.
-        return target;
-    }
-    const next = withoutPreviewActions(target);
-    if (
-        next.source === 'inventory_entry'
-        && next.state === 'available'
-        && !next.browserTarget
-        && next.actions.length === 0
-    ) {
-        return unavailable(next, 'preview_registration_unavailable');
-    }
-    return next;
+    // The feed does not own executable launch authority. Private-preview lifecycle actions
+    // resolve an existing listener through the server access owner and remain reachable.
+    return withoutLaunchActions(target);
 }
 
 function sourcePriority(target: LocalServiceLaunchTargetV1): number {
@@ -113,42 +75,18 @@ function sortTargets(targets: readonly LocalServiceLaunchTargetV1[]): readonly L
     ));
 }
 
-function createRunTargetsTimeoutError(timeoutMs: number): Error {
-    const error = new Error(`Local-service run-target discovery timed out after ${timeoutMs}ms`);
-    error.name = 'LocalServiceRunTargetsTimeoutError';
-    return error;
-}
-
 async function resolveRunTargets(
     value: CreateLocalServiceLauncherFeedInput['runTargets'],
-    options: Readonly<{
-        timeoutMs: number;
-        onError: CreateLocalServiceLauncherFeedInput['onRunTargetsError'];
-    }>,
+    onError: CreateLocalServiceLauncherFeedInput['onRunTargetsError'],
 ): Promise<readonly LocalServiceRunTarget[]> {
     if (!value) return [];
     if (typeof value !== 'function') return value;
 
-    let timeout: ReturnType<typeof setTimeout> | undefined;
-    let timedOut = false;
     try {
-        const runTargets = Promise.resolve(value());
-        const bounded = new Promise<readonly LocalServiceRunTarget[]>((resolve) => {
-            timeout = setTimeout(() => {
-                timedOut = true;
-                resolve([]);
-            }, Math.max(0, options.timeoutMs));
-        });
-        const result = await Promise.race([runTargets, bounded]);
-        if (timedOut) {
-            options.onError?.(createRunTargetsTimeoutError(Math.max(0, options.timeoutMs)));
-        }
-        return result;
+        return await value();
     } catch (error) {
-        options.onError?.(error);
+        onError?.(error);
         return [];
-    } finally {
-        if (timeout) clearTimeout(timeout);
     }
 }
 
@@ -177,7 +115,6 @@ export function createLocalServiceLauncherFeed(
     input: CreateLocalServiceLauncherFeedInput,
 ): LocalServiceLauncherFeed {
     const now = input.now ?? (() => Date.now());
-    const runTargetsTimeoutMs = input.runTargetsTimeoutMs ?? DEFAULT_RUN_TARGETS_TIMEOUT_MS;
     return {
         async getSnapshot(request) {
             const sessionId = request?.sessionId ?? input.sessionId;
@@ -192,10 +129,7 @@ export function createLocalServiceLauncherFeed(
                 sessionId,
                 ...(workspaceScopePaths ? { workspaceScopePaths } : {}),
                 updatedAt: now(),
-                runTargets: await resolveRunTargets(input.runTargets, {
-                    timeoutMs: runTargetsTimeoutMs,
-                    onError: input.onRunTargetsError,
-                }),
+                runTargets: await resolveRunTargets(input.runTargets, input.onRunTargetsError),
                 inventoryEntries: input.inventoryRegistry.getSnapshot().entries,
                 previewResources: listLocalServicePreviewResources(input.previewRegistry),
                 terminateDetectedEnabled: input.terminateDetectedEnabled?.() === true,

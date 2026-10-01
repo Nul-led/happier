@@ -17,7 +17,53 @@ vi.mock('./commandExistsInPath', () => ({
 describe('runDaemonServiceCommands', () => {
   afterEach(() => {
     spawnSyncMock.mockReset();
+    vi.restoreAllMocks();
     delete process.env.HAPPIER_DAEMON_SERVICE_COMMAND_TIMEOUT_MS;
+  });
+
+  it('restores state after an unavailable command and reports a restoration failure too', async () => {
+    const { runDaemonServiceCommands } = await import('./apply');
+    const { commandExistsInPath } = await import('./commandExistsInPath');
+    vi.mocked(commandExistsInPath).mockImplementation(({ cmd }) => cmd !== 'missing');
+    const executed: string[] = [];
+    spawnSyncMock.mockImplementation((command: string) => {
+      executed.push(command);
+      return { status: 1, stdout: Buffer.from(''), stderr: Buffer.from('restoration denied') };
+    });
+    try {
+      runDaemonServiceCommands([
+        { cmd: 'missing', args: [] },
+        { cmd: 'must-not-run', args: [] },
+        { cmd: 'restore', args: [], runOnFailure: true },
+      ], { failureMode: 'strict' });
+      expect.fail('Expected both command failures');
+    } catch (error) {
+      expect(error).toBeInstanceOf(AggregateError);
+      expect(String(error)).toMatch(/not available: missing/);
+      expect(String(error)).toMatch(/restoration denied/);
+    }
+    expect(executed).toEqual(['restore']);
+    vi.mocked(commandExistsInPath).mockReturnValue(true);
+  });
+
+  it.each(['darwin', 'win32'] as const)('restores disabled login state after a failed %s service restart', async (platform) => {
+    const { runDaemonServiceCommands } = await import('./apply');
+    const { planDaemonServiceInstall } = await import('./plan');
+    let enabled = false;
+    spawnSyncMock.mockImplementation((command: string, args: readonly string[] = []) => {
+      if ((command === 'launchctl' && args[0] === 'enable') || (command === 'schtasks' && args[0] === '/Create')) enabled = true;
+      if ((command === 'launchctl' && args[0] === 'disable') || (command === 'powershell.exe' && args.some((arg) => arg.includes('Disable-ScheduledTask')))) enabled = false;
+      const failed = (command === 'launchctl' && args[0] === 'bootstrap') || (command === 'schtasks' && args[0] === '/Run');
+      return { status: failed ? 1 : 0, stdout: Buffer.from(''), stderr: Buffer.from(failed ? 'restart denied' : '') };
+    });
+    const plan = planDaemonServiceInstall({
+      platform, channel: 'stable', targetMode: 'pinned', instanceId: 'company', activeServerId: 'company',
+      uid: 501, userHomeDir: '/test', happierHomeDir: '/test/.happier',
+      serverUrl: 'https://company.example.test', webappUrl: 'https://company.example.test', publicServerUrl: 'https://company.example.test',
+      nodePath: '/npm/happier', entryPath: '', enablement: 'disabled', preserveRunningWhenDisabled: true,
+    });
+    expect(() => runDaemonServiceCommands(plan.commands, { failureMode: 'strict' })).toThrow(/restart denied/);
+    expect(enabled).toBe(false);
   });
 
   it('ignores missing launchctl bootout cleanup failures in strict mode', async () => {

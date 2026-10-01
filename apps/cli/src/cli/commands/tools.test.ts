@@ -36,7 +36,7 @@ function createBaseDeps() {
       machineId: 'machine-1',
     }),
     bootstrapAccountSettingsContext: async () => ({ settings: {}, source: 'network', settingsVersion: 1, loadedAtMs: 1, whenRefreshed: null }),
-    resolveCustomHappierToolsContext: async () => ({ mcpServers: {}, warnings: [] }),
+    resolveCustomHappierToolsContext: async () => ({ mcpServers: {}, warnings: [], cleanup: () => undefined }),
   };
 }
 
@@ -44,7 +44,7 @@ describe('happier tools --json', () => {
   it('prints a tools_list JSON envelope grouped by source', async () => {
     const output = captureStdoutJsonOutput();
     const initializeBackendApiContext = vi.fn(async () => ({ api: {} as any, machineId: 'machine-1' }));
-    const resolveCustomHappierToolsContext = vi.fn(async () => ({ mcpServers: {}, warnings: [] }));
+    const resolveCustomHappierToolsContext = vi.fn(async () => ({ mcpServers: {}, warnings: [], cleanup: () => undefined }));
     const savedSecretResources = [{ resourceId: 'shared-secret-resource' }];
     const prevExitCode = process.exitCode;
     process.exitCode = undefined;
@@ -220,7 +220,7 @@ describe('happier tools --json', () => {
 
   it('prints a tools_call JSON envelope for custom Happier-managed tools', async () => {
     const output = captureStdoutJsonOutput();
-    const resolveCustomHappierToolsContext = vi.fn(async () => ({ mcpServers: {}, warnings: [] }));
+    const resolveCustomHappierToolsContext = vi.fn(async () => ({ mcpServers: {}, warnings: [], cleanup: () => undefined }));
     const prevExitCode = process.exitCode;
     process.exitCode = undefined;
 

@@ -7,7 +7,8 @@
 
 import { chmodSync, existsSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
-import { normalizeCliArgv } from './cli/parseArgs'
+import { readCliProcessArgs } from './cli/parseArgs'
+import { applyRuntimeContextPrefixEnv, parseRuntimeContextPrefixArgs } from './utils/env/runtimeContextArgv'
 import {
   resolveManagedCliReleaseChannelSync,
 } from '@happier-dev/cli-common/firstPartyRuntime'
@@ -22,9 +23,9 @@ import {
   readActiveServerFromSettingsFile,
   resolveServerSelection,
 } from './configuration/serverSelection'
-import { DEFAULT_SESSION_WEBHOOK_TIMEOUT_MS } from './daemon/spawn/sessionWebhookTimeoutPolicy'
+import { DEFAULT_SESSION_WEBHOOK_TIMEOUT_MS, type ClientEncryptionRequirement } from '@happier-dev/protocol'
 import { FILES_TRANSFER_CHUNK_CONFIG_MAX_BYTES } from './configuration/fileTransferLimits'
-import type { ClientEncryptionRequirement } from '@happier-dev/protocol'
+import { TerminalPresentUserPolicySchema, type TerminalPresentUserPolicy } from '@happier-dev/protocol/actions/invocationAuthority';
 
 export const DEFAULT_MCP_TOOL_CALL_TIMEOUT_MS = 100_000_000;
 export const DEFAULT_EXECUTION_RUN_WAIT_MCP_TIMEOUT_GRACE_MS = 60_000;
@@ -45,6 +46,14 @@ function resolveClientEncryptionRequirementEnv(env: NodeJS.ProcessEnv): ClientEn
   throw new Error(
     'Invalid HAPPIER_ENCRYPTION_REQUIREMENT; expected "follow_account" or "require_e2ee"',
   );
+}
+
+function resolveTerminalPresentUserPolicyEnv(env: NodeJS.ProcessEnv): TerminalPresentUserPolicy | undefined {
+  const raw = String(env.HAPPIER_CLI_PRESENT_USER ?? '').trim().toLowerCase();
+  if (!raw) return undefined;
+  const parsed = TerminalPresentUserPolicySchema.safeParse(raw);
+  if (parsed.success) return parsed.data;
+  throw new Error('Invalid HAPPIER_CLI_PRESENT_USER; expected "allowed" or "disallowed"');
 }
 
 export function isDaemonProcessArgv(args: readonly string[]): boolean {
@@ -228,7 +237,6 @@ class Configuration {
   public readonly executionRunsReviewBoundedTimeoutMs: number | null
   public readonly voiceAgentResponseTimeoutMs: number
   public readonly executionRunsMaxTurns: number | null
-  public readonly executionRunsMaxDepth: number
   public readonly executionBudgetMaxConcurrentTotalPerSession: number | null
   public readonly executionBudgetMaxConcurrentByClass: Readonly<Record<string, number>>
 
@@ -257,10 +265,11 @@ class Configuration {
   // Shell-bridge command context env policy (default: off).
   public readonly shellBridgeContextEnvMode: ShellBridgeContextEnvMode
   public readonly clientEncryptionRequirement: ClientEncryptionRequirement
+  public readonly terminalPresentUserPolicy: TerminalPresentUserPolicy | undefined
 
   constructor() {
     // Check if we're running as daemon based on process args
-    const args = normalizeCliArgv(process.argv.slice(2))
+    const { args } = parseRuntimeContextPrefixArgs(readCliProcessArgs())
     this.isDaemonProcess = isDaemonProcessArgv(args)
     normalizeDaemonProcessInheritedEnv({
       env: process.env,
@@ -307,6 +316,7 @@ class Configuration {
     this.activeServerDir = join(this.serversDir, this.activeServerId)
     this.shellBridgeContextEnvMode = resolveShellBridgeContextEnvMode(process.env)
     this.clientEncryptionRequirement = resolveClientEncryptionRequirementEnv(process.env)
+    this.terminalPresentUserPolicy = resolveTerminalPresentUserPolicyEnv(process.env)
     this.legacyPrivateKeyFile = join(this.happyHomeDir, 'access.key')
     this.privateKeyFile = join(this.activeServerDir, 'access.key')
     this.installationIdentityFile = join(this.happyHomeDir, 'installation-identity.json')
@@ -724,10 +734,6 @@ class Configuration {
     });
     // Intentionally unlimited by default: long-lived execution runs should not stop unexpectedly.
     this.executionRunsMaxTurns = Number.isFinite(maxTurnsRaw) && maxTurnsRaw >= 1 ? Math.trunc(maxTurnsRaw) : null;
-    // Depth 0 means "no nested runs allowed". Default 1 allows one nested hop when explicitly linked.
-    this.executionRunsMaxDepth = resolveIntEnvWithBounds('HAPPIER_EXECUTION_RUNS_MAX_DEPTH', {
-      min: 0, default: 1,
-    });
 
     this.executionBudgetMaxConcurrentTotalPerSession =
       Number.isFinite(budgetTotalRaw) && budgetTotalRaw >= 1 ? budgetTotalRaw : null;
@@ -893,6 +899,7 @@ class Configuration {
   }
 }
 
+applyRuntimeContextPrefixEnv(readCliProcessArgs(), process.env)
 export let configuration: Configuration = new Configuration()
 
 export function reloadConfiguration(): void {

@@ -15,23 +15,6 @@ describe('plugin React Native loader policy', () => {
         });
     });
 
-    it('loads daemon-authorized dev hot reload only when its projected URL is present', () => {
-        expect(resolvePluginReactNativeLoaderPolicy({
-            source: 'devHotReload',
-        })).toEqual({
-            canLoad: false,
-            diagnostics: ['dev_hot_reload_dev_url_missing'],
-        });
-
-        expect(resolvePluginReactNativeLoaderPolicy({
-            source: 'devHotReload',
-            devUrl: 'http://127.0.0.1:8082/bundle',
-        })).toEqual({
-            canLoad: true,
-            diagnostics: [],
-        });
-    });
-
     it('rejects the retired external dynamic bundle policy even when its legacy trust flags are true', () => {
         const retiredExternalPolicy = {
             source: 'externalDynamicBundle',

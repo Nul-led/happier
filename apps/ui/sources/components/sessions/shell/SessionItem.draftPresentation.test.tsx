@@ -11,7 +11,8 @@ import { installSessionShellCommonModuleMocks } from './sessionShellTestHelpers'
 
 const confirmDeleteDraft = vi.hoisted(() => vi.fn(async () => true));
 
-vi.mock('react-native-reanimated', () => ({}));
+// The shared press owner's motion tokens build their easing curves at import.
+vi.mock('react-native-reanimated', () => ({ Easing: { bezier: () => (value: number) => value, linear: (value: number) => value } }));
 vi.mock('react-native-gesture-handler', () => ({
     Swipeable: (props: Record<string, unknown>) => React.createElement('Swipeable', props),
     GestureDetector: (props: React.PropsWithChildren) => React.createElement('GestureDetector', props, props.children),
@@ -79,6 +80,7 @@ describe('SessionItem existing-session draft presentation', () => {
             session,
             overrides: {
                 draft: {
+                    listed: true,
                     text: 'Fix the flaky release test',
                     preview: 'Fix the flaky release test',
                     status: 'clean',

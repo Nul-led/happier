@@ -9,11 +9,16 @@ import {
   type SessionFollowPendingObservationV1,
   type SessionFollowUpdateEnvelopeV1,
   SESSION_FOLLOW_ZERO_FRONTIER_V1,
+  type WorkerUpdateV1,
+  renderWorkerUpdatePromptBlockV1,
 } from '@happier-dev/protocol';
 
 import type { ApiSessionClient } from '@/api/session/sessionClient';
+import { SocketAckError } from '@/session/transport/shared/socketAck';
 
 import { applySessionFollowContextBudgetV1 } from './sessionFollowContextBudget';
+import { measureSessionFollowUtf8Bytes } from './sessionFollowContextBudget';
+import { fitWorkerUpdateWithinHostContextAllowance } from '../contextOnly/hostContextOnlyInput';
 import type {
   SessionFollowHydratedUpdate,
   SessionFollowHydrationReadModeV1,
@@ -28,11 +33,14 @@ export type SessionFollowHydrateObservation = (input: Readonly<{
   discoverHumanIngress?: boolean;
 }>) => Promise<(SessionFollowUpdateEnvelopeV1 & Partial<Pick<
   SessionFollowHydratedUpdate,
-  'sourceRecencyMs' | 'transcriptConsumedThroughByRenderedMessageCount' | 'pendingHumanIngress'
+  'sourceRecencyMs' | 'transcriptConsumedThroughByRenderedMessageCount' | 'pendingHumanIngress' | 'workerUpdate' | 'recheckWorkerUpdateAdmission'
 >>) | null>;
 
 export type SessionFollowPreparedContext = Readonly<{
   updates: readonly SessionFollowUpdateEnvelopeV1[];
+  workerUpdates?: readonly WorkerUpdateV1[];
+  /** Per-worker cards share the incumbent frontier identity owner, independently of batch membership. */
+  workerUpdateEvents?: readonly Readonly<{ localId: string; update: WorkerUpdateV1 }>[];
   /** Present only for a wake; this is the deterministic durable event identity committed before delivery. */
   wakeEventLocalId?: string;
   acknowledgeAccepted: (input: Readonly<{
@@ -107,6 +115,8 @@ export function createSessionFollowContextReconciler(input: Readonly<{
   hydrateObservation: SessionFollowHydrateObservation;
   observer?: SessionFollowObserverV1;
   sourceMaterialController?: SessionFollowSourceMaterialController | null;
+  /** Re-arm the existing process-local wake signal only for retryable ACK timeouts. */
+  onRetryableTransportFailure?: () => void;
   /** Evidence-backed allowance from the final provider-context owner; null/absent disables optional Follow. */
   maxFollowContextUtf8Bytes?: number | null;
 }>): (options: Readonly<{
@@ -156,9 +166,12 @@ export function createSessionFollowContextReconciler(input: Readonly<{
         } else {
           current = await input.session.observePendingSessionFollow();
         }
-      } catch {
+      } catch (error) {
         // Follow is optional host context. Home unavailable, unsupported runtime, or a
         // test double without Follow transport must never break the real admitted turn.
+        if (deliveryIntent === 'wake' && error instanceof SocketAckError && error.code === 'socket_ack_timeout') {
+          input.onRetryableTransportFailure?.();
+        }
         return null;
       }
       if (observer.kind === 'destination_session' && current.ok && current.currentSourceSessionIds) {
@@ -180,6 +193,8 @@ export function createSessionFollowContextReconciler(input: Readonly<{
       && current.observations?.some((entry) => (
         entry.sourceSessionId === observation.sourceSessionId
         && entry.destinationSessionId === observation.destinationSessionId
+        && entry.edgeKind === observation.edgeKind
+        && entry.attachedAt === observation.attachedAt
         && isSessionFollowFrontierEqualV1(entry.delivered, observation.delivered)
         && entry.mode === observation.mode
         && (
@@ -197,17 +212,18 @@ export function createSessionFollowContextReconciler(input: Readonly<{
     );
     if (!canAdmitFollowContext) return null;
     if (!observed.publisherGeneration || !observed.observations || observed.observations.length === 0) return null;
+    const publisherGeneration = observed.publisherGeneration;
     const destinationSessionId = (input.session as Pick<ApiSessionClient, 'sessionId'>).sessionId;
 
     const candidateObservations = deliveryIntent === 'wake'
-      ? observed.observations.filter((observation) => observation.mode === 'wake_on_human_change')
+      ? observed.observations.filter((observation) => observation.edgeKind === 'reports_to' || observation.mode === 'wake_on_human_change')
       : observed.observations;
     const hydrated = await Promise.all(candidateObservations.map(async (observation) => {
       if (signal.aborted) return null;
       if (observation.destinationSessionId !== destinationSessionId) return null;
       if (observation.sourceSessionId === observation.destinationSessionId) return null;
       try {
-        const readMode = resolveSessionFollowHydrationReadMode({
+        const readMode = observation.edgeKind === 'reports_to' ? 'initial_current_snapshot' : resolveSessionFollowHydrationReadMode({
           observer,
           voiceExpected: observation.voiceExpected,
         });
@@ -234,6 +250,7 @@ export function createSessionFollowContextReconciler(input: Readonly<{
         // the oldest contiguous prefix and only that prefix is acknowledged.
         if (
           deliveryIntent === 'wake'
+          && observation.edgeKind !== 'reports_to'
           && !update.recentMessages.some(isAuthoritativeHumanSessionFollowMessageV1)
           && update.pendingHumanIngress !== true
         ) return null;
@@ -241,6 +258,8 @@ export function createSessionFollowContextReconciler(input: Readonly<{
           sourceRecencyMs = 0,
           transcriptConsumedThroughByRenderedMessageCount,
           pendingHumanIngress: _pendingHumanIngress,
+          workerUpdate,
+          recheckWorkerUpdateAdmission,
           ...rawPromptUpdate
         } = update;
         if (transcriptConsumedThroughByRenderedMessageCount !== undefined) {
@@ -248,7 +267,7 @@ export function createSessionFollowContextReconciler(input: Readonly<{
           if (
             checkpoints.length !== update.recentMessages.length + 1
             || checkpoints.some((seq) => !Number.isSafeInteger(seq))
-            || checkpoints[0]! < observation.delivered.transcriptSeq
+            || (readMode === 'incremental' && checkpoints[0]! < observation.delivered.transcriptSeq)
             || checkpoints[checkpoints.length - 1] !== update.observed.transcriptSeq
             || checkpoints.some((seq, index) => index > 0 && seq < checkpoints[index - 1]!)
             || update.recentMessages.some((message, index) => (
@@ -261,7 +280,8 @@ export function createSessionFollowContextReconciler(input: Readonly<{
         const promptUpdate = deliveryIntent === 'wake'
           ? { ...rawPromptUpdate, reason: 'human_changed_source' as const, deliveryIntent: 'wake' as const }
           : rawPromptUpdate;
-        return { update: promptUpdate, sourceRecencyMs, transcriptConsumedThroughByRenderedMessageCount, readMode };
+        if (observation.edgeKind === 'reports_to' && !workerUpdate) return null;
+        return { update: promptUpdate, sourceRecencyMs, transcriptConsumedThroughByRenderedMessageCount, readMode, workerUpdate, recheckWorkerUpdateAdmission };
       } catch {
         // Follow is optional host context. An unavailable source remains unacknowledged and can
         // be retried by a later accepted turn through the same canonical observation owner.
@@ -280,13 +300,27 @@ export function createSessionFollowContextReconciler(input: Readonly<{
     // without rejecting the real turn.
     const readmitted = await observeAdmission();
     if (signal.aborted) return null;
-    const stillAdmitted = admitted.filter(({ observation }) => isStillAdmitted(readmitted, observation));
+    const stillAdmitted = (await Promise.all(admitted.map(async (entry) => {
+      if (!isStillAdmitted(readmitted, entry.observation)) return null;
+      if (entry.recheckWorkerUpdateAdmission && !await entry.recheckWorkerUpdateAdmission(signal)) return null;
+      return entry;
+    }))).flatMap(entry => entry ? [entry] : []);
+    if (signal.aborted) return null;
     if (stillAdmitted.length === 0) return null;
 
+    let remainingBytes = maxFollowContextUtf8Bytes;
+    const workerPrepared = stillAdmitted.flatMap(({ observation, update, workerUpdate, recheckWorkerUpdateAdmission }) => {
+      if (!workerUpdate) return [];
+      const fitted = fitWorkerUpdateWithinHostContextAllowance(workerUpdate, Math.max(0, remainingBytes - 2));
+      if (!fitted) return [];
+      remainingBytes -= measureSessionFollowUtf8Bytes(renderWorkerUpdatePromptBlockV1(fitted)) + 2;
+      return [{ observation, update, workerUpdate: fitted, recheckWorkerUpdateAdmission, ackable: update.reason !== 'source_unavailable' }];
+    });
+    const followAdmitted = stillAdmitted.filter(({ observation }) => observation.edgeKind !== 'reports_to');
     let budget: ReturnType<typeof applySessionFollowContextBudgetV1>;
     try {
       budget = applySessionFollowContextBudgetV1({
-        candidates: stillAdmitted.map(({ observation, update, sourceRecencyMs, readMode }) => ({
+        candidates: followAdmitted.map(({ observation, update, sourceRecencyMs, readMode }) => ({
           sourceSessionId: observation.sourceSessionId,
           sourceRecencyMs,
           actionableAttention: update.awareness.operational.primary === 'failed'
@@ -306,14 +340,14 @@ export function createSessionFollowContextReconciler(input: Readonly<{
             transformedUserText: '',
           })}\n\n`,
         })),
-        maxUtf8Bytes: maxFollowContextUtf8Bytes,
+        maxUtf8Bytes: remainingBytes,
       });
     } catch {
       // Invalid or concurrently unreadable optional context cannot reject the admitted input.
       return null;
     }
-    const admittedBySource = new Map(stillAdmitted.map((entry) => [entry.observation.sourceSessionId, entry] as const));
-    const prepared = [...budget.keptBySource.keys()].flatMap((sourceSessionId) => {
+    const admittedBySource = new Map(followAdmitted.map((entry) => [entry.observation.sourceSessionId, entry] as const));
+    const followPrepared = [...budget.keptBySource.keys()].flatMap((sourceSessionId) => {
       const entry = admittedBySource.get(sourceSessionId);
       if (!entry) return [];
       const { observation, update, transcriptConsumedThroughByRenderedMessageCount, readMode } = entry;
@@ -343,13 +377,15 @@ export function createSessionFollowContextReconciler(input: Readonly<{
           (observer.kind === 'account_voice' && observation.voiceExpected === null)
           || compareSessionFollowFrontierProgressV1(observation.delivered, filtered.observed) === 'ahead'
         );
-      return [{ observation, update: filtered, ackable }];
+      return [{ observation, update: filtered, workerUpdate: undefined as WorkerUpdateV1 | undefined, recheckWorkerUpdateAdmission: undefined, ackable }];
     });
+    const prepared = [...workerPrepared, ...followPrepared];
     if (prepared.length === 0) return null;
 
     const wakeObservations = deliveryIntent === 'wake'
       ? normalizeSessionFollowWakeObservationsV1(prepared.map(({ observation, update }) => ({
           sourceSessionId: observation.sourceSessionId,
+          ...(observation.edgeKind ? { edgeKind: observation.edgeKind, attachedAt: observation.attachedAt } : {}),
           expected: observation.delivered,
           consumed: update.observed,
         })))
@@ -357,13 +393,24 @@ export function createSessionFollowContextReconciler(input: Readonly<{
     const wakeEventLocalId = wakeObservations
       ? deriveSessionFollowWakeEventLocalIdV1({
           destinationSessionId,
-          publisherGeneration: observed.publisherGeneration,
+          publisherGeneration,
           observations: wakeObservations,
         })
       : undefined;
 
     return {
-      updates: prepared.map(({ update }) => update),
+      updates: followPrepared.map(({ update }) => update),
+      ...(workerPrepared.length ? { workerUpdates: workerPrepared.map(({ workerUpdate }) => workerUpdate) } : {}),
+      ...(deliveryIntent === 'wake' && workerPrepared.length ? {
+        workerUpdateEvents: workerPrepared.map(({ observation, update, workerUpdate }) => ({
+          localId: deriveSessionFollowWakeEventLocalIdV1({
+            destinationSessionId, publisherGeneration,
+            observations: [{ sourceSessionId: observation.sourceSessionId, edgeKind: 'reports_to',
+              attachedAt: observation.attachedAt, expected: observation.delivered, consumed: update.observed }],
+          }),
+          update: workerUpdate,
+        })),
+      } : {}),
       ...(wakeEventLocalId ? { wakeEventLocalId } : {}),
       recheckAdmission: async (dispatchSignal) => {
         if (signal.aborted || dispatchSignal.aborted) return false;
@@ -371,7 +418,10 @@ export function createSessionFollowContextReconciler(input: Readonly<{
         if (signal.aborted || dispatchSignal.aborted) return false;
         // All or nothing: the wake event identity and its ACK name every represented
         // source, so a context that lost any of them is withdrawn rather than narrowed.
-        return prepared.every(({ observation }) => isStillAdmitted(current, observation));
+        const allowed = await Promise.all(prepared.map(async ({ observation, recheckWorkerUpdateAdmission }) =>
+          isStillAdmitted(current, observation)
+          && (!recheckWorkerUpdateAdmission || await recheckWorkerUpdateAdmission(dispatchSignal))));
+        return !signal.aborted && !dispatchSignal.aborted && allowed.every(Boolean);
       },
       acknowledgeAccepted: (acceptance) => {
         if (
@@ -390,7 +440,7 @@ export function createSessionFollowContextReconciler(input: Readonly<{
                 executionRunId: executionRunId!,
                 expectedExecutionRunOccurrenceId: observed.executionRunOccurrenceId!,
                 sourceSessionId: observation.sourceSessionId,
-                expectedPublisherGeneration: observed.publisherGeneration!,
+                expectedPublisherGeneration: publisherGeneration,
                 expected: observation.voiceExpected ?? null,
                 observed: observation.observed,
                 consumed: update.observed,
@@ -398,7 +448,8 @@ export function createSessionFollowContextReconciler(input: Readonly<{
               })
             : input.session.acknowledgeSessionFollow({
                 sourceSessionId: observation.sourceSessionId,
-                expectedPublisherGeneration: observed.publisherGeneration!,
+                ...(observation.edgeKind ? { edgeKind: observation.edgeKind, attachedAt: observation.attachedAt } : {}),
+                expectedPublisherGeneration: publisherGeneration,
                 expected: observation.delivered,
                 observed: observation.observed,
                 consumed: update.observed,

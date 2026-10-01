@@ -3,6 +3,7 @@ import {
   commandRegistry,
   ensureMergedAgentCommandRegistryLoaded,
   findCommandDispatchDescriptor,
+  isAgentCliCommandRoot,
   resolveAdmittedActionCliCommand,
   resolvePluginCommandTmuxMode,
   type CommandContext,
@@ -29,6 +30,8 @@ import {
 } from '@/auth/cliApiToken';
 import type { EphemeralResolvedServerSelection } from '@/server/serverSelection';
 import { argvBeforeOptionTerminator } from '@/cli/commands/shared/argvFlags';
+import { resolveInheritedHerdrRuntime } from '@/terminal/runtime/inheritedHerdrRuntime';
+import { resolveInheritedZellijRuntime } from '@/terminal/runtime/inheritedZellijRuntime';
 
 function isTopLevelVersionRequest(args: readonly string[]): boolean {
   return args.length === 1 && (args[0] === '--version' || args[0] === '-v');
@@ -314,10 +317,17 @@ export async function dispatchCli(params: Readonly<{
   let signal = params.signal;
   const scopedEnvironment =
     resolveExplicitSpawnScopedEnvironmentFromProcessEnv(process.env);
-  const buildCommandContext = (contextArgs: string[]): CommandContext => ({
+  const buildCommandContext = async (
+    contextArgs: string[],
+    startsSession: boolean,
+  ): Promise<CommandContext> => ({
     args: contextArgs,
     rawArgv,
-    terminalRuntime,
+    terminalRuntime: startsSession
+      ? process.env.HERDR_ENV === '1'
+        ? await resolveInheritedHerdrRuntime({ terminalRuntime, env: process.env })
+        : resolveInheritedZellijRuntime({ terminalRuntime, env: process.env })
+      : terminalRuntime,
     ...(signal ? { signal } : {}),
     ...(params.explicitServerSelection
       ? { explicitServerSelection: params.explicitServerSelection }
@@ -472,7 +482,10 @@ export async function dispatchCli(params: Readonly<{
       commandHandler = commandDescriptor?.handler ?? commandRegistry[subcommand];
     }
     if (commandHandler) {
-      await commandHandler(buildCommandContext(args));
+      await commandHandler(await buildCommandContext(
+        args,
+        subcommand === 'resume' || (subcommand !== undefined && isAgentCliCommandRoot(subcommand)),
+      ));
       return;
     }
     if (subcommand && await failClosedReservedRootCommand(args, subcommand)) {
@@ -488,7 +501,7 @@ export async function dispatchCli(params: Readonly<{
       throw new Error(`Default agent '${DEFAULT_CATALOG_AGENT_ID}' has no CLI command handler registered`);
     }
     const defaultHandler = await defaultEntry.getCliCommandHandler();
-    await defaultHandler(buildCommandContext(args));
+    await defaultHandler(await buildCommandContext(args, true));
   } finally {
     disposeCommandSignal?.();
   }

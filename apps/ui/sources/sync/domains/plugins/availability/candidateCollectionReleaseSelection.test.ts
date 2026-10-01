@@ -178,25 +178,20 @@ function target(input: Readonly<{
                 candidateTarget: {
                     artifact: {
                         contributionId: 'tasks-ui',
+                        artifactId: 'tasks-ui',
                         platform: 'ios' as const,
                         digest: `sha256:${'c'.repeat(64)}`,
+                        hostUiApiRange: '^1.0.0',
                     },
-                    availabilityCursor: 4,
                 },
                 artifact: {
                     artifactGraph: {},
                     cacheIdentity: {
                         pluginId,
                         contributionId: 'tasks-ui',
+                        artifactId: 'tasks-ui',
                         artifactDigest: `sha256:${'c'.repeat(64)}`,
-                        hostAppVersion: '1.0.0',
-                        hostUiApiVersion: '1.0.0',
-                        reactVersion: '19.0.0',
-                        reactNativeVersion: '0.83.4',
                         platform: 'ios' as const,
-                        channel: 'internal' as const,
-                        nativeCapabilitiesDigest: `sha256:${'d'.repeat(64)}`,
-                        projectionGeneration: 1,
                     },
                 },
             },

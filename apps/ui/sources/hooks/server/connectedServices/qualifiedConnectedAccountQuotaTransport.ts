@@ -13,6 +13,7 @@ import {
     type BuiltInLegacyConnectedAccountOperation,
     type QualifiedConnectedAccountQuotaSnapshotV4,
     type QualifiedConnectedAccountRef,
+    type ProviderAccountUsageRecordId,
 } from '@happier-dev/protocol';
 
 export type QualifiedConnectedAccountQuotaTransportContext = Readonly<{
@@ -26,8 +27,8 @@ export type QualifiedConnectedAccountQuotaTransportContext = Readonly<{
 
 export async function readQualifiedConnectedAccountQuota(
     context: QualifiedConnectedAccountQuotaTransportContext,
-): Promise<QualifiedConnectedAccountQuotaSnapshotV4 | null> {
-    await context.assertOperationAllowed('quota_read');
+): Promise<Readonly<{ snapshot: QualifiedConnectedAccountQuotaSnapshotV4; recordId: ProviderAccountUsageRecordId }> | null> {
+    // The server serves and scopes the read; the opened response is checked against `ref`.
     const response = await getQualifiedConnectedAccountQuotaV4(
         context.credentials,
         context.ref,
@@ -50,7 +51,7 @@ export async function readQualifiedConnectedAccountQuota(
             { code: 'qualified_connected_account_quota_invalid' },
         );
     }
-    return opened;
+    return { snapshot: opened, recordId: response.sourceResolution.recordId };
 }
 
 export async function refreshQualifiedConnectedAccountQuota(

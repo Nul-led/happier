@@ -76,8 +76,12 @@ export const QRCode = React.memo((props: QRCodeProps) => {
         return createQRMatrix(data, errorCorrectionLevel);
     }, [data, errorCorrectionLevel]);
 
-    // Calculate module size
-    const moduleSize = size / (qrMatrix.size + 4/* space around */);
+    // One module is a whole number of device pixels, and the code sits centred on the pixel grid,
+    // so edges stay sharp at any size (a 72 px store code smeared when modules were fractional and
+    // overlapped their neighbours by a pixel to hide antialiasing seams).
+    const pixelRatio = typeof window !== 'undefined' && window.devicePixelRatio > 0 ? window.devicePixelRatio : 1;
+    const moduleSize = Math.max(1, Math.floor((size * pixelRatio) / (qrMatrix.size + 4/* space around */))) / pixelRatio;
+    const origin = Math.round(((size - moduleSize * qrMatrix.size) / 2) * pixelRatio) / pixelRatio;
 
     // Generate modules with rounded corners
     const modules = React.useMemo(() => {
@@ -103,10 +107,10 @@ export const QRCode = React.memo((props: QRCodeProps) => {
                     // Use path if any corner is rounded
                     if (tlr || trr || brr || blr) {
                         const pathData = getRectPath(
-                            x * moduleSize - 0.5 + 2 * moduleSize,
-                            y * moduleSize - 0.5 + 2 * moduleSize,
-                            moduleSize + 1,
-                            moduleSize + 1,
+                            origin + x * moduleSize,
+                            origin + y * moduleSize,
+                            moduleSize,
+                            moduleSize,
                             tlr, trr, brr, blr
                         );
 
@@ -122,10 +126,10 @@ export const QRCode = React.memo((props: QRCodeProps) => {
                         elements.push(
                             <rect
                                 key={`${x}-${y}`}
-                                x={x * moduleSize - 0.5 + 2 * moduleSize}
-                                y={y * moduleSize - 0.5 + 2 * moduleSize}
-                                width={moduleSize + 1}
-                                height={moduleSize + 1}
+                                x={origin + x * moduleSize}
+                                y={origin + y * moduleSize}
+                                width={moduleSize}
+                                height={moduleSize}
                                 fill={foregroundColor}
                             />
                         );
@@ -135,7 +139,7 @@ export const QRCode = React.memo((props: QRCodeProps) => {
         }
 
         return elements;
-    }, [qrMatrix, moduleSize, foregroundColor]);
+    }, [qrMatrix, moduleSize, origin, foregroundColor]);
 
     const baseRadius = 0.5;
 
@@ -166,13 +170,13 @@ export const QRCode = React.memo((props: QRCodeProps) => {
 
                 {/* Top-left locator pattern */}
                 <path
-                    d={getLocatorRingPath(2 * moduleSize, 2 * moduleSize, moduleSize, baseRadius)}
+                    d={getLocatorRingPath(origin, origin, moduleSize, baseRadius)}
                     fill={foregroundColor}
                     fillRule="evenodd"
                 />
                 <rect
-                    x={4 * moduleSize}
-                    y={4 * moduleSize}
+                    x={origin + 2 * moduleSize}
+                    y={origin + 2 * moduleSize}
                     width={3 * moduleSize}
                     height={3 * moduleSize}
                     rx={moduleSize}
@@ -182,13 +186,13 @@ export const QRCode = React.memo((props: QRCodeProps) => {
 
                 {/* Top-right locator pattern */}
                 <path
-                    d={getLocatorRingPath((qrMatrix.size - 7 + 2) * moduleSize, 2 * moduleSize, moduleSize, baseRadius)}
+                    d={getLocatorRingPath(origin + (qrMatrix.size - 7) * moduleSize, origin, moduleSize, baseRadius)}
                     fill={foregroundColor}
                     fillRule="evenodd"
                 />
                 <rect
-                    x={(qrMatrix.size - 7 + 2 + 2) * moduleSize}
-                    y={4 * moduleSize}
+                    x={origin + (qrMatrix.size - 7 + 2) * moduleSize}
+                    y={origin + 2 * moduleSize}
                     width={3 * moduleSize}
                     height={3 * moduleSize}
                     rx={moduleSize}
@@ -198,13 +202,13 @@ export const QRCode = React.memo((props: QRCodeProps) => {
 
                 {/* Bottom-left locator pattern */}
                 <path
-                    d={getLocatorRingPath(2 * moduleSize, (qrMatrix.size - 7 + 2) * moduleSize, moduleSize, baseRadius)}
+                    d={getLocatorRingPath(origin, origin + (qrMatrix.size - 7) * moduleSize, moduleSize, baseRadius)}
                     fill={foregroundColor}
                     fillRule="evenodd"
                 />
                 <rect
-                    x={4 * moduleSize}
-                    y={(qrMatrix.size - 7 + 2 + 2) * moduleSize}
+                    x={origin + 2 * moduleSize}
+                    y={origin + (qrMatrix.size - 7 + 2) * moduleSize}
                     width={3 * moduleSize}
                     height={3 * moduleSize}
                     rx={moduleSize}

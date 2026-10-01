@@ -66,6 +66,11 @@ export type EncryptionScopeInput = Readonly<{
     shouldContinue?: () => boolean;
 }>;
 
+export type SessionEncryptionScopeInput = EncryptionScopeInput & Readonly<{
+    /** Rechecked after async opening and immediately before installing each Session. */
+    isSessionCurrent?: (sessionId: string) => boolean;
+}>;
+
 export type EncryptionGenerationScope = Readonly<{
     accountId: string;
     serverId: string | null;
@@ -385,7 +390,7 @@ export class Encryption {
      */
     async initializeSessions(
         sessions: Map<string, Uint8Array | null>,
-        scopeInput: EncryptionScopeInput = {},
+        scopeInput: SessionEncryptionScopeInput = {},
     ): Promise<EncryptionGenerationScope | null> {
         const scope = this.resolveEncryptionScope(scopeInput);
         const shouldContinue = () => (
@@ -400,6 +405,7 @@ export class Encryption {
         }>> = [];
         for (const [sessionId, dataKey] of sessions) {
             if (!shouldContinue()) return null;
+            if (scopeInput.isSessionCurrent?.(sessionId) === false) continue;
             const fingerprint = getDataKeyFingerprint(dataKey);
             const existing = this.sessionEncryptions.get(sessionId);
             const existingFingerprint = this.sessionKeyFingerprints.get(sessionId);
@@ -430,6 +436,7 @@ export class Encryption {
         // caused the advance. The returned post-commit scope lets callers keep guarding later
         // cache publication without mistaking this owner-authored advance for an Account switch.
         for (const entry of pending) {
+            if (scopeInput.isSessionCurrent?.(entry.sessionId) === false) continue;
             // Another initializer may have committed while this entry's encryptor was opening.
             // Re-read the owner and key at the synchronous commit boundary so displacing that
             // initializer invalidates the scope it actually installed, not only the pre-await view.
@@ -451,13 +458,16 @@ export class Encryption {
             }
 
             // Create and cache session encryption
-            const sessionEnc = new SessionEncryption(
+            const sessionEnc: SessionEncryption = new SessionEncryption(
                 entry.sessionId,
                 entry.encryptor,
                 this.cache,
                 // Whichever secret actually seals this Session: its own data key,
                 // or the account secret behind the fallback encryptor.
                 entry.dataKey ?? this.masterSecret,
+                // A retired/replaced reader must not refill the shared plaintext cache
+                // when an already-running platform decrypt completes.
+                () => this.sessionEncryptions.get(entry.sessionId) === sessionEnc,
             );
             this.sessionEncryptions.set(entry.sessionId, sessionEnc);
             this.sessionKeyFingerprints.set(entry.sessionId, entry.fingerprint);

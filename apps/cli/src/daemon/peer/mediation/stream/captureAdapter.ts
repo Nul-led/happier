@@ -64,6 +64,7 @@ export type MachineLiveStreamControlApplyResult = Readonly<
 
 export type MachineLiveStreamCaptureSession = Readonly<{
   stop: () => void | Promise<void>;
+  applyControl?: (control: MachineLiveStreamControlV1) => MachineLiveStreamControlApplyResult;
   applySidebandControl?: (control: MachineLiveStreamControlSidebandV1) => MachineLiveStreamControlApplyResult;
 }>;
 
@@ -97,7 +98,7 @@ export function createDaemonMachineLiveStreamCaptureAdapter(
   if (registry) {
     return {
       start: async (input) => {
-        const source = registry.resolve({ streamFamily: input.streamFamily });
+        const source = registry.resolve({ sourceId: input.startRequest.sourceId, streamFamily: input.streamFamily });
         if (!source.ok) {
           return {
             ok: false,

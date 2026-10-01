@@ -60,15 +60,9 @@ type ExternalSessionOperationStagingDisposition =
 function capturedCanonicalOwnerReference(
   evidence: ExternalSessionCanonicalOwnerEvidenceV1,
 ): Readonly<{
-  owner: 'pending_admission' | 'transcript_authority' | 'linked_session';
+  owner: 'transcript_authority' | 'linked_session';
   expectedRevision: number;
 }> {
-  if (evidence.pendingAdmissionRevision !== undefined) {
-    return {
-      owner: 'pending_admission',
-      expectedRevision: evidence.pendingAdmissionRevision,
-    };
-  }
   if (evidence.transcriptAuthorityRevision !== undefined) {
     return {
       owner: 'transcript_authority',
@@ -272,11 +266,6 @@ function resolvePassiveRepairMode(
   }
   const hasTranscriptAuthority =
     record.canonicalOwnerEvidence.transcriptAuthorityRevision !== undefined;
-  const hasPendingAdmission =
-    record.canonicalOwnerEvidence.pendingAdmissionRevision !== undefined;
-  if (hasTranscriptAuthority !== hasPendingAdmission) {
-    return 'reconciliation_required';
-  }
   return hasTranscriptAuthority
     ? 'admission_recovery_required'
     : 'awaiting_user_resume';

@@ -14,7 +14,6 @@ import { resolveExternalSessionSourceFromAgentProjection } from '../../plugins/p
 import type { ResolvedAgentContribution } from '../../plugins/projection/registry/types';
 
 const basis: ConfiguredExternalSessionSourceSnapshotBasis = {
-  contributionGenerationId: 'registry:g1',
   accountSettingsRevision: 'account:7',
 };
 
@@ -85,11 +84,18 @@ const sourceProjection = {
 async function buildConfiguredExternalSessionSourceSnapshot(
   params: Omit<
     Parameters<typeof buildConfiguredExternalSessionSourceSnapshotWithProjection>[0],
-    'resolveSource'
-  >,
+    'resolveSource' | 'resolveAgentOccurrence'
+  > & Partial<Pick<
+    Parameters<typeof buildConfiguredExternalSessionSourceSnapshotWithProjection>[0],
+    'resolveAgentOccurrence'
+  >>,
 ) {
   return await buildConfiguredExternalSessionSourceSnapshotWithProjection({
     ...params,
+    resolveAgentOccurrence: params.resolveAgentOccurrence ?? ((agentId) => Object.freeze({
+      occurrenceId: `${agentId}:test-occurrence`,
+      isCurrent: () => true,
+    })),
     resolveSource: (agentId, source) => resolveExternalSessionSourceFromAgentProjection(
       sourceProjection,
       agentId,
@@ -109,7 +115,57 @@ function providerOps(
   };
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 describe('configured external-session source registry', () => {
+  it('invalidates only the replaced Agent occurrence and rejects its stale completion', async () => {
+    const source = {
+      kind: 'codexHome',
+      home: 'user',
+    } satisfies ExternalSessionsSource;
+    const alphaValidation = deferred<ReturnType<ExternalSessionProviderOps['validateSource']>>();
+    const occurrences = new Map([
+      ['codex', 'codex:1'],
+      ['antigravity', 'antigravity:1'],
+    ]);
+
+    const building = buildConfiguredExternalSessionSourceSnapshot({
+      basis,
+      candidates: [
+        { agentId: 'codex', source },
+        { agentId: 'antigravity', source },
+      ],
+      resolveAgentOccurrence: (agentId) => {
+        const occurrenceId = occurrences.get(agentId);
+        return occurrenceId
+          ? Object.freeze({
+              occurrenceId,
+              isCurrent: () => occurrences.get(agentId) === occurrenceId,
+            })
+          : null;
+      },
+      resolveProviderOps: (agentId) => providerOps(agentId === 'codex'
+        ? async () => await alphaValidation.promise
+        : ({ source: candidate }) => ({ ok: true, source: candidate })),
+    });
+
+    await vi.waitFor(() => expect(alphaValidation.resolve).toBeTypeOf('function'));
+    occurrences.set('codex', 'codex:2');
+    alphaValidation.resolve({ ok: true, source });
+
+    const snapshot = await building;
+    expect(snapshot.list(basis).map((entry) => entry.agentId)).toEqual(['antigravity']);
+    expect(snapshot.resolve('antigravity', 'codexHome:user:::', basis)).not.toBeNull();
+    expect(snapshot.resolve('codex', 'codexHome:user:::', basis)).toBeNull();
+  });
   it('canonicalizes sources through provider ops and exposes opaque-key immutable entries', async () => {
     const canonicalSource = {
       kind: 'codexHome',
@@ -261,6 +317,10 @@ describe('configured external-session source registry', () => {
     const snapshot = await buildConfiguredExternalSessionSourceSnapshotWithProjection({
       basis,
       candidates: [{ agentId: 'codex', source }],
+      resolveAgentOccurrence: () => ({
+        occurrenceId: 'codex:test-occurrence',
+        isCurrent: () => true,
+      }),
       resolveProviderOps: () => providerOps(({ source: candidate }) => ({
         ok: true,
         source: candidate,
@@ -293,6 +353,10 @@ describe('configured external-session source registry', () => {
     await expect(buildConfiguredExternalSessionSourceSnapshotWithProjection({
       basis,
       candidates: [{ agentId: ' codex ', source }],
+      resolveAgentOccurrence: () => ({
+        occurrenceId: 'codex:test-occurrence',
+        isCurrent: () => true,
+      }),
       resolveProviderOps: () => providerOps(({ source: candidate }) => ({
         ok: true,
         source: candidate,
@@ -377,49 +441,38 @@ describe('configured external-session source registry', () => {
     }]);
   });
 
-  it('rejects retired contribution generations and account-settings drift on every read', async () => {
+  it('filters retired occurrences and rejects account-settings drift on every read', async () => {
     const source = {
       kind: 'codexHome',
       home: 'user',
     } satisfies ExternalSessionsSource;
+    let current = true;
     const snapshot = await buildConfiguredExternalSessionSourceSnapshot({
       basis,
       candidates: [{ agentId: 'codex', source }],
+      resolveAgentOccurrence: () => ({ occurrenceId: 'codex:1', isCurrent: () => current }),
       resolveProviderOps: () => providerOps(({ source: candidate }) => ({ ok: true, source: candidate })),
     });
 
-    expect(() => snapshot.list({ ...basis, contributionGenerationId: 'registry:g2' })).toThrow(/retired/i);
+    current = false;
+    expect(snapshot.list(basis)).toEqual([]);
     expect(() => snapshot.resolve('codex', 'codex:user:', {
       ...basis,
       accountSettingsRevision: 'account:8',
     })).toThrow(/account settings/i);
   });
 
-  it('fences generation and account drift around every provider await', async () => {
+  it('fences account drift around every provider await', async () => {
     let currentBasis = basis;
     const source = {
       kind: 'codexHome',
       home: 'user',
     } satisfies ExternalSessionsSource;
 
-    const retiredDuringResolution = buildConfiguredExternalSessionSourceSnapshot({
-      basis,
-      candidates: [{ agentId: 'codex', source }],
-      readCurrentBasis: () => currentBasis,
-      isCurrent: () => true,
-      resolveProviderOps: async () => {
-        currentBasis = { ...basis, contributionGenerationId: 'registry:g2' };
-        return providerOps(({ source: candidate }) => ({ ok: true, source: candidate }));
-      },
-    });
-    await expect(retiredDuringResolution).rejects.toMatchObject({ code: 'retired_generation' });
-
-    currentBasis = basis;
     const driftDuringValidation = buildConfiguredExternalSessionSourceSnapshot({
       basis,
       candidates: [{ agentId: 'codex', source }],
       readCurrentBasis: () => currentBasis,
-      isCurrent: () => true,
       resolveProviderOps: () => providerOps(async ({ source: candidate }) => {
         currentBasis = { ...basis, accountSettingsRevision: 'account:8' };
         return { ok: true, source: candidate };

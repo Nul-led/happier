@@ -1,4 +1,8 @@
-import type { TranscriptMotionConfig, TranscriptMotionPreset } from './TranscriptMotionContext';
+import {
+    normalizeTranscriptMotionPreset,
+    type TranscriptMotionConfig,
+    type TranscriptMotionPreset,
+} from './TranscriptMotionContext';
 
 export function resolveTranscriptMotionConfig(input: {
     reducedMotionPreferred?: unknown;
@@ -11,12 +15,9 @@ export function resolveTranscriptMotionConfig(input: {
 }): TranscriptMotionConfig {
     const reducedMotionPreferred = input.reducedMotionPreferred === true;
 
-    const preset: TranscriptMotionPreset =
-        reducedMotionPreferred
-            ? 'off'
-            : input.transcriptMotionPreset === 'off' || input.transcriptMotionPreset === 'full'
-                ? input.transcriptMotionPreset
-                : 'subtle';
+    const preset: TranscriptMotionPreset = reducedMotionPreferred
+        ? 'off'
+        : normalizeTranscriptMotionPreset(input.transcriptMotionPreset);
 
     const freshnessMs =
         typeof input.transcriptMotionFreshnessMs === 'number' && Number.isFinite(input.transcriptMotionFreshnessMs)

@@ -1,8 +1,8 @@
 import * as React from 'react';
+import { createReactNavigationNativeMock } from '@/dev/testkit/mocks/reactNavigation';
 import renderer from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { AppPaneProvider } from '@/components/appShell/panes/AppPaneProvider';
-import { renderScreen } from '@/dev/testkit';
+import { renderScreen } from '@/dev/testkit/render/renderScreen';
 import { createModalModuleMock } from '@/dev/testkit/mocks/modal';
 import { createReactNativeWebMock } from '@/dev/testkit/mocks/reactNative';
 import { createExpoRouterMock } from '@/dev/testkit/mocks/router';
@@ -158,6 +158,7 @@ vi.mock('react-native-safe-area-context', () => ({
 }));
 
 vi.mock('@react-navigation/native', () => ({
+    ...createReactNavigationNativeMock(),
   useFocusEffect: () => {},
   useIsFocused: () => true,
 }));
@@ -393,7 +394,7 @@ function createForeignSurfaceHandlers() {
   return createComposerPresentationHostHandlers({
     owner: {
       identity: { pluginId: 'acme.fixture', localId: 'composer-tools' },
-      immutableGenerationId: 'generation-1',
+      occurrenceId: 'generation-1',
       surfaceInstanceKey: 'foreign-surface-1',
     },
   });
@@ -436,6 +437,8 @@ function surfaceElement(input: Readonly<{ surfaceFocused: boolean }>) {
     <SessionView id="s1" surfaceFocusedOverride={input.surfaceFocused} surfaceVisibleOverride />
   </AppPaneProvider>);
 }
+
+const { AppPaneProvider } = await import('@/components/appShell/panes/AppPaneProvider');
 
 describe('SessionView composer surface focus', () => {
   it('stops being the active composer once its mounted surface is no longer focused', async () => {

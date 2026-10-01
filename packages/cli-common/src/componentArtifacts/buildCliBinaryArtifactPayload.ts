@@ -1,10 +1,11 @@
 import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
-import { cp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { copyFile, cp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { isAbsolute, join, relative, sep } from 'node:path';
 
 import cliDistBuildManifest from '../../cliDistBuildManifest.cjs';
+import { BUNDLED_PLUGIN_PUBLICATION_FAILURES_RELATIVE_PATH as BUNDLED_PLUGIN_FAILURES_RELATIVE_PATH } from '../../bundledPluginPublicationPolicy.mjs';
 import {
   assertResolvedRuntimeDependencyMatchesDeclaration,
   collectExternalRuntimeDependencies,
@@ -19,7 +20,6 @@ import { CLI_BINARY_TARGETS, resolveCliToolsPlatformDir, resolveCurrentBinaryTar
 import { commandExists, compileBunBinary, ensureFileExists, execOrThrow, resolveBunCommand, resolveYarnCommand, type RunCommand } from './commands.js';
 import {
   bundleInstalledPackageWithRuntimeDependencies,
-  bundleWorkspacePackageWithRuntimeDependencies,
   resolveWorkspaceBundlesFromPackageJson,
 } from '../workspaces/index.js';
 import { withCliDistBuildLock } from './withCliDistBuildLock.js';
@@ -31,10 +31,9 @@ import {
 } from './copyCliNodeRuntimePayload.js';
 import { finalizeRuntimeArtifactPayload } from './finalizeRuntimeArtifactPayload.js';
 import type {
-  BundledWorkspacePackage,
   EnsureWorkspacePackagesBuiltByName,
 } from './ensureBundledWorkspacePackagesBuilt.js';
-import { ensureBundledWorkspacePackagesBuilt } from './ensureBundledWorkspacePackagesBuilt.js';
+import { buildCliBundledWorkspaceArtifactClosure } from './ensureBundledWorkspacePackagesBuilt.js';
 import { shouldReuseCliDistSnapshot } from './shouldReuseCliDistSnapshot.js';
 import { stageCliProxyApiManagedRuntime } from './stageCliProxyApiManagedRuntime.js';
 import { stageProcessCustodyRuntime } from './stageProcessCustodyRuntime.js';
@@ -88,7 +87,7 @@ type CliPackageJson = Readonly<{
 
 export type CliBinaryArtifactSupportIdentity = Readonly<{
   fingerprint: string;
-  workspaceRuntimeIdentity: string;
+  workspaceRuntimeIdentity: string | null;
 }>;
 
 export type CliBinaryArtifactCodePayload = Readonly<{
@@ -98,10 +97,26 @@ export type CliBinaryArtifactCodePayload = Readonly<{
   runtimeAssetRelativePath: string;
 }>;
 
+type CliBinaryArtifactWorkspacePublication = Readonly<{
+  workspaceRuntimeIdentity: string;
+  workspaceRuntimePackages: readonly string[];
+}>;
+
 function isExactStringList(value: unknown, expected: readonly string[]): boolean {
   return Array.isArray(value)
     && value.length === expected.length
     && value.every((entry, index) => entry === expected[index]);
+}
+
+function workspacePublicationMatches(
+  publication: CliBinaryArtifactWorkspacePublication,
+  workspaceRuntime: Readonly<{
+    fingerprint: string;
+    packageNames: readonly string[];
+  }>,
+): boolean {
+  return publication.workspaceRuntimeIdentity === workspaceRuntime.fingerprint
+    && isExactStringList(publication.workspaceRuntimePackages, workspaceRuntime.packageNames);
 }
 
 function normalizeNodePlatform(platform: string): string {
@@ -302,12 +317,14 @@ export function readCliBinaryArtifactSupportIdentity({
   repoRoot,
   target = resolveCurrentBinaryTarget({ availableTargets: CLI_BINARY_TARGETS }),
   goVersion,
+  workspaceSourceFingerprint,
   cliProxyApiManagedRuntimeExecutablePath,
   processCustodyRuntimeExecutablePath,
 }: Readonly<{
   repoRoot: string;
   target?: BinaryTarget;
   goVersion: string;
+  workspaceSourceFingerprint?: string;
   cliProxyApiManagedRuntimeExecutablePath?: string;
   processCustodyRuntimeExecutablePath?: string;
 }>): CliBinaryArtifactSupportIdentity {
@@ -318,25 +335,48 @@ export function readCliBinaryArtifactSupportIdentity({
   }
 
   const hash = createHash('sha256');
-  hash.update('happier:daemon-runtime-support:v1\0');
+  // v2 binds release support metadata to the finalized (projected) workspace bytes.
+  // Do not reuse older immutable support artifacts whose recorded identity
+  // described the pre-projection tree.
+  const sourceFingerprint = String(workspaceSourceFingerprint ?? '').trim().toLowerCase();
+  if (workspaceSourceFingerprint !== undefined && !/^[a-f0-9]{64}$/.test(sourceFingerprint)) {
+    throw new Error('[component-artifacts] invalid daemon workspace source fingerprint');
+  }
+  hash.update(sourceFingerprint
+    ? 'happier:daemon-runtime-support-source:v1\0'
+    : 'happier:daemon-runtime-support:v2\0');
   hash.update(`target\0${target.os}\0${target.arch}\0${target.exeExt}\0`);
   hash.update(`node\0${process.version}\0`);
   hash.update(`go\0${normalizedGoVersion}\0`);
+  const bundledPluginFailuresPath = join(repoRoot, 'apps', 'cli', BUNDLED_PLUGIN_FAILURES_RELATIVE_PATH);
+  hash.update('bundled-plugin-failures\0');
+  hash.update(existsSync(bundledPluginFailuresPath) ? readFileSync(bundledPluginFailuresPath) : 'absent');
+  hash.update('\0');
 
   const cliDir = join(repoRoot, 'apps', 'cli');
-  const workspaceRuntime = readCliNodeWorkspaceRuntimeIdentity({ repoRoot, hostPackageDir: cliDir });
-  hash.update(`workspace-runtime\0${workspaceRuntime.fingerprint}\0`);
-  for (const packageName of workspaceRuntime.packageNames) {
-    const installedWorkspacePackage = resolveInstalledRuntimePackage({
+  const workspaceRuntime = sourceFingerprint
+    ? null
+    : readCliNodeWorkspaceRuntimeIdentity({ repoRoot, hostPackageDir: cliDir });
+  hash.update(sourceFingerprint
+    ? `workspace-source\0${sourceFingerprint}\0`
+    : `workspace-runtime\0${workspaceRuntime?.fingerprint}\0`);
+  const workspacePackages = sourceFingerprint
+    ? resolveWorkspaceBundlesFromPackageJson({ repoRoot, hostPackageDir: cliDir })
+      .map(({ packageName, srcDir }) => ({ packageName, packageJsonPath: join(srcDir, 'package.json') }))
+    : (workspaceRuntime?.packageNames ?? []).map((packageName) => ({
       packageName,
-      resolveFromPackageJsonPath: join(cliDir, 'package.json'),
-      dereferenceRootDir: repoRoot,
-    });
+      packageJsonPath: resolveInstalledRuntimePackage({
+        packageName,
+        resolveFromPackageJsonPath: join(cliDir, 'package.json'),
+        dereferenceRootDir: repoRoot,
+      }).packageJsonPath,
+    }));
+  for (const { packageName, packageJsonPath } of workspacePackages) {
     hash.update(`workspace-package\0${packageName}\0`);
     hashRuntimeDependencyTree({
       hash,
       repoRoot,
-      packageJsonPath: installedWorkspacePackage.packageJsonPath,
+      packageJsonPath,
       destinationNodeModulesPath: join('node_modules', ...packageName.split('/'), 'node_modules'),
     });
   }
@@ -440,7 +480,7 @@ export function readCliBinaryArtifactSupportIdentity({
 
   return {
     fingerprint: hash.digest('hex'),
-    workspaceRuntimeIdentity: workspaceRuntime.fingerprint,
+    workspaceRuntimeIdentity: workspaceRuntime?.fingerprint ?? null,
   };
 }
 
@@ -488,47 +528,43 @@ async function copyCliRuntimeTools(repoRoot: string, payloadDir: string, target:
   await rm(targetArchivesDir, { recursive: true, force: true });
 }
 
-function syncCliBundledWorkspacePackagesForCompile(
-  repoRoot: string,
-  cliDir: string,
-  workspaceBundles: readonly BundledWorkspacePackage[],
-): void {
-  for (const { packageName, srcDir } of workspaceBundles) {
-    bundleWorkspacePackageWithRuntimeDependencies({
-      packageName,
-      srcDir,
-      destDir: join(cliDir, 'node_modules', ...packageName.split('/')),
-      dereferenceRootDir: repoRoot,
-    });
-  }
-}
-
 /**
  * Settle the installed CLI workspace publication before a managed daemon build
- * captures identities that include that publication. The later code builder
- * deliberately repeats this same owner-local reconciliation while holding its
- * consumer lock; with unchanged source inputs that pass is idempotent, while
- * genuine intervening drift remains visible to the daemon support guards.
+ * captures identities that include that publication. Its exact physical
+ * identity is passed to code assembly, which validates it while holding the
+ * existing consumer lock instead of preparing the broad closure again.
  */
 export async function prepareCliBinaryArtifactWorkspacePublication({
   repoRoot,
+  publicationMode = 'artifact',
   ensureWorkspacePackagesBuiltByName,
 }: Readonly<{
   repoRoot: string;
+  publicationMode?: 'live' | 'artifact';
   ensureWorkspacePackagesBuiltByName?: EnsureWorkspacePackagesBuiltByName;
-}>): Promise<void> {
-  const cliDir = join(repoRoot, 'apps', 'cli');
-  const workspaceBundles = resolveWorkspaceBundlesFromPackageJson({
+}>): Promise<CliBinaryArtifactWorkspacePublication> {
+  await buildCliBundledWorkspaceArtifactClosure({
     repoRoot,
-    hostPackageDir: cliDir,
-  });
-  await ensureBundledWorkspacePackagesBuilt({
-    repoRoot,
-    bundles: workspaceBundles.map(({ packageName, srcDir }) => ({ packageName, srcDir })),
+    publicationMode,
     ensureWorkspacePackagesBuiltByName,
   });
-  await withWorkspaceBundleLock(() => {
-    syncCliBundledWorkspacePackagesForCompile(repoRoot, cliDir, workspaceBundles);
+  return await readCliBinaryArtifactWorkspacePublication({ repoRoot });
+}
+
+/** Read the settled publication without running another publication writer. */
+export async function readCliBinaryArtifactWorkspacePublication({ repoRoot }: Readonly<{
+  repoRoot: string;
+}>): Promise<CliBinaryArtifactWorkspacePublication> {
+  const cliDir = join(repoRoot, 'apps', 'cli');
+  return await withWorkspaceBundleLock(() => {
+    const workspaceRuntime = readCliNodeWorkspaceRuntimeIdentity({
+      repoRoot,
+      hostPackageDir: cliDir,
+    });
+    return {
+      workspaceRuntimeIdentity: workspaceRuntime.fingerprint,
+      workspaceRuntimePackages: workspaceRuntime.packageNames,
+    };
   }, {
     lockPath: resolveCliSharedDepsBuildLockPath(repoRoot),
   });
@@ -539,12 +575,14 @@ async function prepareCliDistSnapshot({
   runCommand,
   ensureWorkspacePackagesBuiltByName,
   requiredCliDistInputFingerprint,
+  preparedWorkspacePublication,
   commandProbe,
 }: Readonly<{
   repoRoot: string;
   runCommand: RunCommand;
   ensureWorkspacePackagesBuiltByName?: EnsureWorkspacePackagesBuiltByName;
   requiredCliDistInputFingerprint?: string;
+  preparedWorkspacePublication?: CliBinaryArtifactWorkspacePublication;
   commandProbe: (cmd: string) => boolean;
 }>): Promise<Readonly<{
   snapshotDistDir: string;
@@ -558,17 +596,12 @@ async function prepareCliDistSnapshot({
   const entrypoint = join(distDir, 'index.mjs');
   const lockPath = join(repoRoot, '.project', 'tmp', 'cli-dist-build.lock');
   const yarn = resolveYarnCommand({ commandProbe });
-  const workspaceBundles = resolveWorkspaceBundlesFromPackageJson({
-    repoRoot,
-    hostPackageDir: cliDir,
-  });
-  await ensureBundledWorkspacePackagesBuilt({
-    repoRoot,
-    bundles: workspaceBundles.map(({ packageName, srcDir }) => ({ packageName, srcDir })),
-    ensureWorkspacePackagesBuiltByName,
-  });
+  const workspacePublication = preparedWorkspacePublication
+    ?? await prepareCliBinaryArtifactWorkspacePublication({
+      repoRoot,
+      ensureWorkspacePackagesBuiltByName,
+    });
   const prepared = await withWorkspaceBundleLock(() => {
-    syncCliBundledWorkspacePackagesForCompile(repoRoot, cliDir, workspaceBundles);
     return withCliDistBuildLock<{
       snapshotDistDir: string;
       workspaceRuntimeIdentity: string;
@@ -588,18 +621,18 @@ async function prepareCliDistSnapshot({
         repoRoot,
         hostPackageDir: cliDir,
       });
+      if (!workspacePublicationMatches(workspacePublication, workspaceRuntimeBeforeBuild)) {
+        throw new Error(
+          '[component-artifacts] CLI workspace runtime publication changed before staging '
+          + `(expected ${workspacePublication.workspaceRuntimeIdentity}, found ${workspaceRuntimeBeforeBuild.fingerprint})`,
+        );
+      }
       const currentDistManifest = cliDistBuildManifest.readCliDistBuildManifest(entrypoint);
 
-      // If the CLI dist entrypoint is already present and is at least as new as the tracked inputs,
-      // prefer snapshotting it instead of rebuilding. Rebuilding `apps/cli` is expensive and can
-      // disrupt long-running processes in dev checkouts.
+      // The CLI build manifest binds the compiled bytes to the source identity.
+      // A caller without that identity must build rather than guess from mtimes.
       const reuseExistingDistSnapshot = await shouldReuseCliDistSnapshot({
         distEntrypointPath: entrypoint,
-        inputPaths: [
-          join(cliDir, 'src'),
-          join(cliDir, 'package.json'),
-          ...workspaceBundles.map(({ srcDir }) => join(srcDir, 'dist')),
-        ],
         requiredInputFingerprint: requiredCliDistInputFingerprint,
       })
         && currentDistManifest.manifest?.workspaceRuntimeIdentity
@@ -623,6 +656,9 @@ async function prepareCliDistSnapshot({
         repoRoot,
         hostPackageDir: cliDir,
       });
+      // build:prepared can canonically publish generated workspace bytes while
+      // this lock is held. Return that coherent final identity for the dist
+      // manifest; external closure writers remain excluded by this same lock.
       return {
         snapshotDistDir,
         workspaceRuntimeIdentity: workspaceRuntime.fingerprint,
@@ -648,6 +684,7 @@ export async function buildCliBinaryArtifactCodePayload({
   compileBinary = compileBunBinary,
   ensureWorkspacePackagesBuiltByName,
   requiredCliDistInputFingerprint,
+  preparedWorkspacePublication,
 }: {
   repoRoot: string;
   payloadDir: string;
@@ -658,6 +695,7 @@ export async function buildCliBinaryArtifactCodePayload({
   compileBinary?: typeof compileBunBinary;
   ensureWorkspacePackagesBuiltByName?: EnsureWorkspacePackagesBuiltByName;
   requiredCliDistInputFingerprint?: string;
+  preparedWorkspacePublication?: CliBinaryArtifactWorkspacePublication;
 }): Promise<CliBinaryArtifactCodePayload> {
   const bunCommand = resolveBunCommand({ commandProbe });
   if (!bunCommand) {
@@ -670,6 +708,7 @@ export async function buildCliBinaryArtifactCodePayload({
     runCommand,
     ensureWorkspacePackagesBuiltByName,
     requiredCliDistInputFingerprint,
+    preparedWorkspacePublication,
     commandProbe,
   });
   const snapshotEntrypoint = join(prepared.snapshotDistDir, 'index.mjs');
@@ -707,10 +746,17 @@ export async function buildCliBinaryArtifactCodePayload({
       cwd: repoRoot,
       externals: mergedExternals,
       bunCommand,
+      // Standalone CLI binaries must not inherit project-local dotenv files
+      // from the directory where users invoke them.
+      autoloadDotenv: false,
       runCommand,
     });
     await rm(join(payloadDir, 'package-dist'), { recursive: true, force: true });
     await cp(prepared.snapshotDistDir, join(payloadDir, 'package-dist'), { recursive: true });
+    // The compiled CLI reads its package publication metadata from the
+    // executable's runtime root. It belongs to this code artifact, not the
+    // separately linked support-directory closure.
+    await copyFile(join(repoRoot, 'apps', 'cli', 'package.json'), join(payloadDir, 'package.json'));
     // The source dist manifest detects build-host publication churn. The code
     // artifact binds its exact workspace publication even when the physical
     // workspace dependency tree lives in a separate daemon support artifact.
@@ -741,6 +787,7 @@ async function stageCliBinaryArtifactSupportPayload({
   expectedWorkspaceRuntimeIdentity,
   supportArtifactFingerprint,
   goVersion,
+  workspaceSourceFingerprint,
   preserveCompilePayloadAssets = false,
   includeIrohNativeReleaseEvidence = false,
 }: {
@@ -754,6 +801,7 @@ async function stageCliBinaryArtifactSupportPayload({
   expectedWorkspaceRuntimeIdentity?: string;
   supportArtifactFingerprint?: string;
   goVersion?: string;
+  workspaceSourceFingerprint?: string;
   preserveCompilePayloadAssets?: boolean;
   includeIrohNativeReleaseEvidence?: boolean;
 }): Promise<Readonly<{
@@ -772,6 +820,7 @@ async function stageCliBinaryArtifactSupportPayload({
       repoRoot,
       target,
       goVersion: normalizedGoVersion,
+      workspaceSourceFingerprint,
       cliProxyApiManagedRuntimeExecutablePath,
       processCustodyRuntimeExecutablePath,
     });
@@ -785,8 +834,8 @@ async function stageCliBinaryArtifactSupportPayload({
   const yarn = resolveYarnCommand({ commandProbe });
   await mkdir(payloadDir, { recursive: true });
   const runtimeSupportDirectories = preserveCompilePayloadAssets
-    ? ['node_modules']
-    : ['node_modules', 'tools', 'scripts'];
+    ? ['node_modules', '.project']
+    : ['node_modules', 'tools', 'scripts', '.project'];
   await Promise.all(runtimeSupportDirectories.map(async (name) => {
     await rm(join(payloadDir, name), { recursive: true, force: true });
   }));
@@ -797,11 +846,15 @@ async function stageCliBinaryArtifactSupportPayload({
     expectedWorkspaceRuntimeIdentity,
     excludeRootDependencies: CLI_OPTIONAL_RUNTIME_PACKAGES,
   });
-  const stagedWorkspaceRuntime = readCliNodeWorkspaceRuntimeIdentityFromRuntimeRoot({
-    runtimeRoot: payloadDir,
-    packageNames: sourceWorkspaceRuntime.packageNames,
-  });
   await copyCliRuntimeSidecars(repoRoot, payloadDir);
+  const bundledPluginFailuresSource = join(repoRoot, 'apps', 'cli', BUNDLED_PLUGIN_FAILURES_RELATIVE_PATH);
+  const bundledPluginFailuresTarget = join(payloadDir, BUNDLED_PLUGIN_FAILURES_RELATIVE_PATH);
+  await mkdir(join(payloadDir, '.project', 'tmp', 'bundled-plugin-publication'), { recursive: true });
+  if (existsSync(bundledPluginFailuresSource)) {
+    await copyFile(bundledPluginFailuresSource, bundledPluginFailuresTarget);
+  } else {
+    await writeFile(bundledPluginFailuresTarget, '[]\n', 'utf8');
+  }
   await copyCliRuntimeTools(repoRoot, payloadDir, target);
   const cliProxyApiManagedRuntime = await stageCliProxyApiManagedRuntime({
     repoRoot,
@@ -832,12 +885,17 @@ async function stageCliBinaryArtifactSupportPayload({
     );
   }
   await finalizeRuntimeArtifactPayload(payloadDir, target);
+  const stagedWorkspaceRuntime = readCliNodeWorkspaceRuntimeIdentityFromRuntimeRoot({
+    runtimeRoot: payloadDir,
+    packageNames: sourceWorkspaceRuntime.packageNames,
+  });
 
   if (expectedSupportFingerprint) {
     const after = readCliBinaryArtifactSupportIdentity({
       repoRoot,
       target,
       goVersion: normalizedGoVersion,
+      workspaceSourceFingerprint,
       cliProxyApiManagedRuntimeExecutablePath,
       processCustodyRuntimeExecutablePath,
     });

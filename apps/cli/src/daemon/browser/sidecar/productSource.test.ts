@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { SidecarBrowserBinaryCandidate } from './binary';
+import * as productSource from './productSource';
 
 const MANAGED_PROVENANCE = {
     origin: 'managed_package' as const,
@@ -88,79 +89,19 @@ describe('browser sidecar product source owner', () => {
         }
     });
 
-    it('resolves ok for a managed provenance-verified candidate and delegates to the launch owner', async () => {
-        const mod = await import('./productSource');
-
-        expect(mod?.createProductBrowserSidecarControlAdapterFactory).toBeTypeOf('function');
-        if (!mod?.createProductBrowserSidecarControlAdapterFactory) return;
-
-        const launchOwnerAdapter = {
-            ok: true as const,
-            adapter: {
-                adapterKind: 'chromiumSidecar' as const,
-                ownsView: () => false,
-                supportsOpenView: () => false,
-                dispatchCommand: vi.fn(),
-            },
-            dispose: vi.fn(),
-        };
-        const launchOwnerFactory = vi.fn((_input: unknown) => async () => launchOwnerAdapter);
-        const resolveCandidate = vi.fn(async () => managedCandidate());
-
-        const factory = mod.createProductBrowserSidecarControlAdapterFactory({
-            platform: 'linux',
-            featureEnabled: true,
-            resolveManagedCandidate: resolveCandidate,
-            createLaunchOwnerFactory: launchOwnerFactory,
-        });
-
-        const result = await factory({ machineId: 'machine_product' });
-
-        expect(result.ok).toBe(true);
-        expect(resolveCandidate).toHaveBeenCalledOnce();
-        expect(launchOwnerFactory).toHaveBeenCalledOnce();
-        // The launch owner receives a digest-verified managed binary resolution.
-        const launchInput = launchOwnerFactory.mock.calls[0]?.[0] as { featureEnabled: boolean; binaryResolution: { ok: boolean; source: string; provenance?: unknown } };
-        expect(launchInput.binaryResolution.ok).toBe(true);
-        expect(launchInput.binaryResolution.source).toBe('managedBrowserPackage');
-        expect(launchInput.binaryResolution.provenance).toMatchObject({ origin: 'managed_package' });
-        // The resolved server sidecar decision is threaded through to the launch owner.
-        expect(launchInput.featureEnabled).toBe(true);
+    it('accepts a managed candidate with verified provenance', () => {
+        expect(productSource.resolveProductBrowserSidecarBinary({ platform: 'linux', candidates: [managedCandidate()] }))
+            .toMatchObject({ ok: true, source: 'managedBrowserPackage', provenance: { origin: 'managed_package' } });
     });
 
-    it('passes the resolved server sidecar decision through to the launch owner', async () => {
-        const mod = await import('./productSource');
-
-        expect(mod?.createProductBrowserSidecarControlAdapterFactory).toBeTypeOf('function');
-        if (!mod?.createProductBrowserSidecarControlAdapterFactory) return;
-
-        const launchOwnerAdapter = {
-            ok: true as const,
-            adapter: {
-                adapterKind: 'chromiumSidecar' as const,
-                ownsView: () => false,
-                supportsOpenView: () => false,
-                dispatchCommand: vi.fn(),
-            },
-            dispose: vi.fn(),
-        };
-        const launchOwnerFactory = vi.fn((_input: unknown) => async () => launchOwnerAdapter);
-
-        const factory = mod.createProductBrowserSidecarControlAdapterFactory({
+    it('rejects a resolved but server-disabled source', async () => {
+        const factory = productSource.createProductBrowserSidecarControlAdapterFactory({
             platform: 'linux',
             // Server-disabled `browser.sidecar` decision threaded from the daemon startup gate.
             featureEnabled: false,
             resolveManagedCandidate: vi.fn(async () => managedCandidate()),
-            createLaunchOwnerFactory: launchOwnerFactory,
         });
-
-        await factory({ machineId: 'machine_disabled' });
-
-        expect(launchOwnerFactory).toHaveBeenCalledOnce();
-        const launchInput = launchOwnerFactory.mock.calls[0]?.[0] as { featureEnabled: boolean };
-        // The launch plan rejects featureEnabled:false (sidecar/runtime.ts); the hard-coded `true`
-        // bypass is gone.
-        expect(launchInput.featureEnabled).toBe(false);
+        expect(await factory({ machineId: 'machine_disabled' })).toMatchObject({ ok: false, errorCode: 'feature_disabled' });
     });
 
     it('stays fail-closed when no managed candidate is installed', async () => {
@@ -169,18 +110,15 @@ describe('browser sidecar product source owner', () => {
         expect(mod?.createProductBrowserSidecarControlAdapterFactory).toBeTypeOf('function');
         if (!mod?.createProductBrowserSidecarControlAdapterFactory) return;
 
-        const launchOwnerFactory = vi.fn(() => async () => ({ ok: true as const, adapter: {} as never }));
         const factory = mod.createProductBrowserSidecarControlAdapterFactory({
             platform: 'linux',
             featureEnabled: true,
             resolveManagedCandidate: vi.fn(async () => null),
-            createLaunchOwnerFactory: launchOwnerFactory,
         });
 
         const result = await factory({ machineId: 'machine_missing' });
 
         expect(result).toMatchObject({ ok: false, errorCode: 'managed_package_missing' });
-        expect(launchOwnerFactory).not.toHaveBeenCalled();
     });
 
     // MCH-2: lazy-install trigger — a supported, digest-pinned platform whose artifact is missing
@@ -190,18 +128,6 @@ describe('browser sidecar product source owner', () => {
 
         expect(mod?.createProductBrowserSidecarControlAdapterFactory).toBeTypeOf('function');
         if (!mod?.createProductBrowserSidecarControlAdapterFactory) return;
-
-        const launchOwnerAdapter = {
-            ok: true as const,
-            adapter: {
-                adapterKind: 'chromiumSidecar' as const,
-                ownsView: () => false,
-                supportsOpenView: () => false,
-                dispatchCommand: vi.fn(),
-            },
-            dispose: vi.fn(),
-        };
-        const launchOwnerFactory = vi.fn((_input: unknown) => async () => launchOwnerAdapter);
 
         const missingThenInstalled = vi
             .fn()
@@ -223,7 +149,6 @@ describe('browser sidecar product source owner', () => {
             platform: 'linux',
             featureEnabled: true,
             resolveManagedCandidate: missingThenInstalled,
-            createLaunchOwnerFactory: launchOwnerFactory,
             installManagedBrowserChromium,
         });
 
@@ -232,7 +157,6 @@ describe('browser sidecar product source owner', () => {
         expect(installManagedBrowserChromium).toHaveBeenCalledOnce();
         expect(missingThenInstalled).toHaveBeenCalledTimes(2);
         expect(result.ok).toBe(true);
-        expect(launchOwnerFactory).toHaveBeenCalledOnce();
     });
 
     it('does not lazily install when autoInstallWhenMissing is disabled', async () => {
@@ -242,7 +166,6 @@ describe('browser sidecar product source owner', () => {
         if (!mod?.createProductBrowserSidecarControlAdapterFactory) return;
 
         const installManagedBrowserChromium = vi.fn(async () => ({ ok: true as const, executablePath: '/x', pinnedVersion: '1.2.3.4', integrityDigest: `sha256:${'a'.repeat(64)}` }));
-        const launchOwnerFactory = vi.fn(() => async () => ({ ok: true as const, adapter: {} as never }));
         const factory = mod.createProductBrowserSidecarControlAdapterFactory({
             platform: 'linux',
             featureEnabled: true,
@@ -253,7 +176,6 @@ describe('browser sidecar product source owner', () => {
                 available: false as const,
                 disabledReason: 'not installed',
             })),
-            createLaunchOwnerFactory: launchOwnerFactory,
             installManagedBrowserChromium,
         });
 
@@ -261,7 +183,6 @@ describe('browser sidecar product source owner', () => {
 
         expect(installManagedBrowserChromium).not.toHaveBeenCalled();
         expect(result).toMatchObject({ ok: false, errorCode: 'managed_package_missing' });
-        expect(launchOwnerFactory).not.toHaveBeenCalled();
     });
 
     it('stays fail-closed when a managed candidate lacks provenance (never delegates to launch)', async () => {
@@ -270,7 +191,6 @@ describe('browser sidecar product source owner', () => {
         expect(mod?.createProductBrowserSidecarControlAdapterFactory).toBeTypeOf('function');
         if (!mod?.createProductBrowserSidecarControlAdapterFactory) return;
 
-        const launchOwnerFactory = vi.fn(() => async () => ({ ok: true as const, adapter: {} as never }));
         const factory = mod.createProductBrowserSidecarControlAdapterFactory({
             platform: 'linux',
             featureEnabled: true,
@@ -280,7 +200,6 @@ describe('browser sidecar product source owner', () => {
                 discoveryKind: 'managedRuntime' as const,
                 available: true,
             })),
-            createLaunchOwnerFactory: launchOwnerFactory,
         });
 
         const result = await factory({ machineId: 'machine_no_provenance' });
@@ -289,6 +208,5 @@ describe('browser sidecar product source owner', () => {
         if (!result.ok) {
             expect(result.errorCode).toBe('binary_resolution_failed');
         }
-        expect(launchOwnerFactory).not.toHaveBeenCalled();
     });
 });

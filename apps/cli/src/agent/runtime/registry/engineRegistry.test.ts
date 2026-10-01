@@ -7,6 +7,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { PluginReloadController } from '../../../plugins/runtime/reload/controller';
 import { seedCurrentLocalPathPluginFixture } from '../../../plugins/store/registry/currentState.testkit';
+import '../../../plugins/runtime/resolveExecutablePluginRuntimeRegistry';
+import '../bridges/session/SessionHostBridge';
+
+// Warm cold transformation during collection; cases still reload owners after selecting their home.
 
 let activePluginReloadController: PluginReloadController | null = null;
 
@@ -199,6 +203,17 @@ describe('resolveCliEngineRegistry', () => {
         } else {
             process.env.HAPPIER_HOME_DIR = originalHappyHomeDir;
         }
+    });
+
+    it('admits the installed bundled Codex native attach surface through the session bridge', async () => {
+        const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-native-attach-registry-home-'));
+        process.env.HAPPIER_HOME_DIR = happyHomeDir;
+        const { configuration } = await import('../../../configuration');
+        expect(configuration.happyHomeDir).toBe(happyHomeDir);
+        await publishCurrentRuntimeRegistry({ happyHomeDir, generation: 1, changedPluginIds: [] });
+        const { getSessionHostBridge } = await import('@/agent/runtime/bridges/session/SessionHostBridge');
+        const surfaces = await getSessionHostBridge().resolveExecutionSurfaces('codex');
+        expect(surfaces.attach?.attach).toEqual(expect.any(Function));
     });
 
     it('does not eagerly load plugin daemon modules until a plugin backend actually needs them', async () => {

@@ -9,6 +9,11 @@ export type SessionListRowPlatform = 'ios' | 'android' | 'web' | 'windows' | 'ma
 export type SessionListRowDensity = 'default' | 'compact' | 'minimal';
 
 export const SESSION_LIST_ROW_CORNER_RADIUS = 12;
+/**
+ * A row's own fill inside the column — the open session inside its group's sheet, and a navigation
+ * row's hover — rounded tighter than the sheet so the sheet's paper shows around it.
+ */
+export const SESSION_LIST_ROW_SELECTION_RADIUS = 8;
 
 export const SESSION_LIST_ROW_TITLE_TEXT_METRICS = {
     default: { fontSize: 14, lineHeight: 18 },
@@ -59,7 +64,15 @@ export type SessionListDensityViewState = Readonly<{
 export type ResolveSessionListDensityViewStateOptions = Readonly<{
     isTablet: boolean;
     platform: SessionListRowPlatform | string;
+    uiFontScale?: number;
 }>;
+
+function scaleRowHeight(height: number, uiFontScale: number | undefined): number {
+    const scale = typeof uiFontScale === 'number' && Number.isFinite(uiFontScale)
+        ? Math.max(1, Math.min(uiFontScale, 2.5))
+        : 1;
+    return scale > 1.1 ? Math.ceil(height * scale) : height;
+}
 
 const SESSION_LIST_DENSITY_VIEW_STATE_DEFAULT: SessionListDensityViewState = Object.freeze({
     compact: false,
@@ -99,16 +112,20 @@ export function resolveSessionListDensityViewState(
     sessionListDensity: string | null | undefined,
     options?: ResolveSessionListDensityViewStateOptions,
 ): SessionListDensityViewState {
+    const scale = (state: SessionListDensityViewState): SessionListDensityViewState => {
+        const rowHeight = scaleRowHeight(state.rowHeight, options?.uiFontScale);
+        return rowHeight === state.rowHeight ? state : { ...state, rowHeight };
+    };
     if (sessionListDensity === 'narrow') {
         if (shouldUseReadableNativePhoneMinimalSessionRow(options)) {
-            return SESSION_LIST_DENSITY_VIEW_STATE_MINIMAL_NATIVE_PHONE;
+            return scale(SESSION_LIST_DENSITY_VIEW_STATE_MINIMAL_NATIVE_PHONE);
         }
-        return SESSION_LIST_DENSITY_VIEW_STATE_MINIMAL;
+        return scale(SESSION_LIST_DENSITY_VIEW_STATE_MINIMAL);
     }
 
     if (sessionListDensity === 'cozy') {
-        return SESSION_LIST_DENSITY_VIEW_STATE_COMPACT;
+        return scale(SESSION_LIST_DENSITY_VIEW_STATE_COMPACT);
     }
 
-    return SESSION_LIST_DENSITY_VIEW_STATE_DEFAULT;
+    return scale(SESSION_LIST_DENSITY_VIEW_STATE_DEFAULT);
 }

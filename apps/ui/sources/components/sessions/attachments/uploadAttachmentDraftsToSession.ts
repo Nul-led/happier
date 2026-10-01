@@ -1,4 +1,4 @@
-import { SESSION_ATTACHMENT_UPLOAD_STRUCTURED_INPUT_PROVENANCE_KIND } from '@happier-dev/protocol';
+import { SESSION_ATTACHMENT_UPLOAD_STRUCTURED_INPUT_PROVENANCE_KIND, type SessionAttachmentHandleV1 } from '@happier-dev/protocol';
 
 import type { AttachmentsUploadConfig } from '@/sync/domains/transfers/ops/uploadSessionAttachment';
 import { sessionAttachmentsUploadFile } from '@/sync/domains/transfers/ops/uploadSessionAttachment';
@@ -19,6 +19,7 @@ export type AttachmentUploadedDraftCheckpoint = Readonly<{
     uploadedSizeBytes: number;
     uploadedMimeType?: string;
     sha256?: string;
+    attachmentHandle?: SessionAttachmentHandleV1;
 }>;
 
 type StructuredInputImageInput = Readonly<{
@@ -39,6 +40,7 @@ export type UploadedAttachment = Readonly<{
     mimeType?: string;
     sizeBytes: number;
     sha256?: string;
+    attachmentHandle?: SessionAttachmentHandleV1;
     structuredInput?: StructuredInputImageInput;
 }>;
 type UploadedAttachmentBase = Omit<UploadedAttachment, 'structuredInput'>;
@@ -82,6 +84,7 @@ function toAttachmentPayload(attachment: UploadedAttachment): Record<string, unk
         mimeType: attachment.mimeType,
         sizeBytes: attachment.sizeBytes,
         sha256: attachment.sha256,
+        ...(attachment.attachmentHandle ? { attachmentHandle: attachment.attachmentHandle } : {}),
     };
 }
 
@@ -188,6 +191,7 @@ export async function uploadAttachmentDraftsToSession(args: Readonly<{
                     ? { mimeType: (stillPresent.uploadedMimeType ?? described.mimeType)! }
                     : {}),
                 ...(stillPresent.sha256 ? { sha256: stillPresent.sha256 } : {}),
+                ...(stillPresent.attachmentHandle ? { attachmentHandle: stillPresent.attachmentHandle } : {}),
             };
             uploaded.push(buildUploadedAttachment(uploadedAttachment));
             continue;
@@ -238,6 +242,7 @@ export async function uploadAttachmentDraftsToSession(args: Readonly<{
             uploadedSizeBytes: uploadRes.sizeBytes,
             uploadedMimeType: described.mimeType,
             sha256: uploadRes.sha256,
+            attachmentHandle: uploadRes.attachmentHandle,
             error: undefined,
             uploadProgress: { uploadedBytes: uploadRes.sizeBytes, totalBytes: uploadRes.sizeBytes },
         } satisfies Partial<Omit<AttachmentDraft, 'id' | 'source'>>;
@@ -248,6 +253,7 @@ export async function uploadAttachmentDraftsToSession(args: Readonly<{
             uploadedSizeBytes: uploadRes.sizeBytes,
             ...(described.mimeType ? { uploadedMimeType: described.mimeType } : {}),
             ...(uploadRes.sha256 ? { sha256: uploadRes.sha256 } : {}),
+            ...(uploadRes.attachmentHandle ? { attachmentHandle: uploadRes.attachmentHandle } : {}),
         });
 
         const uploadedAttachment: UploadedAttachmentBase = {
@@ -256,6 +262,7 @@ export async function uploadAttachmentDraftsToSession(args: Readonly<{
             sizeBytes: uploadRes.sizeBytes,
             ...(described.mimeType ? { mimeType: described.mimeType } : {}),
             ...(uploadRes.sha256 ? { sha256: uploadRes.sha256 } : {}),
+            ...(uploadRes.attachmentHandle ? { attachmentHandle: uploadRes.attachmentHandle } : {}),
         };
         uploaded.push(buildUploadedAttachment(uploadedAttachment));
     }

@@ -18,6 +18,22 @@ import { catchUpSessionMessagesAfterSeq } from './sessionMessageCatchUp';
 import { handleSessionNewMessageUpdate } from './sessionNewMessageUpdate';
 
 describe('sessionMessageCatchUp (stored-content envelopes)', () => {
+  it('rejects malformed page metadata before publishing valid rows', async () => {
+    vi.spyOn(axios, 'get').mockResolvedValueOnce({
+      status: 200,
+      data: {
+        messages: [{ id: 'm11', seq: 11, createdAt: 1, updatedAt: 1, localId: null,
+          content: { t: 'plain', v: { role: 'user', content: { type: 'text', text: 'hello' } } } }],
+        hasMore: 'false', nextAfterSeq: null,
+      },
+    });
+    const updates: Update[] = [];
+    await expect(catchUpSessionMessagesAfterSeq({
+      mode: 'plain', ctx: null, token: 't', sessionId: 's1', afterSeq: 10,
+      onUpdate: (update) => updates.push(update),
+    })).rejects.toMatchObject({ code: 'session_transcript_stored_content_unavailable' });
+    expect(updates).toEqual([]);
+  });
   it.each(['legacy', 'dataKey'] as const)('replays authenticated %s history under the established E2EE context', async (encryptionVariant) => {
     const ctx = { encryptionKey: new Uint8Array(32), encryptionVariant };
     const content = {
@@ -26,7 +42,7 @@ describe('sessionMessageCatchUp (stored-content envelopes)', () => {
     };
     vi.spyOn(axios, 'get').mockResolvedValueOnce({
       status: 200,
-      data: { messages: [{ id: 'm11', seq: 11, content }], hasMore: false, nextAfterSeq: null },
+      data: { messages: [{ id: 'm11', seq: 11, createdAt: 1, content }], hasMore: false, nextAfterSeq: null },
     });
     const updates: Update[] = [];
 
@@ -61,8 +77,8 @@ describe('sessionMessageCatchUp (stored-content envelopes)', () => {
         status: 200,
         data: {
           messages: [
-            { id: 'm11', seq: 11, content: crypto.mode === 'plain' ? plain : encrypted },
-            { id: 'm12', seq: 12, content: rejected },
+            { id: 'm11', seq: 11, createdAt: 1, content: crypto.mode === 'plain' ? plain : encrypted },
+            { id: 'm12', seq: 12, createdAt: 1, content: rejected },
           ],
           hasMore: true,
           nextAfterSeq: 12,
@@ -92,6 +108,7 @@ describe('sessionMessageCatchUp (stored-content envelopes)', () => {
           messages: [{
             id: `m${seq}`,
             seq,
+            createdAt: 1,
             content: { t: 'plain', v: { role: 'agent', content: { type: 'text', text: `message ${seq}` } } },
           }],
           hasMore: seq < 22,
@@ -112,7 +129,7 @@ describe('sessionMessageCatchUp (stored-content envelopes)', () => {
 
     expect(updates.map((update) => update.body.t === 'new-message' ? update.body.message.id : null))
       .toEqual(Array.from({ length: 12 }, (_, index) => `m${index + 11}`));
-    expect(getSpy.mock.calls.map((call) => call[1]?.params.afterSeq))
+    expect(getSpy.mock.calls.map((call) => Number(new URL(String(call[0])).searchParams.get('afterSeq'))))
       .toEqual(Array.from({ length: 12 }, (_, index) => index + 10));
   });
 
@@ -123,6 +140,7 @@ describe('sessionMessageCatchUp (stored-content envelopes)', () => {
         messages: [{
           id: 'm10',
           seq: 10,
+          createdAt: 1,
           content: { t: 'plain', v: { role: 'agent', content: { type: 'text', text: 'repeated' } } },
         }],
         hasMore: true,
@@ -142,6 +160,31 @@ describe('sessionMessageCatchUp (stored-content envelopes)', () => {
 
     expect(updates).toEqual([]);
     expect(getSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('advances through sidechain rows while replaying only the main chain', async () => {
+    const content = { t: 'plain', v: { role: 'agent', content: { type: 'text', text: 'history' } } };
+    const getSpy = vi.spyOn(axios, 'get')
+      .mockResolvedValueOnce({ status: 200, data: {
+        messages: [{ id: 'side11', seq: 11, createdAt: 1, sidechainId: 'subagent', content }],
+        hasMore: true, nextAfterSeq: 11,
+      } })
+      .mockResolvedValueOnce({ status: 200, data: {
+        messages: [{ id: 'main12', seq: 12, createdAt: 1, content }],
+        hasMore: false, nextAfterSeq: null,
+      } });
+    const updates: Update[] = [];
+
+    await catchUpSessionMessagesAfterSeq({
+      mode: 'plain', ctx: null, token: 't', sessionId: 's1', afterSeq: 10,
+      onUpdate: (update) => updates.push(update),
+    });
+
+    expect(updates.map((update) => update.body.t === 'new-message' ? update.body.message.id : null)).toEqual(['main12']);
+    expect(getSpy.mock.calls.map((call) => {
+      const query = new URL(String(call[0])).searchParams;
+      return [query.get('scope'), query.get('afterSeq')];
+    })).toEqual([['all', '10'], ['all', '11']]);
   });
 
   it('emits new-message updates for plaintext transcript messages', async () => {
@@ -257,6 +300,7 @@ describe('sessionMessageCatchUp (stored-content envelopes)', () => {
             id: 'm1',
             seq: 12,
             localId: ' request-1 ',
+            createdAt: 1,
             content: { t: 'plain', v: { role: 'user', content: { type: 'text', text: 'hello' } } },
           },
         ],
@@ -276,7 +320,7 @@ describe('sessionMessageCatchUp (stored-content envelopes)', () => {
     expect(updates[0]?.body?.message?.localId).toBe(' request-1 ');
   });
 
-  it('preserves missing transcript timestamps as unavailable in catch-up updates', async () => {
+  it('rejects a page missing the protocol-required creation timestamp as unavailable', async () => {
     vi.spyOn(axios, 'get').mockResolvedValueOnce({
       data: {
         messages: [
@@ -290,19 +334,15 @@ describe('sessionMessageCatchUp (stored-content envelopes)', () => {
     } as any);
 
     const updates: any[] = [];
-    await catchUpSessionMessagesAfterSeq({
+    await expect(catchUpSessionMessagesAfterSeq({
       mode: 'plain',
       ctx: null,
       token: 't',
       sessionId: 's1',
       afterSeq: 10,
       onUpdate: (u) => updates.push(u),
-    });
-
-    expect(updates).toHaveLength(1);
-    expect(updates[0]?.createdAt).toBeNull();
-    expect(updates[0]?.body?.message?.createdAt).toBeNull();
-    expect(updates[0]?.body?.message?.updatedAt).toBeNull();
+    })).rejects.toMatchObject({ code: 'session_transcript_stored_content_unavailable' });
+    expect(updates).toHaveLength(0);
   });
 
   it('rejects transcript messages with malformed seq values', async () => {
@@ -342,16 +382,19 @@ describe('sessionMessageCatchUp (stored-content envelopes)', () => {
           {
             id: 'm11',
             seq: 11,
+            createdAt: 1,
             content: { t: 'plain', v: { role: 'user', content: { type: 'text', text: 'before' } } },
           },
           {
             id: 'm12',
             seq: 12,
+            createdAt: 1,
             content: { t: 'future', value: 'unreadable' },
           },
           {
             id: 'm13',
             seq: 13,
+            createdAt: 1,
             content: { t: 'plain', v: { role: 'agent', content: { type: 'text', text: 'after' } } },
           },
         ],
@@ -375,7 +418,7 @@ describe('sessionMessageCatchUp (stored-content envelopes)', () => {
 
     expect(updates).toEqual([]);
     expect(getSpy).toHaveBeenCalledTimes(1);
-    expect(getSpy.mock.calls[0]?.[1]).toMatchObject({ params: { afterSeq: 10 } });
+    expect(new URL(String(getSpy.mock.calls[0]?.[0])).searchParams.get('afterSeq')).toBe('10');
   });
 
   it('throws terminal auth responses instead of treating them as empty catch-up', async () => {

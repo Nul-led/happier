@@ -21,34 +21,22 @@ describe('wizardStepRegistry', () => {
             relayLockConfirmationPending: false,
             relaySwitchConfirmationPending: false,
             authIntent: 'standard',
-            setupAction: null,
         };
 
         const step = getWizardStepDefinition('background_service_handoff');
         expect(step.visibleWhen(context)).toBe(true);
     });
 
-    it('keeps provider setup visible for the local relay hosting setup branch', () => {
+    it('keeps Home hosting, access and switch confirmation in pre-auth onboarding', () => {
         const context: WizardContext = {
-            mode: 'setup',
-            platform: 'desktop',
-            canScanQr: false,
-            scanStepEnabled: false,
+            mode: 'onboarding', platform: 'desktop', canScanQr: false, scanStepEnabled: false,
             canRunSystemTasks: true,
-            relaySelection: {
-                choiceId: 'customUrl',
-                serverUrl: 'https://relay.local.test',
-                relayProfileId: 'relay-local',
-                locked: true,
-            },
-            relayAccessProviderId: null,
-            relayLockConfirmationPending: false,
-            relaySwitchConfirmationPending: false,
-            authIntent: 'standard',
-            setupAction: 'relayLocal',
+            relaySelection: { choiceId: 'thisComputer', serverUrl: 'https://relay.local.test', locked: false },
+            relayAccessProviderId: 'lan', relayLockConfirmationPending: false,
+            relaySwitchConfirmationPending: true, authIntent: 'standard',
         };
-
-        const step = getWizardStepDefinition('providers_optional');
-        expect(step.visibleWhen(context)).toBe(true);
+        for (const step of ['host_relay_local', 'relay_access', 'relay_access_prereqs', 'confirm_switch_relay'] as const) {
+            expect(getWizardStepDefinition(step).visibleWhen(context)).toBe(true);
+        }
     });
 });

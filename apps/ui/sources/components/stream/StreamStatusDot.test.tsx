@@ -25,7 +25,11 @@ function dotStyle(screen: Awaited<ReturnType<typeof renderScreen>>, testID: stri
 }
 
 describe('StreamStatusDot', () => {
-    it('pulses the dot when live and reduced motion is not requested', async () => {
+    /**
+     * Healthy is quiet: a playing stream already moves (the frames are the motion), so its dot is
+     * still. DESIGN: no indefinite decorative animation on routine surfaces (H-UX F-11).
+     */
+    it('keeps the live dot still', async () => {
         const { StreamStatusDot } = await import('./StreamStatusDot');
 
         const screen = await renderScreen(
@@ -33,17 +37,6 @@ describe('StreamStatusDot', () => {
         );
 
         expect(screen.findByTestId('stream-dot')).not.toBeNull();
-        // On web, the canonical StatusDot expresses a live pulse via a CSS animation.
-        expect(dotStyle(screen, 'stream-dot').animationName).toBe('happierStatusDotPulse');
-    });
-
-    it('renders a static dot under reduced motion even when live', async () => {
-        const { StreamStatusDot } = await import('./StreamStatusDot');
-
-        const screen = await renderScreen(
-            <StreamStatusDot variant="live" reducedMotion testID="stream-dot" />,
-        );
-
         expect(dotStyle(screen, 'stream-dot').animationName).toBeUndefined();
     });
 
@@ -75,17 +68,17 @@ describe('StreamStatusDot', () => {
         expect(colors.size).toBeGreaterThan(1);
     });
 
-    it('renders a soft halo ring behind the dot', async () => {
+    it('renders the canonical soft halo ring behind the dot', async () => {
         const { StreamStatusDot } = await import('./StreamStatusDot');
 
         const screen = await renderScreen(
-            <StreamStatusDot variant="live" testID="stream-dot" />,
+            <StreamStatusDot variant="live" size={8} testID="stream-dot" />,
         );
 
-        const halo = screen.findByTestId('stream-dot:halo');
-        expect(halo).not.toBeNull();
-        const style = flattenStyle(halo?.props.style);
-        expect(typeof style.borderRadius).toBe('number');
-        expect(typeof style.backgroundColor).toBe('string');
+        // The one halo composition (StatusDot `halo`): a concentric ring twice the dot size.
+        const halo = flattenStyle(screen.findByTestId('stream-dot:dot-halo')?.props.style);
+        expect(halo.width).toBe(16);
+        expect(halo.borderRadius).toBe(8);
+        expect(typeof halo.backgroundColor).toBe('string');
     });
 });

@@ -51,7 +51,7 @@ vi.mock('@/api/session/external/linking/qualifiedLinkIdentityRegistry', () => ({
     defaultDependencies.resolveCurrentAgent,
 }));
 vi.mock('./providerOpsResolution', () => ({
-  resolveGenerationBoundExternalSessionFollowSurface:
+  resolveOccurrenceBoundExternalSessionFollowSurface:
     defaultDependencies.resolveGenerationBoundSurface,
 }));
 
@@ -162,7 +162,7 @@ function configureDefaultLinkedSource(): void {
   defaultDependencies.resolveGenerationBoundSurface.mockResolvedValue({
     providerOps: { pageTranscript },
     resource: {
-      pluginGeneration: 'plugin-current',
+      pluginOccurrenceId: 'plugin-current',
       retirementSignal: new AbortController().signal,
     },
   });

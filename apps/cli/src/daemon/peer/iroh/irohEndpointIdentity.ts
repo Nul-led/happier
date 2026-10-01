@@ -1,9 +1,9 @@
 import { join } from 'node:path';
 
 /**
- * One installation-scoped native Iroh identity for every CLI process role.
- * Auth helpers and daemon startup must resolve this owner instead of choosing
- * their own key path or silently creating a keyless endpoint.
+ * The daemon's installation-scoped Machine service identity survives restarts.
+ * Account-client helpers borrow its Home leases in-process or use independent
+ * ephemeral endpoints; they must never register this identity in another process.
  */
 export function resolveCliIrohEndpointKeyPath(happyHomeDir: string): string {
   const dataRoot = String(happyHomeDir ?? '').trim();

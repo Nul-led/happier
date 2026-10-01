@@ -13,6 +13,7 @@ import {
     HostEventTargetV1Schema,
     ManagedExecutableRefSchema,
     PluginContributionIdentityV1Schema,
+    PluginSourceCustodyV1Schema,
     ProviderRuntimeBindingBasisV1Schema,
     QualifiedConnectedAccountRefSchema,
     SessionIdSchema,
@@ -20,6 +21,7 @@ import {
 } from '@happier-dev/protocol';
 import type {
     ConnectedAccountRequestAuthUseV1,
+    PluginSourceCustodyV1,
     ProviderRuntimeBindingBasisV1,
     SessionProviderBindingMetadataV1,
 } from '@happier-dev/protocol';
@@ -188,8 +190,8 @@ export type RunnerDaemonManagedProviderCustodyScopeV1 = Readonly<{
     runtimeBindingBasis: ProviderRuntimeBindingBasisV1;
     pluginId: string;
     providerLocalId: string;
-    activationGeneration: string;
-    immutableGenerationId: string;
+    occurrenceId: string;
+    sourceCustody: PluginSourceCustodyV1;
     manifestAuthority: 'external' | 'bundled_first_party';
     operationClaimId: string;
 }>;
@@ -213,8 +215,8 @@ export const RunnerDaemonManagedProviderCustodyScopeV1Schema:
     runtimeBindingBasis: ProviderRuntimeBindingBasisV1Schema,
     pluginId: BoundedIdSchema,
     providerLocalId: BoundedIdSchema,
-    activationGeneration: BoundedIdSchema,
-    immutableGenerationId: BoundedIdSchema,
+    occurrenceId: BoundedIdSchema,
+    sourceCustody: asHostProtocolZod(PluginSourceCustodyV1Schema),
     manifestAuthority: ManagedProviderManifestAuthoritySchema,
     operationClaimId: BoundedIdSchema,
 }).strict().superRefine((value, context) => {

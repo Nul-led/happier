@@ -96,12 +96,12 @@ describe('happier session history (action executor)', () => {
       expect(boundExecute).toHaveBeenCalledWith(
         'transcript.follow',
         expect.objectContaining({ sessionId: 'sess-1' }),
-        { surface: 'cli', authority: 'present_user', defaultSessionId: null },
+        { surface: 'cli', defaultSessionId: null },
       );
       expect(execute).toHaveBeenCalledWith(
         'transcript.unfollow',
         { sessionId: 'sess-1', leaseId: expect.any(String) },
-        { surface: 'cli', authority: 'present_user', defaultSessionId: null },
+        { surface: 'cli', defaultSessionId: null },
       );
       expect(output.logs.map((line) => JSON.parse(line))).toEqual([{
         v: 1,
@@ -165,19 +165,19 @@ describe('happier session history (action executor)', () => {
         1,
         'transcript.follow',
         expect.objectContaining({ sessionId: 'sess-1', cursor: 'tail' }),
-        { surface: 'cli', authority: 'present_user', defaultSessionId: null },
+        { surface: 'cli', defaultSessionId: null },
       );
       expect(execute).toHaveBeenNthCalledWith(
         2,
         'session.status.get',
         { sessionId: 'sess-1' },
-        { surface: 'cli', authority: 'present_user', defaultSessionId: null },
+        { surface: 'cli', defaultSessionId: null },
       );
       expect(execute).toHaveBeenNthCalledWith(
         5,
         'transcript.unfollow',
         { sessionId: 'sess-1', leaseId: expect.any(String) },
-        { surface: 'cli', authority: 'present_user', defaultSessionId: null },
+        { surface: 'cli', defaultSessionId: null },
       );
       expect(output.logs.map((line) => JSON.parse(line))).toEqual([
         {
@@ -319,7 +319,7 @@ describe('happier session history (action executor)', () => {
         2,
         'transcript.unfollow',
         { sessionId: 'sess-1', leaseId: expect.any(String) },
-        { surface: 'cli', authority: 'present_user', defaultSessionId: null },
+        { surface: 'cli', defaultSessionId: null },
       );
       expect(output.logs.map((line) => JSON.parse(line))).toEqual([{
         v: 1,
@@ -382,7 +382,7 @@ describe('happier session history (action executor)', () => {
           includeRaw: true,
           maxRawPayloadChars: 32768,
         },
-        { surface: 'cli', authority: 'present_user', defaultSessionId: null },
+        { surface: 'cli', defaultSessionId: null },
       );
 
       expect(output.json()).toEqual(expect.objectContaining({
@@ -446,7 +446,7 @@ describe('happier session history (action executor)', () => {
       2,
       'session.transcript.get',
       expect.objectContaining({ sessionId: 'sess-1', limit: 10 }),
-      { surface: 'cli', authority: 'present_user', defaultSessionId: null },
+      { surface: 'cli', defaultSessionId: null },
     );
   });
 
@@ -666,7 +666,7 @@ describe('happier session history (action executor)', () => {
       expect(execute).toHaveBeenLastCalledWith(
         'session.transcript.get',
         expect.objectContaining({ limit: expectedLimit }),
-        { surface: 'cli', authority: 'present_user', defaultSessionId: null },
+        { surface: 'cli', defaultSessionId: null },
       );
     } finally {
       output.restore();
@@ -793,7 +793,7 @@ describe('happier session history (action executor)', () => {
           includeMeta: true,
           includeStructuredPayload: true,
         },
-        { surface: 'cli', authority: 'present_user', defaultSessionId: null },
+        { surface: 'cli', defaultSessionId: null },
       );
 
       expect(output.json()).toEqual(expect.objectContaining({

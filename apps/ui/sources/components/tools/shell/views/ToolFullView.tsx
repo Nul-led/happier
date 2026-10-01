@@ -1,8 +1,8 @@
 import * as React from 'react';
 import { View, ScrollView, Platform, useWindowDimensions } from 'react-native';
-import { ToolCall, Message } from '@/sync/domains/messages/messageTypes';
+import { ToolCall, Message } from "@happier-dev/session-core/messages";
 import { CodeView } from '@/components/ui/media/CodeView';
-import { Metadata } from '@/sync/domains/state/storageTypes';
+import { Metadata } from '@happier-dev/session-core/state';
 import type { DiscardedPendingMessage, PendingMessage } from '@/sync/domains/state/storageTypes';
 import { getToolViewComponent } from '@/components/tools/renderers/core/_registry';
 import { useLayoutMaxWidthStyle } from '@/components/ui/layout/layout';
@@ -10,7 +10,7 @@ import { useLocalSetting } from '@/sync/domains/state/storage';
 import { StyleSheet } from 'react-native-unistyles';
 import { t } from '@/text';
 import { StructuredResultView } from '@/components/tools/renderers/system/StructuredResultView';
-import { normalizeToolCallForRendering } from '@/components/tools/normalization/core/normalizeToolCallForRendering';
+import { normalizeToolCallForRendering } from "@happier-dev/session-core/tools";
 import { PermissionFooter } from '../permissions/PermissionFooter';
 import { useSetting } from '@/sync/domains/state/storage';
 import { useUnistyles } from 'react-native-unistyles';
@@ -22,7 +22,8 @@ import {
     useEnsureSidechainsLoaded,
 } from '@/hooks/session/useEnsureSidechainsLoaded';
 import { ChainTranscriptList } from '@/components/sessions/transcript/ChainTranscriptList';
-import { sync } from '@/sync/sync';
+import { SessionTranscriptSourceProvider, useSessionTranscriptSource } from '@/components/sessions/transcript/source/SessionTranscriptSourceContext';
+import { createAppSidechainHistoryLoader } from '@/components/sessions/transcript/source/appSessionTranscriptSource';
 import { resolveToolTranscriptSidechainId } from './resolveToolTranscriptSidechainId';
 import {
     SidechainHydrationInlineStatus,
@@ -60,7 +61,17 @@ interface ToolFullViewProps {
     pendingRecipient?: PendingMessage['recipient'];
 }
 
-export function ToolFullView({ tool, owningMessageId, sessionId, serverId, metadata, messages = [], jumpChildId, forcePermissionFooterInTranscript = false, interaction, pendingMessages, discardedMessages, pendingRecipient }: ToolFullViewProps) {
+export function ToolFullView(props: ToolFullViewProps) {
+    const source = useSessionTranscriptSource();
+    // Full detail is already the tool's destination. Keep its Session actions,
+    // but do not stack another full-detail destination from nested tool rows.
+    const detailSource = React.useMemo(() => ({ ...source, navigate: null }), [source]);
+    return <SessionTranscriptSourceProvider source={detailSource}><ToolFullViewContent {...props} /></SessionTranscriptSourceProvider>;
+}
+
+function ToolFullViewContent({ tool, owningMessageId, sessionId, serverId, metadata, messages = [], jumpChildId, forcePermissionFooterInTranscript = false, pendingMessages, discardedMessages, pendingRecipient }: ToolFullViewProps) {
+    const source = useSessionTranscriptSource();
+    const interaction = source.useInteraction();
     const { theme } = useUnistyles();
     // This view opens one historical row on its own screen, so the row's own
     // Agent — published by the opener — outranks the Session's current one.
@@ -105,9 +116,10 @@ export function ToolFullView({ tool, owningMessageId, sessionId, serverId, metad
         enabled:
             typeof sessionId === 'string' &&
             sessionId.length > 0 &&
-            isSubAgentTranscriptTool,
+            isSubAgentTranscriptTool && source.loadSidechain !== null,
         sessionId,
         sidechainIds: [transcriptSidechainId],
+        loadSidechain: source.loadSidechain,
     });
     const sidechainHydrationStatus = transcriptSidechainId
         ? sidechainHydration.bySidechainId[transcriptSidechainId]?.status ?? sidechainHydration.status
@@ -160,26 +172,11 @@ export function ToolFullView({ tool, owningMessageId, sessionId, serverId, metad
             ? 'transcript'
             : resolvePermissionPromptSurface(permissionPromptSurface);
 
-    // The sidechain transcript is a transcript surface and must receive the *whole* interaction
-    // contract. Reconstructing it field-by-field silently drops every grant this file does not know
-    // about (`canFork`, `canOpenFiles`, `canPreviewMedia`), and those are read with exact-`true`
-    // checks downstream — so a dropped grant removes a valid affordance. Only tool navigation is
-    // owned here: the full view already *is* the tool detail surface.
-    const transcriptInteraction = React.useMemo<TranscriptInteraction>(() => {
-        return {
-            canSendMessages: true,
-            canApprovePermissions: true,
-            ...interaction,
-            disableToolNavigation: true,
-        };
-    }, [interaction]);
-
-    const loadOlderSidechain = React.useCallback(async () => {
-        if (!normalizedSessionId || !sidechainId) {
-            return { loaded: 0, hasMore: false, status: 'not_ready' as const };
-        }
-        return sync.loadOlderSidechainMessages(normalizedSessionId, sidechainId);
-    }, [normalizedSessionId, sidechainId]);
+    const transcriptInteraction = interaction;
+    const loadOlderSidechain = React.useMemo(
+        () => createAppSidechainHistoryLoader(source.sessionId, sidechainId),
+        [source.sessionId, sidechainId],
+    );
 
     const showPermissionPromptsInTranscript = resolvedPermissionPromptSurface === 'transcript';
 
@@ -195,7 +192,7 @@ export function ToolFullView({ tool, owningMessageId, sessionId, serverId, metad
                 toolName={normalizedToolName}
                 toolInput={toolForRendering.input}
                 metadata={metadata || null}
-                canApprovePermissions={interaction?.canApprovePermissions ?? true}
+                canApprovePermissions={interaction.canApprovePermissions}
                 disabledReason={interaction?.permissionDisabledReason}
             />
         ) : null;

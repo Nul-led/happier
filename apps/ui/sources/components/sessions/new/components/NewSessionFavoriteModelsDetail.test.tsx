@@ -4,7 +4,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ResolvedBackendCatalogEntry } from '@/agents/backendCatalog/getResolvedBackendCatalogEntries';
 import type { AgentId } from '@/agents/catalog/catalog';
-import { createResolvedAgentCatalogEntryFixture, renderScreen } from '@/dev/testkit';
+import { createResolvedAgentCatalogEntryFixture } from '@/dev/testkit/fixtures/agentCatalogFixtures';
+import { renderScreen } from '@/dev/testkit';
 import { createReactNativeWebMock } from '@/dev/testkit/mocks/reactNative';
 import { createTextModuleMock } from '@/dev/testkit/mocks/text';
 import { createUnistylesMock } from '@/dev/testkit/mocks/unistyles';
@@ -109,13 +110,14 @@ vi.mock('@/agents/catalog/catalog', async (importOriginal) => {
     return {
         ...actual,
         AGENT_IDS: ['claude', 'codex'],
-        getAgentCore: (agentId: AgentId | null) => {
+        getAgentCore: (agentId: AgentId) => {
             const core = actual.getAgentCore(agentId);
+            if (!core) return null;
             return {
                 ...core,
                 model: {
                     ...core.model,
-                    dynamicProbe: agentId ? (agentCoreById[agentId]?.dynamicProbe ?? 'dynamic') : 'dynamic',
+                    dynamicProbe: agentCoreById[agentId]?.dynamicProbe ?? 'dynamic',
                 },
             };
         },

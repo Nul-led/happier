@@ -1,9 +1,9 @@
-import { Image, Pressable, View } from 'react-native';
+import { Image, View } from 'react-native';
 
 import { Text } from '@/components/ui/text/Text';
 import { Typography } from '@/constants/Typography';
 import { t } from '@/text';
-import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
+import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
 
 type FileStateProps = {
     theme: any;
@@ -15,92 +15,27 @@ function getBasename(path: string): string {
     return last || path;
 }
 
-export function FileLoadingState({ theme, filePath }: FileStateProps & { filePath: string }) {
-    const fileName = getBasename(filePath);
+export function FileLoadingState({ filePath }: { filePath: string }) {
     return (
-        <View
-            style={{
-                flex: 1,
-                backgroundColor: theme.colors.surface.base,
-                justifyContent: 'center',
-                alignItems: 'center',
-            }}
-        >
-            <ActivitySpinner size="small" color={theme.colors.text.secondary} />
-            <Text
-                style={{
-                    marginTop: 16,
-                    fontSize: 16,
-                    color: theme.colors.text.secondary,
-                    ...Typography.default(),
-                }}
-            >
-                {t('files.loadingFile', { fileName })}
-            </Text>
-        </View>
+        <SurfaceStateCard
+            testID="file-details-loading"
+            kind="loading"
+            title={t('surfaceState.opening', { name: getBasename(filePath) })}
+        />
     );
 }
 
-export function FileErrorState({ theme, filePath, error, onRetry }: FileStateProps & { filePath: string; error: string; onRetry: () => void }) {
+/** A file that could not be read: what failed, the reason (already human copy), and one retry. */
+export function FileErrorState({ filePath, error, onRetry }: { filePath: string; error?: string | null; onRetry: () => void }) {
     return (
-        <View
-            style={{
-                flex: 1,
-                backgroundColor: theme.colors.surface.base,
-                justifyContent: 'center',
-                alignItems: 'center',
-                padding: 20,
-            }}
-        >
-            <Text
-                style={{
-                    fontSize: 18,
-                    color: theme.colors.state.danger.foreground,
-                    marginBottom: 8,
-                    ...Typography.default('semiBold'),
-                }}
-            >
-                {t('common.error')}
-            </Text>
-            <Text
-                style={{
-                    fontSize: 16,
-                    color: theme.colors.text.secondary,
-                    textAlign: 'center',
-                    ...Typography.default(),
-                }}
-            >
-                {error}
-            </Text>
-            <Text
-                style={{
-                    fontSize: 14,
-                    color: theme.colors.text.secondary,
-                    textAlign: 'center',
-                    marginTop: 8,
-                    ...Typography.default(),
-                }}
-            >
-                {filePath}
-            </Text>
-            <Pressable
-                accessibilityRole="button"
-                onPress={onRetry}
-                style={{
-                    marginTop: 16,
-                    paddingHorizontal: 14,
-                    paddingVertical: 10,
-                    borderRadius: 10,
-                    borderWidth: 1,
-                    borderColor: theme.colors.border.default,
-                    backgroundColor: theme.colors.surface.inset ?? theme.colors.surface.base,
-                }}
-            >
-                <Text style={{ fontSize: 14, color: theme.colors.text.primary, ...Typography.default('semiBold') }}>
-                    {t('common.retry')}
-                </Text>
-            </Pressable>
-        </View>
+        <SurfaceStateCard
+            testID="file-details-error"
+            kind="error"
+            title={t('surfaceState.couldNotOpen', { name: getBasename(filePath) })}
+            reason={error ?? undefined}
+            detail={filePath}
+            action={{ label: t('surfaceState.tryAgain'), onPress: onRetry }}
+        />
     );
 }
 

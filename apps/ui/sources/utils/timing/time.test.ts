@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { HappyError } from '@/utils/errors/errors';
+import { ServerFetchConnectivityTimeoutError } from '@/sync/http/client';
 import { AsyncTimeoutError, backoff, createBackoff, linearBackoffDelay, withTimeout } from './time';
 
 describe('linearBackoffDelay', () => {
@@ -80,6 +81,14 @@ describe('withTimeout', () => {
 });
 
 describe('createBackoff', () => {
+    it('retries a transient connectivity timeout through the shared policy', async () => {
+        const retry = createBackoff({ minDelay: 0, maxDelay: 0, maxFailureCount: 2 });
+        const callback = vi.fn()
+            .mockRejectedValueOnce(new ServerFetchConnectivityTimeoutError())
+            .mockResolvedValueOnce('recovered');
+        await expect(retry(callback)).resolves.toBe('recovered');
+        expect(callback).toHaveBeenCalledTimes(2);
+    });
     it('does not console.warn by default when using the exported backoff', async () => {
         vi.useFakeTimers();
         const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});

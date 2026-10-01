@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import fastify from 'fastify';
 import {
     PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2,
+    IrohMachineHandshakeV1Schema,
     FeaturesResponseSchema,
     ProviderConnectionIdSchema,
     V2SessionByIdResponseSchema,
@@ -20,6 +21,7 @@ const usageLimitRecoveryMutationCustodyMocks = vi.hoisted(() => {
         })),
         close: vi.fn(async () => undefined),
         stage: vi.fn(async () => undefined),
+        stageWorkState: vi.fn(async () => undefined),
     };
     return {
         ...handle,
@@ -44,6 +46,9 @@ vi.mock('@/plugins/runtime/reload/runtimeLease', () => ({
 }));
 
 import type { DaemonState, Machine } from '@/api/types';
+import { ApiMachineClient } from '@/api/apiMachine';
+import { createLocalServicePreviewRoutes } from '@/daemon/local/services/preview/routes';
+import { createLocalServicePreviewRegistry } from '@/daemon/local/services/preview/registry';
 import { createPromptAssetAdapterRegistry } from '@/prompts/assets/createPromptAssetAdapterRegistry';
 import { createPromptRegistryAdapterRegistry } from '@/prompts/registries/createPromptRegistryAdapterRegistry';
 import { DEFAULT_MEMORY_SETTINGS } from '@/settings/memorySettings';
@@ -237,6 +242,10 @@ describe('bootstrapMachineSyncRuntime', () => {
             }),
             onAccountSettingsVersionHint: vi.fn(() => () => {}),
             onPendingSessionActivationHint: vi.fn(() => () => {}),
+            onSessionDeletedChange: vi.fn(() => () => {}),
+            onSessionAccessRevoked: vi.fn(() => () => {}),
+            onSessionAccessReset: vi.fn(() => () => {}),
+            onSessionArchivedStateChange: vi.fn(() => () => {}),
             onConnectionStateChange: vi.fn(() => () => {}),
             connect: vi.fn(),
             updateDaemonState: vi.fn(async () => {}),
@@ -293,7 +302,7 @@ describe('bootstrapMachineSyncRuntime', () => {
             startAutomationWorkerForMachine,
             startMemoryWorkerForMachine,
             spawnSession: vi.fn(async (): Promise<SpawnSessionResult> => ({ type: 'success', sessionId: 'sess-1' })),
-            stopSession: vi.fn(async () => true),
+            stopSession: vi.fn(async () => ({ status: 'stopped' as const })),
             isSessionAlreadyRunning: vi.fn(async () => false),
             loadLocalSessionMetadataForHandoff: vi.fn(async () => null),
             beforeShutdown: vi.fn(async () => {}),
@@ -529,7 +538,7 @@ describe('bootstrapMachineSyncRuntime', () => {
         expect(automationWorker.handleServerUpdate).toHaveBeenCalledTimes(2);
     });
 
-    it('does not start automation or memory workers when machine sync is disabled', async () => {
+    it('does not start machine-bound workers without a machine client', async () => {
         const startAutomationWorkerForMachine = vi.fn((): AutomationWorkerHandle => ({
             stop: vi.fn(),
             refreshAssignments: vi.fn(async () => {}),
@@ -588,7 +597,7 @@ describe('bootstrapMachineSyncRuntime', () => {
             startAutomationWorkerForMachine,
             startMemoryWorkerForMachine,
             spawnSession: vi.fn(async (): Promise<SpawnSessionResult> => ({ type: 'success', sessionId: 'sess-1' })),
-            stopSession: vi.fn(async () => true),
+            stopSession: vi.fn(async () => ({ status: 'stopped' as const })),
             isSessionAlreadyRunning: vi.fn(async () => false),
             loadLocalSessionMetadataForHandoff: vi.fn(async () => null),
             beforeShutdown: vi.fn(async () => {}),
@@ -642,11 +651,17 @@ describe('bootstrapMachineSyncRuntime', () => {
             })),
             close: vi.fn(async () => {}),
             stage: vi.fn(async () => {}),
+            stageWorkState: vi.fn(async () => {}),
+            stageTranscriptMessage: async () => { throw new Error('Unexpected recording attachment in this fixture'); },
             stageTranscriptEvent: vi.fn(async () => ({ persisted: true as const, delivered: true })),
         };
         const memoryFailure = new Error('memory-bootstrap-failure');
         const fakeConnectedApiMachine = {
             shutdown: vi.fn(async () => {}),
+            // Machine socket event subscriptions are a genuine transport boundary.
+            onSessionDeletedChange: vi.fn(() => () => {}),
+            onSessionAccessReset: vi.fn(() => () => {}),
+            onConnectionStateChange: vi.fn(() => () => {}),
         };
         const machine: Machine = {
             id: 'machine-aborted-bootstrap',
@@ -677,7 +692,7 @@ describe('bootstrapMachineSyncRuntime', () => {
             }),
             startVoiceInferenceWorkerForMachine: vi.fn(async (): Promise<VoiceInferenceWorkerHandle | null> => null),
             spawnSession: vi.fn(async (): Promise<SpawnSessionResult> => ({ type: 'success', sessionId: 'sess-1' })),
-            stopSession: vi.fn(async () => true),
+            stopSession: vi.fn(async () => ({ status: 'stopped' as const })),
             isSessionAlreadyRunning: vi.fn(async () => false),
             loadLocalSessionMetadataForHandoff: vi.fn(async () => null),
             beforeShutdown: vi.fn(async () => {}),
@@ -729,7 +744,7 @@ describe('bootstrapMachineSyncRuntime', () => {
             startMemoryWorkerForMachine: vi.fn(async (): Promise<MemoryWorkerHandle | null> => null),
             startVoiceInferenceWorkerForMachine: vi.fn(async (): Promise<VoiceInferenceWorkerHandle | null> => null),
             spawnSession: vi.fn(async (): Promise<SpawnSessionResult> => ({ type: 'success', sessionId: 'sess-1' })),
-            stopSession: vi.fn(async () => true),
+            stopSession: vi.fn(async () => ({ status: 'stopped' as const })),
             isSessionAlreadyRunning: vi.fn(async () => false),
             loadLocalSessionMetadataForHandoff: vi.fn(async () => null),
             beforeShutdown: vi.fn(async () => {}),
@@ -767,6 +782,10 @@ describe('bootstrapMachineSyncRuntime', () => {
             onConnectionStateChange: vi.fn(() => () => {}),
             onAccountSettingsVersionHint: vi.fn(() => () => {}),
             onPendingSessionActivationHint: vi.fn(() => () => {}),
+            onSessionDeletedChange: vi.fn(() => () => {}),
+            onSessionAccessRevoked: vi.fn(() => () => {}),
+            onSessionAccessReset: vi.fn(() => () => {}),
+            onSessionArchivedStateChange: vi.fn(() => () => {}),
             connect: vi.fn(),
             updateDaemonState: vi.fn(async () => {}),
             updateMachineMetadata: vi.fn(async () => {}),
@@ -812,7 +831,7 @@ describe('bootstrapMachineSyncRuntime', () => {
             startMemoryWorkerForMachine: vi.fn(async (): Promise<MemoryWorkerHandle | null> => null),
             startVoiceInferenceWorkerForMachine: vi.fn(async (): Promise<VoiceInferenceWorkerHandle | null> => null),
             spawnSession: vi.fn(async (): Promise<SpawnSessionResult> => ({ type: 'success', sessionId: 'sess-1' })),
-            stopSession: vi.fn(async () => true),
+            stopSession: vi.fn(async () => ({ status: 'stopped' as const })),
             isSessionAlreadyRunning: vi.fn(async () => false),
             loadLocalSessionMetadataForHandoff: vi.fn(async () => null),
             beforeShutdown: vi.fn(async () => {}),
@@ -894,6 +913,10 @@ describe('bootstrapMachineSyncRuntime', () => {
             onUpdate: vi.fn(() => () => {}),
             onAccountSettingsVersionHint: vi.fn(() => () => {}),
             onPendingSessionActivationHint: vi.fn(() => () => {}),
+            onSessionDeletedChange: vi.fn(() => () => {}),
+            onSessionAccessRevoked: vi.fn(() => () => {}),
+            onSessionAccessReset: vi.fn(() => () => {}),
+            onSessionArchivedStateChange: vi.fn(() => () => {}),
             onConnectionStateChange: vi.fn((listener: (state: ManagedConnectionState) => void) => {
                 connectionStateListener = listener;
                 return () => {};
@@ -945,7 +968,7 @@ describe('bootstrapMachineSyncRuntime', () => {
             startAutomationWorkerForMachine: vi.fn(() => automationWorker),
             startMemoryWorkerForMachine: vi.fn(async (): Promise<MemoryWorkerHandle | null> => null),
             spawnSession: vi.fn(async (): Promise<SpawnSessionResult> => ({ type: 'success', sessionId: 'sess-1' })),
-            stopSession: vi.fn(async () => true),
+            stopSession: vi.fn(async () => ({ status: 'stopped' as const })),
             isSessionAlreadyRunning: vi.fn(async () => false),
             loadLocalSessionMetadataForHandoff: vi.fn(async () => null),
             beforeShutdown: vi.fn(async () => {}),
@@ -1014,13 +1037,13 @@ describe('bootstrapMachineSyncRuntime', () => {
         const endpoint: PeerLoopbackEndpointCandidateV1 = {
             v: 1,
             routeKind: 'loopback_direct',
-            url: 'http://127.0.0.1:46011/peer-mediation/v1/probe',
+            url: 'http://127.0.0.1:46011',
             endpointFingerprint: 'endpoint_rpc_1',
             expiresAt: 602_000,
         };
         const startPeerMediationLoopbackServer = vi.fn(async () => ({
             app: loopbackApp,
-            url: 'http://127.0.0.1:46011/peer-mediation/v1/probe',
+            url: 'http://127.0.0.1:46011',
             endpoint,
             stop: stopPeerMediationLoopbackServer,
         }));
@@ -1115,7 +1138,7 @@ describe('bootstrapMachineSyncRuntime', () => {
             })),
             startMemoryWorkerForMachine: vi.fn(async (): Promise<MemoryWorkerHandle | null> => null),
             spawnSession: vi.fn(async (): Promise<SpawnSessionResult> => ({ type: 'success', sessionId: 'sess-1' })),
-            stopSession: vi.fn(async () => true),
+            stopSession: vi.fn(async () => ({ status: 'stopped' as const })),
             isSessionAlreadyRunning: vi.fn(async () => false),
             loadLocalSessionMetadataForHandoff: vi.fn(async () => null),
             beforeShutdown: vi.fn(async () => {}),
@@ -1244,6 +1267,10 @@ describe('bootstrapMachineSyncRuntime', () => {
             }),
             onAccountSettingsVersionHint: vi.fn(() => () => {}),
             onPendingSessionActivationHint: vi.fn(() => () => {}),
+            onSessionDeletedChange: vi.fn(() => () => {}),
+            onSessionAccessRevoked: vi.fn(() => () => {}),
+            onSessionAccessReset: vi.fn(() => () => {}),
+            onSessionArchivedStateChange: vi.fn(() => () => {}),
             connect: vi.fn(),
             updateDaemonState: vi.fn(async () => {}),
             updateMachineMetadata: vi.fn(async () => {}),
@@ -1301,7 +1328,7 @@ describe('bootstrapMachineSyncRuntime', () => {
             })),
             startMemoryWorkerForMachine: vi.fn(async (): Promise<MemoryWorkerHandle | null> => null),
             spawnSession,
-            stopSession: vi.fn(async () => true),
+            stopSession: vi.fn(async () => ({ status: 'stopped' as const })),
             awaitAgentSessionOpen,
             isSessionAlreadyRunning: vi.fn(async () => false),
             loadLocalSessionMetadataForHandoff: vi.fn(async () => null),
@@ -1469,7 +1496,7 @@ describe('bootstrapMachineSyncRuntime', () => {
                 v: 1,
                 updatedAt: 1020,
                 ref: {
-                    agentTargetKey: 'backend:claude',
+                    agentTargetKey: 'agent:happier.agent.claude/claude',
                     providerConnectionId: null,
                     modelId: 'claude-opus-4-7',
                 },
@@ -1552,7 +1579,7 @@ describe('bootstrapMachineSyncRuntime', () => {
             })),
             startMemoryWorkerForMachine: vi.fn(async (): Promise<MemoryWorkerHandle | null> => null),
             spawnSession: vi.fn(async (): Promise<SpawnSessionResult> => ({ type: 'success', sessionId: 'sess-1' })),
-            stopSession: vi.fn(async () => true),
+            stopSession: vi.fn(async () => ({ status: 'stopped' as const })),
             isSessionAlreadyRunning: vi.fn(async () => false),
             loadLocalSessionMetadataForHandoff: vi.fn(async () => null),
             beforeShutdown: vi.fn(async () => {}),
@@ -1738,7 +1765,7 @@ describe('bootstrapMachineSyncRuntime', () => {
             })),
             startMemoryWorkerForMachine: vi.fn(async (): Promise<MemoryWorkerHandle | null> => null),
             spawnSession: vi.fn(async (): Promise<SpawnSessionResult> => ({ type: 'success', sessionId: 'sess-1' })),
-            stopSession: vi.fn(async () => true),
+            stopSession: vi.fn(async () => ({ status: 'stopped' as const })),
             isSessionAlreadyRunning: vi.fn(async () => false),
             loadLocalSessionMetadataForHandoff: vi.fn(async () => null),
             beforeShutdown: vi.fn(async () => {}),
@@ -1859,7 +1886,7 @@ describe('bootstrapMachineSyncRuntime', () => {
         const endpoint: PeerLoopbackEndpointCandidateV1 = {
             v: 1,
             routeKind: 'loopback_direct',
-            url: 'http://127.0.0.1:46012/peer-mediation/v1/probe',
+            url: 'http://127.0.0.1:46012',
             endpointFingerprint: 'endpoint_tunnel_1',
             expiresAt: 602_000,
         };
@@ -1869,7 +1896,7 @@ describe('bootstrapMachineSyncRuntime', () => {
             lifecycleOrder.push('loopback:start');
             return {
                 app: loopbackApp,
-                url: 'http://127.0.0.1:46012/peer-mediation/v1/probe',
+                url: 'http://127.0.0.1:46012',
                 endpoint,
                 stop: stopPeerMediationLoopbackServer,
             };
@@ -1938,6 +1965,18 @@ describe('bootstrapMachineSyncRuntime', () => {
             daemonState,
             daemonStateVersion: 1,
         };
+        // Keep the capability fold/publication real; avoid unrelated constructor
+        // RPC registration while the transport fixture controls bootstrap lifecycle.
+        Object.setPrototypeOf(fakeConnectedApiMachine, ApiMachineClient.prototype);
+        Reflect.set(fakeConnectedApiMachine, 'machine', machine);
+        Reflect.set(fakeConnectedApiMachine, 'lifecycleDependencies', {});
+        const readCapabilities = () => (connectedApiMachine as unknown as {
+            resolveCurrentMachineOperationProtocolCapabilitiesForPublication(): Promise<Record<string, unknown> | null>;
+        }).resolveCurrentMachineOperationProtocolCapabilitiesForPublication();
+        const previewRoutes = createLocalServicePreviewRoutes({
+            machineId: machine.id,
+            registry: createLocalServicePreviewRegistry(),
+        });
         const currentAuthority: { snapshot: CliServerFeaturesSnapshot } = {
             snapshot: { status: 'error', reason: 'network' },
         };
@@ -1969,13 +2008,14 @@ describe('bootstrapMachineSyncRuntime', () => {
             })),
             startMemoryWorkerForMachine: vi.fn(async (): Promise<MemoryWorkerHandle | null> => null),
             spawnSession: vi.fn(async (): Promise<SpawnSessionResult> => ({ type: 'success', sessionId: 'sess-1' })),
-            stopSession: vi.fn(async () => true),
+            stopSession: vi.fn(async () => ({ status: 'stopped' as const })),
             isSessionAlreadyRunning: vi.fn(async () => false),
             loadLocalSessionMetadataForHandoff: vi.fn(async () => null),
             beforeShutdown: vi.fn(async () => {}),
             requestShutdown: vi.fn(),
             directPeerServerLifecycle: null,
             machineIrohRuntime,
+            acquireLocalServicePreviewApplication: previewRoutes.acquireNativeApplication,
             acquireWorkspaceSyncMachineIngress,
             directTransferPromptAssetAdapterRegistry: createPromptAssetAdapterRegistry(),
             directTransferPromptRegistryRegistry: createPromptRegistryAdapterRegistry(),
@@ -2021,8 +2061,32 @@ describe('bootstrapMachineSyncRuntime', () => {
             rpc: expect.any(Object),
         }));
         expect(lifecycleOrder).toEqual(['loopback:start', 'acceptor:start']);
+        await expect(readCapabilities()).resolves.toEqual({
+            localServicePreviewNativeAccess: { protocolVersions: [1] },
+        });
         const admission = (loopbackStartOptions as StartPeerMediationLoopbackServerOptions | null)?.irohMachineAdmission;
         if (!admission) throw new Error('expected Iroh machine admission');
+        // Admission has already authenticated this strict handshake. Its signed
+        // application port scope must not choose the outer carrier's listener.
+        const tcpHandshake = IrohMachineHandshakeV1Schema.parse({
+            v: 1, accountId: 'account_1', flow: 'tcp_tunnel',
+            initiator: { kind: 'account_client', endpointId: 'b'.repeat(64) },
+            target: { machineId: 'machine-1', endpointId: 'a'.repeat(64) },
+            grant: {
+                payload: {
+                    v: 2, grantId: 'tcp-fixed-target', accountId: 'account_1', machineId: 'machine-1', flowKind: 'tcp_tunnel', routeKind: 'iroh_peer',
+                    scope: { kind: 'tcp_tunnel', tunnelId: 'tcp-1', allowedPorts: [3000] },
+                    iat: 1000, exp: 301000, aud: 'happier-daemon-route-grant', endpointFingerprint: 'a'.repeat(64),
+                    iroh: { initiator: { kind: 'account_client', endpointId: 'b'.repeat(64) }, target: { machineId: 'machine-1', endpointId: 'a'.repeat(64) }, operationKind: 'tcp_tunnel' },
+                    proofKind: 'ephemeral_ed25519', ephemeralPublicKeyBase64Url: 'A'.repeat(43),
+                },
+                signature: { keyId: 'key-1', alg: 'Ed25519', valueBase64Url: 'A'.repeat(86) },
+            },
+            proof: { v: 2, kind: 'ephemeral_ed25519', signedGrantDigestBase64Url: 'A'.repeat(43), nonceBase64Url: 'A'.repeat(22), signatureBase64Url: 'A'.repeat(86) },
+        });
+        await expect(admission.resolveApplicationTarget({ handshake: tcpHandshake, authenticatedRemoteEndpointId: 'b'.repeat(64), signal: new AbortController().signal }))
+            .resolves.toEqual({ port: 46012 });
+        expect(admission.allowedFlows).toContain('tcp_tunnel');
         expect((loopbackStartOptions as StartPeerMediationLoopbackServerOptions | null)?.resolveTrustRoots).toBe(resolvePeerMediationTrustRoots);
         expect(admission.resolveTrustRoots?.()).toEqual([]);
         const currentReadyWithoutRoots = createPeerMediationServerFeatures();
@@ -2096,6 +2160,7 @@ describe('bootstrapMachineSyncRuntime', () => {
         });
 
         await result.stopMachineIrohAcceptor();
+        await expect(readCapabilities()).resolves.toBeNull();
         await result.stopPeerMediationLoopbackServer();
         expect(ingressCloses).toHaveLength(2);
         for (const close of ingressCloses) expect(close).toHaveBeenCalledOnce();
@@ -2110,22 +2175,25 @@ describe('bootstrapMachineSyncRuntime', () => {
         expect(stopPeerMediationLoopbackServer).toHaveBeenCalledOnce();
     });
 
-    it('keeps peer mediation available when the optional Iroh acceptor fails to start', async () => {
+    it.each([true, false])('withdraws a stale Iroh endpoint when peer mediation loopback starts: %s', async (loopbackStarts) => {
         const loopbackApp = fastify();
         const stopPeerMediationLoopbackServer = vi.fn(async () => {});
         const endpoint: PeerLoopbackEndpointCandidateV1 = {
             v: 1,
             routeKind: 'loopback_direct',
-            url: 'http://127.0.0.1:46012/peer-mediation/v1/probe',
+            url: 'http://127.0.0.1:46012',
             endpointFingerprint: 'endpoint_standard_1',
             expiresAt: 602_000,
         };
-        const startPeerMediationLoopbackServer = vi.fn(async () => ({
-            app: loopbackApp,
-            url: endpoint.url,
-            endpoint,
-            stop: stopPeerMediationLoopbackServer,
-        }));
+        const startPeerMediationLoopbackServer = vi.fn(async () => {
+            if (!loopbackStarts) throw new Error('loopback unavailable');
+            return {
+                app: loopbackApp,
+                url: endpoint.url,
+                endpoint,
+                stop: stopPeerMediationLoopbackServer,
+            };
+        });
         const machineIrohRuntime = {
             available: true as const,
             endpoint: { endpointId: 'a'.repeat(64), directAddresses: ['127.0.0.1:7777'] },
@@ -2183,6 +2251,14 @@ describe('bootstrapMachineSyncRuntime', () => {
             daemonStateVersion: 1,
         };
 
+        const createConnectedApiMachine = vi.fn((machineForConnection: Machine) => {
+            // Model ApiMachineClient discarding an endpoint before connect.
+            machineForConnection.daemonState = {
+                ...machineForConnection.daemonState!,
+                peerMediation: { ...machineForConnection.daemonState?.peerMediation, iroh: undefined },
+            };
+            return connectedApiMachine;
+        });
         const result = await bootstrapMachineSyncRuntime({
             cliVersion: '0.0.0-test',
             machineId: 'machine-1',
@@ -2193,7 +2269,7 @@ describe('bootstrapMachineSyncRuntime', () => {
             filesystemAccessPolicy: { kind: 'osUser' },
             takeoverRequested: false,
             isShuttingDown: () => false,
-            createConnectedApiMachine: vi.fn(() => connectedApiMachine),
+            createConnectedApiMachine,
             attachTransferRuntimeStatePublisher: vi.fn(async () => {}),
             startAutomationWorkerForMachine: vi.fn((): AutomationWorkerHandle => ({
                 stop: vi.fn(),
@@ -2204,13 +2280,13 @@ describe('bootstrapMachineSyncRuntime', () => {
             })),
             startMemoryWorkerForMachine: vi.fn(async (): Promise<MemoryWorkerHandle | null> => null),
             spawnSession: vi.fn(async (): Promise<SpawnSessionResult> => ({ type: 'success', sessionId: 'sess-1' })),
-            stopSession: vi.fn(async () => true),
+            stopSession: vi.fn(async () => ({ status: 'stopped' as const })),
             isSessionAlreadyRunning: vi.fn(async () => false),
             loadLocalSessionMetadataForHandoff: vi.fn(async () => null),
             beforeShutdown: vi.fn(async () => {}),
             requestShutdown: vi.fn(),
             directPeerServerLifecycle: null,
-            machineIrohRuntime,
+            machineIrohRuntime: loopbackStarts ? machineIrohRuntime : undefined,
             directTransferPromptAssetAdapterRegistry: createPromptAssetAdapterRegistry(),
             directTransferPromptRegistryRegistry: createPromptRegistryAdapterRegistry(),
             connectedServiceRefreshLoopHandle: null,
@@ -2233,21 +2309,345 @@ describe('bootstrapMachineSyncRuntime', () => {
         if (!connectOptions?.onConnect) throw new Error('expected machine connect options');
         await connectOptions.onConnect();
 
-        expect(machineIrohRuntime.startAttemptAcceptor).toHaveBeenCalledWith({ admissionPort: 46012 });
+        if (loopbackStarts) {
+            expect(machineIrohRuntime.startAttemptAcceptor).toHaveBeenCalledWith({ admissionPort: 46012 });
+        } else {
+            expect(machineIrohRuntime.startAttemptAcceptor).not.toHaveBeenCalled();
+        }
         expect(stopPeerMediationLoopbackServer).not.toHaveBeenCalled();
-        expect(daemonState).toMatchObject({
-            status: 'running',
-            peerMediation: {
-                loopback: {
-                    endpoint: {
-                        endpointFingerprint: 'endpoint_standard_1',
-                    },
-                },
-            },
-        });
+        expect(daemonState?.status).toBe('running');
+        if (loopbackStarts) {
+            expect(daemonState?.peerMediation?.loopback?.endpoint?.endpointFingerprint).toBe('endpoint_standard_1');
+        }
         expect(daemonState?.peerMediation?.iroh).toBeUndefined();
 
         await result.stopPeerMediationLoopbackServer();
-        expect(stopPeerMediationLoopbackServer).toHaveBeenCalledOnce();
+        expect(stopPeerMediationLoopbackServer).toHaveBeenCalledTimes(loopbackStarts ? 1 : 0);
+    });
+
+    it('keeps a metadata publish requested while a failing one is in flight, and runs it after the failure', async () => {
+        const connectOptionsRef: { current: { onConnect?: () => Promise<void> | void } | null } = { current: null };
+        let storedMetadata: Record<string, unknown> | null = null;
+        let metadataCalls = 0;
+        const updateMachineMetadata = vi.fn(async (handler: (metadata: unknown) => Record<string, unknown>) => {
+            metadataCalls += 1;
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            // The machine socket gave up (backoff exhausted) on the first publish only.
+            if (metadataCalls === 1) throw new Error('Machine socket is not connected');
+            storedMetadata = handler(storedMetadata);
+            return 'published' as const;
+        });
+        const fakeConnectedApiMachine = {
+            setRPCHandlers: vi.fn(emptyMachineRpcLifecycleRegistration),
+            registerLiveStreamRelayRoutes: vi.fn(),
+            onUpdate: vi.fn(() => () => {}),
+            onAccountSettingsVersionHint: vi.fn(() => () => {}),
+            onPendingSessionActivationHint: vi.fn(() => () => {}),
+            onSessionDeletedChange: vi.fn(() => () => {}),
+            onSessionAccessRevoked: vi.fn(() => () => {}),
+            onSessionAccessReset: vi.fn(() => () => {}),
+            onSessionArchivedStateChange: vi.fn(() => () => {}),
+            onConnectionStateChange: vi.fn(() => () => {}),
+            connect: vi.fn((options: { onConnect?: () => Promise<void> | void }) => {
+                connectOptionsRef.current = options;
+            }),
+            updateDaemonState: vi.fn(async () => 'published' as const),
+            updateMachineMetadata,
+            emitExternalSessionTranscriptUpdate: vi.fn(),
+            onMachineTransferEnvelope: vi.fn(() => () => {}),
+            sendMachineTransferEnvelope: vi.fn(),
+            onTransferRelayV2Envelope: vi.fn(() => () => {}),
+            sendTransferRelayV2Envelope: vi.fn(),
+            onMachineLiveStreamRelayEnvelope: vi.fn(() => () => {}),
+            sendMachineLiveStreamRelayEnvelope: vi.fn(),
+            getPeerMediationMachineRpcHandlerManager: vi.fn(() => ({
+                invokeLocal: async () => ({ ok: true }),
+            })),
+        };
+        // Test harness boundary: bootstrap accepts the concrete ApiMachineClient class, so this fixture supplies only methods the bootstrap path calls.
+        const connectedApiMachine = fakeConnectedApiMachine as unknown as ConnectedApiMachineForBootstrap;
+        const facts = {
+            currentVersion: '0.3.1',
+            latestVersion: '0.3.2',
+            channel: 'stable' as const,
+            installSource: 'managed' as const,
+            updateCommand: 'happier self update',
+            canUpdateRemotely: true,
+            lastUpdate: null as null | { targetVersion: string | null; outcome: 'failed'; at: number; message: string | null },
+        };
+        const recordChanged: { notify: (() => void) | null } = { notify: null };
+        const stopWatching = vi.fn();
+        const machine: Machine = {
+            id: 'machine-k5',
+            encryptionKey: new Uint8Array(32).fill(7),
+            encryptionVariant: 'legacy',
+            metadata: null,
+            metadataVersion: 0,
+            daemonState: null,
+            daemonStateVersion: 0,
+        };
+
+        const result = await bootstrapMachineSyncRuntime({
+            cliVersion: '0.3.1',
+            machineId: machine.id,
+            machine,
+            preferredHost: 'host.local',
+            happyHomeDir: '/tmp/happy-home',
+            happyLibDir: '/tmp/happy-lib',
+            readCliUpdateFacts: () => ({ ...facts }),
+            watchCliUpdateRecord: (onChange) => {
+                recordChanged.notify = onChange;
+                return stopWatching;
+            },
+            filesystemAccessPolicy: { kind: 'osUser' },
+            takeoverRequested: false,
+            isShuttingDown: () => false,
+            createConnectedApiMachine: vi.fn(() => connectedApiMachine),
+            attachTransferRuntimeStatePublisher: vi.fn(async () => {}),
+            startAutomationWorkerForMachine: vi.fn(() => null),
+            startMemoryWorkerForMachine: vi.fn(async (): Promise<MemoryWorkerHandle | null> => null),
+            spawnSession: vi.fn(async (): Promise<SpawnSessionResult> => ({ type: 'success', sessionId: 'sess-1' })),
+            stopSession: vi.fn(async () => ({ status: 'stopped' as const })),
+            isSessionAlreadyRunning: vi.fn(async () => false),
+            loadLocalSessionMetadataForHandoff: vi.fn(async () => null),
+            beforeShutdown: vi.fn(async () => {}),
+            requestShutdown: vi.fn(),
+            directPeerServerLifecycle: null,
+            directTransferPromptAssetAdapterRegistry: createPromptAssetAdapterRegistry(),
+            directTransferPromptRegistryRegistry: createPromptRegistryAdapterRegistry(),
+            connectedServiceRefreshLoopHandle: null,
+            connectedServiceQuotasLoopHandle: null,
+            daemonServerWorkScheduler: {} as never,
+            startVoiceInferenceWorkerForMachine: vi.fn(async (): Promise<VoiceInferenceWorkerHandle | null> => null),
+        });
+        const onConnect = connectOptionsRef.current?.onConnect;
+        if (!onConnect) throw new Error('expected machine connect options');
+        // A reconnect arrives while the first publish is still failing.
+        await Promise.allSettled([onConnect(), onConnect()]);
+        expect(updateMachineMetadata).toHaveBeenCalledTimes(2);
+        expect(storedMetadata).toMatchObject({ cliUpdate: facts });
+        void result;
+    });
+
+    it('publishes a result recorded while a publication is in flight once that publication settles', async () => {
+        const connectOptionsRef: { current: { onConnect?: () => Promise<void> | void } | null } = { current: null };
+        let storedMetadata: Record<string, unknown> | null = null;
+        const heldPublications: Array<() => void> = [];
+        const updateMachineMetadata = vi.fn(async (handler: (metadata: unknown) => Record<string, unknown>) => {
+            const next = handler(storedMetadata);
+            // Deliberately held until the test releases it; it then succeeds.
+            await new Promise<void>((release) => { heldPublications.push(release); });
+            storedMetadata = next;
+            return 'published' as const;
+        });
+        const fakeConnectedApiMachine = {
+            setRPCHandlers: vi.fn(emptyMachineRpcLifecycleRegistration),
+            registerLiveStreamRelayRoutes: vi.fn(),
+            onUpdate: vi.fn(() => () => {}),
+            onAccountSettingsVersionHint: vi.fn(() => () => {}),
+            onPendingSessionActivationHint: vi.fn(() => () => {}),
+            onSessionDeletedChange: vi.fn(() => () => {}),
+            onSessionAccessRevoked: vi.fn(() => () => {}),
+            onSessionAccessReset: vi.fn(() => () => {}),
+            onSessionArchivedStateChange: vi.fn(() => () => {}),
+            onConnectionStateChange: vi.fn(() => () => {}),
+            connect: vi.fn((options: { onConnect?: () => Promise<void> | void }) => {
+                connectOptionsRef.current = options;
+            }),
+            updateDaemonState: vi.fn(async () => 'published' as const),
+            updateMachineMetadata,
+            emitExternalSessionTranscriptUpdate: vi.fn(),
+            onMachineTransferEnvelope: vi.fn(() => () => {}),
+            sendMachineTransferEnvelope: vi.fn(),
+            onTransferRelayV2Envelope: vi.fn(() => () => {}),
+            sendTransferRelayV2Envelope: vi.fn(),
+            onMachineLiveStreamRelayEnvelope: vi.fn(() => () => {}),
+            sendMachineLiveStreamRelayEnvelope: vi.fn(),
+            getPeerMediationMachineRpcHandlerManager: vi.fn(() => ({
+                invokeLocal: async () => ({ ok: true }),
+            })),
+        };
+        // Test harness boundary: bootstrap accepts the concrete ApiMachineClient class, so this fixture supplies only methods the bootstrap path calls.
+        const connectedApiMachine = fakeConnectedApiMachine as unknown as ConnectedApiMachineForBootstrap;
+        const facts = {
+            currentVersion: '0.3.1',
+            latestVersion: '0.3.2',
+            channel: 'stable' as const,
+            installSource: 'managed' as const,
+            updateCommand: 'happier self update',
+            canUpdateRemotely: true,
+            lastUpdate: null as null | { targetVersion: string | null; outcome: 'failed'; at: number; message: string | null },
+        };
+        const recordChanged: { notify: (() => void) | null } = { notify: null };
+        const stopWatching = vi.fn();
+        const machine: Machine = {
+            id: 'machine-k5',
+            encryptionKey: new Uint8Array(32).fill(7),
+            encryptionVariant: 'legacy',
+            metadata: null,
+            metadataVersion: 0,
+            daemonState: null,
+            daemonStateVersion: 0,
+        };
+
+        const result = await bootstrapMachineSyncRuntime({
+            cliVersion: '0.3.1',
+            machineId: machine.id,
+            machine,
+            preferredHost: 'host.local',
+            happyHomeDir: '/tmp/happy-home',
+            happyLibDir: '/tmp/happy-lib',
+            readCliUpdateFacts: () => ({ ...facts }),
+            watchCliUpdateRecord: (onChange) => {
+                recordChanged.notify = onChange;
+                return stopWatching;
+            },
+            filesystemAccessPolicy: { kind: 'osUser' },
+            takeoverRequested: false,
+            isShuttingDown: () => false,
+            createConnectedApiMachine: vi.fn(() => connectedApiMachine),
+            attachTransferRuntimeStatePublisher: vi.fn(async () => {}),
+            startAutomationWorkerForMachine: vi.fn(() => null),
+            startMemoryWorkerForMachine: vi.fn(async (): Promise<MemoryWorkerHandle | null> => null),
+            spawnSession: vi.fn(async (): Promise<SpawnSessionResult> => ({ type: 'success', sessionId: 'sess-1' })),
+            stopSession: vi.fn(async () => ({ status: 'stopped' as const })),
+            isSessionAlreadyRunning: vi.fn(async () => false),
+            loadLocalSessionMetadataForHandoff: vi.fn(async () => null),
+            beforeShutdown: vi.fn(async () => {}),
+            requestShutdown: vi.fn(),
+            directPeerServerLifecycle: null,
+            directTransferPromptAssetAdapterRegistry: createPromptAssetAdapterRegistry(),
+            directTransferPromptRegistryRegistry: createPromptRegistryAdapterRegistry(),
+            connectedServiceRefreshLoopHandle: null,
+            connectedServiceQuotasLoopHandle: null,
+            daemonServerWorkScheduler: {} as never,
+            startVoiceInferenceWorkerForMachine: vi.fn(async (): Promise<VoiceInferenceWorkerHandle | null> => null),
+        });
+        const onConnect = connectOptionsRef.current?.onConnect;
+        if (!onConnect) throw new Error('expected machine connect options');
+        const connecting = onConnect();
+        await vi.waitFor(() => expect(heldPublications).toHaveLength(1));
+
+        // The update records its end while the connect publication (with the old facts) is held.
+        facts.lastUpdate = { targetVersion: '0.3.2', outcome: 'failed', at: 9, message: 'GitHub returned 503. Nothing was changed.' };
+        recordChanged.notify?.();
+        heldPublications[0]?.();
+        await connecting;
+
+        await vi.waitFor(() => expect(heldPublications).toHaveLength(2));
+        heldPublications[1]?.();
+        await vi.waitFor(() => expect(storedMetadata).toMatchObject({ cliUpdate: { lastUpdate: { outcome: 'failed', targetVersion: '0.3.2' } } }));
+        expect(updateMachineMetadata).toHaveBeenCalledTimes(2);
+        result.machineConnectionStateCleanup?.();
+    });
+
+    it('publishes the CLI update facts (K5) with its metadata and republishes them when an update records its end', async () => {
+        const connectOptionsRef: { current: { onConnect?: () => Promise<void> | void } | null } = { current: null };
+        let storedMetadata: Record<string, unknown> | null = null;
+        const updateMachineMetadata = vi.fn(async (handler: (metadata: unknown) => Record<string, unknown>) => {
+            storedMetadata = handler(storedMetadata);
+            return 'published' as const;
+        });
+        const fakeConnectedApiMachine = {
+            setRPCHandlers: vi.fn(emptyMachineRpcLifecycleRegistration),
+            registerLiveStreamRelayRoutes: vi.fn(),
+            onUpdate: vi.fn(() => () => {}),
+            onAccountSettingsVersionHint: vi.fn(() => () => {}),
+            onPendingSessionActivationHint: vi.fn(() => () => {}),
+            onSessionDeletedChange: vi.fn(() => () => {}),
+            onSessionAccessRevoked: vi.fn(() => () => {}),
+            onSessionAccessReset: vi.fn(() => () => {}),
+            onSessionArchivedStateChange: vi.fn(() => () => {}),
+            onConnectionStateChange: vi.fn(() => () => {}),
+            connect: vi.fn((options: { onConnect?: () => Promise<void> | void }) => {
+                connectOptionsRef.current = options;
+            }),
+            updateDaemonState: vi.fn(async () => 'published' as const),
+            updateMachineMetadata,
+            emitExternalSessionTranscriptUpdate: vi.fn(),
+            onMachineTransferEnvelope: vi.fn(() => () => {}),
+            sendMachineTransferEnvelope: vi.fn(),
+            onTransferRelayV2Envelope: vi.fn(() => () => {}),
+            sendTransferRelayV2Envelope: vi.fn(),
+            onMachineLiveStreamRelayEnvelope: vi.fn(() => () => {}),
+            sendMachineLiveStreamRelayEnvelope: vi.fn(),
+            getPeerMediationMachineRpcHandlerManager: vi.fn(() => ({
+                invokeLocal: async () => ({ ok: true }),
+            })),
+        };
+        // Test harness boundary: bootstrap accepts the concrete ApiMachineClient class, so this fixture supplies only methods the bootstrap path calls.
+        const connectedApiMachine = fakeConnectedApiMachine as unknown as ConnectedApiMachineForBootstrap;
+        const facts = {
+            currentVersion: '0.3.1',
+            latestVersion: '0.3.2',
+            channel: 'stable' as const,
+            installSource: 'managed' as const,
+            updateCommand: 'happier self update',
+            canUpdateRemotely: true,
+            lastUpdate: null as null | { targetVersion: string | null; outcome: 'failed'; at: number; message: string | null },
+        };
+        const recordChanged: { notify: (() => void) | null } = { notify: null };
+        const stopWatching = vi.fn();
+        const machine: Machine = {
+            id: 'machine-k5',
+            encryptionKey: new Uint8Array(32).fill(7),
+            encryptionVariant: 'legacy',
+            metadata: null,
+            metadataVersion: 0,
+            daemonState: null,
+            daemonStateVersion: 0,
+        };
+
+        const result = await bootstrapMachineSyncRuntime({
+            cliVersion: '0.3.1',
+            machineId: machine.id,
+            machine,
+            preferredHost: 'host.local',
+            happyHomeDir: '/tmp/happy-home',
+            happyLibDir: '/tmp/happy-lib',
+            readCliUpdateFacts: () => ({ ...facts }),
+            watchCliUpdateRecord: (onChange) => {
+                recordChanged.notify = onChange;
+                return stopWatching;
+            },
+            filesystemAccessPolicy: { kind: 'osUser' },
+            takeoverRequested: false,
+            isShuttingDown: () => false,
+            createConnectedApiMachine: vi.fn(() => connectedApiMachine),
+            attachTransferRuntimeStatePublisher: vi.fn(async () => {}),
+            startAutomationWorkerForMachine: vi.fn(() => null),
+            startMemoryWorkerForMachine: vi.fn(async (): Promise<MemoryWorkerHandle | null> => null),
+            spawnSession: vi.fn(async (): Promise<SpawnSessionResult> => ({ type: 'success', sessionId: 'sess-1' })),
+            stopSession: vi.fn(async () => ({ status: 'stopped' as const })),
+            isSessionAlreadyRunning: vi.fn(async () => false),
+            loadLocalSessionMetadataForHandoff: vi.fn(async () => null),
+            beforeShutdown: vi.fn(async () => {}),
+            requestShutdown: vi.fn(),
+            directPeerServerLifecycle: null,
+            directTransferPromptAssetAdapterRegistry: createPromptAssetAdapterRegistry(),
+            directTransferPromptRegistryRegistry: createPromptRegistryAdapterRegistry(),
+            connectedServiceRefreshLoopHandle: null,
+            connectedServiceQuotasLoopHandle: null,
+            daemonServerWorkScheduler: {} as never,
+            startVoiceInferenceWorkerForMachine: vi.fn(async (): Promise<VoiceInferenceWorkerHandle | null> => null),
+        });
+        const onConnect = connectOptionsRef.current?.onConnect;
+        if (!onConnect) throw new Error('expected machine connect options');
+        await onConnect();
+        expect(updateMachineMetadata).toHaveBeenCalledTimes(1);
+        expect(storedMetadata).toMatchObject({ cliUpdate: facts });
+
+        // An event whose facts did not change publishes nothing.
+        recordChanged.notify?.();
+        await vi.waitFor(() => expect(updateMachineMetadata).toHaveBeenCalledTimes(1));
+
+        // A remote update that failed before activation recorded its end without restarting this daemon.
+        facts.lastUpdate = { targetVersion: '0.3.2', outcome: 'failed', at: 9, message: 'GitHub returned 503. Nothing was changed.' };
+        recordChanged.notify?.();
+        await vi.waitFor(() => expect(updateMachineMetadata).toHaveBeenCalledTimes(2));
+        expect(storedMetadata).toMatchObject({ cliUpdate: { lastUpdate: { outcome: 'failed', targetVersion: '0.3.2' } } });
+
+        result.machineConnectionStateCleanup?.();
+        expect(stopWatching).toHaveBeenCalledTimes(1);
     });
 });

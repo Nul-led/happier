@@ -22,14 +22,16 @@ vi.mock('@/sync/domains/state/storage', () => ({
 }));
 
 describe('useNewSessionPromptAutomationState', () => {
-    it('keeps a forced automation route enabled when Expo supplies empty seed params', async () => {
+    it('never manufactures a fresh Automation draft from the route flag alone', async () => {
+        // Creating an Automation is the shared wrapper's journey. A URL that
+        // switched New Session into an Automation entry point produced a second
+        // authoring surface with its own controls, validation and direct write.
         const { useNewSessionPromptAutomationState } = await import('./useNewSessionPromptAutomationState');
 
         const hook = await renderHook(() => useNewSessionPromptAutomationState({
             prompt: undefined,
             dataId: undefined,
             automationParam: '1',
-            automationFeatureEnabled: true,
             persistedDraftEntryIntent: null,
             hydratedTempAuthoringDraft: null,
             hydratedPersistedAuthoringDraft: null,
@@ -37,7 +39,104 @@ describe('useNewSessionPromptAutomationState', () => {
 
         await flushHookEffects({ cycles: 2, turns: 1 });
 
+        expect(hook.getCurrent().automationDraft.enabled).toBe(false);
+    });
+
+    /**
+     * New Session does not write Automations. A draft saved before creation
+     * moved to the shared Automation editor still hydrates with an enabled
+     * inline Automation; that work is handed, once, to the shared editor, and
+     * New Session keeps the prompt as an ordinary draft.
+     */
+    it('hands a hydrated pre-change Automation draft to the shared editor once', async () => {
+        const { useNewSessionPromptAutomationState } = await import('./useNewSessionPromptAutomationState');
+        const trigger = {
+            clientId: 'nightly-schedule',
+            definition: {
+                kind: 'schedule' as const,
+                enabled: true,
+                schedule: { kind: 'interval' as const, everyMs: 3_600_000, scheduleExpr: null, timezone: null },
+            },
+        };
+        const handOffLegacyAutomation = vi.fn();
+
+        const hook = await renderHook(() => useNewSessionPromptAutomationState({
+            prompt: undefined,
+            dataId: undefined,
+            automationParam: undefined,
+            persistedDraftEntryIntent: 'session',
+            hydratedTempAuthoringDraft: null,
+            hydratedPersistedAuthoringDraft: {
+                automation: { enabled: true, name: 'Nightly notes', description: 'Every night', triggers: [trigger] },
+            },
+            handOffLegacyAutomation,
+        }));
+        await flushHookEffects({ cycles: 2, turns: 1 });
+
+        expect(handOffLegacyAutomation).toHaveBeenCalledTimes(1);
+        expect(handOffLegacyAutomation).toHaveBeenCalledWith(expect.objectContaining({
+            enabled: true,
+            name: 'Nightly notes',
+            description: 'Every night',
+            triggers: [trigger],
+        }));
+        expect(hook.getCurrent().automationDraft.enabled).toBe(false);
+
+        await hook.rerender();
+        await flushHookEffects({ cycles: 2, turns: 1 });
+        expect(handOffLegacyAutomation).toHaveBeenCalledTimes(1);
+    });
+
+    it('sends an old /new?automation=1 link to the shared editor, and leaves ordinary drafts alone', async () => {
+        const { useNewSessionPromptAutomationState } = await import('./useNewSessionPromptAutomationState');
+        const routeHandOff = vi.fn();
+        await renderHook(() => useNewSessionPromptAutomationState({
+            prompt: undefined,
+            dataId: undefined,
+            automationParam: '1',
+            persistedDraftEntryIntent: null,
+            hydratedTempAuthoringDraft: null,
+            hydratedPersistedAuthoringDraft: null,
+            handOffLegacyAutomation: routeHandOff,
+        }));
+        await flushHookEffects({ cycles: 2, turns: 1 });
+        expect(routeHandOff).toHaveBeenCalledTimes(1);
+        expect(routeHandOff).toHaveBeenCalledWith(expect.objectContaining({ enabled: true }));
+
+        const ordinaryHandOff = vi.fn();
+        await renderHook(() => useNewSessionPromptAutomationState({
+            prompt: undefined,
+            dataId: undefined,
+            automationParam: undefined,
+            persistedDraftEntryIntent: null,
+            hydratedTempAuthoringDraft: null,
+            hydratedPersistedAuthoringDraft: null,
+            handOffLegacyAutomation: ordinaryHandOff,
+        }));
+        await flushHookEffects({ cycles: 2, turns: 1 });
+        expect(ordinaryHandOff).not.toHaveBeenCalled();
+    });
+
+    it('still hydrates a genuinely persisted pre-change Automation draft', async () => {
+        // Without an available hand-off (Automations unavailable) the persisted
+        // draft is kept, not discarded, so the work survives until it can move.
+        const { useNewSessionPromptAutomationState } = await import('./useNewSessionPromptAutomationState');
+
+        const hook = await renderHook(() => useNewSessionPromptAutomationState({
+            prompt: undefined,
+            dataId: undefined,
+            automationParam: '1',
+            persistedDraftEntryIntent: 'automation',
+            hydratedTempAuthoringDraft: null,
+            hydratedPersistedAuthoringDraft: {
+                automation: { enabled: true, name: 'Nightly notes', description: '', triggers: [] },
+            },
+        }));
+
+        await flushHookEffects({ cycles: 2, turns: 1 });
+
         expect(hook.getCurrent().automationDraft.enabled).toBe(true);
+        expect(hook.getCurrent().automationDraft.name).toBe('Nightly notes');
     });
 
     it('does not treat empty automation seed params as explicit seeds (does not override user toggles)', async () => {
@@ -47,7 +146,6 @@ describe('useNewSessionPromptAutomationState', () => {
             prompt: undefined,
             dataId: undefined,
             automationParam: undefined,
-            automationFeatureEnabled: true,
             persistedDraftEntryIntent: null,
             hydratedTempAuthoringDraft: null,
             hydratedPersistedAuthoringDraft: null,
@@ -75,7 +173,6 @@ describe('useNewSessionPromptAutomationState', () => {
             prompt: undefined,
             dataId: undefined,
             automationParam: undefined,
-            automationFeatureEnabled: true,
             persistedDraftEntryIntent: null,
             hydratedTempAuthoringDraft: null,
             hydratedPersistedAuthoringDraft,
@@ -112,7 +209,6 @@ describe('useNewSessionPromptAutomationState', () => {
             prompt: undefined,
             dataId: undefined,
             automationParam: undefined,
-            automationFeatureEnabled: true,
             persistedDraftEntryIntent: null,
             hydratedTempAuthoringDraft: null,
             hydratedPersistedAuthoringDraft,
@@ -142,7 +238,6 @@ describe('useNewSessionPromptAutomationState', () => {
             prompt: undefined,
             dataId: undefined,
             automationParam: undefined,
-            automationFeatureEnabled: true,
             persistedDraftEntryIntent: null,
             hydratedTempAuthoringDraft: null,
             hydratedPersistedAuthoringDraft,
@@ -215,7 +310,6 @@ describe('useNewSessionPromptAutomationState', () => {
             prompt: undefined,
             dataId: undefined,
             automationParam: undefined,
-            automationFeatureEnabled: true,
             persistedDraftEntryIntent: null,
             hydratedTempAuthoringDraft: { automation: seedDraft },
             hydratedPersistedAuthoringDraft: null,

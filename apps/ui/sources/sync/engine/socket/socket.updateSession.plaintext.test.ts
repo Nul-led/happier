@@ -1467,7 +1467,7 @@ describe('socket update handling: plaintext update-session', () => {
         expect(params.invalidateSessions).not.toHaveBeenCalled();
     });
 
-    it('target-hydrates layout-1 owner metadata after a shared metadata socket patch', async () => {
+    it('keeps the last-known owner view while it target-hydrates layout-1 owner metadata after a shared metadata socket patch', async () => {
         const sessionId = 's_layout1_owner_refresh';
         storage.getState().applySessions([{
             ...buildSession(sessionId),
@@ -1506,7 +1506,11 @@ describe('socket update handling: plaintext update-session', () => {
         const appliedSession = (
             params.applySessions as unknown as ReturnType<typeof vi.fn>
         ).mock.calls.at(-1)?.[0]?.[0] as Session | undefined;
-        expect(appliedSession?.ownerMetadataView).toBeNull();
+        // The owner view for the new revision is re-read by the targeted hydration. Until it
+        // lands, the last-known owner view stays: dropping it would hide the owner's row (its
+        // hidden-system answer becomes unknown) and flip its title on every metadata write.
+        expect(appliedSession?.metadataVersion).toBe(2);
+        expect(appliedSession?.ownerMetadataView).toEqual({ path: '/private/worktree', host: 'private' });
         expect(appliedSession).not.toHaveProperty('ownerMetadata');
         expect(params.invalidateSessions).not.toHaveBeenCalled();
     });

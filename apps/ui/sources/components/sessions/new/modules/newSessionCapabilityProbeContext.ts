@@ -4,6 +4,7 @@ import {
     type BackendTargetRefV2,
     type ConnectedServiceBindingsV2,
     type PersistedBackendTargetRefV2,
+    type RuntimeDescriptorV1,
 } from '@happier-dev/protocol';
 import { getAgentModelConfig } from '@happier-dev/agents';
 
@@ -14,7 +15,7 @@ import {
 import { resolveConfiguredAgentRuntimeKindFromUiBehavior } from '@/agents/registry/registryUiBehavior';
 import type { AgentPluginSettingsSnapshot } from '@/agents/registry/registryUiBehavior';
 import { resolveQualifiedConnectedAccountServiceKey } from '@/sync/domains/connectedServices/connectedServiceRegistry';
-import { settingsParse, type Settings } from '@/sync/domains/settings/settings';
+import type { Settings } from '@/sync/domains/settings/settings';
 import { stableJsonStringify } from '@/utils/json/stableJsonStringify';
 
 export type NewSessionCapabilityProbeContext = Readonly<{
@@ -114,6 +115,7 @@ export function resolveNewSessionCapabilityProbeContext(params: Readonly<{
     runtimeCarrierAgentId?: string | null;
     machineId?: string | null;
     pluginSettings?: AgentPluginSettingsSnapshot | null;
+    runtimeDescriptorV1?: RuntimeDescriptorV1 | null;
 }>): NewSessionCapabilityProbeContext | null {
     const backendTarget = resolveNewSessionOperationalBackendTarget(params);
     // The selected operational identity is authoritative for both bundled and
@@ -125,20 +127,26 @@ export function resolveNewSessionCapabilityProbeContext(params: Readonly<{
     if (!agentId) {
         return null;
     }
-    const runtimeKind = resolveConfiguredAgentRuntimeKindFromUiBehavior({
+    // `settings` is the canonical parsed Account settings. The open engine picker
+    // resolves this on every render, so it is read as given, never re-parsed.
+    const runtimeKind = params.runtimeDescriptorV1 ? null : resolveConfiguredAgentRuntimeKindFromUiBehavior({
         agentId,
-        settings: settingsParse(params.settings),
+        settings: params.settings,
         ...(params.pluginSettings ? { pluginSettings: params.pluginSettings } : {}),
         ...(params.machineId?.trim() ? { machineId: params.machineId } : {}),
     });
     const selectedProfileId = params.selectedProfileId?.trim() || null;
-    if (!runtimeKind && !selectedProfileId) return null;
+    if (!runtimeKind && !selectedProfileId && !params.runtimeDescriptorV1) return null;
 
     const cacheKeySuffixParts = [
+        ...(params.runtimeDescriptorV1 ? [`runtime:${stableJsonStringify(params.runtimeDescriptorV1)}`] : []),
         ...(runtimeKind ? [runtimeKind] : []),
         ...(selectedProfileId ? [`profile:${selectedProfileId}`] : []),
     ];
-    const capabilityParams = selectedProfileId ? { profileId: selectedProfileId } : {};
+    const capabilityParams = {
+        ...(selectedProfileId ? { profileId: selectedProfileId } : {}),
+        ...(params.runtimeDescriptorV1 ? { runtimeDescriptorV1: params.runtimeDescriptorV1 } : {}),
+    };
     return getOrCreateProbeContext({
         key: stableJsonStringify({ cacheKeySuffixParts, capabilityParams }),
         cacheKeySuffixParts,
@@ -153,6 +161,7 @@ export function resolveNewSessionModelCapabilityProbeContext(params: Readonly<{
     runtimeCarrierAgentId?: string | null;
     machineId?: string | null;
     pluginSettings?: AgentPluginSettingsSnapshot | null;
+    runtimeDescriptorV1?: RuntimeDescriptorV1 | null;
     connectedServices?: ConnectedServiceBindingsV2 | null;
     connectedServicesCacheIdentity?: string | null;
 }>): NewSessionCapabilityProbeContext | null {

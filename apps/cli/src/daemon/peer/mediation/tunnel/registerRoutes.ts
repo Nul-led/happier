@@ -7,10 +7,8 @@ import {
     decodePeerTcpTunnelBinaryFrameV2,
     PEER_TCP_TUNNEL_DEFAULT_MAX_FRAME_BYTES,
     PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2,
-    PEER_TCP_TUNNEL_OPEN_PATH,
     PEER_TCP_TUNNEL_OPEN_PATH_V2,
     PEER_TCP_TUNNEL_STREAM_PATH,
-    PeerTcpTunnelOpenV1Schema,
     PeerTcpTunnelOpenV2Schema,
     type PeerFlowKindV1,
     type VoiceMediaApplicationAuthorityV1,
@@ -20,9 +18,7 @@ import { openPeerTcpTunnel, type OpenPeerTcpTunnelInput, type OpenPeerTcpTunnelR
 import {
     createPeerTcpTunnelApplicationSubstreamSession,
     createPeerTcpTunnelSubstreamMuxSession,
-    createPeerTcpTunnelStreamSession,
     decodePeerTcpTunnelBinaryFrameForSession,
-    encodePeerTcpTunnelBinaryFrameForSession,
     peerTcpTunnelBinaryDecodeFailureReason,
 } from './frames';
 import { connectPeerTcpTunnelTcp } from './open';
@@ -37,14 +33,6 @@ import {
 } from './voiceBinaryAppend';
 
 const registeredTunnelApps = new WeakSet<FastifyInstance>();
-const DEFAULT_DIRECT_TUNNEL_LIMITS: Readonly<{
-    maxIdleMs: number;
-    maxDurationMs: number;
-    maxTotalBytes?: number;
-}> = {
-    maxIdleMs: Number.MAX_SAFE_INTEGER,
-    maxDurationMs: Number.MAX_SAFE_INTEGER,
-};
 const DEFAULT_OPEN_STREAM_TIMEOUT_MS = 30_000;
 
 export type RegisterPeerTcpTunnelLoopbackRoutesOptions = Omit<OpenPeerTcpTunnelInput, 'open' | 'nowMs' | 'grantConsumption'> & Readonly<{
@@ -61,7 +49,11 @@ export type RegisterPeerTcpTunnelLoopbackRoutesOptions = Omit<OpenPeerTcpTunnelI
 
 type ActivePeerTcpTunnel = (OpenPeerTcpTunnelResult & { ok: true }) & Readonly<{
     openStreamTimeout?: ReturnType<typeof setTimeout>;
-}>;
+}> & {
+    closeTransport?: () => void;
+    onPreviewAbort?: () => void;
+    pendingControl?: Readonly<{ detach: () => void; close: () => void }>;
+};
 
 type PeerTcpTunnelFastifyWebSocket = Readonly<{
     on: (event: 'message' | 'close', handler: (payload?: unknown) => void) => void;
@@ -71,7 +63,6 @@ type PeerTcpTunnelFastifyWebSocket = Readonly<{
 
 type PeerTcpTunnelLoopbackSession = Readonly<{
     flowKind: ActivePeerTcpTunnel['flowKind'];
-    session?: ReturnType<typeof createPeerTcpTunnelStreamSession>;
     applicationSubstreams?: ReturnType<typeof createPeerTcpTunnelApplicationSubstreamSession>;
     substreamMux?: ReturnType<typeof createPeerTcpTunnelSubstreamMuxSession>;
     encoding: ActivePeerTcpTunnel['response']['encoding'];
@@ -82,8 +73,7 @@ type PeerTcpTunnelLoopbackSession = Readonly<{
 function readOpenTunnelId(open: unknown): string | null {
     const parsedV2 = PeerTcpTunnelOpenV2Schema.safeParse(open);
     if (parsedV2.success) return parsedV2.data.tunnelId;
-    const parsedV1 = PeerTcpTunnelOpenV1Schema.safeParse(open);
-    return parsedV1.success ? parsedV1.data.tunnelId : null;
+    return null;
 }
 
 function toBinaryFramePayload(raw: unknown, maxHeaderBytes: number): Uint8Array | null {
@@ -121,6 +111,16 @@ export function registerPeerTcpTunnelLoopbackRoutes(
     const openTunnel = options.openTunnel ?? openPeerTcpTunnel;
     const maxActiveTunnels = Math.max(1, Math.floor(options.maxActiveTunnels ?? 8));
     const activeTunnels = new Map<string, ActivePeerTcpTunnel>();
+    const releaseTunnel = (tunnelId: string): void => {
+        const tunnel = activeTunnels.get(tunnelId);
+        if (!tunnel) return;
+        activeTunnels.delete(tunnelId);
+        if (tunnel.openStreamTimeout) clearTimeout(tunnel.openStreamTimeout);
+        if (tunnel.onPreviewAbort) tunnel.previewApplication?.signal.removeEventListener('abort', tunnel.onPreviewAbort);
+        tunnel.pendingControl?.close();
+        tunnel.closeTransport?.();
+        void tunnel.previewApplication?.close();
+    };
     const grantConsumption = createAtomicRouteGrantConsumption({ activationFailurePolicy: 'consume' });
     const openStreamTimeoutMs =
         typeof options.openStreamTimeoutMs === 'number' && Number.isFinite(options.openStreamTimeoutMs) && options.openStreamTimeoutMs >= 1
@@ -128,31 +128,23 @@ export function registerPeerTcpTunnelLoopbackRoutes(
             : DEFAULT_OPEN_STREAM_TIMEOUT_MS;
     app.register(fastifyWebsocket);
     app.register(async (streamRoutes) => {
-        streamRoutes.get(PEER_TCP_TUNNEL_STREAM_PATH, { websocket: true }, (socket: PeerTcpTunnelFastifyWebSocket) => {
+        streamRoutes.get(PEER_TCP_TUNNEL_STREAM_PATH, { websocket: true }, (socket: PeerTcpTunnelFastifyWebSocket, request) => {
+            const query = new URL(request.raw.url ?? '/', 'http://localhost').searchParams;
+            const previewTunnelIds = query.getAll('tunnelId');
+            const previewTunnelId = previewTunnelIds.length === 1 ? previewTunnelIds[0] : null;
             const sessions = new Map<string, PeerTcpTunnelLoopbackSession>();
-            const getSession = (tunnelId: string) => {
+            const getSession = (tunnelId: string, attachPreview = false) => {
+                if (previewTunnelId && tunnelId !== previewTunnelId) return null;
                 const existing = sessions.get(tunnelId);
                 if (existing) return existing;
                 const tunnel = activeTunnels.get(tunnelId);
                 if (!tunnel) return null;
+                if (tunnel.previewApplication && (!attachPreview || tunnel.closeTransport)) return null;
+                if (attachPreview && !tunnel.previewApplication) return null;
                 if (tunnel.openStreamTimeout) {
                     clearTimeout(tunnel.openStreamTimeout);
                 }
-                const limits = tunnel.limits ?? DEFAULT_DIRECT_TUNNEL_LIMITS;
-                const session = tunnel.flowKind !== 'tcp_tunnel' || !tunnel.connection
-                    ? undefined
-                    : createPeerTcpTunnelStreamSession({
-                            tunnelId,
-                            initialWindowBytes: tunnel.response.initialWindowBytes,
-                            maxFrameBytes: tunnel.response.maxFrameBytes,
-                            maxDecodedPayloadBytes: tunnel.response.maxFrameBytes,
-                            maxSendChunkBytes: tunnel.response.maxFrameBytes,
-                            maxIdleMs: limits.maxIdleMs,
-                            maxDurationMs: limits.maxDurationMs,
-                            maxTotalBytes: limits.maxTotalBytes,
-                            connection: tunnel.connection,
-                            sendFrame: (frame) => socket.send(encodePeerTcpTunnelBinaryFrameForSession(frame)),
-                        });
+                const limits = tunnel.limits;
                 // The open owner is the single destination normalizer; the mux dials exactly the
                 // destination it admitted.
                 const destination = tunnel.destination;
@@ -166,13 +158,7 @@ export function registerPeerTcpTunnelLoopbackRoutes(
                         maxFrameBytes: tunnel.response.maxFrameBytes,
                         maxBinaryHeaderBytes: tunnel.response.maxFrameBytes,
                         maxRawPayloadBytes: tunnel.response.maxFrameBytes,
-                        caps: {
-                            ...DEFAULT_MACHINE_TUNNEL_SUBSTREAM_CAPABILITIES,
-                            maxBytesPerSubstream: tunnel.limits.maxTotalBytes ?? DEFAULT_MACHINE_TUNNEL_SUBSTREAM_CAPABILITIES.maxBytesPerSubstream,
-                            maxAggregateBytes: tunnel.limits.maxTotalBytes ?? DEFAULT_MACHINE_TUNNEL_SUBSTREAM_CAPABILITIES.maxAggregateBytes,
-                            maxSubstreamIdleMs: tunnel.limits.maxIdleMs,
-                            maxSessionIdleMs: tunnel.limits.maxIdleMs,
-                        },
+                        caps: DEFAULT_MACHINE_TUNNEL_SUBSTREAM_CAPABILITIES,
                         connectTcp: options.connectTcp ?? connectPeerTcpTunnelTcp,
                         sendBinaryFrame: (frame) => {
                             socket.send(frame);
@@ -186,8 +172,7 @@ export function registerPeerTcpTunnelLoopbackRoutes(
                     && tunnel.flowKind === 'voice_media'
                     && options.voiceBinaryAppendConsumer
                 ) {
-                    const aggregateLimit = limits.maxTotalBytes
-                        ?? DEFAULT_MACHINE_TUNNEL_SUBSTREAM_CAPABILITIES.maxAggregateBytes;
+                    const aggregateLimit = limits.maxTotalBytes;
                     applicationSubstreams = createPeerTcpTunnelApplicationSubstreamSession({
                         tunnelId,
                         maxBinaryHeaderBytes: tunnel.response.maxFrameBytes,
@@ -195,7 +180,6 @@ export function registerPeerTcpTunnelLoopbackRoutes(
                         maxBytesPerSubstream: aggregateLimit,
                         maxAggregateBytes: aggregateLimit,
                         maxConcurrentSubstreams: DEFAULT_MACHINE_TUNNEL_SUBSTREAM_CAPABILITIES.maxConcurrentSubstreams,
-                        maxTotalSubstreams: DEFAULT_MACHINE_TUNNEL_SUBSTREAM_CAPABILITIES.maxTotalSubstreams,
                         maxSubstreamIdleMs: limits.maxIdleMs,
                         maxSessionIdleMs: limits.maxIdleMs,
                         maxDurationMs: limits.maxDurationMs,
@@ -212,9 +196,8 @@ export function registerPeerTcpTunnelLoopbackRoutes(
                                 const current = sessions.get(tunnelId);
                                 if (!current || current.applicationSubstreams !== applicationSubstreams) return;
                                 sessions.delete(tunnelId);
-                                activeTunnels.delete(tunnelId);
+                                releaseTunnel(tunnelId);
                                 await current.substreamMux?.close();
-                                await current.session?.close();
                             }
                         },
                         nowMs: options.nowMs,
@@ -222,7 +205,6 @@ export function registerPeerTcpTunnelLoopbackRoutes(
                 }
                 const entry = {
                     flowKind: tunnel.flowKind,
-                    ...(session ? { session } : {}),
                     ...(substreamMux ? { substreamMux } : {}),
                     ...(applicationSubstreams ? { applicationSubstreams } : {}),
                     encoding: tunnel.response.encoding,
@@ -232,6 +214,11 @@ export function registerPeerTcpTunnelLoopbackRoutes(
                     } : {}),
                 };
                 sessions.set(tunnelId, entry);
+                if (tunnel.previewApplication) {
+                    tunnel.closeTransport = () => closeSocket(socket);
+                    tunnel.pendingControl?.detach();
+                    delete tunnel.pendingControl;
+                }
                 return entry;
             };
 
@@ -313,11 +300,13 @@ export function registerPeerTcpTunnelLoopbackRoutes(
                             closeSocket(socket);
                             return;
                         }
-                        if (!entry.session) {
+                        if (!entry.substreamMux || (decoded.frame.kind !== 'close' && decoded.frame.kind !== 'abort')) {
                             closeSocket(socket);
                             return;
                         }
-                        await entry.session.acceptFrame(decoded.frame);
+                        await entry.substreamMux.close();
+                        sessions.delete(tunnelId);
+                        releaseTunnel(tunnelId);
                         return;
                     }
 
@@ -334,21 +323,20 @@ export function registerPeerTcpTunnelLoopbackRoutes(
                         continue;
                     }
                     void entry.substreamMux?.close();
-                    void entry.session?.close();
-                    activeTunnels.delete(tunnelId);
+                    releaseTunnel(tunnelId);
                     sessions.delete(tunnelId);
                 }
             });
+            // Native previews attach their already-admitted exact tunnel before any guest
+            // frames. The established WS now owns even an idle viewer's registration.
+            if (previewTunnelIds.length > 0
+                && (!previewTunnelId || previewTunnelIds.length !== 1 || !getSession(previewTunnelId, true))) {
+                closeSocket(socket);
+            }
         });
     });
     app.addHook('onClose', async () => {
-        for (const tunnel of activeTunnels.values()) {
-            if (tunnel.openStreamTimeout) {
-                clearTimeout(tunnel.openStreamTimeout);
-            }
-            await tunnel.connection?.close();
-        }
-        activeTunnels.clear();
+        for (const tunnelId of activeTunnels.keys()) releaseTunnel(tunnelId);
         grantConsumption.clear();
     });
 
@@ -360,6 +348,7 @@ export function registerPeerTcpTunnelLoopbackRoutes(
     const observeTunnel = (input: Readonly<{
         tunnelId: string;
         kind: Parameters<DaemonPeerMediationDirectFlowObserver['emit']>[0]['kind'];
+        routeKind?: Extract<OpenPeerTcpTunnelResult, { ok: true }>['routeKind'];
         flowKind?: PeerFlowKindV1;
         reasonCode?: string;
     }>): void => {
@@ -367,6 +356,7 @@ export function registerPeerTcpTunnelLoopbackRoutes(
             flowKind: input.flowKind ?? 'tcp_tunnel',
             flowId: input.tunnelId,
             kind: input.kind,
+            ...(input.routeKind ? { routeKind: input.routeKind } : {}),
             ...(input.reasonCode ? { reasonCode: input.reasonCode } : {}),
         });
     };
@@ -389,12 +379,23 @@ export function registerPeerTcpTunnelLoopbackRoutes(
                 reasonCode: 'direct_tunnel_cap_exceeded',
             };
         }
+        const cancellation = new AbortController();
+        const onCancel = () => cancellation.abort();
+        const onResponseClose = () => { if (!reply.raw.writableEnded) onCancel(); };
+        request.raw.once('aborted', onCancel);
+        reply.raw.once('close', onResponseClose);
+        app.server.once('close', onCancel);
         const result = await openTunnel({
             ...options,
             trustRoots: options.resolveTrustRoots?.() ?? options.trustRoots,
             nowMs: options.nowMs(),
             grantConsumption,
             open: request.body,
+            signal: cancellation.signal,
+        }).finally(() => {
+            request.raw.off('aborted', onCancel);
+            reply.raw.off('close', onResponseClose);
+            app.server.off('close', onCancel);
         });
         if (!result.ok) {
             reply.code(400);
@@ -403,7 +404,7 @@ export function registerPeerTcpTunnelLoopbackRoutes(
             }
             return result;
         }
-        const openStreamTimeout = openStreamTimeoutMs == null
+        const openStreamTimeout = result.previewApplication || openStreamTimeoutMs == null
             ? undefined
             : setTimeout(() => {
                 const activeTunnel = activeTunnels.get(result.response.tunnelId);
@@ -411,8 +412,7 @@ export function registerPeerTcpTunnelLoopbackRoutes(
                 if (activeTunnel.openStreamTimeout) {
                     clearTimeout(activeTunnel.openStreamTimeout);
                 }
-                void activeTunnel.connection?.close();
-                activeTunnels.delete(result.response.tunnelId);
+                releaseTunnel(result.response.tunnelId);
                 void dispatchDaemonVoiceInferenceSttTerminal({
                     consumer: options.voiceBinaryTerminalConsumer,
                     substreamIds: [],
@@ -423,21 +423,48 @@ export function registerPeerTcpTunnelLoopbackRoutes(
                     tunnelId: result.response.tunnelId,
                     kind: 'flow.aborted',
                     reasonCode: 'tunnel_open_timeout',
+                    routeKind: activeTunnel.routeKind,
                     ...(activeTunnel.flowKind ? { flowKind: activeTunnel.flowKind } : {}),
                 });
             }, openStreamTimeoutMs);
         openStreamTimeout?.unref?.();
-        activeTunnels.set(result.response.tunnelId, {
+        const activeTunnel: ActivePeerTcpTunnel = {
             ...result,
             ...(openStreamTimeout ? { openStreamTimeout } : {}),
-        });
+        };
+        activeTunnels.set(result.response.tunnelId, activeTunnel);
+        if (result.previewApplication) {
+            const controlSocket = request.raw.socket;
+            const onControlClose = () => {
+                if (activeTunnels.get(result.response.tunnelId) === activeTunnel && !activeTunnel.closeTransport) {
+                    releaseTunnel(result.response.tunnelId);
+                }
+            };
+            const detach = () => controlSocket.off('close', onControlClose);
+            activeTunnel.pendingControl = {
+                detach,
+                close: () => { detach(); controlSocket.destroy(); },
+            };
+            controlSocket.once('close', onControlClose);
+            // Node installs its keep-alive timeout on response finish. Register after its
+            // listener so pending registration custody has no shorter HTTP-phase cutoff.
+            reply.raw.once('finish', () => {
+                if (activeTunnels.get(result.response.tunnelId) === activeTunnel && !activeTunnel.closeTransport) {
+                    controlSocket.setTimeout(0);
+                }
+            });
+            activeTunnel.onPreviewAbort = () => releaseTunnel(result.response.tunnelId);
+            result.previewApplication.signal.addEventListener('abort', activeTunnel.onPreviewAbort, { once: true });
+            if (result.previewApplication.signal.aborted) activeTunnel.onPreviewAbort();
+            if (controlSocket.destroyed) onControlClose();
+        }
         observeTunnel({
             tunnelId: result.response.tunnelId,
             kind: 'flow.ready',
+            routeKind: result.routeKind,
             ...(result.flowKind ? { flowKind: result.flowKind } : {}),
         });
         return result.response;
     };
-    app.post(PEER_TCP_TUNNEL_OPEN_PATH, handleOpen);
     app.post(PEER_TCP_TUNNEL_OPEN_PATH_V2, handleOpen);
 }

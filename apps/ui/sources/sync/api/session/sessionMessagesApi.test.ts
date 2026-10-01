@@ -1,9 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import {
-    buildSessionMessagesPath,
-    parseSessionMessagesResponseJson,
-} from './sessionMessagesApi';
+import { buildSessionMessagesPath } from '@happier-dev/protocol';
+import { parseSessionMessagesPage } from '@happier-dev/sync-client';
 
 function readSearchParams(path: string): URLSearchParams {
     const [, query = ''] = path.split('?');
@@ -69,7 +67,7 @@ describe('sessionMessagesApi', () => {
     });
 
     it('parses valid message page responses and rejects invalid shapes at the API boundary', () => {
-        expect(parseSessionMessagesResponseJson({
+        expect(parseSessionMessagesPage({
             messages: [],
             hasMore: true,
             nextBeforeSeq: 10,
@@ -79,6 +77,6 @@ describe('sessionMessagesApi', () => {
             nextBeforeSeq: 10,
         });
 
-        expect(() => parseSessionMessagesResponseJson({ messages: 'bad' })).toThrow('Invalid /messages response');
+        expect(() => parseSessionMessagesPage({ messages: 'bad' })).toThrow('Invalid /messages response');
     });
 });

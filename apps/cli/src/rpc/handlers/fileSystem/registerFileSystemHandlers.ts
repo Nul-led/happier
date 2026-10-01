@@ -39,6 +39,7 @@ export function registerFileSystemHandlers(
     getAdditionalAllowedReadFiles?: () => ReadonlyArray<ExactAllowedReadFile>;
     getAdditionalAllowedWriteDirs?: () => ReadonlyArray<string>;
     composerMediaStage?: ComposerMediaStageUploadTargetDeps;
+    resolveSessionWorkingDirectory?: (sessionId: string) => Promise<string | null>;
     actionExecutor?: RpcActionExecutor;
     directoryLimits?: Readonly<{
       listMaxEntries?: number;
@@ -105,6 +106,7 @@ export function registerFileSystemHandlers(
     sessionRpcTransferMaxBytes: resolveServerRoutedTransferMaxBytes(),
     attachmentUpload: {
       pathAllowanceRegistry,
+      resolveSessionWorkingDirectory: opts?.resolveSessionWorkingDirectory ?? (async () => null),
     },
     ...(opts?.composerMediaStage ? { composerMediaStage: opts.composerMediaStage } : {}),
   });

@@ -16,8 +16,9 @@ import {
 
 export type SidecarCdpBrowserContextSourceInput = Readonly<{
     contextCapture: BrowserSidecarContextCaptureSurface;
-    /** Durable media bucket for screenshots. Defaults to a per-view browser-context bucket. */
+    /** Screenshot media is stored under the invoking Happier session and view generation. */
     workingDirectory: string;
+    screenshotMediaStorage?: 'session' | 'daemon';
     pathAllowanceRegistry: TransferPathAllowanceRegistry;
     accessPolicy?: FilesystemAccessPolicy;
     resolveScreenshotTarget?: (input: Readonly<{
@@ -56,6 +57,7 @@ export function createSidecarCdpBrowserContextSource(
     const screenshotMediaWriter = input.screenshotMediaWriter
         ?? createSessionMediaScreenshotWriter({
             workingDirectory: input.workingDirectory,
+            storage: input.screenshotMediaStorage,
             pathAllowanceRegistry: input.pathAllowanceRegistry,
             ...(input.accessPolicy ? { accessPolicy: input.accessPolicy } : {}),
             resolveTarget: input.resolveScreenshotTarget ?? defaultScreenshotTarget,

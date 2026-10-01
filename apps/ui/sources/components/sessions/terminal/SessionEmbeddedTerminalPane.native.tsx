@@ -57,6 +57,7 @@ const SessionEmbeddedTerminalPaneContent = React.memo(function SessionEmbeddedTe
         serverId,
         terminalKey,
         terminalMode,
+        terminalTarget: props.terminalIdentity.terminalTarget,
         terminalRef: terminalRendererRef,
     });
 

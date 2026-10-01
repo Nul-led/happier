@@ -1160,4 +1160,97 @@ describe('useNewSessionMachinePathState', () => {
 
         await hook.unmount();
     });
+
+    describe('directory intent', () => {
+        it('applies pushed picker intent changes even when choosing the same remembered folder', async () => {
+            const initial = {
+                machines: toMachines({ id: 'machine-a', metadata: { homeDir: '/a' } }),
+                recentMachinePaths: [], machineIdParam: 'machine-a', pathParam: '/a/repo',
+                directoryKindParam: 'path' as const,
+            };
+            const hook = await renderMachinePathState(initial);
+            await hook.rerender({ ...initial, directoryKindParam: 'managed' });
+            expect(hook.getCurrent().directoryIntent).toEqual({ kind: 'managed' });
+            expect(hook.getCurrent().rememberedPath).toBe('/a/repo');
+            await hook.rerender(initial);
+            expect(hook.getCurrent().directoryIntent).toEqual({ kind: 'path', path: '/a/repo' });
+            await hook.unmount();
+        });
+        it('removes the folder without forgetting it, and choosing it again restores it', async () => {
+            const hook = await renderMachinePathState({
+                machines: toMachines({ id: 'machine-a', metadata: { homeDir: '/a' } }),
+                recentMachinePaths: [],
+                machineIdParam: 'machine-a',
+                pathParam: '/a/repo',
+            });
+            expect(hook.getCurrent().directoryIntent).toEqual({ kind: 'path', path: '/a/repo' });
+
+            await act(async () => hook.getCurrent().setDirectoryIntent({ kind: 'managed' }));
+            expect(hook.getCurrent().directoryIntent).toEqual({ kind: 'managed' });
+            // Folder-scoped features see no folder; the draft still remembers it.
+            expect(hook.getCurrent().selectedPath).toBe('');
+            expect(hook.getCurrent().getRequestedPath()).toBe('');
+            expect(hook.getCurrent().rememberedPath).toBe('/a/repo');
+
+            // Changing machine keeps the no-folder choice.
+            await act(async () => hook.getCurrent().setSelectedMachineTarget({ machineId: 'machine-a', path: '/a/other' }));
+            expect(hook.getCurrent().directoryKind).toBe('managed');
+
+            await act(async () => hook.getCurrent().setDirectoryIntent({ kind: 'path', path: '/a/repo' }));
+            expect(hook.getCurrent().directoryIntent).toEqual({ kind: 'path', path: '/a/repo' });
+            expect(hook.getCurrent().selectedPath).toBe('/a/repo');
+            await hook.unmount();
+        });
+
+        it('treats choosing a folder in the picker as choosing to have one', async () => {
+            const hook = await renderMachinePathState({
+                machines: toMachines({ id: 'machine-a', metadata: { homeDir: '/a' } }),
+                recentMachinePaths: [],
+                machineIdParam: undefined,
+                pathParam: undefined,
+                persistedMachineId: 'machine-a',
+                persistedPath: '/a/repo',
+                initialDirectoryKind: 'managed',
+            });
+            expect(hook.getCurrent().directoryIntent).toEqual({ kind: 'managed' });
+
+            await act(async () => hook.getCurrent().setSelectedPath('/a/notes'));
+            expect(hook.getCurrent().directoryIntent).toEqual({ kind: 'path', path: '/a/notes' });
+            await hook.unmount();
+        });
+
+        it('reopens a no-folder draft without a folder', async () => {
+            const hook = await renderMachinePathState({
+                machines: toMachines({ id: 'machine-a', metadata: { homeDir: '/a' } }),
+                recentMachinePaths: [],
+                machineIdParam: undefined,
+                pathParam: undefined,
+                persistedMachineId: 'machine-a',
+                persistedPath: '/a/repo',
+                initialDirectoryKind: 'managed',
+            });
+            expect(hook.getCurrent().directoryIntent).toEqual({ kind: 'managed' });
+            expect(hook.getCurrent().rememberedPath).toBe('/a/repo');
+            await hook.unmount();
+        });
+
+        it('holds a fixed intent: no default folder is resolved and no writer can change it', async () => {
+            const hook = await renderMachinePathState({
+                machines: toMachines({ id: 'machine-a', metadata: { homeDir: '/a' } }),
+                recentMachinePaths: [{ machineId: 'machine-a', path: '/a/recent' }],
+                machineIdParam: 'machine-a',
+                pathParam: undefined,
+                fixedDirectoryIntent: { kind: 'managed' },
+            });
+            const current = hook.getCurrent();
+            expect(current.directoryIntent).toEqual({ kind: 'managed' });
+            expect(current.directoryIntentFixed).toBe(true);
+            expect(current.selectedPath).toBe('');
+
+            await act(async () => hook.getCurrent().setDirectoryIntent({ kind: 'path', path: '/a/recent' }));
+            expect(hook.getCurrent().directoryIntent).toEqual({ kind: 'managed' });
+            expect(hook.getCurrent().selectedPath).toBe('');
+            await hook.unmount();
+        });
+    });
 });

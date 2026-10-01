@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { useNavigation } from 'expo-router';
+import { useNavigation } from '@/components/appShell/workspace/destinationRoute';
 
 import { useSessionCockpitDismissController } from '@/components/workspaceCockpit/session/SessionCockpitChromeRegistry';
 

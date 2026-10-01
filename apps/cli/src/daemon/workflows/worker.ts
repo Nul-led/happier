@@ -16,9 +16,18 @@ export type WorkflowClaimForCoordination = Readonly<{
   attempt: number;
   /** Claimed parent revision used by the one pre-root accepted-snapshot CAS. */
   expectedRevision: number;
+  /** Recorded boundary Resume, consumed atomically by this successful claim. */
+  workflowResumeRequestedRevision?: number;
   accountCurrentness: AutomationAccountCurrentnessWitnessV1;
-  /** Automation origin carries the reviewed definition; direct origin carries an accepted snapshot. */
+  /** Automation origin carries sealed trigger context; direct origin carries an accepted snapshot. */
   definitionEnvelope?: string;
+  /** Automation-owned live source and optional session scope, copied from the claim receipt. */
+  workflowDefinitionId?: string | null;
+  scopeSessionId?: string | null;
+  /** Closing checkpoint of the newest succeeded occurrence of this scoped trigger. */
+  lastSucceededRun?: Readonly<{ runId: string; checkpointEnvelope: string }>;
+  /** Frozen cause depth from the server claim receipt, never recomputed by the daemon. */
+  causeWorkDepth?: number;
   acceptedEnvelope?: string;
   /** Automation origin only: separately frozen occurrence evidence. */
   automationEvidenceEnvelope?: string | null;
@@ -36,5 +45,7 @@ export type WorkflowClaimForCoordination = Readonly<{
   registerControlCheck?: (
     check: () => Promise<'running' | 'pause_requested' | 'cancel_requested'>,
   ) => void;
+  /** Exact live coordinator callback; the incumbent worker remains its owner. */
+  registerReviewHoldRefresh?: (refresh: () => Promise<void>) => void;
   signal?: AbortSignal;
 }>;

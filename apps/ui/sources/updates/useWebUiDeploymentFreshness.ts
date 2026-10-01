@@ -1,64 +1,60 @@
 import * as React from 'react';
 import { Platform } from 'react-native';
-
 import { apiSocket } from '@/sync/api/session/apiSocket';
-import {
-    reduceUiDeploymentFreshness,
-    type UiDeploymentFreshnessState,
-} from './uiDeploymentFreshness';
+import { reduceUiDeploymentFreshness, type UiDeploymentFreshnessState } from './uiDeploymentFreshness';
 
-const INITIAL_STATE: UiDeploymentFreshnessState = {
-    baselineId: null,
-    updateAvailable: false,
-};
+/**
+ * One freshness check for the whole web app (the S-3 rule applied to the web build): every surface
+ * that shows "This app" subscribes here instead of fetching the deployment identity on its own.
+ * Checks on first use, on reconnect and when the tab becomes visible again.
+ */
+let state: UiDeploymentFreshnessState = { baselineId: null, updateAvailable: false };
+let started = false;
+const listeners = new Set<() => void>();
 
-async function fetchCurrentUiDeploymentId(): Promise<unknown> {
-    const response = await globalThis.fetch('/.well-known/happier-ui-deployment', {
-        cache: 'no-store',
-        credentials: 'same-origin',
-    });
-    if (!response.ok || response.status === 204) return null;
-    const payload = await response.json() as { deploymentId?: unknown };
-    return payload?.deploymentId;
+async function checkDeploymentFreshness(): Promise<void> {
+    if (Platform.OS !== 'web' || typeof globalThis.fetch !== 'function') return;
+    try {
+        const response = await globalThis.fetch('/.well-known/happier-ui-deployment', { cache: 'no-store', credentials: 'same-origin' });
+        if (!response.ok || response.status === 204) return;
+        const payload = await response.json() as { deploymentId?: unknown };
+        const next = reduceUiDeploymentFreshness(state, payload.deploymentId);
+        if (next === state) return;
+        state = next;
+        for (const listener of listeners) listener();
+    } catch {
+        // Missing, malformed, and temporarily unavailable identities are intentionally silent.
+    }
 }
 
-export function useWebUiDeploymentFreshness(): Readonly<{
-    updateAvailable: boolean;
-    reload: () => void;
-}> {
-    const [state, setState] = React.useState<UiDeploymentFreshnessState>(INITIAL_STATE);
+function start(): void {
+    if (started || Platform.OS !== 'web') return;
+    started = true;
+    void checkDeploymentFreshness();
+    apiSocket.onReconnected(() => void checkDeploymentFreshness());
+    const doc = (globalThis as { document?: Document }).document;
+    doc?.addEventListener('visibilitychange', () => {
+        if (doc.visibilityState === 'visible') void checkDeploymentFreshness();
+    });
+}
 
-    const check = React.useCallback(async () => {
-        if (Platform.OS !== 'web' || typeof globalThis.fetch !== 'function') return;
-        try {
-            const observedId = await fetchCurrentUiDeploymentId();
-            setState((current) => reduceUiDeploymentFreshness(current, observedId));
-        } catch {
-            // Missing, malformed, and temporarily unavailable identities are intentionally silent.
-        }
-    }, []);
+function subscribe(listener: () => void): () => void {
+    listeners.add(listener);
+    start();
+    return () => {
+        listeners.delete(listener);
+    };
+}
 
-    React.useEffect(() => {
-        if (Platform.OS !== 'web') return;
-        void check();
-        const unsubscribeReconnect = apiSocket.onReconnected(() => {
-            void check();
-        });
-        const doc = (globalThis as { document?: Document }).document;
-        const onVisibilityChange = () => {
-            if (!doc || doc.visibilityState === 'visible') void check();
-        };
-        doc?.addEventListener('visibilitychange', onVisibilityChange);
-        return () => {
-            unsubscribeReconnect();
-            doc?.removeEventListener('visibilitychange', onVisibilityChange);
-        };
-    }, [check]);
+function readUpdateAvailable(): boolean {
+    return state.updateAvailable;
+}
 
-    const reload = React.useCallback(() => {
-        if (Platform.OS !== 'web') return;
-        (globalThis as { location?: { reload?: () => void } }).location?.reload?.();
-    }, []);
+function reload(): void {
+    if (Platform.OS === 'web') (globalThis as { location?: { reload?: () => void } }).location?.reload?.();
+}
 
-    return { updateAvailable: state.updateAvailable, reload };
+export function useWebUiDeploymentFreshness(): Readonly<{ updateAvailable: boolean; reload: () => void }> {
+    const updateAvailable = React.useSyncExternalStore(subscribe, readUpdateAvailable, readUpdateAvailable);
+    return React.useMemo(() => ({ updateAvailable, reload }), [updateAvailable]);
 }

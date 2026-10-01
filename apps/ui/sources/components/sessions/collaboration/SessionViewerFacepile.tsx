@@ -1,8 +1,9 @@
 import * as React from 'react';
 import { Animated, Platform, Pressable, View } from 'react-native';
-import { StyleSheet } from 'react-native-unistyles';
+import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { Avatar } from '@/components/ui/avatar/Avatar';
+import { AvatarStack } from '@/components/ui/avatar/AvatarStack';
 import { Text } from '@/components/ui/text/Text';
 import { DeferredAnchoredTooltip } from '@/components/ui/overlays/DeferredAnchoredTooltip';
 import { ITEM_SUBTITLE_TEXT_METRICS } from '@/components/ui/lists/itemDensityMetrics';
@@ -14,6 +15,7 @@ import { t } from '@/text';
 import type { SessionHumanPresenceViewer } from '@/sync/domains/session/humanPresence/sessionHumanPresenceStore';
 
 import { formatSessionPresenceViewerNames } from './sessionPresenceNames';
+import { isHappierFocusVisible } from '@happier-dev/plugin-ui/presentation';
 
 const AVATAR_SIZE = 28;
 /** One de-emphasis for retained last-known presence, shared with the Collaboration summary row. */
@@ -28,12 +30,10 @@ const styles = StyleSheet.create((theme) => ({
     },
     hovered: { backgroundColor: theme.colors.surface.selected },
     focused: { borderColor: theme.colors.border.focus },
-    avatar: { borderRadius: AVATAR_SIZE, borderWidth: 2, borderColor: theme.colors.border.default },
-    typing: { borderColor: theme.colors.text.link },
     overflow: { ...Typography.default('semiBold'), ...ITEM_SUBTITLE_TEXT_METRICS.cozy, color: theme.colors.text.secondary, paddingLeft: 4 },
 }));
 
-function ViewerAvatar({ viewer, stale, index }: Readonly<{ viewer: SessionHumanPresenceViewer; stale: boolean; index: number }>) {
+function ViewerAvatar({ viewer }: Readonly<{ viewer: SessionHumanPresenceViewer }>) {
     const reducedMotion = useReducedMotionPreference();
     const opacity = React.useRef(new Animated.Value(reducedMotion ? 1 : 0)).current;
     React.useEffect(() => {
@@ -42,9 +42,7 @@ function ViewerAvatar({ viewer, stale, index }: Readonly<{ viewer: SessionHumanP
         animation.start();
         return () => animation.stop();
     }, [opacity, reducedMotion]);
-    return <Animated.View testID="session-viewer-avatar" accessible={false} style={[
-        styles.avatar, !stale && viewer.typing && styles.typing, { marginLeft: index === 0 ? 0 : -8, opacity },
-    ]}>
+    return <Animated.View testID="session-viewer-avatar" accessible={false} style={{ opacity }}>
         <Avatar id={viewer.account.accountId} size={AVATAR_SIZE} imageUrl={viewer.account.avatarUrl} />
     </Animated.View>;
 }
@@ -55,6 +53,7 @@ export function SessionViewerFacepile({ viewers, stale, attentionLabel, onPress 
     attentionLabel?: string | null;
     onPress: () => void;
 }>): React.ReactElement | null {
+    const { theme } = useUnistyles();
     const anchorRef = React.useRef<View | null>(null);
     const [hovered, setHovered] = React.useState(false);
     const [focused, setFocused] = React.useState(false);
@@ -68,12 +67,16 @@ export function SessionViewerFacepile({ viewers, stale, attentionLabel, onPress 
         testID="session-viewer-facepile"
         onPress={onPress}
         onHoverIn={() => setHovered(true)} onHoverOut={() => setHovered(false)}
-        onFocus={() => setFocused(true)} onBlur={() => setFocused(false)}
+        onFocus={(event) => setFocused(isHappierFocusVisible(event?.target))} onBlur={() => setFocused(false)}
         accessibilityRole="button" accessibilityLabel={label} accessibilityHint={t('session.collaboration.open')}
-        style={({ pressed }) => [styles.button, hovered && styles.hovered, focused && styles.focused, { opacity: pressed ? 0.7 : stale ? STALE_PRESENCE_OPACITY : 1 }]}
+        style={({ pressed }) => [styles.button, hovered && styles.hovered, focused && styles.focused, { opacity: pressed ? motionTokens.press.opacity : stale ? STALE_PRESENCE_OPACITY : 1 }]}
     >
         <View accessible={false} importantForAccessibility="no-hide-descendants" style={{ flexDirection: 'row', alignItems: 'center' }}>
-            {viewers.slice(0, 3).map((viewer, index) => <ViewerAvatar key={viewer.account.accountId} viewer={viewer} stale={stale} index={index} />)}
+            <AvatarStack size={AVATAR_SIZE} entries={viewers.slice(0, 3).map((viewer) => ({
+                key: viewer.account.accountId,
+                ringColor: !stale && viewer.typing ? theme.colors.text.link : undefined,
+                content: <ViewerAvatar viewer={viewer} />,
+            }))} />
             {viewers.length > 3 ? <Text testID="session-viewer-overflow" style={styles.overflow}>{`+${viewers.length - 3}`}</Text> : null}
         </View>
         {Platform.OS === 'web' && (hovered || focused) ? <DeferredAnchoredTooltip anchorRef={anchorRef} activationKey={`${hovered}:${focused}`} label={t('session.collaboration.open')} /> : null}

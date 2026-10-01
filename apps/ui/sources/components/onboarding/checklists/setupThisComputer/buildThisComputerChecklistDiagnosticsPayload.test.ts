@@ -33,6 +33,7 @@ describe('buildThisComputerChecklistDiagnosticsPayload', () => {
                 accountMismatch: true,
                 pairingRequired: true,
                 relayDriftBanner: null,
+                thisComputerConnection: null,
             },
             activeTaskSnapshot: null,
             executionById: {

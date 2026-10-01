@@ -1,8 +1,29 @@
 import { describe, expect, it } from 'vitest';
 
-import type { ConnectedServiceQuotaSnapshotV1 } from '@happier-dev/protocol';
+import type { ConnectedServiceQuotaMeterV1, ConnectedServiceQuotaSnapshotV1 } from '@happier-dev/protocol';
 
-import { computeConnectedServiceQuotaSummaryBadges } from './connectedServiceQuotaBadges';
+import { buildSummaryMeters, computeConnectedServiceQuotaSummaryBadges } from './connectedServiceQuotaBadges';
+
+describe('buildSummaryMeters', () => {
+  const meters = ['session', 'weekly', 'weekly-sonnet', 'weekly-opus', 'extra-usage'].map((meterId, index) => ({
+    meterId, label: meterId, used: null, limit: null, unit: 'unknown',
+    utilizationPct: index * 10, remainingPct: 95 - index * 10,
+    resetsAt: index + 1, status: 'ok', details: {},
+  } satisfies ConnectedServiceQuotaMeterV1));
+
+  it('preserves every reported usage window and its provider-reported values', () => {
+    expect(buildSummaryMeters(meters, [], 'primary')).toEqual(meters.map((meter) => ({
+      meterId: meter.meterId, label: meter.label, remainingPct: meter.remainingPct,
+      utilizationPct: meter.utilizationPct, status: meter.status, resetsAt: meter.resetsAt,
+    })));
+  });
+
+  it('keeps every present pinned meter in the chosen order, dropping only absent meters', () => {
+    const pinned = ['extra-usage', 'weekly-opus', 'missing', 'weekly-sonnet', 'session', 'weekly'];
+    expect(buildSummaryMeters(meters, pinned, 'primary').map((meter) => meter.meterId))
+      .toEqual(['extra-usage', 'weekly-opus', 'weekly-sonnet', 'session', 'weekly']);
+  });
+});
 
 describe('computeConnectedServiceQuotaSummaryBadges', () => {
   it('returns one badge per pinned meter in pinned order', () => {

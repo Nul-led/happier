@@ -10,7 +10,7 @@ import { Modal } from '@/modal';
 import { t } from '@/text';
 
 import { ExternalSessionImportProgressBar } from './ExternalSessionImportProgressBar';
-import { ExternalSessionOperationAccessibilityStatus } from './ExternalSessionOperationAccessibilityStatus';
+import { PoliteAccessibilityStatus } from '@/components/ui/accessibility/PoliteAccessibilityStatus';
 import {
     presentExternalSessionOperationProgress,
     type ExternalSessionOperationActionKind,
@@ -138,7 +138,7 @@ export const ExternalImportProgressCard = React.memo(function ExternalImportProg
             testID="external-session-operation-progress-card"
             accessibilityState={{ busy: pendingAction !== null }}
         >
-            <ExternalSessionOperationAccessibilityStatus
+            <PoliteAccessibilityStatus
                 announcement={accessibilityAnnouncement}
                 statusTestID="external-session-operation-a11y-status"
                 transitionKey={accessibilityTransitionKey}

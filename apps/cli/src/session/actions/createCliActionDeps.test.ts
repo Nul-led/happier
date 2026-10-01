@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createActionExecutor,
+  admitAgentStartV1,
+  SessionAgentSpawnPolicyV1StrictSchema,
   createProviderErrorV1,
   SessionSpawnNewResultV1Schema,
   type ActionExecutorContext,
@@ -688,6 +690,42 @@ type MediatedPermissionResponse = Awaited<ReturnType<
 const actionContext: ActionExecutorContext = {};
 
 describe('createCliActionDeps hook dispatch', () => {
+  it('refuses autonomous remote role edits and report copies without a trusted RPC origin', async () => {
+    const deps = createCliActionDeps({ token: 'token', credentials: { token: 'token', encryption: null },
+      sessionId: 'lead', mode: 'plain', ctx: null,
+    });
+    for (const request of [
+      { actionId: 'session.notes.set' as const, input: { sessionId: 'child', notes: 'Coordinate' } },
+      { actionId: 'session.roles.apply_to_reports' as const, input: { sessionId: 'lead' } },
+    ]) {
+      await expect(deps.roleActionExecute!({ ...request, context: { authority: 'account_automation', surface: 'agent' } }))
+        .rejects.toMatchObject({ code: 'role_rpc_origin_unavailable' });
+    }
+  });
+
+  it('refuses led-session role forwarding without an authenticated autonomous origin through the real executor', async () => {
+    const deps = createCliActionDeps({ token: 'token', credentials: { token: 'token', encryption: null },
+      sessionId: 'lead', mode: 'plain', ctx: null,
+    });
+    const executor = createActionExecutor(deps);
+    const context: ActionExecutorContext = {
+      authority: 'account_automation', surface: 'agent', defaultSessionId: 'lead', workspaceWrites: 'allow',
+      agentStartContext: { caller: { kind: 'session', sessionId: 'lead', starterDepth: 0, turnDepth: 0 },
+        baseline: { machineId: 'machine-1', directory: '/repo' }, ledSubtreeSessionIds: ['child'],
+        workDepthLimit: 4, roles: {}, callerPermissionCeiling: 'default' },
+    };
+    for (const request of [
+      { actionId: 'session.role.set' as const, input: { sessionId: 'child', roleId: 'builder' } },
+      { actionId: 'session.roles.override.set' as const, input: { sessionId: 'child', roleId: 'builder', workspaceWrites: 'deny' as const } },
+    ]) {
+      expect(await executor.execute(request.actionId, request.input, context))
+        .toMatchObject({ ok: false, errorCode: 'action_failed', error: 'role_rpc_origin_unavailable' });
+      expect(await executor.execute(request.actionId, { ...request.input, sessionId: 'unrelated' }, context))
+        .toMatchObject({ ok: false, errorCode: 'subtree_denied' });
+    }
+    expect(callSessionRpc).not.toHaveBeenCalled();
+  });
+
   beforeEach(() => {
     createSpawnedSession.mockReset();
     lookupSessionsByTags.mockReset();
@@ -743,6 +781,38 @@ describe('createCliActionDeps hook dispatch', () => {
     hostSubagentStore.complete.mockReset();
   });
 
+  it.each(['agent_cli_missing', 'agent_signed_out', 'SPAWN_VALIDATION_FAILED'] as const)(
+    'preserves %s from the daemon through real creation settlement', async (errorCode) => {
+      const realCatalog = await vi.importActual<typeof import('@/agent/catalog/snapshot')>('@/agent/catalog/snapshot');
+      readAgentCatalogSnapshot.mockImplementation(realCatalog.readAgentCatalogSnapshot);
+      const realCreation = await vi.importActual<typeof import('@/session/services/createSpawnedSession')>('@/session/services/createSpawnedSession');
+      createSpawnedSession.mockImplementation(realCreation.createSpawnedSession);
+      lookupSessionsByTags.mockResolvedValue({ state: 'available', tags: [], sessions: [] });
+      validateStoredAuthTokenAgainstActiveServer.mockResolvedValue({ state: 'valid', httpStatus: 200 });
+      const spawn = async () => ({ type: 'error' as const, errorCode, errorMessage: 'Agent setup is required.', ...(errorCode === 'SPAWN_VALIDATION_FAILED' ? {} : { agentId: 'codex' }) });
+      const deps = createCliActionDeps({
+        token: 'token', credentials: { token: 'token', encryption: null },
+        sessionId: 'sess-parent', mode: 'plain', ctx: null,
+        sessionSpawnDirectTargetTransport: {
+          machineId: 'machine-1',
+          prepare: async () => ({ ok: true, directory: '/repo', directoryKind: 'path' as const, directoryCreationRequired: false, checkout: null }),
+          spawnedSession: { spawn, resolveSpawnSessionByNonce: async () => ({ status: 'not_found' }) },
+        },
+      });
+      const result = await deps.sessionSpawnNew({
+        creationKey: SessionCreationKeyV1Schema.parse('agent-preconditions'),
+        sessionCreationTag: deriveSessionCreationTagV1({ callerCreationNamespace: 'user', creationKey: 'agent-preconditions' }),
+        executionTarget: { serverId: configuration.activeServerId, machineId: 'machine-1' },
+        directory: { kind: 'path' as const, path: '/repo' }, agentTarget: { kind: 'agent', identity: { pluginId: 'happier.agent.codex', localId: 'codex' } },
+        connectedServices: { v: 2, bindingsByServiceId: {} }, actionCaller: { kind: 'host' },
+      });
+      expect(result).toEqual(errorCode === 'SPAWN_VALIDATION_FAILED'
+        ? { type: 'error', code: 'spawn_failed', retryable: true }
+        : { type: 'error', code: errorCode, agentId: 'codex', retryable: false });
+      expect(SessionSpawnNewResultV1Schema.safeParse(result)).toMatchObject({ success: true, data: result });
+    },
+  );
+
   it.each(['provider_not_enabled_on_machine', 'provider_endpoint_unavailable'] as const)(
     'preserves %s from the daemon through real creation settlement', async (code) => {
       const realCatalog = await vi.importActual<typeof import('@/agent/catalog/snapshot')>('@/agent/catalog/snapshot');
@@ -761,7 +831,7 @@ describe('createCliActionDeps hook dispatch', () => {
         sessionId: 'sess-parent', mode: 'plain', ctx: null,
         sessionSpawnDirectTargetTransport: {
           machineId: 'machine-1',
-          prepare: async () => ({ ok: true, directory: '/repo', directoryCreationRequired: false, checkout: null }),
+          prepare: async () => ({ ok: true, directory: '/repo', directoryKind: 'path' as const, directoryCreationRequired: false, checkout: null }),
           spawnedSession: {
             spawn,
             resolveSpawnSessionByNonce: async () => ({ status: 'not_found' }),
@@ -772,11 +842,11 @@ describe('createCliActionDeps hook dispatch', () => {
         creationKey: SessionCreationKeyV1Schema.parse('provider-recovery'),
         sessionCreationTag: deriveSessionCreationTagV1({ callerCreationNamespace: 'user', creationKey: 'provider-recovery' }),
         executionTarget: { serverId: configuration.activeServerId, machineId: 'machine-1' },
-        directory: '/repo',
+        directory: { kind: 'path' as const, path: '/repo' },
         agentTarget: { kind: 'agent', identity: { pluginId: 'happier.agent.codex', localId: 'codex' } },
         modelSelection: {
           v: 1, updatedAt: 1,
-          ref: { agentTargetKey: 'backend:codex', providerConnectionId: ProviderConnectionIdSchema.parse('pc_work'), modelId: 'model-a' },
+          ref: { agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: ProviderConnectionIdSchema.parse('pc_work'), modelId: 'model-a' },
         },
         connectedServices: { v: 2, bindingsByServiceId: {} },
         actionCaller: { kind: 'host' },
@@ -789,6 +859,56 @@ describe('createCliActionDeps hook dispatch', () => {
       expect(SessionSpawnNewResultV1Schema.safeParse(result)).toMatchObject({ success: true, data: result });
     },
   );
+
+  it('reaches the daemon transport with the canonical Agent key the model selection was authored with', async () => {
+    const agentTargetKey = 'agent:happier.agent.claude/claude';
+    const realCatalog = await vi.importActual<typeof import('@/agent/catalog/snapshot')>('@/agent/catalog/snapshot');
+    readAgentCatalogSnapshot.mockImplementation(realCatalog.readAgentCatalogSnapshot);
+    const realCreation = await vi.importActual<typeof import('@/session/services/createSpawnedSession')>(
+      '@/session/services/createSpawnedSession',
+    );
+    createSpawnedSession.mockImplementation(realCreation.createSpawnedSession);
+    lookupSessionsByTags.mockResolvedValue({ state: 'available', tags: [], sessions: [] });
+    validateStoredAuthTokenAgainstActiveServer.mockResolvedValue({ state: 'valid', httpStatus: 200 });
+    const providerError = createProviderErrorV1('provider_endpoint_unavailable', { connectionId: 'pc_work', machineId: 'machine-1' });
+    const spawn = vi.fn(async () => buildProviderSpawnErrorResult(providerError));
+    const deps = createCliActionDeps({
+      token: 'token',
+      credentials: { token: 'token', encryption: null },
+      sessionId: 'sess-parent', mode: 'plain', ctx: null,
+      sessionSpawnDirectTargetTransport: {
+        machineId: 'machine-1',
+        prepare: async () => ({ ok: true, directory: '/repo', directoryKind: 'path' as const, directoryCreationRequired: false, checkout: null }),
+        spawnedSession: {
+          spawn,
+          resolveSpawnSessionByNonce: async () => ({ status: 'not_found' }),
+        },
+      },
+    });
+
+    await deps.sessionSpawnNew({
+      creationKey: SessionCreationKeyV1Schema.parse('model-selection-key'),
+      sessionCreationTag: deriveSessionCreationTagV1({ callerCreationNamespace: 'user', creationKey: 'model-selection-key' }),
+      executionTarget: { serverId: configuration.activeServerId, machineId: 'machine-1' },
+      directory: { kind: 'path' as const, path: '/repo' },
+      agentTarget: { kind: 'agent', identity: { pluginId: 'happier.agent.claude', localId: 'claude' } },
+      modelSelection: {
+        v: 1, updatedAt: 1,
+        ref: { agentTargetKey, providerConnectionId: null, modelId: 'claude-sonnet-5' },
+      },
+      connectedServices: { v: 2, bindingsByServiceId: {} },
+      actionCaller: { kind: 'host' },
+    });
+
+    // The daemon routes by the backend target but keys the selection by the one
+    // canonical Agent key, so nothing is translated at this seam.
+    expect(spawn).toHaveBeenCalledWith(expect.objectContaining({
+      backendTarget: expect.objectContaining({ backendId: 'claude' }),
+      modelSelection: expect.objectContaining({
+        ref: expect.objectContaining({ agentTargetKey, modelId: 'claude-sonnet-5' }),
+      }),
+    }), undefined);
+  });
 
   it('routes a filtered Session list through the canonical list service with both scope and cancellation', async () => {
     const query = {
@@ -1143,7 +1263,7 @@ describe('createCliActionDeps hook dispatch', () => {
       sessionId: 'sess-1',
       modelId: 'model-a',
       activeSelection: {
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         providerConnectionId: ProviderConnectionIdSchema.parse('pc_work'),
         modelId: 'model-a',
       },
@@ -1169,7 +1289,7 @@ describe('createCliActionDeps hook dispatch', () => {
       sessionId: 'sess-1',
       modelId: 'model-a',
       activeSelection: {
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         providerConnectionId: 'pc_work',
         modelId: 'model-a',
       },
@@ -1184,7 +1304,7 @@ describe('createCliActionDeps hook dispatch', () => {
 
   it('preserves the inactive intent owner timestamp and structured selection', async () => {
     const selection = {
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       providerConnectionId: ProviderConnectionIdSchema.parse('pc_work'),
       modelId: 'model-a',
     };
@@ -1229,12 +1349,12 @@ describe('createCliActionDeps hook dispatch', () => {
       status: 'restart_required',
       sessionId: 'sess-1',
       activeSelection: {
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         providerConnectionId: ProviderConnectionIdSchema.parse('pc_work'),
         modelId: 'model-old',
       },
       requestedSelection: {
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         providerConnectionId: ProviderConnectionIdSchema.parse('pc_other'),
         modelId: 'model-a',
       },
@@ -1262,12 +1382,12 @@ describe('createCliActionDeps hook dispatch', () => {
       details: {
         status: 'restart_required',
         activeSelection: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: 'pc_work',
           modelId: 'model-old',
         },
         requestedSelection: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: 'pc_other',
           modelId: 'model-a',
         },
@@ -1289,7 +1409,7 @@ describe('createCliActionDeps hook dispatch', () => {
     callMachineRpc.mockResolvedValue({
       ok: true,
       directory: '/repo/exact',
-      directoryCreationRequired: false,
+      directoryKind: 'path' as const, directoryCreationRequired: false,
       checkout: null,
     });
     createSpawnedSession.mockImplementation(async (input) => {
@@ -1318,6 +1438,7 @@ describe('createCliActionDeps hook dispatch', () => {
         meta: {
           happierStructuredInputV1: {
             v: 1,
+            mentions: [{ kind: 'partner.reference', ref: 'partner:issue-42', token: '@issue' }],
             composerAttachments: [{
               v: 1,
               instanceId: 'plugin-input-v1:spawn-transport#0',
@@ -1367,7 +1488,7 @@ describe('createCliActionDeps hook dispatch', () => {
         serverId: configuration.activeServerId,
         machineId: 'machine-exact',
       },
-      directory: '/repo/exact',
+      directory: { kind: 'path' as const, path: '/repo/exact' },
       organizationPlacement: {
         folderId: 'folder-1',
         tagIds: ['tag-b', 'tag-a'],
@@ -1383,7 +1504,7 @@ describe('createCliActionDeps hook dispatch', () => {
         v: 1,
         updatedAt: 4,
         ref: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: null,
           modelId: 'gpt-5',
         },
@@ -1391,6 +1512,7 @@ describe('createCliActionDeps hook dispatch', () => {
       title: 'Atomic title',
       initialInput: {
         text: 'Inspect the repository',
+        structuredInput: { v: 1, mentions: [{ kind: 'partner.reference', ref: 'partner:issue-42', token: '@issue' }] },
         attachments: [{
           attachmentLocalId: 'entry',
           value: {
@@ -1440,6 +1562,7 @@ describe('createCliActionDeps hook dispatch', () => {
       initialTitle: 'Atomic title',
       initialInput: {
         text: 'Inspect the repository',
+        structuredInput: { v: 1, mentions: [{ kind: 'partner.reference', ref: 'partner:issue-42', token: '@issue' }] },
         attachments: [{
           attachmentLocalId: 'entry',
           value: {
@@ -1461,7 +1584,7 @@ describe('createCliActionDeps hook dispatch', () => {
         recipe: expect.objectContaining({
           execution: {
             machineId: 'machine-exact',
-            directory: '/repo/exact',
+            directory: { kind: 'path' as const, path: '/repo/exact' },
           },
           organization: {
             folderId: 'folder-1',
@@ -1499,7 +1622,7 @@ describe('createCliActionDeps hook dispatch', () => {
     const prepare = vi.fn(async () => ({
       ok: true as const,
       directory: '/repo/direct',
-      directoryCreationRequired: false,
+      directoryKind: 'path' as const, directoryCreationRequired: false,
       checkout: null,
     }));
     const spawnedSession = {
@@ -1541,7 +1664,7 @@ describe('createCliActionDeps hook dispatch', () => {
         serverId: 'srv_account_current',
         machineId: 'machine-exact',
       },
-      directory: '/repo/direct',
+      directory: { kind: 'path' as const, path: '/repo/direct' },
       organizationPlacement: { folderId: null, tagIds: [] },
       placementOrigin: {
         kind: 'machine_pool',
@@ -1569,7 +1692,13 @@ describe('createCliActionDeps hook dispatch', () => {
     });
 
     expect(prepare).toHaveBeenCalledWith(
-      { directory: '/repo/direct' },
+      {
+        directory: { kind: 'path', path: '/repo/direct' },
+        sessionCreationTag: deriveSessionCreationTagV1({
+          callerCreationNamespace: 'automation:automation-1',
+          creationKey: 'automation-run:run-1',
+        }),
+      },
       { signal: controller.signal },
     );
     expect(createSpawnedSession).toHaveBeenCalledWith(expect.objectContaining({
@@ -1598,7 +1727,7 @@ describe('createCliActionDeps hook dispatch', () => {
     callMachineRpc.mockResolvedValue({
       ok: true,
       directory: '/repo/exact',
-      directoryCreationRequired: false,
+      directoryKind: 'path' as const, directoryCreationRequired: false,
       checkout: null,
     });
     readMachineOperationProtocolCapabilitiesV1.mockResolvedValue({
@@ -1623,7 +1752,7 @@ describe('createCliActionDeps hook dispatch', () => {
       creationKey: SessionCreationKeyV1Schema.parse('pool-origin-supported'),
       sessionCreationTag: deriveSessionCreationTagV1({ callerCreationNamespace: 'user', creationKey: 'pool-origin-supported' }),
       executionTarget: { serverId: configuration.activeServerId, machineId: 'machine-exact' },
-      directory: '/repo/exact',
+      directory: { kind: 'path' as const, path: '/repo/exact' },
       placementOrigin,
       agentTarget: {
         kind: 'agent',
@@ -1649,7 +1778,7 @@ describe('createCliActionDeps hook dispatch', () => {
     callMachineRpc.mockResolvedValue({
       ok: true,
       directory: '/repo/exact',
-      directoryCreationRequired: false,
+      directoryKind: 'path' as const, directoryCreationRequired: false,
       checkout: null,
     });
     readMachineOperationProtocolCapabilitiesV1.mockResolvedValue({
@@ -1671,7 +1800,7 @@ describe('createCliActionDeps hook dispatch', () => {
       creationKey: SessionCreationKeyV1Schema.parse('pool-origin-unsupported'),
       sessionCreationTag: deriveSessionCreationTagV1({ callerCreationNamespace: 'user', creationKey: 'pool-origin-unsupported' }),
       executionTarget: { serverId: configuration.activeServerId, machineId: 'machine-exact' },
-      directory: '/repo/exact',
+      directory: { kind: 'path' as const, path: '/repo/exact' },
       placementOrigin,
       agentTarget: {
         kind: 'agent',
@@ -1693,7 +1822,7 @@ describe('createCliActionDeps hook dispatch', () => {
         encryption: { type: 'legacy' as const, secret: new Uint8Array([1, 2, 3, 4]) },
       },
       sessionId: 'parent-session',
-      rawSession: { path: '/repo/current', machineId: 'machine-current' },
+      rawSession: { path: '/repo/current', machineId: 'machine-current', workDepth: 0 },
       getCurrentSessionBackendTarget: () => ({
         kind: 'backend',
         backendId: 'codex',
@@ -1702,7 +1831,7 @@ describe('createCliActionDeps hook dispatch', () => {
       mode: 'plain',
       ctx: null,
     });
-    const policy = {
+    const policy = SessionAgentSpawnPolicyV1StrictSchema.parse({
       v: 1 as const,
       allowCustomDirectory: false,
       allowCrossMachine: false,
@@ -1716,33 +1845,31 @@ describe('createCliActionDeps hook dispatch', () => {
       allowMcpSelectionOverride: false,
       allowTranscriptStorageOverride: false,
       permissionCeiling: null,
-    };
+    });
     const baseInput = {
       creationKey: SessionCreationKeyV1Schema.parse('agent-child'),
       executionTarget: { serverId: configuration.activeServerId, machineId: 'machine-current' },
-      directory: '/repo/current',
+      directory: { kind: 'path' as const, path: '/repo/current' },
       agentTarget: {
         kind: 'agent' as const,
         identity: { pluginId: 'happier.agent.codex', localId: 'codex' },
       },
     };
 
-    await expect(deps.sessionSpawnNewAgentPolicyPreflight?.({ input: baseInput, policy }))
-      .resolves.toEqual({ type: 'allowed' });
-    await expect(deps.sessionSpawnNewAgentPolicyPreflight?.({
-      input: {
-        ...baseInput,
-        executionTarget: { ...baseInput.executionTarget, machineId: 'machine-other' },
-      },
-      policy,
-    })).resolves.toEqual({ type: 'denied', field: 'executionTarget.machineId' });
+    const context = await deps.resolveAgentStartContext?.({ defaultSessionId: 'parent-session', callerPermissionMode: 'default' });
+    expect(context).not.toBeNull();
+    if (!context) throw new Error('parent snapshot unavailable');
+    const facts = { machineId: baseInput.executionTarget.machineId, directory: baseInput.directory.path, agentTarget: baseInput.agentTarget };
+    expect(admitAgentStartV1(policy, { kind: 'spawn_new', facts }, context)).toMatchObject({ ok: true });
+    expect(admitAgentStartV1(policy, { kind: 'spawn_new', facts: { ...facts, machineId: 'machine-other' } }, context))
+      .toMatchObject({ ok: false, refusal: { code: 'policy_denied_field', field: 'executionTarget.machineId' } });
   });
 
   it('preserves a portable Account server identity in target-owned directory approval on the exact daemon', async () => {
     const prepare = vi.fn(async () => ({
       ok: true as const,
       directory: '/repo/new-directory',
-      directoryCreationRequired: true,
+      directoryKind: 'path' as const, directoryCreationRequired: true,
       checkout: null,
     }));
     const input = {
@@ -1751,7 +1878,7 @@ describe('createCliActionDeps hook dispatch', () => {
         serverId: 'srv_account_current',
         machineId: 'machine-exact',
       },
-      directory: '/repo/new-directory',
+      directory: { kind: 'path' as const, path: '/repo/new-directory' },
       agentTarget: {
         kind: 'agent' as const,
         identity: {
@@ -1804,7 +1931,7 @@ describe('createCliActionDeps hook dispatch', () => {
         serverId: configuration.activeServerId,
         machineId: 'machine-exact',
       },
-      directory: '/repo/new-directory',
+      directory: { kind: 'path' as const, path: '/repo/new-directory' },
       agentTarget: {
         kind: 'agent' as const,
         identity: {
@@ -1820,7 +1947,7 @@ describe('createCliActionDeps hook dispatch', () => {
     callMachineRpc.mockResolvedValue({
       ok: true,
       directory: '/repo/new-directory',
-      directoryCreationRequired: true,
+      directoryKind: 'path' as const, directoryCreationRequired: true,
       checkout: null,
     });
     createSpawnedSession.mockResolvedValue({
@@ -1906,7 +2033,7 @@ describe('createCliActionDeps hook dispatch', () => {
         serverId: configuration.activeServerId,
         machineId: 'machine-exact',
       },
-      directory: '/repo',
+      directory: { kind: 'path' as const, path: '/repo' },
       agentTarget: {
         kind: 'agent' as const,
         identity: { pluginId: 'happier.agent.codex', localId: 'codex' },
@@ -1925,7 +2052,7 @@ describe('createCliActionDeps hook dispatch', () => {
     callMachineRpc.mockResolvedValue({
       ok: true,
       directory: '/repo',
-      directoryCreationRequired: false,
+      directoryKind: 'path' as const, directoryCreationRequired: false,
       checkout: null,
     });
     fetchSessionByIdCompat.mockResolvedValue({ share: null, machineId: 'machine-exact' });
@@ -2001,7 +2128,7 @@ describe('createCliActionDeps hook dispatch', () => {
     callMachineRpc.mockResolvedValue({
       ok: true,
       directory: '/repo',
-      directoryCreationRequired: false,
+      directoryKind: 'path' as const, directoryCreationRequired: false,
       checkout: null,
     });
     createSpawnedSession.mockResolvedValue({
@@ -2028,7 +2155,7 @@ describe('createCliActionDeps hook dispatch', () => {
         serverId: configuration.activeServerId,
         machineId: 'machine-exact',
       },
-      directory: '/repo',
+      directory: { kind: 'path' as const, path: '/repo' },
       agentTarget: {
         kind: 'agent',
         identity: { pluginId: 'happier.agent.codex', localId: 'codex' },
@@ -2059,7 +2186,7 @@ describe('createCliActionDeps hook dispatch', () => {
         serverId: configuration.activeServerId,
         machineId: 'machine-exact',
       },
-      directory: '/repo',
+      directory: { kind: 'path' as const, path: '/repo' },
       agentTarget: {
         kind: 'agent' as const,
         identity: { pluginId: 'happier.agent.codex', localId: 'codex' },
@@ -2074,7 +2201,7 @@ describe('createCliActionDeps hook dispatch', () => {
     callMachineRpc.mockResolvedValue({
       ok: true,
       directory: '/repo',
-      directoryCreationRequired: false,
+      directoryKind: 'path' as const, directoryCreationRequired: false,
       checkout: null,
     });
     fetchSessionByIdCompat.mockResolvedValue({
@@ -2129,7 +2256,7 @@ describe('createCliActionDeps hook dispatch', () => {
         serverId: configuration.activeServerId,
         machineId: 'machine-exact',
       },
-      directory: '/repo',
+      directory: { kind: 'path' as const, path: '/repo' },
       agentTarget: {
         kind: 'agent' as const,
         identity: { pluginId: 'happier.agent.codex', localId: 'codex' },
@@ -2144,7 +2271,7 @@ describe('createCliActionDeps hook dispatch', () => {
     const prepare = vi.fn().mockResolvedValue({
       ok: true,
       directory: '/repo',
-      directoryCreationRequired: false,
+      directoryKind: 'path' as const, directoryCreationRequired: false,
       checkout: null,
     });
     fetchSessionByIdCompat.mockResolvedValue({ share: null, machineId: 'source-machine' });
@@ -2204,7 +2331,7 @@ describe('createCliActionDeps hook dispatch', () => {
         serverId: configuration.activeServerId,
         machineId: 'machine-exact',
       },
-      directory: '/repo',
+      directory: { kind: 'path' as const, path: '/repo' },
       agentTarget: {
         kind: 'agent' as const,
         identity: { pluginId: 'happier.agent.codex', localId: 'codex' },
@@ -2220,7 +2347,7 @@ describe('createCliActionDeps hook dispatch', () => {
     const prepare = vi.fn().mockResolvedValue({
       ok: true,
       directory: '/repo/.dev/worktree/replay',
-      directoryCreationRequired: false,
+      directoryKind: 'path' as const, directoryCreationRequired: false,
       checkout: {
         kind: 'git_worktree',
         finalDirectory: '/repo/.dev/worktree/replay',
@@ -2290,7 +2417,7 @@ describe('createCliActionDeps hook dispatch', () => {
         prepare: vi.fn().mockResolvedValue({
           ok: true,
           directory: '/repo/.dev/worktree/reused',
-          directoryCreationRequired: false,
+          directoryKind: 'path' as const, directoryCreationRequired: false,
           checkout: {
             kind: 'git_worktree',
             finalDirectory: '/repo/.dev/worktree/reused',
@@ -2314,7 +2441,7 @@ describe('createCliActionDeps hook dispatch', () => {
         serverId: configuration.activeServerId,
         machineId: 'machine-exact',
       },
-      directory: '/repo',
+      directory: { kind: 'path' as const, path: '/repo' },
       agentTarget: {
         kind: 'agent',
         identity: { pluginId: 'happier.agent.codex', localId: 'codex' },
@@ -2366,7 +2493,7 @@ describe('createCliActionDeps hook dispatch', () => {
         serverId: configuration.activeServerId,
         machineId: 'different-machine',
       },
-      directory: '/repo/direct',
+      directory: { kind: 'path' as const, path: '/repo/direct' },
       organizationPlacement: { folderId: null, tagIds: [] },
       agentTarget: {
         kind: 'agent',
@@ -2420,7 +2547,7 @@ describe('createCliActionDeps hook dispatch', () => {
     callMachineRpc.mockResolvedValue({
       ok: true,
       directory: '/workspace/project',
-      directoryCreationRequired: false,
+      directoryKind: 'path' as const, directoryCreationRequired: false,
       checkout: null,
     });
     createSpawnedSession.mockResolvedValue({
@@ -2473,7 +2600,7 @@ describe('createCliActionDeps hook dispatch', () => {
     callMachineRpc.mockResolvedValue({
       ok: true,
       directory: '/repo/.dev/worktree/feature-session',
-      directoryCreationRequired: false,
+      directoryKind: 'path' as const, directoryCreationRequired: false,
       checkout: {
         kind: 'git_worktree',
         finalDirectory: '/repo/.dev/worktree/feature-session',
@@ -2506,7 +2633,7 @@ describe('createCliActionDeps hook dispatch', () => {
         serverId: configuration.activeServerId,
         machineId: 'machine-exact',
       },
-      directory: '~/repo',
+      directory: { kind: 'path' as const, path: '~/repo' },
       checkoutCreationDraft: {
         kind: 'git_worktree',
         displayName: 'feature-session',
@@ -2546,7 +2673,7 @@ describe('createCliActionDeps hook dispatch', () => {
         recipe: expect.objectContaining({
           execution: {
             machineId: 'machine-exact',
-            directory: '/repo/.dev/worktree/feature-session',
+            directory: { kind: 'path' as const, path: '/repo/.dev/worktree/feature-session' },
           },
           checkout: {
             kind: 'git_worktree',
@@ -2563,7 +2690,7 @@ describe('createCliActionDeps hook dispatch', () => {
     callMachineRpc.mockResolvedValue({
       ok: true,
       directory: '/repo/exact',
-      directoryCreationRequired: false,
+      directoryKind: 'path' as const, directoryCreationRequired: false,
       checkout: null,
     });
     createSpawnedSession.mockResolvedValue({
@@ -2595,7 +2722,7 @@ describe('createCliActionDeps hook dispatch', () => {
         serverId: configuration.activeServerId,
         machineId: 'machine-exact',
       },
-      directory: '/repo/exact',
+      directory: { kind: 'path' as const, path: '/repo/exact' },
       agentTarget: {
         kind: 'agent',
         identity: {
@@ -2628,7 +2755,7 @@ describe('createCliActionDeps hook dispatch', () => {
     callMachineRpc.mockResolvedValue({
       ok: true,
       directory: '/repo/exact',
-      directoryCreationRequired: false,
+      directoryKind: 'path' as const, directoryCreationRequired: false,
       checkout: {
         kind: 'git_worktree',
         finalDirectory: '/repo/exact',
@@ -2662,7 +2789,7 @@ describe('createCliActionDeps hook dispatch', () => {
         serverId: configuration.activeServerId,
         machineId: 'machine-exact',
       },
-      directory: '/repo/exact',
+      directory: { kind: 'path' as const, path: '/repo/exact' },
       agentTarget: {
         kind: 'agent',
         identity: {
@@ -2685,7 +2812,7 @@ describe('createCliActionDeps hook dispatch', () => {
     callMachineRpc.mockResolvedValue({
       ok: true,
       directory: '/repo/exact',
-      directoryCreationRequired: false,
+      directoryKind: 'path' as const, directoryCreationRequired: false,
       checkout: null,
     });
     const error = new Error('opaque daemon wording') as Error & {
@@ -2724,7 +2851,7 @@ describe('createCliActionDeps hook dispatch', () => {
         serverId: configuration.activeServerId,
         machineId: 'machine-exact',
       },
-      directory: '/repo/exact',
+      directory: { kind: 'path' as const, path: '/repo/exact' },
       organizationPlacement: { folderId: 'folder-invalid', tagIds: [] },
       agentTarget: {
         kind: 'agent',
@@ -2745,7 +2872,7 @@ describe('createCliActionDeps hook dispatch', () => {
     callMachineRpc.mockResolvedValue({
       ok: true,
       directory: '/repo/exact',
-      directoryCreationRequired: false,
+      directoryKind: 'path' as const, directoryCreationRequired: false,
       checkout: null,
     });
     const error = new Error('opaque daemon wording') as Error & {
@@ -2784,7 +2911,7 @@ describe('createCliActionDeps hook dispatch', () => {
         serverId: configuration.activeServerId,
         machineId: 'machine-exact',
       },
-      directory: '/repo/exact',
+      directory: { kind: 'path' as const, path: '/repo/exact' },
       agentTarget: {
         kind: 'agent',
         identity: {
@@ -2804,7 +2931,7 @@ describe('createCliActionDeps hook dispatch', () => {
     callMachineRpc.mockResolvedValue({
       ok: true,
       directory: '/repo/exact',
-      directoryCreationRequired: false,
+      directoryKind: 'path' as const, directoryCreationRequired: false,
       checkout: null,
     });
     const controller = new AbortController();
@@ -2840,7 +2967,7 @@ describe('createCliActionDeps hook dispatch', () => {
         serverId: configuration.activeServerId,
         machineId: 'machine-exact',
       },
-      directory: '/repo/exact',
+      directory: { kind: 'path' as const, path: '/repo/exact' },
       agentTarget: {
         kind: 'agent',
         identity: {
@@ -2884,7 +3011,7 @@ describe('createCliActionDeps hook dispatch', () => {
         serverId: configuration.activeServerId,
         machineId: 'machine-exact',
       },
-      directory: '~/repo',
+      directory: { kind: 'path' as const, path: '~/repo' },
       checkoutCreationDraft: {
         kind: 'git_worktree',
         displayName: 'feature-timeout',
@@ -2930,7 +3057,7 @@ describe('createCliActionDeps hook dispatch', () => {
         serverId: configuration.activeServerId,
         machineId: 'machine-exact',
       },
-      directory: '/repo/exact',
+      directory: { kind: 'path' as const, path: '/repo/exact' },
       agentTarget: {
         kind: 'agent',
         identity: {
@@ -2951,7 +3078,7 @@ describe('createCliActionDeps hook dispatch', () => {
     callMachineRpc.mockResolvedValue({
       ok: true,
       directory: '/repo/exact',
-      directoryCreationRequired: false,
+      directoryKind: 'path' as const, directoryCreationRequired: false,
       checkout: null,
     });
     const error = new Error('The exact machine does not expose session spawning');
@@ -2979,7 +3106,7 @@ describe('createCliActionDeps hook dispatch', () => {
         serverId: configuration.activeServerId,
         machineId: 'machine-exact',
       },
-      directory: '/repo/exact',
+      directory: { kind: 'path' as const, path: '/repo/exact' },
       agentTarget: {
         kind: 'agent',
         identity: {
@@ -3021,7 +3148,7 @@ describe('createCliActionDeps hook dispatch', () => {
         serverId: 'different-server',
         machineId: 'machine-exact',
       },
-      directory: '/repo/exact',
+      directory: { kind: 'path' as const, path: '/repo/exact' },
       agentTarget: {
         kind: 'agent' as const,
         identity: {
@@ -3092,7 +3219,7 @@ describe('createCliActionDeps hook dispatch', () => {
         serverId: configuration.activeServerId,
         machineId: 'machine-incompatible',
       },
-      directory: '/repo/exact',
+      directory: { kind: 'path' as const, path: '/repo/exact' },
       agentTarget: {
         kind: 'agent',
         identity: {
@@ -3144,7 +3271,7 @@ describe('createCliActionDeps hook dispatch', () => {
         serverId: configuration.activeServerId,
         machineId: 'machine-v1-only',
       },
-      directory: '/repo/exact',
+      directory: { kind: 'path' as const, path: '/repo/exact' },
       agentTarget: {
         kind: 'agent',
         identity: {
@@ -5309,7 +5436,7 @@ describe('Session initial-access spawn settlement', () => {
         prepare: async () => ({
           ok: true,
           directory: '/repo',
-          directoryCreationRequired: false,
+          directoryKind: 'path' as const, directoryCreationRequired: false,
           checkout: null,
         }),
         spawnedSession: {
@@ -5330,7 +5457,7 @@ describe('Session initial-access spawn settlement', () => {
         serverId: configuration.activeServerId,
         machineId: 'machine-1',
       },
-      directory: '/repo',
+      directory: { kind: 'path' as const, path: '/repo' },
       agentTarget: {
         kind: 'agent',
         identity: {

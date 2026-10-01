@@ -2,7 +2,8 @@ import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { renderScreen, standardCleanup } from '@/dev/testkit';
+import { renderHook, renderScreen as renderBaseScreen, standardCleanup } from '@/dev/testkit';
+import { AppSessionTranscriptSourceProvider, useTranscriptMachineId } from '../source/appSessionTranscriptSource';
 import { storage } from '@/sync/domains/state/storageStore';
 import { useSession } from '@/sync/domains/state/storage';
 import type { SessionAgentTransitionDividerV1 } from '@happier-dev/protocol';
@@ -10,11 +11,6 @@ import type { SessionAgentTransitionDividerV1 } from '@happier-dev/protocol';
 import { AgentTransitionDividerRow } from './AgentTransitionDividerRow';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-
-vi.mock('@/sync/runtime/orchestration/serverScopedRpc/resolvePreferredServerIdForSessionId', () => ({
-    resolveServerIdForSessionIdFromLocalCache: () => 'server-1',
-    resolvePreferredServerIdForSessionId: () => 'server-1',
-}));
 
 const modalMock = vi.hoisted(() => ({ show: vi.fn((_config: unknown) => 'modal-id') }));
 
@@ -24,6 +20,11 @@ vi.mock('@/modal', async () => {
 });
 
 const SESSION_ID = 'agent-transition-divider-subscription-width';
+const SERVER_ID = 'server-1';
+
+function renderScreen(element: React.ReactElement) {
+    return renderBaseScreen(<AppSessionTranscriptSourceProvider sessionId={SESSION_ID} serverId={SERVER_ID}>{element}</AppSessionTranscriptSourceProvider>);
+}
 
 const DIVIDER: SessionAgentTransitionDividerV1 = {
     v: 1,
@@ -47,6 +48,7 @@ function seedSession(patch: Record<string, unknown>): void {
             ...state.sessions,
             [SESSION_ID]: {
                 id: SESSION_ID,
+                serverId: SERVER_ID,
                 seq: 1,
                 createdAt: 0,
                 updatedAt: 0,
@@ -88,6 +90,24 @@ describe('Agent transition divider subscription width', () => {
     afterEach(() => {
         standardCleanup();
         storage.setState(previousState, true);
+    });
+
+    it('keeps the app source machine selector narrow during unrelated Session writes', async () => {
+        seedSession({});
+        let renders = 0;
+        const hook = await renderHook(() => { renders += 1; return useTranscriptMachineId(); }, {
+            wrapper: (props) => <AppSessionTranscriptSourceProvider sessionId={SESSION_ID} serverId={SERVER_ID}>{props.children}</AppSessionTranscriptSourceProvider>,
+        });
+        expect(hook.getCurrent()).toBe('machine-owner');
+        const before = renders;
+
+        await act(async () => { seedSession({ thinking: true, agentState: {}, agentStateVersion: 1, seq: 2 }); });
+        expect(renders).toBe(before);
+
+        await act(async () => { seedSession({ ownerMetadataView: { path: '/w', host: 'h', machineId: 'machine-moved' } }); });
+        expect(hook.getCurrent()).toBe('machine-moved');
+        expect(renders).toBe(before + 1);
+        await hook.unmount();
     });
 
     it('does not re-render while turn-lifecycle session fields churn, where a whole-record subscriber does', async () => {

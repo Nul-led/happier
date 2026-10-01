@@ -136,19 +136,6 @@ function resolveActiveRouteKinds(
     return routeKinds;
 }
 
-/**
- * 0.2 apiMachine registers daemon.bulkTransfer RPCs without a transfer state
- * declaration. Absence permits the existing RPC probe, never establishes route
- * viability. Remove this reader bridge when those predecessors are unsupported.
- */
-export function isMachineDaemonLegacyTransferRpcEligible(daemonState: unknown): boolean {
-    if (!daemonState || typeof daemonState !== 'object' || Array.isArray(daemonState)) return false;
-    if (!Object.prototype.hasOwnProperty.call(daemonState, 'transfer')) {
-        return typeof (daemonState as Record<string, unknown>).status === 'string';
-    }
-    return isMachineDaemonFiniteTransferApplicationSupported(daemonState);
-}
-
 /** Exact current daemon declaration required before the shared endpoint carries finite transfers. */
 export function isMachineDaemonFiniteTransferApplicationSupported(daemonState: unknown): boolean {
     const declared = readMachineDaemonTransferState({ daemonState });

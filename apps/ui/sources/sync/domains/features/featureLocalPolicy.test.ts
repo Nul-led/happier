@@ -28,12 +28,19 @@ describe('featureLocalPolicy', () => {
         })).toBe(true);
     });
 
-    it('disables connectedServices.quotas by default when experiments are on', () => {
+    it('shows connected-account usage wherever the Home serves it, with no local switch to turn it off', () => {
+        // Only the Home's own feature bit decides; the retired experimental toggle, even if an
+        // account still stores it as off, no longer does.
+        expect(resolveLocalFeaturePolicyEnabled('connectedServices.quotas', {
+            ...settingsDefaults,
+            experiments: false,
+            featureToggles: {},
+        })).toBe(true);
         expect(resolveLocalFeaturePolicyEnabled('connectedServices.quotas', {
             ...settingsDefaults,
             experiments: true,
-            featureToggles: {},
-        })).toBe(false);
+            featureToggles: { 'connectedServices.quotas': false },
+        })).toBe(true);
     });
 
     it('disables app.ui.liveActivities by default when experiments are on', () => {
@@ -65,14 +72,6 @@ describe('featureLocalPolicy', () => {
             ...settingsDefaults,
             experiments: true,
             featureToggles: { 'app.ui.homeScreenWidgets': true },
-        })).toBe(true);
-    });
-
-    it('enables connectedServices.quotas when explicitly enabled', () => {
-        expect(resolveLocalFeaturePolicyEnabled('connectedServices.quotas', {
-            ...settingsDefaults,
-            experiments: true,
-            featureToggles: { 'connectedServices.quotas': true },
         })).toBe(true);
     });
 
@@ -308,47 +307,41 @@ describe('featureLocalPolicy', () => {
         })).not.toThrow();
     });
 
-    it('defers browser.automation to the server decision and keeps the finer eval tiers fail-closed', () => {
+    it('defers browser.automation to the server decision without dormant local opt-in tiers', () => {
         // §13.4: browser.automation is server-represented + default-ALLOW. The UI local policy must
         // NOT force it closed (that would override the now-ON server bit, since a server-represented
         // decision combines `localPolicyEnabled && serverEnabled`). It defers via the unlisted-id
-        // fallback (returns true). The finer injectedPage/eval tiers stay client + fail-closed.
+        // fallback (returns true). Dormant env-only tiers do not add another policy decision.
         const settings = { ...settingsDefaults, experiments: true, featureToggles: {} };
         expect(resolveLocalFeaturePolicyEnabled('browser.automation', settings)).toBe(true);
-        expect(resolveLocalFeaturePolicyEnabled('browser.automation.injectedPage', settings)).toBe(false);
-        expect(resolveLocalFeaturePolicyEnabled('browser.automation.eval', settings)).toBe(false);
+        expect(resolveLocalFeaturePolicyEnabled('browser.automation.injectedPage', settings)).toBe(true);
+        expect(resolveLocalFeaturePolicyEnabled('browser.automation.eval', settings)).toBe(true);
     });
 
-    it('defers server-represented plugin UI tiers to the server decision and keeps dev hot reload fail-closed', () => {
+    it('defers server-represented plugin UI tiers to the server decision', () => {
         // §4.1/§13.5.3: hostedWeb / reactNativeBundles are
         // server-represented + default-ALLOW kill-switches. The UI local policy must NOT force them
         // closed (that would override the now-ON server bit, since a server-represented decision
         // combines `localPolicyEnabled && serverEnabled`). They defer via the unlisted-id fallback
         // (returns true). Per-plugin install/enable/trust/runtime derivation (5.1/5.2) still governs
-        // actual render. The finer dev-only hot-reload tier stays client + fail-closed.
+        // actual render.
         const settings = { ...settingsDefaults, experiments: true, featureToggles: {} };
         expect(resolveLocalFeaturePolicyEnabled('plugins.ui.hostedWeb', settings)).toBe(true);
         expect(resolveLocalFeaturePolicyEnabled('plugins.ui.reactNativeBundles', settings)).toBe(true);
-        expect(resolveLocalFeaturePolicyEnabled('plugins.ui.reactNativeBundles.devHotReload', settings)).toBe(false);
     });
 
-    it('resolves the client fail-closed browser/plugin opt-in tiers from a REAL env flag (never a hardcoded false)', () => {
-        // A6 / PATCH-04: the injectedPage/eval/devHotReload tiers are fail-closed but the opt-in must
-        // genuinely exist (mirror the CLI featureLocalPolicy env opt-in). With the env flag set the
-        // resolver returns true — proving the value comes from env, not a dead `() => false` constant.
+    it('ignores retired browser automation env opt-ins', () => {
         const settings = { ...settingsDefaults, experiments: true, featureToggles: {} };
         const env = process.env as Record<string, string | undefined>;
         const keys = [
             'EXPO_PUBLIC_HAPPIER_FEATURE_BROWSER_AUTOMATION_INJECTED_PAGE__ENABLED',
             'EXPO_PUBLIC_HAPPIER_FEATURE_BROWSER_AUTOMATION_EVAL__ENABLED',
-            'EXPO_PUBLIC_HAPPIER_FEATURE_PLUGINS_UI_REACT_NATIVE_BUNDLES_DEV_HOT_RELOAD__ENABLED',
         ] as const;
         const backup = keys.map((key) => [key, env[key]] as const);
         try {
-            for (const key of keys) env[key] = '1';
+            for (const key of keys) env[key] = '0';
             expect(resolveLocalFeaturePolicyEnabled('browser.automation.injectedPage', settings)).toBe(true);
             expect(resolveLocalFeaturePolicyEnabled('browser.automation.eval', settings)).toBe(true);
-            expect(resolveLocalFeaturePolicyEnabled('plugins.ui.reactNativeBundles.devHotReload', settings)).toBe(true);
         } finally {
             for (const [key, value] of backup) {
                 if (typeof value === 'string') env[key] = value; else delete env[key];

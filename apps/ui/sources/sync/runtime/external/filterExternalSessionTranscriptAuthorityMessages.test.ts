@@ -17,6 +17,13 @@ function message(overrides: Record<string, unknown> = {}) {
 }
 
 describe('filterExternalSessionTranscriptAuthorityMessages', () => {
+    it('applies the same publication authority to content-free metadata refreshes', () => {
+        const metadata = { id: 'server-row-1', localId: liveId, seq: 4, accountActor: null };
+        expect(filterExternalSessionTranscriptAuthorityMessages([metadata], { kind: 'live_agent', sourceKey: 'source-1' })).toEqual([]);
+        expect(filterExternalSessionTranscriptAuthorityMessages([metadata], { kind: 'server_snapshot', maxServerSeq: 3, materializedThroughSourceAt: 1 })).toEqual([]);
+        expect(filterExternalSessionTranscriptAuthorityMessages([metadata], { kind: 'server_snapshot', maxServerSeq: 4, materializedThroughSourceAt: 1 }))
+            .toEqual([{ ...metadata, id: liveId }]);
+    });
     it('never peer-applies persisted server ids while live Agent authority is selected', () => {
         expect(filterExternalSessionTranscriptAuthorityMessages(
             [message(), message({ id: liveId, seq: undefined })],

@@ -2,7 +2,7 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import tweetnacl from 'tweetnacl';
 import axios from 'axios';
@@ -15,6 +15,8 @@ import {
   normalizeActionsSettingsV1,
   sealEncryptedDataKeyEnvelopeV1,
   SPAWN_SESSION_ERROR_CODES,
+  createActionExecutor,
+  type ActionExecutorDeps,
 } from '@happier-dev/protocol';
 import {
   buildTestCodexRuntimeDescriptorV1 as buildCodexAgentRuntimeDescriptor,
@@ -32,6 +34,12 @@ import { setActiveAccountSettingsSnapshot } from '@/settings/accountSettings/act
 import { createAuthenticationHttpStatusError } from '@/api/client/httpStatusError';
 import { createExternalSessionOperationExclusion } from '@/session/external/operationExclusion';
 import { createTestExecutionRunHostRuntime } from '@/agent/runtime/bridges/executionRun/testkit';
+import type { RpcHandler, RpcHandlerContext } from '@/api/rpc/types';
+import { configuration } from '@/configuration';
+import { runGit } from '@/scm/rpc/__tests__/testRpcHarness';
+import { pluginReloadController } from '@/plugins/runtime/reload/singleton';
+import { resolveExecutablePluginRuntimeRegistry } from '@/plugins/runtime/resolveExecutablePluginRuntimeRegistry';
+import { createResolvedContributionRegistry } from '@/plugins/projection/registry/createResolvedContributionRegistry';
 
 const {
   readCredentialsMock,
@@ -110,6 +118,10 @@ vi.mock('@/configuration', () => ({
     isDaemonProcess: false,
     replaySeedMaxChars: 50_000,
     replaySeedCandidateLimit: 500,
+    executionRunsMaxConcurrentPerSession: null,
+    oneShotTasksMaxConcurrentPerSession: null,
+    executionBudgetMaxConcurrentTotalPerSession: null,
+    executionBudgetMaxConcurrentByClass: {},
   },
 }));
 
@@ -296,6 +308,27 @@ function registerMachineRpcHandlers(
 }
 
 describe('registerMachineRpcHandlers', () => {
+  afterAll(async () => { await pluginReloadController.shutdown(); });
+  it('refuses detached permission decisions without verified present-user authority', async () => {
+    const registered = new Map<string, RpcHandler<unknown, unknown>>();
+    const rpcHandlerManager = {
+      registerHandler: (method: string, handler: RpcHandler<unknown, unknown>) => {
+        registered.set(method, handler);
+      },
+    } as Parameters<typeof registerMachineRpcHandlersImpl>[0]['rpcHandlerManager'];
+    registerMachineRpcHandlers({ rpcHandlerManager, handlers: {
+      spawnSession: async () => ({ type: 'success', sessionId: 's1' } as const),
+      stopSession: async () => true, requestShutdown: () => {},
+    } });
+    const handler = registered.get(RPC_METHODS.DAEMON_EXECUTION_RUN_PERMISSION_RESPOND)!;
+    const params = { runId: 'missing-run', requestId: 'request', approved: true, callerAuthority: 'present_user' };
+    for (const context of [undefined, { signal: new AbortController().signal,
+      callerAuthority: 'account_automation' } satisfies RpcHandlerContext]) {
+      expect(await handler(params, context)).toMatchObject({ ok: false, errorCode: 'present_user_required' });
+    }
+    expect(await handler(params, { signal: new AbortController().signal, callerAuthority: 'present_user' }))
+      .not.toMatchObject({ errorCode: 'present_user_required' });
+  });
   beforeEach(() => {
     // Many tests spy on axios.get; restore between tests so mockResolvedValueOnce
     // chains cannot leak across cases.
@@ -1799,6 +1832,59 @@ describe('registerMachineRpcHandlers', () => {
       expectedOccurrenceId: idle.occurrenceId,
     })).resolves.toMatchObject({ status: 'not_current' });
     await registration.dispose();
+  });
+
+  it('bounds two detached review.start panels through the daemon-owned review execution budget before effects', async () => {
+    const previousBudget = configuration.executionBudgetMaxConcurrentByClass;
+    Object.defineProperty(configuration, 'executionBudgetMaxConcurrentByClass', { value: { review: 1 }, configurable: true });
+    const directory = await mkdtemp(join(tmpdir(), 'happier-daemon-review-budget-'));
+    runGit(directory, ['init', '--initial-branch=main']);
+    // Publish a real empty plugin graph. The canonical SCM owner still supplies
+    // the built-in Git backend; no domain catalog or review logic is mocked.
+    const runtimeLease = await pluginReloadController.acquireRuntimeRegistry({
+      resolveRuntimeRegistry: async () => await resolveExecutablePluginRuntimeRegistry({
+        happyHomeDir: directory, pluginIds: [], contributes: createResolvedContributionRegistry({}),
+      }),
+    });
+    let releaseReview!: () => void;
+    const reviewPending = new Promise<void>((resolve) => { releaseReview = resolve; });
+    createExecutionRunBridgeRuntimeMock.mockImplementation(() => createTestExecutionRunHostRuntime({
+      onWaitForTurnCompletion: async () => await reviewPending,
+    }));
+    const registered = new Map<string, RpcHandler<unknown, unknown>>();
+    const rpcHandlerManager = {
+      registerHandler: (method: string, handler: RpcHandler<unknown, unknown>) => { registered.set(method, handler); },
+    } as Parameters<typeof registerMachineRpcHandlersImpl>[0]['rpcHandlerManager'];
+    const registration = registerMachineRpcHandlers({ rpcHandlerManager, handlers: {
+      spawnSession: async () => ({ type: 'success', sessionId: 'unused' }),
+      stopSession: async () => true, requestShutdown: () => {},
+    }, deps: { workingDirectory: directory, currentMachineId: 'review-machine' } });
+    const start = registered.get(SESSION_RPC_METHODS.EXECUTION_RUN_START)!;
+    // The RPC boundary is in-process here; the real daemon dispatcher, bridge,
+    // startExecutionRun and budget acquisition beneath it are all exercised.
+    const transport: Partial<ActionExecutorDeps> = {
+      reviewEnginesList: async () => ({ items: [{ value: 'claude', label: 'Claude' }] }),
+      executionRunCheckProtocolV2: async () => ({ ok: true }),
+      executionRunStart: async (_sessionId, request) => await start(request),
+    };
+    const executor = createActionExecutor(transport as ActionExecutorDeps);
+    const input = { engineIds: ['claude'], instructions: 'Review the current worktree.', target: { kind: 'detached' } };
+    const context = { surface: 'cli' as const, authority: 'present_user' as const,
+      externalActionTarget: { kind: 'machine' as const, machineId: 'review-machine', project: { directory } } };
+    try {
+      const first = await executor.execute('review.start', input, context);
+      expect(first, JSON.stringify(first)).toMatchObject({ ok: true, result: { results: [{ ok: true }] } });
+      await vi.waitFor(() => expect(createExecutionRunBridgeRuntimeMock).toHaveBeenCalledTimes(1));
+      const second = await executor.execute('review.start', input, context);
+      expect(second).toMatchObject({ ok: true, result: { results: [{ ok: false, errorCode: 'execution_run_budget_exceeded' }] } });
+      expect(createExecutionRunBridgeRuntimeMock).toHaveBeenCalledTimes(1);
+    } finally {
+      releaseReview();
+      await registration.dispose();
+      await runtimeLease.release();
+      await rm(directory, { recursive: true, force: true });
+      Object.defineProperty(configuration, 'executionBudgetMaxConcurrentByClass', { value: previousBudget, configurable: true });
+    }
   });
 
   it('binds detached execution-run Actions to the injected Account policy', async () => {
@@ -6158,7 +6244,7 @@ describe('registerMachineRpcHandlers', () => {
         v: 1,
         updatedAt: 456,
         ref: {
-          agentTargetKey: 'backend:opencode',
+          agentTargetKey: 'agent:happier.agent.opencode/opencode',
           providerConnectionId: null,
           modelId: 'gpt-test',
         },
@@ -6176,7 +6262,7 @@ describe('registerMachineRpcHandlers', () => {
       v: 1,
       updatedAt: 456,
       selection: {
-        agentTargetKey: 'backend:opencode',
+        agentTargetKey: 'agent:happier.agent.opencode/opencode',
         providerConnectionId: null,
         modelId: 'gpt-test',
       },
@@ -6418,7 +6504,7 @@ describe('registerMachineRpcHandlers', () => {
         v: 1,
         updatedAt: 456,
         ref: {
-          agentTargetKey: 'backend:opencode',
+          agentTargetKey: 'agent:happier.agent.opencode/opencode',
           providerConnectionId: null,
           modelId: 'gpt-test',
         },
@@ -6437,7 +6523,7 @@ describe('registerMachineRpcHandlers', () => {
       v: 1,
       updatedAt: 456,
       selection: {
-        agentTargetKey: 'backend:opencode',
+        agentTargetKey: 'agent:happier.agent.opencode/opencode',
         providerConnectionId: null,
         modelId: 'gpt-test',
       },

@@ -1,14 +1,20 @@
 import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
-import { open } from 'node:fs/promises';
+import { lstat, open, readdir, readlink } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import {
+  MUTAGEN_ENGINE_CONTENT_HASH_ALGORITHM,
+} from '@happier-dev/cli-common/firstPartyRuntime';
+import {
   WORKSPACE_SYNC_FILE_PREVIEW_MAX_BYTES,
+  WorkspaceSyncEntryExpectationV1Schema,
   type ReadWorkspaceSyncFileResultV1,
+  type WorkspaceSyncEntryExpectationV1,
 } from '@happier-dev/protocol';
 import { withConfinedWorkspaceSyncParent } from './workspaceSyncConfinedFileSystem';
 import {
   runNativeConfinedWorkspaceSyncRead,
+  runNativeConfinedWorkspaceSyncObserve,
   type RunNativeConfinedReadInput,
 } from './workspaceSyncNativeConfinedFileSystem';
 
@@ -22,6 +28,10 @@ export type ReadWorkspaceSyncFileAtRootInput = Readonly<{
 
 export type ReadWorkspaceSyncFileAtRootDependencies = Readonly<{
   runNativeConfinedRead?: (input: RunNativeConfinedReadInput) => Promise<Awaited<ReturnType<typeof runNativeConfinedWorkspaceSyncRead>>>;
+}>;
+
+export type ObserveWorkspaceSyncEntryAtRootDependencies = Readonly<{
+  runNativeConfinedObserve?: typeof runNativeConfinedWorkspaceSyncObserve;
 }>;
 
 function unsafePath(message: string): Error {
@@ -42,6 +52,142 @@ function validateMaxBytes(value: number): number {
     });
   }
   return value;
+}
+
+type ObserveWorkspaceSyncEntryAtRootInput = Readonly<{
+  rootPath: string;
+  relativePath: string;
+  assertCurrentAuthority?: () => Promise<void>;
+}>;
+
+function changed(message: string): Error {
+  return Object.assign(new Error(message), { code: 'conflict_changed' });
+}
+
+async function hashOpenFile(handle: Awaited<ReturnType<typeof open>>): Promise<Readonly<{
+  digest: string;
+  executable: boolean;
+  size: number;
+}>> {
+  const before = await handle.stat();
+  if (!before.isFile()) throw changed('workspace entry changed before file observation');
+  const hash = createHash(MUTAGEN_ENGINE_CONTENT_HASH_ALGORITHM);
+  const chunk = Buffer.allocUnsafe(64 * 1024);
+  let offset = 0;
+  while (true) {
+    const { bytesRead } = await handle.read(chunk, 0, chunk.byteLength, offset);
+    if (bytesRead === 0) break;
+    hash.update(chunk.subarray(0, bytesRead));
+    offset += bytesRead;
+  }
+  const after = await handle.stat();
+  if (
+    before.dev !== after.dev
+    || before.ino !== after.ino
+    || before.size !== after.size
+    || before.mtimeMs !== after.mtimeMs
+    || before.mode !== after.mode
+    || offset !== after.size
+  ) throw changed('workspace entry changed during file observation');
+  return {
+    digest: hash.digest('hex'),
+    executable: (after.mode & 0o111) !== 0,
+    size: offset,
+  };
+}
+
+async function observeAtDescriptorPath(path: string): Promise<WorkspaceSyncEntryExpectationV1> {
+  const admitted = await lstat(path).catch((error: unknown) => {
+    if (isMissing(error)) return null;
+    throw error;
+  });
+  if (!admitted) return { kind: 'missing' };
+  if (admitted.isSymbolicLink()) {
+    const rawTarget = await readlink(path, { encoding: 'buffer' });
+    const target = rawTarget.toString('utf8');
+    if (!Buffer.from(target, 'utf8').equals(rawTarget)) {
+      throw Object.assign(new Error('workspace symlink target cannot be represented'), { code: 'workspace_file_unsupported' });
+    }
+    const current = await lstat(path).catch((error: unknown) => {
+      if (isMissing(error)) throw changed('workspace symlink changed during observation');
+      throw error;
+    });
+    if (admitted.dev !== current.dev || admitted.ino !== current.ino || admitted.mtimeMs !== current.mtimeMs) {
+      throw changed('workspace symlink changed during observation');
+    }
+    return { kind: 'symlink', target };
+  }
+  if (admitted.isFile()) {
+    const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW).catch((error: unknown) => {
+      if (isMissing(error) || (error as NodeJS.ErrnoException).code === 'ELOOP') {
+        throw changed('workspace file changed before observation');
+      }
+      throw error;
+    });
+    try {
+      const observed = await hashOpenFile(handle);
+      return { kind: 'file', ...observed };
+    } finally {
+      await handle.close();
+    }
+  }
+  if (!admitted.isDirectory()) {
+    throw Object.assign(new Error('workspace entry kind cannot be resolved safely'), { code: 'workspace_file_unsupported' });
+  }
+  const directory = await open(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW).catch((error: unknown) => {
+    if (isMissing(error) || (error as NodeJS.ErrnoException).code === 'ELOOP') {
+      throw changed('workspace directory changed before observation');
+    }
+    throw error;
+  });
+  try {
+    const before = await directory.stat();
+    const descriptorPath = `/proc/self/fd/${directory.fd}`;
+    const rawNames = (await readdir(descriptorPath, { encoding: 'buffer' })).sort(Buffer.compare);
+    const names = rawNames.map((rawName) => {
+      const name = rawName.toString('utf8');
+      if (!Buffer.from(name, 'utf8').equals(rawName)) {
+        throw Object.assign(new Error('workspace directory contains an unrepresentable filename'), { code: 'workspace_file_unsupported' });
+      }
+      return name;
+    });
+    const entries: Array<readonly [string, WorkspaceSyncEntryExpectationV1]> = [];
+    // Traverse sequentially so a large valid tree cannot exhaust this process's
+    // descriptor budget merely because every sibling was opened concurrently.
+    for (const name of names) {
+      entries.push([name, await observeAtDescriptorPath(resolve(descriptorPath, name))]);
+    }
+    const after = await directory.stat();
+    if (
+      before.dev !== after.dev
+      || before.ino !== after.ino
+      || before.mtimeMs !== after.mtimeMs
+      || before.ctimeMs !== after.ctimeMs
+    ) throw changed('workspace directory changed during observation');
+    const fingerprint = createHash('sha256').update(JSON.stringify({ v: 1, entries })).digest('hex');
+    return { kind: 'directory', fingerprint };
+  } finally {
+    await directory.close();
+  }
+}
+
+/** Canonical complete observation used by both reviewed comparison and mutation. */
+export async function observeWorkspaceSyncEntryAtRoot(
+  input: ObserveWorkspaceSyncEntryAtRootInput,
+  dependencies: ObserveWorkspaceSyncEntryAtRootDependencies = {},
+): Promise<WorkspaceSyncEntryExpectationV1> {
+  if (process.platform !== 'linux') {
+    return WorkspaceSyncEntryExpectationV1Schema.parse(await (
+      dependencies.runNativeConfinedObserve ?? runNativeConfinedWorkspaceSyncObserve
+    )(input));
+  }
+  const observed = await withConfinedWorkspaceSyncParent({
+    rootPath: input.rootPath,
+    relativePath: input.relativePath,
+    ...(input.assertCurrentAuthority ? { assertCurrentAuthority: input.assertCurrentAuthority } : {}),
+    run: async ({ parentHandlePath, finalName }) => await observeAtDescriptorPath(resolve(parentHandlePath, finalName)),
+  });
+  return WorkspaceSyncEntryExpectationV1Schema.parse(observed);
 }
 
 export async function readWorkspaceSyncFileAtRoot(
@@ -93,7 +239,7 @@ export async function readWorkspaceSyncFileAtRoot(
           return { status: 'too_large', size: before.size };
         }
 
-        const hash = createHash('sha1');
+        const hash = createHash(MUTAGEN_ENGINE_CONTENT_HASH_ALGORITHM);
         const retained: Buffer[] = [];
         let retainedBytes = 0;
         let offset = 0;

@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { createMixedAgentTranscriptFixture } from '@/dev/testkit/fixtures/sessionAgentTransitionFixtures';
+import { createMixedAgentTranscriptFixture } from "../../../../../../../packages/session-core/src/testkit/sessionAgentTransitionFixtures.js";
 
 import {
     buildSessionTranscriptAgentAttributionIndex,
     resolveHistoricalAgentIdAtSeq,
-} from './sessionTranscriptAgentAttribution';
+} from "@happier-dev/session-core/messages";
 
 /**
  * A divider chain is only evidence while it is continuous: one divider's target

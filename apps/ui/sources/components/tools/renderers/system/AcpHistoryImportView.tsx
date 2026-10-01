@@ -4,11 +4,12 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { ToolViewProps } from '../core/_registry';
 import { resolvePermissionRequestId } from '../core/resolvePermissionRequestId';
 import { ToolSectionView } from '../../shell/presentation/ToolSectionView';
-import { sessionAllow, sessionDeny } from '@/sync/ops';
+import { useSessionTranscriptSource } from '@/components/sessions/transcript/source/SessionTranscriptSourceContext';
 import { Modal } from '@/modal';
 import { t } from '@/text';
 import { Text } from '@/components/ui/text/Text';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
+import { resolvePermissionDisabledMessage } from '@/components/tools/shell/permissions/permissionDisabledMessage';
 
 
 type HistoryPreviewItem = { role?: string; text?: string };
@@ -26,7 +27,10 @@ function asPreviewList(input: unknown): HistoryPreviewItem[] {
     });
 }
 
-export const AcpHistoryImportView = React.memo<ToolViewProps>(({ tool, sessionId, serverId, interaction }) => {
+export const AcpHistoryImportView = React.memo<ToolViewProps>(({ tool, sessionId, interaction }) => {
+  const source = useSessionTranscriptSource();
+  const sourceInteraction = source.useInteraction();
+  const actions = source.actions;
   const { theme } = useUnistyles();
   const [loading, setLoading] = React.useState<'import' | 'skip' | null>(null);
 
@@ -34,13 +38,9 @@ export const AcpHistoryImportView = React.memo<ToolViewProps>(({ tool, sessionId
   const permissionId = resolvePermissionRequestId(tool);
   if (!permissionId) return null;
 
-  const canApprovePermissions = interaction?.canApprovePermissions ?? true;
+  const canApprovePermissions = actions !== null && sourceInteraction.canApprovePermissions && interaction?.canApprovePermissions !== false;
   const disabledMessage =
-    interaction?.permissionDisabledReason === 'public'
-      ? t('session.sharing.permissionApprovalsDisabledPublic')
-      : interaction?.permissionDisabledReason === 'readOnly'
-        ? t('session.sharing.permissionApprovalsDisabledReadOnly')
-        : t('session.sharing.permissionApprovalsDisabledNotGranted');
+    resolvePermissionDisabledMessage(interaction?.permissionDisabledReason ?? sourceInteraction.permissionDisabledReason);
 
   const input = tool.input as any;
   const provider = typeof input?.provider === 'string' ? input.provider : 'acp';
@@ -59,7 +59,8 @@ export const AcpHistoryImportView = React.memo<ToolViewProps>(({ tool, sessionId
     if (!isPending || loading || !canApprovePermissions) return;
     setLoading('import');
     try {
-      await sessionAllow(sessionId, permissionId, ...(serverId !== undefined ? [undefined, undefined, undefined, undefined, undefined, { serverId }] as const : [] as const));
+      if (!actions) return;
+      await actions.respondToPermission({ id: permissionId, approved: true });
     } catch (e) {
       Modal.alert(t('common.error'), e instanceof Error ? e.message : t('errors.failedToSendMessage'));
     } finally {
@@ -71,7 +72,8 @@ export const AcpHistoryImportView = React.memo<ToolViewProps>(({ tool, sessionId
     if (!isPending || loading || !canApprovePermissions) return;
     setLoading('skip');
     try {
-      await sessionDeny(sessionId, permissionId, undefined, undefined, 'denied', ...(serverId !== undefined ? [undefined, undefined, { serverId }] as const : [] as const));
+      if (!actions) return;
+      await actions.respondToPermission({ id: permissionId, approved: false, decision: 'denied' });
     } catch (e) {
       Modal.alert(t('common.error'), e instanceof Error ? e.message : t('errors.failedToSendMessage'));
     } finally {

@@ -2,10 +2,11 @@ import { getAgentLocalControlCapability, type AgentId } from '@happier-dev/agent
 
 import type { StoredCredentials } from '@/persistence';
 import type { AgentState } from '@/api/types';
-import { createSessionScopedSocket } from '@/api/session/sockets';
+import { createSessionScopedSocket, createSessionScopedSocketConnection } from '@/api/session/sockets';
+import { createSocketTransportAdapter } from '@happier-dev/sync-client';
+import type { Socket } from 'socket.io-client';
 import { updateSessionAgentStateWithAck } from '@/api/session/stateUpdates';
 import { configuration } from '@/configuration';
-import { waitForSocketConnect } from '@/session/transport/socket/waitForSocketConnect';
 import {
   readSessionMetadataTupleWriterSnapshot,
   updateSessionMetadataEnvelopeTupleWithRetry,
@@ -49,7 +50,7 @@ export function createAgentAttachStatePublisher(params: Readonly<{
   rawSession: RawSessionLike;
   getAccountEncryptionCurrentness: () => Promise<AccountEncryptionCurrentnessResponse>;
   createSessionScopedSocketFn?: typeof createSessionScopedSocket;
-  waitForSocketConnectFn?: typeof waitForSocketConnect;
+  waitForSocketConnectFn?: (socket: Socket, timeoutMs: number) => Promise<void>;
   updateSessionAgentStateWithAckFn?:
     typeof updateSessionAgentStateWithAck;
   updateSessionMetadataEnvelopeTupleWithRetryFn?:
@@ -113,20 +114,26 @@ export function createAgentAttachStatePublisher(params: Readonly<{
     let currentAgentState = request.current.value.agentState;
     let currentAgentStateVersion = request.current.agentStateVersion;
     let usePreparedMutation = true;
-    const socket = (
-      params.createSessionScopedSocketFn
-      ?? createSessionScopedSocket
-    )({
+    const connectTimeoutMs = params.connectTimeoutMs ?? configuration.sessionControlHttpTimeoutMs;
+    const socketOptions = {
       token: params.credentials.token,
       sessionId: params.sessionId,
-    }) as unknown as SocketLike;
-    socket.connect();
+    };
+    const createSocket = params.createSessionScopedSocketFn;
+    const connection = createSocket
+      ? (() => {
+        const socket = createSocket(socketOptions);
+        return { socket, transport: createSocketTransportAdapter(socket, { connectTimeoutMs }) };
+      })()
+      : createSessionScopedSocketConnection({ ...socketOptions, connectTimeoutMs });
+    const socket = connection.socket as unknown as SocketLike;
     try {
-      await (params.waitForSocketConnectFn ?? waitForSocketConnect)(
-        socket as Parameters<typeof waitForSocketConnect>[0],
-        params.connectTimeoutMs
-          ?? configuration.sessionControlHttpTimeoutMs,
-      );
+      if (params.waitForSocketConnectFn) {
+        socket.connect();
+        await params.waitForSocketConnectFn(connection.socket as Socket, connectTimeoutMs);
+      } else {
+        await connection.transport.connect();
+      }
       const result = await (
         params.updateSessionAgentStateWithAckFn
         ?? updateSessionAgentStateWithAck
@@ -178,7 +185,7 @@ export function createAgentAttachStatePublisher(params: Readonly<{
         },
       };
     } finally {
-      socket.disconnect();
+      await connection.transport.destroy();
     }
   };
 

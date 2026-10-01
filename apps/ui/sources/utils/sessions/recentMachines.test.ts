@@ -1,26 +1,9 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
-import { installSessionUtilsCommonModuleMocks } from './sessionUtilsTestHelpers';
 import type { Machine, Session } from '@/sync/domains/state/storageTypes';
-
-type StorageState = {
-    sessions?: Record<string, unknown>;
-    machines?: Record<string, unknown>;
-    getProjectForSession?: (sessionId: string) => { key?: { machineId?: string; path?: string } } | null;
-};
-
-let storageState: StorageState = {};
-
-installSessionUtilsCommonModuleMocks({
-    storage: async () => {
-        const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
-        return createStorageModuleStub({
-            storage: {
-                getState: () => storageState,
-            },
-        });
-    },
-});
+import { storage } from '@/sync/domains/state/storage';
+import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
+import { getServerUrl, setServerUrl } from '@/sync/domains/server/serverConfig';
 
 function createMachine(id: string): Machine {
     return {
@@ -51,6 +34,7 @@ function createSession(input: Readonly<{
 }>): Session {
     return {
         id: input.id,
+        serverId: getActiveServerSnapshot().serverId,
         seq: 1,
         createdAt: 1,
         updatedAt: input.updatedAt ?? 1,
@@ -73,20 +57,25 @@ function createSession(input: Readonly<{
 }
 
 describe('getRecentMachinesFromSessions', () => {
+    let previousState: ReturnType<typeof storage.getState>;
+    let previousServerUrl: string;
+    beforeAll(async () => {
+        previousServerUrl = getServerUrl();
+        await setServerUrl('https://recent-machines.example.test');
+    });
+    afterAll(async () => { await setServerUrl(previousServerUrl || null); });
     beforeEach(() => {
-        storageState = {
+        previousState = storage.getState();
+        storage.setState({
             sessions: {},
             machines: {
-                'machine-target': {
-                    id: 'machine-target',
-                    active: true,
-                    activeAt: 10,
-                    metadata: { host: 'target.local' },
-                },
+                'machine-target': createMachine('machine-target'),
             },
-            getProjectForSession: () => null,
-        };
+            sessionListRowsByServerId: {},
+            machineListByServerId: {},
+        });
     });
+    afterEach(() => storage.setState(previousState, true));
 
     it('does not include a same-host machine when session metadata has no explicit replacement', async () => {
         const { getRecentMachinesFromSessions } = await import('./recentMachines');
@@ -99,25 +88,11 @@ describe('getRecentMachinesFromSessions', () => {
             updatedAt: 25,
         });
 
-        storageState = {
-            ...storageState,
+        storage.setState({
             sessions: {
-                'session-1': {
-                    active: true,
-                    updatedAt: 25,
-                    metadata: reboundSession.metadata,
-                },
+                'session-1': reboundSession,
             },
-            getProjectForSession: (sessionId: string) =>
-                sessionId === 'session-1'
-                    ? {
-                        key: {
-                            machineId: 'machine-other',
-                            path: '/Users/test/workspace/rebound',
-                        },
-                    }
-                    : null,
-        };
+        });
 
         expect(getRecentMachinesFromSessions({
             machines: [otherMachine, targetMachine],
@@ -143,21 +118,18 @@ describe('getRecentMachinesFromSessions', () => {
             updatedAt: 25,
         });
 
-        storageState = {
-            ...storageState,
+        storage.setState({
             machines: {
                 'machine-old': oldMachine,
                 'machine-target': targetMachine,
             },
             sessions: {
                 'session-1': {
+                    ...reboundSession,
                     active: false,
-                    updatedAt: 25,
-                    metadata: reboundSession.metadata,
                 },
             },
-            getProjectForSession: () => null,
-        };
+        });
 
         expect(getRecentMachinesFromSessions({
             machines: [oldMachine, targetMachine],

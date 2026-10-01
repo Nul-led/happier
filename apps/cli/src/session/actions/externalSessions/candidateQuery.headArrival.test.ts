@@ -111,6 +111,7 @@ describe('External Sessions candidate index head arrivals', () => {
         const listCandidates = createHeadAnchoredSource(corpus);
         const query = () => executeExternalSessionCandidateQuery({
             activeServerDir,
+            agentSourceCustody: { kind: 'development', registeredRootId: 'fixture-source-root' },
             agentIdentity: { pluginId: 'happier.claude', localId: 'claude' },
             source: { kind: 'claudeConfig', configDir: '/private/source' },
             limit: CHUNK_LIMIT,
@@ -154,6 +155,7 @@ describe('External Sessions candidate index head arrivals', () => {
         const listCandidates = createHeadAnchoredSource(corpus);
         const query = () => executeExternalSessionCandidateQuery({
             activeServerDir,
+            agentSourceCustody: { kind: 'development', registeredRootId: 'fixture-source-root' },
             agentIdentity: { pluginId: 'happier.claude', localId: 'claude' },
             source: { kind: 'claudeConfig', configDir: '/private/source' },
             limit: CHUNK_LIMIT,
@@ -212,13 +214,14 @@ describe('External Sessions candidate index head arrivals', () => {
         expect(republished.candidates[0]?.remoteSessionId).toBe('row-arrival');
     }, 120_000);
 
-    it('restarts an in-progress build when an already-scanned head row mutates', async () => {
+    it('treats an in-progress already-scanned head mutation as a move-ahead', async () => {
         const activeServerDir = await mkdtemp(join(tmpdir(), 'happier-candidate-head-mutation-'));
         roots.push(activeServerDir);
         const corpus = createCorpus(30_000);
         const listCandidates = createHeadAnchoredSource(corpus);
         const query = () => executeExternalSessionCandidateQuery({
             activeServerDir,
+            agentSourceCustody: { kind: 'development', registeredRootId: 'fixture-source-root' },
             agentIdentity: { pluginId: 'happier.claude', localId: 'claude' },
             source: { kind: 'claudeConfig', configDir: '/private/source' },
             limit: CHUNK_LIMIT,
@@ -237,11 +240,11 @@ describe('External Sessions candidate index head arrivals', () => {
 
         expect(afterMutation.preparation?.kind).toBe('building_candidate_index');
         expect(afterMutation.preparation?.scanned ?? 0)
-            .toBeLessThan(warmed.preparation?.scanned ?? 0);
+            .toBeGreaterThanOrEqual(warmed.preparation?.scanned ?? 0);
         const afterRecord = await readBuildingRecord(activeServerDir);
         expect(afterRecord.state).toBe('building');
-        expect(afterRecord.candidates).toHaveLength(CHUNK_LIMIT);
-        expect(afterRecord.scanned).toBe(CHUNK_LIMIT);
+        expect(afterRecord.candidates.length).toBeGreaterThan(CHUNK_LIMIT);
+        expect(afterRecord.scanned).toBeGreaterThan(CHUNK_LIMIT);
     });
 
     it('rejects a persisted anchor that no longer derives its published token', async () => {
@@ -251,6 +254,7 @@ describe('External Sessions candidate index head arrivals', () => {
         const listCandidates = createHeadAnchoredSource(corpus);
         const query = () => executeExternalSessionCandidateQuery({
             activeServerDir,
+            agentSourceCustody: { kind: 'development', registeredRootId: 'fixture-source-root' },
             agentIdentity: { pluginId: 'happier.claude', localId: 'claude' },
             source: { kind: 'claudeConfig', configDir: '/private/source' },
             limit: CHUNK_LIMIT,

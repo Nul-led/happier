@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act } from 'react-test-renderer';
 
 import { renderScreen, standardCleanup } from '@/dev/testkit';
+import { createTestSessionTranscriptSource, wrapWithSessionTranscriptSource } from '@/dev/testkit/sessionTranscriptSource';
 import type { CapturingLegendListMockState } from '@/dev/testkit/mocks/legendList';
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -60,6 +61,19 @@ vi.mock('@legendapp/list/react-native', async () => {
     return mock.module;
 });
 
+
+function createChainTestRoot(Content: typeof import('./ChainTranscriptList')['ChainTranscriptList']) {
+    return function ChainTestRoot(props: React.ComponentProps<typeof Content>) {
+        const [source] = React.useState(() => createTestSessionTranscriptSource({
+            sessionId: props.sessionId, serverId: props.serverId, messages: props.messages,
+            metadata: props.metadata, interaction: props.interaction,
+            loadSidechain: async () => 'not_ready',
+            history: { loadOlder: props.loadOlder ?? (async () => ({ loaded: 0, hasMore: false, status: 'not_ready' })) },
+        }));
+        return wrapWithSessionTranscriptSource(React.createElement(Content, props), source);
+    };
+}
+
 describe('ChainTranscriptList web keyboard ownership', () => {
     afterEach(() => {
         standardCleanup();
@@ -76,7 +90,8 @@ describe('ChainTranscriptList web keyboard ownership', () => {
 
     it('selects the sole sidechain from BODY PageUp without prior transcript interaction', async () => {
         const { Platform } = await import('react-native');
-        const { ChainTranscriptList } = await import('./ChainTranscriptList');
+        const { ChainTranscriptList: ChainContent } = await import('./ChainTranscriptList');
+        const ChainTranscriptList = createChainTestRoot(ChainContent);
         const originalPlatform = Platform.OS;
         Object.defineProperty(Platform, 'OS', { configurable: true, value: 'web' });
         const scroller = document.createElement('div');
@@ -88,7 +103,7 @@ describe('ChainTranscriptList web keyboard ownership', () => {
             sessionId: 'sidechain-document-page-up',
             datasetKey: JSON.stringify(['sidechain-document-page-up', 'sidechain-a']),
             metadata: null,
-            interaction: { canSendMessages: true, canApprovePermissions: true, disableToolNavigation: true },
+            interaction: { canSendMessages: true, canApprovePermissions: true },
         } as const;
 
         try {
@@ -133,7 +148,8 @@ describe('ChainTranscriptList web keyboard ownership', () => {
 
     it('keeps sidechain held-end maintenance through bottom-clamped PageDown and later growth', async () => {
         const { Platform } = await import('react-native');
-        const { ChainTranscriptList } = await import('./ChainTranscriptList');
+        const { ChainTranscriptList: ChainContent } = await import('./ChainTranscriptList');
+        const ChainTranscriptList = createChainTestRoot(ChainContent);
         const originalPlatform = Platform.OS;
         Object.defineProperty(Platform, 'OS', { configurable: true, value: 'web' });
         const scroller = document.createElement('div');
@@ -153,7 +169,7 @@ describe('ChainTranscriptList web keyboard ownership', () => {
             sessionId: 'sidechain-document-page-down',
             datasetKey: JSON.stringify(['sidechain-document-page-down', 'sidechain-a']),
             metadata: null,
-            interaction: { canSendMessages: true, canApprovePermissions: true, disableToolNavigation: true },
+            interaction: { canSendMessages: true, canApprovePermissions: true },
         } as const;
 
         try {

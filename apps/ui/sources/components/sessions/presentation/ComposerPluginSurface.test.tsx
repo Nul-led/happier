@@ -31,7 +31,7 @@ vi.mock('@/components/plugins/surfaces/PluginSurfaceHost', () => ({
 function createCatalogEntry(): DaemonPluginUiComposerSurfaceCatalogEntryV1 {
     return DaemonPluginUiComposerSurfaceCatalogEntryV1Schema.parse({
         contribution: { pluginId: 'acme.compose', localId: 'summary' },
-        immutableGenerationId: 'generation-1',
+        occurrenceId: 'generation-1',
         projectionGeneration: 7,
         role: 'region',
         rendererChain: [{ pluginId: 'acme.compose', localId: 'summary-renderer' }],
@@ -40,12 +40,11 @@ function createCatalogEntry(): DaemonPluginUiComposerSurfaceCatalogEntryV1 {
             renderer: {
                 kind: 'declarative',
                 contributionId: 'summary-renderer',
-                model: { visible: true },
             },
             availability: { state: 'available', reason: 'available', diagnostics: [] },
         },
         executionOrigin: {
-            serverIdentityId: 'server-1',
+            serverIdentityId: 'srv_server-1',
             materializationRef: {
                 machineId: 'machine-1',
                 materializationId: 'materialization-1',
@@ -54,7 +53,11 @@ function createCatalogEntry(): DaemonPluginUiComposerSurfaceCatalogEntryV1 {
         },
         resourceCapability: { readable: true, dynamic: true },
         contributorTargetedContributions: {
-            target: { pluginId: 'acme.compose', immutableGenerationId: 'generation-1' },
+            target: {
+                pluginId: 'acme.compose',
+                occurrenceId: 'generation-1',
+                sourceCustody: { kind: 'development', registeredRootId: 'compose-root' },
+            },
             points: [],
         },
     });
@@ -86,7 +89,7 @@ describe('ComposerPluginSurface', () => {
         await renderScreen(<ComposerPluginSurface
             request={{
                 contribution: catalogEntry.contribution,
-                immutableGenerationId: 'generation-1',
+                occurrenceId: 'generation-1',
                 role: 'region',
                 input: {
                     v: 1,
@@ -141,13 +144,17 @@ describe('ComposerPluginSurface', () => {
 
     it('passes the existing mount/catalog identity to the host for boundary recovery', async () => {
         const { ComposerPluginSurface } = await import('./ComposerPluginSurface');
-        const renderComposer = (immutableGenerationId: string, projectionGeneration: number) => {
+        const renderComposer = (occurrenceId: string, projectionGeneration: number) => {
             const catalogEntry = DaemonPluginUiComposerSurfaceCatalogEntryV1Schema.parse({
                 ...createCatalogEntry(),
-                immutableGenerationId,
+                occurrenceId,
                 projectionGeneration,
                 contributorTargetedContributions: {
-                    target: { pluginId: 'acme.compose', immutableGenerationId },
+                    target: {
+                        pluginId: 'acme.compose',
+                        occurrenceId,
+                        sourceCustody: { kind: 'development', registeredRootId: 'compose-root' },
+                    },
                     points: [],
                 },
             });
@@ -155,7 +162,7 @@ describe('ComposerPluginSurface', () => {
                 <ComposerPluginSurface
                     request={{
                         contribution: catalogEntry.contribution,
-                        immutableGenerationId,
+                        occurrenceId,
                         role: 'region',
                         input: {
                             v: 1,
@@ -205,7 +212,7 @@ describe('ComposerPluginSurface', () => {
         const renderComposerSurface = () => renderScreen(<ComposerPluginSurface
             request={{
                 contribution: catalogEntry.contribution,
-                immutableGenerationId: 'generation-1',
+                occurrenceId: 'generation-1',
                 role: 'region',
                 input: {
                     v: 1,

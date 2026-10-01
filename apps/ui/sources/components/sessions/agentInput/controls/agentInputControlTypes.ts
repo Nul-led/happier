@@ -1,6 +1,8 @@
 import type { AgentInputActionBarLayout } from '@/components/sessions/agentInput/layout/actionBarLogic';
 
 export type AgentInputHostControlId =
+    | 'workflow'
+    | 'workflowInputs'
     | 'engine'
     | 'mode'
     | 'goal'

@@ -366,8 +366,7 @@ async function setCurrentUiContextPrivacyMode(params: Readonly<{
     requiredTestIds: ['settings.voice.section.privacy'],
     timeoutMs: 180_000,
   });
-  await params.page.getByTestId('settings.voice.privacy.currentUiContextMode').click();
-  const option = params.page.getByTestId(`dropdown-option-${params.mode}`);
+  const option = params.page.getByTestId(`settings.voice.privacy.currentUiContextMode:${params.mode}`);
   await expect(option).toHaveCount(1, { timeout: 120_000 });
   await option.click();
 }

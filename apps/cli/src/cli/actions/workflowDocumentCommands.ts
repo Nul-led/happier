@@ -2,11 +2,8 @@ import { readFile, writeFile } from 'node:fs/promises';
 
 import {
   WorkflowActionOutputSchemasV1,
-  WorkflowDocumentParseErrorV1,
-  WorkflowDocumentV1Schema,
-  parseWorkflowDocumentJsonV1,
+  parseWorkflowDocumentJsonIngressV1,
   serializeWorkflowDocumentJsonV1,
-  validateWorkflowDefinition,
 } from '@happier-dev/protocol';
 
 import { printJsonEnvelope, writeJsonStdout } from '@/cli/output/jsonEnvelope';
@@ -95,17 +92,6 @@ function transportArgs(argv: readonly string[]): readonly string[] {
   return kept;
 }
 
-function workflowDocumentVersion(raw: string): unknown {
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-      ? (parsed as { version?: unknown }).version
-      : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 async function reportError(
   argv: readonly string[],
   kind: string,
@@ -184,39 +170,25 @@ export async function tryHandleWorkflowDocumentCliCommand(params: Readonly<{
       const raw = decodeUtf8(source === '-'
         ? await deps.readStdinFn()
         : await deps.readFileFn(resolveAbsolutePathFromWorkingDirectory(source) ?? source));
-      const version = workflowDocumentVersion(raw);
-      if (version !== undefined && version !== 1) {
-        await reportError(params.argv, kind, 'unsupported_workflow_document_version', { version });
+      const parsedDocument = parseWorkflowDocumentJsonIngressV1(raw);
+      if (!parsedDocument.ok && parsedDocument.code === 'workflow_document_unsupported_version') {
+        await reportError(params.argv, kind, 'unsupported_workflow_document_version', {
+          version: parsedDocument.version,
+        });
         return true;
       }
-      let definitionInput: unknown;
-      try {
-        definitionInput = parseWorkflowDocumentJsonV1(raw).definition;
-      } catch (error) {
-        if (error instanceof WorkflowDocumentParseErrorV1) {
-          if (error.code === 'workflow_document_invalid_json') throw error;
-          if (error.code === 'workflow_document_unsupported_version') {
-            await reportError(params.argv, kind, 'unsupported_workflow_document_version', { version });
-            return true;
-          }
+      if (!parsedDocument.ok) {
+        if (parsedDocument.code === 'workflow_document_invalid_definition') {
+          await reportError(params.argv, kind, 'invalid_workflow_definition', {
+            issues: parsedDocument.issues,
+          });
+          return true;
         }
-        const parsedJson = JSON.parse(raw) as unknown;
-        const parsedDocument = WorkflowDocumentV1Schema.safeParse(parsedJson);
-        if (
-          !parsedDocument.success
-          && parsedDocument.error.issues.every((issue) => issue.path[0] === 'definition')
-          && parsedJson !== null
-          && typeof parsedJson === 'object'
-          && !Array.isArray(parsedJson)
-        ) {
-          definitionInput = (parsedJson as { definition?: unknown }).definition;
-        } else {
-          throw error;
-        }
+        throw new TypeError(parsedDocument.code);
       }
-      const validation = validateWorkflowDefinition(definitionInput);
-      if (!validation.valid || validation.normalizedDefinition === undefined) {
-        await reportError(params.argv, kind, 'invalid_workflow_definition', { issues: validation.issues });
+      const definition = parsedDocument.document.definition;
+      if (definition === undefined) {
+        await reportError(params.argv, kind, 'invalid_workflow_definition');
         return true;
       }
       const metadata = JSON.parse(metadataJson) as unknown;
@@ -226,7 +198,7 @@ export async function tryHandleWorkflowDocumentCliCommand(params: Readonly<{
         argv: [
           ...command.path,
           '--input-json',
-          JSON.stringify({ definitionId, definition: validation.normalizedDefinition, metadata }),
+          JSON.stringify({ definitionId, definition, metadata }),
           ...transport,
         ],
         ...(deps.actionExecutionDeps ? { deps: deps.actionExecutionDeps } : {}),

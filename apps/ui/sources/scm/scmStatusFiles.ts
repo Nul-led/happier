@@ -5,6 +5,8 @@
 
 import type { ScmWorkingEntry, ScmWorkingSnapshot } from '@/sync/domains/state/storageTypes';
 
+import { isDirectoryLikeScmFileStatus } from './isDirectoryLikeScmFileStatus';
+
 export interface ScmFileStatus {
     fileName: string;
     filePath: string;
@@ -34,6 +36,7 @@ export interface ScmStatusFiles {
 }
 
 const snapshotStatusFilesCache = new WeakMap<ScmWorkingSnapshot, ScmStatusFiles>();
+const snapshotChangedFilesCache = new WeakMap<ScmWorkingSnapshot, readonly ScmFileStatus[]>();
 
 function toFileStatus(entry: ScmWorkingEntry, isIncluded: boolean): ScmFileStatus {
     const segments = entry.path.split('/');
@@ -82,4 +85,46 @@ export function snapshotToScmStatusFiles(snapshot: ScmWorkingSnapshot): ScmStatu
 
     snapshotStatusFilesCache.set(snapshot, result);
     return result;
+}
+
+/**
+ * The working copy's changed files: one row per changed path (a file staged and then edited again is
+ * one file), untracked files included, and directories collapsed by the backend (`scratch/`) left
+ * out because they are not a file a person can open, stage or commit. Sorted by path.
+ *
+ * This list is the one change-count truth: its length is the count on the rail badge and its tooltip,
+ * the Git and Files headers, the Changes tab and the phone cockpit (`ScmStatus.changedFileCount`).
+ */
+export function selectScmChangedFiles(snapshot: ScmWorkingSnapshot): readonly ScmFileStatus[] {
+    const cached = snapshotChangedFilesCache.get(snapshot);
+    if (cached) return cached;
+
+    const statusFiles = snapshotToScmStatusFiles(snapshot);
+    const mergedByPath = new Map<string, ScmFileStatus>();
+    // The pending row wins for a file in both areas: it carries the edit the person sees last.
+    for (const file of [...statusFiles.pendingFiles, ...statusFiles.includedFiles]) {
+        if (isDirectoryLikeScmFileStatus(file) || mergedByPath.has(file.fullPath)) continue;
+        mergedByPath.set(file.fullPath, file);
+    }
+    const result = Array.from(mergedByPath.values()).sort((a, b) => a.fullPath.localeCompare(b.fullPath));
+    snapshotChangedFilesCache.set(snapshot, result);
+    return result;
+}
+
+/**
+ * The same working copy seen through one scope of its changed files (this session's changes, the files
+ * selected for the next commit): the entries whose path is in `paths`. Every count read from the result
+ * still goes through {@link selectScmChangedFiles}, so a scoped view (the Git tree's folders) counts
+ * exactly the rows it shows.
+ */
+export function narrowScmSnapshotToPaths(snapshot: ScmWorkingSnapshot, paths: ReadonlySet<string>): ScmWorkingSnapshot {
+    const entries = snapshot.entries.filter((entry) => paths.has(entry.path));
+    return entries.length === snapshot.entries.length ? snapshot : { ...snapshot, entries };
+}
+
+/** Paths in conflict, ready for the existing file-open action in the Git and Review panes. */
+export function selectScmConflictFiles(snapshot: ScmWorkingSnapshot): readonly Readonly<{ path: string; openPath: string }>[] {
+    return selectScmChangedFiles(snapshot)
+        .filter((file) => file.status === 'conflicted')
+        .map((file) => ({ path: file.fullPath, openPath: file.fullPath }));
 }

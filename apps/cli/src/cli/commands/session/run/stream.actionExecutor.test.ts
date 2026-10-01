@@ -69,7 +69,6 @@ describe('happier session run streams (credential-aware Action executor)', () =>
         { sessionId: 'sess-factory', runId: 'run-1', message: 'continue', resume: true },
         {
           surface: 'cli',
-          authority: 'present_user',
           defaultSessionId: 'sess-factory',
           actionRequestId: expect.any(String),
         },
@@ -105,7 +104,6 @@ describe('happier session run streams (credential-aware Action executor)', () =>
         { sessionId: 'sess-factory', runId: 'run-1', streamId: 'stream-1', cursor: 0, maxEvents: 2 },
         {
           surface: 'cli',
-          authority: 'present_user',
           defaultSessionId: 'sess-factory',
           actionRequestId: expect.any(String),
         },
@@ -138,7 +136,6 @@ describe('happier session run streams (credential-aware Action executor)', () =>
         { sessionId: 'sess-factory', runId: 'run-1', streamId: 'stream-1' },
         {
           surface: 'cli',
-          authority: 'present_user',
           defaultSessionId: 'sess-factory',
           actionRequestId: expect.any(String),
         },
@@ -176,7 +173,6 @@ describe('happier session run streams (credential-aware Action executor)', () =>
         { sessionId: 'sess-factory', runId: 'run-1', message: 'continue' },
         {
           surface: 'cli',
-          authority: 'present_user',
           defaultSessionId: 'sess-factory',
           actionRequestId: expect.any(String),
         },

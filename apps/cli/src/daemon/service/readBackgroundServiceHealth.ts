@@ -1,10 +1,15 @@
 import { spawnSync } from 'node:child_process';
 import { closeSync, openSync, readFileSync, readSync, statSync } from 'node:fs';
 
-import { buildServiceCommandEnv } from '@happier-dev/cli-common/service';
-import { readSystemdUnitStatus, type SystemdUnitStatus } from '@happier-dev/cli-common/service/discovery';
+import {
+  buildReadWindowsScheduledTaskStatusPowerShellCommand,
+  buildServiceCommandEnv,
+  parseWindowsScheduledTaskStatusPowerShellJson,
+  splitQualifiedWindowsScheduledTaskName,
+} from '@happier-dev/cli-common/service';
+import { readLaunchdServiceEnabled, readSystemdUnitStatus, type SystemdUnitStatus } from '@happier-dev/cli-common/service/discovery';
 
-import type { DaemonServiceMode } from './plan';
+import type { DaemonServiceAutostartMode, DaemonServiceMode } from './plan';
 
 export type ServiceHealthSignal = Readonly<{
   runs: number | null;
@@ -50,6 +55,95 @@ export function readBackgroundServiceHealth(params: Readonly<{
     suspectedCause,
     conflictingManualDaemonPid,
   };
+}
+
+/**
+ * Whether the service manager is running (or starting) this background service now — the state
+ * `service stop` changes: launchd has it bootstrapped (`stop` boots it out), systemd reports it
+ * active, activating or reloading (`stop` leaves it inactive), Task Scheduler reports it running.
+ * `unknown` when the manager could not be asked.
+ */
+export type BackgroundServiceActivity = 'active' | 'inactive' | 'unknown';
+
+export function readBackgroundServiceActivity(params: Readonly<{
+  platform: NodeJS.Platform;
+  uid: number | null;
+  label: string;
+  mode?: DaemonServiceMode | null;
+}>): BackgroundServiceActivity {
+  if (params.platform === 'darwin') {
+    if (params.uid == null) return 'unknown';
+    return tryReadLaunchctl(params.uid, params.label) ? 'active' : 'inactive';
+  }
+  if (params.platform === 'linux') {
+    const status = tryReadSystemdStatus({
+      unitName: normalizeSystemdUnitName(params.label),
+      mode: params.mode ?? 'user',
+      uid: params.uid,
+    });
+    if (!status) return 'unknown';
+    const activeState = String(status.activeState ?? '').trim().toLowerCase();
+    return activeState === 'active' || activeState === 'activating' || activeState === 'reloading' ? 'active' : 'inactive';
+  }
+  if (params.platform === 'win32') {
+    return tryReadScheduledTaskActivity(params.label);
+  }
+  return 'unknown';
+}
+
+function tryReadScheduledTaskActivity(label: string): BackgroundServiceActivity {
+  const status = tryReadScheduledTaskStatus(label);
+  if (!status) return 'unknown';
+  return status.exists && status.active ? 'active' : 'inactive';
+}
+
+function tryReadScheduledTaskStatus(label: string, includeAutostart = false) {
+  try {
+    const task = splitQualifiedWindowsScheduledTaskName(label);
+    const result = spawnSync('powershell.exe', [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      buildReadWindowsScheduledTaskStatusPowerShellCommand({ ...task, includeAutostart }),
+    ], { encoding: 'utf-8', timeout: 5_000, windowsHide: true });
+    return result.status === 0 ? parseWindowsScheduledTaskStatusPowerShellJson(String(result.stdout ?? '')) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Effective login trigger, not merely the last preference written in the definition. */
+export function readBackgroundServiceAutostartMode(params: Readonly<{
+  platform: NodeJS.Platform;
+  uid: number | null;
+  label: string;
+  mode?: DaemonServiceMode | null;
+  installedMode: DaemonServiceAutostartMode | null;
+}>): DaemonServiceAutostartMode | null {
+  if (params.platform === 'linux') {
+    const state = tryReadSystemdStatus({ unitName: normalizeSystemdUnitName(params.label), mode: params.mode ?? 'user', uid: params.uid, includeEnablement: true })?.unitFileState;
+    if (state === 'enabled' || state === 'enabled-runtime') return 'at-login';
+    if (state === 'disabled') return 'on-demand';
+    return null;
+  }
+  if (params.platform === 'win32') {
+    const status = tryReadScheduledTaskStatus(params.label, true);
+    if (!status?.exists) return null;
+    if (!status.enabled) return 'on-demand';
+    return typeof status.autostart === 'boolean' ? status.autostart ? 'at-login' : 'on-demand' : null;
+  }
+  if (params.platform === 'darwin' && params.uid !== null) {
+    const args = ['print-disabled', `gui/${params.uid}`];
+    try {
+      const result = spawnSync('launchctl', args, { encoding: 'utf-8', timeout: 2_000, env: buildServiceCommandEnv({ cmd: 'launchctl', args, env: process.env }) });
+      if (result.status !== 0) return null;
+      const enabled = readLaunchdServiceEnabled({ output: String(result.stdout ?? '').trim() || null, label: params.label });
+      return enabled === false ? 'on-demand' : enabled === true ? params.installedMode : null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
 }
 
 function readLaunchdHealth(params: Readonly<{
@@ -117,12 +211,13 @@ function tryReadSystemdStatus(params: Readonly<{
   unitName: string;
   mode: DaemonServiceMode;
   uid: number | null;
+  includeEnablement?: boolean;
 }>): SystemdUnitStatus | null {
   const args = [
     ...systemdScopeArgs(params.mode),
     'show',
     params.unitName,
-    '--property=Result,ExecMainStatus,NRestarts,ActiveState,SubState',
+    `--property=Result,ExecMainStatus,NRestarts,ActiveState,SubState${params.includeEnablement ? ',UnitFileState' : ''}`,
     '--no-pager',
   ];
   try {

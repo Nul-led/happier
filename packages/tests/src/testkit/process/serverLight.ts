@@ -671,7 +671,7 @@ function supportsServerLightTemplateCache(provider: TestDbProvider): provider is
   return provider === 'sqlite' || provider === 'pglite';
 }
 
-function resolveServerLightTemplateCacheRoot(rootDir: string): string {
+export function resolveServerLightTemplateCacheRoot(rootDir: string = repoRootDir()): string {
   return resolve(rootDir, '.project', 'cache', 'e2e', 'server-light');
 }
 
@@ -901,6 +901,8 @@ export async function startServerLight(params: {
    * Not part of the public API; used to validate retry behavior deterministically.
    */
   __portAllocator?: () => Promise<number>;
+  /** Test-only artifact preparation after server setup and immediately before each process spawn. */
+  __beforeSpawnAttempt?: () => Promise<void>;
 }): Promise<StartedServer> {
   const dataDir = resolve(params.testDir, 'server-light-data');
   mkdirSync(dataDir, { recursive: true });
@@ -1017,6 +1019,8 @@ export async function startServerLight(params: {
       env,
     });
     const attemptLogs = prepareServerStartAttemptLogs({ testDir: params.testDir, attempt });
+
+    await params.__beforeSpawnAttempt?.();
 
     const proc = spawnLoggedProcess({
       command: launchSpec.command,

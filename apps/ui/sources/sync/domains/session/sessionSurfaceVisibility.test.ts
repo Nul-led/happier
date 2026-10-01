@@ -161,6 +161,17 @@ describe('sessionSurfaceVisibility', () => {
         expect(isSessionSurfaceVisible('session-1', 'server-actual')).toBe(false);
     });
 
+    it('preserves mounted session visibility on the chrome-less embed route', async () => {
+        const { clearSessionSurfaceVisibilityForNonSessionRoute } = await import('./sessionSurfaceVisibility');
+        markSessionSurfaceVisible('session-1', 'server-actual');
+        setFocusedSessionId('session-1');
+        setRouteAnchorSessionId('session-1');
+
+        expect(clearSessionSurfaceVisibilityForNonSessionRoute('/embed/session/session-1')).toBe(false);
+        expect(getSessionSurfaceVisibilitySnapshot().visibleSessionIds).toEqual(['session-1']);
+        expect(clearSessionSurfaceVisibilityForNonSessionRoute('/embed/new')).toBe(true);
+    });
+
     it('keeps visibility state available across module re-evaluation', async () => {
         markSessionSurfaceVisible('session-1', 'server-actual');
 

@@ -109,6 +109,15 @@ describe('dispatchBrowserDaemonControlCommandViaMachineRpc', () => {
 });
 
 describe('createBrowserDaemonControlCommandSender', () => {
+    it('feeds authoritative response events to the surface event sink', async () => {
+        const event = { kind: 'navigationCommitted', eventId: 'redirect', browserSessionId: 'browser_session_1', viewId: 'view_1', occurredAt: 1, currentUrl: 'https://redirect.test/', navigationGeneration: 4 };
+        const response = dispatchedResponse();
+        machineRpcWithServerScopeMock.mockResolvedValue({ ...response, result: { ...response.result, events: [event] } });
+        const onEvents = vi.fn();
+        const send = createBrowserDaemonControlCommandSender({ machineId: MACHINE_ID, serverId: SERVER_ID });
+        send(RELOAD_COMMAND, onEvents);
+        await vi.waitFor(() => expect(onEvents).toHaveBeenCalledWith([event]));
+    });
     beforeEach(() => {
         machineRpcWithServerScopeMock.mockReset();
     });

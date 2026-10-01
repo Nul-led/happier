@@ -61,7 +61,7 @@ export type ConnectedAccountDescriptorProjectionState = Readonly<{
 export function readConnectedAccountDescriptorProjection(
   projection: DaemonContributionRegistryProjection | null,
 ): ConnectedAccountDescriptorMachineProjection {
-  if (!projection || projection.v !== 2) return { kind: 'error', reason: 'unsupported' };
+  if (!projection) return { kind: 'error', reason: 'unsupported' };
   const family = projection.familiesById.connectedAccounts;
   if (!family) return { kind: 'ready', descriptors: [] };
 

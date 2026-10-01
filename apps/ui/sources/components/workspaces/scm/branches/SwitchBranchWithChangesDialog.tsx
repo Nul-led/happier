@@ -8,6 +8,7 @@ import { Modal } from '@/modal';
 import { createDeferredOnce } from '@/modal/async/createDeferredOnce';
 import type { CustomModalInjectedProps } from '@/modal';
 import { t } from '@/text';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 export type SwitchBranchWithChangesDialogResolution = 'stash_on_current_branch' | 'bring_changes' | 'cancel';
 
@@ -74,7 +75,7 @@ export function SwitchBranchWithChangesDialog(props: SwitchBranchWithChangesDial
             <Pressable
                 testID="switch-branch-leave-changes"
                 onPress={() => resolve('stash_on_current_branch')}
-                style={({ pressed }) => [styles.button, { opacity: pressed ? 0.8 : 1 }]}
+                style={({ pressed }) => [styles.button, { opacity: pressed ? motionTokens.press.opacitySubtle : 1 }]}
             >
                 <Text style={styles.buttonTitle}>
                     {t('files.branchSwitchDialog.leaveTitle', { branch: props.currentBranch })}
@@ -85,7 +86,7 @@ export function SwitchBranchWithChangesDialog(props: SwitchBranchWithChangesDial
             <Pressable
                 testID="switch-branch-bring-changes"
                 onPress={() => resolve('bring_changes')}
-                style={({ pressed }) => [styles.button, { opacity: pressed ? 0.8 : 1 }]}
+                style={({ pressed }) => [styles.button, { opacity: pressed ? motionTokens.press.opacitySubtle : 1 }]}
             >
                 <Text style={styles.buttonTitle}>
                     {t('files.branchSwitchDialog.bringTitle', { branch: props.targetBranch })}
@@ -96,7 +97,7 @@ export function SwitchBranchWithChangesDialog(props: SwitchBranchWithChangesDial
             <Pressable
                 testID="switch-branch-cancel"
                 onPress={() => resolve('cancel')}
-                style={({ pressed }) => [styles.cancelButton, { opacity: pressed ? 0.7 : 1 }]}
+                style={({ pressed }) => [styles.cancelButton, { opacity: pressed ? motionTokens.press.opacity : 1 }]}
             >
                 <Text style={styles.cancelText}>{t('common.cancel')}</Text>
             </Pressable>

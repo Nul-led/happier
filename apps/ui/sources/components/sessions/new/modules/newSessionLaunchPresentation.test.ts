@@ -4,13 +4,13 @@ import { createNewSessionLaunchAttempt, markNewSessionLaunchAttemptCreated, mark
 import { resolveNewSessionLaunchPresentation } from './newSessionLaunchPresentation';
 
 function attempt(prompt = 'Fix the failing import') {
-    return createNewSessionLaunchAttempt({ prompt, displayText: prompt, scopeKey: 'scope-a' });
+    return createNewSessionLaunchAttempt({ prompt, displayText: prompt, scopeKey: 'scope-a', configurationUpdatedAtMs: 0 });
 }
 
 describe('resolveNewSessionLaunchPresentation', () => {
     it('renders nothing before the author sends', () => {
         expect(resolveNewSessionLaunchPresentation({
-            temporaryComputerLaunchStatus: 'idle',
+            temporaryComputerLaunchActive: false,
             isCreating: false,
             pendingLaunchAttempt: attempt(),
         })).toBe('none');
@@ -18,7 +18,7 @@ describe('resolveNewSessionLaunchPresentation', () => {
 
     it('renders the compact pending card for an ordinary exact-Machine launch', () => {
         expect(resolveNewSessionLaunchPresentation({
-            temporaryComputerLaunchStatus: 'idle',
+            temporaryComputerLaunchActive: false,
             isCreating: true,
             pendingLaunchAttempt: markNewSessionLaunchAttemptSpawning(attempt()),
         })).toBe('machine');
@@ -26,7 +26,7 @@ describe('resolveNewSessionLaunchPresentation', () => {
 
     it('stops the compact pending card once the Session exists', () => {
         expect(resolveNewSessionLaunchPresentation({
-            temporaryComputerLaunchStatus: 'idle',
+            temporaryComputerLaunchActive: false,
             isCreating: true,
             pendingLaunchAttempt: markNewSessionLaunchAttemptCreated(attempt(), { createdSessionId: 'session-1' }),
         })).toBe('none');
@@ -34,7 +34,7 @@ describe('resolveNewSessionLaunchPresentation', () => {
 
     it('has nothing to preview for an empty prompt', () => {
         expect(resolveNewSessionLaunchPresentation({
-            temporaryComputerLaunchStatus: 'idle',
+            temporaryComputerLaunchActive: false,
             isCreating: true,
             pendingLaunchAttempt: attempt('   '),
         })).toBe('none');
@@ -45,16 +45,9 @@ describe('resolveNewSessionLaunchPresentation', () => {
     // waiting surface owns the screen. With two independent decisions in the Simple
     // panel and the Wizard, one launch grew two competing pending presentations —
     // one of them behind an inert, accessibility-hidden authoring tree.
-    it.each([
-        'preparing',
-        'waiting_for_computer',
-        'waiting_for_approval',
-        'preparing_encryption',
-        'cancel_failed',
-        'failed',
-    ] as const)('never shows a second pending card while a temporary launch owns the screen (%s)', (status) => {
+    it('never shows a second pending card while a temporary launch owns the screen', () => {
         expect(resolveNewSessionLaunchPresentation({
-            temporaryComputerLaunchStatus: status,
+            temporaryComputerLaunchActive: true,
             isCreating: true,
             pendingLaunchAttempt: attempt(),
         })).toBe('temporary_computer');
@@ -62,7 +55,7 @@ describe('resolveNewSessionLaunchPresentation', () => {
 
     it('keeps the waiting surface presented after navigation back into a reconciling draft', () => {
         expect(resolveNewSessionLaunchPresentation({
-            temporaryComputerLaunchStatus: 'reconciling',
+            temporaryComputerLaunchActive: true,
             isCreating: false,
             pendingLaunchAttempt: null,
         })).toBe('temporary_computer');

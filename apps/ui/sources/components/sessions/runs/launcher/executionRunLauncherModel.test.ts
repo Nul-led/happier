@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
     createExecutionRunDetailsTab,
     createDiscussionSelectionInteractiveExecutionRunDraftDetailsTab,
+    resolveExecutionRunLaunchTitle,
     createInteractiveExecutionRunDraftDetailsTab,
     resolveExecutionRunLauncherIntent,
 } from './executionRunLauncherModel';
@@ -39,6 +40,25 @@ describe('execution Run conversation details resources', () => {
             key: 'execution-run-conversation-draft:discussion:draft_1',
             resource: { kind: 'executionRunLauncher', mode: 'conversation', source, initialInstructions: 'Investigate this' },
         });
+    });
+});
+
+describe('execution Run tab titles', () => {
+    it('never titles a Run tab by its id', () => {
+        const tab = createExecutionRunDetailsTab('7f3a91c2');
+        expect(tab.title).not.toContain('7f3a91c2');
+        expect(tab.title.trim().length).toBeGreaterThan(0);
+        expect(createExecutionRunDetailsTab('7f3a91c2', undefined, 'Review #2481 changes').title).toBe('Review #2481 changes');
+    });
+
+    it('titles a launched Run by what was asked, else by its intent', () => {
+        expect(resolveExecutionRunLaunchTitle({ intent: 'review', instructions: '\n  Focus on state loss on resize.\nAnd the sheet.' }))
+            .toBe('Focus on state loss on resize.');
+        const reviewTitle = resolveExecutionRunLaunchTitle({ intent: 'review', instructions: '   ' });
+        const planTitle = resolveExecutionRunLaunchTitle({ intent: 'plan', instructions: null });
+        expect(reviewTitle.trim().length).toBeGreaterThan(0);
+        expect(planTitle.trim().length).toBeGreaterThan(0);
+        expect(reviewTitle).not.toBe(planTitle);
     });
 });
 

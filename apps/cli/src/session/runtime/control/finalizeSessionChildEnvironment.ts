@@ -1,4 +1,5 @@
 import { stripNestedSessionDetectionEnv } from '@/utils/processEnv/stripNestedSessionDetectionEnv';
+import { stripDaemonServiceInstallRequestEnv } from '@/utils/processEnv/stripDaemonServiceInstallRequestEnv';
 import {
   isFinalChildTypedOrForcedControlEnvKey,
   isCanonicalSessionControlEnvKey,
@@ -17,7 +18,7 @@ export function finalizeSessionChildEnvironment(params: Readonly<{
   stackProcessKind: 'session' | null;
 }>): NodeJS.ProcessEnv {
   const env = stripNestedSessionDetectionEnv(
-    stripSessionControlEnvOverrides(params.environment),
+    stripDaemonServiceInstallRequestEnv(stripSessionControlEnvOverrides(params.environment)),
   );
   for (const [key, value] of Object.entries(params.canonicalSessionControlEnvironment ?? {})) {
     if (!isCanonicalSessionControlEnvKey(key) || isFinalChildTypedOrForcedControlEnvKey(key)) {

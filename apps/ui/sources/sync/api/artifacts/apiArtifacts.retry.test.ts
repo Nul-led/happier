@@ -29,7 +29,7 @@ describe('apiArtifacts retry modes', () => {
         vi.useFakeTimers();
         vi.spyOn(Math, 'random').mockReturnValue(0);
 
-        upsertAndActivateServer({ serverUrl: 'https://server.example.test', scope: 'tab' });
+        await upsertAndActivateServer({ serverUrl: 'https://server.example.test', scope: 'tab' });
         runtimeFetchSpy.mockImplementation(async (url: unknown) => {
             const href = String(url ?? '');
             if (href.endsWith('/health')) return new Response('{}', { status: 200 });

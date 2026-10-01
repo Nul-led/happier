@@ -4,11 +4,9 @@ import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils';
 import {
     computePluginUiArtifactSha256DigestV1,
     PluginUiArtifactDigestV1Schema,
-    verifyPluginUiArtifactBytesIntegrityV1,
     type PluginUiArtifactDigestV1,
 } from '@happier-dev/protocol/plugins/ui';
 
-import type { PluginReactNativeBundleCacheIdentity } from '@/sync/domains/plugins/ui/reactNativeRuntime';
 import {
     createPluginUiPersistentArtifactAccessClock,
     createPluginUiPersistentArtifactOperationQueue,
@@ -24,7 +22,6 @@ import {
     type PluginUiPersistentArtifactRetainedRecord,
 } from '@/sync/domains/plugins/ui/artifactByteCache';
 
-const INSTALLED_ARTIFACT_DIRECTORY = 'happier-rn-installed-artifacts-v1';
 const PERSISTENT_ARTIFACT_DIRECTORY = 'happier-plugin-ui-artifacts-v1';
 const PERSISTENT_ARTIFACT_MANIFEST = 'record.v1.json';
 const PERSISTENT_STORED_FILE_NAME_PATTERN = /^[a-f0-9]{64}\.bin$/u;
@@ -54,58 +51,12 @@ type ExpoFileSystemModule = Readonly<{
     }>;
 }>;
 
-export type ReactNativeInstalledArtifactFileMaterializer = (input: Readonly<{
-    identity: PluginReactNativeBundleCacheIdentity;
-    bytes: Uint8Array;
-    scriptId: string;
-    file?: Readonly<{
-        relativePath: string;
-        digest: PluginUiArtifactDigestV1;
-        byteSize: number;
-    }>;
-}>) => Promise<string>;
-
 export type ReactNativeInstalledArtifactFileMaterializerOptions = Readonly<{
     fileSystem?: ExpoFileSystemModule;
 }>;
 
 function sha256Hex(value: string): string {
     return bytesToHex(sha256(utf8ToBytes(value)));
-}
-
-function digestFileNamePart(digest: PluginUiArtifactDigestV1): string {
-    return digest.trim().toLowerCase().replace(/^sha256:/u, 'sha256-').replace(/[^a-f0-9-]/gu, '_');
-}
-
-function createCanonicalMaterializerIdentity(
-    identity: PluginReactNativeBundleCacheIdentity,
-): string {
-    const fields: readonly (readonly [string, string])[] = [
-        ['pluginId', identity.pluginId],
-        ['contributionId', identity.contributionId],
-        ['platform', identity.platform],
-        ['artifactDigest', identity.artifactDigest],
-    ];
-    return fields
-        .map(([key, value]) => {
-            const bytes = utf8ToBytes(value);
-            return `${key}:${bytes.byteLength}:${value}`;
-        })
-        .join('\n');
-}
-
-/**
- * RN-3: the per-artifact on-disk directory name for a materialized installed
- * artifact. It is derived from immutable executable identity alone (not the scriptId),
- * so disk-level GC can recompute the exact directory to delete from a cache identity
- * without tracking a side index. Transient host compatibility and projection-generation
- * facts intentionally do not participate: changing those facts must re-admit the artifact,
- * but must not rewrite identical digest-verified bytes.
- */
-export function resolveMaterializedArtifactDirectoryName(
-    identity: PluginReactNativeBundleCacheIdentity,
-): string {
-    return sha256Hex(createCanonicalMaterializerIdentity(identity));
 }
 
 async function resolveExpoFileSystem(
@@ -125,25 +76,6 @@ function resolveCacheDirectory(FileSystem: ExpoFileSystemModule): ExpoFileSystem
         : cachePath;
     assertFileUri(cacheDirectory.uri);
     return cacheDirectory;
-}
-
-function ensureVerifiedInputBytes(input: Readonly<{
-    identity: PluginReactNativeBundleCacheIdentity;
-    bytes: Uint8Array;
-    digest?: PluginUiArtifactDigestV1;
-}>): void {
-    const integrity = verifyPluginUiArtifactBytesIntegrityV1({
-        bytes: input.bytes,
-        integrity: {
-            digest: input.digest ?? input.identity.artifactDigest,
-            pluginId: input.identity.pluginId,
-            contributionId: input.identity.contributionId,
-            artifactKind: 'reactNativeBundle',
-        },
-    });
-    if (!integrity.ok) {
-        throw new Error(integrity.reasonCode);
-    }
 }
 
 type PersistentArtifactManifestV1 = Readonly<{
@@ -614,145 +546,8 @@ export function createReactNativePersistentArtifactStore(
     });
 }
 
-async function fileMatchesExpectedArtifact(input: Readonly<{
-    file: ExpoFileSystemFile;
-    identity: PluginReactNativeBundleCacheIdentity;
-    digest?: PluginUiArtifactDigestV1;
-    byteSize: number;
-}>): Promise<boolean> {
-    try {
-        if (!input.file.exists || input.file.size !== input.byteSize) return false;
-        const bytes = await input.file.bytes();
-        const integrity = verifyPluginUiArtifactBytesIntegrityV1({
-            bytes,
-            integrity: {
-                digest: input.digest ?? input.identity.artifactDigest,
-                pluginId: input.identity.pluginId,
-                contributionId: input.identity.contributionId,
-                artifactKind: 'reactNativeBundle',
-            },
-        });
-        return integrity.ok;
-    } catch {
-        return false;
-    }
-}
-
 function assertFileUri(uri: string): void {
     if (!uri.startsWith('file://')) {
         throw new Error('React Native installed artifact materializer must materialize to a file:// URL');
     }
-}
-
-export function createReactNativeInstalledArtifactFileMaterializer(
-    options: ReactNativeInstalledArtifactFileMaterializerOptions = {},
-): ReactNativeInstalledArtifactFileMaterializer {
-    return async ({ identity, bytes, scriptId, file: artifactFile }) => {
-        const digest = artifactFile?.digest ?? identity.artifactDigest;
-        const expectedByteSize = artifactFile?.byteSize ?? bytes.byteLength;
-        if (bytes.byteLength !== expectedByteSize) {
-            throw new Error('react_native_installed_artifact_file_size_mismatch');
-        }
-        ensureVerifiedInputBytes({ identity, bytes, digest });
-
-        const FileSystem = await resolveExpoFileSystem(options);
-        const cacheDirectory = resolveCacheDirectory(FileSystem);
-
-        const identityHash = resolveMaterializedArtifactDirectoryName(identity);
-        const scriptHash = sha256Hex(scriptId);
-        const directory = new FileSystem.Directory(
-            cacheDirectory,
-            INSTALLED_ARTIFACT_DIRECTORY,
-            identityHash,
-        );
-        directory.create({ intermediates: true, idempotent: true });
-
-        const materializedFile = new FileSystem.File(
-            directory,
-            `${digestFileNamePart(digest)}.${scriptHash}.bundle.js`,
-        );
-        assertFileUri(materializedFile.uri);
-
-        if (await fileMatchesExpectedArtifact({
-            file: materializedFile,
-            identity,
-            digest,
-            byteSize: expectedByteSize,
-        })) {
-            return materializedFile.uri;
-        }
-
-        try {
-            materializedFile.delete?.();
-        } catch {
-            // Best effort: File.write with append false should overwrite on current Expo FileSystem.
-        }
-        materializedFile.write(bytes, { append: false });
-
-        if (!await fileMatchesExpectedArtifact({
-            file: materializedFile,
-            identity,
-            digest,
-            byteSize: expectedByteSize,
-        })) {
-            throw new Error('react_native_installed_artifact_file_digest_mismatch');
-        }
-        return materializedFile.uri;
-    };
-}
-
-export type ReactNativeInstalledArtifactDiskGc = Readonly<{
-    /**
-     * RN-3: delete the on-disk materialized bundle directory for each cache identity.
-     * Tied to in-memory cache eviction (uninstall / disable)
-     * so revoked or removed executable bytes are deleted from disk, not just dropped
-     * from the in-memory cache. Best-effort and idempotent: a missing directory is a
-     * no-op, and a delete failure for one identity never blocks the others.
-     */
-    evictForIdentities: (
-        identities: readonly PluginReactNativeBundleCacheIdentity[],
-    ) => Promise<void>;
-}>;
-
-export function createReactNativeInstalledArtifactDiskGc(
-    options: ReactNativeInstalledArtifactFileMaterializerOptions = {},
-): ReactNativeInstalledArtifactDiskGc {
-    return Object.freeze({
-        evictForIdentities: async (identities) => {
-            if (identities.length === 0) {
-                return;
-            }
-            let FileSystem: ExpoFileSystemModule;
-            let cacheDirectory: ExpoFileSystemDirectory;
-            try {
-                FileSystem = await resolveExpoFileSystem(options);
-                cacheDirectory = resolveCacheDirectory(FileSystem);
-            } catch {
-                // No native file system (web/test) → nothing materialized to delete.
-                return;
-            }
-
-            const deletedDirectoryNames = new Set<string>();
-            for (const identity of identities) {
-                const directoryName = resolveMaterializedArtifactDirectoryName(identity);
-                if (deletedDirectoryNames.has(directoryName)) {
-                    continue;
-                }
-                deletedDirectoryNames.add(directoryName);
-                try {
-                    const directory = new FileSystem.Directory(
-                        cacheDirectory,
-                        INSTALLED_ARTIFACT_DIRECTORY,
-                        directoryName,
-                    );
-                    if (directory.exists === false) {
-                        continue;
-                    }
-                    directory.delete?.();
-                } catch {
-                    // Best effort: a failed delete for one identity must not block the rest.
-                }
-            }
-        },
-    });
 }

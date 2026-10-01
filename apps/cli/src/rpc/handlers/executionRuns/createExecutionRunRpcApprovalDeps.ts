@@ -3,14 +3,17 @@ import { createCliApprovalsArtifactStore } from '@/session/actions/approvals/art
 import { getSharedBlockingApprovalCoordinator } from '@/session/actions/approvals/blockingApprovalCoordinator';
 import {
   ApprovalRequestSchema,
+  pluginSourceCustodyV1Equal,
   type ReviewCommentPrincipalHeaderV1,
 } from '@happier-dev/protocol';
 import { createCliReviewCommentActionExecutorFromCredentials } from '@/agent/reviews/comments/executor';
 import { createExecutionRunHostActionCurrentIntentAdapter } from '@/session/actions/approvals/executionRunHostActionCurrentIntent';
 import { requestReviewCommentDirectWriteGrant } from '@/agent/executionRuns/profiles/review/directWriteGrantRequester';
-import { resolveReviewCommentHostPluginAuthority } from '@/agent/executionRuns/profiles/review/hostActionMaterializer';
 import type { PluginMachineMaterializationRefV1 } from '@happier-dev/protocol';
-import { tryAcquireAuthoritativePluginRuntimeRegistryLease } from '@/plugins/runtime/reload/runtimeLease';
+import {
+  readAuthoritativePluginSlotOccurrence,
+  tryAcquireAuthoritativePluginRuntimeRegistryLease,
+} from '@/plugins/runtime/reload/runtimeLease';
 
 import type { ExecutionRunRpcApprovalDeps } from './dispatchExecutionRunRpcAction';
 
@@ -30,23 +33,13 @@ function assertReviewCommentPrincipalCurrent(
   principal: ReviewCommentPrincipalHeaderV1,
 ): void {
   const currentIntent = principal.currentIntent;
-  if (!currentIntent) return;
-  const lease = tryAcquireAuthoritativePluginRuntimeRegistryLease();
-  if (!lease) throw staleReviewHostActionError();
-  try {
-    const authority = resolveReviewCommentHostPluginAuthority({
-      pluginId: currentIntent.pluginId,
-      current: lease.registry.pluginFinalPolicyCurrentGenerationsById
-        ?.get(currentIntent.pluginId) ?? null,
-    });
-    if (
-      !authority
-      || authority.immutableGenerationId !== currentIntent.immutableGenerationId
-    ) {
-      throw staleReviewHostActionError();
-    }
-  } finally {
-    void lease.release();
+  if (!currentIntent || currentIntent.kind !== 'execution_run_host_action') return;
+  const sourceCustody = readAuthoritativePluginSlotOccurrence(currentIntent.pluginId)?.sourceCustody ?? null;
+  if (
+    !sourceCustody
+    || !pluginSourceCustodyV1Equal(sourceCustody, currentIntent.sourceCustody)
+  ) {
+    throw staleReviewHostActionError();
   }
 }
 

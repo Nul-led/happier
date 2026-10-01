@@ -25,6 +25,11 @@
 //   - darwin/windows: `workspace-confined-read` and `workspace-confined-delete` hold
 //     a no-follow root-to-leaf handle chain across a two-phase authorization
 //     exchange before disclosing bytes or mutating the exact held object.
+//   - darwin/windows: `workspace-confined-observe` and `workspace-confined-capture`
+//     provide complete entry identity and file-backed reviewed bytes. Linux uses
+//     its existing retained-descriptor TypeScript owner for those two operations.
+//   - linux/darwin/windows: `workspace-confined-apply` and
+//     `workspace-confined-recover` provide no-clobber replacement and disposition.
 //   - any other platform: every subcommand fails closed; Linux SVC09 custody
 //     stays on its process-group owner and never consumes this helper.
 //
@@ -69,7 +74,12 @@ usage:
   happier-process-custody peer-identity [--pipe-handle=<handle>]
   happier-process-custody secure-pipe-relay --pipe-name=<name> --target-port=<port>
   happier-process-custody workspace-confined-read
-  happier-process-custody workspace-confined-delete`))
+  happier-process-custody workspace-confined-delete
+  happier-process-custody workspace-confined-observe
+  happier-process-custody workspace-confined-capture
+  happier-process-custody workspace-confined-apply
+  happier-process-custody workspace-confined-inspect
+  happier-process-custody workspace-confined-recover`))
 }
 
 func main() {
@@ -97,6 +107,16 @@ func main() {
 		err = workspaceConfinedReadCommand(rest, os.Stdin, os.Stdout)
 	case "workspace-confined-delete":
 		err = workspaceConfinedDeleteCommand(rest, os.Stdin, os.Stdout)
+	case "workspace-confined-observe":
+		err = workspaceConfinedObserveCommand(rest, os.Stdin, os.Stdout)
+	case "workspace-confined-capture":
+		err = workspaceConfinedCaptureCommand(rest, os.Stdin, os.Stdout)
+	case "workspace-confined-apply":
+		err = workspaceConfinedApplyCommand(rest, os.Stdin, os.Stdout)
+	case "workspace-confined-inspect":
+		err = workspaceConfinedInspectCommand(rest, os.Stdin, os.Stdout)
+	case "workspace-confined-recover":
+		err = workspaceConfinedRecoverCommand(rest, os.Stdin, os.Stdout)
 	default:
 		usage()
 		os.Exit(exitUsage)

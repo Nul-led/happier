@@ -14,7 +14,6 @@ const SESSION_VIEW_HEADER_ACTION_ITEMS_CACHE = new LruMap<string, readonly Dropd
 function buildCacheKey(input: Readonly<{
     shouldShowSubagentsButton: boolean;
     subagentActiveCount: number;
-    sessionExecutionRunsSupported: boolean;
     showAutomations: boolean;
     actionIconColor: string;
 }>): string {
@@ -22,7 +21,6 @@ function buildCacheKey(input: Readonly<{
         getPreferredLanguage(),
         input.shouldShowSubagentsButton ? 1 : 0,
         input.subagentActiveCount,
-        input.sessionExecutionRunsSupported ? 1 : 0,
         input.showAutomations ? 1 : 0,
         input.actionIconColor,
     ]);
@@ -32,7 +30,6 @@ export function resolveSessionViewHeaderActionItems(input: Readonly<{
     shouldFoldHeaderIconActions: boolean;
     shouldShowSubagentsButton: boolean;
     subagentActiveCount: number;
-    sessionExecutionRunsSupported: boolean;
     showAutomations: boolean;
     actionIconColor: string;
 }>): readonly DropdownMenuItem[] {
@@ -54,13 +51,7 @@ export function resolveSessionViewHeaderActionItems(input: Readonly<{
             icon: <Icon name="robot" size={ICON_SIZE.md} color={input.actionIconColor} />,
         });
     }
-    if (input.sessionExecutionRunsSupported) {
-        items.push({
-            id: 'header.openRuns',
-            title: t('session.openRuns'),
-            icon: <Icon name="play" size={16} color={input.actionIconColor} />,
-        });
-    }
+    // No separate "Runs" entry: the Agents roster is the one list of a Session's runs and agents.
     if (input.showAutomations) {
         items.push({
             id: 'header.openAutomations',

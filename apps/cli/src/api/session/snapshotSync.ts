@@ -7,6 +7,7 @@ import { tryParseJsonRecord } from '@/utils/tryParseJsonRecord';
 import {
     SESSION_METADATA_LAYOUT_VERSION_V1,
     type AccountEncryptionCurrentnessResponse,
+    type V2SessionByIdResponse,
 } from '@happier-dev/protocol';
 import {
     readSessionMetadataLayoutVersion,
@@ -25,6 +26,41 @@ import {
     type LatestTurnStatusSnapshot,
 } from './sessionTurnStatusSnapshot';
 import type { SessionStoredContentCryptoContext } from '@/session/transport/encryption/sessionEncryptionContext';
+import {
+    TranscriptOpenedAgentStateV1Schema,
+    TranscriptOpenedSharedMetadataV1Schema,
+    projectSessionSharedMetadataV1,
+    type TranscriptOpenedAgentStateV1,
+    type TranscriptOpenedSharedMetadataV1,
+} from '@happier-dev/protocol';
+
+export type OpenedSessionStateVersions = Readonly<{ agentStateVersion: number; sharedMetadataVersion: number }>;
+export type OpenedSessionStateSnapshot = Readonly<{
+    agentState: TranscriptOpenedAgentStateV1 | null;
+    sharedMetadata: TranscriptOpenedSharedMetadataV1 | null;
+}>;
+
+/** Follow's opened read projection consumes the same layout-aware snapshot owner. */
+export async function fetchOpenedSessionStateFromServer(
+    opts: Parameters<typeof fetchSessionSnapshotUpdateFromServer>[0],
+): Promise<OpenedSessionStateSnapshot> {
+    const update = await fetchSessionSnapshotUpdateFromServer(opts);
+    const state = opts.metadataAuthority === 'shared_editor' ? null : update.metadataTuple
+        ? { version: update.metadataTuple.agentStateVersion, value: update.metadataTuple.value.agentState }
+        : update.agentState
+            ? { version: update.agentState.agentStateVersion, value: update.agentState.agentState }
+            : null;
+    const tuple = update.metadataTuple ?? update.sharedMetadataTuple;
+    const shared = tuple
+        ? { version: tuple.metadataVersion, value: tuple.value.sharedMetadata }
+        : update.metadata
+            ? { version: update.metadata.metadataVersion, value: projectSessionSharedMetadataV1({ metadata: update.metadata.metadata }) }
+            : null;
+    return {
+        agentState: state && state.version > opts.currentAgentStateVersion ? TranscriptOpenedAgentStateV1Schema.parse(state) : null,
+        sharedMetadata: shared && shared.version > opts.currentMetadataVersion ? TranscriptOpenedSharedMetadataV1Schema.parse(shared) : null,
+    };
+}
 
 export function shouldSyncSessionSnapshotOnConnect(opts: { metadataVersion: number; agentStateVersion: number }): boolean {
     return opts.metadataVersion < 0 || opts.agentStateVersion < 0;
@@ -78,6 +114,7 @@ export async function fetchSessionSnapshotUpdateFromServer(opts: {
     currentAgentState?: AgentState | null;
     reason?: SessionSnapshotRefreshReason;
 } & SessionStoredContentCryptoContext): Promise<{
+    organization?: Pick<V2SessionByIdResponse['session'], 'reportsTo' | 'origin'>;
     metadataLayoutVersion?: number;
     metadataTuple?: SessionMetadataEnvelopeTupleSnapshot;
     sharedMetadataTuple?: SessionMetadataSharedEditorSnapshot;
@@ -95,6 +132,7 @@ export async function fetchSessionSnapshotUpdateFromServer(opts: {
         (raw as any)?.encryptionMode === 'plain' ? 'plain' : 'e2ee';
 
     const out: {
+        organization?: Pick<V2SessionByIdResponse['session'], 'reportsTo' | 'origin'>;
         metadataLayoutVersion?: number;
         metadataTuple?: SessionMetadataEnvelopeTupleSnapshot;
         sharedMetadataTuple?: SessionMetadataSharedEditorSnapshot;
@@ -105,6 +143,10 @@ export async function fetchSessionSnapshotUpdateFromServer(opts: {
         latestTurnStatus?: LatestTurnStatusSnapshot;
         latestTurnStatusObservedAt?: number;
     } = {};
+    out.organization = {
+        ...(raw.reportsTo ? { reportsTo: raw.reportsTo } : {}),
+        ...(raw.origin ? { origin: raw.origin } : {}),
+    };
 
     const pendingQueueState = readKnownPendingQueueState(raw);
     if (pendingQueueState) {

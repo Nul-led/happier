@@ -107,6 +107,31 @@ export function derivePersonalHomeBootstrapSnapshot(facts: PersonalHomeFacts): P
         };
     }
 
+    // R10 D4: a returning user already signed in to another Home (a 0.2 Cloud user, say) keeps it
+    // and is asked once before a Personal Home is created. A runtime already installed for a
+    // Personal Home means that choice was made.
+    if (
+        !alreadyCompleted
+        && facts.signedInOtherHome
+        && facts.relayRuntime?.purpose?.kind !== 'personal-home'
+    ) {
+        return {
+            shouldGateShell: true,
+            homeReady: false,
+            daemonReady,
+            phase: 'blocked',
+            daemonState: daemonState(facts),
+            action: 'choose-signed-in-home',
+            progressMilestones,
+            signedInHomeLabel: facts.signedInOtherHome.label,
+            detail: {
+                message: 'This computer is already signed in to another Home.',
+                code: 'signed_in_other_home',
+                retryable: false,
+            },
+        };
+    }
+
     // Erase intentionally retains the runtime registration so its explicit managed origin remains
     // available, but clears the Home's data and policy. This is not an automatic bootstrap
     // continuation: recreating a Personal Home is a new user decision made through Retry.

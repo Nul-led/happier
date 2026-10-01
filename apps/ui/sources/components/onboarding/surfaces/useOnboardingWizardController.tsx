@@ -7,7 +7,7 @@ import type { AuthEntryOptions } from '@/components/account/auth/useAuthEntryOpt
 import type { AccountServiceEntryOptions } from '@/components/account/auth/useAccountServiceEntryOptions';
 import type { AccountServiceSelectionFormProps } from '@/components/account/auth/AccountServiceSelectionForm';
 import type { AccountDirectoryKeyLoginOutcome } from '@/components/account/auth/AccountDirectoryKeyLoginForm';
-import type { AccountPostAuthInput, AccountPostAuthResult } from '@/sync/ops/accountDirectory/completeAccountServicePostAuth';
+import { shouldDismissAccountPostAuthContinuation, type AccountPostAuthInput, type AccountPostAuthResult } from '@/sync/ops/accountDirectory/completeAccountServicePostAuth';
 import type { AccountContinuationIntent } from '@happier-dev/cli-common/accountService';
 import type { WelcomeAuthenticationMethod } from '@/components/onboarding/preAuth/composeWelcomeEntryModel';
 import { Text } from '@/components/ui/text/Text';
@@ -24,11 +24,13 @@ import { useActiveServerSnapshot } from '@/hooks/server/useActiveServerSnapshot'
 import { isSameServerUrl, normalizeServerUrl, setActiveServerAndSwitch, upsertActivateAndSwitchServer } from '@/sync/domains/server/activeServerSwitch';
 import { getActiveServerSnapshot, upsertServerProfileOnly } from '@/sync/domains/server/serverRuntime';
 import { readConfiguredServerUrlEnv } from '@/sync/domains/server/readConfiguredServerUrlEnv';
-import { listServerProfiles, removeServerProfile } from '@/sync/domains/server/serverProfiles';
+import { listServerProfiles, removeServerProfile, type ServerProfile } from '@/sync/domains/server/serverProfiles';
+import { connectHomeAtAddress } from '@/sync/ops/home/connectHomeAtAddress';
+import { confirmCanonicalHomeUrl, confirmInsecureHomeHttp, homeConnectFailureMessage } from '@/components/homes/add/homeConnectPresentation';
 import { removeServerProfileUiAction } from '@/components/serverProfiles/removeServerProfileUiAction';
 import { presentFirstKeyCredentialLifecycle } from '@/components/account/presentFirstKeyCredentialLifecycle';
 import { useEndpointReachabilityRemediationController } from '@/components/settings/server/hooks/useEndpointReachabilityRemediationController';
-import { resolveSetupSurfacePolicy } from '@/sync/domains/server/setup/setupSurfacePolicy';
+import { canHostPersonalHomeHere, resolveSetupSurfacePolicy } from '@/sync/domains/server/setup/setupSurfacePolicy';
 import { isLocalishServerUrl } from '@/sync/domains/server/url/serverUrlClassification';
 import { toServerUrlDisplay } from '@/sync/domains/server/url/serverUrlDisplay';
 import { readServerReachabilityProbeTimeoutMs } from '@/sync/runtime/connectivity/serverReachabilityTuning';
@@ -38,7 +40,6 @@ import {
     type EndpointReachabilityRemediation,
 } from '@/components/serverReachability/remediation';
 import { isRunningOnMac } from '@/utils/platform/platform';
-import { desktopHostKind } from '@/utils/platform/desktopHost';
 import { isWebQrScannerSupported } from '@/utils/platform/qrScannerSupport';
 import { isWebMobileLikeQrScannerHost } from '@/utils/platform/webMobileHeuristics';
 import type { RelayHostLocalChecklistRuntimeStatus } from '../checklists/relayHostLocal/types';
@@ -54,6 +55,8 @@ import type { WizardPlatform, WizardRelaySelection, WizardStepId } from '../stat
 import { ConfirmSwitchRelayStep, type RelaySwitchDecision } from '../steps/ConfirmSwitchRelayStep';
 import { parseOnboardingScanPayload } from '../state/scanPayload';
 import { promptLegacyPairingUpdateRequired } from '@/auth/pairing/legacyPairingUpdateRequired';
+import { promptAccountConnectApprovalRequired } from '@/components/account/restore/accountConnectApprovalGuidance';
+import { resolveReverseQrTargetProfileId } from '@/components/onboarding/restore/RestoreIndexEmbedded';
 import { useEndpointReadinessMap } from '../hooks/useEndpointReadinessMap';
 import {
     setOnboardingWizardAwaitingAuthResumeIntent,
@@ -97,6 +100,8 @@ export type OnboardingWizardSurfaceProps = Readonly<{
     accountContinuationIntent?: AccountContinuationIntent;
     accountEntryReturnTo?: string;
     initialStepId?: WizardStepId;
+    initialServerUrl?: string;
+    onInitialServerUrlConnected?: () => void;
 
     /** Provider sign-in on the selected sign-in service. Never touches the focused Home. */
     onContinueWithAccountServiceProvider?: (request: WelcomeAuthenticationMethod, context: WelcomeAuthenticationActionContext) => Promise<void> | void;
@@ -190,7 +195,7 @@ export function useOnboardingWizardController(props: OnboardingWizardSurfaceProp
         [qrScannerHeuristicViewport.height, qrScannerHeuristicViewport.width],
     );
 
-    const [urlDraft, setUrlDraft] = React.useState('');
+    const [urlDraft, setUrlDraft] = React.useState(props.initialServerUrl ?? '');
     const [relaySwitchDecision, setRelaySwitchDecision] = React.useState<RelaySwitchDecision>('switch');
     type LocalRelayRuntimeStatus = RelayHostLocalChecklistRuntimeStatus | null;
     const [localRelayRuntimeStatus, setLocalRelayRuntimeStatus] = React.useState<LocalRelayRuntimeStatus>(null);
@@ -220,7 +225,6 @@ export function useOnboardingWizardController(props: OnboardingWizardSurfaceProp
                 relayLockConfirmationPending: false,
                 relaySwitchConfirmationPending: false,
                 authIntent: 'standard',
-                setupAction: null,
             } as const;
 
             const requestedStepId = props.initialStepId ?? 'welcome';
@@ -238,9 +242,7 @@ export function useOnboardingWizardController(props: OnboardingWizardSurfaceProp
             });
         },
     );
-    const canCreatePersonalHome = desktopHostKind() === 'tauri'
-        && setupPolicy.relay.allowRelaySelection
-        && setupPolicy.relay.allowLocalRelayHost
+    const canCreatePersonalHome = canHostPersonalHomeHere(setupPolicy)
         && !state.context.relaySelection.locked;
 
     const handleLocalRelayRuntimeStatusChange = React.useCallback(async (status: LocalRelayRuntimeStatus) => {
@@ -266,36 +268,81 @@ export function useOnboardingWizardController(props: OnboardingWizardSurfaceProp
         });
     }, [dispatch]);
 
-    const applyWizardAdvanceResolution = React.useCallback(async (resolution: WizardAdvanceResolution) => {
+    const handleSelectAccountService = React.useCallback<AccountServiceSelectionFormProps['onSelect']>(async (url, options) => {
+        const result = await props.onSelectAccountService?.(url, options) ?? { kind: 'unavailable' as const };
+        if (result.kind === 'selected') {
+            dispatch({ type: 'wizard/goToStep', stepId: 'welcome' });
+        }
+        return result;
+    }, [props.onSelectAccountService]);
+
+    const connectAndFocusHomeAddress = React.useCallback(async (serverUrl: string): Promise<ServerProfile | null> => {
+        const saved = listServerProfiles().find((profile) => (
+            isSameServerUrl(profile.serverUrl, serverUrl)
+            || (profile.canonicalServerUrl != null && isSameServerUrl(profile.canonicalServerUrl, serverUrl))
+        ));
+        if (saved) {
+            const switched = await setActiveServerAndSwitch({ serverId: saved.id, scope: 'device' });
+            if (switched === 'blocked') return null;
+            props.onInitialServerUrlConnected?.();
+            return saved;
+        }
+
+        try {
+            const result = await connectHomeAtAddress({
+                serverUrl,
+                source: 'url',
+                confirmInsecureHttp: confirmInsecureHomeHttp,
+                confirmCanonicalUrl: confirmCanonicalHomeUrl,
+            });
+            if (result.kind === 'connected') {
+                const switched = await setActiveServerAndSwitch({ serverId: result.profile.id, scope: 'device' });
+                if (switched === 'blocked') return null;
+                props.onInitialServerUrlConnected?.();
+                return result.profile;
+            }
+            const failureMessage = homeConnectFailureMessage(result);
+            if (failureMessage) await Modal.alert(t('common.error'), failureMessage);
+            return null;
+        } catch (error) {
+            if (error instanceof Error && error.name === 'AbortError') return null;
+            await Modal.alert(t('common.error'), t('errors.operationFailed'));
+            return null;
+        }
+    }, [props.onInitialServerUrlConnected]);
+
+    const applyWizardAdvanceResolution = React.useCallback(async (resolution: WizardAdvanceResolution): Promise<boolean> => {
+        let connectedProfile: ServerProfile | null = null;
         for (const effect of resolution.effects) {
             switch (effect.type) {
                 case 'activateServerUrl':
-                    await upsertActivateAndSwitchServer({
-                        serverUrl: effect.serverUrl,
-                        source: effect.source,
-                        scope: effect.scope,
-                    });
+                    connectedProfile = await connectAndFocusHomeAddress(effect.serverUrl);
+                    if (!connectedProfile) return false;
                     break;
                 case 'activateServerProfile':
-                    await setActiveServerAndSwitch({
+                    if (await setActiveServerAndSwitch({
                         serverId: effect.serverId,
                         scope: effect.scope,
-                    });
+                    }) === 'blocked') return false;
                     break;
                 case 'setRelaySelection':
-                    dispatch({ type: 'wizard/setRelaySelection', relaySelection: effect.relaySelection });
+                    dispatch({
+                        type: 'wizard/setRelaySelection',
+                        relaySelection: connectedProfile
+                            ? {
+                                ...effect.relaySelection,
+                                serverUrl: connectedProfile.serverUrl,
+                                relayProfileId: effect.relaySelection.choiceId === 'customUrl' ? connectedProfile.id : effect.relaySelection.relayProfileId,
+                            }
+                            : effect.relaySelection,
+                    });
                     break;
                 case 'persistOnboardingIntent':
-                    setOnboardingWizardAwaitingAuthResumeIntent(effect.relayUrl);
+                    setOnboardingWizardAwaitingAuthResumeIntent(connectedProfile?.serverUrl ?? effect.relayUrl);
                     break;
                 case 'clearRelayAccessDraft':
                     setRelayAccessTarget(null);
                     setRelayAccessShareUrl(null);
-                    break;
-                case 'setRelayRuntimeCandidate':
-                case 'setPendingSetupIntent':
-                case 'exitSetup':
-                case 'navigate':
                     break;
             }
         }
@@ -303,7 +350,8 @@ export function useOnboardingWizardController(props: OnboardingWizardSurfaceProp
         if (resolution.nextStepId) {
             dispatch({ type: 'wizard/goToStep', stepId: resolution.nextStepId });
         }
-    }, [dispatch]);
+        return true;
+    }, [connectAndFocusHomeAddress, dispatch, state.context.mode]);
 
     const stepId = state.currentStepId;
     const welcomeAuthenticationAbortControllerRef = React.useRef<AbortController | null>(null);
@@ -744,7 +792,7 @@ export function useOnboardingWizardController(props: OnboardingWizardSurfaceProp
                 ? isSameServerUrl(activeSnapshot.serverUrl, cloudRelay.serverUrl)
                 : undefined;
 
-        await applyWizardAdvanceResolution(resolveWizardAdvance(
+        return await applyWizardAdvanceResolution(resolveWizardAdvance(
             stateForAdvance,
             wizardStepRegistry,
             {
@@ -839,6 +887,19 @@ export function useOnboardingWizardController(props: OnboardingWizardSurfaceProp
             }
             return;
         }
+        if (parsed.kind === 'account_connect') {
+            // A legacy account link cannot be approved; the recovery is this
+            // device's own QR, offered only when there is a Home to show it for.
+            const action = await promptAccountConnectApprovalRequired({
+                showQr: resolveReverseQrTargetProfileId() !== null,
+            });
+            if (action !== 'showQr') return;
+            dispatch({ type: 'wizard/setParsedScanPayload', parsedScanPayload: parsed });
+            dispatch({ type: 'wizard/setAuthIntent', authIntent: 'restore' });
+            dispatch({ type: 'wizard/setScanStepEnabled', enabled: false });
+            dispatch({ type: 'wizard/goToStep', stepId: 'auth_restore' });
+            return;
+        }
         dispatch({ type: 'wizard/setParsedScanPayload', parsedScanPayload: parsed });
         if (parsed.kind === 'home_qr_invite') {
             dispatch({ type: 'wizard/setAuthIntent', authIntent: 'restore' });
@@ -854,38 +915,21 @@ export function useOnboardingWizardController(props: OnboardingWizardSurfaceProp
             dispatch({ type: 'wizard/goToStep', stepId: 'confirm_relay_lock' });
             return;
         }
-        if (parsed.kind === 'account_connect') {
-            dispatch({ type: 'wizard/setAuthIntent', authIntent: 'restore' });
-            dispatch({ type: 'wizard/setScanStepEnabled', enabled: false });
-            dispatch({ type: 'wizard/goToStep', stepId: 'auth_restore' });
-            return;
-        }
         await Modal.alert(t('common.error'), t('modals.invalidAuthUrl'));
     }, [canonicalCloudUrl]);
 
     const handleSaveCustomRelayUrl = React.useCallback(async () => {
         const trimmed = urlDraft.trim();
-        const normalized = normalizeServerUrl(trimmed);
-        if (!normalized) {
-            await Modal.alert(t('common.error'), t('modals.invalidAuthUrl'));
-            return;
-        }
-        const isThisComputerHandoff =
-            (state.context.platform === 'web' || state.context.platform === 'native')
-            && state.context.relaySelection.choiceId === 'thisComputer';
-        const relayProfileId = isThisComputerHandoff
-            ? null
-            : resolveRelayProfileIdForServerUrl({ serverUrl: normalized, canonicalCloudUrl });
         await applyWizardAdvanceResolution(resolveWizardAdvance(
             state,
             wizardStepRegistry,
             {
                 type: 'saveCustomRelayUrl',
-                relayUrl: normalized,
-                relayProfileId,
+                relayUrl: trimmed,
+                relayProfileId: null,
             },
         ));
-    }, [applyWizardAdvanceResolution, canonicalCloudUrl, state, urlDraft]);
+    }, [applyWizardAdvanceResolution, state, urlDraft]);
 
     const showBack = stepId !== 'welcome';
     const showSkip = stepId !== 'relay_select'
@@ -1110,35 +1154,31 @@ export function useOnboardingWizardController(props: OnboardingWizardSurfaceProp
         dispatch({ type: 'wizard/goToStep', stepId: 'relay_select' });
     }, [state.context.authIntent, state.context.relaySelection]);
 
-    const ensureActiveServerForAuth = React.useCallback(async () => {
+    const ensureActiveServerForAuth = React.useCallback(async (): Promise<boolean> => {
         const rawRelayUrl = state.context.relaySelection.serverUrl ? String(state.context.relaySelection.serverUrl).trim() : '';
         const fallbackRelayUrl = welcomeRelayUrl ? String(welcomeRelayUrl).trim() : '';
         const candidate = rawRelayUrl || fallbackRelayUrl;
-        const normalized = candidate ? normalizeServerUrl(candidate) : null;
-        if (!normalized) return;
+        if (!candidate) return true;
 
-        const snapshot = getActiveServerSnapshot();
-        if (isSameServerUrl(snapshot.serverUrl, normalized)) return;
-
-        if (canonicalCloudProfile && isSameServerUrl(canonicalCloudProfile.serverUrl, normalized)) {
+        if (canonicalCloudProfile && isSameServerUrl(canonicalCloudProfile.serverUrl, candidate)) {
             const ensuredCloudProfile = canonicalCloudProfile.serverId
                 ? { serverId: canonicalCloudProfile.serverId, serverUrl: canonicalCloudProfile.serverUrl }
                 : await ensureCanonicalCloudRelayProfile();
             if (ensuredCloudProfile) {
-                await setActiveServerAndSwitch({ serverId: ensuredCloudProfile.serverId, scope: 'device' });
-                return;
+                const switched = await setActiveServerAndSwitch({ serverId: ensuredCloudProfile.serverId, scope: 'device' });
+                return switched !== 'blocked';
             }
         }
 
-        await upsertActivateAndSwitchServer({ serverUrl: normalized, source: 'url', scope: 'device' });
-    }, [canonicalCloudProfile, state.context.relaySelection.serverUrl, welcomeRelayUrl]);
+        return (await connectAndFocusHomeAddress(candidate)) != null;
+    }, [canonicalCloudProfile, connectAndFocusHomeAddress, state.context.relaySelection.serverUrl, welcomeRelayUrl]);
 
     const handleWelcomeLogin = React.useCallback(async () => {
-        const relayUrl = welcomeRelayUrl;
+        if (!await ensureActiveServerForAuth()) return;
+        const relayUrl = getActiveServerSnapshot().serverUrl ?? welcomeRelayUrl;
         if (relayUrl) {
             setOnboardingWizardAwaitingAuthResumeIntent(relayUrl);
         }
-        await ensureActiveServerForAuth();
         dispatch({ type: 'wizard/goToStep', stepId: 'auth_restore' });
     }, [ensureActiveServerForAuth, welcomeRelayUrl]);
     const handleOpenRestore = handleWelcomeLogin;
@@ -1202,7 +1242,8 @@ export function useOnboardingWizardController(props: OnboardingWizardSurfaceProp
         input?: AccountPostAuthInput,
     ) => {
         await props.onAccountDirectoryKeyResult?.(result);
-        if (result.kind === 'home_entered' || result.kind === 'home_enrolled' || result.kind === 'home_linked') {
+        // Shared host rule: Done / Open {Home} results keep their card here exactly as in the account-entry route.
+        if (shouldDismissAccountPostAuthContinuation(result)) {
             setAccountDirectoryHomeRecovery(null);
             return;
         }
@@ -1224,14 +1265,6 @@ export function useOnboardingWizardController(props: OnboardingWizardSurfaceProp
         dispatch({ type: 'wizard/goToStep', stepId: 'auth_service_select' });
     }, []);
 
-    const handleSelectAccountService = React.useCallback<AccountServiceSelectionFormProps['onSelect']>(async (url, options) => {
-        const result = await props.onSelectAccountService?.(url, options) ?? { kind: 'unavailable' as const };
-        if (result.kind === 'selected') {
-            dispatch({ type: 'wizard/goToStep', stepId: 'welcome' });
-        }
-        return result;
-    }, [props.onSelectAccountService]);
-
     const handleRelaySelectAdvance = React.useCallback(async () => {
         const isManualRelayEntry =
             state.context.relaySelection.choiceId === 'customUrl'
@@ -1240,8 +1273,9 @@ export function useOnboardingWizardController(props: OnboardingWizardSurfaceProp
         const relayUrl = isManualRelayEntry
             ? null
             : (selectedRelayFooterUrl || snapshotRelayUrl || null);
-        setOnboardingWizardAwaitingAuthResumeIntent(relayUrl);
-        await handleAdvance();
+        if (await handleAdvance()) {
+            setOnboardingWizardAwaitingAuthResumeIntent(relayUrl);
+        }
     }, [
         handleAdvance,
         selectedRelayFooterUrl,
@@ -1322,21 +1356,19 @@ export function useOnboardingWizardController(props: OnboardingWizardSurfaceProp
                                 dispatch({ type: 'wizard/goToStep', stepId: 'relay_select' });
                                 return;
                             }
-                            const snapshot = getActiveServerSnapshot();
-                            if (!isSameServerUrl(snapshot.serverUrl, relayUrl)) {
-                                await upsertActivateAndSwitchServer({ serverUrl: relayUrl, source: 'url', scope: 'device' });
-                            }
+                            const profile = await connectAndFocusHomeAddress(relayUrl);
+                            if (!profile) return;
                             dispatch({
                                 type: 'wizard/setRelaySelection',
                                 relaySelection: {
                                     ...state.context.relaySelection,
-                                    serverUrl: relayUrl,
-                                    relayProfileId: state.context.relaySelection.relayProfileId ?? null,
+                                    serverUrl: profile.serverUrl,
+                                    relayProfileId: profile.id,
                                     locked: true,
                                 },
                             });
                             dispatch({ type: 'wizard/setRelayLockConfirmationPending', pending: false });
-                            setOnboardingWizardAwaitingAuthResumeIntent(relayUrl);
+                            setOnboardingWizardAwaitingAuthResumeIntent(profile.serverUrl);
                             dispatch({ type: 'wizard/goToStep', stepId: state.context.authIntent === 'restore' ? 'auth_restore' : 'auth' });
                         }
                     : stepId === 'desktop_handoff'
@@ -1450,6 +1482,14 @@ export function useOnboardingWizardController(props: OnboardingWizardSurfaceProp
         && typeof state.parsedScanPayload.rawLink === 'string'
             ? state.parsedScanPayload.rawLink
             : null;
+    // "Show QR instead" chosen for a scanned legacy account link.
+    const restoreInitialView =
+        state.parsedScanPayload
+        && typeof state.parsedScanPayload === 'object'
+        && 'kind' in state.parsedScanPayload
+        && state.parsedScanPayload.kind === 'account_connect'
+            ? 'qr' as const
+            : undefined;
     const relaySelectBody = renderWizardChoiceList({
         accessibilityLabel: t('setupOnboarding.preAuthTitle'),
         items: [
@@ -1474,6 +1514,7 @@ export function useOnboardingWizardController(props: OnboardingWizardSurfaceProp
         accountDirectoryHomeRecovery,
         accountEntryReturnTo: props.accountEntryReturnTo,
         initialPairingLink,
+        restoreInitialView,
         canScanQr,
         welcomeHasKnownRelay,
         welcomeHasAuthActions,

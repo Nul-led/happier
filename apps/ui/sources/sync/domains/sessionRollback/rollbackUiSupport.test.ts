@@ -1,12 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { createSessionAccessFixture } from '@/dev/testkit/fixtures/sessionFixtures';
 
-import type { Message } from '@/sync/domains/messages/messageTypes';
-import type { Metadata, Session } from '@/sync/domains/state/storageTypes';
+import type { Message } from "@happier-dev/session-core/messages";
+import type { Session } from '@/sync/domains/state/storageTypes';
+import type { Metadata } from '@happier-dev/session-core/state';
 
 import { readSessionRollbackRangesV1, resolveTranscriptRollbackActions } from './rollbackUiSupport';
 
-const projectedExternalRollbackCapabilities = {
+const projectedExternalRollbackCapabilities: NonNullable<
+    Parameters<typeof resolveTranscriptRollbackActions>[0]['currentAgentCapabilities']
+> = {
     agentId: 'acme-lifecycle',
     identity: {
         pluginId: 'acme.lifecycle',
@@ -21,7 +24,7 @@ const projectedExternalRollbackCapabilities = {
             conversationRollback: true,
         },
     },
-} as const;
+};
 
 function createActiveSession(metadata: Metadata): Session {
     return {

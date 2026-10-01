@@ -34,13 +34,18 @@ import { createServerFetchAtEndpoint } from '@/sync/http/client';
 export type TeamInvitationPreviewState =
     | Readonly<{ kind: 'idle' }>
     | Readonly<{ kind: 'loading' }>
-    | Readonly<{ kind: 'ready'; preview: TeamInvitationPreviewV1 }>
+    | Readonly<{
+        kind: 'ready';
+        preview: TeamInvitationPreviewV1;
+        refreshing?: true;
+        refreshFailure?: Readonly<{ retryable: boolean }>;
+    }>
     | Readonly<{ kind: 'unavailable' }>
     | Readonly<{ kind: 'feature_unavailable' }>
-    | Readonly<{ kind: 'update_required' }>
     | Readonly<{ kind: 'failed'; retryable: boolean }>;
 
 const IDLE: TeamInvitationPreviewState = Object.freeze({ kind: 'idle' as const });
+const LOADING: TeamInvitationPreviewState = Object.freeze({ kind: 'loading' as const });
 
 export function useTeamInvitationPreview(params: Readonly<{
     target: HomeTargetInput | null | undefined;
@@ -54,15 +59,34 @@ export function useTeamInvitationPreview(params: Readonly<{
     );
     const token = params.token ?? '';
     const revision = params.revision ?? 0;
-    const [state, setState] = React.useState<TeamInvitationPreviewState>(IDLE);
+    const scopeKey = resolvedTarget && token
+        ? `${resolvedTarget.serverIdentityId}\u0000${resolvedTarget.endpointUrl}\u0000${token}`
+        : null;
+    const [state, setState] = React.useState<Readonly<{
+        scopeKey: string | null;
+        value: TeamInvitationPreviewState;
+    }>>({ scopeKey: null, value: IDLE });
 
     React.useEffect(() => {
-        if (!resolvedTarget || !token) {
-            setState(IDLE);
+        if (!resolvedTarget || !scopeKey) {
+            setState({ scopeKey: null, value: IDLE });
             return;
         }
         let current = true;
-        setState({ kind: 'loading' });
+        setState((previous) => ({
+            scopeKey,
+            value: previous.scopeKey === scopeKey && previous.value.kind === 'ready'
+                ? { kind: 'ready', preview: previous.value.preview, refreshing: true }
+                : LOADING,
+        }));
+        const fail = (retryable: boolean) => {
+            setState((previous) => ({
+                scopeKey,
+                value: previous.scopeKey === scopeKey && previous.value.kind === 'ready'
+                    ? { kind: 'ready', preview: previous.value.preview, refreshFailure: { retryable } }
+                    : { kind: 'failed', retryable },
+            }));
+        };
         void (async () => {
             try {
                 const request = createServerFetchAtEndpoint({
@@ -82,45 +106,42 @@ export function useTeamInvitationPreview(params: Readonly<{
                     body: JSON.stringify(boundRequest.body),
                 }, { includeAuth: false, retry: 'none' });
                 if (!current) return;
-                // Only a Home without this route at all — an older binary — may
-                // claim update-required; a capable Home answers its own typed
-                // `feature_unavailable` outcome below.
-                if (response.status === 404 || response.status === 405 || response.status === 501) {
-                    setState({ kind: 'update_required' });
-                    return;
-                }
+                // Route failure is not evidence of an old binary. The canonical
+                // exact-Home feature decision owns capability diagnostics.
                 if (!response.ok) {
-                    setState({ kind: 'failed', retryable: response.status >= 500 });
+                    fail(response.status >= 500);
                     return;
                 }
                 const raw = await decodeBoundedJsonResponse(response, 64 * 1024);
                 const outcome = TeamInvitationPreviewResultV1Schema.safeParse(raw);
                 if (!outcome.success) {
-                    setState({ kind: 'update_required' });
+                    fail(true);
                     return;
                 }
                 if (outcome.data.outcome === 'ok') {
-                    setState({ kind: 'ready', preview: outcome.data.preview });
+                    setState({ scopeKey, value: { kind: 'ready', preview: outcome.data.preview } });
                     return;
                 }
                 // `feature_unavailable` is a capable Home's operator choice, not
                 // an old binary, and not an unusable link: child 05 :437 requires
                 // enabled, operator-disabled, unsupported and unreachable to stay
                 // distinguishable, so the Home's own declared outcome is carried
-                // through instead of being folded into `unavailable`. The
-                // 404/405/501 branch above stays the update-required case.
-                setState({ kind: outcome.data.outcome === 'feature_unavailable'
-                    ? 'feature_unavailable'
-                    : 'unavailable' });
+                // through instead of being folded into `unavailable`.
+                setState({
+                    scopeKey,
+                    value: { kind: outcome.data.outcome === 'feature_unavailable'
+                        ? 'feature_unavailable'
+                        : 'unavailable' },
+                });
             } catch {
                 // An approval-pending or transport throw is not a description of
                 // the invitation; the surface keeps its own retry.
-                if (current) setState({ kind: 'failed', retryable: true });
+                if (current) fail(true);
                 return;
             }
         })();
         return () => { current = false; };
-    }, [resolvedTarget, token, revision]);
+    }, [resolvedTarget, scopeKey, revision]);
 
-    return state;
+    return state.scopeKey === scopeKey ? state.value : scopeKey ? LOADING : IDLE;
 }

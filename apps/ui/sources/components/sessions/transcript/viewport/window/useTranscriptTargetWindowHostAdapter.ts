@@ -1,4 +1,5 @@
 import * as React from 'react';
+import type { SessionMessagesTailBoundary } from '@/sync/runtime/sessionMessagesTailDiscontinuity';
 
 import { applyTranscriptJumpResult } from '../jump/applyTranscriptJumpResult';
 import { resolveTranscriptJumpStrategy } from '../jump/resolveTranscriptJumpStrategy';
@@ -73,7 +74,8 @@ export function resolveTranscriptTargetWindowHostFacts<TItem extends TranscriptT
     isSeqLoaded?: (seq: number) => boolean;
     isSeqRangeLoaded?: (fromInclusive: number, toInclusive: number) => boolean;
     resolveSeq?: (item: TItem) => number | null | undefined;
-    tailContiguousFloorSeq?: number | null;
+    tailContiguousBoundary?: SessionMessagesTailBoundary | null;
+    resolveMessageIds?: (item: TItem) => readonly string[];
     windowState: TranscriptTargetWindowState;
 }>): TranscriptTargetWindowHostFacts<TItem> {
     const activeWindowState = params.windowState.isWindowMode ? params.windowState : null;
@@ -88,9 +90,7 @@ export function resolveTranscriptTargetWindowHostFacts<TItem extends TranscriptT
         : null;
     const tailFloorActive =
         activeWindowState === null &&
-        typeof params.tailContiguousFloorSeq === 'number' &&
-        Number.isFinite(params.tailContiguousFloorSeq) &&
-        params.tailContiguousFloorSeq > 0;
+        params.tailContiguousBoundary != null;
     const hasOmittedOlderSequenceItems = display
         ? hasOmittedSequenceItem({
             direction: 'older',
@@ -135,10 +135,11 @@ export function resolveTranscriptTargetWindowHostFacts<TItem extends TranscriptT
             older: olderGap,
         },
         hasMoreNewer: activeWindowState?.hasMoreNewer === true,
-        items: display?.items ?? boundTailItemsToContiguousFloor({
+        items: display?.items ?? boundTailItemsToContiguousBoundary({
             items: params.items,
             resolveSeq: params.resolveSeq,
-            tailContiguousFloorSeq: params.tailContiguousFloorSeq ?? null,
+            tailContiguousBoundary: params.tailContiguousBoundary ?? null,
+            resolveMessageIds: params.resolveMessageIds,
         }),
         targetWindowActive: activeWindowState !== null,
     };
@@ -149,35 +150,59 @@ export function resolveTranscriptTargetWindowHostFacts<TItem extends TranscriptT
  * catch-up gap tail-resets onto an existing loaded prefix, only content at or above the
  * floor is contiguous with the live tail. Tail display must not glue the stale prefix
  * onto the island; target-window display is unaffected (jumps below the floor render
- * through their own window). Rows without a seq are synthetic tail chrome and stay.
+ * through their own window). Opaque sources identify the island through materialized
+ * message IDs; absence of a seq is not evidence that a direct transcript row is chrome.
+ * Keep the whole suffix after the first matching row: grouped/decomposed rows can
+ * have earlier anchor sequences inside an otherwise contiguous island.
  */
-function boundTailItemsToContiguousFloor<TItem extends TranscriptTargetWindowDisplayItem>(params: Readonly<{
+function boundTailItemsToContiguousBoundary<TItem extends TranscriptTargetWindowDisplayItem>(params: Readonly<{
     items: readonly TItem[];
     resolveSeq?: (item: TItem) => number | null | undefined;
-    tailContiguousFloorSeq: number | null;
+    tailContiguousBoundary: SessionMessagesTailBoundary | null;
+    resolveMessageIds?: (item: TItem) => readonly string[];
 }>): readonly TItem[] {
-    const floorSeq = params.tailContiguousFloorSeq;
-    if (typeof floorSeq !== 'number' || !Number.isFinite(floorSeq) || floorSeq <= 0) return params.items;
-    const isAboveFloor = (item: TItem): boolean => {
+    const boundary = params.tailContiguousBoundary;
+    if (!boundary) return params.items;
+    const resolveItemSeq = (item: TItem): number | null => {
         const rawSeq = params.resolveSeq ? params.resolveSeq(item) : item.seq;
-        if (typeof rawSeq !== 'number' || !Number.isFinite(rawSeq) || rawSeq < 0) return true;
-        return Math.trunc(rawSeq) >= floorSeq;
+        if (typeof rawSeq !== 'number' || !Number.isFinite(rawSeq) || rawSeq < 0) return null;
+        return Math.trunc(rawSeq);
     };
-    return params.items.every(isAboveFloor) ? params.items : params.items.filter(isAboveFloor);
+    const boundaryIds = new Set(boundary.kind === 'messageIds' ? boundary.messageIds : []);
+    const messageIdsForItem = (item: TItem) => params.resolveMessageIds?.(item) ?? [item.id];
+    let islandStartIndex = params.items.length;
+    for (let index = 0; index < params.items.length; index += 1) {
+        const item = params.items[index];
+        if (!item) continue;
+        const startsIsland = boundary.kind === 'seq'
+            ? (resolveItemSeq(item) ?? -1) >= boundary.seq
+            : messageIdsForItem(item).some((id) => boundaryIds.has(id));
+        if (startsIsland) {
+            islandStartIndex = index;
+            break;
+        }
+    }
+    if (islandStartIndex === 0) return params.items;
+    const bounded = params.items.filter((item, index) => (
+        index >= islandStartIndex || (boundary.kind === 'seq' ? resolveItemSeq(item) === null : messageIdsForItem(item).length === 0)
+    ));
+    return bounded.length === params.items.length ? params.items : bounded;
 }
 
 export function useTranscriptTargetWindowHostAdapter<TItem extends TranscriptTargetWindowDisplayItem>(params: Readonly<{
     items: readonly TItem[];
     isSeqRangeLoaded?: (fromInclusive: number, toInclusive: number) => boolean;
     resolveSeq?: (item: TItem) => number | null | undefined;
-    tailContiguousFloorSeq?: number | null;
+    tailContiguousBoundary?: SessionMessagesTailBoundary | null;
+    resolveMessageIds?: (item: TItem) => readonly string[];
     windowState: TranscriptTargetWindowState;
 }>): TranscriptTargetWindowHostFacts<TItem> {
     return React.useMemo(() => resolveTranscriptTargetWindowHostFacts(params), [
         params.items,
         params.isSeqRangeLoaded,
         params.resolveSeq,
-        params.tailContiguousFloorSeq,
+        params.tailContiguousBoundary,
+        params.resolveMessageIds,
         params.windowState,
     ]);
 }
@@ -362,6 +387,8 @@ export async function executeTranscriptTargetWindowJump(params: Readonly<{
     scrollToTarget: () => boolean;
     target: TranscriptJumpTarget;
     targetSeq: number;
+    /** Resolves only after the target is present in the committed renderer window. */
+    waitForTargetRender?: () => Promise<boolean>;
     waitForNextLandingFrame?: () => Promise<void>;
     landingSettleDeadlineMs?: number;
     /**
@@ -545,6 +572,9 @@ export async function executeTranscriptTargetWindowJump(params: Readonly<{
         }
         return { status: 'not-found', reason: 'unavailable' };
     }
+    if (result.status === 'window-rendered' && params.waitForTargetRender && !(await params.waitForTargetRender())) {
+        return isCurrentOperation() ? { status: 'not-found', reason: 'unavailable' } : { status: 'aborted' };
+    }
     if (result.status === 'window-rendered' && params.platformOS !== 'web') {
         if (!isCurrentOperation()) return { status: 'aborted' };
         const applied = params.scrollToTarget();
@@ -577,8 +607,11 @@ export async function executeTranscriptTargetWindowJump(params: Readonly<{
         });
         if (!isCurrentOperation()) return { status: 'aborted' };
         if (fallbackResult.status === 'window-rendered') {
+            if (params.waitForTargetRender && !(await params.waitForTargetRender())) {
+                return isCurrentOperation() ? { status: 'not-found', reason: 'unavailable' } : { status: 'aborted' };
+            }
+            if (!isCurrentOperation()) return { status: 'aborted' };
             if (params.platformOS !== 'web') {
-                if (!isCurrentOperation()) return { status: 'aborted' };
                 const applied = params.scrollToTarget();
                 if (applied && params.isTargetMounted() && params.isTargetAligned?.() !== false) {
                     params.onJumpLanded?.(fallbackResult);

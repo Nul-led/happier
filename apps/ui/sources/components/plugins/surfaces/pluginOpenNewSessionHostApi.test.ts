@@ -36,7 +36,8 @@ const operation = {
     contributor: {
         pluginId: 'happier.scm.github',
         contributionId: 'github',
-        immutableGenerationId: 'github-generation-1',
+        occurrenceId: 'github-generation-1',
+        sourceCustody: { kind: 'development' as const, registeredRootId: 'github-root' },
     },
     role: 'prepareReviewWorkspace',
     action: { pluginId: 'happier.scm.github', localId: 'prepare-review-workspace' },
@@ -47,7 +48,11 @@ const selected = {
     action: operation.action,
     input: { repository: 'happier-dev/happier' },
     selection: {
-        target: { pluginId: 'happier.triage', immutableGenerationId: 'triage-generation-1' },
+        target: {
+            pluginId: 'happier.triage',
+            occurrenceId: 'triage-generation-1',
+            sourceCustody: { kind: 'development' as const, registeredRootId: 'triage-root' },
+        },
         point: operation.point,
         contributor: operation.contributor,
     },

@@ -8,6 +8,10 @@ import {
 } from './setNewSessionPickerReturnParams';
 
 describe('pickNewSessionRouteParams', () => {
+    it('preserves a no-folder choice on the pushed folder picker round trip', () => {
+        expect(pickNewSessionRouteParams({ directoryKind: 'managed', directory: undefined }))
+            .toEqual({ directoryKind: 'managed' });
+    });
     it('preserves ordinary-entry origin across picker round trips without admitting unrelated params', () => {
         expect(pickNewSessionRouteParams({
             draftId: '4a506d8a-85bd-4c42-a662-6f502f3acc45',

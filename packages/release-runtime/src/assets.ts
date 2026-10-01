@@ -29,19 +29,38 @@ export function resolveReleaseArtifactArchiveName({
   return `${product}-v${version}-${os}-${arch}${extension}`;
 }
 
+type ReleaseAsset = { name: string; url: string };
+type SignedReleaseAssetBundle = {
+  version: string;
+  archive: ReleaseAsset;
+  checksums: ReleaseAsset;
+  checksumsSig: ReleaseAsset;
+};
+type UnsignedReleaseAssetBundle = Omit<SignedReleaseAssetBundle, 'checksumsSig'> & {
+  checksumsSig: ReleaseAsset | null;
+};
+type ResolveReleaseAssetBundleArgs = {
+  assets: unknown;
+  product: string;
+  os: string;
+  arch: string;
+  preferZipOnWindows?: boolean;
+};
+
+export function resolveReleaseAssetBundle(
+  args: ResolveReleaseAssetBundleArgs & { requireChecksumsSignature: false },
+): UnsignedReleaseAssetBundle;
+export function resolveReleaseAssetBundle(
+  args: ResolveReleaseAssetBundleArgs & { requireChecksumsSignature?: true },
+): SignedReleaseAssetBundle;
 export function resolveReleaseAssetBundle({
   assets,
   product,
   os,
   arch,
   preferZipOnWindows = true,
-}: {
-  assets: unknown;
-  product: string;
-  os: string;
-  arch: string;
-  preferZipOnWindows?: boolean;
-}) {
+  requireChecksumsSignature = true,
+}: ResolveReleaseAssetBundleArgs & { requireChecksumsSignature?: boolean }): UnsignedReleaseAssetBundle {
   const list = Array.isArray(assets) ? assets : [];
   const byName = new Map<string, { name: string; url: string }>();
   for (const asset of list) {
@@ -77,7 +96,9 @@ export function resolveReleaseAssetBundle({
   const archive = byName.get(archiveName) ?? null;
 
   if (!checksums) throw new Error(`[release-assets] missing release asset: ${checksumsName}`);
-  if (!checksumsSig) throw new Error(`[release-assets] missing release asset: ${checksumsSigName}`);
+  if (requireChecksumsSignature && !checksumsSig) {
+    throw new Error(`[release-assets] missing release asset: ${checksumsSigName}`);
+  }
   if (!archive) throw new Error(`[release-assets] missing release asset: ${archiveName}`);
 
   return { version, archive, checksums, checksumsSig };

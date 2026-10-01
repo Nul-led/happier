@@ -7,6 +7,9 @@ import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { VirtualizedList } from '@/components/ui/lists/virtualized';
 import { useLayoutMaxWidthStyle } from '@/components/ui/layout/layout';
+import { ListPresentationProvider } from '@/components/ui/lists/listPresentation';
+import { SurfaceStateCard, type SurfaceStateKind } from '@/components/ui/surfaces/SurfaceStateCard';
+import { SettingsPageHeader } from '@/components/settings/shell/SettingsPageHeader';
 import { Text, TextInput } from '@/components/ui/text/Text';
 import { Typography } from '@/constants/Typography';
 import { Modal } from '@/modal';
@@ -24,7 +27,7 @@ import {
 import { registerSessionRealtimeTranscriptConsumer } from '@/sync/runtime/sessionRealtimeTranscriptConsumers';
 import { saveVoiceHistoryExportArtifact } from './voiceHistoryExportTarget';
 import { Icon, type IconName } from '@/components/ui/icons/Icon';
-import { ExternalSessionOperationAccessibilityStatus } from '@/components/sessions/external/progress/ExternalSessionOperationAccessibilityStatus';
+import { PoliteAccessibilityStatus } from '@/components/ui/accessibility/PoliteAccessibilityStatus';
 import {
   isVoiceHistoryOperationSupersededError,
   resolveVoiceHistoryInitialLoadFailureState,
@@ -97,33 +100,23 @@ const VoiceHistoryRowView = React.memo(function VoiceHistoryRowView(
 
 function VoiceHistoryStateMessage(props: Readonly<{
   testID: string;
+  kind: SurfaceStateKind;
   icon: IconName;
   title: string;
   body: string;
   actionMessage?: string | null;
   retry?: (() => void) | null;
 }>) {
-  const { theme } = useUnistyles();
-  // Composed at render time: the module-scope stylesheet evaluates once, so a
-  // baked-in `layout.maxWidth` would freeze the user's content-width preference.
-  const stateMaxWidthStyle = useLayoutMaxWidthStyle();
   return (
-    <View testID={props.testID} style={[styles.stateOuter, stateMaxWidthStyle]}>
-      <View style={styles.stateCard}>
-        <Icon name={props.icon} size={29} color={theme.colors.text.secondary} />
-        <Text style={styles.stateTitle}>{props.title}</Text>
-        <Text style={styles.stateBody}>{props.body}</Text>
-        {props.retry ? (
-          <Item
-            testID={`${props.testID}-retry`}
-            title={t('settingsVoice.history.retry')}
-            accessibilityRole="button"
-            accessibilityLabel={t('settingsVoice.history.retry')}
-            onPress={props.retry}
-            showChevron={false}
-          />
-        ) : null}
-      </View>
+    <View style={styles.stateOuter}>
+      <SurfaceStateCard
+        testID={props.testID}
+        kind={props.kind}
+        iconName={props.icon}
+        title={props.title}
+        reason={props.body}
+        action={props.retry ? { label: t('settingsVoice.history.retry'), onPress: props.retry } : undefined}
+      />
       {props.actionMessage ? <VoiceHistoryActionMessage message={props.actionMessage} /> : null}
     </View>
   );
@@ -322,18 +315,26 @@ const VoiceHistoryScreenBody = React.memo(function VoiceHistoryScreenBody(
     }
   })();
   const withAccessibilityStatus = (content: React.ReactNode) => (
-    <>
+    <ListPresentationProvider value="page">
       {content}
-      <ExternalSessionOperationAccessibilityStatus
+      <PoliteAccessibilityStatus
         announcement={statusAnnouncement}
         statusTestID="voice-history-operation-status"
         transitionKey={`${loadState}\u0001${statusAnnouncement}`}
       />
-    </>
+    </ListPresentationProvider>
+  );
+  const pageHeader = <SettingsPageHeader description={t('settingsVoice.history.pageDescription')} />;
+  // Full-surface states keep the page header above them, like every other settings page.
+  const withPageState = (content: React.ReactNode) => withAccessibilityStatus(
+    <View style={styles.screen}>
+      {pageHeader}
+      {content}
+    </View>,
   );
 
   if (loadState === 'loading') {
-    return withAccessibilityStatus(
+    return withPageState(
       <View testID="voice-history-loading" style={styles.loading}>
         <ActivitySpinner size="large" />
         <Text style={styles.stateBody}>{t('settingsVoice.history.loading')}</Text>
@@ -342,9 +343,10 @@ const VoiceHistoryScreenBody = React.memo(function VoiceHistoryScreenBody(
   }
 
   if (loadState === 'error') {
-    return withAccessibilityStatus(
+    return withPageState(
       <VoiceHistoryStateMessage
         testID="voice-history-error"
+        kind="error"
         icon="cloud-slash"
         title={t('settingsVoice.history.errorTitle')}
         body={t('settingsVoice.history.errorBody')}
@@ -354,9 +356,10 @@ const VoiceHistoryScreenBody = React.memo(function VoiceHistoryScreenBody(
   }
 
   if (loadState === 'upgrade_required') {
-    return withAccessibilityStatus(
+    return withPageState(
       <VoiceHistoryStateMessage
         testID="voice-history-upgrade-required"
+        kind="warning"
         icon="arrow-up"
         title={t('settingsVoice.history.upgradeRequiredTitle')}
         body={t('settingsVoice.history.upgradeRequiredBody')}
@@ -365,9 +368,10 @@ const VoiceHistoryScreenBody = React.memo(function VoiceHistoryScreenBody(
   }
 
   if (loadState === 'superseded') {
-    return withAccessibilityStatus(
+    return withPageState(
       <VoiceHistoryStateMessage
         testID="voice-history-superseded"
+        kind="warning"
         icon="arrows-left-right"
         title={t('settingsVoice.history.supersededTitle')}
         body={t('settingsVoice.history.supersededBody')}
@@ -377,9 +381,10 @@ const VoiceHistoryScreenBody = React.memo(function VoiceHistoryScreenBody(
   }
 
   if (!snapshot.sessionId) {
-    return withAccessibilityStatus(
+    return withPageState(
       <VoiceHistoryStateMessage
         testID="voice-history-empty"
+        kind="empty"
         icon="clock"
         title={t('settingsVoice.history.emptyTitle')}
         body={t('settingsVoice.history.emptyBody')}
@@ -393,9 +398,10 @@ const VoiceHistoryScreenBody = React.memo(function VoiceHistoryScreenBody(
     && snapshot.rows.length === 0;
   const listHeader = (
     <View style={[styles.header, headerMaxWidthStyle]}>
+      {pageHeader}
       <ItemGroup
         title={t('settingsVoice.history.searchTitle')}
-        footer={t('settingsVoice.history.searchFooter')}
+        description={t('settingsVoice.history.searchFooter')}
       >
         <View style={styles.searchFieldWrap}>
           <Icon
@@ -423,7 +429,6 @@ const VoiceHistoryScreenBody = React.memo(function VoiceHistoryScreenBody(
             ? t('settingsVoice.history.exporting')
             : t('settingsVoice.history.exportTitle')}
           subtitle={t('settingsVoice.history.exportSubtitle')}
-          icon={<Icon name="download" size={20} color={theme.colors.text.secondary} />}
           accessibilityRole="button"
           accessibilityLabel={t('settingsVoice.history.exportTitle')}
           disabled={operationInFlight}
@@ -436,7 +441,6 @@ const VoiceHistoryScreenBody = React.memo(function VoiceHistoryScreenBody(
             ? t('settingsVoice.history.clearing')
             : t('settingsVoice.history.clearTitle')}
           subtitle={t('settingsVoice.history.clearSubtitle')}
-          icon={<Icon name="trash" size={20} color={theme.colors.state.danger.foreground} />}
           accessibilityRole="button"
           accessibilityLabel={t('settingsVoice.history.clearTitle')}
           disabled={operationInFlight}
@@ -447,7 +451,7 @@ const VoiceHistoryScreenBody = React.memo(function VoiceHistoryScreenBody(
         />
       </ItemGroup>
       {snapshot.hasMore !== false ? (
-        <ItemGroup footer={t('settingsVoice.history.loadOlderFooter')}>
+        <ItemGroup description={t('settingsVoice.history.loadOlderFooter')}>
           <Item
             testID="voice-history-load-older"
             title={loadingOlder
@@ -482,6 +486,7 @@ const VoiceHistoryScreenBody = React.memo(function VoiceHistoryScreenBody(
         ListEmptyComponent={(
           <VoiceHistoryStateMessage
             testID={noSearchResults ? 'voice-history-no-results' : 'voice-history-empty'}
+            kind="empty"
             icon={noSearchResults ? 'magnifying-glass' : 'clock'}
             title={noSearchResults
               ? t('settingsVoice.history.noResultsTitle')
@@ -519,7 +524,7 @@ const styles = StyleSheet.create((theme) => ({
   screen: {
     flex: 1,
     minHeight: 0,
-    backgroundColor: theme.colors.background.canvas,
+    backgroundColor: theme.colors.surface.base,
   },
   loading: {
     flex: 1,
@@ -527,7 +532,6 @@ const styles = StyleSheet.create((theme) => ({
     justifyContent: 'center',
     gap: 12,
     padding: 24,
-    backgroundColor: theme.colors.background.canvas,
   },
   listContent: {
     paddingBottom: 32,
@@ -564,9 +568,10 @@ const styles = StyleSheet.create((theme) => ({
     paddingHorizontal: 16,
     paddingVertical: 14,
     borderRadius: 14,
-    backgroundColor: theme.colors.surface.base,
+    // Transcript entries sit on the page like its sheets do.
+    backgroundColor: theme.colors.surface.sectionTint,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.border.surface,
+    borderColor: theme.colors.border.default,
   },
   rowMeta: {
     flexDirection: 'row',
@@ -592,24 +597,9 @@ const styles = StyleSheet.create((theme) => ({
     lineHeight: 21,
   },
   stateOuter: {
+    flex: 1,
     width: '100%',
     alignSelf: 'center',
-    padding: 20,
-  },
-  stateCard: {
-    alignItems: 'center',
-    paddingHorizontal: 24,
-    paddingVertical: 32,
-    borderRadius: 16,
-    backgroundColor: theme.colors.surface.base,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.border.surface,
-  },
-  stateTitle: {
-    ...Typography.default('semiBold'),
-    color: theme.colors.text.primary,
-    textAlign: 'center',
-    marginTop: 12,
   },
   stateBody: {
     color: theme.colors.text.secondary,

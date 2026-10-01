@@ -71,6 +71,7 @@ import {
     serializePluginActionInputSelectionFacts,
 } from './pluginActionInputSelectionHostApi';
 import { createPluginOpenNewSessionHostApiHandler } from './pluginOpenNewSessionHostApi';
+import { createPluginSurfaceSessionHandlers } from './pluginSurfaceSessionState';
 
 /**
  * The bound surface controller (§3.1).
@@ -898,6 +899,46 @@ export function createBoundPluginSurfaceController(input: Readonly<{
     // daemon owns admission and bounds, and the transport adapter owns the
     // subscription registry it publishes into.
     const resourceInvalidationListeners = new Set<(event: PluginUiResourceSubscriptionEventV1) => void>();
+    const deliverResourceInvalidation = (event: PluginUiResourceSubscriptionEventV1): void => {
+        for (const listener of [...resourceInvalidationListeners]) {
+            try {
+                listener(event);
+            } catch {
+                // One surface's delivery failure never stops another's.
+            }
+        }
+    };
+    // Linked-Session state and permission answers are client-realm host
+    // capabilities of this Account (r0.42). They share the mount's one
+    // invalidation fan-out and its disposal, so they add no second channel.
+    const sessionHandlers = accountLifetime && !isOpenableContentViewer
+        ? createPluginSurfaceSessionHandlers({
+            accountScope: accountLifetime.scope,
+            isCurrent,
+            deliver: deliverResourceInvalidation,
+        })
+        : null;
+    const mountedDisposeHostResource = mountedHostApiHandlers.disposeHostResource;
+    const hostApiMountedHandlers: PluginSurfaceHostApiHandlers = sessionHandlers
+        ? Object.freeze({
+            ...mountedHostApiHandlers,
+            readSession: sessionHandlers.handlers.readSession,
+            watchSession: sessionHandlers.handlers.watchSession,
+            respondToSessionPermission: sessionHandlers.handlers.respondToSessionPermission,
+            disposeHostResource: async (request, options) => {
+                sessionHandlers.handlers.disposeHostResource(request);
+                return mountedDisposeHostResource
+                    ? await mountedDisposeHostResource(request, options)
+                    : null;
+            },
+        })
+        : mountedHostApiHandlers;
+    const disposeHostApiMountedHandlers = sessionHandlers
+        ? () => {
+            sessionHandlers.dispose();
+            disposeMountedHostApiHandlers?.();
+        }
+        : disposeMountedHostApiHandlers;
     // The exact Home/Account this mount may address the Home family as. A mount
     // whose surface names a different Home than the current Account scope has
     // no such scope, and its Home-family Actions stay unsupported rather than
@@ -1019,15 +1060,7 @@ export function createBoundPluginSurfaceController(input: Readonly<{
                 ...(canWatchResource
                     ? {
                         resourceInvalidation: {
-                            deliver: (event) => {
-                                for (const listener of [...resourceInvalidationListeners]) {
-                                    try {
-                                        listener(event);
-                                    } catch {
-                                        // One surface's delivery failure never stops another's.
-                                    }
-                                }
-                            },
+                            deliver: deliverResourceInvalidation,
                             ...(binding?.watchResource ? { transport: binding.watchResource } : {}),
                         },
                     }
@@ -1040,11 +1073,9 @@ export function createBoundPluginSurfaceController(input: Readonly<{
         ...(binding?.openSurface ? { openSurface: binding.openSurface } : {}),
         ...(selectActionInput ? { selectActionInput } : {}),
         ...(createOpenNewSession ? { createOpenNewSession } : {}),
-        ...(mountedHostApiHandlers
-            ? { mountedHostApiHandlers }
-            : {}),
-        ...(disposeMountedHostApiHandlers
-            ? { disposeMountedHostApiHandlers }
+        mountedHostApiHandlers: hostApiMountedHandlers,
+        ...(disposeHostApiMountedHandlers
+            ? { disposeMountedHostApiHandlers: disposeHostApiMountedHandlers }
             : {}),
     });
     const dispatchAction = createBoundPluginSurfaceActionDispatcher({ surfaceContext, hostApi });

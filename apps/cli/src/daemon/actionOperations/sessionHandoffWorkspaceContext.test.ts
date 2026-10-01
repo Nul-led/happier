@@ -16,6 +16,7 @@ const contentPolicy = {
 const refs = [
   { id: 'source-ref', serverId: 'server-1', machineId: 'source-machine', rootPath: '/source', createdAtMs: 1 },
   { id: 'target-ref', serverId: 'server-1', machineId: 'target-machine', rootPath: '/target', createdAtMs: 1 },
+  { id: 'hub-ref', serverId: 'server-1', machineId: 'hub-machine', rootPath: '/hub', createdAtMs: 1 },
 ];
 const relationship = {
   v: 1 as const,
@@ -46,6 +47,8 @@ describe('resolveSessionHandoffWorkspaceContext', () => {
       targetRootPath: '/target',
       controllerMachineId: 'source-machine',
       contentSelection: 'all_files',
+      relationshipIds: ['relationship-1'],
+      contentSelections: ['all_files'],
     });
 
     expect(() => resolveSessionHandoffWorkspaceContext({
@@ -68,5 +71,38 @@ describe('resolveSessionHandoffWorkspaceContext', () => {
       sourceRootPath: '/source',
       targetMachineId: 'target-machine',
     })).toThrowError(expect.objectContaining({ code: 'relationship_source_mismatch' }));
+  });
+
+  it('derives a linked-spoke destination and ordered route from current settings', () => {
+    const sourceHub = {
+      ...relationship,
+      relationshipId: 'source-hub',
+      controllerMachineId: 'hub-machine',
+      alphaWorkspaceRefId: 'hub-ref',
+      betaWorkspaceRefId: 'source-ref',
+      mode: 'keep_both_in_sync' as const,
+    };
+    const hubTarget = {
+      ...relationship,
+      relationshipId: 'hub-target',
+      controllerMachineId: 'hub-machine',
+      alphaWorkspaceRefId: 'hub-ref',
+      betaWorkspaceRefId: 'target-ref',
+    };
+    expect(resolveSessionHandoffWorkspaceContext({
+      action: { kind: 'linked_workspace' },
+      workspaceRefs: refs,
+      relationships: [sourceHub, hubTarget],
+      sourceMachineId: 'source-machine',
+      sourceRootPath: '/source',
+      targetMachineId: 'target-machine',
+      targetRootPath: '/target',
+    })).toMatchObject({
+      sourceWorkspaceRefId: 'source-ref',
+      targetWorkspaceRefId: 'target-ref',
+      controllerMachineId: 'hub-machine',
+      relationshipIds: ['source-hub', 'hub-target'],
+      contentSelections: ['all_files', 'all_files'],
+    });
   });
 });

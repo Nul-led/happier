@@ -87,20 +87,22 @@ export function isDaemonProcessForCurrentRuntimeRoot(
 
 /**
  * Matches a discovered daemon process to the current lifecycle scope. Discovery
- * may classify old processes with incomplete environment facts, but force-stop
- * callers require the recorded scope facts before they are allowed to signal.
+ * may supplement existing marker evidence with incomplete environment facts.
+ * Markerless recovery requires recorded home and lifecycle identity; force-stop
+ * additionally requires endpoint agreement before it is allowed to signal.
  */
 export function daemonProcessMatchesCurrentScope(
   processInfo: HappyProcessInfo,
-  options: Readonly<{ requireRecordedScopeFacts?: boolean }> = {},
+  options: Readonly<{ requireRecordedScopeFacts?: boolean; requireScopeIdentity?: boolean }> = {},
 ): boolean {
   const requireRecordedScopeFacts = options.requireRecordedScopeFacts === true;
+  const requireScopeIdentity = requireRecordedScopeFacts || options.requireScopeIdentity === true;
   const env = processInfo.daemonOwnershipEnvironmentVariables;
-  if (!env) return !requireRecordedScopeFacts;
+  if (!env) return !requireScopeIdentity;
 
   const processHomeDir = normalizeScopeValue(env.HAPPIER_HOME_DIR);
   const currentHomeDir = normalizeScopeValue(configuration.happyHomeDir);
-  if (requireRecordedScopeFacts && (!processHomeDir || !currentHomeDir)) return false;
+  if (requireScopeIdentity && (!processHomeDir || !currentHomeDir)) return false;
   if (!processEnvValueMatchesCurrent(
     env.HAPPIER_HOME_DIR,
     configuration.happyHomeDir,
@@ -111,25 +113,28 @@ export function daemonProcessMatchesCurrentScope(
 
   const processLifecycleScopeId = normalizeScopeValue(env.HAPPIER_DAEMON_LIFECYCLE_SCOPE_ID);
   const currentLifecycleScopeId = normalizeScopeValue(process.env.HAPPIER_DAEMON_LIFECYCLE_SCOPE_ID);
+  // Standalone daemons have no explicit lifecycle env, but their spawn owner gives
+  // children the resolved active-server id as the lifecycle identity.
+  const currentEffectiveLifecycleScopeId = currentLifecycleScopeId || configuration.activeServerId;
   if (processLifecycleScopeId) {
     // Explicit lifecycle scope is the canonical owner identity. Endpoint profiles and URLs are
     // independently mutable connection facts for discovery, but a force-stop requires every
     // available recorded scope fact to agree before it signals the process.
-    if (!currentLifecycleScopeId || processLifecycleScopeId !== currentLifecycleScopeId) return false;
+    if (!currentEffectiveLifecycleScopeId || processLifecycleScopeId !== currentEffectiveLifecycleScopeId) return false;
     return !requireRecordedScopeFacts
       || processServerUrlMatchesCurrent(env.HAPPIER_SERVER_URL, true);
   }
 
   // Released stack daemons predate the explicit lifecycle-scope variable. Only that old shape may
   // fall back to the active-server identity and endpoint URL comparison.
-  const currentFallbackScope = currentLifecycleScopeId || configuration.activeServerId;
+  const currentFallbackScope = currentEffectiveLifecycleScopeId;
   const processActiveServerId = normalizeScopeValue(env.HAPPIER_ACTIVE_SERVER_ID);
-  if (requireRecordedScopeFacts && (!processActiveServerId || !currentFallbackScope)) return false;
+  if (requireScopeIdentity && (!processActiveServerId || !currentFallbackScope)) return false;
   if (!processEnvValueMatchesCurrent(env.HAPPIER_ACTIVE_SERVER_ID, currentFallbackScope)) {
     return false;
   }
 
-  if (!processServerUrlMatchesCurrent(env.HAPPIER_SERVER_URL, requireRecordedScopeFacts)) return false;
+  if (!processServerUrlMatchesCurrent(env.HAPPIER_SERVER_URL, requireScopeIdentity)) return false;
 
   return true;
 }

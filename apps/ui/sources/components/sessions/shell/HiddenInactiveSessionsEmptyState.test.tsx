@@ -39,6 +39,14 @@ describe('HiddenInactiveSessionsEmptyState', () => {
         standardCleanup();
     });
 
+    it('says it in one line on the rows\' edge instead of a page-size tile', async () => {
+        const { HiddenInactiveSessionsEmptyState } = await import('./HiddenInactiveSessionsEmptyState');
+        const screen = await renderScreen(<HiddenInactiveSessionsEmptyState />);
+        expect(screen.findByTestId('sessions-hidden-inactive-empty-state')).toBeTruthy();
+        expect(screen.findByTestId('sessions-hidden-inactive-empty-state-list')).toBeNull();
+        expect(screen.findByTestId('sessions-hidden-inactive-empty-state-description')).toBeNull();
+    });
+
     it('offers the canonical inactive-visibility recovery beside the archived destination', async () => {
         const { HiddenInactiveSessionsEmptyState } = await import('./HiddenInactiveSessionsEmptyState');
         const screen = await renderScreen(<HiddenInactiveSessionsEmptyState />);

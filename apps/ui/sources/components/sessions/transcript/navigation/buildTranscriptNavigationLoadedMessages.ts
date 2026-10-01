@@ -1,14 +1,15 @@
-import { buildMessageRouteId } from '@/sync/domains/messages/messageRouteIds';
-import type { Message } from '@/sync/domains/messages/messageTypes';
+import { buildMessageRouteId } from "@happier-dev/session-core/messages";
+import type { Message } from "@happier-dev/session-core/messages";
 import type { SessionMessageHistoryRemoteRow } from '@/sync/engine/sessions/fetchUserMessageHistoryPage';
 
-import { buildUserEntry, deriveTranscriptNavigationEntries } from './deriveTranscriptNavigationEntries';
+import { buildUserEntry, deriveTranscriptNavigationEntries, resolvePromptOnlyTurnFacts } from './deriveTranscriptNavigationEntries';
 import { normalizeTranscriptNavigationTextPreview } from './transcriptNavigationTextPreview';
 import type {
     DeriveTranscriptNavigationEntriesParams,
     TranscriptNavigationEntry,
     TranscriptNavigationLoadedMessage,
     TranscriptNavigationRole,
+    TranscriptNavigationToolFacts,
 } from './transcriptNavigationTypes';
 
 function roleForMessage(message: Message): TranscriptNavigationRole {
@@ -33,6 +34,26 @@ function textForMessage(message: Message): string | null {
     return null;
 }
 
+function permissionOutcome(message: Message & { kind: 'tool-call' }): TranscriptNavigationToolFacts['permission'] {
+    const permission = message.tool.permission;
+    if (!permission) return null;
+    if (permission.status === 'pending') return 'pending';
+    if (permission.status === 'approved') return 'allowed';
+    if (permission.status === 'denied') return 'denied';
+    // A canceled request was never answered by the person; it is not an approval outcome.
+    return null;
+}
+
+function toolFactsForMessage(message: Message): TranscriptNavigationToolFacts | null {
+    if (message.kind !== 'tool-call') return null;
+    return {
+        state: message.tool.state,
+        permission: permissionOutcome(message),
+        label: normalizeTranscriptNavigationTextPreview(message.tool.description ?? message.tool.name),
+        completedAtMs: normalizeFiniteInteger(message.tool.completedAt),
+    };
+}
+
 function normalizeFiniteInteger(value: unknown): number | null {
     if (typeof value !== 'number' || !Number.isFinite(value)) return null;
     return Math.trunc(value);
@@ -53,6 +74,7 @@ function buildLoadedMessageRow(sessionId: string, message: Message): TranscriptN
         text: normalizeTranscriptNavigationTextPreview(textForMessage(message)),
         createdAtMs: normalizeFiniteInteger(message.createdAt),
         loaded: true,
+        tool: toolFactsForMessage(message),
         preNormalized: true,
     };
 }
@@ -304,6 +326,7 @@ function deriveSingleAppendedUserTurnEntries(
         loaded: appendedMessage.loaded !== false,
         blockOrder: 0,
         transcriptBlockIndex: normalizeFiniteInteger(appendedMessage.transcriptBlockIndex),
+        facts: resolvePromptOnlyTurnFacts(appendedMessage),
     }, 'all', null);
     if (!appendedEntry) return null;
 

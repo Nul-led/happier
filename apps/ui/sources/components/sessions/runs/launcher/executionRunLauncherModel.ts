@@ -1,6 +1,7 @@
 import type { DetailsTab } from '@/components/appShell/panes/model/appPaneReducer';
 import { resolveExecutionRunAvailableBackends, type ExecutionRunBackendCapabilityMap } from '@/sync/domains/executionRuns/resolveExecutionRunAvailableBackends';
 import type { PermissionMode } from '@/sync/domains/permissions/permissionTypes';
+import { resolveExecutionRunIntentTitle } from '@/components/sessions/runs/resolveExecutionRunIntentTitle';
 import { t } from '@/text';
 import {
     ExecutionRunIntentSchema,
@@ -43,11 +44,27 @@ export function defaultPermissionModeForExecutionRunIntent(intent: ExecutionRunI
     return 'safe-yolo';
 }
 
-export function createExecutionRunLauncherDetailsTab(intent?: ExecutionRunIntent): DetailsTab {
+/** What a launched Run is for, in words: the first line the person wrote, else its intent. */
+export function resolveExecutionRunLaunchTitle(input: Readonly<{
+    intent: ExecutionRunIntent;
+    instructions?: string | null;
+}>): string {
+    return resolveExecutionRunIntentTitle(input.instructions) ?? t(`runPage.intentTitles.${input.intent}` as const);
+}
+
+/** A start that begins with a role already chosen (Second opinion: a review by `second_opinion`). */
+export type ExecutionRunStartPreset = Readonly<{
+    roleId: string;
+    /** What the start's tab is called ("Second opinion"). */
+    title: string;
+}>;
+
+export function createExecutionRunLauncherDetailsTab(intent?: ExecutionRunIntent, preset?: ExecutionRunStartPreset): DetailsTab {
+    const baseKey = intent ? `execution-run-launcher:${intent}` : 'execution-run-launcher';
     return {
-        key: intent ? `execution-run-launcher:${intent}` : 'execution-run-launcher',
+        key: preset ? `${baseKey}:${preset.roleId}` : baseKey,
         kind: 'executionRunLauncher',
-        title: intent === 'plan'
+        title: preset ? preset.title : intent === 'plan'
             ? t('executionRuns.newRun.intents.plan')
             : intent === 'delegate'
                 ? t('executionRuns.newRun.intents.delegate')
@@ -57,6 +74,7 @@ export function createExecutionRunLauncherDetailsTab(intent?: ExecutionRunIntent
         resource: {
             kind: 'executionRunLauncher',
             ...(intent ? { intent } : {}),
+            ...(preset ? { roleId: preset.roleId } : {}),
         },
     };
 }
@@ -95,12 +113,19 @@ export function createDiscussionSelectionInteractiveExecutionRunDraftDetailsTab(
     };
 }
 
-/** A stable Details resource for a materialized execution Run. */
-export function createExecutionRunDetailsTab(runId: string, recovery?: Readonly<{ retryInputLocalId: string }>): DetailsTab {
+/**
+ * A stable Details resource for a materialized execution Run, titled by its intent when the opener
+ * knows it ("Is 5 attempts enough during a deploy?") and generically otherwise — never by its id.
+ */
+export function createExecutionRunDetailsTab(
+    runId: string,
+    recovery?: Readonly<{ retryInputLocalId: string }>,
+    title?: string | null,
+): DetailsTab {
     return {
         key: `execution-run:${runId}`,
         kind: 'executionRun',
-        title: t('runs.runLabel', { runId }),
+        title: title?.trim() || t('runPage.untitledRun'),
         resource: { kind: 'executionRun', runId, ...(recovery ?? {}) },
     };
 }

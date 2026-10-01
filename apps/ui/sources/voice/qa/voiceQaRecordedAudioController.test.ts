@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createTransferRecipientKeyPair } from '@/sync/domains/transfers/runtime/transferRuntime/plumbing/transferChunkEncryption';
 import { storage } from '@/sync/domains/state/storage';
-import type { Metadata, Session } from '@/sync/domains/state/storageTypes';
+import type { Session } from '@/sync/domains/state/storageTypes';
+import type { Metadata } from '@happier-dev/session-core/state';
 import { applySettings } from '@/sync/domains/settings/settings';
 
 import {

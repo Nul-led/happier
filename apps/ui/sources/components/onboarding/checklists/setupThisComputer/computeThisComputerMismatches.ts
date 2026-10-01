@@ -1,4 +1,4 @@
-import { createRelayUrlComparableKeySafe } from '@/sync/domains/server/relayDrift/relayDriftModel';
+import { isDaemonOfAnotherAccount, isDaemonOnActiveRelay } from '@/sync/domains/server/relayDrift/relayDriftModel';
 
 export function computeThisComputerMismatches(params: Readonly<{
     activeRelayUrl: string | null;
@@ -14,22 +14,17 @@ export function computeThisComputerMismatches(params: Readonly<{
     accountMismatch: boolean;
     pairingRequired: boolean;
 }> {
-    const activeRelayKey = createRelayUrlComparableKeySafe(params.activeRelayUrl);
-    const activeLocalKey = createRelayUrlComparableKeySafe(params.activeLocalRelayUrl);
-    const daemonKey = createRelayUrlComparableKeySafe(params.daemonComparableKey);
+    // The relay and account comparisons are the drift owner's; this checklist only projects them.
+    const serverMismatch = isDaemonOnActiveRelay({
+        activeRelayUrl: params.activeRelayUrl,
+        activeLocalRelayUrl: params.activeLocalRelayUrl,
+        daemonRelayUrl: params.daemonComparableKey,
+    }) === false;
 
-    const serverMismatch = Boolean(
-        activeRelayKey
-            && daemonKey
-            && daemonKey !== activeRelayKey
-            && (!activeLocalKey || daemonKey !== activeLocalKey),
-    );
-
-    const accountMismatch = Boolean(
-        String(params.uiAccountId ?? '').trim()
-            && String(params.daemonAccountId ?? '').trim()
-            && String(params.uiAccountId ?? '').trim() !== String(params.daemonAccountId ?? '').trim(),
-    );
+    const accountMismatch = isDaemonOfAnotherAccount({
+        daemonAccountId: params.daemonAccountId,
+        appAccountId: params.uiAccountId,
+    });
 
     const pairingRequired = params.needsAuth
         || params.machineRegistered === false

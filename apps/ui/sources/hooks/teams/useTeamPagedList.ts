@@ -67,7 +67,7 @@ export function useTeamPagedList<TRow>(params: Readonly<{
      */
     key: string;
     enabled: boolean;
-    loadPage: (cursor: string | null) => Promise<TeamPageOutcome<TRow>>;
+    loadPage: (cursor: string | null, signal: AbortSignal) => Promise<TeamPageOutcome<TRow>>;
     /** Optional AccountChange invalidation for the exact Home owning this page. */
     accountChange?: Readonly<{ serverId: string; entityId: string }>;
 }>): TeamPagedList<TRow> {
@@ -80,6 +80,7 @@ export function useTeamPagedList<TRow>(params: Readonly<{
     const loadPageRef = React.useRef(params.loadPage);
     loadPageRef.current = params.loadPage;
     const inFlight = React.useRef(false);
+    const request = React.useRef<AbortController | null>(null);
     /**
      * The paging position has to be readable synchronously: a continuation must
      * decide which cursor it continues before it awaits, and React state is not
@@ -108,10 +109,13 @@ export function useTeamPagedList<TRow>(params: Readonly<{
                 : { ...previous, status: 'loading_more', error: null });
 
         const currentGeneration = mode === 'more' ? generation.current : (generation.current += 1);
+        request.current?.abort();
+        const controller = new AbortController();
+        request.current = controller;
         inFlight.current = true;
         try {
-            const outcome = await loadPageRef.current(cursor);
-            if (currentGeneration !== generation.current) return;
+            const outcome = await loadPageRef.current(cursor, controller.signal);
+            if (controller.signal.aborted || currentGeneration !== generation.current) return;
             const base = stateRef.current;
             if (outcome.kind === 'failed') {
                 const withdrawn = isAuthoritativeScopedSnapshotRefusalKind(outcome.failure.kind);
@@ -145,12 +149,18 @@ export function useTeamPagedList<TRow>(params: Readonly<{
 
     React.useEffect(() => {
         if (!enabled) {
+            request.current?.abort();
             generation.current += 1;
             inFlight.current = false;
             publish(initialState<TRow>());
             return;
         }
         void load('reset');
+        return () => {
+            generation.current += 1;
+            request.current?.abort();
+            inFlight.current = false;
+        };
         // `key` is the sequence identity; `load` only closes over `enabled`.
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [enabled, key, load]);

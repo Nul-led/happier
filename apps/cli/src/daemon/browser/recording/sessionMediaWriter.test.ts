@@ -4,7 +4,7 @@ import { join, resolve } from 'node:path';
 
 import type { BrowserRecordingSessionV1 } from '@happier-dev/protocol';
 import { createTransferPathAllowanceRegistry } from '@/transfers/targets/createTransferPathAllowanceRegistry';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 const webmBytes = Buffer.concat([
   Buffer.from([0x1a, 0x45, 0xdf, 0xa3, 0x42, 0x86, 0x81, 0x01]),
@@ -59,6 +59,8 @@ describe('browser recording session-media writer', () => {
       await mkdir(join(workingDirectory, '.git', 'info'), { recursive: true });
       const sourcePath = join(captureDirectory, 'recording.webm');
       await writeFile(sourcePath, webmBytes);
+      // Transcript admission is the process/network boundary; media persistence stays real.
+      const commitAttachment = vi.fn(async () => {});
       const writer = createBrowserRecordingSessionMediaWriter({
         workingDirectory,
         pathAllowanceRegistry: createTransferPathAllowanceRegistry(),
@@ -66,6 +68,7 @@ describe('browser recording session-media writer', () => {
           sessionId: 'session_1',
           messageLocalId: 'browser-recording-1',
         }),
+        commitAttachment,
       });
 
       const mediaRef = await writer.persistRecording({
@@ -101,6 +104,24 @@ describe('browser recording session-media writer', () => {
       );
       const persistedFiles = await readFile(resolve(persistedPath, `${mediaRef.mediaId.slice(0, 12)}-recording.webm`)).catch(() => null);
       expect(persistedFiles).toEqual(webmBytes);
+      expect(commitAttachment).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: 'session_1',
+        localId: 'browser-recording-1',
+        meta: {
+          happier: {
+            kind: 'session_media.v1',
+            payload: { media: [expect.objectContaining({
+              id: mediaRef.mediaId,
+              mediaKind: 'video',
+              role: 'output',
+              category: 'tool-artifact',
+              path: expect.stringContaining('/session_1/browser-recording-1/'),
+              sha256: expect.any(String),
+              sizeBytes: webmBytes.byteLength,
+            })] },
+          },
+        },
+      }));
 
       await writer.discardRecording({
         recording: {
@@ -111,7 +132,8 @@ describe('browser recording session-media writer', () => {
       });
 
       await expect(stat(persistedPath)).resolves.toBeTruthy();
-      await expect(readFile(resolve(persistedPath, `${mediaRef.mediaId.slice(0, 12)}-recording.webm`))).rejects.toThrow();
+      // A completed transcript attachment is no longer disposable recording draft data.
+      await expect(readFile(resolve(persistedPath, `${mediaRef.mediaId.slice(0, 12)}-recording.webm`))).resolves.toEqual(webmBytes);
     } finally {
       await rm(workingDirectory, { recursive: true, force: true });
       await rm(captureDirectory, { recursive: true, force: true });

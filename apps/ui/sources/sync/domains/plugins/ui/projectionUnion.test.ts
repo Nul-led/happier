@@ -26,7 +26,6 @@ function machineProjection(input: Readonly<{
         generation: input.generation,
         installedPackagesById: input.installedPackagesById ?? {},
         agentsById: {},
-        backendsById: {},
         actionsById: input.actionsById ?? {},
         toolsById: {},
         commandsById: {},
@@ -59,6 +58,7 @@ function placementEntry(input: Readonly<{
     return {
         id: `surfacePlacement:${input.pluginId}:${input.localId}`,
         pluginId: input.pluginId,
+        occurrenceId: `${input.pluginId}:${input.localId}:occurrence`,
         contributionKind: 'surfacePlacement',
         descriptorId: input.localId,
         binding,
@@ -74,6 +74,7 @@ function reactNativeBundleEntry(pluginId: string): Readonly<Record<string, unkno
     return {
         id: `reactNativeBundle:${pluginId}:bundle`,
         pluginId,
+        occurrenceId: `${pluginId}:bundle:occurrence`,
         contributionKind: 'reactNativeBundle',
         contributionId: 'bundle',
     };
@@ -456,7 +457,6 @@ describe('unionPluginUiProjections', () => {
                 target: 'client',
                 client: {
                     artifactId: 'client-runtime',
-                    modulePath: './clientRuntime',
                     exportName: 'activate',
                 },
                 platforms: ['web'],
@@ -766,22 +766,38 @@ describe('unionPluginUiProjections', () => {
         expect(union.pluginUiProjection?.installedPackagesById['acme.selected']).toBeUndefined();
     });
 
-    it('withholds an originless plugin when multiple machines replicate it', () => {
+    it('follows the selected Administration machine when multiple machines project the same originless plugin', () => {
+        const pluginId = 'happier.triage';
+        const actionId = `${pluginId}/open-triage`;
         const replica = (machineId: string, version: string): PluginUiProjectionUnionMember => ({
             machineId,
             serverId: 'server-1',
             projection: machineProjection({
                 generation: 7,
                 entriesById: {
-                    placement: placementEntry({ pluginId: 'happier.triage', localId: 'triage' }),
+                    placement: placementEntry({ pluginId, localId: 'triage' }),
+                },
+                actionsById: {
+                    [actionId]: {
+                        id: 'open-triage',
+                        pluginId,
+                        occurrenceId: `${machineId}:triage-occurrence`,
+                        title: 'Open triage',
+                        scopes: ['session'],
+                        surfaces: ['ui'],
+                        placementBindings: ['detailsPanel'],
+                        dangerLevel: 'safe',
+                        available: true,
+                        execution: { target: 'daemon' },
+                    },
                 },
                 installedPackagesById: {
-                    'happier.triage': {
-                        id: 'happier.triage',
+                    [pluginId]: {
+                        id: pluginId,
                         displayName: 'Triage',
                         version,
                         enabled: true,
-                        source: { kind: 'bundled', locator: 'happier.triage' },
+                        source: { kind: 'bundled', locator: pluginId },
                     },
                 },
             }),
@@ -789,16 +805,34 @@ describe('unionPluginUiProjections', () => {
             interactionEnabled: true,
         });
 
-        const union = unionPluginUiProjections(
-            [replica('machine-b', '2.0.0'), replica('machine-a', '1.0.0')],
-            new Map(),
-        );
+        const members = [replica('machine-b', '2.0.0'), replica('machine-a', '1.0.0')];
+        const unresolved = unionPluginUiProjections(members, new Map());
+        expect(unresolved.pluginUiProjection).toBeNull();
+        expect(unresolved.interactionEnabled).toBe(false);
 
-        const placement = union.pluginUiProjection
+        const unionA = unionPluginUiProjections(members, new Map(), 'machine-a');
+        const placementA = unionA.pluginUiProjection
             ?.surfacePlacementsById['surfacePlacement:happier.triage:triage'];
-        expect(placement).toBeUndefined();
-        expect(union.pluginUiProjection?.installedPackagesById['happier.triage']).toBeUndefined();
-        expect(union.interactionEnabled).toBe(false);
+        expect(readPluginUiContributionOrigin(placementA)).toMatchObject({
+            machineId: 'machine-a',
+            executionOrigin: null,
+        });
+        expect(unionA.pluginUiProjection?.actionsById[actionId]?.occurrenceId)
+            .toBe('machine-a:triage-occurrence');
+        expect(unionA.pluginUiProjection?.installedPackagesById['happier.triage']?.version).toBe('1.0.0');
+        expect(unionA.interactionEnabled).toBe(true);
+
+        const unionB = unionPluginUiProjections(members, new Map(), 'machine-b');
+        const placementB = unionB.pluginUiProjection
+            ?.surfacePlacementsById['surfacePlacement:happier.triage:triage'];
+        expect(readPluginUiContributionOrigin(placementB)).toMatchObject({
+            machineId: 'machine-b',
+            executionOrigin: null,
+        });
+        expect(unionB.pluginUiProjection?.actionsById[actionId]?.occurrenceId)
+            .toBe('machine-b:triage-occurrence');
+        expect(unionB.pluginUiProjection?.installedPackagesById['happier.triage']?.version).toBe('2.0.0');
+        expect(unionB.interactionEnabled).toBe(true);
     });
 
     it('treats an authority flip as a member change and an unchanged snapshot as none', () => {

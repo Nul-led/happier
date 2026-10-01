@@ -6,6 +6,7 @@ import { Item } from "@/components/ui/lists/Item";
 import { ItemGroup } from "@/components/ui/lists/ItemGroup";
 import { ItemListStatic } from "@/components/ui/lists/ItemList";
 import { Text } from "@/components/ui/text/Text";
+import { Typography } from "@/constants/Typography";
 import { t } from "@/text";
 import { ModalCloseButton } from '@/modal/components/card';
 
@@ -277,10 +278,10 @@ const stylesheet = StyleSheet.create((theme) => ({
     backgroundColor: theme.colors.surface.base,
   },
   title: {
-    fontSize: 12,
-    fontWeight: "600",
-    color: theme.colors.text.secondary,
-    textTransform: "uppercase",
+    fontSize: 13,
+    lineHeight: 18,
+    ...Typography.default("semiBold"),
+    color: theme.colors.text.primary,
   },
   body: {
     padding: 12,

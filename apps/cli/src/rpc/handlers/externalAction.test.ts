@@ -1,4 +1,5 @@
 import {
+  API_TOKEN_FULL_GRANT_V1,
   computeExternalActionRequestEnvelopeDigestV1,
   EXTERNAL_ACTION_DAEMON_RPC_METHOD_V1,
   parseExternalActionDaemonDispatchResultV1,
@@ -42,6 +43,7 @@ function authorizedDispatch<T extends ExternalActionDaemonDispatchRequest>(reque
         accountId: request.principal.accountId,
         principalId: request.principal.principalId,
         credentialId: request.principal.credentialId,
+        grant: request.principal.grant,
         machineId: request.placement.machineId,
         actionId: request.actionId,
         requestId: request.envelope.requestId ?? 'server-generated-request-id',
@@ -105,6 +107,7 @@ describe('registerExternalActionRpcHandler', () => {
         accountId: 'account-1',
         principalId: 'principal-1',
         credentialId: 'credential-1',
+        grant: API_TOKEN_FULL_GRANT_V1,
         authority: 'account_automation',
       },
       placement: {
@@ -163,6 +166,7 @@ describe('registerExternalActionRpcHandler', () => {
         accountId: 'account-1',
         principalId: 'principal-1',
         credentialId: 'credential-1',
+        grant: API_TOKEN_FULL_GRANT_V1,
         authority: 'account_automation',
       },
       placement: {
@@ -222,6 +226,7 @@ describe('registerExternalActionRpcHandler', () => {
         accountId: 'account-1',
         principalId: 'principal-1',
         credentialId: 'credential-1',
+        grant: API_TOKEN_FULL_GRANT_V1,
         authority: 'account_automation',
       },
       placement: {
@@ -263,6 +268,7 @@ describe('registerExternalActionRpcHandler', () => {
         accountId: 'account-1',
         principalId: 'principal-1',
         credentialId: 'credential-1',
+        grant: API_TOKEN_FULL_GRANT_V1,
         authority: 'account_automation',
       },
       placement: {
@@ -302,6 +308,7 @@ describe('registerExternalActionRpcHandler', () => {
         accountId: 'account-1',
         principalId: 'principal-1',
         credentialId: 'credential-1',
+        grant: API_TOKEN_FULL_GRANT_V1,
         authority: 'account_automation',
       },
       placement: {

@@ -3,6 +3,7 @@ import type { LoopbackWebSocketJsonClientV1 } from '@/plugins/runtime/exec/priva
 import { createLoopbackWebSocketJsonClient } from '@/plugins/runtime/exec/loopbackWebSocket';
 
 import type {
+    BrowserSidecarCdpCommandScope,
     BrowserSidecarCdpControlTransport,
     BrowserSidecarCdpEventSubscriber,
     BrowserSidecarCdpPageHandle,
@@ -17,7 +18,6 @@ export type BrowserSidecarCdpTransportErrorCode =
     | 'cdp_malformed_response'
     | 'cdp_protocol_error'
     | 'cdp_request_timeout'
-    | 'cdp_response_too_large'
     | 'cdp_transport_closed'
     | 'cdp_transport_disposed'
     | 'cdp_unavailable';
@@ -54,18 +54,15 @@ type CdpResponse = Readonly<{
 type PendingRequest = Readonly<{
     id: number;
     resolve(result: unknown): void;
-    reject(error: BrowserSidecarCdpTransportError): void;
-    timeout: NodeJS.Timeout;
+    reject(error: Error): void;
+    cleanup(): void;
 }>;
 
-type CdpCommandInput = Readonly<{
+type CdpCommandInput = BrowserSidecarCdpCommandScope & Readonly<{
     method: string;
     params?: Record<string, unknown>;
     sessionId?: string;
 }>;
-
-const DEFAULT_REQUEST_TIMEOUT_MS = 5_000;
-const DEFAULT_MAX_RESPONSE_BYTES = 1024 * 1024;
 
 function privateError(code: BrowserSidecarCdpTransportErrorCode): BrowserSidecarCdpTransportError {
     switch (code) {
@@ -77,8 +74,6 @@ function privateError(code: BrowserSidecarCdpTransportErrorCode): BrowserSidecar
             return new BrowserSidecarCdpTransportError(code, 'Browser sidecar CDP protocol violation.');
         case 'cdp_request_timeout':
             return new BrowserSidecarCdpTransportError(code, 'Browser sidecar CDP request timed out.');
-        case 'cdp_response_too_large':
-            return new BrowserSidecarCdpTransportError(code, 'Browser sidecar CDP response exceeded the size limit.');
         case 'cdp_transport_closed':
             return new BrowserSidecarCdpTransportError(code, 'Browser sidecar CDP transport closed.');
         case 'cdp_transport_disposed':
@@ -94,14 +89,6 @@ function recordValue(input: unknown): Record<string, unknown> | null {
         : null;
 }
 
-function responseSize(input: unknown): number {
-    try {
-        return Buffer.byteLength(JSON.stringify(input), 'utf8');
-    } catch {
-        return Number.POSITIVE_INFINITY;
-    }
-}
-
 function hasOwn(input: Record<string, unknown>, key: string): boolean {
     return Object.prototype.hasOwnProperty.call(input, key);
 }
@@ -110,12 +97,6 @@ function readStringField(input: unknown, field: string): string | null {
     const record = recordValue(input);
     const value = record?.[field];
     return typeof value === 'string' && value.length > 0 ? value : null;
-}
-
-function normalizePositiveInteger(input: number | undefined, fallback: number): number {
-    return typeof input === 'number' && Number.isFinite(input) && input > 0
-        ? Math.trunc(input)
-        : fallback;
 }
 
 function readErrorCode(input: unknown): string | null {
@@ -136,34 +117,27 @@ function mapClientClosedError(input: unknown): BrowserSidecarCdpTransportErrorCo
     if (message.includes('not valid JSON')) {
         return 'cdp_malformed_response';
     }
-    if (message.includes('size limit')) {
-        return 'cdp_response_too_large';
-    }
     return 'cdp_protocol_error';
 }
 
 export function createBrowserSidecarCdpTransport(input: Readonly<{
     client: LoopbackWebSocketJsonClientV1;
-    requestTimeoutMs?: number;
-    maxResponseBytes?: number;
     disposeClient?: (error?: Error) => void;
 }>): BrowserSidecarCdpTransport {
     const pending = new Map<number, PendingRequest>();
     const eventListeners = new Set<BrowserSidecarCdpEventSubscriber>();
-    const requestTimeoutMs = normalizePositiveInteger(input.requestTimeoutMs, DEFAULT_REQUEST_TIMEOUT_MS);
-    const maxResponseBytes = normalizePositiveInteger(input.maxResponseBytes, DEFAULT_MAX_RESPONSE_BYTES);
     let nextId = 1;
     let disposedError: BrowserSidecarCdpTransportError | null = null;
 
-    function rejectPending(request: PendingRequest, error: BrowserSidecarCdpTransportError): void {
+    function rejectPending(request: PendingRequest, error: Error): void {
         if (!pending.delete(request.id)) return;
-        clearTimeout(request.timeout);
+        request.cleanup();
         request.reject(error);
     }
 
     function resolvePending(request: PendingRequest, result: unknown): void {
         if (!pending.delete(request.id)) return;
-        clearTimeout(request.timeout);
+        request.cleanup();
         request.resolve(result);
     }
 
@@ -204,11 +178,6 @@ export function createBrowserSidecarCdpTransport(input: Readonly<{
 
     function handleMessage(message: unknown): void {
         if (disposedError) return;
-        if (responseSize(message) > maxResponseBytes) {
-            handleProtocolFailure('cdp_response_too_large');
-            return;
-        }
-
         const record = recordValue(message);
         if (!record) {
             handleProtocolFailure('cdp_malformed_response');
@@ -231,6 +200,9 @@ export function createBrowserSidecarCdpTransport(input: Readonly<{
 
         const request = pending.get(record.id);
         if (!request) {
+            // Chrome can finish an issued command after its containing operation was cancelled.
+            // That late reply must not poison unrelated commands on the same connection.
+            if (record.id > 0 && record.id < nextId) return;
             handleProtocolFailure('cdp_protocol_error');
             return;
         }
@@ -260,6 +232,12 @@ export function createBrowserSidecarCdpTransport(input: Readonly<{
         if (disposedError) {
             throw disposedError;
         }
+        if (command.signal?.aborted) {
+            throw new DOMException('Browser sidecar CDP request was aborted.', 'AbortError');
+        }
+        if (command.deadlineMs !== undefined && command.deadlineMs <= Date.now()) {
+            throw privateError('cdp_request_timeout');
+        }
 
         const id = nextId;
         nextId += 1;
@@ -271,21 +249,24 @@ export function createBrowserSidecarCdpTransport(input: Readonly<{
         };
 
         return await new Promise<unknown>((resolve, reject) => {
-            const timeout = setTimeout(() => {
-                const request = pending.get(id);
-                if (request) {
-                    rejectPending(request, privateError('cdp_request_timeout'));
-                }
-            }, requestTimeoutMs);
+            let timeout: NodeJS.Timeout | undefined;
+            const onAbort = () => rejectPending(request, new DOMException('Browser sidecar CDP request was aborted.', 'AbortError'));
             const request: PendingRequest = {
                 id,
                 resolve,
                 reject,
-                timeout,
+                cleanup() {
+                    if (timeout !== undefined) clearTimeout(timeout);
+                    command.signal?.removeEventListener('abort', onAbort);
+                },
             };
             pending.set(id, request);
+            command.signal?.addEventListener('abort', onAbort, { once: true });
+            if (command.deadlineMs !== undefined) {
+                timeout = setTimeout(() => rejectPending(request, privateError('cdp_request_timeout')), Math.max(0, command.deadlineMs - Date.now()));
+            }
             try {
-                void input.client.sendJson(message).catch(() => {
+                void input.client.sendJson(message, { signal: command.signal }).catch(() => {
                     rejectPending(request, privateError('cdp_transport_closed'));
                 });
             } catch {
@@ -294,8 +275,10 @@ export function createBrowserSidecarCdpTransport(input: Readonly<{
         });
     }
 
-    async function openPage(pageInput: Readonly<{ url: string; focus: boolean }>): Promise<BrowserSidecarCdpPageHandle> {
+    async function openPage(pageInput: BrowserSidecarCdpCommandScope & Readonly<{ url: string; focus: boolean }>): Promise<BrowserSidecarCdpPageHandle> {
+        const scope = { signal: pageInput.signal, deadlineMs: pageInput.deadlineMs };
         const createTargetResult = await sendCommand({
+            ...scope,
             method: 'Target.createTarget',
             params: { url: pageInput.url },
         });
@@ -305,6 +288,7 @@ export function createBrowserSidecarCdpTransport(input: Readonly<{
         }
 
         const attachResult = await sendCommand({
+            ...scope,
             method: 'Target.attachToTarget',
             params: { targetId, flatten: true },
         });
@@ -315,6 +299,7 @@ export function createBrowserSidecarCdpTransport(input: Readonly<{
 
         if (pageInput.focus) {
             await sendCommand({
+                ...scope,
                 method: 'Target.activateTarget',
                 params: { targetId },
             });
@@ -330,12 +315,16 @@ export function createBrowserSidecarCdpTransport(input: Readonly<{
                 method: command.method,
                 params: command.params,
                 sessionId: command.sessionId,
+                signal: command.signal,
+                deadlineMs: command.deadlineMs,
             });
         },
         async dispatchBrowserCommand(command) {
             return await sendCommand({
                 method: command.method,
                 params: command.params,
+                signal: command.signal,
+                deadlineMs: command.deadlineMs,
             });
         },
         subscribeCdpEvents(listener) {
@@ -357,9 +346,7 @@ export function createBrowserSidecarCdpTransport(input: Readonly<{
 
 export async function connectBrowserSidecarCdpTransport(input: Readonly<{
     endpoint: Pick<BrowserSidecarCdpEndpoint, 'url'>;
-    requestTimeoutMs?: number;
     connectTimeoutMs?: number;
-    maxMessageBytes?: number;
     signal?: AbortSignal;
 }>): Promise<BrowserSidecarCdpTransport> {
     const endpoint = discoverBrowserSidecarCdpEndpoint({
@@ -378,8 +365,8 @@ export async function connectBrowserSidecarCdpTransport(input: Readonly<{
                 timeoutMs: input.connectTimeoutMs,
             },
             limits: {
-                maxMessageBytes: input.maxMessageBytes,
-                maxBufferedBytes: input.maxMessageBytes,
+                // Capture/stream operations own resource policy, not this multiplexed socket.
+                messageByteLimits: null,
             },
             signal: input.signal,
         });
@@ -389,8 +376,6 @@ export async function connectBrowserSidecarCdpTransport(input: Readonly<{
 
     return createBrowserSidecarCdpTransport({
         client: client.client,
-        requestTimeoutMs: input.requestTimeoutMs,
-        maxResponseBytes: input.maxMessageBytes,
         disposeClient: (error) => client.dispose(error),
     });
 }

@@ -8,7 +8,7 @@ import {
     installToolShellCommonModuleMocks,
     makeToolCall,
 } from './ToolView.testHelpers';
-import type { Message } from '@/sync/domains/messages/messageTypes';
+import type { Message } from "@happier-dev/session-core/messages";
 import { createUseSettingMock } from '@/dev/testkit/mocks/storage';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;

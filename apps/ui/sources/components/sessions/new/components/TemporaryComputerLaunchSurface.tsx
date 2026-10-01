@@ -1,8 +1,9 @@
 import * as React from 'react';
-import { Platform, Pressable, View } from 'react-native';
+import { Platform, View } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
+import { RoundButton } from '@/components/ui/buttons/RoundButton';
 import { Text } from '@/components/ui/text/Text';
 import { PoliteAccessibilityStatus } from '@/components/ui/accessibility/PoliteAccessibilityStatus';
 import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
@@ -10,6 +11,7 @@ import { Modal } from '@/modal';
 import { t } from '@/text';
 import {
     isTemporaryComputerLaunchErrorRetryable,
+    projectTemporaryComputerLaunchStatus,
     type TemporaryComputerLaunchController,
 } from '../hooks/useTemporaryComputerLaunch';
 import { isLaunchProfileIncompatibility } from '../modules/profileHelpers';
@@ -52,6 +54,8 @@ export function TemporaryComputerLaunchSurface(props: Readonly<{
     packageCustodyOnThisDevice?: boolean;
     onExportPackage?: () => Promise<void>;
     onRequestCancel?: () => void;
+    /** Leaves the authoring surface mounted while the synchronized draft continues. */
+    onContinueLater?: () => void;
 }>): React.ReactElement | null {
     const { theme } = useUnistyles();
     const exportPressInFlightRef = React.useRef(false);
@@ -73,7 +77,12 @@ export function TemporaryComputerLaunchSurface(props: Readonly<{
     const terminalCloseReason = props.controller.projection?.state === 'closed'
         ? props.controller.projection.closeReason
         : null;
-    const statusLabel = t(`newSession.temporaryComputer.status.${status}` as Parameters<typeof t>[0]);
+    const dependencyUnavailable = status === 'review_unavailable' || status === 'materialization_unavailable';
+    const observingDependency = dependencyUnavailable && props.packageCustodyOnThisDevice === false;
+    const presentedStatus = observingDependency && props.controller.projection
+        ? projectTemporaryComputerLaunchStatus(props.controller.projection)
+        : status;
+    const statusLabel = t(`newSession.temporaryComputer.status.${presentedStatus}` as Parameters<typeof t>[0]);
     // Never is the product default, and "no expiry" is the single most consequential
     // thing this surface can say about a package that is about to leave the device.
     // Silence read as "probably fine"; an exact local date reads as the truth.
@@ -107,17 +116,19 @@ export function TemporaryComputerLaunchSurface(props: Readonly<{
         : `${status}|${terminalCloseReason ?? ''}|${packageExportFailed ? 'export-failed' : 'export-ok'}`;
     const iosAnnouncement = terminalReasonLabel ? `${statusLabel}. ${terminalReasonLabel}` : statusLabel;
     if (status === 'idle') return null;
-    const dependencyUnavailable = status === 'review_unavailable' || status === 'materialization_unavailable';
     // The reviewed Profile or its exact target-Account secrets stopped resolving
     // before anything was created. Retrying the frozen submission would repeat
     // the same refusal, so the composer is the only control that can fix it.
     const authoringIncompatible = isLaunchProfileIncompatibility(status);
     const packageExporting = props.packageExportState?.status === 'exporting';
     const failed = status === 'failed' || status === 'cancel_failed'
-        || dependencyUnavailable || authoringIncompatible || packageExportFailed;
+        || (dependencyUnavailable && !observingDependency) || authoringIncompatible || packageExportFailed;
     const terminalProjection = props.controller.projection?.state === 'materialized'
         || props.controller.projection?.state === 'closed';
-    const retryableFailure = ((status === 'failed' && !terminalProjection) || status === 'cancel_failed')
+    const materializedRecoveryFailure = status === 'failed'
+        && props.controller.projection?.state === 'materialized';
+    const retryableFailure = ((status === 'failed' && (!terminalProjection || materializedRecoveryFailure)) || status === 'cancel_failed'
+        || (dependencyUnavailable && props.packageCustodyOnThisDevice === true))
         && isTemporaryComputerLaunchErrorRetryable(props.controller.error);
     // Nothing is waiting any more once the request has settled, so the expiry of a
     // package that can no longer be claimed is noise rather than information. A
@@ -172,6 +183,9 @@ export function TemporaryComputerLaunchSurface(props: Readonly<{
         >
             <Text accessibilityRole="header" style={{ color: theme.colors.text.primary }}>
                 {t('newSession.temporaryComputer.title')}
+            </Text>
+            <Text style={{ color: theme.colors.text.secondary }}>
+                {t('newSession.temporaryComputer.subtitle')}
             </Text>
             {props.target ? (
                 <View testID="temporary-computer-target" style={{ gap: 2 }}>
@@ -253,6 +267,14 @@ export function TemporaryComputerLaunchSurface(props: Readonly<{
                     />
                 ) : null}
                 {retryableFailure ? <Action testID="temporary-computer-retry" label={t('common.retry')} onPress={() => void props.controller.retry()} /> : null}
+                {props.onContinueLater && (!terminalProjection || materializedRecoveryFailure) && status !== 'succeeded' ? (
+                    <Action
+                        testID="temporary-computer-continue-later"
+                        label={t('newSession.temporaryComputer.continueLater')}
+                        display="inverted"
+                        onPress={props.onContinueLater}
+                    />
+                ) : null}
                 {status === 'failed' && props.controller.projection?.state === 'closed' && terminalCloseReason === 'canceled' ? (
                     <Action
                         testID="temporary-computer-terminal-done"
@@ -271,6 +293,7 @@ export function TemporaryComputerLaunchSurface(props: Readonly<{
                     <Action
                         testID="temporary-computer-cancel"
                         label={t('common.cancel')}
+                        display="inverted"
                         onPress={props.onRequestCancel ?? (() => { void requestTemporaryComputerLaunchCancel(props.controller); })}
                     />
                 ) : null}
@@ -337,23 +360,17 @@ export async function requestTemporaryComputerLaunchCancel(
     await controller.cancel();
 }
 
-function Action(props: Readonly<{ testID: string; label: string; disabled?: boolean; busy?: boolean; onPress: () => void }>): React.ReactElement {
-    const { theme } = useUnistyles();
-    // The canonical 44/48 platform floor: Android requires 48dp while iOS and
-    // web keep the 44pt baseline. Never hardcode a single size here again.
-    const minimumTargetSize = resolveMinimumInteractiveTargetSize(Platform.OS);
-    return <Pressable accessibilityRole="button" accessibilityLabel={props.label} accessibilityState={{ disabled: props.disabled === true, busy: props.busy === true }}
-        disabled={props.disabled === true} testID={props.testID} onPress={props.onPress}
-        style={{ minHeight: minimumTargetSize, flexDirection: 'row', alignItems: 'center', gap: 8, justifyContent: 'center', paddingHorizontal: 12, borderRadius: 8, backgroundColor: theme.colors.surface.base, opacity: props.disabled && !props.busy ? 0.55 : 1 }}>
-        {props.busy ? (
-            <ActivitySpinner
-                testID={`${props.testID}-progress`}
-                size="small"
-                color={theme.colors.text.secondary}
-                accessibilityElementsHidden
-                importantForAccessibility="no-hide-descendants"
-            />
-        ) : null}
-        <Text style={{ color: theme.colors.text.primary }}>{props.label}</Text>
-    </Pressable>;
+function Action(props: Readonly<{ testID: string; label: string; disabled?: boolean; busy?: boolean; display?: 'inverted'; onPress: () => void }>): React.ReactElement {
+    return <RoundButton
+        testID={props.testID}
+        title={props.label}
+        accessibilityLabel={props.label}
+        disabled={props.disabled && !props.busy}
+        loading={props.busy}
+        display={props.display}
+        size="normal"
+        titleNumberOfLines="complete"
+        style={{ minHeight: resolveMinimumInteractiveTargetSize(Platform.OS), maxWidth: '100%' }}
+        onPress={props.onPress}
+    />;
 }

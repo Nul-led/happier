@@ -1,4 +1,4 @@
-import type { Metadata } from '@/sync/domains/state/storageTypes';
+import type { Metadata } from '@happier-dev/session-core/state';
 import { publishUiSessionStateFieldToMetadata } from './publishField';
 
 export type AcpConfigOptionOverrideValueId = string;

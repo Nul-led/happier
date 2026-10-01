@@ -69,6 +69,8 @@ export type BrowserRecordingDaemonRuntimeOptions = Readonly<{
   mediaWriter?: BrowserRecordingMediaWriter;
   pathAllowanceRegistry?: TransferPathAllowanceRegistry;
   resolveSessionMediaTarget?: BrowserRecordingSessionMediaWriterOptions['resolveSessionMediaTarget'];
+  resolveWorkingDirectory?: BrowserRecordingSessionMediaWriterOptions['resolveWorkingDirectory'];
+  commitAttachment?: BrowserRecordingSessionMediaWriterOptions['commitAttachment'];
   resolveStartContext?: (input: Parameters<BrowserRecordingRoutes['startRecording']>[0]) =>
     | BrowserRecordingStartContext
     | Promise<BrowserRecordingStartContext>;
@@ -122,6 +124,8 @@ function createRuntimeMediaWriter(
     workingDirectory: options.workingDirectory,
     pathAllowanceRegistry: options.pathAllowanceRegistry ?? createTransferPathAllowanceRegistry(),
     resolveSessionMediaTarget,
+    resolveWorkingDirectory: options.resolveWorkingDirectory,
+    commitAttachment: options.commitAttachment,
   });
 }
 

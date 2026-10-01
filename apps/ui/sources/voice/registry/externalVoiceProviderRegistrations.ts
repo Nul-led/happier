@@ -8,13 +8,19 @@ import type { VoiceRealtimeJsonValue } from '@happier-dev/protocol';
 
 import type { VoiceProviderRegistryEntry } from './providerRegistry';
 
-export type ExternalVoiceProviderRegistration = Readonly<{
+type ExternalVoiceProviderSettingsActions = Readonly<{
+  execute(input: PluginSettingsActionInput & Readonly<{
+    /** Host snapshot receipt; non-speech action runtimes may ignore it. */
+    settingsRevision?: string;
+    signal: AbortSignal;
+  }>): Promise<PluginSettingsActionResult>;
+}>;
+
+type ExternalVoiceProviderRegistrationBase = Readonly<{
   token: object;
   pluginId: string;
   localId: string;
   providerId: string;
-  /** Exact daemon projection generation; required while projection authority is present. */
-  projectionGeneration?: string;
   descriptor: VoiceProviderRegistryEntry | null;
   adapter: VoiceAdapterController | null;
   settingsOperations?: Readonly<{
@@ -24,14 +30,20 @@ export type ExternalVoiceProviderRegistration = Readonly<{
       signal: AbortSignal;
     }>): ReturnType<NonNullable<RealtimeVoiceProviderSettingsOperations['listCatalog']>>;
   }>;
-  settingsActions?: Readonly<{
-    execute(input: PluginSettingsActionInput & Readonly<{
-      /** Host snapshot receipt; non-speech action runtimes may ignore it. */
-      settingsRevision?: string;
-      signal: AbortSignal;
-    }>): Promise<PluginSettingsActionResult>;
-  }>;
 }>;
+
+export type ExternalVoiceProviderRegistration = ExternalVoiceProviderRegistrationBase & (
+  | Readonly<{
+      /** Exact producer occurrence required by every executable settings action. */
+      occurrenceId: string;
+      settingsActions: ExternalVoiceProviderSettingsActions;
+    }>
+  | Readonly<{
+      /** Exact plugin occurrence when the registration has projection authority. */
+      occurrenceId?: string;
+      settingsActions?: undefined;
+    }>
+);
 
 const registrationsByProviderId = new Map<string, ExternalVoiceProviderRegistration>();
 const authoritativeProvidersByToken = new Map<object, ReadonlyMap<string, string>>();
@@ -70,12 +82,12 @@ export function removeExternalVoiceProviderRegistration(token: object): void {
  * disabled or stale provider behind the projection's back.
  *
  * Projection authority and runtime registration remain deliberately distinct
- * facts: the former says which exact generation may exist; the latter says
+ * facts: the former says which exact plugin occurrence may exist; the latter says
  * activation actually succeeded. A projected provider without its matching
  * registration is unavailable, never silently restored from fallback bytes.
  *
  * The activation token already owns registration lifetime, so this adds no
- * second generation or enablement owner.
+ * second currentness or enablement owner.
  */
 export function replaceExternalVoiceProviderProjectionAuthority(
   previousToken: object | null,
@@ -96,7 +108,7 @@ export function getExternalVoiceProviderProjectionAuthority(): ReadonlyMap<strin
   if (authoritativeProvidersByToken.size === 0) return null;
   const providers = new Map<string, string>();
   for (const entries of authoritativeProvidersByToken.values()) {
-    for (const [id, generation] of entries) providers.set(id, generation);
+    for (const [id, occurrenceId] of entries) providers.set(id, occurrenceId);
   }
   return Object.freeze(providers);
 }

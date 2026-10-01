@@ -213,15 +213,15 @@ describe('useCreateNewSession (ACP mode seeding)', () => {
     const { useCreateNewSession, sessionSpawnNewRpcSpy } = await setupHarness({
       storageState: { sessions: { 'runner-session-1': { id: 'runner-session-1' } } },
     });
-    let creatorSettlement: Readonly<{
+    const creatorSettlements: Array<Readonly<{
       attachmentMessageLocalId: string;
       firstTurnLocalId: string;
       present(sessionId: string): Promise<void>;
       complete(sessionId: string, uploaded: readonly []): Promise<void>;
       reject(): void;
-    }> | null = null;
+    }>> = [];
     const temporaryComputerLaunch = vi.fn(async (_submission, settlement) => {
-      creatorSettlement = settlement;
+      creatorSettlements.push(settlement);
     });
     const onAfterCreatedSettled = vi.fn();
     const afterCreated = vi.fn(async () => undefined);
@@ -236,7 +236,7 @@ describe('useCreateNewSession (ACP mode seeding)', () => {
     const { sync } = await import('@/sync/sync');
     const ensureSessionVisibleForMessageRouteSpy = vi
       .spyOn(sync, 'ensureSessionVisibleForMessageRoute')
-      .mockResolvedValue({ kind: 'available' });
+      .mockResolvedValue({ kind: 'available', sessionId: 'runner-session-1' });
     writeNewSessionDraft({
       scope: draftScope,
       draftId,
@@ -290,8 +290,11 @@ describe('useCreateNewSession (ACP mode seeding)', () => {
     expect(temporaryComputerLaunch).toHaveBeenCalledTimes(1);
     expect(onAfterCreatedSettled).not.toHaveBeenCalled();
 
+    const creatorSettlement = creatorSettlements[0];
+    if (!creatorSettlement) throw new Error('Expected Temporary computer creator settlement');
+
     await act(async () => {
-      await creatorSettlement?.present('runner-session-1');
+      await creatorSettlement.present('runner-session-1');
     });
     expect(router.replace).toHaveBeenCalledTimes(1);
     expect(ensureSessionVisibleForMessageRouteSpy).toHaveBeenCalledWith('runner-session-1', {
@@ -303,13 +306,13 @@ describe('useCreateNewSession (ACP mode seeding)', () => {
     expect(getSessionDraftSnapshot(draftScope, { kind: 'newSession', draftId })?.document.composer.text.value)
       .toBe('reviewed prompt');
 
-    await expect(creatorSettlement?.complete('runner-session-2', []))
+    await expect(creatorSettlement.complete('runner-session-2', []))
       .rejects.toThrow('runner_creator_materialized_session_changed');
     expect(afterCreated).not.toHaveBeenCalled();
     expect(router.replace).toHaveBeenCalledTimes(1);
 
     await act(async () => {
-      await creatorSettlement?.complete('runner-session-1', []);
+      await creatorSettlement.complete('runner-session-1', []);
     });
     expect(onAfterCreatedSettled).toHaveBeenCalledWith({
       status: 'accepted',

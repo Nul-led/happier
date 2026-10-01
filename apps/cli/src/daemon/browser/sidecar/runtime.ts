@@ -38,6 +38,7 @@ function rejectedLaunchResult(input: Readonly<{
 
 function buildSidecarLaunchArgs(profileDirectory: string): readonly string[] {
     return [
+        '--headless=new',
         `--user-data-dir=${profileDirectory}`,
         '--remote-debugging-port=0',
         '--no-first-run',

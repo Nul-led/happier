@@ -30,6 +30,7 @@ import {
     enableWorkspaceSyncRelationship,
     terminatePersistedWorkspaceSyncRelationship,
     inspectWorkspaceSyncLegacyState,
+    inspectWorkspaceSyncConflict,
 } from './workspaceSync';
 
 const status = {
@@ -39,9 +40,12 @@ const status = {
     alphaPath: '/alpha',
     betaPath: '/beta',
     mode: 'keep_synced' as const,
-    changedFiles: 2,
+    endpointStates: {
+        alpha: { connected: true, scanned: true, scanProblemCount: 0, transitionProblemCount: 0 },
+        beta: { connected: true, scanned: true, scanProblemCount: 0, transitionProblemCount: 0 },
+    },
     conflictCount: 1,
-    lastSuccessfulSyncAtMs: 42,
+    lastCycleObservedAtMs: 42,
 };
 
 const initialStorageState = getStorage().getState();
@@ -72,7 +76,7 @@ describe('workspace sync UI operations', () => {
         getStorage().setState(initialStorageState, true);
         resetServerFeaturesClientForTests();
         invalidateAccountEncryptionModeCache();
-        actionServerId = upsertAndActivateServer({ serverUrl: 'https://workspace-sync-action.test', name: 'Home' }).id;
+        actionServerId = (await upsertAndActivateServer({ serverUrl: 'https://workspace-sync-action.test', name: 'Home' })).id;
         getStorage().getState().activateProfileScope({ serverId: actionServerId, accountId: 'workspace-sync-account' });
         getStorage().setState({ settingsScope: { serverId: actionServerId, accountId: 'workspace-sync-account' } });
         vi.spyOn(TokenStorage, 'getCredentialsForServerUrl').mockResolvedValue({ token: accountToken });
@@ -179,7 +183,11 @@ describe('workspace sync UI operations', () => {
     });
 
     it('maps transient and conflict commands without inventing client-side state', async () => {
-        const paused = { ...status, state: 'paused' as const };
+        const phases: string[] = [];
+        const resolution = { endpoints: [
+            { workspaceRefId: 'workspace-alpha', status: 'applied' as const },
+            { workspaceRefId: 'workspace-beta', status: 'applied_paused' as const },
+        ] };
         machineRpcWithServerScope
             .mockResolvedValueOnce({
                 status: 'page',
@@ -193,7 +201,7 @@ describe('workspace sync UI operations', () => {
                     beta: { kind: 'file', digest: 'b'.repeat(40) },
                 }],
             })
-            .mockResolvedValueOnce(paused);
+            .mockResolvedValueOnce(resolution);
 
         await expect(listWorkspaceSyncConflicts({
             controllerMachineId: 'machine-controller',
@@ -203,17 +211,21 @@ describe('workspace sync UI operations', () => {
         await expect(resolveWorkspaceSyncConflict({
             controllerMachineId: 'machine-controller',
             serverId: actionServerId,
+            onPhase: (phase) => phases.push(phase),
             request: {
-                relationshipId: 'relationship-1',
+                strategy: 'use_source',
+                controllerMachineId: 'machine-controller',
+                hubWorkspaceRefId: 'workspace-alpha',
                 path: 'README.md',
-                keep: 'alpha',
-                expectedDigest: 'b'.repeat(40),
-                expectedKind: 'file',
+                source: { workspaceRefId: 'workspace-alpha', expected: { kind: 'file', digest: 'a'.repeat(40), executable: false, size: 12 } },
+                targets: [{ workspaceRefId: 'workspace-beta', expected: { kind: 'file', digest: 'b'.repeat(40), executable: true, size: 13 } }],
+                relationshipIds: ['relationship-1'],
             },
-        })).resolves.toEqual(paused);
+        })).resolves.toEqual(resolution);
+        expect(phases).toEqual(['requesting_approval', 'applying']);
         expect(machineRpcWithServerScope.mock.calls.map(([input]) => input.method)).toEqual([
             RPC_METHODS.DAEMON_WORKSPACE_SYNC_CONFLICTS_LIST,
-            RPC_METHODS.DAEMON_WORKSPACE_SYNC_CONFLICT_DELETE,
+            RPC_METHODS.DAEMON_WORKSPACE_SYNC_CONFLICT_RESOLVE,
         ]);
         expect(machineRpcWithServerScope.mock.calls[0]?.[0]).toMatchObject({
             payload: { relationshipId: 'relationship-1', limit: 100 },
@@ -222,18 +234,17 @@ describe('workspace sync UI operations', () => {
         expect(conflictRpc).toMatchObject({
             machineId: 'machine-controller',
             serverId: actionServerId,
-            method: RPC_METHODS.DAEMON_WORKSPACE_SYNC_CONFLICT_DELETE,
+            method: RPC_METHODS.DAEMON_WORKSPACE_SYNC_CONFLICT_RESOLVE,
             payload: {
                 actionReceiptId: expect.any(String),
                 actionInput: {
+                    strategy: 'use_source',
                     controllerMachineId: 'machine-controller',
-                    request: {
-                        relationshipId: 'relationship-1',
-                        path: 'README.md',
-                        keep: 'alpha',
-                        expectedDigest: 'b'.repeat(40),
-                        expectedKind: 'file',
-                    },
+                    hubWorkspaceRefId: 'workspace-alpha',
+                    path: 'README.md',
+                    source: { workspaceRefId: 'workspace-alpha', expected: { kind: 'file', digest: 'a'.repeat(40), executable: false, size: 12 } },
+                    targets: [{ workspaceRefId: 'workspace-beta', expected: { kind: 'file', digest: 'b'.repeat(40), executable: true, size: 13 } }],
+                    relationshipIds: ['relationship-1'],
                 },
             },
         });
@@ -268,11 +279,13 @@ describe('workspace sync UI operations', () => {
             controllerMachineId: 'machine-controller',
             serverId: actionServerId,
             request: {
-                relationshipId: 'relationship-1',
+                strategy: 'use_source',
+                controllerMachineId: 'machine-controller',
+                hubWorkspaceRefId: 'workspace-alpha',
                 path: 'README.md',
-                keep: 'alpha',
-                expectedDigest: 'b'.repeat(40),
-                expectedKind: 'file',
+                source: { workspaceRefId: 'workspace-alpha', expected: { kind: 'file', digest: 'a'.repeat(40), executable: false, size: 12 } },
+                targets: [{ workspaceRefId: 'workspace-beta', expected: { kind: 'missing' } }],
+                relationshipIds: ['relationship-1'],
             },
         })).rejects.toMatchObject({
             message: 'conflict_changed',
@@ -280,8 +293,32 @@ describe('workspace sync UI operations', () => {
         });
 
         expect(machineRpcWithServerScope.mock.calls.map(([input]) => input.method)).toEqual([
-            RPC_METHODS.DAEMON_WORKSPACE_SYNC_CONFLICT_DELETE,
+            RPC_METHODS.DAEMON_WORKSPACE_SYNC_CONFLICT_RESOLVE,
         ]);
+    });
+
+    it('inspects the complete endpoint set before previewing only a selected version', async () => {
+        const metadata = {
+            controllerMachineId: 'machine-controller', hubWorkspaceRefId: 'workspace-alpha', path: 'README.md',
+            endpoints: [
+                { workspaceRefId: 'workspace-alpha', outcome: 'observed', observation: { kind: 'file', digest: 'a'.repeat(40), executable: false, size: 12 }, selections: [] },
+                { workspaceRefId: 'workspace-beta', outcome: 'observed', observation: { kind: 'missing' }, selections: [] },
+            ],
+            versions: [
+                { endpointWorkspaceRefIds: ['workspace-alpha'], entry: { kind: 'file', digest: 'a'.repeat(40), executable: false, size: 12 } },
+                { endpointWorkspaceRefIds: ['workspace-beta'], entry: { kind: 'missing' } },
+            ], coverage: { complete: true },
+        };
+        machineRpcWithServerScope.mockResolvedValueOnce(metadata);
+        await expect(inspectWorkspaceSyncConflict({
+            controllerMachineId: 'machine-controller', serverId: 'server-1',
+            request: { workspaceRefId: 'workspace-beta', path: 'README.md' },
+        })).resolves.toEqual(metadata);
+        expect(machineRpcWithServerScope).toHaveBeenCalledWith(expect.objectContaining({
+            method: RPC_METHODS.DAEMON_WORKSPACE_SYNC_CONFLICT_INSPECT,
+            payload: { workspaceRefId: 'workspace-beta', path: 'README.md' },
+        }));
+        expect(machineRpcWithServerScope).toHaveBeenCalledTimes(1);
     });
 
     it('validates bounded file previews and rejects malformed daemon responses', async () => {

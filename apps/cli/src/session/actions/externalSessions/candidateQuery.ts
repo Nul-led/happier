@@ -13,8 +13,15 @@ import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
 
 import type {
+    ExternalSessionCandidateThreadV1,
     ExternalSessionsSource,
     PluginContributionIdentityV1,
+    PluginSourceCustodyV1,
+} from '@happier-dev/protocol';
+import {
+    ExternalSessionCandidateThreadV1Schema,
+    PluginSourceCustodyV1Schema,
+    pluginSourceCustodyV1Equal,
 } from '@happier-dev/protocol';
 import { createCanonicalJsonSigningInput } from '@happier-dev/protocol/crypto/canonicalJson';
 import {
@@ -49,6 +56,7 @@ type StoredCandidate = Readonly<{
     createdAtMs?: number;
     archived?: boolean;
     title?: string;
+    thread?: ExternalSessionCandidateThreadV1;
     linkData?: StrictJsonObject;
     candidateIndexState?: StrictJsonObject;
 }>;
@@ -107,16 +115,14 @@ type CandidateIndexRecord = Readonly<{
     candidateIndexStateSeed?: CandidateIndexStateSeed;
     indexGeneration?: string;
     /**
-     * The Agent runtime generation that produced these rows, or `null` when the
-     * caller resolved no generation. `agentKey` names the Agent contribution, not
-     * the code behind it: a reload or upgrade keeps the same key while replacing
-     * the leaf that decides what a candidate is, what its `linkData` means, and
-     * which sessions the corpus contains. Without this, a successor would serve
-     * its predecessor's persisted rows and replay their `linkData` into its own
-     * link path. A record from another generation is not parsed at all, so the
+     * Durable custody of the Agent source that produced these rows. `agentKey`
+     * names the Agent contribution, not the installed/bundled/development source
+     * behind it: an upgrade can keep the same key while replacing the leaf that
+     * decides what a candidate is, what its `linkData` means, and which sessions
+     * the corpus contains. A record from different custody is not parsed, so the
      * root request rebuilds and a continuation minted against it resets.
      */
-    runtimeGeneration: string | null;
+    sourceCustody: PluginSourceCustodyV1 | null;
     candidates: readonly StoredCandidate[];
 }>;
 
@@ -125,7 +131,7 @@ type CandidateIndexCursor = Readonly<{
     kind: 'external_session_candidate_index';
     agentKey: string;
     sourceKey: string;
-    runtimeGeneration: string | null;
+    sourceCustody: PluginSourceCustodyV1 | null;
     indexGeneration: string;
     offset: number;
     byteOffset: number;
@@ -266,7 +272,7 @@ function digest(value: string): string {
 type CandidateIndexKeys = Readonly<{
     agentKey: string;
     sourceKey: string;
-    runtimeGeneration: string | null;
+    sourceCustody: PluginSourceCustodyV1 | null;
 }>;
 
 type CandidateIndexIdentity = Readonly<{
@@ -277,15 +283,30 @@ type CandidateIndexIdentity = Readonly<{
 function resolveKeys(
     agentIdentity: PluginContributionIdentityV1,
     source: unknown,
-    runtimeGeneration: string | null,
+    sourceCustody: PluginSourceCustodyV1 | null,
 ): CandidateIndexKeys {
     const agentKey = digest(`${agentIdentity.pluginId}\u0000${agentIdentity.localId}`);
     const sourceKey = digest(createCanonicalJsonSigningInput(source));
     return Object.freeze({
         agentKey,
         sourceKey,
-        runtimeGeneration,
+        sourceCustody,
     });
+}
+
+function parseSourceCustody(value: unknown): PluginSourceCustodyV1 | null | undefined {
+    if (value === null) return null;
+    const parsed = PluginSourceCustodyV1Schema.safeParse(value);
+    return parsed.success ? parsed.data : undefined;
+}
+
+function sourceCustodyEqual(
+    left: PluginSourceCustodyV1 | null,
+    right: PluginSourceCustodyV1 | null,
+): boolean {
+    return left === null || right === null
+        ? left === right
+        : pluginSourceCustodyV1Equal(left, right);
 }
 
 function candidateIndexRoot(activeServerDir: string): string {
@@ -297,15 +318,23 @@ function candidateIndexRoot(activeServerDir: string): string {
     );
 }
 
+/**
+ * A listing that includes the Agent's internal threads is a different corpus,
+ * so it keeps its own index beside the top-level one: each index's pages,
+ * cursors and totals describe exactly one listing. It lives inside the source
+ * directory, so retiring the source retires both.
+ */
 function resolvePaths(
     activeServerDir: string,
     keys: CandidateIndexKeys,
+    listing: 'topLevel' | 'withThreads' = 'topLevel',
 ): Readonly<{ directory: string; indexPath: string; lockPath: string }> {
-    const directory = join(
+    const sourceDirectory = join(
         candidateIndexRoot(activeServerDir),
         keys.agentKey,
         keys.sourceKey,
     );
+    const directory = listing === 'withThreads' ? join(sourceDirectory, 'threads') : sourceDirectory;
     return Object.freeze({
         directory,
         indexPath: join(directory, 'index.json'),
@@ -402,7 +431,7 @@ export async function reconcileExternalSessionCandidateIndexes(params: Readonly<
             await retireExternalSessionCandidateIndexAtPaths(resolvePaths(params.activeServerDir, {
                 agentKey,
                 sourceKey,
-                runtimeGeneration: null,
+                sourceCustody: null,
             }), params.signal);
         }
     }
@@ -468,6 +497,10 @@ function sanitizeCandidate(value: ExternalSessionCandidatesPage['candidates'][nu
             && (typeof value.title !== 'string' || value.title.length === 0)
         )
     ) return null;
+    const parsedThread = value.thread === undefined
+        ? undefined
+        : ExternalSessionCandidateThreadV1Schema.safeParse(value.thread);
+    if (parsedThread !== undefined && !parsedThread.success) return null;
     const rawLinkData = Reflect.get(value as object, 'linkData');
     const parsedLinkData = rawLinkData === undefined ? undefined : readStrictJson(rawLinkData);
     const rawCandidateIndexState = Reflect.get(value as object, 'candidateIndexState');
@@ -498,6 +531,7 @@ function sanitizeCandidate(value: ExternalSessionCandidatesPage['candidates'][nu
         ...(value.createdAtMs === undefined ? {} : { createdAtMs: value.createdAtMs }),
         ...(value.archived === undefined ? {} : { archived: value.archived }),
         ...(value.title === undefined ? {} : { title: value.title }),
+        ...(parsedThread === undefined ? {} : { thread: parsedThread.data }),
         ...(linkData === undefined ? {} : { linkData }),
         ...(candidateIndexState === undefined ? {} : { candidateIndexState }),
     });
@@ -555,6 +589,8 @@ export async function hydrateExternalSessionCandidateThroughAgentSource(params: 
         limit: 1,
         searchTerm: params.candidate.remoteSessionId,
         searchMode: 'fast',
+        // An admitted row may be one of the Agent's internal threads.
+        includeThreads: true,
         ...(params.candidate.candidateIndexState === undefined
             ? {}
             : {
@@ -588,6 +624,7 @@ export async function hydrateExternalSessionCandidateThroughAgentSource(params: 
             limit: 1,
             searchTerm: params.candidate.remoteSessionId,
             searchMode: 'fast',
+            includeThreads: true,
             ...(params.candidate.candidateIndexState === undefined
                 ? {}
                 : {
@@ -743,6 +780,7 @@ function parseStoredCandidate(value: unknown): StoredCandidate | null {
         'createdAtMs',
         'archived',
         'title',
+        'thread',
         'linkData',
         'candidateIndexState',
     ].filter((key) => record[key] !== undefined);
@@ -810,6 +848,7 @@ function parsePersistedCompleteCandidate(
         'createdAtMs',
         'archived',
         'title',
+        'thread',
         'linkData',
         'candidateIndexState',
     ].filter((key) => record[key] !== undefined);
@@ -939,6 +978,7 @@ function parseIndexRecord(
         const value = JSON.parse(raw) as unknown;
         if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
         const record = value as Record<string, unknown>;
+        const sourceCustody = parseSourceCustody(record.sourceCustody);
         const optionalKeys = [
             'total',
             'head',
@@ -955,7 +995,7 @@ function parseIndexRecord(
             'state',
             'agentKey',
             'sourceKey',
-            'runtimeGeneration',
+            'sourceCustody',
             'startToken',
             'scanCursor',
             'scanned',
@@ -968,8 +1008,9 @@ function parseIndexRecord(
             || (record.state !== 'building' && record.state !== 'complete')
             || record.agentKey !== expected.agentKey
             || record.sourceKey !== expected.sourceKey
-            || (record.runtimeGeneration !== null && typeof record.runtimeGeneration !== 'string')
-            || record.runtimeGeneration !== expected.runtimeGeneration
+            || sourceCustody === undefined
+            || sourceCustody === null
+            || !sourceCustodyEqual(sourceCustody, expected.sourceCustody)
             || typeof record.startToken !== 'string'
             || record.startToken.length === 0
             || (record.scanCursor !== null && typeof record.scanCursor !== 'string')
@@ -1083,7 +1124,7 @@ function parseIndexRecord(
             state: record.state,
             agentKey: expected.agentKey,
             sourceKey: expected.sourceKey,
-            runtimeGeneration: expected.runtimeGeneration,
+            sourceCustody: expected.sourceCustody,
             startToken: record.startToken,
             ...(head === undefined ? {} : { head }),
             scanCursor: record.scanCursor as string | null,
@@ -1137,7 +1178,7 @@ type CompleteCandidateIndexHeader = Readonly<{
     state: 'complete';
     agentKey: string;
     sourceKey: string;
-    runtimeGeneration: string | null;
+    sourceCustody: PluginSourceCustodyV1 | null;
     startToken: string;
     scanCursor: null;
     scanned: number;
@@ -1173,7 +1214,7 @@ function serializeCompleteIndexRecord(
         state: 'complete',
         agentKey: record.agentKey,
         sourceKey: record.sourceKey,
-        runtimeGeneration: record.runtimeGeneration,
+        sourceCustody: record.sourceCustody,
         startToken: record.startToken,
         scanCursor: null,
         scanned: record.scanned,
@@ -1255,13 +1296,14 @@ function parseCompleteIndexHeader(
         const value = JSON.parse(raw) as unknown;
         if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
         const record = value as Record<string, unknown>;
+        const sourceCustody = parseSourceCustody(record.sourceCustody);
         const optionalKeys = ['total'].filter((key) => record[key] !== undefined);
         if (!isExactKeys(record, [
             'v',
             'state',
             'agentKey',
             'sourceKey',
-            'runtimeGeneration',
+            'sourceCustody',
             'startToken',
             'scanCursor',
             'scanned',
@@ -1277,8 +1319,9 @@ function parseCompleteIndexHeader(
             || record.state !== 'complete'
             || record.agentKey !== expected.agentKey
             || record.sourceKey !== expected.sourceKey
-            || (record.runtimeGeneration !== null && typeof record.runtimeGeneration !== 'string')
-            || record.runtimeGeneration !== expected.runtimeGeneration
+            || sourceCustody === undefined
+            || sourceCustody === null
+            || !sourceCustodyEqual(sourceCustody, expected.sourceCustody)
             || typeof record.startToken !== 'string'
             || record.startToken.length === 0
             || record.scanCursor !== null
@@ -1299,7 +1342,7 @@ function parseCompleteIndexHeader(
             state: 'complete',
             agentKey: expected.agentKey,
             sourceKey: expected.sourceKey,
-            runtimeGeneration: expected.runtimeGeneration,
+            sourceCustody: expected.sourceCustody,
             startToken: record.startToken,
             scanCursor: null,
             scanned: record.scanned as number,
@@ -1535,6 +1578,10 @@ function candidateHeadAnchorToken(anchor: readonly string[]): string {
     return digest(createCanonicalJsonSigningInput(anchor));
 }
 
+function candidateContentDigest(candidate: StoredCandidate): string {
+    return digest(createCanonicalJsonSigningInput(candidate));
+}
+
 /**
  * Whether an in-progress crawl's anchor still holds against a freshly read first
  * chunk.
@@ -1546,11 +1593,11 @@ function candidateHeadAnchorToken(anchor: readonly string[]): string {
  * keeps its cursor, its crawled rows and its corpus chain, and the arrival is
  * served by the generation that follows this one.
  *
- * A row the anchor DID hold whose content moved is the opposite fact, and still
- * restarts the generation. So does an anchor that is no longer visible at all:
- * once every anchored row has left the head window there is nothing left to
- * check the crawl against, so the build fails closed rather than absorbing
- * without evidence.
+ * A row whose identity remains in the head but whose content changed has moved
+ * ahead under the newest-first precedence contract. It is therefore absorbed
+ * alongside arrivals; validation starts at the first identity+content match.
+ * If no anchored row remains visible, there is no watermark and the build still
+ * fails closed rather than absorbing without evidence.
  */
 function candidateHeadAnchorHolds(
     anchor: readonly string[],
@@ -1564,7 +1611,7 @@ function candidateHeadAnchorHolds(
     for (const entry of fresh) {
         const anchoredContent = anchoredContentByIdentity.get(entry.slice(0, 64));
         if (anchoredContent === undefined) continue;
-        if (anchoredContent !== entry.slice(64)) return false;
+        if (anchoredContent !== entry.slice(64)) continue;
         anchoredRowsStillVisible += 1;
     }
     return anchoredRowsStillVisible > 0;
@@ -1606,9 +1653,12 @@ function countCandidatesAheadOfAnchor(
     freshCandidates: readonly StoredCandidate[],
 ): number {
     if (record.state !== 'building' || !record.head) return 0;
-    const anchoredIdentities = new Set(record.head.map((entry) => entry.slice(0, 64)));
+    const anchoredContentByIdentity = new Map(
+        record.head.map((entry) => [entry.slice(0, 64), entry.slice(64)] as const),
+    );
     const firstAnchored = freshCandidates.findIndex(
-        (candidate) => anchoredIdentities.has(candidateIdentity(candidate)),
+        (candidate) => anchoredContentByIdentity.get(candidateIdentity(candidate))
+            === candidateContentDigest(candidate),
     );
     return firstAnchored < 0 ? 0 : firstAnchored;
 }
@@ -1700,7 +1750,7 @@ function createBuildingRecord(
         state: 'building',
         agentKey: keys.agentKey,
         sourceKey: keys.sourceKey,
-        runtimeGeneration: keys.runtimeGeneration,
+        sourceCustody: keys.sourceCustody,
         startToken: candidateHeadAnchorToken(head),
         head,
         scanCursor: chunk.nextCursor,
@@ -1722,6 +1772,102 @@ function createBuildingRecord(
 type CandidateContinuationRead =
     | Readonly<{ kind: 'chunk'; page: ExternalSessionCandidatesPage }>
     | Readonly<{ kind: 'rebuilt'; response: ExternalSessionCandidatesPage }>;
+
+type CandidateHeadRefresh = Readonly<{
+    watermarkFound: boolean;
+    /** Fresh rows strictly ahead of the first identity+content match. */
+    freshHead: readonly StoredCandidate[];
+}>;
+
+/**
+ * Walks only the newest portion of a completed generation until an indexed row
+ * is observed with both the same identity and the same content. Rows before that
+ * watermark are the only rows eligible for the cheap generation replacement.
+ * A source that never reaches a watermark cannot be merged safely and must
+ * rebuild through the ordinary bounded crawl.
+ */
+async function readCandidateHeadThroughWatermark(params: Readonly<{
+    existing: CandidateIndexRecord;
+    initialPage: ExternalSessionCandidatesPage;
+    listCandidates: (request: Readonly<{
+        cursor?: string;
+        limit: number;
+        readCandidateIndexState?(candidate: Readonly<{
+            remoteSessionId: string;
+            linkData?: StrictJsonObject;
+        }>): StrictJsonObject | undefined;
+    }>) => Promise<ExternalSessionCandidatesPage>;
+    readCandidateIndexState: (candidate: Readonly<{
+        remoteSessionId: string;
+        linkData?: StrictJsonObject;
+    }>) => StrictJsonObject | undefined;
+}>): Promise<CandidateHeadRefresh> {
+    const indexedContentByIdentity = new Map(
+        params.existing.candidates.map((candidate) => [
+            candidateIdentity(candidate),
+            candidateContentDigest(candidate),
+        ] as const),
+    );
+    const freshHead: StoredCandidate[] = [];
+    let page = params.initialPage;
+    const seenCursors = new Set<string>();
+    for (let call = 0; call <= INDEX_CONTINUATION_CALL_LIMIT; call += 1) {
+        const chunk = readPreparedChunk(page);
+        for (const candidate of chunk.candidates) {
+            const indexedDigest = indexedContentByIdentity.get(candidateIdentity(candidate));
+            if (indexedDigest !== undefined && indexedDigest === candidateContentDigest(candidate)) {
+                return Object.freeze({
+                    watermarkFound: true,
+                    freshHead: Object.freeze(freshHead),
+                });
+            }
+            freshHead.push(candidate);
+        }
+        if (!chunk.nextCursor) break;
+        if (seenCursors.has(chunk.nextCursor)) break;
+        seenCursors.add(chunk.nextCursor);
+        page = await params.listCandidates({
+            cursor: chunk.nextCursor,
+            limit: INDEX_SCAN_CHUNK_LIMIT,
+            readCandidateIndexState: params.readCandidateIndexState,
+        });
+        if (!page.preparation) break;
+    }
+    return Object.freeze({
+        watermarkFound: false,
+        freshHead: Object.freeze(freshHead),
+    });
+}
+
+function replaceCompletedCandidateHead(
+    existing: CandidateIndexRecord,
+    freshHead: readonly StoredCandidate[],
+    startToken: string,
+): CandidateIndexRecord {
+    if (existing.state !== 'complete' || !existing.indexGeneration) {
+        throw new Error('Candidate head refresh requires a completed index');
+    }
+    const identitiesAhead = new Set(freshHead.map(candidateIdentity));
+    const merged = sortCandidates([
+        ...existing.candidates.filter((candidate) => !identitiesAhead.has(candidateIdentity(candidate))),
+        ...freshHead,
+    ]);
+    const corpus = extendCorpusDigest(emptyCorpusDigest(), merged);
+    return Object.freeze({
+        v: 2,
+        state: 'complete',
+        agentKey: existing.agentKey,
+        sourceKey: existing.sourceKey,
+        sourceCustody: existing.sourceCustody,
+        startToken,
+        scanCursor: null,
+        scanned: existing.scanned,
+        ...(existing.total === undefined ? {} : { total: existing.total }),
+        corpus,
+        indexGeneration: computeIndexGeneration(corpus, merged),
+        candidates: merged,
+    });
+}
 
 function sourceInvalid(message: string): ExternalSessionProviderFailureError {
     return new ExternalSessionProviderFailureError({
@@ -1828,13 +1974,14 @@ function decodeIndexCursor(value: string): CandidateIndexCursor | null {
         ) as unknown;
         if (!decoded || typeof decoded !== 'object' || Array.isArray(decoded)) return null;
         const record = decoded as Record<string, unknown>;
+        const sourceCustody = parseSourceCustody(record.sourceCustody);
         if (
             !isExactKeys(record, [
                 'v',
                 'kind',
                 'agentKey',
                 'sourceKey',
-                'runtimeGeneration',
+                'sourceCustody',
                 'indexGeneration',
                 'offset',
                 'byteOffset',
@@ -1845,7 +1992,8 @@ function decodeIndexCursor(value: string): CandidateIndexCursor | null {
             || record.kind !== 'external_session_candidate_index'
             || typeof record.agentKey !== 'string'
             || typeof record.sourceKey !== 'string'
-            || (record.runtimeGeneration !== null && typeof record.runtimeGeneration !== 'string')
+            || sourceCustody === undefined
+            || sourceCustody === null
             || typeof record.indexGeneration !== 'string'
             || !/^[a-f0-9]{64}$/.test(record.indexGeneration)
             || !Number.isSafeInteger(record.offset)
@@ -1858,7 +2006,10 @@ function decodeIndexCursor(value: string): CandidateIndexCursor | null {
             || typeof record.pageDigest !== 'string'
             || !/^[a-f0-9]{64}$/.test(record.pageDigest)
         ) return null;
-        return record as CandidateIndexCursor;
+        return Object.freeze({
+            ...record,
+            sourceCustody,
+        }) as CandidateIndexCursor;
     } catch {
         return null;
     }
@@ -1965,7 +2116,7 @@ async function serveIndexPage(
             kind: 'external_session_candidate_index',
             agentKey: record.agentKey,
             sourceKey: record.sourceKey,
-            runtimeGeneration: record.runtimeGeneration,
+            sourceCustody: record.sourceCustody,
             indexGeneration: record.indexGeneration,
             offset: nextOffset,
             byteOffset,
@@ -2023,12 +2174,14 @@ export async function executeExternalSessionCandidateQuery(params: Readonly<{
     maxBytes?: number;
     searchTerm?: string;
     searchMode?: 'fast' | 'full';
+    /** List the Agent's internal threads too; served from their own index (see `resolvePaths`). */
+    includeThreads?: boolean;
     /**
-     * Immutable generation id of the Agent runtime that will serve this query.
-     * A persisted index is only reused by the generation that built it; see
-     * `CandidateIndexRecord.runtimeGeneration`.
+     * Durable source custody of the Agent runtime that will serve this query.
+     * A persisted index is only reused by equivalent custody; see
+     * `CandidateIndexRecord.sourceCustody`.
      */
-    agentRuntimeGeneration?: string | null;
+    agentSourceCustody: PluginSourceCustodyV1;
     /**
      * The caller's cancellation. It reaches the Agent leaf through the two
      * request closures below and fences candidate-index lock admission here.
@@ -2039,6 +2192,7 @@ export async function executeExternalSessionCandidateQuery(params: Readonly<{
         limit: number;
         searchTerm?: string;
         searchMode?: 'fast' | 'full';
+        includeThreads?: boolean;
         readCandidateIndexState?(candidate: Readonly<{
             remoteSessionId: string;
             linkData?: StrictJsonObject;
@@ -2075,9 +2229,12 @@ export async function executeExternalSessionCandidateQuery(params: Readonly<{
     const keys = resolveKeys(
         params.agentIdentity,
         params.source,
-        params.agentRuntimeGeneration ?? null,
+        params.agentSourceCustody,
     );
-    const paths = resolvePaths(params.activeServerDir, keys);
+    const paths = resolvePaths(params.activeServerDir, keys, params.includeThreads ? 'withThreads' : 'topLevel');
+    const listCandidates: typeof params.listCandidates = params.includeThreads
+        ? (request) => params.listCandidates({ ...request, includeThreads: true })
+        : (request) => params.listCandidates(request);
     const indexCursor = params.cursor ? decodeIndexCursor(params.cursor) : null;
     if (params.cursor && params.cursor.startsWith(INDEX_CURSOR_PREFIX) && !indexCursor) invalidCursor();
 
@@ -2110,7 +2267,7 @@ export async function executeExternalSessionCandidateQuery(params: Readonly<{
     };
 
     if (params.searchTerm || (params.cursor && !indexCursor)) {
-        return publishCandidatePage(await params.listCandidates({
+        return publishCandidatePage(await listCandidates({
             ...(params.cursor ? { cursor: params.cursor } : {}),
             limit,
             ...(params.searchTerm ? { searchTerm: params.searchTerm } : {}),
@@ -2134,7 +2291,7 @@ export async function executeExternalSessionCandidateQuery(params: Readonly<{
                 || parsedHeader.indexGeneration !== indexCursor.indexGeneration
                 || parsedHeader.agentKey !== indexCursor.agentKey
                 || parsedHeader.sourceKey !== indexCursor.sourceKey
-                || parsedHeader.runtimeGeneration !== indexCursor.runtimeGeneration
+                || !sourceCustodyEqual(parsedHeader.sourceCustody, indexCursor.sourceCustody)
                 || indexCursor.offset >= MAX_INDEX_CANDIDATES
             ) invalidCursor();
             header = parsedHeader;
@@ -2188,7 +2345,7 @@ export async function executeExternalSessionCandidateQuery(params: Readonly<{
                     kind: 'external_session_candidate_index',
                     agentKey: header.agentKey,
                     sourceKey: header.sourceKey,
-                    runtimeGeneration: header.runtimeGeneration,
+                    sourceCustody: header.sourceCustody,
                     indexGeneration: header.indexGeneration,
                     offset: indexCursor.offset + selectedCount,
                     byteOffset: nextByteOffset,
@@ -2214,7 +2371,7 @@ export async function executeExternalSessionCandidateQuery(params: Readonly<{
             current?.indexGeneration === header.indexGeneration
             && current.agentKey === header.agentKey
             && current.sourceKey === header.sourceKey
-            && current.runtimeGeneration === header.runtimeGeneration
+            && sourceCustodyEqual(current.sourceCustody, header.sourceCustody)
         );
         if (bodyCorrupt) {
             await withCandidateIndexLock(paths.lockPath, params.signal, async () => {
@@ -2249,7 +2406,7 @@ export async function executeExternalSessionCandidateQuery(params: Readonly<{
         });
     }
 
-    const initialPage = await params.listCandidates({
+    const initialPage = await listCandidates({
         limit: Math.min(INDEX_SCAN_CHUNK_LIMIT, limit),
         readCandidateIndexState,
     });
@@ -2395,7 +2552,7 @@ export async function executeExternalSessionCandidateQuery(params: Readonly<{
             try {
                 return {
                     kind: 'chunk',
-                    page: await params.listCandidates({
+                    page: await listCandidates({
                         cursor,
                         limit: INDEX_SCAN_CHUNK_LIMIT,
                         readCandidateIndexState,
@@ -2462,7 +2619,7 @@ export async function executeExternalSessionCandidateQuery(params: Readonly<{
                 state: 'complete',
                 agentKey: record.agentKey,
                 sourceKey: record.sourceKey,
-                runtimeGeneration: record.runtimeGeneration,
+                sourceCustody: record.sourceCustody,
                 startToken: record.startToken,
                 scanCursor: null,
                 scanned: record.scanned,
@@ -2611,6 +2768,36 @@ export async function executeExternalSessionCandidateQuery(params: Readonly<{
             );
         }
 
+        if (existing.state === 'complete') {
+            const headRefresh = await readCandidateHeadThroughWatermark({
+                existing,
+                initialPage,
+                listCandidates,
+                readCandidateIndexState,
+            });
+            if (!headRefresh.watermarkFound) {
+                return await rebuildAndReport(existing);
+            }
+            if (headRefresh.freshHead.length > 0) {
+                const refreshed = replaceCompletedCandidateHead(
+                    existing,
+                    headRefresh.freshHead,
+                    candidateHeadAnchorToken(initialAnchor),
+                );
+                await writeIndexRecord(paths.indexPath, refreshed);
+                return await serveIndexPage(
+                    refreshed,
+                    0,
+                    limit,
+                    maxBytes,
+                    params.hydrateCandidate,
+                    async () => {
+                        await unlink(paths.indexPath).catch(() => undefined);
+                    },
+                );
+            }
+        }
+
         if (!candidateIndexAnchorHolds(existing, initialAnchor)) {
             return await rebuildAndReport(existing);
         }
@@ -2645,7 +2832,7 @@ export async function executeExternalSessionCandidateQuery(params: Readonly<{
                     state: 'building',
                     agentKey: existing.agentKey,
                     sourceKey: existing.sourceKey,
-                    runtimeGeneration: existing.runtimeGeneration,
+                    sourceCustody: existing.sourceCustody,
                     startToken: existing.startToken,
                     ...(existing.head === undefined ? {} : { head: existing.head }),
                     scanCursor,

@@ -1,5 +1,6 @@
 import type {
   AgentSessionRuntimeEvent,
+  AgentSessionStartupInstructionsV1,
   SessionInputCausalPermissionAuthorityV1,
 } from '@happier-dev/protocol';
 import type { RuntimeConfigUpdateOutcomeV1 } from '@happier-dev/agents';
@@ -34,6 +35,8 @@ export type RuntimeTurnSessionIdentity = Readonly<{
 /** One immutable read of the active turn facts that must remain causally paired. */
 export type RuntimeActiveTurnPermissionWitness = Readonly<{
   turnId: string;
+  /** Host-computed cause depth, paired with this exact turn (never plugin input). */
+  workDepth?: number;
   causalPermissionAuthority?: SessionInputCausalPermissionAuthorityV1;
 }>;
 
@@ -43,6 +46,8 @@ export type RuntimeTurnConfigUpdate = Readonly<{
   /** Host-private exact Provider binding; public callers must use session.model.set. */
   providerBinding?: AgentSessionProviderBinding;
   permissionMode?: string | null;
+  /** Host-resolved role ceiling, independent of permission intent. */
+  workspaceWrites?: 'allow' | 'deny';
   configOption?: Readonly<{
     id: string;
     value: string | number | boolean | null;
@@ -50,12 +55,13 @@ export type RuntimeTurnConfigUpdate = Readonly<{
 }>;
 
 export type RuntimeTurnSessionOpenIntent =
+  Readonly<{ startupInstructions?: AgentSessionStartupInstructionsV1 | null }> & (
   | Readonly<{ kind: 'create' }>
   | Readonly<{
     kind: 'resume';
     providerSessionId: string;
     importHistory: boolean;
-  }>;
+  }>);
 
 export type RuntimeTurnCompletionOptions = Readonly<{
   timeoutMs?: number | null;
@@ -145,6 +151,8 @@ export type RuntimeTurnDisposeReason = NonNullable<
 >;
 
 export type RuntimeTurnOperations = Readonly<{
+  /** Full plan supplied by the host on this native open, not provider-input acceptance. */
+  readSessionStartupInstructions?: () => AgentSessionStartupInstructionsV1 | null;
   /** Existing native runtime scope, including plugin retirement; never a transport-request lifetime. */
   getRuntimeLifetimeSignal?: () => AbortSignal | null;
   permissionCapability?: RuntimePermissionCapability;
@@ -178,6 +186,12 @@ export type RuntimeTurnOperations = Readonly<{
   /** Exact local input identity that admitted the currently active parent turn. */
   readActiveTurnInputId?: () => string | null;
   readActiveTurnAdmissionWitness?: () => AgentInvocationTurnAdmissionWitness | null;
+  /**
+   * Prepare the live, process-local metadata required by the Agent's existing
+   * provider CLI attach surface. This is intentionally transient: durable
+   * Session identity publication remains owned by provider acceptance.
+   */
+  prepareProviderCliAttach?: AgentSessionRuntime['prepareProviderCliAttach'];
   readSessionIdentity: () => RuntimeTurnSessionIdentity;
   updateSessionRuntimeConfig: (update: RuntimeTurnConfigUpdate) => Promise<RuntimeConfigUpdateOutcomeV1 | void>;
   resetOrDisposeRuntime: (

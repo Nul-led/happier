@@ -185,7 +185,7 @@ const request = {
     },
     linkGeneration: 'link-1',
     sourceGeneration: 'source-1',
-    contributionGeneration: 'contribution-1',
+    sourceCustody: { kind: 'development', registeredRootId: 'contribution-1' },
   },
   plan: 'takeover',
   targetStorageMode: 'persisted',
@@ -1669,6 +1669,14 @@ describe('external session operation record store integrity', () => {
     }
   });
 
+  it('retains takeover terminal preferences across durable record reloads', async () => {
+    const activeServerDir = await createRoot();
+    const terminal = { mode: 'tmux' as const, tmux: { sessionName: 'takeover', isolated: true, tmpDir: '/tmp/takeover-tmux' } };
+    const record = { ...operationRecord(), request: { ...request, terminal } };
+    await writeExternalSessionOperationRecord(activeServerDir, record);
+    await expect(readExternalSessionOperationRecord(activeServerDir, record.operationId)).resolves.toEqual(record);
+  });
+
   it('resolves full records and live receipts by durable key plus stable intent, then mints a non-aliasing id at expiry', async () => {
     const activeServerDir = await createRoot();
     const completed = completedExternalLinkedOperationRecord();
@@ -1702,7 +1710,7 @@ describe('external session operation record store integrity', () => {
     }
     const {
       sourceGeneration: _sourceGeneration,
-      contributionGeneration: _contributionGeneration,
+      sourceCustody: _sourceCustody,
       ...publicSource
     } = completed.request.source;
     const publicRetryIntent = {
@@ -1719,6 +1727,15 @@ describe('external session operation record store integrity', () => {
       kind: 'terminal_receipt',
       receipt: compacted.receipt,
     });
+    await expect(resolveExternalSessionOperationStartAdmission({
+      activeServerDir,
+      durableIdempotencyKey: completed.request.idempotencyKey,
+      intent: {
+        ...publicRetryIntent,
+        terminal: { mode: 'tmux', tmux: { sessionName: 'takeover', isolated: true, tmpDir: null } },
+      },
+      nowMs: compacted.receipt.expiresAtMs - 1,
+    })).resolves.toEqual({ kind: 'conflict' });
     await expect(resolveExternalSessionOperationStartAdmission({
       activeServerDir,
       durableIdempotencyKey: completed.request.idempotencyKey,

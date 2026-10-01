@@ -44,6 +44,11 @@ export async function reconcileTeamCredentialDirectMaterial(input: Readonly<{
   upsert(input: TeamCredentialDirectMaterialUpsertRequestV1['items'][number]): Promise<
     Readonly<{ ok: true }> | Readonly<{ ok: false; reason: string }>
   >;
+  withdrawPublication(input: Readonly<{
+    sourceMemberKey: string;
+    expectedResourceRevision: number;
+    expectedPublishedSourceVersion: string;
+  }>): Promise<Readonly<{ ok: boolean }>>;
   signal?: AbortSignal;
 }>): Promise<TeamCredentialDirectMaterialReconcileResult> {
   let cursor: string | undefined;
@@ -65,22 +70,51 @@ export async function reconcileTeamCredentialDirectMaterial(input: Readonly<{
       ) {
         return { ok: false, reason: 'source_changed', prepared };
       }
-      const sourceSnapshot = await input.resolveSourceSnapshot({
-        source: page.source,
-        sourceMember: page.sourceMember,
-        sourceCredentialIncarnation: page.sourceCredentialIncarnation,
-        ...(input.signal ? { signal: input.signal } : {}),
-      });
-      if (!sourceSnapshot) return { ok: false, reason: 'source_unavailable', prepared };
+      let publishedSourceVersion = page.publishedSourceVersion;
+      const withdrawPublication = async () => {
+        input.signal?.throwIfAborted();
+        if (publishedSourceVersion === null) return;
+        await input.withdrawPublication({
+          sourceMemberKey: input.sourceMemberKey,
+          expectedResourceRevision: page.resourceRevision,
+          expectedPublishedSourceVersion: publishedSourceVersion,
+        });
+      };
+      let sourceSnapshot: TeamCredentialSourceSnapshot | null;
+      try {
+        sourceSnapshot = await input.resolveSourceSnapshot({
+          source: page.source,
+          sourceMember: page.sourceMember,
+          sourceCredentialIncarnation: page.sourceCredentialIncarnation,
+          ...(input.signal ? { signal: input.signal } : {}),
+        });
+      } catch {
+        await withdrawPublication();
+        return { ok: false, reason: 'source_unavailable', prepared };
+      }
+      if (!sourceSnapshot) {
+        await withdrawPublication();
+        return { ok: false, reason: 'source_unavailable', prepared };
+      }
       if (computeTeamCredentialSourceMemberKeyV1(sourceSnapshot.currentness.sourceMember) !== input.sourceMemberKey) {
+        return { ok: false, reason: 'source_changed', prepared };
+      }
+      if (!await sourceSnapshot.currentness.isCurrent()) {
+        await withdrawPublication();
         return { ok: false, reason: 'source_changed', prepared };
       }
       // The Home advances the resource's published source version on the first
       // tuple this run stores, so the remaining recipients of the page are
       // fenced against the version this run published rather than the one the
       // page was captured at. Every other precondition stays exact.
-      let publishedSourceVersion = page.publishedSourceVersion;
       for (const recipient of page.recipients) {
+        // A missing/stale census, not a whole-audience repair (child 06
+        // L10D-R13): a tuple the Home reports current for the version this
+        // snapshot would produce is already delivered, and re-sealing it would
+        // only publish a Team change that restarts this reconciliation.
+        if (recipient.storedTupleCurrent && page.publishedSourceVersion === sourceSnapshot.currentness.sourceVersion) {
+          continue;
+        }
         const result = await produceTeamCredentialDirectMaterial({
           sourceSnapshot,
           expected: {
@@ -125,7 +159,13 @@ export async function reconcileTeamCredentialDirectMaterial(input: Readonly<{
           upsert: input.upsert,
           ...(input.signal ? { signal: input.signal } : {}),
         });
-        if (!result.ok) return { ...result, prepared };
+        if (!result.ok) {
+          if (result.reason !== 'cancelled' && (
+            publishedSourceVersion !== sourceSnapshot.currentness.sourceVersion
+            || !await sourceSnapshot.currentness.isCurrent()
+          )) await withdrawPublication();
+          return { ...result, prepared };
+        }
         publishedSourceVersion = result.sourceVersion;
         prepared += 1;
       }

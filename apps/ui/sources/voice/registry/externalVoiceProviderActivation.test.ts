@@ -69,22 +69,16 @@ const declaration = requireConversationDeclaration(PluginContributesV2Schema.par
         interruptionPolicy: 'provider_immediate',
       },
     },
-    client: { artifactId: 'voice-runtime-web', modulePath: './voiceRuntime', exportName: 'activate' },
+    client: { artifactId: 'voice-runtime-web', exportName: 'activate' },
   }],
 }).voiceProviders[0]!);
 
 const identity: PluginReactNativeBundleCacheIdentity = Object.freeze({
   pluginId: 'acme.synthetic-voice',
-  contributionId: declaration.client.artifactId,
+  contributionId: declaration.id,
+  artifactId: declaration.client.artifactId,
   artifactDigest: 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
-  hostAppVersion: '2.0.0',
-  hostUiApiVersion: '1.0.0',
-  reactVersion: '19.0.0',
-  reactNativeVersion: '0.83.4',
   platform: 'web',
-  channel: 'internal',
-  nativeCapabilitiesDigest: 'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
-  projectionGeneration: 12,
 });
 
 function createProviderLeaf(input?: Readonly<{ setInputMuted?(muted: boolean): Promise<void> | void }>) {
@@ -155,6 +149,7 @@ describe('external Voice provider activation', () => {
     const hostLease = createBundledConversationRuntimeHostLease();
     const scope = createExternalVoiceProviderActivationScope({
       pluginId,
+      occurrenceId: `${pluginId}-activation-occurrence`,
       declarations: [agentRealtimeDeclaration],
       hostPlatform: 'web',
     });
@@ -233,7 +228,6 @@ describe('external Voice provider activation', () => {
       identity: exactIdentity,
       hostPlatform: 'web',
       phase: 'connection',
-      generation: '12',
       signal: new AbortController().signal,
       isCurrent: () => true,
     });
@@ -245,7 +239,6 @@ describe('external Voice provider activation', () => {
       identity: exactIdentity,
       hostPlatform: 'web',
       phase: 'prepare',
-      generation: '12',
       signal: new AbortController().signal,
       isCurrent: () => true,
     })).toBeNull();
@@ -255,7 +248,6 @@ describe('external Voice provider activation', () => {
       identity: { ...exactIdentity, contributionId: 'other-provider' },
       hostPlatform: 'web',
       phase: 'connection',
-      generation: '12',
       signal: new AbortController().signal,
       isCurrent: () => true,
     })).toBeNull();
@@ -712,7 +704,7 @@ describe('external Voice provider activation', () => {
     const hostLease = createBundledConversationRuntimeHostLease();
     onTestFinished(() => hostLease.revoke());
     const scope = createExternalVoiceProviderActivationScope({
-      pluginId: identity.pluginId, declarations: [declaration], hostPlatform: 'web',
+      pluginId: identity.pluginId, occurrenceId: 'acme-synthetic-voice-activation-occurrence', declarations: [declaration], hostPlatform: 'web',
     });
     Reflect.apply(scope.api.voiceProviders.register, undefined, ['conversation', {
       engineKind: 'realtime', async start() {}, async stop() {}, async toggle() {},
@@ -727,7 +719,7 @@ describe('external Voice provider activation', () => {
 
   it('exposes only the declaration-scoped Voice registration API to client-realm modules', async () => {
     const scope = createExternalVoiceProviderActivationScope({
-      pluginId: identity.pluginId, declarations: [declaration], hostPlatform: 'web',
+      pluginId: identity.pluginId, occurrenceId: 'acme-synthetic-voice-activation-occurrence', declarations: [declaration], hostPlatform: 'web',
     });
     expect(Object.keys(scope.api)).toEqual(['voiceProviders']);
     expect(Reflect.get(scope.api, 'actions')).toBeUndefined();
@@ -746,6 +738,7 @@ describe('external Voice provider activation', () => {
     }).voiceProviders[0]!);
     const scope = createExternalVoiceProviderActivationScope({
       pluginId: 'happier.voice.elevenlabs',
+      occurrenceId: 'happier-voice-elevenlabs-activation-occurrence',
       declarations: [copiedDeclaration],
       hostPlatform: 'web',
     });
@@ -775,7 +768,7 @@ describe('external Voice provider activation', () => {
     const revokedHost = createBundledConversationRuntimeHostLease();
     revokedHost.revoke();
     const scope = createExternalVoiceProviderActivationScope({
-      pluginId: identity.pluginId, declarations: [declaration], hostPlatform: 'web',
+      pluginId: identity.pluginId, occurrenceId: 'acme-synthetic-voice-activation-occurrence', declarations: [declaration], hostPlatform: 'web',
     });
     scope.api.voiceProviders.register('conversation', createProviderLeaf());
     await expect(scope.commit()).rejects.toThrow(/voice_runtime_host_unavailable/u);
@@ -788,7 +781,7 @@ describe('external Voice provider activation', () => {
     const replacementDispose = vi.fn(async () => {});
     const runtime = { ...createProviderLeaf(), dispose: capturedDispose };
     const scope = createExternalVoiceProviderActivationScope({
-      pluginId: identity.pluginId, declarations: [declaration], hostPlatform: 'web',
+      pluginId: identity.pluginId, occurrenceId: 'acme-synthetic-voice-activation-occurrence', declarations: [declaration], hostPlatform: 'web',
     });
     scope.api.voiceProviders.register('conversation', runtime);
     await scope.commit();
@@ -813,6 +806,7 @@ describe('external Voice provider activation', () => {
     const hostLease = createBundledConversationRuntimeHostLease();
     const scope = createExternalVoiceProviderActivationScope({
       pluginId: identity.pluginId,
+      occurrenceId: 'acme-synthetic-voice-activation-occurrence',
       declarations: [declaration, secondDeclaration],
       hostPlatform: 'web',
     });
@@ -844,6 +838,7 @@ describe('external Voice provider activation', () => {
     const hostLease = createBundledConversationRuntimeHostLease();
     const scope = createExternalVoiceProviderActivationScope({
       pluginId: identity.pluginId,
+      occurrenceId: 'acme-synthetic-voice-activation-occurrence',
       declarations: [declaration],
       hostPlatform: 'web',
     });
@@ -901,6 +896,7 @@ describe('external Voice provider activation', () => {
     const hostLease = createBundledConversationRuntimeHostLease();
     const scope = createExternalVoiceProviderActivationScope({
       pluginId: identity.pluginId,
+      occurrenceId: 'acme-synthetic-voice-activation-occurrence',
       declarations: [configurableDeclaration],
       hostPlatform: 'web',
     });
@@ -987,6 +983,7 @@ describe('external Voice provider activation', () => {
     const hostLease = createBundledConversationRuntimeHostLease();
     const scope = createExternalVoiceProviderActivationScope({
       pluginId,
+      occurrenceId: `${pluginId}-activation-occurrence`,
       declarations: [readinessDeclaration],
       hostPlatform: 'web',
     });
@@ -1076,6 +1073,7 @@ describe('external Voice provider activation', () => {
     const hostLease = createBundledConversationRuntimeHostLease();
     const scope = createExternalVoiceProviderActivationScope({
       pluginId,
+      occurrenceId: `${pluginId}-activation-occurrence`,
       declarations: [conditionalDeclaration],
       hostPlatform: 'web',
     });
@@ -1176,6 +1174,7 @@ describe('external Voice provider activation', () => {
     const hostLease = createBundledConversationRuntimeHostLease();
     const scope = createExternalVoiceProviderActivationScope({
       pluginId: identity.pluginId,
+      occurrenceId: 'acme-synthetic-voice-activation-occurrence',
       declarations: [credentialDeclaration, undeclaredSlot],
       hostPlatform: 'web',
       recipientContractsByLocalId: {
@@ -1214,6 +1213,7 @@ describe('external Voice provider activation', () => {
     };
     expect(() => createExternalVoiceProviderActivationScope({
       pluginId: 'acme.invalid-voice',
+      occurrenceId: 'acme-invalid-voice-activation-occurrence',
       declarations: [mismatchedDeclaration as typeof credentialDeclaration],
       hostPlatform: 'web',
     })).toThrow(/invalid_external_voice_provider_declaration/u);
@@ -1236,6 +1236,7 @@ describe('external Voice provider activation', () => {
     const hostLease = createBundledConversationRuntimeHostLease();
     const scope = createExternalVoiceProviderActivationScope({
       pluginId: identity.pluginId,
+      occurrenceId: 'acme-synthetic-voice-activation-occurrence',
       declarations: [declaration, incompatibleDeclaration],
       hostPlatform: 'web',
     });
@@ -1263,7 +1264,7 @@ describe('external Voice provider activation', () => {
   it('unwinds a committed contribution when an external registration listener throws', async () => {
     const hostLease = createBundledConversationRuntimeHostLease();
     const scope = createExternalVoiceProviderActivationScope({
-      pluginId: identity.pluginId, declarations: [declaration], hostPlatform: 'web',
+      pluginId: identity.pluginId, occurrenceId: 'acme-synthetic-voice-activation-occurrence', declarations: [declaration], hostPlatform: 'web',
     });
     const providerId = 'acme.synthetic-voice/conversation';
     const unsubscribe = subscribeExternalVoiceProviderRegistrations(() => {
@@ -1299,7 +1300,7 @@ describe('external Voice provider activation', () => {
     const setInputMuted = vi.fn(async () => undefined);
     const disposeProviderLeaf = vi.fn(async () => {});
     const backend: PluginReactNativeLoaderBackend = Object.freeze({
-      backendId: 'reactNativeWebModule',
+      backendId: 'commonJs',
       available: true,
       async loadInstalledBundle() {
         return (api: ReturnType<typeof createExternalVoiceProviderActivationScope>['api']) => {
@@ -1316,9 +1317,7 @@ describe('external Voice provider activation', () => {
       await host.unload();
       hostLease.revoke();
     });
-    const authority = Object.freeze({
-      serverId: 'server-1', machineId: 'machine-1', projectionGeneration: 12,
-    });
+    const authority = Object.freeze({ serverId: 'server-1', machineId: 'machine-1' });
     await host.replaceAuthority(authority);
     const forgetProviderConversationState = vi.fn(async () => {});
     const runtimeHost = Object.freeze({
@@ -1330,8 +1329,6 @@ describe('external Voice provider activation', () => {
       cache,
       identity,
       moduleReference: {
-        containerName: 'acme_synthetic_voice_runtime',
-        modulePath: declaration.client.modulePath,
         exportName: declaration.client.exportName,
       },
       backend,
@@ -1339,6 +1336,7 @@ describe('external Voice provider activation', () => {
       authority,
       createScope: () => createExternalVoiceProviderActivationScope({
         pluginId: identity.pluginId,
+        occurrenceId: 'acme-synthetic-voice-activation-occurrence',
         declarations: [declaration],
         hostPlatform: 'web',
         runtimeHost,
@@ -1401,7 +1399,7 @@ describe('external Voice provider activation', () => {
     expect(replacementAdapter).not.toBeNull();
     if (!replacementAdapter) throw new Error('expected_replacement_external_voice_adapter');
     expect(createDefaultVoiceProviderRegistry().get(providerId)).not.toBeNull();
-    await host.replaceAuthority({ ...authority, projectionGeneration: 13 });
+    await host.replaceAuthority({ ...authority, machineId: 'machine-2' });
     expect(disposeProviderLeaf).toHaveBeenCalledTimes(2);
     expect(getVoiceAdapterRegistry().get(providerId)).toBeNull();
     expect(createDefaultVoiceProviderRegistry().get(providerId)).toBeNull();
@@ -1411,7 +1409,7 @@ describe('external Voice provider activation', () => {
     }))
       .rejects.toThrow(/voice_runtime_generation_revoked/u);
     await expect(host.activate(activationInput)).resolves.toMatchObject({
-      ok: false, code: 'stale_projection_generation',
+      ok: false, code: 'artifact_replaced',
     });
   });
 });

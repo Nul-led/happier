@@ -27,6 +27,7 @@ type ActiveDemoSnapshot = Readonly<{
     snapshot: StoreSnapshot;
     sessionIds: ReadonlySet<string>;
     machineIds: ReadonlySet<string>;
+    artifactIds: ReadonlySet<string>;
     activeServerSnapshot: ActiveServerSnapshot;
     homeViewState: HomeViewStateV1 | null;
     demoServerProfileId: string;
@@ -87,10 +88,11 @@ function reportRuntimeResidue(findings: readonly DemoRuntimeResidueFinding[]): v
     });
 }
 
-function collectWorldIds(world: DemoWorld): Pick<ActiveDemoSnapshot, 'sessionIds' | 'machineIds'> {
+function collectWorldIds(world: DemoWorld): Pick<ActiveDemoSnapshot, 'sessionIds' | 'machineIds' | 'artifactIds'> {
     return {
         sessionIds: new Set(world.sessions.map((session) => session.id)),
         machineIds: new Set(world.machines.map((machine) => machine.id)),
+        artifactIds: new Set(world.artifacts.map((artifact) => artifact.id)),
     };
 }
 
@@ -170,6 +172,8 @@ export async function seedDemoWorld(options: SeedDemoWorldOptions = {}): Promise
             ...current.profile,
             ...world.profile,
         },
+        artifacts: { ...current.artifacts, ...Object.fromEntries(world.artifacts.map((artifact) => [artifact.id, artifact])) },
+        artifactsLoaded: true,
     }));
     const state = storage.getState();
     state.applyMachines(world.machines);
@@ -217,6 +221,7 @@ export async function clearDemoWorld(options: ClearDemoWorldOptions = {}): Promi
         snapshot: active.snapshot,
         sessionIds: active.sessionIds,
         machineIds: active.machineIds,
+        artifactIds: active.artifactIds,
     }));
     await setActiveServer({ serverId: active.activeServerSnapshot.serverId, scope: 'device' });
     if (active.homeViewState) await saveHomeViewState(active.homeViewState);

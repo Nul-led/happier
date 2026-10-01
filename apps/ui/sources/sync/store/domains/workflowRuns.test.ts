@@ -4,6 +4,7 @@ import {
     createAutomationRunFixture,
     createWorkflowInvocationIndexFixture,
     createWorkflowRunSummaryFixture,
+    createWorkflowDefinitionFixture,
 } from '@/dev/testkit/fixtures/workflowRunFixtures';
 import type { AutomationDefinitionRun } from '@/sync/domains/automations/automationTypes';
 
@@ -12,7 +13,10 @@ import {
     mergeWorkflowRunBodies,
     releaseWorkflowRunBodies,
     resolveAutomationRunProjections,
+    resolveVisibleWorkflowInvocations,
     resolveWorkflowRunRows,
+    selectWorkflowRunFirstFailedInvocation,
+    selectWorkflowRunWindowInvocations,
     workflowRunRowFromAutomationRun,
     workflowRunRowFromSummary,
 } from './workflowRuns';
@@ -64,6 +68,67 @@ function summary(input: Readonly<{
 }
 
 describe('workflow run body store', () => {
+    it('retains opened Run content when a list refresh observes the same Run', () => {
+        const harness = createHarness();
+        const run = summary({ id: 'run-1', revision: 4 });
+        const definition = createWorkflowDefinitionFixture();
+        const detail = { run, definition, checkpoint: null, acceptedContext: {
+            source: { kind: 'inline' as const }, inputs: {}, machineId: run.machineId,
+            executionTarget: { kind: 'session' as const },
+            workspaceTarget: { project: { machineId: run.machineId, directory: '/repo', checkoutRootPath: '/repo' } },
+            origin: { kind: 'direct' as const },
+        } };
+        harness.get().upsertWorkflowRuns([{ ...workflowRunRowFromSummary(run), detail }]);
+        harness.get().upsertWorkflowRuns([workflowRunRowFromSummary({ ...run, revision: 5 })]);
+        expect(harness.get().workflowRunsById['run-1']).toHaveProperty('detail', detail);
+    });
+
+    it('keeps an opened invocation observation on an equal-token index refresh', () => {
+        const harness = createHarness();
+        const index = createWorkflowInvocationIndexFixture({ contentRevision: '4' });
+        const opened = { index, parentRevision: 1, progress: { kind: 'happier.workflow-progress.v1' as const,
+            blockKind: 'step' as const, invocationPath: { blockId: 'analyze', scope: [] }, attempt: '0', logicalInvocationRecordId: index.id } };
+        harness.get().upsertWorkflowRunInvocation({ runId: 'run-1', invocation: { ...index, opened }, parentRevision: 1 });
+        harness.get().applyWorkflowRunInvocationPage({ runId: 'run-1', invocations: [{ ...index }], nextCursor: null, parentRevision: 1, mode: 'replace' });
+        expect(harness.get().workflowRunInvocationsByRunId['run-1']?.factsById[index.id]).toHaveProperty('opened', opened);
+    });
+
+    it('keeps the newest invocation fact when a delayed page or exact response has the same parent revision', () => {
+        const harness = createHarness();
+        const latest = createWorkflowInvocationIndexFixture({
+            contentRevision: '9007199254740993', lifecycle: 'completed',
+        });
+        const stale = createWorkflowInvocationIndexFixture({
+            contentRevision: '9007199254740992', lifecycle: 'waiting_for_review',
+        });
+        harness.get().applyWorkflowRunInvocationPage({
+            runId: 'run-1', invocations: [latest], nextCursor: null, parentRevision: 4, mode: 'replace',
+        });
+        harness.get().applyWorkflowRunInvocationPage({
+            runId: 'run-1', invocations: [stale], nextCursor: null, parentRevision: 4, mode: 'refresh',
+        });
+        const history = () => selectWorkflowRunWindowInvocations(harness.get().workflowRunInvocationsByRunId['run-1'], 'history');
+        expect(history()[0]).toBe(latest);
+        harness.get().upsertWorkflowRunInvocation({ runId: 'run-1', invocation: stale, parentRevision: 4 });
+        expect(history()[0]).toBe(latest);
+        harness.get().applyWorkflowRunInvocationPage({
+            runId: 'run-1', invocations: [stale], nextCursor: null, parentRevision: 4, mode: 'replace',
+        });
+        expect(history()[0]).toBe(latest);
+    });
+
+    it('refreshes server attention independently of unchanged parent revision and timestamp', () => {
+        const run = summary({ id: 'run-1', revision: 4 });
+        const initial = mergeWorkflowRunBodies({}, [workflowRunRowFromSummary({ ...run, attentionRequired: false })]);
+        const needsYou = mergeWorkflowRunBodies(initial, [workflowRunRowFromSummary({ ...run, attentionRequired: true })]);
+        expect(needsYou['run-1']?.summary).toMatchObject({ attentionRequired: true, revision: 4 });
+        const settled = mergeWorkflowRunBodies(needsYou, [workflowRunRowFromSummary({ ...run, attentionRequired: false })]);
+        expect(settled['run-1']?.summary).toMatchObject({ attentionRequired: false, revision: 4 });
+        expect(mergeWorkflowRunBodies(settled, [workflowRunRowFromSummary({ ...run, attentionRequired: false })])).toBe(settled);
+        expect(mergeWorkflowRunBodies(settled, [workflowRunRowFromSummary({ ...run, revision: 3, attentionRequired: true })])).toBe(settled);
+        expect(mergeWorkflowRunBodies(needsYou, [workflowRunRowFromSummary(run)])).toBe(needsYou);
+    });
+
     it('starts empty', () => {
         expect(createHarness().get().workflowRunsById).toEqual({});
         expect(createHarness().get().workflowRunListWindows).toEqual({});
@@ -113,12 +178,14 @@ describe('workflow run body store', () => {
             parentRevision: 7,
         });
 
-        expect(harness.get().workflowRunInvocationsByRunId['run-1']).toEqual({
-            invocations: [first, second, exact],
+        expect(harness.get().workflowRunInvocationsByRunId['run-1']?.history).toEqual({
+            invocationIds: ['invocation-1', 'invocation-2', 'invocation-off-page'],
             nextCursor: 'page-2',
             parentRevision: 7,
             loaded: true,
         });
+        expect(selectWorkflowRunWindowInvocations(harness.get().workflowRunInvocationsByRunId['run-1'], 'history'))
+            .toEqual([first, second, exact]);
     });
 
     it('retains a 500-row paged history without introducing a UI product limit', () => {
@@ -308,6 +375,243 @@ describe('workflow run body store', () => {
         expect(next['run-shared']?.metadata).toBe(metadata);
         expect(next['run-shared']?.automation).toBeNull();
         expect(next['run-shared']?.revision).toBe(3);
+    });
+
+    describe('loaded-span refresh', () => {
+        function seedTwoPages(harness: ReturnType<typeof createHarness>) {
+            harness.get().applyWorkflowRunListPage({
+                windowId: 'all',
+                runs: [
+                    createWorkflowRunSummaryFixture({ id: 'run-5', createdAt: '2026-09-08T10:00:05.000Z' }),
+                    createWorkflowRunSummaryFixture({ id: 'run-4', createdAt: '2026-09-08T10:00:04.000Z' }),
+                ],
+                nextCursor: 'page-2',
+                mode: 'replace',
+            });
+            harness.get().applyWorkflowRunListPage({
+                windowId: 'all',
+                runs: [
+                    createWorkflowRunSummaryFixture({ id: 'run-3', createdAt: '2026-09-08T10:00:03.000Z' }),
+                    createWorkflowRunSummaryFixture({ id: 'run-2', createdAt: '2026-09-08T10:00:02.000Z' }),
+                ],
+                nextCursor: 'page-3',
+                mode: 'append',
+            });
+        }
+
+        it('merges a refreshed first page into a longer traversal without dropping later pages', () => {
+            const harness = createHarness();
+            seedTwoPages(harness);
+
+            // The background invalidation re-reads page one only. Everything the
+            // reader paged to is strictly older than that page's oldest row, so
+            // it survives — together with the continuation for the END of the
+            // traversal, which is the only cursor that can extend it.
+            harness.get().applyWorkflowRunListPage({
+                windowId: 'all',
+                runs: [
+                    createWorkflowRunSummaryFixture({ id: 'run-5', createdAt: '2026-09-08T10:00:05.000Z', revision: 9, state: 'succeeded' }),
+                    createWorkflowRunSummaryFixture({ id: 'run-4', createdAt: '2026-09-08T10:00:04.000Z' }),
+                ],
+                nextCursor: 'page-2',
+                mode: 'refresh',
+            });
+
+            expect(harness.get().workflowRunListWindows.all).toEqual({
+                runIds: ['run-5', 'run-4', 'run-3', 'run-2'],
+                nextCursor: 'page-3',
+                loaded: true,
+            });
+            expect(harness.get().workflowRunsById['run-5']?.summary?.state).toBe('succeeded');
+        });
+
+        it('admits a newly created Run at the head while keeping every loaded row', () => {
+            const harness = createHarness();
+            seedTwoPages(harness);
+
+            harness.get().applyWorkflowRunListPage({
+                windowId: 'all',
+                runs: [
+                    createWorkflowRunSummaryFixture({ id: 'run-6', createdAt: '2026-09-08T10:00:06.000Z' }),
+                    createWorkflowRunSummaryFixture({ id: 'run-5', createdAt: '2026-09-08T10:00:05.000Z' }),
+                ],
+                nextCursor: 'page-2',
+                mode: 'refresh',
+            });
+
+            // `run-4` was only pushed off page one by the new Run; it is still
+            // in this filter and the reader can still see it.
+            expect(harness.get().workflowRunListWindows.all?.runIds)
+                .toEqual(['run-6', 'run-5', 'run-4', 'run-3', 'run-2']);
+            expect(harness.get().workflowRunListWindows.all?.nextCursor).toBe('page-3');
+        });
+
+        it('drops a loaded row the refreshed span proves has left this filter', () => {
+            const harness = createHarness();
+            seedTwoPages(harness);
+
+            // `Needs you` stops matching `run-5`. The refreshed page reaches
+            // further back than `run-5` and does not contain it, so the window
+            // must not keep offering a row that no longer needs anyone.
+            harness.get().applyWorkflowRunListPage({
+                windowId: 'all',
+                runs: [
+                    createWorkflowRunSummaryFixture({ id: 'run-6', createdAt: '2026-09-08T10:00:06.000Z' }),
+                    createWorkflowRunSummaryFixture({ id: 'run-4', createdAt: '2026-09-08T10:00:04.000Z' }),
+                ],
+                nextCursor: 'page-2',
+                mode: 'refresh',
+            });
+
+            expect(harness.get().workflowRunListWindows.all?.runIds)
+                .toEqual(['run-6', 'run-4', 'run-3', 'run-2']);
+        });
+
+        it('reseeds when the refreshed page exhausts the filter', () => {
+            const harness = createHarness();
+            seedTwoPages(harness);
+
+            harness.get().applyWorkflowRunListPage({
+                windowId: 'all',
+                runs: [createWorkflowRunSummaryFixture({ id: 'run-5', createdAt: '2026-09-08T10:00:05.000Z' })],
+                nextCursor: null,
+                mode: 'refresh',
+            });
+
+            expect(harness.get().workflowRunListWindows.all).toEqual({
+                runIds: ['run-5'], nextCursor: null, loaded: true,
+            });
+        });
+
+        it('merges a refreshed invocation page in canonical order without shrinking loaded history', () => {
+            const harness = createHarness();
+            harness.get().applyWorkflowRunInvocationPage({
+                runId: 'run-1',
+                invocations: [
+                    createWorkflowInvocationIndexFixture({ id: 'invocation-1', sequence: '1' }),
+                    createWorkflowInvocationIndexFixture({ id: 'invocation-2', sequence: '2' }),
+                ],
+                nextCursor: 'page-2',
+                parentRevision: 4,
+                mode: 'replace',
+            });
+            harness.get().applyWorkflowRunInvocationPage({
+                runId: 'run-1',
+                invocations: [
+                    createWorkflowInvocationIndexFixture({ id: 'invocation-3', sequence: '3' }),
+                    createWorkflowInvocationIndexFixture({ id: 'invocation-4', sequence: '4' }),
+                ],
+                nextCursor: 'page-3',
+                parentRevision: 5,
+                mode: 'append',
+            });
+
+            harness.get().applyWorkflowRunInvocationPage({
+                runId: 'run-1',
+                invocations: [
+                    createWorkflowInvocationIndexFixture({ id: 'invocation-1', sequence: '1', lifecycle: 'completed' }),
+                    createWorkflowInvocationIndexFixture({ id: 'invocation-1b', sequence: '1', lifecycle: 'running' }),
+                ],
+                nextCursor: 'page-2',
+                parentRevision: 6,
+                mode: 'refresh',
+            });
+
+            const window = harness.get().workflowRunInvocationsByRunId['run-1']?.history;
+            const invocations = selectWorkflowRunWindowInvocations(harness.get().workflowRunInvocationsByRunId['run-1'], 'history');
+            expect(invocations.map((entry) => entry.id))
+                .toEqual(['invocation-1', 'invocation-1b', 'invocation-2', 'invocation-3', 'invocation-4']);
+            expect(invocations[0]?.lifecycle).toBe('completed');
+            expect(window?.nextCursor).toBe('page-3');
+            expect(window?.parentRevision).toBe(6);
+        });
+    });
+
+    describe('one invocation fact owner (03 §6.2)', () => {
+        const held = (id: string, contentRevision: string, sequence = '1') => createWorkflowInvocationIndexFixture({
+            id, sequence, contentRevision, lifecycle: 'waiting_for_approval',
+        });
+
+        it('merges attention, history, exact and first-failure reads into one fact per row', () => {
+            const harness = createHarness();
+            const attentionFact = held('inv-a', '12');
+            harness.get().applyWorkflowRunInvocationPage({
+                runId: 'run-1', window: 'attention', invocations: [attentionFact], nextCursor: null, parentRevision: 3, mode: 'replace',
+            });
+            // A delayed history page carries an older token for the same row.
+            const olderHistoryFact = createWorkflowInvocationIndexFixture({ id: 'inv-a', sequence: '1', contentRevision: '11', lifecycle: 'running' });
+            harness.get().applyWorkflowRunInvocationPage({
+                runId: 'run-1', invocations: [olderHistoryFact], nextCursor: null, parentRevision: 3, mode: 'replace',
+            });
+            const state = () => harness.get().workflowRunInvocationsByRunId['run-1'];
+            expect(state()?.factsById['inv-a']).toBe(attentionFact);
+            expect(selectWorkflowRunWindowInvocations(state(), 'history')).toEqual([attentionFact]);
+            expect(resolveVisibleWorkflowInvocations(state())).toEqual([attentionFact]);
+
+            // An older exact completion neither replaces the fact nor withdraws attention.
+            const olderExact = createWorkflowInvocationIndexFixture({ id: 'inv-a', sequence: '1', contentRevision: '10', lifecycle: 'completed' });
+            harness.get().upsertWorkflowRunInvocation({ runId: 'run-1', invocation: olderExact, parentRevision: 3 });
+            expect(selectWorkflowRunWindowInvocations(state(), 'attention')).toEqual([attentionFact]);
+
+            // The current exact read settles the row once: attention membership
+            // withdraws while history and the visible union keep the settled fact.
+            const settled = createWorkflowInvocationIndexFixture({ id: 'inv-a', sequence: '1', contentRevision: '13', lifecycle: 'completed' });
+            harness.get().upsertWorkflowRunInvocation({ runId: 'run-1', invocation: settled, parentRevision: 4 });
+            expect(selectWorkflowRunWindowInvocations(state(), 'attention')).toEqual([]);
+            expect(selectWorkflowRunWindowInvocations(state(), 'history')).toEqual([settled]);
+            expect(resolveVisibleWorkflowInvocations(state())).toEqual([settled]);
+        });
+
+        it('keeps first-failure evidence beyond both windows visible through the same fact map', () => {
+            const harness = createHarness();
+            harness.get().applyWorkflowRunInvocationPage({
+                runId: 'run-1', invocations: [held('inv-a', '1')], nextCursor: 'page-2', parentRevision: 2, mode: 'replace',
+            });
+            const failed = createWorkflowInvocationIndexFixture({ id: 'inv-failed', sequence: '9', contentRevision: '5', lifecycle: 'failed' });
+            harness.get().setWorkflowRunFirstFailedInvocation({ runId: 'run-1', invocation: failed });
+            const state = () => harness.get().workflowRunInvocationsByRunId['run-1'];
+            expect(selectWorkflowRunFirstFailedInvocation(state())).toBe(failed);
+            expect(resolveVisibleWorkflowInvocations(state()).map((entry) => entry.id)).toEqual(['inv-a', 'inv-failed']);
+
+            // History paging to the failed row with a newer token updates the
+            // first-failure evidence too: there is no second copy to diverge.
+            const newer = { ...failed, contentRevision: '6' };
+            harness.get().applyWorkflowRunInvocationPage({
+                runId: 'run-1', invocations: [newer], nextCursor: null, parentRevision: 3, mode: 'append',
+            });
+            expect(selectWorkflowRunFirstFailedInvocation(state())).toBe(newer);
+            harness.get().setWorkflowRunFirstFailedInvocation({ runId: 'run-1', invocation: null });
+            expect(selectWorkflowRunFirstFailedInvocation(state())).toBeNull();
+        });
+
+        it('restates the complete loaded attention span with its own authoritative cursor', () => {
+            const harness = createHarness();
+            harness.get().applyWorkflowRunInvocationPage({
+                runId: 'run-1', window: 'attention', invocations: [held('inv-a', '1', '0'), held('inv-b', '1', '1')],
+                nextCursor: 'attention-2', parentRevision: 1, mode: 'replace',
+            });
+            harness.get().applyWorkflowRunInvocationPage({
+                runId: 'run-1', window: 'attention', invocations: [held('inv-tail', '1', '2')],
+                nextCursor: null, parentRevision: 1, mode: 'append',
+            });
+            harness.get().applyWorkflowRunInvocationPage({
+                runId: 'run-1', window: 'attention', invocations: [held('inv-a', '1', '0'), held('inv-b', '1', '1')],
+                nextCursor: null, parentRevision: 2, mode: 'refresh',
+            });
+            const attention = harness.get().workflowRunInvocationsByRunId['run-1']?.attention;
+            expect(attention?.invocationIds).toEqual(['inv-a', 'inv-b']);
+            expect(attention?.nextCursor).toBeNull();
+        });
+
+        it('projects a window to stable arrays until its ids or facts change', () => {
+            const harness = createHarness();
+            harness.get().applyWorkflowRunInvocationPage({
+                runId: 'run-1', invocations: [held('inv-a', '1')], nextCursor: null, parentRevision: 1, mode: 'replace',
+            });
+            const state = harness.get().workflowRunInvocationsByRunId['run-1'];
+            expect(selectWorkflowRunWindowInvocations(state, 'history')).toBe(selectWorkflowRunWindowInvocations(state, 'history'));
+            expect(resolveVisibleWorkflowInvocations(state)).toBe(resolveVisibleWorkflowInvocations(state));
+        });
     });
 
     it('projects only Automation-backed rows into an Automation window', () => {

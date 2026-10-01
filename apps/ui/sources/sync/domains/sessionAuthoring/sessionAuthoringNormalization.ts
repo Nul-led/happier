@@ -61,10 +61,11 @@ export function normalizeTerminalFromSessionMetadata(
         return null;
     }
     const mode = terminal.mode;
-    if (mode !== 'plain' && mode !== 'tmux' && mode !== 'windows_terminal' && mode !== 'windows_console') {
+    if (mode !== 'plain' && mode !== 'tmux' && mode !== 'zellij' && mode !== 'herdr' && mode !== 'windows_terminal' && mode !== 'windows_console') {
         return null;
     }
     const tmux = normalizeOptionalRecord(terminal.tmux);
+    const herdr = normalizeOptionalRecord(terminal.herdr);
     return {
         mode,
         ...(mode === 'tmux'
@@ -78,6 +79,9 @@ export function normalizeTerminalFromSessionMetadata(
                         : {}),
                 },
             }
+            : {}),
+        ...(mode === 'herdr' && typeof herdr?.sessionName === 'string' && herdr.sessionName.trim()
+            ? { herdr: { sessionName: herdr.sessionName.trim() } }
             : {}),
     };
 }

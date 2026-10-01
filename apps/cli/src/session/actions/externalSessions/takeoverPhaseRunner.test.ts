@@ -1,3 +1,4 @@
+import { createStoppedTakeoverQuiescenceFixture } from '@/testkit/backends/externalSessionFixtures';
 import {
   resolveExternalSessionOperationTimelineV1,
 } from '@happier-dev/protocol';
@@ -20,12 +21,13 @@ import {
   createExternalSessionPersistedTakeoverPreparation,
   reconstructPersistedTakeoverTargetFromRetiredMetadata,
 } from './takeoverPhaseRunner';
+import { createPluginRuntimeOccurrenceId } from '@/plugins/runtime/runtimeSlots';
 
 function admittingRecord(
   currentSourceCursor: string,
 ): ExternalSessionPersistedTakeoverImportRecord {
   const initialSourceCursor = 'source-cursor-a';
-  const request = {
+  const request: ExternalSessionPersistedTakeoverImportRecord['request'] = {
     v: 1 as const,
     idempotencyKey: 'takeover-request-1',
     sessionId: 'session-1',
@@ -41,7 +43,7 @@ function admittingRecord(
       sourceGeneration: createExternalSessionSourceGenerationAnchor(
         initialSourceCursor,
       ),
-      contributionGeneration: 'contribution-1',
+      sourceCustody: { kind: 'development', registeredRootId: 'contribution-1' },
     },
     plan: 'takeover' as const,
     targetStorageMode: 'persisted' as const,
@@ -122,8 +124,9 @@ describe('persisted takeover source continuity', () => {
     };
     const preparedSource = {
       linked,
-      pluginGeneration: record.request.source.contributionGeneration,
+      occurrenceId: createPluginRuntimeOccurrenceId('example.plugin'),
       quiescenceIdentity: 'quiescence-1',
+      quiescence: createStoppedTakeoverQuiescenceFixture(record),
     };
     const followLeaseManager = {
       suspendSession: vi.fn(async () => true),
@@ -145,7 +148,7 @@ describe('persisted takeover source continuity', () => {
         origin: {
           agentId: 'example',
           pluginId: 'example.plugin',
-          generation: record.request.source.contributionGeneration,
+          occurrenceId: preparedSource.occurrenceId,
         },
       },
     }));
@@ -163,6 +166,7 @@ describe('persisted takeover source continuity', () => {
       linked,
       sessionId: record.request.sessionId,
       targetDirectory: record.request.targetDirectory,
+      transcriptStorage: 'persisted',
     });
     expect(followLeaseManager.suspendSession).toHaveBeenCalledOnce();
     expect(followLeaseManager.resumeSession).not.toHaveBeenCalled();

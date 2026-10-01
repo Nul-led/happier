@@ -1,3 +1,5 @@
+import type { ExecutionRunInputTurnV1 } from '@happier-dev/protocol';
+
 import type { AgentInvocationTurnAdmissionWitness } from '@/plugins/runtime/invocation/services/types';
 import type {
     ExecutionRunBackendController,
@@ -48,6 +50,40 @@ export type ExecutionRunOccurrenceWitnessRegistry = Readonly<{
         readActiveTurnAdmissionWitness: () => AgentInvocationTurnAdmissionWitness | null;
     }>) => ExecutionRunOccurrenceRegistration;
 }>;
+
+export type ExecutionRunInputTurnsProjectionV1 = Readonly<{
+    occurrenceId: string;
+    current?: ExecutionRunInputTurnV1;
+    last?: ExecutionRunInputTurnV1;
+}>;
+
+/**
+ * The one exact-input observation every reader shares: public state, the
+ * blocking exact-input wait and stop's final witness capture.
+ *
+ * A live backend controller answers from its own current/last turn under the
+ * occurrence that labels it — the canonical occurrence witness for a
+ * Session-owned retained Run, or the detached/bounded controller's own
+ * exact-result occurrence. Without a live labelled controller the Run's
+ * retained `inputTurns` stands.
+ */
+export function projectExecutionRunInputTurns(params: Readonly<{
+    runId: string;
+    retained: ExecutionRunInputTurnsProjectionV1 | undefined;
+    controller: ExecutionRunController | undefined;
+    reader: ExecutionRunOccurrenceWitnessReaderV1;
+}>): ExecutionRunInputTurnsProjectionV1 | undefined {
+    const controller = params.controller;
+    if (controller?.kind !== 'backend') return params.retained;
+    const occurrenceId = params.reader.readCurrentRunOccurrence(params.runId)?.occurrenceId
+        ?? controller.inputTurnOccurrenceId;
+    if (!occurrenceId) return params.retained;
+    return {
+        occurrenceId,
+        ...(controller.currentInputTurn ? { current: controller.currentInputTurn } : {}),
+        ...(controller.lastInputTurn ? { last: controller.lastInputTurn } : {}),
+    };
+}
 
 /**
  * Stable occurrence identities projected from the canonical controller map.

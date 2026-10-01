@@ -46,7 +46,7 @@ describe('sessionReminderPreset', () => {
 
         expect(applySessionReminderPresetIntentToAccountSettings(
             { sessionReminderPresetsV1: [kept, concurrent] },
-            { kind: 'replace', presets: [concurrent] },
+            { kind: 'replace', presets: [concurrent], expectedPresets: [kept, concurrent] },
         )).toEqual({ sessionReminderPresetsV1: [concurrent] });
     });
 
@@ -57,6 +57,20 @@ describe('sessionReminderPreset', () => {
             .toBe('Next Tuesday · 4:00 PM');
         expect(formatSessionReminderPresetRuleLabel({ kind: 'next_calendar_weekday', weekday: 0, weeksAhead: 2, minuteOfDay: 540 }, now.getTime(), 'en-US'))
             .toBe('Sunday in 2 weeks · 9:00 AM');
+    });
+
+    it('refuses a stale replacement instead of overwriting concurrent preset edits', () => {
+        const opened = { label: 'Morning', rule: { kind: 'relative_day', daysAhead: 1, minuteOfDay: 540 } } as const;
+        const edited = { ...opened, label: 'Focus' };
+        const concurrent = { ...opened, label: 'Other device' };
+        expect(() => applySessionReminderPresetIntentToAccountSettings(
+            { sessionReminderPresetsV1: [concurrent], viewInline: true },
+            { kind: 'replace', presets: [edited], expectedPresets: [opened] },
+        )).toThrow();
+        expect(applySessionReminderPresetIntentToAccountSettings(
+            { sessionReminderPresetsV1: [opened], viewInline: true },
+            { kind: 'replace', presets: [edited], expectedPresets: [opened] },
+        )).toEqual({ sessionReminderPresetsV1: [edited], viewInline: true });
     });
 
     it('drops malformed synced entries and upserts duplicate semantic rules in place', () => {

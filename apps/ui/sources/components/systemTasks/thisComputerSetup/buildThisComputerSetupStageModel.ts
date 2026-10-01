@@ -3,7 +3,9 @@ import { toServerUrlDisplay } from '@/sync/domains/server/url/serverUrlDisplay';
 
 import type { PlanChecklistItem } from '@/components/systemTasks/planChecklist';
 import type { ThisComputerSetupPreflight } from '@/components/onboarding/checklists/setupThisComputer/types';
-import type { ThisComputerSetupPrompt } from './resolveThisComputerSetupPrompt';
+import type { CliChoiceSetupPrompt, ThisComputerSetupPrompt } from './resolveThisComputerSetupPrompt';
+
+type BackgroundServiceSetupPrompt = Exclude<ThisComputerSetupPrompt, CliChoiceSetupPrompt>;
 
 export type ThisComputerSetupStageId =
     | 'setup.thisComputer.stage.installTools'
@@ -36,14 +38,16 @@ function installToolsSubtitle(preflight: ThisComputerSetupPreflight): string {
 }
 
 function relayStageSubtitle(preflight: ThisComputerSetupPreflight): string {
+    // The drift banner is the shared sentence for this computer (it names the Home and both
+    // accounts); the generic lines below are only for states it does not describe.
+    if (preflight.relayDriftBanner) {
+        return preflight.relayDriftBanner.description;
+    }
     if (preflight.accountMismatch) {
         return t('setupOnboarding.thisComputerStages.useRelayAccountMismatchSubtitle');
     }
     if (preflight.needsAuth) {
         return t('setupOnboarding.thisComputerStages.useRelayNeedsAuthSubtitle');
-    }
-    if (preflight.relayDriftBanner) {
-        return preflight.relayDriftBanner.description;
     }
     if (preflight.serverMismatch) {
         return t('setupOnboarding.thisComputerStages.useRelayServerMismatchSubtitle', {
@@ -69,7 +73,7 @@ function isRelayReady(preflight: ThisComputerSetupPreflight): boolean {
     );
 }
 
-function resolveBackgroundServiceDecisionDetails(prompt: ThisComputerSetupPrompt | null): string | undefined {
+function resolveBackgroundServiceDecisionDetails(prompt: BackgroundServiceSetupPrompt | null): string | undefined {
     if (!prompt) {
         return undefined;
     }
@@ -113,7 +117,7 @@ function registerComputerSubtitle(preflight: ThisComputerSetupPreflight): string
 
 function backgroundServiceSubtitle(
     preflight: ThisComputerSetupPreflight,
-    prompt: ThisComputerSetupPrompt | null,
+    prompt: BackgroundServiceSetupPrompt | null,
 ): string {
     if (prompt) {
         return t('setupOnboarding.thisComputerStages.backgroundServiceDecisionSubtitle');
@@ -172,7 +176,8 @@ function resolveRelayChildDetails(preflight: ThisComputerSetupPreflight): string
 
 function signInChildDetails(preflight: ThisComputerSetupPreflight): string {
     if (preflight.accountMismatch) {
-        return t('setupOnboarding.thisComputerStages.useRelayAccountMismatchSubtitle');
+        return preflight.relayDriftBanner?.description
+            ?? t('setupOnboarding.thisComputerStages.useRelayAccountMismatchSubtitle');
     }
     if (preflight.needsAuth) {
         return t('setupOnboarding.thisComputerStages.useRelayNeedsAuthSubtitle');
@@ -235,7 +240,7 @@ function verifyServiceChildDetails(preflight: ThisComputerSetupPreflight): strin
     return t('setupOnboarding.thisComputerStages.backgroundServiceDetails');
 }
 
-function buildBackgroundServiceDecisionChildren(prompt: ThisComputerSetupPrompt | null): readonly PlanChecklistItem[] {
+function buildBackgroundServiceDecisionChildren(prompt: BackgroundServiceSetupPrompt | null): readonly PlanChecklistItem[] {
     if (!prompt) {
         return [];
     }
@@ -278,8 +283,10 @@ function buildBackgroundServiceDecisionChildren(prompt: ThisComputerSetupPrompt 
 export function buildThisComputerSetupStageModel(params: Readonly<{
     preflight: ThisComputerSetupPreflight;
     prompt: ThisComputerSetupPrompt | null;
-}>): readonly PlanChecklistItem[] {
-    const { preflight, prompt } = params;
+}>): readonly (PlanChecklistItem & Readonly<{ id: ThisComputerSetupStageId; title: string }>)[] {
+    const { preflight } = params;
+    // The one-CLI question (R12) belongs to installing the tools, not to the background service.
+    const prompt: BackgroundServiceSetupPrompt | null = params.prompt?.kind === 'setup.cliChoice' ? null : params.prompt;
     const ready = isReady(preflight);
     const toolsInstalled = hasInstalledTools(preflight);
     const relayReady = isRelayReady(preflight);
@@ -397,5 +404,5 @@ export function buildThisComputerSetupStageModel(params: Readonly<{
                 }),
             ],
         },
-    ] satisfies readonly PlanChecklistItem[];
+    ] satisfies readonly (PlanChecklistItem & Readonly<{ id: ThisComputerSetupStageId; title: string }>)[];
 }

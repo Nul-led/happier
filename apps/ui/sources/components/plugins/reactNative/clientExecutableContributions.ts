@@ -28,7 +28,7 @@ import {
 } from './executableModuleHost';
 import type {
     PluginReactNativeLoaderBackend,
-    RepackInstalledArtifactModuleReference,
+    PluginReactNativeExecutableModuleReference,
 } from './loader';
 import type { PluginReactNativeBundleCacheIdentity } from '@/sync/domains/plugins/ui/reactNativeRuntime';
 import { isPluginProjectedActionExecutable } from '@/sync/domains/plugins/ui/projection';
@@ -36,7 +36,6 @@ import type { ActiveServerAccountScopeLifetime } from '@/sync/domains/scope/acti
 
 export type PluginUiClientExecutableTarget = Readonly<{
     artifactId: string;
-    modulePath: string;
     exportName: string;
     platform: PluginContributionClientPlatform;
 }>;
@@ -46,8 +45,8 @@ export type PluginUiClientExecutableRegistrationAddress = Readonly<{
     pluginId: string;
     localId: string;
     target: PluginUiClientExecutableTarget;
-    executionOrigin: PluginMachineExecutionOriginV1;
-    projectionGeneration: number;
+    executionOrigin: PluginMachineExecutionOriginV1 | null;
+    occurrenceId: string;
 }>;
 
 /** One host-owned activation lifetime, never reconstructed by a family consumer. */
@@ -56,7 +55,7 @@ export type PluginUiClientExecutableRegistrationLifecycle = Readonly<{
     isCurrent: () => boolean;
 }>;
 
-/** One immutable client registration from one exact target/origin/generation. */
+/** One client registration from one exact target/origin/plugin occurrence. */
 export type PluginUiClientExecutableRegistration = Readonly<{
     contribution: Readonly<{
         pluginId: string;
@@ -65,12 +64,11 @@ export type PluginUiClientExecutableRegistration = Readonly<{
     right: PluginContributionRegistrationRight;
     registration: PluginRuntimeRegistration;
     target: PluginUiClientExecutableTarget;
-    executionOrigin: PluginMachineExecutionOriginV1;
-    projectionGeneration: number;
+    executionOrigin: PluginMachineExecutionOriginV1 | null;
+    /** Process-local admitted plugin slot currentness. */
+    occurrenceId: string;
     /** Exact installed package identity supplied by the activated projection. */
     pluginVersion?: string;
-    /** Exact activation facts, retained for target-owned client invocation context. */
-    immutableGenerationId?: string;
     accountLifetime?: ActiveServerAccountScopeLifetime;
     authority?: PluginUiExecutableAuthority;
     lifecycle: PluginUiClientExecutableRegistrationLifecycle;
@@ -120,11 +118,10 @@ export type PluginUiClientExecutableRegistrationIndex = Readonly<{
          */
         publishedContributes?: Readonly<Record<string, unknown>>;
         target: PluginUiClientExecutableTarget;
-        executionOrigin: PluginMachineExecutionOriginV1;
-        projectionGeneration: number;
+        executionOrigin: PluginMachineExecutionOriginV1 | null;
+        occurrenceId: string;
         /** Optional for non-Action client families; Actions fail closed without it. */
         pluginVersion?: string;
-        immutableGenerationId?: string;
         accountLifetime?: ActiveServerAccountScopeLifetime;
         authority?: PluginUiExecutableAuthority;
         lifecycle: PluginUiClientExecutableRegistrationLifecycle;
@@ -144,10 +141,22 @@ type RegistrationSnapshot = Readonly<Record<string, IndexedRegistration>>;
 function freezeTarget(target: PluginUiClientExecutableTarget): PluginUiClientExecutableTarget {
     return Object.freeze({
         artifactId: target.artifactId,
-        modulePath: target.modulePath,
         exportName: target.exportName,
         platform: target.platform,
     });
+}
+
+/**
+ * A bundled or development plugin has no materialization: its registrations
+ * carry no origin and route through the projecting daemon's authority.
+ */
+function sameExecutionOrigin(
+    left: PluginMachineExecutionOriginV1 | null,
+    right: PluginMachineExecutionOriginV1 | null,
+): boolean {
+    return left === null || right === null
+        ? left === right
+        : arePluginMachineExecutionOriginsEqual(left, right);
 }
 
 function freezeExecutionOrigin(origin: PluginMachineExecutionOriginV1): PluginMachineExecutionOriginV1 {
@@ -162,7 +171,6 @@ function sameTarget(
     right: PluginUiClientExecutableTarget,
 ): boolean {
     return left.artifactId === right.artifactId
-        && left.modulePath === right.modulePath
         && left.exportName === right.exportName
         && left.platform === right.platform;
 }
@@ -192,24 +200,25 @@ function registrationIndexKey(input: Readonly<{
 function validateScopeInput(input: Readonly<{
     pluginId: string;
     target: PluginUiClientExecutableTarget;
-    executionOrigin: PluginMachineExecutionOriginV1;
-    projectionGeneration: number;
+    executionOrigin: PluginMachineExecutionOriginV1 | null;
+    occurrenceId: string;
     pluginVersion?: string;
 }>): Readonly<{
     target: PluginUiClientExecutableTarget;
-    executionOrigin: PluginMachineExecutionOriginV1;
+    executionOrigin: PluginMachineExecutionOriginV1 | null;
     pluginVersion?: string;
 }> {
-    if (!Number.isInteger(input.projectionGeneration) || input.projectionGeneration < 0) {
-        throw new Error('client_executable_projection_generation_required');
+    if (input.occurrenceId.trim().length === 0) {
+        throw new Error('client_executable_occurrence_required');
     }
-    const parsedOrigin = PluginMachineExecutionOriginV1Schema.safeParse(input.executionOrigin);
-    if (!parsedOrigin.success || parsedOrigin.data.materializationRef.pluginId !== input.pluginId) {
+    const parsedOrigin = input.executionOrigin === null
+        ? null
+        : PluginMachineExecutionOriginV1Schema.safeParse(input.executionOrigin);
+    if (parsedOrigin && (!parsedOrigin.success || parsedOrigin.data.materializationRef.pluginId !== input.pluginId)) {
         throw new Error('client_executable_origin_mismatch');
     }
     if (
         !input.target.artifactId
-        || !input.target.modulePath.startsWith('./')
         || !input.target.exportName
     ) {
         throw new Error('client_executable_target_invalid');
@@ -219,7 +228,7 @@ function validateScopeInput(input: Readonly<{
     }
     return Object.freeze({
         target: freezeTarget(input.target),
-        executionOrigin: freezeExecutionOrigin(parsedOrigin.data),
+        executionOrigin: parsedOrigin?.success ? freezeExecutionOrigin(parsedOrigin.data) : null,
         ...(input.pluginVersion === undefined ? {} : { pluginVersion: input.pluginVersion }),
     });
 }
@@ -250,9 +259,9 @@ export function createPluginUiClientExecutableRegistrationIndex(): PluginUiClien
         const indexed = snapshot[key];
         if (!indexed) return null;
         const registration = indexed.registration;
-        return registration.projectionGeneration === address.projectionGeneration
+        return registration.occurrenceId === address.occurrenceId
             && sameTarget(registration.target, address.target)
-            && arePluginMachineExecutionOriginsEqual(registration.executionOrigin, address.executionOrigin)
+            && sameExecutionOrigin(registration.executionOrigin, address.executionOrigin)
             && isLifecycleCurrent(registration.lifecycle)
             ? registration
             : null;
@@ -263,10 +272,9 @@ export function createPluginUiClientExecutableRegistrationIndex(): PluginUiClien
         contributes: Readonly<Record<string, unknown>>;
         publishedContributes?: Readonly<Record<string, unknown>>;
         target: PluginUiClientExecutableTarget;
-        executionOrigin: PluginMachineExecutionOriginV1;
-        projectionGeneration: number;
+        executionOrigin: PluginMachineExecutionOriginV1 | null;
+        occurrenceId: string;
         pluginVersion?: string;
-        immutableGenerationId?: string;
         accountLifetime?: ActiveServerAccountScopeLifetime;
         authority?: PluginUiExecutableAuthority;
         lifecycle: PluginUiClientExecutableRegistrationLifecycle;
@@ -365,11 +373,10 @@ export function createPluginUiClientExecutableRegistrationIndex(): PluginUiClien
                             registration,
                             target: exact.target,
                             executionOrigin: exact.executionOrigin,
-                            projectionGeneration: input.projectionGeneration,
+                            occurrenceId: input.occurrenceId,
                             ...(exact.pluginVersion === undefined
                                 ? {}
                                 : { pluginVersion: exact.pluginVersion }),
-                            ...(input.immutableGenerationId === undefined ? {} : { immutableGenerationId: input.immutableGenerationId }),
                             ...(input.accountLifetime === undefined ? {} : { accountLifetime: input.accountLifetime }),
                             ...(input.authority === undefined ? {} : { authority: input.authority }),
                             lifecycle: input.lifecycle,
@@ -415,15 +422,16 @@ export type PluginUiClientExecutableActivation = Readonly<{
     pluginId: string;
     contributes: Readonly<Record<string, unknown>>;
     target: PluginUiClientExecutableTarget;
-    executionOrigin: PluginMachineExecutionOriginV1;
-    projectionGeneration: number;
+    executionOrigin: PluginMachineExecutionOriginV1 | null;
+    occurrenceId: string;
+    /** Host ABI compatibility participates in byte/module sharing identity. */
+    hostUiApiRange: string;
     /** Exact package version retained for client Action SDK context. */
     pluginVersion?: string;
-    immutableGenerationId?: string;
     accountLifetime?: ActiveServerAccountScopeLifetime;
     cache: PluginReactNativeBundleCache;
     identity: PluginReactNativeBundleCacheIdentity;
-    moduleReference: RepackInstalledArtifactModuleReference;
+    moduleReference: PluginReactNativeExecutableModuleReference;
     backend: PluginReactNativeLoaderBackend;
     authority: PluginUiExecutableAuthority;
     isCurrent(): boolean;
@@ -456,7 +464,7 @@ type ActiveClientExecutableTarget = Readonly<{
     pluginId: string;
     activation: PluginUiClientExecutableActivation;
     identity: PluginReactNativeBundleCacheIdentity;
-    moduleReference: RepackInstalledArtifactModuleReference;
+    moduleReference: PluginReactNativeExecutableModuleReference;
     controller: AbortController;
     authorityKey: string;
     executableHost: PluginUiExecutableModuleHost;
@@ -479,7 +487,6 @@ function clientExecutableAuthorityKey(authority: PluginUiExecutableAuthority): s
     return JSON.stringify([
         authority.serverId,
         authority.machineId,
-        authority.projectionGeneration,
     ]);
 }
 
@@ -489,51 +496,32 @@ function clientExecutableAuthorityKey(authority: PluginUiExecutableAuthority): s
  */
 export function getPluginUiClientExecutableTargetAddressKey(input: Pick<
     PluginUiClientExecutableActivation,
-    'pluginId' | 'target' | 'executionOrigin' | 'projectionGeneration' | 'authority'
+    'pluginId' | 'target' | 'executionOrigin' | 'authority'
 >): string {
     return [
         input.pluginId,
         input.target.artifactId,
-        input.target.modulePath,
         input.target.exportName,
         input.target.platform,
-        input.executionOrigin.serverIdentityId,
-        input.executionOrigin.materializationRef.machineId,
-        input.executionOrigin.materializationRef.materializationId,
-        input.executionOrigin.materializationRef.pluginId,
-        String(input.projectionGeneration),
+        input.executionOrigin?.serverIdentityId ?? '',
+        input.executionOrigin?.materializationRef.machineId ?? '',
+        input.executionOrigin?.materializationRef.materializationId ?? '',
+        input.executionOrigin?.materializationRef.pluginId ?? '',
         clientExecutableAuthorityKey(input.authority),
     ].join('\u0000');
 }
 
 /**
  * Rights may be shared only by the same installed executable bytes. Authority
- * and projection generation intentionally do not participate: they select
- * separate hosts, exact index publication, and currentness, not what one
- * module is allowed to register.
+ * and plugin occurrence intentionally do not participate: they select exact
+ * index publication and currentness, not what one module is allowed to register.
  */
 function clientExecutableModuleKey(activation: PluginUiClientExecutableActivation): string {
     return [
-        activation.pluginId,
-        activation.target.artifactId,
-        activation.target.modulePath,
-        activation.target.exportName,
-        activation.target.platform,
         activation.identity.artifactDigest,
-        activation.identity.hostAppVersion,
-        activation.identity.hostUiApiVersion,
-        activation.identity.reactVersion,
-        activation.identity.reactNativeVersion,
-        activation.identity.expoRuntimeVersion ?? '',
-        activation.identity.hermesVersion ?? '',
-        activation.identity.platform,
-        activation.identity.channel,
-        activation.identity.nativeCapabilitiesDigest,
-        activation.pluginVersion ?? '',
-        activation.immutableGenerationId ?? '',
-        activation.moduleReference.containerName,
-        activation.moduleReference.modulePath,
         activation.moduleReference.exportName,
+        activation.identity.platform,
+        activation.hostUiApiRange,
     ].join('\u0000');
 }
 
@@ -566,21 +554,11 @@ function clientExecutableActivationFingerprint(
     return [
         activation.identity.pluginId,
         activation.identity.contributionId,
+        activation.identity.artifactId,
         activation.identity.artifactDigest,
-        activation.identity.hostAppVersion,
-        activation.identity.hostUiApiVersion,
-        activation.identity.reactVersion,
-        activation.identity.reactNativeVersion,
-        activation.identity.expoRuntimeVersion ?? '',
-        activation.identity.hermesVersion ?? '',
         activation.identity.platform,
-        activation.identity.channel,
-        activation.identity.nativeCapabilitiesDigest,
-        String(activation.identity.projectionGeneration),
-        activation.pluginVersion ?? '',
-        activation.immutableGenerationId ?? '',
-        activation.moduleReference.containerName,
-        activation.moduleReference.modulePath,
+        activation.occurrenceId,
+        activation.hostUiApiRange,
         activation.moduleReference.exportName,
         clientExecutableAuthorityKey(activation.authority),
         derivePluginClientContributionRegistrationRights(registrationContributes, activation.target)
@@ -605,20 +583,21 @@ function isClientExecutableActivationCoherent(
 ): boolean {
     return activation.identity.pluginId === activation.pluginId
         && activation.identity.platform === activation.target.platform
-        && activation.identity.projectionGeneration === activation.projectionGeneration
-        && activation.moduleReference.modulePath === activation.target.modulePath
         && activation.moduleReference.exportName === activation.target.exportName
-        && activation.authority.machineId === activation.executionOrigin.materializationRef.machineId
-        && activation.authority.projectionGeneration === activation.projectionGeneration
-        && activation.executionOrigin.materializationRef.pluginId === activation.pluginId
+        && (activation.executionOrigin === null || (
+            activation.authority.machineId === activation.executionOrigin.materializationRef.machineId
+            && activation.executionOrigin.materializationRef.pluginId === activation.pluginId
+        ))
+        && activation.occurrenceId.trim().length > 0
+        && activation.hostUiApiRange.trim().length > 0
         && (activation.pluginVersion === undefined || activation.pluginVersion.trim().length > 0);
 }
 
-function staleClientExecutableResult(): PluginUiExecutableModuleActivationResult {
+function retiredClientExecutableResult(): PluginUiExecutableModuleActivationResult {
     return Object.freeze({
         ok: false,
-        code: 'stale_projection_generation',
-        diagnostics: Object.freeze(['stale_projection_generation']),
+        code: 'artifact_replaced',
+        diagnostics: Object.freeze(['artifact_replaced']),
     });
 }
 
@@ -710,7 +689,7 @@ export function createPluginUiClientExecutableComposition(input: Readonly<{
 
         for (const [index, activation] of activations.entries()) {
             if (!isClientExecutableActivationCurrent(activation)) {
-                results[index] = staleClientExecutableResult();
+                results[index] = retiredClientExecutableResult();
                 continue;
             }
             if (!isClientExecutableActivationCoherent(activation)) {
@@ -820,7 +799,7 @@ export function createPluginUiClientExecutableComposition(input: Readonly<{
             const leaf = leavesByAuthorityKey.get(authorityKey);
             if (!leaf) {
                 for (const index of preparedTarget.inputIndexes) {
-                    results[index] = staleClientExecutableResult();
+                    results[index] = retiredClientExecutableResult();
                 }
                 continue;
             }
@@ -867,11 +846,10 @@ export function createPluginUiClientExecutableComposition(input: Readonly<{
                         publishedContributes: activation.contributes,
                         target: activation.target,
                         executionOrigin: activation.executionOrigin,
-                        projectionGeneration: activation.projectionGeneration,
+                        occurrenceId: activation.occurrenceId,
                         ...(activation.pluginVersion === undefined
                             ? {}
                             : { pluginVersion: activation.pluginVersion }),
-                        ...(activation.immutableGenerationId === undefined ? {} : { immutableGenerationId: activation.immutableGenerationId }),
                         ...(activation.accountLifetime === undefined ? {} : { accountLifetime: activation.accountLifetime }),
                         authority: activation.authority,
                         lifecycle,
@@ -947,7 +925,7 @@ export function createPluginUiClientExecutableComposition(input: Readonly<{
 
         return Object.freeze(activations.map((activation, index) => Object.freeze({
             activation,
-            result: results[index] ?? staleClientExecutableResult(),
+            result: results[index] ?? retiredClientExecutableResult(),
             reused: reused[index] === true,
         })));
     };
@@ -1008,28 +986,30 @@ export function getInstalledPluginUiClientExecutableComposition(): PluginUiClien
  */
 export function resolvePluginUiClientActionRegistration(input: Readonly<{
     action: PluginProjectedActionV2;
-    projectionGeneration: number;
     /** The one platform mapper is `resolvePluginUiClientExecutablePlatform`. */
     platform: PluginContributionClientPlatform;
     reader?: PluginUiClientExecutableRegistrationReader;
 }>): PluginUiClientActionRegistration | null {
-    const { action, projectionGeneration, platform } = input;
+    const { action, platform } = input;
     if (
         action.execution.target !== 'client'
         || !isPluginProjectedActionExecutable(action)
         || !action.authorization
-        || !Number.isInteger(projectionGeneration)
-        || projectionGeneration < 0
     ) {
         return null;
     }
-    const parsedOrigin = PluginMachineExecutionOriginV1Schema.safeParse({
-        serverIdentityId: action.serverIdentityId,
-        materializationRef: action.materializationRef,
-    });
+    // An originless (bundled/development) Action carries neither fact; one
+    // that carries either must carry a valid origin for its own plugin.
+    const originless = action.serverIdentityId === undefined && action.materializationRef === undefined;
+    const parsedOrigin = originless
+        ? null
+        : PluginMachineExecutionOriginV1Schema.safeParse({
+            serverIdentityId: action.serverIdentityId,
+            materializationRef: action.materializationRef,
+        });
     if (
-        !parsedOrigin.success
-        || parsedOrigin.data.materializationRef.pluginId !== action.pluginId
+        parsedOrigin
+        && (!parsedOrigin.success || parsedOrigin.data.materializationRef.pluginId !== action.pluginId)
     ) {
         return null;
     }
@@ -1040,12 +1020,11 @@ export function resolvePluginUiClientActionRegistration(input: Readonly<{
         localId: action.id,
         target: freezeTarget({
             artifactId: action.execution.client.artifactId,
-            modulePath: action.execution.client.modulePath,
             exportName: action.execution.client.exportName,
             platform,
         }),
-        executionOrigin: freezeExecutionOrigin(parsedOrigin.data),
-        projectionGeneration,
+        executionOrigin: parsedOrigin?.success ? freezeExecutionOrigin(parsedOrigin.data) : null,
+        occurrenceId: action.occurrenceId,
     }) satisfies PluginUiClientExecutableRegistrationAddress;
     let registration: PluginUiClientExecutableRegistration | null;
     try {
@@ -1060,6 +1039,7 @@ export function resolvePluginUiClientActionRegistration(input: Readonly<{
         || registration.contribution.localId !== action.id
         || registration.right.family !== 'actions'
         || registration.registration.family !== 'actions'
+        || registration.occurrenceId !== action.occurrenceId
         || typeof registration.registration.value !== 'function'
         || typeof pluginVersion !== 'string'
         || pluginVersion.trim().length === 0

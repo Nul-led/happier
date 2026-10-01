@@ -1,4 +1,5 @@
 import * as React from 'react';
+import type { ResolvedHomeTarget } from '@happier-dev/cli-common/homeTarget';
 import {
     parseApproveRemoteProvisioningPromptData,
     parseSshPasswordPromptData,
@@ -8,7 +9,7 @@ import {
     type SystemTaskResult,
 } from '@happier-dev/protocol';
 
-import { getDefaultSystemTaskRunner } from '@/components/systemTasks';
+import { getSystemTasksRunner } from '@/components/systemTasks/systemTasksRuntime';
 import {
     resolveBackgroundServiceReplacementPrompt,
     resolveReleaseChannelSwitchSetupPrompt,
@@ -17,12 +18,8 @@ import {
 import type { SystemTaskRunState, SystemTaskRunner } from '@/components/systemTasks/types';
 import { useSystemTaskSnapshot } from '@/components/systemTasks/useSystemTaskSnapshot';
 import { readLatestSystemTaskPrompt } from '@/components/systemTasks/prompts/readLatestSystemTaskPrompt';
-import { resolvePreferredPublicReleaseRingLabelForCurrentApp } from '@/sync/runtime/resolvePublicReleaseRing';
-
-import {
-    buildRemoteSshBootstrapMachineSystemTaskSpec,
-    type RemoteSshPromptResolution,
-} from './buildRemoteSshBootstrapMachineSystemTaskSpec';
+import type { RemoteSshPromptResolution } from './buildRemoteSshBootstrapMachineSystemTaskSpec';
+import { startRemoteSshBootstrapTask, continueRemoteSshBootstrapTask } from './remoteSshBootstrapTask';
 
 export type RemoteSshBootstrapPrompt =
     | (Readonly<{
@@ -62,7 +59,10 @@ function resolveStatus(result: SystemTaskResult): SystemTaskRunState['status'] {
     return (result.error.code === 'cancelled' || result.error.code === 'canceled') ? 'canceled' : 'failed';
 }
 
-function resolveRemotePrompt(snapshot: SystemTaskRunState | null): RemoteSshBootstrapPrompt | null {
+export function resolveRemoteSshBootstrapPrompt(snapshot: SystemTaskRunState | null): RemoteSshBootstrapPrompt | null {
+    // Failed desktop tasks retain their trust/provisioning prompt for the
+    // existing continuation restart; successful or canceled tasks do not.
+    if (snapshot?.result?.ok || snapshot?.cancelRequested || snapshot?.status === 'canceled') return null;
     const prompt = readLatestSystemTaskPrompt(snapshot);
     if (!prompt) {
         return null;
@@ -117,26 +117,36 @@ function normalizeRemoteSnapshot(snapshot: SystemTaskRunState | null): SystemTas
     return {
         ...snapshot,
         status: snapshot.result ? resolveStatus(snapshot.result) : snapshot.status,
-        awaitingInput: resolveRemotePrompt(snapshot) != null,
+        awaitingInput: resolveRemoteSshBootstrapPrompt(snapshot) != null,
     };
 }
 
 export function useRemoteSshBootstrapTask(options: Readonly<{
     runner?: SystemTaskRunner;
+    /** undefined preserves legacy presenter-local ownership; null/id is controlled. */
+    taskId?: string | null;
+    onTaskIdChange?: (taskId: string | null) => void;
     relayUrl: string;
+    homeTarget?: ResolvedHomeTarget;
     webappUrl?: string;
     publicRelayUrl?: string;
     serviceMode?: 'user' | 'none';
+    intent?: 'machineSetup' | 'personalHome.create';
 }>) {
-    const runner = options.runner ?? getDefaultSystemTaskRunner();
-    const [activeTaskId, setActiveTaskId] = React.useState<string | null>(null);
+    const runner = options.runner ?? getSystemTasksRunner();
+    const [localTaskId, setLocalTaskId] = React.useState<string | null>(null);
+    const activeTaskId = options.taskId === undefined ? localTaskId : options.taskId;
+    const setActiveTaskId = React.useCallback((taskId: string | null) => {
+        setLocalTaskId(taskId);
+        options.onTaskIdChange?.(taskId);
+    }, [options.onTaskIdChange]);
     const [isStarting, setIsStarting] = React.useState(false);
     const [promptResolution, setPromptResolution] = React.useState<RemoteSshPromptResolution>({});
     const latestFormStateRef = React.useRef<RemoteSshBootstrapFormState | null>(null);
     const answeredPasswordPromptTaskIdRef = React.useRef<string | null>(null);
     const rawSnapshot = useSystemTaskSnapshot(runner, activeTaskId);
     const activeTaskSnapshot = React.useMemo(() => normalizeRemoteSnapshot(rawSnapshot), [rawSnapshot]);
-    const prompt = React.useMemo(() => resolveRemotePrompt(rawSnapshot), [rawSnapshot]);
+    const prompt = React.useMemo(() => resolveRemoteSshBootstrapPrompt(rawSnapshot), [rawSnapshot]);
 
     const startWithResolution = React.useCallback(async (
         params: RemoteSshBootstrapFormState,
@@ -145,28 +155,13 @@ export function useRemoteSshBootstrapTask(options: Readonly<{
         latestFormStateRef.current = params;
         setIsStarting(true);
         try {
-            const taskId = await runner.start(buildRemoteSshBootstrapMachineSystemTaskSpec({
-                relayUrl: options.relayUrl,
-                webappUrl: options.webappUrl,
-                publicRelayUrl: options.publicRelayUrl,
-                serviceMode: options.serviceMode,
-                channel: resolvePreferredPublicReleaseRingLabelForCurrentApp(),
-                sshUsername: params.sshUsername,
-                sshHost: params.sshHost,
-                sshPort: params.sshPort,
-                sshAuth: params.sshAuth,
-                sshPassword: params.sshPassword,
-                identityFilePath: params.identityFilePath,
-                identityPrivateKey: params.sshAuth === 'keyfile' ? params.identityPrivateKey : undefined,
-                installRelayRuntime: params.installRelayRuntime,
-                promptResolution: nextPromptResolution,
-            }));
+            const taskId = await startRemoteSshBootstrapTask({ ...options, runner }, params, nextPromptResolution);
             setActiveTaskId(taskId);
             return taskId;
         } finally {
             setIsStarting(false);
         }
-    }, [options.publicRelayUrl, options.relayUrl, options.webappUrl, runner]);
+    }, [options.homeTarget, options.intent, options.publicRelayUrl, options.relayUrl, options.serviceMode, options.webappUrl, runner, setActiveTaskId]);
 
     const start = React.useCallback(async (params: RemoteSshBootstrapFormState) => {
         return await startWithResolution(params, promptResolution);
@@ -179,57 +174,14 @@ export function useRemoteSshBootstrapTask(options: Readonly<{
         if (prompt.kind === 'ssh.password') {
             throw new Error('SSH password prompts must be answered via answerPasswordPrompt().');
         }
-        if (prompt.kind === 'daemon.replaceRemoteBackgroundServices') {
-            if (!activeTaskId) {
-                throw new Error('No remote background service prompt task is active.');
-            }
-            latestFormStateRef.current = params;
-            await runner.respond(activeTaskId, { replaceExistingServices: true });
-            return activeTaskId;
-        }
-        if (prompt.kind === 'releaseChannel.switchDefaultForSetup') {
-            if (!activeTaskId) {
-                throw new Error('No remote release-channel prompt task is active.');
-            }
-            latestFormStateRef.current = params;
-            await runner.respond(activeTaskId, { switchDefaultReleaseChannel: true });
-            return activeTaskId;
-        }
-
+        if (!activeTaskId) throw new Error('No remote SSH prompt task is active.');
         latestFormStateRef.current = params;
-
-        if (runner.mode === 'native' && activeTaskId && rawSnapshot?.result == null) {
-            if (prompt.kind === 'auth.approveRemoteProvisioning') {
-                await runner.respond(activeTaskId, { approved: true });
-                return activeTaskId;
-            }
-            await runner.respond(activeTaskId, { trusted: true });
-            return activeTaskId;
-        }
-
-        const nextPromptResolution: RemoteSshPromptResolution = prompt.kind === 'auth.approveRemoteProvisioning'
-            ? {
-                ...promptResolution,
-                ...(prompt.publicKey ? { authApproval: { publicKey: prompt.publicKey } } : {}),
-            }
-            : {
-                ...promptResolution,
-                hostTrust: {
-                    kind: prompt.kind,
-                    fingerprint: prompt.fingerprint,
-                    ...(prompt.kind === 'ssh.replaceHostKey'
-                        ? { existingFingerprint: prompt.existingFingerprint }
-                        : {}),
-                },
-            };
-
-        if (activeTaskId && rawSnapshot?.result == null) {
-            await runner.cancel(activeTaskId).catch(() => {});
-        }
-
-        setPromptResolution(nextPromptResolution);
-        return await startWithResolution(params, nextPromptResolution);
-    }, [activeTaskId, prompt, promptResolution, rawSnapshot, runner, startWithResolution]);
+        const continued = await continueRemoteSshBootstrapTask({ options: { ...options, runner }, form: params,
+            taskId: activeTaskId, snapshot: rawSnapshot, prompt, resolution: promptResolution });
+        setPromptResolution(continued.resolution);
+        setActiveTaskId(continued.taskId);
+        return continued.taskId;
+    }, [activeTaskId, options.homeTarget, options.intent, options.publicRelayUrl, options.relayUrl, options.serviceMode, options.webappUrl, prompt, promptResolution, rawSnapshot, runner, setActiveTaskId]);
 
     const answerPasswordPrompt = React.useCallback(async (params: RemoteSshBootstrapFormState) => {
         if (!prompt || prompt.kind !== 'ssh.password') {
@@ -273,7 +225,7 @@ export function useRemoteSshBootstrapTask(options: Readonly<{
             void runner.cancel(activeTaskId);
         }
         setActiveTaskId(null);
-    }, [activeTaskId, runner]);
+    }, [activeTaskId, runner, setActiveTaskId]);
 
     const resetPromptResolution = React.useCallback(() => {
         setPromptResolution({});
@@ -306,6 +258,7 @@ export function useRemoteSshBootstrapTask(options: Readonly<{
     }, [activeTaskSnapshot]);
 
     return {
+        activeTaskId,
         activeTaskSnapshot,
         cancel,
         declinePrompt,

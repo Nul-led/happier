@@ -9,6 +9,7 @@ import { join } from 'node:path';
 
 import {
   accountSettingsParse,
+  projectSessionMetadataForWire,
   buildConnectedServiceCredentialRecord,
   deserializeSessionModelSelectionV1,
   ProviderConnectionIdSchema,
@@ -19,10 +20,10 @@ import {
 } from '@happier-dev/protocol';
 
 import { reloadConfiguration } from '@/configuration';
-import type { Credentials } from '@/persistence';
+import type { Credentials, Settings } from '@/persistence';
 import { encodeBase64, encrypt } from '@/api/encryption';
 import { readSessionAttachFromFile } from '@/agent/runtime/sessionAttach';
-import { createSessionRecordFixture } from '@/testkit/backends/sessionFixtures';
+import { createAccountEncryptionCurrentnessFixture, createSessionRecordFixture } from '@/testkit/backends/sessionFixtures';
 import type { CommandHandler } from '@/cli/commandRegistry';
 import { createPluginStateStore } from '@/plugins/store/state.testkit';
 import { createPluginManifestV2Fixture } from '@/plugins/testkit/manifestV2Fixture';
@@ -91,6 +92,80 @@ describe('happier resume', () => {
       logSpy.mockRestore();
       errorSpy.mockRestore();
     }
+  });
+
+  it('attaches an active Happier session through the existing terminal attach path without vendor-resuming it', async () => {
+    const credentials: Credentials = {
+      token: 'token-1',
+      encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
+    };
+    const terminal = {
+      mode: 'herdr' as const,
+      requested: 'herdr' as const,
+      herdr: { sessionName: 'main', socketPath: '/tmp/herdr.sock', terminalId: 'term-1' },
+    };
+    const rawSession = createSessionRecordFixture({
+      id: 'sid_active_1',
+      active: true,
+      encryptionMode: 'plain',
+      metadata: JSON.stringify(projectSessionMetadataForWire({
+        flavor: 'claude', machineId: 'machine-local', path: '/tmp/project', terminal,
+      })),
+    });
+    const runHerdrAttachFn = vi.fn(async () => 0);
+    const resolveAgentHandlerFn = vi.fn(async () => vi.fn(async () => {}));
+
+    await handleResumeCommand(['sid_active_1'], {
+      readCredentialsFn: async () => credentials,
+      fetchSessionByIdFn: async () => rawSession,
+      readAccountSettingsFn: async () => accountSettingsParse({}),
+      resolveContributionRegistryFn: async () => null,
+      getAccountEncryptionCurrentnessFn: async () => createAccountEncryptionCurrentnessFixture(),
+      resolveAgentHandlerFn,
+      attachDeps: {
+        readSettingsFn: async (): Promise<Settings> => ({ machineId: 'machine-local' } as Settings),
+        readTerminalAttachmentInfoFn: async () => null,
+        runHerdrAttachFn,
+      },
+    });
+
+    expect(runHerdrAttachFn).toHaveBeenCalledWith({ terminal });
+    expect(resolveAgentHandlerFn).not.toHaveBeenCalled();
+  });
+
+  it('does not start a second Agent if attachment to an active Herdr session fails', async () => {
+    const credentials: Credentials = {
+      token: 'token-1',
+      encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
+    };
+    const terminal = {
+      mode: 'herdr' as const, requested: 'herdr' as const,
+      herdr: { sessionName: 'main', socketPath: '/tmp/herdr.sock', terminalId: 'stale-term' },
+    };
+    const rawSession = createSessionRecordFixture({
+      id: 'sid_active_stale', active: true, encryptionMode: 'plain',
+      metadata: JSON.stringify({
+        flavor: 'claude', claudeSessionId: 'vendor-resumable-id',
+        machineId: 'machine-local', path: '/tmp/project', terminal,
+      }),
+    });
+    const resolveAgentHandlerFn = vi.fn(async () => vi.fn(async () => {}));
+
+    await expect(handleResumeCommand(['sid_active_stale'], {
+      readCredentialsFn: async () => credentials,
+      fetchSessionByIdFn: async () => rawSession,
+      readAccountSettingsFn: async () => accountSettingsParse({}),
+      resolveContributionRegistryFn: async () => null,
+      getAccountEncryptionCurrentnessFn: async () => createAccountEncryptionCurrentnessFixture(),
+      resolveAgentHandlerFn,
+      attachDeps: {
+        readSettingsFn: async (): Promise<Settings> => ({ machineId: 'machine-local' } as Settings),
+        readTerminalAttachmentInfoFn: async () => ({ version: 1, sessionId: rawSession.id, terminal, updatedAt: Date.now() }),
+        runHerdrAttachFn: async () => { throw new Error('Herdr terminal is no longer available'); },
+      },
+    })).rejects.toThrow('Herdr terminal is no longer available');
+
+    expect(resolveAgentHandlerFn).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -354,7 +429,7 @@ describe('happier resume', () => {
           v: 1,
           updatedAt: 123,
           selection: {
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             providerConnectionId: 'pc_gateway',
             modelId: 'vendor/model',
           },
@@ -399,7 +474,7 @@ describe('happier resume', () => {
         v: 1,
         updatedAt: 123,
         ref: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: 'pc_gateway',
           modelId: 'vendor/model',
         },
@@ -1218,7 +1293,12 @@ describe('happier resume', () => {
             pluginVersion: '1.0.0',
             agentId: 'codex',
             backendId: 'codex',
-            generation: 'generation-1',
+            occurrenceId: 'occurrence:happier.agent.codex:1',
+            sourceCustody: {
+              kind: 'managed',
+              immutableGenerationId: 'generation-1',
+              installSource: 'localPath',
+            },
           },
         },
         launchPolicy: {
@@ -1296,21 +1376,21 @@ describe('happier resume', () => {
         readAccountSettingsFn: async () => accountSettingsParse({ schemaVersion: 6, codexBackendMode: 'acp' }),
         fetchSessionByIdFn,
         canUseInkSelectorFn: () => true,
-        selectResumableSessionIdFn: async () => ({ type: 'cancelled' }),
+        selectContinuableSessionIdFn: async () => ({ type: 'cancelled' }),
       });
 
       expect(fetchSessionByIdFn).not.toHaveBeenCalled();
 
       const output = logSpy.mock.calls.flat().join('\n');
       expect(output).toContain('cancel');
-      expect(output).not.toContain('No resumable sessions found.');
+      expect(output).not.toContain('No sessions available to continue from here.');
     } finally {
       logSpy.mockRestore();
       errorSpy.mockRestore();
     }
   });
 
-  it('prints a "No resumable sessions" message when there are none in interactive mode', async () => {
+  it('prints a no-sessions message when there are none in interactive mode', async () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
@@ -1329,20 +1409,20 @@ describe('happier resume', () => {
         readAccountSettingsFn: async () => accountSettingsParse({ schemaVersion: 6, codexBackendMode: 'acp' }),
         fetchSessionByIdFn,
         canUseInkSelectorFn: () => true,
-        selectResumableSessionIdFn: async () => ({ type: 'none' }),
+        selectContinuableSessionIdFn: async () => ({ type: 'none' }),
       });
 
       expect(fetchSessionByIdFn).not.toHaveBeenCalled();
 
       const output = logSpy.mock.calls.flat().join('\n');
-      expect(output).toContain('No resumable sessions found.');
+      expect(output).toContain('No sessions available to continue from here.');
     } finally {
       logSpy.mockRestore();
       errorSpy.mockRestore();
     }
   });
 
-  it('prints the attach footer when interactive resume only finds active sessions', async () => {
+  it('prints a selector hint when no sessions are available to continue', async () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
@@ -1351,16 +1431,6 @@ describe('happier resume', () => {
         token: 'token-1',
         encryption: { type: 'legacy', secret: new Uint8Array(32).fill(11) },
       };
-      const activeSession = createSessionRecordFixture({
-        id: 'sid_active_only_1',
-        active: true,
-        encryptionMode: 'plain',
-        metadata: JSON.stringify({
-          flavor: 'claude',
-          path: '/tmp/active-only',
-          machineId: 'machine-local',
-        }),
-      });
       const fetchSessionByIdFn = vi.fn(async () => {
         throw new Error('fetchSessionByIdFn should not be called');
       });
@@ -1370,9 +1440,10 @@ describe('happier resume', () => {
         readAccountSettingsFn: async () => accountSettingsParse({ schemaVersion: 6, codexBackendMode: 'acp' }),
         fetchSessionByIdFn,
         fetchSessionsPageFn: async () => ({
-          sessions: [activeSession],
+          sessions: [],
           nextCursor: null,
           hasNext: false,
+          metadataUpgradeRequiredCount: 1,
         }),
         canUseInkSelectorFn: () => true,
       });
@@ -1380,8 +1451,8 @@ describe('happier resume', () => {
       expect(fetchSessionByIdFn).not.toHaveBeenCalled();
 
       const output = logSpy.mock.calls.flat().join('\n');
-      expect(output).toContain('No resumable sessions found.');
-      expect(output).toContain('happier attach');
+      expect(output).toContain('No sessions available to continue from here.');
+      expect(output).toMatch(/incomplete.*owner.*upgrade/i);
     } finally {
       logSpy.mockRestore();
       errorSpy.mockRestore();

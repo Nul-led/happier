@@ -72,7 +72,7 @@ describe('readVerifiedEphemeralRunnerActivationFile', () => {
     expect([...verified.activationSecretKey]).toEqual(new Array(64).fill(0));
   });
 
-  it('rejects tampering, bearer extras, oversized input, and a substituted artifact', async () => {
+  it('rejects tampering and a substituted artifact while accepting a schema-valid large descriptor', async () => {
     const root = await mkdtemp(join(tmpdir(), 'happier-runner-activation-'));
     roots.push(root);
     const path = join(root, 'activation.json');
@@ -95,9 +95,22 @@ describe('readVerifiedEphemeralRunnerActivationFile', () => {
       artifact: { ...value.activation.artifact, sha256: 'b'.repeat(64) },
     })).rejects.toMatchObject({ code: 'RUNNER_ARTIFACT_MISMATCH' });
 
-    await writeFile(path, ' '.repeat(65 * 1024), { mode: 0o600 });
+    const large = {
+      ...value,
+      home: {
+        ...value.home,
+        endpoints: [{
+          kind: 'iroh' as const,
+          endpointId: 'a'.repeat(64),
+          relayUrls: Array.from({ length: 200 }, (_, index) => (
+            `https://relay-${index}.example.test/endpoint/${'x'.repeat(420)}`
+          )),
+        }],
+      },
+    };
+    await writeFile(path, JSON.stringify(large), { mode: 0o600 });
     await expect(readVerifiedEphemeralRunnerActivationFile(path, {
       artifact: value.activation.artifact,
-    })).rejects.toMatchObject({ code: 'RUNNER_ACTIVATION_FILE_INVALID' });
+    })).resolves.toMatchObject({ document: large });
   });
 });

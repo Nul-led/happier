@@ -12,7 +12,7 @@ use happier_iroh_core::{
     validate_endpoint_id, validate_loopback_target, EndpointConfig, EndpointIdentity,
     EndpointKeyStore, EndpointManager, EndpointSeed, HomeAcceptor, HomeAcceptorConfig, HomeTunnel,
     HomeTunnelConfig, IrohCapProfile, IrohEndpoint, MachineAcceptor, MachineAcceptorConfig,
-    MachineHttpTunnel, MachineTunnel, MachineTunnelConfig, MachineTunnelStatus, RelayPolicy,
+    MachineHttpTunnel, MachineTunnel, MachineTunnelConfig, MachineTunnelStatus, NativeHttpLease, RelayPolicy,
     RelaySelection,
 };
 pub use happier_iroh_core::{IrohError, MachineHandshakeProvider};
@@ -62,6 +62,14 @@ struct CreateEndpointRequest {
     relay_urls: Vec<String>,
     #[serde(default = "default_cap_profile")]
     cap_profile: String,
+}
+
+#[cfg(feature = "test-relay-fixture")]
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ForceRelayOnlyRequest {
+    #[serde(default)]
+    relay_url: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -118,7 +126,13 @@ struct StartMachineTunnelRequest {
     handshake_json: String,
     #[serde(default = "default_machine_cap_profile")]
     cap_profile: String,
+    #[serde(default)]
+    native_http_lease: Option<NativeHttpLeaseRequest>,
 }
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct NativeHttpLeaseRequest { open_json: String }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -277,6 +291,7 @@ impl Drop for EndpointAdmission {
 enum MachineTunnelKind {
     Raw(MachineTunnel),
     Http(MachineHttpTunnel),
+    GuestHttp(NativeHttpLease),
 }
 
 impl MachineTunnelKind {
@@ -284,6 +299,7 @@ impl MachineTunnelKind {
         match self {
             Self::Raw(tunnel) => tunnel.status(),
             Self::Http(tunnel) => tunnel.status(),
+            Self::GuestHttp(tunnel) => tunnel.status(),
         }
     }
 
@@ -291,6 +307,7 @@ impl MachineTunnelKind {
         match self {
             Self::Raw(tunnel) => tunnel.stop_and_wait().await,
             Self::Http(tunnel) => tunnel.stop_and_wait().await,
+            Self::GuestHttp(tunnel) => tunnel.stop_and_wait().await,
         }
     }
 }
@@ -304,7 +321,7 @@ enum TestTopology {
         // The one local relay owner stops when this drop guard is released.
         // Its concrete type is erased so the lifecycle crate does not grow a
         // second relay-server API.
-        _relay_server: Box<dyn Any + Send>,
+        _relay_server: Option<Box<dyn Any + Send>>,
     },
 }
 
@@ -618,7 +635,11 @@ fn force_direct_only_for_tests() -> Value {
 }
 
 #[cfg(feature = "test-relay-fixture")]
-fn force_relay_only_for_tests() -> Value {
+fn force_relay_only_for_tests(value: *const c_char) -> Value {
+    let input = match parse_json::<ForceRelayOnlyRequest>(value) {
+        Ok(input) => input,
+        Err((code, message)) => return error_response(&code, message),
+    };
     let _operation = state()
         .test_operation
         .lock()
@@ -626,26 +647,34 @@ fn force_relay_only_for_tests() -> Value {
     if test_fixture_has_active_endpoints() {
         return test_fixture_busy_response();
     }
-    // One relay owner, shared with the Rust tunnel fixtures. It serves plain
-    // HTTP, so ordinary endpoints reach it with normal CA verification and a
-    // browser can consume the same URL.
-    let relay_server = match runtime().block_on(happier_iroh_core::LocalTestRelay::spawn()) {
-        Ok(value) => value,
-        Err(error) => {
-            return error_response(
-                "test-fixture-unavailable",
-                format!("local Iroh test relay failed to start: {error}"),
-            )
-        }
-    };
-    let relay_url = relay_server.url_string();
+    // The same topology owner may use the local stock test relay or an
+    // externally started stock relay (the source Docker journey). Both clear
+    // IP transports below, making the observed relay path decisive.
+    let (relay_url, relay_server): (String, Option<Box<dyn Any + Send>>) =
+        if let Some(relay_url) = input.relay_url {
+            if RelaySelection::resolve(&RelayPolicy::Automatic, &[relay_url.clone()]).is_err() {
+                return error_response("invalid-request", "test relayUrl is invalid");
+            }
+            (relay_url, None)
+        } else {
+            let server = match runtime().block_on(happier_iroh_core::LocalTestRelay::spawn()) {
+                Ok(value) => value,
+                Err(error) => {
+                    return error_response(
+                        "test-fixture-unavailable",
+                        format!("local Iroh test relay failed to start: {error}"),
+                    )
+                }
+            };
+            (server.url_string(), Some(Box::new(server)))
+        };
     let mut fixture = state()
         .test_fixture
         .lock()
         .expect("test fixture lock poisoned");
     fixture.topology = TestTopology::RelayOnly {
         relay_url,
-        _relay_server: Box::new(relay_server),
+        _relay_server: relay_server,
     };
     fixture.observed_path = "unknown";
     json!({"ok": true})
@@ -1247,17 +1276,20 @@ fn start_machine_tunnel(value: *const c_char) -> Value {
     };
     let tunnel = match runtime().block_on(async {
         tokio::select! {
-            result = MachineTunnel::start(
-                &endpoint,
-                MachineTunnelConfig {
+            result = async {
+                let config = MachineTunnelConfig {
                     endpoint_id: input.endpoint_id,
                     bind_addr: "127.0.0.1:0".parse().expect("fixed loopback"),
                     direct_addresses: input.direct_addresses,
                     relay_urls,
                     handshake_json: input.handshake_json,
                     cap_profile,
-                },
-            ) => result,
+                };
+                match input.native_http_lease {
+                    Some(lease) => NativeHttpLease::start(&endpoint, config, &lease.open_json).await.map(MachineTunnelKind::GuestHttp),
+                    None => MachineTunnel::start(&endpoint, config).await.map(MachineTunnelKind::Raw),
+                }
+            } => result,
             _ = admission.cancelled() => Err(happier_iroh_core::IrohError::Cancelled),
         }
     }) {
@@ -1266,7 +1298,10 @@ fn start_machine_tunnel(value: *const c_char) -> Value {
     };
     let id = next_id();
     let status = tunnel.status();
-    let tunnel_local_capability = tunnel.local_capability().map(str::to_owned);
+    let tunnel_local_capability = match &tunnel {
+        MachineTunnelKind::Raw(tunnel) => tunnel.local_capability().map(str::to_owned),
+        _ => None,
+    };
     let started_at_ms = now_ms();
     let published = admission.publish_if_active(tunnel, |tunnel| {
         state()
@@ -1277,7 +1312,7 @@ fn start_machine_tunnel(value: *const c_char) -> Value {
                 id.clone(),
                 MachineTunnelLease {
                     endpoint_handle: input.endpoint_handle.clone(),
-                    tunnel: MachineTunnelKind::Raw(tunnel),
+                    tunnel,
                     started_at_ms,
                 },
             );
@@ -1309,6 +1344,9 @@ fn start_machine_http_tunnel_input(
     input: StartMachineTunnelRequest,
     handshake_provider: Option<MachineHandshakeProvider>,
 ) -> Value {
+    if input.native_http_lease.is_some() {
+        return error_response("invalid-request", "nativeHttpLease requires startMachineTunnel");
+    }
     if validate_endpoint_id(&input.endpoint_id).is_err() {
         return error_response("invalid-request", "endpointId is invalid");
     }
@@ -1747,9 +1785,9 @@ pub extern "C" fn happier_iroh_native_test_force_direct_only_json(
 #[cfg(feature = "test-relay-fixture")]
 #[no_mangle]
 pub extern "C" fn happier_iroh_native_test_force_relay_only_json(
-    _value: *const c_char,
+    value: *const c_char,
 ) -> *mut c_char {
-    response(force_relay_only_for_tests())
+    response(force_relay_only_for_tests(value))
 }
 
 #[cfg(feature = "test-relay-fixture")]

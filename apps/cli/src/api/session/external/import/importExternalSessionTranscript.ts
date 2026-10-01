@@ -7,7 +7,7 @@ import {
   stripSessionInputProtectedMeta,
   type ExternalSessionTranscriptRawMessageV1,
   type SessionMessageRole,
-  type SessionStoredMessageContent,
+  type StrictSessionStoredMessageContentEnvelope,
   type SidechainId,
 } from '@happier-dev/protocol';
 
@@ -81,7 +81,7 @@ function buildStoredMessageContent(params: Readonly<{
   rawSession: RawSessionRecord;
   credentials: StoredCredentials;
   raw: Record<string, unknown>;
-}>): SessionStoredMessageContent {
+}>): StrictSessionStoredMessageContentEnvelope {
   // Structured presentation remains host-private prework. This is the one
   // historical-import boundary that still owns plaintext for both storage
   // modes, so share the canonical Message-writer profile reservation before
@@ -131,7 +131,7 @@ export async function prepareExternalSessionHistoricalImportItem(params: Readonl
   localId: string;
   sidechainId: SidechainId | null;
   messageRole: SessionMessageRole | null;
-  content: SessionStoredMessageContent;
+  content: StrictSessionStoredMessageContentEnvelope;
   sourceCreatedAtMs?: number;
 }>> {
   const localId = makeExternalSessionHistoricalImportLocalId({
@@ -174,7 +174,7 @@ export async function prepareExternalSessionHistoricalImportItem(params: Readonl
     throw new ExternalSessionHistoricalImportRequiredItemError('media');
   }
   raw = sanitizeHistoricalImportRaw({ item: params.item, messageRole, raw });
-  let content: SessionStoredMessageContent;
+  let content: StrictSessionStoredMessageContentEnvelope;
   try {
     content = buildStoredMessageContent({
       rawSession: params.linked.rawSession,
@@ -262,7 +262,7 @@ export function validateExternalSessionHistoricalImportStagedItem(params: Readon
   localId: string;
   sidechainId: SidechainId | null;
   messageRole: SessionMessageRole | null;
-  content: SessionStoredMessageContent;
+  content: StrictSessionStoredMessageContentEnvelope;
   sourceCreatedAtMs?: number;
 }> {
   const localId = makeExternalSessionHistoricalImportLocalId({
@@ -272,7 +272,7 @@ export function validateExternalSessionHistoricalImportStagedItem(params: Readon
   });
   const parsedMessageRole = SessionMessageRoleSchema.safeParse(params.staged.item.messageRole);
   const messageRole = parsedMessageRole.success ? parsedMessageRole.data : null;
-  let content: SessionStoredMessageContent;
+  let content: StrictSessionStoredMessageContentEnvelope;
   try {
     content = buildStoredMessageContent({
       rawSession: params.linked.rawSession,

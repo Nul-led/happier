@@ -40,7 +40,6 @@ import {
     resolveWarmCacheAccountScope,
     saveMachineDisplayWarmCacheEntries,
     saveSessionListWarmCacheEntries,
-    scheduleWarmCacheBootHydration,
     setWarmCacheAccountScope,
 } from './warmCachePersistence';
 import { prepareWarmCacheEncryptionKey } from './warmCacheEncryptionKey';
@@ -442,52 +441,5 @@ describe('warmCachePersistence', () => {
                 displayName: 'Work Mac',
             }),
         });
-    });
-
-    it('defers boot hydration work and completes through the deterministic fallback', async () => {
-        vi.useFakeTimers();
-        const previousRequestIdleCallback = globalThis.requestIdleCallback;
-        const previousCancelIdleCallback = globalThis.cancelIdleCallback;
-        const idleCallbacks: Array<() => void> = [];
-        const cancelIdleCallback = vi.fn();
-        Object.defineProperty(globalThis, 'requestIdleCallback', {
-            configurable: true,
-            value: vi.fn((callback: () => void) => {
-                idleCallbacks.push(callback);
-                return 7;
-            }),
-        });
-        Object.defineProperty(globalThis, 'cancelIdleCallback', {
-            configurable: true,
-            value: cancelIdleCallback,
-        });
-
-        try {
-            const task = vi.fn();
-            const scheduled = scheduleWarmCacheBootHydration(task, { fallbackDelayMs: 50 });
-
-            expect(task).not.toHaveBeenCalled();
-            expect(idleCallbacks).toHaveLength(1);
-
-            await Promise.resolve();
-            vi.advanceTimersByTime(49);
-            expect(task).not.toHaveBeenCalled();
-
-            vi.advanceTimersByTime(1);
-            await scheduled.done;
-
-            expect(task).toHaveBeenCalledTimes(1);
-            expect(cancelIdleCallback).toHaveBeenCalledWith(7);
-        } finally {
-            Object.defineProperty(globalThis, 'requestIdleCallback', {
-                configurable: true,
-                value: previousRequestIdleCallback,
-            });
-            Object.defineProperty(globalThis, 'cancelIdleCallback', {
-                configurable: true,
-                value: previousCancelIdleCallback,
-            });
-            vi.useRealTimers();
-        }
     });
 });

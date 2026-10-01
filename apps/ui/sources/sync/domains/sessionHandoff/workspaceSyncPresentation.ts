@@ -1,3 +1,19 @@
+import { t } from '@/text';
+import type { WorkspaceSyncSetAttention } from './workspaceSyncRelationshipModel';
+
+/** Keep known conflicts distinct from links whose current status needs checking. */
+export function formatWorkspaceSyncSetAttention(attention: WorkspaceSyncSetAttention): string | null {
+    const parts = [
+        attention.conflictedLinkCount > 0
+            ? t('workspaceSync.attention.conflictedLinks', { count: attention.conflictedLinkCount })
+            : null,
+        attention.unknownLinkCount > 0
+            ? t('workspaceSync.attention.unavailableLinks', { count: attention.unknownLinkCount })
+            : null,
+    ].filter((part): part is string => part !== null);
+    return parts.length > 0 ? parts.join(' · ') : null;
+}
+
 export type WorkspaceSyncModeTranslationKey =
     | 'workspaceSync.mode.copyOnce'
     | 'workspaceSync.mode.keepSynced'
@@ -23,6 +39,8 @@ export type WorkspaceSyncErrorTranslationKey =
     | 'workspaceSync.error.authorizationExpired'
     | 'workspaceSync.error.rootNoLongerAuthorized'
     | 'workspaceSync.error.conflictNeedsAttention'
+    | 'workspaceSync.error.updateRequired'
+    | 'sessionHandoff.failure.partialLinked'
     | 'workspaceSync.error.needsAttention';
 
 /**
@@ -53,22 +71,6 @@ export function formatWorkspaceSyncRelationshipTitle(input: Readonly<{
 }>): string {
     const separator = input.mode === 'keep_both_in_sync' ? ' ↔ ' : ' → ';
     return `${input.alphaLabel}${separator}${input.betaLabel}`;
-}
-
-export type WorkspaceSyncConflictOpenTarget =
-    | Readonly<{ kind: 'none' }>
-    | Readonly<{ kind: 'relationship'; relationshipId: string }>
-    | Readonly<{ kind: 'relationshipList' }>;
-
-export function resolveWorkspaceSyncConflictOpenTarget(
-    relationships: readonly Readonly<{ relationshipId: string; conflictCount: number }>[],
-): WorkspaceSyncConflictOpenTarget {
-    const conflicted = relationships.filter((relationship) => relationship.conflictCount > 0);
-    if (conflicted.length === 0) return { kind: 'none' };
-    if (conflicted.length === 1) {
-        return { kind: 'relationship', relationshipId: conflicted[0]!.relationshipId };
-    }
-    return { kind: 'relationshipList' };
 }
 
 export function resolveWorkspaceSyncStateTranslationKey(value: unknown): WorkspaceSyncStateTranslationKey | null {
@@ -110,8 +112,14 @@ export function resolveWorkspaceSyncErrorTranslationKey(value: unknown): Workspa
             return 'workspaceSync.error.rootNoLongerAuthorized';
         case 'conflict_changed':
             return 'workspaceSync.error.conflictNeedsAttention';
-        default:
+        case 'workspace_sync_update_required':
+            return 'workspaceSync.error.updateRequired';
+        case 'workspace_sync_partial_route_blocked':
+            return 'sessionHandoff.failure.partialLinked';
+        case 'engine_problems':
             return 'workspaceSync.error.needsAttention';
+        default:
+            return null;
     }
 }
 

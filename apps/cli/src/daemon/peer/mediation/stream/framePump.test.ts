@@ -18,7 +18,23 @@ function frame(sequence: number, payloadKind: MachineLiveStreamFrameV1['payloadK
 }
 
 describe('startMachineLiveStreamFramePump', () => {
-    it('honors ack credit and pauses before exceeding the advertised window', () => {
+    it('pauses direct credit without consuming metering or producer sequence and resumes on credit', () => {
+        const frames: MachineLiveStreamFrameV1[] = [];
+        const receipts: unknown[] = [];
+        const pump = startMachineLiveStreamFramePump({
+            streamId: 'stream_1', routeKind: 'loopback_direct',
+            caps: { maxFramesPerSecond: 1 }, startedAtMs: 1_000, nowMs: () => 1_000,
+            emitFrame: (frame) => frames.push(frame), emitReceipt: (receipt) => receipts.push(receipt),
+        });
+        pump.applyControl({ v: 1, streamId: 'stream_1', kind: 'ack', nextSequence: 1, windowFrames: 0 });
+        expect(pump.offerFrame(frame(1, 'image_keyframe'))).toEqual({ ok: false, reasonCode: 'backpressure_window_exhausted' });
+        expect(pump.offerFrame(frame(1, 'image_keyframe'))).toEqual({ ok: false, reasonCode: 'backpressure_window_exhausted' });
+        expect(receipts.every((receipt) => typeof receipt === 'object' && receipt !== null && !('terminal' in receipt))).toBe(true);
+        pump.applyControl({ v: 1, streamId: 'stream_1', kind: 'ack', nextSequence: 1, windowFrames: 1 });
+        expect(pump.offerFrame(frame(1, 'image_keyframe'))).toEqual({ ok: true });
+        expect(frames).toHaveLength(1);
+    });
+    it('leaves relay credit and viewer ACK cursors to the server without changing producer sequencing', () => {
         const emittedFrames: MachineLiveStreamFrameV1[] = [];
         const receipts: unknown[] = [];
         const pump = startMachineLiveStreamFramePump({
@@ -41,22 +57,15 @@ describe('startMachineLiveStreamFramePump', () => {
             v: 1,
             streamId: 'stream_1',
             kind: 'ack',
-            nextSequence: 1,
-            windowFrames: 1,
-            windowBytes: 3,
+            nextSequence: 90,
+            windowFrames: 0,
+            windowBytes: 0,
         });
 
         expect(pump.offerFrame(frame(1, 'image_keyframe'))).toEqual({ ok: true });
-        expect(pump.offerFrame(frame(2, 'image_delta'))).toEqual({
-            ok: false,
-            reasonCode: 'backpressure_window_exhausted',
-        });
-        expect(emittedFrames.map((item) => item.sequence)).toEqual([1]);
-        expect(receipts).toContainEqual(expect.objectContaining({
-            id: PEER_MEDIATION_RECEIPTS.streamPaused,
-            reasonCode: 'backpressure_window_exhausted',
-            routeKind: 'server_relay',
-        }));
+        expect(pump.offerFrame(frame(2, 'image_delta'))).toEqual({ ok: true });
+        expect(emittedFrames.map((item) => item.sequence)).toEqual([1, 2]);
+        expect(receipts).toEqual([]);
     });
 
     it('caps oversized frames without leaking payload bytes into receipts', () => {
@@ -87,6 +96,8 @@ describe('startMachineLiveStreamFramePump', () => {
         expect(receipts).toContainEqual(expect.objectContaining({
             id: PEER_MEDIATION_RECEIPTS.streamBandwidthCapped,
             reasonCode: 'max_frame_bytes_exceeded',
+            terminal: true,
+            terminalOutcome: 'error',
         }));
         expect(JSON.stringify(receipts)).not.toContain('c2VudGluZWw=');
         expect(JSON.stringify(receipts)).not.toContain('sentinel');
@@ -126,7 +137,7 @@ describe('startMachineLiveStreamFramePump', () => {
         }));
     });
 
-    it('ignores stale ack cursors that would rewind frame sequencing', () => {
+    it('rejects stale direct credit updates without using ACK cursors as producer sequencing', () => {
         const emittedFrames: MachineLiveStreamFrameV1[] = [];
         const pump = startMachineLiveStreamFramePump({
             streamId: 'stream_1',
@@ -145,6 +156,14 @@ describe('startMachineLiveStreamFramePump', () => {
 
         expect(pump.offerFrame(frame(1, 'image_keyframe'))).toEqual({ ok: true });
         expect(pump.offerFrame(frame(2, 'image_delta'))).toEqual({ ok: true });
+        expect(pump.applyControl({
+            v: 1,
+            streamId: 'stream_1',
+            kind: 'ack',
+            nextSequence: 3,
+            windowFrames: 10,
+            windowBytes: 30,
+        })).toEqual({ ok: true });
         expect(pump.applyControl({
             v: 1,
             streamId: 'stream_1',

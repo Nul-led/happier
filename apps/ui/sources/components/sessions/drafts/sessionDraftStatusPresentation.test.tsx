@@ -10,7 +10,10 @@ import {
 describe('sessionDraftStatusPresentation', () => {
     it.each([
         ['offline', 'sessionDrafts.status.offline', 'paused'],
-        ['error', 'common.error', 'danger'],
+        ['error', 'common.error', 'warning'],
+        // A Home that cannot sync this draft at all says so in its own words:
+        // it is not the transient error, and the draft is still safe on device.
+        ['unsupported', 'sessionDrafts.status.unsupported', 'paused'],
     ] as const)('projects %s from the repository status into the composer badge', (status, labelKey, tone) => {
         const label = t(labelKey);
         expect(buildSessionDraftSyncStatusBadge(status)).toEqual(expect.objectContaining({

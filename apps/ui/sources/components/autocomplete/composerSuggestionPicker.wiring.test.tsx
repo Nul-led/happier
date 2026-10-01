@@ -6,8 +6,10 @@ import { RPC_METHODS, type PluginProjectionV2 } from '@happier-dev/protocol';
 import { createDeferred, flushHookEffects, renderHook } from '@/dev/testkit';
 import type { FileItem, FileSuggestionScope } from '@/sync/domains/input/suggestionFile';
 import {
+    DISCUSSION_COMPOSER_SUGGESTION_KINDS,
     NEW_SESSION_COMPOSER_SUGGESTION_KINDS,
     SESSION_COMPOSER_SUGGESTION_KINDS,
+    type ComposerAccountMentionSource,
     type ComposerReferenceSearchHost,
     type ComposerSuggestionKindId,
 } from './composerSuggestionKinds';
@@ -127,7 +129,6 @@ function composerReferenceHost(): ComposerReferenceSearchHost {
         generation: 7,
         installedPackagesById: {},
         agentsById: {},
-        backendsById: {},
         actionsById: {},
         toolsById: {},
         commandsById: {},
@@ -147,8 +148,8 @@ function composerReferenceHost(): ComposerReferenceSearchHost {
                     localId: 'issues',
                 },
                 progression: { declared: true, normalized: true, merged: true },
-                registration: { requirement: 'required', state: 'bound', generation: '7' },
-                activation: { state: 'active', generation: '7' },
+                registration: { requirement: 'required', state: 'bound', occurrenceId: '7' },
+                activation: { state: 'active', occurrenceId: '7' },
                 projection: { state: 'projected' },
                 presentation: {
                     kind: 'composerReference',
@@ -394,7 +395,7 @@ describe('composer suggestion picker — host wiring', () => {
             serverId: 'server-a',
             method: RPC_METHODS.DAEMON_PLUGIN_COMPOSER_REFERENCE_SEARCH,
             payload: expect.objectContaining({
-                expectedGeneration: '7',
+                expectedOccurrenceId: '7',
                 reference: { pluginId: 'acme.issues', localId: 'issues' },
                 trigger: '@',
                 query: 'issue',
@@ -435,6 +436,39 @@ describe('composer suggestion picker — host wiring', () => {
         });
     });
 
+    it('offers Account mentions to a human discussion through its adapter, and no agent kind', async () => {
+        const search = vi.fn<ComposerAccountMentionSource['search']>(async () => ({
+            candidates: [{
+                accountId: 'account-alice',
+                profile: { firstName: 'Alice', lastName: 'Ng', username: 'alice', avatarUrl: null },
+                accessHint: 'view',
+            }],
+            hasMore: false,
+        }));
+        const accountMentions: ComposerAccountMentionSource = { search, retry: vi.fn() };
+        searchFilesMock.mockResolvedValue([file('alice.ts')]);
+        const { getSuggestions } = await import('./suggestions');
+
+        // `SessionDiscussionComposer`'s handler: no session, its own kind list, its Account search.
+        const hook = await renderComposerPickerWithHandler({
+            initialText: '@al',
+            kinds: DISCUSSION_COMPOSER_SUGGESTION_KINDS,
+            handler: (query, signal) => getSuggestions(null, query, {
+                kinds: DISCUSSION_COMPOSER_SUGGESTION_KINDS,
+                accountMentions,
+                signal,
+            }),
+        });
+        await flushHookEffects();
+
+        expect(hook.getCurrent().commandMenuOpen).toBe(true);
+        expect(labelsByGroup(hook.getCurrent().items)).toEqual({
+            'agentInput.suggestionGroups.people': ['Alice Ng'],
+        });
+        expect(search).toHaveBeenCalledWith(expect.objectContaining({ query: 'al', signal: expect.any(AbortSignal) }));
+        expect(searchFilesMock).not.toHaveBeenCalled();
+    });
+
     it('renders a current reference under its declared section through the same session-composer handler', async () => {
         searchFilesMock.mockResolvedValue([file('src/issues.ts')]);
         machineRpcWithServerScopeMock.mockResolvedValue({
@@ -456,7 +490,7 @@ describe('composer suggestion picker — host wiring', () => {
             serverId: 'server-a',
             method: RPC_METHODS.DAEMON_PLUGIN_COMPOSER_REFERENCE_SEARCH,
             payload: expect.objectContaining({
-                expectedGeneration: '7',
+                expectedOccurrenceId: '7',
                 reference: { pluginId: 'acme.issues', localId: 'issues' },
                 trigger: '@',
                 query: 'issue',

@@ -154,9 +154,6 @@ vi.mock('@/components/ui/lists/ItemGroup', () => ({
         React.createElement('ItemGroup', props, props.children),
 }));
 
-vi.mock('@/components/sessions/new/components/CliNotDetectedBanner', () => ({
-    CliNotDetectedBanner: () => null,
-}));
 
 vi.mock('@/components/machines/InstallableDepInstaller', () => ({
     InstallableDepInstaller: () => null,
@@ -285,8 +282,6 @@ function buildWizard() {
                 tmuxRequested: false,
                 enabledAgentIds: ['codex'] as any,
                 isAgentSelectable: () => true,
-                isCliBannerDismissed: () => true,
-                dismissCliBanner: () => {},
                 agentType: 'codex' as any,
                 setAgentType: () => {},
                 modelOptions: [{ value: 'default', label: 'Default', description: '' }] as any,

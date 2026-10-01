@@ -1,7 +1,7 @@
+import { useSessionTranscriptSource } from '@/components/sessions/transcript/source/SessionTranscriptSourceContext';
 import * as React from 'react';
 import { Pressable, View, useWindowDimensions } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
-import { useRouter } from 'expo-router';
 
 import { useOptionalAppPaneScopeLayout } from '@/components/appShell/panes/hooks/useAppPaneScopeLayout';
 import { Text } from '@/components/ui/text/Text';
@@ -15,7 +15,9 @@ import { Icon } from '@/components/ui/icons/Icon';
 import { getSessionName } from '@/utils/sessions/sessionUtils';
 import type { TranscriptStructuredReference } from './messageStructuredReferences';
 import { createSessionPaneScopeId } from '@/components/sessions/panes/sessionPaneScopeId';
+import { useDestinationPaneScopeId } from '@/components/appShell/workspace/DestinationInstanceHost';
 import { buildScopedSessionRouteHref } from '@/hooks/session/sessionRouteServerScope';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 /**
  * The transcript's structured-references row (D-6). It presents every reference a message
@@ -24,7 +26,7 @@ import { buildScopedSessionRouteHref } from '@/hooks/session/sessionRouteServerS
  * `LinkedWorkspaceFilesRow` rather than sitting beside it, so the transcript keeps exactly one
  * reference-presentation owner.
  *
- * Navigation goes through the router / pane deep-link the rest of the app uses, never through
+ * Navigation goes through the transcriptSource / pane deep-link the rest of the app uses, never through
  * an agent action: `session.open` is `surfaces.session_agent: false` on purpose, because the
  * agent does not drive the user's navigation.
  *
@@ -66,7 +68,7 @@ const stylesheet = StyleSheet.create((theme) => ({
         maxWidth: '100%',
     },
     chipPressed: {
-        opacity: 0.8,
+        opacity: motionTokens.press.opacitySubtle,
     },
     chipText: {
         flexShrink: 1,
@@ -95,7 +97,7 @@ const SessionReferenceChip = React.memo((props: Readonly<{
 }>) => {
     const styles = stylesheet;
     const { theme } = useUnistyles();
-    const router = useRouter();
+    const transcriptSource = useSessionTranscriptSource();
     const target = useSessionReferenceTarget(props.sessionId, props.serverId);
 
     // The live title wins over the label captured when the reference was composed, so a renamed
@@ -107,16 +109,16 @@ const SessionReferenceChip = React.memo((props: Readonly<{
     // which is not null and would therefore beat the composed label. A reference that knows what
     // it pointed at must not degrade to "Unknown" just because metadata has not resolved.
     const liveTitle = target.metadata
-        ? getSessionName({ id: props.sessionId, metadata: target.metadata })
+        ? getSessionName({ id: props.sessionId, metadata: target.metadata }, props.serverId)
         : null;
     const title = liveTitle ?? props.label;
 
     const openSession = React.useCallback(() => {
-        router.push(buildScopedSessionRouteHref({
+        transcriptSource.navigate?.(buildScopedSessionRouteHref({
             sessionId: props.sessionId,
             serverId: props.serverId,
-        }) as never);
-    }, [props.serverId, props.sessionId, router]);
+        }));
+    }, [props.serverId, props.sessionId, transcriptSource]);
 
     const testID = `transcript-session-reference:${props.sessionId}`;
 
@@ -125,6 +127,9 @@ const SessionReferenceChip = React.memo((props: Readonly<{
     // nowhere. A session merely missing from the list caches — an archived one, or any row the
     // last refresh did not cover — stays pressable, because it is still openable at its route and
     // the route answers a genuinely missing id itself.
+    if (transcriptSource.navigate === null && !target.deleted) {
+        return <View testID={testID} style={styles.chip}><Text style={styles.chipText}>{REFERENCE_PREFIX}{title ?? props.sessionId}</Text></View>;
+    }
     if (target.deleted) {
         const unavailableText = t('message.sessionReferenceUnavailable');
         return (
@@ -162,16 +167,13 @@ const SessionReferenceChip = React.memo((props: Readonly<{
 export const StructuredReferencesRow = React.memo((props: StructuredReferencesRowProps) => {
     const styles = stylesheet;
     const { theme } = useUnistyles();
-    const router = useRouter();
+    const transcriptSource = useSessionTranscriptSource();
     const { width: windowWidth } = useWindowDimensions();
     const deviceType = useDeviceType();
     const multiPaneEnabled = useLocalSetting('uiMultiPanePanelsEnabled') !== false;
     const paneScopeLayout = useOptionalAppPaneScopeLayout();
 
-    const scopeId = React.useMemo(
-        () => createSessionPaneScopeId(props.sessionId, props.serverId),
-        [props.serverId, props.sessionId],
-    );
+    const scopeId = useDestinationPaneScopeId(createSessionPaneScopeId(props.sessionId, props.serverId));
     const pane = useAppPaneScope(scopeId);
 
     const openFile = React.useCallback((path: string) => {
@@ -189,7 +191,7 @@ export const StructuredReferencesRow = React.memo((props: StructuredReferencesRo
                 suffix: '/file',
                 query: { path },
             });
-            router.push(href as never);
+            transcriptSource.navigate?.(href);
             return;
         }
 
@@ -199,7 +201,7 @@ export const StructuredReferencesRow = React.memo((props: StructuredReferencesRo
             title: getBasename(path),
             resource: { kind: 'file', path },
         });
-    }, [deviceType, multiPaneEnabled, pane, paneScopeLayout?.containerWidthPx, props.serverId, props.sessionId, router, windowWidth]);
+    }, [deviceType, multiPaneEnabled, pane, paneScopeLayout?.containerWidthPx, props.serverId, props.sessionId, transcriptSource, windowWidth]);
 
     if (props.references.length === 0) return null;
 
@@ -227,7 +229,7 @@ export const StructuredReferencesRow = React.memo((props: StructuredReferencesRo
                         </Text>
                     </>
                 );
-                return props.fileOpenEnabled ? (
+                return props.fileOpenEnabled && transcriptSource.navigate !== null ? (
                     <Pressable
                         key={`file:${path}`}
                         testID={`linked-workspace-file:${path}`}

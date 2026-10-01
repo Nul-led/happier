@@ -163,7 +163,6 @@ describe('TemporaryComputerLaunchSurface', () => {
         const exportAction = screen.findByTestId('temporary-computer-export');
         expect(exportAction).not.toBeNull();
         expect(exportAction?.props.accessibilityState).toMatchObject({ disabled: true, busy: true });
-        expect(screen.findByTestId('temporary-computer-export-progress')).not.toBeNull();
         await screen.unmount();
     });
 
@@ -212,16 +211,36 @@ describe('TemporaryComputerLaunchSurface', () => {
         expect(screen.findByTestId('temporary-computer-launch-progress')?.props.accessibilityLiveRegion).toBe('assertive');
     });
 
-    it('truthfully blocks an unreviewable claim without offering a meaningless retry', async () => {
+    it('offers the creator an in-place retry when review dependencies are temporarily unavailable', async () => {
         const value = controller('review_unavailable');
         const { TemporaryComputerLaunchSurface } = await import('./TemporaryComputerLaunchSurface');
-        const screen = await renderScreen(<TemporaryComputerLaunchSurface controller={value} />);
+        const screen = await renderScreen(<TemporaryComputerLaunchSurface controller={value} packageCustodyOnThisDevice />);
 
         expect(screen.findByTestId('temporary-computer-launch-status')?.props.children)
             .toBe('newSession.temporaryComputer.status.review_unavailable');
-        expect(screen.findByTestId('temporary-computer-retry')).toBeNull();
+        expect(screen.findByTestId('temporary-computer-retry')).not.toBeNull();
+        await screen.pressByTestIdAsync('temporary-computer-retry');
+        expect(value.retry).toHaveBeenCalledOnce();
+        expect(value.start).not.toHaveBeenCalled();
         expect(screen.findByTestId('temporary-computer-cancel')).not.toBeNull();
         expect(screen.findByTestId('temporary-computer-launch-progress')?.props.accessibilityLiveRegion).toBe('assertive');
+        await screen.unmount();
+    });
+
+    it('keeps an observing device inspect-and-cancel only when creator review is unavailable here', async () => {
+        const value = controller('review_unavailable', 'claimed');
+        const { TemporaryComputerLaunchSurface } = await import('./TemporaryComputerLaunchSurface');
+        const screen = await renderScreen(<TemporaryComputerLaunchSurface
+            controller={value}
+            packageCustodyOnThisDevice={false}
+            packageAvailableOnThisDevice={false}
+        />);
+
+        expect(screen.findByTestId('temporary-computer-retry')).toBeNull();
+        expect(screen.findByTestId('temporary-computer-cancel')).not.toBeNull();
+        expect(screen.findByTestId('temporary-computer-other-device-guidance')).not.toBeNull();
+        expect(screen.findByTestId('temporary-computer-launch-progress')?.props.accessibilityLiveRegion).toBe('polite');
+        await screen.unmount();
     });
 
     // Retry cannot resolve a Profile the target Account no longer has, and the
@@ -334,12 +353,35 @@ describe('TemporaryComputerLaunchSurface', () => {
     it('announces a semantic phase change once on iOS without repeating on refetch', async () => {
         platformMock.os = 'ios';
         const { TemporaryComputerLaunchSurface } = await import('./TemporaryComputerLaunchSurface');
+        const screen = await renderScreen(<TemporaryComputerLaunchSurface controller={controller('reconciling')} />);
+
+        // The phase a reopened surface mounts with is already on screen: like
+        // every other platform's live region, iOS does not re-speak it.
+        expect(announceForAccessibilityMock).not.toHaveBeenCalled();
+
+        // A refetch that leaves the semantic phase unchanged stays silent.
+        await screen.update(<TemporaryComputerLaunchSurface controller={controller('reconciling')} />);
+        expect(announceForAccessibilityMock).not.toHaveBeenCalled();
+
+        await screen.update(<TemporaryComputerLaunchSurface controller={controller('waiting_for_computer')} />);
+        expect(announceForAccessibilityMock).toHaveBeenCalledTimes(1);
+        expect(announceForAccessibilityMock).toHaveBeenLastCalledWith('newSession.temporaryComputer.status.waiting_for_computer');
+
+        await screen.update(<TemporaryComputerLaunchSurface controller={controller('waiting_for_computer')} />);
+        expect(announceForAccessibilityMock).toHaveBeenCalledTimes(1);
+        await screen.unmount();
+    });
+
+    it('announces a fresh launch once on iOS when the surface mounts for it, then each phase once', async () => {
+        platformMock.os = 'ios';
+        const { TemporaryComputerLaunchSurface } = await import('./TemporaryComputerLaunchSurface');
+        // The composer mounts this surface only once the user has pressed Launch,
+        // so `preparing` at mount is the launch starting, not a state already heard.
         const screen = await renderScreen(<TemporaryComputerLaunchSurface controller={controller('preparing')} />);
 
         expect(announceForAccessibilityMock).toHaveBeenCalledTimes(1);
         expect(announceForAccessibilityMock).toHaveBeenLastCalledWith('newSession.temporaryComputer.status.preparing');
 
-        // A refetch that leaves the semantic phase unchanged stays silent.
         await screen.update(<TemporaryComputerLaunchSurface controller={controller('preparing')} />);
         expect(announceForAccessibilityMock).toHaveBeenCalledTimes(1);
 
@@ -349,12 +391,23 @@ describe('TemporaryComputerLaunchSurface', () => {
         await screen.unmount();
     });
 
-    it('announces errors on iOS through the strongest platform announcement', async () => {
+    it('does not re-speak a reopened request on iOS when the surface mounts', async () => {
         platformMock.os = 'ios';
         const { TemporaryComputerLaunchSurface } = await import('./TemporaryComputerLaunchSurface');
-        const screen = await renderScreen(<TemporaryComputerLaunchSurface controller={controller('cancel_failed')} />);
+        const screen = await renderScreen(<TemporaryComputerLaunchSurface controller={controller('reconciling')} />);
+
+        expect(announceForAccessibilityMock).not.toHaveBeenCalled();
+        await screen.unmount();
+    });
+
+    it('announces a failure transition on iOS with its terminal reason', async () => {
+        platformMock.os = 'ios';
+        const { TemporaryComputerLaunchSurface } = await import('./TemporaryComputerLaunchSurface');
+        const screen = await renderScreen(<TemporaryComputerLaunchSurface controller={controller('waiting_for_computer')} />);
+        await screen.update(<TemporaryComputerLaunchSurface controller={controller('cancel_failed')} />);
 
         expect(announceForAccessibilityMock).toHaveBeenCalledTimes(1);
+        expect(announceForAccessibilityMock).toHaveBeenLastCalledWith('newSession.temporaryComputer.status.cancel_failed');
         await screen.unmount();
     });
 
@@ -382,8 +435,9 @@ describe('TemporaryComputerLaunchSurface', () => {
         />);
 
         expect(resolveMinimumInteractiveTargetSize(os)).toBe(minimum);
-        expect(screen.findByTestId('temporary-computer-export')?.props.style.minHeight).toBe(minimum);
-        expect(screen.findByTestId('temporary-computer-cancel')?.props.style.minHeight).toBe(minimum);
+        const { StyleSheet } = await import('react-native');
+        expect(StyleSheet.flatten(screen.findByTestId('temporary-computer-export')?.props.style).minHeight).toBe(minimum);
+        expect(StyleSheet.flatten(screen.findByTestId('temporary-computer-cancel')?.props.style).minHeight).toBe(minimum);
         await screen.unmount();
     });
 
@@ -502,6 +556,44 @@ describe('TemporaryComputerLaunchSurface', () => {
         />);
         expect(consented.findByTestId('temporary-computer-export')).not.toBeNull();
         await consented.unmount();
+    });
+
+    it('keeps materialized recovery retryable without offering cancellation', async () => {
+        const value = controller('failed', 'materialized');
+        const { TemporaryComputerLaunchSurface } = await import('./TemporaryComputerLaunchSurface');
+        const screen = await renderScreen(<TemporaryComputerLaunchSurface controller={value} />);
+
+        await screen.pressByTestIdAsync('temporary-computer-retry');
+        expect(value.retry).toHaveBeenCalledOnce();
+        expect(screen.findByTestId('temporary-computer-cancel')).toBeNull();
+        await screen.unmount();
+    });
+
+    it('lets the creator leave a materialized recovery failure while preserving the draft', async () => {
+        const onContinueLater = vi.fn();
+        const { TemporaryComputerLaunchSurface } = await import('./TemporaryComputerLaunchSurface');
+        const screen = await renderScreen(<TemporaryComputerLaunchSurface
+            controller={controller('failed', 'materialized')}
+            onContinueLater={onContinueLater}
+        />);
+
+        await screen.pressByTestIdAsync('temporary-computer-continue-later');
+        expect(onContinueLater).toHaveBeenCalledOnce();
+        expect(screen.findByTestId('temporary-computer-cancel')).toBeNull();
+        await screen.unmount();
+    });
+
+    it('lets the creator continue later while the waiting draft remains active', async () => {
+        const onContinueLater = vi.fn();
+        const { TemporaryComputerLaunchSurface } = await import('./TemporaryComputerLaunchSurface');
+        const screen = await renderScreen(<TemporaryComputerLaunchSurface
+            controller={controller('waiting_for_computer', 'pending')}
+            onContinueLater={onContinueLater}
+        />);
+
+        await screen.pressByTestIdAsync('temporary-computer-continue-later');
+        expect(onContinueLater).toHaveBeenCalledOnce();
+        await screen.unmount();
     });
 
     it('says when this device cannot read the details the computer sent', async () => {

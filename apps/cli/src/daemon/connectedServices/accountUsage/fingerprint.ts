@@ -57,6 +57,7 @@ function buildMaterialSnapshot(snapshot: ProviderAccountUsageSnapshotV1): JsonVa
     planLabel: snapshot.planLabel ?? null,
     accountLabel: snapshot.accountLabel ?? null,
     recoveryCredits: snapshot.recoveryCredits ?? null,
+    subscription: snapshot.subscription ?? null,
     meters: snapshot.meters,
   });
 }

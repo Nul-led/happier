@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { SessionRuntimeIssueV1 } from '@happier-dev/protocol';
-import type { AgentEvent } from '@/sync/typesRaw';
+import type { AgentEvent } from "@happier-dev/session-core/raw";
 
 import {
     deriveSessionIntentionalRestartSignals,

@@ -31,6 +31,39 @@ function buildSession(overrides: Partial<Session> = {}): Session {
 }
 
 describe('getModelOverrideForSpawn', () => {
+    it('preserves sealed composer selection when complete owner metadata is unavailable', () => {
+        const intent = SessionModelSelectionIntentV1Schema.parse({ v: 1, updatedAt: 20,
+            selection: { agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: null, modelId: 'sealed-model' } });
+        const session = buildSession({ metadataLayoutVersion: 1, ownerMetadataView: null,
+            composerOptionsInput: { modelSelectionIntentV1: intent } });
+        expect(getModelOverrideForSpawn(session, 'agent:happier.agent.codex/codex')).toEqual({
+            modelSelection: { v: 1, updatedAt: 20, ref: intent.selection },
+        });
+    });
+    it('reads a stale selection saved for another Agent as absent instead of throwing into the React tree', () => {
+        // Sessions written by an earlier 0.3 build keyed a bundled Agent as
+        // `backend:codex`; the app reads the canonical key. The stale selection
+        // is dropped and the session's own local model stands.
+        expect(
+            getModelOverrideForSpawn(
+                buildSession({
+                    modelMode: 'o3',
+                    modelModeUpdatedAt: 11,
+                    metadata: {
+                        path: '/repo',
+                        host: 'localhost',
+                        modelSelectionIntentV1: {
+                            v: 1,
+                            updatedAt: 1,
+                            selection: { agentTargetKey: 'backend:codex', providerConnectionId: null, modelId: 'gpt-stale' },
+                        },
+                    },
+                }),
+                'agent:happier.agent.codex/codex',
+            )?.modelSelection.ref,
+        ).toEqual({ agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: null, modelId: 'o3' });
+    });
+
     it('returns the persisted selection when local modelModeUpdatedAt is missing', () => {
         expect(
             getModelOverrideForSpawn(
@@ -42,13 +75,13 @@ describe('getModelOverrideForSpawn', () => {
                         modelOverrideV1: { v: 1, updatedAt: 1, modelId: 'o4-mini' },
                     },
                 }),
-                'backend:codex',
+                'agent:happier.agent.codex/codex',
             ),
         ).toEqual({
             modelSelection: {
                 v: 1,
                 updatedAt: 1,
-                ref: { agentTargetKey: 'backend:codex', providerConnectionId: null, modelId: 'o4-mini' },
+                ref: { agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: null, modelId: 'o4-mini' },
             },
         });
     });
@@ -65,13 +98,13 @@ describe('getModelOverrideForSpawn', () => {
                         modelOverrideV1: { v: 1, updatedAt: 10, modelId: 'persisted-model' },
                     },
                 }),
-                'backend:codex',
+                'agent:happier.agent.codex/codex',
             ),
         ).toEqual({
             modelSelection: {
                 v: 1,
                 updatedAt: 10,
-                ref: { agentTargetKey: 'backend:codex', providerConnectionId: null, modelId: 'persisted-model' },
+                ref: { agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: null, modelId: 'persisted-model' },
             },
         });
     });
@@ -87,13 +120,13 @@ describe('getModelOverrideForSpawn', () => {
                         modelOverrideV1: { v: 1, updatedAt: 10, modelId: 'o4-mini' },
                     },
                 }),
-                'backend:codex',
+                'agent:happier.agent.codex/codex',
             ),
         ).toEqual({
             modelSelection: {
                 v: 1,
                 updatedAt: 10,
-                ref: { agentTargetKey: 'backend:codex', providerConnectionId: null, modelId: 'o4-mini' },
+                ref: { agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: null, modelId: 'o4-mini' },
             },
         });
     });
@@ -110,7 +143,7 @@ describe('getModelOverrideForSpawn', () => {
                         modelOverrideV1: { v: 1, updatedAt: 10, modelId: 'o4-mini' },
                     },
                 }),
-                'backend:codex',
+                'agent:happier.agent.codex/codex',
             ),
         ).toBeNull();
     });
@@ -127,13 +160,13 @@ describe('getModelOverrideForSpawn', () => {
                         modelOverrideV1: { v: 1, updatedAt: 10, modelId: 'o4-mini' },
                     },
                 }),
-                'backend:codex',
+                'agent:happier.agent.codex/codex',
             ),
         ).toEqual({
             modelSelection: {
                 v: 1,
                 updatedAt: 11,
-                ref: { agentTargetKey: 'backend:codex', providerConnectionId: null, modelId: 'o3' },
+                ref: { agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: null, modelId: 'o3' },
             },
         });
     });
@@ -146,13 +179,13 @@ describe('getModelOverrideForSpawn', () => {
                     modelModeUpdatedAt: 11,
                     metadata: { path: '/repo', host: 'localhost' },
                 }),
-                'backend:codex',
+                'agent:happier.agent.codex/codex',
             ),
         ).toEqual({
             modelSelection: {
                 v: 1,
                 updatedAt: 11,
-                ref: { agentTargetKey: 'backend:codex', providerConnectionId: null, modelId: 'o3' },
+                ref: { agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: null, modelId: 'o3' },
             },
         });
     });
@@ -169,7 +202,7 @@ describe('getModelOverrideForSpawn', () => {
                         modelOverrideV1: { v: 1, updatedAt: 10, modelId: 'o4-mini' },
                     },
                 }),
-                'backend:codex',
+                'agent:happier.agent.codex/codex',
             ),
         ).toBeNull();
     });
@@ -184,18 +217,18 @@ describe('getModelOverrideForSpawn', () => {
                     v: 1,
                     updatedAt: 12,
                     selection: {
-                        agentTargetKey: 'backend:codex',
+                        agentTargetKey: 'agent:happier.agent.codex/codex',
                         providerConnectionId: 'pc_work',
                         modelId: 'openai/gpt-5.5',
                     },
                 }),
             },
-        }), 'backend:codex')).toEqual({
+        }), 'agent:happier.agent.codex/codex')).toEqual({
             modelSelection: {
                 v: 1,
                 updatedAt: 12,
                 ref: {
-                    agentTargetKey: 'backend:codex',
+                    agentTargetKey: 'agent:happier.agent.codex/codex',
                     providerConnectionId: 'pc_work',
                     modelId: 'openai/gpt-5.5',
                 },
@@ -214,18 +247,18 @@ describe('getModelOverrideForSpawn', () => {
                     v: 1,
                     updatedAt: 20,
                     selection: {
-                        agentTargetKey: 'backend:codex',
+                        agentTargetKey: 'agent:happier.agent.codex/codex',
                         providerConnectionId: 'pc_01J00000000000000000000000',
                         modelId: 'shared-id',
                     },
                 }),
             },
-        }), 'backend:codex')).toEqual({
+        }), 'agent:happier.agent.codex/codex')).toEqual({
             modelSelection: {
                 v: 1,
                 updatedAt: 20,
                 ref: {
-                    agentTargetKey: 'backend:codex',
+                    agentTargetKey: 'agent:happier.agent.codex/codex',
                     providerConnectionId: 'pc_01J00000000000000000000000',
                     modelId: 'shared-id',
                 },
@@ -244,18 +277,18 @@ describe('getModelOverrideForSpawn', () => {
                     v: 1,
                     updatedAt: 20,
                     selection: {
-                        agentTargetKey: 'backend:codex',
+                        agentTargetKey: 'agent:happier.agent.codex/codex',
                         providerConnectionId: 'pc_01J00000000000000000000000',
                         modelId: 'provider-model',
                     },
                 }),
             },
-        }), 'backend:codex')).toEqual({
+        }), 'agent:happier.agent.codex/codex')).toEqual({
             modelSelection: {
                 v: 1,
                 updatedAt: 20,
                 ref: {
-                    agentTargetKey: 'backend:codex',
+                    agentTargetKey: 'agent:happier.agent.codex/codex',
                     providerConnectionId: 'pc_01J00000000000000000000000',
                     modelId: 'provider-model',
                 },
@@ -274,18 +307,18 @@ describe('getModelOverrideForSpawn', () => {
                     v: 1,
                     updatedAt: 20,
                     selection: {
-                        agentTargetKey: 'backend:codex',
+                        agentTargetKey: 'agent:happier.agent.codex/codex',
                         providerConnectionId: 'pc_01J00000000000000000000000',
                         modelId: 'provider-model',
                     },
                 }),
             },
-        }), 'backend:codex')).toEqual({
+        }), 'agent:happier.agent.codex/codex')).toEqual({
             modelSelection: {
                 v: 1,
                 updatedAt: 20,
                 ref: {
-                    agentTargetKey: 'backend:codex',
+                    agentTargetKey: 'agent:happier.agent.codex/codex',
                     providerConnectionId: 'pc_01J00000000000000000000000',
                     modelId: 'provider-model',
                 },
@@ -304,18 +337,18 @@ describe('getModelOverrideForSpawn', () => {
                     v: 1,
                     updatedAt: 20,
                     selection: {
-                        agentTargetKey: 'backend:codex',
+                        agentTargetKey: 'agent:happier.agent.codex/codex',
                         providerConnectionId: null,
                         modelId: 'older-native-model',
                     },
                 }),
             },
-        }), 'backend:codex')).toEqual({
+        }), 'agent:happier.agent.codex/codex')).toEqual({
             modelSelection: {
                 v: 1,
                 updatedAt: 30,
                 ref: {
-                    agentTargetKey: 'backend:codex',
+                    agentTargetKey: 'agent:happier.agent.codex/codex',
                     providerConnectionId: null,
                     modelId: 'newer-native-model',
                 },

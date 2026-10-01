@@ -155,7 +155,7 @@ export function resolveAgentCliManagedCommandRelativePathForRuntime(runtimeSpec:
   return join('bin', resolveManagedCommandBasename(managedInstall));
 }
 
-function resolveAgentCliOverrideEnvKey(agentId: string): string {
+export function resolveAgentCliOverrideEnvKey(agentId: string): string {
   const normalized = agentId.replace(/[^a-zA-Z0-9]+/g, '_').replace(/^_+|_+$/g, '').toUpperCase();
   return `HAPPIER_${normalized || agentId.toUpperCase()}_PATH`;
 }

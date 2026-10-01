@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { SpawnSessionTerminalSchema } from '@happier-dev/protocol/spawnSession';
 import {
     AgentExecutionTargetV1Schema,
     BackendTargetRefV2Schema,
@@ -20,7 +21,7 @@ import {
     type SessionInitialGoalRequestV1,
     type SessionModelSelectionV1,
 } from '@happier-dev/protocol';
-import { resolveBundledAgentIdFromContributionIdentity } from '@/agents/catalog/catalog';
+import { resolveBundledAgentIdFromContributionIdentity } from '@/agents/catalog/resolveBundledAgentIdFromContributionIdentity';
 import { isPermissionMode, type PermissionMode } from '../../permissions/permissionTypes';
 
 export type ResumeHappySessionRpcParams = {
@@ -32,6 +33,7 @@ export type ResumeHappySessionRpcParams = {
     resume?: string;
     runtimeDescriptorV1?: RuntimeDescriptorV1;
     environmentVariables?: Record<string, string>;
+    terminal?: z.infer<typeof SpawnSessionTerminalSchema>;
     connectedServices?: SessionAuthoringValueV1['connectedServices'];
     connectedServicesUpdatedAt?: number;
     transcriptStorage?: 'direct' | 'persisted';
@@ -45,6 +47,7 @@ export type ResumeHappySessionRpcParams = {
         provenance: 'user_request';
         requestId: string;
     }>;
+    approvedNewDirectoryCreation?: boolean;
     initialGoal?: SessionInitialGoalRequestV1;
     /** Stable correlation for callers that must observe the resumed runtime before continuing. */
     spawnNonce?: string;
@@ -66,6 +69,7 @@ const ResumeHappySessionRpcParamsSchema = z.object({
     resume: z.string().min(1).optional(),
     runtimeDescriptorV1: RuntimeDescriptorV1Schema.optional(),
     environmentVariables: z.record(z.string(), z.string()).optional(),
+    terminal: SpawnSessionTerminalSchema.optional(),
     connectedServices: SessionAuthoringValueV1Schema.shape.connectedServices.optional(),
     connectedServicesUpdatedAt: z.number().optional(),
     transcriptStorage: z.enum(['direct', 'persisted']).optional(),
@@ -76,6 +80,7 @@ const ResumeHappySessionRpcParamsSchema = z.object({
     accountSettingsVersionHint: z.number().int().nonnegative().optional(),
     initialTranscriptAfterSeq: z.number().int().nonnegative().optional(),
     executionAuthorization: SpawnSessionExecutionAuthorizationSchema.optional(),
+    approvedNewDirectoryCreation: z.boolean().optional(),
     initialGoal: SessionInitialGoalRequestV1Schema.optional(),
     spawnNonce: z.string().min(1).optional(),
 }).superRefine((value, context) => {

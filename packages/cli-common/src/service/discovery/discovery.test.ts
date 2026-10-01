@@ -145,6 +145,7 @@ describe('parseWindowsScheduledTaskWrapperPs1', () => {
       env: {
         PATH: 'C:\\Users\\me\\.happier\\bin;C:\\Windows\\System32',
         HAPPIER_SERVER_URL: 'https://api.happier.dev',
+        HAPPIER_IROH_RELAY_URL: 'https://relay.example/$tenant/$()/back`tick/"quoted"',
       },
       stdoutPath: 'C:\\Users\\me\\.happier\\logs\\out.log',
       stderrPath: 'C:\\Users\\me\\.happier\\logs\\err.log',
@@ -161,6 +162,7 @@ describe('parseWindowsScheduledTaskWrapperPs1', () => {
       env: {
         PATH: 'C:\\Users\\me\\.happier\\bin;C:\\Windows\\System32',
         HAPPIER_SERVER_URL: 'https://api.happier.dev',
+        HAPPIER_IROH_RELAY_URL: 'https://relay.example/$tenant/$()/back`tick/"quoted"',
       },
       stdoutPath: 'C:\\Users\\me\\.happier\\logs\\out.log',
       stderrPath: 'C:\\Users\\me\\.happier\\logs\\err.log',

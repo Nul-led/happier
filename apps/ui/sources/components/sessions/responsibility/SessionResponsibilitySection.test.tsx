@@ -171,12 +171,14 @@ describe('SessionResponsibilitySection', () => {
         expect(screen.findByTestId('session-responsibility-row')).toBeNull();
     });
 
-    it('renders nothing when the server did not project responsibility', async () => {
+    it('keeps one line saying the Home does not track responsibility, never collapsing or claiming "No one"', async () => {
         storeState.session = { id: 'session-1' };
         const screen = await renderScreen(
             <MountedResponsibilitySection sessionId="session-1" scope={scope} actingAccountId="account-owner" />,
         );
         expect(screen.findByTestId('session-responsibility-row')).toBeNull();
+        expect(screen.findByTestId('session-responsibility-unsupported')).not.toBeNull();
+        expect(screen.getTextContent()).not.toContain('No one');
     });
 
     it('hides the section when Session sharing is unavailable on the Home, never claiming "No one"', async () => {
@@ -186,6 +188,7 @@ describe('SessionResponsibilitySection', () => {
             <MountedResponsibilitySection sessionId="session-1" scope={scope} actingAccountId="account-owner" />,
         );
         expect(screen.findByTestId('session-responsibility-row')).toBeNull();
+        expect(screen.getTextContent()).not.toContain('No one');
     });
 
     it('renders authoritative unassigned responsibility without an editable action for a read-only collaborator', async () => {

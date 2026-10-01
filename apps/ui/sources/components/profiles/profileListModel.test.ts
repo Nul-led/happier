@@ -82,7 +82,7 @@ describe('profileListModel', () => {
             ...buildProfile({}),
             compatibilityByTargetKey: {
                 'backend:custom-backend:configured:custom-backend': true,
-                'backend:claude': false,
+                'agent:happier.agent.claude/claude': false,
             },
         } satisfies ProfileCompatibilitySummary;
 
@@ -90,7 +90,7 @@ describe('profileListModel', () => {
             profile,
             enabledAgentIds: ['claude'],
             backendEntries: [
-                { backendTargetKey: 'backend:claude', title: 'Claude' },
+                { backendTargetKey: 'agent:happier.agent.claude/claude', title: 'Claude' },
                 { backendTargetKey: 'backend:custom-backend:configured:custom-backend', title: 'Custom Backend' },
             ],
             strings,

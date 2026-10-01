@@ -39,6 +39,7 @@ export type DaemonServiceInstallationSnapshot = Readonly<{
   installed: boolean;
   installedPath: string;
   label: string;
+  autostart?: 'at-login' | 'on-demand' | null;
 }>;
 
 export type DaemonServiceListEntry = Readonly<{
@@ -54,6 +55,8 @@ export type DaemonServiceListEntry = Readonly<{
   label: string;
   targetMode: DaemonServiceTargetMode;
   installedDefinitionMatchesExpected?: boolean;
+  /** `desktop` when the desktop app manages this service; `null`/absent means user-owned. */
+  managedBy?: 'desktop' | null;
 }>;
 
 export type DaemonServiceInventoryEntry = Readonly<{

@@ -7,6 +7,7 @@ import type { SystemTaskRunState, SystemTaskRunner } from '../types';
 import type { SystemTaskPromptEnvelope } from '../prompts/readLatestSystemTaskPrompt';
 import { buildBackgroundServiceReplacementPromptBody } from '../prompts/backgroundServiceReplacementPromptPresentation';
 
+import { presentCliChoice } from './presentCliChoice';
 import { resolveThisComputerSetupPrompt } from './resolveThisComputerSetupPrompt';
 
 function buildPromptBody(prompt: ReturnType<typeof resolveThisComputerSetupPrompt>): string | undefined {
@@ -26,7 +27,7 @@ function buildPromptBody(prompt: ReturnType<typeof resolveThisComputerSetupPromp
         return lines.length > 0 ? lines.join('\n') : undefined;
     }
 
-    if (prompt.kind === 'daemon.takeOverManualRelayRuntimeForSetup') {
+    if (prompt.kind === 'daemon.takeOverManualRelayRuntimeForSetup' || prompt.kind === 'setup.cliChoice') {
         return undefined;
     }
 
@@ -60,6 +61,12 @@ export function useThisComputerSetupPromptModals(params: Readonly<{
         handledPromptRef.current = promptKey;
 
         void (async () => {
+            if (parsedPrompt.kind === 'setup.cliChoice') {
+                // `null` (dismissed, or "Not now") records nothing; the run stops before any write.
+                await params.runner.respond(taskId, { choice: await presentCliChoice(parsedPrompt) });
+                return;
+            }
+
             const confirmed = await Modal.confirm(
                 parsedPrompt.message,
                 buildPromptBody(parsedPrompt),

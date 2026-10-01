@@ -33,7 +33,7 @@ export function isCurrentSessionInteractionDeadlineMs(value: unknown): value is 
  * `INTERACTION-TRANSIENT-V1` therefore represents that policy directly: the
  * Session arm selects the contract's explicit no-deadline arm, which stamps no
  * `expiresAtMs` and creates no timer at all. The request is settled only by an
- * observable lifecycle event — the user's answer, requester abort, generation
+ * observable lifecycle event — the user's answer, requester abort, occurrence
  * retirement, Session end, or host unavailability — exactly as L-25 requires,
  * and `timedOut` is unreachable here rather than merely improbable.
  */
@@ -49,7 +49,7 @@ export type CurrentSessionInteractionOwner = TransientInteractionOwner;
 type OwnerParams = Readonly<{
   sessionId: string;
   sessionSignal: AbortSignal;
-  isGenerationCurrent(): boolean;
+  isOccurrenceCurrent(): boolean;
   /** `null` selects the contract's no-deadline arm; see the policy above. */
   deadlineMs: number | null;
   present: TransientInteractionPresenter;
@@ -66,7 +66,7 @@ type ExecutionRunOwnerParams = Omit<OwnerParams, 'sessionId' | 'sessionSignal'> 
 function createCurrentScopedInteractionOwner(params: Readonly<{
   scope: PluginExecutionScopeV1;
   scopeSignal: AbortSignal;
-  isGenerationCurrent(): boolean;
+  isOccurrenceCurrent(): boolean;
   deadlineMs: number | null;
   present: TransientInteractionPresenter;
   propagatePresentationError?: (error: unknown) => boolean;
@@ -78,7 +78,7 @@ function createCurrentScopedInteractionOwner(params: Readonly<{
     ...(params.scope.kind === 'session'
       ? { sessionSignal: params.scopeSignal }
       : { executionRunSignal: params.scopeSignal }),
-    isGenerationCurrent: params.isGenerationCurrent,
+    isOccurrenceCurrent: params.isOccurrenceCurrent,
     deadlineMs: params.deadlineMs,
     present: params.present,
     ...(params.propagatePresentationError
@@ -95,7 +95,7 @@ export function createCurrentSessionInteractionOwner(params: OwnerParams): Curre
   return createCurrentScopedInteractionOwner({
     scope: Object.freeze({ kind: 'session', sessionId }),
     scopeSignal: params.sessionSignal,
-    isGenerationCurrent: params.isGenerationCurrent,
+    isOccurrenceCurrent: params.isOccurrenceCurrent,
     deadlineMs: params.deadlineMs,
     present: params.present,
     ...(params.propagatePresentationError
@@ -115,7 +115,7 @@ export function createCurrentExecutionRunInteractionOwner(
   return createCurrentScopedInteractionOwner({
     scope: Object.freeze({ kind: 'execution_run', executionRunId }),
     scopeSignal: params.executionRunSignal,
-    isGenerationCurrent: params.isGenerationCurrent,
+    isOccurrenceCurrent: params.isOccurrenceCurrent,
     deadlineMs: params.deadlineMs,
     present: params.present,
     ...(params.propagatePresentationError

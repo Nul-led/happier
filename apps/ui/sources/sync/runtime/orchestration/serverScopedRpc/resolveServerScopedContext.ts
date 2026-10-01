@@ -8,11 +8,18 @@ import {
     getServerProfileById,
     resolveServerProfileScopeIdForIdentifier,
 } from '@/sync/domains/server/serverProfiles';
-import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
+import {
+    getAppliedActiveServerSnapshot,
+    isAppliedActiveServerRuntimeAvailable,
+} from '@/sync/runtime/orchestration/connectionManager';
 import { parseToken } from '@/utils/auth/parseToken';
 import { resolveServerScopedTransport } from './resolveServerScopedTransport';
 
-import type { ResolvedServerRpcContext, ScopedRpcEncryptionContext } from './serverScopedRpcTypes';
+import {
+    DEFAULT_SERVER_SCOPED_RPC_TIMEOUT_MS,
+    type ResolvedServerRpcContext,
+    type ScopedRpcEncryptionContext,
+} from './serverScopedRpcTypes';
 
 function normalizeId(raw: unknown): string {
     return String(raw ?? '').trim();
@@ -28,12 +35,16 @@ export async function resolveServerScopedContext(params: Readonly<{
     const machineId = normalizeId(params.machineId);
     const targetServerId = normalizeId(params.serverId);
     const expectedAccountId = normalizeId(params.accountId);
-    const timeoutMs = typeof params.timeoutMs === 'number' && params.timeoutMs > 0 ? params.timeoutMs : 30_000;
-    const activeSnapshot = getActiveServerSnapshot();
+    const timeoutMs = typeof params.timeoutMs === 'number' && params.timeoutMs > 0 ? params.timeoutMs : DEFAULT_SERVER_SCOPED_RPC_TIMEOUT_MS;
+    const activeSnapshot = getAppliedActiveServerSnapshot();
     const activeServerId = normalizeId(activeSnapshot.serverId);
     const shouldForceScoped = params.forceScoped === true || Boolean(expectedAccountId);
 
-    if (!shouldForceScoped && (!targetServerId || areServerProfileIdentifiersEquivalent(targetServerId, activeServerId))) {
+    if (
+        !shouldForceScoped
+        && isAppliedActiveServerRuntimeAvailable()
+        && (!targetServerId || areServerProfileIdentifiersEquivalent(targetServerId, activeServerId))
+    ) {
         return {
             scope: 'active',
             machineId,
@@ -42,13 +53,18 @@ export async function resolveServerScopedContext(params: Readonly<{
     }
 
     const resolvedTargetServerId = resolveServerProfileScopeIdForIdentifier(targetServerId || activeServerId);
-    const targetProfile = areServerProfileIdentifiersEquivalent(resolvedTargetServerId, activeServerId)
-        ? {
+    // During an incumbent-to-next Home transition the old applied snapshot is
+    // still useful identity, but its singleton socket has already been torn
+    // down. Preserve the profile's prepared carrier when the scoped fallback
+    // reaches that incumbent directly (notably browser Iroh).
+    const targetProfile = getServerProfileById(resolvedTargetServerId)
+        ?? (areServerProfileIdentifiersEquivalent(resolvedTargetServerId, activeServerId)
+            ? {
             id: activeServerId,
             serverUrl: activeSnapshot.serverUrl,
             name: activeSnapshot.serverUrl,
-        }
-        : getServerProfileById(resolvedTargetServerId);
+            }
+            : null);
     if (!targetProfile) {
         throw new Error(`Target server profile not found for serverId "${resolvedTargetServerId}"`);
     }

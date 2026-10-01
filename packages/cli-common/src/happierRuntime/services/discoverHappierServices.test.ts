@@ -325,6 +325,124 @@ describe('discoverHappierServices', () => {
         }
     });
 
+    it('reports a default-following service\'s ring the way the service resolves it: its env ring, else this home\'s default channel (R12)', async () => {
+        const root = await mkdtemp(join(tmpdir(), 'happier-runtime-services-default-ring-'));
+        try {
+            const userRoot = join(root, 'systemd-user');
+            const homeDir = join(root, 'home', '.happier');
+            await mkdir(userRoot, { recursive: true });
+            await mkdir(homeDir, { recursive: true });
+            await writeFile(join(homeDir, 'default-cli-release-channel.json'), JSON.stringify({ releaseChannel: 'preview' }), 'utf8');
+            const unit = (env: Record<string, string>) => renderSystemdServiceUnit({
+                description: 'Happier Daemon',
+                execStart: ['/Users/tester/.happier/bin/happier', 'daemon', 'start-sync'],
+                env: { HAPPIER_DAEMON_SERVICE_TARGET_MODE: 'default-following', ...env },
+                wantedBy: 'default.target',
+            });
+            await writeFile(join(userRoot, 'happier-daemon.default.service'), unit({ HAPPIER_HOME_DIR: homeDir, HAPPIER_PUBLIC_RELEASE_CHANNEL: 'dev' }), 'utf8');
+
+            const withEnvRing = await discoverHappierServices({ platform: 'linux', roots: [{ path: userRoot, scope: 'user' }] });
+            expect(withEnvRing.services).toEqual([expect.objectContaining({ targetMode: 'default-following', ring: 'dev' })]);
+
+            await writeFile(join(userRoot, 'happier-daemon.default.service'), unit({ HAPPIER_HOME_DIR: homeDir }), 'utf8');
+            const fromDefaultChannel = await discoverHappierServices({ platform: 'linux', roots: [{ path: userRoot, scope: 'user' }] });
+            expect(fromDefaultChannel.services).toEqual([expect.objectContaining({ targetMode: 'default-following', ring: 'preview' })]);
+        } finally {
+            await rm(root, { recursive: true, force: true });
+        }
+    });
+
+    it('reports whether each service starts at login, as its service manager records it (R12)', async () => {
+        const root = await mkdtemp(join(tmpdir(), 'happier-runtime-services-enabled-'));
+        try {
+            // systemd: `UnitFileState` from `systemctl show`.
+            const userRoot = join(root, 'systemd-user');
+            await mkdir(userRoot, { recursive: true });
+            for (const id of ['on', 'off']) {
+                await writeFile(join(userRoot, `happier-daemon.${id}.service`), renderSystemdServiceUnit({
+                    description: 'Happier Daemon',
+                    execStart: ['/Users/tester/.happier/bin/happier', 'daemon', 'start-sync'],
+                    env: { HAPPIER_ACTIVE_SERVER_ID: id, HAPPIER_PUBLIC_RELEASE_CHANNEL: 'stable' },
+                    wantedBy: 'default.target',
+                }), 'utf8');
+            }
+            const linux = await discoverHappierServices({
+                platform: 'linux',
+                roots: [{ path: userRoot, scope: 'user' }],
+                commands: {
+                    run: ({ cmd, args }) => cmd === 'systemctl'
+                        ? `ActiveState=inactive\nSubState=dead\nUnitFileState=${args.includes('happier-daemon.off.service') ? 'disabled' : 'enabled'}\n`
+                        : null,
+                },
+            });
+            expect(linux.services.map((service) => [service.label, service.enabled])).toEqual([
+                ['happier-daemon.off', false],
+                ['happier-daemon.on', true],
+            ]);
+
+            // launchd: the override database, read with `launchctl print-disabled <domain>`.
+            const agents = join(root, 'LaunchAgents');
+            await mkdir(agents, { recursive: true });
+            for (const id of ['on', 'off']) {
+                await writeFile(join(agents, `com.happier.cli.daemon.${id}.plist`), `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+<key>Label</key><string>com.happier.cli.daemon.${id}</string>
+<key>ProgramArguments</key><array><string>/Users/tester/.happier/bin/happier</string><string>daemon</string><string>start-sync</string></array>
+<key>EnvironmentVariables</key><dict><key>HAPPIER_ACTIVE_SERVER_ID</key><string>${id}</string></dict>
+</dict></plist>`, 'utf8');
+            }
+            const printed: string[][] = [];
+            const darwin = await discoverHappierServices({
+                platform: 'darwin',
+                uid: 501,
+                roots: [{ path: agents, scope: 'user' }],
+                commands: {
+                    run: ({ cmd, args }) => {
+                        if (cmd !== 'launchctl') return null;
+                        if (args[0] === 'print-disabled') {
+                            printed.push([...args]);
+                            return 'disabled services = {\n\t"com.happier.cli.daemon.off" => disabled\n\t"com.apple.other" => enabled\n}\n';
+                        }
+                        return null;
+                    },
+                },
+            });
+            expect(darwin.services.map((service) => [service.label, service.enabled])).toEqual([
+                ['com.happier.cli.daemon.off', false],
+                ['com.happier.cli.daemon.on', true],
+            ]);
+            expect(printed[0]).toEqual(['print-disabled', 'gui/501']);
+
+            // Task Scheduler: `Scheduled Task State`.
+            const tasks = join(root, 'services');
+            await mkdir(tasks, { recursive: true });
+            for (const id of ['on', 'off']) {
+                await writeFile(join(tasks, `happier-daemon.${id}.ps1`), renderWindowsScheduledTaskWrapperPs1({
+                    workingDirectory: 'C:\\Users\\tester',
+                    programArgs: ['C:\\Users\\tester\\.happier\\bin\\happier.exe', 'daemon', 'start-sync'],
+                    env: { HAPPIER_ACTIVE_SERVER_ID: id },
+                    stdoutPath: 'C:\\out.log',
+                    stderrPath: 'C:\\err.log',
+                }), 'utf8');
+            }
+            const win32 = await discoverHappierServices({
+                platform: 'win32',
+                roots: [{ path: tasks, scope: 'user' }],
+                commands: {
+                    run: ({ cmd, args }) => cmd === 'schtasks'
+                        ? `Status: Ready\r\nScheduled Task State: ${args.some((arg) => arg.endsWith('happier-daemon.off')) ? 'Disabled' : 'Enabled'}\r\n`
+                        : null,
+                },
+            });
+            expect(win32.services.map((service) => [service.label, service.enabled])).toEqual([
+                ['happier-daemon.off', false],
+                ['happier-daemon.on', true],
+            ]);
+        } finally {
+            await rm(root, { recursive: true, force: true });
+        }
+    });
+
     it('discovers default-following daemon services from the canonical target marker', async () => {
         const root = await mkdtemp(join(tmpdir(), 'happier-runtime-services-default-'));
         try {
@@ -357,7 +475,8 @@ describe('discoverHappierServices', () => {
                     label: 'happier-daemon.default',
                     verification: 'verified',
                     targetMode: 'default-following',
-                    ring: null,
+                    // No ring in its env and no default-channel record: the default channel, stable (R12).
+                    ring: 'stable',
                     instanceId: null,
                     scope: 'user',
                     definitionPath: join(userRoot, 'happier-daemon.default.service'),
@@ -409,6 +528,33 @@ describe('discoverHappierServices', () => {
                     label: 'happier-daemon.preview.cloud',
                     verification: 'candidate',
                 }),
+            ]);
+        } finally {
+            await rm(root, { recursive: true, force: true });
+        }
+    });
+
+    it('reports the desktop management marker a definition carries; no marker reads as user-owned (R15)', async () => {
+        const root = await mkdtemp(join(tmpdir(), 'happier-runtime-services-managed-by-'));
+        try {
+            const userRoot = join(root, 'systemd-user');
+            await mkdir(userRoot, { recursive: true });
+            for (const [id, marker] of [['company', 'desktop'], ['personal', null]] as const) {
+                await writeFile(join(userRoot, `happier-daemon.${id}.service`), renderSystemdServiceUnit({
+                    description: 'Happier Daemon',
+                    execStart: ['/Users/tester/.happier/bin/happier', 'daemon', 'start-sync'],
+                    env: {
+                        HAPPIER_ACTIVE_SERVER_ID: id,
+                        HAPPIER_PUBLIC_RELEASE_CHANNEL: 'stable',
+                        ...(marker ? { HAPPIER_DAEMON_SERVICE_MANAGED_BY: marker } : {}),
+                    },
+                    wantedBy: 'default.target',
+                }), 'utf8');
+            }
+            const discovered = await discoverHappierServices({ platform: 'linux', roots: [{ path: userRoot, scope: 'user' }] });
+            expect(discovered.services.map((service) => [service.label, service.managedBy])).toEqual([
+                ['happier-daemon.company', 'desktop'],
+                ['happier-daemon.personal', null],
             ]);
         } finally {
             await rm(root, { recursive: true, force: true });

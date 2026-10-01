@@ -111,6 +111,7 @@ describe('sessionControl.sessionsHttp authentication status handling', () => {
     process.env.HAPPIER_SERVER_URL = 'http://server.example.test';
     vi.doMock('@/api/session/resolveSessionCreateEncryptionMode', () => ({
       resolveSessionCreateEncryptionMode: vi.fn(async () => ({
+        status: 'resolved',
         desiredSessionEncryptionMode: 'plain',
         accountEncryptionCurrentness: plainAccountEncryptionCurrentness,
         serverSupportsFeatureSnapshot: true,
@@ -133,6 +134,41 @@ describe('sessionControl.sessionsHttp authentication status handling', () => {
       response: { status: 401 },
       code: 'not_authenticated',
     });
+  });
+
+  it('surfaces the wrapped transport failure when the Account currentness preflight is unavailable', async () => {
+    process.env.HAPPIER_SERVER_URL = 'http://server.example.test';
+    const { AccountEncryptionCurrentnessUnavailableError } = await import('@/api/client/connectedServiceCredentialApi');
+    const { createHttpStatusError } = await import('@/api/client/httpStatusError');
+    vi.doMock('@/api/session/resolveSessionCreateEncryptionMode', () => ({
+      resolveSessionCreateEncryptionMode: vi.fn(async () => ({
+        status: 'currentness_unavailable',
+        error: new AccountEncryptionCurrentnessUnavailableError(
+          'Account encryption currentness is unavailable (401)',
+          undefined,
+          { cause: createHttpStatusError(401, 'Account encryption currentness is unavailable (401)', 'not_authenticated') },
+        ),
+      })),
+    }));
+    vi.resetModules();
+    const { getOrCreateSessionByTag } = await import('./sessionsHttp');
+    const post = vi.spyOn(axios, 'post');
+
+    // An unavailable currentness is never reinterpreted as a Plain Account: the
+    // transport failure it wraps is what the caller classifies.
+    await expect(
+      getOrCreateSessionByTag({
+        credentials: createLegacyCredentials(),
+        tag: 'tag-currentness-unavailable',
+        metadata: { path: '/private/project', host: 'private-host' },
+        agentState: null,
+      }),
+    ).rejects.toMatchObject({
+      name: 'HttpStatusError',
+      response: { status: 401 },
+      code: 'not_authenticated',
+    });
+    expect(post).not.toHaveBeenCalled();
   });
 
   it('does not POST a tagged Session when the server is too old for current stored content', async () => {
@@ -167,6 +203,7 @@ describe('sessionControl.sessionsHttp authentication status handling', () => {
     process.env.HAPPIER_SERVER_URL = 'http://server.example.test';
     vi.doMock('@/api/session/resolveSessionCreateEncryptionMode', () => ({
       resolveSessionCreateEncryptionMode: vi.fn(async () => ({
+        status: 'resolved',
         desiredSessionEncryptionMode: 'plain',
         accountEncryptionCurrentness: plainAccountEncryptionCurrentness,
         serverSupportsFeatureSnapshot: true,
@@ -195,6 +232,7 @@ describe('sessionControl.sessionsHttp authentication status handling', () => {
     process.env.HAPPIER_SERVER_URL = 'http://server.example.test';
     vi.doMock('@/api/session/resolveSessionCreateEncryptionMode', () => ({
       resolveSessionCreateEncryptionMode: vi.fn(async () => ({
+        status: 'resolved',
         desiredSessionEncryptionMode: 'plain',
         accountEncryptionCurrentness: plainAccountEncryptionCurrentness,
         serverSupportsFeatureSnapshot: true,
@@ -263,6 +301,7 @@ describe('sessionControl.sessionsHttp authentication status handling', () => {
       resolveSessionCreateEncryptionMode: vi.fn(
         async () => await new Promise((resolve) => {
           releasePreparation = () => resolve({
+            status: 'resolved',
             desiredSessionEncryptionMode: 'plain',
             accountEncryptionCurrentness: plainAccountEncryptionCurrentness,
             serverSupportsFeatureSnapshot: true,

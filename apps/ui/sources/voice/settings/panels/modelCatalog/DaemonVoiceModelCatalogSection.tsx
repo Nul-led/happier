@@ -54,7 +54,7 @@ function resolveCatalogStatusDetail(
 
 function ModelCatalogGroup(props: Readonly<{
     title: string;
-    footer?: string;
+    description?: string;
     rows: readonly ModelCatalogRow[];
     actionPackId: string | null;
     onSetDefault: (packId: string) => void;
@@ -63,7 +63,7 @@ function ModelCatalogGroup(props: Readonly<{
     onCancel: () => void;
 }>): React.ReactElement {
     return (
-        <ItemGroup title={props.title} footer={props.footer}>
+        <ItemGroup title={props.title} description={props.description}>
             {props.rows.map((row) => (
                 <DaemonModelPackRow
                     key={row.packId}
@@ -162,7 +162,7 @@ export function DaemonVoiceModelCatalogSection(props: Readonly<{
 
             <ModelCatalogGroup
                 title={t('settingsVoice.local.models.sttGroupTitle')}
-                footer={t('settingsVoice.local.models.footer')}
+                description={t('settingsVoice.local.models.footer')}
                 rows={groups.stt}
                 actionPackId={state.actionPackId}
                 onSetDefault={(packId) => props.onSelectDefault('stt_sherpa', packId)}

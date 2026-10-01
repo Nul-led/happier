@@ -24,7 +24,6 @@ export function buildReviewCommentsOutboundMessage(params: Readonly<{
 
     return {
         text: buildReviewCommentsPromptText({
-            sessionId: params.sessionId,
             drafts,
             additionalMessage: params.additionalMessage,
         }),

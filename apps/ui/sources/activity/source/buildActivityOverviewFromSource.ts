@@ -8,8 +8,8 @@ import type {
     SessionActivityAttention,
 } from '@/activity/attention/activityAttentionTypes';
 import type { SessionAttentionOptions } from '@/sync/domains/session/attention/sessionAttention';
-import type { Message } from '@/sync/domains/messages/messageTypes';
-import { readStoredSessionMessagesFromStateLike } from '@/sync/domains/messages/readStoredSessionMessages';
+import type { Message } from "@happier-dev/session-core/messages";
+import { readStoredSessionMessagesFromStateLike } from "@happier-dev/session-core/messages";
 import {
     listSessionListLookupServerSessions,
     findSessionListLookupSession,
@@ -29,6 +29,8 @@ import {
 } from '@/activity/actions/activitySurfaceTargets';
 import { isVoiceConversationCustodySessionMetadata } from '@/voice/persistence/voiceConversationSystemSessionLookup';
 import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
+import { readSessionPersonalAttentionExpirationsForViewer } from '@/sync/domains/session/readState/sessionViewerAttention';
+import { classifyInboxSessionCandidate } from '@/activity/presentation/buildInboxSessionPresentation';
 import {
     activityInstanceKey,
     normalizeSessionAddress,
@@ -42,6 +44,16 @@ import {
 import { resolveSessionWorkspaceDisplayPresentation } from '@/sync/domains/session/listing/sessionWorkspaceDisplayPresentation';
 
 import type { ActivityAttentionSource } from './activityAttentionSourceTypes';
+
+export type ActivityOverviewSummary = Readonly<{
+    totalAttentionCount: number;
+    inboxContentCount: number;
+    nextAttentionBoundaryMs: number | null;
+    /** Sessions working right now (the full overview's `thinking`). */
+    workingCount: number;
+    /** Sessions waiting on the person: a permission, an action, or a blocked delivery. */
+    needsYouCount: number;
+}>;
 
 export const DEFAULT_ACTIVITY_SURFACE_TIMING: ActivitySurfaceTimingBySurface = {
     desktopOverlay: {
@@ -237,6 +249,7 @@ export function readActivitySourceAttentionMessages(
 function collectSourceSessions(
     source: ActivityAttentionSource,
     includeWarmSourceWhenNotReady: boolean,
+    preferCurrentListProjection = false,
 ): readonly ActivitySourceSessionEntry[] {
     const sessions: ActivitySourceSessionEntry[] = [];
     const lookupState = buildLookupState(source);
@@ -246,7 +259,20 @@ function collectSourceSessions(
         const lookupEntry = findSessionListLookupSession(lookupState, address);
         const renderable = lookupEntry?.session ?? null;
         if (session) {
-            const projectedSession = renderable
+            const summaryProjectionMatchesHydrated = preferCurrentListProjection
+                && renderable !== null
+                && renderable.metadataUnavailable !== true
+                && renderable.seq === session.seq
+                && renderable.agentStateVersion === session.agentStateVersion;
+            const summaryProjectionIsNewer = preferCurrentListProjection
+                && renderable !== null
+                && renderable.metadataUnavailable !== true
+                && renderable.seq >= session.seq
+                && renderable.agentStateVersion >= session.agentStateVersion
+                && !summaryProjectionMatchesHydrated;
+            const projectedSession = summaryProjectionIsNewer
+                ? buildSessionFromListRenderable(renderable, { serverId: address.serverId })
+                : renderable
                 && renderable.metadataUnavailable !== true
                 && isSessionListRenderableNewerThanSession(renderable, session)
                 ? buildSessionFromListRenderable(renderable, {
@@ -255,7 +281,11 @@ function collectSourceSessions(
                 })
                 : session;
             if (isHydratedSessionInActivityCustody(projectedSession)) {
-                sessions.push({ address, session: projectedSession, hasHydratedMessages: true });
+                sessions.push({
+                    address,
+                    session: projectedSession,
+                    hasHydratedMessages: !(summaryProjectionMatchesHydrated || summaryProjectionIsNewer),
+                });
             }
             continue;
         }
@@ -461,4 +491,70 @@ export function buildActivityOverviewFromSource(params: Readonly<{
         }));
 
     return buildActivityOverviewFromCandidates(candidates);
+}
+
+/**
+ * Minimal always-mounted Activity projection. It reuses the canonical source,
+ * per-session attention owner, and Inbox classifier while avoiding candidate
+ * enrichment, presentation strings, sorting, fingerprints, and detail arrays.
+ */
+export function buildActivityOverviewSummaryFromSource(params: Readonly<{
+    source: ActivityAttentionSource;
+    nowMs: number;
+    sessionOptions?: SessionAttentionOptions;
+    includeWarmSourceWhenNotReady?: boolean;
+}>): ActivityOverviewSummary {
+    let totalAttentionCount = 0;
+    let inboxContentCount = 0;
+    let workingCount = 0;
+    let needsYouCount = 0;
+    let nextAttentionBoundaryMs: number | null = null;
+
+    for (const entry of collectSourceSessions(
+        params.source,
+        params.includeWarmSourceWhenNotReady === true,
+        true,
+    )) {
+        if (!isSessionAdmittedToPersonalActivity(entry.session)) continue;
+        const messages = entry.hasHydratedMessages
+            ? readSourceSessionMessages(params.source, entry.address.sessionId)
+            : undefined;
+        const candidate = buildSessionActivityAttention({
+            session: entry.session,
+            sessionMessages: messages,
+            sessionOptions: params.sessionOptions,
+            nowMs: params.nowMs,
+        });
+        if (
+            !isHydratedSessionUserFacing(candidate.session)
+            && !(
+                isVoiceConversationCustodySessionMetadata(readSessionOwnerMetadataView(candidate.session))
+                && candidate.hasAttention
+            )
+        ) {
+            continue;
+        }
+        if (candidate.hasAttention) totalAttentionCount += 1;
+        if (classifyInboxSessionCandidate(candidate) !== null) inboxContentCount += 1;
+        if (candidate.reasons.isThinking) workingCount += 1;
+        if (
+            candidate.reasons.hasPendingPermissionRequests
+            || candidate.reasons.hasPendingUserActionRequests
+            || candidate.reasons.hasBlockedPendingDelivery
+        ) {
+            needsYouCount += 1;
+        }
+        for (const expiresAtMs of readSessionPersonalAttentionExpirationsForViewer(
+            entry.session,
+            params.nowMs,
+            messages,
+        )) {
+            if (expiresAtMs <= params.nowMs) continue;
+            if (nextAttentionBoundaryMs === null || expiresAtMs < nextAttentionBoundaryMs) {
+                nextAttentionBoundaryMs = expiresAtMs;
+            }
+        }
+    }
+
+    return { totalAttentionCount, inboxContentCount, nextAttentionBoundaryMs, workingCount, needsYouCount };
 }

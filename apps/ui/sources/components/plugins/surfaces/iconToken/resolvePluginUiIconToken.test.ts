@@ -29,9 +29,22 @@ const EXPECTED_PRIVATE_ICON_NAMES: Readonly<Record<string, IconName>> = Object.f
     search: 'magnifying-glass',
     'change-open': 'git-pull-request',
     'change-complete': 'git-merge',
+    issue: 'target',
+    bug: 'bug',
+    pin: 'push-pin',
+    conversations: 'chats-circle',
+    pause: 'pause-circle',
+    failure: 'warning-circle',
+    unavailable: 'cloud-slash',
+    denied: 'lock',
 });
 
 describe('resolvePluginUiIconToken', () => {
+    it('renders recoverable failure, unavailable and denied states with their distinct calm glyphs', () => {
+        expect(iconTokenResolver.resolvePluginUiIconName('failure')).toBe('warning-circle');
+        expect(iconTokenResolver.resolvePluginUiIconName('unavailable')).toBe('cloud-slash');
+        expect(iconTokenResolver.resolvePluginUiIconName('denied')).toBe('lock');
+    });
     it('exposes the Protocol-owned semantic icon contract through the plugin-UI seam', () => {
         expect([...HAPPIER_ICON_NAMES]).toEqual([...PluginUiIconTokenV1Schema.options]);
     });

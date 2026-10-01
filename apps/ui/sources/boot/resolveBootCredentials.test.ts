@@ -97,13 +97,14 @@ describe('resolveBootCredentials', () => {
         vi.clearAllMocks();
     });
 
-    it('prefers server-scoped credentials and bootstraps the active server when the web location overrides the server', async () => {
+    it('prefers server-scoped credentials when the web URL selects a saved Home', async () => {
         stubWebRuntime('http://happier.example.test/?server=http%3A%2F%2Flocalhost%3A24731');
 
         const { setServerUrl, getServerUrl } = await import('@/sync/domains/server/serverConfig');
         const { getActiveServerSnapshot } = await import('@/sync/domains/server/serverRuntime');
-        const { getDeviceDefaultServerId } = await import('@/sync/domains/server/serverProfiles');
+        const { getDeviceDefaultServerId, upsertServerProfile } = await import('@/sync/domains/server/serverProfiles');
         setServerUrl('https://other.example.test');
+        await upsertServerProfile({ serverUrl: 'http://localhost:24731', source: 'manual' });
         const deviceDefaultBefore = getDeviceDefaultServerId();
 
         getCredentialsForServerUrlMock.mockResolvedValue({ token: 'stack-token', secret: 'stack-secret' });
@@ -116,6 +117,21 @@ describe('resolveBootCredentials', () => {
         expect(getCredentialsMock).not.toHaveBeenCalled();
         expect(getServerUrl()).toBe('http://localhost:24731');
         expect(getDeviceDefaultServerId()).toBe(deviceDefaultBefore);
+    });
+
+    it('leaves an unknown web Home address for the mounted connect flow', async () => {
+        stubWebRuntime('https://app.example.test/?server=https%3A%2F%2Fnew.example.test');
+        getCredentialsMock.mockResolvedValue({ token: 'retained-token' });
+
+        const { setServerUrl, getServerUrl } = await import('@/sync/domains/server/serverConfig');
+        const { listServerProfiles } = await import('@/sync/domains/server/serverProfiles');
+        setServerUrl('https://retained.example.test');
+
+        const { resolveBootCredentials } = await import('./resolveBootCredentials');
+        await expect(resolveBootCredentials('web')).resolves.toEqual({ token: 'retained-token' });
+        expect(getServerUrl()).toBe('https://retained.example.test');
+        expect(listServerProfiles().some((profile) => profile.serverUrl === 'https://new.example.test')).toBe(false);
+        expect(getCredentialsForServerUrlMock).not.toHaveBeenCalled();
     });
 
     it('keeps the current server and credentials when active custody blocks a web server override', async () => {
@@ -504,7 +520,9 @@ describe('resolveBootCredentials', () => {
 
         const { setServerUrl, getServerUrl } = await import('@/sync/domains/server/serverConfig');
         const { getActiveServerSnapshot } = await import('@/sync/domains/server/serverRuntime');
+        const { upsertServerProfile } = await import('@/sync/domains/server/serverProfiles');
         setServerUrl('https://other.example.test');
+        await upsertServerProfile({ serverUrl: 'http://localhost:24731', source: 'manual' });
 
         getCredentialsForServerUrlMock.mockResolvedValue({ token: 'hash-token', secret: 'hash-secret' });
 

@@ -21,6 +21,7 @@ import {
     getCodexAcpDetectResult,
     shouldPrefetchCodexAcpLatestVersion,
 } from './codexAcpDep';
+import { isLatestVersionCheckDue } from '@/updates/latestVersionCheckFreshness';
 
 export type InstallableDepDataLike = {
     installed: boolean;
@@ -28,6 +29,7 @@ export type InstallableDepDataLike = {
     sourceKind: string;
     lastInstallLogPath: string | null;
     lastBackgroundUpdateCheckAtMs: number | null;
+    runtimeState?: 'downloading' | 'ready' | 'unavailable';
     latestVersionCheck?:
         | { ok: true; latestVersion: string | null; label: string | null; checkedAt?: number }
         | { ok: false; errorMessage: string; checkedAt?: number };
@@ -102,8 +104,6 @@ function shouldPrefetchInstallableLatestVersion(params: {
     data?: InstallableDepDataLike | null;
     requireExistingResult?: boolean;
 }): boolean {
-    const okStaleMs = 24 * 60 * 60 * 1000;
-    const errorRetryMs = 30 * 60 * 1000;
     const result = params.result ?? null;
     const data = params.data ?? null;
     const requireExistingResult = params.requireExistingResult === true;
@@ -121,8 +121,7 @@ function shouldPrefetchInstallableLatestVersion(params: {
     if (!latestVersionCheck) return true;
     if (checkedAt <= 0) return true;
 
-    const threshold = latestVersionCheck.ok === true ? okStaleMs : errorRetryMs;
-    return Date.now() - checkedAt > threshold;
+    return isLatestVersionCheckDue({ checkedAt, ok: latestVersionCheck.ok === true, now: Date.now() });
 }
 
 function buildLatestVersionDetectRequest(

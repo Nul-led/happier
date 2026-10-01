@@ -223,10 +223,12 @@ export async function assertPersonalHomeDaemonSetupNonBlockingContract(): Promis
   const absentStatus: DaemonServiceStatusSnapshot = {
     serviceInstalled: false, daemonRunning: false, needsAuth: false, machineId: null,
     daemonServerUrl: null, daemonComparableKey: null, daemonAccountId: null, daemonMachineRegistered: null,
+    daemonAccountLabel: null, cliUpdate: null,
   };
   const statusWith = (daemonRunning: boolean): DaemonServiceStatusSnapshot => ({
     serviceInstalled: true, daemonRunning, needsAuth: false, machineId: daemonRunning ? 'machine_personal_home' : null,
     daemonServerUrl: null, daemonComparableKey: null, daemonAccountId: null, daemonMachineRegistered: daemonRunning ? true : null,
+    daemonAccountLabel: null, cliUpdate: null,
   });
   const depsWith = (readStatus: DaemonServiceKindDeps['readStatus']): DaemonServiceKindDeps => ({
     readStatus: async (params) => { calls.readStatus += 1; return readStatus(params); },

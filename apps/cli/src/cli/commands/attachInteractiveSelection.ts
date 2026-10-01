@@ -24,21 +24,11 @@ import {
   type EffectiveSessionTmuxResolution,
 } from '@/session/attach/resolveEffectiveSessionTmuxFromAccountSettings';
 import { resolveCliSessionAttachBackendId } from '@/session/attach/resolveCliSessionAttachBackendId';
-import type { RawSessionListRow } from '@/session/transport/http/sessionsHttp';
+import type { fetchSessionsPage, RawSessionListRow } from '@/session/transport/http/sessionsHttp';
 import type { TerminalAttachmentInfo } from '@/terminal/attachment/terminalAttachmentInfo';
 import type { SessionActionSelectorRow } from '@/ui/ink/SessionActionSelector';
 
-type FetchSessionsPageFn = (params: {
-  token: string;
-  cursor?: string;
-  limit?: number;
-  activeOnly?: boolean;
-  archivedOnly?: boolean;
-}) => Promise<{
-  sessions: RawSessionListRow[];
-  nextCursor: string | null;
-  hasNext: boolean;
-}>;
+type FetchSessionsPageFn = typeof fetchSessionsPage;
 
 type ReadTerminalAttachmentInfoFn = (params: {
   happyHomeDir: string;
@@ -111,12 +101,20 @@ export async function buildAttachSelectionModel(params: Readonly<{
   accountSettings?: AccountSettings | null;
   accountEncryptionMode: 'plain' | 'e2ee';
 }>): Promise<AttachSelectionModel> {
-  const sessionHostBridge = getSessionHostBridge();
   const page = await params.fetchSessionsPageFn({
     token: params.credentials.token,
     limit: 200,
     activeOnly: true,
   });
+  return await buildAttachSelectionModelFromSessions({ ...params, sessions: page.sessions });
+}
+
+export async function buildAttachSelectionModelFromSessions(params: Readonly<
+  Omit<Parameters<typeof buildAttachSelectionModel>[0], 'fetchSessionsPageFn'> & {
+    sessions: readonly RawSessionListRow[];
+  }
+>): Promise<AttachSelectionModel> {
+  const sessionHostBridge = getSessionHostBridge();
   const tmuxAvailable = await params.isTmuxAvailableFn();
   const rows: SessionActionSelectorRow[] = [];
   const ineligibilityExplanations: AttachIneligibilityExplanation[] = [];
@@ -124,7 +122,7 @@ export async function buildAttachSelectionModel(params: Readonly<{
     backendId: string;
     metadata: AttachSessionMetadataV1;
   }>();
-  for (const rawSession of page.sessions) {
+  for (const rawSession of params.sessions) {
     const rowModel = buildCliSessionRowModel({
       credentials: params.credentials,
       rawSession,

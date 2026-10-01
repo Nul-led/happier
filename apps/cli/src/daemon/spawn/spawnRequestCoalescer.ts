@@ -10,6 +10,7 @@ import {
 
 import { readCanonicalSpawnRuntimeSelection } from '@/rpc/handlers/spawnRuntimeSelection';
 import { SPAWN_SESSION_ERROR_CODES, type SpawnSessionOptions, type SpawnSessionResult } from '@/session/shared/spawnSessionContract';
+import { pickSessionCreateOriginFields } from '@/session/shared/sessionCreateOrigin';
 
 function sha256Hex(value: string): string {
   return createHash('sha256').update(value, 'utf8').digest('hex');
@@ -119,6 +120,7 @@ function buildSpawnSemanticFingerprint(options: SpawnSessionOptions): Json {
   return {
     machineId: normalizeNonEmptyString(options.machineId),
     directory: normalizeNonEmptyString(options.directory) ?? '',
+    directoryKind: options.directoryKind ?? 'path',
     agentTarget: options.agentTarget === undefined
       ? null
       : toStableJson(options.agentTarget, new WeakSet()),
@@ -142,9 +144,17 @@ function buildSpawnSemanticFingerprint(options: SpawnSessionOptions): Json {
       ? null
       : sha256Hex(stableJsonStringify(options.initialAccess)),
     primaryTeamId: options.primaryTeamId === undefined ? null : [options.primaryTeamId],
+    reportsTo: options.reportsTo ?? null,
+    initialSessionRolesHash: options.initialSessionRolesV1 === undefined
+      ? null
+      : sha256Hex(stableJsonStringify(options.initialSessionRolesV1)),
+    creationOrigin: options.existingSessionId ? null : toStableJson(pickSessionCreateOriginFields(options), new WeakSet()),
     pendingFirstInputHash: options.pendingFirstInput === undefined
       ? null
       : sha256Hex(stableJsonStringify(options.pendingFirstInput)),
+    initialGoalHash: options.initialGoal === undefined
+      ? null
+      : sha256Hex(stableJsonStringify(options.initialGoal)),
     initialTranscriptAfterSeq,
     attachMetadataIdentityPolicy: normalizeNonEmptyString(options.attachMetadataIdentityPolicy),
     envValueHashes: hashRecordValues(options.environmentVariables),

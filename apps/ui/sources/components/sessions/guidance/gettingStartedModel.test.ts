@@ -138,6 +138,7 @@ describe('buildSessionGettingStartedViewModel', () => {
             hasUnknownServers: false,
             machineCount: 1,
             onlineCount: 1,
+            unavailableServerIds: [],
         });
     });
 
@@ -266,7 +267,7 @@ describe('buildSessionGettingStartedViewModel', () => {
         expect(model.kind).toBe('create_session');
     });
 
-    it('treats a healthy local daemon as an online machine when the active server cache is empty', () => {
+    it('does not count a local daemon the account machine list does not contain', () => {
         const model = buildSessionGettingStartedViewModel({
             sessionsReady: true,
             sessionCount: 0,
@@ -279,39 +280,9 @@ describe('buildSessionGettingStartedViewModel', () => {
             serverSelectionGroups: [],
             activeServerProfile: { id: 'srv-a', name: 'A', serverUrl: 'https://api.a.example' },
             machineListByServerId: { 'srv-a': [] },
-            localDaemonStatus: {
-                serviceInstalled: true,
-                daemonRunning: true,
-                needsAuth: false,
-                machineId: 'machine-1',
-            },
         });
 
-        expect(model.kind).toBe('create_session');
-    });
-
-    it('treats a healthy local daemon as an online machine when the active server cache only reports offline machines', () => {
-        const model = buildSessionGettingStartedViewModel({
-            sessionsReady: true,
-            sessionCount: 0,
-            activeMachines: [],
-            selection: {
-                activeTarget: { kind: 'server', id: 'srv-a' },
-                activeServerId: 'srv-a',
-                allowedServerIds: ['srv-a'],
-            },
-            serverSelectionGroups: [],
-            activeServerProfile: { id: 'srv-a', name: 'A', serverUrl: 'https://api.a.example' },
-            machineListByServerId: { 'srv-a': [{ active: false }] },
-            localDaemonStatus: {
-                serviceInstalled: true,
-                daemonRunning: true,
-                needsAuth: false,
-                machineId: 'machine-1',
-            },
-        });
-
-        expect(model.kind).toBe('create_session');
+        expect(model.kind).toBe('connect_machine');
     });
 
     it('falls back to the active machine list when no visible server ids are selected', () => {
@@ -372,4 +343,45 @@ describe('buildSessionGettingStartedViewModel', () => {
 
         expect(model.kind).toBe('loading');
     });
+
+    it('never waits on a Home that is not answering: the active Home decides, and the other Home is reported', () => {
+        const model = buildSessionGettingStartedViewModel({
+            sessionsReady: true,
+            sessionCount: 0,
+            activeMachines: [{ active: true }],
+            selection: {
+                activeTarget: { kind: 'group', id: 'g', groupId: 'g' },
+                activeServerId: 'srv-a',
+                allowedServerIds: ['srv-a', 'srv-b'],
+            },
+            serverSelectionGroups: [{ id: 'g', name: 'All' }],
+            activeServerProfile: { id: 'srv-a', name: 'A', serverUrl: 'https://api.a.example' },
+            machineListByServerId: { 'srv-a': [{ active: true }] },
+            machineListStatusByServerId: { 'srv-a': 'idle', 'srv-b': 'error' },
+        });
+
+        expect(model.kind).toBe('create_session');
+        expect(model.unavailableServerIds).toEqual(['srv-b']);
+    });
+
+    it('answers from the active Home when the only other selected Home is not answering', () => {
+        const model = buildSessionGettingStartedViewModel({
+            sessionsReady: true,
+            sessionCount: 0,
+            activeMachines: [],
+            selection: {
+                activeTarget: { kind: 'server', id: 'srv-b' },
+                activeServerId: 'srv-a',
+                allowedServerIds: ['srv-b'],
+            },
+            serverSelectionGroups: [],
+            activeServerProfile: { id: 'srv-a', name: 'A', serverUrl: 'https://api.a.example' },
+            machineListByServerId: { 'srv-a': [] },
+            machineListStatusByServerId: { 'srv-b': 'error' },
+        });
+
+        expect(model.kind).toBe('connect_machine');
+        expect(model.unavailableServerIds).toEqual(['srv-b']);
+    });
 });
+

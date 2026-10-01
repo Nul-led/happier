@@ -26,6 +26,7 @@ export function createActivePluginAccountHostedArtifactRemover(
                 && output.data.link.release.pluginId === target.release.pluginId
                 && output.data.link.release.version === target.release.version
                 && output.data.link.contributionId === target.contributionId
+                && output.data.link.artifactId === target.artifactId
                 && output.data.link.tier === target.tier
                 && output.data.link.platform === target.platform;
         },

@@ -258,7 +258,7 @@ function privateRecord(input: Readonly<{
         },
         linkGeneration: 'link-1',
         sourceGeneration: 'source-1',
-        contributionGeneration: 'contribution-1',
+        sourceCustody: { kind: 'development', registeredRootId: 'contribution-1' },
       },
       plan,
       targetStorageMode: input.targetStorageMode
@@ -377,7 +377,7 @@ function persistedTakeoverRuntimeRecord(input: Readonly<{
         },
         linkGeneration: 'link-1',
         sourceGeneration: 'source-1',
-        contributionGeneration: 'contribution-1',
+        sourceCustody: { kind: 'development', registeredRootId: 'contribution-1' },
       },
       plan: 'takeover',
       targetStorageMode: 'persisted',
@@ -420,7 +420,6 @@ function persistedTakeoverRuntimeRecord(input: Readonly<{
       ...(input.authorityPrepared
         ? {
           transcriptAuthorityRevision: 3,
-          pendingAdmissionRevision: 4,
         }
         : {}),
     },
@@ -2030,7 +2029,7 @@ describe('external-session operation progress producer selection', () => {
         }
         const {
           sourceGeneration: _sourceGeneration,
-          contributionGeneration: _contributionGeneration,
+          sourceCustody: _sourceCustody,
           ...source
         } = terminalA.request.source;
         const executor = createExternalSessionTakeoverStartActionExecutor({
@@ -2936,53 +2935,6 @@ describe('external-session operation progress producer selection', () => {
     });
   });
 
-  it('fails incomplete legacy admission evidence closed as reconciliation_required', async () => {
-    const activeServerDir = await mkdtemp(join(
-      tmpdir(),
-      'happier-takeover-legacy-admission-repair-',
-    ));
-    roots.push(activeServerDir);
-    const base = persistedTakeoverRuntimeRecord({ phase: 'admitting' });
-    const ambiguous = ExternalSessionOperationRecordV1Schema.parse({
-      ...base,
-      canonicalOwnerEvidence: {
-        ...base.canonicalOwnerEvidence,
-        transcriptAuthorityRevision: 3,
-      },
-    });
-    await writeExternalSessionOperationRecord(activeServerDir, ambiguous);
-    const publish = vi.fn(async () => undefined);
-
-    await expect(repairExternalSessionOperationProgressProjections(
-      activeServerDir,
-      {
-        readPresentation: async () => ({ kind: 'absent' }),
-        publish,
-      },
-    )).resolves.toBe(1);
-
-    await expect(readExternalSessionOperationRecord(
-      activeServerDir,
-      ambiguous.operationId,
-    )).resolves.toMatchObject({
-      revision: ambiguous.revision + 1,
-      status: 'reconciliation_required',
-      phase: 'admitting',
-      retryTargetPhase: 'admitting',
-      currentStorageState: 'snapshot_complete',
-      error: { code: 'reconciliation_required', retryable: true },
-      canonicalOwnerEvidence: {
-        disagreement: {
-          // The record captured a transcript-authority revision and nothing
-          // from runtime control, so that is the owner the evidence names.
-          owner: 'transcript_authority',
-          expectedRevision: 3,
-          observedRevision: 0,
-        },
-      },
-    });
-  });
-
   it('fails passive repair closed when legacy private rows have two nonterminal owners', () => {
     expect(() => selectExternalSessionOperationRecordsForPassiveRepair([
       privateRecord({
@@ -3401,7 +3353,7 @@ describe('external-session operation progress producer selection', () => {
 
     const {
       sourceGeneration: _sourceGeneration,
-      contributionGeneration: _contributionGeneration,
+      sourceCustody: _sourceCustody,
       ...rawSource
     } = completed.request.source;
     const describeSession = vi.fn();

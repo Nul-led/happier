@@ -1,4 +1,5 @@
 import { IrohError, normalizeIrohNativeError, type IrohHomeTunnelLease, type IrohHomeTunnelRequest, type IrohObservedPath } from '@happier-dev/iroh-native';
+import { isLiteralLoopbackHostname } from '@happier-dev/protocol';
 
 import { desktopHostKind, invokeDesktopHost } from '@/utils/platform/desktopHost';
 
@@ -37,10 +38,9 @@ function readLoopbackRuntimeOrigin(record: Record<string, unknown>): string {
     } catch {
         throw new IrohError('unknown', 'Desktop Iroh host lease field runtimeOrigin is invalid');
     }
-    const isLoopback = parsed.hostname === '127.0.0.1' || parsed.hostname === '[::1]';
     if (
         parsed.protocol !== 'http:'
-        || !isLoopback
+        || !isLiteralLoopbackHostname(parsed.hostname)
         || parsed.port.length === 0
         || parsed.username.length > 0
         || parsed.password.length > 0

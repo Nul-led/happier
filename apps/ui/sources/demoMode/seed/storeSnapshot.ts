@@ -20,6 +20,8 @@ export type DemoLocalSettingKey = 'themeProfiles';
 export type DemoProfileKey = 'connectedServicesV2';
 
 export type StoreSnapshot = Readonly<{
+    artifacts: StorageState['artifacts'];
+    artifactsLoaded: StorageState['artifactsLoaded'];
     sessions: StorageState['sessions'];
     sessionListRowsByServerId: StorageState['sessionListRowsByServerId'];
     ordinarySessionListMembershipByServerId: StorageState['ordinarySessionListMembershipByServerId'];
@@ -42,6 +44,8 @@ function cloneData<T>(value: T): T {
 
 export function takeStoreSnapshot(state: StorageState): StoreSnapshot {
     return {
+        artifacts: cloneData(state.artifacts),
+        artifactsLoaded: state.artifactsLoaded,
         sessions: cloneData(state.sessions),
         sessionListRowsByServerId: cloneData(state.sessionListRowsByServerId),
         ordinarySessionListMembershipByServerId: cloneData(state.ordinarySessionListMembershipByServerId),
@@ -62,9 +66,7 @@ export function takeStoreSnapshot(state: StorageState): StoreSnapshot {
             sessionListWorkingPlacementModeV1: state.settings.sessionListWorkingPlacementModeV1,
             serverSelectionActiveTargetKind: state.settings.serverSelectionActiveTargetKind,
             serverSelectionActiveTargetId: state.settings.serverSelectionActiveTargetId,
-            executionRunsGuidanceEnabled: state.settings.executionRunsGuidanceEnabled,
-            executionRunsGuidanceMaxChars: state.settings.executionRunsGuidanceMaxChars,
-            executionRunsGuidanceEntries: cloneData(state.settings.executionRunsGuidanceEntries),
+            rolesV1: cloneData(state.settings.rolesV1),
             connectedServicesDefaultProfileByServiceId: cloneData(state.settings.connectedServicesDefaultProfileByServiceId),
             connectedServicesProfileLabelByKey: cloneData(state.settings.connectedServicesProfileLabelByKey),
             connectedServicesDefaultAuthByAgentIdV1: cloneData(state.settings.connectedServicesDefaultAuthByAgentIdV1),
@@ -188,8 +190,11 @@ export function buildStoreStateAfterDemoRestore(params: Readonly<{
     snapshot: StoreSnapshot;
     sessionIds: ReadonlySet<string>;
     machineIds: ReadonlySet<string>;
+    artifactIds: ReadonlySet<string>;
 }>): Partial<StorageState> {
     return {
+        artifacts: restoreRecordByOwnedIds(params.current.artifacts, params.snapshot.artifacts, params.artifactIds),
+        artifactsLoaded: params.snapshot.artifactsLoaded,
         sessions: restoreRecordByOwnedIds(params.current.sessions, params.snapshot.sessions, params.sessionIds),
         sessionListRowsByServerId: restoreSessionListRows(
             params.current.sessionListRowsByServerId,

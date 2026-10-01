@@ -1,5 +1,5 @@
 import * as React from 'react';
-import type { ComposerContentHandleV1 } from '@happier-dev/protocol';
+import type { ComposerContentHandleV1, SessionAttachmentHandleV1 } from '@happier-dev/protocol';
 import { Platform, Pressable, useWindowDimensions, View } from 'react-native';
 import { Image } from 'expo-image';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
@@ -13,6 +13,8 @@ import { useModalCardChrome } from '@/modal/components/card/useModalCardChrome';
 import { t } from '@/text';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { Icon } from '@/components/ui/icons/Icon';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
+import type { WorkspaceScopeBase } from '@/sync/domains/workspaces/workspaceScope';
 
 export type AttachmentImagePreviewModalImage =
     | Readonly<{
@@ -28,6 +30,9 @@ export type AttachmentImagePreviewModalImage =
         mimeType?: string;
         sizeBytes?: number;
         cacheKey?: string | null;
+        attachmentHandle?: SessionAttachmentHandleV1;
+        /** The files' root when it is not the Session's working directory (daemon-stored media). */
+        workspaceScope?: WorkspaceScopeBase | null;
     }>
     | Readonly<{
         /** Draft-only opaque stage; the preview hook owns any temporary URI. */
@@ -109,6 +114,8 @@ function AttachmentImagePreviewCurrentImage(props: Readonly<{
         mimeType: sessionImage?.mimeType ?? composerStagedImage?.handle.mimeType ?? null,
         sizeBytes: sessionImage?.sizeBytes ?? composerStagedImage?.handle.sizeBytes ?? null,
         composerStagedMedia: composerStagedImage?.handle ?? null,
+        attachmentHandle: sessionImage?.attachmentHandle,
+        workspaceScope: sessionImage?.workspaceScope ?? null,
     });
 
     if (props.image.kind === 'direct') {
@@ -248,7 +255,7 @@ export const AttachmentImagePreviewModal = React.memo(function AttachmentImagePr
                                 styles.navButtonLeft,
                                 Platform.OS === 'web' && !isHovered ? styles.navButtonIdle : null,
                                 !canGoPrevious ? styles.navButtonDisabled : null,
-                                pressed && canGoPrevious ? { opacity: 0.85 } : null,
+                                pressed && canGoPrevious ? { opacity: motionTokens.press.opacitySubtle } : null,
                             ]}
                             testID="attachment-image-preview-previous"
                         >
@@ -276,7 +283,7 @@ export const AttachmentImagePreviewModal = React.memo(function AttachmentImagePr
                                 styles.navButtonRight,
                                 Platform.OS === 'web' && !isHovered ? styles.navButtonIdle : null,
                                 !canGoNext ? styles.navButtonDisabled : null,
-                                pressed && canGoNext ? { opacity: 0.85 } : null,
+                                pressed && canGoNext ? { opacity: motionTokens.press.opacitySubtle } : null,
                             ]}
                             testID="attachment-image-preview-next"
                         >

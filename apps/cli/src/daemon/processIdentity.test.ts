@@ -5,6 +5,7 @@ import {
   processGenerationMatches,
   processGenerationProvesReuse,
   readProcessIdentityByPid,
+  type ReadProcessIdentityByPidDependencies,
 } from './processIdentity';
 
 describe('process generation identity', () => {
@@ -105,14 +106,14 @@ describe('readProcessIdentityByPid', () => {
     })).resolves.toBeNull();
   });
 
-  it('preserves Linux procfs command and start-time identity', async () => {
+  it('keeps Linux process identity stable when procfs boot wall time shifts, but detects new start ticks', async () => {
     const files = new Map<string, string>([
       ['/proc/stat', 'cpu  1 2 3\nbtime 1717171000\n'],
       ['/proc/777/stat', '777 (provider) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 12345 22'],
       ['/proc/777/cmdline', 'provider\u0000serve\u0000--port=43111\u0000'],
     ]);
 
-    await expect(readProcessIdentityByPid(777, {
+    const dependencies = {
       platform: 'linux',
       linuxBoundary: {
         readFile: async (path) => {
@@ -126,18 +127,28 @@ describe('readProcessIdentityByPid', () => {
           throw new Error(`missing ${path}`);
         },
       },
-    })).resolves.toEqual({
+    } satisfies ReadProcessIdentityByPidDependencies;
+    const first = await readProcessIdentityByPid(777, dependencies);
+    expect(first).toEqual({
       pid: 777,
       ppid: 1,
-      processStartTimeMs: 1_717_171_000_190,
+      processStartTimeMs: 190,
       command: 'provider serve --port=43111',
       cwd: '/repo',
     });
+    files.set('/proc/stat', 'cpu  1 2 3\nbtime 1717170999\n');
+    const afterClockStep = await readProcessIdentityByPid(777, dependencies);
+    expect(afterClockStep?.processStartTimeMs).toBe(first?.processStartTimeMs);
+    expect(processGenerationMatches(first?.processStartTimeMs, afterClockStep?.processStartTimeMs)).toBe(true);
+
+    files.set('/proc/777/stat', '777 (provider) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 20 12345 22');
+    const reusedPid = await readProcessIdentityByPid(777, dependencies);
+    expect(processGenerationProvesReuse(first?.processStartTimeMs, reusedPid?.processStartTimeMs)).toBe(true);
   });
 });
 
 describe('compareProcessGenerationIdentities', () => {
-  it('fences an equal whole-second pair on Darwin but decides it exactly on sub-second platforms', () => {
+  it('delegates the legacy numeric precision policy to cli-common', () => {
     expect(compareProcessGenerationIdentities('41:1754041400000', '41:1754041400000', 'darwin'))
       .toBe('ambiguous');
     expect(compareProcessGenerationIdentities('41:1754041400000', '41:1754041400000', 'linux'))

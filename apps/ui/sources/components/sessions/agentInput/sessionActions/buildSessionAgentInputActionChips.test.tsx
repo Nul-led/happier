@@ -65,14 +65,17 @@ describe('buildSessionAgentInputActionChips', () => {
 
     it('seeds UI-normalized permission defaults for execution-run action chips', () => {
         actionIdsState.value = ['review.start', 'subagents.delegate.start'];
+        let composerText = '';
 
         const chips = buildSessionAgentInputActionChips({
             accountScope: { serverId: 'server-a', accountId: 'account-a' },
             address: { serverId: 'server-a', sessionId: 'session-1' },
             defaultBackendTarget: { kind: 'builtInAgent', agentId: 'claude' } as const,
             defaultBackendId: 'claude',
-            instructionsText: '',
+            readInstructionsText: () => composerText,
         });
+        // The chips are built once; the draft carries the composer text as it is at the press.
+        composerText = 'Check the retry path';
 
         const expectations = [
             { key: 'session-action:review.start', actionId: 'review.start', permissionMode: 'read_only' },
@@ -109,6 +112,7 @@ describe('buildSessionAgentInputActionChips', () => {
                     actionId: expectation.actionId,
                     input: expect.objectContaining({
                         permissionMode: expectation.permissionMode,
+                        instructions: 'Check the retry path',
                     }),
                 }),
             );
@@ -123,7 +127,7 @@ describe('buildSessionAgentInputActionChips', () => {
             accountScopeIsCurrent: () => current,
             address: { serverId: 'server-a', sessionId: 'session-1' },
             defaultBackendId: 'claude',
-            instructionsText: '',
+            readInstructionsText: () => '',
         });
         const rendered = chips[0]?.render({
             chipStyle: () => null,

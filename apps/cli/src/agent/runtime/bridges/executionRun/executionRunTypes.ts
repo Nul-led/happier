@@ -31,11 +31,21 @@ import type { ExecutionRunWorkflowObservationSink } from './executionRunWorkflow
 export type ExecutionRunManagerStartParams = Readonly<{
   /** Session association is explicit; `null` is a daemon-owned detached run. */
   sessionId: string | null;
+  /** Absolute depth stamped by host admission; parent refs are correlation only. */
+  workDepth?: number;
   /** Host-only store bound to this exact Run occurrence when it differs from the bridge default. */
   getPermissionRequestStore?: ExecutionRunPermissionRequestStoreProvider;
   /** Host-private exact Workflow invocation projection; never persisted with Run state. */
   workflowObservationSink?: ExecutionRunWorkflowObservationSink;
+  /** Host-private identity from an admitted Workflow Action leaf, never authored input. */
+  workflowRunId?: string;
   intent: ExecutionRunIntent;
+  roleId?: string;
+  launchProfileId?: string;
+  /** Host-resolved admission snapshot, never a caller-authored RPC field. */
+  resolvedRole?: import('@happier-dev/protocol').ResolvedRoleV1;
+  roleSessionMetadata?: unknown;
+  promptCredentials?: import('@/persistence').StoredCredentials;
   backendTarget: BackendTargetRefV1;
   accountSettings?: Readonly<Record<string, unknown>> | null;
   instructions?: string;
@@ -99,6 +109,7 @@ export type ExecutionRunManagerStartParams = Readonly<{
    */
   causalPermissionAuthority?: SessionInputCausalPermissionAuthorityV1;
   permissionMode: string;
+  workspaceWrites?: 'allow' | 'deny';
   retentionPolicy: 'ephemeral' | 'resumable';
   runClass: 'bounded' | 'long_lived';
   ioMode: 'request_response' | 'streaming';
@@ -137,12 +148,16 @@ export type ExecutionRunRuntimeSettings = Readonly<{
 }>;
 
 export type ExecutionRunState = Readonly<{
+  /** Resolved host runtime engine, rather than a requested launch preference. */
+  effectiveEngine?: Readonly<{ agentId: string; modelId?: string }>;
   runId: string;
   callId: string;
   sidechainId: string;
   sessionId: string | null;
   depth: number;
   intent: ExecutionRunManagerStartParams['intent'];
+  roleId?: string;
+  launchProfileId?: string;
   profileId?: string | null;
   profileSourceCustody?: import('@happier-dev/protocol').PluginSourceCustodyV1 | null;
   backendTarget: BackendTargetRefV1;
@@ -151,6 +166,7 @@ export type ExecutionRunState = Readonly<{
   intentInput?: unknown;
   display?: ExecutionRunDisplay;
   permissionMode: string;
+  workspaceWrites?: 'allow' | 'deny';
   retentionPolicy: ExecutionRunManagerStartParams['retentionPolicy'];
   runClass: ExecutionRunManagerStartParams['runClass'];
   ioMode: ExecutionRunManagerStartParams['ioMode'];

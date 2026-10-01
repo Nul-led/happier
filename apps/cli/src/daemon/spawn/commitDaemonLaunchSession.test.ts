@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { SessionInitialAccessServerError } from '@/api/session/sessionCreationInitialAccess';
 import type { SpawnSessionOptions } from '@/session/shared/spawnSessionContract';
+import { snapshotSessionRolesAtSpawnV1 } from '@happier-dev/protocol';
 
 // Network boundary only: the Session row read, the Account currentness read and
 // the archive mutation are HTTP calls. Attach-context building stays real.
@@ -53,6 +54,7 @@ const directTeamOptions: SpawnSessionOptions = {
   },
   teamCredentialBindings: [teamSlotBinding],
   primaryTeamId: 'team-1',
+  reportsTo: { sessionId: 'lead-1' },
   mcpSelection: { v: 1, managedServersEnabled: true, forceIncludeServerIds: ['docs'], forceExcludeServerIds: [] },
 } as SpawnSessionOptions;
 
@@ -78,7 +80,7 @@ describe('commitDaemonLaunchSession', () => {
     network.setSessionArchivedStateById.mockReset().mockResolvedValue({ archivedAt: 1 });
   });
 
-  it('commits only launches whose connected services select directly delivered Team material', () => {
+  it('commits launches needing host creation proof or directly delivered Team material', () => {
     expect(daemonLaunchRequiresCommittedSession(directTeamOptions)).toBe(true);
     expect(daemonLaunchRequiresCommittedSession({
       ...directTeamOptions,
@@ -90,9 +92,26 @@ describe('commitDaemonLaunchSession', () => {
       },
     } as SpawnSessionOptions)).toBe(false);
     expect(daemonLaunchRequiresCommittedSession({ directory: '/repo' })).toBe(false);
+    expect(daemonLaunchRequiresCommittedSession({ directory: '/repo', creationAuthorization: { token: 'signed-proof' } })).toBe(true);
+  });
+
+  it('commits a complete role snapshot before launch instead of transporting role text in the process environment', () => {
+    const initialSessionRolesV1 = snapshotSessionRolesAtSpawnV1({
+      leadSessionId: 'lead-1', sameAccount: false,
+      roles: { builder: { roleId: 'builder', name: 'Builder', instructions: 'Build carefully',
+        engine: { agentTargetKey: 'agent:codex' }, runsAs: { kind: 'session' },
+        workspaceWrites: 'allow', secondOpinion: 'off', enabled: true } },
+    });
+    expect(daemonLaunchRequiresCommittedSession({ directory: '/repo', initialSessionRolesV1 })).toBe(true);
   });
 
   it('creates the Session with its Team slot binding before launch, then continues as an attach to it', async () => {
+    const initialSessionRolesV1 = { ...snapshotSessionRolesAtSpawnV1({
+      leadSessionId: 'lead-1', sameAccount: true, notes: 'Keep notes', memoryDocRef: { kind: 'doc', artifactId: 'memory' },
+      roles: { builder: { roleId: 'builder', name: 'Builder', instructions: 'Resolved instructions',
+        engine: { agentTargetKey: 'agent:codex', modelId: 'builder-model' }, runsAs: { kind: 'session' },
+        workspaceWrites: 'allow', secondOpinion: 'off', enabled: true } },
+    }), roleId: 'builder' };
     const getOrCreateSession = vi.fn(async (input: { metadata: Record<string, unknown> }) => ({
       id: 'session-committed',
       metadata: input.metadata,
@@ -107,7 +126,7 @@ describe('commitDaemonLaunchSession', () => {
     const committed = await commitDaemonLaunchSession({
       api: { getOrCreateSession } as never,
       credentials,
-      options: directTeamOptions,
+      options: { ...directTeamOptions, creationAuthorization: { token: 'signed-proof' }, initialSessionRolesV1 },
       directory: '/repo',
       agentModeId: 'plan',
       agentModeUpdatedAt: 5,
@@ -120,8 +139,10 @@ describe('commitDaemonLaunchSession', () => {
     };
     // The Home admits the Team binding in the create transaction.
     expect(createInput).toMatchObject({
+      creationAuthorizationToken: 'signed-proof',
       teamCredentialBindings: [teamSlotBinding],
       primaryTeamId: 'team-1',
+      reportsTo: { sessionId: 'lead-1' },
     });
     // Intents an attaching runner never takes from its own process are
     // seeded by the creator.
@@ -129,6 +150,7 @@ describe('commitDaemonLaunchSession', () => {
       path: '/repo',
       mcpSelectionV1: { v: 1, forceIncludeServerIds: ['docs'] },
       connectedServiceMaterializationIdentityV1: committed.session.options.connectedServiceMaterializationIdentityV1,
+      work: { sessionRolesV1: initialSessionRolesV1 },
     });
     expect(JSON.stringify(createInput.metadata)).toContain('"plan"');
     expect(committed.session).toMatchObject({
@@ -139,7 +161,10 @@ describe('commitDaemonLaunchSession', () => {
       options: { attachMetadataIdentityPolicy: 'replace_with_runtime_identity' },
     });
     expect(withoutFreshSessionCreationFields(committed.session.options)).not.toHaveProperty('teamCredentialBindings');
+    expect(withoutFreshSessionCreationFields(committed.session.options)).not.toHaveProperty('creationAuthorization');
     expect(withoutFreshSessionCreationFields(committed.session.options)).not.toHaveProperty('primaryTeamId');
+    expect(withoutFreshSessionCreationFields(committed.session.options)).not.toHaveProperty('reportsTo');
+    expect(withoutFreshSessionCreationFields(committed.session.options)).not.toHaveProperty('initialSessionRolesV1');
   });
 
   it('keeps the identity a rejoined Session already persisted', async () => {

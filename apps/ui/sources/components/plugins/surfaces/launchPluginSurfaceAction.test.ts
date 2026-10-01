@@ -62,7 +62,6 @@ describe('launchPluginSurfaceAction', () => {
             resolveContributedAction: resolveExact(projected),
             contributedAction: {
                 machineId: 'machine-1',
-                expectedGeneration: 'generation-7',
                 execute,
             },
             operationOrigin,
@@ -103,7 +102,6 @@ describe('launchPluginSurfaceAction', () => {
             resolveContributedAction: resolveExact(projected),
             contributedAction: {
                 machineId: 'machine-1',
-                expectedGeneration: 'generation-7',
                 execute,
             },
             operationOrigin: { resolve: () => null },
@@ -127,7 +125,6 @@ describe('launchPluginSurfaceAction', () => {
             resolveContributedAction: resolveExact(projected),
             contributedAction: {
                 machineId: 'machine-1',
-                expectedGeneration: 'generation-7',
                 execute,
             },
             operationOrigin: { resolve: () => null },
@@ -153,7 +150,6 @@ describe('launchPluginSurfaceAction', () => {
             resolveContributedAction: resolveExact(withoutOperation as PluginProjectedActionV2),
             contributedAction: {
                 machineId: 'machine-1',
-                expectedGeneration: 'generation-7',
                 execute,
             },
         });

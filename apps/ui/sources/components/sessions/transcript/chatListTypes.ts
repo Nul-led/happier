@@ -1,8 +1,9 @@
 import type { OpenApprovalArtifactForSession } from '@/sync/domains/artifacts/approvalArtifacts';
-import type { Message } from '@/sync/domains/messages/messageTypes';
-import type { PersistedSessionMessagePinV1 } from '@/sync/domains/messages/pins/sessionMessagePins';
+import type { Message } from "@happier-dev/session-core/messages";
+import type { PersistedSessionMessagePinV1 } from "@happier-dev/session-core/pins";
 import type { SessionViewportAnchorSnapshot } from '@/sync/sync';
-import type { Metadata, Session } from '@/sync/domains/state/storageTypes';
+import type { Session } from '@/sync/domains/state/storageTypes';
+import type { Metadata } from '@happier-dev/session-core/state';
 import type { TranscriptInteraction } from '@/utils/sessions/deriveTranscriptInteraction';
 import type { ChatFooterExternalControlState } from './ChatFooter';
 import type { PendingMessageEditRequest } from '@/components/sessions/pending/PendingMessagesTranscriptBlock';
@@ -11,7 +12,10 @@ import type { TranscriptJumpResult } from '@/components/sessions/transcript/view
 import type { TranscriptRowShellItem } from '@/components/sessions/transcript/measurement/transcriptRowShellSignature';
 import type { TranscriptSessionCommonProps } from '@/components/sessions/transcript/transcriptSessionCommon';
 import type { TranscriptRollbackAction, SessionRollbackRangeV1 } from '@/sync/domains/sessionRollback/rollbackUiSupport';
-import type { TranscriptEventEmphasisByMessageId } from '@/components/sessions/transcript/events/transcriptEventEmphasis';
+import type {
+    TranscriptEventEmphasisByMessageId,
+    TranscriptHostWakeCountByMessageId,
+} from '@/components/sessions/transcript/events/transcriptEventEmphasis';
 import type { ExternalSessionOperationActionRef } from '@/components/sessions/external/progress/ExternalImportProgressCard';
 import type { ExternalSessionOperationProgressV1 } from '@happier-dev/protocol';
 
@@ -97,6 +101,7 @@ export type ChatListInternalProps = Readonly<{
     onToggleMessagePin: (pin: PersistedSessionMessagePinV1) => void;
     messagesById: Readonly<Record<string, Message>>;
     eventEmphasisByMessageId: TranscriptEventEmphasisByMessageId;
+    hostWakeCountByMessageId: TranscriptHostWakeCountByMessageId;
     forkMessageMetadataById: TranscriptForkMessageMetadataById | null;
     committedMessagesCount: number;
     latestCommittedActivityKey: string | null;

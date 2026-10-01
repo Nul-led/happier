@@ -31,7 +31,6 @@ function createScopedLaunchFacts(
     return {
         serverId: 'server-projection',
         machineId: 'machine-projection',
-        generation: 7,
         interactionEnabled: true,
         ...overrides,
     };
@@ -56,7 +55,6 @@ function createProjectedHeaderAction(params?: Readonly<{
         generation: 7,
         installedPackagesById: {},
         agentsById: {},
-        backendsById: {},
         // This action entry makes the legacy-action rejection discriminating:
         // the retired UI reader would otherwise reject the raw entry only
         // because its target was absent, rather than because its shape is
@@ -65,6 +63,7 @@ function createProjectedHeaderAction(params?: Readonly<{
             'acme.plugin/roundtrip': {
                 id: 'roundtrip',
                 pluginId: 'acme.plugin',
+                occurrenceId: 'acme-plugin-occurrence-7',
                 title: 'Roundtrip',
                 scopes: ['session'],
                 surfaces: ['ui'],
@@ -87,6 +86,7 @@ function createProjectedHeaderAction(params?: Readonly<{
                     'translations:acme.plugin': {
                         id: 'translations:acme.plugin',
                         pluginId: 'acme.plugin',
+                        occurrenceId: 'acme-plugin-occurrence-7',
                         contributionKind: 'translations',
                         locales: ['en'],
                         bundles: {
@@ -98,6 +98,7 @@ function createProjectedHeaderAction(params?: Readonly<{
                     'sessionHeaderAction:acme.plugin:roundtrip-header': {
                         id: 'sessionHeaderAction:acme.plugin:roundtrip-header',
                         pluginId: 'acme.plugin',
+                        occurrenceId: 'acme-plugin-occurrence-7',
                         contributionKind: 'sessionHeaderAction',
                         descriptorId: 'roundtrip-header',
                         title: {
@@ -129,7 +130,6 @@ describe('pluginHeaderActions — contribution-reference resolution', () => {
                 target: 'client',
                 client: {
                     artifactId: 'client-action-bundle',
-                    modulePath: './actions/clientAction',
                     exportName: 'execute',
                 },
                 platforms: ['web'],
@@ -222,7 +222,7 @@ describe('pluginHeaderActions — contribution-reference resolution', () => {
         expect(result).toEqual({ ok: true, result: { completed: true } });
         expect(execute).toHaveBeenCalledWith('machine-1', {
             serverId: 'server-a',
-            expectedGeneration: '7',
+            expectedContributorOccurrenceId: '7',
             qualifiedActionId: 'acme.plugin/roundtrip',
             sessionId: 'sess-1',
             executionSurface: 'ui',
@@ -260,6 +260,7 @@ describe('pluginHeaderActions — contribution-reference resolution', () => {
                 'other.plugin/roundtrip': {
                     id: 'roundtrip',
                     pluginId: 'other.plugin',
+                    occurrenceId: 'other-plugin-occurrence-7',
                     title: 'Other roundtrip',
                     scopes: ['session'],
                     surfaces: ['ui'],
@@ -409,7 +410,6 @@ describe('pluginHeaderActions — scoped projection authority', () => {
                 target: 'client',
                 client: {
                     artifactId: 'client-action-bundle',
-                    modulePath: './actions/clientAction',
                     exportName: 'execute',
                 },
                 platforms: ['web'],
@@ -508,7 +508,7 @@ describe('pluginHeaderActions — scoped projection authority', () => {
 
         expect(execute).toHaveBeenCalledWith('machine-projection', {
             serverId: 'server-projection',
-            expectedGeneration: '7',
+            expectedContributorOccurrenceId: '7',
             qualifiedActionId: 'acme.plugin/roundtrip',
             sessionId: 'sess-1',
             executionSurface: 'ui',
@@ -529,7 +529,6 @@ describe('pluginHeaderActions — scoped projection authority', () => {
             menuActionId: createPluginSessionHeaderActionMenuId(projectedAction),
             execute,
             scopedLaunchFacts: createScopedLaunchFacts({
-                generation: 8,
                 machineId: 'machine-replacement',
                 serverId: 'server-replacement',
             }),
@@ -547,6 +546,7 @@ function createOrderedHeaderActions(): PluginProjectionV2 {
     const action = (localId: string): PluginProjectedActionV2 => ({
         id: localId,
         pluginId: 'acme.plugin',
+        occurrenceId: 'acme-plugin-occurrence-7',
         title: localId,
         scopes: ['session'],
         surfaces: ['ui'],
@@ -558,6 +558,7 @@ function createOrderedHeaderActions(): PluginProjectionV2 {
     const entry = (descriptorId: string, order?: number) => ({
         id: `sessionHeaderAction:acme.plugin:${descriptorId}`,
         pluginId: 'acme.plugin',
+        occurrenceId: 'acme-plugin-occurrence-7',
         contributionKind: 'sessionHeaderAction',
         descriptorId,
         title: descriptorId,
@@ -572,7 +573,6 @@ function createOrderedHeaderActions(): PluginProjectionV2 {
         generation: 7,
         installedPackagesById: {},
         agentsById: {},
-        backendsById: {},
         actionsById: {
             'acme.plugin/aaa-unordered': action('aaa-unordered'),
             'acme.plugin/zzz-first': action('zzz-first'),

@@ -5,8 +5,7 @@ import {
     PEER_MEDIATION_RECEIPTS,
     type FeaturesResponse,
     type PeerLoopbackEndpointCandidateV1,
-    type PeerMachineRpcDirectRequestV1,
-    type SignedDirectRouteGrantV1,
+    type PeerMachineRpcDirectRequestV2,
 } from '@happier-dev/protocol';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 
@@ -116,51 +115,29 @@ function createFeaturePayload(): FeaturesResponse {
     });
 }
 
-function createGrant(method: string): SignedDirectRouteGrantV1 {
-    return {
-        payload: {
-            v: 1,
-            grantId: 'grant_1',
-            grantFamilyId: 'grant_family_1',
-            accountId: 'account_1',
-            machineId: 'machine_1',
-            flowKind: 'machine_rpc',
-            routeKind: 'loopback_direct',
-            scope: {
-                kind: 'machine_rpc',
-                rpcScopeId: 'machine_1:daemon.memory.status',
-                allowedMethods: [method],
-                maxCalls: 2,
-                maxIdleMs: 30_000,
-            },
-            iat: 1_000,
-            exp: 301_000,
-            aud: 'happier-daemon-route-grant',
-            endpointFingerprint: 'endpoint_1',
-        },
-        signature: {
-            keyId: 'grant_key_1',
-            alg: 'Ed25519',
-            valueBase64Url: 'AbCdEf012_-',
-        },
-    };
-}
 
-function createDirectRequest(): PeerMachineRpcDirectRequestV1 {
+function createDirectRequest(): PeerMachineRpcDirectRequestV2 {
     return {
-        v: 1,
+        v: 2,
         requestId: 'request_1',
         method: RPC_METHODS.DAEMON_MEMORY_STATUS,
         params: { includeWorkers: true },
-        grant: createGrant(RPC_METHODS.DAEMON_MEMORY_STATUS),
-        nonceProof: {
-            v: 1,
-            grantId: 'grant_1',
-            routeKind: 'loopback_direct',
-            flowKind: 'machine_rpc',
-            endpointFingerprint: 'endpoint_1',
+        grant: {
+            payload: {
+                v: 2, grantId: 'grant_1', accountId: 'account-1', machineId: 'machine_1',
+                flowKind: 'machine_rpc', routeKind: 'loopback_direct',
+                scope: { kind: 'machine_rpc', rpcScopeId: 'scope_1', allowedMethods: [RPC_METHODS.DAEMON_MEMORY_STATUS], maxCalls: 1, maxIdleMs: 30_000 },
+                iat: 1_000, exp: 301_000, aud: 'happier-daemon-route-grant', endpointFingerprint: 'endpoint_1',
+                proofKind: 'ephemeral_ed25519', ephemeralPublicKeyBase64Url: Buffer.from(new Uint8Array(32).fill(1)).toString('base64url'),
+            },
+            signature: { keyId: 'key_1', alg: 'Ed25519', valueBase64Url: Buffer.from(new Uint8Array(64).fill(2)).toString('base64url') },
+        },
+        proof: {
+            v: 2,
+            kind: 'ephemeral_ed25519',
+            signedGrantDigestBase64Url: Buffer.from(new Uint8Array(32).fill(1)).toString('base64url'),
             nonceBase64Url: 'nonce_1',
-            signatureBase64Url: 'AbCdEf012_-',
+            signatureBase64Url: Buffer.from(new Uint8Array(64).fill(2)).toString('base64url'),
         },
         routeKind: 'loopback_direct',
         flowKind: 'machine_rpc',
@@ -189,6 +166,7 @@ describe('production peer mediation machine RPC route adapter', () => {
         listServerProfilesSpy.mockReset();
         captureAuthoritySpy.mockReset();
         vi.unstubAllGlobals();
+        storageSnapshot.state = { machines: {}, machineListByServerId: {} };
         getActiveServerSnapshotSpy.mockReturnValue({
             serverId: 'server-a',
             serverUrl: 'https://server-a.example.test',
@@ -206,7 +184,11 @@ describe('production peer mediation machine RPC route adapter', () => {
             if (payload.sub !== scope.accountId) throw new Error('Account scope changed');
             return { scope, request: activeRequest, release: async () => {} };
         });
-        storageGetStateSpy.mockImplementation(() => storageSnapshot.state);
+        storageGetStateSpy.mockImplementation(() => ({
+            settingsScope: { serverId: 'server-a', accountId: 'account-1' },
+            settings: { peerMediationPreferencesV1: { v: 1, flows: {}, byMachineId: {} } },
+            ...storageSnapshot.state,
+        }));
     });
 
     it('fails closed before route selection when stored credentials belong to another Account', async () => {
@@ -224,41 +206,35 @@ describe('production peer mediation machine RPC route adapter', () => {
         expect(storageGetStateSpy).not.toHaveBeenCalled();
     });
 
-    it('projects legacy account signing as ready and data-key credentials as typed fail-closed', async () => {
+    it.each([
+        { flows: { machine_rpc: { direct: 'disabled' } }, byMachineId: {} },
+        { flows: { machine_rpc: { direct: 'enabled' } }, byMachineId: { machine_1: { flows: { machine_rpc: { direct: 'disabled' } } } } },
+    ])('honors the stored direct-route preference before minting a grant: %j', async (preferences) => {
+        storageSnapshot.state = {
+            settingsScope: { serverId: 'server-a', accountId: 'account-1' },
+            settings: { peerMediationPreferencesV1: { v: 1, ...preferences } },
+            machines: {},
+            machineListByServerId: {},
+        };
+        const fetchSpy = vi.fn();
+        vi.stubGlobal('fetch', fetchSpy);
         const module = await importProductionRoute();
-        expect(module).toHaveProperty('resolvePeerRouteSigningReadiness');
         if ('importError' in module) throw module.importError;
 
-        expect(module.resolvePeerRouteSigningReadiness({
-            token: 'legacy-token',
-            secret: Buffer.from(new Uint8Array(32).fill(7)).toString('base64'),
-        })).toEqual({
-            status: 'ready',
-            credentialMode: 'legacy_account_signing',
-            signingIdentity: 'account_signing_v1',
-        });
-        expect(module.resolvePeerRouteSigningReadiness({
-            token: DATA_KEY_TOKEN,
-            encryption: {
-                publicKey: Buffer.from(new Uint8Array(32).fill(8)).toString('base64'),
-                machineKey: Buffer.from(new Uint8Array(32).fill(9)).toString('base64'),
-            },
-        })).toEqual({
-            status: 'unavailable',
-            credentialMode: 'data_key_keyless',
-            reasonCode: 'peer_route_signing_identity_unavailable',
-            requiredCapability: 'peer_route_signing_identity_v1',
-        });
+        await expect(module.resolveProductionMachineRpcDirectRoute({
+            serverId: 'server-a', machineId: 'machine_1', method: RPC_METHODS.DAEMON_MEMORY_STATUS,
+        })).resolves.toMatchObject({ kind: 'fallback', reasonCode: 'disabled_by_account_preference' });
+        expect(fetchSpy).not.toHaveBeenCalled();
     });
 
-    it('selects V2 for data-key credentials only when server mint and daemon verifier capabilities intersect', async () => {
+
+    it.each(['secret', 'data-key'] as const)('uses the current ephemeral proof for %s credentials without component-version probes', async (credentialKind) => {
         const endpoint = PeerLoopbackEndpointCandidateV1Schema.parse({
             v: 1,
             routeKind: 'loopback_direct',
-            url: 'http://127.0.0.1:46011/peer-mediation/v1/probe',
+            url: 'http://127.0.0.1:46011',
             endpointFingerprint: 'endpoint_1',
             expiresAt: Date.now() + 60_000,
-            directRouteGrantProofVerifierVersions: [2],
         });
         storageSnapshot.state = {
             machines: {
@@ -268,9 +244,8 @@ describe('production peer mediation machine RPC route adapter', () => {
         };
         getReadyServerFeaturesSpy.mockResolvedValue(FeaturesResponseSchema.parse({
             features: { machines: { enabled: true, rpc: { enabled: true, directPeer: { enabled: true } } } },
-            capabilities: { machines: { peerMediation: { directRouteGrantProofMintVersions: [2] } } },
         }));
-        getCredentialsForServerUrlSpy.mockResolvedValue({
+        if (credentialKind === 'data-key') getCredentialsForServerUrlSpy.mockResolvedValue({
             token: DATA_KEY_TOKEN,
             encryption: {
                 publicKey: Buffer.from(new Uint8Array(32).fill(8)).toString('base64'),
@@ -326,52 +301,8 @@ describe('production peer mediation machine RPC route adapter', () => {
         expect(fetchSpy).toHaveBeenCalledTimes(1);
     });
 
-    it('fails data-key direct-route readiness before topology lookup or route traffic', async () => {
-        const endpoint: PeerLoopbackEndpointCandidateV1 = {
-            v: 1,
-            routeKind: 'loopback_direct',
-            url: 'http://127.0.0.1:46011/peer-mediation/v1/probe',
-            endpointFingerprint: 'endpoint_1',
-            expiresAt: Date.now() + 60_000,
-        };
-        storageSnapshot.state = {
-            machines: {
-                machine_1: {
-                    id: 'machine_1',
-                    daemonState: { peerMediation: { loopback: { endpoint } } },
-                },
-            },
-            machineListByServerId: {},
-        };
-        getCredentialsForServerUrlSpy.mockResolvedValue({
-            token: DATA_KEY_TOKEN,
-            encryption: {
-                publicKey: Buffer.from(new Uint8Array(32).fill(8)).toString('base64'),
-                machineKey: Buffer.from(new Uint8Array(32).fill(9)).toString('base64'),
-            },
-        });
-        const fetchSpy = vi.fn();
-        vi.stubGlobal('fetch', fetchSpy);
 
-        const module = await importProductionRoute();
-        expect(module).toHaveProperty('resolveProductionMachineRpcDirectRoute');
-        if ('importError' in module) throw module.importError;
-
-        await expect(module.resolveProductionMachineRpcDirectRoute({
-            serverId: 'server-a',
-            machineId: 'machine_1',
-            method: RPC_METHODS.DAEMON_MEMORY_STATUS,
-        })).resolves.toEqual({
-            kind: 'fallback',
-            receipt: PEER_MEDIATION_RECEIPTS.routeFallback,
-            reasonCode: 'peer_route_signing_identity_unavailable',
-            requiredCapability: 'peer_route_signing_identity_v1',
-        });
-        expect(storageGetStateSpy).not.toHaveBeenCalled();
-        expect(fetchSpy).not.toHaveBeenCalled();
-    });
-
-    it('does not let an absent daemon endpoint mask data-key signing identity unavailability', async () => {
+    it('reports absent current daemon topology without attempting authentication', async () => {
         storageSnapshot.state = { machines: {}, machineListByServerId: {} };
         getCredentialsForServerUrlSpy.mockResolvedValue({
             token: DATA_KEY_TOKEN,
@@ -392,97 +323,17 @@ describe('production peer mediation machine RPC route adapter', () => {
             method: RPC_METHODS.DAEMON_MEMORY_STATUS,
         })).resolves.toMatchObject({
             kind: 'fallback',
-            reasonCode: 'peer_route_signing_identity_unavailable',
-            requiredCapability: 'peer_route_signing_identity_v1',
+            reasonCode: 'topology_unavailable',
         });
-        expect(storageGetStateSpy).not.toHaveBeenCalled();
         expect(fetchSpy).not.toHaveBeenCalled();
     });
 
-    it('resolves a selected direct route from daemon endpoint, server grant, nonce proof, and loopback probe', async () => {
-        const endpoint: PeerLoopbackEndpointCandidateV1 = {
-            v: 1,
-            routeKind: 'loopback_direct',
-            url: 'http://127.0.0.1:46011/peer-mediation/v1/probe',
-            endpointFingerprint: 'endpoint_1',
-            expiresAt: Date.now() + 60_000,
-        };
-        storageSnapshot.state = {
-            machines: {
-                machine_1: {
-                    id: 'machine_1',
-                    daemonState: {
-                        peerMediation: {
-                            loopback: {
-                                endpoint,
-                            },
-                        },
-                    },
-                },
-            },
-            machineListByServerId: {},
-        };
-        const grant = createGrant(RPC_METHODS.DAEMON_MEMORY_STATUS);
-        const fetchSpy = vi.fn(async (url: RequestInfo | URL) => {
-            const parsed = new URL(String(url));
-            if (parsed.pathname === '/v1/machines/peer/mediation/route-grants') {
-                return responseJson({
-                    ok: true,
-                    receipt: PEER_MEDIATION_RECEIPTS.routeGrantMinted,
-                    grant,
-                });
-            }
-            return responseJson({
-                v: 1,
-                ok: true,
-                receipt: PEER_MEDIATION_RECEIPTS.routeSelected,
-                routeKind: 'loopback_direct',
-                flowKind: 'machine_rpc',
-                endpointFingerprint: 'endpoint_1',
-            });
-        });
-        vi.stubGlobal('fetch', fetchSpy);
-
-        const module = await importProductionRoute();
-        expect(module).toHaveProperty('resolveProductionMachineRpcDirectRoute');
-        if ('importError' in module) throw module.importError;
-
-        const result = await module.resolveProductionMachineRpcDirectRoute({
-            serverId: 'server-a',
-            machineId: 'machine_1',
-            method: RPC_METHODS.DAEMON_MEMORY_STATUS,
-        });
-
-        expect(result).toMatchObject({
-            kind: 'selected',
-            endpoint: {
-                endpointFingerprint: 'endpoint_1',
-            },
-            grant,
-            nonceProof: {
-                v: 1,
-                grantId: 'grant_1',
-                routeKind: 'loopback_direct',
-                flowKind: 'machine_rpc',
-                endpointFingerprint: 'endpoint_1',
-            },
-        });
-        expect(fetchSpy).toHaveBeenCalledWith(
-            'https://server-a.example.test/v1/machines/peer/mediation/route-grants',
-            expect.objectContaining({
-                method: 'POST',
-            }),
-        );
-        expect(fetchSpy.mock.calls.filter(([url]) =>
-            new URL(String(url)).pathname === '/v1/machines/peer/mediation/route-grants',
-        )).toHaveLength(1);
-    });
 
     it('fails closed to fallback when grant transport is unavailable', async () => {
         const endpoint: PeerLoopbackEndpointCandidateV1 = {
             v: 1,
             routeKind: 'loopback_direct',
-            url: 'http://127.0.0.1:46012/peer-mediation/v1/probe',
+            url: 'http://127.0.0.1:46012',
             endpointFingerprint: 'endpoint_2',
             expiresAt: Date.now() + 60_000,
         };
@@ -526,7 +377,7 @@ describe('production peer mediation machine RPC route adapter', () => {
         const endpoint: PeerLoopbackEndpointCandidateV1 = {
             v: 1,
             routeKind: 'loopback_direct',
-            url: 'http://127.0.0.1:46012/peer-mediation/v1/probe',
+            url: 'http://127.0.0.1:46012',
             endpointFingerprint: 'endpoint_2',
             expiresAt: Date.now() + 60_000,
         };
@@ -562,58 +413,6 @@ describe('production peer mediation machine RPC route adapter', () => {
         expect(fetchSpy).not.toHaveBeenCalled();
     });
 
-    it('fails closed to fallback when the loopback probe transport is unavailable', async () => {
-        const endpoint: PeerLoopbackEndpointCandidateV1 = {
-            v: 1,
-            routeKind: 'loopback_direct',
-            url: 'http://127.0.0.1:46013/peer-mediation/v1/probe',
-            endpointFingerprint: 'endpoint_3',
-            expiresAt: Date.now() + 60_000,
-        };
-        storageSnapshot.state = {
-            machines: {
-                machine_1: {
-                    id: 'machine_1',
-                    daemonState: {
-                        peerMediation: {
-                            loopback: {
-                                endpoint,
-                            },
-                        },
-                    },
-                },
-            },
-            machineListByServerId: {},
-        };
-        const grant = createGrant(RPC_METHODS.DAEMON_MEMORY_STATUS);
-        vi.stubGlobal('fetch', vi.fn(async (url: RequestInfo | URL) => {
-            const parsed = new URL(String(url));
-            if (parsed.pathname === '/v1/machines/peer/mediation/route-grants') {
-                return responseJson({
-                    ok: true,
-                    receipt: PEER_MEDIATION_RECEIPTS.routeGrantMinted,
-                    grant,
-                });
-            }
-            throw new Error('loopback probe unavailable');
-        }));
-
-        const module = await importProductionRoute();
-        expect(module).toHaveProperty('resolveProductionMachineRpcDirectRoute');
-        if ('importError' in module) throw module.importError;
-
-        const result = await module.resolveProductionMachineRpcDirectRoute({
-            serverId: 'server-a',
-            machineId: 'machine_1',
-            method: RPC_METHODS.DAEMON_MEMORY_STATUS,
-        });
-
-        expect(result).toEqual({
-            kind: 'fallback',
-            receipt: PEER_MEDIATION_RECEIPTS.routeFallback,
-            reasonCode: 'topology_unavailable',
-        });
-    });
 
     it('forwards the caller abort signal to the direct loopback request', async () => {
         const controller = new AbortController();

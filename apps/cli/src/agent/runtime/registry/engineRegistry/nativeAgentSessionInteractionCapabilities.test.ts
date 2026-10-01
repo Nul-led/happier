@@ -25,6 +25,26 @@ function createFullyCapableSessionRuntime(): AgentSessionRuntime {
   } as unknown as AgentSessionRuntime;
 }
 
+function createSessionRuntimeWithLiveManualCompaction(
+  manual: 'supported' | 'unsupported',
+): AgentSessionRuntime {
+  return {
+    ...createFullyCapableSessionRuntime(),
+    runtimeCapabilities: {
+      sessionCapabilities: {
+        sessionListing: 'unsupported',
+        sessionFork: {
+          conversation: 'unsupported',
+          fromMessage: 'unsupported',
+        },
+        sessionRollback: { conversation: 'unsupported' },
+        usageLimitRecovery: { checkNow: 'unsupported' },
+        compaction: { manual },
+      },
+    },
+  } as unknown as AgentSessionRuntime;
+}
+
 function createContext(): AgentSessionRuntimeContext {
   return {
     agent: { id: 'acp:review-bot' },
@@ -46,7 +66,7 @@ function createOperations(
 }
 
 describe('native Agent Session interaction capability ownership', () => {
-  it('offers manual compaction only when the declaration declares it', () => {
+  it('uses the live Session runtime fact for dialect-dependent manual compaction', () => {
     expect('compactContext' in createOperations({
       open: ['create'],
       delivery: ['newTurn'],
@@ -57,8 +77,15 @@ describe('native Agent Session interaction capability ownership', () => {
       open: ['create'],
       delivery: ['newTurn'],
       cancel: true,
+      compaction: { events: true },
+    }, createSessionRuntimeWithLiveManualCompaction('supported'))).toBe(true);
+
+    expect('compactContext' in createOperations({
+      open: ['create'],
+      delivery: ['newTurn'],
+      cancel: true,
       compaction: { events: true, manual: true },
-    })).toBe(true);
+    }, createSessionRuntimeWithLiveManualCompaction('unsupported'))).toBe(false);
   });
 
   it('refuses to compose when a declaration promises a control the runtime does not implement', () => {
@@ -72,5 +99,20 @@ describe('native Agent Session interaction capability ownership', () => {
       { open: ['create'], delivery: ['newTurn'], cancel: true },
       session,
     )).toThrow(/does not implement cancel/);
+  });
+
+  it('refuses a live manual-compaction claim when the Session runtime omits compact', () => {
+    const capable = createSessionRuntimeWithLiveManualCompaction('supported');
+    const session = {
+      ...capable,
+      compact: undefined,
+    } as AgentSessionRuntime;
+
+    expect(() => createOperations({
+      open: ['create'],
+      delivery: ['newTurn'],
+      cancel: true,
+      compaction: { events: true },
+    }, session)).toThrow(/publishes manual compaction support/);
   });
 });

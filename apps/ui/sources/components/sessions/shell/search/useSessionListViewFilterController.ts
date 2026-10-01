@@ -41,6 +41,20 @@ export function resolveSelectedHomeFeatureAvailability(
     return selectedServerIds.some((serverId) => supportByServerId[serverId] === true);
 }
 
+/** The Home facet's options: each Home by its profile name, for any surface that edits a Sessions filter. */
+export function buildSessionListFilterHomeOptions(
+    serverIds: readonly string[],
+): readonly Readonly<{ serverId: string; label: string }>[] {
+    const profilesById = new Map(listServerProfiles().flatMap((profile) => [
+        [profile.id, profile] as const,
+        [resolveServerProfileScopeId(profile), profile] as const,
+    ]));
+    return serverIds.map((serverId) => ({
+        serverId,
+        label: profilesById.get(serverId)?.name?.trim() || serverId,
+    }));
+}
+
 export type SessionListViewFilterController = Readonly<{
     filters: SessionListViewFilters;
     defaultFilters: SessionListViewFilters;
@@ -59,14 +73,14 @@ export type SessionListViewFilterController = Readonly<{
     setSource(source: SessionListViewFilters['source']): void;
     queryEnabled: boolean;
     corpusPresentation: SessionListCorpusPresentation;
-    queryHomes: readonly SessionListQueryHomeInput[];
+    queryHomes: readonly (SessionListQueryHomeInput & Readonly<{ queryKey: string }>)[];
     /**
      * Homes handed to the canonical per-Home pagination owner, or `undefined` when
      * this corpus has no owner mounted and the incumbent ordinary Sync list is the
      * source. Archived always has an owner because its released GET adapter serves
      * Homes without filtered listing.
      */
-    pagingHomes: readonly SessionListQueryHomeInput[] | undefined;
+    pagingHomes: readonly (SessionListQueryHomeInput & Readonly<{ queryKey: string }>)[] | undefined;
     /** True only when mounted filter options are known and qualified facets exclude every Home. */
     emptyQuerySelectionComplete?: boolean;
     followingAvailable: boolean;
@@ -136,6 +150,7 @@ export function useSessionListViewFilterController(
     const retained = useSessionListViewFilters({
         contextKey: context.contextKey,
         defaults: context.defaults,
+        viewContext,
         accountScopeResolutions,
         // Global Homes mount asynchronously; a Team context is fixed to its Home.
         followDefaultHomeSelection: viewContext.kind === 'global',
@@ -202,19 +217,9 @@ export function useSessionListViewFilterController(
         mountedHomeCount: mountedHomeServerIds.length,
         queryHomeCount: queryHomes.length,
     });
-    const homeOptions = React.useMemo(() => {
-        const profilesById = new Map(listServerProfiles().flatMap((profile) => [
-            [profile.id, profile] as const,
-            [resolveServerProfileScopeId(profile), profile] as const,
-        ]));
-        const visibleHomeServerIds = viewContext.kind === 'team'
-            ? [viewContext.team.serverId]
-            : mountedHomeServerIds;
-        return visibleHomeServerIds.map((serverId) => ({
-            serverId,
-            label: profilesById.get(serverId)?.name?.trim() || serverId,
-        }));
-    }, [mountedHomeServerIds, viewContext]);
+    const homeOptions = React.useMemo(() => buildSessionListFilterHomeOptions(
+        viewContext.kind === 'team' ? [viewContext.team.serverId] : mountedHomeServerIds,
+    ), [mountedHomeServerIds, viewContext]);
     const fixedHomeServerIds = React.useMemo(
         () => viewContext.kind === 'team'
             ? new Set([viewContext.team.serverId])

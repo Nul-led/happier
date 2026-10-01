@@ -6,7 +6,7 @@ import {
     evaluateScmRemoteMutationPolicy,
     scmPathMatchesScopePath,
     type ScmRemoteMutationReason,
-} from '@happier-dev/protocol';
+} from '@happier-dev/protocol/scm';
 import { mapUiSnapshotToRemotePolicySnapshot } from '@/scm/core/snapshotMappers';
 
 export type ScmOperationIntent =

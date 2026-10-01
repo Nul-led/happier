@@ -53,7 +53,7 @@ function voiceDeclaration(
         rawGrants: [rawGrant],
       }],
     },
-    client: { artifactId: 'web-runtime', modulePath: './voiceRuntime' as const, exportName: 'activate' as const },
+    client: { artifactId: 'web-runtime', exportName: 'activate' as const },
   });
 }
 

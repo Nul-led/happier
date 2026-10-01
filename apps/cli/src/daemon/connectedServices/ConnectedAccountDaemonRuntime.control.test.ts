@@ -7,6 +7,7 @@ import type { PluginContributionRef } from '@happier-dev/plugin-sdk';
 
 import type { PluginReloadController } from '@/plugins/runtime/reload/controller';
 import { createPluginRuntimeOccurrenceId } from '@/plugins/runtime/runtimeSlots';
+import { logger } from '@/ui/logger';
 import {
   createConnectedAccountContributionRegistry,
   type ConnectedAccountRuntimeRegistration,
@@ -146,6 +147,7 @@ describe('ConnectedAccountDaemonRuntime control facade', () => {
   );
 
   it('revalidates mutable peer admission before an active attempt invokes its plugin', async () => {
+    const logInfo = vi.spyOn(logger, 'info').mockImplementation(() => undefined);
     const manualDescriptor =
       PluginConnectedAccountDescriptorContributionV2Schema.parse({
         id: service.localId,
@@ -265,6 +267,20 @@ describe('ConnectedAccountDaemonRuntime control facade', () => {
       code: 'connected_account_legacy_operation_unsupported',
     });
     expect(invokeAuthentication).not.toHaveBeenCalled();
+    const events = logInfo.mock.calls
+      .filter(([message]) => message === '[DAEMON RUN] Connected Account authentication attempt')
+      .map(([, event]) => event);
+    expect(events).toContainEqual(expect.objectContaining({
+      operation: 'submitManual',
+      serviceId: 'acme.accounts/work',
+      status: 'unavailable',
+      code: 'connected_account_legacy_operation_unsupported',
+      settlementPhase: 'notPrepared',
+      attemptCorrelationHash: expect.any(String),
+    }));
+    expect(JSON.stringify(events)).not.toContain(activeAttempt.attemptId);
+    expect(JSON.stringify(events)).not.toContain('secret');
+    logInfo.mockRestore();
   });
 
   it('rejects an unsupported account-list peer before acquiring plugin runtime', async () => {

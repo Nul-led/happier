@@ -324,6 +324,7 @@ vi.mock('@/sync/domains/server/serverRuntime', () => ({
 }));
 vi.mock('@/sync/domains/server/serverProfiles', () => ({
     HAPPIER_CLOUD_SERVER_URL: 'https://api.happier.dev',
+    DEFAULT_ACCOUNT_SERVICE_ENDPOINT: { url: 'https://api.happier.dev', displayName: 'Happier Cloud', source: 'default' },
     loadHomeViewState: () => null,
     subscribeHomeViewState: () => () => {},
     updateHomeViewState: (update: (current: {
@@ -426,6 +427,7 @@ vi.mock('@/sync/api/capabilities/serverFeaturesClient', () => ({
 }));
 vi.mock('@/components/onboarding/restore/RestoreIndexEmbedded', () => ({
     RestoreIndexEmbedded: (props: Record<string, unknown>) => React.createElement('RestoreIndexEmbedded', props),
+    resolveReverseQrTargetProfileId: () => null,
 }));
 vi.mock('@/components/onboarding/restore/SecretKeyLoginEmbedded', () => ({
     SecretKeyLoginEmbedded: (props: Record<string, unknown>) => React.createElement('SecretKeyLoginEmbedded', props),
@@ -547,30 +549,6 @@ const baseAuthOptions = {
     serverAvailability: 'ready' as const,
     serverUrlForCopy: 'https://relay.example.test',
     showAuthActions: true,
-    showProviderSignup: false,
-    showAnonymousSignup: true,
-    showMtlsLogin: false,
-    showKeylessProviderLogin: false,
-    providerId: null,
-    keylessProviderId: null,
-    providerSignupTitle: '',
-    providerKeylessTitle: '',
-    anonymousSignupTitle: 'Create account',
-    mtlsTitle: 'Sign in with certificate',
-    primaryAction: {
-        kind: 'anonymous' as const,
-        title: 'Create account',
-    },
-    mtlsPrimary: false,
-    keylessPrimary: false,
-    autoRedirect: {
-        enabled: false,
-        providerId: null,
-        toKeyedProvision: false,
-        toKeylessLogin: false,
-        toMtls: false,
-        toLegacySignupProvider: false,
-    },
     retryServerCheck: vi.fn(),
 } satisfies AuthEntryOptions;
 
@@ -660,6 +638,65 @@ describe('OnboardingWizardSurface', () => {
         controller = hook.getCurrent();
         expect(controller.stepId).toBe('welcome');
         expect(controller.contentTransitionDirection).toBe('backward');
+    });
+
+    it('keeps the shared Open {Home} card when a Home sign-in from the wizard continuation enrolls the Home', async () => {
+        const { useOnboardingWizardController } = await import('./useOnboardingWizardController');
+        const { WelcomeDecisionPanel } = await import('../preAuth/WelcomeDecisionPanel');
+        const { AccountDirectoryKeyLoginForm } = await import('@/components/account/auth/AccountDirectoryKeyLoginForm');
+        const { AccountServiceHomeAuthenticationAdapter } = await import('@/components/account/auth/AccountServiceHomeAuthenticationAdapter');
+        const { AccountServiceContinuation } = await import('@/components/account/auth/AccountServiceContinuation');
+        type ElementWithProps = React.ReactElement<Record<string, unknown>>;
+        const findElement = (node: React.ReactNode, type: unknown): ElementWithProps | null => {
+            if (Array.isArray(node)) {
+                for (const child of node) {
+                    const found = findElement(child, type);
+                    if (found) return found;
+                }
+                return null;
+            }
+            if (!React.isValidElement(node)) return null;
+            const element = node as ElementWithProps;
+            if (element.type === type) return element;
+            return findElement(element.props.children as React.ReactNode, type);
+        };
+        const onAccountDirectoryKeyResult = vi.fn();
+        const hook = await renderHook(() => useOnboardingWizardController({
+            layout: 'portrait',
+            isDesktopShell: true,
+            authEntryOptions: baseAuthOptions,
+            accountContinuationIntent: { kind: 'enter', target: { kind: 'automatic' } },
+            onAccountDirectoryKeyResult,
+        }));
+        const welcome = findElement(hook.getCurrent().body, WelcomeDecisionPanel);
+        await act(async () => {
+            (welcome?.props.onContinueWithAccountServiceKey as (request: unknown) => void)({
+                authority: { purpose: 'account_service', service: { endpointUrl: 'https://api.happier.dev', serverIdentityId: 'srv_cloud' } },
+                execution: { kind: 'key_challenge' },
+            });
+        });
+        await flushHookEffects({ cycles: 2, turns: 2 });
+        const keyForm = findElement(hook.getCurrent().body, AccountDirectoryKeyLoginForm);
+        const input = { intent: { kind: 'enter', target: { kind: 'automatic' } } };
+        await act(async () => {
+            (keyForm?.props.onOpenHomeAuthentication as (input: unknown, homeId: string, previous: unknown) => void)(
+                input, 'home-b', { kind: 'explicit_target_not_linked', homeServerIdentityId: 'home-b' },
+            );
+        });
+        await flushHookEffects({ cycles: 2, turns: 2 });
+        const adapter = findElement(hook.getCurrent().body, AccountServiceHomeAuthenticationAdapter);
+        expect(adapter).not.toBeNull();
+        const result = { kind: 'home_enrolled', homeServerIdentityId: 'home-b' };
+        await act(async () => {
+            await (adapter?.props.onResult as (result: unknown, input?: unknown) => Promise<void>)(result, input);
+        });
+        await flushHookEffects({ cycles: 2, turns: 2 });
+
+        expect(onAccountDirectoryKeyResult).toHaveBeenCalledWith(result);
+        // Shared host rule (shouldDismissAccountPostAuthContinuation): the wizard keeps the same
+        // Open {Home} / Done card the account-entry route shows for this result.
+        expect(findElement(hook.getCurrent().body, AccountServiceContinuation)?.props.result).toEqual(result);
+        await hook.unmount();
     });
 
     it('labels the welcome action as start without retaining a duplicate relay next action', async () => {
@@ -1708,14 +1745,6 @@ describe('OnboardingWizardSurface', () => {
                     ...baseAuthOptions,
                     authenticationCatalog: { provenance: 'structured', methods: [providerAction.method] },
                     authenticationActions: [providerAction],
-                    showAnonymousSignup: false,
-                    showProviderSignup: true,
-                    providerId: 'github',
-                    providerSignupTitle: 'Continue with GitHub',
-                    primaryAction: {
-                        kind: 'provider-keyed',
-                        title: 'Continue with GitHub',
-                    },
                 },
                 onContinueWithHomeAuthentication,
             }),
@@ -1754,13 +1783,6 @@ describe('OnboardingWizardSurface', () => {
                     ...baseAuthOptions,
                     authenticationCatalog: { provenance: 'structured', methods: [mtlsAction.method] },
                     authenticationActions: [mtlsAction],
-                    showAnonymousSignup: false,
-                    showMtlsLogin: true,
-                    mtlsPrimary: true,
-                    primaryAction: {
-                        kind: 'mtls',
-                        title: 'Sign in with certificate',
-                    },
                 },
                 onContinueWithHomeAuthentication,
             }),
@@ -1797,7 +1819,6 @@ describe('OnboardingWizardSurface', () => {
                     ...baseAuthOptions,
                     serverAvailability: 'loading',
                     showAuthActions: false,
-                    showAnonymousSignup: false,
                 },
             }),
         );
@@ -2482,7 +2503,6 @@ describe('OnboardingWizardSurface', () => {
 
     it('treats native as a handoff flow: enables "On your computer" and routes to the handoff step', async () => {
         reactNativeMockState.os = 'ios';
-        vi.resetModules();
 
         activeServerSnapshotMock.serverUrl = 'https://api.happier.dev';
         activeServerSnapshotMock.activeLocalRelayUrl = null;
@@ -2520,7 +2540,6 @@ describe('OnboardingWizardSurface', () => {
         ['native', 'ios' as const],
     ])('routes %s users through background service handoff after saving a relay url from the "On this computer" handoff', async (_label, os) => {
         reactNativeMockState.os = os;
-        vi.resetModules();
 
         activeServerSnapshotMock.serverUrl = 'https://api.happier.dev';
         activeServerSnapshotMock.activeLocalRelayUrl = null;
@@ -3677,7 +3696,7 @@ describe('OnboardingWizardSurface', () => {
         expect(continueButtonAfter.props.disabled).toBe(false);
     });
 
-    it('probes a manually entered custom relay url and disables continue when it is unreachable', async () => {
+    it('keeps a manually entered unreachable Home address in the URL step without saving it', async () => {
         const previousFetchImpl = runtimeFetchMock.getMockImplementation();
         runtimeFetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
             const url = String(input);
@@ -3731,14 +3750,9 @@ describe('OnboardingWizardSurface', () => {
         });
         await flushHookEffects({ cycles: 2, turns: 2 });
 
-        await pressOnboarding(screen, 'welcome-use-different-home');
-
-        const typedRelayRow = screen.findByProps({ testID: 'onboarding-wizard-relay:profile:active' } as never);
-        expect(typedRelayRow?.props.selected).toBe(true);
-        expect(typedRelayRow?.props.badge).toBe('common.unreachable');
-        expect(typedRelayRow?.props.menuActions?.some((action: any) => action.id === 'retry')).toBe(true);
-        expect(screen.findByProps({ testID: 'onboarding-wizard-relay:customUrl' } as never)?.props.selected).toBe(false);
-        expect(screen.findByTestId('onboarding-wizard-primary')?.props.disabled).toBe(true);
+        expect(getOnboardingStepId(screen)).toBe('relay_enter_url');
+        expect(screen.findByTestId('onboarding-wizard-relay-url-input')?.props.value).toBe('https://typed-unreachable-relay.example.test');
+        expect(upsertActivateAndSwitchServerMock).not.toHaveBeenCalled();
 
         runtimeFetchMock.mockImplementation(previousFetchImpl ?? (async (input: RequestInfo | URL, init?: RequestInit) => new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'content-type': 'application/json' } })));
     });
@@ -3796,7 +3810,6 @@ describe('OnboardingWizardSurface', () => {
     });
 
     it('shows web tailscale install guidance when a typed tailscale relay is unreachable', async () => {
-        vi.resetModules();
         reactNativeMockState.os = 'web';
 
         const previousFetchImpl = runtimeFetchMock.getMockImplementation();
@@ -3852,7 +3865,6 @@ describe('OnboardingWizardSurface', () => {
     });
 
     it('shows native tailscale install guidance when a typed tailscale relay is unreachable', async () => {
-        vi.resetModules();
         reactNativeMockState.os = 'ios';
 
         const previousFetchImpl = runtimeFetchMock.getMockImplementation();
@@ -3911,7 +3923,6 @@ describe('OnboardingWizardSurface', () => {
         const globalWithLocation = globalThis as unknown as { location?: unknown };
         const previousLocation = globalWithLocation.location;
         try {
-            vi.resetModules();
             reactNativeMockState.os = 'web';
             runtimeActiveMockState.value = true;
             try {

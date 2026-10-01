@@ -588,12 +588,14 @@ export function parseActionCliInput(
       positionalOnly = true;
       continue;
     }
-    if (positionalOnly || !token.startsWith('--')) {
+    const equalsIndex = token.indexOf('=');
+    const name = equalsIndex >= 0 ? token.slice(0, equalsIndex) : token;
+    // A declared short alias is a field flag; undeclared dash-prefixed bytes
+    // remain positional text, just as before.
+    if (positionalOnly || (!token.startsWith('--') && !flags.has(name))) {
       positionalValues.push(token);
       continue;
     }
-    const equalsIndex = token.indexOf('=');
-    const name = equalsIndex >= 0 ? token.slice(0, equalsIndex) : token;
     const inlineValue = equalsIndex >= 0 ? token.slice(equalsIndex + 1) : null;
 
     if (name === ACTION_CLI_WHOLE_INPUT_FLAG) {

@@ -6,10 +6,11 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ACCOUNT_API_TOKENS_LIST_HTTP_PATH_V1 } from '@happier-dev/protocol';
+import { API_TOKEN_FULL_GRANT_V1, ACCOUNT_API_TOKENS_LIST_HTTP_PATH_V1 } from '@happier-dev/protocol';
 
 import { configuration, reloadConfiguration } from '@/configuration';
 import { registerDaemonExternalActionRoute } from '@/daemon/externalActions/registerDaemonExternalActionRoute';
+import { installDaemonMachineAdmissionTransport } from '@/daemon/machineAdmissionTransport';
 
 const {
   createCliActionExecutor,
@@ -184,6 +185,26 @@ function apiFailure(actionId: string, errorCode: string, details?: unknown): Moc
 }
 
 describe('createCliActionExecutorFromCredentials API Token transport', () => {
+  it('uses the daemon-owned Machine admission transport for credential-backed Actions without per-caller wiring', async () => {
+    const machineAdmissionTransport = vi.fn(async () => ({ status: 'accepted' as const, localId: 'input-1' }));
+    const release = installDaemonMachineAdmissionTransport({
+      serverId: configuration.activeServerId,
+      transport: machineAdmissionTransport,
+    });
+    try {
+      const { createCliActionExecutorFromCredentials } = await import('./createCliActionExecutorFromCredentials');
+      createCliActionExecutorFromCredentials({
+        credentials: { token: syntheticAccountToken('account-1'), encryption: null },
+      });
+      const admitted = createCliActionExecutor.mock.calls.at(-1)?.[0]?.machineAdmissionTransport;
+      expect(admitted).toEqual(expect.any(Function));
+      await expect(admitted?.({ v: 1, sessionId: 'session-1', targetMachineId: 'machine-1', localId: 'input-1' }))
+        .resolves.toEqual({ status: 'accepted', localId: 'input-1' });
+      expect(machineAdmissionTransport).toHaveBeenCalledOnce();
+    } finally {
+      release();
+    }
+  }, 120_000);
   beforeAll(async () => {
     patActionServer = createServer((request, response) => {
       void handlePatActionRequest(request, response);
@@ -645,6 +666,7 @@ describe('createCliActionExecutorFromCredentials API Token transport', () => {
         accountId: 'account-1',
         principalId: 'principal-1',
         credentialId: 'credential-1',
+        grant: API_TOKEN_FULL_GRANT_V1,
         expiresAt: null,
         authority: 'account_automation' as const,
       }),
@@ -1062,6 +1084,7 @@ describe('createCliActionExecutorFromCredentials API Token transport', () => {
       accountId: 'account-1',
       principalId: 'principal-1',
       credentialId: 'credential-1',
+      grant: API_TOKEN_FULL_GRANT_V1,
       expiresAt: null,
       authority: 'account_automation' as const,
     }));
@@ -1358,7 +1381,7 @@ describe('createCliActionExecutorFromCredentials API Token transport', () => {
       {
         creationKey: 'manual:pat-spawn-1',
         executionTarget: { serverId: 'daemon-profile-only', machineId: 'machine-selected' },
-        directory: '/workspace/pat-project',
+        directory: { kind: 'path', path: '/workspace/pat-project' },
         organizationPlacement: { folderId: null, tagIds: [] },
         agentTarget: {
           kind: 'agent',
@@ -1376,7 +1399,7 @@ describe('createCliActionExecutorFromCredentials API Token transport', () => {
       target: { kind: 'machine', machineId: 'machine-selected' },
       input: {
         creationKey: 'manual:pat-spawn-1',
-        directory: '/workspace/pat-project',
+        directory: { kind: 'path', path: '/workspace/pat-project' },
         organizationPlacement: { folderId: null, tagIds: [] },
         agentTarget: {
           kind: 'agent',

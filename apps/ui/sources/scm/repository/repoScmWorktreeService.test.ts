@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, afterEach } from 'vitest';
-import { SCM_WORKTREE_REMOVE_AUTHORIZATION_TOKEN } from '@happier-dev/protocol';
+import { SCM_OPERATION_ERROR_CODES, SCM_WORKTREE_REMOVE_AUTHORIZATION_TOKEN } from '@happier-dev/protocol';
 
 import { installRepositoryScmCommonModuleMocks } from './repositoryScmTestHelpers';
 import { createPartialStorageModuleMock } from '@/dev/testkit/mocks/storage';
@@ -55,6 +55,16 @@ describe('repoScmWorktreeService', () => {
         machineScmWorktreeRemoveMock.mockReset();
         storageGetStateMock.mockReset();
         storageGetStateMock.mockReturnValue({});
+    });
+
+    it('refuses an invalid worktree request without publishing a created path or branch', async () => {
+        const { repoScmWorktreeService } = await import('./repoScmWorktreeService');
+        const result = await repoScmWorktreeService.createWorktreeForMachinePath({ machineId: '', path: '/repo' });
+
+        expect(result).toMatchObject({ success: false, errorCode: SCM_OPERATION_ERROR_CODES.INVALID_REQUEST });
+        expect(result).not.toHaveProperty('worktreePath');
+        expect(result).not.toHaveProperty('branchName');
+        expect(machineScmWorktreeCreateMock).not.toHaveBeenCalled();
     });
 
     it('finds a reusable sibling worktree for the selected base branch while ignoring the current worktree', async () => {

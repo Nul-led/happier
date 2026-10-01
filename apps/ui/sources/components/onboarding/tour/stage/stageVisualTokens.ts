@@ -132,7 +132,6 @@ export const stageVisualTokens = {
         skipTransitionMs: 240,
         hoverMs: 120,
         hoverTranslateY: -1,
-        pressScale: 0.97,
         springDamping: 18,
         springStiffness: 320,
         focusRingWidth: 2,

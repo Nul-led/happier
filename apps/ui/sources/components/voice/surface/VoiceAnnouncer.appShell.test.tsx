@@ -190,7 +190,7 @@ describe('one Voice announcer for the whole app shell', () => {
         );
 
         try {
-            expect(screen.findByTestId(VOICE_ANNOUNCER_TEST_ID)?.props.accessibilityLabel).toBe('');
+            expect(screen.findByTestId(VOICE_ANNOUNCER_TEST_ID)?.props.children?.props.children).toBe('');
             expect(screen.root.findAllByProps({
                 accessibilityLabel: tLoose('settingsVoice.diagnostics.retryShutdown'),
             })).toHaveLength(0);
@@ -229,7 +229,7 @@ describe('one Voice announcer for the whole app shell', () => {
                     <VoiceAnnouncer />
                 </VoiceEnergyProvider>,
             );
-            expect(screen.findByTestId(VOICE_ANNOUNCER_TEST_ID)?.props.accessibilityLabel)
+            expect(screen.findByTestId(VOICE_ANNOUNCER_TEST_ID)?.props.children?.props.children)
                 .toBe('Microphone muted');
 
             attemptControl.current = {
@@ -254,7 +254,7 @@ describe('one Voice announcer for the whole app shell', () => {
                     <VoiceAnnouncer />
                 </VoiceEnergyProvider>,
             );
-            expect(screen.findByTestId(VOICE_ANNOUNCER_TEST_ID)?.props.accessibilityLabel)
+            expect(screen.findByTestId(VOICE_ANNOUNCER_TEST_ID)?.props.children?.props.children)
                 .toContain('Retry');
             expect(screen.tree.root.findAllByProps({ accessibilityLiveRegion: 'polite' })).toHaveLength(1);
         } finally {

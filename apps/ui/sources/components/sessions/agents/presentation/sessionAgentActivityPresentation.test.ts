@@ -83,11 +83,19 @@ describe('resolveSessionAgentActivityPresentation', () => {
 
     it('translates the canonical status rather than painting a raw token on screen', () => {
         expect(resolveSessionAgentActivityPresentation({ entry: entry({ status: 'timedOut' }) }))
-            .toMatchObject({ statusLabel: 'Timed out', statusVariant: 'warning' });
-        expect(resolveSessionAgentActivityPresentation({ entry: entry({ status: 'succeeded' }) }))
-            .toMatchObject({ statusLabel: 'Done', statusVariant: 'success' });
-        expect(resolveSessionAgentActivityPresentation({ entry: entry({ status: 'failed' }) }).statusVariant)
+            .toMatchObject({ statusLabel: 'Timed out', statusTone: 'attention' });
+        expect(resolveSessionAgentActivityPresentation({ entry: entry({ status: 'failed' }) }).statusTone)
             .toBe('danger');
+    });
+
+    it('takes its tone from the one work-status owner: healthy work is neutral, never green or blue (INT T4)', () => {
+        for (const status of ['running', 'succeeded', 'queued', 'cancelled'] as const) {
+            expect(resolveSessionAgentActivityPresentation({ entry: entry({ status }) }).statusTone).toBe('neutral');
+        }
+        expect(resolveSessionAgentActivityPresentation({ entry: entry({ status: 'succeeded' }) }).statusLabel).toBe('Completed');
+        // Running is said by the activity ring and the clock; queued is still named.
+        expect(resolveSessionAgentActivityPresentation({ entry: entry({ status: 'running' }) }).statusShownByActivity).toBe(true);
+        expect(resolveSessionAgentActivityPresentation({ entry: entry({ status: 'queued' }) }).statusShownByActivity).toBe(false);
     });
 
     it('reads the merged status, never the local subagent status a host might still hold', () => {
@@ -96,7 +104,7 @@ describe('resolveSessionAgentActivityPresentation', () => {
             subagent: subagent({ status: 'running' }),
         });
 
-        expect(presentation.statusLabel).toBe('Done');
+        expect(presentation.statusLabel).toBe('Completed');
     });
 
     it('prefers the local title, and falls back to the entry title for an unloaded row', () => {
@@ -116,6 +124,39 @@ describe('resolveSessionAgentActivityPresentation', () => {
 
         expect(presentation.title).not.toBe('run_1');
         expect(presentation.facts.filter((fact) => fact === 'Claude')).toHaveLength(1);
-        expect(presentation.facts).toContain('run_1');
+        // A named row never spells its run id; the id lives in the Run's details.
+        expect(presentation.facts).not.toContain('run_1');
+    });
+
+    it('names a Run by what it is for — a Conversation, a Review, a Plan — never by its raw intent token', () => {
+        const conversation = resolveSessionAgentActivityPresentation({
+            entry: entry(),
+            subagent: subagent({
+                display: { title: 'Is 5 attempts enough?', providerLabel: 'Claude', subtitle: 'delegate' },
+                runRef: { runId: 'run_1', intent: 'delegate', runClass: 'long_lived' },
+            }),
+        });
+        expect(conversation.facts[0]).toBe('Conversation');
+        expect(conversation.facts).not.toContain('delegate');
+
+        const review = resolveSessionAgentActivityPresentation({
+            entry: entry(),
+            subagent: subagent({
+                display: { title: 'Review #2481 changes', subtitle: 'review' },
+                runRef: { runId: 'run_1', intent: 'review', runClass: 'bounded' },
+            }),
+        });
+        expect(review.facts[0]).toBe('Review');
+        expect(review.facts).not.toContain('review');
+    });
+
+    it('says where a Run came from, right after what it is, when the host knows the origin', () => {
+        const presentation = resolveSessionAgentActivityPresentation({
+            entry: entry(),
+            subagent: subagent({ runRef: { runId: 'run_1', intent: 'delegate', runClass: 'long_lived' } }),
+            originLabel: 'from Relay retry plan',
+        });
+
+        expect(presentation.facts.slice(0, 2)).toEqual(['Conversation', 'from Relay retry plan']);
     });
 });

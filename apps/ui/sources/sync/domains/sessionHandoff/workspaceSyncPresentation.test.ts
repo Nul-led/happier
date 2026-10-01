@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 
 import {
     formatWorkspaceSyncRelationshipTitle,
-    resolveWorkspaceSyncConflictOpenTarget,
     resolveWorkspaceSyncErrorTranslationKey,
     resolveWorkspaceSyncModeTranslationKey,
     resolveWorkspaceSyncRelationshipStateLabel,
@@ -21,20 +20,6 @@ describe('workspaceSyncPresentation', () => {
             betaLabel: 'Beta',
             mode: 'keep_both_in_sync',
         })).toBe('Alpha ↔ Beta');
-    });
-
-    it('opens the exact relationship only when one relationship owns the conflict attention', () => {
-        expect(resolveWorkspaceSyncConflictOpenTarget([
-            { relationshipId: 'one', conflictCount: 2 },
-            { relationshipId: 'healthy', conflictCount: 0 },
-        ])).toEqual({ kind: 'relationship', relationshipId: 'one' });
-        expect(resolveWorkspaceSyncConflictOpenTarget([
-            { relationshipId: 'one', conflictCount: 1 },
-            { relationshipId: 'two', conflictCount: 3 },
-        ])).toEqual({ kind: 'relationshipList' });
-        expect(resolveWorkspaceSyncConflictOpenTarget([
-            { relationshipId: 'healthy', conflictCount: 0 },
-        ])).toEqual({ kind: 'none' });
     });
 
     it('keeps every released mode distinct and fails closed for unknown modes', () => {
@@ -64,7 +49,10 @@ describe('workspaceSyncPresentation', () => {
         expect(resolveWorkspaceSyncErrorTranslationKey('target_bootstrap_required')).toBe('workspaceSync.error.destinationNeedsPreparation');
         expect(resolveWorkspaceSyncErrorTranslationKey('git_selection_unavailable')).toBe('workspaceSync.error.gitPreparationFailed');
         expect(resolveWorkspaceSyncErrorTranslationKey('root_changed')).toBe('workspaceSync.error.rootNoLongerAuthorized');
-        expect(resolveWorkspaceSyncErrorTranslationKey('future-error')).toBe('workspaceSync.error.needsAttention');
+        expect(resolveWorkspaceSyncErrorTranslationKey('workspace_sync_update_required')).toBe('workspaceSync.error.updateRequired');
+        expect(resolveWorkspaceSyncErrorTranslationKey('workspace_sync_partial_route_blocked')).toBe('sessionHandoff.failure.partialLinked');
+        expect(resolveWorkspaceSyncErrorTranslationKey('engine_problems')).toBe('workspaceSync.error.needsAttention');
+        expect(resolveWorkspaceSyncErrorTranslationKey('future-error')).toBeNull();
         expect(resolveWorkspaceSyncErrorTranslationKey(null)).toBeNull();
     });
 

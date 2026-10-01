@@ -27,7 +27,7 @@ export type PeerTcpTunnelRouteDecision =
     | Readonly<{
         kind: 'selected';
         flowKind: PeerTcpTunnelFlowKind;
-        routeKind: 'loopback_direct' | 'server_relay';
+        routeKind: 'loopback_direct' | 'iroh_peer' | 'server_relay';
         allowServerRelayFallback: boolean;
       }>
     | Readonly<{
@@ -52,6 +52,8 @@ export type ResolveTcpTunnelRouteDecisionInput = Readonly<{
     directPeerDecision: FeatureDecision | null | undefined;
     serverRoutedDecision: FeatureDecision | null | undefined;
     directRoute: PeerTcpTunnelDirectRouteOutcome;
+    /** Native carrier admission; absent on browser clients, which retain server relay. */
+    irohRoute?: PeerTcpTunnelDirectRouteOutcome;
 }>;
 
 function isEnabled(decision: FeatureDecision | null | undefined): boolean {
@@ -88,12 +90,26 @@ export function resolveTcpTunnelRouteDecision(
 
     const routeDecision = resolvePeerRouteDecision({
         flowKind: input.flowKind,
-        preferredRouteKinds: ['loopback_direct', 'server_relay'],
+        preferredRouteKinds: ['loopback_direct', 'iroh_peer', 'server_relay'],
         candidates: [
             {
                 routeKind: 'loopback_direct',
                 enabled: directPeerEnabled,
                 viability: directViability,
+            },
+            {
+                routeKind: 'iroh_peer',
+                enabled: directPeerEnabled && input.flowKind === 'tcp_tunnel',
+                viability: input.irohRoute?.status === 'selected'
+                    ? { status: 'viable', checkedAt: 0, expiresAt: Number.MAX_SAFE_INTEGER }
+                    : {
+                        status: 'unavailable',
+                        checkedAt: 0,
+                        expiresAt: 0,
+                        failureReason: input.irohRoute?.status === 'unavailable'
+                            ? input.irohRoute.reasonCode
+                            : 'iroh_peer_unavailable',
+                    },
             },
             {
                 routeKind: 'server_relay',
@@ -106,7 +122,9 @@ export function resolveTcpTunnelRouteDecision(
         return {
             kind: 'selected',
             flowKind: input.flowKind,
-            routeKind: routeDecision.routeKind === 'server_relay' ? 'server_relay' : 'loopback_direct',
+            routeKind: routeDecision.routeKind === 'iroh_peer'
+                ? 'iroh_peer'
+                : routeDecision.routeKind === 'server_relay' ? 'server_relay' : 'loopback_direct',
             allowServerRelayFallback: routeDecision.routeKind === 'server_relay' ? true : serverRoutedEnabled,
         };
     }

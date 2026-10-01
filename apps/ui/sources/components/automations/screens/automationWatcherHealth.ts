@@ -1,4 +1,7 @@
-import type { PluginProjectionV2 } from '@happier-dev/protocol';
+import {
+    pluginSourceCustodyV1Equal,
+    type PluginSourceCustodyV1,
+} from '@happier-dev/protocol';
 
 import { t } from '@/text';
 import { resolveMachinePickerPresence } from '@/sync/domains/machines/identity/resolveMachinePickerPresence';
@@ -21,6 +24,8 @@ import type { MachineWithReplacement } from '@/sync/domains/machines/identity/ma
  */
 export type AutomationWatcherHealthV1 =
     | Readonly<{ kind: 'observing' }>
+    /** The machine list has not been read yet, so nothing can be said about the watcher's machine. */
+    | Readonly<{ kind: 'machineChecking' }>
     | Readonly<{ kind: 'machineUnknown' }>
     | Readonly<{ kind: 'machineUnavailable'; status: 'revoked' | 'replaced' }>
     | Readonly<{ kind: 'installationReplaced' }>
@@ -29,10 +34,12 @@ export type AutomationWatcherHealthV1 =
 export function resolveAutomationWatcherHealth(params: Readonly<{
     watcher: Readonly<{ machineId: string; machineInstallationId: string }>;
     machine: MachineWithReplacement | undefined;
+    /** This Home's machine list has been read, so an absent machine has really left. */
+    machineListSettled: boolean;
     nowMs?: number;
 }>): AutomationWatcherHealthV1 {
     const { machine } = params;
-    if (!machine) return Object.freeze({ kind: 'machineUnknown' });
+    if (!machine) return Object.freeze({ kind: params.machineListSettled ? 'machineUnknown' : 'machineChecking' });
 
     const presence = resolveMachinePickerPresence(machine, params.nowMs);
     if (presence.status === 'revoked' || presence.status === 'replaced') {
@@ -62,6 +69,7 @@ export function formatAutomationWatcherImpediment(
 ): string | undefined {
     switch (health.kind) {
         case 'observing':
+        case 'machineChecking':
             return undefined;
         case 'machineUnknown':
             return t('automations.detail.event.watcherMachineUnknown');
@@ -99,27 +107,21 @@ export type AutomationEventObserverRuntimeHealthV1 =
     | Readonly<{ kind: 'runtimeUnavailable' }>;
 
 /**
- * Joins retained provider status to the daemon's existing runtime lifecycle
- * projection. The installation/current-generation join is exact. Generic
- * background-service contributions are deliberately not consulted: without a
- * source-to-service identity, plugin ownership alone cannot prove which
- * service observes this Event source and must not suppress its canonical
- * retained status.
+ * Joins retained provider status to the daemon's current eligible-Event
+ * producer. Source custody is producer-owned and exact; the UI neither derives
+ * it from package metadata nor treats an unrelated same-plugin service as the
+ * Event observer.
  */
 export function resolveAutomationEventObserverRuntimeHealth(params: Readonly<{
-    projection: PluginProjectionV2 | null | undefined;
-    eventPluginId: string;
-    reporterImmutableGenerationId: string | null | undefined;
+    currentSourceCustody: PluginSourceCustodyV1 | null | undefined;
+    reporterSourceCustody: PluginSourceCustodyV1 | null | undefined;
 }>): AutomationEventObserverRuntimeHealthV1 {
-    const projection = params.projection;
-    if (!projection) return Object.freeze({ kind: 'runtimeUnavailable' });
-    const installed = projection.installedPackagesById[params.eventPluginId];
-    if (!installed?.enabled || !installed.immutableGenerationId) {
+    if (!params.currentSourceCustody) {
         return Object.freeze({ kind: 'runtimeUnavailable' });
     }
     if (
-        params.reporterImmutableGenerationId
-        && params.reporterImmutableGenerationId !== installed.immutableGenerationId
+        params.reporterSourceCustody
+        && !pluginSourceCustodyV1Equal(params.reporterSourceCustody, params.currentSourceCustody)
     ) {
         return Object.freeze({ kind: 'generationReplaced' });
     }

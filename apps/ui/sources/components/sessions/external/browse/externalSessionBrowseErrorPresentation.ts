@@ -28,6 +28,10 @@ export function resolveExternalSessionBrowseRpcErrorMessage(
             return t('newSession.machineOfflineInlineBody');
         case 'agent_unavailable':
             return t('externalSessions.browseAgentUnavailable');
+        case 'agent_timeout':
+            return t('externalSessions.browseAgentTimedOut');
+        case 'agent_error':
+            return t('externalSessions.browseAgentFailed');
         case 'invalid_request':
         case 'internal_error':
             return fallbackMessage(operation);

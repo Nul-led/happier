@@ -97,6 +97,8 @@ export type OlderPaginationEvent =
      * was attempted and FAILED — the only outcome the reader can act on.
      */
     | Readonly<{ type: 'loadFinished'; loaded: number; hasMore: boolean; error?: boolean; failed?: boolean }>
+    /** Initial-fill and navigation reads use the same source without arming this pager. */
+    | Readonly<{ type: 'sourceExhausted' }>
     | Readonly<{ type: 'cooldownElapsed' }>
     | Readonly<{ type: 'retryRequested' }>
     /**
@@ -315,6 +317,17 @@ export function reduceOlderPagination(state: OlderPaginationState, event: OlderP
                 loadFailed: event.failed === true,
             };
         }
+        case 'sourceExhausted': {
+            if (!state.hasMore) return state;
+            return {
+                ...state,
+                phase: state.phase === 'loading' ? 'loading' : 'idle',
+                hasMore: false,
+                loadFailed: false,
+                committedExactEdgeDuringLoad: false,
+                successfulLoadAwaitingCommittedLayout: false,
+            };
+        }
         case 'cooldownElapsed': {
             if (state.phase !== 'cooldown') return state;
             const rearm =
@@ -350,13 +363,16 @@ export function reduceOlderPagination(state: OlderPaginationState, event: OlderP
             // unreachable. This is a reader action, not another paginator: it arms the same
             // single-entry machine for exactly one ordinary older read. The normal load result
             // and cooldown then decide whether any later reader action is needed.
-            if (!state.hasMore || state.phase === 'loading' || state.phase === 'armed') return state;
+            if (!state.hasMore || state.phase === 'loading') return state;
             return {
                 ...state,
                 phase: 'armed',
                 committedExactEdgeDuringLoad: false,
                 successfulLoadAwaitingCommittedLayout: false,
                 rearmEligible: false,
+                // Reader intent does not require scrollable geometry. Fill and viewport
+                // ownership still suspend this same request through the ordinary gate.
+                suspendedReasons: withSuspendedReason(state.suspendedReasons, 'negative-offset', false),
             };
         }
         case 'suspend': {

@@ -68,6 +68,7 @@ function buildSessionListProjectHeaderViewModelStateCacheKey(input: Readonly<{
             String(item.groupKey ?? ''),
             String(item.title ?? ''),
             String(item.workspaceKey ?? ''),
+            String(item.workspace?.t ?? ''),
             String(item.workspaceScopeHint?.serverId ?? ''),
             String(item.workspaceScopeHint?.machineId ?? ''),
             String(item.workspaceScopeHint?.rootPath ?? ''),
@@ -119,7 +120,9 @@ export function buildSessionListProjectHeaderViewModels(input: Readonly<{
             scopeHintByLegacyWorkspaceKey.set(legacyWorkspaceKey, scopeHint);
         }
 
-        const legacyCustomLabel = legacyWorkspaceKey ? input.workspaceLabels?.[legacyWorkspaceKey] ?? null : null;
+        const legacyCustomLabel = item.workspace?.t !== 'managedSessions' && legacyWorkspaceKey
+            ? input.workspaceLabels?.[legacyWorkspaceKey] ?? null
+            : null;
         const presentation = resolveWorkspaceDisplayPresentation({
             scope: scopeHint,
             workspaceRefs: input.workspaceRefs,

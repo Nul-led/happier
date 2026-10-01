@@ -4,6 +4,9 @@ import { useNavigation, useRouter } from 'expo-router';
 import { StyleSheet } from 'react-native-unistyles';
 import {
     AutomationSourceSelectorIdV1Schema,
+    parseWorkflowDefinitionRefV1,
+    readTriggerTargetV1,
+    pluginJsonValuesEqual,
     type AutomationDefinitionDetail,
     type AutomationTriggerDefinitionInput,
 } from '@happier-dev/protocol';
@@ -30,6 +33,8 @@ import { layout } from '@/components/ui/layout/layout';
 import { ItemList } from '@/components/ui/lists/ItemList';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
+import { ListPresentationProvider } from '@/components/ui/lists/listPresentation';
+import { PageHeader } from '@/components/ui/layout/PageHeader';
 import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
 import { useActiveServerSnapshot } from '@/hooks/server/useActiveServerSnapshot';
 import { useAutomationsSupport } from '@/hooks/server/useAutomationsSupport';
@@ -53,7 +58,6 @@ import {
 } from '@/sync/domains/automations/automationEditorDraft';
 import { buildAutomationRecipeFromSessionAuthoring, openAutomationRecipeForAuthoring } from '@/sync/domains/automations/automationRecipeAuthoring';
 import {
-    buildAutomationWorkflowRecipe,
     openAutomationWorkflowRecipeForAuthoring,
 } from '@/sync/domains/workflows/automationWorkflowRecipe';
 import {
@@ -63,7 +67,8 @@ import {
     type AutomationWorkflowEditorOrigin,
     type AutomationWorkflowEditorProjection,
 } from '@/sync/domains/workflows/automationRecipeWorkflowDraft';
-import { buildWorkflowScheduleSeed } from '@/sync/domains/workflows/workflowScheduleSeed';
+import { getWorkflowDefinition } from '@/sync/domains/workflows/workflowDefinitionActions';
+import { WorkflowActionError } from '@/sync/domains/workflows/workflowActionError';
 import {
     firstBlockingWorkflowIssue,
     resolveWorkflowSaveBlockedReason,
@@ -75,10 +80,11 @@ import {
 import {
     EMPTY_WORKFLOW_EDITOR_VIEW_STATE,
     selectWorkflowBlock,
+    setWorkflowInspectorGroupExpanded,
     type WorkflowEditorDraft,
     type WorkflowEditorViewState,
 } from '@/sync/domains/workflows/workflowEditorDraft';
-import type { WorkflowProjectTargetV1 } from '@happier-dev/protocol/workflows';
+import { isWorkflowProjectTarget, type WorkflowAuthoringTarget } from '@/sync/domains/workflows/workflowProjectTarget';
 import { captureActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
 import { serverAccountScopeKeySuffix } from '@/sync/domains/scope/serverAccountScope';
 import { captureSessionAutomationAuthority } from '@/sync/domains/automations/sessionAutomationAuthority';
@@ -93,7 +99,7 @@ import { useUnsavedDraftNavigationGuard } from '@/utils/navigation/useUnsavedDra
 import { getSessionName } from '@/utils/sessions/sessionUtils';
 
 const stylesheet = StyleSheet.create((theme) => ({
-    root: { flex: 1, backgroundColor: theme.colors.background.canvas },
+    root: { flex: 1, backgroundColor: theme.colors.surface.base },
     centered: { minHeight: 180, alignItems: 'center', justifyContent: 'center' },
     content: { maxWidth: layout.maxWidth, alignSelf: 'center', width: '100%' },
 }));
@@ -175,6 +181,8 @@ async function openAutomationRecipeAsWorkflowDraft(params: Readonly<{
     draftId: string;
     name: string;
     machineId: string | null;
+    workflowDefinitionId?: string | null;
+    scopeSessionId?: string | null;
     isCurrent: () => boolean;
 }>): Promise<AutomationWorkflowEditorProjection> {
     const encryption = sync.encryption;
@@ -187,10 +195,27 @@ async function openAutomationRecipeAsWorkflowDraft(params: Readonly<{
                 : {}),
             isCurrent: params.isCurrent,
         });
+        const target = readTriggerTargetV1(params, stored);
+        if (target.kind !== 'available' || !params.machineId) {
+            throw new WorkflowActionError({ message: 'Workflow source unavailable', rawCode: 'source_unavailable' });
+        }
+        let resolvedDefinition;
+        if (target.target.kind === 'workflow') {
+            const ref = parseWorkflowDefinitionRefV1(target.target.ref);
+            if (ref?.kind === 'artifact') {
+                resolvedDefinition = (await getWorkflowDefinition({ definitionId: ref.artifactId })).definition;
+            }
+            if (!resolvedDefinition || !params.isCurrent()) {
+                throw new WorkflowActionError({ message: 'Workflow source unavailable', rawCode: 'source_unavailable' });
+            }
+        }
         return projectAutomationWorkflowRecipeToEditorDraft({
             draftId: params.draftId,
             name: params.name,
             stored,
+            machineId: params.machineId,
+            workflowDefinitionId: params.workflowDefinitionId ?? null,
+            ...(resolvedDefinition ? { resolvedDefinition } : {}),
         });
     }
     const program = await openAutomationRecipeForAuthoring({
@@ -398,7 +423,22 @@ export function AutomationEditorHostScreen(props: Readonly<{
     const latestWorkflowDraftRef = React.useRef<WorkflowEditorDraft | null>(null);
     latestWorkflowDraftRef.current = workflowDraft;
     const [recipeOrigin, setRecipeOrigin] = React.useState<AutomationWorkflowEditorOrigin | null>(null);
-    const [projectTarget, setProjectTarget] = React.useState<WorkflowProjectTargetV1 | null>(null);
+    const [projectTarget, setProjectTarget] = React.useState<WorkflowAuthoringTarget | null>(null);
+    // The Machine and project folder are authored values: Save persists them,
+    // so changing only one of them is unsaved work and must answer the same
+    // departure guard the prompt does. Compare semantic values rather than
+    // object identity so returning to the hydrated placement is clean again.
+    const hydratedProjectTargetRef = React.useRef<WorkflowAuthoringTarget | null>(null);
+    const changeProjectTarget = React.useCallback((next: WorkflowAuthoringTarget) => {
+        setProjectTarget(next);
+        const baseline = hydratedProjectTargetRef.current;
+        if (baseline === null
+            || baseline.machineId !== next.machineId
+            || !pluginJsonValuesEqual(baseline.directory, next.directory)
+            || baseline.workspaceRefId !== next.workspaceRefId) {
+            setIsDirty(true);
+        }
+    }, []);
     const [convertToWorkflow, setConvertToWorkflow] = React.useState(false);
     const [workflowView, setWorkflowView] = React.useState<WorkflowEditorView>('steps');
     const [workflowSelection, setWorkflowSelection] = React.useState<WorkflowEditorViewState>(
@@ -431,6 +471,7 @@ export function AutomationEditorHostScreen(props: Readonly<{
         setWorkflowDraft(null);
         hydratedWorkflowDraftRef.current = null;
         setRecipeOrigin(null);
+        hydratedProjectTargetRef.current = null;
         setProjectTarget(null);
         setConvertToWorkflow(false);
         setWorkflowSelection(EMPTY_WORKFLOW_EDITOR_VIEW_STATE);
@@ -479,6 +520,8 @@ export function AutomationEditorHostScreen(props: Readonly<{
                     draftId: `automation-${props.automationId}`,
                     name: hydrated.name,
                     machineId: resolveAutomationAssignmentMachineId(hydrated),
+                    workflowDefinitionId: hydrated.workflowDefinitionId,
+                    scopeSessionId: hydrated.scopeSessionId,
                     isCurrent: () => alive
                         && accountLifetime.isCurrent()
                         && capturedIdentity === editorLifetimeIdentity,
@@ -521,6 +564,7 @@ export function AutomationEditorHostScreen(props: Readonly<{
                 hydratedWorkflowDraftRef.current = recipeProjection.draft;
                 setWorkflowDraft(recipeProjection.draft);
                 setRecipeOrigin(recipeProjection.origin);
+                hydratedProjectTargetRef.current = recipeProjection.project;
                 setProjectTarget(recipeProjection.project);
                 setIsDirty(withPrefill !== hydrated);
                 setDraft(withPrefill);
@@ -576,15 +620,16 @@ export function AutomationEditorHostScreen(props: Readonly<{
     const legacyWriteBackProbe = React.useMemo(() => (
         recipeOrigin?.kind === 'legacy'
             && workflowDraft !== null
-            && workflowDraft !== hydratedWorkflowDraftRef.current
+            && (workflowDraft !== hydratedWorkflowDraftRef.current || projectTarget !== hydratedProjectTargetRef.current)
             ? projectEditorDraftToLegacyAutomationRecipe({
                 draft: workflowDraft,
                 target: recipeOrigin.target,
+                project: projectTarget,
                 // Representability only; the committed write stamps its own time.
                 configurationUpdatedAtMs: 0,
             })
             : null
-    ), [recipeOrigin, workflowDraft]);
+    ), [projectTarget, recipeOrigin, workflowDraft]);
     // An empty prompt is ordinary repairable authoring, not a reason to change
     // how this Automation executes.
     const promptRequired = legacyWriteBackProbe?.kind === 'unavailable'
@@ -592,7 +637,7 @@ export function AutomationEditorHostScreen(props: Readonly<{
     const conversionRequired = legacyWriteBackProbe?.kind === 'unavailable'
         && !promptRequired
         && !convertToWorkflow;
-    const projectUnresolved = projectTarget === null || projectTarget.directory.trim().length === 0;
+    const projectUnresolved = projectTarget === null || !isWorkflowProjectTarget(projectTarget) || projectTarget.directory.trim().length === 0;
     const workflowRecipeSelected = recipeOrigin?.kind === 'workflow' || convertToWorkflow;
     // A managed workflow recipe answers to the same canonical draft validation
     // as the neutral editor and the create wrapper: Save is refused up front,
@@ -659,7 +704,7 @@ export function AutomationEditorHostScreen(props: Readonly<{
         const origin = recipeOrigin;
         const workflow = params.workflowDraft;
         if (origin === null || workflow === null) return params.draft;
-        if (workflow === hydratedWorkflowDraftRef.current && !convertToWorkflow) return params.draft;
+        if (workflow === hydratedWorkflowDraftRef.current && projectTarget === hydratedProjectTargetRef.current && !convertToWorkflow) return params.draft;
         // Only a recipe write reaches here. A managed workflow recipe — whether
         // already stored or newly adopted — is refused rather than resealed
         // when the canonical Workflows decision does not authorize it, and the
@@ -679,6 +724,7 @@ export function AutomationEditorHostScreen(props: Readonly<{
             const writeBack = projectEditorDraftToLegacyAutomationRecipe({
                 draft: workflow,
                 target: origin.target,
+                project: projectTarget,
                 configurationUpdatedAtMs: Date.now(),
             });
             // The visible conversion card already owns this explanation.
@@ -697,51 +743,11 @@ export function AutomationEditorHostScreen(props: Readonly<{
             return replaceAutomationEditorExecutionRecipe(params.draft, recipe);
         }
 
-        const project = projectTarget;
-        if (project === null || project.directory.trim().length === 0) {
-            await Modal.alert(t('workflows.conversion.title'), t('workflows.conversion.machineRequired'));
-            return null;
-        }
-        const reviewed = buildWorkflowScheduleSeed({
-            draft: { ...workflow, name: params.draft.name.trim() || workflow.name },
-            project,
-            saved: origin.kind === 'workflow' && origin.source && hydratedWorkflowDraftRef.current
-                ? {
-                    definitionId: origin.source.definitionId,
-                    revision: origin.source.revision,
-                    definition: hydratedWorkflowDraftRef.current,
-                }
-                : null,
-        });
-        if (reviewed.kind !== 'available') {
-            await Modal.alert(
-                t('common.error'),
-                // The editor body shows the exact per-block issue inline; this
-                // last-resort alert states only that the save did not happen.
-                t('automations.edit.updateFailed'),
-            );
-            return null;
-        }
-        const recipe = await buildAutomationWorkflowRecipe({
-            credentials,
-            automationId: requireAutomationEditorDraftIdentity(params.draft),
-            templateVersion,
-            seed: reviewed.seed,
-            ...(encryption
-                ? { encryptRaw: (value: unknown) => encryption.encryptAutomationTemplateRaw(value) }
-                : {}),
-            isCurrent: params.isCurrent,
-        });
-        const next = replaceAutomationEditorExecutionRecipe(params.draft, recipe);
-        // One workflow runs on exactly one machine. An assignment that already
-        // names it keeps its priority; anything else adopts the reviewed
-        // placement the author selected above.
-        const assignment = next.assignments.length === 1 ? next.assignments[0] : undefined;
-        return assignment !== undefined
-            && assignment.machineId === project.machineId
-            && assignment.enabled !== false
-            ? next
-            : { ...next, assignments: [{ machineId: project.machineId, enabled: true, priority: 100 }] };
+        // A managed workflow trigger, or a conversion into one, is written only through
+        // `workflow.trigger.*` (03 §5.3, §5.6; 04 §5.4): this retained editor writes released
+        // one-shot recipes and nothing else.
+        await Modal.alert(t('workflows.triggers.editor.editInWorkflows'));
+        return null;
     }, [convertToWorkflow, projectTarget, recipeOrigin, workflows.available]);
 
     const handleSave = React.useCallback(async (draftOverride?: AutomationEditorDraft): Promise<boolean> => {
@@ -939,7 +945,12 @@ export function AutomationEditorHostScreen(props: Readonly<{
 
     if (hydrationState.kind !== 'ready' || !draft || draftLifetimeIdentity !== editorLifetimeIdentity) {
         return (
+            <ListPresentationProvider value="page">
             <View style={stylesheet.root}>
+                <PageHeader
+                    title={t('automations.edit.title')}
+                    description={t('automationPages.editor.description')}
+                />
                 <View style={stylesheet.content}>
                     {definition && hydrationState.kind !== 'notFound' ? (
                         <View testID="automation-editor-public-facts">
@@ -981,6 +992,7 @@ export function AutomationEditorHostScreen(props: Readonly<{
                     )}
                 </View>
             </View>
+            </ListPresentationProvider>
         );
     }
 
@@ -1100,7 +1112,7 @@ export function AutomationEditorHostScreen(props: Readonly<{
                             projectTarget={projectTarget}
                             {...(workflowRecipeSelected ? {
                                 projectMachines: machines,
-                                onChangeProjectTarget: setProjectTarget,
+                                onChangeProjectTarget: changeProjectTarget,
                             } : {})}
                             selectedBlockId={workflowSelection.selectedBlockId}
                             onSelectBlock={(blockId) => setWorkflowSelection((current) => (
@@ -1109,9 +1121,12 @@ export function AutomationEditorHostScreen(props: Readonly<{
                             onCustomizeBlock={(blockId) => setWorkflowSelection((current) => (
                                 selectWorkflowBlock(current, blockId)
                             ))}
+                            inspectorGroupDisclosure={workflowSelection.inspectorGroupDisclosure}
+                            onChangeInspectorGroup={(groupId, expanded) => setWorkflowSelection((current) => (
+                                setWorkflowInspectorGroupExpanded(current, groupId, expanded)
+                            ))}
                             view={workflowView}
                             onChangeView={setWorkflowView}
-                            primaryAction="save"
                             showNameField={false}
                             testIDPrefix="automation-workflow-definition"
                         />

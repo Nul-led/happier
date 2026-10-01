@@ -13,6 +13,7 @@ import { type DaemonStartupSource, isDaemonStartupSourceServiceManaged } from '@
 import { resolveHappierHomeDirComparableKey } from '@/daemon/ownership/happierHomeDirComparableKey';
 import { resolveDaemonServicePaths, type DaemonServiceCliRuntime, type DaemonServiceListEntry } from '@/daemon/service/paths';
 import type { DaemonServiceMode } from '@/daemon/service/plan';
+import { readBackgroundServiceActivity, type BackgroundServiceActivity } from '@/daemon/service/readBackgroundServiceHealth';
 
 function resolveDiscoveryModes(platform: DaemonServiceCliRuntime['platform']): readonly DaemonServiceMode[] {
   return platform === 'linux' ? ['user', 'system'] : ['user'];
@@ -252,6 +253,80 @@ export async function evaluateDaemonStartupServiceConflict(params: Readonly<{
   }
 
   return { kind: 'installed-background-service-conflict', services };
+}
+
+/**
+ * The pinned services of this Happier home that serve `serverId`. A daemon's lock is per Happier
+ * home and server, so such a service is that server's owner (R10 D3): the default-following service
+ * yields the server to it rather than compete for the lock. Only a pinned service its manager is
+ * running or starting counts (RV3-C3): a stopped one serves nobody, so the default service serves
+ * the server as before. `unknown` (the manager could not be asked) still counts, so a failed read
+ * never starts a competing daemon.
+ */
+export function selectPinnedServicesServingServer(params: Readonly<{
+  services: readonly DaemonServiceListEntry[];
+  runtime: DaemonServiceCliRuntime;
+  serverId: string;
+  readActivity?: (service: DaemonServiceListEntry) => BackgroundServiceActivity;
+}>): readonly DaemonServiceListEntry[] {
+  const readActivity = params.readActivity ?? ((service: DaemonServiceListEntry) => readBackgroundServiceActivity({
+    platform: service.platform,
+    uid: params.runtime.uid,
+    label: service.label,
+    mode: service.mode ?? null,
+  }));
+  return params.services.filter((service) => (
+    service.targetMode === 'pinned'
+    && service.serverId === params.serverId
+    && hasInstalledBackgroundServiceConflictForCurrentInstallation({ services: [service], runtime: params.runtime })
+    && readActivity(service) !== 'inactive'
+  ));
+}
+
+/** The pinned services the default-following service stands by for (none for any other service). */
+export async function resolveDefaultFollowingStandBy(
+  runtime: DaemonServiceCliRuntime,
+): Promise<readonly DaemonServiceListEntry[]> {
+  if (runtime.targetMode !== 'default-following') return [];
+  return selectPinnedServicesServingServer({
+    services: await resolveInstalledDaemonServiceInventoryForCurrentRelay(runtime),
+    runtime,
+    serverId: runtime.instanceId,
+  });
+}
+
+/**
+ * Startup of the default-following background service (`start-sync` from its own definition, or
+ * its self-restart). It follows whichever server the terminal selects; when that server has this
+ * home's pinned service, the pinned one serves it and this one stands by instead of starting a
+ * second daemon for the same server. The caller then exits cleanly, which every service manager
+ * treats as "stay stopped" (launchd, systemd and Task Scheduler restart only failures), until the
+ * service is restarted after the selection changes (`server use` follow-up) or at the next login.
+ */
+export async function evaluateDefaultFollowingServiceStartup(params: Readonly<{
+  startupSource: DaemonStartupSource | null | undefined;
+  processEnv: NodeJS.ProcessEnv;
+  resolveRuntime: () => DaemonServiceCliRuntime;
+}>): Promise<Readonly<{ kind: 'serve' }> | Readonly<{ kind: 'yield-to-pinned-service'; services: readonly DaemonServiceListEntry[] }>> {
+  const serviceStartup = isDaemonStartupSourceServiceManaged(params.startupSource) || params.startupSource === 'self-restart';
+  if (!serviceStartup || String(params.processEnv.HAPPIER_DAEMON_SERVICE_TARGET_MODE ?? '').trim() !== 'default-following') {
+    return { kind: 'serve' };
+  }
+  const services = await resolveDefaultFollowingStandBy(params.resolveRuntime());
+  return services.length > 0 ? { kind: 'yield-to-pinned-service', services } : { kind: 'serve' };
+}
+
+export function renderDefaultFollowingServiceStandingBy(params: Readonly<{
+  serverId: string;
+  services: readonly DaemonServiceListEntry[];
+}>): Readonly<{ title: string; lines: readonly string[] }> {
+  return {
+    title: `Relay ${params.serverId} has its own background service, so the default background service stands by.`,
+    lines: [
+      ...params.services.map((service) => `  ${describeDaemonServiceInventoryEntry(service)}`),
+      'The default background service follows the next relay you select with `happier server use <relay>`.',
+    ],
+  };
 }
 
 function normalizeServicePathForComparison(path: string, platform: DaemonServiceCliRuntime['platform']): string {

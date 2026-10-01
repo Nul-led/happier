@@ -6,6 +6,7 @@ import { RoundButton } from '@/components/ui/buttons/RoundButton';
 import { Text } from '@/components/ui/text/Text';
 import { t } from '@/text';
 import { HANDOFF_TEXT_MAX_WIDTH } from '@/components/onboarding/ui/handoffLayout';
+import { HAPPIER_DESKTOP_DOWNLOAD_URL } from '@/constants/downloadUrls';
 
 export type WebDesktopDownloadCtaProps = Readonly<{
     testIDPrefix: string;
@@ -55,11 +56,10 @@ const stylesheet = StyleSheet.create((theme) => ({
 export function WebDesktopDownloadCta(props: WebDesktopDownloadCtaProps) {
     useUnistyles();
     const styles = stylesheet;
-    const downloadUrl = 'https://happier.dev/download';
     const showSubtitle = props.showSubtitle ?? true;
     const openDownload = React.useCallback(() => {
-        void Linking.openURL(downloadUrl).catch(() => {});
-    }, [downloadUrl]);
+        void Linking.openURL(HAPPIER_DESKTOP_DOWNLOAD_URL).catch(() => {});
+    }, []);
 
     return (
         <View testID={`${props.testIDPrefix}-download-cta`} style={styles.root}>

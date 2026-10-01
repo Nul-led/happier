@@ -357,20 +357,20 @@ export async function reachSidebarVoiceSurfaceFixtureHome(params: Readonly<{
             return false;
         }
     };
-    const setupWizardSurface = params.page.getByTestId('setupWizard.surface');
+    const machineAddDraft = params.page.getByTestId('settings.machines.draft.form');
     let wizardDismissed = false;
     try {
-        await expect(setupWizardSurface).toHaveCount(0, { timeout: 1_000 });
+        await expect(machineAddDraft).toHaveCount(0, { timeout: 1_000 });
         wizardDismissed = true;
     } catch {
         // wizard still visible
     }
     if (!wizardDismissed) {
-        await tryClick(params.page.getByTestId('setupWizard.surface-skip'), 10_000);
+        await tryClick(params.page.getByTestId('settings.machines.draft.discard'), 10_000);
         // Best-effort dismissal: some wizard steps intentionally hide skip, and we don't want the
         // whole voice fixture to hang for minutes when the setup wizard is non-dismissible.
         try {
-            await expect(setupWizardSurface).toHaveCount(0, { timeout: 15_000 });
+            await expect(machineAddDraft).toHaveCount(0, { timeout: 15_000 });
         } catch {
             // continue
         }
@@ -455,9 +455,9 @@ export async function reachSidebarVoiceSurfaceFixtureHome(params: Readonly<{
             `earlyVoiceTestIds=${earlyVoiceTestIds == null ? 'error' : JSON.stringify(earlyVoiceTestIds).slice(0, 500)}`,
             `earlyDataTestIds=${earlyDataTestIds == null ? 'error' : JSON.stringify(earlyDataTestIds).slice(0, 500)}`,
             `sidebar-view=${await getCount('sidebar-view')}`,
-            `setupWizard.surface=${await getCount('setupWizard.surface')}`,
+            `settings.machines.draft.form=${await getCount('settings.machines.draft.form')}`,
             `welcome-create-account=${await getCount('welcome-create-account')}`,
-            `main-header-start-new-session=${await getCount('main-header-start-new-session')}`,
+            `tabbar-start-new-session=${await getCount('tabbar-start-new-session')}`,
             `voice-surface:sidebar=${await getCount('voice-surface:sidebar')}`,
             `voiceAssistantText=${await getHasBodyText('Voice Assistant')}`,
             `dataTestIds.voice-surface=${await getDataTestIdMatches('voice-surface')}`,

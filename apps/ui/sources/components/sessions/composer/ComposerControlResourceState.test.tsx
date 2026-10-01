@@ -15,7 +15,7 @@ import {
     type ComposerControlResourceStateProjection,
 } from './ComposerControlResourceState';
 
-function createBinding(expectedGeneration = 'generation-7'): PluginContextualResourceBinding {
+function createBinding(expectedCallerOccurrenceId = 'occurrence-7'): PluginContextualResourceBinding {
     return {
         accountLifetime: {
             scope: { serverId: 'server-1', accountId: 'account-1' },
@@ -25,7 +25,7 @@ function createBinding(expectedGeneration = 'generation-7'): PluginContextualRes
         pluginId: 'acme.controls',
         machineId: 'machine-1',
         serverId: 'server-1',
-        expectedGeneration,
+        expectedCallerOccurrenceId,
         context: { kind: 'session', sessionId: 'session-1' },
     };
 }
@@ -289,7 +289,7 @@ describe('ComposerControlResourceState', () => {
         // assertion specifically proves generation-scoped LKG retirement.
         const secondBinding: PluginContextualResourceBinding = {
             ...firstBinding,
-            expectedGeneration: 'generation-8',
+            expectedCallerOccurrenceId: 'occurrence-8',
         };
         const first = resourceSnapshot({
             contentType: COMPOSER_CONTROL_STATE_CONTENT_TYPE_V1,

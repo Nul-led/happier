@@ -57,6 +57,8 @@ const ref = {
 };
 const response = {
     ref,
+    // Every V4 quota response names the usage record it was read from.
+    sourceResolution: { recordId: 'pau-record' },
     content: {
         t: 'plain' as const,
         v: {
@@ -105,11 +107,8 @@ describe('useQualifiedConnectedAccountQuota', () => {
                 generation: 1,
             },
         });
-        expect(operationAdmissionMock).toHaveBeenCalledWith(
-            ref.service,
-            { kind: 'v4' },
-            'quota_read',
-        );
+        // Reading is the server's GET; no machine is asked.
+        expect(operationAdmissionMock).not.toHaveBeenCalled();
         expect(openQuotaMock).toHaveBeenCalledWith({
             response,
             expectedRef: ref,
@@ -120,6 +119,19 @@ describe('useQualifiedConnectedAccountQuota', () => {
             snapshot: response.content.v,
             error: null,
         }));
+    });
+
+    it('names the usage record the server resolved, so the account\'s subscription is read from that record', async () => {
+        getQuotaMock.mockResolvedValueOnce(response);
+        openQuotaMock.mockReturnValueOnce(response.content.v);
+
+        const { useQualifiedConnectedAccountQuota } = await import(
+            './useQualifiedConnectedAccountQuota'
+        );
+        const hook = await renderHook(() => useQualifiedConnectedAccountQuota(ref));
+        await flushHookEffects();
+
+        expect(hook.getCurrent().usageRecordId).toBe('pau-record');
     });
 
     it('hides only the quota affordance when the exact service has no quota leaf', async () => {
@@ -161,7 +173,7 @@ describe('useQualifiedConnectedAccountQuota', () => {
             },
         });
         expect(operationAdmissionMock.mock.calls.map((call) => call[2]))
-            .toEqual(['quota_read', 'quota_refresh', 'quota_read']);
+            .toEqual(['quota_refresh']);
         expect(getQuotaMock).toHaveBeenCalledTimes(2);
         expect(getQuotaMock).toHaveBeenLastCalledWith(credentials, ref, {
             expectedActiveServer: {
@@ -257,30 +269,6 @@ describe('useQualifiedConnectedAccountQuota', () => {
         expect(hook.getCurrent()).toEqual(expect.objectContaining({
             supported: null,
             loading: false,
-            snapshot: null,
-            error: resolveConnectedServiceSettingsErrorMessage(failure),
-        }));
-    });
-
-    it('does not issue a V4 request when daemon admission contradicts V4', async () => {
-        const failure = Object.assign(
-            new Error('unsupported'),
-            { code: 'connected_account_v4_operation_unsupported' },
-        );
-        operationAdmissionMock.mockRejectedValueOnce(failure);
-
-        const { useQualifiedConnectedAccountQuota } = await import(
-            './useQualifiedConnectedAccountQuota'
-        );
-        const hook = await renderHook(() =>
-            useQualifiedConnectedAccountQuota(ref));
-        await flushHookEffects();
-
-        expect(getQuotaMock).not.toHaveBeenCalled();
-        // A refused operation is not evidence of support: `supported` stays
-        // unknown so the block cannot offer a refresh that cannot work.
-        expect(hook.getCurrent()).toEqual(expect.objectContaining({
-            supported: null,
             snapshot: null,
             error: resolveConnectedServiceSettingsErrorMessage(failure),
         }));

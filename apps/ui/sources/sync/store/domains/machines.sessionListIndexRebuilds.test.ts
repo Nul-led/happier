@@ -287,7 +287,7 @@ describe('machines domain: sessionListIndex rebuild gating', () => {
                     loopback: {
                         endpoint: {
                             v: 1,
-                            url: 'http://127.0.0.1:41001/peer-mediation/v1/probe',
+                            url: 'http://127.0.0.1:41001',
                             endpointFingerprint: 'before-restart',
                         },
                     },
@@ -325,7 +325,7 @@ describe('machines domain: sessionListIndex rebuild gating', () => {
                     loopback: {
                         endpoint: {
                             v: 1,
-                            url: 'http://127.0.0.1:41002/peer-mediation/v1/probe',
+                            url: 'http://127.0.0.1:41002',
                             endpointFingerprint: 'after-restart',
                         },
                     },

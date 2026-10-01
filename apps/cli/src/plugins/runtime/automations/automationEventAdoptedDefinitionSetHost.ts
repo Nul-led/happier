@@ -52,7 +52,7 @@ export type AutomationEventStoredDefinitionsHttpTransportV1 = Readonly<{
 
 /**
  * The one host-private HTTP hop for stored Event definitions. Its caller is
- * stamped from the current generation; no plugin Action or SDK request can
+ * stamped from the current occurrence; no plugin Action or SDK request can
  * create this body.
  */
 export function createAutomationEventStoredDefinitionsHttpTransportV1(params: Readonly<{
@@ -65,7 +65,8 @@ export function createAutomationEventStoredDefinitionsHttpTransportV1(params: Re
         v: 1,
         caller: {
           pluginId: request.caller.pluginId,
-          immutableGenerationId: request.caller.immutableGenerationId,
+          occurrenceId: request.caller.occurrenceId,
+          sourceCustody: request.caller.sourceCustody,
           materialization: request.caller.materialization,
         },
         input: request.input,
@@ -188,25 +189,26 @@ async function projectStoredDefinition(params: Readonly<{
 }
 
 /**
- * Composes the existing exact current-generation and Account-currentness
+ * Composes the existing exact current-occurrence and Account-currentness
  * owners into one E3 definition set. It starts no work itself; its consumer
  * explicitly refreshes and may expose only the resulting adopted lookup.
- * Stored definitions are opened only after the generation-local Account
+ * Stored definitions are opened only after the occurrence-local Account
  * currentness/material owner approves their exact current mode.
  */
 export function createAutomationEventAdoptedDefinitionSetHostV1(params: Readonly<{
   credentials: StoredCredentials;
   caller: PluginMachineMaterializationRefV1;
-  immutableGenerationId: string;
+  occurrenceId: string;
+  sourceCustody: import('@happier-dev/protocol').PluginSourceCustodyV1;
   transport: AutomationEventSourcesListTransportV1;
-  generationSignal: AbortSignal;
-  isGenerationCurrent(): boolean;
+  occurrenceSignal: AbortSignal;
+  isOccurrenceCurrent(): boolean;
   revalidateCallerMaterialization(
     caller: PluginMachineMaterializationRefV1,
     signal?: AbortSignal,
   ): Promise<boolean>;
-  revalidateCallerImmutableGeneration(
-    caller: Readonly<{ pluginId: string; immutableGenerationId: string }>,
+  revalidateCallerOccurrence(
+    caller: Readonly<{ pluginId: string; occurrenceId: string }>,
     signal?: AbortSignal,
   ): Promise<boolean>;
   readStoredDefinitions?: AutomationEventStoredDefinitionsHttpTransportV1['read'];
@@ -221,13 +223,13 @@ export function createAutomationEventAdoptedDefinitionSetHostV1(params: Readonly
     ?? createAutomationEventStoredDefinitionsHttpTransportV1({
       credentials: params.credentials,
       revalidateCaller: async (caller, signal) => (
-        params.isGenerationCurrent()
+        params.isOccurrenceCurrent()
         && await params.revalidateCallerMaterialization(caller.materialization, signal)
-        && await params.revalidateCallerImmutableGeneration({
+        && await params.revalidateCallerOccurrence({
           pluginId: caller.pluginId,
-          immutableGenerationId: caller.immutableGenerationId,
+          occurrenceId: caller.occurrenceId,
         }, signal)
-        && params.isGenerationCurrent()
+        && params.isOccurrenceCurrent()
       ),
     }).read;
   const resolveAccountEncryptionCurrentness = params.resolveAccountEncryptionCurrentness
@@ -253,15 +255,16 @@ export function createAutomationEventAdoptedDefinitionSetHostV1(params: Readonly
   return createAutomationEventAdoptedDefinitionSetV1({
     caller: params.caller,
     transport: params.transport,
-    generationSignal: params.generationSignal,
-    isGenerationCurrent: params.isGenerationCurrent,
+    occurrenceSignal: params.occurrenceSignal,
+    isOccurrenceCurrent: params.isOccurrenceCurrent,
     revalidateCallerMaterialization: params.revalidateCallerMaterialization,
     resolveAccountEncryption,
     readStoredDefinitions: async (request) => await readStoredDefinitions({
       ...request,
       caller: {
         pluginId: params.caller.pluginId,
-        immutableGenerationId: params.immutableGenerationId,
+        occurrenceId: params.occurrenceId,
+        sourceCustody: params.sourceCustody,
         materialization: params.caller,
       },
     }),

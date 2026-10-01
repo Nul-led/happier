@@ -4,6 +4,10 @@
  */
 
 import { isPidProvablyAbsent } from '@happier-dev/cli-common/process';
+import {
+  processGenerationMatches,
+  readProcessInstanceFingerprintSync,
+} from '@happier-dev/cli-common/processInstance';
 import type { ActionExecuteResult, ActionExecutorContext } from '@happier-dev/protocol';
 import { logger } from '@/ui/logger';
 import {
@@ -55,9 +59,6 @@ import {
   RestartSessionRunnerRequestV1Schema,
   RestartSessionRunnerRequestV2Schema,
   RestartSessionRunnerResultV1Schema,
-  SessionRunnerStatusGetRequestV1Schema,
-  SessionRunnerRuntimeStateV1Schema,
-  SessionRunnerRuntimeStatusV2Schema,
   type ConnectedServiceBindingsV2,
   type ConnectedAccountServiceKey,
   type ConnectedServiceId,
@@ -68,9 +69,6 @@ import {
   type RestartSessionRunnerRequestV1,
   type RestartSessionRunnerRequestV2,
   type RestartSessionRunnerResultV1,
-  type SessionRunnerStatusGetRequestV1,
-  type SessionRunnerRuntimeStateV1,
-  type SessionRunnerRuntimeStatusV2,
   type SessionRunnerRestartModeV1,
   type SessionMetadataPublisherPreconditionV1,
   type SshTunnelEnsureRequest,
@@ -95,7 +93,6 @@ import type {
   ConnectedServiceTurnLifecycleRequestBody,
   ConnectedServiceTurnLifecycleResult,
 } from './connectedServices/connectedServiceTurnLifecycleContract';
-import { deriveConnectedServiceRunMaterializeToken } from './connectedServices/runs/capabilityToken';
 import {
   CONNECTED_SERVICE_RUN_MATERIALIZE_PATH,
   CONNECTED_SERVICE_RUN_GENERATION_CURRENT_PATH,
@@ -106,12 +103,13 @@ import {
   type ExecutionRunConnectedServicesRegistrationV1,
 } from './connectedServices/runs/materializeContract';
 import { resolveComparableCliVersion } from './resolveComparableCliVersion';
-import { DEFAULT_SESSION_WEBHOOK_TIMEOUT_MS } from './spawn/sessionWebhookTimeoutPolicy';
 import type {
   PersistedTakeoverAdmissionPhase,
   TakeoverAdmissionMode,
 } from './spawn/persistedTakeoverAdmission';
-import { buildDaemonControlHttpHeaders } from './controlHttp';
+import { daemonPost, type DaemonControlRequestOptions } from './controlHttp';
+export type { DaemonControlRequestOptions } from './controlHttp';
+export { startDaemonAgentInstallJob, readDaemonAgentInstallJob, cancelDaemonAgentInstallJob, listDaemonAgentInstallJobs } from './agentInstallJobClient';
 import {
   type PluginChangeDecision,
   type PluginChangeDecisionResult,
@@ -134,40 +132,25 @@ import {
   PLUGIN_CHANGE_LIST_PATH,
   PLUGIN_CHANGE_REQUEST_PATH,
   PLUGIN_CHANGE_STATUS_PATH,
+  PLUGIN_DEVELOPMENT_CONTROL_PATH,
 } from '@/plugins/daemon/controlRoutes';
-import type { PluginActionExecutionAttempt } from '@/plugins/projection/actions/execute';
+import type {
+  DaemonPluginDevelopmentControlRequest,
+  DaemonPluginDevelopmentControlResult,
+} from '@/plugins/daemon/developmentRoots';
+import type { PluginActionExecutionAttempt } from '@/plugins/runtime/invocation/actions/executeContributedAction';
 import {
   SIGNED_ROOT_ACTION_EXECUTE_PATH,
   type SignedRootActionExecuteRequest,
 } from './externalActions/signedRootActionControl';
 import type { PluginCatalogEntry } from '@/plugins/projection/catalog/installed';
 import type { ProjectedPluginToolCatalogEntry } from '@/plugins/runtime/toolCatalog';
+import { resolveAbsolutePathFromWorkingDirectory } from '@/utils/path/expandHomeDirPath';
 
-export type DaemonControlRequestOptions = {
-  timeoutMs?: number | null;
-  signal?: AbortSignal;
-  target?: Readonly<{
-    pid: number;
-    httpPort: number;
-    controlToken?: string;
-  }>;
-};
-
-type DaemonPostAuthScope = 'daemon-control' | 'connected-service-run-materialize';
-
-type DaemonPostOptions = DaemonControlRequestOptions & {
-  authScope?: DaemonPostAuthScope;
-  authTokenOverride?: string;
-};
-
-const DEFAULT_DAEMON_HTTP_TIMEOUT_MS = 10_000;
-const DEFAULT_DAEMON_SPAWN_HTTP_TIMEOUT_MS = DEFAULT_SESSION_WEBHOOK_TIMEOUT_MS;
 const DEFAULT_DAEMON_PING_TIMEOUT_MS = 3_000;
 const DEFAULT_DAEMON_STOP_WAIT_FOR_DEATH_TIMEOUT_MS = 12_000;
 const DEFAULT_DAEMON_SHUTDOWN_SPAWN_DRAIN_GRACE_MS = 10_000;
 const DAEMON_STATE_FRESHNESS_GRACE_MS = 60_000;
-const DAEMON_HTTP_TIMEOUT_ENV_KEY = 'HAPPIER_DAEMON_HTTP_TIMEOUT';
-const DAEMON_SPAWN_HTTP_TIMEOUT_ENV_KEY = 'HAPPIER_DAEMON_SPAWN_HTTP_TIMEOUT';
 const DAEMON_PING_TIMEOUT_ENV_KEY = 'HAPPIER_DAEMON_PING_TIMEOUT_MS';
 const DAEMON_STOP_WAIT_FOR_DEATH_TIMEOUT_ENV_KEY = 'HAPPIER_DAEMON_STOP_WAIT_FOR_DEATH_TIMEOUT_MS';
 const DAEMON_SHUTDOWN_SPAWN_DRAIN_GRACE_ENV_KEY = 'HAPPIER_DAEMON_SHUTDOWN_SPAWN_DRAIN_GRACE_MS';
@@ -238,40 +221,6 @@ function resolvePositiveIntValue(
         : Number.NaN;
   if (!Number.isFinite(parsed)) return fallback;
   return Math.min(bounds.max, Math.max(bounds.min, Math.trunc(parsed)));
-}
-
-function resolveDaemonControlTimeoutMs(
-  path: string,
-  options: DaemonControlRequestOptions,
-): number | null {
-  if (options.timeoutMs === null) {
-    return null;
-  }
-  if (options.timeoutMs !== undefined) {
-    return resolvePositiveIntValue(options.timeoutMs, DEFAULT_DAEMON_HTTP_TIMEOUT_MS, {
-      min: 100,
-      max: path === CONNECTED_SERVICE_RUN_MATERIALIZE_PATH ? 600_000 : 300_000,
-    });
-  }
-
-  if (path === '/spawn-session') {
-    const rawSpawnTimeout = process.env[DAEMON_SPAWN_HTTP_TIMEOUT_ENV_KEY];
-    if (rawSpawnTimeout !== undefined && String(rawSpawnTimeout).trim().length > 0) {
-      return resolvePositiveIntValue(rawSpawnTimeout, DEFAULT_DAEMON_SPAWN_HTTP_TIMEOUT_MS, {
-        min: 100,
-        max: 300_000,
-      });
-    }
-    return resolvePositiveIntValue(process.env[DAEMON_HTTP_TIMEOUT_ENV_KEY], DEFAULT_DAEMON_SPAWN_HTTP_TIMEOUT_MS, {
-      min: 100,
-      max: 300_000,
-    });
-  }
-
-  return resolvePositiveIntValue(process.env[DAEMON_HTTP_TIMEOUT_ENV_KEY], DEFAULT_DAEMON_HTTP_TIMEOUT_MS, {
-    min: 100,
-    max: 300_000,
-  });
 }
 
 export function resolveExecutionRunConnectedServiceMaterializeTimeoutMs(
@@ -346,7 +295,10 @@ export async function inspectDaemonRunningStateAndCleanupStaleState(): Promise<D
     process.kill(state.pid, 0);
   } catch (error) {
     if ((error as NodeJS.ErrnoException)?.code === 'ESRCH') {
-      logger.debug('[DAEMON RUN] Daemon PID is definitively not running, treating daemon as replaceable without client cleanup');
+      // State can still name a departed predecessor while its successor owns the
+      // lifecycle lock and has not published its own state yet.
+      const lockStartup = await inspectDaemonLockStartupProgress();
+      if (lockStartup) return lockStartup;
       return { status: 'not-running' };
     }
 
@@ -398,83 +350,6 @@ export async function inspectDaemonRunningStateAndCleanupStaleState(): Promise<D
 
     logger.debug('[DAEMON RUN] Daemon PID is not running and state is stale, treating daemon as replaceable without client cleanup');
     return { status: 'not-running' };
-  }
-}
-
-async function daemonPost(path: string, body?: any, options: DaemonPostOptions = {}): Promise<{ error?: string } | any> {
-  const state = options.target ?? await readDaemonState();
-  if (!state?.httpPort) {
-    const errorMessage = 'No daemon running, no state file found';
-    logger.debug(`[CONTROL CLIENT] ${errorMessage}`);
-    return {
-      error: errorMessage
-    };
-  }
-
-  try {
-    const timeout = resolveDaemonControlTimeoutMs(path, options);
-    const authToken = options.authTokenOverride
-      ?? (options.authScope === 'connected-service-run-materialize'
-        ? deriveConnectedServiceRunMaterializeToken(state.controlToken)
-        : state.controlToken);
-    const headers = buildDaemonControlHttpHeaders(authToken);
-    const timeoutSignal = timeout === null ? null : AbortSignal.timeout(timeout);
-    const requestSignal = options.signal && timeoutSignal
-      ? AbortSignal.any([options.signal, timeoutSignal])
-      : options.signal ?? timeoutSignal ?? undefined;
-    const response = await fetch(`http://127.0.0.1:${state.httpPort}${path}`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(body || {}),
-      ...(requestSignal ? { signal: requestSignal } : {}),
-    });
-    
-    const rawBody = await response.text();
-    let parsedBody: unknown = null;
-    if (rawBody.trim().length > 0) {
-      try {
-        parsedBody = JSON.parse(rawBody);
-      } catch {
-        parsedBody = rawBody;
-      }
-    }
-
-    if (!response.ok) {
-      const responseObject =
-        parsedBody && typeof parsedBody === 'object' ? (parsedBody as Record<string, unknown>) : null;
-      // If the daemon control server returns a structured payload (e.g. {success:false,...}),
-      // preserve it so callers can act on fields like requiresUserApproval/errorCode.
-      if (responseObject && typeof responseObject.success === 'boolean') {
-        return responseObject;
-      }
-
-      const remoteErrorCode =
-        responseObject && typeof responseObject.errorCode === 'string' ? responseObject.errorCode : undefined;
-
-      const remoteErrorMessage =
-        responseObject && typeof responseObject.error === 'string'
-          ? responseObject.error
-          : responseObject && typeof responseObject.message === 'string'
-            ? responseObject.message
-            : undefined;
-
-      const detailSuffix = [remoteErrorCode, remoteErrorMessage].filter(Boolean).join(': ');
-      const errorMessage = `Request failed: ${path}, HTTP ${response.status}${detailSuffix ? ` (${detailSuffix})` : ''}`;
-      logger.debug(`[CONTROL CLIENT] ${errorMessage}`);
-      return {
-        error: errorMessage,
-        errorCode: remoteErrorCode,
-        response: parsedBody,
-      };
-    }
-    
-    return parsedBody ?? {};
-  } catch (error) {
-    const errorMessage = `Request failed: ${path}, ${error instanceof Error ? error.message : 'Unknown error'}`;
-    logger.debug(`[CONTROL CLIENT] ${errorMessage}`);
-    return {
-      error: errorMessage
-    }
   }
 }
 
@@ -543,9 +418,8 @@ function parseDaemonPluginChangeReviewResult(
 ): PluginChangePendingReviewResult | null | undefined {
   if (!result || typeof result !== 'object') return undefined;
   const kind = (result as Readonly<Record<string, unknown>>).kind;
-  // Non-review arms fall through to the caller's own result handling; only the
-  // two pending-review arms are parsed — and fail closed — here.
-  if (kind !== 'reviewRequired' && kind !== 'sourceRootReviewRequired') return undefined;
+  // Non-review arms fall through to the caller's own result handling.
+  if (kind !== 'reviewRequired') return undefined;
   const parsed = PluginChangePendingReviewResultSchema.safeParse(result);
   return parsed.success ? parsed.data : null;
 }
@@ -661,14 +535,45 @@ export async function listDaemonPluginChanges(
   };
 }
 
+export async function controlDaemonPluginDevelopment(
+  request: DaemonPluginDevelopmentControlRequest,
+  options: DaemonControlRequestOptions = {},
+): Promise<DaemonPluginDevelopmentControlResult> {
+  const normalizedRequest: DaemonPluginDevelopmentControlRequest = request.kind === 'status'
+    ? request
+    : request.kind === 'registerWorkspace'
+      ? {
+          ...request,
+          projectRoot: resolveAbsolutePathFromWorkingDirectory(request.projectRoot)
+            ?? request.projectRoot,
+        }
+      : {
+          ...request,
+          rootPath: resolveAbsolutePathFromWorkingDirectory(request.rootPath)
+            ?? request.rootPath,
+        };
+  const result = await daemonPost(PLUGIN_DEVELOPMENT_CONTROL_PATH, normalizedRequest, {
+    ...options,
+    timeoutMs: options.timeoutMs ?? 300_000,
+  });
+  if (!result || typeof result !== 'object' || typeof result.kind !== 'string') {
+    return {
+      kind: 'failed',
+      code: 'daemon_invalid_response',
+      message: 'The daemon returned an invalid plugin development response',
+      status: { roots: [], plugins: [] },
+    };
+  }
+  return result as DaemonPluginDevelopmentControlResult;
+}
+
 export async function requestDaemonPluginActionExecution(request: Readonly<{
   actionId: string;
   input: unknown;
   surface: 'cli' | 'mcp' | 'agent';
-  authority: NonNullable<ActionExecutorContext['authority']>;
   defaultSessionId?: string;
   /** Host-stamped turn admission fence; never Action input or SDK surface. */
-  expectedContributorImmutableGenerationId?: string;
+  expectedContributorOccurrenceId?: string;
 }>, options: DaemonControlRequestOptions = {}): Promise<PluginActionExecutionAttempt> {
   const result = await daemonPost(PLUGIN_ACTION_EXECUTE_PATH, request, {
     ...options,
@@ -895,7 +800,7 @@ export async function notifyDaemonConnectedServiceUsageLimitWaitResumeCancel(
 
 export async function notifyDaemonConnectedServiceQuotaRecoveryCreditConsume(
   body: Readonly<{
-    serviceId: ConnectedServiceId;
+    serviceId: ConnectedAccountServiceKey;
     profileId: string;
     idempotencyKey: string;
     providerCreditId?: string;
@@ -1020,7 +925,6 @@ export async function resolveDaemonSpawnSessionByNonce(spawnNonce: string): Prom
 export type DaemonSessionRunnerRestartMode = SessionRunnerRestartModeV1;
 export type RestartAllDaemonSessionRunnersRequest = RestartAllSessionRunnersRequestV1;
 export type RestartAllDaemonSessionRunnersResult = RestartAllSessionRunnersResultV1;
-export type GetDaemonSessionRunnerStatusRequest = SessionRunnerStatusGetRequestV1;
 
 const DAEMON_SESSION_RUNNER_RESTART_TIMEOUT_ENV_KEY = 'HAPPIER_DAEMON_SESSION_RUNNER_RESTART_HTTP_TIMEOUT_MS';
 const DEFAULT_DAEMON_SESSION_RUNNER_RESTART_TIMEOUT_MS = 75_000;
@@ -1088,38 +992,6 @@ export async function restartAllDaemonSessionRunners(
   const parsed = RestartAllSessionRunnersResultV1Schema.safeParse(result);
   if (!parsed.success) {
     throw new Error('Invalid daemon session runner restart-all response');
-  }
-  return parsed.data;
-}
-
-export async function getDaemonSessionRunnerStatus(
-  request: GetDaemonSessionRunnerStatusRequest,
-  options: DaemonControlRequestOptions = {},
-): Promise<SessionRunnerRuntimeStateV1> {
-  const body = SessionRunnerStatusGetRequestV1Schema.parse(request);
-  const result = await daemonPost('/session-runners/status', body, options);
-  if (result?.error) {
-    throw new Error(String(result.error));
-  }
-  const parsed = SessionRunnerRuntimeStateV1Schema.safeParse(result);
-  if (!parsed.success) {
-    throw new Error('Invalid daemon session runner status response');
-  }
-  return parsed.data;
-}
-
-export async function getDaemonSessionRunnerStatusV2(
-  request: GetDaemonSessionRunnerStatusRequest,
-  options: DaemonControlRequestOptions = {},
-): Promise<SessionRunnerRuntimeStatusV2> {
-  const body = SessionRunnerStatusGetRequestV1Schema.parse(request);
-  const result = await daemonPost('/session-runners/status-v2', body, options);
-  if (result?.error) {
-    throw new Error(String(result.error));
-  }
-  const parsed = SessionRunnerRuntimeStatusV2Schema.safeParse(result);
-  if (!parsed.success) {
-    throw new Error('Invalid daemon session runner V2 status response');
   }
   return parsed.data;
 }
@@ -1427,7 +1299,7 @@ async function assertForceStopIdentity(
   expectedState?: Awaited<ReturnType<typeof readDaemonState>>,
 ): Promise<NonNullable<Awaited<ReturnType<typeof readDaemonState>>>> {
   let recordedState: NonNullable<Awaited<ReturnType<typeof readDaemonState>>>;
-  let lockIdentity: Readonly<{ pid: number; processStartedAtMs: number }>;
+  let lockIdentity: NonNullable<ReturnType<typeof readDaemonLockOwnerIdentity>>;
   try {
     const state = expectedState ?? await readDaemonState();
     if (!state || state.pid !== pid) {
@@ -1485,16 +1357,18 @@ async function assertForceStopIdentity(
 
   const processIdentity = await readForceStopProcessIdentity(pid);
   const processStartedAtMs = processIdentity.processStartTimeMs;
+  const lockFingerprint = lockIdentity.processInstanceFingerprint;
+  const currentFingerprint = lockFingerprint
+    ? readProcessInstanceFingerprintSync(pid, { expectedFingerprint: lockFingerprint })
+    : null;
   if (
     processIdentity.pid !== pid
     || typeof processStartedAtMs !== 'number'
     || !Number.isSafeInteger(processStartedAtMs)
     || processStartedAtMs < 0
     || !isDaemonCommandForCurrentRuntimeRoot(processIdentity.command, projectPath())
-    // The released v1 lock's birth timestamp was derived from process.uptime,
-    // so it remains a compatibility correlation only. The adjacent current
-    // identity recheck below is the exact process-birth authority for signals.
-    || Math.abs(processStartedAtMs - lockIdentity.processStartedAtMs) > 1_000
+    || !processGenerationMatches(lockIdentity.processStartedAtMs, processStartedAtMs)
+    || (lockFingerprint !== undefined && currentFingerprint !== lockFingerprint)
   ) {
     throw new DaemonStopIncompleteError({ reason: 'process_identity_unverified', pid });
   }
@@ -1508,6 +1382,7 @@ async function assertForceStopIdentity(
       || !settledLockIdentity
       || settledLockIdentity.pid !== lockIdentity.pid
       || settledLockIdentity.processStartedAtMs !== lockIdentity.processStartedAtMs
+      || settledLockIdentity.processInstanceFingerprint !== lockIdentity.processInstanceFingerprint
     ) {
       throw new DaemonStopIncompleteError({ reason: 'process_identity_unverified', pid });
     }

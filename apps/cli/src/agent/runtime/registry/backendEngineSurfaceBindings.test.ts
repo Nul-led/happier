@@ -109,6 +109,51 @@ describe('resolveBackendExecutionSurfacesFromNativeAgentRuntime', () => {
     expect(attach.attach).toHaveBeenCalledWith({ sessionId: 'session-1', metadata: {} });
     expect(surfaces.checkpoint).toBe(checkpoint);
     expect(surfaces.terminalRuntime).toBeNull();
+    expect(surfaces.resolveTerminalPresentation?.({})).toBe(true);
+
+    const runnerSurfaces = resolveBackendExecutionSurfacesFromNativeAgentRuntime({
+      backend: createBackend(),
+      runtime: { ...runtime, surfaces: { checkpoint } },
+      hostExecutionSurfaces: surfaces,
+      agentId: 'acme.runtime.provider',
+      isCurrent: () => true,
+      declaredAgentSurfaceFamilies: new Set(),
+      diagnostics: [],
+    });
+    expect(runnerSurfaces.resolveTerminalPresentation?.({})).toBe(true);
+
+    const narrowedRunnerSurfaces = resolveBackendExecutionSurfacesFromNativeAgentRuntime({
+      backend: createBackend(),
+      runtime: {
+        ...runtime,
+        surfaces: { checkpoint },
+        sessions: {
+          supportsTerminalPresentation: () => false,
+          open: () => { throw new Error('not opened'); },
+        },
+      },
+      hostExecutionSurfaces: surfaces,
+      agentId: 'acme.runtime.provider',
+      isCurrent: () => true,
+      declaredAgentSurfaceFamilies: new Set(),
+      diagnostics: [],
+    });
+    expect(narrowedRunnerSurfaces.resolveTerminalPresentation?.({})).toBe(false);
+  });
+
+  it('does not grant terminal presentation to absent or undeclared terminal surfaces', () => {
+    const runtime = createNativeRuntime(async () => { throw new Error('not launched'); });
+    for (const surfaces of [undefined, runtime.surfaces]) {
+      const projected = resolveBackendExecutionSurfacesFromNativeAgentRuntime({
+        backend: createBackend(),
+        runtime: { ...runtime, surfaces },
+        agentId: 'acme.runtime.provider',
+        isCurrent: () => true,
+        declaredAgentSurfaceFamilies: new Set(),
+        diagnostics: [],
+      });
+      expect(projected.resolveTerminalPresentation?.({})).toBe(false);
+    }
   });
 
   it('binds author-owned handoff and replay fork operations to one host-approved invocation context', async () => {
@@ -659,6 +704,7 @@ describe('resolveBackendExecutionSurfacesFromNativeAgentRuntime', () => {
       declaredAgentSurfaceFamilies: new Set(['terminalRuntime']),
       diagnostics,
     });
+    expect(surfaces.resolveTerminalPresentation?.({})).toBe(true);
     const signal = new AbortController().signal;
     const terminalConfiguration = {
       mode: { value: null, updatedAtMs: 0 },

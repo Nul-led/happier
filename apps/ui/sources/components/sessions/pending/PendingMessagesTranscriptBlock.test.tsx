@@ -932,7 +932,7 @@ describe('PendingMessagesTranscriptBlock', () => {
         expect(screen.findByTestId('pendingMessages.steerNow:p1')).toBeNull();
     });
 
-    it('keeps steer and force-send available when the active flag lags a fresh in-progress turn', async () => {
+    it('keeps steer and force-send available when the active flag and AgentState version lag a fresh in-progress turn', async () => {
         const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(130_000);
         const PendingMessagesTranscriptBlock = await loadPendingMessagesTranscriptBlock();
         sessionValue = {
@@ -942,7 +942,7 @@ describe('PendingMessagesTranscriptBlock', () => {
             presence: 'online',
             latestTurnStatus: 'in_progress',
             latestTurnStatusObservedAt: 129_500,
-            agentStateVersion: 1,
+            agentStateVersion: 0,
             agentState: {
                 controlledByUser: false,
                 capabilities: {

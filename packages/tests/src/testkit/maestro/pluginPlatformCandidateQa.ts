@@ -27,7 +27,7 @@ import type { NativeTriageGithubVoiceQaInput } from './mobilePluginPlatformCandi
 export const G5_GENERATED_INPUTS_AUTHORIZATION = 'G5_GENERATED_INPUTS_GREEN' as const;
 
 export type InspectorNativeArtifactIdentity =
-  PackedInspectorArtifactAttestation['platforms']['ios'];
+  PackedInspectorArtifactAttestation['artifact'];
 
 type CandidateQaDeps = Readonly<{
   loadCandidate: (manifestPath: string) => Promise<PackedAuthorCandidate>;
@@ -208,8 +208,8 @@ async function prepareVerifiedPluginPlatformCandidateQa(input: Readonly<{
   });
   const exactInspectorGraph = await deps.attestPackedInspectorArtifacts({ cliEntrypoint });
   const inspectorArtifacts = Object.freeze({
-    ios: exactInspectorGraph.platforms.ios,
-    android: exactInspectorGraph.platforms.android,
+    ios: exactInspectorGraph.artifact,
+    android: exactInspectorGraph.artifact,
   });
   return Object.freeze({
     candidate,

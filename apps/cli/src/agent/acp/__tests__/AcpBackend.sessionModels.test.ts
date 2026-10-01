@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
+import { probeModelsFromAcpBackend } from '@/capabilities/probes/agentModelsProbe';
+
 import { AcpBackend } from '../AcpBackend';
 import { writeAcpTestAgentScript } from '../testkit/subprocessHarness';
 import { createAcpBackendFromDefinition } from '../runtime/definition/backend';
@@ -7,7 +9,7 @@ import { createAcpRuntimeDefinition } from '../runtime/definition/create';
 import type { AgentMessage } from '../../core/AgentMessage';
 import { withTempDir } from '@/testkit/fs/tempDir';
 
-function writeFakeAcpAgentScript(params: { dir: string }): string {
+function writeFakeAcpAgentScript(params: { dir: string; emptyModelChoices?: boolean }): string {
   const src = `
     const decoder = new TextDecoder();
     let buf = '';
@@ -17,6 +19,10 @@ function writeFakeAcpAgentScript(params: { dir: string }): string {
     }
 
     function ok(id, result) {
+      if (${params.emptyModelChoices === true} && result.models) {
+        delete result.models;
+        result.configOptions = [{ id: 'model', name: 'Model', type: 'select', currentValue: 'current', options: [] }];
+      }
       send({ jsonrpc: '2.0', id, result });
     }
 
@@ -147,6 +153,16 @@ function writeFakeAcpAgentScript(params: { dir: string }): string {
 }
 
 describe('AcpBackend session models', () => {
+  it('reports successful empty model choices through the generic ACP preflight', async () => {
+    await withTempDir('happier-acp-empty-preflight-', async (dir) => {
+      const script = writeFakeAcpAgentScript({ dir, emptyModelChoices: true });
+      const backend = new AcpBackend({ agentName: 'test', cwd: dir, command: process.execPath, args: [script] });
+      try {
+        expect(await probeModelsFromAcpBackend({ backend, timeoutMs: 10000 })).toEqual([{ id: 'default', name: 'Default' }]);
+      } finally { await backend.dispose(); }
+    });
+  });
+
   it('captures models from newSession and can set the current model', async () => {
     await withTempDir('happier-acp-models-', async (dir) => {
       const scriptPath = writeFakeAcpAgentScript({ dir });
@@ -416,7 +432,10 @@ describe('AcpBackend session models', () => {
         expect(state?.availableModels[0]?.modelOptions?.[0]?.currentValue).toBe('high');
         expect(events.filter((event) => (
           event.type === 'event' && event.name === 'session_models_state'
-        ))).toHaveLength(2);
+        ))).toHaveLength(1);
+        expect(events).toContainEqual({
+          type: 'event', name: 'current_model_update', payload: { currentModelId: 'model-a' },
+        });
       } finally {
         await backend.dispose();
       }

@@ -135,6 +135,7 @@ export type NativeAgentRuntimeLeaseIdentity = Readonly<{
     pluginVersion: string;
     agentId: string;
     localAgentId: string;
+    occurrenceId: string;
     isCurrent(): boolean;
 }>;
 
@@ -177,6 +178,7 @@ export function createNativeAgentExecutionRunContextLeaseFactory(params: Readonl
     machineId: string;
     accountSettings: AccountSettings | null;
     permissionMode: string;
+    workspaceWrites?: 'allow' | 'deny';
     start: ExecutionRunBackendStartContext;
     causalPermissionAuthority?: CreateCliExecutionRunBackendParams['causalPermissionAuthority'];
     getPermissionRequestStore?: CreateCliExecutionRunBackendParams['getPermissionRequestStore'];
@@ -193,6 +195,7 @@ export function createNativeAgentExecutionRunContextLeaseFactory(params: Readonl
     const sidechainId = readRequiredString(params.sidechainId, 'a sidechain id');
     const permissionHandler = createExecutionRunPermissionHandler({
         permissionMode: params.permissionMode,
+        workspaceWrites: params.workspaceWrites,
         backendId: params.lease.agentId,
         ...(Object.hasOwn(params, 'causalPermissionAuthority')
             ? { causalPermissionAuthority: params.causalPermissionAuthority }
@@ -297,7 +300,7 @@ export function createNativeAgentExecutionRunContextLeaseFactory(params: Readonl
             contributionId: params.lease.localAgentId,
             runtimeId: `native-agent-run:${runId}`,
             executionRunId: runId,
-            generationId: params.lease.pluginVersion,
+            occurrenceId: params.lease.occurrenceId,
             isCurrent: params.lease.isCurrent,
             signal,
             readActiveTurnAdmissionWitness,
@@ -607,7 +610,7 @@ function createNativeAgentInvocationContext(params: Readonly<{
         ? createPluginInteractionsService({
             currentSession: params.currentSession,
             signal: params.signal,
-            isGenerationCurrent: params.lease.isCurrent,
+            isOccurrenceCurrent: params.lease.isCurrent,
             ...(params.readActiveTurnAdmissionWitness
                 ? { readActiveTurnAdmissionWitness: params.readActiveTurnAdmissionWitness }
                 : {}),
@@ -632,7 +635,7 @@ function createNativeAgentInvocationContext(params: Readonly<{
         ui: createPluginInvocationPresentation({
             currentSession: params.currentSession ?? null,
             signal: params.signal,
-            isGenerationCurrent: params.lease.isCurrent,
+            isOccurrenceCurrent: params.lease.isCurrent,
         }),
         agent: Object.freeze({ id: params.lease.agentId }),
         protocols: createPublicAcpRuntimeProtocols({

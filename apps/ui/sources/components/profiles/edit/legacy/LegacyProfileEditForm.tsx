@@ -1,8 +1,6 @@
 import React from 'react';
-import { View, ViewStyle, Linking, Platform, Pressable } from 'react-native';
-import { StyleSheet } from 'react-native-unistyles';
+import { ViewStyle, Linking, Platform } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
-import { Typography } from '@/constants/Typography';
 import { t } from '@/text';
 import { type AIBackendProfile } from '@/sync/domains/profiles/profileCompatibility';
 import { normalizeProfileDefaultPermissionMode, type PermissionMode } from '@/sync/domains/permissions/permissionTypes';
@@ -17,7 +15,8 @@ import { EnvironmentVariablesList } from '@/components/profiles/environmentVaria
 import { useSetting, useSettings, useAllMachines, useMachine, useSettingMutable } from '@/sync/domains/state/storage';
 import { Modal } from '@/modal';
 import { isMachineOnline } from '@/utils/sessions/machineUtils';
-import { useCLIDetection } from '@/hooks/auth/useCLIDetection';
+import { useMachineAgents } from '@/agents/machineAgents/useMachineAgents';
+import { projectMachineAgentsToCliAvailability } from '@/agents/machineAgents/machineAgentCliAvailability';
 import { getActiveServerId } from '@/sync/domains/server/serverProfiles';
 import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
 import { useEnabledAgentIds } from '@/agents/hooks/useEnabledAgentIds';
@@ -35,12 +34,14 @@ import {
     readProfileTargetKeyValueForEntry,
     resolveProfileBackendTargetKeyForEntry,
 } from '../profileBackendEntryStorage';
-import { Text, TextInput } from '@/components/ui/text/Text';
 import { LegacyProfileDefaultsSections } from './LegacyProfileDefaultsSections';
 import { LegacyProfileBackendCompatibilitySection } from './LegacyProfileBackendCompatibilitySection';
 import { buildLegacyProfileSave } from './buildLegacyProfileSave';
 import { useLegacyProfileSecretRequirements } from './useLegacyProfileSecretRequirements';
+import { ProfileNameSection } from '../ProfileNameSection';
+import { ProfileEditActions } from '../ProfileEditActions';
 import { Icon } from '@/components/ui/icons/Icon';
+import { getMachineDisplayName } from '@/utils/sessions/machineDisplayNames';
 
 export interface LegacyProfileEditFormProps {
     profile: AIBackendProfile;
@@ -54,6 +55,13 @@ export interface LegacyProfileEditFormProps {
     onDirtyChange?: (isDirty: boolean) => void;
     containerStyle?: ViewStyle;
     saveRef?: React.MutableRefObject<(() => boolean) | null>;
+    /**
+     * The host's page header (entity header with Save). When present the host owns saving and
+     * leaving, so the editor renders no action row of its own.
+     */
+    header?: React.ReactNode;
+    /** The name as it is typed, for a host that shows it (a collection's draft row). */
+    onNameChange?: (name: string) => void;
 }
 
 export function LegacyProfileEditForm({
@@ -64,6 +72,8 @@ export function LegacyProfileEditForm({
     onDirtyChange,
     containerStyle,
     saveRef,
+    header,
+    onNameChange,
 }: LegacyProfileEditFormProps) {
     const { theme, rt } = useUnistyles();
     const router = useRouter();
@@ -86,7 +96,6 @@ export function LegacyProfileEditForm({
         });
     }, [routeParams.agentType, routeParams.backendTarget, routeParams.backendTargetKey]);
     const selectedIndicatorColor = rt.themeName === 'dark' ? theme.colors.text.primary : theme.colors.button.primary.background;
-    const styles = stylesheet;
     const popoverBoundaryRef = React.useRef<any>(null);
     const enabledAgentIds = useEnabledAgentIds();
     const machines = useAllMachines();
@@ -138,10 +147,11 @@ export function LegacyProfileEditForm({
         enabledAgentIds,
         settings.acpCatalogSettingsV1,
     ]);
-    const cliDetection = useCLIDetection(resolvedMachineId, {
-        includeLoginStatus: Boolean(resolvedMachineId),
+    const machineAgents = useMachineAgents({
+        machineId: resolvedMachineId,
         serverId: activeServerId,
     });
+    const cliDetection = React.useMemo(() => projectMachineAgentsToCliAvailability(machineAgents), [machineAgents]);
 
     const getPermissionAgentIdForEntry = React.useCallback((entry: ResolvedBackendCatalogEntry): string => {
         return entry.builtInAgentId ?? entry.catalogAgentId ?? entry.agentId;
@@ -211,6 +221,9 @@ export function LegacyProfileEditForm({
     );
 
     const [name, setName] = React.useState(profile.name || '');
+    React.useEffect(() => {
+        onNameChange?.(name);
+    }, [name, onNameChange]);
     const {
         sourceRequirementsByName,
         derivedEnvVarRequirements,
@@ -521,36 +534,24 @@ export function LegacyProfileEditForm({
     }, [handleSave, saveRef]);
 
     return (
-        <ItemList ref={popoverBoundaryRef} style={containerStyle} keyboardShouldPersistTaps="handled">
-            <ItemGroup title={t('profiles.profileName')}>
-                <React.Fragment>
-                    <View style={styles.inputContainer}>
-                        <TextInput
-                            style={styles.textInput}
-                            placeholder={t('profiles.enterName')}
-                            placeholderTextColor={theme.colors.input.placeholder}
-                            value={name}
-                            onChangeText={setName}
-                        />
-                    </View>
-                </React.Fragment>
-            </ItemGroup>
+        <ItemList ref={popoverBoundaryRef} style={containerStyle} keyboardShouldPersistTaps="handled" presentation="page">
+            {header}
+            <ProfileNameSection testIDPrefix="profile-legacy" name={name} onChangeName={setName} />
 
             {profile.isBuiltIn && profileDocs?.setupGuideUrl && (
-                <ItemGroup title={t('profiles.setupInstructions.title')} footer={profileDocs.description}>
+                <ItemGroup title={t('profiles.setupInstructions.title')} description={profileDocs.description}>
                     <Item
                         title={t('profiles.setupInstructions.viewCloudGuide')}
-                        icon={<Icon name="book" size={29} color={theme.colors.button.secondary.tint} />}
+                        icon={<Icon name="book" />}
                         onPress={() => void openSetupGuide()}
                     />
                 </ItemGroup>
             )}
 
-            <ItemGroup title={t('profiles.requirements.sectionTitle')} footer={t('profiles.requirements.sectionSubtitle')}>
+            <ItemGroup title={t('profiles.requirements.sectionTitle')} description={t('profiles.requirements.sectionSubtitle')}>
                 <Item
                     title={t('profiles.machineLogin.title')}
                     subtitle={t('profiles.machineLogin.subtitle')}
-                    leftElement={<Icon name="terminal" size={24} color={theme.colors.text.secondary} />}
                     rightElement={(
                         <Switch
                             value={effectiveAuthMode === 'machineLogin'}
@@ -621,11 +622,10 @@ export function LegacyProfileEditForm({
                     <Item
                         title={t('profiles.previewMachine.itemTitle')}
                         subtitle={resolvedMachine ? t('profiles.previewMachine.resolveSubtitle') : t('profiles.previewMachine.selectSubtitle')}
-                        detail={resolvedMachine ? (resolvedMachine.metadata?.displayName || resolvedMachine.metadata?.host || resolvedMachine.id) : undefined}
+                        detail={getMachineDisplayName(resolvedMachine) ?? undefined}
                         detailStyle={resolvedMachine
                             ? { color: isMachineOnline(resolvedMachine) ? theme.colors.status.connected : theme.colors.status.disconnected }
                             : undefined}
-                        icon={<Icon name="desktop" size={29} color={theme.colors.button.secondary.tint} />}
                         onPress={showMachinePreviewPicker}
                     />
                 </ItemGroup>
@@ -634,7 +634,7 @@ export function LegacyProfileEditForm({
             <EnvironmentVariablesList
                 environmentVariables={environmentVariables}
                 machineId={resolvedMachineId}
-                machineName={resolvedMachine ? (resolvedMachine.metadata?.displayName || resolvedMachine.metadata?.host || resolvedMachine.id) : null}
+                machineName={getMachineDisplayName(resolvedMachine)}
                 profileDocs={profileDocs}
                 onChange={setEnvironmentVariables}
                 sourceRequirementsByName={sourceRequirementsByName}
@@ -643,72 +643,9 @@ export function LegacyProfileEditForm({
                 onPickDefaultSecretForSourceVar={openDefaultSecretModalForSourceVar}
             />
 
-            <View style={{ paddingHorizontal: Platform.select({ ios: 16, default: 12 }), paddingTop: 12 }}>
-                <View style={{ flexDirection: 'row', gap: 12 }}>
-                    <View style={{ flex: 1 }}>
-                        <Pressable
-                            onPress={onCancel}
-                            style={({ pressed }) => ({
-                                backgroundColor: theme.colors.surface.base,
-                                borderRadius: 10,
-                                paddingVertical: 12,
-                                alignItems: 'center',
-                                opacity: pressed ? 0.85 : 1,
-                            })}
-                        >
-                            <Text style={{ color: theme.colors.text.primary, ...Typography.default('semiBold') }}>
-                                {t('common.cancel')}
-                            </Text>
-                        </Pressable>
-                    </View>
-                    <View style={{ flex: 1 }}>
-                        <Pressable
-                            onPress={handleSave}
-                            style={({ pressed }) => ({
-                                backgroundColor: theme.colors.button.primary.background,
-                                borderRadius: 10,
-                                paddingVertical: 12,
-                                alignItems: 'center',
-                                opacity: pressed ? 0.85 : 1,
-                            })}
-                        >
-                            <Text style={{ color: theme.colors.button.primary.tint, ...Typography.default('semiBold') }}>
-                                {profile.isBuiltIn ? t('common.saveAs') : t('common.save')}
-                            </Text>
-                        </Pressable>
-                    </View>
-                </View>
-            </View>
+            {header ? null : (
+                <ProfileEditActions saveAs={profile.isBuiltIn === true} onSave={handleSave} onCancel={onCancel} />
+            )}
         </ItemList>
     );
 }
-
-const stylesheet = StyleSheet.create((theme) => ({
-    inputContainer: {
-        paddingHorizontal: 16,
-        paddingVertical: 12,
-    },
-    textInput: {
-        ...Typography.default('regular'),
-        backgroundColor: theme.colors.input.background,
-        borderRadius: 10,
-        paddingHorizontal: 12,
-        paddingVertical: Platform.select({ ios: 10, default: 12 }),
-        fontSize: Platform.select({ ios: 17, default: 16 }),
-        lineHeight: Platform.select({ ios: 22, default: 24 }),
-        letterSpacing: Platform.select({ ios: -0.41, default: 0.15 }),
-        color: theme.colors.input.text,
-        ...(Platform.select({
-            web: {
-                outline: 'none',
-                outlineStyle: 'none',
-                outlineWidth: 0,
-                outlineColor: 'transparent',
-                boxShadow: 'none',
-                WebkitBoxShadow: 'none',
-                WebkitAppearance: 'none',
-            },
-            default: {},
-        }) as object),
-    },
-}));

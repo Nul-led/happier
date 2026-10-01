@@ -109,6 +109,54 @@ function makeContext(overrides?: Partial<Parameters<typeof commitSessionListDrag
     };
 }
 
+describe('commitSessionListDragIntent — putting a Session under a lead', () => {
+    function underIntent(targetSessionId: string): SessionListDragIntent {
+        const target = treeRowId.session('server-a', targetSessionId);
+        return {
+            sourceRowId: treeRowId.session('server-a', 'root-b'),
+            sourceKind: 'leaf',
+            instructionKind: 'nest-into',
+            targetRowId: target,
+            containerId: target,
+            parentRowId: target,
+            depth: 1,
+            edge: null,
+            sourceSnapshotSignature: 'sig',
+        };
+    }
+
+    it('asks the reportsTo owner and touches no folder or order state', async () => {
+        const putSessionUnder = vi.fn(async () => 'applied' as const);
+        const { context, spies } = makeContext({ putSessionUnder });
+
+        const result = await commitSessionListDragIntent({ intent: underIntent('root-a'), context });
+
+        expect(result).toEqual({ ok: true });
+        expect(putSessionUnder).toHaveBeenCalledWith({ serverId: 'server-a', sessionId: 'root-b', leadSessionId: 'root-a' });
+        expect(spies.setSessionListGroupOrderV1).not.toHaveBeenCalled();
+        expect(spies.setSessionFolderAssignment).not.toHaveBeenCalled();
+        expect(spies.setSessionFoldersV1).not.toHaveBeenCalled();
+    });
+
+    it('no-ops when the lead left the list, the drop is no longer eligible, or the server refused', async () => {
+        const putSessionUnder = vi.fn(async () => 'applied' as const);
+        expect(await commitSessionListDragIntent({ intent: underIntent('gone'), context: makeContext({ putSessionUnder }).context }))
+            .toEqual({ ok: false, reason: 'target-missing' });
+        expect(putSessionUnder).not.toHaveBeenCalled();
+
+        expect(await commitSessionListDragIntent({
+            intent: underIntent('root-a'),
+            context: makeContext({ putSessionUnder: async () => 'not-eligible' as const }).context,
+        })).toEqual({ ok: false, reason: 'blocked-intent' });
+        expect(await commitSessionListDragIntent({
+            intent: underIntent('root-a'),
+            context: makeContext({ putSessionUnder: async () => 'refused' as const }).context,
+        })).toEqual({ ok: false, reason: 'refused' });
+        expect(await commitSessionListDragIntent({ intent: underIntent('root-a'), context: makeContext().context }))
+            .toEqual({ ok: false, reason: 'blocked-intent' });
+    });
+});
+
 describe('commitSessionListDragIntent', () => {
     it('commits a valid reorder intent against the latest tree (moving root-b before root-a)', async () => {
         const intent: SessionListDragIntent = {

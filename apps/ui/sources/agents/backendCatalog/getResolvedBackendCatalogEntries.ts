@@ -20,7 +20,7 @@ import type {
     MergedBackendProjectionEntry,
     MergedProviderProjectionEntry,
 } from './mergedProjectionTypes';
-import { normalizeAcpCatalogSettingsV1 } from '@/sync/domains/acpCatalog/normalizeAcpCatalogSettingsV1';
+import { normalizeAcpCatalogSettingsV1 } from '@happier-dev/protocol';
 import { t } from '@/text';
 import { resolveCliAuthBackgroundCheckSafe } from './resolveCliAuthBackgroundCheckSafe';
 import { resolveAgentExecutionTargetForBackendTarget } from './resolveAgentExecutionTargetForBackendTarget';

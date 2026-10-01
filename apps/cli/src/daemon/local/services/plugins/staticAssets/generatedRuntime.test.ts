@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
+import { PluginManifestV2Schema } from '@happier-dev/protocol';
 import {
     PLUGIN_UI_HOST_API_VERSION_V1,
     computePluginUiArtifactFileSetSha256DigestV1,
@@ -53,7 +54,7 @@ async function installGeneratedUiPlugin(input?: Readonly<{
     const artifactsRoot = join(sourceRoot, 'dist', 'happier-plugin-ui');
     await mkdir(join(sourceRoot, '.happier-plugin'), { recursive: true });
     await mkdir(join(artifactsRoot, `hosted-web/${artifactId}/assets`), { recursive: true });
-    await writeFile(manifestPath, JSON.stringify({
+    const manifest = PluginManifestV2Schema.parse({
         schemaVersion: 2,
         id: pluginId,
         version: '1.0.0',
@@ -76,7 +77,8 @@ async function installGeneratedUiPlugin(input?: Readonly<{
                 translations: [],
             },
         },
-    }), 'utf8');
+    });
+    await writeFile(manifestPath, JSON.stringify(manifest), 'utf8');
     await writeFile(join(artifactsRoot, 'ui-artifacts.json'), JSON.stringify({
         version: 1,
         entries: [{
@@ -114,7 +116,7 @@ async function installGeneratedUiPlugin(input?: Readonly<{
                     manifestPath,
                 },
                 compatibility: { status: 'compatible', diagnostics: [] },
-                install: { mode: 'link', manifestVersion: '1.0.0', trust, updatePolicy: 'reviewEveryUpdate' },
+                install: { mode: 'link', manifestVersion: '1.0.0', trust, updatePolicy: 'allowed' },
                 state: { enabled: true },
             },
         },
@@ -134,7 +136,7 @@ async function installGeneratedUiPlugin(input?: Readonly<{
         sourceRootPath: sourceRoot,
         manifestRelativePath: '.happier-plugin/plugin.json',
         distribution,
-        updatePolicy: 'reviewEveryUpdate',
+        updatePolicy: 'allowed',
         createdAtMs: Date.now(),
     });
     try {
@@ -142,8 +144,9 @@ async function installGeneratedUiPlugin(input?: Readonly<{
             pluginId,
             catalogRecord,
             trust,
-            updatePolicy: 'reviewEveryUpdate',
+            updatePolicy: 'allowed',
             optionalAccess: [],
+            approvedAuthorityManifest: manifest,
             preparedGeneration,
         });
     } finally {

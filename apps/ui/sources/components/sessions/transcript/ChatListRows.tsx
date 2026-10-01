@@ -1,11 +1,11 @@
 import * as React from 'react';
 import { View, type LayoutChangeEvent } from 'react-native';
 
-import { useMessage } from '@/sync/domains/state/storage';
-import type { Metadata } from '@/sync/domains/state/storageTypes';
-import type { Message } from '@/sync/domains/messages/messageTypes';
+import { TranscriptOriginSourceProvider, useTranscriptMessage } from '@/components/sessions/transcript/source/appSessionTranscriptSource';
+import type { Metadata } from '@happier-dev/session-core/state';
+import type { Message } from "@happier-dev/session-core/messages";
 import type { OpenApprovalArtifactForSession } from '@/sync/domains/artifacts/approvalArtifacts';
-import type { PersistedSessionMessagePinV1 } from '@/sync/domains/messages/pins/sessionMessagePins';
+import type { PersistedSessionMessagePinV1 } from "@happier-dev/session-core/pins";
 import { MessageView, MessageViewWithSessionCommon } from './MessageView';
 import { deriveReadOnlyTranscriptInteraction } from '@/components/sessions/transcript/forkContext/deriveReadOnlyTranscriptInteraction';
 import {
@@ -54,6 +54,8 @@ export const ChatListMessageRow = React.memo(function ChatListMessageRow(props: 
     setThinkingExpanded: (messageId: string, expanded: boolean) => void;
     interaction: TranscriptInteraction;
     eventEmphasisByMessageId?: TranscriptEventEmphasisByMessageId;
+    /** Set on the worker update that opens a context-only wake: how many updates woke the session. */
+    hostWakeCount?: number;
     rollbackAction?: TranscriptRollbackAction | null;
     rollbackRanges: readonly SessionRollbackRangeV1[];
     approvalRequests?: readonly OpenApprovalArtifactForSession[];
@@ -61,7 +63,7 @@ export const ChatListMessageRow = React.memo(function ChatListMessageRow(props: 
     onToggleMessagePin: (pin: PersistedSessionMessagePinV1) => void;
 } & Partial<TranscriptSessionCommonProps>) {
     const originSessionId = props.originSessionId ?? props.sessionId;
-    const committedMessage = useMessage(originSessionId, props.messageId);
+    const committedMessage = useTranscriptMessage(props.messageId, originSessionId);
     const message = props.messageOverride ?? committedMessage;
     const messageRevision = props.getMessageRevisionById?.(props.messageId) ?? null;
     if (!message) return null;
@@ -84,6 +86,7 @@ export const ChatListMessageRow = React.memo(function ChatListMessageRow(props: 
             rollbackAction={props.rollbackAction ?? null}
             historical={historical}
             eventEmphasis={props.eventEmphasisByMessageId?.[message.id]}
+            hostWakeCount={props.hostWakeCount}
             approvalRequests={props.approvalRequests}
             messagePins={props.messagePins}
             onToggleMessagePin={props.onToggleMessagePin}
@@ -107,6 +110,7 @@ export const ChatListMessageRow = React.memo(function ChatListMessageRow(props: 
             rollbackAction={props.rollbackAction ?? null}
             historical={historical}
             eventEmphasis={props.eventEmphasisByMessageId?.[message.id]}
+            hostWakeCount={props.hostWakeCount}
             approvalRequests={props.approvalRequests}
             messagePins={props.messagePins}
             onToggleMessagePin={props.onToggleMessagePin}
@@ -116,7 +120,9 @@ export const ChatListMessageRow = React.memo(function ChatListMessageRow(props: 
     return (
         <View testID={`${TRANSCRIPT_WEB_MESSAGE_PREPEND_ANCHOR_TEST_ID_PREFIX}${props.messageId}`}>
             <View testID={`transcript-message-${props.messageId}`}>
-                {messageView}
+                <TranscriptOriginSourceProvider originSessionId={originSessionId} readOnly={props.isReadOnlyContext === true}>
+                    {messageView}
+                </TranscriptOriginSourceProvider>
             </View>
         </View>
     );

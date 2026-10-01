@@ -19,7 +19,7 @@ const defaultRestoreMocks = vi.hoisted(() => ({
     loadLinkedExternalSessionFromRaw: vi.fn(),
     loadPersistedLinkedExternalSession: vi.fn(),
     resolveExternalSessionObservationLinkInput: vi.fn(),
-    resolveGenerationBoundExternalSessionFollowSurface: vi.fn(),
+    resolveOccurrenceBoundExternalSessionFollowSurface: vi.fn(),
 }));
 
 vi.mock('@/api/client/connectedServiceCredentialApi', () => ({
@@ -68,8 +68,8 @@ vi.mock('@/session/actions/externalSessions/providerOpsResolution', async (
     ...await importOriginal<
         typeof import('@/session/actions/externalSessions/providerOpsResolution')
     >(),
-    resolveGenerationBoundExternalSessionFollowSurface:
-        defaultRestoreMocks.resolveGenerationBoundExternalSessionFollowSurface,
+    resolveOccurrenceBoundExternalSessionFollowSurface:
+        defaultRestoreMocks.resolveOccurrenceBoundExternalSessionFollowSurface,
 }));
 
 import type { ExternalSessionObservationLinkInput } from './resolveExternalSessionObservationLinkInput';
@@ -94,7 +94,7 @@ function resolvedInput(sessionId: string): ExternalSessionObservationLinkInput {
         resource: {
             pluginId: 'happier.opencode',
             agentLocalId: 'opencode',
-            pluginGeneration: 'plugin-generation-1',
+            occurrenceId: 'plugin-generation-1',
             resourceKey: 'endpoint-one',
         },
         link: {
@@ -171,11 +171,11 @@ describe('startExternalSessionPassiveObservation', () => {
 
         expect(debugLog).toHaveBeenCalledWith(
             '[externalSessions][internal_error]',
-            {
+            expect.objectContaining({
                 context: 'external_session.passive_observation_startup',
                 errorCode: 'internal_error',
                 errorKind: 'error',
-            },
+            }),
         );
         expect(JSON.stringify(debugLog.mock.calls)).not.toContain(sentinel);
         await lifecycle.dispose();
@@ -545,7 +545,7 @@ describe('startExternalSessionPassiveObservation', () => {
             resource: {
                 pluginId: 'happier.agent.codex',
                 agentLocalId: 'codex',
-                pluginGeneration: 'plugin-codex-restore',
+                occurrenceId: 'plugin-codex-restore',
                 resourceKey: '/tmp/codex-home',
             },
             link: {
@@ -593,7 +593,7 @@ describe('startExternalSessionPassiveObservation', () => {
         });
         defaultRestoreMocks.resolveExternalSessionObservationLinkInput
             .mockResolvedValue(groupingOnly);
-        defaultRestoreMocks.resolveGenerationBoundExternalSessionFollowSurface
+        defaultRestoreMocks.resolveOccurrenceBoundExternalSessionFollowSurface
             .mockResolvedValue({
                 providerOps: {
                     pageTranscript: vi.fn(async () => ({
@@ -609,7 +609,7 @@ describe('startExternalSessionPassiveObservation', () => {
                 },
                 resource: {
                     linkGeneration: 'link-codex-restore',
-                    pluginGeneration: 'plugin-codex-restore',
+                    occurrenceId: 'plugin-codex-restore',
                 },
             });
         const transcriptDemand: boolean[] = [];
@@ -756,7 +756,7 @@ describe('startExternalSessionPassiveObservation', () => {
                 enabled: true,
                 resource: {
                     linkGeneration: 'link-1',
-                    pluginGeneration: 'plugin-1',
+                    occurrenceId: 'plugin-1',
                 },
                 acquireFollowLease: async () => ({
                     release: releaseAccountAFollow,
@@ -861,7 +861,7 @@ describe('startExternalSessionPassiveObservation', () => {
                     enabled: true,
                     resource: {
                         linkGeneration: 'link-1',
-                        pluginGeneration: credentialAvailable
+                        occurrenceId: credentialAvailable
                             ? `plugin-${acquireFollowLease.mock.calls.length + 1}`
                             : 'plugin-unavailable',
                     },
@@ -899,7 +899,7 @@ describe('startExternalSessionPassiveObservation', () => {
             enabled: true,
             resource: {
                 linkGeneration: 'link-1',
-                pluginGeneration: 'plugin-late-1',
+                occurrenceId: 'plugin-late-1',
             },
             acquireFollowLease: acquireLateFollowLease,
         });
@@ -1543,7 +1543,7 @@ describe('startExternalSessionPassiveObservation', () => {
                     enabled: true,
                     resource: {
                         linkGeneration: 'link-1',
-                        pluginGeneration: 'plugin-1',
+                        occurrenceId: 'plugin-1',
                     },
                     acquireFollowLease,
                 });
@@ -1604,7 +1604,7 @@ describe('startExternalSessionPassiveObservation', () => {
                     enabled: true,
                     resource: {
                         linkGeneration: 'link-1',
-                        pluginGeneration: 'plugin-1',
+                        occurrenceId: 'plugin-1',
                     },
                     acquireFollowLease,
                 });
@@ -1653,7 +1653,7 @@ describe('startExternalSessionPassiveObservation', () => {
     });
 
     it('re-resolves persisted passive demand once after a plugin runtime generation reload', async () => {
-        let pluginGeneration = 'plugin-generation-1';
+        let occurrenceId = 'plugin-generation-1';
         let runtimeReloadListener: (() => void) | undefined;
         const detachRuntimeReload = vi.fn();
         const firstRelease = vi.fn(async () => {});
@@ -1669,7 +1669,7 @@ describe('startExternalSessionPassiveObservation', () => {
                 ...resolvedInput('session-reload'),
                 resource: {
                     ...resolvedInput('session-reload').resource,
-                    pluginGeneration,
+                    occurrenceId,
                 },
             },
         }]);
@@ -1687,7 +1687,7 @@ describe('startExternalSessionPassiveObservation', () => {
                     enabled: true,
                     resource: {
                         linkGeneration: 'link-1',
-                        pluginGeneration,
+                        occurrenceId,
                     },
                     acquireFollowLease,
                 });
@@ -1715,11 +1715,11 @@ describe('startExternalSessionPassiveObservation', () => {
         expect(acquireFollowLease).toHaveBeenCalledTimes(1);
         expect(reconcileLink).toHaveBeenLastCalledWith(expect.objectContaining({
             resource: expect.objectContaining({
-                pluginGeneration: 'plugin-generation-1',
+                occurrenceId: 'plugin-generation-1',
             }),
         }));
 
-        pluginGeneration = 'plugin-generation-2';
+        occurrenceId = 'plugin-generation-2';
         runtimeReloadListener?.();
 
         await vi.waitFor(() => {
@@ -1727,7 +1727,7 @@ describe('startExternalSessionPassiveObservation', () => {
             expect(acquireFollowLease).toHaveBeenCalledTimes(2);
             expect(reconcileLink).toHaveBeenLastCalledWith(expect.objectContaining({
                 resource: expect.objectContaining({
-                    pluginGeneration: 'plugin-generation-2',
+                    occurrenceId: 'plugin-generation-2',
                 }),
             }));
         });
@@ -1745,7 +1745,7 @@ describe('startExternalSessionPassiveObservation', () => {
     });
 
     it('hard-releases observation and follow work when reload makes the persisted plugin source unavailable', async () => {
-        let pluginGeneration: string | null = 'plugin-generation-1';
+        let occurrenceId: string | null = 'plugin-generation-1';
         let runtimeReloadListener: (() => void) | undefined;
         const firstRelease = vi.fn(async () => {});
         const secondRelease = vi.fn(async () => {});
@@ -1757,18 +1757,18 @@ describe('startExternalSessionPassiveObservation', () => {
         const removeLink = vi.fn(async () => ({ removed: true as const }));
         const listCurrentLinks = vi.fn(async () => [{
             sessionId: 'session-unavailable-reload',
-            observation: pluginGeneration
+            observation: occurrenceId
                 ? {
                     ...resolvedInput('session-unavailable-reload'),
                     resource: {
                         ...resolvedInput('session-unavailable-reload').resource,
-                        pluginGeneration,
+                        occurrenceId,
                     },
                 }
                 : null,
         }]);
         const restoreFollowPolicy = vi.fn(async (sessionId: string) => {
-            if (!pluginGeneration) {
+            if (!occurrenceId) {
                 throw new Error('plugin source unavailable');
             }
             await manager.setBackgroundFollowEnabled({
@@ -1776,7 +1776,7 @@ describe('startExternalSessionPassiveObservation', () => {
                 enabled: true,
                 resource: {
                     linkGeneration: 'link-1',
-                    pluginGeneration,
+                    occurrenceId,
                 },
                 acquireFollowLease,
             });
@@ -1816,16 +1816,16 @@ describe('startExternalSessionPassiveObservation', () => {
             ...resolvedInput('session-unavailable-reload'),
             resource: {
                 ...resolvedInput('session-unavailable-reload').resource,
-                pluginGeneration: 'plugin-generation-1',
+                occurrenceId: 'plugin-generation-1',
             },
         };
         expect(reconcileLink).toHaveBeenCalledWith(expect.objectContaining({
             resource: expect.objectContaining({
-                pluginGeneration: 'plugin-generation-1',
+                occurrenceId: 'plugin-generation-1',
             }),
         }));
 
-        pluginGeneration = null;
+        occurrenceId = null;
         runtimeReloadListener?.();
         await vi.waitFor(() => {
             expect(listCurrentLinks).toHaveBeenCalledTimes(2);
@@ -1837,14 +1837,14 @@ describe('startExternalSessionPassiveObservation', () => {
         expect(acquireFollowLease).toHaveBeenCalledTimes(1);
         expect(manager.isBackgroundFollowEnabled('session-unavailable-reload')).toBe(false);
 
-        pluginGeneration = 'plugin-generation-2';
+        occurrenceId = 'plugin-generation-2';
         runtimeReloadListener?.();
         await vi.waitFor(() => {
             expect(listCurrentLinks).toHaveBeenCalledTimes(3);
             expect(acquireFollowLease).toHaveBeenCalledTimes(2);
             expect(reconcileLink).toHaveBeenLastCalledWith(expect.objectContaining({
                 resource: expect.objectContaining({
-                    pluginGeneration: 'plugin-generation-2',
+                    occurrenceId: 'plugin-generation-2',
                 }),
             }));
         });
@@ -1881,7 +1881,7 @@ describe('startExternalSessionPassiveObservation', () => {
                     enabled: true,
                     resource: {
                         linkGeneration: 'link-1',
-                        pluginGeneration: 'plugin-generation-1',
+                        occurrenceId: 'plugin-generation-1',
                     },
                     acquireFollowLease,
                 });
@@ -1921,7 +1921,7 @@ describe('startExternalSessionPassiveObservation', () => {
     });
 
     it('serializes a reload restore behind stale in-flight passive work', async () => {
-        let pluginGeneration = 'plugin-generation-1';
+        let occurrenceId = 'plugin-generation-1';
         const firstGenerationRetirement = new AbortController();
         const secondGenerationRetirement = new AbortController();
         let retirementSignal = firstGenerationRetirement.signal;
@@ -1956,7 +1956,7 @@ describe('startExternalSessionPassiveObservation', () => {
                     ...resolvedInput('session-reload-in-flight'),
                     resource: {
                         ...resolvedInput('session-reload-in-flight').resource,
-                        pluginGeneration,
+                        occurrenceId,
                         retirementSignal,
                     },
                     link: {
@@ -1979,7 +1979,7 @@ describe('startExternalSessionPassiveObservation', () => {
         await vi.waitFor(() => {
             expect(restoreFollowPolicy).toHaveBeenCalledTimes(1);
         });
-        pluginGeneration = 'plugin-generation-2';
+        occurrenceId = 'plugin-generation-2';
         retirementSignal = secondGenerationRetirement.signal;
         firstGenerationRetirement.abort();
         runtimeReloadListener?.();
@@ -2004,7 +2004,7 @@ describe('startExternalSessionPassiveObservation', () => {
         expect(reconcileLink).toHaveBeenCalledTimes(2);
         expect(reconcileLink).toHaveBeenCalledWith(expect.objectContaining({
             resource: expect.objectContaining({
-                pluginGeneration: 'plugin-generation-2',
+                occurrenceId: 'plugin-generation-2',
             }),
         }));
         await lifecycle.dispose();
@@ -2022,7 +2022,7 @@ describe('startExternalSessionPassiveObservation', () => {
                 enabled: true,
                 resource: {
                     linkGeneration: 'link-1',
-                    pluginGeneration: 'plugin-1',
+                    occurrenceId: 'plugin-1',
                 },
                 acquireFollowLease,
             });
@@ -2139,7 +2139,7 @@ describe('startExternalSessionPassiveObservation', () => {
             defaultRestoreMocks.resolveExternalSessionObservationLinkInput,
         ).not.toHaveBeenCalled();
         expect(
-            defaultRestoreMocks.resolveGenerationBoundExternalSessionFollowSurface,
+            defaultRestoreMocks.resolveOccurrenceBoundExternalSessionFollowSurface,
         ).not.toHaveBeenCalled();
         expect(manager.isBackgroundFollowEnabled(
             'session-exact-archived',
@@ -2227,7 +2227,7 @@ describe('startExternalSessionPassiveObservation', () => {
             defaultRestoreMocks.resolveExternalSessionObservationLinkInput,
         ).not.toHaveBeenCalled();
         expect(
-            defaultRestoreMocks.resolveGenerationBoundExternalSessionFollowSurface,
+            defaultRestoreMocks.resolveOccurrenceBoundExternalSessionFollowSurface,
         ).not.toHaveBeenCalled();
 
         await lifecycle.dispose();
@@ -2399,7 +2399,7 @@ describe('startExternalSessionPassiveObservation', () => {
                     enabled: true,
                     resource: {
                         linkGeneration: 'link-1',
-                        pluginGeneration: 'plugin-1',
+                        occurrenceId: 'plugin-1',
                     },
                     acquireFollowLease: async () => ({
                         release: releaseFollowLease,

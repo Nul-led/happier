@@ -1,5 +1,3 @@
-import type { Metadata } from '@/sync/domains/state/storageTypes';
-
 const METADATA_TIMESTAMP_ONLY_KEYS = new Set([
     'readStateV1',
 ]);
@@ -8,6 +6,7 @@ const METADATA_NESTED_FRESHNESS_RECORD_KEYS = new Set([
     'summary',
     'acpSessionModesV1',
     'sessionModesV1',
+    'sessionModesV2',
     'acpSessionModelsV1',
     'sessionModelsV1',
     'sessionAppliedModelV1',
@@ -33,7 +32,7 @@ function omitRecordKeys(value: unknown, keysToOmit: ReadonlySet<string>): unknow
 }
 
 export function buildSessionMetadataStabilitySignatureValue(
-    metadata: Metadata | null | undefined,
+    metadata: object | null | undefined,
 ): unknown {
     if (!metadata) return null;
     const record = metadata as Record<string, unknown>;
@@ -75,6 +74,6 @@ export function buildStableJsonSignature(value: unknown): string {
     }
 }
 
-export function buildSessionMetadataStabilitySignature(metadata: Metadata | null | undefined): string {
+export function buildSessionMetadataStabilitySignature(metadata: object | null | undefined): string {
     return buildStableJsonSignature(buildSessionMetadataStabilitySignatureValue(metadata));
 }

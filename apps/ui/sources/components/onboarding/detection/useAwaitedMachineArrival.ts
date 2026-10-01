@@ -1,42 +1,61 @@
 import * as React from 'react';
 
 import { useAllMachines, useMachineListByServerId } from '@/sync/domains/state/storage';
+import { createServerUrlComparableKey } from '@/sync/domains/server/url/serverUrlCanonical';
+import { listServerProfiles } from '@/sync/domains/server/serverProfiles';
 import type { Machine } from '@/sync/domains/state/storageTypes';
 import { isMachineOnline } from '@/utils/sessions/machineUtils';
+import { useHasMachineForGettingStartedGuidance } from '@/components/sessions/guidance/useHasMachineForGettingStartedGuidance';
+
+/**
+ * The computers already on the list when a wait began. It is the only arrival boundary: a
+ * registration or activity time is stamped by the server and can never be compared with this
+ * client's clock. The owner of the wait keeps it so a remounted card resumes the same wait.
+ */
+export type AwaitedMachineArrivalBaseline = Readonly<{
+    serverUrl: string;
+    serverId?: string;
+    knownIds: ReadonlySet<string>;
+    wasOnlineById: ReadonlyMap<string, boolean>;
+}>;
 
 export type AwaitedMachineArrivalInput = Readonly<{
     serverUrl?: string | null;
-    since?: number | null;
+    serverId?: string | null;
+    enabled?: boolean;
+    baseline?: AwaitedMachineArrivalBaseline | null;
+    onBaselineCaptured?: (baseline: AwaitedMachineArrivalBaseline) => void;
 }>;
 
 export type AwaitedMachineArrivalSnapshot =
     | Readonly<{ status: 'waiting'; machine?: undefined; isOnline: false }>
     | Readonly<{ status: 'arrived'; machine: Machine; isOnline: true }>;
 
-type Snapshot = Readonly<{
-    scopeKey: string;
-    knownIds: ReadonlySet<string>;
-    wasOnlineById: ReadonlyMap<string, boolean>;
-    since: number | null;
-}>;
-
 function normalizeServerScope(raw: string | null | undefined): string {
     return String(raw ?? '').trim();
 }
 
-function normalizeSince(raw: number | null | undefined): number | null {
-    return typeof raw === 'number' && Number.isFinite(raw) ? raw : null;
+/**
+ * Machine lists are keyed by server profile id; the wait is given the server's URL. Only a URL
+ * that names exactly one saved profile selects a list — two profiles sharing one endpoint are
+ * distinct Homes, and guessing between them would watch the wrong one.
+ */
+function resolveServerProfileIdForUrl(serverUrl: string): string | null {
+    const key = createServerUrlComparableKey(serverUrl);
+    if (!key) return null;
+    const matches = listServerProfiles().filter((profile) => createServerUrlComparableKey(profile.serverUrl) === key);
+    return matches.length === 1 ? matches[0]!.id : null;
 }
 
 function selectMachinesForScope(params: Readonly<{
     allMachines: readonly Machine[];
     machineListByServerId: Readonly<Record<string, Machine[] | null>>;
-    serverUrl: string;
+    serverId: string | null;
 }>): readonly Machine[] {
-    if (!params.serverUrl) return params.allMachines;
-    const scoped = params.machineListByServerId[params.serverUrl];
+    if (!params.serverId) return params.allMachines;
+    const scoped = params.machineListByServerId[params.serverId];
     if (Array.isArray(scoped)) return scoped;
-    return params.allMachines;
+    return [];
 }
 
 function readMachineActivitySortValue(machine: Machine): number {
@@ -47,29 +66,32 @@ function readMachineActivitySortValue(machine: Machine): number {
     return typeof machine.createdAt === 'number' && Number.isFinite(machine.createdAt) ? machine.createdAt : 0;
 }
 
-function createSnapshot(scopeKey: string, machines: readonly Machine[], since: number | null): Snapshot {
+export function createAwaitedMachineArrivalBaseline(serverUrl: string, machines: readonly Machine[], serverId?: string): AwaitedMachineArrivalBaseline {
     const knownIds = new Set<string>();
     const wasOnlineById = new Map<string, boolean>();
     for (const machine of machines) {
-        const activeAt = readMachineActivitySortValue(machine);
-        if (since !== null && activeAt >= since) continue;
         knownIds.add(machine.id);
         wasOnlineById.set(machine.id, isMachineOnline(machine));
     }
-    return { scopeKey, knownIds, wasOnlineById, since };
+    return { serverUrl, ...(serverId ? { serverId } : {}), knownIds, wasOnlineById };
 }
 
-function resolveArrival(machines: readonly Machine[], snapshot: Snapshot): Machine | null {
+/**
+ * Arrival is a computer that is new to this wait — absent from the list when the wait began — or
+ * one that went from offline to online while waiting. A heartbeat of a computer that was already
+ * there is never an arrival (another computer on the account keeps heartbeating the whole time).
+ */
+function resolveArrival(machines: readonly Machine[], snapshot: AwaitedMachineArrivalBaseline): Machine | null {
     let arrived: Machine | null = null;
     let arrivedSortValue = Number.NEGATIVE_INFINITY;
 
     for (const machine of machines) {
-        if (!isMachineOnline(machine)) continue;
-        const sortValue = readMachineActivitySortValue(machine);
+        if (machine.revokedAt || !isMachineOnline(machine)) continue;
         const existedAtSnapshot = snapshot.knownIds.has(machine.id);
-        const arrivedAfterSince = snapshot.since !== null && sortValue >= snapshot.since;
+        const isNew = !existedAtSnapshot;
         const transitionedOnline = existedAtSnapshot && snapshot.wasOnlineById.get(machine.id) === false;
-        if (existedAtSnapshot && !transitionedOnline && !arrivedAfterSince) continue;
+        if (!isNew && !transitionedOnline) continue;
+        const sortValue = readMachineActivitySortValue(machine);
         if (sortValue >= arrivedSortValue) {
             arrived = machine;
             arrivedSortValue = sortValue;
@@ -83,16 +105,36 @@ export function useAwaitedMachineArrival(input: AwaitedMachineArrivalInput = {})
     const allMachines = useAllMachines();
     const machineListByServerId = useMachineListByServerId();
     const serverUrl = normalizeServerScope(input.serverUrl);
-    const since = normalizeSince(input.since);
-    const machines = selectMachinesForScope({ allMachines, machineListByServerId, serverUrl });
-    const scopeKey = `${serverUrl}\u0000${since ?? ''}`;
-    const snapshotRef = React.useRef<Snapshot | null>(null);
-
-    if (!snapshotRef.current || snapshotRef.current.scopeKey !== scopeKey) {
-        snapshotRef.current = createSnapshot(scopeKey, machines, since);
+    const enabled = input.enabled !== false;
+    // The wait starts from the loaded list: a snapshot of a list still loading would make every
+    // existing computer look new the moment it loads.
+    const activeMachineListKnown = useHasMachineForGettingStartedGuidance() !== null;
+    const explicitId = normalizeServerScope(input.serverId);
+    const serverId = React.useMemo(() => explicitId || resolveServerProfileIdForUrl(serverUrl), [explicitId, serverUrl]);
+    const machineListKnown = serverId !== null ? Array.isArray(machineListByServerId[serverId]) : !serverUrl && activeMachineListKnown;
+    // A named but unresolved/loading Home never borrows the active Home's computers.
+    const machines = serverId || !serverUrl ? selectMachinesForScope({ allMachines, machineListByServerId, serverId }) : [];
+    const scope = serverId ?? serverUrl;
+    const snapshotRef = React.useRef<Readonly<{ scope: string; baseline: AwaitedMachineArrivalBaseline }> | null>(null);
+    const provided = input.baseline;
+    const providedMatches = provided && (serverId && provided.serverId
+        ? provided.serverId === serverId : provided.serverUrl === serverUrl);
+    if (!enabled) {
+        snapshotRef.current = null;
+    } else if (providedMatches && provided) {
+        // A new externally supplied baseline also starts a new wait while mounted.
+        snapshotRef.current = { scope, baseline: provided };
+    } else if (!snapshotRef.current || snapshotRef.current.scope !== scope) {
+        snapshotRef.current = machineListKnown ? { scope, baseline: createAwaitedMachineArrivalBaseline(serverUrl, machines, serverId ?? undefined) } : null;
     }
+    const snapshot = enabled && snapshotRef.current?.scope === scope ? snapshotRef.current.baseline : null;
+    const persistedBaseline = input.baseline ?? null;
+    const onBaselineCaptured = input.onBaselineCaptured;
+    React.useEffect(() => {
+        if (snapshot && snapshot !== persistedBaseline) onBaselineCaptured?.(snapshot);
+    }, [onBaselineCaptured, persistedBaseline, snapshot]);
 
-    const arrived = resolveArrival(machines, snapshotRef.current);
+    const arrived = snapshot ? resolveArrival(machines, snapshot) : null;
     if (!arrived) {
         return { status: 'waiting', machine: undefined, isOnline: false };
     }

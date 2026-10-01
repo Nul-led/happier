@@ -1,5 +1,5 @@
 import * as React from 'react';
-import type { Message } from '@/sync/domains/messages/messageTypes';
+import type { Message } from "@happier-dev/session-core/messages";
 import { buildPendingSessionRequestsSourceSignature } from '@/sync/domains/session/pending/listPendingSessionRequests';
 import { listPendingUserActionRequests } from '@/utils/sessions/sessionUtils';
 import { EMPTY_PENDING_USER_ACTION_REQUESTS } from '@/components/sessions/transcript/chatListEmptyValues';

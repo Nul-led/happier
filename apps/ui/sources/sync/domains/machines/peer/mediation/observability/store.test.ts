@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import * as storeModule from './store';
+import * as selectorsModule from './selectors';
 import {
     type PeerMediationObservabilityDeltaV1,
     type PeerMediationObservabilityEventV1,
@@ -7,68 +9,12 @@ import {
     type PeerMediationObservabilitySnapshotV1,
 } from '@happier-dev/protocol';
 
-type StoreModuleShape = Readonly<{
-    createPeerMediationObservabilityUiStore: () => unknown;
-    applyPeerMediationObservabilitySnapshot: (
-        state: unknown,
-        input: Readonly<{
-            source: 'server' | 'daemon';
-            snapshot: PeerMediationObservabilitySnapshotV1;
-        }>,
-    ) => unknown;
-    applyPeerMediationObservabilityDelta: (
-        state: unknown,
-        input: Readonly<{
-            source: 'server' | 'daemon';
-            delta: PeerMediationObservabilityDeltaV1;
-        }>,
-    ) => unknown;
-}>;
-
-type SelectorsModuleShape = Readonly<{
-    selectPeerMediationObservabilityScopeState: (
-        state: unknown,
-        scope: PeerMediationObservabilityScopeV1,
-    ) => unknown;
-    selectPeerMediationObservabilityActiveFlows: (
-        state: unknown,
-        scope: PeerMediationObservabilityScopeV1,
-    ) => readonly unknown[];
-    selectPeerMediationObservabilityFlowSummaries: (
-        state: unknown,
-        scope: PeerMediationObservabilityScopeV1,
-    ) => readonly unknown[];
-    selectPeerMediationObservabilityHttpMetadata: (
-        state: unknown,
-        input: Readonly<{
-            scope: PeerMediationObservabilityScopeV1;
-            flowId: string;
-        }>,
-    ) => Record<string, unknown> | null;
-    selectPeerMediationObservabilityWebSocketMetadata: (
-        state: unknown,
-        input: Readonly<{
-            scope: PeerMediationObservabilityScopeV1;
-            flowId: string;
-        }>,
-    ) => Record<string, unknown> | null;
-    selectPeerMediationPreviewProxyDiagnostics: (
-        state: unknown,
-        input: Readonly<{
-            scope: PeerMediationObservabilityScopeV1;
-            previewId: string;
-        }>,
-    ) => unknown;
-}>;
-
-async function loadStoreModule(): Promise<Partial<StoreModuleShape>> {
-    const modulePath = './store';
-    return import(modulePath).catch(() => ({})) as Promise<Partial<StoreModuleShape>>;
+async function loadStoreModule() {
+    return storeModule;
 }
 
-async function loadSelectorsModule(): Promise<Partial<SelectorsModuleShape>> {
-    const modulePath = './selectors';
-    return import(modulePath).catch(() => ({})) as Promise<Partial<SelectorsModuleShape>>;
+async function loadSelectorsModule() {
+    return selectorsModule;
 }
 
 const machineScope: PeerMediationObservabilityScopeV1 = {

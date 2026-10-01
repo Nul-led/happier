@@ -31,11 +31,10 @@ vi.mock('@/components/ui/code/WrapLinesToggleButton', () => ({
     WrapLinesToggleButton: 'WrapLinesToggleButton',
 }));
 
-vi.mock('@/constants/Typography', () => ({
-    Typography: {
-        default: () => ({}),
-    },
-}));
+vi.mock('@/constants/Typography', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/constants/Typography')>();
+    return { ...actual, Typography: { ...actual.Typography, default: () => ({}), mono: () => ({}) } };
+});
 
 vi.mock('@expo/vector-icons', () => ({
     Ionicons: 'Ionicons',
@@ -79,6 +78,12 @@ vi.mock('@/text', async () => {
     const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
     return createTextModuleMock({ translate: (key) => key });
 });
+
+function flattenToolbarStyle(style: any): Record<string, any> {
+    if (!style) return {};
+    if (Array.isArray(style)) return style.reduce((acc, entry) => Object.assign(acc, flattenToolbarStyle(entry)), {});
+    return typeof style === 'object' ? style : {};
+}
 
 describe('FileActionToolbar', () => {
     const theme = {
@@ -151,7 +156,7 @@ describe('FileActionToolbar', () => {
 
         expect(screen.findByTestId('file-details-stage-file')).toBeTruthy();
         const stageFileButton = screen.findByTestId('file-details-stage-file');
-        expect(stageFileButton?.props.role).toBe('button');
+        expect(stageFileButton?.props.accessibilityRole).toBe('button');
         expect(stageFileButton?.props.accessibilityLabel).toBe('files.fileActions.stageFile');
         expect(typeof stageFileButton?.props.onPress).toBe('function');
     });
@@ -212,7 +217,7 @@ describe('FileActionToolbar', () => {
             }),
         );
 
-        expect(screen.findByTestId('file-details-stage-file')?.props.disabled).toBe(false);
+        expect(screen.findByTestId('file-details-stage-file')?.props.accessibilityState?.disabled).toBe(false);
     });
 
     it('shows only the remove action when a file is already selected for commit', async () => {
@@ -619,39 +624,15 @@ describe('FileActionToolbar', () => {
         });
 
         expect(screen.findByTestId('file-details-view-actions')).toBeTruthy();
-        expect(screen.findByTestId('file-details-view-mode-menu')).toBeTruthy();
+        expect(screen.findByTestId('file-details-view-mode:diff')).toBeTruthy();
         expect(screen.findByTestId('file-details-edit')).toBeTruthy();
+        expect(screen.findByTestId('file-discard-action')).toBeTruthy();
+        // Selected-line controls sit on their own wrapping row under the header, never clipped off.
+        const selectionBar = screen.findByTestId('file-details-change-actions');
+        expect(selectionBar).toBeTruthy();
+        expect(flattenToolbarStyle(selectionBar?.props.style).flexWrap).toBe('wrap');
         expect(screen.findByTestId('file-details-apply-selected-lines')).toBeTruthy();
         expect(screen.findByTestId('file-details-clear-selection')).toBeTruthy();
-        expect(screen.findByTestId('file-discard-action')).toBeTruthy();
-
-        const actionScroll = screen.findByTestId('file-details-action-scroll');
-        expect(actionScroll?.props.horizontal).toBe(true);
-        expect(actionScroll?.props.showsHorizontalScrollIndicator).toBe(false);
-        expect(screen.findByTestId('file-details-action-scroll-content')).toBeTruthy();
-
-        act(() => {
-            actionScroll?.props.onLayout({ nativeEvent: { layout: { width: 220, height: 32 } } });
-            actionScroll?.props.onContentSizeChange(480, 32);
-        });
-        expect(screen.findByType('ScrollEdgeFades' as any)?.props.edges).toMatchObject({
-            left: false,
-            right: true,
-        });
-
-        act(() => {
-            actionScroll?.props.onScroll({
-                nativeEvent: {
-                    contentOffset: { x: 80, y: 0 },
-                    layoutMeasurement: { width: 220, height: 32 },
-                    contentSize: { width: 480, height: 32 },
-                },
-            });
-        });
-        expect(screen.findByType('ScrollEdgeIndicators' as any)?.props.edges).toMatchObject({
-            left: true,
-            right: true,
-        });
     });
 
     it('does not treat displayed applied line counts as active draft selection controls', async () => {
@@ -831,12 +812,9 @@ describe('FileActionToolbar', () => {
             }),
         );
 
-        expect(screen.findByTestId('file-details-view-mode-menu')).toBeTruthy();
-        expect(screen.findByTestId('file-details-toggle-diff')).toBeNull();
-        expect(screen.findByTestId('file-details-toggle-file')).toBeNull();
-
-        const menu = screen.findByType('DropdownMenu' as any);
-        expect(menu?.props.items.map((item: any) => item.id)).toEqual(['diff', 'file']);
+        // Two or three short views: one segmented choice, all visible (control decision table).
+        const segmented = screen.findAll((node) => Array.isArray(node.props?.tabs) && typeof node.props?.onSelectTab === 'function')[0];
+        expect(segmented?.props.tabs.map((tab: any) => tab.id)).toEqual(['diff', 'file']);
     });
 
     it('adds Markdown to the display mode menu when markdown preview is available', async () => {
@@ -870,11 +848,11 @@ describe('FileActionToolbar', () => {
             }),
         );
 
-        const menu = screen.findByType('DropdownMenu' as any);
-        expect(menu?.props.items.map((item: any) => item.id)).toEqual(['diff', 'file', 'markdown']);
-        expect(menu?.props.selectedId).toBe('markdown');
+        const segmented = screen.findAll((node) => Array.isArray(node.props?.tabs) && typeof node.props?.onSelectTab === 'function')[0];
+        expect(segmented?.props.tabs.map((tab: any) => tab.id)).toEqual(['diff', 'file', 'markdown']);
+        expect(segmented?.props.activeTabId).toBe('markdown');
 
-        menu?.props.onSelect('markdown');
+        segmented?.props.onSelectTab('markdown');
         expect(onDisplayMode).toHaveBeenCalledWith('markdown');
     });
 
@@ -935,6 +913,49 @@ describe('FileActionToolbar', () => {
         expect(menus.at(-1)?.props.items.map((item: any) => item.id)).toEqual(['pending', 'included', 'both']);
     });
 
+    it('names the diff areas after the index when staging is real, and keeps the selection names for a virtual selection', async () => {
+        const { FileActionToolbar } = await import('./FileActionToolbar');
+        const baseProps = {
+            theme,
+            displayMode: 'diff',
+            onDisplayMode: () => {},
+            diffMode: 'both',
+            onDiffMode: () => {},
+            hasPendingDelta: true,
+            hasIncludedDelta: true,
+            scmWriteEnabled: true,
+            includeExcludeEnabled: true,
+            isSelectedForCommit: false,
+            lineSelectionEnabled: false,
+            selectedLineCount: 0,
+            isApplyingStage: false,
+            inFlightScmOperation: null,
+            onStageFile: () => {},
+            onUnstageFile: () => {},
+            onApplySelectedLines: () => {},
+            onClearSelection: () => {},
+        };
+        const areaTitles = (screen: Awaited<ReturnType<typeof renderScreen>>) => {
+            const menu = screen.findAllByType('DropdownMenu' as any)
+                .find((node: any) => (node.props.items ?? []).some((item: any) => item.id === 'pending'));
+            return (menu?.props.items ?? []).map((item: any) => item.title);
+        };
+
+        const indexScreen = await renderScreen(React.createElement(FileActionToolbar as any, { ...baseProps, virtualSelectionEnabled: false }));
+        expect(areaTitles(indexScreen)).toEqual([
+            'detailsSurface.file.areaUnstaged',
+            'detailsSurface.file.areaStaged',
+            'detailsSurface.file.areaBoth',
+        ]);
+
+        const virtualScreen = await renderScreen(React.createElement(FileActionToolbar as any, { ...baseProps, virtualSelectionEnabled: true }));
+        expect(areaTitles(virtualScreen)).toEqual([
+            'files.diffModes.pending',
+            'files.diffModes.included',
+            'files.diffModes.combined',
+        ]);
+    });
+
     it('hosts file path and file-level actions in the command bar', async () => {
         const { FileActionToolbar } = await import('./FileActionToolbar');
 
@@ -965,9 +986,9 @@ describe('FileActionToolbar', () => {
             }),
         );
 
-        expect(screen.findByTestId('file-details-path')).toBeTruthy();
-        expect(screen.findByTestId('file-details-path')?.props.accessibilityLabel).toBe('src/env.ts');
+        // The file is the header's title and its folder leads the live line.
         expect(screen.getTextContent()).toContain('env.ts');
+        expect(screen.getTextContent()).toContain('src/');
         expect(screen.findByTestId('file-details-right')).toBeTruthy();
         expect(screen.findByTestId('file-download-action')).toBeTruthy();
     });
@@ -1012,14 +1033,11 @@ describe('FileActionToolbar', () => {
             toolbar.props.onLayout({ nativeEvent: { layout: { width: 360 } } });
         });
 
+        // Narrow panes keep one header: the quiet toggles and the labelled Stage stay in the band,
+        // the whole-file action named for what it does (a virtual commit selection here).
         const stageAction = screen.findByTestId('file-details-stage-file')!;
-        expect(stageAction.findAllByType('Text' as never)).toHaveLength(0);
         expect(stageAction.props.accessibilityLabel).toBe('files.fileActions.selectEntireFileForCommit');
-        const actionScroll = screen.findByTestId('file-details-action-scroll');
-        expect(actionScroll?.props.horizontal).toBe(true);
-
         const viewActions = screen.findByTestId('file-details-view-actions')!;
-        const changeActions = screen.findByTestId('file-details-change-actions')!;
         const findChildByTestId = (node: any, testID: string): unknown => {
             try {
                 return node.findByProps({ testID });
@@ -1027,11 +1045,8 @@ describe('FileActionToolbar', () => {
                 return null;
             }
         };
-
-        expect(findChildByTestId(viewActions, 'file-details-view-mode-menu')).toBeTruthy();
         expect(findChildByTestId(viewActions, 'file-details-edit')).toBeTruthy();
-        expect(findChildByTestId(changeActions, 'file-details-stage-file')).toBeTruthy();
-        expect(findChildByTestId(changeActions, 'file-discard-action')).toBeTruthy();
+        expect(findChildByTestId(viewActions, 'file-discard-action')).toBeTruthy();
     });
 
     it('repurposes the view dropdown into the Raw/Rich edit-mode menu when editing a markdown file (I3)', async () => {

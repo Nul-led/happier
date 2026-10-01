@@ -8,9 +8,14 @@ import { SessionAwarenessListResultV1Schema } from '@happier-dev/protocol';
 // The Home query transport is the genuine network boundary; page currentness and
 // abort behavior below are the real runtime's, replayed without a socket.
 const fetchSessionListQueryPageForHome = vi.hoisted(() => vi.fn());
+const acquireAdmittedSessionReferenceCorpusOptions = vi.hoisted(() => vi.fn());
 vi.mock('@/sync/domains/session/listing/sessionListQueryRuntime', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/sync/domains/session/listing/sessionListQueryRuntime')>()),
   fetchSessionListQueryPageForHome: (...args: unknown[]) => fetchSessionListQueryPageForHome(...args),
+}));
+vi.mock('./admittedSessionReferenceCorpus', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./admittedSessionReferenceCorpus')>()),
+  acquireAdmittedSessionReferenceCorpusOptions: (...args: unknown[]) => acquireAdmittedSessionReferenceCorpusOptions(...args),
 }));
 
 vi.mock('@/sync/domains/server/serverRuntime', async (importOriginal) => ({
@@ -70,6 +75,18 @@ function seedSession(privacyOverrides: Record<string, unknown>): void {
 describe('listSessionsForVoiceTool privacy', () => {
   beforeEach(() => {
     fetchSessionListQueryPageForHome.mockReset();
+    acquireAdmittedSessionReferenceCorpusOptions.mockReset();
+    acquireAdmittedSessionReferenceCorpusOptions.mockImplementation(async (state: {
+      ordinarySessionListMembershipByServerId?: Record<string, readonly string[]>;
+    }) => {
+      const membership = state.ordinarySessionListMembershipByServerId ?? {};
+      return {
+        knownServerIds: Object.keys(membership),
+        coverage: 'complete' as const,
+        addresses: Object.entries(membership).flatMap(([serverId, sessionIds]) =>
+          sessionIds.map((sessionId) => ({ serverId, sessionId }))),
+      };
+    });
   });
 
   it('preserves another Home row timestamp and never attaches the active Home transcript with the same id', async () => {
@@ -78,8 +95,14 @@ describe('listSessionsForVoiceTool privacy', () => {
       ...current,
       sessionListIndexByServerId: {},
       concurrentSessionListCacheByServerId: { 'other-home': { serverName: 'Other Home' } },
-      ordinarySessionListMembershipByServerId: { 'other-home': ['s1'] },
+      ordinarySessionListMembershipByServerId: {
+        'server-a': ['s1'],
+        'other-home': ['s1'],
+      },
       sessionListRowsByServerId: {
+        'server-a': {
+          s1: { id: 's1', updatedAt: 100, active: true, presence: 'online', metadata: { summaryText: 'Active session' } },
+        },
         'other-home': {
           s1: { id: 's1', updatedAt: 7, active: false, presence: 'offline', metadata: { summaryText: 'Other session' } },
         },
@@ -161,6 +184,50 @@ describe('listSessionsForVoiceTool privacy', () => {
 
     expect(fromReleasedCursor.sessions.map((session) => session.id)).toEqual(['s0']);
     expect(JSON.parse(fromReleasedCursor.nextCursor ?? '')).toEqual([1, 90, 's0', 'server-a']);
+  });
+
+  it('uses the admitted corpus for the basic list and reports incomplete coverage', async () => {
+    seedSession({ shareSessionSummary: true });
+    storage.setState((current) => ({
+      ...current,
+      sessionListRowsByServerId: {
+        'server-a': {
+          admitted: {
+            id: 'admitted',
+            updatedAt: 30,
+            active: true,
+            presence: 'online',
+            metadata: { summaryText: 'Admitted session' },
+          },
+          stale: {
+            id: 'stale',
+            updatedAt: 999,
+            active: true,
+            presence: 'online',
+            metadata: { summaryText: 'Stale cache row' },
+          },
+        },
+      },
+      ordinarySessionListMembershipByServerId: {},
+      sessionListIndexByServerId: {},
+    }) as never);
+    acquireAdmittedSessionReferenceCorpusOptions.mockResolvedValueOnce({
+      knownServerIds: ['server-a', 'server-b'],
+      coverage: 'incomplete',
+      addresses: [{ serverId: 'server-a', sessionId: 'admitted' }],
+    });
+    const { listSessionsForVoiceTool } = await import('./sessionList');
+
+    const result = await listSessionsForVoiceTool({});
+    if ('view' in result || !result.ok) throw new Error('Expected summary session list');
+
+    expect(result.sessions.map((session) => session.id)).toEqual(['admitted']);
+    expect(result.sessions).not.toEqual(expect.arrayContaining([expect.objectContaining({ id: 'stale' })]));
+    expect(result).toMatchObject({ coverage: 'incomplete' });
+    expect(acquireAdmittedSessionReferenceCorpusOptions).toHaveBeenCalledWith(
+      expect.objectContaining({ ordinarySessionListMembershipByServerId: {} }),
+      { signal: undefined },
+    );
   });
   afterEach(() => {
     storage.setState((current) => ({

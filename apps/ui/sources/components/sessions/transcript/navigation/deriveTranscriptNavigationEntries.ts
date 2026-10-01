@@ -1,7 +1,7 @@
 import {
     resolveSessionMessagePinRowIdentityKey,
     sessionMessagePinRowsMatch,
-} from '@/sync/domains/messages/pins/sessionMessagePinIdentity';
+} from "@happier-dev/session-core/pins";
 
 import { normalizeTranscriptNavigationTextPreview } from './transcriptNavigationTextPreview';
 import type {
@@ -12,6 +12,8 @@ import type {
     TranscriptNavigationLoadedMessage,
     TranscriptNavigationPin,
     TranscriptNavigationRole,
+    TranscriptNavigationTurnApproval,
+    TranscriptNavigationTurnFacts,
 } from './transcriptNavigationTypes';
 
 export type NavigationEntryWithOrder = Readonly<{
@@ -32,7 +34,70 @@ export type UserTurnDraft = Readonly<{
     blockOrder: number;
     /** Real row block index; null when the loaded row carries none. Used for entry identity. */
     transcriptBlockIndex: number | null;
+    /** Null when any row of the turn is outside the loaded window (unknown, never zero). */
+    facts?: TranscriptNavigationTurnFacts | null;
 }>;
+
+type TurnFactsAccumulator = {
+    complete: boolean;
+    toolCount: number;
+    failedCount: number;
+    approvals: TranscriptNavigationTurnApproval[];
+    running: boolean;
+    lastToolFailed: boolean;
+    endedAtMs: number | null;
+};
+
+function createTurnFactsAccumulator(user: TranscriptNavigationLoadedMessage): TurnFactsAccumulator {
+    return {
+        complete: user.loaded !== false,
+        toolCount: 0,
+        failedCount: 0,
+        approvals: [],
+        running: false,
+        lastToolFailed: false,
+        endedAtMs: normalizeFiniteInteger(user.createdAtMs),
+    };
+}
+
+function laterOf(a: number | null, b: number | null): number | null {
+    if (a === null) return b;
+    if (b === null) return a;
+    return Math.max(a, b);
+}
+
+function accumulateTurnRow(acc: TurnFactsAccumulator, message: TranscriptNavigationLoadedMessage): void {
+    if (message.loaded === false) {
+        acc.complete = false;
+        return;
+    }
+    acc.endedAtMs = laterOf(acc.endedAtMs, normalizeFiniteInteger(message.createdAtMs));
+    const tool = message.tool;
+    if (message.role !== 'tool' || !tool) return;
+    acc.toolCount += 1;
+    if (tool.state === 'error') acc.failedCount += 1;
+    if (tool.state === 'running') acc.running = true;
+    acc.lastToolFailed = tool.state === 'error';
+    acc.endedAtMs = laterOf(acc.endedAtMs, tool.completedAtMs);
+    if (tool.permission) acc.approvals.push({ outcome: tool.permission, label: tool.label });
+}
+
+/** Facts of a turn that is only its prompt so far (nothing ran yet), or null when unloaded. */
+export function resolvePromptOnlyTurnFacts(user: TranscriptNavigationLoadedMessage): TranscriptNavigationTurnFacts | null {
+    return finishTurnFacts(createTurnFactsAccumulator(user));
+}
+
+function finishTurnFacts(acc: TurnFactsAccumulator): TranscriptNavigationTurnFacts | null {
+    if (!acc.complete) return null;
+    return {
+        toolCount: acc.toolCount,
+        failedCount: acc.failedCount,
+        approvals: acc.approvals,
+        running: acc.running,
+        lastToolFailed: acc.lastToolFailed,
+        endedAtMs: acc.endedAtMs,
+    };
+}
 
 function normalizeSessionId(value: string): string {
     return value.trim();
@@ -198,6 +263,7 @@ function deriveLoadedUserTurns(
     let activeUser: TranscriptNavigationLoadedMessage | null = null;
     let activeAgentPreview: string | null = null;
     let activeToolPreview: string | null = null;
+    let activeFacts: TurnFactsAccumulator | null = null;
 
     const commitActiveUser = () => {
         if (!activeUser) return;
@@ -207,6 +273,7 @@ function deriveLoadedUserTurns(
             activeUser = null;
             activeAgentPreview = null;
             activeToolPreview = null;
+            activeFacts = null;
             return;
         }
 
@@ -222,10 +289,12 @@ function deriveLoadedUserTurns(
             loaded: activeUser.loaded !== false,
             blockOrder: normalizeBlockIndex(activeUser.transcriptBlockIndex, 'user'),
             transcriptBlockIndex: normalizeFiniteInteger(activeUser.transcriptBlockIndex),
+            facts: activeFacts ? finishTurnFacts(activeFacts) : null,
         });
         activeUser = null;
         activeAgentPreview = null;
         activeToolPreview = null;
+        activeFacts = null;
     };
 
     for (const message of loadedMessages) {
@@ -234,6 +303,7 @@ function deriveLoadedUserTurns(
             activeUser = message;
             activeAgentPreview = null;
             activeToolPreview = null;
+            activeFacts = createTurnFactsAccumulator(message);
             continue;
         }
         if (!activeUser) continue;
@@ -245,6 +315,7 @@ function deriveLoadedUserTurns(
         const replySeq = normalizeFiniteInteger(message.seq);
         const activeUserSeq = normalizeFiniteInteger(activeUser.seq);
         if (replySeq !== null && activeUserSeq !== null && replySeq < activeUserSeq) continue;
+        if (activeFacts) accumulateTurnRow(activeFacts, message);
         const preview = message.text;
         if (!preview) continue;
         if (message.role === 'assistant') {
@@ -326,6 +397,7 @@ export function buildUserEntry(turn: UserTurnDraft, mode: 'all' | 'pinned', pin:
             pinned,
             pinnedAtMs,
             loaded: turn.loaded,
+            facts: turn.facts ?? null,
         },
     };
 }
@@ -454,7 +526,25 @@ function transcriptNavigationEntriesMatch(
         && a.createdAtMs === b.createdAtMs
         && a.pinned === b.pinned
         && a.pinnedAtMs === b.pinnedAtMs
-        && a.loaded === b.loaded;
+        && a.loaded === b.loaded
+        && transcriptNavigationTurnFactsMatch(a.facts ?? null, b.facts ?? null);
+}
+
+function transcriptNavigationTurnFactsMatch(
+    a: TranscriptNavigationTurnFacts | null,
+    b: TranscriptNavigationTurnFacts | null,
+): boolean {
+    if (a === b) return true;
+    if (!a || !b) return false;
+    return a.toolCount === b.toolCount
+        && a.failedCount === b.failedCount
+        && a.running === b.running
+        && a.lastToolFailed === b.lastToolFailed
+        && a.endedAtMs === b.endedAtMs
+        && a.approvals.length === b.approvals.length
+        && a.approvals.every((approval, index) => (
+            approval.outcome === b.approvals[index]!.outcome && approval.label === b.approvals[index]!.label
+        ));
 }
 
 function shareTranscriptNavigationEntries(

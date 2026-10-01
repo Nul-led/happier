@@ -1,10 +1,11 @@
 import { act } from 'react-test-renderer';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { renderHook, standardCleanup } from '@/dev/testkit';
+import { createSessionFixture, renderHook, standardCleanup } from '@/dev/testkit';
 
 import {
     buildSessionListReachabilityRenderableKey,
+    useAllSessions,
     useAllSessionListAttentionRows,
     useAllSessionListRenderables,
     usePersistProjectLastMobileSurface,
@@ -19,6 +20,7 @@ import {
     useSessionListRowRenderablesForItems,
     useSessionListRowsByServerId,
     useSessionServerId,
+    useSession,
     useMachine,
     useSessions,
 } from '@/sync/domains/state/storage';
@@ -107,6 +109,87 @@ describe('useSessions', () => {
             expect(hook.getCurrent()).toEqual([session]);
 
             await hook.unmount();
+        } finally {
+            storage.setState(previousState);
+        }
+    });
+});
+
+describe('useSession exact Home lookup', () => {
+    it('uses an unqualified legacy carrier only for its active applied Home', async () => {
+        const previousState = storage.getState();
+        const legacy = createSessionFixture({ id: 'same', serverId: undefined, activeAt: 90_000 });
+        try {
+            activeServerRuntimeState.snapshot = { serverId: 'home-a', serverUrl: 'https://a.example', generation: 1 };
+            storage.setState((state) => ({
+                ...state,
+                sessions: { same: legacy },
+                sessionLocalStateScope: { serverId: 'home-a', accountId: 'account-a' },
+            }));
+
+            const hook = await renderHook(() => ({
+                homeA: useSession('same', 'home-a'),
+                homeB: useSession('same', 'home-b'),
+            }));
+            expect(hook.getCurrent()).toEqual({ homeA: legacy, homeB: null });
+
+            // Selection may publish Home B before Sync retires Home A's carrier.
+            await act(async () => {
+                activeServerRuntimeState.snapshot = { serverId: 'home-b', serverUrl: 'https://b.example', generation: 2 };
+                activeServerRuntimeState.listener?.(activeServerRuntimeState.snapshot);
+            });
+            expect(hook.getCurrent()).toEqual({ homeA: null, homeB: null });
+
+            await hook.unmount();
+        } finally {
+            storage.setState(previousState);
+        }
+    });
+});
+
+describe('all-session projection identity', () => {
+    it('does not walk unchanged session records after an unrelated store publication', async () => {
+        const previousState = storage.getState();
+        const originalObjectValues = Object.values.bind(Object);
+        let sessionRecordTraversals = 0;
+        let renderableRecordTraversals = 0;
+        try {
+            const session = createSessionFixture({ id: 'stable-all-session', updatedAt: 2 });
+            const renderable = { ...makeRenderable(session.id), updatedAt: 2 };
+            const sessions = { [session.id]: session };
+            const renderables = { [session.id]: renderable };
+            storage.setState((state) => ({
+                ...state,
+                isDataReady: true,
+                sessions,
+                sessionListRowsByServerId: { 'active-server': renderables },
+            }));
+            const valuesSpy = vi.spyOn(Object, 'values').mockImplementation(((value: object) => {
+                if (value === sessions) sessionRecordTraversals += 1;
+                if (value === renderables) renderableRecordTraversals += 1;
+                return originalObjectValues(value);
+            }) as typeof Object.values);
+            const hook = await renderHook(() => ({
+                sessions: useAllSessions(),
+                renderables: useAllSessionListRenderables(),
+            }), { flushOptions: { cycles: 1, turns: 4 } });
+            const first = hook.getCurrent();
+            expect(first.sessions).toEqual([session]);
+            expect(first.renderables).toEqual([renderable]);
+            sessionRecordTraversals = 0;
+            renderableRecordTraversals = 0;
+
+            act(() => {
+                storage.setState((state) => ({ ...state }));
+            });
+
+            expect(hook.getCurrent().sessions).toBe(first.sessions);
+            expect(hook.getCurrent().renderables).toBe(first.renderables);
+            expect(sessionRecordTraversals).toBe(0);
+            expect(renderableRecordTraversals).toBe(0);
+
+            await hook.unmount();
+            valuesSpy.mockRestore();
         } finally {
             storage.setState(previousState);
         }

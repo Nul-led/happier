@@ -26,7 +26,7 @@ import {
     scheduleMachineListDisplayWarmCacheSave,
 } from '../../domains/state/machineDisplayWarmCacheWriter';
 import { areSessionValuesDeepEqual } from './areStoredSessionsEqual';
-import { areStoredMachinesEqual, hasMachineDaemonStateAdvanced } from './areStoredMachinesEqual';
+import { areStoredMachinesEqual, hasMachineDaemonBeenReplaced, hasMachineDaemonStateAdvanced } from './areStoredMachinesEqual';
 import { applyWorkspaceSyncRuntimeEvent } from '../../domains/sessionHandoff/applyWorkspaceSyncRuntimeEvent';
 
 import type { StoreGet, StoreSet } from './_shared';
@@ -40,6 +40,8 @@ export type MachinesDomain = {
     machineListStatusByServerId: Record<string, 'idle' | 'loading' | 'signedOut' | 'error'>;
     applyMachines: (machines: Machine[], replace?: boolean, options?: ApplyMachinesOptions) => void;
     replaceMachineDisplays: (machines: MachineDisplayRenderable[], options?: ApplyMachinesOptions) => void;
+    /** The Home's machine list could not be read; retained rows stay, the loading state ends. */
+    markMachineListUnavailable: (serverId: string) => void;
 };
 
 export type ApplyMachinesOptions = Readonly<{
@@ -170,6 +172,15 @@ export function createMachinesDomain<S extends MachinesDomain & MachinesDomainDe
         machineDisplayById: {},
         machineListByServerId: {},
         machineListStatusByServerId: {},
+        markMachineListUnavailable: (serverIdRaw) =>
+            set((state) => {
+                const serverId = normalizeMachineServerId(serverIdRaw);
+                if (!serverId || state.machineListStatusByServerId[serverId] === 'error') return state;
+                return {
+                    ...state,
+                    machineListStatusByServerId: { ...state.machineListStatusByServerId, [serverId]: 'error' },
+                };
+            }),
         applyMachines: (machines, replace = false, options) =>
             set((state) => {
                 const activeServerId = normalizeMachineServerId(getActiveServerSnapshot().serverId);
@@ -246,6 +257,7 @@ export function createMachinesDomain<S extends MachinesDomain & MachinesDomainDe
                 let mergedMachines: Record<string, Machine>;
                 let mergedMachineDisplays: Record<string, MachineDisplayRenderable>;
                 const machinesWithAdvancedDaemonState = new Set<string>();
+                const machinesWithReplacedDaemon = new Set<string>();
 
                 if (replace) {
                     mergedMachines = {};
@@ -254,6 +266,9 @@ export function createMachinesDomain<S extends MachinesDomain & MachinesDomainDe
                         const previousMachine = state.machines[machine.id];
                         if (hasMachineDaemonStateAdvanced(previousMachine, machine)) {
                             machinesWithAdvancedDaemonState.add(machine.id);
+                        }
+                        if (hasMachineDaemonBeenReplaced(previousMachine, machine)) {
+                            machinesWithReplacedDaemon.add(machine.id);
                         }
                         mergedMachines[machine.id] = machine;
                         mergedMachineDisplays[machine.id] = buildMachineDisplayRenderableFromMachine(machine);
@@ -265,6 +280,9 @@ export function createMachinesDomain<S extends MachinesDomain & MachinesDomainDe
                         const previousMachine = state.machines[machine.id];
                         if (hasMachineDaemonStateAdvanced(previousMachine, machine)) {
                             machinesWithAdvancedDaemonState.add(machine.id);
+                        }
+                        if (hasMachineDaemonBeenReplaced(previousMachine, machine)) {
+                            machinesWithReplacedDaemon.add(machine.id);
                         }
                         if (!areStoredMachinesEqual(previousMachine, machine)) {
                             if (mergedMachines === state.machines) {
@@ -355,10 +373,12 @@ export function createMachinesDomain<S extends MachinesDomain & MachinesDomainDe
                         // consumer re-describe and what lets an in-flight
                         // response recognise that it answered for the previous
                         // endpoint.
-                        publishMachineContributionRegistryProjectionInvalidation({
-                            serverId,
-                            machineId,
-                        });
+                        if (machinesWithReplacedDaemon.has(machineId)) {
+                            publishMachineContributionRegistryProjectionInvalidation({
+                                serverId,
+                                machineId,
+                            });
+                        }
                     }
                 }
                 const nextSessionListIndexByServerId = activeServerId

@@ -1,9 +1,29 @@
 import {
     HomeAccountDeleteResultV1Schema,
+    HomeAccountDetailV1Schema,
     HomeAccountListResultV1Schema,
     HomeAccountSearchResultV1Schema,
+    HomeAuditListResultV1Schema,
+    HomeEmptinessV1Schema,
+    HomeMailDeliveryReadinessV1Schema,
+    HomeMailDeliveryTestResultV1Schema,
+    HomeReachabilityV1Schema,
+    HomeRetentionDryRunResultV1Schema,
+    HomeSettingsInvalidErrorV1Schema,
+    HomeSettingsProjectionV1Schema,
+    type HomeAccountDetailV1,
     type HomeAccountListResultV1,
     type HomeAccountSearchResultV1,
+    type HomeAuditListResultV1,
+    type HomeEmptinessV1,
+    type HomeMailDeliveryReadinessV1,
+    type HomeMailDeliveryTestResultV1,
+    type HomeIrohModeV1,
+    type HomeReachabilityV1,
+    type HomeRetentionDryRunResultV1,
+    type HomeSettingSecretWriteV1,
+    type HomeSettingsInvalidReasonV1,
+    type HomeSettingsProjectionV1,
     type HomeAuthenticationPolicyV1,
     type HomeGovernanceActionIdV1,
     type HomeIdentityNetworkPolicyV1,
@@ -63,6 +83,15 @@ export type HomeGovernanceAcknowledgedOutcome =
 
 export type HomeGovernanceQueryOutcome<TValue> =
     | Readonly<{ kind: 'succeeded'; value: TValue }>
+    | Readonly<{ kind: 'failed'; failure: HomeDomainFailure }>;
+
+/**
+ * A mutation whose answer is the Home's new state (settings) or its verdict (a test send).
+ * Unlike a query, an approval request is a real outcome here: the change has not run yet.
+ */
+export type HomeGovernanceValueMutationOutcome<TValue> =
+    | Readonly<{ kind: 'succeeded'; value: TValue }>
+    | Readonly<{ kind: 'approval_pending'; artifactId: string }>
     | Readonly<{ kind: 'failed'; failure: HomeDomainFailure }>;
 
 const SUCCEEDED: HomeGovernanceAcknowledgedOutcome = Object.freeze({ kind: 'succeeded' as const });
@@ -145,6 +174,21 @@ export function enableHomeAccount(params: Readonly<{
 }
 
 /**
+ * Ends every signed-in session of one person (D-9). Their API tokens keep working until the
+ * Account is disabled; nothing about their role or data changes.
+ */
+export function signOutHomeAccountEverywhere(params: Readonly<{
+    scope: ServerAccountScope;
+    accountId: string;
+}>): Promise<HomeGovernanceAcknowledgedOutcome> {
+    return mutate({
+        scope: params.scope,
+        actionId: 'home.accounts.signOutEverywhere',
+        input: { accountId: params.accountId },
+    });
+}
+
+/**
  * Deletes one Account and its data through the Home's single erasure owner.
  *
  * An authorized owner may call this again for an Account already left Retired by
@@ -191,33 +235,83 @@ export function setHomeTeamCreationPolicy(params: Readonly<{
     });
 }
 
-/**
- * Applies the authentication-related fields of the Home's one policy document.
- * Callers still receive the same compare-and-set conflict and refresh behavior
- * as Team creation; this is a typed surface over that owner, not another writer.
- */
-export function setHomeAuthenticationPolicies(params: Readonly<{
+/** Whether members outside every Team see Teams: a field of the same policy document. */
+export function setHomeTeamsVisibleToMembers(params: Readonly<{
     scope: ServerAccountScope;
     expectedRevision: number;
-    authenticationPolicy?: HomeAuthenticationPolicyV1 | null;
-    teamProviderPolicy?: HomeTeamProviderPolicyV1 | null;
-    identityNetworkPolicy?: HomeIdentityNetworkPolicyV1 | null;
+    teamsVisibleToMembers: boolean;
 }>): Promise<HomeGovernanceAcknowledgedOutcome> {
     return mutate({
         scope: params.scope,
         actionId: 'home.policy.set',
         input: {
             expectedRevision: params.expectedRevision,
-            ...(params.authenticationPolicy !== undefined
-                ? { authenticationPolicy: params.authenticationPolicy }
-                : {}),
-            ...(params.teamProviderPolicy !== undefined
-                ? { teamProviderPolicy: params.teamProviderPolicy }
-                : {}),
-            ...(params.identityNetworkPolicy !== undefined
-                ? { identityNetworkPolicy: params.identityNetworkPolicy }
-                : {}),
+            teamsVisibleToMembers: params.teamsVisibleToMembers,
         },
+    });
+}
+
+/**
+ * Applies the authentication-related fields of the Home's one policy document.
+ * Callers still receive the same compare-and-set conflict and refresh behavior
+ * as Team creation; this is a typed surface over that owner, not another writer.
+ *
+ * Only the Home decides whether a patch widens sign-in, admission or storage
+ * (plan `2026-09-26-home-owner-console` §3.4). The patch is sent as is; when the
+ * Home refuses it with `home_policy_widening_unconfirmed` (nothing written),
+ * `confirmWidening` asks the person and, on yes, the identical patch is resent
+ * once with `confirmWidening: true`. Declining returns that refusal unchanged.
+ */
+export async function setHomeAuthenticationPolicies(params: Readonly<{
+    scope: ServerAccountScope;
+    expectedRevision: number;
+    authenticationPolicy?: HomeAuthenticationPolicyV1 | null;
+    teamProviderPolicy?: HomeTeamProviderPolicyV1 | null;
+    identityNetworkPolicy?: HomeIdentityNetworkPolicyV1 | null;
+    confirmWidening?: () => Promise<boolean>;
+}>): Promise<HomeGovernanceAcknowledgedOutcome> {
+    const input = {
+        expectedRevision: params.expectedRevision,
+        ...(params.authenticationPolicy !== undefined
+            ? { authenticationPolicy: params.authenticationPolicy }
+            : {}),
+        ...(params.teamProviderPolicy !== undefined
+            ? { teamProviderPolicy: params.teamProviderPolicy }
+            : {}),
+        ...(params.identityNetworkPolicy !== undefined
+            ? { identityNetworkPolicy: params.identityNetworkPolicy }
+            : {}),
+    };
+    const outcome = await mutate({ scope: params.scope, actionId: 'home.policy.set', input });
+    if (
+        outcome.kind !== 'failed'
+        || outcome.failure.code !== 'home_policy_widening_unconfirmed'
+        || !params.confirmWidening
+        || !await params.confirmWidening()
+    ) {
+        return outcome;
+    }
+    return await mutate({
+        scope: params.scope,
+        actionId: 'home.policy.set',
+        input: { ...input, confirmWidening: true },
+    });
+}
+
+/**
+ * Claims an ownerless Home with the one-time code printed on the server
+ * (`happier-server --print-home-claim-code`). The Home answers every refusal with
+ * `home_claim_refused`; on success the viewer is the owner, so the governance
+ * projection is re-read like any accepted change.
+ */
+export function claimHomeWithCode(params: Readonly<{
+    scope: ServerAccountScope;
+    code: string;
+}>): Promise<HomeGovernanceAcknowledgedOutcome> {
+    return mutate({
+        scope: params.scope,
+        actionId: 'home.governance.claim',
+        input: { code: params.code },
     });
 }
 
@@ -276,6 +370,22 @@ export function listHomeAccounts(params: Readonly<{
 }
 
 /**
+ * One person as Home administration sees them, in one read: the People row plus Teams, counts,
+ * linked providers and recent administration events about them.
+ */
+export function getHomeAccount(params: Readonly<{
+    scope: ServerAccountScope;
+    accountId: string;
+}>): Promise<HomeGovernanceQueryOutcome<HomeAccountDetailV1>> {
+    return query({
+        scope: params.scope,
+        actionId: 'home.accounts.get',
+        input: { accountId: params.accountId },
+        parse: (value) => HomeAccountDetailV1Schema.safeParse(value),
+    });
+}
+
+/**
  * Looks up people on one Home by name.
  *
  * The scope is always stated explicitly rather than inferred from what the
@@ -293,5 +403,172 @@ export function searchHomeAccounts(params: Readonly<{
         actionId: 'home.accounts.search',
         input: { query: params.query.trim(), scope: { kind: 'home' } },
         parse: (value) => HomeAccountSearchResultV1Schema.safeParse(value),
+    });
+}
+
+/**
+ * A mutation answered with a typed value. Nothing here touches the governance projection: Home
+ * settings and mail are not part of what the viewer may do, so the answer itself is the new state.
+ */
+async function mutateForValue<TValue>(params: Readonly<{
+    scope: ServerAccountScope;
+    actionId: HomeGovernanceActionIdV1;
+    input: unknown;
+    parse: (value: unknown) => { success: true; data: TValue } | { success: false };
+}>): Promise<HomeGovernanceValueMutationOutcome<TValue>> {
+    const outcome = await executeHomeAction(params);
+    if (outcome.kind !== 'completed') return outcome;
+    const parsed = params.parse(outcome.result);
+    if (!parsed.success) {
+        return Object.freeze({
+            kind: 'failed' as const,
+            failure: Object.freeze({ kind: 'invalid' as const, retryable: false, code: null }),
+        });
+    }
+    return Object.freeze({ kind: 'succeeded' as const, value: parsed.data });
+}
+
+/** The Home's effective configuration, one entry per registry key, with each value's source. */
+export function getHomeSettings(params: Readonly<{
+    scope: ServerAccountScope;
+}>): Promise<HomeGovernanceQueryOutcome<HomeSettingsProjectionV1>> {
+    return query({
+        scope: params.scope,
+        actionId: 'home.settings.get',
+        input: {},
+        parse: (value) => HomeSettingsProjectionV1Schema.safeParse(value),
+    });
+}
+
+/** A fresh, exact-Home owner read before offering empty Personal Home removal. */
+export function getHomeEmptiness(params: Readonly<{
+    scope: ServerAccountScope;
+}>): Promise<HomeGovernanceQueryOutcome<HomeEmptinessV1>> {
+    return query({
+        scope: params.scope,
+        actionId: 'home.emptiness.get',
+        input: {},
+        parse: (value) => HomeEmptinessV1Schema.safeParse(value),
+    });
+}
+
+/**
+ * Stores Home setting values against the revision the caller last read. `null` clears a stored
+ * value; secrets travel only as Replace or Clear, never as a value.
+ */
+export function setHomeSettings(params: Readonly<{
+    scope: ServerAccountScope;
+    expectedRevision: number;
+    values: Readonly<Record<string, unknown>>;
+    secrets?: Readonly<Record<string, HomeSettingSecretWriteV1>>;
+    /** Discard: the Home returns every pending restart value to what its server started with. */
+    discardPendingRestart?: true;
+}>): Promise<HomeGovernanceValueMutationOutcome<HomeSettingsProjectionV1>> {
+    return mutateForValue({
+        scope: params.scope,
+        actionId: 'home.settings.set',
+        input: {
+            expectedRevision: params.expectedRevision,
+            values: params.values,
+            ...(params.secrets && Object.keys(params.secrets).length > 0 ? { secrets: params.secrets } : {}),
+            ...(params.discardPendingRestart ? { discardPendingRestart: true as const } : {}),
+        },
+        parse: (value) => HomeSettingsProjectionV1Schema.safeParse(value),
+    });
+}
+
+/** The key and reason of a `home_settings_invalid` refusal, or `null` for any other failure. */
+export function readHomeSettingsInvalidFailure(
+    failure: HomeDomainFailure,
+): Readonly<{ key: string; reason: HomeSettingsInvalidReasonV1 }> | null {
+    const parsed = HomeSettingsInvalidErrorV1Schema.safeParse(failure.details);
+    return parsed.success ? Object.freeze({ key: parsed.data.key, reason: parsed.data.reason }) : null;
+}
+
+/** Whether this Home can send mail: a configured transport and a link a mail can carry. */
+export function getHomeMailDelivery(params: Readonly<{
+    scope: ServerAccountScope;
+}>): Promise<HomeGovernanceQueryOutcome<HomeMailDeliveryReadinessV1>> {
+    return query({
+        scope: params.scope,
+        actionId: 'home.mailDelivery.get',
+        input: {},
+        parse: (value) => HomeMailDeliveryReadinessV1Schema.safeParse(value),
+    });
+}
+
+/** Sends the Home's fixed test message; a failure is reported by its class only. */
+export function sendHomeTestEmail(params: Readonly<{
+    scope: ServerAccountScope;
+    to: string;
+}>): Promise<HomeGovernanceValueMutationOutcome<HomeMailDeliveryTestResultV1>> {
+    return mutateForValue({
+        scope: params.scope,
+        actionId: 'home.mailDelivery.test',
+        input: { to: params.to.trim() },
+        parse: (value) => HomeMailDeliveryTestResultV1Schema.safeParse(value),
+    });
+}
+
+/** One page of the Home's administration events, newest first. */
+export function listHomeAudit(params: Readonly<{
+    scope: ServerAccountScope;
+    cursor?: string | null;
+    limit?: number;
+    targetId?: string;
+}>): Promise<HomeGovernanceQueryOutcome<HomeAuditListResultV1>> {
+    return query({
+        scope: params.scope,
+        actionId: 'home.audit.list',
+        input: {
+            ...(params.cursor ? { cursor: params.cursor } : {}),
+            ...(params.limit ? { limit: params.limit } : {}),
+            ...(params.targetId ? { targetId: params.targetId } : {}),
+        },
+        parse: (value) => HomeAuditListResultV1Schema.safeParse(value),
+    });
+}
+
+/** How this Home is reached: effective addresses with their sources, the host's access method, direct connections. */
+export function getHomeReachability(params: Readonly<{
+    scope: ServerAccountScope;
+}>): Promise<HomeGovernanceQueryOutcome<HomeReachabilityV1>> {
+    return query({
+        scope: params.scope,
+        actionId: 'home.reachability.get',
+        input: {},
+        parse: (value) => HomeReachabilityV1Schema.safeParse(value),
+    });
+}
+
+/**
+ * Turns direct (Iroh) connections on or off. Off retires the current direct-connection identity for
+ * good; the surface confirms that with the person before calling.
+ */
+export function setHomeIrohMode(params: Readonly<{
+    scope: ServerAccountScope;
+    mode: HomeIrohModeV1;
+}>): Promise<HomeGovernanceValueMutationOutcome<HomeReachabilityV1>> {
+    return mutateForValue({
+        scope: params.scope,
+        actionId: 'home.reachability.iroh.set',
+        input: { mode: params.mode },
+        parse: (value) => HomeReachabilityV1Schema.safeParse(value),
+    });
+}
+
+/**
+ * One retention sweep of the Home's current rules with deletion forced off: per-domain would-delete
+ * counts and why each domain stopped. Read-only; the answer is request state and is not kept. A
+ * sweep that holds the lock answers `retention_sweep_in_progress`.
+ */
+export function runHomeRetentionDryRun(params: Readonly<{
+    scope: ServerAccountScope;
+}>): Promise<HomeGovernanceQueryOutcome<HomeRetentionDryRunResultV1>> {
+    return query({
+        scope: params.scope,
+        actionId: 'home.retention.dryRun',
+        input: {},
+        parse: (value) => HomeRetentionDryRunResultV1Schema.safeParse(value),
     });
 }

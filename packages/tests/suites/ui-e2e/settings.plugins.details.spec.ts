@@ -1651,7 +1651,6 @@ test.describe('ui e2e: plugin settings reload', () => {
                 toolContinuationObserved: firstRunFixtureEventsJson.includes('fixture_continue'),
                 cancelObserved: firstRunFixtureEventsJson.includes('fixture_cancel'),
                 controllerClosed: firstRunFixtureEventsJson.includes('closed'),
-                reloadGenerationChanged: generationAfterReload !== generationBeforeReload,
                 reloadedControllerConnected: postReloadFixtureEventsJson.includes('connected'),
                 deletedCredentialFailedClosed: true,
                 sourceCredentialLeakScanPassed: true,
@@ -1920,7 +1919,7 @@ test.describe('ui e2e: plugin settings reload', () => {
             runtimeAttestation = attestCandidateInspectorRuntime({
                 expectedCliVersion: packedCandidate.attestation.cliVersion,
                 expectedInspectorWebArtifactDigest:
-                    packedCandidate.attestation.inspectorWebArtifactDigest,
+                    packedCandidate.attestation.inspectorArtifactDigest,
                 daemonState: daemon.state,
                 projectionResponse,
             });
@@ -2348,20 +2347,10 @@ test.describe('ui e2e: plugin settings reload', () => {
                 sdkIntegrity: packedCandidate.attestation.sdkIntegrity,
                 cliVersion: runtimeAttestation.cliVersion,
                 cliIntegrity: packedCandidate.attestation.cliIntegrity,
-                inspectorContributionId: packedCandidate.attestation.inspectorContributionId,
+                inspectorArtifactId: packedCandidate.attestation.inspectorArtifactId,
                 inspectorWebArtifactDigest: runtimeAttestation.inspectorWebArtifactDigest,
-                inspectorIosArtifactDigest:
-                    packedCandidate.attestation.inspectorIosArtifactDigest,
-                inspectorAndroidArtifactDigest:
-                    packedCandidate.attestation.inspectorAndroidArtifactDigest,
-                inspectorRepackContainerName:
-                    packedCandidate.attestation.inspectorRepackContainerName,
-                inspectorRepackModulePath:
-                    packedCandidate.attestation.inspectorRepackModulePath,
-                inspectorRepackExportName:
-                    packedCandidate.attestation.inspectorRepackExportName,
-                inspectorPlatforms: JSON.stringify(
-                    packedCandidate.attestation.inspectorPlatforms,
+                inspectorUniversalArtifact: JSON.stringify(
+                    packedCandidate.attestation.inspectorArtifact,
                 ),
                 publicAuthoringPluginId: publicAuthoring.pluginId,
                 publicAuthoringVersion: publicAuthoring.version,

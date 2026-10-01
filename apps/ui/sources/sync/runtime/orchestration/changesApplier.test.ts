@@ -18,6 +18,7 @@ function buildPlanned(partial: {
     changes?: ApiChangeEntry[];
     workflowRunIdsToRefresh?: string[];
     sessionIdsToCatchUp?: string[];
+    sessionRowRefreshIds?: string[];
     sessionTranscriptRepairs?: PlannedChangeActions['sessionTranscriptRepairs'];
     sessionFolderAssignmentSessionIds?: string[];
     sessionOrganization?: PlannedChangeActions['sessionOrganization'];
@@ -30,6 +31,7 @@ function buildPlanned(partial: {
         changes: partial.changes ?? [],
         workflowRunIdsToRefresh: partial.workflowRunIdsToRefresh ?? [],
         sessionIdsToCatchUp: partial.sessionIdsToCatchUp ?? [],
+        sessionRowRefreshIds: partial.sessionRowRefreshIds ?? [],
         sessionTranscriptRepairs: partial.sessionTranscriptRepairs ?? [],
         sessionFolderAssignmentSessionIds: partial.sessionFolderAssignmentSessionIds ?? [],
         sessionOrganization: partial.sessionOrganization ?? { mode: 'none' },
@@ -70,6 +72,28 @@ function buildChange(params: {
 }
 
 describe('changesApplier', () => {
+    it('checkpoints a hydrated session when its history reader deliberately defers newer content', async () => {
+        let deferred = false;
+        const result = await applyPlannedChangeActions({
+            planned: buildPlanned({
+                changes: [buildChange({ cursor: 1, kind: 'session', entityId: 's1', hint: { lastMessageSeq: 900 } })],
+                sessionIdsToCatchUp: ['s1'],
+                invalidate: { sessions: true },
+            }),
+            credentials,
+            isSessionMessagesLoaded: () => true,
+            shouldCatchUpSessionMessages: () => true,
+            getSessionMaterializedMaxSeq: () => 100,
+            isSessionMessagesDeferred: () => deferred,
+            invalidate: { sessions: async () => {} },
+            invalidateMessagesForSession: async () => { deferred = true; },
+            invalidateScmStatusForSession: () => {},
+            applyTodoSocketUpdates: async () => {},
+            kvBulkGet: async () => ({ values: [] }),
+        });
+
+        expect(result).toMatchObject({ status: 'complete', safeAdvanceCursor: '1', blockedChanges: 0 });
+    });
     it('refreshes the exact workflow Run before advancing its Account change', async () => {
         const refreshWorkflowRun = vi.fn(async () => {});
         const change = buildChange({ cursor: 1, kind: 'account', entityId: 'workflow-run:run-42' });
@@ -449,6 +473,33 @@ describe('changesApplier', () => {
         expect(invalidateScmStatusForSession).toHaveBeenCalledWith('s1');
     });
 
+    it('refreshes listed rows by id instead of the list, and holds the cursor until they land', async () => {
+        const planned = planSyncActionsFromChanges([
+            buildChange({ cursor: 1, kind: 'session', entityId: 'listed', hint: { lastMessageSeq: 4, lastMessageId: 'm4' } }),
+        ], { isSessionListMember: (sessionId) => sessionId === 'listed' });
+        const invalidateSessions = vi.fn(async () => {});
+        let rowRefreshFails = true;
+        const refreshSessionRows = vi.fn(async (_sessionIds: readonly string[]) => {
+            if (rowRefreshFails) throw new Error('offline');
+        });
+        const apply = () => applyPlannedChangeActions({
+            planned,
+            credentials,
+            isSessionMessagesLoaded: () => false,
+            invalidate: { sessions: invalidateSessions, sessionRows: refreshSessionRows },
+            invalidateMessagesForSession: async () => {},
+            invalidateScmStatusForSession: () => {},
+            applyTodoSocketUpdates: async () => {},
+            kvBulkGet: async () => ({ values: [] }),
+        });
+
+        expect(await apply()).toMatchObject({ status: 'partial', blockedCursor: '1', blockedReason: 'partial-materialization' });
+        rowRefreshFails = false;
+        expect(await apply()).toMatchObject({ status: 'complete', safeAdvanceCursor: '1' });
+        expect(refreshSessionRows).toHaveBeenLastCalledWith(['listed']);
+        expect(invalidateSessions).not.toHaveBeenCalled();
+    });
+
     it('requires shell hydration for every changed session while limiting transcript catch-up to loaded sessions', async () => {
         const invalidateSessions = vi.fn(async (_context: {
             requiredHydrationSessionIds: readonly string[];
@@ -759,6 +810,7 @@ describe('changesApplier', () => {
             }),
             credentials,
             isSessionMessagesLoaded: () => true,
+            isSessionMessagesDeferred: () => true,
             invalidate: {
                 sessions: invalidateSessions,
             },
@@ -999,6 +1051,7 @@ describe('changesApplier', () => {
             }),
             credentials,
             isSessionMessagesLoaded: () => true,
+            isSessionMessagesDeferred: () => true,
             invalidate: {},
             invalidateMessagesForSession,
             invalidateScmStatusForSession: () => {},
@@ -1216,6 +1269,7 @@ describe('changesApplier', () => {
             }),
             credentials,
             isSessionMessagesLoaded: () => true,
+            isSessionMessagesDeferred: () => true,
             getSessionMaterializedMaxSeq: () => 15,
             invalidate: {},
             invalidateMessagesForSession: async () => {},

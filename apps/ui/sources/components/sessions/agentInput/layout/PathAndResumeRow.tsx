@@ -1,10 +1,10 @@
 import * as React from 'react';
-import { Pressable, View, type View as RNView } from 'react-native';
+import { View, type View as RNView } from 'react-native';
 import { ResumeChip } from './ResumeChip';
-import { normalizeNodeForView } from '@/components/ui/rendering/normalizeNodeForView';
-import { Text } from '@/components/ui/text/Text';
-import { Icon } from '@/components/ui/icons/Icon';
-import { AGENT_INPUT_CHIP_ICON_SIZE_PX, AGENT_INPUT_CHIP_ICON_STYLE } from '@/components/sessions/agentInput/definitions/agentInputChipIconMetrics';
+import {
+    AgentInputFolderChip,
+    type AgentInputFolderChipState,
+} from '@/components/sessions/agentInput/definitions/AgentInputFolderChip';
 
 
 export type PathAndResumeRowStyles = {
@@ -22,10 +22,10 @@ export type PathAndResumeRowProps = {
     fillAvailableWidth?: boolean;
     showChipLabels: boolean;
     iconColor: string;
-    currentPath?: string | null;
+    folderChipState: AgentInputFolderChipState;
     pathChipAnchorRef?: React.RefObject<RNView | null>;
     onPathClick?: () => void;
-    emptyPathLabel: string;
+    onRemoveFolder?: () => void;
     resumeSessionId?: string | null;
     resumeChipAnchorRef?: React.RefObject<RNView | null>;
     onResumeClick?: () => void;
@@ -45,35 +45,18 @@ export function PathAndResumeRow(props: PathAndResumeRowProps) {
             <View style={[props.styles.actionButtonsLeft, widthFillStyle]}>
                 {leadingControls}
                 {hasPath ? (
-                    <Pressable
-                        ref={props.pathChipAnchorRef}
-                        testID="agent-input-path-chip"
-                        onPress={props.onPathClick}
-                        hitSlop={{ top: 5, bottom: 10, left: 0, right: 0 }}
-                        style={(p) => ([
-                            props.styles.actionChip,
-                            p.pressed ? props.styles.actionChipPressed : null,
-                            // Keep the path chip readable on mobile: let the row wrap it as a whole instead of
-                            // compressing the text into an icon-only sliver.
-                            { flexShrink: 0, minWidth: 0, maxWidth: '100%' },
-                        ])}
-                    >
-                        {normalizeNodeForView(
-                            <Icon
-                                name="folder"
-                                size={AGENT_INPUT_CHIP_ICON_SIZE_PX}
-                                color={props.iconColor} style={AGENT_INPUT_CHIP_ICON_STYLE} />,
-                        )}
-                        <Text
-                            numberOfLines={1}
-                            ellipsizeMode="middle"
-                            style={[props.styles.actionChipText, { flexShrink: 1 }]}
-                        >
-                            {typeof props.currentPath === 'string' && props.currentPath.length > 0
-                                ? props.currentPath
-                                : props.emptyPathLabel}
-                        </Text>
-                    </Pressable>
+                    // Keep the folder readable on phones: the row wraps the chip whole instead of
+                    // compressing it into an icon-only sliver.
+                    <AgentInputFolderChip
+                        anchorRef={props.pathChipAnchorRef}
+                        state={props.folderChipState}
+                        tint={props.iconColor}
+                        chipStyle={(pressed) => [props.styles.actionChip, pressed ? props.styles.actionChipPressed : null]}
+                        textStyle={props.styles.actionChipText}
+                        onPress={props.onPathClick!}
+                        onRemove={props.onRemoveFolder}
+                        layout="wrap"
+                    />
                 ) : null}
 
                 {hasResume ? (

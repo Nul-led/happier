@@ -23,6 +23,7 @@ import { resolveDarwinBackgroundServiceSpawnDirectoryFailure } from '../spawn/re
 import { applyInitialTranscriptAfterSeqToAttachPayload } from '../sessionEncryption/applyInitialTranscriptAfterSeqToAttachPayload';
 import { buildProviderSpawnErrorResult } from '../spawn/buildProviderSpawnErrorResult';
 import { resolveConfiguredAcpBackendFromAccountSettings } from '@/agent/acp/catalog/configured/resolveBackend';
+import { resolvePreparedSessionDirectory } from './resolvePreparedSessionDirectory';
 
 /**
  * A requested Agent that is not installed in the current catalog is an invalid
@@ -57,6 +58,8 @@ export type PreparedExecuteSpawnSessionRequest = Readonly<{
 }> & Pick<
     SpawnSessionOptions,
     | 'directory'
+    | 'directoryKind'
+    | 'sessionCreationTag'
     | 'sessionId'
     | 'existingSessionId'
     | 'permissionMode'
@@ -119,7 +122,6 @@ export async function prepareExecuteSpawnSessionRequest(
     }
 
     const {
-        directory: requestedDirectory,
         sessionId,
         resume,
         existingSessionId,
@@ -153,7 +155,9 @@ export async function prepareExecuteSpawnSessionRequest(
         ownerMetadata,
         existingSessionWorkspacePath,
     } = backendIdentityResolution;
-    const directory = existingSessionWorkspacePath ?? requestedDirectory;
+    const { directory, directoryKind, sessionCreationTag } = resolvePreparedSessionDirectory({
+        options, normalizedExistingSessionId, ownerMetadata, existingSessionWorkspacePath,
+    });
     let persistedProviderResumeState: ReturnType<typeof readPersistedProviderResumeState>;
     try {
         const ownerProviderResumeMetadata = ownerMetadata
@@ -273,6 +277,8 @@ export async function prepareExecuteSpawnSessionRequest(
 
     return {
         directory,
+        directoryKind,
+        ...(sessionCreationTag ? { sessionCreationTag } : {}),
         sessionId,
         existingSessionId,
         permissionMode,

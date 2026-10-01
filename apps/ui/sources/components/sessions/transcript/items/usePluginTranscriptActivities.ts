@@ -355,7 +355,7 @@ export function usePluginTranscriptActivities(params: Readonly<{
                 pluginId: profile.pluginId,
                 machineId: params.machineId!,
                 serverId: params.serverId,
-                expectedGeneration: generationKey,
+                expectedCallerOccurrenceId: profile.occurrenceId,
                 context: { kind: 'session', sessionId: params.sessionId },
             });
             if (!lease) return null;

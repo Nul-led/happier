@@ -1,833 +1,213 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { ManagedConnectionState } from '@happier-dev/connection-supervisor';
+import { createSocketIoBoundaryStub } from '@/dev/testkit/mocks/socketIo';
+import { createSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
+import { readRpcRequestDisposition } from '@happier-dev/sync-client';
 
-type ManagedConnectionState = Readonly<{
-    phase: 'idle' | 'connecting' | 'online' | 'offline' | 'auth_failed' | 'shutting_down';
-    reason: string | null;
-    attempt: number;
-    nextRetryAt: number | null;
-    lastConnectedAt: number | null;
-    lastDisconnectedAt: number | null;
-    lastErrorMessage: string | null;
-}>;
-
-type TransportDisconnectEvent = Readonly<{
-    intentional: boolean;
-    reason?: string | null;
-    error?: unknown;
-}>;
-
-type ManagedConnectionTransport = Readonly<{
-    connect: () => Promise<void>;
-    disconnect: (params?: { intentional?: boolean }) => Promise<void>;
-    destroy: () => Promise<void>;
-    isConnected: () => boolean;
-    onConnected: (listener: () => void) => () => void;
-    onDisconnected: (listener: (event: TransportDisconnectEvent) => void) => () => void;
-    onError: (listener: (error: unknown) => void) => () => void;
-}>;
-
-type SocketStub = Readonly<{
-    on: (event: string, listener: (...args: unknown[]) => void) => void;
-    onAny: (listener: (event: string, data: unknown) => void) => void;
-    timeout: (ms: number) => Readonly<{ emitWithAck: (event: string, payload: unknown) => Promise<unknown> }>;
-    emitWithAck: (event: string, payload: unknown) => Promise<unknown>;
-}>;
-
+const ioSpy = vi.hoisted(() => vi.fn());
+let activeSocket: typeof import('./apiSocket')['apiSocket'] | undefined;
 const reachability = vi.hoisted(() => ({
-    subscribeSpy: vi.fn(),
-    startSpy: vi.fn(async (..._args: unknown[]) => {}),
-    invalidateSpy: vi.fn(async (..._args: unknown[]) => {}),
-    restartSpy: vi.fn((..._args: unknown[]) => {}),
-    reportSpy: vi.fn((..._args: unknown[]) => {}),
-    listenersByServerUrl: new Map<string, (state: ManagedConnectionState) => void>(),
+    listeners: new Map<string, (state: ManagedConnectionState) => void>(),
+    invalidate: vi.fn(async (..._args: unknown[]) => {}),
+    restart: vi.fn((..._args: unknown[]) => {}),
+    report: vi.fn((..._args: unknown[]) => {}),
 }));
-
-const transportFactory = vi.hoisted(() => ({
-    createSyncSocketTransportSpy: vi.fn(),
-    lastController: null as null | {
-        transport: ManagedConnectionTransport;
-        triggerConnected: () => void;
-        triggerDisconnected: (event: TransportDisconnectEvent) => void;
-        triggerError: (error: unknown) => void;
+vi.mock('socket.io-client', () => ({ io: (...args: unknown[]) => ioSpy(...args) }));
+vi.mock('@/sync/runtime/connectivity/serverReachabilitySupervisorPool', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/sync/runtime/connectivity/serverReachabilitySupervisorPool')>(),
+    subscribeServerReachabilityState: (url: string, listener: (state: ManagedConnectionState) => void) => {
+        reachability.listeners.set(url, listener);
+        listener(state('idle'));
+        return () => { reachability.listeners.delete(url); };
     },
+    startServerReachabilitySupervisor: vi.fn(async () => {}),
+    stopServerReachabilitySupervisor: vi.fn(async () => {}),
+    invalidateServerReachabilitySupervisor: (...args: unknown[]) => reachability.invalidate(...args),
+    reportServerRestarting: (...args: unknown[]) => reachability.restart(...args),
+    reportServerUnreachable: (...args: unknown[]) => reachability.report(...args),
 }));
 
-vi.mock('@/sync/runtime/connectivity/serverReachabilitySupervisorPool', async (importOriginal) => {
-    const actual = await importOriginal<typeof import('@/sync/runtime/connectivity/serverReachabilitySupervisorPool')>();
-    return {
-        ...actual,
-        subscribeServerReachabilityState: (serverUrl: string, listener: (state: ManagedConnectionState) => void) => {
-            reachability.subscribeSpy(serverUrl, listener);
-            reachability.listenersByServerUrl.set(serverUrl, listener);
-            listener({
-                phase: 'idle',
-                reason: null,
-                attempt: 0,
-                nextRetryAt: null,
-                lastConnectedAt: null,
-                lastDisconnectedAt: null,
-                lastErrorMessage: null,
-            });
-            return () => {
-                reachability.listenersByServerUrl.delete(serverUrl);
-            };
-        },
-        startServerReachabilitySupervisor: (...args: unknown[]) => reachability.startSpy(...args),
-        invalidateServerReachabilitySupervisor: (...args: unknown[]) => reachability.invalidateSpy(...args),
-        reportServerRestarting: (...args: unknown[]) => reachability.restartSpy(...args),
-        reportServerUnreachable: (...args: unknown[]) => reachability.reportSpy(...args),
-    };
-});
-
-vi.mock('@/sync/api/session/connection/createSyncSocketTransport', () => ({
-    createSyncSocketTransport: (...args: unknown[]) => transportFactory.createSyncSocketTransportSpy(...args),
-}));
-
-async function settleAsyncWork() {
-    await new Promise<void>((resolve) => queueMicrotask(resolve));
-    if (typeof vi.isFakeTimers === 'function' && vi.isFakeTimers()) {
-        await vi.advanceTimersByTimeAsync(0);
-    }
+const endpoint = 'https://server.example.test';
+function state(phase: ManagedConnectionState['phase']): ManagedConnectionState {
+    return { phase, reason: phase === 'offline' ? 'transport_disconnect' : null, attempt: 1,
+        nextRetryAt: null, lastConnectedAt: null, lastDisconnectedAt: null, lastErrorMessage: null };
 }
-
-async function advanceUntil(predicate: () => boolean, maxSteps = 25) {
-    for (let step = 0; step < maxSteps; step += 1) {
-        await settleAsyncWork();
-        if (predicate()) return;
-        if (typeof vi.isFakeTimers === 'function' && vi.isFakeTimers()) {
-            try {
-                await vi.advanceTimersToNextTimerAsync();
-            } catch {
-                // No more timers to advance.
-                return;
-            }
-        }
-    }
+function emitReachability(phase: ManagedConnectionState['phase']) {
+    const listener = reachability.listeners.get(endpoint);
+    if (!listener) throw new Error('Missing reachability listener');
+    listener(state(phase));
 }
-
-function createTransportController(): {
-    transport: ManagedConnectionTransport;
-    triggerConnected: () => void;
-    triggerDisconnected: (event: TransportDisconnectEvent) => void;
-    triggerError: (error: unknown) => void;
-} {
-    const connectedListeners = new Set<() => void>();
-    const disconnectedListeners = new Set<(event: TransportDisconnectEvent) => void>();
-    const errorListeners = new Set<(error: unknown) => void>();
-    let connected = false;
-
-    const controller = {
-        transport: {
-            async connect() {
-                connected = true;
-                connectedListeners.forEach((listener) => listener());
-            },
-            async disconnect(params?: { intentional?: boolean }) {
-                const wasConnected = connected;
-                connected = false;
-                if (!wasConnected) return;
-                disconnectedListeners.forEach((listener) =>
-                    listener({
-                        intentional: params?.intentional === true,
-                        reason: params?.intentional === true ? 'manual' : 'disconnect',
-                    }),
-                );
-            },
-            async destroy() {
-                connected = false;
-                connectedListeners.clear();
-                disconnectedListeners.clear();
-                errorListeners.clear();
-            },
-            isConnected() {
-                return connected;
-            },
-            onConnected(listener: () => void) {
-                connectedListeners.add(listener);
-                return () => connectedListeners.delete(listener);
-            },
-            onDisconnected(listener: (event: TransportDisconnectEvent) => void) {
-                disconnectedListeners.add(listener);
-                return () => disconnectedListeners.delete(listener);
-            },
-            onError(listener: (error: unknown) => void) {
-                errorListeners.add(listener);
-                return () => errorListeners.delete(listener);
-            },
-        },
-        triggerConnected() {
-            connected = true;
-            connectedListeners.forEach((listener) => listener());
-        },
-        triggerDisconnected(event: TransportDisconnectEvent) {
-            connected = false;
-            disconnectedListeners.forEach((listener) => listener(event));
-        },
-        triggerError(error: unknown) {
-            errorListeners.forEach((listener) => listener(error));
-        },
-    };
-
-    return controller;
+async function boot(options: Readonly<{ autoConnect?: boolean; token?: string }> = {}) {
+    const boundary = createSocketIoBoundaryStub(options);
+    ioSpy.mockReturnValue(boundary.socket);
+    const { apiSocket } = await import('./apiSocket');
+    activeSocket = apiSocket;
+    apiSocket.initialize({ endpoint, token: options.token ?? 'token-1' }, null);
+    return { apiSocket, ...boundary };
 }
-
-function createSessionEncryptionStub() {
-    return {
-        getSessionEncryption: () => ({
-            encryptRaw: async (value: unknown) => value,
-            decryptRaw: async (value: unknown) => value,
-        }),
-        getMachineEncryption: vi.fn(),
-    } as never;
-}
-
-function createSocketStub(emitWithAck: (event: string, payload: unknown) => Promise<unknown>): SocketStub {
-    return {
-        on: vi.fn(),
-        onAny: vi.fn(),
-        timeout: vi.fn((_ms: number) => ({ emitWithAck })),
-        emitWithAck,
-    };
-}
-
-function emitReachability(serverUrl: string, state: ManagedConnectionState): void {
-    const listener = reachability.listenersByServerUrl.get(serverUrl);
-    if (!listener) {
-        throw new Error(`Missing reachability listener for ${serverUrl}`);
-    }
-    listener(state);
+async function connect(socket: ReturnType<typeof createSocketIoBoundaryStub>['socket']) {
+    emitReachability('online');
+    await vi.waitFor(() => expect(socket.connected).toBe(true));
 }
 
 describe('apiSocket reconnect semantics', () => {
     afterEach(() => {
-        reachability.subscribeSpy.mockReset();
-        reachability.startSpy.mockReset();
-        reachability.invalidateSpy.mockReset();
-        reachability.restartSpy.mockReset();
-        reachability.reportSpy.mockReset();
-        reachability.listenersByServerUrl.clear();
-        transportFactory.createSyncSocketTransportSpy.mockReset();
-        transportFactory.lastController = null;
-        vi.resetModules();
-        vi.useRealTimers();
+        activeSocket?.disconnect(); activeSocket = undefined;
+        reachability.listeners.clear(); reachability.invalidate.mockClear();
+        reachability.restart.mockClear(); reachability.report.mockClear();
+        ioSpy.mockReset(); vi.resetModules(); vi.useRealTimers();
+    });
+
+    it.each(['revoked', 'invalid-token'] as const)('retires the explicit frame authority on %s without Account supervision', async (failure) => {
+        const boundary = createSocketIoBoundaryStub({ autoConnect: failure === 'revoked' });
+        ioSpy.mockReturnValue(boundary.socket);
+        const { apiSocket } = await import('./apiSocket');
+        activeSocket = apiSocket;
+        const onCredentialRejected = vi.fn();
+        apiSocket.initialize({ endpoint, token: 'hap_v1_child',
+            socketRole: { clientType: 'session-scoped', sessionId: 'frame-session' },
+            request: async () => new Response(JSON.stringify({ cursor: 0 })),
+            isCurrent: () => true, onCredentialRejected,
+        }, null);
+        await vi.waitFor(() => expect(failure === 'revoked' ? boundary.socket.connected : boundary.socket.active).toBe(true));
+        if (failure === 'revoked') boundary.trigger('disconnect', 'io server disconnect');
+        else boundary.trigger('connect_error', Object.assign(new Error('invalid-token'), { data: { statusCode: 401, error: 'invalid-token' } }));
+        await vi.waitFor(() => expect(onCredentialRejected).toHaveBeenCalledOnce());
+        await expect(apiSocket.emitWithAck('message', { sid: 'frame-session' })).rejects.toMatchObject({ code: 'not_authenticated' });
+        expect(reachability.listeners.size).toBe(0);
+        expect(reachability.invalidate).not.toHaveBeenCalled();
     });
 
     it('publishes rendered Session presence on the existing focused Home socket', async () => {
-        const controller = createTransportController();
-        const emissions: Array<[string, unknown]> = [];
-        const emitWithAck = async (event: string, payload: unknown) => {
-            emissions.push([event, payload]);
-            return {v:1, ok:true, admittedSessionIds:['presence-session']};
-        };
-        transportFactory.createSyncSocketTransportSpy.mockReturnValue({
-            socket: {...createSocketStub(emitWithAck), connected:true, emit:vi.fn(), off:vi.fn()},
-            transport: controller.transport,
-        });
-        const { apiSocket } = await import('./apiSocket');
-        const {markSessionSurfaceVisible, markSessionSurfaceHidden} = await import('@/sync/domains/session/sessionSurfaceVisibility');
-        markSessionSurfaceVisible('presence-session', 'presence-home');
-        const endpoint = 'https://presence.example.test';
-        // Real JWT-shaped authenticated subject at the external transport boundary.
-        const token = `e30.${Buffer.from(JSON.stringify({sub:'self'})).toString('base64')}.signature`;
-        apiSocket.initialize({endpoint, token, serverId:'presence-home', generation:1}, createSessionEncryptionStub());
+        const token = `e30.${Buffer.from(JSON.stringify({ sub: 'self' })).toString('base64')}.signature`;
+        const { apiSocket, socket } = await boot({ token });
+        const { markSessionSurfaceVisible, markSessionSurfaceHidden } = await import('@/sync/domains/session/sessionSurfaceVisibility');
+        const { getActiveServerSnapshot } = await import('@/sync/domains/server/serverRuntime');
+        const serverId = getActiveServerSnapshot().serverId;
+        markSessionSurfaceVisible('presence-session', serverId);
         try {
-            emitReachability(endpoint, {
-                phase:'online', reason:null, attempt:0, nextRetryAt:null,
-                lastConnectedAt:Date.now(), lastDisconnectedAt:null, lastErrorMessage:null,
-            });
-            await settleAsyncWork();
-            await vi.waitFor(() => expect(emissions).toContainEqual(
-                ['session-human-presence:visible-replace', {v:1,sessionIds:['presence-session']}],
-            ), {timeout:15_000});
-        } finally {
-            apiSocket.disconnect();
-            markSessionSurfaceHidden('presence-session', 'presence-home');
-        }
+            socket.emitWithAck.mockResolvedValue({ v: 1, ok: true, admittedSessionIds: ['presence-session'] });
+            await connect(socket);
+            await vi.waitFor(() => expect(socket.emitWithAck.mock.calls).toContainEqual([
+                'session-human-presence:visible-replace', { v: 1, sessionIds: ['presence-session'] },
+            ]), { timeout: 15_000 });
+        } finally { apiSocket.disconnect(); markSessionSurfaceHidden('presence-session', serverId); }
     });
 
-    it('fires onReconnected only after a transport outage cycle', async () => {
-        const controller = createTransportController();
-        transportFactory.lastController = controller;
-        transportFactory.createSyncSocketTransportSpy.mockImplementation((params: any) => ({
-            socket: { on: vi.fn(), onAny: vi.fn() },
-            transport: controller.transport,
-            ...params,
-        }));
-
-        const { apiSocket } = await import('./apiSocket');
-        const onReconnected = vi.fn();
-        apiSocket.onReconnected(onReconnected);
-
-        const endpoint = 'https://server.example.test';
-        apiSocket.initialize({ endpoint, token: 'token-1' }, { getSessionEncryption: vi.fn(), getMachineEncryption: vi.fn() } as never);
-
-        await settleAsyncWork();
-        expect(onReconnected).not.toHaveBeenCalled();
-
-        emitReachability(endpoint, {
-            phase: 'online',
-            reason: null,
-            attempt: 1,
-            nextRetryAt: null,
-            lastConnectedAt: Date.now(),
-            lastDisconnectedAt: null,
-            lastErrorMessage: null,
-        });
-        await settleAsyncWork();
-
-        controller.triggerDisconnected({ intentional: false, reason: 'transport close', error: new Error('transport close') });
-        await settleAsyncWork();
-
-        emitReachability(endpoint, {
-            phase: 'offline',
-            reason: 'network_error',
-            attempt: 2,
-            nextRetryAt: Date.now() + 1000,
-            lastConnectedAt: Date.now(),
-            lastDisconnectedAt: Date.now(),
-            lastErrorMessage: 'offline',
-        });
-        await settleAsyncWork();
-
-        emitReachability(endpoint, {
-            phase: 'online',
-            reason: null,
-            attempt: 3,
-            nextRetryAt: null,
-            lastConnectedAt: Date.now(),
-            lastDisconnectedAt: Date.now(),
-            lastErrorMessage: null,
-        });
-        await settleAsyncWork();
-
+    it('fires onReconnected only after an unintentional transport outage cycle', async () => {
+        const { apiSocket, socket, trigger } = await boot();
+        const onReconnected = vi.fn(); apiSocket.onReconnected(onReconnected);
+        await connect(socket); expect(onReconnected).not.toHaveBeenCalled();
+        trigger('disconnect', 'transport close');
+        emitReachability('offline'); await connect(socket);
         expect(onReconnected).toHaveBeenCalledTimes(1);
     });
 
-    it('invalidates reachability instead of reporting generic unreachable when the socket transport drops', async () => {
-        const controller = createTransportController();
-        transportFactory.lastController = controller;
-        transportFactory.createSyncSocketTransportSpy.mockImplementation((params: any) => ({
-            socket: { on: vi.fn(), onAny: vi.fn() },
-            transport: controller.transport,
-            ...params,
-        }));
-
-        const { apiSocket } = await import('./apiSocket');
-
-        const endpoint = 'https://server.example.test';
-        apiSocket.initialize({ endpoint, token: 'token-1' }, { getSessionEncryption: vi.fn(), getMachineEncryption: vi.fn() } as never);
-
-        emitReachability(endpoint, {
-            phase: 'online',
-            reason: null,
-            attempt: 1,
-            nextRetryAt: null,
-            lastConnectedAt: Date.now(),
-            lastDisconnectedAt: null,
-            lastErrorMessage: null,
-        });
-        await settleAsyncWork();
-
-        controller.triggerDisconnected({ intentional: false, reason: 'transport close', error: new Error('transport close') });
-        await settleAsyncWork();
-
-        expect(reachability.invalidateSpy).toHaveBeenCalledWith({ serverUrl: endpoint, token: 'token-1' });
-        expect(reachability.reportSpy).not.toHaveBeenCalled();
+    it('invalidates reachability when the network transport drops', async () => {
+        const { socket, trigger } = await boot(); await connect(socket);
+        trigger('disconnect', 'transport close');
+        expect(reachability.invalidate).toHaveBeenCalledWith({ serverUrl: endpoint, token: 'token-1' });
+        expect(reachability.report).not.toHaveBeenCalled();
     });
 
-    it('reports planned server restart socket events to the reachability supervisor', async () => {
-        const controller = createTransportController();
-        const socketListeners = new Map<string, (payload: unknown) => void>();
-        const socket = {
-            onAny: vi.fn(),
-            on: vi.fn((event: string, listener: (payload: unknown) => void) => {
-                socketListeners.set(event, listener);
-                return socket;
-            }),
-        };
-        transportFactory.lastController = controller;
-        transportFactory.createSyncSocketTransportSpy.mockImplementation((params: any) => ({
-            socket,
-            transport: controller.transport,
-            ...params,
-        }));
-
-        const { apiSocket } = await import('./apiSocket');
-
-        const endpoint = 'https://server.example.test';
-        apiSocket.initialize({ endpoint, token: 'token-1' }, { getSessionEncryption: vi.fn(), getMachineEncryption: vi.fn() } as never);
-
-        emitReachability(endpoint, {
-            phase: 'online',
-            reason: null,
-            attempt: 1,
-            nextRetryAt: null,
-            lastConnectedAt: Date.now(),
-            lastDisconnectedAt: null,
-            lastErrorMessage: null,
-        });
-        await settleAsyncWork();
-
-        socketListeners.get('server:restarting')?.({ retryAfterMs: 7_000 });
-
-        expect(reachability.restartSpy).toHaveBeenCalledWith(endpoint, 7_000);
+    it('reports planned server restart events to the reachability owner', async () => {
+        const { socket, trigger } = await boot(); await connect(socket);
+        trigger('server:restarting', { retryAfterMs: 7_000 });
+        expect(reachability.restart).toHaveBeenCalledWith(endpoint, 7_000, 'token-1');
     });
 
     it('feeds ephemerals to handlers with the immutable Home captured by the concrete socket', async () => {
-        const controller = createTransportController();
-        const socketListeners: {
-            onAny: ((event: string, payload: unknown) => void) | null;
-        } = { onAny: null };
-        const emit = vi.fn();
-        const socket = {
-            connected: true,
-            emit,
-            on: vi.fn(),
-            onAny: vi.fn((listener: (event: string, payload: unknown) => void) => {
-                socketListeners.onAny = listener;
-                return socket;
-            }),
-        };
-        transportFactory.lastController = controller;
-        transportFactory.createSyncSocketTransportSpy.mockImplementation((params: unknown) => ({
-            socket,
-            transport: controller.transport,
-            ...(params as object),
-        }));
-
-        const { apiSocket } = await import('./apiSocket');
-        const {
-            replaceExternalSessionStatusDemandViewport,
-            resetExternalSessionStatusDemandCoordinatorForTests,
-        } = await import('@/sync/runtime/orchestration/externalSessions/externalSessionStatusDemandCoordinator');
+        const { apiSocket, socket, trigger } = await boot();
         const { getActiveServerSnapshot } = await import('@/sync/domains/server/serverRuntime');
         const serverId = getActiveServerSnapshot().serverId;
-        const ephemeralHandler = vi.fn();
-        apiSocket.onMessage('ephemeral', ephemeralHandler);
-        replaceExternalSessionStatusDemandViewport('active-server-test', [{
-            serverId,
-            sessionId: 'session-1',
-            machineId: 'machine-1',
-            linkGeneration: 'generation-1',
-            demand: 'open',
-        }]);
-
-        const endpoint = 'https://server.example.test';
-        const socketConfig = { endpoint, token: 'token-1', serverId };
-        apiSocket.initialize(
-            socketConfig,
-            { getSessionEncryption: vi.fn(), getMachineEncryption: vi.fn() } as never,
-        );
-        emitReachability(endpoint, {
-            phase: 'online',
-            reason: null,
-            attempt: 1,
-            nextRetryAt: null,
-            lastConnectedAt: Date.now(),
-            lastDisconnectedAt: null,
-            lastErrorMessage: null,
-        });
-        await settleAsyncWork();
-
-        expect(socketListeners.onAny).toBeTypeOf('function');
-        socketConfig.serverId = 'later-focused-home';
-        emit.mockClear();
-        socketListeners.onAny?.('ephemeral', {
-            type: 'machine-activity',
-            id: 'machine-1',
-            active: true,
-            activeAt: 1_000,
-        });
-
-        const demandPayloads = emit.mock.calls
-            .filter(([event]) => event === 'external-session-status-demand-v1')
-            .map(([, payload]) => payload);
-        expect(demandPayloads).toEqual([
-            expect.objectContaining({ revision: 3 }),
-        ]);
-        expect(ephemeralHandler).toHaveBeenCalledWith(
-            {
-                type: 'machine-activity',
-                id: 'machine-1',
-                active: true,
-                activeAt: 1_000,
-            },
-            { serverId },
-        );
-
-        apiSocket.disconnect();
+        const { replaceExternalSessionStatusDemandViewport, resetExternalSessionStatusDemandCoordinatorForTests } =
+            await import('@/sync/runtime/orchestration/externalSessions/externalSessionStatusDemandCoordinator');
+        replaceExternalSessionStatusDemandViewport('active-server-test', [{ serverId, sessionId: 'session-1',
+            machineId: 'machine-1', linkGeneration: 'generation-1', demand: 'open' }]);
+        const config = { endpoint, token: 'token-1', serverId };
+        apiSocket.initialize(config, null);
+        const handler = vi.fn(); apiSocket.onMessage('ephemeral', handler);
+        await connect(socket); config.serverId = 'later-home'; socket.emit.mockClear();
+        const payload = { type: 'machine-activity', id: 'machine-1', active: true, activeAt: 1_000 };
+        trigger('ephemeral', payload);
+        expect(handler).toHaveBeenCalledWith(payload, { serverId });
+        expect(socket.emit.mock.calls.filter(([event]) => event === 'external-session-status-demand-v1')
+            .map(([, demand]) => demand)).toEqual([expect.objectContaining({ revision: 3 })]);
         resetExternalSessionStatusDemandCoordinatorForTests();
     });
 
-    it('disconnects the transport when reachability goes offline while a connect is in-flight', async () => {
-        const connectedListeners = new Set<() => void>();
-        const disconnectedListeners = new Set<(event: TransportDisconnectEvent) => void>();
-        const errorListeners = new Set<(error: unknown) => void>();
-        let connected = false;
-        let connecting = false;
-
-        const disconnectSpy = vi.fn(async (_params?: { intentional?: boolean }) => {
-            connecting = false;
-            connected = false;
-        });
-
-        const transport: ManagedConnectionTransport = {
-            connect: vi.fn(async () => {
-                connecting = true;
-            }),
-            disconnect: disconnectSpy,
-            destroy: vi.fn(async () => {
-                connecting = false;
-                connected = false;
-                connectedListeners.clear();
-                disconnectedListeners.clear();
-                errorListeners.clear();
-            }),
-            isConnected: () => connected,
-            onConnected: (listener) => {
-                connectedListeners.add(listener);
-                return () => connectedListeners.delete(listener);
-            },
-            onDisconnected: (listener) => {
-                disconnectedListeners.add(listener);
-                return () => disconnectedListeners.delete(listener);
-            },
-            onError: (listener) => {
-                errorListeners.add(listener);
-                return () => errorListeners.delete(listener);
-            },
-        };
-
-        transportFactory.createSyncSocketTransportSpy.mockImplementation((params: any) => ({
-            socket: { on: vi.fn(), onAny: vi.fn() },
-            transport,
-            ...params,
-        }));
-
-        const { apiSocket } = await import('./apiSocket');
-
-        const endpoint = 'https://server.example.test';
-        apiSocket.initialize({ endpoint, token: 'token-1' }, { getSessionEncryption: vi.fn(), getMachineEncryption: vi.fn() } as never);
-
-        await settleAsyncWork();
-
-        emitReachability(endpoint, {
-            phase: 'online',
-            reason: null,
-            attempt: 1,
-            nextRetryAt: null,
-            lastConnectedAt: Date.now(),
-            lastDisconnectedAt: null,
-            lastErrorMessage: null,
-        });
-        await settleAsyncWork();
-
-        expect(connecting).toBe(true);
-        expect(transport.isConnected()).toBe(false);
-
-        emitReachability(endpoint, {
-            phase: 'offline',
-            reason: 'network_error',
-            attempt: 2,
-            nextRetryAt: Date.now() + 1000,
-            lastConnectedAt: null,
-            lastDisconnectedAt: Date.now(),
-            lastErrorMessage: 'network_error',
-        });
-        await settleAsyncWork();
-
-        expect(disconnectSpy).toHaveBeenCalledWith({ intentional: true });
+    it('disconnects a pending network connect when reachability becomes offline', async () => {
+        const { socket } = await boot({ autoConnect: false });
+        emitReachability('online');
+        await vi.waitFor(() => expect(socket.active).toBe(true));
+        expect(socket.connected).toBe(false);
+        emitReachability('offline');
+        await vi.waitFor(() => expect(socket.active).toBe(false));
+        expect(socket.disconnect).toHaveBeenCalled();
     });
 
     it('does not fire onReconnected after an intentional disconnect cycle', async () => {
-        const controller = createTransportController();
-        transportFactory.lastController = controller;
-        transportFactory.createSyncSocketTransportSpy.mockImplementation((params: any) => ({
-            socket: { on: vi.fn(), onAny: vi.fn() },
-            transport: controller.transport,
-            ...params,
-        }));
-
-        const { apiSocket } = await import('./apiSocket');
-        const onReconnected = vi.fn();
-        apiSocket.onReconnected(onReconnected);
-
-        const endpoint = 'https://server.example.test';
-        apiSocket.initialize({ endpoint, token: 'token-1' }, { getSessionEncryption: vi.fn(), getMachineEncryption: vi.fn() } as never);
-
-        await settleAsyncWork();
-
-        emitReachability(endpoint, {
-            phase: 'online',
-            reason: null,
-            attempt: 1,
-            nextRetryAt: null,
-            lastConnectedAt: Date.now(),
-            lastDisconnectedAt: null,
-            lastErrorMessage: null,
-        });
-        await settleAsyncWork();
-
-        apiSocket.disconnect();
-        await settleAsyncWork();
-
-        apiSocket.connect();
-        await settleAsyncWork();
-
-        emitReachability(endpoint, {
-            phase: 'online',
-            reason: null,
-            attempt: 2,
-            nextRetryAt: null,
-            lastConnectedAt: Date.now(),
-            lastDisconnectedAt: Date.now(),
-            lastErrorMessage: null,
-        });
-        await settleAsyncWork();
-
+        const { apiSocket, socket } = await boot();
+        const onReconnected = vi.fn(); apiSocket.onReconnected(onReconnected);
+        await connect(socket); apiSocket.disconnect(); apiSocket.connect(); await connect(socket);
         expect(onReconnected).not.toHaveBeenCalled();
     });
 
-    it('recreates the managed transport with the latest token after updateToken', async () => {
-        const createControllers: Array<ReturnType<typeof createTransportController>> = [];
-        transportFactory.createSyncSocketTransportSpy.mockImplementation((params: any) => {
-            const controller = createTransportController();
-            createControllers.push(controller);
-            transportFactory.lastController = controller;
-            return { socket: { on: vi.fn(), onAny: vi.fn() }, transport: controller.transport, ...params };
-        });
-
-        const { apiSocket } = await import('./apiSocket');
-        const endpoint = 'https://server.example.test';
-        apiSocket.initialize({ endpoint, token: 'token-1' }, { getSessionEncryption: vi.fn(), getMachineEncryption: vi.fn() } as never);
-
-        emitReachability(endpoint, {
-            phase: 'online',
-            reason: null,
-            attempt: 1,
-            nextRetryAt: null,
-            lastConnectedAt: Date.now(),
-            lastDisconnectedAt: null,
-            lastErrorMessage: null,
-        });
-        await advanceUntil(() => transportFactory.createSyncSocketTransportSpy.mock.calls.length >= 1);
-        apiSocket.updateToken('token-2');
-        emitReachability(endpoint, {
-            phase: 'online',
-            reason: null,
-            attempt: 2,
-            nextRetryAt: null,
-            lastConnectedAt: Date.now(),
-            lastDisconnectedAt: Date.now(),
-            lastErrorMessage: null,
-        });
-        await advanceUntil(() => transportFactory.createSyncSocketTransportSpy.mock.calls.length >= 2);
-
-        expect(transportFactory.createSyncSocketTransportSpy).toHaveBeenCalledTimes(2);
-        const secondParams = transportFactory.createSyncSocketTransportSpy.mock.calls[1]?.[0] as { token?: string } | undefined;
-        expect(secondParams?.token).toBe('token-2');
+    it('recreates the socket with the latest token after updateToken', async () => {
+        const { apiSocket, socket } = await boot(); await connect(socket);
+        const next = createSocketIoBoundaryStub(); ioSpy.mockReturnValue(next.socket);
+        apiSocket.updateToken('token-2'); await connect(next.socket);
+        expect(ioSpy.mock.calls.at(-1)?.[1]).toMatchObject({ auth: { token: 'token-2' } });
+        expect(socket.connected).toBe(false);
     });
 
-    it('rejects session RPC as not_authenticated when reachability is auth_failed', async () => {
-        const controller = createTransportController();
-        const emitWithAck = vi.fn(async () => {
-            throw new Error('operation has timed out');
-        });
-        transportFactory.createSyncSocketTransportSpy.mockImplementation((params: unknown) => ({
-            socket: createSocketStub(emitWithAck),
-            transport: controller.transport,
-            ...(params as object),
-        }));
-
-        const { apiSocket } = await import('./apiSocket');
-        const endpoint = 'https://server.example.test';
-        apiSocket.initialize({ endpoint, token: 'token-1' }, createSessionEncryptionStub());
-
-        emitReachability(endpoint, {
-            phase: 'online',
-            reason: null,
-            attempt: 1,
-            nextRetryAt: null,
-            lastConnectedAt: Date.now(),
-            lastDisconnectedAt: null,
-            lastErrorMessage: null,
-        });
-        await settleAsyncWork();
-        emitReachability(endpoint, {
-            phase: 'auth_failed',
-            reason: 'auth_failed',
-            attempt: 2,
-            nextRetryAt: null,
-            lastConnectedAt: Date.now(),
-            lastDisconnectedAt: Date.now(),
-            lastErrorMessage: 'expired token',
-        });
-
-        await expect(
-            apiSocket.sessionRPC('session-1', 'send_message', { text: 'hello' }, { timeoutMs: 5 }),
-        ).rejects.toMatchObject({
-            name: 'HappyError',
-            canTryAgain: false,
-            kind: 'auth',
-            code: 'not_authenticated',
-        });
-        expect(emitWithAck).not.toHaveBeenCalled();
-    });
-
-    it('rejects session RPC timeout as not_authenticated when reachability settles to auth_failed', async () => {
-        const controller = createTransportController();
-        const emitWithAck = vi.fn(async () => {
-            throw new Error('operation has timed out');
-        });
-        transportFactory.createSyncSocketTransportSpy.mockImplementation((params: unknown) => ({
-            socket: createSocketStub(emitWithAck),
-            transport: controller.transport,
-            ...(params as object),
-        }));
-
-        const { apiSocket } = await import('./apiSocket');
-        const endpoint = 'https://server.example.test';
-        apiSocket.initialize({ endpoint, token: 'token-1' }, createSessionEncryptionStub());
-
-        emitReachability(endpoint, {
-            phase: 'online',
-            reason: null,
-            attempt: 1,
-            nextRetryAt: null,
-            lastConnectedAt: Date.now(),
-            lastDisconnectedAt: null,
-            lastErrorMessage: null,
-        });
-        await settleAsyncWork();
-
+    it('rejects Session RPC before emission when reachability is auth_failed', async () => {
+        const { apiSocket, socket } = await boot(); await connect(socket); emitReachability('auth_failed');
+        const { storage } = await import('@/sync/domains/state/storage');
+        storage.getState().applySessions([createSessionFixture()]);
         const request = apiSocket.sessionRPC('session-1', 'send_message', { text: 'hello' }, { timeoutMs: 5 });
-        await settleAsyncWork();
-
-        emitReachability(endpoint, {
-            phase: 'auth_failed',
-            reason: 'auth_failed',
-            attempt: 2,
-            nextRetryAt: null,
-            lastConnectedAt: Date.now(),
-            lastDisconnectedAt: Date.now(),
-            lastErrorMessage: 'expired token',
-        });
-
         await expect(request).rejects.toMatchObject({
-            name: 'HappyError',
-            canTryAgain: false,
-            kind: 'auth',
-            code: 'not_authenticated',
+            kind: 'auth', code: 'not_authenticated', canTryAgain: false,
         });
-        expect(emitWithAck).toHaveBeenCalledTimes(1);
+        expect(readRpcRequestDisposition(await request.catch((error: unknown) => error))).toBe('notSent');
+        expect(socket.emitWithAck.mock.calls.filter(([event]) => event === 'rpc-call')).toEqual([]);
     });
 
-    it('keeps session RPC socket timeout errors when reachability is online', async () => {
-        const controller = createTransportController();
-        const emitWithAck = vi.fn(async () => {
-            throw new Error('operation has timed out');
-        });
-        transportFactory.createSyncSocketTransportSpy.mockImplementation((params: unknown) => ({
-            socket: createSocketStub(emitWithAck),
-            transport: controller.transport,
-            ...(params as object),
-        }));
-
-        const { apiSocket } = await import('./apiSocket');
-        const endpoint = 'https://server.example.test';
-        apiSocket.initialize({ endpoint, token: 'token-1' }, createSessionEncryptionStub());
-
-        emitReachability(endpoint, {
-            phase: 'online',
-            reason: null,
-            attempt: 1,
-            nextRetryAt: null,
-            lastConnectedAt: Date.now(),
-            lastDisconnectedAt: null,
-            lastErrorMessage: null,
-        });
-        await settleAsyncWork();
-
-        await expect(
-            apiSocket.sessionRPC('session-1', 'send_message', { text: 'hello' }, { timeoutMs: 5 }),
-        ).rejects.toThrow('operation has timed out');
-        expect(emitWithAck).toHaveBeenCalledTimes(1);
+    it('marks a disconnected Session RPC as not sent before any network emission', async () => {
+        const { apiSocket, socket } = await boot(); await connect(socket);
+        const { storage } = await import('@/sync/domains/state/storage');
+        storage.getState().applySessions([createSessionFixture()]);
+        apiSocket.disconnect();
+        const error: unknown = await apiSocket.sessionRPC('session-1', 'send_message', { text: 'hello' })
+            .catch((failure: unknown) => failure);
+        expect(error).toBeInstanceOf(Error);
+        expect(readRpcRequestDisposition(error)).toBe('notSent');
+        expect(socket.emitWithAck.mock.calls.filter(([event]) => event === 'rpc-call')).toEqual([]);
     });
 
-    it('publishes richer managed connection state changes alongside legacy status listeners', async () => {
-        const controller = createTransportController();
-        transportFactory.lastController = controller;
-        transportFactory.createSyncSocketTransportSpy.mockImplementation((params: any) => ({
-            socket: { on: vi.fn(), onAny: vi.fn() },
-            transport: controller.transport,
-            ...params,
-        }));
+    it.each(['online', 'auth_failed'] as const)('coerces ack timeout only when reachability settles to %s', async (phase) => {
+        const { apiSocket, socket } = await boot(); await connect(socket);
+        const { storage } = await import('@/sync/domains/state/storage');
+        storage.getState().applySessions([createSessionFixture()]);
+        socket.emitWithAck.mockRejectedValue(new Error('operation has timed out'));
+        const request = apiSocket.sessionRPC('session-1', 'send_message', { text: 'hello' }, { timeoutMs: 5 });
+        await vi.waitFor(() => expect(socket.emitWithAck.mock.calls.some(([event]) => event === 'rpc-call')).toBe(true));
+        emitReachability(phase);
+        if (phase === 'auth_failed') await expect(request).rejects.toMatchObject({ kind: 'auth', code: 'not_authenticated' });
+        else await expect(request).rejects.toThrow('operation has timed out');
+        expect(readRpcRequestDisposition(await request.catch((error: unknown) => error))).toBe('outcomeUnknown');
+    });
 
-        const { apiSocket } = await import('./apiSocket');
-        const stateListener = vi.fn();
-        apiSocket.onConnectionStateChange(stateListener);
-
-        const endpoint = 'https://server.example.test';
-        apiSocket.initialize({ endpoint, token: 'token-1' }, { getSessionEncryption: vi.fn(), getMachineEncryption: vi.fn() } as never);
-
-        emitReachability(endpoint, {
-            phase: 'connecting',
-            reason: null,
-            attempt: 1,
-            nextRetryAt: null,
-            lastConnectedAt: null,
-            lastDisconnectedAt: null,
-            lastErrorMessage: null,
-        });
-        emitReachability(endpoint, {
-            phase: 'online',
-            reason: null,
-            attempt: 1,
-            nextRetryAt: null,
-            lastConnectedAt: Date.now(),
-            lastDisconnectedAt: null,
-            lastErrorMessage: null,
-        });
-        await advanceUntil(() => stateListener.mock.calls.some((call) => call[0]?.phase === 'online'));
-        expect(stateListener).toHaveBeenCalled();
-        const phases = stateListener.mock.calls.map((call) => call[0]?.phase);
-        expect(phases).toContain('idle');
-        expect(phases).toContain('connecting');
-        expect(phases).toContain('online');
+    it('publishes managed connection phases alongside legacy status', async () => {
+        const { apiSocket, socket } = await boot(); const listener = vi.fn(); apiSocket.onConnectionStateChange(listener);
+        emitReachability('connecting'); await connect(socket);
+        expect(listener.mock.calls.map(([value]) => value.phase)).toEqual(expect.arrayContaining(['idle', 'connecting', 'online']));
     });
 
     it('keeps connected status when connect is called while already online', async () => {
-        const controller = createTransportController();
-        transportFactory.lastController = controller;
-        transportFactory.createSyncSocketTransportSpy.mockImplementation((params: any) => ({
-            socket: { on: vi.fn(), onAny: vi.fn() },
-            transport: controller.transport,
-            ...params,
-        }));
-
-        const { apiSocket } = await import('./apiSocket');
-        const statusListener = vi.fn();
-        apiSocket.onStatusChange(statusListener);
-
-        const endpoint = 'https://server.example.test';
-        apiSocket.initialize({ endpoint, token: 'token-1' }, { getSessionEncryption: vi.fn(), getMachineEncryption: vi.fn() } as never);
-
-        await settleAsyncWork();
-        emitReachability(endpoint, {
-            phase: 'online',
-            reason: null,
-            attempt: 1,
-            nextRetryAt: null,
-            lastConnectedAt: Date.now(),
-            lastDisconnectedAt: null,
-            lastErrorMessage: null,
-        });
-        await settleAsyncWork();
-        statusListener.mockClear();
-
+        const { apiSocket, socket } = await boot(); await connect(socket);
+        const listener = vi.fn(); apiSocket.onStatusChange(listener); listener.mockClear();
         apiSocket.connect();
-        await settleAsyncWork();
-
-        expect(statusListener).not.toHaveBeenCalledWith('connecting');
+        expect(listener).not.toHaveBeenCalledWith('connecting');
     });
 });

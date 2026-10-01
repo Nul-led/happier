@@ -99,9 +99,12 @@ function bindExternalSessionsFixture(
     identity: {
       pluginId,
       agentId,
-      generation: 'fixture-generation',
+      occurrenceId: 'fixture-occurrence',
       contributionQualifiedId: `${pluginId}/agents/${agentId}`,
-      immutableGenerationId: null,
+      sourceCustody: {
+        kind: 'development',
+        registeredRootId: 'fixture-source-root',
+      },
     },
     isCurrent: () => true,
     retirementSignal: new AbortController().signal,

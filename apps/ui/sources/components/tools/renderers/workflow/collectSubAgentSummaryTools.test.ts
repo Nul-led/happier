@@ -1,10 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type { Message } from '@/sync/domains/messages/messageTypes';
-
-vi.mock('@/components/tools/normalization/core/normalizeToolCallForRendering', () => ({
-    normalizeToolCallForRendering: (t: any) => t,
-}));
+import type { Message } from "@happier-dev/session-core/messages";
 
 vi.mock('@/components/tools/shell/presentation/resolveToolHeaderTextPresentation', () => ({
     resolveToolHeaderTextPresentation: () => ({

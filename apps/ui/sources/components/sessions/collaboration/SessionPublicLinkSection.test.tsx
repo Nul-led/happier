@@ -11,7 +11,8 @@ import type { ExternalSessionSharingAvailability } from '@/components/sessions/e
 import { notifySessionPublicLinkInvalidated } from '@/sync/domains/social/sessionPublicLinkInvalidation';
 import { publishHomeAccountChange } from '@/sync/runtime/orchestration/homeAccountChange';
 import { SessionAccessApiError } from '@/sync/api/session/sessionAccessApi';
-import { SessionPublicLinkSection } from './SessionPublicLinkSection';
+import { SessionPublicLinkSection, useSessionCollaborationPublicLink } from './SessionPublicLinkSection';
+import type { RenderScreenResult } from '@/dev/testkit/render/renderScreen';
 
 vi.mock('react-native', async () => {
     const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
@@ -26,8 +27,7 @@ const publication = vi.hoisted(() => ({
     /** Every bearer the transport generated, in request order. */
     issuedTokens: [] as string[],
 }));
-const publicationDialog = vi.hoisted(() => ({ open: vi.fn() }));
-const modal = vi.hoisted(() => ({ update: vi.fn(), hide: vi.fn() }));
+const modal = vi.hoisted(() => ({ update: vi.fn(), hide: vi.fn(), alert: vi.fn(), confirm: vi.fn(async () => true) }));
 const serverProfile = vi.hoisted(() => ({
     get: vi.fn(() => ({
         id: 'home-one',
@@ -72,12 +72,9 @@ vi.mock('@/sync/runtime/orchestration/serverScopedRpc/createServerRequestWithSer
 }));
 vi.mock('@/sync/runtime/orchestration/serverScopedRpc/readSessionSnapshotForAuthority', () => ({
     readSessionSnapshotForAuthority: async () => ({
-        session: { ...session({ managePublicLink: true }), encryptionMode: 'plain' },
+        session: { ...sessionFixture({ managePublicLink: true }), encryptionMode: 'plain' },
         callerDataKeyEnvelope: null,
     }),
-}));
-vi.mock('@/components/sessions/sharing/openPublicLinkDialog', () => ({
-    openPublicLinkDialog: publicationDialog.open,
 }));
 vi.mock('@/modal', async () => {
     const { createModalModuleMock } = await import('@/dev/testkit/mocks/modal');
@@ -102,7 +99,7 @@ vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => ({
 
 const scope = { serverId: 'home-one', accountId: 'account-owner' };
 
-function session(capabilities: Readonly<{ managePublicLink: boolean }>): Session {
+function sessionFixture(capabilities: Readonly<{ managePublicLink: boolean }>): Session {
     return {
         id: 'session-1',
         metadata: null,
@@ -127,6 +124,32 @@ function hostedAvailability(): ExternalSessionSharingAvailability {
     } as unknown as ExternalSessionSharingAvailability;
 }
 
+/** The pane's one publication controller rendered through the Share panel's card, as the surface mounts it. */
+function PublicLink(props: Readonly<{
+    scope?: Readonly<{ serverId: string; accountId: string }>;
+    session?: Session | null;
+    testID?: string;
+}>) {
+    const session = props.session === undefined ? sessionFixture({ managePublicLink: true }) : props.session;
+    const link = useSessionCollaborationPublicLink({
+        scope: props.scope ?? scope,
+        sessionId: 'session-1',
+        session,
+        availability: hostedAvailability(),
+    });
+    return <SessionPublicLinkSection link={link} hasSession={session !== null} shareable testID={props.testID} />;
+}
+
+const status = (screen: RenderScreenResult, testID = 'session-public-link-status') => screen.findByTestId(testID)?.props.children;
+const shownUrl = (screen: RenderScreenResult) => screen.findByTestId('session-public-link-url')?.props.children as string | undefined;
+
+/** Make a link through the card: Create public link (or New link…), then Create in the options. */
+async function makeLink(screen: RenderScreenResult): Promise<void> {
+    await screen.pressByTestIdAsync(screen.findByTestId('session-public-link-create') ? 'session-public-link-create' : 'session-public-link-new');
+    await vi.waitFor(() => expect(screen.findByTestId('session-public-link-options-create')).not.toBeNull());
+    await screen.pressByTestIdAsync('session-public-link-options-create');
+}
+
 describe('SessionPublicLinkSection', () => {
     beforeEach(() => {
         vi.clearAllMocks();
@@ -139,65 +162,88 @@ describe('SessionPublicLinkSection', () => {
         publication.getPublicLink.mockReset();
         publication.createPublicLink.mockReset();
         publication.removePublicLink.mockReset();
-        modal.update.mockReset();
-        modal.hide.mockReset();
+        modal.alert.mockReset();
+        modal.confirm.mockReset().mockResolvedValue(true);
         resetServerFeaturesClientForTests();
         primePublicLinkFeature(scope.serverId, true);
-        publicationDialog.open.mockResolvedValue('public-link-dialog');
     });
 
     it('does not expose or fetch publication when the exact Home does not advertise sharing.public', async () => {
         primePublicLinkFeature(scope.serverId, false);
         // Another Home advertising publication must not admit this section.
         primePublicLinkFeature('home-other', true);
-        const screen = await renderScreen(
-            <SessionPublicLinkSection scope={scope} sessionId="session-1" session={session({ managePublicLink: true })} availability={hostedAvailability()} />,
-        );
-        expect(screen.findByTestId('session-public-link-row')).toBeNull();
+        const screen = await renderScreen(<PublicLink />);
+        expect(screen.findByTestId('session-public-link-card')).toBeNull();
         expect(publication.getPublicLink).not.toHaveBeenCalled();
     });
 
-    it('renders publication as a sibling status/action group, never as an access principal', async () => {
+    it('renders publication as its own card, never as an access principal', async () => {
         publication.getPublicLink.mockResolvedValue(null);
-        const screen = await renderScreen(
-            <SessionPublicLinkSection scope={scope} sessionId="session-1" session={session({ managePublicLink: true })} availability={hostedAvailability()} />,
-        );
-        await vi.waitFor(() => expect(screen.findByTestId('session-public-link-row')).not.toBeNull());
-        expect(screen.findByTestId('session-public-link-status')?.props.children).toBe('Off');
+        const screen = await renderScreen(<PublicLink />);
+        await vi.waitFor(() => expect(screen.findByTestId('session-public-link-card')).not.toBeNull());
+        await vi.waitFor(() => expect(status(screen)).toBe('Off'));
+        expect(screen.findByTestId('session-public-link-create')).not.toBeNull();
         // Publication is not a grant: it must never appear inside the access editor rows.
         expect(screen.findByTestId('session-access-editor')).toBeNull();
     });
 
-    it('passes the exact Home public endpoint into the incumbent publication dialog', async () => {
+    it('shows the link it made, carrying the exact Home public endpoint, with Copy and QR code', async () => {
+        const created = { id: 'p1', expiresAt: null, useCount: 0, maxUses: 10, isConsentRequired: true, updatedAt: 1 };
         publication.getPublicLink.mockResolvedValue(null);
-        const screen = await renderScreen(
-            <SessionPublicLinkSection scope={scope} sessionId="session-1" session={session({ managePublicLink: true })} availability={hostedAvailability()} />,
-        );
-        await vi.waitFor(() => expect(screen.findByTestId('session-public-link-row')).not.toBeNull());
-        await screen.pressByTestIdAsync('session-public-link-row');
+        publication.createPublicLink.mockResolvedValue(created);
+        const screen = await renderScreen(<PublicLink />);
+        await vi.waitFor(() => expect(status(screen)).toBe('Off'));
+        await makeLink(screen);
+        await vi.waitFor(() => expect(shownUrl(screen)).toContain(`/share/${publication.issuedTokens[0]}`));
         expect(serverProfile.get).toHaveBeenCalledWith('home-one');
-        expect(publicationDialog.open).toHaveBeenCalledWith(expect.objectContaining({
-            serverUrl: 'https://public-home.example.test',
-        }));
+        expect(shownUrl(screen)).toContain(encodeURIComponent('https://public-home.example.test'));
+        expect(status(screen)).toBe('On');
+        // What it grants, in plain words, then its limits.
+        expect(String(screen.findByTestId('session-public-link-detail')?.props.children)).toContain('0/10');
+        await screen.pressByTestIdAsync('session-public-link-qr');
+        expect(screen.findByTestId('session-public-link-qr-code')).not.toBeNull();
     });
 
-    it('hands the invoking row to the publication dialog so focus returns to it', async () => {
+    it('admits one publication request while a create is in flight', async () => {
+        const deferred = createDeferred<Record<string, unknown>>();
         publication.getPublicLink.mockResolvedValue(null);
-        const row = { focus: vi.fn(), isConnected: true };
-        const screen = await renderScreen(
-            <SessionPublicLinkSection scope={scope} sessionId="session-1" session={session({ managePublicLink: true })} availability={hostedAvailability()} />,
-            {
-                createNodeMock: (element: React.ReactElement) => (
-                    (element.props as Readonly<{ testID?: string }>).testID === 'session-public-link-row' ? row : null
-                ),
-            },
-        );
-        await vi.waitFor(() => expect(screen.findByTestId('session-public-link-row')).not.toBeNull());
-        await screen.pressByTestIdAsync('session-public-link-row');
+        publication.createPublicLink.mockImplementation(() => deferred.promise);
+        const screen = await renderScreen(<PublicLink />);
+        await vi.waitFor(() => expect(status(screen)).toBe('Off'));
+        await screen.pressByTestIdAsync('session-public-link-create');
+        await act(async () => { screen.pressByTestId('session-public-link-options-create'); });
+        await act(async () => { screen.pressByTestId('session-public-link-options-create'); });
+        expect(publication.createPublicLink).toHaveBeenCalledTimes(1);
+        expect(screen.findHostByTestId('session-public-link-options-create')?.props.accessibilityState).toMatchObject({ busy: true, disabled: true });
+        await act(async () => { deferred.resolve({ id: 'p1', expiresAt: null, useCount: 0, maxUses: null, isConsentRequired: true, updatedAt: 1 }); });
+        await vi.waitFor(() => expect(screen.findAllHostsByTestId('session-public-link-url')).toHaveLength(1));
+        expect(publication.createPublicLink).toHaveBeenCalledTimes(1);
+    });
 
-        // The shared modal host restores focus only from an explicit ref, so the
-        // dialog has to carry the control the user actually activated.
-        expect(publicationDialog.open.mock.calls.at(-1)?.[0].focusReturnRef?.current).toBe(row);
+    it('asks before turning the link off and deletes once for rapid activations', async () => {
+        const deferred = createDeferred<void>();
+        publication.getPublicLink.mockResolvedValueOnce({ id: 'p1', expiresAt: null, useCount: 3, maxUses: null, isConsentRequired: false, updatedAt: 1 }).mockResolvedValue(null);
+        publication.removePublicLink.mockImplementation(() => deferred.promise);
+        const screen = await renderScreen(<PublicLink />);
+        await vi.waitFor(() => expect(status(screen)).toBe('On'));
+        await act(async () => { screen.pressByTestId('session-public-link-turn-off'); });
+        await act(async () => { screen.pressByTestId('session-public-link-turn-off'); });
+        expect(modal.confirm).toHaveBeenCalledTimes(1);
+        expect(publication.removePublicLink).toHaveBeenCalledTimes(1);
+        await act(async () => { deferred.resolve(); });
+        await vi.waitFor(() => expect(status(screen)).toBe('Off'));
+        expect(publication.removePublicLink).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps the link when the person does not confirm turning it off', async () => {
+        publication.getPublicLink.mockResolvedValue({ id: 'p1', expiresAt: null, useCount: 3, maxUses: null, isConsentRequired: false, updatedAt: 1 });
+        modal.confirm.mockResolvedValue(false);
+        const screen = await renderScreen(<PublicLink />);
+        await vi.waitFor(() => expect(status(screen)).toBe('On'));
+        await screen.pressByTestIdAsync('session-public-link-turn-off');
+        await vi.waitFor(() => expect(modal.confirm).toHaveBeenCalled());
+        expect(publication.removePublicLink).not.toHaveBeenCalled();
+        expect(status(screen)).toBe('On');
     });
 
     it('never promotes a bearer for a regeneration the Home did not commit', async () => {
@@ -211,30 +257,21 @@ describe('SessionPublicLinkSection', () => {
         publication.createPublicLink
             .mockResolvedValueOnce(first)
             .mockRejectedValue(new SessionAccessApiError('outcome_unknown'));
-        const screen = await renderScreen(
-            <SessionPublicLinkSection scope={scope} sessionId="session-1" session={session({ managePublicLink: true })} availability={hostedAvailability()} />,
-        );
-        await vi.waitFor(() => expect(screen.findByTestId('session-public-link-row')).not.toBeNull());
-        await screen.pressByTestIdAsync('session-public-link-row');
-
-        // The presented dialog keeps the callbacks it was opened with; only
-        // `publicShare` is merged into it after a successful create.
-        const dialog = publicationDialog.open.mock.calls.at(-1)?.[0];
-        const settings = { isConsentRequired: true };
-        const created = await dialog.onCreate(settings);
-        expect(created).toMatchObject({ id: 'p1', token: publication.issuedTokens[0] });
+        const screen = await renderScreen(<PublicLink />);
+        await vi.waitFor(() => expect(status(screen)).toBe('Off'));
+        await makeLink(screen);
+        await vi.waitFor(() => expect(shownUrl(screen)).toContain(publication.issuedTokens[0]!));
 
         // The physical executor owns one exact replay. If it still reports an
         // unknown outcome, this controller never guesses from mutable settings.
-        await expect(dialog.onCreate(settings)).rejects.toThrow();
+        await makeLink(screen);
+        await vi.waitFor(() => expect(modal.alert).toHaveBeenCalled());
+        // The options stay open after a failure so the person can try again; closing them shows the link.
+        await screen.pressByTestIdAsync('session-public-link-options-cancel');
         expect(publication.issuedTokens).toHaveLength(2);
-        await vi.waitFor(() => expect(screen.findByTestId('session-public-link-status')?.props.children).toBe('Public link is active'));
-
-        await screen.pressByTestIdAsync('session-public-link-row');
-        expect(publicationDialog.open.mock.calls.at(-1)?.[0].publicShare).toMatchObject({
-            id: 'p1',
-            token: publication.issuedTokens[0],
-        });
+        expect(status(screen)).toBe('On');
+        expect(shownUrl(screen)).toContain(publication.issuedTokens[0]!);
+        expect(shownUrl(screen)).not.toContain(publication.issuedTokens[1]!);
     });
 
     it('does not infer a committed regeneration from refreshed row metadata', async () => {
@@ -250,17 +287,13 @@ describe('SessionPublicLinkSection', () => {
         publication.createPublicLink
             .mockResolvedValueOnce(first)
             .mockRejectedValue(new SessionAccessApiError('outcome_unknown'));
-        const screen = await renderScreen(
-            <SessionPublicLinkSection scope={scope} sessionId="session-1" session={session({ managePublicLink: true })} availability={hostedAvailability()} />,
-        );
-        await vi.waitFor(() => expect(screen.findByTestId('session-public-link-row')).not.toBeNull());
-        await screen.pressByTestIdAsync('session-public-link-row');
+        const screen = await renderScreen(<PublicLink />);
+        await vi.waitFor(() => expect(status(screen)).toBe('Off'));
+        await makeLink(screen);
+        await vi.waitFor(() => expect(shownUrl(screen)).toBeDefined());
 
-        const dialog = publicationDialog.open.mock.calls.at(-1)?.[0];
-        const settings = { isConsentRequired: true };
-        await dialog.onCreate(settings);
-
-        await expect(dialog.onCreate(settings)).rejects.toThrow();
+        await makeLink(screen);
+        await vi.waitFor(() => expect(modal.alert).toHaveBeenCalled());
         expect(publication.getPublicLink).toHaveBeenCalledTimes(1);
     });
 
@@ -274,23 +307,17 @@ describe('SessionPublicLinkSection', () => {
             .mockResolvedValueOnce(null)
             .mockImplementationOnce(() => staleRefresh.promise);
         publication.createPublicLink.mockResolvedValue(created);
-        const screen = await renderScreen(
-            <SessionPublicLinkSection scope={scope} sessionId="session-1" session={session({ managePublicLink: true })} availability={hostedAvailability()} />,
-        );
-        await vi.waitFor(() => expect(screen.findByTestId('session-public-link-status')?.props.children).toBe('Off'));
-        await screen.pressByTestIdAsync('session-public-link-row');
-        const dialog = publicationDialog.open.mock.calls.at(-1)?.[0];
+        const screen = await renderScreen(<PublicLink />);
+        await vi.waitFor(() => expect(status(screen)).toBe('Off'));
 
         notifySessionPublicLinkInvalidated({ serverId: scope.serverId, sessionId: 'session-1' });
         await vi.waitFor(() => expect(publication.getPublicLink).toHaveBeenCalledTimes(2));
-        const applied = await dialog.onCreate({ isConsentRequired: true });
-        expect(applied).toMatchObject({ ...created, token: publication.issuedTokens[0] });
+        await makeLink(screen);
+        await vi.waitFor(() => expect(shownUrl(screen)).toContain(publication.issuedTokens[0]!));
 
         await act(async () => { staleRefresh.resolve(null); });
-        await vi.waitFor(() => expect(screen.findByTestId('session-public-link-status')?.props.children).toBe('Public link is active'));
-        expect(modal.update).toHaveBeenLastCalledWith('public-link-dialog', {
-            publicShare: expect.objectContaining({ id: 'p-created', token: publication.issuedTokens[0] }),
-        });
+        await vi.waitFor(() => expect(status(screen)).toBe('On'));
+        expect(shownUrl(screen)).toContain(publication.issuedTokens[0]!);
     });
 
     it('does not let a pre-delete refresh resurrect a publication after unknown-outcome reconciliation', async () => {
@@ -304,24 +331,19 @@ describe('SessionPublicLinkSection', () => {
             .mockImplementationOnce(() => staleRefresh.promise)
             .mockResolvedValueOnce(null);
         publication.removePublicLink.mockRejectedValue(new SessionAccessApiError('outcome_unknown'));
-        const screen = await renderScreen(
-            <SessionPublicLinkSection scope={scope} sessionId="session-1" session={session({ managePublicLink: true })} availability={hostedAvailability()} />,
-        );
-        await vi.waitFor(() => expect(screen.findByTestId('session-public-link-status')?.props.children).toBe('Public link is active'));
-        await screen.pressByTestIdAsync('session-public-link-row');
-        const dialog = publicationDialog.open.mock.calls.at(-1)?.[0];
+        const screen = await renderScreen(<PublicLink />);
+        await vi.waitFor(() => expect(status(screen)).toBe('On'));
 
         notifySessionPublicLinkInvalidated({ serverId: scope.serverId, sessionId: 'session-1' });
         await vi.waitFor(() => expect(publication.getPublicLink).toHaveBeenCalledTimes(2));
-        await dialog.onDelete();
-        await vi.waitFor(() => expect(screen.findByTestId('session-public-link-status')?.props.children).toBe('Off'));
+        await screen.pressByTestIdAsync('session-public-link-turn-off');
+        await vi.waitFor(() => expect(status(screen)).toBe('Off'));
 
         await act(async () => { staleRefresh.resolve(active); });
-        expect(screen.findByTestId('session-public-link-status')?.props.children).toBe('Off');
-        expect(modal.update).toHaveBeenLastCalledWith('public-link-dialog', { publicShare: null });
+        expect(status(screen)).toBe('Off');
     });
 
-    it('updates open dialogs while retaining a bearer only for identical settings', async () => {
+    it('retains a bearer only for identical settings as the Home reports changes', async () => {
         const created = {
             id: 'p-current', expiresAt: null, useCount: 0, maxUses: null,
             isConsentRequired: true, updatedAt: 7,
@@ -333,56 +355,48 @@ describe('SessionPublicLinkSection', () => {
             .mockResolvedValueOnce(rotated)
             .mockResolvedValueOnce(null);
         publication.createPublicLink.mockResolvedValue(created);
-        const screen = await renderScreen(
-            <SessionPublicLinkSection scope={scope} sessionId="session-1" session={session({ managePublicLink: true })} availability={hostedAvailability()} />,
-        );
-        await vi.waitFor(() => expect(screen.findByTestId('session-public-link-status')?.props.children).toBe('Off'));
-        await screen.pressByTestIdAsync('session-public-link-row');
-        const dialog = publicationDialog.open.mock.calls.at(-1)?.[0];
-        await dialog.onCreate({ isConsentRequired: true });
+        const screen = await renderScreen(<PublicLink />);
+        await vi.waitFor(() => expect(status(screen)).toBe('Off'));
+        await makeLink(screen);
+        await vi.waitFor(() => expect(shownUrl(screen)).toContain(publication.issuedTokens[0]!));
 
         await act(async () => { notifySessionPublicLinkInvalidated({ serverId: scope.serverId, sessionId: 'session-1' }); });
-        await vi.waitFor(() => expect(modal.update).toHaveBeenLastCalledWith('public-link-dialog', {
-            publicShare: { ...created, token: publication.issuedTokens[0] },
-        }));
+        await vi.waitFor(() => expect(publication.getPublicLink).toHaveBeenCalledTimes(2));
+        expect(shownUrl(screen)).toContain(publication.issuedTokens[0]!);
+
+        // Changed settings are a different link state: the old bearer is not claimed for it.
+        await act(async () => { notifySessionPublicLinkInvalidated({ serverId: scope.serverId, sessionId: 'session-1' }); });
+        await vi.waitFor(() => expect(screen.findByTestId('session-public-link-hidden')).not.toBeNull());
+        expect(shownUrl(screen)).toBeUndefined();
 
         await act(async () => { notifySessionPublicLinkInvalidated({ serverId: scope.serverId, sessionId: 'session-1' }); });
-        await vi.waitFor(() => expect(modal.update).toHaveBeenLastCalledWith('public-link-dialog', {
-            publicShare: { ...rotated, token: null },
-        }));
-
-        await act(async () => { notifySessionPublicLinkInvalidated({ serverId: scope.serverId, sessionId: 'session-1' }); });
-        await vi.waitFor(() => expect(modal.update).toHaveBeenLastCalledWith('public-link-dialog', { publicShare: null }));
+        await vi.waitFor(() => expect(status(screen)).toBe('Off'));
     });
 
-    it('reports an active link and never exposes its secret token on the surface', async () => {
+    it('says a link made elsewhere cannot be shown again instead of exposing or inventing a token', async () => {
         publication.getPublicLink.mockResolvedValue({ id: 'p1', expiresAt: null, useCount: 3, maxUses: null, isConsentRequired: false, updatedAt: 1 });
-        const screen = await renderScreen(
-            <SessionPublicLinkSection scope={scope} sessionId="session-1" session={session({ managePublicLink: true })} availability={hostedAvailability()} />,
-        );
-        await vi.waitFor(() => expect(screen.findByTestId('session-public-link-status')?.props.children).toBe('Public link is active'));
-        const row = screen.findByTestId('session-public-link-row');
-        expect(JSON.stringify([row?.props.accessibilityLabel, row?.props.subtitle, row?.props.detail])).not.toContain('super-secret-token');
+        const screen = await renderScreen(<PublicLink />);
+        await vi.waitFor(() => expect(status(screen)).toBe('On'));
+        expect(screen.findByTestId('session-public-link-hidden')).not.toBeNull();
+        expect(screen.findByTestId('session-public-link-url')).toBeNull();
+        expect(screen.findByTestId('session-public-link-qr')).toBeNull();
     });
 
-    it('does not fetch publication state without the explicit managePublicLink capability', async () => {
+    it('tells a viewer without managePublicLink who can create a link, without fetching publication state', async () => {
         publication.getPublicLink.mockResolvedValue(null);
-        const screen = await renderScreen(
-            <SessionPublicLinkSection scope={scope} sessionId="session-1" session={session({ managePublicLink: false })} availability={hostedAvailability()} />,
-        );
-        expect(screen.findByTestId('session-public-link-row')).toBeNull();
+        const screen = await renderScreen(<PublicLink session={sessionFixture({ managePublicLink: false })} />);
+        expect(screen.findByTestId('session-public-link-card')).toBeNull();
+        expect(screen.findByTestId('session-public-link-denied')).not.toBeNull();
         expect(publication.getPublicLink).not.toHaveBeenCalled();
     });
 
-    it('keeps a section-local retry when publication load fails', async () => {
+    it('keeps a card-local retry when publication load fails', async () => {
         publication.getPublicLink.mockRejectedValue(new Error('offline'));
-        const screen = await renderScreen(
-            <SessionPublicLinkSection scope={scope} sessionId="session-1" session={session({ managePublicLink: true })} availability={hostedAvailability()} />,
-        );
+        const screen = await renderScreen(<PublicLink />);
         await vi.waitFor(() => expect(screen.findByTestId('session-public-link-retry')).not.toBeNull());
         publication.getPublicLink.mockResolvedValue(null);
-        await screen.pressByTestIdAsync('session-public-link-retry');
-        await vi.waitFor(() => expect(screen.findByTestId('session-public-link-status')?.props.children).toBe('Off'));
+        await screen.pressByTestIdAsync('session-public-link-retry-action');
+        await vi.waitFor(() => expect(status(screen)).toBe('Off'));
     });
 
     it('leaves a twice-ambiguous create unresolved instead of promoting from a read', async () => {
@@ -394,13 +408,10 @@ describe('SessionPublicLinkSection', () => {
             .mockResolvedValueOnce(null)
             .mockResolvedValue(committed);
         publication.createPublicLink.mockRejectedValue(new SessionAccessApiError('outcome_unknown'));
-        const screen = await renderScreen(
-            <SessionPublicLinkSection scope={scope} sessionId="session-1" session={session({ managePublicLink: true })} availability={hostedAvailability()} />,
-        );
-        await vi.waitFor(() => expect(screen.findByTestId('session-public-link-row')).not.toBeNull());
-        await screen.pressByTestIdAsync('session-public-link-row');
-        const dialogInput = publicationDialog.open.mock.calls.at(-1)?.[0];
-        await expect(dialogInput.onCreate({ isConsentRequired: true })).rejects.toThrow();
+        const screen = await renderScreen(<PublicLink />);
+        await vi.waitFor(() => expect(status(screen)).toBe('Off'));
+        await makeLink(screen);
+        await vi.waitFor(() => expect(modal.alert).toHaveBeenCalled());
 
         expect(publication.createPublicLink).toHaveBeenCalledTimes(1);
         expect(publication.getPublicLink).toHaveBeenCalledTimes(1);
@@ -412,27 +423,9 @@ describe('SessionPublicLinkSection', () => {
         primePublicLinkFeature(otherScope.serverId, true);
         await renderScreen(
             <>
-                <SessionPublicLinkSection
-                    scope={scope}
-                    sessionId="session-1"
-                    session={session({ managePublicLink: true })}
-                    availability={hostedAvailability()}
-                    testID="home-one-public-link"
-                />
-                <SessionPublicLinkSection
-                    scope={scope}
-                    sessionId="session-1"
-                    session={session({ managePublicLink: true })}
-                    availability={hostedAvailability()}
-                    testID="home-one-second-public-link"
-                />
-                <SessionPublicLinkSection
-                    scope={otherScope}
-                    sessionId="session-1"
-                    session={session({ managePublicLink: true })}
-                    availability={hostedAvailability()}
-                    testID="home-two-public-link"
-                />
+                <PublicLink testID="home-one-public-link" />
+                <PublicLink testID="home-one-second-public-link" />
+                <PublicLink scope={otherScope} testID="home-two-public-link" />
             </>,
         );
         await vi.waitFor(() => expect(publication.getPublicLink).toHaveBeenCalledTimes(3));
@@ -454,21 +447,15 @@ describe('SessionPublicLinkSection', () => {
             id: 'p1', expiresAt: null, useCount: 3, maxUses: null,
             isConsentRequired: false, updatedAt: 1,
         });
-        const screen = await renderScreen(
-            <SessionPublicLinkSection
-                scope={scope}
-                sessionId="session-1"
-                session={session({ managePublicLink: true })}
-                availability={hostedAvailability()}
-            />,
-        );
-        await vi.waitFor(() => expect(screen.findByTestId('session-public-link-status')?.props.children).toBe('Public link is active'));
+        const screen = await renderScreen(<PublicLink />);
+        await vi.waitFor(() => expect(status(screen)).toBe('On'));
         publication.getPublicLink.mockRejectedValueOnce(new Error('offline'));
 
         notifySessionPublicLinkInvalidated({ serverId: 'home-one', sessionId: 'session-1' });
 
         await vi.waitFor(() => expect(screen.findByTestId('session-public-link-retry')).not.toBeNull());
-        expect(screen.findByTestId('session-public-link-status')?.props.children).toBe('Public link is active');
+        expect(status(screen)).toBe('On');
+        expect(screen.findByTestId('session-public-link-detail')).not.toBeNull();
     });
 
     it('refreshes from the exact Session change observed during reconnect catch-up', async () => {
@@ -479,20 +466,13 @@ describe('SessionPublicLinkSection', () => {
         publication.getPublicLink
             .mockResolvedValueOnce(null)
             .mockResolvedValueOnce(active);
-        const screen = await renderScreen(
-            <SessionPublicLinkSection
-                scope={scope}
-                sessionId="session-1"
-                session={session({ managePublicLink: true })}
-                availability={hostedAvailability()}
-            />,
-        );
-        await vi.waitFor(() => expect(screen.findByTestId('session-public-link-status')?.props.children).toBe('Off'));
+        const screen = await renderScreen(<PublicLink />);
+        await vi.waitFor(() => expect(status(screen)).toBe('Off'));
 
         // The canonical changes-page catch-up publishes raw AccountChange entity IDs.
         publishHomeAccountChange('home-one', ['session-1'], { sessionListQueryAffects: true });
 
-        await vi.waitFor(() => expect(screen.findByTestId('session-public-link-status')?.props.children).toBe('Public link is active'));
+        await vi.waitFor(() => expect(status(screen)).toBe('On'));
         expect(publication.getPublicLink).toHaveBeenCalledTimes(2);
     });
 
@@ -509,22 +489,15 @@ describe('SessionPublicLinkSection', () => {
             .mockResolvedValueOnce(changed)
             .mockResolvedValueOnce(regenerated)
             .mockResolvedValueOnce(null);
-        const screen = await renderScreen(
-            <SessionPublicLinkSection
-                scope={scope}
-                sessionId="session-1"
-                session={session({ managePublicLink: true })}
-                availability={hostedAvailability()}
-            />,
-        );
-        await vi.waitFor(() => expect(screen.findByTestId('session-public-link-status')?.props.children).toBe('Off'));
+        const screen = await renderScreen(<PublicLink />);
+        await vi.waitFor(() => expect(status(screen)).toBe('Off'));
 
         await act(async () => {
             notifySessionPublicLinkInvalidated({ serverId: 'home-one', sessionId: 'session-1' });
         });
         await vi.waitFor(() => {
             expect(publication.getPublicLink).toHaveBeenCalledTimes(2);
-            expect(screen.findByTestId('session-public-link-status')?.props.children).toBe('Public link is active');
+            expect(status(screen)).toBe('On');
         });
 
         await act(async () => {
@@ -532,8 +505,6 @@ describe('SessionPublicLinkSection', () => {
         });
         await vi.waitFor(() => {
             expect(publication.getPublicLink).toHaveBeenCalledTimes(3);
-            // Addressed at the rendered detail text: the row test id resolves to
-            // the pressable host, which carries no `detail` prop to assert on.
             expect(String(screen.findByTestId('session-public-link-detail')?.props.children)).toContain('5');
         });
 
@@ -544,14 +515,35 @@ describe('SessionPublicLinkSection', () => {
             expect(publication.getPublicLink).toHaveBeenCalledTimes(4);
             expect(String(screen.findByTestId('session-public-link-detail')?.props.children)).not.toContain('5');
         });
-        await screen.pressByTestIdAsync('session-public-link-row');
-        expect(publicationDialog.open.mock.calls.at(-1)?.[0].publicShare.id).toBe('p2');
 
         await act(async () => {
             notifySessionPublicLinkInvalidated({ serverId: 'home-one', sessionId: 'session-1' });
         });
-        await vi.waitFor(() => expect(screen.findByTestId('session-public-link-status')?.props.children).toBe('Off'));
+        await vi.waitFor(() => expect(status(screen)).toBe('Off'));
         expect(publication.getPublicLink).toHaveBeenCalledTimes(5);
+    });
+
+    it('keeps an issued link readable but withdraws every control while the authority is not current', async () => {
+        publication.getPublicLink.mockResolvedValue(null);
+        publication.createPublicLink.mockResolvedValue({ id: 'p1', expiresAt: null, useCount: 0, maxUses: null, isConsentRequired: true, updatedAt: 1 });
+        function Stale(props: Readonly<{ current: boolean }>) {
+            const session = sessionFixture({ managePublicLink: true });
+            const link = useSessionCollaborationPublicLink({
+                scope, sessionId: 'session-1', session, availability: hostedAvailability(), authorityCurrent: props.current,
+            });
+            return <SessionPublicLinkSection link={link} hasSession shareable />;
+        }
+        const screen = await renderScreen(<Stale current />);
+        await vi.waitFor(() => expect(status(screen)).toBe('Off'));
+        await makeLink(screen);
+        await vi.waitFor(() => expect(shownUrl(screen)).toBeDefined());
+        await screen.update(<Stale current={false} />);
+        expect(shownUrl(screen)).toContain(publication.issuedTokens[0]!);
+        expect(screen.findHostByTestId('session-public-link-turn-off')?.props.accessibilityState).toMatchObject({ disabled: true });
+        expect(screen.findHostByTestId('session-public-link-new')?.props.accessibilityState).toMatchObject({ disabled: true });
+        await screen.pressByTestIdAsync('session-public-link-turn-off');
+        expect(modal.confirm).not.toHaveBeenCalled();
+        expect(publication.removePublicLink).not.toHaveBeenCalled();
     });
 
     // The approval-routed publication journey runs on the real approval

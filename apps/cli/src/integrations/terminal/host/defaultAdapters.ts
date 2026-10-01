@@ -9,7 +9,10 @@ import {
   resolveZellijSocketDir,
 } from '../../zellij';
 import { createPtyTerminalHostAdapter } from '@/terminal/pty/hostAdapter';
+import { createHerdrTerminalHostAdapter } from '@/integrations/herdr/adapter';
+import { HERDR_ACTION_TIMEOUT_MS, HERDR_STARTUP_TIMEOUT_MS, resolveHerdrRuntimeBinary } from '@/integrations/herdr/runtimeBinary';
 import { createTerminalHostRegistry } from './registry';
+
 
 type DefaultTerminalHostAdapterDependencies = Readonly<{
   isTmuxAvailable: typeof isTmuxAvailable;
@@ -19,6 +22,8 @@ type DefaultTerminalHostAdapterDependencies = Readonly<{
   createTmuxTerminalHostAdapter: typeof createTmuxTerminalHostAdapter;
   createZellijTerminalHostAdapter: typeof createZellijTerminalHostAdapter;
   createPtyTerminalHostAdapter: typeof createPtyTerminalHostAdapter;
+  resolveHerdrRuntimeBinary: typeof resolveHerdrRuntimeBinary;
+  createHerdrTerminalHostAdapter: typeof createHerdrTerminalHostAdapter;
 }>;
 
 export type DefaultTerminalHostAdapterInventory = Readonly<{
@@ -30,6 +35,7 @@ export type DefaultTerminalHostAdapterInventory = Readonly<{
 export async function createDefaultTerminalHostAdapterInventory(params: Readonly<{
   happyHomeDir: string;
   preference: TerminalHostPreference;
+  herdrSessionName?: string;
   platform?: NodeJS.Platform;
   promptSubmitVerification?: TerminalPromptSubmitVerificationPolicy;
   dependencies?: DefaultTerminalHostAdapterDependencies;
@@ -42,6 +48,8 @@ export async function createDefaultTerminalHostAdapterInventory(params: Readonly
     createTmuxTerminalHostAdapter,
     createZellijTerminalHostAdapter,
     createPtyTerminalHostAdapter,
+    resolveHerdrRuntimeBinary,
+    createHerdrTerminalHostAdapter,
   };
   const adapters: TerminalHostAdapter[] = [];
   const platform = params.platform ?? process.platform;
@@ -75,6 +83,21 @@ export async function createDefaultTerminalHostAdapterInventory(params: Readonly
         ? { promptSubmitVerification: params.promptSubmitVerification }
         : {}),
     }));
+  }
+
+  if (params.preference === 'herdr' && platform !== 'win32') {
+    const herdrBinary = await dependencies.resolveHerdrRuntimeBinary({ actionTimeoutMs: HERDR_ACTION_TIMEOUT_MS });
+    if (herdrBinary) {
+      adapters.push(dependencies.createHerdrTerminalHostAdapter({
+        binary: herdrBinary,
+        ...(params.herdrSessionName ? { sessionName: params.herdrSessionName } : {}),
+        actionTimeoutMs: HERDR_ACTION_TIMEOUT_MS,
+        startupTimeoutMs: HERDR_STARTUP_TIMEOUT_MS,
+        ...(params.promptSubmitVerification
+          ? { promptSubmitVerification: params.promptSubmitVerification }
+          : {}),
+      }));
+    }
   }
 
   return {

@@ -148,7 +148,7 @@ describe('emitSessionMetadataUpdateWithServerScope', () => {
             },
             { timeoutMs: 4000 },
         );
-        expect(createResolvedRequestSpy).not.toHaveBeenCalled();
+        expect(createResolvedRequestSpy).toHaveBeenCalledTimes(1);
         expect(createSocketSpy).not.toHaveBeenCalled();
     });
 
@@ -187,12 +187,13 @@ describe('emitSessionMetadataUpdateWithServerScope', () => {
             metadata: 'committed',
         });
 
-        expect(createSocketSpy).toHaveBeenCalledWith({
+        expect(createSocketSpy).toHaveBeenCalledWith(expect.objectContaining({
             serverUrl: 'https://server-b.example.test',
             reachabilityServerUrl: 'https://server-b.example.test',
             token: 'token-b',
             timeoutMs: 5000,
-        });
+            takeCarrierRelease: expect.any(Function),
+        }));
         expect(emitWithAck).toHaveBeenCalledWith(
             'update-metadata',
             {
@@ -202,7 +203,171 @@ describe('emitSessionMetadataUpdateWithServerScope', () => {
             },
         );
         expect(disconnect).toHaveBeenCalledTimes(1);
-        expect(createResolvedRequestSpy).not.toHaveBeenCalled();
+        expect(createResolvedRequestSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('transfers an authority-owned browser-Iroh carrier to the pooled legacy socket without allowing authority release to tear it down', async () => {
+        const releaseCarrier = vi.fn(async () => {});
+        let authorityOwnsCarrier = true;
+        const authorityRelease = vi.fn(async () => {
+            if (authorityOwnsCarrier) await releaseCarrier();
+        });
+        const transferCarrierCustody = vi.fn(() => {
+            authorityOwnsCarrier = false;
+            return releaseCarrier;
+        });
+        const homeCarrier = {
+            leaseId: 'browser-lease-1',
+            homeServerIdentityId: 'server-b',
+            endpointId: 'a'.repeat(64),
+            appliedRelayUrls: ['https://relay.example.test'],
+            readObservedPath: () => 'relay' as const,
+            request: async () => new Response(null, { status: 200 }),
+            createWebSocket: () => ({}),
+            release: releaseCarrier,
+        };
+        const emitWithAck = vi.fn(async () => ({
+            result: 'success',
+            version: 4,
+            metadata: 'committed',
+        }));
+        const disconnect = vi.fn();
+        createSocketSpy.mockImplementation(async (params: {
+            takeCarrierRelease?: () => (() => Promise<void>) | undefined;
+        }) => {
+            expect(params.takeCarrierRelease?.()).toBe(releaseCarrier);
+            return {
+                timeout: vi.fn(() => ({ emitWithAck })),
+                disconnect,
+            };
+        });
+
+        const { emitSessionMetadataUpdateWithServerScope } =
+            await import('./emitSessionMetadataUpdateWithServerScope');
+
+        await expect(emitSessionMetadataUpdateWithServerScope({
+            sessionId: 'session-1',
+            expectedVersion: 3,
+            metadata: 'ciphertext',
+            authority: {
+                scope: { serverId: 'server-b', accountId: 'account-b' },
+                context: {
+                    scope: 'scoped',
+                    targetServerId: 'server-b',
+                    targetServerUrl: 'https://server-b.example.test',
+                    targetAccountId: 'account-b',
+                    token: 'token-b',
+                    timeoutMs: 5000,
+                    encryption: null,
+                    runtimeOrigin: 'https://server-b.example.test',
+                    carrier: 'iroh',
+                    homeCarrier,
+                    release: releaseCarrier,
+                },
+                request: vi.fn(),
+                release: authorityRelease,
+                transferCarrierCustody,
+            },
+        })).resolves.toEqual({
+            result: 'success',
+            version: 4,
+            metadata: 'committed',
+        });
+
+        await authorityRelease();
+
+        expect(transferCarrierCustody).toHaveBeenCalledTimes(1);
+        expect(createSocketSpy).toHaveBeenCalledWith(expect.objectContaining({
+            carrier: 'iroh',
+            homeCarrier,
+            takeCarrierRelease: expect.any(Function),
+        }));
+        expect(disconnect).toHaveBeenCalledTimes(1);
+        expect(releaseCarrier).not.toHaveBeenCalled();
+    });
+
+    it('reuses an authority-backed pooled carrier across legacy metadata retries without consuming a second carrier release', async () => {
+        const releaseCarrier = vi.fn(async () => {});
+        let authorityOwnsCarrier = true;
+        const authorityRelease = vi.fn(async () => {
+            if (authorityOwnsCarrier) await releaseCarrier();
+        });
+        const transferCarrierCustody = vi.fn(() => {
+            if (!authorityOwnsCarrier) {
+                throw new Error('carrier custody is no longer available');
+            }
+            authorityOwnsCarrier = false;
+            return releaseCarrier;
+        });
+        const homeCarrier = {
+            leaseId: 'browser-lease-1',
+            homeServerIdentityId: 'server-b',
+            endpointId: 'a'.repeat(64),
+            appliedRelayUrls: ['https://relay.example.test'],
+            readObservedPath: () => 'relay' as const,
+            request: async () => new Response(null, { status: 200 }),
+            createWebSocket: () => ({}),
+            release: releaseCarrier,
+        };
+        const emitWithAck = vi.fn(async () => ({
+            result: 'success',
+            version: 4,
+            metadata: 'committed',
+        }));
+        const disconnect = vi.fn();
+        let physicalPoolEntryExists = false;
+        createSocketSpy.mockImplementation(async (params: {
+            takeCarrierRelease?: () => (() => Promise<void>) | undefined;
+        }) => {
+            if (!physicalPoolEntryExists) {
+                physicalPoolEntryExists = true;
+                expect(params.takeCarrierRelease?.()).toBe(releaseCarrier);
+            }
+            return {
+                timeout: vi.fn(() => ({ emitWithAck })),
+                disconnect,
+            };
+        });
+        const authority = {
+            scope: { serverId: 'server-b', accountId: 'account-b' },
+            context: {
+                scope: 'scoped' as const,
+                targetServerId: 'server-b',
+                targetServerUrl: 'https://server-b.example.test',
+                targetAccountId: 'account-b',
+                token: 'token-b',
+                timeoutMs: 5000,
+                encryption: null,
+                runtimeOrigin: 'https://server-b.example.test',
+                carrier: 'iroh' as const,
+                homeCarrier,
+                release: releaseCarrier,
+            },
+            request: vi.fn(),
+            release: authorityRelease,
+            transferCarrierCustody,
+        };
+        const { emitSessionMetadataUpdateWithServerScope } =
+            await import('./emitSessionMetadataUpdateWithServerScope');
+
+        await expect(emitSessionMetadataUpdateWithServerScope({
+            sessionId: 'session-1',
+            expectedVersion: 3,
+            metadata: 'ciphertext-1',
+            authority,
+        })).resolves.toMatchObject({ result: 'success' });
+        await expect(emitSessionMetadataUpdateWithServerScope({
+            sessionId: 'session-1',
+            expectedVersion: 4,
+            metadata: 'ciphertext-2',
+            authority,
+        })).resolves.toMatchObject({ result: 'success' });
+
+        await authorityRelease();
+
+        expect(transferCarrierCustody).toHaveBeenCalledTimes(1);
+        expect(disconnect).toHaveBeenCalledTimes(2);
+        expect(releaseCarrier).not.toHaveBeenCalled();
     });
 
     it.each([

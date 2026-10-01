@@ -1,6 +1,8 @@
 import {
-  hasCanonicalTurnDiffEvidence,
-  isCanonicalTurnDiffPayload,
+  createEmptyCanonicalTurnDiffSuppressionState,
+  rememberSuppressedEmptyCanonicalTurnDiffCallId,
+  shouldSuppressEmptyCanonicalTurnDiffToolResult,
+  type EmptyCanonicalTurnDiffSuppressionState,
   readEmptyCanonicalTurnDiffToolCallId,
   type ConversationTurnOriginV1,
 } from '@happier-dev/protocol';
@@ -40,16 +42,10 @@ export type NormalizeHistoryOptions = Readonly<{
   includeStructuredPayload: boolean;
 }>;
 
-export type TranscriptHistoryNormalizationSequenceState = Readonly<{
-  suppressedEmptyCanonicalTurnDiffCallIds: Set<string>;
-}>;
-
-const MAX_SUPPRESSED_EMPTY_TURN_DIFF_CALL_IDS = 256;
+export type TranscriptHistoryNormalizationSequenceState = EmptyCanonicalTurnDiffSuppressionState;
 
 export function createTranscriptHistoryNormalizationSequenceState(): TranscriptHistoryNormalizationSequenceState {
-  return {
-    suppressedEmptyCanonicalTurnDiffCallIds: new Set<string>(),
-  };
+  return createEmptyCanonicalTurnDiffSuppressionState();
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -98,26 +94,13 @@ function readToolResultCallIdAndOutput(decrypted: unknown): Readonly<{
   return callId ? { callId, output: data.output } : null;
 }
 
-function rememberSuppressedEmptyTurnDiffCallId(
-  state: TranscriptHistoryNormalizationSequenceState,
-  callId: string,
-): void {
-  const callIds = state.suppressedEmptyCanonicalTurnDiffCallIds;
-  callIds.add(callId);
-  while (callIds.size > MAX_SUPPRESSED_EMPTY_TURN_DIFF_CALL_IDS) {
-    const oldest = callIds.values().next().value;
-    if (typeof oldest !== 'string') break;
-    callIds.delete(oldest);
-  }
-}
-
 export function shouldSuppressTranscriptItemForEmptyCanonicalTurnDiff(
   decrypted: unknown,
   state: TranscriptHistoryNormalizationSequenceState,
 ): boolean {
   const emptyCallId = readEmptyCanonicalTurnDiffToolCallId(decrypted);
   if (emptyCallId) {
-    rememberSuppressedEmptyTurnDiffCallId(state, emptyCallId);
+    rememberSuppressedEmptyCanonicalTurnDiffCallId(state, emptyCallId);
     return true;
   }
 
@@ -125,15 +108,7 @@ export function shouldSuppressTranscriptItemForEmptyCanonicalTurnDiff(
   if (!result) {
     return false;
   }
-  if (isCanonicalTurnDiffPayload(result.output)) {
-    return !hasCanonicalTurnDiffEvidence(result.output);
-  }
-  if (!state.suppressedEmptyCanonicalTurnDiffCallIds.has(result.callId)) {
-    return false;
-  }
-
-  state.suppressedEmptyCanonicalTurnDiffCallIds.delete(result.callId);
-  return !hasCanonicalTurnDiffEvidence(result.output);
+  return shouldSuppressEmptyCanonicalTurnDiffToolResult(state, result.callId, result.output);
 }
 
 export function isMemoryArtifactDecryptedRow(value: unknown): boolean {

@@ -12,12 +12,16 @@ function normalizeRepositoryUploadDestination(raw: string): string {
     return normalized;
 }
 
-export async function promptRepositoryUploadDestination(currentDestinationDir: string): Promise<string | null> {
+/** `rootLabel` names the root the empty answer means (default "Project root"). */
+export async function promptRepositoryUploadDestination(
+    currentDestinationDir: string,
+    rootLabel: string = t('files.projectRoot'),
+): Promise<string | null> {
     const raw = await Modal.prompt(
         t('settingsAttachments.workspaceDirectory.uploadsDirectory.promptTitle'),
         t('settingsAttachments.workspaceDirectory.uploadsDirectory.promptMessage'),
         {
-            placeholder: t('files.projectRoot'),
+            placeholder: rootLabel,
             defaultValue: currentDestinationDir,
         },
     );

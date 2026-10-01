@@ -1,16 +1,25 @@
 import * as React from 'react';
 import { View } from 'react-native';
-import { StyleSheet, useUnistyles } from 'react-native-unistyles';
+import { StyleSheet } from 'react-native-unistyles';
 
-import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
+import { usePaneHeaderSlotContent, type PaneHeaderLineSegment } from '@/components/appShell/panes/paneHeaderSlot';
 import { SegmentedTabBar, type SegmentedTab } from '@/components/ui/navigation/SegmentedTabBar';
-import { Text } from '@/components/ui/text/Text';
-import { Typography } from '@/constants/Typography';
+import { SurfaceFreshnessLine } from '@/components/ui/surfaces/SurfaceFreshnessLine';
+import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
 import { t } from '@/text';
-import { TranscriptNavigationActionButton } from './TranscriptNavigationActionButton';
-import { TranscriptNavigationEntryList } from './TranscriptNavigationEntryList';
+import {
+    TranscriptNavigationEntryList,
+    type TranscriptNavigationNewestTurnState,
+    type TranscriptNavigationSessionStart,
+} from './TranscriptNavigationEntryList';
+import {
+    filterTranscriptNavigationEntries,
+    isTranscriptNavigationFilterPartial,
+    resolveTranscriptNavigationFilterChips,
+    summarizeTranscriptNavigationEntries,
+    type TranscriptNavigationFilter,
+} from './transcriptNavigationFilters';
 import type {
-    TranscriptNavigationDerivationMode,
     TranscriptNavigationEntry,
     TranscriptNavigationEntryPressHandler,
 } from './transcriptNavigationTypes';
@@ -19,17 +28,24 @@ export type TranscriptNavigationPanelProps = Readonly<{
     sessionId: string;
     entries: readonly TranscriptNavigationEntry[];
     activeEntryId: string | null;
+    /** The turns on screen in the transcript now. */
+    visibleEntryIds?: readonly string[];
+    /** What the session is doing with its newest turn (canonical awareness). */
+    newestTurn?: TranscriptNavigationNewestTurnState;
+    /** Every earlier turn is listed: filters are complete and the list ends at the session start. */
+    historyComplete?: boolean;
+    /** The reader's "Load earlier turns". */
+    onLoadEarlier?: () => void;
+    loadingEarlier?: boolean;
+    sessionStart?: TranscriptNavigationSessionStart | null;
+    /** The session is unreachable: the list is last-known, as of this moment. */
+    offline?: Readonly<{ asOfMs: number | null; reason: string }> | null;
     onEntryPress: TranscriptNavigationEntryPressHandler;
     onRequestClose?: () => void;
     /** True while the session transcript has not produced its first page yet. */
     isLoading?: boolean;
     testIDPrefix?: string;
 }>;
-
-const MODE_TABS: ReadonlyArray<SegmentedTab<TranscriptNavigationDerivationMode>> = [
-    { id: 'all', label: t('session.transcriptNavigation.modeAll') },
-    { id: 'pinned', label: t('session.transcriptNavigation.modePinned') },
-];
 
 const stylesheet = StyleSheet.create((theme) => ({
     container: {
@@ -38,64 +54,22 @@ const stylesheet = StyleSheet.create((theme) => ({
         minWidth: 0,
         backgroundColor: theme.colors.surface.base,
     },
-    header: {
-        paddingHorizontal: 12,
-        paddingTop: 10,
+    filters: {
+        paddingHorizontal: 16,
         paddingBottom: 8,
-        borderBottomWidth: 1,
-        borderBottomColor: theme.colors.border.default,
-        backgroundColor: theme.colors.surface.inset,
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 10,
+        alignItems: 'flex-start',
     },
-    titleBlock: {
-        flex: 1,
-        minWidth: 0,
-    },
-    title: {
-        color: theme.colors.text.primary,
-        ...Typography.default('semiBold'),
-    },
-    count: {
-        color: theme.colors.text.secondary,
-    },
-    mode: {
-        paddingHorizontal: 12,
-        paddingVertical: 10,
-        borderBottomWidth: 1,
-        borderBottomColor: theme.colors.border.default,
+    freshness: {
+        paddingHorizontal: 16,
+        paddingBottom: 6,
     },
     body: {
         flex: 1,
         minHeight: 0,
         minWidth: 0,
     },
-    empty: {
-        paddingHorizontal: 18,
-        paddingVertical: 18,
-        gap: 4,
-    },
-    emptyTitle: {
-        color: theme.colors.text.primary,
-        ...Typography.default('semiBold'),
-    },
-    emptyBody: {
-        color: theme.colors.text.secondary,
-    },
-    emptyCaveat: {
-        marginTop: 6,
-        color: theme.colors.text.tertiary,
-    },
-    loading: {
-        flex: 1,
-        alignItems: 'center',
-        justifyContent: 'center',
-        gap: 10,
-        paddingHorizontal: 18,
-    },
-    loadingText: {
-        color: theme.colors.text.secondary,
+    lineState: {
+        paddingHorizontal: 16,
     },
 }));
 
@@ -103,26 +77,192 @@ function defaultTestIDPrefix(prefix: string | undefined): string {
     return prefix && prefix.trim().length > 0 ? prefix.trim() : 'transcript-navigation';
 }
 
-function filterEntries(entries: readonly TranscriptNavigationEntry[], mode: TranscriptNavigationDerivationMode): TranscriptNavigationEntry[] {
-    if (mode === 'pinned') {
-        return entries.filter((entry) => entry.pinned);
+const FILTER_LABEL_KEYS = {
+    all: 'session.transcriptNavigation.modeAll',
+    pinned: 'session.transcriptNavigation.modePinned',
+    approvals: 'session.transcriptNavigation.filterApprovals',
+    errors: 'session.transcriptNavigation.filterErrors',
+} as const;
+
+function headerSegments(params: Readonly<{
+    filter: TranscriptNavigationFilter;
+    counts: Readonly<Record<TranscriptNavigationFilter, number>>;
+    waitingCount: number;
+    partial: boolean;
+}>): PaneHeaderLineSegment[] {
+    const { counts, filter } = params;
+    const segments: PaneHeaderLineSegment[] = [];
+    if (filter === 'pinned') {
+        segments.push(t('session.transcriptNavigation.pinnedCount', { count: counts.pinned }));
+    } else if (filter === 'approvals') {
+        segments.push(t('session.transcriptNavigation.approvalsCount', { count: counts.approvals }));
+    } else if (filter === 'errors') {
+        segments.push(t('session.transcriptNavigation.errorsCount', { count: counts.errors }));
+    } else {
+        segments.push(t('session.transcriptNavigation.turnCount', { count: counts.all }));
     }
-    return [...entries];
+    if (params.partial) segments.push(t('session.transcriptNavigation.soFar'));
+    if (params.waitingCount > 0 && (filter === 'all' || filter === 'approvals')) {
+        segments.push({ text: t('session.transcriptNavigation.waitingCount', { count: params.waitingCount }), attention: true });
+    }
+    return segments;
 }
 
 export const TranscriptNavigationPanel = React.memo((props: TranscriptNavigationPanelProps) => {
     const styles = stylesheet;
-    const { theme } = useUnistyles();
-    const [mode, setMode] = React.useState<TranscriptNavigationDerivationMode>('all');
+    const [filter, setFilter] = React.useState<TranscriptNavigationFilter>('all');
     const testIDPrefix = defaultTestIDPrefix(props.testIDPrefix);
-    const entries = React.useMemo(() => filterEntries(props.entries, mode), [mode, props.entries]);
-    const pinnedCount = React.useMemo(() => props.entries.filter((entry) => entry.pinned).length, [props.entries]);
-    const countLabel = mode === 'pinned'
-        ? t('session.transcriptNavigation.pinnedCount', { count: pinnedCount })
-        : t('session.transcriptNavigation.entryCount', { count: props.entries.length });
+    const historyComplete = props.historyComplete === true;
+    const summary = React.useMemo(() => summarizeTranscriptNavigationEntries(props.entries), [props.entries]);
+    const entries = React.useMemo(() => filterTranscriptNavigationEntries(props.entries, filter), [filter, props.entries]);
+    const partial = React.useMemo(
+        () => isTranscriptNavigationFilterPartial({ entries: props.entries, filter, historyComplete }),
+        [filter, historyComplete, props.entries],
+    );
+    const showAll = React.useCallback(() => setFilter('all'), []);
+
+    const chips = resolveTranscriptNavigationFilterChips(summary, filter);
+    const chipKey = chips.join('|');
+    const tabs = React.useMemo<ReadonlyArray<SegmentedTab<TranscriptNavigationFilter>>>(
+        () => (chipKey.split('|') as TranscriptNavigationFilter[]).map((id) => ({
+            id,
+            label: t(FILTER_LABEL_KEYS[id]),
+            count: String(summary.counts[id]),
+        })),
+        [chipKey, summary],
+    );
+
+    // The pane header is the only header (lab N, B21): its live line says how long the session is
+    // and what needs you. The filters are one row under it (lab NA), so the header has no trailing action.
+    const headerLine = React.useMemo(() => (props.entries.length === 0 ? null : {
+        segments: headerSegments({ filter, counts: summary.counts, waitingCount: summary.waitingCount, partial }),
+    }), [filter, partial, props.entries.length, summary]);
+    usePaneHeaderSlotContent(React.useMemo(() => ({ line: headerLine }), [headerLine]));
     // Loading only ever replaces NOTHING: once entries exist, a background refresh must not
     // erase a list the reader is already using.
     const showLoading = props.isLoading === true && props.entries.length === 0;
+    const onLoadEarlier = props.onLoadEarlier;
+
+    const footer = React.useMemo(() => {
+        if (props.loadingEarlier) {
+            return (
+                <SurfaceStateCard
+                    testID={`${testIDPrefix}-loading-earlier`}
+                    size="line"
+                    kind="loading"
+                    title={t('session.transcriptNavigation.loadingEarlierTurns')}
+                />
+            );
+        }
+        const loadEarlier = onLoadEarlier && !historyComplete
+            ? { label: t('session.transcriptNavigation.loadEarlierTurns'), onPress: onLoadEarlier }
+            : undefined;
+        if (filter === 'approvals' || filter === 'errors') {
+            if (partial) {
+                return (
+                    <SurfaceStateCard
+                        testID={`${testIDPrefix}-partial`}
+                        size="line"
+                        kind="empty"
+                        title={filter === 'approvals'
+                            ? t('session.transcriptNavigation.partialApprovals')
+                            : t('session.transcriptNavigation.partialErrors')}
+                        action={loadEarlier}
+                    />
+                );
+            }
+            return (
+                <SurfaceStateCard
+                    testID={`${testIDPrefix}-filter-end`}
+                    size="line"
+                    kind="empty"
+                    title={filter === 'approvals'
+                        ? t('session.transcriptNavigation.filterEndApprovals', { count: summary.counts.approvals, total: summary.counts.all })
+                        : t('session.transcriptNavigation.filterEndErrors', { count: summary.counts.errors, total: summary.counts.all })}
+                    action={{ label: t('session.transcriptNavigation.showAllTurns'), onPress: showAll }}
+                />
+            );
+        }
+        if (filter === 'all' && loadEarlier) {
+            return (
+                <SurfaceStateCard
+                    testID={`${testIDPrefix}-load-earlier`}
+                    size="line"
+                    kind="empty"
+                    title={t('session.transcriptNavigation.earlierTurnsNotListed')}
+                    action={loadEarlier}
+                />
+            );
+        }
+        return null;
+    }, [filter, historyComplete, onLoadEarlier, partial, props.loadingEarlier, showAll, summary.counts, testIDPrefix]);
+
+    const renderBody = () => {
+        if (showLoading) {
+            return (
+                <SurfaceStateCard
+                    testID={`${testIDPrefix}-loading`}
+                    kind="loading"
+                    title={t('session.transcriptNavigation.loadingBody')}
+                />
+            );
+        }
+        if (props.entries.length === 0) {
+            return (
+                <SurfaceStateCard
+                    testID={`${testIDPrefix}-empty`}
+                    kind="empty"
+                    iconName="list-bullets"
+                    title={t('session.transcriptNavigation.emptyAllTitle')}
+                    reason={t('session.transcriptNavigation.emptyAllBody')}
+                />
+            );
+        }
+        if (entries.length > 0) {
+            return (
+                <TranscriptNavigationEntryList
+                    entries={entries}
+                    activeEntryId={props.activeEntryId}
+                    visibleEntryIds={props.visibleEntryIds}
+                    newestTurn={props.newestTurn ?? null}
+                    showApprovals={filter === 'approvals'}
+                    sessionStart={filter === 'all' && historyComplete ? props.sessionStart ?? null : null}
+                    footer={footer}
+                    onEntryPress={props.onEntryPress}
+                    onRequestClose={props.onRequestClose}
+                    testIDPrefix={testIDPrefix}
+                />
+            );
+        }
+        if (filter === 'pinned') {
+            return (
+                <SurfaceStateCard
+                    testID={`${testIDPrefix}-empty-pinned`}
+                    kind="empty"
+                    iconName="push-pin"
+                    title={t('session.transcriptNavigation.emptyPinnedTitle')}
+                    reason={t('session.transcriptNavigation.emptyPinnedHint')}
+                    note={t('session.transcriptNavigation.emptyPinnedPrivacy')}
+                    // Quiet, not a filled primary: the way back to every turn, not a task.
+                    secondaryAction={{ label: t('session.transcriptNavigation.showAllTurns'), onPress: showAll }}
+                />
+            );
+        }
+        // A fact filter with no match: one line, honest about partial history.
+        return (
+            <View style={styles.lineState}>
+                <SurfaceStateCard
+                    testID={`${testIDPrefix}-empty-${filter}`}
+                    size="line"
+                    kind="empty"
+                    title={filter === 'approvals'
+                        ? (partial ? t('session.transcriptNavigation.noApprovalsSoFar') : t('session.transcriptNavigation.noApprovals'))
+                        : (partial ? t('session.transcriptNavigation.noErrorsSoFar') : t('session.transcriptNavigation.noErrors'))}
+                    action={{ label: t('session.transcriptNavigation.showAllTurns'), onPress: showAll }}
+                />
+            </View>
+        );
+    };
 
     return (
         <View
@@ -130,70 +270,26 @@ export const TranscriptNavigationPanel = React.memo((props: TranscriptNavigation
             style={styles.container}
             accessibilityLabel={t('session.transcriptNavigation.title')}
         >
-            <View style={styles.header}>
-                <View style={styles.titleBlock}>
-                    <Text numberOfLines={1} style={styles.title}>{t('session.transcriptNavigation.title')}</Text>
-                    <Text numberOfLines={1} style={styles.count}>{countLabel}</Text>
+            {props.entries.length > 0 ? (
+                <View style={styles.filters}>
+                    <SegmentedTabBar
+                        tabs={tabs}
+                        activeTabId={filter}
+                        onSelectTab={setFilter}
+                        testIDPrefix={`${testIDPrefix}-filter`}
+                        compact
+                        segmentSizing="content"
+                        accessibilityLabel={t('session.transcriptNavigation.filtersA11y')}
+                    />
                 </View>
-                {props.onRequestClose ? (
-                    <TranscriptNavigationActionButton
-                        testID={`${testIDPrefix}-close`}
-                        iconName="x"
-                        accessibilityLabel={t('common.close')}
-                        onPress={props.onRequestClose}
-                    />
-                ) : null}
-            </View>
-            <View style={styles.mode}>
-                <SegmentedTabBar
-                    tabs={MODE_TABS}
-                    activeTabId={mode}
-                    onSelectTab={setMode}
-                    testIDPrefix={`${testIDPrefix}-mode`}
-                    compact
-                />
-            </View>
+            ) : null}
+            {props.offline ? (
+                <View style={styles.freshness}>
+                    <SurfaceFreshnessLine asOf={props.offline.asOfMs} reason={props.offline.reason} />
+                </View>
+            ) : null}
             <View style={styles.body}>
-                {showLoading ? (
-                    <View testID={`${testIDPrefix}-loading`} style={styles.loading}>
-                        <ActivitySpinner size="small" color={theme.colors.text.secondary} />
-                        <Text style={styles.loadingText}>{t('session.transcriptNavigation.loadingBody')}</Text>
-                    </View>
-                ) : entries.length > 0 ? (
-                    <TranscriptNavigationEntryList
-                        entries={entries}
-                        activeEntryId={props.activeEntryId}
-                        onEntryPress={props.onEntryPress}
-                        onRequestClose={props.onRequestClose}
-                        testIDPrefix={testIDPrefix}
-                    />
-                ) : (
-                    <View
-                        testID={mode === 'pinned' ? `${testIDPrefix}-empty-pinned` : `${testIDPrefix}-empty`}
-                        style={styles.empty}
-                    >
-                        <Text style={styles.emptyTitle}>
-                            {mode === 'pinned'
-                                ? t('session.transcriptNavigation.emptyPinnedTitle')
-                                : t('session.transcriptNavigation.emptyAllTitle')}
-                        </Text>
-                        <Text style={styles.emptyBody}>
-                            {mode === 'pinned'
-                                ? t('session.transcriptNavigation.emptyPinnedBody')
-                                : t('session.transcriptNavigation.emptyAllBody')}
-                        </Text>
-                        {mode === 'pinned' ? (
-                            <>
-                                <Text style={styles.emptyBody}>
-                                    {t('session.transcriptNavigation.emptyPinnedHint')}
-                                </Text>
-                                <Text style={styles.emptyCaveat}>
-                                    {t('session.transcriptNavigation.emptyPinnedPrivacy')}
-                                </Text>
-                            </>
-                        ) : null}
-                    </View>
-                )}
+                {renderBody()}
             </View>
         </View>
     );

@@ -15,7 +15,6 @@ import {
     isLegacyCompatAgentType,
     LEGACY_COMPAT_PRIMARY_AGENT_ID,
 } from '@/agents/backendCatalog/legacyCompatAgents';
-import { adaptDaemonContributionRegistryProjectionToMergedProjectionInputs } from '@/agents/backendCatalog/daemonContributionRegistryProjectionAdapters';
 import {
   getResolvedBackendCatalogEntries,
 } from '@/agents/backendCatalog/getResolvedBackendCatalogEntries';
@@ -27,19 +26,10 @@ import type {
 } from '@/agents/backendCatalog/mergedProjectionTypes';
 import { storage } from '@/sync/domains/state/storage';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
-import { machineCapabilitiesInvoke } from '@/sync/ops/capabilities';
-import { machineContributionRegistryProjectionDescribe } from '@/sync/ops/machineContributionRegistryProjection';
-import {
-  readDynamicModelProbeCache,
-  runDynamicModelProbeDedupe,
-  writeDynamicModelProbeCacheError,
-  writeDynamicModelProbeCacheSuccess,
-  writeDynamicModelProbeCacheTransientSuccess,
-} from '@/sync/domains/models/dynamicModelProbeCache';
+import { discoverMachineModels } from '@/sync/ops/modelDiscovery';
+import { loadDaemonMergedProjectionInputs } from '@/agents/backendCatalog/loadDaemonMergedProjectionInputs';
 import { buildDynamicModelProbeCacheKey } from '@/sync/domains/models/dynamicModelProbeCacheKey';
-import { parsePreflightModelListFromProbeModelsResult } from '@/sync/domains/models/parsePreflightModelListFromProbeModelsResult';
 import { createUnavailablePreflightModelList, type PreflightModelList } from '@/sync/domains/models/modelOptions';
-import { buildProviderCliCapabilityId } from '@/capabilities/cliCapabilityId';
 import { describeProviderModels } from '@/providers/rpc/client';
 import {
   buildSessionModelPickerSections,
@@ -163,6 +153,7 @@ type VoiceToolModelListResult = Readonly<{
   supportsFreeform: boolean;
   source: 'preflight' | 'static' | 'unavailable';
   unavailable?: true;
+  refreshError?: true;
 }>;
 
 async function projectVoiceToolProviderModels(params: Readonly<{
@@ -241,6 +232,7 @@ async function projectVoiceToolProviderModels(params: Readonly<{
     items: limitedItems,
     supportsFreeform: params.base.supportsFreeform || supportsProviderFreeform,
     source: params.base.source,
+    ...(params.base.refreshError ? { refreshError: true as const } : {}),
     ...(!hasProviderModels && params.base.unavailable === true ? { unavailable: true as const } : {}),
   };
 }
@@ -333,14 +325,12 @@ export async function listAgentBackendsForVoiceTool(params: Readonly<{ includeDi
   const serverId = normalizeId(getActiveServerSnapshot()?.serverId) || null;
   const daemonMergedProjectionInputs = machineId
     ? await (async () => {
-      const res = await machineContributionRegistryProjectionDescribe(machineId, { serverId, timeoutMs: 5_000 });
-      if (res.supported !== true) return null;
-      const adapted = adaptDaemonContributionRegistryProjectionToMergedProjectionInputs(res.projection);
-      const discoveredBackendIds = Object.keys(adapted.mergedBackendProjectionById ?? {});
+      const inputs = await loadDaemonMergedProjectionInputs({ machineId, serverId });
+      if (!inputs) return null;
       return {
-        mergedProviderProjectionById: adapted.mergedProviderProjectionById,
-        mergedBackendProjectionById: adapted.mergedBackendProjectionById,
-        discoveredBackendIds,
+        mergedProviderProjectionById: inputs.mergedProviderProjectionById,
+        mergedBackendProjectionById: inputs.mergedBackendProjectionById,
+        discoveredBackendIds: inputs.discoveredBackendIds,
       };
     })()
     : null;
@@ -437,101 +427,21 @@ export async function listAgentModelsForVoiceTool(params: Readonly<{
       cwd: null,
     });
 
-    const nowMs = Date.now();
-    const cacheEntry = cacheKey ? readDynamicModelProbeCache(cacheKey) : null;
-    const cached = cacheEntry?.kind === 'success' ? cacheEntry.value : null;
-    const cachedCanPersist = cacheEntry?.kind === 'success' && cacheEntry.cacheable !== false;
-    if (cached && nowMs >= 0 && nowMs < cacheEntry!.expiresAt) {
-      return await withProviderProjection(buildVoiceToolPreflightModelResult({
-        shouldExposeAgentId,
-        agentId,
+    if (cacheKey && bundledCore?.model?.dynamicProbe !== 'static-only') {
+      const entry = await discoverMachineModels({
+        cacheKey,
+        agentType: backendTarget?.kind === 'configuredAcpBackend' ? CONFIGURED_ACP_CLI_CAPABILITY_ID : agentId,
         machineId,
-        list: cached,
-        limit,
-      }));
-    }
-
-    if (cacheKey) {
-      const attempt = await runDynamicModelProbeDedupe<Readonly<{
-        list: PreflightModelList;
-        cacheable: boolean;
-      }> | null>(cacheKey, async () => {
-        const capabilityIdSuffix =
-          backendTarget?.kind === 'configuredAcpBackend'
-            ? CONFIGURED_ACP_CLI_CAPABILITY_ID
-            : agentId;
-        const capabilityId = buildProviderCliCapabilityId(capabilityIdSuffix);
-        const res = await machineCapabilitiesInvoke(
-          machineId,
-          {
-            id: capabilityId,
-            method: 'probeModels',
-            params: {
-              timeoutMs: 15_000,
-              ...(backendTarget ? { backendTarget } : {}),
-            },
-          },
-          { ...(serverId ? { serverId } : {}) },
-        );
-
-        if (!res.supported) {
-          return { list: createUnavailablePreflightModelList(), cacheable: false };
-        }
-        if (!res.response.ok) {
-          return { list: createUnavailablePreflightModelList(), cacheable: false };
-        }
-
-        const list = parsePreflightModelListFromProbeModelsResult(res.response.result);
-        if (!list) {
-          return { list: createUnavailablePreflightModelList(), cacheable: false };
-        }
-        const result = res.response.result;
-        const source = result && typeof result === 'object' && !Array.isArray(result)
-          ? (typeof (result as Record<string, unknown>).source === 'string' ? (result as Record<string, unknown>).source : null)
-          : null;
-        const cacheable = source !== 'static' && source !== 'unavailable';
-        return { list, cacheable };
+        serverId,
+        backendTarget,
+        capabilityParams: { timeoutMs: 15_000 },
       });
-
-      const commitNowMs = Date.now();
-      const list = attempt?.list ?? null;
-      if (list && attempt?.cacheable !== false) {
-        writeDynamicModelProbeCacheSuccess(cacheKey, list, commitNowMs);
-        return await withProviderProjection(buildVoiceToolPreflightModelResult({
-          shouldExposeAgentId,
-          agentId,
-          machineId,
-          list,
-          limit,
-        }));
-      }
-
-      if (list && attempt?.cacheable === false && !cached) {
-        writeDynamicModelProbeCacheTransientSuccess(cacheKey, list, commitNowMs);
-        writeDynamicModelProbeCacheError(cacheKey, commitNowMs);
-        return await withProviderProjection(buildVoiceToolPreflightModelResult({
-          shouldExposeAgentId,
-          agentId,
-          machineId,
-          list,
-          limit,
-        }));
-      }
-
-      if (cached) {
-        if (cachedCanPersist) {
-          writeDynamicModelProbeCacheSuccess(cacheKey, cached, commitNowMs);
-        }
-        return await withProviderProjection(buildVoiceToolPreflightModelResult({
-          shouldExposeAgentId,
-          agentId,
-          machineId,
-          list: cached,
-          limit,
-        }));
-      }
-
-      writeDynamicModelProbeCacheError(cacheKey, commitNowMs);
+      const failed = entry?.kind === 'error' || (entry?.kind === 'success' && entry.errorUpdatedAt !== undefined);
+      const list = entry?.kind === 'success' ? entry.value : createUnavailablePreflightModelList();
+      return await withProviderProjection({
+        ...buildVoiceToolPreflightModelResult({ shouldExposeAgentId, agentId, machineId, list, limit }),
+        ...(failed ? { refreshError: true as const } : {}),
+      });
     }
   }
 

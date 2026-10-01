@@ -56,6 +56,41 @@ function handle(
 }
 
 describe('handleSessionNewMessageUpdate', () => {
+  it.each(['plain', 'e2ee'] as const)('takes per-input constraints from the server receipt and overwrites body-authored claims in %s sessions', (mode) => {
+    const update = createUserUpdate();
+    if (update.body?.t !== 'new-message' || update.body.message.content.t !== 'plain') throw new Error('unexpected fixture');
+    const callerInputConstraints = { models: null, permissionModes: ['default' as const] };
+    const payload = update.body.message.content.v as Record<string, unknown>;
+    payload.callerInputConstraints = { models: null, permissionModes: null };
+    Object.assign(update.body.message, { inputAdmissionReceipt: {
+      v: 1, issuer: 'authenticatedMachine', callerInputConstraints,
+    } });
+    if (mode === 'e2ee') update.body.message.content = { t: 'encrypted', c: encryptSessionPayload({
+      ctx: { encryptionKey: new Uint8Array(32), encryptionVariant: 'legacy' }, payload,
+    }) };
+    const emit = vi.fn();
+    handle(update, { emit, mode });
+    expect(emit).toHaveBeenCalledWith('user-message', expect.objectContaining({ callerInputConstraints }));
+    const untrusted = createUserUpdate();
+    if (untrusted.body?.t !== 'new-message' || untrusted.body.message.content.t !== 'plain') throw new Error('unexpected fixture');
+    (untrusted.body.message.content.v as Record<string, unknown>).callerInputConstraints = callerInputConstraints;
+    const untrustedEmit = vi.fn();
+    handle(untrusted, { emit: untrustedEmit });
+    expect(untrustedEmit.mock.calls[0]?.[1]).toHaveProperty('callerInputConstraints', undefined);
+  });
+
+  it('does not weaken a malformed trusted caller constraint into unrestricted input', () => {
+    const update = createUserUpdate();
+    if (update.body?.t !== 'new-message') throw new Error('unexpected fixture');
+    Object.assign(update.body.message, { inputAdmissionReceipt: {
+      v: 1, issuer: 'authenticatedMachine', callerInputConstraints: { models: [], permissionModes: null },
+    } });
+    const emit = vi.fn();
+    const result = handle(update, { emit });
+    expect(emit).not.toHaveBeenCalledWith('user-message', expect.anything());
+    expect(result.lastObservedUserMessageSeq).toBe(0);
+  });
+
   it('emits ordinary transcript user observations', () => {
     const emit = vi.fn();
 

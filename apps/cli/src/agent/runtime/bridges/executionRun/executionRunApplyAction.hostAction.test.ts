@@ -1,15 +1,18 @@
 import { describe, expect, it } from 'vitest';
+import { readBackendTargetRefV2 } from '@happier-dev/protocol';
 
 import { buildExecutionRunProfileCatalog } from '@/agent/executionRuns/profiles/intentRegistry';
 import type { VoiceAgentManager } from '@/agent/voice/agent/VoiceAgentManager';
 
 import { applyExecutionRunAction } from './executionRunApplyAction';
 import type { ExecutionRunState } from './executionRunTypes';
+import type { ExecutionRunController } from '@/agent/executionRuns/controllers/types';
 
 function succeededRun(): ExecutionRunState {
   return {
     runId: 'run-1', callId: 'call-1', sidechainId: 'sidechain-1', sessionId: 'session-1', depth: 0,
     intent: 'review', profileId: 'acme.review/review',
+    profileSourceCustody: { kind: 'managed', immutableGenerationId: 'immutable-review', installSource: 'archive' },
     backendTarget: { kind: 'builtInAgent', agentId: 'claude' }, backendId: 'claude',
     instructions: 'Review.', permissionMode: 'read_only', retentionPolicy: 'ephemeral',
     runClass: 'bounded', ioMode: 'request_response', status: 'succeeded', startedAtMs: 1, finishedAtMs: 2,
@@ -28,7 +31,7 @@ describe('applyExecutionRunAction review host action', () => {
     const runs = new Map([[run.runId, run]]);
     const catalog = buildExecutionRunProfileCatalog([{
       pluginId: 'acme.review',
-      immutableGenerationId: 'immutable-review',
+      sourceCustody: { kind: 'managed', immutableGenerationId: 'immutable-review', installSource: 'archive' },
       definition: {
         id: 'review', intent: 'review', title: 'Review', promptAsset: 'review-prompt', compatibleAgents: ['claude'],
         defaults: { retention: 'ephemeral', runClass: 'bounded', io: 'streaming' },
@@ -78,7 +81,7 @@ describe('applyExecutionRunAction review host action', () => {
     };
     const catalog = buildExecutionRunProfileCatalog([{
       pluginId: 'acme.review',
-      immutableGenerationId: 'immutable-review',
+      sourceCustody: { kind: 'managed', immutableGenerationId: 'immutable-review', installSource: 'archive' },
       definition: {
         id: 'review', intent: 'review', title: 'Review', promptAsset: 'review-prompt', compatibleAgents: ['claude'],
         defaults: { retention: 'ephemeral', runClass: 'bounded', io: 'streaming' },
@@ -124,7 +127,7 @@ describe('applyExecutionRunAction review host action', () => {
     };
     const catalog = buildExecutionRunProfileCatalog([{
       pluginId: 'acme.review',
-      immutableGenerationId: 'immutable-review',
+      sourceCustody: { kind: 'managed', immutableGenerationId: 'immutable-review', installSource: 'archive' },
       definition: {
         id: 'review', intent: 'review', title: 'Review', promptAsset: 'review-prompt', compatibleAgents: ['codex'],
         defaults: { retention: 'ephemeral', runClass: 'bounded', io: 'streaming' },
@@ -156,7 +159,7 @@ describe('applyExecutionRunAction review host action', () => {
     const run = succeededRun();
     const catalog = buildExecutionRunProfileCatalog([{
       pluginId: 'acme.review',
-      immutableGenerationId: 'immutable-review',
+      sourceCustody: { kind: 'managed', immutableGenerationId: 'immutable-review', installSource: 'archive' },
       definition: {
         id: 'review', intent: 'review', title: 'Review', promptAsset: 'review-prompt', compatibleAgents: ['claude'],
         defaults: { retention: 'ephemeral', runClass: 'bounded', io: 'streaming' },
@@ -183,5 +186,81 @@ describe('applyExecutionRunAction review host action', () => {
       errorCode: 'execution_run_host_action_failed',
       error: 'Review host-action materialization failed',
     });
+  });
+});
+
+describe('applyExecutionRunAction review follow-up admission', () => {
+  async function followUp(run: ExecutionRunState, controller?: ExecutionRunController) {
+    const started: unknown[] = [];
+    const result = await applyExecutionRunAction({
+      runId: run.runId,
+      params: { actionId: 'review.follow_up', input: { messageMarkdown: 'Why?', findingIds: [] } },
+      runs: new Map([[run.runId, run]]),
+      controllers: new Map(controller ? [[run.runId, controller]] : []),
+      voiceAgentManager: {} as VoiceAgentManager,
+      // The child provider launch is the external execution boundary. Admission stays real.
+      startRun: async (params) => {
+        started.push(params);
+        return { runId: 'follow-up', callId: 'follow-up-call', sidechainId: 'follow-up-sidechain' };
+      },
+      parentProvider: 'claude',
+    });
+    return { result, started };
+  }
+
+  it.each(['running', 'cancelled', 'failed', 'timeout'] as const)('refuses a %s review without launching a child', async (status) => {
+    const { result, started } = await followUp({ ...succeededRun(), status });
+    expect(result).toMatchObject({ ok: false, errorCode: status === 'running' ? 'execution_run_busy' : 'review_follow_up_ended' });
+    expect(started).toEqual([]);
+  });
+
+  it('refuses a retiring controller even after a successful result', async () => {
+    const controller: ExecutionRunController = {
+      kind: 'voice_agent', controllerOccurrenceId: 'retiring', voiceAgentId: 'voice', cancelled: true,
+      lastMarkerWriteAtMs: 2, terminalPromise: Promise.resolve(), resolveTerminal: () => {},
+      transcript: { persistenceMode: 'ephemeral', epoch: 1 },
+      externalStreamIdByInternal: new Map(), internalStreamIdByExternal: new Map(),
+      pendingTranscriptTurnByExternalStreamId: new Map(), terminalReadByExternalStreamId: new Map(),
+      readInFlightByExternalStreamId: new Map(),
+    };
+    const { result, started } = await followUp(succeededRun(), controller);
+    expect(result).toMatchObject({ ok: false, errorCode: 'execution_run_busy' });
+    expect(started).toEqual([]);
+  });
+
+  it('refuses the built-in-Agent fresh-child fallback for ephemeral reviews', async () => {
+    const { result, started } = await followUp(succeededRun());
+    expect(result).toMatchObject({ ok: false, errorCode: 'review_follow_up_not_resumable' });
+    expect(started).toEqual([]);
+  });
+
+  it('refuses resumable reviews with no retained provider session', async () => {
+    const { result, started } = await followUp({ ...succeededRun(), retentionPolicy: 'resumable' });
+    expect(result).toMatchObject({ ok: false, errorCode: 'review_follow_up_resume_unavailable' });
+    expect(started).toEqual([]);
+  });
+
+  it('refuses a retained handle for another Agent', async () => {
+    const { result, started } = await followUp({
+      ...succeededRun(), retentionPolicy: 'resumable',
+      resumeHandle: {
+        kind: 'provider_session.v1',
+        backendTarget: readBackendTargetRefV2({ kind: 'builtInAgent', agentId: 'codex' }),
+        providerSessionId: 'other-session',
+      },
+    });
+    expect(result).toMatchObject({ ok: false, errorCode: 'review_follow_up_resume_unavailable' });
+    expect(started).toEqual([]);
+  });
+
+  it('resumes a succeeded review through its exact retained provider session', async () => {
+    const resumeHandle = {
+      kind: 'provider_session.v1' as const,
+      backendTarget: readBackendTargetRefV2({ kind: 'builtInAgent', agentId: 'claude' }),
+      providerSessionId: 'retained-review-session',
+    };
+    const { result, started } = await followUp({ ...succeededRun(), retentionPolicy: 'resumable', resumeHandle });
+    expect(result).toMatchObject({ ok: true, result: { runId: 'follow-up' } });
+    expect(started).toEqual([expect.objectContaining({ resumeHandle, retentionPolicy: 'resumable', parentRunId: 'run-1' })]);
   });
 });

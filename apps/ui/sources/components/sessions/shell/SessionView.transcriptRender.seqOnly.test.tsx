@@ -1,9 +1,12 @@
 import * as React from 'react';
+import { createReactNavigationNativeMock } from '@/dev/testkit/mocks/reactNavigation';
 import { act } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { AppPaneProvider } from '@/components/appShell/panes/AppPaneProvider';
-import { createDeferred, flushHookEffects, renderScreen, standardCleanup } from '@/dev/testkit';
+import { createDeferred } from '@/dev/testkit/hooks/createDeferred';
+import { flushHookEffects } from '@/dev/testkit/hooks/flushHookEffects';
+import { renderScreen } from '@/dev/testkit/render/renderScreen';
+import { standardCleanup } from '@/dev/testkit/cleanup/standardCleanup';
 import { clearSessionSurfaceVisibilityForServerScopeReset } from '@/sync/domains/session/sessionSurfaceVisibility';
 import { syncPerformanceTelemetry } from '@/sync/runtime/syncPerformanceTelemetry';
 import { installSessionShellCommonModuleMocks } from './sessionShellTestHelpers';
@@ -50,6 +53,7 @@ const fetchPendingMessagesSpy = vi.hoisted(() => vi.fn(async (_sessionId: string
 const markSessionViewedSpy = vi.hoisted(() => vi.fn(async () => {}));
 const chatHeaderRenderSpy = vi.hoisted(() => vi.fn());
 const chatListRenderSpy = vi.hoisted(() => vi.fn());
+const transcriptSourceIdentitySpy = vi.hoisted(() => vi.fn());
 const appPaneScopeHostRenderSpy = vi.hoisted(() => vi.fn());
 const agentContentViewRenderSpy = vi.hoisted(() => vi.fn());
 const agentInputRenderSpy = vi.hoisted(() => vi.fn());
@@ -118,10 +122,12 @@ const themeColors = vi.hoisted(() => ({
 let authCredentials: any = { token: 't', secret: 's' };
 let sessionState: any = null;
 let committedMessagesState: any[] = [];
+let pendingMessagesState: any[] = [];
 let committedMessagesLoadedState = true;
 let transcriptIdsState: string[] = [];
 let transcriptIdsLoadedState = true;
 let transcriptIdsSnapshot: { ids: readonly string[]; isLoaded: boolean } = { ids: transcriptIdsState, isLoaded: transcriptIdsLoadedState };
+let transcriptLoadIssueState: any = null;
 let concurrentSessionListCacheByServerIdState: Record<string, any> = {};
 const committedMessagesListeners = new Set<() => void>();
 const storageListeners = new Set<() => void>();
@@ -134,7 +140,9 @@ function getStorageStateForTest() {
         sessionPending: {},
         sessionListRowsByServerId: {},
         ordinarySessionListMembershipByServerId: {},
-        sessionTranscriptLoadIssues: {},
+        sessionTranscriptLoadIssues: transcriptLoadIssueState
+            ? { [sessionState?.id ?? 's1']: transcriptLoadIssueState }
+            : {},
         settings: {
             sessionMessageSendMode: 'agent_queue',
             sessionBusySteerSendPolicy: 'steer_immediately',
@@ -194,6 +202,7 @@ vi.mock('react-native-safe-area-context', () => {
     };
 });
 vi.mock('@react-navigation/native', () => ({
+    ...createReactNavigationNativeMock(),
     useFocusEffect: () => {},
     useIsFocused: () => React.useSyncExternalStore(
         sessionScreenFocusState.subscribe,
@@ -311,7 +320,7 @@ installSessionShellCommonModuleMocks({
                 ),
                 useSessionPendingMessages: (sessionId: string) => {
                     pendingMessagesHookSpy(sessionId);
-                    return { messages: [] };
+                    return { messages: pendingMessagesState };
                 },
                 useSessionSubagentSourceMessages: (sessionId: string) => {
                     subagentSourceMessagesHookSpy(sessionId);
@@ -384,12 +393,17 @@ vi.mock('@/components/sessions/transcript/ChatHeaderView', () => ({
         return null;
     },
 }));
-vi.mock('@/components/sessions/transcript/ChatList', () => ({
+vi.mock('@/components/sessions/transcript/ChatList', async () => {
+    const { useSessionTranscriptSource } = await import('@/components/sessions/transcript/source/SessionTranscriptSourceContext');
+    return ({
     ChatList: (props: any) => {
+        const source = useSessionTranscriptSource();
+        transcriptSourceIdentitySpy({ sessionId: source.sessionId, serverId: source.serverId });
         chatListRenderSpy(props);
         return React.createElement('ChatList');
     },
-}));
+    });
+});
 vi.mock('@/components/ui/empty/EmptyMessages', () => ({
     EmptyMessages: () => React.createElement('EmptyMessages'),
 }));
@@ -579,13 +593,16 @@ vi.mock('@/utils/system/fireAndForget', () => ({
     fireAndForget: (promise: any) => promise,
 }));
 
+const { SessionView } = await import('./SessionView');
+
+const { AppPaneProvider } = await import('@/components/appShell/panes/AppPaneProvider');
+
 describe('SessionView (transcript rendering for seq-only sessions)', () => {
     const AppPaneProviderWrapper = ({ children }: { children?: React.ReactNode }) => (
         <AppPaneProvider>{children ?? null}</AppPaneProvider>
     );
 
-    async function renderSessionView(props?: Partial<React.ComponentProps<(typeof import('./SessionView'))['SessionView']>>) {
-        const { SessionView } = await import('./SessionView');
+    async function renderSessionView(props?: Partial<React.ComponentProps<typeof SessionView>>) {
         return renderScreen(
             <SessionView id="s1" {...props} />,
             {
@@ -612,9 +629,11 @@ describe('SessionView (transcript rendering for seq-only sessions)', () => {
             agentState: {},
         };
         committedMessagesState = [];
+        pendingMessagesState = [];
         committedMessagesLoadedState = true;
         transcriptIdsState = [];
         transcriptIdsLoadedState = true;
+        transcriptLoadIssueState = null;
         concurrentSessionListCacheByServerIdState = {};
         committedMessagesListeners.clear();
         storageListeners.clear();
@@ -812,6 +831,44 @@ describe('SessionView (transcript rendering for seq-only sessions)', () => {
         } finally {
             vi.useRealTimers();
         }
+    });
+
+    it('settles a seq-only transcript read failure on the retry banner instead of a second spinner', async () => {
+        committedMessagesLoadedState = false;
+        transcriptIdsLoadedState = false;
+        transcriptLoadIssueState = { kind: 'read_failed', errorCode: 'internal_error' };
+        sessionState = { ...sessionState, serverId: 'server-1' };
+        routerPathnameState.current = '/session/s1';
+
+        const screen = await renderSessionView({ routeServerId: 'server-1' });
+        const { WarningActionBanner } = await import('./view/WarningActionBanner');
+
+        expect(screen.findAllHostsByTestId('session.externalTranscript.loadIssue')).toHaveLength(1);
+        expect(screen.findAllByProps({ accessibilityRole: 'progressbar' })).toHaveLength(0);
+        expect(screen.findAllByType('ChatList')).toHaveLength(0);
+        expect(screen.tree.root.findAllByType(WarningActionBanner)
+            .find((banner) => banner.props.testID === 'session.externalTranscript.loadIssue')?.props.title
+        ).toBe('externalSessions.sharingTranscriptUnavailableTitle');
+
+        await screen.unmount();
+    });
+
+    it('does not call a pending-only failed transcript a retained transcript', async () => {
+        sessionState = { ...sessionState, seq: 0, serverId: 'server-1' };
+        committedMessagesState = [];
+        transcriptIdsState = [];
+        pendingMessagesState = [{ id: 'pending-only' }];
+        transcriptLoadIssueState = { kind: 'read_failed', errorCode: 'internal_error' };
+        routerPathnameState.current = '/session/s1';
+
+        const screen = await renderSessionView({ routeServerId: 'server-1' });
+        const { WarningActionBanner } = await import('./view/WarningActionBanner');
+
+        expect(screen.tree.root.findAllByType(WarningActionBanner)
+            .find((banner) => banner.props.testID === 'session.externalTranscript.loadIssue')?.props.title
+        ).toBe('externalSessions.sharingTranscriptUnavailableTitle');
+
+        await screen.unmount();
     });
 
     it('forces transcript render for forked sessions even when child has no messages', async () => {
@@ -1287,16 +1344,16 @@ describe('SessionView (transcript rendering for seq-only sessions)', () => {
         }
     });
 
-    it('does not crash when the session is missing (e.g. deep link before hydration)', async () => {
+    it('shows the existing Home recovery surface when a deep link has no address yet', async () => {
+        const { SessionInvalidLinkFallback } = await import('./SessionInvalidLinkFallback');
         const storageModule = await import('@/sync/domains/state/storage');
         (storageModule as any).__setSessionForTest(null);
         expect((storageModule as any).useSession()).toBeNull();
 
-        let error: unknown = null;
         try {
-            await renderSessionView();
-        } catch (err) {
-            error = err;
+            const screen = await renderSessionView();
+            expect(screen.findAllByType(SessionInvalidLinkFallback)).toHaveLength(1);
+            await screen.unmount();
         } finally {
             (storageModule as any).__setSessionForTest({
                 id: 's1',
@@ -1310,7 +1367,21 @@ describe('SessionView (transcript rendering for seq-only sessions)', () => {
             });
         }
 
-        expect(error).toBeNull();
+    });
+
+    it('shows loading while an addressless deep link is still hydrating', async () => {
+        const { ActivitySpinner } = await import('@/components/ui/feedback/ActivitySpinner');
+        const previousSessionState = sessionState;
+        sessionState = null;
+        try {
+            const screen = await renderSessionView({
+                routeHydrationState: { kind: 'loading', sessionId: 's1', reason: 'cold' },
+            });
+            expect(screen.findAllByType(ActivitySpinner)).toHaveLength(1);
+            await screen.unmount();
+        } finally {
+            sessionState = previousSessionState;
+        }
     });
 
     it('keeps the transcript host stable for session timestamp-only updates', async () => {
@@ -1371,6 +1442,13 @@ describe('SessionView (transcript rendering for seq-only sessions)', () => {
 
         expect(chatListRenderSpy).not.toHaveBeenCalled();
 
+        await screen.unmount();
+    });
+
+    it('binds the primary transcript to its exact session source', async () => {
+        transcriptSourceIdentitySpy.mockClear();
+        const screen = await renderSessionView();
+        expect(transcriptSourceIdentitySpy).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 's1' }));
         await screen.unmount();
     });
 

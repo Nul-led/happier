@@ -2,6 +2,7 @@ import type {
     BrowserRecordingCapabilities,
     BrowserRecordingSessionV1,
 } from '@happier-dev/protocol';
+import { browserViewKey } from '@happier-dev/protocol';
 import * as React from 'react';
 import { Pressable, Text, View } from 'react-native';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -14,6 +15,12 @@ const machineRpcMock = vi.hoisted(() => ({
     cancel: vi.fn(),
 }));
 const nativeCaptureDisposers: Array<() => void> = [];
+const modalSpies = vi.hoisted(() => ({ alert: vi.fn() }));
+
+vi.mock('@/modal', async () => {
+    const { createModalModuleMock } = await import('@/dev/testkit/mocks/modal');
+    return createModalModuleMock({ spies: { alert: modalSpies.alert } }).module;
+});
 
 vi.mock('@/sync/domains/browser/recording/machineRpc', () => ({
     startBrowserRecordingViaMachineRpc: (...args: readonly unknown[]) => machineRpcMock.start(...args),
@@ -93,6 +100,7 @@ describe('session browser recording runtime', () => {
         machineRpcMock.start.mockReset();
         machineRpcMock.stop.mockReset();
         machineRpcMock.cancel.mockReset();
+        modalSpies.alert.mockReset();
     });
 
     it('starts recording through the daemon machine RPC and shares the returned session state', async () => {
@@ -374,14 +382,14 @@ describe('session browser recording runtime', () => {
         }));
     });
 
-    it('uses simulator preview producer source identity for stream-frame recording', async () => {
+    it.each(['simulatorPreview', 'streamedBrowser'] as const)('uses %s producer source identity for stream-frame recording', async (targetKind) => {
         machineRpcMock.start.mockResolvedValueOnce({
             ok: true,
             result: {
                 status: 'started',
                 recording: recording({
-                    targetKind: 'simulatorPreview',
-                    adapterKind: 'simulatorPreview',
+                    targetKind,
+                    adapterKind: targetKind === 'simulatorPreview' ? 'simulatorPreview' : 'streamedBrowserSurface',
                     renderEngineKind: 'streamedSurface',
                     captureKind: 'streamFrameCapture',
                     fidelity: 'streamFrame',
@@ -400,7 +408,7 @@ describe('session browser recording runtime', () => {
                 serverId: 'server_1',
                 recordingCapabilities: {
                     ...streamRecordingCapabilities,
-                    supportedAdapterKinds: ['simulatorPreview'],
+                    supportedAdapterKinds: ['simulatorPreview', 'streamedBrowserSurface'],
                 },
                 nowMs: () => 10_000,
             });
@@ -411,14 +419,14 @@ describe('session browser recording runtime', () => {
                         browserSessionId: 'browser_session_1',
                         viewId: 'view_1',
                         profileId: 'profile_1',
-                        target: {
+                        target: targetKind === 'simulatorPreview' ? {
                             kind: 'simulatorPreview',
                             targetId: 'simulator_1',
                             deviceId: 'emulator-5554',
                             sourceId: 'simulator:android:emulator-5554:screen',
-                        },
-                        targetKind: 'simulatorPreview',
-                        adapterKind: 'simulatorPreview',
+                        } : { kind: 'streamedBrowser', targetId: 'daemon-view', streamId: 'viewer-specific-stream' },
+                        targetKind,
+                        adapterKind: targetKind === 'simulatorPreview' ? 'simulatorPreview' : 'streamedBrowserSurface',
                         renderEngineKind: 'streamedSurface',
                         captureKind: 'streamFrameCapture',
                         fidelity: 'streamFrame',
@@ -439,8 +447,9 @@ describe('session browser recording runtime', () => {
             input: expect.objectContaining({
                 captureSource: {
                     kind: 'machineLiveStream',
-                    streamFamily: 'simulator:android:emulator-5554:screen',
-                    sourceId: 'simulator:android:emulator-5554:screen',
+                    streamFamily: targetKind === 'simulatorPreview' ? 'simulator:android:emulator-5554:screen' : 'browser.streamed',
+                    sourceId: targetKind === 'simulatorPreview' ? 'simulator:android:emulator-5554:screen'
+                        : browserViewKey({ browserSessionId: 'browser_session_1', viewId: 'view_1' }),
                     targetMachineId: 'machine_1',
                 },
             }),
@@ -513,5 +522,120 @@ describe('session browser recording runtime', () => {
             reasonCode: 'browser_recording_capture_unavailable',
             message: 'Browser recording capture requires a live stream source.',
         }));
+    });
+    async function renderActiveRecordingProbe(): Promise<Awaited<ReturnType<typeof renderScreen>>> {
+        await registerNativeCaptureHandler();
+        machineRpcMock.start.mockResolvedValueOnce({
+            ok: true,
+            result: { status: 'started', recording: recording() },
+        });
+        const { useSessionBrowserRecordingRuntime } = await import('./sessionBrowserRecordingRuntime');
+
+        function Probe(): React.ReactElement {
+            const runtime = useSessionBrowserRecordingRuntime({
+                enabled: true,
+                scopeKey: 'session_1',
+                sessionId: 'session_1',
+                machineId: 'machine_1',
+                serverId: 'server_1',
+                recordingCapabilities,
+                nowMs: () => 10_000,
+            });
+            const active = runtime?.state.sessionsById.recording_1 ?? null;
+            return (
+                <View>
+                    <Text testID="active-recording-id">
+                        {runtime?.state.activeRecordingIdByViewId.view_1 ?? 'none'}
+                    </Text>
+                    <Pressable
+                        testID="start-recording"
+                        onPress={() => runtime?.browserShellRecording.onStartRecording?.({
+                            browserSessionId: 'browser_session_1',
+                            viewId: 'view_1',
+                            profileId: 'profile_1',
+                            target: {
+                                kind: 'externalUrl',
+                                targetId: 'external_1',
+                                url: 'https://example.com/',
+                            },
+                            targetKind: 'externalUrl',
+                            adapterKind: 'externalUrl',
+                            renderEngineKind: 'desktopWebView',
+                            captureKind: 'nativeViewCapture',
+                            fidelity: 'nativeCallback',
+                            navigationGeneration: 2,
+                            mimeType: 'image/png',
+                            retentionClass: 'preSend',
+                            policyState: 'allowed',
+                        })}
+                    />
+                    <Pressable
+                        testID="stop-recording"
+                        onPress={() => { if (active) void runtime?.browserShellRecording.onStopRecording?.(active); }}
+                    />
+                    <Pressable
+                        testID="cancel-recording"
+                        onPress={() => { if (active) void runtime?.browserShellRecording.onCancelRecording?.(active); }}
+                    />
+                </View>
+            );
+        }
+
+        const screen = await renderScreen(<Probe />);
+        await screen.pressByTestIdAsync('start-recording');
+        expect(screen.findByTestId('active-recording-id')?.props.children).toBe('recording_1');
+        return screen;
+    }
+
+    it('tells the user when stopping a recording fails instead of failing silently (H-UX F-4)', async () => {
+        const screen = await renderActiveRecordingProbe();
+        machineRpcMock.stop.mockResolvedValueOnce({ ok: false, errorCode: 'rpc_unavailable', error: 'rpc_unavailable' });
+
+        await screen.pressByTestIdAsync('stop-recording');
+
+        const { t } = await import('@/text');
+        expect(modalSpies.alert).toHaveBeenCalledTimes(1);
+        expect(modalSpies.alert.mock.calls[0]?.[0]).toBe(t('browserRecording.failure.stopTitle'));
+        // Nothing changed, so the recording is still the active one.
+        expect(screen.findByTestId('active-recording-id')?.props.children).toBe('recording_1');
+    });
+
+    it('tells the user when discarding a recording is refused by the daemon', async () => {
+        const screen = await renderActiveRecordingProbe();
+        machineRpcMock.cancel.mockResolvedValueOnce({
+            ok: true,
+            result: {
+                status: 'unavailable',
+                reason: { code: 'browser_recording_capture_unavailable', message: 'capture adapter gone' },
+            },
+        });
+
+        await screen.pressByTestIdAsync('cancel-recording');
+
+        const { t } = await import('@/text');
+        expect(modalSpies.alert).toHaveBeenCalledTimes(1);
+        expect(modalSpies.alert.mock.calls[0]?.[0]).toBe(t('browserRecording.failure.discardTitle'));
+        // The daemon's technical message is never shown raw.
+        expect(String(modalSpies.alert.mock.calls[0]?.[1])).not.toContain('capture adapter gone');
+    });
+
+    it('stays quiet when stop succeeds: the recording state changing is the outcome', async () => {
+        const screen = await renderActiveRecordingProbe();
+        machineRpcMock.stop.mockResolvedValueOnce({
+            ok: true,
+            result: {
+                status: 'finalized',
+                recording: recording({
+                    status: 'finalized',
+                    outcomeReason: 'user_stopped',
+                    stoppedAtMs: 12_000,
+                    mediaRef: { refKind: 'sessionMedia', mediaId: 'media_1', mediaKind: 'video', mimeType: 'video/webm', sizeBytes: 2048 },
+                }),
+            },
+        });
+
+        await screen.pressByTestIdAsync('stop-recording');
+
+        expect(modalSpies.alert).not.toHaveBeenCalled();
     });
 });

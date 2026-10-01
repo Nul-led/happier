@@ -1,15 +1,22 @@
 import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
+import axios from 'axios';
 
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   buildBackendTargetKey,
+  DEFAULT_SESSION_PENDING_QUEUE_DELIVERY_TIMING,
   deriveSessionFollowWakeEventLocalIdV1,
   deriveSessionCreationTagV1,
   ProviderConnectionIdSchema,
   redactBugReportSensitiveText,
   SessionCreationCorrespondenceV1Schema,
   SESSION_FOLLOW_WAKE_EVENT_MESSAGE,
+  sealWorkflowAcceptedSnapshotStoredEnvelopeV1,
+  sealWorkflowFinalResultStoredEnvelopeV1,
+  serializeWorkflowStoredContentEnvelopeV1,
+  type WorkflowRunSummaryV1,
+  type WorkflowRunRecipientCensusResponseV1,
   type PluginContributionIdentityV1,
   type VoiceProviderContribution,
 } from '@happier-dev/protocol';
@@ -84,12 +91,14 @@ import {
   ApiSessionClient,
   type ApiSessionClientOptions,
 } from '@/api/session/sessionClient';
-import { createPlainSessionFixture } from '@/testkit/backends/sessionFixtures';
+import { createPlainSessionFixture, createSessionRecordFixture } from '@/testkit/backends/sessionFixtures';
 import { DeferredApiSessionClient } from '@/agent/runtime/startup/DeferredApiSessionClient';
 // The composed Follow gate below runs the real prompt loop over the real admitted
 // permission-mode queue, so this is the production owner rather than a test double.
 import { runPermissionModePromptLoop } from '@/agent/runtime/runPermissionModePromptLoop';
 import { publishSessionFollowWakeInvalidation } from '@/agent/runtime/session/follow/sessionFollowWakeSignal';
+import { combinePermissionModeQueuedPrompts, type PermissionModeQueuedPrompt, type PermissionModeQueuedPromptMode } from '@/agent/runtime/permissions/queuedPrompt';
+import type { HostProviderInputOutcomeEvidence } from '@/agent/runtime/session/input/providerInputOutcome';
 
 vi.mock('@/api/session/client/transport/initializeSessionClientConnection', () => ({
   initializeSessionClientConnection: (params: {
@@ -329,6 +338,8 @@ function createSessionFixture(sessionId: string) {
     sendSessionEvent: vi.fn(),
     keepAlive: vi.fn(),
     getMetadataSnapshot: () => ({ path: '/tmp/workspace', permissionMode: 'default' }),
+    // Session boundary projection: this server fixture has no reports-to link or origin.
+    readRolePromptOrganization: vi.fn(async (): ReturnType<ApiSessionClient['readRolePromptOrganization']> => ({})),
     fetchLatestUserPermissionIntentFromTranscript: vi.fn(async () => null),
     waitForMetadataUpdate: vi.fn(async () => false),
     hasPendingProviderInput: vi.fn(() => true),
@@ -700,7 +711,7 @@ function resolveBundledAgentSessionRealtimeVoiceAuthorityFixture(input: Readonly
         identity.pluginId === input.provider.pluginId
         && identity.localId === input.provider.localId
           ? {
-              generation: 'bundled-provider-generation',
+              occurrenceId: 'bundled-provider-occurrence',
               isCurrent: () => !providerRetirement.signal.aborted,
               retirementSignal: providerRetirement.signal,
             }
@@ -711,7 +722,11 @@ function resolveBundledAgentSessionRealtimeVoiceAuthorityFixture(input: Readonly
     agentRuntimeIdentity: {
       pluginId: input.policyAgentRef.pluginId,
       agentId: input.policyAgentRef.localId,
-      generation: input.agentGeneration,
+      occurrenceId: input.agentGeneration,
+      sourceCustody: {
+        kind: 'development',
+        registeredRootId: 'voice-test-root',
+      },
       isCurrent: () => true,
     },
   });
@@ -789,6 +804,7 @@ describe('runHostSessionRuntime', () => {
 
     expect(initializeBackendRunSessionFn).toHaveBeenCalledWith(expect.objectContaining({
       sessionTag: sessionCreationTag,
+      terminalAgentLabel: harness.config.policyAgentId,
     }));
   });
 
@@ -1274,7 +1290,6 @@ describe('runHostSessionRuntime', () => {
       },
       client: {
         artifactId: 'installed-voice-runtime',
-        modulePath: './voice',
         exportName: 'activate',
       },
     } satisfies VoiceProviderContribution;
@@ -1323,7 +1338,7 @@ describe('runHostSessionRuntime', () => {
           ],
         },
         resolveVoiceProviderRuntimeLifecycle: () => ({
-          generation: 'installed-provider-generation:42',
+          occurrenceId: 'installed-provider-occurrence:42',
           isCurrent: () => generationCurrent,
           retirementSignal: generationRetirement.signal,
         }),
@@ -1332,7 +1347,12 @@ describe('runHostSessionRuntime', () => {
       agentRuntimeIdentity: {
         pluginId: selectedAgent.pluginId,
         agentId: selectedAgent.localId,
-        generation: 'installed-generation:42',
+        occurrenceId: 'installed-occurrence:42',
+        sourceCustody: {
+          kind: 'managed',
+          immutableGenerationId: 'installed-generation:42',
+          installSource: 'npm',
+        },
         isCurrent: () => generationCurrent,
       },
       agentRetirementSignal: generationRetirement.signal,
@@ -1909,7 +1929,7 @@ describe('runHostSessionRuntime', () => {
           inputSchema: { type: 'object', additionalProperties: false },
           surfaces: ['agent', 'mcp'],
         },
-        expectedContributorImmutableGenerationId: 'generation-g',
+        expectedContributorOccurrenceId: 'occurrence-g',
       }],
     } as const;
     harness.deps.runSessionLoopLifecycleFn = async (params: Readonly<{
@@ -1975,6 +1995,35 @@ describe('runHostSessionRuntime', () => {
       'pending-input:commit',
       'prompt:admitted',
     ]);
+  });
+
+  it('applies a resumed initial goal after runtime open and before prompt admission', async () => {
+    const harness = createHarness();
+    const order: string[] = [];
+    const setGoal = vi.fn(async () => {
+      order.push('goal:applied');
+      return { status: 'applied' };
+    });
+    harness.runtime.setGoal = setGoal;
+    setSessionRuntimeFactory(harness.config, async () => {
+      order.push('runtime:opened');
+      return { operations: harness.runtime, nativeRuntime: harness.runtime };
+    });
+    harness.deps.runSessionLoopLifecycleFn = async (params: Readonly<{
+      startupCoordinator?: Readonly<{ start?: () => Promise<void> }> | null;
+    }>) => {
+      await params.startupCoordinator?.start?.();
+      order.push('prompt:admitted');
+    };
+    process.env.HAPPIER_DAEMON_INITIAL_GOAL = JSON.stringify({ objective: 'Finish the review' });
+    try {
+      await runHostSessionRuntime(harness.opts, harness.config, harness.deps);
+      expect(setGoal).toHaveBeenCalledWith('Finish the review', undefined);
+      expect(order).toEqual(['runtime:opened', 'goal:applied', 'prompt:admitted']);
+      expect(process.env.HAPPIER_DAEMON_INITIAL_GOAL).toBeUndefined();
+    } finally {
+      delete process.env.HAPPIER_DAEMON_INITIAL_GOAL;
+    }
   });
 
   it('does not commit retained daemon-bridge first input when runtime open fails', async () => {
@@ -2254,7 +2303,7 @@ describe('runHostSessionRuntime', () => {
     harness.opts.backendTarget = { kind: 'backend', backendId: 'codex', sourceKind: 'built_in' };
     harness.opts.modelSelection = {
       v: 1, updatedAt: 1,
-      ref: { agentTargetKey: 'backend:codex', providerConnectionId: ProviderConnectionIdSchema.parse('pc_work'), modelId: 'provider-model' },
+      ref: { agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: ProviderConnectionIdSchema.parse('pc_work'), modelId: 'provider-model' },
     };
     const materialization = {
       v: 1 as const,
@@ -2274,7 +2323,7 @@ describe('runHostSessionRuntime', () => {
       bindingSecurityFingerprint: 'security-v1',
       runtimeBindingBasis: externalProviderRuntimeBindingBasis({
         connectionId: 'pc_work',
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         contributionKey: 'plugin.openrouter/openrouter',
         adapterBindingKey: 'openrouter',
         fingerprintScope: 'ingress',
@@ -2327,7 +2376,7 @@ describe('runHostSessionRuntime', () => {
   it('uses a late-admitted Provider binding as the active target without an early handoff', async () => {
     const harness = createHarness();
     const connectionId = ProviderConnectionIdSchema.parse('pc_late');
-    const agentTargetKey = 'backend:codex';
+    const agentTargetKey = 'agent:happier.agent.codex/codex';
     const handoff = lateExternalProviderBindingHandoff({
       connectionId,
       modelId: 'late-model',
@@ -2482,7 +2531,7 @@ describe('runHostSessionRuntime', () => {
         v: 1,
         updatedAt: 1,
         ref: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId:
             ProviderConnectionIdSchema.parse('pc_work'),
           modelId: providerModelDescriptor.id,
@@ -2509,7 +2558,7 @@ describe('runHostSessionRuntime', () => {
               bindingSecurityFingerprint: 'security-v1',
               runtimeBindingBasis: externalProviderRuntimeBindingBasis({
                 connectionId: 'pc_work',
-                agentTargetKey: 'backend:codex',
+                agentTargetKey: 'agent:happier.agent.codex/codex',
                 contributionKey: 'happier.provider.cliproxyapi/cliproxyapi',
                 adapterBindingKey: 'cliproxyapi',
                 fingerprintScope: 'daemon-ack',
@@ -2603,7 +2652,7 @@ describe('runHostSessionRuntime', () => {
         v: 1,
         updatedAt: 1,
         ref: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: ProviderConnectionIdSchema.parse('pc_work'),
           modelId: providerModelDescriptor.id,
         },
@@ -2630,7 +2679,7 @@ describe('runHostSessionRuntime', () => {
               bindingSecurityFingerprint: 'security-v1',
               runtimeBindingBasis: externalProviderRuntimeBindingBasis({
                 connectionId: 'pc_work',
-                agentTargetKey: 'backend:codex',
+                agentTargetKey: 'agent:happier.agent.codex/codex',
                 contributionKey: 'plugin.openrouter/openrouter',
                 adapterBindingKey: 'openrouter',
                 fingerprintScope: 'model-mismatch',
@@ -2660,7 +2709,7 @@ describe('runHostSessionRuntime', () => {
       v: 1,
       updatedAt: 1,
       ref: {
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         providerConnectionId: ProviderConnectionIdSchema.parse('pc_work'),
         modelId: 'provider-model',
       },
@@ -2682,7 +2731,7 @@ describe('runHostSessionRuntime', () => {
           bindingSecurityFingerprint: 'security-v1',
           runtimeBindingBasis: externalProviderRuntimeBindingBasis({
             connectionId: 'pc_work',
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             contributionKey: 'plugin.openrouter/openrouter',
             adapterBindingKey: 'openrouter',
             fingerprintScope: 'factory-failure',
@@ -2758,7 +2807,7 @@ describe('runHostSessionRuntime', () => {
       v: 1,
       updatedAt: 1,
       ref: {
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         providerConnectionId: ProviderConnectionIdSchema.parse('pc_work'),
         modelId: 'provider-model',
       },
@@ -2784,7 +2833,7 @@ describe('runHostSessionRuntime', () => {
           bindingSecurityFingerprint: 'security-v1',
           runtimeBindingBasis: externalProviderRuntimeBindingBasis({
             connectionId: 'pc_work',
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             contributionKey: 'plugin.openrouter/openrouter',
             adapterBindingKey: 'openrouter',
             fingerprintScope: 'live-lifetime',
@@ -2825,7 +2874,7 @@ describe('runHostSessionRuntime', () => {
     harness.opts.modelSelection = {
       v: 1,
       updatedAt: 1,
-      ref: { agentTargetKey: 'backend:qwen', providerConnectionId: ProviderConnectionIdSchema.parse('pc_work'), modelId: 'provider-model' },
+      ref: { agentTargetKey: 'agent:happier.agent.qwen/qwen', providerConnectionId: ProviderConnectionIdSchema.parse('pc_work'), modelId: 'provider-model' },
     };
 
     await expect(runHostSessionRuntime(harness.opts, harness.config, harness.deps))
@@ -2838,7 +2887,7 @@ describe('runHostSessionRuntime', () => {
     harness.opts.modelSelection = {
       v: 1,
       updatedAt: 1,
-      ref: { agentTargetKey: 'backend:qwen', providerConnectionId: null, modelId: 'native-model' },
+      ref: { agentTargetKey: 'agent:happier.agent.qwen/qwen', providerConnectionId: null, modelId: 'native-model' },
     };
     process.env[HAPPIER_PROVIDER_BINDING_LAUNCH_MATERIALIZATION_V1_ENV_KEY] =
       serializeProviderBindingLaunchHandoffForEnv(
@@ -3320,7 +3369,7 @@ describe('runHostSessionRuntime', () => {
       v: 1 as const,
       updatedAt: 123,
       ref: {
-        agentTargetKey: 'backend:qwen',
+        agentTargetKey: 'agent:happier.agent.qwen/qwen',
         providerConnectionId: null,
         modelId: 'qwen-fast',
       },
@@ -3346,7 +3395,7 @@ describe('runHostSessionRuntime', () => {
       params.permissionModeState.setCurrentPermissionMode('yolo');
       params.permissionModeState.setCurrentPermissionModeUpdatedAt(999);
       await params.transitionModelSelection({
-        agentTargetKey: 'backend:qwen',
+        agentTargetKey: 'agent:happier.agent.qwen/qwen',
         providerConnectionId: null,
         modelId: 'qwen-live',
       }, 'command');
@@ -3450,7 +3499,7 @@ describe('runHostSessionRuntime', () => {
         v: 1,
         updatedAt: expect.any(Number),
         ref: {
-          agentTargetKey: 'backend:qwen',
+          agentTargetKey: 'agent:happier.agent.qwen/qwen',
           providerConnectionId: null,
           modelId: 'qwen-fast',
         },
@@ -3693,7 +3742,7 @@ describe('runHostSessionRuntime', () => {
       v: 1 as const,
       updatedAt: 120,
       ref: {
-        agentTargetKey: 'backend:qwen',
+        agentTargetKey: 'agent:happier.agent.qwen/qwen',
         providerConnectionId: null,
         modelId: 'qwen-account',
       },
@@ -3702,7 +3751,7 @@ describe('runHostSessionRuntime', () => {
       v: 1 as const,
       updatedAt: 121,
       ref: {
-        agentTargetKey: 'backend:qwen',
+        agentTargetKey: 'agent:happier.agent.qwen/qwen',
         providerConnectionId: null,
         modelId: 'qwen-released-cache',
       },
@@ -4085,16 +4134,8 @@ describe('runHostSessionRuntime', () => {
 
     await runHostSessionRuntime(harness.opts, harness.config, harness.deps);
 
-    expect(harness.session.updateAgentState).toHaveBeenCalled();
-    expect(publishedStates.at(-1)).toMatchObject({
-      terminalControl: {
-        pendingHandoffV1: {
-          status: 'deferred_until_terminal_turn_finishes',
-          pendingCount: 2,
-          interruptRequired: false,
-        },
-      },
-    });
+    expect(publishedStates.some((state) => 'pendingHandoffV1' in ((state.terminalControl as Record<string, unknown> | undefined) ?? {}))).toBe(false);
+    expect(harness.session.updateAgentState).not.toHaveBeenCalled();
   });
 
   it('does not inspect server pending rows when local pending state is empty', async () => {
@@ -4292,23 +4333,7 @@ describe('runHostSessionRuntime', () => {
     await runHostSessionRuntime(harness.opts, harness.config, harness.deps);
 
     expect(requestGracefulRemoteHandoff).toHaveBeenCalledTimes(1);
-    expect(publishedStates.at(-1)).toMatchObject({
-      terminalControl: {
-        pendingHandoffV1: {
-          status: 'manual_action_required',
-          pendingCount: 1,
-        },
-      },
-    });
-    expect(publishedStates).toContainEqual(expect.objectContaining({
-      terminalControl: {
-        pendingHandoffV1: expect.objectContaining({
-          status: 'switch_failed',
-          pendingCount: 1,
-          detail: 'remote_handoff_rejected',
-        }),
-      },
-    }));
+    expect(publishedStates.some((state) => 'pendingHandoffV1' in ((state.terminalControl as Record<string, unknown> | undefined) ?? {}))).toBe(false);
     expect(JSON.stringify(publishedStates)).not.toContain('switch handler unavailable');
   });
 
@@ -4354,7 +4379,7 @@ describe('runHostSessionRuntime', () => {
         v: 1,
         updatedAt: 123,
         ref: {
-          agentTargetKey: 'backend:qwen',
+          agentTargetKey: 'agent:happier.agent.qwen/qwen',
           providerConnectionId: null,
           modelId: 'gemini-2.5-pro',
         },
@@ -4374,7 +4399,7 @@ describe('runHostSessionRuntime', () => {
       v: 1,
       updatedAt: 123,
       selection: {
-        agentTargetKey: 'backend:qwen',
+        agentTargetKey: 'agent:happier.agent.qwen/qwen',
         providerConnectionId: null,
         modelId: 'gemini-2.5-pro',
       },
@@ -5046,7 +5071,7 @@ describe('runHostSessionRuntime', () => {
       params.onProviderPromptDispatchPrepared({
         localIds: ['local-exact'],
         selection: {
-          agentTargetKey: 'backend:qwen',
+          agentTargetKey: 'agent:happier.agent.qwen/qwen',
           providerConnectionId: null,
           modelId: 'model-at-dispatch',
         },
@@ -5080,7 +5105,7 @@ describe('runHostSessionRuntime', () => {
         appliedModel: {
           provider: 'qwen',
           selection: {
-            agentTargetKey: 'backend:qwen',
+            agentTargetKey: 'agent:happier.agent.qwen/qwen',
             providerConnectionId: null,
             modelId: 'model-at-dispatch',
           },
@@ -5228,7 +5253,7 @@ describe('runHostSessionRuntime', () => {
       expect(transition).toBeTypeOf('function');
       const runtimeUpdateCount = harness.runtime.updateSessionRuntimeConfig.mock.calls.length;
       const selection = {
-        agentTargetKey: 'backend:qwen',
+        agentTargetKey: 'agent:happier.agent.qwen/qwen',
         providerConnectionId: null,
         modelId: 'default',
       } as const;
@@ -5254,7 +5279,7 @@ describe('runHostSessionRuntime', () => {
     const harness = createHarness();
     const order: string[] = [];
     const freshSelection = {
-      agentTargetKey: 'backend:qwen',
+      agentTargetKey: 'agent:happier.agent.qwen/qwen',
       providerConnectionId: null,
       modelId: 'fresh-model',
     } as const;
@@ -5350,7 +5375,7 @@ describe('runHostSessionRuntime', () => {
     const releaseLoop = createDeferred<void>();
     const order: string[] = [];
     const persistedSelection = {
-      agentTargetKey: 'backend:qwen',
+      agentTargetKey: 'agent:happier.agent.qwen/qwen',
       providerConnectionId: null,
       modelId: 'persisted-before-claim',
     } as const;
@@ -5447,7 +5472,7 @@ describe('runHostSessionRuntime', () => {
         await transition?.({
           v: 1,
           selection: {
-            agentTargetKey: 'backend:qwen',
+            agentTargetKey: 'agent:happier.agent.qwen/qwen',
             providerConnectionId: null,
             modelId: 'must-not-apply',
           },
@@ -5637,7 +5662,7 @@ describe('runHostSessionRuntime', () => {
       v: 1,
       updatedAt: 1,
       ref: {
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         providerConnectionId: null,
         modelId: 'old-model',
       },
@@ -5648,7 +5673,7 @@ describe('runHostSessionRuntime', () => {
         SESSION_RPC_METHODS.SESSION_MODEL_TRANSITION,
       );
       const selection = {
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         providerConnectionId: null,
         modelId: 'next-model',
       } as const;
@@ -5672,7 +5697,7 @@ describe('runHostSessionRuntime', () => {
   it('atomically transfers the run-host model fence into prompt dispatch custody', async () => {
     const harness = createHarness();
     const activeSelection = {
-      agentTargetKey: 'backend:qwen',
+      agentTargetKey: 'agent:happier.agent.qwen/qwen',
       providerConnectionId: null,
       modelId: 'active-model',
     } as const;
@@ -5733,7 +5758,7 @@ describe('runHostSessionRuntime', () => {
       v: 1,
       updatedAt: 1,
       ref: {
-        agentTargetKey: 'backend:qwen',
+        agentTargetKey: 'agent:happier.agent.qwen/qwen',
         providerConnectionId: null,
         modelId: 'old-model',
       },
@@ -5762,7 +5787,7 @@ describe('runHostSessionRuntime', () => {
         SESSION_RPC_METHODS.SESSION_MODEL_TRANSITION,
       );
       const selection = {
-        agentTargetKey: 'backend:qwen',
+        agentTargetKey: 'agent:happier.agent.qwen/qwen',
         providerConnectionId: null,
         modelId: 'next-model',
       } as const;
@@ -5789,7 +5814,7 @@ describe('runHostSessionRuntime', () => {
       v: 1,
       updatedAt: 1,
       ref: {
-        agentTargetKey: 'backend:qwen',
+        agentTargetKey: 'agent:happier.agent.qwen/qwen',
         providerConnectionId: null,
         modelId: 'old-model',
       },
@@ -5840,7 +5865,7 @@ describe('runHostSessionRuntime', () => {
         SESSION_RPC_METHODS.SESSION_MODEL_TRANSITION,
       );
       const selection = {
-        agentTargetKey: 'backend:qwen',
+        agentTargetKey: 'agent:happier.agent.qwen/qwen',
         providerConnectionId: null,
         modelId: 'next-model',
       } as const;
@@ -5863,7 +5888,7 @@ describe('runHostSessionRuntime', () => {
       v: 1,
       updatedAt: 1,
       ref: {
-        agentTargetKey: 'backend:qwen',
+        agentTargetKey: 'agent:happier.agent.qwen/qwen',
         providerConnectionId: null,
         modelId: 'old-model',
       },
@@ -5924,7 +5949,7 @@ describe('runHostSessionRuntime', () => {
         SESSION_RPC_METHODS.SESSION_MODEL_TRANSITION,
       );
       const selection = {
-        agentTargetKey: 'backend:qwen',
+        agentTargetKey: 'agent:happier.agent.qwen/qwen',
         providerConnectionId: null,
         modelId: 'next-model',
       } as const;
@@ -5992,7 +6017,7 @@ describe('runHostSessionRuntime', () => {
       v: 1,
       updatedAt: 1,
       ref: {
-        agentTargetKey: 'backend:qwen',
+        agentTargetKey: 'agent:happier.agent.qwen/qwen',
         providerConnectionId: null,
         modelId: 'old-model',
       },
@@ -6048,7 +6073,7 @@ describe('runHostSessionRuntime', () => {
         SESSION_RPC_METHODS.SESSION_MODEL_TRANSITION,
       );
       const selection = {
-        agentTargetKey: 'backend:qwen',
+        agentTargetKey: 'agent:happier.agent.qwen/qwen',
         providerConnectionId: null,
         modelId: 'next-model',
       } as const;
@@ -6071,7 +6096,7 @@ describe('runHostSessionRuntime', () => {
       v: 1,
       updatedAt: 1,
       ref: {
-        agentTargetKey: 'backend:qwen',
+        agentTargetKey: 'agent:happier.agent.qwen/qwen',
         providerConnectionId: null,
         modelId: 'old-model',
       },
@@ -6126,7 +6151,7 @@ describe('runHostSessionRuntime', () => {
       await expect(transition?.({
         v: 1,
         selection: {
-          agentTargetKey: 'backend:qwen',
+          agentTargetKey: 'agent:happier.agent.qwen/qwen',
           providerConnectionId: null,
           modelId: 'next-model',
         },
@@ -6153,7 +6178,7 @@ describe('runHostSessionRuntime', () => {
       v: 1,
       updatedAt: 1,
       ref: {
-        agentTargetKey: 'backend:qwen',
+        agentTargetKey: 'agent:happier.agent.qwen/qwen',
         providerConnectionId: null,
         modelId: 'old-model',
       },
@@ -6206,7 +6231,7 @@ describe('runHostSessionRuntime', () => {
       await expect(transition?.({
         v: 1,
         selection: {
-          agentTargetKey: 'backend:qwen',
+          agentTargetKey: 'agent:happier.agent.qwen/qwen',
           providerConnectionId: null,
           modelId: 'next-model',
         },
@@ -6234,7 +6259,7 @@ describe('runHostSessionRuntime', () => {
       v: 1,
       updatedAt: 1,
       ref: {
-        agentTargetKey: 'backend:qwen',
+        agentTargetKey: 'agent:happier.agent.qwen/qwen',
         providerConnectionId: null,
         modelId: 'old-model',
       },
@@ -6285,7 +6310,7 @@ describe('runHostSessionRuntime', () => {
       await expect(transition?.({
         v: 1,
         selection: {
-          agentTargetKey: 'backend:qwen',
+          agentTargetKey: 'agent:happier.agent.qwen/qwen',
           providerConnectionId: null,
           modelId: 'next-model',
         },
@@ -7191,6 +7216,83 @@ describe('runHostSessionRuntime', () => {
     expect(harness.deps.resolveRunnerMcpServersFn).toHaveBeenCalledTimes(1);
   });
 
+  it('passes the scoped Session credential reader to native Agent services without the ambient Account reader', async () => {
+    const harness = createHarness();
+    const sessionCredentials = { token: 'runner-session-token', encryption: null } as const;
+    harness.config.runtimeAuthority = {
+      scope: 'session',
+      sessionCredentials,
+      accountCredentials: null,
+    };
+    let readCredentials: (() => Promise<unknown>) | undefined;
+    const createRuntimeOriginal = harness.config.createSessionRuntime;
+    if (!createRuntimeOriginal) throw new Error('Expected session runtime factory in harness');
+    setSessionRuntimeFactory(harness.config, (params: any) => {
+      readCredentials = params.readCredentials;
+      return createRuntimeOriginal(params);
+    });
+
+    await runHostSessionRuntime(harness.opts, harness.config, harness.deps);
+
+    expect(readCredentials).toBeTypeOf('function');
+    await expect(readCredentials!()).resolves.toEqual(sessionCredentials);
+  });
+
+  it('sanitizes ambient Account settings before Session-scoped callbacks and MCP resolution', async () => {
+    const harness = createHarness();
+    const sessionCredentials = { token: 'runner-session-token', encryption: null } as const;
+    const accountSettingsContext = {
+      source: 'network' as const,
+      settings: { sessionDefaultPermissionModeByTargetKey: { claude: 'yolo' } },
+      settingsVersion: 4,
+      loadedAtMs: Date.now(),
+      settingsSecretsReadKeys: [new Uint8Array([1, 2, 3])],
+      whenRefreshed: null,
+    };
+    harness.opts.accountSettingsContext = accountSettingsContext as never;
+    harness.config.runtimeAuthority = {
+      scope: 'session',
+      sessionCredentials,
+      accountCredentials: null,
+    };
+    const resolveRunnerMcpServersAccountSettings = vi.fn(() => accountSettingsContext.settings as never);
+    harness.config.resolveRunnerMcpServersAccountSettings = resolveRunnerMcpServersAccountSettings;
+    let lifecycleOpts: unknown = null;
+    harness.deps.runSessionLoopLifecycleFn = vi.fn(async (params: any) => {
+      lifecycleOpts = params.opts;
+    }) as never;
+
+    await runHostSessionRuntime(harness.opts, harness.config, harness.deps);
+
+    expect(resolveRunnerMcpServersAccountSettings).not.toHaveBeenCalled();
+    expect((lifecycleOpts as any)?.accountSettingsContext).toBeNull();
+  });
+
+  it('does not use ambient Account pending-queue timing for a Session-scoped runtime', async () => {
+    const harness = createHarness();
+    harness.opts.accountSettingsContext = {
+      source: 'network' as const,
+      settings: { sessionPendingQueueDeliveryTiming: 'after_runtime_idle' },
+      settingsVersion: 4,
+      loadedAtMs: Date.now(),
+      settingsSecretsReadKeys: [],
+      whenRefreshed: null,
+    } as never;
+    harness.config.runtimeAuthority = {
+      scope: 'session',
+      sessionCredentials: { token: 'runner-session-token', encryption: null },
+      accountCredentials: null,
+    };
+    let observedPendingQueueDeliveryTiming: unknown;
+    harness.deps.runPermissionModePromptLoopFn = async (params: { pendingQueueDeliveryTiming?: unknown }) => {
+      observedPendingQueueDeliveryTiming = params.pendingQueueDeliveryTiming;
+    };
+
+    await runHostSessionRuntime(harness.opts, harness.config, harness.deps);
+
+    expect(observedPendingQueueDeliveryTiming).toBe(DEFAULT_SESSION_PENDING_QUEUE_DELIVERY_TIMING);
+  });
+
   it('uses attached session metadata for runtime metadata, runtime directory, and MCP directory resolution', async () => {
     const harness = createHarness();
     harness.config.flavor = 'claude';
@@ -7266,7 +7368,7 @@ describe('runHostSessionRuntime', () => {
     harness.opts.backendTarget = { kind: 'backend', backendId: 'codex', sourceKind: 'built_in' };
     harness.opts.modelSelection = {
       v: 1, updatedAt: 1,
-      ref: { agentTargetKey: 'backend:codex', providerConnectionId: ProviderConnectionIdSchema.parse('pc_work'), modelId: 'provider-model' },
+      ref: { agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: ProviderConnectionIdSchema.parse('pc_work'), modelId: 'provider-model' },
     };
     const materialization = {
       v: 1 as const,
@@ -7286,7 +7388,7 @@ describe('runHostSessionRuntime', () => {
       bindingSecurityFingerprint: 'security-v1',
       runtimeBindingBasis: externalProviderRuntimeBindingBasis({
         connectionId: 'pc_work',
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         contributionKey: 'plugin.openrouter/openrouter',
         adapterBindingKey: 'openrouter',
         fingerprintScope: 'attached-refresh',
@@ -7339,7 +7441,7 @@ describe('runHostSessionRuntime', () => {
     harness.opts.modelSelection = {
       v: 1,
       updatedAt: 10,
-      ref: { agentTargetKey: 'backend:qwen', providerConnectionId: null, modelId: 'native-model' },
+      ref: { agentTargetKey: 'agent:happier.agent.qwen/qwen', providerConnectionId: null, modelId: 'native-model' },
     };
     let attachedMetadata: Record<string, unknown> = {
       path: '/srv/attached-workspace',
@@ -8215,6 +8317,47 @@ describe('runHostSessionRuntime', () => {
     expect(renderFn).not.toHaveBeenCalled();
   });
 
+  it('yields the runner TTY to a provider attach and restores the remote display afterward', async () => {
+    const harness = createHarness();
+    const unmounts: Array<ReturnType<typeof vi.fn>> = [];
+    const renderFn = vi.fn(() => {
+      const unmount = vi.fn();
+      unmounts.push(unmount);
+      return { unmount };
+    });
+    (harness.opts as typeof harness.opts & { startingMode: 'terminal' }).startingMode = 'terminal';
+    harness.config.shouldRenderTerminalDisplay = () => true;
+    setTerminalRemoteModeLoop(harness.config, {
+      startingMode: 'terminal',
+      remoteExitCode: 0,
+      topology: 'shared',
+      remoteWritable: true,
+      ownsCurrentTerminalDisplay: true,
+      runTerminal: vi.fn(async () => ({ type: 'switch' as const })),
+      runRemote: vi.fn(async () => 'exit' as const),
+      onModeChange: vi.fn(),
+    });
+
+    const stdoutDescriptor = Object.getOwnPropertyDescriptor(process.stdout, 'isTTY');
+    const stdinDescriptor = Object.getOwnPropertyDescriptor(process.stdin, 'isTTY');
+    Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: true });
+    Object.defineProperty(process.stdin, 'isTTY', { configurable: true, value: true });
+
+    try {
+      await runHostSessionRuntime(harness.opts, harness.config, {
+        ...harness.deps,
+        renderFn,
+      });
+    } finally {
+      if (stdoutDescriptor) Object.defineProperty(process.stdout, 'isTTY', stdoutDescriptor);
+      if (stdinDescriptor) Object.defineProperty(process.stdin, 'isTTY', stdinDescriptor);
+    }
+
+    expect(renderFn).toHaveBeenCalledTimes(2);
+    expect(unmounts[0]).toHaveBeenCalledTimes(1);
+    expect(unmounts[1]).toHaveBeenCalledTimes(1);
+  });
+
   it('uses static remote control instead of Ink for daemon-started tmux sessions', async () => {
     const harness = createHarness();
     harness.opts.startedBy = 'daemon';
@@ -8863,6 +9006,10 @@ describe('runHostSessionRuntime', () => {
 
   it('uses the measured Follow fallback before usage and matching authoritative remaining capacity afterward', async () => {
     const harness = createHarness();
+    harness.opts.modelSelection = {
+      v: 1, updatedAt: 1,
+      ref: { agentTargetKey: 'agent:happier.agent.qwen/qwen', providerConnectionId: null, modelId: 'budget-model' },
+    };
     const observePendingSessionFollow = vi.fn(async () => ({
       ok: true as const,
       publisherGeneration: 1,
@@ -8873,7 +9020,7 @@ describe('runHostSessionRuntime', () => {
     const publishHostRuntimeEvent = vi.fn();
     harness.config.publishHostRuntimeEvent = publishHostRuntimeEvent;
     harness.deps.runPermissionModePromptLoopFn = async (params: any) => {
-      const prepare = params.runtime.prepareSessionFollowContext;
+      const prepare = params.runtime.prepareHostContext;
       expect(prepare).toEqual(expect.any(Function));
 
       await prepare({ signal: new AbortController().signal, requiredPrompt: 'required' });
@@ -8913,8 +9060,48 @@ describe('runHostSessionRuntime', () => {
     }));
   });
 
+  it('refits a taken worker wake against the final shared optional allowance after authoritative usage changes', async () => {
+    const harness = createHarness();
+    harness.opts.modelSelection = {
+      v: 1, updatedAt: 1,
+      ref: { agentTargetKey: 'agent:happier.agent.qwen/qwen', providerConnectionId: null, modelId: 'budget-model' },
+    };
+    harness.session.observePendingSessionFollow = vi.fn(async () => ({
+      ok: true as const, publisherGeneration: 1, currentSourceSessionIds: [], observations: [],
+    }));
+    const update = {
+      v: 1 as const, workerKind: 'session' as const, workerId: 'budget-worker',
+      ownerState: 'settled' as const, wake: 'finished' as const,
+      headline: 'Result', result: 'é'.repeat(4_000), canInspect: true,
+      transcriptPointer: { kind: 'session' as const, sessionId: 'budget-worker' },
+    };
+    harness.deps.runPermissionModePromptLoopFn = async (params: Parameters<typeof runPermissionModePromptLoop>[0]) => {
+      const prepare = params.prepareHostContext!;
+      const before = await prepare({ signal: new AbortController().signal, requiredPrompt: 'required', contextOnlyWorkerUpdate: update });
+      expect(before?.contextOnlyWorkerUpdate?.truncated).toBe(true);
+      expect(before?.contextOnlyWorkerUpdate?.transcriptPointer).toEqual(update.transcriptPointer);
+      const modelId = params.readActiveModelSelection?.().modelId ?? null;
+      expect(modelId).toBeTypeOf('string');
+      harness.runtime.emitRuntimeMessage({
+        kind: 'usage-observed', sequence: 1, sessionId: 'session-1', emittedAtMs: 1,
+        observationId: 'worker-budget-usage', source: 'provider', scope: 'session_cumulative', modelId,
+        context: {
+          v: 1, modelId, usedTokens: 96, windowTokens: 100,
+          totalProcessedTokens: null, baselineTokens: null, isAutoCompactEnabled: null,
+          categories: null, observedAtMs: 1, source: 'provider_live',
+        },
+      });
+      const after = await prepare({ signal: new AbortController().signal, requiredPrompt: 'required', contextOnlyWorkerUpdate: update });
+      expect(after?.contextOnlyWorkerUpdate).toBeNull();
+    };
+    await runHostSessionRuntime(harness.opts, harness.config, harness.deps);
+  });
+
   it('composes the canonical Follow reconciler into a real host prompt and ACKs the exact observed frontier only after provider acceptance', async () => {
     const harness = createHarness();
+    harness.opts.credentials = { token: 'follow-token', encryption: null };
+    harness.session.hasPendingProviderInput = vi.fn(() => false);
+    harness.session.enqueueAgentMessageCommitted = vi.fn(async () => ({ persisted: true, delivered: false }));
     let userMessageHandler: ((message: unknown) => boolean | void) | null = null;
     harness.session.onUserMessage = (handler: (message: unknown) => boolean | void) => {
       userMessageHandler = handler;
@@ -8956,7 +9143,131 @@ describe('runHostSessionRuntime', () => {
       sourceSessionId: 'source-session',
       delivered: observed,
     }));
-    const hydrateObservation = vi.fn(async () => ({
+    const source = createSessionRecordFixture({
+      id: 'source-session', encryptionMode: 'plain', seq: observed.transcriptSeq,
+      metadata: JSON.stringify({ path: '/workspace/source', host: 'source-host' }),
+      active: true, activeAt: 9_000, updatedAt: 9_000,
+      agentStateVersion: observed.agentStateVersion,
+    });
+    // HTTP is the source-content boundary; transport, decoding, hydration and frontier selection stay real.
+    const get = vi.spyOn(axios, 'get').mockImplementation(async (url) => {
+      const request = new URL(String(url));
+      if (request.origin !== 'https://follow-home.example') throw new Error('Follow source read escaped the destination Home');
+      if (request.pathname === '/v1/account/encryption/currentness') return { status: 200, data: {
+        mode: 'plain', version: 1, signingKeyFingerprint: null, contentKeyFingerprint: null, updatedAt: 1,
+      } };
+      if (request.pathname === '/v2/sessions/source-session') return { status: 200, data: { session: source } };
+      if (request.pathname === '/v1/sessions/source-session/messages') return { status: 200, data: {
+        messages: [{
+          id: 'source-message-8', seq: 8, localId: null, createdAt: 8_000, updatedAt: 8_000,
+          content: { t: 'plain', v: { role: 'user', content: { type: 'text', text: 'source context accepted by the provider' } } },
+        }],
+        hasMore: false, nextBeforeSeq: null, nextAfterSeq: null,
+      } };
+      throw new Error(`Unexpected Follow source request: ${request.pathname}`);
+    });
+    const sourceHome = new ApiSessionClient(harness.opts.credentials.token, createPlainSessionFixture({ id: 'session-1' }), {
+      metadataAuthority: { kind: 'owner', credentials: harness.opts.credentials },
+      transport: {
+        serverId: 'follow-home', serverUrl: 'https://follow-home.example',
+        createSessionSocketTransport: () => { throw new Error('Session socket is supplied by the network boundary fixture'); },
+      },
+    });
+    harness.session.runSessionFollowSourceRequest = sourceHome.runSessionFollowSourceRequest.bind(sourceHome);
+
+    let providerOutcome: ((outcome: HostProviderInputOutcomeEvidence) => void) | null = null;
+    const runtime = harness.runtime;
+    runtime.setOnPromptDeliveryOutcome = vi.fn((handler: ((outcome: HostProviderInputOutcomeEvidence) => void) | null) => {
+      providerOutcome = handler;
+    });
+    runtime.sendTurnPrompt = vi.fn(async (_prompt: string, meta?: { localId?: string }) => {
+      expect(harness.session.acknowledgeSessionFollow).not.toHaveBeenCalled();
+      if (!meta?.localId) throw new Error('Expected the admitted destination input identity');
+      providerOutcome?.({
+        type: 'input-accepted',
+        localInputId: meta.localId,
+        userMessageSeq: 41,
+        delivery: { kind: 'newTurn', turnId: 'destination-turn' },
+      });
+    });
+    harness.deps.runPermissionModePromptLoopFn = async (params: Parameters<typeof runPermissionModePromptLoop>[0]) => {
+      let shouldExit = false;
+      expect(userMessageHandler).toBeTypeOf('function');
+      userMessageHandler?.({
+        role: 'user',
+        content: { type: 'text', text: 'continue the destination work' },
+        localId: 'local-follow-runtime',
+        meta: {},
+      });
+      await runPermissionModePromptLoop({
+        ...params,
+        shouldExit: () => shouldExit,
+        sendReady: () => { shouldExit = true; },
+      });
+    };
+
+    try {
+      await runHostSessionRuntime(harness.opts, harness.config, harness.deps);
+    } finally {
+      try {
+        await sourceHome.close();
+      } finally {
+        get.mockRestore();
+      }
+    }
+
+    expect(runtime.sendTurnPrompt).toHaveBeenCalled();
+    expect(harness.session.observePendingSessionFollow).toHaveBeenCalled();
+    expect(runtime.sendTurnPrompt).toHaveBeenCalledWith(
+      expect.stringContaining('source context accepted by the provider'),
+      expect.objectContaining({ localId: 'local-follow-runtime', userMessageSeq: 41 }),
+    );
+    expect(harness.session.acknowledgeSessionFollow).toHaveBeenCalledWith({
+      sourceSessionId: 'source-session',
+      expectedPublisherGeneration: '17',
+      expected: delivered,
+      observed,
+      consumed: observed,
+      acceptance: { kind: 'admitted_input', localInputId: 'local-follow-runtime', userMessageSeq: 41 },
+    });
+  });
+
+  it('withdraws a Follow wake at the final recheck without committing a host event or sending a provider prompt', async () => {
+    const harness = createHarness();
+    harness.session.hasPendingProviderInput = vi.fn(() => false);
+    const wakeQueue = new MessageQueue2(() => 'default', { batcher: (messages) => messages[0]! });
+    harness.deps.createPermissionModeQueueStateFn = () => ({
+      messageQueue: wakeQueue,
+      rebindSession: () => undefined,
+      getCurrentPermissionMode: () => 'default',
+      setCurrentPermissionMode: () => undefined,
+      getCurrentPermissionModeUpdatedAt: () => 0,
+      setCurrentPermissionModeUpdatedAt: () => undefined,
+    });
+    const delivered = { transcriptSeq: 1, readyEventSeq: 0, agentStateVersion: 0, turn: null };
+    const observed = { transcriptSeq: 2, readyEventSeq: 0, agentStateVersion: 0, turn: null };
+    let shouldExit = false;
+    harness.session.observePendingSessionFollow = vi.fn(async () => {
+      const withdrawn = harness.session.observePendingSessionFollow.mock.calls.length > 1;
+      if (withdrawn) shouldExit = true;
+      return {
+        ok: true as const,
+        v: 1 as const,
+        sessionId: 'session-1',
+        publisherGeneration: '17',
+        currentSourceSessionIds: withdrawn ? [] : ['source-session'],
+        observations: withdrawn ? [] : [{
+          sourceSessionId: 'source-session',
+          destinationSessionId: 'session-1',
+          delivered,
+          observed,
+          mode: 'wake_on_human_change' as const,
+        }],
+      };
+    });
+    harness.session.acknowledgeSessionFollow = vi.fn();
+    harness.session.enqueueAgentMessageCommitted = vi.fn(async () => ({ persisted: true, delivered: false }));
+    harness.deps.createSessionFollowSourceHydratorFn = vi.fn(() => vi.fn(async () => ({
       v: 1 as const,
       kind: 'session_follow_update' as const,
       edge: { sourceSessionId: 'source-session', destinationSessionId: 'session-1' },
@@ -8974,72 +9285,291 @@ describe('runHostSessionRuntime', () => {
         availability: 'complete' as const,
       },
       recentMessages: [{
-        messageId: 'seq:8',
-        seq: 8,
-        text: 'source context accepted by the provider',
-        provenance: null,
+        messageId: 'source-human-2',
+        seq: 2,
+        text: 'Context withdrawn before delivery',
+        provenance: { v: 1 as const, kind: 'cli' as const },
       }],
       truncated: false,
-      sourceRecencyMs: 9_000,
-    }));
-    harness.deps.createSessionFollowSourceHydratorFn = vi.fn(() => hydrateObservation);
-
-    let providerOutcome: ((outcome: any) => void) | null = null;
+    })));
     const runtime = {
       ...harness.runtime,
       readSessionIdentity: vi.fn(() => ({ sessionId: null })),
       updateSessionRuntimeConfig: vi.fn(async () => undefined),
       beginTurnLifecycle: vi.fn(),
       waitForTurnCompletion: vi.fn(async () => undefined),
-      setOnPromptDeliveryOutcome: vi.fn((handler: ((outcome: any) => void) | null) => {
-        providerOutcome = handler;
-      }),
-      sendTurnPrompt: vi.fn(async (_prompt: string, meta?: { localId?: string }) => {
-        expect(harness.session.acknowledgeSessionFollow).not.toHaveBeenCalled();
-        providerOutcome?.({
-          type: 'input-accepted',
-          localInputId: meta?.localId,
-          userMessageSeq: 41,
-          delivery: { kind: 'newTurn', turnId: 'destination-turn' },
-        });
-      }),
+      sendTurnPrompt: vi.fn(async () => undefined),
     };
     setSessionRuntimeFactory(harness.config, () => ({ operations: runtime, nativeRuntime: runtime }));
     harness.deps.runPermissionModePromptLoopFn = async (params: Parameters<typeof runPermissionModePromptLoop>[0]) => {
-      let shouldExit = false;
-      expect(userMessageHandler).toBeTypeOf('function');
-      userMessageHandler?.({
-        role: 'user',
-        content: { type: 'text', text: 'continue the destination work' },
-        localId: 'local-follow-runtime',
-        meta: {},
-      });
+      await runPermissionModePromptLoop({ ...params, shouldExit: () => shouldExit });
+    };
+
+    await runHostSessionRuntime(harness.opts, harness.config, harness.deps);
+
+    expect(harness.session.observePendingSessionFollow).toHaveBeenCalledTimes(2);
+    expect(harness.session.enqueueAgentMessageCommitted).not.toHaveBeenCalled();
+    expect(runtime.sendTurnPrompt).not.toHaveBeenCalled();
+    expect(runtime.beginTurnLifecycle).not.toHaveBeenCalled();
+    expect(harness.session.acknowledgeSessionFollow).not.toHaveBeenCalled();
+  });
+
+  it('pulls an originating workflow through the default host context owner and ACKs only accepted context', async () => {
+    const harness = createHarness();
+    const accountId = 'origin-account';
+    harness.opts.credentials = { token: `e30.${Buffer.from(JSON.stringify({ sub: accountId })).toString('base64url')}.signature`, encryption: null };
+    const run: WorkflowRunSummaryV1 = { sourceArtifactId: null, ownerAccountId: 'account-1', visibleTeamId: null,
+      id: 'origin-run', origin: { kind: 'direct', originSessionId: 'session-1' }, machineId: 'machine-1',
+      state: 'succeeded', revision: 3, workflowCustodyState: 'settled', originDeliveryAckRevision: 0,
+      attentionRequired: false, createdAt: '2026-09-30T00:00:00.000Z', updatedAt: '2026-09-30T00:00:00.000Z',
+      availability: { pause: false, resumeBoundary: false, restoreWorkspace: false, cancel: false, inspectExecution: true, disabledReasons: [] },
+    };
+    const acceptedEnvelope = serializeWorkflowStoredContentEnvelopeV1(sealWorkflowAcceptedSnapshotStoredEnvelopeV1({
+      mode: 'plain', binding: { v: 1, purpose: 'accepted_snapshot', accountId, runId: run.id },
+      acceptedSnapshot: {
+        definition: { version: 1, inputs: [], defaults: {}, blocks: [
+          { kind: 'step', id: 'work', document: { text: 'Work', references: [], attachments: [] }, input: [], result: { kind: 'text' } },
+        ] }, source: { kind: 'inline' }, inputs: {}, machineId: 'machine-1', executionTarget: { kind: 'session' },
+        workspaceTarget: { project: { machineId: 'machine-1', directory: '/repo', checkoutRootPath: '/repo' } },
+        origin: { kind: 'direct', originSessionId: 'session-1' },
+        authorization: { principal: { kind: 'host' }, admittedPermissionCeiling: 'default' },
+        resultDelivery: { kind: 'originating_session', originSessionId: 'session-1' }, workDepth: 1,
+      },
+    }));
+    const resultEnvelope = serializeWorkflowStoredContentEnvelopeV1(sealWorkflowFinalResultStoredEnvelopeV1({
+      mode: 'plain', binding: { v: 1, purpose: 'final_result', accountId, runId: run.id },
+      finalResult: { kind: 'happier.workflow-final-result.v1', result: { kind: 'text', value: 'DEFAULT_ORIGIN_RESULT' }, producerInvocation: { recordId: 'producer' } },
+    }));
+    const census: WorkflowRunRecipientCensusResponseV1 = {
+      runId: run.id, ownerAccountId: accountId, access: 'owner', encryptionMode: 'plain', visibleTeamId: null,
+      ownerAccountCurrentness: { mode: 'plain', version: 1, contentKeyFingerprint: null },
+      dataEncryptionKey: null, callerDataEncryptionKey: null, recipients: [],
+    };
+    const requests: string[] = [];
+    // HTTP is the real storage/currentness boundary; the context consumer, schemas and codecs remain real.
+    const post = vi.spyOn(axios, 'post').mockImplementation(async (_url, body) => {
+      const operation = (body as Readonly<{ operation: string }>).operation;
+      requests.push(operation);
+      const data = operation === 'delivery.pull' ? { runs: [{ run, acceptedEnvelope, resultEnvelope, hasOriginInputCandidates: false }] }
+        : operation === 'run-key.census' ? census
+        : operation === 'invocations.get' ? { invocation: null }
+        : operation === 'delivery.ack' ? { acknowledgedRevision: 3 }
+        : operation === 'get' ? { run, acceptedEnvelope, resultEnvelope }
+        : (() => { throw new Error(`unexpected mutation: ${operation}`); })();
+      return { status: 200, data };
+    });
+    const get = vi.spyOn(axios, 'get').mockResolvedValue({ status: 200, data: {
+      mode: 'plain', version: 1, signingKeyFingerprint: null, contentKeyFingerprint: null, updatedAt: 1,
+    } });
+    try {
+      harness.deps.runPermissionModePromptLoopFn = async (params: Parameters<typeof runPermissionModePromptLoop>[0]) => {
+        const input = { signal: new AbortController().signal, requiredPrompt: 'normal user input' };
+        const context = await params.prepareHostContext?.(input);
+        expect(context?.workerUpdates, JSON.stringify({ requests, workflowErrors: loggerDebugMock.mock.calls.filter(([label]) => String(label).includes('Workflow origin context unavailable')) })).toEqual([
+          expect.objectContaining({ workerKind: 'workflow_run', workerId: run.id, result: 'DEFAULT_ORIGIN_RESULT' }),
+        ]);
+        expect(requests).not.toContain('delivery.ack');
+        context?.acknowledgeAccepted({ kind: 'admitted_input', localInputId: 'normal-input', userMessageSeq: null });
+        await params.prepareHostContext?.(input);
+        expect(requests).toContain('delivery.ack');
+      };
+      await runHostSessionRuntime(harness.opts, harness.config, harness.deps);
+    } finally {
+      post.mockRestore();
+      get.mockRestore();
+    }
+  });
+
+  it('coalesces worker updates into one host turn while retaining a card event for each worker', async () => {
+    const harness = createHarness();
+    harness.session.hasPendingProviderInput = vi.fn(() => false);
+    const queue = new MessageQueue2<PermissionModeQueuedPromptMode, PermissionModeQueuedPrompt>((mode) => mode.permissionMode, { batcher: combinePermissionModeQueuedPrompts });
+    harness.deps.createPermissionModeQueueStateFn = () => ({
+      messageQueue: queue, rebindSession: () => undefined,
+      getCurrentPermissionMode: () => 'default', setCurrentPermissionMode: () => undefined,
+      getCurrentPermissionModeUpdatedAt: () => 0, setCurrentPermissionModeUpdatedAt: () => undefined,
+    });
+    const update = (workerId: string): import('@happier-dev/protocol').WorkerUpdateV1 => ({
+      v: 1, workerKind: 'execution_run', workerId, ownerState: 'succeeded', wake: 'finished',
+      headline: workerId, result: `result from ${workerId}`, canInspect: true,
+      transcriptPointer: { kind: 'execution_run', sessionId: harness.session.sessionId, runId: workerId },
+    });
+    let available = true;
+    let accepted = false;
+    harness.config.hostContextOnlyInput = {
+      take: async () => {
+        if (!available) return null;
+        available = false;
+        return { kind: 'worker_update', localId: 'worker-batch', update: update('run-one'),
+          recheckAdmission: async () => true, acknowledgeAccepted: () => { accepted = true; } };
+      },
+      prepareWorkerUpdates: async () => [{ localId: 'run-two-completion', update: update('run-two'), recheckAdmission: async () => true, acknowledgeAccepted: () => { accepted = true; } }],
+      waitForChange: () => new Promise<boolean>(() => {}),
+      isWorkflowStepDeliverable: async () => false, reportWorkflowStepWithdrawn: async () => undefined,
+    };
+    const events: unknown[] = [];
+    harness.session.enqueueAgentMessageCommitted = vi.fn(async (_provider: string, body: unknown) => {
+      events.push(body);
+      return { persisted: true, delivered: false };
+    });
+    const prompts: string[] = [];
+    const runtime = {
+      ...harness.runtime, readSessionIdentity: vi.fn(() => ({ sessionId: null })),
+      updateSessionRuntimeConfig: vi.fn(async () => undefined), beginTurnLifecycle: vi.fn(),
+      sendTurnPrompt: vi.fn(async (prompt: string) => { prompts.push(prompt); }),
+      waitForTurnCompletion: vi.fn(async () => undefined),
+    };
+    setSessionRuntimeFactory(harness.config, () => ({ operations: runtime, nativeRuntime: runtime }));
+    let completed = false;
+    harness.deps.runPermissionModePromptLoopFn = async (params: Parameters<typeof runPermissionModePromptLoop>[0]) => {
+      await runPermissionModePromptLoop({ ...params, shouldExit: () => completed, sendReady: () => { completed = true; } });
+    };
+    await runHostSessionRuntime(harness.opts, harness.config, harness.deps);
+    expect(prompts).toEqual([expect.stringContaining('result from run-one')]);
+    expect(prompts[0]).toContain('result from run-two');
+    expect(events).toEqual([
+      expect.objectContaining({ id: 'worker-batch', type: 'event', data: expect.objectContaining({ type: 'worker-update', update: expect.objectContaining({ workerId: 'run-one' }) }) }),
+      expect.objectContaining({ id: 'run-two-completion', type: 'event', data: expect.objectContaining({ type: 'worker-update', update: expect.objectContaining({ workerId: 'run-two' }) }) }),
+    ]);
+    expect(accepted).toBe(false);
+    expect(harness.session.confirmUserMessageLocallyConsumed).not.toHaveBeenCalled();
+  });
+
+  it('dispatches consecutive workflow steps as separate complete turns and never steers a busy provider', async () => {
+    const harness = createHarness();
+    harness.session.hasPendingProviderInput = vi.fn(() => false);
+    const queue = new MessageQueue2<PermissionModeQueuedPromptMode, PermissionModeQueuedPrompt>((mode) => mode.permissionMode, { batcher: combinePermissionModeQueuedPrompts });
+    harness.deps.createPermissionModeQueueStateFn = () => ({
+      messageQueue: queue,
+      rebindSession: () => undefined,
+      getCurrentPermissionMode: () => 'default',
+      setCurrentPermissionMode: () => undefined,
+      getCurrentPermissionModeUpdatedAt: () => 0,
+      setCurrentPermissionModeUpdatedAt: () => undefined,
+    });
+    const steps = [
+      { localInputId: 'isolated-step-1', text: 'FIRST_REQUIRED_STEP' },
+      { localInputId: 'isolated-step-2', text: 'SECOND_REQUIRED_STEP' },
+    ];
+    harness.config.hostContextOnlyInput = {
+      take: async () => {
+        const step = steps.shift();
+        return step ? {
+          kind: 'workflow_step', ...step,
+          workflowInvocation: { runId: 'isolated-run', invocationRecordId: step.localInputId },
+          workDepth: 2,
+          acknowledgeAccepted: () => undefined,
+        } : null;
+      },
+      waitForChange: () => new Promise<boolean>(() => {}),
+      isWorkflowStepDeliverable: async () => true,
+      reportWorkflowStepWithdrawn: async () => undefined,
+    };
+    const firstTurnWaiting = createDeferred<void>();
+    const finishFirstTurn = createDeferred<void>();
+    let shouldExit = false;
+    let completedTurns = 0;
+    const sendTurnPrompt = vi.fn(async (_prompt: string) => undefined);
+    const runtime = {
+      ...harness.runtime,
+      readSessionIdentity: vi.fn(() => ({ sessionId: null })),
+      updateSessionRuntimeConfig: vi.fn(async () => undefined),
+      beginTurnLifecycle: vi.fn(),
+      supportsInFlightSteer: () => true,
+      canSteerPrompt: () => true,
+      steerInFlightTurn: vi.fn(async () => undefined),
+      sendTurnPrompt,
+      waitForTurnCompletion: vi.fn(async () => {
+        if (completedTurns === 0) {
+          firstTurnWaiting.resolve();
+          await finishFirstTurn.promise;
+        }
+      }),
+    };
+    harness.session.enqueueAgentMessageCommitted = vi.fn(async () => ({ persisted: true, delivered: false }));
+    setSessionRuntimeFactory(harness.config, () => ({ operations: runtime, nativeRuntime: runtime }));
+    harness.deps.runPermissionModePromptLoopFn = async (params: Parameters<typeof runPermissionModePromptLoop>[0]) => {
       await runPermissionModePromptLoop({
-        ...params,
-        shouldExit: () => shouldExit,
-        sendReady: () => { shouldExit = true; },
+        ...params, shouldExit: () => shouldExit,
+        sendReady: () => { completedTurns += 1; shouldExit = completedTurns === 2; },
+      });
+    };
+    const run = runHostSessionRuntime(harness.opts, harness.config, harness.deps);
+    await firstTurnWaiting.promise;
+    expect(sendTurnPrompt.mock.calls.map(([prompt]) => prompt)).toEqual(['FIRST_REQUIRED_STEP']);
+    expect(runtime.steerInFlightTurn).not.toHaveBeenCalled();
+    finishFirstTurn.resolve();
+    await run;
+
+    expect(sendTurnPrompt.mock.calls.map(([prompt]) => prompt)).toEqual(['FIRST_REQUIRED_STEP', 'SECOND_REQUIRED_STEP']);
+    expect(runtime.beginTurnLifecycle).toHaveBeenCalledTimes(2);
+    expect(runtime.steerInFlightTurn).not.toHaveBeenCalled();
+    expect(harness.session.confirmUserMessageLocallyConsumed).not.toHaveBeenCalled();
+    expect(harness.session.observeProviderInputSettlement).not.toHaveBeenCalled();
+  });
+
+  it('lets user input arriving during the workflow deliverability recheck run before the step host event', async () => {
+    const harness = createHarness();
+    harness.session.hasPendingProviderInput = vi.fn(() => false);
+    const queue = new MessageQueue2<PermissionModeQueuedPromptMode, PermissionModeQueuedPrompt>((mode) => mode.permissionMode, { batcher: combinePermissionModeQueuedPrompts });
+    harness.deps.createPermissionModeQueueStateFn = () => ({
+      messageQueue: queue,
+      rebindSession: () => undefined,
+      getCurrentPermissionMode: () => 'default',
+      setCurrentPermissionMode: () => undefined,
+      getCurrentPermissionModeUpdatedAt: () => 0,
+      setCurrentPermissionModeUpdatedAt: () => undefined,
+    });
+    let stepAvailable = true;
+    let rechecks = 0;
+    harness.config.hostContextOnlyInput = {
+      take: async () => {
+        if (!stepAvailable) return null;
+        return {
+          kind: 'workflow_step', localInputId: 'step-after-user', text: 'WORKFLOW_AFTER_USER',
+          workflowInvocation: { runId: 'priority-run', invocationRecordId: 'priority-invocation' },
+          workDepth: 1,
+          acknowledgeAccepted: () => { stepAvailable = false; },
+        };
+      },
+      waitForChange: () => new Promise<boolean>(() => {}),
+      isWorkflowStepDeliverable: async () => {
+        rechecks += 1;
+        if (rechecks === 1) queue.push({ text: 'USER_FIRST', localId: 'priority-user' }, { permissionMode: 'default' });
+        return true;
+      },
+      reportWorkflowStepWithdrawn: async () => undefined,
+    };
+    const order: string[] = [];
+    const hostEvents: unknown[] = [];
+    harness.session.enqueueAgentMessageCommitted = vi.fn(async (_provider: string, body: unknown, options?: { localId?: string }) => {
+      hostEvents.push(body);
+      order.push(`host:${options?.localId}`);
+      return { persisted: true, delivered: false };
+    });
+    const runtime = harness.runtime;
+    // This Agent boundary starts fresh and completes each dispatched turn immediately.
+    runtime.readSessionIdentity = vi.fn(() => ({ sessionId: null }));
+    runtime.updateSessionRuntimeConfig = vi.fn(async () => undefined);
+    runtime.beginTurnLifecycle = vi.fn();
+    runtime.waitForTurnCompletion = vi.fn(async () => undefined);
+    const prompts: string[] = [];
+    runtime.sendTurnPrompt = vi.fn(async (prompt: string, meta?: { localId?: string }) => {
+      prompts.push(prompt);
+      order.push(`provider:${meta?.localId}`);
+    });
+    let completedTurns = 0;
+    harness.deps.runPermissionModePromptLoopFn = async (params: Parameters<typeof runPermissionModePromptLoop>[0]) => {
+      await runPermissionModePromptLoop({
+        ...params, shouldExit: () => completedTurns === 2,
+        sendReady: () => { completedTurns += 1; },
       });
     };
 
     await runHostSessionRuntime(harness.opts, harness.config, harness.deps);
 
-    expect(runtime.sendTurnPrompt).toHaveBeenCalled();
-    expect(harness.session.observePendingSessionFollow).toHaveBeenCalled();
-    expect(hydrateObservation).toHaveBeenCalledWith(expect.objectContaining({
-      observation: expect.objectContaining({ sourceSessionId: 'source-session', delivered, observed }),
-    }));
-    expect(runtime.sendTurnPrompt).toHaveBeenCalledWith(
-      expect.stringContaining('source context accepted by the provider'),
-      expect.objectContaining({ localId: 'local-follow-runtime', userMessageSeq: 41 }),
-    );
-    expect(harness.session.acknowledgeSessionFollow).toHaveBeenCalledWith({
-      sourceSessionId: 'source-session',
-      expectedPublisherGeneration: '17',
-      expected: delivered,
-      observed,
-      consumed: observed,
-      acceptance: { kind: 'admitted_input', localInputId: 'local-follow-runtime', userMessageSeq: 41 },
-    });
+    expect(order, JSON.stringify(hostEvents)).toEqual(['provider:priority-user', 'host:step-after-user', 'provider:step-after-user']);
+    expect(prompts).toEqual([expect.stringContaining('USER_FIRST'), 'WORKFLOW_AFTER_USER']);
   });
 
   it('commits one stable event identity before each retried Follow wake delivery and ACKs that exact identity', async () => {
@@ -9213,7 +9743,7 @@ describe('runHostSessionRuntime', () => {
       };
     };
     harness.deps.runPermissionModePromptLoopFn = async (params: any) => {
-      const prepare = params.runtime.prepareSessionFollowContext;
+      const prepare = params.runtime.prepareHostContext;
       const signal = new AbortController().signal;
       await prepare({ signal, requiredPrompt: 'before handoff' });
       await swapSession?.(replacementFixture.session);

@@ -14,6 +14,7 @@ import {
 } from "./AgentInputChipPickerTypes";
 import { deferAgentInputPopoverClose } from "@/components/sessions/agentInput/selection/deferAgentInputPopoverClose";
 import { runAfterInteractionsWithFallback } from "@/utils/timing/runAfterInteractionsWithFallback";
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 export type AgentInputChipPickerDetailPaneProps = Readonly<{
   option: AgentInputChipPickerOption;
@@ -28,7 +29,7 @@ const renderedDeferredDetailContentKeys = new Set<string>();
 
 const DETAIL_BUTTON_TRANSIENT_STYLES = {
   pressed: {
-    opacity: 0.82,
+    opacity: motionTokens.press.opacitySubtle,
   },
   disabled: {
     opacity: 0.5,

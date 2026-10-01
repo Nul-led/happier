@@ -27,7 +27,7 @@ export function filterCollapsedSessionListItems(
     for (let index = 0; index < items.length; index += 1) {
         const item = items[index];
         if (item.type === 'header') {
-            const kind = item.headerKind ?? '';
+            const kind = item.headerKind;
             // A collapsed section owns everything down to the next primary section
             // header. That set is the canonical one — Needs attention, Working,
             // Pinned, Active, Inactive and the one-section Sessions header — because

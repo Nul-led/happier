@@ -6,23 +6,10 @@ import {
   resolvePermissionIntentFromSessionMetadata,
 } from '@happier-dev/agents';
 import type { SessionModelSelectionIntentV1 } from '@happier-dev/protocol';
+import { readSessionModesMetadata } from '@happier-dev/protocol';
 
 function metadataHasConcreteDefaultSessionMode(metadata: Metadata | null | undefined): boolean {
-  const candidate = metadata as {
-    sessionModesV1?: unknown;
-    acpSessionModesV1?: unknown;
-  } | null | undefined;
-  const states = [candidate?.sessionModesV1, candidate?.acpSessionModesV1];
-  return states.some((state) => {
-    if (!state || typeof state !== 'object') return false;
-    const availableModes = (state as { availableModes?: unknown }).availableModes;
-    if (!Array.isArray(availableModes)) return false;
-    return availableModes.some((mode) => (
-      mode !== null
-      && typeof mode === 'object'
-      && (mode as { id?: unknown }).id === 'default'
-    ));
-  });
+  return readSessionModesMetadata(metadata)?.availableModes.some((mode) => mode.id === 'default') ?? false;
 }
 
 export function resolvePermissionIntentFromMetadataSnapshot(opts: {

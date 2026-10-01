@@ -2,17 +2,14 @@ import type { ModelMode } from '../permissions/permissionTypes';
 import { t } from '@/text';
 import { getAgentCore, isBundledAgentId } from '@/agents/catalog/catalog';
 import { buildAgentUniverseBackendTargetKey } from '@/agents/catalog/agentUniverse';
-import type { Metadata } from '../state/storageTypes';
-import type { AcpConfigOption } from '@/sync/domains/sessionControl/configOptionsControl';
+import type { ComposerOptionsInputV1 } from '@happier-dev/protocol/embed';
+import { normalizeAcpConfigOptionsArray, type AcpConfigOption } from '@/sync/domains/sessionControl/configOptionsControl';
+import { readSessionModelsState } from '@/sync/domains/sessionControl/readSessionControlMetadata';
 import {
     getAgentStaticModels,
     isFreeformModelIdAllowed,
-    LEGACY_ACP_SESSION_MODELS_STATE_KEY,
-    readMetadataAliasValue,
-    resolveModelSelectionIntentFromSessionMetadata,
-    SESSION_MODELS_STATE_KEY,
-    type AgentModelConfig,
 } from '@happier-dev/agents';
+import { readSessionModelSelectionIntentFromMetadata } from '@/sync/domains/models/readSessionModelSelectionIntent';
 
 /** A session's Agent identity remains open; generated catalog policy narrows explicitly. */
 export type AgentType = string;
@@ -45,15 +42,12 @@ export function createUnavailablePreflightModelList(): PreflightModelList {
     };
 }
 
-type SessionModelListState = Readonly<{
-    agentId?: string;
-    availableModels?: Array<{
-        id?: unknown;
-        name?: unknown;
-        description?: unknown;
-        extendedContextModelId?: unknown;
-        modelOptions?: unknown;
-    }>;
+export type SessionModelOptionsContext = Readonly<{
+    preflight?: PreflightModelList | null;
+    preflightUpdatedAt?: number | null;
+    selectedModelId?: string | null;
+    preflightTargetKey?: string | null;
+    currentTargetKey?: string | null;
 }>;
 
 function dedupeModelOptionsByValue(options: readonly ModelOption[]): readonly ModelOption[] {
@@ -77,26 +71,17 @@ function mergeDynamicModelOptionWithCatalog(
 ): ModelOption {
     const catalog = catalogByValue.get(option.value) ?? null;
     if (!catalog) return option;
-    const hasModelOptions = Array.isArray(option.modelOptions) && option.modelOptions.length > 0;
     const hasDescription = typeof option.description === 'string' && option.description.trim().length > 0;
-    const hasExtendedContextModelId = readExtendedContextModelId(option.extendedContextModelId) !== undefined;
-    return {
-        ...option,
-        ...(!hasDescription && catalog.description ? { description: catalog.description } : {}),
-        ...(!hasModelOptions && catalog.modelOptions ? { modelOptions: catalog.modelOptions } : {}),
-        ...(!hasExtendedContextModelId && catalog.extendedContextModelId
-            ? { extendedContextModelId: catalog.extendedContextModelId }
-            : {}),
-    };
+    // Observed catalogs own membership and capabilities; curated copy only enriches presentation.
+    return !hasDescription && catalog.description ? { ...option, description: catalog.description } : option;
 }
 
 /**
  * Two rows that read identically are not a choice.
  *
  * A dynamic catalog advertises pinned snapshot ids (`claude-opus-4-5-20251101`) under the same
- * curated name as their floating alias (`claude-opus-4-5`), and the alias is offered too — either
- * because the source lists both or because the static catalog contributes the one the probe
- * omitted. The result is rows with the same label and the same blurb selecting different models,
+ * curated name as their floating alias (`claude-opus-4-5`), and the source can advertise both.
+ * The result is rows with the same label and the same blurb selecting different models,
  * so the user cannot tell which one they picked.
  *
  * Where a label is contested, the blurb the rows share distinguishes nothing, so it gives way to
@@ -129,47 +114,20 @@ function nameCollidingModelOptionsByModelId(options: readonly ModelOption[]): re
 function mergeModelOptionsWithCatalog(params: Readonly<{
     options: readonly ModelOption[];
     catalogOptions: readonly ModelOption[];
-    appendMissingCatalogOptions: boolean;
 }>): readonly ModelOption[] {
     const catalogByValue = new Map(params.catalogOptions.map((option) => [option.value, option] as const));
-    const merged = dedupeModelOptionsByValue(params.options.map((option) => mergeDynamicModelOptionWithCatalog(option, catalogByValue)));
-
-    if (!params.appendMissingCatalogOptions) return nameCollidingModelOptionsByModelId(merged);
-
-    const seen = new Set(merged.map((option) => option.value));
-    return nameCollidingModelOptionsByModelId([
-        ...merged,
-        ...params.catalogOptions.filter((option) => {
-            if (seen.has(option.value)) return false;
-            seen.add(option.value);
-            return true;
-        }),
-    ]);
+    return nameCollidingModelOptionsByModelId(dedupeModelOptionsByValue(
+        params.options.map((option) => mergeDynamicModelOptionWithCatalog(option, catalogByValue)),
+    ));
 }
 
-function appendSelectedFreeformModelOption(params: Readonly<{
-    options: readonly ModelOption[];
-    selectedModelId: string;
-    modelConfig: AgentModelConfig;
-}>): readonly ModelOption[] {
-    if (!isFreeformModelIdAllowed(params.modelConfig, params.selectedModelId)) return params.options;
-    if (findModelOptionForEffectiveModelId(params.options, params.selectedModelId)) return params.options;
-    return [
-        ...params.options,
-        { value: params.selectedModelId, label: params.selectedModelId, description: '' },
-    ];
+function appendRequestedModelOption(options: readonly ModelOption[], selectedModelId: string): readonly ModelOption[] {
+    if (!selectedModelId || findModelOptionForEffectiveModelId(options, selectedModelId)) return options;
+    return [...options, { value: selectedModelId, label: selectedModelId, description: '' }];
 }
 
-function readSessionModelListState(metadata: Metadata | null | undefined): SessionModelListState | null {
-    return readMetadataAliasValue<SessionModelListState>(
-        (metadata as any) ?? {},
-        SESSION_MODELS_STATE_KEY,
-        LEGACY_ACP_SESSION_MODELS_STATE_KEY,
-    ) ?? null;
-}
-
-function readSelectedModelOverrideId(agentType: AgentType, metadata: Metadata | null | undefined): string {
-    const intent = resolveModelSelectionIntentFromSessionMetadata(
+function readSelectedModelOverrideId(agentType: AgentType, metadata: ComposerOptionsInputV1 | null | undefined): string {
+    const intent = readSessionModelSelectionIntentFromMetadata(
         metadata,
         buildAgentUniverseBackendTargetKey(agentType),
     );
@@ -219,23 +177,52 @@ export function getModelOptionsForPreflightModelList(list: PreflightModelList): 
     return dedupeModelOptionsByValue(withDefault);
 }
 
-export function hasDynamicModelListForSession(agentType: AgentType, metadata: Metadata | null | undefined): boolean {
-    if (!supportsDynamicSessionModelList(agentType)) {
-        return false;
-    }
-    const state = readSessionModelListState(metadata);
-    return Boolean(
-        state &&
-        state.agentId === agentType &&
-        Array.isArray(state.availableModels) &&
-        state.availableModels.length > 0,
-    );
+function readDynamicSessionModelList(agentType: AgentType, metadata: ComposerOptionsInputV1 | null | undefined) {
+    if (!supportsDynamicSessionModelList(agentType)) return null;
+    const state = readSessionModelsState(metadata);
+    return state && state.agentId === agentType && state.updatedAt > 0 && Array.isArray(state.availableModels)
+        ? state
+        : null;
 }
 
-export function supportsFreeformModelSelectionForSession(agentType: AgentType, metadata: Metadata | null | undefined): boolean {
-    if (!isBundledAgentId(agentType)) return false;
-    const core = getAgentCore(agentType);
-    return core.model?.supportsSelection === true && core.model?.supportsFreeform === true;
+export function hasDynamicModelListForSession(agentType: AgentType, metadata: ComposerOptionsInputV1 | null | undefined): boolean {
+    return readDynamicSessionModelList(agentType, metadata) !== null;
+}
+
+function resolveSessionModelList(
+    agentType: AgentType,
+    metadata: ComposerOptionsInputV1 | null | undefined,
+    context?: SessionModelOptionsContext,
+): PreflightModelList | null {
+    const sessionList = readDynamicSessionModelList(agentType, metadata);
+    const preflight = supportsDynamicSessionModelList(agentType)
+        && isPreflightListCurrentForTarget(context ?? {})
+        && context?.preflight?.unavailable !== true ? context?.preflight : null;
+    const preflightUpdatedAt = context?.preflightUpdatedAt;
+    const sessionListIsNewer = sessionList && (
+        typeof preflightUpdatedAt !== 'number'
+        || !Number.isFinite(preflightUpdatedAt)
+        || sessionList.updatedAt > preflightUpdatedAt
+    );
+    if (preflight && !sessionListIsNewer) return preflight;
+    return sessionList ? {
+        availableModels: sessionList.availableModels.map((model) => ({
+            ...model,
+            modelOptions: normalizeAcpConfigOptionsArray(model.modelOptions) ?? undefined,
+        })),
+        supportsFreeform: getAgentCore(agentType)?.model?.supportsFreeform === true,
+    } : null;
+}
+
+export function supportsFreeformModelSelectionForSession(
+    agentType: AgentType,
+    metadata: ComposerOptionsInputV1 | null | undefined,
+    context?: SessionModelOptionsContext,
+): boolean {
+    const modelConfig = getAgentCore(agentType)?.model;
+    if (modelConfig?.supportsSelection === false) return false;
+    return resolveSessionModelList(agentType, metadata, context)?.supportsFreeform
+        ?? modelConfig?.supportsFreeform === true;
 }
 
 function getModelLabel(mode: ModelMode): string {
@@ -316,88 +303,49 @@ export function getModelOptionsForAgentTypeOrPreflight(params: {
         return getModelOptionsForAgentType(params.agentType);
     }
     if (params.preflight?.unavailable === true) {
-        return [];
+        // Discovery cannot authoritatively withdraw catalog models. Preserve trusted
+        // static/default choices while the caller presents the degraded probe state.
+        return getModelOptionsForAgentType(params.agentType);
     }
-    if (params.preflight && Array.isArray(params.preflight.availableModels) && params.preflight.availableModels.length > 0) {
+    if (params.preflight && Array.isArray(params.preflight.availableModels)) {
         const preflightOptions = getModelOptionsForPreflightModelList(params.preflight);
         const catalogOptions = getModelOptionsForAgentType(params.agentType);
         return mergeModelOptionsWithCatalog({
             options: preflightOptions,
             catalogOptions,
-            appendMissingCatalogOptions: params.preflight.supportsFreeform === true,
         });
     }
     return getModelOptionsForAgentType(params.agentType);
 }
 
-function resolveModelOptionsForSession(agentType: AgentType, metadata: Metadata | null | undefined): readonly ModelOption[] {
-    const modelConfig = getAgentCore(agentType)?.model ?? null;
-    const supportsFreeform = supportsFreeformModelSelectionForSession(agentType, metadata);
-    const selectedModelId = readSelectedModelOverrideId(agentType, metadata);
-    const state = supportsDynamicSessionModelList(agentType) ? readSessionModelListState(metadata) : null;
-    if (state && state.agentId === agentType && Array.isArray(state.availableModels) && state.availableModels.length > 0) {
-        const catalogOptions = getModelOptionsForAgentType(agentType);
-
-        const dynamic = state.availableModels
-            .filter((m) => m && typeof m.id === 'string' && typeof m.name === 'string')
-            .map((m) => {
-                const value = String(m.id);
-                const description = typeof m.description === 'string' ? m.description : '';
-                const modelOptionsRaw = Array.isArray(m.modelOptions) && m.modelOptions.length > 0
-                    ? (m.modelOptions as readonly AcpConfigOption[])
-                    : null;
-
-                return {
-                    value,
-                    label: String(m.name),
-                    description,
-                    ...(readExtendedContextModelId(m.extendedContextModelId)
-                        ? { extendedContextModelId: readExtendedContextModelId(m.extendedContextModelId) }
-                        : {}),
-                    ...(modelOptionsRaw ? { modelOptions: modelOptionsRaw } : {}),
-                };
-            });
-
-        const options = mergeModelOptionsWithCatalog({
-            options: [
-                { value: 'default', label: getModelLabel('default'), description: '' },
-                ...dynamic.filter((m) => m.value !== 'default'),
-            ],
-            catalogOptions,
-            appendMissingCatalogOptions: supportsFreeform,
-        });
-        return modelConfig ? appendSelectedFreeformModelOption({
-            options,
-            selectedModelId,
-            modelConfig,
-        }) : options;
-    }
-
-    const base = getModelOptionsForAgentType(agentType);
-    if (base.length === 0) return base;
-    return modelConfig ? appendSelectedFreeformModelOption({
-        options: base,
-        selectedModelId,
-        modelConfig,
-    }) : base;
+function resolveModelOptionsForSession(
+    agentType: AgentType,
+    metadata: ComposerOptionsInputV1 | null | undefined,
+    context?: SessionModelOptionsContext,
+): readonly ModelOption[] {
+    const list = resolveSessionModelList(agentType, metadata, context);
+    const options = getModelOptionsForAgentTypeOrPreflight({ agentType, preflight: list });
+    if (options.length === 0) return options;
+    const selectedModelId = context?.selectedModelId?.trim() || readSelectedModelOverrideId(agentType, metadata);
+    return appendRequestedModelOption(options, selectedModelId);
 }
 
-export function getSelectableModelIdsForSession(agentType: AgentType, metadata: Metadata | null | undefined): readonly string[] {
-    return resolveModelOptionsForSession(agentType, metadata).map((option) => option.value);
+export function getSelectableModelIdsForSession(agentType: AgentType, metadata: ComposerOptionsInputV1 | null | undefined, context?: SessionModelOptionsContext): readonly string[] {
+    return resolveModelOptionsForSession(agentType, metadata, context).map((option) => option.value);
 }
 
-export function isModelSelectableForSession(agentType: AgentType, metadata: Metadata | null | undefined, modelId: string): boolean {
+export function isModelSelectableForSession(agentType: AgentType, metadata: ComposerOptionsInputV1 | null | undefined, modelId: string, context?: SessionModelOptionsContext): boolean {
     const normalized = typeof modelId === 'string' ? modelId.trim() : '';
     if (!normalized) return false;
-
-    const options = resolveModelOptionsForSession(agentType, metadata);
+    const options = resolveModelOptionsForSession(agentType, metadata, context);
     if (findModelOptionForEffectiveModelId(options, normalized)) return true;
-    const modelConfig = isBundledAgentId(agentType) ? getAgentCore(agentType).model : null;
-    return modelConfig ? isFreeformModelIdAllowed(modelConfig, normalized) : false;
+    if (!supportsFreeformModelSelectionForSession(agentType, metadata, context)) return false;
+    const modelConfig = getAgentCore(agentType)?.model;
+    return modelConfig ? isFreeformModelIdAllowed(modelConfig, normalized) : true;
 }
 
-export function getModelOptionsForSession(agentType: AgentType, metadata: Metadata | null | undefined): readonly ModelOption[] {
-    return resolveModelOptionsForSession(agentType, metadata);
+export function getModelOptionsForSession(agentType: AgentType, metadata: ComposerOptionsInputV1 | null | undefined, context?: SessionModelOptionsContext): readonly ModelOption[] {
+    return resolveModelOptionsForSession(agentType, metadata, context);
 }
 
 /**

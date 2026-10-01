@@ -1,13 +1,17 @@
+import { renderWithSessionTranscriptSource as renderBoundScreen, createTestSessionTranscriptSource } from '@/dev/testkit';
 import * as React from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { PendingPermissionRequest } from '@/utils/sessions/sessionUtils';
-import { renderScreen, standardCleanup } from '@/dev/testkit';
+import { standardCleanup } from '@/dev/testkit';
 import { installPermissionShellCommonModuleMocks } from './permissionShellTestHelpers';
 
 const platformEnvironment = vi.hoisted(() => ({
     platform: 'web' as 'web' | 'android',
 }));
+function renderWithSessionTranscriptSource(element: React.ReactElement) {
+    return renderBoundScreen(element, createTestSessionTranscriptSource({ sessionId: 'session-1', navigate: () => {} }));
+}
 
 installPermissionShellCommonModuleMocks({
     reactNative: async () => {
@@ -67,7 +71,7 @@ describe('PermissionPromptCard interactive targets', () => {
                 tool: 'Edit',
                 arguments: { path: 'file.ts' },
             } as PendingPermissionRequest;
-            const screen = await renderScreen(
+            const screen = await renderWithSessionTranscriptSource(
                 <PermissionPromptCard
                     request={request}
                     location={{

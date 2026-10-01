@@ -1,14 +1,26 @@
-import type { Message } from '@/sync/domains/messages/messageTypes';
+import type { Message } from "@happier-dev/session-core/messages";
 import type { ActivitySequenceEventReferenceV1, AgentRequestKind } from '@happier-dev/protocol';
 import { normalizeSessionAddress, type SessionAddress } from '@/sync/domains/session/sessionAddress';
 
+type ActivitySessionUpdateNotification = Readonly<{
+    address: SessionAddress;
+    messages?: Message[];
+} & (
+    | { event: 'human_message'; committedSequence: ActivitySequenceEventReferenceV1; sourceAccountId: string }
+    | { event: 'message'; committedSequence: ActivitySequenceEventReferenceV1 }
+    | { event: 'failed' | 'cancelled'; turnId: string }
+    | { event: 'source_unavailable' }
+)>;
+
 export type ActivityLocalNotificationEvent =
+    | (ActivitySessionUpdateNotification & Readonly<{ kind: 'session-update' }>)
     | Readonly<{
         kind: 'ready';
         event: 'ready';
         address: SessionAddress;
         messages?: Message[];
         committedSequence?: ActivitySequenceEventReferenceV1;
+        committedLocalId?: string;
     }>
     | Readonly<{
         kind: 'agent-request';
@@ -25,6 +37,22 @@ type Listener = (event: ActivityLocalNotificationEvent) => void;
 
 const listeners = new Set<Listener>();
 
+function publish(event: ActivityLocalNotificationEvent): void {
+    for (const listener of Array.from(listeners)) {
+        try {
+            listener(event);
+        } catch {
+            // One consumer cannot prevent the other current consumers from receiving a fact.
+        }
+    }
+}
+
+export function notifyActivitySessionUpdate(params: ActivitySessionUpdateNotification): void {
+    const address = normalizeSessionAddress(params.address.serverId, params.address.sessionId);
+    if (!address) return;
+    publish({ ...params, address, kind: 'session-update' });
+}
+
 export function subscribeActivityLocalNotifications(listener: Listener): () => void {
     listeners.add(listener);
     return () => {
@@ -36,6 +64,7 @@ export function notifyActivityReady(
     addressInput: SessionAddress,
     messages?: Message[],
     committedSequence?: ActivitySequenceEventReferenceV1,
+    committedLocalId?: string,
 ): void {
     const address = normalizeSessionAddress(addressInput.serverId, addressInput.sessionId);
     if (!address) return;
@@ -46,15 +75,10 @@ export function notifyActivityReady(
         address,
         messages,
         ...(committedSequence ? { committedSequence } : {}),
+        ...(committedLocalId ? { committedLocalId } : {}),
     };
 
-    for (const listener of Array.from(listeners)) {
-        try {
-            listener(event);
-        } catch {
-            // ignore listener failures
-        }
-    }
+    publish(event);
 }
 
 export function notifyActivityAgentRequest(params: Readonly<{
@@ -83,13 +107,7 @@ export function notifyActivityAgentRequest(params: Readonly<{
         toolArgs: params.toolArgs,
     };
 
-    for (const listener of Array.from(listeners)) {
-        try {
-            listener(event);
-        } catch {
-            // ignore listener failures
-        }
-    }
+    publish(event);
 }
 
 export function resetActivityLocalNotificationRuntimeForTests(): void {

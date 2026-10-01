@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { TerminalHostAdapter, TerminalHostHandle } from '@happier-dev/agents';
+import axios, { AxiosHeaders } from 'axios';
+
+import { withConfiguredDaemonTestHome } from '@/daemon/testkit/fakeDaemonLifecycle.testkit';
+import { readTerminalHostAttachmentInfo, writeTerminalHostAttachmentInfo } from '@/terminal/attachment/terminalAttachmentInfo';
+import { createSessionRecordFixture } from '@/testkit/backends/sessionFixtures';
+import { retireExactTerminalControlServiceability } from './retireTerminalControlServiceability';
 
 import {
   resolveDisconnectedTerminalMode,
@@ -33,6 +39,11 @@ describe('disconnected terminal-host supervision', () => {
       hostKind: 'tmux',
       attachmentId: 'attachment-tmux',
     })).toBe('tmux');
+    expect(resolveDisconnectedTerminalMode({
+      terminal: undefined,
+      hostKind: 'herdr',
+      attachmentId: 'attachment-herdr',
+    })).toBe('herdr');
     expect(resolveDisconnectedTerminalMode({
       terminal: {
         mode: 'windows_terminal',
@@ -117,19 +128,51 @@ describe('disconnected terminal-host supervision', () => {
     expect(removeMarker).not.toHaveBeenCalled();
   });
 
-  it('keeps local retry identity when confirmed-dead remote retirement is superseded', async () => {
-    const removeAttachment = vi.fn(async (_input: unknown) => true);
-    const removeMarker = vi.fn(async (_pid: number) => undefined);
-    await expect(superviseDisconnectedTerminalHostCandidate({
-      candidate: { sessionId: 'session-live-1', pid: 42, happyHomeDir: '/tmp/happy', attachmentId: handle.attachmentId, handle },
-      terminalHostAdapters: { tmux: adapter({ paneAlive: false, paneDead: true, observedAt: 1 }) },
-      readTerminalAttachmentInfo: async () => attachment(),
-      removeTerminalAttachmentInfo: removeAttachment,
-      removeSessionMarker: removeMarker,
-      retireExactTerminalControlServiceability: async () => 'superseded',
-    })).resolves.toEqual({ state: 'unknown', reason: 'retirement_failed' });
-    expect(removeAttachment).not.toHaveBeenCalled();
-    expect(removeMarker).not.toHaveBeenCalled();
+  it('retires the positively dead old host without changing a newer remote projection', async () => {
+    await withConfiguredDaemonTestHome({ prefix: 'dead-host-superseded-' }, async ({ homeDir }) => {
+      const sessionId = 'session-live-1';
+      await writeTerminalHostAttachmentInfo({
+        happyHomeDir: homeDir, sessionId, attachmentId: handle.attachmentId, handle,
+        terminal: { mode: 'tmux', tmux: { target: 'happier-live-1:claude.1' } },
+      });
+      const metadata = JSON.stringify({ path: '/repo', terminal: {
+        mode: 'tmux', controlServiceabilityV1: {
+          v: 1, attachmentId: 'replacement-attachment', state: 'servable', observedAt: 20,
+        },
+      } });
+      const raw = createSessionRecordFixture({
+        id: sessionId, encryptionMode: 'plain', metadataLayoutVersion: 0, metadata,
+      });
+      const response = { status: 200, statusText: 'OK', headers: {}, config: { headers: new AxiosHeaders() } };
+      // Genuine HTTP boundaries; metadata decoding, projection and retirement remain real.
+      const get = vi.spyOn(axios, 'get').mockImplementation(async (url) => ({
+        ...response,
+        data: String(url).includes('/v2/sessions/') ? { session: raw } : {
+          mode: 'plain', version: 1, signingKeyFingerprint: null, contentKeyFingerprint: null, updatedAt: 1,
+        },
+      }));
+      const patch = vi.spyOn(axios, 'patch').mockRejectedValue(new Error('unexpected_projection_write'));
+      try {
+        const retire = () => retireExactTerminalControlServiceability({
+          credentials: { token: 'test-token', encryption: null },
+          sessionId, attachmentId: handle.attachmentId, terminalMode: 'tmux',
+        });
+        await expect(retire()).resolves.toBe('superseded');
+        const hostAdapter = adapter({ paneAlive: false, paneDead: true, observedAt: 1 });
+        await expect(superviseDisconnectedTerminalHostCandidate({
+          candidate: { sessionId, pid: 42, happyHomeDir: homeDir, attachmentId: handle.attachmentId, handle },
+          terminalHostAdapters: { tmux: hostAdapter },
+          retireExactTerminalControlServiceability: retire,
+        })).resolves.toEqual({ state: 'stopped' });
+        expect(await readTerminalHostAttachmentInfo({ happyHomeDir: homeDir, sessionId })).toBeNull();
+        expect(hostAdapter.dispose).not.toHaveBeenCalled();
+        expect(raw.metadata).toBe(metadata);
+        expect(patch).not.toHaveBeenCalled();
+      } finally {
+        get.mockRestore();
+        patch.mockRestore();
+      }
+    });
   });
 
   it('fails closed for attachment mismatch and inconclusive liveness', async () => {

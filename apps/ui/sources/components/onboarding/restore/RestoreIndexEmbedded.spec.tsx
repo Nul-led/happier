@@ -24,11 +24,6 @@ vi.mock('@/utils/platform/qrScannerSupport', () => ({
     canUseCurrentDeviceQrScanner: () => true,
 }));
 
-const processAuthUrl = vi.fn(async () => true);
-vi.mock('@/hooks/auth/useScannedAuthUrlProcessor', () => ({
-    useScannedAuthUrlProcessor: () => ({ processAuthUrl, isLoading: false }),
-}));
-
 let lastScanProps: any = null;
 vi.mock('@/components/account/restore/RestoreScanComputerQrView', () => ({
     RestoreScanComputerQrView: (props: any) => {
@@ -77,6 +72,13 @@ describe('RestoreIndexEmbedded', () => {
             expect(lastQrProps?.entryIntent).toBe('enter_home');
             expect(lastQrProps?.onBack).toBe(onBack);
             expect(lastQrProps?.onOpenSecretKeyLogin).toBe(onOpenSecretKeyLogin);
+            expect(lastQrProps?.onOpenPairingLinkEntry).toBeInstanceOf(Function);
+
+            await act(async () => {
+                lastQrProps.onOpenPairingLinkEntry();
+            });
+
+            expect(tree.root.findByProps({ testID: 'restore-pairing-link-input' })).toBeTruthy();
         } finally {
             act(() => {
                 tree?.unmount();
@@ -107,10 +109,9 @@ describe('RestoreIndexEmbedded', () => {
         }
     });
 
-    it('opens full-screen paste entry and sends the link through the canonical processor', async () => {
+    it('hands a pasted link to the embedded scanner instead of routing away', async () => {
         vi.resetModules();
         lastScanProps = null;
-        processAuthUrl.mockClear();
         const { RestoreIndexEmbedded } = await import('./RestoreIndexEmbedded');
 
         let tree!: renderer.ReactTestRenderer;
@@ -130,7 +131,10 @@ describe('RestoreIndexEmbedded', () => {
                 await tree.root.findByProps({ testID: 'restore-pairing-link-submit' }).props.action();
             });
 
-            expect(processAuthUrl).toHaveBeenCalledWith('happier:///pair?v=2&payload=opaque');
+            // The scanner is the one owner that classifies and enrolls scanned
+            // and pasted links; the paste form only hands the link over.
+            expect(tree.root.findAllByProps({ testID: 'restore-pairing-link-input' })).toHaveLength(0);
+            expect(lastScanProps.initialPairingLink).toBe('happier:///pair?v=2&payload=opaque');
         } finally {
             act(() => {
                 tree?.unmount();

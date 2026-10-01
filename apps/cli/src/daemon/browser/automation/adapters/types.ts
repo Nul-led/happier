@@ -5,6 +5,7 @@ import type {
   BrowserAutomationErrorCodeV1,
   BrowserAutomationFidelityV1,
   BrowserSemanticAdapterKindV1,
+  BrowserActiveTargetV1,
 } from '@happier-dev/protocol';
 
 /**
@@ -21,6 +22,15 @@ export type BrowserAutomationAdapterExecuteResult = Readonly<{
   errorCode?: BrowserAutomationErrorCodeV1;
   resultSummary?: Readonly<Record<string, unknown>>;
   diagnostics?: Readonly<Record<string, unknown>>;
+  /** Acknowledged input drain/cleanup, not a promise to undo already-dispatched effects. */
+  interruptionCompletion?: 'stopped' | 'uncertain';
+}>;
+
+export type BrowserAutomationAdapterExecutionContext = Readonly<{
+  signal?: AbortSignal;
+  /** Absolute deadline of the containing action, shared by every CDP phase. */
+  deadlineMs?: number;
+  onActiveTarget?: (target: BrowserActiveTargetV1) => void;
 }>;
 
 export type BrowserAutomationAdapter = Readonly<{
@@ -35,5 +45,7 @@ export type BrowserAutomationAdapter = Readonly<{
    * adapters).
    */
   supportedOperations?: ReadonlySet<BrowserAutomationActionKindV1>;
-  execute(request: BrowserAutomationActionRequestV1): Promise<BrowserAutomationAdapterExecuteResult>;
+  /** Read the engine-owned generation; automation never increments it from action success. */
+  getNavigationGeneration?(view: Readonly<{ browserSessionId: string; viewId: string }>): number | null;
+  execute(request: BrowserAutomationActionRequestV1, context?: BrowserAutomationAdapterExecutionContext): Promise<BrowserAutomationAdapterExecuteResult>;
 }>;

@@ -22,6 +22,7 @@ import type {
 import {
   createQualifiedConnectedAccountEstablishedRuntimeOwner,
 } from './qualifiedConnectedAccountEstablishedRuntimeOwner';
+import { createQualifiedConnectedAccountDaemonPersistence } from './qualifiedConnectedAccountDaemonPersistence';
 
 const service = Object.freeze({
   pluginId: 'happier.agent.codex',
@@ -190,32 +191,57 @@ describe('createQualifiedConnectedAccountEstablishedRuntimeOwner', () => {
     expect(release).toHaveBeenCalledOnce();
   });
 
-  it('returns a fully resolved direct-material snapshot fenced by source and contribution revisions', async () => {
+  it.each(['account', 'service'] as const)('returns a fully resolved %s configuration snapshot fenced by source and contribution revisions', async (scope) => {
     let credentialRevision = requestAuthCredentialRevision;
     let contributionCurrent = true;
     let configurationSecret = 'resolved-configuration-secret';
+    let configurationFingerprint = 'saved-secret-record:v1:original';
+    let configurationAvailable = true;
+    let serviceConfigurationRevision = 0;
+    const directDescriptor = PluginConnectedAccountDescriptorContributionV2Schema.parse({
+      id: service.localId,
+      title: 'Acme',
+      authentication: {
+        defaultModeId: 'manual-token',
+        modes: [{
+          id: 'manual-token',
+          kind: 'manual',
+          outcomeReconciliation: 'none',
+          fields: [{ id: 'token', title: 'Token', schema: { type: 'string' }, secret: true }],
+          configuration: {
+            scope,
+            changeBehavior: 'reconnect',
+            fields: [
+              { id: 'endpoint', title: 'Endpoint', schema: { type: 'string' }, required: true },
+              { id: 'region', title: 'Region', schema: { type: 'string' }, default: 'us' },
+              { id: 'clientSecret', title: 'Client secret', schema: { type: 'string' }, secret: true },
+            ],
+          },
+        }],
+      },
+    });
     const credentialSnapshot = () => QualifiedConnectedAccountCredentialSnapshotV4Schema.parse({
       ref: account,
-      authenticationModeId: 'oauth',
+      authenticationModeId: 'manual-token',
       revisionSemantics: 'revisioned' as const,
       credentialRevision,
-      configurationRevision: 'configuration-1',
+      configurationRevision: scope === 'account' ? 'configuration-1' : null,
       content: plainEnvelope('credential', {
         v: 1,
-        values: { accessToken: 'access-1' },
+        values: { token: 'manual-token-1' },
       }),
       metadata: { scopes: [] },
     });
     const configurationSnapshot = (): QualifiedConnectedAccountConfigurationSnapshotV4 => ({
       target: { kind: 'account', ref: account },
-      authenticationModeId: 'oauth',
+      authenticationModeId: 'manual-token',
       revisionSemantics: 'revisioned',
       credentialRevision,
       configurationRevision: 'configuration-1',
       configurationContent: plainEnvelope('configuration', {
         values: { endpoint: 'https://api.example.test' },
-        secretRefs: { clientSecret: 'configuration-secret' },
-        secretValues: {},
+        secretRefs: {},
+        secretValues: { clientSecret: configurationSecret },
       }),
     });
     const acquireRuntimeRegistry = vi.fn(async () => ({
@@ -223,7 +249,7 @@ describe('createQualifiedConnectedAccountEstablishedRuntimeOwner', () => {
         connectedAccountContributions: {
           describe: vi.fn(() => Object.freeze({
             ref: service,
-            descriptor,
+            descriptor: directDescriptor,
             occurrenceId: 'plugin-contract-1',
             sourceCustody: {
               kind: 'managed',
@@ -237,6 +263,39 @@ describe('createQualifiedConnectedAccountEstablishedRuntimeOwner', () => {
       source: 'active' as const,
       release: vi.fn(async () => undefined),
     }));
+    let settings: Readonly<Record<string, unknown>> = {};
+    const secrets = {
+      admit: vi.fn(async () => undefined),
+      has: vi.fn(async () => true),
+      read: vi.fn(async () => configurationSecret),
+      readMaterial: vi.fn(async () => configurationAvailable
+        ? { value: configurationSecret, fingerprint: configurationFingerprint }
+        : null),
+    };
+    const persistence = createQualifiedConnectedAccountDaemonPersistence({
+      credentials: { token: 'token-1', encryption: null },
+      getAccountEncryptionMode: async () => 'plain',
+      readCredential: async () => credentialSnapshot(),
+      readConfiguration: async () => configurationSnapshot(),
+      mutateCredential: vi.fn(),
+      mutateConfiguration: vi.fn(),
+      readAccountSettings: () => settings,
+      updateAccountSettings: async (mutate) => (settings = mutate(settings)),
+      createConfigurationRevision: () => `service-configuration-${++serviceConfigurationRevision}`,
+      createSecretId: () => 'configuration-secret',
+      secrets,
+    });
+    if (scope === 'service') {
+      await expect(persistence.configuration.replaceForControl!({
+        target: { kind: 'service', service, modeId: 'manual-token' },
+        expectedRevision: null,
+        values: { endpoint: 'https://api.example.test' },
+        currentSecretRefs: {},
+        secretValues: { clientSecret: configurationSecret },
+        occurrenceId: 'plugin-contract-1',
+        sourceCustody: { kind: 'managed', immutableGenerationId: 'plugin-contract-1', installSource: 'npm' },
+      })).resolves.toMatchObject({ status: 'committed' });
+    }
     const owner = createQualifiedConnectedAccountEstablishedRuntimeOwner({
       reloadController: {
         acquireRuntimeRegistry,
@@ -250,30 +309,56 @@ describe('createQualifiedConnectedAccountEstablishedRuntimeOwner', () => {
       readCredential: vi.fn(async () => credentialSnapshot()),
       readConfiguration: vi.fn(async () => configurationSnapshot()),
       configuration: {
-        read: vi.fn(async () => null),
-        secrets: {
-          admit: vi.fn(async () => undefined),
-          has: vi.fn(async () => true),
-          read: vi.fn(async () => configurationSecret),
-        },
+        read: persistence.configuration.read,
+        secrets,
       },
     });
 
     const snapshot = await owner.readMaterialSnapshot({ account });
     expect(snapshot).toMatchObject({
-      authenticationModeId: 'oauth',
+      authenticationModeId: 'manual-token',
       credentialRevision: requestAuthCredentialRevision,
-      configurationRevision: 'configuration-1',
+      configurationRevision: scope === 'account' ? 'configuration-1' : null,
       contributionContractVersion: 'plugin-contract-1',
       configuration: {
-        values: { endpoint: 'https://api.example.test' },
+        values: { endpoint: 'https://api.example.test', region: 'us' },
         secretValues: { clientSecret: 'resolved-configuration-secret' },
       },
     });
     await expect(snapshot.isCurrent()).resolves.toBe(true);
     configurationSecret = 'rotated-configuration-secret';
+    configurationFingerprint = 'saved-secret-record:v1:rotated';
     await expect(snapshot.isCurrent()).resolves.toBe(false);
+    if (scope === 'service') {
+      const rotated = await owner.readMaterialSnapshot({ account });
+      expect(rotated.serviceConfigurationFingerprint).not.toBe(snapshot.serviceConfigurationFingerprint);
+      expect(rotated.configuration?.secretValues.clientSecret).toBe('rotated-configuration-secret');
+      await expect(rotated.isCurrent()).resolves.toBe(true);
+      const savedConfiguration = await persistence.configuration.read({ kind: 'service', service, modeId: 'manual-token' });
+      await expect(persistence.configuration.replaceForControl!({
+        target: { kind: 'service', service, modeId: 'manual-token' },
+        expectedRevision: savedConfiguration!.revision,
+        values: { endpoint: 'https://updated.example.test' },
+        currentSecretRefs: savedConfiguration!.secretRefs,
+        secretValues: {},
+        occurrenceId: 'plugin-contract-1',
+        sourceCustody: { kind: 'managed', immutableGenerationId: 'plugin-contract-1', installSource: 'npm' },
+      })).resolves.toMatchObject({ status: 'committed' });
+      await expect(rotated.isCurrent()).resolves.toBe(false);
+      const reconfigured = await owner.readMaterialSnapshot({ account });
+      expect(reconfigured.serviceConfigurationFingerprint).not.toBe(rotated.serviceConfigurationFingerprint);
+      expect(reconfigured.configuration?.values.endpoint).toBe('https://updated.example.test');
+      const configuredSettings = settings;
+      settings = {};
+      await expect(owner.readMaterialSnapshot({ account })).rejects.toThrow();
+      settings = configuredSettings;
+      configurationAvailable = false;
+      await expect(reconfigured.isCurrent()).resolves.toBe(false);
+      await expect(owner.readMaterialSnapshot({ account })).rejects.toThrow();
+      configurationAvailable = true;
+    }
     configurationSecret = 'resolved-configuration-secret';
+    configurationFingerprint = 'saved-secret-record:v1:original';
     credentialRevision = 'csr_1123456789ABCDEFGHJKMNPQRS';
     await expect(snapshot.isCurrent()).resolves.toBe(false);
     credentialRevision = requestAuthCredentialRevision;

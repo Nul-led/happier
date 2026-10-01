@@ -3,6 +3,7 @@ import { buildBackendTargetKey } from '@happier-dev/protocol';
 import { installVoiceToolActionImplCommonModuleMocks } from './voiceToolActionImplTestHelpers';
 import { resolveBackendTargetKeyV2 } from '@/agents/backendCatalog/backendTargetKeyV2';
 
+import { clearDaemonMergedProjectionCacheForTests } from '@/agents/backendCatalog/loadDaemonMergedProjectionInputs';
 vi.mock('@/text', async () => {
   const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
   return createTextModuleMock({
@@ -53,6 +54,11 @@ vi.mock('@/sync/ops/machineContributionRegistryProjection', () => ({
     machinePluginSecretStatus: vi.fn(async () => ({ supported: false, reason: 'not-supported' })),
     machinePluginSecretSet: vi.fn(async () => ({ supported: false, reason: 'not-supported' })),
     machinePluginSecretDelete: vi.fn(async () => ({ supported: false, reason: 'not-supported' })),
+    machinePluginSettingsGet: vi.fn(async () => ({ supported: false, reason: 'not-supported' })),
+    machinePluginSettingsSet: vi.fn(async () => ({ supported: false, reason: 'not-supported' })),
+    getMachineContributionRegistryProjectionRevision: () => 0,
+    subscribeMachineContributionRegistryProjectionInvalidation: () => () => {},
+    resetMachineProjectionReadsForTests: () => {},
 }));
 
 vi.mock('@/sync/domains/server/serverRuntime', () => ({
@@ -61,9 +67,11 @@ vi.mock('@/sync/domains/server/serverRuntime', () => ({
 
 describe('review engine voice tool', () => {
   beforeEach(() => {
+    clearDaemonMergedProjectionCacheForTests();
     state.settings.backendEnabledByTargetKey = {
       [buildBackendTargetKey({ kind: 'builtInAgent', agentId: 'gemini' })]: false,
     };
+    state.settings.acpCatalogSettingsV1 = { v: 2, backends: [] };
     state.sessions = {
       s1: {
         id: 's1',
@@ -105,6 +113,52 @@ describe('review engine voice tool', () => {
 
     expect(res.items.map((item: any) => item.engineId)).toEqual(expect.arrayContaining(['codex', 'coderabbit']));
     expect(res.items.map((item: any) => item.engineId)).not.toContain('gemini');
+  });
+
+  it('omits engines without exact-path support for a path-scoped review', async () => {
+    getMachineCapabilitiesSnapshot.mockReturnValue({
+      response: {
+        results: {
+          'tool.executionRuns': {
+            ok: true,
+            data: {
+              backends: {
+                codex: { available: true, intents: ['review'], reviewScopes: ['worktree', 'paths'] },
+                coderabbit: { available: true, intents: ['review'], reviewScopes: ['worktree'] },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    const { listReviewEnginesForVoiceTool } = await import('./reviewEnginesList');
+    const res = await listReviewEnginesForVoiceTool({ sessionId: 's1', scope: 'paths' }) as {
+      items: readonly { engineId: string }[];
+    };
+
+    expect(res.items.map((item) => item.engineId)).toContain('codex');
+    expect(res.items.map((item) => item.engineId)).not.toContain('coderabbit');
+  });
+
+  it('offers a configured ACP review engine by its exact target key', async () => {
+    const targetKey = 'backend:review-bot:configured:review-bot';
+    state.settings.acpCatalogSettingsV1 = { v: 2, backends: [{
+      id: 'review-bot', name: 'review-bot', title: 'Review Bot', command: 'review-bot',
+      createdAt: 1, updatedAt: 1,
+    }] };
+    getMachineCapabilitiesSnapshot.mockReturnValue({ response: { results: {
+      'tool.executionRuns': { ok: true, data: { backends: {
+        [targetKey]: { available: true, intents: ['review'], title: 'Review Bot' },
+      } } },
+    } } });
+
+    const { listReviewEnginesForVoiceTool } = await import('./reviewEnginesList');
+    const result = await listReviewEnginesForVoiceTool({ sessionId: 's1' }) as {
+      items: readonly { engineId: string; label: string; enabled: boolean }[];
+    };
+
+    expect(result.items).toContainEqual({ engineId: targetKey, label: 'Review Bot', enabled: true });
   });
 
   it('uses the resolved backend catalog title for built-in review engine labels', async () => {

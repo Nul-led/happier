@@ -13,18 +13,53 @@ const base: PersonalHomeBootstrapSnapshot = {
     phase: 'checking',
     daemonState: 'not-started',
     action: 'none',
+    progressMilestones: {
+        runtimeHealthy: false,
+        identityVerified: false,
+        authenticated: false,
+        signupClosed: false,
+    },
 };
 
 describe('derivePersonalHomeSetupProgress', () => {
     it('advances only on facts the snapshot proves, in quantised milestone steps', () => {
         const total = PERSONAL_HOME_SETUP_MILESTONES.length;
         const checking = derivePersonalHomeSetupProgress(base);
-        const ensuringHome = derivePersonalHomeSetupProgress({ ...base, phase: 'ensuring-home' });
+        const runtimeHealthy = derivePersonalHomeSetupProgress({
+            ...base,
+            phase: 'ensuring-home',
+            progressMilestones: { ...base.progressMilestones!, runtimeHealthy: true },
+        });
+        const identityVerified = derivePersonalHomeSetupProgress({
+            ...base,
+            phase: 'ensuring-home',
+            progressMilestones: {
+                ...base.progressMilestones!,
+                runtimeHealthy: true,
+                identityVerified: true,
+            },
+        });
+        const authenticated = derivePersonalHomeSetupProgress({
+            ...base,
+            phase: 'ensuring-home',
+            progressMilestones: {
+                ...base.progressMilestones!,
+                runtimeHealthy: true,
+                identityVerified: true,
+                authenticated: true,
+            },
+        });
         const preparingComputer = derivePersonalHomeSetupProgress({
             ...base,
             phase: 'preparing-computer',
             homeReady: true,
             shouldGateShell: false,
+            progressMilestones: {
+                runtimeHealthy: true,
+                identityVerified: true,
+                authenticated: true,
+                signupClosed: true,
+            },
         });
         const ready = derivePersonalHomeSetupProgress({
             ...base,
@@ -33,14 +68,22 @@ describe('derivePersonalHomeSetupProgress', () => {
             daemonReady: true,
             daemonState: 'ready',
             shouldGateShell: false,
+            progressMilestones: {
+                runtimeHealthy: true,
+                identityVerified: true,
+                authenticated: true,
+                signupClosed: true,
+            },
         });
 
         expect(checking.completedMilestones).toBe(0);
-        expect(ensuringHome.completedMilestones).toBe(1);
-        expect(preparingComputer.completedMilestones).toBe(2);
+        expect(runtimeHealthy.completedMilestones).toBe(1);
+        expect(identityVerified.completedMilestones).toBe(2);
+        expect(authenticated.completedMilestones).toBe(3);
+        expect(preparingComputer.completedMilestones).toBe(4);
         expect(ready.completedMilestones).toBe(total);
 
-        for (const progress of [checking, ensuringHome, preparingComputer, ready]) {
+        for (const progress of [checking, runtimeHealthy, identityVerified, authenticated, preparingComputer, ready]) {
             expect(progress.totalMilestones).toBe(total);
             // Every fraction is exactly a completed-milestone quotient: no interpolation, no fill.
             expect(progress.fraction).toBe(progress.completedMilestones / total);
@@ -56,10 +99,16 @@ describe('derivePersonalHomeSetupProgress', () => {
             homeReady: false,
             daemonReady: true,
             daemonState: 'ready',
+            progressMilestones: {
+                runtimeHealthy: true,
+                identityVerified: false,
+                authenticated: true,
+                signupClosed: true,
+            },
         });
 
         expect(progress.completedMilestones).toBe(1);
-        expect(progress.fraction).toBe(1 / 3);
+        expect(progress.fraction).toBe(1 / 5);
     });
 
     it('keeps the proven facts visible when setup is blocked and stops the working treatment', () => {
@@ -70,7 +119,7 @@ describe('derivePersonalHomeSetupProgress', () => {
             detail: { message: 'Needs attention', retryable: true },
         });
 
-        expect(blocked.completedMilestones).toBe(1);
+        expect(blocked.completedMilestones).toBe(0);
         expect(blocked.working).toBe(false);
     });
 

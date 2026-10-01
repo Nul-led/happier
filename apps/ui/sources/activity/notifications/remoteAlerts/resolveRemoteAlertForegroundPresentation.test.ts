@@ -58,7 +58,7 @@ describe('resolveRemoteAlertForegroundPresentation', () => {
         const presentation = resolveRemoteAlertForegroundPresentation({ data: ALERT, isSessionVisible: () => false });
         expect(presentation).toMatchObject({ kind: 'present', target: { address: { serverId: acmeId, sessionId: 'session-1' }, event: 'ready' } });
         if (presentation.kind !== 'present') return;
-        noteActivityAlertPresented({
+        noteActivityAlertPresented({ accountId: 'account-1',
             address: presentation.target.address,
             event: presentation.target.event,
             identity: presentation.target.eventIdentity!,
@@ -66,23 +66,23 @@ describe('resolveRemoteAlertForegroundPresentation', () => {
         });
         // The other leg sees exactly this event as already presented.
         const otherLeg = { identity: presentation.target.eventIdentity!, source: 'local_notification' } as const;
-        expect(consumeOtherLegActivityAlertPresentation({ address: presentation.target.address, event: 'permission_required', ...otherLeg })).toBe(false);
-        expect(consumeOtherLegActivityAlertPresentation({ address: { serverId: 'other-home', sessionId: 'session-1' }, event: 'ready', ...otherLeg })).toBe(false);
-        expect(consumeOtherLegActivityAlertPresentation({ address: presentation.target.address, event: 'ready', ...otherLeg })).toBe(true);
+        expect(consumeOtherLegActivityAlertPresentation({ accountId: 'account-1', address: presentation.target.address, event: 'permission_required', ...otherLeg })).toBe(false);
+        expect(consumeOtherLegActivityAlertPresentation({ accountId: 'account-1', address: { serverId: 'other-home', sessionId: 'session-1' }, event: 'ready', ...otherLeg })).toBe(false);
+        expect(consumeOtherLegActivityAlertPresentation({ accountId: 'account-1', address: presentation.target.address, event: 'ready', ...otherLeg })).toBe(true);
         // One note suppresses at most one alert, so a repeated event still shows.
-        expect(consumeOtherLegActivityAlertPresentation({ address: presentation.target.address, event: 'ready', ...otherLeg })).toBe(false);
+        expect(consumeOtherLegActivityAlertPresentation({ accountId: 'account-1', address: presentation.target.address, event: 'ready', ...otherLeg })).toBe(false);
     });
 
     it('never lets a leg suppress its own repeated alert', () => {
         const address = { serverId: acmeId, sessionId: 'session-1' };
-        noteActivityAlertPresented({ address, event: 'ready', identity: 'message-seq:session_transcript:7', source: 'local_notification' });
-        expect(consumeOtherLegActivityAlertPresentation({
+        noteActivityAlertPresented({ accountId: 'account-1', address, event: 'ready', identity: 'message-seq:session_transcript:7', source: 'local_notification' });
+        expect(consumeOtherLegActivityAlertPresentation({ accountId: 'account-1',
             address,
             event: 'ready',
             identity: 'message-seq:session_transcript:7',
             source: 'local_notification',
         })).toBe(false);
-        expect(consumeOtherLegActivityAlertPresentation({
+        expect(consumeOtherLegActivityAlertPresentation({ accountId: 'account-1',
             address,
             event: 'ready',
             identity: 'message-seq:session_transcript:7',
@@ -95,14 +95,14 @@ describe('resolveRemoteAlertForegroundPresentation', () => {
 
         // Exercise the runtime boundary defensively: malformed JS callers must
         // not collapse identityless observations into an `undefined` key.
-        noteActivityAlertPresented({
+        noteActivityAlertPresented({ accountId: 'account-1',
             address,
             event: 'permission_required',
             identity: undefined as unknown as string,
             source: 'home_remote_alert',
         });
 
-        expect(consumeOtherLegActivityAlertPresentation({
+        expect(consumeOtherLegActivityAlertPresentation({ accountId: 'account-1',
             address,
             event: 'permission_required',
             identity: 'undefined',
@@ -110,22 +110,26 @@ describe('resolveRemoteAlertForegroundPresentation', () => {
         })).toBe(false);
     });
 
-    it('suppresses the alert this device already showed through its local notification leg', () => {
-        noteActivityAlertPresented({
+    it('leaves the presentation note untouched until the admitted foreground owner consumes it', () => {
+        noteActivityAlertPresented({ accountId: 'account-1',
             address: { serverId: acmeId, sessionId: 'session-1' },
             event: 'ready',
             identity: 'message-seq:session_transcript:7',
             source: 'local_notification',
         });
         expect(resolveRemoteAlertForegroundPresentation({ data: ALERT, isSessionVisible: () => false }))
-            .toEqual({ kind: 'suppress', reason: 'already_presented' });
+            .toMatchObject({ kind: 'present' });
+        expect(consumeOtherLegActivityAlertPresentation({
+            accountId: 'account-1', address: { serverId: acmeId, sessionId: 'session-1' },
+            event: 'ready', identity: 'message-seq:session_transcript:7', source: 'home_remote_alert',
+        })).toBe(true);
         // The consumed note cannot suppress the next Home alert for that Session.
         expect(resolveRemoteAlertForegroundPresentation({ data: ALERT, isSessionVisible: () => false }))
             .toMatchObject({ kind: 'present' });
     });
 
     it('does not suppress a different committed ready message that shares the Session', () => {
-        noteActivityAlertPresented({
+        noteActivityAlertPresented({ accountId: 'account-1',
             address: { serverId: acmeId, sessionId: 'session-1' },
             event: 'ready',
             identity: 'message-seq:session_transcript:7',
@@ -144,26 +148,29 @@ describe('resolveRemoteAlertForegroundPresentation', () => {
         };
 
         // Local leg first: the Home alert for the same committed request is suppressed.
-        noteActivityAlertPresented({
+        noteActivityAlertPresented({ accountId: 'account-1',
             address,
             event: 'permission_required',
             identity: 'request:req-1',
             source: 'local_notification',
         });
         expect(resolveRemoteAlertForegroundPresentation({ data: requestAlert, isSessionVisible: () => false }))
-            .toEqual({ kind: 'suppress', reason: 'already_presented' });
+            .toMatchObject({ kind: 'present' });
+        expect(consumeOtherLegActivityAlertPresentation({
+            accountId: 'account-1', address, event: 'permission_required', identity: 'request:req-1', source: 'home_remote_alert',
+        })).toBe(true);
 
         // Home leg first: the local leg sees the same identity and stands down.
         const presentation = resolveRemoteAlertForegroundPresentation({ data: requestAlert, isSessionVisible: () => false });
         expect(presentation).toMatchObject({ kind: 'present', target: { eventIdentity: 'request:req-1' } });
         if (presentation.kind !== 'present') return;
-        noteActivityAlertPresented({
+        noteActivityAlertPresented({ accountId: 'account-1',
             address: presentation.target.address,
             event: presentation.target.event,
             identity: presentation.target.eventIdentity!,
             source: 'home_remote_alert',
         });
-        expect(consumeOtherLegActivityAlertPresentation({
+        expect(consumeOtherLegActivityAlertPresentation({ accountId: 'account-1',
             address,
             event: 'permission_required',
             identity: 'request:req-1',
@@ -178,7 +185,7 @@ describe('resolveRemoteAlertForegroundPresentation', () => {
     });
 
     it('keeps a released V1 sequence distinct from the current transcript identity', () => {
-        noteActivityAlertPresented({
+        noteActivityAlertPresented({ accountId: 'account-1',
             address: { serverId: acmeId, sessionId: 'session-1' },
             event: 'ready',
             identity: 'message-seq:session_transcript:7',
@@ -215,27 +222,29 @@ describe('resolveRemoteAlertForegroundPresentation', () => {
     it('retains an exact committed-event note until the other leg consumes it', () => {
         vi.useFakeTimers();
         vi.setSystemTime(1_000_000);
-        noteActivityAlertPresented({
+        noteActivityAlertPresented({ accountId: 'account-1',
             address: { serverId: acmeId, sessionId: 'session-1' },
             event: 'ready',
             identity: 'message-seq:session_transcript:7',
             source: 'local_notification',
         });
         vi.advanceTimersByTime(600_000);
-        expect(resolveRemoteAlertForegroundPresentation({ data: ALERT, isSessionVisible: () => false }))
-            .toEqual({ kind: 'suppress', reason: 'already_presented' });
+        expect(consumeOtherLegActivityAlertPresentation({
+            accountId: 'account-1', address: { serverId: acmeId, sessionId: 'session-1' },
+            event: 'ready', identity: 'message-seq:session_transcript:7', source: 'home_remote_alert',
+        })).toBe(true);
     });
 
     it('does not discard an exact committed-event note because unrelated events were presented', () => {
         const address = { serverId: acmeId, sessionId: 'session-1' };
-        noteActivityAlertPresented({
+        noteActivityAlertPresented({ accountId: 'account-1',
             address,
             event: 'ready',
             identity: 'message-seq:session_transcript:7',
             source: 'local_notification',
         });
         for (let seq = 8; seq < 80; seq += 1) {
-            noteActivityAlertPresented({
+            noteActivityAlertPresented({ accountId: 'account-1',
                 address,
                 event: 'ready',
                 identity: `message-seq:session_transcript:${seq}`,
@@ -243,7 +252,8 @@ describe('resolveRemoteAlertForegroundPresentation', () => {
             });
         }
 
-        expect(resolveRemoteAlertForegroundPresentation({ data: ALERT, isSessionVisible: () => false }))
-            .toEqual({ kind: 'suppress', reason: 'already_presented' });
+        expect(consumeOtherLegActivityAlertPresentation({
+            accountId: 'account-1', address, event: 'ready', identity: 'message-seq:session_transcript:7', source: 'home_remote_alert',
+        })).toBe(true);
     });
 });

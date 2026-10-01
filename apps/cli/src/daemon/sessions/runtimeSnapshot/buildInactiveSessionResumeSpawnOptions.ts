@@ -6,6 +6,7 @@ import {
   SessionCreationCorrespondenceV1Schema,
   agentRoutingIdAddressesContributionIdentityV1,
   readRuntimeDescriptorV1FromMetadata,
+  readSessionDirectoryKind,
   resolveLinkedExternalSessionMetadataV1,
 } from '@happier-dev/protocol';
 
@@ -158,6 +159,7 @@ export function buildInactiveSessionResumeSpawnOptions(
     candidatePath: persistedDirectory,
   });
   if (!directory) return null;
+  const directoryKind = readSessionDirectoryKind(params.metadata);
 
   let resolved: SpawnSessionOptions;
   try {
@@ -166,6 +168,7 @@ export function buildInactiveSessionResumeSpawnOptions(
         existingSessionId: params.sessionId,
         machineId,
         directory,
+        directoryKind,
         ...(correspondence
           ? {
               sessionCreationTag: correspondence.sessionCreationTag,
@@ -180,7 +183,7 @@ export function buildInactiveSessionResumeSpawnOptions(
           : {}),
         ...(runtimeIdentity.agentTarget ? { agentTarget: runtimeIdentity.agentTarget } : {}),
         ...(runtimeIdentity.backendTarget ? { backendTarget: runtimeIdentity.backendTarget } : {}),
-        approvedNewDirectoryCreation: true,
+        approvedNewDirectoryCreation: directoryKind !== 'managed',
         ...(runtimeIdentity.runtimeDescriptorV1 ? { runtimeDescriptorV1: runtimeIdentity.runtimeDescriptorV1 } : {}),
       },
       persistedMetadata: params.metadata,

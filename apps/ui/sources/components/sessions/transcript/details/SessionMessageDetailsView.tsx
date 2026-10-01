@@ -12,7 +12,7 @@ import { Text } from '@/components/ui/text/Text';
 import { useSessionExternalSessionRuntime } from '@/components/sessions/model/useSessionExternalSessionRuntime';
 import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
 import { useSessionRunningExecutionRuns } from '@/hooks/session/useSessionRunningExecutionRuns';
-import type { Message } from '@/sync/domains/messages/messageTypes';
+import type { Message } from "@happier-dev/session-core/messages";
 import {
     deriveAutoRecipientFromFocusedToolTranscript,
     deriveSessionParticipantTargets,
@@ -24,7 +24,7 @@ import { shouldEnableExecutionRunPolling } from '@/sync/domains/session/particip
 import type { Session } from '@/sync/domains/state/storageTypes';
 import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
 import { useSessionMessages, useSessionPendingMessages } from '@/sync/store/hooks';
-import { buildSessionTranscriptAgentAttributionIndex } from '@/components/sessions/transcript/attribution/sessionTranscriptAgentAttribution';
+import { buildSessionTranscriptAgentAttributionIndex } from "@happier-dev/session-core/messages";
 import {
     SessionTranscriptAgentAttributionProvider,
     TranscriptRowSeqProvider,
@@ -36,6 +36,8 @@ import { ToolFullView } from '@/components/tools/shell/views/ToolFullView';
 import { useSessionRecipientState } from '@/components/sessions/agentInput/routing/useSessionRecipientState';
 import { participantRecipientsMatch } from '@/sync/domains/input/participants/resolveParticipantRoutedSend';
 import type { BrowserContextState } from '@/sync/domains/browser/context';
+import { AppSessionTranscriptSourceProvider } from '@/components/sessions/transcript/source/appSessionTranscriptSource';
+import { useSessionTranscriptSource } from '@/components/sessions/transcript/source/SessionTranscriptSourceContext';
 
 type SessionMessageDetailsTheme = Readonly<{
     colors: Readonly<{
@@ -179,13 +181,7 @@ function ToolCallDetailsView(props: Readonly<{
     });
     const canControlExecutionRuns = externalSessionRuntime.externalSessionLink === null || externalSessionRuntime.status?.runnerActive === true;
 
-    const interaction = React.useMemo(() => {
-        return deriveTranscriptInteractionFromSession({
-            access: props.session.access,
-            active: props.session.active,
-            presence: props.session.presence,
-        });
-    }, [props.session.access, props.session.active, props.session.presence]);
+    const interaction = useSessionTranscriptSource().useInteraction();
 
     const focusedTool = props.message.tool;
     const toolName = focusedTool?.name;
@@ -307,8 +303,14 @@ export const SessionMessageDetailsView = React.memo((props: Readonly<{
 }>) => {
     const { theme } = useUnistyles();
     const styles = React.useMemo(() => createSessionMessageDetailsStyles(theme), [theme]);
+    const interaction = React.useMemo(() => deriveTranscriptInteractionFromSession({
+        access: props.session.access,
+        active: props.session.active,
+        presence: props.session.presence,
+    }), [props.session.access, props.session.active, props.session.presence]);
 
     return (
+        <AppSessionTranscriptSourceProvider sessionId={props.sessionId} serverId={props.session.serverId} interaction={interaction}>
         <View style={styles.routeContent}>
             <Deferred>
                 {props.message.kind === 'tool-call' ? (
@@ -327,5 +329,6 @@ export const SessionMessageDetailsView = React.memo((props: Readonly<{
                 ) : null}
             </Deferred>
         </View>
+        </AppSessionTranscriptSourceProvider>
     );
 });

@@ -4,7 +4,9 @@ export function findWorkflowStepById(
   blocks: readonly WorkflowBlock[],
   blockId: string,
 ): WorkflowStep | undefined {
-  for (const block of blocks) {
+  const pending: WorkflowBlock[] = [...blocks].reverse();
+  while (pending.length > 0) {
+    const block = pending.pop()!;
     if (block.kind === 'step' && block.id === blockId) return block;
     const nested = block.kind === 'parallel'
       ? block.branches.flatMap((branch) => branch.blocks)
@@ -13,8 +15,9 @@ export function findWorkflowStepById(
         : block.kind === 'loop'
           ? [...block.body, ...(block.repetition.kind === 'evaluate' ? [block.repetition.evaluator] : [])]
           : [];
-    const found = findWorkflowStepById(nested, blockId);
-    if (found) return found;
+    for (let index = nested.length - 1; index >= 0; index -= 1) {
+      pending.push(nested[index]!);
+    }
   }
   return undefined;
 }

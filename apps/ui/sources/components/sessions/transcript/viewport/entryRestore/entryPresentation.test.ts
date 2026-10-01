@@ -28,7 +28,7 @@ describe('entry presentation join', () => {
     it('releases on an affirmative entry confirmation even while renderer placement is unfinished', () => {
         const key = createEntryPresentationKey({
             platform: 'web',
-            sessionId: 'session-a',
+            dataKey: 'session-a',
         });
         const pending = createEntryPresentationState(key);
         const rendererStarted = reduceEntryPresentationState(pending, { type: 'renderer-started' });

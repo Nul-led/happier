@@ -214,6 +214,13 @@ describe('session client durable mutation custody', () => {
             observedAt: 1,
             op: { kind: 'clear' },
         });
+        const workStateMutation = createRegisteredSessionStateFieldMutation({
+            sessionId: 's1',
+            fieldId: 'runtime.workState',
+            source: 'daemon',
+            observedAt: 1,
+            op: { kind: 'set', value: { v: 1, backendId: 'codex', updatedAt: 1, items: [] } },
+        });
         const activityMutation = createRegisteredSessionStateFieldMutation({
             sessionId: 's1',
             fieldId: 'runtime.activity',
@@ -222,6 +229,7 @@ describe('session client durable mutation custody', () => {
             op: { kind: 'set', value: { state: 'unknown', activeCount: 0, sourceClass: 'runtime_unknown' } },
         });
         const nonDaemonUsageMutation = { ...usageMutation, source: 'runtime' as const };
+        const nonDaemonWorkStateMutation = { ...workStateMutation, source: 'runtime' as const };
         const transcript = queued({
             v: 1,
             sessionId: 's1',
@@ -236,12 +244,14 @@ describe('session client durable mutation custody', () => {
 
         expect(parseDaemonSessionClientDurableMutation(exactTurnEnd, 's1').mutations).toHaveLength(1);
         expect(parseDaemonSessionClientDurableMutation(queued(usageMutation as unknown as Record<string, unknown>, 'registered_session_state_field'), 's1').mutations).toHaveLength(1);
+        expect(parseDaemonSessionClientDurableMutation(queued(workStateMutation as unknown as Record<string, unknown>, 'registered_session_state_field'), 's1').mutations).toHaveLength(1);
         expect(parseDaemonSessionClientDurableMutation(transcript, 's1').mutations).toHaveLength(1);
         for (const rejected of [
             broadTurnEnd,
             ordinaryTurn,
             queued(activityMutation as unknown as Record<string, unknown>, 'registered_session_state_field'),
             queued(nonDaemonUsageMutation as unknown as Record<string, unknown>, 'registered_session_state_field'),
+            queued(nonDaemonWorkStateMutation as unknown as Record<string, unknown>, 'registered_session_state_field'),
             { ...exactTurnEnd, dependsOn: [{ mutationId: 'other', relationship: 'same_turn_prerequisite' }] },
             { ...exactTurnEnd, paused: { reason: 'runtime_auth_recovery', pausedAt: 1 } },
             {

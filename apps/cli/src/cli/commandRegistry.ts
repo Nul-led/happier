@@ -69,7 +69,9 @@ function lazyCommandHandler(loadHandler: CommandHandlerLoader): CommandHandler {
 }
 
 const handleAttachCliCommand = lazyCommandHandler(async () => (await import('./commands/attach')).handleAttachCliCommand);
+const handleHerdrCliCommand = lazyCommandHandler(async () => (await import('./commands/herdr')).handleHerdrCliCommand);
 const handleActionsCliCommand = lazyCommandHandler(async () => (await import('./commands/actions')).handleActionsCliCommand);
+const handleBrowserCliCommand = lazyCommandHandler(async () => (await import('./commands/browser')).handleBrowserCliCommand);
 const handleAutomationCliCommand = lazyCommandHandler(async () => (await import('./commands/automation')).handleAutomationCliCommand);
 const handleConfiguredAcpCatalogCliCommand = lazyCommandHandler(async () => (
   await import('@/agent/acp/catalog/configured/handleCatalogCliCommand')
@@ -157,6 +159,7 @@ const firstClassSessionCommandRegistryEntries: Readonly<Record<string, CommandRe
 );
 
 const staticCommandRegistryEntries: Readonly<Record<string, CommandRegistryEntry>> = {
+  browser: { handler: handleBrowserCliCommand, surface: { rootHelpLabel: 'happier browser', rootHelpDescription: 'Browser Actions and managed Chromium sandbox setup', allowTmux: false } },
   setup: { handler: handleSetupCliCommand, surface: { rootHelpLabel: 'happier setup', rootHelpDescription: 'Connect this computer to an existing Home', allowTmux: false } },
   auth: { handler: handleAuthCliCommand, surface: { rootHelpLabel: 'happier auth', rootHelpDescription: 'Manage authentication', allowTmux: false } },
   automation: { handler: handleAutomationCliCommand, surface: { rootHelpLabel: 'happier automation', rootHelpDescription: 'Trigger and manage automations', allowTmux: false } },
@@ -176,7 +179,7 @@ const staticCommandRegistryEntries: Readonly<Record<string, CommandRegistryEntry
   profiles: { handler: handleProfilesCliCommand, surface: { rootHelpLabel: 'happier profiles', rootHelpDescription: 'Manage Agent launch profiles', allowTmux: false } },
   profile: { handler: handleProfilesCliCommand, surface: { allowTmux: false } },
   plugins: { handler: handlePluginsCliCommand, surface: { rootHelpLabel: 'happier plugins', rootHelpDescription: 'Discover and manage plugins', allowTmux: false } },
-  notify: { handler: handleNotifyCliCommand, surface: { rootHelpLabel: 'happier notify', rootHelpDescription: 'Send push notification', allowTmux: false } },
+  notify: { handler: handleNotifyCliCommand, surface: { rootHelpLabel: 'happier notify', rootHelpDescription: 'Send a notification using your delivery policy', allowTmux: false } },
   install: { handler: handleInstallCliCommand, surface: { rootHelpLabel: 'happier install', rootHelpDescription: 'Install agent CLIs and helpers', allowTmux: false } },
   status: { handler: handleStatusCliCommand, surface: { rootHelpLabel: 'happier status', rootHelpDescription: 'Show system status and recommended repairs', allowTmux: false } },
   service: { handler: handleServiceCliCommand, surface: { rootHelpLabel: 'happier service', rootHelpDescription: 'Manage the background service that allows', rootHelpDetail: 'to spawn new sessions away from your computer', allowTmux: false } },
@@ -197,6 +200,7 @@ const staticCommandRegistryEntries: Readonly<Record<string, CommandRegistryEntry
   sessions: { handler: handleSessionCliCommand, surface: { allowTmux: false } },
   server: { handler: handleServerCliCommand, surface: { rootHelpLabel: 'happier server', rootHelpDescription: 'Manage Happier server profiles', allowTmux: false } },
   attach: { handler: handleAttachCliCommand, surface: { allowTmux: false } },
+  herdr: { handler: handleHerdrCliCommand, surface: { rootHelpLabel: 'happier herdr', rootHelpDescription: 'Open the Herdr terminal host', allowTmux: false } },
   logout: { handler: handleLogoutCliCommand, surface: { allowTmux: false } },
   'acp-catalog': { handler: handleConfiguredAcpCatalogCliCommand, surface: { allowTmux: false } },
   'bug-report': { handler: handleBugReportCliCommand, surface: { allowTmux: false } },
@@ -213,7 +217,7 @@ const staticCommandRegistry: Readonly<Record<string, CommandHandler>> = Object.f
 );
 
 /** First-class static entries that are only projections into these Actions. */
-const ACTION_OWNED_STATIC_PATHS = new Set(['list', 'ls', 'send', 'stop', 'wait']);
+const ACTION_OWNED_STATIC_PATHS = new Set(['list', 'ls', 'send', 'stop', 'wait', 'notify']);
 
 /**
  * Dedicated workflow leaves below multiplexed roots. They are intentionally
@@ -221,6 +225,7 @@ const ACTION_OWNED_STATIC_PATHS = new Set(['list', 'ls', 'send', 'stop', 'wait']
  * same path or a descendant that the workflow would otherwise consume.
  */
 const DEDICATED_STATIC_COMMAND_PATHS: readonly (readonly string[])[] = Object.freeze([
+  Object.freeze(['browser', 'sandbox']),
   Object.freeze(['actions', 'invoke']),
   Object.freeze(['session', 'actions', 'describe']),
   Object.freeze(['session', 'actions', 'execute']),
@@ -302,6 +307,11 @@ const mutableCommandSurfaceEntries: Record<string, CommandSurfaceDescriptorInput
 ) as Record<string, CommandSurfaceDescriptorInput>;
 
 const dynamicAgentCommandKeys = new Set<string>();
+
+/** Agent roots admitted by the merged command registry, not arbitrary plugin commands. */
+export function isAgentCliCommandRoot(root: string): boolean {
+  return dynamicAgentCommandKeys.has(root);
+}
 const dynamicPluginCommandKeys = new Set<string>();
 let dynamicPluginCompletionPaths: readonly (readonly string[])[] = Object.freeze([]);
 /**
@@ -504,7 +514,7 @@ let actionCliRootsRegistered = false;
  */
 async function ensureActionCliRootsRegistered(): Promise<void> {
   if (actionCliRootsRegistered) return;
-  const { listActionCliCommandDeclarations } = await import('@happier-dev/protocol');
+  const { listActionCliCommandDeclarations } = await import('@happier-dev/protocol/actions/actionSpecs');
   for (const { binding } of listActionCliCommandDeclarations()) {
     const root = binding.path[0];
     if (root === undefined) continue;

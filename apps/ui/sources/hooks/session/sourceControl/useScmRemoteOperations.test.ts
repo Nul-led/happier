@@ -4,18 +4,22 @@ import { act } from 'react-test-renderer';
 import {
     REMOVE_INDEX_LOCK_CONFIRMATION_TOKEN,
     SCM_OPERATION_ERROR_CODES,
+    createScmCapabilities,
     type ScmRemoteResponse,
-} from '@happier-dev/protocol';
+    type ScmOperationOutcome,
+} from '@happier-dev/protocol/scm';
 import {
     createModalModuleMock,
-    createStorageModuleStub,
     renderHook,
     standardCleanup,
 } from '@/dev/testkit';
+import { createSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
+import type { ScmWorkingSnapshot } from '@/sync/domains/state/storageTypes';
 
 const {
     sessionScmRemoteFetch,
     sessionScmRemotePush,
+    sessionScmRemotePull,
     sessionScmRepositoryRemoveIndexLock,
     invalidateFromMutationAndAwait,
     loadCommitHistory,
@@ -23,24 +27,30 @@ const {
 } = vi.hoisted(() => ({
     sessionScmRemoteFetch: vi.fn(async (): Promise<ScmRemoteResponse> => ({ success: true, stdout: 'fetched' })),
     sessionScmRemotePush: vi.fn(async (): Promise<ScmRemoteResponse> => ({ success: true, stdout: 'pushed' })),
-    sessionScmRepositoryRemoveIndexLock: vi.fn(async () => ({ success: true, removed: true, lockPath: '/repo/.git/index.lock' })),
+    sessionScmRemotePull: vi.fn(async (): Promise<ScmRemoteResponse> => ({ success: true, stdout: 'pulled' })),
+    sessionScmRepositoryRemoveIndexLock: vi.fn(async () => ({ success: true as const, removed: true, lockPath: '/repo/.git/index.lock' })),
     invalidateFromMutationAndAwait: vi.fn(async () => {}),
     loadCommitHistory: vi.fn(async () => {}),
     refreshScmData: vi.fn(async () => {}),
 }));
 
-const storageMock = createStorageModuleStub({});
 const modalMock = createModalModuleMock({ confirmResult: true });
 
-vi.mock('@/sync/ops', () => ({
-    sessionScmRemoteFetch,
-    sessionScmRemotePull: vi.fn(async () => ({ success: true, stdout: 'pulled' })),
-    sessionScmRemotePush,
-    sessionScmRepositoryRemoveIndexLock,
-}));
+vi.mock('@/sync/ops', async (importOriginal) => {
+    const { createSyncOpsModuleMock } = await import('@/dev/testkit/mocks/syncOps');
+    return createSyncOpsModuleMock({ importOriginal, overrides: {
+        sessionScmRemoteFetch,
+        sessionScmRemotePull,
+        sessionScmRemotePush,
+        sessionScmRepositoryRemoveIndexLock,
+    } });
+});
 
-vi.mock('@/sync/domains/state/storage', () => storageMock);
 vi.mock('@/modal', () => modalMock.module);
+vi.mock('@/text', async () => {
+    const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
+    return createTextModuleMock();
+});
 
 vi.mock('@/scm/scmStatusSync', () => ({
     scmStatusSync: {
@@ -48,43 +58,43 @@ vi.mock('@/scm/scmStatusSync', () => ({
     },
 }));
 
-vi.mock('@/scm/core/operationPolicy', () => ({
-    evaluateScmOperationPreflight: () => ({ allowed: true }),
-}));
-
-vi.mock('@/scm/operations/remoteTarget', () => ({
-    inferRemoteTargetFromSnapshot: () => ({ remote: 'origin', branch: 'main' }),
-}));
-
-vi.mock('@/scm/operations/withOperationLock', () => ({
-    withSessionProjectScmOperationLock: async ({ run }: { run: () => Promise<void> }) => {
-        await run();
-        return { started: true };
-    },
-}));
-
-vi.mock('@/scm/operations/reporting', () => ({
-    reportSessionScmOperation: vi.fn(),
-    trackBlockedScmOperation: vi.fn(),
-}));
-
 vi.mock('@/track', () => ({
-    tracking: {},
+    tracking: { capture: vi.fn() },
 }));
 
-vi.mock('@/scm/operations/scmDaemonUnavailableAlert', () => ({
-    tryShowDaemonUnavailableAlertForScmOperationFailure: () => false,
-}));
+const { storage } = await import('@/sync/domains/state/storage');
+const { projectManager } = await import('@/sync/runtime/orchestration/projectManager');
+const snapshot = {
+    fetchedAt: 1,
+    projectKey: 'machine-1:/repo',
+    repo: { isRepo: true, rootPath: '/repo', backendId: 'git', mode: '.git' },
+    capabilities: createScmCapabilities({
+        writeRemoteFetch: true,
+        writeRemotePush: true,
+        writeRemotePull: true,
+        writeRemotePolicies: true,
+    }),
+    branch: { head: 'main', upstream: 'origin/main', ahead: 0, behind: 0, detached: false },
+    stashCount: 0,
+    hasConflicts: false,
+    entries: [],
+    totals: { includedFiles: 0, pendingFiles: 0, untrackedFiles: 0, includedAdded: 0, includedRemoved: 0, pendingAdded: 0, pendingRemoved: 0 },
+} satisfies ScmWorkingSnapshot;
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 describe('useScmRemoteOperations', () => {
     beforeEach(() => {
+        storage.setState(storage.getInitialState(), true);
+        projectManager.clear();
+        storage.getState().applySessions([createSessionFixture({ id: 'session-1', active: true, metadata: { path: '/repo', host: 'localhost', machineId: 'machine-1' } })]);
         modalMock.spies.confirm.mockClear();
+        modalMock.spies.alert.mockClear();
         sessionScmRemoteFetch.mockReset();
         sessionScmRemoteFetch.mockResolvedValue({ success: true, stdout: 'fetched' });
         sessionScmRemotePush.mockReset();
         sessionScmRemotePush.mockResolvedValue({ success: true, stdout: 'pushed' });
+        sessionScmRemotePull.mockReset().mockResolvedValue({ success: true, stdout: 'pulled' });
         sessionScmRepositoryRemoveIndexLock.mockClear();
         invalidateFromMutationAndAwait.mockClear();
         loadCommitHistory.mockClear();
@@ -101,7 +111,7 @@ describe('useScmRemoteOperations', () => {
         const hook = await renderHook(() => useScmRemoteOperations({
             sessionId: 'session-1',
             sessionPath: '/repo',
-            scmSnapshot: null,
+            scmSnapshot: snapshot,
             scmWriteEnabled: true,
             scmCommitStrategy: 'atomic',
             scmRemoteConfirmPolicy: 'always',
@@ -118,8 +128,8 @@ describe('useScmRemoteOperations', () => {
         expect(sessionScmRemotePush).toHaveBeenCalledWith('session-1', {
             remote: 'origin',
             branch: 'main',
-        });
-        expect(invalidateFromMutationAndAwait).toHaveBeenCalledWith('session-1');
+        }, undefined);
+        expect(invalidateFromMutationAndAwait).toHaveBeenCalledWith('session-1', undefined);
         expect(loadCommitHistory).toHaveBeenCalledWith({ reset: true });
     });
 
@@ -136,7 +146,7 @@ describe('useScmRemoteOperations', () => {
         const hook = await renderHook(() => useScmRemoteOperations({
             sessionId: 'session-1',
             sessionPath: '/repo',
-            scmSnapshot: null,
+            scmSnapshot: snapshot,
             scmWriteEnabled: true,
             scmCommitStrategy: 'atomic',
             scmRemoteConfirmPolicy: 'never',
@@ -154,9 +164,9 @@ describe('useScmRemoteOperations', () => {
             cwd: '/repo',
             confirmed: true,
             confirmationToken: REMOVE_INDEX_LOCK_CONFIRMATION_TOKEN,
-        });
+        }, undefined);
         expect(sessionScmRemotePush).toHaveBeenCalledTimes(2);
-        expect(invalidateFromMutationAndAwait).toHaveBeenCalledWith('session-1');
+        expect(invalidateFromMutationAndAwait).toHaveBeenCalledWith('session-1', undefined);
     });
 
     it('releases the remote operation lifecycle when the post-fetch refresh stalls', async () => {
@@ -167,7 +177,7 @@ describe('useScmRemoteOperations', () => {
         const hook = await renderHook(() => useScmRemoteOperations({
             sessionId: 'session-1',
             sessionPath: '/repo',
-            scmSnapshot: null,
+            scmSnapshot: snapshot,
             scmWriteEnabled: true,
             scmCommitStrategy: 'atomic',
             scmRemoteConfirmPolicy: 'never',
@@ -194,5 +204,28 @@ describe('useScmRemoteOperations', () => {
         expect(settled).toBe(true);
         expect(hook.getCurrent().scmRemoteOperationBusy).toBe(false);
         expect(refreshScmData).toHaveBeenCalledTimes(1);
+    });
+
+    it('passes the one-time pull policy to the machine and preserves a needs-input outcome in the real log', async () => {
+        const outcome: ScmOperationOutcome = { v: 1, kind: 'needs_input', errorCode: 'REMOTE_FF_ONLY_REQUIRED', nextActions: [{ kind: 'choose_reconcile' }] };
+        sessionScmRemotePull.mockResolvedValueOnce({ success: false, outcome, errorCode: 'REMOTE_FF_ONLY_REQUIRED' });
+        const { useScmRemoteOperations } = await import('./useScmRemoteOperations');
+        const hook = await renderHook(() => useScmRemoteOperations({
+            sessionId: 'session-1', sessionPath: '/repo', scmSnapshot: snapshot,
+            scmWriteEnabled: true, scmCommitStrategy: 'atomic', scmRemoteConfirmPolicy: 'never',
+            scmPushRejectPolicy: 'prompt_fetch', refreshScmData, loadCommitHistory,
+        }));
+
+        await act(async () => {
+            await hook.getCurrent().runRemoteOperation('pull', { policy: { dirtyPolicy: 'autostash', reconcile: 'rebase' } });
+        });
+
+        expect(sessionScmRemotePull).toHaveBeenCalledWith('session-1', { remote: 'origin', branch: 'main', dirtyPolicy: 'autostash', reconcile: 'rebase' }, undefined);
+        expect(storage.getState().getSessionProjectScmOperationLog('session-1')).toEqual(expect.arrayContaining([
+            expect.objectContaining({ operation: 'pull', status: 'failed', outcome }),
+        ]));
+        expect(hook.getCurrent().scmRemoteOperationBusy).toBe(false);
+        expect(storage.getState().getSessionProjectScmInFlightOperation('session-1')).toBeNull();
+        expect(modalMock.spies.alert).not.toHaveBeenCalled();
     });
 });

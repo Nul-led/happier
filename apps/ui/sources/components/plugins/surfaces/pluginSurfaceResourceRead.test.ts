@@ -52,7 +52,7 @@ function createMountedHostApi(read: PluginSurfaceResourceReadTransport) {
         resource: {
             machineId: 'machine-1',
             serverId: null,
-            expectedGeneration: '7',
+            expectedCallerOccurrenceId: 'occurrence-7',
             read,
         },
     });
@@ -95,7 +95,7 @@ describe('mounted plugin surface resource snapshot read (§3.6)', () => {
             resource: {
                 machineId: 'machine-1',
                 serverId: null,
-                expectedGeneration: '7',
+                expectedCallerOccurrenceId: 'occurrence-7',
                 context: { kind: 'session', sessionId: 'session-a' },
                 read: async (machineId, options) => {
                     requests.push({ machineId, ...options });
@@ -122,7 +122,7 @@ describe('mounted plugin surface resource snapshot read (§3.6)', () => {
         expect(requests).toEqual([expect.objectContaining({
             machineId: 'machine-1',
             callerPluginId: 'acme.preview',
-            expectedGeneration: '7',
+            expectedCallerOccurrenceId: 'occurrence-7',
             resource: { pluginId: 'acme.preview', localId: 'review-summary' },
             context: { kind: 'session', sessionId: 'session-a' },
         })]);
@@ -155,7 +155,7 @@ describe('mounted plugin surface resource snapshot read (§3.6)', () => {
         expect(requests).toEqual([expect.objectContaining({
             machineId: 'machine-1',
             callerPluginId: 'acme.preview',
-            expectedGeneration: '7',
+            expectedCallerOccurrenceId: 'occurrence-7',
             resource: { pluginId: 'acme.preview', localId: 'review-summary' },
         })]);
         // Destination Resources retain their existing non-contextual daemon
@@ -181,7 +181,7 @@ describe('mounted plugin surface resource snapshot read (§3.6)', () => {
             resource: {
                 machineId: 'machine-1',
                 serverId: null,
-                expectedGeneration: '7',
+                expectedCallerOccurrenceId: 'occurrence-7',
                 read: async () => ({ supported: false, reason: 'error' }),
             },
         });

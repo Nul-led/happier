@@ -1,10 +1,7 @@
 import {
-    deriveDaemonPluginReactNativeBundleCacheIdentityKeyV1 as derivePluginReactNativeBundleCacheKey,
-} from '@happier-dev/protocol';
-import {
+    computePluginUiArtifactFileSetSha256DigestV1,
+    computePluginUiArtifactSha256DigestV1,
     isPluginUiHermesBytecodeArtifactV1,
-    verifyPluginUiArtifactBytesIntegrityV1,
-    verifyPluginUiArtifactFileSetIntegrityV1,
     type PluginUiArtifactDigestV1,
 } from '@happier-dev/protocol/plugins/ui';
 
@@ -46,12 +43,14 @@ import { createTauriPluginNativeArtifactResourceRegistrar } from '@/sync/domains
 import { createBrowserPluginUiPersistentArtifactStore } from '@/sync/domains/plugins/ui/artifactByteCache.browser';
 import { createTauriPluginUiPersistentArtifactStore } from '@/sync/domains/plugins/ui/artifactByteCache.tauri';
 import { isDesktopHost } from '@/utils/platform/desktopHost';
-import {
-    createReactNativeInstalledArtifactDiskGc,
-    createReactNativePersistentArtifactStore,
-    resolveMaterializedArtifactDirectoryName,
-    type ReactNativeInstalledArtifactDiskGc,
-} from './artifactFileMaterializer';
+import { createReactNativePersistentArtifactStore } from './artifactFileMaterializer';
+
+/** Bytes are content-addressed inside the existing Account privacy partition. */
+export function derivePluginReactNativeBundleCacheKey(
+    identity: PluginReactNativeBundleCacheIdentity,
+): string {
+    return identity.artifactDigest;
+}
 
 export type PluginReactNativeBundleArtifactFormat = 'plainJs' | 'hermesBytecode';
 
@@ -71,13 +70,10 @@ export type PluginReactNativeCachedArtifact = Readonly<{
     files?: readonly PluginReactNativeCachedArtifactFile[];
 }>;
 
-export type PluginReactNativePersistentArtifactIdentity = PluginUiPersistentArtifactIdentity
-    & Readonly<{ tier: 'reactNative' }>;
-export type PluginReactNativePersistentArtifactRecord = PluginUiPersistentArtifactRecord
-    & Readonly<{
-        persistentIdentity: PluginReactNativePersistentArtifactIdentity;
-        files: readonly PluginReactNativeCachedArtifactFile[];
-    }>;
+export type PluginReactNativePersistentArtifactIdentity = PluginUiPersistentArtifactIdentity;
+export type PluginReactNativePersistentArtifactRecord = PluginUiPersistentArtifactRecord & Readonly<{
+    files: readonly PluginReactNativeCachedArtifactFile[];
+}>;
 export type PluginReactNativePersistentArtifactStore = Readonly<{
     read: (
         identity: PluginReactNativePersistentArtifactIdentity,
@@ -89,18 +85,6 @@ export type PluginReactNativePersistentArtifactStore = Readonly<{
     remove: (identity: PluginUiPersistentArtifactIdentity) => Promise<void>;
     removeAccount: (scope: ServerAccountScope) => Promise<void>;
 }>;
-
-function isPluginReactNativePersistentArtifactIdentity(
-    identity: PluginUiPersistentArtifactIdentity,
-): identity is PluginReactNativePersistentArtifactIdentity {
-    return identity.tier === 'reactNative';
-}
-
-function isPluginReactNativePersistentArtifactRecord(
-    record: PluginUiPersistentArtifactRecord,
-): record is PluginReactNativePersistentArtifactRecord {
-    return isPluginReactNativePersistentArtifactIdentity(record.persistentIdentity);
-}
 
 export function derivePluginReactNativePersistentArtifactKey(
     identity: PluginReactNativePersistentArtifactIdentity,
@@ -226,46 +210,20 @@ function persistentRecordHasValidIntegrity(
     // is missing from its own graph is invalid, never an entry-only record.
     const declaredEntry = record.files.find((file) => file.relativePath === record.entryRelativePath);
     if (!declaredEntry) return false;
-    const entryIntegrity = verifyPluginUiArtifactBytesIntegrityV1({
-        bytes: record.bytes,
-        integrity: {
-            digest: declaredEntry.digest,
-            pluginId: expected.pluginId,
-            contributionId: expected.contributionId,
-            artifactKind: 'reactNativeBundle',
-        },
-    });
-    if (!entryIntegrity.ok) return false;
+    if (computePluginUiArtifactSha256DigestV1(record.bytes) !== declaredEntry.digest) return false;
     if (record.files.some((file) => {
         if (file.bytes.byteLength !== file.byteSize) return true;
-        return !verifyPluginUiArtifactBytesIntegrityV1({
-            bytes: file.bytes,
-            integrity: {
-                digest: file.digest,
-                pluginId: expected.pluginId,
-                contributionId: expected.contributionId,
-                artifactKind: 'reactNativeBundle',
-            },
-        }).ok;
+        return computePluginUiArtifactSha256DigestV1(file.bytes) !== file.digest;
     })) return false;
-    return verifyPluginUiArtifactFileSetIntegrityV1({
-        files: record.files.map((file) => ({
+    return computePluginUiArtifactFileSetSha256DigestV1(
+        record.files.map((file) => ({
             relativePath: file.relativePath,
             bytes: file.bytes,
         })),
-        integrity: {
-            digest: expected.artifactDigest,
-            pluginId: expected.pluginId,
-            contributionId: expected.contributionId,
-            artifactKind: 'reactNativeBundle',
-        },
-    }).ok;
+    ) === expected.artifactDigest;
 }
 
 export type CreatePluginReactNativeBundleCacheOptions = Readonly<{
-    // The default singleton wires disk GC so removed materialized executable
-    // bytes are deleted from disk; tests may inject a fake.
-    diskGc?: ReactNativeInstalledArtifactDiskGc;
     persistentStore?: PluginReactNativePersistentArtifactStore;
     /** Existing Artifact-owned custody; RN owns only hot executable bytes. */
     persistentCustody?: PluginArtifactPersistentCustody;
@@ -290,7 +248,6 @@ export type PluginReactNativeBundleCacheWithNativeArtifactResources = Readonly<{
 export type CreatePluginReactNativeBundleCacheWithNativeArtifactResourcesOptions = Readonly<{
     persistentStore: PluginNativeArtifactPersistentStore;
     registry: PluginNativeArtifactResourceRegistry;
-    diskGc?: ReactNativeInstalledArtifactDiskGc;
     onPersistentCacheDiagnostic?: (code: string) => void;
 }>;
 
@@ -347,7 +304,6 @@ export function createPluginReactNativeBundleCacheWithNativeArtifactResources(
     });
     return Object.freeze({
         cache: createPluginReactNativeBundleCache({
-            diskGc: input.diskGc,
             persistentStore: adaptPluginUiPersistentArtifactStoreForReactNativeBundleCache(nativePersistentStore),
             revokeNativeArtifactResourcesForAccount: input.registry.revokeAccount,
             onPersistentCacheDiagnostic: input.onPersistentCacheDiagnostic,
@@ -508,14 +464,14 @@ export function createPluginReactNativeArtifactLeasePersistentScope(input: Reado
     const canRemovePersistentArtifact = () => operation !== null && isCurrent();
     const store: PluginUiPersistentArtifactStore = Object.freeze({
         read: async (identity) => {
-            if (!isPluginReactNativePersistentArtifactIdentity(identity) || !canUseStore()) {
+            if (!canUseStore()) {
                 return null;
             }
             const record = await operation?.readPersistentArtifact(identity) ?? null;
             return canUseStore() ? record : null;
         },
         write: async (record) => {
-            if (!isPluginReactNativePersistentArtifactRecord(record) || !canUseStore()) {
+            if (!canUseStore()) {
                 throw new Error('react_native_artifact_persistent_scope_retired');
             }
             const disposition = await operation?.writePersistentArtifact(record) ?? null;
@@ -525,7 +481,7 @@ export function createPluginReactNativeArtifactLeasePersistentScope(input: Reado
             return disposition;
         },
         remove: async (identity) => {
-            if (!isPluginReactNativePersistentArtifactIdentity(identity) || !canRemovePersistentArtifact()) return;
+            if (!canRemovePersistentArtifact()) return;
             await input.cache.removePersistentArtifact(identity, operation?.isCurrent);
         },
         removeAccount: async (scope) => {
@@ -546,99 +502,60 @@ export function createPluginReactNativeBundleCache(
     options: CreatePluginReactNativeBundleCacheOptions = {},
 ): PluginReactNativeBundleCache {
     const entries = new Map<string, PluginReactNativeCachedArtifact>();
-    const diskGc = options.diskGc;
     const persistentStore = options.persistentStore;
-    const diagnosePersistentCache = options.onPersistentCacheDiagnostic;
     const persistentCustody = options.persistentCustody ?? createPluginArtifactPersistentCustody({
         store: persistentStore as unknown as PluginUiPersistentArtifactStore | undefined,
         revokeNativeArtifactResourcesForAccount: options.revokeNativeArtifactResourcesForAccount,
         onDiagnostic: options.onPersistentCacheDiagnostic,
     });
     const hotEntryAccountScopes = new Map<string, string>();
-    // This is the existing complete source union, indexed by hot-cache key
-    // with the materializer's stable directory identity alongside it. It does
-    // not own currentness; the projection reconciler supplies that truth.
-    const activeProjectionIdentityDirectoryNames = new Map<string, string>();
+    const activeProjectionKeys = new Set<string>();
     // Before the reconciler observes its first complete source union, the
     // incumbent Artifact path may still be writing bytes for the mount which
     // is about to register that union. Afterwards, this existing set is the
     // sole write-currentness authority for every fenced identity.
     let hasReconciledActiveProjectionSources = false;
 
-    function scheduleDiskEviction(identities: readonly PluginReactNativeBundleCacheIdentity[]): void {
-        if (!diskGc || identities.length === 0) {
-            return;
-        }
-        const currentMaterializedDirectoryNames = new Set(
-            activeProjectionIdentityDirectoryNames.values(),
-        );
-        const physicallyEvictableIdentities = identities.filter(
-            (identity) => !currentMaterializedDirectoryNames.has(
-                resolveMaterializedArtifactDirectoryName(identity),
-            ),
-        );
-        if (physicallyEvictableIdentities.length === 0) {
-            return;
-        }
-        void Promise.resolve(diskGc.evictForIdentities(physicallyEvictableIdentities)).catch(() => {
-            diagnosePersistentCache?.('plugin_ui_artifact_executable_delete_failed');
-        });
-    }
-
     function reconcileActiveProjectionIdentities(
         identities: readonly PluginReactNativeBundleCacheIdentity[],
     ): void {
         hasReconciledActiveProjectionSources = true;
-        const nextIdentityDirectoryNames = new Map<string, string>();
+        const nextKeys = new Set<string>();
         for (const identity of identities) {
-            nextIdentityDirectoryNames.set(
-                derivePluginReactNativeBundleCacheKey(identity),
-                resolveMaterializedArtifactDirectoryName(identity),
-            );
+            nextKeys.add(derivePluginReactNativeBundleCacheKey(identity));
         }
         const sourcesChanged = !(
-            nextIdentityDirectoryNames.size === activeProjectionIdentityDirectoryNames.size
-            && [...nextIdentityDirectoryNames].every(([key, directoryName]) => (
-                activeProjectionIdentityDirectoryNames.get(key) === directoryName
-            ))
+            nextKeys.size === activeProjectionKeys.size
+            && [...nextKeys].every((key) => activeProjectionKeys.has(key))
         );
         const hasUnownedEntry = [...entries.keys()].some(
-            (key) => !nextIdentityDirectoryNames.has(key),
+            (key) => !nextKeys.has(key),
         );
         if (!sourcesChanged && !hasUnownedEntry) {
             return;
         }
 
         if (sourcesChanged) {
-            activeProjectionIdentityDirectoryNames.clear();
-            for (const [key, directoryName] of nextIdentityDirectoryNames) {
-                activeProjectionIdentityDirectoryNames.set(key, directoryName);
-            }
+            activeProjectionKeys.clear();
+            for (const key of nextKeys) activeProjectionKeys.add(key);
         }
 
-        const evictedIdentities: PluginReactNativeBundleCacheIdentity[] = [];
         for (const [key, entry] of entries.entries()) {
-            if (!activeProjectionIdentityDirectoryNames.has(key)) {
-                evictedIdentities.push(entry.identity);
+            if (!activeProjectionKeys.has(key)) {
                 entries.delete(key);
                 hotEntryAccountScopes.delete(key);
             }
         }
-        scheduleDiskEviction(evictedIdentities);
     }
 
     async function retireAccount(scope: ServerAccountScope): Promise<void> {
         await persistentCustody.retireAccount(scope);
         const key = accountScopeKey(scope);
-        const evictedIdentities: PluginReactNativeBundleCacheIdentity[] = [];
         for (const [cacheKey, entryScope] of hotEntryAccountScopes.entries()) {
             if (entryScope !== key) continue;
-            const entry = entries.get(cacheKey);
-            if (entry) evictedIdentities.push(entry.identity);
             entries.delete(cacheKey);
             hotEntryAccountScopes.delete(cacheKey);
         }
-        scheduleDiskEviction(evictedIdentities);
     }
 
     /**
@@ -672,7 +589,7 @@ export function createPluginReactNativeBundleCache(
                     writeFence.cacheKey !== cacheKey
                     || (
                         hasReconciledActiveProjectionSources
-                        && !activeProjectionIdentityDirectoryNames.has(cacheKey)
+                        && !activeProjectionKeys.has(cacheKey)
                     )
                 );
                 if (invalidated) {
@@ -785,11 +702,9 @@ const installedNativeArtifactRegistry = nativeResourceRegistrar
     ? createPluginNativeArtifactResourceRegistry({ registrar: nativeResourceRegistrar })
     : null;
 const defaultPersistentArtifactStore = createDefaultPersistentArtifactStore(installedNativeArtifactRegistry);
-const installedDiskGc = createReactNativeInstalledArtifactDiskGc();
 const nativeStore = defaultPersistentArtifactStore.nativeStore;
 const installedNativeArtifactComposition = nativeStore && installedNativeArtifactRegistry
     ? createPluginReactNativeBundleCacheWithNativeArtifactResources({
-        diskGc: installedDiskGc,
         persistentStore: nativeStore,
         registry: installedNativeArtifactRegistry,
     })
@@ -802,7 +717,6 @@ const installedNativeArtifactResources: InstalledPluginNativeArtifactResources |
     : null;
 const installedPluginReactNativeBundleCache = installedNativeArtifactComposition?.cache
     ?? createPluginReactNativeBundleCache({
-        diskGc: installedDiskGc,
         persistentStore: defaultPersistentArtifactStore.reactNativeStore,
     });
 
@@ -819,6 +733,5 @@ export function getInstalledPluginNativeArtifactResources(): InstalledPluginNati
 }
 
 export {
-    derivePluginReactNativeBundleCacheKey,
     type PluginReactNativeBundleCacheIdentity,
 };

@@ -12,6 +12,11 @@ import { VOICE_ORB_HIT_TARGET } from './voiceOrbGeometry';
 
 vi.mock('@/sync/store/hooks', () => ({ useLocalSetting: () => 1 }));
 
+const motionPreference = vi.hoisted(() => ({ reduced: false }));
+vi.mock('@/hooks/ui/useReducedMotionPreference', () => ({
+    useReducedMotionPreference: () => motionPreference.reduced,
+}));
+
 const waveformRenderCount = vi.hoisted(() => ({ count: 0 }));
 
 vi.mock('@/components/voice/light/VoiceLight', async (importOriginal) => {
@@ -172,6 +177,52 @@ function flattenStyle(style: unknown): Record<string, unknown> {
 describe('VoiceOrb', () => {
     beforeEach(() => {
         waveformRenderCount.count = 0;
+        motionPreference.reduced = false;
+    });
+
+    it('presses with the shared tactile values: composed scale with motion, opacity only under reduced motion', async () => {
+        const control = createControl();
+        const scene = () => (
+            <VoiceEnergyProvider state={{ luminosity: 0.4, energized: false, direction: 'none' }} previewTimeMs={1_100}>
+                <VoiceOrb
+                    control={control}
+                    labels={labels}
+                    expanded={false}
+                    onExpandedChange={() => {}}
+                    restingBottomInset={24}
+                    availableSheetHeight={900}
+                />
+            </VoiceEnergyProvider>
+        );
+        const orbFrameStyle = (screen: Awaited<ReturnType<typeof renderScreen>>) => {
+            let node = screen.findByTestId('voice.orb.body')!.parent;
+            while (node && String(node.type) !== 'Animated.View') node = node.parent;
+            if (!node) throw new Error('Voice orb frame did not render');
+            return flattenStyle(node.props.style);
+        };
+        const pressIn = async (screen: Awaited<ReturnType<typeof renderScreen>>) => {
+            await act(async () => {
+                screen.findByTestId('voice.orb.body')!.props.onPressIn();
+            });
+            await screen.update(scene());
+        };
+
+        const moving = await renderScreen(scene());
+        await pressIn(moving);
+        const movingStyle = orbFrameStyle(moving);
+        const movingScale = (movingStyle.transform as Array<Record<string, number>>).find((entry) => 'scale' in entry)!.scale;
+        expect(movingScale).toBeCloseTo(0.96);
+        expect(movingStyle.opacity ?? 1).toBe(1);
+        await moving.unmount();
+
+        motionPreference.reduced = true;
+        const still = await renderScreen(scene());
+        await pressIn(still);
+        const stillStyle = orbFrameStyle(still);
+        const stillScale = (stillStyle.transform as Array<Record<string, number>>).find((entry) => 'scale' in entry)!.scale;
+        expect(stillScale).toBeCloseTo(1);
+        expect(stillStyle.opacity).toBeCloseTo(0.7);
+        await still.unmount();
     });
 
     it('is the transport when collapsed: one tap starts the canonical attempt', async () => {

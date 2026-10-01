@@ -30,8 +30,8 @@ export function canAttemptCanonicalExternalSessionLiveFollow(params: Readonly<{
 }>): boolean {
     return params.observation !== null
         && params.observation.link.changeObservation !== 'reconcile_only'
-        && params.observation.resource.pluginGeneration
-            === params.resource.pluginGeneration
+        && params.observation.resource.occurrenceId
+            === params.resource.occurrenceId
         && params.observation.link.linkGeneration
             === params.resource.linkGeneration
         && typeof params.providerOps.pageTranscript === 'function'
@@ -70,7 +70,7 @@ export async function acquireCanonicalExternalSessionFollowLease(params: Readonl
         );
     }
     if (
-        params.observation.resource.pluginGeneration !== params.resource.pluginGeneration
+        params.observation.resource.occurrenceId !== params.resource.occurrenceId
         || params.observation.link.linkGeneration !== params.resource.linkGeneration
         || isGenerationRetired()
     ) {

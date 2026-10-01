@@ -4,6 +4,8 @@ import type {
   AgentSessionHostServices,
   AgentSessionModelsSnapshot,
   AgentSessionModelsSource,
+  AgentSessionModesSnapshot,
+  AgentSessionModesSource,
 } from '@happier-dev/plugin-sdk/agents/runtime';
 
 import { updateAgentStateBestEffort } from '@/api/session/sessionWritesBestEffort';
@@ -13,8 +15,9 @@ type PublicationSession = Readonly<{
 }>;
 
 export type NativeAgentSessionPublications = Readonly<{
-  services: Pick<AgentSessionHostServices, 'models' | 'activeInput'>;
+  services: Pick<AgentSessionHostServices, 'models' | 'modes' | 'activeInput'>;
   modelsSource: AgentSessionModelsSource;
+  modesSource: AgentSessionModesSource;
   readActiveInputBinding(): AgentSessionActiveInputBinding | null;
   dispose(): void;
 }>;
@@ -27,10 +30,7 @@ export function createNativeAgentSessionPublications(params: Readonly<{
   supportsInFlightSteer: boolean;
 }>): NativeAgentSessionPublications {
   let disposed = false;
-  let modelBinding: Readonly<{ source: AgentSessionModelsSource; dispose(): void }> | null = null;
   let activeInputBinding: AgentSessionActiveInputBinding | null = null;
-  let modelSnapshot: AgentSessionModelsSnapshot = Object.freeze({ models: null });
-  const modelSubscribers = new Set<(snapshot: AgentSessionModelsSnapshot) => void>();
 
   const isAvailable = (): boolean => {
     if (disposed || params.signal.aborted) return false;
@@ -45,25 +45,78 @@ export function createNativeAgentSessionPublications(params: Readonly<{
       throw new Error('The native Agent session publication scope is retired or unavailable');
     }
   };
-  const publishModels = (snapshot: AgentSessionModelsSnapshot): void => {
-    modelSnapshot = Object.freeze({
-      models: snapshot.models,
-      ...(snapshot.currentModelId === undefined ? {} : { currentModelId: snapshot.currentModelId }),
+  // Both catalogs have the same one-live-source lifetime, not the same domain policy.
+  const createCatalogPublication = <Snapshot,>(empty: Snapshot, project: (snapshot: Snapshot) => Snapshot) => {
+    type Source = Readonly<{
+      read(): Snapshot;
+      subscribe(listener: (snapshot: Snapshot) => void): Readonly<{ dispose(): void | Promise<void> }>;
+    }>;
+    let snapshot = empty;
+    let binding: Readonly<{ dispose(): void }> | null = null;
+    const subscribers = new Set<(snapshot: Snapshot) => void>();
+    const publish = (next: Snapshot): void => {
+      snapshot = project(next);
+      for (const subscriber of subscribers) subscriber(snapshot);
+    };
+    const source: Source = Object.freeze({
+      read: () => snapshot,
+      subscribe(listener) {
+        subscribers.add(listener);
+        listener(snapshot);
+        return Object.freeze({ dispose: () => { subscribers.delete(listener); } });
+      },
     });
-    for (const subscriber of modelSubscribers) subscriber(modelSnapshot);
-  };
-  const internalModelSource: AgentSessionModelsSource = Object.freeze({
-    read: () => modelSnapshot,
-    subscribe(handler) {
-      modelSubscribers.add(handler);
-      handler(modelSnapshot);
-      return Object.freeze({
-        dispose: () => {
-          modelSubscribers.delete(handler);
+    return Object.freeze({
+      source,
+      service: Object.freeze({
+        bind(input: Source) {
+          assertAvailable();
+          if (binding) throw new Error('Native Agent session catalog already has an active publisher');
+          let retired = false;
+          let subscription: ReturnType<Source['subscribe']> | null = null;
+          const current = Object.freeze({
+            dispose() {
+              if (retired) return;
+              retired = true;
+              void subscription?.dispose();
+              subscription = null;
+              if (binding !== current) return;
+              binding = null;
+              if (isAvailable()) publish(empty);
+            },
+          });
+          const apply = (next: Snapshot): void => {
+            if (retired || binding !== current || !isAvailable()) return;
+            publish(next);
+          };
+          binding = current;
+          try {
+            apply(input.read());
+            subscription = input.subscribe(apply);
+            if (retired) { void subscription.dispose(); subscription = null; }
+          } catch (error) {
+            current.dispose();
+            throw error;
+          }
+          return current;
         },
-      });
-    },
-  });
+      }),
+      dispose() {
+        binding?.dispose();
+        subscribers.clear();
+      },
+    });
+  };
+  const modelPublication = createCatalogPublication<AgentSessionModelsSnapshot>(Object.freeze({ models: null }), (snapshot) => Object.freeze({
+    models: snapshot.models,
+    ...(snapshot.observedAt === undefined ? {} : { observedAt: snapshot.observedAt }),
+    ...(snapshot.currentModelId === undefined ? {} : { currentModelId: snapshot.currentModelId }),
+  }));
+  const modePublication = createCatalogPublication<AgentSessionModesSnapshot>(Object.freeze({ modes: null }), (snapshot) => Object.freeze({
+    modes: snapshot.modes,
+    ...(snapshot.observedAt === undefined ? {} : { observedAt: snapshot.observedAt }),
+    ...(snapshot.currentModeId === undefined ? {} : { currentModeId: snapshot.currentModeId }),
+  }));
   const publishActiveInputStatus = (status: AgentSessionActiveInputStatus): void => {
     assertAvailable();
     if (!activeInputBinding) {
@@ -94,42 +147,6 @@ export function createNativeAgentSessionPublications(params: Readonly<{
     );
   };
 
-  const models: AgentSessionHostServices['models'] = Object.freeze({
-    bind(source) {
-      assertAvailable();
-      if (modelBinding) {
-        throw new Error('Native Agent session models already have an active publisher');
-      }
-      let bindingDisposed = false;
-      let sourceDisposable: ReturnType<AgentSessionModelsSource['subscribe']> | null = null;
-      const apply = (snapshot: AgentSessionModelsSnapshot): void => {
-        if (bindingDisposed || !isAvailable() || modelBinding?.source !== source) return;
-        publishModels(snapshot);
-      };
-      const binding = Object.freeze({
-        source,
-        dispose() {
-          if (bindingDisposed) return;
-          bindingDisposed = true;
-          void sourceDisposable?.dispose();
-          sourceDisposable = null;
-          if (modelBinding !== binding) return;
-          modelBinding = null;
-          if (isAvailable()) publishModels({ models: null });
-        },
-      });
-      modelBinding = binding;
-      try {
-        apply(source.read());
-        sourceDisposable = source.subscribe(apply);
-      } catch (error) {
-        binding.dispose();
-        throw error;
-      }
-      return Object.freeze({ dispose: binding.dispose });
-    },
-  });
-
   const activeInput: AgentSessionHostServices['activeInput'] = Object.freeze({
     bind(binding) {
       assertAvailable();
@@ -153,18 +170,17 @@ export function createNativeAgentSessionPublications(params: Readonly<{
   const dispose = (): void => {
     if (disposed) return;
     disposed = true;
-    const currentModelBinding = modelBinding;
-    modelBinding = null;
-    currentModelBinding?.dispose();
+    modelPublication.dispose();
+    modePublication.dispose();
     activeInputBinding = null;
-    modelSubscribers.clear();
   };
   if (params.signal.aborted) dispose();
   else params.signal.addEventListener('abort', dispose, { once: true });
 
   return Object.freeze({
-    services: Object.freeze({ models, activeInput }),
-    modelsSource: internalModelSource,
+    services: Object.freeze({ models: modelPublication.service, modes: modePublication.service, activeInput }),
+    modelsSource: modelPublication.source,
+    modesSource: modePublication.source,
     readActiveInputBinding: () => isAvailable() ? activeInputBinding : null,
     dispose,
   });

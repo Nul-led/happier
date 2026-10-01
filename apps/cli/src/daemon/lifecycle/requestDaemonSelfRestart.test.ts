@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { DaemonLocallyPersistedState } from '@/persistence';
+import { requestDaemonSelfRestart, waitForReplacementDaemon } from './requestDaemonSelfRestart';
 
 function makeState(overrides: Partial<DaemonLocallyPersistedState> = {}): DaemonLocallyPersistedState {
   return {
@@ -23,8 +24,6 @@ describe('requestDaemonSelfRestart', () => {
         text: async () => JSON.stringify({ success: true }),
       } as Response;
     });
-
-    const { waitForReplacementDaemon } = await import('./requestDaemonSelfRestart');
 
     try {
       await expect(waitForReplacementDaemon({
@@ -54,8 +53,7 @@ describe('requestDaemonSelfRestart', () => {
     const readDaemonState = vi.fn(async () => makeState({ runtimeId: 'runtime-1' }));
     const confirmReplacementState = vi.fn(async () => true);
     const exitProcess = vi.fn();
-
-    const { requestDaemonSelfRestart } = await import('./requestDaemonSelfRestart');
+    const onReplacementConfirmed = vi.fn(async () => {});
 
     const result = await requestDaemonSelfRestart({
       runtimeId: 'runtime-1',
@@ -67,6 +65,7 @@ describe('requestDaemonSelfRestart', () => {
       readDaemonStateImpl: readDaemonState,
       confirmReplacementStateImpl: confirmReplacementState,
       exitProcess,
+      onReplacementConfirmed,
       env: { KEEP_ME: '1' },
     });
 
@@ -79,15 +78,35 @@ describe('requestDaemonSelfRestart', () => {
       }),
     }));
     expect(exitProcess).toHaveBeenCalledWith(0);
+    expect(onReplacementConfirmed).toHaveBeenCalledTimes(1);
+    expect(onReplacementConfirmed.mock.invocationCallOrder[0]).toBeLessThan(
+      exitProcess.mock.invocationCallOrder[0]!,
+    );
     expect(result.status).toBe('exited');
+  });
+
+  it('counts successor spawn against the same restart confirmation deadline', async () => {
+    const readDaemonState = vi.fn(async () => makeState({ runtimeId: 'runtime-1' }));
+    const exitProcess = vi.fn();
+    const result = await requestDaemonSelfRestart({
+      runtimeId: 'runtime-1', expectedCliVersion: '2.0.0',
+      ownPid: process.pid, timeoutMs: 30_000, pollMs: 1,
+      deadlineAtMs: Date.now() - 1,
+      spawnDetachedDaemonStartSyncImpl: vi.fn(async () => ({ unref: vi.fn() })),
+      readDaemonStateImpl: readDaemonState,
+      confirmReplacementStateImpl: vi.fn(async () => true),
+      exitProcess,
+      env: {},
+    });
+    expect(result.status).toBe('replacement_not_confirmed');
+    expect(readDaemonState).not.toHaveBeenCalled();
+    expect(exitProcess).not.toHaveBeenCalled();
   });
 
   it('keeps the current daemon alive when the replacement is not confirmed', async () => {
     const spawnDetachedDaemonStartSync = vi.fn(async () => ({ unref: vi.fn() }));
     const readDaemonState = vi.fn(async () => makeState({ pid: process.pid, startedWithCliVersion: '1.0.0' }));
     const exitProcess = vi.fn();
-
-    const { requestDaemonSelfRestart } = await import('./requestDaemonSelfRestart');
 
     const result = await requestDaemonSelfRestart({
       runtimeId: 'runtime-1',
@@ -116,8 +135,6 @@ describe('requestDaemonSelfRestart', () => {
     }));
     const confirmReplacementState = vi.fn(async () => true);
     const exitProcess = vi.fn();
-
-    const { requestDaemonSelfRestart } = await import('./requestDaemonSelfRestart');
 
     const result = await requestDaemonSelfRestart({
       runtimeId: 'runtime-1',

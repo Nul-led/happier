@@ -43,6 +43,7 @@ function createDeps(
         pinThresholdPx: 72,
         platformOS: 'ios',
         routeHydrationPending: false,
+        rendererDataKey: 'session-a',
         sessionId: 'session-a',
         sessionOpenLatch: {
             onNativeFirstPaintFallbackDeadline: () => ({ effects: [] }),
@@ -164,6 +165,38 @@ describe('web Legend renderer-ready first-paint presentation', () => {
             hook.getCurrent().recordEntryOwnerOutcome({
                 outcome: 'confirmed',
                 sessionId: 'session-a',
+            });
+        });
+        expect(hook.getCurrent().showFirstPaintPlaceholder).toBe(false);
+
+        await hook.unmount();
+    });
+
+    it('accepts renderer settlement for a scoped dataset after the entry owner falls back', async () => {
+        const rendererDataKey = '["home-a","session-a"]';
+        const hook = await renderHook(
+            (deps: TranscriptFirstPaintStateDeps) => useTranscriptFirstPaintState(deps),
+            { initialProps: createDeps({ platformOS: 'web', rendererDataKey }) },
+        );
+
+        act(() => {
+            hook.getCurrent().onEntryPlacementEvent({
+                dataKey: rendererDataKey,
+                itemId: 'row-42',
+                platform: 'web',
+                type: 'started',
+            });
+            hook.getCurrent().recordEntryOwnerOutcome({ outcome: 'fallback', sessionId: 'session-a' });
+        });
+        expect(hook.getCurrent().showFirstPaintPlaceholder).toBe(true);
+
+        act(() => {
+            hook.getCurrent().onEntryPlacementEvent({
+                dataKey: rendererDataKey,
+                itemId: 'row-42',
+                outcome: 'settled',
+                platform: 'web',
+                type: 'finished',
             });
         });
         expect(hook.getCurrent().showFirstPaintPlaceholder).toBe(false);

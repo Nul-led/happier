@@ -3,7 +3,7 @@ import type { SessionFollowSourceKeyPreparationResultV1 } from '@happier-dev/pro
 
 import { resolveExternalActionServerRequestHeaders } from '@/api/externalActionExecutionAuthorization';
 import type { ExternalActionMachineRequestSigningKey } from '@/api/externalActionExecutionAuthorization';
-import { resolveServerHttpBaseUrl, runWithServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
+import { normalizeServerHttpBaseUrl, resolveServerHttpBaseUrl, runWithServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
 import type { CliServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
 import type { StoredCredentials } from '@/persistence';
 import { openSessionDataEncryptionKey } from '@/api/client/openSessionDataEncryptionKey';
@@ -20,13 +20,14 @@ export type SessionFollowSourceKeyPreparationAfterSet = (input: Readonly<{
 }>) => Promise<SessionFollowSourceKeyPreparationResultV1>;
 
 /**
- * Binds the shared post-commit Follow preparation leaf to one authenticated
+ * Binds the shared post-commit context-relation preparation leaf to one authenticated
  * Account/Home runtime. The public edge mutation remains committed when this
  * optional preparation cannot run; the family adapter projects that partial
  * completion as an explicit waiting result.
  */
 export function createSessionFollowSourceKeyPreparationAfterSet(input: Readonly<{
   credentials: StoredCredentials;
+  effectActionId?: 'session.follow.sources.set' | 'session.reports_to.set' | 'session.spawn_new';
   serverHttpBaseUrl?: string;
   serverIdentityId?: string;
   resolveServerFeaturesSnapshot?: () =>
@@ -36,12 +37,17 @@ export function createSessionFollowSourceKeyPreparationAfterSet(input: Readonly<
   externalActionMachineRequestPrivateKey?: ExternalActionMachineRequestSigningKey;
   externalActionMachineInstallationId?: string;
 }>): SessionFollowSourceKeyPreparationAfterSet {
-  const serverHttpBaseUrl = input.serverHttpBaseUrl ?? resolveServerHttpBaseUrl();
+  const serverHttpBaseUrl = normalizeServerHttpBaseUrl(input.serverHttpBaseUrl ?? resolveServerHttpBaseUrl());
+  const effectActionId = input.effectActionId ?? 'session.follow.sources.set';
 
   return async ({ sourceSessionId, destinationSessionId, context, signal }) => await runWithServerHttpBaseUrl(
     serverHttpBaseUrl,
     async () => {
-      const homeServerIdentityId = input.serverIdentityId;
+      // Active-Home Action composition enriches the invocation context from
+      // the authenticated feature snapshot. Reuse that identity when the
+      // constructor was created before the snapshot was available; fixed-Home
+      // executors still retain their explicitly bound identity as authority.
+      const homeServerIdentityId = input.serverIdentityId ?? context.serverIdentityId;
       const resolveAuthorizationHeaders = (request: Readonly<{
         method: 'GET' | 'POST';
         path: string;
@@ -49,7 +55,7 @@ export function createSessionFollowSourceKeyPreparationAfterSet(input: Readonly<
       }>): Readonly<Record<string, string>> | null => {
         const resolved = resolveExternalActionServerRequestHeaders({
           context,
-          effectActionId: 'session.follow.sources.set',
+          effectActionId,
           method: request.method,
           path: request.path,
           ...(request.body === undefined ? {} : { body: request.body }),
@@ -113,7 +119,7 @@ export function createSessionFollowSourceKeyPreparationAfterSet(input: Readonly<
           && input.externalActionMachineRequestPrivateKey
           ? {
               context,
-              effectActionId: 'session.follow.sources.set',
+              effectActionId,
               installationId: input.externalActionMachineInstallationId,
               privateKey: input.externalActionMachineRequestPrivateKey,
             }

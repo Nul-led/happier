@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   acquireHomeCarrierByPolicy,
   drainRetainedHomeCarrierReleases,
+  readHomeApplicationCarrierEligibilityFromEnv,
 } from './homeCarrierPolicy';
 import { enrollmentPollingBackoffMs } from './index';
 
@@ -17,6 +18,16 @@ const descriptor = {
     { kind: 'iroh' as const, endpointId, relayUrls: ['https://relay.example.test/'] },
   ],
 };
+
+describe('client-local Home carrier selection', () => {
+  it('selects Standard only from the operator environment and rejects unknown values', () => {
+    expect(readHomeApplicationCarrierEligibilityFromEnv({})).toBe('automatic');
+    expect(readHomeApplicationCarrierEligibilityFromEnv({ HAPPIER_HOME_CARRIER_POLICY: 'standard_only' })).toBe('standard_only');
+    expect(readHomeApplicationCarrierEligibilityFromEnv({ HAPPIER_HOME_CARRIER_POLICY: 'AUTOMATIC' })).toBe('automatic');
+    expect(() => readHomeApplicationCarrierEligibilityFromEnv({ HAPPIER_HOME_CARRIER_POLICY: 'disabled' }))
+      .toThrow('HAPPIER_HOME_CARRIER_POLICY');
+  });
+});
 
 describe('acquireHomeCarrierByPolicy', () => {
   it('bypasses Iroh entirely when application carriers are standard-only', async () => {

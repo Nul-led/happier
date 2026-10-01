@@ -86,6 +86,7 @@ describe('Composer media stage download handler', () => {
     const recipient = createTransferRecipientKeyPair();
     const initResponse = await init({
       t: 'composer_media_stage_inspect_v1',
+      sessionId: 'session-a',
       handle: finalized.handle,
       offset: 2,
       maxBytes: 5,

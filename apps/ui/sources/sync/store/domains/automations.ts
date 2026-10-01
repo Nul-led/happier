@@ -9,6 +9,7 @@ import {
 } from '@/sync/domains/automations/automationDefinitionProjection';
 import { getAutomationDefinitionRunCauseAt } from '@/sync/domains/automations/automationRunCause';
 import { loadSyncTuning } from '@/sync/runtime/syncTuning';
+import { sameStrictJsonValue, type WorkflowTriggerSetV1 } from '@happier-dev/protocol';
 
 import type { StoreGet, StoreSet } from './_shared';
 import {
@@ -38,6 +39,55 @@ type AutomationRunTraversal = Readonly<{
  * list cannot render two versions of the same Run.
  */
 type AutomationRunsSlice = WorkflowRunsDomain;
+
+function mergeTriggerSets(previous: AutomationsDomain['workflowTriggerSetsById'], incoming: readonly WorkflowTriggerSetV1[]) {
+    let next: Record<string, WorkflowTriggerSetV1> | null = null;
+    for (const value of incoming) {
+        const known = (next ?? previous)[value.automationId];
+        if (known && (known.revision > value.revision || sameStrictJsonValue(known, value))) continue;
+        next ??= { ...previous };
+        next[value.automationId] = value;
+    }
+    return next ?? previous;
+}
+
+const EMPTY_TRIGGER_SETS: readonly WorkflowTriggerSetV1[] = [];
+/** One reader instance per mounted query; unrelated queries keep the same selected value. */
+export function createWorkflowTriggerSetSelector(queryKey: string, includeEmpty = false) {
+    let previous: readonly WorkflowTriggerSetV1[] = EMPTY_TRIGGER_SETS;
+    let previousFacts: AutomationsDomain['workflowTriggerSetsById'] | null = null;
+    let previousIds: readonly string[] | undefined;
+    return (state: Pick<AutomationsDomain, 'workflowTriggerSetsById' | 'workflowTriggerSetIdsByQuery'>) => {
+        const ids = state.workflowTriggerSetIdsByQuery[queryKey];
+        if (previousFacts === state.workflowTriggerSetsById && previousIds === ids) return previous;
+        previousFacts = state.workflowTriggerSetsById;
+        previousIds = ids;
+        const next = (ids ?? []).flatMap((id) => {
+            const value = state.workflowTriggerSetsById[id];
+            // 0.2 Manual Automations still own their prompt even without a scheduled trigger.
+            return value && (includeEmpty || value.triggers.length > 0 || (queryKey === 'account_inline' && value.legacy)) ? [value] : [];
+        });
+        if (next.length === previous.length && next.every((value, index) => previous[index] === value)) return previous;
+        previous = next;
+        return previous;
+    };
+}
+
+/** Automation sync is the invalidation signal, not a second opened-content owner. */
+export function createWorkflowTriggerChangeSelector(sessionId: string | null) {
+    let previous: AutomationsDomain['automations'] | null = null;
+    let signal = '';
+    return (state: Pick<AutomationsDomain, 'automations'>) => {
+        if (previous === state.automations) return signal;
+        previous = state.automations;
+        signal = Object.values(state.automations)
+            .filter((automation) => sessionId === null
+                ? !automation.scopeSessionId && !automation.workflowDefinitionId
+                : automation.scopeSessionId === sessionId)
+            .map((automation) => `${automation.id}:${automation.updatedAt}:${automation.lastRunAt}`).join('|');
+        return signal;
+    };
+}
 
 function retainCurrentDefinitionDetail(params: Readonly<{
     previous: AutomationDefinition | undefined;
@@ -70,6 +120,11 @@ function retainCurrentDefinitionDetail(params: Readonly<{
 }
 
 export type AutomationsDomain = {
+    /** Opened trigger content lives once; surfaces retain only query membership and drafts. */
+    workflowTriggerSetsById: Readonly<Record<string, WorkflowTriggerSetV1>>;
+    workflowTriggerSetIdsByQuery: Readonly<Record<string, readonly string[]>>;
+    applyWorkflowTriggerSetPage: (input: Readonly<{ queryKey: string; sets: readonly WorkflowTriggerSetV1[] }>) => void;
+    upsertWorkflowTriggerSet: (input: Readonly<{ queryKey?: string; set: WorkflowTriggerSetV1 }>) => void;
     automations: Record<string, AutomationDefinition>;
     automationDefinitionNextCursor: string | null;
     automationDefinitionWindowExtended: boolean;
@@ -289,6 +344,40 @@ export function createAutomationsDomain<S extends AutomationsDomain & Automation
     const runTraversalTokensByAutomationId = new Map<string, number>();
 
     return {
+        workflowTriggerSetsById: {},
+        workflowTriggerSetIdsByQuery: {},
+        applyWorkflowTriggerSetPage: ({ queryKey, sets }) => {
+            set((state) => {
+                const facts = mergeTriggerSets(state.workflowTriggerSetsById, sets);
+                const ids = sets.map((value) => value.automationId);
+                const previous = state.workflowTriggerSetIdsByQuery[queryKey];
+                const unchanged = previous !== undefined && ids.length === previous.length && ids.every((id, index) => previous[index] === id);
+                if (facts === state.workflowTriggerSetsById && unchanged) return state;
+                return {
+                    ...state,
+                    workflowTriggerSetsById: facts,
+                    workflowTriggerSetIdsByQuery: unchanged ? state.workflowTriggerSetIdsByQuery
+                        : { ...state.workflowTriggerSetIdsByQuery, [queryKey]: ids },
+                };
+            });
+        },
+        upsertWorkflowTriggerSet: ({ queryKey, set: written }) => {
+            set((state) => {
+                const facts = mergeTriggerSets(state.workflowTriggerSetsById, [written]);
+                if ((state.workflowTriggerSetsById[written.automationId]?.revision ?? -1) > written.revision) return state;
+                let windows = state.workflowTriggerSetIdsByQuery;
+                // Retargeting an Account inline set to a saved workflow moves
+                // its membership; it is not still an inline trigger row.
+                if (queryKey?.startsWith('workflow:') && windows.account_inline?.includes(written.automationId)) {
+                    windows = { ...windows, account_inline: windows.account_inline.filter((id) => id !== written.automationId) };
+                }
+                if (queryKey && !(windows[queryKey] ?? []).includes(written.automationId)) {
+                    windows = { ...windows, [queryKey]: [...(windows[queryKey] ?? []), written.automationId] };
+                }
+                if (facts === state.workflowTriggerSetsById && windows === state.workflowTriggerSetIdsByQuery) return state;
+                return { ...state, workflowTriggerSetsById: facts, workflowTriggerSetIdsByQuery: windows };
+            });
+        },
         automations: {},
         automationDefinitionNextCursor: null,
         automationDefinitionWindowExtended: false,

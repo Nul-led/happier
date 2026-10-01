@@ -21,12 +21,12 @@ function createSessionBoardActionAdapter(options: Omit<Parameters<typeof createA
 }
 
 describe('Session Board Action adapter', () => {
-    it('creates only an exact available sessionWidget from the current projection', async () => {
+    it('creates only an exact available widget from the current projection', async () => {
         const installed = { ...item, source: { kind: 'installedSurface', surface: { pluginId: 'acme.widgets', localId: 'status' } } } as const;
-        const binding = normalizePluginUiInlineSurfaceBindingV1({ pluginId: 'acme.widgets', surfaceId: 'status', rendererId: 'native', role: 'sessionWidget', target: { kind: 'session' } });
+        const binding = normalizePluginUiInlineSurfaceBindingV1({ pluginId: 'acme.widgets', surfaceId: 'status', rendererId: 'native', role: 'widget', target: { kind: 'session' } });
         if (!binding) throw new Error('invalid fixture');
         const projection: PluginUiProjectionModel = { ...EMPTY_PLUGIN_UI_PROJECTION, surfacePlacementsById: {
-            status: { id: 'status', pluginId: 'acme.widgets', contributionKind: 'surfacePlacement', descriptorId: 'status', binding,
+            status: { id: 'status', pluginId: 'acme.widgets', occurrenceId: 'acme-widgets-occurrence-current', contributionKind: 'surfacePlacement', descriptorId: 'status', binding,
                 target: binding.target, renderer: { kind: 'declarative', contributionId: 'native' }, display: { title: 'Status' }, headerActions: [],
                 availability: { state: 'available', reason: 'available', diagnostics: [] } },
         } };
@@ -73,6 +73,40 @@ describe('Session Board Action adapter', () => {
         await expect(execute({ actionId: 'session.board.item.upsert', context: {}, input: { sessionId: session.sessionId,
             itemId: 'status', expectedItemRevision: revision, item: { ...installed, source: { ...installed.source, surface: { ...installed.source.surface, localId: 'other' } } } } })).resolves.toMatchObject({ errorCode: 'session_board_source_conflict' });
         expect(writes).toHaveLength(1);
+    });
+    it('acknowledges the requested second view when an item already placed elsewhere gains another placement', async () => {
+        const layout = { v: 1, tabs: [
+            { id: 'overview', title: 'Overview', items: [{ itemId: 'note', width: 'medium' }] },
+            { id: 'second', title: 'Second', items: [] },
+        ] };
+        let committedLayout: unknown;
+        const request = async (path: string, init?: RequestInit) => {
+            if (init?.method === 'PUT') {
+                committedLayout = JSON.parse(String(init.body)).placement.layoutContent.v;
+                return new Response(JSON.stringify({ operation: 'upsert_item', itemId: 'note', outcome: 'updated', itemRevision: revision, layoutRevision: revision }));
+            }
+            const query = new URL(path, 'https://example.invalid').searchParams;
+            const address = { owner: query.get('owner'), namespace: query.get('namespace'), kind: query.get('kind'), localId: query.get('localId') };
+            return new Response(JSON.stringify({ record: {
+                id: address.kind === 'layout.v1' ? 'layout-row' : 'item-row', address,
+                content: { t: 'plain', v: address.kind === 'layout.v1' ? layout : item }, revision,
+                createdAt: '2026-09-05T00:00:00.000Z', updatedAt: '2026-09-05T00:00:00.000Z',
+            } }));
+        };
+        const adapter = createSessionBoardActionAdapter({ scope, session, request, contentContext: { mode: 'plain' },
+            capabilities: { readTranscript: true, editSessionRecords: true } });
+        // The real executor's strict result correspondence is the deciding consumer.
+        const executor = createActionExecutor({ sessionBoardAction: adapter, isActionApprovalRequired: () => false } as unknown as ActionExecutorDeps);
+        const input = { sessionId: session.sessionId, itemId: 'note', expectedItemRevision: revision, item,
+            placement: { tabId: 'second', width: 'wide' as const } };
+        const result = await executor.execute('session.board.item.upsert', input, {
+            surface: 'ui', authority: 'present_user', serverId: scope.serverId, defaultSessionId: session.sessionId,
+        });
+        expect(committedLayout).toMatchObject({ tabs: [
+            { id: 'overview', items: [{ itemId: 'note', width: 'medium' }] },
+            { id: 'second', items: [{ itemId: 'note', width: 'wide' }] },
+        ] });
+        expect(result).toMatchObject({ ok: true, result: { destination: { tabId: 'second', width: 'wide' } } });
     });
     it('invalidates the canonical record projection after a committed mutation', async () => {
         const layout = { v: 1, tabs: [{ id: 'overview', title: 'Overview', items: [] }] };
@@ -524,6 +558,58 @@ describe('Session Board Action adapter', () => {
         });
         expect(await execute({ actionId: 'session.board.get', input: { sessionId: 'session-one' }, context: {} })).toMatchObject({
             layout: null, items: [{ itemId: 'note', title: 'Note', sourceKind: 'declarative', revision }], incomplete: true, page: { cursor: 'page-two', hasNext: true },
+        });
+    });
+    it.each([
+        ['forbidden', 403, 'plugin_session_record_forbidden'],
+        ['feature_disabled', 404, 'plugin_session_record_feature_disabled'],
+        ['offline', 0, ''],
+    ] as const)('preserves %s from an explicit item read after layout success', async (errorCode, status, code) => {
+        const execute = createSessionBoardActionAdapter({
+            scope, session, contentContext: { mode: 'plain' },
+            capabilities: { readTranscript: true, editSessionRecords: true },
+            // Only HTTP is replaced; record transport, repository and failure projection remain real.
+            request: async (path) => {
+                const query = new URL(path, 'https://home-a').searchParams;
+                if (query.get('kind') === 'layout.v1') return new Response(JSON.stringify({ record: null }));
+                if (status === 0) throw new TypeError('Network request failed');
+                return new Response(JSON.stringify({ error: 'Plugin Session system record operation failed', code }), { status });
+            },
+        });
+
+        await expect(execute({ actionId: 'session.board.get', context: {},
+            input: { sessionId: session.sessionId, itemIds: ['note'] },
+        })).resolves.toEqual({
+            ok: false, errorCode, error: errorCode,
+            ...(errorCode === 'feature_disabled' ? { details: { operation: 'session.board.get' } } : {}),
+        });
+    });
+    it('preserves readable explicit items while marking missing and corrupt items incomplete', async () => {
+        const encryption = new SessionEncryption(session.sessionId, new SecretBoxEncryption(new Uint8Array(32).fill(7)), new EncryptionCache());
+        const readableContent = await encryption.encryptRaw(item);
+        const malformedContent = await encryption.encryptRaw({ v: 1 });
+        const execute = createSessionBoardActionAdapter({
+            scope, session, contentContext: { mode: 'e2ee', encryption },
+            capabilities: { readTranscript: true, editSessionRecords: false },
+            request: async (path) => {
+                const query = new URL(path, 'https://home-a').searchParams;
+                const localId = query.get('localId');
+                if (query.get('kind') === 'layout.v1' || localId === 'missing') return new Response(JSON.stringify({ record: null }));
+                return new Response(JSON.stringify({ record: {
+                    id: `row-${localId}`, address: { owner: 'host', namespace: 'surface', kind: 'item.v1', localId }, revision,
+                    content: { t: 'encrypted', c: localId === 'note' ? readableContent : localId === 'malformed' ? malformedContent : 'AAAA' },
+                    createdAt: '2026-09-05T00:00:00.000Z', updatedAt: '2026-09-05T00:00:00.000Z',
+                } }));
+            },
+        });
+
+        await expect(execute({ actionId: 'session.board.get', context: {},
+            input: { sessionId: session.sessionId, itemIds: ['note', 'missing', 'corrupt', 'malformed'] },
+        })).resolves.toEqual({
+            v: 1, serverId: scope.serverId, sessionId: session.sessionId,
+            capabilities: { readTranscript: true, editSessionRecords: false }, layout: null,
+            items: [{ itemId: 'note', revision, title: item.title, sourceKind: 'declarative', item }],
+            incomplete: true, page: { cursor: null, hasNext: false },
         });
     });
     it.each(['session.board.layout.update', 'session.board.item.remove'] as const)('uses the exact complete layout for %s', async (actionId) => {

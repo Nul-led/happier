@@ -10,6 +10,7 @@ import type { CustomModalInjectedProps } from '@/modal/types';
 import { useModalCardChrome } from '@/modal/components/card/useModalCardChrome';
 import {
     formatSessionReminderPresetRuleLabel,
+    SessionReminderPresetConflictError,
     sessionReminderPresetRuleKey,
     type SessionReminderPresetV1,
 } from '@/sync/domains/session/organization/sessionReminderPreset';
@@ -27,20 +28,33 @@ function moveItem(items: readonly SessionReminderPresetV1[], from: number, to: n
 
 export function SessionReminderPresetManagerModal(props: Readonly<{
     presets: readonly SessionReminderPresetV1[];
+    onSubmit: (value: SessionReminderPresetV1[]) => Promise<void>;
     onResolve: (value: SessionReminderPresetV1[] | null) => void;
 }> & CustomModalInjectedProps) {
     const { theme } = useUnistyles();
     const [drafts, setDrafts] = React.useState<SessionReminderPresetV1[]>(() => [...props.presets]);
+    const [saving, setSaving] = React.useState(false);
+    const [error, setError] = React.useState<string | null>(null);
     const finish = React.useCallback((value: SessionReminderPresetV1[] | null) => {
         props.onResolve(value);
         props.onClose();
     }, [props]);
     const footer = React.useMemo(() => (
         <View style={{ paddingHorizontal: 16, paddingVertical: 12, flexDirection: 'row', justifyContent: 'flex-end', gap: 10 }}>
-            <RoundButton display="inverted" title={t('common.cancel')} onPress={() => finish(null)} />
-            <RoundButton title={t('common.save')} onPress={() => finish(drafts)} />
+            <RoundButton display="inverted" title={t('common.cancel')} disabled={saving} onPress={() => finish(null)} />
+            <RoundButton title={t('common.save')} disabled={saving} loading={saving} onPress={() => {
+                if (saving) return;
+                setSaving(true);
+                setError(null);
+                void props.onSubmit(drafts).then(() => finish(drafts), (cause: unknown) => {
+                    setSaving(false);
+                    setError(cause instanceof SessionReminderPresetConflictError
+                        ? t('sessionsList.reminders.presetsChanged')
+                        : t('sessionsList.reminders.presetsSaveFailed'));
+                });
+            }} />
         </View>
-    ), [drafts, finish]);
+    ), [drafts, finish, props.onSubmit, saving]);
 
     useModalCardChrome(props.setChrome, React.useMemo(() => ({
         kind: 'card' as const,
@@ -77,6 +91,7 @@ export function SessionReminderPresetManagerModal(props: Readonly<{
                 >
                     <View style={{ flex: 1, gap: 4 }}>
                         <TextInput
+                            editable={!saving}
                             value={preset.label ?? ''}
                             placeholder={formatSessionReminderPresetRuleLabel(preset.rule)}
                             placeholderTextColor={theme.colors.text.secondary}
@@ -91,7 +106,7 @@ export function SessionReminderPresetManagerModal(props: Readonly<{
                     <Pressable
                         accessibilityRole="button"
                         accessibilityLabel={t('sessionsList.reminders.movePresetUpLabel', { preset: effectivePresetLabel })}
-                        disabled={index === 0}
+                        disabled={saving || index === 0}
                         onPress={() => setDrafts((current) => moveItem(current, index, index - 1))}
                         style={({ pressed }) => ({ width: 48, height: 48, alignItems: 'center', justifyContent: 'center', opacity: index === 0 ? 0.28 : pressed ? motionTokens.press.opacity : 1 })}
                     >
@@ -100,7 +115,7 @@ export function SessionReminderPresetManagerModal(props: Readonly<{
                     <Pressable
                         accessibilityRole="button"
                         accessibilityLabel={t('sessionsList.reminders.movePresetDownLabel', { preset: effectivePresetLabel })}
-                        disabled={index === drafts.length - 1}
+                        disabled={saving || index === drafts.length - 1}
                         onPress={() => setDrafts((current) => moveItem(current, index, index + 1))}
                         style={({ pressed }) => ({ width: 48, height: 48, alignItems: 'center', justifyContent: 'center', opacity: index === drafts.length - 1 ? 0.28 : pressed ? motionTokens.press.opacity : 1 })}
                     >
@@ -109,6 +124,7 @@ export function SessionReminderPresetManagerModal(props: Readonly<{
                     <Pressable
                         accessibilityRole="button"
                         accessibilityLabel={t('sessionsList.reminders.deletePresetLabel', { preset: effectivePresetLabel })}
+                        disabled={saving}
                         onPress={() => setDrafts((current) => current.filter((_, presetIndex) => presetIndex !== index))}
                         style={({ pressed }) => ({ width: 48, height: 48, alignItems: 'center', justifyContent: 'center', opacity: pressed ? motionTokens.press.opacity : 1 })}
                     >
@@ -117,6 +133,7 @@ export function SessionReminderPresetManagerModal(props: Readonly<{
                 </View>
                 );
             })}
+            {error ? <Text testID="session-reminder-presets-error" accessibilityLiveRegion="polite" style={{ color: theme.colors.text.primary }}>{error}</Text> : null}
             {drafts.length === 0 ? (
                 <View style={{ paddingVertical: 30, alignItems: 'center', gap: 7 }}>
                     <Text style={{ ...Typography.default('semiBold'), color: theme.colors.text.primary }}>{t('sessionsList.reminders.noPresets')}</Text>

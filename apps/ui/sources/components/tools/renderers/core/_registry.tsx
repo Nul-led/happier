@@ -2,8 +2,8 @@ import type { Session } from '@/sync/domains/state/storageTypes';
 import * as React from 'react';
 import { EditView } from '../fileOps/EditView';
 import { BashView } from '../system/BashView';
-import { Message, ToolCall } from '@/sync/domains/messages/messageTypes';
-import { Metadata } from '@/sync/domains/state/storageTypes';
+import { Message, ToolCall } from "@happier-dev/session-core/messages";
+import { Metadata } from '@happier-dev/session-core/state';
 import { WriteView } from '../fileOps/WriteView';
 import { TodoView } from '../workflow/TodoView';
 import { ExitPlanToolView } from '../workflow/ExitPlanToolView';
@@ -35,6 +35,7 @@ import { TaskStopView } from '../system/TaskStopView';
 import { KnownCanonicalToolNameV2Schema, type KnownCanonicalToolNameV2 } from '@happier-dev/protocol';
 import { normalizeToolNameForView } from '@/components/tools/normalization/policy/normalizeToolNameForView';
 import type { TranscriptInteraction } from '@/utils/sessions/deriveTranscriptInteraction';
+import type { ExecutionRunPromptResponseTarget } from '@/components/tools/shell/permissions/executionRunPromptResponseTarget';
 
 export type ToolViewDetailLevel = 'title' | 'summary' | 'full';
 
@@ -48,6 +49,11 @@ export type ToolViewProps = {
     messageId?: string;
     detailLevel?: ToolViewDetailLevel;
     interaction?: TranscriptInteraction;
+    /**
+     * Set only when a prompt card answers this pending request for an Execution
+     * Run; the view then has no Session and must not answer through one.
+     */
+    executionRun?: ExecutionRunPromptResponseTarget;
 }
 
 // Type for tool view components

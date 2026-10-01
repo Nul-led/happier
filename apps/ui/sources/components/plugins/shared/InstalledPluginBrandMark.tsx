@@ -36,7 +36,7 @@ export function InstalledPluginBrandMark(props: InstalledPluginBrandMarkProps): 
             size={props.size}
             externallyLabelled={props.externallyLabelled}
             theme={presentationTheme}
-            colorScheme={theme.dark ? 'dark' : 'light'}
+            monochrome={props.brand.monochrome}
             testID={props.pixelSize === undefined ? props.testID : undefined}
         />
     );

@@ -1256,6 +1256,14 @@ export async function prepareCurrentManagedStackDeclarativeLifecycleFixture(para
  * would not produce. There is no second fixture source and no second rewrite
  * rule.
  */
+export function shouldStageCurrentSourceNativePublicFixturePath(source: string): boolean {
+  return !source.includes('/dist/')
+    && !source.includes('/.happier-plugin/')
+    && !source.includes('/.happier-plugin-ui-staging/')
+    && !source.endsWith('/.happier-plugin-ui-staging')
+    && !source.endsWith('/node_modules');
+}
+
 export async function stageCurrentSourceNativePublicFixtureSource(params: Readonly<{
   root: string;
   pluginId: string;
@@ -1263,10 +1271,7 @@ export async function stageCurrentSourceNativePublicFixtureSource(params: Readon
 }>): Promise<void> {
   await cp(CURRENT_SOURCE_NATIVE_PUBLIC_FIXTURE_ROOT, params.root, {
     recursive: true,
-    filter: (source) => !source.includes('/dist/')
-      && !source.includes('/.happier-plugin/')
-      && !source.includes('/.happier-plugin-ui-build-')
-      && !source.endsWith('/node_modules'),
+    filter: shouldStageCurrentSourceNativePublicFixturePath,
   });
   const indexPath = join(params.root, 'index.ts');
   const revisionPath = join(params.root, 'revision.ts');
@@ -1776,7 +1781,6 @@ export function buildCurrentManagedStackSessionAgentInstallArgs(sourceRoot: stri
     'install',
     sourceRoot,
     '--dev',
-    '--trust',
     '--json',
   ]);
 }

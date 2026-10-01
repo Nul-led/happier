@@ -41,7 +41,7 @@ describe('happier session run action (action executor)', () => {
       expect(execute).toHaveBeenCalledWith(
         'execution.run.action',
         { sessionId: 'sess-1', runId: 'run-1', actionId: 'action-1', input: { a: 1 } },
-        { surface: 'cli', authority: 'present_user', defaultSessionId: null },
+        { surface: 'cli', defaultSessionId: null },
       );
 
       expect(output.json()).toEqual(expect.objectContaining({
@@ -57,6 +57,26 @@ describe('happier session run action (action executor)', () => {
     } finally {
       output.restore();
     }
+  });
+
+  it('refuses malformed argv and an invalid run Action request before reading credentials', async () => {
+    const { handleSessionCommand } = await import('../handleSessionCommand');
+    const readCredentialsFn = vi.fn(async () => ({ token: 'token_test', encryption: null }));
+    const executionsBefore = execute.mock.calls.length;
+    for (const argv of [
+      ['run', 'action', 'sess-1', 'run-1', 'resume', '--not-an-option', '--json'],
+      ['run', 'action', 'sess-1', 'run-1', 'resume', 'surplus', '--json'],
+      ['run', 'action', 'sess-1', 'run-1', 'resume', '--input-json', '{', '--json'],
+    ]) {
+      const output = captureConsoleJsonOutput();
+      try {
+        await handleSessionCommand(argv, { readCredentialsFn }).catch(() => undefined);
+      } finally {
+        output.restore();
+      }
+    }
+    expect(readCredentialsFn).not.toHaveBeenCalled();
+    expect(execute.mock.calls.length).toBe(executionsBefore);
   });
 
   it('does not resolve an API-token Session through the generic transport', async () => {

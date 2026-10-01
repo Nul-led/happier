@@ -83,16 +83,19 @@ const IDENTITY = Object.freeze({
     pluginId: 'happier.agent.opencode',
     pluginVersion: '1.0.0',
     agentId: 'opencode',
-    generation: 'gen-1',
+    occurrenceId: 'occurrence-1',
 });
 
 const READ_INPUT = Object.freeze({
     identity: Object.freeze({
         pluginId: IDENTITY.pluginId,
         agentId: IDENTITY.agentId,
-        generation: IDENTITY.generation,
+        occurrenceId: IDENTITY.occurrenceId,
         contributionQualifiedId: 'happier.agent.opencode/agents/opencode',
-        immutableGenerationId: null,
+        sourceCustody: {
+            kind: 'development' as const,
+            registeredRootId: 'test-source-root',
+        },
     }),
     source: Object.freeze({ kind: 'opencode' }),
     signal: new AbortController().signal,
@@ -115,7 +118,7 @@ describe('contribution-owned managed endpoint read host', () => {
             identity: IDENTITY,
             createAgentInvocationServices: failingThenWorking,
             cwd: '/tmp',
-            isGenerationActive: () => true,
+            isOccurrenceActive: () => true,
             retirementSignal: new AbortController().signal,
         });
         expect(host).not.toBeNull();
@@ -136,7 +139,7 @@ describe('contribution-owned managed endpoint read host', () => {
             identity: IDENTITY,
             createAgentInvocationServices: async () => services,
             cwd: '/tmp',
-            isGenerationActive: () => true,
+            isOccurrenceActive: () => true,
             retirementSignal: new AbortController().signal,
         });
         const attachedRead = await host!.attachedOnly(READ_INPUT);
@@ -150,7 +153,7 @@ describe('contribution-owned managed endpoint read host', () => {
             identity: IDENTITY,
             createAgentInvocationServices: async () => createServices(spawnSupervise),
             cwd: '/tmp',
-            isGenerationActive: () => true,
+            isOccurrenceActive: () => true,
             retirementSignal: new AbortController().signal,
         });
         expect(await spawnHost!.attachedOnly(READ_INPUT)).toBeNull();

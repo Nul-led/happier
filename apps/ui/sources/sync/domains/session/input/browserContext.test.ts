@@ -101,7 +101,7 @@ function createAttachedSecretUrlContextState() {
         viewId: 'view_1',
         target,
         page: {
-            url: 'https://preview.localhost.test/dashboard?previewToken=secret&publicToken=secret&token=secret&code=secret#secret',
+            url: 'https://preview.localhost.test/reset/tok9f8e7d6c5b4a3210ffeeddcc?previewToken=secret&publicToken=secret&token=secret&code=secret#secret',
             title: 'Dashboard',
             faviconUrl: 'https://preview.localhost.test/favicon.ico?token=secret#secret',
             navigationGeneration: 2,
@@ -150,7 +150,7 @@ describe('buildBrowserContextMessageMetaOverrides', () => {
         });
     });
 
-    it('does not project page-reference URL query or fragment values into message metadata', () => {
+    it('does not project page-reference URL token paths, query or fragment values into message metadata', () => {
         const result = buildBrowserContextMessageMetaOverrides({
             state: createAttachedSecretUrlContextState(),
         });
@@ -164,7 +164,7 @@ describe('buildBrowserContextMessageMetaOverrides', () => {
                         contexts: [expect.objectContaining({
                             kind: 'browserPageReference',
                             targetId: 'preview_1',
-                            url: 'https://preview.localhost.test/dashboard',
+                            url: 'https://preview.localhost.test/reset/:redacted',
                             faviconUrl: 'https://preview.localhost.test/favicon.ico',
                             redactionLevel: 'metadataOnly',
                         })],
@@ -181,6 +181,7 @@ describe('buildBrowserContextMessageMetaOverrides', () => {
         expect(JSON.stringify(result)).not.toContain('token=');
         expect(JSON.stringify(result)).not.toContain('code=');
         expect(JSON.stringify(result)).not.toContain('#secret');
+        expect(JSON.stringify(result)).not.toContain('tok9f8e7d6c5b4a3210ffeeddcc');
     });
 
     it('blocks send projection when captured context is stale after navigation', () => {

@@ -19,6 +19,7 @@ const WORKFLOW_ACTION_IDS = [
   'workflow.definition.get',
   'workflow.definition.create',
   'workflow.definition.update',
+  'workflow.definition.edit',
   'workflow.definition.delete',
 ] as const;
 
@@ -34,7 +35,7 @@ describe('workflow Action host', () => {
     const list = vi.fn(async () => ({ definitions: [] }));
     const execute = createWorkflowActionExecutor({
       isWorkflowFeatureEnabled: async () => true,
-      definitions: { list, get: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn() },
+      definitions: { list, get: vi.fn(), create: vi.fn(), update: vi.fn(), edit: vi.fn(), delete: vi.fn() },
       runs: { execute: vi.fn() },
     });
 
@@ -48,7 +49,7 @@ describe('workflow Action host', () => {
   it('does not claim target validation when the host has no target diagnostics owner', async () => {
     const execute = createWorkflowActionExecutor({
       isWorkflowFeatureEnabled: async () => true,
-      definitions: { list: vi.fn(), get: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn() },
+      definitions: { list: vi.fn(), get: vi.fn(), create: vi.fn(), update: vi.fn(), edit: vi.fn(), delete: vi.fn() },
       runs: { execute: vi.fn() },
     });
 
@@ -66,13 +67,35 @@ describe('workflow Action host', () => {
     const runExecute = vi.fn(async () => unavailable);
     const execute = createWorkflowActionExecutor({
       isWorkflowFeatureEnabled: async () => true,
-      definitions: { list: vi.fn(), get: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn() },
+      definitions: { list: vi.fn(), get: vi.fn(), create: vi.fn(), update: vi.fn(), edit: vi.fn(), delete: vi.fn() },
       runs: { execute: runExecute },
     });
     await expect(execute({
       actionId: 'workflow.run.get', input: { runId: '550e8400-e29b-41d4-a716-446655440000' }, context: {},
     })).resolves.toEqual(unavailable);
     expect(runExecute).toHaveBeenCalledOnce();
+  });
+
+  it('delegates an exact-Run list selection to the one Run owner without a detail read', async () => {
+    const runExecute = vi.fn(async (_args: Readonly<{ actionId: string }>) => unavailable);
+    const execute = createWorkflowActionExecutor({
+      isWorkflowFeatureEnabled: async () => true,
+      definitions: { list: vi.fn(), get: vi.fn(), create: vi.fn(), update: vi.fn(), edit: vi.fn(), delete: vi.fn() },
+      runs: { execute: runExecute },
+    });
+    // The lean background-refresh selection travels inside the existing
+    // list input. The executor must parse it (not reject it as unknown)
+    // and hand it to the Run owner untouched.
+    await expect(execute({
+      actionId: 'workflow.run.list',
+      input: { runId: '550e8400-e29b-41d4-a716-446655440000', limit: 1 },
+      context: {},
+    })).resolves.toEqual(unavailable);
+    expect(runExecute).toHaveBeenCalledOnce();
+    expect(runExecute.mock.calls[0]?.[0]).toMatchObject({
+      actionId: 'workflow.run.list',
+      input: { runId: '550e8400-e29b-41d4-a716-446655440000', limit: 1 },
+    });
   });
 
   it('covers the complete catalog through one workflow-family executor', async () => {
@@ -82,6 +105,7 @@ describe('workflow Action host', () => {
       get: vi.fn(async () => { called.add('workflow.definition.get'); return unavailable; }),
       create: vi.fn(async () => { called.add('workflow.definition.create'); return unavailable; }),
       update: vi.fn(async () => { called.add('workflow.definition.update'); return unavailable; }),
+      edit: vi.fn(async () => { called.add('workflow.definition.edit'); return unavailable; }),
       delete: vi.fn(async () => { called.add('workflow.definition.delete'); return unavailable; }),
     };
     const execute = createWorkflowActionExecutor({
@@ -99,12 +123,13 @@ describe('workflow Action host', () => {
       'workflow.run.cancel': { runId: '550e8400-e29b-41d4-a716-446655440000', expectedRevision: 1 },
       'workflow.run.invocations.list': { runId: '550e8400-e29b-41d4-a716-446655440000' },
       'workflow.run.invocations.get': { runId: '550e8400-e29b-41d4-a716-446655440000', invocationId: 'invocation-1' },
-      'workflow.run.invocations.retry': { runId: '550e8400-e29b-41d4-a716-446655440000', expectedRevision: 1, invocation: { recordId: 'invocation-1' }, conversation: 'same_conversation', input: { kind: 'original' } },
+      'workflow.run.invocations.retry': { runId: '550e8400-e29b-41d4-a716-446655440000', expectedRevision: 1, invocation: { recordId: 'invocation-1' }, causalInvocationIds: ['invocation-1'], conversation: 'same_conversation', input: { kind: 'original' } },
       'workflow.run.delete': { runId: '550e8400-e29b-41d4-a716-446655440000', expectedRevision: 1 },
       'workflow.definition.list': {},
       'workflow.definition.get': { definitionId: 'definition-1' },
       'workflow.definition.create': { definitionId: 'definition-1', definition: { defaults: { agentTarget: { kind: 'agent', identity: { pluginId: 'happier.agent.test', localId: 'test' } } }, blocks: ['work'] }, metadata: { title: 'Work' } },
       'workflow.definition.update': { definitionId: 'definition-1', expectedRevision: { headerVersion: 1, bodyVersion: 1 }, definition: { defaults: { agentTarget: { kind: 'agent', identity: { pluginId: 'happier.agent.test', localId: 'test' } } }, blocks: ['work'] }, metadata: { title: 'Work' } },
+      'workflow.definition.edit': { definitionId: 'definition-1', expectedRevision: { headerVersion: 1, bodyVersion: 1 }, ops: [{ kind: 'rename', name: 'Changed' }] },
       'workflow.definition.delete': { definitionId: 'definition-1' },
     } as const;
     for (const actionId of WORKFLOW_ACTION_IDS) {
@@ -116,7 +141,7 @@ describe('workflow Action host', () => {
 
   it('fails the whole family closed before parsing or invoking an owner', async () => {
     const definitions = {
-      list: vi.fn(), get: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn(),
+      list: vi.fn(), get: vi.fn(), create: vi.fn(), update: vi.fn(), edit: vi.fn(), delete: vi.fn(),
     };
     const runs = { execute: vi.fn() };
     const execute = createWorkflowActionExecutor({
@@ -143,7 +168,7 @@ describe('workflow Action host', () => {
     const execute = createWorkflowActionExecutor({
       isWorkflowFeatureEnabled: async () => true,
       resolveIngressContext,
-      definitions: { list: vi.fn(), get: vi.fn(), create, update, delete: vi.fn() },
+      definitions: { list: vi.fn(), get: vi.fn(), create, update, edit: vi.fn(), delete: vi.fn() },
       runs: { execute: runExecute },
     });
     const promptOnly = { blocks: ['Work'] };
@@ -156,15 +181,15 @@ describe('workflow Action host', () => {
 
     expect(resolveIngressContext).toHaveBeenCalledTimes(4);
     expect(runExecute).toHaveBeenCalledWith(expect.anything(), ingress);
-    expect(create).toHaveBeenCalledWith(expect.anything(), ingress);
-    expect(update).toHaveBeenCalledWith(expect.anything(), ingress);
+    expect(create).toHaveBeenCalledWith(expect.anything(), ingress, { defaultSessionId: 'session-1' });
+    expect(update).toHaveBeenCalledWith(expect.anything(), ingress, { defaultSessionId: 'session-1' });
   });
 
   it('requires a positive timeout only for Session-bound agent and MCP waits before delegation', async () => {
     const runs = { execute: vi.fn(async () => unavailable) };
     const execute = createWorkflowActionExecutor({
       isWorkflowFeatureEnabled: async () => true,
-      definitions: { list: vi.fn(), get: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn() },
+      definitions: { list: vi.fn(), get: vi.fn(), create: vi.fn(), update: vi.fn(), edit: vi.fn(), delete: vi.fn() },
       runs,
     });
     const input = { runId: '550e8400-e29b-41d4-a716-446655440000' } as const;
@@ -186,7 +211,7 @@ describe('workflow Action host', () => {
     const execute = createWorkflowActionExecutor({
       isWorkflowFeatureEnabled: async () => true,
       resolveTargetValidation,
-      definitions: { list: vi.fn(), get: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn() },
+      definitions: { list: vi.fn(), get: vi.fn(), create: vi.fn(), update: vi.fn(), edit: vi.fn(), delete: vi.fn() },
       runs: { execute: vi.fn() },
     });
 

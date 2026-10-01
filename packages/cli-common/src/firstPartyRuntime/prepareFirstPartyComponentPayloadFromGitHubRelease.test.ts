@@ -178,7 +178,40 @@ describe('prepareFirstPartyComponentPayloadFromGitHubRelease', () => {
             }>;
         }>;
 
-        await expect(prepareFirstPartyComponentPayloadFromGitHubRelease(params)).rejects.toThrow(/acme\/private-hstack/i);
-        await expect(prepareFirstPartyComponentPayloadFromGitHubRelease(params)).rejects.toThrow(/stack-preview/i);
+        const sourceError = await prepareFirstPartyComponentPayloadFromGitHubRelease(params).then(
+            () => null,
+            (cause: unknown) => cause,
+        );
+
+        expect(sourceError).toBeInstanceOf(Error);
+        expect((sourceError as Error).message).toMatch(/acme\/private-hstack/i);
+        expect((sourceError as Error).message).toMatch(/stack-preview/i);
+        expect((sourceError as Error).message).toContain('No GitHub token was configured');
+    });
+
+    it('does not suggest a GitHub token when the release exists but its assets are incomplete', async () => {
+        fetchGitHubReleaseByTagMock.mockResolvedValue({ assets: [] });
+        resolveReleaseAssetBundleMock.mockImplementation(() => {
+            throw new Error('missing release asset: happier-v0.2.12-preview.1-darwin-arm64.tar.gz');
+        });
+
+        const error = await prepareFirstPartyComponentPayloadFromGitHubRelease({
+            componentId: 'happier-cli',
+            channel: 'preview',
+            os: 'darwin',
+            arch: 'arm64',
+            artifactSource: {
+                kind: 'github-release',
+                githubRepo: 'happier-dev/happier',
+                githubToken: '',
+            },
+        }).then(
+            () => null,
+            (cause: unknown) => cause,
+        );
+
+        expect(error).toBeInstanceOf(Error);
+        expect((error as Error).message).toContain('missing release asset');
+        expect((error as Error).message).not.toContain('No GitHub token was configured');
     });
 });

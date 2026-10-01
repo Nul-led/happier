@@ -2,6 +2,7 @@ import {
     orientTranscriptListItems,
     type TranscriptListOrientation,
 } from '@/components/sessions/transcript/listOrientation';
+import type { SessionMessagesTailBoundary } from '@/sync/runtime/sessionMessagesTailDiscontinuity';
 import type { TranscriptLiveTailAnchorReason } from '@/components/sessions/transcript/viewport/lifecycle/transcriptRowClassification';
 import { resolveTranscriptTargetWindowHostFacts } from './useTranscriptTargetWindowHostAdapter';
 import type {
@@ -66,7 +67,8 @@ export function resolveTranscriptRenderWindowProjection<TItem extends RenderWind
     resolveSeq?: (item: TItem) => number | null | undefined;
     resolveLiveTailAnchor?: (items: readonly TItem[]) => Readonly<{ messageId: string; reason?: TranscriptLiveTailAnchorReason | null }> | null;
     sessionId: string;
-    tailContiguousFloorSeq?: number | null;
+    tailContiguousBoundary?: SessionMessagesTailBoundary | null;
+    resolveMessageIds?: (item: TItem) => readonly string[];
     targetWindowState: TranscriptTargetWindowState;
 }>): TranscriptRenderWindowProjection<TItem> {
     const targetWindow = resolveTranscriptTargetWindowHostFacts({
@@ -74,7 +76,8 @@ export function resolveTranscriptRenderWindowProjection<TItem extends RenderWind
         isSeqLoaded: params.isSeqLoaded,
         isSeqRangeLoaded: params.isSeqRangeLoaded,
         resolveSeq: params.resolveSeq,
-        tailContiguousFloorSeq: params.tailContiguousFloorSeq ?? null,
+        tailContiguousBoundary: params.tailContiguousBoundary ?? null,
+        resolveMessageIds: params.resolveMessageIds,
         windowState: params.targetWindowState,
     });
     const canonicalWindowedItems = [

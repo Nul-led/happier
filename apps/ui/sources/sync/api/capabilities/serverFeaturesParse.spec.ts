@@ -4,6 +4,7 @@ import {
     SERVER_FEATURES_RESPONSE_MAX_UTF8_BYTES,
     decodeServerFeaturesResponse,
     parseServerFeatures,
+    readHomeHostFact,
 } from './serverFeaturesParse';
 
 function createValidFeaturesResponse() {
@@ -84,6 +85,14 @@ function createValidFeaturesResponse() {
 }
 
 describe('serverFeaturesParse', () => {
+    it('reads a typed Home host fact and treats absent or invalid facts as unknown', () => {
+        const known = { kind: 'known' as const, machineName: 'Studio', platform: 'linux' as const, mobility: 'portable' as const };
+        const payload = createValidFeaturesResponse();
+        expect(readHomeHostFact(parseServerFeatures({ ...payload, homeHostFact: known }))).toEqual(known);
+        expect(readHomeHostFact(parseServerFeatures(payload))).toEqual({ kind: 'unknown' });
+        expect(readHomeHostFact(parseServerFeatures({ ...payload, homeHostFact: { ...known, mobility: 'maybe' } })))
+            .toEqual({ kind: 'unknown' });
+    });
     it('rejects an oversized response before JSON parsing', async () => {
         const response = new Response(`{"padding":"${'x'.repeat(SERVER_FEATURES_RESPONSE_MAX_UTF8_BYTES)}"}`, {
             headers: { 'content-type': 'application/json' },

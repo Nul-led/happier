@@ -12,7 +12,7 @@ import {
     publishProjectedAgentUiBehaviorDescriptors,
 } from '@/agents/registry/agentUiBehaviorProjection';
 
-import { buildInstallablesBackgroundActionKey, ensureAgentInstallablesBackground } from './ensureAgentInstallablesBackground';
+import { buildInstallablesBackgroundActionKey, ensureAgentInstallablesBackground, ensureMachineUpdateFactsBackground } from './ensureAgentInstallablesBackground';
 
 function buildMissingCodexAcpResults() {
     return {
@@ -36,7 +36,6 @@ const codexAcpPluginProjection = {
     generation: 1,
     installedPackagesById: {},
     agentsById: {},
-    backendsById: {},
     actionsById: {},
     toolsById: {},
     commandsById: {},
@@ -619,6 +618,19 @@ describe('ensureAgentInstallablesBackground', () => {
                 expect.objectContaining({ id: installId, method: 'install' }),
                 expect.anything(),
             );
+        });
+    });
+
+    describe('update facts for every installed agent and helper (R13 (e) summary coverage)', () => {
+        it('asks each machine once, on the shared freshness policy, for every agent CLI with its latest version and every helper', async () => {
+            const prefetchMachineCapabilitiesIfStale = vi.fn(async (_params: { machineId: string; staleMs: number; request: CapabilitiesDetectRequest }) => {});
+            await ensureMachineUpdateFactsBackground({ machineIds: ['m1', 'm2'] }, { prefetchMachineCapabilitiesIfStale });
+            expect(prefetchMachineCapabilitiesIfStale).toHaveBeenCalledTimes(2);
+            const [first] = prefetchMachineCapabilitiesIfStale.mock.calls[0]!;
+            expect(first.staleMs).toBe(24 * 60 * 60 * 1000);
+            const ids = (first.request.requests ?? []).map((request) => request.id);
+            expect(ids).toEqual(expect.arrayContaining(['cli.claude', 'cli.codex', 'tool.systemTasks']));
+            expect((first.request.requests ?? []).find((request) => request.id === 'cli.claude')?.params).toEqual({ includeLatestVersion: true });
         });
     });
 });

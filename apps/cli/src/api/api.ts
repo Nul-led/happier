@@ -1,7 +1,9 @@
 import { resolvePublishedMachineEncryptionContext } from './machine/machineDataEncryptionKey';
 import { createMachineContentCodec } from './machine/machineStoredContent';
 import axios from 'axios'
+import { pickSessionCreateOriginFields } from '@/session/shared/sessionCreateOrigin';
 import {
+  SESSION_CREATION_AUTHORIZATION_HEADER_V1,
   PROVIDER_BROKER_MODEL_CATALOG_AUTHORIZE_HTTP_PATH_V1,
   PROVIDER_BROKER_READINESS_AUTHORIZE_HTTP_PATH_V1,
   PROVIDER_BROKER_REQUEST_ADMISSION_HTTP_PATH_V1,
@@ -64,6 +66,7 @@ import type {
 import { MachineRegistrationIdentitySchema } from '@/api/types'
 import { ApiSessionClient, type ApiSessionClientOptions } from './session/sessionClient';
 import { createAccountSessionClientTransport } from './client/createAccountSessionClientTransport';
+import { ensureSessionMachineAccessKeyBinding } from './session/ensureSessionMachineAccessKeyBinding';
 import { openTeamCredentialProviderBroker } from './client/providerBrokerApi';
 import {
   ApiMachineClient,
@@ -71,11 +74,12 @@ import {
 } from './apiMachine';
 import type { BrowserDaemonControlRoutes } from '@/daemon/browser/control/routes';
 import type { BrowserContextRoutes } from '@/daemon/browser/context/routes';
+import type { ComputerRoutes } from '@/daemon/computer/routes';
 import type { BrowserAutomationRoutes } from '@/daemon/browser/automation/routes';
 import type { ProvisionBrowserAutomationRuntime } from '@/daemon/browser/actions/runtimeActionExecutor';
 import type { BrowserDiagnosticsActionRoutes } from '@/daemon/browser/diagnostics/actionRoutes';
 import type { BrowserRecordingRoutes } from '@/daemon/browser/recording/routes';
-import { createDaemonRuntimeActionExecutor } from '@/daemon/runtimeActionExecutor';
+import { createDaemonRuntimeActionExecutor, type BrowserUiAutomationRouteOwner } from '@/daemon/runtimeActionExecutor';
 import type {
   BrowserRecordingComposerAttachInput,
   BrowserRecordingComposerAttachResult,
@@ -202,6 +206,9 @@ import {
   SessionMetadataPrivacyUpgradeRequiredError,
 } from '@/session/metadata/buildSessionMetadataEnvelopeCreateFields';
 export { SessionMetadataPrivacyUpgradeRequiredError } from '@/session/metadata/buildSessionMetadataEnvelopeCreateFields';
+import { resolveSessionRoleSnapshotCreationMetadata } from '@/session/metadata/resolveSessionRoleSnapshotCreationMetadata';
+import { fetchSessionById } from '@/session/transport/http/sessionsHttp';
+import { SessionReportsToV1Schema, SessionAwarenessOriginV1Schema } from '@happier-dev/protocol';
 
 function assertSessionCreationCorrespondenceMatches(
   requested: unknown,
@@ -274,6 +281,8 @@ export class ApiClient {
   private getBrowserDaemonControlRoutes: (() => BrowserDaemonControlRoutes | null) | null = null;
   private getBrowserDaemonContextRoutes: (() => BrowserContextRoutes | null) | null = null;
   private getBrowserDaemonAutomationRoutes: (() => BrowserAutomationRoutes | null) | null = null;
+  private getComputerRoutes: (() => ComputerRoutes | null) | null = null;
+  private getBrowserUiAutomation: (() => BrowserUiAutomationRouteOwner | null) | null = null;
   private getProvisionBrowserAutomationRuntime: (() => ProvisionBrowserAutomationRuntime | null) | null = null;
   private getBrowserDiagnosticsActionRoutes: (() => BrowserDiagnosticsActionRoutes | null) | null = null;
   private getBrowserRecordingRoutes: (() => BrowserRecordingRoutes | null) | null = null;
@@ -311,6 +320,14 @@ export class ApiClient {
 
   setBrowserDaemonAutomationRoutesProvider(provider: (() => BrowserAutomationRoutes | null) | null): void {
     this.getBrowserDaemonAutomationRoutes = provider;
+  }
+
+  setComputerRoutesProvider(provider: (() => ComputerRoutes | null) | null): void {
+    this.getComputerRoutes = provider;
+  }
+
+  setBrowserUiAutomationProvider(provider: (() => BrowserUiAutomationRouteOwner | null) | null): void {
+    this.getBrowserUiAutomation = provider;
   }
 
   // Install-on-first-automation-attempt (user ruling, 2026-08-23). The daemon startup owner
@@ -369,9 +386,11 @@ export class ApiClient {
     return createDaemonRuntimeActionExecutor({
       env: process.env,
       resolveRouteOwners: () => ({
+        computer: this.getComputerRoutes?.() ?? null,
         browserControl: this.getBrowserDaemonControlRoutes?.() ?? null,
         browserContext: this.getBrowserDaemonContextRoutes?.() ?? null,
         browserAutomation: this.getBrowserDaemonAutomationRoutes?.() ?? null,
+        browserUiAutomation: this.getBrowserUiAutomation?.() ?? null,
         provisionBrowserAutomationRuntime: this.getProvisionBrowserAutomationRuntime?.() ?? null,
         browserDiagnostics: this.getBrowserDiagnosticsActionRoutes?.() ?? null,
         browserRecording: this.getBrowserRecordingRoutes?.() ?? null,
@@ -450,14 +469,16 @@ export class ApiClient {
    * accepts the canonical protocol metadata shape because a pre-committed
    * Session may not have runtime-owned workspace identity until attach.
    */
-  async getOrCreateSession(opts: {
+  async getOrCreateSession(opts: import('@happier-dev/protocol').SessionCreateOriginFieldsV1 & {
     tag: string,
     metadata: SessionMetadata,
     state: AgentState | null,
     organizationPlacement?: import('@happier-dev/protocol').SessionOrganizationPlacementV1,
     initialAccess?: import('@happier-dev/protocol').SessionInitialAccessDraftV1,
+    reportsTo?: import('@happier-dev/protocol').SessionReportsToV1,
     primaryTeamId?: string | null,
     teamCredentialBindings?: import('@happier-dev/protocol/teams').SessionTeamCredentialBindingIntentListV1,
+    creationAuthorizationToken?: string,
     signal?: AbortSignal,
   }): Promise<SessionCreateOrLoadResult | null> {
     opts.signal?.throwIfAborted();
@@ -522,6 +543,14 @@ export class ApiClient {
       serverFeaturesSnapshot,
     } = encryptionModeResolution;
     const initialAccessCreateFields = buildSessionInitialAccessCreateFields(opts, serverFeaturesSnapshot);
+    const creationMetadata = await resolveSessionRoleSnapshotCreationMetadata({
+      metadata: opts.metadata,
+      readLeadSession: (sessionId) => fetchSessionById({
+        token: this.credential.token, sessionId, serverFeaturesSnapshot,
+        ...(opts.signal ? { signal: opts.signal } : {}),
+      }),
+      ...(opts.signal ? { signal: opts.signal } : {}),
+    });
     const encryptionContext = desiredSessionEncryptionMode === 'e2ee'
       ? resolveSessionEncryptionContext(this.credential)
       : null;
@@ -584,7 +613,7 @@ export class ApiClient {
           ? buildSessionMetadataEnvelopeCreateFields({
               credentials: this.credential,
               accountEncryptionMode: accountEncryptionCurrentness.mode,
-              metadata: opts.metadata,
+              metadata: creationMetadata,
               agentState: opts.state,
               storedContentMode: 'plain',
             })
@@ -595,7 +624,7 @@ export class ApiClient {
               return buildSessionMetadataEnvelopeCreateFields({
                 credentials: this.credential,
                 accountEncryptionMode: accountEncryptionCurrentness.mode,
-                metadata: opts.metadata,
+                metadata: creationMetadata,
                 agentState: opts.state,
                 storedContentMode: 'e2ee',
                 encryptionKey: encryptionContext.encryptionKey,
@@ -607,6 +636,8 @@ export class ApiClient {
           sessionsUrl,
           {
             tag: opts.tag,
+            ...pickSessionCreateOriginFields(opts),
+            ...(opts.reportsTo !== undefined ? { reportsTo: opts.reportsTo } : {}),
             ...materializedInitialAccessCreateFields,
             ...metadataEnvelopeFields,
             dataEncryptionKey:
@@ -622,6 +653,7 @@ export class ApiClient {
           {
             headers: {
               ...buildCurrentAccountStoredContentCompatibilityHttpHeaders(),
+              ...(opts.creationAuthorizationToken ? { [SESSION_CREATION_AUTHORIZATION_HEADER_V1]: opts.creationAuthorizationToken } : {}),
               'Authorization': `Bearer ${this.credential.token}`,
               'Content-Type': 'application/json'
             },
@@ -632,6 +664,8 @@ export class ApiClient {
 
         logger.debug(`Session created/loaded: ${response.data.session.id} (tag: ${opts.tag})`)
         let raw = response.data.session;
+        const reportsTo = SessionReportsToV1Schema.safeParse(raw.reportsTo);
+        const origin = SessionAwarenessOriginV1Schema.safeParse(raw.origin);
         const parsedOrganizationPlacement = SessionOrganizationPlacementV1Schema.safeParse(
           response.data.organizationPlacement,
         );
@@ -642,6 +676,17 @@ export class ApiClient {
               organizationPlacement: parsedOrganizationPlacement.data,
             }
           : undefined;
+        const ensureLocalMachineAccess = async () => {
+          if (!this.localMachineId) return;
+          // Machine admission may begin as soon as creation settles. The
+          // Session socket also ensures this binding, but can connect later.
+          await ensureSessionMachineAccessKeyBinding({
+            serverUrl: serverBaseUrl,
+            token: this.credential.token,
+            sessionId: raw.id,
+            machineId: this.localMachineId,
+          });
+        };
 
         const sessionEncryptionMode: 'e2ee' | 'plain' =
           (raw as any)?.encryptionMode === 'plain' ? 'plain' : 'e2ee';
@@ -698,9 +743,13 @@ export class ApiClient {
             opts.metadata.sessionCreationCorrespondenceV1,
             ownerMetadata,
           );
+          await ensureLocalMachineAccess();
           return {
             id: raw.id,
             seq: raw.seq,
+            workDepth: typeof raw.workDepth === 'number' ? raw.workDepth : 0,
+            ...(reportsTo.success ? { reportsTo: reportsTo.data } : {}),
+            ...(origin.success ? { origin: origin.data } : {}),
             encryptionMode: 'plain' as const,
             metadata: runtimeMetadata,
             metadataLayoutVersion,
@@ -744,6 +793,7 @@ export class ApiClient {
           opts.metadata.sessionCreationCorrespondenceV1,
           ownerMetadata,
         );
+        await ensureLocalMachineAccess();
         const agentState = raw.agentState
           ? decrypt(
               sessionEncryptionKey,
@@ -755,6 +805,9 @@ export class ApiClient {
         return {
           id: raw.id,
           seq: raw.seq,
+          workDepth: typeof raw.workDepth === 'number' ? raw.workDepth : 0,
+          ...(reportsTo.success ? { reportsTo: reportsTo.data } : {}),
+          ...(origin.success ? { origin: origin.data } : {}),
           encryptionMode: 'e2ee' as const,
           encryptionKey: sessionEncryptionKey,
           encryptionVariant: responseEncryptionContext.encryptionVariant,
@@ -854,6 +907,10 @@ export class ApiClient {
         throw new Error('Machine storage mode does not match Account encryption mode');
       }
       const machineCodec = createMachineContentCodec(encryptionContext);
+      const operationProtocolCapabilities = readMachineOperationProtocolCapabilitiesProjectionV1({
+        machineId,
+        value: raw,
+      });
 
       const common = {
         id: raw.id,
@@ -861,8 +918,8 @@ export class ApiClient {
         metadataVersion: raw.metadataVersion || 0,
         daemonState: raw.daemonState ? machineCodec.decodeStored(raw.daemonState) as DaemonState : null,
         daemonStateVersion: raw.daemonStateVersion || 0,
-        operationProtocolCapabilities: null,
-        operationProtocolCapabilitiesRevision: null,
+        operationProtocolCapabilities: operationProtocolCapabilities?.capabilities ?? null,
+        operationProtocolCapabilitiesRevision: operationProtocolCapabilities?.revision ?? null,
       };
       return encryptionContext.encryptionMode === 'plain'
         ? { ...common, encryptionMode: 'plain' }
@@ -1267,6 +1324,7 @@ export class ApiClient {
       getBrowserDaemonControlRoutes: this.getBrowserDaemonControlRoutes,
       getBrowserDaemonContextRoutes: this.getBrowserDaemonContextRoutes,
       getBrowserDaemonAutomationRoutes: this.getBrowserDaemonAutomationRoutes,
+      getBrowserUiAutomation: () => this.getBrowserUiAutomation?.() ?? null,
       getBrowserDiagnosticsActionRoutes: this.getBrowserDiagnosticsActionRoutes,
       getBrowserRecordingRoutes: this.getBrowserRecordingRoutes,
       attachBrowserRecordingToComposer: this.attachBrowserRecordingToComposer,

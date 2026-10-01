@@ -1,4 +1,4 @@
-import type { AgentState } from '@/sync/domains/state/storageTypes';
+import type { AgentState } from '@happier-dev/session-core/state';
 
 export function getPermissionsInUiWhileLocal(capabilities: AgentState['capabilities'] | null | undefined): boolean {
     if (!capabilities) return false;

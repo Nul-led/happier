@@ -31,6 +31,9 @@ type StubElement = {
   textContent: string;
   hidden: boolean;
   onclick: null | (() => unknown);
+  onchange: null | (() => unknown);
+  type: string;
+  checked: boolean;
   children: StubElement[];
   append: (...nodes: StubElement[]) => void;
   replaceChildren: (...nodes: StubElement[]) => void;
@@ -59,6 +62,9 @@ function createHarness(
       textContent: '',
       hidden: false,
       onclick: null,
+      onchange: null,
+      type: '',
+      checked: false,
       children: [],
       append: (...nodes) => { node.children.push(...nodes); },
       replaceChildren: (...nodes) => { node.children = [...nodes]; },
@@ -129,6 +135,7 @@ function createHarness(
   const run = new Function('window', 'document', SHELL_SOURCE);
   run(window, document);
 
+  const descendants = (node: StubElement): StubElement[] => node.children.flatMap((child) => [child, ...descendants(child)]);
   return {
     named,
     sent,
@@ -147,8 +154,9 @@ function createHarness(
       return named.actions.children.map((child) => child.textContent);
     },
     rendered() {
-      return [...named.facts.children.map((child) => child.textContent), named.notice.textContent].join('\n');
+      return [...descendants(named.facts).map((child) => child.textContent), named.notice.textContent].join('\n');
     },
+    descendants,
     documentLanguage() {
       return document.documentElement.lang;
     },
@@ -295,10 +303,14 @@ describe('ephemeral Runner native shell renderer', () => {
     const harness = createHarness({});
 
     harness.emit({ requestId: 'request-1', request: { v: 1, type: 'review', review: presentation } });
-    const clipboard = harness.named.actions.children.find((child) => child.textContent.includes('clipboard.write'))!;
-    expect(clipboard.attributes).toEqual({ role: 'switch', 'aria-checked': 'false' });
-    await harness.click(clipboard.textContent);
-    expect(clipboard.attributes['aria-checked']).toBe('true');
+    // Native checkboxes expose their state both visually and to assistive
+    // technology; aria-checked on an otherwise unchanged button did not.
+    const choices = harness.descendants(harness.named.actions).filter((child) => child.type === 'checkbox');
+    expect(choices).toHaveLength(2);
+    expect(choices.map((choice) => choice.checked)).toEqual([false, false]);
+    const clipboard = choices[0]!;
+    clipboard.checked = true;
+    await clipboard.onchange?.();
     await harness.click('Allow');
 
     const answer = harness.sent[0] as Extract<ShellMessage, { requestId: string }>;
@@ -516,6 +528,7 @@ describe('ephemeral Runner native shell renderer', () => {
     harness.present(resolveEphemeralRunnerEndpointPresentation({ phase: 'reviewing', connection: 'reconnecting' }));
 
     expect(harness.named.status.textContent).toBe('Reconnecting');
+    expect(harness.named.status.hidden).toBe(false);
     expect(harness.labels()).toEqual(['Decline', 'Allow']);
     expect(harness.rendered()).toContain('Fix the checkout race.');
   });
@@ -542,7 +555,7 @@ describe('ephemeral Runner native shell renderer', () => {
 
     harness.emit({ requestId: 'request-1', request: { v: 1, type: 'review', review: presentation } });
 
-    const rendered = harness.named.facts.children.map((child) => child.textContent);
+    const rendered = harness.descendants(harness.named.facts).map((child) => child.textContent);
     for (const section of presentation.sections) {
       expect(rendered).toContain(section.title);
       for (const fact of section.facts) {
@@ -564,6 +577,30 @@ describe('ephemeral Runner native shell renderer', () => {
       requestId: 'request-1',
       response: { v: 1, type: 'consent_decision', decision: 'allow' },
     }]);
+  });
+
+  it('shows decision facts before technical disclosures in semantic review sections', () => {
+    const harness = createHarness({});
+    harness.present(resolveEphemeralRunnerEndpointPresentation({ phase: 'reviewing', connection: 'connected' }));
+    const presentation = resolveEphemeralRunnerConsentReviewPresentation({ manifest, directory: '/workspace/exact' });
+    harness.emit({ requestId: 'request-1', request: { v: 1, type: 'review', review: presentation } });
+
+    const groups = harness.named.facts.children;
+    expect(groups.every((group) => group.tagName === 'section')).toBe(true);
+    expect(groups.map((group) => group.children[0]?.tagName)).toEqual(presentation.sections.map(() => 'h3'));
+    const disclosed = groups.flatMap((group) => harness.descendants(group)
+      .filter((node) => node.tagName === 'details')
+      .flatMap((node) => harness.descendants(node).map((child) => child.textContent)));
+    expect(disclosed).toContain('srv_acme_home');
+    expect(disclosed).toContain('gpt-5.6');
+    expect(disclosed).not.toContain('Acme Home 🌍');
+    expect(disclosed).not.toContain('GPT 5.6 Verified');
+    expect(disclosed).not.toContain('Fix the checkout race.');
+    for (const entry of presentation.sections.flatMap((group) => group.facts)
+      .filter((entry) => ['initial_access', 'action_policy', 'profile', 'environment', 'mcp', 'mcp_material', 'connected_services', 'connected_service_bindings'].includes(entry.id))) {
+      expect(disclosed).not.toContain(entry.label);
+    }
+    expect(harness.named.status.hidden).toBe(true);
   });
 
   it('keeps a long Unicode verified name intact without displacing either consent action', () => {

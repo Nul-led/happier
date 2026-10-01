@@ -34,6 +34,9 @@ pub const IROH_MACHINE_APPLICATION_PORT_HEADER: &str = "X-Happier-Iroh-Applicati
 pub const IROH_MACHINE_APPLICATION_CAPABILITY_HEADER: &str =
     "X-Happier-Iroh-Application-Capability";
 pub const IROH_MACHINE_HTTP_LOCAL_CAPABILITY_HEADER: &str = "X-Happier-Machine-Local-Capability";
+/// Browser-compatible, loopback-only WebSocket authentication. Removed before
+/// forwarding the upgrade so the local capability never reaches the peer.
+pub const MACHINE_WEBSOCKET_CAPABILITY_PROTOCOL_PREFIX: &str = "happier.iroh.cap.";
 pub const MACHINE_LOCAL_CAPABILITY_BYTES: usize = 32;
 pub const MACHINE_LOCAL_CAPABILITY_HEX_LENGTH: usize = MACHINE_LOCAL_CAPABILITY_BYTES * 2;
 const MAX_ADMISSION_RESPONSE_BYTES: usize = 16 * 1024;
@@ -503,6 +506,7 @@ enum MachineTunnelPurpose {
     FiniteTransfer,
     WorkspaceSync,
     ProviderBroker,
+    TcpTunnel,
 }
 
 impl MachineTunnelPurpose {
@@ -590,6 +594,7 @@ enum HttpRequestBodyFraming {
     None,
     ContentLength(u64),
     Chunked,
+    WebSocket,
 }
 
 struct CapabilityGatedHttpRequestHead {
@@ -608,6 +613,7 @@ async fn read_capability_gated_http_request_head<R>(
     socket: &mut R,
     buffered: &mut Vec<u8>,
     expected_capability: &[u8],
+    allow_websocket: bool,
 ) -> std::io::Result<Option<CapabilityGatedHttpRequestHead>>
 where
     R: AsyncRead + Unpin,
@@ -650,6 +656,8 @@ where
     let mut capability_line: Option<(usize, usize)> = None;
     let mut content_length: Option<u64> = None;
     let mut transfer_encoding: Option<&[u8]> = None;
+    let mut websocket = false;
+    let mut connection_upgrade = false;
     let mut line_start = request_line_end + 2;
     while line_start <= header_fields_end {
         let Some(relative_end) = request[line_start..header_fields_end + 2]
@@ -663,14 +671,26 @@ where
         if let Some(colon) = line.iter().position(|byte| *byte == b':') {
             let name = line[..colon].trim_ascii_start().trim_ascii_end();
             let value = line[colon + 1..].trim_ascii_start().trim_ascii_end();
-            if name.eq_ignore_ascii_case(IROH_MACHINE_HTTP_LOCAL_CAPABILITY_HEADER.as_bytes()) {
+            let websocket_capability = allow_websocket && name.eq_ignore_ascii_case(b"sec-websocket-protocol")
+                && value.starts_with(MACHINE_WEBSOCKET_CAPABILITY_PROTOCOL_PREFIX.as_bytes());
+            if name.eq_ignore_ascii_case(IROH_MACHINE_HTTP_LOCAL_CAPABILITY_HEADER.as_bytes())
+                || websocket_capability {
                 if capability_line.is_some() {
                     return Err(invalid_http_request());
                 }
-                if !capabilities_equal(value, expected_capability) {
+                let capability = if websocket_capability {
+                    &value[MACHINE_WEBSOCKET_CAPABILITY_PROTOCOL_PREFIX.len()..]
+                } else { value };
+                if !capabilities_equal(capability, expected_capability) {
                     return Err(invalid_http_request());
                 }
                 capability_line = Some((line_start, line_end + 2));
+            } else if name.eq_ignore_ascii_case(b"upgrade") {
+                if websocket || !value.eq_ignore_ascii_case(b"websocket") { return Err(invalid_http_request()); }
+                websocket = true;
+            } else if name.eq_ignore_ascii_case(b"connection") {
+                connection_upgrade |= value.split(|byte| *byte == b',')
+                    .any(|token| token.trim_ascii_start().trim_ascii_end().eq_ignore_ascii_case(b"upgrade"));
             } else if name.eq_ignore_ascii_case(b"content-length") {
                 if content_length.is_some() || value.is_empty() {
                     return Err(invalid_http_request());
@@ -699,7 +719,12 @@ where
     let Some((capability_start, capability_end)) = capability_line else {
         return Err(invalid_http_request());
     };
-    let body_framing = match (content_length, transfer_encoding) {
+    let body_framing = if websocket {
+        if !allow_websocket || !connection_upgrade || content_length.is_some() || transfer_encoding.is_some() {
+            return Err(invalid_http_request());
+        }
+        HttpRequestBodyFraming::WebSocket
+    } else { match (content_length, transfer_encoding) {
         (Some(_), Some(_)) => return Err(invalid_http_request()),
         (Some(length), None) => HttpRequestBodyFraming::ContentLength(length),
         (None, Some(value)) => {
@@ -721,7 +746,7 @@ where
             HttpRequestBodyFraming::Chunked
         }
         (None, None) => HttpRequestBodyFraming::None,
-    };
+    }};
     let mut sanitized = Vec::with_capacity(request.len() - (capability_end - capability_start));
     sanitized.extend_from_slice(&request[..capability_start]);
     sanitized.extend_from_slice(&request[capability_end..]);
@@ -896,6 +921,7 @@ async fn forward_capability_gated_http_requests<R, W>(
     socket: &mut R,
     destination: &mut W,
     expected_capability: &[u8],
+    allow_websocket: bool,
     mut buffered: Vec<u8>,
     mut request: CapabilityGatedHttpRequestHead,
 ) -> std::io::Result<()>
@@ -906,6 +932,12 @@ where
     loop {
         destination.write_all(&request.sanitized).await?;
         match request.body_framing {
+            HttpRequestBodyFraming::WebSocket => {
+                destination.write_all(&buffered).await?;
+                tokio::io::copy(socket, destination).await?;
+                destination.shutdown().await?;
+                return Ok(());
+            }
             HttpRequestBodyFraming::None => {}
             HttpRequestBodyFraming::ContentLength(length) => {
                 forward_exact_buffered(socket, destination, &mut buffered, length).await?;
@@ -915,7 +947,7 @@ where
             }
         }
         let Some(next_request) =
-            read_capability_gated_http_request_head(socket, &mut buffered, expected_capability)
+            read_capability_gated_http_request_head(socket, &mut buffered, expected_capability, allow_websocket)
                 .await?
         else {
             destination.shutdown().await?;
@@ -946,7 +978,9 @@ impl MachineHttpTunnel {
         config: MachineTunnelConfig,
         handshake_provider: Option<MachineHandshakeProvider>,
     ) -> Result<Self> {
-        if validate_handshake(&config.handshake_json)? != MachineTunnelPurpose::ProviderBroker {
+        let purpose = validate_handshake(&config.handshake_json)?;
+        if !matches!(purpose,
+            MachineTunnelPurpose::ProviderBroker | MachineTunnelPurpose::TcpTunnel) {
             return Err(IrohError::InvalidDescriptor);
         }
         // Bind the public listener before starting the inner machine tunnel.
@@ -962,6 +996,7 @@ impl MachineHttpTunnel {
             .map_err(|_| IrohError::LoopbackBindFailed)?;
         let tunnel = MachineTunnel::start_inner(endpoint, config, handshake_provider).await?;
         let private_addr = tunnel.local_addr;
+        let allow_websocket = purpose == MachineTunnelPurpose::TcpTunnel;
         let local_capability = tunnel
             .local_capability
             .clone()
@@ -984,6 +1019,7 @@ impl MachineHttpTunnel {
                                     &mut application,
                                     &mut buffered,
                                     &capability,
+                                    allow_websocket,
                                 ),
                             ).await else { return };
                             let Ok(mut secured) = TcpStream::connect(private_addr).await else { return };
@@ -994,6 +1030,7 @@ impl MachineHttpTunnel {
                                 &mut application_read,
                                 &mut secured_write,
                                 &capability,
+                                allow_websocket,
                                 buffered,
                                 initial_request,
                             );
@@ -1319,6 +1356,7 @@ fn validate_handshake(value: &str) -> Result<MachineTunnelPurpose> {
     match parsed.get("flow").and_then(serde_json::Value::as_str) {
         Some("finite_transfer") => Ok(MachineTunnelPurpose::FiniteTransfer),
         Some("workspace_sync") => Ok(MachineTunnelPurpose::WorkspaceSync),
+        Some("tcp_tunnel") => Ok(MachineTunnelPurpose::TcpTunnel),
         Some(_) | None => Err(IrohError::InvalidDescriptor),
     }
 }
@@ -1326,6 +1364,36 @@ fn validate_handshake(value: &str) -> Result<MachineTunnelPurpose> {
 #[cfg(test)]
 mod handshake_tests {
     use super::{validate_handshake, MachineTunnelPurpose};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[tokio::test]
+    async fn native_tcp_websocket_authentication_stays_local_and_preserves_binary_frames() {
+        let capability = "a".repeat(64);
+        let (mut client, mut server) = tokio::io::duplex(4096);
+        let request = format!("GET /peer-mediation/v1/tunnel/stream HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Protocol: happier.iroh.cap.{capability}\r\n\r\n");
+        let binary = [0x82, 0x03, 0xff, 0x00, 0x7f];
+        client.write_all(request.as_bytes()).await.unwrap();
+        client.write_all(&binary).await.unwrap();
+        client.shutdown().await.unwrap();
+        let mut buffered = Vec::new();
+        let head = super::read_capability_gated_http_request_head(&mut server, &mut buffered, capability.as_bytes(), true).await
+            .expect("authenticated WebSocket head").expect("request");
+        let (mut received, mut destination) = tokio::io::duplex(4096);
+        super::forward_capability_gated_http_requests(&mut server, &mut destination, capability.as_bytes(), true, buffered, head).await.unwrap();
+        drop(destination);
+        let mut output = Vec::new();
+        received.read_to_end(&mut output).await.unwrap();
+        assert!(output.ends_with(&binary));
+        assert!(!String::from_utf8_lossy(&output).contains(&capability));
+    }
+
+    #[test]
+    fn tcp_tunnel_keeps_the_capability_gated_multi_stream_carrier() {
+        let purpose = validate_handshake(r#"{"v":1,"flow":"tcp_tunnel"}"#)
+            .expect("TCP tunnel handshake");
+        assert!(purpose.requires_local_capability());
+        assert!(!purpose.accepts_one_local_stream());
+    }
 
     #[test]
     fn accepts_provider_broker_handshakes_as_multi_stream_carriers() {

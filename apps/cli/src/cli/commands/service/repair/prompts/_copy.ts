@@ -783,7 +783,7 @@ export function copyServerProfileMissing(_finding: ServerProfileMissing, invoker
     'Configure it before doctor repair can work for that server.',
     '',
     'Pick whichever applies:',
-    `  ${invoker} setup                         — connect to the selected Account Service or saved Home`,
+    `  ${invoker} setup                         — connect to your account or a saved Home`,
     `  ${invoker} setup --home <saved>          — connect to a specific saved Home`,
     `  ${invoker} setup --home-url <https-url>  — connect directly to a Home over HTTPS`,
   ];

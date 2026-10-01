@@ -309,6 +309,26 @@ describe('sessions domain: modelMode normalization', () => {
         });
     });
 
+    it('admits a fresh native model and preserves it through reconciliation and reload', () => {
+        const { get, domain } = createHarness();
+        const session = createRevisionedSession({ id: 'fresh-session', metadata: {
+            path: '/repo', host: 'machine', flavor: 'codex', sessionModelsV1: {
+                v: 1, agentId: 'codex', updatedAt: 1, currentModelId: 'old', availableModels: [{ id: 'old', name: 'Old' }],
+            },
+        } });
+        domain.applySessions([session]);
+        domain.updateSessionModelMode(session.id, 'fresh', {
+            preflight: { availableModels: [{ id: 'fresh', name: 'Fresh' }], supportsFreeform: false },
+            preflightUpdatedAt: 2,
+        });
+        expect(get().sessions[session.id].modelMode).toBe('fresh');
+        domain.applySessions([session]);
+        expect(get().sessions[session.id].modelMode).toBe('fresh');
+        const reloaded = createHarness();
+        reloaded.domain.applySessions([session]);
+        expect(reloaded.get().sessions[session.id].modelMode).toBe('fresh');
+    });
+
     it('clamps invalid local model selections for agents without freeform model selection', () => {
         const { get, domain } = createHarness();
 
@@ -327,7 +347,7 @@ describe('sessions domain: modelMode normalization', () => {
         expect(get().sessions.s1.modelMode).toBe('default');
     });
 
-    it('clamps invalid persisted model modes to default for agents without freeform model selection', () => {
+    it('preserves admitted persisted models absent from the current catalog', () => {
         saveSessionModelModes({ s1: 'not-a-real-model' });
         saveSessionModelModeUpdatedAts({ s1: 123 });
 
@@ -343,11 +363,11 @@ describe('sessions domain: modelMode normalization', () => {
             } as any,
         ]);
 
-        expect(get().sessions.s1.modelMode).toBe('default');
+        expect(get().sessions.s1.modelMode).toBe('not-a-real-model');
         expect(get().sessions.s1.modelModeUpdatedAt).toBe(123);
     });
 
-    it('clamps invalid persisted model modes using canonical runtime metadata when flavor is absent', () => {
+    it('preserves admitted persisted models using canonical runtime metadata when flavor is absent', () => {
         saveSessionModelModes({ s1: 'not-a-real-model' });
         saveSessionModelModeUpdatedAts({ s1: 123 });
 
@@ -369,7 +389,7 @@ describe('sessions domain: modelMode normalization', () => {
             } as any,
         ]);
 
-        expect(get().sessions.s1.modelMode).toBe('default');
+        expect(get().sessions.s1.modelMode).toBe('not-a-real-model');
         expect(get().sessions.s1.modelModeUpdatedAt).toBe(123);
     });
 
@@ -393,7 +413,7 @@ describe('sessions domain: modelMode normalization', () => {
         expect(get().sessions.s1.modelModeUpdatedAt).toBe(123);
     });
 
-    it('ignores invalid metadata model overrides for agents without freeform model selection', () => {
+    it('preserves explicit metadata model intent absent from the current catalog', () => {
         const { get, domain } = createHarness();
 
         domain.applySessions([
@@ -409,11 +429,11 @@ describe('sessions domain: modelMode normalization', () => {
             } as any,
         ]);
 
-        expect(get().sessions.s1.modelMode).toBe('default');
+        expect(get().sessions.s1.modelMode).toBe('not-a-real-model');
         expect(get().sessions.s1.modelModeUpdatedAt).toBe(1000);
     });
 
-    it('does not churn clamped metadata model overrides across repeated applySessions calls', () => {
+    it('does not churn preserved metadata model intent across repeated applySessions calls', () => {
         const { get, domain } = createHarness();
         const payload = {
             id: 's1',
@@ -431,7 +451,7 @@ describe('sessions domain: modelMode normalization', () => {
         domain.applySessions([payload]);
         const secondUpdatedAt = get().sessions.s1.modelModeUpdatedAt;
 
-        expect(get().sessions.s1.modelMode).toBe('default');
+        expect(get().sessions.s1.modelMode).toBe('not-a-real-model');
         expect(firstUpdatedAt).toBe(1000);
         expect(secondUpdatedAt).toBe(1000);
     });
@@ -448,6 +468,8 @@ describe('sessions domain: modelMode normalization', () => {
             } as unknown as Session['metadata'],
             metadataVersion: 2,
             ownerMetadataView: { path: '/owner/new', host: 'owner-host' },
+            metadataProjection: 'sessionOnly',
+            composerOptionsInput: { modelOverrideV1: { v: 1, modelId: 'new-model', updatedAt: 10 } },
             agentState: {
                 controlledByUser: true,
                 requests: {},
@@ -465,6 +487,8 @@ describe('sessions domain: modelMode normalization', () => {
             } as unknown as Session['metadata'],
             metadataVersion: 1,
             ownerMetadataView: { path: '/owner/stale', host: 'owner-host' },
+            metadataProjection: undefined,
+            composerOptionsInput: { modelOverrideV1: { v: 1, modelId: 'stale-model', updatedAt: 9 } },
             agentState: {
                 controlledByUser: false,
                 requests: {},
@@ -483,6 +507,8 @@ describe('sessions domain: modelMode normalization', () => {
             metadataVersion: 2,
             metadata: { summary: { text: 'new shared', updatedAt: 10 } },
             ownerMetadataView: { path: '/owner/new' },
+            metadataProjection: 'sessionOnly',
+            composerOptionsInput: { modelOverrideV1: { modelId: 'new-model' } },
             agentStateVersion: 2,
             agentState: { controlledByUser: true },
         });

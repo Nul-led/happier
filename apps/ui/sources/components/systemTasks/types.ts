@@ -91,7 +91,11 @@ export type SystemTaskRunner = Readonly<{
     registerPromptContinuation?: (taskId: string, continuation: SystemTaskPromptContinuation) => void;
     /** Tasks that are still running with a registered continuation, so a remounted surface can rediscover them. */
     listPromptContinuations?: () => readonly SystemTaskPromptContinuationRegistration[];
+    /** Tasks this runner started that have no result yet — the one fact of what is in flight. */
+    listActiveTasks?: () => readonly Readonly<{ taskId: string; spec: SystemTaskSpec }>[];
     getSnapshot: (taskId: string) => SystemTaskRunState | null;
+    /** Original spec remains owned by this runner, including after task settlement. */
+    getTaskSpec?: (taskId: string) => SystemTaskSpec | null;
     subscribe(taskId: string, listener: () => void): () => void;
     subscribe(taskId: string, onEvent?: (event: SystemTaskEvent) => void, onResult?: (result: SystemTaskResult) => void): () => void;
 }>;

@@ -2,6 +2,7 @@ import { Buffer } from 'node:buffer';
 
 import fastify from 'fastify';
 import { describe, expect, it, vi } from 'vitest';
+import { API_TOKEN_FULL_GRANT_V1, ACCOUNT_API_TOKEN_ENCRYPTION_ACCESS_HTTP_PATH_V1 } from '@happier-dev/protocol';
 
 const protocolSerializerSpy = vi.hoisted(() => vi.fn());
 
@@ -53,6 +54,7 @@ function verifier(): DaemonPatVerifier {
     accountId: 'account-1',
     principalId: 'principal-1',
     credentialId: 'credential-1',
+    grant: API_TOKEN_FULL_GRANT_V1,
     expiresAt: null,
     authority: 'account_automation' as const,
   }));
@@ -274,10 +276,10 @@ describe('registerDaemonExternalActionRoute', () => {
       seed: {
         plugin: { id: 'acme.convergence', version: '1.0.0' },
         resolveCurrentPluginMaterializationRef: materialization.resolveCurrentPluginMaterializationRef,
-        generation: 'generation-1',
+        occurrenceId: 'generation-1',
         surface: 'background',
         signal: new AbortController().signal,
-        isGenerationCurrent: () => true,
+        isOccurrenceCurrent: () => true,
       },
       actionExecutor: canonicalExecutor,
       invokeContributedAction: vi.fn(),
@@ -710,8 +712,15 @@ describe('registerDaemonExternalActionRoute', () => {
         },
       });
       expect(preflight.statusCode).toBe(404);
-      expect(preflight.headers['cache-control']).toBe('no-store');
-      expect(preflight.headers['access-control-allow-origin']).toBeUndefined();
+      expect(Object.keys(preflight.headers).filter((header) => header.startsWith('access-control-'))).toEqual([]);
+
+      const encryptionPreflight = await app.inject({
+        method: 'OPTIONS',
+        url: ACCOUNT_API_TOKEN_ENCRYPTION_ACCESS_HTTP_PATH_V1,
+        headers: { origin: 'https://example.test', 'access-control-request-method': 'POST' },
+      });
+      expect(encryptionPreflight.statusCode).toBe(404);
+      expect(Object.keys(encryptionPreflight.headers).filter((header) => header.startsWith('access-control-'))).toEqual([]);
 
       const response = await app.inject({
         method: 'POST',
@@ -724,7 +733,7 @@ describe('registerDaemonExternalActionRoute', () => {
       });
       expect(EXTERNAL_ACTION_HTTP_BODY_LIMIT_BYTES).toBeGreaterThan(8 * 1024 * 1024);
       expect(response.statusCode).toBe(200);
-      expect(response.headers['access-control-allow-origin']).toBeUndefined();
+      expect(Object.keys(response.headers).filter((header) => header.startsWith('access-control-'))).toEqual([]);
     } finally {
       await app.close();
     }

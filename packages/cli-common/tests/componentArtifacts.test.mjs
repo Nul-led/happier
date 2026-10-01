@@ -11,11 +11,6 @@ import {
   resolveWorkspaceBundlesFromPackageJson,
 } from '../dist/workspaces/index.js';
 
-const ACTUAL_VOICE_RUNTIME_LOADER_SOURCE = readFileSync(
-  new URL('../../../apps/cli/scripts/runtime/loadVoiceInferenceRuntime.mjs', import.meta.url),
-  'utf8',
-);
-
 test('CLI dist dependency extraction ignores generated module source after a regular expression literal', () => {
   const emittedScaffoldChunk = String.raw`
 const quotePattern = /["']/;
@@ -78,6 +73,30 @@ function writeWorkspaceBuildOwnerFixture(repoRoot) {
   );
 }
 
+function writeCliArtifactClosureOwnerFixture(repoRoot) {
+  const scriptPath = join(repoRoot, 'apps', 'cli', 'scripts', 'buildSharedDeps.mjs');
+  mkdirSync(join(scriptPath, '..'), { recursive: true });
+  writeFileSync(scriptPath, `
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
+
+export async function buildBundledWorkspaceDependenciesForCli({
+  repoRoot,
+  publicationMode,
+  ensureWorkspacePackagesBuiltByNameImpl,
+}) {
+  if (publicationMode !== 'artifact') throw new Error('expected artifact publication');
+  const cliDir = join(repoRoot, 'apps', 'cli');
+  const cliPackage = JSON.parse(await readFile(join(cliDir, 'package.json'), 'utf8'));
+  const packageNames = cliPackage.bundledDependencies ?? [];
+  await ensureWorkspacePackagesBuiltByNameImpl?.(repoRoot, packageNames, {
+    includeDevDependencies: false,
+    publicationMode: 'artifact',
+  });
+}
+`, 'utf8');
+}
+
 function writeCliToolUnpackFixture(repoRoot) {
   const cliDir = join(repoRoot, 'apps', 'cli');
   const cliScriptsDir = join(cliDir, 'scripts');
@@ -94,14 +113,20 @@ const path = require('path');
 async function unpackTools(options = {}) {
   const platformDir = options.platformDir || 'unknown';
   const toolsDir = options.toolsDir || path.resolve(__dirname, '..', 'tools');
+  const requestedTools = options.tools || ['ripgrep', 'zellij'];
   const unpackedPath = path.join(toolsDir, 'unpacked');
   fs.mkdirSync(unpackedPath, { recursive: true });
-  const binaryName = platformDir === 'x64-win32' ? 'zellij.exe' : 'zellij';
-  fs.writeFileSync(path.join(unpackedPath, binaryName), 'zellij 0.44.3 for ' + platformDir + '\\n');
-  fs.writeFileSync(path.join(unpackedPath, 'zellij-LICENSE'), 'fake zellij license\\n');
+  if (requestedTools.includes('ripgrep')) {
+    fs.writeFileSync(path.join(unpackedPath, platformDir === 'x64-win32' ? 'rg.exe' : 'rg'), 'ripgrep for ' + platformDir + '\\n');
+  }
+  if (requestedTools.includes('zellij')) {
+    const binaryName = platformDir === 'x64-win32' ? 'zellij.exe' : 'zellij';
+    fs.writeFileSync(path.join(unpackedPath, binaryName), 'zellij 0.44.3 for ' + platformDir + '\\n');
+    fs.writeFileSync(path.join(unpackedPath, 'zellij-LICENSE'), 'fake zellij license\\n');
+  }
   fs.writeFileSync(path.join(unpackedPath, '.happier-tools-manifest.json'), JSON.stringify({
     platformDir,
-    tools: { zellij: { version: '0.44.3' } },
+    tools: Object.fromEntries(requestedTools.map((tool) => [tool, { version: tool === 'zellij' ? '0.44.3' : '0' }])),
   }, null, 2) + '\\n');
   return { success: true, alreadyUnpacked: false };
 }
@@ -125,6 +150,7 @@ function writeCliRuntimePackageFixture(
   mkdirSync(cliDir, { recursive: true });
   mkdirSync(cliScriptsDir, { recursive: true });
   writeWorkspaceBuildOwnerFixture(repoRoot);
+  writeCliArtifactClosureOwnerFixture(repoRoot);
   writeFileSync(
     join(cliDir, 'package.json'),
     JSON.stringify(
@@ -287,6 +313,19 @@ function writeServerSharpRuntimeFixture({ repoRoot, platform = 'linux', arch = '
   }
 }
 
+function writeIrohNativeRuntimeFixture(repoRoot) {
+  const packageDir = join(repoRoot, 'packages', 'iroh-native');
+  for (const dir of ['dist', 'scripts']) {
+    mkdirSync(join(packageDir, dir), { recursive: true });
+    writeFileSync(join(packageDir, dir, 'fixture.mjs'), 'export {}\n', 'utf8');
+  }
+  writeFileSync(
+    join(packageDir, 'package.json'),
+    JSON.stringify({ name: '@happier-dev/iroh-native', version: '0.0.0', type: 'module' }),
+    'utf8',
+  );
+}
+
 function writeServerPackagedMigrationFixtures({ repoRoot, targetKey = 'linux-x64', schemaEngineName = 'schema-engine-debian-openssl-3.0.x' }) {
   const serverRoot = join(repoRoot, 'apps', 'server');
   for (const dir of [
@@ -305,16 +344,11 @@ function writeServerPackagedMigrationFixtures({ repoRoot, targetKey = 'linux-x64
   writeFileSync(join(repoRoot, 'node_modules', 'prisma', 'build', 'prisma_schema_build_bg.wasm'), 'schema wasm\n');
 }
 
-function writePackagedVoiceRuntimeFixture({ cliDistDir, cliRuntimeDir }) {
+function writePackagedVoiceRuntimeFixture({ cliDistDir }) {
   mkdirSync(join(cliDistDir, 'daemon', 'voiceInference', 'runtime'), { recursive: true });
   writeFileSync(
     join(cliDistDir, 'daemon', 'voiceInference', 'runtime', 'packagedVoiceInferenceRuntime.mjs'),
     'export const voiceInferenceRuntimeEngine = { warmModel: async () => {}, synthesizeTts: async () => ({ bytes: Buffer.from("wav"), output: { codec: "wav", mimeType: "audio/wav" }, name: "runtime.wav" }), transcribeAudio: async () => ({ text: "runtime", language: "en" }) };\n',
-    'utf8',
-  );
-  writeFileSync(
-    join(cliRuntimeDir, 'loadVoiceInferenceRuntime.mjs'),
-    ACTUAL_VOICE_RUNTIME_LOADER_SOURCE,
     'utf8',
   );
 }
@@ -527,8 +561,8 @@ test('buildCliBinaryArtifactPayload compiles and finalizes a self-contained runt
         mkdirSync(cliDistDir, { recursive: true });
         writeFileSync(join(cliDistDir, 'index.mjs'), 'console.log("cli");\n', 'utf8');
       },
-      compileBinary: async ({ outfile, externals }) => {
-        compileCalls.push({ outfile, externals });
+      compileBinary: async ({ outfile, externals, autoloadDotenv }) => {
+        compileCalls.push({ outfile, externals, autoloadDotenv });
         writeFileSync(outfile, '#!/bin/sh\necho happier\n', 'utf8');
         if (process.platform !== 'win32') {
           const runtimeAssetsDir = join(payloadDir, 'runtime-assets');
@@ -545,6 +579,7 @@ test('buildCliBinaryArtifactPayload compiles and finalizes a self-contained runt
     assert.equal(result.entrypoint, artifacts.resolveExecutableName({ baseName: 'happier', target }));
     assert.deepEqual(runCalls.map(({ cmd }) => cmd), ['go']);
     assert.equal(compileCalls.length, 1);
+    assert.equal(compileCalls[0].autoloadDotenv, false);
     assert.deepEqual(compileCalls[0].externals.sort(), [
       '@homebridge/node-pty-prebuilt-multiarch',
       'ffmpeg-static',
@@ -569,18 +604,22 @@ test('buildCliBinaryArtifactPayload compiles and finalizes a self-contained runt
       readFileSync(join(payloadDir, 'node_modules', '@homebridge', 'node-pty-prebuilt-multiarch', 'index.js'), 'utf8'),
       'module.exports = { spawn() {} };\n',
     );
-    assert.equal(existsSync(join(payloadDir, 'node_modules', 'ffmpeg-static')), false);
+    assert.equal(existsSync(join(payloadDir, 'node_modules', 'ffmpeg-static')), true);
     assert.equal(existsSync(join(payloadDir, 'node_modules', '@huggingface', 'transformers')), false);
     assert.equal(existsSync(join(payloadDir, 'node_modules', 'sherpa-onnx-node')), false);
+    assert.equal(existsSync(join(payloadDir, 'node_modules', `sherpa-onnx-${target.os === 'windows' ? 'win' : target.os}-${target.arch}`)), false);
     assert.equal(
       existsSync(join(payloadDir, 'tools', 'archives', `voice-inference-runtime-${target.os}-${target.arch}.tar.gz`)),
-      true,
+      false,
     );
     const zellijBinaryName = target.os === 'windows' ? 'zellij.exe' : 'zellij';
-    assert.equal(
-      readFileSync(join(payloadDir, 'tools', 'unpacked', zellijBinaryName), 'utf8'),
-      `zellij 0.44.3 for ${target.arch}-${target.os === 'windows' ? 'win32' : target.os}\n`,
-    );
+    assert.equal(existsSync(join(payloadDir, 'tools', 'unpacked', zellijBinaryName)), target.os !== 'windows');
+    if (target.os !== 'windows') {
+      assert.equal(
+        readFileSync(join(payloadDir, 'tools', 'unpacked', zellijBinaryName), 'utf8'),
+        `zellij 0.44.3 for ${target.arch}-${target.os}\n`,
+      );
+    }
     assert.equal(
       readFileSync(join(payloadDir, 'tools', 'unpacked', `happier-cliproxyapi-managed${target.exeExt}`), 'utf8'),
       'signed managed runtime fixture\n',
@@ -616,10 +655,7 @@ test('buildCliBinaryArtifactPayload compiles and finalizes a self-contained runt
       readFileSync(join(payloadDir, 'scripts', 'runtime', 'loadTransformersFromRuntime.mjs'), 'utf8'),
       'export const env = {}; export async function pipeline() { return () => null; }\n',
     );
-    assert.equal(
-      readFileSync(join(payloadDir, 'scripts', 'runtime', 'loadVoiceInferenceRuntime.mjs'), 'utf8'),
-      ACTUAL_VOICE_RUNTIME_LOADER_SOURCE,
-    );
+    assert.equal(existsSync(join(payloadDir, 'scripts', 'runtime', 'loadVoiceInferenceRuntime.mjs')), false);
     assert.equal(
       readFileSync(join(payloadDir, 'package-dist', 'daemon', 'voiceInference', 'runtime', 'packagedVoiceInferenceRuntime.mjs'), 'utf8'),
       'export const voiceInferenceRuntimeEngine = { warmModel: async () => {}, synthesizeTts: async () => ({ bytes: Buffer.from("wav"), output: { codec: "wav", mimeType: "audio/wav" }, name: "runtime.wav" }), transcribeAudio: async () => ({ text: "runtime", language: "en" }) };\n',
@@ -873,6 +909,9 @@ test('buildCliBinaryArtifactPayload snapshots CLI dist before compile/copy so la
       JSON.stringify({ name: '@homebridge/node-pty-prebuilt-multiarch', version: '1.0.0', dependencies: {} }, null, 2),
     );
     writeFileSync(join(homebridgePtyDir, 'index.js'), 'module.exports = { spawn() {} };\n', 'utf8');
+    writeFileSync(join(cliDistDir, 'index.mjs'), 'export {};\n', 'utf8');
+    materializeFixtureCliWorkspaceRuntime({ repoRoot, cliDistDir });
+    rmSync(join(cliDistDir, 'index.mjs'));
 
     const artifacts = await import('../dist/componentArtifacts/index.js');
     await artifacts.buildCliBinaryArtifactPayload({
@@ -1170,11 +1209,12 @@ test('buildCliBinaryArtifactPayload stages embeddings runtime packages and exter
       'thread-stream',
     ].sort());
     assert.equal(existsSync(join(payloadDir, 'node_modules', '@huggingface', 'transformers')), false);
-    assert.equal(existsSync(join(payloadDir, 'node_modules', 'ffmpeg-static')), false);
+    assert.equal(existsSync(join(payloadDir, 'node_modules', 'ffmpeg-static')), true);
     assert.equal(existsSync(join(payloadDir, 'node_modules', 'sherpa-onnx-node')), false);
+    assert.equal(existsSync(join(payloadDir, 'node_modules', `sherpa-onnx-${target.os === 'windows' ? 'win' : target.os}-${target.arch}`)), false);
     assert.equal(
       existsSync(join(payloadDir, 'tools', 'archives', `voice-inference-runtime-${target.os}-${target.arch}.tar.gz`)),
-      true,
+      false,
     );
   } finally {
     rmSync(tempRoot, { recursive: true, force: true });
@@ -1251,6 +1291,7 @@ test('buildServerBinaryArtifactPayload stages and finalizes self-contained runti
       'utf8',
     );
     writeFileSync(join(sharpLibvipsLinuxX64Dir, 'libvips.so'), 'libvips\n', 'utf8');
+    writeIrohNativeRuntimeFixture(repoRoot);
     if (process.platform !== 'win32') {
       const externalBinTarget = join(tempRoot, 'external-server-bin-target.js');
       const nestedBinDir = join(prismaClientPackageDir, 'node_modules', '.bin');
@@ -1500,6 +1541,7 @@ test('buildServerBinaryArtifactPayload packages PostgreSQL and MySQL migration c
     writeFileSync(join(repoRoot, 'node_modules', '@prisma', 'client', 'index.js'), 'module.exports = {};\n');
     writeFileSync(join(repoRoot, 'node_modules', 'prisma', 'build', 'prisma_schema_build_bg.wasm'), 'schema wasm\n');
     writeServerSharpRuntimeFixture({ repoRoot });
+    writeIrohNativeRuntimeFixture(repoRoot);
 
     const artifacts = await import('../dist/componentArtifacts/index.js');
     const result = await artifacts.buildServerBinaryArtifactPayload({
@@ -1594,6 +1636,7 @@ test('buildServerBinaryArtifactPayload stages sharp runtime sidecars for the ser
       'utf8',
     );
     writeFileSync(join(sharpDarwinArm64Dir, 'binding.node'), 'darwin sharp binding\n', 'utf8');
+    writeIrohNativeRuntimeFixture(repoRoot);
 
     const artifacts = await import('../dist/componentArtifacts/index.js');
     const compileCalls = [];
@@ -1697,6 +1740,7 @@ test('buildServerBinaryArtifactPayload delegates provider freshness to generate:
     writeFileSync(join(postgresClientDir, 'default.js'), 'module.exports = {};\n', 'utf8');
     writeFileSync(join(prismaClientPackageDir, 'index.js'), 'module.exports = { PrismaClient: class PrismaClient {} };\n', 'utf8');
     writeServerSharpRuntimeFixture({ repoRoot });
+    writeIrohNativeRuntimeFixture(repoRoot);
     writeServerPackagedMigrationFixtures({ repoRoot });
 
     const artifacts = await import('../dist/componentArtifacts/index.js');
@@ -1795,6 +1839,7 @@ test('buildServerBinaryArtifactPayload fails darwin artifacts without the darwin
     });
     writeFileSync(join(prismaClientPackageDir, 'index.js'), 'module.exports = { PrismaClient: class PrismaClient {} };\n', 'utf8');
     writeServerSharpRuntimeFixture({ repoRoot, platform: 'darwin', arch: 'arm64' });
+    writeIrohNativeRuntimeFixture(repoRoot);
 
     const artifacts = await import('../dist/componentArtifacts/index.js');
     await assert.rejects(
@@ -1849,6 +1894,7 @@ test('buildServerBinaryArtifactPayload retries transient ENOENT failures while c
     writeServerPrismaEngineFixtures({ sqliteClientDir, postgresClientDir });
     writeFileSync(join(prismaClientPackageDir, 'index.js'), 'module.exports = {};\n', 'utf8');
     writeServerSharpRuntimeFixture({ repoRoot });
+    writeIrohNativeRuntimeFixture(repoRoot);
 
     const artifacts = await import('../dist/componentArtifacts/index.js');
     let copyAttempts = 0;
@@ -1913,6 +1959,7 @@ test('prepareUiWebDist refreshes an existing ui-web dist before server sidecars 
     writeServerPrismaEngineFixtures({ sqliteClientDir, postgresClientDir });
     writeFileSync(join(prismaClientPackageDir, 'index.js'), 'module.exports = {};\n', 'utf8');
     writeServerSharpRuntimeFixture({ repoRoot });
+    writeIrohNativeRuntimeFixture(repoRoot);
 
     const artifacts = await import('../dist/componentArtifacts/index.js');
     const runCalls = [];

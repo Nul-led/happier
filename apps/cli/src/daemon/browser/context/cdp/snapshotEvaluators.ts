@@ -2,13 +2,13 @@ import type {
     BrowserContextSnapshotAxNodeV1,
     BrowserContextSnapshotInteractiveElementV1,
 } from '@happier-dev/protocol';
+import { synthesizeLocatorNameExpression } from '../../automation/locators';
 
 /**
  * BA-2 combined-snapshot evaluators + parsers. The injected expressions are bounded + try/guarded so
  * a hostile or huge DOM can never throw out of the evaluator or return an unbounded dump; the parsers
- * defensively coerce the raw CDP result into the bounded protocol shapes. These are the snapshot-only
- * page-query primitives owned by the context producer; the automation control bridge owns its own
- * read-only query expressions (kept separate so the two read surfaces evolve independently).
+ * defensively coerce the raw CDP result into the bounded protocol shapes. Context capture and
+ * automation semantic queries share this extraction owner.
  */
 
 export const SNAPSHOT_MAX_VISIBLE_TEXT_CHARS = 16_384;
@@ -16,7 +16,7 @@ export const SNAPSHOT_MAX_AX_NODES = 512;
 export const SNAPSHOT_MAX_INTERACTIVE_ELEMENTS = 512;
 
 const MAX_ROLE_CHARS = 128;
-const MAX_NAME_CHARS = 256;
+export const SNAPSHOT_MAX_NAME_CHARS = 256;
 const MAX_SELECTOR_CHARS = 1024;
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -45,41 +45,41 @@ export function interactiveElementsExpression(maxElements: number): string {
     const isUnique = (s) => { try { return document.querySelectorAll(s).length === 1; } catch { return false; } };
     const synth = (el) => {
       try {
-        if (el.id) { const s = '#' + cssEsc(el.id); if (isUnique(s)) return s.slice(0, 256); }
+        if (el.id) { const s = '#' + cssEsc(el.id); if (s.length <= ${MAX_SELECTOR_CHARS} && isUnique(s)) return s; }
         const tid = el.getAttribute && el.getAttribute('data-testid');
-        if (tid) { const s = '[data-testid="' + tid.replace(/"/g, '\\\\"') + '"]'; if (isUnique(s)) return s.slice(0, 256); }
+        if (tid) { const s = '[data-testid="' + tid.replace(/"/g, '\\\\"') + '"]'; if (s.length <= ${MAX_SELECTOR_CHARS} && isUnique(s)) return s; }
         const parts = [];
         let node = el;
-        let depth = 0;
-        while (node && node.nodeType === 1 && depth < 5) {
+        while (node && node.nodeType === 1) {
           let part = node.tagName.toLowerCase();
           const parent = node.parentElement;
-          if (node.id) { parts.unshift('#' + cssEsc(node.id)); break; }
           if (parent) {
             const sibs = Array.prototype.filter.call(parent.children, (c) => c.tagName === node.tagName);
             if (sibs.length > 1) part += ':nth-of-type(' + (sibs.indexOf(node) + 1) + ')';
           }
           parts.unshift(part);
           node = parent;
-          depth++;
+          const candidate = parts.join(' > ');
+          if (candidate.length > ${MAX_SELECTOR_CHARS}) return '';
+          if (isUnique(candidate)) return candidate;
         }
-        return parts.join(' > ').slice(0, 256);
+        return '';
       } catch { return ''; }
     };
     const out = [];
     const sel = 'a,button,input,select,textarea,[role],h1,h2,h3,[aria-label]';
     const nodes = document.querySelectorAll(sel);
-    for (let i = 0; i < nodes.length && out.length < ${maxElements}; i++) {
+    // One extra raw element is the overflow sentinel; the parser returns at most the wire cap.
+    for (let i = 0; i < nodes.length && out.length < ${maxElements + 1}; i++) {
       const el = nodes[i];
       const role = el.getAttribute('role') || el.tagName.toLowerCase();
-      const name = (el.getAttribute('aria-label') || el.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 120);
+      const name = ${synthesizeLocatorNameExpression('el')}.slice(0, ${SNAPSHOT_MAX_NAME_CHARS + 1});
       let rect = { x: 0, y: 0, width: 0, height: 0 };
       try {
         const r = el.getBoundingClientRect();
         rect = { x: Math.round(r.left), y: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) };
       } catch {}
       const selector = synth(el);
-      if (!selector) continue;
       out.push({ role, name, selector, rect });
     }
     return out;
@@ -96,14 +96,19 @@ export function parseInteractiveElements(
 ): Readonly<{ elements: readonly BrowserContextSnapshotInteractiveElementV1[]; truncated: boolean }> {
     if (!Array.isArray(value)) return { elements: [], truncated: false };
     const elements: BrowserContextSnapshotInteractiveElementV1[] = [];
+    let metadataTruncated = false;
     for (const raw of value) {
         if (elements.length >= cap) break;
         const r = record(raw);
         if (!r) continue;
         const role = clampString(r.role, MAX_ROLE_CHARS);
-        const selector = clampString(r.selector, MAX_SELECTOR_CHARS);
+        // Selectors are executable code, not display text: never return a sliced selector.
+        const selector = typeof r.selector === 'string' && r.selector.trim().length <= MAX_SELECTOR_CHARS
+            ? r.selector.trim()
+            : undefined;
         if (!role || !selector) continue;
-        const name = clampString(r.name, MAX_NAME_CHARS);
+        const name = clampString(r.name, SNAPSHOT_MAX_NAME_CHARS);
+        if (typeof r.name === 'string' && r.name.trim().length > SNAPSHOT_MAX_NAME_CHARS) metadataTruncated = true;
         const rectRecord = record(r.rect);
         const rect = {
             x: numberOr(rectRecord?.x, 0),
@@ -113,12 +118,12 @@ export function parseInteractiveElements(
         };
         elements.push({ role, selector, rect, ...(name ? { name } : {}) });
     }
-    return { elements, truncated: Array.isArray(value) && value.length > elements.length };
+    return { elements, truncated: metadataTruncated || value.length > elements.length };
 }
 
 function axValue(node: Record<string, unknown>, field: string): string | undefined {
     const wrapped = record(node[field]);
-    return clampString(wrapped?.value, field === 'role' ? MAX_ROLE_CHARS : MAX_NAME_CHARS);
+    return clampString(wrapped?.value, field === 'role' ? MAX_ROLE_CHARS : SNAPSHOT_MAX_NAME_CHARS);
 }
 
 /**

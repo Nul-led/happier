@@ -1,4 +1,40 @@
 import { vi } from 'vitest';
+import type * as React from 'react';
+import { createTestSessionTranscriptSource, renderScreen, wrapWithSessionTranscriptSource } from '@/dev/testkit';
+import type { SessionTranscriptActions } from '@/components/sessions/transcript/source/types';
+
+type RespondToPermission = SessionTranscriptActions['respondToPermission'];
+
+/** Each observer receives the actual protocol payload passed to the injected action. */
+export function createPermissionShellRenderer(observers: Readonly<{
+    approve?: RespondToPermission;
+    approveWithUpdates?: RespondToPermission;
+    deny?: RespondToPermission;
+    abort?: SessionTranscriptActions['abort'];
+}> = {}) {
+    return async (element: React.ReactElement) => {
+        const props = element.props as Readonly<{ sessionId?: unknown; serverId?: unknown }>;
+        const source = createTestSessionTranscriptSource({
+            sessionId: typeof props.sessionId === 'string' ? props.sessionId : undefined,
+            serverId: typeof props.serverId === 'string' ? props.serverId : null,
+            interaction: { canSendMessages: true, canApprovePermissions: true },
+            actions: {
+                respondToPermission: async (params) => {
+                    const observer = params.approved
+                        ? params.updatedPermissions !== undefined ? observers.approveWithUpdates : observers.approve
+                        : observers.deny;
+                    await observer?.(params);
+                },
+                answerUserAction: async () => {}, abort: observers.abort ?? (async () => {}), submitMessage: async () => {},
+            },
+        });
+        const screen = await renderScreen(wrapWithSessionTranscriptSource(element, source));
+        return {
+            ...screen,
+            update: (next: React.ReactElement) => screen.update(wrapWithSessionTranscriptSource(next, source)),
+        };
+    };
+}
 
 type PermissionShellModuleFactory = () => unknown | Promise<unknown>;
 type PermissionShellImportOriginal = <T = unknown>() => Promise<T>;

@@ -13,10 +13,6 @@ function createBaseRuntimeParams(
     // Test fixture boundary: the real Memory worker does not invoke the API client during startup.
     api: { machineSyncClient: vi.fn() } as never,
     credentials: { token: 'token-only', encryption: null },
-    diagnosticSubsystemGates: {
-      disableMachineSync: false,
-      disableAutomationWorker: false,
-    },
     runtimeId: 'runtime_1',
     publicReleaseChannel: 'dev' as const,
     startupSource: 'manual',

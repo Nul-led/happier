@@ -12,7 +12,7 @@ describe('resolveSessionRuntimeSnapshot connected-services V2', () => {
           ref: {
             source: 'team_resource', resourceId: 'resource-1', teamId: 'team-1',
             expectedResourceRevision: 7, deliveryMode: 'brokered',
-            agentTargetKey: 'backend:codex', modelId: 'model-1',
+            agentTargetKey: 'agent:happier.agent.codex/codex', modelId: 'model-1',
           },
         },
       },
@@ -25,7 +25,7 @@ describe('resolveSessionRuntimeSnapshot connected-services V2', () => {
       deliveryMode: 'brokered', teamId: 'team-1',
     }]);
     expect(result.spawnOptions.modelSelection).toMatchObject({
-      ref: { agentTargetKey: 'backend:codex', providerConnectionId: null, modelId: 'model-1' },
+      ref: { agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: null, modelId: 'model-1' },
       updatedAt: 10,
     });
   });
@@ -35,7 +35,7 @@ describe('resolveSessionRuntimeSnapshot connected-services V2', () => {
       persistedMetadata: {
         modelSelectionIntentV2: {
           v: 2, updatedAt: 10,
-          ref: { source: 'native', agentTargetKey: 'backend:codex', modelId: 'model-1' },
+          ref: { source: 'native', agentTargetKey: 'agent:happier.agent.codex/codex', modelId: 'model-1' },
         },
       },
     });

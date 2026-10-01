@@ -68,7 +68,12 @@ const translatedProjection: PluginUiProjectionModel = {
 const targetedContributions = {
     target: {
         pluginId: 'acme.target',
-        immutableGenerationId: 'target-generation-1',
+        occurrenceId: 'target-occurrence-1',
+        sourceCustody: {
+            kind: 'managed',
+            immutableGenerationId: 'target-generation-1',
+            installSource: 'archive',
+        },
     },
     points: [],
 } as const satisfies SurfaceContext['targetedContributions'];
@@ -104,6 +109,7 @@ function createHostSurface(input: Readonly<{
             screenReaderEnabled: false,
             safeAreaInsets: { top: 0, right: 0, bottom: 0, left: 0 },
             theme: themeForProfile(input.themeProfileIndex),
+            columnVisible: false,
         },
         translations: resolvePluginUiTranslationBundle({
             projection: translatedProjection,

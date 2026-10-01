@@ -56,6 +56,10 @@ export function createSessionProviderInputConsumerSessionAdapter(
     getMetadataSnapshot: () => session.getMetadataSnapshot(),
     shouldAttemptPendingMaterialization: () =>
       session.shouldAttemptPendingMaterialization?.() ?? true,
+    hasPendingProviderInput: () => {
+      const state = session.getPendingQueueState?.();
+      return state?.known === true && state.pendingCount > 0;
+    },
     ...(session.reconcilePendingProviderInputCustodyBeforeMaterialization
       ? {
           reconcilePendingProviderInputCustodyBeforeMaterialization: () =>

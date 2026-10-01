@@ -3,6 +3,34 @@ import { describe, expect, it } from 'vitest';
 import { normalizeLocalServiceScan } from './scanner';
 
 describe('normalizeLocalServiceScan', () => {
+    it('marks only listeners owned by exact Happier process or endpoint evidence', () => {
+        const snapshot = normalizeLocalServiceScan({
+            machineId: 'machine-a', now: 1_000, previous: null, workspaces: [],
+            internalProcessPids: [100, 200],
+            internalEndpointUrls: ['http://127.0.0.1:19364', 'https://example.com:9999', 'not a URL'],
+            listeners: [
+                { address: '127.0.0.1', port: 3000, protocol: 'tcp', pid: 100 },
+                { address: '::1', port: 3001, protocol: 'tcp', pid: 200 },
+                { address: '0.0.0.0', port: 19364, protocol: 'tcp' },
+                { address: '127.0.0.1', port: 5173, protocol: 'tcp', pid: 300 },
+                { address: '192.168.1.2', port: 19364, protocol: 'tcp', pid: 400 },
+                { address: '127.0.0.2', port: 19364, protocol: 'tcp', pid: 400 },
+                { address: '127.0.0.1', port: 9999, protocol: 'tcp', pid: 400 },
+            ],
+            processes: new Map([
+                [100, { pid: 100, command: 'node daemon.js' }],
+                [200, { pid: 200, command: 'happier session' }],
+                [300, { pid: 300, ppid: 200, command: 'node happier-demo.js', cwd: '/repo/.happier' }],
+                [400, { pid: 400, command: 'node web.js' }],
+            ]),
+        });
+        expect(snapshot.entries.filter((entry) => entry.classification?.kind === 'happier').map((entry) => entry.port)).toEqual([3000, 3001, 19364]);
+        expect(snapshot.entries.find((entry) => entry.port === 5173)?.classification?.kind).not.toBe('happier');
+        expect(snapshot.entries.find((entry) => entry.address.kind === 'lan')?.classification?.kind).not.toBe('happier');
+        expect(snapshot.entries.find((entry) => entry.address.host === '127.0.0.2')?.classification?.kind).not.toBe('happier');
+        expect(snapshot.entries.find((entry) => entry.port === 9999)?.classification?.kind).not.toBe('happier');
+    });
+
     it('normalizes adapter listeners into stable sanitized inventory entries', () => {
         const snapshot = normalizeLocalServiceScan({
             machineId: 'machine-a',

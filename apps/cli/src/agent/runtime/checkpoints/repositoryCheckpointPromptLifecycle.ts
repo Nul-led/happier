@@ -28,6 +28,8 @@ type ActiveCheckpointBinding = Readonly<{
     unavailableReason?: RepositoryCheckpointTurnProjectionUnavailableReason;
     unavailableError?: string;
     attributionInterval?: WorktreeAttributionInterval;
+    startSequence?: number;
+    finalSequence?: number;
 }>;
 
 function buildScopeId(params: Readonly<{
@@ -193,7 +195,12 @@ export function createRepositoryCheckpointPromptLifecycle(params: Readonly<{
             providerTurnChangeSet: {
                 sessionId: params.session.sessionId,
                 turnId: input.turnId,
-                seqRange: { startSeqInclusive: 0, endSeqInclusive: 0 },
+                // Capture runtime chronology before asynchronous Git work/publication. Both
+                // checkpoint and normalized tool evidence consume the same runtime event sequence.
+                seqRange: {
+                    startSeqInclusive: input.binding.startSequence ?? input.binding.finalSequence ?? 0,
+                    endSeqInclusive: input.binding.finalSequence ?? input.binding.startSequence ?? 0,
+                },
                 status: input.status,
                 files: [],
                 provider: 'scm:git',
@@ -254,7 +261,7 @@ export function createRepositoryCheckpointPromptLifecycle(params: Readonly<{
                 receipts: appendReceipts(binding.receipts, captured.receipts),
             });
         },
-        async onTurnStarted({ messageId, turnId }) {
+        async onTurnStarted({ messageId, turnId, sequence }) {
             const binding = bindingsByMessageId.get(messageId);
             if (!binding) return;
             const refs = buildRepositoryCheckpointRefs({
@@ -262,7 +269,7 @@ export function createRepositoryCheckpointPromptLifecycle(params: Readonly<{
                 messageId,
                 turnId,
             });
-            let nextBinding: ActiveCheckpointBinding = { ...binding, refs };
+            let nextBinding: ActiveCheckpointBinding = { ...binding, refs, startSequence: sequence };
             bindingsByMessageId.set(messageId, nextBinding);
             if (binding.unavailableReason || !binding.context) return;
             if (!refs.messageStart || !refs.turnStart) {
@@ -294,10 +301,11 @@ export function createRepositoryCheckpointPromptLifecycle(params: Readonly<{
             };
             bindingsByMessageId.set(messageId, nextBinding);
         },
-        async onTurnFinal({ messageId, turnId, status }) {
-            const binding = bindingsByMessageId.get(messageId);
+        async onTurnFinal({ messageId, turnId, status, sequence }) {
+            const activeBinding = bindingsByMessageId.get(messageId);
             bindingsByMessageId.delete(messageId);
-            if (!binding) return;
+            if (!activeBinding) return;
+            const binding: ActiveCheckpointBinding = { ...activeBinding, finalSequence: sequence };
             let capturedAttributionScope: RepositoryCheckpointAttributionScope | null = null;
             /**
              * Close the capture interval exactly once, at the boundary where no further checkpoint

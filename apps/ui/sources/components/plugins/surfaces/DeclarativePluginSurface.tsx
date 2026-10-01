@@ -18,6 +18,8 @@ import {
 import type { PluginUiDataClient } from '@happier-dev/plugin-ui/data';
 import {
     HappierUiEnvironmentProvider,
+    HappierUiPaletteProvider,
+    HappierUiTypographyProvider,
     resolveHappierUiPresentationTheme,
     type HappierUiAccessibility,
     type HappierUiEnvironment,
@@ -44,6 +46,7 @@ import {
 } from '@happier-dev/protocol/plugins/ui';
 
 import { PluginSurfaceInteractionBoundary } from '@/components/plugins/shared/PluginSurfaceInteractionBoundary';
+import { PluginSettingDaemonSecretField } from '@/components/settings/plugins/detail/PluginDetailGenericSettingsSection';
 import { Icon, ICON_SIZE } from '@/components/ui/icons/Icon';
 import {
     createDeclarativeTextResolver,
@@ -68,7 +71,10 @@ import {
     type ScopedPluginSettingsFieldModel,
     type ScopedPluginSettingsProjectionState,
 } from '@/sync/domains/plugins/settings/scopedPluginSettingsProjection';
-import type { PluginProjectionEditableSettingField } from '@/agents/backendCatalog/daemonContributionRegistryProjectionAdapters';
+import type {
+    PluginProjectionEditableSettingField,
+    ResolvedPluginProjectionEditableSettingField,
+} from '@/agents/backendCatalog/daemonContributionRegistryProjectionAdapters';
 import {
     resolveScopedPluginSettingsServerIdentity,
     scopedPluginAccountSecretSettingsAdapter,
@@ -87,7 +93,7 @@ import {
     resolvePluginSurfaceDestinationIcon,
     resolvePluginSurfaceDestinationLabel,
 } from './pluginSurfaceDestinations';
-import { projectPluginUiTheme } from './pluginUiThemeProjection';
+import { projectPluginUiHostPalette, projectPluginUiTheme, readPluginUiHostTypography } from './pluginUiThemeProjection';
 import { getPreferredLanguage, t } from '@/text';
 import { createPluginLocalizedTextResolver } from '@/sync/domains/plugins/ui/i18n';
 import type { ActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
@@ -104,6 +110,7 @@ import {
     type AdmittedDeclarativeDestination,
     type AdmittedDeclarativeSetting,
 } from './declarativeStaticModel';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 /**
  * The declarative node vocabulary itself is rendered by the single owner in
@@ -211,7 +218,7 @@ function projectDeclarativeDeclaredField(
     node: RecordValue,
     binding: DeclarativeSettingBinding,
     localized: DeclarativeTextResolver,
-): PluginProjectionEditableSettingField | null {
+): ResolvedPluginProjectionEditableSettingField | null {
     const control = record(node.control);
     const setting = record(node.setting);
     const descriptor = record(setting?.descriptor);
@@ -282,7 +289,8 @@ function collectDeclarativeSettingsFields(
                 ? 'accountSecrets'
                 : binding.scope;
             const projectedField = projectScopedPluginSettingsField(declaredField);
-            if (!fields[bucket].some((field) => field.key === binding.id)) {
+            if (!(binding.scope === 'daemon' && binding.secret)
+                && !fields[bucket].some((field) => field.key === binding.id)) {
                 fields[bucket].push(projectedField);
             }
             if (!binding.secret) {
@@ -355,11 +363,11 @@ type DeclarativeComposerApplyBinding = Readonly<{
     transaction: ComposerTransactionV1;
 }>;
 
-function readActionBinding(node: RecordValue, generation: string | null): DeclarativeActionBinding | null {
+function readActionBinding(node: RecordValue, occurrenceId: string | null): DeclarativeActionBinding | null {
     const input = Object.prototype.hasOwnProperty.call(node, 'input')
         ? PluginUiJsonValueV1Schema.safeParse(node.input)
         : null;
-    if (!generation || (input !== null && !input.success)) return null;
+    if (!occurrenceId || (input !== null && !input.success)) return null;
     if (node.hostAction !== undefined) {
         const hostAction = ActionIdSchema.safeParse(node.hostAction);
         if (!hostAction.success || node.action !== undefined || node.effect !== undefined) return null;
@@ -373,7 +381,7 @@ function readActionBinding(node: RecordValue, generation: string | null): Declar
     const identity = PluginContributionIdentityV1Schema.safeParse(action?.identity);
     if (
         !identity.success
-        || action?.generation !== generation
+        || action?.occurrenceId !== occurrenceId
         || action.qualifiedId !== buildQualifiedPluginContributionKey(identity.data)
     ) {
         return null;
@@ -425,22 +433,22 @@ function readNonemptyString(value: unknown): string | null {
 
 /**
  * Reattaches a pre-normalized qualified target to this exact static model
- * generation. It deliberately does not accept a plugin-local author reference
+ * occurrenceId. It deliberately does not accept a plugin-local author reference
  * or manufacture a qualified id from a label.
  */
 function readDeclarativeQualifiedReference(input: Readonly<{
     value: unknown;
     pluginId: string;
-    generation: string | null;
+    occurrenceId: string | null;
 }>): DeclarativeQualifiedReference | null {
     const value = record(input.value);
     const identity = PluginContributionIdentityV1Schema.safeParse(value?.identity);
     const qualifiedId = readNonemptyString(value?.qualifiedId);
     if (
-        !input.generation
+        !input.occurrenceId
         || !identity.success
         || identity.data.pluginId !== input.pluginId
-        || value?.generation !== input.generation
+        || value?.occurrenceId !== input.occurrenceId
         || qualifiedId !== buildQualifiedPluginContributionKey(identity.data)
     ) {
         return null;
@@ -451,14 +459,14 @@ function readDeclarativeQualifiedReference(input: Readonly<{
 function readDeclarativeCollectionRowCommand(input: Readonly<{
     value: unknown;
     pluginId: string;
-    generation: string | null;
+    occurrenceId: string | null;
 }>): DeclarativeCollectionRowCommand | null {
     const command = record(input.value);
     if (command?.kind === 'action') {
         const action = readDeclarativeQualifiedReference({
             value: command.action,
             pluginId: input.pluginId,
-            generation: input.generation,
+            occurrenceId: input.occurrenceId,
         });
         return action ? Object.freeze({ kind: 'action', action }) : null;
     }
@@ -466,7 +474,7 @@ function readDeclarativeCollectionRowCommand(input: Readonly<{
         const destination = readDeclarativeQualifiedReference({
             value: command.destination,
             pluginId: input.pluginId,
-            generation: input.generation,
+            occurrenceId: input.occurrenceId,
         });
         return destination ? Object.freeze({ kind: 'openSurface', destination }) : null;
     }
@@ -519,7 +527,7 @@ function readCollectionRowCommandPendingState(input: Readonly<{
     node: RecordValue;
     context: DeclarativeCollectionRowCommandContext;
     pluginId: string;
-    generation: string | null;
+    occurrenceId: string | null;
     actions: ReadonlyMap<string, DeclarativeActionCatalogEntry>;
     pendingActions: ReadonlySet<string>;
 }>): string | null {
@@ -532,7 +540,7 @@ function readCollectionRowCommandPendingState(input: Readonly<{
         const command = readDeclarativeCollectionRowCommand({
             value: commandValue,
             pluginId: input.pluginId,
-            generation: input.generation,
+            occurrenceId: input.occurrenceId,
         });
         if (command?.kind !== 'action') continue;
         const action = input.actions.get(command.action.qualifiedId);
@@ -650,7 +658,7 @@ export function DeclarativePluginSurface(props: Readonly<{
         expectedPluginId: props.pluginId,
     }), [model, props.pluginId]);
     const root = admittedModel?.root ?? null;
-    const generation = admittedModel?.generation ?? null;
+    const occurrenceId = admittedModel?.occurrenceId ?? null;
     const qualifiedId = admittedModel?.qualifiedId ?? props.pluginId;
     const visible = admittedModel !== null;
     const collectionCommandCatalog: DeclarativeCollectionCommandCatalog = admittedModel
@@ -665,7 +673,7 @@ export function DeclarativePluginSurface(props: Readonly<{
         ),
         [admittedModel, localized, root],
     );
-    const settingsSourceLifetimeIdentity = `${qualifiedId}:${generation ?? 'unavailable'}:${props.authorityGeneration}`;
+    const settingsSourceLifetimeIdentity = `${qualifiedId}:${occurrenceId ?? 'unavailable'}:${props.authorityGeneration}`;
     const accountServerIdentityId = React.useMemo(
         () => resolveScopedPluginSettingsServerIdentity(activeServer.serverId),
         [activeServer.serverId],
@@ -755,7 +763,7 @@ export function DeclarativePluginSurface(props: Readonly<{
         pendingActionIdsRef.current.clear();
         setPendingActions(new Set());
     }, [
-        generation,
+        occurrenceId,
         props.authorityGeneration,
         composerScopeKey,
         props.applyComposer,
@@ -845,7 +853,7 @@ export function DeclarativePluginSurface(props: Readonly<{
 
     /**
      * The mounted surface's action affordance. A node whose binding does not
-     * agree with the current generation stays visible but inert, so a stale
+     * agree with the current occurrenceId stays visible but inert, so a stale
      * projection cannot dispatch.
      */
     const resolveAction = React.useCallback((node: RecordValue): DeclarativeActionAffordance => {
@@ -866,7 +874,7 @@ export function DeclarativePluginSurface(props: Readonly<{
                 onPress: () => runComposerApply(composerApply, true, key),
             };
         }
-        const binding = readActionBinding(node, generation);
+        const binding = readActionBinding(node, occurrenceId);
         const key = binding?.qualifiedActionId ?? `invalid:${String(node.path)}`;
         const busy = binding !== null && pendingActions.has(binding.qualifiedActionId);
         const disabled = node.enabled !== true
@@ -881,7 +889,7 @@ export function DeclarativePluginSurface(props: Readonly<{
             ...(binding ? { onPress: () => runAction(binding, true) } : {}),
         };
     }, [
-        generation,
+        occurrenceId,
         pendingActions,
         props.actionAvailable,
         props.applyComposer,
@@ -909,7 +917,7 @@ export function DeclarativePluginSurface(props: Readonly<{
             const command = readDeclarativeCollectionRowCommand({
                 value: commandValue,
                 pluginId: props.pluginId,
-                generation,
+                occurrenceId,
             });
             if (!command) return null;
 
@@ -972,7 +980,7 @@ export function DeclarativePluginSurface(props: Readonly<{
     }, [
         collectionCommandCatalog.actions,
         collectionCommandCatalog.destinations,
-        generation,
+        occurrenceId,
         props.actionAvailable,
         props.daemonInteractionEnabled,
         props.openSurface,
@@ -990,10 +998,10 @@ export function DeclarativePluginSurface(props: Readonly<{
         node,
         context,
         pluginId: props.pluginId,
-        generation,
+        occurrenceId,
         actions: collectionCommandCatalog.actions,
         pendingActions,
-    }), [collectionCommandCatalog.actions, generation, pendingActions, props.pluginId]);
+    }), [collectionCommandCatalog.actions, occurrenceId, pendingActions, props.pluginId]);
 
     const renderField = (node: RecordValue): React.ReactNode => {
         const nodePath = typeof node.path === 'string' ? node.path : 'field';
@@ -1055,6 +1063,88 @@ export function DeclarativePluginSurface(props: Readonly<{
             theme: presentationTheme,
             testID: `${fieldTestID}:container`,
         } as const;
+
+        if (binding?.scope === 'daemon' && binding.secret) {
+            const declaredField = projectDeclarativeDeclaredField(node, binding, localized);
+            if (!declaredField) return null;
+            return (
+                <PluginSettingDaemonSecretField
+                    key={nodePath}
+                    pluginId={props.pluginId}
+                    field={declaredField}
+                    target={daemonTarget?.kind === 'daemon' ? daemonTarget : null}
+                    enabled={visible && daemonSettingsEnabled}
+                    accountLifetime={props.accountLifetime ?? null}
+                    isDaemonTargetCurrent={props.isDaemonSettingsTargetCurrent}
+                    lifetimeIdentity={settingsSourceLifetimeIdentity}
+                    renderField={(secret) => {
+                        const secretDisabled = secret.disabled || secret.saving;
+                        const buttonStyle = (state: { disabled?: boolean; pressed?: boolean }) => ({
+                            minWidth: minimumTouchTarget,
+                            minHeight: minimumTouchTarget,
+                            justifyContent: 'center' as const,
+                            alignItems: 'center' as const,
+                            paddingHorizontal: presentationTheme.spacing.medium,
+                            borderRadius: presentationTheme.radii.control,
+                            backgroundColor: presentationTheme.colors.accent,
+                            opacity: state.disabled ? 0.5 : state.pressed ? motionTokens.press.opacitySubtle : 1,
+                        });
+                        return (
+                            <HappierField {...fieldProps} disabled={secretDisabled}>
+                                <HappierTextField
+                                    testID={fieldTestID}
+                                    label={label}
+                                    value={secret.value}
+                                    disabled={secretDisabled}
+                                    secure
+                                    minimumTouchTarget={minimumTouchTarget}
+                                    theme={presentationTheme}
+                                    onChangeText={secret.onChangeText}
+                                />
+                                <HappierFormActions testID={`${fieldTestID}:actions`}>
+                                    {secret.onDelete ? (
+                                        <HappierPressable
+                                            testID={`plugin-declarative-field-delete:${nodePath}`}
+                                            accessibilityRole="button"
+                                            accessibilityLabel={`${t('settingsPlugins.secretFieldActions.delete')}: ${label}`}
+                                            disabled={secretDisabled}
+                                            onPress={secret.onDelete}
+                                            style={buttonStyle}
+                                        >
+                                            <HappierText style={{ color: presentationTheme.colors.onAccent }}>
+                                                {t('common.delete')}
+                                            </HappierText>
+                                        </HappierPressable>
+                                    ) : null}
+                                    <HappierPressable
+                                        testID={`plugin-declarative-field-save:${nodePath}`}
+                                        accessibilityRole="button"
+                                        accessibilityLabel={`${t('common.save')}: ${label}`}
+                                        disabled={secretDisabled || !secret.dirty}
+                                        onPress={secret.onCommit}
+                                        style={buttonStyle}
+                                    >
+                                        <HappierText style={{ color: presentationTheme.colors.onAccent }}>
+                                            {t('common.save')}
+                                        </HappierText>
+                                    </HappierPressable>
+                                </HappierFormActions>
+                                {secret.saveFailed ? (
+                                    <HappierValidationMessage
+                                        testID={`${fieldTestID}:error`}
+                                        message={t(secret.saveOutcomeUnknown
+                                            ? 'settingsProviders.errors.mutationOutcomeUnknownDescription'
+                                            : 'settingsPlugins.genericSettingsSaveError')}
+                                        accessibilityLiveRegion="polite"
+                                        theme={presentationTheme}
+                                    />
+                                ) : null}
+                            </HappierField>
+                        );
+                    }}
+                />
+            );
+        }
 
         if (control?.kind === 'toggle') {
             return (
@@ -1179,7 +1269,7 @@ export function DeclarativePluginSurface(props: Readonly<{
                                 paddingHorizontal: presentationTheme.spacing.medium,
                                 borderRadius: presentationTheme.radii.control,
                                 backgroundColor: presentationTheme.colors.accent,
-                                opacity: state.disabled ? 0.5 : state.pressed ? 0.8 : 1,
+                                opacity: state.disabled ? 0.5 : state.pressed ? motionTokens.press.opacitySubtle : 1,
                             })}
                         >
                             <HappierText style={{ color: presentationTheme.colors.onAccent }}>
@@ -1217,7 +1307,7 @@ export function DeclarativePluginSurface(props: Readonly<{
                             paddingHorizontal: presentationTheme.spacing.medium,
                             borderRadius: presentationTheme.radii.control,
                             backgroundColor: presentationTheme.colors.accent,
-                            opacity: state.disabled ? 0.5 : state.pressed ? 0.8 : 1,
+                            opacity: state.disabled ? 0.5 : state.pressed ? motionTokens.press.opacitySubtle : 1,
                         })}
                     >
                         <HappierText style={{ color: presentationTheme.colors.onAccent }}>
@@ -1237,7 +1327,7 @@ export function DeclarativePluginSurface(props: Readonly<{
             <DeclarativeCollectionList
                 key={typeof node.path === 'string' ? node.path : 'root'}
                 pluginId={props.pluginId}
-                modelGeneration={generation ?? ''}
+                modelGeneration={occurrenceId ?? ''}
                 node={node}
                 accountLifetime={props.accountLifetime ?? null}
                 dataClient={props.dataClient ?? null}
@@ -1347,7 +1437,7 @@ export function DeclarativePluginSurface(props: Readonly<{
                                 paddingHorizontal: presentationTheme.spacing.medium,
                                 borderRadius: presentationTheme.radii.control,
                                 backgroundColor: presentationTheme.colors.accent,
-                                opacity: state.disabled ? 0.5 : state.pressed ? 0.8 : 1,
+                                opacity: state.disabled ? 0.5 : state.pressed ? motionTokens.press.opacitySubtle : 1,
                             })}
                         >
                             <HappierText style={{ color: presentationTheme.colors.onAccent }}>
@@ -1389,7 +1479,14 @@ export function DeclarativePluginSurface(props: Readonly<{
             )}
         </PluginSurfaceInteractionBoundary>
     );
+    // The declarative renderer is same-realm: its shared text owners read the
+    // host's real type roles and page colours, exactly as an executable plugin surface does.
+    const typedSurface = (
+        <HappierUiTypographyProvider typography={readPluginUiHostTypography()}>
+            <HappierUiPaletteProvider palette={projectPluginUiHostPalette(theme)}>{renderedSurface}</HappierUiPaletteProvider>
+        </HappierUiTypographyProvider>
+    );
     return props.environment
-        ? <HappierUiEnvironmentProvider environment={props.environment}>{renderedSurface}</HappierUiEnvironmentProvider>
-        : renderedSurface;
+        ? <HappierUiEnvironmentProvider environment={props.environment}>{typedSurface}</HappierUiEnvironmentProvider>
+        : typedSurface;
 }

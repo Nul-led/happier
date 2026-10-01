@@ -3,7 +3,8 @@ import { subscribeHomeAccountChange } from '@/sync/runtime/orchestration/homeAcc
 import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
 
 type SessionListQueryInvalidationTarget = Readonly<{
-    invalidate(): Promise<void>;
+    /** `'structural'` re-reads only a corpus whose server-side selection a row write can move. */
+    invalidate(scope?: 'structural'): Promise<void>;
     retire(sessionId: string): void;
 }>;
 
@@ -49,14 +50,17 @@ export function retireSessionListQueryAddress(serverId: string | null, sessionId
  * A socket-only concurrent-Home wake has no entity identities, so it stays
  * conservative. Do not infer a domain cause from content or ciphertext here.
  */
-export function shouldInvalidateSessionListQueryForAccountChange(
+export function resolveSessionListQueryInvalidationForAccountChange(
     event: HomeAccountChangeEvent,
-): boolean {
+): 'none' | 'structural' | 'all' {
     if (event.sessionListQueryAffects !== undefined) {
-        return event.sessionListQueryAffects;
+        if (event.sessionListQueryAffects === 'structural') return 'structural';
+        return event.sessionListQueryAffects ? 'all' : 'none';
     }
     return event.entityIds === undefined
-        || event.entityIds.some((entityId) => entityId !== 'self');
+        || event.entityIds.some((entityId) => entityId !== 'self')
+        ? 'all'
+        : 'none';
 }
 
 /**
@@ -69,8 +73,11 @@ export function subscribeSessionListQueryHomeInvalidation(
 ): () => void {
     mountedSessionListQueryReaders.add(readControllers);
     const unsubscribeAccountChanges = subscribeHomeAccountChange((event) => {
-        if (!shouldInvalidateSessionListQueryForAccountChange(event)) return;
-        void readControllers().get(event.serverId)?.invalidate();
+        const invalidation = resolveSessionListQueryInvalidationForAccountChange(event);
+        if (invalidation === 'none') return;
+        const target = readControllers().get(event.serverId);
+        if (!target) return;
+        void (invalidation === 'structural' ? target.invalidate('structural') : target.invalidate());
     });
     return () => {
         unsubscribeAccountChanges();

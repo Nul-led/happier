@@ -95,7 +95,7 @@ function resource(
     return {
         pluginId: 'happier.codex',
         agentLocalId: 'codex',
-        pluginGeneration: 'generation-1',
+        occurrenceId: 'generation-1',
         resourceKey: key,
     };
 }

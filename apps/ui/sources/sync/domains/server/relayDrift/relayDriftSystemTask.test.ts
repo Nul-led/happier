@@ -2,6 +2,19 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { buildRelayDriftRepairSystemTaskSpec } from './relayDriftSystemTask';
 
+const activeServer = vi.hoisted(() => ({ serverUrl: 'https://relay.example.test', serverIdentityId: 'srv_relay' as string | null }));
+
+vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>();
+    return {
+        ...actual,
+        getActiveServerSnapshot: () => ({ serverId: 'active', serverUrl: activeServer.serverUrl, generation: 1 }),
+        getServerProfileById: (id: string) => (id === 'active'
+            ? { id, name: 'Active', serverUrl: activeServer.serverUrl, serverIdentityId: activeServer.serverIdentityId, createdAt: 0, updatedAt: 0, lastUsedAt: 0 }
+            : null),
+    };
+});
+
 describe('buildRelayDriftRepairSystemTaskSpec', () => {
     it('builds the stable repair task contract for aligning the background service to the active relay', () => {
         expect(buildRelayDriftRepairSystemTaskSpec({
@@ -16,9 +29,24 @@ describe('buildRelayDriftRepairSystemTaskSpec', () => {
                 activeRelayUrl: 'https://relay.example.test/path',
                 activeWebappUrl: 'https://app.example.test',
                 activeLocalRelayUrl: 'http://127.0.0.1:3012',
+                // Same server as the active one by the protocol's comparable key.
+                activeServerIdentityId: 'srv_relay',
                 surface: 'desktop.ui',
             },
         });
+    });
+
+    // RV2-30: repairing the app's active server names that Home's identity, so a CLI holding two
+    // profiles on one URL resolves the right one instead of failing as ambiguous.
+    it('names the active server\'s Home identity when repairing it, and no identity for another URL', () => {
+        expect(buildRelayDriftRepairSystemTaskSpec({
+            activeRelayUrl: 'https://relay.example.test',
+            activeWebappUrl: 'https://relay.example.test',
+        }).params).toMatchObject({ activeServerIdentityId: 'srv_relay' });
+        expect(buildRelayDriftRepairSystemTaskSpec({
+            activeRelayUrl: 'https://other.example.test',
+            activeWebappUrl: 'https://other.example.test',
+        }).params).not.toHaveProperty('activeServerIdentityId');
     });
 
     it('uses channel=dev for publicdev builds', async () => {

@@ -58,7 +58,7 @@ async function createBundledRegistry(input: Readonly<{
         }),
         runtimeRegistrations: registrations.map((registration) => ({
             pluginId: input.manifest.id,
-            generation: 'test-generation',
+            occurrenceId: 'test-generation',
             registration,
         })),
     });

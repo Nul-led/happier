@@ -44,7 +44,6 @@ import {
     ExternalSessionRefreshCursorV1Schema,
     MAX_COMPOSER_ATTACHMENT_INSTANCES_V1,
     SessionModelSelectionV1Schema,
-    SessionModelSelectionResolutionError,
     SessionMcpSelectionV1Schema,
     SessionExecutionTargetV1Schema,
     SessionAuthoringExecutionTargetV2Schema,
@@ -70,6 +69,7 @@ import type { PluginUiSessionPlacementCandidateV1 } from '@happier-dev/protocol/
 import type { SessionTeamCredentialBindingIntentListV1 } from '@happier-dev/protocol/teams';
 import { getPersistenceStorage } from './persistenceStorage';
 import { resolveBackendTargetKeyV2 } from '@/agents/backendCatalog/backendTargetKeyV2';
+import { log } from '@/log';
 import { prepareSessionPersistenceScopeForActivation } from './sessionPersistence';
 import { scopedSessionLocalStateKey, sessionDraftValuesStorageKey } from './sessionLocalStateKeys';
 export { loadProfile, saveProfile } from './profilePersistence';
@@ -191,6 +191,8 @@ export interface NewSessionDraft {
     launchUserAttemptId?: string;
     selectedMachineId: string | null;
     selectedPath: string | null;
+    /** `managed`: the draft has no folder (the machine keeps a private one); `selectedPath` is the remembered folder. */
+    directoryKind?: 'managed';
     targetServerId?: string | null;
     /** Unresolved placement choices seeded by a host, owned by this draft. */
     placementCandidates?: readonly PluginUiSessionPlacementCandidateV1[];
@@ -632,6 +634,7 @@ export function loadNewSessionDraft(scope?: ServerAccountScope | null): NewSessi
         const launchUserAttemptId = parseDraftTrimmedString((parsed as any).launchUserAttemptId);
         const selectedMachineId = typeof parsed.selectedMachineId === 'string' ? parsed.selectedMachineId : null;
         const selectedPath = typeof parsed.selectedPath === 'string' ? parsed.selectedPath : null;
+        const directoryKind = (parsed as Record<string, unknown>).directoryKind === 'managed' ? 'managed' as const : null;
         const targetServerId = parseDraftTrimmedString((parsed as any).targetServerId);
         const parsedExecutionTarget = NewSessionDraftExecutionTargetSchema.safeParse((parsed as any).executionTarget);
         const legacyExecutionTarget: z.infer<typeof NewSessionDraftExecutionTargetSchema> | null = parsedExecutionTarget.success
@@ -723,7 +726,11 @@ export function loadNewSessionDraft(scope?: ServerAccountScope | null): NewSessi
                     }
                 })();
                 if (canonicalSelectionTargetKey !== targetKey) {
-                    throw new SessionModelSelectionResolutionError('model_selection_agent_target_mismatch');
+                    // A selection saved for another Agent is stale, never sendable
+                    // here. Drop it so the draft falls back to its Agent's default
+                    // model, keeping the rest of the draft.
+                    log.log(`[new-session-draft] dropped a stored model selection for ${canonical.data.ref.agentTargetKey}; the draft targets ${targetKey}`);
+                    return null;
                 }
                 return {
                     ...canonical.data,
@@ -800,6 +807,7 @@ export function loadNewSessionDraft(scope?: ServerAccountScope | null): NewSessi
             ...(launchUserAttemptId ? { launchUserAttemptId } : {}),
             selectedMachineId,
             selectedPath,
+            ...(directoryKind ? { directoryKind } : {}),
             ...(targetServerId ? { targetServerId } : {}),
             executionTarget,
             ...(parsedActivationRef.success ? { temporaryComputerActivationRef: parsedActivationRef.data } : {}),

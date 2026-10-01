@@ -1,5 +1,5 @@
 import type { ChatListItem } from '@/components/sessions/chatListItems';
-import type { Message } from '@/sync/domains/messages/messageTypes';
+import type { Message } from "@happier-dev/session-core/messages";
 
 import type { TranscriptTurn } from './buildTranscriptTurns';
 

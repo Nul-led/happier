@@ -32,7 +32,8 @@ const state = vi.hoisted(() => ({
     resolveTransport: vi.fn(),
 }));
 
-vi.mock('@/sync/domains/server/serverProfiles', () => ({
+vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>(),
     getServerProfileById: (id: string) => id === 'known-profile'
         ? { id, serverIdentityId: descriptor.homeServerIdentityId }
         : null,
@@ -61,16 +62,9 @@ vi.mock('@/auth/flows/qrWait', () => ({
     authQRWait: (...args: unknown[]) => state.authWait(...args),
 }));
 
-vi.mock('@/sync/domains/server/adoptHomeProfile', () => ({
+vi.mock('@/sync/domains/server/adoptHomeProfile', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/sync/domains/server/adoptHomeProfile')>(),
     adoptHomeProfileWithCredentials: (...args: unknown[]) => state.adopt(...args),
-    HomeProfileAdoptionPartialCommitError: class HomeProfileAdoptionPartialCommitError extends Error {},
-    HomeProfileCanonicalUrlMigrationPartialCommitError: class HomeProfileCanonicalUrlMigrationPartialCommitError extends Error {},
-    isHomeProfileAdoptionPartialCommitFailure: (error: unknown) => (
-        error instanceof Error && [
-            'HomeProfileAdoptionPartialCommitError',
-            'HomeProfileCanonicalUrlMigrationPartialCommitError',
-        ].includes(error.constructor.name)
-    ),
 }));
 
 vi.mock('@/auth/pairing/pairingUrl', () => ({

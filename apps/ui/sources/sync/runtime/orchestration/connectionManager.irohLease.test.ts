@@ -151,8 +151,8 @@ describe('switchConnectionToActiveServer Iroh lease acquisition', () => {
         vi.doMock('@/sync/runtime/nativeIrohTunnels/runtime', () => ({
             getIrohHomeTunnelRuntime: () => irohRuntimeMock,
         }));
-        vi.doMock('@/sync/runtime/nativeSshTunnels/runtime', () => ({
-            startNativeSshTunnelRuntimeAppStateLifecycle: startLifecycleSpy,
+        vi.doMock('@/sync/runtime/nativeLoopbackTunnels/runtime', () => ({
+            startNativeLoopbackTunnelRuntimeAppStateLifecycle: startLifecycleSpy,
         }));
 
         const { switchConnectionToActiveServer } = await import('./connectionManager');
@@ -202,8 +202,8 @@ describe('switchConnectionToActiveServer Iroh lease acquisition', () => {
             vi.doMock('@/sync/runtime/nativeIrohTunnels/runtime', () => ({
                 getIrohHomeTunnelRuntime: () => irohRuntimeMock,
             }));
-            vi.doMock('@/sync/runtime/nativeSshTunnels/runtime', () => ({
-                startNativeSshTunnelRuntimeAppStateLifecycle: startLifecycleSpy,
+            vi.doMock('@/sync/runtime/nativeLoopbackTunnels/runtime', () => ({
+                startNativeLoopbackTunnelRuntimeAppStateLifecycle: startLifecycleSpy,
             }));
 
             const { switchConnectionToActiveServer } = await import('./connectionManager');
@@ -241,12 +241,13 @@ describe('switchConnectionToActiveServer Iroh lease acquisition', () => {
         mockTokenStorage(credentials);
         const { syncSwitchServer } = mockSyncInfra();
         const syncRestore = vi.fn(async () => undefined);
-        vi.doMock('@/sync/sync', () => ({ syncSwitchServer, syncRestore }));
+        const syncHydrateLocalState = vi.fn();
+        vi.doMock('@/sync/sync', () => ({ syncSwitchServer, syncRestore, syncHydrateLocalState }));
         vi.doMock('@/sync/runtime/nativeIrohTunnels/runtime', () => ({
             getIrohHomeTunnelRuntime: () => irohRuntimeMock,
         }));
-        vi.doMock('@/sync/runtime/nativeSshTunnels/runtime', () => ({
-            startNativeSshTunnelRuntimeAppStateLifecycle: startLifecycleSpy,
+        vi.doMock('@/sync/runtime/nativeLoopbackTunnels/runtime', () => ({
+            startNativeLoopbackTunnelRuntimeAppStateLifecycle: startLifecycleSpy,
         }));
 
         const { restoreConnectionToActiveServer } = await import('./connectionManager');
@@ -254,6 +255,9 @@ describe('switchConnectionToActiveServer Iroh lease acquisition', () => {
 
         expect(irohRuntimeMock.ensureHomeTunnel.mock.invocationCallOrder[0])
             .toBeLessThan(syncRestore.mock.invocationCallOrder[0]);
+        // The warm cache is local: it reaches the store before the carrier is even asked.
+        expect(syncHydrateLocalState.mock.invocationCallOrder[0])
+            .toBeLessThan(irohRuntimeMock.ensureHomeTunnel.mock.invocationCallOrder[0]);
         expect(syncRestore).toHaveBeenCalledWith(
             credentials,
             expect.objectContaining({
@@ -263,6 +267,96 @@ describe('switchConnectionToActiveServer Iroh lease acquisition', () => {
             }),
         );
         expect(syncSwitchServer).not.toHaveBeenCalled();
+    });
+
+    it('serializes a switch requested while the cold restore is still acquiring its carrier', async () => {
+        // Boot now paints after restore's local phase, so the UI (Retry, pull-to-refresh,
+        // foreground reprobe) can reach the switch owner while the carrier is pending.
+        mockActiveSnapshot({
+            serverId: 'srv_home_a',
+            serverUrl: 'http://127.0.0.1:3010',
+            generation: 44,
+        });
+        mockProfile({
+            id: 'profile-a',
+            serverIdentityId: 'srv_home_a',
+            serverUrl: 'http://127.0.0.1:3010',
+            irohEndpoint: { endpointId: 'endpoint-a' },
+            connectionDescriptorRevision: 7,
+        });
+        const credentials = { token: 'scoped-token', secret: 'scoped-secret' };
+        mockTokenStorage(credentials);
+        const { syncSwitchServer } = mockSyncInfra();
+        const syncRestore = vi.fn(async () => undefined);
+        const syncHydrateLocalState = vi.fn();
+        vi.doMock('@/sync/sync', () => ({ syncSwitchServer, syncRestore, syncHydrateLocalState }));
+        vi.doMock('@/sync/runtime/nativeIrohTunnels/runtime', () => ({
+            getIrohHomeTunnelRuntime: () => irohRuntimeMock,
+        }));
+        vi.doMock('@/sync/runtime/nativeLoopbackTunnels/runtime', () => ({
+            startNativeLoopbackTunnelRuntimeAppStateLifecycle: startLifecycleSpy,
+        }));
+        let releaseCarrier!: () => void;
+        const carrierGate = new Promise<void>((resolve) => {
+            releaseCarrier = resolve;
+        });
+        const defaultEnsure = irohRuntimeMock.ensureHomeTunnel.getMockImplementation()!;
+        irohRuntimeMock.ensureHomeTunnel.mockImplementationOnce(async () => {
+            await carrierGate;
+            return await defaultEnsure();
+        });
+
+        const { restoreConnectionToActiveServer, switchConnectionToActiveServer } = await import('./connectionManager');
+        const restore = restoreConnectionToActiveServer(credentials);
+        const switched = switchConnectionToActiveServer();
+        await Promise.resolve();
+        await Promise.resolve();
+        releaseCarrier();
+        await restore;
+        await expect(switched).resolves.toEqual(credentials);
+
+        // One carrier acquisition and one Sync initialization: the switch joined the
+        // restore's applied runtime instead of racing a second bootstrap beside it.
+        expect(irohRuntimeMock.ensureHomeTunnel).toHaveBeenCalledTimes(1);
+        expect(syncRestore).toHaveBeenCalledTimes(1);
+        expect(syncSwitchServer).not.toHaveBeenCalled();
+    });
+
+    it('hydrates the same-scope warm state even when cold restore cannot acquire the Iroh carrier', async () => {
+        mockActiveSnapshot({
+            serverId: 'srv_home_a',
+            serverUrl: 'http://127.0.0.1:3010',
+            generation: 43,
+        });
+        mockProfile({
+            id: 'profile-a',
+            serverIdentityId: 'srv_home_a',
+            serverUrl: 'http://127.0.0.1:3010',
+            irohEndpoint: { endpointId: 'endpoint-a' },
+            connectionDescriptorRevision: 7,
+        });
+        const credentials = { token: 'scoped-token', secret: 'scoped-secret' };
+        mockTokenStorage(credentials);
+        const { syncSwitchServer } = mockSyncInfra();
+        const syncRestore = vi.fn(async () => undefined);
+        const syncHydrateLocalState = vi.fn();
+        vi.doMock('@/sync/sync', () => ({ syncSwitchServer, syncRestore, syncHydrateLocalState }));
+        vi.doMock('@/sync/runtime/nativeIrohTunnels/runtime', () => ({
+            getIrohHomeTunnelRuntime: () => irohRuntimeMock,
+        }));
+        vi.doMock('@/sync/runtime/nativeLoopbackTunnels/runtime', () => ({
+            startNativeLoopbackTunnelRuntimeAppStateLifecycle: startLifecycleSpy,
+        }));
+        irohRuntimeMock.ensureHomeTunnel.mockRejectedValueOnce(new Error('home unreachable'));
+
+        const { restoreConnectionToActiveServer } = await import('./connectionManager');
+        await expect(restoreConnectionToActiveServer(credentials)).rejects.toBeTruthy();
+
+        expect(syncHydrateLocalState).toHaveBeenCalledWith(
+            credentials,
+            expect.objectContaining({ serverId: 'srv_home_a', generation: 43 }),
+        );
+        expect(syncRestore).not.toHaveBeenCalled();
     });
 
     it('keeps a non-Iroh Home on the established path and releases stale Iroh leases', async () => {
@@ -282,8 +376,8 @@ describe('switchConnectionToActiveServer Iroh lease acquisition', () => {
         vi.doMock('@/sync/runtime/nativeIrohTunnels/runtime', () => ({
             getIrohHomeTunnelRuntime: () => irohRuntimeMock,
         }));
-        vi.doMock('@/sync/runtime/nativeSshTunnels/runtime', () => ({
-            startNativeSshTunnelRuntimeAppStateLifecycle: startLifecycleSpy,
+        vi.doMock('@/sync/runtime/nativeLoopbackTunnels/runtime', () => ({
+            startNativeLoopbackTunnelRuntimeAppStateLifecycle: startLifecycleSpy,
         }));
 
         const { switchConnectionToActiveServer } = await import('./connectionManager');
@@ -348,8 +442,8 @@ describe('switchConnectionToActiveServer Iroh lease acquisition', () => {
                 ensureHomeTunnel,
             }),
         }));
-        vi.doMock('@/sync/runtime/nativeSshTunnels/runtime', () => ({
-            startNativeSshTunnelRuntimeAppStateLifecycle: startLifecycleSpy,
+        vi.doMock('@/sync/runtime/nativeLoopbackTunnels/runtime', () => ({
+            startNativeLoopbackTunnelRuntimeAppStateLifecycle: startLifecycleSpy,
         }));
 
         const { switchConnectionToActiveServer } = await import('./connectionManager');
@@ -393,8 +487,8 @@ describe('switchConnectionToActiveServer Iroh lease acquisition', () => {
                 ensureHomeTunnel,
             }),
         }));
-        vi.doMock('@/sync/runtime/nativeSshTunnels/runtime', () => ({
-            startNativeSshTunnelRuntimeAppStateLifecycle: startLifecycleSpy,
+        vi.doMock('@/sync/runtime/nativeLoopbackTunnels/runtime', () => ({
+            startNativeLoopbackTunnelRuntimeAppStateLifecycle: startLifecycleSpy,
         }));
 
         const { switchConnectionToActiveServer } = await import('./connectionManager');
@@ -437,8 +531,8 @@ describe('switchConnectionToActiveServer Iroh lease acquisition', () => {
                 }),
             }),
         }));
-        vi.doMock('@/sync/runtime/nativeSshTunnels/runtime', () => ({
-            startNativeSshTunnelRuntimeAppStateLifecycle: startLifecycleSpy,
+        vi.doMock('@/sync/runtime/nativeLoopbackTunnels/runtime', () => ({
+            startNativeLoopbackTunnelRuntimeAppStateLifecycle: startLifecycleSpy,
         }));
 
         const { switchConnectionToActiveServer } = await import('./connectionManager');
@@ -475,8 +569,8 @@ describe('switchConnectionToActiveServer Iroh lease acquisition', () => {
                 }),
             }),
         }));
-        vi.doMock('@/sync/runtime/nativeSshTunnels/runtime', () => ({
-            startNativeSshTunnelRuntimeAppStateLifecycle: startLifecycleSpy,
+        vi.doMock('@/sync/runtime/nativeLoopbackTunnels/runtime', () => ({
+            startNativeLoopbackTunnelRuntimeAppStateLifecycle: startLifecycleSpy,
         }));
 
         const { switchConnectionToActiveServer } = await import('./connectionManager');
@@ -536,8 +630,8 @@ describe('switchConnectionToActiveServer Iroh lease acquisition', () => {
                 ensureHomeTunnel,
             }),
         }));
-        vi.doMock('@/sync/runtime/nativeSshTunnels/runtime', () => ({
-            startNativeSshTunnelRuntimeAppStateLifecycle: startLifecycleSpy,
+        vi.doMock('@/sync/runtime/nativeLoopbackTunnels/runtime', () => ({
+            startNativeLoopbackTunnelRuntimeAppStateLifecycle: startLifecycleSpy,
         }));
 
         const { switchConnectionToActiveServer } = await import('./connectionManager');
@@ -592,25 +686,25 @@ describe('switchConnectionToActiveServer Iroh lease acquisition', () => {
                     id: 'profile-b',
                     serverIdentityId: 'srv_home_b',
                     serverUrl: 'https://home-b.example.test',
-                    irohEndpoint: { endpointId: 'endpoint-b' },
-                    connectionDescriptorRevision: 1,
                 }),
         }));
         let resolveCredentials: ((value: { token: string; secret: string }) => void) | null = null;
         vi.doMock('@/auth/storage/tokenStorage', async (importOriginal) => await createTokenStorageModuleMock({
             importOriginal,
             tokenStorage: {
-                getCredentialsForServerUrl: vi.fn(async () => await new Promise<{ token: string; secret: string }>((resolve) => {
-                    resolveCredentials = resolve;
-                })),
+                getCredentialsForServerUrl: vi.fn(async (serverUrl: string) => serverUrl === 'https://home-b.example.test'
+                    ? { token: 'token-b', secret: 'secret-b' }
+                    : await new Promise<{ token: string; secret: string }>((resolve) => {
+                        resolveCredentials = resolve;
+                    })),
             },
         }));
         const { retryNow } = mockSyncInfra();
         vi.doMock('@/sync/runtime/nativeIrohTunnels/runtime', () => ({
             getIrohHomeTunnelRuntime: () => irohRuntimeMock,
         }));
-        vi.doMock('@/sync/runtime/nativeSshTunnels/runtime', () => ({
-            startNativeSshTunnelRuntimeAppStateLifecycle: startLifecycleSpy,
+        vi.doMock('@/sync/runtime/nativeLoopbackTunnels/runtime', () => ({
+            startNativeLoopbackTunnelRuntimeAppStateLifecycle: startLifecycleSpy,
         }));
 
         const { retryActiveServerConnection } = await import('./connectionManager');
@@ -648,8 +742,8 @@ describe('switchConnectionToActiveServer Iroh lease acquisition', () => {
         vi.doMock('@/sync/runtime/nativeIrohTunnels/runtime', () => ({
             getIrohHomeTunnelRuntime: () => irohRuntimeMock,
         }));
-        vi.doMock('@/sync/runtime/nativeSshTunnels/runtime', () => ({
-            startNativeSshTunnelRuntimeAppStateLifecycle: startLifecycleSpy,
+        vi.doMock('@/sync/runtime/nativeLoopbackTunnels/runtime', () => ({
+            startNativeLoopbackTunnelRuntimeAppStateLifecycle: startLifecycleSpy,
         }));
 
         const { switchConnectionToActiveServer } = await import('./connectionManager');
@@ -677,8 +771,8 @@ describe('switchConnectionToActiveServer Iroh lease acquisition', () => {
         vi.doMock('@/sync/runtime/nativeIrohTunnels/runtime', () => ({
             getIrohHomeTunnelRuntime: () => irohRuntimeMock,
         }));
-        vi.doMock('@/sync/runtime/nativeSshTunnels/runtime', () => ({
-            startNativeSshTunnelRuntimeAppStateLifecycle: startLifecycleSpy,
+        vi.doMock('@/sync/runtime/nativeLoopbackTunnels/runtime', () => ({
+            startNativeLoopbackTunnelRuntimeAppStateLifecycle: startLifecycleSpy,
         }));
 
         const { switchConnectionToActiveServer } = await import('./connectionManager');
@@ -714,8 +808,8 @@ describe('switchConnectionToActiveServer Iroh lease acquisition', () => {
         vi.doMock('@/sync/runtime/nativeIrohTunnels/runtime', () => ({
             getIrohHomeTunnelRuntime: () => irohRuntimeMock,
         }));
-        vi.doMock('@/sync/runtime/nativeSshTunnels/runtime', () => ({
-            startNativeSshTunnelRuntimeAppStateLifecycle: startLifecycleSpy,
+        vi.doMock('@/sync/runtime/nativeLoopbackTunnels/runtime', () => ({
+            startNativeLoopbackTunnelRuntimeAppStateLifecycle: startLifecycleSpy,
         }));
 
         const { disconnectActiveServerConnection } = await import('./connectionManager');

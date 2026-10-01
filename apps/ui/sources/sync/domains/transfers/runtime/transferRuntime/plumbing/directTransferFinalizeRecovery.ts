@@ -90,16 +90,45 @@ type TransferFinalizeRecoveryOperationOutcome<TResponse> = Readonly<{
     settlesContinuation: boolean;
 }>;
 
-function retainTransferFinalizeRecovery<TResponse>(
+export function retainTransferFinalizeRecovery<TResponse = never>(
     result: TransferFinalizeRecoveryActionResult<TResponse>,
 ): TransferFinalizeRecoveryOperationOutcome<TResponse> {
     return { result, settlesContinuation: false };
 }
 
-function settleTransferFinalizeRecovery<TResponse>(
+export function settleTransferFinalizeRecovery<TResponse = never>(
     result: TransferFinalizeRecoveryActionResult<TResponse>,
 ): TransferFinalizeRecoveryOperationOutcome<TResponse> {
     return { result, settlesContinuation: true };
+}
+
+/** One continuation lifecycle shared by direct-machine and Session-bound carriers. */
+export function createTransferFinalizeRecovery<TResponse>(params: Readonly<{
+    expiresAt: number;
+    retryFinalize: () => Promise<TransferFinalizeRecoveryOperationOutcome<TResponse>>;
+    discard: () => Promise<TransferFinalizeRecoveryOperationOutcome<TResponse>>;
+}>): TransferFinalizeRecoveryContinuation<TResponse> {
+    let inFlight: Promise<TransferFinalizeRecoveryActionResult<TResponse>> | null = null;
+    let settled: TransferFinalizeRecoveryActionResult<TResponse> | null = null;
+    const invoke = (action: TransferFinalizeRecoveryAction): Promise<TransferFinalizeRecoveryActionResult<TResponse>> => {
+        if (action !== 'retry_finalize' && action !== 'discard_staged') {
+            return Promise.resolve(createUnavailableResult({ reason: 'invalid_action', error: 'Unsupported transfer recovery action' }));
+        }
+        if (settled) return Promise.resolve(settled);
+        if (inFlight) return inFlight;
+        inFlight = (action === 'retry_finalize' ? params.retryFinalize() : params.discard()).then((outcome) => {
+            if (outcome.settlesContinuation) settled = outcome.result;
+            return outcome.result;
+        }).finally(() => { inFlight = null; });
+        return inFlight;
+    };
+    return Object.freeze({
+        kind: 'transfer_finalize_recovery' as const,
+        expiresAt: params.expiresAt,
+        actions: Object.freeze(['retry_finalize', 'discard_staged'] as const),
+        isActionable: () => settled === null,
+        invoke,
+    });
 }
 
 export function createDirectTransferFinalizeRecovery<TResponse>(params: Readonly<{
@@ -124,30 +153,6 @@ export function createDirectTransferFinalizeRecovery<TResponse>(params: Readonly
         response: Extract<DirectTransferImportFinalizeResponse, { success: true }>,
     ) => TResponse | null;
 }>): TransferFinalizeRecoveryContinuation<TResponse> {
-    let inFlight: Promise<TransferFinalizeRecoveryActionResult<TResponse>> | null = null;
-    let settled: TransferFinalizeRecoveryActionResult<TResponse> | null = null;
-
-    const runOnce = (
-        operation: () => Promise<TransferFinalizeRecoveryOperationOutcome<TResponse>>,
-    ): Promise<TransferFinalizeRecoveryActionResult<TResponse>> => {
-        if (settled) {
-            return Promise.resolve(settled);
-        }
-        if (inFlight) {
-            return inFlight;
-        }
-
-        inFlight = operation().then((outcome) => {
-            if (outcome.settlesContinuation) {
-                settled = outcome.result;
-            }
-            return outcome.result;
-        }).finally(() => {
-            inFlight = null;
-        });
-        return inFlight;
-    };
-
     const finalizeResponseOutcome = (
         response: DirectTransferImportFinalizeResponse,
     ): TransferFinalizeRecoveryOperationOutcome<TResponse> => {
@@ -194,7 +199,7 @@ export function createDirectTransferFinalizeRecovery<TResponse>(params: Readonly
         });
     };
 
-    const retryFinalize = (): Promise<TransferFinalizeRecoveryActionResult<TResponse>> => runOnce(async () => {
+    const retryFinalize = async (): Promise<TransferFinalizeRecoveryOperationOutcome<TResponse>> => {
         let carrier: MachineCarrierHttpLease | null = null;
         try {
             let carrierRequest: ReturnType<typeof resolveDirectImportCarrierRequest>;
@@ -235,9 +240,9 @@ export function createDirectTransferFinalizeRecovery<TResponse>(params: Readonly
             // failed release stays retained and retryable there.
             await Promise.resolve(carrier?.release()).catch(() => undefined);
         }
-    });
+    };
 
-    const discard = (): Promise<TransferFinalizeRecoveryActionResult<TResponse>> => runOnce(async () => {
+    const discard = async (): Promise<TransferFinalizeRecoveryOperationOutcome<TResponse>> => {
         try {
             const result = await abortPreparedDirectImportSessionViaMachineRpc({
                 machineId: params.machineId,
@@ -258,24 +263,6 @@ export function createDirectTransferFinalizeRecovery<TResponse>(params: Readonly
                 error: 'The staged upload could not be discarded because its session is unavailable',
             }));
         }
-    });
-
-    const invoke = (
-        action: TransferFinalizeRecoveryAction,
-    ): Promise<TransferFinalizeRecoveryActionResult<TResponse>> => {
-        if (action === 'retry_finalize') return retryFinalize();
-        if (action === 'discard_staged') return discard();
-        return Promise.resolve(createUnavailableResult({
-            reason: 'invalid_action',
-            error: 'Unsupported transfer recovery action',
-        }));
     };
-
-    return Object.freeze({
-        kind: 'transfer_finalize_recovery' as const,
-        expiresAt: params.expiresAt,
-        actions: Object.freeze(['retry_finalize', 'discard_staged'] as const),
-        isActionable: () => settled === null,
-        invoke,
-    });
+    return createTransferFinalizeRecovery({ expiresAt: params.expiresAt, retryFinalize, discard });
 }

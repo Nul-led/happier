@@ -9,8 +9,16 @@ import { callGuardedMachineRpcWithPolicy, isGuardedMachineRpcMethod } from './gu
 
 type GetReadyServerFeaturesInput = Readonly<{ timeoutMs?: number; force?: boolean; serverId?: string }>;
 const getReadyServerFeaturesMock = vi.fn<(input: GetReadyServerFeaturesInput) => Promise<FeaturesResponse | null>>();
+const getAppliedActiveServerSnapshotMock = vi.hoisted(() => vi.fn());
+const getActiveServerSnapshotMock = vi.hoisted(() => vi.fn());
 vi.mock('@/sync/api/capabilities/getReadyServerFeatures', () => ({
     getReadyServerFeatures: (input: GetReadyServerFeaturesInput) => getReadyServerFeaturesMock(input),
+}));
+vi.mock('@/sync/runtime/orchestration/connectionManager', () => ({
+    getAppliedActiveServerSnapshot: (...args: unknown[]) => getAppliedActiveServerSnapshotMock(...args),
+}));
+vi.mock('@/sync/domains/server/serverRuntime', () => ({
+    getActiveServerSnapshot: (...args: unknown[]) => getActiveServerSnapshotMock(...args),
 }));
 
 type MachineRpcWithServerScopeInput = Readonly<{
@@ -73,6 +81,37 @@ describe('guardedMachineRpc', () => {
             method: RPC_METHODS.DAEMON_PROMPT_ASSETS_DOWNLOAD_INIT,
             preferScoped: true,
         }));
+    });
+
+    it('evaluates an omitted guarded target against the applied Home, not the staged Home', async () => {
+        getAppliedActiveServerSnapshotMock.mockReturnValue({
+            serverId: 'server-a',
+            serverUrl: 'https://server-a.example.test',
+            generation: 1,
+        });
+        getActiveServerSnapshotMock.mockReturnValue({
+            serverId: 'server-b',
+            serverUrl: 'https://server-b.example.test',
+            generation: 2,
+        });
+        getReadyServerFeaturesMock.mockResolvedValueOnce(null);
+
+        await callGuardedMachineRpcWithPolicy({
+            machineId: 'm-shared',
+            method: RPC_METHODS.DAEMON_PROMPT_ASSETS_DOWNLOAD_INIT,
+            payload: { kind: 'prompt-assets', id: 'asset-a' },
+        });
+
+        expect(getReadyServerFeaturesMock).toHaveBeenCalledWith({
+            timeoutMs: 500,
+            serverId: 'server-a',
+        });
+        expect(machineRpcWithServerScopeMock).toHaveBeenCalledWith(expect.objectContaining({
+            machineId: 'm-shared',
+            serverId: 'server-a',
+            preferScoped: true,
+        }));
+        expect(getActiveServerSnapshotMock).not.toHaveBeenCalled();
     });
 
     it('allows direct route (does not force scoped) when transfer is enabled', async () => {

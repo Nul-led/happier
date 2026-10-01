@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { SessionAttachmentHandleV1Schema } from '@happier-dev/protocol';
 
 export const AttachmentMessageMetaItemV1Schema = z.object({
     name: z.string(),
@@ -6,6 +7,7 @@ export const AttachmentMessageMetaItemV1Schema = z.object({
     mimeType: z.string().optional(),
     sizeBytes: z.number().finite(),
     sha256: z.string().optional(),
+    attachmentHandle: SessionAttachmentHandleV1Schema.optional(),
 });
 
 export const AttachmentsMessageMetaV1Schema = z.object({

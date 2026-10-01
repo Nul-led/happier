@@ -7,7 +7,7 @@ import {
     sanitizeSessionMessagePin,
     type PersistedSessionMessagePinV1,
     type SessionMessagePinRouteHydrationFact,
-} from '@/sync/domains/messages/pins/sessionMessagePins';
+} from "@happier-dev/session-core/pins";
 
 export const SESSION_MESSAGE_PINS_STORAGE_BASE_KEY = 'session-message-pins-v1';
 

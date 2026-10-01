@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 
 import type { ConnectedServiceId } from '@happier-dev/protocol';
-import { decodeJwtPayload } from '@/cloud/decodeJwtPayload';
+import { readAccountIdFromToken } from '@/cloud/decodeJwtPayload';
 
 const QUOTA_PERSISTENCE_KEY_PREFIX = 'connected-service-quota';
 const UNKNOWN_SCOPE = 'unknown';
@@ -35,8 +35,7 @@ export function resolveQuotaPersistenceAccountScope(
   const normalizedToken = String(credentials?.token ?? '').trim();
   if (!normalizedToken) return { kind: 'unknown' };
 
-  const payload = decodeJwtPayload(normalizedToken);
-  const sub = typeof payload?.sub === 'string' ? payload.sub.trim() : '';
+  const sub = readAccountIdFromToken(normalizedToken);
   if (sub) return { kind: 'known', value: `sub-${hashQuotaPersistenceScope(sub)}` };
 
   return { kind: 'known', value: `token-${hashQuotaPersistenceScope(normalizedToken)}` };

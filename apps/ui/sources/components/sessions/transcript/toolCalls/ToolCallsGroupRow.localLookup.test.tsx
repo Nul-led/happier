@@ -1,7 +1,7 @@
 import * as React from 'react';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { renderScreen } from '@/dev/testkit';
+import { createTestSessionTranscriptSource, renderWithSessionTranscriptSource } from '@/dev/testkit';
 import {
     installTranscriptCommonModuleMocks,
     resetTranscriptCommonModuleMockState,
@@ -53,6 +53,23 @@ function getRenderedToolCallsGroupViewProps() {
 }
 
 describe('ToolCallsGroupRow', () => {
+  it('reads tool rows from the mounted source instead of a same-id viewer store row', async () => {
+    const sourceMessage = {
+      kind: 'tool-call' as const, id: 'tool-source', localId: null, createdAt: 1,
+      tool: { id: 'bash-source', name: 'Bash', state: 'completed' as const, input: { command: 'source' }, createdAt: 1, startedAt: 1, completedAt: 2, description: null, result: null },
+      children: [],
+    };
+    messageById[sourceMessage.id] = { ...sourceMessage, tool: { ...sourceMessage.tool, input: { command: 'viewer' } } };
+    const { ToolCallsGroupRow } = await import('./ToolCallsGroupRow');
+    await renderWithSessionTranscriptSource(React.createElement(ToolCallsGroupRow, {
+      sessionId: 's1', toolCallsGroupId: 'group-source', toolMessageIds: [sourceMessage.id],
+      metadata: null, expanded: false, onSetExpanded: () => {},
+      interaction: { canSendMessages: false, canApprovePermissions: false },
+    }), createTestSessionTranscriptSource({ messages: [sourceMessage] }));
+    expect(getRenderedToolCallsGroupViewProps()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ toolMessages: [expect.objectContaining({ tool: expect.objectContaining({ input: { command: 'source' } }) })] }),
+    ]));
+  });
   beforeEach(() => {
     messageById = {};
     renderedToolCallsGroupViewProps = [];
@@ -99,7 +116,7 @@ describe('ToolCallsGroupRow', () => {
 
     const { ToolCallsGroupRowWithSessionCommon } = await import('./ToolCallsGroupRow');
 
-    await renderScreen(React.createElement(ToolCallsGroupRowWithSessionCommon as any, {
+    await renderWithSessionTranscriptSource(React.createElement(ToolCallsGroupRowWithSessionCommon as any, {
       sessionId: 's1',
       toolCallsGroupId: 'group-1',
       toolMessageIds: ['tool-1'],
@@ -146,7 +163,7 @@ describe('ToolCallsGroupRow', () => {
 
     const { ToolCallsGroupRow } = await import('./ToolCallsGroupRow');
 
-    await renderScreen(React.createElement(ToolCallsGroupRow as any, {
+    await renderWithSessionTranscriptSource(React.createElement(ToolCallsGroupRow as any, {
           sessionId: 's1',
           toolCallsGroupId: 'group-1',
           toolMessageIds: ['tool-1', 'tool-2'],
@@ -198,7 +215,7 @@ describe('ToolCallsGroupRow', () => {
 
     const { ToolCallsGroupRow } = await import('./ToolCallsGroupRow');
 
-    await renderScreen(React.createElement(ToolCallsGroupRow as any, {
+    await renderWithSessionTranscriptSource(React.createElement(ToolCallsGroupRow as any, {
       sessionId: 's1',
       toolCallsGroupId: 'group-1',
       toolMessageIds: ['tool-1'],
@@ -236,7 +253,7 @@ describe('ToolCallsGroupRow', () => {
 
     const { ToolCallsGroupRow } = await import('./ToolCallsGroupRow');
 
-    await renderScreen(React.createElement(ToolCallsGroupRow as any, {
+    await renderWithSessionTranscriptSource(React.createElement(ToolCallsGroupRow as any, {
       sessionId: 's1',
       toolCallsGroupId: 'group-1',
       toolMessageIds: ['tool-1'],
@@ -272,7 +289,7 @@ describe('ToolCallsGroupRow', () => {
 
     const { ToolCallsGroupRow } = await import('./ToolCallsGroupRow');
 
-    await renderScreen(React.createElement(ToolCallsGroupRow as any, {
+    await renderWithSessionTranscriptSource(React.createElement(ToolCallsGroupRow as any, {
           sessionId: 's1',
           toolCallsGroupId: 'group-1',
           toolMessageIds: ['tool-1'],
@@ -335,7 +352,7 @@ describe('ToolCallsGroupRow', () => {
 
     const { ToolCallsGroupRow } = await import('./ToolCallsGroupRow');
 
-    await renderScreen(React.createElement(ToolCallsGroupRow as any, {
+    await renderWithSessionTranscriptSource(React.createElement(ToolCallsGroupRow as any, {
           sessionId: 's1',
           toolCallsGroupId: 'group-1',
           toolMessageIds: ['tool-1', 'tool-2'],

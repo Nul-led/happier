@@ -18,7 +18,7 @@ import type { IrohObservedPath } from './types.js';
 /** Native topology boundary exported only by a `test-relay-fixture` addon. */
 export type IrohTestControllerNative = Readonly<{
   forceDirectOnly(): Promise<void>;
-  forceRelayOnly(): Promise<void>;
+  forceRelayOnly(relayUrl?: string): Promise<void>;
   restoreAutomatic(): Promise<void>;
   getObservedPath(): IrohObservedPath;
   /**
@@ -42,9 +42,9 @@ export class IrohTestController {
     await this.native.forceDirectOnly();
   }
 
-  async forceRelayOnly(): Promise<void> {
+  async forceRelayOnly(relayUrl?: string): Promise<void> {
     if (!this.native) unavailable();
-    await this.native.forceRelayOnly();
+    await this.native.forceRelayOnly(relayUrl);
   }
 
   async restoreAutomatic(): Promise<void> {
@@ -63,7 +63,7 @@ export class IrohTestController {
 
 type RawIrohTestAddon = Readonly<{
   forceDirectOnly(): Promise<string>;
-  forceRelayOnly(): Promise<string>;
+  forceRelayOnly(relayUrl?: string): Promise<string>;
   restoreAutomatic(): Promise<string>;
   getObservedPath(): unknown;
   getTestRelayUrl(): unknown;
@@ -110,7 +110,7 @@ export function createIrohTestControllerFromNativeAddon(candidate: unknown): Iro
   const addon = requireRawAddon(candidate);
   return new IrohTestController({
     async forceDirectOnly() { requireSuccessfulOperation(await addon.forceDirectOnly()); },
-    async forceRelayOnly() { requireSuccessfulOperation(await addon.forceRelayOnly()); },
+    async forceRelayOnly(relayUrl?: string) { requireSuccessfulOperation(await addon.forceRelayOnly(relayUrl)); },
     async restoreAutomatic() { requireSuccessfulOperation(await addon.restoreAutomatic()); },
     getObservedPath() {
       const value = addon.getObservedPath();

@@ -37,7 +37,7 @@ function createRegistryWithDetectedProvider(
         }],
         runtimeRegistrations: [{
             pluginId: `happier.scm.${detectedProvider.id}`,
-            generation: 'test-generation',
+            occurrenceId: 'test-generation',
             registration,
         }],
     });
@@ -89,11 +89,11 @@ describe('SCM hosting provider registry', () => {
             }],
             runtimeRegistrations: [{
                 pluginId: 'happier.scm.forge.gitlab',
-                generation: 'test-generation',
+                occurrenceId: 'test-generation',
                 registration: createRegistration('gitlab', 'https://gitlab.example.test:8443', true),
             }, {
                 pluginId: 'happier.scm.forge.github',
-                generation: 'test-generation',
+                occurrenceId: 'test-generation',
                 registration: createRegistration('github', 'https://github.com', false),
             }],
             configuredDeploymentsByProviderId: new Map([
@@ -178,14 +178,13 @@ describe('SCM hosting provider registry', () => {
         } as unknown as ActivationTarget;
         let active = true;
         const runtimeEntries = createTargetScmRuntimeEntries({
-            generation: 7,
             activationTargets: [target],
             targetRegistrations: [{
                 pluginId: 'acme.forge',
-                generation: '7',
+                occurrenceId: '7',
                 registration,
             }],
-            isGenerationActive: () => active,
+            isOccurrenceCurrent: () => active,
         });
         const registry = createScmHostingProviderRegistry({
             providers: [{
@@ -206,7 +205,7 @@ describe('SCM hosting provider registry', () => {
             id: 'forge',
             authority: {
                 pluginId: 'acme.forge',
-                generation: '7',
+                occurrenceId: '7',
                 contributionId: 'forge',
             },
         });
@@ -250,7 +249,7 @@ describe('SCM hosting provider registry', () => {
         }));
         const runtimeRegistrations = ['one', 'two'].map((suffix) => ({
             pluginId: `acme.scm.${suffix}`,
-            generation: '7',
+            occurrenceId: '7',
             registration: {
                 id: 'shared',
                 adapter: {
@@ -289,7 +288,7 @@ describe('SCM hosting provider registry', () => {
             }],
             runtimeRegistrations: [{
                 pluginId: 'acme.broken',
-                generation: 'test-generation',
+                occurrenceId: 'test-generation',
                 registration: {
                     id: 'broken',
                     adapter: {
@@ -303,7 +302,7 @@ describe('SCM hosting provider registry', () => {
                 },
             }, {
                 pluginId: 'acme.working',
-                generation: 'test-generation',
+                occurrenceId: 'test-generation',
                 registration: {
                     id: 'working',
                     adapter: {
@@ -343,7 +342,7 @@ describe('SCM hosting provider registry', () => {
             }],
             runtimeRegistrations: [{
                 pluginId: 'acme.declared',
-                generation: 'test-generation',
+                occurrenceId: 'test-generation',
                 registration: {
                     id: 'declared',
                     adapter: {
@@ -400,7 +399,7 @@ describe('SCM hosting provider registry', () => {
             }],
             runtimeRegistrations: [{
                 pluginId: 'acme.bounded',
-                generation: 'test-generation',
+                occurrenceId: 'test-generation',
                 registration: {
                     id: 'bounded',
                     adapter: {
@@ -435,7 +434,7 @@ describe('SCM hosting provider registry', () => {
             }],
             runtimeRegistrations: [{
                 pluginId: 'acme.forge',
-                generation: 'test-generation',
+                occurrenceId: 'test-generation',
                 registration: {
                     id: 'forge',
                     adapter: {
@@ -474,7 +473,7 @@ describe('SCM hosting provider registry', () => {
             }],
             runtimeRegistrations: [{
                 pluginId: 'acme.forge',
-                generation: 'revision-7',
+                occurrenceId: 'revision-7',
                 registration: {
                     id: 'forge',
                     adapter: {
@@ -516,7 +515,7 @@ describe('SCM hosting provider registry', () => {
             }],
             runtimeRegistrations: [{
                 pluginId: 'acme.compare-only',
-                generation: 'test-generation',
+                occurrenceId: 'test-generation',
                 registration: {
                     id: 'compare-only',
                     adapter: {

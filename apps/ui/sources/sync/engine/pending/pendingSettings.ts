@@ -4,6 +4,8 @@ import { runAfterInteractionsWithFallback } from '@/utils/timing/runAfterInterac
 
 type PendingFlushTimer = ReturnType<typeof setTimeout>;
 
+export const ACCOUNT_SETTINGS_QUIET_FLUSH_DELAY_MS = 900;
+
 type ScheduleDebouncedPendingSettingsFlushParams = {
     getTimer: () => PendingFlushTimer | null;
     setTimer: (timer: PendingFlushTimer) => void;

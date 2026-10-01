@@ -73,7 +73,7 @@ describe('CurrentSessionPresentationSurface', () => {
             id: 'acme.review/summary',
             pluginId: 'acme.review',
             identity: { pluginId: 'acme.review', localId: 'summary' },
-            immutableGenerationId: 'review-generation-a',
+            occurrenceId: 'review-generation-a',
             definition: {
                 id: 'summary',
                 placement: 'beforeComposer',
@@ -100,7 +100,7 @@ describe('CurrentSessionPresentationSurface', () => {
             id: 'acme.review/summary',
             pluginId: 'acme.review',
             identity: { pluginId: 'acme.review', localId: 'summary' },
-            immutableGenerationId: 'review-generation-a',
+            occurrenceId: 'review-generation-a',
             definition: {
                 id: 'summary',
                 placement: 'beforeComposer',
@@ -152,13 +152,13 @@ describe('CurrentSessionPresentationSurface', () => {
         const retired = vi.fn();
         type ComposerRegionInput = Readonly<{
             id: string;
-            immutableGenerationId: string;
+            occurrenceId: string;
         }>;
         const initialRegion = {
             id: 'acme.review/summary',
             pluginId: 'acme.review',
             identity: { pluginId: 'acme.review', localId: 'summary' },
-            immutableGenerationId: 'review-generation-a',
+            occurrenceId: 'review-generation-a',
             definition: {
                 id: 'summary',
                 placement: 'beforeComposer',
@@ -167,15 +167,15 @@ describe('CurrentSessionPresentationSurface', () => {
         } as const;
         const replacementRegion = {
             ...initialRegion,
-            immutableGenerationId: 'review-generation-b',
+            occurrenceId: 'review-generation-b',
         } as const;
         const ComposerRegion = (props: Readonly<{ region: ComposerRegionInput }>) => {
             React.useEffect(() => {
-                mounted(props.region.immutableGenerationId);
-                return () => retired(props.region.immutableGenerationId);
-            }, [props.region.immutableGenerationId]);
+                mounted(props.region.occurrenceId);
+                return () => retired(props.region.occurrenceId);
+            }, [props.region.occurrenceId]);
             return React.createElement('ComposerManifestRegion', {
-                testID: `composer-region:${props.region.immutableGenerationId}`,
+                testID: `composer-region:${props.region.occurrenceId}`,
             });
         };
         const renderComposerRegion = vi.fn((region: ComposerRegionInput) => (

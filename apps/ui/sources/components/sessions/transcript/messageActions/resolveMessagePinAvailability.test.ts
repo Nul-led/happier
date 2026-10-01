@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { PersistedSessionMessagePinV1 } from '@/sync/domains/messages/pins/sessionMessagePins';
+import type { PersistedSessionMessagePinV1 } from "@happier-dev/session-core/pins";
 
 import {
     buildSessionMessagePinAtPressTime,

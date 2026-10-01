@@ -32,7 +32,13 @@ export function useNewSessionRepoScmSnapshot(input: Readonly<{
     path: string;
     machineHomeDir?: string | null;
     machinePlatform?: string | null;
+    /**
+     * `false`: show only the cached snapshot and never ask the machine. An embedded composer
+     * (Home) passes `false` until the person shows intent to use it.
+     */
+    enabled?: boolean;
 }>): ScmWorkingSnapshot | null {
+    const fetchEnabled = input.enabled !== false;
     const [snapshot, setSnapshot] = React.useState<ScmWorkingSnapshot | null>(() => {
         const machineId = input.machineId?.trim() ?? '';
         const path = input.path.trim();
@@ -101,6 +107,9 @@ export function useNewSessionRepoScmSnapshot(input: Readonly<{
             });
         };
         applySeed();
+        if (!fetchEnabled) return () => {
+            cancelled = true;
+        };
 
         void (async () => {
             try {
@@ -142,7 +151,7 @@ export function useNewSessionRepoScmSnapshot(input: Readonly<{
         return () => {
             cancelled = true;
         };
-    }, [input.machineHomeDir, input.machineId, input.machinePlatform, input.path, input.serverId]);
+    }, [fetchEnabled, input.machineHomeDir, input.machineId, input.machinePlatform, input.path, input.serverId]);
 
     React.useEffect(() => {
         return refreshSnapshot();

@@ -112,6 +112,7 @@ describe('derivePluginSessionInputLocalIdV1', () => {
     expect(buildCausalSessionInputAdmissionV1({
       sourceSessionId: 'source-session',
       sourceTurnId: 'source-turn',
+      callerDepth: 3,
       via: 'mcp',
       causalPermissionAuthority: {
         kind: 'admittedSessionInputV1',
@@ -123,6 +124,7 @@ describe('derivePluginSessionInputLocalIdV1', () => {
         kind: 'happierSession',
         sourceSessionId: 'source-session',
         via: 'mcp',
+        callerDepth: 3,
       },
       request: {
         v: 1,
@@ -136,6 +138,14 @@ describe('derivePluginSessionInputLocalIdV1', () => {
         permission: { requestedPermissionCeiling: 'read-only' },
       },
     });
+  });
+
+  it('rejects caller depths outside the canonical persisted integer contract', () => {
+    expect(() => buildCausalSessionInputAdmissionV1({
+      sourceSessionId: 'source-session', sourceTurnId: 'source-turn', via: 'mcp',
+      callerDepth: 2_147_483_648,
+      causalPermissionAuthority: { kind: 'admittedSessionInputV1', admittedPermissionCeiling: 'default' },
+    })).toThrow();
   });
 
   it('retains the host-sealed spawn identity while preserving real plugin provenance', () => {
@@ -248,7 +258,7 @@ describe('derivePluginSessionInputLocalIdV1', () => {
     });
   });
 
-  it('builds distinct stable Workflow invocation and final-delivery Session admissions without an Automation id', () => {
+  it('builds stable exact Workflow invocation Session admissions without an Automation id', () => {
     const invocation = buildWorkflowSessionInputAdmissionV2({
       runId: 'workflow-run-42',
       purpose: 'invocation',
@@ -261,10 +271,6 @@ describe('derivePluginSessionInputLocalIdV1', () => {
         sourceRevisionOrEpoch: '4:7',
         remoteApprovalMaxScope: 'session',
       },
-    });
-    const delivery = buildWorkflowSessionInputAdmissionV2({
-      runId: 'workflow-run-42',
-      purpose: 'result_delivery',
     });
 
     expect(invocation).toEqual({
@@ -292,16 +298,6 @@ describe('derivePluginSessionInputLocalIdV1', () => {
         permission: { requestedPermissionCeiling: 'read-only' },
       },
     });
-    expect(delivery).toEqual({
-      provenance: { v: 2, kind: 'workflow_result_delivery', runId: 'workflow-run-42' },
-      request: {
-        v: 2,
-        producer: 'workflow',
-        caller: { kind: 'host' },
-        workflow: { purpose: 'result_delivery', runId: 'workflow-run-42' },
-        permission: {},
-      },
-    });
     expect(deriveWorkflowSessionInputLocalIdV2({
       runId: 'workflow-run-42',
       purpose: 'invocation',
@@ -317,7 +313,8 @@ describe('derivePluginSessionInputLocalIdV1', () => {
       invocationRecordId: 'workflow-invocation-7',
     })).not.toBe(deriveWorkflowSessionInputLocalIdV2({
       runId: 'workflow-run-42',
-      purpose: 'result_delivery',
+      purpose: 'invocation',
+      invocationRecordId: 'workflow-invocation-other',
     }));
   });
 

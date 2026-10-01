@@ -69,7 +69,10 @@ export function applyAgentStatePublishedRequest(params: {
     entry.kind = params.kind;
   }
   entry.arguments = params.toolArguments;
-  entry.createdAt = params.createdAtMs;
+  const previous = requests[params.requestId];
+  entry.createdAt = typeof previous?.createdAt === 'number' && Number.isFinite(previous.createdAt)
+    ? previous.createdAt
+    : params.createdAtMs;
   if (typeof params.source === 'string' && params.source.length > 0) {
     entry.source = params.source;
   }

@@ -33,5 +33,5 @@ appId: ${HAPPIER_E2E_MOBILE_APP_ID}
 
 - extendedWaitUntil:
     visible:
-      id: main-header-start-new-session
+      id: tabbar-start-new-session
     timeout: 120000

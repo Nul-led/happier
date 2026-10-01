@@ -12,14 +12,14 @@ import {
   type AutomationAccountCurrentnessWitnessV1,
   type AutomationV3WorkerResultDelivery,
 } from '@happier-dev/protocol';
-import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SpawnSessionResult } from '@/rpc/handlers/registerSessionHandlers';
 
-import type { ClaimableRunPayload } from './automationRunExecutor';
+import { executeClaimedRun, type ClaimableRunPayload } from './automationRunExecutor';
 import type { AutomationV3ClaimedAutomation } from './automationTypes';
 import { abortAutomationRunForAuthoritativeCancellation } from './automationRunCancellation';
 
-type ExecuteClaimedRun = typeof import('./automationRunExecutor').executeClaimedRun;
+type ExecuteClaimedRun = typeof executeClaimedRun;
 type AutomationRunClaimClient = Parameters<ExecuteClaimedRun>[0]['claimClient'];
 type AutomationRunSucceed = AutomationRunClaimClient['succeedRun'];
 type ExecuteAutomationAction = NonNullable<Parameters<ExecuteClaimedRun>[0]['executeAction']>;
@@ -30,7 +30,6 @@ type StrictClaimedRunPayload = Extract<
   ClaimableRunPayload,
   { protocol: 'v3'; automation: AutomationV3ClaimedAutomation }
 >;
-let executeClaimedRun: ExecuteClaimedRun;
 
 const {
   enqueueAutomationPrompt,
@@ -145,7 +144,7 @@ function strictNewSessionRecipe(params: {
       kind: 'newSession' as const,
       spawn: {
         executionTarget: { serverId: 'server-1', machineId },
-        directory: '/tmp/strict-new-session',
+        directory: { kind: 'path' as const, path: '/tmp/strict-new-session' },
         agentTarget: {
           kind: 'agent' as const,
           identity: { pluginId: 'happier.agent.codex', localId: 'codex' },
@@ -228,39 +227,8 @@ function strictExecutionRunRecipe(params: { triggerEvidence?: typeof executionRu
   };
 }
 
-type ClaimedV2RunPayload = Extract<ClaimableRunPayload, { protocol: 'v2' }>;
-
-function buildClaimedRun(overrides: {
-  run?: Partial<ClaimedV2RunPayload['run']>;
-  automation?: Partial<ClaimedV2RunPayload['automation']>;
-} = {}): ClaimedV2RunPayload {
-  return {
-    protocol: 'v2',
-    run: {
-      id: 'run-1',
-      automationId: 'automation-1',
-      attempt: 1,
-      ...overrides.run,
-    },
-    automation: {
-      id: 'automation-1',
-      name: 'Nightly',
-      enabled: true,
-      targetType: 'new_session',
-      templateCiphertext: JSON.stringify({
-        kind: 'happier_automation_template_plain_v1',
-        payload: { directory: '/tmp/project' },
-      }),
-      ...overrides.automation,
-    },
-  };
-}
 
 describe('executeClaimedRun (mcpSelection)', () => {
-  beforeAll(async () => {
-    ({ executeClaimedRun } = await import('./automationRunExecutor'));
-  });
-
   beforeEach(() => {
     enqueueAutomationPrompt.mockReset();
     enqueueAutomationPrompt.mockResolvedValue({ status: 'accepted', localId: 'automation:run-strict' });
@@ -686,6 +654,7 @@ describe('executeClaimedRun (mcpSelection)', () => {
       automationEvidenceEnvelope: claimed.run.automationEvidenceEnvelope,
       automationCause: claimed.run.cause,
       registerAuthorizationCurrentnessCheck: expect.any(Function),
+      registerControlCheck: expect.any(Function),
       signal: expect.any(AbortSignal),
     });
     expect(claimClient.startRun).not.toHaveBeenCalled();
@@ -720,6 +689,7 @@ describe('executeClaimedRun (mcpSelection)', () => {
       runId: 'run-direct', attempt: 1, expectedRevision: 3,
       accountCurrentness: CLAIM_CURRENTNESS, acceptedEnvelope: 'accepted',
       registerAuthorizationCurrentnessCheck: expect.any(Function),
+      registerControlCheck: expect.any(Function),
       signal: expect.any(AbortSignal),
     });
     expect(claimClient.startRun).not.toHaveBeenCalled();
@@ -770,6 +740,66 @@ describe('executeClaimedRun (mcpSelection)', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('reclaims a live workflow after a transient heartbeat currentness error without calling it revocation', async () => {
+    vi.useFakeTimers();
+    try {
+      const claimClient = {
+        startRun: vi.fn(async () => START_CURRENTNESS), heartbeatRun: vi.fn(async () => {}),
+        succeedRun: vi.fn(async () => {}), failRun: vi.fn(async () => {}),
+      };
+      let observedAbortReason: unknown;
+      const coordinateWorkflowRun = vi.fn(async (claim: Readonly<{ signal?: AbortSignal }>) => {
+        const registerCurrentness = Reflect.get(claim, 'registerAuthorizationCurrentnessCheck');
+        registerCurrentness(async () => { throw new Error('currentness_fetch_failed'); });
+        const signal = claim.signal;
+        if (!signal) throw new Error('Expected the claimed Workflow signal.');
+        if (!signal.aborted) await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }));
+        observedAbortReason = signal.reason;
+        return { state: 'interrupted' as const };
+      });
+      const claimed = {
+        protocol: 'v3', run: {
+          id: 'run-direct-currentness-error', automationId: null, attempt: 1, revision: 3,
+          origin: { kind: 'direct' }, workflowAcceptedSnapshotEnvelope: 'accepted', triggerId: null,
+        }, automation: null, accountCurrentness: CLAIM_CURRENTNESS,
+      } satisfies ClaimableRunPayload;
+      const execution = executeClaimedRun({
+        token: 'token', machineId: 'machine-1', claimClient, spawnSession: vi.fn(),
+        heartbeatMs: 1_000, leaseDurationMs: 30_000, coordinateWorkflowRun, claimed,
+      });
+      await vi.advanceTimersByTimeAsync(1_000);
+      await execution;
+      expect(claimClient.heartbeatRun).toHaveBeenCalledOnce();
+      expect(observedAbortReason).not.toBe('workflow_authorization_not_current');
+      expect(claimClient.failRun).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('leaves a direct workflow claimed for lease reclaim when currentness fetch fails before an effect', async () => {
+    const claimClient = {
+      startRun: vi.fn(), heartbeatRun: vi.fn(async () => {}), succeedRun: vi.fn(),
+      failRun: vi.fn(async () => {}),
+    };
+    const coordinateWorkflowRun = vi.fn(async () => {
+      throw Object.assign(new Error('currentness_fetch_failed'), { code: 'workflow_authorization_check_unavailable' });
+    });
+    const claimed = {
+      protocol: 'v3', run: {
+        id: 'run-direct-currentness-fetch', automationId: null, attempt: 1, revision: 3,
+        origin: { kind: 'direct' }, workflowAcceptedSnapshotEnvelope: 'accepted', triggerId: null,
+      }, automation: null, accountCurrentness: CLAIM_CURRENTNESS,
+    } satisfies ClaimableRunPayload;
+    await executeClaimedRun({
+      token: 'token', machineId: 'machine-1', claimClient, spawnSession: vi.fn(),
+      heartbeatMs: 60_000, leaseDurationMs: 120_000, coordinateWorkflowRun, claimed,
+    });
+    expect(coordinateWorkflowRun).toHaveBeenCalledOnce();
+    expect(claimClient.failRun).not.toHaveBeenCalled();
+    expect(claimClient.succeedRun).not.toHaveBeenCalled();
   });
 
   it('terminalizes decrypted-invalid strict content under C without starting or invoking a target owner', async () => {
@@ -2506,7 +2536,7 @@ describe('executeClaimedRun (mcpSelection)', () => {
     }));
   });
 
-  it('executes an exact released-V2 frozen input claimed through V3 under the V3 lifecycle', async () => {
+  it('executes current frozen input containing a retained 0.2 template under the current lifecycle', async () => {
     const spawnSession = vi.fn(async (): Promise<SpawnSessionResult> => ({ type: 'success', sessionId: 'sess_frozen' }));
     const claimClient = {
       startRun: vi.fn(async () => START_CURRENTNESS),
@@ -2639,458 +2669,4 @@ describe('executeClaimedRun (mcpSelection)', () => {
     }));
   });
 
-  it('records a typed locked failure when a retained encrypted template has no account material', async () => {
-    const spawnSession = vi.fn(async (): Promise<SpawnSessionResult> => ({
-      type: 'success',
-      sessionId: 'must-not-spawn',
-    }));
-    const claimClient = {
-      startRun: vi.fn(async () => {}),
-      heartbeatRun: vi.fn(async () => {}),
-      succeedRun: vi.fn(async () => {}),
-      failRun: vi.fn(async () => {}),
-    };
-
-    await executeClaimedRun({
-      token: 'token',
-      machineId: 'machine-1',
-      claimClient,
-      spawnSession,
-      heartbeatMs: 60_000,
-      leaseDurationMs: 120_000,
-      encryption: undefined,
-      claimed: buildClaimedRun({
-        automation: {
-          templateCiphertext: JSON.stringify({
-            kind: 'happier_automation_template_encrypted_v1',
-            payloadCiphertext: 'retained-ciphertext',
-          }),
-        },
-      }),
-    });
-
-    expect(spawnSession).not.toHaveBeenCalled();
-    expect(claimClient.failRun).toHaveBeenCalledWith({
-      protocol: 'v2',
-      runId: 'run-1',
-      machineId: 'machine-1',
-      attempt: 1,
-      errorCode: 'encryption_material_unavailable',
-      errorMessage: 'Encrypted automation template cannot be decrypted without account encryption material',
-    });
-  });
-
-  it('stops a delayed start after lease heartbeat loss before it can spawn or settle the Run', async () => {
-    vi.useFakeTimers();
-    try {
-      let resolveStart!: () => void;
-      const startPending = new Promise<void>((resolve) => {
-        resolveStart = resolve;
-      });
-      const spawnSession = vi.fn(async (): Promise<SpawnSessionResult> => ({
-        type: 'success',
-        sessionId: 'must-not-spawn',
-      }));
-      const claimClient = {
-        startRun: vi.fn(async () => {
-          await startPending;
-        }),
-        heartbeatRun: vi.fn(async () => {
-          throw new Error('lease lost');
-        }),
-        succeedRun: vi.fn(async () => {}),
-        failRun: vi.fn(async () => {}),
-      };
-
-      const execution = executeClaimedRun({
-        token: 'token',
-        machineId: 'machine-1',
-        claimClient,
-        spawnSession,
-        heartbeatMs: 1_000,
-        leaseDurationMs: 30_000,
-        claimed: buildClaimedRun(),
-      });
-
-      await vi.advanceTimersByTimeAsync(1_000);
-      resolveStart();
-      await execution;
-
-      expect(claimClient.heartbeatRun).toHaveBeenCalledOnce();
-      expect(spawnSession).not.toHaveBeenCalled();
-      expect(claimClient.succeedRun).not.toHaveBeenCalled();
-      expect(claimClient.failRun).not.toHaveBeenCalled();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it('stops renewing an aborted Run while an already-started spawn is still resolving', async () => {
-    vi.useFakeTimers();
-    try {
-      const cancellation = new AbortController();
-      let resolveSpawn!: (result: SpawnSessionResult) => void;
-      const spawnPending = new Promise<SpawnSessionResult>((resolve) => {
-        resolveSpawn = resolve;
-      });
-      const spawnSession = vi.fn(() => spawnPending);
-      const claimClient = {
-        startRun: vi.fn(async () => {}),
-        heartbeatRun: vi.fn(async () => {}),
-        succeedRun: vi.fn(async () => {}),
-        failRun: vi.fn(async () => {}),
-      };
-
-      const execution = executeClaimedRun({
-        token: 'token',
-        machineId: 'machine-1',
-        claimClient,
-        spawnSession,
-        heartbeatMs: 1_000,
-        leaseDurationMs: 30_000,
-        signal: cancellation.signal,
-        claimed: buildClaimedRun(),
-      });
-
-      await vi.advanceTimersByTimeAsync(0);
-      expect(spawnSession).toHaveBeenCalledOnce();
-      await vi.advanceTimersByTimeAsync(1_000);
-      expect(claimClient.heartbeatRun).toHaveBeenCalledOnce();
-
-      cancellation.abort();
-      await vi.advanceTimersByTimeAsync(1_000);
-      resolveSpawn({ type: 'success', sessionId: 'must-not-settle' });
-      await execution;
-
-      expect(claimClient.heartbeatRun).toHaveBeenCalledOnce();
-      expect(claimClient.succeedRun).not.toHaveBeenCalled();
-      expect(claimClient.failRun).not.toHaveBeenCalled();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it('passes configured ACP backend state, mcpSelection, connectedServices, transcriptStorage, and session config overrides through to spawnSession for new-session automations', async () => {
-    const spawnSession = vi.fn(async (): Promise<SpawnSessionResult> => ({ type: 'success', sessionId: 'sess_1' }));
-    const claimClient = {
-      startRun: vi.fn(async () => {}),
-      heartbeatRun: vi.fn(async () => {}),
-      succeedRun: vi.fn(async () => {}),
-      failRun: vi.fn(async () => {}),
-    };
-
-    await executeClaimedRun({
-      token: 'token',
-      machineId: 'machine-1',
-      claimClient,
-      spawnSession,
-      heartbeatMs: 60_000,
-      leaseDurationMs: 120_000,
-      encryption: { type: 'legacy', secret: new Uint8Array(32).fill(7) },
-      claimed: buildClaimedRun({
-        automation: {
-          id: 'automation-1',
-          name: 'Nightly',
-          enabled: true,
-          targetType: 'new_session',
-          templateCiphertext: JSON.stringify({
-            kind: 'happier_automation_template_plain_v1',
-            payload: {
-              directory: '/tmp/project',
-              backendTarget: { kind: 'configuredAcpBackend', backendId: 'review-bot' },
-              mcpSelection: {
-                v: 1,
-                managedServersEnabled: false,
-                forceIncludeServerIds: ['server-portable'],
-                forceExcludeServerIds: ['server-disabled'],
-              },
-              sessionConfigOptionOverrides: {
-                v: 1,
-                updatedAt: 789,
-                overrides: {
-                  reasoning: { updatedAt: 789, value: 'high' },
-                },
-              },
-              connectedServices: {
-                v: 1,
-                bindingsByServiceId: {
-                  anthropic: { source: 'connected', profileId: 'work' },
-                },
-              },
-              transcriptStorage: 'direct',
-            },
-          }),
-        },
-      }),
-    });
-
-    expect(spawnSession).toHaveBeenCalledWith(expect.objectContaining({
-      directory: '/tmp/project',
-      spawnNonce: 'automation:run-1',
-      backendTarget: {
-        kind: 'backend',
-        backendId: 'review-bot',
-        configuredBackendId: 'review-bot',
-        sourceKind: 'configured',
-      },
-      mcpSelection: {
-        v: 1,
-        managedServersEnabled: false,
-        forceIncludeServerIds: ['server-portable'],
-        forceExcludeServerIds: ['server-disabled'],
-      },
-      sessionConfigOptionOverrides: {
-        v: 1,
-        updatedAt: 789,
-        overrides: {
-          reasoning: { updatedAt: 789, value: 'high' },
-        },
-      },
-      connectedServices: {
-        v: 1,
-        bindingsByServiceId: {
-          anthropic: { source: 'connected', profileId: 'work' },
-        },
-      },
-      transcriptStorage: 'direct',
-    }));
-    expect(claimClient.succeedRun).toHaveBeenCalledWith(expect.objectContaining({
-      runId: 'run-1',
-      attempt: 1,
-      producedSessionId: 'sess_1',
-    }));
-    expect(claimClient.failRun).not.toHaveBeenCalled();
-  });
-
-  it('passes mcpSelection + connectedServices + transcriptStorage through to spawnSession for existing-session automations', async () => {
-    const spawnSession = vi.fn(async (): Promise<SpawnSessionResult> => ({ type: 'success', sessionId: 'sess_existing' }));
-    const claimClient = {
-      startRun: vi.fn(async () => {}),
-      heartbeatRun: vi.fn(async () => {}),
-      succeedRun: vi.fn(async () => {}),
-      failRun: vi.fn(async () => {}),
-    };
-
-    await executeClaimedRun({
-      token: 'token',
-      machineId: 'machine-1',
-      claimClient,
-      spawnSession,
-      heartbeatMs: 60_000,
-      leaseDurationMs: 120_000,
-      encryption: { type: 'legacy', secret: new Uint8Array(32).fill(7) },
-      claimed: buildClaimedRun({
-        run: { id: 'run-2' },
-        automation: {
-          id: 'automation-1',
-          name: 'Nightly existing',
-          enabled: true,
-          targetType: 'existing_session',
-          templateCiphertext: JSON.stringify({
-            kind: 'happier_automation_template_plain_v1',
-            existingSessionId: 'sess-parent',
-            payload: {
-              directory: '/tmp/project',
-              existingSessionId: 'sess-parent',
-              mcpSelection: {
-                v: 1,
-                managedServersEnabled: false,
-                forceIncludeServerIds: ['server-portable'],
-                forceExcludeServerIds: ['server-disabled'],
-              },
-              connectedServices: {
-                v: 1,
-                bindingsByServiceId: {
-                  anthropic: { source: 'connected', profileId: 'work' },
-                },
-              },
-              transcriptStorage: 'direct',
-            },
-          }),
-        },
-      }),
-    });
-
-    expect(spawnSession).toHaveBeenCalledWith(expect.objectContaining({
-      directory: '/tmp/project',
-      existingSessionId: 'sess-parent',
-      mcpSelection: {
-        v: 1,
-        managedServersEnabled: false,
-        forceIncludeServerIds: ['server-portable'],
-        forceExcludeServerIds: ['server-disabled'],
-      },
-      connectedServices: {
-        v: 1,
-        bindingsByServiceId: {
-          anthropic: { source: 'connected', profileId: 'work' },
-        },
-      },
-      transcriptStorage: 'direct',
-    }));
-    expect(claimClient.succeedRun).toHaveBeenCalledWith(expect.objectContaining({
-      runId: 'run-2',
-      attempt: 1,
-      producedSessionId: 'sess_existing',
-    }));
-    expect(claimClient.failRun).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    {
-      name: 'accepted first input',
-      admission: { status: 'accepted' as const, localId: 'automation:run:run-settlement-fallback' },
-      firstSettlement: 'succeed' as const,
-    },
-    {
-      name: 'already-accepted first input',
-      admission: { status: 'alreadyAccepted' as const, localId: 'automation:run:run-settlement-fallback' },
-      firstSettlement: 'succeed' as const,
-    },
-    {
-      name: 'rejected first input',
-      admission: { status: 'rejected' as const, code: 'session_input_invalid' as const },
-      firstSettlement: 'fail' as const,
-    },
-  ])('retains a created V2 Session in the fallback after a pre-commit $name settlement failure', async ({
-    admission,
-    firstSettlement,
-  }) => {
-    const sessionId = `session-settlement-fallback-${firstSettlement}-${admission.status}`;
-    const spawnSession = vi.fn(async (): Promise<SpawnSessionResult> => ({ type: 'success', sessionId }));
-    const succeedRun = vi.fn(async () => {});
-    const failRun = vi.fn(async () => {});
-    if (firstSettlement === 'succeed') {
-      succeedRun.mockRejectedValueOnce(new Error('succeed transport failed before commit'));
-    } else {
-      failRun
-        .mockRejectedValueOnce(new Error('fail transport failed before commit'))
-        .mockRejectedValueOnce(new Error('fail retry transport failed before commit'))
-        .mockResolvedValueOnce(undefined);
-    }
-    const claimClient = {
-      startRun: vi.fn(async () => {}),
-      heartbeatRun: vi.fn(async () => {}),
-      succeedRun,
-      failRun,
-    };
-    enqueueAutomationPrompt.mockResolvedValueOnce(admission);
-
-    await executeClaimedRun({
-      token: 'token',
-      credentials: { token: 'token', encryption: null },
-      machineId: 'machine-1',
-      claimClient,
-      spawnSession,
-      heartbeatMs: 60_000,
-      leaseDurationMs: 120_000,
-      machineAdmissionTransport: vi.fn(async () => ({
-        status: 'accepted' as const,
-        localId: 'automation:run:run-settlement-fallback',
-      })),
-      claimed: buildClaimedRun({
-        run: { id: 'run-settlement-fallback' },
-        automation: {
-          templateCiphertext: JSON.stringify({
-            kind: 'happier_automation_template_plain_v1',
-            payload: {
-              directory: '/tmp/project',
-              prompt: 'Deliver the first automation input.',
-            },
-          }),
-        },
-      }),
-    });
-
-    expect(spawnSession).toHaveBeenCalledOnce();
-    if (firstSettlement === 'succeed') {
-      expect(succeedRun).toHaveBeenCalledWith(expect.objectContaining({ producedSessionId: sessionId }));
-      expect(failRun).toHaveBeenCalledWith(expect.objectContaining({
-        producedSessionId: sessionId,
-        errorCode: 'unexpected_error',
-      }));
-      return;
-    }
-
-    expect(succeedRun).not.toHaveBeenCalled();
-    expect(failRun).toHaveBeenNthCalledWith(1, expect.objectContaining({
-      producedSessionId: sessionId,
-      errorCode: 'prompt_delivery_failed',
-    }));
-    expect(failRun).toHaveBeenNthCalledWith(2, expect.objectContaining({
-      producedSessionId: sessionId,
-      errorCode: 'prompt_delivery_failed',
-    }));
-    expect(failRun).toHaveBeenNthCalledWith(3, expect.objectContaining({
-      producedSessionId: sessionId,
-      errorCode: 'unexpected_error',
-    }));
-  });
-
-  it('uses the incumbent cancellation settlement fallback when its first transport attempt fails after a V2 Session is created', async () => {
-    const cancellation = new AbortController();
-    const sessionId = 'session-cancelled-settlement-fallback';
-    const spawnSession = vi.fn(async (): Promise<SpawnSessionResult> => ({ type: 'success', sessionId }));
-    const failRun = vi.fn()
-      .mockRejectedValueOnce(new Error('cancellation retention transport failed before commit'))
-      .mockRejectedValueOnce(new Error('cancellation retention retry transport failed before commit'))
-      .mockResolvedValueOnce(undefined);
-    const claimClient = {
-      startRun: vi.fn(async () => {}),
-      heartbeatRun: vi.fn(async () => {}),
-      succeedRun: vi.fn(async () => {}),
-      failRun,
-    };
-    enqueueAutomationPrompt.mockImplementationOnce(async () => {
-      abortAutomationRunForAuthoritativeCancellation(cancellation);
-      return { status: 'accepted' as const, localId: 'automation:run:run-cancelled-settlement-fallback' };
-    });
-
-    await executeClaimedRun({
-      token: 'token',
-      credentials: { token: 'token', encryption: null },
-      machineId: 'machine-1',
-      claimClient,
-      spawnSession,
-      heartbeatMs: 60_000,
-      leaseDurationMs: 120_000,
-      signal: cancellation.signal,
-      machineAdmissionTransport: vi.fn(async () => ({
-        status: 'accepted' as const,
-        localId: 'automation:run:run-cancelled-settlement-fallback',
-      })),
-      claimed: buildClaimedRun({
-        run: { id: 'run-cancelled-settlement-fallback' },
-        automation: {
-          templateCiphertext: JSON.stringify({
-            kind: 'happier_automation_template_plain_v1',
-            payload: {
-              directory: '/tmp/project',
-              prompt: 'Deliver then cancel the first automation input.',
-            },
-          }),
-        },
-      }),
-    });
-
-    expect(spawnSession).toHaveBeenCalledOnce();
-    expect(failRun).toHaveBeenNthCalledWith(1, expect.objectContaining({
-      producedSessionId: sessionId,
-      errorCode: 'session_start_cancelled_after_create',
-    }));
-    expect(failRun).toHaveBeenNthCalledWith(2, expect.objectContaining({
-      producedSessionId: sessionId,
-      errorCode: 'session_start_cancelled_after_create',
-    }));
-    expect(failRun).toHaveBeenNthCalledWith(3, expect.objectContaining({
-      producedSessionId: sessionId,
-      errorCode: 'unexpected_error',
-    }));
-    expect(discardAutomationPromptAfterRunCancellation).toHaveBeenCalledWith({
-      credentials: { token: 'token', encryption: null },
-      sessionId,
-      automationId: 'automation-1',
-      runId: 'run-cancelled-settlement-fallback',
-    });
-  });
 });

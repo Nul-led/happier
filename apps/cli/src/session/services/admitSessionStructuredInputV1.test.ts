@@ -25,6 +25,11 @@ const attachment = {
 } as const;
 
 describe('admitSessionStructuredInputV1', () => {
+  it('rejects malformed browser context with a typed admission result before reservation', () => {
+    expect(() => validateSessionStructuredInputIngressV1({ meta: {
+      happierBrowserContext: { kind: 'browser_context.v1', payload: { contexts: [], attachments: [] } },
+    } })).toThrow(expect.objectContaining({ code: 'session_structured_input_browser_context_invalid' }));
+  });
   it('admits a fully prepared contentless attachment without legacy media verification state', () => {
     const result = admitSessionStructuredInputV1({
       text: '',

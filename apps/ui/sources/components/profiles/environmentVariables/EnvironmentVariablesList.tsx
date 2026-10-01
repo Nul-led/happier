@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, Platform } from 'react-native';
+import { View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { Typography } from '@/constants/Typography';
 import { EnvironmentVariableCard } from './EnvironmentVariableCard';
@@ -9,9 +9,8 @@ import { Modal } from '@/modal';
 import { t } from '@/text';
 import { useEnvironmentVariables } from '@/hooks/server/useEnvironmentVariables';
 import { parseEnvVarTemplate } from '@/utils/profiles/envVarTemplate';
-import { shadowLevelStyle } from '@/shadowElevation';
+import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { Text, TextInput } from '@/components/ui/text/Text';
-import { Icon } from '@/components/ui/icons/Icon';
 
 
 export interface EnvironmentVariablesListProps {
@@ -208,12 +207,11 @@ export function EnvironmentVariablesList({
 
     return (
         <View style={styles.container}>
-            <View style={styles.titleContainer}>
-                <Text style={styles.titleText}>
-                    {t('profiles.environmentVariables.title')}
-                </Text>
-            </View>
-
+            <ItemGroup
+                title={t('profiles.environmentVariables.title')}
+                description={t('profilesPage.environmentDescription')}
+                surface="none"
+            >
             {environmentVariables.length > 0 && (
                 <View>
                     {environmentVariables.map((envVar, index) => {
@@ -269,12 +267,12 @@ export function EnvironmentVariablesList({
                 </View>
             )}
 
-            <View style={styles.addContainer}>
+            </ItemGroup>
+            <ItemGroup>
                 <InlineAddExpander
                     isOpen={isAddExpanded}
                     onOpenChange={setIsAddExpanded}
                     title={t('profiles.environmentVariables.addVariable')}
-                    icon={<Icon name="plus-circle" size={29} color={theme.colors.button.secondary.tint} />}
                     onCancel={resetAddDraft}
                     onSave={handleAddVariable}
                     saveDisabled={!newVarName.trim()}
@@ -313,7 +311,7 @@ export function EnvironmentVariablesList({
                         />
                     </View>
                 </InlineAddExpander>
-            </View>
+            </ItemGroup>
         </View>
     );
 }
@@ -322,31 +320,6 @@ export function EnvironmentVariablesList({
 const stylesheet = StyleSheet.create((theme) => ({
     container: {
         marginBottom: 16,
-    },
-    titleContainer: {
-        paddingTop: Platform.select({ ios: 35, default: 16 }),
-        paddingBottom: Platform.select({ ios: 6, default: 8 }),
-        paddingHorizontal: Platform.select({ ios: 32, default: 24 }),
-    },
-    titleText: {
-        ...Typography.default('regular'),
-        color: theme.colors.text.secondary,
-        fontSize: Platform.select({ ios: 13, default: 14 }),
-        lineHeight: Platform.select({ ios: 18, default: 20 }),
-        letterSpacing: Platform.select({ ios: -0.08, default: 0.1 }),
-        textTransform: 'uppercase',
-        fontWeight: '500',
-    },
-    envVarListContainer: {
-        // Intentionally unused: each EnvironmentVariableCard is an ItemGroup
-        // and provides its own consistent horizontal margins.
-    },
-    addContainer: {
-        backgroundColor: theme.colors.surface.base,
-        marginHorizontal: Platform.select({ ios: 16, default: 12 }),
-        borderRadius: Platform.select({ ios: 10, default: 16 }),
-        overflow: 'hidden',
-        ...shadowLevelStyle(theme.colors.shadowLevels[1]),
     },
     fieldLabel: {
         ...Typography.default('semiBold'),
@@ -371,17 +344,5 @@ const stylesheet = StyleSheet.create((theme) => ({
         fontSize: 16,
         color: theme.colors.input.text,
         ...Typography.default('regular'),
-        ...(Platform.select({
-            web: {
-                outline: 'none',
-                outlineStyle: 'none',
-                outlineWidth: 0,
-                outlineColor: 'transparent',
-                boxShadow: 'none',
-                WebkitBoxShadow: 'none',
-                WebkitAppearance: 'none',
-            },
-            default: {},
-        }) as object),
     },
 }));

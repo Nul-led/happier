@@ -11,9 +11,9 @@ import {
     PluginManifestV2Schema,
 } from '@happier-dev/protocol';
 import {
-    projectPluginAccountCollectionDeclaration,
     type JsonValue,
 } from '@happier-dev/plugin-sdk';
+import { projectPluginAccountCollectionDeclaration } from '@happier-dev/plugin-sdk/host/registration';
 import {
     defineAccountCollection,
 } from '@happier-dev/plugin-sdk/collections';

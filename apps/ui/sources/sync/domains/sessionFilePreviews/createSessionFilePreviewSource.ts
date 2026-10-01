@@ -1,10 +1,11 @@
 import { Platform } from 'react-native';
-import type { ComposerContentHandleV1 } from '@happier-dev/protocol';
+import type { ComposerContentHandleV1, SessionAttachmentHandleV1 } from '@happier-dev/protocol';
 import { decodeBase64 } from '@happier-dev/protocol/crypto/base64';
 
 import {
     downloadDaemonWorkspaceFileToDestination,
     inspectComposerContent,
+    downloadDaemonSessionAttachmentToDestination,
 } from '@/sync/domains/transfers/runtime/transferRuntime';
 import type { WorkspaceScopeBase } from '@/sync/domains/workspaces/workspaceScope';
 import { createNativeCacheFileSink, type NativeCacheFileSink } from '@/sync/runtime/files/nativeCacheFileSink';
@@ -225,6 +226,39 @@ export async function createSessionFilePreviewSource(input: Readonly<{
                     }
                 },
                 signal,
+            });
+            return download.ok ? { ok: true } : { ok: false, error: download.error };
+        },
+    });
+}
+
+/** Attachment preview uses issued custody, never the Message's advisory filesystem path. */
+export async function createSessionAttachmentPreviewSource(input: Readonly<{
+    handle: SessionAttachmentHandleV1;
+    fileName: string;
+    mimeType: string;
+    maxBytes: number;
+    expectedSizeBytes?: number | null;
+    signal?: AbortSignal | null;
+}>): Promise<CreateSessionFilePreviewSourceResult> {
+    return await createPreviewSource({
+        filePath: input.fileName,
+        mimeType: input.mimeType,
+        maxBytes: input.maxBytes,
+        expectedSizeBytes: input.expectedSizeBytes,
+        cacheIdentity: input.handle.id,
+        signal: input.signal,
+        load: async ({ destination, signal }) => {
+            const context = (await import('@/sync/sync')).sync.getSessionAttachmentTransferContext(input.handle.sessionId, { purpose: 'attachmentPreview' });
+            if (!context) return { ok: false, error: 'Session attachment scope is unavailable' };
+            const download = await downloadDaemonSessionAttachmentToDestination({
+                transferContext: context,
+                attachmentHandle: input.handle,
+                destination,
+                signal,
+                onInit: async ({ sizeBytes }) => sizeBytes > input.maxBytes
+                    ? { success: false, error: PREVIEW_TOO_LARGE_ERROR }
+                    : undefined,
             });
             return download.ok ? { ok: true } : { ok: false, error: download.error };
         },

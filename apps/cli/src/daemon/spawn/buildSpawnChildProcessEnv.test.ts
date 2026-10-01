@@ -113,10 +113,14 @@ describe('buildSpawnChildProcessEnv', () => {
         HAPPIER_DAEMON_RUNTIME_ID: 'runtime-parent',
         HAPPIER_DAEMON_STARTUP_SOURCE: 'self-restart',
         HAPPIER_DAEMON_TAKEOVER: '1',
+        HAPPIER_DAEMON_SERVICE_MANAGED_BY: 'desktop',
+        HAPPIER_DAEMON_SERVICE_BUNDLE_ID: 'dev.happier.app',
       },
       extraEnv: {},
     });
 
+    expect(env.HAPPIER_DAEMON_SERVICE_MANAGED_BY).toBeUndefined();
+    expect(env.HAPPIER_DAEMON_SERVICE_BUNDLE_ID).toBeUndefined();
     expect(env.PATH).toBe('/bin');
     expect(env.HAPPIER_DAEMON_RUNTIME_ID).toBeUndefined();
     expect(env.HAPPIER_DAEMON_STARTUP_SOURCE).toBeUndefined();

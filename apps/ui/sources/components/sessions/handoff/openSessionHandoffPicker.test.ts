@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const showMock = vi.hoisted(() => vi.fn<(config: unknown) => string>());
 const hideMock = vi.hoisted(() => vi.fn<(id: string) => void>());
+const updateMock = vi.hoisted(() => vi.fn());
 const sessionHandoffPickerModalStub = vi.hoisted(() => () => null);
 
 vi.mock('@/modal', async () => {
@@ -10,6 +11,7 @@ vi.mock('@/modal', async () => {
         spies: {
             show: (config: unknown) => showMock(config),
             hide: (id: string) => hideMock(id),
+            update: (id: string, props: Record<string, unknown>) => updateMock(id, props),
         },
     }).module;
 });
@@ -22,6 +24,7 @@ describe('openSessionHandoffPicker', () => {
     beforeEach(() => {
         showMock.mockReset();
         hideMock.mockReset();
+        updateMock.mockReset();
         showMock.mockImplementation((config: any) => {
             config.props.onResolve(null);
             return 'modal_1';
@@ -87,5 +90,53 @@ describe('openSessionHandoffPicker', () => {
             workspaceAction: { kind: 'none' },
         });
         expect(hideMock).toHaveBeenCalledWith('modal_1');
+    });
+
+    it('keeps the submitted picker mounted for conflict review and only redispatches after another explicit submit', async () => {
+        let capturedConfig: any = null;
+        showMock.mockImplementation((config: any) => { capturedConfig = config; return 'modal_1'; });
+        const { openSessionHandoffPicker } = await import('./openSessionHandoffPicker');
+        const onSubmitAgain = vi.fn();
+        const onRetained = vi.fn();
+        const pending = openSessionHandoffPicker({
+            sessionId: 'sess_1', sourceMachineId: 'machine_source', serverId: 'server_a',
+            retainOnSubmit: true, onSubmitAgain, onRetained,
+        });
+        const selection = { targetMachineId: 'machine_target', targetPath: '/project', workspaceAction: { kind: 'linked_workspace' } };
+        capturedConfig.props.onResolve(selection);
+        await expect(pending).resolves.toEqual(selection);
+        expect(hideMock).not.toHaveBeenCalled();
+        expect(onRetained).toHaveBeenCalledOnce();
+        expect(onSubmitAgain).not.toHaveBeenCalled();
+        capturedConfig.props.onResolve(selection);
+        expect(onSubmitAgain).toHaveBeenCalledWith(selection);
+        onRetained.mock.calls[0]?.[0]();
+        expect(hideMock).toHaveBeenCalledWith('modal_1');
+    });
+
+    it('permits truthful dismissal during admission and rejects duplicate submit', async () => {
+        let capturedConfig: any = null;
+        showMock.mockImplementation((config: any) => { capturedConfig = config; return 'modal_1'; });
+        const { openSessionHandoffPicker } = await import('./openSessionHandoffPicker');
+        const onRetained = vi.fn();
+        const onSubmitAgain = vi.fn();
+        const pending = openSessionHandoffPicker({
+            sessionId: 'sess_1', serverId: 'server_a', retainOnSubmit: true, onRetained, onSubmitAgain,
+        });
+        const selection = { targetMachineId: 'machine_target', workspaceAction: { kind: 'none' } };
+        capturedConfig.props.onResolve(selection);
+        await expect(pending).resolves.toEqual(selection);
+        const setAwaitingAdmission = onRetained.mock.calls[0]?.[1] as (awaiting: boolean) => void;
+        setAwaitingAdmission(true);
+        expect(updateMock).toHaveBeenCalledWith('modal_1', { awaitingAdmission: true });
+        capturedConfig.props.onResolve(selection);
+        expect(capturedConfig.onDismissRequest?.('shared')).not.toBe(false);
+        expect(onSubmitAgain).not.toHaveBeenCalled();
+        expect(hideMock).not.toHaveBeenCalled();
+        capturedConfig.onRequestClose();
+        expect(hideMock).toHaveBeenCalledWith('modal_1');
+        setAwaitingAdmission(false);
+        capturedConfig.props.onResolve(selection);
+        expect(onSubmitAgain).not.toHaveBeenCalled();
     });
 });

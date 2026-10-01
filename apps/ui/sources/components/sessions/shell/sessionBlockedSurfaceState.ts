@@ -1,13 +1,14 @@
 import type { SurfaceStateKind } from '@/components/ui/surfaces/SurfaceStateCard';
 import type { IconName } from '@/components/ui/icons/Icon';
-import type { SessionContentAvailability } from '@/sync/domains/session/encryptedContentAvailability';
+import {
+    readBlockedSessionContentAvailability,
+    type BlockedSessionContentAvailability,
+    type SessionContentAvailability,
+} from '@/sync/domains/session/encryptedContentAvailability';
 import type { SessionRouteHydrationState } from '@/sync/domains/session/sessionRouteHydrationState';
 import { t } from '@/text';
 
 import type { SessionAuthSurfaceState } from './sessionAuthSurfaceState';
-
-/** Every content availability that must replace the transcript with a settled explanation. */
-export type BlockedSessionContentAvailability = Exclude<SessionContentAvailability, 'ready'>;
 
 /**
  * The one precedence decision for a Session detail surface that must not render its transcript.
@@ -27,6 +28,7 @@ export function resolveSessionBlockedSurfaceState(params: Readonly<{
     authSurfaceState: SessionAuthSurfaceState | null;
     routeHydrationState?: SessionRouteHydrationState | null;
     sessionPresent: boolean;
+    /** From `readSessionContentAvailability`; `null` is unsettled and never blocks. */
     contentAvailability?: SessionContentAvailability | null;
 }>): SessionBlockedSurfaceState | null {
     const routeMissing = params.routeHydrationState?.kind === 'missing'
@@ -45,8 +47,8 @@ export function resolveSessionBlockedSurfaceState(params: Readonly<{
         return { kind: 'access_denied' };
     }
 
-    const availability = params.contentAvailability ?? null;
-    if (params.sessionPresent && availability !== null && availability !== 'ready') {
+    const availability = readBlockedSessionContentAvailability(params.contentAvailability ?? null);
+    if (params.sessionPresent && availability !== null) {
         return { kind: 'content_blocked', availability };
     }
     return null;

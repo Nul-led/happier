@@ -9,6 +9,7 @@ import {
     attachActiveBrowserAnnotationFromCaptureProvider,
 } from './activeViewAttachment';
 import {
+    attachBrowserContextToComposer,
     updateBrowserAnnotationComment,
     updateBrowserAnnotationStroke,
     updateBrowserAnnotationStyleIntent,
@@ -283,10 +284,17 @@ export function createBrowserContextAnnotationAdapter(input: Readonly<{
         if (committed.status !== 'committed') {
             return { status: 'unavailable', reason: committed.reason };
         }
-        input.onStateChange(committed.state);
+        const attached = attachBrowserContextToComposer(committed.state, {
+            attachmentId: `browser_context_attachment:${committed.annotationId}`,
+            contextId: committed.itemIds[0],
+        });
+        if (attached.status !== 'attached') {
+            return { status: 'unavailable', reason: attached.reason };
+        }
+        input.onStateChange(attached.state);
         return {
             status: 'committed',
-            state: committed.state,
+            state: attached.state,
             annotationId: committed.annotationId,
             itemIds: committed.itemIds,
         };

@@ -5,7 +5,6 @@ import { serverFetch } from '@/sync/http/client';
 import { runTasksWithLimit } from '@/sync/runtime/orchestration/runTasksWithLimit';
 import type { MachineDisplayRenderable } from '@/sync/domains/machines/machineDisplayRenderable';
 import type { MachineDisplayCacheEntryV1 } from '@/sync/domains/state/warmCachePersistence';
-import { loadSyncTuning } from '@/sync/runtime/syncTuning';
 import {
     MachineKindFromLegacyProjectionSchema,
     MachineOperationProtocolCapabilitiesV1Schema,
@@ -330,8 +329,12 @@ export async function fetchAndApplyMachines(params: {
     applyMachineDisplayEntries?: (machines: MachineDisplayRenderable[], options?: { replace?: boolean }) => void;
     cachedMachineDisplayEntries?: Record<string, MachineDisplayCacheEntryV1>;
     machineDisplayHydrationConcurrencyLimit?: number;
-    machineDisplayHydrationMaxRows?: number;
     shouldContinue?: () => boolean;
+    /**
+     * Called when the machine list itself could not be read (transport failure or a non-OK
+     * response), so the list owner can end its loading state instead of waiting forever.
+     */
+    onListUnavailable?: (error: unknown) => void;
     /**
      * When true, drop any locally-cached machines that are missing from the
      * latest fetch response.
@@ -352,10 +355,6 @@ export async function fetchAndApplyMachines(params: {
 }): Promise<void> {
     const { credentials, encryption, machineDataKeys, applyMachines } = params;
     const concurrencyLimit = Math.max(1, Math.trunc(params.machineDisplayHydrationConcurrencyLimit ?? 4));
-    const hydrationMaxRows = Math.max(
-        1,
-        Math.trunc(params.machineDisplayHydrationMaxRows ?? loadSyncTuning().machineDisplayHydrationMaxRows),
-    );
     const shouldContinue = params.shouldContinue ?? (() => true);
     const throwOnError = params.throwOnError === true;
 
@@ -366,6 +365,7 @@ export async function fetchAndApplyMachines(params: {
             ...(params.request ? { request: params.request } : {}),
         });
     } catch (error) {
+        if (shouldContinue()) params.onListUnavailable?.(error);
         if (throwOnError) {
             throw error;
         }
@@ -431,18 +431,27 @@ export async function fetchAndApplyMachines(params: {
         freshKeyByMachineId.set(pendingMachineIds[index]!, pendingDecryptedKeys[index] ?? null);
     }
     const machineById = new Map(machines.map((machine) => [machine.id, machine] as const));
+    // Resolve custody for the whole refresh together, including rows relabelled
+    // by the Home. Concurrent refreshes share cold reads at the custody owner.
+    const runnerTrustByMachineId = new Map(await Promise.all(machines.map(async (machine) => [
+        machine.id,
+        await resolveRunnerMachineContentKeyTrustV1({
+            credentials,
+            homeServerIdentityId: params.sourceServerId,
+            machineId: machine.id,
+        }),
+    ] as const)));
+    if (!shouldContinue()) return;
     for (const result of machineKeyKinds) {
         const reusedKey = reusedKeyByMachineId.get(result.machineId);
         const decryptedKey = reusedKey ?? freshKeyByMachineId.get(result.machineId) ?? null;
         const machine = machineById.get(result.machineId)!;
         // Resolved for every Machine: the trusted classification must not be
         // suppressed by the very field a hostile Home would rewrite.
-        const runnerTrust = resolveRunnerMachineContentKeyTrustV1({
-            credentials,
-            homeServerIdentityId: params.sourceServerId,
-            machineId: machine.id,
-        });
-        const resolution = resolvePublishedMachineDataEncryptionKeyV1({
+        const runnerTrust = runnerTrustByMachineId.get(machine.id);
+        const resolution = !runnerTrust && !isTokenOnlyAuthCredentials(credentials)
+            ? { status: 'unavailable' as const }
+            : resolvePublishedMachineDataEncryptionKeyV1({
             machine,
             openedDataEncryptionKey: decryptedKey,
             expectedAccountMode: isTokenOnlyAuthCredentials(credentials)
@@ -495,6 +504,10 @@ export async function fetchAndApplyMachines(params: {
         if (isPlainMachineDataKeyMarker(machine.dataEncryptionKey)) {
             return false;
         }
+        const existingMachine = params.getExistingMachine?.(machine.id);
+        if (!existingMachine?.metadata || existingMachine.metadataVersion !== machine.metadataVersion) {
+            return true;
+        }
         if (cachedMachineDisplayEntries[machine.id]?.metadataVersion !== machine.metadataVersion) {
             return true;
         }
@@ -518,9 +531,8 @@ export async function fetchAndApplyMachines(params: {
             : null,
     });
 
-    const buildMachineFromRowAndCache = (
+    const buildMachineFromRowAndExisting = (
         machine: FetchedMachineRow,
-        cachedEntry: MachineDisplayCacheEntryV1 | undefined,
         existingMachine: Machine | null | undefined,
     ): Machine => {
         if (unavailableMachineIds.has(machine.id)) {
@@ -544,14 +556,9 @@ export async function fetchAndApplyMachines(params: {
             return createLockedMachineView(machine, 'decryption_failed');
         }
         const hasEncryptedDaemonState = typeof machine.daemonState === 'string' && machine.daemonState.length > 0;
-        const metadata = cachedEntry?.metadataVersion === machine.metadataVersion && existingMachine?.metadata
-            ? {
-                ...existingMachine.metadata,
-                displayName: cachedEntry.displayName ?? existingMachine.metadata.displayName,
-                host: cachedEntry.host ?? existingMachine.metadata.host,
-                homeDir: cachedEntry.homeDir ?? existingMachine.metadata.homeDir,
-            }
-            : null;
+        // Keep decrypted capabilities and their version while a fresh envelope is pending.
+        // The availability checks above still fail closed when encryption or trust is unavailable.
+        const metadata = machine.metadata ? existingMachine?.metadata ?? null : null;
         return ({
             id: machine.id,
             seq: machine.seq,
@@ -560,7 +567,7 @@ export async function fetchAndApplyMachines(params: {
             active: machine.active,
             activeAt: machine.activeAt,
             revokedAt: machine.revokedAt ?? null,
-            metadataVersion: machine.metadataVersion,
+            metadataVersion: metadata && existingMachine ? existingMachine.metadataVersion : machine.metadataVersion,
             metadata,
             daemonState: hasEncryptedDaemonState ? existingMachine?.daemonState ?? null : null,
             daemonStateVersion: hasEncryptedDaemonState
@@ -630,9 +637,8 @@ export async function fetchAndApplyMachines(params: {
         params.applyMachineDisplayEntries!(displayEntries, { replace: params.replace ?? false });
         applyMachines(
             machines.map((machine) =>
-                buildMachineFromRowAndCache(
+                buildMachineFromRowAndExisting(
                     machine,
-                    cachedMachineDisplayEntries[machine.id],
                     params.getExistingMachine?.(machine.id),
                 )),
             params.replace ?? false,
@@ -647,8 +653,7 @@ export async function fetchAndApplyMachines(params: {
                 const leftActivity = Math.max(left.activeAt ?? 0, left.updatedAt ?? 0);
                 const rightActivity = Math.max(right.activeAt ?? 0, right.updatedAt ?? 0);
                 return rightActivity - leftActivity;
-            })
-            .slice(0, hydrationMaxRows);
+            });
         if (machinesNeedingHydration.length > 0) {
             void runTasksWithLimit(
                 machinesNeedingHydration.map((machine) => async () => {

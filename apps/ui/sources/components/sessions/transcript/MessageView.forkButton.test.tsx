@@ -3,7 +3,7 @@ import React from 'react';
 import renderer, { act } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { renderScreen, standardCleanup } from '@/dev/testkit';
+import { createTestSessionTranscriptSource, renderScreen as renderBaseScreen, wrapWithSessionTranscriptSource, standardCleanup } from '@/dev/testkit';
 import { installMessageViewCommonModuleMocks } from './messageViewTestHelpers';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -23,6 +23,21 @@ let sessionMetadata: any = { machineId: 'm1' };
 let sessionForkSupportSource: any = { metadata: sessionMetadata };
 let projectForSession: any = null;
 let machinesState: Record<string, any> = {};
+
+function wrapMessage(element: React.ReactElement) {
+  return wrapWithSessionTranscriptSource(element, createTestSessionTranscriptSource({
+    sessionId: 's1', serverId: 'server-a', metadata: sessionMetadata,
+    forkSupportSource: sessionForkSupportSource,
+    workspacePath: projectForSession?.key?.path ?? sessionMetadata?.path ?? null,
+    interaction: { canSendMessages: true, canApprovePermissions: true, canFork: true, canOpenFiles: true, canPreviewMedia: true },
+    navigate: routerPushSpy,
+  }));
+}
+
+async function renderScreen(element: React.ReactElement) {
+  const screen = await renderBaseScreen(wrapMessage(element));
+  return { ...screen, update: (next: React.ReactElement) => screen.update(wrapMessage(next)) };
+}
 
 function flattenStyleProp(style: any): any {
   if (!style) return style;
@@ -405,7 +420,6 @@ describe('MessageView (fork button)', () => {
           canSendMessages: false,
           canApprovePermissions: false,
           permissionDisabledReason: 'public',
-          disableToolNavigation: true,
           canFork: false,
         }}
       />,
@@ -428,7 +442,6 @@ describe('MessageView (fork button)', () => {
       canApprovePermissions: false,
       canFork: false,
       permissionDisabledReason: 'public',
-      disableToolNavigation: true,
     } as const;
 
     const screen = await renderScreen(
@@ -438,7 +451,7 @@ describe('MessageView (fork button)', () => {
     expect(typeof stalePress).toBe('function');
 
     act(() => {
-      screen.tree.update(
+      screen.update(
         <MessageView message={message} metadata={null} sessionId="s1" interaction={deniedInteraction} />,
       );
     });
@@ -459,7 +472,6 @@ describe('MessageView (fork button)', () => {
       canApprovePermissions: false,
       canFork: false,
       permissionDisabledReason: 'public',
-      disableToolNavigation: true,
     } as const;
     const allowedInteraction = {
       canSendMessages: true,
@@ -472,7 +484,7 @@ describe('MessageView (fork button)', () => {
     expect(screen.findByTestId('transcript-message-fork:m1')).toBeNull();
 
     await act(async () => {
-      screen.tree.update(
+      screen.update(
         <MessageView message={message} metadata={null} sessionId="s1" interaction={allowedInteraction} />,
       );
     });
@@ -494,7 +506,6 @@ describe('MessageView (fork button)', () => {
       canApprovePermissions: false,
       canFork: false,
       permissionDisabledReason: 'public',
-      disableToolNavigation: true,
     } as const;
     const neverSettles = new Promise<never>(() => {});
     const SuspendAfterRow = (props: Readonly<{ shouldSuspend: boolean }>) => {
@@ -510,7 +521,7 @@ describe('MessageView (fork button)', () => {
     let tree!: renderer.ReactTestRenderer;
 
     await act(async () => {
-      tree = renderer.create(renderMessage(allowedInteraction), {
+      tree = renderer.create(wrapMessage(renderMessage(allowedInteraction)), {
         unstable_isConcurrent: true,
       } as unknown as renderer.TestRendererOptions);
     });
@@ -520,7 +531,7 @@ describe('MessageView (fork button)', () => {
 
     await act(async () => {
       React.startTransition(() => {
-        tree.update(renderMessage(deniedInteraction, true));
+        tree.update(wrapMessage(renderMessage(deniedInteraction, true)));
       });
       await Promise.resolve();
     });
@@ -531,7 +542,7 @@ describe('MessageView (fork button)', () => {
     expect(openSessionForkStrategyFlowSpy).toHaveBeenCalledTimes(1);
 
     await act(async () => {
-      tree.update(renderMessage(deniedInteraction));
+      tree.update(wrapMessage(renderMessage(deniedInteraction)));
     });
     expect(tree.root.findAll((node) => node.props?.testID === 'transcript-message-fork:m1')).toHaveLength(0);
 

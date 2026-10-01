@@ -1,6 +1,8 @@
 import {
   BrowserContextItemV1Schema,
   BrowserContextSnapshotV1Schema,
+  resolveBrowserContextPrivacyDenial,
+  type BrowserContextPrivacyState,
   type BrowserContextItemV1,
   type BrowserContextSnapshotAxNodeV1,
   type BrowserContextSnapshotInteractiveElementV1,
@@ -15,14 +17,17 @@ import {
   buildSidecarSummaryContextItem,
   type SidecarSummaryContextKind,
 } from '../sidecar/context/capture';
-import { createSidecarContextPublisher } from '../sidecar/context/publish';
+import { createSidecarContextPublisher, resolveSidecarContextGateDenial } from '../sidecar/context/publish';
+import type { BrowserSidecarCdpCommandScope } from '../sidecar/controlAdapter';
+
+export type BrowserContextCaptureScope = BrowserSidecarCdpCommandScope;
 
 /**
  * The CDP/Chromium boundary the BRW-11 context service captures from. This is the
  * only seam that talks to the sidecar control transport; everything else (owner
  * gating, redaction, protocol shaping) is daemon logic and is tested for real.
  */
-export type BrowserContextSourceTargetRef = Readonly<{
+export type BrowserContextSourceTargetRef = BrowserContextCaptureScope & Readonly<{
   browserSessionId: string;
   viewId: string;
   navigationGeneration: number;
@@ -116,6 +121,10 @@ export type BrowserContextSourceSnapshotResult =
   | BrowserContextSourceFailure;
 
 export type BrowserContextSource = Readonly<{
+  /** Reads only privacy facts before any context or pixel capture. */
+  readPrivacyState?(target: BrowserContextSourceTargetRef): Promise<
+    Readonly<{ ok: true; privacyState: BrowserContextPrivacyState | null }> | BrowserContextSourceFailure
+  >;
   capturePage(target: BrowserContextSourceTargetRef): Promise<BrowserContextSourcePageResult>;
   captureScreenshot(target: BrowserContextSourceTargetRef): Promise<BrowserContextSourceScreenshotResult>;
   captureSummary(
@@ -148,7 +157,7 @@ export type BrowserContextSource = Readonly<{
   ): Promise<BrowserContextSourceSnapshotResult>;
 }>;
 
-export type BrowserContextCaptureRequest = Readonly<{
+export type BrowserContextCaptureRequest = BrowserContextCaptureScope & Readonly<{
   requesterAccountId: string;
   browserSessionId: string;
   viewId: string;
@@ -193,16 +202,20 @@ export type BrowserContextCaptureService = Readonly<{
 }>;
 
 /**
- * The publish-time gate state threaded from the single-owner daemon feature-gate. The route
+ * The capture/egress gate state threaded from the single-owner daemon feature-gate. The route
  * owner is constructed only when `browser.context` is enabled, but the server can flip the
- * feature off afterwards; reading the gate per publish keeps capture fail-closed instead of
- * trusting the construction-time decision forever.
+ * feature off afterwards; checking before any read/persistence keeps disabled capture closed
+ * instead of trusting construction-time admission. Page/screenshot publishers also recheck egress.
  */
 export type BrowserContextCaptureGateState = Readonly<{
   featureEnabled: boolean;
   policyAllowed: boolean;
   runtimeAvailable: boolean;
+  privacyState?: BrowserContextPrivacyState | null;
 }>;
+
+export type BrowserContextCaptureGateResolver = (target: BrowserContextSourceTargetRef) =>
+  BrowserContextCaptureGateState | Promise<BrowserContextCaptureGateState>;
 
 // Fail-closed default (GATE-SEC-001): a sensitive capture gate MUST default to disabled when no
 // gate is threaded — matching the OWNER-GATE contract that a missing/malformed gate decision is
@@ -311,10 +324,17 @@ export function createBrowserContextCaptureService(input: Readonly<{
   ownerAccountId: string;
   source: BrowserContextSource;
   now?: () => number;
-  resolveGate?: () => BrowserContextCaptureGateState;
+  resolveGate?: BrowserContextCaptureGateResolver;
 }>): BrowserContextCaptureService {
   const now = input.now ?? (() => Date.now());
-  const resolveGate = input.resolveGate ?? (() => DEFAULT_GATE_STATE);
+  const resolveOwnerGate = input.resolveGate ?? (() => DEFAULT_GATE_STATE);
+  async function resolveGate(request: BrowserContextCaptureRequest): Promise<BrowserContextCaptureGateState> {
+    const gate = await resolveOwnerGate(targetRef(request));
+    if (resolveSidecarContextGateDenial(gate) || !input.source.readPrivacyState) return gate;
+    const facts = await input.source.readPrivacyState(targetRef(request));
+    return { ...gate, policyAllowed: facts.ok && resolveBrowserContextPrivacyDenial(facts.privacyState) === null,
+      ...(facts.ok ? { privacyState: facts.privacyState } : {}) };
+  }
   const publisher = createSidecarContextPublisher({
     ownerAccountId: input.ownerAccountId,
     // Publishing is the egress shape today; the daemon route owner returns the item
@@ -327,6 +347,8 @@ export function createBrowserContextCaptureService(input: Readonly<{
       browserSessionId: request.browserSessionId,
       viewId: request.viewId,
       navigationGeneration: request.navigationGeneration,
+      ...(request.signal ? { signal: request.signal } : {}),
+      ...(request.deadlineMs !== undefined ? { deadlineMs: request.deadlineMs } : {}),
     };
   }
 
@@ -356,6 +378,20 @@ export function createBrowserContextCaptureService(input: Readonly<{
   return {
     async capturePage(request) {
       if (!isOwner(request)) return { status: 'denied' };
+      const gate = await resolveGate(request);
+      if (resolveSidecarContextGateDenial(gate)) {
+        const published = publisher.publishPageReference({
+          requesterAccountId: request.requesterAccountId,
+          ...gate,
+          contextId: request.contextId,
+          sourceViewId: request.viewId,
+          capturedAtMs: now(),
+          navigationGeneration: request.navigationGeneration,
+        });
+        return published.status === 'published'
+          ? { status: 'captured', item: published.item }
+          : { status: 'denied' };
+      }
       const capture = await input.source.capturePage(targetRef(request));
       if (!capture.ok) {
         return unavailableSummary(request, 'browserDomSnapshotSummary', capture);
@@ -363,7 +399,7 @@ export function createBrowserContextCaptureService(input: Readonly<{
 
       const published = publisher.publishPageReference({
         requesterAccountId: request.requesterAccountId,
-        ...resolveGate(),
+        ...await resolveGate(request),
         contextId: request.contextId,
         sourceViewId: request.viewId,
         capturedAtMs: now(),
@@ -381,6 +417,14 @@ export function createBrowserContextCaptureService(input: Readonly<{
 
     async captureScreenshot(request) {
       if (!isOwner(request)) return { status: 'denied' };
+      const denial = resolveSidecarContextGateDenial(await resolveGate(request));
+      if (denial) {
+        return { status: 'unavailable', item: buildSidecarContextUnavailableItem({
+          contextId: request.contextId, sourceViewId: request.viewId, capturedAtMs: now(),
+          navigationGeneration: request.navigationGeneration, kind: 'browserDomSnapshotSummary',
+          lifecycleState: denial.lifecycleState, disabledReason: denial.disabledReason,
+        }) };
+      }
       const capture = await input.source.captureScreenshot(targetRef(request));
       if (!capture.ok) {
         return unavailableSummary(request, 'browserDomSnapshotSummary', capture);
@@ -388,7 +432,7 @@ export function createBrowserContextCaptureService(input: Readonly<{
 
       const published = publisher.publishScreenshotReference({
         requesterAccountId: request.requesterAccountId,
-        ...resolveGate(),
+        ...await resolveGate(request),
         contextId: request.contextId,
         sourceViewId: request.viewId,
         capturedAtMs: now(),
@@ -397,17 +441,18 @@ export function createBrowserContextCaptureService(input: Readonly<{
       });
       if (published.status === 'denied') return { status: 'denied' };
       if (published.status === 'blocked') {
-        return unavailableSummary(request, 'browserDomSnapshotSummary', {
-          ok: false,
-          reason: published.reason === 'adapter_unavailable' ? 'adapter_unavailable' : 'capture_failed',
-          disabledReason: published.disabledReason,
-        });
+        return { status: 'unavailable', item: buildSidecarContextUnavailableItem({
+          contextId: request.contextId, sourceViewId: request.viewId, capturedAtMs: now(),
+          navigationGeneration: request.navigationGeneration, kind: 'browserDomSnapshotSummary',
+          lifecycleState: published.lifecycleState, disabledReason: published.disabledReason,
+        }) };
       }
       return { status: 'captured', item: published.item };
     },
 
     async captureSummary(request) {
       if (!isOwner(request)) return { status: 'denied' };
+      if (resolveSidecarContextGateDenial(await resolveGate(request))) return { status: 'denied' };
       const capture = await input.source.captureSummary({ ...targetRef(request), kind: request.kind });
       if (!capture.ok) {
         return unavailableSummary(request, request.kind, capture);
@@ -429,6 +474,7 @@ export function createBrowserContextCaptureService(input: Readonly<{
 
     async captureSelectedElement(request) {
       if (!isOwner(request)) return { status: 'denied' };
+      if (resolveSidecarContextGateDenial(await resolveGate(request))) return { status: 'denied' };
       const capture = await input.source.captureSelectedElement(targetRef(request));
       if (!capture.ok) {
         return unavailableSummary(request, 'browserDomSnapshotSummary', capture);
@@ -450,8 +496,8 @@ export function createBrowserContextCaptureService(input: Readonly<{
 
     async captureAnnotationRegion(request) {
       if (!isOwner(request)) return { status: 'denied' };
-      const gate = resolveGate();
-      if (!gate.featureEnabled || !gate.policyAllowed || !gate.runtimeAvailable) {
+      const gate = await resolveGate(request);
+      if (resolveSidecarContextGateDenial(gate)) {
         return { status: 'denied' };
       }
       if (!input.source.captureRegion) {
@@ -482,8 +528,8 @@ export function createBrowserContextCaptureService(input: Readonly<{
 
     async captureAnnotationElement(request) {
       if (!isOwner(request)) return { status: 'denied' };
-      const gate = resolveGate();
-      if (!gate.featureEnabled || !gate.policyAllowed || !gate.runtimeAvailable) {
+      const gate = await resolveGate(request);
+      if (resolveSidecarContextGateDenial(gate)) {
         return { status: 'denied' };
       }
       if (!input.source.captureElement) {
@@ -514,11 +560,11 @@ export function createBrowserContextCaptureService(input: Readonly<{
 
     async captureSnapshot(request) {
       if (!isOwner(request)) return { status: 'denied' };
-      const gate = resolveGate();
+      const gate = await resolveGate(request);
       // The combined snapshot bundles a screenshot, so it is gated like the other sensitive
       // pixel-bearing captures (screenshot/annotation): fail-closed unless the feature is enabled,
       // policy-allowed, and the runtime is available.
-      if (!gate.featureEnabled || !gate.policyAllowed || !gate.runtimeAvailable) {
+      if (resolveSidecarContextGateDenial(gate)) {
         return { status: 'denied' };
       }
       if (!input.source.captureSnapshot) {

@@ -8,6 +8,7 @@ import {
 import { asHostProtocolZod } from '@/plugins/runtime/protocolComposableZodAdapter';
 import {
   ManagedServiceLocalIdSchema,
+  PluginSourceCustodyV1Schema,
   ProviderRuntimeBindingBasisV1Schema,
 } from '@happier-dev/protocol';
 import { SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc';
@@ -41,8 +42,8 @@ const CustodyClaimSchema: z.ZodType<RunnerManagedProviderCustodyClaimV1> =
     runtimeBindingBasis: ProviderRuntimeBindingBasisV1Schema,
     pluginId: CustodyIdentityPartSchema,
     providerLocalId: CustodyIdentityPartSchema,
-    activationGeneration: CustodyIdentityPartSchema,
-    immutableGenerationId: CustodyIdentityPartSchema,
+    occurrenceId: CustodyIdentityPartSchema,
+    sourceCustody: asHostProtocolZod(PluginSourceCustodyV1Schema),
     manifestAuthority: z.enum(['external', 'bundled_first_party']),
     operationClaimId: CustodyIdentityPartSchema,
   }).strict();
@@ -100,12 +101,23 @@ const EndpointProjectionOpenRouteSchema = z.object({
   kind: z.literal('endpointProjection'),
   projection: ProjectionSchema,
 }).strict();
+const EndpointClientEnvironmentRouteSchema = z.object({
+  kind: z.literal('endpointClientEnvironment'),
+  projection: ProjectionSchema,
+  environmentKey: z.string().trim().min(1).max(128)
+    .regex(/^[A-Za-z_][A-Za-z0-9_]*$/u),
+}).strict();
 const EndpointProjectionContinuationRouteSchema = z.object({
   kind: z.literal('endpointProjection'),
   projectionToken: ProjectionTokenSchema,
 }).strict();
 
 export const ManagedServiceEndpointReadOpenRequestV1Schema = z.union([
+  z.object({
+    v: z.literal(1),
+    requestId: RequestIdSchema,
+    route: EndpointClientEnvironmentRouteSchema,
+  }).strict(),
   z.object({
     v: z.literal(1),
     requestId: RequestIdSchema,
@@ -126,6 +138,15 @@ export const ManagedServiceEndpointReadOpenRequestV1Schema = z.union([
 ]);
 
 export const ManagedServiceEndpointReadOpenResultV1Schema = z.discriminatedUnion('status', [
+  z.object({
+    v: z.literal(1),
+    requestId: RequestIdSchema,
+    status: z.literal('clientEnvironment'),
+    environment: z.record(
+      z.string().trim().min(1).max(128),
+      z.string().max(8_192),
+    ).refine((environment) => Object.keys(environment).length <= 1),
+  }).strict(),
   z.object({
     v: z.literal(1),
     requestId: RequestIdSchema,

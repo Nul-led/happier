@@ -2,10 +2,10 @@ import * as React from 'react';
 import { useShallow } from 'zustand/react/shallow';
 
 import { parseSessionMediaMessageMeta } from '@/sync/domains/session/media/sessionMediaMessageMeta';
-import type { Message } from '@/sync/domains/messages/messageTypes';
-import { compareTranscriptMessagesOldestFirst } from '@/sync/domains/messages/transcriptOrdering';
+import type { Message } from "@happier-dev/session-core/messages";
+import { compareTranscriptMessagesOldestFirst } from "@happier-dev/session-core/messages";
 import { storage, useSetting } from '@/sync/domains/state/storage';
-import type { Metadata } from '@/sync/domains/state/storageTypes';
+import type { Metadata } from '@happier-dev/session-core/state';
 import { useSessionDebugInformationEnabled } from '@/sync/runtime/useSessionDebugInformationEnabled';
 
 import { isAgentTextMessageActivelyStreamingForSelection, resolveSelectableMessageText } from './resolveSelectableMessageText';

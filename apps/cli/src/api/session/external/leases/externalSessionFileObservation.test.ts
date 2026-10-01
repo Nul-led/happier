@@ -371,7 +371,7 @@ async function runFileObservationScenario(
     const retirement = new AbortController();
     const resource = {
         linkGeneration: 'link-generation-1',
-        pluginGeneration: 'plugin-generation-1',
+        occurrenceId: 'plugin-generation-1',
         retirementSignal: retirement.signal,
     };
     const manager = createExternalSessionFollowLeaseManager();
@@ -458,7 +458,7 @@ async function runFileObservationScenario(
     const observationResource: ExternalSessionObservationResourceIdentity = {
         pluginId: fixture.pluginId,
         agentLocalId: fixture.agentLocalId,
-        pluginGeneration: resource.pluginGeneration,
+        occurrenceId: resource.occurrenceId,
         resourceKey: firstDescriptor.resourceKey,
         retirementSignal: retirement.signal,
     };
@@ -746,7 +746,7 @@ describe('source-backed External Session file observation', () => {
         const retirement = new AbortController();
         const resource = {
             linkGeneration: 'delayed-child-link-generation',
-            pluginGeneration: 'delayed-child-plugin-generation',
+            occurrenceId: 'delayed-child-plugin-generation',
             retirementSignal: retirement.signal,
         };
         const manager = createExternalSessionFollowLeaseManager();
@@ -865,7 +865,7 @@ describe('source-backed External Session file observation', () => {
                 resource: {
                     pluginId: 'happier.codex',
                     agentLocalId: 'codex',
-                    pluginGeneration: resource.pluginGeneration,
+                    occurrenceId: resource.occurrenceId,
                     resourceKey: descriptor.resourceKey,
                     retirementSignal: retirement.signal,
                 },

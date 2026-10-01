@@ -1,17 +1,18 @@
+import { resolveNewSessionGroupTarget } from './resolveSessionListHeaderActionHandlers';
 import {
     normalizeSessionAddress,
     sessionAddressKey as audienceSessionAddressKey,
 } from '@/sync/domains/session/sessionAddress';
 import * as React from 'react';
 import { Platform, type ViewToken } from 'react-native';
-import { usePathname } from 'expo-router';
+import { usePathname } from '@/components/appShell/workspace/destinationRoute';
 import { EXTERNAL_SESSION_STATUS_DEMAND_MAX_ENTRIES_V1 } from '@happier-dev/protocol';
 import {
     useSetting,
-    useSettings,
     useSettingMutable,
     useMachineDisplayById,
     useProfile,
+    useLocalSetting,
     useLocalSettingMutable,
     useSessionListRowRenderablesForItems,
     useSessionOrganizationProjections,
@@ -136,11 +137,10 @@ import {
 import { useSessionAttentionStandingInputs } from '@/hooks/session/useSessionAttentionStandingInputs';
 import { sessionSetAttentionStandingWithServerScope } from '@/sync/ops/sessionOrganization';
 import { resolveWorkspaceRootTreeRowId, treeRowId } from './drop-resolution/treeRowId';
-import {
-    hasActiveSessionListHeaderFilters,
-} from './sessionListFilters';
+import { hasActiveSessionListHeaderFilters } from './sessionListFilters';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { HappyError } from '@/utils/errors/errors';
+import { shouldRetryError } from '@/sync/runtime/connectivity/transientConnectivityErrors';
 import {
     useActiveServerAccountScope,
     useOrdinarySessionListMembershipByServerId,
@@ -196,12 +196,6 @@ import {
 import { syncPerformanceTelemetry } from '@/sync/runtime/syncPerformanceTelemetry';
 import { transcriptSearchUnavailableHint } from '@/components/appShell/search/transcriptSearchUnavailableHint';
 import { SessionListFilterControl } from './search/SessionListFilterControl';
-import {
-    buildSessionListFilterTagOptionId,
-    reduceSessionListFilterEditorSelection,
-} from './search/sessionListFilterEditorModel';
-import { buildSessionListFilterTagOptions } from './search/sessionListFilterTagOptions';
-import type { SessionListTagShortcutOption } from './search/SessionListSearchChrome';
 import type {
     QualifiedTagAddress,
     SessionListViewContext,
@@ -212,7 +206,6 @@ const EMPTY_MEMORY_MATCHED_SESSION_KEYS: ReadonlySet<string> = new Set();
 const EMPTY_VIEWABLE_SESSION_ROW_KEYS: ReadonlySet<string> = new Set();
 const EMPTY_KNOWN_TAGS: ReadonlyArray<string> = [];
 const EMPTY_LOCAL_TAG_SELECTIONS: ReadonlyArray<QualifiedTagAddress> = [];
-const EMPTY_TAG_SHORTCUT_OPTIONS: ReadonlyArray<SessionListTagShortcutOption> = [];
 const EMPTY_MEMORY_MATCHED_SESSION_TARGETS: ReadonlyArray<SessionListMemorySearchTarget> = [];
 const EMPTY_SESSION_FOLDER_MOVE_TARGETS: readonly SessionFolderMoveTarget[] = [];
 const SESSION_LIST_IDLE_MOVE_RESULT = Object.freeze({
@@ -366,6 +359,9 @@ function buildStringArrayRecordSignature(value: Readonly<Record<string, readonly
 }
 
 function buildSessionFolderWorkspaceSignature(workspace: SessionFolderWorkspaceRefV1): string {
+    if (workspace.t === 'managedSessions') {
+        return JSON.stringify([workspace.t, workspace.serverId, workspace.machineId]);
+    }
     if (workspace.t === 'workspaceScope') {
         return JSON.stringify([
             workspace.t,
@@ -401,7 +397,7 @@ async function runSessionOrganizationWriteForHome(
         await write();
     } catch (error) {
         const message = error instanceof HappyError ? error.message : t('errors.unknownError');
-        const canTryAgain = error instanceof HappyError ? error.canTryAgain : true;
+        const canTryAgain = shouldRetryError(error);
         throw new HappyError(
             `${t('teams.homeLabel')} ${serverId}: ${message}${canTryAgain ? ` ${t('common.retry')}` : ''}`,
             canTryAgain,
@@ -409,6 +405,9 @@ async function runSessionOrganizationWriteForHome(
         );
     }
 }
+
+/** A stable empty Home selection: not searching follows no Home's rows. */
+const NO_SEARCH_ROW_SERVER_IDS: readonly string[] = Object.freeze([]);
 
 export function buildSessionFolderMoveTargetSignature(
     foldersSignature: string,
@@ -547,9 +546,12 @@ export function useSessionListViewStateFromPaneState(
     // Team surfaces are already qualified to one Home and must not borrow the
     // globally focused Home for transcript search. Global surfaces deliberately
     // retain the selected Home's incumbent contextual-provider semantics.
-    const memorySearchContext = useSessionListMemorySearchContext({ serverId: transcriptSearchServerId });
-    const renderPaneState = sessionListPaneState;
     const searchQuery = filterController.filters.searchQuery;
+    const memorySearchContext = useSessionListMemorySearchContext(
+        { serverId: transcriptSearchServerId },
+        { searchQuery, enabled: surfaceOwnership.dataActive },
+    );
+    const renderPaneState = sessionListPaneState;
     const setSearchQuery = filterController.setSearchQuery;
     const isTablet = useIsTablet();
     const [sessionListOrderingModeV1] = useSettingMutable('sessionListOrderingModeV1');
@@ -584,13 +586,27 @@ export function useSessionListViewStateFromPaneState(
         foldersFeatureEnabled: folderActionsEnabled,
     });
     const sessionListDensity = useSetting('sessionListDensity');
+    const uiFontScale = useLocalSetting('uiFontScale');
     const sessionListWorkingIndicatorStyle = useSetting('sessionListNarrowWorkingIndicatorStyle');
     const sessionListWorkingStatusAnimatedTextEnabled = useSetting('sessionListWorkingStatusAnimatedTextEnabled');
     const sessionListIdentityDisplay = useSetting('sessionListIdentityDisplay');
     const sessionListActiveColorMode = useSetting('sessionListActiveColorModeV1');
     const hideInactiveSessions = useSetting('hideInactiveSessions');
     const sessionReplayEnabled = useSetting('sessionReplayEnabled');
-    const sessionForkReplaySettings = useSettings();
+    const sessionReplayMaxSeedChars = useSetting('sessionReplayMaxSeedChars');
+    const sessionReplayStrategy = useSetting('sessionReplayStrategy');
+    const sessionReplaySummaryRunnerV1 = useSetting('sessionReplaySummaryRunnerV1');
+    const sessionForkReplaySettings = React.useMemo(() => ({
+        sessionReplayEnabled,
+        sessionReplayMaxSeedChars,
+        sessionReplayStrategy,
+        sessionReplaySummaryRunnerV1,
+    }), [
+        sessionReplayEnabled,
+        sessionReplayMaxSeedChars,
+        sessionReplayStrategy,
+        sessionReplaySummaryRunnerV1,
+    ]);
     const executionRunsEnabled = useFeatureEnabled('execution.runs');
     const forkActionContext = React.useMemo(() => ({
         settings: sessionForkReplaySettings,
@@ -605,6 +621,7 @@ export function useSessionListViewStateFromPaneState(
     const densityViewState = resolveSessionListDensityViewState(sessionListDensity, {
         isTablet,
         platform: Platform.OS,
+        uiFontScale,
     });
     const currentUserId = typeof profile?.id === 'string' ? profile.id : null;
     // The exact Homes this surface can present rows for. Resolved through the one
@@ -629,37 +646,6 @@ export function useSessionListViewStateFromPaneState(
         serverIds: organizationServerIds,
         projectionsByServerId: selectedOrganizationProjectionsByServerId,
     }), [organizationServerIds, selectedOrganizationProjectionsByServerId]);
-    // The compact shortcut and the full editor present the same qualified tag
-    // options and hand the same option id back to the one filter writer. The
-    // shortcut shows a tag's label but selects its Home-local id, so equal labels
-    // on two Homes stay two selections and changing the focused Home retargets
-    // nothing. Only the Homes this corpus is currently reading are offered.
-    const selectedHomeServerIdSet = React.useMemo(
-        () => new Set(filterController.filters.homeServerIds),
-        [filterController.filters.homeServerIds],
-    );
-    const tagShortcutOptions = React.useMemo(() => buildSessionListFilterTagOptions({
-        homeOptions: filterController.homeOptions,
-        organizationProjectionsByServerId,
-    })
-        .filter((tag) => selectedHomeServerIdSet.has(tag.serverId))
-        .map((tag): SessionListTagShortcutOption => ({
-            id: buildSessionListFilterTagOptionId(tag),
-            label: tag.label,
-        })), [
-        filterController.homeOptions,
-        organizationProjectionsByServerId,
-        selectedHomeServerIdSet,
-    ]);
-    const selectedTagShortcutOptionIds = React.useMemo(
-        () => filterController.filters.tagIds.map(buildSessionListFilterTagOptionId),
-        [filterController.filters.tagIds],
-    );
-    const handleToggleTagShortcutOption = React.useCallback((optionId: string) => {
-        filterController.updateFilters((current) => (
-            reduceSessionListFilterEditorSelection(current, optionId)
-        ));
-    }, [filterController]);
     // A Home that answered the strict query already applied the tag predicate
     // before pagination, so its rows are authoritative. Only the legacy
     // owner/direct adapter, whose released GET cannot express tags, filters the
@@ -955,7 +941,14 @@ export function useSessionListViewStateFromPaneState(
         normalizedShellState.workspaceRefs,
         workspacePathDisplayModeV1,
     ]);
-    const sessionListRowsByServerId = useSessionListRowsByServerId();
+    // Rows are read only to search them: follow the search corpus's Homes while a query is active, and
+    // nothing otherwise, so a session row write does not re-render the list when no one is searching.
+    const searchingRows = searchQuery.trim().length > 0;
+    const searchRowServerIds = React.useMemo(
+        () => (searchingRows ? searchCorpus.homes.map((home) => home.serverId) : NO_SEARCH_ROW_SERVER_IDS),
+        [searchCorpus.homes, searchingRows],
+    );
+    const sessionListRowsByServerId = useSessionListRowsByServerId(searchRowServerIds);
     // Structural membership admits; the canonical row cache only resolves an admitted
     // address. Enumerating the cache itself would readmit rows that satisfied an older
     // query, another Home's corpus, or another storage/scope/audience/tag selection.
@@ -1101,53 +1094,13 @@ export function useSessionListViewStateFromPaneState(
         handleOpenArchivedSessions,
         handleOpenUniversalSearch,
     } = useSessionListNavigationActions(universalSearchScope);
-    // The filter editor is the only host of `Hide inactive sessions`, Source, Homes
-    // and Tags, so it stays mounted for every corpus. Each section is individually
-    // availability-gated inside the editor model, and the control's own
-    // `legacy_owner_or_direct` label already names a corpus with no semantic query.
-    const filterControl = React.useMemo(() => (
-        <SessionListFilterControl
-            controller={filterController}
-            organizationProjectionsByServerId={organizationProjectionsByServerId}
-        />
-    ), [
-        filterController,
-        organizationProjectionsByServerId,
-    ]);
-    const searchChrome = React.useMemo(() => ({
-        filterControl,
-        tagOptions: sessionTagsEnabled === true ? tagShortcutOptions : EMPTY_TAG_SHORTCUT_OPTIONS,
-        selectedTagOptionIds: selectedTagShortcutOptionIds,
-        searchQuery,
-        searchScopeLabel: transcriptSearchHomeLabel,
-        organizationServerId: transcriptSearchServerId,
-        searchStatus,
-        searchTrailingAccessory,
-        onToggleTagOption: handleToggleTagShortcutOption,
-        onSearchQueryChange: setSearchQuery,
-        // A Team-context escalation must never fall through to Universal Search's
-        // ambient (globally focused Home) scope while its exact credential-backed
-        // Account binding is still resolving. Keep the action unavailable until
-        // the qualified Team Home/Account seed exists.
-        onSearchEverything: filterController.viewContext.kind === 'global' || universalSearchScope
-            ? handleOpenUniversalSearch
-            : undefined,
-    }), [
-        filterControl,
-        filterController.viewContext.kind,
-        handleOpenUniversalSearch,
-        handleToggleTagShortcutOption,
-        searchQuery,
-        transcriptSearchHomeLabel,
-        transcriptSearchServerId,
-        universalSearchScope,
-        searchStatus,
-        searchTrailingAccessory,
-        selectedTagShortcutOptionIds,
-        sessionTagsEnabled,
-        tagShortcutOptions,
-        setSearchQuery,
-    ]);
+    // The navigation actions are rebuilt each render; the scope menu keeps one stable handler so the
+    // memoized filter control does not rebuild with them.
+    const openArchivedSessionsRef = React.useRef(handleOpenArchivedSessions);
+    openArchivedSessionsRef.current = handleOpenArchivedSessions;
+    const handleOpenArchivedFromScopeMenu = React.useCallback(() => {
+        openArchivedSessionsRef.current();
+    }, []);
 
     const selectedSession = useSessionCanvasSelection({
         selectable: shellFlags.selectable,
@@ -1175,6 +1128,7 @@ export function useSessionListViewStateFromPaneState(
     ), [selectedSessionId, selectedSessionServerId, renderPaneState.visibleSessionListIndex]);
     const runtimePrioritySessionRowKeysRaw = useSessionListRuntimePriorityRowKeysForItems(
         renderPaneState.visibleSessionListIndex,
+        { enabled: surfaceOwnership.dataActive },
     );
     const prioritySessionRowKeysRaw = React.useMemo(() => mergeSessionListRowStoreKeySets(
         indexPrioritySessionRowKeysRaw,
@@ -1265,6 +1219,53 @@ export function useSessionListViewStateFromPaneState(
         () => buildVisibleSessionNavigationEntries(renderModels.selectionScopeListItems),
         [renderModels.selectionScopeListItems],
     );
+    // The scope editor states how many sessions these choices show: the list's own selection-scope
+    // rows (every matching row, including those inside collapsed groups), never a second derivation.
+    const filterResultCount = selectionScopeSessionNavigationEntries.length;
+    // The filter editor is the only host of `Hide inactive sessions`, Source, Homes
+    // and Tags, so it stays mounted for every corpus. Each section is individually
+    // availability-gated inside the editor model, and the control's own
+    // `legacy_owner_or_direct` label already names a corpus with no semantic query.
+    const filterControl = React.useMemo(() => (
+        <SessionListFilterControl
+            controller={filterController}
+            organizationProjectionsByServerId={organizationProjectionsByServerId}
+            onOpenArchived={filterController.corpusStorage === 'active' ? handleOpenArchivedFromScopeMenu : undefined}
+            resultCount={filterResultCount}
+        />
+    ), [
+        filterController,
+        filterResultCount,
+        handleOpenArchivedFromScopeMenu,
+        organizationProjectionsByServerId,
+    ]);
+    const searchChrome = React.useMemo(() => ({
+        filterControl,
+        searchQuery,
+        searchScopeLabel: transcriptSearchHomeLabel,
+        organizationServerId: transcriptSearchServerId,
+        searchStatus,
+        searchTrailingAccessory,
+        onSearchQueryChange: setSearchQuery,
+        // A Team-context escalation must never fall through to Universal Search's
+        // ambient (globally focused Home) scope while its exact credential-backed
+        // Account binding is still resolving. Keep the action unavailable until
+        // the qualified Team Home/Account seed exists.
+        onSearchEverything: filterController.viewContext.kind === 'global' || universalSearchScope
+            ? handleOpenUniversalSearch
+            : undefined,
+    }), [
+        filterControl,
+        filterController.viewContext.kind,
+        handleOpenUniversalSearch,
+        searchQuery,
+        transcriptSearchHomeLabel,
+        transcriptSearchServerId,
+        universalSearchScope,
+        searchStatus,
+        searchTrailingAccessory,
+        setSearchQuery,
+    ]);
     const knownSessionEntries = visibleSessionNavigationEntries;
     // Row-level pin/tag writes resolve their exact Home through the same published addresses the
     // order writes use, so one Session key never means two different Homes on two surfaces.
@@ -1606,26 +1607,13 @@ export function useSessionListViewStateFromPaneState(
         }
         return loadedItems;
     }, [renderedListItems, sessionListItemBySelectionKey, viewableSessionRowKeys]);
-    const statusDemandRowRenderableByKey = useSessionListRowRenderablesForItems(
-        statusDemandSubscriptionItems,
-    );
-    React.useEffect(() => {
-        const entries = collectExternalSessionStatusDemandViewportEntries({
-            activeServerId: getActiveServerSnapshot().serverId,
-            renderedListItems: statusDemandSubscriptionItems,
-            resolveRowRenderable: (rowKey) => statusDemandRowRenderableByKey.get(rowKey) ?? null,
-            visibleRowKeys: viewableSessionRowKeys,
-        });
-        replaceExternalSessionStatusDemandViewport(statusDemandViewportId, entries);
-    }, [
-        statusDemandRowRenderableByKey,
-        statusDemandSubscriptionItems,
-        statusDemandViewportId,
-        viewableSessionRowKeys,
-    ]);
-    React.useEffect(() => () => {
-        replaceExternalSessionStatusDemandViewport(statusDemandViewportId, []);
-    }, [statusDemandViewportId]);
+    // The rows' content is read by the demand publisher leaf (`SessionListExternalStatusDemandPublisher`),
+    // not here: subscribing the list to every listed row re-rendered the whole list on each session write.
+    const externalStatusDemand = React.useMemo(() => ({
+        items: statusDemandSubscriptionItems,
+        viewportId: statusDemandViewportId,
+        visibleRowKeys: viewableSessionRowKeys,
+    }), [statusDemandSubscriptionItems, statusDemandViewportId, viewableSessionRowKeys]);
     const selectedSessionListItems = React.useMemo(() => {
         if (!sessionListSelectionSnapshot.isSelectionMode || sessionListSelectionSnapshot.selectedKeys.size === 0) {
             return [] as Array<Extract<SessionListIndexItem, { type: 'session' }>>;
@@ -1843,8 +1831,9 @@ export function useSessionListViewStateFromPaneState(
     }, [rowInteractions.consumeFolderFocusPressAfterDrag, setSessionListFocusedFolderV1]);
 
     const handleCreateSessionFromFolder = React.useCallback((item: Extract<SessionListIndexItem, { type: 'header' }>) => {
-        if (!item.workspaceScopeHint) return;
-        handleCreateSessionFromWorkspaceScope(item.workspaceScopeHint, {
+        const target = resolveNewSessionGroupTarget(item);
+        if (!target) return;
+        handleCreateSessionFromWorkspaceScope(target, {
             seedSessionId: item.seedSessionId,
         });
     }, [handleCreateSessionFromWorkspaceScope]);
@@ -2173,6 +2162,9 @@ export function useSessionListViewStateFromPaneState(
         const rowDragPolicy = resolveSessionListSessionRowDragPolicy({
             manualSessionOrderingEnabled: shellFlags.canReorderSessions,
             folderContainmentEnabled: shellFlags.canMoveSessionRowsBetweenFolders && canUseSessionFolders,
+            // A live Home Session can be dropped on another to report to it; the drop rule checks
+            // the person's rights and the tree against the latest Sessions.
+            putUnderEnabled: Boolean(item.serverId) && item.archivedAt == null,
             item,
             sectionModeV1: sessionListSectionModeV1,
             orderingModeV1: sessionListOrderingModeV1,
@@ -2418,19 +2410,40 @@ export function useSessionListViewStateFromPaneState(
         allKnownTagsSignature,
         attentionStandingEnabled: attentionStanding.actionEnabled,
         attentionStandingSignature,
+        audience: renderModels.audience,
         canDragSessionRows: shellFlags.canDragSessionRows,
         canMoveSessionRowsBetweenFolders: shellFlags.canMoveSessionRowsBetweenFolders,
         canReorderSessions: shellFlags.canReorderSessions,
         compact: Boolean(densityViewState.compact),
         compactMinimal: Boolean(densityViewState.compact && densityViewState.compactMinimal),
         currentUserId,
+        draftScope,
         dragSnapshotId: frozenListProjection.snapshotId,
         draggingSessionKey: rowInteractions.draggingSessionKey,
+        existingDraftBySessionKey: renderModels.existingDraftBySessionKey,
         folderActionsEnabled,
+        forkActionContext,
+        hasMultipleMachines: renderModels.hasMultipleMachines,
+        homeObservations,
         nativeContextMenuSessionKey: rowInteractions.nativeContextMenuSessionKey,
+        pinnedSessionKeys: orderingPersistenceState.pinnedKeySet,
+        reachableSessionDisplayById: renderModels.reachableSessionDisplayById,
+        reachableSessionDisplayByKey: renderModels.reachableSessionDisplayByKey,
         rowHeight: densityViewState.rowHeight,
         rowLabelsSignature,
+        selectedSessionId,
+        selectedSessionServerId,
         sessionFoldersSignature,
+        sessionListActiveColorMode: sessionListActiveColorMode === 'attentionOnly' || sessionListActiveColorMode === 'allActive'
+            ? sessionListActiveColorMode
+            : 'activityAndAttention',
+        sessionListHideInactiveSessions: hideInactiveSessions === true,
+        sessionListIdentityDisplay: sessionListIdentityDisplay === 'agentLogo' || sessionListIdentityDisplay === 'none'
+            ? sessionListIdentityDisplay
+            : 'avatar',
+        sessionListSurfaceDataActive: surfaceOwnership.dataActive,
+        sessionListWorkingIndicatorMode: sessionListWorkingIndicatorStyle === 'pulse' ? 'pulse' : 'spinner',
+        sessionListWorkingTextMode: sessionListWorkingStatusAnimatedTextEnabled === false ? 'static' : 'animated',
         sessionTagsEnabled: sessionTagsEnabled === true,
         sessionTagsSignature,
         workspaceLabelsSignature,
@@ -2442,12 +2455,29 @@ export function useSessionListViewStateFromPaneState(
         densityViewState.compact,
         densityViewState.compactMinimal,
         densityViewState.rowHeight,
+        draftScope,
         frozenListProjection.snapshotId,
         folderActionsEnabled,
+        forkActionContext,
+        hideInactiveSessions,
+        homeObservations,
+        orderingPersistenceState.pinnedKeySet,
+        renderModels.audience,
+        renderModels.existingDraftBySessionKey,
+        renderModels.hasMultipleMachines,
+        renderModels.reachableSessionDisplayById,
+        renderModels.reachableSessionDisplayByKey,
         rowInteractions.draggingSessionKey,
         rowInteractions.nativeContextMenuSessionKey,
         rowLabelsSignature,
+        selectedSessionId,
+        selectedSessionServerId,
+        sessionListActiveColorMode,
+        sessionListIdentityDisplay,
+        sessionListWorkingIndicatorStyle,
+        sessionListWorkingStatusAnimatedTextEnabled,
         sessionFoldersSignature,
+        surfaceOwnership.dataActive,
         sessionTagsEnabled,
         sessionTagsSignature,
         shellFlags.canDragSessionRows,
@@ -2501,6 +2531,7 @@ export function useSessionListViewStateFromPaneState(
     ), [handleSessionListKeyDown, sessionListSelectionStore]);
 
     return {
+        externalStatusDemand,
         nodes: virtualizedNodes,
         nodeIds,
         rowHeight: densityViewState.rowHeight,
@@ -2522,7 +2553,6 @@ export function useSessionListViewStateFromPaneState(
         onNativeListScrollInteractionEnd: rowInteractions.handleNativeListScrollInteractionEnd,
         onTreeViewportLayout: handleTreeViewportLayout,
         onTreeContentSizeChange: rowInteractions.handleTreeContentSizeChange,
-        onPressArchivedSessions: handleOpenArchivedSessions,
         searchChrome,
         keyboardZoneProps,
         sessionListSelectionStore,
@@ -2537,3 +2567,28 @@ export function useSessionListViewStateFromPaneState(
         onSelectFolderBreadcrumb: handleSelectFolderBreadcrumb,
     };
 }
+
+/**
+ * Publishes which visible external Sessions need live status. It is the only reader of those rows'
+ * content in the list, so a session write re-renders this leaf (which renders nothing) and not the list.
+ */
+export const SessionListExternalStatusDemandPublisher = React.memo(function SessionListExternalStatusDemandPublisher(props: Readonly<{
+    items: ReadonlyArray<Extract<SessionListIndexItem, { type: 'session' }>>;
+    viewportId: string;
+    visibleRowKeys: ReadonlySet<string> | null;
+}>) {
+    const rowRenderableByKey = useSessionListRowRenderablesForItems(props.items);
+    React.useEffect(() => {
+        const entries = collectExternalSessionStatusDemandViewportEntries({
+            activeServerId: getActiveServerSnapshot().serverId,
+            renderedListItems: props.items,
+            resolveRowRenderable: (rowKey) => rowRenderableByKey.get(rowKey) ?? null,
+            visibleRowKeys: props.visibleRowKeys,
+        });
+        replaceExternalSessionStatusDemandViewport(props.viewportId, entries);
+    }, [props.items, props.viewportId, props.visibleRowKeys, rowRenderableByKey]);
+    React.useEffect(() => () => {
+        replaceExternalSessionStatusDemandViewport(props.viewportId, []);
+    }, [props.viewportId]);
+    return null;
+});

@@ -14,7 +14,7 @@ import * as tar from 'tar';
 import { TranscriptRawRecordV1Schema } from '@happier-dev/protocol';
 import {
   computePluginUiArtifactFileSetSha256DigestV1,
-  PluginUiArtifactsManifestV1Schema,
+  PluginUiArtifactsManifestV2Schema,
 } from '@happier-dev/protocol/plugins/ui';
 import { sanitizePackageArtifactEnv } from '../../../../scripts/pipeline/npm/sanitize-package-artifact-env.mjs';
 import { readPluginInstallReviewRequiredEnvelope } from '../../src/testkit/pluginPlatform/pluginInstallReviewRequiredEnvelope.mjs';
@@ -1818,13 +1818,12 @@ export async function attestPackedPublicAuthoringHostedWebGraph({
     resolvedArtifactRoot,
     'ui-artifacts.json',
   ));
-  const graph = PluginUiArtifactsManifestV1Schema.parse(JSON.parse(
+  const graph = PluginUiArtifactsManifestV2Schema.parse(JSON.parse(
     Buffer.from(rawManifest).toString('utf8'),
   ));
   const entries = graph.entries.filter((entry) => (
-    entry.contributionId === contributionId
+    entry.artifactId === contributionId
     && entry.tier === 'hostedWeb'
-    && entry.platform === 'web'
   ));
   if (entries.length !== 1) {
     fail(`${label} hostedWeb graph must contain exactly one ${contributionId}/web entry`);
@@ -1858,7 +1857,7 @@ export async function attestPackedPublicAuthoringHostedWebGraph({
     fail(`${label} hostedWeb graph digest mismatch`);
   }
   return Object.freeze({
-    contributionId: entry.contributionId,
+    contributionId,
     entry: entry.entry,
     digest: entry.digest,
     files: Object.freeze(entry.files.map((file) => Object.freeze({
@@ -1873,26 +1872,14 @@ const PACKED_SCAFFOLD_UI_CONTRIBUTION_ID = 'main-renderer';
 const PACKED_SCAFFOLD_UI_EXPECTED_ARTIFACT_ENTRIES = Object.freeze({
   reactNative: Object.freeze([
     Object.freeze({
-      contributionId: PACKED_SCAFFOLD_UI_CONTRIBUTION_ID,
+      artifactId: PACKED_SCAFFOLD_UI_CONTRIBUTION_ID,
       tier: 'reactNative',
-      platform: 'web',
-    }),
-    Object.freeze({
-      contributionId: PACKED_SCAFFOLD_UI_CONTRIBUTION_ID,
-      tier: 'reactNative',
-      platform: 'ios',
-    }),
-    Object.freeze({
-      contributionId: PACKED_SCAFFOLD_UI_CONTRIBUTION_ID,
-      tier: 'reactNative',
-      platform: 'android',
     }),
   ]),
   hostedWeb: Object.freeze([
     Object.freeze({
-      contributionId: PACKED_SCAFFOLD_UI_CONTRIBUTION_ID,
+      artifactId: PACKED_SCAFFOLD_UI_CONTRIBUTION_ID,
       tier: 'hostedWeb',
-      platform: 'web',
     }),
   ]),
 });
@@ -1935,7 +1922,7 @@ export async function attestPackedScaffoldUiArtifactGraph({
     resolvedArtifactRoot,
     'ui-artifacts.json',
   ));
-  const graph = PluginUiArtifactsManifestV1Schema.parse(JSON.parse(
+  const graph = PluginUiArtifactsManifestV2Schema.parse(JSON.parse(
     Buffer.from(rawManifest).toString('utf8'),
   ));
   if (graph.entries.length !== expectedEntries.length) {
@@ -1944,12 +1931,11 @@ export async function attestPackedScaffoldUiArtifactGraph({
   const entries = [];
   for (const expected of expectedEntries) {
     const matchingEntries = graph.entries.filter((entry) => (
-      entry.contributionId === expected.contributionId
+      entry.artifactId === expected.artifactId
       && entry.tier === expected.tier
-      && entry.platform === expected.platform
     ));
     if (matchingEntries.length !== 1) {
-      fail(`${label} graph must contain exactly one ${expected.tier}/${expected.platform} main-renderer entry`);
+      fail(`${label} graph must contain exactly one ${expected.tier} main-renderer entry`);
     }
     const entry = matchingEntries[0];
     if (!entry.files.some((file) => file.relativePath === entry.entry)) {
@@ -1980,12 +1966,11 @@ export async function attestPackedScaffoldUiArtifactGraph({
       verifiedFiles.push({ relativePath: file.relativePath, bytes });
     }
     if (computePluginUiArtifactFileSetSha256DigestV1(verifiedFiles) !== entry.digest) {
-      fail(`${label} graph digest mismatch: ${expected.tier}/${expected.platform}`);
+      fail(`${label} graph digest mismatch: ${expected.tier}`);
     }
     entries.push(Object.freeze({
-      contributionId: entry.contributionId,
+      artifactId: entry.artifactId,
       tier: entry.tier,
-      platform: entry.platform,
       entry: entry.entry,
       digest: entry.digest,
       fileCount: entry.files.length,
@@ -4733,10 +4718,6 @@ export async function configureVerticalAPlugin(params) {
         ...(packageJson.dependencies ?? {}),
         react: '19.2.0',
       },
-      devDependencies: {
-        ...(packageJson.devDependencies ?? {}),
-        vite: '^7.0.0',
-      },
     } : {}),
     files: projectCodeDefinedPackageFiles(packageJson.files, ['resources']),
   }, null, 2)}\n`, 'utf8');
@@ -4751,46 +4732,16 @@ export async function configureVerticalAPlugin(params) {
     writeFile(join(resourceRoot, 'config.json'), resourcePayloads.config, 'utf8'),
   ]);
   if (params.pluginId === 'acme.vertical-a') {
-    const uiRoot = join(params.pluginRoot, 'src', 'ui');
+    const uiRoot = join(params.pluginRoot, '.happier-plugin', 'ui', 'hosted-web', hostedWebRendererId);
     await mkdir(uiRoot, { recursive: true });
-    await Promise.all([
-      writeFile(join(params.pluginRoot, 'pluginUiBuild.mjs'), [
-        "import { defineBuildConfig } from '@happier-dev/plugin-sdk/ui/build';",
-        '',
-        'export default defineBuildConfig({',
-        '  targets: [{',
-        `    rendererId: ${JSON.stringify(hostedWebRendererId)},`,
-        "    entry: 'src/ui/index.ts',",
-        "    kind: 'hostedWeb',",
-        '  }],',
-        '});',
-        '',
-      ].join('\n'), 'utf8'),
-      writeFile(join(params.pluginRoot, 'vite.config.mjs'), [
-        "import { resolve } from 'node:path';",
-        "import { defineConfig } from 'vite';",
-        '',
-        'export default defineConfig({',
-        "  root: 'src/ui',",
-        "  base: './',",
-        '  build: {',
-        `    outDir: resolve(process.cwd(), 'dist/ui/hosted-web/${hostedWebRendererId}'),`,
-        '    emptyOutDir: true,',
-        '    sourcemap: false,',
-        '  },',
-        '});',
-        '',
-      ].join('\n'), 'utf8'),
-      writeFile(join(uiRoot, 'index.ts'), [
-        'document.body.innerHTML = `',
-        '  <main>',
-        '    <h1>Vertical A packed hosted web surface</h1>',
-        '    <p data-testid="packed-hosted-web-status">Installed artifact mounted.</p>',
-        '  </main>',
-        '`;',
-        '',
-      ].join('\n'), 'utf8'),
-    ]);
+    await writeFile(join(uiRoot, 'index.html'), [
+      '<!doctype html>',
+      '<main>',
+      '  <h1>Vertical A packed hosted web surface</h1>',
+      '  <p data-testid="packed-hosted-web-status">Installed artifact mounted.</p>',
+      '</main>',
+      '',
+    ].join('\n'), 'utf8');
   }
   await writeFile(join(params.pluginRoot, 'src', 'index.ts'), [
     "import { randomUUID } from 'node:crypto';",
@@ -7128,7 +7079,6 @@ async function runVerticalAWithCapturedOutputs(candidate, options = {}) {
     const retainedHostedWebArtifacts = Array.isArray(retainedUiArtifacts.entries)
       ? retainedUiArtifacts.entries.filter((entry) => (
           entry.tier === 'hostedWeb'
-          && entry.platform === 'web'
         ))
       : [];
     const retainedHostedWebArtifact = retainedHostedWebArtifacts.length === 1
@@ -7136,14 +7086,14 @@ async function runVerticalAWithCapturedOutputs(candidate, options = {}) {
       : null;
     if (
       !retainedHostedWebArtifact
-      || typeof retainedHostedWebArtifact.contributionId !== 'string'
-      || retainedHostedWebArtifact.contributionId.length === 0
+      || typeof retainedHostedWebArtifact.artifactId !== 'string'
+      || retainedHostedWebArtifact.artifactId.length === 0
       || typeof retainedHostedWebArtifact.digest !== 'string'
       || !retainedHostedWebArtifact.files?.some((file) => file.relativePath === retainedHostedWebArtifact.entry)
     ) {
       fail(`Packed retained-capability UI build did not emit its hostedWeb artifact graph: ${JSON.stringify(retainedUiArtifacts)}`);
     }
-    retainedHostedWebRendererId = retainedHostedWebArtifact.contributionId;
+    retainedHostedWebRendererId = retainedHostedWebArtifact.artifactId;
 
     const plugin = pluginSpecs[0];
     const archivePath = join(tempRoot, `${plugin.pluginId}.happier-plugin.tgz`);
@@ -7530,7 +7480,6 @@ async function runVerticalAWithCapturedOutputs(candidate, options = {}) {
       version: '1.0.0',
       activationInstanceId: reenabledAction.data.result.activationInstanceId,
     });
-    childEnv.HAPPIER_MARKETPLACE_CURATED_SOURCE_URL = 'https://marketplace.happier.dev/catalog.json';
     const marketplaceSourceEnvelope = await runPackedCliJson({
       cliEntrypoint, cwd: fixtureRoot, env: childEnv,
       args: [
@@ -7576,7 +7525,7 @@ async function runVerticalAWithCapturedOutputs(candidate, options = {}) {
             status: 'approved',
             reviewedAt: '2026-07-23T00:00:00.000Z',
           },
-          updatePolicy: 'reviewSensitiveChanges',
+          updatePolicy: 'allowed',
         },
       },
     );
@@ -7624,7 +7573,7 @@ async function runVerticalAWithCapturedOutputs(candidate, options = {}) {
           registryOrigin: publicRegistry.origin,
           packageName: publicPlugin.packageName,
         },
-        updatePolicy: 'reviewSensitiveChanges',
+        updatePolicy: 'allowed',
       },
     });
     const marketplaceAction = await runPackedPluginRoundtrip({

@@ -16,8 +16,12 @@ const sharedEntries = [{
     capabilities: { use: true, rename: false, rotate: false, manageAccess: false, delete: false },
 }] as const;
 let observedSharedEntries: unknown;
+let observedListProps: Record<string, unknown> = {};
 
-installModalComponentCommonModuleMocks();
+// Parameterized copy keeps its params, so the machine a message names is observable.
+installModalComponentCommonModuleMocks({
+    text: async () => (await import('@/dev/testkit/mocks/text')).createTextModuleMock(),
+});
 
 vi.mock('@expo/vector-icons', () => ({
     Ionicons: () => null,
@@ -39,9 +43,12 @@ vi.mock('@/hooks/machine/useMachineEnvPresence', () => ({
     }),
 }));
 
+const machineState = vi.hoisted(() => ({ value: null as null | { id: string; metadata: Record<string, unknown> } }));
+const renderedItemTitles = vi.hoisted(() => [] as string[]);
+
 vi.mock('@/sync/domains/state/storage', () => ({
     ...createStorageModuleStub({
-        useMachine: () => null,
+        useMachine: () => machineState.value,
     }),
 }));
 
@@ -52,6 +59,7 @@ vi.mock('@/utils/sessions/machineUtils', () => ({
 vi.mock('@/components/secrets/SecretsList', () => ({
     SecretsList: (props: { sharedEntries?: unknown }) => {
         observedSharedEntries = props.sharedEntries;
+        observedListProps = props;
         return null;
     },
 }));
@@ -78,11 +86,19 @@ vi.mock('@/components/ui/lists/ItemGroup', () => ({
 }));
 
 vi.mock('@/components/ui/lists/Item', () => ({
-    Item: () => null,
+    Item: (props: { title?: unknown }) => {
+        if (typeof props.title === 'string') renderedItemTitles.push(props.title);
+        return null;
+    },
 }));
 
 vi.mock('@/components/ui/forms/dropdown/DropdownMenu', () => ({
-    DropdownMenu: () => null,
+    DropdownMenu: (props: { items?: ReadonlyArray<{ title?: unknown }> }) => {
+        for (const item of props.items ?? []) {
+            if (typeof item.title === 'string') renderedItemTitles.push(item.title);
+        }
+        return null;
+    },
 }));
 
 vi.mock('@/components/ui/scroll/useScrollEdgeFades', () => ({
@@ -108,6 +124,31 @@ vi.mock('@/components/ui/text/Text', () => ({
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 describe('SecretRequirementModal', () => {
+    it('names an unnamed machine as unnamed, never by its id, in the machine check', async () => {
+        const { renderScreen } = await import('@/dev/testkit');
+        const { SecretRequirementModal } = await import('./SecretRequirementModal');
+        machineState.value = { id: 'f98b860d-63e0-436e', metadata: {} };
+        renderedItemTitles.length = 0;
+        try {
+            await renderScreen(
+                React.createElement(SecretRequirementModal, {
+                    profile: ({ id: 'p1', name: 'Profile' } satisfies Pick<AIBackendProfile, 'id' | 'name'>) as unknown as AIBackendProfile,
+                    secretEnvVarName: 'OPENAI_API_KEY',
+                    machineId: 'f98b860d-63e0-436e',
+                    secrets: [],
+                    defaultSecretId: null,
+                    onResolve: () => {},
+                    onClose: () => {},
+                }),
+            );
+            const machineCheck = renderedItemTitles.find((title) => title.startsWith('profiles.requirements.machineEnvStatus.'));
+            expect(machineCheck).toContain('machine=machine.unnamedMachine');
+            expect(renderedItemTitles.join('\n')).not.toContain('f98b860d');
+        } finally {
+            machineState.value = null;
+        }
+    });
+
     it('drives modal card chrome when setChrome is provided', async () => {
         const { renderScreen } = await import('@/dev/testkit');
         const { SecretRequirementModal } = await import('./SecretRequirementModal');
@@ -145,6 +186,29 @@ describe('SecretRequirementModal', () => {
         }));
 
         expect(observedSharedEntries).toBe(sharedEntries);
+    });
+
+    it('lets a ready shared secret become a Profile default', async () => {
+        const { renderScreen } = await import('@/dev/testkit');
+        const { SecretRequirementModal } = await import('./SecretRequirementModal');
+        const onResolve = vi.fn();
+        const onSetDefaultSecretId = vi.fn();
+
+        await renderScreen(React.createElement(SecretRequirementModal, {
+            profile: ({ id: 'p4', name: 'Profile' } satisfies Pick<AIBackendProfile, 'id' | 'name'>) as unknown as AIBackendProfile,
+            secretEnvVarName: 'OPENAI_API_KEY', machineId: null, secrets: [], defaultSecretId: null,
+            variant: 'defaultForProfile', onResolve, onSetDefaultSecretId, onClose: () => {},
+        }));
+
+        // The list must not disable shared rows for a Profile default: that was
+        // the retired 0.2-coexistence hold on persisted Profile references.
+        expect(observedListProps.allowSharedSelection).not.toBe(false);
+        (observedListProps.onSelectId as (id: string) => void)('happier:shared-secret:v1:shared-a');
+        expect(onSetDefaultSecretId).toHaveBeenCalledWith('happier:shared-secret:v1:shared-a');
+        expect(onResolve).toHaveBeenCalledWith({
+            action: 'selectSaved', envVarName: 'OPENAI_API_KEY',
+            secretId: 'happier:shared-secret:v1:shared-a', setDefault: true,
+        });
     });
 
     it('returns an Enter Once value without normalizing opaque whitespace', async () => {

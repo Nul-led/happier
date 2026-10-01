@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import {
+    pluginSourceCustodyV1Equal,
     sameQualifiedConnectedAccountRef,
     type PluginHostAccessRequestV2,
 } from '@happier-dev/protocol';
@@ -61,7 +62,7 @@ type ConnectedAccountCallbackCurrentnessPhase = 'beforeCallback' | 'afterCallbac
 
 /**
  * The typed invocation boundary, rather than a recursive runtime wrapper,
- * owns the generation/currentness fence around every plugin callback. The
+ * owns the occurrence/currentness fence around every plugin callback. The
  * callback's own rejection stays visible while current; a retirement while it
  * is pending wins over that stale producer result just as every other host
  * currentness boundary does.
@@ -272,8 +273,8 @@ export function createConnectedAccountHostRuntimeInvoker(params: Readonly<{
             throw new Error('Connected-account runtime is unavailable');
         }
         if (
-            lease.generation !== input.admission.generation
-            || lease.immutableGenerationId !== input.admission.immutableGenerationId
+            lease.occurrenceId !== input.admission.occurrenceId
+            || !pluginSourceCustodyV1Equal(lease.sourceCustody, input.admission.sourceCustody)
             || !sameService(lease.ref, input.admission.service)
         ) {
             throw new Error('Connected-account runtime admission is no longer current');
@@ -291,12 +292,13 @@ export function createConnectedAccountHostRuntimeInvoker(params: Readonly<{
                 id: lease.ref.localId,
                 qualifiedId,
             }),
-            generation: lease.generation,
+            occurrenceId: lease.occurrenceId,
+            sourceCustody: lease.sourceCustody,
             correlationId: randomUUID(),
             surface: 'cli',
             signal,
             redactionLifetimeSignal: lifetime.redactionLifetimeSignal,
-            isGenerationCurrent: () => !signal.aborted && lease.isCurrent(),
+            isOccurrenceCurrent: () => !signal.aborted && lease.isCurrent(),
         });
         const assertCurrent = async (
             phase: ConnectedAccountCallbackCurrentnessPhase = 'afterCallback',
@@ -325,7 +327,7 @@ export function createConnectedAccountHostRuntimeInvoker(params: Readonly<{
         try {
             const policy = params.resolveHostPolicy({
                 pluginId: lease.ref.pluginId,
-                generation: lease.generation,
+                occurrenceId: lease.occurrenceId,
                 qualifiedId,
             }, {
                 hostAccessRequests: plugin.hostAccessRequests,
@@ -347,7 +349,7 @@ export function createConnectedAccountHostRuntimeInvoker(params: Readonly<{
                 const resolution = await resolveConnectedAccountConfiguredOrigins({
                     pluginId: lease.ref.pluginId,
                     service: lease.ref,
-                    generation: lease.generation,
+                    occurrenceId: lease.occurrenceId,
                     configuration: input.context.configuration,
                     hostAccessRequests: resolveHostAccessEntries(
                         plugin.hostAccessRequests,
@@ -360,7 +362,7 @@ export function createConnectedAccountHostRuntimeInvoker(params: Readonly<{
                     ...(configurationRevocationSignal === undefined
                         ? {}
                         : { configurationRevocationSignal }),
-                    isGenerationCurrent: () => lease.isCurrent(),
+                    isOccurrenceCurrent: () => lease.isCurrent(),
                     ...(params.resolveNetworkAddresses
                         ? { resolveNetworkAddresses: params.resolveNetworkAddresses }
                         : {}),
@@ -412,7 +414,7 @@ export function createConnectedAccountHostRuntimeInvoker(params: Readonly<{
                 ui: createPluginInvocationPresentation({
                     currentSession: null,
                     signal,
-                    isGenerationCurrent: seed.isGenerationCurrent,
+                    isOccurrenceCurrent: seed.isOccurrenceCurrent,
                 }),
                 ...input.context,
                 configuration,
@@ -475,12 +477,13 @@ export function createConnectedAccountHostRuntimeInvoker(params: Readonly<{
                 id: lease.ref.localId,
                 qualifiedId,
             }),
-            generation: lease.generation,
+            occurrenceId: lease.occurrenceId,
+            sourceCustody: lease.sourceCustody,
             correlationId: randomUUID(),
             surface: 'cli',
             signal,
             redactionLifetimeSignal: lifetime.redactionLifetimeSignal,
-            isGenerationCurrent: () => !signal.aborted && lease.isCurrent(),
+            isOccurrenceCurrent: () => !signal.aborted && lease.isCurrent(),
         });
         const assertCurrent = async (
             _phase: ConnectedAccountCallbackCurrentnessPhase = 'afterCallback',
@@ -504,7 +507,7 @@ export function createConnectedAccountHostRuntimeInvoker(params: Readonly<{
             await assertCurrent();
             const policy = params.resolveHostPolicy({
                 pluginId: lease.ref.pluginId,
-                generation: lease.generation,
+                occurrenceId: lease.occurrenceId,
                 qualifiedId,
             }, {
                 hostAccessRequests: plugin.hostAccessRequests,
@@ -526,7 +529,7 @@ export function createConnectedAccountHostRuntimeInvoker(params: Readonly<{
                 const resolution = await resolveConnectedAccountConfiguredOrigins({
                     pluginId: lease.ref.pluginId,
                     service: lease.ref,
-                    generation: lease.generation,
+                    occurrenceId: lease.occurrenceId,
                     configuration: input.context.configuration,
                     hostAccessRequests: resolveHostAccessEntries(
                         plugin.hostAccessRequests,
@@ -539,7 +542,7 @@ export function createConnectedAccountHostRuntimeInvoker(params: Readonly<{
                     ...(configurationRevocationSignal === undefined
                         ? {}
                         : { configurationRevocationSignal }),
-                    isGenerationCurrent: () => lease.isCurrent(),
+                    isOccurrenceCurrent: () => lease.isCurrent(),
                     ...(params.resolveNetworkAddresses
                         ? { resolveNetworkAddresses: params.resolveNetworkAddresses }
                         : {}),
@@ -577,7 +580,7 @@ export function createConnectedAccountHostRuntimeInvoker(params: Readonly<{
                 ui: createPluginInvocationPresentation({
                     currentSession: null,
                     signal,
-                    isGenerationCurrent: seed.isGenerationCurrent,
+                    isOccurrenceCurrent: seed.isOccurrenceCurrent,
                 }),
                 account: input.context.account,
                 configuration,

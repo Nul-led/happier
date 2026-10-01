@@ -160,22 +160,35 @@ describe('target Session input authoring through HTTP', () => {
     expect(http.post).not.toHaveBeenCalled();
   });
 
-  it('normalizes a missing strict target resource to update-required without a main retry', async () => {
+  it('classifies a missing strict target resource as unavailable without a main retry', async () => {
     http.post.mockRejectedValue({ response: { status: 404 } });
     const result = await sendSessionMessage({
       credentials, idOrPrefix: sessionId, localId: 'input-a', message: 'Private run input',
       recipient, wait: false, timeoutMs: 1000,
     });
     expect(result).toMatchObject({
-      ok: false, admissionResult: { status: 'rejected', code: 'session_input_target_update_required' },
+      ok: false, admissionResult: { status: 'rejected', code: 'session_input_target_unavailable' },
     });
     expect(http.post).toHaveBeenCalledTimes(1);
     expect(http.post.mock.calls[0]?.[0]).toContain('/execution-runs/run-a/pending');
   });
 
+  it('does not infer a Machine update from an untyped strict-route failure', async () => {
+    http.post.mockRejectedValue({ response: { status: 405 } });
+    const result = await sendSessionMessage({
+      credentials, idOrPrefix: sessionId, localId: 'input-a', message: 'Private run input',
+      recipient, wait: false, timeoutMs: 1000,
+    });
+    expect(result).toMatchObject({
+      ok: false, admissionResult: { status: 'outcomeUnknown' },
+    });
+    expect(http.post).toHaveBeenCalledTimes(1);
+  });
+
   it.each([
     { status: 400, code: 'session_input_target_update_required' },
     { status: 404, code: 'session_input_target_unavailable' },
+    { status: 405, code: 'session_input_target_update_required' },
   ] as const)('preserves a current server target rejection before legacy HTTP fallback ($code)', async ({ status, code }) => {
     http.post.mockRejectedValue({ response: { status, data: { error: status === 404 ? 'session-not-found' : 'invalid-params', code } } });
     const result = await sendSessionMessage({

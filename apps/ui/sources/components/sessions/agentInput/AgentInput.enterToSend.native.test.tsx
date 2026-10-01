@@ -1,5 +1,5 @@
 import React from 'react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { act } from 'react-test-renderer';
 
 import {
@@ -209,6 +209,7 @@ vi.mock('@/sync/domains/permissions/permissionModeOptions', () => ({
     getPermissionModeLabelForAgentType: () => 'Default',
     getPermissionModeOptionsForSession: () => [{ value: 'default', label: 'Default' }],
     getPermissionModeTitleForAgentType: () => 'Permissions',
+    restrictPermissionModeOptions: (options: readonly unknown[]) => options,
 }));
 
 vi.mock('@/sync/domains/permissions/describeEffectivePermissionMode', () => ({
@@ -310,6 +311,11 @@ function flattenStyle(style: unknown): Record<string, unknown> {
     }
     return {};
 }
+
+// Module transform is paid once, outside any single case's time budget.
+beforeAll(async () => {
+    await import('./AgentInput');
+}, 900_000);
 
 describe('AgentInput (enter to send on native)', () => {
     afterEach(() => {
@@ -832,6 +838,51 @@ describe('AgentInput (enter to send on native)', () => {
 
         expect(mocks.onChangeText).toHaveBeenCalledWith('hello\n');
         expect(mocks.onSend).not.toHaveBeenCalled();
+    });
+
+    it('is authoring-only without onSend: Enter inserts a newline, no submit path or send affordance exists', async () => {
+        settingState.webEnterToSend = true;
+        settingState.nativeEnterToSend = true;
+
+        const { AgentInput } = await import('./AgentInput');
+        const screen = await renderScreen(
+            <AgentInput
+                value="hello"
+                onChangeText={mocks.onChangeText}
+                placeholder="p"
+                autocompleteKinds={[]}
+                autocompleteSuggestions={async () => []}
+                isSendDisabled={false}
+                disabled={false}
+                showAbortButton={false}
+            />,
+        );
+
+        const input = findNativeTextInput(screen);
+        // The Session Enter-to-send preference never turns an authoring field into a submitter.
+        expect(input.props.submitBehavior).toBe('newline');
+
+        await act(async () => {
+            input.props.onSelectionChange?.({ nativeEvent: { selection: { start: 5, end: 5 } } });
+            input.props.onFocus?.({ nativeEvent: {} });
+        });
+        // No hardware Shift+Enter interception: Enter is already a newline.
+        expect(hardwareShiftEnterState.listener).toBeNull();
+
+        const modEnterPreventDefault = vi.fn();
+        let modEnterHandled: unknown;
+        await act(async () => {
+            input.props.onSubmitEditing?.();
+            modEnterHandled = input.props.onKeyPress?.({
+                nativeEvent: { key: 'Enter', shiftKey: false, metaKey: true, ctrlKey: false },
+                preventDefault: modEnterPreventDefault,
+            });
+        });
+        // Mod+Enter is left to the page (its Run command), never consumed as a send.
+        expect(modEnterPreventDefault).not.toHaveBeenCalled();
+        expect(modEnterHandled).not.toBe(true);
+        expect(mocks.inputBlur).not.toHaveBeenCalled();
+        expect(screen.findAll((node) => node.props?.testID === 'new-session-composer-send')).toHaveLength(0);
     });
 
     it('uses platform-correct immediate-send bypass for native hardware Mod+Enter', async () => {

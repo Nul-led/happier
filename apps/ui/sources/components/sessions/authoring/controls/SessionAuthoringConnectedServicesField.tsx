@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { View } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 
 import type {
     ConnectedServiceBindingsV2,
@@ -81,14 +81,7 @@ export function SessionAuthoringConnectedServicesField(props: Readonly<{
         [props.agentId],
     );
 
-    /**
-     * The Team credential resources this Home currently offers for a Connected
-     * Service, under the same Account decision and the same currentness filter
-     * New Session applies — a stale or non-credential resource is never offered
-     * as a binding source. They are observed here rather than in the surface's
-     * option facts so a host that never shows this field opens no Team
-     * subscriptions.
-     */
+    /** The shared picker owns service matching, currentness, and recovery. */
     const serverId = props.context.serverId;
     const credentialResourcesFeatureScope = React.useMemo(
         () => (serverId === null ? undefined : { scopeKind: 'spawn' as const, serverId }),
@@ -99,12 +92,7 @@ export function SessionAuthoringConnectedServicesField(props: Readonly<{
         serverId,
         enabled: credentialResourcesEnabled,
     });
-    const teamCredentialResources = React.useMemo(() => (
-        teamCredentialCatalog.resources.filter((resource) => (
-            teamCredentialCatalog.currentResourceKeys.has(`${resource.teamId}:${resource.id}`)
-            && resource.connectedServiceSelections.length > 0
-        ))
-    ), [teamCredentialCatalog.currentResourceKeys, teamCredentialCatalog.resources]);
+    const teamCredentialResources = teamCredentialCatalog.resources;
 
     const { connectedServicesBindingsPayload, connectedServicesAuthChip } = useNewSessionConnectedServices({
         agentCore,
@@ -129,6 +117,7 @@ export function SessionAuthoringConnectedServicesField(props: Readonly<{
         // restore inheritance.
         emitWhenAllNative: true,
         teamCredentialResources,
+        teamCredentialResourceCurrentKeys: teamCredentialCatalog.currentResourceKeys,
         teamNameById: teamCredentialCatalog.teamNameById,
         router,
         setAgentOptionStateForCurrentAgent,

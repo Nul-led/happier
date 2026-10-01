@@ -63,6 +63,7 @@ export function createSessionLifecycleRpcActionExecutor(
                 result: await handler(input, context
                     ? {
                         signal: context.signal ?? new AbortController().signal,
+                        callerAuthority: context.authority ?? 'account_automation',
                         ...(context.operationProgress || context.operationOwnerUpdate
                             ? {
                                 localActionContext: {
@@ -96,7 +97,6 @@ export function registerSessionLifecycleRpcHandlers(params: Readonly<{
         actionExecutor: params.actionExecutor,
         actionIds: params.actionIds,
         scopes: params.scopes ?? SESSION_LIFECYCLE_RPC_SCOPES,
-        authority: 'present_user',
         ...(params.observeExecution ? { observeExecution: params.observeExecution } : {}),
         ...(params.mapResponseForMethod ? { mapResponseForMethod: params.mapResponseForMethod } : {}),
         ...(params.mapRequestForMethod ? { mapRequestForMethod: params.mapRequestForMethod } : {}),
@@ -143,7 +143,6 @@ export function registerSessionSpawnNewRpcHandlers(params: Readonly<{
                 ? { sessionSpawnDirectTargetTransport: params.sessionSpawnDirectTargetTransport }
                 : {}),
         }),
-        authority: 'present_user',
         scopes: SESSION_SPAWN_NEW_RPC_SCOPES,
         ...(params.observeExecution ? { observeExecution: params.observeExecution } : {}),
     });

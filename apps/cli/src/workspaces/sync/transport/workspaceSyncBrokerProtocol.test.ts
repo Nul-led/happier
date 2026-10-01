@@ -8,6 +8,7 @@ import {
   encodeBrokerControlFrame,
   isBrokerTerminalErrorCode,
   parseBrokerControlV1,
+  parseMutagenControlCommandV1,
   WORKSPACE_SYNC_BROKER_MAX_REQUEST_FRAME_BYTES,
 } from './workspaceSyncBrokerProtocol';
 const validPolicy = { selection: 'all_files' as const, extraIgnorePatterns: [], extraIncludePatterns: [] };
@@ -72,6 +73,15 @@ describe('workspace sync broker protocol', () => {
     expect(() => parseBrokerControlV1({ t: 'command', requestId: 'r1', command: { t: 'copy_once', requestId: 'r1' } })).toThrow(/unknown mutagen control command/);
     expect(() => parseBrokerControlV1({ t: 'command', requestId: 'r1', command: { t: 'delete_conflict_loser', requestId: 'r1' } })).toThrow(/unknown mutagen control command/);
     expect(() => parseBrokerControlV1({ t: 'command', requestId: 'r1', command: { t: 'bogus', requestId: 'r1' } })).toThrow(/unknown mutagen control command/);
+  });
+
+  it('admits only an endpoint-relative selection diagnosis for a selected side', () => {
+    const command = { t: 'diagnose_selection', requestId: 'r1', sessionIdentifier: 'session-1', side: 'beta', path: 'src/file.ts' };
+    expect(parseMutagenControlCommandV1(command)).toEqual(command);
+    expect(() => parseMutagenControlCommandV1({ ...command, side: 'other' })).toThrow();
+    expect(() => parseMutagenControlCommandV1({ ...command, path: '../escape' })).toThrow();
+    expect(() => parseMutagenControlCommandV1({ ...command, path: 'src\\file.ts' })).toThrow();
+    expect(() => parseMutagenControlCommandV1({ ...command, root: '/other' })).toThrow();
   });
 
   it('requires bounded cursor pagination for exhaustive manager LIST', () => {

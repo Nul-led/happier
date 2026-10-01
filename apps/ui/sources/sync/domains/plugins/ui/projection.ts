@@ -162,6 +162,13 @@ type PluginUiSurfacePlacementProjectionFields = UnknownRecord & Readonly<{
     availability: PluginUiSurfaceAvailabilityProjection;
     headerActions: readonly PluginUiPageHeaderActionProjection[];
     rightSidebar?: UnknownRecord;
+    /** An app page's own shell column: its renderer and that renderer's availability. */
+    column?: PluginUiAppPageColumnProjection;
+}>;
+
+export type PluginUiAppPageColumnProjection = Readonly<{
+    renderer: UnknownRecord;
+    availability: PluginUiSurfaceAvailabilityProjection;
 }>;
 
 /** A navigable placement. Destination consumers must name this arm explicitly. */
@@ -582,6 +589,15 @@ function readSurfaceAvailability(value: unknown): PluginUiSurfaceAvailabilityPro
     });
 }
 
+function readAppPageColumn(value: unknown): PluginUiAppPageColumnProjection | undefined {
+    const column = asRecord(value);
+    const renderer = asRecord(column?.renderer);
+    const availability = readSurfaceAvailability(column?.availability);
+    return renderer && availability
+        ? Object.freeze({ renderer: Object.freeze({ ...renderer }), availability })
+        : undefined;
+}
+
 function isNormalizedPluginUiDestinationBinding(
     value: unknown,
 ): value is PluginUiDestinationBindingV1 {
@@ -781,7 +797,7 @@ export function normalizePluginUiProjection(
     projection: DaemonContributionRegistryProjection | null,
     platform: PluginUiPlatformV1 = resolvePluginUiProjectionPlatform(),
 ): PluginUiProjectionModel {
-    if (!projection || projection.v !== 2) {
+    if (!projection) {
         return EMPTY_PLUGIN_UI_PROJECTION;
     }
 
@@ -928,8 +944,10 @@ export function normalizePluginUiProjection(
                 const runtime = asRecord(entry.runtime);
                 const rightSidebar = asRecord(entry.rightSidebar);
                 const headerActions = resolvePluginUiPageHeaderActions(entry.headerActions);
+                const { column: projectedColumn, ...entryFields } = entry;
+                const column = readAppPageColumn(projectedColumn);
                 const normalized = Object.freeze({
-                    ...entry,
+                    ...entryFields,
                     // Preserve the CLI-normalized object verbatim. No UI
                     // parser, clone, or legacy placement reconstruction may
                     // become a competing binding owner.
@@ -940,6 +958,8 @@ export function normalizePluginUiProjection(
                     headerActions,
                     ...(runtime ? { runtime } : {}),
                     ...(rightSidebar ? { rightSidebar: Object.freeze({ ...rightSidebar }) } : {}),
+                    // A malformed column is dropped, never passed through as an unknown record.
+                    ...(column ? { column } : {}),
                     availability,
                 }) as PluginUiPhysicalSurfacePlacementProjection;
                 surfacePlacementsById[entry.id] = normalized;
@@ -1026,9 +1046,6 @@ export function resolvePluginUiProjectionState(
 ): PluginUiProjectionModel {
     if (projection === null) {
         return previous;
-    }
-    if (projection.v !== 2) {
-        return EMPTY_PLUGIN_UI_PROJECTION;
     }
     if (
         options?.reuseSameGeneration === true

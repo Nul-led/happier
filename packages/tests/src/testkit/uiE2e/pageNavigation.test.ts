@@ -338,7 +338,7 @@ describe('waitForAuthenticatedHomeUi', () => {
       'session-getting-started-kind-connect_machine': [1, 1, 1, 1],
       'session-getting-started-kind-create_session': [0, 0, 1, 1],
       'session-getting-started-kind-select_session': [0, 0, 1, 1],
-      'setupWizard.surface': [0, 0, 0, 0],
+      'settings.machines.draft.form': [0, 0, 0, 0],
     };
     const counts = new Map<string, number>();
     let sessionsTabActivated = false;
@@ -384,7 +384,7 @@ describe('waitForAuthenticatedHomeUi', () => {
       'session-getting-started-kind-connect_machine': [0, 0, 0, 0],
       'session-getting-started-kind-create_session': [0, 0, 1, 1],
       'session-getting-started-kind-select_session': [0, 0, 0, 0],
-      'setupWizard.surface': [0, 0, 0, 0],
+      'settings.machines.draft.form': [0, 0, 0, 0],
       'tabbar-tab-sessions': [1, 1, 1, 1],
     };
     const counts = new Map<string, number>();
@@ -436,7 +436,7 @@ describe('waitForAuthenticatedHomeUi', () => {
       'session-getting-started-kind-connect_machine': [0, 0, 0, 0, 0],
       'session-getting-started-kind-create_session': [0, 0, 0, 0, 0],
       'session-getting-started-kind-select_session': [0, 0, 0, 0, 0],
-      'setupWizard.surface': [0, 0, 0, 0, 0],
+      'settings.machines.draft.form': [0, 0, 0, 0, 0],
       'tabbar-tab-sessions': [1, 1, 1, 1, 1],
     };
     const counts = new Map<string, number>();
@@ -493,8 +493,8 @@ describe('waitForAuthenticatedHomeUi', () => {
       'session-getting-started-kind-connect_machine': [0, 0, 0, 0],
       'session-getting-started-kind-create_session': [0, 0, 0, 0],
       'session-getting-started-kind-select_session': [0, 0, 0, 0],
-      'main-header-start-new-session': [1, 1, 1, 1],
-      'setupWizard.surface': [0, 0, 0, 0],
+      'tabbar-start-new-session': [1, 1, 1, 1],
+      'settings.machines.draft.form': [0, 0, 0, 0],
     };
     const counts = new Map<string, number>();
     let nowMs = 0;
@@ -529,7 +529,7 @@ describe('waitForAuthenticatedHomeUi', () => {
     ).resolves.toBeUndefined();
 
     expect(page.reload).not.toHaveBeenCalled();
-    expect(counts.get('main-header-start-new-session')).toBeGreaterThanOrEqual(1);
+    expect(counts.get('tabbar-start-new-session')).toBeGreaterThanOrEqual(1);
   });
 
   it('accepts the authenticated empty-state setup re-entry affordance as home', async () => {
@@ -562,7 +562,7 @@ describe('waitForAuthenticatedHomeUi', () => {
 
   it('dismisses an auto-open setup wizard before authenticated home markers render', async () => {
     let nowMs = 0;
-    let setupWizardDismissed = false;
+    let machineDraftDiscarded = false;
     let skipClickCount = 0;
     vi.spyOn(Date, 'now').mockImplementation(() => nowMs);
 
@@ -570,15 +570,15 @@ describe('waitForAuthenticatedHomeUi', () => {
       getByTestId: (testId: string) => ({
         count: async () => {
           if (testId === 'welcome-create-account') return 0;
-          if (testId === 'setupWizard.surface') return setupWizardDismissed ? 0 : 1;
-          if (testId === 'setupWizard.surface-skip') return setupWizardDismissed ? 0 : 1;
-          if (testId === 'main-header-start-new-session') return setupWizardDismissed ? 1 : 0;
+          if (testId === 'settings.machines.draft.form') return machineDraftDiscarded ? 0 : 1;
+          if (testId === 'settings.machines.draft.discard') return machineDraftDiscarded ? 0 : 1;
+          if (testId === 'tabbar-start-new-session') return machineDraftDiscarded ? 1 : 0;
           return 0;
         },
         click: async () => {
-          if (testId === 'setupWizard.surface-skip') {
+          if (testId === 'settings.machines.draft.discard') {
             skipClickCount += 1;
-            setupWizardDismissed = true;
+            machineDraftDiscarded = true;
           }
         },
       }),
@@ -812,7 +812,7 @@ describe('waitForSessionActionsHomeUi', () => {
       'session-getting-started-kind-connect_machine': [1, 1, 1, 1, 1],
       'session-getting-started-kind-create_session': [0, 0, 0, 1, 1],
       'session-getting-started-kind-select_session': [0, 0, 0, 1, 1],
-      'setupWizard.surface': [0, 0, 0, 0, 0],
+      'settings.machines.draft.form': [0, 0, 0, 0, 0],
       'tabbar-tab-sessions': [1, 1, 1, 1, 1],
     };
     const counts = new Map<string, number>();
@@ -823,7 +823,7 @@ describe('waitForSessionActionsHomeUi', () => {
     const nextCount = (key: string): number => {
       const index = counts.get(key) ?? 0;
       counts.set(key, index + 1);
-      if (key === 'main-header-start-new-session') {
+      if (key === 'tabbar-start-new-session') {
         return sessionsTabActivated ? 1 : 0;
       }
       if (key === 'session-getting-started-kind-select_session') {

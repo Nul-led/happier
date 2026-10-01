@@ -11,6 +11,7 @@ import {
 } from './provenance';
 import type { TerminalProcessRegistry } from './terminalRegistry';
 import type { LocalServiceEndpointFact } from './endpoint';
+import { isLiteralLoopbackHostname, normalizeHostnameForLoopbackCheck } from '@happier-dev/protocol/server/urls';
 
 export type LocalServiceInventoryDiagnostic = Readonly<{
     code: string;
@@ -169,8 +170,20 @@ export function normalizeLocalServiceScan(input: Readonly<{
     workspaces: readonly LocalServiceWorkspaceFact[];
     terminalRegistry?: TerminalProcessRegistry;
     staleAfterMs?: number;
+    /** Exact owned listener processes, never their arbitrary descendants. */
+    internalProcessPids?: readonly number[];
+    /** Configured Happier endpoint authorities, not command/title or bare-port guesses. */
+    internalEndpointUrls?: readonly string[];
 }>): NormalizedLocalServiceInventorySnapshot {
     const entries = new Map<string, NormalizedLocalServiceInventoryEntry>();
+    const internalEndpoints = (input.internalEndpointUrls ?? []).flatMap((value) => {
+        try {
+            const url = new URL(value);
+            const host = normalizeHostnameForLoopbackCheck(url.hostname);
+            if (!isLiteralLoopbackHostname(host) || (url.protocol !== 'http:' && url.protocol !== 'https:')) return [];
+            return [{ host, port: Number(url.port || (url.protocol === 'https:' ? 443 : 80)) }];
+        } catch { return []; }
+    });
     const now = Math.max(0, Math.trunc(input.now));
     const staleAfterMs = input.staleAfterMs === undefined
         ? Number.POSITIVE_INFINITY
@@ -203,7 +216,21 @@ export function normalizeLocalServiceScan(input: Readonly<{
         const sessionAttribution = terminalMatch.workspace ? terminalMatch.session : undefined;
         const listenerProcess = listener.pid ? input.processes.get(listener.pid) : undefined;
         const classificationCommand = [listenerProcess?.command, recovered?.command].filter(Boolean).join(' ');
-        const classification = classificationCommand
+        const internal = (listener.pid !== undefined && input.internalProcessPids?.includes(listener.pid))
+            || internalEndpoints.some((endpoint) => {
+                if (endpoint.port !== listener.port) return false;
+                const host = normalizeHostnameForLoopbackCheck(address.host);
+                if (host === endpoint.host) return true;
+                const localhost = endpoint.host === 'localhost';
+                if (address.kind === 'loopback') return localhost && (host === '127.0.0.1' || host === '::1');
+                if (address.kind !== 'wildcard') return false;
+                return host === '*' || localhost
+                    || (address.family === 'ipv4' && !endpoint.host.includes(':'))
+                    || (address.family === 'ipv6' && endpoint.host.includes(':'));
+            });
+        const classification = internal
+            ? { kind: 'happier', displayName: 'Happier', confidence: 'high' as const, signals: ['owner:happier'] }
+            : classificationCommand
             ? classifyLocalServiceProcess({ command: classificationCommand, cwd: recovered?.cwd })
             : undefined;
         const id = buildInventoryId({

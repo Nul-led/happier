@@ -127,8 +127,7 @@ function makeStatus(lastUpdatedAt: number) {
   return {
     branch: 'main',
     isDirty: true,
-    modifiedCount: 1,
-    untrackedCount: 0,
+    changedFileCount: 1,
     includedCount: 0,
     lastUpdatedAt,
     includedLinesAdded: 0,

@@ -152,7 +152,7 @@ export async function resolveAccountConfiguredAcpBackend(
       pluginVersion: '0.0.0',
       agentId,
       localAgentId: configuredBackend.backendId,
-      generation: `account-configured:${configuredBackend.backendId}:${accountSnapshot.settingsVersion}`,
+      occurrenceId: `account-configured:${configuredBackend.backendId}:${accountSnapshot.settingsVersion}`,
       isCurrent: () => {
         const currentSnapshot = getActiveAccountSettingsSnapshot();
         return currentSnapshot?.settingsVersion === accountSnapshot.settingsVersion

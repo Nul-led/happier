@@ -43,7 +43,7 @@ vi.mock('@/daemon/processIdentity', () => ({
 function writeDaemonLockFixture(lockPath: string, pid: number): void {
   mkdirSync(dirname(lockPath), { recursive: true });
   writeFileSync(lockPath, JSON.stringify({
-    t: 'happier_daemon_lock_v1',
+    t: 'happier_daemon_lock_v2',
     pid,
     ownerToken: '00000000-0000-4000-8000-000000000001',
     processStartedAtMs: 1_000,

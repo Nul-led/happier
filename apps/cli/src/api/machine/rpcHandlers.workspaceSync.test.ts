@@ -12,9 +12,12 @@ const status = {
   alphaPath: '/repo/a',
   betaPath: '/repo/b',
   mode: 'keep_both_in_sync' as const,
-  changedFiles: 0,
+  endpointStates: {
+    alpha: { connected: true, scanned: true, scanProblemCount: 0, transitionProblemCount: 0 },
+    beta: { connected: true, scanned: true, scanProblemCount: 0, transitionProblemCount: 0 },
+  },
   conflictCount: 0,
-  lastSuccessfulSyncAtMs: 1,
+  lastCycleObservedAtMs: 1,
 };
 
 function createRegistrar() {
@@ -28,6 +31,78 @@ function createRegistrar() {
 }
 
 describe('workspace sync machine RPC handlers', () => {
+  it('accepts only a relationship-owned target entry request and passes cancellation to the authority', async () => {
+    const { handlers, rpcHandlerManager } = createRegistrar();
+    const observeEntryAtTarget = vi.fn(async () => ({ kind: 'missing' as const }));
+    registerMachineWorkspaceSyncRpcHandlers({
+      rpcHandlerManager,
+      service: {
+        controller: {
+          get: vi.fn(), list: vi.fn(), flush: vi.fn(), pause: vi.fn(), resume: vi.fn(), terminate: vi.fn(),
+          listConflicts: vi.fn(), listRelationships: vi.fn(), inspectConflict: vi.fn(),
+          resolveConflict: vi.fn(), readFile: vi.fn(),
+        },
+        relationshipOwner: { setEnabled: vi.fn(), stop: vi.fn(), create: vi.fn() },
+        prepareBetween: vi.fn(),
+        readFileAtTarget: vi.fn(), observeEntryAtTarget,
+        preflightHandoffTargetReplacement: vi.fn(), prepareBootstrapAtTarget: vi.fn(), releaseBootstrapAtTarget: vi.fn(),
+        inspectRetiredState: vi.fn(),
+      },
+    });
+    const handler = handlers.get(RPC_METHODS.DAEMON_WORKSPACE_SYNC_TARGET_ENTRY_OBSERVE);
+    expect(handler).toBeDefined();
+    const signal = new AbortController().signal;
+    await expect(handler?.({ relationshipId: 'rel-1', workspaceRefId: 'workspace-b', path: 'src/index.ts' }, { signal }))
+      .resolves.toEqual({ kind: 'missing' });
+    expect(observeEntryAtTarget).toHaveBeenCalledWith(
+      { relationshipId: 'rel-1', workspaceRefId: 'workspace-b', path: 'src/index.ts' }, signal,
+    );
+    await expect(handler?.({ relationshipId: 'rel-1', workspaceRefId: 'workspace-b', path: 'src/index.ts', rootPath: '/caller' }))
+      .rejects.toThrow();
+    expect(observeEntryAtTarget).toHaveBeenCalledTimes(1);
+  });
+
+  it('serves strict relationship and selected-path reads with current controller authority', async () => {
+    const { handlers, rpcHandlerManager } = createRegistrar();
+    const signal = new AbortController().signal;
+    const listRelationships = vi.fn(async () => ({
+      controllerMachineId: 'machine-a', sets: [], relationships: [], remoteRelationships: [],
+      membership: { workspaceRefId: 'workspace-c', found: false }, discoveryAvailable: true,
+    }));
+    const inspectConflict = vi.fn(async () => ({
+      controllerMachineId: 'machine-a', hubWorkspaceRefId: 'workspace-a', path: 'src/index.ts',
+      endpoints: [{ workspaceRefId: 'workspace-a', outcome: 'observed' as const, observation: { kind: 'missing' as const }, selections: [] }],
+      versions: [{ endpointWorkspaceRefIds: ['workspace-a'], entry: { kind: 'missing' as const } }],
+      coverage: { complete: true },
+    }));
+    registerMachineWorkspaceSyncRpcHandlers({
+      rpcHandlerManager,
+      service: {
+        controller: {
+          get: vi.fn(), list: vi.fn(), flush: vi.fn(), pause: vi.fn(), resume: vi.fn(), terminate: vi.fn(),
+          listConflicts: vi.fn(), listRelationships, inspectConflict,
+          resolveConflict: vi.fn(), readFile: vi.fn(),
+        },
+        relationshipOwner: { setEnabled: vi.fn(), stop: vi.fn(), create: vi.fn() },
+        prepareBetween: vi.fn(),
+        readFileAtTarget: vi.fn(), observeEntryAtTarget: vi.fn(),
+        preflightHandoffTargetReplacement: vi.fn(), prepareBootstrapAtTarget: vi.fn(), releaseBootstrapAtTarget: vi.fn(),
+        inspectRetiredState: vi.fn(),
+      },
+    });
+    await expect(handlers.get(RPC_METHODS.DAEMON_WORKSPACE_SYNC_RELATIONSHIPS_LIST)?.(
+      { workspaceRefId: 'workspace-c' }, { signal },
+    )).resolves.toMatchObject({ membership: { found: false } });
+    await expect(handlers.get(RPC_METHODS.DAEMON_WORKSPACE_SYNC_CONFLICT_INSPECT)?.(
+      { workspaceRefId: 'workspace-a', path: 'src/index.ts' }, { signal },
+    )).resolves.toMatchObject({ endpoints: [{ observation: { kind: 'missing' } }] });
+    expect(listRelationships).toHaveBeenCalledWith({ workspaceRefId: 'workspace-c' }, signal);
+    expect(inspectConflict).toHaveBeenCalledWith({ workspaceRefId: 'workspace-a', path: 'src/index.ts' }, signal);
+    await expect(handlers.get(RPC_METHODS.DAEMON_WORKSPACE_SYNC_CONFLICT_INSPECT)?.({
+      workspaceRefId: 'workspace-a', path: 'src/index.ts', root: '/caller/root',
+    })).rejects.toThrow();
+    expect(inspectConflict).toHaveBeenCalledTimes(1);
+  });
   it('projects a bounded unsafe-root read failure through the ordinary plaintext RPC envelope', async () => {
     const rpcHandlerManager = new RpcHandlerManager({
       scopePrefix: 'machine-1',
@@ -42,11 +117,13 @@ describe('workspace sync machine RPC handlers', () => {
       service: {
         controller: {
           get: vi.fn(), list: vi.fn(), flush: vi.fn(), pause: vi.fn(), resume: vi.fn(), terminate: vi.fn(),
-          listConflicts: vi.fn(), deleteConflictLoser: vi.fn(), readFile: vi.fn(),
+          listConflicts: vi.fn(), listRelationships: vi.fn(), inspectConflict: vi.fn(),
+          resolveConflict: vi.fn(), readFile: vi.fn(),
         },
-        relationshipOwner: { setEnabled: vi.fn(), stop: vi.fn() },
-        deleteConflictLoserAtTarget: vi.fn(),
+        prepareBetween: vi.fn(async () => ({ ok: true as const, traversed: [] })),
+        relationshipOwner: { setEnabled: vi.fn(), stop: vi.fn(), create: vi.fn() },
         readFileAtTarget,
+        observeEntryAtTarget: vi.fn(async () => { throw new Error('unexpected target observation'); }),
         preflightHandoffTargetReplacement: vi.fn(),
         prepareBootstrapAtTarget: vi.fn(),
         releaseBootstrapAtTarget: vi.fn(),
@@ -87,10 +164,12 @@ describe('workspace sync machine RPC handlers', () => {
       resume: vi.fn(async () => status),
       terminate: vi.fn(async () => undefined),
       listConflicts: vi.fn(async () => ({ status: 'page' as const, relationshipId: 'rel-1', totalCount: 0, nextCursor: null, conflicts: [] })),
-      deleteConflictLoser: vi.fn(async () => status),
+      listRelationships: vi.fn(),
+      inspectConflict: vi.fn(),
+      resolveConflict: vi.fn(async () => ({ endpoints: [{ workspaceRefId: 'workspace-beta', status: 'applied' as const }] })),
       readFile: vi.fn(async () => ({ status: 'text' as const, text: 'hello', digest: 'a'.repeat(40), size: 5 })),
     };
-    const relationshipOwner = { setEnabled: vi.fn(async () => undefined), stop: vi.fn(async () => undefined) };
+    const relationshipOwner = { setEnabled: vi.fn(async () => undefined), stop: vi.fn(async () => undefined), create: vi.fn() };
     const prepareBootstrapAtTarget = vi.fn(async () => ({
       v: 1 as const,
       bootstrapOperationId: 'bootstrap-op-1',
@@ -109,13 +188,15 @@ describe('workspace sync machine RPC handlers', () => {
       schemaVersion: 1 as const,
     }));
     const assertConflictResolutionAuthorized = vi.fn(async () => undefined);
+    const prepareBetween = vi.fn(async () => ({ ok: true as const, traversed: [] }));
     registerMachineWorkspaceSyncRpcHandlers({
       rpcHandlerManager,
       service: {
         controller,
+        prepareBetween,
         relationshipOwner,
-        deleteConflictLoserAtTarget: vi.fn(async () => undefined),
         readFileAtTarget: vi.fn(async () => ({ status: 'missing' as const })),
+        observeEntryAtTarget: vi.fn(async () => ({ kind: 'missing' as const })),
         preflightHandoffTargetReplacement,
         prepareBootstrapAtTarget,
         releaseBootstrapAtTarget,
@@ -125,6 +206,15 @@ describe('workspace sync machine RPC handlers', () => {
     });
 
     await expect(handlers.get(RPC_METHODS.DAEMON_WORKSPACE_SYNC_LIST)?.({})).resolves.toEqual({ statuses: [status] });
+    await expect(handlers.get(RPC_METHODS.DAEMON_WORKSPACE_SYNC_PREPARE_BETWEEN)?.({
+      sourceWorkspaceRefId: 'workspace-a', targetWorkspaceRefId: 'workspace-b',
+    })).resolves.toEqual({ ok: true, traversed: [] });
+    expect(prepareBetween).toHaveBeenCalledWith({
+      sourceWorkspaceRefId: 'workspace-a', targetWorkspaceRefId: 'workspace-b',
+    }, expect.any(AbortSignal));
+    await expect(handlers.get(RPC_METHODS.DAEMON_WORKSPACE_SYNC_PREPARE_BETWEEN)?.({
+      sourceWorkspaceRefId: 'workspace-a', targetWorkspaceRefId: 'workspace-b', rootPath: '/caller/root',
+    })).rejects.toThrow();
     await expect(handlers.get(RPC_METHODS.DAEMON_WORKSPACE_SYNC_PAUSE)?.({ relationshipId: 'rel-1' }))
       .resolves.toEqual({ ok: true });
     await expect(handlers.get(RPC_METHODS.DAEMON_WORKSPACE_SYNC_CONFLICTS_LIST)?.({ relationshipId: 'rel-1', limit: 50 }))
@@ -134,24 +224,23 @@ describe('workspace sync machine RPC handlers', () => {
       expect.any(AbortSignal),
     );
     const conflictRequest = {
-      relationshipId: 'rel-1',
-      path: 'src/index.ts',
-      keep: 'alpha',
-      expectedKind: 'file',
-      expectedDigest: 'b'.repeat(40),
-    } as const;
-    await expect(handlers.get(RPC_METHODS.DAEMON_WORKSPACE_SYNC_CONFLICT_DELETE)?.(conflictRequest))
+      controllerMachineId: 'machine-a', hubWorkspaceRefId: 'workspace-alpha', path: 'src/index.ts',
+      source: { workspaceRefId: 'workspace-alpha', expected: { kind: 'file' as const, digest: 'a'.repeat(40), executable: false, size: 5 } },
+      targets: [{ workspaceRefId: 'workspace-beta', expected: { kind: 'file' as const, digest: 'b'.repeat(40), executable: false, size: 5 } }],
+      relationshipIds: ['rel-1'], strategy: 'use_source' as const,
+    };
+    await expect(handlers.get(RPC_METHODS.DAEMON_WORKSPACE_SYNC_CONFLICT_RESOLVE)?.(conflictRequest))
       .rejects.toMatchObject({ code: 'approval_required' });
-    expect(controller.deleteConflictLoser).not.toHaveBeenCalled();
-    await expect(handlers.get(RPC_METHODS.DAEMON_WORKSPACE_SYNC_CONFLICT_DELETE)?.({
+    expect(controller.resolveConflict).not.toHaveBeenCalled();
+    await expect(handlers.get(RPC_METHODS.DAEMON_WORKSPACE_SYNC_CONFLICT_RESOLVE)?.({
       actionReceiptId: 'conflict-action-1',
-      actionInput: { controllerMachineId: 'machine-a', request: conflictRequest },
-    })).resolves.toEqual(status);
+      actionInput: conflictRequest,
+    })).resolves.toEqual({ endpoints: [{ workspaceRefId: 'workspace-beta', status: 'applied' }] });
     expect(assertConflictResolutionAuthorized).toHaveBeenCalledWith(
       'conflict-action-1',
-      { controllerMachineId: 'machine-a', request: conflictRequest },
+      conflictRequest,
     );
-    expect(controller.deleteConflictLoser).toHaveBeenCalledWith(
+    expect(controller.resolveConflict).toHaveBeenCalledWith(
       conflictRequest,
       expect.any(AbortSignal),
       'conflict-action-1',
@@ -180,29 +269,26 @@ describe('workspace sync machine RPC handlers', () => {
 
   it('keeps target mutation roots daemon-resolved and fails closed without the runtime', async () => {
     const first = createRegistrar();
-    const deleteConflictLoserAtTarget = vi.fn(async () => undefined);
     const readFileAtTarget = vi.fn(async () => ({ status: 'missing' as const }));
     registerMachineWorkspaceSyncRpcHandlers({
       rpcHandlerManager: first.rpcHandlerManager,
       service: {
         controller: {
           get: vi.fn(), list: vi.fn(), flush: vi.fn(), pause: vi.fn(), resume: vi.fn(), terminate: vi.fn(),
-          listConflicts: vi.fn(), deleteConflictLoser: vi.fn(), readFile: vi.fn(),
+          listConflicts: vi.fn(), listRelationships: vi.fn(), inspectConflict: vi.fn(),
+          resolveConflict: vi.fn(), readFile: vi.fn(),
         },
-        relationshipOwner: { setEnabled: vi.fn(), stop: vi.fn() },
-        deleteConflictLoserAtTarget,
+        prepareBetween: vi.fn(async () => ({ ok: true as const, traversed: [] })),
+        relationshipOwner: { setEnabled: vi.fn(), stop: vi.fn(), create: vi.fn() },
         readFileAtTarget,
+        observeEntryAtTarget: vi.fn(async () => { throw new Error('unexpected target observation'); }),
         preflightHandoffTargetReplacement: vi.fn(async () => ({ type: 'not_required' as const })),
         prepareBootstrapAtTarget: vi.fn(),
         releaseBootstrapAtTarget: vi.fn(),
         inspectRetiredState: vi.fn(),
       },
     });
-    await expect(first.handlers.get(RPC_METHODS.DAEMON_WORKSPACE_SYNC_TARGET_CONFLICT_DELETE)?.({
-      relationshipId: 'rel-1', workspaceRefId: 'workspace-beta', rootPath: '/caller/root',
-      path: 'src/index.ts', expectedKind: 'file',
-    })).rejects.toThrow();
-    expect(deleteConflictLoserAtTarget).not.toHaveBeenCalled();
+    expect(first.handlers.has('daemon.workspaceSync.target.conflict.delete.v1')).toBe(false);
 
     await expect(first.handlers.get(RPC_METHODS.DAEMON_WORKSPACE_SYNC_TARGET_FILE_READ)?.({
       relationshipId: 'rel-1', workspaceRefId: 'workspace-beta',
@@ -224,69 +310,6 @@ describe('workspace sync machine RPC handlers', () => {
       .rejects.toMatchObject({ code: 'workspace_sync_unavailable' });
   });
 
-  it('does not expose a raw conflict-delete RPC bypass around Action admission', async () => {
-    const { handlers, rpcHandlerManager } = createRegistrar();
-    const deleteConflictLoser = vi.fn(async () => status);
-    const assertConflictResolutionAuthorized = vi.fn(async () => undefined);
-    registerMachineWorkspaceSyncRpcHandlers({
-      rpcHandlerManager,
-      service: {
-        controller: {
-          get: vi.fn(), list: vi.fn(), flush: vi.fn(), pause: vi.fn(), resume: vi.fn(), terminate: vi.fn(),
-          listConflicts: vi.fn(), deleteConflictLoser, readFile: vi.fn(),
-        },
-        relationshipOwner: { setEnabled: vi.fn(), stop: vi.fn() },
-        deleteConflictLoserAtTarget: vi.fn(),
-        readFileAtTarget: vi.fn(),
-        preflightHandoffTargetReplacement: vi.fn(),
-        prepareBootstrapAtTarget: vi.fn(),
-        releaseBootstrapAtTarget: vi.fn(),
-        inspectRetiredState: vi.fn(),
-        assertConflictResolutionAuthorized,
-      },
-    });
-    await expect(handlers.get(RPC_METHODS.DAEMON_WORKSPACE_SYNC_CONFLICT_DELETE)?.({
-      request: { relationshipId: 'rel-1', path: 'src/x.ts', keep: 'alpha', expectedKind: 'directory' },
-    })).rejects.toMatchObject({ code: 'approval_required' });
-    await expect(handlers.get(RPC_METHODS.DAEMON_WORKSPACE_SYNC_CONFLICT_DELETE)?.({
-      actionReceiptId: 'conflict-action-1',
-      actionInput: {
-        controllerMachineId: 'machine-a',
-        request: { relationshipId: 'rel-1', path: 'src/x.ts', keep: 'alpha', expectedKind: 'directory' },
-      },
-      callerAssertion: 'must-not-be-admitted',
-    })).rejects.toMatchObject({ code: 'approval_required' });
-    expect(deleteConflictLoser).not.toHaveBeenCalled();
-    expect(assertConflictResolutionAuthorized).not.toHaveBeenCalled();
-  });
-
-  it('does not mutate when the Action receipt is stale', async () => {
-    const { handlers, rpcHandlerManager } = createRegistrar();
-    const deleteConflictLoser = vi.fn(async () => status);
-    const stale = Object.assign(new Error('stale'), { code: 'approval_stale' });
-    registerMachineWorkspaceSyncRpcHandlers({
-      rpcHandlerManager,
-      service: {
-        controller: {
-          get: vi.fn(), list: vi.fn(), flush: vi.fn(), pause: vi.fn(), resume: vi.fn(), terminate: vi.fn(),
-          listConflicts: vi.fn(), deleteConflictLoser, readFile: vi.fn(),
-        },
-        relationshipOwner: { setEnabled: vi.fn(), stop: vi.fn() },
-        deleteConflictLoserAtTarget: vi.fn(), readFileAtTarget: vi.fn(),
-        preflightHandoffTargetReplacement: vi.fn(), prepareBootstrapAtTarget: vi.fn(),
-        releaseBootstrapAtTarget: vi.fn(), inspectRetiredState: vi.fn(),
-        assertConflictResolutionAuthorized: vi.fn(async () => { throw stale; }),
-      },
-    });
-    await expect(handlers.get(RPC_METHODS.DAEMON_WORKSPACE_SYNC_CONFLICT_DELETE)?.({
-      actionReceiptId: 'stale-1',
-      actionInput: {
-        controllerMachineId: 'machine-a',
-        request: { relationshipId: 'rel-1', path: 'src/x.ts', keep: 'alpha', expectedKind: 'directory' },
-      },
-    })).rejects.toBe(stale);
-    expect(deleteConflictLoser).not.toHaveBeenCalled();
-  });
 });
 
 describe('workspace sync target bootstrap RPC handlers', () => {
@@ -308,11 +331,13 @@ describe('workspace sync target bootstrap RPC handlers', () => {
       service: {
         controller: {
           get: vi.fn(), list: vi.fn(), flush: vi.fn(), pause: vi.fn(), resume: vi.fn(), terminate: vi.fn(),
-          listConflicts: vi.fn(), deleteConflictLoser: vi.fn(), readFile: vi.fn(),
+          listConflicts: vi.fn(), listRelationships: vi.fn(), inspectConflict: vi.fn(),
+          resolveConflict: vi.fn(), readFile: vi.fn(),
         },
-        relationshipOwner: { setEnabled: vi.fn(), stop: vi.fn() },
-        deleteConflictLoserAtTarget: vi.fn(async () => undefined),
+        prepareBetween: vi.fn(async () => ({ ok: true as const, traversed: [] })),
+        relationshipOwner: { setEnabled: vi.fn(), stop: vi.fn(), create: vi.fn() },
         readFileAtTarget: vi.fn(async () => ({ status: 'missing' as const })),
+        observeEntryAtTarget: vi.fn(async () => ({ kind: 'missing' as const })),
         preflightHandoffTargetReplacement: vi.fn(async () => ({ type: 'not_required' as const })),
         prepareBootstrapAtTarget,
         releaseBootstrapAtTarget,

@@ -48,13 +48,13 @@ async function renderOverlay(phase: LiveStreamPlayerPhase, reasonCode?: string) 
 }
 
 describe('StreamDiagnosticsOverlay', () => {
-    it('renders a pulsing live status dot beside the playing status', async () => {
+    it('renders a still live status dot beside the playing status (the frames are the motion)', async () => {
         const screen = await renderOverlay('playing');
 
         expect(screen.findByTestId('overlay-status-playing')).toBeTruthy();
         const dot = screen.findByTestId('overlay-status-dot:dot');
         expect(dot).not.toBeNull();
-        expect(flattenStyle(dot?.props.style).animationName).toBe('happierStatusDotPulse');
+        expect(flattenStyle(dot?.props.style).animationName).toBeUndefined();
     });
 
     it('renders a non-pulsing dot while reconnecting (stale, not live)', async () => {

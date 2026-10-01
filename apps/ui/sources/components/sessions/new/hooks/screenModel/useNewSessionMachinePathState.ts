@@ -1,7 +1,11 @@
 import * as React from 'react';
-import type { MachinePoolSelectionOriginV1, SessionAuthoringExecutionTargetV2 } from '@happier-dev/protocol';
+import type {
+    MachinePoolSelectionOriginV1,
+    SessionAuthoringExecutionTargetV2,
+    SessionDirectoryIntentV1,
+} from '@happier-dev/protocol';
 
-import { resolvePreferredMachineId } from '@/components/settings/pickers/resolvePreferredMachineId';
+import { resolvePreferredLaunchMachineId } from '@/components/settings/pickers/resolvePreferredMachineId';
 import { normalizeOptionalParam } from '@/profileRouteParams';
 import type { Machine, Session } from '@/sync/domains/state/storageTypes';
 import { isMachineOnline } from '@/utils/sessions/machineUtils';
@@ -24,6 +28,61 @@ function normalizePathParam(raw: unknown): string {
     return typeof normalized === 'string' ? normalized.trim() : '';
 }
 
+export type NewSessionInitialPlacement = Readonly<{
+    /** The draft's own persisted target is kept as-is (it may be a Temporary computer or none). */
+    keepsPersistedTarget: boolean;
+    machineId: string | null;
+    path: string;
+}>;
+
+/**
+ * Where a New Session draft starts before any live reconciliation: a requested (route/seeded)
+ * machine, else the draft's persisted target, else the Account's preferred launch machine; and
+ * the requested folder, else the draft's folder on that machine, else the machine's default one.
+ */
+export function resolveNewSessionInitialPlacement(input: Readonly<{
+    serverId: string | null;
+    machines: ReadonlyArray<Machine>;
+    recentMachinePaths: ReadonlyArray<Readonly<{ machineId: string; path: string }>>;
+    resolveRecentPathsForMachine: (machineId: string | null) => ReadonlyArray<string>;
+    machineIdParam?: unknown;
+    pathParam?: unknown;
+    persistedExecutionTarget?: SessionAuthoringExecutionTargetV2 | null;
+    persistedMachineId?: unknown;
+    persistedPath?: unknown;
+}>): NewSessionInitialPlacement {
+    const requestedMachineId = normalizeMachineIdParam(input.machineIdParam);
+    const persistedMachineId = input.persistedExecutionTarget?.kind === 'machine'
+        ? input.persistedExecutionTarget.target.machineId
+        : normalizeMachineIdParam(input.persistedMachineId);
+    const keepsPersistedTarget = !requestedMachineId && input.persistedExecutionTarget !== undefined;
+    // An ordinary machine target needs a Home to live on; without one nothing is selected.
+    const machineId = keepsPersistedTarget
+        ? (input.persistedExecutionTarget?.kind === 'machine' ? input.persistedExecutionTarget.target.machineId : null)
+        : input.serverId
+            ? requestedMachineId || persistedMachineId || resolvePreferredLaunchMachineId({
+                machines: input.machines,
+                recentMachinePaths: input.recentMachinePaths,
+                preferredMachineId: null,
+            })
+            : null;
+
+    const requestedPath = normalizePathParam(input.pathParam);
+    const persistedPath = normalizePathParam(input.persistedPath);
+    let path = requestedPath;
+    if (!path && keepsPersistedTarget && input.persistedExecutionTarget?.kind === 'temporary_computer') {
+        path = persistedPath;
+    } else if (!path) {
+        path = (machineId && persistedMachineId === machineId ? persistedPath : '')
+            || resolveDefaultDirectoryForMachine({
+                machineId,
+                machines: input.machines,
+                recentPaths: input.resolveRecentPathsForMachine(machineId),
+            });
+    }
+    return { keepsPersistedTarget, machineId, path };
+}
+
 export function useNewSessionMachinePathState(params: Readonly<{
     serverId: string | null;
     persistedExecutionTarget?: SessionAuthoringExecutionTargetV2 | null;
@@ -35,8 +94,18 @@ export function useNewSessionMachinePathState(params: Readonly<{
     sessions?: ReadonlyArray<Session | string> | null | undefined;
     machineIdParam: unknown;
     pathParam: unknown;
+    /** Explicit intent returned by a pushed folder picker; separate from its remembered path. */
+    directoryKindParam?: 'path' | 'managed' | null;
     persistedMachineId?: unknown;
     persistedPath?: unknown;
+    /** The draft's (or seeding surface's) no-folder choice; absent means the folder. */
+    initialDirectoryKind?: 'path' | 'managed' | null;
+    /**
+     * A surface that decides the directory itself (the embed's new chat passes `{kind:'managed'}`).
+     * The intent is then constant, no default folder is resolved, and the folder controls render
+     * nothing: callers read `directoryIntentFixed`.
+     */
+    fixedDirectoryIntent?: SessionDirectoryIntentV1;
     cacheScopeKey?: string | null;
 }>): Readonly<{
     executionTarget: SessionAuthoringExecutionTargetV2 | null;
@@ -64,7 +133,21 @@ export function useNewSessionMachinePathState(params: Readonly<{
         /** Absolute instant; omitted means the default, Never. */
         packageExpiresAt?: number;
     }>) => void;
+    /**
+     * The folder the session will run in, or `''` when there is none (no folder chosen, or not
+     * resolved yet). Folder-scoped features (checkout, file suggestions, MCP, SCM) read this.
+     */
     selectedPath: string;
+    /** The folder the draft remembers, kept while there is no folder so choosing it again restores it. */
+    rememberedPath: string;
+    /** `managed`: no folder; the target machine keeps a private one for the session. */
+    directoryKind: 'path' | 'managed';
+    /** The intent the session is created with; `null` while a folder intent has no path yet. */
+    directoryIntent: SessionDirectoryIntentV1 | null;
+    /** True when a surface fixed the intent; the folder and checkout controls render nothing. */
+    directoryIntentFixed: boolean;
+    /** The one directory-intent writer: every removal and restoration path calls it. */
+    setDirectoryIntent: (intent: SessionDirectoryIntentV1) => void;
     setSelectedPath: React.Dispatch<React.SetStateAction<string>>;
     setDraftSelectedPath: (path: string) => void;
     getRequestedPath: () => string;
@@ -79,20 +162,9 @@ export function useNewSessionMachinePathState(params: Readonly<{
         cacheScopeKey: params.cacheScopeKey,
     });
 
-    const resolveMachineId = React.useCallback((preferredMachineId: string | null): string | null => {
-        const preferredOnlineMachineId = resolvePreferredMachineId({
-            machines: params.machines,
-            preferredMachineId,
-            recentMachinePaths,
-            onlineOnly: true,
-        });
-        if (preferredOnlineMachineId) return preferredOnlineMachineId;
-        return resolvePreferredMachineId({
-            machines: params.machines,
-            preferredMachineId,
-            recentMachinePaths,
-        });
-    }, [params.machines, recentMachinePaths]);
+    const resolveMachineId = React.useCallback((preferredMachineId: string | null): string | null => (
+        resolvePreferredLaunchMachineId({ machines: params.machines, preferredMachineId, recentMachinePaths })
+    ), [params.machines, recentMachinePaths]);
 
     const getBestPathForMachine = React.useCallback((machineId: string | null): string => (
         resolveDefaultDirectoryForMachine({
@@ -147,16 +219,24 @@ export function useNewSessionMachinePathState(params: Readonly<{
             ? persisted
             : { kind: 'machine', target: { serverId: params.serverId, machineId } };
     }, [params.machineIdParam, params.persistedExecutionTarget, params.routeSelectionOrigin, params.serverId]);
-    const [executionTarget, setExecutionTarget] = React.useState<SessionAuthoringExecutionTargetV2 | null>(() => {
-        const requestedMachineId = normalizeMachineIdParam(params.machineIdParam);
-        // A route/seeded machine is an exact target. Do not pair its directory
-        // with a persisted or preferred machine while that target hydrates.
-        if (requestedMachineId) {
-            return machineTarget(requestedMachineId);
-        }
-        if (params.persistedExecutionTarget !== undefined) return params.persistedExecutionTarget;
-        return machineTarget(resolvePersistedMachineId() ?? resolveMachineId(null));
-    });
+    // A route/seeded machine is an exact target. Do not pair its directory
+    // with a persisted or preferred machine while that target hydrates.
+    const [initialPlacement] = React.useState(() => resolveNewSessionInitialPlacement({
+        serverId: params.serverId,
+        machines: params.machines,
+        recentMachinePaths,
+        resolveRecentPathsForMachine,
+        machineIdParam: params.machineIdParam,
+        pathParam: params.pathParam,
+        persistedExecutionTarget: params.persistedExecutionTarget,
+        persistedMachineId: params.persistedMachineId,
+        persistedPath: params.persistedPath,
+    }));
+    const [executionTarget, setExecutionTarget] = React.useState<SessionAuthoringExecutionTargetV2 | null>(() => (
+        initialPlacement.keepsPersistedTarget
+            ? params.persistedExecutionTarget ?? null
+            : machineTarget(initialPlacement.machineId)
+    ));
     const selectedMachineId = executionTarget?.kind === 'machine' ? executionTarget.target.machineId : null;
     const agentCatalogMachineId = executionTarget?.kind === 'temporary_computer'
         ? resolveMachineId(resolvePersistedMachineId())
@@ -190,14 +270,21 @@ export function useNewSessionMachinePathState(params: Readonly<{
     );
     const lastAppliedRouteOriginPoolIdRef = React.useRef<string | null>(null);
 
-    const [selectedPath, setSelectedPathState] = React.useState<string>(() => {
-        const trimmedPath = normalizePathParam(params.pathParam);
-        if (trimmedPath) return trimmedPath;
-        if (executionTarget?.kind === 'temporary_computer') return normalizePathParam(params.persistedPath);
-        const persistedPath = getPersistedPathForMachine(selectedMachineId);
-        if (persistedPath) return persistedPath;
-        return getBestPathForMachine(selectedMachineId);
-    });
+    // Keyed by value so a caller's inline `{kind:'managed'}` never re-runs the owner's effects.
+    const fixedDirectoryKind = params.fixedDirectoryIntent?.kind ?? null;
+    const fixedDirectoryPath = params.fixedDirectoryIntent?.kind === 'path' ? params.fixedDirectoryIntent.path : null;
+    const fixedDirectoryIntent = React.useMemo<SessionDirectoryIntentV1 | null>(() => (
+        fixedDirectoryKind === 'managed' ? { kind: 'managed' }
+            : fixedDirectoryKind === 'path' && fixedDirectoryPath ? { kind: 'path', path: fixedDirectoryPath }
+                : null
+    ), [fixedDirectoryKind, fixedDirectoryPath]);
+    const [directoryKindState, setDirectoryKindState] = React.useState<'path' | 'managed'>(
+        () => ((params.directoryKindParam ?? params.initialDirectoryKind) === 'managed' ? 'managed' : 'path'),
+    );
+    const directoryKind = fixedDirectoryIntent ? fixedDirectoryIntent.kind : directoryKindState;
+    const directoryKindRef = React.useRef(directoryKind);
+    directoryKindRef.current = directoryKind;
+    const [selectedPath, setSelectedPathState] = React.useState<string>(() => initialPlacement.path);
     const selectedPathDraftRef = React.useRef<string>(selectedPath);
     const hasUserEditedPathRef = React.useRef(false);
     const lastAppliedMachineParamRef = React.useRef<Readonly<{ machineId: string; scopeKey: string | null }> | null>(null);
@@ -266,11 +353,15 @@ export function useNewSessionMachinePathState(params: Readonly<{
     }>) => {
         hasUserSelectedMachineRef.current = true;
         hasCommittedExactTargetRef.current = true;
+        // A Temporary computer's endpoint chooses its folder; no-folder is a machine target's choice.
+        setDirectoryKindState('path');
         setExecutionTarget({ kind: 'temporary_computer', ...target });
     }, []);
 
     const setSelectedPath = React.useCallback<React.Dispatch<React.SetStateAction<string>>>((next) => {
         hasUserEditedPathRef.current = true;
+        // Choosing a folder is choosing to have one.
+        setDirectoryKindState('path');
         hasCommittedExactTargetRef.current = executionTargetRef.current !== null;
         setSelectedPathState((current) => {
             const resolved = typeof next === 'function' ? next(current) : next;
@@ -286,8 +377,25 @@ export function useNewSessionMachinePathState(params: Readonly<{
     }, []);
 
     const getRequestedPath = React.useCallback(() => {
-        return selectedPathDraftRef.current;
+        return directoryKindRef.current === 'managed' ? '' : selectedPathDraftRef.current;
     }, []);
+
+    const setDirectoryIntent = React.useCallback((intent: SessionDirectoryIntentV1) => {
+        if (fixedDirectoryIntent) return;
+        if (intent.kind === 'managed') {
+            setDirectoryKindState('managed');
+            return;
+        }
+        setSelectedPath(intent.path);
+    }, [fixedDirectoryIntent, setSelectedPath]);
+
+    React.useEffect(() => {
+        if (params.directoryKindParam === 'managed') setDirectoryIntent({ kind: 'managed' });
+        else if (params.directoryKindParam === 'path') {
+            const path = normalizePathParam(params.pathParam);
+            if (path) setDirectoryIntent({ kind: 'path', path });
+        }
+    }, [params.directoryKindParam, params.pathParam, setDirectoryIntent]);
 
     const hasMachine = React.useCallback((machineId: string | null): boolean => {
         if (!machineId) return false;
@@ -489,13 +597,16 @@ export function useNewSessionMachinePathState(params: Readonly<{
         }
 
         lastAppliedPathParamRef.current = trimmedPath;
+        if (trimmedPath && params.directoryKindParam !== 'managed') setDirectoryKindState('path');
         if (trimmedPath && trimmedPath !== selectedPath) {
             hasUserEditedPathRef.current = false;
             applyCommittedSelectedPath(trimmedPath);
         }
-    }, [applyCommittedSelectedPath, hasMachine, params.machineIdParam, params.pathParam, selectedPath]);
+    }, [applyCommittedSelectedPath, hasMachine, params.machineIdParam, params.pathParam, params.directoryKindParam, selectedPath]);
 
     React.useEffect(() => {
+        // A fixed intent decides the directory; there is no default folder to resolve.
+        if (fixedDirectoryIntent) return;
         if (!selectedMachineId) {
             return;
         }
@@ -524,7 +635,17 @@ export function useNewSessionMachinePathState(params: Readonly<{
         }
 
         applyCommittedSelectedPath(bestPath);
-    }, [applyCommittedSelectedPath, getBestPathForMachine, getPersistedPathForMachine, params.pathParam, selectedMachineId, selectedPath]);
+    }, [applyCommittedSelectedPath, fixedDirectoryIntent, getBestPathForMachine, getPersistedPathForMachine, params.pathParam, selectedMachineId, selectedPath]);
+
+    const effectivePath = fixedDirectoryIntent
+        ? (fixedDirectoryIntent.kind === 'path' ? fixedDirectoryIntent.path : '')
+        : directoryKind === 'managed' ? '' : selectedPath;
+    const directoryIntent = React.useMemo<SessionDirectoryIntentV1 | null>(() => {
+        if (fixedDirectoryIntent) return fixedDirectoryIntent;
+        if (directoryKind === 'managed') return { kind: 'managed' };
+        const path = selectedPath.trim();
+        return path ? { kind: 'path', path } : null;
+    }, [directoryKind, fixedDirectoryIntent, selectedPath]);
 
     return {
         executionTarget,
@@ -533,7 +654,12 @@ export function useNewSessionMachinePathState(params: Readonly<{
         setSelectedMachineId,
         setSelectedMachineTarget,
         setTemporaryComputerTarget,
-        selectedPath,
+        selectedPath: effectivePath,
+        rememberedPath: selectedPath,
+        directoryKind,
+        directoryIntent,
+        directoryIntentFixed: fixedDirectoryIntent !== null,
+        setDirectoryIntent,
         setSelectedPath,
         setDraftSelectedPath,
         getRequestedPath,

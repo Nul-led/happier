@@ -8,8 +8,8 @@ import {
     type FetchUserMessageHistoryPageResult,
     type SessionMessageHistoryRemoteRow,
 } from '@/sync/engine/sessions/fetchUserMessageHistoryPage';
-import type { Message } from '@/sync/domains/messages/messageTypes';
-import { readStoredSessionMessagesFromStateLike } from '@/sync/domains/messages/readStoredSessionMessages';
+import type { Message } from "@happier-dev/session-core/messages";
+import { readStoredSessionMessagesFromStateLike } from "@happier-dev/session-core/messages";
 import { getStorage } from '@/sync/domains/state/storageStore';
 import { useSessionMessagesById, useSessionTranscriptIds } from '@/sync/domains/state/storage';
 import { normalizeSessionId } from '@/sync/domains/session/normalizeSessionId';

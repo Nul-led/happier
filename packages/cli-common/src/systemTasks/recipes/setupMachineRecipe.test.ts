@@ -381,4 +381,29 @@ describe('runSetupMachineRecipe', () => {
     expect(executor.startDaemonService).toHaveBeenCalledTimes(1);
     expect(executor.readAuthStatus).toHaveBeenCalledTimes(3);
   });
+  it('lets the service disposition owner decide the lifecycle actions, including a restart after pairing', async () => {
+    const invocations: string[] = [];
+    const seen: Array<{ paired: boolean }> = [];
+    await runSetupMachineRecipe({
+      relayProfile: { serverUrl: 'https://relay.example.test', webappUrl: 'https://app.example.test', localServerUrl: null },
+      executor: {
+        configureRelay: async () => undefined,
+        readAuthStatus: async () => ({ authenticated: false, credentialState: 'missing', machineId: null }),
+        requestAuthPairing: async () => ({ publicKey: 'pk' }),
+        waitForAuthPairing: async () => ({ machineId: 'm1' }),
+        installDaemonService: async () => { invocations.push('install'); },
+        startDaemonService: async () => { invocations.push('start'); },
+        restartDaemonService: async () => { invocations.push('restart'); },
+      },
+      approvePairingRequest: async () => undefined,
+      serviceActions: (facts) => {
+        seen.push(facts);
+        return facts.paired ? [{ kind: 'restart' }] : [];
+      },
+      emit() {},
+    });
+
+    expect(seen).toEqual([{ paired: true }]);
+    expect(invocations).toEqual(['restart']);
+  });
 });

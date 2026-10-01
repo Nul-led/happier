@@ -6,6 +6,7 @@ import type {
     BrowserContextCapabilities,
     BrowserContextItemV1,
     BrowserContextKindV1,
+    BrowserContextPrivacyState,
     BrowserContextLifecycleStateV1,
     BrowserDiagnosticsElementPickerResultV1,
     BrowserDiagnosticsElementSourceLocationV1,
@@ -15,10 +16,7 @@ import type {
 
 import type { AnnotationCropClip, AnnotationViewportRect } from './annotationCropGeometry';
 
-export type BrowserContextPrivacyState = Extract<
-    BrowserContextLifecycleStateV1,
-    'sensitiveOrigin' | 'sensitiveFieldsPresent' | 'ephemeralOnly'
->;
+export type { BrowserContextPrivacyState } from '@happier-dev/protocol';
 
 export type BrowserContextUnavailableReasonCode =
     | 'browser_context_disabled'

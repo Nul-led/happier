@@ -4,6 +4,7 @@ import {
   readNonAuthoritativeLinkedExternalSessionV1FromMetadata,
   type ExternalSessionsSource,
   type PluginAgentExternalLinkedTakeoverWriterSafetyV1,
+  type PluginSourceCustodyV1,
 } from '@happier-dev/protocol';
 import { isPluginError, PluginError } from '@happier-dev/plugin-sdk';
 
@@ -54,22 +55,14 @@ import {
 import type { CurrentGlobalExternalSessionsPublicAccess } from './currentGlobalRouting';
 
 type CurrentAgentRuntime = Readonly<{
-  generationId: string;
-  /**
-   * Immutable identity of the Agent plugin artifact behind this lease, as opposed
-   * to `generationId`, which names one activation. Persisted host state that must
-   * survive a daemon restart but not a plugin upgrade — the candidate index — is
-   * qualified by this, so the same installed Agent keeps its index across
-   * restarts and a replaced one never inherits it.
-   */
-  immutableGenerationId: string | null;
+  occurrenceId: string;
+  sourceCustody: PluginSourceCustodyV1;
   retirementSignal: AbortSignal;
   isCurrent(): boolean;
   surface: ExternalSessionExecutionSurface;
 }>;
 
 export type CurrentGlobalExternalSessionsAuthorServiceParams = Readonly<{
-  contributionGenerationId: string;
   agents: readonly ConfiguredExternalSessionSourceAgentContribution[];
   activeServerDir?: string;
   activeServerId?: string;
@@ -155,7 +148,7 @@ export function createCurrentGlobalExternalSessionsTakeoverAdapter(params: Reado
 export function createCurrentGlobalExternalSessionsAuthorBinding(params: Readonly<{
   pluginId: string;
   signal: AbortSignal;
-  isGenerationCurrent(): boolean;
+  isOccurrenceCurrent(): boolean;
   activeServerDir?: string;
   takeoverStart?: ExternalSessionPluginTakeoverStart;
   resolveCurrent(): CurrentGlobalExternalSessionsAuthorService | null;
@@ -195,13 +188,13 @@ export function createCurrentGlobalExternalSessionsAuthorBinding(params: Readonl
     return boundService;
   };
   const readCallerFailureCode = (operationSignal?: AbortSignal): string | null => {
-    let generationCurrent = false;
+    let occurrenceCurrent = false;
     try {
-      generationCurrent = params.isGenerationCurrent() === true;
+      occurrenceCurrent = params.isOccurrenceCurrent() === true;
     } catch {
-      generationCurrent = false;
+      occurrenceCurrent = false;
     }
-    if (!generationCurrent) return 'plugin_generation_retired';
+    if (!occurrenceCurrent) return 'plugin_generation_retired';
     if (params.signal.aborted || operationSignal?.aborted) {
       return 'plugin_operation_aborted';
     }
@@ -667,7 +660,6 @@ export async function createCurrentGlobalExternalSessionsAuthorService(
     configuredExternalSessionSourcesUseConnectedProfiles(params.agents);
   lifecycle = await createLiveConfiguredPluginExternalSessionsAdapter({
     agents: params.agents,
-    contributionGenerationId: params.contributionGenerationId,
     ...(params.activeServerDir ? { activeServerDir: params.activeServerDir } : {}),
     readAccount: async () => readsConnectedProfiles
       ? await fetchAccountProfile({ token: (await requireCredentials(params)).token })
@@ -681,10 +673,16 @@ export async function createCurrentGlobalExternalSessionsAuthorService(
       (_previous, next) => listener(resolveActiveAccountConfiguredExternalSessionSourceRevision(next)),
     ),
     isCurrent: params.isCurrent,
+    resolveAgentOccurrence: (agentId) => {
+      const runtime = params.resolveAgentRuntime(agentId);
+      return runtime
+        ? Object.freeze({ occurrenceId: runtime.occurrenceId, isCurrent: runtime.isCurrent })
+        : null;
+    },
     resolveProviderOps: async (agentId) =>
       readProviderOps(params.resolveAgentRuntime(agentId)),
-    resolveAgentRuntimeGeneration: (agentId) =>
-      params.resolveAgentRuntime(agentId)?.immutableGenerationId ?? null,
+    resolveAgentSourceCustody: (agentId) =>
+      params.resolveAgentRuntime(agentId)?.sourceCustody ?? null,
     attach: async (ref, source, options) => await ensureLink({
       ref,
       source,
@@ -709,15 +707,15 @@ export async function createCurrentGlobalExternalSessionsAuthorService(
             const port = params.externalSessionHostOperationOwner!.bind({
               pluginId: agent.identity.pluginId,
               agentId: ref.agentId,
-              generationId: runtime.generationId,
+              occurrenceId: runtime.occurrenceId,
               sessionId: linked.sessionId,
               machineId: requireMachineId(params),
               readAccountRevision: () =>
                 resolveActiveAccountConfiguredExternalSessionSourceRevision(
                   getActiveAccountSettingsSnapshot(),
                 ),
-              generationRetirementSignal: runtime.retirementSignal,
-              isGenerationCurrent: () => params.isCurrent() && runtime.isCurrent(),
+              occurrenceRetirementSignal: runtime.retirementSignal,
+              isOccurrenceCurrent: () => params.isCurrent() && runtime.isCurrent(),
               agentContribution: agent,
             });
             const result = await port.executeFollow({
@@ -769,7 +767,7 @@ export async function createCurrentGlobalExternalSessionsAuthorService(
             });
           },
           // Read live from the owner. The presence of `followTranscript` above only
-          // proves the owner object exists; it does not prove a generation was ever
+          // proves the owner object exists; it does not prove an occurrence was ever
           // installed into it, which is what follow actually requires.
           canFollowNow: () =>
             params.externalSessionHostOperationOwner!.canFollowNow(),

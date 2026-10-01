@@ -23,14 +23,12 @@ export function projectTeamCredentialSelectionConsequence(
     const includesDirect = deliveryMode === 'direct';
     return {
         deliveryMode,
-        // The server derives both pre-disclosure states from the absence of
-        // recipient material and of the retained first-disclosure Activity
-        // fact; they differ only in whether the custodian has already
-        // published the source versions the envelopes will come from
-        // (`preparing`) or not yet (`never_delivered`). Reuse that canonical
-        // history instead of keeping UI acknowledgement.
-        directDisclosure: includesDirect
-            && (resource.directMaterialState === 'never_delivered' || resource.directMaterialState === 'preparing')
+        // First direct use asks once (child 06 L10D-R3). Whether this viewer
+        // was already disclosed to is the Home's retained delivery history,
+        // not readiness: a custodian prepares a `current` tuple before the
+        // recipient ever opens it. Reuse that canonical history instead of
+        // keeping UI acknowledgement.
+        directDisclosure: includesDirect && resource.directDeliveryRecorded !== true
             ? 'required'
             : 'not_applicable',
         recipient: { mode: 'current_account', count: 1 },

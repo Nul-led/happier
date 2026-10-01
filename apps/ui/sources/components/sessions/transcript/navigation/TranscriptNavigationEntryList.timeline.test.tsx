@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { renderScreen, standardCleanup } from '@/dev/testkit';
 import { installNavigationCommonModuleMocks } from '@/components/ui/navigation/navigationTestHelpers';
-import type { TranscriptNavigationEntry } from './transcriptNavigationTypes';
+import type { TranscriptNavigationEntry, TranscriptNavigationTurnFacts } from './transcriptNavigationTypes';
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
@@ -68,18 +68,27 @@ function entry(overrides: Partial<TranscriptNavigationEntry> & Pick<TranscriptNa
         pinned: overrides.pinned ?? false,
         pinnedAtMs: overrides.pinnedAtMs ?? null,
         loaded: overrides.loaded ?? true,
+        facts: overrides.facts,
     };
+}
+
+function facts(overrides: Partial<TranscriptNavigationTurnFacts> = {}): TranscriptNavigationTurnFacts {
+    return { toolCount: 0, failedCount: 0, approvals: [], running: false, endedAtMs: null, lastToolFailed: false, ...overrides };
 }
 
 async function renderTimeline(params: Readonly<{
     entries: readonly TranscriptNavigationEntry[];
     activeEntryId?: string | null;
+    visibleEntryIds?: readonly string[];
+    newestTurn?: 'working' | 'waiting' | null;
 }>) {
     const { TranscriptNavigationEntryList } = await import('./TranscriptNavigationEntryList');
     return renderScreen(
         <TranscriptNavigationEntryList
             entries={params.entries}
             activeEntryId={params.activeEntryId ?? null}
+            visibleEntryIds={params.visibleEntryIds}
+            newestTurn={params.newestTurn ?? null}
             onEntryPress={() => {}}
             testIDPrefix="nav"
         />,
@@ -137,25 +146,68 @@ describe('TranscriptNavigationEntryList timeline', () => {
         expect(rail.length).toBeGreaterThan(0);
     });
 
-    it('groups rows under day sections only once the session spans days', async () => {
+    it('lists the newest turn first under a dated day header, even within one day', async () => {
         standardCleanup();
-        const sameDay = await renderTimeline({
+        const screen = await renderTimeline({
             entries: [
                 entry({ id: 'turn-1', seq: 1, createdAtMs: atLocal(2026, 7, 27, 9) }),
                 entry({ id: 'turn-2', seq: 2, createdAtMs: atLocal(2026, 7, 27, 17) }),
             ],
         });
-        expect(sameDay.findAllByTestId(`nav-day:${atLocal(2026, 7, 27, 0)}`)).toHaveLength(0);
+        expect(screen.findByTestId(`nav-day:${atLocal(2026, 7, 27, 0)}`)).toBeTruthy();
+        const order = screen.tree.root
+            .findAll((instance) => typeof instance.props?.testID === 'string' && instance.props.testID.startsWith('nav-entry:'))
+            .map((instance) => instance.props.testID);
+        expect(order.filter((id, index) => order.indexOf(id) === index)).toEqual(['nav-entry:turn-2', 'nav-entry:turn-1']);
+    });
+
+    it('marks what the turns did: live, waiting for you, ended in failure', async () => {
+        standardCleanup();
+        const live = await renderTimeline({
+            entries: [entry({ id: 'turn-1', seq: 1, facts: facts() }), entry({ id: 'turn-2', seq: 2, facts: facts({ running: true }) })],
+            newestTurn: 'working',
+        });
+        expect(live.findByTestId('nav-node-live:turn-2')).toBeTruthy();
+        expect(live.findByTestId('nav-node-live:turn-1')).toBeNull();
 
         standardCleanup();
-        const acrossDays = await renderTimeline({
+        const typed = await renderTimeline({
             entries: [
-                entry({ id: 'turn-1', seq: 1, createdAtMs: atLocal(2026, 7, 26, 9) }),
-                entry({ id: 'turn-2', seq: 2, createdAtMs: atLocal(2026, 7, 27, 9) }),
+                entry({ id: 'turn-1', seq: 1, facts: facts({ toolCount: 3, failedCount: 1, lastToolFailed: true }) }),
+                entry({ id: 'turn-2', seq: 2, facts: facts({ toolCount: 1, approvals: [{ outcome: 'pending', label: 'git push' }] }) }),
             ],
         });
-        expect(acrossDays.findByTestId(`nav-day:${atLocal(2026, 7, 26, 0)}`)).toBeTruthy();
-        expect(acrossDays.findByTestId(`nav-day:${atLocal(2026, 7, 27, 0)}`)).toBeTruthy();
+        expect(typed.findByTestId('nav-node-failed:turn-1')).toBeTruthy();
+        expect(typed.findByTestId('nav-node-waiting:turn-2')).toBeTruthy();
+    });
+
+    it('shows what happened in between only when it is known, never as zero', async () => {
+        standardCleanup();
+        const screen = await renderTimeline({
+            entries: [
+                entry({ id: 'known', seq: 1, facts: facts({ toolCount: 6, failedCount: 1, approvals: [{ outcome: 'allowed', label: 'yarn test' }] }) }),
+                entry({ id: 'quiet', seq: 2, facts: facts() }),
+                entry({ id: 'unknown', seq: 3, loaded: false }),
+            ],
+        });
+        expect(screen.findByTestId('nav-entry-facts:known')).toBeTruthy();
+        expect(screen.findByTestId('nav-entry-facts:quiet')).toBeNull();
+        expect(screen.findByTestId('nav-entry-facts:unknown')).toBeNull();
+        const text = screen.getTextContent();
+        expect(text).toContain('session.transcriptNavigation.toolCount');
+        expect(text).toContain('session.transcriptNavigation.failedCount');
+    });
+
+    it('bands the turns that are on screen, following the transcript', async () => {
+        standardCleanup();
+        const screen = await renderTimeline({
+            entries: [entry({ id: 'turn-1', seq: 1 }), entry({ id: 'turn-2', seq: 2 }), entry({ id: 'turn-3', seq: 3 })],
+            activeEntryId: 'turn-2',
+            visibleEntryIds: ['turn-2', 'turn-3'],
+        });
+        expect(screen.findByTestId('nav-inview:turn-2')).toBeTruthy();
+        expect(screen.findByTestId('nav-inview:turn-3')).toBeTruthy();
+        expect(screen.findByTestId('nav-inview:turn-1')).toBeNull();
     });
 
     it('distinguishes a turn still waiting for its reply from one whose reply is not loaded', async () => {

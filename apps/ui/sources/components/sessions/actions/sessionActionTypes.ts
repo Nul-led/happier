@@ -26,7 +26,9 @@ export type SessionActionId =
     | 'ui.session.tags.edit'
     | 'ui.session.move-to-folder'
     | 'ui.session.set-attention-standing'
-    | 'ui.session.clear-attention-standing';
+    | 'ui.session.clear-attention-standing'
+    | 'ui.session.make-orchestrator'
+    | 'ui.session.put-under';
 
 /**
  * Whether this session can be kept in — or released from — Needs attention, and which way the
@@ -103,6 +105,8 @@ export type SessionActionExecutionOperations = Readonly<{
     archiveSession?: (sessionId: string, opts?: Readonly<{ serverId?: string | null }>) => Promise<SessionActionOperationResult>;
     unarchiveSession?: (sessionId: string, opts?: Readonly<{ serverId?: string | null }>) => Promise<SessionActionOperationResult>;
     renameSession?: (sessionId: string, title: string, opts?: Readonly<{ serverId?: string | null }>) => Promise<SessionActionOperationResult>;
+    setSessionRole?: (sessionId: string, roleId: string) => Promise<Readonly<{ ok: boolean; error?: string }>>;
+    openPutUnderPicker?: (params: Readonly<{ sessionId: string; serverId: string | null }>) => void;
     resumeSession?: (sessionId: string) => void | Promise<void>;
     deleteSession?: (sessionId: string, opts?: Readonly<{ serverId?: string | null }>) => Promise<SessionActionOperationResult>;
     setPinned?: (

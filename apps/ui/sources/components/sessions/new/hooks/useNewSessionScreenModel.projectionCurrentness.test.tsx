@@ -389,20 +389,6 @@ vi.mock('@/agents/hooks/useEnabledAgentIds', () => ({
     useEnabledAgentIds: () => enabledAgentIdsState.value,
 }));
 
-vi.mock('@/hooks/auth/useCLIDetection', () => ({
-    useCLIDetection: () => ({
-        refresh: cliAvailabilityRefreshMock,
-        isDetecting: false,
-        timestamp: 1,
-        available: cliAvailabilityState.value.available ?? {},
-        login: {},
-        authStatus: cliAvailabilityState.value.authStatus ?? {},
-        resolvedPath: {},
-        resolvedCommand: {},
-        resolutionSource: {},
-        tmux: null,
-    }),
-}));
 
 vi.mock('@/utils/sessions/machineUtils', () => ({
     isMachineOnline: () => true,
@@ -520,11 +506,6 @@ vi.mock('@/sync/domains/profiles/profileUtils', () => ({
     isProfileCompatibleWithAnyAgent: () => true,
 }));
 
-vi.mock('@/agents/runtime/cliWarnings', () => ({
-    applyCliWarningDismissal: () => ({}),
-    isCliWarningDismissed: () => false,
-}));
-
 vi.mock('@/utils/secrets/secretSatisfaction', () => ({
     getSecretSatisfaction: () => ({ missingRequired: [], missingOptional: [] }),
 }));
@@ -614,9 +595,7 @@ vi.mock('@/components/sessions/new/hooks/useNewSessionWizardProps', () => ({
 // suites: a retryable machine_offline error keeps the assertion surface on the
 // payload without dragging route-recovery timing into these tests.
 vi.mock('@/sync/ops/actions/sessionSpawnNewAction', async (importOriginal) => {
-    const actual = await importOriginal<typeof import('@/sync/ops/actions/sessionSpawnNewAction')>(
-        '@/sync/ops/actions/sessionSpawnNewAction',
-    );
+    const actual = await importOriginal<typeof import('@/sync/ops/actions/sessionSpawnNewAction')>();
     return {
         ...actual,
         executeManualSessionSpawnNewAction: async (input: any, _context: any, params: any) => {

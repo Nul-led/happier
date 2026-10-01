@@ -12,7 +12,7 @@ import {
   decodeExecutionRunProfileResult,
   normalizeExecutionRunProfileResultContract,
   type ExecutionRunProfileResultContract,
-} from '../resultContract';
+} from '@happier-dev/protocol';
 
 function readAgentIntentInput(value: unknown) {
   return ExecutionRunAgentIntentInputV1Schema.parse(value ?? {});
@@ -75,7 +75,7 @@ export const AgentProfile: ExecutionRunIntentProfile = {
     if (!decoded.ok) return invalidAgentOutput();
     return {
       status: 'succeeded',
-      summary: 'Agent completed.',
+      summary: typeof decoded.value === 'string' ? decoded.value : JSON.stringify(decoded.value),
       toolResultOutput: decoded.value,
     };
   },

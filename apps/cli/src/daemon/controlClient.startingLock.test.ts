@@ -60,6 +60,32 @@ describe('daemon control client startup lock inspection', () => {
     });
   }, 120_000);
 
+  it('defers stale dead state to a different live lifecycle lock holder', async () => {
+    await withTempDir('happier-daemon-stale-state-live-lock-', async (homeDir) => {
+      envScope.patch({ HAPPIER_HOME_DIR: homeDir });
+      vi.resetModules();
+      const [{ configuration }, { inspectDaemonRunningStateAndCleanupStaleState }, { writeDaemonState }] = await Promise.all([
+        import('@/configuration'),
+        import('./controlClient'),
+        import('@/persistence'),
+      ]);
+      mkdirSync(dirname(configuration.daemonLockFile), { recursive: true });
+      writeFileSync(configuration.daemonLockFile, JSON.stringify({
+        t: 'happier_daemon_lock_v1',
+        pid: process.pid,
+        ownerToken: '7dca87df-aef3-47d7-870f-a30cc5f8e73a',
+        processStartedAtMs: Date.now() - 60_000,
+        createdAtMs: Date.now(),
+      }), 'utf8');
+      writeDaemonState({ pid: 999_999_999, httpPort: 3025, startedAt: Date.now(), startedWithCliVersion: '0.2.10' });
+
+      await expect(inspectDaemonRunningStateAndCleanupStaleState()).resolves.toEqual({
+        status: 'starting',
+        pid: process.pid,
+      });
+    });
+  }, 120_000);
+
   it('keeps an old live unclassified lock holder fail-closed', async () => {
     await withTempDir('happier-daemon-control-stale-lock-', async (homeDir) => {
       envScope.patch({ HAPPIER_HOME_DIR: homeDir });

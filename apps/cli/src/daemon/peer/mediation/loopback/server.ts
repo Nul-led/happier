@@ -1,14 +1,13 @@
 import fastify, { type FastifyInstance } from 'fastify';
-import { serializerCompiler, validatorCompiler, ZodTypeProvider } from 'fastify-type-provider-zod';
+import { serializerCompiler, validatorCompiler } from 'fastify-type-provider-zod';
 import {
   PEER_MEDIATION_RECEIPTS,
   PeerLoopbackEndpointCandidateV1Schema,
-  PeerLoopbackProbeRequestV1Schema,
+  isLiteralLoopbackHostname,
+  normalizeHostnameForLoopbackCheck,
   type DirectPeerRouteKindV1,
   type PeerFlowKindV1,
   type PeerLoopbackEndpointCandidateV1,
-  type PeerLoopbackProbeFallbackReasonCodeV1,
-  type PeerLoopbackProbeResponseV1,
 } from '@happier-dev/protocol';
 
 import {
@@ -16,10 +15,8 @@ import {
   type DaemonPeerMediationObservabilityEmitter,
 } from '../observability/events';
 import {
-  verifyDirectRouteGrantV1,
-  verifyPeerRouteNonceV1,
   type DirectRouteGrantTrustRoot,
-} from '../verifyDirectRouteGrantV1';
+} from '../verifyDirectRouteGrant';
 import {
   registerPeerMediationMachineRpcDirectRoutes,
   type PeerMachineRpcDirectRuntimeOptions,
@@ -50,7 +47,6 @@ export const PEER_MEDIATION_LOOPBACK_BODY_LIMIT_BYTES =
   resolveBase64EncodedLength(FILES_TRANSFER_CHUNK_CONFIG_MAX_BYTES + ENCRYPTED_TRANSFER_CHUNK_OVERHEAD_BYTES)
   + resolveBase64EncodedLength(MAX_ENCRYPTED_DATA_KEY_ENVELOPE_BYTES)
   + SIGNED_MACHINE_RPC_ENVELOPE_BUDGET_BYTES;
-const PEER_MEDIATION_LOOPBACK_PROBE_PATH = '/peer-mediation/v1/probe';
 const PEER_MEDIATION_LOOPBACK_BROWSER_METHODS = 'POST, OPTIONS';
 const PEER_MEDIATION_LOOPBACK_BROWSER_HEADERS = 'content-type';
 
@@ -60,7 +56,6 @@ export type PeerMediationLoopbackExpectedBinding = Readonly<{
   flowKind: PeerFlowKindV1;
   routeKind: DirectPeerRouteKindV1;
   endpointFingerprint: string;
-  accountPublicKey?: string;
 }>;
 
 /**
@@ -102,7 +97,6 @@ export type StartPeerMediationLoopbackServerOptions = PeerMediationLoopbackAppOp
   host?: string;
   port?: number;
   endpointExpiresAt: number;
-  directRouteGrantProofVerifierVersions?: readonly 2[];
   daemonRuntimeId?: string;
 }>;
 
@@ -112,38 +106,13 @@ export type StartedPeerMediationLoopbackServer = Readonly<{
   endpoint: PeerLoopbackEndpointCandidateV1;
   stop: () => Promise<void>;
 }>;
-type PeerLoopbackFallbackReasonCode = PeerLoopbackProbeFallbackReasonCodeV1;
-
-function normalizeBindHost(host: string): string {
-  const normalized = host.trim().toLowerCase();
-  return normalized.startsWith('[') && normalized.endsWith(']') ? normalized.slice(1, -1) : normalized;
-}
-
-function isIpv4LoopbackHost(host: string): boolean {
-  const parts = host.split('.');
-  if (parts.length !== 4 || parts[0] !== '127') return false;
-  return parts.slice(1).every((part) => {
-    if (!/^\d+$/.test(part)) return false;
-    const value = Number(part);
-    return Number.isInteger(value) && value >= 0 && value <= 255;
-  });
-}
 
 export function assertPeerMediationLoopbackBindHost(host: string): string {
-  const normalized = normalizeBindHost(host);
-  if (normalized === 'localhost' || normalized === '::1' || isIpv4LoopbackHost(normalized)) {
-    return normalized === '::1' ? '::1' : host.trim().toLowerCase();
+  const normalized = normalizeHostnameForLoopbackCheck(host);
+  if (isLiteralLoopbackHostname(normalized)) {
+    return normalized;
   }
   throw new Error('Peer mediation loopback server must bind to a loopback host');
-}
-
-function fallback(reasonCode: PeerLoopbackFallbackReasonCode): PeerLoopbackProbeResponseV1 {
-  return {
-    v: 1,
-    ok: false,
-    receipt: PEER_MEDIATION_RECEIPTS.routeFallback,
-    reasonCode,
-  };
 }
 
 function resolveExpectedBindingForFlow(
@@ -167,7 +136,7 @@ export function createPeerMediationLoopbackApp(options: PeerMediationLoopbackApp
   // Browser clients reach this loopback-only server from the UI's dev/web
   // origin on a different port. CORS is transport admission only: every
   // operation still requires a server-signed route grant plus an
-  // account-signed nonce, so no origin is treated as an authorization
+  // ephemeral caller proof, so no origin is treated as an authorization
   // boundary. PNA is required by Chromium when a web origin targets a local
   // address. Keep the exposed method/header surface intentionally minimal.
   app.addHook('onRequest', (request, reply, done) => {
@@ -185,56 +154,6 @@ export function createPeerMediationLoopbackApp(options: PeerMediationLoopbackApp
     }
     done();
   });
-  const typed = app.withTypeProvider<ZodTypeProvider>();
-
-  typed.post(PEER_MEDIATION_LOOPBACK_PROBE_PATH, async (request): Promise<PeerLoopbackProbeResponseV1> => {
-    const parsedRequest = PeerLoopbackProbeRequestV1Schema.safeParse(request.body);
-    if (!parsedRequest.success) return fallback('grant_invalid');
-    const expected = resolveExpectedBindingForFlow(options, parsedRequest.data.grant.payload.flowKind);
-
-    const verification = verifyDirectRouteGrantV1({
-      grant: parsedRequest.data.grant,
-      trustRoots: resolveTrustRoots(),
-      nowMs: options.nowMs(),
-      expected: {
-        accountId: expected.accountId,
-        machineId: expected.machineId,
-        flowKind: expected.flowKind,
-        routeKind: expected.routeKind,
-        endpointFingerprint: expected.endpointFingerprint,
-      },
-    });
-    if (!verification.valid) {
-      // The V1 loopback probe never carries an Iroh grant; keep its published fallback
-      // vocabulary bounded even though the shared verifier also serves machine/1 V2.
-      return fallback(verification.reasonCode === 'grant_iroh_binding_mismatch'
-        ? 'grant_invalid'
-        : verification.reasonCode);
-    }
-
-    if (!expected.accountPublicKey) return fallback('nonce_invalid');
-    const nonceVerification = verifyPeerRouteNonceV1({
-      proof: parsedRequest.data.nonceProof,
-      accountPublicKey: expected.accountPublicKey,
-      expected: {
-        grantId: verification.payload.grantId,
-        routeKind: verification.payload.routeKind,
-        flowKind: verification.payload.flowKind,
-        endpointFingerprint: verification.payload.endpointFingerprint,
-      },
-    });
-    if (!nonceVerification.valid) return fallback(nonceVerification.reasonCode);
-
-    return {
-      v: 1,
-      ok: true,
-      receipt: PEER_MEDIATION_RECEIPTS.routeSelected,
-      routeKind: 'loopback_direct',
-      flowKind: verification.payload.flowKind,
-      endpointFingerprint: verification.payload.endpointFingerprint ?? expected.endpointFingerprint,
-    };
-  });
-
   const directFlowObserverFor = (expected: PeerMediationLoopbackExpectedBinding) => (
     createDaemonPeerMediationDirectFlowObserver({
       ...(options.observability ? { observability: options.observability } : {}),
@@ -279,7 +198,7 @@ export function createPeerMediationLoopbackApp(options: PeerMediationLoopbackApp
         accountId: expected.accountId,
         machineId: expected.machineId,
         endpointFingerprint: expected.endpointFingerprint,
-        accountPublicKey: expected.accountPublicKey,
+        ...(options.irohMachineAdmission ? { irohEndpointId: options.irohMachineAdmission.localEndpointId } : {}),
       },
       trustRoots: options.trustRoots,
       resolveTrustRoots,
@@ -303,7 +222,7 @@ export function createPeerMediationLoopbackApp(options: PeerMediationLoopbackApp
 }
 
 function formatLoopbackUrlHost(host: string): string {
-  return normalizeBindHost(host) === '::1' ? '[::1]' : host;
+  return normalizeHostnameForLoopbackCheck(host) === '::1' ? '[::1]' : host;
 }
 
 export async function startPeerMediationLoopbackServer(
@@ -313,14 +232,13 @@ export async function startPeerMediationLoopbackServer(
   const app = createPeerMediationLoopbackApp(options);
   const address = await app.listen({ host, port: options.port ?? 0 });
   const parsedAddress = new URL(address);
-  const url = `http://${formatLoopbackUrlHost(host)}:${parsedAddress.port}${PEER_MEDIATION_LOOPBACK_PROBE_PATH}`;
+  const url = `http://${formatLoopbackUrlHost(host)}:${parsedAddress.port}`;
   const endpoint = PeerLoopbackEndpointCandidateV1Schema.parse({
     v: 1,
     routeKind: 'loopback_direct',
     url,
     endpointFingerprint: options.expected.endpointFingerprint,
     expiresAt: options.endpointExpiresAt,
-    directRouteGrantProofVerifierVersions: options.directRouteGrantProofVerifierVersions ?? [],
   });
   return {
     app,

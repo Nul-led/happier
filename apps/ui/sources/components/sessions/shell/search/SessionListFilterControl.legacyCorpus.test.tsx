@@ -106,6 +106,33 @@ describe('SessionListFilterControl legacy corpus presentation', () => {
         expect(props.active).toBe(true);
     });
 
+    it('hands the Archived destination to the scope menu and reads the scope from the label, not the narrowed mark', async () => {
+        const { SessionListFilterControl } = await import('./SessionListFilterControl');
+        const openArchived = vi.fn();
+        const base = createSessionListViewFilterDefaults({ homeServerIds: ['home-a'] });
+        await renderScreen(
+            <SessionListFilterControl
+                controller={controller({
+                    queryEnabled: true,
+                    corpusPresentation: 'semantic_query',
+                    filters: { ...base, scope: 'all_accessible' },
+                })}
+                organizationProjectionsByServerId={{}}
+                onOpenArchived={openArchived}
+            />,
+        );
+
+        const props = editorControlSpy.mock.lastCall?.[0] as Readonly<{
+            label: string;
+            active: boolean;
+            editor: Readonly<{ onOpenArchived?: () => void; labels: Readonly<{ archived?: string }> }>;
+        }>;
+        expect(props.editor.onOpenArchived).toBe(openArchived);
+        expect(props.editor.labels.archived).toBeTruthy();
+        // A broader scope is already said by the label; "narrowed" is for facets beyond it.
+        expect(props.active).toBe(false);
+    });
+
     it('marks the inactive preference unavailable for the archived corpus', async () => {
         const { SessionListFilterControl } = await import('./SessionListFilterControl');
         await renderScreen(

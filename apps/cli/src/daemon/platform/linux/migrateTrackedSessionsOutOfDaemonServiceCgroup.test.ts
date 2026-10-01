@@ -49,6 +49,7 @@ describe('migrateTrackedSessionsOutOfDaemonServiceCgroup', () => {
       9802,
       '/user.slice/user-501.slice/user@501.service/app.slice/happier-session-9802.scope',
     );
+    await writeProcCgroup(procfsRootDir, 9900, daemonServiceRelativePath);
     await writeProcChildren(procfsRootDir, 6480, [6481]);
     await writeProcChildren(procfsRootDir, 6481, [6482]);
     await writeProcChildren(procfsRootDir, 6482, []);
@@ -57,7 +58,7 @@ describe('migrateTrackedSessionsOutOfDaemonServiceCgroup', () => {
     await mkdir(join(cgroupRootDir, '/user.slice/user-501.slice/user@501.service/app.slice/happier-daemon.default.service'), { recursive: true });
     await writeFile(
       join(cgroupRootDir, '/user.slice/user-501.slice/user@501.service/app.slice/happier-daemon.default.service/cgroup.procs'),
-      '111\n6480\n6481\n6482\n9761\n9802\n',
+      '111\n6480\n6481\n6482\n9761\n9802\n9900\n',
       'utf8',
     );
 
@@ -100,10 +101,6 @@ describe('migrateTrackedSessionsOutOfDaemonServiceCgroup', () => {
         pid: 9761,
         targetRelativePath: '/user.slice/user-501.slice/user@501.service/happier-session-9761.scope',
       },
-      {
-        pid: 9802,
-        targetRelativePath: '/user.slice/user-501.slice/user@501.service/happier-session-9802.scope',
-      },
     ]);
 
     expect(
@@ -124,12 +121,14 @@ describe('migrateTrackedSessionsOutOfDaemonServiceCgroup', () => {
         'utf8',
       ),
     ).toBe('6482\n');
-    expect(
-      await readFile(
-        join(cgroupRootDir, '/user.slice/user-501.slice/user@501.service/happier-session-9802.scope/cgroup.procs'),
-        'utf8',
-      ),
-    ).toBe('9802\n');
+    await expect(readFile(
+      join(cgroupRootDir, '/user.slice/user-501.slice/user@501.service/happier-session-9802.scope/cgroup.procs'),
+      'utf8',
+    )).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(readFile(
+      join(cgroupRootDir, '/user.slice/user-501.slice/user@501.service/happier-session-9900.scope/cgroup.procs'),
+      'utf8',
+    )).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('skips sessions that are not daemon-reattached or already outside the daemon service subtree', async () => {
@@ -255,7 +254,7 @@ describe('migrateTrackedSessionsOutOfDaemonServiceCgroup', () => {
     })).resolves.toBeNull();
   });
 
-  it('moves residual legacy happier-session scopes under app.slice even when they are not listed in the daemon service cgroup', async () => {
+  it('leaves untracked legacy happier-session scopes under app.slice untouched', async () => {
     sandboxDir = await mkdtemp(join(tmpdir(), 'happier-cgroup-migration-'));
     const procfsRootDir = join(sandboxDir, 'proc');
     const cgroupRootDir = join(sandboxDir, 'sys', 'fs', 'cgroup');
@@ -291,15 +290,10 @@ describe('migrateTrackedSessionsOutOfDaemonServiceCgroup', () => {
       cgroupRootDir,
     });
 
-    expect(migrated).toContainEqual({
-      pid: 15161,
-      targetRelativePath: '/user.slice/user-501.slice/user@501.service/happier-session-15161.scope',
-    });
-    expect(
-      await readFile(
-        join(cgroupRootDir, '/user.slice/user-501.slice/user@501.service/happier-session-15161.scope/cgroup.procs'),
-        'utf8',
-      ),
-    ).toBe('15161\n');
+    expect(migrated).toEqual([]);
+    await expect(readFile(
+      join(cgroupRootDir, '/user.slice/user-501.slice/user@501.service/happier-session-15161.scope/cgroup.procs'),
+      'utf8',
+    )).rejects.toMatchObject({ code: 'ENOENT' });
   });
 });

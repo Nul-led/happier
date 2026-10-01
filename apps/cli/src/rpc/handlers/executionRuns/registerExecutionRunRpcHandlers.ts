@@ -2,13 +2,13 @@ import type { RpcHandlerRegistrar } from '@/api/rpc/types';
 import type { ACPMessageData, ACPProvider } from '@/api/session/sessionMessageTypes';
 import {
   ExecutionRunTurnStreamStartV2RequestSchema,
-  ExecutionRunCancelTurnRequestSchema,
   ExecutionRunUserTranscriptCommitRequestSchema,
   SessionExecutionRunBrokerAuthorityRequestV1Schema,
   SessionExecutionRunBrokerAuthorityResponseV1Schema,
   type ExecutionRunPublicState,
   type SessionTranscriptObservationProvenanceV1,
   type ActionExecutorDeps,
+  type ReviewCommentPrincipalHeaderV1,
 } from '@happier-dev/protocol';
 import { accountSettingsParse } from '@happier-dev/protocol';
 import { SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc';
@@ -27,6 +27,7 @@ import type { ExecutionBudgetRegistry } from '@/daemon/executionBudget/Execution
 import type { BrowserDaemonControlRoutes } from '@/daemon/browser/control/routes';
 import type { BrowserContextRoutes } from '@/daemon/browser/context/routes';
 import type { BrowserAutomationRoutes } from '@/daemon/browser/automation/routes';
+import type { BrowserUiAutomationRouteOwner } from '@/daemon/runtimeActionExecutor';
 import type { BrowserDiagnosticsActionRoutes } from '@/daemon/browser/diagnostics/actionRoutes';
 import type { BrowserRecordingRoutes } from '@/daemon/browser/recording/routes';
 import type {
@@ -61,6 +62,7 @@ import type { NativeAgentSessionInteractionHostBinding } from '@/agent/runtime/r
 import type { ActiveAccountSettingsSnapshot } from '@/settings/accountSettings/activeAccountSettingsSnapshot';
 import type { RuntimeActionSettingsProvider } from '@/settings/actionsSettingsProvider';
 import type { ExecutionRunTeamCredentialProviderBindingPreparer } from '@/agent/runtime/bridges/executionRun/runtime/providerLaunch';
+import { createReviewRunCommentService } from '@/agent/executionRuns/profiles/review/reviewComments';
 
 export type ExecutionRunRpcHandlerContext = Readonly<{
   /** Fixed handler scope: a concrete Session or the daemon-owned detached scope. */
@@ -73,12 +75,17 @@ export type ExecutionRunRpcHandlerContext = Readonly<{
   runtimeAccountId?: string;
   /** Session-owned Run listing dependency, injected by the runtime principal owner. */
   sessionList?: ActionExecutorDeps['sessionList'];
+  resolveAgentStartContext?: ActionExecutorDeps['resolveAgentStartContext'];
+  readPromptCredentials?: () => Promise<import('@/persistence').StoredCredentials | null>;
   grantAttachedRunTeamVisibility?: GrantAttachedRunTeamVisibility;
   serverUrl?: string;
   parentProvider: ACPProvider;
+  /** Actual Agent identity from the live Session owner; not provider/transcript metadata. */
+  resolveReviewCommentActor?: () => Extract<ReviewCommentPrincipalHeaderV1['actor'], { kind: 'agent' }> | null;
   browserControl?: BrowserDaemonControlRoutes | null;
   browserContext?: BrowserContextRoutes | null;
   browserAutomation?: BrowserAutomationRoutes | null;
+  getBrowserUiAutomation?: () => BrowserUiAutomationRouteOwner | null;
   browserDiagnostics?: BrowserDiagnosticsActionRoutes | null;
   browserRecording?: BrowserRecordingRoutes | null;
   attachBrowserRecordingToComposer?: (
@@ -127,7 +134,6 @@ export type ExecutionRunRpcHandlerContext = Readonly<{
     boundedTimeoutMs?: number | null;
     reviewBoundedTimeoutMs?: number | null;
     maxTurns?: number | null;
-    maxDepth?: number;
   }>;
   budgetRegistry?: ExecutionBudgetRegistry;
   getPermissionRequestStore?: ExecutionRunPermissionRequestStoreProvider | null;
@@ -145,7 +151,6 @@ export type ExecutionRunRpcHandlerContext = Readonly<{
   /** Host-owned runtime Action policy; restricted runtimes must not fall back to ambient env/Account state. */
   actionsSettingsProvider?: RuntimeActionSettingsProvider;
   actionApprovalDeps?: Partial<ExecutionRunRpcApprovalDeps>;
-  enqueueParentSessionInput?: (input: Readonly<{ text: string; meta: Record<string, unknown> }>) => Promise<void>;
   /** Parent Session composition hook; the bridge remains the sole Run registry owner. */
   onManagerCreated?: (manager: ExecutionRunHostBridge) => void;
 }>;
@@ -195,7 +200,6 @@ export function registerExecutionRunRpcHandlers(
       boundedTimeoutMs: configuration.executionRunsBoundedTimeoutMs,
       reviewBoundedTimeoutMs: configuration.executionRunsReviewBoundedTimeoutMs,
       maxTurns: configuration.executionRunsMaxTurns,
-      maxDepth: configuration.executionRunsMaxDepth,
     },
     override: ctx.policy,
   });
@@ -258,6 +262,17 @@ export function registerExecutionRunRpcHandlers(
         };
 
   let canonicalActionExecutor: RpcActionExecutor | null = null;
+  const reviewCommentAction = ctx.actionApprovalDeps?.reviewCommentAction;
+  const reviewComments = reviewCommentAction && ctx.machineId
+    ? createReviewRunCommentService({
+        cwd: ctx.cwd, scope: { workspace: { machineId: ctx.machineId, path: ctx.cwd } },
+        resolveTriageActor: ctx.resolveReviewCommentActor,
+        execute: async (actionId, input, options) => await reviewCommentAction({
+          actionId, input, ...(options?.principal ? { reviewCommentPrincipal: options.principal } : {}),
+          ...(options?.signal ? { signal: options.signal } : {}), ...(ctx.serverId ? { serverId: ctx.serverId } : {}),
+        }),
+      })
+    : undefined;
   const requestCurrentIntent = ctx.actionApprovalDeps?.executionRunHostActionCurrentIntent;
   const materializeReviewHostAction = requestCurrentIntent
     ? async (readCurrentCandidate: Parameters<typeof createReviewCommentHostActionMaterializer>[0]['readCurrentCandidate']) => {
@@ -331,9 +346,6 @@ export function registerExecutionRunRpcHandlers(
     ...(ctx.resolveAccountSettingsSnapshot
       ? { resolveAccountSettingsSnapshot: ctx.resolveAccountSettingsSnapshot }
       : {}),
-    ...(ctx.enqueueParentSessionInput
-      ? { enqueueParentSessionInput: ctx.enqueueParentSessionInput }
-      : {}),
     ...(ctx.machineId ? { machineId: ctx.machineId } : {}),
     resolveProvidersFeatureEnabled: () => {
       const serverSnapshot = ctx.getServerFeaturesSnapshot?.();
@@ -344,6 +356,7 @@ export function registerExecutionRunRpcHandlers(
       }).state === 'enabled';
     },
     ...(materializeReviewHostAction ? { materializeReviewHostAction } : {}),
+    ...(reviewComments ? { reviewComments } : {}),
     checkConnectedServicesGenerationCurrent: async ({ runId, registration }) => {
       const result = await checkExecutionRunConnectedServicesGenerationCurrent({
         runId,
@@ -393,18 +406,6 @@ export function registerExecutionRunRpcHandlers(
     }),
     scopes: EXECUTION_RUN_RPC_SCOPES,
   });
-
-  rpc.registerHandler(
-    SESSION_RPC_METHODS.EXECUTION_RUN_CANCEL_TURN_V1,
-    async (request: unknown) => {
-      if (!isExecutionRunsEnabled()) {
-        return { ok: false, error: 'Execution runs disabled', errorCode: 'execution_run_cancel_unsupported' };
-      }
-      const parsed = ExecutionRunCancelTurnRequestSchema.safeParse(request);
-      if (!parsed.success) return invalidParams();
-      return await manager.cancelCurrentTurn(parsed.data.runId, parsed.data);
-    },
-  );
 
   rpc.registerHandler(
     SESSION_RPC_METHODS.EXECUTION_RUN_STREAM_START_V2,

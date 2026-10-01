@@ -241,6 +241,16 @@ const PENDING_EXPORT_CONTRACT: Readonly<Record<string, PendingExportContract>> =
         kind: 'not-a-server-mutation',
         why: 'Pure projection-identity resolution; no server exchange.',
     },
+    resolvePendingMutationIdentity: {
+        kind: 'not-a-server-mutation',
+        why: 'Reads the scoped projection and durable request recipient, validating transportability '
+            + 'before a caller sends anything; it has no server exchange or acknowledgement.',
+    },
+    PendingMessageMutationProtocolUnsupportedError: {
+        kind: 'not-a-server-mutation',
+        why: 'Constructs a typed failure when a mutation response does not confirm replacement identity; '
+            + 'the constructor performs no server exchange or custody transition.',
+    },
     serializePendingEnqueueBodyForServerWire: {
         kind: 'not-a-server-mutation',
         why: 'Pure wire serialization; no server exchange.',

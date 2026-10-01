@@ -94,6 +94,8 @@ export type DaemonMachineIrohRuntime = Readonly<{
   endpoint: IrohEndpointDescriptorV1;
   ensureHomeTunnel?: (input: Readonly<{
     descriptor: HomeConnectionDescriptorV1;
+    /** Retain exact descriptor authority while dialing through its stable relay hint. */
+    relayOnly?: boolean;
   }>) => Promise<Readonly<{
     runtimeOrigin: string;
     observedPath: 'direct' | 'relay' | 'unknown';
@@ -349,7 +351,7 @@ export async function createDaemonMachineIrohRuntime(input: Readonly<{
   return {
     available: true,
     endpoint,
-    async ensureHomeTunnel({ descriptor }) {
+    async ensureHomeTunnel({ descriptor, relayOnly }) {
       if (shutdownRequested) throw new Error('Iroh daemon runtime is shut down');
       const parsed = HomeConnectionDescriptorV1Schema.parse(descriptor);
       const homeEndpoint = parsed.endpoints.find((candidate) => candidate.kind === 'iroh');
@@ -358,7 +360,7 @@ export async function createDaemonMachineIrohRuntime(input: Readonly<{
         endpointHandle: created.endpointHandle,
         homeServerIdentityId: parsed.homeServerIdentityId,
         endpointId: homeEndpoint.endpointId,
-        ...(homeEndpoint.directAddresses ? { directAddresses: homeEndpoint.directAddresses } : {}),
+        ...(!relayOnly && homeEndpoint.directAddresses ? { directAddresses: homeEndpoint.directAddresses } : {}),
         ...(homeEndpoint.relayUrls ? { relayUrls: homeEndpoint.relayUrls } : {}),
       });
       // The lease stays owned until native release succeeds; concurrent

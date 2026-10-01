@@ -31,6 +31,21 @@ describe('voice provider conversation metadata', () => {
     });
   });
 
+  it('keeps the original timestamp when the same provider conversation is published again', () => {
+    const providerId = 'happier.voice.xai/realtime-grok';
+    const first = writeVoiceProviderConversationMetadata(
+      {},
+      { providerId, state: { conversationId: 'conversation-1' }, updatedAt: 10 },
+    );
+
+    const second = writeVoiceProviderConversationMetadata(
+      first,
+      { providerId, state: { conversationId: 'conversation-1' }, updatedAt: 20 },
+    );
+
+    expect(readVoiceProviderConversationMetadata(second, providerId)?.updatedAt).toBe(10);
+  });
+
   it('round-trips provider-owned resumable identity without overwriting siblings', () => {
     const first = writeVoiceProviderConversationMetadata(
       { retained: true },

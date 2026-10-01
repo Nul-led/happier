@@ -1,15 +1,10 @@
 import {
-    arePluginMachineMaterializationRefsEqual,
-    isPluginMachineMaterializationOnServerIdentityV1,
-    type PluginMachineExecutionOriginV1,
-} from '@happier-dev/protocol';
-import {
-    PluginUiArtifactsManifestEntryV1Schema,
+    PluginUiArtifactsManifestEntryV2Schema,
     verifyPluginUiArtifactBytesIntegrityV1,
     verifyPluginUiArtifactFileSetIntegrityV1,
     type PluginUiArtifactDigestV1,
     type PluginUiArtifactFileV1,
-    type PluginUiArtifactsManifestEntryV1,
+    type PluginUiArtifactsManifestEntryV2,
 } from '@happier-dev/protocol/plugins/ui';
 
 import type {
@@ -43,34 +38,79 @@ export type PluginArtifactSourceKind =
 export type PluginSelectedArtifactIdentity = Readonly<{
     pluginId: string;
     contributionId: string;
+    artifactId: string;
     tier: 'declarative' | 'hostedWeb' | 'reactNative';
     platform: 'web' | 'ios' | 'android';
     digest: PluginUiArtifactDigestV1;
+    hostUiApiRange: string;
     releaseVersion: string;
-    availabilityCursor: number;
 }>;
 
 /**
- * Source-local provenance carried beside the selected immutable Artifact
- * identity. Account hosting consumes this only to address its current link;
- * it must not affect selected-byte identity, lease currentness, or cache
- * custody.
+ * Addressing for the daemon byte source: the machine that projected (bundled/
+ * development) or serves (portable) the selected digest. It is transport
+ * only, never admission; the returned bytes are SHA-verified like any source.
  */
-export type PluginArtifactSourceReadInput = Readonly<{
+export type PluginArtifactDaemonTransport = Readonly<{
+    machineId: string;
+    serverId: string;
+}>;
+
+/**
+ * Exact non-portable Artifact selected by one admitted daemon projection.
+ * The projection supplies semantic selection/currentness only; every source
+ * still has to return bytes matching this selected digest and graph.
+ */
+export type PluginDaemonProjectionArtifactSelection = Readonly<{
+    occurrenceId: string;
+    artifact: PluginAccountAvailabilityArtifactFact;
+    isCurrent: () => boolean;
+}>;
+
+/**
+ * A bundled/development selection made by one daemon's admitted projection.
+ * It carries that projecting daemon as its byte route, so an originless
+ * selection always has a daemon source for its exact digest.
+ */
+export type PluginArtifactDaemonProjectionSelectionInput = Readonly<{
+    occurrenceId: string;
+    contributionId: string;
+    releaseVersion: string;
+    /** The daemon whose projection made this selection. */
+    transport?: PluginArtifactDaemonTransport;
+    isCurrent: () => boolean;
+}>;
+
+type PluginSelectedArtifactAdmission =
+    | Readonly<{
+        kind: 'available';
+        artifact: PluginAccountAvailabilityArtifactFact;
+    }>
+    | Extract<PluginAccountAvailabilityArtifactAdmission, { kind: 'unavailable' }>;
+
+/**
+ * One byte request: the selected digest plus the selected slot facts. Digest is
+ * the byte identity; Account hosting additionally needs its current link id
+ * because the server authorizes that read by link. No source receives or
+ * decides currentness.
+ */
+export type PluginArtifactByteRequest = Readonly<{
     artifact: PluginSelectedArtifactIdentity;
-    relativePath: string;
     accountHostedArtifactId?: string;
 }>;
 
+/** A source's complete file set for one digest, keyed by relative path. */
+export type PluginArtifactFileSet = ReadonlyMap<string, Uint8Array>;
+
 /**
- * A concrete source adapter receives the current immutable Artifact identity,
- * one declared file path, and only Account-hosted source provenance when that
- * specific adapter needs it. It owns transport details privately; no renderer
- * receives a daemon RPC shape, URL, cache key, or source choice.
+ * The one byte-source interface. Every source (app preseed, device cache,
+ * daemon, Account hosting) returns the complete file set for the requested
+ * digest or `null` for a miss/failure. Integrity is verified once by the
+ * lease; a source has no admission, selection, or currentness authority.
  */
 export type PluginArtifactSourceCandidate = Readonly<{
     kind: PluginArtifactSourceKind;
-    readFile: (input: PluginArtifactSourceReadInput) => Promise<Uint8Array | null>;
+    fetch: (request: PluginArtifactByteRequest) => Promise<PluginArtifactFileSet | null>;
     /**
      * Persistent byte custody can atomically remove one verified-entry key
      * when the lease proves that its complete declared file graph is invalid.
@@ -93,7 +133,7 @@ export type PluginSelectedArtifactLease = Readonly<{
     artifact: PluginSelectedArtifactIdentity;
     /** The one fully verified source that supplied this private handle. */
     sourceKind: PluginArtifactSourceKind;
-    artifactGraph: PluginUiArtifactsManifestEntryV1;
+    artifactGraph: PluginUiArtifactsManifestEntryV2;
     files: readonly PluginUiArtifactFileV1[];
     readFile: (relativePath: string) => Promise<PluginSelectedArtifactLeaseFileResult>;
     isCurrent: () => boolean;
@@ -115,94 +155,80 @@ export type PluginSelectedArtifactLeaseAcquireResult =
             | 'artifact_lease_revoked';
     }>;
 
-const SOURCE_RANK: Readonly<Record<PluginArtifactSourceKind, number>> = Object.freeze({
-    persistentCache: 0,
-    appExact: 1,
-    daemon: 2,
-    accountHosted: 3,
-});
+const SOURCE_ORDER = Object.freeze([
+    'persistentCache',
+    'appExact',
+    'daemon',
+    'accountHosted',
+] satisfies readonly PluginArtifactSourceKind[]);
 
 function cloneArtifactFact(
     fact: PluginAccountAvailabilityArtifactFact,
-    availabilityCursor: number,
 ): PluginSelectedArtifactIdentity {
     return Object.freeze({
         pluginId: fact.pluginId,
         contributionId: fact.contributionId,
+        artifactId: fact.artifactId,
         tier: fact.tier,
         platform: fact.platform,
         digest: fact.digest,
+        hostUiApiRange: fact.hostUiApiRange,
         releaseVersion: fact.releaseVersion,
-        availabilityCursor,
+    });
+}
+
+function readSelectedArtifactAdmission(input: Readonly<{
+    reader: PluginAccountAvailabilityReader;
+    slot: PluginAccountAvailabilityArtifactSlot;
+    daemonProjectionSelection?: PluginDaemonProjectionArtifactSelection;
+}>): PluginSelectedArtifactAdmission {
+    const selected = input.daemonProjectionSelection;
+    if (!selected) return input.reader.readCurrentArtifact(input.slot);
+    if (
+        !selected.occurrenceId.trim()
+        || selected.artifact.pluginId !== input.slot.pluginId
+        || selected.artifact.contributionId !== input.slot.contributionId
+        || selected.artifact.tier !== input.slot.tier
+        || selected.artifact.platform !== input.slot.platform
+    ) {
+        return Object.freeze({ kind: 'unavailable', code: 'artifact_not_current' });
+    }
+    try {
+        if (!selected.isCurrent()) {
+            return Object.freeze({ kind: 'unavailable', code: 'artifact_not_current' });
+        }
+    } catch {
+        return Object.freeze({ kind: 'unavailable', code: 'artifact_not_current' });
+    }
+    return Object.freeze({
+        kind: 'available',
+        artifact: selected.artifact,
     });
 }
 
 function sameArtifactIdentity(
     left: PluginSelectedArtifactIdentity,
-    right: PluginAccountAvailabilityArtifactAdmission,
+    right: PluginSelectedArtifactAdmission,
 ): boolean {
     return right.kind === 'available'
         && left.pluginId === right.artifact.pluginId
         && left.contributionId === right.artifact.contributionId
+        && left.artifactId === right.artifact.artifactId
         && left.tier === right.artifact.tier
         && left.platform === right.artifact.platform
         && left.digest === right.artifact.digest
+        && left.hostUiApiRange === right.artifact.hostUiApiRange
         && left.releaseVersion === right.artifact.releaseVersion;
 }
 
-/**
- * The one exact daemon-origin currentness decision shared by every Artifact
- * family. Family adapters first prove their cache identity, then delegate the
- * Account/materialization/release/slot facts here instead of maintaining
- * lockstep hosted-web and React-Native copies.
- */
-export function isExactDaemonPluginArtifactOriginCurrent(input: Readonly<{
-    reader: PluginAccountAvailabilityReader;
-    origin: PluginMachineExecutionOriginV1;
-    artifact: PluginSelectedArtifactIdentity;
-}>): boolean {
-    if (input.origin.materializationRef.pluginId !== input.artifact.pluginId) return false;
-    const admission = input.reader.readMaterializations();
-    if (admission.kind !== 'available') return false;
-    const matching = admission.materializations.filter((materialization) => (
-        isPluginMachineMaterializationOnServerIdentityV1(materialization, input.origin.serverIdentityId)
-        && arePluginMachineMaterializationRefsEqual(materialization, input.origin.materializationRef)
-    ));
-    if (matching.length !== 1) return false;
-    const materialization = matching[0]!;
-    if (
-        !materialization.portableRelease
-        || !materialization.enabled
-        || materialization.trustState !== 'trusted'
-        || materialization.version !== input.artifact.releaseVersion
-    ) {
-        return false;
-    }
-    const release = input.reader.classifyRelease(materialization);
-    if (
-        release.serverIdentityId !== input.origin.serverIdentityId
-        || !arePluginMachineMaterializationRefsEqual(materialization, release.materializationRef)
-        || release.releaseContent !== 'matched'
-        || release.validation.kind !== 'admitted'
-    ) {
-        return false;
-    }
-    return materialization.uiArtifacts.some((slot) => (
-        slot.contributionId === input.artifact.contributionId
-        && slot.tier === input.artifact.tier
-        && slot.platform === input.artifact.platform
-        && slot.artifactDigest === input.artifact.digest
-    ));
-}
-
 function isGraphCompatible(
-    graph: PluginUiArtifactsManifestEntryV1,
+    graph: PluginUiArtifactsManifestEntryV2,
     artifact: PluginSelectedArtifactIdentity,
 ): boolean {
-    return graph.contributionId === artifact.contributionId
+    return graph.artifactId === artifact.artifactId
         && graph.tier === artifact.tier
-        && (graph.platform === undefined || graph.platform === artifact.platform)
-        && graph.digest === artifact.digest;
+        && graph.digest === artifact.digest
+        && graph.hostUiApiRange === artifact.hostUiApiRange;
 }
 
 function artifactKindFor(tier: PluginSelectedArtifactIdentity['tier']): string {
@@ -218,7 +244,7 @@ function orderedSources(
         byKind.set(source.kind, source);
     }
     return Object.freeze([...byKind.values()].sort((left, right) => (
-        SOURCE_RANK[left.kind] - SOURCE_RANK[right.kind]
+        SOURCE_ORDER.indexOf(left.kind) - SOURCE_ORDER.indexOf(right.kind)
     )));
 }
 
@@ -239,6 +265,22 @@ export type PluginArtifactVerifiedSourceResult =
     }>
     | Readonly<{ kind: 'notCurrent' }>
     | Readonly<{ kind: 'unavailable'; integrityFailed: boolean }>;
+
+type InFlightArtifactMaterializationParticipant = Readonly<{
+    sources: readonly PluginArtifactSourceCandidate[];
+    isCurrent: () => boolean;
+    accountHostedArtifactId?: string;
+}>;
+
+type InFlightArtifactMaterialization = Readonly<{
+    participants: Set<InFlightArtifactMaterializationParticipant>;
+    promise: Promise<PluginArtifactVerifiedSourceResult>;
+}>;
+
+const inFlightMaterializationsByLifetime = new WeakMap<
+    object,
+    Map<PluginUiArtifactDigestV1, InFlightArtifactMaterialization>
+>();
 
 export type PluginArtifactLeasePersistentScope = Readonly<{
     scope: ServerAccountScope;
@@ -492,124 +534,32 @@ function persistentIdentityFor(input: Readonly<{
 }>): PluginUiPersistentArtifactIdentity {
     return Object.freeze({
         accountScope: input.scope,
-        releaseVersion: input.artifact.releaseVersion,
-        pluginId: input.artifact.pluginId,
-        contributionId: input.artifact.contributionId,
-        tier: input.artifact.tier,
-        platform: input.artifact.platform,
         artifactDigest: input.artifact.digest,
     });
 }
 
-export function isPluginArtifactPersistentScopeCurrent(
-    scope: PluginArtifactLeasePersistentScope | undefined,
-): boolean {
-    return scope ? scope.isCurrent() : true;
-}
-
-export function createPluginArtifactPersistentSource<TIdentity>(input: Readonly<{
+/**
+ * The device-cache byte source: the retained verified file set for the
+ * selected digest inside this server/Account partition.
+ */
+export function createPluginArtifactPersistentSource(input: Readonly<{
     scope: PluginArtifactLeasePersistentScope;
-    identity: TIdentity;
-    artifactMatchesIdentity: (artifact: PluginSelectedArtifactIdentity, identity: TIdentity) => boolean;
 }>): PluginArtifactSourceCandidate {
-    let pending: Promise<PluginUiPersistentArtifactRecord | null> | null = null;
-    let persistentIdentityKey = '';
     let loadedIdentity: PluginUiPersistentArtifactIdentity | null = null;
-    let loadedRecord: PluginUiPersistentArtifactRecord | null = null;
-    const clearLoaded = () => {
-        const identity = loadedIdentity;
-        loadedIdentity = null;
-        loadedRecord = null;
-        pending = Promise.resolve(null);
-        return identity;
-    };
     return Object.freeze({
         kind: 'persistentCache',
-        readFile: async ({ artifact, relativePath }) => {
-            if (!input.scope.isCurrent() || !input.artifactMatchesIdentity(artifact, input.identity)) return null;
-            const persistentIdentity = persistentIdentityFor({ scope: input.scope.scope, artifact });
-            const currentKey = [
-                persistentIdentity.releaseVersion,
-                persistentIdentity.pluginId,
-                persistentIdentity.contributionId,
-                persistentIdentity.tier,
-                persistentIdentity.platform,
-                persistentIdentity.artifactDigest,
-            ].join('\u0000');
-            if (currentKey !== persistentIdentityKey) {
-                persistentIdentityKey = currentKey;
-                loadedIdentity = persistentIdentity;
-                loadedRecord = null;
-                pending = input.scope.store.read(persistentIdentity)
-                    .then((record) => {
-                        loadedRecord = record;
-                        return record;
-                    })
-                    .catch(() => null);
-            }
-            const record = await pending;
+        fetch: async ({ artifact }) => {
+            if (!input.scope.isCurrent()) return null;
+            const identity = persistentIdentityFor({ scope: input.scope.scope, artifact });
+            const record = await input.scope.store.read(identity).catch(() => null);
             if (!record || !input.scope.isCurrent()) return null;
-            const file = record.files.find((candidate) => candidate.relativePath === relativePath);
-            return file ? new Uint8Array(file.bytes) : null;
+            loadedIdentity = identity;
+            return new Map(record.files.map((file) => [file.relativePath, new Uint8Array(file.bytes)] as const));
         },
         discardInvalid: async () => {
-            if (!input.scope.isCurrent() || !loadedIdentity || !loadedRecord) return;
-            const identity = clearLoaded();
-            if (identity) await input.scope.removePersistentArtifact(identity);
-        },
-    });
-}
-
-export function wrapPluginArtifactLeaseCurrentness(input: Readonly<{
-    lease: PluginSelectedArtifactLease;
-    reader: PluginAccountAvailabilityReader;
-    isAdditionalCurrent: () => boolean;
-}>): PluginSelectedArtifactLease {
-    const revokeListeners = new Set<() => void>();
-    let revoked = false;
-    let disposed = false;
-    const revoke = () => {
-        if (revoked) return;
-        revoked = true;
-        for (const listener of revokeListeners) {
-            try { listener(); } catch { /* notify every independent listener */ }
-        }
-        revokeListeners.clear();
-    };
-    const isCurrent = () => {
-        if (revoked || !input.lease.isCurrent() || !input.isAdditionalCurrent()) {
-            revoke();
-            return false;
-        }
-        return true;
-    };
-    const accountSubscription = input.reader.subscribe(isCurrent);
-    const leaseSubscription = input.lease.onRevoke(revoke);
-    return Object.freeze({
-        ...input.lease,
-        isCurrent,
-        readFile: async (relativePath) => {
-            if (!isCurrent()) return Object.freeze({ kind: 'unavailable' as const, code: 'artifact_lease_revoked' as const });
-            const result = await input.lease.readFile(relativePath);
-            return isCurrent()
-                ? result
-                : Object.freeze({ kind: 'unavailable' as const, code: 'artifact_lease_revoked' as const });
-        },
-        onRevoke: (listener) => {
-            if (revoked) {
-                listener();
-                return Object.freeze({ dispose: () => {} });
-            }
-            revokeListeners.add(listener);
-            return Object.freeze({ dispose: () => revokeListeners.delete(listener) });
-        },
-        dispose: () => {
-            if (disposed) return;
-            disposed = true;
-            accountSubscription();
-            leaseSubscription.dispose();
-            input.lease.dispose();
-            revoke();
+            const identity = loadedIdentity;
+            loadedIdentity = null;
+            if (identity && input.scope.isCurrent()) await input.scope.removePersistentArtifact(identity);
         },
     });
 }
@@ -654,14 +604,15 @@ export async function persistVerifiedPluginArtifactLease(input: Readonly<{
 
 /**
  * The one verified-source materializer. It walks already-ordered candidates,
- * reads every declared file, and admits a source only when each file and the
- * complete declared file set pass canonical integrity. It owns no lease,
+ * fetches each one's file set for the selected digest, and admits a source
+ * only when each declared file and the complete file set pass canonical
+ * integrity. It owns no lease,
  * lifetime, cache custody, or result vocabulary: callers keep their own
  * currentness owner and map the outcome to their own typed codes.
  */
 export async function materializeVerifiedPluginArtifactSource(input: Readonly<{
     artifact: PluginSelectedArtifactIdentity;
-    graph: PluginUiArtifactsManifestEntryV1;
+    graph: PluginUiArtifactsManifestEntryV2;
     /** Already ordered by the caller's admitted source order. */
     sources: readonly PluginArtifactSourceCandidate[];
     isCurrent: () => boolean;
@@ -670,23 +621,24 @@ export async function materializeVerifiedPluginArtifactSource(input: Readonly<{
 }>): Promise<PluginArtifactVerifiedSourceResult> {
     let sawIntegrityFailure = false;
     for (const source of input.sources) {
+        if (!input.isCurrent()) return Object.freeze({ kind: 'notCurrent' });
+        let fetched: PluginArtifactFileSet | null;
+        try {
+            fetched = await source.fetch({
+                artifact: input.artifact,
+                ...(input.accountHostedArtifactId
+                    ? { accountHostedArtifactId: input.accountHostedArtifactId }
+                    : {}),
+            });
+        } catch {
+            fetched = null;
+        }
+        if (!input.isCurrent()) return Object.freeze({ kind: 'notCurrent' });
+        if (!fetched) continue;
         const materialized: PluginArtifactVerifiedSourceFile[] = [];
         let sourceUsable = true;
         for (const declared of input.graph.files) {
-            if (!input.isCurrent()) return Object.freeze({ kind: 'notCurrent' });
-            let bytes: Uint8Array | null;
-            try {
-                bytes = await source.readFile({
-                    artifact: input.artifact,
-                    relativePath: declared.relativePath,
-                    ...(source.kind === 'accountHosted' && input.accountHostedArtifactId
-                        ? { accountHostedArtifactId: input.accountHostedArtifactId }
-                        : {}),
-                });
-            } catch {
-                bytes = null;
-            }
-            if (!input.isCurrent()) return Object.freeze({ kind: 'notCurrent' });
+            const bytes = fetched.get(declared.relativePath);
             if (!bytes) {
                 sourceUsable = false;
                 break;
@@ -739,6 +691,120 @@ export async function materializeVerifiedPluginArtifactSource(input: Readonly<{
     return Object.freeze({ kind: 'unavailable', integrityFailed: sawIntegrityFailure });
 }
 
+function isInFlightArtifactParticipantCurrent(
+    participant: InFlightArtifactMaterializationParticipant,
+): boolean {
+    try {
+        return participant.isCurrent();
+    } catch {
+        return false;
+    }
+}
+
+async function materializeInFlightVerifiedPluginArtifactSource(input: Readonly<{
+    artifact: PluginSelectedArtifactIdentity;
+    graph: PluginUiArtifactsManifestEntryV2;
+    participants: ReadonlySet<InFlightArtifactMaterializationParticipant>;
+}>): Promise<PluginArtifactVerifiedSourceResult> {
+    // Joined occurrences share verification work, not the first occurrence's
+    // source ownership. Restart the canonical order after each failed/retired
+    // candidate so a newly joined current participant can supply exact bytes.
+    const attemptedByParticipant = new Map<
+        InFlightArtifactMaterializationParticipant,
+        Set<PluginArtifactSourceCandidate>
+    >();
+    let sawIntegrityFailure = false;
+
+    while (true) {
+        let next: Readonly<{
+            participant: InFlightArtifactMaterializationParticipant;
+            source: PluginArtifactSourceCandidate;
+        }> | null = null;
+        let anyCurrent = false;
+        for (const kind of SOURCE_ORDER) {
+            for (const participant of input.participants) {
+                if (!isInFlightArtifactParticipantCurrent(participant)) continue;
+                anyCurrent = true;
+                const attempted = attemptedByParticipant.get(participant);
+                const source = participant.sources.find((candidate) => (
+                    candidate.kind === kind && !attempted?.has(candidate)
+                ));
+                if (source) {
+                    next = Object.freeze({ participant, source });
+                    break;
+                }
+            }
+            if (next) break;
+        }
+        if (!anyCurrent) return Object.freeze({ kind: 'notCurrent' });
+        if (!next) {
+            return Object.freeze({ kind: 'unavailable', integrityFailed: sawIntegrityFailure });
+        }
+
+        let attempted = attemptedByParticipant.get(next.participant);
+        if (!attempted) {
+            attempted = new Set();
+            attemptedByParticipant.set(next.participant, attempted);
+        }
+        attempted.add(next.source);
+        const materialized = await materializeVerifiedPluginArtifactSource({
+            artifact: input.artifact,
+            graph: input.graph,
+            sources: [next.source],
+            isCurrent: next.participant.isCurrent,
+            ...(next.participant.accountHostedArtifactId
+                ? { accountHostedArtifactId: next.participant.accountHostedArtifactId }
+                : {}),
+        });
+        if (materialized.kind === 'available') return materialized;
+        if (materialized.kind === 'unavailable' && materialized.integrityFailed) {
+            sawIntegrityFailure = true;
+        }
+    }
+}
+
+function materializeSharedVerifiedPluginArtifactSource(input: Readonly<{
+    reader: PluginAccountAvailabilityReader;
+    acquisitionLifetime?: object;
+    artifact: PluginSelectedArtifactIdentity;
+    graph: PluginUiArtifactsManifestEntryV2;
+    sources: readonly PluginArtifactSourceCandidate[];
+    isCurrent: () => boolean;
+    accountHostedArtifactId?: string;
+}>): Promise<PluginArtifactVerifiedSourceResult> {
+    const lifetime = input.acquisitionLifetime ?? input.reader;
+    let byDigest = inFlightMaterializationsByLifetime.get(lifetime);
+    if (!byDigest) {
+        byDigest = new Map();
+        inFlightMaterializationsByLifetime.set(lifetime, byDigest);
+    }
+    const participant: InFlightArtifactMaterializationParticipant = Object.freeze({
+        sources: input.sources,
+        isCurrent: input.isCurrent,
+        ...(input.accountHostedArtifactId
+            ? { accountHostedArtifactId: input.accountHostedArtifactId }
+            : {}),
+    });
+    const existing = byDigest.get(input.artifact.digest);
+    if (existing) {
+        existing.participants.add(participant);
+        return existing.promise;
+    }
+
+    const participants = new Set([participant]);
+    const promise = materializeInFlightVerifiedPluginArtifactSource({
+        artifact: input.artifact,
+        graph: input.graph,
+        participants,
+    }).finally(() => {
+        if (byDigest?.get(input.artifact.digest)?.promise === promise) {
+            byDigest.delete(input.artifact.digest);
+        }
+    });
+    byDigest.set(input.artifact.digest, Object.freeze({ participants, promise }));
+    return promise;
+}
+
 async function discardInvalidPersistentSource(source: PluginArtifactSourceCandidate): Promise<void> {
     if (source.kind !== 'persistentCache') return;
     const discardInvalid = source.discardInvalid;
@@ -752,21 +818,33 @@ async function discardInvalidPersistentSource(source: PluginArtifactSourceCandid
  * returned lease has no transport/cache/source authority; renderer consumers
  * can only read declared already-verified bytes while it remains current.
  */
+/** The Account lifetime facts a lease needs: currentness and retirement. */
+export type PluginArtifactLeaseAccountLifetime = Readonly<{
+    isCurrent: () => boolean;
+    onRetire: (listener: () => void) => Readonly<{ dispose: () => void }>;
+}>;
+
 export async function acquirePluginSelectedArtifactLease(input: Readonly<{
     reader: PluginAccountAvailabilityReader;
+    /**
+     * The one active Account lifetime. It is one of the lease's two
+     * currentness facts and scopes in-flight digest sharing.
+     */
+    accountLifetime?: PluginArtifactLeaseAccountLifetime;
     slot: PluginAccountAvailabilityArtifactSlot;
+    daemonProjectionSelection?: PluginDaemonProjectionArtifactSelection;
     artifactGraph: unknown;
     sources: readonly PluginArtifactSourceCandidate[];
 }>): Promise<PluginSelectedArtifactLeaseAcquireResult> {
-    const admission = input.reader.readCurrentArtifact(input.slot);
+    const admission = readSelectedArtifactAdmission(input);
     if (admission.kind !== 'available') {
         return Object.freeze({ kind: 'unavailable', code: admission.code });
     }
-    const graph = PluginUiArtifactsManifestEntryV1Schema.safeParse(input.artifactGraph);
+    const graph = PluginUiArtifactsManifestEntryV2Schema.safeParse(input.artifactGraph);
     if (!graph.success) {
         return Object.freeze({ kind: 'unavailable', code: 'artifact_graph_invalid' });
     }
-    const artifact = cloneArtifactFact(admission.artifact, admission.availabilityCursor);
+    const artifact = cloneArtifactFact(admission.artifact);
     if (!isGraphCompatible(graph.data, artifact)) {
         return Object.freeze({ kind: 'unavailable', code: 'artifact_graph_mismatch' });
     }
@@ -780,12 +858,18 @@ export async function acquirePluginSelectedArtifactLease(input: Readonly<{
 
     const revokeListeners = new Set<() => void>();
     let unsubscribe: (() => void) | null = null;
+    let retirement: Readonly<{ dispose: () => void }> | null = null;
     let revoked = false;
+    const stopObserving = () => {
+        unsubscribe?.();
+        unsubscribe = null;
+        retirement?.dispose();
+        retirement = null;
+    };
     const revoke = () => {
         if (revoked) return;
         revoked = true;
-        unsubscribe?.();
-        unsubscribe = null;
+        stopObserving();
         for (const listener of revokeListeners) {
             try {
                 listener();
@@ -803,9 +887,19 @@ export async function acquirePluginSelectedArtifactLease(input: Readonly<{
     // withdrawal are retirement only, including `A -> B -> A`; physical deletion
     // belongs to the invalid-record discard below, the cache's own corruption
     // and eviction owners, and the logout/forget Account-wide owner.
+    // The lease's whole currentness: the Account lifetime and the current
+    // per-plugin selection (Account release or daemon occurrence). Sources,
+    // custody, and consumers add no further revocation layer.
+    const lifetimeIsCurrent = () => {
+        try {
+            return input.accountLifetime ? input.accountLifetime.isCurrent() : true;
+        } catch {
+            return false;
+        }
+    };
     const isCurrent = () => {
         if (revoked) return false;
-        if (!sameArtifactIdentity(artifact, input.reader.readCurrentArtifact(input.slot))) {
+        if (!lifetimeIsCurrent() || !sameArtifactIdentity(artifact, readSelectedArtifactAdmission(input))) {
             revoke();
             return false;
         }
@@ -814,8 +908,11 @@ export async function acquirePluginSelectedArtifactLease(input: Readonly<{
     unsubscribe = input.reader.subscribe(() => {
         isCurrent();
     });
+    retirement = input.accountLifetime?.onRetire(revoke) ?? null;
 
-    const materializedSource = await materializeVerifiedPluginArtifactSource({
+    const materializedSource = await materializeSharedVerifiedPluginArtifactSource({
+        reader: input.reader,
+        ...(input.accountLifetime ? { acquisitionLifetime: input.accountLifetime } : {}),
         artifact,
         graph: graph.data,
         sources,
@@ -824,12 +921,11 @@ export async function acquirePluginSelectedArtifactLease(input: Readonly<{
             ? { accountHostedArtifactId: admission.artifact.accountArtifactId }
             : {}),
     });
-    if (materializedSource.kind === 'notCurrent') {
+    if (!isCurrent() || materializedSource.kind === 'notCurrent') {
         return Object.freeze({ kind: 'unavailable', code: 'artifact_lease_revoked' });
     }
     if (materializedSource.kind === 'unavailable') {
-        unsubscribe?.();
-        unsubscribe = null;
+        stopObserving();
         return Object.freeze({
             kind: 'unavailable',
             code: materializedSource.integrityFailed

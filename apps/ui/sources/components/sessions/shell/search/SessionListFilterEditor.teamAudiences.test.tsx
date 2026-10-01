@@ -46,7 +46,13 @@ import { resetTeamActionClientForTests } from '@/sync/ops/teams/teamActionClient
 import { applyTeamGroupsPage, invalidateTeamGroupsForTeam, resetTeamsSnapshotsForTests } from '@/sync/store/teams/teamsSnapshots';
 
 import { SessionListFilterEditor } from './SessionListFilterEditor';
-import { createSessionListViewFilterDefaults } from './sessionListViewFilters';
+import {
+    buildSessionListFilterQueryHomes,
+    createSessionListViewFilterDefaults,
+    resolveSessionListViewContextDefaults,
+    type SessionListViewFilters,
+} from './sessionListViewFilters';
+import { clearSessionListViewFilterRetentionForTests, useSessionListViewFilters } from './useSessionListViewFilters';
 
 const labels = {
     search: 'Search filters', show: 'Show', myWork: 'My work', assignedToMe: 'Assigned to me',
@@ -55,7 +61,10 @@ const labels = {
     inactiveSessions: 'Inactive sessions', showInactive: 'Show', hideInactive: 'Hide', homes: 'Homes',
     sharedWith: 'Shared with', outsideTeams: 'Personal & direct', tags: 'Tags', source: 'Source',
     allSources: 'All', persistedSource: 'Saved in Happier', directSource: 'External', noOptions: 'No options',
-    clear: 'Clear filters', done: 'Done', title: 'Session filters',
+    clear: 'Reset', done: 'Done', title: 'Session filters',
+    needsMeOnly: 'Needs me only', needsMeOnlyDescription: 'Sessions waiting on you',
+    moreTags: (count: number) => `+ ${count} more`,
+    resultCount: (count: number) => `${count} sessions`,
 } as const;
 
 function tokenForSub(sub: string): string {
@@ -130,6 +139,7 @@ beforeEach(() => {
 
 afterEach(async () => {
     await standardCleanup();
+    clearSessionListViewFilterRetentionForTests();
     resetTeamActionClientForTests();
     resetTeamsDirectoryEngineForTests();
     resetTeamsSnapshotsForTests();
@@ -201,15 +211,21 @@ describe('SessionListFilterEditor Team audiences', () => {
             if (request.url?.endsWith('/v1/teams/groups/list')) return pendingGroups.promise;
             throw new Error(`Unexpected request: ${request.url ?? 'unknown'}`);
         });
-        const updateFilters = vi.fn();
-        const removeAuthoritativelyDeletedSelections = vi.fn();
-        const filters = createSessionListViewFilterDefaults({
-            homeServerIds: [serverId],
-            audiences: [{ serverId, kind: 'group', teamId: 'team-1', groupId: 'group-1' }],
-        });
-        const screen = await renderScreen(
-            <SessionListFilterEditor
-                filters={filters}
+        const viewContext = { kind: 'team' as const, team: address };
+        const context = resolveSessionListViewContextDefaults(viewContext, [serverId], 'all');
+        const selectedGroup = { serverId, kind: 'group' as const, teamId: 'team-1', groupId: 'group-1' };
+        let currentFilters: SessionListViewFilters = { ...context.defaults, audiences: [selectedGroup] };
+        const defaults = currentFilters;
+        function Harness() {
+            const retained = useSessionListViewFilters({
+                contextKey: context.contextKey,
+                defaults,
+                viewContext,
+                accountScopeResolutions: new Map([[serverId, { kind: 'bound', scope }]]),
+            });
+            currentFilters = retained.filters;
+            return <SessionListFilterEditor
+                filters={retained.filters}
                 includeInactive
                 queryEnabled
                 followingAvailable
@@ -219,28 +235,31 @@ describe('SessionListFilterEditor Team audiences', () => {
                 tags={[]}
                 teamAudienceContext={{ kind: 'team', team: address }}
                 labels={labels}
-                updateFilters={updateFilters}
-                removeAuthoritativelyDeletedSelections={removeAuthoritativelyDeletedSelections}
+                updateFilters={retained.updateFilters}
+                removeAuthoritativelyDeletedSelections={retained.removeAuthoritativelyDeletedSelections}
                 setIncludeInactive={vi.fn()}
                 setSource={vi.fn()}
-                resetFilters={vi.fn()}
+                resetFilters={retained.resetFilters}
                 disableTransitions
-            />,
-        );
+            />;
+        }
+        const screen = await renderScreen(<Harness />);
+        // The audiences facet opens in place of the panel, as its own list.
+        await screen.pressByTestIdAsync('session-list-filter-audiences');
         await vi.waitFor(() => {
             expect(runtimeFetchMock.mock.calls.some((call) => call[0]?.url?.endsWith('/groups/list'))).toBe(true);
         });
         const groupOptionId = `audience:${JSON.stringify([serverId, 'group', 'team-1', 'group-1'])}`;
         expect(screen.findByTestId(`session-list-filter-editor:session-list-filters:option:${groupOptionId}`)).not.toBeNull();
-        expect(removeAuthoritativelyDeletedSelections).not.toHaveBeenCalled();
+        expect(currentFilters.audiences).toEqual([selectedGroup]);
 
         await act(async () => {
             pendingGroups.resolve(new Response(JSON.stringify({ items: [], nextCursor: null }), { status: 200 }));
         });
         await vi.waitFor(() => {
-            expect(removeAuthoritativelyDeletedSelections).toHaveBeenCalledWith({
-                deletedAudiences: [{ serverId, kind: 'group', teamId: 'team-1', groupId: 'group-1' }],
-            });
+            expect(buildSessionListFilterQueryHomes(currentFilters, {
+                storage: 'active', includeInactive: true, mountedHomeServerIds: [serverId],
+            })[0].query.audiences).toEqual([{ kind: 'team', teamId: 'team-1' }]);
         });
     });
 
@@ -277,6 +296,8 @@ describe('SessionListFilterEditor Team audiences', () => {
                 disableTransitions
             />,
         );
+        // The audiences facet opens in place of the panel, as its own list.
+        await screen.pressByTestIdAsync('session-list-filter-audiences');
 
         const teamStepId = `session-list-audience-team:${JSON.stringify([serverId, 'team', 'team-1'])}`;
         await vi.waitFor(() => {
@@ -355,6 +376,8 @@ describe('SessionListFilterEditor Team audiences', () => {
                 disableTransitions
             />,
         );
+        // The audiences facet opens in place of the panel, as its own list.
+        await screen.pressByTestIdAsync('session-list-filter-audiences');
 
         const teamStepId = `session-list-audience-team:${JSON.stringify([serverId, 'team', 'team-1'])}`;
         await vi.waitFor(() => {
@@ -518,6 +541,8 @@ describe('SessionListFilterEditor Team audiences', () => {
                 disableTransitions
             />,
         );
+        // The audiences facet opens in place of the panel, as its own list.
+        await screen.pressByTestIdAsync('session-list-filter-audiences');
 
         await vi.waitFor(() => {
             expect(screen.findByTestId('session-list-filter-editor:pagination:loading')).not.toBeNull();
@@ -573,6 +598,8 @@ describe('SessionListFilterEditor Team audiences', () => {
                 disableTransitions
             />,
         );
+        // The audiences facet opens in place of the panel, as its own list.
+        await screen.pressByTestIdAsync('session-list-filter-audiences');
 
         await vi.waitFor(() => {
             expect(screen.findByTestId('session-list-filter-editor:pagination:error')).not.toBeNull();

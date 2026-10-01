@@ -19,7 +19,9 @@ vi.mock('@/sync/runtime/connectivity/serverReachabilityRuntimeFetch', () => ({
 }));
 
 vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
-    const { createTokenStorageModuleMock } = await import('@/dev/testkit');
+    // The barrel imports runtime consumers of tokenStorage while this mock is
+    // still being initialized, deadlocking module collection.
+    const { createTokenStorageModuleMock } = await import('@/dev/testkit/mocks/tokenStorage');
     return createTokenStorageModuleMock({
         importOriginal: importOriginal as <T = typeof import('@/auth/storage/tokenStorage')>() => Promise<T>,
         tokenStorage: { getCredentialsForServerUrl: getCredentialsForServerUrlMock },
@@ -313,6 +315,31 @@ describe('requestHomeDomain', () => {
                 retryable: false,
                 code: 'github_app_revision_conflict',
                 details: { error: 'github_app_revision_conflict' },
+            },
+        });
+    });
+
+    it('keeps an erasure blocked by encryption cleanup retryable', async () => {
+        const homeA = await addHome('Home A', 'https://home-a.example');
+        await focusHome(homeA);
+        plainCredentialsFor('account');
+        runtimeFetchMock.mockResolvedValue(jsonResponse({ error: 'account_erasure_transition_cleanup_pending' }, 409));
+
+        const result = await requestHomeDomain({
+            scope: createServerAccountScope(homeA, 'account')!,
+            path: '/v1/home/accounts/delete',
+            effect: 'write',
+            input: { accountId: 'target' },
+            schema: HomeGovernanceProjectionV1Schema,
+        });
+
+        expect(result).toEqual({
+            ok: false,
+            failure: {
+                kind: 'conflict',
+                retryable: true,
+                code: 'account_erasure_transition_cleanup_pending',
+                details: { error: 'account_erasure_transition_cleanup_pending' },
             },
         });
     });

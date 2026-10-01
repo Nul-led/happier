@@ -25,3 +25,15 @@ export function resolveQuotaTone(remainingPct: number | null): MeterTone {
     if (remainingPct <= QUOTA_REMAINING_WARNING_THRESHOLD_PCT) return 'warning';
     return 'success';
 }
+
+/**
+ * A reported meter's tone: by what is left, except that an unavailable or estimated value makes no
+ * health claim and stays neutral.
+ */
+export function resolveQuotaMeterTone(meter: Readonly<{
+    remainingPct: number | null;
+    status: 'ok' | 'unavailable' | 'estimated' | (string & {});
+}>): MeterTone {
+    if (meter.status === 'unavailable' || meter.status === 'estimated') return 'neutral';
+    return resolveQuotaTone(meter.remainingPct);
+}

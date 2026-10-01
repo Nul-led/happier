@@ -48,6 +48,7 @@ export async function ensureExecutionRun(args: Readonly<{
     backendId: string;
     backendTarget?: BackendTargetRefV1;
     permissionMode: string;
+    workspaceWrites?: 'allow' | 'deny';
     causalPermissionAuthority?: SessionInputCausalPermissionAuthorityV1;
     modelId?: string;
     modelSelection?: ProviderBoundModelRef;
@@ -215,6 +216,7 @@ export async function ensureExecutionRun(args: Readonly<{
             ...(modelSelection ? { modelSelection } : {}),
             ...(sessionConfigOptionOverrides ? { sessionConfigOptionOverrides } : {}),
             permissionMode: permissionIntent,
+            workspaceWrites: voiceRun.workspaceWrites,
             ...(args.params.causalPermissionAuthority
               ? { causalPermissionAuthority: args.params.causalPermissionAuthority }
               : {}),

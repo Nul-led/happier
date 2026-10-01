@@ -40,6 +40,15 @@ function Harness(props: Parameters<typeof useEnsureSidechainsLoaded>[0] & {
 }
 
 describe('useEnsureSidechainsLoaded', () => {
+  it('hydrates through the supplied source while retaining the demand status', async () => {
+    const snapshots: unknown[] = [];
+    const loadSidechain = vi.fn(async () => 'loaded' as const);
+    await renderScreen(<Harness enabled sessionId="session-source" sidechainIds={['source-chain']} loadSidechain={loadSidechain} onSnapshot={(snapshot) => snapshots.push(snapshot)} />);
+    await flushHookEffects();
+    expect(loadSidechain).toHaveBeenCalledWith('source-chain');
+    expect(ensureSidechainMessagesLoadedSpy).not.toHaveBeenCalled();
+    expect(snapshots.at(-1)).toMatchObject({ status: 'loaded', loadedCount: 1 });
+  });
   beforeEach(() => {
     ensureSidechainMessagesLoadedSpy.mockReset();
     syncTuningState.sidechainDemandHydrationConcurrencyLimit = 2;

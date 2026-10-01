@@ -1,11 +1,13 @@
 import * as React from 'react';
+import { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
     ExternalSessionOperationSharedPresentationV1Schema,
 } from '@happier-dev/protocol';
 
-import { renderScreen } from '@/dev/testkit';
+import { createTestSessionTranscriptSource, renderWithSessionTranscriptSource } from '@/dev/testkit';
+import type { Message } from '@happier-dev/session-core/messages';
 import {
     installTranscriptCommonModuleMocks,
     resetTranscriptCommonModuleMockState,
@@ -116,28 +118,24 @@ describe('TranscriptList external session operation presentation', () => {
             phase: 'importing',
         });
         const { TranscriptList } = await import('./TranscriptList');
-        const screen = await renderScreen(
+        const metadata = {
+            path: '/repo', host: 'public-host',
+            externalSessionOperationPresentationV1: presentation,
+        };
+        const messages: Message[] = [{
+            kind: 'user-text', id: 'message-1', localId: null, createdAt: 1, text: 'hello',
+        }];
+        const source = createTestSessionTranscriptSource({
+            sessionId: 'session-public-1', metadata, messages,
+            interaction: { canSendMessages: false, canApprovePermissions: false, permissionDisabledReason: 'public' },
+        });
+        const screen = await renderWithSessionTranscriptSource(
             <TranscriptList
-                sessionId="session-public-1"
                 datasetKey="public:session-public-1:1"
-                metadata={{
-                    path: '/repo',
-                    host: 'public-host',
-                    externalSessionOperationPresentationV1: presentation,
-                }}
-                messages={[{
-                    kind: 'user-text',
-                    id: 'message-1',
-                    localId: null,
-                    createdAt: 1,
-                    text: 'hello',
-                } as never]}
-                interaction={{
-                    canSendMessages: false,
-                    canApprovePermissions: false,
-                    permissionDisabledReason: 'public',
-                }}
+                metadata={metadata}
+                messages={messages}
             />,
+            source,
         );
 
         expect(
@@ -192,7 +190,6 @@ describe('TranscriptList external session operation presentation', () => {
             presentation: typeof completedPresentation,
         ) => (
             <TranscriptList
-                sessionId="session-public-1"
                 datasetKey="public:session-public-1:1"
                 metadata={{
                     path: '/repo',
@@ -200,16 +197,26 @@ describe('TranscriptList external session operation presentation', () => {
                     externalSessionOperationPresentationV1: presentation,
                 }}
                 messages={[]}
-                interaction={{
-                    canSendMessages: false,
-                    canApprovePermissions: false,
-                    permissionDisabledReason: 'public',
-                }}
             />
         );
-        const screen = await renderScreen(
+        const source = createTestSessionTranscriptSource({
+            sessionId: 'session-public-1', messages: [],
+            metadata: { path: '/repo', host: 'public-host', externalSessionOperationPresentationV1: completedPresentation },
+            interaction: { canSendMessages: false, canApprovePermissions: false, permissionDisabledReason: 'public' },
+        });
+        const screen = await renderWithSessionTranscriptSource(
             renderTranscript(completedPresentation),
+            source,
         );
+        const updateTranscript = async (presentation: typeof completedPresentation) => {
+            await act(async () => {
+                source.update({
+                    metadata: { path: '/repo', host: 'public-host', externalSessionOperationPresentationV1: presentation },
+                    messages: [], reducerState: null, agentState: null,
+                });
+            });
+            await screen.update(renderTranscript(presentation));
+        };
 
         expect(
             screen.findByTestId('external-session-operation-action-dismiss'),
@@ -221,30 +228,30 @@ describe('TranscriptList external session operation presentation', () => {
             screen.findByTestId('external-session-operation-shared-card'),
         ).toBeNull();
 
-        await screen.update(renderTranscript({
+        await updateTranscript({
             ...completedPresentation,
             revision: completedPresentation.revision + 1,
-        }));
+        });
         expect(
             screen.findByTestId('external-session-operation-action-dismiss'),
         ).not.toBeNull();
 
-        await screen.update(renderTranscript({
+        await updateTranscript({
             ...completedPresentation,
             operationId: 'operation-public-2',
             revision: 1,
-        }));
+        });
         expect(
             screen.findByTestId('external-session-operation-action-dismiss'),
         ).not.toBeNull();
 
-        await screen.update(renderTranscript({
+        await updateTranscript({
             ...completedPresentation,
             operationId: 'operation-public-running',
             revision: 1,
             status: 'running',
             phase: 'importing',
-        }));
+        });
         expect(
             screen.findByTestId('external-session-operation-shared-card'),
         ).not.toBeNull();

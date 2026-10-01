@@ -45,3 +45,12 @@ export const AGENT_INPUT_MENU_ICON_SIZE_PX = 16;
  * named exception is a decision.
  */
 export const AGENT_INPUT_CHIP_OPTION_ICON_SIZE_PX = 14;
+
+/**
+ * Width of a chip's trailing remove target (the folder chip's ×). It spans the chip's full height,
+ * so the target is at least 24 × 24 CSS px (WCAG 2.5.8) while its glyph stays at the option size.
+ */
+export const AGENT_INPUT_CHIP_REMOVE_TARGET_WIDTH_PX = 24;
+
+/** The folder label's resolving placeholder; keeps its established chip geometry while loading. */
+export const AGENT_INPUT_FOLDER_CHIP_RESOLVING_SIZE = Object.freeze({ width: 88, height: 10 });

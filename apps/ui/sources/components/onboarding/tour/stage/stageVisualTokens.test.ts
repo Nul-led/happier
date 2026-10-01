@@ -64,12 +64,13 @@ describe('stageVisualTokens', () => {
             skipTransitionMs: 240,
             hoverMs: 120,
             hoverTranslateY: -1,
-            pressScale: 0.97,
             springDamping: 18,
             springStiffness: 320,
             focusRingWidth: 2,
             focusRingAlpha: 0.4,
         });
+        // Press feedback is owned by usePressFeedback (motionTokens.press), not the stage tokens.
+        expect(stageVisualTokens.motion).not.toHaveProperty('pressScale');
     });
 
     it('shares ONE planet framing recipe and display headline scale with the welcome brand pane', () => {

@@ -1,15 +1,13 @@
 import * as React from 'react';
 import { View } from 'react-native';
-import { useUnistyles } from 'react-native-unistyles';
 
 import {
     type SelectionListOption,
     type SelectionListStatusVariant,
 } from '@/components/ui/selectionList';
+import { RelativeTimeText } from '@/components/ui/selectionList/accessories/RelativeTimeText';
 import { StatusPill as BaseStatusPill, type StatusPillVariant } from '@/components/ui/status/StatusPill';
 import { Icon } from '@/components/ui/icons/Icon';
-import { Text } from '@/components/ui/text/Text';
-import { Typography } from '@/constants/Typography';
 import { t } from '@/text';
 
 import { buildWorktreeCheckoutOptionId } from '@/components/sessions/new/modules/worktreeCheckoutOptionId';
@@ -26,28 +24,6 @@ const STATUS_VARIANT_MAP = {
     info: 'info',
     neutral: 'neutral',
 } as const satisfies Record<SelectionListStatusVariant, StatusPillVariant>;
-
-function formatWorktreeRelativeAge(atMs: number, nowMs: number): string {
-    const diffMs = Math.max(0, nowMs - atMs);
-    const minutes = Math.max(1, Math.floor(diffMs / 60_000));
-    if (minutes < 60) return t('time.minutesAgo', { count: minutes });
-    const hours = Math.floor(minutes / 60);
-    if (hours < 24) return t('time.hoursAgo', { count: hours });
-    return t('time.daysAgoShort', { count: Math.floor(hours / 24) });
-}
-
-function WorktreeRelativeTimeText(props: Readonly<{
-    atMs: number;
-    nowMs: number;
-    testID: string;
-}>): React.ReactElement {
-    const { theme } = useUnistyles();
-    return (
-        <Text testID={props.testID} style={[Typography.tabular(), { color: theme.colors.text.secondary }]}>
-            {formatWorktreeRelativeAge(props.atMs, props.nowMs)}
-        </Text>
-    );
-}
 
 function WorktreeStatusPill(props: Readonly<{
     variant: SelectionListStatusVariant;
@@ -135,7 +111,7 @@ export function buildExistingWorktreeOptions(
             const accessory = (
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                     {worktree.lastActivityAt !== undefined ? (
-                        <WorktreeRelativeTimeText
+                        <RelativeTimeText
                             atMs={worktree.lastActivityAt}
                             nowMs={params.nowMs}
                             testID={`worktree-row-age:${worktree.path}`}

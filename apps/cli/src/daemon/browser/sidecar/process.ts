@@ -35,6 +35,7 @@ export type SidecarProcessEndpointSourceResult =
         ok: false;
         errorCode: 'cdp_unavailable';
         disabledReason: string;
+        sandboxUnavailable?: boolean;
     }>;
 
 type EndpointWaiter = Readonly<{
@@ -49,6 +50,8 @@ type ActiveSidecarProcess = Readonly<{
     stderrPreview: { value: string };
     endpointWaiters: Set<EndpointWaiter>;
     disposeStderr: () => void;
+    settled: Promise<void>;
+    resolveSettled: () => void;
 }>;
 
 const MAX_STDERR_PREVIEW_CHARS = 64 * 1024;
@@ -84,11 +87,12 @@ function unavailableStatus(updatedAtMs: number): BrowserSidecarRuntimeStatusV1 {
     });
 }
 
-function cdpUnavailable(): SidecarProcessEndpointSourceResult {
+function cdpUnavailable(stderr = ''): SidecarProcessEndpointSourceResult {
     return {
         ok: false,
         errorCode: 'cdp_unavailable',
         disabledReason: 'Browser sidecar CDP endpoint is unavailable.',
+        ...(stderr.includes('No usable sandbox!') ? { sandboxUnavailable: true } : {}),
     };
 }
 
@@ -145,6 +149,8 @@ function createActiveSidecarProcess(
 ): ActiveSidecarProcess {
     const stderrPreview = { value: '' };
     const endpointWaiters = new Set<EndpointWaiter>();
+    let resolveSettled!: () => void;
+    const settled = new Promise<void>((resolve) => { resolveSettled = resolve; });
     const stderr = process.stderr ?? null;
     const listener = (chunk: string | Uint8Array): void => {
         stderrPreview.value = appendStderrPreview(stderrPreview.value, chunk);
@@ -160,6 +166,8 @@ function createActiveSidecarProcess(
         stderrPreview,
         endpointWaiters,
         disposeStderr,
+        settled,
+        resolveSettled,
     };
 
     stderr?.on('data', listener);
@@ -168,7 +176,8 @@ function createActiveSidecarProcess(
 
 function disposeActiveSidecarProcess(activeProcess: ActiveSidecarProcess): void {
     activeProcess.disposeStderr();
-    resolveEndpointWaiters(activeProcess, cdpUnavailable());
+    resolveEndpointWaiters(activeProcess, cdpUnavailable(activeProcess.stderrPreview.value));
+    activeProcess.resolveSettled();
 }
 
 export function createSidecarProcessController(params: Readonly<{
@@ -177,6 +186,7 @@ export function createSidecarProcessController(params: Readonly<{
 }>): SidecarProcessController {
     let active: ActiveSidecarProcess | null = null;
     let status = unavailableStatus(params.nowMs());
+    let endpointFailure = cdpUnavailable();
 
     function setStatus(nextStatus: BrowserSidecarRuntimeStatusV1): BrowserSidecarRuntimeStatusV1 {
         status = nextStatus;
@@ -186,6 +196,7 @@ export function createSidecarProcessController(params: Readonly<{
     function handleExit(plan: SidecarPrivateLaunchPlan, code: number | null, signal: NodeJS.Signals | null): void {
         const current = active;
         if (current?.plan.sidecarId !== plan.sidecarId) return;
+        endpointFailure = cdpUnavailable(current.stderrPreview.value);
         disposeActiveSidecarProcess(current);
         active = null;
         const expectedStop = status.state === 'stopping' && (code === 0 || signal === 'SIGTERM');
@@ -200,12 +211,15 @@ export function createSidecarProcessController(params: Readonly<{
     function handleError(plan: SidecarPrivateLaunchPlan): void {
         const current = active;
         if (current?.plan.sidecarId !== plan.sidecarId) return;
-        disposeActiveSidecarProcess(current);
-        active = null;
+        // A post-spawn process error (for example a failed signal) does not prove exit.
+        if (!current.process.pid) {
+            disposeActiveSidecarProcess(current);
+            active = null;
+        }
         setStatus(statusForPlan(plan, 'crashed', params.nowMs(), 'launch_failed'));
     }
 
-    return {
+    const controller: SidecarProcessController = {
         launch(plan) {
             if (active) {
                 return {
@@ -216,6 +230,7 @@ export function createSidecarProcessController(params: Readonly<{
             }
 
             try {
+                endpointFailure = cdpUnavailable();
                 const spawnedProcess = params.spawnProcess(plan.executablePath, plan.args);
                 active = createActiveSidecarProcess(plan, spawnedProcess);
                 spawnedProcess.once('exit', (code, signal) => handleExit(plan, code, signal));
@@ -242,11 +257,24 @@ export function createSidecarProcessController(params: Readonly<{
             }
 
             const current = active;
-            current.process.kill('SIGTERM');
+            setStatus(statusForPlan(current.plan, 'stopping', params.nowMs()));
+            try {
+                if (!current.process.kill('SIGTERM')) {
+                    return { ok: false, status, error: new Error('Browser sidecar process could not be stopped.') };
+                }
+            } catch (error) {
+                return { ok: false, status, error: error instanceof Error ? error : new Error(String(error)) };
+            }
             return {
                 ok: true,
-                status: setStatus(statusForPlan(current.plan, 'stopping', params.nowMs())),
+                status,
             };
+        },
+        async stopAndWait() {
+            const current = active;
+            const stopped = controller.stop();
+            if (!stopped.ok) throw stopped.error;
+            await current?.settled;
         },
         getStatus() {
             return status;
@@ -254,7 +282,7 @@ export function createSidecarProcessController(params: Readonly<{
         async waitForDevToolsEndpointSource(input) {
             const current = active;
             if (!current || current.plan.sidecarId !== input.sidecarId) {
-                return cdpUnavailable();
+                return endpointFailure;
             }
 
             const endpointSource = endpointSourceForPreview(current.stderrPreview.value);
@@ -270,18 +298,20 @@ export function createSidecarProcessController(params: Readonly<{
                     sidecarId: input.sidecarId,
                     resolve,
                     timeout: setTimeout(() => {
-                        resolveEndpointWaiter(current, waiter, cdpUnavailable());
+                        resolveEndpointWaiter(current, waiter, cdpUnavailable(current.stderrPreview.value));
                     }, normalizeEndpointTimeoutMs(input.timeoutMs)),
                 };
                 current.endpointWaiters.add(waiter);
             });
         },
     };
+    return controller;
 }
 
 export type SidecarProcessController = Readonly<{
     launch: (plan: SidecarPrivateLaunchPlan) => SidecarProcessResult;
     stop: () => SidecarProcessResult;
+    stopAndWait: () => Promise<void>;
     getStatus: () => BrowserSidecarRuntimeStatusV1;
     waitForDevToolsEndpointSource: (input: Readonly<{
         sidecarId: string;

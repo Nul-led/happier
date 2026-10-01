@@ -4,6 +4,7 @@ import {
   applySessionTurnLifecycleEvent,
   detectSessionTurnLifecycleEvent,
   isSessionTurnCompletionProof,
+  isSessionContextOnlyHostInput,
 } from './sessionTurnLifecycle';
 
 function rawLifecycle(type: string) {
@@ -47,6 +48,13 @@ function rawClaudeOutput(params: Readonly<{
 }
 
 describe('sessionTurnLifecycle', () => {
+  it('recognizes published context-only inputs without treating reports as a new turn', () => {
+    const published = (event: unknown) => ({ role: 'agent', content: { type: 'acp', data: { type: 'event', data: event } } });
+    expect(isSessionContextOnlyHostInput(published({ type: 'worker-update', update: { workerId: 'run-1' } }))).toBe(true);
+    expect(isSessionContextOnlyHostInput(published({ type: 'message', message: 'Workflow step input' }))).toBe(true);
+    expect(isSessionContextOnlyHostInput(published({ type: 'worker-report', report: { workerId: 'run-1' } }))).toBe(false);
+    expect(isSessionContextOnlyHostInput(published({ type: 'message', message: 'Diagnostic output' }))).toBe(false);
+  });
   it.each(['turn_failed', 'turn_cancelled', 'turn_aborted'] as const)(
     'detects terminal lifecycle marker %s',
     (type) => {

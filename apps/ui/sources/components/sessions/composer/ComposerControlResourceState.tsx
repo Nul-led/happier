@@ -87,7 +87,7 @@ function createComposerControlResourceStateScope(input: Readonly<{
             input.binding.pluginId,
             input.binding.machineId,
             input.binding.serverId,
-            input.binding.expectedGeneration,
+            input.binding.expectedCallerOccurrenceId,
             resourceContextKey(input.binding),
         ]),
         resourceKey: resourceReferenceKey(input.resource),

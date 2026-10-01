@@ -4,6 +4,9 @@ import { describe, expect, it } from 'vitest';
 import type { PluginProjectionV2 } from '@happier-dev/protocol';
 
 import { createSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
+import { SessionHeaderSubagentsButton } from '@/components/sessions/actions/SessionHeaderSubagentsButton';
+import { SessionHeaderTerminalButton } from '@/components/sessions/actions/SessionHeaderTerminalButton';
+import { SessionHeaderBrowserButton } from '@/components/sessions/actions/SessionHeaderBrowserButton';
 import { SessionHeaderActionMenu } from '@/components/sessions/actions/SessionHeaderActionMenu';
 import { normalizePluginUiProjection } from '@/sync/domains/plugins/ui/projection';
 import { SESSION_BOARD_DESTINATION } from '@/components/sessions/board/sessionBoardDestination';
@@ -40,11 +43,11 @@ function createPluginHeaderProjection() {
         generation: 7,
         installedPackagesById: {},
         agentsById: {},
-        backendsById: {},
         actionsById: {
             'acme.preview/run': {
                 id: 'run',
                 pluginId: 'acme.preview',
+                occurrenceId: 'acme.preview:run:occurrence',
                 title: 'Run preview',
                 scopes: ['session'],
                 surfaces: ['ui'],
@@ -65,6 +68,7 @@ function createPluginHeaderProjection() {
                     'sessionHeaderAction:acme.preview:run': {
                         id: 'sessionHeaderAction:acme.preview:run',
                         pluginId: 'acme.preview',
+                        occurrenceId: 'acme.preview:run:occurrence',
                         contributionKind: 'sessionHeaderAction',
                         descriptorId: 'run',
                         title: 'Run preview',
@@ -77,6 +81,7 @@ function createPluginHeaderProjection() {
                     'sessionHeaderAction:acme.preview:open': {
                         id: 'sessionHeaderAction:acme.preview:open',
                         pluginId: 'acme.preview',
+                        occurrenceId: 'acme.preview:open:occurrence',
                         contributionKind: 'sessionHeaderAction',
                         descriptorId: 'open',
                         title: 'Open preview',
@@ -99,6 +104,7 @@ function createManyPluginHeaderProjection(actionCount: number) {
         return [`acme.preview/${localId}`, {
             id: localId,
             pluginId: 'acme.preview',
+            occurrenceId: `acme.preview:${localId}:occurrence`,
             title: `Action ${index + 1}`,
             scopes: ['session'] as Array<'session'>,
             surfaces: ['ui'] as Array<'ui'>,
@@ -114,6 +120,7 @@ function createManyPluginHeaderProjection(actionCount: number) {
         return [id, {
             id,
             pluginId: 'acme.preview',
+            occurrenceId: `acme.preview:${localId}:occurrence`,
             contributionKind: 'sessionHeaderAction' as const,
             descriptorId: localId,
             title: `Action ${index + 1}`,
@@ -130,7 +137,6 @@ function createManyPluginHeaderProjection(actionCount: number) {
         generation: 7,
         installedPackagesById: {},
         agentsById: {},
-        backendsById: {},
         actionsById,
         toolsById: {},
         commandsById: {},
@@ -147,6 +153,42 @@ function createManyPluginHeaderProjection(actionCount: number) {
 }
 
 describe('resolveSessionViewHeaderProps owner metadata', () => {
+    it('removes duplicate rail and mobile terminal icons while preserving fallback access and desktop browser', () => {
+        const session = createSessionFixture({ id: 'header-rail-access' });
+        const input = {
+            isDataReady: true, session, sessionId: session.id,
+            sessionInfoHref: '/session/header-rail-access/info',
+            sessionRunsHref: '/session/header-rail-access/runs',
+            sessionAutomationsHref: '/session/header-rail-access/automations',
+            paneScopeId: 'header-rail-access', windowWidth: 1400,
+            sessionAutomationsEnabledCount: 0, sessionExecutionRunsSupported: true,
+            showAutomations: false, shouldShowSubagentsButton: true, subagentActiveCount: 1,
+            navigateWithBlurOnWeb: (action: () => void) => action(),
+            handleHeaderExtraItemSelect: () => false,
+            router: { push: () => {}, navigate: () => {} },
+            actionIconColor: '#000', headerTintColor: '#000', statusErrorColor: '#f00',
+            externalSessionRuntime: null,
+        };
+        const types = (value: ReturnType<typeof resolveSessionViewHeaderProps>) => React.Children.toArray(
+            (value.rightElement as React.ReactElement<{ children?: React.ReactNode }>).props.children,
+        ).filter(React.isValidElement).map((child) => child.type);
+        const fallback = types(resolveSessionViewHeaderProps(input));
+        expect(fallback).toContain(SessionHeaderSubagentsButton);
+        expect(fallback).toContain(SessionHeaderTerminalButton);
+        const rail = types(resolveSessionViewHeaderProps({ ...input, actionRailVisible: true }));
+        expect(rail).not.toContain(SessionHeaderSubagentsButton);
+        expect(rail).not.toContain(SessionHeaderTerminalButton);
+        expect(rail).toContain(SessionHeaderBrowserButton);
+        const mobile = types(resolveSessionViewHeaderProps({ ...input, mobileTerminalTabAvailable: true }));
+        expect(mobile).not.toContain(SessionHeaderTerminalButton);
+        expect(mobile).toContain(SessionHeaderSubagentsButton);
+        expect(types(resolveSessionViewHeaderProps(input))).toContain(SessionHeaderTerminalButton);
+        const boardHeaderAction = { onPress: () => {}, preferDirect: true };
+        expect(findBoardHeaderButton(resolveSessionViewHeaderProps({ ...input, boardHeaderAction }))).toBeDefined();
+        expect(findBoardHeaderButton(resolveSessionViewHeaderProps({ ...input, boardHeaderAction, actionRailVisible: true }))).toBeUndefined();
+
+    });
+
     it('keeps a deduplicated workspace conflict discoverable from the session header', () => {
         const session = createSessionFixture({ id: 'workspace-conflict-header' });
         const onOpenWorkspaceSyncConflicts = () => {};
@@ -171,7 +213,7 @@ describe('resolveSessionViewHeaderProps owner metadata', () => {
             headerTintColor: '#000',
             statusErrorColor: '#f00',
             externalSessionRuntime: null,
-            workspaceSyncConflictCount: 1,
+            workspaceSyncAttention: { conflictedLinkCount: 1, unknownLinkCount: 0 },
             onOpenWorkspaceSyncConflicts,
         });
         const children = React.Children.toArray(
@@ -247,7 +289,7 @@ describe('resolveSessionViewHeaderProps owner metadata', () => {
             expect.arrayContaining(Array.from({ length: 12 }, (_value, index) => expect.objectContaining({
                 action: expect.objectContaining({
                     descriptorId: `action-${index + 1}`,
-                    action: expect.objectContaining({ kind: 'executeAction' }),
+                    command: expect.objectContaining({ kind: 'executeAction' }),
                 }),
             }))),
         );
@@ -636,9 +678,14 @@ describe('resolveSessionViewHeaderProps owner metadata', () => {
             const session = createSessionFixture({
                 id: 'agent-identity-cache-session',
                 metadata: {
-                    agentId,
                     path: '/tmp/project',
                     host: 'test-host',
+                    runtimeDescriptorV1: {
+                        v: 1,
+                        agentId,
+                        agent: {},
+                        provider: {},
+                    },
                 },
             });
             return {

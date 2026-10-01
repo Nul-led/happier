@@ -13,7 +13,6 @@ test('prepares the current-platform relay fixture and all real transport integra
     packageDir: 'C:\\repo\\packages\\iroh-native',
     serverDir: 'C:\\repo\\apps\\server',
     cliDir: 'C:\\repo\\apps\\cli',
-    uiDir: 'C:\\repo\\apps\\ui',
     testsDir: 'C:\\repo\\packages\\tests',
     repoRoot: 'C:\\repo',
   });
@@ -25,6 +24,10 @@ test('prepares the current-platform relay fixture and all real transport integra
   ]);
   assert.deepEqual(plan.workspacePreparation, {
     args: ['-s', 'workspace', '@happier-dev/server', 'build:shared'],
+    cwd: 'C:\\repo',
+  });
+  assert.deepEqual(plan.cliWorkspacePreparation, {
+    args: ['-s', 'workspace', '@happier-dev/cli', 'build:shared', '--source-dev', 'protocol'],
     cwd: 'C:\\repo',
   });
   assert.deepEqual(plan.tests.server.args, [
@@ -49,14 +52,10 @@ test('prepares the current-platform relay fixture and all real transport integra
   assert.equal(plan.tests.machine.cwd, 'C:\\repo\\apps\\cli');
   assert.deepEqual(plan.tests.clientMachineDirect.args, [
     '-s',
-    'vitest:local',
-    'run',
-    '--isolate',
-    '-c',
-    'vitest.integration.config.ts',
-    'sources/sync/domains/transfers/runtime/transferRuntime/plumbing/machineCarrierHttp.real.integration.test.ts',
+    'test:core',
+    'suites/core-e2e/machineCarrierHttp.real.integration.test.ts',
   ]);
-  assert.equal(plan.tests.clientMachineDirect.cwd, 'C:\\repo\\apps\\ui');
+  assert.equal(plan.tests.clientMachineDirect.cwd, 'C:\\repo\\packages\\tests');
   assert.equal(plan.tests.clientMachineDirect.env.HAPPIER_MACHINE_TRANSFER_TEST_TOPOLOGY, 'direct');
   assert.equal(plan.tests.clientMachineRelay.env.HAPPIER_MACHINE_TRANSFER_TEST_TOPOLOGY, 'relay');
   assert.equal(plan.tests.server.env.HAPPIER_IROH_REQUIRE_NODE_ADDON, '1');
@@ -66,11 +65,11 @@ test('prepares the current-platform relay fixture and all real transport integra
   assert.match(plan.tests.composed.args.join(' '), /home\.iroh\.composedPersonalHome\.real\.e2e\.test\.ts/u);
   assert.equal(
     plan.tests.composed.env.HAPPIER_TEST_IROH_NODE_ADDON_PATH,
-    'C:\\repo\\packages\\iroh-native\\native\\happier-iroh-native-lifecycle-test.win32-x64.node',
+    'C:\\repo\\packages\\iroh-native\\native-test\\happier-iroh-native-lifecycle-test.win32-x64.node',
   );
   assert.equal(
     plan.tests.machine.env.HAPPIER_TEST_IROH_NODE_ADDON_PATH,
-    'C:\\repo\\packages\\iroh-native\\native\\happier-iroh-native-lifecycle-test.win32-x64.node',
+    'C:\\repo\\packages\\iroh-native\\native-test\\happier-iroh-native-lifecycle-test.win32-x64.node',
   );
 });
 
@@ -93,7 +92,7 @@ test('runs fixture journeys before rebuilding the ordinary addon immediately bef
     removeDirImpl: (directory) => removed.push(directory),
   });
 
-  assert.equal(calls.length, 9);
+  assert.equal(calls.length, 10);
   assert.deepEqual(calls[0].args, ['-s', 'build']);
   assert.deepEqual(calls[1].args, ['-s', 'build:native:test-relay']);
   assert.match(calls[2].args.join(' '), /homeIrohEndpoint\.real\.integration\.test\.ts/u);
@@ -101,17 +100,18 @@ test('runs fixture journeys before rebuilding the ordinary addon immediately bef
   assert.match(calls[4].args.join(' '), /machineCarrierHttp\.real\.integration\.test\.ts/u);
   assert.match(calls[5].args.join(' '), /machineCarrierHttp\.real\.integration\.test\.ts/u);
   assert.deepEqual(calls[6].args, ['-s', 'workspace', '@happier-dev/server', 'build:shared']);
-  assert.deepEqual(calls[7].args, ['-s', 'build:native']);
-  assert.match(calls[8].args.join(' '), /home\.iroh\.composedPersonalHome\.real\.e2e\.test\.ts/u);
+  assert.deepEqual(calls[7].args, ['-s', 'workspace', '@happier-dev/cli', 'build:shared', '--source-dev', 'protocol']);
+  assert.deepEqual(calls[8].args, ['-s', 'build:native']);
+  assert.match(calls[9].args.join(' '), /home\.iroh\.composedPersonalHome\.real\.e2e\.test\.ts/u);
   assert.equal(calls[2].options.env.EXISTING_VALUE, 'preserved');
   assert.equal(calls[2].options.env.HAPPIER_IROH_REQUIRE_NODE_ADDON, '1');
   assert.equal(calls[3].options.env.HAPPIER_RUN_HOME_IROH_REAL_INTEGRATION, '1');
   assert.equal(calls[4].options.env.HAPPIER_RUN_MACHINE_TRANSFER_REAL_INTEGRATION, '1');
   assert.equal(calls[4].options.env.HAPPIER_MACHINE_TRANSFER_TEST_TOPOLOGY, 'direct');
   assert.equal(calls[5].options.env.HAPPIER_MACHINE_TRANSFER_TEST_TOPOLOGY, 'relay');
-  assert.equal(calls[8].options.env.HAPPIER_RUN_HOME_IROH_REAL_INTEGRATION, '1');
+  assert.equal(calls[9].options.env.HAPPIER_RUN_HOME_IROH_REAL_INTEGRATION, '1');
   assert.equal(copied.length, 1);
-  assert.match(copied[0].source, /native[/\\]happier-iroh-native-lifecycle-test\.[^.]+-[^.]+\.node$/u);
+  assert.match(copied[0].source, /native-test[/\\]happier-iroh-native-lifecycle-test\.[^.]+-[^.]+\.node$/u);
   assert.equal(copied[0].destination, '/tmp/happier-iroh-home-test-stable/relay-fixture.node');
   assert.deepEqual(events, [
     'exec:build',
@@ -119,8 +119,9 @@ test('runs fixture journeys before rebuilding the ordinary addon immediately bef
     'copy:relay-fixture.node',
     'exec:vitest:local',
     'exec:vitest:local',
-    'exec:vitest:local',
-    'exec:vitest:local',
+    'exec:test:core',
+    'exec:test:core',
+    'exec:workspace',
     'exec:workspace',
     'exec:build:native',
     'exec:test:core',
@@ -129,10 +130,31 @@ test('runs fixture journeys before rebuilding the ordinary addon immediately bef
   assert.equal(calls[3].options.env.HAPPIER_TEST_IROH_NODE_ADDON_PATH, copied[0].destination);
   assert.equal(calls[4].options.env.HAPPIER_TEST_IROH_NODE_ADDON_PATH, copied[0].destination);
   assert.equal(calls[5].options.env.HAPPIER_TEST_IROH_NODE_ADDON_PATH, copied[0].destination);
-  assert.equal(calls[7].options.env.HAPPIER_TEST_IROH_NODE_ADDON_PATH, undefined);
+  assert.equal(calls[8].options.env.HAPPIER_TEST_IROH_NODE_ADDON_PATH, undefined);
   // The composed parent test process owns the shared stock test relay through
   // the stable fixture addon; the journey strips this path from production
   // server/daemon children itself.
-  assert.equal(calls[8].options.env.HAPPIER_TEST_IROH_NODE_ADDON_PATH, copied[0].destination);
+  assert.equal(calls[9].options.env.HAPPIER_TEST_IROH_NODE_ADDON_PATH, copied[0].destination);
   assert.deepEqual(removed, ['/tmp/happier-iroh-home-test-stable']);
+});
+
+test('Docker source journey runs Home HTTP and Socket.IO against the stock relay before transfer and composed scenarios', () => {
+  const calls = [];
+  runHomeIrohRealIntegration({
+    dockerOnly: true,
+    env: { HAPPIER_TEST_IROH_EXTERNAL_RELAY_URL: 'http://127.0.0.1:49123' },
+    execYarnImpl: (args, options) => calls.push({ args, options }),
+    makeTempDirImpl: () => '/tmp/happier-iroh-docker-test-stable',
+    copyFileImpl: () => {},
+    removeDirImpl: () => {},
+  });
+  assert.equal(calls.length, 8);
+  assert.match(calls[2].args.join(' '), /homeIrohEndpoint\.real\.integration\.test\.ts/u);
+  assert.equal(calls[2].options.env.HAPPIER_TEST_IROH_EXTERNAL_RELAY_URL, 'http://127.0.0.1:49123');
+  assert.match(calls[3].args.join(' '), /machineCarrierHttp\.real\.integration\.test\.ts/u);
+  assert.equal(calls[3].options.env.HAPPIER_MACHINE_TRANSFER_TEST_TOPOLOGY, 'relay');
+  assert.equal(calls[3].options.env.HAPPIER_TEST_IROH_EXTERNAL_RELAY_URL, 'http://127.0.0.1:49123');
+  assert.deepEqual(calls[5].args, ['-s', 'workspace', '@happier-dev/cli', 'build:shared', '--source-dev', 'protocol']);
+  assert.match(calls[7].args.join(' '), /home\.iroh\.composedPersonalHome\.real\.e2e\.test\.ts/u);
+  assert.equal(calls[7].options.env.HAPPIER_TEST_IROH_EXTERNAL_RELAY_URL, 'http://127.0.0.1:49123');
 });

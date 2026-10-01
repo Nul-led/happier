@@ -119,6 +119,21 @@ describe('terminal control serviceability projection', () => {
     })).toEqual(replacement);
   });
 
+  it('does not restamp an already retired attachment', () => {
+    const retired = clearTerminalControlServiceabilityProjection({
+      metadata: { terminal: { mode: 'tmux' } },
+      retiredAttachmentId: 'attachment-1',
+      retiredAt: 100,
+      terminalMode: 'tmux',
+    });
+    expect(clearTerminalControlServiceabilityProjection({
+      metadata: retired,
+      retiredAttachmentId: 'attachment-1',
+      retiredAt: 200,
+      terminalMode: 'tmux',
+    })).toBe(retired);
+  });
+
   it('rejects delayed evidence for a retired attachment but accepts replacement evidence', () => {
     const retired = clearTerminalControlServiceabilityProjection({
       metadata: {

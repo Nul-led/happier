@@ -216,6 +216,46 @@ describe('resolveSessionListInstruction', () => {
         expect(result.sessionListBlockReason).toBeUndefined();
     });
 
+    it('puts a Session under another Session on a middle drop, independent of folders and ordering', () => {
+        const items = [
+            projectHeader('project-a', workspaceA),
+            sessionItem({ id: 'lead-a', groupKey: 'project-a', folderId: null, depth: 0, workspace: workspaceA }),
+            sessionItem({ id: 'worker-a', groupKey: 'project-a', folderId: null, depth: 0, workspace: workspaceA }),
+        ];
+        const tree = buildSessionListTreeRows({
+            items,
+            rowBoundsById: new Map([
+                [treeRowId.workspaceRoot('project-a'), bounds(0)],
+                [treeRowId.session('server-a', 'lead-a'), bounds(40)],
+                [treeRowId.session('server-a', 'worker-a'), bounds(80)],
+            ]),
+        });
+        const source = buildSessionListDragSource({ tree, sourceRowId: treeRowId.session('server-a', 'worker-a') });
+        const resolve = (y: number, canPutSessionUnder?: (sessionId: string, leadSessionId: string) => boolean) => resolveSessionListInstruction({
+            tree,
+            source,
+            pointer: pointer(y),
+            foldersFeatureEnabled: false,
+            canReorderSessionSiblings: false,
+            ...(canPutSessionUnder ? { canPutSessionUnder } : {}),
+        });
+        const onlyUnderLead = (sessionId: string, leadSessionId: string) => sessionId === 'worker-a' && leadSessionId === 'lead-a';
+
+        const underLead = resolve(60, onlyUnderLead);
+        expect(underLead.instruction).toMatchObject({
+            kind: 'nest-into',
+            targetId: treeRowId.session('server-a', 'lead-a'),
+        });
+        expect(underLead.visual).toEqual({ kind: 'outline', targetId: treeRowId.session('server-a', 'lead-a') });
+        expect(underLead.sessionListBlockReason).toBeUndefined();
+
+        // The edges still mean reorder, which this layout does not allow.
+        expect(resolve(42, onlyUnderLead).instruction.kind).toBe('blocked');
+        // Without the reportsTo rule a Session row is never a drop target.
+        expect(resolve(60).instruction.kind).toBe('blocked');
+        expect(resolve(60, () => false).instruction.kind).toBe('blocked');
+    });
+
     it('blocks all folder moves when the sessions.folders feature is disabled', () => {
         const tree = buildTree();
 

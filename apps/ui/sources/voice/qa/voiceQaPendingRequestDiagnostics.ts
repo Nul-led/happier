@@ -1,7 +1,7 @@
 import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { resolveVoiceContextSessionFromState } from '@/voice/context/resolveVoiceContextSession';
-import { readStoredSessionMessages } from '@/sync/domains/messages/readStoredSessionMessages';
+import { readStoredSessionMessages } from "@happier-dev/session-core/messages";
 import { storage } from '@/sync/domains/state/storage';
 import {
     listPendingPermissionRequests,

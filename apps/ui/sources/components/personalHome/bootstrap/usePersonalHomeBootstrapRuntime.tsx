@@ -11,6 +11,13 @@ import { buildLocalMachineSetupSystemTaskSpec } from '@/components/systemTasks/b
 import { useThisComputerSetupTask } from '@/components/systemTasks/useThisComputerSetupTask';
 import type { SystemTaskAuthRequestApproval } from '@/components/systemTasks/approveSystemTaskAuthRequestPrompt';
 import { useLocalDaemonControl } from '@/components/settings/machines/localControl/useLocalDaemonControl';
+import { useAppAccountIdentity } from '@/components/settings/machines/localControl/useThisComputerConnection';
+import {
+    confirmThisComputerAccountMove,
+    isThisComputerAccountMove,
+} from '@/components/settings/machines/localControl/thisComputerConnectionPresentation';
+import { isDaemonOnActiveRelay } from '@/sync/domains/server/relayDrift/relayDriftModel';
+import { resolveThisComputerConnection } from '@/sync/domains/server/relayDrift/thisComputerConnection';
 import { useLocalRelayRuntimeControl } from '@/components/settings/server/localControl/useLocalRelayRuntimeControl';
 import { createServerFetchAtEndpoint } from '@/sync/http/client';
 import {
@@ -25,6 +32,7 @@ import {
     getServerProfileById,
     listServerProfiles,
     preflightHomeProfileAdoption,
+    setActiveServerId,
     type ServerProfile,
 } from '@/sync/domains/server/serverProfiles';
 import {
@@ -32,15 +40,18 @@ import {
     getActiveServerSnapshot,
 } from '@/sync/domains/server/serverRuntime';
 import { canonicalizeServerUrl, createServerUrlComparableKey } from '@/sync/domains/server/url/serverUrlCanonical';
+import { toServerUrlDisplay } from '@/sync/domains/server/url/serverUrlDisplay';
 import type { SystemTaskRunState } from '@/components/systemTasks/types';
 import { HappyError } from '@/utils/errors/errors';
 
 import { createPersonalHomeBootstrapFacts } from './personalHomeBootstrapFacts';
 import type {
+    LocalDaemonStatus,
     PersonalHomeBootstrapOperation,
     PersonalHomeFacts,
     RelayRuntimeStatusSnapshot,
 } from './personalHomeBootstrapTypes';
+import { createThisComputerConnectionError } from './personalHomeComputerErrors';
 import { PersonalHomeBootstrapGate } from './PersonalHomeBootstrapGate';
 import { isPersonalHomeBootstrapRuntimeHost } from './personalHomeBootstrapHost';
 import { awaitPersonalHomeBootstrapQaMutationPause } from './personalHomeBootstrapQaMutationPause';
@@ -48,7 +59,7 @@ import {
     runPersonalHomeBootstrapFromSystemTasks,
     type PersonalHomeEndpointSnapshot,
 } from './runPersonalHomeBootstrapFromSystemTasks';
-import type { PersonalHomeBootstrapOperationRunner } from './usePersonalHomeBootstrapController';
+import type { PersonalHomeBootstrapOperationContext, PersonalHomeBootstrapOperationRunner } from './usePersonalHomeBootstrapController';
 
 export function shouldBypassPersonalHomeBootstrapForSegments(segments: readonly string[]): boolean {
     const normalized = segments.filter((segment) => !(segment.startsWith('(') && segment.endsWith(')')));
@@ -237,6 +248,10 @@ export function usePersonalHomeBootstrapRuntime(): PersonalHomeBootstrapRuntime 
     activeTaskRef.current = activeTask;
     // Daemon status is read through the daemon-control owner: one parser, one status state.
     const readDaemonStatus = daemon.readStatus;
+    // Read at call time by prepare-computer, which only names the account it already verified.
+    const appAccountIdentity = useAppAccountIdentity();
+    const appAccountRef = React.useRef(appAccountIdentity);
+    appAccountRef.current = appAccountIdentity;
     const readRelayStatus = relay.readStatus;
 
     const readFacts = React.useCallback(async (): Promise<PersonalHomeFacts> => {
@@ -303,15 +318,30 @@ export function usePersonalHomeBootstrapRuntime(): PersonalHomeBootstrapRuntime 
         // Daemon facts are read through the awaited daemon-control owner so they are fresh at
         // call time rather than a stale render-time projection, then verified against this
         // Personal Home: readiness requires the daemon's URL and account identity to match.
-        const daemonStatus = await readDaemonStatus().catch(() => null);
-        let daemonFacts: PersonalHomeFacts['daemon'] = daemonStatus;
+        // A read that ran and FAILED is a blocking fact about this computer, never "no daemon yet":
+        // reporting it as absent would start an automatic setup run from an unknown state.
+        // R12 exception: a read that failed only because nobody chose who manages this computer's
+        // `happier` yet is "not set up", because setup's first step asks exactly that question.
+        const daemonRead = await readDaemonStatus({ relayUrl: localUrl, serverIdentityId: localHomeIdentity })
+            .then((status) => ({ status, failure: null, cliChoiceRequired: false }), (error: unknown) => ({
+                status: null,
+                failure: isCliChoiceRequiredError(error)
+                    ? null
+                    : error instanceof Error && error.message ? error.message : 'The daemon status read failed.',
+                cliChoiceRequired: isCliChoiceRequiredError(error),
+            }));
+        const daemonStatus = daemonRead.status;
+        let daemonFacts: PersonalHomeFacts['daemon'] = daemonRead.failure !== null
+            ? { serviceInstalled: false, daemonRunning: false, needsAuth: false, machineId: null, error: daemonRead.failure }
+            : daemonRead.cliChoiceRequired
+                ? { serviceInstalled: false, daemonRunning: false, needsAuth: false, machineId: null }
+                : daemonStatus;
         if (daemonStatus) {
-            const connectedUrl = daemonStatus.daemonComparableKey ?? daemonStatus.daemonServerUrl ?? '';
-            const connectedKey = connectedUrl
-                ? (createServerUrlComparableKey(connectedUrl) || normalizeUrl(connectedUrl))
-                : null;
-            const localKey = createServerUrlComparableKey(localUrl) || normalizeUrl(localUrl);
-            const urlMatches = Boolean(connectedKey) && connectedKey === localKey;
+            const urlMatches = isDaemonOnActiveRelay({
+                activeRelayUrl: localUrl,
+                daemonRelayUrl: daemonStatus.daemonServerUrl,
+                daemonAlternateRelayUrls: [daemonStatus.daemonComparableKey],
+            }) === true;
             let accountMatches: boolean | null = null;
             if (urlMatches && daemonStatus.daemonAccountId) {
                 const daemonCredentials = await TokenStorage.getCredentialsForServerUrl(
@@ -333,10 +363,34 @@ export function usePersonalHomeBootstrapRuntime(): PersonalHomeBootstrapRuntime 
                     && accountMatches === true,
             };
         }
+        // R10 D4: an implicit selection the app already holds credentials for (the 0.2 default
+        // Cloud selection, say) is the user's Home too. It is kept until they choose a Personal
+        // Home, so the first launch of this app never silently creates and focuses one.
+        let signedInOtherHome: PersonalHomeFacts['signedInOtherHome'] = null;
+        if (
+            !completed
+            && !explicitlySelectedOtherHome
+            && activeProfile != null
+            && activeProfile.source !== 'desktop-personal-home'
+            && !(localUrl && profileMatchesUrl(activeProfile, localUrl))
+        ) {
+            const activeCredentials = await TokenStorage.getCredentialsForServerUrl(
+                activeProfile.serverUrl,
+                activeProfile.serverIdentityId ? { serverId: activeProfile.serverIdentityId } : {},
+            ).catch(() => null);
+            if (activeCredentials?.token) {
+                signedInOtherHome = {
+                    serverId: activeProfile.id,
+                    label: activeProfile.name?.trim() || toServerUrlDisplay(activeProfile.serverUrl),
+                };
+            }
+        }
+
         return createPersonalHomeBootstrapFacts({
             hostIsDesktop: true,
             isDesktopMainWindow: true,
             explicitlySelectedOtherHome,
+            signedInOtherHome,
             completedPersonalHomeProfile: completed,
             candidateLocalProfile: candidate,
             relayRuntime,
@@ -542,25 +596,18 @@ export function usePersonalHomeBootstrapRuntime(): PersonalHomeBootstrapRuntime 
         await runBootstrapWithDisposition('use-this-local-home', context.trigger);
     }, [runBootstrapWithDisposition]);
 
-    const prepareComputer = React.useCallback<PersonalHomeBootstrapOperationRunner>(async (facts) => {
+    const prepareComputer = React.useCallback<PersonalHomeBootstrapOperationRunner>(async (
+        facts,
+        context: PersonalHomeBootstrapOperationContext = { trigger: 'manual' },
+    ) => {
         const runner = getDefaultSystemTaskRunner();
         const localUrl = resolveLocalUrl();
         if (!localUrl) {
             throw new Error('Personal Home runtime status did not provide a canonical local origin.');
         }
-        const localUrlKey = createServerUrlComparableKey(localUrl) || normalizeUrl(localUrl);
         const identity = facts.localHomeIdentity
             ?? facts.completedPersonalHomeProfile?.serverIdentityId
             ?? null;
-        const daemonMatchesHomeUrl = (status: {
-            daemonComparableKey?: string | null;
-            daemonServerUrl?: string | null;
-        } | null): boolean => {
-            if (!status) return false;
-            const connectedUrl = status.daemonComparableKey ?? status.daemonServerUrl ?? '';
-            if (!connectedUrl) return false;
-            return (createServerUrlComparableKey(connectedUrl) || normalizeUrl(connectedUrl)) === localUrlKey;
-        };
 
         // The expected account identity is derived from this Home's scoped token against the
         // explicit endpoint BEFORE the idempotence check: a daemon on the same endpoint that is
@@ -579,79 +626,77 @@ export function usePersonalHomeBootstrapRuntime(): PersonalHomeBootstrapRuntime 
             throw new Error('Could not verify the Personal Home account for the daemon on this computer.');
         }
 
-        const daemonReadyForHome = (status: {
-            serviceInstalled?: boolean | null;
-            daemonRunning?: boolean | null;
-            needsAuth?: boolean | null;
-            error?: string | null;
-            machineId?: string | null;
-            daemonMachineRegistered?: boolean | null;
-            daemonAccountId?: string | null;
-            daemonComparableKey?: string | null;
-            daemonServerUrl?: string | null;
-        } | null): boolean =>
+        // One classification of this computer's daemon against this Home and its account — the
+        // same owner every other surface describing this computer uses.
+        const appAccount = appAccountRef.current;
+        const connectionFor = (status: LocalDaemonStatus | null) => resolveThisComputerConnection({
+            daemon: status
+                ? { ...status, daemonAlternateRelayUrls: [status.daemonComparableKey] }
+                : null,
+            activeRelayUrl: localUrl,
+            activeLocalRelayUrl: localUrl,
+            appAccountId: expectedAccountId,
+            appAccountLabel: appAccount.accountId === expectedAccountId ? appAccount.accountLabel : null,
+        });
+        const daemonReadyForHome = (status: LocalDaemonStatus | null): boolean =>
             status != null
-            && status.serviceInstalled === true
-            && status.daemonRunning === true
-            && status.needsAuth !== true
             && !status.error
             && Boolean(status.machineId)
             && status.daemonMachineRegistered !== false
-            && daemonMatchesHomeUrl(status)
-            && status.daemonAccountId === expectedAccountId;
-
-        const verifyStatusForHome = (verified: {
-            serviceInstalled?: boolean | null;
-            daemonRunning?: boolean | null;
-            needsAuth?: boolean | null;
-            error?: string | null;
-            machineId?: string | null;
-            daemonMachineRegistered?: boolean | null;
-            daemonAccountId?: string | null;
-            daemonComparableKey?: string | null;
-            daemonServerUrl?: string | null;
-        }): void => {
-            const connectedUrl = verified.daemonComparableKey ?? verified.daemonServerUrl ?? '';
-            if (!daemonMatchesHomeUrl(verified) && connectedUrl) {
-                throw new Error(`The daemon on this computer is connected to a different Home (${connectedUrl}).`);
-            }
-            if (!daemonReadyForHome(verified)) {
-                if (verified.daemonAccountId && verified.daemonAccountId !== expectedAccountId) {
-                    throw new Error(`The daemon on this computer is connected to a different Home (account ${verified.daemonAccountId}).`);
-                }
-                throw new Error('Background service did not reach a ready state for this Home.');
-            }
-            if (verified.daemonMachineRegistered === false) {
-                throw new Error('The Personal Home daemon machine is not registered yet.');
-            }
-        };
+            && connectionFor(status)?.status === 'aligned';
 
         // Authoritative daemon facts through the daemon-control owner decide idempotence.
-        let status = await readDaemonStatus().catch(() => null);
-        if (!daemonReadyForHome(status)) {
-            // Absent, unhealthy, unverified, or paired with another Home or account: run the
-            // existing configure/auth/pair/install/start/verify task against this Home's
+        // A failed read rejects and fails this operation by name; it never starts setup (RV2-30).
+        // Except `cli_choice_required` (R12): setup's first step asks that question, so run it.
+        let status = await readDaemonStatus({ relayUrl: localUrl, serverIdentityId: identity }).catch((error: unknown) => {
+            if (isCliChoiceRequiredError(error)) return null;
+            throw error;
+        });
+        // R12: a Retry of a CLI switch that moved this Home's service but not every other one reruns
+        // that convergence with the recorded choice; this Home reading ready does not settle it.
+        const reconvergeCliChoice = context.trigger === 'retry'
+            && context.previousErrorCode === 'cli_choice_service_convergence_failed';
+        if (reconvergeCliChoice || !daemonReadyForHome(status)) {
+            // R10 D1 / U7: a daemon signed in to another account (on this Home or another) is the
+            // user's own setup. Automatic preparation never moves it; an explicit retry asks
+            // first, naming both accounts. Absent, stopped or unapproved daemons move nobody.
+            const before = connectionFor(status);
+            if (before && isThisComputerAccountMove(before)) {
+                if (context.trigger === 'automatic' || !(await confirmThisComputerAccountMove(before))) {
+                    throw createThisComputerConnectionError(before);
+                }
+            }
+            // Run the existing configure/auth/pair/install/start/verify task against this Home's
             // explicit descriptor. This replaces the focused-Home repair/start path.
             const taskId = await startSetupTask(buildLocalMachineSetupSystemTaskSpec({
                 activeRelayUrl: localUrl,
                 activeWebappUrl: localUrl,
                 activeLocalRelayUrl: localUrl,
+                activeServerIdentityId: identity,
+                activeAccountId: expectedAccountId,
                 installService: true,
                 startService: true,
                 verifyService: true,
+                ...(reconvergeCliChoice ? { convergeCliChoice: true } : {}),
             }));
             const result = await waitForSystemTaskResult(runner, taskId);
             if (!result.ok) {
-                throw new Error(result.error.message);
+                // The task's code travels with its message, so recovery (and its Retry) knows what failed.
+                throw Object.assign(new Error(result.error.message), { code: result.error.code });
             }
             // Fresh post-task readback: task events are diagnostics, not readiness facts.
-            status = await readDaemonStatus().catch(() => null);
+            status = await readDaemonStatus({ relayUrl: localUrl, serverIdentityId: identity });
         }
 
-        if (!status) {
-            throw new Error('Background service did not reach a ready state for this Home.');
+        if (daemonReadyForHome(status)) return;
+        const after = connectionFor(status);
+        if (after && after.status !== 'aligned') {
+            throw createThisComputerConnectionError(after);
         }
-        verifyStatusForHome(status);
+        if (status?.daemonMachineRegistered === false) {
+            throw new Error('The Personal Home daemon machine is not registered yet.');
+        }
+        throw new Error('Background service did not reach a ready state for this Home.');
     }, [readDaemonStatus, resolveLocalUrl, startSetupTask]);
 
     const operations = React.useMemo<PersonalHomeBootstrapRuntime['operations']>(() => ({
@@ -668,12 +713,21 @@ export function usePersonalHomeBootstrapRuntime(): PersonalHomeBootstrapRuntime 
     };
 }
 
-function shouldRouteExistingRuntimeToGenericHome(error: unknown): boolean {
+/** The status read failed only because this computer's one-CLI question is unanswered (R12). */
+function isCliChoiceRequiredError(error: unknown): boolean {
+    return Boolean(error && typeof error === 'object' && (error as { code?: unknown }).code === 'cli_choice_required');
+}
+
+function shouldRouteExistingRuntimeToGenericHome(error: unknown, facts: PersonalHomeFacts): boolean {
     const code = error && typeof error === 'object' && 'code' in error
         ? (error as { code?: unknown }).code
         : null;
-    return code === 'personal_home_existing_runtime_conflict'
-        || code === 'personal_home_credentials_unverified';
+    if (code === 'personal_home_existing_runtime_conflict') return true;
+    // A generic Home without verified credentials is signed into like any other Home. A Personal
+    // Home whose credentials live with another Happier app on this computer (S18) is not routed
+    // silently: the gate names that state first and offers the recovery-key sign-in as its choice.
+    return code === 'personal_home_credentials_unverified'
+        && facts.relayRuntime?.purpose?.kind !== 'personal-home';
 }
 
 function completedProfileInitialFacts(profile: ServerProfile): PersonalHomeFacts {
@@ -703,7 +757,7 @@ function PersonalHomeBootstrapRuntimeInner(props: Readonly<{
         try {
             await runtime.useExistingRuntime(facts);
         } catch (error) {
-            if (shouldRouteExistingRuntimeToGenericHome(error)) {
+            if (shouldRouteExistingRuntimeToGenericHome(error, facts)) {
                 router.push(`/server?url=${encodeURIComponent(runtime.localServerUrl)}&auto=1`);
                 return;
             }
@@ -713,6 +767,13 @@ function PersonalHomeBootstrapRuntimeInner(props: Readonly<{
     const useAnotherHome = React.useCallback(() => {
         router.push('/server');
     }, [router]);
+    const signInToExistingRuntime = React.useCallback(() => {
+        router.push(`/server?url=${encodeURIComponent(runtime.localServerUrl)}&auto=1`);
+    }, [router, runtime.localServerUrl]);
+    const keepSignedInHome = React.useCallback(async (serverId: string) => {
+        // A device-scoped selection is explicit, which is the durable "keep this Home" answer.
+        await setActiveServerId(serverId, { scope: 'device' });
+    }, []);
     return (
         <PersonalHomeBootstrapGate
             bypass={false}
@@ -722,6 +783,8 @@ function PersonalHomeBootstrapRuntimeInner(props: Readonly<{
             initialFacts={props.initialFacts}
             useExistingRuntimeOperation={useExistingRuntime}
             onUseAnotherHome={useAnotherHome}
+            onKeepSignedInHome={keepSignedInHome}
+            onSignInToExistingRuntime={signInToExistingRuntime}
         >
             {props.children}
         </PersonalHomeBootstrapGate>

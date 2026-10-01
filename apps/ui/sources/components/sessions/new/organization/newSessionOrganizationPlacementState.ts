@@ -29,22 +29,36 @@ export function isNewSessionOrganizationPlacementAvailable(params: Readonly<{
         || (params.placement.folderId === null && params.placement.tagIds.length === 0);
 }
 
-export function reconcileNewSessionOrganizationPlacementForWorkspace(params: Readonly<{
-    placement: SessionOrganizationPlacementV1;
+/**
+ * The session-folder scope a new session is placed in: its folder's workspace scope, or for a
+ * no-folder session its machine's Chats scope (`managedSessions`), never its private path.
+ */
+export function resolveNewSessionFolderWorkspace(params: Readonly<{
     executionTarget: SessionExecutionTargetV1 | null;
     directory: string;
-    folders: readonly NewSessionOrganizationFolderTarget[];
-}>): SessionOrganizationPlacementV1 {
-    if (!params.placement.folderId) return params.placement;
-    const folder = params.folders.find((candidate) => candidate.folderId === params.placement.folderId);
-    const requestedWorkspace = params.executionTarget
-        ? normalizeSessionFolderWorkspaceRef({
+    directoryKind?: 'path' | 'managed';
+}>): SessionFolderWorkspaceRefV1 | null {
+    if (!params.executionTarget) return null;
+    return normalizeSessionFolderWorkspaceRef(params.directoryKind === 'managed'
+        ? { t: 'managedSessions', serverId: params.executionTarget.serverId, machineId: params.executionTarget.machineId }
+        : {
             t: 'workspaceScope',
             serverId: params.executionTarget.serverId,
             machineId: params.executionTarget.machineId,
             rootPath: params.directory,
-        })
-        : null;
+        });
+}
+
+export function reconcileNewSessionOrganizationPlacementForWorkspace(params: Readonly<{
+    placement: SessionOrganizationPlacementV1;
+    executionTarget: SessionExecutionTargetV1 | null;
+    directory: string;
+    directoryKind?: 'path' | 'managed';
+    folders: readonly NewSessionOrganizationFolderTarget[];
+}>): SessionOrganizationPlacementV1 {
+    if (!params.placement.folderId) return params.placement;
+    const folder = params.folders.find((candidate) => candidate.folderId === params.placement.folderId);
+    const requestedWorkspace = resolveNewSessionFolderWorkspace(params);
     const compatible = Boolean(folder?.workspace && requestedWorkspace
         && compareSessionFolderWorkspaceRefs(folder.workspace, requestedWorkspace));
     return compatible ? params.placement : { ...params.placement, folderId: null };

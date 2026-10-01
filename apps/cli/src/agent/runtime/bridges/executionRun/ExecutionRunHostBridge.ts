@@ -18,7 +18,6 @@ import {
   type ConnectedServiceBindingsV2,
   type ExecutionRunConnectedServicesLaunchV1,
   type ExecutionRunUserTranscriptDirective,
-  buildExecutionRunCompletionInputV1,
   type ExecutionRunBridgeLifecycleHookEventIdV1,
   type ExecutionRunListRequest,
   ExecutionRunPublicStateSchema,
@@ -93,7 +92,19 @@ import {
 } from './runOccurrenceWitness';
 import { createExecutionRunPendingInputConsumer } from './pending/executionRunPendingInputConsumer';
 import { createRetainedExecutionRunInputDelivery } from './pending/retainedExecutionRunInputDelivery';
-import { startExecutionRun } from './startExecutionRun';
+import {
+  acknowledgeExecutionRunWorkerUpdate,
+  readPendingExecutionRunWorkerUpdates,
+  type RetainedExecutionRunWorkerUpdate,
+} from '@/daemon/executionRunRegistry';
+import {
+  fitWorkerUpdateWithinHostContextAllowance,
+  type HostContextOnlySourceInput,
+  type PreparedWorkerContextItem,
+} from '@/agent/runtime/session/contextOnly/hostContextOnlyInput';
+import { measureSessionFollowUtf8Bytes } from '@/agent/runtime/session/follow/sessionFollowContextBudget';
+import { renderWorkerUpdatePromptBlockV1 } from '@happier-dev/protocol';
+import { omitExecutionRunRoleCompositionContext, startExecutionRun } from './startExecutionRun';
 import { cancelCurrentExecutionRunTurn } from './cancelCurrentExecutionRunTurn';
 import type { ExecutionRunTranscriptPublisher } from './executionRunTranscriptPublisher';
 import type { ExecutionRunSessionStateTarget } from './sessionStateDelivery';
@@ -134,6 +145,8 @@ import {
   resolveSecretReferenceOverlayEnvironment,
 } from '@/daemon/agentRuntime/resolveForegroundProfileSavedSecretEnvironment';
 import { SavedSecretOperationAdmissionError } from '@/settings/secrets/hydrateSavedSecretCatalog';
+import type { ReviewRunCommentService } from '@/agent/executionRuns/profiles/review/reviewComments';
+import { readWorktreeChangeFingerprint } from '@/scm/readWorktreeChangeFingerprint';
 
 type ExecutionRunProfileCatalogResolution = Readonly<{
   profileCatalog: ExecutionRunProfileContributionCatalog;
@@ -192,6 +205,7 @@ type ExecutionRunRuntimeCreateOptions = Readonly<{
   backendId: string;
   backendTarget?: BackendTargetRefV1;
   permissionMode: string;
+  workspaceWrites?: 'allow' | 'deny';
   modelId?: string;
   modelSelection?: ProviderBoundModelRef;
   teamCredentialModel?: TeamCredentialProviderModelSelectionV1;
@@ -252,7 +266,7 @@ async function prepareExecutionRunManagerStartParams(
     params.profileSourceCustody,
   );
   const startProfilePatch = await profile.prepareStartParams?.({
-    request: params as unknown as ExecutionRunStartRequest,
+    request: omitExecutionRunRoleCompositionContext(params) as unknown as ExecutionRunStartRequest,
     cwd,
   });
 
@@ -310,6 +324,7 @@ export type ExecutionRunHostBridgeOptions = Readonly<{
   materializeReviewHostAction?: (
     readCurrentCandidate: () => ReviewCommentHostActionCandidate | null,
   ) => Promise<ReviewCommentHostActionMaterializationResult>;
+  reviewComments?: ReviewRunCommentService;
   checkConnectedServicesGenerationCurrent?: (input: Readonly<{
     runId: string;
     registration: ExecutionRunConnectedServicesLaunchV1;
@@ -319,7 +334,6 @@ export type ExecutionRunHostBridgeOptions = Readonly<{
   resolveAccountSettingsSnapshot?: (input?: Readonly<{
     secretReferenceOverlay?: SecretReferenceOverlayV1;
   }>) => Promise<ActiveAccountSettingsSnapshot | null>;
-  enqueueParentSessionInput?: (input: Readonly<{ text: string; meta: Record<string, unknown> }>) => Promise<void>;
 }>;
 
 /**
@@ -358,11 +372,17 @@ export class ExecutionRunHostBridge implements ExecutionRunHostBridgeContract {
   private readonly sessionInteractionHost: NativeAgentSessionInteractionHostBinding | null;
   private readonly prepareRunTeamCredentialProviderBinding: ExecutionRunTeamCredentialProviderBindingPreparer | null;
   private readonly materializeReviewHostAction: ExecutionRunHostBridgeOptions['materializeReviewHostAction'];
+  private readonly reviewComments: ReviewRunCommentService | undefined;
   private readonly checkConnectedServicesGenerationCurrent: ExecutionRunHostBridgeOptions['checkConnectedServicesGenerationCurrent'];
   private readonly machineId: string | null;
   private readonly resolveProvidersFeatureEnabled: ExecutionRunHostBridgeOptions['resolveProvidersFeatureEnabled'];
   private readonly resolveAccountSettingsSnapshot: ExecutionRunHostBridgeOptions['resolveAccountSettingsSnapshot'];
-  private readonly enqueueParentSessionInput: NonNullable<ExecutionRunHostBridgeOptions['enqueueParentSessionInput']> | null;
+  private readonly resolveAccountSettings: ExecutionRunHostBridgeOptions['resolveAccountSettings'];
+  /** Rebuildable projection of the marker owner's retained terminal completions. Taking never consumes. */
+  private readonly workerUpdates = new Map<string, RetainedExecutionRunWorkerUpdate>();
+  private readonly workerUpdateWaiters = new Set<(sessionId: string) => void>();
+  private workerUpdateRecovery: Promise<void> | null = null;
+  private workerUpdateAcknowledgements: Promise<void> = Promise.resolve();
   private readonly getPermissionRequestStore: ExecutionRunPermissionRequestStoreProvider | null;
   private readonly runs = new Map<string, ExecutionRunState>();
   private readonly controllers = new Map<string, ExecutionRunController>();
@@ -508,6 +528,7 @@ export class ExecutionRunHostBridge implements ExecutionRunHostBridgeContract {
     const parentSession = host.session;
     return Object.freeze({
       runId,
+      workDepth: run.depth,
       sidechainId,
       readCurrentRunOccurrence: (id: string) => (
         this.runOccurrenceWitnesses.reader.readCurrentRunOccurrence(id)
@@ -872,13 +893,14 @@ export class ExecutionRunHostBridge implements ExecutionRunHostBridgeContract {
     this.sessionInteractionHost = opts.sessionInteractionHost ?? null;
     this.prepareRunTeamCredentialProviderBinding = opts.prepareRunTeamCredentialProviderBinding ?? null;
     this.materializeReviewHostAction = opts.materializeReviewHostAction;
+    this.reviewComments = opts.reviewComments;
     this.checkConnectedServicesGenerationCurrent = opts.checkConnectedServicesGenerationCurrent;
     this.machineId = typeof opts.machineId === 'string' && opts.machineId.trim().length > 0
       ? opts.machineId.trim()
       : null;
     this.resolveProvidersFeatureEnabled = opts.resolveProvidersFeatureEnabled;
     this.resolveAccountSettingsSnapshot = opts.resolveAccountSettingsSnapshot;
-    this.enqueueParentSessionInput = opts.enqueueParentSessionInput ?? null;
+    this.resolveAccountSettings = opts.resolveAccountSettings;
     this.onPublicStateUpdated = typeof opts.onPublicStateUpdated === 'function' ? opts.onPublicStateUpdated : null;
     this.onVoiceAgentWelcomed = typeof opts.onVoiceAgentWelcomed === 'function' ? opts.onVoiceAgentWelcomed : null;
     this.executionRunProfileCatalog = opts.executionRunProfileCatalog ?? buildExecutionRunProfileCatalog();
@@ -1022,10 +1044,15 @@ export class ExecutionRunHostBridge implements ExecutionRunHostBridgeContract {
       backendId: opts.backendId,
       backendTarget: opts.backendTarget,
       permissionMode: opts.permissionMode,
+      workspaceWrites: opts.workspaceWrites,
       ...(opts.causalPermissionAuthority
         ? { causalPermissionAuthority: opts.causalPermissionAuthority }
         : {}),
       modelId: opts.modelId,
+      onEffectiveEngine: (engine) => {
+        const run = opts.runId ? this.runs.get(opts.runId) : null;
+        if (run) this.runs.set(run.runId, { ...run, effectiveEngine: engine });
+      },
       ...(opts.modelSelection ? { modelSelection: opts.modelSelection } : {}),
       ...(opts.teamCredentialModel ? { teamCredentialModel: opts.teamCredentialModel } : {}),
       ...(opts.sessionConfigOptionOverrides
@@ -1166,6 +1193,7 @@ export class ExecutionRunHostBridge implements ExecutionRunHostBridgeContract {
       backendId: opts.backendId,
       ...(opts.backendTarget ? { backendTarget: opts.backendTarget } : {}),
       permissionMode: opts.permissionMode,
+      workspaceWrites: resumeOptions.workspaceWrites,
       ...(opts.causalPermissionAuthority
         ? { causalPermissionAuthority: opts.causalPermissionAuthority }
         : {}),
@@ -1476,7 +1504,12 @@ export class ExecutionRunHostBridge implements ExecutionRunHostBridgeContract {
         sendAcp: this.sendAcp,
         enqueueMarkerWrite: this.enqueueMarkerWrite.bind(this),
         terminalMarkerWritePromises: this.terminalMarkerWritePromises,
+        onWorkerUpdateRetained: (input) => {
+          this.workerUpdates.set(input.localId, input);
+          for (const wake of this.workerUpdateWaiters) wake(input.sessionId);
+        },
         profileCatalog: this.executionRunProfileCatalog,
+        ...(this.reviewComments ? { reviewComments: this.reviewComments } : {}),
       });
     } catch (error) {
       terminalTransitionClaimed = this.runs.get(runId)?.status !== 'running';
@@ -1485,24 +1518,6 @@ export class ExecutionRunHostBridge implements ExecutionRunHostBridgeContract {
       this.emitPublicStateUpdated(runId);
       const completedRun = this.runs.get(runId);
       if (terminalTransitionClaimed && completedRun && completedRun.status !== 'running') {
-        if (completedRun.notifyParentOnCompletion === true && this.enqueueParentSessionInput) {
-          const input = buildExecutionRunCompletionInputV1({
-            v: 1,
-            runId: completedRun.runId,
-            status: completedRun.status,
-            finishedAtMs: completedRun.finishedAtMs ?? next.finishedAtMs,
-            canInspect: completedRun.retentionPolicy === 'resumable',
-            ...(completedRun.summary ? { summary: completedRun.summary.slice(0, 8_000) } : {}),
-          });
-          try {
-            await this.enqueueParentSessionInput(input);
-          } catch (error) {
-            logger.warn('[EXECUTION RUN] Failed to enqueue parent completion input', {
-              runId: completedRun.runId,
-              error: error instanceof Error ? error.message : String(error),
-            });
-          }
-        }
         void this.emitLifecycleHookEvent({
           eventId: 'executionRun.completed',
           runId,
@@ -1519,6 +1534,82 @@ export class ExecutionRunHostBridge implements ExecutionRunHostBridgeContract {
         });
       }
     }
+  }
+
+  private async recoverWorkerUpdates(): Promise<void> {
+    if (!this.workerUpdateRecovery) {
+      this.workerUpdateRecovery = readPendingExecutionRunWorkerUpdates().then((updates) => {
+        for (const update of updates) this.workerUpdates.set(update.localId, update);
+      }).catch((error: unknown) => {
+        this.workerUpdateRecovery = null;
+        throw error;
+      });
+    }
+    await this.workerUpdateRecovery;
+    await this.workerUpdateAcknowledgements;
+  }
+
+  private projectWorkerUpdate(input: RetainedExecutionRunWorkerUpdate): Extract<HostContextOnlySourceInput, { kind: 'worker_update' }> {
+    return {
+      kind: 'worker_update', localId: input.localId, update: input.update,
+      recheckAdmission: async (signal) => !signal.aborted && this.workerUpdates.get(input.localId) === input,
+      acknowledgeAccepted: () => {
+        this.workerUpdateAcknowledgements = this.workerUpdateAcknowledgements.then(async () => {
+          if (this.workerUpdates.get(input.localId) !== input) return;
+          if (await acknowledgeExecutionRunWorkerUpdate(input)) this.workerUpdates.delete(input.localId);
+        }).catch((error: unknown) => {
+          logger.warn('[EXECUTION RUN] Failed to acknowledge parent worker update', {
+            runId: input.update.workerId, error: error instanceof Error ? error.message : String(error),
+          });
+        });
+      },
+    };
+  }
+
+  async takeWorkerUpdate(sessionId: string, signal: AbortSignal): Promise<Extract<HostContextOnlySourceInput, { kind: 'worker_update' }> | null> {
+    await this.recoverWorkerUpdates();
+    if (signal.aborted) return null;
+    const pending = [...this.workerUpdates.values()].find((input) => input.sessionId === sessionId);
+    return pending ? this.projectWorkerUpdate(pending) : null;
+  }
+
+  async prepareWorkerUpdates(sessionId: string, input: Readonly<{ signal: AbortSignal; maxUtf8Bytes: number }>): Promise<readonly PreparedWorkerContextItem[]> {
+    await this.recoverWorkerUpdates();
+    if (input.signal.aborted) return [];
+    const prepared: PreparedWorkerContextItem[] = [];
+    let remaining = input.maxUtf8Bytes;
+    for (const pending of this.workerUpdates.values()) {
+      if (pending.sessionId !== sessionId) continue;
+      const update = fitWorkerUpdateWithinHostContextAllowance(pending.update, remaining);
+      if (!update) continue;
+      const source = this.projectWorkerUpdate(pending);
+      prepared.push({ localId: pending.localId, update, recheckAdmission: source.recheckAdmission, acknowledgeAccepted: source.acknowledgeAccepted });
+      remaining -= measureSessionFollowUtf8Bytes(renderWorkerUpdatePromptBlockV1(update));
+    }
+    return prepared;
+  }
+
+  async waitForWorkerUpdateChange(sessionId: string, signal: AbortSignal): Promise<boolean> {
+    if (signal.aborted) return false;
+    return new Promise<boolean>((resolve, reject) => {
+      const finish = (changed: boolean) => {
+        this.workerUpdateWaiters.delete(onChange);
+        signal.removeEventListener('abort', onAbort);
+        resolve(changed);
+      };
+      const onChange = (changedSessionId: string) => { if (changedSessionId === sessionId) finish(true); };
+      const onAbort = () => finish(false);
+      this.workerUpdateWaiters.add(onChange);
+      signal.addEventListener('abort', onAbort, { once: true });
+      if (signal.aborted) finish(false);
+      void this.recoverWorkerUpdates().then(() => {
+        if ([...this.workerUpdates.values()].some((pending) => pending.sessionId === sessionId)) finish(true);
+      }, (error: unknown) => {
+        this.workerUpdateWaiters.delete(onChange);
+        signal.removeEventListener('abort', onAbort);
+        reject(error);
+      });
+    });
   }
 
   private async emitLifecycleHookEvent(params: Readonly<{
@@ -1549,6 +1640,17 @@ export class ExecutionRunHostBridge implements ExecutionRunHostBridgeContract {
     const resolution = await this.resolveExecutionRunProfileCatalog();
     const runtimeSnapshot = this.bindExecutionRunRuntimeSnapshot(resolution);
     try {
+      params = { ...params, roleSessionMetadata: this.sessionInteractionHost?.session.getMetadataSnapshot() };
+      if (params.intent === 'review') {
+        const accountSettings = params.accountSettings ?? await this.resolveAccountSettings?.() ?? undefined;
+        const fingerprint = await readWorktreeChangeFingerprint(params.cwd ?? this.cwd);
+        const intentInput = params.intentInput && typeof params.intentInput === 'object' && !Array.isArray(params.intentInput)
+          ? params.intentInput as Readonly<Record<string, unknown>> : {};
+        params = {
+          ...params, ...(accountSettings ? { accountSettings } : {}),
+          intentInput: { ...intentInput, reviewedFingerprint: fingerprint.kind === 'available' ? fingerprint.fingerprint : null },
+        };
+      }
       const preparedParams = await prepareExecutionRunManagerStartParams(
         params,
         params.cwd ?? this.cwd,
@@ -1643,7 +1745,6 @@ export class ExecutionRunHostBridge implements ExecutionRunHostBridgeContract {
             }
           : {}),
         voiceAgentManager: this.voiceAgentManager,
-        getDepthByCallId: this.getDepthByCallId.bind(this),
         onPublicStateUpdated: (runId) => this.emitPublicStateUpdated(runId),
         attachRetainedRunSessionInput: (attachParams) => this.attachRetainedRunSessionInput(attachParams),
       });
@@ -1828,6 +1929,7 @@ export class ExecutionRunHostBridge implements ExecutionRunHostBridgeContract {
               ? { causalPermissionAuthority: params.causalPermissionAuthority }
               : {}),
             permissionMode: resumedRun.permissionMode,
+            workspaceWrites: resumeOptions.workspaceWrites,
             retentionPolicy: resumedRun.retentionPolicy,
             runClass: resumedRun.runClass,
             ioMode: resumedRun.ioMode,
@@ -2220,7 +2322,7 @@ export class ExecutionRunHostBridge implements ExecutionRunHostBridgeContract {
 
   async readTurnStream(
     runId: string,
-    params: Readonly<{ streamId: string; cursor: number; maxEvents?: number }>,
+    params: Readonly<{ streamId: string; cursor: number; maxEvents?: number; waitForEvents?: boolean; signal?: AbortSignal }>,
   ): Promise<
     | { ok: true; streamId: string; events: any[]; nextCursor: number; done: boolean }
     | { ok: false; errorCode: string; error: string }
@@ -2547,8 +2649,12 @@ export class ExecutionRunHostBridge implements ExecutionRunHostBridgeContract {
     }>,
   ): Promise<ExecutionRunActionResult> {
     const run = this.runs.get(runId) ?? null;
-    if (!run) {
+    if (!run && params.actionId !== 'review.triage') {
       return { ok: false, errorCode: 'execution_run_not_found', error: 'Not found' };
+    }
+    if (!run && params.actionId === 'review.triage') {
+      return this.reviewComments ? await this.reviewComments.triage(runId, params.input)
+        : { ok: false, errorCode: 'review_comment_persistence_unavailable', error: 'ReviewComment persistence is unavailable' };
     }
     const resolution = await this.resolveExecutionRunProfileCatalog();
     try {
@@ -2559,7 +2665,7 @@ export class ExecutionRunHostBridge implements ExecutionRunHostBridgeContract {
         controllers: this.controllers,
         voiceAgentManager: this.voiceAgentManager,
         startRun: this.start.bind(this),
-        ...(run.sessionId !== null
+        ...(run && run.sessionId !== null
           ? { enqueueCommittedAcp: this.streamedTranscriptSession?.enqueueAgentMessageCommitted }
           : {}),
         parentProvider: this.parentProvider,
@@ -2571,6 +2677,7 @@ export class ExecutionRunHostBridge implements ExecutionRunHostBridgeContract {
           ? { effectiveCallerPermissionMode: opts.effectiveCallerPermissionMode }
           : {}),
         ...(this.materializeReviewHostAction ? { materializeReviewHostAction: this.materializeReviewHostAction } : {}),
+        ...(this.reviewComments ? { reviewComments: this.reviewComments } : {}),
         onVoiceAgentWelcomed: async (welcomedRunId, welcomedEpoch) => {
           if (this.runs.get(welcomedRunId)?.sessionId === null) return;
           const callback = this.onVoiceAgentWelcomed;

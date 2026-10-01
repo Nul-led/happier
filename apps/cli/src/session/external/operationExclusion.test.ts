@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { readProcessIdentityByPid } from '@/daemon/processIdentity';
 
 import {
     createExternalSessionOperationExclusion,
@@ -73,6 +74,37 @@ afterEach(async () => {
 });
 
 describe('external session operation exclusion', () => {
+    it('records the canonical process witness for a new claim', async () => {
+        const { owner } = await createOwner('daemon:canonical', Date.now);
+        const acquired = await owner.acquire(materializeRequest());
+        expect(acquired.status).toBe('acquired');
+        if (acquired.status !== 'acquired') return;
+        expect(acquired.claim.record).toMatchObject({
+            schemaVersion: 2,
+            ownerProcess: {
+                pid: process.pid,
+                processStartTimeMs: (await readProcessIdentityByPid(process.pid))?.processStartTimeMs,
+            },
+        });
+        await acquired.claim.release();
+    });
+
+    it('compares a live Linux claim in numeric witness units and detects PID reuse', async () => {
+        const ownerProcess = { pid: 4_242, processStartTimeMs: 190 } as const;
+        const inspect = (observedStart: number) => inspectExternalSessionOperationOwnerProcess(
+            ownerProcess,
+            {
+                readProcessRunState: async () => 'servable',
+                readProcessIdentityByPid: async () => ({
+                    pid: ownerProcess.pid,
+                    processStartTimeMs: observedStart,
+                    command: 'happier daemon',
+                }),
+            },
+        );
+        await expect(inspect(190)).resolves.toBe('verified_running');
+        await expect(inspect(200)).resolves.toBe('verified_stopped');
+    });
     it.each(['dead', 'zombie'] as const)(
         'verifies a recorded owner process is stopped when its run state is %s',
         async (runState) => {
@@ -87,25 +119,6 @@ describe('external session operation exclusion', () => {
             expect(readProcessIdentityByPid).not.toHaveBeenCalled();
         },
     );
-
-    it('distinguishes the recorded live process from a process that reused its pid', async () => {
-        const ownerProcess = {
-            pid: 4_242,
-            processStartTimeMs: 1_717_171_717_000,
-        } as const;
-        const inspect = async (processStartTimeMs: number) =>
-            await inspectExternalSessionOperationOwnerProcess(ownerProcess, {
-                readProcessRunState: async () => 'servable',
-                readProcessIdentityByPid: async () => ({
-                    pid: ownerProcess.pid,
-                    processStartTimeMs,
-                    command: 'happier daemon',
-                }),
-            });
-
-        await expect(inspect(ownerProcess.processStartTimeMs)).resolves.toBe('verified_running');
-        await expect(inspect(ownerProcess.processStartTimeMs + 10_000)).resolves.toBe('verified_stopped');
-    });
 
     it.each([
         ['stopped run state', async () => ({
@@ -613,6 +626,18 @@ describe('external session operation exclusion', () => {
             'external_session_operation_repair_claim_unreadable',
         );
         expect(malformedEffect).not.toHaveBeenCalled();
+
+        // 0.2 never wrote these claims. An undeployed v1 wall-clock claim
+        // cannot be reinterpreted as a current numeric-witness record.
+        await writeFile(join(claimDirectory, 'claim.json'), JSON.stringify({
+            ...acquired.claim.record,
+            schemaVersion: 1,
+        }), 'utf8');
+        await expect(owner.withPassiveRepairSessionBarrier({
+            sessionId: acquired.claim.record.request.sessionId,
+        }, malformedEffect)).rejects.toThrow(
+            'external_session_operation_repair_claim_unreadable',
+        );
     });
 
     it('bounds acquisition while a live passive repair keeps the claim barrier', async () => {
@@ -843,7 +868,7 @@ describe('external session operation exclusion', () => {
                     renew: vi.fn(renew),
                     release: vi.fn(async () => undefined),
                     record: {
-                        schemaVersion: 1,
+                        schemaVersion: 2,
                         claimId: 'claim-1',
                         ownerId: 'owner-1',
                         request: materializeRequest(),
@@ -882,7 +907,7 @@ describe('external session operation exclusion', () => {
                 renew: vi.fn(async (): Promise<boolean> => false),
                 release: vi.fn(async () => undefined),
                 record: {
-                    schemaVersion: 1,
+                    schemaVersion: 2,
                     claimId: 'claim-1',
                     ownerId: 'owner-1',
                     request: materializeRequest(),

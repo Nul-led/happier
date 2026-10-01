@@ -3,7 +3,9 @@ import { View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
 import { MainAppTabBar } from '@/components/navigation/mobile/chrome/bars/MainAppTabBar';
-import { SidebarView } from '@/components/navigation/shell/SidebarView';
+import { AppRail } from '@/components/navigation/shell/appRail/AppRail';
+import { AppShellColumn } from '@/components/navigation/shell/appRail/AppShellColumn';
+import { builtinAppShellColumn } from '@/components/navigation/shell/appRail/appRailModel';
 
 import type { StageDevice } from './DeviceFrame';
 import { stageVisualTokens } from './stageVisualTokens';
@@ -12,6 +14,8 @@ import { stageVisualTokens } from './stageVisualTokens';
 // presses are inert. The bar is present for real-app fidelity (spec §3), and
 // the cockpit beat spotlights it.
 function noopTabPress(): void {}
+
+const SESSIONS_COLUMN = builtinAppShellColumn('sessions');
 
 type AppShellStageSurfaceId = 'sessions-list' | 'session-view';
 
@@ -64,7 +68,7 @@ const stylesheet = StyleSheet.create((theme) => ({
 }));
 
 /**
- * The stage reuses the real sidebar/list and session-detail owners. It only
+ * The stage reuses the real app shell (rail and Sessions column) and session-detail owners. It only
  * composes them into the desktop split that normally surrounds those screens.
  */
 export function StageAppShell(props: StageAppShellProps): React.ReactElement {
@@ -76,7 +80,7 @@ export function StageAppShell(props: StageAppShellProps): React.ReactElement {
                 {props.surface === 'session-view' ? (
                     props.detail
                 ) : (
-                    <SidebarView desktopWindowControls={null} desktopUpdateIndicator={null} />
+                    <AppShellColumn column={SESSIONS_COLUMN} />
                 )}
                 <View testID="demo-stage-phone-tab-bar" pointerEvents="none" style={styles.phoneTabBar}>
                     <MainAppTabBar activeTab="sessions" onTabPress={noopTabPress} />
@@ -87,12 +91,9 @@ export function StageAppShell(props: StageAppShellProps): React.ReactElement {
 
     return (
         <View testID="demo-stage-app-shell" style={styles.root}>
+            <AppRail />
             <View testID="demo-stage-app-shell-sidebar" style={styles.sidebar}>
-                <SidebarView
-                    sidebarWidthPx={stageVisualTokens.appShell.sidebarWidth}
-                    desktopWindowControls={null}
-                    desktopUpdateIndicator={null}
-                />
+                <AppShellColumn column={SESSIONS_COLUMN} />
             </View>
             <View testID={props.detailTestID ?? 'demo-stage-app-shell-detail'} style={styles.detail}>
                 {props.detail}

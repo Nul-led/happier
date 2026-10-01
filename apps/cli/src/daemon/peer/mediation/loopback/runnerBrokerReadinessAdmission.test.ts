@@ -1,4 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
+import { once } from 'node:events';
+import { request as requestHttp } from 'node:http';
+import { Server, type Socket } from 'node:net';
 import { IROH_MACHINE_ADMISSION_PATH, IROH_MACHINE_REMOTE_ENDPOINT_HEADER } from '@happier-dev/iroh-native/node';
 import { createPeerMediationLoopbackApp } from './server';
 
@@ -26,6 +29,52 @@ function createApp(resolve: NonNullable<NonNullable<Parameters<typeof createPeer
 }
 
 describe('Runner broker readiness machine/1 admission', () => {
+  it('closes an unclaimed application proxy when the client disconnects during its bind', async () => {
+    const app = createApp(async () => ({ port: 46_124 }));
+    await app.listen({ host: '127.0.0.1', port: 0 });
+    const address = app.server.address();
+    if (!address || typeof address === 'string') throw new Error('admission listener did not bind');
+    const incoming = once(app.server, 'connection') as Promise<[Socket]>;
+    const body = JSON.stringify(request);
+    const client = requestHttp({ host: '127.0.0.1', port: address.port,
+      path: IROH_MACHINE_ADMISSION_PATH, method: 'POST', headers: {
+        'content-type': 'application/json', 'content-length': Buffer.byteLength(body),
+        [IROH_MACHINE_REMOTE_ENDPOINT_HEADER]: sourceEndpoint,
+      } });
+    client.on('error', () => undefined);
+    let proxyServer: Server | undefined;
+    let completeBind: (() => void) | undefined;
+    let notifyBound!: () => void;
+    const bound = new Promise<void>((resolve) => { notifyBound = resolve; });
+    const originalListen = Server.prototype.listen;
+    // Delay only the OS listener completion notification. Authorization, proxy
+    // allocation and socket disconnect handling remain the production path.
+    const listen = vi.spyOn(Server.prototype, 'listen').mockImplementation(function (this: Server, ...args: unknown[]) {
+      const callback = args.at(-1);
+      if (typeof callback !== 'function') return Reflect.apply(originalListen, this, args);
+      return Reflect.apply(originalListen, this, [...args.slice(0, -1), () => {
+        proxyServer = this;
+        completeBind = () => { Reflect.apply(callback, this, []); };
+        notifyBound();
+      }]);
+    });
+    try {
+      client.end(body);
+      const [socket] = await incoming;
+      await bound;
+      const disconnected = once(socket, 'close');
+      client.destroy();
+      await disconnected;
+      completeBind?.();
+      await vi.waitFor(() => expect(proxyServer?.listening).toBe(false));
+    } finally {
+      completeBind?.();
+      listen.mockRestore();
+      client.destroy();
+      await app.close();
+    }
+  });
+
   it('binds the observed endpoint and exact local broker before selecting the fixed readiness app', async () => {
     const resolve = vi.fn(async () => ({ port: 46_124 }));
     const app = createApp(resolve);

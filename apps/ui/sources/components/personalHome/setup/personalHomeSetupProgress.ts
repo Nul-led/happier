@@ -4,12 +4,18 @@ import type { PersonalHomeBootstrapSnapshot } from '../bootstrap/personalHomeBoo
  * The ordered milestones first-run setup can prove, derived from the canonical bootstrap
  * snapshot and nothing else.
  *
- * They are the phases `derivePersonalHomeBootstrapSnapshot` already reports for the two
- * bootstrap operations (`ensure-home-ready`, `prepare-computer`); this module invents no stage
- * of its own and reads no task events, timers or clocks. Progress is therefore quantised to
+ * They are the readiness facts `derivePersonalHomeBootstrapSnapshot` already proves while it
+ * derives those phases; this module invents no stage of its own and reads no task events,
+ * timers or clocks. Progress is therefore quantised to
  * completed facts — never time-based, never a fabricated fill (lane-03 §6.5 as amended by A12).
  */
-export const PERSONAL_HOME_SETUP_MILESTONES = ['checking', 'ensuring-home', 'preparing-computer'] as const;
+export const PERSONAL_HOME_SETUP_MILESTONES = [
+    'runtime-healthy',
+    'identity-verified',
+    'authenticated',
+    'signup-closed',
+    'daemon-ready',
+] as const;
 
 export type PersonalHomeSetupMilestone = typeof PERSONAL_HOME_SETUP_MILESTONES[number];
 
@@ -26,11 +32,14 @@ export type PersonalHomeSetupProgress = Readonly<{
 export function derivePersonalHomeSetupProgress(
     snapshot: PersonalHomeBootstrapSnapshot,
 ): PersonalHomeSetupProgress {
-    // `checking` is complete once the controller holds authoritative facts, which is exactly
-    // when it leaves that phase; the other two are complete when the snapshot proves readiness.
+    const milestones = snapshot.progressMilestones;
+    // Older/incomplete presentation fixtures can omit the fine-grained projection. They may
+    // claim only the aggregate facts the snapshot itself proves, never a fabricated phase step.
     const proven: readonly boolean[] = [
-        snapshot.phase !== 'checking',
-        snapshot.homeReady,
+        milestones?.runtimeHealthy ?? snapshot.homeReady,
+        milestones?.identityVerified ?? snapshot.homeReady,
+        milestones?.authenticated ?? snapshot.homeReady,
+        milestones?.signupClosed ?? snapshot.homeReady,
         snapshot.daemonReady,
     ];
 

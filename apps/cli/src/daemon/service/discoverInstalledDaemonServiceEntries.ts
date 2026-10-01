@@ -13,7 +13,16 @@ import {
 import type { PublicReleaseRingId } from '@happier-dev/release-runtime/releaseRings';
 import { readPositiveIntEnv } from '@/utils/readPositiveIntEnv';
 
-import type { DaemonServiceMode, DaemonServiceTargetMode } from './plan';
+import {
+  DAEMON_SERVICE_MANAGED_BY_ENV_KEY,
+  DAEMON_SERVICE_AUTOSTART_ENV_KEY,
+  DAEMON_SERVICE_BUNDLE_ID_ENV_KEY,
+  parseDaemonServiceBundleId,
+  type DaemonServiceAutostartMode,
+  type DaemonServiceManagedBy,
+  type DaemonServiceMode,
+  type DaemonServiceTargetMode,
+} from './plan';
 
 export type InstalledDaemonServiceEntry = Readonly<{
   serverId: string;
@@ -28,6 +37,8 @@ export type InstalledDaemonServiceEntry = Readonly<{
   releaseChannel: PublicReleaseRingId;
   label: string;
   targetMode: DaemonServiceTargetMode;
+  /** `desktop` when the definition carries the desktop marker; `null` (user-owned) otherwise. */
+  managedBy?: DaemonServiceManagedBy | null;
 }>;
 
 type InstalledServicePathMatch = Readonly<{
@@ -319,6 +330,54 @@ export function readInstalledDaemonServiceEnvValue(params: Readonly<{
   return readParsedServiceEnvValue(readInstalledDaemonServiceDefinition(params), params.key);
 }
 
+/** The management marker a definition carries; anything but `desktop` reads as none (user-owned). */
+export function readInstalledDaemonServiceManagedBy(params: Readonly<{
+  platform: 'darwin' | 'linux' | 'win32';
+  path: string;
+}>): DaemonServiceManagedBy | null {
+  const value = readInstalledDaemonServiceEnvValue({ ...params, key: DAEMON_SERVICE_MANAGED_BY_ENV_KEY });
+  return value === 'desktop' ? 'desktop' : null;
+}
+
+/** Definition-owned metadata only: inherited install requests cannot change a rewrite. */
+export function readInstalledDaemonServiceBundleId(params: Readonly<{
+  platform: 'darwin' | 'linux' | 'win32';
+  path: string;
+}>): string | null {
+  try {
+    return parseDaemonServiceBundleId(readInstalledDaemonServiceEnvValue({ ...params, key: DAEMON_SERVICE_BUNDLE_ID_ENV_KEY }));
+  } catch {
+    return null;
+  }
+}
+
+/** The declared trigger; real OS enablement is observed by readBackgroundServiceAutostartMode. */
+export function readInstalledDaemonServiceAutostartMode(params: Readonly<{
+  platform: 'darwin' | 'linux' | 'win32';
+  path: string;
+}>): DaemonServiceAutostartMode | null {
+  const definition = readInstalledDaemonServiceDefinition(params);
+  if (!definition) return null;
+  if (definition.kind === 'launchd-plist') {
+    return definition.runAtLoad || definition.keepAliveOnFailure ? 'at-login' : 'on-demand';
+  }
+  const value = readParsedServiceEnvValue(definition, DAEMON_SERVICE_AUTOSTART_ENV_KEY);
+  return value === 'at-login' || value === 'on-demand' ? value : null;
+}
+
+/** Preserve optional defaults without adding a new marker to an unchanged legacy terminal install. */
+export function readInstalledDaemonServiceInstallOptions(params: Readonly<{
+  platform: 'darwin' | 'linux' | 'win32';
+  path: string;
+}>): Readonly<{ bundleId: string | null; autostart: DaemonServiceAutostartMode | undefined }> {
+  const mode = readInstalledDaemonServiceAutostartMode(params);
+  const recorded = readInstalledDaemonServiceEnvValue({ ...params, key: DAEMON_SERVICE_AUTOSTART_ENV_KEY });
+  return {
+    bundleId: readInstalledDaemonServiceBundleId(params),
+    autostart: mode && (recorded || mode === 'on-demand') ? mode : undefined,
+  };
+}
+
 export function isValidInstalledDaemonServiceFile(params: Readonly<{
   platform: 'darwin' | 'linux' | 'win32';
   path: string;
@@ -387,7 +446,8 @@ export async function discoverInstalledDaemonServiceEntries(params: Readonly<{
   let fileNames: string[] = [];
   try {
     fileNames = fs.readdirSync(servicesDir);
-  } catch {
+  } catch (error) {
+    if (!(error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT')) throw error;
     if (params.platform !== 'win32') {
       return [];
     }
@@ -455,6 +515,7 @@ export async function discoverInstalledDaemonServiceEntries(params: Readonly<{
         releaseChannel: metadata.releaseChannel,
         label: parsed.label,
         targetMode: metadata.targetMode,
+        managedBy: readParsedServiceEnvValue(definition, DAEMON_SERVICE_MANAGED_BY_ENV_KEY) === 'desktop' ? 'desktop' as const : null,
       }];
     });
 }

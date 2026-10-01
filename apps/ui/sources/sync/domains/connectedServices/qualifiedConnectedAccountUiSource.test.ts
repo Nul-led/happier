@@ -156,6 +156,29 @@ describe('createQualifiedConnectedAccountGroupsClient', () => {
         activeV4Mock.mockReset();
     });
 
+    it('exposes active-since only when it belongs to the listed active account', async () => {
+        listV4Mock.mockResolvedValueOnce({ groups: [{
+            ...qualifiedGroup,
+            state: { activeSince: { accountId: 'account-a', atMs: 123 } },
+        }] });
+        listV4Mock.mockResolvedValueOnce({ groups: [{
+            ...qualifiedGroup,
+            state: { activeSince: { accountId: 'old-account', atMs: 12 } },
+        }] });
+        listV4Mock.mockResolvedValueOnce({ groups: [qualifiedGroup] });
+        const client = createQualifiedConnectedAccountGroupsClient({
+            credentials,
+            service,
+            source: { protocol: 'v4' },
+        });
+        const matching = (await client.list())[0];
+        expect(matching?.activeSince).toEqual({ accountId: 'account-a', atMs: 123 });
+        const stale = (await client.list())[0];
+        expect(stale?.activeSince).toBeNull();
+        expect(stale?.state.activeSince).toBeNull();
+        expect((await client.list())[0]?.activeSince).toBeNull();
+    });
+
     it('retains exact qualified refs and threads only V4 revision semantics', async () => {
         listV4Mock.mockResolvedValueOnce({ groups: [qualifiedGroup] });
         patchV4Mock.mockResolvedValueOnce({

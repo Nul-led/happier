@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi, beforeEach } from 'vitest';
+import { PluginProjectionV2Schema } from '@happier-dev/protocol';
 import {
   AgentsBackendsListOutputSchema,
   buildBackendTargetKeyV2,
@@ -11,8 +12,11 @@ import {
 } from '@/sync/api/capabilities/serverFeaturesClient';
 import {
   readDynamicModelProbeCache,
+  writeDynamicModelProbeCacheSuccess,
+  DYNAMIC_MODEL_PROBE_SUCCESS_TTL_MS,
   resetDynamicModelProbeCacheForTests,
 } from '@/sync/domains/models/dynamicModelProbeCache';
+import { resolveBackendTargetKeyV2 } from '@/agents/backendCatalog/backendTargetKeyV2';
 import { buildDynamicModelProbeCacheKey } from '@/sync/domains/models/dynamicModelProbeCacheKey';
 import type { MachineContributionRegistryProjectionDescribeResult } from '@/sync/ops/machineContributionRegistryProjection';
 import type { machineCapabilitiesInvoke as machineCapabilitiesInvokeFn } from '@/sync/ops/capabilities';
@@ -22,7 +26,6 @@ type MachineContributionRegistryProjectionDescribeFn = typeof import('@/sync/ops
 
 const machineCapabilitiesInvoke = vi.fn<typeof machineCapabilitiesInvokeFn>();
 const describeProviderModelsMock = vi.fn();
-let providerSettingsReadCount = 0;
 const machineContributionRegistryProjectionDescribeMock = vi.fn<MachineContributionRegistryProjectionDescribeFn>(
   async () => ({ supported: false, reason: 'not-supported' }),
 );
@@ -85,7 +88,7 @@ function createProviderModelsProjection(freeformPolicy: Readonly<{
 }> = {}) {
   return {
     status: 'success',
-    agentTargetKey: 'backend:claude',
+    agentTargetKey: 'agent:happier.agent.claude/claude',
     groups: [{
       connectionId: 'pc_work', providerName: 'Gateway', connectionName: 'Work',
       connectionRole: 'named', connectionDisplayNameMode: 'custom', connectionRevision: 1,
@@ -94,7 +97,7 @@ function createProviderModelsProjection(freeformPolicy: Readonly<{
       supportsFreeformModelIds: freeformPolicy.supportsFreeformModelIds ?? true,
       suppressedConnectedServiceIds: [], modelLoadAction: 'descriptor_absent',
       rows: [{
-        ref: { agentTargetKey: 'backend:claude', providerConnectionId: 'pc_work', modelId: 'provider-model' },
+        ref: { agentTargetKey: 'agent:happier.agent.claude/claude', providerConnectionId: 'pc_work', modelId: 'provider-model' },
         descriptor: { id: 'provider-model', name: 'Provider model' },
         sources: { manual: false, static: true, probe: false }, confidence: 'verified_static',
         compatibility: { result: { status: 'verified' }, compatibilityFingerprint: 'compatibility:v1:voice', confirmed: true },
@@ -115,8 +118,10 @@ installVoiceToolActionImplCommonModuleMocks({
   },
 });
 
+import { clearDaemonMergedProjectionCacheForTests } from '@/agents/backendCatalog/loadDaemonMergedProjectionInputs';
 vi.mock('@/sync/domains/server/serverRuntime', () => ({
-  getActiveServerSnapshot: () => ({ serverId: 'server-a' }),
+  getActiveServerSnapshot: () => ({ serverId: 'server-a', serverUrl: 'https://voice-test.invalid', runtimeOrigin: 'https://voice-test.invalid', generation: 1 }),
+  getActiveServerHomeCarrier: () => null,
 }));
 
 vi.mock('@/sync/ops/machineContributionRegistryProjection', () => ({
@@ -125,6 +130,11 @@ vi.mock('@/sync/ops/machineContributionRegistryProjection', () => ({
     machinePluginSecretStatus: vi.fn(async () => ({ supported: false, reason: 'not-supported' })),
     machinePluginSecretSet: vi.fn(async () => ({ supported: false, reason: 'not-supported' })),
     machinePluginSecretDelete: vi.fn(async () => ({ supported: false, reason: 'not-supported' })),
+    machinePluginSettingsGet: vi.fn(async () => ({ supported: false, reason: 'not-supported' })),
+    machinePluginSettingsSet: vi.fn(async () => ({ supported: false, reason: 'not-supported' })),
+    getMachineContributionRegistryProjectionRevision: () => 0,
+    subscribeMachineContributionRegistryProjectionInvalidation: () => () => {},
+    resetMachineProjectionReadsForTests: () => {},
 }));
 
 vi.mock('@/sync/ops/capabilities', () => ({
@@ -136,10 +146,11 @@ vi.mock('@/providers/rpc/client', () => ({
 
 describe('agent catalog voice tools', () => {
   beforeEach(() => {
+    clearDaemonMergedProjectionCacheForTests();
     primeProvidersFeatureSnapshot('enabled');
     machineCapabilitiesInvoke.mockReset();
     describeProviderModelsMock.mockReset();
-    describeProviderModelsMock.mockResolvedValue({ status: 'success', agentTargetKey: 'backend:claude', groups: [] });
+    describeProviderModelsMock.mockResolvedValue({ status: 'success', agentTargetKey: 'agent:happier.agent.claude/claude', groups: [] });
     machineContributionRegistryProjectionDescribeMock.mockReset();
     machineContributionRegistryProjectionDescribeMock.mockResolvedValue({ supported: false, reason: 'not-supported' });
     state.settings.backendEnabledByTargetKey = {
@@ -168,15 +179,6 @@ describe('agent catalog voice tools', () => {
         updatedAt: 1,
       }],
     };
-    providerSettingsReadCount = 0;
-    Object.defineProperty(state.settings, 'providerSettingsV1', {
-      configurable: true,
-      enumerable: false,
-      get: () => {
-        providerSettingsReadCount += 1;
-        return undefined;
-      },
-    });
     resetDynamicModelProbeCacheForTests();
   });
 
@@ -201,7 +203,6 @@ describe('agent catalog voice tools', () => {
     // The native probe refuses freeform ids, so this is the Provider side of the
     // two-sided policy alone deciding that an unlisted id is still a real model.
     expect(result.supportsFreeform).toBe(true);
-    expect(providerSettingsReadCount).toBeGreaterThan(0);
   });
 
   it.each([
@@ -245,7 +246,6 @@ describe('agent catalog voice tools', () => {
       item.providerConnectionId !== undefined && item.providerConnectionId !== null
     ))).toBe(false);
     expect(describeProviderModelsMock).not.toHaveBeenCalled();
-    expect(providerSettingsReadCount).toBe(0);
   });
 
   it('does no Provider work while the feature decision is loading and fails closed on a network error', async () => {
@@ -266,7 +266,6 @@ describe('agent catalog voice tools', () => {
     await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalled());
 
     expect(describeProviderModelsMock).not.toHaveBeenCalled();
-    expect(providerSettingsReadCount).toBe(0);
 
     rejectFeatureFetch(new Error('network unavailable'));
     const result: any = await resultPromise;
@@ -275,7 +274,6 @@ describe('agent catalog voice tools', () => {
     ]));
     expect(result.items.some((item: any) => item.providerConnectionId != null)).toBe(false);
     expect(describeProviderModelsMock).not.toHaveBeenCalled();
-    expect(providerSettingsReadCount).toBe(0);
   });
 
   it('does not retain Provider rows when a cached native probe is reused after the feature closes', async () => {
@@ -294,7 +292,6 @@ describe('agent catalog voice tools', () => {
     primeProvidersFeatureSnapshot('disabled');
     machineCapabilitiesInvoke.mockClear();
     describeProviderModelsMock.mockClear();
-    providerSettingsReadCount = 0;
 
     const disabledResult: any = await listAgentModelsForVoiceTool({ agentId: 'claude', machineId: 'm1' });
 
@@ -306,7 +303,6 @@ describe('agent catalog voice tools', () => {
     ))).toBe(false);
     expect(machineCapabilitiesInvoke).not.toHaveBeenCalled();
     expect(describeProviderModelsMock).not.toHaveBeenCalled();
-    expect(providerSettingsReadCount).toBe(0);
   });
 
   it('uses daemon merged projection titles for discovered/plugin backend labels when machineId is provided', async () => {
@@ -317,36 +313,29 @@ describe('agent catalog voice tools', () => {
 
     machineContributionRegistryProjectionDescribeMock.mockResolvedValue({
       supported: true,
-      projection: {
-        v: 1,
+      projection: PluginProjectionV2Schema.parse({
+        v: 2,
+        generation: 1,
         agentsById: {
           'plugin:review-bot': {
             id: 'plugin:review-bot',
             title: 'Review Bot Plugin',
+            // V2 addresses the plugin backend through its Agent.
+            settingsBackendId: 'plugin-review-bot',
             subtitle: undefined,
             channel: 'plugin',
             isBuiltIn: false,
+            providerOwnedEnvironmentKeys: [],
           },
         },
-        backendsById: {
-          'plugin-review-bot': {
-            id: 'plugin-review-bot',
-            backendId: 'plugin-review-bot',
-            agentId: 'plugin:review-bot',
-            title: 'Review Bot (plugin)',
-            subtitle: undefined,
-            catalogAgentId: undefined,
-            iconAgentId: undefined,
-          },
-        },
-      },
+      }),
     });
 
     const { listAgentBackendsForVoiceTool } = await import('./agentCatalogList');
     const res: any = await listAgentBackendsForVoiceTool({ includeDisabled: true, machineId: 'm1' } as any);
     const pluginItem = (res?.items ?? []).find((i: any) => i.targetKey === 'backend:plugin-review-bot');
     expect(pluginItem).toBeTruthy();
-    expect(pluginItem.label).toBe('Review Bot (plugin)');
+    expect(pluginItem.label).toBe('Review Bot Plugin');
   });
 
   it('returns a coherent plugin backend item and model-list roundtrip when a runtime carrier is projected', async () => {
@@ -357,31 +346,24 @@ describe('agent catalog voice tools', () => {
 
     machineContributionRegistryProjectionDescribeMock.mockResolvedValue({
       supported: true,
-      projection: {
-        v: 1,
+      projection: PluginProjectionV2Schema.parse({
+        v: 2,
+        generation: 1,
         agentsById: {
           'plugin:review-bot': {
             id: 'plugin:review-bot',
             title: 'Review Bot Plugin',
+            // V2 addresses the plugin backend through its Agent.
+            settingsBackendId: 'plugin-review-bot',
             subtitle: undefined,
             channel: 'plugin',
             isBuiltIn: false,
+            providerOwnedEnvironmentKeys: [],
             catalogAgentId: 'claude',
             iconAgentId: 'claude',
           },
         },
-        backendsById: {
-          'plugin-review-bot': {
-            id: 'plugin-review-bot',
-            backendId: 'plugin-review-bot',
-            agentId: 'plugin:review-bot',
-            title: 'Review Bot (plugin)',
-            subtitle: undefined,
-            catalogAgentId: 'claude',
-            iconAgentId: 'claude',
-          },
-        },
-      },
+      }),
     });
 
     machineCapabilitiesInvoke.mockResolvedValue({
@@ -443,8 +425,9 @@ describe('agent catalog voice tools', () => {
 
     machineContributionRegistryProjectionDescribeMock.mockResolvedValue({
       supported: true,
-      projection: {
-        v: 1,
+      projection: PluginProjectionV2Schema.parse({
+        v: 2,
+        generation: 1,
         agentsById: {
           'acme-review': {
             id: 'acme-review',
@@ -452,20 +435,10 @@ describe('agent catalog voice tools', () => {
             subtitle: undefined,
             channel: 'plugin',
             isBuiltIn: false,
+            providerOwnedEnvironmentKeys: [],
           },
         },
-        backendsById: {
-          'acme-review': {
-            id: 'acme-review',
-            backendId: 'acme-review',
-            agentId: 'acme-review',
-            title: 'Acme Review (plugin)',
-            subtitle: undefined,
-            catalogAgentId: undefined,
-            iconAgentId: undefined,
-          },
-        },
-      },
+      }),
     });
 
     machineCapabilitiesInvoke.mockResolvedValue({
@@ -605,14 +578,14 @@ describe('agent catalog voice tools', () => {
     const { listAgentBackendsForVoiceTool } = await import('./agentCatalogList');
     const res: any = await listAgentBackendsForVoiceTool({ includeDisabled: false });
     const targetKeys = (res?.items ?? []).map((i: any) => i.targetKey);
-    expect(targetKeys).not.toContain('backend:gemini');
+    expect(targetKeys).not.toContain('agent:happier.agent.gemini/gemini');
     expect(targetKeys).not.toContain('backend:team-review:configured:team-review');
   });
 
   it('includes disabled backends when includeDisabled=true', async () => {
     const { listAgentBackendsForVoiceTool } = await import('./agentCatalogList');
     const res: any = await listAgentBackendsForVoiceTool({ includeDisabled: true });
-    const gemini = (res?.items ?? []).find((i: any) => i.targetKey === 'backend:gemini');
+    const gemini = (res?.items ?? []).find((i: any) => i.targetKey === 'agent:happier.agent.gemini/gemini');
     expect(gemini).toBeTruthy();
     expect(gemini.enabled).toBe(false);
     expect(gemini).toMatchObject({
@@ -637,7 +610,7 @@ describe('agent catalog voice tools', () => {
     if (!parsed.success) return;
 
     expect(parsed.data.items).toContainEqual(expect.objectContaining({
-      targetKey: 'backend:codex',
+      targetKey: 'agent:happier.agent.codex/codex',
       agentId: 'codex',
       identity: { pluginId: 'happier.agent.codex', localId: 'codex' },
     }));
@@ -660,51 +633,44 @@ describe('agent catalog voice tools', () => {
 
   it('prioritizes enabled plugin backends ahead of disabled built-ins when limiting discovery results', async () => {
     state.settings.backendEnabledByTargetKey = {
-      'backend:claude': false,
-      'backend:codex': false,
-      'backend:opencode': false,
-      'backend:antigravity': false,
-      'backend:gemini': false,
-      'backend:auggie': false,
-      'backend:qwen': false,
-      'backend:kimi': false,
-      'backend:kilo': false,
-      'backend:kiro': false,
-      'backend:cursor': false,
-      'backend:ohMyPi': false,
-      'backend:pi': false,
-      'backend:copilot': false,
+      'agent:happier.agent.claude/claude': false,
+      'agent:happier.agent.codex/codex': false,
+      'agent:happier.agent.opencode/opencode': false,
+      'agent:happier.agent.antigravity/antigravity': false,
+      'agent:happier.agent.gemini/gemini': false,
+      'agent:happier.agent.auggie/auggie': false,
+      'agent:happier.agent.qwen/qwen': false,
+      'agent:happier.agent.kimi/kimi': false,
+      'agent:happier.agent.kilo/kilo': false,
+      'agent:happier.agent.kiro/kiro': false,
+      'agent:happier.agent.cursor/cursor': false,
+      'agent:happier.agent.ohmypi/ohmypi': false,
+      'agent:happier.agent.pi/pi': false,
+      'agent:happier.agent.copilot/copilot': false,
       'backend:team-review:configured:team-review': false,
       'backend:plugin-review-bot': true,
     };
 
     machineContributionRegistryProjectionDescribeMock.mockResolvedValue({
       supported: true,
-      projection: {
-        v: 1,
+      projection: PluginProjectionV2Schema.parse({
+        v: 2,
+        generation: 1,
         agentsById: {
           'plugin:review-bot': {
             id: 'plugin:review-bot',
             title: 'Review Bot Plugin',
+            // V2 addresses the plugin backend through its Agent.
+            settingsBackendId: 'plugin-review-bot',
             subtitle: undefined,
             channel: 'plugin',
             isBuiltIn: false,
+            providerOwnedEnvironmentKeys: [],
             catalogAgentId: 'claude',
             iconAgentId: 'claude',
           },
         },
-        backendsById: {
-          'plugin-review-bot': {
-            id: 'plugin-review-bot',
-            backendId: 'plugin-review-bot',
-            agentId: 'plugin:review-bot',
-            title: 'Review Bot (plugin)',
-            subtitle: undefined,
-            catalogAgentId: 'claude',
-            iconAgentId: 'claude',
-          },
-        },
-      },
+      }),
     });
 
     const { listAgentBackendsForVoiceTool } = await import('./agentCatalogList');
@@ -713,7 +679,7 @@ describe('agent catalog voice tools', () => {
     const firstDisabledIndex = backends?.items?.findIndex((item: any) => item.enabled === false) ?? -1;
     expect(backends?.items?.[pluginIndex]).toMatchObject({
       targetKey: 'backend:plugin-review-bot',
-      label: 'Review Bot (plugin)',
+      label: 'Review Bot Plugin',
       agentId: 'claude',
       enabled: true,
     });
@@ -791,7 +757,7 @@ describe('agent catalog voice tools', () => {
 
     const cacheKey = buildDynamicModelProbeCacheKey({
       machineId: 'm1',
-      targetKey: buildBackendTargetKeyV2({ kind: 'backend', backendId: 'claude' }),
+      targetKey: resolveBackendTargetKeyV2({ kind: 'backend', backendId: 'claude' }),
       providerConnectionId: null,
       serverId: 'server-a',
       cwd: null,
@@ -847,7 +813,7 @@ describe('agent catalog voice tools', () => {
 
     const cacheKey = buildDynamicModelProbeCacheKey({
       machineId: 'm1',
-      targetKey: buildBackendTargetKeyV2({ kind: 'backend', backendId: 'claude' }),
+      targetKey: resolveBackendTargetKeyV2({ kind: 'backend', backendId: 'claude' }),
       providerConnectionId: null,
       serverId: 'server-a',
       cwd: null,
@@ -1081,5 +1047,46 @@ describe('agent catalog voice tools', () => {
       errorMessage: 'invalid_parameters',
     });
     expect(machineCapabilitiesInvoke).not.toHaveBeenCalled();
+  });  it('keeps provider-owned nonpersistent discovery nonpersistent in the shared cache', async () => {
+    machineCapabilitiesInvoke.mockResolvedValue({ supported: true, response: { ok: true, result: {
+      availableModels: [{ id: 'provider-model', name: 'Provider model' }],
+      supportsFreeform: true, source: 'dynamic', cacheable: false,
+    } } });
+    const { listAgentModelsForVoiceTool } = await import('./agentCatalogList');
+    const result = await listAgentModelsForVoiceTool({ agentId: 'claude', machineId: 'm1' });
+    expect(result).toMatchObject({ source: 'preflight', items: expect.arrayContaining([expect.objectContaining({ modelId: 'provider-model', label: 'Provider model' })]) });
+    const key = buildDynamicModelProbeCacheKey({ machineId: 'm1', targetKey: resolveBackendTargetKeyV2({ kind: 'backend', backendId: 'claude' }), providerConnectionId: null, serverId: 'server-a', cwd: null })!;
+    expect(readDynamicModelProbeCache(key)).toMatchObject({ kind: 'success', cacheable: false });
   });
+
+  it('uses a newer daemon last-good observation on failure without renewing its age', async () => {
+    const key = buildDynamicModelProbeCacheKey({ machineId: 'm1', targetKey: resolveBackendTargetKeyV2({ kind: 'backend', backendId: 'claude' }), providerConnectionId: null, serverId: 'server-a', cwd: null })!;
+    const previousAt = Date.now() - DYNAMIC_MODEL_PROBE_SUCCESS_TTL_MS - 1000;
+    const observedAt = previousAt + 500;
+    writeDynamicModelProbeCacheSuccess(key, { availableModels: [{ id: 'old', name: 'Old' }], supportsFreeform: true }, previousAt);
+    machineCapabilitiesInvoke.mockResolvedValue({ supported: true, response: { ok: true, result: {
+      availableModels: [{ id: 'newer', name: 'Newer' }], supportsFreeform: true,
+      source: 'dynamic', cacheable: false, refreshError: true, observedAt,
+    } } });
+    const { listAgentModelsForVoiceTool } = await import('./agentCatalogList');
+    expect(await listAgentModelsForVoiceTool({ agentId: 'claude', machineId: 'm1' })).toMatchObject({
+      refreshError: true, items: expect.arrayContaining([expect.objectContaining({ modelId: 'newer', label: 'Newer' })]),
+    });
+    expect(readDynamicModelProbeCache(key)).toMatchObject({ updatedAt: observedAt });
+  });
+
+  it('distinguishes intentional static policy from a failed discovery fallback', async () => {
+    machineCapabilitiesInvoke.mockResolvedValue({ supported: true, response: { ok: true, result: {
+      availableModels: [{ id: 'policy-model', name: 'Policy model' }], supportsFreeform: true,
+      source: 'static', refreshError: false, cacheable: false,
+    } } });
+    const { listAgentModelsForVoiceTool } = await import('./agentCatalogList');
+    const result = await listAgentModelsForVoiceTool({ agentId: 'claude', machineId: 'm1' });
+    expect(result).toMatchObject({ items: expect.arrayContaining([expect.objectContaining({ modelId: 'policy-model', label: 'Policy model' })]) });
+    expect(result).not.toHaveProperty('refreshError');
+    resetDynamicModelProbeCacheForTests();
+    machineCapabilitiesInvoke.mockRejectedValue(new Error('offline'));
+    expect(await listAgentModelsForVoiceTool({ agentId: 'claude', machineId: 'm1' })).toMatchObject({ source: 'unavailable', refreshError: true });
+  });
+
 });

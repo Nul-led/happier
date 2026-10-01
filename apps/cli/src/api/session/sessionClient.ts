@@ -1,4 +1,6 @@
 import { logger } from '@/ui/logger'
+import { readInstallationIdentityIfExistsSync } from '@/daemon/identity/store';
+import { createExternalActionAuthorizedRequestHeaders } from '@/api/externalActionExecutionAuthorization';
 import { randomUUID } from 'node:crypto'
 import {
     createSessionActionConfirmationAdapter,
@@ -10,7 +12,9 @@ import { Socket } from 'socket.io-client'
 import { AgentState, ClientToServerEvents, Metadata, ServerToClientEvents, Session, Update, UserMessage } from '../types'
 import { AsyncLock } from '@/utils/lock';
 import { RpcHandlerManager } from '../rpc/RpcHandlerManager';
-import { shouldSyncSessionSnapshotOnConnect } from './snapshotSync';
+import { shouldSyncSessionSnapshotOnConnect, type OpenedSessionStateSnapshot, type OpenedSessionStateVersions } from './snapshotSync';
+import { createSessionTranscriptStoredContentUnavailableError } from './sessionTranscriptStoredContentUnavailable';
+import { TranscriptOpenedAgentStateV1Schema, TranscriptOpenedSharedMetadataV1Schema, projectSessionSharedMetadataV1, type TranscriptOpenedSharedMetadataV1 } from '@happier-dev/protocol';
 import {
     updateSessionAgentStateWithAck,
     updateSessionMetadataWithAck,
@@ -56,6 +60,7 @@ import {
 import type { BrowserDaemonControlRoutes } from '@/daemon/browser/control/routes';
 import type { BrowserContextRoutes } from '@/daemon/browser/context/routes';
 import type { BrowserAutomationRoutes } from '@/daemon/browser/automation/routes';
+import type { BrowserUiAutomationRouteOwner } from '@/daemon/runtimeActionExecutor';
 import type { BrowserDiagnosticsActionRoutes } from '@/daemon/browser/diagnostics/actionRoutes';
 import type { BrowserRecordingRoutes } from '@/daemon/browser/recording/routes';
 import type {
@@ -392,6 +397,7 @@ function readRecordProperty(value: unknown, key: string): unknown {
 
 const SESSION_CONNECTION_STATE_EVENT = 'session-connection-state';
 const SESSION_SYNC_SERVER_CONTRACT_EVENT = 'session-sync-server-contract';
+const EXECUTION_RUN_WORKER_UPDATE_SOURCE_EVENT = 'execution-run-worker-update-source';
 type SessionSocketAckWriteEvent =
     | 'session-publisher-authority-check'
     | 'session-runtime-activity-snapshot'
@@ -457,6 +463,7 @@ export type ApiSessionClientOptions = Readonly<{
     getBrowserDaemonControlRoutes?: (() => BrowserDaemonControlRoutes | null) | null;
     getBrowserDaemonContextRoutes?: (() => BrowserContextRoutes | null) | null;
     getBrowserDaemonAutomationRoutes?: (() => BrowserAutomationRoutes | null) | null;
+    getBrowserUiAutomation?: (() => BrowserUiAutomationRouteOwner | null) | null;
     getBrowserDiagnosticsActionRoutes?: (() => BrowserDiagnosticsActionRoutes | null) | null;
     getBrowserRecordingRoutes?: (() => BrowserRecordingRoutes | null) | null;
     attachBrowserRecordingToComposer?: (
@@ -490,15 +497,21 @@ export class ApiSessionClient extends EventEmitter {
 
     private readonly token: string;
     readonly sessionId: string;
+    private readonly workDepth: number;
+    private rolePromptOrganization: Pick<import('@happier-dev/protocol').V2SessionByIdResponse['session'], 'reportsTo' | 'origin'>;
+    private hostCurrentTurnFacts: Readonly<{ turnId: string; facts: import('@happier-dev/protocol').SessionTurnFactsV1 }> | null = null;
     private metadata: Metadata | null;
     private metadataLayoutVersion: number;
     private metadataVersion: number;
+    /** Exact recipient-safe component of the incumbent materialized tuple. */
+    private openedSharedMetadata: TranscriptOpenedSharedMetadataV1 | null = null;
     private ownerMetadata: SessionOwnerMetadataV1 | null;
     private readonly metadataAuthorityKind: SessionMetadataAuthority['kind'];
     private readonly runtimePrincipalAccountId: string | null;
     private readonly ownerCredentials: StoredCredentials | null;
     private readonly transport: SessionClientTransport;
     private readonly serverBinding: SessionClientServerBinding;
+    private readonly machineAdmissionTransport: ApiSessionClientOptions['machineAdmissionTransport'];
     private readonly readInjectedOwnerCredentials: (() => Promise<StoredCredentials | null>) | null;
     private readonly getAccountEncryptionCurrentness: () => Promise<AccountEncryptionCurrentnessResponse>;
     private agentState: AgentState | null;
@@ -563,6 +576,8 @@ export class ApiSessionClient extends EventEmitter {
     private runtimeActivityProjection: RuntimeActivityProjectionForPendingDrain = {};
     private readonly activeExecutionRunIds = new Set<string>();
     private readonly executionRunActivityListeners = new Set<(activeCount: number) => void>();
+    private executionRunWorkerUpdateSource: Pick<import('@/agent/runtime/bridges/executionRun/ExecutionRunHostBridge').ExecutionRunHostBridge,
+        'takeWorkerUpdate' | 'waitForWorkerUpdateChange' | 'prepareWorkerUpdates'> | null = null;
     private readonly pendingSessionTurnMutationUpdates = new Set<Promise<void>>();
     private readonly pendingTranscriptMessageUpdates = new Set<Promise<unknown>>();
     private readonly locallyAuthoredTranscriptObservationUserLocalIds = new Set<string>();
@@ -583,9 +598,12 @@ export class ApiSessionClient extends EventEmitter {
     private endSessionAndClosePromise: Promise<void> | null = null;
     private readonly sessionRuntimeControls: Partial<SessionRuntimeControls> = {};
     readonly executionRuns: HappyMcpExecutionRunService;
+    /** Existing native runtime accessor installed by applyRunnerMcpSessionContext. */
+    declare getBackendTarget?: import('@/mcp/startHappyServer').HappyMcpSessionClient['getBackendTarget'];
     private sessionActionConfirmationAdapter: ReturnType<typeof createSessionActionConfirmationAdapter> | null = null;
     private sessionActionConfirmationRecovery: Promise<void> | null = null;
     private disposeSessionFollowWakeReceiver: (() => void) | null = null;
+    private readonly sessionHandlersRegistration: ReturnType<typeof registerSessionClientRuntimeHandlers>;
 
     /**
      * Returns the latest known agentState (may be stale if socket is disconnected).
@@ -593,6 +611,25 @@ export class ApiSessionClient extends EventEmitter {
      */
     getAgentStateSnapshot(): AgentState | null {
         return this.agentState;
+    }
+
+    /** Refresh through the incumbent snapshot lifecycle before exposing a versioned follow projection. */
+    async readOpenedSessionStateSnapshot(versions: OpenedSessionStateVersions): Promise<OpenedSessionStateSnapshot> {
+        if (this.closed) {
+            throw createSessionTranscriptStoredContentUnavailableError();
+        }
+        if (!await this.syncSessionSnapshotFromServer({ reason: 'explicit-drain' }) || this.closed) {
+            throw createSessionTranscriptStoredContentUnavailableError();
+        }
+        const sharedMetadata = this.metadataLayoutVersion === SESSION_METADATA_LAYOUT_VERSION_V1
+            ? this.openedSharedMetadata
+            : { version: this.metadataVersion, value: projectSessionSharedMetadataV1({ metadata: this.metadata }) };
+        return {
+            agentState: this.hasOwnerMetadataAuthority() && this.agentStateVersion > versions.agentStateVersion
+                ? TranscriptOpenedAgentStateV1Schema.parse({ version: this.agentStateVersion, value: this.agentState }) : null,
+            sharedMetadata: sharedMetadata && sharedMetadata.version > versions.sharedMetadataVersion
+                ? TranscriptOpenedSharedMetadataV1Schema.parse(sharedMetadata) : null,
+        };
     }
 
     async readSessionTurnsProjection(): Promise<SessionTurnsProjectionV1 | null> {
@@ -959,11 +996,17 @@ export class ApiSessionClient extends EventEmitter {
 	        super()
 	        this.token = token;
 	        this.transport = options.transport;
+            this.machineAdmissionTransport = options.machineAdmissionTransport;
 	        this.serverBinding = Object.freeze({
                 serverId: options.transport.serverId,
                 serverUrl: options.transport.serverUrl,
             });
 	        this.sessionId = session.id;
+            this.workDepth = session.workDepth ?? 0;
+            this.rolePromptOrganization = {
+                ...(session.reportsTo ? { reportsTo: session.reportsTo } : {}),
+                ...(session.origin ? { origin: session.origin } : {}),
+            };
 	        this.initialExecutionRunPendingTargetIds = readPendingExecutionRunIds(session) ?? [];
 	        this.metadata = session.metadata;
             this.metadataLayoutVersion = readSessionMetadataLayoutVersion(session.metadataLayoutVersion);
@@ -1076,7 +1119,10 @@ export class ApiSessionClient extends EventEmitter {
                     pendingBlockedCount: state.pendingBlockedCount,
                     pendingVersion: state.pendingVersion,
                 });
-                if (!recipient) return;
+                if (!recipient) {
+                    void this.reconcilePendingProviderInputCustodyBeforeMaterialization();
+                    return;
+                }
                 void this.notifyExecutionRunPendingTarget(recipient.runId).catch((error) => {
                     logger.debug('[pendingQueue] execution-run target reconciliation failed closed', {
                         sessionId: this.sessionId,
@@ -1251,6 +1297,7 @@ export class ApiSessionClient extends EventEmitter {
             getSessionConnectionSupervisor: () => this.sessionConnectionSupervisor,
             getLatestTurnSnapshot: () => this.materializationRuntime.getLatestTurnSnapshot(),
             getActiveLocalTurnProgressAt: () => this.materializationRuntime.getActiveLocalTurnProgressAt(),
+            onPresence: (presence) => this.emit('local-presence', presence),
             getMetadataSnapshot: () => this.getMetadataSnapshot(),
             updateAgentState: (handler) => this.updateAgentState(handler),
             updateMetadata: (handler) => this.updateMetadata(handler),
@@ -1317,6 +1364,7 @@ export class ApiSessionClient extends EventEmitter {
                     queryContext: this.getTranscriptQueryContext(),
                 })),
             admitSessionUserMessage: async ({
+                callerInputAuthorization,
                 localId,
                 text,
                 meta,
@@ -1356,7 +1404,23 @@ export class ApiSessionClient extends EventEmitter {
                     }
                     throw new Error('Current Account credentials are required to admit Session user input');
                 }
+                const installation = callerInputAuthorization ? readInstallationIdentityIfExistsSync() : null;
+                if (callerInputAuthorization && !installation) {
+                    await settle('onDefinitiveAdmissionFailure');
+                    return { status: 'rejected', code: 'session_input_unauthorized' };
+                }
+                const resolveAuthorizationHeaders = callerInputAuthorization && installation
+                    ? (request: Readonly<{ method: string; path: string; body?: unknown }>) =>
+                        createExternalActionAuthorizedRequestHeaders({
+                            authorization: callerInputAuthorization, effectActionId: 'session.message.send',
+                            target: { kind: 'session', sessionId: this.sessionId },
+                            installationId: installation.installationId, privateKey: installation.privateKey,
+                            ...request,
+                        })
+                    : undefined;
                 const result = await this.runSessionRequest(async () => sendSessionMessage({
+                    ...(callerInputAuthorization ? { callerInputAuthorization } : {}),
+                    ...(resolveAuthorizationHeaders ? { resolveAuthorizationHeaders } : {}),
                     credentials,
                     idOrPrefix: this.sessionId,
                     message: text,
@@ -1420,6 +1484,7 @@ export class ApiSessionClient extends EventEmitter {
             };
         this.rpcHandlerManager = new RpcHandlerManager({
             scopePrefix: this.sessionId,
+            localMachineId: options.localMachineId,
             ...rpcTransportConfig,
             logger: (msg, data) => logger.debug(msg, data),
             onRegistrationError: (error) => {
@@ -1431,7 +1496,7 @@ export class ApiSessionClient extends EventEmitter {
                 }
             },
         });
-        registerSessionClientRuntimeHandlers({
+        this.sessionHandlersRegistration = registerSessionClientRuntimeHandlers({
             rpcHandlerManager: this.rpcHandlerManager,
             token: this.token,
             ...this.serverBinding,
@@ -1463,6 +1528,7 @@ export class ApiSessionClient extends EventEmitter {
             getBrowserDaemonControlRoutes: options.getBrowserDaemonControlRoutes ?? null,
             getBrowserDaemonContextRoutes: options.getBrowserDaemonContextRoutes ?? null,
             getBrowserDaemonAutomationRoutes: options.getBrowserDaemonAutomationRoutes ?? null,
+            getBrowserUiAutomation: options.getBrowserUiAutomation ?? null,
             getBrowserDiagnosticsActionRoutes: options.getBrowserDiagnosticsActionRoutes ?? null,
             getBrowserRecordingRoutes: options.getBrowserRecordingRoutes ?? null,
             attachBrowserRecordingToComposer: options.attachBrowserRecordingToComposer,
@@ -1562,7 +1628,19 @@ export class ApiSessionClient extends EventEmitter {
             handleSessionScopedUpdate: (data) => this.updateRuntime.handleUpdate(data, {
                 source: 'session-scoped',
             }),
-            onSessionFollowInvalidated: options.onSessionFollowInvalidated,
+            onSessionFollowInvalidated: () => {
+                // The existing exact-Session hint also invalidates its live
+                // worker relation. Keep immutable origin, but never use a
+                // detached relation while the existing snapshot owner refreshes.
+                this.rolePromptOrganization = {
+                    ...(this.rolePromptOrganization.origin ? { origin: this.rolePromptOrganization.origin } : {}),
+                };
+                // Snapshot failures are already logged by the owner. A prompt
+                // reader awaiting the in-flight refresh still sees typed
+                // privacy failures; the socket hint itself has no awaiter.
+                void this.syncSessionSnapshotFromServer({ reason: 'waitForMetadataUpdate' }).catch(() => undefined);
+                options.onSessionFollowInvalidated?.();
+            },
             deliverMaterializedUserMessageToAgentQueue: (message, providerAction, requestedAction) =>
                 this.deliverUserMessageToAgentQueue(message, providerAction, requestedAction),
             clearStartupMessageCatchUpRetryTimer: () => this.recoveryRuntime.clearStartupMessageCatchUpRetryTimer(),
@@ -1998,7 +2076,11 @@ export class ApiSessionClient extends EventEmitter {
                     currentAgentState: this.agentState,
                     sessionConnectionSupervisor: this.sessionConnectionSupervisor,
                     isClosed: () => this.closed,
+                    setOrganizationSnapshot: (organization) => {
+                        this.rolePromptOrganization = organization;
+                    },
                     setMetadataSnapshot: (metadata, version, layoutVersion) => {
+                        this.openedSharedMetadata = null;
                         this.metadata = metadata;
                         this.metadataLayoutVersion = layoutVersion;
                         this.metadataVersion = version;
@@ -2276,6 +2358,7 @@ export class ApiSessionClient extends EventEmitter {
     }
 
     async enqueueSessionUserMessage(params: Readonly<{
+        callerInputAuthorization?: import('@happier-dev/protocol').ExternalActionExecutionAuthorizationV1;
         text: string;
         localId?: string;
         meta?: Record<string, unknown>;
@@ -2292,6 +2375,7 @@ export class ApiSessionClient extends EventEmitter {
     }
 
     async enqueueSessionUserMessageWithDisposition(params: Readonly<{
+        callerInputAuthorization?: import('@happier-dev/protocol').ExternalActionExecutionAuthorizationV1;
         text: string;
         localId: string;
         meta?: Record<string, unknown>;
@@ -2354,7 +2438,7 @@ export class ApiSessionClient extends EventEmitter {
     enqueueSessionEventCommitted(
         event: SessionEventMessage,
         id?: string,
-    ): Promise<Readonly<{ persisted: boolean; delivered: boolean }>> {
+    ): Promise<Readonly<{ persisted: boolean; delivered: boolean; localId?: string; committedSequence?: number }>> {
         const update = this.transcriptApi.enqueueSessionEventCommitted(event, id);
         this.trackPendingUpdate(this.pendingTranscriptMessageUpdates, update);
         return update;
@@ -2784,6 +2868,7 @@ export class ApiSessionClient extends EventEmitter {
     private applySharedMetadataSnapshot(
         snapshot: SessionMetadataSharedEditorSnapshot,
     ): void {
+        this.openedSharedMetadata = TranscriptOpenedSharedMetadataV1Schema.parse({ version: snapshot.metadataVersion, value: snapshot.value.sharedMetadata });
         this.metadataLayoutVersion = snapshot.metadataLayoutVersion;
         this.metadata = snapshot.value.metadata;
         this.metadataVersion = snapshot.metadataVersion;
@@ -2814,6 +2899,7 @@ export class ApiSessionClient extends EventEmitter {
     private applyMetadataEnvelopeTupleSnapshot(
         snapshot: SessionMetadataEnvelopeTupleSnapshot,
     ): void {
+        this.openedSharedMetadata = TranscriptOpenedSharedMetadataV1Schema.parse({ version: snapshot.metadataVersion, value: snapshot.value.sharedMetadata });
         this.metadataLayoutVersion = snapshot.metadataLayoutVersion;
         this.metadata = snapshot.value.metadata;
         this.metadataVersion = snapshot.metadataVersion;
@@ -2860,6 +2946,32 @@ export class ApiSessionClient extends EventEmitter {
 
     getServerBinding(): SessionClientServerBinding {
         return this.serverBinding;
+    }
+
+    getMachineAdmissionTransport(): ApiSessionClientOptions['machineAdmissionTransport'] {
+        return this.machineAdmissionTransport;
+    }
+
+    getWorkDepth(): number {
+        return this.workDepth;
+    }
+
+    /** Current server-owned worker/origin projection, never role metadata lineage. */
+    async readRolePromptOrganization(signal?: AbortSignal): Promise<Pick<import('@happier-dev/protocol').V2SessionByIdResponse['session'], 'reportsTo' | 'origin'>> {
+        signal?.throwIfAborted();
+        if (this.snapshotSyncInFlight) await this.snapshotSyncInFlight;
+        signal?.throwIfAborted();
+        return this.rolePromptOrganization;
+    }
+
+    /** Projection of the host lifecycle's exact begin facts for Action/MCP callers. */
+    observeHostTurnFacts(input: Readonly<{ turnId: string; facts: import('@happier-dev/protocol').SessionTurnFactsV1 | null }>): void {
+        if (input.facts) this.hostCurrentTurnFacts = { turnId: input.turnId, facts: input.facts };
+        else if (this.hostCurrentTurnFacts?.turnId === input.turnId) this.hostCurrentTurnFacts = null;
+    }
+
+    getHostTurnWorkDepth(turnId: string): number | undefined {
+        return this.hostCurrentTurnFacts?.turnId === turnId ? this.hostCurrentTurnFacts.facts.workDepth : undefined;
     }
 
     async getAuthenticatedAccountId(): Promise<string | null> {
@@ -3078,6 +3190,40 @@ export class ApiSessionClient extends EventEmitter {
         this.executionRunActivityListeners.add(listener);
         listener(this.activeExecutionRunIds.size);
         return () => this.executionRunActivityListeners.delete(listener);
+    }
+
+    setExecutionRunWorkerUpdateSource(source: NonNullable<ApiSessionClient['executionRunWorkerUpdateSource']>): void {
+        this.executionRunWorkerUpdateSource = source;
+        this.emit(EXECUTION_RUN_WORKER_UPDATE_SOURCE_EVENT);
+    }
+
+    async takeExecutionRunWorkerUpdate(signal: AbortSignal): Promise<Extract<import('@/agent/runtime/session/contextOnly/hostContextOnlyInput').HostContextOnlySourceInput, { kind: 'worker_update' }> | null> {
+        return await this.executionRunWorkerUpdateSource?.takeWorkerUpdate(this.sessionId, signal) ?? null;
+    }
+
+    async waitForExecutionRunWorkerUpdateChange(signal: AbortSignal): Promise<boolean> {
+        if (signal.aborted) return false;
+        if (!this.executionRunWorkerUpdateSource) {
+            const installed = await new Promise<boolean>((resolve) => {
+                const finish = (ready: boolean) => {
+                    this.off(EXECUTION_RUN_WORKER_UPDATE_SOURCE_EVENT, onSource);
+                    signal.removeEventListener('abort', onAbort);
+                    resolve(ready);
+                };
+                const onSource = () => finish(true);
+                const onAbort = () => finish(false);
+                this.on(EXECUTION_RUN_WORKER_UPDATE_SOURCE_EVENT, onSource);
+                signal.addEventListener('abort', onAbort, { once: true });
+                if (signal.aborted) finish(false);
+                else if (this.executionRunWorkerUpdateSource) finish(true);
+            });
+            if (!installed || signal.aborted) return false;
+        }
+        return await this.executionRunWorkerUpdateSource?.waitForWorkerUpdateChange(this.sessionId, signal) ?? false;
+    }
+
+    async prepareExecutionRunWorkerUpdates(input: Readonly<{ signal: AbortSignal; maxUtf8Bytes: number }>): Promise<readonly import('@/agent/runtime/session/contextOnly/hostContextOnlyInput').PreparedWorkerContextItem[]> {
+        return await this.executionRunWorkerUpdateSource?.prepareWorkerUpdates(this.sessionId, input) ?? [];
     }
 
     private applyRuntimeActivityProjectionFromServer(projectionLike: unknown): void {
@@ -3428,6 +3574,18 @@ export class ApiSessionClient extends EventEmitter {
         return this.committedUserMessageSeqTracker.subscribe(listener);
     }
 
+    subscribePendingProviderInputRetirement(listener: (localId: string) => void): () => void {
+        const observe = (localId: string): void => {
+            try {
+                listener(localId);
+            } catch (error) {
+                logger.warn('[pendingQueue] provider-input retirement observer failed', { localId, error });
+            }
+        };
+        this.on('pending-provider-input-retired', observe);
+        return () => { this.off('pending-provider-input-retired', observe); };
+    }
+
     getTurnAssistantTextSnapshotStore(): TurnAssistantTextSnapshotStore {
         return this.turnAssistantTextSnapshotStore;
     }
@@ -3486,6 +3644,7 @@ export class ApiSessionClient extends EventEmitter {
         const request = SessionFollowObservePendingRequestV1Schema.parse({
             v: 1,
             sessionId: this.sessionId,
+            includeReportsTo: true,
         });
         const raw = await emitSocketWithAck<unknown>({
             socket: this.socket as any,
@@ -3650,6 +3809,7 @@ export class ApiSessionClient extends EventEmitter {
     }
 
     async close() {
+        await this.sessionHandlersRegistration.dispose();
         const disposeSessionFollowWakeReceiver = this.disposeSessionFollowWakeReceiver;
         this.disposeSessionFollowWakeReceiver = null;
         disposeSessionFollowWakeReceiver?.();
@@ -3667,6 +3827,7 @@ export class ApiSessionClient extends EventEmitter {
         });
         await this.interactionApi.close();
         await this.durableMutationOutbox.close();
+        this.emit('local-closed');
     }
 
     async listPendingMessageQueueV2LocalIds(): Promise<string[]> {
@@ -3686,7 +3847,9 @@ export class ApiSessionClient extends EventEmitter {
     }
 
     async reconcilePendingQueueState(opts?: { force?: boolean }): Promise<boolean> {
-        return await this.interactionApi.reconcilePendingQueueState(opts);
+        const changed = await this.interactionApi.reconcilePendingQueueState(opts);
+        await this.reconcilePendingProviderInputCustodyBeforeMaterialization();
+        return changed;
     }
 
     async materializeNextPendingMessageSafely(opts: MaterializeNextPendingOptions = {}): Promise<MaterializeNextPendingResult> {
@@ -3856,10 +4019,10 @@ export class ApiSessionClient extends EventEmitter {
     }
 
     async reconcilePendingProviderInputCustodyBeforeMaterialization(): Promise<boolean> {
+        if (this.closed) return false;
         const localIds = [...this.materializationRuntime.pendingQueueMaterializedLocalIds]
             .filter((localId) => (
                 !this.executionRunPendingCustody.has(localId)
-                && !this.nonBlockingArchivedPendingDeliveryLocalIds.has(localId)
             ));
         if (localIds.length === 0) return true;
 
@@ -3881,6 +4044,23 @@ export class ApiSessionClient extends EventEmitter {
                 }
                 if (status !== undefined && status.status !== 'discarded') continue;
                 if (!this.materializationRuntime.hasPendingQueueMaterializedLocalId(localId)) continue;
+                // Provider acceptance may have begun while the Pending snapshot was read.
+                if (this.acceptedPendingSettlementLocalIdsInFlight.has(localId)) continue;
+                if (status === undefined) {
+                    // Protected admission commits the user transcript and removes the Pending row
+                    // before the provider accepts the input. Absence alone cannot retire its custody.
+                    const transcript = await findTranscriptEncryptedMessageByLocalIdV2({
+                        token: this.token,
+                        serverUrl: this.transport.serverUrl,
+                        sessionId: this.sessionId,
+                        localId,
+                    });
+                    if (transcript.type === 'found' && transcript.message.localId === localId) continue;
+                    if (transcript.type !== 'not_found') continue;
+                }
+                if (!this.materializationRuntime.hasPendingQueueMaterializedLocalId(localId)) continue;
+                // Acceptance may also start while the transcript lookup is in flight.
+                if (this.acceptedPendingSettlementLocalIdsInFlight.has(localId)) continue;
                 logger.debug('[pendingQueue] exact terminal server truth retired local provider custody', {
                     sessionId: this.sessionId,
                     localId,
@@ -3888,6 +4068,7 @@ export class ApiSessionClient extends EventEmitter {
                 });
                 this.deletePendingProviderInputLocalState(localId);
                 this.acceptedPendingSettlementLocalIds.delete(localId);
+                this.emit('pending-provider-input-retired', localId);
             }
         } catch (error) {
             logger.debug('[pendingQueue] exact local provider custody reconciliation failed closed', {

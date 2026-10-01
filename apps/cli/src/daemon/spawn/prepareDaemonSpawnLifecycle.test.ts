@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import { ConnectedServiceRuntimeRegistry } from '../connectedServices/runtimeRegistry/registry';
 import { prepareDaemonSpawnLifecycle } from './prepareDaemonSpawnLifecycle';
+import { configuration } from '@/configuration';
+import { buildSpawnChildProcessEnv } from './buildSpawnChildProcessEnv';
 
 describe('prepareDaemonSpawnLifecycle', () => {
   it('passes the daemon-owned spawn nonce to the runner through the protected control environment', async () => {
@@ -32,5 +34,13 @@ describe('prepareDaemonSpawnLifecycle', () => {
       HAPPIER_SESSION_STARTUP_SPAWN_NONCE: 'creation-attempt-1',
     });
     expect(result.unsetEnvKeys).not.toContain('HAPPIER_SESSION_STARTUP_SPAWN_NONCE');
+    for (const processEnv of [{}, { HAPPIER_HOME_DIR: '/stale-home' }]) {
+      const childEnv = buildSpawnChildProcessEnv({
+        processEnv,
+        extraEnv: result.extraEnvForChildWithMessage,
+        unsetEnvKeys: result.unsetEnvKeys,
+      });
+      expect(childEnv.HAPPIER_HOME_DIR).toBe(configuration.happyHomeDir);
+    }
   });
 });

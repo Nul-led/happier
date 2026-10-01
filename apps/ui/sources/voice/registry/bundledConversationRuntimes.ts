@@ -69,7 +69,6 @@ function createBundledVoiceRegistrationScope(input: Readonly<{
 }>): VoiceProviderActivationRegistrationScope {
   const target = Object.freeze({
     artifactId: input.declaration.client.artifactId,
-    modulePath: input.declaration.client.modulePath,
     exportName: input.declaration.client.exportName,
     platform: input.hostPlatform,
   });
@@ -122,6 +121,7 @@ function createBundledVoiceActivationScope(input: Readonly<{
   });
   const scope = createExternalVoiceProviderActivationScope({
     pluginId: input.pluginId,
+    ...(input.host.runtimeOccurrenceId ? { occurrenceId: input.host.runtimeOccurrenceId } : {}),
     declarations: [input.declaration],
     hostPlatform: input.host.getPlatform(),
     registrationScope,

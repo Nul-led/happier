@@ -19,6 +19,11 @@ import type {
 } from '@/components/onboarding/surfaces/useOnboardingWizardController';
 import type { PendingSetupIntent } from '@/sync/domains/pending/pendingSetupIntent.shared';
 import { runtimeFetch } from '@/utils/system/runtimeFetch';
+import { act } from 'react-test-renderer';
+import { createMachineFixture } from '@/dev/testkit/fixtures/machineFixtures';
+import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
+import { discardMachineAddFlowDraft, updateMachineAddFlowDraft } from '@/components/machines/add/machineAddFlowStore';
+import { createAwaitedMachineArrivalBaseline } from '@/components/onboarding/detection/useAwaitedMachineArrival';
 
 import type { StageFrame } from './stage/stageFrames';
 
@@ -54,33 +59,6 @@ const platformState = vi.hoisted(() => ({
     os: 'web' as 'android' | 'ios' | 'web',
 }));
 
-const setupControllerState = vi.hoisted(() => ({
-    calls: 0,
-    lastProps: null as Record<string, unknown> | null,
-    current: {
-        stepId: 'setup_this_computer',
-        currentStepIndex: 0,
-        stepCount: 2,
-        contentTransitionKey: 'setup_this_computer',
-        contentTransitionDirection: 'replace',
-        title: 'setup',
-        subtitle: null,
-        scrollable: false,
-        body: null as React.ReactNode,
-        onPrimary: vi.fn(),
-        primaryLabel: 'Continue setup',
-        primaryDisabled: false,
-        onBack: vi.fn(),
-        backLabel: 'Back',
-        showBack: true,
-        onSkip: vi.fn(),
-        skipLabel: 'Skip',
-        skipDisabled: false,
-        showSkip: true,
-        footerHint: null,
-        goToStep: vi.fn(),
-    },
-}));
 
 const syncSingletonState = vi.hoisted(() => ({
     applySettings: vi.fn(),
@@ -117,6 +95,7 @@ vi.mock('@/text', async () => {
 
 vi.mock('@/text/i18n', () => ({
     setPreferredLanguageFromSettings: vi.fn(),
+    getPreferredLanguage: () => 'en',
 }));
 
 vi.mock('@/demoMode/seed/seedDemoWorld', async (importOriginal) => {
@@ -154,23 +133,10 @@ vi.mock('@/demoMode/seed/seedDemoWorld', async (importOriginal) => {
     };
 });
 
-vi.mock('react-native-reanimated', () => ({
-    __esModule: true,
-    default: {
-        View: 'Animated.View',
-        createAnimatedComponent: (component: unknown) => component,
-    },
-    Easing: {
-        cubic: 'cubic',
-        out: (value: unknown) => value,
-    },
-    useAnimatedStyle: (factory: () => unknown) => factory(),
-    useAnimatedProps: (factory: () => unknown) => factory(),
-    useSharedValue: (value: unknown) => ({ value }),
-    cancelAnimation: vi.fn(),
-    withDelay: (_delayMs: number, value: unknown) => value,
-    withTiming: (value: unknown) => value,
-}));
+vi.mock('react-native-reanimated', async () => {
+    const { createReanimatedModuleMock } = await import('@/dev/testkit/mocks/reanimated');
+    return createReanimatedModuleMock();
+});
 
 vi.mock('react-native-svg', () => ({
     __esModule: true,
@@ -209,16 +175,6 @@ vi.mock('@/sync/domains/pending/pendingSetupIntent', () => ({
     setPendingSetupIntent: setPendingSetupIntentMock,
 }));
 
-vi.mock('@/components/onboarding/surfaces/useSetupWizardController', () => ({
-    useSetupWizardController: (props: Record<string, unknown>) => {
-        setupControllerState.calls += 1;
-        setupControllerState.lastProps = props;
-        return {
-            ...setupControllerState.current,
-            body: React.createElement(Text, { testID: 'setup-controller-body' }, 'Setup controller body'),
-        };
-    },
-}));
 
 vi.mock('@/sync/runtime/getSyncSingleton', () => ({
     getSyncSingleton: () => ({
@@ -296,27 +252,6 @@ function createWizardSurfaceProps(): OnboardingWizardSurfaceProps {
             serverAvailability: 'ready',
             serverUrlForCopy: 'https://relay.example.test',
             showAuthActions: true,
-            showProviderSignup: false,
-            showAnonymousSignup: false,
-            showMtlsLogin: false,
-            showKeylessProviderLogin: false,
-            providerId: null,
-            keylessProviderId: null,
-            providerSignupTitle: '',
-            providerKeylessTitle: '',
-            anonymousSignupTitle: '',
-            mtlsTitle: '',
-            primaryAction: null,
-            mtlsPrimary: false,
-            keylessPrimary: false,
-            autoRedirect: {
-                enabled: false,
-                providerId: null,
-                toKeyedProvision: false,
-                toKeylessLogin: false,
-                toMtls: false,
-                toLegacySignupProvider: false,
-            },
             retryServerCheck: () => undefined,
         },
         accountContinuationIntent: { kind: 'enter', target: { kind: 'automatic' } },
@@ -352,6 +287,48 @@ function isRendererElementWithTestId(
 }
 
 describe('OnboardingJourneyHost', () => {
+    it('advances from the shared machine form on arrival and keeps the arrived Home and machine for agent setup', async () => {
+        authState.isAuthenticated = true;
+        authState.credentials = { token: 'real-token', secret: 'real-secret' };
+        const home = getActiveServerSnapshot();
+        storage.getState().applyMachines([], true);
+        updateMachineAddFlowDraft((draft) => ({
+            ...draft,
+            serverId: home.serverId,
+            path: 'thisComputer',
+            startedAtMs: Date.now(),
+            baseline: createAwaitedMachineArrivalBaseline(home.serverUrl, [], home.serverId),
+        }));
+        const { OnboardingJourneyHost } = await import('./OnboardingJourneyHost');
+        const screen = await renderScreen(<OnboardingJourneyHost
+            surface="web"
+            isDesktopShell={false}
+            initialBeatId="S3"
+            preAuthController={createPreAuthController()}
+            wizardSurfaceProps={createWizardSurfaceProps()}
+            testID="journey-host"
+        />);
+        expect(screen.findByTestId('journey-host-machine-add')).not.toBeNull();
+        expect(screen.findByTestId('journey-host-desktop-current-beat:S3')).not.toBeNull();
+        await act(async () => {
+            storage.getState().applyMachines([createMachineFixture({ id: 'arrived-machine', active: true, activeAt: Date.now() })]);
+        });
+        await flushJourneyEffects();
+        expect(screen.findByTestId('journey-host-desktop-current-beat:S4')).not.toBeNull();
+        expect(screen.findByTestId('journey-host-machine-add')).toBeNull();
+        expect(screen.findHostByTestId('machine-agents')).not.toBeNull();
+        // The real memoized section consumes the arrived scope; do not query its React wrapper type.
+        expect(screen.findAllByProps({ machineId: 'arrived-machine', serverId: home.serverId }).length).toBeGreaterThan(0);
+        await screen.pressByTestIdAsync('journey-host-desktop-config-back');
+        await flushJourneyEffects();
+        expect(screen.findByTestId('journey-host-desktop-current-beat:S3')).not.toBeNull();
+        expect(screen.findByTestId('journey-host-machine-add')).not.toBeNull();
+        await screen.pressByTestIdAsync('journey-host-machine-add.pane.arrived.startSession');
+        expect(screen.findByTestId('journey-host-desktop-current-beat:S4')).not.toBeNull();
+        await screen.pressByTestIdAsync('journey-host-desktop-config-primary');
+        expect(screen.findByTestId('journey-host-desktop-current-beat:S5')).not.toBeNull();
+        discardMachineAddFlowDraft();
+    });
     beforeEach(() => {
         authState.isAuthenticated = false;
         authState.credentials = null;
@@ -367,14 +344,7 @@ describe('OnboardingJourneyHost', () => {
         windowDimensionsState.width = 1280;
         windowDimensionsState.height = 820;
         platformState.os = 'web';
-        setupControllerState.calls = 0;
-        setupControllerState.lastProps = null;
-        setupControllerState.current.stepId = 'setup_this_computer';
-        setupControllerState.current.contentTransitionKey = 'setup_this_computer';
-        setupControllerState.current.onPrimary.mockClear();
-        setupControllerState.current.onBack.mockClear();
-        setupControllerState.current.onSkip.mockClear();
-        setupControllerState.current.goToStep.mockClear();
+        discardMachineAddFlowDraft();
         syncSingletonState.applySettings.mockReset();
         setPendingSetupIntentMock.mockReset();
         setPendingSetupIntentMock.mockImplementation((value) => {
@@ -387,6 +357,7 @@ describe('OnboardingJourneyHost', () => {
 
     afterEach(async () => {
         standardCleanup();
+        discardMachineAddFlowDraft();
         await flushJourneyEffects();
         uninstallDemoFirewall();
         resetDemoFirewallForTests();
@@ -451,7 +422,7 @@ describe('OnboardingJourneyHost', () => {
 
         expect(focusContent).toHaveBeenCalledTimes(1);
         expect(screen.findByTestId('journey-host-desktop-current-beat:A2')).not.toBeNull();
-        expect(setupControllerState.calls).toBe(0);
+        expect(screen.findByTestId('journey-host-machine-add')).toBeNull();
     });
 
     it('shows the relay retention disclosure in the auth beat footer', async () => {
@@ -462,7 +433,7 @@ describe('OnboardingJourneyHost', () => {
                 surface="web"
                 isDesktopShell
                 initialBeatId="S2"
-                retentionSummary="This relay cleans up subagent transcripts after 7 days."
+                retentionDisclosure={{ kind: 'summary', summary: 'This relay cleans up subagent transcripts after 7 days.' }}
                 preAuthController={createPreAuthController()}
                 wizardSurfaceProps={createWizardSurfaceProps()}
                 testID="journey-host"
@@ -521,7 +492,7 @@ describe('OnboardingJourneyHost', () => {
 
         expect(screen.findAllByType('DemoStage' as never)).toHaveLength(0);
         expect(stageSurfaceModuleState.voiceLoads).toBe(0);
-        expect(setupControllerState.calls).toBe(0);
+        expect(screen.findByTestId('journey-host-machine-add')).toBeNull();
 
         await screen.unmount();
         await flushJourneyEffects();
@@ -880,12 +851,8 @@ describe('OnboardingJourneyHost', () => {
         await screen.update(<OnboardingJourneyHost {...props} />);
         await flushJourneyEffects();
 
-        expect(screen.getTextContent()).toContain('Setup controller body');
-        expect(setupControllerState.lastProps).toMatchObject({
-            isDesktopShell: true,
-            initialStepId: 'setup_this_computer',
-            scope: 'machine',
-        });
+        expect(screen.findByTestId('journey-host-machine-add')).not.toBeNull();
+        expect(screen.findByTestId('journey-host-machine-add')).not.toBeNull();
         expect(vi.mocked(seedDemoWorld)).not.toHaveBeenCalled();
         expect(demoWorldState.clearCalls).toBe(0);
         expect(takeStoreSnapshot(storage.getState())).toEqual(before);
@@ -909,7 +876,7 @@ describe('OnboardingJourneyHost', () => {
         const screen = await renderScreen(<OnboardingJourneyHost {...props} />);
         await flushJourneyEffects();
 
-        expect(screen.getTextContent()).toContain('Setup controller body');
+        expect(screen.findByTestId('journey-host-machine-add')).not.toBeNull();
         expect(vi.mocked(seedDemoWorld)).not.toHaveBeenCalled();
         expect(demoWorldState.clearCalls).toBe(0);
         expect(takeStoreSnapshot(storage.getState())).toEqual(before);
@@ -918,7 +885,7 @@ describe('OnboardingJourneyHost', () => {
         await flushJourneyEffects();
 
         expect(demoWorldState.clearCalls).toBe(0);
-        expect(screen.getTextContent()).toContain('Setup controller body');
+        expect(screen.findByTestId('journey-host-machine-add')).not.toBeNull();
         expect(takeStoreSnapshot(storage.getState())).toEqual(before);
     });
 
@@ -1081,60 +1048,6 @@ describe('OnboardingJourneyHost', () => {
         expect(embeddedBack).not.toHaveBeenCalled();
         expect(screen.findByTestId('journey-host-desktop-current-beat:S1')).not.toBeNull();
         expect(goToStep).toHaveBeenCalledWith('relay_select');
-    });
-
-    it('keeps journey-driven setup entry and controller-driven setup progress in one bidirectional contract', async () => {
-        authState.isAuthenticated = true;
-        authState.credentials = { token: 'real-token', secret: 'real-secret' };
-        setupIntentState.current = { branch: 'thisComputer', phase: 'post_auth', relayUrl: 'https://relay.example.test' };
-        setupControllerState.current.stepId = 'setup_this_computer';
-        const { OnboardingJourneyHost } = await import('./OnboardingJourneyHost');
-
-        const screen = await renderScreen(
-            <OnboardingJourneyHost
-                surface="desktop"
-                isDesktopShell
-                initialBeatId="S4"
-                preAuthController={createPreAuthController()}
-                wizardSurfaceProps={createWizardSurfaceProps()}
-                testID="journey-host"
-            />,
-        );
-        await flushJourneyEffects();
-
-        expect(setupControllerState.current.goToStep).toHaveBeenCalledWith('providers_optional');
-
-        setupControllerState.current.stepId = 'providers_optional';
-        setupControllerState.current.contentTransitionKey = 'providers_optional';
-        await screen.update(
-            <OnboardingJourneyHost
-                surface="desktop"
-                isDesktopShell
-                initialBeatId="S4"
-                preAuthController={createPreAuthController()}
-                wizardSurfaceProps={createWizardSurfaceProps()}
-                testID="journey-host"
-            />,
-        );
-        await flushJourneyEffects();
-
-        expect(screen.findByTestId('journey-host-desktop-current-beat:S4')).not.toBeNull();
-
-        setupControllerState.current.stepId = 'done';
-        setupControllerState.current.contentTransitionKey = 'done';
-        await screen.update(
-            <OnboardingJourneyHost
-                surface="desktop"
-                isDesktopShell
-                initialBeatId="S4"
-                preAuthController={createPreAuthController()}
-                wizardSurfaceProps={createWizardSurfaceProps()}
-                testID="journey-host"
-            />,
-        );
-        await flushJourneyEffects();
-
-        expect(screen.findByTestId('journey-host-desktop-current-beat:S5')).not.toBeNull();
     });
 
     it('persists the A7 promoted attention choice through the real settings writer when the journey completes', async () => {

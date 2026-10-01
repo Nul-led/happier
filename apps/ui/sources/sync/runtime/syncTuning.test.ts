@@ -43,7 +43,6 @@ describe('loadSyncTuning', () => {
         expect(tuning.feedItemsMaxEntries).toBeGreaterThan(0);
         expect(tuning.artifactHeadsMaxEntries).toBeGreaterThan(0);
         expect(tuning.automationRunsMaxEntriesPerAutomation).toBeGreaterThan(0);
-        expect(tuning.machineDisplayHydrationMaxRows).toBeGreaterThan(0);
         expect(tuning.encryptionCacheMessageByteBudget).toBeGreaterThan(1024);
     });
 
@@ -139,7 +138,6 @@ describe('loadSyncTuning', () => {
                     feedItemsMaxEntries: 12,
                     artifactHeadsMaxEntries: 13,
                     automationRunsMaxEntriesPerAutomation: 14,
-                    machineDisplayHydrationMaxRows: 15,
                     encryptionCacheMessageByteBudget: 2048,
                 }),
             },
@@ -212,7 +210,6 @@ describe('loadSyncTuning', () => {
         expect(tuning.feedItemsMaxEntries).toBe(12);
         expect(tuning.artifactHeadsMaxEntries).toBe(13);
         expect(tuning.automationRunsMaxEntriesPerAutomation).toBe(14);
-        expect(tuning.machineDisplayHydrationMaxRows).toBe(15);
         expect(tuning.encryptionCacheMessageByteBudget).toBe(2048);
     });
 

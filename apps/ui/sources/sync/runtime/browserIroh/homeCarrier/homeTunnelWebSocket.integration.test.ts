@@ -4,7 +4,8 @@ import { connect as connectLoopback, type AddressInfo } from 'node:net';
 import { attach, type Server as EngineServer } from 'engine.io';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { createSyncSocketTransport } from '@/sync/api/session/connection/createSyncSocketTransport';
+import { createHappierSocket } from '@happier-dev/sync-client';
+import { buildAccountStoredContentCompatibilitySocketAuthV1, CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION } from '@happier-dev/protocol';
 
 import type { BrowserIrohStream } from '../endpointClient';
 import {
@@ -121,10 +122,12 @@ describe('browserIroh/homeCarrier Engine.IO vertical', () => {
             openStream: () => openLoopbackTunnelStream(port, HOME_ENDPOINT_ID),
         });
 
-        const { transport } = createSyncSocketTransport({
+        const { transport } = createHappierSocket({
+            clientType: 'user-scoped',
+            clientPurpose: 'sync',
+            authExtras: buildAccountStoredContentCompatibilitySocketAuthV1(CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION),
             endpoint: `http://127.0.0.1:${port}`,
             token: 'carrier-token',
-            carrier: 'iroh',
             websocketFactory: (uri: string) => {
                 requestedUris.push(uri);
                 const carrier = carrierFactory(uri);
@@ -162,10 +165,12 @@ describe('browserIroh/homeCarrier Engine.IO vertical', () => {
             endpointId: HOME_ENDPOINT_ID,
             openStream: () => openLoopbackTunnelStream(port, HOME_ENDPOINT_ID),
         });
-        const build = () => createSyncSocketTransport({
+        const build = () => createHappierSocket({
+            clientType: 'user-scoped',
+            clientPurpose: 'sync',
+            authExtras: buildAccountStoredContentCompatibilitySocketAuthV1(CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION),
             endpoint: `http://127.0.0.1:${port}`,
             token: 'carrier-token',
-            carrier: 'iroh',
             websocketFactory: (uri: string) => {
                 const carrier = carrierFactory(uri);
                 carriers.push(carrier);
@@ -195,10 +200,12 @@ describe('browserIroh/homeCarrier Engine.IO vertical', () => {
             endpointId: HOME_ENDPOINT_ID,
             openStream: () => openLoopbackTunnelStream(port, 'k51endpointimposteraaaaaaaaaaaaaaaaaaaaaaaaaa'),
         });
-        const { transport } = createSyncSocketTransport({
+        const { transport } = createHappierSocket({
+            clientType: 'user-scoped',
+            clientPurpose: 'sync',
+            authExtras: buildAccountStoredContentCompatibilitySocketAuthV1(CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION),
             endpoint: `http://127.0.0.1:${port}`,
             token: 'carrier-token',
-            carrier: 'iroh',
             websocketFactory: (uri: string) => carrierFactory(uri),
         });
 

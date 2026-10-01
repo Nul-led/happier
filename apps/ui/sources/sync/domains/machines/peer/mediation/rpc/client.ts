@@ -1,8 +1,6 @@
 import {
-    PEER_MACHINE_RPC_DIRECT_PATH_V1,
     PEER_MACHINE_RPC_DIRECT_PATH_V2,
     PEER_MEDIATION_RECEIPTS,
-    PeerMachineRpcDirectResponseV1Schema,
     PeerMachineRpcDirectResponseV2Schema,
     createPeerMachineRpcRequestHashV1,
     isMachineRpcDirectRoutePolicy,
@@ -10,13 +8,9 @@ import {
     resolveMachineRpcRoutePolicy,
     type MachineRpcRelayFallbackDecision,
     type MachineRpcRoutePolicyV1,
-    type PeerMachineRpcDirectRequestV1,
     type PeerMachineRpcDirectRequestV2,
-    type PeerMachineRpcDirectResponseV1,
     type PeerMachineRpcDirectResponseV2,
     type PeerRouteEphemeralProofV2,
-    type PeerRouteNonceProofV1,
-    type SignedDirectRouteGrantV1,
     type SignedDirectRouteGrantV2,
 } from '@happier-dev/protocol';
 import type { SocketRpcAuthorizationContext } from '@happier-dev/protocol/rpc';
@@ -24,16 +18,6 @@ import type { SocketRpcAuthorizationContext } from '@happier-dev/protocol/rpc';
 import { createMachineRpcPeerFallbackReceipt, type MachineRpcPeerFallbackReceipt } from './fallback';
 
 export type MachineRpcDirectRouteResolution =
-    | Readonly<{
-        kind: 'selected';
-        receipt: typeof PEER_MEDIATION_RECEIPTS.routeSelected;
-        endpoint: Readonly<{
-            url: string;
-            endpointFingerprint: string;
-        }>;
-        grant: SignedDirectRouteGrantV1;
-        nonceProof: PeerRouteNonceProofV1;
-    }>
     | Readonly<{
         kind: 'selected';
         receipt: typeof PEER_MEDIATION_RECEIPTS.routeSelected;
@@ -74,10 +58,10 @@ export type MachineRpcWithPeerMediationRouteParams<A> = Readonly<{
     }>) => Promise<MachineRpcDirectRouteResolution>;
     postDirect: (input: Readonly<{
         url: string;
-        request: PeerMachineRpcDirectRequestV1 | PeerMachineRpcDirectRequestV2;
+        request: PeerMachineRpcDirectRequestV2;
         timeoutMs?: number;
         signal?: AbortSignal;
-    }>) => Promise<PeerMachineRpcDirectResponseV1 | PeerMachineRpcDirectResponseV2>;
+    }>) => Promise<PeerMachineRpcDirectResponseV2>;
     serverFallback: (input: Readonly<{
         serverId?: string | null;
         accountId?: string | null;
@@ -104,9 +88,9 @@ function createRequestId(): string {
     return `rpc_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`;
 }
 
-function resolveDirectRpcUrl(endpointUrl: string, version: 1 | 2): string {
+function resolveDirectRpcUrl(endpointUrl: string): string {
     const parsed = new URL(endpointUrl);
-    parsed.pathname = version === 2 ? PEER_MACHINE_RPC_DIRECT_PATH_V2 : PEER_MACHINE_RPC_DIRECT_PATH_V1;
+    parsed.pathname = PEER_MACHINE_RPC_DIRECT_PATH_V2;
     parsed.search = '';
     parsed.hash = '';
     return parsed.toString();
@@ -225,8 +209,7 @@ export async function machineRpcWithPeerMediationRoute<R, A>(
         endpointFingerprint: route.endpoint.endpointFingerprint,
         replayKey,
     });
-    const directRequest: PeerMachineRpcDirectRequestV1 | PeerMachineRpcDirectRequestV2 = 'proof' in route
-        ? {
+    const directRequest: PeerMachineRpcDirectRequestV2 = {
             v: 2,
             requestId,
             method: params.method,
@@ -247,38 +230,14 @@ export async function machineRpcWithPeerMediationRoute<R, A>(
                     },
                 }
                 : {}),
-        }
-        : {
-            v: 1,
-            requestId,
-            method: params.method,
-            params: params.payload,
-            grant: route.grant,
-            nonceProof: route.nonceProof,
-            routeKind: 'loopback_direct',
-            flowKind: 'machine_rpc',
-            endpointFingerprint: route.endpoint.endpointFingerprint,
-            ...(policy.commandReceiptRequired
-                ? {
-                    commandReceipt: {
-                        v: 1 as const,
-                        issuer: 'ui' as const,
-                        issuedAtMs: Date.now(),
-                        requestHash,
-                        replayKey,
-                    },
-                }
-                : {}),
         };
     const rawDirectResponse = await params.postDirect({
-        url: resolveDirectRpcUrl(route.endpoint.url, directRequest.v),
+        url: resolveDirectRpcUrl(route.endpoint.url),
         timeoutMs: params.timeoutMs,
         signal: params.signal,
         request: directRequest,
     });
-    const directResponse = directRequest.v === 2
-        ? PeerMachineRpcDirectResponseV2Schema.parse(rawDirectResponse)
-        : PeerMachineRpcDirectResponseV1Schema.parse(rawDirectResponse);
+    const directResponse = PeerMachineRpcDirectResponseV2Schema.parse(rawDirectResponse);
 
     if (directResponse.requestId !== requestId || directResponse.method !== params.method) {
         return await useServerFallback<R, A>(

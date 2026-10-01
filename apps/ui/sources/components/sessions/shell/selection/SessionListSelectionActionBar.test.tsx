@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Platform, StyleSheet, useWindowDimensions } from 'react-native';
+import { Platform, useWindowDimensions } from 'react-native';
 import { act } from 'react-test-renderer';
 import { SafeAreaInsetsContext } from 'react-native-safe-area-context';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -94,16 +94,6 @@ function ProbeButton(props: React.PropsWithChildren<{ testID: string; onPress: (
     return React.createElement('ProbeButton', props, props.children);
 }
 
-function flattenStyle(style: unknown): Record<string, unknown> {
-    if (!style) return {};
-    if (Array.isArray(style)) {
-        return style.reduce<Record<string, unknown>>((acc, entry) => ({
-            ...acc,
-            ...flattenStyle(entry),
-        }), {});
-    }
-    return (StyleSheet.flatten(style) ?? {}) as Record<string, unknown>;
-}
 
 async function pressByTestId(screen: Awaited<ReturnType<typeof renderScreen>>, testID: string): Promise<void> {
     const button = screen.findByProps({ testID });
@@ -328,33 +318,6 @@ describe('SessionListSelectionActionBarHost', () => {
             ? Object.assign({}, ...host.props.style.filter(Boolean))
             : host.props.style;
         expect(flattenedStyle.bottom).toBeGreaterThanOrEqual(80); // clears the mocked 80px tab bar (no overlap)
-    });
-
-    it('uses a compact horizontally scrollable action row on short native screens', async () => {
-        Platform.OS = 'ios';
-        vi.mocked(useWindowDimensions).mockReturnValue({ width: 390, height: 680, scale: 1, fontScale: 1 });
-        const screen = await renderScreen(<ActionBarHarness />);
-
-        await pressByTestId(screen, 'select-session-a');
-
-        const actionRows = screen.findAllByProps({ testID: 'session-list-selection-actions-scroll' });
-        expect(actionRows.some((row) => row.props.horizontal === true)).toBe(true);
-        expect(screen.findByProps({ testID: 'session-list-selection-actions-scroll-content' })).toBeTruthy();
-    });
-
-    it('contains the compact horizontal actions inside the list-width action bar', async () => {
-        vi.mocked(useWindowDimensions).mockReturnValue({ width: 390, height: 680, scale: 1, fontScale: 1 });
-        const screen = await renderScreen(<ActionBarHarness />);
-
-        await pressByTestId(screen, 'select-session-a');
-
-        const host = screen.findByProps({ testID: 'session-list-selection-action-bar-host' });
-        const actionBar = screen.findByTestId('session-list-selection-action-bar');
-        const actionScroll = screen.findByProps({ testID: 'session-list-selection-actions-scroll' });
-
-        expect(flattenStyle(host.props.style)).toMatchObject({ alignItems: 'stretch' });
-        expect(flattenStyle(actionBar!.props.style)).toMatchObject({ width: '100%' });
-        expect(flattenStyle(actionScroll.parent?.props.style)).toMatchObject({ width: '100%' });
     });
 
     it('executes actions for selected targets hidden by a collapsed group', async () => {

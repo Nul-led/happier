@@ -66,7 +66,8 @@ export async function claimDaemonForegroundAgentRuntimeEnvironment(
       foregroundPid: params.foregroundPid,
       pluginId: handoff.descriptor.pluginId,
       agentId: handoff.descriptor.agentId,
-      generation: handoff.descriptor.generation,
+      occurrenceId: handoff.descriptor.occurrenceId,
+      sourceCustody: handoff.descriptor.sourceCustody,
       capability: handoff.capability,
       foregroundSatisfiedProfileSecretRequirementNames:
         [...params.foregroundSatisfiedProfileSecretRequirementNames],

@@ -9,6 +9,7 @@ import { SegmentedTabBar } from '@/components/ui/navigation/SegmentedTabBar';
 import { normalizeNodeForView } from '@/components/ui/rendering/normalizeNodeForView';
 import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
 import {
+    SELECTION_LIST_CARD_COLUMN_GAP_PX,
     SelectionList,
     type SelectionListColumnsLayout,
     type SelectionListHeightBehavior,
@@ -29,6 +30,7 @@ import {
 } from '@/sync/domains/sessionControl/configOptionsControl';
 import { t } from '@/text';
 import { Icon } from '@/components/ui/icons/Icon';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 type WebHoverablePressableState = Readonly<{
     pressed: boolean;
@@ -73,22 +75,25 @@ const HEADER_GLYPH_SIZE_PX = 16;
 const TITLE_ROW_ACTION_GAP_PX = 4;
 
 /**
- * The two-up grid used by the engine detail panes, opted into per caller.
+ * The two-up card grid of the engine detail pane (0.2's model grid), opted into per caller.
  *
- * The minimum is deliberately far below the shared list-column default (320px,
- * tuned for FULL-WIDTH settings lists and needing 652px for two columns). This
- * picker never sees anything close: its widest home is the engine popover's
- * detail pane, which is the 720px popover cap minus the 190px agent rail minus
- * the pane's 12px horizontal insets — 506px — or 550px when the rail is hidden
- * and the popover caps at 570px instead. At the shared gutter of 12px, two
- * columns need `2 * min + 12`, so anything above 247 collapses the pane beside
- * the rail back to one column forever. 240 clears both widths (492 <= 506) with
- * enough headroom for popover chrome and a web scrollbar.
+ * The pane's width is MEASURED, not assumed: in the /new engine popover at 1440 the list gets
+ * 479px (720px popover, the rail as it actually renders at 215px, the pane insets). The former
+ * 240px minimum was derived from an assumed 506px pane and resolved that real pane to one column,
+ * which is why 0.3 showed the models as a list.
  *
- * Module-level so the identity is stable: the prop feeds a memo that decides
- * the column count from the measured width.
+ * 200px is the narrowest card that still holds a model name and a two-line description; two need
+ * `2 * 200 + 4 = 404px`, which the rail-side pane and the rail-less 570px popover both clear, while
+ * a phone's stacked pane (~350px) stays one column, as 0.2 did below its 560px phone width. The
+ * gutter is the card gutter the grid paints, so the resolver budgets the same gap it draws.
+ *
+ * Module-level so the identity is stable: the prop feeds a memo that decides the column count.
  */
-const ENGINE_PANE_COLUMNS: SelectionListColumnsLayout = { max: 2, minColumnWidthPx: 240 };
+const ENGINE_PANE_COLUMNS: SelectionListColumnsLayout = {
+    max: 2,
+    minColumnWidthPx: 200,
+    columnGapPx: SELECTION_LIST_CARD_COLUMN_GAP_PX,
+};
 
 export type OptionPickerOption<TValue = string> = Readonly<{
     value: TValue;
@@ -96,6 +101,11 @@ export type OptionPickerOption<TValue = string> = Readonly<{
     icon?: React.ReactNode;
     trailingStatusIcon?: React.ReactNode;
     description?: string;
+    /**
+     * A richer rendering of `description` (a purpose line over an engine line with its mark).
+     * `description` stays the searchable plain text.
+     */
+    descriptionContent?: React.ReactNode;
     accessibilityLabel?: string;
     disabled?: boolean;
     /** Runs a row-owned recovery/navigation action instead of selecting its value. */
@@ -110,6 +120,7 @@ export type OptionPickerSection<TValue = string> = Readonly<{
 
 export type OptionPickerProbeState = Readonly<{
     phase: 'idle' | 'loading' | 'refreshing';
+    failed?: boolean;
     onRefresh?: () => void;
     refreshAccessibilityLabel?: string;
     loadingAccessibilityLabel?: string;
@@ -268,6 +279,7 @@ function SelectedOptionControls(props: Readonly<{
                         <Text style={styles.selectedControlTitle}>{option.name}</Text>
                         {secondary}
                         <SegmentedTabBar
+                            role="radiogroup"
                             tabs={(option.options ?? []).map((choice) => ({ id: choice.value, label: choice.name }))}
                             activeTabId={highlightedValue}
                             disabled={control.disabled === true}
@@ -291,6 +303,12 @@ function OptionTrailingAccessory<TValue>(props: Readonly<{
     option: OptionPickerOption<TValue>;
     valueKey: string;
     selected: boolean;
+    /**
+     * Whether this accessory draws the current-choice check itself. A single-choice LIST row gets
+     * its check from `SelectionList` (one owner for every picker), so only card presentation and
+     * multiple selection draw it here.
+     */
+    drawsSelectionMark: boolean;
     favorite: boolean;
     canToggleFavorite: boolean;
     optionTestIDPrefix: string;
@@ -315,13 +333,13 @@ function OptionTrailingAccessory<TValue>(props: Readonly<{
             pointerEvents="box-none"
             style={props.card ? styles.optionCardIndicatorStacked : styles.optionCardIndicator}
         >
-            {props.selected || props.option.trailingStatusIcon ? (
+            {(props.selected && props.drawsSelectionMark) || props.option.trailingStatusIcon ? (
                 <View
                     testID={`model-picker-overlay-option-selection-status:${props.valueKey}`}
                     pointerEvents="none"
                     style={styles.optionSelectionStatus}
                 >
-                    {props.selected ? (
+                    {props.selected && props.drawsSelectionMark ? (
                         <View style={styles.optionSelectionMark}>
                             <Icon name="check" size={14} color={theme.colors.text.primary} />
                         </View>
@@ -377,7 +395,9 @@ export function OptionPickerOverlay<TValue = string>(props: OptionPickerOverlayP
             : new Set(props.selectedValues.map((value) => getValueKey(value))),
         [getValueKey, props.selectedValues],
     );
-    const notes = props.notes ?? [];
+    const notes = props.probe?.failed
+        ? [...(props.notes ?? []), t('agentInput.model.unavailable')]
+        : props.notes ?? [];
     const optionTestIDPrefix = props.optionTestIDPrefix ?? 'model-picker-overlay-option';
     const refreshTestID = props.refreshTestID ?? 'model-picker-overlay-refresh';
     // SelectionList treats root identity changes as scope replacement. Keep
@@ -563,6 +583,7 @@ export function OptionPickerOverlay<TValue = string>(props: OptionPickerOverlayP
                         selectionPressPendingRef.current = true;
                     },
                     subtitle: option.description,
+                    subtitleContent: option.descriptionContent,
                     accessibilityLabel: option.accessibilityLabel,
                     disabled: option.disabled,
                     icon: option.icon ? (
@@ -578,6 +599,7 @@ export function OptionPickerOverlay<TValue = string>(props: OptionPickerOverlayP
                             option={option}
                             valueKey={valueKey}
                             selected={selected}
+                            drawsSelectionMark={props.multiColumn === true || selectedValueKeys !== null}
                             favorite={favorite}
                             canToggleFavorite={canToggleFavorite}
                             optionTestIDPrefix={optionTestIDPrefix}
@@ -652,19 +674,18 @@ export function OptionPickerOverlay<TValue = string>(props: OptionPickerOverlayP
         </View>
     );
 
-    return (
-        <View
-            testID="model-picker-overlay"
-            style={[styles.section, props.fillAvailableSpace ? styles.sectionFill : null]}
-        >
-            {props.showTitle !== false
+    // One pane, one scroll owner (0.2 parity): the pane title, its status and notices, the search
+    // field, the options and the "Custom…" entry scroll together inside the list's body. Only when there
+    // is no list (no options) does the pane lay them out itself.
+    const headerNode = (
+        props.showTitle !== false
                 || props.summary
                 || props.effectiveLabel
                 || notes.length > 0
                 || probeHintText
                 || props.headerAccessory
                 || shouldRenderProbeControl ? (
-            <View style={styles.titleRowContainer}>
+            <View testID="model-picker-overlay-title-row" style={styles.titleRowContainer}>
                 <View style={styles.titleRow}>
                     {props.showTitle !== false ? <Text style={styles.title}>{props.title}</Text> : null}
                     {props.summary ? (
@@ -719,11 +740,77 @@ export function OptionPickerOverlay<TValue = string>(props: OptionPickerOverlayP
                     </View>
                 ) : null}
             </View>
-            ) : null}
+            ) : null
+    );
+    const customNode = (
+        props.canEnterCustomValue ? (
+                customEditorVisible ? (
+                    <View
+                        testID="model-picker-overlay-custom"
+                        style={[styles.customEntryRow, styles.customEntrySelected]}
+                    >
+                        {customEntryHeader}
+                        <View style={styles.customEditor}>
+                            <TextInput
+                                ref={customInputRef}
+                                testID="model-picker-overlay-custom-input"
+                                accessibilityLabel={t('modelPickerOverlay.customInputA11y')}
+                                value={customValue}
+                                onChangeText={setCustomValue}
+                                placeholder={t('agentInput.model.customPlaceholder')}
+                                placeholderTextColor={theme.colors.input.placeholder}
+                                autoCorrect={false}
+                                autoCapitalize="none"
+                                onSubmitEditing={() => commitCustomValue(customValue)}
+                                onBlur={() => {
+                                    if (selectionPressPendingRef.current) {
+                                        selectionPressPendingRef.current = false;
+                                        return;
+                                    }
+                                    commitCustomValue(customValue);
+                                }}
+                                {...customEditorWebKeyProps}
+                                style={styles.customEditorInput}
+                            />
+                        </View>
+                    </View>
+                ) : (
+                    <Pressable
+                        ref={customTriggerRef}
+                        testID="model-picker-overlay-custom"
+                        accessibilityRole="button"
+                        accessibilityLabel={props.customLabel ?? t('modelPickerOverlay.customTitle')}
+                        onPress={() => {
+                            selectionPressPendingRef.current = false;
+                            dismissedSelectedCustomValueKeyRef.current = null;
+                            customEditorOpenReasonRef.current = selectedCustomValue.length > 0 ? 'selected-custom' : 'manual';
+                            focusCustomInputOnOpenRef.current = true;
+                            setCustomEditorVisible(true);
+                            if (selectedCustomValue.length > 0) setCustomValue(selectedCustomValue);
+                        }}
+                        style={(state) => [
+                            styles.customEntryRow,
+                            (state as WebHoverablePressableState).hovered === true ? styles.customEntryHovered : null,
+                            state.pressed ? styles.customEntryPressed : null,
+                        ]}
+                    >
+                        {customEntryHeader}
+                    </Pressable>
+                )
+            ) : null
+    );
 
+    return (
+        <View
+            testID="model-picker-overlay"
+            style={[styles.section, props.fillAvailableSpace ? styles.sectionFill : null]}
+        >
             {totalOptionCount > 0 ? (
                 <SelectionList
                     testID="model-picker-overlay-selection-list"
+                    inputPlacement="body"
+                    bodyHeader={headerNode}
+                    bodyFooter={customNode === null ? null : <View style={styles.bodyFooter}>{customNode}</View>}
                     inputTestID="model-picker-overlay-search"
                     rootStep={selectionRootStep}
                     listAccessibilityLabel={props.title}
@@ -785,71 +872,21 @@ export function OptionPickerOverlay<TValue = string>(props: OptionPickerOverlayP
                     // `multiColumn` off, where nothing else can force the grid.
                     optionsHostInlineControls={props.onSelectOptionControlValue !== undefined}
                 />
-            ) : !props.canEnterCustomValue ? (
-                <Text style={styles.emptyText}>{props.emptyText}</Text>
-            ) : null}
-
-            {props.canEnterCustomValue ? (
-                customEditorVisible ? (
-                    <View
-                        testID="model-picker-overlay-custom"
-                        style={[styles.customEntryRow, styles.customEntrySelected]}
-                    >
-                        {customEntryHeader}
-                        <View style={styles.customEditor}>
-                            <TextInput
-                                ref={customInputRef}
-                                testID="model-picker-overlay-custom-input"
-                                accessibilityLabel={t('modelPickerOverlay.customInputA11y')}
-                                value={customValue}
-                                onChangeText={setCustomValue}
-                                placeholder={t('agentInput.model.customPlaceholder')}
-                                placeholderTextColor={theme.colors.input.placeholder}
-                                autoCorrect={false}
-                                autoCapitalize="none"
-                                onSubmitEditing={() => commitCustomValue(customValue)}
-                                onBlur={() => {
-                                    if (selectionPressPendingRef.current) {
-                                        selectionPressPendingRef.current = false;
-                                        return;
-                                    }
-                                    commitCustomValue(customValue);
-                                }}
-                                {...customEditorWebKeyProps}
-                                style={styles.customEditorInput}
-                            />
-                        </View>
-                    </View>
-                ) : (
-                    <Pressable
-                        ref={customTriggerRef}
-                        testID="model-picker-overlay-custom"
-                        accessibilityRole="button"
-                        accessibilityLabel={props.customLabel ?? t('modelPickerOverlay.customTitle')}
-                        onPress={() => {
-                            selectionPressPendingRef.current = false;
-                            dismissedSelectedCustomValueKeyRef.current = null;
-                            customEditorOpenReasonRef.current = selectedCustomValue.length > 0 ? 'selected-custom' : 'manual';
-                            focusCustomInputOnOpenRef.current = true;
-                            setCustomEditorVisible(true);
-                            if (selectedCustomValue.length > 0) setCustomValue(selectedCustomValue);
-                        }}
-                        style={(state) => [
-                            styles.customEntryRow,
-                            (state as WebHoverablePressableState).hovered === true ? styles.customEntryHovered : null,
-                            state.pressed ? styles.customEntryPressed : null,
-                        ]}
-                    >
-                        {customEntryHeader}
-                    </Pressable>
-                )
-            ) : null}
+            ) : (
+                <>
+                    {headerNode}
+                    {!props.canEnterCustomValue ? <Text style={styles.emptyText}>{props.emptyText}</Text> : null}
+                    {customNode}
+                </>
+            )}
         </View>
     );
 }
 
 const styles = StyleSheet.create((theme) => ({
     section: { gap: 6 },
+    /** The "Custom…" entry keeps the pane's gap from the last row when it scrolls with them. */
+    bodyFooter: { marginTop: 6 },
     sectionFill: {
         flex: 1,
         minHeight: 0,
@@ -858,7 +895,11 @@ const styles = StyleSheet.create((theme) => ({
     titleRow: { flex: 1, minWidth: 0 },
     titleRowActions: { flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', flexShrink: 0, gap: TITLE_ROW_ACTION_GAP_PX, marginLeft: 8 },
     headerAccessory: { flexShrink: 0 },
-    title: { flex: 1, fontSize: 12, color: theme.colors.text.secondary, textTransform: 'uppercase' },
+    /**
+     * The pane's own name ("Model"), in sentence case: it heads the pane beside its favourite and
+     * refresh controls, so it reads as a title (primary ink, semibold), not as an eyebrow.
+     */
+    title: { flex: 1, fontSize: 13, lineHeight: 18, ...Typography.default('semiBold'), color: theme.colors.text.primary },
     effectiveBlock: { gap: 0 },
     noteText: { fontSize: 11, color: theme.colors.text.tertiary },
     /**
@@ -893,12 +934,13 @@ const styles = StyleSheet.create((theme) => ({
     selectedControlGroup: { gap: 3 },
     selectedControlRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
     selectedControlTextBlock: { flex: 1, gap: 1 },
-    selectedControlTitle: { fontSize: 9, ...Typography.default('semiBold'), textTransform: 'uppercase', color: theme.colors.text.secondary },
-    selectedControlDescription: { fontSize: 9, color: theme.colors.text.secondary },
+    /** A model option's name ("Thinking", "Speed") above its segmented control: sentence case, medium. */
+    selectedControlTitle: { fontSize: 12, lineHeight: 16, ...Typography.default('medium'), color: theme.colors.text.secondary },
+    selectedControlDescription: { fontSize: 11, lineHeight: 14, color: theme.colors.text.tertiary },
     customEntryRow: { borderRadius: 12, paddingHorizontal: 7, paddingVertical: 7, backgroundColor: theme.colors.surface.base, minHeight: 44 },
     customEntrySelected: { backgroundColor: theme.colors.surface.selected },
     customEntryHovered: { backgroundColor: theme.colors.surface.pressed },
-    customEntryPressed: { opacity: 0.86 },
+    customEntryPressed: { opacity: motionTokens.press.opacitySubtle },
     customEntryHeader: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 },
     customEntryTextBlock: { flex: 1, minWidth: 0 },
     customEditor: { paddingTop: 4 },

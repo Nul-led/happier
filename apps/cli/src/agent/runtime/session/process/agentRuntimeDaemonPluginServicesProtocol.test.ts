@@ -257,7 +257,7 @@ describe('runner daemon PluginServices v1 protocol', () => {
             sessionId: 'session-1',
             runtimeBindingBasis: {
                 v: 1,
-                agentTargetKey: 'backend:claude',
+                agentTargetKey: 'agent:happier.agent.claude/claude',
                 connectionId: 'connection-1',
                 contributionKey: 'provider.plugin/gateway',
                 runtimeCredentialTransport: null,
@@ -305,8 +305,12 @@ describe('runner daemon PluginServices v1 protocol', () => {
             },
             pluginId: 'provider.plugin',
             providerLocalId: 'gateway',
-            activationGeneration: 'activation-1',
-            immutableGenerationId: 'generation-1',
+            occurrenceId: 'occurrence-1',
+            sourceCustody: {
+                kind: 'managed',
+                immutableGenerationId: 'generation-1',
+                installSource: 'npm',
+            },
             manifestAuthority: 'external',
             operationClaimId: 'session-demand:session-1:generation-1',
         } as const;

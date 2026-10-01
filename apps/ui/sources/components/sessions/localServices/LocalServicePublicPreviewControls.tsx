@@ -15,14 +15,16 @@ import { CopiedPill } from '@/components/ui/copy/CopiedPill';
 import { useTemporaryCopyFeedback } from '@/components/ui/copy/useTemporaryCopyFeedback';
 import { INSTRUMENT_SPRINGS, useMotionPreferences } from '@/components/instrument';
 import { Item } from '@/components/ui/lists/Item';
-import { ItemGroup } from '@/components/ui/lists/ItemGroup';
+import { QRCode } from '@/components/qr/QRCode';
 import { Text } from '@/components/ui/text/Text';
 import { Typography } from '@/constants/Typography';
+import { useLayoutPresentationActive } from '@/components/ui/presentation/PluginSurfaceFocusEligibility';
 import { useElapsedTime } from '@/hooks/ui/useElapsedTime';
 import { Modal } from '@/modal';
 import {
     DEFAULT_LOCAL_SERVICE_PUBLIC_PREVIEW_TTL_MS,
     type LocalServicePublicPreviewActions,
+    type LocalServicePublicPreviewActionTarget,
 } from '@/components/sessions/localServices/publicPreviewActions';
 import {
     selectLocalServicePublicExposureExpiry,
@@ -45,7 +47,7 @@ import {
 } from './showLocalServiceExposureSheet';
 
 type PublicPreviewTarget = Readonly<{
-    target: LocalServiceLaunchTargetV1;
+    target: LocalServicePublicPreviewActionTarget;
     previewId: string | null;
     targetKey: string;
     title: string;
@@ -62,7 +64,43 @@ type PublicPreviewDisabledTarget = PublicPreviewTarget & Readonly<{
 /** The gap between an exposure row's controls, shared with their press frames. */
 const EXPOSURE_ACTION_GAP_PX = 8;
 
+/** Big enough to scan from a phone held at arm's length, small enough to sit inside a pane row. */
+const PUBLIC_LINK_QR_SIZE_PX = 96;
+
 const stylesheet = StyleSheet.create((theme) => ({
+    /**
+     * The service's public link, inside its expanded row's card (session-tabs lab S): separated from
+     * the row's controls by one hairline, drawn on the card's own surface.
+     */
+    block: {
+        borderTopWidth: StyleSheet.hairlineWidth,
+        borderTopColor: theme.colors.border.default,
+    },
+    note: {
+        ...Typography.default(),
+        fontSize: 12,
+        color: theme.colors.text.secondary,
+        paddingHorizontal: 16,
+        paddingBottom: 10,
+    },
+    qrRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 12,
+        paddingHorizontal: 16,
+        paddingBottom: 10,
+    },
+    qrTile: {
+        padding: 4,
+        borderRadius: 6,
+        backgroundColor: theme.colors.surface.base,
+    },
+    qrHint: {
+        ...Typography.default(),
+        flex: 1,
+        fontSize: 12,
+        color: theme.colors.text.secondary,
+    },
     actionRow: {
         flexDirection: 'row',
         alignItems: 'center',
@@ -105,13 +143,21 @@ function readTargetPreviewId(target: LocalServiceLaunchTargetV1): string | null 
         : null;
 }
 
+/**
+ * Whether a service has anything to say about a public link: a registered preview it can share, or a
+ * detected loopback service for which the reason it cannot be shared is worth showing. The row asks
+ * this before it offers to expand, so a row never grows into an empty space.
+ */
+export function hasLocalServicePublicPreviewSurface(target: LocalServiceLaunchTargetV1): boolean {
+    return readTargetPreviewId(target) !== null
+        || (target.source === 'inventory_entry' && target.browserTarget?.kind === 'externalUrl');
+}
+
 function publicPreviewTargets(targets: readonly LocalServiceLaunchTargetV1[]): readonly PublicPreviewTarget[] {
     return targets
         .map((target): PublicPreviewTarget | null => {
             const previewId = readTargetPreviewId(target);
-            const supportsDisabledStatus = target.source === 'inventory_entry'
-                && target.browserTarget?.kind === 'externalUrl';
-            if (!previewId && !supportsDisabledStatus) {
+            if (!hasLocalServicePublicPreviewSurface(target)) {
                 return null;
             }
             return {
@@ -253,7 +299,10 @@ function useExposureCountdown(exposure: LocalServicePublicExposureV1): Readonly<
     // ONE derivation of "how long is left" — B1's canonical selector. Reading `expiresAt` directly
     // to decide whether to tick would be a second, subtly different answer to the same question.
     const expiry = selectLocalServicePublicExposureExpiry(exposure, Date.now());
-    const shouldTick = ticking && !expiry.expired && expiry.remainingMs <= LIVE_COUNTDOWN_WINDOW_MS;
+    // Presentation only: a retained pane that is hidden keeps this row mounted, so it stops ticking
+    // there (F-PLAN-22). Shown again, it re-renders and reads the clock afresh from the selector.
+    const presented = useLayoutPresentationActive();
+    const shouldTick = presented && ticking && !expiry.expired && expiry.remainingMs <= LIVE_COUNTDOWN_WINDOW_MS;
     // The return value is unused on purpose: the hook is only the tick source. Each tick re-renders,
     // and the reading above is recomputed from the selector against the current clock.
     useElapsedTime(shouldTick ? exposure.issuedAt : null);
@@ -363,7 +412,6 @@ function ExposureActions(props: Readonly<{
 
 function ExposureRow(props: Readonly<{
     exposure: LocalServicePublicExposureV1;
-    serviceTitle: string;
     actions: LocalServicePublicPreviewActions;
     pending: boolean;
     runAction: ReturnType<typeof useLocalServiceActionRunner>['run'];
@@ -421,7 +469,7 @@ function ExposureRow(props: Readonly<{
         <Animated.View style={entrance.style}>
             <Item
                 testID={props.testID}
-                title={props.serviceTitle}
+                title={t('localServices.pane.publicLinkTitle')}
                 subtitle={(
                     <View style={styles.urlRow}>
                         <Text
@@ -467,12 +515,23 @@ function ExposureRow(props: Readonly<{
                     />
                 )}
             />
+            {/* The QR carries the secret link, so it appears only once the user reveals the link. */}
+            {revealed && !countdown.expired ? (
+                <View style={styles.qrRow}>
+                    <View testID={`${props.testID}-qr`} style={styles.qrTile}>
+                        <QRCode data={exposure.publicUrl} size={PUBLIC_LINK_QR_SIZE_PX} />
+                    </View>
+                    <Text style={styles.qrHint}>{t('localServices.pane.publicLinkScanHint')}</Text>
+                </View>
+            ) : null}
         </Animated.View>
     );
 }
 
 export function LocalServicePublicPreviewControls(props: Readonly<{
     launchTargets: readonly LocalServiceLaunchTargetV1[];
+    browserTarget?: Extract<LocalServicePublicPreviewActionTarget, { kind: 'localServicePreview' }>;
+    serviceTitle?: string;
     state: LocalServicePublicPreviewState | null | undefined;
     actions?: LocalServicePublicPreviewActions;
     /**
@@ -490,8 +549,12 @@ export function LocalServicePublicPreviewControls(props: Readonly<{
     const actions = props.actions;
 
     const targets = React.useMemo(
-        () => (state && actions ? publicPreviewTargets(props.launchTargets) : []),
-        [actions, props.launchTargets, state],
+        (): readonly PublicPreviewTarget[] => (state && actions
+            ? props.browserTarget
+                ? [{ target: props.browserTarget, previewId: props.browserTarget.targetId, targetKey: props.browserTarget.targetId, title: props.serviceTitle ?? props.browserTarget.display?.title ?? props.browserTarget.targetId }]
+                : publicPreviewTargets(props.launchTargets)
+            : []),
+        [actions, props.browserTarget, props.launchTargets, props.serviceTitle, state],
     );
 
     // UX-5 + UB-4: the exposure is created only after the consequence sheet returns a decision, so
@@ -537,10 +600,7 @@ export function LocalServicePublicPreviewControls(props: Readonly<{
             capabilityDisabledReasons: capabilityDisabledReasons?.publicPreview,
         }),
     }));
-    const exposureRows = targetRows.flatMap((row) => row.exposures.map((exposure) => ({
-        exposure,
-        serviceTitle: row.target.title,
-    })));
+    const exposureRows = targetRows.flatMap((row) => row.exposures);
     const creatableTargets: readonly PublicPreviewCreatableTarget[] = targetRows
         .filter((row) => !row.createDisabledSubtitle)
         .map((row) => row.target)
@@ -561,6 +621,7 @@ export function LocalServicePublicPreviewControls(props: Readonly<{
     }
 
     const testID = props.testID ?? 'local-service-public-preview-controls';
+    const styles = stylesheet;
 
     const allowedModes = state.policy?.allowedModes ?? [];
     const modeChoices: readonly LocalServiceExposureModeChoice[] = (
@@ -570,61 +631,57 @@ export function LocalServicePublicPreviewControls(props: Readonly<{
         .map((ttlMs) => ({ ttlMs, label: ttlChoiceLabel(ttlMs) }));
 
     return (
-        <View testID={testID}>
-            <ItemGroup
-                title={t('localServices.publicPreview.title')}
-                // The Confirm beat's missing fact: a public link is audited, and the user is
-                // entitled to know that at the moment they are looking at one.
-                footer={t('localServices.publicPreview.groupFooter')}
-                selectableItemCountOverride={exposureRows.length + creatableTargets.length + disabledTargets.length}
-            >
-                {exposureRows.map(({ exposure, serviceTitle }) => (
-                    <ExposureRow
-                        key={`exposure:${exposure.exposureId}`}
-                        exposure={exposure}
-                        serviceTitle={serviceTitle}
-                        actions={actions}
-                        pending={runner.pendingId === `exposure:${exposure.exposureId}`}
-                        runAction={runner.run}
-                        testID={`${testID}-exposure:${exposure.exposureId}`}
-                    />
-                ))}
-                {creatableTargets.map((target) => (
-                    <Item
-                        key={`create:${target.previewId}`}
-                        testID={`${testID}-target:${target.previewId}`}
-                        title={target.title}
-                        subtitle={t('localServices.publicPreview.createSubtitle')}
-                        detail={modeChoices[0]?.label}
-                        detailTestID={`${testID}-target:${target.previewId}-mode`}
-                        mode="info"
-                        showChevron={false}
-                        loading={runner.pendingId === `create:${target.previewId}`}
-                        rightElement={(
-                            <IconButton
-                                testID={`${testID}-target:${target.previewId}-create`}
-                                iconName="link"
-                                accessibilityLabel={t('localServices.publicPreview.createActionA11y')}
-                                minimumInteractiveTargetSize={resolveMinimumInteractiveTargetSize(Platform.OS)}
-                                disabled={runner.pendingId === `create:${target.previewId}`}
-                                onPress={() => createExposure(target, modeChoices, ttlChoices)}
-                            />
-                        )}
-                    />
-                ))}
-                {disabledTargets.map((target) => (
-                    <Item
-                        key={`disabled:${target.targetKey}`}
-                        testID={`${testID}-target:${target.targetKey}-disabled`}
-                        title={target.title}
-                        subtitle={target.subtitle}
-                        detail={modeChoices[0]?.label}
-                        detailTestID={`${testID}-target:${target.targetKey}-disabled-mode`}
-                        mode="info"
-                        showChevron={false}
-                    />
-                ))}
-            </ItemGroup>
+        <View testID={testID} style={styles.block}>
+            {exposureRows.map((exposure) => (
+                <ExposureRow
+                    key={`exposure:${exposure.exposureId}`}
+                    exposure={exposure}
+                    actions={actions}
+                    pending={runner.pendingId === `exposure:${exposure.exposureId}`}
+                    runAction={runner.run}
+                    testID={`${testID}-exposure:${exposure.exposureId}`}
+                />
+            ))}
+            {creatableTargets.map((target) => (
+                <Item
+                    key={`create:${target.previewId}`}
+                    testID={`${testID}-target:${target.previewId}`}
+                    title={t('localServices.pane.publicLinkTitle')}
+                    subtitle={t('localServices.publicPreview.createSubtitle')}
+                    detail={modeChoices[0]?.label}
+                    detailTestID={`${testID}-target:${target.previewId}-mode`}
+                    mode="info"
+                    showChevron={false}
+                    loading={runner.pendingId === `create:${target.previewId}`}
+                    rightElement={(
+                        <IconButton
+                            testID={`${testID}-target:${target.previewId}-create`}
+                            iconName="link"
+                            accessibilityLabel={t('localServices.publicPreview.createActionA11y')}
+                            minimumInteractiveTargetSize={resolveMinimumInteractiveTargetSize(Platform.OS)}
+                            disabled={runner.pendingId === `create:${target.previewId}`}
+                            onPress={() => createExposure(target, modeChoices, ttlChoices)}
+                        />
+                    )}
+                />
+            ))}
+            {disabledTargets.map((target) => (
+                <Item
+                    key={`disabled:${target.targetKey}`}
+                    testID={`${testID}-target:${target.targetKey}-disabled`}
+                    title={t('localServices.pane.publicLinkTitle')}
+                    subtitle={target.subtitle}
+                    detail={modeChoices[0]?.label}
+                    detailTestID={`${testID}-target:${target.targetKey}-disabled-mode`}
+                    mode="info"
+                    showChevron={false}
+                />
+            ))}
+            {/*
+              * The Confirm beat's missing fact: a public link is audited, and the user is entitled
+              * to know that at the moment they are looking at one.
+              */}
+            <Text style={styles.note}>{t('localServices.publicPreview.groupFooter')}</Text>
         </View>
     );
 }

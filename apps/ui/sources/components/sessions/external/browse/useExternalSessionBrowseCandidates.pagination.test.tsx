@@ -29,6 +29,7 @@ type CandidateFixture = Readonly<{
     linkedSessionId?: string;
     imported?: boolean;
     materializedThrough?: number;
+    thread?: Readonly<{ kind: 'reviewer' | 'subagent'; parentRemoteSessionId: string | null }>;
 }>;
 
 function page(
@@ -479,6 +480,41 @@ describe('useExternalSessionBrowseCandidates pagination', () => {
         expect(hook.getCurrent().candidates.map((candidate) => candidate.remoteSessionId)).toEqual(['new-root']);
     });
 
+    // Live defect (2026-09-27): switching Codex → Claude showed the Codex rows labelled "Claude" while
+    // the Claude index was still building, then kept them when the Claude listing failed. Rows belong
+    // to the listing (machine, Home, Agent, source) that served them.
+    it.each([
+        ['a still-building index', () => preparationPage(0)],
+        ['a failed listing', () => ({ ok: false, errorCode: 'agent_unavailable' }) as const],
+    ] as const)('never shows the previous Agent\'s rows under the new Agent while it answers with %s', async (_answer, claudeAnswer) => {
+        const claudeNext = createDeferred<ReturnType<typeof page>>();
+        candidatesListSpy
+            .mockResolvedValueOnce(page([
+                { remoteSessionId: 'codex-row', title: 'Codex row', updatedAtMs: 1 },
+            ], null))
+            .mockResolvedValueOnce(claudeAnswer())
+            .mockImplementation(() => claudeNext.promise);
+        const { useExternalSessionBrowseCandidates } = await import('./useExternalSessionBrowseCandidates');
+        type AgentParams = Readonly<{
+            machineId: string;
+            providerId: 'codex' | 'claude';
+            source: Readonly<{ kind: 'codexHome'; home: 'user' }> | Readonly<{ kind: 'claudeConfig' }>;
+        }>;
+        const hook = await renderHook(
+            (hookParams: AgentParams) => useExternalSessionBrowseCandidates(hookParams as never),
+            { initialProps: params as AgentParams },
+        );
+        await flushHookEffects();
+        expect(hook.getCurrent().candidates.map((candidate) => candidate.remoteSessionId)).toEqual(['codex-row']);
+
+        await hook.rerender({ machineId: 'machine-1', providerId: 'claude', source: { kind: 'claudeConfig' } });
+        await flushHookEffects();
+
+        expect(hook.getCurrent().candidates).toEqual([]);
+        claudeNext.resolve(page([], null));
+        await flushHookEffects();
+    });
+
     it.each([
         ['machine', { ...params, machineId: null }],
         ['Agent', { ...params, providerId: null }],
@@ -606,6 +642,36 @@ describe('useExternalSessionBrowseCandidates pagination', () => {
 
         expect(hook.getCurrent().candidates).toEqual([
             expect.objectContaining({ remoteSessionId: 'fresh-root' }),
+        ]);
+    });
+
+    it('requests internal threads only when asked and treats that listing as its own', async () => {
+        const thread = { kind: 'reviewer', parentRemoteSessionId: 'top-level' } as const;
+        candidatesListSpy
+            .mockResolvedValueOnce(page([
+                { remoteSessionId: 'top-level', title: 'Top level', updatedAtMs: 2 },
+            ], null))
+            .mockResolvedValueOnce(page([
+                { remoteSessionId: 'top-level', title: 'Top level', updatedAtMs: 2 },
+                { remoteSessionId: 'reviewer', updatedAtMs: 1, thread },
+            ], null));
+        const { useExternalSessionBrowseCandidates } = await import('./useExternalSessionBrowseCandidates');
+        const initialProps: typeof params & Readonly<{ includeThreads?: boolean }> = params;
+        const hook = await renderHook(
+            (hookParams: typeof initialProps) => useExternalSessionBrowseCandidates(hookParams),
+            { initialProps },
+        );
+        await flushHookEffects();
+        expect(candidatesListSpy.mock.calls[0]?.[0]).not.toHaveProperty('includeThreads');
+
+        await hook.rerender({ ...params, includeThreads: true });
+        await flushHookEffects();
+
+        expect(candidatesListSpy).toHaveBeenCalledTimes(2);
+        expect(candidatesListSpy.mock.calls[1]?.[0]).toMatchObject({ includeThreads: true });
+        expect(hook.getCurrent().candidates).toEqual([
+            expect.objectContaining({ remoteSessionId: 'top-level' }),
+            expect.objectContaining({ remoteSessionId: 'reviewer', thread }),
         ]);
     });
 

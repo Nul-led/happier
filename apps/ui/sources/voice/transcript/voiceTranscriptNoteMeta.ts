@@ -1,4 +1,4 @@
-import type { MessageMeta } from '@/sync/domains/messages/messageMetaTypes';
+import type { MessageMeta } from "@happier-dev/session-core/messages";
 
 export const VOICE_TRANSCRIPT_NOTE_META_KIND = 'voice_note.v1';
 

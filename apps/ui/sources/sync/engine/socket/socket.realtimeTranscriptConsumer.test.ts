@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+vi.mock('@/sync/domains/plugins/availability/generatedBundledPluginUiArtifacts', async () => {
+  const { emptyBundledPluginUiAssetsModule } = await import('@/dev/testkit/mocks/bundledPluginUiAssets');
+  return emptyBundledPluginUiAssetsModule;
+});
+
 vi.mock('@/sync/runtime/syncTuning', () => ({
   loadSyncTuning: () => ({
     sessionSocketApplyCoalescingEnabled: false,
@@ -14,7 +19,7 @@ import { buildActivityOverviewFromSource } from '@/activity/source/buildActivity
 import type { ActivityAttentionSource } from '@/activity/source/activityAttentionSourceTypes';
 import { buildInboxSessionPresentation } from '@/activity/presentation/buildInboxSessionPresentation';
 import type { Session } from '@/sync/domains/state/storageTypes';
-import type { NormalizedMessage } from '@/sync/typesRaw';
+import type { NormalizedMessage } from "@happier-dev/session-core/raw";
 import { storage } from '@/sync/domains/state/storage';
 import {
   markSessionSurfaceVisible,

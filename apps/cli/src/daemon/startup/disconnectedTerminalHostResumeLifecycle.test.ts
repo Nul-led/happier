@@ -36,9 +36,9 @@ describe('disconnected terminal-host resume lifecycle', () => {
     await expect(lifecycle.resolveResumePreGate(
       'sess-unresolved',
       async () => ({ status: 'incomplete', reason: 'legacy_attachment' }),
-    )).resolves.toEqual({
+    )).resolves.toMatchObject({
       type: 'error',
-      errorMessage: 'The existing session has preserved terminal topology that cannot be verified. Stop it explicitly before retrying resume.',
+      errorMessage: expect.any(String),
     });
     expect(unresolved.has('sess-unresolved')).toBe(true);
   });

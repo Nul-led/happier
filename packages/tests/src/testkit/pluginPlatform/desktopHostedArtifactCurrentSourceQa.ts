@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   computePluginUiArtifactFileSetSha256DigestV1,
-  PluginUiArtifactsManifestV1Schema,
+  PluginUiArtifactsManifestV2Schema,
 } from '@happier-dev/protocol/plugins/ui';
 
 import {
@@ -53,12 +53,12 @@ export async function runDesktopHostedArtifactCurrentSourceQa(
   const context = await deps.resolvePluginUiContext({ env });
   const runtimeAttestation = await deps.attestPluginUi({ context });
   const generation = await deps.attestSourcePluginGeneration({ context, pluginId });
-  const graph = PluginUiArtifactsManifestV1Schema.parse(JSON.parse(await readFile(
+  const graph = PluginUiArtifactsManifestV2Schema.parse(JSON.parse(await readFile(
     resolve(pluginRoot, 'dist', 'happier-plugin-ui', 'ui-artifacts.json'),
     'utf8',
   )));
   const artifact = graph.entries.find((entry) => (
-    entry.contributionId === hostedArtifactId && entry.tier === 'hostedWeb'
+    entry.artifactId === hostedArtifactId && entry.tier === 'hostedWeb'
   ));
   if (!artifact) throw new Error(`desktop_hosted_artifact_source_graph_entry_missing:${hostedArtifactId}`);
   const emittedFiles = await Promise.all(artifact.files.map(async (file) => Object.freeze({

@@ -1,4 +1,5 @@
 import { MACHINE_HTTP_LOCAL_CAPABILITY_HEADER } from '@happier-dev/iroh-native/node';
+import { readHomeApplicationCarrierEligibilityFromEnv } from '@happier-dev/cli-common/homeEnrollment';
 import {
   doesRunnerBrokerReadinessResponseMatchRequestV1,
   RunnerBrokerReadinessResponseV1Schema,
@@ -35,6 +36,9 @@ export async function checkRunnerBrokerNonInferenceReadiness(input: Readonly<{
   fetchImpl?: typeof fetch;
 }>): Promise<TeamCredentialResourceReadinessV1> {
   input.signal.throwIfAborted();
+  if (readHomeApplicationCarrierEligibilityFromEnv(process.env) === 'standard_only') {
+    return { kind: 'broker_unavailable' };
+  }
   const createRuntime = input.createRuntime ?? createDaemonMachineIrohRuntime;
   const runtime = await createRuntime({
     happyHomeDir: input.happyHomeDir,

@@ -1,0 +1,258 @@
+import * as React from 'react';
+import { useShallow } from 'zustand/react/shallow';
+import {
+    buildWorkBoardItemKeyV1,
+    type BoardItemRefV1,
+    type WorkBoardV1,
+} from '@happier-dev/protocol';
+
+import { useInboxModelWhen } from '@/hooks/inbox/useInboxModel';
+import { useSessionListSelectionState } from '@/hooks/session/useSessionListSelectionState';
+import { buildSessionListFilterQueryHomes } from '@/components/sessions/shell/search/sessionListViewFilters';
+import { useWorkflowDefinitionLibrary, useWorkflowRunWindow } from '@/components/workflows/library/workflowLibraryReads';
+import { useWorkflowLibrarySummaries } from '@/components/workflows/library/useWorkflowLibrarySummaries';
+import { areServerProfileIdentifiersEquivalent, resolveServerProfileScopeIdForIdentifier } from '@/sync/domains/server/serverProfiles';
+import { readSessionListRowForServerId } from '@/sync/domains/session/listing/sessionListRowStateLookup';
+import { useSessionListQueryHomeStates } from '@/sync/domains/session/listing/useSessionListQuerySourceState';
+import { getStorage, useMachineListByServerId, useSessionListRowsByServerId, useWorkflowRunRows } from '@/sync/domains/state/storage';
+import type { Machine } from '@/sync/domains/state/storageTypes';
+
+import {
+    buildBoardCards,
+    countSessionsByMachine,
+    reconcileBoardCards,
+    type BoardCard,
+    type BoardCardFacts,
+    type BoardWorkflowFacts,
+} from './boardCards';
+import { projectBoardMembership, type BoardMembership } from './boardMembership';
+import { fromBoardSessionFilter } from './boardSessionFilter';
+
+/**
+ * The live board: which items are on it (each source from its existing owner) and one summary card
+ * per item. Summaries are what By status, the column counts and every card frame read; detail —
+ * a card's compact map — mounts only inside an expanded, visible card.
+ */
+
+export type BoardHomes = Readonly<{
+    /** The active Home's portable id: Account-scoped reads (workflow runs, workflows) belong to it. */
+    activeServerId: string | null;
+    mountedServerIds: readonly string[];
+    isHomeMounted: (serverId: string) => boolean;
+}>;
+
+const NO_IDS: readonly string[] = Object.freeze([]);
+
+/** The Homes this device has mounted, from the canonical Home-selection owner. */
+export function useBoardHomes(): BoardHomes {
+    const selection = useSessionListSelectionState();
+    return React.useMemo(() => {
+        const raw = selection.allowedServerIds?.length
+            ? selection.allowedServerIds
+            : selection.activeServerId ? [selection.activeServerId] : NO_IDS;
+        const mountedServerIds = [...new Set(raw.map((id) => resolveServerProfileScopeIdForIdentifier(id)).filter(Boolean))];
+        const activeServerId = selection.activeServerId ? resolveServerProfileScopeIdForIdentifier(selection.activeServerId) : null;
+        return {
+            activeServerId,
+            mountedServerIds,
+            isHomeMounted: (serverId: string) => mountedServerIds.some((mounted) => areServerProfileIdentifiersEquivalent(mounted, serverId)),
+        };
+    }, [selection.activeServerId, selection.allowedServerIds]);
+}
+
+function sessionRef(serverId: string, id: string): BoardItemRefV1 {
+    return { kind: 'session', qualifiedId: { serverId: resolveServerProfileScopeIdForIdentifier(serverId) || serverId, id } };
+}
+
+function runRef(serverId: string, id: string): BoardItemRefV1 {
+    return { kind: 'workflow_run', qualifiedId: { serverId, id } };
+}
+
+/** Keeps the previous array when it holds the same refs, so an unrelated store write changes nothing. */
+function useStableRefs(next: readonly BoardItemRefV1[] | null): readonly BoardItemRefV1[] | null {
+    const ref = React.useRef<Readonly<{ key: string; refs: readonly BoardItemRefV1[] | null }>>({ key: '', refs: null });
+    const key = next === null ? '\u0000' : next.map(buildWorkBoardItemKeyV1).join('\n');
+    if (ref.current.key !== key) ref.current = { key, refs: next };
+    return ref.current.refs;
+}
+
+/** Whether a board reads the Inbox model (its Needs you section); only such boards need an Inbox boundary. */
+export function boardReadsNeedsYou(board: WorkBoardV1): boolean {
+    return board.source.sections?.includes('needs_you') === true;
+}
+
+function useNeedsYouRefs(enabled: boolean, activeServerId: string | null): readonly BoardItemRefV1[] | null {
+    // Read only when the board shows Needs you; without a boundary above, the section has not answered.
+    const inbox = useInboxModelWhen(enabled);
+    const workGroups = inbox && !inbox.isLoading ? inbox.workGroups : null;
+    const refs = React.useMemo(() => {
+        if (!workGroups) return null;
+        const next: BoardItemRefV1[] = [];
+        for (const group of workGroups) {
+            for (const item of group.items) {
+                if (item.kind === 'session') {
+                    const address = item.entry.candidate.address;
+                    if (address) next.push(sessionRef(address.serverId, address.sessionId));
+                } else if (item.kind === 'workflow_run' && activeServerId) {
+                    next.push(runRef(activeServerId, item.runId));
+                }
+            }
+        }
+        return next;
+    }, [activeServerId, workGroups]);
+    return useStableRefs(refs);
+}
+
+function useRunningRefs(enabled: boolean, activeServerId: string | null): readonly BoardItemRefV1[] | null {
+    const window = useWorkflowRunWindow('active', { enabled });
+    const refs = React.useMemo(() => {
+        if (!enabled || !activeServerId || window.status === 'loading') return null;
+        return window.rows.map((row) => runRef(activeServerId, row.id));
+    }, [activeServerId, enabled, window.rows, window.status]);
+    return useStableRefs(refs);
+}
+
+function useMachineRefs(enabled: boolean, machineLists: Readonly<Record<string, Machine[] | null>>): readonly BoardItemRefV1[] | null {
+    const refs = React.useMemo(() => {
+        if (!enabled) return null;
+        const next: BoardItemRefV1[] = [];
+        for (const [serverId, machines] of Object.entries(machineLists)) {
+            const portable = resolveServerProfileScopeIdForIdentifier(serverId) || serverId;
+            for (const machine of machines ?? []) next.push({ kind: 'machine', qualifiedId: { serverId: portable, id: machine.id } });
+        }
+        return next;
+    }, [enabled, machineLists]);
+    return useStableRefs(refs);
+}
+
+function useFilteredSessionRefs(board: WorkBoardV1, homes: BoardHomes): Readonly<{
+    refs: readonly BoardItemRefV1[] | null | undefined;
+    complete: boolean;
+}> {
+    const filter = board.source.filter;
+    const queryHomes = React.useMemo(() => {
+        if (!filter) return [];
+        // An empty Home selection means every mounted Home, as in the Sessions list.
+        return buildSessionListFilterQueryHomes(fromBoardSessionFilter(filter, homes.mountedServerIds), {
+            storage: 'active',
+            includeInactive: false,
+            mountedHomeServerIds: homes.mountedServerIds,
+        });
+    }, [filter, homes.mountedServerIds]);
+    const states = useSessionListQueryHomeStates({ enabled: Boolean(filter), homes: queryHomes });
+    const answered = React.useMemo(() => {
+        if (!filter) return { refs: null, complete: true };
+        const next: BoardItemRefV1[] = [];
+        let complete = true;
+        for (const home of queryHomes) {
+            // A Home that has not answered (or cannot serve the filter) adds nothing yet; the others still show.
+            const addresses = states.membershipByServerId[home.serverId];
+            if (!addresses) {
+                complete = false;
+                continue;
+            }
+            for (const address of addresses) next.push(sessionRef(home.serverId, address.sessionId));
+        }
+        return { refs: next, complete };
+    }, [filter, queryHomes, states.membershipByServerId]);
+    const stable = useStableRefs(answered.refs);
+    return { refs: filter ? stable : undefined, complete: answered.complete };
+}
+
+/** What is on the board now. Sources a board does not use issue no read. */
+export function useBoardMembership(board: WorkBoardV1, homes: BoardHomes): BoardMembership {
+    const sections = new Set(board.source.sections ?? []);
+    const machineLists = useMachineListByServerId();
+    const needsYou = useNeedsYouRefs(boardReadsNeedsYou(board), homes.activeServerId);
+    const running = useRunningRefs(sections.has('running'), homes.activeServerId);
+    const myMachines = useMachineRefs(sections.has('my_machines'), machineLists);
+    const filtered = useFilteredSessionRefs(board, homes);
+    return React.useMemo(() => projectBoardMembership(board, {
+        isHomeMounted: homes.isHomeMounted,
+        sections: { needs_you: needsYou, running, my_machines: myMachines },
+        filtered: filtered.refs,
+        filterComplete: filtered.complete,
+    }), [board, filtered.complete, filtered.refs, homes.isHomeMounted, myMachines, needsYou, running]);
+}
+
+const NO_CARDS: readonly BoardCard[] = Object.freeze([]);
+
+/** One summary card per member, from the kinds' own stores; identity kept for unchanged cards. */
+export function useBoardCards(membership: BoardMembership, homes: BoardHomes): readonly BoardCard[] {
+    const members = membership.members;
+    const sessionMembers = React.useMemo(() => members.filter((member) => member.ref.kind === 'session'), [members]);
+    const hasMachines = members.some((member) => member.ref.kind === 'machine');
+    const runIds = React.useMemo(
+        () => members.filter((member) => member.ref.kind === 'workflow_run').map((member) => member.ref.qualifiedId.id),
+        [members],
+    );
+    const workflowIds = React.useMemo(
+        () => members.filter((member) => member.ref.kind === 'workflow').map((member) => member.ref.qualifiedId.id),
+        [members],
+    );
+    // One narrow selector for the board's Sessions: an unrelated row write keeps this array.
+    const sessionRows = getStorage()(useShallow((state) => sessionMembers.map((member) => (
+        readSessionListRowForServerId(state.sessionListRowsByServerId, member.ref.qualifiedId.serverId, member.ref.qualifiedId.id)
+    ))));
+    // Machine counts read the already-loaded rows of the mounted Homes, only when a machine is on the board.
+    const allRows = useSessionListRowsByServerId(hasMachines ? homes.mountedServerIds : NO_IDS);
+    const machineLists = useMachineListByServerId();
+    const runRows = useWorkflowRunRows(runIds);
+    const library = useWorkflowDefinitionLibrary();
+    const summaries = useWorkflowLibrarySummaries(workflowIds);
+
+    const next = React.useMemo(() => {
+        const nowMs = Date.now();
+        const sessionByKey = new Map(sessionMembers.map((member, index) => [member.key, sessionRows[index] ?? null] as const));
+        const runById = new Map(runRows.map((row) => [row.id, row] as const));
+        const definitionById = new Map(library.definitions.map((definition) => [definition.definitionId, definition] as const));
+        const activeServerId = homes.activeServerId;
+        const facts: BoardCardFacts = {
+            nowMs,
+            accountScopedHome: (serverId) => activeServerId !== null && areServerProfileIdentifiersEquivalent(activeServerId, serverId),
+            session: (ref) => sessionByKey.get(buildWorkBoardItemKeyV1(ref)) ?? null,
+            workflowRun: (ref) => runById.get(ref.qualifiedId.id) ?? null,
+            machine: (ref) => {
+                for (const [serverId, machines] of Object.entries(machineLists)) {
+                    if (!areServerProfileIdentifiersEquivalent(serverId, ref.qualifiedId.serverId)) continue;
+                    const machine = machines?.find((candidate) => candidate.id === ref.qualifiedId.id);
+                    if (machine) return machine;
+                }
+                return null;
+            },
+            machineSessionCounts: hasMachines
+                ? countSessionsByMachine(Object.entries(allRows).map(([serverId, rows]) => [
+                    resolveServerProfileScopeIdForIdentifier(serverId) || serverId,
+                    Object.values(rows ?? {}),
+                ] as const), nowMs)
+                : new Map(),
+            workflow: (ref): BoardWorkflowFacts | null => {
+                const definition = definitionById.get(ref.qualifiedId.id);
+                if (!definition) return null;
+                const summary = summaries?.get(ref.qualifiedId.id) ?? null;
+                return {
+                    title: definition.metadata.title,
+                    summary: summary ? { needsYouCount: summary.needsYouCount, lastRun: summary.lastRun } : null,
+                };
+            },
+        };
+        return buildBoardCards(members, facts);
+    }, [allRows, hasMachines, homes.activeServerId, library.definitions, machineLists, members, runRows, sessionMembers, sessionRows, summaries]);
+
+    const previousRef = React.useRef<readonly BoardCard[]>(NO_CARDS);
+    const reconciled = reconcileBoardCards(previousRef.current, next);
+    React.useLayoutEffect(() => { previousRef.current = reconciled; }, [reconciled]);
+    return reconciled;
+}
+
+/** The open board's live cards: homes → membership → cards, the one chain every Boards surface mounts. */
+export function useBoardLiveCards(board: WorkBoardV1): Readonly<{
+    homes: BoardHomes;
+    membership: BoardMembership;
+    cards: readonly BoardCard[];
+}> {
+    const homes = useBoardHomes();
+    const membership = useBoardMembership(board, homes);
+    const cards = useBoardCards(membership, homes);
+    return { homes, membership, cards };
+}

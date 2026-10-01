@@ -4,7 +4,7 @@ import {
 import type { MachineDisplayCacheEntryV1 } from '@/sync/domains/state/warmCachePersistence';
 import type { Machine } from '@/sync/domains/state/storageTypes';
 import { isPersistentMachine } from '@happier-dev/protocol';
-import type { ServerProfile } from '@/sync/domains/server/serverProfiles';
+import { areServerProfileIdentifiersEquivalent, type ServerProfile } from '@/sync/domains/server/serverProfiles';
 
 import {
     buildMachineDisplayRenderableFromMachine,
@@ -20,6 +20,11 @@ export type ServerMachineInventorySnapshotV1 =
         serverIdentityId: string;
         serverName: string;
         observation: 'live' | 'stale';
+        /**
+         * This Home's machine list has been read and is current, so a machine absent from it has
+         * left. Absent while the list is still loading, failed, or known only from the warm cache.
+         */
+        settled?: true;
         machines: readonly MachineDisplayRenderable[];
     }>
     | Readonly<{
@@ -103,22 +108,26 @@ function resolveRawMachineList(params: Readonly<{
     activeMachines: readonly Machine[];
     machineListByServerId: Readonly<Record<string, readonly Machine[] | null | undefined>>;
     machineListStatusByServerId: Readonly<Record<string, MachineListStatus | undefined>>;
-}>): Readonly<{ machines: readonly Machine[]; observation: 'live' | 'stale' }> | null {
+}>): Readonly<{ machines: readonly Machine[]; observation: 'live' | 'stale'; settled: boolean }> | null {
     const keys = uniqueNonEmpty([
         params.serverIdentityId,
         params.profile.id,
         ...(params.profile.legacyServerIds ?? []),
     ]);
     if (params.activeInventoryLoaded && keys.includes(params.activeServerId)) {
-        return { machines: params.activeMachines, observation: 'live' };
+        // "Loaded" is the app's data readiness (sessions), which can arrive before this Home's
+        // machine list does: the list is settled only once it has been applied (`idle`).
+        return {
+            machines: params.activeMachines,
+            observation: 'live',
+            settled: keys.some((key) => params.machineListStatusByServerId[key] === 'idle'),
+        };
     }
     for (const key of keys) {
         const machines = params.machineListByServerId[key];
         if (!Array.isArray(machines)) continue;
-        return {
-            machines,
-            observation: params.machineListStatusByServerId[key] === 'idle' ? 'live' : 'stale',
-        };
+        const settled = params.machineListStatusByServerId[key] === 'idle';
+        return { machines, observation: settled ? 'live' : 'stale', settled };
     }
     return null;
 }
@@ -196,6 +205,7 @@ export function resolveAllProfileMachineInventorySnapshots(params: Readonly<{
                 serverIdentityId,
                 serverName,
                 observation: raw.observation,
+                ...(raw.settled ? { settled: true as const } : {}),
                 machines: Object.freeze(raw.machines
                     .filter(isPersistentMachine)
                     .map(buildMachineDisplayRenderableFromMachine)
@@ -234,4 +244,16 @@ export function resolveAllProfileMachineInventorySnapshots(params: Readonly<{
         const identityOrder = leftIdentity.localeCompare(rightIdentity);
         return identityOrder !== 0 ? identityOrder : left.profileId.localeCompare(right.profileId);
     }));
+}
+
+/**
+ * Whether a Home's machine list has been read, so that a machine absent from it has really left.
+ */
+export function isMachineInventorySettled(
+    snapshots: readonly ServerMachineInventorySnapshotV1[],
+    serverIdentityId: string,
+): boolean {
+    return snapshots.some((snapshot) => snapshot.kind === 'resolved'
+        && snapshot.settled === true
+        && areServerProfileIdentifiersEquivalent(snapshot.serverIdentityId, serverIdentityId));
 }

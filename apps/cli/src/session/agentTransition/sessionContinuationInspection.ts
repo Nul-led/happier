@@ -2,6 +2,9 @@ import {
   buildBackendTargetKeyV2,
   readBackendTargetRefV2,
   resolveLinkedExternalSessionAuthorityV1,
+  type SessionAgentTransitionSelectionV1,
+  type SessionContinuationInspectionBatchRequestV1,
+  type SessionContinuationInspectionBatchResultV1,
   type SessionContinuationInspectionRequestV1,
   type SessionContinuationInspectionUnavailableReasonV1,
   type SessionContinuationInspectionV1,
@@ -98,6 +101,93 @@ function unavailable(
 export async function inspectSessionContinuation(
   params: InspectSessionContinuationParams,
 ): Promise<SessionContinuationInspectionV1> {
+  const result = await inspectSessionContinuations({
+    credentials: params.credentials,
+    request: {
+      v: 1,
+      sourceSessionId: params.request.sourceSessionId,
+      selections: [params.request.selection],
+    },
+    ...(params.deps ? { deps: params.deps } : {}),
+  });
+  return result.inspections[0] ?? unavailable('unsupported_session');
+}
+
+type SessionContinuationSource =
+  | Readonly<{ type: 'available'; sourceAgentId: string }>
+  | Readonly<{ type: 'unavailable'; reason: 'unsupported_session' }>;
+
+async function loadSessionContinuationSource(params: Readonly<{
+  credentials: StoredCredentials;
+  sourceSessionId: string;
+  deps: SessionContinuationInspectionDeps;
+}>): Promise<SessionContinuationSource> {
+  const transport = await params.deps.resolveSessionTransportContext({
+    credentials: params.credentials,
+    idOrPrefix: params.sourceSessionId,
+  }).catch(() => null);
+  if (!transport?.ok) return { type: 'unavailable', reason: 'unsupported_session' };
+
+  const metadata = params.deps.decryptOwnerMetadataView({
+    credentials: params.credentials,
+    rawSession: transport.rawSession,
+    accountEncryptionMode: transport.accountEncryptionCurrentness.mode,
+  });
+  if (!metadata) return { type: 'unavailable', reason: 'unsupported_session' };
+
+  // Direct/external transcript storage is excluded from in-place continuation:
+  // the target cannot consume it canonically. Hosted here is a positive fact
+  // the metadata has to prove, so an unresolved link is not treated as hosted.
+  const transcriptAuthority = resolveLinkedExternalSessionAuthorityV1(metadata);
+  if (!transcriptAuthority.ok || transcriptAuthority.transcriptStorage !== 'persisted') {
+    return { type: 'unavailable', reason: 'unsupported_session' };
+  }
+
+  // The recorded machine is deliberately not a proxy gate. The stop owner,
+  // native-return owner, cutover, and activation each validate the facts they
+  // actually own, including Sessions legitimately moved to this host.
+  const sourceAgentId = resolveAgentIdFromSessionMetadata(metadata);
+  if (sourceAgentId === null) return { type: 'unavailable', reason: 'unsupported_session' };
+  return { type: 'available', sourceAgentId };
+}
+
+async function inspectSessionContinuationSelection(params: Readonly<{
+  source: SessionContinuationSource;
+  selection: SessionAgentTransitionSelectionV1;
+  deps: SessionContinuationInspectionDeps;
+}>): Promise<SessionContinuationInspectionV1> {
+  if (params.source.type === 'unavailable') return params.source;
+
+  const target = resolveSessionContinuationTargetAgent({
+    readAgentCatalogSnapshot: params.deps.readAgentCatalogSnapshot,
+    agentId: params.selection.agentId,
+  });
+  if (!target) return unavailable('target_unavailable');
+
+  const providerPreflight = await params.deps.resolveCurrentProviderSpawnDefinitiveRejection({
+    agentTargetKey: target.backendTargetKey,
+    agentId: target.agentId,
+    selection: params.selection,
+  });
+  if (!providerPreflight.ok) return unavailable('target_unavailable');
+
+  return {
+    type: 'available',
+    protocolVersion: 1,
+    sameSessionTransition: params.source.sourceAgentId !== params.selection.agentId,
+  };
+}
+
+/**
+ * Resolves one ordered Agent-picker projection from one source Session read and
+ * decrypt. Target-specific Provider checks remain owned by the same mutation
+ * preflight, and run only after the shared source proves usable.
+ */
+export async function inspectSessionContinuations(params: Readonly<{
+  credentials: StoredCredentials;
+  request: SessionContinuationInspectionBatchRequestV1;
+  deps?: Partial<SessionContinuationInspectionDeps>;
+}>): Promise<SessionContinuationInspectionBatchResultV1> {
   const deps: SessionContinuationInspectionDeps = {
     resolveSessionTransportContext,
     decryptOwnerMetadataView: tryDecryptSessionOwnerMetadataView,
@@ -105,64 +195,15 @@ export async function inspectSessionContinuation(
     resolveCurrentProviderSpawnDefinitiveRejection,
     ...params.deps,
   };
-
-  const transport = await deps.resolveSessionTransportContext({
+  const source = await loadSessionContinuationSource({
     credentials: params.credentials,
-    idOrPrefix: params.request.sourceSessionId,
-  }).catch(() => null);
-  if (!transport?.ok) return unavailable('unsupported_session');
-
-  const metadata = deps.decryptOwnerMetadataView({
-    credentials: params.credentials,
-    rawSession: transport.rawSession,
-    accountEncryptionMode: transport.accountEncryptionCurrentness.mode,
+    sourceSessionId: params.request.sourceSessionId,
+    deps,
   });
-  if (!metadata) return unavailable('unsupported_session');
-
-  // Direct/external transcript storage is excluded from in-place continuation:
-  // the target cannot consume it canonically. "Hosted here" is a POSITIVE fact
-  // the metadata has to prove, so it is read through the discriminated
-  // authority owner: a link that exists but cannot be trusted is unresolved,
-  // not hosted, and reporting such a Session `available` arms a mutation that
-  // stops the source before it can discover the truth.
-  const transcriptAuthority = resolveLinkedExternalSessionAuthorityV1(metadata);
-  if (!transcriptAuthority.ok || transcriptAuthority.transcriptStorage !== 'persisted') {
-    return unavailable('unsupported_session');
-  }
-
-  // Deliberately NOT gated on the Session's recorded machine. A machine id is a
-  // PROXY for "can this Session be continued here", and the components that
-  // actually know already answer it: the stop owner finds no local process and
-  // reports it, an absent DEVICE-LOCAL native-return record already degrades to
-  // a full replay, the cutover is server-side and machine-agnostic, and
-  // activating the target succeeds or fails here loudly. The proxy was wrong in
-  // both directions — it refused a Session a user had legitimately moved to this
-  // host, while still admitting a same-id Session whose vendor conversation was
-  // long gone — so it removed real capability to prevent nothing.
-
-  const targetAgentId = params.request.selection.agentId;
-  const target = resolveSessionContinuationTargetAgent({
-    readAgentCatalogSnapshot: deps.readAgentCatalogSnapshot,
-    agentId: targetAgentId,
-  });
-  if (!target) {
-    return unavailable('target_unavailable');
-  }
-  const providerPreflight = await deps.resolveCurrentProviderSpawnDefinitiveRejection({
-    agentTargetKey: target.backendTargetKey,
-    agentId: target.agentId,
-    selection: params.request.selection,
-  });
-  if (!providerPreflight.ok) return unavailable('target_unavailable');
-
-  const currentAgentId = resolveAgentIdFromSessionMetadata(metadata);
-  // A Session whose current Agent cannot be named has no authoritative source
-  // to transition away from.
-  if (currentAgentId === null) return unavailable('unsupported_session');
-
   return {
-    type: 'available',
-    protocolVersion: 1,
-    sameSessionTransition: currentAgentId !== targetAgentId,
+    v: 1,
+    inspections: await Promise.all(params.request.selections.map(async (selection) => (
+      await inspectSessionContinuationSelection({ source, selection, deps })
+    ))),
   };
 }

@@ -9,7 +9,7 @@ import { AppState, Platform } from 'react-native';
 import { captureActiveServerAccountScopeCurrentness } from '@/sync/domains/scope/activeServerAccountScope';
 import { readExternalSessionLink } from '@/sync/domains/session/external/readExternalSessionLink';
 import { normalizeSessionId } from '@/sync/domains/session/normalizeSessionId';
-import type { Metadata } from '@/sync/domains/state/storageTypes';
+import type { Metadata } from '@happier-dev/session-core/state';
 import {
     machineExternalSessionAttach,
     machineExternalSessionDetach,

@@ -1,5 +1,5 @@
 import { isTerminalAuthError } from '@/sync/runtime/connectivity/authErrors';
-import { raceSocketIoAckTimeout } from '@/sync/runtime/socketIoAckTimeout';
+import { raceSocketIoAckTimeout } from '@happier-dev/sync-client';
 
 export async function socketEmitWithAckFallback<TAck>(params: {
     emitWithAck: (event: string, payload: any, opts?: { timeoutMs?: number }) => Promise<TAck>;

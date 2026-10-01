@@ -357,7 +357,7 @@ describe('browser recording daemon runtime', () => {
 
     it('maps the cdpScreencast BUILD-NOW cell to a live producer when a CDP screencast transport is bound', async () => {
       const { createBrowserRecordingDaemonRuntime } = await import('./runtime');
-      const transportStart = vi.fn(async () => ({ ackFrame: vi.fn(), stop: vi.fn(async () => {}) }));
+      const transportStart = vi.fn(async () => ({ stop: vi.fn(async () => {}) }));
       const runtime = createBrowserRecordingDaemonRuntime({
         workingDirectory: '/tmp/happier-browser-recording-cdp-matrix',
         cdpScreencast: { transport: { start: transportStart } },

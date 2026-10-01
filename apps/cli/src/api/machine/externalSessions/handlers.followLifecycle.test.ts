@@ -160,9 +160,14 @@ describe('registerMachineExternalSessionsRpcHandlers', () => {
           commit: null,
           generations: new Map(),
           rejectedGenerations: new Map(),
-          unavailableBundledPackageNames: new Set(),
           isCurrent: async () => true,
         },
+        resolveDevelopmentSourceAuthority: ({ pluginId, rootPath }) => ({
+          kind: 'development',
+          registeredRootId: `external-session-follow:${pluginId}`,
+          canonicalRoot: rootPath,
+          observedRevision: 1,
+        }),
       }),
     });
     for (const agentId of externalSessionAgentIds) {
@@ -194,7 +199,7 @@ describe('registerMachineExternalSessionsRpcHandlers', () => {
         },
         generation: 'source-1',
       },
-      contributionGeneration: 'contribution-1',
+      sourceCustody: { kind: 'development', registeredRootId: 'source-root-1' },
       cursorIdentity: `external_session_cursor_binding_v1:${'a'.repeat(64)}`,
     }));
     resetActiveAccountSettingsSnapshotForTests();

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { createStore } from 'zustand/vanilla';
 import type { SessionOrganizationSnapshot } from '@happier-dev/protocol';
 
 import { buildSessionOrganizationSessionKey } from '@/sync/domains/session/organization';
@@ -10,16 +11,9 @@ import {
 
 type State = SessionOrganizationDomain;
 
-function createHarness(): {
-    get: () => State;
-} {
-    let state = {} as State;
-    const get = () => state;
-    const set = (updater: (draft: State) => Partial<State>) => {
-        state = { ...state, ...updater(state) };
-    };
-    state = createSessionOrganizationDomain({ get, set } as any);
-    return { get };
+function createHarness() {
+    const store = createStore<State>((set, get) => createSessionOrganizationDomain({ set, get }));
+    return { get: store.getState, subscribe: store.subscribe };
 }
 
 function emptySnapshot(input: Partial<SessionOrganizationSnapshot> = {}): SessionOrganizationSnapshot {
@@ -40,6 +34,61 @@ function emptySnapshot(input: Partial<SessionOrganizationSnapshot> = {}): Sessio
 }
 
 describe('createSessionOrganizationDomain', () => {
+    it.each([false, true, null])('restores the original standing %s after two same-session reminder writes both fail', (originalStanding) => {
+        for (const failureOrder of [[0, 1], [1, 0]]) {
+            const harness = createHarness();
+            const original = originalStanding === null ? [] : [{ sessionId: 's1', standing: originalStanding, updatedAt: 1 }];
+            harness.get().applySessionOrganizationSnapshot('srv-a', emptySnapshot({ attentionStandings: original }));
+            const baseline = harness.get().sessionOrganizationAttentionStandingsBySessionKey;
+            const records = [2_000, 5_000].map((remindAt) => harness.get().setSessionAttentionStandingOptimistic('srv-a', 's1', {
+                sessionId: 's1', standing: true, remindAt, updatedAt: remindAt,
+            }));
+            for (const index of failureOrder) harness.get().rollbackSessionOrganizationOptimistic(records[index]!);
+            expect(harness.get().sessionOrganizationAttentionStandingsBySessionKey).toEqual(baseline);
+            expect(harness.get().sessionOrganizationOptimisticRecords).toEqual({});
+        }
+    });
+
+    it('does not replay an older pending reminder over a newer confirmed reminder when another write fails', () => {
+        const harness = createHarness();
+        const first = harness.get().setSessionAttentionStandingOptimistic('srv-a', 's1', { sessionId: 's1', standing: true, remindAt: 2_000, updatedAt: 2 });
+        const unrelated = harness.get().setSessionPinOptimistic('srv-a', 's2', { sessionId: 's2', pinnedAt: 3, sortKey: null });
+        const latest = { sessionId: 's1', standing: true, remindAt: 5_000, updatedAt: 5 };
+        const last = harness.get().setSessionAttentionStandingOptimistic('srv-a', 's1', latest);
+        const key = buildSessionOrganizationSessionKey('srv-a', 's1');
+        harness.get().confirmSessionOrganizationOptimistic(last, 'sessionOrganizationAttentionStandingsBySessionKey', key, latest);
+        harness.get().rollbackSessionOrganizationOptimistic(unrelated);
+        expect(harness.get().sessionOrganizationAttentionStandingsBySessionKey[key]).toEqual(latest);
+        harness.get().rollbackSessionOrganizationOptimistic(first);
+        expect(harness.get().sessionOrganizationAttentionStandingsBySessionKey[key]).toEqual(latest);
+    });
+
+    it('does not publish unchanged loading, error, assignment, or ignored reconciliation state', () => {
+        const harness = createHarness();
+        harness.get().setSessionOrganizationLoading('srv-a', false);
+        harness.get().setSessionOrganizationError('srv-a', null);
+        harness.get().applySessionOrganizationSnapshot('srv-a', emptySnapshot({ version: 2 }));
+        harness.get().applySessionFolderAssignments('srv-a', [{ sessionId: 's1', folderId: null }]);
+        const before = harness.get();
+        let notifications = 0;
+        const unsubscribe = harness.subscribe(() => { notifications += 1; });
+        harness.get().setSessionFolderAssignmentsLoading('srv-a', false);
+        harness.get().setSessionOrganizationError('srv-a', null);
+        harness.get().applySessionFolderAssignments('srv-a', [{ sessionId: 's1', folderId: null }]);
+        harness.get().applySessionOrganizationSnapshot('srv-a', emptySnapshot({ version: 1 }));
+        harness.get().reconcileSessionOrganizationFolderDelete('srv-a', ['missing'], null);
+        harness.get().reconcileSessionOrganizationTagDelete('srv-a', 'missing');
+        harness.get().rollbackSessionOrganizationOptimistic('missing');
+        harness.get().commitSessionOrganizationOptimistic('missing');
+        expect(harness.get()).toBe(before);
+        expect(notifications).toBe(0);
+
+        harness.get().setSessionOrganizationLoading('srv-a', true);
+        expect(harness.get().sessionOrganizationLoadingByServerId['srv-a']).toBe(true);
+        expect(notifications).toBe(1);
+        unsubscribe();
+    });
+
     it('keeps known sessions known when a full snapshot drops their folder assignment', () => {
         const harness = createHarness();
         harness.get().applySessionOrganizationSnapshot('srv-a', emptySnapshot({

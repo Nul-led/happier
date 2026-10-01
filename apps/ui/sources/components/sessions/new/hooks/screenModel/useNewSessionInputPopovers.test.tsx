@@ -6,11 +6,11 @@ import type { Machine } from '@/sync/domains/state/storageTypes';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-vi.mock('react-native-reanimated', () => ({ __esModule: true, default: {} }));
-vi.mock('react-native-reanimated/lib/module', () => ({ __esModule: true, default: {} }));
-vi.mock('react-native-reanimated/lib/module/index.js', () => ({ __esModule: true, default: {} }));
-vi.mock('react-native-reanimated/lib/module/index', () => ({ __esModule: true, default: {} }));
-vi.mock('react-native-reanimated/lib/module/publicGlobals', () => ({ __esModule: true }));
+vi.mock('react-native-reanimated', () => ({ __esModule: true, default: {}, Easing: { bezier: () => (value: number) => value, linear: (value: number) => value } }));
+vi.mock('react-native-reanimated/lib/module', () => ({ __esModule: true, default: {}, Easing: { bezier: () => (value: number) => value, linear: (value: number) => value } }));
+vi.mock('react-native-reanimated/lib/module/index.js', () => ({ __esModule: true, default: {}, Easing: { bezier: () => (value: number) => value, linear: (value: number) => value } }));
+vi.mock('react-native-reanimated/lib/module/index', () => ({ __esModule: true, default: {}, Easing: { bezier: () => (value: number) => value, linear: (value: number) => value } }));
+vi.mock('react-native-reanimated/lib/module/publicGlobals', () => ({ __esModule: true, Easing: { bezier: () => (value: number) => value, linear: (value: number) => value } }));
 vi.mock('@/components/sessions/new/components/NewSessionPathSelectionContent', () => ({
     NewSessionPathSelectionContent: () => null,
 }));
@@ -249,16 +249,18 @@ describe('useNewSessionInputPopovers', () => {
             temporaryComputerAvailability: {
                 status: 'available',
                 artifacts: [{
-                    v: 1,
                     identity: {
                         product: 'happier-runner',
                         version: '0.3.0',
                         target: 'linux-x64',
                         sha256: 'a'.repeat(64),
                     },
-                    archiveUrl: 'https://example.test/runner.zip',
-                    checksumUrl: 'https://example.test/checksums.txt',
-                    signatureUrl: 'https://example.test/checksums.txt.minisig',
+                    channel: 'stable',
+                    url: 'https://example.test/runner.zip',
+                    checksumsUrl: 'https://example.test/checksums.txt',
+                    checksumsSignatureUrl: 'https://example.test/checksums.txt.minisig',
+                    sizeBytes: 1,
+                    entries: [{ path: 'happier-runner', kind: 'file', sizeBytes: 1, mode: 0o755 }],
                 }],
                 client: {} as HookParams['temporaryComputerAvailability'] extends { client: infer Client } ? Client : never,
                 retry: vi.fn(),

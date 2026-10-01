@@ -10,6 +10,11 @@ import {
 
 import { useTranscriptItemsEdgeSlots } from './useTranscriptRowHost';
 
+vi.mock('@/sync/domains/plugins/availability/generatedBundledPluginUiArtifacts', async () => {
+    const { emptyBundledPluginUiAssetsModule } = await import('@/dev/testkit/mocks/bundledPluginUiAssets');
+    return emptyBundledPluginUiAssetsModule;
+});
+
 describe('useTranscriptItemsEdgeSlots', () => {
     it('keeps retained underfilled history reachable through the canonical older pager', async () => {
         // A sidechain-only initial-fill page can leave a short transcript with a live older

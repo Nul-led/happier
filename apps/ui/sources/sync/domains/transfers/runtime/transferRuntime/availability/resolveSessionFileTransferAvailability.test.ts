@@ -5,7 +5,13 @@ import { FeaturesResponseSchema } from '@happier-dev/protocol';
 import { resolveSessionFileTransferAvailability } from './resolveSessionFileTransferAvailability';
 
 const features = FeaturesResponseSchema.parse({
-    features: { machines: { enabled: true, transfer: { enabled: true, directPeer: { enabled: true }, serverRouted: { enabled: false } } } },
+    features: {
+        machines: {
+            enabled: true,
+            transfer: { enabled: true, directPeer: { enabled: true }, serverRouted: { enabled: false } },
+            peerMediation: { enabled: true },
+        },
+    },
     capabilities: {},
 });
 const predecessorState = {
@@ -33,7 +39,10 @@ describe('resolveSessionFileTransferAvailability', () => {
             machineTargetAvailable: true,
             serverFeatures: features,
             machineCarrierHost: { kind: 'browser' },
-            machineRpcDirectRoute: { status: 'viable', checkedAt: 1, expiresAt: 2 },
+            machineOperationProtocolCapabilities: {
+                irohMachineEndpoint: { protocolVersions: [1], endpointId: 'a'.repeat(64), relayUrls: ['https://relay.example.test'] },
+            },
+            machineOperationProtocolCapabilitiesRevision: 1,
             machineDaemonState: {
                 ...declaredTransferState,
                 peerMediation: { iroh: { endpoint: { endpointId: 'a'.repeat(64), relayUrls: ['https://relay.example.test'] } } },
@@ -44,27 +53,25 @@ describe('resolveSessionFileTransferAvailability', () => {
         expect(result.decision).toMatchObject({ kind: 'selected', preferredRouteKind: 'iroh_peer' });
     });
 
-    it('keeps a moving 0.2 daemon available through its retained finite-transfer RPC route', () => {
+    it('keeps transfer controls unavailable for a daemon without a current transfer declaration', () => {
         const result = resolveSessionFileTransferAvailability({
             sessionAvailable: true,
             machineTargetAvailable: true,
             serverFeatures: features,
             machineCarrierHost: { kind: 'native', lifecycleAvailable: false },
-            machineRpcDirectRoute: { status: 'viable', checkedAt: 1, expiresAt: 2 },
             machineDaemonState: predecessorState,
         });
 
-        expect(result.available).toBe(true);
-        expect(result.decision).toMatchObject({ kind: 'selected', preferredRouteKind: 'machine_rpc_direct' });
+        expect(result.available).toBe(false);
+        expect(result.decision).toBeNull();
     });
 
-    it('makes a current Runner attachment route available from its strict Machine capability without daemon state', () => {
+    it('keeps a current Runner attachment route unavailable when Iroh is unavailable', () => {
         const result = resolveSessionFileTransferAvailability({
             sessionAvailable: true,
             machineTargetAvailable: true,
             serverFeatures: features,
             machineCarrierHost: { kind: 'native', lifecycleAvailable: false },
-            machineRpcDirectRoute: { status: 'viable', checkedAt: 1, expiresAt: 2 },
             machineDaemonState: null,
             machineKind: 'ephemeral_session_runner',
             machineOperationProtocolCapabilities: {
@@ -75,8 +82,28 @@ describe('resolveSessionFileTransferAvailability', () => {
             machineRevokedAt: null,
         });
 
+        expect(result.available).toBe(false);
+        expect(result.decision).toBeNull();
+    });
+
+    it('makes a current Runner transfer available through its Iroh endpoint without daemon state', () => {
+        const result = resolveSessionFileTransferAvailability({
+            sessionAvailable: true,
+            machineTargetAvailable: true,
+            serverFeatures: features,
+            machineCarrierHost: { kind: 'native', lifecycleAvailable: true },
+            machineDaemonState: null,
+            machineKind: 'ephemeral_session_runner',
+            machineOperationProtocolCapabilities: {
+                finiteTransferRpc: { protocolVersions: [1] },
+                irohMachineEndpoint: { protocolVersions: [1], endpointId: 'a'.repeat(64) },
+            },
+            machineOperationProtocolCapabilitiesRevision: 1,
+            machineActive: true,
+            machineRevokedAt: null,
+        });
         expect(result.available).toBe(true);
-        expect(result.decision).toMatchObject({ kind: 'selected', preferredRouteKind: 'machine_rpc_direct' });
+        expect(result.decision).toMatchObject({ kind: 'selected', preferredRouteKind: 'iroh_peer' });
     });
 
     it('does not let an endpoint or operation projection override an unsupported daemon transfer declaration', () => {
@@ -85,7 +112,6 @@ describe('resolveSessionFileTransferAvailability', () => {
             machineTargetAvailable: true,
             serverFeatures: features,
             machineCarrierHost: { kind: 'browser' },
-            machineRpcDirectRoute: { status: 'viable', checkedAt: 1, expiresAt: 2 },
             machineKind: 'persistent',
             machineOperationProtocolCapabilities: {
                 finiteTransferRpc: { protocolVersions: [1] },
@@ -119,7 +145,6 @@ describe('resolveSessionFileTransferAvailability', () => {
             machineTargetAvailable: true,
             serverFeatures: features,
             machineCarrierHost: { kind: 'browser' },
-            machineRpcDirectRoute: { status: 'unknown' },
             machineDaemonState: predecessorState,
         });
 
@@ -139,7 +164,6 @@ describe('resolveSessionFileTransferAvailability', () => {
             machineTargetAvailable: true,
             serverFeatures: features,
             machineCarrierHost: { kind: 'browser' },
-            machineRpcDirectRoute: { status: 'viable', checkedAt: 1, expiresAt: 2 },
             machineDaemonState,
         });
 

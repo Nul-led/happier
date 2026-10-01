@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { SCM_OPERATION_ERROR_CODES, SCM_WORKTREE_REMOVE_AUTHORIZATION_TOKEN } from '@happier-dev/protocol';
+import { SCM_OPERATION_ERROR_CODES, SCM_WORKTREE_REMOVE_AUTHORIZATION_TOKEN } from '@happier-dev/protocol/scm';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 import { RPC_ERROR_CODES, RPC_ERROR_MESSAGES } from '@happier-dev/protocol/rpc';
 
@@ -47,6 +47,8 @@ describe('machineScm', () => {
             method: RPC_METHODS.SCM_STATUS_SNAPSHOT,
             payload: {
                 cwd: '/repo',
+                outcomeVersion: 1,
+                operationStateVersion: 1,
                 backendPreference: {
                     kind: 'prefer',
                     backendId: 'sapling',
@@ -93,6 +95,8 @@ describe('machineScm', () => {
         expect(machineRpcWithServerScopeMock).toHaveBeenCalledWith(expect.objectContaining({
             payload: {
                 cwd: '/repo',
+                outcomeVersion: 1,
+                operationStateVersion: 1,
                 backendPreference: {
                     kind: 'prefer',
                     backendId: 'acme.scm/stacked',
@@ -114,7 +118,7 @@ describe('machineScm', () => {
         await machineScmStatusSnapshot('machine-1', { cwd: '/repo' });
 
         expect(machineRpcWithServerScopeMock).toHaveBeenCalledWith(expect.objectContaining({
-            payload: { cwd: '/repo' },
+            payload: { cwd: '/repo', outcomeVersion: 1, operationStateVersion: 1 },
         }));
     });
 
@@ -231,8 +235,9 @@ describe('machineScm', () => {
             1,
             {
                 machineId: 'machine-1',
-                method: RPC_METHODS.SCM_WORKTREE_CREATE,
-                payload: {
+               method: RPC_METHODS.SCM_WORKTREE_CREATE,
+               payload: {
+                    outcomeVersion: 1,
                     cwd: '/repo',
                     displayName: 'feature-auth',
                     baseRef: 'main',
@@ -244,8 +249,9 @@ describe('machineScm', () => {
             2,
             {
                 machineId: 'machine-1',
-                method: RPC_METHODS.SCM_WORKTREE_REMOVE,
-                payload: {
+               method: RPC_METHODS.SCM_WORKTREE_REMOVE,
+               payload: {
+                    outcomeVersion: 1,
                     cwd: '/repo',
                     worktreePath: '/repo/.dev/worktree/feature-auth',
                     confirmed: true,
@@ -258,8 +264,9 @@ describe('machineScm', () => {
             3,
             {
                 machineId: 'machine-1',
-                method: RPC_METHODS.SCM_WORKTREE_PRUNE,
-                payload: {
+               method: RPC_METHODS.SCM_WORKTREE_PRUNE,
+               payload: {
+                    outcomeVersion: 1,
                     cwd: '/repo',
                 },
                 timeoutMs: undefined,
@@ -374,8 +381,9 @@ describe('machineScm', () => {
             1,
             {
                 machineId: 'machine-1',
-                method: RPC_METHODS.SCM_REMOTE_ADD,
-                payload: {
+               method: RPC_METHODS.SCM_REMOTE_ADD,
+               payload: {
+                    outcomeVersion: 1,
                     cwd: '/repo',
                     name: 'origin',
                     fetchUrl: '/tmp/remote.git',
@@ -387,8 +395,9 @@ describe('machineScm', () => {
             2,
             {
                 machineId: 'machine-1',
-                method: RPC_METHODS.SCM_REMOTE_SET_URL,
-                payload: {
+               method: RPC_METHODS.SCM_REMOTE_SET_URL,
+               payload: {
+                    outcomeVersion: 1,
                     cwd: '/repo',
                     name: 'origin',
                     pushUrl: null,
@@ -400,8 +409,9 @@ describe('machineScm', () => {
             3,
             {
                 machineId: 'machine-1',
-                method: RPC_METHODS.SCM_BRANCH_MERGE,
-                payload: {
+               method: RPC_METHODS.SCM_BRANCH_MERGE,
+               payload: {
+                    outcomeVersion: 1,
                     cwd: '/repo',
                     sourceRef: 'feature',
                 },
@@ -412,8 +422,9 @@ describe('machineScm', () => {
             4,
             {
                 machineId: 'machine-1',
-                method: RPC_METHODS.SCM_BRANCH_OPERATION_ABORT,
-                payload: {
+               method: RPC_METHODS.SCM_BRANCH_OPERATION_ABORT,
+               payload: {
+                    outcomeVersion: 1,
                     cwd: '/repo',
                     operation: 'merge',
                 },
@@ -441,8 +452,9 @@ describe('machineScm', () => {
 
         expect(machineRpcWithServerScopeMock).toHaveBeenCalledWith({
             machineId: 'machine-1',
-            method: RPC_METHODS.SCM_DIFF_COMMIT,
-            payload: {
+           method: RPC_METHODS.SCM_DIFF_COMMIT,
+           payload: {
+                outcomeVersion: 1,
                 cwd: '/repo',
                 commit: 'abc123',
             },
@@ -477,8 +489,9 @@ describe('machineScm', () => {
         });
         expect(machineRpcWithServerScopeMock).toHaveBeenCalledWith({
             machineId: 'machine-1',
-            method: RPC_METHODS.SCM_REPOSITORY_REMOVE_INDEX_LOCK,
-            payload: {
+           method: RPC_METHODS.SCM_REPOSITORY_REMOVE_INDEX_LOCK,
+           payload: {
+                outcomeVersion: 1,
                 cwd: '/repo',
                 confirmed: true,
                 confirmationToken: 'remove-stale-index-lock',
@@ -541,8 +554,9 @@ describe('machineScm', () => {
 
         expect(machineRpcWithServerScopeMock).toHaveBeenNthCalledWith(1, {
             machineId: 'machine-1',
-            method: RPC_METHODS.SCM_PULL_REQUEST_LIST,
-            payload: {
+           method: RPC_METHODS.SCM_PULL_REQUEST_LIST,
+           payload: {
+                outcomeVersion: 1,
                 cwd: '/repo',
                 base: 'main',
                 head: 'feature/pr-cache',
@@ -552,8 +566,9 @@ describe('machineScm', () => {
         });
         expect(machineRpcWithServerScopeMock).toHaveBeenNthCalledWith(2, {
             machineId: 'machine-1',
-            method: RPC_METHODS.SCM_PULL_REQUEST_GET,
-            payload: {
+           method: RPC_METHODS.SCM_PULL_REQUEST_GET,
+           payload: {
+                outcomeVersion: 1,
                 cwd: '/repo',
                 prReference: { number: 42 },
             },
@@ -561,8 +576,9 @@ describe('machineScm', () => {
         });
         expect(machineRpcWithServerScopeMock).toHaveBeenNthCalledWith(3, {
             machineId: 'machine-1',
-            method: RPC_METHODS.SCM_PULL_REQUEST_OPEN_COMPOSE,
-            payload: {
+           method: RPC_METHODS.SCM_PULL_REQUEST_OPEN_COMPOSE,
+           payload: {
+                outcomeVersion: 1,
                 cwd: '/repo',
                 base: 'main',
                 head: 'feature/pr-cache',
@@ -608,8 +624,9 @@ describe('machineScm', () => {
 
         expect(machineRpcWithServerScopeMock).toHaveBeenNthCalledWith(1, {
             machineId: 'machine-1',
-            method: RPC_METHODS.SCM_PULL_REQUEST_OPEN_OR_REUSE,
-            payload: {
+           method: RPC_METHODS.SCM_PULL_REQUEST_OPEN_OR_REUSE,
+           payload: {
+                outcomeVersion: 1,
                 cwd: '/repo',
                 base: 'trunk',
                 head: 'feature/pr-cache',
@@ -618,16 +635,18 @@ describe('machineScm', () => {
         });
         expect(machineRpcWithServerScopeMock).toHaveBeenNthCalledWith(2, {
             machineId: 'machine-1',
-            method: RPC_METHODS.SCM_REPOSITORY_INIT,
-            payload: {
+           method: RPC_METHODS.SCM_REPOSITORY_INIT,
+           payload: {
+                outcomeVersion: 1,
                 cwd: '/repo',
             },
             timeoutMs: undefined,
         });
         expect(machineRpcWithServerScopeMock).toHaveBeenNthCalledWith(3, {
             machineId: 'machine-1',
-            method: RPC_METHODS.SCM_HOSTING_REPOSITORY_DESCRIBE_PUBLISH_TARGETS,
-            payload: {
+           method: RPC_METHODS.SCM_HOSTING_REPOSITORY_DESCRIBE_PUBLISH_TARGETS,
+           payload: {
+                outcomeVersion: 1,
                 cwd: '/repo',
                 providerKind: 'github',
             },
@@ -635,8 +654,9 @@ describe('machineScm', () => {
         });
         expect(machineRpcWithServerScopeMock).toHaveBeenNthCalledWith(4, {
             machineId: 'machine-1',
-            method: RPC_METHODS.SCM_HOSTING_REPOSITORY_PUBLISH,
-            payload: {
+           method: RPC_METHODS.SCM_HOSTING_REPOSITORY_PUBLISH,
+           payload: {
+                outcomeVersion: 1,
                 cwd: '/repo',
                 providerKind: 'github',
                 owner: 'acme',

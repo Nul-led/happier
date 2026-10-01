@@ -2,6 +2,20 @@ import { describe, expect, it, vi } from 'vitest';
 import { handleSessionStateUpdate } from './sessionStateUpdateHandling';
 
 describe('handleSessionStateUpdate', () => {
+  it('hydrates additive flat Herdr metadata from the socket without retaining wire selectors or dropping opaque fields', () => {
+    const result = handleSessionStateUpdate({
+      update: { id: 'u-herdr', seq: 1, createdAt: 1, body: { t: 'update-session', id: 's1', metadata: { version: 1, value: JSON.stringify({
+        path: '/repo', host: 'machine', providerExtension: { retained: true },
+        terminal: { mode: 'plain', hostKind: 'herdr', requested: 'plain', requestedHostKind: 'herdr', herdr: { sessionName: 'work', socketPath: '/tmp/herdr.sock', terminalId: 'term_1' } },
+      }) } } },
+      updateSource: 'session-scoped', sessionId: 's1', mode: 'plain', ctx: null,
+      metadata: null, metadataVersion: 0, agentState: null, agentStateVersion: 0, pendingWakeSeq: 0,
+      onMetadataUpdated: () => {}, onWarning: () => {},
+    });
+    expect(result.metadata).toMatchObject({ terminal: { mode: 'herdr', requested: 'herdr' }, providerExtension: { retained: true } });
+    expect(result.metadata?.terminal).not.toHaveProperty('hostKind');
+  });
+
   it('invalidates instead of applying a shared-only layout-1 socket update to the owner view', () => {
     const onMetadataEnvelopeTupleInvalidated = vi.fn();
     const previousMetadata = {
@@ -45,6 +59,45 @@ describe('handleSessionStateUpdate', () => {
     expect(result.agentState).toEqual({ controlledByUser: true });
     expect(result.agentStateVersion).toBe(1);
     expect(onMetadataEnvelopeTupleInvalidated).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not refetch the owner tuple for an equal-version layout-1 self echo', () => {
+    const onMetadataEnvelopeTupleInvalidated = vi.fn();
+    const result = handleSessionStateUpdate({
+      update: {
+        id: 'u-equal', seq: 3, createdAt: 1,
+        body: {
+          t: 'update-session', sid: 's1',
+          metadata: { version: 3, value: '{}'},
+          agentState: { version: 4, value: '{}'},
+          ownerMetadata: { ownerMetadata: { value: 'opaque-owner-envelope' } },
+        },
+      } as any,
+      updateSource: 'session-scoped',
+      sessionId: 's1',
+      metadataLayoutVersion: 1,
+      mode: 'plain',
+      metadata: {
+        path: '/owner',
+        host: 'h1',
+        flavor: 'claude',
+        homeDir: '/home/owner',
+        happyHomeDir: '/home/owner/.happier',
+        happyLibDir: '/home/owner/.happier/lib',
+        happyToolsDir: '/home/owner/.happier/tools',
+      },
+      metadataVersion: 3,
+      agentState: { controlledByUser: true },
+      agentStateVersion: 4,
+      pendingWakeSeq: 0,
+      ctx: null,
+      onMetadataUpdated: vi.fn(),
+      onMetadataEnvelopeTupleInvalidated,
+      onWarning: vi.fn(),
+    });
+
+    expect(result.handled).toBe(true);
+    expect(onMetadataEnvelopeTupleInvalidated).not.toHaveBeenCalled();
   });
 
   it('parses plaintext metadata updates when sessionEncryptionMode=plain', () => {

@@ -1,5 +1,11 @@
 import type { Session } from '@/sync/domains/state/storageTypes';
 
+/**
+ * Why this presentation cannot answer a prompt. `openSession` is the embedded read-only view: the
+ * prompt is answerable, but in the full Session rather than here.
+ */
+export type TranscriptPermissionDisabledReason = 'public' | 'readOnly' | 'notGranted' | 'inactive' | 'openSession';
+
 export type TranscriptInteraction = Readonly<{
     canSendMessages: boolean;
     canApprovePermissions: boolean;
@@ -9,8 +15,7 @@ export type TranscriptInteraction = Readonly<{
     canOpenFiles?: boolean;
     /** Grant for resolving and opening session media previews. Missing grants fail closed. */
     canPreviewMedia?: boolean;
-    permissionDisabledReason?: 'public' | 'readOnly' | 'notGranted' | 'inactive';
-    disableToolNavigation?: boolean;
+    permissionDisabledReason?: TranscriptPermissionDisabledReason;
 }>;
 
 /**
@@ -36,7 +41,6 @@ export function deriveTranscriptInteractionFromSession(
         access?: Session['access'];
         active?: boolean | null | undefined;
         presence?: 'online' | number | null | undefined;
-        disableToolNavigation?: boolean;
     }>,
 ): TranscriptInteraction {
     // Treat `session.active` as the source of truth. When `active` is missing/unknown, be conservative
@@ -47,7 +51,6 @@ export function deriveTranscriptInteractionFromSession(
         kind: 'session',
         access: session.access,
         isSessionActive,
-        disableToolNavigation: session.disableToolNavigation,
     });
 }
 
@@ -57,11 +60,9 @@ export function deriveTranscriptInteraction(
               kind: 'session';
               access?: Session['access'];
               isSessionActive?: boolean | null | undefined;
-              disableToolNavigation?: boolean;
           }>
         | Readonly<{
               kind: 'public';
-              disableToolNavigation?: boolean;
           }>,
 ): TranscriptInteraction {
     if (input.kind === 'public') {
@@ -72,7 +73,6 @@ export function deriveTranscriptInteraction(
             canOpenFiles: false,
             canPreviewMedia: false,
             permissionDisabledReason: 'public',
-            disableToolNavigation: input.disableToolNavigation,
         };
     }
 
@@ -95,6 +95,5 @@ export function deriveTranscriptInteraction(
         canOpenFiles: input.access?.capabilities.readTranscript === true,
         canPreviewMedia: input.access?.capabilities.readTranscript === true,
         permissionDisabledReason,
-        disableToolNavigation: input.disableToolNavigation,
     };
 }

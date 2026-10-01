@@ -100,7 +100,7 @@ const model = Object.freeze({
         pluginId: 'acme.account-secret',
         localId: 'settings',
         qualifiedId: 'acme.account-secret/settings',
-        generation: 'generation-account-secret',
+        occurrenceId: 'account-secret-occurrence',
     }),
     declarativeInventory: Object.freeze({
         actions: Object.freeze([]),
@@ -264,13 +264,13 @@ describe('DeclarativePluginSurface ordinary Settings', () => {
                 schema: Object.freeze({ type: 'string' }),
             }),
         });
-        const modelForGeneration = (generation: string) => Object.freeze({
+        const modelForOccurrence = (occurrenceId: string) => Object.freeze({
             visible: true,
             identity: Object.freeze({
                 pluginId: 'acme.ordinary-settings',
                 localId: 'settings',
                 qualifiedId: 'acme.ordinary-settings/settings',
-                generation,
+                occurrenceId,
             }),
             declarativeInventory: Object.freeze({
                 actions: Object.freeze([]),
@@ -298,10 +298,10 @@ describe('DeclarativePluginSurface ordinary Settings', () => {
             }),
         });
         const accountLifetime = createAccountLifetime();
-        const renderModel = (generation: string) => (
+        const renderModel = (occurrenceId: string) => (
             <DeclarativePluginSurface
                 pluginId="acme.ordinary-settings"
-                model={modelForGeneration(generation)}
+                model={modelForOccurrence(occurrenceId)}
                 interactionEnabled={true}
                 daemonInteractionEnabled={false}
                 settingsScopesEnabled={{ account: true, daemon: false }}

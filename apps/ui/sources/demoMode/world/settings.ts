@@ -1,7 +1,6 @@
 import type { Settings } from '@/sync/domains/settings/settings';
 import { buildDemoConnectedServicesSettings } from './connectedAccounts';
 import { DEMO_CLIENT_FEATURE_TOGGLES } from './serverFeatures';
-import { buildDemoSubagentGuidanceEntries } from './subagentGuidance';
 
 /**
  * Every account setting the demo world owns. `buildDemoSettings` is typed
@@ -16,9 +15,7 @@ const DEMO_WORLD_SETTINGS_KEYS = [
     'sessionListSectionModeV1',
     'sessionListAttentionPromotionModeV1',
     'sessionListWorkingPlacementModeV1',
-    'executionRunsGuidanceEnabled',
-    'executionRunsGuidanceMaxChars',
-    'executionRunsGuidanceEntries',
+    'rolesV1',
     'connectedServicesDefaultProfileByServiceId',
     'connectedServicesProfileLabelByKey',
     'connectedServicesDefaultAuthByAgentIdV1',
@@ -47,9 +44,7 @@ export function buildDemoSettings(): DemoWorldSettings {
         sessionListSectionModeV1: 'single',
         sessionListAttentionPromotionModeV1: 'global',
         sessionListWorkingPlacementModeV1: 'global',
-        executionRunsGuidanceEnabled: true,
-        executionRunsGuidanceMaxChars: 4_000,
-        executionRunsGuidanceEntries: buildDemoSubagentGuidanceEntries(),
+        rolesV1: { overrides: {} },
         ...buildDemoConnectedServicesSettings(),
         // A9 source control: a workspace someone has actually configured — live Git
         // staging, a confirmation before anything leaves the machine, generated

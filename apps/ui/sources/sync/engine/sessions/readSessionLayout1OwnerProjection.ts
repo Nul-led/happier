@@ -9,18 +9,54 @@ import {
 } from '@happier-dev/protocol';
 
 import type { NormalizedSessionAccessProjection } from './normalizeSessionAccessProjection';
+import { ComposerOptionsInputV1Schema, projectComposerOptionsInputV1, type ComposerOptionsInputV1 } from '@happier-dev/protocol/embed';
 
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
-import { MetadataSchema, type Metadata } from '@/sync/domains/state/storageTypes';
+import { MetadataSchema, type Metadata } from '@happier-dev/session-core/state';
 import { resolveAccountScopedCryptoMaterialFromCredentials } from '@/sync/domains/connectedServices/resolveAccountScopedCryptoMaterialFromCredentials';
+import type { SessionContentAvailability } from '@/sync/domains/session/encryptedContentAvailability';
+
+/** One safe outcome when the layout-1 owner view cannot be opened or projected. */
+export function buildSessionOwnerMetadataUnavailableShell<T extends Readonly<{
+    metadata: unknown;
+    ownerMetadataView?: unknown;
+    composerOptionsInput?: unknown;
+    agentState: unknown;
+    encryptedContentAvailability?: SessionContentAvailability | null;
+}>>(session: T): Omit<T, 'metadata' | 'ownerMetadataView' | 'composerOptionsInput' | 'agentState' | 'encryptedContentAvailability'> & Readonly<{
+    metadata: null;
+    ownerMetadataView: null;
+    composerOptionsInput: null;
+    agentState: null;
+    encryptedContentAvailability: 'encrypted_content_unavailable';
+}> {
+    const {
+        metadata: _metadata,
+        ownerMetadataView: _ownerMetadataView,
+        composerOptionsInput: _composerOptionsInput,
+        agentState: _agentState,
+        encryptedContentAvailability: _contentAvailability,
+        ...safeSession
+    } = session;
+    return {
+        ...safeSession,
+        metadata: null,
+        ownerMetadataView: null,
+        composerOptionsInput: null,
+        agentState: null,
+        encryptedContentAvailability: 'encrypted_content_unavailable',
+    };
+}
 
 export type SessionLayout1OwnerProjection =
     | Readonly<{ kind: 'recipient' }>
+    | Readonly<{ kind: 'composer'; ownerMetadataView: null; composerOptionsInput: ComposerOptionsInputV1 | null }>
     | Readonly<{
         kind: 'owner';
         ownerMetadataEnvelope: SessionOwnerMetadataEnvelopeV1;
         ownerMetadata: SessionOwnerMetadataV1;
         ownerMetadataView: Metadata;
+        composerOptionsInput: ComposerOptionsInputV1;
       }>
     | Readonly<{
         kind: 'unavailable';
@@ -35,6 +71,7 @@ export type SessionLayout1OwnerProjection =
 
 export type SessionLayout1OwnerMetadataRead =
     | Readonly<{ kind: 'recipient' }>
+    | Extract<SessionLayout1OwnerProjection, { kind: 'composer' }>
     | Readonly<{
         kind: 'owner';
         ownerMetadataEnvelope: SessionOwnerMetadataEnvelopeV1;
@@ -66,8 +103,24 @@ export function readSessionLayout1OwnerMetadata(params: Readonly<{
     accountMode?: AccountEncryptionCurrentnessResponse['mode'];
     ownerMetadataEnvelope: unknown;
     credentials: AuthCredentials;
+    composerOptionsInput?: ComposerOptionsInputV1 | null;
 }>): SessionLayout1OwnerMetadataRead {
     if (!params.access) return { kind: 'unavailable', reason: 'access_unavailable' };
+    if (params.composerOptionsInput !== undefined) {
+        if (params.composerOptionsInput !== null) {
+            const parsed = ComposerOptionsInputV1Schema.safeParse(params.composerOptionsInput);
+            return parsed.success
+                ? { kind: 'composer', ownerMetadataView: null, composerOptionsInput: parsed.data }
+                : { kind: 'unavailable', reason: 'invalid_envelope' };
+        }
+        // Plain owner content may only be interpreted using persisted Account mode, never Session mode.
+        if (params.accountMode !== 'plain' || params.access.role === 'recipient' || params.ownerMetadataEnvelope == null) {
+            return { kind: 'composer', ownerMetadataView: null, composerOptionsInput: null };
+        }
+        const opened = openSessionOwnerMetadataEnvelopeV1({ accountMode: 'plain', envelope: params.ownerMetadataEnvelope, material: null });
+        if (!opened.ok) return { kind: 'unavailable', reason: opened.reason };
+        return { kind: 'composer', ownerMetadataView: null, composerOptionsInput: projectComposerOptionsInputV1(opened.ownerMetadata.runtime) };
+    }
     if (params.access.role === 'recipient') {
         return { kind: 'recipient' };
     }
@@ -136,6 +189,7 @@ export function projectSessionLayout1OwnerMetadata(params: Readonly<{
         ownerMetadataEnvelope: params.ownerMetadataRead.ownerMetadataEnvelope,
         ownerMetadata: params.ownerMetadataRead.ownerMetadata,
         ownerMetadataView: ownerMetadataView.data,
+        composerOptionsInput: projectComposerOptionsInputV1(ownerMetadataView.data),
     };
 }
 
@@ -145,6 +199,7 @@ export function readSessionLayout1OwnerProjection(params: Readonly<{
     sharedMetadata: SessionSharedMetadataV1;
     ownerMetadataEnvelope: unknown;
     credentials: AuthCredentials;
+    composerOptionsInput?: ComposerOptionsInputV1 | null;
 }>): SessionLayout1OwnerProjection {
     return projectSessionLayout1OwnerMetadata({
         sharedMetadata: params.sharedMetadata,

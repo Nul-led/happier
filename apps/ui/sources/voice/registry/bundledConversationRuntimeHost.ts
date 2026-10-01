@@ -588,6 +588,7 @@ export function createBundledConversationRuntimeHostLease(input: Readonly<{
       && areSessionAddressesEqual(binding.conversationSessionAddress, persistedSessionAddress);
   };
   const host: BundledRealtimeProviderRuntimeHost = Object.freeze({
+    runtimeOccurrenceId: generation.runtimeLeaseId,
     globalVoiceSessionId: VOICE_AGENT_GLOBAL_SESSION_ID,
     isCurrentGeneration: () => generation.isCurrent(),
     runCurrentGenerationEffect(callback) {

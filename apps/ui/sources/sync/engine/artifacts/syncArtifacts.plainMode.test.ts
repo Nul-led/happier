@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Artifact, ArtifactCreateRequest, DecryptedArtifact } from '@/sync/domains/artifacts/artifactTypes';
 import type { ArtifactDataKeyCache } from './syncArtifacts';
+import { HappyError } from '@/utils/errors/errors';
 import {
     ARTIFACT_PLAIN_DATA_KEY_MARKER,
     CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION,
@@ -127,7 +128,10 @@ describe('syncArtifacts plaintext account storage', () => {
         });
     });
 
-    it('refuses a plain Artifact marker create before POST on an old server snapshot', async () => {
+    it('creates plain Artifact content without probing an older server snapshot', async () => {
+        mocks.createArtifact.mockImplementation(async (_credentials, request: ArtifactCreateRequest) => ({
+            ...buildPlainArtifact(), ...request,
+        }));
         mocks.getServerFeaturesSnapshot.mockResolvedValue({
             status: 'ready',
             features: {
@@ -150,12 +154,9 @@ describe('syncArtifacts plaintext account storage', () => {
             encryption: null,
             artifactDataKeys: new Map(),
             addArtifact: vi.fn(),
-        })).rejects.toMatchObject({
-            code: 'client-upgrade-required',
-            retryable: false,
-        });
+        })).resolves.toBe('artifact-plain-1');
 
-        expect(mocks.createArtifact).not.toHaveBeenCalled();
+        expect(mocks.getServerFeaturesSnapshot).not.toHaveBeenCalled();
     });
 
     it('reads plain list and full artifacts without account encryption material', async () => {
@@ -227,6 +228,20 @@ describe('syncArtifacts plaintext account storage', () => {
         expect(applyArtifacts).toHaveBeenCalledWith([
             expect.objectContaining({ id: full.id, body: JSON.stringify(request) }),
         ]);
+    });
+
+    it('hydrates Launch Profile document bodies through the existing mode-aware Artifact sync owner', async () => {
+        const full = { ...buildPlainArtifact(),
+            header: encodePlainArtifactStoredContent({ kind: 'launch-profile.v1', title: 'Shared', name: 'Shared', profileId: 'shared' }),
+            body: encodePlainArtifactStoredContent({ body: '{"kind":"launch-profile.v1"}' }),
+        };
+        const { body: _body, ...listRow } = full;
+        mocks.fetchArtifacts.mockResolvedValueOnce([listRow]);
+        mocks.fetchArtifact.mockResolvedValueOnce(full);
+        const applied: DecryptedArtifact[][] = [];
+        await fetchAndApplyArtifactsList({ credentials: { token: 'token-only' }, encryption: null,
+            artifactDataKeys: new Map(), applyArtifacts: (rows) => applied.push(rows) });
+        expect(applied[0]?.[0]).toMatchObject({ id: full.id, isDecrypted: true, body: '{"kind":"launch-profile.v1"}' });
     });
 
     it('surfaces retained malformed plain Artifact reads and socket updates as locked instead of throwing', async () => {
@@ -484,7 +499,7 @@ describe('syncArtifacts retained encrypted content', () => {
             },
         });
 
-        mocks.fetchArtifact.mockRejectedValueOnce(new Error('Artifact not found'));
+        mocks.fetchArtifact.mockRejectedValueOnce(new HappyError('Artifact not found', false, { status: 404 }));
         await expect(fetchArtifactWithBodyFromApi({
             credentials: { token: 'token-only' },
             artifactId: 'missing-artifact',

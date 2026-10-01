@@ -1044,7 +1044,7 @@ describe('AutomationEditorHostScreen shared Workflow editor body', () => {
         expect(savedDraft.executionRecipe.templateVersion).toBe(4);
     });
 
-    it('requires an explicit conversion before a grown workflow replaces the one-shot recipe', async () => {
+    it('requires an explicit conversion and never writes the managed shape from the retained editor', async () => {
         syncSpies.saveAutomationEditorDraft.mockResolvedValue({ id: 'automation-1' });
         const screen = await mountHost({});
         await flushRender();
@@ -1096,16 +1096,11 @@ describe('AutomationEditorHostScreen shared Workflow editor body', () => {
         await act(async () => latestEditorProps.value.onSubmit());
         await flushRender();
 
-        expect(modalAlertSpy).not.toHaveBeenCalled();
-        const [savedDraft] = syncSpies.saveAutomationEditorDraft.mock.calls[0]!;
-        expect(savedDraft.executionRecipe.v).toBe(2);
-        expect(savedDraft.executionRecipe.workflow.v.definition.blocks).toHaveLength(2);
-        expect(savedDraft.executionRecipe.workflow.v.project)
-            .toEqual({ machineId: 'machine-1', directory: '/repo' });
-        // One workflow runs on exactly one reviewed machine. The Automation's
-        // existing assignment already names it, so its priority is preserved
-        // rather than silently rewritten by the conversion.
-        expect(savedDraft.assignments).toEqual([{ machineId: 'machine-1', enabled: true, priority: 0 }]);
+        // A conversion into a managed workflow is 03 §5.6's one write through
+        // `workflow.trigger.*`; this retained editor never writes that shape itself.
+        expect(modalAlertSpy).toHaveBeenCalled();
+        expect(String(modalAlertSpy.mock.calls.at(-1)?.[0])).toContain('workflows.triggers.editor.editInWorkflows');
+        expect(syncSpies.saveAutomationEditorDraft).not.toHaveBeenCalled();
     });
 
     it('opens a saved managed workflow Automation from its frozen definition', async () => {
@@ -1120,7 +1115,7 @@ describe('AutomationEditorHostScreen shared Workflow editor body', () => {
         expect(body.projectTarget).toEqual({ machineId: 'machine-1', directory: '/repo' });
     });
 
-    it('reseals an edited managed workflow definition through the canonical workflow recipe writer', async () => {
+    it('refuses to reseal a managed workflow trigger: it is changed in Workflows through workflow.trigger.*', async () => {
         seedWorkflowRecipeDefinition();
         syncSpies.saveAutomationEditorDraft.mockResolvedValue({ id: 'automation-1' });
         await mountHost({});
@@ -1131,16 +1126,8 @@ describe('AutomationEditorHostScreen shared Workflow editor body', () => {
         await act(async () => latestEditorProps.value.onSubmit());
         await flushRender();
 
-        expect(modalAlertSpy).not.toHaveBeenCalled();
-        const [savedDraft] = syncSpies.saveAutomationEditorDraft.mock.calls[0]!;
-        expect(savedDraft.recipeDirty).toBe(true);
-        expect(savedDraft.executionRecipe.v).toBe(2);
-        expect(savedDraft.executionRecipe.templateVersion).toBe(5);
-        expect(savedDraft.executionRecipe.workflow.t).toBe('plain');
-        expect(savedDraft.executionRecipe.workflow.v.definition.blocks[0].document.text)
-            .toBe('Analyze the release and report risks');
-        expect(savedDraft.executionRecipe.workflow.v.project)
-            .toEqual({ machineId: 'machine-1', directory: '/repo' });
+        expect(String(modalAlertSpy.mock.calls.at(-1)?.[0])).toContain('workflows.triggers.editor.editInWorkflows');
+        expect(syncSpies.saveAutomationEditorDraft).not.toHaveBeenCalled();
     });
 
     /**
@@ -1172,6 +1159,27 @@ describe('AutomationEditorHostScreen shared Workflow editor body', () => {
 
         expect(preventRemoveState.enabled).toBe(false);
         await act(async () => editWorkflowPrompt('Ship notes, carefully'));
+        await flushRender();
+        expect(preventRemoveState.enabled).toBe(true);
+    });
+
+    /**
+     * Machine and project folder are authored values Save persists, so changing
+     * only one of them is unsaved work. Without this, Cancel or native Back
+     * discarded a placement edit with no prompt at all.
+     */
+    it('treats a project-only placement edit as dirty and lets the baseline clear it', async () => {
+        seedWorkflowRecipeDefinition();
+        await mountHost({});
+        await flushRender();
+        expect(preventRemoveState.enabled).toBe(false);
+
+        await act(async () => {
+            latestWorkflowBodyProps.value.onChangeProjectTarget({
+                machineId: 'machine-1',
+                directory: '/repo/packages/ui',
+            });
+        });
         await flushRender();
         expect(preventRemoveState.enabled).toBe(true);
     });

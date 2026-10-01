@@ -10,6 +10,7 @@ import type {
     SpawnSessionResult,
     SpawnSessionNonceResolution,
 } from '@happier-dev/protocol';
+import { MACHINE_RPC_POLL_INTERVAL_MS } from './machineRpcPollInterval';
 import {
     decodePlainMachineStoredContent,
     encodePlainMachineStoredContent,
@@ -42,7 +43,7 @@ import { readSpawnSessionRpcTimeoutMsFromEnv } from '../domains/session/spawn/sp
 import { storage } from '../domains/state/storage';
 import { readMachineDaemonCliVersionForServerScope } from '../domains/machines/readMachineDaemonCliVersionForServerScope';
 import { isPlainObject, normalizeSpawnSessionResult } from './_shared';
-import { isSocketIoAckTimeoutError } from '@/sync/runtime/socketIoAckTimeout';
+import { isSocketIoAckTimeoutError } from '@happier-dev/sync-client';
 import { mergeMachineMetadataForVersionMismatch } from './machineMetadataMerge';
 import { machineRpcWithServerScope } from '@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc';
 import { isMachineRpcTimeoutError } from '@/sync/runtime/orchestration/serverScopedRpc/machineRpcTimeoutError';
@@ -104,7 +105,7 @@ export type MachineResolveSpawnSessionByNonceResult =
     | SpawnSessionNonceResolution
     | { status: 'transport_error' };
 
-const DEFAULT_MACHINE_SPAWN_NONCE_RESOLUTION_POLL_INTERVAL_MS = 1_000;
+const DEFAULT_MACHINE_SPAWN_NONCE_RESOLUTION_POLL_INTERVAL_MS = MACHINE_RPC_POLL_INTERVAL_MS;
 
 function readAuthoritativeMachineHomeDir(params: Readonly<{
     machineId: string;

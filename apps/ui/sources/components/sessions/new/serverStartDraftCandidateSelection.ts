@@ -1,6 +1,8 @@
 import type { Machine } from '@/sync/domains/state/storageTypes';
 import { resolveMachineSpawnReadiness } from '@/sync/domains/machines/identity/resolveMachineSpawnReadiness';
 import { resolveExactServerScopedMachine } from '@/sync/domains/machines/resolveServerScopedMachines';
+import { formatPathRelativeToHome } from '@/utils/sessions/formatPathRelativeToHome';
+import { getMachineDisplayName } from '@/utils/sessions/machineDisplayNames';
 
 import type {
     SessionServerStartDraftSeed,
@@ -45,5 +47,30 @@ export function resolveSessionServerStartCandidateSelection(params: Readonly<{
             machine,
             selectedMachineId: target.machineId,
         }).status === 'ready',
+    };
+}
+
+/**
+ * What a placement candidate row says: the folder (its label, else its path relative to the
+ * machine's home) and the machine's name. Raw machine and server ids are never shown; a machine this
+ * device cannot resolve simply goes unnamed.
+ */
+export function presentSessionServerStartCandidate(params: Readonly<{
+    candidate: Candidate;
+    activeServerId: string;
+    activeMachines: readonly Machine[];
+    machineListByServerId: Readonly<Record<string, readonly Machine[] | null | undefined>>;
+}>): Readonly<{ title: string; subtitle: string | undefined }> {
+    const machine = resolveExactServerScopedMachine({
+        machineId: params.candidate.machineId,
+        serverId: params.candidate.serverId,
+        activeServerId: params.activeServerId,
+        activeMachines: params.activeMachines,
+        machineListByServerId: params.machineListByServerId,
+    });
+    return {
+        title: params.candidate.label
+            ?? formatPathRelativeToHome(params.candidate.rootPath, machine?.metadata?.homeDir ?? undefined),
+        subtitle: getMachineDisplayName(machine) ?? undefined,
     };
 }

@@ -2429,7 +2429,7 @@ export async function prepareRunnerDaemonPluginServices(
     };
     const exec = createStableRunnerPluginExecService({
         signal: input.signal,
-        isGenerationCurrent: () =>
+        isOccurrenceCurrent: () =>
             !input.signal.aborted,
         transformAgentChildLaunchEnvironment: (environment) =>
             launchEnvironmentTransformer

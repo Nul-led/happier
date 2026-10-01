@@ -5,10 +5,9 @@ import { usePreventRemove } from '@react-navigation/native';
 
 import { RoundButton } from '@/components/ui/buttons/RoundButton';
 import { useChromeSafeAreaInsets } from '@/components/ui/layout/useChromeSafeAreaInsets';
-import { SoftSlideTransitionFrame } from '@/components/ui/motion/SoftSlideTransitionFrame';
+import { StepTransitionFrame } from '@/components/ui/motion/StepTransitionFrame';
 import { Text } from '@/components/ui/text/Text';
 import { Typography } from '@/constants/Typography';
-import { useReducedMotionPreference } from '@/hooks/ui/useReducedMotionPreference';
 
 import { WizardLogotype } from '../ui/WizardLogotype';
 import { WizardModalShell } from '../ui/WizardModalShell';
@@ -156,7 +155,6 @@ function BareOnboardingWorkflowContent(props: BareOnboardingWorkflowContentProps
     useUnistyles();
     const styles = bareStylesheet;
     const controller = props.controller;
-    const reducedMotion = useReducedMotionPreference();
 
     if (controller.stepId === 'welcome') {
         return controller.body;
@@ -185,16 +183,15 @@ function BareOnboardingWorkflowContent(props: BareOnboardingWorkflowContentProps
                         </Text>
                     ) : null}
                 </View>
-                <SoftSlideTransitionFrame
+                <StepTransitionFrame
                     transitionKey={controller.stepId}
                     direction={controller.contentTransitionDirection}
-                    reducedMotion={reducedMotion}
                     testID={`${props.testID}-bare-body-transition`}
                 >
                     <View style={styles.body}>
                         {controller.body}
                     </View>
-                </SoftSlideTransitionFrame>
+                </StepTransitionFrame>
             </View>
             {hasFooter ? (
                 <View style={styles.footer}>

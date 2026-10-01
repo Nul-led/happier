@@ -73,7 +73,7 @@ export function resolveComposerAttachmentCatalogRowDescriptor(input: Readonly<{
 
     return {
         identity: entry.identity,
-        immutableGenerationId: entry.immutableGenerationId,
+        occurrenceId: entry.occurrenceId,
         ...(entry.definition.picker === undefined ? {} : { picker: entry.definition.picker }),
         ...(entry.definition.display === undefined ? {} : { display: entry.definition.display }),
         ...(entry.definition.preview === undefined ? {} : { preview: entry.definition.preview }),

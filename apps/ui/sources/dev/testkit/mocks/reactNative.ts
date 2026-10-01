@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { vi } from 'vitest';
 
 import {
     createReactNativeAppStateEmitter,
@@ -8,6 +9,7 @@ import {
     type TestReactNativeAppStateStatus,
     type TestReactNativeNativePlatformOS,
     type TestReactNativeRuntimeOverrides,
+    type TestReactNativeStubLoader,
 } from '../runtime/reactNativeRuntime';
 
 export type TestReactNativeOverrides = TestReactNativeRuntimeOverrides;
@@ -19,9 +21,25 @@ type TestReactNativeHostProps = Record<string, unknown> & Readonly<{
 }>;
 
 export { createReactNativeAppStateEmitter };
-export const createReactNativeWebMock = createReactNativeWebRuntime;
-export const installReactNativeWebMock = installReactNativeWebRuntime;
-export const createReactNativeNativeMock = createReactNativeNativeRuntime;
+// `react-native` aliases this stub in Vitest. A normal import while its async
+// mock is resolving can await that same mock; only the framework adapter owns
+// bypassing it, while reusable runtime factories stay framework-independent.
+const loadReactNativeStub: TestReactNativeStubLoader = () => vi.importActual<typeof import('../../reactNativeStub')>('@/dev/reactNativeStub');
+
+export function createReactNativeWebMock(overrides?: TestReactNativeOverrides) {
+    return createReactNativeWebRuntime(overrides, loadReactNativeStub);
+}
+
+export function installReactNativeWebMock(overrides?: TestReactNativeOverrides) {
+    return installReactNativeWebRuntime(overrides, loadReactNativeStub);
+}
+
+export function createReactNativeNativeMock(
+    options: Readonly<{ platformOS: TestReactNativeNativeMockPlatformOS }>,
+    overrides?: TestReactNativeOverrides,
+) {
+    return createReactNativeNativeRuntime(options, overrides, loadReactNativeStub);
+}
 
 /**
  * A focused host Pressable for the small set of renderer tests that exercise

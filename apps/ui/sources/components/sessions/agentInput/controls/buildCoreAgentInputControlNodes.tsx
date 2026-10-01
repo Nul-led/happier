@@ -8,7 +8,7 @@ import { createAbortActionButton } from '../definitions/createAbortActionButton'
 import { createEnvVarsActionChip } from '../definitions/createEnvVarsActionChip';
 import { createMachineActionChip } from '../definitions/createMachineActionChip';
 import { createActionMenuTriggerChip } from '../definitions/createActionMenuTriggerChip';
-import { createPathActionChip } from '../definitions/createPathActionChip';
+import { AgentInputFolderChip, type AgentInputFolderChipState } from '../definitions/AgentInputFolderChip';
 import { createPermissionActionChip } from '../definitions/createPermissionActionChip';
 import { createProfileActionChip } from '../definitions/createProfileActionChip';
 import { createResumeActionChip } from '../definitions/createResumeActionChip';
@@ -53,15 +53,14 @@ export function buildCoreAgentInputControlNodes(params: Readonly<{
     agentChipAnchorRef: React.RefObject<View | null>;
     agentLabel: string;
     engineLabel: string;
-    /** Hover/focus/press-in on the Agent chip, before the picker opens. */
-    onAgentIntent?: () => void;
     onAgentPress: () => void;
     machineChipAnchorRef: React.RefObject<View | null>;
     onMachinePress?: () => void;
     machineName?: string | null;
     pathChipAnchorRef: React.RefObject<View | null>;
     onPathPress?: () => void;
-    currentPath?: string | null;
+    folderChipState: AgentInputFolderChipState;
+    onRemoveFolder?: () => void;
     resumeChipAnchorRef: React.RefObject<View | null>;
     onResumePress?: () => void;
     blurInput: () => void;
@@ -149,7 +148,6 @@ export function buildCoreAgentInputControlNodes(params: Readonly<{
         chipStyle: params.chipStyle,
         textStyle: params.textStyle,
         onPress: params.onAgentPress,
-        onIntent: params.onAgentIntent,
     }) : null;
 
     const machineChip = params.onMachinePress ? createMachineActionChip({
@@ -162,15 +160,18 @@ export function buildCoreAgentInputControlNodes(params: Readonly<{
         onPress: params.onMachinePress,
     }) : null;
 
-    const pathChip = params.onPathPress ? createPathActionChip({
-        anchorRef: params.pathChipAnchorRef,
-        currentPath: params.currentPath,
-        tint: params.tint,
-        showLabel: params.showChipLabels,
-        chipStyle: params.chipStyle,
-        textStyle: params.textStyle,
-        onPress: params.onPathPress,
-    }) : null;
+    const pathChip = params.onPathPress ? (
+        <AgentInputFolderChip
+            key="path"
+            anchorRef={params.pathChipAnchorRef}
+            state={params.folderChipState}
+            tint={params.tint}
+            chipStyle={params.chipStyle}
+            textStyle={params.textStyle}
+            onPress={params.onPathPress}
+            onRemove={params.onRemoveFolder}
+        />
+    ) : null;
 
     const resumeChip = createResumeActionChip({
         anchorRef: params.resumeChipAnchorRef,

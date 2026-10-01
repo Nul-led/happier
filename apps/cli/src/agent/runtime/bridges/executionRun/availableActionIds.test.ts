@@ -9,7 +9,7 @@ describe('getExecutionRunAvailableActionIds', () => {
   it('exposes retained review proposals only for the matching succeeded run', () => {
     const catalog = buildExecutionRunProfileCatalog([{
       pluginId: 'happier.review.coderabbit',
-      immutableGenerationId: 'immutable-coderabbit',
+      sourceCustody: { kind: 'managed', immutableGenerationId: 'immutable-coderabbit', installSource: 'archive' },
       definition: {
         id: 'review', intent: 'review', title: 'Review', promptAsset: 'review-prompt', compatibleAgents: ['coderabbit'],
         defaults: { retention: 'ephemeral', runClass: 'bounded', io: 'streaming' },
@@ -19,6 +19,7 @@ describe('getExecutionRunAvailableActionIds', () => {
     const run = {
       runId: 'run_1', callId: 'call_1', sidechainId: 'call_1', sessionId: 'session_1', depth: 0,
       intent: 'review', profileId: 'happier.review.coderabbit/review',
+      profileSourceCustody: { kind: 'managed', immutableGenerationId: 'immutable-coderabbit', installSource: 'archive' },
       backendTarget: { kind: 'builtInAgent', agentId: 'coderabbit' }, backendId: 'coderabbit',
       instructions: 'Review', permissionMode: 'read_only', retentionPolicy: 'ephemeral',
       runClass: 'bounded', ioMode: 'request_response', startedAtMs: 1,
@@ -72,7 +73,7 @@ describe('getExecutionRunAvailableActionIds', () => {
   it('does not expose session-bound review comments for a detached run', () => {
     const catalog = buildExecutionRunProfileCatalog([{
       pluginId: 'acme.review',
-      immutableGenerationId: 'immutable-review',
+      sourceCustody: { kind: 'managed', immutableGenerationId: 'immutable-review', installSource: 'archive' },
       definition: {
         id: 'review', intent: 'review', title: 'Review', promptAsset: 'review-prompt', compatibleAgents: ['claude'],
         defaults: { retention: 'ephemeral', runClass: 'bounded', io: 'streaming' },
@@ -87,6 +88,7 @@ describe('getExecutionRunAvailableActionIds', () => {
       depth: 0,
       intent: 'review',
       profileId: 'acme.review/review',
+      profileSourceCustody: { kind: 'managed', immutableGenerationId: 'immutable-review', installSource: 'archive' },
       backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
       backendId: 'claude',
       instructions: 'Review this change',

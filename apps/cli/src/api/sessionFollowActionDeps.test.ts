@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fastify from 'fastify';
 import tweetnacl from 'tweetnacl';
 import {
+  API_TOKEN_FULL_GRANT_V1,
   EXTERNAL_ACTION_EFFECT_ACTION_HEADER,
   EXTERNAL_ACTION_EXECUTION_AUTHORIZATION_HEADER,
   EXTERNAL_ACTION_MACHINE_SIGNATURE_HEADER,
@@ -95,6 +96,7 @@ describe('Follow HTTP family adapter', () => {
       token: 'execution-proof',
       binding: {
         serverIdentityId: 'home', accountId: 'account-1', principalId: 'principal-1', credentialId: 'credential-1',
+        grant: API_TOKEN_FULL_GRANT_V1,
         machineId: 'machine-1', actionId: 'session.follow.preferences.get', requestId: 'request-1',
         requestEnvelopeDigest: 'd'.repeat(43), target,
       },
@@ -126,7 +128,7 @@ describe('Follow HTTP family adapter', () => {
     });
     await deps.sessionFollowAction!({
       context: {
-        externalActionCredential: { accountId: 'account-1', principalId: 'principal-1', credentialId: 'credential-1' },
+        externalActionCredential: { accountId: 'account-1', principalId: 'principal-1', credentialId: 'credential-1', grant: authorization.binding.grant },
         externalActionExecutionAuthorization: authorization,
         externalActionTarget: target,
       },
@@ -143,6 +145,7 @@ describe('Follow HTTP family adapter', () => {
       token: 'execution-proof',
       binding: {
         serverIdentityId: 'srv-cryptographic-home', accountId: 'account-1', principalId: 'principal-1', credentialId: 'credential-1',
+        grant: API_TOKEN_FULL_GRANT_V1,
         machineId: 'machine-1', actionId: 'session.follow.preferences.get', requestId: 'request-1',
         requestEnvelopeDigest: 'd'.repeat(43), target,
       },
@@ -176,6 +179,7 @@ describe('Follow HTTP family adapter', () => {
       token: 'execution-proof',
       binding: {
         serverIdentityId: 'home', accountId: 'account-1', principalId: 'principal-1', credentialId: 'credential-1',
+        grant: API_TOKEN_FULL_GRANT_V1,
         machineId: 'machine-1', actionId: 'session.follow.sources.set', requestId: 'request-1',
         requestEnvelopeDigest: 'd'.repeat(43), target,
       },
@@ -209,7 +213,7 @@ describe('Follow HTTP family adapter', () => {
       prepareSourceKeyAfterSet,
     });
     const context = {
-        externalActionCredential: { accountId: 'account-1', principalId: 'principal-1', credentialId: 'credential-1' },
+        externalActionCredential: { accountId: 'account-1', principalId: 'principal-1', credentialId: 'credential-1', grant: authorization.binding.grant },
         externalActionExecutionAuthorization: authorization,
         externalActionTarget: target,
       };

@@ -7,7 +7,7 @@ import type {
     MachineLiveStreamStartRequestV1,
 } from '@happier-dev/protocol';
 
-import type { MachineLiveStreamCaptureAdapter } from './captureAdapter';
+import type { MachineLiveStreamCaptureAdapter, MachineLiveStreamCaptureStartInput, MachineLiveStreamCaptureStartResult } from './captureAdapter';
 import { createMachineLiveStreamCaptureRegistry } from './captureRegistry';
 import { createMachineLiveStreamRelayTerminator } from './relay';
 
@@ -87,6 +87,295 @@ function startRequestWithViewerSocket(viewerSocketId: string): MachineLiveStream
 }
 
 describe('createMachineLiveStreamRelayTerminator', () => {
+    it('refuses a signed renewal that changes the exact capture source', async () => {
+        const request = startRequest();
+        request.sourceId = 'source_1';
+        request.authorization!.payload.sourceId = 'source_1';
+        const terminator = createMachineLiveStreamRelayTerminator({
+            machineId: 'machine_source',
+            captureAdapter: { start: async () => ({ ok: true, session: { stop: () => undefined } }) },
+            nowMs: () => 1_000,
+            emitEnvelope: () => undefined,
+        });
+        await terminator.start(request);
+        expect(terminator.applyControl({
+            v: 1, sourceMachineId: 'machine_source', targetMachineId: 'machine_target',
+            message: { kind: 'renew', startRequest: {
+                ...request, sourceId: 'source_2',
+                authorization: { ...request.authorization!, payload: {
+                    ...request.authorization!.payload, sourceId: 'source_2', exp: 121_000,
+                } },
+            } },
+        })).toEqual({ ok: false, reasonCode: 'renewal_scope_mismatch' });
+        await terminator.dispose();
+    });
+
+    it('selects the exact signed capture source when a family has multiple views', async () => {
+        const registry = createMachineLiveStreamCaptureRegistry();
+        const emitted: MachineLiveStreamRelayEnvelopeV1[] = [];
+        for (const [sourceId, payloadBase64] of [['source_1', 'AQID'], ['source_2', 'BAUG']] as const) {
+            registry.register({
+                sourceId, streamFamily: 'screen',
+                adapter: { start: async (input) => {
+                    input.offerFrame({ ...keyframe(), payloadBase64 });
+                    return { ok: true, session: { stop: () => undefined } };
+                } },
+                capabilities: { v: 1, sourceId, sourceKind: 'screen', supportedCodecs: ['image.mjpeg'],
+                    maxFramesPerSecond: 12, inputMode: 'exclusive', sidebands: [], health: { status: 'available' } },
+            });
+        }
+        const request = startRequest();
+        request.sourceId = 'source_2';
+        request.authorization!.payload.sourceId = 'source_2';
+        const terminator = createMachineLiveStreamRelayTerminator({
+            machineId: 'machine_source', registry, nowMs: () => 1_000,
+            emitEnvelope: (envelope) => emitted.push(envelope),
+        });
+        expect(await terminator.start(request)).toEqual({ ok: true, streamId: 'stream_1' });
+        expect(emitted).toContainEqual(expect.objectContaining({ message: {
+            kind: 'frame', frame: expect.objectContaining({ payloadBase64: 'BAUG' }),
+        } }));
+        await terminator.dispose();
+    });
+    it.each(['stop', 'dispose'] as const)('stops a late capture after %s while startup is pending', async (action) => {
+        let resolveCapture!: (value: MachineLiveStreamCaptureStartResult) => void;
+        const stop = vi.fn();
+        const emitted: MachineLiveStreamRelayEnvelopeV1[] = [];
+        const terminator = createMachineLiveStreamRelayTerminator({
+            machineId: 'machine_source',
+            captureAdapter: { start: () => new Promise((resolve) => { resolveCapture = resolve; }) },
+            nowMs: () => 1_000,
+            emitEnvelope: (envelope) => emitted.push(envelope),
+        });
+        const starting = terminator.start(startRequest());
+        if (action === 'stop') await terminator.stop('stream_1');
+        else await terminator.dispose();
+        resolveCapture({ ok: true, session: { stop } });
+        expect(await starting).toEqual({ ok: false, reasonCode: action === 'stop' ? 'stream_stopped' : 'relay_disposed' });
+        expect(stop).toHaveBeenCalledOnce();
+        expect(emitted.some((envelope) => envelope.message.kind === 'start')).toBe(false);
+    });
+
+    it('deduplicates pending starts in the same lifecycle map', async () => {
+        let resolveCapture!: (value: MachineLiveStreamCaptureStartResult) => void;
+        const terminator = createMachineLiveStreamRelayTerminator({
+            machineId: 'machine_source',
+            captureAdapter: { start: () => new Promise((resolve) => { resolveCapture = resolve; }) },
+            nowMs: () => 1_000,
+            emitEnvelope: () => undefined,
+        });
+        const starting = terminator.start(startRequest());
+        expect(await terminator.start(startRequest())).toEqual({ ok: false, reasonCode: 'duplicate_stream_id' });
+        resolveCapture({ ok: true, session: { stop: () => undefined } });
+        expect(await starting).toEqual({ ok: true, streamId: 'stream_1' });
+        await terminator.dispose();
+    });
+
+    it('keeps a replacement stream independent from a stopped pending capture with the same id', async () => {
+        let resolveFirst!: (value: MachineLiveStreamCaptureStartResult) => void;
+        let firstInput!: MachineLiveStreamCaptureStartInput;
+        let starts = 0;
+        const firstStop = vi.fn();
+        const secondStop = vi.fn();
+        const emitted: MachineLiveStreamRelayEnvelopeV1[] = [];
+        const terminator = createMachineLiveStreamRelayTerminator({
+            machineId: 'machine_source',
+            captureAdapter: { start: async (input) => {
+                starts += 1;
+                if (starts === 1) {
+                    firstInput = input;
+                    return await new Promise((resolve) => { resolveFirst = resolve; });
+                }
+                return { ok: true, session: { stop: secondStop } };
+            } },
+            nowMs: () => 1_000,
+            emitEnvelope: (envelope) => emitted.push(envelope),
+        });
+        const firstStart = terminator.start(startRequest());
+        await terminator.stop('stream_1');
+        expect(await terminator.start(startRequest())).toEqual({ ok: true, streamId: 'stream_1' });
+        expect(firstInput.offerFrame(keyframe())).toEqual({ ok: false, reasonCode: 'stream_closed' });
+        resolveFirst({ ok: true, session: { stop: firstStop } });
+        expect(await firstStart).toEqual({ ok: false, reasonCode: 'stream_stopped' });
+        expect(firstStop).toHaveBeenCalledOnce();
+        expect(secondStop).not.toHaveBeenCalled();
+        expect(emitted.filter((envelope) => envelope.message.kind === 'start')).toHaveLength(1);
+        await terminator.dispose();
+        expect(secondStop).toHaveBeenCalledOnce();
+    });
+
+    it('enforces grant expiry for idle capture and emits one terminal receipt', async () => {
+        vi.useFakeTimers();
+        try {
+            vi.setSystemTime(1_000);
+            const stop = vi.fn();
+            const emitted: MachineLiveStreamRelayEnvelopeV1[] = [];
+            const terminator = createMachineLiveStreamRelayTerminator({
+                machineId: 'machine_source',
+                captureAdapter: { start: async () => ({ ok: true, session: { stop } }) },
+                nowMs: () => Date.now(),
+                emitEnvelope: (envelope) => emitted.push(envelope),
+            });
+            await terminator.start(startRequest());
+            await vi.advanceTimersByTimeAsync(60_000);
+            expect(stop).toHaveBeenCalledOnce();
+            expect(emitted.filter((envelope) => envelope.message.kind === 'receipt')).toEqual([
+                expect.objectContaining({ message: { kind: 'receipt', receipt: expect.objectContaining({ terminal: true, reasonCode: 'grant_expired' }) } }),
+            ]);
+            await terminator.dispose();
+            expect(stop).toHaveBeenCalledOnce();
+        } finally { vi.useRealTimers(); }
+    });
+
+    it('renews only identical active grant scope and caps, extending expiry without replacing capture or lifetime', async () => {
+        vi.useFakeTimers();
+        try {
+            vi.setSystemTime(1_000);
+            const stop = vi.fn();
+            let starts = 0;
+            const request = startRequest();
+            request.maxDurationMs = 120_000;
+            request.authorization!.payload.maxDurationMs = 120_000;
+            const terminator = createMachineLiveStreamRelayTerminator({
+                machineId: 'machine_source',
+                captureAdapter: { start: async () => { starts += 1; return { ok: true, session: { stop } }; } },
+                nowMs: () => Date.now(),
+                emitEnvelope: () => undefined,
+            });
+            await terminator.start(request);
+            await vi.advanceTimersByTimeAsync(30_000);
+            const renewed = {
+                ...request,
+                authorization: { ...request.authorization!, payload: { ...request.authorization!.payload, grantId: 'grant_renewed', iat: 31_000, exp: 181_000 } },
+            };
+            const renewal = (next: MachineLiveStreamStartRequestV1): MachineLiveStreamRelayEnvelopeV1 => ({
+                v: 1, sourceMachineId: request.sourceMachineId, targetMachineId: request.targetMachineId,
+                message: { kind: 'renew', startRequest: next },
+            });
+            expect(terminator.applyControl(renewal({ ...renewed, targetMachineId: 'other_machine' }))).toEqual({ ok: false, reasonCode: 'renewal_scope_mismatch' });
+            expect(terminator.applyControl(renewal({ ...renewed, maxFrameBytes: 1 }))).toEqual({ ok: false, reasonCode: 'renewal_scope_mismatch' });
+            expect(terminator.applyControl(renewal(renewed))).toEqual({ ok: true });
+            expect(terminator.applyControl(renewal(renewed))).toEqual({ ok: false, reasonCode: 'renewal_expiry_not_extended' });
+            await vi.advanceTimersByTimeAsync(30_000);
+            expect(stop).not.toHaveBeenCalled();
+            await vi.advanceTimersByTimeAsync(60_000);
+            expect(stop).toHaveBeenCalledOnce();
+            expect(starts).toBe(1);
+            await terminator.dispose();
+        } finally { vi.useRealTimers(); }
+    });
+
+    it('keeps transient paused receipts active and routes transport pause, resume and keyframe controls to capture', async () => {
+        let captureInput!: MachineLiveStreamCaptureStartInput;
+        const controls: unknown[] = [];
+        const stop = vi.fn();
+        const terminator = createMachineLiveStreamRelayTerminator({
+            machineId: 'machine_source',
+            captureAdapter: { start: async (input) => {
+                captureInput = input;
+                input.offerFrame(keyframe(1));
+                return { ok: true, session: { stop, applyControl: (control) => { controls.push(control); return { ok: true }; } } };
+            } },
+            nowMs: () => 1_000,
+            emitEnvelope: () => undefined,
+        });
+        await terminator.start(startRequest());
+        captureInput.emitReceipt({ v: 1, id: 'peer.stream.paused', streamId: 'stream_1', routeKind: 'server_relay', flowKind: 'live_stream', reasonCode: 'backpressure_window_exhausted' });
+        for (const control of [
+            { v: 1 as const, streamId: 'stream_1', kind: 'pause' as const, reasonCode: 'backpressure_window_exhausted' },
+            { v: 1 as const, streamId: 'stream_1', kind: 'resume' as const },
+            { v: 1 as const, streamId: 'stream_1', kind: 'keyframe_required' as const, reasonCode: 'startup_keyframe_required' },
+        ]) {
+            expect(terminator.applyControl({ v: 1, sourceMachineId: 'machine_source', targetMachineId: 'machine_target', message: { kind: 'control', control } })).toEqual({ ok: true });
+        }
+        expect(controls).toHaveLength(3);
+        expect(stop).not.toHaveBeenCalled();
+        await terminator.dispose();
+    });
+
+    it('requests a fresh keyframe when startup only produced dependent deltas', async () => {
+        const emitted: MachineLiveStreamRelayEnvelopeV1[] = [];
+        const controls: unknown[] = [];
+        const terminator = createMachineLiveStreamRelayTerminator({
+            machineId: 'machine_source',
+            captureAdapter: { start: async (input) => {
+                input.offerFrame({ ...keyframe(1), payloadKind: 'image_delta' });
+                return { ok: true, session: { stop: () => undefined, applyControl: (control) => { controls.push(control); return { ok: true }; } } };
+            } },
+            nowMs: () => 1_000,
+            emitEnvelope: (envelope) => emitted.push(envelope),
+        });
+        await terminator.start(startRequest());
+        expect(emitted.map((envelope) => envelope.message.kind)).toEqual(['start']);
+        expect(controls).toEqual([expect.objectContaining({ kind: 'keyframe_required' })]);
+        await terminator.dispose();
+    });
+
+    it('withholds dependent frames after dropping startup deltas until a fresh keyframe arrives', async () => {
+        let captureInput!: MachineLiveStreamCaptureStartInput;
+        const emitted: MachineLiveStreamRelayEnvelopeV1[] = [];
+        const controls: unknown[] = [];
+        const terminator = createMachineLiveStreamRelayTerminator({
+            machineId: 'machine_source',
+            captureAdapter: { start: async (input) => {
+                captureInput = input;
+                input.offerFrame(keyframe(1));
+                input.offerFrame({ ...keyframe(2), payloadKind: 'image_delta' });
+                input.offerFrame({ ...keyframe(3), payloadKind: 'image_delta' });
+                return { ok: true, session: { stop: () => undefined, applyControl: (control) => { controls.push(control); return { ok: true }; } } };
+            } },
+            nowMs: () => 1_000,
+            emitEnvelope: (envelope) => emitted.push(envelope),
+        });
+        await terminator.start(startRequest());
+        expect(captureInput.offerFrame({ ...keyframe(4), payloadKind: 'image_delta' })).toEqual({ ok: true });
+        expect(captureInput.offerFrame(keyframe(5))).toEqual({ ok: true });
+        expect(captureInput.offerFrame({ ...keyframe(6), payloadKind: 'image_delta' })).toEqual({ ok: true });
+        expect(emitted.flatMap((envelope) => envelope.message.kind === 'frame' ? [envelope.message.frame.sequence] : [])).toEqual([1, 5, 6]);
+        expect(controls).toEqual([expect.objectContaining({ kind: 'keyframe_required' })]);
+        await terminator.dispose();
+    });
+
+    it('cleans pending startup after a terminal receipt before capture resolves', async () => {
+        const stop = vi.fn();
+        const terminator = createMachineLiveStreamRelayTerminator({
+            machineId: 'machine_source',
+            captureAdapter: { start: async (input) => {
+                input.emitReceipt({ v: 1, id: 'peer.stream.paused', streamId: 'stream_1', routeKind: 'server_relay', flowKind: 'live_stream', reasonCode: 'capture_failed', terminal: true, terminalOutcome: 'error' });
+                return { ok: true, session: { stop } };
+            } },
+            nowMs: () => 1_000,
+            emitEnvelope: () => undefined,
+        });
+        expect(await terminator.start(startRequest())).toEqual({ ok: false, reasonCode: 'capture_failed' });
+        expect(stop).toHaveBeenCalledOnce();
+        await terminator.dispose();
+    });
+
+    it('closes active capture on frame pump cap failure and rejects later source frames', async () => {
+        let captureInput!: MachineLiveStreamCaptureStartInput;
+        const stop = vi.fn();
+        const emitted: MachineLiveStreamRelayEnvelopeV1[] = [];
+        const terminator = createMachineLiveStreamRelayTerminator({
+            machineId: 'machine_source',
+            captureAdapter: { start: async (input) => {
+                captureInput = input;
+                return { ok: true, session: { stop } };
+            } },
+            nowMs: () => 1_000,
+            emitEnvelope: (envelope) => emitted.push(envelope),
+        });
+        const request = startRequest();
+        request.maxFrameBytes = 2;
+        request.authorization!.payload.maxFrameBytes = 2;
+        await terminator.start(request);
+        expect(captureInput.offerFrame(keyframe())).toEqual({ ok: false, reasonCode: 'max_frame_bytes_exceeded' });
+        await Promise.resolve();
+        expect(stop).toHaveBeenCalledOnce();
+        expect(captureInput.offerFrame(keyframe())).toEqual({ ok: false, reasonCode: 'stream_closed' });
+        expect(emitted.filter((envelope) => envelope.message.kind === 'receipt')).toHaveLength(1);
+        await terminator.dispose();
+    });
     it('echoes the signed start viewerSocketId onto the start and frame envelopes for per-tab delivery', async () => {
         const emitted: MachineLiveStreamRelayEnvelopeV1[] = [];
         const adapter: MachineLiveStreamCaptureAdapter = {
@@ -265,7 +554,9 @@ describe('createMachineLiveStreamRelayTerminator', () => {
             ok: false,
             reasonCode: 'capture_start_failed',
         });
-        expect(emitted).toEqual([]);
+        expect(emitted).toEqual([expect.objectContaining({ message: {
+            kind: 'receipt', receipt: expect.objectContaining({ terminal: true, terminalOutcome: 'error', reasonCode: 'capture_start_failed' }),
+        } })]);
     });
 
     it('rejects duplicate active stream starts without replacing the existing capture session', async () => {
@@ -560,7 +851,7 @@ describe('createMachineLiveStreamRelayTerminator', () => {
         })).toEqual({ ok: false, reasonCode: 'live_stream_start_required' });
     });
 
-    it('bounds frame envelopes produced before capture startup resolves', async () => {
+    it('retains the latest independently decodable observation before capture startup resolves', async () => {
         const emitted: MachineLiveStreamRelayEnvelopeV1[] = [];
         const base = startRequest();
         const manyFrameStartRequest: MachineLiveStreamStartRequestV1 = {
@@ -619,7 +910,7 @@ describe('createMachineLiveStreamRelayTerminator', () => {
         });
 
         const emittedFrames = emitted.filter((envelope) => envelope.message.kind === 'frame');
-        expect(emittedFrames.length).toBeLessThanOrEqual(32);
+        expect(emittedFrames).toEqual([expect.objectContaining({ message: { kind: 'frame', frame: keyframe(64) } })]);
         expect(emitted[0]?.message.kind).toBe('start');
     });
 
@@ -679,7 +970,7 @@ describe('createMachineLiveStreamRelayTerminator', () => {
         expect(serialized).not.toContain('AQID');
         expect(serialized).not.toContain('relay_grant_1');
         expect(serialized).toContain('grant_');
-        expect(emitted.map((envelope) => envelope.message.kind)).toEqual(['start', 'frame']);
+        expect(emitted.map((envelope) => envelope.message.kind)).toEqual(['start', 'frame', 'receipt']);
     });
 
     it('reports a clean end-of-stream paused receipt as flow.closed, not flow.errored', async () => {
@@ -738,6 +1029,8 @@ describe('createMachineLiveStreamRelayTerminator', () => {
             routeKind: 'server_relay',
             flowKind: 'live_stream',
             reasonCode: 'android_scrcpy_raw_stream_ended',
+            terminal: true,
+            terminalOutcome: 'stopped',
             maxBitrateBps: 64_000,
             maxFramesPerSecond: 12,
             maxFrameBytes: 32_000,
@@ -830,6 +1123,8 @@ describe('createMachineLiveStreamRelayTerminator', () => {
             routeKind: 'server_relay',
             flowKind: 'live_stream',
             reasonCode: 'max_total_bytes_exceeded',
+            terminal: true,
+            terminalOutcome: 'error',
             maxBitrateBps: 64_000,
             maxFramesPerSecond: 12,
             maxFrameBytes: 32_000,
@@ -894,6 +1189,8 @@ describe('createMachineLiveStreamRelayTerminator', () => {
             routeKind: 'server_relay',
             flowKind: 'live_stream',
             reasonCode: 'android_scrcpy_raw_stream_unavailable',
+            terminal: true,
+            terminalOutcome: 'error',
             maxBitrateBps: 64_000,
             maxFramesPerSecond: 12,
             maxFrameBytes: 32_000,

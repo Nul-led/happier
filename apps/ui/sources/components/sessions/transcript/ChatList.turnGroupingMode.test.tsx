@@ -131,6 +131,42 @@ describe('ChatList (turn grouping mode)', () => {
     },
   );
 
+  it.each(['linear', 'turns'] as const)(
+    'threads the host wake count to the update that opens a wake through %s row projection',
+    async (groupingMode) => {
+      chatListHarnessState.settingValues.transcriptGroupingMode = groupingMode;
+      chatListHarnessState.settingValues.transcriptGroupToolCalls = false;
+      chatListHarnessState.settingValues.transcriptTurnToolCallsGroupStrategy = 'consecutive_tools';
+      const workerUpdate = (workerId: string) => ({
+        type: 'worker-update',
+        update: { v: 1, workerKind: 'session', workerId, ownerState: 'settled', wake: 'finished', headline: 'Finished', canInspect: false },
+      });
+      const messages = [
+        { kind: 'agent-event', id: 'wake-1', createdAt: 1, event: workerUpdate('w1') },
+        { kind: 'agent-event', id: 'wake-2', createdAt: 2, event: workerUpdate('w2') },
+      ];
+      chatListHarnessState.sessionMessagesState = { isLoaded: true, messages };
+      buildChatListItemsMock.mockImplementation((opts: any) => {
+        if (opts?.includeCommittedMessages === false) return [];
+        return (opts.messageIdsOldestFirst ?? []).map((id: string) => ({
+          kind: 'message',
+          id,
+          messageId: id,
+          createdAt: opts.messagesById[id]?.createdAt ?? 0,
+          seq: null,
+        }));
+      });
+
+      const screen = await renderChatListHarnessSession();
+      const byId = new Map(capturedMessageViewProps.map((props) => [props.message?.id, props]));
+
+      expect(byId.get('wake-1')?.hostWakeCount).toBe(2);
+      expect(byId.get('wake-2')?.hostWakeCount).toBeUndefined();
+
+      await screen.unmount();
+    },
+  );
+
   it('renders turn items when transcriptGroupingMode is turns', async () => {
     chatListHarnessState.settingValues.transcriptGroupingMode = 'turns';
     chatListHarnessState.settingValues.transcriptGroupToolCalls = false;

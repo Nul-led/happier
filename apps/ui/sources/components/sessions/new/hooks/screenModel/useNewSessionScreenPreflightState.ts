@@ -15,10 +15,7 @@ import { useNewSessionPreflightModelsState } from '@/components/sessions/new/hoo
 import { useNewSessionPreflightConfigOptionsState } from '@/components/sessions/new/hooks/screenModel/useNewSessionPreflightConfigOptionsState';
 import { useNewSessionPreflightSessionModesState } from '@/components/sessions/new/hooks/screenModel/useNewSessionPreflightSessionModesState';
 
-type ModelOptionsProbeState = Readonly<{
-    phase: 'idle' | 'loading' | 'refreshing';
-    onRefresh?: () => void;
-}>;
+type ModelOptionsProbeState = ReturnType<typeof useNewSessionPreflightModelsState>['probe'];
 
 type AcpSessionModeProbeState = Readonly<{
     phase: 'idle' | 'loading' | 'refreshing';
@@ -42,6 +39,12 @@ export function useNewSessionScreenPreflightState(params: Readonly<{
     cwd: string | null;
     connectedServicesBindingsPayload?: ConnectedServiceBindingsV2 | null;
     connectedServicesModelProbeCacheIdentity?: string | null;
+    /**
+     * `false`: read cached probe results only and send no probe to the machine (an embedded
+     * composer before the person reaches for it). Cache identity is unchanged, so the probes
+     * that start on intent land in the same entries.
+     */
+    machineProbesEnabled?: boolean;
 }>): Readonly<{
     preflightModels: ReturnType<typeof useNewSessionPreflightModelsState>['preflightModels'];
     preflightModelsTargetKey: ReturnType<typeof useNewSessionPreflightModelsState>['preflightModelsTargetKey'];
@@ -57,6 +60,7 @@ export function useNewSessionScreenPreflightState(params: Readonly<{
         || params.pluginSettingsReadiness === undefined
         || params.pluginSettingsReadiness.ready;
     const effectivePluginSettings = probesEnabled ? params.pluginSettings : null;
+    const machineProbesEnabled = probesEnabled && params.machineProbesEnabled !== false;
     const operationalBackendTarget = React.useMemo(() => resolveNewSessionOperationalBackendTarget({
         backendTarget: params.backendTarget,
         runtimeCarrierAgentId: params.runtimeCarrierAgentId,
@@ -93,7 +97,7 @@ export function useNewSessionScreenPreflightState(params: Readonly<{
         capabilityServerId: params.capabilityServerId,
         cwd: params.cwd,
         probeContext: modelCapabilityProbeContext,
-        enabled: probesEnabled,
+        enabled: machineProbesEnabled,
     });
     const { preflightModes: preflightSessionModes, modeOptions: acpSessionModeOptions, probe: acpSessionModeProbe } =
         useNewSessionPreflightSessionModesState({
@@ -103,7 +107,7 @@ export function useNewSessionScreenPreflightState(params: Readonly<{
             capabilityServerId: params.capabilityServerId,
             cwd: params.cwd,
             probeContext: capabilityProbeContext,
-            enabled: probesEnabled,
+            enabled: machineProbesEnabled,
         });
     const { configOptions: acpConfigOptions, probe: acpConfigOptionsProbe } = useNewSessionPreflightConfigOptionsState({
         backendTarget: operationalBackendTarget,
@@ -112,17 +116,14 @@ export function useNewSessionScreenPreflightState(params: Readonly<{
         capabilityServerId: params.capabilityServerId,
         cwd: params.cwd,
         probeContext: capabilityProbeContext,
-        enabled: probesEnabled,
+        enabled: machineProbesEnabled,
     });
 
     return {
         preflightModels,
         preflightModelsTargetKey,
         modelOptions,
-        modelOptionsProbeState: {
-            phase: modelOptionsProbe.phase,
-            onRefresh: modelOptionsProbe.onRefresh,
-        },
+        modelOptionsProbeState: modelOptionsProbe,
         preflightSessionModes,
         acpSessionModeOptions,
         acpSessionModeProbeState: {

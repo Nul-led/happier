@@ -1,12 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
 import * as tmp from 'tmp';
-import { stat } from 'node:fs/promises';
+import { chmod, stat, unlink, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 
 import type { TerminalHostAdapter, TerminalHostHandle } from '@happier-dev/agents';
 import { createSessionHooksService } from '@/plugins/runtime/hooks/session/service';
 import { logger } from '@/ui/logger';
 import {
   readTerminalHostAttachmentInfo,
+  removeTerminalHostAttachmentInfo,
   writeTerminalHostAttachmentInfo,
 } from './terminalAttachmentInfo';
 import {
@@ -50,6 +52,177 @@ function buildAdapter(dispose: TerminalHostAdapter['dispose']): TerminalHostAdap
 }
 
 describe('executeTerminalHostDisposition', () => {
+  it.each(['owned', 'borrowed'] as const)('retires captured %s attachment evidence after the exited runner removed its descriptor', async (lifecycle) => {
+    const dir = tmp.dirSync({ unsafeCleanup: true });
+    const sessionId = `session-exited-${lifecycle}`;
+    try {
+      const attachment = await writeTerminalHostAttachmentInfo({
+        happyHomeDir: dir.name,
+        sessionId,
+        handle: HANDLE,
+        ...(lifecycle === 'borrowed' ? { lifecycle: 'borrowed' as const } : {}),
+      });
+      await removeTerminalHostAttachmentInfo({
+        happyHomeDir: dir.name,
+        sessionId,
+        expectedAttachmentId: attachment.attachmentId,
+      });
+      const events: string[] = [];
+      const input = {
+        happyHomeDir: dir.name,
+        sessionId,
+        expectedAttachmentId: attachment.attachmentId,
+        expectedAttachmentInfo: attachment,
+        intent: lifecycle === 'borrowed'
+          ? { kind: 'release_borrowed_host' as const, reason: 'explicit_user_stop' as const }
+          : { kind: 'destroy_owned_host' as const, reason: 'explicit_user_stop' as const },
+        adapter: buildAdapter(async () => { events.push('dispose'); }),
+        beforeDescriptorRetirement: async () => { events.push('retire'); },
+      };
+
+      await expect(executeTerminalHostDisposition(input)).resolves.toEqual({
+        status: lifecycle === 'borrowed' ? 'retired' : 'destroyed',
+        attachmentId: attachment.attachmentId,
+      });
+      expect(events).toEqual(lifecycle === 'borrowed' ? ['retire'] : ['dispose', 'retire']);
+      await expect(readTerminalHostAttachmentInfo({ happyHomeDir: dir.name, sessionId })).resolves.toBeNull();
+    } finally {
+      dir.removeCallback();
+    }
+  });
+
+  it.each([
+    { lifecycle: 'owned', path: 'host' },
+    { lifecycle: 'borrowed', path: 'host' },
+    { lifecycle: 'owned', path: 'predecessor' },
+    { lifecycle: 'borrowed', path: 'predecessor' },
+  ] as const)('does not substitute captured $lifecycle evidence for an unreadable $path descriptor', async ({ lifecycle, path }) => {
+    const dir = tmp.dirSync({ unsafeCleanup: true });
+    const sessionId = 'session-unreadable-after-exit';
+    try {
+      const attachment = await writeTerminalHostAttachmentInfo({
+        happyHomeDir: dir.name,
+        sessionId,
+        handle: HANDLE,
+        ...(lifecycle === 'borrowed' ? { lifecycle } : {}),
+      });
+      // Real persistent-filesystem boundary: malformed evidence is not absence.
+      const descriptorPath = join(dir.name, 'terminal', 'sessions', `${sessionId}.${path === 'host' ? 'host.json' : 'json'}`);
+      if (path === 'predecessor') {
+        await unlink(join(dir.name, 'terminal', 'sessions', `${sessionId}.host.json`));
+      }
+      await writeFile(descriptorPath, '{');
+      const dispose = vi.fn(async () => undefined);
+      const retire = vi.fn(async () => undefined);
+      const input = {
+        happyHomeDir: dir.name,
+        sessionId,
+        expectedAttachmentId: attachment.attachmentId,
+        expectedAttachmentInfo: attachment,
+        intent: lifecycle === 'borrowed'
+          ? { kind: 'release_borrowed_host' as const, reason: 'explicit_user_stop' as const }
+          : { kind: 'destroy_owned_host' as const, reason: 'explicit_user_stop' as const },
+        adapter: buildAdapter(dispose),
+        beforeDescriptorRetirement: retire,
+      };
+      await expect(executeTerminalHostDisposition(input)).resolves.toEqual({ status: 'parked', reason: 'missing_topology_proof' });
+      expect(dispose).not.toHaveBeenCalled();
+      expect(retire).not.toHaveBeenCalled();
+      await expect(stat(descriptorPath)).resolves.toBeDefined();
+    } finally {
+      dir.removeCallback();
+    }
+  });
+
+  it.each(['borrowed', 'owned'] as const)('preserves $lifecycle disposition finality when the descriptor becomes unreadable during upstream retirement', async (lifecycle) => {
+    const dir = tmp.dirSync({ unsafeCleanup: true });
+    const sessionId = 'session-borrowed-retirement-unreadable';
+    try {
+      const attachment = await writeTerminalHostAttachmentInfo({ happyHomeDir: dir.name, sessionId, handle: HANDLE, lifecycle });
+      await expect(executeTerminalHostDisposition({
+        happyHomeDir: dir.name,
+        sessionId,
+        expectedAttachmentId: attachment.attachmentId,
+        expectedAttachmentInfo: attachment,
+        intent: lifecycle === 'borrowed'
+          ? { kind: 'release_borrowed_host', reason: 'explicit_user_stop' }
+          : { kind: 'destroy_owned_host', reason: 'explicit_user_stop' },
+        adapter: buildAdapter(async () => undefined),
+        beforeDescriptorRetirement: async () => {
+          await writeFile(join(dir.name, 'terminal', 'sessions', `${sessionId}.host.json`), '{');
+        },
+      })).resolves.toEqual(lifecycle === 'borrowed'
+        ? { status: 'parked', reason: 'missing_topology_proof' }
+        : { status: 'destroyed', attachmentId: attachment.attachmentId, descriptorRetained: true });
+      await expect(stat(join(dir.name, 'terminal', 'sessions', `${sessionId}.host.json`))).resolves.toBeDefined();
+    } finally {
+      dir.removeCallback();
+    }
+  });
+
+  it('releases a borrowed descriptor without disposing the user-owned pane', async () => {
+    const dir = tmp.dirSync({ unsafeCleanup: true });
+    const sessionId = 'session-borrowed';
+    try {
+      const attachment = await writeTerminalHostAttachmentInfo({
+        happyHomeDir: dir.name,
+        sessionId,
+        handle: HANDLE,
+        lifecycle: 'borrowed',
+      });
+      // Releasing a borrowed host needs no host adapter or destructive capability.
+      await expect(executeTerminalHostDisposition({
+        happyHomeDir: dir.name,
+        sessionId,
+        expectedAttachmentId: attachment.attachmentId,
+        intent: { kind: 'release_borrowed_host', reason: 'explicit_user_stop' },
+      })).resolves.toEqual({ status: 'retired', attachmentId: attachment.attachmentId });
+      await expect(readTerminalHostAttachmentInfo({ happyHomeDir: dir.name, sessionId })).resolves.toBeNull();
+    } finally {
+      dir.removeCallback();
+    }
+  });
+
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0).each(['borrowed', 'dead', 'owned'] as const)(
+    'retains exact %s evidence and returns a typed result when filesystem retirement fails', async (lifecycle) => {
+      const dir = tmp.dirSync({ unsafeCleanup: true });
+      const sessionId = `session-removal-denied-${lifecycle}`;
+      const sessionsDir = join(dir.name, 'terminal', 'sessions');
+      const dispose = vi.fn(async () => undefined);
+      // Observe the real default logging sink; do not replace its implementation.
+      const fileLog = vi.spyOn(logger, 'infoFile');
+      try {
+        const attachment = await writeTerminalHostAttachmentInfo({
+          happyHomeDir: dir.name, sessionId, handle: HANDLE,
+          ...(lifecycle === 'borrowed' ? { lifecycle } : {}),
+        });
+        await expect(executeTerminalHostDisposition({
+          happyHomeDir: dir.name, sessionId, expectedAttachmentId: attachment.attachmentId,
+          intent: lifecycle === 'borrowed'
+            ? { kind: 'release_borrowed_host', reason: 'explicit_user_stop' }
+            : lifecycle === 'owned'
+              ? { kind: 'destroy_owned_host', reason: 'explicit_user_stop' }
+            : { kind: 'retire_confirmed_dead_attachment', reason: 'positive_dead_recovery' },
+          adapter: buildAdapter(dispose),
+          // Genuine OS permission failure: retain a readable exact descriptor,
+          // but deny the canonical remover's filesystem writes.
+          beforeDescriptorRetirement: async () => { await chmod(sessionsDir, 0o500); },
+        })).resolves.toEqual(lifecycle === 'owned'
+          ? { status: 'destroyed', attachmentId: attachment.attachmentId, descriptorRetained: true }
+          : { status: 'parked', reason: 'descriptor_retirement_failed' });
+        expect(fileLog).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
+          sessionId, attachmentId: attachment.attachmentId,
+        }));
+        if (lifecycle !== 'owned') expect(dispose).not.toHaveBeenCalled();
+        await expect(readTerminalHostAttachmentInfo({ happyHomeDir: dir.name, sessionId })).resolves.toEqual(attachment);
+      } finally {
+        fileLog.mockRestore();
+        await chmod(sessionsDir, 0o700);
+        dir.removeCallback();
+      }
+    },
+  );
+
   it('maps runtime disposal provenance without granting destruction to unknown or recovery paths', () => {
     expect(resolveRuntimeTerminalHostDispositionIntent({ kind: 'destroy_owned_host', reason: 'session_closed' }))
       .toEqual({ kind: 'destroy_owned_host', reason: 'session_closed' });

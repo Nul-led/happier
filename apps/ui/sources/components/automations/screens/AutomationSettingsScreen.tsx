@@ -7,10 +7,12 @@ import {
 } from '@happier-dev/protocol';
 
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
+import { FieldValueItem } from '@/components/ui/forms/FieldValueItem';
 import { Switch } from '@/components/ui/forms/Switch';
-import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
+import { AttentionBanner } from '@/components/ui/lists/AttentionBanner';
 import { ItemList } from '@/components/ui/lists/ItemList';
+import { PageHeader } from '@/components/ui/layout/PageHeader';
 import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
 import { Modal } from '@/modal';
 import { captureActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
@@ -18,8 +20,14 @@ import { useActiveServerAccountScope } from '@/sync/domains/state/storage';
 import { sync } from '@/sync/sync';
 import { t } from '@/text';
 import { formatAutomationErrorMessage } from '@/components/automations/automationErrorFormatting';
+import { WORKFLOW_RUN_SETTINGS } from '@/components/automations/settings/workflowRunSettings';
+import { SettingAnchor, SettingRow } from '@/components/settings/shell/SettingRow';
+
 
 /**
+ * Workflows › Run settings (`/workflows/settings`, FIN 07 S6): how many runs each machine takes at
+ * once and how long run history is kept. Its rows render from their search declarations.
+ *
  * This screen presents the server-owned settings record directly. Its local
  * state is only the current route projection and request state; it never
  * becomes another Automation settings store or retention-policy owner.
@@ -96,7 +104,7 @@ export function AutomationSettingsScreen(): React.ReactElement {
         } catch (error) {
             if (requestEpoch !== requestEpochRef.current || requestAccountLifetime?.isCurrent() === false) return;
             await Modal.alert(
-                t('common.error'),
+                t('workflows.destination.runSettingsPage.saveFailed'),
                 formatAutomationErrorMessage(error, t('automations.settings.updateFailed')),
             );
         } finally {
@@ -106,30 +114,27 @@ export function AutomationSettingsScreen(): React.ReactElement {
         }
     }, [accountLifetime, saving]);
 
-    const handleMaxActiveRuns = React.useCallback(async () => {
+    // The limit is typed in place (`FieldValueItem`). A value the settings contract rejects is not
+    // written, and the field says why until the draft changes.
+    const savedMaxActiveRuns = settings === null ? '' : String(settings.maxActiveRunsPerMachine);
+    const [maxActiveRunsInvalid, setMaxActiveRunsInvalid] = React.useState(false);
+    React.useEffect(() => {
+        setMaxActiveRunsInvalid(false);
+    }, [savedMaxActiveRuns]);
+    const clearMaxActiveRunsRefusal = React.useCallback(() => setMaxActiveRunsInvalid(false), []);
+
+    const commitMaxActiveRuns = React.useCallback((draft: string) => {
         if (settings === null || saving) return;
-        const requestEpoch = requestEpochRef.current;
-        const value = await Modal.prompt(
-            t('automations.settings.maxActiveRunsPerMachine'),
-            t('automations.settings.maxActiveRunsPerMachinePrompt'),
-            {
-                defaultValue: String(settings.maxActiveRunsPerMachine),
-                inputType: 'numeric',
-                confirmText: t('common.save'),
-            },
-        );
-        if (value === null) return;
-        if (requestEpoch !== requestEpochRef.current) return;
-        const parsed = Number(value.trim());
         const candidate = AutomationV3SettingsSchema.safeParse({
             ...settings,
-            maxActiveRunsPerMachine: parsed,
+            maxActiveRunsPerMachine: Number(draft),
         });
         if (!candidate.success) {
-            await Modal.alert(t('common.error'), t('automations.settings.maxActiveRunsPerMachineInvalid'));
+            setMaxActiveRunsInvalid(true);
             return;
         }
-        await applySettings(candidate.data);
+        setMaxActiveRunsInvalid(false);
+        void applySettings(candidate.data);
     }, [applySettings, saving, settings]);
 
     const handleRetentionChange = React.useCallback((keepForever: boolean) => {
@@ -140,17 +145,30 @@ export function AutomationSettingsScreen(): React.ReactElement {
         });
     }, [applySettings, saving, settings]);
 
+    // The page keeps its header through loading and failure, so nothing above the settings moves
+    // when they arrive.
+    const header = (
+        <PageHeader
+            title={t('workflows.destination.runSettingsPage.title')}
+            description={t('workflows.destination.runSettingsPage.description')}
+        />
+    );
+
     if (loading && settings === null) {
         return (
-            <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
-                <ActivitySpinner size="small" color={theme.colors.text.secondary} />
-            </View>
+            <ItemList presentation="page">
+                {header}
+                <View style={{ alignItems: 'center', paddingVertical: 32 }}>
+                    <ActivitySpinner size="small" color={theme.colors.text.secondary} />
+                </View>
+            </ItemList>
         );
     }
 
     if (settings === null) {
         return (
-            <ItemList>
+            <ItemList presentation="page">
+                {header}
                 <SurfaceStateCard
                     testID="automation-settings-load-error"
                     kind="error"
@@ -167,41 +185,44 @@ export function AutomationSettingsScreen(): React.ReactElement {
     }
 
     return (
-        <ItemList>
+        <ItemList presentation="page">
+            {header}
             {loadFailed ? (
-                <ItemGroup>
-                    <Item
-                        testID="automation-settings-stale-load-error"
-                        title={t('automations.settings.failedToLoad')}
-                        mode="info"
-                        showChevron={false}
-                        accessibilityRole="alert"
-                        accessibilityLiveRegion="assertive"
-                        webRole="alert"
-                    />
-                    <Item
-                        testID="automation-settings-stale-load-retry"
-                        title={t('common.retry')}
-                        onPress={() => { void refresh(); }}
-                        showChevron={false}
-                    />
-                </ItemGroup>
-            ) : null}
-            <ItemGroup title={t('automations.settings.title')}>
-                <Item
-                    testID="automation-settings-max-active-runs"
-                    title={t('automations.settings.maxActiveRunsPerMachine')}
-                    subtitle={t('automations.settings.maxActiveRunsPerMachineSubtitle')}
-                    subtitleLines={0}
-                    detail={String(settings.maxActiveRunsPerMachine)}
-                    onPress={saving ? undefined : () => { void handleMaxActiveRuns(); }}
-                    disabled={saving}
-                    showChevron={false}
+                <AttentionBanner
+                    testID="automation-settings-stale-load-error"
+                    title={t('automations.settings.failedToLoad')}
+                    announce="alert"
+                    accessibilityLiveRegion="assertive"
+                    action={{ label: t('common.retry'), onPress: () => { void refresh(); }, testID: 'automation-settings-stale-load-retry' }}
                 />
-                <Item
+            ) : null}
+            <ItemGroup
+                title={t('automationPages.settings.capacityTitle')}
+                description={t('automationPages.settings.capacityDescription')}
+            >
+                <SettingAnchor setting={WORKFLOW_RUN_SETTINGS.settings.maxActiveRunsPerMachine}>
+                    <FieldValueItem
+                        testID="automation-settings-max-active-runs"
+                        title={t(WORKFLOW_RUN_SETTINGS.settings.maxActiveRunsPerMachine.titleKey)}
+                        subtitle={t('automations.settings.maxActiveRunsPerMachineSubtitle')}
+                        subtitleLines={0}
+                        disabled={saving}
+                        value={savedMaxActiveRuns}
+                        kind="integer"
+                        fieldTestID="automation-settings-max-active-runs-field"
+                        error={maxActiveRunsInvalid ? t('automations.settings.maxActiveRunsPerMachineInvalid') : null}
+                        onDraftChange={clearMaxActiveRunsRefusal}
+                        onCommit={commitMaxActiveRuns}
+                    />
+                </SettingAnchor>
+            </ItemGroup>
+            <ItemGroup
+                title={t('automationPages.settings.historyTitle')}
+                description={t('automationPages.settings.historyDescription')}
+            >
+                <SettingRow
+                    setting={WORKFLOW_RUN_SETTINGS.settings.runRetention}
                     testID="automation-settings-run-retention"
-                    title={t('automations.settings.runRetention')}
-                    subtitle={t('automations.settings.runRetentionSubtitle')}
                     subtitleLines={0}
                     showChevron={false}
                     rightElement={(

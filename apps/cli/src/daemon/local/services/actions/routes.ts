@@ -54,6 +54,7 @@ function executionResult(input: Readonly<{
     status: LocalServiceActionResultV1['status'];
     requestedAt: number;
     reasonCode?: string;
+    undoKey?: string;
     confirmed: boolean;
 }>): LocalServiceActionResultV1 {
     const auditEvents = [
@@ -84,6 +85,7 @@ function executionResult(input: Readonly<{
         requestId: input.request.requestId,
         action: input.request.action,
         status: input.status,
+        ...(input.undoKey ? { undoKey: input.undoKey } : {}),
         ...(input.reasonCode ? { reasonCode: input.reasonCode } : {}),
         auditEvents,
     };
@@ -127,6 +129,23 @@ export function createLocalServiceActionRoutes(input: Readonly<{
     return {
         async execute(request) {
             const requestedAt = now();
+            if (request.undoKey) {
+                if (request.target.machineId !== input.machineId) {
+                    return deniedResult({ request, requestedAt, reasonCode: 'wrong_machine' });
+                }
+                if (request.action !== 'forget' || request.target.kind !== 'inventory_entry'
+                    || request.target.inventoryEntryId !== request.undoKey) {
+                    return deniedResult({ request, requestedAt, reasonCode: 'wrong_target_kind' });
+                }
+                const restored = input.inventoryRegistry.undoForget(request.undoKey);
+                return executionResult({
+                    request,
+                    requestedAt,
+                    confirmed: false,
+                    status: restored.ok ? 'succeeded' : 'denied',
+                    ...(!restored.ok ? { reasonCode: restored.reason } : {}),
+                });
+            }
             const target = resolveActionTarget({
                 request,
                 machineId: input.machineId,
@@ -175,6 +194,7 @@ export function createLocalServiceActionRoutes(input: Readonly<{
                 request,
                 status: outcome.status,
                 ...(outcome.status === 'succeeded' ? {} : { reasonCode: outcome.reasonCode }),
+                ...(outcome.status === 'succeeded' && outcome.undoKey ? { undoKey: outcome.undoKey } : {}),
                 requestedAt,
                 confirmed: decision.requiresConfirmation,
             });

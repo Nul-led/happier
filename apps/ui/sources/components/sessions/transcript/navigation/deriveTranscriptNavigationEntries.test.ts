@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { resolveSessionMessagePinRowIdentityKey } from '@/sync/domains/messages/pins/sessionMessagePinIdentity';
+import { resolveSessionMessagePinRowIdentityKey } from "@happier-dev/session-core/pins";
 
 import {
     deriveTranscriptNavigationEntries,
@@ -24,7 +24,28 @@ function loadedMessage(
         text: overrides.text,
         createdAtMs: overrides.createdAtMs ?? Number(overrides.seq) * 100,
         loaded: overrides.loaded ?? true,
+        tool: overrides.tool ?? null,
     };
+}
+
+function toolRow(
+    seq: number,
+    tool: Partial<NonNullable<TranscriptNavigationLoadedMessage['tool']>>,
+    overrides: Partial<TranscriptNavigationLoadedMessage> = {},
+): TranscriptNavigationLoadedMessage {
+    return loadedMessage({
+        messageId: `tool-${seq}`,
+        role: 'tool',
+        seq,
+        text: tool.label ?? `tool ${seq}`,
+        ...overrides,
+        tool: {
+            state: tool.state ?? 'completed',
+            permission: tool.permission ?? null,
+            label: tool.label ?? `tool ${seq}`,
+            completedAtMs: tool.completedAtMs ?? null,
+        },
+    });
 }
 
 function remoteMessage(
@@ -73,6 +94,84 @@ function derive(params: Readonly<{
         pins: params.pins ?? [],
     });
 }
+
+describe('deriveTranscriptNavigationEntries turn facts', () => {
+    it('summarizes what a loaded turn did: tools, approvals with their outcome, failures and when it ended', () => {
+        const entries = derive({
+            loadedMessages: [
+                loadedMessage({ messageId: 'u1', role: 'user', seq: 1, text: 'Add a test', createdAtMs: 1_000 }),
+                toolRow(2, { label: 'Edit SettingsModal.test.tsx' }, { createdAtMs: 2_000 }),
+                toolRow(3, { label: 'yarn test settings', permission: 'allowed', state: 'error', completedAtMs: 9_000 }, { createdAtMs: 3_000 }),
+                toolRow(4, { label: 'rm -rf dist', permission: 'denied' }, { createdAtMs: 4_000 }),
+                loadedMessage({ messageId: 'a5', role: 'assistant', seq: 5, text: 'All 24 tests pass.', createdAtMs: 12_000 }),
+                loadedMessage({ messageId: 'u6', role: 'user', seq: 6, text: 'Push it', createdAtMs: 20_000 }),
+                toolRow(7, { label: 'git push', permission: 'pending', state: 'running' }, { createdAtMs: 21_000 }),
+            ],
+        });
+
+        expect(entries.map((entry) => entry.facts)).toEqual([
+            {
+                toolCount: 3,
+                failedCount: 1,
+                approvals: [
+                    { outcome: 'allowed', label: 'yarn test settings' },
+                    { outcome: 'denied', label: 'rm -rf dist' },
+                ],
+                running: false,
+                lastToolFailed: false,
+                endedAtMs: 12_000,
+            },
+            {
+                toolCount: 1,
+                failedCount: 0,
+                approvals: [{ outcome: 'pending', label: 'git push' }],
+                running: true,
+                lastToolFailed: false,
+                endedAtMs: 21_000,
+            },
+        ]);
+    });
+
+    it('leaves facts unknown (not zero) for a turn with rows outside the loaded window', () => {
+        const entries = derive({
+            loadedMessages: [
+                loadedMessage({ messageId: 'u3', role: 'user', seq: 3, text: 'Loaded turn' }),
+            ],
+            remoteMessages: [
+                remoteMessage({ seq: 1, text: 'Remote turn' }),
+                remoteMessage({ seq: 2, role: 'tool', text: 'yarn test' }),
+            ],
+        });
+
+        expect(entries.map((entry) => [entry.promptPreview, entry.facts])).toEqual([
+            ['Remote turn', null],
+            ['Loaded turn', { toolCount: 0, failedCount: 0, approvals: [], running: false, lastToolFailed: false, endedAtMs: 300 }],
+        ]);
+    });
+
+    it('re-derives an entry when only its facts changed', () => {
+        const before = derive({
+            loadedMessages: [
+                loadedMessage({ messageId: 'u1', role: 'user', seq: 1, text: 'Run it' }),
+                toolRow(2, { label: 'yarn test', state: 'running', permission: 'pending' }),
+            ],
+        });
+        const after = deriveTranscriptNavigationEntries({
+            sessionId: 's1',
+            mode: 'all',
+            loadedMessages: [
+                loadedMessage({ messageId: 'u1', role: 'user', seq: 1, text: 'Run it' }),
+                toolRow(2, { label: 'yarn test', state: 'completed', permission: 'allowed' }),
+            ],
+            remoteMessages: [],
+            pins: [],
+            previousEntries: before,
+        });
+
+        expect(after[0]).not.toBe(before[0]);
+        expect(after[0]?.facts?.approvals).toEqual([{ outcome: 'allowed', label: 'yarn test' }]);
+    });
+});
 
 describe('deriveTranscriptNavigationEntries', () => {
     it('derives loaded user turns with prompt primary text and final loaded assistant response preview', () => {

@@ -41,7 +41,7 @@ describe('happier session review start command', () => {
       expect(execute).toHaveBeenCalledWith(
         'review.start',
         expect.objectContaining({ engineIds: ['engine-1'], instructions: 'Review.', changeType: 'uncommitted', base: { kind: 'none' } }),
-        { authority: 'present_user', defaultSessionId: 'sess-review-1' },
+        { defaultSessionId: 'sess-review-1' },
       );
       expect(output.json()).toEqual(expect.objectContaining({ ok: true, kind: 'session_review_start' }));
     } finally {

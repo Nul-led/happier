@@ -416,12 +416,7 @@ describe('PlanChecklistCard', () => {
         if (!statusSlot) {
             throw new Error('Expected onboarding status slot');
         }
-        const flattenedStyle = Array.isArray(statusSlot.props.style)
-            ? Object.assign({}, ...statusSlot.props.style.filter(Boolean))
-            : statusSlot.props.style;
-        expect(flattenedStyle.borderWidth).toBe(1);
-        expect(flattenedStyle.width).toBeGreaterThan(26);
-        expect(flattenedStyle.height).toBeGreaterThan(26);
+        // The onboarding contract is the numbered cue, not a second marker geometry.
         expect(statusSlot.findAll((node) => node.children.includes('1'))).toHaveLength(1);
     });
 

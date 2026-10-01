@@ -3,10 +3,10 @@ import axios from 'axios';
 
 import { createAuthenticationHttpStatusError, isAuthenticationStatus } from '@/api/client/httpStatusError';
 import { resolveServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
-import { SessionMessageContentSchema } from '@/api/types';
 import {
-  ExternalShareableActorV1Schema,
-  ExternalShareableTranscriptSnapshotV1Schema,
+  buildSessionMessagesPath,
+  SessionMessagesPageV1Schema,
+  SessionExternalShareableMessagesPageV1Schema,
   isExternalShareableTranscriptWirePayloadWithinLimitV1,
   type ExternalShareableTranscriptSnapshotV1,
 } from '@happier-dev/protocol';
@@ -20,6 +20,7 @@ export type RawTranscriptRow = Readonly<{
   seq?: unknown;
   localId?: unknown;
   createdAt?: unknown;
+  updatedAt?: unknown;
   content?: unknown;
   messageRole?: unknown;
   sidechainId?: unknown;
@@ -35,48 +36,6 @@ export type FetchEncryptedTranscriptMessagesPageResult = Readonly<{
   publicationBlocked?: boolean;
   externalShareableSnapshot?: ExternalShareableTranscriptSnapshotV1;
 }>;
-
-function parseAuthoritativeTranscriptMessages(raw: unknown, projection?: 'externalShareableV1'): RawTranscriptRow[] {
-  if (!Array.isArray(raw)) throw createSessionTranscriptStoredContentUnavailableError();
-
-  return raw.map((entry) => {
-    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
-      throw createSessionTranscriptStoredContentUnavailableError();
-    }
-    const row = entry as Record<string, unknown>;
-    if (!(typeof row.seq === 'number' && Number.isSafeInteger(row.seq) && row.seq >= 0)) {
-      throw createSessionTranscriptStoredContentUnavailableError();
-    }
-    if (projection === 'externalShareableV1') {
-      const {
-        inputAdmissionReceipt: _inputAdmissionReceipt,
-        externalShareableActor: rawExternalShareableActor,
-        content: _rawContent,
-        ...externalShareableRow
-      } = row;
-      const content = SessionMessageContentSchema.safeParse(row.content);
-      const externalShareableActor = ExternalShareableActorV1Schema.safeParse(rawExternalShareableActor);
-      return {
-        ...externalShareableRow,
-        ...(content.success ? { content: content.data } : {}),
-        ...(externalShareableActor.success
-          ? { externalShareableActor: externalShareableActor.data }
-          : {}),
-      };
-    }
-    const content = SessionMessageContentSchema.safeParse(row.content);
-    if (!content.success) throw createSessionTranscriptStoredContentUnavailableError();
-    return { ...row, content: content.data };
-  });
-}
-
-function parseOptionalTranscriptCursor(value: unknown): number | null {
-  if (value === undefined || value === null) return null;
-  if (!(typeof value === 'number' && Number.isSafeInteger(value) && value >= 0)) {
-    throw createSessionTranscriptStoredContentUnavailableError();
-  }
-  return value;
-}
 
 export async function fetchEncryptedTranscriptMessagesPage(params: Readonly<{
   token: string;
@@ -104,16 +63,17 @@ export async function fetchEncryptedTranscriptMessagesPage(params: Readonly<{
     error.name = 'AbortError';
     throw error;
   }
-  const query = new URLSearchParams();
-  query.set('limit', String(params.limit));
-  if (typeof params.beforeSeq === 'number' && Number.isFinite(params.beforeSeq)) query.set('beforeSeq', String(Math.max(0, Math.floor(params.beforeSeq))));
-  if (typeof params.afterSeq === 'number' && Number.isFinite(params.afterSeq)) query.set('afterSeq', String(Math.max(0, Math.floor(params.afterSeq))));
-  if (params.scope) query.set('scope', params.scope);
-  if (params.sidechainId) query.set('sidechainId', params.sidechainId);
-  if (params.role) query.set('role', params.role);
-  if (params.roles && params.roles.length > 0) query.set('roles', params.roles.join(','));
-  if (params.projection) query.set('projection', params.projection);
-  const path = `/v1/sessions/${encodeURIComponent(params.sessionId)}/messages?${query.toString()}`;
+  const path = buildSessionMessagesPath({
+    sessionId: params.sessionId,
+    scope: params.scope ?? 'main',
+    limit: params.limit,
+    ...(typeof params.beforeSeq === 'number' && Number.isFinite(params.beforeSeq) ? { beforeSeq: Math.max(0, Math.floor(params.beforeSeq)) } : {}),
+    ...(typeof params.afterSeq === 'number' && Number.isFinite(params.afterSeq) ? { afterSeq: Math.max(0, Math.floor(params.afterSeq)) } : {}),
+    ...(params.sidechainId ? { sidechainId: params.sidechainId } : {}),
+    ...(params.role ? { role: params.role } : {}),
+    ...(params.roles?.length ? { roles: params.roles } : {}),
+    ...(params.projection ? { projection: params.projection } : {}),
+  });
   const authorizationHeaders = params.resolveAuthorizationHeaders?.({ method: 'GET', path })
     ?? (params.resolveAuthorizationHeaders ? null : { Authorization: `Bearer ${params.token}` });
   if (!authorizationHeaders) throw new Error('External Action authorization unavailable');
@@ -142,30 +102,25 @@ export async function fetchEncryptedTranscriptMessagesPage(params: Readonly<{
     throw createSessionTranscriptStoredContentUnavailableError();
   }
 
-  const raw = (response.data as any)?.messages;
-  const messages = parseAuthoritativeTranscriptMessages(raw, params.projection);
-  const hasMore = (response.data as any)?.hasMore === true;
-  const nextBeforeSeqRaw = (response.data as any)?.nextBeforeSeq;
-  const nextAfterSeqRaw = (response.data as any)?.nextAfterSeq;
-  const nextBeforeSeq = parseOptionalTranscriptCursor(nextBeforeSeqRaw);
-  const nextAfterSeq = parseOptionalTranscriptCursor(nextAfterSeqRaw);
-  const rawExternalShareableSnapshot = (response.data as any)?.externalShareableSnapshot;
-  const externalShareableSnapshot = params.projection === 'externalShareableV1'
-    && rawExternalShareableSnapshot !== undefined
-    ? ExternalShareableTranscriptSnapshotV1Schema.parse(rawExternalShareableSnapshot)
-    : undefined;
-
+  if (params.projection === 'externalShareableV1') {
+    const page = SessionExternalShareableMessagesPageV1Schema.safeParse(response.data);
+    if (!page.success) throw createSessionTranscriptStoredContentUnavailableError();
+    return {
+      messages: page.data.messages,
+      hasMore: page.data.hasMore ?? false,
+      nextBeforeSeq: page.data.nextBeforeSeq ?? null,
+      nextAfterSeq: page.data.nextAfterSeq ?? null,
+      publicationBlocked: page.data.publicationBlocked === true,
+      ...(page.data.externalShareableSnapshot ? { externalShareableSnapshot: page.data.externalShareableSnapshot } : {}),
+    };
+  }
+  const page = SessionMessagesPageV1Schema.safeParse(response.data);
+  if (!page.success) throw createSessionTranscriptStoredContentUnavailableError();
   return {
-    messages,
-    hasMore,
-    nextBeforeSeq,
-    nextAfterSeq,
-    ...(params.projection === 'externalShareableV1'
-      ? {
-          publicationBlocked: (response.data as any)?.publicationBlocked === true,
-          ...(externalShareableSnapshot ? { externalShareableSnapshot } : {}),
-        }
-      : {}),
+    messages: page.data.messages,
+    hasMore: page.data.hasMore ?? false,
+    nextBeforeSeq: page.data.nextBeforeSeq ?? null,
+    nextAfterSeq: page.data.nextAfterSeq ?? null,
   };
 }
 

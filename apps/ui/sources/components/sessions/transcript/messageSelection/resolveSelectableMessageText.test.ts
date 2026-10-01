@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { AgentTextMessage, Message, UserTextMessage } from '@/sync/domains/messages/messageTypes';
+import type { AgentTextMessage, Message, UserTextMessage } from "@happier-dev/session-core/messages";
 
 import { resolveSelectableMessageText } from './resolveSelectableMessageText';
 

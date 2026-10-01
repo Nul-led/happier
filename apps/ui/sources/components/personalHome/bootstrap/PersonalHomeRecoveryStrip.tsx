@@ -1,10 +1,12 @@
 import * as React from 'react';
-import { Pressable, View } from 'react-native';
+import { View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
 import type { SystemTaskRunState } from '@/components/systemTasks/types';
+import { RoundButton } from '@/components/ui/buttons/RoundButton';
 import { Text } from '@/components/ui/text/Text';
 import { Typography } from '@/constants/Typography';
+import { presentThisComputerConnection } from '@/components/settings/machines/localControl/thisComputerConnectionPresentation';
 import { t } from '@/text';
 import { PersonalHomeDiagnosticDetails } from '../setup/PersonalHomeDiagnosticDetails';
 import type { NormalizedSetupDetail } from './personalHomeBootstrapTypes';
@@ -20,19 +22,6 @@ const styles = StyleSheet.create((theme) => ({
     },
     message: { ...Typography.default(), color: theme.colors.text.secondary, fontSize: 13, lineHeight: 19 },
     actions: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
-    button: {
-        minHeight: 44,
-        alignSelf: 'flex-start',
-        borderRadius: 12,
-        paddingHorizontal: 16,
-        justifyContent: 'center',
-        borderWidth: 1,
-        borderColor: theme.colors.button.primary.background,
-        backgroundColor: theme.colors.button.primary.background,
-    },
-    secondaryButton: { backgroundColor: theme.colors.background.canvas, borderColor: theme.colors.border.default },
-    buttonText: { ...Typography.default('semiBold'), color: theme.colors.button.primary.tint },
-    secondaryButtonText: { ...Typography.default('semiBold'), color: theme.colors.text.primary },
     details: { width: '100%' },
 }));
 
@@ -49,13 +38,21 @@ export const PersonalHomeRecoveryStrip = React.memo(function PersonalHomeRecover
     onRetry?: () => void;
 }>) {
     const [detailsOpen, setDetailsOpen] = React.useState(false);
+    // A failure that is a fact about this computer's daemon (another account, another Home…) reads
+    // as the same localized sentence and action every surface uses; Details stays diagnostic only.
+    const computerPresentation = !props.pending && props.kind === 'computer' && props.detail?.thisComputer
+        ? presentThisComputerConnection(props.detail.thisComputer)
+        : null;
     const message = props.pending
         ? props.kind === 'computer'
             ? t('personalHome.bootstrap.preparingComputerStatus')
             : t('personalHome.bootstrap.ensuringHomeStatus')
-        : props.kind === 'computer'
-            ? t('personalHome.bootstrap.computerRecoveryBody')
-            : t('personalHome.bootstrap.profileRecoveryBody');
+        : computerPresentation
+            ? computerPresentation.description
+            : props.kind === 'computer'
+                ? t('personalHome.bootstrap.computerRecoveryBody')
+                : t('personalHome.bootstrap.profileRecoveryBody');
+    const retryLabel = computerPresentation?.actionLabel ?? t('common.retry');
     const hasDetails = props.onOpenDetails != null || props.activeTask != null || props.detail != null;
     const openDetails = React.useCallback(() => {
         if (props.onOpenDetails) {
@@ -73,27 +70,24 @@ export const PersonalHomeRecoveryStrip = React.memo(function PersonalHomeRecover
             <Text style={styles.message}>{message}</Text>
             <View style={styles.actions}>
                 {!props.pending && props.onRetry ? (
-                    <Pressable
+                    <RoundButton
+                        size="normal"
                         testID="personal-home-recovery-retry"
-                        accessibilityRole="button"
-                        accessibilityLabel={t('common.retry')}
+                        accessibilityLabel={retryLabel}
                         onPress={props.onRetry}
-                        style={styles.button}
-                    >
-                        <Text style={styles.buttonText}>{t('common.retry')}</Text>
-                    </Pressable>
+                        title={retryLabel}
+                    />
                 ) : null}
                 {!props.pending && hasDetails ? (
-                    <Pressable
+                    <RoundButton
+                        size="normal"
+                        display="inverted"
                         testID="personal-home-recovery-details"
-                        accessibilityRole="button"
                         accessibilityLabel={t('common.details')}
-                        accessibilityState={props.onOpenDetails ? undefined : { expanded: detailsOpen }}
+                        expanded={props.onOpenDetails ? undefined : detailsOpen}
                         onPress={openDetails}
-                        style={[styles.button, styles.secondaryButton]}
-                    >
-                        <Text style={styles.secondaryButtonText}>{t('common.details')}</Text>
-                    </Pressable>
+                        title={t('common.details')}
+                    />
                 ) : null}
             </View>
             {detailsOpen && (props.activeTask || props.detail) ? (

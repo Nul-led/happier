@@ -1,7 +1,9 @@
 import * as React from 'react';
 import { readServerEnabledBit, type MachineKind, type MachinePoolViewV1 } from '@happier-dev/protocol';
 
+import { useServerProfilesGeneration } from '@/hooks/server/useServerProfilesGeneration';
 import { useServerFeaturesMainSelectionSnapshot } from '@/sync/domains/features/featureDecisionRuntime';
+import { resolveServerProfileScopeIdForIdentifier } from '@/sync/domains/server/serverProfiles';
 import {
     useServerCredentialAccountScopeResolutions,
     type ServerCredentialAccountScopeProjectionLifecycle,
@@ -89,12 +91,21 @@ export function useMachinePoolProjections(
     const poolAccountIdByServerId = useMachinePoolAccountIdByServerId();
     const serverIds = React.useMemo(() => scopes.map((scope) => scope.serverId), [scopes]);
     const features = useServerFeaturesMainSelectionSnapshot(serverIds);
+    // Credentials, Pool Actions and the Pool store key a Home by its portable scope id, while a
+    // consumer may name it by its local profile id. Read every one of those owners by the scope id.
+    const profilesGeneration = useServerProfilesGeneration();
+    const scopeIds = React.useMemo(
+        () => serverIds.map((serverId) => resolveServerProfileScopeIdForIdentifier(serverId) || serverId),
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+        [serverIds, profilesGeneration],
+    );
     const accountScopes = useServerCredentialAccountScopeResolutions(
-        serverIds,
+        scopeIds,
         MACHINE_POOL_CREDENTIAL_SCOPE_LIFECYCLE,
     );
 
-    const projections = React.useMemo<readonly MachinePoolProjection[]>(() => scopes.map((scope) => {
+    const projections = React.useMemo<readonly MachinePoolProjection[]>(() => scopes.map((scope, index) => {
+        const scopeId = scopeIds[index] ?? scope.serverId;
         const snapshot = features.snapshotsByServerId[scope.serverId];
         const featureStatus: MachinePoolProjection['featureStatus'] = !snapshot
             ? 'loading'
@@ -107,11 +118,11 @@ export function useMachinePoolProjections(
         const featureKnownDisabled = featureStatus === 'disabled';
         // `null` is this Home's explicit "not hydrated yet" marker, so an array is the only
         // evidence that a real list arrived.
-        const cached = poolListByServerId[scope.serverId];
+        const cached = poolListByServerId[scopeId];
         const hydrated = Array.isArray(cached);
-        const storedStatus = poolListStatusByServerId[scope.serverId] ?? 'idle';
-        const accountScope = accountScopes.get(scope.serverId);
-        const cachedAccountId = poolAccountIdByServerId[scope.serverId];
+        const storedStatus = poolListStatusByServerId[scopeId] ?? 'idle';
+        const accountScope = accountScopes.get(scopeId);
+        const cachedAccountId = poolAccountIdByServerId[scopeId];
         const cachedAccountIsCurrent = accountScope?.kind === 'signed_out'
             ? Boolean(cachedAccountId)
             : accountScope?.kind === 'bound' && accountScope.scope.accountId === cachedAccountId;
@@ -143,12 +154,13 @@ export function useMachinePoolProjections(
             status,
             ready: featureKnownDisabled || (featureEnabled && currentRowsAvailable && status === 'idle'),
         };
-    }), [accountScopes, features.snapshotsByServerId, poolAccountIdByServerId, poolListByServerId, poolListStatusByServerId, scopes]);
+    }), [accountScopes, features.snapshotsByServerId, poolAccountIdByServerId, poolListByServerId, poolListStatusByServerId, scopeIds, scopes]);
 
     const projectionDemands = React.useMemo(() => projections.map((projection, index) => {
-        const accountScope = accountScopes.get(projection.serverId);
+        const scopeId = scopeIds[index] ?? projection.serverId;
+        const accountScope = accountScopes.get(scopeId);
         return {
-            serverId: projection.serverId,
+            serverId: scopeId,
             machineRevisionKey: buildMachineLifecycleRevisionKey(scopes[index]!),
             transportEnabled: projection.featureEnabled,
             // A signed-out or failed Home keeps its last-known rows visible but inert. Those states
@@ -157,12 +169,12 @@ export function useMachinePoolProjections(
             needsHydration: projection.featureEnabled
                 && accountScope?.kind === 'bound'
                 && (
-                    !Array.isArray(poolListByServerId[projection.serverId])
-                    || poolAccountIdByServerId[projection.serverId] !== accountScope.scope.accountId
+                    !Array.isArray(poolListByServerId[scopeId])
+                    || poolAccountIdByServerId[scopeId] !== accountScope.scope.accountId
                 )
-                && (poolListStatusByServerId[projection.serverId] ?? 'idle') === 'idle',
+                && (poolListStatusByServerId[scopeId] ?? 'idle') === 'idle',
         };
-    }), [accountScopes, poolAccountIdByServerId, poolListByServerId, projections, scopes]);
+    }), [accountScopes, poolAccountIdByServerId, poolListByServerId, projections, scopeIds, scopes]);
     // Every visible Home participates in the shared feature/currentness wake, while Pool transport
     // itself is admitted only after the Home positively advertises it. This lets a live Home move
     // from unsupported/disabled to enabled without a remount or an unsupported speculative Action.

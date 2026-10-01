@@ -2,7 +2,7 @@ import React from 'react';
 import { View } from 'react-native';
 import { useSessionProjectScmSnapshot } from '@/sync/domains/state/storage';
 import { StyleSheet } from 'react-native-unistyles';
-import { buildScmStatusSummaryFromSnapshot } from './statusSummary';
+import { buildSessionScmSummary } from './statusSummary';
 import { Text } from '@/components/ui/text/Text';
 import { t } from '@/text';
 
@@ -71,7 +71,7 @@ interface ProjectSourceControlStatusProps {
 export function ProjectSourceControlStatus({ sessionId }: ProjectSourceControlStatusProps) {
     const styles = stylesheet;
     const snapshot = useSessionProjectScmSnapshot(sessionId);
-    const scmStatusSummary = buildScmStatusSummaryFromSnapshot(snapshot);
+    const scmStatusSummary = buildSessionScmSummary(snapshot);
 
     if (!scmStatusSummary) {
         return null;

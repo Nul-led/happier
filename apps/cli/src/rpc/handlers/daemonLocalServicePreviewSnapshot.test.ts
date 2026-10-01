@@ -2,6 +2,11 @@ import { describe, expect, it } from 'vitest';
 
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 import type { LocalServicePreviewSnapshotV1 } from '@happier-dev/protocol';
+import {
+    DaemonLocalServicePreviewOpenOrCreateResponseV1Schema,
+    DaemonLocalServicePreviewRevokeResponseV1Schema,
+    LocalServicePreviewResourceV1Schema,
+} from '@happier-dev/protocol';
 import type { RpcHandlerRegistrar } from '@/api/rpc/types';
 
 import {
@@ -66,9 +71,22 @@ function createLifecycleRoutes() {
     });
     return createLocalServicePreviewRoutes({
         machineId: LIFECYCLE_MACHINE_ID,
+        accountId: 'account-lifecycle',
         registry: createLocalServicePreviewRegistry(),
         inventoryRegistry,
         now: () => 1_000,
+        // Substitute only the HTTP boundary; registration, scope and RPC projection remain real.
+        server: {
+            token: 'daemon-token',
+            serverBaseUrl: 'https://home.example.test',
+            http: {
+                async post(_url, body) {
+                    const resource = LocalServicePreviewResourceV1Schema.parse(body);
+                    return { data: { resource, accessUrl: 'https://private.preview.example.test/?previewToken=admission', expiresAt: 61_000 } };
+                },
+                async delete() { return { data: { ok: true } }; },
+            },
+        },
     });
 }
 
@@ -137,16 +155,18 @@ describe('daemon local service preview snapshot rpc handler', () => {
             localServicesPreview: createLifecycleRoutes(),
         });
 
-        const response = await handlers.get(RPC_METHODS.DAEMON_LOCAL_SERVICES_PREVIEW_OPEN_OR_CREATE)?.({
+        const response = DaemonLocalServicePreviewOpenOrCreateResponseV1Schema.parse(await handlers.get(RPC_METHODS.DAEMON_LOCAL_SERVICES_PREVIEW_OPEN_OR_CREATE)?.({
             machineId: LIFECYCLE_MACHINE_ID,
             sessionId: 'session-1',
             inventoryEntryId: 'entry-vite',
-        }) as Record<string, unknown>;
+        }));
 
         expect(response.status).toBe('created');
         expect(response.protocolVersion).toBe(1);
-        const preview = response.preview as Record<string, unknown>;
-        expect(preview.accessUrl).toBe('http://127.0.0.1:5173/');
+        expect(response.preview.accessUrl).toBe('https://private.preview.example.test/?previewToken=admission');
+        expect(response.preview.resource.browserTarget).toMatchObject({
+            kind: 'localServicePreview', machineId: LIFECYCLE_MACHINE_ID, sessionId: 'session-1',
+        });
     });
 
     it('revoke dispatches to the daemon route and reports the refreshed snapshot', async () => {
@@ -162,13 +182,13 @@ describe('daemon local service preview snapshot rpc handler', () => {
         expect(created.ok).toBe(true);
         if (!created.ok) return;
 
-        const response = await handlers.get(RPC_METHODS.DAEMON_LOCAL_SERVICES_PREVIEW_REVOKE)?.({
+        const response = DaemonLocalServicePreviewRevokeResponseV1Schema.parse(await handlers.get(RPC_METHODS.DAEMON_LOCAL_SERVICES_PREVIEW_REVOKE)?.({
             machineId: LIFECYCLE_MACHINE_ID,
             previewId: created.response.preview.previewId,
-        }) as Record<string, unknown>;
+        }));
 
         expect(response.revoked).toBe(true);
-        expect((response.snapshot as Record<string, unknown>).previews).toHaveLength(0);
+        expect(response.snapshot.previews).toHaveLength(0);
     });
 
     it('maps a daemon route refusal to a lifecycle error carrying the reason code', async () => {

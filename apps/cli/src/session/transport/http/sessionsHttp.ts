@@ -1,6 +1,8 @@
 import axios, { type AxiosResponse } from 'axios';
+import { pickSessionCreateOriginFields } from '@/session/shared/sessionCreateOrigin';
 import { z } from 'zod';
 import {
+  SESSION_CREATION_AUTHORIZATION_HEADER_V1,
   agentEventLocalIdAttentionImpact,
   type SessionMessageAttentionImpact,
   type SessionStoredMessageContent,
@@ -35,6 +37,14 @@ import {
   type SessionListUnavailableQueryV1,
   SessionCurrentProjectionRecordV1Schema,
   type SessionInitialAccessDraftV1,
+  SessionReportsToSetActionInputV1Schema,
+  SessionReportsToSetResultV1Schema,
+  SessionAttentionSetResultV1Schema,
+  buildSessionAttentionStandingHttpPath,
+  type SessionAttentionSetResultV1,
+  type SessionReportsToSetActionInputV1,
+  type SessionReportsToSetResultV1,
+  type SessionReportsToV1,
 } from '@happier-dev/protocol';
 import {
   SessionTeamCredentialBindingMutationRejectionV1Schema,
@@ -64,6 +74,7 @@ import {
 import { configuration } from '@/configuration';
 import { resolveServerHttpBaseUrl } from './serverHttpBaseUrl';
 import { buildSessionMetadataEnvelopeCreateFields } from '@/session/metadata/buildSessionMetadataEnvelopeCreateFields';
+import { resolveSessionRoleSnapshotCreationMetadata } from '@/session/metadata/resolveSessionRoleSnapshotCreationMetadata';
 import {
   buildSessionInitialAccessCreateFields,
   materializeSessionInitialAccessCreateFields,
@@ -72,6 +83,69 @@ import {
 } from '@/api/session/sessionCreationInitialAccess';
 
 export type RawSessionRecord = V2SessionByIdResponse['session'];
+
+export async function setSessionReportsTo(params: SessionReportsToSetActionInputV1 & Readonly<{
+  token: string;
+  signal?: AbortSignal;
+  resolveAuthorizationHeaders?: (request: Readonly<{ method: 'POST'; path: string; body: unknown }>) => Readonly<Record<string, string>> | null;
+}>): Promise<SessionReportsToSetResultV1> {
+  const request = SessionReportsToSetActionInputV1Schema.parse({
+    sessionId: params.sessionId, leadSessionId: params.leadSessionId, expectedLeadSessionId: params.expectedLeadSessionId,
+  });
+  const path = `/v1/sessions/${encodeSessionIdPathSegment(request.sessionId)}/reports-to`;
+  const body = { leadSessionId: request.leadSessionId, expectedLeadSessionId: request.expectedLeadSessionId };
+  const authorizationHeaders = params.resolveAuthorizationHeaders?.({ method: 'POST', path, body })
+    ?? (params.resolveAuthorizationHeaders ? null : { Authorization: `Bearer ${params.token}` });
+  if (!authorizationHeaders) throw new Error('External Action authorization unavailable');
+  const response = await axios.post(`${resolveServerHttpBaseUrl()}${path}`, body, {
+    headers: { ...authorizationHeaders, 'Content-Type': 'application/json' },
+    ...(params.signal ? { signal: params.signal } : {}),
+    timeout: configuration.sessionControlHttpTimeoutMs,
+    validateStatus: () => true,
+  });
+  const result = SessionReportsToSetResultV1Schema.safeParse(response.data);
+  if (result.success) {
+    const expectedStatus = result.data.ok ? 200 : result.data.error === 'reports_to_cycle' ? 400
+      : result.data.error === 'reports_to_cas_conflict' ? 409 : 403;
+    if (response.status !== expectedStatus) throwUnexpectedStatusError(path, response.status);
+    if (result.data.ok && (result.data.sessionId !== request.sessionId || result.data.leadSessionId !== request.leadSessionId)) {
+      throw new Error('Unexpected reportsTo attachment response');
+    }
+    return result.data;
+  }
+  if (isAuthenticationStatus(response.status)) throwAuthenticationStatusError(response.status);
+  if (response.status !== 200) throwUnexpectedStatusError(path, response.status);
+  throw new Error('Unexpected reportsTo response shape');
+}
+/**
+ * `session.attention.set` (ORC R-10) over the existing attention-standing route. The server route is
+ * the only writer; a 404 is the route's own "session not found", anything else unexpected throws.
+ */
+export async function setSessionAttentionStanding(params: Readonly<{
+  token: string;
+  sessionId: string;
+  request: Readonly<{ standing?: boolean | null; remindAt?: number | null }>;
+  signal?: AbortSignal;
+  resolveAuthorizationHeaders?: (request: Readonly<{ method: 'PUT'; path: string; body: unknown }>) => Readonly<Record<string, string>> | null;
+}>): Promise<SessionAttentionSetResultV1 | Readonly<{ ok: false; errorCode: 'session_not_found'; error: 'session_not_found' }>> {
+  const path = buildSessionAttentionStandingHttpPath(params.sessionId);
+  const body = params.request;
+  const authorizationHeaders = params.resolveAuthorizationHeaders?.({ method: 'PUT', path, body })
+    ?? (params.resolveAuthorizationHeaders ? null : { Authorization: `Bearer ${params.token}` });
+  if (!authorizationHeaders) throw new Error('External Action authorization unavailable');
+  const response = await axios.put(`${resolveServerHttpBaseUrl()}${path}`, body, {
+    headers: { ...authorizationHeaders, 'Content-Type': 'application/json' },
+    ...(params.signal ? { signal: params.signal } : {}),
+    timeout: configuration.sessionControlHttpTimeoutMs,
+    validateStatus: () => true,
+  });
+  if (response.status === 404) return { ok: false, errorCode: 'session_not_found', error: 'session_not_found' };
+  if (isAuthenticationStatus(response.status)) throwAuthenticationStatusError(response.status);
+  if (response.status !== 200) throwUnexpectedStatusError(path, response.status);
+  const result = SessionAttentionSetResultV1Schema.safeParse(response.data);
+  if (!result.success) throw new Error('Unexpected attention standing response shape');
+  return result.data;
+}
 export type RawSessionListRow = V2SessionListResponse['sessions'][number];
 export type SessionLookupByTagsHttpResult =
   | Readonly<{
@@ -85,15 +159,21 @@ export async function fetchSessionTurnsProjection(params: Readonly<{
   token: string;
   sessionId: string;
   projection?: 'externalShareableV1';
+  signal?: AbortSignal;
+  resolveAuthorizationHeaders?: (request: Readonly<{ method: 'GET'; path: string }>) => Readonly<Record<string, string>> | null;
 }>): Promise<SessionTurnsProjectionV1 | null> {
   const path = `/v1/sessions/${encodeSessionIdPathSegment(params.sessionId)}/turns`;
+  const authorizationHeaders = params.resolveAuthorizationHeaders?.({ method: 'GET', path })
+    ?? (params.resolveAuthorizationHeaders ? null : { Authorization: `Bearer ${params.token}` });
+  if (!authorizationHeaders) throw new Error('External Action authorization unavailable');
   const response = await axios.get(`${resolveServerHttpBaseUrl()}${path}`, {
     headers: {
       ...buildCurrentAccountStoredContentCompatibilityHttpHeaders(),
-      Authorization: `Bearer ${params.token}`,
+      ...authorizationHeaders,
       'Content-Type': 'application/json',
     },
     ...(params.projection ? { params: { projection: params.projection } } : {}),
+    ...(params.signal ? { signal: params.signal } : {}),
     timeout: configuration.sessionControlHttpTimeoutMs,
     validateStatus: () => true,
   });
@@ -306,7 +386,7 @@ export async function fetchSessionById(params: Readonly<{
   reason?: SessionSnapshotRefreshReason;
   signal?: AbortSignal;
   deadlineAtMs?: number;
-  /** Supply only after the exact Home's canonical sharing.session decision is enabled. */
+  /** Require the complete current projection; unsupported Homes fail rather than falling back. */
   accessProjectionVersion?: 1;
   /** Exact Home snapshot already owned by the caller's runtime/connection; never fetched here. */
   serverFeaturesSnapshot?: CliServerFeaturesSnapshot;
@@ -1055,6 +1135,7 @@ export async function fetchSessionsPage(params: Readonly<{
   sessions: RawSessionListRow[];
   nextCursor: string | null;
   hasNext: boolean;
+  metadataUpgradeRequiredCount?: number;
 }> & (
   | SessionListAttentionContinuationV1
   | Readonly<{ attentionNextCursor?: never; attentionHasNext?: never }>
@@ -1118,6 +1199,9 @@ export async function fetchSessionsPage(params: Readonly<{
     sessions: parsed.sessions,
     nextCursor: typeof parsed.nextCursor === 'string' ? parsed.nextCursor : null,
     hasNext: Boolean(parsed.hasNext),
+    ...(parsed.metadataUpgradeRequiredCount === undefined
+      ? {}
+      : { metadataUpgradeRequiredCount: parsed.metadataUpgradeRequiredCount }),
   };
   return attentionContinuation === null
     ? page
@@ -1352,7 +1436,7 @@ export async function importHistoricalSessionTranscript(params: Readonly<{
   };
 }
 
-export async function getOrCreateSessionByTag(params: Readonly<{
+export async function getOrCreateSessionByTag(params: Readonly<import('@happier-dev/protocol').SessionCreateOriginFieldsV1 & {
   credentials: StoredCredentials;
   tag: string;
   metadata: Record<string, unknown>;
@@ -1361,8 +1445,10 @@ export async function getOrCreateSessionByTag(params: Readonly<{
   organizationPlacement?: SessionOrganizationPlacementV1;
   shouldCommit?: () => boolean;
   initialAccess?: SessionInitialAccessDraftV1;
+  reportsTo?: SessionReportsToV1;
   primaryTeamId?: string | null;
   teamCredentialBindings?: SessionTeamCredentialBindingIntentListV1;
+  creationAuthorizationToken?: string;
   accountEncryptionCurrentness?: AccountEncryptionCurrentnessResponse;
 }>): Promise<{
   session: RawSessionRecord;
@@ -1394,6 +1480,12 @@ export async function getOrCreateSessionByTag(params: Readonly<{
   } = encryptionModeResolution;
 
   const initialAccessFields = buildSessionInitialAccessCreateFields(params, serverFeaturesSnapshot);
+  const creationMetadata = await resolveSessionRoleSnapshotCreationMetadata({
+    metadata: params.metadata,
+    readLeadSession: (sessionId) => fetchSessionById({
+      token: params.credentials.token, sessionId, serverFeaturesSnapshot,
+    }),
+  });
   const sessionEncryptionContext =
     desiredSessionEncryptionMode === 'e2ee'
       ? resolveSessionEncryptionContext(params.credentials)
@@ -1403,7 +1495,7 @@ export async function getOrCreateSessionByTag(params: Readonly<{
       ? buildSessionMetadataEnvelopeCreateFields({
           credentials: params.credentials,
           accountEncryptionMode: accountEncryptionCurrentness.mode,
-          metadata: params.metadata,
+          metadata: creationMetadata,
           agentState: params.agentState,
           storedContentMode: 'plain',
         })
@@ -1414,7 +1506,7 @@ export async function getOrCreateSessionByTag(params: Readonly<{
           return buildSessionMetadataEnvelopeCreateFields({
             credentials: params.credentials,
             accountEncryptionMode: accountEncryptionCurrentness.mode,
-            metadata: params.metadata,
+            metadata: creationMetadata,
             agentState: params.agentState,
             storedContentMode: 'e2ee',
             encryptionKey: sessionEncryptionContext.encryptionKey,
@@ -1439,6 +1531,8 @@ export async function getOrCreateSessionByTag(params: Readonly<{
     throw new Error('Session creation commit precondition failed');
   }
   const response = await axios.post(`${serverUrl}/v1/sessions`, {
+    ...pickSessionCreateOriginFields(params),
+    ...(params.reportsTo !== undefined ? { reportsTo: params.reportsTo } : {}),
     tag: params.tag,
     ...metadataEnvelopeFields,
     dataEncryptionKey: dataEncryptionKeyPayload,
@@ -1450,6 +1544,7 @@ export async function getOrCreateSessionByTag(params: Readonly<{
   }, {
     headers: {
       ...buildCurrentAccountStoredContentCompatibilityHttpHeaders(),
+      ...(params.creationAuthorizationToken ? { [SESSION_CREATION_AUTHORIZATION_HEADER_V1]: params.creationAuthorizationToken } : {}),
       Authorization: `Bearer ${params.credentials.token}`,
       'Content-Type': 'application/json',
     },

@@ -6,12 +6,15 @@ import {
 } from '@happier-dev/protocol';
 
 import type { MachineLiveStreamCaptureAdapter } from './captureAdapter';
+import type { ComputerCaptureSource } from '../../../computer/source';
 
 export type MachineLiveStreamRegisteredCaptureSource = Readonly<{
     sourceId: string;
     streamFamily: string;
     adapter: MachineLiveStreamCaptureAdapter;
     capabilities: MachineLiveStreamCaptureSourceV1;
+    /** Native target lifecycle and control share this exact registered capture source. */
+    computer?: ComputerCaptureSource;
 }>;
 
 export type MachineLiveStreamCaptureRegistryResolveInput = Readonly<{
@@ -56,11 +59,12 @@ export function createMachineLiveStreamCaptureRegistry(): MachineLiveStreamCaptu
         resolve: (input) => {
             if (input.sourceId) {
                 const source = sourcesById.get(input.sourceId);
-                return source ? { ok: true, source } : { ok: false, diagnostic: unavailableDiagnostic(input) };
+                return source && (!input.streamFamily || source.streamFamily === input.streamFamily)
+                    ? { ok: true, source } : { ok: false, diagnostic: unavailableDiagnostic(input) };
             }
             if (input.streamFamily) {
-                const source = [...sourcesById.values()].find((entry) => entry.streamFamily === input.streamFamily);
-                return source ? { ok: true, source } : { ok: false, diagnostic: unavailableDiagnostic(input) };
+                const sources = [...sourcesById.values()].filter((entry) => entry.streamFamily === input.streamFamily);
+                return sources.length === 1 ? { ok: true, source: sources[0]! } : { ok: false, diagnostic: unavailableDiagnostic(input) };
             }
             return { ok: false, diagnostic: unavailableDiagnostic(input) };
         },

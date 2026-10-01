@@ -60,9 +60,6 @@ const activeAccountHostedArtifactSource = vi.hoisted(() => ({ create: vi.fn() })
 vi.mock('@/sync/api/plugins/availability/activePluginAccountHostedArtifactRead', () => ({
     createActivePluginAccountHostedArtifactSourceCandidate: (input: unknown) => activeAccountHostedArtifactSource.create(input),
 }));
-vi.mock('./reactNativeArtifactDaemonTransport', () => ({
-    fetchReactNativeExactArtifactBytesViaMachineRpc: vi.fn(),
-}));
 
 import {
     computePluginUiArtifactFileSetSha256DigestV1,
@@ -78,9 +75,10 @@ import {
 import { encodeBase64 } from '@/encryption/base64';
 import { createPluginReactNativeBundleCache } from '@/components/plugins/reactNative/bundleCache';
 import type { ActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
-import type {
-    PluginUiPersistentArtifactRecord,
-    PluginUiPersistentArtifactStore,
+import {
+    derivePluginUiPersistentArtifactKey,
+    type PluginUiPersistentArtifactRecord,
+    type PluginUiPersistentArtifactStore,
 } from '@/sync/domains/plugins/ui/artifactByteCache';
 import type { PluginReactNativeBundleCacheIdentity } from '@/sync/domains/plugins/ui/reactNativeRuntime';
 
@@ -94,12 +92,11 @@ const permanentlyCurrentLifetime: ActiveServerAccountScopeLifetime = Object.free
     onRetire: () => Object.freeze({ dispose: () => {} }),
 });
 
-const inactiveAppExactSource = Object.freeze({ kind: 'appExact' as const, readFile: async () => null });
-const inactiveAccountHostedSource = Object.freeze({ kind: 'accountHosted' as const, readFile: async () => null });
+const inactiveAppExactSource = Object.freeze({ kind: 'appExact' as const, fetch: async () => null });
+const inactiveAccountHostedSource = Object.freeze({ kind: 'accountHosted' as const, fetch: async () => null });
 
-// Realistic Re.Pack RN plugin bundle: ~3 MiB entry + ~1 MiB async chunk.
+// Realistic single-file CommonJS RN plugin bundle (the canonical executable grammar is one file).
 const ENTRY_BYTES_SIZE = 3 * 1024 * 1024;
-const CHUNK_BYTES_SIZE = 1 * 1024 * 1024;
 
 function pseudoJsBytes(size: number, seed: number): Uint8Array {
     const out = new Uint8Array(size);
@@ -113,9 +110,7 @@ function pseudoJsBytes(size: number, seed: number): Uint8Array {
 
 function createPersistentStore() {
     const records = new Map<string, PluginUiPersistentArtifactRecord>();
-    const keyFor = (identity: PluginUiPersistentArtifactRecord['persistentIdentity']) => (
-        `${identity.releaseVersion}:${identity.artifactDigest}`
-    );
+    const keyFor = derivePluginUiPersistentArtifactKey;
     const store: PluginUiPersistentArtifactStore = {
         read: async (identity) => records.get(keyFor(identity)) ?? null,
         write: async (record) => {
@@ -130,27 +125,16 @@ function createPersistentStore() {
 
 function fixture() {
     const artifactContributionId = 'native-preview';
-    const entryPath = 'react-native/acme/ios.bundle';
-    const chunkPath = 'react-native/acme/chunk.js';
+    const artifactId = 'native-preview-artifact';
+    const entryPath = `react-native/${artifactId}/entry.cjs.bundle`;
     const entryBytes = pseudoJsBytes(ENTRY_BYTES_SIZE, 1);
-    const chunkBytes = pseudoJsBytes(CHUNK_BYTES_SIZE, 2);
     const files = [
         { relativePath: entryPath, digest: computePluginUiArtifactSha256DigestV1(entryBytes), byteSize: entryBytes.byteLength },
-        { relativePath: chunkPath, digest: computePluginUiArtifactSha256DigestV1(chunkBytes), byteSize: chunkBytes.byteLength },
     ] as const;
     const artifactDigest = computePluginUiArtifactFileSetSha256DigestV1([
         { relativePath: entryPath, bytes: entryBytes },
-        { relativePath: chunkPath, bytes: chunkBytes },
     ]);
     const archiveDigestSha256 = PluginUiArtifactDigestV1Schema.parse(`sha256:${'a'.repeat(64)}`);
-    const compatibility = {
-        hostUiApiVersion: '1.0.0',
-        reactVersion: '19.0.0',
-        reactNativeVersion: '0.83.4',
-        expoRuntimeVersion: '0.2.0-native',
-        hermesVersion: '0.15.0',
-    };
-    const adoptionCompatibility = { ...compatibility, hostAppVersion: '2.0.0', platform: 'ios' as const, channel: 'internal', nativeCapabilities: [] };
     const release = PluginReleaseFactsV1Schema.parse({
         ref: { pluginId: 'com.acme.preview', version: '1.2.3' },
         archiveDigestSha256,
@@ -159,14 +143,28 @@ function fixture() {
             engines: { happier: '^1.0.0' }, runtime: { apiVersion: 1 }, contributes: {},
         },
         collectionContracts: [],
-        uiSlots: [{ contributionId: artifactContributionId, tier: 'reactNative', platform: 'ios', artifactDigest, compatibility }],
+        uiSlots: [{
+            contributionId: artifactContributionId,
+            artifactId,
+            tier: 'reactNative',
+            platform: 'ios',
+            artifactDigest,
+            hostUiApiRange: '^1.0.0',
+        }],
         packageAssetArchive: { archiveDigestSha256: `sha256:${'d'.repeat(64)}`, resources: [] },
     });
     const materialization: PluginMachineMaterializationV1 = {
         serverIdentityId: 'srv_account_one', machineId: 'machine-a', materializationId: 'install-epoch-a',
         pluginId: 'com.acme.preview', version: '1.2.3', sourceClass: 'versionedArchive', portableRelease: true,
         archiveDigestSha256,
-        uiArtifacts: [{ contributionId: artifactContributionId, tier: 'reactNative', platform: 'ios', artifactDigest }],
+        uiArtifacts: [{
+            contributionId: artifactContributionId,
+            artifactId,
+            tier: 'reactNative',
+            platform: 'ios',
+            artifactDigest,
+            hostUiApiRange: '^1.0.0',
+        }],
         enabled: true, trustState: 'trusted', observedAt: 1,
     };
     const snapshot = {
@@ -189,55 +187,46 @@ function fixture() {
         snapshots: [{
             serverIdentityId: materialization.serverIdentityId,
             machineId: materialization.machineId,
-            revision: 1,
             materializations: [materialization],
         }],
     } satisfies PluginAccountAvailabilitySnapshot;
     const reader = createPluginAccountAvailabilityReader({ scope, snapshot });
     const cacheIdentity = {
-        pluginId: materialization.pluginId, contributionId: 'native-preview', artifactDigest,
-        hostAppVersion: adoptionCompatibility.hostAppVersion, hostUiApiVersion: compatibility.hostUiApiVersion,
-        reactVersion: compatibility.reactVersion, reactNativeVersion: compatibility.reactNativeVersion,
-        expoRuntimeVersion: compatibility.expoRuntimeVersion, hermesVersion: compatibility.hermesVersion,
-        platform: adoptionCompatibility.platform, channel: adoptionCompatibility.channel,
-        nativeCapabilitiesDigest: `sha256:${'b'.repeat(64)}`, projectionGeneration: 12,
+        pluginId: materialization.pluginId,
+        contributionId: artifactContributionId,
+        artifactId,
+        artifactDigest,
+        platform: 'ios' as const,
     } satisfies PluginReactNativeBundleCacheIdentity;
-    const crashStateToken = Object.freeze({
-        mount: Object.freeze({ kind: 'destination' as const, destination: Object.freeze({ pluginId: cacheIdentity.pluginId, localId: 'native-destination' }) }),
-        renderer: Object.freeze({ pluginId: cacheIdentity.pluginId, localId: cacheIdentity.contributionId }),
-        artifactDigest: cacheIdentity.artifactDigest,
-        crashStateEpoch: 4,
-    });
     const graph = {
-        contributionId: artifactContributionId, tier: 'reactNative' as const, platform: cacheIdentity.platform,
-        entry: entryPath, files, digest: artifactDigest,
-        builtWith: { bundler: 'repack' as const, version: '5.0.0' },
-        repack: { containerName: 'acme_preview', modulePath: './renderSurface', exportName: 'renderSurface' },
-        hostUiApiVersion: cacheIdentity.hostUiApiVersion,
-        compat: { react: cacheIdentity.reactVersion, reactNative: cacheIdentity.reactNativeVersion },
+        artifactId,
+        tier: 'reactNative' as const,
+        entry: entryPath,
+        files,
+        digest: artifactDigest,
+        builtWith: { bundler: 'esbuild' as const, version: '0.25.0' },
+        executable: { exports: ['renderSurface'] as const },
+        hostUiApiRange: '^1.0.0',
     };
     const origin = {
         serverIdentityId: materialization.serverIdentityId,
         materializationRef: { machineId: materialization.machineId, materializationId: materialization.materializationId, pluginId: materialization.pluginId },
     } as const;
     const entryBase64 = encodeBase64(entryBytes);
-    const chunkBase64 = encodeBase64(chunkBytes);
     const daemonResponse = {
-        ok: true as const, artifactFamily: 'reactNative' as const, artifactOwnerKind: 'renderer' as const,
-        cacheIdentity, crashStateToken,
+        ok: true as const, artifactFamily: 'reactNative' as const,
+        cacheIdentity: { artifactDigest },
         artifact: {
-            pluginId: cacheIdentity.pluginId, contributionId: cacheIdentity.contributionId,
             artifactKind: 'reactNativeBundle' as const, digest: artifactDigest, format: 'plainJs' as const,
             byteSize: entryBytes.byteLength,
         },
         bytesBase64: entryBase64,
         files: [
             { ...files[0], bytesBase64: entryBase64 },
-            { ...files[1], bytesBase64: chunkBase64 },
         ],
     };
     const wireBytes = JSON.stringify(daemonResponse).length;
-    return { reader, cacheIdentity, crashStateToken, graph, origin, daemonResponse, entryBytes, chunkBytes, entryPath, chunkPath, wireBytes, entryBase64, chunkBase64 };
+    return { reader, cacheIdentity, graph, origin, daemonResponse, entryBytes, entryPath, wireBytes, entryBase64 };
 }
 
 describe('U6 cold-mount integrity probe', () => {
@@ -245,7 +234,7 @@ describe('U6 cold-mount integrity probe', () => {
         activeAccountHostedArtifactSource.create.mockReturnValue(inactiveAccountHostedSource);
         const current = fixture();
         // eslint-disable-next-line no-console
-        console.log(`\n=== wire payload: ${(current.wireBytes / 1048576).toFixed(2)}MiB for ${((ENTRY_BYTES_SIZE + CHUNK_BYTES_SIZE) / 1048576).toFixed(2)}MiB of artifact`);
+        console.log(`\n=== wire payload: ${(current.wireBytes / 1048576).toFixed(2)}MiB for ${(ENTRY_BYTES_SIZE / 1048576).toFixed(2)}MiB of artifact`);
         // eslint-disable-next-line no-console
         console.log(`=== entry base64 appears at top level (${(current.entryBase64.length / 1048576).toFixed(2)}MiB) AND inside files[] (${(current.entryBase64.length / 1048576).toFixed(2)}MiB)`);
 
@@ -262,13 +251,12 @@ describe('U6 cold-mount integrity probe', () => {
         const t0 = performance.now();
         const acquired = await producer.acquire({
             reader: current.reader, artifactGraph: current.graph, cacheIdentity: current.cacheIdentity,
-            accountLifetime: permanentlyCurrentLifetime, artifactOwnerKind: 'renderer',
-            crashStateToken: current.crashStateToken,
-            daemon: { origin: current.origin, serverId: scope.serverId },
+            accountLifetime: permanentlyCurrentLifetime,
+            daemon: { machineId: current.origin.materializationRef.machineId, serverId: scope.serverId },
             isCurrent: () => true,
         });
         const wall = performance.now() - t0;
-        expect(acquired.kind).toBe('available');
+        expect(acquired).toMatchObject({ kind: 'available' });
         const total = probe.report(`COLD daemon mount (no persistent store) wall=${wall.toFixed(1)}ms`);
         expect(total.n).toBeGreaterThan(0);
     }, 120_000);
@@ -296,13 +284,12 @@ describe('U6 cold-mount integrity probe', () => {
         const t0 = performance.now();
         const acquired = await producer.acquire({
             reader: current.reader, artifactGraph: current.graph, cacheIdentity: current.cacheIdentity,
-            accountLifetime: permanentlyCurrentLifetime, artifactOwnerKind: 'renderer',
-            crashStateToken: current.crashStateToken,
-            daemon: { origin: current.origin, serverId: scope.serverId },
+            accountLifetime: permanentlyCurrentLifetime,
+            daemon: { machineId: current.origin.materializationRef.machineId, serverId: scope.serverId },
             isCurrent: () => true,
         });
         const wall = performance.now() - t0;
-        expect(acquired.kind).toBe('available');
+        expect(acquired).toMatchObject({ kind: 'available' });
         probe.report(`COLD daemon mount + persistent write wall=${wall.toFixed(1)}ms`);
 
         // Second cold mount on a fresh cache reading the SAME persistent record.
@@ -324,13 +311,12 @@ describe('U6 cold-mount integrity probe', () => {
         const t1 = performance.now();
         const acquired2 = await producer2.acquire({
             reader: current.reader, artifactGraph: current.graph, cacheIdentity: current.cacheIdentity,
-            accountLifetime: permanentlyCurrentLifetime, artifactOwnerKind: 'renderer',
-            crashStateToken: current.crashStateToken,
-            daemon: { origin: current.origin, serverId: scope.serverId },
+            accountLifetime: permanentlyCurrentLifetime,
+            daemon: { machineId: current.origin.materializationRef.machineId, serverId: scope.serverId },
             isCurrent: () => true,
         });
         const wall2 = performance.now() - t1;
-        expect(acquired2.kind).toBe('available');
+        expect(acquired2).toMatchObject({ kind: 'available' });
         probe.report(`COLD mount from PERSISTENT cache wall=${wall2.toFixed(1)}ms`);
     }, 120_000);
 });

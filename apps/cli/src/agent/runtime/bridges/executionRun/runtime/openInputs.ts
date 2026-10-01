@@ -21,6 +21,7 @@ export function buildExecutionRunConfiguration(input: Readonly<{
     sessionConfigOptionOverrides?: AcpConfigOptionOverridesV1;
     acpSessionModeId?: string;
     permissionMode: string;
+    workspaceWrites?: 'allow' | 'deny';
     updatedAtMs: number;
 }>): Readonly<{
     modelSelection?: ProviderBoundModelRef;
@@ -57,6 +58,7 @@ export function buildExecutionRunConfiguration(input: Readonly<{
             value: permissionMode(input.permissionMode),
             updatedAtMs: input.updatedAtMs,
         },
+        ...(input.workspaceWrites !== undefined ? { workspaceWrites: input.workspaceWrites } : {}),
         options: Object.fromEntries(
             Object.entries(
                 input.sessionConfigOptionOverrides?.overrides ?? {},

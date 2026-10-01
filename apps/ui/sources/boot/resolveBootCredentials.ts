@@ -7,9 +7,10 @@ import {
     readWebServerUrlOverrideFromLocation,
 } from '@/sync/domains/server/url/bootstrapActiveServerFromWebLocation';
 import { createServerUrlComparableKey } from '@/sync/domains/server/url/serverUrlCanonical';
+import { resolveUniqueServerProfileByUrl } from '@/sync/domains/server/serverProfiles';
 import {
     getActiveServerSnapshot,
-    upsertAndActivateServer,
+    setActiveServer,
 } from '@/sync/domains/server/serverRuntime';
 import { activateStackRuntimeServer, readStackRuntimeServerUrl } from '@/sync/domains/server/stackRuntimeServer';
 import { invokeDesktopHost, isDesktopHost } from '@/utils/platform/desktopHost';
@@ -181,6 +182,12 @@ export async function resolveBootCredentials(platformOs: string): Promise<AuthCr
         ?? (platformOs === 'web' ? resolveBootServerUrlFromTerminalConnectHash() : null);
 
     if (bootServerUrl) {
+        const savedBootServer = resolveUniqueServerProfileByUrl(bootServerUrl);
+        if (!savedBootServer) {
+            // The URL remains intact for the mounted Home connect flow. Boot has no
+            // modal owner with which to confirm and prove a new address before saving.
+            return await readRetainedBootCredentials();
+        }
         if (!await canAdoptBootServerCredentials(bootServerUrl)) {
             return await readRetainedBootCredentials();
         }
@@ -189,26 +196,22 @@ export async function resolveBootCredentials(platformOs: string): Promise<AuthCr
                 scope: routineSelectionScope,
             });
         }
-        const bootServerProfile = await upsertAndActivateServer({
-            serverUrl: bootServerUrl,
-            source: 'url',
-            scope: routineSelectionScope,
-        });
+        await setActiveServer({ serverId: savedBootServer.id, scope: routineSelectionScope });
         const credentials = await TokenStorage.getCredentialsForServerUrl(bootServerUrl, {
-            serverId: bootServerProfile.id,
+            serverId: savedBootServer.id,
         });
         if (credentials) {
             return await resolveBootCredentialAdoption(
                 credentials,
                 {
                     serverUrl: bootServerUrl,
-                    serverId: bootServerProfile.id,
+                    serverId: savedBootServer.id,
                 },
             );
         }
         return await resolveAndPersistStackDesktopBootCredentials({
             serverUrl: bootServerUrl,
-            serverId: bootServerProfile.id,
+            serverId: savedBootServer.id,
         });
     }
 

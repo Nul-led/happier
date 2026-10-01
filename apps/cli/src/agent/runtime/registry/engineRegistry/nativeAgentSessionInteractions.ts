@@ -27,6 +27,7 @@ import type { AgentInvocationTurnAdmissionWitness } from '@/plugins/runtime/invo
 import type { StoredCredentials } from '@/persistence';
 import { createPluginSessionsInventory } from '@/session/services/pluginSessionsInventory';
 import { createPluginSessionHandleCapabilitiesFactory } from '@/session/services/pluginSessionHandleCapabilities';
+import type { PluginSourceCustodyV1 } from '@happier-dev/protocol';
 import { executePluginSessionMessageAction } from '@/session/services/executePluginSessionMessageAction';
 import { createCliActionExecutorFromCredentials } from '@/session/actions/createCliActionExecutorFromCredentials';
 import type { CliServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
@@ -162,8 +163,9 @@ export type NativeAgentSessionInteractionParams = Readonly<{
     contributionId: string;
     runtimeId: string;
     sessionId: string;
-    generationId: string;
+    occurrenceId: string;
     immutableGenerationId?: string;
+    sourceCustody?: PluginSourceCustodyV1;
     /**
      * Host-side override only. Omitted in production so the Session arm binds the
      * canonical `CURRENT_SESSION_INTERACTION_DEADLINE_MS` policy; a supplied value
@@ -186,7 +188,7 @@ export type NativeAgentSessionInteractionParams = Readonly<{
 
 export type NativeAgentExecutionRunInteractionParams = Omit<
     NativeAgentSessionInteractionParams,
-    'sessionId' | 'credentials' | 'readCredentials' | 'readPermissionMode' | 'media'
+    'sessionId' | 'credentials' | 'readCredentials' | 'readPermissionMode' | 'media' | 'sourceCustody'
 > & Readonly<{
     executionRunId: string;
 }>;
@@ -213,7 +215,7 @@ function defaultRequester(
     return Object.freeze({
         pluginId: params.pluginId,
         contributionId: params.contributionId,
-        generationId: params.immutableGenerationId ?? params.generationId,
+        occurrenceId: params.occurrenceId,
         invocationId: params.runtimeId,
     });
 }
@@ -374,7 +376,7 @@ function createNativeCurrentSessionInteractionOwner(
     return createCurrentSessionInteractionOwner({
         sessionId: params.sessionId,
         sessionSignal: signal,
-        isGenerationCurrent: isCurrent,
+        isOccurrenceCurrent: isCurrent,
         deadlineMs: deadline.deadlineMs,
         propagatePresentationError: isWorkflowInteractionCapacityError,
         present: async (request, options) => await presentBoundPermissionRequest({
@@ -405,7 +407,7 @@ function createNativeCurrentExecutionRunInteractionOwner(
     return createCurrentExecutionRunInteractionOwner({
         executionRunId: params.executionRunId,
         executionRunSignal: signal,
-        isGenerationCurrent: isCurrent,
+        isOccurrenceCurrent: isCurrent,
         deadlineMs: deadline.deadlineMs,
         propagatePresentationError: isWorkflowInteractionCapacityError,
         present: async (request, options) => await presentBoundPermissionRequest({
@@ -503,14 +505,14 @@ export function createNativeAgentSessionServices(params: NativeAgentSessionInter
     const interactions = createPluginInteractionsService({
         currentSession: currentSessionUi,
         signal: params.signal ?? new AbortController().signal,
-        isGenerationCurrent: () => readPluginGenerationState(params.isCurrent) === 'current',
+        isOccurrenceCurrent: () => readPluginGenerationState(params.isCurrent) === 'current',
         ...(params.readActiveTurnAdmissionWitness
             ? { readActiveTurnAdmissionWitness: params.readActiveTurnAdmissionWitness }
             : {}),
         requester: Object.freeze({
             pluginId: params.pluginId,
             contributionId: params.contributionId,
-            generationId: params.immutableGenerationId ?? params.generationId,
+            occurrenceId: params.occurrenceId,
             invocationId: params.runtimeId,
         }),
     });
@@ -532,7 +534,8 @@ export function createNativeAgentSessionServices(params: NativeAgentSessionInter
             ...(params.resolveServerFeaturesSnapshot ? { resolveServerFeaturesSnapshot: params.resolveServerFeaturesSnapshot } : {}),
         })
         : null;
-    const inventory = params.credentials && params.isCurrent
+    const sourceCustody = params.sourceCustody;
+    const inventory = params.credentials && params.isCurrent && sourceCustody
         ? createPluginSessionsInventory({
             executeMessageAction: async ({ sessionId, request, signal }) => (
                 await executePluginSessionMessageAction({
@@ -541,7 +544,8 @@ export function createNativeAgentSessionServices(params: NativeAgentSessionInter
                     ),
                     pluginId: params.pluginId,
                     contributionLocalId: params.contributionId,
-                    immutableGenerationId: params.immutableGenerationId ?? params.generationId,
+                    occurrenceId: params.occurrenceId,
+                    sourceCustody,
                     ...(params.resolveCallerMaterialization
                         ? { resolveCallerMaterialization: params.resolveCallerMaterialization }
                         : {}),
@@ -562,37 +566,37 @@ export function createNativeAgentSessionServices(params: NativeAgentSessionInter
             isCurrent: params.isCurrent,
             external: base.sessions.external,
             createHandleCapabilities: ({ sessionId, readSummary }) => (
-                createPluginSessionHandleCapabilitiesFactory({
-                    credentials: params.credentials!,
-                    ...(params.readCredentials ? { readCredentials: params.readCredentials } : {}),
-                    caller: {
-                        pluginId: params.pluginId,
-                        contributionId: params.contributionId,
-                        immutableGenerationId: params.immutableGenerationId ?? params.generationId,
-                        runtimeId: params.runtimeId,
-                    },
-                    signal: params.signal ?? new AbortController().signal,
-                    isCurrent: params.isCurrent!,
-                    readAgentId: async (_boundSessionId, signal) => (
-                        sessionId === params.sessionId
-                            ? params.runtimeId
-                            : (await readSummary({ signal })).agentId ?? null
+                        createPluginSessionHandleCapabilitiesFactory({
+                            credentials: params.credentials!,
+                            ...(params.readCredentials ? { readCredentials: params.readCredentials } : {}),
+                            caller: {
+                                pluginId: params.pluginId,
+                                contributionId: params.contributionId,
+                                sourceCustody,
+                                runtimeId: params.runtimeId,
+                            },
+                            signal: params.signal ?? new AbortController().signal,
+                            isCurrent: params.isCurrent!,
+                            readAgentId: async (_boundSessionId, signal) => (
+                                sessionId === params.sessionId
+                                    ? params.runtimeId
+                                    : (await readSummary({ signal })).agentId ?? null
+                            ),
+                            resolveLiveCapabilities: (boundSessionId) => (
+                                boundSessionId === params.sessionId
+                                    ? Object.freeze({
+                                        scopeId: liveScopeId,
+                                        ...(permissionHandler ? { permissionHandler } : {}),
+                                        interactions,
+                                        readPermissionMode: params.readPermissionMode ?? (() => 'unavailable'),
+                                        ...(params.media ? { media: params.media } : {}),
+                                        ...(params.signal ? { signal: params.signal } : {}),
+                                        isCurrent: params.isCurrent!,
+                                    })
+                                    : null
+                            ),
+                        })(sessionId)
                     ),
-                    resolveLiveCapabilities: (boundSessionId) => (
-                        boundSessionId === params.sessionId
-                            ? Object.freeze({
-                                scopeId: liveScopeId,
-                                ...(permissionHandler ? { permissionHandler } : {}),
-                                interactions,
-                                readPermissionMode: params.readPermissionMode ?? (() => 'unavailable'),
-                                ...(params.media ? { media: params.media } : {}),
-                                ...(params.signal ? { signal: params.signal } : {}),
-                                isCurrent: params.isCurrent!,
-                            })
-                            : null
-                    ),
-                })(sessionId)
-            ),
         })
         : base.sessions;
     return Object.freeze({

@@ -107,6 +107,7 @@ async function createEncryption(
             ...worker,
             decryptDataKeyEnvelopeV1: async (request) => {
                 const result = await worker.decryptDataKeyEnvelopeV1(request);
+                if (result.status !== 'ok') return result;
                 return { ...result, items: result.items.map((value, index) => {
                     const replacement = overrides('', index);
                     return replacement === undefined ? value : replacement === null ? null : encodeBase64(replacement, 'base64');

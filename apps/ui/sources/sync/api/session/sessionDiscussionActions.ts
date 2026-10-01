@@ -52,7 +52,7 @@ import {
     openSessionStoredContent,
     sealSessionStoredContent,
     type SessionStoredContentContext,
-} from '@/sync/encryption/sessionStoredContent';
+} from '@happier-dev/sync-client';
 import { listSessionResponsibilityMentionCandidates } from './apiSessionResponsibility';
 
 export async function listSessionDiscussionMentionCandidates(params: Readonly<{

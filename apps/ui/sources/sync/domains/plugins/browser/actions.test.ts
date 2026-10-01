@@ -29,11 +29,11 @@ function createProjection(): PluginProjectionV2 {
         generation: 14,
         installedPackagesById: {},
         agentsById: {},
-        backendsById: {},
         actionsById: {
             'acme.preview/open-preview': {
                 id: 'open-preview',
                 pluginId: 'acme.preview',
+                occurrenceId: 'occurrence-preview',
                 title: 'Open preview',
                 icon: 'open-outline',
                 scopes: ['session'],
@@ -109,7 +109,6 @@ describe('plugin browser projection normalization', () => {
                 target: 'client',
                 client: {
                     artifactId: 'client-action-bundle',
-                    modulePath: './actions/clientAction',
                     exportName: 'execute',
                 },
                 platforms: ['web'],
@@ -121,7 +120,6 @@ describe('plugin browser projection normalization', () => {
 
         await expect(executePluginBrowserAction({
             action,
-            generation: model.generation,
             machineId: null,
             input: { targetId: action?.targetId },
             policyContext: {
@@ -244,13 +242,6 @@ describe('plugin browser projection normalization', () => {
         expect(resolvePluginBrowserProjectionState(previous, null)).toBe(previous);
     });
 
-    it('clears the previous model when an authoritative projection refresh is unsupported', () => {
-        const previous = normalizePluginBrowserProjection(createProjection());
-
-        expect(resolvePluginBrowserProjectionState(previous, { v: 1, agentsById: {}, backendsById: {} }))
-            .toBe(EMPTY_PLUGIN_BROWSER_PROJECTION);
-    });
-
     it('fails closed for browser entries with unevaluated policy fields', () => {
         const model = normalizePluginBrowserProjection(createProjection());
 
@@ -293,7 +284,6 @@ describe('plugin browser projection normalization', () => {
 
         await expect(executePluginBrowserAction({
             action,
-            generation: model.generation,
             machineId: 'machine-1',
             serverId: 'server-a',
             sessionId: 'session-1',
@@ -312,7 +302,7 @@ describe('plugin browser projection normalization', () => {
 
         expect(execute).toHaveBeenCalledWith('machine-1', {
             serverId: 'server-a',
-            expectedGeneration: '14',
+            expectedContributorOccurrenceId: '14',
             qualifiedActionId: 'acme.preview/open-preview',
             input: {
                 browserSessionId: 'browser-session-1',

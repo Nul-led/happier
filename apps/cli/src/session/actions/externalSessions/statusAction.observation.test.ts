@@ -652,7 +652,7 @@ describe('executeExternalSessionStatusGetAction observation reconciliation', () 
             resource: {
                 pluginId: 'happier.opencode',
                 agentLocalId: 'opencode',
-                pluginGeneration: 'plugin-generation-1',
+                pluginOccurrenceId: 'plugin-generation-1',
                 resourceKey: 'endpoint-default',
             },
             link: {

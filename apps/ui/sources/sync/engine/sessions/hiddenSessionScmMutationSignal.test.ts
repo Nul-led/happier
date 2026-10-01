@@ -1,8 +1,9 @@
+import { type SessionMessageV1 } from '@happier-dev/protocol';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { ApiMessage } from '@/sync/api/types/apiTypes';
+
 import type { Session } from '@/sync/domains/state/storageTypes';
-import type { NormalizedMessage } from '@/sync/typesRaw';
+import type { NormalizedMessage } from "@happier-dev/session-core/raw";
 import { resetSessionSurfaceVisibilityForTests } from '@/sync/domains/session/sessionSurfaceVisibility';
 import { storage } from '@/sync/domains/state/storage';
 import {
@@ -62,7 +63,7 @@ function buildEditToolRawRecord(filePath: string) {
     };
 }
 
-function buildPlainEditToolMessage(filePath: string): ApiMessage {
+function buildPlainEditToolMessage(filePath: string): SessionMessageV1 {
     return {
         id: 'message-edit',
         seq: 7,
@@ -108,6 +109,7 @@ describe('deliverHiddenSessionScmMutationSignal', () => {
         try {
             await deliverHiddenSessionScmMutationSignal({
                 sessionId: 'hidden-producer',
+                sessionEncryptionMode: 'plain',
                 rawMessage: buildPlainEditToolMessage('/repo/packages/app/src/index.ts'),
                 getSessionEncryption: () => null,
                 ingestMessages,
@@ -141,6 +143,7 @@ describe('deliverHiddenSessionScmMutationSignal', () => {
 
         await deliverHiddenSessionScmMutationSignal({
             sessionId: 'hidden-producer',
+            sessionEncryptionMode: 'plain',
             rawMessage: buildPlainEditToolMessage('/repo/packages/app/src/index.ts'),
             getSessionEncryption,
             ingestMessages,
@@ -159,6 +162,7 @@ describe('deliverHiddenSessionScmMutationSignal', () => {
             for (const messageRole of ['user', 'event'] as const) {
                 await deliverHiddenSessionScmMutationSignal({
                     sessionId: 'hidden-producer',
+                    sessionEncryptionMode: 'plain',
                     rawMessage: { ...buildPlainEditToolMessage('/repo/x.ts'), messageRole },
                     getSessionEncryption,
                     ingestMessages,
@@ -178,7 +182,7 @@ describe('deliverHiddenSessionScmMutationSignal', () => {
         const rawRecord = buildEditToolRawRecord('/repo/packages/app/src/encrypted.ts');
         // Boundary mock: session encryption is a crypto boundary; we assert the decrypted
         // outcome (normalized tool-call) rather than call counts alone.
-        const decryptMessage = vi.fn(async (message: ApiMessage) => ({
+        const decryptMessage = vi.fn(async (message: SessionMessageV1) => ({
             id: message.id,
             seq: message.seq,
             localId: message.localId ?? null,
@@ -190,6 +194,7 @@ describe('deliverHiddenSessionScmMutationSignal', () => {
         try {
             await deliverHiddenSessionScmMutationSignal({
                 sessionId: 'hidden-producer',
+                sessionEncryptionMode: 'e2ee',
                 rawMessage: {
                     id: 'message-encrypted',
                     seq: 9,

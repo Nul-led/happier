@@ -1,10 +1,11 @@
+import { type SessionMessageV1 } from '@happier-dev/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { ApiMessage } from '@/sync/api/types/apiTypes';
+
 import { syncPerformanceTelemetry } from '@/sync/runtime/syncPerformanceTelemetry';
 import { fetchAndApplyMessages } from './syncSessions';
-import { advanceSessionReceivedMessageCurrentness } from './sessionMessageCurrentness';
+import { advanceSessionReceivedMessageCurrentness } from "@happier-dev/session-core/transcript";
 
-function buildApiMessage(params: { id: string; seq: number; updatedAt: number }): ApiMessage {
+function buildApiMessage(params: { id: string; seq: number; updatedAt: number }): SessionMessageV1 {
     return {
         id: params.id,
         seq: params.seq,
@@ -16,7 +17,7 @@ function buildApiMessage(params: { id: string; seq: number; updatedAt: number })
     };
 }
 
-function buildPlainApiMessage(params: { id: string; seq: number; text: string }): ApiMessage {
+function buildPlainApiMessage(params: { id: string; seq: number; text: string }): SessionMessageV1 {
     return {
         id: params.id,
         seq: params.seq,
@@ -49,7 +50,7 @@ describe('fetchAndApplyMessages (updatedAt dedupe)', () => {
             ),
         );
 
-        const decryptMessages = vi.fn(async (apiMessages: ApiMessage[]) =>
+        const decryptMessages = vi.fn(async (apiMessages: SessionMessageV1[]) =>
             apiMessages.map((m) => ({
                 id: m.id,
                 seq: m.seq,
@@ -122,7 +123,7 @@ describe('fetchAndApplyMessages (updatedAt dedupe)', () => {
         const pendingDecryption = new Promise<DecryptedPageMessage[]>((resolve) => {
             releaseDecryption = resolve;
         });
-        const decryptMessages = vi.fn((_messages: ApiMessage[]) => pendingDecryption);
+        const decryptMessages = vi.fn((_messages: SessionMessageV1[]) => pendingDecryption);
         const sessionReceivedMessages = new Map<string, Map<string, number>>([
             ['s1', new Map([['m1', 2_009]])],
         ]);

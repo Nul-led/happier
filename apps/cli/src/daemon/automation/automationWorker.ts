@@ -19,7 +19,6 @@ import {
 import { getAutomationWorkerFeatureDecision } from './automationFeatureGate';
 import { executeClaimedRun, type ClaimableRunPayload } from './automationRunExecutor';
 import { resolveAutomationPollingConfig } from './automationScheduler';
-import type { AutomationTemplateEncryption } from './automationTemplateExecution';
 import { logAutomationInfo, logAutomationWarn } from './automationTelemetry';
 import type {
   AutomationClaimedRunPayload,
@@ -85,7 +84,6 @@ export function startAutomationWorker(params: {
   token: string;
   credentials?: StoredCredentials;
   machineId: string;
-  encryption?: AutomationTemplateEncryption;
   spawnSession: (options: SpawnSessionOptions) => Promise<SpawnSessionResult>;
   machineAdmissionTransport?: AutomationMachineAdmissionTransport;
   /** The connected daemon's Session-owned Automation start ingress. */
@@ -133,6 +131,7 @@ export function startAutomationWorker(params: {
   let claimConsecutiveFailures = 0;
   let claimRetryAfter = 0;
   let noWorkCooldownUntil = 0;
+  let noWorkCooldownScope: 'session_scoped' | undefined;
   let pendingQueuedWake = false;
   let nextAssignmentReconciliationAt = 0;
   let latestAssignmentRefreshRequest = 0;
@@ -141,14 +140,17 @@ export function startAutomationWorker(params: {
   let claimTimerAt = 0;
   let claimInFlight = false;
   let refreshSoonTimer: NodeJS.Timeout | null = null;
-  // This map is the one Automation execution budget: a Run enters it as soon
-  // as this daemon receives the durable claim and leaves only after its local
-  // execution settles. The server still owns every durable lifecycle fact.
+  // One active-execution map owns ordinary capacity and cancellation. Scoped
+  // runs stay in this map without charging the ordinary machine budget; their
+  // review leaves use the existing execution-run budget. The server owns every
+  // durable lifecycle fact.
   const activeExecutions = new Map<string, {
     runId: string;
     automationId: string | null;
+    scopeSessionId?: string | null;
     attempt: number;
     controller: AbortController;
+    refreshReviewHolds?: () => void;
   }>();
   const actionExecutor = params.credentials
     ? createCliActionExecutorFromCredentials({
@@ -205,7 +207,12 @@ export function startAutomationWorker(params: {
   }
 
   function scheduleCapacityRefill(reason: string) {
-    if (!hasExecutionCapacity()) return;
+    // A scoped-only null claim says nothing about ordinary queued work. When
+    // an ordinary slot opens, refill it through the incumbent claim loop.
+    if (hasExecutionCapacity() && noWorkCooldownScope === 'session_scoped') {
+      noWorkCooldownUntil = 0;
+      noWorkCooldownScope = undefined;
+    }
     // Yield through the existing claim timer. A synchronous mock or a very
     // fast terminal executor must not create an unbounded microtask chain
     // that starves cancellation, assignment refreshes, or the next timer.
@@ -246,15 +253,15 @@ export function startAutomationWorker(params: {
   }
 
   function hasExecutionCapacity(): boolean {
-    return activeExecutions.size < maxActiveRunsPerMachine;
+    let ordinaryActiveRuns = 0;
+    for (const active of activeExecutions.values()) {
+      if (!active.scopeSessionId) ordinaryActiveRuns += 1;
+    }
+    return ordinaryActiveRuns < maxActiveRunsPerMachine;
   }
 
   function rescheduleClaim(reason: string, force = false) {
     if (stopped) return;
-    if (!hasExecutionCapacity()) {
-      clearClaimTimer();
-      return;
-    }
     const rows = assignments.getAll();
     const now = Date.now();
     const blockedUntil = Math.max(claimRetryAfter, noWorkCooldownUntil);
@@ -274,7 +281,7 @@ export function startAutomationWorker(params: {
     scheduleClaimAt(Math.min(...candidates), `${reason}:scheduled`, force);
   }
 
-  const stopWorker = (reason: 'manual' | 'unsupported-endpoint') => {
+  const stopWorker = (reason: 'manual') => {
     if (stopped) return;
     stopped = true;
     for (const active of activeExecutions.values()) {
@@ -312,9 +319,7 @@ export function startAutomationWorker(params: {
       // its wake timer; otherwise a late older snapshot can erase newer work.
       if (request !== latestAssignmentRefreshRequest) return;
       const previousMaxActiveRunsPerMachine = maxActiveRunsPerMachine;
-      // The server is the settings authority. The V2 compatibility adapter
-      // has already normalized its observed predecessor shape to the
-      // Protocol-owned default, so every worker refresh has this one input.
+      // The current server is the execution-capacity settings authority.
       maxActiveRunsPerMachine = response.settings.maxActiveRunsPerMachine;
       assignments.replace(response.assignments);
       scheduleNextAssignmentReconciliation();
@@ -323,11 +328,8 @@ export function startAutomationWorker(params: {
         count: response.assignments.length,
       });
       if (pendingQueuedWake) {
-        if (response.assignments.length > 0) {
-          scheduleClaimSoon('queued-wake-after-assignments-refresh');
-          return;
-        }
-        pendingQueuedWake = false;
+        scheduleClaimSoon('queued-wake-after-assignments-refresh');
+        return;
       }
       if (
         maxActiveRunsPerMachine > previousMaxActiveRunsPerMachine
@@ -339,15 +341,6 @@ export function startAutomationWorker(params: {
       rescheduleClaim('assignments-refreshed', true);
     } catch (error) {
       if (request !== latestAssignmentRefreshRequest) return;
-      if (claimClient.isMissingEndpointError(error, [
-        '/v3/automations/worker/assignments',
-        '/v2/automations/daemon/assignments',
-      ])) {
-        // Backwards compatibility: older servers/daemons won't have the automation routes. Treat this as
-        // a feature negotiation result, not a retryable operational failure.
-        stopWorker('unsupported-endpoint');
-        return;
-      }
       logAutomationWarn('Failed to refresh automation assignments', error, {
         machineId: params.machineId,
       });
@@ -358,30 +351,26 @@ export function startAutomationWorker(params: {
     if (stopped) return;
     if (paused) return;
     if (claimInFlight) return;
-    if (!hasExecutionCapacity()) return;
 
+    let reconciledAssignments = false;
     if (nextAssignmentReconciliationAt > 0 && Date.now() >= nextAssignmentReconciliationAt) {
       // Keep a bounded retry scheduled if the authoritative read fails. A successful
       // read immediately replaces this deadline with a fresh reconciliation window.
       scheduleNextAssignmentReconciliation();
       await refreshAssignments();
       if (stopped || paused) return;
+      reconciledAssignments = true;
     }
 
-    if (assignments.getAll().length === 0 && pendingQueuedWake) {
-      // A queued-run hint can arrive before the assignment cache catches up. Read the
-      // canonical assignment owner before deciding that this daemon has no work.
+    if (!reconciledAssignments && assignments.getAll().length === 0 && pendingQueuedWake) {
+      // A queued-run hint can arrive before the assignment cache catches up.
+      // Refresh that cache, then let the server's claim owner decide whether a
+      // direct or Automation-origin Run is ready for this machine.
       await refreshAssignments();
       if (stopped || paused) return;
     }
 
-    const assignmentCount = assignments.getAll().length;
-    if (assignmentCount === 0) {
-      rescheduleClaim('empty-assignments');
-      return;
-    }
-
-    if (!forceCapacityRefill && !pendingQueuedWake) {
+    if (!reconciledAssignments && !forceCapacityRefill && !pendingQueuedWake) {
       const nextRunAt = getNextAssignedRunAtMs();
       if (nextRunAt !== null && nextRunAt > Date.now()) {
         rescheduleClaim('next-run-not-due');
@@ -398,13 +387,18 @@ export function startAutomationWorker(params: {
       return;
     }
 
+    // Assignment preparation may have yielded to another queued wake. Take
+    // the incumbent claim slot only after rechecking that asynchronous gap.
+    if (claimInFlight) return;
     let claimedRunStarted = false;
     try {
       claimInFlight = true;
       pendingQueuedWake = false;
+      const scope = hasExecutionCapacity() ? undefined : 'session_scoped';
       const claimResult = await claimClient.claimRun({
         machineId: params.machineId,
         leaseDurationMs: scheduler.leaseDurationMs,
+        ...(scope ? { scope } : {}),
       });
 
       // A completed claim is authoritative progress for this loop, regardless
@@ -418,6 +412,7 @@ export function startAutomationWorker(params: {
         if (nextRunAt !== null && (forceCapacityRefill || nextRunAt <= Date.now())) {
           // Another machine likely claimed (or our clock is ahead). Back off to avoid a thundering herd.
           noWorkCooldownUntil = Date.now() + nullClaimBackoffMs;
+          noWorkCooldownScope = scope;
           scheduleAssignmentsRefreshSoon('no-work-due-refresh');
         } else {
           noWorkCooldownUntil = 0;
@@ -429,6 +424,7 @@ export function startAutomationWorker(params: {
       activeExecutions.set(claimed.run.id, {
         runId: claimed.run.id,
         automationId: claimed.run.automationId,
+        scopeSessionId: claimed.automation?.scopeSessionId,
         attempt: claimed.run.attempt,
         controller: executionController,
       });
@@ -441,10 +437,15 @@ export function startAutomationWorker(params: {
             ...(params.credentials ? { credentials: params.credentials } : {}),
             machineId: params.machineId,
             claimClient,
+            registerReviewHoldRefresh: (refresh) => {
+              const active = activeExecutions.get(claimed.run.id);
+              if (active?.controller !== executionController) return;
+              active.refreshReviewHolds = () => { void refresh().catch((error) =>
+                logAutomationWarn('Failed to refresh workflow review holds', error, { runId: claimed.run.id })); };
+            },
             spawnSession: params.spawnSession,
             heartbeatMs: scheduler.heartbeatMs,
             leaseDurationMs: scheduler.leaseDurationMs,
-            encryption: params.encryption,
             ...(params.machineAdmissionTransport
               ? { machineAdmissionTransport: params.machineAdmissionTransport }
               : {}),
@@ -499,13 +500,6 @@ export function startAutomationWorker(params: {
         }
       })();
     } catch (error) {
-      if (claimClient.isMissingEndpointError(error, [
-        '/v3/automations/runs/claim',
-        '/v2/automations/runs/claim',
-      ])) {
-        stopWorker('unsupported-endpoint');
-        return;
-      }
       const errorClass = classifyAutomationWorkerError(error);
       if (errorClass === 'transient') {
         claimConsecutiveFailures += 1;
@@ -527,15 +521,14 @@ export function startAutomationWorker(params: {
     } finally {
       claimInFlight = false;
 
-      if (claimedRunStarted && hasExecutionCapacity()) {
-        // Refill directly from the same bounded map after the claim releases
-        // its admission slot. This is not a second scheduler: the next claim
-        // still consults the one durable server claim owner and stops at the
-        // map's configured capacity.
+      if (claimedRunStarted) {
+        // Refill through the same map and claim timer after releasing request
+        // admission. At ordinary capacity the server filters this next claim
+        // to scoped work; no second scheduler or local cap is introduced.
         scheduleCapacityRefill('claimed-run-capacity-available');
         return;
       }
-      if (pendingQueuedWake && assignments.getAll().length > 0) {
+      if (pendingQueuedWake) {
         scheduleClaimSoon('queued-wake-pending');
         return;
       }
@@ -608,14 +601,6 @@ export function startAutomationWorker(params: {
 
       if (body.t === 'automation-run-updated' && body.state === 'queued') {
         pendingQueuedWake = true;
-        if (assignments.getAll().length === 0) {
-          void refreshAssignments().catch((error) => {
-            logAutomationWarn('Failed to refresh automation assignments after queued wake', error, {
-              machineId: params.machineId,
-            });
-          });
-          return;
-        }
         scheduleClaimSoon('socket-run-queued');
       }
     },

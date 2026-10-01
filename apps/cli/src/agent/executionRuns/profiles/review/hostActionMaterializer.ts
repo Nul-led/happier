@@ -9,6 +9,7 @@ import {
   type ActionExecuteResult,
   type ActionExecutorContext,
   type PluginPermissionGrantRequestActionInputV1,
+  type PluginSourceCustodyV1,
   type ReviewCommentCreateRequestV1,
   type ReviewCommentProposalV1,
   type ReviewCommentSnapshotV1,
@@ -16,7 +17,7 @@ import {
 
 import {
   resolvePluginFinalPolicyAuthorizationFacts,
-  type PluginFinalPolicyCurrentGeneration,
+  type PluginFinalPolicyCurrentRuntime,
 } from '@/plugins/runtime/policy/facts';
 import { resolveReviewCommentSnapshot } from '../../../reviews/comments/snapshots';
 
@@ -38,12 +39,13 @@ type ReviewCommentHostWorkspace = Readonly<{
 }>;
 
 export type ReviewCommentHostPluginAuthority = Readonly<{
-  immutableGenerationId: string;
+  sourceCustody: PluginSourceCustodyV1;
 }>;
 
 export function resolveReviewCommentHostPluginAuthority(params: Readonly<{
   pluginId: string;
-  current: PluginFinalPolicyCurrentGeneration | null;
+  current: PluginFinalPolicyCurrentRuntime | null;
+  sourceCustody: PluginSourceCustodyV1 | null;
 }>): ReviewCommentHostPluginAuthority | null {
   const authorizationFacts = resolvePluginFinalPolicyAuthorizationFacts({
     pluginId: params.pluginId,
@@ -54,9 +56,9 @@ export function resolveReviewCommentHostPluginAuthority(params: Readonly<{
     serviceAvailability: Object.freeze([]),
     currentIntent: 'currentIntentRequired',
   });
-  if (decision.outcome !== 'visible' || !params.current) return null;
+  if (decision.outcome !== 'visible' || !params.current || !params.sourceCustody) return null;
   return Object.freeze({
-    immutableGenerationId: params.current.immutableGenerationId,
+    sourceCustody: params.sourceCustody,
   });
 }
 
@@ -338,7 +340,7 @@ export function createReviewCommentHostActionMaterializer(deps: Readonly<{
             agentId: approved.agentId,
             projectId: approved.projectId,
             workspaceId: approved.workspaceId,
-            immutableGenerationId: approved.immutableGenerationId,
+            sourceCustody: approved.sourceCustody,
           },
         },
       };

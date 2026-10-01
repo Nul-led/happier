@@ -61,8 +61,7 @@ function mergeOptions(
       type: option.type,
       currentValue: option.currentValue,
       ...(option.options === undefined ? {} : { options: [...option.options] }),
-      // Producer-declared. A runtime snapshot cannot author this fact, so dropping it here
-      // would silently erase what the persisted catalog already carries.
+      // Keep the producer-declared override rule with its current option contribution.
       ...(option.overridesWhenOn === undefined
         ? {}
         : { overridesWhenOn: option.overridesWhenOn }),
@@ -77,12 +76,21 @@ function mergeState(params: Readonly<{
   previous: SessionModelsState | null;
   runtime: AgentSessionModelsSnapshot;
   authoritativeCurrentModelId?: string | null;
+  observedAt: number;
 }>): SessionModelsState | null {
-  if (params.runtime.models === null) return params.base;
+  if (params.runtime.models === null) return mergeBaseState(params.previous, params.base);
   const availableModels: SessionModel[] = [];
   const indexById = new Map<string, number>();
   const suppressedOptionIdsByModelId = new Map<string, readonly string[]>();
-  for (const model of params.runtime.models) {
+  const currentFactsOnly = params.runtime.observedAt === 0 && (params.base?.updatedAt ?? 0) > 0;
+  for (const runtimeModel of params.runtime.models) {
+    if (currentFactsOnly && runtimeModel.id !== params.runtime.currentModelId) continue;
+    const model: NonNullable<AgentSessionModelsSnapshot['models']>[number] = currentFactsOnly ? {
+      id: runtimeModel.id,
+      name: runtimeModel.name,
+      contextWindowTokens: runtimeModel.contextWindowTokens,
+      suppressedModelOptionIds: runtimeModel.suppressedModelOptionIds,
+    } : runtimeModel;
     if (indexById.has(model.id)) continue;
     indexById.set(model.id, availableModels.length);
     if (model.suppressedModelOptionIds?.length) {
@@ -104,7 +112,7 @@ function mergeState(params: Readonly<{
       ...(modelOptions ? { modelOptions } : {}),
     });
   }
-  for (const model of params.base?.availableModels ?? []) {
+  for (const model of params.runtime.observedAt === 0 ? params.base?.availableModels ?? [] : []) {
     const existingIndex = indexById.get(model.id);
     if (existingIndex === undefined) {
       indexById.set(model.id, availableModels.length);
@@ -137,7 +145,7 @@ function mergeState(params: Readonly<{
       ...(modelOptions ? { modelOptions } : {}),
     };
   }
-  if (availableModels.length === 0) return params.base;
+  if (availableModels.length === 0 && params.runtime.observedAt === 0) return params.base;
   const candidates = [
     params.authoritativeCurrentModelId ?? undefined,
     params.runtime.currentModelId ?? undefined,
@@ -145,11 +153,11 @@ function mergeState(params: Readonly<{
     params.base?.currentModelId,
   ];
   const currentModelId = candidates.find((candidate) =>
-    typeof candidate === 'string' && indexById.has(candidate)) ?? availableModels[0]!.id;
+    typeof candidate === 'string' && candidate.length > 0) ?? availableModels[0]?.id ?? 'default';
   return {
     v: 1,
     agentId: params.agentId,
-    updatedAt: Date.now(),
+    updatedAt: params.runtime.observedAt === 0 ? params.base?.updatedAt ?? 0 : params.observedAt,
     currentModelId,
     availableModels,
     ...(params.previous?.activeSelectionV1
@@ -164,28 +172,8 @@ function mergeBaseState(
 ): SessionModelsState | null {
   if (!canonical) return legacyAcp;
   if (!legacyAcp) return canonical;
-  const availableModels: SessionModel[] = [...canonical.availableModels];
-  const indexById = new Map(availableModels.map((model, index) => [model.id, index] as const));
-  for (const model of legacyAcp.availableModels) {
-    const existingIndex = indexById.get(model.id);
-    if (existingIndex === undefined) {
-      indexById.set(model.id, availableModels.length);
-      availableModels.push(model);
-    }
-  }
-  const currentModelId = [canonical.currentModelId, legacyAcp.currentModelId]
-    .find((candidate) => indexById.has(candidate)) ?? availableModels[0]?.id;
-  if (!currentModelId) return null;
-  return {
-    v: 1,
-    agentId: canonical.agentId,
-    updatedAt: Math.max(canonical.updatedAt, legacyAcp.updatedAt),
-    currentModelId,
-    availableModels,
-    ...(canonical.activeSelectionV1
-      ? { activeSelectionV1: canonical.activeSelectionV1 }
-      : {}),
-  };
+  // Compatibility aliases are observations of one catalog, not independent membership sources.
+  return legacyAcp.updatedAt > canonical.updatedAt ? legacyAcp : canonical;
 }
 
 export function createSessionRuntimeModelsPublisher(params: Readonly<{
@@ -213,6 +201,12 @@ export function createSessionRuntimeModelsPublisher(params: Readonly<{
 }> {
   let stopped = false;
   let runtime = params.source.read();
+  // Current-model/context telemetry does not observe the available catalog again.
+  const catalogFingerprint = (snapshot: AgentSessionModelsSnapshot): string => JSON.stringify(
+    snapshot.models?.map(({ contextWindowTokens: _context, ...model }) => model) ?? null,
+  );
+  let runtimeCatalogFingerprint = catalogFingerprint(runtime);
+  let runtimeObservedAt = runtime.observedAt ?? (runtime.models === null ? 0 : Date.now());
   const initialMetadata = params.session.getMetadataSnapshot();
   let canonicalBase = stateForAgent(
     initialMetadata?.sessionModelsV1 ?? null,
@@ -328,9 +322,10 @@ export function createSessionRuntimeModelsPublisher(params: Readonly<{
       const base = mergeBaseState(canonicalBase, legacyAcpBase);
       const merged = mergeState({
         agentId: params.agentId,
-        base,
+        base: runtime.observedAt === 0 ? mergeBaseState(current, base) : base,
         previous: current,
         runtime,
+        observedAt: runtimeObservedAt,
         authoritativeCurrentModelId:
           authoritativeSelection?.selection.modelId ?? null,
       });
@@ -394,6 +389,10 @@ export function createSessionRuntimeModelsPublisher(params: Readonly<{
   params.session.on('metadata-updated', onMetadataUpdated);
   const unsubscribe = params.source.subscribe((snapshot) => {
     if (stopped) return;
+    const fingerprint = catalogFingerprint(snapshot);
+    if (snapshot.observedAt !== undefined) runtimeObservedAt = snapshot.observedAt;
+    else if (snapshot.models !== null && fingerprint !== runtimeCatalogFingerprint) runtimeObservedAt = Date.now();
+    runtimeCatalogFingerprint = fingerprint;
     runtime = snapshot;
     publish();
   });

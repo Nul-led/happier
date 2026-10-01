@@ -15,6 +15,12 @@ import { installSessionShellCommonModuleMocks } from './sessionShellTestHelpers'
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
+const homeHealth = vi.hoisted(() => ({ kind: 'healthy' as string }));
+
+vi.mock('@/components/navigation/connectionStatus/useConnectionHealth', () => ({
+    useActiveHomeConnectionHealth: () => ({ kind: homeHealth.kind }),
+}));
+
 installSessionShellCommonModuleMocks({
     router: async () => {
         const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
@@ -54,6 +60,7 @@ function buildPaneState(items: readonly SessionListIndexItem[]): VisibleSessionL
         visibleSessionListIndex: items,
         hasHiddenInactiveSessions: false,
         folderFocus: null,
+        folderFeatureEnabledServerIds: [],
         showLoading: false,
         showEmptyState: false,
     };
@@ -115,6 +122,7 @@ async function renderListAndNeighbours(params: Readonly<{
 describe('SessionsList session-navigation cursor publication', () => {
     beforeEach(() => {
         resetSessionNavigationCursorForTests();
+        homeHealth.kind = 'healthy';
     });
 
     afterEach(() => {
@@ -131,6 +139,19 @@ describe('SessionsList session-navigation cursor publication', () => {
             buildServerScopedSessionKey('s2', 'server_a'),
             buildServerScopedSessionKey('s3', 'server_a'),
         ]);
+    });
+
+    it('shows Home recovery beside retained ordinary rows when the Home is unreachable', async () => {
+        homeHealth.kind = 'server_unreachable';
+        const { screen } = await renderListAndNeighbours({
+            items: ORDERED_LIST,
+            dataActive: true,
+            anchorSessionId: 's2',
+        });
+
+        expect(readSessionNavigationCursor()?.entries).toHaveLength(3);
+        expect(screen.findByTestId('home-unreachable')).toBeTruthy();
+        expect(screen.findByTestId('home-unreachable-retry')).toBeTruthy();
     });
 
     it('resolves the cockpit step to the sessions either side of the open one', async () => {

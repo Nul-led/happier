@@ -11,6 +11,7 @@ import {
   verifyExternalActionApprovalInputV1,
   type ActionExecutorDeps,
 } from '@happier-dev/protocol/actions';
+import { API_TOKEN_FULL_GRANT_V1, buildBackendTargetKeyV2 } from '@happier-dev/protocol';
 
 import {
   executeExternalAction,
@@ -22,6 +23,7 @@ const principal = {
   accountId: 'account-1',
   principalId: 'principal-1',
   credentialId: 'credential-1',
+  grant: API_TOKEN_FULL_GRANT_V1,
   authority: 'account_automation',
 } as const;
 
@@ -87,6 +89,68 @@ function createExactLimitMultibyteResult(): string {
 }
 
 describe('executeExternalAction', () => {
+  it('uses the current signed grant instead of a wider cached PAT grant', async () => {
+    const material = { type: 'dataKey' as const, machineKey: new Uint8Array(32).fill(9) };
+    const binding = { serverIdentityId: 'srv_test', accountId: principal.accountId,
+      credentialId: '00000000-0000-4000-8000-000000000001', actionId: 'session.permission_mode.set',
+      requestId: 'narrowed-send', target: { kind: 'session' as const, sessionId: 'session-1' } };
+    const envelope = sealExternalActionRequestV2({ binding, material,
+      input: { sessionId: 'session-1', permissionMode: 'yolo' },
+      randomBytes: (length) => new Uint8Array(length).fill(2) });
+    const authorization = { v: 1 as const, token: 'current-home-proof', binding: {
+      ...binding, principalId: principal.principalId, machineId: 'machine-1',
+      requestEnvelopeDigest: computeExternalActionRequestEnvelopeDigestV1(envelope),
+      grant: { ...API_TOKEN_FULL_GRANT_V1, permissionModes: ['default'] as ['default'] },
+    } };
+    const sessionPermissionModeSet = vi.fn(async () => ({ ok: true }));
+    const result = await executeExternalAction({ actionId: binding.actionId, envelope,
+      principal: { ...principal, credentialId: binding.credentialId },
+      executionAuthorization: authorization,
+      externalActionMachineRequestPrivateKey: tweetnacl.sign.keyPair.fromSeed(new Uint8Array(32).fill(7)).secretKey,
+      currentMachineId: 'machine-1', currentServerId: 'server-1',
+      resolveEncryption: async () => ({ serverIdentityId: binding.serverIdentityId, material }),
+      resolveTarget: async () => binding.target,
+      executor: createActionExecutor({ ...createUnavailableHostActionDeps(), sessionPermissionModeSet }),
+    });
+    if (result.kind !== 'response' || result.response.v !== 2) throw new Error('Expected protected response');
+    expect(openExternalActionResponseV2({ envelope: result.response, binding, material, request: envelope }))
+      .toMatchObject({ ok: false, errorCode: 'permission_mode_not_granted' });
+    expect(sessionPermissionModeSet).not.toHaveBeenCalled();
+  });
+
+  it('checks bound creation against decrypted V2 fields before host launch', async () => {
+    const material = { type: 'dataKey' as const, machineKey: new Uint8Array(32).fill(9) };
+    const agentTarget = { kind: 'agent' as const, identity: { pluginId: 'happier.agent.codex', localId: 'codex' } };
+    const placement = { folderId: 'leads', tagIds: ['inbound'] };
+    const grant = { ...API_TOKEN_FULL_GRANT_V1, actions: { families: [], ids: ['session.spawn_new'] },
+      targets: { sessions: ['existing-only'], machines: [] },
+      create: { machineId: 'machine-1', agentTargetKey: buildBackendTargetKeyV2(agentTarget), directory: 'managed' as const, placement } };
+    const binding = { serverIdentityId: 'srv_test', accountId: principal.accountId,
+      credentialId: '00000000-0000-4000-8000-000000000001', actionId: 'session.spawn_new',
+      requestId: 'bound-create', target: { kind: 'machine' as const, machineId: 'machine-1' } };
+    const sessionSpawnNew = vi.fn(async () => SESSION_SPAWN_PENDING_RESULT);
+    const executor = createActionExecutor({ ...createUnavailableHostActionDeps(), sessionSpawnNew });
+    const run = async (directory: unknown) => {
+      const envelope = sealExternalActionRequestV2({ binding, material, input: {
+        creationKey: 'create-bound',
+        agentTarget, directory, organizationPlacement: placement,
+      }, randomBytes: (length) => new Uint8Array(length).fill(2) });
+      const result = await executeExternalAction({ actionId: binding.actionId, envelope,
+        principal: { ...principal, credentialId: binding.credentialId, grant },
+        currentMachineId: 'machine-1', currentServerId: 'server-1',
+        resolveEncryption: async () => ({ serverIdentityId: binding.serverIdentityId, material }),
+        resolveTarget: async () => binding.target, executor });
+      if (result.kind !== 'response' || result.response.v !== 2) throw new Error('Expected protected response');
+      return openExternalActionResponseV2({ envelope: result.response, binding, material, request: envelope });
+    };
+    expect(await run({ kind: 'path', path: '/ungranted' })).toMatchObject({
+      ok: false, errorCode: 'credential_scope_denied',
+    });
+    expect(sessionSpawnNew).not.toHaveBeenCalled();
+    expect(await run({ kind: 'managed' })).toMatchObject({ ok: true });
+    expect(sessionSpawnNew).toHaveBeenCalledOnce();
+  });
+
   it('admits a present-user signed-root handoff on its UI surface', async () => {
     const sessionHandoffStart = vi.fn(async () => ({
       handoffId: 'handoff-1',
@@ -223,6 +287,7 @@ describe('executeExternalAction', () => {
         requestId: 'home-generated-request',
         requestEnvelopeDigest: computeExternalActionRequestEnvelopeDigestV1(envelope),
         target: { kind: 'machine' as const, machineId: 'machine-implied' },
+        grant: API_TOKEN_FULL_GRANT_V1,
       },
     };
     const execute = vi.fn<ExternalActionExecutor['execute']>(async (_actionId, actionInput, context) => {
@@ -374,6 +439,7 @@ describe('executeExternalAction', () => {
           accountId: principal.accountId,
           principalId: principal.principalId,
           credentialId: principal.credentialId,
+          grant: principal.grant,
           machineId: 'machine-1',
           actionId: 'action.spec.get',
           requestId: envelope.requestId,

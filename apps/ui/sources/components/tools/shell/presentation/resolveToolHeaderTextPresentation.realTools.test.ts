@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type { ToolCall } from '@/sync/domains/messages/messageTypes';
+import type { ToolCall } from "@happier-dev/session-core/messages";
 
 import { knownTools } from '@/components/tools/catalog';
 import { resolveToolHeaderTextPresentation } from './resolveToolHeaderTextPresentation';

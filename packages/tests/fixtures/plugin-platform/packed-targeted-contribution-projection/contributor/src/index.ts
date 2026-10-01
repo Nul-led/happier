@@ -13,7 +13,6 @@ import {
 const CLIENT_ARTIFACT_ID = 'packed-client-runtime';
 const CLIENT_MODULE = {
   artifactId: CLIENT_ARTIFACT_ID,
-  modulePath: './clientRuntime',
   exportName: 'activate',
 } as const;
 

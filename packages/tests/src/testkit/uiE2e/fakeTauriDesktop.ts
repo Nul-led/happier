@@ -14,7 +14,17 @@ export type FakeTauriDesktopStrategy =
 export type FakeTauriDesktopUpdateState = Readonly<{
     installed?: boolean;
     version: string;
+    currentVersion?: string;
 }>;
+
+/**
+ * How `desktop_download_update` behaves: `succeed` resolves at once, `fail` rejects, `hold` emits one
+ * `desktop_update_download_progress` event (`holdPercent`, default 42) and waits for
+ * `releaseFakeTauriDesktopDownload`.
+ */
+export type FakeTauriDesktopUpdateDownload = 'succeed' | 'fail' | 'hold';
+
+const FAKE_UPDATE_DOWNLOAD_ERROR = 'error sending request for url';
 
 export type FakeTauriDesktopControlsState = Readonly<{
     closeCount: number;
@@ -29,7 +39,6 @@ export type FakeTauriDesktopInvokeLogEntry = Readonly<{
 }>;
 
 export type FakeTauriDesktopState = Readonly<{
-    autostartEnabled: boolean;
     controls: FakeTauriDesktopControlsState;
     currentWindowLabel: string;
     desktopActivityOverlayState: unknown | null;
@@ -38,8 +47,11 @@ export type FakeTauriDesktopState = Readonly<{
     isMaximized: boolean;
     platform: FakeTauriDesktopPlatform;
     strategy: FakeTauriDesktopStrategy;
+    shutdownOutcome: 'exit' | 'menuBar' | null;
     trayState: Record<string, unknown> | null;
     updateAvailable: FakeTauriDesktopUpdateState | null;
+    updateDownload: FakeTauriDesktopUpdateDownload;
+    holdPercent: number;
 }>;
 
 export type FakeTauriDesktopCommandResult = Readonly<{
@@ -50,6 +62,10 @@ export type FakeTauriDesktopCommandResult = Readonly<{
 type MutableFakeTauriDesktopWindow = Window & {
     __HAPPIER_FAKE_TAURI_DESKTOP__?: FakeTauriDesktopState;
     __HAPPIER_FAKE_TAURI_EVENT_LISTENERS__?: Record<string, number[]>;
+    /** Emits one Tauri event to the page's listeners (a system-task host's event channel). */
+    __HAPPIER_FAKE_TAURI_EMIT__?: (event: string, payload: unknown) => void;
+    /** Settles a held `desktop_download_update` (`true` → downloaded, `false` → the download fails). */
+    __HAPPIER_FAKE_TAURI_RELEASE_DOWNLOAD__?: (ok: boolean) => void;
     __TAURI__?: {
         core?: {
             invoke?: (command: string, args?: Record<string, unknown>) => Promise<unknown>;
@@ -242,7 +258,6 @@ export function createFakeTauriDesktopState(
 ): FakeTauriDesktopState {
     const platform = overrides.platform ?? 'macos';
     return {
-        autostartEnabled: false,
         controls: {
             closeCount: 0,
             dragCount: 0,
@@ -257,8 +272,11 @@ export function createFakeTauriDesktopState(
         isMaximized: false,
         platform,
         strategy: overrides.strategy ?? resolveDefaultStrategy(platform),
+        shutdownOutcome: overrides.shutdownOutcome ?? null,
         trayState: overrides.trayState ?? null,
         updateAvailable: overrides.updateAvailable ?? null,
+        updateDownload: overrides.updateDownload ?? 'succeed',
+        holdPercent: overrides.holdPercent ?? 42,
     };
 }
 
@@ -321,6 +339,14 @@ export async function applyFakeTauriDesktopCommand(
                 result: nextStateBase.updateAvailable,
                 state: nextStateBase,
             };
+        case 'desktop_download_update':
+            if (nextStateBase.updateAvailable && nextStateBase.updateDownload === 'fail') {
+                throw new Error(FAKE_UPDATE_DOWNLOAD_ERROR);
+            }
+            return {
+                result: nextStateBase.updateAvailable != null,
+                state: nextStateBase,
+            };
         case 'desktop_install_update': {
             const installedUpdate = nextStateBase.updateAvailable
                 ? {
@@ -341,24 +367,17 @@ export async function applyFakeTauriDesktopCommand(
                 result: null,
                 state: {
                     ...nextStateBase,
-                    trayState: args ?? null,
+                    trayState: isRecord(args?.state) ? args.state : null,
                 },
             };
-        case 'desktop_get_autostart_enabled':
+        case 'desktop_finish_shutdown':
             return {
-                result: nextStateBase.autostartEnabled,
-                state: nextStateBase,
-            };
-        case 'desktop_set_autostart_enabled': {
-            const enabled = Boolean(args?.enabled);
-            return {
-                result: enabled,
+                result: null,
                 state: {
                     ...nextStateBase,
-                    autostartEnabled: enabled,
+                    shutdownOutcome: args?.outcome === 'menuBar' ? 'menuBar' : 'exit',
                 },
             };
-        }
         case 'plugin:window|minimize':
         case 'plugin:window|toggle_maximize':
         case 'plugin:window|close':
@@ -378,10 +397,7 @@ export async function applyFakeTauriDesktopCommand(
         case 'desktop_window_get_state':
             return applyWindowCommand(nextStateBase, command, 'legacy');
         default:
-            return {
-                result: null,
-                state: nextStateBase,
-            };
+            throw new Error(`Unknown desktop command: ${command}`);
     }
 }
 
@@ -406,6 +422,10 @@ export async function installFakeTauriDesktopBridge(
         const listenersByEvent: Record<string, number[]> = Object.create(null);
         const callbacks = new Map<number, (data: unknown) => unknown>();
         let nextCallbackId = 1;
+
+        // Playwright serializes this function, so its boundary adapters must be self-contained.
+        const isRecord = (value: unknown): value is Record<string, unknown> =>
+            typeof value === 'object' && value !== null && !Array.isArray(value);
 
         const resolveDefaultStrategy = (platform: FakeTauriDesktopPlatform): FakeTauriDesktopStrategy =>
             platform === 'macos' ? 'native-macos-traffic-lights' : 'custom-controls';
@@ -555,6 +575,14 @@ export async function installFakeTauriDesktopBridge(
             }
         };
 
+        const systemTaskHostBinding = '__HAPPIER_FAKE_TAURI_SYSTEM_TASK_HOST__';
+        const systemTaskCommands = [
+            'start_system_task',
+            'get_system_task_snapshot',
+            'cancel_system_task',
+            'respond_system_task_prompt',
+        ];
+
         const emitEvent = (event: string, payload: unknown) => {
             for (const callbackId of listenersByEvent[event] ?? []) {
                 const handler = callbacks.get(callbackId);
@@ -584,7 +612,7 @@ export async function installFakeTauriDesktopBridge(
 
             switch (command) {
                 case 'desktop_activity_overlay_sync': {
-                    const payload = readDesktopActivityOverlaySyncPayload(args);
+                    const payload = args && 'payload' in args ? args.payload ?? null : null;
                     return {
                         emittedEvents: [
                             {
@@ -610,10 +638,10 @@ export async function installFakeTauriDesktopBridge(
                         state: nextStateBase,
                     };
                 case 'desktop_activity_overlay_set_expanded': {
-                    const payload = resolveDesktopActivityOverlayExpandedState(
-                        nextStateBase.desktopActivityOverlayState,
-                        args?.expanded,
-                    );
+                    const current = nextStateBase.desktopActivityOverlayState;
+                    const payload = isRecord(current) && typeof args?.expanded === 'boolean'
+                        ? { ...current, expanded: args.expanded }
+                        : current;
                     return {
                         emittedEvents: [
                             {
@@ -707,24 +735,17 @@ export async function installFakeTauriDesktopBridge(
                         result: null,
                         state: {
                             ...nextStateBase,
-                            trayState: args ?? null,
+                            trayState: isRecord(args?.state) ? args.state : null,
                         },
                     };
-                case 'desktop_get_autostart_enabled':
+                case 'desktop_finish_shutdown':
                     return {
-                        result: nextStateBase.autostartEnabled,
-                        state: nextStateBase,
-                    };
-                case 'desktop_set_autostart_enabled': {
-                    const enabled = Boolean(args?.enabled);
-                    return {
-                        result: enabled,
+                        result: null,
                         state: {
                             ...nextStateBase,
-                            autostartEnabled: enabled,
+                            shutdownOutcome: args?.outcome === 'menuBar' ? 'menuBar' : 'exit',
                         },
                     };
-                }
                 case 'plugin:window|minimize':
                 case 'plugin:window|toggle_maximize':
                 case 'plugin:window|close':
@@ -744,10 +765,7 @@ export async function installFakeTauriDesktopBridge(
                 case 'desktop_window_get_state':
                     return applyWindowCommand(nextStateBase, command, 'legacy');
                 default:
-                    return {
-                        result: null,
-                        state: nextStateBase,
-                    };
+                    throw new Error(`Unknown desktop command: ${command}`);
             }
         };
 
@@ -779,6 +797,39 @@ export async function installFakeTauriDesktopBridge(
         win.__TAURI_INTERNALS__ = {
             callbacks,
             invoke: async (command: string, args?: Record<string, unknown>) => {
+                // System tasks go to the attached host (`desktopSetup/desktopSystemTaskHost.ts`),
+                // the test's stand-in for the Rust bridge; without one the commands are unsupported.
+                const systemTaskHost = (win as unknown as Record<string, unknown>)[systemTaskHostBinding];
+                if (systemTaskCommands.includes(command) && typeof systemTaskHost === 'function') {
+                    return await (systemTaskHost as (command: string, args: Record<string, unknown> | null) => Promise<unknown>)(
+                        command,
+                        args ?? null,
+                    );
+                }
+                if (command === 'desktop_download_update') {
+                    const current = createNextStateBase(
+                        win.__HAPPIER_FAKE_TAURI_DESKTOP__ ?? serializedState,
+                        command,
+                        args,
+                    );
+                    win.__HAPPIER_FAKE_TAURI_DESKTOP__ = current;
+                    const offered = current.updateAvailable;
+                    if (!offered) return false;
+                    if (current.updateDownload === 'fail') throw new Error('error sending request for url');
+                    if (current.updateDownload !== 'hold') return true;
+                    emitEvent('desktop_update_download_progress', {
+                        version: offered.version,
+                        downloadedBytes: current.holdPercent,
+                        totalBytes: 100,
+                    });
+                    return await new Promise<boolean>((resolve, reject) => {
+                        win.__HAPPIER_FAKE_TAURI_RELEASE_DOWNLOAD__ = (ok) => {
+                            win.__HAPPIER_FAKE_TAURI_RELEASE_DOWNLOAD__ = undefined;
+                            if (ok) resolve(true);
+                            else reject(new Error('error sending request for url'));
+                        };
+                    });
+                }
                 const result = applyCommand(
                     win.__HAPPIER_FAKE_TAURI_DESKTOP__ ?? serializedState,
                     command,
@@ -804,6 +855,7 @@ export async function installFakeTauriDesktopBridge(
         win.__TAURI_EVENT_PLUGIN_INTERNALS__ = {
             unregisterListener,
         };
+        win.__HAPPIER_FAKE_TAURI_EMIT__ = emitEvent;
         win.__TAURI__ = {
             core: {
                 invoke: win.__TAURI_INTERNALS__.invoke,
@@ -852,4 +904,12 @@ export async function navigateSpa(page: Page, path: string): Promise<void> {
         window.history.pushState({}, '', nextPath);
         window.dispatchEvent(new PopStateEvent('popstate'));
     }, path);
+}
+
+/** Settles a download the fake bridge is holding (`updateDownload: 'hold'`). */
+export async function releaseFakeTauriDesktopDownload(page: Page, ok: boolean): Promise<void> {
+    await page.evaluate((resolvedOk) => {
+        const win = window as MutableFakeTauriDesktopWindow;
+        win.__HAPPIER_FAKE_TAURI_RELEASE_DOWNLOAD__?.(resolvedOk);
+    }, ok);
 }

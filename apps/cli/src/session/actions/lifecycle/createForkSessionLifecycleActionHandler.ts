@@ -44,7 +44,7 @@ export function createForkSessionLifecycleActionHandler(params: Readonly<{
     });
 
     return async (raw: unknown, context) => {
-        if (context?.signal.aborted) return cancelled();
+        if (context?.signal?.aborted) return cancelled();
         const parsed = SessionForkRpcParamsSchema.safeParse(raw);
         if (!parsed.success) {
             return {
@@ -94,7 +94,7 @@ export function createForkSessionLifecycleActionHandler(params: Readonly<{
                 errorMessage: error instanceof Error ? error.message : 'Failed to load parent session',
             };
         }
-        if (context?.signal.aborted) return cancelled();
+        if (context?.signal?.aborted) return cancelled();
         if (!parentSession) {
             return {
                 ok: false,
@@ -232,7 +232,7 @@ export function createForkSessionLifecycleActionHandler(params: Readonly<{
         if (existingFork) {
             return await existingFork;
         }
-        if (context?.signal.aborted) return cancelled();
+        if (context?.signal?.aborted) return cancelled();
 
         const forkPromise = (async (): Promise<ForkLifecycleResult> => {
             const spawnNonce = createStableSpawnNonce('session.fork', forkAttemptIdentity);
@@ -276,7 +276,7 @@ export function createForkSessionLifecycleActionHandler(params: Readonly<{
                         : {}),
                 });
                 if (nativeForkOpen) return nativeForkOpen;
-                if (context?.signal.aborted) return cancelled();
+                if (context?.signal?.aborted) return cancelled();
             }
 
             const maxTextChars = readReplayTextLimitFromEnv();
@@ -310,7 +310,7 @@ export function createForkSessionLifecycleActionHandler(params: Readonly<{
                     stopSession: params.handlers.stopSession,
                 });
                 if (providerNativeFork) return providerNativeFork;
-                if (context?.signal.aborted) return cancelled();
+                if (context?.signal?.aborted) return cancelled();
             }
 
             if (shouldAttemptAcpForkLatest) {
@@ -330,7 +330,7 @@ export function createForkSessionLifecycleActionHandler(params: Readonly<{
                     stopSession: params.handlers.stopSession,
                 });
                 if (acpLatestFork) return acpLatestFork;
-                if (context?.signal.aborted) return cancelled();
+                if (context?.signal?.aborted) return cancelled();
             }
 
             if (requestedStrategy !== 'auto' && requestedStrategy !== 'replay') {
@@ -341,7 +341,7 @@ export function createForkSessionLifecycleActionHandler(params: Readonly<{
                 };
             }
 
-            if (context?.signal.aborted) return cancelled();
+            if (context?.signal?.aborted) return cancelled();
 
             return await createReplayForkSession({
                 credentials,
@@ -363,7 +363,7 @@ export function createForkSessionLifecycleActionHandler(params: Readonly<{
             });
         })().catch((error: unknown): ForkLifecycleResult => {
             if (
-                context?.signal.aborted === true
+                context?.signal?.aborted === true
                 && error instanceof Error
                 && error.name === 'AbortError'
             ) {

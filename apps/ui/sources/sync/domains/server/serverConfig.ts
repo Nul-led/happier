@@ -1,4 +1,4 @@
-import { getActiveServerUrl } from './serverProfiles';
+import { getActiveServerUrl, HAPPIER_CLOUD_SERVER_URL } from './serverProfiles';
 import { getResetToDefaultServerId } from './serverProfiles';
 import { setActiveServer, upsertAndActivateServer } from './serverRuntime';
 import { isStackContext } from './serverContext';
@@ -13,7 +13,7 @@ function normalizeUrl(raw: string): string {
     return canonicalizeServerUrl(raw);
 }
 
-function getDefaultServerUrl(): string {
+export function getDefaultServerUrl(): string {
     const envUrl = normalizeUrl(readConfiguredServerUrlEnv());
     if (envUrl) return envUrl;
 
@@ -24,7 +24,7 @@ function getDefaultServerUrl(): string {
         }
     }
 
-    return '';
+    return HAPPIER_CLOUD_SERVER_URL;
 }
 
 export function getServerUrl(): string {

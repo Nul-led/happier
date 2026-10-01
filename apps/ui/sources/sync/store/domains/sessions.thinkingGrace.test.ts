@@ -143,7 +143,7 @@ describe('sessions domain: thinking grace', () => {
             scheduledTimeouts.delete(timeoutId as unknown as number);
         });
 
-        const { createReducer } = await import('../../reducer/reducer');
+        const { createReducer } = await import("@happier-dev/session-core/reducer");
         const { createSessionsDomain } = await import('./sessions');
         const { get, domain } = createHarness(createSessionsDomain, createReducer, {
             sessionListRowsByServerId: { server_1: {} },
@@ -259,7 +259,7 @@ describe('sessions domain: thinking grace', () => {
             scheduledTimeouts.delete(timeoutId as unknown as number);
         });
 
-        const { createReducer } = await import('../../reducer/reducer');
+        const { createReducer } = await import("@happier-dev/session-core/reducer");
         const { createSessionsDomain } = await import('./sessions');
         const { get, domain } = createHarness(createSessionsDomain, createReducer);
 
@@ -343,7 +343,7 @@ describe('sessions domain: thinking grace', () => {
             scheduledTimeouts.delete(timeoutId as unknown as number);
         });
 
-        const { createReducer } = await import('../../reducer/reducer');
+        const { createReducer } = await import("@happier-dev/session-core/reducer");
         const { createSessionsDomain } = await import('./sessions');
         const { get, domain } = createHarness(createSessionsDomain, createReducer);
 
@@ -406,7 +406,7 @@ describe('sessions domain: thinking grace', () => {
         vi.spyOn(Date, 'now').mockImplementation(() => nowMs);
         vi.spyOn(globalThis, 'setTimeout');
 
-        const { createReducer } = await import('../../reducer/reducer');
+        const { createReducer } = await import("@happier-dev/session-core/reducer");
         const { createSessionsDomain } = await import('./sessions');
         const { get, domain } = createHarness(createSessionsDomain, createReducer);
 

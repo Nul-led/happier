@@ -2,6 +2,32 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { installLocalStorageMock } from '@/auth/storage/tokenStorage.web.testHelpers';
 
+// The desktop's system-task bridge is the boundary for this computer's services; off the desktop
+// (every other case here) the real runtime has no local bridge and the disconnect is not applicable.
+const desktopRunner = vi.hoisted(() => ({
+    runner: null as unknown,
+    starts: [] as string[],
+    reply: { ok: true, data: { outcome: 'removed' } } as { ok: true; data: Record<string, unknown> } | { ok: false; code: string },
+    subscribeError: null as string | null,
+}));
+const modalSpies = vi.hoisted(() => ({ alerts: [] as string[], confirmAnswers: [] as boolean[], confirms: 0 }));
+vi.mock('@/components/systemTasks/systemTasksRuntime', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/components/systemTasks/systemTasksRuntime')>();
+    return { ...actual, getSystemTasksRunner: () => (desktopRunner.runner ?? actual.getSystemTasksRunner()) as never };
+});
+vi.mock('@/modal', async () => {
+    const { createModalModuleMock } = await import('@/dev/testkit/mocks/modal');
+    return createModalModuleMock({
+        spies: {
+            alert: (title) => { modalSpies.alerts.push(title); },
+            confirm: async () => {
+                modalSpies.confirms += 1;
+                return modalSpies.confirmAnswers.shift() ?? false;
+            },
+        },
+    }).module;
+});
+
 afterEach(() => {
     try {
         const localStorage = (globalThis as { localStorage?: Storage }).localStorage;
@@ -20,6 +46,11 @@ afterEach(() => {
 function randomScope(): string {
     return `test_${Date.now()}_${Math.random().toString(16).slice(2)}`;
 }
+
+// Transform the real graph during collection; cases still reload it after setting their scope.
+await import('./removeServerProfileUiAction');
+await import('@/components/systemTasks/createSystemTaskRunner');
+vi.resetModules();
 
 describe('removeServerProfileUiAction', () => {
     it('clears server-scoped credentials before removing the profile', async () => {
@@ -235,5 +266,106 @@ describe('removeServerProfileUiAction', () => {
 
         expect(profiles.getServerProfileById(profile.id)).not.toBeNull();
         localStorageHandle.restore();
+    });
+
+});
+
+describe('removeServerProfileUiAction — this computer stops serving the Home first (R15 c, R13C-P3-5)', () => {
+    async function setUp() {
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
+        const localStorageHandle = installLocalStorageMock();
+        const { createSystemTaskRunner } = await import('@/components/systemTasks/createSystemTaskRunner');
+        desktopRunner.starts = [];
+        modalSpies.alerts = [];
+        modalSpies.confirmAnswers = [];
+        modalSpies.confirms = 0;
+        desktopRunner.subscribeError = null;
+        desktopRunner.runner = createSystemTaskRunner({
+            mode: 'tauri',
+            bridge: {
+                async start(spec) {
+                    desktopRunner.starts.push(spec.kind);
+                    return `task_${desktopRunner.starts.length}`;
+                },
+                async subscribe(taskId, listenerSet) {
+                    if (desktopRunner.subscribeError) throw new Error(desktopRunner.subscribeError);
+                    const reply = desktopRunner.reply;
+                    setTimeout(() => listenerSet.onResult(reply.ok
+                        ? { protocolVersion: 1, taskId, ok: true, data: reply.data as never }
+                        : { protocolVersion: 1, taskId, ok: false, error: { code: reply.code, message: 'failed' } }), 0);
+                    return () => {};
+                },
+                async cancel() {},
+                async respond() {},
+            },
+        });
+        const profiles = await import('@/sync/domains/server/serverProfiles');
+        const home = await profiles.upsertServerProfile({ serverUrl: 'https://company.example.test', name: 'Company' });
+        const { removeServerProfileUiAction } = await import('./removeServerProfileUiAction');
+        const remove = (extra: Record<string, unknown> = {}) =>
+            removeServerProfileUiAction({ profileId: home.id, serverUrl: home.serverUrl, ...extra });
+        const stillSaved = () => profiles.getServerProfileById(home.id) !== null;
+        return { remove, stillSaved, restore: () => { desktopRunner.runner = null; localStorageHandle.restore(); } };
+    }
+
+    it('uninstalls this computer\'s service for the Home before forgetting it, on every removal path', async () => {
+        const t = await setUp();
+        desktopRunner.reply = { ok: true, data: { outcome: 'removed' } };
+        await expect(t.remove()).resolves.toEqual({ kind: 'completed' });
+        expect(desktopRunner.starts).toEqual(['daemon.service.relay.disconnect.v1']);
+        expect(t.stillSaved()).toBe(false);
+        t.restore();
+    });
+
+    it('keeps the Home when its service could not be uninstalled, and says so', async () => {
+        const t = await setUp();
+        desktopRunner.reply = { ok: false, code: 'service_uninstall_failed' };
+        await expect(t.remove()).resolves.toEqual({ kind: 'kept' });
+        expect(modalSpies.alerts).toHaveLength(1);
+        expect(t.stillSaved()).toBe(true);
+        t.restore();
+    });
+
+    it('asks before removing anyway when this computer\'s services could not be read', async () => {
+        const t = await setUp();
+        desktopRunner.reply = { ok: false, code: 'service_inventory_unavailable' };
+        modalSpies.confirmAnswers = [false];
+        await expect(t.remove()).resolves.toEqual({ kind: 'kept' });
+        expect(t.stillSaved()).toBe(true);
+        modalSpies.confirmAnswers = [true];
+        await expect(t.remove()).resolves.toEqual({ kind: 'completed' });
+        expect(modalSpies.confirms).toBe(2);
+        expect(t.stillSaved()).toBe(false);
+        t.restore();
+    });
+
+    it('leaves a service the user installed, says so, and still forgets the Home', async () => {
+        const t = await setUp();
+        desktopRunner.reply = { ok: true, data: { outcome: 'user_owned', label: 'happier-daemon.company' } };
+        await expect(t.remove()).resolves.toEqual({ kind: 'completed' });
+        expect(modalSpies.alerts).toHaveLength(1);
+        t.restore();
+    });
+
+    it('does not disconnect twice for the caller that already did (the Personal Home erase)', async () => {
+        const t = await setUp();
+        await expect(t.remove({ thisComputer: 'disconnected' })).resolves.toEqual({ kind: 'completed' });
+        expect(desktopRunner.starts).toEqual([]);
+        t.restore();
+    });
+
+    it('keeps the Home when the disconnect broke off after it started, and asks only when no bridge existed', async () => {
+        const t = await setUp();
+        // The task started on this computer, then the connection to it failed: it may have uninstalled.
+        desktopRunner.subscribeError = 'channel closed';
+        await expect(t.remove()).resolves.toEqual({ kind: 'kept' });
+        expect(modalSpies.confirms).toBe(0);
+        expect(modalSpies.alerts).toHaveLength(1);
+        // No bridge at all: nothing was attempted, so the person may remove it anyway.
+        desktopRunner.subscribeError = 'system_tasks_unavailable';
+        modalSpies.confirmAnswers = [false];
+        await expect(t.remove()).resolves.toEqual({ kind: 'kept' });
+        expect(modalSpies.confirms).toBe(1);
+        t.restore();
     });
 });

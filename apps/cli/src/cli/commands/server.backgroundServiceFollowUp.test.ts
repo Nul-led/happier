@@ -146,6 +146,32 @@ describe('server background service follow-up helpers', () => {
         expect(runCliAction).toHaveBeenCalledWith(['service', 'restart']);
     });
 
+    it('never asks the default service to follow a relay that has its own pinned service', async () => {
+        const promptInput = vi.fn(async () => 'y');
+        const runCliAction = vi.fn(async () => undefined);
+        const output: string[] = [];
+
+        await runDefaultFollowingBackgroundServiceServerChangeFollowUp({
+            interactive: true,
+            promptInput,
+            runCliAction,
+            targetServerUrl: 'https://home.example.test',
+            authState: 'logged_out',
+            log: (message) => output.push(message),
+            services: [createDaemonServiceListEntry()],
+            pinnedServices: [createDaemonServiceListEntry({ serverId: 'home', label: 'happier-daemon.home', targetMode: 'pinned' })],
+        });
+
+        // No authentication for the new relay: the default service will not connect to it.
+        expect(promptInput).toHaveBeenCalledTimes(1);
+        expect(promptInput).toHaveBeenCalledWith(
+            'Restart the default background service so it stops serving the relay you left? [Y/n]: ',
+        );
+        expect(axiosGetMock).not.toHaveBeenCalled();
+        expect(runCliAction).toHaveBeenCalledWith(['service', 'restart']);
+        expect(output.join('\n')).toContain('happier-daemon.home');
+    });
+
     it('logs auth + restart guidance when authentication is declined', async () => {
         readStoredCredentialsMock.mockResolvedValueOnce(null);
         const output: string[] = [];

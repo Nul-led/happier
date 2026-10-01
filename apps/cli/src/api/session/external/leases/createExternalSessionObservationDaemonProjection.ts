@@ -1,5 +1,5 @@
 import type {
-    GenerationBoundExternalSessionObservation,
+    OccurrenceBoundExternalSessionObservation,
 } from '@/plugins/runtime/lifecycle/contributions/targetAgents';
 import {
     ExternalAgentObservationResourceDescriptorV1Schema,
@@ -26,7 +26,7 @@ import {
 } from './publishExternalAgentObservationField';
 
 type ObservationContributionLease = Readonly<{
-    contribution: GenerationBoundExternalSessionObservation;
+    contribution: OccurrenceBoundExternalSessionObservation;
     filesystemReadAllowedPaths?: ReadonlySet<string>;
     retirementSignal?: AbortSignal;
     release(): Promise<void>;
@@ -54,14 +54,14 @@ type CreateExternalSessionObservationDaemonProjectionParams = Readonly<{
         sessionId: string;
         resource: Readonly<{
             linkGeneration: string;
-            pluginGeneration: string;
+            occurrenceId: string;
         }>;
     }>) => unknown | Promise<unknown>;
     isTranscriptRefreshDemanded?: (input: Readonly<{
         sessionId: string;
         resource: Readonly<{
             linkGeneration: string;
-            pluginGeneration: string;
+            occurrenceId: string;
         }>;
     }>) => boolean;
 }>;
@@ -139,7 +139,8 @@ async function acquireCurrentObservationContribution(
             || !runtimeLease.isCurrent()
             || runtimeLease.agentId !== agentDefinition.id
             || runtimeLease.pluginId !== resource.pluginId
-            || runtimeLease.generation !== resource.pluginGeneration
+            || registryLease.registry.readPluginOccurrenceId?.(resource.pluginId)
+                !== resource.occurrenceId
             || !runtimeLease.externalSessionObservation
         ) {
             await registryLease.release();
@@ -178,7 +179,7 @@ export function createExternalSessionObservationDaemonProjection(
     const withContribution = async <T>(
         resource: ExternalSessionObservationResourceIdentity,
         operation: (
-            contribution: GenerationBoundExternalSessionObservation,
+            contribution: OccurrenceBoundExternalSessionObservation,
             lease: Pick<
                 ObservationContributionLease,
                 'filesystemReadAllowedPaths' | 'retirementSignal'

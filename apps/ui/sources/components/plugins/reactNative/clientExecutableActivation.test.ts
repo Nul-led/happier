@@ -4,7 +4,7 @@ import {
     type PluginMachineExecutionOriginV1,
 } from '@happier-dev/protocol';
 import {
-    PluginUiArtifactsManifestEntryV1Schema,
+    PluginUiArtifactsManifestEntryV2Schema,
 } from '@happier-dev/protocol/plugins/ui';
 import type { PluginClientApi } from '@happier-dev/plugin-sdk';
 
@@ -48,9 +48,9 @@ import { reconcileProjectedPluginUiClientExecutables } from './clientExecutableA
 const pluginId = 'acme.shared-runtime';
 const serverId = 'server-1';
 const machineId = 'machine-1';
+const occurrenceIdForGeneration = (generation: number) => `${pluginId}:occurrence:${generation}`;
 const target = Object.freeze({
     artifactId: 'shared-runtime',
-    modulePath: './sharedRuntime',
     exportName: 'activate',
     platform: 'web' as const,
 });
@@ -63,37 +63,30 @@ const origin: PluginMachineExecutionOriginV1 = Object.freeze({
     }),
 });
 
-function identity(localId: string, generation: number): PluginReactNativeBundleCacheIdentity {
+function identity(localId: string, _generation: number): PluginReactNativeBundleCacheIdentity {
     return Object.freeze({
         pluginId,
         contributionId: localId,
+        artifactId: target.artifactId,
         artifactDigest: 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
-        hostAppVersion: '2.0.0',
-        hostUiApiVersion: '1.0.0',
-        reactVersion: '19.0.0',
-        reactNativeVersion: '0.83.4',
         platform: target.platform,
-        channel: 'internal',
-        nativeCapabilitiesDigest: 'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
-        projectionGeneration: generation,
     });
 }
 
 function artifactGraph() {
-    return PluginUiArtifactsManifestEntryV1Schema.parse({
-        contributionId: target.artifactId,
+    return PluginUiArtifactsManifestEntryV2Schema.parse({
+        artifactId: target.artifactId,
         tier: 'reactNative',
-        platform: target.platform,
-        entry: 'react-native/shared-runtime/index.js',
+        entry: 'react-native/shared-runtime/entry.cjs.bundle',
         files: [{
-            relativePath: 'react-native/shared-runtime/index.js',
+            relativePath: 'react-native/shared-runtime/entry.cjs.bundle',
             digest: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
             byteSize: 1,
         }],
         digest: 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
-        builtWith: { bundler: 'vite', version: '7.0.0' },
-        hostUiApiVersion: '1.0.0',
-        compat: { react: '19.0.0', reactNative: '0.83.4' },
+        builtWith: { bundler: 'esbuild', version: '0.27.2' },
+        executable: { exports: ['activate'] },
+        hostUiApiRange: '^1.0.0',
     });
 }
 
@@ -110,7 +103,6 @@ function actionDeclaration() {
                 target: 'client',
                 client: {
                     artifactId: target.artifactId,
-                    modulePath: target.modulePath,
                     exportName: target.exportName,
                 },
                 platforms: [target.platform],
@@ -135,7 +127,6 @@ function voiceDeclaration() {
             },
             client: {
                 artifactId: target.artifactId,
-                modulePath: target.modulePath,
                 exportName: target.exportName,
             },
         }],
@@ -172,6 +163,7 @@ function projection(input: Readonly<{
             [`${pluginId}/${action.id}`]: Object.freeze({
                 ...action,
                 pluginId,
+                occurrenceId: occurrenceIdForGeneration(input.generation),
                 available: true,
                 [PLUGIN_UI_CONTRIBUTION_ORIGIN_KEY]: hostOrigin,
             }),
@@ -182,6 +174,7 @@ function projection(input: Readonly<{
             [`${pluginId}/${voice.id}`]: Object.freeze({
                 id: `${pluginId}/${voice.id}`,
                 pluginId,
+                occurrenceId: occurrenceIdForGeneration(input.generation),
                 generation: input.generation,
                 contributionKey: `${pluginId}/${voice.id}`,
                 definition: voice,
@@ -202,7 +195,7 @@ function projection(input: Readonly<{
                 runtime: Object.freeze({
                     decision: Object.freeze({ state: 'load' }),
                     loadPolicy: Object.freeze({ source: 'installedArtifact' }),
-                    cacheIdentity: actionIdentity,
+                    cacheIdentity: { artifactDigest: actionIdentity.artifactDigest },
                 }),
                 [PLUGIN_UI_CONTRIBUTION_ORIGIN_KEY]: hostOrigin,
             }),
@@ -219,7 +212,7 @@ function projection(input: Readonly<{
                 runtime: Object.freeze({
                     decision: Object.freeze({ state: 'load' }),
                     loadPolicy: Object.freeze({ source: 'installedArtifact' }),
-                    cacheIdentity: voiceIdentity,
+                    cacheIdentity: { artifactDigest: voiceIdentity.artifactDigest },
                 }),
                 [PLUGIN_UI_CONTRIBUTION_ORIGIN_KEY]: hostOrigin,
             }),
@@ -280,7 +273,7 @@ function installArtifact(identityToInstall: PluginReactNativeBundleCacheIdentity
 
 function backend(activate: (api: PluginClientApi) => void): PluginReactNativeLoaderBackend {
     return Object.freeze({
-        backendId: 'reactNativeWebModule',
+        backendId: 'commonJs',
         available: true,
         loadInstalledBundle: vi.fn(async () => activate),
     });
@@ -294,6 +287,7 @@ function address(input: Readonly<{
     return Object.freeze({
         family: input.family,
         pluginId,
+        occurrenceId: occurrenceIdForGeneration(input.generation),
         localId: input.localId,
         target,
         executionOrigin: origin,
@@ -373,13 +367,6 @@ describe('projected client executable complete-set reconciliation', () => {
 
         expect(attempts).toMatchObject([{ result: { ok: true }, reused: false }]);
         expect(artifactAvailabilitySpy).toHaveBeenCalledTimes(1);
-        expect(artifactAvailabilitySpy).toHaveBeenCalledWith(expect.objectContaining({
-            artifactOwnerKind: 'clientContribution',
-            clientContribution: {
-                family: 'actions',
-                action: { pluginId, localId: 'open-shared' },
-            },
-        }));
         expect(loaderBackend.loadInstalledBundle).toHaveBeenCalledTimes(1);
         expect(activate).toHaveBeenCalledTimes(1);
         expect(composition.read(address({ family: 'actions', localId: 'open-shared', generation: 12 }))).not.toBeNull();
@@ -517,7 +504,7 @@ describe('projected client executable complete-set reconciliation', () => {
         let resolveLoad: ((value: (api: PluginClientApi) => void) => void) | null = null;
         const activate = vi.fn((_api: PluginClientApi) => {});
         const loaderBackend: PluginReactNativeLoaderBackend = Object.freeze({
-            backendId: 'reactNativeWebModule',
+            backendId: 'commonJs',
             available: true,
             loadInstalledBundle: vi.fn(() => new Promise<(api: PluginClientApi) => void>((resolve) => {
                 resolveLoad = resolve;

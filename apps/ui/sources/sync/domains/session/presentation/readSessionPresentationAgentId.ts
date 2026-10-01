@@ -7,7 +7,6 @@ import {
 } from '@happier-dev/protocol';
 
 import { readSessionMetadataLayoutVersion } from '@/sync/engine/sessions/parsePlainSessionPayload';
-import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
 
 type SessionPresentationAgentIdInput = Readonly<{
     metadataLayoutVersion?: number;
@@ -30,9 +29,6 @@ export function readSessionPresentationAgentId(
     if (metadataLayoutVersion !== 0) {
         return null;
     }
-    return resolveAgentIdFromSessionMetadata(readSessionOwnerMetadataView({
-        metadataLayoutVersion,
-        metadata: session.metadata ?? null,
-        ownerMetadataView: session.ownerMetadataView,
-    }));
+    // Legacy Agent identity is Session-readable even when the producer withholds a full owner view.
+    return resolveAgentIdFromSessionMetadata(session.metadata ?? null);
 }

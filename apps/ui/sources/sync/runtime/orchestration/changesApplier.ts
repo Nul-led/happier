@@ -3,14 +3,15 @@ import {
     classifyChangeForCheckpoint,
     changeRequiresSavedSecretCatalogRefresh,
     getChangeSessionDraftHint,
+    getChangeAuthoringMemoryHint,
     getChangeTargetMessageSeq,
-    getChangeUpdatedMessageHint,
     type ChangeCheckpointBlockedReason,
     type PlannedChangeActions,
 } from './changesPlanner';
 import { runTasksWithLimit } from './runTasksWithLimit';
 import type { ApiChangeEntry } from '@/sync/api/types/apiTypes';
 import { canonicalSessionDraftAddressV2, type SessionDraftAddressV2 } from '@happier-dev/protocol';
+import { readSessionUpdatedMessageChangeHintV1 } from '@happier-dev/protocol/changes';
 
 export type TodoSocketUpdate = Readonly<{
     key: string;
@@ -45,6 +46,7 @@ export async function applyPlannedChangeActions(params: {
     isSessionMessagesLoaded: (sessionId: string) => boolean;
     shouldCatchUpSessionMessages?: (sessionId: string) => boolean;
     getSessionMaterializedMaxSeq?: (sessionId: string) => number;
+    isSessionMessagesDeferred?: (sessionId: string) => boolean;
     concurrencyLimit?: number;
     invalidate: {
         settings?: () => Promise<void>;
@@ -57,6 +59,8 @@ export async function applyPlannedChangeActions(params: {
         feed?: () => Promise<void>;
         automations?: () => Promise<void>;
         sessions?: (context: SessionListInvalidationContext) => Promise<void>;
+        /** Refresh exactly these listed rows by id; the list membership is not re-read. */
+        sessionRows?: (sessionIds: readonly string[]) => Promise<void>;
         sessionFolderAssignments?: (sessionIds: string[]) => Promise<void>;
         todos?: () => Promise<void>;
         pets?: () => Promise<void>;
@@ -80,6 +84,7 @@ export async function applyPlannedChangeActions(params: {
     kvBulkGet: (credentials: AuthCredentials, keys: string[]) => Promise<{ values: TodoSocketUpdate[] }>;
     convergePendingForSession?: (sessionId: string) => Promise<void>;
     materializeSessionDraft?: (address: SessionDraftAddressV2) => Promise<void>;
+    materializeAuthoringMemory?: (key: string) => Promise<void>;
 }): Promise<PlannedChangesApplyResult> {
     const { planned } = params;
 
@@ -117,6 +122,7 @@ export async function applyPlannedChangeActions(params: {
     const failedPendingSessionIds = new Set<string>();
     const completedSessionDraftAddresses = new Set<string>();
     const failedSessionDraftAddresses = new Set<string>();
+    const completedAuthoringMemoryKeys = new Set<string>();
     const listHydrationSessionIds = Array.from(new Set(
         planned.sessionIdsToCatchUp
             .map((sessionId) => String(sessionId ?? '').trim())
@@ -141,7 +147,8 @@ export async function applyPlannedChangeActions(params: {
     let savedSecretResourcesInvalidationFailed = false;
     let sessionsInvalidationDone: Promise<boolean> | null = null;
     let resolveSessionsInvalidationDone: ((succeeded: boolean) => void) | null = null;
-    if (planned.invalidate.sessions) {
+    const sessionRowRefreshIds = planned.invalidate.sessions ? [] : planned.sessionRowRefreshIds;
+    if (planned.invalidate.sessions || sessionRowRefreshIds.length > 0) {
         sessionsInvalidationDone = new Promise<boolean>((resolve) => {
             resolveSessionsInvalidationDone = resolve;
         });
@@ -203,6 +210,19 @@ export async function applyPlannedChangeActions(params: {
                     requiredHydrationSessionIds: listHydrationSessionIds,
                     prioritizeSessionIds: listHydrationSessionIds,
                 });
+                resolveSessionsInvalidationDone?.(true);
+            } catch {
+                sessionsInvalidationFailed = true;
+                resolveSessionsInvalidationDone?.(false);
+            }
+        });
+    }
+    if (sessionRowRefreshIds.length > 0) {
+        tasks.push(async () => {
+            try {
+                // No row owner means these rows cannot be proven current: hold the cursor.
+                if (!params.invalidate.sessionRows) throw new Error('Session row refresh owner unavailable');
+                await params.invalidate.sessionRows(sessionRowRefreshIds);
                 resolveSessionsInvalidationDone?.(true);
             } catch {
                 sessionsInvalidationFailed = true;
@@ -329,6 +349,18 @@ export async function applyPlannedChangeActions(params: {
         });
     }
 
+    for (const key of planned.authoringMemoryKeys ?? []) {
+        tasks.push(async () => {
+            try {
+                if (!params.materializeAuthoringMemory) return;
+                await params.materializeAuthoringMemory(key);
+                completedAuthoringMemoryKeys.add(key);
+            } catch {
+                // This row remains unmaterialized and the durable cursor stops below.
+            }
+        });
+    }
+
     if (planned.kv.type === 'refresh-feature' && planned.kv.feature === 'todos') {
         tasks.push(() => params.invalidate.todos?.() ?? Promise.resolve());
     }
@@ -373,6 +405,18 @@ export async function applyPlannedChangeActions(params: {
                 processedChanges,
                 blockedChanges: planned.changes.length - processedChanges,
             };
+        }
+
+        if (classification.materializationProof === 'authoring-memory') {
+            const hint = getChangeAuthoringMemoryHint(change);
+            if (!hint || !completedAuthoringMemoryKeys.has(hint.key)) {
+                return { status: 'partial', safeAdvanceCursor, blockedCursor: classification.cursor,
+                    blockedReason: 'partial-materialization', processedChanges,
+                    blockedChanges: planned.changes.length - processedChanges };
+            }
+            safeAdvanceCursor = classification.cursor;
+            processedChanges += 1;
+            continue;
         }
 
         if (classification.materializationProof === 'workflow-run') {
@@ -523,7 +567,7 @@ export async function applyPlannedChangeActions(params: {
             };
         }
 
-        const updatedMessage = getChangeUpdatedMessageHint(change);
+        const updatedMessage = readSessionUpdatedMessageChangeHintV1(change);
         if (
             updatedMessage
             && params.isSessionMessagesLoaded(classification.entityId)
@@ -548,7 +592,11 @@ export async function applyPlannedChangeActions(params: {
         ) {
             const targetSeq = getChangeTargetMessageSeq(change);
             const materializedSeq = params.getSessionMaterializedMaxSeq?.(classification.entityId) ?? null;
-            if (targetSeq !== null && (materializedSeq === null || materializedSeq < targetSeq)) {
+            if (
+                targetSeq !== null
+                && (materializedSeq === null || materializedSeq < targetSeq)
+                && params.isSessionMessagesDeferred?.(classification.entityId) !== true
+            ) {
                 return {
                     status: 'partial',
                     safeAdvanceCursor,

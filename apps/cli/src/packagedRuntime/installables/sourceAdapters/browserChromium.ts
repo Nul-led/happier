@@ -29,7 +29,7 @@ export type ArchiveDownloadInstallResult =
   | Readonly<{ ok: false; errorMessage: string }>;
 
 export type ArchiveDownloadInstallableAdapter = Readonly<{
-  key: BrowserChromiumInstallableKey;
+  key: string;
   sourceKind: ArchiveDownloadInstallableSourceKind;
   /** Resolve the already-installed managed executable path, or `null` when not yet installed. */
   resolveInstalledExecutable: (params?: Readonly<{
@@ -44,8 +44,7 @@ export type ArchiveDownloadInstallableAdapter = Readonly<{
 }>;
 
 /**
- * The single archive-download adapter for the managed browser-chromium source. There is exactly one
- * archive-download installable today (Chrome-for-Testing); the registry routes by `key`.
+ * The archive-download adapter for the managed browser-chromium source; the registry routes by key.
  */
 export function getBrowserChromiumArchiveDownloadInstallableAdapter(): ArchiveDownloadInstallableAdapter {
   return {

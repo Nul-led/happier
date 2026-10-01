@@ -33,7 +33,7 @@ export type BrowserIrohHttpErrorCode =
     | 'invalid_request'
     /** The stream proved a different peer than the caller asked for. */
     | 'endpoint_identity_mismatch'
-    /** A head block exceeded {@link BROWSER_IROH_HTTP_MAX_HEAD_BYTES}. */
+    /** A request head cannot fit the worker's single write operation. */
     | 'head_too_large'
     /** Status line, header line, or chunk size is not valid HTTP/1.1. */
     | 'malformed_response'
@@ -54,13 +54,11 @@ export class BrowserIrohHttpError extends Error {
 }
 
 /**
- * The head block bound applied in both directions. It is a parse-buffer bound for
- * a tab, not a product limit: it sits far above the Home server's own header
- * budget (Node's default is 16 KiB) and far below the stream chunk cap, so a
- * legitimate Home response can never reach it and a broken or hostile peer cannot
- * grow the buffer without end.
+ * A request head is written in one structured-clone worker operation, whose
+ * encoded payload must fit the canonical stream-operation budget. Responses
+ * can span many reads: that operation budget is not an aggregate header quota.
  */
-export const BROWSER_IROH_HTTP_MAX_HEAD_BYTES = 64 * 1024;
+export const BROWSER_IROH_HTTP_MAX_REQUEST_HEAD_BYTES = BROWSER_IROH_STREAM_CHUNK_BYTES;
 
 /** Read granularity. Bounded by the protocol's per-operation chunk cap. */
 const RESPONSE_READ_CHUNK_BYTES = Math.min(64 * 1024, BROWSER_IROH_STREAM_CHUNK_BYTES);
@@ -511,10 +509,10 @@ function buildRequestHead(
     }
 
     const head = ENCODER.encode(`${lines.join(CRLF)}${CRLF}${CRLF}`);
-    if (head.byteLength > BROWSER_IROH_HTTP_MAX_HEAD_BYTES) {
+    if (head.byteLength > BROWSER_IROH_HTTP_MAX_REQUEST_HEAD_BYTES) {
         throw new BrowserIrohHttpError(
             'head_too_large',
-            `Request head is ${head.byteLength} bytes, above the ${BROWSER_IROH_HTTP_MAX_HEAD_BYTES} byte bound`,
+            `Request head is ${head.byteLength} bytes, above the ${BROWSER_IROH_HTTP_MAX_REQUEST_HEAD_BYTES} byte bound`,
         );
     }
     return head;
@@ -581,7 +579,13 @@ function encodeChunk(payload: Uint8Array): Uint8Array {
     return framed;
 }
 
-/** Incremental reader over the stream's bounded `read`. */
+/**
+ * Incremental reader over the stream's bounded `read`. The caller has already
+ * authenticated the exact Home/Machine endpoint. A response head may span any
+ * number of reads; no independent aggregate response-memory budget is declared
+ * by that owner. Platform allocation failures still reject through the caller's
+ * cancellation/cleanup path, rather than imposing a guessed HTTP size quota.
+ */
 class ResponseByteReader {
     private buffered: Uint8Array = EMPTY_BYTES;
     private ended = false;
@@ -619,12 +623,6 @@ class ResponseByteReader {
                 this.buffered = this.buffered.subarray(terminator + 4);
                 return block;
             }
-            if (this.buffered.byteLength > BROWSER_IROH_HTTP_MAX_HEAD_BYTES) {
-                throw new BrowserIrohHttpError(
-                    'head_too_large',
-                    `Response head exceeded the ${BROWSER_IROH_HTTP_MAX_HEAD_BYTES} byte bound`,
-                );
-            }
             if (this.ended) {
                 throw new BrowserIrohHttpError(
                     'truncated_response',
@@ -637,7 +635,7 @@ class ResponseByteReader {
     }
 
     /** Reads one CRLF-terminated line, without the terminator. */
-    async readLine(maxBytes: number): Promise<string> {
+    async readLine(): Promise<string> {
         let searchFrom = 0;
         for (;;) {
             const terminator = indexOfCrlf(this.buffered, searchFrom);
@@ -645,12 +643,6 @@ class ResponseByteReader {
                 const line = DECODER.decode(this.buffered.subarray(0, terminator));
                 this.buffered = this.buffered.subarray(terminator + 2);
                 return line;
-            }
-            if (this.buffered.byteLength > maxBytes) {
-                throw new BrowserIrohHttpError(
-                    'head_too_large',
-                    `Response line exceeded the ${maxBytes} byte bound`,
-                );
             }
             if (this.ended) {
                 throw new BrowserIrohHttpError(
@@ -676,10 +668,7 @@ class ResponseByteReader {
     }
 
     async expectCrlf(): Promise<void> {
-        // Bounded like any other line: a peer that never terminates the chunk is
-        // stopped by the same budget, and anything before the terminator is the
-        // malformed framing it looks like.
-        const line = await this.readLine(BROWSER_IROH_HTTP_MAX_HEAD_BYTES);
+        const line = await this.readLine();
         if (line.length !== 0) {
             throw new BrowserIrohHttpError(
                 'malformed_response',
@@ -690,17 +679,9 @@ class ResponseByteReader {
 
     /** Consumes the trailer section that terminates a chunked body. */
     async readTrailerSection(): Promise<void> {
-        let consumed = 0;
         for (;;) {
-            const line = await this.readLine(BROWSER_IROH_HTTP_MAX_HEAD_BYTES);
+            const line = await this.readLine();
             if (line.length === 0) return;
-            consumed += line.length + 2;
-            if (consumed > BROWSER_IROH_HTTP_MAX_HEAD_BYTES) {
-                throw new BrowserIrohHttpError(
-                    'head_too_large',
-                    `Response trailer section exceeded the ${BROWSER_IROH_HTTP_MAX_HEAD_BYTES} byte bound`,
-                );
-            }
         }
     }
 }
@@ -862,7 +843,7 @@ function createResponseBodyStream(
 
         if (framing.kind === 'chunked') {
             if (chunkRemaining === 0) {
-                const sizeLine = await reader.readLine(BROWSER_IROH_HTTP_MAX_HEAD_BYTES);
+                const sizeLine = await reader.readLine();
                 const size = parseChunkSize(sizeLine);
                 if (size === 0) {
                     await reader.readTrailerSection();

@@ -24,6 +24,7 @@ function createWrongSizedResultWorker(replacements: ReadonlyMap<number, Uint8Arr
         probe: () => inner.probe(),
         decryptDataKeyEnvelopeV1: async (request: CryptoWorkerBatchRequest<NativeCryptoWorkerDataKeyEnvelopeItem>) => {
             const result = await inner.decryptDataKeyEnvelopeV1(request);
+            if (result.status !== 'ok') return result;
             return {
                 ...result,
                 items: result.items.map((item, index) => {

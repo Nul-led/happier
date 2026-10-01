@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { classifyWorkspaceSyncAdmission, hasUnsupportedWorkspaceAction } from './workspaceSyncGuard';
+import { hasUnsupportedWorkspaceAction } from './workspaceSyncGuard';
 import { computeWorkspaceSyncPolicyDigest } from '@happier-dev/protocol';
 
 const policyInput = {
@@ -24,23 +24,20 @@ describe('workspace sync handoff admission', () => {
       },
       { kind: 'relationship', relationshipId: 'relationship-1', flushBeforeCommit: true },
     ]) {
-      expect(classifyWorkspaceSyncAdmission({ workspaceAction })).toEqual({ kind: 'canonical' });
       expect(hasUnsupportedWorkspaceAction({ workspaceAction })).toBe(false);
     }
   });
 
   it('reserves update-required only for the deliberately retired workspace corridor', () => {
-    expect(classifyWorkspaceSyncAdmission({
+    expect(hasUnsupportedWorkspaceAction({
       workspaceTransfer: { enabled: true, strategy: 'sync_changes' },
-    })).toEqual({ kind: 'update_required' });
+    })).toBe(true);
     expect(hasUnsupportedWorkspaceAction({
       workspaceReplicationReverseSourceRootPath: '/old/source',
     })).toBe(true);
   });
 
   it('leaves malformed canonical input to the strict request schema', () => {
-    expect(classifyWorkspaceSyncAdmission({ workspaceAction: { kind: 'future_mode' } }))
-      .toEqual({ kind: 'malformed' });
     expect(hasUnsupportedWorkspaceAction({ workspaceAction: { kind: 'future_mode' } })).toBe(false);
   });
 });

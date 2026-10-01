@@ -21,8 +21,16 @@ import {
     subscribeServerReachabilityNetworkAllowed,
 } from '@/sync/runtime/connectivity/serverReachabilitySupervisorPool';
 import { t } from '@/text';
+import { NOTIFICATIONS_SETTINGS } from '@/components/settings/notifications/notificationsSettings';
+import { SettingRow, SettingSection } from '@/components/settings/shell/SettingRow';
 
 const FIELDS = ['assigned', 'direct', 'team', 'group'] as const;
+const FIELD_SETTINGS = {
+    assigned: NOTIFICATIONS_SETTINGS.settings.autoFollowAssigned,
+    direct: NOTIFICATIONS_SETTINGS.settings.autoFollowDirect,
+    team: NOTIFICATIONS_SETTINGS.settings.autoFollowTeam,
+    group: NOTIFICATIONS_SETTINGS.settings.autoFollowGroup,
+};
 
 /**
  * The intent is the single field the user flipped, not a captured whole-preferences snapshot: a
@@ -161,10 +169,11 @@ export function SessionAutoFollowPreferencesSection({ serverId }: Readonly<{ ser
     const displayed = preferences && outstanding
         ? { ...preferences, [outstanding.field]: outstanding.value }
         : preferences;
-    return <ItemGroup title={t('session.follow.preferences.title')} footer={t('session.follow.preferences.help')}>
-        {displayed ? FIELDS.map((field) => <Item
+    return <SettingSection section={NOTIFICATIONS_SETTINGS.sectionRefs.autoFollow}>
+        <ItemGroup title={t('session.follow.preferences.title')} description={t('session.follow.preferences.help')}>
+        {displayed ? FIELDS.map((field) => <SettingRow
             key={field}
-            title={t(`session.follow.preferences.${field}`)}
+            setting={FIELD_SETTINGS[field]}
             titleLines={0}
             showChevron={false}
             rightElement={<Switch
@@ -187,5 +196,6 @@ export function SessionAutoFollowPreferencesSection({ serverId }: Readonly<{ ser
             onPress={() => { if (mutation.failed) void save(mutation.failed); else void refresh(); }}
             showChevron={false}
         /> : null}
-    </ItemGroup>;
+    </ItemGroup>
+    </SettingSection>;
 }

@@ -68,6 +68,7 @@ export async function waitForReplacementDaemon(params: Readonly<{
   expectedCliVersion: string;
   expectedRuntimeId?: string | null;
   timeoutMs: number;
+  deadlineAtMs?: number;
   pollMs: number;
   readDaemonStateImpl?: ReadDaemonState;
   confirmReplacementStateImpl?: ConfirmReplacementDaemonState;
@@ -82,7 +83,7 @@ export async function waitForReplacementDaemon(params: Readonly<{
   } = params;
   const normalizedExpectedCliVersion = String(params.expectedCliVersion ?? '').trim();
   const normalizedExpectedRuntimeId = typeof expectedRuntimeId === 'string' ? expectedRuntimeId.trim() : '';
-  const deadline = Date.now() + timeoutMs;
+  const deadline = params.deadlineAtMs ?? Date.now() + timeoutMs;
   let lastObserved: Readonly<{
     pid: number;
     startedWithCliVersion?: string;
@@ -128,8 +129,10 @@ export async function requestDaemonSelfRestart(params: Readonly<{
   expectedCliVersion: string;
   ownPid?: number;
   timeoutMs: number;
+  deadlineAtMs?: number;
   pollMs: number;
   postConfirmationOverlapMs?: number;
+  onReplacementConfirmed?: () => Promise<void>;
   takeover?: boolean;
   env?: NodeJS.ProcessEnv | Record<string, string | undefined>;
   spawnDetachedDaemonStartSyncImpl?: SpawnDetachedDaemonStartSync;
@@ -175,6 +178,7 @@ export async function requestDaemonSelfRestart(params: Readonly<{
     expectedCliVersion,
     expectedRuntimeId: runtimeId,
     timeoutMs,
+    ...(params.deadlineAtMs === undefined ? {} : { deadlineAtMs: params.deadlineAtMs }),
     pollMs,
     readDaemonStateImpl,
     confirmReplacementStateImpl,
@@ -185,6 +189,7 @@ export async function requestDaemonSelfRestart(params: Readonly<{
   }
 
   logger.debug('[DAEMON RUN] Replacement daemon confirmed. Exiting current daemon process.');
+  await params.onReplacementConfirmed?.();
   await delay(postConfirmationOverlapMs);
   exitProcess(0);
   return { status: 'exited' };

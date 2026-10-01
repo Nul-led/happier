@@ -151,7 +151,7 @@ describe('initial access terminal refusal through API, daemon HTTP, waiter and A
           sessionId: 'parent', mode: 'plain', ctx: null,
           sessionSpawnDirectTargetTransport: {
             machineId: 'machine-1',
-            prepare: async () => ({ ok: true, directory: homeDir, directoryCreationRequired: false, checkout: null }),
+            prepare: async () => ({ ok: true, directory: homeDir, directoryKind: 'path', directoryCreationRequired: false, checkout: null }),
             spawnedSession: {
               spawn: async (request) => {
                 const result = await spawnDaemonSession(request);
@@ -169,7 +169,7 @@ describe('initial access terminal refusal through API, daemon HTTP, waiter and A
           creationKey: SessionCreationKeyV1Schema.parse('initial-access-terminal'),
           sessionCreationTag: deriveSessionCreationTagV1({ callerCreationNamespace: 'user', creationKey: 'initial-access-terminal' }),
           executionTarget: { serverId: configuration.activeServerId, machineId: 'machine-1' },
-          directory: homeDir,
+          directory: { kind: 'path', path: homeDir },
           agentTarget: { kind: 'agent', identity: { pluginId: 'happier.agent.codex', localId: 'codex' } },
           connectedServices: { v: 2, bindingsByServiceId: {} },
           actionCaller: { kind: 'host' },

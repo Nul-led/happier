@@ -2,8 +2,9 @@ import { resolveAgentIdFromSessionMetadata } from '@happier-dev/agents';
 import * as React from 'react';
 import { Pressable } from 'react-native';
 
-import type { Message, ToolCall } from '@/sync/domains/messages/messageTypes';
-import type { Metadata, Session } from '@/sync/domains/state/storageTypes';
+import type { Message, ToolCall } from "@happier-dev/session-core/messages";
+import type { Session } from '@/sync/domains/state/storageTypes';
+import type { Metadata } from '@happier-dev/session-core/state';
 
 import {
     getToolViewComponent,
@@ -29,6 +30,8 @@ import { t } from '@/text';
 import { resolveToolPermissionTerminalErrorMessage } from '@/components/tools/shell/permissions/resolveToolPermissionTerminalErrorMessage';
 import { useTranscriptRowLayoutMutation } from '@/components/sessions/transcript/measurement/TranscriptRowLayoutMutationContext';
 import { useHistoricalTranscriptAgentId } from '@/components/sessions/transcript/attribution/SessionTranscriptAgentAttributionContext';
+import type { ExecutionRunPromptResponseTarget } from '@/components/tools/shell/permissions/executionRunPromptResponseTarget';
+import type { TranscriptPermissionDisabledReason } from '@/utils/sessions/deriveTranscriptInteraction';
 
 type ToolInlineBodyMode = 'card' | 'timeline';
 type DisplayCode = Readonly<{
@@ -96,9 +99,10 @@ export const ToolInlineBody = React.memo(function ToolInlineBody(props: {
     interaction?: {
         canSendMessages: boolean;
         canApprovePermissions: boolean;
-        permissionDisabledReason?: 'public' | 'readOnly' | 'notGranted' | 'inactive';
+        permissionDisabledReason?: TranscriptPermissionDisabledReason;
     };
     detailLevel: 'summary' | 'full';
+    executionRun?: ExecutionRunPromptResponseTarget;
     sectionSpacing?: 'default' | 'compact';
     setHeaderActions: (node: React.ReactNode | null) => void;
 }) {
@@ -200,6 +204,7 @@ export const ToolInlineBody = React.memo(function ToolInlineBody(props: {
                             messageId={props.messageId}
                             detailLevel={props.detailLevel}
                             interaction={props.interaction}
+                            executionRun={props.executionRun}
                         />
                     </ToolHeaderActionsContext.Provider>
                     {tool.state === 'error' && tool.result && !hideDefaultError && (

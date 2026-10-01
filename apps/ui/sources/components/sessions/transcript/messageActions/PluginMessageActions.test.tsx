@@ -68,13 +68,13 @@ const messageReference: MessageActionReferenceV1 = {
 function action(input: Partial<PluginProjectionAction> & Readonly<{ id: string }>): PluginProjectionAction {
     return {
         id: input.id,
+        occurrenceId: input.occurrenceId ?? null,
         title: input.title ?? input.id,
         description: input.description ?? null,
         icon: input.icon ?? null,
         scopes: input.scopes ?? ['message'],
         surfaces: input.surfaces ?? ['ui'],
         placementBindings: input.placementBindings ?? ['rowAction'],
-        inputSchema: input.inputSchema ?? null,
         inputHints: input.inputHints ?? null,
         priority: input.priority ?? null,
         dangerLevel: input.dangerLevel ?? 'safe',
@@ -131,7 +131,7 @@ describe('PluginMessageActions', () => {
             host: {
                 machineId: 'machine-1',
                 serverId: 'server-1',
-                expectedGeneration: 7,
+                expectedContributorOccurrenceId: 7,
                 sessionId: 'session-1',
                 isCurrent: () => true,
             },
@@ -166,7 +166,7 @@ describe('PluginMessageActions', () => {
         expect(resolveCurrent.mock.calls.length).toBeGreaterThan(currentReadsBeforeRowPress);
         expect(machinePluginStructuredMessageActionExecuteMock).toHaveBeenCalledWith('machine-1', {
             serverId: 'server-1',
-            expectedGeneration: '7',
+            expectedContributorOccurrenceId: '7',
             qualifiedActionId: 'acme.preview/open-preview',
             input: {},
             executionSurface: 'ui',
@@ -194,7 +194,7 @@ describe('PluginMessageActions', () => {
 
         expect(machinePluginStructuredMessageActionExecuteMock).toHaveBeenLastCalledWith('machine-1', {
             serverId: 'server-1',
-            expectedGeneration: '7',
+            expectedContributorOccurrenceId: '7',
             qualifiedActionId: 'acme.preview/menu-only',
             input: {},
             executionSurface: 'ui',
@@ -216,7 +216,7 @@ describe('PluginMessageActions', () => {
 
         expect(machinePluginStructuredMessageActionExecuteMock).toHaveBeenLastCalledWith('machine-1', {
             serverId: 'server-1',
-            expectedGeneration: '7',
+            expectedContributorOccurrenceId: '7',
             qualifiedActionId: 'acme.preview/semantic-menu-only',
             input: {},
             executionSurface: 'ui',

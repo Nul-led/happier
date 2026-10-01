@@ -1,12 +1,24 @@
 import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { describe, expect, it, vi } from 'vitest';
-import { SCM_OPERATION_ERROR_CODES, type ScmHostingRepositoryDescribePublishTargetsResponse, type ScmHostingRepositoryPublishResponse } from '@happier-dev/protocol';
+import { SCM_OPERATION_ERROR_CODES, type ScmHostingRepositoryDescribePublishTargetsResponse, type ScmHostingRepositoryPublishResponse } from '@happier-dev/protocol/scm';
 
-import { createDeferred, createThemeFixture, flushHookEffects, renderScreen } from '@/dev/testkit';
+import { createDeferred } from '@/dev/testkit/hooks/createDeferred';
+import { createThemeFixture } from '@/dev/testkit/fixtures/themeFixtures';
+import { flushHookEffects } from '@/dev/testkit/hooks/flushHookEffects';
+import { renderScreen } from '@/dev/testkit/render/renderScreen';
 import type { ScmWorkingSnapshot } from '@/sync/domains/state/storageTypes';
 import type { SourceControlUpdateTheme } from './SourceControlUpdateControls';
 import { SourceControlPublishRepositorySection } from './SourceControlPublishRepositorySection';
+import { SourceControlUpdateDropdown } from './SourceControlUpdateDropdown';
+import { createAzureDevopsOperationsAdapter } from '../../../../../../../packages/plugins/scm-azure-devops/src/operations/azureDevopsAdapter';
+import { Modal } from '@/modal';
+
+// Native/modal presentation is the boundary; provider discovery and remediation stay real.
+vi.mock('@/modal', async () => {
+    const { createModalModuleMock } = await import('@/dev/testkit/mocks/modal');
+    return createModalModuleMock().module;
+});
 
 function createSnapshot(overrides: Partial<ScmWorkingSnapshot> = {}): ScmWorkingSnapshot {
     return {
@@ -66,6 +78,76 @@ function createSourceControlUpdateThemeFixture(): SourceControlUpdateTheme {
 }
 
 describe('SourceControlPublishRepositorySection', () => {
+    it('connects GitHub from the actual unauthenticated provider result', async () => {
+        const { createGithubRepositoryProvisioningAdapter } = await import('../../../../../../../packages/plugins/scm-github/src/repositoryProvisioning/createRepositoryWithAuthFallback');
+        const adapter = createGithubRepositoryProvisioningAdapter({
+            restAdapter: {
+                describePublishTargets: async () => {
+                    throw Object.assign(new Error('Signed out'), { errorCode: SCM_OPERATION_ERROR_CODES.REMOTE_AUTH_REQUIRED });
+                },
+            },
+        });
+        const result = await adapter.describePublishTargets({
+            provider: { id: 'scm.github', kind: 'github', displayName: 'GitHub', baseUrl: 'https://github.com', urlSafety: { allowedSchemes: ['https:'] } },
+            defaultRepositoryName: 'repo',
+        });
+        const onConnectGitHub = vi.fn();
+        const screen = await renderScreen(<SourceControlPublishRepositorySection
+            theme={createSourceControlUpdateThemeFixture()} snapshot={createSnapshot()} writeEnabled
+            publishTargets={{ success: true, defaultRepositoryName: 'repo', ...result }}
+            onDescribePublishTargets={vi.fn()} onPublishRepository={vi.fn()} onRefresh={vi.fn()}
+            onConnectGitHub={onConnectGitHub}
+        />);
+        expect(screen.findByTestId('scm-publish-remediation-connect-github')).toBeTruthy();
+        await screen.pressByTestIdAsync('scm-publish-remediation-connect-github');
+        expect(onConnectGitHub).toHaveBeenCalled();
+    });
+
+    it('shows the Azure provider CLI command from the actual signed-out provider result', async () => {
+        let authenticated = false;
+        const describePublishTargets = async (): Promise<ScmHostingRepositoryDescribePublishTargetsResponse> => ({
+            success: true,
+            defaultRepositoryName: 'repo',
+            ...await createAzureDevopsOperationsAdapter().describePublishTargets({
+                provider: { id: 'happier.scm.forge.azure-devops/azure-devops', kind: 'azure-devops', displayName: 'Azure DevOps', baseUrl: 'https://dev.azure.com/acme', nameWithOwner: 'acme/platform/repo', urlSafety: { allowedSchemes: ['https:'] } },
+                defaultRepositoryName: 'repo',
+                runtimeServices: { executeCommand: async () => authenticated
+                    ? { ok: true, exitCode: 0, stdout: '{"user":{"name":"user@example.com"}}', stderr: '' }
+                    : { ok: false, exitCode: 1, stdout: '', stderr: 'Please run az login' } },
+            }),
+        });
+        const alert = vi.spyOn(Modal, 'alert');
+        const onAuthenticateGh = vi.fn();
+        const screen = await renderScreen(<SourceControlPublishRepositorySection
+            theme={createSourceControlUpdateThemeFixture()} snapshot={createSnapshot()} writeEnabled
+            publishTargets={null}
+            onDescribePublishTargets={describePublishTargets} onPublishRepository={vi.fn()} onRefresh={vi.fn()}
+            onAuthenticateGh={onAuthenticateGh}
+        />);
+        await flushHookEffects({ cycles: 6, turns: 3 });
+        expect(screen.findByTestId('scm-publish-remediation-authenticate-gh') === null).toBe(true);
+        expect(screen.findByTestId('scm-publish-remediation-authenticate-provider-cli')).toBeTruthy();
+        expect(screen.findByTestId('scm-publish-repository-retry')).toBeTruthy();
+        await act(async () => screen.changeTextByTestId('scm-publish-repository-name-input', 'my-repository'));
+        const visibilityDropdown = () => screen.findAllByType(SourceControlUpdateDropdown).find(
+            (node) => node.props.testID === 'scm-publish-visibility-dropdown',
+        );
+        expect(visibilityDropdown()).toBeDefined();
+        await act(async () => visibilityDropdown()!.props.onSelect('public'));
+        await screen.pressByTestIdAsync('scm-publish-remediation-authenticate-provider-cli');
+        expect(alert).toHaveBeenCalledWith(expect.stringContaining('Azure DevOps'), expect.stringContaining('az login'));
+        expect(onAuthenticateGh).not.toHaveBeenCalled();
+        authenticated = true;
+        await screen.pressByTestIdAsync('scm-publish-repository-retry');
+        await flushHookEffects({ cycles: 6, turns: 3 });
+        expect(screen.findByTestId('scm-publish-auth-provider-cli-ready')).toBeTruthy();
+        expect(screen.getTextContent()).not.toContain('GitHub CLI');
+        expect(screen.findByTestId('scm-publish-remediation-authenticate-provider-cli') === null).toBe(true);
+        expect(screen.findByTestId('scm-publish-repository-submit')?.props.disabled).toBe(false);
+        expect(screen.findByTestId('scm-publish-repository-name-input')?.props.value).toBe('my-repository');
+        expect(visibilityDropdown()!.props.selectedId).toBe('public');
+    });
+
     it('suppresses publish when any remote already points at a GitHub-family host', async () => {
         const screen = await renderScreen(
             <SourceControlPublishRepositorySection

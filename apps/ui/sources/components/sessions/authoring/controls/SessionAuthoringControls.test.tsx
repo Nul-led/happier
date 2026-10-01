@@ -1,5 +1,5 @@
 import React from 'react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act } from 'react-test-renderer';
 
 import { renderScreen } from '@/dev/testkit';
@@ -162,7 +162,7 @@ function baseValues(): WorkflowSessionAuthoringSelection {
 
 function directCapableClaude(supportsDirectTranscriptStorage = true) {
     return {
-        id: 'backend:claude',
+        id: 'agent:happier.agent.claude/claude',
         label: 'Claude Code',
         target: CLAUDE_TARGET,
         agentId: 'claude',
@@ -253,6 +253,11 @@ function selectOption(screen: Awaited<ReturnType<typeof renderControls>>['screen
     option.onSelect();
 }
 
+// Module transform is paid once, outside any single case's time budget.
+beforeAll(async () => {
+    await import('./SessionAuthoringControls');
+}, 300_000);
+
 describe('SessionAuthoringControls', () => {
     beforeEach(() => {
         accountSettings.current = null;
@@ -285,6 +290,35 @@ describe('SessionAuthoringControls', () => {
         expect(registeredCommandIds).not.toContain('composer.sendImmediate');
 
         await screen.unmount();
+    });
+
+    it('presents one field model as chips or as labelled field rows, and marks a changed field', async () => {
+        const chips = await renderControls({
+            fields: ['permissionMode', 'transcriptStorage'],
+            facts: { agentTargets: [directCapableClaude()] },
+            overriddenFields: new Set(['permissionMode']),
+            overriddenAccessibilityHint: 'Changed for this step',
+        });
+        const permissionChip = chips.screen.root.find((node) => (
+            node.props?.testID === 'session-authoring-control-permissionMode' && typeof node.props?.onPress === 'function'
+        ));
+        // Changed-here is a state of the chip trigger itself, not a second control.
+        expect(permissionChip.props.accessibilityHint).toBe('Changed for this step');
+        const storageChip = chips.screen.root.findAll((node) => (
+            node.props?.testID === 'session-authoring-control-transcriptStorage' && typeof node.props?.onPress === 'function'
+        ));
+        for (const node of storageChip) expect(node.props.accessibilityHint).toBeUndefined();
+        await chips.screen.unmount();
+
+        const fields = await renderControls({ fields: ['permissionMode'], presentation: 'fields' });
+        const row = fields.screen.findByTestId('session-authoring-control-permissionMode-row');
+        expect(row).not.toBeNull();
+        // The row names the field; its trigger opens the very same picker and reports the same value.
+        expect(fields.screen.getTextContent()).toContain('settingsSession.permissions.title');
+        await act(async () => { fields.screen.pressByTestId('session-authoring-control-permissionMode'); });
+        await act(async () => { selectOption(fields.screen, 'yolo'); });
+        expect(fields.onChangeField).toHaveBeenCalledWith('permissionMode', 'yolo');
+        await fields.screen.unmount();
     });
 
     it('reports the chosen permission mode without writing any preference', async () => {
@@ -440,16 +474,14 @@ describe('SessionAuthoringControls', () => {
                 service: { pluginId: 'happier.connect.github', localId: 'github' },
             },
         });
-        // A second resource this Home no longer reports as current: it must not
-        // reach the panel as a selectable binding source. It is schema-valid too —
-        // with its own selection resource id — so exclusion is decided by the
-        // currentness filter alone.
+        // A second resource this Home no longer reports as current remains in
+        // the picker so the shared selection owner can show its recovery path.
         const staleResource = TeamCredentialResourceCatalogEntryV1Schema.parse({
             ...teamResource,
             id: 'res-stale',
-            connectedServiceSelections: [
-                { source: 'team_resource', resourceId: 'res-stale', deliveryMode: 'brokered' },
-            ],
+            readiness: { kind: 'source_unavailable' },
+            recoveryAction: 'source_owner_action',
+            connectedServiceSelections: [],
         });
         teamCredentialCatalog.resources = [teamResource, staleResource];
         teamCredentialCatalog.currentResourceKeys = new Set(['team-1:res-1']);
@@ -471,11 +503,12 @@ describe('SessionAuthoringControls', () => {
         await act(async () => { screen.pressByTestId('new-session-connected-services-auth-chip'); });
         expect(screen.findByTestId('connected-services-content-stub')).toBeTruthy();
         // The owner is handed the exact Agent-declared service and the Team
-        // resources this Home offers — not an unscoped catalogue.
+        // resources this Home returns, with currentness kept separate from
+        // retained choices that need recovery.
         expect(connectedServicesContentProps.value?.supportedServiceIds)
             .toEqual(['happier.connect.github/github']);
-        // Only the resource this Home still reports as current is offered.
-        expect(connectedServicesContentProps.value?.teamCredentialResources).toEqual([teamResource]);
+        expect(connectedServicesContentProps.value?.teamCredentialResources).toEqual([teamResource, staleResource]);
+        expect(connectedServicesContentProps.value?.teamCredentialResourceCurrentKeys).toEqual(new Set(['team-1:res-1']));
         expect(connectedServicesContentProps.value?.teamNameById).toEqual({ 'team-1': 'Platform' });
 
         const setBindingForService = connectedServicesContentProps.value
@@ -822,7 +855,7 @@ describe('SessionAuthoringControls', () => {
             values: { agentTarget: opencodeTarget },
             facts: {
                 agentTargets: [{
-                    id: 'backend:opencode',
+                    id: 'agent:happier.agent.opencode/opencode',
                     label: 'OpenCode',
                     target: opencodeTarget,
                     agentId: 'opencode',

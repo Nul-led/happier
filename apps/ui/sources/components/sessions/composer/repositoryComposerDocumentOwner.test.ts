@@ -233,6 +233,11 @@ describe('repositoryComposerDocumentOwner Session revision', () => {
                 structuredInputMentions: true,
                 composerAttachments: false,
             },
+            acceptedFieldsCurrent: {
+                text: true,
+                structuredInputMentions: true,
+                composerAttachments: false,
+            },
         });
         expect(owner.read().document).toEqual({
             text: '',

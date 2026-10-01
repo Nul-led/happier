@@ -1,3 +1,4 @@
+import { useSessionTranscriptSource } from '@/components/sessions/transcript/source/SessionTranscriptSourceContext';
 import * as React from 'react';
 
 import { sync } from '@/sync/sync';
@@ -29,6 +30,7 @@ export function useTranscriptTargetWindowContinuationOwner(params: Readonly<{
     observeProximity(near: Readonly<Record<Direction, boolean>>): void;
     observeReachedEdge(direction: Direction): void;
 }> {
+    const transcriptSource = useSessionTranscriptSource();
     const nearEdgeRef = React.useRef<Record<Direction, boolean>>({
         newer: false,
         older: false,
@@ -147,8 +149,7 @@ export function useTranscriptTargetWindowContinuationOwner(params: Readonly<{
                         }
                         : null;
                 if (!loadTarget) return;
-                const result = await sync.loadTargetWindowMessages(
-                    params.sessionId,
+                const result = await transcriptSource.history.loadTargetWindow?.(
                     loadTarget,
                     { direction },
                 );
@@ -199,6 +200,7 @@ export function useTranscriptTargetWindowContinuationOwner(params: Readonly<{
             }
         })();
     }, [
+        transcriptSource.history.loadTargetWindow,
         params.activeTargetWindowTargetRef,
         params.activeWindowState,
         params.isReadyForLoad,

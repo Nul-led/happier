@@ -1,16 +1,15 @@
 import * as React from 'react';
-import { Linking, Platform, View } from 'react-native';
+import { Platform, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import {
     useAuth,
 } from '@/auth/context/AuthContext';
-import { TokenStorage } from '@/auth/storage/tokenStorage';
 import { Modal } from '@/modal';
 import { accountDirectoryAuthClient } from '@/auth/accountDirectory/accountDirectoryAuthClient';
 import type { AccountDirectoryKeyLoginOutcome } from '@/components/account/auth/AccountDirectoryKeyLoginForm';
-import { startAccountServiceOAuthAuthentication } from '@/components/account/auth/accountServiceAuthenticationActions';
+import { launchAccountServiceOAuthAuthentication } from '@/components/account/auth/accountServiceAuthenticationActions';
 import type { WelcomeAuthenticationMethod } from '@/components/onboarding/preAuth/composeWelcomeEntryModel';
 import type { AccountContinuationIntent } from '@happier-dev/cli-common/accountService';
 import { useAuthEntryOptions } from '@/components/account/auth/useAuthEntryOptions';
@@ -18,7 +17,6 @@ import { useAccountServiceEntryOptions } from '@/components/account/auth/useAcco
 import type { AccountServiceSelectionFormProps } from '@/components/account/auth/AccountServiceSelectionForm';
 import { selectAccountServiceEndpoint } from '@/sync/ops/accountDirectory/selectAccountServiceEndpoint';
 import { useIsLandscape } from '@/utils/platform/responsive';
-import { isSafeExternalAuthUrl } from '@/auth/providers/externalAuthUrl';
 import { formatOperationFailedDebugMessage } from '@/utils/errors/formatOperationFailedDebugMessage';
 import { trackAccountCreated } from '@/track';
 import { t } from '@/text';
@@ -36,7 +34,7 @@ import { UnauthenticatedSplitShell, useApplyBrandHeroSeen } from '@/components/o
 import { DesktopShellUpdateIndicatorHost } from '@/components/navigation/shell/desktopChrome/DesktopShellUpdateIndicatorHost';
 import { DesktopShellWindowControlsHost } from '@/components/navigation/shell/desktopChrome/DesktopShellWindowControlsHost';
 import { useResolvedDesktopWindowControls } from '@/components/navigation/shell/desktopChrome/useResolvedDesktopWindowControls';
-import { AppUpdateStatusTag } from '@/components/ui/feedback/AppUpdateStatusTag';
+import { UpdatesEntry } from '@/components/updates/UpdatesPopoverButton';
 import { resolveAppShellChromeHost } from '@/components/appShell/resolveAppShellChromeHost';
 import { resolveWizardAuthReturnToRoute } from '@/components/onboarding/state/wizardResume';
 import { getWizardStepDefinition } from '@/components/onboarding/state/wizardStepRegistry';
@@ -55,6 +53,7 @@ import {
     ACCOUNT_SECURITY_EMAIL_PASSWORD_CONNECT_INTENT,
     openAccountSecurityForHome,
 } from '@/components/settings/account/openAccountSecurityForHome';
+import { readWebServerUrlOverrideFromLocation } from '@/sync/domains/server/url/bootstrapActiveServerFromWebLocation';
 
 type OnboardingJourneyHostModule = typeof import('@/components/onboarding/tour/OnboardingJourneyHost');
 let onboardingJourneyHostModulePromise: Promise<OnboardingJourneyHostModule> | null = null;
@@ -151,25 +150,6 @@ function resolveAuthReturnToRoute(): string {
     return resolveWizardAuthReturnToRoute();
 }
 
-/**
- * Leaves the app for a provider authorization URL. Web replaces the current document so the
- * provider return lands back on the same origin; native hands the URL to the OS.
- */
-async function openExternalAuthUrl(url: string): Promise<void> {
-    if (Platform.OS === 'web') {
-        const location = typeof window !== 'undefined' ? window.location : null;
-        if (location && typeof location.assign === 'function') {
-            location.assign(url);
-            return;
-        }
-        if (location && typeof location.href === 'string') {
-            location.href = url;
-            return;
-        }
-    }
-    await Linking.openURL(url);
-}
-
 function resolveUnauthShellRouteTestId(stepId: WizardStepId): string {
     if (stepId === 'auth_restore') return 'unauth-shell-route-restore';
     if (stepId === 'relay_select') return 'unauth-shell-route-setup-pre-auth';
@@ -189,6 +169,13 @@ function resolveJourneySurface(params: Readonly<{ isDesktopShell: boolean; platf
 export const PreAuthOnboardingWizardEntry = React.memo(function PreAuthOnboardingWizardEntry(props: PreAuthOnboardingWizardEntryProps) {
     const auth = useAuth();
     const router = useRouter();
+    const suppliedHomeAddress = React.useMemo(() => readWebServerUrlOverrideFromLocation(), []);
+    const clearSuppliedHomeAddress = React.useCallback(() => {
+        if (!suppliedHomeAddress || typeof window === 'undefined') return;
+        const current = readWebServerUrlOverrideFromLocation();
+        if (current?.serverUrl !== suppliedHomeAddress.serverUrl) return;
+        window.history.replaceState(null, '', current.cleanedRelativeUrl);
+    }, [suppliedHomeAddress]);
     const onboardingTourDecision = useFeatureDecision('app.ui.onboardingTour', { scopeKind: 'runtime' });
     const onboardingTourEnabled = onboardingTourDecision?.state === 'enabled';
     const onboardingTourResolving = onboardingTourDecision == null;
@@ -242,7 +229,6 @@ export const PreAuthOnboardingWizardEntry = React.memo(function PreAuthOnboardin
     const applyBrandHeroSeen = useApplyBrandHeroSeen();
     const shellChromeHost = resolveAppShellChromeHost({
         isAuthenticated: false,
-        isWeb: Platform.OS === 'web',
         isDesktopHost: isDesktopShell,
         isTablet: false,
         isTerminalConnectRoute: false,
@@ -268,44 +254,21 @@ export const PreAuthOnboardingWizardEntry = React.memo(function PreAuthOnboardin
     const continueWithAccountServiceProvider = React.useCallback(async (request: WelcomeAuthenticationMethod, context: WelcomeAuthenticationActionContext) => {
         if (request.authority.purpose !== 'account_service' || request.execution.kind !== 'oauth') return;
         const service = request.authority.service;
-        const endpointUrl = service.endpointUrl;
-        const endpointServerIdentityId = service.serverIdentityId;
-        let started: Awaited<ReturnType<typeof startAccountServiceOAuthAuthentication>> | null = null;
-        try {
-            const currentDiscovery = accountServiceEntry.discovery;
-            if (accountServiceEntry.status !== 'ready' || !currentDiscovery
-                || currentDiscovery.endpointUrl !== endpointUrl
-                || currentDiscovery.serverIdentityId !== endpointServerIdentityId) return;
-            started = await startAccountServiceOAuthAuthentication({
-                authority: service,
-                execution: request.execution,
-                intent: accountContinuationIntent,
-                returnTo: AUTHENTICATED_ACCOUNT_ENTRY_ROUTE,
-                accountEntryReturnTo: resolveAuthReturnToRoute(),
-                transport: accountServiceEntry.transport,
-                signal: context.signal,
-            });
-            if (context.signal.aborted) {
-                await TokenStorage.clearPendingAccountDirectoryAuth({
-                    endpoint: endpointUrl,
-                    serverIdentityId: endpointServerIdentityId,
-                }, { expected: started.pending }).catch(() => false);
-                return;
-            }
-            if (!isSafeExternalAuthUrl(started.url)) {
-                throw new Error('Invalid Account Service OAuth URL');
-            }
-            await openExternalAuthUrl(started.url);
-        } catch {
-            if (started) {
-                await TokenStorage.clearPendingAccountDirectoryAuth({
-                    endpoint: endpointUrl,
-                    serverIdentityId: endpointServerIdentityId,
-                }, { expected: started.pending }).catch(() => false);
-            }
-            if (!context.signal.aborted) {
-                await Modal.alert(t('common.error'), t('errors.operationFailed'));
-            }
+        const currentDiscovery = accountServiceEntry.discovery;
+        if (accountServiceEntry.status !== 'ready' || !currentDiscovery
+            || currentDiscovery.endpointUrl !== service.endpointUrl
+            || currentDiscovery.serverIdentityId !== service.serverIdentityId) return;
+        const outcome = await launchAccountServiceOAuthAuthentication({
+            authority: service,
+            execution: request.execution,
+            intent: accountContinuationIntent,
+            returnTo: AUTHENTICATED_ACCOUNT_ENTRY_ROUTE,
+            accountEntryReturnTo: resolveAuthReturnToRoute(),
+            transport: accountServiceEntry.transport,
+            signal: context.signal,
+        });
+        if (outcome === 'failed') {
+            await Modal.alert(t('common.error'), t('errors.operationFailed'));
         }
     }, [accountContinuationIntent, accountServiceEntry]);
 
@@ -341,6 +304,8 @@ export const PreAuthOnboardingWizardEntry = React.memo(function PreAuthOnboardin
             recoveryTarget: resolvedTarget.serverIdentityId,
             action: execution.action,
             mode: execution.mode,
+            ...(execution.recommendedProvisionMode ? { recommendedProvisionMode: execution.recommendedProvisionMode } : {}),
+            ...(execution.passwordReset ? { passwordReset: execution.passwordReset } : {}),
             ...(authEntryOptions.homeLabel ? { homeLabel: authEntryOptions.homeLabel } : {}),
             signal: context.signal,
             // Welcome has no mounted step of its own behind this modal, so a
@@ -358,7 +323,7 @@ export const PreAuthOnboardingWizardEntry = React.memo(function PreAuthOnboardin
                 }
                 : {}),
             onAuthenticated: async (result) => {
-                await completeEmailPasswordAuthentication({
+                return await completeEmailPasswordAuthentication({
                     outcome: result,
                     target: {
                         serverUrl: resolvedTarget.canonicalServerUrl,
@@ -378,6 +343,7 @@ export const PreAuthOnboardingWizardEntry = React.memo(function PreAuthOnboardin
         if (props.initialStepId) {
             return props.initialStepId;
         }
+        if (suppliedHomeAddress) return 'relay_enter_url';
         const candidate = readDebugWebQueryParam('happier_wizard_step');
         if (!candidate) {
             return undefined;
@@ -389,7 +355,7 @@ export const PreAuthOnboardingWizardEntry = React.memo(function PreAuthOnboardin
         } catch {
             return undefined;
         }
-    }, [props.initialStepId]);
+    }, [props.initialStepId, suppliedHomeAddress]);
 
     const resolvedInitialBeatId = React.useMemo((): JourneyBeatId | undefined => (
         readJourneyReplayBeatId()
@@ -401,7 +367,7 @@ export const PreAuthOnboardingWizardEntry = React.memo(function PreAuthOnboardin
                 {resolvedDesktopWindowControls}
             </DesktopShellWindowControlsHost>
             <DesktopShellUpdateIndicatorHost>
-                <AppUpdateStatusTag testID="preauth-app-update-status-tag" />
+                <UpdatesEntry variant="pill" testID="preauth-updates-pill" />
             </DesktopShellUpdateIndicatorHost>
         </>
     ) : null;
@@ -418,6 +384,8 @@ export const PreAuthOnboardingWizardEntry = React.memo(function PreAuthOnboardin
         accountEntryReturnTo: resolveAuthReturnToRoute(),
         shellChrome,
         initialStepId: resolvedInitialStepId,
+        initialServerUrl: suppliedHomeAddress?.serverUrl,
+        onInitialServerUrlConnected: suppliedHomeAddress ? clearSuppliedHomeAddress : undefined,
         onContinueWithAccountServiceProvider: continueWithAccountServiceProvider,
         onContinueWithHomeAuthentication: continueWithHomeAuthentication,
         onAccountDirectoryKeyResult: () => {},
@@ -442,7 +410,7 @@ export const PreAuthOnboardingWizardEntry = React.memo(function PreAuthOnboardin
             stepId={controller.stepId}
             isWelcomeStep={controller.stepId === 'welcome'}
             allowMobileBrandHero={controller.stepId === 'welcome'}
-            retentionSummary={authEntryOptions.retentionSummary}
+            retentionDisclosure={authEntryOptions.retentionDisclosure}
             onOpenRelayCustomFlow={() => {
                 controller.goToStep('relay_select');
             }}
@@ -456,7 +424,7 @@ export const PreAuthOnboardingWizardEntry = React.memo(function PreAuthOnboardin
         </UnauthenticatedSplitShell>
     );
 
-    if (onboardingTourResolving) {
+    if (onboardingTourResolving && !suppliedHomeAddress) {
         return journeyLoadingFallback;
     }
 
@@ -465,6 +433,7 @@ export const PreAuthOnboardingWizardEntry = React.memo(function PreAuthOnboardin
     const hasExplicitJourneyReplayIntent = resolvedInitialBeatId != null;
     const shouldRenderJourney =
         onboardingTourEnabled
+        && !suppliedHomeAddress
         && (journeySessionActive || hasAuthedSetupContinuation || !hasCompletedAuthOnce || hasExplicitJourneyReplayIntent);
     // Re-latch case: authed setup continuation without a live journey session mounts
     // the host directly at the first setup-act beat (S3) instead of the journey start.
@@ -482,7 +451,7 @@ export const PreAuthOnboardingWizardEntry = React.memo(function PreAuthOnboardin
                         surface={journeySurface}
                         isDesktopShell={isDesktopShell}
                         initialBeatId={journeyInitialBeatId}
-                        retentionSummary={authEntryOptions.retentionSummary}
+                        retentionDisclosure={authEntryOptions.retentionDisclosure}
                         preAuthController={controller}
                         wizardSurfaceProps={wizardSurfaceProps}
                     />

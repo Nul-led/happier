@@ -86,63 +86,6 @@ const pluginProjection = {
 } satisfies PluginBrowserProjectionModel;
 
 describe('browser launchpad suggestions', () => {
-    it('builds launchpad rows from registered local preview state', async () => {
-        const { buildBrowserLaunchpadRows } = await import('./suggestions');
-        const {
-            applyLocalServicePreviewSnapshot,
-            createLocalServicePreviewState,
-        } = await import('@/sync/domains/local/services/preview/store');
-        const localServicePreviewState = applyLocalServicePreviewSnapshot(
-            createLocalServicePreviewState(),
-            {
-                generatedAt: 1_500,
-                refreshState: 'idle',
-                previews: [{
-                    previewId: 'preview_vite',
-                    accessUrl: 'https://preview.happier.test/session_1/preview_vite/',
-                    expiresAt: 4_000,
-                    diagnostics: [],
-                    resource: {
-                        previewId: 'preview_vite',
-                        sessionId: 'session_1',
-                        machineId: 'machine_1',
-                        owner: { kind: 'session', id: 'session_1' },
-                        target: { scheme: 'http', host: '127.0.0.1', port: 5173 },
-                        initialPath: { pathname: '/', search: '' },
-                        display: {
-                            title: 'Vite app',
-                            addressLabel: 'localhost:5173',
-                            folderLabel: 'happier',
-                        },
-                        originMode: 'host',
-                        browserTarget: localPreviewTarget,
-                    },
-                }],
-                diagnostics: [],
-            },
-        );
-
-        const rows = buildBrowserLaunchpadRows({
-            localServicePreviewState,
-            nowMs: 2_000,
-        });
-
-        expect(rows).toHaveLength(1);
-        expect(rows[0]).toMatchObject({
-            id: 'localServicePreview:preview_vite',
-            section: 'running',
-            sourceKind: 'localService',
-            title: 'Vite app',
-            subtitle: 'localhost:5173',
-            detail: 'registered_preview',
-            target: localPreviewTarget,
-            currentUrl: 'https://preview.happier.test/session_1/preview_vite/',
-            currentUrlExpiresAt: 4_000,
-            disabledReason: null,
-            lastSeenAt: 1_500,
-        });
-    });
-
     it('builds ranked launchpad rows from LSV launcher snapshots, plugin browser targets, and recents', async () => {
         const { buildBrowserLaunchpadRows } = await import('./suggestions');
 
@@ -163,19 +106,20 @@ describe('browser launchpad suggestions', () => {
             nowMs: 3_000,
         });
 
+        // Running services are the Local services rows (carried as `serviceRow`); a stale one is not
+        // listed as a dead launchpad row (it stays in Local services with its own state).
         expect(rows.map((row) => row.id)).toEqual([
-            'localService:launcher_preview',
+            'service:launcher_preview',
             'pluginExternalUrl:browserTarget:acme.preview:previewPane',
             'recent:preview_recent',
-            'localService:launcher_stale',
         ]);
         expect(rows[0]).toMatchObject({
             section: 'running',
             title: 'Vite app',
-            subtitle: 'localhost:5173',
             disabledReason: null,
             target: localPreviewTarget,
         });
+        expect(rows[0]?.serviceRow).toMatchObject({ id: 'launcher_preview', status: 'running' });
         expect(rows[1]).toMatchObject({
             section: 'plugin',
             title: 'Plugin Preview',
@@ -188,11 +132,6 @@ describe('browser launchpad suggestions', () => {
         expect(rows[2]).toMatchObject({
             section: 'recent',
             title: 'Recent app',
-        });
-        expect(rows[3]).toMatchObject({
-            section: 'unavailable',
-            title: 'Old service',
-            disabledReason: 'stale_service',
         });
     });
 
@@ -250,27 +189,6 @@ describe('browser launchpad suggestions', () => {
                 disabledReason: 'Open this target on a mobile device.',
             }),
         ]);
-    });
-
-    it('dedupes unavailable local-service launch targets by stable row identity', async () => {
-        const { buildBrowserLaunchpadRows } = await import('./suggestions');
-
-        const rows = buildBrowserLaunchpadRows({
-            launcherSnapshot: {
-                ...launcherSnapshot,
-                targets: [
-                    launcherSnapshot.targets[1],
-                    {
-                        ...launcherSnapshot.targets[1],
-                        unavailableReason: 'runtime_dependency_unavailable',
-                    },
-                ],
-            },
-            nowMs: 3_000,
-        });
-
-        expect(rows.map((row) => row.id)).toEqual(['localService:launcher_stale']);
-        expect(new Set(rows.map((row) => row.id)).size).toBe(rows.length);
     });
 
     it('B-RC6: plugin row identity and lastSeenAt are stable across polls (nowMs does not churn identity)', async () => {

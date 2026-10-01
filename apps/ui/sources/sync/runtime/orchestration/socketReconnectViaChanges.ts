@@ -1,6 +1,6 @@
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
 import type { ChangeEntry } from '@happier-dev/protocol/changes';
-import { planSyncActionsFromChanges, type PlannedChangeActions } from './changesPlanner';
+import { planSyncActionsFromChanges, type PlannedChangeActions, type SessionChangePlanningContext } from './changesPlanner';
 
 export type FetchChangesFn = (params: {
     credentials: AuthCredentials;
@@ -85,6 +85,8 @@ export async function runSocketReconnectCatchUpViaChanges(params: {
     onSnapshotBaseCursorFetchFailed?: (context: SnapshotBaseCursorFetchFailedContext) => void;
     onCursorContractAnomaly?: (context: ChangesCursorContractAnomalyContext) => void;
     applyPlanned: (planned: PlannedChangeActions) => Promise<PlannedChangesApplyResult>;
+    /** Loaded-list knowledge of the planned Home; absent, every Session write re-reads the list. */
+    planContext?: SessionChangePlanningContext;
     snapshotRefresh: () => Promise<SnapshotRefreshResult | void>;
 }): Promise<
     | { status: 'fallback' }
@@ -268,7 +270,7 @@ export async function runSocketReconnectCatchUpViaChanges(params: {
             };
         }
 
-        const planned = planSyncActionsFromChanges(changes);
+        const planned = planSyncActionsFromChanges(changes, params.planContext);
         const applyResult = await params.applyPlanned(planned);
         const safeAdvanceCursor = normalizeApplySafeCursor(applyResult, nextCursor);
 

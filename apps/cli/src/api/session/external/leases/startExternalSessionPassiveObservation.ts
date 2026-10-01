@@ -22,7 +22,7 @@ import {
     loadPersistedLinkedExternalSession,
 } from '@/api/session/external/takeover/loadLinkedExternalSession';
 import { EXTERNAL_SESSIONS_INVOCATION_POLICY } from '@/session/external/agentExternalSessionsInvocation';
-import { resolveGenerationBoundExternalSessionFollowSurface } from '@/session/actions/externalSessions/providerOpsResolution';
+import { resolveOccurrenceBoundExternalSessionFollowSurface } from '@/session/actions/externalSessions/providerOpsResolution';
 import { logExternalSessionsInternalError } from '@/session/actions/externalSessions/responseErrors';
 import {
     getActiveAccountSettingsSnapshot,
@@ -339,7 +339,7 @@ export function startExternalSessionPassiveObservation(params: Readonly<{
                 });
                 if (!loaded.ok || signal.aborted) return false;
                 const { providerOps, resource } =
-                    await resolveGenerationBoundExternalSessionFollowSurface(
+                    await resolveOccurrenceBoundExternalSessionFollowSurface(
                         loaded.session.agentId,
                         loaded.session.linkGeneration,
                     );

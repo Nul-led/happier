@@ -635,7 +635,6 @@ describe('SessionWorkStatePopover', () => {
         let tree: renderer.ReactTestRenderer | undefined;
         await act(async () => {
             tree = renderer.create(<SessionWorkStatePopover
-                sessionId="sess_1"
                 open
                 anchorRef={anchorRef}
                 snapshot={{

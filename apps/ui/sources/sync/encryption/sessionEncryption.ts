@@ -1,21 +1,24 @@
+import { type SessionMessageV1 } from '@happier-dev/protocol';
 import {
     deriveSessionMutationEqualityTagV1,
+    projectSessionMetadataForWire,
     SESSION_DISCUSSION_MUTATION_EQUALITY_HKDF_LABEL_V1,
     SESSION_INPUT_EQUALITY_HKDF_LABEL_V1,
 } from '@happier-dev/protocol';
 import { encodeBase64 } from '@/encryption/base64';
-import type { RawRecord } from '../typesRaw';
-import { ApiMessage } from '../api/types/apiTypes';
-import { DecryptedMessage, Metadata, MetadataSchema, AgentState, AgentStateSchema } from '../domains/state/storageTypes';
+import type { RawRecord } from "@happier-dev/session-core/raw";
+
+import { DecryptedMessage } from '../domains/state/storageTypes';
+import { Metadata, MetadataSchema, AgentState, AgentStateSchema } from '@happier-dev/session-core/state';
 import { EncryptionCache } from './encryptionCache';
 import { Decryptor, Encryptor, type DecryptOptions } from './encryptor';
 import { runWithInFlightDedupe } from '../runtime/orchestration/runWithInFlightDedupe';
 import { syncPerformanceTelemetry } from '../runtime/syncPerformanceTelemetry';
 import { decryptBase64Payloads } from './decryptBase64Payloads';
 
-type EncryptedApiMessage = ApiMessage & { content: { t: 'encrypted'; c: string } };
+type EncryptedApiMessage = SessionMessageV1 & { content: { t: 'encrypted'; c: string } };
 
-function isEncryptedApiMessage(message: ApiMessage): message is EncryptedApiMessage {
+function isEncryptedApiMessage(message: SessionMessageV1): message is EncryptedApiMessage {
     const content: any = (message as any)?.content;
     return Boolean(content && content.t === 'encrypted' && typeof content.c === 'string');
 }
@@ -49,6 +52,7 @@ export class SessionEncryption {
         encryptor: Encryptor & Decryptor,
         cache: EncryptionCache,
         equalityKeyMaterial: Uint8Array | null = null,
+        private readonly isCurrent: () => boolean = () => true,
     ) {
         this.sessionId = sessionId;
         this.encryptor = encryptor;
@@ -105,7 +109,9 @@ export class SessionEncryption {
     /**
      * Batch-first API for decrypting messages
      */
-    async decryptMessages(messages: ApiMessage[], options: DecryptOptions = {}): Promise<(DecryptedMessage | null)[]> {
+    async decryptMessages(messages: SessionMessageV1[], options: DecryptOptions = {}): Promise<(DecryptedMessage | null)[]> {
+        if (!this.isCurrent()) return messages.map(() => null);
+
         const computeMessageCiphertextFingerprint = (ciphertextB64: string): string => {
             // Avoid storing full ciphertext in-memory; keep a cheap fingerprint so we can
             // detect streaming updates that reuse message ids.
@@ -192,6 +198,7 @@ export class SessionEncryption {
                     onAuthenticationFailure: (index) => options.onAuthenticationFailure?.(toDecrypt[index].index),
                 },
             );
+            if (!this.isCurrent()) return messages.map(() => null);
 
             for (let i = 0; i < toDecrypt.length; i++) {
                 const decryptedData = decrypted[i];
@@ -231,7 +238,7 @@ export class SessionEncryption {
     /**
      * Single message convenience method
      */
-    async decryptMessage(message: ApiMessage | null | undefined): Promise<DecryptedMessage | null> {
+    async decryptMessage(message: SessionMessageV1 | null | undefined): Promise<DecryptedMessage | null> {
         if (!message) {
             return null;
         }
@@ -290,7 +297,7 @@ export class SessionEncryption {
             'sync.encryption.session.encryptMetadata',
             { items: 1 },
             async () => {
-                const encrypted = await this.encryptor.encrypt([metadata]);
+                const encrypted = await this.encryptor.encrypt([projectSessionMetadataForWire(metadata)]);
                 return encodeBase64(encrypted[0], 'base64');
             },
         );
@@ -305,6 +312,7 @@ export class SessionEncryption {
      * invalid and can resurrect owner-only legacy fields.
      */
     async decryptMetadataPayload(version: number, encrypted: string, options: DecryptOptions = {}): Promise<unknown | null> {
+        if (!this.isCurrent()) return null;
         const key = this.buildDedupeKey('metadata-payload', version, encrypted);
         const result = await runWithInFlightDedupe(
             {
@@ -326,6 +334,7 @@ export class SessionEncryption {
                 return { payload: decrypted[0] ?? null, authenticationFailed };
             },
         );
+        if (!this.isCurrent()) return null;
         if (result.authenticationFailed) options.onAuthenticationFailure?.(0);
         return result.payload;
     }
@@ -334,6 +343,7 @@ export class SessionEncryption {
      * Decrypt metadata using session-specific encryption
      */
     async decryptMetadata(version: number, encrypted: string, options: DecryptOptions = {}): Promise<Metadata | null> {
+        if (!this.isCurrent()) return null;
         // Check cache first
         const cached = this.cache.getCachedMetadata(this.sessionId, version);
         if (cached) {
@@ -345,7 +355,7 @@ export class SessionEncryption {
 
     private async decryptMetadataUncached(version: number, encrypted: string, options: DecryptOptions): Promise<Metadata | null> {
         const decrypted = await this.decryptMetadataPayload(version, encrypted, options);
-        if (!decrypted) {
+        if (!this.isCurrent() || !decrypted) {
             return null;
         }
         const parsed = MetadataSchema.safeParse(decrypted);
@@ -376,7 +386,7 @@ export class SessionEncryption {
      * Decrypt agent state using session-specific encryption
      */
     async decryptAgentState(version: number, encrypted: string | null | undefined): Promise<AgentState> {
-        if (!encrypted) {
+        if (!this.isCurrent() || !encrypted) {
             return {};
         }
 
@@ -408,7 +418,7 @@ export class SessionEncryption {
             decryptName: 'sync.encryption.decryptAgentState',
             decryptFields: { items: 1 },
         });
-        if (!decrypted[0]) {
+        if (!this.isCurrent() || !decrypted[0]) {
             return {};
         }
         const parsed = AgentStateSchema.safeParse(decrypted[0]);
@@ -436,6 +446,7 @@ export class SessionEncryption {
         encryptedAgentState: string | null | undefined,
         options: DecryptOptions = {},
     ): Promise<{ metadata: Metadata | null; agentState: AgentState }> {
+        if (!this.isCurrent()) return { metadata: null, agentState: {} };
         const key = this.buildSnapshotStateDedupeKey(
             metadataVersion,
             encryptedMetadata,
@@ -460,6 +471,7 @@ export class SessionEncryption {
                 encryptedAgentState,
             ),
         );
+        if (!this.isCurrent()) return { metadata: null, agentState: {} };
         if (result.metadataAuthenticationFailed) options.onAuthenticationFailure?.(0);
         return { metadata: result.metadata, agentState: result.agentState };
     }
@@ -515,6 +527,9 @@ export class SessionEncryption {
                     if (tasks[index].kind === 'metadata') metadataAuthenticationFailed = true;
                 } },
             );
+            if (!this.isCurrent()) {
+                return { metadata: null, agentState: {}, metadataAuthenticationFailed: false };
+            }
 
             tasks.forEach((task, index) => {
                 const value = decrypted[index];

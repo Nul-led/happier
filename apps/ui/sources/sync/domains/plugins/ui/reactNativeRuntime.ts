@@ -1,17 +1,16 @@
-import type {
-    DaemonPluginReactNativeBundleCacheIdentityV1,
-    PluginReactNativeCompatibilityDecisionV1,
-} from '@happier-dev/protocol';
+import type { PluginReactNativeCompatibilityDecisionV1 } from '@happier-dev/protocol';
+import type { PluginUiArtifactDigestV1 } from '@happier-dev/protocol/plugins/ui';
 
 export type PluginReactNativeCompatibilityDecision = Readonly<
     Omit<PluginReactNativeCompatibilityDecisionV1, 'diagnostics'>
     & { diagnostics: readonly string[] }
 >;
 
-/**
- * The daemon's canonical React Native cache identity, not a second local
- * shape. The producer validates `runtime.cacheIdentity` with the same Protocol
- * schema, so a structural copy here would drift from the wire contract.
- */
-export type PluginReactNativeBundleCacheIdentity =
-    Readonly<DaemonPluginReactNativeBundleCacheIdentityV1>;
+/** Artifact slot context used locally around the digest-only byte identity. */
+export type PluginReactNativeBundleCacheIdentity = Readonly<{
+    pluginId: string;
+    contributionId: string;
+    artifactId: string;
+    artifactDigest: PluginUiArtifactDigestV1;
+    platform: 'web' | 'ios' | 'android';
+}>;

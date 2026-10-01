@@ -3,7 +3,7 @@ import * as React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
 import { useChangedFilesReviewDiffLoading } from './useChangedFilesReviewDiffLoading';
-import { renderScreen } from '@/dev/testkit';
+import { renderHook, renderScreen } from '@/dev/testkit';
 import type { ScmFileStatus } from '@/scm/scmStatusFiles';
 
 
@@ -47,6 +47,30 @@ function file(fullPath: string): ScmFileStatus {
 type DiffStateSource = ReturnType<typeof useChangedFilesReviewDiffLoading>['diffStateSource'];
 
 describe('useChangedFilesReviewDiffLoading (provider diffs)', () => {
+    it.each([
+        { diff: '', status: 'loaded', error: null },
+        { diff: null, status: 'error', error: 'unavailable' },
+    ] as const)('keeps an explicit $status Session comparison out of SCM fallback', async ({ diff, status, error }) => {
+        const fetchUnifiedDiffForPath = vi.fn(async () => ({ success: true as const, diff: 'repository diff' }));
+        const reviewFiles = [file('src/a.ts')];
+        let providerDiffByPath: ReadonlyMap<string, string | null> | null = new Map([['src/a.ts', diff]]);
+        const { getCurrent, rerender } = await renderHook(() => useChangedFilesReviewDiffLoading({
+            sessionId: 's1', isRepo: true, reviewFiles, diffArea: 'pending',
+            tooLarge: false, selectedPath: 'src/a.ts',
+            providerDiffByPath, fetchUnifiedDiffForPath,
+            normalizeError: String, fallbackError: 'unavailable',
+        }));
+
+        expect(getCurrent().diffStateSource.getDiffState('src/a.ts')).toEqual({ status, diff: '', error });
+        expect(fetchUnifiedDiffForPath).not.toHaveBeenCalled();
+
+        providerDiffByPath = null;
+        await rerender();
+        expect(getCurrent().diffStateSource.getDiffState('src/a.ts')).toEqual({
+            status: 'loaded', diff: 'repository diff', error: null,
+        });
+    });
+
     it('uses provider-backed diffs without fetching SCM diffs', async () => {
         sessionScmDiffFileSpy.mockClear();
 

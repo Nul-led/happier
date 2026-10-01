@@ -1,18 +1,16 @@
 import { storage } from '@/sync/domains/state/storage';
 import type { VoiceAgentHandle } from '@/voice/agent/types';
 import { isVoiceAgentNotFoundError } from '@/voice/agent/voiceAgentErrorGuards';
-import { readPersistedVoiceConversationRuntimeState } from '@/voice/binding/voiceConversationBindingPersistence';
 import {
     persistVoiceAgentWelcomedEpoch,
-    resolveVoiceRunMetadataSessionId,
 } from '@/voice/agent/voiceAgentRunState';
 import { readVoiceAgentRunMetadataFromSession } from '@/voice/persistence/voiceAgentRunMetadata';
 import { readLocalConversationSettingsFromAccountSettings } from '@/voice/local/localVoiceSettings';
 import { voiceSettingsParse } from '@/sync/domains/settings/voiceSettings';
 
-function readPersistedWelcomedEpoch(metadataSessionId: string | null): number | undefined {
+function readPersistedWelcomedEpoch(metadataSessionId: string | null, serverId: string): number | undefined {
     if (!metadataSessionId) return undefined;
-    const metadata = readVoiceAgentRunMetadataFromSession({ sessionId: metadataSessionId });
+    const metadata = readVoiceAgentRunMetadataFromSession({ sessionId: metadataSessionId, serverId });
     return typeof metadata?.welcomedEpoch === 'number' ? metadata.welcomedEpoch : undefined;
 }
 
@@ -38,19 +36,11 @@ export function createVoiceWelcomePolicy(args: Readonly<{
             const epoch = Number.isFinite(epochRaw) && epochRaw >= 0 ? Math.floor(epochRaw) : 0;
 
             const handle = await args.getVoiceAgentHandle(sessionId);
-            const persistedRuntimeState =
-                handle.backend === 'daemon'
-                    ? readPersistedVoiceConversationRuntimeState({
-                        managedSessionId: sessionId,
-                        conversationSessionId: handle.rpcSessionId,
-                    })
-                    : null;
-            const metadataSessionId =
-                persistedRuntimeState?.metadataSessionId
-                ?? resolveVoiceRunMetadataSessionId(sessionId, handle.backend, handle.rpcSessionId);
+            if (!handle.accountLifetime.isCurrent()) return null;
+            const metadataSessionId = handle.metadataSessionId;
             const persistedWelcomedEpoch =
                 handle.backend === 'daemon'
-                    ? readPersistedWelcomedEpoch(metadataSessionId ?? handle.rpcSessionId)
+                    ? readPersistedWelcomedEpoch(metadataSessionId ?? handle.rpcSessionId, handle.accountLifetime.scope.serverId)
                     : undefined;
             if (persistedWelcomedEpoch === epoch) {
                 return null;
@@ -61,7 +51,7 @@ export function createVoiceWelcomePolicy(args: Readonly<{
                 const assistantText = String(res?.assistantText ?? '').trim();
                 if (!assistantText) return null;
                 if (handle.backend === 'daemon') {
-                    await persistVoiceAgentWelcomedEpoch(metadataSessionId, epoch).catch(() => {});
+                    await persistVoiceAgentWelcomedEpoch(metadataSessionId, epoch, handle.accountLifetime).catch(() => {});
                 }
                 return assistantText;
             } catch (error) {

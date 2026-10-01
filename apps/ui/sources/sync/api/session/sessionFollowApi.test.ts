@@ -112,6 +112,25 @@ describe('Follow exact Home Action transport', () => {
         await expect(api.sessionFollowRemove({ serverId: env.target.id, sessionId: 'same' })).resolves.toEqual({ kind: 'failed', error: 'unavailable' });
     });
 
+    it('cancels a delayed Voice inclusion replacement when the target Home credential changes', async () => {
+        const env = await setup();
+        const api = await import('./sessionFollowApi');
+        let releaseResponse!: (response: Response) => void;
+        const responseReady = new Promise<Response>((resolve) => { releaseResponse = resolve; });
+        env.request.mockImplementation(async () => responseReady);
+
+        const operation = api.replaceSessionVoiceInclusions(env.target.id, ['same']);
+        await Promise.resolve();
+        await env.TokenStorage.setCredentialsForServerUrl(
+            'https://target.example',
+            { serverId: env.target.id },
+            { token: env.token('new-target-account') },
+        );
+        releaseResponse(new Response(JSON.stringify({ changed: true, sessionIds: ['same'] }), { status: 200 }));
+
+        await expect(operation).resolves.toEqual({ kind: 'failed', error: 'unavailable' });
+    });
+
     it('rejects a saved projection for a different Session', async () => {
         const env = await setup();
         const api = await import('./sessionFollowApi');

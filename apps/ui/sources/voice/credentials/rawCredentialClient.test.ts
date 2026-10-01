@@ -7,15 +7,9 @@ import { createVoiceClientRawCredentialAccess } from './rawCredentialClient';
 const identity = Object.freeze({
     pluginId: 'acme.voice',
     contributionId: 'browser',
+    artifactId: 'browser-artifact',
     artifactDigest: `sha256:${'b'.repeat(64)}`,
-    hostAppVersion: '2.0.0',
-    hostUiApiVersion: '1.0.0',
-    reactVersion: '19.0.0',
-    reactNativeVersion: '0.83.4',
     platform: 'web' as const,
-    channel: 'internal' as const,
-    nativeCapabilitiesDigest: `sha256:${'c'.repeat(64)}`,
-    projectionGeneration: 12,
 });
 const request = Object.freeze({
     kind: 'httpHeaders' as const,
@@ -56,7 +50,9 @@ describe('Voice client raw credential adapter', () => {
         expect(invoke).toHaveBeenCalledWith(
             RPC_METHODS.DAEMON_VOICE_CLIENT_RAW_CREDENTIAL_MATERIALIZE,
             {
-                cacheIdentity: identity,
+                contribution: { pluginId: identity.pluginId, localId: identity.contributionId },
+                platform: identity.platform,
+                cacheIdentity: { artifactDigest: identity.artifactDigest },
                 phase: 'connection',
                 expectedCredentialRevision: null,
                 request,
@@ -120,7 +116,9 @@ describe('Voice client raw credential adapter', () => {
             1,
             RPC_METHODS.DAEMON_VOICE_CLIENT_RAW_CREDENTIAL_MATERIALIZE,
             {
-                cacheIdentity: identity,
+                contribution: { pluginId: identity.pluginId, localId: identity.contributionId },
+                platform: identity.platform,
+                cacheIdentity: { artifactDigest: identity.artifactDigest },
                 phase: 'connection',
                 expectedCredentialRevision: null,
                 request,
@@ -131,7 +129,9 @@ describe('Voice client raw credential adapter', () => {
             2,
             RPC_METHODS.DAEMON_VOICE_CLIENT_RAW_CREDENTIAL_MATERIALIZE,
             {
-                cacheIdentity: identity,
+                contribution: { pluginId: identity.pluginId, localId: identity.contributionId },
+                platform: identity.platform,
+                cacheIdentity: { artifactDigest: identity.artifactDigest },
                 phase: 'connection',
                 expectedCredentialRevision: revisionA,
                 request,
@@ -155,7 +155,9 @@ describe('Voice client raw credential adapter', () => {
             3,
             RPC_METHODS.DAEMON_VOICE_CLIENT_RAW_CREDENTIAL_MATERIALIZE,
             {
-                cacheIdentity: identity,
+                contribution: { pluginId: identity.pluginId, localId: identity.contributionId },
+                platform: identity.platform,
+                cacheIdentity: { artifactDigest: identity.artifactDigest },
                 phase: 'connection',
                 expectedCredentialRevision: null,
                 request,

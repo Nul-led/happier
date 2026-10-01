@@ -1,6 +1,6 @@
 import type { MetadataUpdatePort } from '@happier-dev/agents';
 import type { SessionMetadata } from '@happier-dev/protocol';
-import type { Metadata } from '@/sync/domains/state/storageTypes';
+import type { Metadata } from '@happier-dev/session-core/state';
 
 function isForbiddenMetadataUpdateError(error: unknown): boolean {
     const record = error && typeof error === 'object'

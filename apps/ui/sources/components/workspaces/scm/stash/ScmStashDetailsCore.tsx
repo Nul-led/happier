@@ -17,7 +17,8 @@ import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
 import { Modal } from '@/modal';
 import { useScmReviewViewabilityConfig } from '@/scm/review/useScmReviewViewabilityConfig';
 import { resolveScmStashEntries } from '@/scm/stash/useScmStashSummaryCount';
-import { resolveScmStashIconName, resolveScmStashPrimaryLabel, resolveScmStashSecondaryLabel } from '@/scm/stash/stashPresentation';
+import { resolveScmStashIdentity } from '@/scm/stash/stashIdentity';
+import { resolveScmStashOrigin as resolveStashOrigin, resolveScmStashTitle as resolveStashTitle } from '@/scm/stash/stashPresentation';
 import { useSetting } from '@/sync/domains/state/storage';
 import { t } from '@/text';
 
@@ -31,8 +32,14 @@ import {
 } from './scmStashRetry';
 
 import type { ScmStashEntry } from '@happier-dev/protocol';
-import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { Icon } from '@/components/ui/icons/Icon';
+import { ToolbarButton } from '@/components/ui/buttons/ToolbarButton';
+import { DetailsTabHeader, type DetailsTabHeaderMetaFact } from '@/components/appShell/panes/details/header/DetailsTabHeader';
+import { DetailsDiffSummaryRow } from '@/components/appShell/panes/details/header/DetailsDiffSummaryRow';
+import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
+import { SurfaceFreshnessLine } from '@/components/ui/surfaces/SurfaceFreshnessLine';
+import { formatScmHistoryTimestamp, formatScmTimelineWhen } from '@/scm/history/historyPresentation';
+import { ScmTimelineGutter } from '@/components/workspaces/scm/history/ScmTimelineGutter';
 
 type StashDiffState = Readonly<{
     stashRef: string | null;
@@ -51,29 +58,15 @@ export type ScmStashDetailsCoreProps = Readonly<{
     rootTestId?: string;
     restoreButtonTestId?: string;
     discardButtonTestId?: string;
+    applyButtonTestId?: string;
+    /** The repository folder's name, for saying what Restore changes ("puts these back in happier"). */
+    folderLabel?: string | null;
 }>;
 
-function formatStashTimestamp(value: number | null | undefined): string | null {
-    if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return null;
-    try {
-        return new Date(value).toLocaleString(undefined, {
-            month: 'short',
-            day: 'numeric',
-            hour: '2-digit',
-            minute: '2-digit',
-        });
-    } catch {
-        return null;
-    }
-}
-
-function resolveStashSelectorSubtitle(entry: ScmStashEntry): string | null {
-    const secondary = resolveScmStashSecondaryLabel(entry);
-    const timestamp = formatStashTimestamp(entry.createdAt);
-    if (secondary && timestamp) {
-        return `${secondary} • ${timestamp}`;
-    }
-    return secondary ?? timestamp;
+function resolveStashSelectorSubtitle(entry: ScmStashEntry): string {
+    const when = typeof entry.createdAt === 'number' ? formatScmHistoryTimestamp(entry.createdAt) : '';
+    const origin = resolveStashOrigin(entry, 'short');
+    return [origin, when, entry.stashRef].filter((part) => part.length > 0).join(' · ');
 }
 
 export const ScmStashDetailsCore = React.memo((props: ScmStashDetailsCoreProps) => {
@@ -101,7 +94,7 @@ export const ScmStashDetailsCore = React.memo((props: ScmStashDetailsCoreProps) 
         truncated: false,
         error: null,
     }));
-    const [operationBusy, setOperationBusy] = React.useState<null | 'restore' | 'discard'>(null);
+    const [operationBusy, setOperationBusy] = React.useState<null | 'restore' | 'discard' | 'apply'>(null);
     const refreshTokenRef = React.useRef(0);
     const stashListRetryTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
     const stashListRetryAttemptRef = React.useRef(0);
@@ -178,8 +171,8 @@ export const ScmStashDetailsCore = React.memo((props: ScmStashDetailsCoreProps) 
             const nextStashes = resolveScmStashEntries(response);
             setStashes(nextStashes);
             setSelectedStashRef((prev) => {
-                if (prev && nextStashes.some((stash) => stash.stashRef === prev)) return prev;
-                return nextStashes[0]?.stashRef ?? null;
+                if (prev && nextStashes.some((stash) => resolveScmStashIdentity(stash) === prev)) return prev;
+                return nextStashes[0] ? resolveScmStashIdentity(nextStashes[0]) : null;
             });
         } catch (error) {
             stashListRetryAttemptRef.current = 0;
@@ -345,22 +338,23 @@ export const ScmStashDetailsCore = React.memo((props: ScmStashDetailsCoreProps) 
 
     const selectedStash = React.useMemo(() => {
         if (!selectedStashRef) return null;
-        return stashes.find((stash) => stash.stashRef === selectedStashRef) ?? null;
+        return stashes.find((stash) => resolveScmStashIdentity(stash) === selectedStashRef) ?? null;
     }, [selectedStashRef, stashes]);
     const stashSelectorItems = React.useMemo<ReadonlyArray<DropdownMenuItem>>(() => {
         return stashes.map((stash) => ({
-            id: stash.stashRef,
-            title: resolveScmStashPrimaryLabel(stash),
-            subtitle: resolveStashSelectorSubtitle(stash) ?? undefined,
+            id: resolveScmStashIdentity(stash),
+            title: resolveStashTitle(stash),
+            subtitle: resolveStashSelectorSubtitle(stash),
+            // History as a timeline (user ruling): when it was kept on the left, then its point.
             icon: (
-                <Icon
-                    name={resolveScmStashIconName(stash)}
-                    size={16}
-                    color={theme.colors.text.secondary}
+                <ScmTimelineGutter
+                    when={typeof stash.createdAt === 'number' ? formatScmTimelineWhen(stash.createdAt) : ''}
+                    pointTopPx={6}
+                    emphasized={resolveScmStashIdentity(stash) === selectedStashRef}
                 />
             ),
         }));
-    }, [stashes, theme.colors.text.secondary]);
+    }, [selectedStashRef, stashes]);
 
     const ensureCanMutate = React.useCallback(() => {
         if (!scmWriteEnabled) {
@@ -429,156 +423,163 @@ export const ScmStashDetailsCore = React.memo((props: ScmStashDetailsCoreProps) 
         }
     }, [ensureCanMutate, loadStashes, props.adapter, props.onAfterMutation, selectedStashRef]);
 
+    const applySelected = React.useCallback(async () => {
+        if (!ensureCanMutate() || !selectedStashRef) return;
+        setOperationBusy('apply');
+        try {
+            const response = await props.adapter.apply(selectedStashRef);
+            if (!response.success) {
+                Modal.alert(t('common.error'), response.error || t('files.stash.restoreFailed'));
+                return;
+            }
+            await props.onAfterMutation?.();
+        } catch (error) {
+            const message = error instanceof Error ? error.message : t('files.stash.restoreFailed');
+            Modal.alert(t('common.error'), message);
+        } finally {
+            setOperationBusy(null);
+        }
+    }, [ensureCanMutate, props.adapter, props.onAfterMutation, selectedStashRef]);
+
     const rootTestId = props.rootTestId;
 
     if (isLoadingStashes && stashes.length === 0) {
         return (
-            <View testID={rootTestId} style={{ flex: 1, alignItems: 'center', justifyContent: 'center', paddingTop: 24 }}>
-                <ActivitySpinner size="small" color={theme.colors.text.secondary} />
-                <Text style={{ marginTop: 12, fontSize: 12, color: theme.colors.text.secondary, ...Typography.default() }}>
-                    {t('common.loading')}
-                </Text>
+            <View testID={rootTestId} style={{ flex: 1 }}>
+                <SurfaceStateCard testID="scm-stash-details-loading" kind="loading" title={t('common.loading')} />
             </View>
         );
     }
 
     if (!isLoadingStashes && stashes.length === 0) {
         return (
-            <View testID={rootTestId} style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 }}>
-                <Text style={{ fontSize: 13, color: theme.colors.text.secondary, ...Typography.default(), textAlign: 'center' }}>
-                    {stashesError ? stashesError : t('files.stash.empty')}
-                </Text>
+            <View testID={rootTestId} style={{ flex: 1 }}>
+                {stashesError ? (
+                    <SurfaceStateCard
+                        testID="scm-stash-details-error"
+                        kind="error"
+                        iconName="archive"
+                        title={t('files.stash.detailsTitle')}
+                        diagnosticCode={stashesError}
+                        action={{ label: t('surfaceState.tryAgain'), onPress: () => { void loadStashes(); } }}
+                    />
+                ) : (
+                    <SurfaceStateCard testID="scm-stash-details-empty" kind="empty" iconName="archive" title={t('files.stash.empty')} />
+                )}
             </View>
         );
     }
 
+    const selectedTitle = selectedStash ? resolveStashTitle(selectedStash) : t('files.stash.detailsTitle');
+    const selectedMeta: DetailsTabHeaderMetaFact[] = [];
+    if (selectedStash) {
+        selectedMeta.push({ key: 'origin', text: resolveStashOrigin(selectedStash, 'long') });
+        const when = typeof selectedStash.createdAt === 'number' ? formatScmHistoryTimestamp(selectedStash.createdAt) : '';
+        if (when) selectedMeta.push({ key: 'when', text: when });
+        selectedMeta.push({ key: 'ref', text: selectedStash.stashRef, tone: 'mono' });
+    }
+    const totalAdded = diffFiles.reduce((sum, file) => sum + Math.max(0, typeof file.added === 'number' ? file.added : 0), 0);
+    const totalRemoved = diffFiles.reduce((sum, file) => sum + Math.max(0, typeof file.removed === 'number' ? file.removed : 0), 0);
+    const mutationsDisabled = !scmWriteEnabled || !selectedStashRef || operationBusy !== null;
+
     return (
         <View testID={rootTestId} style={{ flex: 1, minHeight: 0, minWidth: 0, position: 'relative' }}>
-            <View
-                style={{
-                    paddingHorizontal: 16,
-                    paddingTop: 14,
-                    paddingBottom: 12,
-                    borderBottomWidth: Platform.select({ ios: 0.33, default: 1 }),
-                    borderBottomColor: theme.colors.border.default,
-                    backgroundColor: theme.colors.surface.inset,
-                    gap: 10,
-                }}
-            >
-                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
-                    <View style={{ flex: 1, minWidth: 0 }}>
-                        <DropdownMenu
-                            open={stashSelectorOpen}
-                            onOpenChange={setStashSelectorOpen}
-                            selectedId={selectedStashRef}
-                            items={stashSelectorItems}
-                            onSelect={(itemId) => {
-                                setSelectedStashRef(itemId);
-                                setStashSelectorOpen(false);
-                            }}
-                            variant="selectable"
-                            search={false}
-                            showCategoryTitles={false}
-                            rowKind="item"
-                            itemRowProps={{ density: 'compact' }}
-                            matchTriggerWidth={true}
-                            connectToTrigger={true}
-                            itemTrigger={{
-                                title: t('files.stash.detailsTitle'),
-                                icon: (
-                                    <Icon
-                                        name={selectedStash ? resolveScmStashIconName(selectedStash) : 'archive'}
-                                        size={16}
-                                        color={theme.colors.text.secondary}
-                                    />
-                                ),
-                                itemProps: { density: 'compact' },
-                            }}
-                        />
-                    </View>
-                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                        <Pressable
-                            testID={props.restoreButtonTestId}
-                            accessibilityRole="button"
-                            accessibilityLabel={t('files.stash.restore')}
-                            onPress={() => {
-                                void restoreSelected();
-                            }}
-                            style={({ pressed }) => ({
-                                flexDirection: 'row',
-                                alignItems: 'center',
-                                justifyContent: 'center',
-                                gap: 6,
-                                paddingHorizontal: 10,
-                                height: 32,
-                                borderRadius: 10,
-                                borderWidth: 1,
-                                borderColor: theme.colors.border.default,
-                                backgroundColor: theme.colors.surface.base,
-                                opacity: pressed || operationBusy ? 0.78 : 1,
-                            })}
-                        >
-                            <Icon name="upload" size={14} color={theme.colors.text.secondary} />
-                            <Text style={{ fontSize: 12, color: theme.colors.text.secondary, ...Typography.default('semiBold') }}>
-                                {t('files.stash.restore')}
-                            </Text>
-                        </Pressable>
-                        <Pressable
-                            testID={props.discardButtonTestId}
-                            accessibilityRole="button"
-                            accessibilityLabel={t('files.stash.discard')}
-                            onPress={() => {
-                                void discardSelected();
-                            }}
-                            style={({ pressed }) => ({
-                                flexDirection: 'row',
-                                alignItems: 'center',
-                                justifyContent: 'center',
-                                gap: 6,
-                                paddingHorizontal: 10,
-                                height: 32,
-                                borderRadius: 10,
-                                borderWidth: 1,
-                                borderColor: theme.colors.border.default,
-                                backgroundColor: theme.colors.surface.base,
-                                opacity: pressed || operationBusy ? 0.78 : 1,
-                            })}
-                        >
-                            <Icon name="trash" size={14} color={theme.colors.text.secondary} />
-                            <Text style={{ fontSize: 12, color: theme.colors.text.secondary, ...Typography.default('semiBold') }}>
-                                {t('files.stash.discard')}
-                            </Text>
-                        </Pressable>
-                    </View>
-                </View>
-
-                {stashesError ? (
-                    <Text style={{ fontSize: 12, color: theme.colors.state.neutral.foreground, ...Typography.default() }}>
-                        {stashesError}
-                    </Text>
+            <DetailsTabHeader
+                testID="scm-stash-details-header"
+                title={selectedTitle}
+                controls={stashes.length > 1 ? (
+                    <DropdownMenu
+                        open={stashSelectorOpen}
+                        onOpenChange={setStashSelectorOpen}
+                        selectedId={selectedStashRef}
+                        items={stashSelectorItems}
+                        onSelect={(itemId) => {
+                            setSelectedStashRef(itemId);
+                            setStashSelectorOpen(false);
+                        }}
+                        variant="selectable"
+                        search={false}
+                        showCategoryTitles={false}
+                        rowKind="item"
+                        itemRowProps={{ density: 'compact' }}
+                        matchTriggerWidth={false}
+                        maxWidthCap={420}
+                        placement="bottom"
+                        popoverAnchorAlign="start"
+                        trigger={({ toggle }) => (
+                            <ToolbarButton
+                                testID="scm-stash-switcher"
+                                onPress={toggle}
+                                accessibilityLabel={t('detailsSurface.history.stashSwitcherA11y')}
+                                label={t('detailsSurface.history.stashCount', { count: stashes.length })}
+                                trailing={<Icon name="caret-down" size={12} color={theme.colors.text.tertiary} />}
+                            />
+                        )}
+                    />
                 ) : null}
-            </View>
+                meta={selectedMeta}
+                body={selectedStash && props.folderLabel ? t('detailsSurface.history.stashRestoreExplains', { folder: props.folderLabel }) : undefined}
+                buttons={scmWriteEnabled ? [
+                    {
+                        label: t('detailsSurface.history.stashDiscardEllipsis'),
+                        accessibilityLabel: t('files.stash.discard'),
+                        tone: 'danger',
+                        onPress: () => { void discardSelected(); },
+                        disabled: mutationsDisabled,
+                        busy: operationBusy === 'discard',
+                        testID: props.discardButtonTestId,
+                    },
+                    {
+                        label: t('detailsSurface.history.stashApply'),
+                        accessibilityLabel: t('detailsSurface.history.stashApplyA11y'),
+                        onPress: () => { void applySelected(); },
+                        disabled: mutationsDisabled,
+                        busy: operationBusy === 'apply',
+                        testID: props.applyButtonTestId,
+                    },
+                    {
+                        label: t('files.stash.restore'),
+                        tone: 'primary',
+                        onPress: () => { void restoreSelected(); },
+                        disabled: mutationsDisabled,
+                        busy: operationBusy === 'restore',
+                        testID: props.restoreButtonTestId,
+                    },
+                ] : undefined}
+                notice={stashesError ? (
+                    <SurfaceFreshnessLine
+                        testID="scm-stash-details-stale"
+                        tone="warning"
+                        reason={stashesError}
+                        action={{ label: t('common.retry'), onPress: () => { void loadStashes(); } }}
+                    />
+                ) : null}
+            />
 
             {!diffState.loading && !diffState.error && diffFiles.length > 0 ? (
-                <View style={{ paddingHorizontal: 16, paddingTop: 12, paddingBottom: 8, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                    {Platform.OS === 'web' ? <DiffPresentationStyleToggleButton /> : null}
-                    <WrapLinesToggleButton />
-                </View>
+                <DetailsDiffSummaryRow
+                    testID="scm-stash-details-summary"
+                    label={t('detailsSurface.history.files', { count: diffFiles.length })}
+                    added={totalAdded}
+                    removed={totalRemoved}
+                    trailing={(
+                        <>
+                            {Platform.OS === 'web' ? <DiffPresentationStyleToggleButton /> : null}
+                            <WrapLinesToggleButton />
+                        </>
+                    )}
+                />
             ) : null}
 
             {diffState.loading ? (
-                <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', paddingTop: 24 }}>
-                    <ActivitySpinner size="small" color={theme.colors.text.secondary} />
-                    <Text style={{ marginTop: 12, fontSize: 12, color: theme.colors.text.secondary, ...Typography.default() }}>
-                        {t('common.loading')}
-                    </Text>
-                </View>
+                <SurfaceStateCard testID="scm-stash-diff-loading" kind="loading" title={t('common.loading')} />
             ) : diffState.error ? (
-                <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 }}>
-                    <Text style={{ fontSize: 13, color: theme.colors.text.secondary, ...Typography.default(), textAlign: 'center' }}>
-                        {diffState.error}
-                    </Text>
-                </View>
+                <SurfaceStateCard
+                    testID="scm-stash-diff-error"
+                    kind="error"
+                    title={t('surfaceState.couldNotOpen', { name: selectedTitle })}
+                    diagnosticCode={diffState.error}
+                />
             ) : (
                 <View style={{ flex: 1, minHeight: 0, position: 'relative' }}>
                     <DiffFilesListView

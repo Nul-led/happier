@@ -27,7 +27,11 @@ function trackedRunner(): TrackedSession {
     processCommand:
       'node /Users/alice/.happier/cli-dev/versions/0.2.10/package-dist/index.mjs codex --happy-starting-mode remote --started-by daemon',
     vendorResumeId: 'codex-thread-1',
-    runnerAgentImmutableGenerationId: 'generation-g',
+    runnerAgentSourceCustodyV1: {
+      kind: 'managed',
+      immutableGenerationId: 'generation-g',
+      installSource: 'localPath',
+    },
     spawnOptions: {
       directory: '/tmp/workspace',
       backendTarget: {
@@ -40,7 +44,7 @@ function trackedRunner(): TrackedSession {
   };
 }
 
-describe('restartSessionRunnerOnCurrentRuntime retained Agent generation gate', () => {
+describe('restartSessionRunnerOnCurrentRuntime retained Agent custody gate', () => {
   it('safe-restarts same-CLI older Agent code instead of reporting already current', async () => {
     const requestRestart = vi.fn(async () => ({ signaled: true }));
 

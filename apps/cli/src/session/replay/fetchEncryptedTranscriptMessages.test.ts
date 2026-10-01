@@ -31,7 +31,7 @@ describe('fetchEncryptedTranscriptMessages', () => {
     });
 
     const call = (getSpy as any).mock.calls[0];
-    expect(call?.[1]?.params).toEqual({ limit: 10, beforeSeq: 123 });
+    expect(Object.fromEntries(new URL(String(call?.[0])).searchParams)).toMatchObject({ limit: '10', beforeSeq: '123' });
   });
 
   it('passes scope and role filters through to the server query params', async () => {
@@ -52,8 +52,8 @@ describe('fetchEncryptedTranscriptMessages', () => {
     });
 
     const call = (getSpy as any).mock.calls[0];
-    expect(call?.[1]?.params).toEqual({
-      limit: 10,
+    expect(Object.fromEntries(new URL(String(call?.[0])).searchParams)).toMatchObject({
+      limit: '10',
       scope: 'sidechain',
       sidechainId: 'side-1',
       roles: 'user,agent',
@@ -64,7 +64,7 @@ describe('fetchEncryptedTranscriptMessages', () => {
     vi.spyOn(axios, 'get').mockResolvedValueOnce({
       status: 200,
       data: {
-        messages: [{ seq: 1, content: { t: 'plain', v: { role: 'user', content: { type: 'text', text: 'ok' } } } }],
+        messages: [{ id: 'm1', seq: 1, createdAt: 1, content: { t: 'plain', v: { role: 'user', content: { type: 'text', text: 'ok' } } } }],
         hasMore: true,
         nextBeforeSeq: 1,
         nextAfterSeq: null,
@@ -81,7 +81,7 @@ describe('fetchEncryptedTranscriptMessages', () => {
     });
 
     expect(res).toEqual({
-      messages: [{ seq: 1, content: { t: 'plain', v: { role: 'user', content: { type: 'text', text: 'ok' } } } }],
+      messages: [{ id: 'm1', seq: 1, createdAt: 1, content: { t: 'plain', v: { role: 'user', content: { type: 'text', text: 'ok' } } } }],
       hasMore: true,
       nextBeforeSeq: 1,
       nextAfterSeq: null,
@@ -94,6 +94,7 @@ describe('fetchEncryptedTranscriptMessages', () => {
       data: {
         messages: [{
           seq: 1,
+          id: 'm1', createdAt: 1,
           content: { t: 'plain', v: { role: 'user', content: { type: 'text', text: 'ok' } } },
           externalShareableActor: 'machine',
         }],
@@ -110,7 +111,7 @@ describe('fetchEncryptedTranscriptMessages', () => {
       projection: 'externalShareableV1',
     });
 
-    expect((getSpy as any).mock.calls[0]?.[1]?.params).toMatchObject({
+    expect(Object.fromEntries(new URL(String(getSpy.mock.calls[0]?.[0])).searchParams)).toMatchObject({
       projection: 'externalShareableV1',
     });
     expect(result).toMatchObject({
@@ -125,6 +126,7 @@ describe('fetchEncryptedTranscriptMessages', () => {
       data: {
         messages: [{
           seq: 1,
+          id: 'm1', createdAt: 1,
           content: {
             t: 'plain',
             v: {
@@ -179,9 +181,9 @@ describe('fetchEncryptedTranscriptMessages', () => {
       status: 200,
       data: {
         messages: [
-          { seq: 11, content: { t: 'plain', v: { role: 'user', content: { type: 'text', text: 'before' } } } },
-          { seq: 12, content: { t: 'encrypted' } },
-          { seq: 13, content: { t: 'plain', v: { role: 'agent', content: { type: 'text', text: 'after' } } } },
+          { id: 'm11', seq: 11, createdAt: 1, content: { t: 'plain', v: { role: 'user', content: { type: 'text', text: 'before' } } } },
+          { id: 'm12', seq: 12, createdAt: 1, content: { t: 'encrypted' } },
+          { id: 'm13', seq: 13, createdAt: 1, content: { t: 'plain', v: { role: 'agent', content: { type: 'text', text: 'after' } } } },
         ],
         hasMore: true,
         nextBeforeSeq: 11,
@@ -208,13 +210,14 @@ describe('fetchEncryptedTranscriptMessages', () => {
       status: 200,
       data: {
         messages: [
-          { seq: 11, content: { t: 'plain', v: { role: 'user', content: { type: 'text', text: 'before' } } } },
+          { id: 'm11', seq: 11, createdAt: 1, content: { t: 'plain', v: { role: 'user', content: { type: 'text', text: 'before' } } } },
           {
             seq: 12,
+            id: 'm12', createdAt: 1,
             content: { t: 'encrypted' },
             inputAdmissionReceipt: { v: 1, issuer: 'authenticatedMachine' },
           },
-          { seq: 13, content: { t: 'plain', v: { role: 'agent', content: { type: 'text', text: 'after' } } } },
+          { id: 'm13', seq: 13, createdAt: 1, content: { t: 'plain', v: { role: 'agent', content: { type: 'text', text: 'after' } } } },
         ],
         hasMore: false,
         nextBeforeSeq: null,

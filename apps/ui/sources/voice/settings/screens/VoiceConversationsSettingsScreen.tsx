@@ -8,7 +8,10 @@ import { LANGUAGES } from '@/constants/Languages';
 import { DropdownMenu } from '@/components/ui/forms/dropdown/DropdownMenu';
 import { Icon } from '@/components/ui/icons/Icon';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
+import { SettingAnchor } from '@/components/settings/shell/SettingRow';
+import { VOICE_CONVERSATIONS_SETTINGS } from '@/voice/settings/voiceSettingsDeclarations';
 import { ItemList } from '@/components/ui/lists/ItemList';
+import { SettingsPageHeader } from '@/components/settings/shell/SettingsPageHeader';
 import { useScrollRectIntoViewRegistry } from '@/components/ui/scroll/useScrollRectIntoView';
 import { useHappierVoiceSupport } from '@/hooks/server/useHappierVoiceSupport';
 import {
@@ -134,7 +137,9 @@ export function VoiceConversationsSettingsScreen() {
           onContentSizeChange={focusRegistry.onContentSizeChange}
           onScroll={focusRegistry.onScroll}
           scrollEventThrottle={16}
+          presentation="page"
         >
+          <SettingsPageHeader description={t('settingsVoice.intents.conversations.subtitle')} />
           <View
             testID="settings.voice.section.provider"
             onLayout={onProviderSectionLayout}
@@ -161,58 +166,60 @@ export function VoiceConversationsSettingsScreen() {
             />
           </View>
 
-          <ItemGroup title={t('settingsVoice.languageTitle')} footer={t('settingsVoice.languageDescription')}>
-            <DropdownMenu
-              open={openMenu === 'assistantLanguage'}
-              onOpenChange={(next) => setOpenMenu(next ? 'assistantLanguage' : null)}
-              variant="selectable"
-              search={true}
-              searchPlaceholder={t('settingsVoice.preferredLanguage')}
-              selectedId={effectiveAssistantLanguageId ?? ''}
-              showCategoryTitles={false}
-              matchTriggerWidth={true}
-              connectToTrigger={true}
-              rowKind="item"
-              popoverBoundaryRef={popoverBoundaryRef}
-              itemTrigger={{
-                title: t('settingsVoice.preferredLanguage'),
-                subtitle: t('settingsVoice.preferredLanguageSubtitle'),
-                showSelectedSubtitle: false,
-              }}
-              items={[
-                {
-                  id: '',
-                  title: t('settingsVoice.language.autoDetect'),
-                  subtitle: t('settingsVoice.language.autoDetectSubtitle'),
-                  icon: (
-                    <View style={{ width: 32, height: 32, alignItems: 'center', justifyContent: 'center' }}>
-                      <Icon name="sparkle" size={20} color={theme.colors.text.secondary} />
-                    </View>
-                  ),
-                },
-                ...LANGUAGES.flatMap((lang) => {
-                  const code = lang.code;
-                  if (typeof code !== 'string' || code.length === 0) return [];
-                  return [{
-                    id: code,
-                    title: lang.name,
-                    subtitle: code,
+          <ItemGroup title={t('settingsVoice.languageTitle')} description={t('settingsVoice.languageDescription')}>
+            <SettingAnchor setting={VOICE_CONVERSATIONS_SETTINGS.settings.assistantLanguage}>
+              <DropdownMenu
+                open={openMenu === 'assistantLanguage'}
+                onOpenChange={(next) => setOpenMenu(next ? 'assistantLanguage' : null)}
+                variant="selectable"
+                search={true}
+                searchPlaceholder={t('settingsVoice.preferredLanguage')}
+                selectedId={effectiveAssistantLanguageId ?? ''}
+                showCategoryTitles={false}
+                matchTriggerWidth={true}
+                connectToTrigger={true}
+                rowKind="item"
+                popoverBoundaryRef={popoverBoundaryRef}
+                itemTrigger={{
+                  title: t('settingsVoice.preferredLanguage'),
+                  subtitle: t('settingsVoice.preferredLanguageSubtitle'),
+                  showSelectedSubtitle: false,
+                }}
+                items={[
+                  {
+                    id: '',
+                    title: t('settingsVoice.language.autoDetect'),
+                    subtitle: t('settingsVoice.language.autoDetectSubtitle'),
                     icon: (
                       <View style={{ width: 32, height: 32, alignItems: 'center', justifyContent: 'center' }}>
-                        <Icon name="translate" size={20} color={theme.colors.text.secondary} />
+                        <Icon name="sparkle" size={20} color={theme.colors.text.secondary} />
                       </View>
                     ),
-                  }];
-                }),
-              ]}
-              onSelect={(id) => {
-                setVoice({
-                  ...voice,
-                  assistantLanguage: id || null,
-                });
-                setOpenMenu(null);
-              }}
-            />
+                  },
+                  ...LANGUAGES.flatMap((lang) => {
+                    const code = lang.code;
+                    if (typeof code !== 'string' || code.length === 0) return [];
+                    return [{
+                      id: code,
+                      title: lang.name,
+                      subtitle: code,
+                      icon: (
+                        <View style={{ width: 32, height: 32, alignItems: 'center', justifyContent: 'center' }}>
+                          <Icon name="translate" size={20} color={theme.colors.text.secondary} />
+                        </View>
+                      ),
+                    }];
+                  }),
+                ]}
+                onSelect={(id) => {
+                  setVoice({
+                    ...voice,
+                    assistantLanguage: id || null,
+                  });
+                  setOpenMenu(null);
+                }}
+              />
+            </SettingAnchor>
           </ItemGroup>
 
           <BundledConversationSettingsSection voice={voice} setVoice={setVoice} popoverBoundaryRef={popoverBoundaryRef} />

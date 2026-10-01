@@ -38,8 +38,12 @@ export function useNewSessionAuthoringState(params: Readonly<{
     targetServerId: string | null;
     windowsRemoteSessionLaunchModeOverride: BuildPersistedInputs['windowsRemoteSessionLaunchModeOverride'];
     selectedMachine: Machine | null;
+    hostBoundMachineId?: string | null;
     selectedMachineSpawnReadiness?: MachineSpawnReadiness | null;
+    /** The authored folder; kept while there is no folder, so choosing it again restores it. */
     selectedPath: string;
+    /** `managed`: no folder (the machine keeps a private one). */
+    directoryKind: 'path' | 'managed';
     executionTarget: SessionAuthoringDraft['executionTarget'];
     temporaryComputerActivationRef?: SessionAuthoringDraft['temporaryComputerActivationRef'];
     organizationPlacement: SessionOrganizationPlacementV1;
@@ -77,6 +81,14 @@ export function useNewSessionAuthoringState(params: Readonly<{
 }>): Readonly<{
     authoringContext: ReturnType<typeof buildNewSessionAuthoringContext>;
     currentAuthoringDraft: SessionAuthoringDraft;
+    /**
+     * Rebuilds the authoring draft from live input at the moment it is called.
+     *
+     * `currentAuthoringDraft` is a render projection and can lag the composer,
+     * so an action that hands the draft somewhere else — persisting, submitting
+     * or the Automation chip — must build from here instead.
+     */
+    buildCurrentAuthoringDraft: (effectiveAutomationDraft: NewSessionAutomationDraft) => SessionAuthoringDraft;
     effectiveAutomationDraft: NewSessionAutomationDraft;
     canCreate: boolean;
     buildCurrentPersistedDraft: () => PersistedDraft;
@@ -121,6 +133,7 @@ export function useNewSessionAuthoringState(params: Readonly<{
         executionTarget: params.executionTarget,
         temporaryComputerActivationRef: params.temporaryComputerActivationRef,
         directory: params.selectedPath,
+        directoryKind: params.directoryKind,
         checkoutCreationDraft: params.checkoutCreationDraft,
         organizationPlacement: params.organizationPlacement,
         access: params.access,
@@ -150,14 +163,16 @@ export function useNewSessionAuthoringState(params: Readonly<{
         runtimeDescriptorV1: null,
         acpSessionModeId: params.acpSessionModeId ?? null,
         sessionConfigOptionOverrides: params.sessionConfigOptionOverrides,
-        automation: params.automationRequestedByRoute || effectiveAutomationDraft.enabled
-            ? effectiveAutomationDraft
-            : null,
+        // Only a genuinely hydrated, enabled Automation draft reaches the
+        // retained one-shot writer. A route flag is not authored work, and
+        // treating it as one kept a second create-an-Automation surface alive
+        // inside New Session after every first-party entry had migrated to the
+        // shared wrapper.
+        automation: effectiveAutomationDraft.enabled ? effectiveAutomationDraft : null,
         });
     }, [
         params.acpSessionModeId,
         params.temporaryComputerActivationRef,
-        params.automationRequestedByRoute,
         params.staticAgentId,
         params.agentNewSessionOptions,
         params.backendTarget,
@@ -171,6 +186,7 @@ export function useNewSessionAuthoringState(params: Readonly<{
         params.resumeSessionId,
         params.selectedMachineId,
         params.selectedPath,
+        params.directoryKind,
         params.executionTarget,
         params.organizationPlacement,
         params.access,
@@ -188,16 +204,18 @@ export function useNewSessionAuthoringState(params: Readonly<{
         automationFeatureEnabled: params.automationFeatureEnabled,
         selectedMachineId: params.selectedMachineId,
         selectedMachine: params.selectedMachine,
+        hostBoundMachineId: params.hostBoundMachineId,
         selectedMachineSpawnReadiness: params.selectedMachineSpawnReadiness ?? null,
         selectedPath: params.selectedPath,
-        automationRequestedByRoute: params.automationRequestedByRoute,
+        directoryKind: params.directoryKind,
         buildDraft: buildCurrentAuthoringDraft,
     }), [
+        params.directoryKind,
         buildCurrentAuthoringDraft,
         params.automationDraft,
-        params.automationRequestedByRoute,
         params.automationFeatureEnabled,
         params.selectedMachine,
+        params.hostBoundMachineId,
         params.selectedMachineSpawnReadiness,
         params.selectedMachineId,
         params.selectedPath,
@@ -307,6 +325,7 @@ export function useNewSessionAuthoringState(params: Readonly<{
     return {
         authoringContext,
         currentAuthoringDraft,
+        buildCurrentAuthoringDraft,
         effectiveAutomationDraft,
         canCreate,
         buildCurrentPersistedDraft,

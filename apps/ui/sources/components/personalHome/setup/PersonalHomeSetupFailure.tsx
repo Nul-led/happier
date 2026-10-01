@@ -1,7 +1,8 @@
 import * as React from 'react';
-import { Pressable, View } from 'react-native';
-import { StyleSheet, useUnistyles } from 'react-native-unistyles';
+import { View } from 'react-native';
+import { StyleSheet } from 'react-native-unistyles';
 
+import { RoundButton } from '@/components/ui/buttons/RoundButton';
 import { Text } from '@/components/ui/text/Text';
 import { Typography } from '@/constants/Typography';
 import { t } from '@/text';
@@ -10,19 +11,20 @@ const styles = StyleSheet.create((theme) => ({
     root: { gap: 14, alignItems: 'center', alignSelf: 'stretch' },
     message: { ...Typography.default(), color: theme.colors.text.secondary, fontSize: 14, lineHeight: 21, textAlign: 'center' },
     actions: { flexDirection: 'row', gap: 10, flexWrap: 'wrap', justifyContent: 'center' },
-    button: { minHeight: 44, borderRadius: 12, paddingHorizontal: 16, justifyContent: 'center', borderWidth: 1, borderColor: theme.colors.border.default },
-    primary: { backgroundColor: theme.colors.button.primary.background, borderColor: theme.colors.button.primary.background },
-    buttonText: { ...Typography.default('semiBold'), color: theme.colors.text.primary },
-    primaryText: { color: theme.colors.button.primary.tint },
 }));
 
 export const PersonalHomeSetupFailure = React.memo(function PersonalHomeSetupFailure(props: Readonly<{
-    retryRef?: React.Ref<React.ElementRef<typeof Pressable>>;
-    detailsRef?: React.Ref<React.ElementRef<typeof Pressable>>;
+    retryControlRef?: React.ComponentProps<typeof RoundButton>['controlRef'];
+    detailsControlRef?: React.ComponentProps<typeof RoundButton>['controlRef'];
+    /**
+     * The state-specific body. The generic fallback promises the user's completed
+     * setup work is safe, which is false after an erase, so a state that knows
+     * better supplies its own sentence.
+     */
+    body?: string;
     onRetry?: () => void;
     onOpenDetails?: () => void;
 }>) {
-    const { theme } = useUnistyles();
     return (
         <View
             testID="personal-home-bootstrap-failure"
@@ -30,31 +32,28 @@ export const PersonalHomeSetupFailure = React.memo(function PersonalHomeSetupFai
             accessibilityRole="alert"
             style={styles.root}
         >
-            <Text style={styles.message}>{t('personalHome.bootstrap.failureBody')}</Text>
+            <Text style={styles.message}>{props.body?.trim() || t('personalHome.bootstrap.failureBody')}</Text>
             <View style={styles.actions}>
                 {props.onRetry ? (
-                    <Pressable
-                        ref={props.retryRef}
+                    <RoundButton
+                        size="normal"
+                        controlRef={props.retryControlRef}
                         testID="personal-home-bootstrap-retry"
-                        accessibilityRole="button"
                         accessibilityLabel={t('common.retry')}
                         onPress={props.onRetry}
-                        style={[styles.button, styles.primary]}
-                    >
-                        <Text style={[styles.buttonText, styles.primaryText]}>{t('common.retry')}</Text>
-                    </Pressable>
+                        title={t('common.retry')}
+                    />
                 ) : null}
                 {props.onOpenDetails ? (
-                    <Pressable
-                        ref={props.detailsRef}
+                    <RoundButton
+                        size="normal"
+                        display="inverted"
+                        controlRef={props.detailsControlRef}
                         testID="personal-home-bootstrap-details"
-                        accessibilityRole="button"
                         accessibilityLabel={t('common.details')}
                         onPress={props.onOpenDetails}
-                        style={styles.button}
-                    >
-                        <Text style={[styles.buttonText, { color: theme.colors.text.primary }]}>{t('common.details')}</Text>
-                    </Pressable>
+                        title={t('common.details')}
+                    />
                 ) : null}
             </View>
         </View>

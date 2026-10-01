@@ -22,7 +22,7 @@ import {
   type PluginProjectedActionV2,
 } from '@happier-dev/protocol';
 import {
-  computePluginUiArtifactSha256DigestV1,
+  computePluginUiArtifactFileSetSha256DigestV1,
   type CurrentUiContextSnapshotV1,
 } from '@happier-dev/protocol/plugins/ui';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
@@ -53,7 +53,7 @@ import {
   type PluginReactNativeExecutableExport,
   type PluginReactNativeLoaderBackend,
 } from '@/components/plugins/reactNative/loader';
-import { createReactNativeWebLoaderBackend } from '@/components/plugins/reactNative/webLoaderBackend.web';
+import { createPluginUiCommonJsLoaderBackend } from '@/components/plugins/reactNative/commonJsLoaderBackend';
 import { createVoiceConversationController } from '@/voice/runtime/controller/VoiceConversationController';
 import {
   createSdkHandleConnection,
@@ -141,7 +141,7 @@ const parsedDeclaration = PluginContributesV2Schema.parse({ voiceProviders: [{
       response: { maxBytes: 64 * 1024, contentTypes: ['application/json'] },
     }] },
   },
-  client: { artifactId: 'voice-runtime-web', modulePath: './voiceRuntime', exportName: 'activate' },
+  client: { artifactId: 'voice-runtime-web', exportName: 'activate' },
 }] }).voiceProviders[0]!;
 if (parsedDeclaration.kind !== 'conversation') throw new Error('expected conversation declaration');
 const declaration = parsedDeclaration;
@@ -150,7 +150,6 @@ const CLIENT_ACTION_LOCAL_ID = 'open-client-destination';
 const CLIENT_ACTION_GENERATION = 12;
 const CLIENT_ACTION_TARGET = Object.freeze({
   artifactId: 'voice-client-action-bundle',
-  modulePath: './clientActionRuntime',
   exportName: 'activate',
   platform: 'web' as const,
 });
@@ -174,8 +173,7 @@ function createClientActionFixture(handler: PluginClientActionHandler) {
       target: 'client' as const,
       client: {
         artifactId: CLIENT_ACTION_TARGET.artifactId,
-        modulePath: CLIENT_ACTION_TARGET.modulePath,
-        exportName: CLIENT_ACTION_TARGET.exportName,
+                exportName: CLIENT_ACTION_TARGET.exportName,
       },
       platforms: [CLIENT_ACTION_TARGET.platform],
     },
@@ -184,6 +182,7 @@ function createClientActionFixture(handler: PluginClientActionHandler) {
   const action = PluginProjectedActionV2Schema.parse({
     ...declaration,
     pluginId: CLIENT_ACTION_ORIGIN.materializationRef.pluginId,
+    occurrenceId: 'acme-synthetic-voice-client-action-occurrence-12',
     serverIdentityId: CLIENT_ACTION_ORIGIN.serverIdentityId,
     materializationRef: CLIENT_ACTION_ORIGIN.materializationRef,
     available: true,
@@ -202,15 +201,9 @@ function createClientActionFixture(handler: PluginClientActionHandler) {
   const identity: PluginReactNativeBundleCacheIdentity = Object.freeze({
     pluginId: CLIENT_ACTION_ORIGIN.materializationRef.pluginId,
     contributionId: CLIENT_ACTION_LOCAL_ID,
+    artifactId: CLIENT_ACTION_TARGET.artifactId,
     artifactDigest: 'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
-    hostAppVersion: '2.0.0',
-    hostUiApiVersion: '1.0.0',
-    reactVersion: '19.0.0',
-    reactNativeVersion: '0.83.4',
     platform: CLIENT_ACTION_TARGET.platform,
-    channel: 'internal',
-    nativeCapabilitiesDigest: 'sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
-    projectionGeneration: CLIENT_ACTION_GENERATION,
   });
   const cache = createPluginReactNativeBundleCache();
   cache.putInstalledArtifact({
@@ -222,7 +215,7 @@ function createClientActionFixture(handler: PluginClientActionHandler) {
     api.actions.register(CLIENT_ACTION_LOCAL_ID, handler);
   });
   const backend: PluginReactNativeLoaderBackend = Object.freeze({
-    backendId: 'reactNativeWebModule',
+    backendId: 'commonJs',
     available: true,
     loadInstalledBundle: vi.fn(async () => activate as PluginReactNativeExecutableExport),
   });
@@ -231,7 +224,9 @@ function createClientActionFixture(handler: PluginClientActionHandler) {
     activate,
     activation: Object.freeze({
       pluginId: CLIENT_ACTION_ORIGIN.materializationRef.pluginId,
+      occurrenceId: action.occurrenceId,
       pluginVersion: '1.2.3',
+      hostUiApiRange: '^1.0.0',
       contributes: PluginContributesV2Schema.parse({ actions: [declaration] }),
       target: CLIENT_ACTION_TARGET,
       executionOrigin: CLIENT_ACTION_ORIGIN,
@@ -239,15 +234,12 @@ function createClientActionFixture(handler: PluginClientActionHandler) {
       cache,
       identity,
       moduleReference: {
-        containerName: 'voice-client-action-runtime',
-        modulePath: CLIENT_ACTION_TARGET.modulePath,
         exportName: CLIENT_ACTION_TARGET.exportName,
       },
       backend,
       authority: {
         serverId: 'server-1',
         machineId: 'machine-1',
-        projectionGeneration: CLIENT_ACTION_GENERATION,
       },
       isCurrent: () => true,
     }),
@@ -498,15 +490,9 @@ describe('external Voice provider host composition', () => {
             identity: Object.freeze({
               pluginId: 'acme.synthetic-voice',
               contributionId: 'conversation',
+              artifactId: declaration.client.artifactId,
               artifactDigest: `sha256:${'b'.repeat(64)}`,
-              hostAppVersion: '2.0.0',
-              hostUiApiVersion: '1.0.0',
-              reactVersion: '19.0.0',
-              reactNativeVersion: '0.83.4',
               platform: 'web' as const,
-              channel: 'internal' as const,
-              nativeCapabilitiesDigest: `sha256:${'c'.repeat(64)}`,
-              projectionGeneration: 12,
             }),
             phase: 'settings',
             isCurrent: () => true,
@@ -927,7 +913,7 @@ describe('external Voice provider host composition', () => {
       createInvocationUi: (signal: AbortSignal) => createAppShellPluginUiInvocationHost({
         pluginId: 'acme.synthetic-voice',
         contributionId: 'conversation',
-        generation: '12',
+        occurrenceId: 'acme-synthetic-voice-occurrence-12',
         machineId: 'selected-machine',
         signal,
         isCurrent: () => true,
@@ -1101,19 +1087,14 @@ describe('external Voice provider host composition', () => {
       ? Object.freeze({
           pluginId,
           contributionId: parsedPhaseDeclaration.id,
+          artifactId: parsedPhaseDeclaration.client.artifactId,
           artifactDigest: `sha256:${'a'.repeat(64)}` as const,
-          hostAppVersion: '1.0.0',
-          hostUiApiVersion: '1',
-          reactVersion: '19.0.0',
-          reactNativeVersion: '0.79.0',
           platform: 'web',
-          channel: 'stable',
-          nativeCapabilitiesDigest: `sha256:${'b'.repeat(64)}` as const,
-          projectionGeneration: 7,
         })
       : null;
     const scope = createExternalVoiceProviderActivationScope({
       pluginId,
+      occurrenceId: `${pluginId}-activation-occurrence`,
       declarations: [parsedPhaseDeclaration],
       hostPlatform: 'web',
       runtimeHost: host,
@@ -1123,7 +1104,6 @@ describe('external Voice provider host composition', () => {
       },
       ...(projectedClientRuntimeIdentity
         ? {
-            generation: '7',
             clientRuntimeIdentitiesByLocalId: {
               [parsedPhaseDeclaration.id]: projectedClientRuntimeIdentity,
             },
@@ -1195,7 +1175,10 @@ describe('external Voice provider host composition', () => {
           // daemon to the exact Connected Account the attempt was authorized
           // under.
           declarationAuthority: projectedClientRuntimeIdentity
-            ? { kind: 'projected', cacheIdentity: projectedClientRuntimeIdentity }
+            ? {
+                kind: 'projected',
+                cacheIdentity: { artifactDigest: projectedClientRuntimeIdentity.artifactDigest },
+              }
             : { kind: 'bundled' },
           expectedSelection: {
             kind: 'account',
@@ -1503,6 +1486,7 @@ describe('external Voice provider host composition', () => {
     const action: PluginProjectedActionV2 = {
       id: 'mint-session',
       pluginId: 'acme.synthetic-voice',
+      occurrenceId: 'acme-synthetic-voice-occurrence-12',
       title: 'Mint session',
       scopes: ['session'],
       surfaces: ['voice'],
@@ -1513,7 +1497,7 @@ describe('external Voice provider host composition', () => {
       available: true,
     };
     const createInvocationUi = vi.fn((signal: AbortSignal) => createAppShellPluginUiInvocationHost({
-      pluginId: 'acme.synthetic-voice', contributionId: 'conversation', generation: '12',
+      pluginId: 'acme.synthetic-voice', contributionId: 'conversation', occurrenceId: 'acme-synthetic-voice-occurrence-12',
       machineId: 'machine-1', signal, isCurrent: () => true, execute,
       resolveContributedAction: (identity) => (
         identity.pluginId === action.pluginId && identity.localId === action.id ? action : null
@@ -1578,7 +1562,7 @@ describe('external Voice provider host composition', () => {
     const createInvocationUi = vi.fn((signal: AbortSignal) => createAppShellPluginUiInvocationHost({
       pluginId: 'acme.synthetic-voice',
       contributionId: 'conversation',
-      generation: String(CLIENT_ACTION_GENERATION),
+      occurrenceId: fixture.action.occurrenceId,
       machineId: 'machine-1',
       serverId: 'server-1',
       signal,
@@ -1630,7 +1614,6 @@ describe('external Voice provider host composition', () => {
       expect(fixture.activate).toHaveBeenCalledTimes(1);
       expect(resolvePluginUiClientActionRegistration({
         action: fixture.action,
-        projectionGeneration: CLIENT_ACTION_GENERATION,
         platform: CLIENT_ACTION_TARGET.platform,
         reader: fixture.composition,
       })).not.toBeNull();
@@ -1854,7 +1837,7 @@ describe('external Voice provider host composition', () => {
     );
     const [artifactBytes, manifestText] = await Promise.all([
       readFile(new URL(
-        'dist/happier-plugin-ui/react-native-web/voice-runtime-web/entry.mjs.bundle',
+        'dist/happier-plugin-ui/react-native/voice-runtime-web/entry.cjs.bundle',
         fixtureRoot,
       )),
       readFile(new URL('.happier-plugin/plugin.json', fixtureRoot), 'utf8'),
@@ -1873,7 +1856,6 @@ describe('external Voice provider host composition', () => {
         target: 'client',
         client: {
           artifactId: 'voice-runtime-web',
-          modulePath: './voiceRuntime',
           exportName: 'activate',
         },
         platforms: ['web', 'ios', 'android'],
@@ -1906,25 +1888,22 @@ describe('external Voice provider host composition', () => {
       schemaVersion: 2,
       config: packedProviderSettings.defaultConfig,
     }, packedProviderSettings)).toEqual({ status: 'ready', modeId: 'default' });
-    const digest = computePluginUiArtifactSha256DigestV1(bytes);
+    const digest = computePluginUiArtifactFileSetSha256DigestV1([{
+      relativePath: 'react-native/voice-runtime-web/entry.cjs.bundle',
+      bytes,
+    }]);
     const identity = Object.freeze({
-      pluginId: 'acme.packed-voice', contributionId: 'voice-runtime-bundle', artifactDigest: digest,
-      hostAppVersion: '2.0.0', hostUiApiVersion: '1.0.0', reactVersion: '19.0.0', reactNativeVersion: '0.83.4',
-      platform: 'web', channel: 'internal', nativeCapabilitiesDigest: `sha256:${'c'.repeat(64)}`, projectionGeneration: 12,
+      pluginId: 'acme.packed-voice', contributionId: 'voice-runtime-bundle',
+      artifactId: packedDeclaration.client.artifactId, artifactDigest: digest, platform: 'web',
     });
     const cache = createPluginReactNativeBundleCache();
     cache.putInstalledArtifact({ identity, bytes, format: 'plainJs' });
-    const source = new TextDecoder().decode(bytes);
-    const backend = createReactNativeWebLoaderBackend({
-      importModule: async () => import(
-        /* @vite-ignore */ `data:text/javascript,${encodeURIComponent(source)}#${digest}`
-      ) as Promise<Readonly<{ default?: unknown } & Record<string, unknown>>>,
-    });
+    const backend = createPluginUiCommonJsLoaderBackend();
     expect(packedDeclaration.platforms).toEqual(['web', 'ios', 'android']);
     await expect(loadPluginReactNativeBundleExport({
       cache,
       identity,
-      moduleReference: { containerName: 'acme_packed_voice', modulePath: './voiceRuntime', exportName: 'activate' },
+      moduleReference: { exportName: 'activate' },
       backend,
       hostPlatform: 'ios',
     })).resolves.toMatchObject({
@@ -1945,6 +1924,7 @@ describe('external Voice provider host composition', () => {
     const packedAction = PluginProjectedActionV2Schema.parse({
       ...packedContextAction,
       pluginId: packedOrigin.materializationRef.pluginId,
+      occurrenceId: 'packed-voice-occurrence-12',
       serverIdentityId: packedOrigin.serverIdentityId,
       materializationRef: packedOrigin.materializationRef,
       available: true,
@@ -2092,32 +2072,29 @@ describe('external Voice provider host composition', () => {
     const activation = Object.freeze({
       pluginId: 'acme.packed-voice',
       pluginVersion: '1.0.0',
+      hostUiApiRange: '^1.0.0',
       contributes: packedContributes,
       target: Object.freeze({
         artifactId: 'voice-runtime-web',
-        modulePath: './voiceRuntime',
         exportName: 'activate',
         platform: 'web' as const,
       }),
       executionOrigin: packedOrigin,
-      projectionGeneration: 12,
+      occurrenceId: 'packed-voice-occurrence-12',
       cache,
       identity,
       moduleReference: Object.freeze({
-        containerName: 'acme_packed_voice',
-        modulePath: './voiceRuntime',
         exportName: 'activate',
       }),
       backend,
       authority: Object.freeze({
         serverId: 'server-packed-voice',
         machineId: 'machine-packed-voice',
-        projectionGeneration: 12,
       }),
       isCurrent: () => true,
       createScope: (registrationScope) => createProductionExternalVoiceProviderActivationScope({
         pluginId: 'acme.packed-voice',
-        generation: '12',
+        occurrenceId: 'packed-voice-occurrence-12',
         declarations: conversationDeclarations,
         hostPlatform: 'web',
         registrationScope,
@@ -2165,7 +2142,6 @@ describe('external Voice provider host composition', () => {
       }
       expect(resolvePluginUiClientActionRegistration({
         action: packedAction,
-        projectionGeneration: 12,
         platform: 'web',
       })).not.toBeNull();
 
@@ -2269,7 +2245,6 @@ describe('external Voice provider host composition', () => {
       )).toBeNull();
       expect(resolvePluginUiClientActionRegistration({
         action: packedAction,
-        projectionGeneration: 12,
         platform: 'web',
       })).toBeNull();
       await expect(currentUiContext.invokeCurrentUiCommand?.({

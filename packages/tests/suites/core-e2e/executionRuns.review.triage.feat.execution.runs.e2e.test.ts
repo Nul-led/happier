@@ -36,7 +36,7 @@ describe('core e2e: execution runs (review) supports triage updates', () => {
     await server?.stop();
   }, 60_000);
 
-  it('emits review_findings.v2 meta and allows review.triage action overlay', async () => {
+  it('emits review_findings.v2 meta and accepts review.triage without rewriting the result', async () => {
     const testDir = run.testDir(`execution-runs-review-triage-${randomUUID()}`);
     server = await startServerLight({
       testDir,
@@ -193,8 +193,8 @@ describe('core e2e: execution runs (review) supports triage updates', () => {
     });
     expect(updated.structuredMeta?.kind).toBe('review_findings.v2');
     const updatedPayload = updated.structuredMeta?.payload as any;
-    expect(updatedPayload?.triage?.findings?.[0]?.id).toBe(findingId);
-    expect(updatedPayload?.triage?.findings?.[0]?.status).toBe('accept');
+    // The decision lives in the finding's ReviewComment; the review result itself is never rewritten.
+    expect(updatedPayload?.triage).toBeUndefined();
 
     // Simulate the UI "apply accepted findings" message through the live parent-agent queue.
     const applyPayload = {

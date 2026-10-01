@@ -4,7 +4,8 @@ import type { SessionSpawnSourceContextV1 } from '@happier-dev/protocol';
 
 import type { AgentInputExtraActionPresentation } from '@/components/sessions/agentInput/agentInputContracts';
 import { createSessionSourceContextActionChip } from '@/components/sessions/agentInput/definitions/createSessionSourceContextActionChip';
-import { storage } from '@/sync/domains/state/storage';
+import { useSessionDisplayNameSource } from '@/sync/domains/state/storage';
+import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
 import { getSessionName } from '@/utils/sessions/sessionUtils';
 import type { NewSessionData } from '@/utils/sessions/tempDataStore';
 
@@ -57,16 +58,17 @@ export function useNewSessionSourceContext(params: Readonly<{
     }
 
     const sourceContext = removed ? null : seededSourceContext;
-
+    const sourceSession = useSessionDisplayNameSource(sourceContext?.sourceSessionId ?? '', seededServerId);
     const sourceSessionTitle = React.useMemo(() => {
-        if (!sourceContext) return null;
-        const session = storage.getState().sessions[sourceContext.sourceSessionId] ?? null;
-        return session ? normalize(getSessionName(session)) : null;
-    }, [sourceContext]);
+        return sourceSession ? normalize(getSessionName(sourceSession, seededServerId)) : null;
+    }, [seededServerId, sourceSession]);
 
     const targetServerId = normalize(params.targetServerId);
     const serverMismatch = Boolean(
-        sourceContext && seededServerId && targetServerId && seededServerId !== targetServerId,
+        sourceContext
+        && seededServerId
+        && targetServerId
+        && !areServerProfileIdentifiersEquivalent(seededServerId, targetServerId),
     );
 
     const presentation = React.useMemo(() => {

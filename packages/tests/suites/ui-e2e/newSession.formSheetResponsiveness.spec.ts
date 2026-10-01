@@ -16,9 +16,9 @@ import {
 const run = createRunDirs({ runLabel: 'ui-e2e' });
 
 const startNewSessionTestIds = [
-    'main-header-start-new-session',
+    'tabbar-start-new-session',
     'home-header-start-new-session',
-    'nav-new-session',
+    'sidebar-start-new-session',
     'session-getting-started-start-new-session',
 ] as const;
 

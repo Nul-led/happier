@@ -83,7 +83,7 @@ function request(overrides: Readonly<Record<string, unknown>> = {}) {
     return {
         pluginId: 'happier.codex',
         contributionId: 'codex',
-        generationId: 'generation-1',
+        occurrenceId: 'generation-1',
         sessionId: 'session-1',
         machineId: 'machine-1',
         accountRevision: 'account-1',

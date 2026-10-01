@@ -1,3 +1,4 @@
+import type { PersistedTakeoverAdmissionWaitRegistration } from './persistedTakeoverAdmission';
 import fs from 'fs/promises';
 import { randomUUID } from 'node:crypto';
 
@@ -14,11 +15,13 @@ import { SPAWN_SESSION_ERROR_CODES } from '@/session/shared/spawnSessionContract
 import type { ResolvedTerminalRequest } from '@/terminal/runtime/terminalConfig';
 import { configuration } from '@/configuration';
 import { createTmuxTerminalHostHandle } from '@/integrations/tmux/hostHandle';
-import { writeTerminalHostAttachmentInfo } from '@/terminal/attachment/terminalAttachmentInfo';
+import {
+  createTerminalAttachmentId,
+  writeTerminalHostAttachmentInfo,
+} from '@/terminal/attachment/terminalAttachmentInfo';
 
 import { resolveDaemonCliSubcommandFromBackendTarget } from '../backendTargetRouting';
 import { buildTmuxSpawnConfig } from '../platform/tmux/spawnConfig';
-import { resolveSpawnWebhookResult } from '../sessions/resolveSpawnWebhookResult';
 import type { ChildExit } from '../sessions/onChildExited';
 import type {
   RunnerAgentInvocationContext,
@@ -28,14 +31,9 @@ import type {
   RunnerAgentSessionBootstrapAuthorization,
 } from '../agentRuntime/sessionBridgeAuthorization';
 import type { SpawnLifecycleCallbacks } from './createSpawnLifecycleCallbacks';
-import { waitForSessionWebhook } from './waitForSessionWebhook';
 import type { SpawnCommitRevalidation } from './spawnCommitRevalidation';
 import type { HappyCliSubprocessLaunchOptions } from '@/utils/spawnHappyCLI';
-import {
-  completeStartupCancellationCleanup,
-  resolveSpawnErrorAfterStartupCancellation,
-  type CancelStartupLaunch,
-} from './startupLaunchCancellation';
+import { waitForTerminalHostedSessionWebhook } from './waitForTerminalHostedSessionWebhook';
 
 type SpawnTmuxHostedSessionAndWaitForWebhookResult = Readonly<{
   spawnResult: SpawnSessionResult | null;
@@ -65,6 +63,7 @@ export async function spawnTmuxHostedSessionAndWaitForWebhook(params: Readonly<{
   pidToAwaiter: Map<number, (session: TrackedSession) => void>;
   pidToSpawnResultResolver: Map<number, (result: SpawnSessionResult) => void>;
   pidToSpawnWebhookTimeout: Map<number, NodeJS.Timeout>;
+  takeoverAdmission?: PersistedTakeoverAdmissionWaitRegistration;
   resolveCanonicalTrackedSessionId: (pid: number) => string;
   onChildExited: (pid: number, exit: ChildExit) => void | Promise<void>;
   spawnLifecycleCallbacks: SpawnLifecycleCallbacks;
@@ -142,6 +141,7 @@ export async function spawnTmuxHostedSessionAndWaitForWebhook(params: Readonly<{
 
   const windowName = `happy-${randomUUID()}-${agentSubcommand}`;
   const tmuxTarget = `${resolvedTmuxSessionName}:${windowName}`;
+  const attachmentId = createTerminalAttachmentId();
 
   const terminalRuntimeArgs = [
     '--happy-terminal-mode',
@@ -150,6 +150,8 @@ export async function spawnTmuxHostedSessionAndWaitForWebhook(params: Readonly<{
     'tmux',
     '--happy-tmux-target',
     tmuxTarget,
+    '--happy-terminal-attachment-id',
+    attachmentId,
     ...(tmuxTmpDir ? ['--happy-tmux-tmpdir', tmuxTmpDir] : []),
   ];
 
@@ -235,178 +237,49 @@ export async function spawnTmuxHostedSessionAndWaitForWebhook(params: Readonly<{
   // Resolve the actual tmux session name used (important when sessionName was empty/undefined)
   const tmuxSession = tmuxResult.sessionName ?? (resolvedTmuxSessionName || 'happy');
 
-  let resolveAcceptedSpawnMarker!: (accepted: boolean) => void;
-  const acceptedSpawnMarkerGate = new Promise<boolean>((resolve) => {
-    resolveAcceptedSpawnMarker = resolve;
-  });
-  const trackedSession: TrackedSession = {
-    startedBy: 'daemon',
-    happySessionId:
-      params.normalizedExistingSessionId || `PID-${tmuxPid}`,
+  const spawnResult = await waitForTerminalHostedSessionWebhook({
     pid: tmuxPid,
-    spawnOptions: params.trackedSpawnOptions,
-    ...(params.sessionCreationOutcome
-        ? { sessionCreationOutcome: params.sessionCreationOutcome }
-        : {}),
-    acceptedSpawnMarkerGate,
-    ...(params.runnerAgentSessionBootstrapAuthorization ? {
-      agentRuntimeDaemonServiceAuthorityFilePath:
-        params.runnerAgentSessionBootstrapAuthorization
-          .authorityFilePath,
-      runnerAgentBootstrapIdentity: {
-        agentId:
-          params.runnerAgentSessionBootstrapAuthorization.descriptor.agentId,
-        backendId:
-          params.runnerAgentSessionBootstrapAuthorization.descriptor.backendId,
-      },
-    } : {}),
-    ...(params.runnerAgentInvocationContext ? {
-      runnerAgentInvocationContext:
-        params.runnerAgentInvocationContext,
-    } : {}),
-    tmuxSessionId: tmuxResult.sessionId,
-    tmuxTmpDir: typeof tmuxTmpDir === 'string' && tmuxTmpDir.trim().length > 0 ? tmuxTmpDir.trim() : undefined,
-    vendorResumeId: params.effectiveResume || undefined,
+    label: 'tmux',
+    normalizedExistingSessionId: params.normalizedExistingSessionId,
+    trackedSpawnOptions: params.trackedSpawnOptions,
+    ...(params.sessionCreationOutcome ? { sessionCreationOutcome: params.sessionCreationOutcome } : {}),
+    effectiveResume: params.effectiveResume,
     directoryCreated: params.directoryCreated,
     message: params.directoryCreated
       ? `The path '${params.directory}' did not exist. We created a new folder and spawned a new session in tmux session '${tmuxSession}'. Use 'tmux attach -t ${tmuxSession}' to view the session.`
       : `Spawned new session in tmux session '${tmuxSession}'. Use 'tmux attach -t ${tmuxSession}' to view the session.`,
-  };
-  let startupLaunchCancellation: ReturnType<CancelStartupLaunch> | null =
-    null;
-  const cancelStartupLaunch: CancelStartupLaunch = () => {
-    startupLaunchCancellation ??= (async () => {
-      try {
-        await params.cleanupSpawnResources();
-      } catch {
-        return {
-          status: 'incomplete' as const,
-          reason: 'exit_cleanup_incomplete' as const,
-        };
-      }
-      if (!await tmux.killWindow(tmuxResult.sessionId)) {
-        return {
-          status: 'incomplete' as const,
-          reason: 'terminal_host_disposition_failed' as const,
-        };
-      }
-      return await completeStartupCancellationCleanup({
-        trackedSession,
-        pidToTrackedSession: params.pidToTrackedSession,
-        onChildExited: params.onChildExited,
-      });
-    })();
-    return startupLaunchCancellation;
-  };
-  trackedSession.cancelStartupLaunchBeforeAck =
-    cancelStartupLaunch;
-
-  params.pidToTrackedSession.set(tmuxPid, trackedSession);
-  const acceptedSpawnMarkerPromise =
-    params.spawnLifecycleCallbacks.persistAcceptedSpawnMarker(trackedSession);
-  params.logDebug(`[DAEMON RUN] Waiting for session webhook for PID ${tmuxPid} (tmux)`);
-  const spawnResultPromise = waitForSessionWebhook({
-    pid: tmuxPid,
+    trackedSessionFields: {
+      tmuxSessionId: tmuxResult.sessionId,
+      ...(typeof tmuxTmpDir === 'string' && tmuxTmpDir.trim() ? { tmuxTmpDir: tmuxTmpDir.trim() } : {}),
+    },
+    runnerAgentSessionBootstrapAuthorization: params.runnerAgentSessionBootstrapAuthorization,
+    runnerAgentInvocationContext: params.runnerAgentInvocationContext,
+    pidToTrackedSession: params.pidToTrackedSession,
     pidToAwaiter: params.pidToAwaiter,
     pidToSpawnResultResolver: params.pidToSpawnResultResolver,
     pidToSpawnWebhookTimeout: params.pidToSpawnWebhookTimeout,
-    pidToTrackedSession: params.pidToTrackedSession,
-    timeoutErrorMessage: `Session webhook timeout for PID ${tmuxPid} (tmux)`,
-    onTimeout: () => {
-      params.logDebug(`[DAEMON RUN] Session webhook timeout for PID ${tmuxPid} (tmux)`);
-    },
-    onSuccess: () => {
-      params.logDebug('[DAEMON RUN] Session fully spawned with webhook (tmux)');
-    },
-  });
-  try {
-    await acceptedSpawnMarkerPromise;
-  } catch (error) {
-    resolveAcceptedSpawnMarker(false);
-    const timeout = params.pidToSpawnWebhookTimeout.get(tmuxPid);
-    if (timeout) clearTimeout(timeout);
-    params.pidToSpawnWebhookTimeout.delete(tmuxPid);
-    params.pidToAwaiter.delete(tmuxPid);
-    params.pidToSpawnResultResolver.delete(tmuxPid);
-    if (
-      params.pidToTrackedSession.get(trackedSession.pid)
-      === trackedSession
-    ) {
-      const incompleteRetirement =
-        resolveSpawnErrorAfterStartupCancellation(
-          await cancelStartupLaunch(),
-        );
-      if (incompleteRetirement) {
-        throw new Error(incompleteRetirement);
-      }
-    }
-    throw error;
-  }
-  params.spawnLifecycleCallbacks.registerConnectedServiceSpawnTarget(tmuxPid);
-  params.spawnLifecycleCallbacks.registerSpawnResourceCleanupForPid(tmuxPid);
-  params.spawnLifecycleCallbacks.consumeSessionAttachCleanupForPid(tmuxPid);
-  trackedSession.acceptedSpawnMarkerGate = undefined;
-  resolveAcceptedSpawnMarker(true);
-
-  let spawnResult = await spawnResultPromise.then((result) =>
-    resolveSpawnWebhookResult({
-      pid: tmuxPid,
-      result,
-      pidToTrackedSession: params.pidToTrackedSession,
-      warn: params.warn,
-    }),
-  );
-  if (
-    spawnResult.type === 'error'
-    && (
-      trackedSession.spawnStartupReadinessFailure
-      || typeof trackedSession.sessionWebhookTimedOutAtMs === 'number'
-    )
-  ) {
-    const incompleteRetirement =
-      resolveSpawnErrorAfterStartupCancellation(
-        await cancelStartupLaunch(),
-      );
-    if (incompleteRetirement) {
-      spawnResult = {
-        type: 'error',
-        errorCode: SPAWN_SESSION_ERROR_CODES.SPAWN_FAILED,
-        errorMessage: incompleteRetirement,
-      };
-    }
-  }
-  if (spawnResult.type === 'success') {
-    const sessionId = spawnResult.sessionId?.trim() ?? '';
-    try {
-      if (!sessionId) throw new Error('canonical_session_id_missing');
+    takeoverAdmission: params.takeoverAdmission,
+    onChildExited: params.onChildExited,
+    spawnLifecycleCallbacks: params.spawnLifecycleCallbacks,
+    cleanupSpawnResources: params.cleanupSpawnResources,
+    cancelOwnedHost: async () => await tmux.killWindow(tmuxResult.sessionId),
+    bindCanonicalSession: async (sessionId) => {
       await writeTerminalHostAttachmentInfo({
         happyHomeDir: configuration.happyHomeDir,
         sessionId,
         handle: createTmuxTerminalHostHandle({
+          attachmentId,
           sessionName: tmuxSession,
           windowId: tmuxResult.windowId,
           ...(tmuxTmpDir ? { tmuxTmpDir } : {}),
           topology: 'shared',
         }),
       });
-    } catch (error) {
-      params.logDebug(
-        '[DAEMON RUN] Failed to bind the spawned tmux host to its canonical session',
-        sanitizeDiagnosticText(error instanceof Error ? error.message : String(error)),
-      );
-      const incompleteRetirement = resolveSpawnErrorAfterStartupCancellation(
-        await cancelStartupLaunch(),
-      );
-      spawnResult = {
-        type: 'error',
-        errorCode: SPAWN_SESSION_ERROR_CODES.SPAWN_FAILED,
-        errorMessage: incompleteRetirement ?? 'terminal_attachment_binding_failed',
-      };
-    }
-  }
-  if (spawnResult.type === 'success') {
-    delete trackedSession.cancelStartupLaunchBeforeAck;
-  }
+    },
+    logDebug: params.logDebug,
+    warn: params.warn,
+    sanitizeDiagnosticText,
+  });
 
   return {
     spawnResult,

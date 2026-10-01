@@ -2,27 +2,83 @@ import type { AuthCredentials } from '@/auth/storage/tokenStorage';
 import { backoff } from '@/utils/timing/time';
 import { Artifact, ArtifactCreateRequest, ArtifactUpdateRequest, ArtifactUpdateResponse } from '@/sync/domains/artifacts/artifactTypes';
 import { HappyError } from '@/utils/errors/errors';
-import { serverFetch } from '@/sync/http/client';
+import { serverFetch, type ServerFetch } from '@/sync/http/client';
+import {
+    ArtifactAccessErrorCodeV1Schema,
+    ArtifactAccessGrantsListResponseV1Schema,
+    ArtifactAccessGrantMutationResponseV1Schema,
+    ArtifactAccessRecipientCensusResponseV1Schema,
+    ArtifactRecipientKeyEnvelopeCommitResponseV1Schema,
+    type ArtifactAccessGrantsListInputV1,
+    type ArtifactAccessGrantSetInputV1,
+    type ArtifactAccessGrantRemoveInputV1,
+    type ArtifactRecipientKeyEnvelopeCommitInputV1,
+} from '@happier-dev/protocol';
 
 export type ArtifactApiOptions = Readonly<{
     retry?: 'default' | 'none';
-    request?: (path: string, init?: RequestInit) => Promise<Response>;
+    request?: ServerFetch;
+    limit?: number;
+    cursor?: string;
+    signal?: AbortSignal;
+    /** Inventory selection only; the server remains the access authority. */
+    ownerAccountId?: string;
 }>;
+
+/** The existing Artifact HTTP owner carries grants and fenced recipient keys. */
+export function createArtifactAccessApi(credentials: AuthCredentials, opts: Pick<ArtifactApiOptions, 'request'> = {}) {
+    const send = async <T>(artifactId: string, leaf: string, schema: { parse: (value: unknown) => T },
+        method?: string, input?: unknown, signal?: AbortSignal): Promise<T> => {
+        signal?.throwIfAborted();
+        const response = await (opts.request ?? serverFetch)(`/v1/artifacts/${encodeURIComponent(artifactId)}/access/${leaf}`, {
+            ...(method ? { method } : {}),
+            headers: { Authorization: `Bearer ${credentials.token}`, 'Content-Type': 'application/json' },
+            ...(input === undefined ? {} : { body: JSON.stringify(input) }),
+            ...(signal ? { signal } : {}),
+        }, { includeAuth: false, retry: 'none' });
+        signal?.throwIfAborted();
+        const value: unknown = await response.json().catch(() => null);
+        signal?.throwIfAborted();
+        if (!response.ok) {
+            const known = ArtifactAccessErrorCodeV1Schema.safeParse(value && typeof value === 'object' ? Reflect.get(value, 'error') : undefined);
+            const code = known.success ? known.data
+                : response.status === 404 || response.status === 405 ? 'artifact_access_unavailable' : 'artifact_access_failed';
+            throw Object.assign(new Error(code), { code });
+        }
+        return schema.parse(value);
+    };
+    return {
+        list: (input: ArtifactAccessGrantsListInputV1, signal?: AbortSignal) =>
+            send(input.artifactId, 'grants', ArtifactAccessGrantsListResponseV1Schema, undefined, undefined, signal),
+        set: (input: ArtifactAccessGrantSetInputV1, signal?: AbortSignal) =>
+            send(input.artifactId, 'grants', ArtifactAccessGrantMutationResponseV1Schema, 'PUT', input, signal),
+        remove: (input: ArtifactAccessGrantRemoveInputV1, signal?: AbortSignal) =>
+            send(input.artifactId, 'grants', ArtifactAccessGrantMutationResponseV1Schema, 'DELETE', input, signal),
+        readRecipients: (artifactId: string, signal?: AbortSignal) =>
+            send(artifactId, 'recipients', ArtifactAccessRecipientCensusResponseV1Schema, undefined, undefined, signal),
+        commitKeyEnvelopes: (input: ArtifactRecipientKeyEnvelopeCommitInputV1, signal?: AbortSignal) =>
+            send(input.artifactId, 'key-envelopes', ArtifactRecipientKeyEnvelopeCommitResponseV1Schema, 'POST', input, signal),
+    };
+}
 
 /**
  * Fetch all artifacts for the account
  */
 export async function fetchArtifacts(
     credentials: AuthCredentials,
-    opts: Readonly<{ retry?: 'default' | 'none' }> = {},
+    opts: ArtifactApiOptions = {},
 ): Promise<Artifact[]> {
     const run = async () => {
-        const response = await serverFetch('/v1/artifacts', {
+        const query = new URLSearchParams();
+        if (opts.limit !== undefined) query.set('limit', String(opts.limit));
+        if (opts.cursor !== undefined) query.set('cursor', opts.cursor);
+        const search = query.toString();
+        const response = await (opts.request ?? serverFetch)(`/v1/artifacts${search ? `?${search}` : ''}`, {
             headers: {
                 'Authorization': `Bearer ${credentials.token}`,
                 'Content-Type': 'application/json'
             }
-        }, { includeAuth: false });
+        }, { includeAuth: false, retry: opts.retry });
 
         if (!response.ok) {
             if (response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429) {
@@ -33,13 +89,13 @@ export async function fetchArtifacts(
                 } catch {
                     // ignore
                 }
-                throw new HappyError(message, false);
+                throw new HappyError(message, false, { status: response.status, ...(response.status === 400 ? { code: 'invalid_cursor' } : {}) });
             }
-            throw new Error(`Failed to fetch artifacts: ${response.status}`);
+            throw new HappyError(`Failed to fetch artifacts: ${response.status}`, true, { status: response.status });
         }
 
         const data = await response.json() as Artifact[];
-        return data;
+        return opts.ownerAccountId === undefined ? data : data.filter(artifact => artifact.ownerAccountId === opts.ownerAccountId);
     };
 
     if (opts.retry === 'none') {
@@ -58,16 +114,20 @@ export async function fetchArtifact(
     opts: ArtifactApiOptions = {},
 ): Promise<Artifact> {
     const run = async () => {
-        const response = await (opts.request ?? ((path, init) => serverFetch(path, init, { includeAuth: false })))(`/v1/artifacts/${artifactId}`, {
+        const response = await (opts.request ?? ((path, init, requestOptions) => serverFetch(path, init, {
+            includeAuth: false,
+            retry: requestOptions?.retry,
+        })))(`/v1/artifacts/${artifactId}`, {
+            ...(opts.signal ? { signal: opts.signal } : {}),
             headers: {
                 'Authorization': `Bearer ${credentials.token}`,
                 'Content-Type': 'application/json'
             }
-        });
+        }, { includeAuth: false, retry: opts.retry });
 
         if (!response.ok) {
             if (response.status === 404) {
-                throw new HappyError('Artifact not found', false);
+                throw new HappyError('Artifact not found', false, { status: 404, code: 'not_found' });
             }
             if (response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429) {
                 let message = 'Failed to fetch artifact';
@@ -77,9 +137,9 @@ export async function fetchArtifact(
                 } catch {
                     // ignore
                 }
-                throw new HappyError(message, false);
+                throw new HappyError(message, false, { status: response.status });
             }
-            throw new Error(`Failed to fetch artifact: ${response.status}`);
+            throw new HappyError(`Failed to fetch artifact: ${response.status}`, true, { status: response.status });
         }
 
         const data = await response.json() as Artifact;
@@ -113,7 +173,7 @@ export async function createArtifact(
 
         if (!response.ok) {
             if (response.status === 409) {
-                throw new HappyError('Artifact ID already exists', false);
+                throw new HappyError('Artifact ID already exists', false, { status: 409, code: 'conflict' });
             }
             if (response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429) {
                 let message = 'Failed to create artifact';
@@ -123,9 +183,9 @@ export async function createArtifact(
                 } catch {
                     // ignore
                 }
-                throw new HappyError(message, false);
+                throw new HappyError(message, false, { status: response.status });
             }
-            throw new Error(`Failed to create artifact: ${response.status}`);
+            throw new HappyError(`Failed to create artifact: ${response.status}`, true, { status: response.status });
         }
 
         const data = await response.json() as Artifact;
@@ -160,7 +220,7 @@ export async function updateArtifact(
 
         if (!response.ok) {
             if (response.status === 404) {
-                throw new HappyError('Artifact not found', false);
+                throw new HappyError('Artifact not found', false, { status: 404, code: 'not_found' });
             }
             if (response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429) {
                 let message = 'Failed to update artifact';
@@ -170,9 +230,9 @@ export async function updateArtifact(
                 } catch {
                     // ignore
                 }
-                throw new HappyError(message, false);
+                throw new HappyError(message, false, { status: response.status });
             }
-            throw new Error(`Failed to update artifact: ${response.status}`);
+            throw new HappyError(`Failed to update artifact: ${response.status}`, true, { status: response.status });
         }
 
         const data = await response.json() as ArtifactUpdateResponse;
@@ -192,19 +252,19 @@ export async function updateArtifact(
 export async function deleteArtifact(
     credentials: AuthCredentials,
     artifactId: string,
-    opts: Readonly<{ retry?: 'default' | 'none' }> = {},
+    opts: ArtifactApiOptions = {},
 ): Promise<void> {
     const run = async () => {
-        const response = await serverFetch(`/v1/artifacts/${artifactId}`, {
+        const response = await (opts.request ?? serverFetch)(`/v1/artifacts/${artifactId}`, {
             method: 'DELETE',
             headers: {
                 'Authorization': `Bearer ${credentials.token}`
             }
-        }, { includeAuth: false });
+        }, { includeAuth: false, retry: opts.retry });
 
         if (!response.ok) {
             if (response.status === 404) {
-                throw new HappyError('Artifact not found', false);
+                throw new HappyError('Artifact not found', false, { status: 404, code: 'not_found' });
             }
             if (response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429) {
                 let message = 'Failed to delete artifact';
@@ -214,9 +274,9 @@ export async function deleteArtifact(
                 } catch {
                     // ignore
                 }
-                throw new HappyError(message, false);
+                throw new HappyError(message, false, { status: response.status });
             }
-            throw new Error(`Failed to delete artifact: ${response.status}`);
+            throw new HappyError(`Failed to delete artifact: ${response.status}`, true, { status: response.status });
         }
     };
 

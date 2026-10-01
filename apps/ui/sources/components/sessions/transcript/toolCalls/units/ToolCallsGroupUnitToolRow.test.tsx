@@ -2,7 +2,7 @@ import React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
 import { createToolCallMessageFixture, renderScreen } from '@/dev/testkit';
-import type { ToolCallMessage } from '@/sync/domains/messages/messageTypes';
+import type { ToolCallMessage } from "@happier-dev/session-core/messages";
 import { installToolCallsGroupViewCommonModuleMocks } from '@/components/sessions/transcript/turns/toolCalls/toolCallsGroupViewTestHelpers';
 import { createTranscriptSessionCommonPropsFixture, flattenStyleProp } from './toolCallsGroupUnitsTestFixtures';
 
@@ -82,7 +82,11 @@ async function renderToolRow(props: Record<string, unknown>) {
         ...createTranscriptSessionCommonPropsFixture(),
         ...props,
     } as React.ComponentProps<typeof ToolCallsGroupUnitToolRowWithSessionCommon>;
-    return renderScreen(React.createElement(ToolCallsGroupUnitToolRowWithSessionCommon, rowProps));
+    const { createTestSessionTranscriptSource, renderWithSessionTranscriptSource } = await import('@/dev/testkit');
+    return renderWithSessionTranscriptSource(React.createElement(ToolCallsGroupUnitToolRowWithSessionCommon, rowProps), createTestSessionTranscriptSource({
+        navigate: rowProps.interaction.canSendMessages ? vi.fn() : null,
+        loadSidechain: rowProps.interaction.canSendMessages ? async () => 'loaded' as const : null,
+    }));
 }
 
 describe('ToolCallsGroupUnitToolRow', () => {
@@ -173,7 +177,7 @@ describe('ToolCallsGroupUnitToolRow', () => {
         expect(ensureSidechainsLoadedCalls.every((call) => call.enabled === false)).toBe(true);
     });
 
-    it('disables sidechain loading and nested route ids when tool navigation is disabled', async () => {
+    it('keeps route ids resolved while a read-only source disables sidechain loading', async () => {
         ensureSidechainsLoadedCalls.length = 0;
         const screen = await renderToolRow({
             message: createToolCallMessageFixture({ id: 'm1', createdAt: 1 }),
@@ -181,13 +185,12 @@ describe('ToolCallsGroupUnitToolRow', () => {
             interaction: {
                 canSendMessages: false,
                 canApprovePermissions: false,
-                disableToolNavigation: true,
             },
         });
 
         const rows = screen.findAllByType('ToolTimelineRow' as React.ElementType);
         expect(rows).toHaveLength(1);
-        expect(rows[0]?.props.messageId).toBeUndefined();
+        expect(rows[0]?.props.messageId).toBeDefined();
         expect(ensureSidechainsLoadedCalls.every((call) => call.enabled === false)).toBe(true);
     });
 

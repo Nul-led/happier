@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { extractExecutionRunProfilesFromMachineCapabilitiesState } from './extractExecutionRunsBackendsFromMachineCapabilities';
 
 describe('extractExecutionRunProfilesFromMachineCapabilitiesState', () => {
-    it('accepts only qualified profiles with a committed generation', () => {
+    it('accepts only qualified profiles with canonical source custody', () => {
         const profiles = extractExecutionRunProfilesFromMachineCapabilitiesState({
             snapshot: { response: { results: { 'tool.executionRuns': { ok: true, data: {
                 executionRunProfiles: [
@@ -12,11 +12,11 @@ describe('extractExecutionRunProfilesFromMachineCapabilitiesState', () => {
                         intent: 'review',
                         title: { key: 'profile.review', fallback: 'CodeRabbit Review' },
                         compatibleAgents: ['coderabbit'],
-                        generationId: 'generation-3',
+                        sourceCustody: { kind: 'managed', immutableGenerationId: 'generation-3', installSource: 'archive' },
                         available: true,
                         defaults: { retention: 'resumable', runClass: 'bounded', io: 'streaming' },
                     },
-                    { id: 'local-only', intent: 'review', generationId: 'generation-3' },
+                    { id: 'local-only', intent: 'review', sourceCustody: { kind: 'managed', immutableGenerationId: 'generation-3', installSource: 'archive' } },
                     { id: 'review.deepsec/audit', intent: 'review' },
                 ],
             } } } } },
@@ -27,7 +27,7 @@ describe('extractExecutionRunProfilesFromMachineCapabilitiesState', () => {
             intent: 'review',
             title: 'CodeRabbit Review',
             compatibleAgentIds: ['coderabbit'],
-            generationId: 'generation-3',
+            sourceCustody: { kind: 'managed', immutableGenerationId: 'generation-3', installSource: 'archive' },
             available: true,
             defaults: { retention: 'resumable', runClass: 'bounded', io: 'streaming' },
         }]);

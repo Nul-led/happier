@@ -21,6 +21,10 @@ export type DaemonServiceInstallTarget = Readonly<{
   ring: PublicReleaseRingId | null;
   instanceId: string | null;
   happierHomeDir: string | null;
+  /** Pinned targets: the relay the service is pinned to, so other Homes' services never compete. */
+  serverUrl?: string | null;
+  /** Default-following targets: the server the service follows (the active server). */
+  followedServerId?: string | null;
 }>;
 
 export type DaemonServiceInstallConflictPlan = Readonly<{
@@ -44,7 +48,8 @@ function toCanonicalTarget(target: DaemonServiceInstallTarget): CanonicalDaemonS
     targetMode: target.targetMode,
     ring: target.ring === null ? null : resolvePublicReleaseRingLabelForId(target.ring),
     instanceId: target.instanceId,
-    serverUrl: null,
+    serverUrl: target.targetMode === 'pinned' ? target.serverUrl ?? null : null,
+    followedServerId: target.targetMode === 'default-following' ? target.followedServerId ?? null : null,
     happierHomeDir: target.happierHomeDir,
   };
 }

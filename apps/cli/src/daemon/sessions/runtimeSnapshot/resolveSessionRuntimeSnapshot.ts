@@ -11,6 +11,7 @@ import {
   resolveSessionModeOverrideFromMetadataSnapshot,
 } from '@/agent/runtime/permissions/modeFromMetadata';
 import type { SpawnSessionOptions } from '@/session/shared/spawnSessionContract';
+import { readSessionDirectoryKind } from '@happier-dev/protocol/sessions/metadata/directory';
 import {
   ConnectedServiceBindingsV2IngressSchema,
   SessionMcpSelectionV1Schema,
@@ -347,6 +348,8 @@ function applySnapshotToSpawnOptions(
   const {
     initialTranscriptAfterSeq: _initialTranscriptAfterSeq,
     executionAuthorization: _executionAuthorization,
+    freshSessionCreation: _freshSessionCreation,
+    managedDirectorySeed: _managedDirectorySeed,
     ...durableOptions
   } = options;
   const next: SpawnSessionOptions = { ...durableOptions };
@@ -514,13 +517,22 @@ export function resolveSessionRuntimeSnapshot(
     vendorResumeId: chooseVendorResumeId(params, explicitResumeId),
   };
 
+  const spawnOptions = applySnapshotToSpawnOptions(
+    params.incomingOptions,
+    snapshot,
+    explicitResumeId,
+    retainedLiveRuntimeOptions,
+  );
+  const directoryKind = params.incomingOptions.freshSessionCreation === true && params.incomingOptions.directoryKind === 'managed'
+    ? 'managed'
+    : params.persistedMetadata
+      ? readSessionDirectoryKind(params.persistedMetadata)
+      : params.trackedSpawnOptions?.directoryKind ?? spawnOptions.directoryKind;
+  if (directoryKind) spawnOptions.directoryKind = directoryKind;
+  if (directoryKind === 'managed') spawnOptions.approvedNewDirectoryCreation = false;
+
   return {
     snapshot,
-    spawnOptions: applySnapshotToSpawnOptions(
-      params.incomingOptions,
-      snapshot,
-      explicitResumeId,
-      retainedLiveRuntimeOptions,
-    ),
+    spawnOptions,
   };
 }

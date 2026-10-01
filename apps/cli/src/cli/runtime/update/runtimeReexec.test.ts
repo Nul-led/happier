@@ -232,7 +232,10 @@ describe('maybeReexecToRuntime', () => {
     expect(exit).not.toHaveBeenCalled();
   });
 
-  it('does not reexec background service installs away from the current local cli runtime', async () => {
+  it.each([
+    { prefix: [] },
+    { prefix: ['--runtime-context', Buffer.from(JSON.stringify({ HAPPIER_HOME_DIR: '/sentinel' })).toString('base64url')] },
+  ])('does not reexec background service installs away from the current local cli runtime ($prefix)', async ({ prefix }) => {
     const exec = vi.fn();
     const exit = createExitMock();
     const exists = (path: string) => path.endsWith('/runtime/node_modules/@happier-dev/cli/dist/index.mjs');
@@ -242,12 +245,13 @@ describe('maybeReexecToRuntime', () => {
       cliRootDir: '/repo/apps/cli',
       homeDir: '/home/x/.happier',
       packageName: '@happier-dev/cli',
-      argv: ['service', 'install', '--dry-run', '--json'],
+      argv: [...prefix, 'service', 'install', '--dry-run', '--json'],
       env: {},
       exec,
       exit,
       exists,
       readVersion,
+      ensureRuntimeExecutable: async () => '/sentinel-runtime',
     });
 
     expect(exec).not.toHaveBeenCalled();

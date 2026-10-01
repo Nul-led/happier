@@ -3,17 +3,24 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { renderHook } from '@/dev/testkit';
 import { clearTempData, peekTempData, type NewSessionData } from '@/utils/sessions/tempDataStore';
-import { createUseSettingMock } from '@/dev/testkit/mocks/storage';
+import { createUseLocalSettingMock, createUseSettingMock } from '@/dev/testkit/mocks/storage';
+import type { ProjectMobileSurface } from '@/components/workspaceCockpit/project/projectCockpitState';
+import type { WorkspaceRefV1 } from '@happier-dev/protocol';
 
 const routerPushSpy = vi.hoisted(() => vi.fn());
 const openUniversalSearchSpy = vi.hoisted(() => vi.fn());
 const rememberLastProjectSessionSelections = vi.hoisted(() => ({ value: true }));
 const sessionById = vi.hoisted(() => ({ value: {} as Record<string, any> }));
-const projectOpenState = vi.hoisted(() => ({
-    workspaceRefs: [] as any[],
-    mobileSurfaces: {} as Record<string, string>,
-    activeRootPaths: {} as Record<string, string>,
-    worktreeIds: {} as Record<string, string>,
+const projectOpenState = vi.hoisted((): {
+    workspaceRefs: WorkspaceRefV1[];
+    mobileSurfaces: Record<string, ProjectMobileSurface>;
+    activeRootPaths: Record<string, string>;
+    worktreeIds: Record<string, string>;
+} => ({
+    workspaceRefs: [],
+    mobileSurfaces: {},
+    activeRootPaths: {},
+    worktreeIds: {},
 }));
 
 vi.mock('expo-router', async () => {
@@ -44,17 +51,28 @@ vi.mock('@/components/appShell/search/UniversalSearchRuntimeContext', () => ({
 
 vi.mock('@/sync/domains/state/storage', async (importOriginal) => {
     const { createStorageModuleMock } = await import('@/dev/testkit/mocks/storage');
+    const readStorageState = () => ({
+        sessions: sessionById.value,
+        machines: {
+            machine_target: {
+                id: 'machine_target',
+                active: true,
+                activeAt: 1,
+                metadata: { host: 'target-host' },
+            },
+        },
+    });
     return createStorageModuleMock({
         importOriginal,
         overrides: {
             storage: Object.assign(
                 ((selector?: (state: any) => unknown) => {
-                    const state = { sessions: sessionById.value };
+                    const state = readStorageState();
                     return typeof selector === 'function' ? selector(state) : state;
                 }) as any,
                 {
-                    getState: () => ({ sessions: sessionById.value }),
-                    getInitialState: () => ({ sessions: sessionById.value }),
+                    getState: readStorageState,
+                    getInitialState: readStorageState,
                     setState: () => undefined,
                     subscribe: () => () => undefined,
                     destroy: () => undefined,
@@ -69,11 +87,13 @@ vi.mock('@/sync/domains/state/storage', async (importOriginal) => {
                 }
                 return undefined;
             } }),
-            useLocalSetting: (name: string) => name === 'projectLastActiveRootPathByWorkspaceRefId'
-                ? projectOpenState.activeRootPaths
-                : name === 'projectLastActiveWorktreeIdByWorkspaceRefId'
-                    ? projectOpenState.worktreeIds
-                    : undefined,
+            useLocalSetting: createUseLocalSettingMock({ fallback: (name) => (
+                name === 'projectLastActiveRootPathByWorkspaceRefId'
+                    ? projectOpenState.activeRootPaths
+                    : name === 'projectLastActiveWorktreeIdByWorkspaceRefId'
+                        ? projectOpenState.worktreeIds
+                        : undefined
+            ) }),
             useProjectLastMobileSurfacesByWorkspaceRefId: () => projectOpenState.mobileSurfaces,
         },
     });
@@ -211,33 +231,38 @@ describe('useSessionListNavigationActions', () => {
             machineId: 'machine_target',
             directory: '/repo',
             agentType: 'codex',
-            backendTarget: { kind: 'backend', backendId: 'codex' },
+            agentTarget: {
+                kind: 'agent',
+                identity: { pluginId: 'happier.agent.codex', localId: 'codex' },
+            },
+            backendTarget: { kind: 'backend', backendId: 'codex', sourceKind: 'built_in' },
             selectedProfileId: 'profile-1',
             transcriptStorage: 'direct',
             permissionMode: 'safe-yolo',
             modelSelection: {
                 v: 1,
                 ref: {
-                    agentTargetKey: 'backend:codex',
+                    agentTargetKey: 'agent:happier.agent.codex/codex',
                     modelId: 'gpt-5',
                     providerConnectionId: null,
                 },
                 updatedAt: 102,
             },
-            codexBackendMode: 'appServer',
             acpSessionModeId: 'plan',
         }));
 
         await hook.unmount();
     });
 
-    it('starts a project session from the owning machine workspace path', async () => {
+    it('starts a project session from the canonical Session control path', async () => {
         rememberLastProjectSessionSelections.value = false;
         sessionById.value = {
             seed_sess: {
                 id: 'seed_sess',
                 active: false,
-                metadata: {
+                metadataLayoutVersion: 1,
+                metadata: {},
+                ownerMetadataView: {
                     machineId: 'machine_target',
                     path: '/home/coder/repo',
                     sessionWorkspaceLocationV1: {
@@ -266,7 +291,7 @@ describe('useSessionListNavigationActions', () => {
             params: {
                 draftId: expect.any(String),
                 machineId: 'machine_target',
-                directory: '/Users/alice/repo',
+                directory: '/home/coder/repo',
                 spawnServerId: 'server_a',
             },
         });

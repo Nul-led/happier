@@ -786,6 +786,44 @@ describe('ApiMachineClient transports', () => {
     }]);
   });
 
+  it('encrypts live-stream pixels before emitting them to the relay', async () => {
+    const machineSocket = createApiSessionSocketStub();
+    bindApiSessionSocketMock(mockIo, machineSocket);
+    const { MACHINE_LIVE_STREAM_SOCKET_EVENT, openMachineLiveStreamEnvelopeV1,
+      openSessionDataKeyBundleV0, sealSessionDataKeyBundleV0, encodeBase64, decodeBase64 } = await import('@happier-dev/protocol');
+    const machine: Machine = {
+      id: 'test-machine',
+      encryptionMode: 'e2ee',
+      encryptionKey: new Uint8Array(32).fill(7),
+      encryptionVariant: 'dataKey',
+      metadata: null, metadataVersion: 0, daemonState: null, daemonStateVersion: 0,
+    };
+    const client = new ApiMachineClient('fake-token', machine);
+    client.connect();
+    const envelope = {
+      v: 1, sourceMachineId: 'test-machine', targetMachineId: 'viewer-machine',
+      message: { kind: 'frame', frame: {
+        v: 1, streamId: 'stream_1', sequence: 1, timestampMs: 1000,
+        payloadKind: 'image_keyframe', payloadEncoding: 'binary_base64',
+        payloadBase64: 'c2NyZWVuIHBpeGVscw==', payloadSizeBytes: 13,
+      } },
+    } as const;
+    await client.sendMachineLiveStreamRelayEnvelope(envelope);
+    const emitted = machineSocket.emit.mock.calls.find(([event]) => event === MACHINE_LIVE_STREAM_SOCKET_EVENT)?.[1];
+    expect(emitted).toMatchObject({ message: { kind: 'frame', frame: { payload: { t: 'encrypted', c: expect.any(String) } } } });
+    expect(JSON.stringify(emitted)).not.toContain(envelope.message.frame.payloadBase64);
+    expect(emitted).not.toHaveProperty('message.frame.payloadBase64');
+    const key = new Uint8Array(32).fill(7);
+    expect(await openMachineLiveStreamEnvelopeV1(emitted, { mode: 'e2ee', cipher: {
+      encryptRaw: async (value) => encodeBase64(await sealSessionDataKeyBundleV0(value, key)),
+      decryptRaw: async (value) => {
+        const opened = await openSessionDataKeyBundleV0(decodeBase64(value), key);
+        return opened.status === 'authenticated' ? opened.value : null;
+      },
+    } })).toEqual({ ok: true, value: envelope });
+    await client.shutdown();
+  });
+
   it('emits and receives live-stream relay envelopes over the machine-scoped socket', async () => {
     const machineSocket = createApiSessionSocketStub();
     bindApiSessionSocketMock(mockIo, machineSocket);
@@ -875,7 +913,7 @@ describe('ApiMachineClient transports', () => {
           },
           generation: 'source-1',
         },
-        contributionGeneration: 'contribution-1',
+        sourceCustody: { kind: 'development', registeredRootId: 'contribution-1' },
         cursorIdentity: `external_session_cursor_binding_v1:${'a'.repeat(64)}`,
       },
     });

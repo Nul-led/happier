@@ -1,12 +1,24 @@
 import { describe, expect, it, vi } from 'vitest';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { accountSettingsParse } from '@happier-dev/protocol';
 
 import { createWorkspaceSyncHandoffAdapter, type PrepareWorkspaceSyncHandoffInput } from './workspaceSyncHandoffAdapter';
 import { computeWorkspaceSyncPolicyDigest, type ManagedWorkspaceSync, type WorkspaceSyncStatusV1 } from './workspaceSyncTypes';
+import { createWorkspaceSyncRelationshipOwner } from './workspaceSyncRelationshipOwner';
+import { createWorkspaceRootOwnershipManager } from './workspaceSyncRootOwnership';
+import { workspaceSyncTargetBootstrap } from './workspaceSyncTargetBootstrap';
+import { prepareWorkspaceSyncBetween } from './workspaceSyncPreparation';
 
 const relationshipStatus: WorkspaceSyncStatusV1 = {
   relationshipId: 'rel-1', controllerMachineId: 'machine-a', state: 'watching',
-  alphaPath: '/src', betaPath: '/dst', mode: 'keep_synced', changedFiles: 0,
-  conflictCount: 0, lastSuccessfulSyncAtMs: null,
+  alphaPath: '/src', betaPath: '/dst', mode: 'keep_synced',
+  endpointStates: {
+    alpha: { connected: true, scanned: true, scanProblemCount: 0, transitionProblemCount: 0 },
+    beta: { connected: true, scanned: true, scanProblemCount: 0, transitionProblemCount: 0 },
+  },
+  conflictCount: 0, lastCycleObservedAtMs: null,
 };
 
 describe('WorkspaceSyncHandoffAdapter', () => {
@@ -23,6 +35,92 @@ describe('WorkspaceSyncHandoffAdapter', () => {
     await adapter.finalize({ operationId: 'handoff-1', prepared });
     expect(sync.flush).toHaveBeenCalledTimes(2);
     await adapter.commit({ operationId: 'handoff-1', prepared });
+  });
+
+  it('does not admit handoff or fresh copy completion when the awaited result contains transition problems', async () => {
+    const problemStatus = {
+      ...relationshipStatus,
+      state: 'error' as const,
+      endpointStates: {
+        ...relationshipStatus.endpointStates,
+        beta: { connected: true, scanned: true, scanProblemCount: 0, transitionProblemCount: 1 },
+      },
+    };
+    const relationshipSync = managedSync({ flush: vi.fn(async () => problemStatus) });
+    await expect(handoffAdapter(relationshipSync).prepare(relationshipInput())).rejects.toMatchObject({
+      code: 'workspace_sync_not_clean',
+    });
+
+    const copySync = managedSync({
+      copyOnce: vi.fn(async () => ({ ...problemStatus, relationshipId: 'handoff-copy', mode: 'copy_once' as const })),
+    });
+    const copyAdapter = handoffAdapter(copySync);
+    const prepared = await copyAdapter.prepare(copyInput('all_files'));
+    await expect(copyAdapter.finalize({ operationId: 'handoff-copy', prepared })).rejects.toMatchObject({
+      code: 'workspace_sync_not_clean',
+    });
+  });
+
+  it('aborts transient relationship preparation when its first finite result is not clean', async () => {
+    const abort = vi.fn(async () => undefined);
+    const problemStatus = {
+      ...relationshipStatus,
+      relationshipId: 'rel-created',
+      state: 'error' as const,
+      endpointStates: {
+        ...relationshipStatus.endpointStates,
+        alpha: { connected: true, scanned: true, scanProblemCount: 0, transitionProblemCount: 1 },
+      },
+    };
+    const adapter = createWorkspaceSyncHandoffAdapter({
+      sync: managedSync(),
+      bootstrap: vi.fn(async () => { throw new Error('relationship creation must use its prepared transaction'); }),
+      relationshipOwner: {
+        materializeEndpoints: vi.fn(),
+        prepareCreate: vi.fn(async () => ({
+          relationship: {
+            v: 1 as const,
+            relationshipId: 'rel-created',
+            controllerMachineId: 'machine-a',
+            alphaWorkspaceRefId: 'workspace-created-a',
+            betaWorkspaceRefId: 'workspace-created-b',
+            mode: 'keep_synced' as const,
+            contentPolicy: allFilesPolicy(),
+            enabled: true,
+            createdAtMs: 1,
+            updatedAtMs: 1,
+          },
+          status: problemStatus,
+          reused: false as const,
+          commit: vi.fn(),
+          abort,
+        })),
+      },
+    });
+
+    await expect(adapter.prepare({
+      operationId: 'handoff-create',
+      accountServerId: 'server-a',
+      action: {
+        kind: 'create_relationship',
+        mode: 'keep_synced',
+        contentPolicy: allFilesPolicy(),
+        flushBeforeCommit: true,
+      },
+      sourceMachineId: 'machine-a',
+      targetMachineId: 'machine-b',
+      sourceRootPath: '/src',
+      targetRootPath: '/dst',
+    })).rejects.toMatchObject({ code: 'workspace_sync_not_clean' });
+    expect(abort).toHaveBeenCalledOnce();
+  });
+
+  it('admits a clean completed result even when a benign next scan has already started', async () => {
+    const scanning = { ...relationshipStatus, state: 'starting' as const };
+    const sync = managedSync({ flush: vi.fn(async () => scanning) });
+    const adapter = handoffAdapter(sync);
+    const prepared = await adapter.prepare(relationshipInput());
+    await expect(adapter.finalize({ operationId: 'handoff-1', prepared })).resolves.toMatchObject({ status: scanning });
   });
 
   it('attempts every independent abort obligation and preserves every cleanup failure for retry', async () => {
@@ -293,6 +391,87 @@ describe('WorkspaceSyncHandoffAdapter', () => {
     expect(sync.flush).not.toHaveBeenCalled();
   });
 
+  it('prewarms and finalizes a linked spoke route through the same existing target custody', async () => {
+    const sync = managedSync();
+    const bootstrap = vi.fn(async () => ({ release: vi.fn(async () => undefined) }));
+    const settings = linkedSettings();
+    const flush = vi.fn(async (relationshipId: string) => ({ ...relationshipStatus, relationshipId }));
+    const prepareBetween = vi.fn(async (
+      request: { sourceWorkspaceRefId: string; targetWorkspaceRefId: string },
+      signal?: AbortSignal,
+    ) => await prepareWorkspaceSyncBetween({
+      ...request,
+      readCurrent: async () => ({ workspaceRefs: settings.workspaceRefsV1, relationships: settings.workspaceSyncRelationshipsV1 }),
+      flush,
+      signal,
+    }));
+    const adapter = createWorkspaceSyncHandoffAdapter({ sync, bootstrap, prepareBetween });
+    const handoff = {
+      operationId: 'handoff-linked', action: { kind: 'linked_workspace' as const },
+      sourceMachineId: 'machine-c', targetMachineId: 'machine-b',
+      sourceWorkspaceRefId: 'workspace-c', targetWorkspaceRefId: 'workspace-b',
+      sourceRootPath: '/c', targetRootPath: '/b',
+    };
+
+    const prepared = await adapter.prepare(handoff);
+    expect(bootstrap).toHaveBeenCalledWith(handoff);
+    expect(prepareBetween).toHaveBeenCalledWith({ sourceWorkspaceRefId: 'workspace-c', targetWorkspaceRefId: 'workspace-b' }, undefined);
+    expect(sync.copyOnce).not.toHaveBeenCalled();
+    expect(sync.flush).not.toHaveBeenCalled();
+
+    const finalized = await adapter.finalize({ operationId: handoff.operationId, prepared });
+    expect(prepareBetween).toHaveBeenCalledTimes(2);
+    expect(flush.mock.calls.map(([relationshipId]) => relationshipId)).toEqual([
+      'source-hub', 'hub-target', 'source-hub', 'hub-target',
+    ]);
+    expect(finalized).toMatchObject({ kind: 'linked_workspace', traversed: [{ relationshipId: 'source-hub' }, { relationshipId: 'hub-target' }] });
+    await expect(adapter.commit({ operationId: handoff.operationId, prepared })).resolves.toMatchObject({
+      kind: 'linked_workspace', traversed: [{ relationshipId: 'source-hub' }, { relationshipId: 'hub-target' }],
+    });
+  });
+
+  it('reports the completed upstream link when the final linked route is blocked', async () => {
+    const sync = managedSync();
+    const settings = linkedSettings();
+    let flushCount = 0;
+    const flush = vi.fn(async (relationshipId: string) => {
+      flushCount += 1;
+      return {
+        ...relationshipStatus,
+        relationshipId,
+        ...(flushCount === 4 ? { state: 'conflicted' as const, conflictCount: 1 } : {}),
+      };
+    });
+    const prepareBetween = async (
+      request: { sourceWorkspaceRefId: string; targetWorkspaceRefId: string },
+      signal?: AbortSignal,
+    ) => await prepareWorkspaceSyncBetween({
+      ...request,
+      readCurrent: async () => ({ workspaceRefs: settings.workspaceRefsV1, relationships: settings.workspaceSyncRelationshipsV1 }),
+      flush,
+      signal,
+    });
+    const adapter = createWorkspaceSyncHandoffAdapter({
+      sync,
+      bootstrap: vi.fn(async () => ({ release: vi.fn(async () => undefined) })),
+      prepareBetween,
+    });
+    const prepared = await adapter.prepare({
+      operationId: 'handoff-linked', action: { kind: 'linked_workspace' },
+      sourceMachineId: 'machine-c', targetMachineId: 'machine-b',
+      sourceWorkspaceRefId: 'workspace-c', targetWorkspaceRefId: 'workspace-b',
+      sourceRootPath: '/c', targetRootPath: '/b',
+    });
+    await expect(adapter.finalize({ operationId: 'handoff-linked', prepared })).rejects.toMatchObject({
+      code: 'workspace_sync_partial_route_blocked',
+      details: { completed: [{ relationshipId: 'source-hub' }], blockedRelationshipId: 'hub-target' },
+    });
+    expect(sync.copyOnce).not.toHaveBeenCalled();
+    expect(flush.mock.calls.map(([relationshipId]) => relationshipId)).toEqual([
+      'source-hub', 'hub-target', 'source-hub', 'hub-target',
+    ]);
+  });
+
   it('runs one copyOnce only after the source has stopped and never broadens an unknown selection', async () => {
     const sync = managedSync();
     const adapter = handoffAdapter(sync);
@@ -309,6 +488,81 @@ describe('WorkspaceSyncHandoffAdapter', () => {
     // Boundary fixture deliberately represents an untrusted future wire value.
     await expect(adapter.prepare(copyInput('future_selection') as unknown as PrepareWorkspaceSyncHandoffInput)).rejects.toThrow(/selection/i);
     expect(sync.copyOnce).toHaveBeenCalledTimes(1);
+  });
+
+  it('reenters an admitted copy without WorkspaceRefs and retains its resolved endpoints through finalization', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-copy-reentry-'));
+    const sourceRootPath = join(fixture, 'source');
+    const targetRootPath = join(fixture, 'target');
+    await Promise.all([mkdir(sourceRootPath), mkdir(targetRootPath)]);
+    // Account Settings persistence and the external Mutagen engine are the
+    // boundaries; endpoint materialization and physical-root custody are real.
+    let settings = accountSettingsParse({});
+    const sync = managedSync();
+    const unusedRelationshipOperation = async (): Promise<never> => { throw new Error('copy must not create a relationship'); };
+    const relationshipOwner = createWorkspaceSyncRelationshipOwner({
+      localMachineId: 'machine-a',
+      readSettings: async () => settings,
+      mutateSettings: async (mutate) => {
+        settings = accountSettingsParse(await mutate(settings));
+        return { status: 'applied', version: 1, settings };
+      },
+      waitForSettingsReconciliation: async () => undefined,
+      ensureRelationship: unusedRelationshipOperation,
+      flushRelationship: unusedRelationshipOperation,
+      commitRelationshipTarget: unusedRelationshipOperation,
+      terminateRelationshipRuntime: unusedRelationshipOperation,
+    });
+    const rootOwnershipManager = createWorkspaceRootOwnershipManager({ lockDirectory: join(fixture, 'locks') });
+    const adapter = createWorkspaceSyncHandoffAdapter({
+      sync,
+      relationshipOwner,
+      bootstrap: async (input) => {
+        if (input.action.kind !== 'copy_once' || !input.targetWorkspaceRefId) throw new Error('copy endpoint was not resolved');
+        const target = await workspaceSyncTargetBootstrap({
+          rootPath: input.targetRootPath,
+          sourceRootPath: input.sourceRootPath,
+          relationshipId: input.operationId,
+          endpointRole: 'beta',
+          targetWorkspaceRefId: input.targetWorkspaceRefId,
+          policyDigest: input.action.contentPolicy.policyDigest,
+          contentSelection: 'all_files',
+          materializationDirectory: join(fixture, 'materialization'),
+          rootOwnershipManager,
+          targetBootstrap: 'use_existing',
+        });
+        return {
+          ownershipHandles: target.ownershipHandles,
+          release: async (reason) => {
+            if (reason === 'commit') await target.publishReady();
+            await target.release();
+          },
+        };
+      },
+    });
+    const input: PrepareWorkspaceSyncHandoffInput = {
+      operationId: 'handoff-copy', accountServerId: 'server-a',
+      sourceMachineId: 'machine-a', targetMachineId: 'machine-b',
+      sourceRootPath, targetRootPath,
+      action: { kind: 'copy_once', contentPolicy: allFilesPolicy() },
+    };
+    try {
+      const prepared = await adapter.prepare(input);
+      await expect(adapter.prepare({ ...input })).resolves.toBe(prepared);
+      await expect(adapter.prepare({ ...input, targetRootPath: join(fixture, 'other-target') }))
+        .rejects.toMatchObject({ code: 'workspace_sync_operation_conflict' });
+      expect(input.sourceWorkspaceRefId).toBeUndefined();
+      expect(input.targetWorkspaceRefId).toBeUndefined();
+      await adapter.finalize({ operationId: input.operationId, prepared });
+      expect(sync.copyOnce).toHaveBeenCalledWith(expect.objectContaining({
+        alphaWorkspaceRefId: settings.workspaceRefsV1.find((ref) => ref.machineId === 'machine-a')?.id,
+        betaWorkspaceRefId: settings.workspaceRefsV1.find((ref) => ref.machineId === 'machine-b')?.id,
+      }), undefined, expect.any(Array));
+      await adapter.commit({ operationId: input.operationId, prepared });
+    } finally {
+      await adapter.abort({ operationId: input.operationId });
+      await rm(fixture, { recursive: true, force: true });
+    }
   });
 
   it('does not terminate a pre-existing relationship during compensation', async () => {
@@ -444,6 +698,20 @@ function allFilesPolicy() {
   return { ...input, policyDigest: computeWorkspaceSyncPolicyDigest(input) };
 }
 
+function linkedSettings() {
+  return accountSettingsParse({
+    workspaceRefsV1: [
+      { id: 'workspace-c', serverId: 'server-a', machineId: 'machine-c', rootPath: '/c', createdAtMs: 1 },
+      { id: 'workspace-a', serverId: 'server-a', machineId: 'machine-a', rootPath: '/a', createdAtMs: 1 },
+      { id: 'workspace-b', serverId: 'server-a', machineId: 'machine-b', rootPath: '/b', createdAtMs: 1 },
+    ],
+    workspaceSyncRelationshipsV1: [
+      { v: 1, relationshipId: 'source-hub', controllerMachineId: 'machine-a', alphaWorkspaceRefId: 'workspace-a', betaWorkspaceRefId: 'workspace-c', mode: 'keep_both_in_sync', contentPolicy: allFilesPolicy(), enabled: true, createdAtMs: 1, updatedAtMs: 1 },
+      { v: 1, relationshipId: 'hub-target', controllerMachineId: 'machine-a', alphaWorkspaceRefId: 'workspace-a', betaWorkspaceRefId: 'workspace-b', mode: 'keep_synced', contentPolicy: allFilesPolicy(), enabled: true, createdAtMs: 1, updatedAtMs: 1 },
+    ],
+  });
+}
+
 function copyInput(selection: 'all_files'): PrepareWorkspaceSyncHandoffInput;
 function copyInput(selection: 'future_selection'): unknown;
 function copyInput(selection: 'all_files' | 'future_selection'): unknown {
@@ -460,6 +728,8 @@ function copyInput(selection: 'all_files' | 'future_selection'): unknown {
 function managedSync(overrides: Partial<ManagedWorkspaceSync> = {}): ManagedWorkspaceSync {
   const copyStatus: WorkspaceSyncStatusV1 = { ...relationshipStatus, relationshipId: 'handoff-copy', mode: 'copy_once' };
   return {
+    resolveLocalResolutionEndpoint: vi.fn(async () => null),
+    borrowSourceRootForCopy: vi.fn(async () => null),
     get: vi.fn(async () => null), list: vi.fn(async () => []), subscribe: vi.fn(() => ({ async *[Symbol.asyncIterator]() {} })),
     ensure: vi.fn(async () => relationshipStatus), copyOnce: vi.fn(async () => copyStatus),
     flush: vi.fn(async () => relationshipStatus), pause: vi.fn(async () => ({ ...relationshipStatus, state: 'paused' as const })),
@@ -471,7 +741,10 @@ function managedSync(overrides: Partial<ManagedWorkspaceSync> = {}): ManagedWork
       nextCursor: null,
       conflicts: [],
     })),
-    deleteConflictLoser: vi.fn(async () => relationshipStatus), readFile: vi.fn(async () => ({ status: 'missing' as const })),
+    listRelationships: vi.fn(async () => { throw new Error('unexpected relationship inspection'); }),
+    inspectConflict: vi.fn(async () => { throw new Error('unexpected conflict inspection'); }),
+    resolveConflict: vi.fn(async () => { throw new Error('unexpected conflict resolution'); }),
+    readFile: vi.fn(async () => ({ status: 'missing' as const })),
     withAuthorizedSourceSeedExport: vi.fn(async (_request, exportSource) => await exportSource('/src')),
     withSourceSeedAuthorization: vi.fn(async (_operation, _handles, action) => await action()),
     ...overrides,

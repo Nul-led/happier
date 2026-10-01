@@ -209,6 +209,10 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
     const secrets = createActiveAccountSettingsConnectedAccountSecrets({ expectedScopeKey: 'account-a-scope' });
     await expect(secrets.has(secretRef)).resolves.toBe(true);
     await expect(secrets.read(secretRef)).resolves.toBe('shared-token-value');
+    await expect(secrets.readMaterial!(secretRef)).resolves.toMatchObject({
+      value: 'shared-token-value',
+      fingerprint: expect.stringMatching(/^saved-secret-record:v1:/u),
+    });
 
     resetActiveAccountSettingsSnapshotForTests();
   });

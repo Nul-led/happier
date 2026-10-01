@@ -3,8 +3,8 @@ import { act } from 'react-test-renderer';
 
 import { renderHook, standardCleanup } from '@/dev/testkit';
 import { storage } from '@/sync/domains/state/storageStore';
-import type { Message } from '@/sync/domains/messages/messageTypes';
-import type { Metadata } from '@/sync/domains/state/storageTypes';
+import type { Message } from "@happier-dev/session-core/messages";
+import type { Metadata } from '@happier-dev/session-core/state';
 import { settingsDefaults } from '@/sync/domains/settings/settings';
 
 import { useTranscriptSelectionEligibleMessageIds } from './useTranscriptSelectionEligibleMessageIds';

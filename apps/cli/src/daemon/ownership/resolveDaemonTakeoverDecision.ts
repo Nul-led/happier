@@ -1,11 +1,39 @@
 import type { DaemonStartupSource } from '@/daemon/ownership/daemonOwnershipMetadata';
 import type { CurrentDaemonOwner, DaemonOwnerEvaluation } from '@/daemon/ownership/evaluateCurrentDaemonOwner';
+import { resolveDaemonServiceLaunchdLabel, type DaemonServiceTargetMode } from '@/daemon/service/plan';
 
 export type DaemonTakeoverDecision =
   | Readonly<{ kind: 'ok' }>
   | Readonly<{ kind: 'conflict'; owner: CurrentDaemonOwner }>
   | Readonly<{ kind: 'manual-owner-takeover'; owner: CurrentDaemonOwner }>
-  | Readonly<{ kind: 'manual-owner-replace'; owner: CurrentDaemonOwner }>;
+  | Readonly<{ kind: 'manual-owner-replace'; owner: CurrentDaemonOwner }>
+  /** A pinned service starting while the default-following daemon serves its server: stop it. */
+  | Readonly<{ kind: 'default-following-owner-yield'; owner: CurrentDaemonOwner }>;
+
+/** The service shape of this daemon's own background service (`HAPPIER_DAEMON_SERVICE_TARGET_MODE`). */
+export function readStartingServiceTargetModeFromEnv(env: NodeJS.ProcessEnv = process.env): DaemonServiceTargetMode | null {
+  const value = String(env.HAPPIER_DAEMON_SERVICE_TARGET_MODE ?? '').trim();
+  return value === 'pinned' || value === 'default-following' ? value : null;
+}
+
+/**
+ * One server has one owner, and its pinned background service is that owner (R10 D3). The
+ * default-following service yields at its own startup when the pinned one is running
+ * (`evaluateDefaultFollowingServiceStartup`); when the default one got the server's lock first —
+ * both start at login, in no fixed order — the pinned one takes the server over here. The stopped
+ * default daemon exits 0, which no service manager restarts, and yields at its next start.
+ */
+function isDefaultFollowingServiceOwnerYieldingToPinned(params: Readonly<{
+  owner: CurrentDaemonOwner;
+  startupSource: DaemonStartupSource;
+  serviceTargetMode: DaemonServiceTargetMode | null;
+}>): boolean {
+  return params.serviceTargetMode === 'pinned'
+    && (params.startupSource === 'background-service' || params.startupSource === 'self-restart')
+    && params.owner.source === 'state'
+    && params.owner.serviceManaged === true
+    && params.owner.state.serviceLabel === resolveDaemonServiceLaunchdLabel('default', 'stable', 'default-following');
+}
 
 function canImplicitlyReplaceConflictingManualOwner(
   owner: CurrentDaemonOwner,
@@ -28,7 +56,16 @@ export function resolveDaemonTakeoverDecision(params: Readonly<{
   ownership: DaemonOwnerEvaluation;
   takeoverRequested: boolean;
   startupSource: DaemonStartupSource;
+  /** The starting daemon's own service shape; `null`/absent for any daemon a service did not start. */
+  serviceTargetMode?: DaemonServiceTargetMode | null;
 }>): DaemonTakeoverDecision {
+  if (params.ownership.kind !== 'none' && isDefaultFollowingServiceOwnerYieldingToPinned({
+    owner: params.ownership.owner,
+    startupSource: params.startupSource,
+    serviceTargetMode: params.serviceTargetMode ?? null,
+  })) {
+    return { kind: 'default-following-owner-yield', owner: params.ownership.owner };
+  }
   if (params.ownership.kind === 'none' || params.ownership.kind === 'compatible') {
     return { kind: 'ok' };
   }

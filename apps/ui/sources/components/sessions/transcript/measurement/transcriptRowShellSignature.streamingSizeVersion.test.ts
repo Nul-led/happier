@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { AgentTextMessage, Message } from '@/sync/domains/messages/messageTypes';
+import type { AgentTextMessage, Message } from "@happier-dev/session-core/messages";
 
 import type { TranscriptItemHeightValiditySignature } from './transcriptItemHeightCache';
 import { buildTranscriptItemHeightSignatureKey } from './transcriptItemHeightCache';

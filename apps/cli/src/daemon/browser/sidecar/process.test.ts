@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { SidecarPrivateLaunchPlan } from './runtime';
+import * as sidecarProcess from './process';
 
 type ExitListener = (code: number | null, signal: NodeJS.Signals | null) => void;
 type ErrorListener = (error: Error) => void;
@@ -62,7 +63,7 @@ function privateLaunchPlan(overrides: Partial<SidecarPrivateLaunchPlan> = {}): S
 
 describe('daemon browser sidecar process lifecycle', () => {
     it('launches through the private plan and publishes a public running status without executable paths', async () => {
-        const mod = await import('./process');
+        const mod = sidecarProcess;
 
         expect(mod).not.toBeNull();
         if (!mod) return;
@@ -93,7 +94,7 @@ describe('daemon browser sidecar process lifecycle', () => {
     });
 
     it('moves the public status to crashed when the sidecar process exits unexpectedly', async () => {
-        const mod = await import('./process');
+        const mod = sidecarProcess;
 
         expect(mod).not.toBeNull();
         if (!mod) return;
@@ -117,7 +118,7 @@ describe('daemon browser sidecar process lifecycle', () => {
     });
 
     it('sends SIGTERM and reports stopping when stop is requested for a running sidecar', async () => {
-        const mod = await import('./process');
+        const mod = sidecarProcess;
 
         expect(mod).not.toBeNull();
         if (!mod) return;
@@ -142,7 +143,7 @@ describe('daemon browser sidecar process lifecycle', () => {
     });
 
     it('does not overwrite an active sidecar process when launch is requested again', async () => {
-        const mod = await import('./process');
+        const mod = sidecarProcess;
 
         expect(mod).not.toBeNull();
         if (!mod) return;
@@ -182,7 +183,7 @@ describe('daemon browser sidecar process lifecycle', () => {
     });
 
     it('captures a private DevTools endpoint source from sidecar stderr after launch', async () => {
-        const mod = await import('./process');
+        const mod = sidecarProcess;
 
         expect(mod).not.toBeNull();
         if (!mod) return;

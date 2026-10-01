@@ -6,6 +6,7 @@ import {
 } from '@happier-dev/protocol';
 
 import type { ApiSessionClient } from '@/api/session/sessionClient';
+import { SocketAckError } from '@/session/transport/shared/socketAck';
 import {
   createSessionFollowContextReconciler,
   type SessionFollowHydrateObservation,
@@ -48,6 +49,42 @@ function envelopeFor(observation: { sourceSessionId: string; destinationSessionI
 }
 
 describe('Session Follow context reconciler', () => {
+  it('re-arms the existing wake signal after a retryable observe transport timeout', async () => {
+    const onRetryableTransportFailure = vi.fn();
+    const prepared = await createSessionFollowContextReconciler({
+      session: {
+        sessionId: 'destination',
+        observePendingSessionFollow: vi.fn().mockRejectedValue(new SocketAckError({
+          code: 'socket_ack_timeout',
+          event: 'session.follow.observe_pending',
+        })),
+      } as unknown as ApiSessionClient,
+      hydrateObservation: vi.fn(),
+      onRetryableTransportFailure,
+    })({ signal: new AbortController().signal, maxFollowContextUtf8Bytes: 8_192, deliveryIntent: 'wake' });
+
+    expect(prepared).toBeNull();
+    expect(onRetryableTransportFailure).toHaveBeenCalledOnce();
+  });
+
+  it('does not re-arm for a disconnected or otherwise non-timeout observation failure', async () => {
+    const onRetryableTransportFailure = vi.fn();
+    const prepared = await createSessionFollowContextReconciler({
+      session: {
+        sessionId: 'destination',
+        observePendingSessionFollow: vi.fn().mockRejectedValue(new SocketAckError({
+          code: 'socket_not_connected',
+          event: 'session.follow.observe_pending',
+        })),
+      } as unknown as ApiSessionClient,
+      hydrateObservation: vi.fn(),
+      onRetryableTransportFailure,
+    })({ signal: new AbortController().signal, maxFollowContextUtf8Bytes: 8_192, deliveryIntent: 'wake' });
+
+    expect(prepared).toBeNull();
+    expect(onRetryableTransportFailure).not.toHaveBeenCalled();
+  });
+
   it('does not observe or hydrate Follow sources without an evidence-backed provider allowance', async () => {
     const observePendingSessionFollow = vi.fn();
     const hydrateObservation = vi.fn();

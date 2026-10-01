@@ -4,11 +4,6 @@ import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope
 
 export type PluginUiPersistentArtifactIdentity = Readonly<{
     accountScope: ServerAccountScope;
-    releaseVersion: string;
-    pluginId: string;
-    contributionId: string;
-    tier: 'declarative' | 'hostedWeb' | 'reactNative';
-    platform: string;
     artifactDigest: PluginUiArtifactDigestV1;
 }>;
 
@@ -219,11 +214,6 @@ export function derivePluginUiPersistentArtifactKey(
     return [
         identity.accountScope.serverId,
         identity.accountScope.accountId,
-        identity.pluginId,
-        identity.releaseVersion,
-        identity.contributionId,
-        identity.tier,
-        identity.platform,
         identity.artifactDigest,
     ].map(encodeIdentityPart).join('');
 }

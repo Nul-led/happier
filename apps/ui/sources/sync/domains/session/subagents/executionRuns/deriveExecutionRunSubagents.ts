@@ -1,4 +1,4 @@
-import type { Message } from '@/sync/domains/messages/messageTypes';
+import type { Message } from "@happier-dev/session-core/messages";
 import { isExecutionRunAddressableRecipient } from '@/sync/domains/executionRuns/isExecutionRunAddressableRecipient';
 
 import type { SessionSubagent, SessionSubagentActiveExecutionRunState, SessionSubagentStatus } from '../types';

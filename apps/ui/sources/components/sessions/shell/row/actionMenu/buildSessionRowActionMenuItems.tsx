@@ -31,7 +31,7 @@ import {
 } from './sessionAttentionReminderAction';
 import { formatSessionReminderPresetRuleLabel, resolveSessionReminderPresetRule, sessionReminderPresetRuleKey } from '@/sync/domains/session/organization/sessionReminderPreset';
 
-function createReminderPresetItem(
+export function buildSessionReminderMenuItem(
     iconColor: string,
     presets: SessionRowMoreMenuBuildParams['reminderPresets'],
     reminder: SessionRowMoreMenuBuildParams['reminder'],
@@ -139,7 +139,7 @@ export function buildSessionRowMoreMenuItems(params: SessionRowMoreMenuBuildPara
     return [
         ...selectItems,
         ...primaryItems,
-        ...(params.target.reminderAction.canSchedule || (params.reminder && params.target.reminderAction.canClear) ? [createReminderPresetItem(
+        ...(params.target.reminderAction.canSchedule || (params.reminder && params.target.reminderAction.canClear) ? [buildSessionReminderMenuItem(
             params.iconColor,
             params.reminderPresets,
             params.reminder,

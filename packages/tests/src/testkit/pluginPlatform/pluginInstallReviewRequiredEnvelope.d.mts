@@ -101,7 +101,7 @@ export type PluginInstallationReviewFacts = Readonly<{
       diagnostics: readonly Readonly<{ code: string; message: string }>[];
     }>[];
   }>;
-  updatePolicy: 'reviewSensitiveChanges' | 'reviewEveryUpdate' | 'pinned';
+  updatePolicy: 'allowed' | 'pinned';
 }>;
 
 export declare function readPluginInstallReviewRequiredEnvelope(envelope: unknown): Readonly<{

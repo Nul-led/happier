@@ -7,6 +7,7 @@ import {
 import { TeamCredentialResourceCatalogEntryV1Schema } from '@happier-dev/protocol/teams';
 
 import { t } from '@/text';
+import { presentConnectedAccountIdentity } from './maskAccountEmail';
 
 import {
   buildConnectedAccountPurposeTargetChoices,
@@ -76,6 +77,23 @@ const resolveAuthentication = () => ({
 });
 
 describe('buildConnectedAccountPurposeTargetChoices', () => {
+  it('applies privacy to visible and assistive identities in purpose choices through the target presenter', () => {
+    const choices = buildConnectedAccountPurposeTargetChoices({
+      declaration: { purpose: 'request-auth', service, required: true }, selectedTarget: null,
+      accounts: [{ ...connectedAccount, displayName: undefined, providerIdentity: { email: 'work@example.com', accountId: 'provider-account-42' } }],
+      groups: [], labelsByKey: {}, serviceTitle: 'Acme Gateway', resolveAuthentication,
+      presentIdentity: (input) => presentConnectedAccountIdentity({
+        ...input, hidden: true, label: input.label ?? null, email: input.email ?? null, accountId: input.accountId ?? null,
+      }),
+    });
+    expect(choices[0]?.presentation).toMatchObject({
+      primaryLabel: 'wo•••@e•••.com',
+      secondaryLabel: 'Acme Gateway · provi•••42',
+      accessibilityLabel: 'Acme Gateway · wo•••@e•••.com · provi•••42',
+    });
+    expect(JSON.stringify(choices.map((choice) => choice.presentation))).not.toContain('provider-account-42');
+  });
+
   it('offers explicit optional unbound, account and group choices while keeping an incompatible account non-selectable', () => {
     const choices = buildConnectedAccountPurposeTargetChoices({
       declaration: { purpose: 'request-auth', service, required: false },
@@ -347,6 +365,23 @@ describe('buildConnectedAccountPurposeTargetChoices', () => {
       // The recipient's own inventory is unchanged: no source member became an account choice.
       expect(choices.filter((choice) => choice.kind === 'account').map((choice) => choice.target))
         .toEqual([{ kind: 'account', account: connectedAccount.ref }]);
+    });
+
+    it('retains stale Team selections as visible but non-selectable choices', () => {
+      const choices = buildConnectedAccountPurposeTargetChoices({
+        declaration: { purpose: 'request-auth', service, required: true },
+        selectedTarget: null,
+        accounts: [connectedAccount],
+        groups: [],
+        labelsByKey: {},
+        serviceTitle: 'Acme Gateway',
+        resolveAuthentication,
+        teamResources: [catalogEntry()],
+        teamResourceCurrentKeys: new Set(),
+        teamNameById: { 'team-acme': 'Acme' },
+      });
+      expect(choices.filter((choice) => choice.kind === 'unavailable')).toHaveLength(2);
+      expect(choices.filter((choice) => choice.kind === 'unavailable').every((choice) => !choice.selectable)).toBe(true);
     });
 
     it('keeps an unready Team resource visible but not selectable', () => {

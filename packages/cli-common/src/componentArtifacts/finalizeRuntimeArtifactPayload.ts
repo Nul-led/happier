@@ -19,6 +19,7 @@ import { createRequire } from 'node:module';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fixNodePtyPackageSpawnHelperPermissions } from '../../nodePtySpawnHelperPermissions.cjs';
 import type { BinaryTarget } from './targets.js';
+import { PUBLIC_SDK_GENERATED_GOVERNANCE_RECORDS } from '../workspaces/index.js';
 
 const AUDITED_DUPLICATE_PACKAGE_PAIRS = [
   { duplicate: '@happier-dev/agents/node_modules/zod', survivor: 'zod' },
@@ -522,16 +523,23 @@ async function projectCliRuntimeTools(payloadDir: string, target: BinaryTarget):
   }
 }
 
+// The generated governance records come from the one shared list; the SDK's
+// release-governance `scripts/` subtree is an artifact-only removal.
 const PUBLIC_SDK_GOVERNANCE_PROJECTIONS = [
   {
     packageName: '@happier-dev/plugin-sdk',
     packagePath: ['@happier-dev', 'plugin-sdk'],
-    removedPaths: ['api-declarations.md', 'api-surface.json', 'scripts'],
+    removedPaths: [...PUBLIC_SDK_GENERATED_GOVERNANCE_RECORDS['@happier-dev/plugin-sdk'], 'scripts'],
   },
   {
     packageName: '@happier-dev/plugin-ui',
     packagePath: ['@happier-dev', 'plugin-ui'],
-    removedPaths: ['api-declarations.md', 'api-surface.json'],
+    removedPaths: [...PUBLIC_SDK_GENERATED_GOVERNANCE_RECORDS['@happier-dev/plugin-ui']],
+  },
+  {
+    packageName: '@happier-dev/sdk',
+    packagePath: ['@happier-dev', 'sdk'],
+    removedPaths: [...PUBLIC_SDK_GENERATED_GOVERNANCE_RECORDS['@happier-dev/sdk']],
   },
 ] as const;
 

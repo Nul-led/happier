@@ -77,6 +77,8 @@ export function installSessionFilesViewCommonModuleMocks(
             keyHint: () => ({}),
             timestamp: () => ({}),
             logo: () => ({}),
+            header: () => ({}),
+            body: () => ({}),
         },
     }));
 

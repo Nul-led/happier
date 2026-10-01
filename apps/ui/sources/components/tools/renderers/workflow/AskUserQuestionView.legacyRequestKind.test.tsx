@@ -2,9 +2,9 @@ import React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import type { ReactTestRenderer } from 'react-test-renderer';
 
-import type { ToolCall } from '@/sync/domains/messages/messageTypes';
+import type { ToolCall } from "@happier-dev/session-core/messages";
 import { makeToolCall, makeToolViewProps, findPressableByText } from '@/dev/testkit';
-import { pressTestInstanceAsync, renderScreen } from '@/dev/testkit';
+import { createTestSessionTranscriptSource, pressTestInstanceAsync, renderWithSessionTranscriptSource } from '@/dev/testkit';
 import { installWorkflowRendererCommonModuleMocks } from './workflowRendererTestHelpers';
 
 
@@ -49,10 +49,6 @@ installWorkflowRendererCommonModuleMocks({
     },
 });
 
-vi.mock('@/sync/ops', () => ({
-    sessionAllowWithAnswers: (...args: any[]) => sessionAllowWithAnswers(...args),
-}));
-
 vi.mock('@/components/sessions/terminal/openAttachedSessionTerminal', () => ({
     useOpenAttachedSessionTerminal: () => ({
         available: false,
@@ -84,7 +80,11 @@ describe('AskUserQuestionView legacy request-kind fallback', () => {
         });
 
         let tree: ReactTestRenderer | null = null;
-        tree = (await renderScreen(React.createElement(AskUserQuestionView, makeToolViewProps(tool, { sessionId: 's1' })))).tree;
+        tree = (await renderWithSessionTranscriptSource(React.createElement(AskUserQuestionView, makeToolViewProps(tool, { sessionId: 's1' })), createTestSessionTranscriptSource({
+            interaction: { canSendMessages: true, canApprovePermissions: true },
+            agentState: { requests: { toolu_1: { tool: 'AskUserQuestion', arguments: {}, createdAt: 1 } } },
+            actions: { answerUserAction: (params) => sessionAllowWithAnswers(params), respondToPermission: async () => {}, abort: async () => {}, submitMessage: async () => {} },
+        }))).tree;
 
         const option = findPressableByText(tree!, 'A');
         expect(option).toBeTruthy();
@@ -95,6 +95,6 @@ describe('AskUserQuestionView legacy request-kind fallback', () => {
         await pressTestInstanceAsync(submit, 'tools.askUserQuestion.submit');
 
         expect(sessionAllowWithAnswers).toHaveBeenCalledTimes(1);
-        expect(sessionAllowWithAnswers).toHaveBeenCalledWith('s1', 'toolu_1', { 'Pick one': ['A'] });
+        expect(sessionAllowWithAnswers).toHaveBeenCalledWith({ id: 'toolu_1', answers: { 'Pick one': ['A'] } });
     });
 });

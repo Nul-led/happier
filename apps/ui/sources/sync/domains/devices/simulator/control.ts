@@ -7,6 +7,11 @@ import {
     type SimulatorPreviewRectV1,
 } from '@happier-dev/protocol';
 
+import type {
+    LiveStreamGestureGeometry,
+    LiveStreamInputGesture,
+} from '@/sync/domains/machines/peer/mediation/stream/inputGesture';
+
 export type SimulatorPreviewTapControlBuildResult = Readonly<
     | { ok: true; control: MachineLiveStreamControlSidebandV1 }
     | {
@@ -25,46 +30,11 @@ export type SimulatorPreviewTapControlBuildResult = Readonly<
 
 export type SimulatorPreviewControlBuildResult = SimulatorPreviewTapControlBuildResult;
 
-type SimulatorPreviewGeometryInput = Readonly<{
-    orientation: SimulatorOrientationV1;
-    viewport: Readonly<{ width: number; height: number }>;
-    content: SimulatorPreviewRectV1;
-}>;
+type SimulatorPreviewGeometryInput = LiveStreamGestureGeometry;
 
+/** A viewer gesture (the shared stream input owner) or one of the simulator's own controls. */
 export type SimulatorPreviewControlAction =
-    | (Readonly<{
-        kind: 'tap';
-        point: Readonly<{ x: number; y: number }>;
-    }> & SimulatorPreviewGeometryInput)
-    | (Readonly<{
-        kind: 'long_press';
-        point: Readonly<{ x: number; y: number }>;
-        durationMs?: number;
-    }> & SimulatorPreviewGeometryInput)
-    | (Readonly<{
-        kind: 'swipe' | 'drag';
-        from: Readonly<{ x: number; y: number }>;
-        to: Readonly<{ x: number; y: number }>;
-        durationMs?: number;
-    }> & SimulatorPreviewGeometryInput)
-    | (Readonly<{
-        kind: 'pinch';
-        center: Readonly<{ x: number; y: number }>;
-        startDistance: number;
-        endDistance: number;
-        angle?: number;
-        durationMs?: number;
-    }> & SimulatorPreviewGeometryInput)
-    | (Readonly<{
-        kind: 'rotate';
-        center: Readonly<{ x: number; y: number }>;
-        radius: number;
-        startAngle: number;
-        endAngle: number;
-        durationMs?: number;
-    }> & SimulatorPreviewGeometryInput)
-    | Readonly<{ kind: 'keyboard_text'; text: string }>
-    | Readonly<{ kind: 'keyboard_key'; key: string }>
+    | LiveStreamInputGesture
     | Readonly<{ kind: 'hardware_button'; button: string }>
     | Readonly<{ kind: 'orientation'; orientation: SimulatorOrientationV1 }>
     | Readonly<{ kind: 'request_keyframe' }>

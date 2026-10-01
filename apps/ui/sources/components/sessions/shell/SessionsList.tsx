@@ -1,6 +1,6 @@
 import React from 'react';
 import { View, Platform, RefreshControl } from 'react-native';
-import { useNavigation } from 'expo-router';
+import { useNavigation } from '@/components/appShell/workspace/destinationRoute';
 import { useChromeSafeAreaInsets } from '@/components/ui/layout/useChromeSafeAreaInsets';
 import { useLayoutMaxWidthStyle } from '@/components/ui/layout/layout';
 import type { SessionListStorageFilter } from '@/sync/domains/session/sessionStorageKind';
@@ -8,13 +8,14 @@ import { sessionListStyles } from './sessionListStyles';
 import { SessionListDropOverlay } from './drag/SessionListDropOverlay';
 import { SessionListVirtualizedContent } from './sessionListVirtualizedContent';
 import { SessionListSearchChrome } from './search/SessionListSearchChrome';
+import { HomeReachabilityGate } from '@/components/navigation/connectionStatus/HomeReachabilityGate';
 import {
     useSessionListViewFilterController,
     type SessionListCorpusStorage,
     type SessionListViewFilterController,
 } from './search/useSessionListViewFilterController';
 import { preloadEnrichedMarkdownRuntime } from '@/components/markdown/enriched/preloadEnrichedMarkdownRuntime';
-import { useSessionListViewStateFromPaneState } from './useSessionListViewState';
+import { SessionListExternalStatusDemandPublisher, useSessionListViewStateFromPaneState } from './useSessionListViewState';
 import {
     releaseSessionListScrollRetention,
     useSessionListScrollRetention,
@@ -405,11 +406,12 @@ function VisibleSessionsListViewContent(
         viewState.onNativeListScrollInteractionStart();
     }, [scrollRetention, viewState.onNativeListScrollInteractionStart]);
     const nativeRefreshControl = React.useMemo(() => {
-        if (Platform.OS === 'web' || !surfaceOwnership.dataActive) return undefined;
+        if (Platform.OS === 'web') return undefined;
         return (
             <RefreshControl
-                refreshing={refreshingSessions}
-                onRefresh={handleRefreshSessions}
+                enabled={surfaceOwnership.dataActive}
+                refreshing={surfaceOwnership.dataActive && refreshingSessions}
+                onRefresh={surfaceOwnership.dataActive ? handleRefreshSessions : undefined}
             />
         );
     }, [handleRefreshSessions, refreshingSessions, surfaceOwnership.dataActive]);
@@ -426,6 +428,7 @@ function VisibleSessionsListViewContent(
         return {
             presentation,
             visibleSessionCount: queryVisibleSessionCount,
+            selectedHomeServerIds: props.filterController.queryHomes.map((home) => home.serverId),
             filters: props.filterController.filters,
             defaults: props.filterController.defaultFilters,
             viewContext: props.filterController.viewContext,
@@ -446,6 +449,7 @@ function VisibleSessionsListViewContent(
         props.filterController.defaultFilters,
         props.filterController.filters,
         props.filterController.includeInactive,
+        props.filterController.queryHomes,
         props.filterController.viewContext,
         props.paneState.queryPresentation,
         props.paneState.query?.active,
@@ -455,6 +459,7 @@ function VisibleSessionsListViewContent(
 
     return (
         <SessionListSelectionStoreProvider store={viewState.sessionListSelectionStore}>
+            <SessionListExternalStatusDemandPublisher {...viewState.externalStatusDemand} />
         <KeyboardAwareScreen
             testID="sessions-list-keyboard-frame"
             mode="form"
@@ -467,6 +472,12 @@ function VisibleSessionsListViewContent(
                 style={contentContainerStyle}
             >
                 <SessionListSearchChrome {...viewState.searchChrome} />
+                {queryVisibleSessionCount > 0 ? (
+                    <HomeReachabilityGate
+                        variant="line"
+                        relevantServerIds={queryPresentationState?.selectedHomeServerIds}
+                    >{null}</HomeReachabilityGate>
+                ) : null}
                 <SyncPerformanceReactProfiler id="sessions.list.virtualized">
                     <SessionListVirtualizedContent
                         listRef={viewState.virtualizedListRef}
@@ -497,10 +508,8 @@ function VisibleSessionsListViewContent(
                             if (Platform.OS !== 'web') return;
                             if (typeof event?.stopPropagation === 'function') event.stopPropagation();
                         }}
-                        onPressArchivedSessions={viewState.onPressArchivedSessions}
                         folderFocus={viewState.folderFocus}
                         showDrafts={props.corpusStorage === 'active'}
-                        showArchivedShortcut={props.corpusStorage === 'active'}
                         folderFocusRootTitle={viewState.folderFocusRootTitle}
                         onClearFolderFocus={viewState.onClearFolderFocus}
                         onSelectFolderBreadcrumb={viewState.onSelectFolderBreadcrumb}

@@ -11,6 +11,12 @@ import { installSessionHandoffCommonModuleMocks } from './sessionHandoffTestHelp
 const modalShowMock = vi.hoisted(() => vi.fn((..._args: unknown[]) => 'handoff-progress-modal'));
 const modalHideMock = vi.hoisted(() => vi.fn((..._args: unknown[]) => {}));
 const modalUpdateMock = vi.hoisted(() => vi.fn((..._args: unknown[]) => {}));
+type MachineRpcWithServerScope = typeof import(
+    '@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc'
+)['machineRpcWithServerScope'];
+const machineRpcWithServerScopeMock = vi.hoisted(() => vi.fn(
+    async (_params: unknown) => ({ kind: 'requested' as const }),
+)) as unknown as MachineRpcWithServerScope & ReturnType<typeof vi.fn>;
 const SERVER_ID = 'server-1';
 
 function merge(store: ActionOperationStore, snapshots: readonly ActionOperationSnapshotV1[]): void {
@@ -33,9 +39,13 @@ installSessionHandoffCommonModuleMocks({
     },
 });
 
-vi.mock('@/components/inbox/actionOperations/requestActionOperationStop', () => ({
-    requestActionOperationStop: vi.fn(async () => ({ kind: 'requested' as const })),
-}));
+vi.mock('@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc', async (importOriginal) => {
+    const { createServerScopedMachineRpcModuleMock } = await import('@/dev/testkit/mocks/serverScopedRpc');
+    return createServerScopedMachineRpcModuleMock({
+        importOriginal,
+        overrides: { machineRpcWithServerScope: machineRpcWithServerScopeMock },
+    });
+});
 
 vi.mock('@/components/ui/buttons/RoundButton', () => ({
     RoundButton: (props: Record<string, unknown>) => React.createElement('RoundButton', props),
@@ -147,6 +157,53 @@ describe('observed session handoff progress presentation', () => {
         modalShowMock.mockClear();
         modalHideMock.mockClear();
         modalUpdateMock.mockClear();
+        machineRpcWithServerScopeMock.mockClear();
+    });
+
+    it('updates only the active modal with request-local blocked-link failure and retains its conflict opener', async () => {
+        const { openObservedSessionHandoffProgressModal } = await import('./openSessionHandoffProgressModal');
+        const onOpenConflicts = vi.fn();
+        const presentation = openObservedSessionHandoffProgressModal({
+            requestId: 'blocked-request', sessionId: 'session-1', serverId: SERVER_ID,
+            accountId: 'account-1', store: createActionOperationStore(), onOpenConflicts,
+        });
+        const failure = { ok: false as const, error: 'blocked', errorCode: 'workspace_sync_partial_route_blocked',
+            workspacePreparation: { ok: false as const, errorCode: 'relationship_conflicted', completed: [], blockedRelationshipId: 'a-b' } };
+        presentation.showRequestFailure(failure);
+        expect(modalShowMock.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
+            props: expect.objectContaining({ onOpenConflicts }),
+        }));
+        expect(modalUpdateMock).toHaveBeenCalledWith('handoff-progress-modal', { requestFailure: failure });
+    });
+
+    it('routes Stop from the observed handoff modal through its exact Home and operation', async () => {
+        const { openObservedSessionHandoffProgressModal } = await import('./openSessionHandoffProgressModal');
+        const store = createActionOperationStore();
+        openObservedSessionHandoffProgressModal({
+            requestId: 'handoff-request-stop',
+            sessionId: 'session-1',
+            serverId: SERVER_ID,
+            accountId: 'account-1',
+            store,
+        });
+
+        merge(store, [runningSnapshot({
+            operationId: 'handoff-operation-stop',
+            requestId: 'handoff-request-stop',
+        })]);
+        const running = await renderObservedModal(lastPushedOperation());
+        const chrome = running.setChrome.mock.calls.at(-1)?.[0] as { footer?: React.ReactNode } | undefined;
+        if (!React.isValidElement(chrome?.footer)) throw new Error('Expected the observed handoff modal footer');
+
+        const footer = await renderScreen(chrome.footer);
+        await footer.pressByTestIdAsync('action-operation-cancel');
+
+        expect(machineRpcWithServerScopeMock).toHaveBeenCalledWith({
+            machineId: 'machine-1',
+            method: 'actionOperation.cancel.v1',
+            payload: { operationId: 'handoff-operation-stop' },
+            serverId: SERVER_ID,
+        });
     });
 
     it('streams pushed operation revisions into the modal and detaches observation when collapsed', async () => {

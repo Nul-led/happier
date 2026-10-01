@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { describeEffectiveModelMode } from './describeEffectiveModelMode';
 import { getAgentCore } from '@/agents/catalog/catalog';
-import type { Metadata } from '@/sync/domains/state/storageTypes';
+import type { Metadata } from '@happier-dev/session-core/state';
 
 function buildMetadata(overrides: Partial<Metadata> = {}): Metadata {
     return {
@@ -65,7 +65,7 @@ describe('describeEffectiveModelMode', () => {
                     updatedAt: 11,
                     modelId: 'gpt-5.6-terra',
                     selection: {
-                        agentTargetKey: 'backend:codex',
+                        agentTargetKey: 'agent:happier.agent.codex/codex',
                         providerConnectionId: null,
                         modelId: 'gpt-5.6-terra',
                     },

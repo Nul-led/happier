@@ -41,6 +41,18 @@ export function clearNewSessionAttachmentDrafts(flowId: string | null | undefine
     clearAttachmentDraftsForKey(newSessionAttachmentDraftKey(normalizedFlowId));
 }
 
+/** Accepted custody settles the detached Send, not files added to its successor draft. */
+export function clearAcceptedNewSessionAttachmentDrafts(
+    flowId: string | null | undefined,
+    acceptedDrafts: readonly AttachmentDraft[],
+    currentDrafts: readonly AttachmentDraft[] = readNewSessionAttachmentDrafts(flowId),
+): readonly AttachmentDraft[] {
+    const acceptedIds = new Set(acceptedDrafts.map((draft) => draft.id));
+    const remaining = currentDrafts.filter((draft) => !acceptedIds.has(draft.id));
+    writeNewSessionAttachmentDrafts(flowId, remaining);
+    return remaining;
+}
+
 export function clearAllNewSessionAttachmentDrafts(): void {
     clearAttachmentDraftsForKeyPrefix(NEW_SESSION_ATTACHMENT_DRAFT_KEY_PREFIX);
 }

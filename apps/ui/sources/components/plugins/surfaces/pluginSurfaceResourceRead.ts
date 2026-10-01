@@ -45,7 +45,7 @@ export type PluginResourceHostRequest = Readonly<{
 export type PluginSurfaceResourceBinding = Readonly<{
     machineId: string;
     serverId?: string | null;
-    expectedGeneration: string;
+    expectedCallerOccurrenceId: string;
     /**
      * Host-stamped contextual Resource authority for this exact mounted
      * consumer. Plugin code cannot supply or rewrite it through a request.
@@ -146,7 +146,7 @@ export function createPluginContextualResourceReadClient(input: Readonly<{
             assertCurrentContextualResourceClient(input.isCurrent, signal);
             const outcome = await read(input.resource.machineId, {
                 serverId: input.resource.serverId ?? null,
-                expectedGeneration: input.resource.expectedGeneration,
+                expectedCallerOccurrenceId: input.resource.expectedCallerOccurrenceId,
                 callerPluginId: input.pluginId,
                 resource: reference,
                 ...(input.resource.context === undefined ? {} : { context: input.resource.context }),
@@ -225,7 +225,7 @@ export function createPluginSurfaceResourceReadHandler(input: Readonly<{
         try {
             outcome = await read(input.resource.machineId, {
                 serverId: input.resource.serverId ?? null,
-                expectedGeneration: input.resource.expectedGeneration,
+                expectedCallerOccurrenceId: input.resource.expectedCallerOccurrenceId,
                 callerPluginId: input.pluginId,
                 resource: reference,
                 ...(input.resource.context === undefined ? {} : { context: input.resource.context }),

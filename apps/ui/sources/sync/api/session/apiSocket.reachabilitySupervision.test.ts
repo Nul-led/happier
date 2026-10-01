@@ -1,36 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { Encryption } from '@/sync/encryption/encryption';
+import { createSocketIoBoundaryStub } from '@/dev/testkit/mocks/socketIo';
 
-type SocketEventHandler = (...args: any[]) => void;
-
-function createSocketStub() {
-    const listeners = new Map<string, Set<SocketEventHandler>>();
-    const socket = {
-        connected: false,
-        on: vi.fn((event: string, handler: SocketEventHandler) => {
-            const bucket = listeners.get(event) ?? new Set<SocketEventHandler>();
-            bucket.add(handler);
-            listeners.set(event, bucket);
-            return socket;
-        }),
-        onAny: vi.fn((_handler: SocketEventHandler) => socket),
-        connect: vi.fn(() => {
-            // Do not auto-fire 'connect' — tests control readiness separately.
-        }),
-        disconnect: vi.fn(() => {
-            socket.connected = false;
-            for (const handler of listeners.get('disconnect') ?? []) {
-                handler('io client disconnect');
-            }
-        }),
-        emit: vi.fn(),
-        removeAllListeners: vi.fn(() => {
-            listeners.clear();
-        }),
-    };
-    return socket;
-}
+function createSocketStub() { return createSocketIoBoundaryStub().socket; }
 
 afterEach(async () => {
     vi.useRealTimers();
@@ -120,11 +93,7 @@ describe('apiSocket reachability supervision', () => {
             };
         });
 
-        vi.doMock('@/sync/api/session/connection/createSyncSocketTransport', () => ({
-            createSyncSocketTransport: () => {
-                throw new Error('createSyncSocketTransport should not be called in this test');
-            },
-        }));
+        vi.doMock('socket.io-client', () => ({ io: vi.fn(() => createSocketStub()) }));
 
         const { apiSocket } = await import('./apiSocket');
         const encryption = { getSessionEncryption: () => null } as unknown as Encryption;
@@ -161,11 +130,7 @@ describe('apiSocket reachability supervision', () => {
             };
         });
 
-        vi.doMock('@/sync/api/session/connection/createSyncSocketTransport', () => ({
-            createSyncSocketTransport: () => {
-                throw new Error('createSyncSocketTransport should not be called in this test');
-            },
-        }));
+        vi.doMock('socket.io-client', () => ({ io: vi.fn(() => createSocketStub()) }));
 
         const { apiSocket } = await import('./apiSocket');
         const encryption = { getSessionEncryption: () => null } as unknown as Encryption;
@@ -193,42 +158,7 @@ describe('apiSocket reachability supervision', () => {
         });
 
         const fakeSocket = createSocketStub();
-        vi.doMock('@/sync/api/session/connection/createSyncSocketTransport', () => {
-            const connectedListeners = new Set<() => void>();
-            const disconnectedListeners = new Set<(event: any) => void>();
-            let connected = false;
-            const transport = {
-                async connect() {
-                    connected = true;
-                    connectedListeners.forEach((listener) => listener());
-                },
-                async disconnect(params?: { intentional?: boolean }) {
-                    connected = false;
-                    disconnectedListeners.forEach((listener) => listener({
-                        intentional: params?.intentional === true,
-                        reason: params?.intentional === true ? 'manual' : 'disconnect',
-                    }));
-                },
-                async destroy() {},
-                isConnected() {
-                    return connected;
-                },
-                onConnected(listener: () => void) {
-                    connectedListeners.add(listener);
-                    return () => connectedListeners.delete(listener);
-                },
-                onDisconnected(listener: (event: any) => void) {
-                    disconnectedListeners.add(listener);
-                    return () => disconnectedListeners.delete(listener);
-                },
-                onError(_listener: (error: unknown) => void) {
-                    return () => {};
-                },
-            };
-            return {
-                createSyncSocketTransport: () => ({ socket: fakeSocket, transport }),
-            };
-        });
+        vi.doMock('socket.io-client', () => ({ io: () => fakeSocket }));
 
         const { apiSocket } = await import('./apiSocket');
         const encryption = { getSessionEncryption: () => null } as unknown as Encryption;
@@ -246,6 +176,8 @@ describe('apiSocket reachability supervision', () => {
             lastDisconnectedAt: null,
             lastErrorMessage: null,
         });
+
+        await vi.waitFor(() => expect(fakeSocket.connected).toBe(true));
 
         reachability.listener({
             phase: 'offline',
@@ -267,7 +199,7 @@ describe('apiSocket reachability supervision', () => {
             lastErrorMessage: null,
         });
 
-        expect(reconnectedSpy).toHaveBeenCalledTimes(1);
+        await vi.waitFor(() => expect(reconnectedSpy).toHaveBeenCalledTimes(1));
     });
 
     it('delays socket.connect() until reachability is online', async () => {
@@ -329,53 +261,7 @@ describe('apiSocket reachability supervision', () => {
             };
         });
 
-        vi.doMock('@/sync/api/session/connection/createSyncSocketTransport', () => {
-            const connectedListeners = new Set<() => void>();
-            const disconnectedListeners = new Set<(event: any) => void>();
-            const errorListeners = new Set<(error: unknown) => void>();
-            let connected = false;
-
-            const transport = {
-                async connect() {
-                    connected = true;
-                    connectedListeners.forEach((listener) => listener());
-                },
-                async disconnect(params?: { intentional?: boolean }) {
-                    connected = false;
-                    disconnectedListeners.forEach((listener) => listener({
-                        intentional: params?.intentional === true,
-                        reason: params?.intentional === true ? 'manual' : 'disconnect',
-                    }));
-                },
-                async destroy() {
-                    // Simulate a buggy transport that emits a non-intentional disconnect during teardown.
-                    disconnectedListeners.forEach((listener) => listener({ intentional: false, reason: 'destroy' }));
-                    connected = false;
-                    connectedListeners.clear();
-                    disconnectedListeners.clear();
-                    errorListeners.clear();
-                },
-                isConnected() {
-                    return connected;
-                },
-                onConnected(listener: () => void) {
-                    connectedListeners.add(listener);
-                    return () => connectedListeners.delete(listener);
-                },
-                onDisconnected(listener: (event: any) => void) {
-                    disconnectedListeners.add(listener);
-                    return () => disconnectedListeners.delete(listener);
-                },
-                onError(listener: (error: unknown) => void) {
-                    errorListeners.add(listener);
-                    return () => errorListeners.delete(listener);
-                },
-            };
-
-            return {
-                createSyncSocketTransport: () => ({ socket: fakeSocket, transport }),
-            };
-        });
+        vi.doMock('socket.io-client', () => ({ io: () => fakeSocket }));
 
         const { apiSocket } = await import('./apiSocket');
         const encryption = { getSessionEncryption: () => null } as unknown as Encryption;
@@ -464,11 +350,7 @@ describe('apiSocket reachability supervision', () => {
             };
         });
 
-        vi.doMock('@/sync/api/session/connection/createSyncSocketTransport', () => ({
-            createSyncSocketTransport: () => {
-                throw new Error('createSyncSocketTransport should not be called in this test');
-            },
-        }));
+        vi.doMock('socket.io-client', () => ({ io: vi.fn(() => createSocketStub()) }));
 
         const { apiSocket } = await import('./apiSocket');
         const encryption = { getSessionEncryption: () => null } as unknown as Encryption;
@@ -509,11 +391,7 @@ describe('apiSocket reachability supervision', () => {
             };
         });
 
-        vi.doMock('@/sync/api/session/connection/createSyncSocketTransport', () => ({
-            createSyncSocketTransport: () => {
-                throw new Error('createSyncSocketTransport should not be called in this test');
-            },
-        }));
+        vi.doMock('socket.io-client', () => ({ io: vi.fn(() => createSocketStub()) }));
 
         const { apiSocket } = await import('./apiSocket');
         const encryption = { getSessionEncryption: () => null } as unknown as Encryption;
@@ -581,11 +459,7 @@ describe('apiSocket reachability supervision', () => {
                     },
                 };
             });
-            vi.doMock('@/sync/api/session/connection/createSyncSocketTransport', () => ({
-                createSyncSocketTransport: () => {
-                    throw new Error('createSyncSocketTransport should not be called in this test');
-                },
-            }));
+            vi.doMock('socket.io-client', () => ({ io: vi.fn(() => createSocketStub()) }));
             mockFocusedHomeRuntimeContext();
 
             currentSnapshot = {
@@ -641,11 +515,7 @@ describe('apiSocket reachability supervision', () => {
                     },
                 };
             });
-            vi.doMock('@/sync/api/session/connection/createSyncSocketTransport', () => ({
-                createSyncSocketTransport: () => {
-                    throw new Error('createSyncSocketTransport should not be called in this test');
-                },
-            }));
+            vi.doMock('socket.io-client', () => ({ io: vi.fn(() => createSocketStub()) }));
 
             // Foreground recovery starts from the suspended world: no published origin.
             currentSnapshot = {
@@ -714,11 +584,7 @@ describe('apiSocket reachability supervision', () => {
                     },
                 };
             });
-            vi.doMock('@/sync/api/session/connection/createSyncSocketTransport', () => ({
-                createSyncSocketTransport: () => {
-                    throw new Error('createSyncSocketTransport should not be called in this test');
-                },
-            }));
+            vi.doMock('socket.io-client', () => ({ io: vi.fn(() => createSocketStub()) }));
 
             // Suspended: the canonical audience is this device's loopback URL, which is not
             // a network route to the Home. Supervision must wait for the verified origin.

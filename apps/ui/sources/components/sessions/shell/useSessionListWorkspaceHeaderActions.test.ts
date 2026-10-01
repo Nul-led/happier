@@ -5,13 +5,18 @@ import {
     buildSessionProjectGroupingIdentity,
     sessionProjectGroupingIdentityKey,
 } from '@/sync/domains/session/listing/sessionListProjectGroupingKeys';
+import type * as WorkspaceRefOperations from '@/sync/ops/workspaceRefs';
 
-const addWorkspaceRefToAccountSpy = vi.hoisted(() => vi.fn(async () => ({ ok: true, workspaceRefId: 'workspace-ref-id' })));
-const resetWorkspaceRefNameInAccountSpy = vi.hoisted(() => vi.fn(async () => ({ ok: true })));
+const addWorkspaceRefToAccountSpy = vi.hoisted(() => vi.fn<typeof WorkspaceRefOperations.addWorkspaceRefToAccount>(
+    async () => ({ ok: true, workspaceRefId: 'workspace-ref-id' }),
+));
+const resetWorkspaceRefNameInAccountSpy = vi.hoisted(() => vi.fn<typeof WorkspaceRefOperations.resetWorkspaceRefNameInAccount>(
+    async () => ({ ok: true }),
+));
 
 vi.mock('@/sync/ops/workspaceRefs', () => ({
-    addWorkspaceRefToAccount: (...args: unknown[]) => addWorkspaceRefToAccountSpy(...args),
-    resetWorkspaceRefNameInAccount: (...args: unknown[]) => resetWorkspaceRefNameInAccountSpy(...args),
+    addWorkspaceRefToAccount: addWorkspaceRefToAccountSpy,
+    resetWorkspaceRefNameInAccount: resetWorkspaceRefNameInAccountSpy,
 }));
 
 vi.mock('@/modal', async () => {

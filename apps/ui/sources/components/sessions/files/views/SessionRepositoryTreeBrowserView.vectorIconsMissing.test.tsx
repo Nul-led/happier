@@ -68,6 +68,10 @@ vi.mock('@/hooks/session/files/useWorkspaceFileTransfers', () => ({
     }),
 }));
 
+vi.mock('@/components/sessions/agents/presentation/useSessionMachineName', () => ({
+    useSessionMachineName: () => 'MacBook Pro',
+}));
+
 vi.mock('@/components/sessions/model/useSessionMachineReachability', () => ({
     useSessionMachineReachability: () => ({
         machineReachable: true,

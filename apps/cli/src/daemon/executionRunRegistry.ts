@@ -10,8 +10,16 @@ import {
   type DaemonExecutionRunMarker,
   type DaemonExecutionRunMarkerPersistenceRead,
   type DaemonExecutionRunMarkerOwnerWrite,
+  WorkerUpdateV1Schema,
 } from '@happier-dev/protocol';
+import { z } from 'zod';
+import { readOrCreateDeviceLocalSecretStorage } from './deviceLocalSecretStorage';
 import { resolveReleaseRingScopedBasename } from '../cli/runtime/publicReleaseChannel';
+import {
+  publishProtectedLocalStateFileIfAbsent,
+  readProtectedLocalStateFile,
+  removeProtectedLocalStateFile,
+} from '../utils/fs/protectedLocalState';
 
 const ExecutionRunMarkerSchema = DaemonExecutionRunMarkerSchema;
 const ExecutionRunMarkerOwnerWriteSchema = DaemonExecutionRunMarkerOwnerWriteSchema;
@@ -19,6 +27,107 @@ const ExecutionRunMarkerPersistenceReadSchema = DaemonExecutionRunMarkerPersiste
 
 export type ExecutionRunMarker = DaemonExecutionRunMarker;
 type ExecutionRunMarkerPersistenceRead = DaemonExecutionRunMarkerPersistenceRead;
+
+const RetainedWorkerUpdateSchema = z.object({
+  sessionId: z.string().min(1),
+  localId: z.string().min(1),
+  update: WorkerUpdateV1Schema,
+}).strict();
+export type RetainedExecutionRunWorkerUpdate = z.infer<typeof RetainedWorkerUpdateSchema>;
+
+function resolveWorkerUpdateEntry(runId: string, localId: string): string {
+  // Encode the exact identities without path separators or ambiguous delimiters.
+  return `worker-update-${Buffer.from(JSON.stringify([runId, localId])).toString('base64url')}.sealed`;
+}
+
+function readWorkerUpdateEntryIdentity(entry: string): readonly [string, string] | null {
+  if (!entry.startsWith('worker-update-') || !entry.endsWith('.sealed')) return null;
+  try {
+    const parsed = z.tuple([z.string().min(1), z.string().min(1)]).safeParse(
+      JSON.parse(Buffer.from(entry.slice('worker-update-'.length, -'.sealed'.length), 'base64url').toString('utf8')),
+    );
+    if (!parsed.success || resolveWorkerUpdateEntry(...parsed.data) !== entry) return null;
+    return parsed.data;
+  } catch {
+    return null;
+  }
+}
+
+async function listWorkerUpdateEntries(): Promise<readonly string[]> {
+  try {
+    return (await readdir(resolveExecutionRunMarkerDir())).filter((entry) => readWorkerUpdateEntryIdentity(entry));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return [];
+    throw error;
+  }
+}
+
+/** Each terminal observation has immutable custody independent of the public run marker. */
+export async function retainExecutionRunWorkerUpdate(input: RetainedExecutionRunWorkerUpdate): Promise<void> {
+  const payload = RetainedWorkerUpdateSchema.parse(input);
+  if (payload.update.workerKind !== 'execution_run') throw new Error('Expected an execution-run worker update');
+  const storage = await readOrCreateDeviceLocalSecretStorage({ path: configuration.deviceLocalSecretKeyFile });
+  const path = join(resolveExecutionRunMarkerDir(), resolveWorkerUpdateEntry(payload.update.workerId, payload.localId));
+  const published = await publishProtectedLocalStateFileIfAbsent(path, storage.sealJson({
+    purpose: 'execution_run_worker_update', value: payload,
+  }), { authority: 'owned' });
+  if (!published) {
+    const retained = RetainedWorkerUpdateSchema.safeParse(storage.openJson({
+      purpose: 'execution_run_worker_update', ciphertext: await readProtectedLocalStateFile(path),
+    }));
+    if (!retained.success || JSON.stringify(retained.data) !== JSON.stringify(payload)) {
+      throw new Error('Execution-run worker update custody conflicts with the terminal observation');
+    }
+  }
+}
+
+export async function readPendingExecutionRunWorkerUpdates(): Promise<readonly RetainedExecutionRunWorkerUpdate[]> {
+  const entries = await listWorkerUpdateEntries();
+  if (!entries.length) return [];
+  const storage = await readOrCreateDeviceLocalSecretStorage({ path: configuration.deviceLocalSecretKeyFile });
+  const result: RetainedExecutionRunWorkerUpdate[] = [];
+  for (const entry of entries) {
+    const identity = readWorkerUpdateEntryIdentity(entry)!;
+    try {
+      const parsed = RetainedWorkerUpdateSchema.safeParse(storage.openJson({
+        purpose: 'execution_run_worker_update',
+        ciphertext: await readProtectedLocalStateFile(join(resolveExecutionRunMarkerDir(), entry)),
+      }));
+      if (!parsed.success || parsed.data.update.workerKind !== 'execution_run'
+        || parsed.data.update.workerId !== identity[0] || parsed.data.localId !== identity[1]) {
+        throw new Error('Retained terminal observation could not be opened');
+      }
+      result.push(parsed.data);
+    } catch (error) {
+      // An exact acceptance ACK can remove an entry between the directory scan and read.
+      if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') continue;
+      logger.warn('[executionRunRegistry] Retained worker update could not be opened', {
+        code: 'execution_run_worker_update_custody_unavailable', runId: identity[0],
+      });
+    }
+  }
+  return result;
+}
+
+/** Provider-acceptance ACK removes only the exact terminal observation it accepted. */
+export async function acknowledgeExecutionRunWorkerUpdate(input: RetainedExecutionRunWorkerUpdate): Promise<boolean> {
+  if (input.update.workerKind !== 'execution_run') return false;
+  const path = join(resolveExecutionRunMarkerDir(), resolveWorkerUpdateEntry(input.update.workerId, input.localId));
+  const storage = await readOrCreateDeviceLocalSecretStorage({ path: configuration.deviceLocalSecretKeyFile });
+  try {
+    const parsed = RetainedWorkerUpdateSchema.safeParse(storage.openJson({
+      purpose: 'execution_run_worker_update', ciphertext: await readProtectedLocalStateFile(path),
+    }));
+    if (!parsed.success || parsed.data.update.workerKind !== 'execution_run'
+      || parsed.data.update.workerId !== input.update.workerId
+      || parsed.data.localId !== input.localId || parsed.data.sessionId !== input.sessionId) return false;
+    await removeProtectedLocalStateFile(path);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return true;
+    throw error;
+  }
+}
 
 function resolveExecutionRunMarkerDir(): string {
   return join(
@@ -73,11 +182,11 @@ function shouldReplaceRecoveredMarker(params: Readonly<{
 
 function isTerminalMarker(marker: ExecutionRunMarker): boolean {
   if (marker.status !== 'running') return true;
-  return typeof (marker as any).finishedAtMs === 'number';
+  return typeof marker.finishedAtMs === 'number';
 }
 
 function isRunningMarker(marker: ExecutionRunMarker): boolean {
-  return marker.status === 'running' && typeof (marker as any).finishedAtMs !== 'number';
+  return marker.status === 'running' && typeof marker.finishedAtMs !== 'number';
 }
 
 async function shouldSkipOverwriteForTerminalMarker(filePath: string, next: ExecutionRunMarker): Promise<boolean> {
@@ -86,7 +195,8 @@ async function shouldSkipOverwriteForTerminalMarker(filePath: string, next: Exec
     const parsed = ExecutionRunMarkerPersistenceReadSchema.safeParse(JSON.parse(raw));
     if (!parsed.success) return false;
     if (parsed.data.happyHomeDir !== undefined && parsed.data.happyHomeDir !== configuration.happyHomeDir) return false;
-    if (isTerminalMarker(parsed.data) && isRunningMarker(next)) return true;
+    if (isTerminalMarker(parsed.data) && isRunningMarker(next)
+      && next.updatedAtMs <= parsed.data.updatedAtMs) return true;
   } catch {
     // ignore read/parse issues
   }
@@ -142,7 +252,7 @@ export async function writeExecutionRunMarker(marker: DaemonExecutionRunMarkerOw
   const dir = resolveExecutionRunMarkerDir();
   await mkdir(dir, { recursive: true });
 
-  const payload = ExecutionRunMarkerOwnerWriteSchema.parse(marker);
+  const { pendingWorkerUpdateCiphertext: _pending, ...payload } = ExecutionRunMarkerOwnerWriteSchema.parse(marker);
   await writeJsonAtomic(resolveExecutionRunMarkerPath(payload.runId), payload);
 }
 
@@ -188,6 +298,7 @@ export async function clearExecutionRunConnectedServicesCleanupReceipt(
   const current = await readExecutionRunMarkerFile(filePath);
   if (!current?.executionRunConnectedServicesCleanupReceiptV1) return;
   const {
+    pendingWorkerUpdateCiphertext: _pending,
     executionRunConnectedServicesCleanupReceiptV1: _cleanupReceipt,
     executionRunConnectedServicesLaunchV1: _legacyLaunch,
     happyHomeDir: _legacyHappyHomeDir,
@@ -244,6 +355,7 @@ function projectExecutionRunMarkerForPublication(
   const {
     executionRunConnectedServicesLaunchV1: _ownerLocalLaunch,
     executionRunConnectedServicesCleanupReceiptV1: _ownerLocalCleanupReceipt,
+    pendingWorkerUpdateCiphertext: _pendingWorkerUpdate,
     ...publicMarker
   } = marker;
   return ExecutionRunMarkerSchema.parse(publicMarker);
@@ -264,9 +376,12 @@ export async function gcExecutionRunMarkers(params: Readonly<{
   isPidSafeHappyProcess: (pid: number) => boolean | Promise<boolean>;
 }>): Promise<{ removedRunIds: string[] }> {
   const markers = await listExecutionRunMarkersRaw();
+  const pendingRunIds = new Set((await listWorkerUpdateEntries()).map((entry) => readWorkerUpdateEntryIdentity(entry)![0]));
   const removedRunIds: string[] = [];
 
   for (const marker of markers) {
+    // Pending parent delivery is retained terminal state, independent of process liveness or visibility TTL.
+    if (pendingRunIds.has(marker.runId)) continue;
     const isTerminal = typeof marker.finishedAtMs === 'number' || marker.status !== 'running';
     if (isTerminal && marker.executionRunConnectedServicesCleanupReceiptV1) {
       continue;

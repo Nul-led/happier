@@ -1,4 +1,5 @@
 import React from 'react';
+import { useConnectedAccountIdentityPrivacy } from '@/hooks/ui/useConnectedAccountIdentityPrivacy';
 
 import { t } from '@/text';
 import type { AgentInputExtraActionChip } from '@/components/sessions/agentInput/agentInputContracts';
@@ -155,6 +156,7 @@ export function useNewSessionConnectedServices(params: Readonly<{
    */
   emitWhenAllNative?: boolean;
   teamCredentialResources?: readonly TeamCredentialResourceCatalogEntryV1[];
+  teamCredentialResourceCurrentKeys?: ReadonlySet<string>;
   teamNameById?: Readonly<Record<string, string>>;
   router: { push: (path: any) => void };
   setAgentOptionStateForCurrentAgent: (key: string, value: unknown) => void;
@@ -165,6 +167,7 @@ export function useNewSessionConnectedServices(params: Readonly<{
 }>): NewSessionConnectedServicesResult {
   const { agentCore, connectedAccounts, agentOptionState, settings, targetServerId, router, setAgentOptionStateForCurrentAgent } = params;
   const accountProfile = useProfile();
+  const { present } = useConnectedAccountIdentityPrivacy();
   const connectedServicesRegistry = useProjectedConnectedServicesRegistry();
   const connectedServicesFeatureScope = React.useMemo<FeatureDecisionScopeParams | undefined>(() => {
     const trimmedTargetServerId = targetServerId?.trim() ?? '';
@@ -176,10 +179,12 @@ export function useNewSessionConnectedServices(params: Readonly<{
   const teamCredentialContextRef = React.useRef({
     serverId: targetServerId,
     resources: params.teamCredentialResources ?? [],
+    currentResourceKeys: params.teamCredentialResourceCurrentKeys,
   });
   teamCredentialContextRef.current = {
     serverId: targetServerId,
     resources: params.teamCredentialResources ?? [],
+    currentResourceKeys: params.teamCredentialResourceCurrentKeys,
   };
 
   const supportedConnectedServiceIds = React.useMemo<ReadonlyArray<ConnectedAccountServiceKey>>(() => (
@@ -192,10 +197,11 @@ export function useNewSessionConnectedServices(params: Readonly<{
         accounts: accountProfile?.connectedAccountsV4 ?? [],
         supportedServiceIds: supportedConnectedServiceIds,
         labelsByKey: settings.connectedServicesProfileLabelByKey,
+        presentIdentity: present,
       }),
       connectedAccounts,
     })
-  ), [accountProfile?.connectedAccountsV4, connectedAccounts, settings.connectedServicesProfileLabelByKey, supportedConnectedServiceIds]);
+  ), [accountProfile?.connectedAccountsV4, connectedAccounts, settings.connectedServicesProfileLabelByKey, supportedConnectedServiceIds, present]);
 
   const connectedServiceAccountGroupOptionsByServiceId = React.useMemo(() => (
     buildQualifiedConnectedAccountGroupOptionsByServiceId({
@@ -349,6 +355,8 @@ export function useNewSessionConnectedServices(params: Readonly<{
         deliveryMode: requestedTeamBinding.deliveryMode,
         selection: requestedTeamBinding,
         isCurrent: () => teamCredentialContextRef.current.serverId === startedServerId
+          && (teamCredentialContextRef.current.currentResourceKeys === undefined
+            || teamCredentialContextRef.current.currentResourceKeys.has(`${selectedResource.teamId}:${requestedTeamBinding.resourceId}`))
           && teamCredentialContextRef.current.resources.some((resource) => (
             resource.id === requestedTeamBinding.resourceId
             && resource.readiness.kind === 'available'
@@ -361,8 +369,10 @@ export function useNewSessionConnectedServices(params: Readonly<{
       if (outcome.kind !== 'continue') return;
       binding = outcome.selection;
       if (params.applyTeamCredentialPolicy
-        && !await params.applyTeamCredentialPolicy(selectedResource, () => (
-          teamCredentialContextRef.current.serverId === startedServerId
+          && !await params.applyTeamCredentialPolicy(selectedResource, () => (
+            teamCredentialContextRef.current.serverId === startedServerId
+          && (teamCredentialContextRef.current.currentResourceKeys === undefined
+            || teamCredentialContextRef.current.currentResourceKeys.has(`${selectedResource.teamId}:${selectedResource.id}`))
           && teamCredentialContextRef.current.resources.some((resource) => (
             resource.id === selectedResource.id
             && resource.resourceRevision === selectedResource.resourceRevision
@@ -436,6 +446,7 @@ export function useNewSessionConnectedServices(params: Readonly<{
       groupOptionsByServiceId={connectedServiceAccountGroupOptionsByServiceId}
       bindingsByServiceId={optimisticBindingsByServiceId}
       teamCredentialResources={params.teamCredentialResources}
+      teamCredentialResourceCurrentKeys={params.teamCredentialResourceCurrentKeys}
       teamNameById={params.teamNameById}
       onRecoverTeamCredentialResource={(resource) => {
         if (!targetServerId) return;
@@ -469,6 +480,7 @@ export function useNewSessionConnectedServices(params: Readonly<{
     settings.connectedServicesDefaultProfileByServiceId,
     supportedConnectedServiceIds,
     params.teamCredentialResources,
+    params.teamCredentialResourceCurrentKeys,
     params.teamNameById,
     targetServerId,
   ]);

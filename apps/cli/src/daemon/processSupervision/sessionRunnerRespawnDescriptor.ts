@@ -18,6 +18,7 @@ import {
   RuntimeDescriptorV1Schema,
   sealAccountScopedBlobCiphertext,
   SessionMcpSelectionV1Schema,
+  SessionCreationTagV1Schema,
   SessionModelSelectionV1Schema,
   SessionProviderBindingMetadataV1Schema,
   buildBackendTargetKeyV2,
@@ -39,7 +40,7 @@ import {
 import { HAPPIER_SESSION_CONNECTED_SERVICE_MATERIALIZATION_IDENTITY_ENV_KEY } from '@/agent/runtime/sessionConnectedServiceMaterializationIdentityEnv';
 import type { DeviceLocalSecretStorage } from '../deviceLocalSecretStorage';
 
-const TERMINAL_MODES = ['plain', 'tmux', 'zellij', 'windows_terminal', 'windows_console'] as const satisfies readonly TerminalMode[];
+const TERMINAL_MODES = ['plain', 'tmux', 'zellij', 'herdr', 'windows_terminal', 'windows_console'] as const satisfies readonly TerminalMode[];
 const SAFE_RESPAWN_ENVIRONMENT_VARIABLE_KEYS = [
   'CLAUDE_CONFIG_DIR',
   'CODEX_HOME',
@@ -73,6 +74,7 @@ const TerminalSpawnOptionsSchema: z.ZodType<TerminalSpawnOptions> = z
   .object({
     mode: z.enum(TERMINAL_MODES).optional(),
     tmux: TerminalTmuxSpawnOptionsSchema.optional(),
+    herdr: z.object({ sessionName: z.string().optional() }).optional(),
   })
   .passthrough();
 
@@ -330,6 +332,8 @@ export const SessionRunnerRespawnDescriptorSchema = z
   .object({
     version: z.union([z.literal(1), z.literal(2)]),
     directory: z.string(),
+    directoryKind: z.enum(['path', 'managed']).optional(),
+    sessionCreationTag: SessionCreationTagV1Schema.optional(),
     agentTarget: AgentExecutionTargetV1Schema.optional(),
     backendTarget: z.union([BackendTargetRefSchema, BackendTargetRefV2Schema]).optional(),
     backendTargetV2: BackendTargetRefV2Schema.optional(),
@@ -577,6 +581,8 @@ export function buildSessionRunnerRespawnDescriptorV1FromSpawnOptions(
   const descriptor: SessionRunnerRespawnDescriptor = {
     version: selectedProviderConnectionId ? 2 : 1,
     directory,
+    ...(spawnOptions.directoryKind ? { directoryKind: spawnOptions.directoryKind } : {}),
+    ...(spawnOptions.sessionCreationTag ? { sessionCreationTag: spawnOptions.sessionCreationTag } : {}),
     ...(spawnOptions.agentTarget ? { agentTarget: spawnOptions.agentTarget } : {}),
     ...(backendTarget ? { backendTarget } : {}),
     ...(backendTargetV2Shadow ? { backendTargetV2: backendTargetV2Shadow } : {}),
@@ -644,6 +650,8 @@ export function buildSpawnSessionOptionsFromRespawnDescriptorV1(
 
   return {
     directory: descriptor.directory,
+    ...(descriptor.directoryKind ? { directoryKind: descriptor.directoryKind } : {}),
+    ...(descriptor.sessionCreationTag ? { sessionCreationTag: descriptor.sessionCreationTag } : {}),
     ...(descriptor.agentTarget ? { agentTarget: descriptor.agentTarget } : {}),
     ...(backendTarget ? { backendTarget } : {}),
     ...(typeof descriptor.resume === 'string' ? { resume: descriptor.resume } : {}),
@@ -671,6 +679,6 @@ export function buildSpawnSessionOptionsFromRespawnDescriptorV1(
       : {}),
     ...(descriptor.mcpSelection ? { mcpSelection: descriptor.mcpSelection } : {}),
     ...(descriptor.runtimeDescriptorV1 ? { runtimeDescriptorV1: descriptor.runtimeDescriptorV1 } : {}),
-    approvedNewDirectoryCreation: true,
+    approvedNewDirectoryCreation: descriptor.directoryKind !== 'managed',
   };
 }

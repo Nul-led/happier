@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import type { TranscriptRowShellItem } from '@/components/sessions/transcript/measurement/transcriptRowShellSignature';
+import { collectTranscriptNavigationMessageIdsForItem } from '@/components/sessions/transcript/viewport/lifecycle/transcriptRowClassification';
 
 import type { TranscriptListOrientation } from '@/components/sessions/transcript/listOrientation';
 import {
@@ -59,6 +61,32 @@ function project(overrides: Partial<Parameters<typeof resolveTranscriptRenderWin
 }
 
 describe('resolveTranscriptRenderWindowProjection', () => {
+    it.each(['standard', 'inverted'] as const)('keeps an opaque island and grouped rows whole in %s orientation', (listOrientation) => {
+        const items: TranscriptRowShellItem[] = [
+            { kind: 'message', id: 'old-row', messageId: 'old', createdAt: 100, seq: null },
+            { kind: 'turn', id: 'turn', turn: { id: 'turn', userMessageId: null, content: [{ kind: 'tool_calls', id: 'tools', toolMessageIds: ['tail-tool'] }] } },
+            { kind: 'tool-group-tool', id: 'tool-unit', groupId: 'tools', toolMessageId: 'later-tool', toolMessageIds: ['tail-tool', 'later-tool'], expanded: true, createdAt: 1, seq: null },
+            { kind: 'message', id: 'tail-row', messageId: 'tail', createdAt: 0, seq: null },
+        ];
+        const projection = resolveTranscriptRenderWindowProjection({
+            createWindowGapItem: gapItem, items, listOrientation, sessionId: 'session-1', targetWindowState: inactiveWindow,
+            tailContiguousBoundary: { kind: 'messageIds', messageIds: ['tail-tool'] },
+            resolveMessageIds: collectTranscriptNavigationMessageIdsForItem,
+        });
+        const canonicalIds = ['transcript-window-gap:tail:older', 'turn', 'tool-unit', 'tail-row'];
+        expect(projection.listData.map((entry) => entry.id)).toEqual(listOrientation === 'inverted' ? [...canonicalIds].reverse() : canonicalIds);
+        expect(projection.indexMap.sourceIndexToRenderedIndex(0)).toBeNull();
+        expect(items.map((entry) => entry.id)).toEqual(['old-row', 'turn', 'tool-unit', 'tail-row']);
+    });
+
+    it('keeps the whole hosted island when a later grouped row has an earlier anchor sequence', () => {
+        const projection = project({
+            items: [item(1), item(5), item(3), item(6)],
+            tailContiguousBoundary: { kind: 'seq', seq: 5 },
+        });
+        expect(projection.listData.map((entry) => entry.id)).toEqual(['transcript-window-gap:tail:older', 'row-5', 'row-3', 'row-6']);
+    });
+
     it('keeps every row in one chronological renderer data projection', () => {
         const projection = project();
 

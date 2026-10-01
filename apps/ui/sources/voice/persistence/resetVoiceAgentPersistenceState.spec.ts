@@ -149,7 +149,7 @@ describe('resetVoiceAgentPersistenceState', () => {
 
         expect(stop).toHaveBeenCalledTimes(1);
         expect(patchSessionMetadataWithRetry).toHaveBeenCalledWith('sys_bound', expect.any(Function));
-        expect(stateRef.current.sessions.sys_bound.metadata.voiceAgentRunV1).toBeNull();
+        expect(stateRef.current.sessions.sys_bound.metadata).not.toHaveProperty('voiceAgentRunV1');
         expect(stateRef.current.sessions.sys_newer.metadata.voiceAgentRunV1).toMatchObject({
             runId: 'run_newer',
         });
@@ -168,7 +168,7 @@ describe('resetVoiceAgentPersistenceState', () => {
         await resetVoiceAgentPersistenceState({ stop });
 
         expect(patchSessionMetadataWithRetry).toHaveBeenCalledWith('sys_newer', expect.any(Function));
-        expect(stateRef.current.sessions.sys_newer.metadata.voiceAgentRunV1).toBeNull();
+        expect(stateRef.current.sessions.sys_newer.metadata).not.toHaveProperty('voiceAgentRunV1');
         expect(stateRef.current.sessions.sys_bound.metadata.voiceAgentRunV1).toMatchObject({
             runId: 'run_bound',
         });

@@ -48,7 +48,7 @@ const harness = vi.hoisted(() => {
         kind: string;
         params: Record<string, unknown>;
     }>;
-    type RecordedResult = Readonly<{ taskId: string; kind: string; data: Record<string, unknown> }>;
+    type RecordedResult = Readonly<{ taskId: string; kind: string; data: Record<string, unknown>; error?: Readonly<{ code: string; message: string }> }>;
 
     const runtime = {
         installed: false,
@@ -85,6 +85,9 @@ const harness = vi.hoisted(() => {
     let daemonStatusOverride: DaemonRuntime | null = null;
     /** When set, the override clears once the setup task approval succeeds (re-pair fixed the binding). */
     let daemonStatusClearsOnApproval = false;
+    /** When set, status reads FAIL with this task error (e.g. the CLI cannot tell which profile is this Home). */
+    let daemonStatusFailure: Readonly<{ code: string; message: string }> | null = null;
+    let setupFailureAfterApproval: Readonly<{ code: string; message: string }> | null = null;
     /** Render-time projection of the daemon-control hook; only readStatus() updates it (real-hook semantics). */
     const daemonControl: { status: Record<string, unknown> | null } = { status: null };
 
@@ -339,17 +342,32 @@ const harness = vi.hoisted(() => {
                         const data = { machineId: approved ? 'machine-home-b' : null };
                         recordedResults.push({ taskId, kind: spec.kind, data });
                         events.push(`task:${spec.kind}:result`);
+                        // This Home's own service is set up, but hsetup still fails the run (for
+                        // example one of the other services could not follow the CLI choice).
+                        const failure = approved ? setupFailureAfterApproval : null;
                         listeners.get(taskId)?.onResult({
                             protocolVersion: SYSTEM_TASK_PROTOCOL_VERSION,
                             taskId,
-                            ok: approved,
-                            ...(approved ? { data } : { error: { code: 'approval_required', message: 'Pairing was not approved.' } }),
+                            ok: approved && !failure,
+                            ...(failure
+                                ? { error: failure }
+                                : approved ? { data } : { error: { code: 'approval_required', message: 'Pairing was not approved.' } }),
                         });
                     })();
                     break;
                 }
                 case 'daemon.service.status.v1': {
                     events.push('daemon:status:read');
+                    if (daemonStatusFailure) {
+                        recordedResults.push({ taskId, kind: spec.kind, data: {}, error: daemonStatusFailure });
+                        listeners.get(taskId)?.onResult({
+                            protocolVersion: SYSTEM_TASK_PROTOCOL_VERSION,
+                            taskId,
+                            ok: false,
+                            error: daemonStatusFailure,
+                        });
+                        break;
+                    }
                     const data = daemonStatusData();
                     recordedResults.push({ taskId, kind: spec.kind, data: JSON.parse(JSON.stringify(data)) as Record<string, unknown> });
                     const listener = listeners.get(taskId);
@@ -395,10 +413,18 @@ const harness = vi.hoisted(() => {
         },
     });
 
-    async function readDaemonStatusThroughBridge(): Promise<Record<string, unknown> | null> {
+    async function readDaemonStatusThroughBridge(
+        scope: Readonly<{ relayUrl?: string | null }> = {},
+    ): Promise<Record<string, unknown> | null> {
         const bridge = makeManualBridge();
-        const taskId = await bridge.start({ kind: 'daemon.service.status.v1', params: {} });
-        return recordedResults.find((entry) => entry.taskId === taskId)?.data ?? null;
+        const taskId = await bridge.start({
+            kind: 'daemon.service.status.v1',
+            params: scope.relayUrl ? { relayUrl: scope.relayUrl } : {},
+        });
+        const recorded = recordedResults.find((entry) => entry.taskId === taskId);
+        // Mirrors the real hook: a FAILED status task rejects with its coded error.
+        if (recorded?.error) throw Object.assign(new Error(recorded.error.message), { code: recorded.error.code });
+        return recorded?.data ?? null;
     }
 
     const authGetTokenAtEndpoint = vi.fn(async (params: {
@@ -461,6 +487,12 @@ const harness = vi.hoisted(() => {
         setDaemonStatusOverride: (override: DaemonRuntime | null) => {
             daemonStatusOverride = override;
         },
+        setDaemonStatusFailure: (failure: Readonly<{ code: string; message: string }> | null) => {
+            daemonStatusFailure = failure;
+        },
+        setSetupFailureAfterApproval: (failure: Readonly<{ code: string; message: string }> | null) => {
+            setupFailureAfterApproval = failure;
+        },
         setDaemonStatusOverrideClearsOnApproval: () => {
             daemonStatusClearsOnApproval = true;
         },
@@ -485,6 +517,8 @@ const harness = vi.hoisted(() => {
             daemonRuntime.daemonMachineRegistered = null;
             daemonStatusOverride = null;
             daemonStatusClearsOnApproval = false;
+            daemonStatusFailure = null;
+            setupFailureAfterApproval = null;
             daemonControl.status = null;
             recordedSpecs.length = 0;
             recordedResults.length = 0;
@@ -603,6 +637,15 @@ const harness = vi.hoisted(() => {
     };
 });
 
+// Modal boundary: the account-move consent (R10 D1) is a user answer, supplied per test.
+const modalConsent = vi.hoisted(() => ({
+    confirm: vi.fn(async (..._args: unknown[]) => true),
+}));
+vi.mock('@/modal', async () => {
+    const { createModalModuleMock } = await import('@/dev/testkit/mocks/modal');
+    return createModalModuleMock({ spies: { confirm: (...args) => modalConsent.confirm(...args) } }).module;
+});
+
 // System-task bridge (process/native boundary): the REAL runner, spec builder and wait path stay
 // live above this mock; the bridge only records actual specs and moves the managed runtime state.
 vi.mock('@/components/systemTasks/createSystemTaskBridge', () => ({
@@ -620,8 +663,8 @@ vi.mock('@/components/settings/machines/localControl/useLocalDaemonControl', () 
         canStart: false,
         status: harness.daemonControl.status,
         refreshStatus: async () => null,
-        readStatus: async () => {
-            const next = await harness.readDaemonStatusThroughBridge();
+        readStatus: async (scope?: Readonly<{ relayUrl?: string | null }>) => {
+            const next = await harness.readDaemonStatusThroughBridge(scope);
             harness.daemonControl.status = next;
             return next;
         },
@@ -973,7 +1016,10 @@ describe('usePersonalHomeBootstrapRuntime system-task composition', () => {
 
         // --- Post-shell daemon composition: one explicit setup.thisComputer.v1 for B. ---
         harness.markBootstrapStarted();
+        modalConsent.confirm.mockClear();
         await runHookOperation(() => hook.getCurrent().operations['prepare-computer']!(facts));
+        // R10 D1: re-pairing a daemon signed in to another account asked once, naming both.
+        expect(modalConsent.confirm).toHaveBeenCalledTimes(1);
 
         // 8. Exactly one explicit setup task, carrying the explicit Home B URLs independent of
         //    the still-focused Home A, with the full configure/auth/pair/install/start/verify scope.
@@ -1012,6 +1058,8 @@ describe('usePersonalHomeBootstrapRuntime system-task composition', () => {
         expect(firstPostSetupStatusIndex).toBeGreaterThan(setupResultIndex);
         const recordedSpecs = harness.recordedSpecs();
         const lastStatusSpec = recordedSpecs[statusTaskIndexes.at(-1)!];
+        // D3: readiness reads this Home's own pinned daemon, not the terminal's active server.
+        expect(lastStatusSpec.params.relayUrl).toBe(harness.CANONICAL_SERVER_URL);
         const readback = harness.resultForTask(lastStatusSpec.taskId);
         expect(readback).toMatchObject({
             serviceInstalled: true,
@@ -1126,6 +1174,143 @@ describe('usePersonalHomeBootstrapRuntime system-task composition', () => {
             servesPersonalHome: false,
         });
         expect(derivePersonalHomeBootstrapSnapshot(factsAfterFailure).daemonReady).toBe(false);
+        await hook.unmount();
+    });
+
+    // U7 + R10 D1: automatic preparation on launch never moves a daemon the user signed in to
+    // another Home or account. It reports the shared, coded fact instead, and mutates nothing.
+    it('never re-targets a daemon signed in elsewhere automatically; it reports the coded fact instead', async () => {
+        const profiles = await import('@/sync/domains/server/serverProfiles');
+        const focusedHome = await profiles.upsertServerProfile({
+            serverUrl: 'https://home-a.example',
+            name: 'Focused Home A',
+            source: 'manual',
+        });
+        await profiles.setActiveServerId(focusedHome.id);
+
+        const { usePersonalHomeBootstrapRuntime } = await import('./usePersonalHomeBootstrapRuntime');
+        const hook = await renderHook(() => usePersonalHomeBootstrapRuntime());
+        harness.markBootstrapStarted();
+        await runHookOperation(() => hook.getCurrent().operations['ensure-home-ready']!(initialFacts));
+
+        harness.setDaemonStatusOverride({
+            serviceInstalled: true,
+            daemonRunning: true,
+            needsAuth: false,
+            machineId: 'machine-home-a',
+            daemonServerUrl: 'https://home-a.example',
+            daemonComparableKey: 'https://home-a.example',
+            daemonAccountId: 'acct_home_a',
+            daemonMachineRegistered: true,
+        });
+        const facts = await runHookOperation(() => hook.getCurrent().readFacts());
+        const setupCountBefore = harness.recordedSpecs().filter((spec) => spec.kind === 'setup.thisComputer.v1').length;
+        modalConsent.confirm.mockClear();
+
+        let failure: unknown = null;
+        try {
+            await runHookOperation(() => hook.getCurrent().operations['prepare-computer']!(facts, { trigger: 'automatic' }));
+        } catch (error) {
+            failure = error;
+        }
+
+        expect(failure).toMatchObject({
+            code: 'daemon_url_mismatch',
+            thisComputer: expect.objectContaining({
+                status: 'daemon_url_mismatch',
+                daemonHomeLabel: 'https://home-a.example',
+            }),
+        });
+        expect(modalConsent.confirm).not.toHaveBeenCalled();
+        expect(harness.recordedSpecs().filter((spec) => spec.kind === 'setup.thisComputer.v1')).toHaveLength(setupCountBefore);
+        await hook.unmount();
+    });
+
+    // RV2-30: a status read that FAILED (here the CLI cannot tell which saved profile is this Home)
+    // is not "no daemon yet": it is reported as blocked, and never starts an automatic setup run.
+    it('reports a failed daemon status read as blocked and never starts setup from it', async () => {
+        const { usePersonalHomeBootstrapRuntime } = await import('./usePersonalHomeBootstrapRuntime');
+        const hook = await renderHook(() => usePersonalHomeBootstrapRuntime());
+        harness.markBootstrapStarted();
+        await runHookOperation(() => hook.getCurrent().operations['ensure-home-ready']!(initialFacts));
+
+        harness.setDaemonStatusFailure({ code: 'server_profile_ambiguous', message: 'The Happier CLI has 2 saved profiles for this Home.' });
+        const facts = await runHookOperation(() => hook.getCurrent().readFacts());
+        expect(facts.daemon).toMatchObject({ error: 'The Happier CLI has 2 saved profiles for this Home.' });
+
+        const setupCountBefore = harness.recordedSpecs().filter((spec) => spec.kind === 'setup.thisComputer.v1').length;
+        let failure: unknown = null;
+        try {
+            await runHookOperation(() => hook.getCurrent().operations['prepare-computer']!(facts, { trigger: 'automatic' }));
+        } catch (error) {
+            failure = error;
+        }
+        expect(failure).toMatchObject({ code: 'server_profile_ambiguous' });
+        expect(harness.recordedSpecs().filter((spec) => spec.kind === 'setup.thisComputer.v1')).toHaveLength(setupCountBefore);
+        await hook.unmount();
+    });
+
+    // R12: a status read that failed because nobody chose who manages this computer's `happier`
+    // yet is not a blocking fact: setup's first step asks exactly that, so preparation starts it.
+    it('routes a status read that needs the one-CLI answer into setup, whose first step asks it', async () => {
+        const { usePersonalHomeBootstrapRuntime } = await import('./usePersonalHomeBootstrapRuntime');
+        const hook = await renderHook(() => usePersonalHomeBootstrapRuntime());
+        harness.markBootstrapStarted();
+        await runHookOperation(() => hook.getCurrent().operations['ensure-home-ready']!(initialFacts));
+
+        harness.setDaemonStatusFailure({
+            code: 'cli_choice_required',
+            message: 'Choose who manages the Happier CLI at /usr/local/bin/happier before setup continues.',
+        });
+        const facts = await runHookOperation(() => hook.getCurrent().readFacts());
+        expect(facts.daemon?.error).toBeUndefined();
+        const { derivePersonalHomeBootstrapSnapshot } = await import('./derivePersonalHomeBootstrapSnapshot');
+        expect(derivePersonalHomeBootstrapSnapshot(facts).daemonState).not.toBe('blocked');
+
+        const setupCountBefore = harness.recordedSpecs().filter((spec) => spec.kind === 'setup.thisComputer.v1').length;
+        await runHookOperation(() => hook.getCurrent().operations['prepare-computer']!(facts, { trigger: 'automatic' })).catch(() => {});
+        expect(harness.recordedSpecs().filter((spec) => spec.kind === 'setup.thisComputer.v1').length).toBe(setupCountBefore + 1);
+        await hook.unmount();
+    });
+
+    it('keeps a partly applied CLI switch recoverable: the failure keeps its code, and Retry re-converges instead of reading ready', async () => {
+        const { usePersonalHomeBootstrapRuntime } = await import('./usePersonalHomeBootstrapRuntime');
+        const hook = await renderHook(() => usePersonalHomeBootstrapRuntime());
+        harness.markBootstrapStarted();
+        await runHookOperation(() => hook.getCurrent().operations['ensure-home-ready']!(initialFacts));
+
+        // The answer is recorded and this Home's service switched, but another service did not follow.
+        const convergenceFailure = {
+            code: 'cli_choice_service_convergence_failed',
+            message: "This computer's background services could not all be moved to the chosen Happier CLI: happier-daemon.default (systemctl failed)",
+        };
+        harness.setSetupFailureAfterApproval(convergenceFailure);
+        const facts = await runHookOperation(() => hook.getCurrent().readFacts());
+        let failure: unknown = null;
+        try {
+            await runHookOperation(() => hook.getCurrent().operations['prepare-computer']!(facts, { trigger: 'automatic' }));
+        } catch (error) {
+            failure = error;
+        }
+        // The typed task error survives into recovery, not just its text.
+        expect(failure).toMatchObject({ code: 'cli_choice_service_convergence_failed' });
+
+        // Retry: this Home's daemon now reads ready, yet the retry reruns the convergence with the
+        // recorded choice instead of taking the readiness fast path.
+        harness.setSetupFailureAfterApproval(null);
+        const retryFacts = await runHookOperation(() => hook.getCurrent().readFacts());
+        const setupCountBefore = harness.recordedSpecs().filter((spec) => spec.kind === 'setup.thisComputer.v1').length;
+        await runHookOperation(() => hook.getCurrent().operations['prepare-computer']!(retryFacts, {
+            trigger: 'retry',
+            previousErrorCode: 'cli_choice_service_convergence_failed',
+        }));
+        const setupSpecs = harness.recordedSpecs().filter((spec) => spec.kind === 'setup.thisComputer.v1');
+        expect(setupSpecs).toHaveLength(setupCountBefore + 1);
+        expect(setupSpecs.at(-1)?.params).toMatchObject({ convergeCliChoice: true });
+
+        // An ordinary retry of a ready daemon still takes the fast path.
+        await runHookOperation(() => hook.getCurrent().operations['prepare-computer']!(retryFacts, { trigger: 'retry' }));
+        expect(harness.recordedSpecs().filter((spec) => spec.kind === 'setup.thisComputer.v1')).toHaveLength(setupCountBefore + 1);
         await hook.unmount();
     });
 

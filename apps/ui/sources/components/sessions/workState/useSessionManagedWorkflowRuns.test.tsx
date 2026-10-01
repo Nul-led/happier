@@ -51,6 +51,15 @@ const accountScope = vi.hoisted(() => {
     };
 });
 
+/** The canonical Workflows decision this contextual reader answers. */
+const featureDecisions = vi.hoisted(() => ({
+    workflows: { state: 'enabled' } as Record<string, unknown> | null,
+}));
+vi.mock('@/hooks/server/useFeatureDecision', () => ({
+    useFeatureDecision: (featureId: string) => (
+        featureId === 'workflows' ? featureDecisions.workflows : { state: 'enabled' }
+    ),
+}));
 vi.mock('@/sync/domains/workflows/workflowRunListActions', () => ({
     listWorkflowRuns: listRuns,
 }));
@@ -131,6 +140,7 @@ async function renderHook(sessionId: string | null = 'session-1') {
 }
 
 beforeEach(() => {
+    featureDecisions.workflows = { state: 'enabled' };
     latest = null;
     probeRenders = 0;
     storeState.reset();
@@ -147,7 +157,7 @@ describe('useSessionManagedWorkflowRuns', () => {
         const running = createWorkflowRunSummaryFixture({
             id: 'run-1', state: 'running', revision: 1, origin: { kind: 'direct', originSessionId: 'session-1' },
         });
-        listRuns.mockImplementation(async (params) => (
+        listRuns.mockImplementation(async (params): Promise<WorkflowRunListPage> => (
             params.filter?.attention === 'required'
                 ? { runs: [], metadataByRunId: {}, nextCursor: undefined }
                 : { runs: [running], metadataByRunId: { 'run-1': { kind: 'available', value: { title: 'Nightly review' } } }, nextCursor: undefined }
@@ -173,6 +183,27 @@ describe('useSessionManagedWorkflowRuns', () => {
     });
 
     /**
+     * A contextual Session surface is not a second place the feature can be
+     * on. It answers the same canonical decision the dedicated Workflow routes
+     * do and fails closed while that decision is unresolved, so a Home without
+     * Workflows neither reads managed Runs nor links to them — while the
+     * Session's ordinary one-shot Automations are untouched.
+     */
+    it.each([
+        ['disabled', { state: 'disabled', blockedBy: 'server' }],
+        ['unknown', { state: 'unknown' }],
+        ['unresolved', null],
+    ] as const)('reads no managed Run on a %s Workflows decision', async (_label, decision) => {
+        featureDecisions.workflows = decision as Record<string, unknown> | null;
+        listRuns.mockResolvedValue({ runs: [], metadataByRunId: {}, nextCursor: undefined });
+
+        await renderHook();
+
+        expect(listRuns).not.toHaveBeenCalled();
+        expect(latest?.runs).toEqual([]);
+    });
+
+    /**
      * Every Run this Account has read shares one map. A Session section that
      * read the map rerendered for every other Run's exact refresh — including
      * the ones a Run screen settles controls on while this transcript is open.
@@ -181,7 +212,7 @@ describe('useSessionManagedWorkflowRuns', () => {
         const running = createWorkflowRunSummaryFixture({
             id: 'run-1', state: 'running', revision: 1, origin: { kind: 'direct', originSessionId: 'session-1' },
         });
-        listRuns.mockImplementation(async (params) => (
+        listRuns.mockImplementation(async (params): Promise<WorkflowRunListPage> => (
             params.filter?.attention === 'required'
                 ? { runs: [], metadataByRunId: {}, nextCursor: undefined }
                 : {
@@ -222,7 +253,7 @@ describe('useSessionManagedWorkflowRuns', () => {
         const running = createWorkflowRunSummaryFixture({
             id: 'run-1', state: 'running', revision: 1, origin: { kind: 'direct', originSessionId: 'session-1' },
         });
-        listRuns.mockImplementation(async (params) => (
+        listRuns.mockImplementation(async (params): Promise<WorkflowRunListPage> => (
             params.filter?.attention === 'required'
                 ? { runs: [], metadataByRunId: {}, nextCursor: undefined }
                 : { runs: [running], metadataByRunId: {}, nextCursor: undefined }
@@ -234,7 +265,7 @@ describe('useSessionManagedWorkflowRuns', () => {
         // A later approval on an off-page invocation: the server's attention
         // predicate is the only owner of that fact, and the wake is how the
         // client learns to ask again.
-        listRuns.mockImplementation(async (params) => (
+        listRuns.mockImplementation(async (params): Promise<WorkflowRunListPage> => (
             params.filter?.attention === 'required'
                 ? { runs: [running], metadataByRunId: {}, nextCursor: undefined }
                 : { runs: [running], metadataByRunId: {}, nextCursor: undefined }
@@ -273,7 +304,7 @@ describe('useSessionManagedWorkflowRuns', () => {
             id: 'run-off-page', state: 'interrupted', revision: 4,
             origin: { kind: 'direct', originSessionId: 'session-1' },
         });
-        listRuns.mockImplementation(async (params) => (
+        listRuns.mockImplementation(async (params): Promise<WorkflowRunListPage> => (
             params.filter?.attention === 'required'
                 ? {
                     runs: [offPage],

@@ -10,11 +10,11 @@ vi.mock('@/sync/domains/sessionHandoff/useWorkspaceSyncRelationshipSummaries', (
 }));
 
 describe('createWorkspaceSyncConflictDetailsTab', () => {
-    it('binds local and remote conflict actions to the workspace that opened the details tab', async () => {
+    it('opens the canonical set resource from either endpoint without persisting root authority', async () => {
         const { createWorkspaceSyncConflictDetailsTab } = await import('./workspaceSyncConflictDetailsTab');
         const summary = {
             relationshipId: 'relationship-1',
-            relationship: { mode: 'keep_both_in_sync', enabled: true },
+            relationship: { mode: 'keep_both_in_sync', controllerMachineId: 'machine-alpha', enabled: true },
             alpha: {
                 workspaceRefId: 'workspace-alpha',
                 label: 'Alpha',
@@ -36,21 +36,15 @@ describe('createWorkspaceSyncConflictDetailsTab', () => {
         } as Parameters<typeof createWorkspaceSyncConflictDetailsTab>[0];
 
         const fromBeta = createWorkspaceSyncConflictDetailsTab(summary, 'workspace-beta');
+        const fromAlpha = createWorkspaceSyncConflictDetailsTab(summary, 'workspace-alpha');
 
-        expect(fromBeta.resource).toEqual(expect.objectContaining({
-            localSide: 'beta',
-            alpha: {
-                label: 'Alpha',
-                machineId: 'machine-alpha',
-                machineName: 'Alpha Mac',
-                rootPath: '/work/alpha',
-            },
-            beta: {
-                label: 'Beta',
-                machineId: 'machine-beta',
-                machineName: 'Beta workstation',
-                rootPath: '/work/beta',
-            },
-        }));
+        expect(fromBeta.key).toBe(fromAlpha.key);
+        expect(fromBeta.resource).toEqual({
+            kind: 'workspaceSyncConflicts',
+            hubWorkspaceRefId: 'workspace-alpha',
+            workspaceRefId: 'workspace-beta',
+            controllerMachineId: 'machine-alpha',
+            serverId: 'server-1',
+        });
     });
 });

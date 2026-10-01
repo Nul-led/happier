@@ -17,6 +17,8 @@ import {
     getActiveAccountSettingsSnapshot,
 } from '@/settings/accountSettings/activeAccountSettingsSnapshot';
 import { deepEqual } from '@/utils/deterministicJson';
+import { fetchSessionById } from '@/session/transport/http/sessionsHttp';
+import { resolveServerHttpBaseUrl } from '@/session/transport/http/serverHttpBaseUrl';
 
 type PublishExternalAgentObservationFieldInput = Readonly<{
     sessionId: string;
@@ -75,6 +77,7 @@ function hasSameDurableObservationLink(
 
 async function dispatchExternalSessionReadyNotification(
     input: ReadyNotificationInput,
+    home: Readonly<{ token: string; serverUrl: string }>,
 ): Promise<void> {
     const settings = getActiveAccountSettingsSnapshot();
     if (!settings || settings.source === 'none') {
@@ -83,6 +86,9 @@ async function dispatchExternalSessionReadyNotification(
     await dispatchActivityNotificationAsync({
         settings: settings.settings,
         settingsSecretsReadKeys: settings.settingsSecretsReadKeys,
+        fetchSessionNotificationContext: (sessionId) => fetchSessionById({
+            ...home, sessionId, accessProjectionVersion: 1,
+        }),
         event: {
             topic: 'ready',
             sessionId: input.sessionId,
@@ -106,18 +112,21 @@ export function createExternalAgentObservationFieldPublisher(
         params.readCredentials ?? readStoredCredentials;
     const updateMetadata = params.updateMetadataForTarget
         ?? updateSessionMetadataForTarget;
-    const dispatchReadyNotification = params.dispatchReadyNotification
-        ?? dispatchExternalSessionReadyNotification;
 
     return async (
         input: PublishExternalAgentObservationFieldInput,
     ): Promise<void> => {
+        const serverUrl = resolveServerHttpBaseUrl();
         const credentials = await readCurrentCredentials();
         if (!credentials) {
             throw new Error(
                 'External Agent observation publication requires authentication',
             );
         }
+        const dispatchReadyNotification = params.dispatchReadyNotification
+            ?? ((notification: ReadyNotificationInput) => dispatchExternalSessionReadyNotification(
+                notification, { token: credentials.token, serverUrl },
+            ));
 
         let reservedBoundaryId: string | null = null;
         const result = await updateMetadata({

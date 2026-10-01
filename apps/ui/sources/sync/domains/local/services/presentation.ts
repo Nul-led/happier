@@ -78,7 +78,8 @@ export function selectLocalServiceServiceCounts(input: Readonly<{
 
 /**
  * Returns the launch target itself when its service is openable in the browser —
- * i.e. it carries a daemon-projected `browserTarget` and is not `unavailable`.
+ * i.e. it carries a daemon-projected `browserTarget` or a private-preview registration
+ * action and is not `unavailable`.
  * Returns `null` otherwise so callers render no open affordance (fail-closed).
  *
  * Openability is judged purely from the **service** launch target. This helper
@@ -92,7 +93,7 @@ export function resolveLocalServiceOpenableTarget(
     if (target.state === 'unavailable') {
         return null;
     }
-    return target.browserTarget ? target : null;
+    return target.browserTarget || target.actions.includes('register_preview') ? target : null;
 }
 
 /**
@@ -138,4 +139,3 @@ export function isLocalServiceRowAttributedToSession(
     }
     return readRowSessionId(row) === sessionId;
 }
-

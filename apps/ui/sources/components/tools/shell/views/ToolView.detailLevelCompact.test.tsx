@@ -1,7 +1,7 @@
+import { renderWithSessionTranscriptSource } from '@/dev/testkit';
 import React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-    renderScreen,
     standardCleanup,
 } from '@/dev/testkit';
 
@@ -110,7 +110,7 @@ describe('ToolView (detail level: compact)', () => {
 
         const tool = makeToolCall({ name: 'edit', state: 'running', input: {}, description: null, result: { ok: true } });
 
-        const screen = await renderScreen(React.createElement(ToolView, { tool, metadata: null, messages: [] }));
+        const screen = await renderWithSessionTranscriptSource(React.createElement(ToolView, { tool, metadata: null, messages: [] }));
 
         expect(screen.findAllByTestId('tool-card-subtitle')).toHaveLength(0);
         expect(collectHostText(screen.tree).join(' ')).toContain('file.ts');

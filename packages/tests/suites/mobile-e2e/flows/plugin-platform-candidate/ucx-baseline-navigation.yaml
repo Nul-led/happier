@@ -17,7 +17,7 @@ appId: ${HAPPIER_E2E_MOBILE_APP_ID}
 - openLink: ${HAPPIER_E2E_MOBILE_APP_SCHEME}:///
 - extendedWaitUntil:
     visible:
-      id: main-header-start-new-session
+      id: tabbar-start-new-session
     timeout: 120000
 - runFlow:
     file: ../_shared/gotoNewSessionComposer.yaml
@@ -65,30 +65,24 @@ appId: ${HAPPIER_E2E_MOBILE_APP_ID}
     visible:
       id: settings.voice.privacy.currentUiContextMode
     timeout: 120000
-- tapOn:
-    id: settings.voice.privacy.currentUiContextMode
 - extendedWaitUntil:
     visible:
-      id: dropdown-option-off
+      id: "settings.voice.privacy.currentUiContextMode:off"
     timeout: 120000
 - tapOn:
-    id: dropdown-option-off
-- tapOn:
-    id: settings.voice.privacy.currentUiContextMode
+    id: "settings.voice.privacy.currentUiContextMode:off"
 - extendedWaitUntil:
     visible:
-      id: dropdown-option-automatic
+      id: "settings.voice.privacy.currentUiContextMode:automatic"
     timeout: 120000
 - tapOn:
-    id: dropdown-option-automatic
-- tapOn:
-    id: settings.voice.privacy.currentUiContextMode
+    id: "settings.voice.privacy.currentUiContextMode:automatic"
 - extendedWaitUntil:
     visible:
-      id: dropdown-option-on_demand
+      id: "settings.voice.privacy.currentUiContextMode:on_demand"
     timeout: 120000
 - tapOn:
-    id: dropdown-option-on_demand
+    id: "settings.voice.privacy.currentUiContextMode:on_demand"
 
 # The public packed contributor is the only current native plugin-page handoff
 # in this harness. Normal Triage and built-in Voice remain separate loaded

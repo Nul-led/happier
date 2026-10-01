@@ -48,6 +48,7 @@ import {
 import type { SessionCatchUpRequest } from '../../sessionChangesSyncOnConnect';
 import {
     coerceSessionUserPromptV1,
+    SessionInputAdmissionReceiptV1Schema,
     assertSessionInputAdmissionReceiptForRequest,
     PENDING_INPUT_PROTOCOL_VERSION_V3,
     SESSION_INPUT_REQUEST_META_KEY,
@@ -123,6 +124,7 @@ function createMaterializedPendingQueueUpdate(params: {
                 id: syntheticMessageId,
                 seq: message.seq,
                 content: message.content,
+                inputAdmissionReceipt: message.inputAdmissionReceipt,
                 localId: message.localId,
                 createdAt,
                 updatedAt,
@@ -137,6 +139,8 @@ function readMaterializedPendingUserMessage(params: Readonly<{
 }> & SessionStoredContentCryptoContext): UserMessage | null {
     const message = params.message;
     if (!message?.content) return null;
+    const inputAdmissionReceipt = SessionInputAdmissionReceiptV1Schema.safeParse(message.inputAdmissionReceipt);
+    if (message.inputAdmissionReceipt != null && !inputAdmissionReceipt.success) return null;
     let body: unknown;
     try {
         body = openSessionMessageContent({ ...params, content: message.content });
@@ -145,6 +149,7 @@ function readMaterializedPendingUserMessage(params: Readonly<{
     }
     const bodyWithTransportFields = {
         ...(body && typeof body === 'object' && !Array.isArray(body) ? body : {}),
+        callerInputConstraints: inputAdmissionReceipt.success ? inputAdmissionReceipt.data.callerInputConstraints : undefined,
         ...(message.localId ? { localId: message.localId } : {}),
         ...(typeof message.createdAt === 'number' ? { createdAt: message.createdAt } : {}),
     };
@@ -154,6 +159,7 @@ function readMaterializedPendingUserMessage(params: Readonly<{
     if (!coerced) return null;
     const candidate = UserMessageSchema.safeParse({
         role: 'user',
+        callerInputConstraints: bodyWithTransportFields.callerInputConstraints,
         content: { type: 'text', text: coerced.text },
         ...(message.localId ? { localId: message.localId } : {}),
         ...(typeof message.createdAt === 'number' ? { createdAt: message.createdAt } : {}),

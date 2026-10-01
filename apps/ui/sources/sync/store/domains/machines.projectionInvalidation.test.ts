@@ -176,6 +176,22 @@ describe('machines domain: contribution projection currentness', () => {
         });
     });
 
+    it('does not treat the first observation of a machine as a replaced daemon', async () => {
+        const { createMachinesDomain, revision } = await loadMachinesDomain();
+        const { domain } = createHarness(createMachinesDomain);
+        const scope = { machineId: 'm-1', serverId: 'server_a' } as const;
+
+        // A reader that described before the machine list arrived already
+        // asked the daemon the list now reports: nothing to re-describe.
+        domain.applyMachines([makeMachine({ daemonStateVersion: 4 })], true, { sourceServerId: 'server_a' });
+        expect(revision.getMachineContributionRegistryProjectionRevision(scope)).toBe(0);
+
+        // A full reload that reports a newer daemon on the known machine is a
+        // replacement and still advances.
+        domain.applyMachines([makeMachine({ daemonStateVersion: 6, updatedAt: 30 })], true, { sourceServerId: 'server_a' });
+        expect(revision.getMachineContributionRegistryProjectionRevision(scope)).toBe(1);
+    });
+
     it('leaves the projection revision alone for an equal or stale daemon state', async () => {
         const { createMachinesDomain, revision } = await loadMachinesDomain();
         const { domain } = createHarness(createMachinesDomain);

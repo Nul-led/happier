@@ -351,87 +351,6 @@ describe('voiceAgentTurnStreams', () => {
     }
   });
 
-  it('drops the external stream identity after a terminal read so replay and cancel are rejected', async () => {
-    const voiceAgentManager = {
-      readTurnStream: vi.fn(async ({ streamId, cursor }: { streamId: string; cursor: number }) => ({
-        streamId,
-        events: cursor === 0 ? [{
-          t: 'voice_output',
-          output: { v: 1, kind: 'turn_final', turnId: 'internal-stream-1', seq: 0, text: 'assistant reply' },
-        }] : [],
-        nextCursor: cursor + 1,
-        done: true,
-      })),
-      cancelTurnStream: vi.fn(async ({ streamId }: { streamId: string }) => {
-        expect(streamId).toBe('internal-stream-1');
-        return { ok: true as const };
-      }),
-    } as unknown as VoiceAgentManager;
-
-    const run = {
-      status: 'running',
-      intent: 'voice_agent',
-      ioMode: 'streaming',
-    } as ExecutionRunState;
-    const ctrl = createVoiceAgentController();
-    ctrl.transcript = { persistenceMode: 'ephemeral', epoch: 7 };
-    ctrl.externalStreamIdByInternal.set('internal-stream-1', 'stream_external');
-    ctrl.internalStreamIdByExternal.set('stream_external', 'internal-stream-1');
-    const runs = new Map<string, ExecutionRunState>([['run_1', run]]);
-    const controllers = new Map<string, ExecutionRunVoiceAgentController>([['run_1', ctrl]]);
-
-    const firstRead = await readVoiceAgentTurnStream({
-      runId: 'run_1',
-      params: { streamId: 'stream_external', cursor: 0 },
-      runs,
-      controllers,
-      voiceAgentManager,
-      transcriptWriter: { commitVoiceAgentTranscriptTurn: vi.fn() },
-      writeActivityMarker: vi.fn(async () => undefined),
-      getNowMs: () => 123,
-    });
-
-    if (!firstRead.ok) {
-      throw new Error(firstRead.error);
-    }
-    expect(firstRead).toMatchObject({
-      ok: true,
-      done: true,
-      streamId: 'stream_external',
-    });
-
-    const replayRead = await readVoiceAgentTurnStream({
-      runId: 'run_1',
-      params: { streamId: 'stream_external', cursor: firstRead.nextCursor },
-      runs,
-      controllers,
-      voiceAgentManager,
-      transcriptWriter: { commitVoiceAgentTranscriptTurn: vi.fn() },
-      writeActivityMarker: vi.fn(async () => undefined),
-      getNowMs: () => 123,
-    });
-
-    expect(replayRead).toMatchObject({
-      ok: false,
-      errorCode: 'execution_run_stream_not_found',
-    });
-
-    const cancel = await cancelVoiceAgentTurnStream({
-      runId: 'run_1',
-      params: { streamId: 'stream_external' },
-      runs,
-      controllers,
-      voiceAgentManager,
-    });
-
-    expect(cancel).toMatchObject({
-      ok: false,
-      errorCode: 'execution_run_stream_not_found',
-    });
-    expect(voiceAgentManager.readTurnStream).toHaveBeenCalledTimes(1);
-    expect(voiceAgentManager.cancelTurnStream).toHaveBeenCalledTimes(0);
-  });
-
   it('does not persist either side of a persistent turn that is cancelled', async () => {
     const userTextCommitted = vi.fn(async (_text: string, _meta: Record<string, unknown>) => undefined);
     const assistantTextCommitted = vi.fn(async () => undefined);
@@ -677,6 +596,37 @@ describe('voiceAgentTurnStreams', () => {
       assistant: expect.objectContaining({ text: 'assistant reply' }),
     }));
     expect(ctrl.pendingTranscriptTurnByExternalStreamId.size).toBe(0);
+
+    // The public iterator releases a stream after receiving its terminal page.
+    // Release must not try to cancel the already-completed provider turn.
+    await expect(cancelVoiceAgentTurnStream({
+      runId: 'run_1',
+      params: { streamId: 'stream_foreign' },
+      runs,
+      controllers,
+      voiceAgentManager: manager,
+    })).resolves.toMatchObject({ ok: false, errorCode: 'execution_run_stream_not_found' });
+    await expect(cancelVoiceAgentTurnStream({
+      runId: 'run_1',
+      params: { streamId: started.streamId },
+      runs,
+      controllers,
+      voiceAgentManager: manager,
+    })).resolves.toEqual({ ok: true });
+    expect(ctrl.internalStreamIdByExternal.size).toBe(0);
+    expect(ctrl.externalStreamIdByInternal.size).toBe(0);
+    expect(ctrl.terminalReadByExternalStreamId.size).toBe(0);
+    expect(durableCommit).toHaveBeenCalledTimes(1);
+    await expect(readVoiceAgentTurnStream({
+      runId: 'run_1',
+      params: { streamId: started.streamId, cursor },
+      runs,
+      controllers,
+      voiceAgentManager: manager,
+      transcriptWriter: { commitVoiceAgentTranscriptTurn: durableCommit },
+      writeActivityMarker: marker,
+      getNowMs: () => 123,
+    })).resolves.toMatchObject({ ok: false, errorCode: 'execution_run_stream_not_found' });
 
     // A new stream can be cancelled through the same real manager without
     // ever handing a transcript pair to the durable boundary.

@@ -19,6 +19,7 @@ describe('registerSessionCreationTargetPreparationRpc', () => {
     const prepare = vi.fn(async () => ({
       ok: true as const,
       directory: '/repo',
+      directoryKind: 'path' as const,
       directoryCreationRequired: false,
       checkout: null,
     }));
@@ -29,16 +30,17 @@ describe('registerSessionCreationTargetPreparationRpc', () => {
     const signal = new AbortController().signal;
 
     await expect(registered.get(RPC_METHODS.DAEMON_SESSION_CREATION_PREPARE)?.(
-      { directory: '/repo' },
+      { directory: { kind: 'path', path: '/repo' } },
       { signal },
     )).resolves.toEqual({
       ok: true,
       directory: '/repo',
+      directoryKind: 'path',
       directoryCreationRequired: false,
       checkout: null,
     });
     expect(prepare).toHaveBeenCalledWith({
-      request: { directory: '/repo' },
+      request: { directory: { kind: 'path', path: '/repo' } },
       signal,
     });
   });

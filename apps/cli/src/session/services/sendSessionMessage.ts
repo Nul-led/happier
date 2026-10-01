@@ -7,7 +7,6 @@ import {
 } from '@happier-dev/agents';
 import {
   readPendingLocalId,
-  requiresAuthenticatedMachineAdmissionForSessionInput,
   resolveLinkedExternalSessionAuthorityV1,
   SESSION_MESSAGE_PROVENANCE_META_KEY,
   SessionInputRequestSchema,
@@ -43,6 +42,7 @@ import {
   type PendingQueueDeliveryBlockedReason,
 } from '@/api/session/pendingQueueV2Transport';
 import {
+  findTranscriptEncryptedMessageByLocalId,
   waitForTranscriptEncryptedMessageByLocalId,
   type TranscriptMessageLookupResult,
 } from '@/api/session/transcriptMessageLookup';
@@ -72,9 +72,12 @@ import {
   detectSessionTurnLifecycleEvent,
   isBareSessionReadyEvent,
   isSessionTurnCompletionProof,
+  isSessionContextOnlyHostInput,
 } from '@/session/shared/sessionTurnLifecycle';
 
 import { resolveSessionTransportContext } from './resolveSessionTransportContext';
+import { requiresMachineAdmissionForSessionInput } from './sessionInputAdmissionIdentity';
+import { MachineAdmissionTransportUnavailableError } from '@/daemon/machineAdmissionTransport';
 import {
   resolveSessionMessageModel,
   type SessionMessageModelSelectionInput,
@@ -103,7 +106,7 @@ export type SendSessionMessageResult =
        * from `unsupported`, which claims this Session or daemon cannot do it at
        * all — see `InactiveSessionResumeResult`.
        */
-      code: 'session_not_found' | 'session_id_ambiguous' | 'session_lookup_timeout' | 'session_archived' | 'session_inactive' | 'takeover_required' | 'unsupported' | 'resume_failed' | 'encryption_material_unavailable' | 'timeout' | 'wait_failed' | 'provider_switch_unsupported' | 'admission_rejected' | 'cancelled';
+      code: 'session_not_found' | 'session_id_ambiguous' | 'session_lookup_timeout' | 'session_archived' | 'session_inactive' | 'takeover_required' | 'unsupported' | 'resume_failed' | 'encryption_material_unavailable' | 'timeout' | 'wait_failed' | 'provider_switch_unsupported' | 'admission_rejected' | 'cancelled' | 'machine_admission_transport_unavailable';
       candidates?: string[];
       message?: string;
       providerError?: ProviderErrorV1;
@@ -157,6 +160,7 @@ export type WaitForSessionInputResult =
 
 export type SessionInputResultObservationV1 =
   | Readonly<{ kind: 'no_deadline' }>
+  | Readonly<{ kind: 'after_input'; timeoutMs: number }>
   | Readonly<{ kind: 'absolute_deadline'; deadlineMs: number }>;
 
 type ResolveSessionMessageAuthorizationHeaders = (request: Readonly<{
@@ -171,6 +175,10 @@ export type WaitForSessionInputResultParams = Readonly<{
   localId: string;
   signal?: AbortSignal;
   serverFeaturesSnapshot?: CliServerFeaturesSnapshot;
+  /** Workflow custody may close while this exact input waits for host dispatch. */
+  beforeInputObservation?: () => Promise<void>;
+  /** The input owner's committed transcript timestamp is the accepted fact. */
+  onInputMaterialized?: (acceptedAtMs: number) => Promise<void>;
 }> & (
   | Readonly<{
       /** Incumbent bounded observer contract retained for Automation V1. */
@@ -178,13 +186,15 @@ export type WaitForSessionInputResultParams = Readonly<{
       observation?: never;
     }>
   | Readonly<{
-      /** Workflow observers author either one absolute deadline or no deadline. */
+      /** Workflow budgets are absolute, absent, or anchored on the committed input. */
       observation: SessionInputResultObservationV1;
       timeoutMs?: never;
     }>
 );
 
 type SendSessionMessageParams = Readonly<{
+  /** Verified host-only root proof; never read from authored message metadata. */
+  callerInputAuthorization?: import('@happier-dev/protocol').ExternalActionExecutionAuthorizationV1;
   credentials: StoredCredentials;
   idOrPrefix: string;
   message: string;
@@ -220,8 +230,10 @@ type SendSessionMessageParams = Readonly<{
   /** Authenticated daemon transport. Machine-only assertions never fall back to Account admission. */
   machineAdmissionTransport?: (
     request: SessionPendingEnqueueByMachineRequestV1 | SessionPendingExecutionRunEnqueueByMachineRequestV2,
-    options?: Readonly<{ signal?: AbortSignal }>,
+    options?: Readonly<{ signal?: AbortSignal; callerInputAuthorization?: import('@happier-dev/protocol').ExternalActionExecutionAuthorizationV1 }>,
   ) => Promise<SessionInputAdmissionResultV1>;
+  /** Exact creation target when admission precedes the Session metadata projection. */
+  targetMachineId?: string;
   serverFeaturesSnapshot?: CliServerFeaturesSnapshot;
 }>;
 
@@ -313,6 +325,7 @@ function readProvenPreWriteHttpAdmissionRejectionCode(
   if (status === 400) return exactCode ?? 'session_input_invalid';
   if (status === 401 || status === 403) return exactCode ?? 'session_input_unauthorized';
   if (status === 404) return exactCode ?? 'session_input_target_unavailable';
+  if (status === 405 || status === 501) return exactCode;
   if (status === 409 && isExactRequestedActionConflictHttpResponse(error)) {
     return 'session_input_idempotency_conflict';
   }
@@ -333,15 +346,20 @@ function resolvePermissionIntent(params: Readonly<{
 function resolveProtectedInputTargetMachineId(params: Readonly<{
   decryptedMetadata: Record<string, unknown> | null;
   rawSession: Readonly<Record<string, unknown>>;
+  targetMachineId?: string;
 }>): string | null {
   const correspondence = SessionCreationCorrespondenceV1Schema.safeParse(
     params.decryptedMetadata?.sessionCreationCorrespondenceV1,
   );
-  if (correspondence.success) return correspondence.data.recipe.execution.machineId;
-  const predecessorMachineId = typeof params.rawSession.machineId === 'string'
-    ? params.rawSession.machineId.trim()
-    : '';
-  return predecessorMachineId || null;
+  const observedMachineId = correspondence.success
+    ? correspondence.data.recipe.execution.machineId
+    : typeof params.rawSession.machineId === 'string'
+      ? params.rawSession.machineId.trim()
+      : '';
+  const suppliedMachineId = params.targetMachineId?.trim() ?? '';
+  if (observedMachineId && suppliedMachineId && observedMachineId !== suppliedMachineId) return null;
+  if (observedMachineId) return observedMachineId;
+  return suppliedMachineId || null;
 }
 
 function resolveCanonicalMessageSource(params: Readonly<{
@@ -615,20 +633,34 @@ async function waitForCurrentPromptDelivery(params: Readonly<{
   deadlineMs: number | null;
   signal?: AbortSignal;
   resolveAuthorizationHeaders?: ResolveSessionMessageAuthorizationHeaders;
+  beforeInputObservation?: () => Promise<void>;
 }>): Promise<CurrentPromptDeliveryOutcome> {
-  while (!params.signal?.aborted && (params.deadlineMs === null || Date.now() <= params.deadlineMs)) {
+  let observedOnce = false;
+  while (!params.signal?.aborted && (!observedOnce || params.deadlineMs === null || Date.now() <= params.deadlineMs)) {
+    await params.beforeInputObservation?.();
+    if (params.signal?.aborted) break;
+    observedOnce = true;
     const remainingMs = params.deadlineMs === null
       ? CURRENT_PROMPT_DELIVERY_POLL_MS
       : params.deadlineMs - Date.now();
-    const materialized = await waitForTranscriptEncryptedMessageByLocalId({
+    const request = {
       token: params.token,
       sessionId: params.sessionId,
       localId: params.localId,
-      maxWaitMs: Math.max(1, Math.min(CURRENT_PROMPT_DELIVERY_POLL_MS, remainingMs)),
+      ...(params.signal ? { signal: params.signal } : {}),
       ...(params.resolveAuthorizationHeaders
         ? { resolveAuthorizationHeaders: params.resolveAuthorizationHeaders }
         : {}),
-    });
+    };
+    // The deadline bounds waiting, not the native request needed to observe
+    // once. Use its owning transport budget rather than imposing a 1ms timeout.
+    const materialized = params.deadlineMs !== null && remainingMs <= 0
+      ? await findTranscriptEncryptedMessageByLocalId(request)
+      : await waitForTranscriptEncryptedMessageByLocalId({
+        ...request,
+        maxWaitMs: Math.max(1, Math.min(CURRENT_PROMPT_DELIVERY_POLL_MS, remainingMs)),
+      });
+    params.signal?.throwIfAborted();
     if (materialized) {
       return { kind: 'materialized', message: materialized };
     }
@@ -715,10 +747,10 @@ async function scanAssistantTurnAfterCurrentUserTurn(params: Readonly<{
         content: row.content,
         ctx: params.ctx,
       });
-      // The exact input's terminal proof closes this scan. A later user row
+      // The exact input's terminal proof closes this scan. A later input
       // starts another turn and must not become a fallback result for this
       // input when a legacy transcript lacks an explicit turn anchor.
-      if (isSessionAgentThreadTextUserMessage(decrypted)) {
+      if (isSessionAgentThreadTextUserMessage(decrypted) || isSessionContextOnlyHostInput(decrypted)) {
         const usage = currentUsage();
         return { failure: null, sawCompletion, finalAssistantText, ...(usage ? { usage } : {}) };
       }
@@ -1082,6 +1114,7 @@ export async function waitForSessionInputResult(
       sessionId: sessionTarget.sessionId,
       localId,
       deadlineMs,
+      ...(params.beforeInputObservation ? { beforeInputObservation: params.beforeInputObservation } : {}),
       ...(params.signal ? { signal: params.signal } : {}),
     });
     if (promptDelivery.kind === 'blocked') {
@@ -1096,6 +1129,7 @@ export async function waitForSessionInputResult(
       };
     }
     if (promptDelivery.kind === 'missing') {
+      if (params.signal?.aborted) return { ok: false, code: 'cancelled' };
       return {
         ok: true,
         sessionId: sessionTarget.sessionId,
@@ -1104,15 +1138,20 @@ export async function waitForSessionInputResult(
       };
     }
 
+    await params.onInputMaterialized?.(promptDelivery.message.createdAt);
+    const acceptedDeadlineMs = observation?.kind === 'after_input'
+      ? promptDelivery.message.createdAt + observation.timeoutMs : deadlineMs;
+
     const outcome = await waitForAssistantCompletionAfterCurrentUserTurn({
       token: params.credentials.token,
       sessionId: sessionTarget.sessionId,
       localId,
       materializedSeq: promptDelivery.message.seq,
       ctx: sessionTarget.ctx,
-      deadlineMs,
+      deadlineMs: acceptedDeadlineMs,
       ...(params.signal ? { signal: params.signal } : {}),
     });
+    if (outcome.kind === 'missing' && params.signal?.aborted) return { ok: false, code: 'cancelled' };
     return {
       ok: true,
       sessionId: sessionTarget.sessionId,
@@ -1244,9 +1283,6 @@ export async function sendSessionMessage(
           : Date.now(),
       })
     : { modelId: '', selection: null };
-  const machineOnlyAdmission = protectedAdmission
-    ? requiresAuthenticatedMachineAdmissionForSessionInput(protectedAdmission.request)
-    : false;
   const callerMeta = stripSessionInputProtectedMeta(params.messageMeta);
   delete callerMeta[SESSION_MESSAGE_PROVENANCE_META_KEY];
   const baseMeta = {
@@ -1281,13 +1317,11 @@ export async function sendSessionMessage(
     deliveryIntent: shouldResumeInactiveSession ? 'runtime_bootstrap' : 'ordinary',
     ...(params.requestedAction ? { requestedAction: params.requestedAction } : {}),
   });
-  // An E2EE protected request must carry host-derived terminal equality. The
-  // Account route cannot safely carry that assertion, including for ordinary
-  // host/UI provenance, so every protected E2EE request uses the authenticated
-  // machine admission seam. Plain protected requests retain Account admission
-  // unless their facts themselves require machine authentication.
-  const requiresMachineAdmission = protectedAdmission !== null
-    && (machineOnlyAdmission || sessionTarget.mode === 'e2ee');
+  const requiresMachineAdmission = requiresMachineAdmissionForSessionInput({
+    request: protectedAdmission?.request ?? null,
+    mode: sessionTarget.mode,
+    ...(params.callerInputAuthorization ? { callerInputAuthorization: params.callerInputAuthorization } : {}),
+  });
   const requestEqualityEvidenceV1 = requiresMachineAdmission && sessionTarget.mode === 'e2ee'
     ? {
         kind: 'e2eeTag' as const,
@@ -1323,6 +1357,7 @@ export async function sendSessionMessage(
       const targetMachineId = resolveProtectedInputTargetMachineId({
         decryptedMetadata,
         rawSession: sessionTarget.rawSession as Readonly<Record<string, unknown>>,
+        ...(params.targetMachineId ? { targetMachineId: params.targetMachineId } : {}),
       });
       if (params.signal?.aborted) {
         return {
@@ -1333,13 +1368,16 @@ export async function sendSessionMessage(
         };
       }
       if (!params.machineAdmissionTransport || !targetMachineId) {
+        const transportError = !params.machineAdmissionTransport
+          ? new MachineAdmissionTransportUnavailableError()
+          : null;
         return {
           ok: false,
-          code: 'admission_rejected',
-          message: 'Protected Session input requires the authenticated machine admission transport',
+          code: transportError?.code ?? 'admission_rejected',
+          message: transportError?.message ?? 'Protected Session input target is unavailable',
           admissionResult: {
             status: 'rejected',
-            code: 'session_input_target_update_required',
+            code: 'session_input_target_unavailable',
           },
         };
       }
@@ -1353,8 +1391,11 @@ export async function sendSessionMessage(
         requestedAction,
         ...(requestEqualityEvidenceV1 ? { requestEqualityEvidenceV1 } : {}),
       } satisfies SessionPendingEnqueueByMachineRequestV1 | SessionPendingExecutionRunEnqueueByMachineRequestV2;
-      const result = params.signal
-        ? await params.machineAdmissionTransport(machineAdmissionRequest, { signal: params.signal })
+      const result = params.signal || params.callerInputAuthorization
+        ? await params.machineAdmissionTransport(machineAdmissionRequest, {
+            ...(params.signal ? { signal: params.signal } : {}),
+            ...(params.callerInputAuthorization ? { callerInputAuthorization: params.callerInputAuthorization } : {}),
+          })
         : await params.machineAdmissionTransport(machineAdmissionRequest);
       if (result.status === 'rejected') {
         return {
@@ -1418,9 +1459,10 @@ export async function sendSessionMessage(
       const targetMachineId = resolveProtectedInputTargetMachineId({
         decryptedMetadata,
         rawSession: sessionTarget.rawSession as Readonly<Record<string, unknown>>,
+        ...(params.targetMachineId ? { targetMachineId: params.targetMachineId } : {}),
       });
       if (!targetMachineId) {
-        return { ok: false, code: 'admission_rejected', admissionResult: { status: 'rejected', code: 'session_input_target_update_required' } };
+        return { ok: false, code: 'admission_rejected', admissionResult: { status: 'rejected', code: 'session_input_target_unavailable' } };
       }
       enqueueResult = await enqueuePendingExecutionRunMessageViaHttp({
         token: params.credentials.token, sessionId, recipient: executionRunRecipient,
@@ -1458,11 +1500,8 @@ export async function sendSessionMessage(
     }
   } catch (error) {
     const status = readHttpResponseStatus(error);
-    const exactAdmissionRejectionCode = readHttpAdmissionRejectionCode(error);
     const admissionRejectionCode = status !== null && !machineAdmissionInvoked
-      ? executionRunRecipient && (status === 404 || status === 405 || status === 501)
-        ? exactAdmissionRejectionCode ?? 'session_input_target_update_required'
-        : readProvenPreWriteHttpAdmissionRejectionCode(error, status)
+      ? readProvenPreWriteHttpAdmissionRejectionCode(error, status)
       : null;
     if (admissionRejectionCode !== null) {
       return {

@@ -1,6 +1,6 @@
 import type { ParticipantRecipientV1 } from '@happier-dev/protocol';
 
-import type { Message, ToolCall } from '@/sync/domains/messages/messageTypes';
+import type { Message, ToolCall } from "@happier-dev/session-core/messages";
 import type { Session } from '@/sync/domains/state/storageTypes';
 
 import { deriveSessionSubagents } from '../deriveSessionSubagents';

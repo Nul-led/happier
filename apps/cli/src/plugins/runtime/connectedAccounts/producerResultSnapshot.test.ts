@@ -7,6 +7,35 @@ import {
 } from './producerResultSnapshot';
 
 describe('connected-account producer result snapshots', () => {
+    it('admits detached subscription observations and rejects invalid subscription authority fields', () => {
+        const operation = { kind: 'quota' } as const;
+        const options = { quotaLeafUnavailable: false } as const;
+        for (const status of ['subscribed', 'unavailable'] as const) {
+            const subscription = {
+                status,
+                renewal: 'off',
+                observedAtMs: 100,
+                staleAfterMs: 1_000,
+                currentPeriodEndAtMs: 200,
+                lastRefreshError: { observedAtMs: 110, code: 'network' },
+            };
+            const quota = { observedAtMs: 110, limits: [{ id: 'requests', remaining: 3 }], subscription };
+            const result = snapshotConnectedAccountEstablishedResult(operation, quota, options);
+            expect(result).toEqual(quota);
+            if (!('limits' in result)) throw new Error('Expected a quota snapshot');
+            subscription.observedAtMs = 900;
+            subscription.lastRefreshError.observedAtMs = 900;
+            expect(result.subscription).toMatchObject({ observedAtMs: 100, lastRefreshError: { observedAtMs: 110 } });
+            for (const invalidSubscription of [
+                { ...subscription, recordId: 'another-account' },
+                { ...subscription, lastRefreshError: { ...subscription.lastRefreshError, authority: true } },
+                { ...subscription, lastRefreshError: { observedAtMs: 110, code: 'unsupported' } },
+            ]) {
+                expect(() => snapshotConnectedAccountEstablishedResult(operation, { ...quota, subscription: invalidSubscription }, options))
+                    .toThrow(expect.objectContaining({ code: 'connected_account_producer_result_invalid', operation: 'quota' }));
+            }
+        }
+    });
     it('snapshots reset inventory and rejects unknown authority fields in inventory and receipts', () => {
         const read = { kind: 'recoveryCredits.read' } as const;
         const consume = { kind: 'recoveryCredits.consume', request: { idempotencyKey: 'reset-1' } } as const;

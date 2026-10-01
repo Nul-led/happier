@@ -482,7 +482,7 @@ describe('native SSH tunnel supervisor', () => {
         }));
     });
 
-    it('keeps a failed lease so probe-cleanup stop failures can be retried on release', async () => {
+    it('keeps a failed lease and exposes cleanup failure without replacing the probe cause', async () => {
         const loaded = await import('./supervisor').catch(() => null);
         expect(loaded).not.toBeNull();
 
@@ -503,7 +503,11 @@ describe('native SSH tunnel supervisor', () => {
             })),
         });
 
-        await expect(supervisor.ensureTunnel(createRequest())).rejects.toThrow('native_stop_failed');
+        const error = await supervisor.ensureTunnel(createRequest()).catch((caught: unknown) => caught);
+        expect(error).toMatchObject({
+            message: 'native_ssh_tunnel_probe_failed:remote-service-unreachable',
+            cleanupError: expect.objectContaining({ message: 'native_stop_failed' }),
+        });
         const failedLease = supervisor.listTunnels().leases[0];
         expect(failedLease).toEqual(expect.objectContaining({
             status: 'failed',

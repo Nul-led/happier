@@ -161,6 +161,7 @@ describe('MessageView timestamps', () => {
         } = await import('./messageActions/PluginMessageActions');
         const action: PluginProjectionAction = {
             id: 'open-preview',
+            occurrenceId: null,
             title: 'Open preview',
             description: null,
             icon: null,
@@ -168,7 +169,6 @@ describe('MessageView timestamps', () => {
             surfaces: ['ui'],
             placementBindings: ['rowAction'],
             inputHints: null,
-            inputSchema: null,
             priority: null,
             dangerLevel: 'safe',
             confirmation: null,
@@ -194,7 +194,6 @@ describe('MessageView timestamps', () => {
             host: {
                 machineId: 'machine-1',
                 serverId: 'server-1',
-                expectedGeneration: 7,
                 sessionId: 's1',
                 isCurrent: () => true,
             },

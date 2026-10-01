@@ -21,6 +21,7 @@ const STAGE_ORDER: readonly ThisComputerSetupStageId[] = [
 ] as const;
 
 const STEP_ORDER = [
+    'setup.thisComputer.cliChoice',
     'setup.thisComputer.ensureCli',
     'setup.thisComputer.resolveRelay',
     'setup.thisComputer.checkAuth',
@@ -40,6 +41,8 @@ const OPTIONAL_STAGE_IDS = new Set<ThisComputerSetupStageId>([
 ]);
 
 const OPTIONAL_STEP_IDS = new Set<string>([
+    // Asked only when this computer has a `happier` this app did not install (R12).
+    'setup.thisComputer.cliChoice',
     'setup.thisComputer.preflight.releaseChannel',
     'setup.thisComputer.preflight.manualRelayTakeover',
     'setup.thisComputer.preflight.serviceConflict',
@@ -49,6 +52,7 @@ const OPTIONAL_STEP_IDS = new Set<string>([
 ]);
 
 const STEP_TO_STAGE: Readonly<Record<string, ThisComputerSetupStageId>> = {
+    'setup.thisComputer.cliChoice': 'setup.thisComputer.stage.installTools',
     'setup.thisComputer.ensureCli': 'setup.thisComputer.stage.installTools',
     'setup.thisComputer.resolveRelay': 'setup.thisComputer.stage.useRelay',
     'setup.thisComputer.checkAuth': 'setup.thisComputer.stage.useRelay',

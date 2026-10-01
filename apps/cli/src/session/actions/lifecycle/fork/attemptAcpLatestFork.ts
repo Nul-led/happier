@@ -9,6 +9,7 @@ import { isAmbiguousSpawnSessionFailure } from '@/session/shared/spawnNonce';
 import type { ForkResultV1 } from '@happier-dev/agents';
 import { readNonBlankOpaqueIdentifier, readRuntimeDescriptorV1FromMetadata } from '@happier-dev/protocol';
 import { applyAgentAuthoredSessionStateUpdatesToMetadata } from '@/agent/runtime/state/agentAuthoredSessionStateUpdates';
+import { prepareManagedForkDirectory } from './prepareManagedForkDirectory';
 
 import {
     archiveSessionBestEffort,
@@ -77,6 +78,7 @@ export async function attemptAcpLatestFork(params: Readonly<{
                 ...(runtimeDescriptorV1 ? { runtimeDescriptorV1 } : {}),
                 ...(forked.launch.environmentVariables ? { environmentVariables: { ...forked.launch.environmentVariables } } : {}),
                 ...inheritedForkOverrides.spawn,
+                ...prepareManagedForkDirectory(params),
             } satisfies SpawnSessionOptions);
 
             if (isAmbiguousSpawnSessionFailure(result)) {

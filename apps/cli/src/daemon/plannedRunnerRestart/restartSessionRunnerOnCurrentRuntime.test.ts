@@ -267,7 +267,7 @@ describe('restartSessionRunnerOnCurrentRuntime', () => {
         modelSelection: {
           v: 1,
           updatedAt: 1,
-          ref: { agentTargetKey: 'backend:claude', providerConnectionId: gatewayConnectionId, modelId: 'model-a' },
+          ref: { agentTargetKey: 'agent:happier.agent.claude/claude', providerConnectionId: gatewayConnectionId, modelId: 'model-a' },
         },
         providerBindingMetadataV1: previousBinding,
       },

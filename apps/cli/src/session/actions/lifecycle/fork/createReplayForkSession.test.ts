@@ -250,7 +250,7 @@ describe('createReplayForkSession', () => {
             v: 1,
             updatedAt: 1,
             ref: {
-              agentTargetKey: 'backend:codex',
+              agentTargetKey: 'agent:happier.agent.codex/codex',
               providerConnectionId: ProviderConnectionIdSchema.parse('pc_work'),
               modelId: 'provider-model',
             },

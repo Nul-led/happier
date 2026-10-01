@@ -1,8 +1,9 @@
 import * as React from 'react';
+import { createReactNavigationNativeMock } from '@/dev/testkit/mocks/reactNavigation';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { AppPaneProvider } from '@/components/appShell/panes/AppPaneProvider';
-import { renderScreen, standardCleanup } from '@/dev/testkit';
+import { renderScreen } from '@/dev/testkit/render/renderScreen';
+import { standardCleanup } from '@/dev/testkit/cleanup/standardCleanup';
 import { createModalModuleMock } from '@/dev/testkit/mocks/modal';
 import { createReactNativeWebMock } from '@/dev/testkit/mocks/reactNative';
 import { createExpoRouterMock } from '@/dev/testkit/mocks/router';
@@ -180,6 +181,7 @@ vi.mock('react-native-safe-area-context', () => ({
     useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
 }));
 vi.mock('@react-navigation/native', () => ({
+    ...createReactNavigationNativeMock(),
     useFocusEffect: () => {},
     useIsFocused: () => sessionScreenFocused,
 }));
@@ -346,6 +348,8 @@ vi.mock('@/sync/runtime/time', () => ({
 vi.mock('@/utils/system/fireAndForget', () => ({
     fireAndForget: () => {},
 }));
+
+const { AppPaneProvider } = await import('@/components/appShell/panes/AppPaneProvider');
 
 describe('SessionView (right pane auto-open)', () => {
     const AppPaneProviderWrapper = ({ children }: { children?: React.ReactNode }) => (

@@ -23,7 +23,7 @@ describe('providerSettingsHarness', () => {
         );
         harness.setResponse(
             RPC_METHODS.DAEMON_PROVIDERS_MODEL_PROJECTION,
-            createProviderModelProjectionFixture({ agentTargetKey: 'backend:codex' }),
+            createProviderModelProjectionFixture({ agentTargetKey: 'agent:happier.agent.codex/codex' }),
         );
 
         await expect(harness.machineRpc({

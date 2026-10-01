@@ -1,14 +1,26 @@
 import { act } from 'react-test-renderer';
-import { describe, expect, it } from 'vitest';
+import type * as React from 'react';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
     ExternalSessionOperationSharedPresentationV1Schema,
     type ExternalSessionOperationSharedPresentationV1,
 } from '@happier-dev/protocol';
 
-import { renderHook } from '@/dev/testkit';
+import { createTestSessionTranscriptSource, renderHook, wrapWithSessionTranscriptSource } from '@/dev/testkit';
 
 import { useExternalSessionOperationTranscriptDismissal } from './useExternalSessionOperationTranscriptDismissal';
+
+function createInteractiveSource(sessionId = 'session-1') {
+    return createTestSessionTranscriptSource({ sessionId, actions: {
+        respondToPermission: vi.fn(async () => {}), answerUserAction: vi.fn(async () => {}),
+        abort: vi.fn(async () => {}), submitMessage: vi.fn(async () => {}),
+    } });
+}
+
+function InteractiveTranscriptProvider(props: React.PropsWithChildren) {
+    return wrapWithSessionTranscriptSource(props.children as React.ReactElement, createInteractiveSource());
+}
 
 function createPresentation(
     overrides: Partial<ExternalSessionOperationSharedPresentationV1> = {},
@@ -25,14 +37,26 @@ function createPresentation(
 }
 
 describe('useExternalSessionOperationTranscriptDismissal', () => {
+    it('keeps a read-only transcript dismissal inert', async () => {
+        const presentation = createPresentation();
+        const source = createTestSessionTranscriptSource({ sessionId: 'shared-session' });
+        const hook = await renderHook(() => useExternalSessionOperationTranscriptDismissal({ sessionId: 'viewer-session', presentation }), {
+            wrapper: (props) => wrapWithSessionTranscriptSource(props.children as React.ReactElement, source),
+        });
+        act(() => hook.getCurrent().onDismiss({ operationId: presentation.operationId, revision: presentation.revision }));
+        expect(hook.getCurrent().dismissal).toBeNull();
+        await hook.unmount();
+    });
     it('retains one exact terminal dismissal for the mounted session and resets it for another session', async () => {
         const presentation = createPresentation();
+        let source = createInteractiveSource();
         const hook = await renderHook(
             (props: Readonly<{
                 sessionId: string;
                 presentation: ExternalSessionOperationSharedPresentationV1 | null;
             }>) => useExternalSessionOperationTranscriptDismissal(props),
             {
+                wrapper: (props) => wrapWithSessionTranscriptSource(props.children as React.ReactElement, source),
                 initialProps: {
                     sessionId: 'session-1',
                     presentation,
@@ -60,6 +84,7 @@ describe('useExternalSessionOperationTranscriptDismissal', () => {
             revision: 4,
         }));
 
+        source = createInteractiveSource('session-2');
         await hook.rerender({
             sessionId: 'session-2',
             presentation,
@@ -78,6 +103,7 @@ describe('useExternalSessionOperationTranscriptDismissal', () => {
                 sessionId: 'session-1',
                 presentation: running,
             }),
+            { wrapper: InteractiveTranscriptProvider },
         );
 
         act(() => {
@@ -98,6 +124,7 @@ describe('useExternalSessionOperationTranscriptDismissal', () => {
                 sessionId: 'session-1',
                 presentation: createPresentation(),
             }),
+            { wrapper: InteractiveTranscriptProvider },
         );
         expect(remounted.getCurrent().dismissal).toBeNull();
         await remounted.unmount();

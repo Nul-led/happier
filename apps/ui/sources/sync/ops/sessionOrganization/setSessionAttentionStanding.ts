@@ -1,3 +1,5 @@
+import type { SetSessionAttentionStandingResponse } from '@happier-dev/protocol';
+
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
 import { setSessionAttentionStanding as setSessionAttentionStandingApi } from '@/sync/api/session/sessionOrganizationApi';
 import { buildSessionOrganizationSessionKey } from '@/sync/domains/session/organization';
@@ -13,7 +15,7 @@ export async function setSessionAttentionStanding(params: Readonly<{
     sessionId: string;
     standing?: boolean | null;
     remindAt?: number | null;
-}>): Promise<void> {
+}>): Promise<SetSessionAttentionStandingResponse> {
     const previousStanding = getStorage().getState().sessionOrganizationAttentionStandingsBySessionKey[
         buildSessionOrganizationSessionKey(params.serverId, params.sessionId)
     ];
@@ -43,6 +45,7 @@ export async function setSessionAttentionStanding(params: Readonly<{
             buildSessionOrganizationSessionKey(params.serverId, params.sessionId),
             response.standing,
         );
+        return response;
     } catch (error) {
         getStorage().getState().rollbackSessionOrganizationOptimistic(recordId);
         throw error;
@@ -109,4 +112,21 @@ export async function sessionSetAttentionStandingWithServerScope(
     } catch (error) {
         return { success: false, message: error instanceof Error ? error.message : 'Unknown error' };
     }
+}
+
+/**
+ * The UI host port for `session.attention.set` (ORC R-10): the same optimistic writer the session
+ * menus use, resolved to the exact Home, returning the route's `{ standing }` payload so the
+ * Action executor projects it. A missing scope is the Action's `unavailable`, never a local write.
+ */
+export async function executeSessionAttentionSetAction(params: Readonly<{
+    sessionId: string;
+    serverId?: string | null;
+    request: Readonly<{ standing?: boolean | null; remindAt?: number | null }>;
+}>): Promise<SetSessionAttentionStandingResponse | Readonly<{ ok: false; errorCode: string; error: string }>> {
+    const requestedServerId = typeof params.serverId === 'string' ? params.serverId.trim() : '';
+    const serverId = requestedServerId || resolvePreferredServerIdForSessionId(params.sessionId) || '';
+    const resolved = await resolveSessionOrganizationMutationScope(serverId);
+    if (!resolved.ok) return { ok: false, errorCode: 'unavailable', error: 'unavailable' };
+    return await setSessionAttentionStanding({ ...resolved.scope, sessionId: params.sessionId, ...params.request });
 }

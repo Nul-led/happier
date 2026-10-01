@@ -27,23 +27,17 @@ describe('shouldReuseCliDistSnapshot', () => {
     }));
   });
 
-  it('returns false when a bundled workspace dist is newer than the cli dist entrypoint', async () => {
+  it('returns false when the CLI dist entrypoint is missing', async () => {
     const rootDir = await createTempDir();
-    const older = new Date('2026-04-13T18:00:00.000Z');
-    const newer = new Date('2026-04-13T18:05:00.000Z');
     const distEntrypointPath = join(rootDir, 'apps', 'cli', 'dist', 'index.mjs');
-    const workspaceDistFile = join(rootDir, 'packages', 'cli-common', 'dist', 'firstPartyRuntime', 'index.js');
-
-    await writeTimedFile(distEntrypointPath, 'export default "cli";\n', older);
-    await writeTimedFile(workspaceDistFile, 'export default "workspace";\n', newer);
 
     await expect(shouldReuseCliDistSnapshot({
       distEntrypointPath,
-      inputPaths: [join(rootDir, 'packages', 'cli-common', 'dist')],
+      requiredInputFingerprint: 'a'.repeat(64),
     })).resolves.toBe(false);
   });
 
-  it('keeps legacy mtime-only reuse for non-candidate callers even when the dist manifest identifies another source closure', async () => {
+  it('does not reuse a dist without a required input identity even when timestamps look current', async () => {
     const rootDir = await createTempDir();
     const older = new Date('2026-04-13T18:00:00.000Z');
     const newer = new Date('2026-04-13T18:05:00.000Z');
@@ -60,11 +54,7 @@ describe('shouldReuseCliDistSnapshot', () => {
 
     await expect(shouldReuseCliDistSnapshot({
       distEntrypointPath,
-      inputPaths: [
-        join(rootDir, 'apps', 'cli', 'src'),
-        join(rootDir, 'packages', 'cli-common', 'dist'),
-      ],
-    })).resolves.toBe(true);
+    })).resolves.toBe(false);
   });
 
   it('reuses only the exact dist closure whose manifest binds the candidate-verified input fingerprint', async () => {
@@ -83,12 +73,10 @@ describe('shouldReuseCliDistSnapshot', () => {
 
     await expect(shouldReuseCliDistSnapshot({
       distEntrypointPath,
-      inputPaths: [join(rootDir, 'apps', 'cli', 'src')],
       requiredInputFingerprint: inputFingerprint,
     })).resolves.toBe(true);
     await expect(shouldReuseCliDistSnapshot({
       distEntrypointPath,
-      inputPaths: [join(rootDir, 'apps', 'cli', 'src')],
       requiredInputFingerprint: 'b'.repeat(64),
     })).resolves.toBe(false);
   });

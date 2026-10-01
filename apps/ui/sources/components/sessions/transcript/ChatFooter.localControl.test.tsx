@@ -2,7 +2,9 @@ import React from 'react';
 import { act } from 'react-test-renderer';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { renderScreen, standardCleanup } from '@/dev/testkit';
+import { createSessionFixture, renderScreen, standardCleanup } from '@/dev/testkit';
+import { getSessionLocalControlState } from '@/sync/domains/session/control/sessionLocalControl';
+import { shouldRequestRemoteControl } from '@/sync/domains/session/control/localControlSwitch';
 import { installTranscriptCommonModuleMocks, resetTranscriptCommonModuleMockState } from './transcriptTestHelpers';
 import { ChatFooter } from './ChatFooter';
 
@@ -46,10 +48,6 @@ vi.mock('@expo/vector-icons', () => ({
     Ionicons: 'Ionicons',
 }));
 
-vi.mock('@/constants/Typography', () => ({
-    Typography: { default: () => ({}) },
-}));
-
 vi.mock('@/components/ui/layout/layout', () => ({
     layout: { maxWidth: 800 },
     useLayoutMaxWidth: () => 800,
@@ -88,6 +86,36 @@ async function renderFooter(props: ChatFooterTestProps) {
 }
 
 describe('ChatFooter (local control)', () => {
+    it('offers release of the runner-owned shared terminal without model authentication', async () => {
+        const session = createSessionFixture({ active: true, agentState: { controlledByUser: false, localControl: {
+            attached: true, topology: 'shared', remoteWritable: true, canDetach: true,
+        } } });
+        const release = vi.fn();
+        const screen = await renderFooter({
+            controlledByUser: false,
+            localControl: getSessionLocalControlState(session),
+            onRequestSwitchToRemote: shouldRequestRemoteControl(session, 'logged_out') ? release : undefined,
+        });
+        const action = screen.findByTestId('session-chatFooter-detachLocalTerminal');
+        expect(action).not.toBeNull();
+        await act(async () => { action!.props.onPress(); });
+        expect(release).toHaveBeenCalledOnce();
+        expect(screen.findByTestId('session-chatFooter-switchToRemote')).toBeNull();
+        expect(session.agentState?.localControl?.remoteWritable).toBe(true);
+    });
+
+    it.each([false, undefined])('does not offer release without runner-owned capability (%s)', async (canDetach) => {
+        const session = createSessionFixture({ active: true, agentState: { controlledByUser: false, localControl: {
+            attached: true, topology: 'shared', remoteWritable: true,
+            ...(canDetach === undefined ? {} : { canDetach }),
+        } } });
+        const screen = await renderFooter({
+            localControl: getSessionLocalControlState(session),
+            onRequestSwitchToRemote: shouldRequestRemoteControl(session, 'logged_out') ? vi.fn() : undefined,
+        });
+        expect(screen.findByTestId('session-chatFooter-detachLocalTerminal')).toBeNull();
+    });
+
     afterEach(() => {
         resetTranscriptCommonModuleMockState();
         standardCleanup();

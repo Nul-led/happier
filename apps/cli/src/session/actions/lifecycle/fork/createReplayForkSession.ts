@@ -23,6 +23,7 @@ import type {
     ForkSpawnSession,
 } from './forkLifecycleTypes';
 import type { SessionLifecycleMachineDeps } from '../sessionLifecycleTypes';
+import { prepareManagedForkDirectory } from './prepareManagedForkDirectory';
 
 type ReplaySummaryRunner = NonNullable<Parameters<typeof resolveReplaySeedDraft>[0]['summaryRunner']>;
 
@@ -61,6 +62,7 @@ export async function createReplayForkSession(params: Readonly<{
         'fork.replayLaunch.sessionStateUpdates',
     );
     const replayChildDirectory = replayForkContinuation?.directory ?? params.directory;
+    const managedForkDirectory = prepareManagedForkDirectory(params);
     const replayRuntimeDescriptorV1 = readRuntimeDescriptorV1FromMetadata(replayLaunchMetadata) ?? undefined;
     const connectedServiceForkLaunchContext = createConnectedServiceForkLaunchContext({
         inherited: params.inheritedForkOverrides,
@@ -87,6 +89,7 @@ export async function createReplayForkSession(params: Readonly<{
             ...inheritedForkOverrides.metadata,
             ...params.forkBackendResolution.metadataOverlay,
             ...replayLaunchMetadata,
+            ...(managedForkDirectory ? { sessionDirectoryV1: { v: 1, kind: 'managed' } } : {}),
         },
         // No count bound: the fork seed is bounded by CHARACTERS. Passing the
         // page-size knob here as a message count is what capped the window at
@@ -121,15 +124,18 @@ export async function createReplayForkSession(params: Readonly<{
         // fork's own retry identity and its inherited launch configuration.
         const created = await createSpawnedSession({
             credentials: params.credentials,
-            directory: replayChildDirectory,
+            directory: managedForkDirectory?.directory ?? replayChildDirectory,
+            ...(managedForkDirectory ? { directoryKind: 'managed', sessionCreationTag: managedForkDirectory.sessionCreationTag } : {}),
             backendTarget: params.forkBackendResolution.backendTargetV2,
             ...(parentMachineId ? { machineId: parentMachineId } : {}),
             approvedNewDirectoryCreation: true,
             spawnNonce: params.spawnNonce,
             replaySeededCreation: {
-                tag: params.spawnNonce,
+                tag: managedForkDirectory?.sessionCreationTag ?? params.spawnNonce,
                 flavor: params.forkBackendResolution.replayFlavor,
-                metadata: recipe.metadata,
+                metadata: managedForkDirectory ? { ...recipe.metadata, path: managedForkDirectory.directory,
+                  sessionDirectoryV1: { v: 1, kind: 'managed' },
+                } : recipe.metadata,
                 sourceRecipe: {
                     sourceSessionId: params.parentSessionId,
                     cutoffSeqInclusive: params.effectiveCutoffSeqInclusive,
@@ -145,6 +151,7 @@ export async function createReplayForkSession(params: Readonly<{
                         ? { environmentVariables: { ...replayForkContinuation.environmentVariables } }
                         : {}),
                     ...inheritedForkOverrides.spawn,
+                    ...managedForkDirectory,
                     // A rejoined child keeps the identity persisted by its
                     // first creation; the canonical creator supplies it on
                     // the request after authenticating that row.

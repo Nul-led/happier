@@ -1,29 +1,65 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type {
-    ScmWorkingSnapshot as ProtocolScmWorkingSnapshot,
-    ScmWorktreesEnrichmentRequest,
-    ScmWorktreesEnrichmentResponse,
-} from '@happier-dev/protocol';
+import type { ScmWorkingSnapshot as ProtocolScmWorkingSnapshot } from '@happier-dev/protocol';
 import { SCM_OPERATION_ERROR_CODES, SCM_WORKTREES_ENRICHMENT_MAX_PATHS } from '@happier-dev/protocol';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
-import { sessionScmStatusSnapshot } from '@/sync/ops';
-import { machineScmStatusSnapshot, runMachineScmRpc } from '@/sync/ops/scm/machineScm';
+import { createMachineFixture } from '@/dev/testkit/fixtures/machineFixtures';
+import { createSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
+import { createStorageStoreMock } from '@/dev/testkit/mocks/storage';
+import { settingsDefaults } from '@/sync/domains/settings/settings';
+import type { StorageState } from '@/sync/store/types';
 import { storage } from '@/sync/domains/state/storage';
 import type { ScmWorkingSnapshot as UiScmWorkingSnapshot } from '@/sync/domains/state/storageTypes';
 import { EMPTY_SCM_CAPABILITIES } from './core/snapshotMappers';
 import { ScmRepositoryService, snapshotToScmStatus } from './scmRepositoryService';
 
-vi.mock('@/sync/ops', () => ({
-    sessionScmStatusSnapshot: vi.fn(),
+type ScmTransportRequest = Readonly<{
+    machineId: string;
+    method: string;
+    payload: Readonly<Record<string, unknown>>;
+    serverId?: string;
+}>;
+
+const { statusRpcMock, enrichmentRpcMock } = vi.hoisted(() => ({
+    statusRpcMock: vi.fn<(request: ScmTransportRequest) => Promise<unknown>>(),
+    enrichmentRpcMock: vi.fn<(request: ScmTransportRequest) => Promise<unknown>>(),
 }));
 
-vi.mock('@/sync/ops/scm/machineScm', () => ({
-    machineScmStatusSnapshot: vi.fn(),
-    runMachineScmRpc: vi.fn(),
+// Mock the network and storage environment; SCM routing/admission/mapping stays real.
+vi.mock('@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc', () => ({
+    machineRpcWithServerScope: (request: ScmTransportRequest) =>
+        request.method === RPC_METHODS.SCM_WORKTREES_ENRICHMENT
+            ? enrichmentRpcMock(request)
+            : statusRpcMock(request),
 }));
+
+vi.mock('@/sync/domains/state/storage', async () => {
+    const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
+    return createStorageModuleStub({});
+});
+
+function setScmState(overrides: Partial<StorageState>) {
+    const machines = overrides.machines ?? { 'machine-a': createMachineFixture({ id: 'machine-a' }) };
+    const sessions = overrides.sessions ?? {};
+    vi.spyOn(storage, 'getState').mockReturnValue(createStorageStoreMock({
+        settings: settingsDefaults,
+        ...overrides,
+        machines: Object.fromEntries(Object.entries(machines).map(([id, machine]) => [
+            id, createMachineFixture({ ...machine, active: machine.active ?? true }),
+        ])),
+        sessions: Object.fromEntries(Object.entries(sessions).map(([id, session]) => [
+            id, createSessionFixture({ ...session, active: session.active ?? true }),
+        ])),
+    }).getState());
+}
+
+beforeEach(() => {
+    setScmState({});
+});
 
 afterEach(() => {
+    statusRpcMock.mockReset();
+    enrichmentRpcMock.mockReset();
     vi.restoreAllMocks();
 });
 
@@ -171,12 +207,20 @@ function makeScmSnapshot(partial?: ProtocolScmSnapshotOverrides): ProtocolScmWor
 }
 
 describe('snapshotToScmStatus', () => {
+    it('does not mark non-file directory entries as dirty', () => {
+        const snapshot = makeSnapshot();
+        const status = snapshotToScmStatus(makeSnapshot({
+            entries: [{ ...snapshot.entries[1]!, path: 'scratch/' }],
+        }));
+        expect(status.changedFileCount).toBe(0);
+        expect(status.isDirty).toBe(false);
+    });
+
     it('derives aggregate status counters from the canonical snapshot', () => {
         const status = snapshotToScmStatus(makeSnapshot());
         expect(status.branch).toBe('main');
         expect(status.isDirty).toBe(true);
-        expect(status.modifiedCount).toBe(1);
-        expect(status.untrackedCount).toBe(1);
+        expect(status.changedFileCount).toBe(2);
         expect(status.includedCount).toBe(1);
         expect(status.includedLinesAdded).toBe(2);
         expect(status.includedLinesRemoved).toBe(1);
@@ -194,7 +238,7 @@ describe('snapshotToScmStatus', () => {
 
 describe('ScmRepositoryService.fetchSnapshotForSession', () => {
     it('returns null when session metadata path is unavailable', async () => {
-        vi.spyOn(storage, 'getState').mockReturnValue({
+        setScmState({
             sessions: {
                 session_1: {
                     id: 'session_1',
@@ -205,11 +249,11 @@ describe('ScmRepositoryService.fetchSnapshotForSession', () => {
         const service = new ScmRepositoryService();
         const result = await service.fetchSnapshotForSession('session_1');
         expect(result).toBeNull();
-        expect(sessionScmStatusSnapshot).not.toHaveBeenCalled();
+        expect(statusRpcMock).not.toHaveBeenCalled();
     });
 
     it('uses project key path when session metadata path is unavailable', async () => {
-        vi.spyOn(storage, 'getState').mockReturnValue({
+        setScmState({
             sessions: {
                 session_1: {
                     id: 'session_1',
@@ -229,7 +273,7 @@ describe('ScmRepositoryService.fetchSnapshotForSession', () => {
                     : null,
         } as any);
 
-        vi.mocked(sessionScmStatusSnapshot).mockResolvedValue({
+        statusRpcMock.mockResolvedValue({
             success: true,
             snapshot: makeScmSnapshot({
                 projectKey: 'machine-a:/repo-from-project',
@@ -246,15 +290,16 @@ describe('ScmRepositoryService.fetchSnapshotForSession', () => {
 
         const service = new ScmRepositoryService();
         const result = await service.fetchSnapshotForSession('session_1');
-
-        expect(result).not.toBeNull();
         expect(result?.projectKey).toBe('machine-a:/repo-from-project');
-        expect(sessionScmStatusSnapshot).toHaveBeenCalledWith('session_1', {});
+        expect(statusRpcMock).toHaveBeenCalledWith(expect.objectContaining({
+            machineId: 'machine-a', method: RPC_METHODS.SCM_STATUS_SNAPSHOT,
+            payload: expect.objectContaining({ cwd: '/repo-from-project', outcomeVersion: 1, operationStateVersion: 1 }),
+        }));
     });
 
     it('throws when rpc snapshot fetch fails', async () => {
         vi.spyOn(Date, 'now').mockReturnValue(1_700_000_000_000);
-        vi.spyOn(storage, 'getState').mockReturnValue({
+        setScmState({
             sessions: {
                 session_1: {
                     id: 'session_1',
@@ -265,7 +310,7 @@ describe('ScmRepositoryService.fetchSnapshotForSession', () => {
                 },
             },
         } as any);
-        vi.mocked(sessionScmStatusSnapshot).mockResolvedValue({
+        statusRpcMock.mockResolvedValue({
             success: false,
             error: 'command failed',
             errorCode: SCM_OPERATION_ERROR_CODES.COMMAND_FAILED,
@@ -288,8 +333,8 @@ describe('ScmRepositoryService.fetchSnapshotForSession', () => {
         ).toBe(SCM_OPERATION_ERROR_CODES.COMMAND_FAILED);
     });
 
-    it('throws a descriptive error when rpc snapshot payload is null', async () => {
-        vi.spyOn(storage, 'getState').mockReturnValue({
+    it('reports a typed unsupported response when the transport returns null', async () => {
+        setScmState({
             sessions: {
                 session_1: {
                     id: 'session_1',
@@ -300,17 +345,17 @@ describe('ScmRepositoryService.fetchSnapshotForSession', () => {
                 },
             },
         } as any);
-        vi.mocked(sessionScmStatusSnapshot).mockResolvedValue(null as any);
+        statusRpcMock.mockResolvedValue(null as any);
 
         const service = new ScmRepositoryService();
-        await expect(service.fetchSnapshotForSession('session_1')).rejects.toThrow(
-            'Invalid source-control status snapshot response'
-        );
+        await expect(service.fetchSnapshotForSession('session_1')).rejects.toMatchObject({
+            scmErrorCode: SCM_OPERATION_ERROR_CODES.FEATURE_UNSUPPORTED,
+        });
     });
 
-    it('throws when rpc invocation throws unexpectedly', async () => {
+    it('reports backend unavailability without exposing a transport exception', async () => {
         vi.spyOn(Date, 'now').mockReturnValue(1_700_000_000_001);
-        vi.spyOn(storage, 'getState').mockReturnValue({
+        setScmState({
             sessions: {
                 session_1: {
                     id: 'session_1',
@@ -321,15 +366,17 @@ describe('ScmRepositoryService.fetchSnapshotForSession', () => {
                 },
             },
         } as any);
-        vi.mocked(sessionScmStatusSnapshot).mockRejectedValue(new Error('network glitch'));
+        statusRpcMock.mockRejectedValue(new Error('network glitch'));
 
         const service = new ScmRepositoryService();
-        await expect(service.fetchSnapshotForSession('session_1')).rejects.toThrow('network glitch');
+        await expect(service.fetchSnapshotForSession('session_1')).rejects.toMatchObject({
+            scmErrorCode: SCM_OPERATION_ERROR_CODES.BACKEND_UNAVAILABLE,
+        });
     });
 
     it('returns a safe empty snapshot when rpc success response omits snapshot payload', async () => {
         vi.spyOn(Date, 'now').mockReturnValue(1_700_000_000_002);
-        vi.spyOn(storage, 'getState').mockReturnValue({
+        setScmState({
             sessions: {
                 session_1: {
                     id: 'session_1',
@@ -340,7 +387,7 @@ describe('ScmRepositoryService.fetchSnapshotForSession', () => {
                 },
             },
         } as any);
-        vi.mocked(sessionScmStatusSnapshot).mockResolvedValue({
+        statusRpcMock.mockResolvedValue({
             success: true,
             snapshot: null,
         } as any);
@@ -358,7 +405,7 @@ describe('ScmRepositoryService.fetchSnapshotForSession', () => {
     });
 
     it('uses a deterministic fallback project key when rpc snapshot key is empty', async () => {
-        vi.spyOn(storage, 'getState').mockReturnValue({
+        setScmState({
             sessions: {
                 session_1: {
                     id: 'session_1',
@@ -369,7 +416,7 @@ describe('ScmRepositoryService.fetchSnapshotForSession', () => {
                 },
             },
         } as any);
-        vi.mocked(sessionScmStatusSnapshot).mockResolvedValue({
+        statusRpcMock.mockResolvedValue({
             success: true,
             snapshot: {
                 ...makeSnapshot({
@@ -385,7 +432,7 @@ describe('ScmRepositoryService.fetchSnapshotForSession', () => {
     });
 
     it('normalizes scm snapshots into the ui working snapshot shape', async () => {
-        vi.spyOn(storage, 'getState').mockReturnValue({
+        setScmState({
             sessions: {
                 session_1: {
                     id: 'session_1',
@@ -396,7 +443,7 @@ describe('ScmRepositoryService.fetchSnapshotForSession', () => {
                 },
             },
         } as any);
-        vi.mocked(sessionScmStatusSnapshot).mockResolvedValue({
+        statusRpcMock.mockResolvedValue({
             success: true,
             snapshot: makeScmSnapshot({
                 repo: { isRepo: true, rootPath: '/repo', backendId: 'sapling', mode: '.sl', worktrees: [], remotes: [] },
@@ -430,7 +477,7 @@ describe('ScmRepositoryService.fetchSnapshotForSession', () => {
     });
 
     it('preserves a qualified external backend id in the ui working snapshot', async () => {
-        vi.spyOn(storage, 'getState').mockReturnValue({
+        setScmState({
             sessions: {
                 session_1: {
                     id: 'session_1',
@@ -441,7 +488,7 @@ describe('ScmRepositoryService.fetchSnapshotForSession', () => {
                 },
             },
         } as any);
-        vi.mocked(sessionScmStatusSnapshot).mockResolvedValue({
+        statusRpcMock.mockResolvedValue({
             success: true,
             snapshot: makeScmSnapshot({
                 repo: {
@@ -461,7 +508,7 @@ describe('ScmRepositoryService.fetchSnapshotForSession', () => {
     });
 
     it('preserves protocol repo metadata in the ui snapshot shape', async () => {
-        vi.spyOn(storage, 'getState').mockReturnValue({
+        setScmState({
             sessions: {
                 session_1: {
                     id: 'session_1',
@@ -472,7 +519,7 @@ describe('ScmRepositoryService.fetchSnapshotForSession', () => {
                 },
             },
         } as any);
-        vi.mocked(sessionScmStatusSnapshot).mockResolvedValue({
+        statusRpcMock.mockResolvedValue({
             success: true,
             snapshot: makeScmSnapshot({
                 repo: {
@@ -513,8 +560,8 @@ describe('ScmRepositoryService.fetchSnapshotForSession', () => {
         ]);
     });
 
-    it('does not pass tilde session paths to scm rpc (relies on session working directory)', async () => {
-        vi.spyOn(storage, 'getState').mockReturnValue({
+    it('routes tilde session working directories through the canonical SCM facade', async () => {
+        setScmState({
             machines: {
                 'machine-a': {
                     id: 'machine-a',
@@ -533,7 +580,7 @@ describe('ScmRepositoryService.fetchSnapshotForSession', () => {
                 },
             },
         } as any);
-        vi.mocked(sessionScmStatusSnapshot).mockResolvedValue({
+        statusRpcMock.mockResolvedValue({
             success: true,
             snapshot: makeScmSnapshot({
                 projectKey: 'machine-a:/Users/tester/repo',
@@ -544,11 +591,14 @@ describe('ScmRepositoryService.fetchSnapshotForSession', () => {
         const service = new ScmRepositoryService();
         await service.fetchSnapshotForSession('session_1');
 
-        expect(sessionScmStatusSnapshot).toHaveBeenCalledWith('session_1', {});
+        expect(statusRpcMock).toHaveBeenCalledWith(expect.objectContaining({
+            machineId: 'machine-a', method: RPC_METHODS.SCM_STATUS_SNAPSHOT,
+            payload: expect.objectContaining({ cwd: '~/repo', outcomeVersion: 1, operationStateVersion: 1 }),
+        }));
     });
 
     it('hydrates the shared machine/path cache when a session snapshot resolves a repo identity', async () => {
-        vi.spyOn(storage, 'getState').mockReturnValue({
+        setScmState({
             machines: {
                 'machine-a': {
                     id: 'machine-a',
@@ -567,7 +617,7 @@ describe('ScmRepositoryService.fetchSnapshotForSession', () => {
                 },
             },
         } as any);
-        vi.mocked(sessionScmStatusSnapshot).mockResolvedValue({
+        statusRpcMock.mockResolvedValue({
             success: true,
             snapshot: makeScmSnapshot({
                 projectKey: 'machine-a:/Users/tester/repo',
@@ -591,7 +641,7 @@ describe('ScmRepositoryService.fetchSnapshotForSession', () => {
     });
 
     it('stores session snapshots under the canonical repo root identity key when the session path is a subdirectory', async () => {
-        vi.spyOn(storage, 'getState').mockReturnValue({
+        setScmState({
             machines: {
                 'machine-a': {
                     id: 'machine-a',
@@ -610,7 +660,7 @@ describe('ScmRepositoryService.fetchSnapshotForSession', () => {
                 },
             },
         } as any);
-        vi.mocked(sessionScmStatusSnapshot).mockResolvedValue({
+        statusRpcMock.mockResolvedValue({
             success: true,
             snapshot: makeScmSnapshot({
                 projectKey: '',
@@ -640,7 +690,7 @@ describe('ScmRepositoryService.fetchSnapshotForSession', () => {
     });
 
     it('defaults missing capabilities to fully disabled regardless of backend id', async () => {
-        vi.spyOn(storage, 'getState').mockReturnValue({
+        setScmState({
             sessions: {
                 session_1: {
                     id: 'session_1',
@@ -651,7 +701,7 @@ describe('ScmRepositoryService.fetchSnapshotForSession', () => {
                 },
             },
         } as any);
-        vi.mocked(sessionScmStatusSnapshot).mockResolvedValue({
+        statusRpcMock.mockResolvedValue({
             success: true,
             snapshot: {
                 ...makeScmSnapshot({
@@ -670,7 +720,7 @@ describe('ScmRepositoryService.fetchSnapshotForSession', () => {
 
 describe('ScmRepositoryService.fetchWorktreesEnrichment', () => {
     it('uses the dedicated worktrees enrichment rpc and caches the result by machine path', async () => {
-        vi.mocked(runMachineScmRpc<ScmWorktreesEnrichmentResponse, ScmWorktreesEnrichmentRequest>).mockResolvedValue({
+        enrichmentRpcMock.mockResolvedValue({
             success: true,
             worktrees: [
                 { path: '/repo', changeCount: 4, lastActivityAt: 1_700_000_000_000 },
@@ -685,14 +735,14 @@ describe('ScmRepositoryService.fetchWorktreesEnrichment', () => {
             worktreePaths: ['/repo', '/repo/.worktrees/feature'],
         });
 
-        expect(runMachineScmRpc).toHaveBeenCalledWith(
-            'machine-a',
-            RPC_METHODS.SCM_WORKTREES_ENRICHMENT,
-            {
+        expect(enrichmentRpcMock).toHaveBeenCalledWith(expect.objectContaining({
+            machineId: 'machine-a', method: RPC_METHODS.SCM_WORKTREES_ENRICHMENT,
+            payload: expect.objectContaining({
                 cwd: '/repo',
                 worktreePaths: ['/repo', '/repo/.worktrees/feature'],
-            },
-        );
+                outcomeVersion: 1,
+            }),
+        }));
         expect(result).toEqual([
             { path: '/repo', changeCount: 4, lastActivityAt: 1_700_000_000_000 },
             { path: '/repo/.worktrees/feature', changeCount: 0, lastActivityAt: 1_699_000_000_000 },
@@ -707,7 +757,7 @@ describe('ScmRepositoryService.fetchWorktreesEnrichment', () => {
     });
 
     it('stores enrichment under the canonical repo identity after a child-path snapshot resolves the repo root', async () => {
-        vi.spyOn(storage, 'getState').mockReturnValue({
+        setScmState({
             machines: {
                 'machine-a': {
                     id: 'machine-a',
@@ -717,7 +767,7 @@ describe('ScmRepositoryService.fetchWorktreesEnrichment', () => {
                 },
             },
         } as any);
-        vi.mocked(machineScmStatusSnapshot).mockResolvedValue({
+        statusRpcMock.mockResolvedValue({
             success: true,
             snapshot: makeScmSnapshot({
                 projectKey: '',
@@ -730,7 +780,7 @@ describe('ScmRepositoryService.fetchWorktreesEnrichment', () => {
                 },
             }),
         } as any);
-        vi.mocked(runMachineScmRpc<ScmWorktreesEnrichmentResponse, ScmWorktreesEnrichmentRequest>).mockResolvedValue({
+        enrichmentRpcMock.mockResolvedValue({
             success: true,
             worktrees: [
                 { path: '/Users/tester/repo', changeCount: 4, lastActivityAt: 1_700_000_000_000 },
@@ -756,7 +806,7 @@ describe('ScmRepositoryService.fetchWorktreesEnrichment', () => {
     });
 
     it('splits enrichment requests at the protocol path limit', async () => {
-        vi.mocked(runMachineScmRpc<ScmWorktreesEnrichmentResponse, ScmWorktreesEnrichmentRequest>).mockResolvedValue({
+        enrichmentRpcMock.mockResolvedValue({
             success: true,
             worktrees: [],
         });
@@ -773,17 +823,17 @@ describe('ScmRepositoryService.fetchWorktreesEnrichment', () => {
             worktreePaths,
         });
 
-        expect(runMachineScmRpc).toHaveBeenCalledTimes(2);
-        expect(vi.mocked(runMachineScmRpc).mock.calls[0]?.[2]).toMatchObject({
+        expect(enrichmentRpcMock).toHaveBeenCalledTimes(2);
+        expect(enrichmentRpcMock.mock.calls[0]?.[0]?.payload).toMatchObject({
             worktreePaths: worktreePaths.slice(0, SCM_WORKTREES_ENRICHMENT_MAX_PATHS),
         });
-        expect(vi.mocked(runMachineScmRpc).mock.calls[1]?.[2]).toMatchObject({
+        expect(enrichmentRpcMock.mock.calls[1]?.[0]?.payload).toMatchObject({
             worktreePaths: worktreePaths.slice(SCM_WORKTREES_ENRICHMENT_MAX_PATHS),
         });
     });
 
     it('returns null and leaves the cache untouched when the enrichment rpc fails', async () => {
-        vi.mocked(runMachineScmRpc).mockResolvedValue({
+        enrichmentRpcMock.mockResolvedValue({
             success: false,
             error: 'porcelain failed',
         });
@@ -806,7 +856,7 @@ describe('ScmRepositoryService.fetchWorktreesEnrichment', () => {
 
 describe('ScmRepositoryService.fetchSnapshotForMachinePath', () => {
     it('scopes target-Home reads and caches by server when machine ids collide', async () => {
-        vi.spyOn(storage, 'getState').mockReturnValue({
+        setScmState({
             machines: {
                 'machine-a': {
                     id: 'machine-a',
@@ -814,7 +864,7 @@ describe('ScmRepositoryService.fetchSnapshotForMachinePath', () => {
                 },
             },
         } as any);
-        vi.mocked(machineScmStatusSnapshot).mockImplementation(async (_machineId, _request, options) => ({
+        statusRpcMock.mockImplementation(async ({ serverId }) => ({
             success: true,
             snapshot: makeScmSnapshot({
                 projectKey: '',
@@ -826,7 +876,7 @@ describe('ScmRepositoryService.fetchSnapshotForMachinePath', () => {
                     worktrees: [],
                 },
                 branch: {
-                    head: options?.serverId === 'server-a' ? 'from-a' : 'from-b',
+                    head: serverId === 'server-a' ? 'from-a' : 'from-b',
                     upstream: null,
                     ahead: 0,
                     behind: 0,
@@ -849,12 +899,14 @@ describe('ScmRepositoryService.fetchSnapshotForMachinePath', () => {
             homeDir: '/Users/shared',
         });
 
-        expect(machineScmStatusSnapshot).toHaveBeenNthCalledWith(1, 'machine-a', {
-            cwd: '/Users/shared/repo',
-        }, { serverId: 'server-a' });
-        expect(machineScmStatusSnapshot).toHaveBeenNthCalledWith(2, 'machine-a', {
-            cwd: '/Users/shared/repo',
-        }, { serverId: 'server-b' });
+        expect(statusRpcMock).toHaveBeenNthCalledWith(1, expect.objectContaining({
+            machineId: 'machine-a', method: RPC_METHODS.SCM_STATUS_SNAPSHOT, serverId: 'server-a',
+            payload: expect.objectContaining({ cwd: '/Users/shared/repo', outcomeVersion: 1, operationStateVersion: 1 }),
+        }));
+        expect(statusRpcMock).toHaveBeenNthCalledWith(2, expect.objectContaining({
+            machineId: 'machine-a', method: RPC_METHODS.SCM_STATUS_SNAPSHOT, serverId: 'server-b',
+            payload: expect.objectContaining({ cwd: '/Users/shared/repo', outcomeVersion: 1, operationStateVersion: 1 }),
+        }));
         expect(service.readCachedSnapshotForMachinePath({
             serverId: 'server-a',
             machineId: 'machine-a',
@@ -870,7 +922,7 @@ describe('ScmRepositoryService.fetchSnapshotForMachinePath', () => {
     });
 
     it('fetches and normalizes a repo snapshot through machine/path SCM without requiring a session', async () => {
-        vi.spyOn(storage, 'getState').mockReturnValue({
+        setScmState({
             machines: {
                 'machine-a': {
                     id: 'machine-a',
@@ -880,7 +932,7 @@ describe('ScmRepositoryService.fetchSnapshotForMachinePath', () => {
                 },
             },
         } as any);
-        vi.mocked(machineScmStatusSnapshot).mockResolvedValue({
+        statusRpcMock.mockResolvedValue({
             success: true,
             snapshot: makeScmSnapshot({
                 projectKey: '',
@@ -904,13 +956,10 @@ describe('ScmRepositoryService.fetchSnapshotForMachinePath', () => {
             path: '~/repo',
         });
 
-        expect(machineScmStatusSnapshot).toHaveBeenCalledWith(
-            'machine-a',
-            {
-                cwd: '/Users/tester/repo',
-            },
-            { serverId: 'server-a' },
-        );
+        expect(statusRpcMock).toHaveBeenCalledWith(expect.objectContaining({
+            machineId: 'machine-a', method: RPC_METHODS.SCM_STATUS_SNAPSHOT, serverId: 'server-a',
+            payload: expect.objectContaining({ cwd: '/Users/tester/repo', outcomeVersion: 1, operationStateVersion: 1 }),
+        }));
         expect(result).not.toBeNull();
         expect(result?.projectKey).toBe('machine-a:/Users/tester/repo');
         expect(result?.repo.rootPath).toBe('/Users/tester/repo');
@@ -921,7 +970,7 @@ describe('ScmRepositoryService.fetchSnapshotForMachinePath', () => {
     });
 
     it('normalizes projectKey to the repo root when the request path is a subdirectory and the backend omits projectKey', async () => {
-        vi.spyOn(storage, 'getState').mockReturnValue({
+        setScmState({
             machines: {
                 'machine-a': {
                     id: 'machine-a',
@@ -931,7 +980,7 @@ describe('ScmRepositoryService.fetchSnapshotForMachinePath', () => {
                 },
             },
         } as any);
-        vi.mocked(machineScmStatusSnapshot).mockResolvedValue({
+        statusRpcMock.mockResolvedValue({
             success: true,
             snapshot: makeScmSnapshot({
                 projectKey: '',
@@ -951,15 +1000,16 @@ describe('ScmRepositoryService.fetchSnapshotForMachinePath', () => {
             path: '~/repo/subdir',
         });
 
-        expect(machineScmStatusSnapshot).toHaveBeenCalledWith('machine-a', {
-            cwd: '/Users/tester/repo/subdir',
-        });
+        expect(statusRpcMock).toHaveBeenCalledWith(expect.objectContaining({
+            machineId: 'machine-a', method: RPC_METHODS.SCM_STATUS_SNAPSHOT,
+            payload: expect.objectContaining({ cwd: '/Users/tester/repo/subdir', outcomeVersion: 1, operationStateVersion: 1 }),
+        }));
         expect(result?.projectKey).toBe('machine-a:/Users/tester/repo');
         expect(result?.repo.rootPath).toBe('/Users/tester/repo');
     });
 
     it('normalizes repo root paths before building the canonical projectKey', async () => {
-        vi.spyOn(storage, 'getState').mockReturnValue({
+        setScmState({
             machines: {
                 'machine-a': {
                     id: 'machine-a',
@@ -969,7 +1019,7 @@ describe('ScmRepositoryService.fetchSnapshotForMachinePath', () => {
                 },
             },
         } as any);
-        vi.mocked(machineScmStatusSnapshot).mockResolvedValue({
+        statusRpcMock.mockResolvedValue({
             success: true,
             snapshot: makeScmSnapshot({
                 projectKey: '',
@@ -993,7 +1043,7 @@ describe('ScmRepositoryService.fetchSnapshotForMachinePath', () => {
     });
 
     it('deduplicates concurrent machine/path snapshot requests for the same repo identity', async () => {
-        vi.spyOn(storage, 'getState').mockReturnValue({
+        setScmState({
             machines: {
                 'machine-a': {
                     id: 'machine-a',
@@ -1010,7 +1060,7 @@ describe('ScmRepositoryService.fetchSnapshotForMachinePath', () => {
         const snapshotPromise = new Promise<any>((resolve) => {
             deferredSnapshot.resolve = resolve;
         });
-        vi.mocked(machineScmStatusSnapshot).mockReturnValue(snapshotPromise as any);
+        statusRpcMock.mockReturnValue(snapshotPromise as any);
 
         const service = new ScmRepositoryService();
         const firstPromise = service.fetchSnapshotForMachinePath({
@@ -1022,7 +1072,7 @@ describe('ScmRepositoryService.fetchSnapshotForMachinePath', () => {
             path: '~/repo',
         });
 
-        expect(machineScmStatusSnapshot).toHaveBeenCalledTimes(1);
+        expect(statusRpcMock).toHaveBeenCalledTimes(1);
 
         deferredSnapshot.resolve({
             success: true,
@@ -1039,11 +1089,11 @@ describe('ScmRepositoryService.fetchSnapshotForMachinePath', () => {
 
         const [firstResult, secondResult] = await Promise.all([firstPromise, secondPromise]);
         expect(firstResult).toEqual(secondResult);
-        expect(machineScmStatusSnapshot).toHaveBeenCalledTimes(1);
+        expect(statusRpcMock).toHaveBeenCalledTimes(1);
     });
 
     it('deduplicates concurrent machine/path snapshot requests before subdirectory aliases are known', async () => {
-        vi.spyOn(storage, 'getState').mockReturnValue({
+        setScmState({
             machines: {
                 'machine-a': {
                     id: 'machine-a',
@@ -1060,7 +1110,7 @@ describe('ScmRepositoryService.fetchSnapshotForMachinePath', () => {
         const snapshotPromise = new Promise<any>((resolve) => {
             deferredSnapshot.resolve = resolve;
         });
-        vi.mocked(machineScmStatusSnapshot).mockReturnValue(snapshotPromise as any);
+        statusRpcMock.mockReturnValue(snapshotPromise as any);
 
         const service = new ScmRepositoryService();
         const rootPromise = service.fetchSnapshotForMachinePath({
@@ -1072,7 +1122,7 @@ describe('ScmRepositoryService.fetchSnapshotForMachinePath', () => {
             path: '~/repo/subdir',
         });
 
-        expect(machineScmStatusSnapshot).toHaveBeenCalledTimes(1);
+        expect(statusRpcMock).toHaveBeenCalledTimes(1);
 
         deferredSnapshot.resolve({
             success: true,
@@ -1091,11 +1141,11 @@ describe('ScmRepositoryService.fetchSnapshotForMachinePath', () => {
         const [rootResult, childResult] = await Promise.all([rootPromise, childPromise]);
         expect(rootResult).toEqual(childResult);
         expect(rootResult?.projectKey).toBe('machine-a:/Users/tester/repo');
-        expect(machineScmStatusSnapshot).toHaveBeenCalledTimes(1);
+        expect(statusRpcMock).toHaveBeenCalledTimes(1);
     });
 
     it('waits for an in-flight sibling path snapshot before issuing another first snapshot', async () => {
-        vi.spyOn(storage, 'getState').mockReturnValue({
+        setScmState({
             machines: {
                 'machine-a': {
                     id: 'machine-a',
@@ -1112,7 +1162,7 @@ describe('ScmRepositoryService.fetchSnapshotForMachinePath', () => {
         const snapshotPromise = new Promise<any>((resolve) => {
             deferredSnapshot.resolve = resolve;
         });
-        vi.mocked(machineScmStatusSnapshot).mockReturnValue(snapshotPromise as any);
+        statusRpcMock.mockReturnValue(snapshotPromise as any);
 
         const service = new ScmRepositoryService();
         const packageAPromise = service.fetchSnapshotForMachinePath({
@@ -1124,7 +1174,7 @@ describe('ScmRepositoryService.fetchSnapshotForMachinePath', () => {
             path: '~/repo/packages/package-b',
         });
 
-        expect(machineScmStatusSnapshot).toHaveBeenCalledTimes(1);
+        expect(statusRpcMock).toHaveBeenCalledTimes(1);
 
         deferredSnapshot.resolve({
             success: true,
@@ -1143,11 +1193,11 @@ describe('ScmRepositoryService.fetchSnapshotForMachinePath', () => {
         const [packageAResult, packageBResult] = await Promise.all([packageAPromise, packageBPromise]);
         expect(packageAResult).toEqual(packageBResult);
         expect(packageAResult?.projectKey).toBe('machine-a:/Users/tester/repo');
-        expect(machineScmStatusSnapshot).toHaveBeenCalledTimes(1);
+        expect(statusRpcMock).toHaveBeenCalledTimes(1);
     });
 
     it('does not wait for sibling repository paths that only share a Windows home directory', async () => {
-        vi.spyOn(storage, 'getState').mockReturnValue({
+        setScmState({
             machines: {
                 'machine-a': {
                     id: 'machine-a',
@@ -1159,7 +1209,7 @@ describe('ScmRepositoryService.fetchSnapshotForMachinePath', () => {
         } as any);
 
         const snapshotPromise = new Promise<any>(() => {});
-        vi.mocked(machineScmStatusSnapshot).mockReturnValue(snapshotPromise as any);
+        statusRpcMock.mockReturnValue(snapshotPromise as any);
 
         const service = new ScmRepositoryService();
         void service.fetchSnapshotForMachinePath({
@@ -1171,11 +1221,11 @@ describe('ScmRepositoryService.fetchSnapshotForMachinePath', () => {
             path: '~\\repo-b',
         });
 
-        expect(machineScmStatusSnapshot).toHaveBeenCalledTimes(2);
+        expect(statusRpcMock).toHaveBeenCalledTimes(2);
     });
 
     it('does not deduplicate concurrent lightweight and enriched machine/path snapshot requests', async () => {
-        vi.spyOn(storage, 'getState').mockReturnValue({
+        setScmState({
             machines: {
                 'machine-a': {
                     id: 'machine-a',
@@ -1213,7 +1263,7 @@ describe('ScmRepositoryService.fetchSnapshotForMachinePath', () => {
             },
         });
 
-        vi.mocked(machineScmStatusSnapshot)
+        statusRpcMock
             .mockResolvedValueOnce({ success: true, snapshot: lightweightSnapshot } as any)
             .mockResolvedValueOnce({ success: true, snapshot: enrichedSnapshot } as any);
 
@@ -1230,7 +1280,7 @@ describe('ScmRepositoryService.fetchSnapshotForMachinePath', () => {
             }),
         ]);
 
-        expect(machineScmStatusSnapshot).toHaveBeenCalledTimes(2);
+        expect(statusRpcMock).toHaveBeenCalledTimes(2);
         expect(service.readCachedSnapshotForMachinePath({
             machineId: 'machine-a',
             path: '~/repo',
@@ -1245,7 +1295,7 @@ describe('ScmRepositoryService.fetchSnapshotForMachinePath', () => {
     });
 
     it('deduplicates concurrent session and machine/path snapshot requests for the same repo identity', async () => {
-        vi.spyOn(storage, 'getState').mockReturnValue({
+        setScmState({
             machines: {
                 'machine-a': {
                     id: 'machine-a',
@@ -1271,7 +1321,7 @@ describe('ScmRepositoryService.fetchSnapshotForMachinePath', () => {
         const snapshotPromise = new Promise<any>((resolve) => {
             deferredSnapshot.resolve = resolve;
         });
-        vi.mocked(sessionScmStatusSnapshot).mockReturnValue(snapshotPromise as any);
+        statusRpcMock.mockReturnValue(snapshotPromise as any);
 
         const service = new ScmRepositoryService();
         const firstPromise = service.fetchSnapshotForSession('session_1');
@@ -1280,8 +1330,7 @@ describe('ScmRepositoryService.fetchSnapshotForMachinePath', () => {
             path: '~/repo',
         });
 
-        expect(sessionScmStatusSnapshot).toHaveBeenCalledTimes(1);
-        expect(machineScmStatusSnapshot).not.toHaveBeenCalled();
+        expect(statusRpcMock).toHaveBeenCalledTimes(1);
 
         deferredSnapshot.resolve({
             success: true,
@@ -1305,11 +1354,11 @@ describe('ScmRepositoryService.fetchSnapshotForMachinePath', () => {
                 projectKey: 'machine-a:/Users/tester/repo',
             }),
         ]);
-        expect(machineScmStatusSnapshot).not.toHaveBeenCalled();
+        expect(statusRpcMock).toHaveBeenCalledTimes(1);
     });
 
     it('caches the last normalized machine/path snapshot by repo identity', async () => {
-        vi.spyOn(storage, 'getState').mockReturnValue({
+        setScmState({
             machines: {
                 'machine-a': {
                     id: 'machine-a',
@@ -1319,7 +1368,7 @@ describe('ScmRepositoryService.fetchSnapshotForMachinePath', () => {
                 },
             },
         } as any);
-        vi.mocked(machineScmStatusSnapshot).mockResolvedValue({
+        statusRpcMock.mockResolvedValue({
             success: true,
             snapshot: makeScmSnapshot({
                 repo: {
@@ -1345,7 +1394,7 @@ describe('ScmRepositoryService.fetchSnapshotForMachinePath', () => {
     });
 
     it('returns a cached repo snapshot when reading from a subdirectory path within the same repo', async () => {
-        vi.spyOn(storage, 'getState').mockReturnValue({
+        setScmState({
             machines: {
                 'machine-a': {
                     id: 'machine-a',
@@ -1355,7 +1404,7 @@ describe('ScmRepositoryService.fetchSnapshotForMachinePath', () => {
                 },
             },
         } as any);
-        vi.mocked(machineScmStatusSnapshot).mockResolvedValue({
+        statusRpcMock.mockResolvedValue({
             success: true,
             snapshot: makeScmSnapshot({
                 projectKey: '',
@@ -1382,7 +1431,7 @@ describe('ScmRepositoryService.fetchSnapshotForMachinePath', () => {
     });
 
     it('stores machine/path snapshots under the canonical repo root identity key when the request is a subdirectory', async () => {
-        vi.spyOn(storage, 'getState').mockReturnValue({
+        setScmState({
             machines: {
                 'machine-a': {
                     id: 'machine-a',
@@ -1392,7 +1441,7 @@ describe('ScmRepositoryService.fetchSnapshotForMachinePath', () => {
                 },
             },
         } as any);
-        vi.mocked(machineScmStatusSnapshot).mockResolvedValue({
+        statusRpcMock.mockResolvedValue({
             success: true,
             snapshot: makeScmSnapshot({
                 projectKey: '',
@@ -1420,7 +1469,7 @@ describe('ScmRepositoryService.fetchSnapshotForMachinePath', () => {
     });
 
     it('does not rely on aliased cache entries surviving forever (alias eviction falls back to prefix-scan)', async () => {
-        vi.spyOn(storage, 'getState').mockReturnValue({
+        setScmState({
             machines: {
                 'machine-a': {
                     id: 'machine-a',
@@ -1430,7 +1479,7 @@ describe('ScmRepositoryService.fetchSnapshotForMachinePath', () => {
                 },
             },
         } as any);
-        vi.mocked(machineScmStatusSnapshot).mockResolvedValue({
+        statusRpcMock.mockResolvedValue({
             success: true,
             snapshot: makeScmSnapshot({
                 projectKey: '',

@@ -11,6 +11,7 @@ import {
     type LocalServicePublicExposureModeV1,
     type LocalServicePublicExposureV1,
     type RuntimeActionExecute,
+    type BrowserViewTargetV1,
 } from '@happier-dev/protocol';
 
 import {
@@ -21,6 +22,7 @@ import {
 import { setClipboardStringSafe } from '@/utils/ui/clipboard';
 
 type CopyToClipboard = (value: string) => Promise<boolean>;
+export type LocalServicePublicPreviewActionTarget = LocalServiceLaunchTargetV1 | Extract<BrowserViewTargetV1, { kind: 'localServicePreview' }>;
 
 /**
  * Exposure shape chosen by the user at create time (UB-4).
@@ -36,7 +38,7 @@ export type LocalServicePublicPreviewCreateOptions = Readonly<{
 
 export type LocalServicePublicPreviewActions = Readonly<{
     create: (
-        target: LocalServiceLaunchTargetV1,
+        target: LocalServicePublicPreviewActionTarget,
         options?: LocalServicePublicPreviewCreateOptions,
     ) => Promise<unknown>;
     copyUrl: (exposure: LocalServicePublicExposureV1) => Promise<boolean>;
@@ -60,12 +62,12 @@ function normalizeNonEmptyString(value: unknown): string | undefined {
     return trimmed.length > 0 ? trimmed : undefined;
 }
 
-function readPreviewTarget(target: LocalServiceLaunchTargetV1): Readonly<{
+function readPreviewTarget(target: LocalServicePublicPreviewActionTarget): Readonly<{
     machineId: string;
     sessionId: string;
     previewId: string;
 }> | null {
-    const browserTarget = target.browserTarget;
+    const browserTarget = 'kind' in target ? target : target.browserTarget;
     if (browserTarget?.kind !== 'localServicePreview') {
         return null;
     }
@@ -90,7 +92,7 @@ function context(input: CreateLocalServicePublicPreviewActionsInput) {
 }
 
 function defaultCreateRequest(
-    target: LocalServiceLaunchTargetV1,
+    target: LocalServicePublicPreviewActionTarget,
     input: CreateLocalServicePublicPreviewActionsInput,
     options?: LocalServicePublicPreviewCreateOptions,
 ): DaemonLocalServicePublicPreviewCreateRequestV1 | null {

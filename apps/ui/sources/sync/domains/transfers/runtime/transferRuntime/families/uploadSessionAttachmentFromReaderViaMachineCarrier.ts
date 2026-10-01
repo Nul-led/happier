@@ -9,6 +9,7 @@ import type { TransferFinalizeRecoveryFailure } from '../plumbing/directTransfer
 type TransferFailureResponse = Readonly<{ success: false; error: string; errorCode?: string }>;
 type SessionUploadRequest = SessionAttachmentsUploadInitRequest & Readonly<{
     t: 'session_attachment_upload_v1';
+    sessionId: string;
     workingDirectory: string;
 }>;
 export async function uploadSessionAttachmentFromReaderViaMachineCarrier(params: Readonly<{

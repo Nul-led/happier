@@ -1,3 +1,4 @@
+import type { PersistedTakeoverAdmissionWaiter } from '../spawn/persistedTakeoverAdmission';
 import { configuration } from '@/configuration';
 import { createSessionInitialAccessFile } from '../spawn/sessionInitialAccessFile';
 import {
@@ -30,6 +31,10 @@ import { resolveConnectedServiceAuthForSpawn } from '../connectedServices/resolv
 import type { ConnectedServiceRefreshCoordinator } from '../connectedServices/refresh/ConnectedServiceRefreshCoordinator';
 import type { ConnectedServiceQuotasCoordinator } from '../connectedServices/quotas/ConnectedServiceQuotasCoordinator';
 import { ensureSessionDirectory } from './ensureSessionDirectory';
+import { createManagedSessionDirectories } from '@/session/creation/managedSessionDirectories';
+import { seedManagedSessionDirectory } from '@/session/creation/seedManagedSessionDirectory';
+import { isDefiniteReplaySeededPreAdmissionRejection } from '@/session/services/spawnPreAdmissionRejection';
+import { readSessionCreationTerminalSpawnErrorDetail } from '@/api/session/sessionCreationTerminalSpawnErrorDetail';
 import { prepareExecuteSpawnSessionRequest } from './prepareExecuteSpawnSessionRequest';
 import { refreshAccountSettingsForDaemonRequest } from './accountSettingsFreshness';
 import {
@@ -80,7 +85,7 @@ import {
 import type { DeviceLocalSecretStorage } from '../deviceLocalSecretStorage';
 import { getActiveAccountSettingsSnapshot } from '@/settings/accountSettings/activeAccountSettingsSnapshot';
 import { resolveSpawnLaunchProfileDefaults } from '../spawn/resolveSpawnLaunchProfileDefaults';
-import { readProfilesFromAccountSettings } from '@/settings/profiles/readProfilesFromAccountSettings';
+import { loadAccountLaunchProfileArtifacts, readProfilesFromAccountSettings } from '@/settings/profiles/readProfilesFromAccountSettings';
 import {
     LaunchSecretReferenceOverlayError,
     readLaunchSecretReferenceOverlayProviderErrorCodeV1,
@@ -95,6 +100,7 @@ type SpawnAuthGroupSwitchCoordinator = Parameters<typeof resolveConnectedService
 type SpawnPredictiveSwitchGuard = Parameters<typeof resolveConnectedServiceAuthForSpawn>[0]['predictiveSwitchGuard'];
 export type ExecuteSpawnSessionRequestParams = Readonly<{
     options: SpawnSessionOptions;
+    persistedTakeoverAdmissionWaiter?: Pick<PersistedTakeoverAdmissionWaiter, 'getRegistration'>;
     credentials: SpawnCredentials;
     deviceLocalSecretStorage?: DeviceLocalSecretStorage;
     api: SpawnApi;
@@ -151,13 +157,26 @@ export async function executeSpawnSessionRequest(
     params: ExecuteSpawnSessionRequestParams,
 ): Promise<SpawnSessionResult> {
     let options = params.options;
-
+    let takeoverAdmission: ReturnType<PersistedTakeoverAdmissionWaiter['getRegistration']> = null;
     try {
+        takeoverAdmission = options.persistedTakeoverAdmission
+            ? params.persistedTakeoverAdmissionWaiter?.getRegistration(options.persistedTakeoverAdmission) ?? null
+            : null;
+        if (options.persistedTakeoverAdmission && !takeoverAdmission) {
+            return {
+                type: 'error',
+                errorCode: SPAWN_SESSION_ERROR_CODES.SPAWN_FAILED,
+                errorMessage: 'Takeover admission attempt is unavailable',
+            };
+        }
         // A profile id is stable Account intent. Refresh before resolving it so
         // the daemon, rather than an Action/UI caller, owns the profile overlay.
         await refreshAccountSettingsForSpawn(params);
 
         const activeAccountSettingsSnapshot = getActiveAccountSettingsSnapshot();
+        const launchProfileArtifacts = options.profileId
+            ? await loadAccountLaunchProfileArtifacts(activeAccountSettingsSnapshot?.settings, params.credentials)
+            : undefined;
         let prepared = await prepareExecuteSpawnSessionRequest({
             request: {
                 ...params,
@@ -174,6 +193,7 @@ export async function executeSpawnSessionRequest(
             options,
             effectiveBackendTarget: prepared.effectiveBackendTargetV2,
             rawSettings: activeAccountSettingsSnapshot?.settings,
+            artifactsById: launchProfileArtifacts,
         });
         if (!profileResolution.ok) return profileResolution.result;
         if (profileResolution.options !== options) {
@@ -198,7 +218,7 @@ export async function executeSpawnSessionRequest(
         }
 
         const {
-            directory,
+            directory: preparedDirectory,
             sessionId,
             permissionMode,
             permissionModeUpdatedAt,
@@ -214,6 +234,24 @@ export async function executeSpawnSessionRequest(
             environmentVariablesValidation,
             persistedProviderResumeState,
         } = prepared;
+        let directory = preparedDirectory;
+        options = {
+            ...options,
+            directoryKind: prepared.directoryKind,
+            ...(prepared.sessionCreationTag ? { sessionCreationTag: prepared.sessionCreationTag } : {}),
+        };
+        const managedDirectoryOwner = prepared.directoryKind === 'managed'
+            ? createManagedSessionDirectories()
+            : null;
+        let managedAllocation: Readonly<{ allocationId: string; created: boolean }> | null = null;
+        let childLaunchSubmitted = false;
+        const rollbackManagedAllocation = async () => {
+            if (!managedDirectoryOwner || !managedAllocation?.created) return;
+            try { await managedDirectoryOwner.rollbackFreshSpawn({ ...managedAllocation,
+                ...(normalizedExistingSessionId ? { sessionId: normalizedExistingSessionId } : {}),
+            }); }
+            catch (error) { logger.warn('[DAEMON RUN] Managed directory rollback remains pending', { error }); }
+        };
 
         let spawnResourceCleanupOnExit: (() => void | Promise<void>) | null = null;
         let retainResourcesForUntrackedTmuxChild = false;
@@ -236,6 +274,7 @@ export async function executeSpawnSessionRequest(
         if (options.profileId) {
             const matchingProfiles = readProfilesFromAccountSettings(
                 activeAccountSettingsSnapshot?.settings,
+                launchProfileArtifacts,
             ).visibleProfiles.filter((profile) => profile.id === options.profileId);
             if (matchingProfiles.length === 1 && activeAccountSettingsSnapshot) {
                 try {
@@ -344,6 +383,7 @@ export async function executeSpawnSessionRequest(
                     { type: 'error' | 'requestToApproveDirectoryCreation' }
                 >,
             ): Promise<SpawnSessionResult> => {
+                await rollbackManagedAllocation();
                 const incompleteRetirement =
                     await retireLaunchResources();
                 return incompleteRetirement
@@ -373,6 +413,7 @@ export async function executeSpawnSessionRequest(
                 catalogAgentId,
                 ...(modelSelection ? { modelSelection } : {}),
                 profileEnvironmentVariables: profileLaunchEnvironment,
+                launchProfileArtifacts,
                 daemonSpawnHooks,
                 persistedProviderBinding: priorBindingMetadata,
                 normalizedExistingSessionId,
@@ -390,11 +431,37 @@ export async function executeSpawnSessionRequest(
             if (!daemonProviderLaunch.ok) {
                 return await refuseSpawn(daemonProviderLaunch.result);
             }
-            const ensuredDirectory = await ensureSessionDirectory({
-                directory,
-                approvedNewDirectoryCreation:
-                    options.approvedNewDirectoryCreation ?? true,
-            });
+            const managedDirectory = managedDirectoryOwner
+                ? await managedDirectoryOwner.prepareForSpawn({
+                    directory,
+                    sessionCreationTag: options.sessionCreationTag,
+                    existingSessionId: normalizedExistingSessionId,
+                    freshSessionCreation: options.freshSessionCreation,
+                    approvedNewDirectoryCreation: options.approvedNewDirectoryCreation,
+                    resumeRequestId: options.executionAuthorization?.requestId,
+                })
+                : null;
+            if (managedDirectory && !managedDirectory.ok) {
+                return await refuseSpawn({
+                    type: 'error', errorCode: managedDirectory.errorCode,
+                    errorMessage: 'The private Session directory is missing. Confirm creation of a new directory to resume.',
+                });
+            }
+            if (managedDirectory?.ok) {
+                managedAllocation = { allocationId: managedDirectory.allocationId, created: managedDirectory.created === true };
+                const identityChanged = directory !== managedDirectory.directory;
+                directory = managedDirectory.directory;
+                options = {
+                    ...options, directory,
+                    ...(identityChanged ? { attachMetadataIdentityPolicy: 'replace_with_runtime_identity' } : {}),
+                };
+            }
+            const ensuredDirectory = managedDirectory?.ok
+                ? { ok: true as const, directoryCreated: managedDirectory.directoryCreated === true }
+                : await ensureSessionDirectory({
+                    directory,
+                    approvedNewDirectoryCreation: options.approvedNewDirectoryCreation ?? true,
+                });
             if (!ensuredDirectory.ok) {
                 logger.debug(
                     '[DAEMON RUN] Session directory setup failed',
@@ -408,6 +475,22 @@ export async function executeSpawnSessionRequest(
                 return await refuseSpawn(ensuredDirectory.response);
             }
             const directoryCreated = ensuredDirectory.directoryCreated;
+            if (managedDirectoryOwner && options.managedDirectorySeed) {
+                if (!options.sessionCreationTag || (normalizedExistingSessionId && !options.freshSessionCreation)) {
+                    return await refuseSpawn({ type: 'error', errorCode: SPAWN_SESSION_ERROR_CODES.INVALID_REQUEST,
+                        errorMessage: 'Managed directory seeding requires a fresh creation allocation' });
+                }
+                const seeded = await seedManagedSessionDirectory({
+                    activeServerDir: configuration.activeServerDir,
+                    sessionCreationTag: options.sessionCreationTag,
+                    targetPath: directory,
+                    seed: options.managedDirectorySeed,
+                });
+                if (!seeded.ok) {
+                    return await refuseSpawn({ type: 'error', errorCode: seeded.errorCode,
+                        errorMessage: 'The source private Session directory is missing; fork files could not be copied.' });
+                }
+            }
             if (params.controlPluginDevelopment) {
                 try {
                     const developmentRegistration = await params.controlPluginDevelopment({
@@ -436,7 +519,12 @@ export async function executeSpawnSessionRequest(
                     runnerAgentSessionBootstrap.cleanupBootstrapFile,
                 );
             }
-            const optionsWithProviderIsolation = daemonProviderLaunch.options;
+            const optionsWithProviderIsolation = {
+                ...daemonProviderLaunch.options, directory,
+                directoryKind: options.directoryKind,
+                ...(options.sessionCreationTag ? { sessionCreationTag: options.sessionCreationTag } : {}),
+                ...(options.attachMetadataIdentityPolicy ? { attachMetadataIdentityPolicy: options.attachMetadataIdentityPolicy } : {}),
+            };
             const providerBindingAttempt: ProviderSpawnAuthorizationAttempt | null = daemonProviderLaunch.attempt;
             const providerAgentTargetKey = daemonProviderLaunch.agentTargetKey;
             const managedProviderBindingAttempt = (
@@ -466,9 +554,8 @@ export async function executeSpawnSessionRequest(
             // and from then on is an attach to that exact Session.
             let launchExistingSessionId = normalizedExistingSessionId;
             let launchSessionAttachPayload = sessionAttachPayload;
-            let launchOptions = optionsWithProviderIsolation;
+            let launchOptions: SpawnSessionOptions = optionsWithProviderIsolation;
             let committedLaunchSession: CommittedDaemonLaunchSession | null = null;
-            let childLaunchSubmitted = false;
             if (
                 !normalizedExistingSessionId
                 && daemonLaunchRequiresCommittedSession(optionsWithProviderIsolation)
@@ -916,6 +1003,7 @@ export async function executeSpawnSessionRequest(
                 happyHomeDir: configuration.happyHomeDir,
                 pidToTrackedSession: params.pidToTrackedSession,
                 pidToAwaiter: params.pidToAwaiter,
+                takeoverAdmission: takeoverAdmission ?? undefined,
                 pidToSpawnResultResolver: params.pidToSpawnResultResolver,
                 pidToSpawnWebhookTimeout: params.pidToSpawnWebhookTimeout,
                 resolveCanonicalTrackedSessionId: params.resolveCanonicalTrackedSessionId,
@@ -931,7 +1019,19 @@ export async function executeSpawnSessionRequest(
                     retainResourcesForUntrackedTmuxChild = true;
                 },
             });
+            if (spawnResult.type === 'success' && spawnResult.sessionId && managedAllocation && managedDirectoryOwner) {
+                try {
+                    await managedDirectoryOwner.bind({ allocationId: managedAllocation.allocationId, sessionId: spawnResult.sessionId });
+                } catch (error) {
+                    // Admission already succeeded. Retain its owner record for
+                    // startup tag reconciliation and preserve the true result.
+                    logger.warn('[DAEMON RUN] Managed directory binding remains pending', {
+                        allocationId: managedAllocation.allocationId, sessionId: spawnResult.sessionId, error,
+                    });
+                }
+            }
             if (spawnResult.type === 'error' && !retainResourcesForUntrackedTmuxChild) {
+                if (isDefiniteReplaySeededPreAdmissionRejection(spawnResult.errorCode)) await rollbackManagedAllocation();
                 const incompleteRetirement =
                     await retireLaunchResources();
                 if (incompleteRetirement) {
@@ -948,6 +1048,8 @@ export async function executeSpawnSessionRequest(
             }
             return spawnResult;
         } catch (error) {
+            if (!childLaunchSubmitted) await rollbackManagedAllocation();
+            const terminalDetail = readSessionCreationTerminalSpawnErrorDetail(error);
             const errorMessage = launchResourceScope.sanitize(error);
             let incompleteRetirement: string | null = null;
             if (!retainResourcesForUntrackedTmuxChild) {
@@ -959,7 +1061,10 @@ export async function executeSpawnSessionRequest(
             });
             return {
                 type: 'error',
-                errorCode: SPAWN_SESSION_ERROR_CODES.SPAWN_FAILED,
+                errorCode: terminalDetail && !incompleteRetirement
+                    ? SPAWN_SESSION_ERROR_CODES.SPAWN_VALIDATION_FAILED
+                    : SPAWN_SESSION_ERROR_CODES.SPAWN_FAILED,
+                ...(terminalDetail && !incompleteRetirement ? { errorDetail: terminalDetail } : {}),
                 errorMessage:
                     incompleteRetirement
                     ?? (
@@ -978,5 +1083,7 @@ export async function executeSpawnSessionRequest(
             backendTargetKind: resolveConcreteBackendTargetRefV2(options.backendTarget)?.kind ?? null,
         });
         throw error;
+    } finally {
+        takeoverAdmission?.cancel();
     }
 }

@@ -17,7 +17,9 @@ import { createDeferred } from '@/dev/testkit';
 
 import {
     createSessionDraftRepository,
+    isNewSessionDraftListed,
     readSessionDiscussionSelectionSourceFromDraft,
+    readSessionScmDraftFromDraft,
     type SessionDraftRepositoryCipher,
     type SessionDraftRepositoryTransport,
 } from './sessionDraftRepository';
@@ -329,6 +331,41 @@ describe('sessionDraftRepository', () => {
         )).toBeNull();
     });
 
+    it('keeps the Git pane drafts on the Session draft beside the composer, outside the composer lifecycle', () => {
+        const repository = createSessionDraftRepository({ storage: createMemoryStorage(), cipher: plainCipher(), syncEnabled: false });
+        repository.writeExistingSessionDraft({
+            scope,
+            sessionId: 'session-a',
+            patch: {
+                scmCommitMessageV1: 'Key the settings modal by route',
+                scmPullRequestV1: { title: 'Key the settings modal by route', body: 'Fixes the remount.', draft: true, base: 'dev' },
+            },
+        });
+        const read = () => readSessionScmDraftFromDraft(
+            repository.getSessionDraftSnapshot(scope, { kind: 'session', sessionId: 'session-a' })?.document,
+        );
+        expect(read()).toEqual({
+            commitMessage: 'Key the settings modal by route',
+            pullRequest: { title: 'Key the settings modal by route', body: 'Fixes the remount.', draft: true, base: 'dev' },
+        });
+        // A Git-only draft is not a message draft: the session list does not mark the row.
+        expect(repository.getExistingSessionDraftProjection(scope, 'session-a')?.listed).toBe(false);
+
+        repository.writeExistingSessionDraft({ scope, sessionId: 'session-a', patch: { text: 'hello' } });
+        expect(repository.getExistingSessionDraftProjection(scope, 'session-a')?.listed).toBe(true);
+
+        // Sending clears only the composer's captured fields; the Git drafts survive.
+        const currentness = repository.captureSessionDraftCurrentness({ scope, address: { kind: 'session', sessionId: 'session-a' } });
+        repository.clearSessionDraftCurrentnessLocal({
+            scope, address: { kind: 'session', sessionId: 'session-a' }, currentness,
+            fieldIds: ['composer.text', 'composer.mentions', 'composer.attachments'],
+        });
+        expect(read().commitMessage).toBe('Key the settings modal by route');
+
+        repository.writeExistingSessionDraft({ scope, sessionId: 'session-a', patch: { scmCommitMessageV1: null, scmPullRequestV1: null } });
+        expect(read()).toEqual({ commitMessage: '', pullRequest: null });
+    });
+
     it('retains opaque envelope fields and the predecessor entry pointer when editing a hydrated scope', () => {
         const storage = createMemoryStorage();
         const repository = createSessionDraftRepository({ storage, cipher: plainCipher(), syncEnabled: false });
@@ -628,6 +665,7 @@ describe('sessionDraftRepository', () => {
             scope,
             draftId: address.draftId,
             patch: {
+                text: 'Run on machine A',
                 authoring: {
                     executionTarget: {
                         kind: 'machine',
@@ -805,6 +843,94 @@ describe('sessionDraftRepository', () => {
 
         expect(repository.getSessionDraftSnapshot(scope, address)).toMatchObject({ materialized: true });
         expect(vi.mocked(remote.transport.mutate)).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps an opened composer out of the drafts until the user writes content', async () => {
+        // Opening New Session resolves and autosaves its configuration (Machine,
+        // folder, permission) before the user types anything. That must not
+        // create, sync or list a draft: the dev account collected dozens of empty
+        // "Untitled draft" / folder-only rows this way.
+        const address = { kind: 'newSession', draftId: uuid(320) } as const;
+        const remote = createRemote(undefined, address);
+        const repository = createSessionDraftRepository({
+            storage: createMemoryStorage(),
+            transport: remote.transport,
+            syncEnabled: true,
+            cipher: plainCipher(),
+            now: () => 10,
+        });
+
+        repository.writeNewSessionDraft({
+            scope,
+            draftId: address.draftId,
+            patch: { authoring: { directory: '/home/user', permissionMode: 'default' } },
+            materializationIntent: 'userEdit',
+        });
+        await repository.flushSessionDraft({ scope, address });
+
+        expect(repository.getSessionDraftSnapshot(scope, address)).toBeNull();
+        expect(repository.listNewSessionDraftProjections(scope)).toEqual([]);
+        expect(vi.mocked(remote.transport.mutate)).not.toHaveBeenCalled();
+
+        repository.writeNewSessionDraft({
+            scope,
+            draftId: address.draftId,
+            patch: { text: 'List the files', authoring: { directory: '/home/user' } },
+            materializationIntent: 'userEdit',
+        });
+        expect(repository.listNewSessionDraftProjections(scope)
+            .map((draft) => [draft.draftId, isNewSessionDraftListed(draft)])).toEqual([[address.draftId, true]]);
+    });
+
+    it('keeps the projection object of a draft that did not change when another draft is edited', () => {
+        const first = { kind: 'newSession', draftId: uuid(401) } as const;
+        const second = { kind: 'newSession', draftId: uuid(402) } as const;
+        let now = 10;
+        const repository = createSessionDraftRepository({
+            storage: createMemoryStorage(),
+            transport: createRemote(undefined, first).transport,
+            syncEnabled: false,
+            cipher: plainCipher(),
+            now: () => now,
+        });
+        repository.writeNewSessionDraft({ scope, draftId: first.draftId, patch: { text: 'First draft' }, materializationIntent: 'userEdit' });
+        repository.writeNewSessionDraft({ scope, draftId: second.draftId, patch: { text: 'Second draft' }, materializationIntent: 'userEdit' });
+        const before = repository.listNewSessionDraftProjections(scope);
+        const secondBefore = before.find((draft) => draft.draftId === second.draftId);
+
+        now = 20;
+        repository.writeNewSessionDraft({ scope, draftId: first.draftId, patch: { text: 'First draft, edited' }, materializationIntent: 'userEdit' });
+        const after = repository.listNewSessionDraftProjections(scope);
+
+        // Every list row renders from one of these objects: an edit to one draft must not hand
+        // every other row a new object, or the whole drafts section re-renders on each keystroke
+        // and on every repository notification.
+        expect(after.find((draft) => draft.draftId === second.draftId)).toBe(secondBefore);
+        expect(after.find((draft) => draft.draftId === first.draftId)).not.toBe(before.find((draft) => draft.draftId === first.draftId));
+    });
+
+    it('never lists a stored new-session draft that holds no user content', () => {
+        const address = { kind: 'newSession', draftId: uuid(321) } as const;
+        const repository = createSessionDraftRepository({
+            storage: createMemoryStorage(),
+            transport: createRemote(undefined, address).transport,
+            syncEnabled: true,
+            cipher: plainCipher(),
+            now: () => 10,
+        });
+        // An explicitly seeded draft is kept (its route reads it), but a folder
+        // alone is not something to list among the user's drafts.
+        repository.writeNewSessionDraft({
+            scope,
+            draftId: address.draftId,
+            patch: { authoring: { directory: '/home/user' } },
+            materializationIntent: 'seeded',
+        });
+        expect(repository.getSessionDraftSnapshot(scope, address)).toMatchObject({ materialized: true });
+        expect(repository.listNewSessionDraftProjections(scope).map(isNewSessionDraftListed)).toEqual([false]);
+
+        repository.writeNewSessionDraft({ scope, draftId: address.draftId, patch: { text: 'now it is a draft' }, materializationIntent: 'userEdit' });
+        expect(repository.listNewSessionDraftProjections(scope).map(isNewSessionDraftListed)).toEqual([true]);
     });
 
     it('keeps submission-time field revisions when launch custody is stored after newer edits', () => {
@@ -1191,7 +1317,7 @@ describe('sessionDraftRepository', () => {
         seedingRepository.writeNewSessionDraft({
             scope,
             draftId: address.draftId,
-            patch: { authoring: { directory: 'mine' } },
+            patch: { text: 'keep this', authoring: { directory: 'mine' } },
             materializationIntent: 'userEdit',
         });
         const storageKey = [...storage.values.keys()][0]!;

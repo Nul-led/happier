@@ -1,6 +1,7 @@
 import {
   AgentSessionStartupInstructionsMarkerV1Schema,
 } from '@happier-dev/protocol';
+import { processIdentityMatches } from '@happier-dev/cli-common/processInstance';
 
 import { readProcessIdentityByPid } from '../processIdentity';
 import { buildSessionRunnerRespawnDescriptorV1FromSpawnOptions } from '../processSupervision/sessionRunnerRespawnDescriptor';
@@ -67,12 +68,14 @@ export async function persistAcceptedSpawnMarker(params: Readonly<{
       : null;
   if (
     params.expectedProcessIdentity
-    && (
-      processIdentity?.processStartTimeMs
-        !== params.expectedProcessIdentity.processStartTimeMs
-      || observedProcessCommandHash
-        !== params.expectedProcessIdentity.processCommandHash
-    )
+    && !processIdentityMatches({
+      pid: processPid,
+      ...params.expectedProcessIdentity,
+    }, {
+      pid: processIdentity?.pid ?? -1,
+      processStartTimeMs: processIdentity?.processStartTimeMs,
+      processCommandHash: observedProcessCommandHash ?? undefined,
+    })
   ) {
     throw new Error(
       'Accepted spawn process identity changed before marker persistence',
@@ -125,10 +128,10 @@ export async function persistAcceptedSpawnMarker(params: Readonly<{
             trackedSession.runnerManagedDependencyRetentionV1,
         }
       : {}),
-    ...(trackedSession.runnerAgentImmutableGenerationId
+    ...(trackedSession.runnerAgentSourceCustodyV1
       ? {
-          runnerAgentImmutableGenerationId:
-            trackedSession.runnerAgentImmutableGenerationId,
+          runnerAgentSourceCustodyV1:
+            trackedSession.runnerAgentSourceCustodyV1,
         }
       : {}),
     ...(startupInstructionsMarker

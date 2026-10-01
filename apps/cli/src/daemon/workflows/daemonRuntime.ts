@@ -1,10 +1,28 @@
-import { readMachineOperationProtocolCapabilitiesV1 } from '@/api/machine/machineOperationProtocolCapabilities';
 import type {
   AccountApiTokensListActionOutputV1,
   WorkflowAcceptedAuthorizationV1,
 } from '@happier-dev/protocol';
 import {
   buildQualifiedPluginContributionKey,
+  pluginSourceCustodyV1Equal,
+  type PluginSourceCustodyV1,
+  WORKFLOW_SESSION_AUTHORING_SELECTION_FIELD_IDS,
+  WorkflowSessionAuthoringSelectionSchema,
+  SessionOwnerMetadataV1Schema,
+  readSessionModesMetadata,
+  SessionInputCancelExactTurnResultV1Schema,
+  ActionDefinitionV1Schema,
+  StrictJsonValueSchema,
+  admitAgentStartV1,
+  formatWorkflowDefinitionRefV1,
+  readSessionMcpSelectionV1FromMetadata,
+  readSessionMcpSelectionRestartRequiredV1FromMetadata,
+  ActionIdSchema,
+  getActionSpec,
+  freezeActionCompletionContractV1,
+  zodSchemaToJsonSchemaObject,
+  ExecutionRunWaitResultSchema,
+  readActionCompletionRunObservationV1,
 } from '@happier-dev/protocol';
 import {
   CONVERSATION_CORE_PROVIDER_ACTION_IDS_V1,
@@ -13,35 +31,148 @@ import {
 import { createAccountServerActionDeps } from '@/api/accountServerActionDeps';
 import { configuration } from '@/configuration';
 import { resolveAutomationWorkerAccountEncryption } from '@/daemon/automation/automationWorker';
-import { acquireAuthoritativePluginRuntimeRegistryLease } from '@/plugins/runtime/reload/runtimeLease';
+import {
+  acquireAuthoritativePluginRuntimeRegistryLease,
+  readAuthoritativePluginSlotOccurrence,
+} from '@/plugins/runtime/reload/runtimeLease';
 import { executeContributedAction } from '@/plugins/runtime/invocation/actions/executeContributedAction';
-import { summarizeSessionRecord } from '@/cli/output/session/sessionSummary';
+import { readAgentCatalogSnapshot } from '@/agent/catalog/snapshot';
+import { resolveBackendTargetFromSessionMetadata } from '@/session/backendTargets/resolveBackendTargetFromSessionMetadata';
 import { createCliActionExecutorFromCredentials } from '@/session/actions/createCliActionExecutorFromCredentials';
-import { cancelSessionInput } from '@/session/services/cancelSessionInput';
+import { createCredentialedWorkflowMaterializationHostV1 } from '@/session/actions/workflowMaterializationHost';
 import type { sendSessionMessage } from '@/session/services/sendSessionMessage';
-import { resolveSessionTransportContext } from '@/session/services/resolveSessionTransportContext';
+import { callSessionRpc } from '@/session/transport/rpc/sessionRpc';
+import { callMachineRpc } from '@/session/transport/rpc/machineRpc';
+import { SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc';
 import { bootstrapAccountSettingsContext } from '@/settings/accountSettings/bootstrapAccountSettingsContext';
 import type { StoredCredentials } from '@/persistence';
 import { createSpawnConnectedServicesTeamResourceCatalogResolver } from '@/session/services/spawnConnectedServicesDefaults';
 
 import {
   createProductionWorkflowRunCoordinator,
-  projectWorkflowResultDeliverySettlement,
+  createWorkflowRunPushNotificationClient,
+  resolveWorkflowTriggerClaimSource,
 } from './production';
 import {
   createWorkflowRunRecoveryReader,
-  type WorkflowInvocationRecoveryObservation,
 } from './recovery';
+import { createWorkflowInvocationRecoveryObserver, resolveWorkflowAuthorizedSession } from './invocationRecoveryObserver';
 import { createWorkflowRunStorageClient } from './workflowRunStorageClient';
-import {
-  deliverWorkflowResultToOriginatingSession,
-  enqueueWorkflowSessionInput,
-  observeWorkflowDetachedExecutionRunInput,
-  observeWorkflowSessionInputResult,
-  stopWorkflowPendingExecutionRunInput,
-} from './stepExecution';
+import { createWorkflowRunReviewEntryNotificationHandler } from '@/notifications/activity/dispatchWorkflowRunUpdateNotification';
+import { WorkflowSessionCompositionError, type WorkflowSessionConversation } from './sessionStepExecutor';
 
 type MachineAdmissionTransport = NonNullable<Parameters<typeof sendSessionMessage>[0]['machineAdmissionTransport']>;
+
+/** Only the loaded origin input queue can prove that a committed step was withdrawn. */
+export async function withdrawWorkflowOriginSessionInput(params: Readonly<{
+  credentials: StoredCredentials;
+  sessionId: string;
+  machineId: string;
+  localInputId: string;
+  signal?: AbortSignal;
+}>): Promise<'withdrawn' | 'dispatched'> {
+  const authorized = await resolveWorkflowAuthorizedSession(params);
+  if (!authorized) throw new WorkflowSessionCompositionError('workflow_conversation_unavailable');
+  const { target } = authorized;
+  const request = {
+    token: params.credentials.token, sessionId: params.sessionId,
+    method: SESSION_RPC_METHODS.SESSION_WORKFLOW_STEP_WITHDRAW,
+    request: { localInputId: params.localInputId },
+    ...(params.signal ? { signal: params.signal } : {}),
+  };
+  let result: unknown;
+  try {
+    result = target.mode === 'plain'
+      ? await callSessionRpc({ ...request, mode: 'plain' })
+      : await callSessionRpc({ ...request, mode: 'e2ee', ctx: target.ctx });
+  } catch {
+    throw new WorkflowSessionCompositionError('workflow_origin_input_withdrawal_unavailable');
+  }
+  if (result !== 'withdrawn' && result !== 'dispatched') {
+    throw new WorkflowSessionCompositionError('workflow_origin_input_withdrawal_unavailable');
+  }
+  return result;
+}
+
+/** After `dispatched`, request the canonical exact-turn stop, never Pending retirement. */
+export async function cancelDispatchedWorkflowOriginSessionInput(params: Readonly<{
+  credentials: StoredCredentials; sessionId: string; machineId: string; localInputId: string; signal?: AbortSignal;
+}>): Promise<void> {
+  const authorized = await resolveWorkflowAuthorizedSession(params);
+  if (!authorized) throw new WorkflowSessionCompositionError('workflow_conversation_unavailable');
+  const request = {
+    token: params.credentials.token, sessionId: params.sessionId,
+    method: SESSION_RPC_METHODS.SESSION_INPUT_CANCEL_EXACT_TURN_V1,
+    request: { sessionId: params.sessionId, localId: params.localInputId },
+    ...(params.signal ? { signal: params.signal } : {}),
+  };
+  try {
+    const result = authorized.target.mode === 'plain'
+      ? await callSessionRpc({ ...request, mode: 'plain' })
+      : await callSessionRpc({ ...request, mode: 'e2ee', ctx: authorized.target.ctx });
+    const parsed = SessionInputCancelExactTurnResultV1Schema.safeParse(result);
+    if (!parsed.success || !parsed.data.ok || parsed.data.sessionId !== params.sessionId || parsed.data.localId !== params.localInputId) {
+      throw new WorkflowSessionCompositionError('workflow_origin_input_stop_unavailable');
+    }
+  } catch {
+    throw new WorkflowSessionCompositionError('workflow_origin_input_stop_unavailable');
+  }
+}
+
+/** Authorized owner metadata supplies identity and applied Session state, never list presentation. */
+export async function resolveWorkflowSessionConversation(params: Readonly<{
+  credentials: StoredCredentials;
+  sessionId: string;
+  machineId: string;
+  signal?: AbortSignal;
+}>): Promise<WorkflowSessionConversation | null> {
+  const authorized = await resolveWorkflowAuthorizedSession(params);
+  if (!authorized) return null;
+  const { target, metadata } = authorized;
+  if (typeof metadata.path !== 'string' || !metadata.path.trim()) return null;
+  const backend = resolveBackendTargetFromSessionMetadata(metadata);
+  const contribution = backend ? readAgentCatalogSnapshot().agentDefinitionsById.get(backend.backendId) : null;
+  const agentTarget = contribution?.identity ? { kind: 'agent' as const, identity: contribution.identity } : undefined;
+  const selection: Record<string, unknown> = {};
+  // Reuse the portable selection schema and field inventory. Metadata-only
+  // fields and secrets never become a Workflow witness.
+  for (const field of WORKFLOW_SESSION_AUTHORING_SELECTION_FIELD_IDS) {
+    if (metadata[field] === undefined) continue;
+    const parsed = WorkflowSessionAuthoringSelectionSchema.shape[field].safeParse(metadata[field]);
+    if (parsed.success) selection[field] = parsed.data;
+  }
+  if (agentTarget) selection.agentTarget = agentTarget;
+  const stateFields = SessionOwnerMetadataV1Schema.shape.runtime.unwrap().shape;
+  const modes = readSessionModesMetadata(metadata);
+  if (modes?.currentModeId && modes.agentId === backend?.backendId) {
+    selection.acpSessionModeId = modes.currentModeId;
+  } else {
+    delete selection.acpSessionModeId;
+  }
+  const config = stateFields.sessionConfigOptionsV1.safeParse(metadata.sessionConfigOptionsV1 ?? metadata.acpConfigOptionsV1);
+  if (config.success && config.data && config.data.agentId === backend?.backendId) {
+    selection.sessionConfigOptionOverrides = {
+      v: 1, updatedAt: config.data.updatedAt,
+      overrides: Object.fromEntries(config.data.configOptions.map((option) => [option.id, {
+        updatedAt: config.data!.updatedAt, value: option.currentValue,
+      }])),
+    };
+  } else {
+    delete selection.sessionConfigOptionOverrides;
+  }
+  // Pending MCP intent is not applied runtime state; its existing owner retains
+  // the exact applied selection when a restart is required.
+  const mcp = readSessionMcpSelectionRestartRequiredV1FromMetadata(metadata)?.appliedSelection
+    ?? readSessionMcpSelectionV1FromMetadata(metadata);
+  if (mcp) selection.mcpSelection = mcp;
+  return {
+    sessionId: target.sessionId, machineId: params.machineId, directory: metadata.path,
+    ...(target.rawSession.origin ? { origin: target.rawSession.origin } : {}),
+    ...(target.rawSession.workDepth === undefined ? {} : { workDepth: target.rawSession.workDepth }),
+    ...(agentTarget ? { agentTarget } : {}),
+    runtimeSelection: WorkflowSessionAuthoringSelectionSchema.parse(selection),
+  };
+}
 
 async function resolveAvailableEncryption(credentials: StoredCredentials, signal?: AbortSignal) {
   const resolved = await resolveAutomationWorkerAccountEncryption({
@@ -53,143 +184,13 @@ async function resolveAvailableEncryption(credentials: StoredCredentials, signal
   return resolved;
 }
 
-type RecoveryActionExecutor = Pick<ReturnType<typeof createCliActionExecutorFromCredentials>, 'execute'>;
-
-/** Exact, one-shot observation/stop adapter. It never sends, starts, or resolves a provider handle. */
-export function createWorkflowInvocationRecoveryObserver(params: Readonly<{
-  credentials: StoredCredentials;
-  machineId: string;
-  actionExecutor: RecoveryActionExecutor;
-  now?: () => number;
-  observeSession?: typeof observeWorkflowSessionInputResult;
-  cancelSession?: typeof cancelSessionInput;
-  observeRun?: typeof observeWorkflowDetachedExecutionRunInput;
-}>) {
-  const now = params.now ?? Date.now;
-  const observeSession = params.observeSession ?? observeWorkflowSessionInputResult;
-  const cancelSession = params.cancelSession ?? cancelSessionInput;
-  const observeRun = params.observeRun ?? observeWorkflowDetachedExecutionRunInput;
-  return async (input: Readonly<{
-    progress: import('@happier-dev/protocol').WorkflowProgressEnvelopeV1;
-    terminalParent: boolean;
-    cancellationRequested: boolean;
-    signal?: AbortSignal;
-  }>): Promise<WorkflowInvocationRecoveryObservation> => {
-    const execution = input.progress.execution;
-    if (!execution) return { kind: 'unresolved', code: 'workflow_execution_correspondence_missing' };
-    if (execution.kind === 'session') {
-      let observed: Awaited<ReturnType<typeof observeSession>>;
-      try {
-        observed = await observeSession({
-          credentials: params.credentials,
-          sessionId: execution.sessionId,
-          localId: execution.localInputId,
-          deadlineMs: now(),
-          ...(input.signal ? { signal: input.signal } : {}),
-        });
-      } catch {
-        return { kind: 'unresolved', code: 'session_input_result_read_failed' };
-      }
-      if (!observed.ok) return { kind: 'unresolved', code: observed.code };
-      switch (observed.result.kind) {
-        case 'final_text': return { kind: 'completed', result: observed.result.text };
-        case 'terminal_no_result': return { kind: 'failed', code: observed.result.reason };
-        case 'failed': return { kind: 'failed', code: 'session_input_failed' };
-        case 'pending':
-          if (!input.terminalParent && !input.cancellationRequested) {
-            return { kind: 'unresolved', code: 'session_input_pending' };
-          }
-          break;
-        case 'cancelled': break;
-      }
-      let cancelled: Awaited<ReturnType<typeof cancelSession>>;
-      try {
-        cancelled = await cancelSession({
-          credentials: params.credentials,
-          sessionId: execution.sessionId,
-          localId: execution.localInputId,
-        });
-      } catch {
-        return { kind: 'unresolved', code: 'session_input_cancel_unavailable' };
-      }
-      switch (cancelled.kind) {
-        case 'pending_retired': return { kind: 'cancelled', code: 'session_input_pending_retired' };
-        // The Session owner accepted the stop request, but the exact turn may
-        // still be running. Live coordination keeps this same correspondence
-        // in `cancel_requested`; recovery must not turn the acknowledgement
-        // into terminal evidence and settle parent custody prematurely.
-        case 'turn_cancel_requested': return { kind: 'unresolved', code: 'session_input_turn_cancel_requested' };
-        case 'session_absent': return { kind: 'cancelled', code: 'session_input_session_absent' };
-        case 'turn_cancel_unavailable': return { kind: 'unresolved', code: cancelled.code };
-      }
-    }
-
-    const sessionId = execution.kind === 'attached_run' ? execution.sessionId : null;
-    let actionFailure: string | null = null;
-    const actionContext = {
-      surface: 'agent' as const,
-      authority: 'account_automation' as const,
-      executionRunTargetMachineId: params.machineId,
-      ...(input.signal ? { signal: input.signal } : {}),
-    };
-    let observed: Awaited<ReturnType<typeof observeRun>>;
-    try {
-      observed = await observeRun({
-        runId: execution.runId,
-        localInputId: execution.localInputId,
-        get: async (request) => {
-          const result = await params.actionExecutor.execute(
-            'execution.run.get',
-            { sessionId, ...request },
-            actionContext,
-          );
-          if (!result.ok) {
-            actionFailure = result.errorCode;
-            return null;
-          }
-          return result.result;
-        },
-      });
-    } catch {
-      return { kind: 'unresolved', code: actionFailure ?? 'execution_run_result_read_failed' };
-    }
-    if (actionFailure) return { kind: 'unresolved', code: actionFailure };
-    if (observed.kind !== 'pending') return observed;
-    if (!input.terminalParent && !input.cancellationRequested) {
-      return { kind: 'unresolved', code: 'execution_run_input_pending' };
-    }
-    const { signal: _signal, ...stopContext } = actionContext;
-    return await stopWorkflowPendingExecutionRunInput({
-      runId: execution.runId,
-      localInputId: execution.localInputId,
-      stop: async () => {
-        try {
-          return await params.actionExecutor.execute(
-            'execution.run.stop',
-            { sessionId, runId: execution.runId },
-            stopContext,
-          );
-        } catch {
-          return { ok: false, errorCode: 'execution_run_stop_unavailable' };
-        }
-      },
-      get: async (request) => {
-        const result = await params.actionExecutor.execute(
-          'execution.run.get',
-          { sessionId, ...request },
-          stopContext,
-        );
-        return result.ok ? result.result : null;
-      },
-      observe: observeRun,
-    });
-  };
-}
+export { createWorkflowInvocationRecoveryObserver } from './invocationRecoveryObserver';
 
 export function createWorkflowAcceptedAuthorizationCurrentness(params: Readonly<{
   accountId: string;
   listAccountApiTokens: (signal?: AbortSignal) => Promise<AccountApiTokensListActionOutputV1>;
-  resolveCurrentPluginImmutableGenerationId: (pluginId: string) => Promise<string | null>;
+  resolveCurrentPluginOccurrenceId: (pluginId: string) => Promise<string | null>;
+  resolveCurrentPluginSourceCustody: (pluginId: string) => Promise<PluginSourceCustodyV1 | null>;
   isMediatedSourceCurrent: (
     sourceAuthority: NonNullable<WorkflowAcceptedAuthorizationV1['sourceAuthority']>,
     signal?: AbortSignal,
@@ -206,10 +207,10 @@ export function createWorkflowAcceptedAuthorizationCurrentness(params: Readonly<
       if (authorization.sourceAuthority) {
         // The authoritative plugin-runtime lease proves that the admitted
         // mediator still exists before this Run may release another leaf.
-        const sourceMediatorGenerationId = await params.resolveCurrentPluginImmutableGenerationId(
+        const sourceMediatorOccurrenceId = await params.resolveCurrentPluginOccurrenceId(
           authorization.sourceAuthority.mediatorPluginId,
         );
-        if (sourceMediatorGenerationId === null) return false;
+        if (sourceMediatorOccurrenceId === null) return false;
         if (!(await params.isMediatedSourceCurrent(authorization.sourceAuthority, signal))) {
           return false;
         }
@@ -226,11 +227,11 @@ export function createWorkflowAcceptedAuthorizationCurrentness(params: Readonly<
         return token !== undefined
           && (token.expiresAt === null || Date.parse(token.expiresAt) > now());
       }
-      if (!principal.immutableGenerationId) return false;
-      const currentGenerationId = await params.resolveCurrentPluginImmutableGenerationId(
+      const sourceCustody = await params.resolveCurrentPluginSourceCustody(
         principal.pluginId,
       );
-      return currentGenerationId === principal.immutableGenerationId;
+      return sourceCustody !== null
+        && pluginSourceCustodyV1Equal(sourceCustody, principal.sourceCustody);
     } catch {
       return false;
     }
@@ -260,20 +261,18 @@ export function createProductionDaemonWorkflowRuntime(params: Readonly<{
       if (!list) throw new Error('workflow_api_token_currentness_unavailable');
       const result = await list({
         input: {},
-        context: { surface: 'cli', authority: 'present_user', serverId },
+        context: { surface: 'cli', authority: 'account_automation', serverId },
         ...(signal ? { signal } : {}),
       });
       if (!('tokens' in result)) throw new Error('workflow_api_token_currentness_unavailable');
       return result;
     },
-    resolveCurrentPluginImmutableGenerationId: async (pluginId) => {
-      const lease = await acquireAuthoritativePluginRuntimeRegistryLease();
-      try {
-        return await lease.registry.resolveCurrentPluginImmutableGenerationId?.(pluginId) ?? null;
-      } finally {
-        await lease.release();
-      }
-    },
+    resolveCurrentPluginOccurrenceId: async (pluginId) => (
+      readAuthoritativePluginSlotOccurrence(pluginId)?.occurrenceId ?? null
+    ),
+    resolveCurrentPluginSourceCustody: async (pluginId) => (
+      readAuthoritativePluginSlotOccurrence(pluginId)?.sourceCustody ?? null
+    ),
     isMediatedSourceCurrent: async (sourceAuthority, signal) => {
       const lease = await acquireAuthoritativePluginRuntimeRegistryLease();
       try {
@@ -318,13 +317,6 @@ export function createProductionDaemonWorkflowRuntime(params: Readonly<{
             accountId: params.accountId,
           })
         : undefined;
-      const resolveMachineOperationProtocolCapabilities = async (signal?: AbortSignal) => (
-        await readMachineOperationProtocolCapabilitiesV1({
-          credentials: params.credentials,
-          machineId: input.machineId,
-          ...(signal ? { signal } : {}),
-        })
-      )?.capabilities ?? null;
       const actionExecutor = createCliActionExecutorFromCredentials({
         credentials: params.credentials,
         machineId: input.machineId,
@@ -332,6 +324,56 @@ export function createProductionDaemonWorkflowRuntime(params: Readonly<{
         machineActionDirectTargetTransport: input.machineActionDirectTargetTransport,
         workflowAcceptedAuthorizationCurrentness: isAcceptedAuthorizationCurrent,
       });
+      const resolveMaterializer = createCredentialedWorkflowMaterializationHostV1({
+        credentials: params.credentials, accountId: params.accountId,
+        callMachineAction: async (request) => {
+          if (request.machineId !== input.machineId) throw new Error('target_unavailable');
+          return await input.machineActionDirectTargetTransport.invoke(request.method, request.request,
+            request.signal ? { signal: request.signal } : undefined);
+        },
+        readWorkflowDefinition: async (ref, signal) => {
+          const encryption = await resolveAvailableEncryption(params.credentials, signal);
+          const source = await resolveWorkflowTriggerClaimSource({ target: { kind: 'workflow', ref: formatWorkflowDefinitionRefV1(ref) },
+            credentials: params.credentials, encryption, ...(signal ? { signal } : {}) });
+          return source ? { ...source, sourceKey: formatWorkflowDefinitionRefV1(ref) } : null;
+        },
+        readHostActionContract: async (actionId, target) => {
+          if (target.machineId !== input.machineId) return null;
+          const result = await actionExecutor.execute('action.spec.get', { id: actionId }, {
+            surface: 'cli', authority: 'account_automation',
+            externalActionTarget: { kind: 'machine', machineId: target.machineId, project: { machineId: target.machineId, directory: target.directory } },
+            ...(target.signal ? { signal: target.signal } : {}),
+          });
+          if (!result.ok || !result.result || typeof result.result !== 'object' || !('actionSpec' in result.result)) return null;
+          const spec = ActionDefinitionV1Schema.safeParse(result.result.actionSpec);
+          if (!spec.success || spec.data.id !== actionId || spec.data.outputSchema === undefined) return null;
+          const id = ActionIdSchema.safeParse(actionId);
+          if (!id.success) return null;
+          // This is the exact run machine's host catalog. Executable completion
+          // functions stay host-private; only their frozen schema is sealed.
+          const hostSpec = getActionSpec(id.data);
+          const declaration = hostSpec.completion;
+          const outputSchema = declaration?.terminalOutputSchema ?? hostSpec.outputSchema;
+          if (outputSchema === undefined) return null;
+          return { inputSchema: StrictJsonValueSchema.parse(zodSchemaToJsonSchemaObject(hostSpec.inputSchema, { target: 'draft-7' })),
+            outputSchema: StrictJsonValueSchema.parse(zodSchemaToJsonSchemaObject(outputSchema, { target: 'draft-7' })),
+            ...(declaration ? { completion: freezeActionCompletionContractV1(declaration) } : {}) };
+        },
+      });
+      const resolveMaterializationHost: NonNullable<Parameters<typeof createProductionWorkflowRunCoordinator>[0]['resolveMaterializationHost']> = async (claim) => {
+        const materialization = await resolveMaterializer({ machineId: input.machineId, directory: claim.directory,
+          ...(claim.signal ? { signal: claim.signal } : {}) });
+        const current = materialization.agentStartPolicySnapshot;
+        return { ...materialization, admitLeaf: async (leaf, facts) => admitAgentStartV1(current.policy,
+          { kind: 'workflow_run_leaf', leaf }, {
+            caller: { kind: 'originless', runId: claim.runId, runDepth: claim.workDepth,
+              ...(claim.originSessionId ? { runOriginSessionId: claim.originSessionId } : {}) },
+            baseline: { machineId: input.machineId, directory: claim.directory }, ledSubtreeSessionIds: [],
+            roles: facts.role ? { [facts.role.roleId]: facts.role } : {},
+            callerPermissionCeiling: facts.permissionCeiling, workDepthLimit: current.workDepthLimit,
+            allowLists: current.allowLists,
+          }) };
+      };
       const buildActionContext = (execution: Readonly<{
         runId: string;
         authorization: import('@happier-dev/protocol').WorkflowAcceptedAuthorizationV1;
@@ -347,26 +389,41 @@ export function createProductionDaemonWorkflowRuntime(params: Readonly<{
         callerPermissionMode: execution.authorization.admittedPermissionCeiling,
         ...(execution.signal ? { signal: execution.signal } : {}),
       });
+      const resolveWorkflowActionContext = async (execution: Readonly<{
+        runId: string;
+        authorization: WorkflowAcceptedAuthorizationV1;
+        workspace: Readonly<{ machineId: string; directory: string }>;
+        workDepth: number;
+        originSessionId?: string;
+        role?: import('@happier-dev/protocol').WorkflowMaterializedLeafV1['role'];
+        signal?: AbortSignal;
+      }>) => {
+        const materialization = await resolveMaterializer({ machineId: execution.workspace.machineId,
+          directory: execution.workspace.directory, ...(execution.signal ? { signal: execution.signal } : {}) });
+        const current = materialization.agentStartPolicySnapshot;
+        return { ...buildActionContext(execution), defaultSessionId: execution.originSessionId ?? null,
+          executionRunTargetMachineId: execution.workspace.machineId,
+          externalActionTarget: { kind: 'machine' as const, machineId: execution.workspace.machineId,
+            project: { machineId: execution.workspace.machineId, directory: execution.workspace.directory } },
+          sessionAgentSpawnPolicyV1: current.policy,
+          agentStartContext: { caller: { kind: 'originless' as const, runId: execution.runId, runDepth: execution.workDepth,
+              ...(execution.originSessionId ? { runOriginSessionId: execution.originSessionId } : {}) },
+            baseline: { machineId: execution.workspace.machineId, directory: execution.workspace.directory },
+            ledSubtreeSessionIds: [], roles: execution.role ? { [execution.role.roleId]: execution.role } : {},
+            callerPermissionCeiling: execution.authorization.admittedPermissionCeiling,
+            workDepthLimit: current.workDepthLimit, allowLists: current.allowLists } };
+      };
       const resolveConversation = async ({ sessionId, machineId, signal }: Readonly<{
         sessionId: string;
         machineId: string;
         signal?: AbortSignal;
       }>) => {
         if (machineId !== input.machineId) return null;
-        const target = await resolveSessionTransportContext({
+        return await resolveWorkflowSessionConversation({
           credentials: params.credentials,
-          idOrPrefix: sessionId,
+          sessionId, machineId,
           ...(signal ? { signal } : {}),
         });
-        if (!target.ok) return null;
-        const summary = summarizeSessionRecord({
-          credentials: params.credentials,
-          accountEncryptionMode: target.accountEncryptionCurrentness.mode,
-          session: target.rawSession,
-        });
-        return summary.path
-          ? { sessionId: target.sessionId, machineId: input.machineId, directory: summary.path }
-          : null;
       };
       return createProductionWorkflowRunCoordinator({
         token: params.credentials.token,
@@ -374,6 +431,13 @@ export function createProductionDaemonWorkflowRuntime(params: Readonly<{
         machineId: input.machineId,
         resolveAccountEncryption: async (signal) => await resolveAvailableEncryption(params.credentials, signal),
         isAcceptedAuthorizationCurrent,
+        resolveControllerContext: async ({ runId, accepted, signal }) => await resolveWorkflowActionContext({
+          runId, authorization: accepted.authorization, workspace: accepted.workspaceTarget.project,
+          workDepth: accepted.workDepth,
+          ...(accepted.origin?.originSessionId ? { originSessionId: accepted.origin.originSessionId } : {}),
+          ...(signal ? { signal } : {}),
+        }),
+        resolveMaterializationHost,
         resolveCurrentWorkspaceRefs: async () => {
           const settings = await bootstrapAccountSettingsContext({
             credentials: params.credentials,
@@ -383,56 +447,32 @@ export function createProductionDaemonWorkflowRuntime(params: Readonly<{
           return settings.settings.workspaceRefsV1;
         },
         execution: {
+          action: {
+            executor: actionExecutor,
+            buildContext: resolveWorkflowActionContext,
+            observeRun: async (run, observation) => {
+              const waited = ExecutionRunWaitResultSchema.safeParse(await input.machineActionDirectTargetTransport.invoke(
+                SESSION_RPC_METHODS.EXECUTION_RUN_WAIT, { runId: run.runId },
+                observation.signal ? { signal: observation.signal } : undefined));
+              if (!waited.success || !waited.data.ok || waited.data.status === 'running'
+                || waited.data.result.run.runId !== run.runId) return { kind: 'outcome_uncertain', code: 'execution_run_observation_unavailable' };
+              return readActionCompletionRunObservationV1(waited.data.result);
+            },
+          },
           credentials: params.credentials,
           serverId,
-          resolveMachineOperationProtocolCapabilities,
           machineAdmissionTransport: input.machineAdmissionTransport,
           ...(resolveTeamCredentialResourceCatalog ? { resolveTeamCredentialResourceCatalog } : {}),
           resolveExistingSessionConversation: resolveConversation,
-          detachedRun: { actionExecutor, buildActionContext },
-          attachedRun: {
-            actionExecutor,
-            buildActionContext,
-            sendInput: async ({ sessionId, runId, workflowRunId, invocationRecordId, text, references, attachments, resultContract, permissionMode, sourceAuthority, modelSelectionInput, signal }) => {
-              const machineOperationProtocolCapabilities =
-                await resolveMachineOperationProtocolCapabilities(signal);
-              const admission = await enqueueWorkflowSessionInput({
-                credentials: params.credentials,
-                sessionId,
-                machineOperationProtocolCapabilities,
-                workflow: {
-                  purpose: 'invocation',
-                  runId: workflowRunId,
-                  invocationRecordId,
-                },
-                executionRunTarget: { runId, resultContract },
-                text,
-                mentions: references,
-                attachments,
-                permissionMode,
-                ...(sourceAuthority ? { sourceAuthority } : {}),
-                ...(modelSelectionInput?.ref === undefined
-                  ? {}
-                  : { modelSelectionInput: modelSelectionInput.ref }),
-                machineAdmissionTransport: input.machineAdmissionTransport,
-                ...(signal ? { signal } : {}),
-              });
-              if (admission.status === 'outcomeUnknown') {
-                return { kind: 'outcome_uncertain' as const, code: admission.code };
-              }
-              if (admission.status === 'update_required') {
-                return { kind: 'rejected' as const, code: admission.code };
-              }
-              return admission.status === 'accepted' || admission.status === 'alreadyAccepted'
-                ? { kind: 'accepted' as const }
-                : { kind: 'rejected' as const, code: admission.code };
-            },
+          originSessionInput: {
+            withdraw: async ({ sessionId, localInputId }) => await withdrawWorkflowOriginSessionInput({
+              credentials: params.credentials, machineId: input.machineId, sessionId, localInputId,
+            }),
+            cancelDispatched: async ({ sessionId, localInputId }) => await cancelDispatchedWorkflowOriginSessionInput({
+              credentials: params.credentials, machineId: input.machineId, sessionId, localInputId,
+            }),
           },
-        },
-        resultDelivery: {
-          credentials: params.credentials,
-          resolveMachineOperationProtocolCapabilities,
-          machineAdmissionTransport: input.machineAdmissionTransport,
+          detachedRun: { actionExecutor, buildActionContext },
         },
       });
     },
@@ -446,39 +486,24 @@ export function createProductionDaemonWorkflowRuntime(params: Readonly<{
         machineId: input.machineId,
         machineAdmissionTransport: input.machineAdmissionTransport,
       });
-      const resolveMachineOperationProtocolCapabilities = async (signal?: AbortSignal) => (
-        await readMachineOperationProtocolCapabilitiesV1({
-          credentials: params.credentials,
-          machineId: input.machineId,
-          ...(signal ? { signal } : {}),
-        })
-      )?.capabilities ?? null;
       return createWorkflowRunRecoveryReader({
         accountId: params.accountId,
         machineId: input.machineId,
         storage,
+        onReviewEntered: createWorkflowRunReviewEntryNotificationHandler({
+          expoPushSender: createWorkflowRunPushNotificationClient(params.credentials.token),
+        }),
         resolveAccountEncryption: async (signal) => await resolveAvailableEncryption(params.credentials, signal),
-        deliverResult: async ({ runId, sessionId, text, signal }) => {
-          const machineOperationProtocolCapabilities =
-            await resolveMachineOperationProtocolCapabilities(signal);
-          const result = await deliverWorkflowResultToOriginatingSession({
-            credentials: params.credentials,
-            sessionId,
-            machineOperationProtocolCapabilities,
-            runId,
-            text,
-            machineAdmissionTransport: input.machineAdmissionTransport,
-            ...(signal ? { signal } : {}),
-          });
-          const settlement = projectWorkflowResultDeliverySettlement(result.status);
-          return {
-            status: settlement ?? 'unresolved',
-          };
-        },
         reconcileInvocation: createWorkflowInvocationRecoveryObserver({
           credentials: params.credentials,
           machineId: input.machineId,
           actionExecutor,
+          nativeActionRuns: {
+            get: async (runId, signal) => await callMachineRpc({ credentials: params.credentials, machineId: input.machineId,
+              method: SESSION_RPC_METHODS.EXECUTION_RUN_GET, request: { runId, includeStructured: true }, ...(signal ? { signal } : {}) }),
+            stop: async (runId, signal) => await callMachineRpc({ credentials: params.credentials, machineId: input.machineId,
+              method: SESSION_RPC_METHODS.EXECUTION_RUN_STOP, request: { runId }, ...(signal ? { signal } : {}) }),
+          },
         }),
       });
     },

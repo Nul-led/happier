@@ -11,7 +11,12 @@ import { Text } from '@/components/ui/text/Text';
 import { ChangedFilesReviewNavigation } from './ChangedFilesReviewNavigation';
 import { useChangedFilesReviewLineScroll } from './useChangedFilesReviewLineScroll';
 import { Typography } from '@/constants/Typography';
-import { filterPresentableSessionAttributedFiles, type SessionAttributedFile, type ChangedFilesViewMode } from '@/scm/scmAttribution';
+import {
+    filterPresentableSessionAttributedFiles,
+    resolveChangedFilesEmptyStateTranslationKey,
+    type SessionAttributedFile,
+    type ChangedFilesViewMode,
+} from '@/scm/scmAttribution';
 import type { ScmWorkingSnapshot } from '@/sync/domains/state/storageTypes';
 import type { ScmFileStatus } from '@/scm/scmStatusFiles';
 import { t } from '@/text';
@@ -49,12 +54,22 @@ import { Icon } from '@/components/ui/icons/Icon';
 import { IconButton } from '@/components/ui/buttons/IconButton';
 import { Tooltip } from '@/components/ui/overlays/Tooltip';
 import { preserveWebScrollAnchorAfterToggle } from './preserveWebScrollAnchorAfterToggle';
+import { ChangedFilesReviewIndex } from './ChangedFilesReviewIndex';
+import { useChangedFileRowLayout } from '@/components/workspaces/scm/changes/useChangedFileRowLayout';
+import { publishActiveReviewFile, useActiveReviewFileRequest } from './activeReviewFile';
+import { DetailsTabHeader, type DetailsTabHeaderMetaFact } from '@/components/appShell/panes/details/header/DetailsTabHeader';
+import { DiffPresentationStyleToggleButton } from '@/components/ui/code/diff/DiffPresentationStyleToggleButton';
+import { ToolbarSelect } from '@/components/ui/forms/ToolbarSelect';
+import { formatAsOfTime } from '@/utils/time/formatAsOfTime';
+import { resolveScmDiffAreaLabels, resolveScmDiffAreaVocabulary } from '@/scm/diff/diffAreaLabels';
 
 const ViewWithClick = View as unknown as React.ComponentType<
     React.ComponentPropsWithRef<typeof View> & { onClick?: any; onKeyDown?: any; tabIndex?: number }
 >;
 
 const REVIEW_DIFF_LIST_DRAW_DISTANCE_MULTIPLIER = 0.75;
+const NO_INDEX_FILES: readonly ScmFileStatus[] = [];
+const NO_ATTRIBUTED_FILES: SessionAttributedFile[] = [];
 
 export function resolveChangedFilesReviewCurrentWebScrollRoot<T>(params: Readonly<{
     resolveCurrent: () => T | null;
@@ -68,6 +83,21 @@ type ChangedFilesReviewTheme = Theme;
 
 type ChangedFilesReviewProps = {
     toolbarLeading?: React.ReactNode;
+    /**
+     * Drawn as a Details tab (details lab 2, R1): the Review header with one honest count, then the
+     * file list first, then the stream. Absent, the compact toolbar of an embedded list stays.
+     */
+    detailsHeader?: Readonly<{
+        /** Whether a file goes in the next commit, when the Review owner has a commit selection. */
+        isSelectedForCommit?: ((file: ScmFileStatus) => boolean) | null;
+    }> | null;
+    /** Room kept under the stream for a tray floating over its foot. */
+    bottomInsetPx?: number;
+    /**
+     * The shared active-file scope (`activeReviewFile`): while `presented`, Review reports the file it
+     * is on and brings a file a changed-files list asks for into view.
+     */
+    activeReviewFile?: Readonly<{ key: string; presented: boolean }> | null;
     theme: ChangedFilesReviewTheme;
     sessionId: string;
     snapshot: ScmWorkingSnapshot | null;
@@ -95,7 +125,7 @@ type ChangedFilesReviewProps = {
     onScrollTopChange?: (top: number) => void;
     diffAutoRefreshIntervalMs?: number;
     diffRefreshToken?: number;
-    providerDiffByPath?: ReadonlyMap<string, string> | null;
+    providerDiffByPath?: ReadonlyMap<string, string | null> | null;
     reviewCommentsEnabled?: boolean;
     reviewCommentDrafts?: readonly ReviewCommentDraft[];
     onUpsertReviewCommentDraft?: (draft: ReviewCommentDraft) => void;
@@ -146,9 +176,9 @@ function ChangedFilesReviewInner(props: ChangedFilesReviewProps) {
         snapshot,
         changedFilesViewMode,
             allRepositoryChangedFiles,
-        turnAttributedFiles = [],
-        turnAgentReportedFiles = [],
-        turnCheckpointFiles = [],
+        turnAttributedFiles = NO_ATTRIBUTED_FILES,
+        turnAgentReportedFiles = NO_ATTRIBUTED_FILES,
+        turnCheckpointFiles = NO_ATTRIBUTED_FILES,
         turnCheckpointMetadata = null,
         sessionAttributedFiles,
             maxFiles,
@@ -160,6 +190,11 @@ function ChangedFilesReviewInner(props: ChangedFilesReviewProps) {
 
     const plugin = React.useMemo(() => scmUiBackendRegistry.getPluginForSnapshot(snapshot), [snapshot]);
     const diffConfig = React.useMemo(() => plugin.diffModeConfig(snapshot), [plugin, snapshot]);
+    const changedFileRowLayout = useChangedFileRowLayout();
+    const commitStrategySetting = useSetting('scmCommitStrategy');
+    const diffAreaLabels = React.useMemo(() => resolveScmDiffAreaLabels(resolveScmDiffAreaVocabulary(
+        commitStrategySetting === 'git_staging' ? 'git_staging' : 'atomic',
+    )), [commitStrategySetting]);
     const scmDefaultDiffModeByBackend = useSetting('scmDefaultDiffModeByBackend');
     const wrapLinesInDiffs = useSetting('wrapLinesInDiffs');
     const showLineNumbers = useSetting('showLineNumbers');
@@ -299,14 +334,15 @@ function ChangedFilesReviewInner(props: ChangedFilesReviewProps) {
                 seen.add(file.fullPath);
 
                 const delta = entryDeltaByPath.get(file.fullPath) ?? null;
-                const isUnmatchedTurnEvidence = delta === null
+                const isUnmatchedAttributedEvidence = delta === null
                     && (
                         section.kind === 'turn'
                         || section.kind === 'turn_agent_reported'
                         || section.kind === 'turn_checkpoint'
+                        || section.kind === 'session'
                     );
-                if (!isUnmatchedTurnEvidence && !fileHasDeltaForArea(file, delta, diffArea)) continue;
-                files.push(isUnmatchedTurnEvidence ? file : toAreaFileStatus(file, delta, diffArea));
+                if (!isUnmatchedAttributedEvidence && !fileHasDeltaForArea(file, delta, diffArea)) continue;
+                files.push(isUnmatchedAttributedEvidence ? file : toAreaFileStatus(file, delta, diffArea));
             }
 
             if (section.kind === 'repository') {
@@ -663,6 +699,18 @@ function ChangedFilesReviewInner(props: ChangedFilesReviewProps) {
         };
     }, [resolveWebScrollRoot, scheduleWebFrame]);
 
+    // Once the file list has scrolled away, the header offers the jump menu in its place (SG).
+    const indexHeightRef = React.useRef<number | null>(null);
+    const [scrolledPastIndex, setScrolledPastIndex] = React.useState(false);
+    const onIndexLayout = React.useCallback((event: Readonly<{ nativeEvent: Readonly<{ layout: Readonly<{ height: number }> }> }>) => {
+        indexHeightRef.current = event.nativeEvent.layout.height;
+    }, []);
+    const trackIndexScroll = React.useCallback((top: number) => {
+        const indexHeight = indexHeightRef.current;
+        const past = indexHeight !== null && top > indexHeight;
+        setScrolledPastIndex((current) => (current === past ? current : past));
+    }, []);
+
     const handleScroll = React.useCallback((event: any) => {
         // Some virtualized-list implementations can invoke onScroll with non-standard shapes on web,
         // while scroll-edge consumers assume `event.nativeEvent` exists.
@@ -679,6 +727,7 @@ function ChangedFilesReviewInner(props: ChangedFilesReviewProps) {
             const current = scrollRoot && typeof (scrollRoot as any).scrollTop === 'number' ? (scrollRoot as any).scrollTop : null;
             if (typeof current === 'number') {
                 reportScrollTop(current);
+                trackIndexScroll(current);
                 return;
             }
         }
@@ -686,8 +735,9 @@ function ChangedFilesReviewInner(props: ChangedFilesReviewProps) {
         const y = event?.nativeEvent?.contentOffset?.y;
         if (typeof y === 'number') {
             reportScrollTop(y);
+            trackIndexScroll(y);
         }
-    }, [props.onScroll, reportScrollTop, resolveWebScrollRoot]);
+    }, [props.onScroll, reportScrollTop, resolveWebScrollRoot, trackIndexScroll]);
 
     useInitialScrollRestore({
         initialScrollTop: typeof props.initialScrollTop === 'number' ? props.initialScrollTop : null,
@@ -819,9 +869,27 @@ function ChangedFilesReviewInner(props: ChangedFilesReviewProps) {
         setLineTarget(null);
         focusReviewPath(path);
     }, [focusReviewPath]);
+
     React.useEffect(() => {
         setLineTarget((current) => current && current.filePath !== activeReviewPath ? null : current);
     }, [activeReviewPath]);
+
+    const activeReviewFileKey = props.activeReviewFile?.key ?? null;
+    const activeReviewFilePresented = props.activeReviewFile?.presented === true;
+    React.useEffect(() => {
+        if (!activeReviewFileKey) return;
+        publishActiveReviewFile(activeReviewFileKey, { presented: activeReviewFilePresented, activePath: activeReviewPath });
+    }, [activeReviewFileKey, activeReviewFilePresented, activeReviewPath]);
+    React.useEffect(() => () => {
+        if (activeReviewFileKey) publishActiveReviewFile(activeReviewFileKey, { presented: false, activePath: null });
+    }, [activeReviewFileKey]);
+    const activeReviewFileRequest = useActiveReviewFileRequest(activeReviewFileKey);
+    const handledRequestNonceRef = React.useRef<number | null>(activeReviewFileRequest?.nonce ?? null);
+    React.useEffect(() => {
+        if (!activeReviewFileRequest || handledRequestNonceRef.current === activeReviewFileRequest.nonce) return;
+        handledRequestNonceRef.current = activeReviewFileRequest.nonce;
+        if (navigationPaths.includes(activeReviewFileRequest.path)) focusFile(activeReviewFileRequest.path);
+    }, [activeReviewFileRequest, focusFile, navigationPaths]);
 
     // Prefetch scheduling + viewability windowing is handled by useChangedFilesReviewPrefetch.
 
@@ -876,13 +944,39 @@ function ChangedFilesReviewInner(props: ChangedFilesReviewProps) {
     const renderFileActions = props.renderFileActions;
     const renderFileTrailingActions = props.renderFileTrailingActions;
 
+    const detailsHeader = props.detailsHeader ?? null;
+    const showIndex = detailsHeader !== null && !tooLarge && reviewListFiles.length > 0;
+    // Only the index reads these, so a review drawn without it keeps a stable list header.
+    const indexFiles = showIndex ? reviewListFiles : NO_INDEX_FILES;
+    const indexDrafts = showIndex ? props.reviewCommentDrafts : undefined;
+    const commentCountByPath = React.useMemo(() => {
+        const counts = new Map<string, number>();
+        for (const draft of indexDrafts ?? []) {
+            counts.set(draft.filePath, (counts.get(draft.filePath) ?? 0) + 1);
+        }
+        return counts;
+    }, [indexDrafts]);
+    const indexRenderCommitToggle = showIndex ? props.renderFileActions ?? null : null;
+    const onIndexFocusPath = focusFile;
+
     const ListHeaderComponent = React.useCallback(() => {
         return (
             <View>
+                {showIndex ? (
+                    <ChangedFilesReviewIndex
+                        files={indexFiles}
+                        activePath={null}
+                        commentCountByPath={commentCountByPath}
+                        onFocusPath={onIndexFocusPath}
+                        activeReviewFileKey={props.activeReviewFile?.key ?? null}
+                        renderCommitToggle={indexRenderCommitToggle}
+                        onLayout={onIndexLayout}
+                    />
+                ) : null}
                 {reviewFiles.length === 0 && !(changedFilesViewMode === 'turn_checkpoint' && turnCheckpointMetadata?.contentConfidence === 'unavailable') && (
                     <View style={{ paddingHorizontal: 16, paddingTop: 12, paddingBottom: 6 }}>
                         <Text style={{ fontSize: 12, color: theme.colors.text.secondary, ...Typography.default() }}>
-                            {t('files.noChanges')}
+                            {t(resolveChangedFilesEmptyStateTranslationKey(changedFilesViewMode))}
                         </Text>
                     </View>
                 )}
@@ -910,7 +1004,7 @@ function ChangedFilesReviewInner(props: ChangedFilesReviewProps) {
         changedFilesViewMode,
         diffArea,
         diffConfig.availableModes,
-        diffConfig.labels,
+        diffAreaLabels,
         reviewFiles.length,
         setDiffArea,
         theme.colors.border.default,
@@ -918,6 +1012,13 @@ function ChangedFilesReviewInner(props: ChangedFilesReviewProps) {
         theme.colors.text.secondary,
         tooLarge,
         turnCheckpointMetadata,
+        showIndex,
+        indexFiles,
+        commentCountByPath,
+        showIndex ? onIndexFocusPath : null,
+        indexRenderCommitToggle,
+        onIndexLayout,
+        props.activeReviewFile?.key,
     ]);
 
     const renderBeforeFileRow = React.useCallback(({ file }: Readonly<{ file: any; index: number }>) => {
@@ -1000,6 +1101,7 @@ function ChangedFilesReviewInner(props: ChangedFilesReviewProps) {
             <ScmChangeRow
                 theme={theme}
                 file={file}
+                layout={changedFileRowLayout}
                 accessibilityQualification={attributedEntriesByPath.has(file.fullPath)
                     ? sessionAttributedFileAccessibilityQualification(attributedEntriesByPath.get(file.fullPath)!)
                     : undefined}
@@ -1029,6 +1131,7 @@ function ChangedFilesReviewInner(props: ChangedFilesReviewProps) {
         renderFileTrailingActions,
         rowDensity,
         theme,
+        changedFileRowLayout,
     ]);
 
     const renderInlineUnifiedDiff = React.useCallback(({ file }: any) => {
@@ -1036,15 +1139,92 @@ function ChangedFilesReviewInner(props: ChangedFilesReviewProps) {
         return renderDiffBlock(path);
     }, [renderDiffBlock]);
 
+    const reviewTotals = reviewListFiles.reduce(
+        (sum, file) => ({
+            added: sum.added + Math.max(0, file.linesAdded ?? 0),
+            removed: sum.removed + Math.max(0, file.linesRemoved ?? 0),
+        }),
+        { added: 0, removed: 0 },
+    );
+    const reviewMeta: DetailsTabHeaderMetaFact[] = [
+        { key: 'files', text: t('detailsSurface.review.files', { count: reviewFiles.length }), testID: 'scm-review-count-files' },
+    ];
+    if (reviewTotals.added > 0 || reviewTotals.removed > 0) {
+        reviewMeta.push({ key: 'stat', kind: 'diffStat', added: reviewTotals.added, removed: reviewTotals.removed });
+    }
+    const isSelectedForCommit = detailsHeader?.isSelectedForCommit ?? null;
+    const nextCommitCount = isSelectedForCommit ? reviewListFiles.filter((file) => isSelectedForCommit(file)).length : 0;
+    if (nextCommitCount > 0) {
+        reviewMeta.push({ key: 'commit', text: t('detailsSurface.review.nextCommit', { count: nextCommitCount }), testID: 'scm-review-count-commit' });
+    }
+    if (snapshot && typeof snapshot.fetchedAt === 'number' && snapshot.fetchedAt > 0) {
+        reviewMeta.push({ key: 'asOf', text: t('surfaceState.asOf', { time: formatAsOfTime(snapshot.fetchedAt) }), tone: 'muted' });
+    }
+    const activeIndex = activeReviewPath ? navigationPaths.indexOf(activeReviewPath) : -1;
+    const jumpItems = navigationPaths.map((path, index) => ({
+        id: path,
+        title: `${index + 1} / ${navigationPaths.length}  ${path.split('/').pop() ?? path}`,
+    }));
+    const showJump = navigationPaths.length > 1 && (!showIndex || scrolledPastIndex);
+
+    const detailsHeaderElement = detailsHeader ? (
+        <DetailsTabHeader
+            testID="scm-review-header"
+            title={t('detailsSurface.review.title')}
+            meta={reviewMeta}
+            actions={(
+                <View testID="scm-review-toolbar" style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                    {props.toolbarLeading}
+                    {Platform.OS === 'web' ? <DiffPresentationStyleToggleButton size={16} /> : null}
+                    <WrapLinesToggleButton />
+                    {tooLarge && reviewFiles.length > 0 ? (
+                        <Tooltip label={t('files.reviewLargeDiffOneAtATime')} testID="scm-review-large-diff-info" style={{ width: Platform.OS === 'web' ? 28 : 48, height: Platform.OS === 'web' ? 28 : 48, alignItems: 'center', justifyContent: 'center' }}>
+                            <Icon name="info" size={16} color={theme.colors.text.secondary} />
+                        </Tooltip>
+                    ) : null}
+                </View>
+            )}
+            controls={(
+                <>
+                    <ChangedFilesReviewDiffAreaSelector
+                        theme={theme}
+                        diffArea={diffArea}
+                        availableModes={diffConfig.availableModes}
+                        labels={diffAreaLabels}
+                        onChange={setDiffArea}
+                        inline
+                    />
+                    {showJump ? (
+                        <ToolbarSelect
+                            testID="scm-review-jump"
+                            label={t('detailsSurface.review.jumpA11y')}
+                            items={jumpItems}
+                            selectedId={activeIndex >= 0 ? navigationPaths[activeIndex] : navigationPaths[0] ?? null}
+                            onSelect={focusFile}
+                        />
+                    ) : null}
+                    <ChangedFilesReviewNavigation
+                        paths={navigationPaths}
+                        activePath={activeReviewPath}
+                        onFocusPath={focusFile}
+                        diffStateSource={diffStateSource}
+                        onFocusLine={focusLine}
+                    />
+                </>
+            )}
+        />
+    ) : null;
+
     return (
         <View style={{ flex: 1, minHeight: 0 }}>
+            {detailsHeaderElement ?? (
             <HorizontalScrollableRow testID="scm-review-toolbar" fadeColor={theme.colors.surface.base ?? theme.colors.surface.inset} indicatorColor={theme.colors.text.secondary} containerStyle={{ flexGrow: 0, flexShrink: 0 }} contentStyle={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 12, paddingVertical: 4 }}>
                 {props.toolbarLeading}
                 <ChangedFilesReviewDiffAreaSelector
                     theme={theme}
                     diffArea={diffArea}
                     availableModes={diffConfig.availableModes}
-                    labels={diffConfig.labels}
+                    labels={diffAreaLabels}
                     onChange={setDiffArea}
                     inline
                 />
@@ -1063,6 +1243,7 @@ function ChangedFilesReviewInner(props: ChangedFilesReviewProps) {
                     </Tooltip>
                 ) : null}
             </HorizontalScrollableRow>
+            )}
             <View ref={reviewViewportRef} collapsable={false} style={{ flex: 1, minHeight: 0 }}>
                 <DiffFilesListView
                     ref={listRef as any}
@@ -1081,6 +1262,7 @@ function ChangedFilesReviewInner(props: ChangedFilesReviewProps) {
                     renderFileRow={renderFileRow as any}
                     renderInlineUnifiedDiff={renderInlineUnifiedDiff as any}
                     ListHeaderComponent={ListHeaderComponent as any}
+                    ListFooterComponent={props.bottomInsetPx ? (() => <View style={{ height: props.bottomInsetPx }} />) as any : undefined}
                     onScroll={handleScroll}
                     onLayout={props.onLayout as any}
                     onContentSizeChange={props.onContentSizeChange as any}

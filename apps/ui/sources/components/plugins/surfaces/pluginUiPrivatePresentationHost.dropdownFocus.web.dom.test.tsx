@@ -51,11 +51,10 @@ vi.mock('react-native-unistyles', async () => {
 vi.mock('@/components/markdown/MarkdownView', () => ({ MarkdownView: () => null }));
 vi.mock('@/components/ui/code/blocks/CodeBlockView', () => ({ CodeBlockView: () => null }));
 
-vi.mock('@/utils/web/radixCjs', () => ({
-    requireRadixDismissableLayer: () => ({
-        Branch: (props: React.PropsWithChildren) => React.createElement(React.Fragment, null, props.children),
-    }),
-}));
+vi.mock('@/utils/web/radixCjs', async () => {
+    const { createRadixCjsRealModule } = await import('@/dev/testkit/mocks/radixCjs');
+    return await createRadixCjsRealModule();
+});
 
 vi.mock('@/utils/web/reactDomCjs', async () => {
     const ReactDOM = await import('react-dom');

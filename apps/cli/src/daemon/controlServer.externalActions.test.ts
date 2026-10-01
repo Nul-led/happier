@@ -1,4 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
+import { API_TOKEN_FULL_GRANT_V1, createActionExecutor } from '@happier-dev/protocol';
+
+const terminalPolicy = vi.hoisted(() => ({ value: 'allowed' as 'allowed' | 'disallowed' }));
+vi.mock('@/configuration', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/configuration')>();
+  return { ...actual, configuration: { ...actual.configuration,
+    get terminalPresentUserPolicy() { return terminalPolicy.value; },
+  } };
+});
 
 vi.mock('@/plugins/daemon/currentCatalog', () => ({
   readCurrentDaemonPluginCatalogSnapshot: vi.fn(async () => ({ plugins: [] })),
@@ -10,6 +19,7 @@ import type {
   ResolveExternalActionTarget,
 } from './externalActions/executeExternalAction';
 import { createDaemonControlApp } from './controlServer';
+import { createCliActionDeps } from '@/session/actions/createCliActionDeps';
 
 type ExternalActionApi = Readonly<{
   currentServerId: string;
@@ -51,6 +61,24 @@ function createApp(
 }
 
 describe('createDaemonControlApp external Action ingress', () => {
+  it('refuses root approval decisions when terminal policy is disallowed and admits them when allowed', async () => {
+    const app = createApp({
+      currentServerId: 'server-local', verifyPat: vi.fn(), resolveTarget: async () => ({ kind: 'machine', machineId: 'machine-local' }),
+      executor: createActionExecutor(createCliActionDeps({
+        token: 'test-token', sessionId: '', mode: 'plain', ctx: null,
+      })),
+    });
+    try {
+      const invoke = () => app.inject({ method: 'POST', url: '/actions/root/execute',
+        headers: { 'x-happier-daemon-token': 'private-control-token' },
+        payload: { actionId: 'approval.request.decide', input: { artifactId: 'missing', decision: 'approve' } },
+      });
+      terminalPolicy.value = 'disallowed';
+      expect((await invoke()).json()).toMatchObject({ ok: false, errorCode: 'present_user_required' });
+      terminalPolicy.value = 'allowed';
+      expect((await invoke()).json()).not.toHaveProperty('errorCode', 'present_user_required');
+    } finally { terminalPolicy.value = 'allowed'; await app.close(); }
+  });
   it('fails closed when a daemon-owned meta Action produces a non-JSON result', async () => {
     const execute = vi.fn<ExternalActionExecutor['execute']>(
       async () => ({ ok: true as const, result: 1n }),
@@ -71,7 +99,6 @@ describe('createDaemonControlApp external Action ingress', () => {
           actionId: 'action.spec.search',
           input: { query: 'review' },
           surface: 'cli',
-          authority: 'present_user',
         },
       });
 
@@ -96,6 +123,7 @@ describe('createDaemonControlApp external Action ingress', () => {
       accountId: 'account-1',
       principalId: 'principal-1',
       credentialId: 'credential-1',
+      grant: API_TOKEN_FULL_GRANT_V1,
       expiresAt: null,
       authority: 'account_automation' as const,
     }));

@@ -1,5 +1,4 @@
 import * as React from 'react';
-import { useUnistyles } from 'react-native-unistyles';
 import {
     readProviderSettingsFromAccountSettingsV1,
     type LaunchProfileV2,
@@ -31,7 +30,6 @@ import type { PermissionMode } from '@/sync/domains/permissions/permissionTypes'
 import { useSettings } from '@/sync/domains/state/storage';
 import { t } from '@/text';
 import { resolveProfileBackendTargetKeyForEntry } from './profileBackendEntryStorage';
-import { Icon } from '@/components/ui/icons/Icon';
 
 type Entry = ResolvedBackendCatalogEntry;
 
@@ -77,7 +75,6 @@ export function SlimProfileRoutingFields(props: Readonly<{
     onPreferredAgentChange: (value: string | undefined) => void;
     onPreferredModelChange: (value: LaunchProfileV2['preferredModelSelection'] | undefined) => void;
 }>) {
-    const { theme } = useUnistyles();
     const providersEnabled = useFeatureEnabled('providers', {
         scopeKind: 'spawn',
         serverId: props.serverId,
@@ -190,7 +187,7 @@ export function SlimProfileRoutingFields(props: Readonly<{
     }, [props.entries]);
 
     return <>
-        <ItemGroup title={t('profiles.preferredAgent.title')} footer={t('profiles.preferredAgent.footer')}>
+        <ItemGroup title={t('profiles.preferredAgent.title')} description={t('profiles.preferredAgent.footer')}>
             <DropdownMenu
                 open={agentOpen}
                 onOpenChange={setAgentOpen}
@@ -229,7 +226,7 @@ export function SlimProfileRoutingFields(props: Readonly<{
             ) : null}
         </ItemGroup>
 
-        {permissionEntries.length > 0 ? <ItemGroup title={t('profiles.defaultPermissions.title')} footer={t('profiles.defaultPermissions.footer')}>
+        {permissionEntries.length > 0 ? <ItemGroup title={t('profiles.defaultPermissions.title')} description={t('profiles.defaultPermissions.footer')}>
             {permissionEntries.map(({ entry, agentId, options }) => {
                 const targetKey = resolveProfileBackendTargetKeyForEntry(entry);
                 const selected = props.defaultPermissionModeByTargetKey[targetKey];
@@ -245,7 +242,6 @@ export function SlimProfileRoutingFields(props: Readonly<{
                     itemTrigger={{
                         title: entry.title,
                         subtitle: selected ? getPermissionModeLabelForAgentType(agentId, selected as PermissionMode) : t('profiles.defaultPermissions.useAccountDefault'),
-                        icon: <Icon name="shield" size={29} color={theme.colors.text.secondary} />,
                         showSelectedDetail: false,
                         showSelectedSubtitle: false,
                     }}
@@ -267,7 +263,7 @@ export function SlimProfileRoutingFields(props: Readonly<{
             })}
         </ItemGroup> : null}
 
-        <ItemGroup title={t('profiles.defaultStorage.title')} footer={t('profiles.defaultStorage.footer')}>
+        <ItemGroup title={t('profiles.defaultStorage.title')} description={t('profiles.defaultStorage.footer')}>
             {props.entries.map((entry) => {
                 const targetKey = resolveProfileBackendTargetKeyForEntry(entry);
                 const selected = props.defaultPersistenceModeByTargetKey[targetKey];
@@ -283,7 +279,6 @@ export function SlimProfileRoutingFields(props: Readonly<{
                     itemTrigger={{
                         title: entry.title,
                         subtitle: selected ? t(`sessionsList.storage${selected === 'direct' ? 'Direct' : 'Persisted'}Tab`) : t('profiles.defaultStorage.useAccountDefault'),
-                        icon: <Icon name="floppy-disk" size={29} color={theme.colors.text.secondary} />,
                         showSelectedDetail: false,
                         showSelectedSubtitle: false,
                     }}

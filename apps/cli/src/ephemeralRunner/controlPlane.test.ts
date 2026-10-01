@@ -2,6 +2,7 @@ import { encodeBase64 } from '@happier-dev/protocol/crypto/base64';
 import { RunnerActivationBindingV1Schema } from '@happier-dev/protocol/ephemeralRunner/activation';
 import type { RunnerEndpointFactsV1 } from '@happier-dev/protocol/ephemeralRunner/endpoint';
 import { runnerArtifactTargetForPlatform } from '@happier-dev/protocol/ephemeralRunner/runnerArtifact';
+import { createPluginInstallationReviewFixture } from '@happier-dev/protocol/testing/pluginInstallationReviewFixture';
 import tweetnacl from 'tweetnacl';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -88,7 +89,7 @@ function harness(input?: Readonly<{
       waitForReview: vi.fn(async () => { events.push('review'); return review; }),
       submitConsent: vi.fn(async () => { events.push('consent'); }),
       submitReadiness: vi.fn(async () => { events.push('readiness.publish'); }),
-      decline: vi.fn(async () => { events.push('decline'); }),
+      decline: vi.fn(async () => { events.push('decline'); return { status: 'declined' as const }; }),
       onConnectionState: (listener: (state: 'connected' | 'reconnecting') => void) => { connectionListener = listener; return () => { connectionListener = null; }; },
       close: vi.fn(async () => { events.push('connection.close'); }),
     })),
@@ -133,6 +134,96 @@ function harness(input?: Readonly<{
 }
 
 describe('ephemeral Runner endpoint control plane', () => {
+  it.each(['creator_unavailable', 'recipient_mismatch'] as const)('does not claim remote cancellation when decline refuses currentness (%s)', async (reason) => {
+    const f = fixture();
+    const h = harness({ allow: false });
+    const connect = vi.mocked(h.deps.createConnection).getMockImplementation()!;
+    vi.mocked(h.deps.createConnection).mockImplementation(async (args) => ({
+      ...await connect(args),
+      decline: async () => ({ status: 'unavailable' as const, reason }),
+    }));
+    const controller = createEphemeralRunnerController({
+      activation: f,
+      home: { v: 1, homeServerIdentityId: 'srv_runner_home', canonicalServerUrl: 'https://home.example.test', revision: 1, endpoints: [{ kind: 'https', url: 'https://home.example.test' }] },
+      localState: { homeDirectory: '/runner/home', endpointHomeDirectory: '/endpoint/home', environment: {}, unsetEnvironmentVariables: [], dispose: vi.fn(async () => { h.events.push('state.dispose'); }) },
+      installation: f.installation,
+      dependencies: h.deps,
+      ui: h.ui,
+    });
+    await expect(controller.run()).resolves.toMatchObject({ status: 'failed' });
+    expect(h.snapshots.at(-1)).toMatchObject({ failure: { kind: 'activation_close_unconfirmed' }, canRetry: false });
+    expect(h.events).toContain('state.dispose');
+  });
+
+  it('lets window close interrupt an unanswered online decline without claiming remote cancellation', async () => {
+    const f = fixture();
+    const h = harness({ allow: false });
+    let declineSignal: AbortSignal | null = null;
+    const control = createEphemeralRunnerHttpControlConnection({
+      activationId: f.binding.activationId,
+      createProjectionProof: () => ({}),
+      request: async (_path, init, signal) => {
+        if (init.method !== 'DELETE') throw new Error('unexpected request');
+        declineSignal = signal;
+        return await new Promise((_resolve, reject) => {
+          signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+        });
+      },
+    });
+    const connect = vi.mocked(h.deps.createConnection).getMockImplementation()!;
+    vi.mocked(h.deps.createConnection).mockImplementation(async (args) => {
+      const base = await connect(args);
+      return { ...base, decline: control.decline };
+    });
+    const controller = createEphemeralRunnerController({
+      activation: f,
+      home: { v: 1, homeServerIdentityId: 'srv_runner_home', canonicalServerUrl: 'https://home.example.test', revision: 1, endpoints: [{ kind: 'https', url: 'https://home.example.test' }] },
+      localState: { homeDirectory: '/runner/home', endpointHomeDirectory: '/endpoint/home', environment: {}, unsetEnvironmentVariables: [], dispose: vi.fn(async () => { h.events.push('state.dispose'); }) },
+      installation: f.installation,
+      dependencies: h.deps,
+      ui: h.ui,
+    });
+    const running = controller.run();
+    await vi.waitFor(() => expect(declineSignal).not.toBeNull());
+    const closing = controller.requestClose();
+    await expect(closing).resolves.toBe('stopped');
+    await expect(running).resolves.toMatchObject({ status: 'failed' });
+    expect(h.snapshots.at(-1)).toMatchObject({ failure: { kind: 'activation_close_unconfirmed' } });
+    expect(h.ui.requestFailureRecovery).not.toHaveBeenCalled();
+    expect(h.events).toContain('state.dispose');
+  });
+
+  it('stops a materialized winner reported by decline before releasing bootstrap custody', async () => {
+    const f = fixture();
+    const h = harness();
+    const connect = vi.mocked(h.deps.createConnection).getMockImplementation()!;
+    vi.mocked(h.deps.createConnection).mockImplementation(async (args) => ({
+      ...await connect(args),
+      decline: async () => ({ status: 'unavailable' as const, reason: 'already_materialized' as const }),
+    }));
+    vi.mocked(h.deps.materialize).mockRejectedValueOnce(new Error('materialized_response_lost'));
+    const ordinaryStop = vi.fn(async () => { h.events.push('ordinary.stop'); });
+    vi.mocked(h.deps.startSession).mockImplementation(async ({ signal, onRuntimeStopReady }) => {
+      onRuntimeStopReady(ordinaryStop);
+      expect(signal.aborted).toBe(true);
+      signal.throwIfAborted();
+      throw new Error('Agent admission must be unreachable');
+    });
+    const controller = createEphemeralRunnerController({
+      activation: f,
+      home: { v: 1, homeServerIdentityId: 'srv_runner_home', canonicalServerUrl: 'https://home.example.test', revision: 1, endpoints: [{ kind: 'https', url: 'https://home.example.test' }] },
+      localState: { homeDirectory: '/runner/home', endpointHomeDirectory: '/endpoint/home', environment: {}, unsetEnvironmentVariables: [], dispose: vi.fn(async () => { h.events.push('state.dispose'); }) },
+      installation: f.installation,
+      dependencies: h.deps,
+      ui: h.ui,
+    });
+    await expect(controller.run()).resolves.toMatchObject({ status: 'failed' });
+    expect(ordinaryStop).toHaveBeenCalledOnce();
+    expect(h.deps.materialize).toHaveBeenCalledTimes(2);
+    expect(h.events.indexOf('ordinary.stop')).toBeLessThan(h.events.indexOf('materialized.release'));
+    expect(h.events.indexOf('materialized.release')).toBeLessThan(h.events.indexOf('state.dispose'));
+  });
+
   it('cancels the exact activation when Stop races a claim whose response is lost', async () => {
     const f = fixture();
     const h = harness();
@@ -146,7 +237,7 @@ describe('ephemeral Runner endpoint control plane', () => {
       waitForReview: vi.fn(async () => h.review),
       submitConsent: vi.fn(async () => undefined),
       submitReadiness: vi.fn(async () => undefined),
-      decline: vi.fn(async () => { h.events.push('decline'); }),
+      decline: vi.fn(async () => { h.events.push('decline'); return { status: 'declined' as const }; }),
       onConnectionState: () => () => undefined,
       close: vi.fn(async () => { h.events.push('connection.close'); }),
     }));
@@ -220,6 +311,19 @@ describe('ephemeral Runner endpoint control plane', () => {
   it('declines without installation, readiness, materialization, or runtime side effects', async () => {
     const f = fixture();
     const h = harness({ allow: false });
+    let acknowledgeDecline!: () => void;
+    let declineSignal: AbortSignal | null = null;
+    const acknowledged = new Promise<void>((resolve) => { acknowledgeDecline = resolve; });
+    const connect = vi.mocked(h.deps.createConnection).getMockImplementation()!;
+    vi.mocked(h.deps.createConnection).mockImplementation(async (args) => ({
+      ...await connect(args),
+      decline: async ({ signal }) => {
+        declineSignal = signal;
+        h.events.push('decline');
+        await acknowledged;
+        return { status: 'declined' as const };
+      },
+    }));
     const dispose = vi.fn(async () => { h.events.push('state.dispose'); });
     const controller = createEphemeralRunnerController({
       activation: f,
@@ -230,7 +334,12 @@ describe('ephemeral Runner endpoint control plane', () => {
       ui: h.ui,
     });
 
-    await expect(controller.run()).resolves.toEqual({ status: 'declined' });
+    const running = controller.run();
+    await vi.waitFor(() => expect(declineSignal).not.toBeNull());
+    expect(declineSignal).toMatchObject({ aborted: false });
+    expect(dispose).not.toHaveBeenCalled();
+    acknowledgeDecline();
+    await expect(running).resolves.toEqual({ status: 'declined' });
     expect(h.events).toEqual(['claim', 'facts', 'review', 'plugin.prepare', 'decline', 'plugin.release', 'connection.close', 'state.dispose']);
     expect(h.deps.prepareAgent).not.toHaveBeenCalled();
     expect(h.deps.materialize).not.toHaveBeenCalled();
@@ -281,7 +390,7 @@ describe('ephemeral Runner endpoint control plane', () => {
       })),
       submitConsent: vi.fn(async () => undefined),
       submitReadiness: vi.fn(async () => undefined),
-      decline: vi.fn(async () => undefined),
+      decline: vi.fn(async () => ({ status: 'declined' as const })),
       onConnectionState: () => () => undefined,
       close: vi.fn(async () => undefined),
     }));
@@ -321,7 +430,7 @@ describe('ephemeral Runner endpoint control plane', () => {
       }),
       submitConsent: vi.fn(async () => { h.events.push('consent'); }),
       submitReadiness: vi.fn(async () => undefined),
-      decline: vi.fn(async () => { h.events.push('decline'); }),
+      decline: vi.fn(async () => { h.events.push('decline'); return { status: 'declined' as const }; }),
       onConnectionState: () => () => undefined,
       close: vi.fn(async () => { h.events.push('connection.close'); }),
     }));
@@ -644,20 +753,113 @@ describe('ephemeral Runner endpoint control plane', () => {
     ]);
     expect(h.deps.materialize).not.toHaveBeenCalled();
     expect(h.deps.startSession).not.toHaveBeenCalled();
-    // This run already declined the activation above, and a retry would mint a
-    // fresh box key and installation identity that the Home's single recorded
-    // claim can never match. Offering Retry here sends the endpoint user into a
-    // loop that fails identically every time.
+    // Recovery happens before declining, while the exact claim and prepared
+    // runtime still exist. This fixture chooses Exit instead of retrying, so
+    // the terminal failure snapshot is no longer retryable after the one
+    // canonical decline has completed.
     expect(h.snapshots.at(-1)).toMatchObject({ phase: 'failed', canRetry: false });
     expect(h.ui.requestFailureRecovery).toHaveBeenCalledWith(
-      expect.objectContaining({ canRetry: false }),
+      expect.objectContaining({ canRetry: true }),
     );
-    // No Session, Machine or AccessKey was ever created here, so the endpoint
-    // must not send the user to an ordinary Session that does not exist.
+    // No Session, Machine or AccessKey was ever created here, and the one
+    // canonical decline has closed the activation. The terminal classification
+    // is therefore truthful without pointing at a nonexistent Session.
     expect(h.snapshots.at(-1)?.failure).toEqual({ kind: 'before_session_terminal' });
     expect(h.ui.requestFailureRecovery).toHaveBeenCalledWith(
       expect.objectContaining({ failure: { kind: 'before_session_terminal' } }),
     );
+  });
+
+  it('retries Agent preparation and AI readiness in place without replacing consent or the installed plugin', async () => {
+    const f = fixture();
+    const h = harness();
+    vi.mocked(h.deps.prepareAgent).mockRejectedValueOnce(new Error('managed_download_unavailable'));
+    vi.mocked(h.deps.checkNonInferenceReadiness).mockResolvedValueOnce({ status: 'unavailable', reason: 'broker_offline' });
+    vi.mocked(h.ui.requestFailureRecovery).mockImplementation(async ({ canRetry }) => {
+      expect(canRetry).toBe(true);
+      expect(h.events).not.toContain('decline');
+      return 'retry';
+    });
+    const controller = createEphemeralRunnerController({
+      activation: f,
+      home: { v: 1, homeServerIdentityId: 'srv_runner_home', canonicalServerUrl: 'https://home.example.test', revision: 1, endpoints: [{ kind: 'https', url: 'https://home.example.test' }] },
+      localState: { homeDirectory: '/runner/home', endpointHomeDirectory: '/endpoint/home', environment: {}, unsetEnvironmentVariables: [], dispose: vi.fn(async () => { h.events.push('state.dispose'); }) },
+      installation: f.installation,
+      dependencies: h.deps,
+      ui: h.ui,
+    });
+    const running = controller.run();
+    await vi.waitFor(() => expect(h.events).toContain('start'));
+    expect(h.ui.requestFailureRecovery).toHaveBeenCalledTimes(2);
+    expect(h.ui.reviewAndRequestConsent).toHaveBeenCalledOnce();
+    expect(h.events.filter((event) => event === 'claim')).toHaveLength(1);
+    expect(h.events.filter((event) => event === 'plugin.apply')).toHaveLength(1);
+    expect(h.events.filter((event) => event === 'consent')).toHaveLength(1);
+    expect(h.deps.materialize).toHaveBeenCalledOnce();
+    expect(h.deps.checkNonInferenceReadiness).toHaveBeenCalledTimes(2);
+    const first = vi.mocked(h.deps.checkNonInferenceReadiness).mock.calls[0]![0];
+    const retried = vi.mocked(h.deps.checkNonInferenceReadiness).mock.calls[1]![0];
+    expect(retried.claim).toBe(first.claim);
+    expect(retried.consent).toBe(first.consent);
+    expect(retried.preparation).toBe(first.preparation);
+    h.settleTerminal({ status: 'completed' });
+    await expect(running).resolves.toEqual({ status: 'completed' });
+  });
+
+  it.each([false, true])('re-prepares a failed plugin install and renews consent only when its review changes (%s)', async (reviewChanges) => {
+    const f = fixture();
+    const h = harness({ optionalSelections: [{ accessId: 'network', selected: true }] });
+    const pluginReview = createPluginInstallationReviewFixture({
+      pluginId: 'reviewed-plugin',
+      optionalHostAccess: [{ id: 'network', capability: 'network', reason: 'Read documentation', authorizationClass: 'hostResourceSelection', normalizedScope: {} }],
+    });
+    const failedApply = vi.fn(async () => { throw new Error('registry_temporarily_unavailable'); });
+    const retriedApply = vi.fn(async () => undefined);
+    const release = vi.fn(async () => undefined);
+    vi.mocked(h.deps.prepareReviewedPluginAcquisition)
+      .mockResolvedValueOnce({ review: pluginReview, apply: failedApply, release })
+      .mockResolvedValueOnce({ review: { ...pluginReview, ...(reviewChanges ? { requiredHostAccess: [{ id: 'files', capability: 'filesystem', reason: 'Read project', authorizationClass: 'hostResourceSelection' as const, normalizedScope: { path: '/workspace/project' } }] } : {}) }, apply: retriedApply, release });
+    vi.mocked(h.ui.requestFailureRecovery).mockResolvedValue('retry');
+    const controller = createEphemeralRunnerController({
+      activation: f,
+      home: { v: 1, homeServerIdentityId: 'srv_runner_home', canonicalServerUrl: 'https://home.example.test', revision: 1, endpoints: [{ kind: 'https', url: 'https://home.example.test' }] },
+      localState: { homeDirectory: '/runner/home', endpointHomeDirectory: '/endpoint/home', environment: {}, unsetEnvironmentVariables: [], dispose: vi.fn(async () => undefined) },
+      installation: f.installation,
+      dependencies: h.deps,
+      ui: h.ui,
+    });
+    const running = controller.run();
+    await vi.waitFor(() => expect(h.events).toContain('start'));
+    expect(h.ui.reviewAndRequestConsent).toHaveBeenCalledTimes(reviewChanges ? 2 : 1);
+    expect(retriedApply).toHaveBeenCalledWith(expect.objectContaining({ optionalSelections: [{ accessId: 'network', selected: true }] }));
+    expect(h.events).not.toContain('decline');
+    expect(release).toHaveBeenCalled();
+    h.settleTerminal({ status: 'completed' });
+    await expect(running).resolves.toEqual({ status: 'completed' });
+  });
+
+  it('closes an outstanding failure question without waiting for its Exit button', async () => {
+    const f = fixture();
+    const h = harness();
+    vi.mocked(h.deps.createConnection).mockRejectedValue(new Error('home_unreachable'));
+    vi.mocked(h.ui.requestFailureRecovery).mockImplementation(async ({ signal }) => await new Promise<'retry' | 'exit'>((_resolve, reject) => {
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+    }));
+    const controller = createEphemeralRunnerController({
+      activation: f,
+      home: { v: 1, homeServerIdentityId: 'srv_runner_home', canonicalServerUrl: 'https://home.example.test', revision: 1, endpoints: [{ kind: 'https', url: 'https://home.example.test' }] },
+      localState: { homeDirectory: '/runner/home', endpointHomeDirectory: '/endpoint/home', environment: {}, unsetEnvironmentVariables: [], dispose: vi.fn(async () => { h.events.push('state.dispose'); }) },
+      installation: f.installation,
+      dependencies: h.deps,
+      ui: h.ui,
+    });
+    const running = controller.run();
+    await vi.waitFor(() => expect(h.ui.requestFailureRecovery).toHaveBeenCalledOnce());
+    const closing = controller.requestClose();
+    expect(vi.mocked(h.ui.requestFailureRecovery).mock.calls[0]![0].signal.aborted).toBe(true);
+    await expect(closing).resolves.toBe('stopped');
+    await running;
+    expect(h.events).toContain('state.dispose');
   });
 
   it('still offers retry when the run failed before any claim reached the Home', async () => {

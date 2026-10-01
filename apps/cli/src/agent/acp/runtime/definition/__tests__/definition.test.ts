@@ -273,6 +273,7 @@ describe('ACP runtime definitions', () => {
         port: 4242,
       },
       definition: {
+        auth: { methodId: 'oauth-personal' },
         modelConfigOptionId: 'agent-model-choice',
         stderrRules: {
           suppress: [{
@@ -285,6 +286,13 @@ describe('ACP runtime definitions', () => {
         permissionModeMapping: {
           default: null,
           'safe-yolo': 'smart',
+        },
+        permissionModeArgv: {
+          flag: '--approval-mode',
+          map: {
+            default: null,
+            'safe-yolo': 'auto-edit',
+          },
         },
       },
     });
@@ -296,6 +304,7 @@ describe('ACP runtime definitions', () => {
         port: 4242,
       },
       definition: {
+        auth: { methodId: 'oauth-personal' },
         modelConfigOptionId: 'agent-model-choice',
         stderrRules: {
           suppress: [{
@@ -308,6 +317,13 @@ describe('ACP runtime definitions', () => {
         permissionModeMapping: {
           default: null,
           'safe-yolo': 'smart',
+        },
+        permissionModeArgv: {
+          flag: '--approval-mode',
+          map: {
+            default: null,
+            'safe-yolo': 'auto-edit',
+          },
         },
       },
     });

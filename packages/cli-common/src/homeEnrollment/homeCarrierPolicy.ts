@@ -10,6 +10,18 @@ export type HomeCarrierPreferredTransport = 'iroh' | 'https';
 export type HomeCarrierAcquisitionMode = 'initial_selection' | 'pinned_recovery';
 export type HomeApplicationCarrierEligibility = 'automatic' | 'standard_only';
 
+export const HOME_CARRIER_POLICY_ENV_KEY = 'HAPPIER_HOME_CARRIER_POLICY';
+
+/** Operator-local application carrier selection for CLI and daemon processes. */
+export function readHomeApplicationCarrierEligibilityFromEnv(
+  env: Readonly<Record<string, string | undefined>>,
+): HomeApplicationCarrierEligibility {
+  const raw = String(env[HOME_CARRIER_POLICY_ENV_KEY] ?? '').trim().toLowerCase();
+  if (!raw || raw === 'automatic') return 'automatic';
+  if (raw === 'standard_only') return 'standard_only';
+  throw new Error(`${HOME_CARRIER_POLICY_ENV_KEY} must be "automatic" or "standard_only"`);
+}
+
 /**
  * Canonical initial carrier preference for a normalized Home descriptor.
  * Acquisition, failure classification, and fallback remain owned by

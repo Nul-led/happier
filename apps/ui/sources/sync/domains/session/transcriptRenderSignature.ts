@@ -2,7 +2,7 @@ import {
     buildSessionMetadataStabilitySignatureValue,
     buildStableJsonSignature,
 } from '@/sync/domains/session/metadata/sessionMetadataStability';
-import type { Metadata } from '@/sync/domains/state/storageTypes';
+import type { Metadata } from '@happier-dev/session-core/state';
 
 const TRANSCRIPT_RENDER_IGNORED_SESSION_FIELDS = new Set([
     'updatedAt',

@@ -36,36 +36,39 @@ vi.mock('@/hooks/server/useFeatureEnabled', () => ({ useFeatureEnabled: () => tr
 afterEach(standardCleanup);
 
 describe('SessionListSearchChrome native layout', () => {
-    it('gives expanded search its own full-width row and moves filters below it', async () => {
+    it('keeps the title row and gives the open field its own full-width row beneath it', async () => {
         const { SessionListSearchChrome } = await import('./SessionListSearchChrome');
         const screen = await renderScreen(
             <SessionListSearchChrome
                 filterControl={React.createElement('FilterControl', { testID: 'session-list-filter-control' })}
-                tagOptions={[{ id: 'tag:a', label: 'alpha' }]}
-                selectedTagOptionIds={[]}
                 searchQuery="responsive"
-                onToggleTagOption={vi.fn()}
                 onSearchQueryChange={vi.fn()}
             />,
         );
-        const flatten = (style: unknown): Record<string, unknown> => (
-            Array.isArray(style)
-                ? style.reduce<Record<string, unknown>>((acc, entry) => ({ ...acc, ...flatten(entry) }), {})
-                : (style as Record<string, unknown> | null) ?? {}
+
+        const titleRow = screen.root.findByProps({ testID: 'session-list-search-primary-controls' });
+        expect(titleRow.findByProps({ testID: 'session-list-filter-control' })).toBeTruthy();
+        expect(titleRow.findAllByProps({ testID: 'session-list-search-trigger' }).length).toBeGreaterThan(0);
+        expect(titleRow.findAllByProps({ testID: 'session-list-view-options-trigger' }).length).toBeGreaterThan(0);
+        expect(titleRow.findAllByProps({ testID: 'session-list-search-input' })).toHaveLength(0);
+
+        const [field] = screen.root.findAllByProps({ testID: 'session-list-search-input.field' });
+        expect(field?.findAllByProps({ testID: 'session-list-search-input' }).length).toBeGreaterThan(0);
+    });
+
+    it('gives every header and field action the touch floor on a touch platform', async () => {
+        const { SessionListSearchChrome } = await import('./SessionListSearchChrome');
+        const { resolveMinimumInteractiveTargetSize } = await import('@/components/ui/interactiveTargetSize');
+        const screen = await renderScreen(
+            <SessionListSearchChrome
+                searchQuery="responsive"
+                onSearchQueryChange={vi.fn()}
+            />,
         );
 
-        const searchRow = screen.root.findByProps({ testID: 'session-list-search-primary-controls' });
-        const auxiliaryRow = screen.root.findByProps({ testID: 'session-list-search-auxiliary-controls' });
-        expect(searchRow.findByProps({ testID: 'session-list-search-input' })).toBeTruthy();
-        expect(searchRow.findAllByProps({ testID: 'session-list-filter-control' })).toHaveLength(0);
-        expect(searchRow.findAllByProps({ testID: 'session-list-tag-filter-trigger' })).toHaveLength(0);
-        expect(searchRow.findAllByProps({ testID: 'session-list-view-options-trigger' })).toHaveLength(0);
-        expect(auxiliaryRow.findByProps({ testID: 'session-list-filter-control' })).toBeTruthy();
-        expect(auxiliaryRow.findByProps({ testID: 'session-list-tag-filter-trigger' })).toBeTruthy();
-        expect(auxiliaryRow.findByProps({ testID: 'session-list-view-options-trigger' })).toBeTruthy();
-
-        const shellStyle = flatten(screen.root.findByProps({ testID: 'session-list-search-trigger' }).props.style);
-        expect(shellStyle.maxWidth).toBe('100%');
-        expect(shellStyle.flexGrow).toBe(1);
+        for (const testID of ['session-list-search-trigger', 'session-list-view-options-trigger', 'session-list-search-close']) {
+            const [button] = screen.root.findAllByProps({ testID });
+            expect(button?.props.minimumInteractiveTargetSize).toBe(resolveMinimumInteractiveTargetSize('ios'));
+        }
     });
 });

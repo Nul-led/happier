@@ -21,7 +21,7 @@ import {
     PluginUiTargetedContributionSurfaceV1Schema,
 } from '@happier-dev/protocol/plugins/ui/targetedContributions';
 
-import type { PreparedDaemonPluginUiTargetedSurfaceMountV1 } from '@/agents/backendCatalog/loadDaemonMergedProjectionInputs';
+import type { PreparedDaemonPluginUiTargetedSurfaceMountV1 } from './mountedTargetedContributions';
 import type { PluginProjectionEntry } from '@/agents/backendCatalog/daemonContributionRegistryProjectionAdapters';
 import type { ActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
 import type { PluginUiProjectionModel } from '@/sync/domains/plugins/ui/projection';
@@ -83,10 +83,10 @@ export function buildTargetedPluginSurfaceReadyTestId(
     return [
         'plugin-targeted-surface-ready',
         mount.target.pluginId,
-        mount.target.immutableGenerationId,
+        mount.target.occurrenceId,
         mount.contributor.pluginId,
         mount.contributor.contributionId,
-        mount.contributor.immutableGenerationId,
+        mount.contributor.occurrenceId,
         mount.selectedRenderer.identity.pluginId,
         mount.selectedRenderer.identity.localId,
         mount.selectedRenderer.renderer.kind,
@@ -287,6 +287,7 @@ export function createTargetedPluginSurfaceBoundFacts(input: Readonly<{
         machineId: physical.executionOrigin.materializationRef.machineId,
         serverId: input.serverId,
         projectionGeneration: input.projectionGeneration,
+        occurrenceId: physical.targetedContributions.target.occurrenceId,
         executionOrigin: physical.executionOrigin,
         resourceCapability: physical.resourceCapability,
         resourceContext: Object.freeze({

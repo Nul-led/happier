@@ -3,18 +3,27 @@ import {
   decodeBase64,
   encodeBase64,
   SessionIdSchema,
+  SessionOrganizationPlacementV1Schema,
+  SessionCreationTerminalSpawnErrorDetailSchema,
+  SpawnSessionErrorCodeSchema,
+  isSessionCreationTerminalSpawnErrorDetail,
   SessionTurnProviderCheckpointV1Schema,
   TurnIdSchema,
   type AcpConfigOptionOverridesV1,
   type AgentExecutionTargetV1,
   type AgentSessionStartupInstructionsV1,
   type BackendTargetRefV2,
+  type CallerInputConstraintsV1,
   type MachinePoolSelectionOriginV1,
   type ConnectedServiceMaterializationIdentityV1,
   type RuntimeDescriptorV1,
   type SessionAttachMetadataIdentityPolicy,
   type SessionMcpSelectionV1,
   type SessionInitialAccessDraftV1,
+  type SessionReportsToV1,
+  type SessionRolesV1,
+  type SessionInitialGoalRequestV1,
+  type SessionCreateOriginFieldsV1,
   type SessionModelSelectionV1,
   type SessionProviderBindingMetadataV1,
   type SessionProviderBindingSecurityChangeConfirmationV1,
@@ -111,9 +120,19 @@ export function deserializeNativeForkSourceV1(value: string): NativeForkSource {
  * Keep this module free of RPC registration/runtime imports so lower-level session code never
  * depends on the high-level handler graph merely to describe a spawn request or response.
  */
-export interface SpawnSessionOptions {
+export interface SpawnSessionOptions extends SessionCreateOriginFieldsV1 {
   machineId?: string;
   directory: string;
+  /** Daemon-owned directory routing fact; filesystem authority comes from the allocation record. */
+  directoryKind?: 'path' | 'managed';
+  /** Trusted creator evidence for a fresh replay row committed before runner launch. */
+  freshSessionCreation?: boolean;
+  /** Host-private fork seed; the daemon must prove source allocation ownership before reading. */
+  managedDirectorySeed?: Readonly<{
+    sourceSessionId: string;
+    sourceSessionCreationTag?: string;
+    sourcePath: string;
+  }>;
   /**
    * Daemon-only spawn idempotency salt.
    *
@@ -138,6 +157,9 @@ export interface SpawnSessionOptions {
   /** Mutable presentation state committed inside the fresh Session create transaction. */
   initialTitle?: string;
   initialAccess?: SessionInitialAccessDraftV1;
+  reportsTo?: SessionReportsToV1;
+  /** Host-resolved role selection and complete lead snapshot, seeded in fresh owner metadata only. */
+  initialSessionRolesV1?: SessionRolesV1;
   primaryTeamId?: string | null;
   teamCredentialBindings?: import('@happier-dev/protocol/teams').SessionTeamCredentialBindingIntentListV1;
   /** Ephemeral producer custody promoted by the child after the real session exists. */
@@ -172,9 +194,14 @@ export interface SpawnSessionOptions {
   existingSessionId?: string;
   /** Attach cursor used when a wake prompt was committed before the runner resumed. */
   initialTranscriptAfterSeq?: number;
+  /** One-shot goal intent delivered to the resumed runtime after it opens. */
+  initialGoal?: SessionInitialGoalRequestV1;
   executionAuthorization?: SpawnSessionExecutionAuthorization;
   attachMetadataIdentityPolicy?: SessionAttachMetadataIdentityPolicy;
   permissionMode?: PermissionMode;
+  /** Host-only caller authority for this launch; never part of the raw spawn wire or respawn state. */
+  creationAuthorization?: Readonly<{ token: string }>;
+  callerInputConstraints?: CallerInputConstraintsV1;
   permissionModeUpdatedAt?: number;
   agentModeId?: string;
   agentModeUpdatedAt?: number;
@@ -225,5 +252,53 @@ export type SpawnSessionResult =
     type: 'error';
     errorCode: SpawnSessionErrorCode;
     errorMessage: string;
+    agentId?: string;
     errorDetail?: SpawnSessionErrorDetail;
   };
+
+export const SessionCreationOutcomeSchema = z.object({
+  disposition: z.enum(['created', 'rejoined']),
+  organizationPlacement: SessionOrganizationPlacementV1Schema,
+}).strict();
+
+/** Local daemon control transport schemas, consumed by the real HTTP routes. */
+export const SpawnSessionControlBadRequestSchema = z.object({
+  success: z.boolean(),
+  error: z.string(),
+  errorCode: z.string().optional(),
+  agentId: z.string().optional(),
+  errorDetail: SessionCreationTerminalSpawnErrorDetailSchema.optional(),
+});
+
+export const SpawnSessionControlErrorResponseSchema = z.object({
+  success: z.boolean(),
+  error: z.string().optional(),
+  errorCode: z.string().optional(),
+  agentId: z.string().optional(),
+  errorDetail: SessionCreationTerminalSpawnErrorDetailSchema.optional(),
+});
+
+export const SpawnSessionNonceControlResponseSchema = z.object({
+  success: z.literal(true),
+  status: z.enum(['success', 'error', 'pending', 'not_found']),
+  sessionId: z.string().optional(),
+  sessionCreationOutcome: SessionCreationOutcomeSchema.optional(),
+  errorCode: SpawnSessionErrorCodeSchema.optional(),
+  errorMessage: z.string().optional(),
+  agentId: z.string().optional(),
+  errorDetail: z.unknown().optional(),
+});
+
+export function projectSpawnSessionControlErrorResponse(
+  error: Pick<Extract<SpawnSessionResult, { type: 'error' }>, 'errorCode' | 'errorMessage' | 'agentId' | 'errorDetail'>,
+) {
+  return {
+    success: false as const,
+    error: error.errorMessage,
+    errorCode: error.errorCode,
+    ...(error.agentId !== undefined ? { agentId: error.agentId } : {}),
+    ...(isSessionCreationTerminalSpawnErrorDetail(error.errorDetail)
+      ? { errorDetail: error.errorDetail }
+      : {}),
+  };
+}

@@ -10,7 +10,7 @@ import type {
 import {
   buildExecutionRunResultContractPrompt,
   decodeExecutionRunProfileResult,
-} from '../resultContract';
+} from '@happier-dev/protocol';
 
 function readTaskIntentInput(value: unknown) {
   return ExecutionRunTaskIntentInputV1Schema.parse(value ?? {});

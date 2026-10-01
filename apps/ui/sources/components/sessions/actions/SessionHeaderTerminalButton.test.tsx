@@ -7,6 +7,7 @@ import {
 } from './sessionActionsTestHelpers';
 import { SESSION_DETAILS_TERMINAL_TAB_KEY } from '@/components/sessions/terminal/embeddedTerminalDocking';
 
+let useRealPane = false;
 let dockLocationMock: 'bottom' | 'details' | 'sidebar' = 'bottom';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -63,9 +64,10 @@ const pane: AppPaneScopeApi = {
     setActiveDetailsTab: vi.fn(),
 };
 
-vi.mock('@/components/appShell/panes/hooks/useAppPaneScope', () => ({
-    useAppPaneScope: () => pane,
-}));
+vi.mock('@/components/appShell/panes/hooks/useAppPaneScope', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/components/appShell/panes/hooks/useAppPaneScope')>();
+    return { useAppPaneScope: (scopeId: string) => useRealPane ? actual.useAppPaneScope(scopeId) : pane };
+});
 
 vi.mock('@/hooks/server/useFeatureEnabled', () => ({
     useFeatureEnabled: () => true,
@@ -77,6 +79,7 @@ vi.mock('@/utils/platform/responsive', () => ({
 
 describe('SessionHeaderTerminalButton', () => {
     beforeEach(() => {
+        useRealPane = false;
         resetSessionActionsCommonModuleMockState();
         openBottomSpy.mockClear();
         closeBottomSpy.mockClear();
@@ -124,6 +127,41 @@ describe('SessionHeaderTerminalButton', () => {
         await screen.pressByTestIdAsync('session-header-terminal-button');
         expect(readSessionTerminalMode('same-session', 'home-b')).toBe('workspace_shell');
         expect(readSessionTerminalMode('same-session', 'home-a')).toBe('session_attach');
+    });
+
+    it('reveals a sidebar terminal hidden by details and preserves the details tabs', async () => {
+        const { act } = await import('react-test-renderer');
+        const { AppPaneProvider } = await import('@/components/appShell/panes/AppPaneProvider');
+        const { PaneActionRailContext } = await import('@/components/appShell/panes/PaneActionRailContext');
+        const { useAppPaneScope } = await import('@/components/appShell/panes/hooks/useAppPaneScope');
+        const { useSessionTerminalAction } = await import('../terminal/useSessionTerminalAction');
+        useRealPane = true;
+        dockLocationMock = 'sidebar';
+        let currentPane!: ReturnType<typeof useAppPaneScope>;
+        let action!: ReturnType<typeof useSessionTerminalAction>;
+        function Probe() {
+            currentPane = useAppPaneScope('session:s1');
+            action = useSessionTerminalAction({ sessionId: 's1', scopeId: 'session:s1' });
+            return null;
+        }
+        await renderScreen(
+            <AppPaneProvider>
+                <PaneActionRailContext.Provider value={{ visible: true, contentWidthPx: 900, rightPaneHiddenByDetails: true }}>
+                    <Probe />
+                </PaneActionRailContext.Provider>
+            </AppPaneProvider>,
+        );
+        await act(async () => {
+            currentPane.openRight({ tabId: 'terminal' });
+            currentPane.openDetailsTab({ key: 'review', kind: 'scmReview', title: 'Review', resource: { kind: 'scmReview', scope: 'working' } });
+        });
+        expect(action.available).toBe(true);
+        expect(action.active).toBe(false);
+        await act(async () => { action.onPress(); });
+        expect(currentPane.scopeState?.right.isOpen).toBe(true);
+        expect(currentPane.scopeState?.right.activeTabId).toBe('terminal');
+        expect(currentPane.scopeState?.details.isOpen).toBe(false);
+        expect(currentPane.scopeState?.details.tabs.map((tab) => tab.key)).toContain('review');
     });
 
     it('opens terminal in the bottom pane when docked to bottom', async () => {

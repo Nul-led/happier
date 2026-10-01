@@ -31,7 +31,7 @@ describe('useMachineCapabilityInvokeWithAlerts', () => {
                 ok: true,
                 result: {
                     change: {
-                        kind: 'reviewRequired',
+                        kind: 'reviewRequired', reviewKind: 'installation', reason: 'firstInstall', currentVersion: null, authorityExpansion: [],
                         pendingChangeId: 'pending-1',
                     },
                 },

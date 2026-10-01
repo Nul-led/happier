@@ -49,6 +49,7 @@ export type PypiWheelAssetResolution =
 
 export type PypiWheelAssetFetchJson = (url: string, init: Readonly<{
   headers: Readonly<Record<string, string>>;
+  signal?: AbortSignal;
 }>) => Promise<FetchJsonResponse>;
 
 function fail(code: PypiWheelAssetDiagnosticCode, message: string): PypiWheelAssetResolution {
@@ -220,10 +221,12 @@ async function fetchSimpleIndex(params: Readonly<{
   distribution: string;
   fetchJson: PypiWheelAssetFetchJson;
   indexBaseUrl: string;
+  signal?: AbortSignal;
 }>): Promise<PypiWheelAssetSimpleIndex> {
   const base = params.indexBaseUrl.replace(/\/+$/, '');
   const url = `${base}/${params.distribution}/`;
   const response = await params.fetchJson(url, {
+    signal: params.signal,
     headers: {
       accept: 'application/vnd.pypi.simple.v1+json',
       'user-agent': 'happier-cli',
@@ -244,7 +247,9 @@ export async function resolvePypiWheelAsset(params: Readonly<{
   index?: PypiWheelAssetSimpleIndex;
   fetchJson?: PypiWheelAssetFetchJson;
   indexBaseUrl?: string;
+  signal?: AbortSignal;
 }>): Promise<PypiWheelAssetResolution> {
+  params.signal?.throwIfAborted();
   const distribution = normalizePypiProjectName(params.distribution);
   if (!isSupportedPlatform(params.platform)) {
     return fail('unsupported_platform', `[pypi-wheel-asset] unsupported platform ${params.platform}`);
@@ -268,10 +273,12 @@ export async function resolvePypiWheelAsset(params: Readonly<{
   }
 
   const index = params.index ?? await fetchSimpleIndex({
+    signal: params.signal,
     distribution,
     fetchJson: params.fetchJson ?? defaultFetchJson,
     indexBaseUrl: params.indexBaseUrl ?? 'https://pypi.org/simple',
   });
+  params.signal?.throwIfAborted();
 
   const candidates: Array<ResolvedPypiWheelAsset & Readonly<{ parsedVersion: readonly number[] }>> = [];
   for (const file of index.files ?? []) {

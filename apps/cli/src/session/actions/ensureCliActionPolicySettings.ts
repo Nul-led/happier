@@ -1,8 +1,10 @@
 import type { StoredCredentials } from '@/persistence';
 import { bootstrapAccountSettingsContext } from '@/settings/accountSettings/bootstrapAccountSettingsContext';
+import { initializeTerminalPresentUserPolicy } from '@/settings/accountSettings/resolveEffectiveTerminalPresentUserPolicy';
 
-export async function ensureCliActionPolicySettings(credentials: StoredCredentials | null | undefined): Promise<void> {
+export async function ensureCliActionPolicySettings(credentials: StoredCredentials | null | undefined, serverHttpBaseUrl?: string): Promise<void> {
   if (!credentials) return;
+  await initializeTerminalPresentUserPolicy({ token: credentials.token, ...(serverHttpBaseUrl ? { serverHttpBaseUrl } : {}) });
   await bootstrapAccountSettingsContext({
     credentials,
     // Policy is an admission input: a successful first fetch must publish before

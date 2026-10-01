@@ -5,6 +5,16 @@ const nativeBoundary = vi.hoisted(() => ({
     ensureApplicationEndpoint: vi.fn(),
 }));
 
+vi.mock('react-native', async () => {
+    const { createReactNativeNativeMock } = await import('@/dev/testkit/mocks/reactNative');
+    return createReactNativeNativeMock({ platformOS: 'ios' }, {
+        AppState: {
+            currentState: 'active',
+            addEventListener: () => ({ remove: () => undefined }),
+        },
+    });
+});
+
 vi.mock('@happier-dev/iroh-native', async (importOriginal) => {
     const actual = await importOriginal<typeof import('@happier-dev/iroh-native')>();
     return {
@@ -14,6 +24,7 @@ vi.mock('@happier-dev/iroh-native', async (importOriginal) => {
     };
 });
 
+import { AppState } from 'react-native';
 import {
     getIrohApplicationEndpoint,
     isIrohMachineTransferLifecycleAvailable,
@@ -22,15 +33,21 @@ import {
     releaseRetainedIrohMachineTransferLeases,
     irohMachineTransferRuntimeActivity,
     startIrohMachineTransferTunnel,
+    startIrohMachineHttpTunnel,
 } from './machineTransferLifecycle';
 
 const ENDPOINT_ID = 'b'.repeat(64);
+
+function setRuntimeAppState(state: string): void {
+    (AppState as unknown as { currentState: string }).currentState = state;
+}
 
 describe('machine Iroh lifecycle availability and application endpoint ownership', () => {
     const originalInternals = (globalThis as Record<string, unknown>).__TAURI_INTERNALS__;
     const originalNavigator = (globalThis as Record<string, unknown>).navigator;
 
     beforeEach(() => {
+        setRuntimeAppState('active');
         nativeBoundary.current = null;
         nativeBoundary.ensureApplicationEndpoint.mockReset();
         delete (globalThis as Record<string, unknown>).__TAURI_INTERNALS__;
@@ -121,6 +138,28 @@ describe('machine Iroh lifecycle availability and application endpoint ownership
         }));
     });
 
+    it('keeps preview mux authorization native and releases the guest listener on suspension', async () => {
+        const native = {
+            getAvailability: () => ({ available: true }),
+            createEndpoint: vi.fn(),
+            startMachineTunnel: vi.fn(async () => ({ machineTunnelId: 'preview-lease', localPort: 48127 })),
+            stopMachineTunnel: vi.fn(async () => undefined),
+        };
+        nativeBoundary.current = native;
+        nativeBoundary.ensureApplicationEndpoint.mockResolvedValue({ endpointHandle: 'shared-mobile-endpoint', endpointId: ENDPOINT_ID });
+        const nativeHttpLease = { openJson: '{"signed":"preview-mux-open"}' };
+        const lease = await startIrohMachineTransferTunnel({
+            endpointId: 'a'.repeat(64), handshakeJson: '{}', nativeHttpLease,
+        });
+        expect(native.startMachineTunnel).toHaveBeenCalledWith(expect.objectContaining({ nativeHttpLease }));
+        expect(lease.localOrigin).toBe('http://127.0.0.1:48127');
+        expect(lease).not.toHaveProperty('requestHeaders');
+        expect(lease).not.toHaveProperty('webSocketProtocols');
+        irohMachineTransferRuntimeActivity.markSuspended();
+        await lease.release();
+        expect(native.stopMachineTunnel).toHaveBeenCalledWith('preview-lease');
+    });
+
     it('uses the raw Tauri machine tunnel command without projecting a local bearer', async () => {
         const invoke = vi.fn(async (command: string) => {
             if (command === 'iroh_start_machine_tunnel') {
@@ -144,6 +183,32 @@ describe('machine Iroh lifecycle availability and application endpoint ownership
         expect(invoke).toHaveBeenCalledWith('iroh_start_machine_tunnel', expect.anything());
         await lease.release();
         expect(invoke).toHaveBeenCalledWith('iroh_stop_machine_tunnel', { leaseId: 'machine-desktop-1' });
+    });
+
+    it('owns a capability-gated HTTP lease and retires it with the shared app lifecycle', async () => {
+        const capability = 'c'.repeat(64);
+        const stopped: string[] = [];
+        nativeBoundary.current = {
+            getAvailability: () => ({ available: true }),
+            createEndpoint: vi.fn(),
+            startMachineTunnel: vi.fn(async () => { throw new Error('raw carrier cannot serve HTTP'); }),
+            startMachineHttpTunnel: async () => ({ machineTunnelId: 'http-mobile-1', localPort: 48127, localCapability: capability }),
+            stopMachineTunnel: async (leaseId: string) => { stopped.push(leaseId); },
+        };
+        nativeBoundary.ensureApplicationEndpoint.mockResolvedValue({ endpointHandle: 'shared-mobile-endpoint', endpointId: ENDPOINT_ID });
+
+        // The native module is the genuine process boundary; the lifecycle and
+        // its suspension/cleanup custody run unchanged beneath it.
+        const lease = await startIrohMachineHttpTunnel({ endpointId: 'a'.repeat(64), handshakeJson: '{}' });
+        expect(lease.localOrigin).toBe('http://127.0.0.1:48127');
+        expect(lease.requestHeaders).toEqual({ 'x-happier-machine-local-capability': capability });
+        expect(lease.webSocketProtocols).toEqual([`happier.iroh.cap.${capability}`]);
+        expect(lease.localOrigin).not.toContain(capability);
+
+        irohMachineTransferRuntimeActivity.markSuspended();
+        await lease.release();
+        expect(stopped).toEqual(['http-mobile-1']);
+        expect(readRetainedIrohMachineTransferLeaseIds()).toEqual([]);
     });
 });
 
@@ -187,6 +252,7 @@ describe('machine Iroh finite-transfer listener cleanup custody', () => {
     }
 
     beforeEach(() => {
+        setRuntimeAppState('active');
         nativeBoundary.current = null;
         nativeBoundary.ensureApplicationEndpoint.mockReset();
         delete (globalThis as Record<string, unknown>).__TAURI_INTERNALS__;
@@ -247,6 +313,44 @@ describe('machine Iroh finite-transfer listener cleanup custody', () => {
         await vi.waitFor(() => expect(native.stopMachineTunnel).toHaveBeenCalledWith(lease.leaseId));
         await lease.release();
         expect(native.stopMachineTunnel).toHaveBeenCalledTimes(1);
+    });
+
+    it('releases a mobile lease that arrives after the shared runtime becomes inactive', async () => {
+        let finishStart!: (value: Readonly<{ machineTunnelId: string; localPort: number }>) => void;
+        const native = mountMobileNative({
+            startMachineTunnel: async () => await new Promise((resolve) => {
+                finishStart = resolve;
+            }),
+            stopMachineTunnel: async () => undefined,
+        });
+
+        const starting = startLease();
+        await vi.waitFor(() => expect(native.startMachineTunnel).toHaveBeenCalledTimes(1));
+
+        setRuntimeAppState('background');
+        irohMachineTransferRuntimeActivity.markSuspended();
+        finishStart({ machineTunnelId: 'late-machine-lease', localPort: 48_130 });
+
+        await expect(starting).rejects.toMatchObject({
+            name: 'IrohError',
+            code: 'unavailable',
+            message: 'iroh_home_tunnel_suspended',
+        });
+        expect(native.stopMachineTunnel).toHaveBeenCalledWith('late-machine-lease');
+        expect(readRetainedIrohMachineTransferLeaseIds()).toEqual([]);
+    });
+
+    it('refuses mobile acquisition while the shared runtime is already inactive', async () => {
+        const native = mountMobileNative({ stopMachineTunnel: async () => undefined });
+        setRuntimeAppState('background');
+
+        await expect(startLease()).rejects.toMatchObject({
+            name: 'IrohError',
+            code: 'unavailable',
+            message: 'iroh_home_tunnel_suspended',
+        });
+        expect(nativeBoundary.ensureApplicationEndpoint).not.toHaveBeenCalled();
+        expect(native.startMachineTunnel).not.toHaveBeenCalled();
     });
 
     it('retries a retained lease when the next machine tunnel is started', async () => {

@@ -2,9 +2,11 @@ import { randomBytes as nodeRandomBytes } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 
 import {
+  PluginSourceCustodyV1Schema,
   StoredJsonContentEnvelopeSchema,
   isStoredJsonContentEnvelopeModeCompatible,
   openQualifiedConnectedAccountContentEnvelope,
+  pluginSourceCustodyV1Equal,
   sealQualifiedConnectedAccountContentEnvelope,
   sameQualifiedConnectedAccountRef,
   type StoredJsonContentEnvelope,
@@ -14,6 +16,7 @@ import { z } from 'zod';
 import {
   createConnectedAccountAttemptTransactionApi,
   type ConnectedAccountAttemptTransactionRecord,
+  type ConnectedAccountAttemptTransactionScope,
   type ConnectedAccountAttemptTransactionStoreApi,
 } from '@/api/client/connectedAccountAttemptTransactionApi';
 import type { ConnectedServiceAccountEncryptionMode } from '@/api/client/connectedServiceCredentialApi';
@@ -58,7 +61,7 @@ const ProviderIdentitySchema = z.object({
   accountId: BoundedIdSchema.optional(),
   email: z.string().min(1).max(4_096).optional(),
 }).strict();
-const PreparedSettlementSchema = z.object({
+const PreparedSettlementShape = {
   intent: z.enum(['connect', 'reconnect']),
   service: ServiceSchema,
   accountId: BoundedIdSchema,
@@ -67,32 +70,39 @@ const PreparedSettlementSchema = z.object({
   expectedCredentialConfigurationRevision:
     z.string().min(1).max(4_096).nullable(),
   expectedConfigurationRevision: z.string().min(1).max(4_096),
-  generation: z.string().min(1).max(4_096),
   stagedCredentials: StagedCredentialsSchema,
   stagedAccountConfigurationContent: z.unknown().optional(),
   providerIdentity: ProviderIdentitySchema.optional(),
   displayName: z.string().max(4_096),
   scopes: z.array(z.string().max(4_096)).max(256),
+} as const;
+const PreparedSettlementSchema = z.object({
+  ...PreparedSettlementShape,
+  sourceCustody: PluginSourceCustodyV1Schema,
 }).strict();
-const SnapshotBaseShape = {
+const SnapshotCommonShape = {
   attemptId: BoundedIdSchema,
   createdAtMs: SafeTimestampSchema,
   intent: z.enum(['connect', 'reconnect']),
   service: ServiceSchema,
   account: AccountSchema.optional(),
   modeId: BoundedIdSchema,
-  immutableGenerationId: z.string().min(1).max(4_096),
   expectedCredentialRevision: z.string().max(4_096).nullable(),
   expectedCredentialConfigurationRevision:
     z.string().min(1).max(4_096).nullable(),
   expectedConfigurationRevision: z.string().min(1).max(4_096),
   stagedCredentials: StagedCredentialsSchema,
   stagedAccountConfigurationContent: z.unknown().optional(),
+} as const;
+const SnapshotBaseShape = {
+  ...SnapshotCommonShape,
+  sourceCustody: PluginSourceCustodyV1Schema,
   preparedSettlement: PreparedSettlementSchema.optional(),
 } as const;
 const OAuthSnapshotSchema = z.object({
   ...SnapshotBaseShape,
   phase: z.enum(['starting', 'awaitingOAuth', 'outcomeUnknown']),
+  authorizationUrl: z.string().min(1).max(8_192).optional(),
   expiresAtMs: SafeTimestampSchema.optional(),
 }).strict();
 const DeviceSnapshotSchema = z.object({
@@ -105,7 +115,7 @@ const DeviceSnapshotSchema = z.object({
   userCode: z.string().min(1).max(4_096),
 }).strict();
 const OAuthPayloadSchema = z.object({
-  version: z.literal(1),
+  version: z.literal(2),
   kind: z.literal('oauth'),
   snapshot: OAuthSnapshotSchema,
   state: z.string().min(32).max(256),
@@ -115,11 +125,10 @@ const OAuthPayloadSchema = z.object({
   consumed: z.boolean(),
 }).strict();
 const DevicePayloadSchema = z.object({
-  version: z.literal(1),
+  version: z.literal(2),
   kind: z.literal('device'),
   snapshot: DeviceSnapshotSchema,
 }).strict();
-
 type OAuthPayload = z.infer<typeof OAuthPayloadSchema>;
 type DevicePayload = z.infer<typeof DevicePayloadSchema>;
 
@@ -143,9 +152,7 @@ function sameAccount(
 }
 
 function sameSnapshotIdentity(
-  left:
-    | ConnectedAccountOAuthTransactionSnapshot
-    | ConnectedAccountDeviceTransactionSnapshot,
+  left: ConnectedAccountOAuthTransactionSnapshot | ConnectedAccountDeviceTransactionSnapshot,
   right:
     | ConnectedAccountOAuthTransactionSnapshot
     | ConnectedAccountDeviceTransactionSnapshot,
@@ -156,7 +163,7 @@ function sameSnapshotIdentity(
     && sameService(left.service, right.service)
     && sameAccount(left.account, right.account)
     && left.modeId === right.modeId
-    && left.immutableGenerationId === right.immutableGenerationId
+    && pluginSourceCustodyV1Equal(left.sourceCustody, right.sourceCustody)
     && left.expectedCredentialRevision === right.expectedCredentialRevision
     && left.expectedCredentialConfigurationRevision
       === right.expectedCredentialConfigurationRevision
@@ -181,6 +188,10 @@ function assertOAuthSnapshotAdvance(
   if (
     !sameSnapshotIdentity(current, next)
     || phaseRank[next.phase] < phaseRank[current.phase]
+    || (
+      current.authorizationUrl !== undefined
+      && current.authorizationUrl !== next.authorizationUrl
+    )
     || (
       current.preparedSettlement !== undefined
       && !isDeepStrictEqual(current.preparedSettlement, next.preparedSettlement)
@@ -234,13 +245,14 @@ export function createQualifiedConnectedAccountAttemptTransactionAdapters(
      * never key presence — decides whether content is sealed or stored plainly.
      */
     getAccountEncryptionMode: () => Promise<ConnectedServiceAccountEncryptionMode>;
+    getMachineId: () => string;
     api?: ConnectedAccountAttemptTransactionStoreApi;
     randomBytes?: (length: number) => Uint8Array;
     callbackUrl?: string;
     transactionTtlMs?: number;
     now?: () => number;
   }>,
-): QualifiedConnectedAccountAttemptTransactionAdapters {
+): Required<QualifiedConnectedAccountAttemptTransactionAdapters> {
   const api =
     params.api
     ?? createConnectedAccountAttemptTransactionApi({
@@ -259,6 +271,19 @@ export function createQualifiedConnectedAccountAttemptTransactionAdapters(
     throw new Error('Connected-account attempt transaction TTL is invalid');
   }
   const material = resolveConnectedAccountCryptoMaterial(params.credentials);
+
+  function scopeFor(
+    snapshot: ConnectedAccountOAuthTransactionSnapshot | ConnectedAccountDeviceTransactionSnapshot,
+  ): ConnectedAccountAttemptTransactionScope {
+    return Object.freeze({
+      machineId: params.getMachineId(),
+      service: snapshot.service,
+      modeId: snapshot.modeId,
+      intent: snapshot.intent,
+      phase: 'phase' in snapshot ? snapshot.phase : 'awaitingDeviceAuthorization',
+      createdAtMs: snapshot.createdAtMs,
+    });
+  }
 
   async function resolveAccountMode(): Promise<'plain' | 'e2ee'> {
     const mode = await params.getAccountEncryptionMode();
@@ -333,7 +358,8 @@ export function createQualifiedConnectedAccountAttemptTransactionAdapters(
     attemptId: string;
     record: ConnectedAccountAttemptTransactionRecord;
   }>): Promise<OAuthPayload> {
-    const parsed = OAuthPayloadSchema.parse(await open(input.record));
+    const opened = await open(input.record);
+    const parsed = OAuthPayloadSchema.parse(opened);
     if (parsed.snapshot.attemptId !== input.attemptId) {
       throw new Error(
         'Connected-account OAuth transaction identity is invalid',
@@ -346,7 +372,8 @@ export function createQualifiedConnectedAccountAttemptTransactionAdapters(
     attemptId: string;
     record: ConnectedAccountAttemptTransactionRecord;
   }>): Promise<DevicePayload> {
-    const parsed = DevicePayloadSchema.parse(await open(input.record));
+    const opened = await open(input.record);
+    const parsed = DevicePayloadSchema.parse(opened);
     if (parsed.snapshot.attemptId !== input.attemptId) {
       throw new Error(
         'Connected-account device transaction identity is invalid',
@@ -385,6 +412,7 @@ export function createQualifiedConnectedAccountAttemptTransactionAdapters(
         assertOAuthSnapshotAdvance(payload.snapshot, snapshot);
         const nextPayload = OAuthPayloadSchema.parse({
           ...payload,
+          version: 2,
           snapshot,
         });
         const nextRecord = await api.replace({
@@ -392,6 +420,7 @@ export function createQualifiedConnectedAccountAttemptTransactionAdapters(
           attemptId: snapshot.attemptId,
           expectedRevision: record.revision,
           content: await seal(nextPayload),
+          scope: scopeFor(snapshot),
           expiresAtMs: Math.min(
             record.expiresAtMs,
             snapshot.expiresAtMs ?? record.expiresAtMs,
@@ -422,6 +451,7 @@ export function createQualifiedConnectedAccountAttemptTransactionAdapters(
           attemptId: payload.snapshot.attemptId,
           expectedRevision: record.revision,
           content: await seal(nextPayload),
+          scope: scopeFor(payload.snapshot),
           expiresAtMs: record.expiresAtMs,
         });
         payload = nextPayload;
@@ -456,7 +486,7 @@ export function createQualifiedConnectedAccountAttemptTransactionAdapters(
       const pkce = generatePkceCodes();
       const callbackUrl = input.callbackUrl ?? defaultCallbackUrl;
       const payload = OAuthPayloadSchema.parse({
-        version: 1,
+        version: 2,
         kind: 'oauth',
         snapshot: input.snapshot,
         state: Buffer.from(randomBytes(32)).toString('base64url'),
@@ -469,6 +499,7 @@ export function createQualifiedConnectedAccountAttemptTransactionAdapters(
         kind: 'oauth',
         attemptId: input.attemptId,
         content: await seal(payload),
+        scope: scopeFor(input.snapshot),
         expiresAtMs: transactionExpiresAt({
           now: now(),
           ttlMs: transactionTtlMs,
@@ -489,6 +520,12 @@ export function createQualifiedConnectedAccountAttemptTransactionAdapters(
 
   return Object.freeze({
     oauth,
+    async listPending(service) {
+      return await api.listPending({
+        machineId: params.getMachineId(),
+        service,
+      });
+    },
     device: Object.freeze({
       async acknowledge(snapshot: ConnectedAccountDeviceTransactionSnapshot) {
         const current = await api.read({
@@ -496,7 +533,7 @@ export function createQualifiedConnectedAccountAttemptTransactionAdapters(
           attemptId: snapshot.attemptId,
         });
         const payload = DevicePayloadSchema.parse({
-          version: 1,
+          version: 2,
           kind: 'device',
           snapshot,
         });
@@ -505,6 +542,7 @@ export function createQualifiedConnectedAccountAttemptTransactionAdapters(
             kind: 'device',
             attemptId: snapshot.attemptId,
             content: await seal(payload),
+            scope: scopeFor(snapshot),
             expiresAtMs: transactionExpiresAt({
               now: now(),
               ttlMs: transactionTtlMs,
@@ -523,6 +561,7 @@ export function createQualifiedConnectedAccountAttemptTransactionAdapters(
           attemptId: snapshot.attemptId,
           expectedRevision: current.revision,
           content: await seal(payload),
+          scope: scopeFor(snapshot),
           expiresAtMs: Math.min(current.expiresAtMs, snapshot.expiresAtMs),
         });
       },

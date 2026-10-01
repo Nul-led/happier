@@ -74,7 +74,7 @@ describe('SavedSecretCreateEditor', () => {
             name: 'Deploy token', kind: 'token', value: '  token-value\n',
             accountGrants: [], teamGrants: [], groupGrants: [],
         }));
-        expect(onCreated).toHaveBeenCalledWith('happier:shared-secret:v1:resource-a');
+        expect(onCreated).toHaveBeenCalledWith('happier:shared-secret:v1:resource-a', 'shared');
     });
 
     it('confirms disclosure and submits initial Account, Team, and Group grants', async () => {
@@ -94,11 +94,12 @@ describe('SavedSecretCreateEditor', () => {
 
         screen.changeTextByTestId('saved-secret-create-name', 'Mixed secret');
         screen.changeTextByTestId('saved-secret-create-value', 'secret-value');
-        await vi.waitFor(() => expect(screen.findByTestId('saved-secret-access-account:account-b')).toBeTruthy());
-        await screen.pressByTestIdAsync('saved-secret-access-account:account-b');
-        await screen.pressByTestIdAsync('saved-secret-access-team:team-a');
-        await vi.waitFor(() => expect(screen.findByTestId('saved-secret-access-group:team-a:group-a')).toBeTruthy());
-        await screen.pressByTestIdAsync('saved-secret-access-group:team-a:group-a');
+        await vi.waitFor(() => expect(screen.findByTestId('saved-secret-access-candidate-account:account-b')).toBeTruthy());
+        await screen.pressByTestIdAsync('saved-secret-access-candidate-account:account-b');
+        await vi.waitFor(() => expect(screen.findByTestId('saved-secret-access-candidate-team:team-a')).toBeTruthy());
+        await screen.pressByTestIdAsync('saved-secret-access-candidate-team:team-a');
+        await vi.waitFor(() => expect(screen.findByTestId('saved-secret-access-candidate-group:team-a:group-a')).toBeTruthy());
+        await screen.pressByTestIdAsync('saved-secret-access-candidate-group:team-a:group-a');
         await screen.pressByTestIdAsync('saved-secret-create-submit');
 
         expect(confirmDisclosure).toHaveBeenCalledOnce();
@@ -197,9 +198,10 @@ describe('SavedSecretCreateEditor', () => {
         );
         screen.changeTextByTestId('saved-secret-create-name', 'Cross-Home secret');
         screen.changeTextByTestId('saved-secret-create-value', 'cross-home-value');
-        await vi.waitFor(() => expect(screen.findByTestId('saved-secret-access-account:account-b')).toBeTruthy());
-        await screen.pressByTestIdAsync('saved-secret-access-account:account-b');
-        await screen.pressByTestIdAsync('saved-secret-access-team:team-a');
+        await vi.waitFor(() => expect(screen.findByTestId('saved-secret-access-candidate-account:account-b')).toBeTruthy());
+        await screen.pressByTestIdAsync('saved-secret-access-candidate-account:account-b');
+        await vi.waitFor(() => expect(screen.findByTestId('saved-secret-access-candidate-team:team-a')).toBeTruthy());
+        await screen.pressByTestIdAsync('saved-secret-access-candidate-team:team-a');
 
         await screen.update(
             <SavedSecretCreateEditor scope={{ serverId: 'home-b', accountId: 'owner-b' }} {...common} />,
@@ -220,6 +222,78 @@ describe('SavedSecretCreateEditor', () => {
         // An owner-only create needs no disclosure confirmation, which also
         // proves the recipient sets really were empty at submit time.
         expect(confirmDisclosure).not.toHaveBeenCalled();
+    });
+
+    it('adds a personal secret through the personal writer unless Shared is chosen', async () => {
+        const onCreatePersonal = vi.fn(async () => 'personal-new');
+        const onCreated = vi.fn(async () => {});
+        const { SavedSecretCreateEditor } = await import('./SavedSecretCreateEditor');
+        const screen = await renderScreen(
+            <SavedSecretCreateEditor
+                scope={{ serverId: 'home-a', accountId: 'owner-a' }}
+                onCreatePersonal={onCreatePersonal}
+                approvalPending={false}
+                requestApproval={vi.fn()}
+                onCancel={vi.fn()}
+                onCreated={onCreated}
+            />,
+        );
+
+        // Personal is the default: no type or recipients to choose, and nothing reaches the Home.
+        expect(screen.findByTestId('saved-secret-create-kind:token')).toBeFalsy();
+        screen.changeTextByTestId('saved-secret-create-name', 'Local key');
+        screen.changeTextByTestId('saved-secret-create-value', 'local-value');
+        await flushHookEffects();
+        await screen.pressByTestIdAsync('saved-secret-create-submit');
+
+        expect(onCreatePersonal).toHaveBeenCalledWith({ name: 'Local key', value: 'local-value' });
+        expect(createResource).not.toHaveBeenCalled();
+        expect(onCreated).toHaveBeenCalledWith('personal-new', 'personal');
+    });
+
+    it('creates a shared resource instead when Shared is chosen in the same editor', async () => {
+        createResource.mockResolvedValueOnce({ ok: true, resourceRef: 'happier:shared-secret:v1:resource-s', revision: 1 });
+        const onCreatePersonal = vi.fn(async () => 'personal-new');
+        const onCreated = vi.fn(async () => {});
+        const { SavedSecretCreateEditor } = await import('./SavedSecretCreateEditor');
+        const screen = await renderScreen(
+            <SavedSecretCreateEditor
+                scope={{ serverId: 'home-a', accountId: 'owner-a' }}
+                onCreatePersonal={onCreatePersonal}
+                approvalPending={false}
+                requestApproval={vi.fn()}
+                onCancel={vi.fn()}
+                onCreated={onCreated}
+            />,
+        );
+
+        await screen.pressByTestIdAsync('saved-secret-create-storage:shared');
+        screen.changeTextByTestId('saved-secret-create-name', 'Team key');
+        screen.changeTextByTestId('saved-secret-create-value', 'team-value');
+        await screen.pressByTestIdAsync('saved-secret-create-kind:password');
+        await screen.pressByTestIdAsync('saved-secret-create-submit');
+
+        expect(onCreatePersonal).not.toHaveBeenCalled();
+        expect(createResource).toHaveBeenCalledWith(expect.objectContaining({ name: 'Team key', kind: 'password', value: 'team-value' }));
+        expect(onCreated).toHaveBeenCalledWith('happier:shared-secret:v1:resource-s', 'shared');
+    });
+
+    it('offers only personal storage where this Home does not allow shared secrets', async () => {
+        const { SavedSecretCreateEditor } = await import('./SavedSecretCreateEditor');
+        const screen = await renderScreen(
+            <SavedSecretCreateEditor
+                scope={{ serverId: 'home-a', accountId: 'owner-a' }}
+                onCreatePersonal={vi.fn(async () => 'personal-new')}
+                sharedAvailable={false}
+                approvalPending={false}
+                requestApproval={vi.fn()}
+                onCancel={vi.fn()}
+                onCreated={vi.fn(async () => {})}
+            />,
+        );
+
+        expect(screen.findByTestId('saved-secret-create-storage:shared')).toBeFalsy();
+        expect(screen.findByTestId('saved-secret-create-kind:token')).toBeFalsy();
     });
 
     it('keeps entered material available for retry after a typed failure', async () => {

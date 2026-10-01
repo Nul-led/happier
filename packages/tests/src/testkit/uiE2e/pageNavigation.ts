@@ -3,12 +3,12 @@ import type { Page } from '@playwright/test';
 export { normalizeLoopbackBaseUrl } from '../network/loopbackBaseUrl';
 import { expandLoopbackBaseUrlCandidates } from '../network/loopbackBaseUrl';
 import { normalizeLoopbackBaseUrl } from '../network/loopbackBaseUrl';
-import { dismissSetupWizardIfVisible } from './createAccountAndReachConnectMachineState';
+import { discardMachineAddDraftIfVisible } from './createAccountAndReachConnectMachineState';
 
 export {
   createAccountAndReachConnectMachineState,
-  createAccountAndReachSetupWizardState,
-  dismissSetupWizardIfVisible,
+  createAccountAndReachMachineAddDraftState,
+  discardMachineAddDraftIfVisible,
 } from './createAccountAndReachConnectMachineState';
 
 type GotoPage = Pick<Page, 'goto' | 'url' | 'waitForTimeout'>;
@@ -305,9 +305,9 @@ async function waitForHomeUi(params: Readonly<{
       const connectMachineVisible = await params.page.getByTestId('session-getting-started-kind-connect_machine').count();
       const createSessionVisible = await params.page.getByTestId('session-getting-started-kind-create_session').count();
       const selectSessionVisible = await params.page.getByTestId('session-getting-started-kind-select_session').count();
-      const startNewSessionVisible = await params.page.getByTestId('main-header-start-new-session').count();
+      const startNewSessionVisible = await params.page.getByTestId('tabbar-start-new-session').count();
       const setupReentryVisible = await params.page.getByTestId('sessions-empty-state-open-setup').count();
-      const setupWizardVisible = await params.page.getByTestId('setupWizard.surface').count();
+      const machineDraftVisible = await params.page.getByTestId('settings.machines.draft.form').count();
       const authenticatedHomeVisible = params.requireSessionActions
         ? createSessionVisible > 0 || selectSessionVisible > 0
         : connectMachineVisible > 0
@@ -316,8 +316,8 @@ async function waitForHomeUi(params: Readonly<{
           || startNewSessionVisible > 0
           || setupReentryVisible > 0;
 
-      if (welcomeVisible === 0 && setupWizardVisible > 0) {
-        await dismissSetupWizardIfVisible({ page: params.page });
+      if (welcomeVisible === 0 && machineDraftVisible > 0) {
+        await discardMachineAddDraftIfVisible({ page: params.page });
         await params.page.waitForTimeout(250);
         continue;
       }

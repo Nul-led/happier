@@ -8,7 +8,7 @@ import { SESSION_OPTIMISTIC_PENDING_THINKING_MS } from '@/sync/domains/session/a
 import type { SessionListRenderableSession } from '@/sync/domains/session/listing/sessionListRenderable';
 import { buildSessionListServerScopedRowKey } from '@/sync/domains/session/listing/sessionListKeyNormalization';
 import { t } from '@/text';
-import { buildSessionListRowViewModels } from './sessionListRowViewModels';
+import { buildSessionListRowViewModels, resolveSessionListRowViewModelAdjacency } from './sessionListRowViewModels';
 
 function createRenderableSession(id: string): SessionListRenderableSession {
     return {
@@ -176,6 +176,7 @@ describe('buildSessionListRowViewModels', () => {
             groupKind: 'date',
         } satisfies SessionListIndexItem;
         const draft = {
+            listed: true,
             text: 'Continue this message',
             preview: 'Continue this message',
             status: 'clean' as const,
@@ -239,6 +240,36 @@ describe('buildSessionListRowViewModels', () => {
         })).toEqual([
             ['sess_selected_current', true],
             ['sess_not_current', false],
+        ]);
+    });
+
+    it('keeps consecutive rows under one heading in one sheet, even when their placement groups differ', () => {
+        const session = (sessionId: string, groupKey: string) => ({
+            type: 'session', sessionId, serverId: 'server_a', storageKind: 'persisted', groupKey, groupKind: 'date',
+        }) satisfies SessionListIndexItem;
+        const header = { type: 'header', title: 'Sessions', headerKind: 'date', groupKey: 'sessions' } as unknown as SessionListIndexItem;
+        // A placement band (working) flows into the rest of the section with no heading between them.
+        const items = [header, session('a', 'working'), session('b', 'working'), session('c', 'sessions'), header, session('d', 'other')];
+        expect(items.map((_, index) => resolveSessionListRowViewModelAdjacency(items, index)).slice(1)).toEqual([
+            { isFirst: true, isLast: false, isSingle: false },
+            { isFirst: false, isLast: false, isSingle: false },
+            { isFirst: false, isLast: true, isSingle: false },
+            { isFirst: true, isLast: true, isSingle: true },
+            { isFirst: true, isLast: true, isSingle: true },
+        ]);
+    });
+
+    it('keeps rows in one sheet across a header that draws no heading, so no sheet is unlabeled', () => {
+        const session = (sessionId: string) => ({
+            type: 'session', sessionId, serverId: 'server_a', storageKind: 'persisted', groupKey: 'home', groupKind: 'project',
+        }) satisfies SessionListIndexItem;
+        const heading = { type: 'header', title: 'Home folder', headerKind: 'project', groupKey: 'home' } as unknown as SessionListIndexItem;
+        const untitled = { type: 'header', title: '', headerKind: 'date', groupKey: 'home:older' } as unknown as SessionListIndexItem;
+        const items = [heading, session('a'), untitled, session('b'), session('c')];
+        expect([1, 3, 4].map((index) => resolveSessionListRowViewModelAdjacency(items, index))).toEqual([
+            { isFirst: true, isLast: false, isSingle: false },
+            { isFirst: false, isLast: false, isSingle: false },
+            { isFirst: false, isLast: true, isSingle: false },
         ]);
     });
 

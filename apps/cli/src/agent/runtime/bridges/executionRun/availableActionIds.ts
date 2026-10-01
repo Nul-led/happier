@@ -13,7 +13,12 @@ export function getExecutionRunAvailableActionIds(
   catalog?: ExecutionRunProfileContributionCatalog,
 ): readonly string[] {
   const profile = catalog
-    ? resolveExecutionRunIntentProfileFromCatalog(catalog, run.intent, run.profileId)
+    ? resolveExecutionRunIntentProfileFromCatalog(
+        catalog,
+        run.intent,
+        run.profileId,
+        run.profileSourceCustody,
+      )
     : resolveExecutionRunIntentProfile(run.intent);
   if (!profile.listAvailableActionIds) return [];
 

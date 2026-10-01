@@ -53,6 +53,7 @@ const accountScopeState = vi.hoisted(() => ({
 const featureRuntimeState = vi.hoisted(() => ({ homeSearch: undefined as unknown }));
 const storageState = vi.hoisted(() => {
     const state = {
+        settings: {},
         sessions: {} as Record<string, { id: string; serverId?: string }>,
         sessionListRowsByServerId: {} as Record<string, Record<string, unknown>>,
         clearSessionListRowsForServerScope: vi.fn((serverId: string) => {

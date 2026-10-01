@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { access, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -19,6 +19,7 @@ import { SPAWN_SESSION_ERROR_CODES } from '@/rpc/handlers/registerSessionHandler
 import { HAPPIER_CONNECTED_SERVICE_SELECTIONS_ENV_KEY } from '../connectedServices/connectedServiceChildEnvironment';
 import { consumeProviderBindingLaunchHandoffFromEnvironments } from '@/plugins/runtime/providerBindings/handoff';
 import type { ProviderSpawnAuthorizationAttempt } from '@/providers/spawn/authorize';
+import type { TrackedSession } from '../types';
 
 const HAPPIER_SESSION_CONNECTED_SERVICE_MATERIALIZATION_IDENTITY_ENV_KEY =
   'HAPPIER_SESSION_CONNECTED_SERVICE_MATERIALIZATION_IDENTITY_V1_JSON';
@@ -56,6 +57,8 @@ const hoisted = vi.hoisted(() => {
   }));
 
   return {
+    activeServerDir: null as string | null,
+    refusedManagedOwnerRecordPath: null as string | null,
     vendorResumeSupport,
     resolveSpawnBackendIdentity,
     getVendorResumeSupport,
@@ -72,6 +75,23 @@ const hoisted = vi.hoisted(() => {
 });
 
 const ORIGINAL_PLATFORM_DESCRIPTOR = Object.getOwnPropertyDescriptor(process, 'platform');
+
+// OS write boundary: the managed owner still publishes, reads, proves and binds
+// real records; this refusal is enabled only after the spawn has been accepted.
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return {
+    ...actual,
+    open: async (...args: Parameters<typeof actual.open>) => {
+      if (hoisted.refusedManagedOwnerRecordPath
+        && String(args[0]).startsWith(`${hoisted.refusedManagedOwnerRecordPath}.`)
+        && String(args[0]).endsWith('.tmp')) {
+        throw Object.assign(new Error('managed owner binding write unavailable'), { code: 'EACCES' });
+      }
+      return await actual.open(...args);
+    },
+  };
+});
 
 vi.mock('@/session/runtime/catalogHooks', () => ({
   getVendorResumeSupport: hoisted.getVendorResumeSupport,
@@ -91,7 +111,7 @@ vi.mock('@/agent/catalog/registry', async (importOriginal) => {
 vi.mock('@/configuration', () => ({
   configuration: {
     happyHomeDir: '/tmp/happier-home',
-    activeServerDir: '/tmp/happier-home/servers/active',
+    get activeServerDir() { return hoisted.activeServerDir ?? '/tmp/happier-home/servers/active'; },
     activeServerId: 'dev-local',
     serverUrl: 'http://dev-public.example.test',
     apiServerUrl: 'http://127.0.0.1:53288',
@@ -368,7 +388,7 @@ function createManagedProviderRuntimeBindingBasis(input: Readonly<{
       },
       purposeBindings: { v: 1, bindings: [] },
     },
-    agentTargetKey: 'backend:codex',
+    agentTargetKey: 'agent:happier.agent.codex/codex',
     connectionId: input.connectionId,
     contributionKey: `${input.pluginId}/${input.providerLocalId}`,
     endpoint: {
@@ -408,7 +428,7 @@ async function configureProviderBoundExistingSessionSpawn(input: Readonly<{
   const runtimeBindingBasis = {
     v: 1,
     deployment: { kind: 'external' },
-    agentTargetKey: 'backend:codex',
+    agentTargetKey: 'agent:happier.agent.codex/codex',
     connectionId,
     contributionKey: 'plugin.gateway/gateway',
     endpoint: {
@@ -621,6 +641,8 @@ describe('executeSpawnSessionRequest', () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     vi.resetModules();
+    hoisted.activeServerDir = null;
+    hoisted.refusedManagedOwnerRecordPath = null;
     const [
       { resolveSpawnChildEnvironment },
       { routeSpawnModeAndWaitForWebhook },
@@ -702,6 +724,64 @@ describe('executeSpawnSessionRequest', () => {
       codex: 'happier.agent.codex',
       claude: 'happier.agent.claude',
     }));
+  });
+
+  it('preserves an accepted managed spawn and its registered session when the owner binding write fails', async () => {
+    const activeServerDir = await mkdtemp(join(tmpdir(), 'happier-spawn-managed-bind-'));
+    hoisted.activeServerDir = activeServerDir;
+    try {
+      const { createManagedSessionDirectories } = await import('@/session/creation/managedSessionDirectories');
+      const owner = createManagedSessionDirectories({ activeServerDir });
+      const sessionCreationTag = 'accepted-managed-bind';
+      const allocation = owner.prepareForCreation({ sessionCreationTag });
+      const sessionId = 'accepted-managed-session';
+      const tracked = { startedBy: 'daemon', pid: 4123, happySessionId: sessionId } satisfies TrackedSession;
+      const pidToTrackedSession = new Map<number, TrackedSession>();
+      hoisted.requireCatalogEntry.mockReturnValue({});
+      hoisted.resolveSpawnBackendIdentity.mockResolvedValueOnce({
+        ok: true,
+        normalizedExistingSessionId: '',
+        effectiveResume: '',
+        effectiveBackendTargetV2: { kind: 'backend', sourceKind: 'built_in', backendId: 'codex' },
+        sessionAttachPayload: null,
+        catalogAgentId: 'codex',
+      });
+      const { resolveSpawnChildEnvironment } = await import('../spawn/resolveSpawnChildEnvironment');
+      vi.mocked(resolveSpawnChildEnvironment).mockResolvedValueOnce({
+        ok: true, cleanupOnFailure: null, cleanupOnExit: null,
+        expandedEnvironmentVariables: {}, extraEnvForChild: {},
+      });
+      const { routeSpawnModeAndWaitForWebhook } = await import('../spawn/routeSpawnModeAndWaitForWebhook');
+      vi.mocked(routeSpawnModeAndWaitForWebhook).mockImplementationOnce(async (input) => {
+        input.pidToTrackedSession.set(tracked.pid, tracked);
+        hoisted.refusedManagedOwnerRecordPath = join(activeServerDir, 'session-directories', '.owners', `${allocation.allocationId}.json`);
+        return { type: 'success', sessionId };
+      });
+      const { executeSpawnSessionRequest } = await import('./executeSpawnSessionRequest');
+      const params = createParams();
+      const result = await executeSpawnSessionRequest({
+        ...params, pidToTrackedSession,
+        options: { ...params.options, resume: undefined, directory: allocation.directory,
+          directoryKind: 'managed', sessionCreationTag },
+      });
+      expect(result).toEqual({ type: 'success', sessionId });
+      expect(pidToTrackedSession.get(tracked.pid)).toBe(tracked);
+      expect(params.onChildExited).not.toHaveBeenCalled();
+      await expect(access(allocation.directory)).resolves.toBeUndefined();
+      expect(await owner.listRecords()).toMatchObject([{ allocationId: allocation.allocationId, sessionId: null }]);
+      const { logger } = await import('@/ui/logger');
+      expect(logger.warn).toHaveBeenCalledWith('[DAEMON RUN] Managed directory binding remains pending', {
+        allocationId: allocation.allocationId, sessionId,
+        error: expect.objectContaining({ code: 'EACCES' }),
+      });
+      hoisted.refusedManagedOwnerRecordPath = null;
+      expect(await owner.resolveForSession({ sessionId, sessionCreationTag, path: allocation.directory })).toMatchObject({ ok: true });
+      expect(await owner.listRecords()).toMatchObject([{ allocationId: allocation.allocationId, sessionId }]);
+    } finally {
+      hoisted.refusedManagedOwnerRecordPath = null;
+      hoisted.activeServerDir = null;
+      await rm(activeServerDir, { recursive: true, force: true });
+    }
   });
 
   it('refuses a present-invalid persisted Provider binding before hooks, secrets, or child work', async () => {
@@ -792,7 +872,7 @@ describe('executeSpawnSessionRequest', () => {
       v: 1 as const,
       updatedAt: 42,
       ref: {
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         providerConnectionId: ProviderConnectionIdSchema.parse('pc_next'),
         modelId: 'next-model',
       },
@@ -866,7 +946,7 @@ describe('executeSpawnSessionRequest', () => {
       v: 1 as const,
       updatedAt: 42,
       ref: {
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         providerConnectionId: setup.connectionId,
         modelId: 'model-a',
       },
@@ -908,12 +988,12 @@ describe('executeSpawnSessionRequest', () => {
           extraEnvironmentVariables: [],
           defaultPermissionModeByTargetKey: {},
           defaultPersistenceModeByTargetKey: {},
-          compatibilityByTargetKey: { 'backend:codex': true },
+          compatibilityByTargetKey: { 'agent:happier.agent.codex/codex': true },
           preferredModelSelection: {
             v: 1,
             updatedAt: 100,
             ref: {
-              agentTargetKey: 'backend:codex',
+              agentTargetKey: 'agent:happier.agent.codex/codex',
               providerConnectionId: null,
               modelId: 'profile-default',
             },
@@ -1041,19 +1121,19 @@ describe('executeSpawnSessionRequest', () => {
       {
         v: 2, id: 'focused', name: 'Focused', extraEnvironmentVariables: [],
         defaultPermissionModeByTargetKey: {}, defaultPersistenceModeByTargetKey: {},
-        compatibilityByTargetKey: { 'backend:codex': true }, createdAt: 1, updatedAt: 1,
+        compatibilityByTargetKey: { 'agent:happier.agent.codex/codex': true }, createdAt: 1, updatedAt: 1,
       },
       {
         v: 2, id: 'focused', name: 'Focused', extraEnvironmentVariables: [],
         defaultPermissionModeByTargetKey: {}, defaultPersistenceModeByTargetKey: {},
-        compatibilityByTargetKey: { 'backend:codex': true }, createdAt: 1, updatedAt: 1,
+        compatibilityByTargetKey: { 'agent:happier.agent.codex/codex': true }, createdAt: 1, updatedAt: 1,
       },
     ]],
     ['malformed', [{ v: 99, id: 'focused' }]],
     ['incompatible', [{
       v: 2, id: 'focused', name: 'Focused', extraEnvironmentVariables: [],
       defaultPermissionModeByTargetKey: {}, defaultPersistenceModeByTargetKey: {},
-      compatibilityByTargetKey: { 'backend:codex': false }, createdAt: 1, updatedAt: 1,
+      compatibilityByTargetKey: { 'agent:happier.agent.codex/codex': false }, createdAt: 1, updatedAt: 1,
     }]],
   ])('refuses an %s V2 launch profile before workspace or Session creation', async (_case, profiles) => {
     hoisted.requireCatalogEntry.mockReturnValue({});
@@ -1383,7 +1463,7 @@ describe('executeSpawnSessionRequest', () => {
         acceptedLease.registry,
       );
       if (input.providerBindingPrerequisitesOnly) {
-        expect(input.providerBindingContext?.agentTargetKey).toBe('backend:codex');
+        expect(input.providerBindingContext?.agentTargetKey).toBe('agent:happier.agent.codex/codex');
         events.push('provider-preflight');
         return {
           ok: true,
@@ -1393,7 +1473,7 @@ describe('executeSpawnSessionRequest', () => {
           extraEnvForChild: {} as Record<string, string>,
         };
       }
-      expect(input.providerBindingContext?.agentTargetKey).toBe('backend:codex');
+      expect(input.providerBindingContext?.agentTargetKey).toBe('agent:happier.agent.codex/codex');
       events.push('generic-hooks');
       const late = await input.materializeProviderBindingAfterHooks?.();
       if (!late) throw new Error('Expected late provider materialization');
@@ -1440,7 +1520,7 @@ describe('executeSpawnSessionRequest', () => {
           v: 1,
           updatedAt: 1,
           ref: {
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             providerConnectionId: ProviderConnectionIdSchema.parse('pc_gateway'),
             modelId: 'model-a',
           },
@@ -1734,7 +1814,7 @@ describe('executeSpawnSessionRequest', () => {
       events.push('generic-hooks');
       expect(input.providerBindingContext).toEqual({
         v: 1,
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         connectionId,
         modelId: 'model-a',
       });
@@ -1816,7 +1896,7 @@ describe('executeSpawnSessionRequest', () => {
           v: 1,
           updatedAt: 1,
           ref: {
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             providerConnectionId: connectionId,
             modelId: 'model-a',
           },
@@ -1874,7 +1954,7 @@ describe('executeSpawnSessionRequest', () => {
           v: 1,
           updatedAt: 1,
           ref: {
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             providerConnectionId: setup.connectionId,
             modelId: 'model-a',
           },
@@ -1923,7 +2003,7 @@ describe('executeSpawnSessionRequest', () => {
           v: 1,
           updatedAt: 1,
           ref: {
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             providerConnectionId: setup.connectionId,
             modelId: 'model-a',
           },
@@ -1963,7 +2043,7 @@ describe('executeSpawnSessionRequest', () => {
           v: 1,
           updatedAt: 1,
           ref: {
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             providerConnectionId: setup.connectionId,
             modelId: 'model-a',
           },
@@ -2018,7 +2098,7 @@ describe('executeSpawnSessionRequest', () => {
           v: 1,
           updatedAt: 1,
           ref: {
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             providerConnectionId: setup.connectionId,
             modelId: 'model-a',
           },
@@ -2078,7 +2158,7 @@ describe('executeSpawnSessionRequest', () => {
           v: 1,
           updatedAt: 1,
           ref: {
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             providerConnectionId: ProviderConnectionIdSchema.parse('pc_gateway'),
             modelId: 'model-a',
           },
@@ -2191,7 +2271,7 @@ describe('executeSpawnSessionRequest', () => {
         ...createParams().options, resume: undefined, profileId: 'focused', environmentVariables: { TEAM_FLAG: '1' },
         modelSelection: {
           v: 1, updatedAt: 1,
-          ref: { agentTargetKey: 'backend:codex', providerConnectionId: ProviderConnectionIdSchema.parse('pc_gateway'), modelId: 'model-a' },
+          ref: { agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: ProviderConnectionIdSchema.parse('pc_gateway'), modelId: 'model-a' },
         },
       },
     } as never);
@@ -2257,7 +2337,7 @@ describe('executeSpawnSessionRequest', () => {
         },
         modelSelection: {
           v: 1, updatedAt: 1,
-          ref: { agentTargetKey: 'backend:codex', providerConnectionId: previousBinding.connectionId, modelId: 'model-a' },
+          ref: { agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: previousBinding.connectionId, modelId: 'model-a' },
         },
       },
     });
@@ -3689,7 +3769,7 @@ describe('executeSpawnSessionRequest', () => {
           v: 1,
           updatedAt: 1,
           ref: {
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             providerConnectionId: ProviderConnectionIdSchema.parse('pc_gateway'),
             modelId: 'model-a',
           },

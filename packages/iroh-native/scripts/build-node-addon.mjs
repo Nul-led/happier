@@ -20,6 +20,7 @@ const crateDir = join(packageDir, "rust", "happier-iroh-node");
 // root inference or the process working directory.
 const cargoTargetDir = join(packageDir, "rust", "target");
 const nativeDir = join(packageDir, "native");
+const nativeTestDir = join(packageDir, "native-test");
 const crateLibName = "happier_iroh_node";
 
 const DYLIB_NAMES = {
@@ -89,8 +90,11 @@ function main() {
   }
 
   const dylib = join(cargoTargetDir, target, profile, DYLIB_NAMES[platform]);
-  const artifact = join(nativeDir, resolveArtifactName(platform, arch, { testRelayFixture }));
-  mkdirSync(nativeDir, { recursive: true });
+  // Relay-fixture bytes are development-only and must never share the package's
+  // publishable `native/` directory with the ordinary lifecycle addon.
+  const artifactDir = testRelayFixture ? nativeTestDir : nativeDir;
+  const artifact = join(artifactDir, resolveArtifactName(platform, arch, { testRelayFixture }));
+  mkdirSync(artifactDir, { recursive: true });
   rmSync(artifact, { force: true });
   copyFileSync(dylib, artifact);
   process.stdout.write(`${artifact} (rust target ${target}, ${profile})\n`);

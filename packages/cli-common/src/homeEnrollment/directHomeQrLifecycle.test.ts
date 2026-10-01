@@ -10,6 +10,7 @@ import {
 import {
   admitDirectHomeQrV2,
   DirectHomeQrCompletionError,
+  runDirectHomeQrCompletion,
   startDirectHomeQrLifecycle,
   type DirectHomeQrLifecycleAdapters,
   type DirectHomeQrPairingStatus,
@@ -170,7 +171,7 @@ describe('direct Home QR lifecycle', () => {
     await expect(result.completion).resolves.toEqual({ kind: 'completed', requestedDeviceLabel: 'Phone' });
     expect(h.start).toHaveBeenCalledWith(expect.objectContaining({ direction: 'trusted_home_displays' }));
     expect(h.complete).toHaveBeenCalledWith(expect.objectContaining({
-      context: expect.objectContaining({ direction: 'trusted_home_displays' }),
+      context: expect.objectContaining({ direction: 'trusted_home_displays', homeServerIdentityId: DESCRIPTOR.homeServerIdentityId }),
     }));
     expect(h.close).toHaveBeenCalledOnce();
   });
@@ -324,5 +325,70 @@ describe('direct Home QR lifecycle', () => {
     await expect(result.completion).resolves.toEqual({ kind: 'invalid_request' });
     expect(h.complete).not.toHaveBeenCalled();
     expect(h.consume).toHaveBeenCalledWith(expect.objectContaining({ intent: 'reject' }));
+  });
+});
+
+describe('runDirectHomeQrCompletion (approver completion for a requester-displayed QR)', () => {
+  const requesterPublicKey = new Uint8Array(32).fill(8);
+  function approverRun(h: ReturnType<typeof harness>) {
+    return runDirectHomeQrCompletion({
+      direction: 'requester_displays',
+      pairId: 'pair-1',
+      homeServerIdentityId: DESCRIPTOR.homeServerIdentityId,
+      qrSecret: new Uint8Array(32).fill(7),
+      issuedAtMs: NOW,
+      expiresAtMs: NOW + 60_000,
+      expectedRequesterPublicKey: requesterPublicKey,
+      adapters: h.adapters,
+      signal: new AbortController().signal,
+    });
+  }
+  function requesterDisplayed() {
+    return requested({
+      bindingProof: computeHomeQrBindingProofV2({
+        direction: 'requester_displays',
+        qrSecret: new Uint8Array(32).fill(7),
+        pairId: 'pair-1',
+        homeServerIdentityId: DESCRIPTOR.homeServerIdentityId,
+        requesterPublicKey,
+        expiresAtMs: NOW + 60_000,
+      }),
+    });
+  }
+
+  it('completes the exact requested device with the requester-displayed direction', async () => {
+    const h = harness({ status: [requesterDisplayed()] });
+
+    await expect(approverRun(h).completion).resolves.toEqual({ kind: 'completed', requestedDeviceLabel: 'Phone' });
+    expect(h.complete).toHaveBeenCalledWith(expect.objectContaining({
+      context: expect.objectContaining({ direction: 'requester_displays', pairId: 'pair-1' }),
+      requesterPublicKey,
+    }));
+  });
+
+  it('rejects the pairing row when the requester proof does not verify', async () => {
+    // A trusted_home_displays proof is not valid for the requester-displayed direction.
+    const h = harness({ status: [requested()] });
+
+    await expect(approverRun(h).completion).resolves.toEqual({ kind: 'invalid_request' });
+    expect(h.complete).not.toHaveBeenCalled();
+    expect(h.consume).toHaveBeenCalledWith(expect.objectContaining({ pairId: 'pair-1', intent: 'reject' }));
+  });
+
+  it('rejects the pairing row when the Home refuses the completion as invalid', async () => {
+    const h = harness({
+      status: [requesterDisplayed()],
+      complete: async () => { throw new DirectHomeQrCompletionError('invalid'); },
+    });
+
+    await expect(approverRun(h).completion).resolves.toEqual({ kind: 'invalid_request' });
+    expect(h.consume).toHaveBeenCalledWith(expect.objectContaining({ intent: 'reject' }));
+  });
+
+  it('reports a pairing row the Home no longer has as expired', async () => {
+    const h = harness({ poll: async () => ({ ok: false, reason: 'not_found', status: 404 }) });
+
+    await expect(approverRun(h).completion).resolves.toEqual({ kind: 'expired' });
+    expect(h.complete).not.toHaveBeenCalled();
   });
 });

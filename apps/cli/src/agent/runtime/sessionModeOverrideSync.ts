@@ -1,11 +1,12 @@
 import type { Metadata } from '@/api/types';
 import { logger } from '@/ui/logger';
+import { isRuntimeConfigUpdateOutcomeApplied, type RuntimeConfigUpdateOutcomeV1 } from '@happier-dev/agents';
 
 import { computePendingSessionModeOverrideApplication } from './permissions/modeFromMetadata';
 
 export function createSessionModeOverrideSynchronizer(params: Readonly<{
   session: { getMetadataSnapshot: () => Metadata | null };
-  runtime: { setSessionMode: (modeId: string) => Promise<void> };
+  runtime: { setSessionMode: (modeId: string) => Promise<RuntimeConfigUpdateOutcomeV1 | void> };
   isStarted: () => boolean;
 }>): {
   syncFromMetadata: () => void;
@@ -46,21 +47,25 @@ export function createSessionModeOverrideSynchronizer(params: Readonly<{
       attempt,
     });
 
+    const reportNotApplied = (): void => {
+      // Native modes and rejection details can contain private provider data.
+      logger.infoFile('[SessionModeOverrideSync] Session mode override not applied; will retry on next sync', {
+        updatedAt: next.updatedAt,
+        attempt,
+      });
+    };
     applyingPromise = params.runtime
       .setSessionMode(runtimeModeId)
-      .then(() => {
+      .then((outcome) => {
+        if (!isRuntimeConfigUpdateOutcomeApplied(outcome)) {
+          reportNotApplied();
+          return;
+        }
         // Only advance lastAppliedUpdatedAt on success so failures can retry.
         lastAppliedUpdatedAt = next.updatedAt;
         if (pending && pending.updatedAt <= lastAppliedUpdatedAt) pending = null;
       })
-      .catch((error: unknown) => {
-        logger.debug('[SessionModeOverrideSync] Failed to apply session mode override; will retry on next sync', {
-          modeId: next.modeId,
-          updatedAt: next.updatedAt,
-          attempt,
-          error: error instanceof Error ? error.message : String(error ?? 'unknown error'),
-        });
-      })
+      .catch(reportNotApplied)
       .finally(() => {
         applyingPromise = null;
         if (pending && pending.updatedAt > next.updatedAt && params.isStarted()) {

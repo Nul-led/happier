@@ -11,6 +11,7 @@ type ScmOperationLockState = {
         serverId?: string,
     ) => BeginScmProjectOperationResult;
     finishSessionProjectScmOperation: (sessionId: string, operationId: string, serverId?: string) => boolean;
+    updateSessionProjectScmOperationProgress: (sessionId: string, operationId: string, progressText?: string, serverId?: string) => boolean;
 };
 
 type ScmWorkspaceOperationLockState = {
@@ -20,6 +21,7 @@ type ScmWorkspaceOperationLockState = {
         serverId?: string,
     ) => BeginScmProjectOperationResult;
     finishWorkspaceScmOperation: (scope: WorkspaceScopeBase, operationId: string, serverId?: string) => boolean;
+    updateWorkspaceScmOperationProgress: (scope: WorkspaceScopeBase, operationId: string, progressText?: string) => boolean;
 };
 
 export type WithSessionProjectScmOperationResult<T> =
@@ -45,6 +47,7 @@ export async function withSessionProjectScmOperationLock<T>(input: {
 
     const operationId = start.operation.id;
     try {
+        input.state.updateSessionProjectScmOperationProgress(input.sessionId, operationId, undefined, ...(input.serverId === undefined ? [] : [input.serverId]));
         const value = await input.run();
         return { started: true, value };
     } finally {
@@ -68,6 +71,7 @@ export async function withWorkspaceScmOperationLock<T>(input: {
 
     const operationId = start.operation.id;
     try {
+        input.state.updateWorkspaceScmOperationProgress(input.scope, operationId);
         const value = await input.run();
         return { started: true, value };
     } finally {

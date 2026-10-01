@@ -30,6 +30,7 @@ import {
   CONNECTED_ACCOUNT_REQUEST_AUTH_LOOKUP_PATH,
   ConnectedAccountAttemptResponseSchema,
   ConnectedAccountDaemonControlResponseSchema,
+  DaemonContributionRegistryProjectionDescribeResponseSchema,
   DaemonPluginUiResourceReadResponseSchema,
   DaemonPluginUiResourceWatchCloseResponseSchema,
   DaemonPluginUiResourceWatchNextResponseSchema,
@@ -39,6 +40,7 @@ import {
   ExternalSessionOperationReferenceV1Schema,
   ExternalSessionRefSchema,
   ProviderConnectionIdSchema,
+  PluginProjectionV2Schema,
   RestartSessionRunnerResultV1Schema,
   sealAccountScopedBlobCiphertext,
   SessionRunnerRuntimeStateV1Schema,
@@ -8154,7 +8156,7 @@ type PackedChannelCatalogEntry = Readonly<{
   pluginId: string;
   desiredGeneration: string | null;
   appliedGeneration: string | null;
-  projectionGeneration: string;
+  occurrenceId: string;
   raw: Readonly<Record<string, unknown>>;
 }>;
 
@@ -8169,23 +8171,6 @@ function readPackedChannelCatalogString(value: unknown): string | null {
   return typeof value === 'string' && value.trim().length > 0
     ? value
     : null;
-}
-
-function readPackedChannelCatalogProjectionGeneration(
-  value: Readonly<Record<string, unknown>>,
-): string {
-  const contributionProjection = isRecord(value.contributions)
-    ? value.contributions
-    : isRecord(value.contributionIntrospection)
-      ? value.contributionIntrospection
-      : null;
-  const generation = contributionProjection?.generation;
-  assert(
-    (typeof generation === 'number' && Number.isInteger(generation))
-      || (typeof generation === 'string' && generation.length > 0),
-    'packed_channel_provider_catalog_projection_generation_missing',
-  );
-  return String(generation);
 }
 
 async function readPackedChannelCatalog(
@@ -8205,10 +8190,22 @@ async function readPackedChannelCatalog(
       && Array.isArray(response.data.plugins),
     'packed_channel_provider_catalog_read_failed',
   );
+  const projection = await callProviderRpc(
+    runtime,
+    RPC_METHODS.DAEMON_MERGED_CONTRIBUTION_REGISTRY_PROJECTION_DESCRIBE,
+    { machineId: runtime.machineId },
+    DaemonContributionRegistryProjectionDescribeResponseSchema,
+  );
+  const projectionV2 = PluginProjectionV2Schema.parse(projection.projection);
   return response.data.plugins.flatMap((candidate) => {
     if (!isRecord(candidate)) return [];
     const pluginId = readPackedChannelCatalogString(candidate.pluginId);
     if (!pluginId) return [];
+    const occurrenceId = projectionV2.installedPackagesById[pluginId]?.occurrenceId;
+    assert(
+      typeof occurrenceId === 'string' && occurrenceId.length > 0,
+      'packed_channel_provider_catalog_occurrence_missing',
+    );
     return [{
       pluginId,
       desiredGeneration: readPackedChannelCatalogString(
@@ -8217,8 +8214,7 @@ async function readPackedChannelCatalog(
       appliedGeneration: readPackedChannelCatalogString(
         candidate.appliedGeneration,
       ),
-      projectionGeneration:
-        readPackedChannelCatalogProjectionGeneration(candidate),
+      occurrenceId,
       raw: candidate,
     }];
   });
@@ -8253,7 +8249,7 @@ function catalogHasPackedChannelContribution(
 
 async function readPackedChannelResource(input: Readonly<{
   runtime: InitializedRuntime;
-  expectedGeneration: string;
+  expectedCallerOccurrenceId: string;
   callerPluginId: string;
   localId: string;
 }>): Promise<PackedChannelResourceRead> {
@@ -8262,7 +8258,7 @@ async function readPackedChannelResource(input: Readonly<{
     RPC_METHODS.DAEMON_PLUGIN_UI_RESOURCE_READ,
     {
       machineId: input.runtime.machineId,
-      expectedGeneration: input.expectedGeneration,
+      expectedCallerOccurrenceId: input.expectedCallerOccurrenceId,
       callerPluginId: input.callerPluginId,
       resource: { pluginId: input.callerPluginId, localId: input.localId },
       context: { kind: 'global' },
@@ -8285,7 +8281,7 @@ async function readPackedChannelResource(input: Readonly<{
 
 async function openPackedChannelResourceWatch(input: Readonly<{
   runtime: InitializedRuntime;
-  expectedGeneration: string;
+  expectedCallerOccurrenceId: string;
   callerPluginId: string;
   localId: string;
 }>): Promise<string> {
@@ -8295,7 +8291,7 @@ async function openPackedChannelResourceWatch(input: Readonly<{
     RPC_METHODS.DAEMON_PLUGIN_UI_RESOURCE_WATCH_OPEN,
     {
       machineId: input.runtime.machineId,
-      expectedGeneration: input.expectedGeneration,
+      expectedCallerOccurrenceId: input.expectedCallerOccurrenceId,
       callerPluginId: input.callerPluginId,
       subscriptionId,
       resource: { pluginId: input.callerPluginId, localId: input.localId },
@@ -8312,7 +8308,7 @@ async function openPackedChannelResourceWatch(input: Readonly<{
 
 async function nextPackedChannelResourceWatch(input: Readonly<{
   runtime: InitializedRuntime;
-  expectedGeneration: string;
+  expectedCallerOccurrenceId: string;
   callerPluginId: string;
   subscriptionId: string;
 }>) {
@@ -8321,7 +8317,7 @@ async function nextPackedChannelResourceWatch(input: Readonly<{
     RPC_METHODS.DAEMON_PLUGIN_UI_RESOURCE_WATCH_NEXT,
     {
       machineId: input.runtime.machineId,
-      expectedGeneration: input.expectedGeneration,
+      expectedCallerOccurrenceId: input.expectedCallerOccurrenceId,
       callerPluginId: input.callerPluginId,
       subscriptionId: input.subscriptionId,
       waitMs: 25_000,
@@ -8355,7 +8351,7 @@ async function executePackedChannelAction(input: Readonly<{
   runtime: InitializedRuntime;
   actionId: string;
   actionInput: unknown;
-  expectedContributorImmutableGenerationId?: string;
+  expectedContributorOccurrenceId?: string;
 }>): Promise<PackedChannelActionAttempt> {
   const response = await daemonControlPostJson<unknown>({
     port: input.runtime.currentDaemonState.httpPort,
@@ -8365,11 +8361,11 @@ async function executePackedChannelAction(input: Readonly<{
       actionId: input.actionId,
       input: input.actionInput,
       surface: 'cli',
-      ...(input.expectedContributorImmutableGenerationId === undefined
+      ...(input.expectedContributorOccurrenceId === undefined
         ? {}
         : {
-          expectedContributorImmutableGenerationId:
-            input.expectedContributorImmutableGenerationId,
+          expectedContributorOccurrenceId:
+            input.expectedContributorOccurrenceId,
         }),
     },
     timeoutMs: 90_000,
@@ -8594,7 +8590,7 @@ async function runPackedChannelProviderLifecycleProbe(input: Readonly<{
 
     await readPackedChannelResource({
       runtime: input.runtime,
-      expectedGeneration: initialFixture.projectionGeneration,
+      expectedCallerOccurrenceId: initialFixture.occurrenceId,
       callerPluginId: PACKED_CHANNEL_PROVIDER_PLUGIN_ID,
       localId: 'status-v1',
     });
@@ -8649,7 +8645,7 @@ async function runPackedChannelProviderLifecycleProbe(input: Readonly<{
     );
     const connectionsBeforeCreate = await readPackedChannelResource({
       runtime: input.runtime,
-      expectedGeneration: coreAfterContractChecks.projectionGeneration,
+      expectedCallerOccurrenceId: coreAfterContractChecks.occurrenceId,
       callerPluginId: PACKED_CHANNELS_CORE_PLUGIN_ID,
       localId: 'connections-v1',
     });
@@ -8663,7 +8659,7 @@ async function runPackedChannelProviderLifecycleProbe(input: Readonly<{
 
     const watchSubscriptionId = await openPackedChannelResourceWatch({
       runtime: input.runtime,
-      expectedGeneration: fixtureAfterContractChecks.projectionGeneration,
+      expectedCallerOccurrenceId: fixtureAfterContractChecks.occurrenceId,
       callerPluginId: PACKED_CHANNEL_PROVIDER_PLUGIN_ID,
       localId: 'status-v1',
     });
@@ -8671,7 +8667,7 @@ async function runPackedChannelProviderLifecycleProbe(input: Readonly<{
     try {
       const watchNext = nextPackedChannelResourceWatch({
         runtime: input.runtime,
-        expectedGeneration: fixtureAfterContractChecks.projectionGeneration,
+        expectedCallerOccurrenceId: fixtureAfterContractChecks.occurrenceId,
         callerPluginId: PACKED_CHANNEL_PROVIDER_PLUGIN_ID,
         subscriptionId: watchSubscriptionId,
       });
@@ -8730,7 +8726,7 @@ async function runPackedChannelProviderLifecycleProbe(input: Readonly<{
         );
         const status = await readPackedChannelResource({
           runtime: input.runtime,
-          expectedGeneration: fixture.projectionGeneration,
+          expectedCallerOccurrenceId: fixture.occurrenceId,
           callerPluginId: PACKED_CHANNEL_PROVIDER_PLUGIN_ID,
           localId: 'status-v1',
         });
@@ -8770,7 +8766,7 @@ async function runPackedChannelProviderLifecycleProbe(input: Readonly<{
       const connectionForBinding = requirePackedChannelConnectionRow({
         resource: await readPackedChannelResource({
           runtime: input.runtime,
-          expectedGeneration: coreForBinding.projectionGeneration,
+          expectedCallerOccurrenceId: coreForBinding.occurrenceId,
           callerPluginId: PACKED_CHANNELS_CORE_PLUGIN_ID,
           localId: 'connections-v1',
         }),
@@ -8858,7 +8854,7 @@ async function runPackedChannelProviderLifecycleProbe(input: Readonly<{
       const connectionBeforeDisable = requirePackedChannelConnectionRow({
         resource: await readPackedChannelResource({
           runtime: input.runtime,
-          expectedGeneration: coreBeforeDisable.projectionGeneration,
+          expectedCallerOccurrenceId: coreBeforeDisable.occurrenceId,
           callerPluginId: PACKED_CHANNELS_CORE_PLUGIN_ID,
           localId: 'connections-v1',
         }),
@@ -8894,7 +8890,7 @@ async function runPackedChannelProviderLifecycleProbe(input: Readonly<{
       const connectionBeforeEnable = requirePackedChannelConnectionRow({
         resource: await readPackedChannelResource({
           runtime: input.runtime,
-          expectedGeneration: coreBeforeEnable.projectionGeneration,
+          expectedCallerOccurrenceId: coreBeforeEnable.occurrenceId,
           callerPluginId: PACKED_CHANNELS_CORE_PLUGIN_ID,
           localId: 'connections-v1',
         }),
@@ -9005,16 +9001,16 @@ async function runPackedChannelProviderLifecycleProbe(input: Readonly<{
         PACKED_CHANNEL_PROVIDER_PLUGIN_ID,
       );
       assert(
-        fixtureAfterReplacement.projectionGeneration
-          !== fixtureAfterContractChecks.projectionGeneration,
-        'packed_channel_provider_replacement_projection_generation_unchanged',
+        fixtureAfterReplacement.occurrenceId
+          !== fixtureAfterContractChecks.occurrenceId,
+        'packed_channel_provider_replacement_occurrence_unchanged',
       );
       const retiredRead = await callProviderRpc(
         input.runtime,
         RPC_METHODS.DAEMON_PLUGIN_UI_RESOURCE_READ,
         {
           machineId: input.runtime.machineId,
-          expectedGeneration: fixtureAfterContractChecks.projectionGeneration,
+          expectedCallerOccurrenceId: fixtureAfterContractChecks.occurrenceId,
           callerPluginId: PACKED_CHANNEL_PROVIDER_PLUGIN_ID,
           resource: {
             pluginId: PACKED_CHANNEL_PROVIDER_PLUGIN_ID,
@@ -9027,7 +9023,7 @@ async function runPackedChannelProviderLifecycleProbe(input: Readonly<{
       assert(
         !retiredRead.ok
           && retiredRead.code === 'plugin_generation_stale'
-          && retiredRead.reason === 'stale_generation',
+          && retiredRead.reason === 'stale_occurrence',
         'packed_channel_provider_retired_resource_read_not_fenced',
       );
 
@@ -9076,7 +9072,7 @@ async function runPackedChannelProviderLifecycleProbe(input: Readonly<{
         const row = requirePackedChannelConnectionRow({
           resource: await readPackedChannelResource({
             runtime: input.runtime,
-            expectedGeneration: coreBeforeHistoryGap.projectionGeneration,
+            expectedCallerOccurrenceId: coreBeforeHistoryGap.occurrenceId,
             callerPluginId: PACKED_CHANNELS_CORE_PLUGIN_ID,
             localId: 'connections-v1',
           }),
@@ -9099,7 +9095,7 @@ async function runPackedChannelProviderLifecycleProbe(input: Readonly<{
       const connectionBeforeDelete = requirePackedChannelConnectionRow({
         resource: await readPackedChannelResource({
           runtime: input.runtime,
-          expectedGeneration: coreBeforeDelete.projectionGeneration,
+          expectedCallerOccurrenceId: coreBeforeDelete.occurrenceId,
           callerPluginId: PACKED_CHANNELS_CORE_PLUGIN_ID,
           localId: 'connections-v1',
         }),

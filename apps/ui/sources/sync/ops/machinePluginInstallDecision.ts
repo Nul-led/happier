@@ -5,10 +5,7 @@ import {
 } from '@happier-dev/protocol/marketplace/internal';
 import { isRpcMethodNotFoundResult } from '@happier-dev/protocol/rpc';
 
-import {
-    decideMachinePluginDevelopmentSourceRootAsPresentUser,
-    decideMachinePluginInstallReviewAsPresentUser,
-} from '@/sync/ops/machinePluginInstallPresentUserDecision.mjs';
+import { decideMachinePluginInstallReviewAsPresentUser } from '@/sync/ops/machinePluginInstallPresentUserDecision.mjs';
 import { machineRpcWithServerScope } from '@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc';
 
 type PositiveDecision = Omit<
@@ -19,12 +16,6 @@ type PositiveDecision = Omit<
         readonly Readonly<{ accessId: string; selected: boolean }>[] | null
     >;
 }>;
-type TrustSourceRootDecision = Omit<
-    Extract<HostPrivatePluginInstallDecisionV1, Readonly<{ decision: 'trustSourceRoot' }>>,
-    'v'
-> & Readonly<{
-    confirmPresentUser: () => Promise<boolean>;
-}>;
 type CancelDecision = Omit<
     Extract<HostPrivatePluginInstallDecisionV1, Readonly<{ decision: 'cancel' }>>,
     'v'
@@ -32,7 +23,6 @@ type CancelDecision = Omit<
 
 export type MachinePluginInstallDecisionInput =
     | PositiveDecision
-    | TrustSourceRootDecision
     | CancelDecision;
 
 export type MachinePluginInstallDecisionOutcome = Readonly<{
@@ -45,13 +35,14 @@ export type MachinePluginInstallDecisionOutcome = Readonly<{
         | 'unavailable'
         | 'outcomeUnknown'
         | 'busy'
+        | 'projectTrustAccepted'
         | 'reviewRequired';
     detail: string | null;
     /**
      * The daemon's own change payload, retained verbatim **only** for the one
-     * outcome that carries a follow-up decision, so a multi-step review
-     * (source-root trust answered with an install-and-trust review) is read by
-     * the caller's canonical change reader instead of being re-modelled here.
+     * outcome that carries a follow-up authority decision, so a project-trust
+     * decision followed by a real authority expansion is read by the caller's
+     * canonical change reader instead of being re-modelled here.
      * Terminal outcomes stay a bare `{ kind, detail }` result.
      */
     change?: unknown;
@@ -83,6 +74,7 @@ function parseOutcome(value: unknown): MachinePluginInstallDecisionOutcome | nul
         && kind !== 'unavailable'
         && kind !== 'outcomeUnknown'
         && kind !== 'busy'
+        && kind !== 'projectTrustAccepted'
         && kind !== 'reviewRequired'
     ) {
         return null;
@@ -112,15 +104,7 @@ export async function machinePluginInstallDecision(
             method,
             payload,
         });
-        if (opts.decision.decision === 'trustSourceRoot') {
-            const { confirmPresentUser, pendingChangeId } = opts.decision;
-            rawPayload = await decideMachinePluginDevelopmentSourceRootAsPresentUser({
-                pendingChangeId,
-                confirmPresentUser,
-                isAuthorityCurrent: opts.isAuthorityCurrent,
-                callAuthenticatedPrivateRpc,
-            });
-        } else if (opts.decision.decision === 'installAndTrust') {
+        if (opts.decision.decision === 'installAndTrust') {
             const affirmativeDecision = opts.decision;
             const { confirmPresentUser, ...decision } = affirmativeDecision;
             rawPayload = await decideMachinePluginInstallReviewAsPresentUser({

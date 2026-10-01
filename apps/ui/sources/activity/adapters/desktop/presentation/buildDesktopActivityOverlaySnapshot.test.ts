@@ -80,6 +80,38 @@ function createOverlaySource(params: Readonly<{
 }
 
 describe('buildDesktopActivityOverlaySnapshot', () => {
+    it.each(['status_only', 'title_only', 'include_preview'] as const)('applies %s workspace privacy to real-source overlay payloads', (privacyMode) => {
+        const snapshot = buildDesktopActivityOverlaySnapshot({
+            source: {
+                ...createOverlaySource({ sessions: [createSessionFixture({
+                    id: 'workspace-privacy',
+                    active: true,
+                    presence: 'online',
+                    pendingPermissionRequestCount: 1,
+                    pendingRequestObservedAt: 950,
+                    metadata: {
+                        path: '/Users/tester/PRIVATE-WORKSPACE-SENTINEL',
+                        host: 'tester.local',
+                        homeDir: '/Users/tester',
+                    },
+                })] }),
+                serverProfilesById: {
+                    'server-1': {
+                        id: 'server-1', name: 'Home A', serverUrl: 'https://server-1.example.test',
+                        createdAt: 1, updatedAt: 1, lastUsedAt: 1, source: 'manual',
+                    },
+                },
+            },
+            activityPolicy: resolveActivitySurfacePolicy({ activitySurfacePrivacyMode: privacyMode }),
+            desktopPolicy: createDesktopPolicy(),
+            nowMs: 1_000,
+        });
+
+        expect(snapshot.primary?.sessionId).toBe('workspace-privacy');
+        expect(snapshot.primary?.subtitle).toContain('Home A');
+        expect(JSON.stringify(snapshot.sessions).includes('PRIVATE-WORKSPACE-SENTINEL')).toBe(privacyMode === 'include_preview');
+    });
+
     it('carries the shared safe structural context independently of locked private content', () => {
         const session = createSessionFixture({
             encryptionMode: 'e2ee',
@@ -795,18 +827,25 @@ describe('buildDesktopActivityOverlaySnapshot', () => {
                 quotaSummaries: [
                     {
                         key: 'claude:default',
+                        serviceGroupKey: 'happier.agent.claude/anthropic',
+                        accountLabel: 'Claude',
+                        accountEmail: null,
+                        accountId: 'default',
+                        recoveryCredits: null,
                         service: { pluginId: 'happier.agent.claude', localId: 'anthropic' },
                         legacyServiceId: 'anthropic',
                         serviceLabel: 'Anthropic',
                         profileId: 'default',
                         profileLabel: 'Claude',
                         planLabel: 'Pro',
+                        fetchedAt: 900,
                         primaryMeter: {
                             meterId: 'requests',
                             label: 'Requests',
                             remainingPct: 12,
                             utilizationPct: 88,
                             status: 'estimated',
+                            resetsAt: null,
                         },
                         meters: [
                             {
@@ -815,6 +854,7 @@ describe('buildDesktopActivityOverlaySnapshot', () => {
                                 remainingPct: 12,
                                 utilizationPct: 88,
                                 status: 'estimated',
+                                resetsAt: null,
                             },
                         ],
                     },

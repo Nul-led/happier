@@ -1,7 +1,7 @@
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
 import { parseToken } from '@/utils/auth/parseToken';
 import { createServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
-import { readRunnerCreatorMachineContentKeyTrust } from '@/sync/domains/ephemeralRunner/runnerCreatorMachineContentKeyTrust';
+import { loadRunnerCreatorMachineContentKeyTrust } from '@/sync/domains/ephemeralRunner/runnerCreatorMachineContentKeyTrust';
 import { resolveAccountScopedCryptoMaterialFromCredentials } from '@/sync/domains/connectedServices/resolveAccountScopedCryptoMaterialFromCredentials';
 import type {
     AccountScopedCryptoMaterial,
@@ -38,11 +38,11 @@ export type ResolvedRunnerMachineContentKeyTrustV1 = Readonly<{
  * Runner: gating the lookup on that label would let a relabelling suppress the
  * trusted answer before it is ever asked for.
  */
-export function resolveRunnerMachineContentKeyTrustV1(params: Readonly<{
+export async function resolveRunnerMachineContentKeyTrustV1(params: Readonly<{
     credentials: AuthCredentials;
     homeServerIdentityId: string | null | undefined;
     machineId: string;
-}>): ResolvedRunnerMachineContentKeyTrustV1 | null {
+}>): Promise<ResolvedRunnerMachineContentKeyTrustV1 | null> {
     const homeServerIdentityId = String(params.homeServerIdentityId ?? '').trim();
     const machineId = String(params.machineId ?? '').trim();
     if (!homeServerIdentityId || !machineId) return null;
@@ -56,7 +56,12 @@ export function resolveRunnerMachineContentKeyTrustV1(params: Readonly<{
 
     const scope = createServerAccountScope(homeServerIdentityId, creatorAccountId);
     if (!scope) return null;
-    const trust = readRunnerCreatorMachineContentKeyTrust(scope, machineId);
+    let trust;
+    try {
+        trust = await loadRunnerCreatorMachineContentKeyTrust(scope, machineId);
+    } catch {
+        return null;
+    }
     if (trust) {
         return {
             expectedRunnerBinding: {

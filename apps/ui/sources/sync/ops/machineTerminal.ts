@@ -55,6 +55,30 @@ type MachineTerminalOpts = Readonly<{
     signal?: AbortSignal;
 }>;
 
+const pendingTerminalCreations = new Map<string, Set<Promise<unknown>>>();
+function terminalCreationKey(machineId: string, terminalKey: string, opts?: MachineTerminalOpts): string {
+    return JSON.stringify([opts?.serverId?.trim() ?? null, machineId.trim(), terminalKey]);
+}
+async function trackTerminalCreation<T>(key: string, run: () => Promise<T>): Promise<T> {
+    const operation = run();
+    const pending = pendingTerminalCreations.get(key) ?? new Set<Promise<unknown>>();
+    pending.add(operation);
+    pendingTerminalCreations.set(key, pending);
+    try { return await operation; }
+    finally {
+        pending.delete(operation);
+        if (pending.size === 0) pendingTerminalCreations.delete(key);
+    }
+}
+
+/** A connecting/restarting pane may not yet appear in the daemon's PTY list. */
+export async function awaitPendingMachineTerminalCreation(machineId: string, terminalKey: string, opts?: MachineTerminalOpts): Promise<void> {
+    const key = terminalCreationKey(machineId, terminalKey, opts);
+    while (pendingTerminalCreations.has(key)) {
+        await Promise.all(pendingTerminalCreations.get(key)!);
+    }
+}
+
 function throwUnsupportedResponse(method: string): never {
     throw new Error(`Unsupported response from machine RPC (${method})`);
 }
@@ -89,19 +113,21 @@ export async function machineTerminalEnsure(
     opts?: MachineTerminalOpts,
 ): Promise<DaemonTerminalEnsureResponse> {
     const payload = DaemonTerminalEnsureRequestSchema.parse(input);
-    const response = await machineRpcWithServerScope<unknown, DaemonTerminalEnsureRequest>({
-        machineId,
-        serverId: opts?.serverId,
-        timeoutMs: opts?.timeoutMs ?? undefined,
-        method: RPC_METHODS.DAEMON_TERMINAL_ENSURE,
-        payload,
-        ...(opts?.signal ? { signal: opts.signal } : {}),
+    return trackTerminalCreation(terminalCreationKey(machineId, payload.terminalKey, opts), async () => {
+        const response = await machineRpcWithServerScope<unknown, DaemonTerminalEnsureRequest>({
+            machineId,
+            serverId: opts?.serverId,
+            timeoutMs: opts?.timeoutMs ?? undefined,
+            method: RPC_METHODS.DAEMON_TERMINAL_ENSURE,
+            payload,
+            ...(opts?.signal ? { signal: opts.signal } : {}),
+        });
+        const parsed = DaemonTerminalEnsureResponseSchema.safeParse(response);
+        if (!parsed.success) {
+            throwUnsupportedResponse(RPC_METHODS.DAEMON_TERMINAL_ENSURE);
+        }
+        return parsed.data;
     });
-    const parsed = DaemonTerminalEnsureResponseSchema.safeParse(response);
-    if (!parsed.success) {
-        throwUnsupportedResponse(RPC_METHODS.DAEMON_TERMINAL_ENSURE);
-    }
-    return parsed.data;
 }
 
 export async function machineTerminalStreamRead(
@@ -259,16 +285,18 @@ export async function machineTerminalRestart(
     opts?: MachineTerminalOpts,
 ): Promise<DaemonTerminalRestartResponse> {
     const payload = DaemonTerminalRestartRequestSchema.parse(input);
-    const response = await machineRpcWithServerScope<unknown, DaemonTerminalRestartRequest>({
-        machineId,
-        serverId: opts?.serverId,
-        timeoutMs: opts?.timeoutMs ?? undefined,
-        method: RPC_METHODS.DAEMON_TERMINAL_RESTART,
-        payload,
+    return trackTerminalCreation(terminalCreationKey(machineId, payload.terminalKey, opts), async () => {
+        const response = await machineRpcWithServerScope<unknown, DaemonTerminalRestartRequest>({
+            machineId,
+            serverId: opts?.serverId,
+            timeoutMs: opts?.timeoutMs ?? undefined,
+            method: RPC_METHODS.DAEMON_TERMINAL_RESTART,
+            payload,
+        });
+        const parsed = DaemonTerminalRestartResponseSchema.safeParse(response);
+        if (!parsed.success) {
+            throwUnsupportedResponse(RPC_METHODS.DAEMON_TERMINAL_RESTART);
+        }
+        return parsed.data;
     });
-    const parsed = DaemonTerminalRestartResponseSchema.safeParse(response);
-    if (!parsed.success) {
-        throwUnsupportedResponse(RPC_METHODS.DAEMON_TERMINAL_RESTART);
-    }
-    return parsed.data;
 }

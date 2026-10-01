@@ -3,7 +3,7 @@ import {
   isConnectedServiceQuotaObservationFresh,
   ProviderAccountUsageRecordIdSchema,
   QualifiedConnectedServiceUsageSourceV4Schema,
-  openProviderAccountUsageSnapshotCiphertext,
+  openSealedProviderAccountUsageSnapshot,
   parseBuiltInLegacyProviderAccountUsageSnapshotV1,
   parseQualifiedPluginContributionKey,
   readBuiltInLegacyConnectedServiceIdForQualifiedService,
@@ -11,6 +11,7 @@ import {
   type ProviderAccountUsageRecordId,
   type ProviderAccountUsageSnapshotV1,
   type QualifiedConnectedServiceUsageSourceV4,
+  type SealedProviderAccountUsageSnapshotV1,
 } from '@happier-dev/protocol';
 import { isConnectedServiceUsageProviderCompatible } from '@happier-dev/agents';
 
@@ -25,7 +26,7 @@ import type { ProviderAccountUsageStore } from './store';
 type ProviderAccountUsageV4Record = Readonly<{
   content:
     | Readonly<{ t: 'plain'; v: unknown }>
-    | Readonly<{ t: 'encrypted'; c: string }>;
+    | Readonly<{ t: 'encrypted'; c: string; subscription?: SealedProviderAccountUsageSnapshotV1['subscription'] }>;
   metadata: Readonly<{
     fetchedAt: number;
     staleAfterMs: number;
@@ -60,7 +61,7 @@ export type ProviderAccountUsageCurrentSourceResolution = Readonly<{
 
 function accountScopedMaterial(
   credentials: StoredCredentials,
-): Parameters<typeof openProviderAccountUsageSnapshotCiphertext>[0]['material'] | null {
+): Parameters<typeof openSealedProviderAccountUsageSnapshot>[0]['material'] | null {
   if (!credentials.encryption) return null;
   return credentials.encryption.type === 'legacy'
     ? { type: 'legacy', secret: credentials.encryption.secret }
@@ -186,12 +187,18 @@ async function openProviderAccountUsageSnapshotForHydration(input: Readonly<{
       { recordId: input.recordId },
     );
   }
-  let openedValue: unknown = null;
+  let openedSnapshot: ProviderAccountUsageSnapshotV1 | null = null;
   try {
-    openedValue = openProviderAccountUsageSnapshotCiphertext({
+    openedSnapshot = openSealedProviderAccountUsageSnapshot({
       material,
-      ciphertext: response.content.c,
-    })?.value;
+      sealed: {
+        format: 'account_scoped_v1',
+        ciphertext: response.content.c,
+        ...(response.content.subscription
+          ? { subscription: response.content.subscription }
+          : {}),
+      },
+    });
   } catch {
     throw new ConnectedServiceStoredContentUnavailableError(
       'provider_account_usage_snapshot',
@@ -199,7 +206,7 @@ async function openProviderAccountUsageSnapshotForHydration(input: Readonly<{
       { recordId: input.recordId },
     );
   }
-  if (!openedValue) {
+  if (!openedSnapshot) {
     throw new ConnectedServiceStoredContentUnavailableError(
       'provider_account_usage_snapshot',
       'stored_content_corrupt',
@@ -208,7 +215,7 @@ async function openProviderAccountUsageSnapshotForHydration(input: Readonly<{
   }
   return {
     snapshot: parseProviderAccountUsageSnapshotForRecordId({
-      value: openedValue,
+      value: openedSnapshot,
       recordId: input.recordId,
     }),
     sources: parseQualifiedUsageSources(response.sources),

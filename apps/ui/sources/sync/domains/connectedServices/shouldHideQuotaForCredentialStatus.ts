@@ -15,9 +15,8 @@ import {
  * which is correct for reauth-PROMPTING but wrong for usage display: an absent
  * or unknown status must not blank a healthy account's capacity avatar.
  *
- * Single owner reused by BOTH the `AccountBlock` outer quota gate AND the
- * `useConnectedServiceQuotaSnapshot` fetch-key derivation so the two choke
- * points can never disagree about whether to hide/fetch usage.
+ * Single owner reused by account usage presentation and the quota hooks'
+ * fetch-key derivation so display and reads agree about signed-out usage.
  */
 export function shouldHideQuotaForCredentialStatus(status: unknown): boolean {
     const parsed = ConnectedServiceCredentialHealthStatusV1Schema.safeParse(status);

@@ -3,7 +3,11 @@ import tweetnacl from 'tweetnacl';
 
 import { MachineRegistrationIdentitySchema } from './types';
 
-const publicKey = Buffer.from(new Uint8Array(tweetnacl.sign.publicKeyLength)).toString('base64url');
+// A real Ed25519 public key: MachineInstallationPublicKeySchema rejects small-order
+// points, so an all-zero placeholder is not a valid registration identity.
+const publicKey = Buffer.from(
+    tweetnacl.sign.keyPair.fromSeed(new Uint8Array(32).fill(7)).publicKey,
+).toString('base64url');
 const signature = Buffer.from(new Uint8Array(tweetnacl.sign.signatureLength)).toString('base64url');
 
 const validRegistrationIdentity = {

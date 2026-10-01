@@ -67,7 +67,7 @@ describe('VoiceUiSection orb row', () => {
     expect(setVoice).not.toHaveBeenCalled();
   });
 
-  it('places the orb row directly after auto-expand and before the scope dropdown', async () => {
+  it('places the orb row directly after auto-expand and before the scope choice', async () => {
     const { VoiceUiSection } = await import('./VoiceUiSection');
     const voice = {
       ...voiceSettingsDefaults,
@@ -81,11 +81,12 @@ describe('VoiceUiSection orb row', () => {
     }));
 
     expect(
-      screen.tree.root.findAllByType('Item' as any).map((item) => item.props.title),
+      screen.tree.root.findAllByType('Item' as any).map((item) => item.props.title).slice(0, 4),
     ).toEqual([
       t('settingsVoice.ui.activityFeedEnabled'),
       t('settingsVoice.ui.activityFeedAutoExpandOnStart'),
       t('settingsVoice.ui.orbEnabled'),
+      t('settingsVoice.ui.scopeTitle'),
     ]);
     expect(screen.findByProps({ testID: 'settings.voice.ui.orbEnabled' }).props.value).toBe(true);
     // "this device" has to be stated: a local setting among synced siblings is how a

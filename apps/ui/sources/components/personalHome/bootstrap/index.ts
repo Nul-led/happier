@@ -1,4 +1,5 @@
-export { PersonalHomeBootstrapGate } from './PersonalHomeBootstrapGate';
+export { PersonalHomeBootstrapGate, usePersonalHomeBootReadiness } from './PersonalHomeBootstrapGate';
+export type { PersonalHomeBootReadiness } from './PersonalHomeBootstrapGate';
 export { derivePersonalHomeBootstrapSnapshot } from './derivePersonalHomeBootstrapSnapshot';
 export { createPersonalHomeBootstrapFacts } from './personalHomeBootstrapFacts';
 // Runtime purpose and fixed environment semantics are owned by cli-common. Keep UI imports on
@@ -14,5 +15,6 @@ export type * from './personalHomeBootstrapTypes';
 export type {
     PersonalHomeBootstrapController,
     PersonalHomeBootstrapControllerOptions,
+    PersonalHomeBootstrapOperationContext,
     PersonalHomeBootstrapOperationRunner,
 } from './usePersonalHomeBootstrapController';

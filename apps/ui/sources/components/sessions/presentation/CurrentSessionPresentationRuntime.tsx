@@ -11,6 +11,7 @@ import {
 } from '@happier-dev/protocol/sessions';
 
 import { randomUUID } from '@/platform/randomUUID';
+import { apiSocket } from '@/sync/api/session/apiSocket';
 import { storage } from '@/sync/domains/state/storage';
 import {
     getFocusedSessionAddress,
@@ -132,7 +133,11 @@ export const CurrentSessionPresentationRuntime = React.memo(function CurrentSess
             // rebound. Include that canonical state in the incumbent bind trigger;
             // focus/draft stability alone must not strand every later command.
             const observedHostNonce = observed.success ? observed.data.hostNonce : '';
-            const signature = `${sessionAddressKey(address)}:${scopeLifetime.scope.accountId}:${focused ? 1 : 0}:${draftRevision}:${observedHostNonce}`;
+            const signatureBase = `${sessionAddressKey(address)}:${scopeLifetime.scope.accountId}:${focused ? 1 : 0}:${draftRevision}`;
+            // A shared-only socket/list row can temporarily omit the owner
+            // AgentState between hydrated echoes. That absence is not a new
+            // daemon; keep the accepted host until an actual different nonce arrives.
+            const signature = `${signatureBase}:${observedHostNonce || boundHostNonce.get(bindingKey) || ''}`;
 
             if (bindSignatures.get(bindingKey) !== signature) {
                 const result = CurrentSessionPresentationBindResultV1Schema.parse(
@@ -170,7 +175,7 @@ export const CurrentSessionPresentationRuntime = React.memo(function CurrentSess
                 }
                 boundHostNonce.set(bindingKey, result.hostNonce);
                 boundBindings.set(bindingKey, acceptedBinding);
-                bindSignatures.set(bindingKey, signature);
+                bindSignatures.set(bindingKey, `${signatureBase}:${result.hostNonce}`);
             }
 
             const latest = storage.getState().sessions[sessionId];
@@ -294,11 +299,24 @@ export const CurrentSessionPresentationRuntime = React.memo(function CurrentSess
         };
 
         syncAll();
+        let previousSocketStatus: 'disconnected' | 'connecting' | 'connected' | 'error' | null = null;
+        const unsubscribeSocketStatus = apiSocket.onStatusChange((status) => {
+            const previous = previousSocketStatus;
+            previousSocketStatus = status;
+            if (status === 'connected' && previous !== null && previous !== 'connected') {
+                // Home retires this exact socket origin on disconnect. A new
+                // connection is a real binding change even if focus and draft
+                // stayed fixed while the UI was offline or backgrounded.
+                bindSignatures.clear();
+                syncAll();
+            }
+        });
         const unsubscribeStorage = storage.subscribe(syncAll);
         const unsubscribeVisibility = subscribeSessionSurfaceVisibility(syncAll);
         const unsubscribeComposer = subscribeSessionComposerPresentationTargets(syncAll);
         return () => {
             disposed = true;
+            unsubscribeSocketStatus();
             unsubscribeStorage();
             unsubscribeVisibility();
             unsubscribeComposer();

@@ -161,6 +161,33 @@ describe('voiceAgentRunMetadata', () => {
     });
   });
 
+  it('keeps the original timestamp when the same voice run is published again', async () => {
+    stateRef.current.sessions.sys_voice.metadata.voiceAgentRunV1 = {
+      v: 1,
+      runId: 'run_same',
+      backendId: 'claude',
+      backendTarget: claudeTarget,
+      resumeHandle: null,
+      updatedAtMs: 123,
+      transcriptContractVersion: 2,
+    };
+    patchSessionMetadataWithRetry.mockImplementation(async (sessionId: string, updater: (m: any) => any) => {
+      const metadata = stateRef.current.sessions[sessionId].metadata;
+      stateRef.current.sessions[sessionId].metadata = updater(metadata);
+    });
+
+    const { writeVoiceAgentRunMetadataToSession } = await import('./voiceAgentRunMetadata');
+    await writeVoiceAgentRunMetadataToSession({
+      sessionId: 'sys_voice',
+      runId: 'run_same',
+      backendTarget: claudeTarget,
+      resumeHandle: null,
+      updatedAtMs: 999,
+    });
+
+    expect(stateRef.current.sessions.sys_voice.metadata.voiceAgentRunV1.updatedAtMs).toBe(123);
+  });
+
   it('never persists a streamId field, even when legacy metadata carried one', async () => {
     stateRef.current.sessions.sys_voice.metadata.voiceAgentRunV1 = {
       v: 1,
@@ -201,7 +228,7 @@ describe('voiceAgentRunMetadata', () => {
     expect('streamId' in (stateRef.current.sessions.sys_voice.metadata.voiceAgentRunV1 as any)).toBe(false);
   });
 
-	  it('clears voiceAgentRunV1 by setting it to null', async () => {
+	  it('clears voiceAgentRunV1 by removing the optional owner field', async () => {
 	    stateRef.current.sessions.sys_voice.metadata.voiceAgentRunV1 = {
 	      v: 1,
 	      runId: 'run_1',
@@ -229,7 +256,7 @@ describe('voiceAgentRunMetadata', () => {
     const { clearVoiceAgentRunMetadataFromSession } = await import('./voiceAgentRunMetadata');
     await clearVoiceAgentRunMetadataFromSession({ sessionId: 'sys_voice' });
 
-    expect(stateRef.current.sessions.sys_voice.metadata.voiceAgentRunV1).toBeNull();
+    expect(stateRef.current.sessions.sys_voice.metadata).not.toHaveProperty('voiceAgentRunV1');
   });
 
   it('reads and writes voiceAgentRunV1 for any session metadata, not only carrier sessions', async () => {

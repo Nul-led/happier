@@ -69,7 +69,7 @@ vi.mock('@/api/session/external/takeover/loadLinkedExternalSession', () => ({
   loadLinkedExternalSession: (...args: unknown[]) => loadLinkedExternalSessionMock(...args),
 }));
 vi.mock('./providerOpsResolution', () => ({
-  resolveGenerationBoundExternalSessionFollowSurface: (...args: unknown[]) => resolveSurfaceMock(...args),
+  resolveOccurrenceBoundExternalSessionFollowSurface: (...args: unknown[]) => resolveSurfaceMock(...args),
 }));
 vi.mock('@/api/session/external/import/importExternalSessionTranscript', () => ({
   ExternalSessionHistoricalImportRequiredItemError:
@@ -240,8 +240,10 @@ async function runRealContributionMaterialization(input: Readonly<{
     },
   });
   resolveSurfaceMock.mockResolvedValue({
+    sourceCustody: { kind: 'development', registeredRootId: 'contribution-1' },
+    occurrenceId: 'plugin-occurrence-1',
     resource: {
-      pluginGeneration: 'contribution-1',
+      pluginOccurrenceId: 'contribution-1',
       retirementSignal: new AbortController().signal,
     },
     providerOps: {
@@ -339,7 +341,7 @@ async function runRealContributionMaterialization(input: Readonly<{
         qualifiedIdentity: input.qualifiedIdentity,
         linkGeneration: 'link-1',
         sourceGeneration: 'source-1',
-        contributionGeneration: 'contribution-1',
+        sourceCustody: { kind: 'development', registeredRootId: 'contribution-1' },
       },
       plan: 'materialize',
       targetStorageMode: 'external-linked',
@@ -492,8 +494,10 @@ describe('default external session materialize capture', () => {
       return result.value;
     });
     resolveSurfaceMock.mockResolvedValue({
+      sourceCustody: { kind: 'development', registeredRootId: 'contribution-1' },
+      occurrenceId: 'plugin-occurrence-1',
       resource: {
-        pluginGeneration: 'contribution-1',
+        pluginOccurrenceId: 'contribution-1',
         retirementSignal: new AbortController().signal,
       },
       providerOps: {
@@ -594,7 +598,7 @@ describe('default external session materialize capture', () => {
           qualifiedIdentity: claudeQualifiedIdentity,
           linkGeneration: 'link-1',
           sourceGeneration: 'source-1',
-          contributionGeneration: 'contribution-1',
+          sourceCustody: { kind: 'development', registeredRootId: 'contribution-1' },
         },
         plan: 'materialize',
         targetStorageMode: 'external-linked',
@@ -729,8 +733,10 @@ describe('default external session materialize capture', () => {
       return result.value;
     });
     resolveSurfaceMock.mockResolvedValue({
+      sourceCustody: { kind: 'development', registeredRootId: 'contribution-1' },
+      occurrenceId: 'plugin-occurrence-1',
       resource: {
-        pluginGeneration: 'contribution-1',
+        pluginOccurrenceId: 'contribution-1',
         retirementSignal: new AbortController().signal,
       },
       providerOps: {
@@ -833,7 +839,7 @@ describe('default external session materialize capture', () => {
           qualifiedIdentity: piQualifiedIdentity,
           linkGeneration: 'link-1',
           sourceGeneration: 'source-1',
-          contributionGeneration: 'contribution-1',
+          sourceCustody: { kind: 'development', registeredRootId: 'contribution-1' },
         },
         plan: 'materialize',
         targetStorageMode: 'external-linked',
@@ -972,8 +978,10 @@ describe('default external session materialize capture', () => {
       return result.value;
     });
     resolveSurfaceMock.mockResolvedValue({
+      sourceCustody: { kind: 'development', registeredRootId: 'contribution-1' },
+      occurrenceId: 'plugin-occurrence-1',
       resource: {
-        pluginGeneration: 'contribution-1',
+        pluginOccurrenceId: 'contribution-1',
         retirementSignal: new AbortController().signal,
       },
       providerOps: {
@@ -1074,7 +1082,7 @@ describe('default external session materialize capture', () => {
           qualifiedIdentity: ohMyPiQualifiedIdentity,
           linkGeneration: 'link-1',
           sourceGeneration: 'source-1',
-          contributionGeneration: 'contribution-1',
+          sourceCustody: { kind: 'development', registeredRootId: 'contribution-1' },
         },
         plan: 'materialize',
         targetStorageMode: 'external-linked',
@@ -1519,8 +1527,10 @@ describe('default external session materialize capture', () => {
         };
     });
     resolveSurfaceMock.mockResolvedValue({
+      sourceCustody: { kind: 'development', registeredRootId: 'contribution-1' },
+      occurrenceId: 'plugin-occurrence-1',
       resource: {
-        pluginGeneration: 'contribution-1',
+        pluginOccurrenceId: 'contribution-1',
         retirementSignal: new AbortController().signal,
       },
       providerOps: {
@@ -1606,7 +1616,7 @@ describe('default external session materialize capture', () => {
           qualifiedIdentity,
           linkGeneration: 'link-1',
           sourceGeneration: 'source-1',
-          contributionGeneration: 'contribution-1',
+          sourceCustody: { kind: 'development', registeredRootId: 'contribution-1' },
         },
         plan: 'materialize',
         targetStorageMode: 'external-linked',
@@ -1699,8 +1709,10 @@ describe('default external session materialize capture', () => {
       return { outcome: 'already_current' as const };
     });
     resolveSurfaceMock.mockResolvedValue({
+      sourceCustody: { kind: 'development', registeredRootId: 'contribution-1' },
+      occurrenceId: 'plugin-occurrence-1',
       resource: {
-        pluginGeneration: 'contribution-1',
+        pluginOccurrenceId: 'contribution-1',
         retirementSignal: new AbortController().signal,
       },
       providerOps: {
@@ -1792,7 +1804,7 @@ describe('default external session materialize capture', () => {
           qualifiedIdentity,
           linkGeneration: 'link-1',
           sourceGeneration: 'source-1',
-          contributionGeneration: 'contribution-1',
+          sourceCustody: { kind: 'development', registeredRootId: 'contribution-1' },
         },
         plan: 'materialize',
         targetStorageMode: 'external-linked',
@@ -1896,8 +1908,10 @@ describe('default external session materialize capture', () => {
       truncated: false,
     }));
     resolveSurfaceMock.mockResolvedValue({
+      sourceCustody: { kind: 'development', registeredRootId: 'contribution-1' },
+      occurrenceId: 'plugin-occurrence-1',
       resource: {
-        pluginGeneration: 'contribution-1',
+        pluginOccurrenceId: 'contribution-1',
         retirementSignal: new AbortController().signal,
       },
       providerOps: {
@@ -1993,7 +2007,7 @@ describe('default external session materialize capture', () => {
           qualifiedIdentity,
           linkGeneration: 'link-1',
           sourceGeneration: 'source-1',
-          contributionGeneration: 'contribution-1',
+          sourceCustody: { kind: 'development', registeredRootId: 'contribution-1' },
         },
         plan: 'materialize',
         targetStorageMode: 'external-linked',
@@ -2067,8 +2081,10 @@ describe('default external session materialize capture', () => {
       })
       .mockResolvedValue({ outcome: 'already_current' });
     resolveSurfaceMock.mockResolvedValue({
+      sourceCustody: { kind: 'development', registeredRootId: 'contribution-1' },
+      occurrenceId: 'plugin-occurrence-1',
       resource: {
-        pluginGeneration: 'contribution-1',
+        pluginOccurrenceId: 'contribution-1',
         retirementSignal: new AbortController().signal,
       },
       providerOps: {
@@ -2104,7 +2120,7 @@ describe('default external session materialize capture', () => {
           qualifiedIdentity,
           linkGeneration: 'link-1',
           sourceGeneration: 'source-1',
-          contributionGeneration: 'contribution-1',
+          sourceCustody: { kind: 'development', registeredRootId: 'contribution-1' },
         },
         plan: 'materialize',
         targetStorageMode: 'external-linked',
@@ -2219,8 +2235,10 @@ describe('default external session materialize capture', () => {
       transcriptMediaReadRoots,
     }));
     resolveSurfaceMock.mockResolvedValue({
+      sourceCustody: { kind: 'development', registeredRootId: 'contribution-1' },
+      occurrenceId: 'plugin-occurrence-1',
       resource: {
-        pluginGeneration: 'contribution-1',
+        pluginOccurrenceId: 'contribution-1',
         retirementSignal: new AbortController().signal,
       },
       providerOps: {
@@ -2311,7 +2329,7 @@ describe('default external session materialize capture', () => {
           qualifiedIdentity,
           linkGeneration: 'link-1',
           sourceGeneration: 'source-1',
-          contributionGeneration: 'contribution-1',
+          sourceCustody: { kind: 'development', registeredRootId: 'contribution-1' },
         },
         plan: 'materialize',
         targetStorageMode: 'external-linked',
@@ -2379,7 +2397,7 @@ describe('default external session materialize capture', () => {
           qualifiedIdentity,
           linkGeneration: 'link-1',
           sourceGeneration: 'source-1',
-          contributionGeneration: 'contribution-1',
+          sourceCustody: { kind: 'development', registeredRootId: 'contribution-1' },
         },
         plan: 'materialize',
         targetStorageMode: 'external-linked',
@@ -2427,7 +2445,7 @@ describe('default external session materialize capture', () => {
           qualifiedIdentity,
           linkGeneration: 'link-1',
           sourceGeneration: 'source-1',
-          contributionGeneration: 'contribution-1',
+          sourceCustody: { kind: 'development', registeredRootId: 'contribution-1' },
         },
         plan: 'materialize',
         targetStorageMode: 'external-linked',
@@ -2475,7 +2493,7 @@ describe('default external session materialize capture', () => {
           qualifiedIdentity,
           linkGeneration: 'link-1',
           sourceGeneration: 'source-1',
-          contributionGeneration: 'contribution-1',
+          sourceCustody: { kind: 'development', registeredRootId: 'contribution-1' },
         },
         plan: 'materialize',
         targetStorageMode: 'external-linked',
@@ -2568,8 +2586,10 @@ describe('default external session materialize capture', () => {
           : { outcome: 'already_current' as const }
       ));
       resolveSurfaceMock.mockResolvedValue({
+        sourceCustody: { kind: 'development', registeredRootId: 'contribution-1' },
+        occurrenceId: 'plugin-occurrence-1',
         resource: {
-          pluginGeneration: 'contribution-1',
+          pluginOccurrenceId: 'contribution-1',
           retirementSignal: new AbortController().signal,
         },
         providerOps: {
@@ -2635,7 +2655,7 @@ describe('default external session materialize capture', () => {
             qualifiedIdentity,
             linkGeneration: 'link-1',
             sourceGeneration: 'source-1',
-            contributionGeneration: 'contribution-1',
+            sourceCustody: { kind: 'development', registeredRootId: 'contribution-1' },
           },
           plan: 'materialize',
           targetStorageMode: 'external-linked',
@@ -2686,7 +2706,7 @@ describe('default external session materialize capture', () => {
             qualifiedIdentity,
             linkGeneration: 'link-1',
             sourceGeneration: 'source-1',
-            contributionGeneration: 'contribution-1',
+            sourceCustody: { kind: 'development', registeredRootId: 'contribution-1' },
           },
           plan: 'materialize',
           targetStorageMode: 'external-linked',

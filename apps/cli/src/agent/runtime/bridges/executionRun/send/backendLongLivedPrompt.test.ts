@@ -10,6 +10,7 @@ import { sendBackendLongLivedRun } from '@/agent/runtime/bridges/executionRun/se
 import type { ExecutionRunBackendController } from '@/agent/executionRuns/controllers/types';
 import { failureSignal } from '@/agent/executionRuns/controllers/failureSignal';
 import { createExecutionRunCodedError } from '@/agent/runtime/bridges/executionRun/errors';
+import { createExactTurnUsageAccumulator } from '@/usage/exactTurnUsage';
 
 function createResumableBackendHarness(): Readonly<{
   runtime: ExecutionRunHostRuntime;
@@ -62,6 +63,48 @@ function createLongLivedResumableRun(overrides?: Partial<ExecutionRunState>): Ex
 }
 
 describe('sendBackendLongLivedRun (resume)', () => {
+  it.each(['initial', 'retained'])('projects native acceptance of a detached %s Workflow input before acknowledging send', async (inputKind) => {
+    type RuntimeEvent = Parameters<NonNullable<ExecutionRunHostRuntime['subscribeRuntimeEvents']>>[0] extends (event: infer E) => void ? E : never;
+    const listeners = new Set<(event: RuntimeEvent) => void>();
+    const observations: unknown[] = [];
+    const sink = { commit: async (observation: unknown) => { observations.push(observation); } };
+    const { runtime: baseRuntime } = createTestExecutionRunHostRuntime({
+      deliverInput: async (_id, _input, meta) => {
+        for (const listener of listeners) listener({ kind: 'input-accepted', sessionId: 'native', sequence: 1,
+          emittedAtMs: 2_000, inputIds: [meta!.localId!], delivery: { kind: 'newTurn', turnId: 'native-turn' } });
+        return { status: 'admitted' };
+      },
+      waitForTurnCompletion: async () => await new Promise<void>(() => {}),
+    });
+    const runtime: ExecutionRunHostRuntime = { ...baseRuntime,
+      subscribeRuntimeEvents: (listener) => { listeners.add(listener); return () => { listeners.delete(listener); }; } };
+    const run = createLongLivedResumableRun({ sessionId: null, status: 'running' });
+    const localInputId = `workflow-${inputKind}`;
+    const controller: ExecutionRunBackendController = {
+      kind: 'backend', controllerOccurrenceId: 'detached-acceptance', backend: runtime, backendSupportsResume: true,
+      runtimeId: 'native', buffer: '', sidechainStreamBuffer: '', sidechainStreamKey: '', streamWriter: null,
+      cancelled: false, turnCount: 0, turnEpoch: 0, turnInFlight: false, turnCancelReason: null, turnCancelEpoch: null,
+      admittedLiveInterventions: [], admittedLiveInterventionsSignal: null, lastMarkerWriteAtMs: 0,
+      pendingHostBarrier: Promise.resolve(), terminalPromise: Promise.resolve(), resolveTerminal: () => {},
+      ...(inputKind === 'initial' ? { workflowObservation: { localInputId, sink, usage: createExactTurnUsageAccumulator() } } : {}),
+    };
+    await expect(sendBackendLongLivedRun({ runId: run.runId,
+      params: { message: 'Generate', localInputId, ...(inputKind === 'retained' ? { workflowObservationSink: sink } : {}) },
+      runs: new Map([[run.runId, run]]), controllers: new Map([[run.runId, controller]]), budgetRegistry: null,
+      createRuntime: () => runtime, maxTurns: null, getNowMs: () => 9_000, finishRun: async () => {},
+      sendAcp: async () => {}, parentProvider: 'codex', streamedTranscriptSession: null, writeActivityMarker: async () => {},
+    })).resolves.toEqual({ ok: true });
+    expect(observations).toEqual([{ kind: 'input_accepted', runId: run.runId, localInputId, acceptedAtMs: 2_000 }]);
+    // A prior turn's listener may still be settling when the next binding appears.
+    controller.workflowObservation = { localInputId: 'next-input', sink, usage: createExactTurnUsageAccumulator() };
+    for (const listener of listeners) listener({ kind: 'input-accepted', sessionId: 'native', sequence: 2,
+      emittedAtMs: 3_000, inputIds: ['next-input'], delivery: { kind: 'newTurn', turnId: 'next-turn' } });
+    await controller.pendingHostBarrier;
+    expect(observations).toHaveLength(1);
+    await runtime.dispose();
+    expect(listeners.size).toBe(0);
+  });
+
   it('preserves a typed durable interaction failure in the Run terminal witness', async () => {
     const capacityError = Object.assign(
       createExecutionRunCodedError(

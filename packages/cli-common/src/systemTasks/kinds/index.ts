@@ -53,6 +53,7 @@ export {
 } from './relayRuntimeKinds.js';
 export {
   createDaemonServiceRestartTaskKind,
+  createDaemonServiceAutostartTaskKind,
   createDaemonServiceStartTaskKind,
   createDaemonServiceStatusTaskKind,
   createDaemonServiceStopTaskKind,
@@ -63,9 +64,21 @@ export {
   type DaemonServiceTaskResult,
 } from './daemonServiceKinds.js';
 export {
+  readDaemonServiceInventory,
+  type ThisComputerServiceRow,
+  type DaemonServiceServerEntry,
+  type DaemonServiceServersKindDeps,
+  type DaemonServiceServersResult,
+} from './daemonServiceServersKind.js';
+export {
+  createDaemonServiceRelayDisconnectTaskKind,
+  type DaemonServiceRelayDisconnectDeps,
+} from './daemonServiceRelayDisconnectKind.js';
+export {
   createRemoteSshBootstrapMachineTaskKind,
   parseRemoteBootstrapMachineParams,
   redactRemoteBootstrapPayload,
+  SERVICE_RECONCILIATION_DECLINED_MESSAGE,
   type RemoteBootstrapMachineParams,
   type RemoteHostTrustResolution,
   type RemoteSshBootstrapMachineDeps,
@@ -75,6 +88,7 @@ export {
   createRemoteSshManageHostTaskKind,
   redactRemoteSshManageHostPayload,
   parseRemotePersonalHomeApprovalInput,
+  releaseChannelSwitchDeclinedMessage,
   type RemotePersonalHomeApprovalInput,
   type RemoteSshManageHostAction,
   type RemoteSshManageHostDeps,

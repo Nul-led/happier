@@ -99,6 +99,35 @@ describe('ServerScopedMachineSelector', () => {
         }));
     });
 
+    it('names rows through the machine naming owner: same names told apart, unnamed never the id', async () => {
+        const { ServerScopedMachineSelector } = await import('./ServerScopedMachineSelector');
+        const row = (id: string, metadata: Record<string, string>) => ({
+            id, serverId: 'server-b', serverName: 'Server B', active: true, metadata,
+        }) as unknown as ServerScopedMachine;
+        capturedItemProps.length = 0;
+
+        await renderScreen(React.createElement(ServerScopedMachineSelector, {
+            groups: [{
+                serverId: 'server-b',
+                serverName: 'Server B',
+                loading: false,
+                signedOut: false,
+                machines: [
+                    row('machine-a', { displayName: 'Build', host: 'mac.local' }),
+                    row('machine-b', { displayName: 'Build', host: 'linux.local' }),
+                    row('f98b860d-63e0', {}),
+                ],
+            }],
+            selectedMachineId: null,
+            selectedServerId: null,
+            onSelect: vi.fn(),
+        }));
+
+        const titles = capturedItemProps.map((props) => props.title);
+        expect(titles).toEqual(expect.arrayContaining(['Build · mac.local', 'Build · linux.local', 'machine.unnamedMachine']));
+        expect(capturedItemProps.map((props) => `${String(props.title)} ${String(props.subtitle)}`).join('\n')).not.toContain('f98b860d');
+    });
+
     it('keeps a structurally ready machine selectable without synthetic spawn readiness', async () => {
         const { ServerScopedMachineSelector } = await import('./ServerScopedMachineSelector');
         const onSelect = vi.fn();

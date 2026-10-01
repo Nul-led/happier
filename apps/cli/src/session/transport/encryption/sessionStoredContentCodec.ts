@@ -1,10 +1,10 @@
 import { createHmac } from 'node:crypto';
 
 import {
-  resolveStoredContentKindForSessionEncryptionMode,
   stringifySerializedJsonValue,
   type StrictSessionStoredMessageContentEnvelope,
 } from '@happier-dev/protocol';
+import { resolveSessionStoredContentEnvelope } from '@happier-dev/sync-client';
 
 import {
   decodeBase64,
@@ -36,13 +36,13 @@ export class SessionStoredContentError extends Error {
 }
 
 /**
- * Seals one already-validated domain payload into the canonical Session
- * stored-content envelope. Domain codecs remain responsible for the inner
- * payload; this owner alone chooses Plain versus E2EE outer storage.
+ * Synchronous Node sealing adapter for the canonical Session envelope.
+ * Domain codecs validate the payload; the established mode and deterministic
+ * nonce namespace are preserved at this platform boundary.
  */
 export function sealSessionStoredContent(
   params: SessionStoredContentCryptoContext & Readonly<{
-    payload: unknown;
+    payload: Extract<StrictSessionStoredMessageContentEnvelope, { t: 'plain' }>['v'];
     idempotencyKey?: string;
   }>,
 ): StrictSessionStoredMessageContentEnvelope {
@@ -62,13 +62,15 @@ export function sealSessionStoredContent(
 /** Opens a canonical envelope only under the Session's established mode. */
 export function openSessionStoredContent(
   params: SessionStoredContentCryptoContext & Readonly<{
-    content: StrictSessionStoredMessageContentEnvelope;
+    content: unknown;
   }>,
 ): unknown {
-  if (params.content.t !== resolveStoredContentKindForSessionEncryptionMode(params.mode)) {
+  const resolved = resolveSessionStoredContentEnvelope(params, params.content);
+  if (resolved.status === 'mode_mismatch') {
     throw new SessionStoredContentError('session_content_mode_mismatch');
   }
-  if (params.content.t === 'plain') return params.content.v;
+  if (resolved.status !== 'ready') throw new SessionStoredContentError('session_content_unavailable');
+  if (resolved.content.t === 'plain') return resolved.content.v;
   if (params.mode !== 'e2ee') {
     throw new SessionStoredContentError('session_content_mode_mismatch');
   }
@@ -76,7 +78,7 @@ export function openSessionStoredContent(
     const result = decryptResult(
       params.ctx.encryptionKey,
       params.ctx.encryptionVariant,
-      decodeBase64(params.content.c, 'base64'),
+      decodeBase64(resolved.content.c, 'base64'),
     );
     if (result.status === 'authenticated') return result.value;
   } catch {

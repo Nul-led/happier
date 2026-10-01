@@ -1,16 +1,17 @@
+import { useSessionTranscriptSource } from '@/components/sessions/transcript/source/SessionTranscriptSourceContext';
 import * as React from 'react';
 import { View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
-import type { ToolCallMessage } from '@/sync/domains/messages/messageTypes';
-import type { PersistedSessionMessagePinV1 } from '@/sync/domains/messages/pins/sessionMessagePins';
-import type { Metadata } from '@/sync/domains/state/storageTypes';
+import type { ToolCallMessage } from "@happier-dev/session-core/messages";
+import type { PersistedSessionMessagePinV1 } from "@happier-dev/session-core/pins";
+import type { Metadata } from '@happier-dev/session-core/state';
 import type { OpenApprovalArtifactForSession } from '@/sync/domains/artifacts/approvalArtifacts';
 
 import { TranscriptEnterWrapper } from '@/components/sessions/transcript/motion/TranscriptEnterWrapper';
 import { TranscriptCollapsible } from '@/components/sessions/transcript/motion/TranscriptCollapsible';
 import type { TranscriptInteraction } from '@/utils/sessions/deriveTranscriptInteraction';
-import { resolveMessageRouteIdForDisplay } from '@/sync/domains/messages/messageRouteIds';
+import { resolveMessageRouteIdForDisplay } from "@happier-dev/session-core/messages";
 import { useEnsureSidechainsLoaded } from '@/hooks/session/useEnsureSidechainsLoaded';
 import { resolveTranscriptToolCallsCollapsedPreviewCount } from '@/sync/domains/settings/transcriptToolCallsCollapsedPreviewCount';
 import {
@@ -53,7 +54,7 @@ type ToolCallsGroupViewWithSessionCommonProps = ToolCallsGroupViewProps & Readon
 }>;
 
 export const ToolCallsGroupView = React.memo((props: ToolCallsGroupViewProps) => {
-    const transcriptSessionCommon = useTranscriptSessionCommon(props.sessionId);
+    const transcriptSessionCommon = useTranscriptSessionCommon();
     const forkCommon = React.useMemo(() => transcriptSessionCommon.fork, [
         transcriptSessionCommon.fork.executionRunsEnabled,
         transcriptSessionCommon.fork.sessionForkSupportSource,
@@ -95,6 +96,7 @@ export const ToolCallsGroupView = React.memo((props: ToolCallsGroupViewProps) =>
 });
 
 export const ToolCallsGroupViewWithSessionCommon = React.memo((props: ToolCallsGroupViewWithSessionCommonProps) => {
+    const transcriptSource = useSessionTranscriptSource();
     const { theme } = useUnistyles();
     const {
         toolViewTimelineChromeMode,
@@ -137,19 +139,19 @@ export const ToolCallsGroupViewWithSessionCommon = React.memo((props: ToolCallsG
     }, [normalizedChromeMode, previewMessages]);
 
     useEnsureSidechainsLoaded({
-        enabled: !expanded && previewSidechainIds.length > 0 && props.interaction.disableToolNavigation !== true,
+        enabled: !expanded && previewSidechainIds.length > 0 && transcriptSource.loadSidechain !== null,
         sessionId: props.sessionId,
+        loadSidechain: transcriptSource.loadSidechain,
         sidechainIds: previewSidechainIds,
     });
 
     const resolveToolRouteMessageId = React.useCallback((message: ToolCallMessage) => {
-        if (props.interaction.disableToolNavigation) return undefined;
         return resolveMessageRouteIdForDisplay({
             message,
             messagesById,
             reducerState,
         });
-    }, [messagesById, props.interaction.disableToolNavigation, reducerState]);
+    }, [messagesById, reducerState]);
     const renderToolPinAction = React.useCallback((message: ToolCallMessage, nestedMessageId: string | undefined) => (
         resolveToolRowPinAction({
             sessionId: props.sessionId,

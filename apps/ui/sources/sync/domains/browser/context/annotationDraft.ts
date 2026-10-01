@@ -1,5 +1,6 @@
 import {
     BrowserContextItemV1Schema,
+    stripBrowserDiagnosticUrlValues,
     type BrowserAnnotationStrokeV1,
     type BrowserContextItemV1,
     type BrowserDiagnosticFidelityV1,
@@ -447,6 +448,8 @@ export function commitBrowserAnnotationDraft(
     const origin = unionViewportRects(rects) ?? { x: 0, y: 0, width: input.media.width, height: input.media.height };
 
     const comment = normalizeComment(draft.comment);
+    const pageUrl = input.pageUrl?.trim();
+    const redactedPageUrl = pageUrl ? stripBrowserDiagnosticUrlValues(pageUrl) : undefined;
     const items: BrowserContextItemV1[] = [];
     marks.forEach((mark, index) => {
         const contextId = `browser_context_${draft.annotationId}_${index}`;
@@ -490,7 +493,7 @@ export function commitBrowserAnnotationDraft(
             target,
             ...(comment ? { comment } : {}),
             ...(stroke ? { stroke } : {}),
-            ...(input.pageUrl ? { pageUrl: input.pageUrl } : {}),
+            ...(redactedPageUrl ? { pageUrl: redactedPageUrl } : {}),
             ...(input.pageTitle ? { pageTitle: input.pageTitle } : {}),
         });
         items.push(item);

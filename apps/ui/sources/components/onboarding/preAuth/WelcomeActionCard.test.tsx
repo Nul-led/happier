@@ -54,6 +54,31 @@ describe('WelcomeActionCard', () => {
         expect(card()).toMatchObject({ transform: [{ scale: 1 }] });
     });
 
+    it('keeps an unavailable card explaining itself with its accessory as the only control', async () => {
+        const onPress = vi.fn();
+        const onRetry = vi.fn();
+        const { WelcomeActionCard } = await import('./WelcomeActionCard');
+        const screen = await renderScreen(
+            <WelcomeActionCard
+                testID="service"
+                title="Continue with Acme"
+                subtitle="Acme is unavailable right now."
+                iconName="sign-in"
+                unavailable={{ accessory: <WelcomeActionCard testID="service-retry" title="Retry" onPress={onRetry} escape /> }}
+                onPress={onPress}
+            />,
+        );
+
+        // Not a button: a disabled card nested around a live Retry would be one control announcing two.
+        const cardNodes = screen.findAll((node) => node.props.testID === 'service');
+        expect(cardNodes.length).toBeGreaterThan(0);
+        expect(cardNodes.some((node) => node.props.accessibilityRole === 'button')).toBe(false);
+        expect(screen.findByTestId('service-subtitle')?.props.children).toBe('Acme is unavailable right now.');
+        await screen.pressByTestIdAsync('service-retry');
+        expect(onRetry).toHaveBeenCalledOnce();
+        expect(onPress).not.toHaveBeenCalled();
+    });
+
     it("renders a provider's Home-projected connect colour behind its mark and ignores a value that is not a colour", async () => {
         // teams-lane-03/01 §10.2: a client renders the Home's projected
         // connect-button colour and never discards it for a dynamic provider.

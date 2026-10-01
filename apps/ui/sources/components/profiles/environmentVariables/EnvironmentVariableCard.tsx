@@ -10,6 +10,7 @@ import { t } from '@/text';
 import type { EnvPreviewSecretsPolicy, PreviewEnvValue } from '@/sync/ops';
 import { Text, TextInput } from '@/components/ui/text/Text';
 import { Icon } from '@/components/ui/icons/Icon';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 
 export interface EnvironmentVariableCardProps {
@@ -272,7 +273,7 @@ export function EnvironmentVariableCard({
     ) : (Boolean(effectiveSourceRequirement?.useSecretVault) ? (
         <Pressable
             onPress={() => onPickDefaultSecretForSourceVar?.(requirementVarName)}
-            style={({ pressed }) => ({ opacity: pressed ? 0.85 : 1 })}
+            style={({ pressed }) => ({ opacity: pressed ? motionTokens.press.opacitySubtle : 1 })}
         >
             <View style={styles.valueRowContent}>
                 <View style={styles.vaultRow}>
@@ -428,7 +429,7 @@ export function EnvironmentVariableCard({
                             <Pressable
                                 onPress={() => onUpdateSecretOverride?.(index, undefined)}
                                 hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                                style={({ pressed }) => ({ opacity: pressed ? 0.7 : 1 })}
+                                style={({ pressed }) => ({ opacity: pressed ? motionTokens.press.opacity : 1 })}
                             >
                                 <Text style={styles.resetToAutoText}>
                                     {t('profiles.environmentVariables.card.secretToggleResetToAuto')}
@@ -538,18 +539,6 @@ const stylesheet = StyleSheet.create((theme) => ({
         lineHeight: Platform.select({ ios: 22, default: 24 }),
         letterSpacing: Platform.select({ ios: -0.41, default: 0.15 }),
         color: theme.colors.input.text,
-        ...(Platform.select({
-            web: {
-                outline: 'none',
-                outlineStyle: 'none',
-                outlineWidth: 0,
-                outlineColor: 'transparent',
-                boxShadow: 'none',
-                WebkitBoxShadow: 'none',
-                WebkitAppearance: 'none',
-            },
-            default: {},
-        }) as object),
     },
     sectionContent: {
         marginTop: 4,
@@ -578,18 +567,6 @@ const stylesheet = StyleSheet.create((theme) => ({
         letterSpacing: Platform.select({ ios: -0.41, default: 0.15 }),
         color: theme.colors.input.text,
         marginBottom: 2,
-        ...(Platform.select({
-            web: {
-                outline: 'none',
-                outlineStyle: 'none',
-                outlineWidth: 0,
-                outlineColor: 'transparent',
-                boxShadow: 'none',
-                WebkitBoxShadow: 'none',
-                WebkitAppearance: 'none',
-            },
-            default: {},
-        }) as object),
     },
     valueRowContent: {
         marginTop: 8,

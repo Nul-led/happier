@@ -14,9 +14,6 @@ import {
 import {
     launchPluginSurfaceAction,
 } from '@/components/plugins/surfaces/launchPluginSurfaceAction';
-import {
-    createPluginActionCurrentIntentHandler,
-} from '@/components/plugins/surfaces/pluginSurfaceFeedback';
 
 import {
     canUsePluginBrowserProjectionEntry,
@@ -71,7 +68,6 @@ function normalizeMachineId(value: string | null | undefined): string | null {
  */
 export async function executePluginBrowserAction(params: Readonly<{
     action: PluginBrowserActionProjection | null | undefined;
-    generation: number | null;
     machineId: string | null | undefined;
     serverId?: string | null;
     sessionId?: string | null;
@@ -90,7 +86,6 @@ export async function executePluginBrowserAction(params: Readonly<{
     const machineId = normalizeMachineId(params.machineId);
     if (
         !params.action
-        || params.generation === null
         || !canUsePluginBrowserProjectionEntry(params.action, params.policyContext)
     ) {
         return { ok: false, code: 'unavailable', reason: 'plugin_browser_action_unavailable' };
@@ -108,19 +103,6 @@ export async function executePluginBrowserAction(params: Readonly<{
         return { ok: false, code: 'unavailable', reason: 'plugin_browser_action_unavailable' };
     }
     const isCurrent = params.isCurrent ?? (() => true);
-    const requestCurrentIntent = projectedAction?.execution.target === 'client'
-        ? createPluginActionCurrentIntentHandler({
-            requester: {
-                pluginId: projectedAction.pluginId,
-                contributionId: projectedAction.id,
-                generationId: String(params.generation),
-                invocationId: `ui-action:${params.generation}`,
-            },
-            ...(params.signal ? { signal: params.signal } : {}),
-            isCurrent,
-            pluginUiProjection: params.pluginUiProjection,
-        })
-        : undefined;
 
     const launched = await launchPluginSurfaceAction({
         callerPluginId: params.action.pluginId,
@@ -134,28 +116,23 @@ export async function executePluginBrowserAction(params: Readonly<{
                 contributedAction: {
                     machineId: machineId!,
                     serverId: params.serverId ?? null,
-                    expectedGeneration: String(params.generation),
                     ...(params.sessionId ? { sessionId: params.sessionId } : {}),
                     ...(params.execute ? { execute: params.execute } : {}),
                 },
             }
             : {}),
         ...(projectedAction?.execution.target === 'client'
-            && typeof params.generation === 'number'
-            && Number.isInteger(params.generation)
-            && params.generation >= 0
             ? {
                 clientAction: {
-                    projectionGeneration: params.generation,
                     ...(params.execute ? { execute: params.execute } : {}),
                     ...(params.sessionId ? { sessionId: params.sessionId } : {}),
-                    ...(requestCurrentIntent ? { requestCurrentIntent } : {}),
                     ...(params.readCurrentUiContext
                         ? { currentUiContext: params.readCurrentUiContext }
                         : {}),
                 },
             }
             : {}),
+        pluginUiProjection: params.pluginUiProjection,
         ...(params.signal ? { signal: params.signal } : {}),
         isCurrent,
     });

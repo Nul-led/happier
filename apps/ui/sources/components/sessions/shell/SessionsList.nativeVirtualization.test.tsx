@@ -11,7 +11,7 @@ vi.mock('react-native-enriched-markdown/lib/module/web/streamingReveal.js', () =
 import { findGestureByKind, renderScreen, standardCleanup } from '@/dev/testkit';
 import { SESSION_LIST_ROW_HEIGHT_DEFAULT } from './sessionListRowHeights';
 import { installSessionShellCommonModuleMocks } from './sessionShellTestHelpers';
-import { buildSessionListIndexFromViewData } from '@/sync/domains/sessionList/sessionListIndex';
+import { buildSessionListIndexFromViewData, buildSessionListIndexNodeId } from '@/sync/domains/sessionList/sessionListIndex';
 import { buildSessionListServerScopedRowKey } from '@/sync/domains/session/listing/sessionListKeyNormalization';
 import type { LocalSettings } from '@/sync/domains/settings/localSettings';
 import { clearSessionListViewFilterRetentionForTests } from './search/useSessionListViewFilters';
@@ -51,6 +51,7 @@ vi.mock('@/components/appShell/search/UniversalSearchRuntimeContext', () => ({
 
 let sessionTagsV1: Record<string, string[]> = {};
 let sessionListOrderingModeV1: 'custom' | 'created' | 'updated' = 'custom';
+let sessionListIdentityDisplay: 'avatar' | 'agentLogo' | 'none' = 'avatar';
 const setSessionListOrderingModeV1 = vi.fn();
 let workspacePathDisplayModeV1: 'name' | 'path' | null = null;
 let workspaceRefsV1: any[] = [];
@@ -252,9 +253,6 @@ vi.mock('@/components/account/RecoveryKeyReminderBanner', () => ({
     RecoveryKeyReminderBanner: 'RecoveryKeyReminderBanner',
 }));
 
-vi.mock('@/components/ui/feedback/UpdateBanner', () => ({
-    UpdateBanner: 'UpdateBanner',
-}));
 
 vi.mock('@/components/ui/layout/layout', () => ({
     layout: { maxWidth: 1280 },
@@ -404,12 +402,16 @@ installSessionShellCommonModuleMocks({
                 useSetting: createUseSettingMock({ fallback: (key) => {
                     if (key === 'compactSessionView') return false;
                     if (key === 'compactSessionViewMinimal') return false;
+                    if (key === 'sessionListIdentityDisplay') return sessionListIdentityDisplay;
                     if (key === 'sessionTagsEnabled') return true;
                     if (key === 'sessionListOrderingModeV1') return sessionListOrderingModeV1;
                     if (key === 'workspaceRefsV1') return workspaceRefsV1;
                     if (key === 'workspacePathDisplayModeV1') return workspacePathDisplayModeV1;
                     return null;
                 } }),
+                useSettings: () => {
+                    throw new Error('SessionsList must subscribe only to settings that affect its rendered output');
+                },
                 useHasUnreadMessages: () => false,
                 useMachineDisplayById: () => Object.fromEntries(
                     allMachines.map((machine) => [machine.id, buildMachineDisplayRenderableFromMachine(machine as any)]),
@@ -733,6 +735,7 @@ describe('SessionsList (native virtualization)', () => {
     beforeEach(async () => {
         virtualizedListState.current?.reset();
         sessionListOrderingModeV1 = 'custom';
+        sessionListIdentityDisplay = 'avatar';
         mockPathname = '';
         pinnedSessionKeysV1 = [];
         sessionMruOrderV1 = [];
@@ -780,6 +783,34 @@ describe('SessionsList (native virtualization)', () => {
     it('preloads the transcript markdown runtime before a session is opened from the list', async () => {
         await renderSessionsList();
         expect(preloadEnrichedMarkdownRuntimeSpy).toHaveBeenCalledOnce();
+    });
+
+    it('defers bulk action targets until selection opens and rebuilds current targets when reopened', async () => {
+        const screen = await renderSessionsList();
+        const { SessionsList } = await import('./SessionsList');
+        const { buildServerScopedSessionKey } = await import('@/sync/domains/session/navigation/sessionNavigationOrder');
+        const selectedKey = buildServerScopedSessionKey('sess_a', 'server_a');
+        const { SessionListSelectionStoreProvider } = await import('./selection/SessionListSelectionContext');
+        const { SessionListSelectionActionBarHost } = await import('./selection/SessionListSelectionActionBar');
+        const store = screen.root.findByType(SessionListSelectionStoreProvider).props.store;
+        const readTargets = () => screen.root.findByType(SessionListSelectionActionBarHost).props.targetsByKey;
+
+        // This is the unused bulk model, not the virtualized row projection.
+        expect(readTargets().size).toBe(0);
+        await act(async () => { store.enter(selectedKey); });
+        expect(readTargets().size).toBe(1);
+        expect(readTargets().get(selectedKey).tags).toEqual([]);
+        await act(async () => { store.selectAllVisible(); });
+        expect(store.getSnapshot().count).toBe(2);
+        expect(readTargets().size).toBe(2);
+        await act(async () => { store.exit(); });
+        expect(readTargets().size).toBe(0);
+
+        sessionTagsV1 = { 'server_a:sess_a': ['updated-while-closed'] };
+        await screen.update(<SessionsList />);
+        expect(readTargets().size).toBe(0);
+        await act(async () => { store.enter(selectedKey); });
+        expect(readTargets().get(selectedKey).tags).toEqual(['updated-while-closed']);
     });
 
     it('renders session items with correct adjacency props on native', async () => {
@@ -1592,6 +1623,19 @@ describe('SessionsList (native virtualization)', () => {
         expect(virtualizedListState.current?.props?.extraData).toBe(initialExtraData);
     });
 
+    it('invalidates mounted native rows when a row presentation setting changes', async () => {
+        const screen = await renderSessionsList();
+        const initialExtraData = virtualizedListState.current?.props?.extraData;
+        const { SessionsList } = await import('./SessionsList');
+
+        sessionListIdentityDisplay = 'none';
+        mockPathname = '/sessions';
+        await screen.update(<SessionsList />);
+
+        expect(virtualizedListState.current?.props?.extraData).not.toBe(initialExtraData);
+        expect(virtualizedListState.current?.props?.extraData?.sessionListIdentityDisplay).toBe('none');
+    });
+
     it('emits one bounded semantic status-demand batch without invalidating rows on a native viewability change', async () => {
         platformOs = 'ios';
         const header = expectPresent(
@@ -2055,6 +2099,7 @@ describe('SessionsList (native virtualization)', () => {
             virtualizedListState.current?.props?.data,
             'expected active virtualized-list data',
         );
+        const activeExtraData = virtualizedListState.current?.props?.extraData;
         mockVisibleSessionListViewData = [
             ...mockVisibleSessionListViewData,
             {
@@ -2091,6 +2136,9 @@ describe('SessionsList (native virtualization)', () => {
             'expected inactive visible virtualized-list data',
         );
         expect(inactiveData).toBe(activeData);
+        expect(virtualizedListState.current?.props?.extraData).not.toBe(activeExtraData);
+        expect(virtualizedListState.current?.props?.extraData?.sessionListSurfaceDataActive).toBe(false);
+        const inactiveExtraData = virtualizedListState.current?.props?.extraData;
 
         await screen.update(
             <SessionsList
@@ -2106,7 +2154,14 @@ describe('SessionsList (native virtualization)', () => {
             'expected reactivated virtualized-list data',
         );
         expect(reactivatedData).not.toBe(activeData);
-        expect(reactivatedData.some((item: any) => item.id === 'session:server_a:sess_hidden_refresh')).toBe(true);
+        expect(virtualizedListState.current?.props?.extraData).not.toBe(inactiveExtraData);
+        expect(virtualizedListState.current?.props?.extraData?.sessionListSurfaceDataActive).toBe(true);
+        const hiddenRefreshNodeId = buildSessionListIndexNodeId({
+            type: 'session',
+            serverId: 'server_a',
+            sessionId: 'sess_hidden_refresh',
+        });
+        expect(reactivatedData.some((item: any) => item.id === hiddenRefreshNodeId)).toBe(true);
     });
 
     it('unmounts native virtualization while the surface is hidden', async () => {
@@ -2181,14 +2236,18 @@ describe('SessionsList (native virtualization)', () => {
         expect(virtualizedListState.current?.props?.refreshControl?.props?.refreshing).toBe(false);
     });
 
-    it('does not expose native pull-to-refresh when the surface is not data-active', async () => {
+    it('keeps native pull-to-refresh mounted but disabled while the surface is inactive', async () => {
         await renderSessionsListWithSurfaceOwnership({
-            visible: false,
+            visible: true,
             interactive: false,
             dataActive: false,
         });
 
-        expect(virtualizedListState.current?.props?.refreshControl).toBeUndefined();
+        expect(virtualizedListState.current?.props?.refreshControl?.props).toMatchObject({
+            enabled: false,
+            refreshing: false,
+        });
+        expect(virtualizedListState.current?.props?.refreshControl?.props?.onRefresh).toBeUndefined();
     });
 
     it('deduplicates native pull-to-refresh while a session refresh is already pending', async () => {

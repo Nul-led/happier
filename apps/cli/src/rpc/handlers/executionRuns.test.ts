@@ -1287,7 +1287,7 @@ describe('executionRuns session RPC handlers', () => {
       expect(createdBackendOpts).toEqual([
         expect.objectContaining({
           backendId: 'review-bot',
-          permissionMode: 'no_tools',
+          permissionMode: 'read_only',
           backendTarget: {
             kind: 'configuredAcpBackend',
             backendId: 'review-bot',
@@ -1615,19 +1615,7 @@ describe('executionRuns session RPC handlers', () => {
     expect(got.run?.availableActionIds).toEqual(['review.triage', 'review.follow_up']);
     expect(got.structuredMeta?.kind).toBe('review_findings.v2');
     expect(got.structuredMeta?.payload?.runRef?.runId).toBe(started.runId);
-
-    const acted = await client.call<any, any>(SESSION_RPC_METHODS.EXECUTION_RUN_ACTION, {
-      runId: started.runId,
-      actionId: 'review.triage',
-      input: {
-        findings: [{ id: 'f1', status: 'accept' }],
-      },
-    });
-    expect(acted).toMatchObject({ ok: true });
-
-    // The action should re-emit a tool-result meta update.
-    const metaToolResult = [...sent].reverse().find((m) => (m.body as any)?.type === 'tool-result' && m.meta);
-    expect((metaToolResult?.meta as any)?.happier?.kind).toBe('review_findings.v2');
+    // review.triage records decisions in ReviewComment (reviewComments.test.ts); it never rewrites this result.
   });
 
   it('can stop a running execution run via execution.run.stop', async () => {
@@ -1695,7 +1683,9 @@ describe('executionRuns session RPC handlers', () => {
       ioMode: 'request_response',
     });
 
-    expect(sent.filter((m: any) => m?.body?.type === 'message').length).toBe(1);
+    await expect.poll(
+      () => sent.filter((m: any) => m?.body?.type === 'message').length,
+    ).toBe(1);
 
     const sentReply = await client.call<any, any>(SESSION_RPC_METHODS.EXECUTION_RUN_SEND, {
       runId: started.runId,
@@ -2016,7 +2006,10 @@ describe('executionRuns session RPC handlers', () => {
       ioMode: 'request_response',
     });
 
-    await new Promise((r) => setTimeout(r, 10));
+    await expect.poll(async () => {
+      const got = await client.call<any, any>(SESSION_RPC_METHODS.EXECUTION_RUN_GET, { runId: started.runId });
+      return got.run?.status;
+    }).toBe('succeeded');
 
     const res = await client.call<any, any>(SESSION_RPC_METHODS.EXECUTION_RUN_SEND, {
       sessionId: null,
@@ -3518,7 +3511,7 @@ describe('executionRuns session RPC handlers', () => {
     expect(plan.runId).toMatch(/^run_/);
   });
 
-  it('returns run_depth_exceeded when maxDepth is exceeded via parentRunId nesting', async () => {
+  it('does not impose a second depth limit on a human run from raw parent references', async () => {
     const sent: Array<{ body: ACPMessageData; meta?: Record<string, unknown> }> = [];
 
     const client = createEncryptedRpcTestClient({
@@ -3537,9 +3530,6 @@ describe('executionRuns session RPC handlers', () => {
             ),
           sendAcp: async (_provider: string, body: ACPMessageData, opts?: { meta?: Record<string, unknown> }) => {
             sent.push({ body, meta: opts?.meta });
-          },
-          policy: {
-            maxDepth: 0,
           },
         });
       },
@@ -3566,8 +3556,7 @@ describe('executionRuns session RPC handlers', () => {
       parentRunId: parent.runId,
     });
 
-    expect(child.ok).toBe(false);
-    expect(child.errorCode).toBe('run_depth_exceeded');
+    expect(child.runId).toMatch(/^run_/);
   });
 
   it('times out bounded execution runs deterministically when boundedTimeoutMs elapses', async () => {
@@ -3639,14 +3628,13 @@ describe('executionRuns session RPC handlers', () => {
       ioMode: 'request_response',
     });
 
-    await new Promise((r) => setTimeout(r, 50));
-
-    const got = await client.call<any, any>(SESSION_RPC_METHODS.EXECUTION_RUN_GET, { runId: started.runId });
-    expect(got.run?.status).toBe('succeeded');
-    expect(got.latestToolResult?.status).toBe('succeeded');
+    await expect.poll(async () => {
+      const got = await client.call<any, any>(SESSION_RPC_METHODS.EXECUTION_RUN_GET, { runId: started.runId });
+      return { runStatus: got.run?.status, toolResultStatus: got.latestToolResult?.status };
+    }).toEqual({ runStatus: 'succeeded', toolResultStatus: 'succeeded' });
   });
 
-  it('supports execution.run.ensure(resume=true) for resumable runs', async () => {
+  it('requires coupled input when execution.run.ensure(resume=true) recovers a bounded run', async () => {
     const sent: Array<{ body: unknown; meta?: Record<string, unknown> }> = [];
     const createBackend = createResumableBackendFactory(JSON.stringify({ findings: [], summary: 'ok' }));
 
@@ -3676,16 +3664,19 @@ describe('executionRuns session RPC handlers', () => {
       ioMode: 'request_response',
     });
 
-    await new Promise((r) => setTimeout(r, 10));
+    await expect.poll(() => sent.some((m) => (m.body as any)?.type === 'tool-result' && m.meta)).toBe(true);
 
     const ensured = await client.call<any, any>(SESSION_RPC_METHODS.EXECUTION_RUN_ENSURE, {
       runId: started.runId,
       resume: true,
     });
-    expect(ensured.ok).toBe(true);
+    expect(ensured).toMatchObject({
+      ok: false,
+      errorCode: 'execution_run_not_allowed',
+    });
 
-    const got = await client.call<any, any>(SESSION_RPC_METHODS.EXECUTION_RUN_GET, { runId: started.runId });
-    expect(got.run?.status).toBe('running');
+    const got = await waitForExecutionRunTerminalState(client, started.runId);
+    expect(got.run?.status).toBe('succeeded');
   });
 
   it('supports execution.run.ensureOrStart to start when runId is missing and ensure when present', async () => {

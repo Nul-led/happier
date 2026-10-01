@@ -21,6 +21,7 @@ import {
 import { PathSelectionList } from '@/components/sessions/new/components/PathSelectionList';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
+import { ItemLoadStateRows } from '@/components/ui/lists/ItemLoadStateRows';
 import { RoundButton } from '@/components/ui/buttons/RoundButton';
 import { Text } from '@/components/ui/text/Text';
 import { t } from '@/text';
@@ -29,7 +30,10 @@ import type {
     SessionServerStartDraftSeed,
     SessionServerStartDraftTarget,
 } from './serverStartDraftComposer';
-import { resolveSessionServerStartCandidateSelection } from './serverStartDraftCandidateSelection';
+import {
+    presentSessionServerStartCandidate,
+    resolveSessionServerStartCandidateSelection,
+} from './serverStartDraftCandidateSelection';
 
 type Props = CustomModalInjectedProps & Readonly<{
     seed: SessionServerStartDraftSeed;
@@ -218,13 +222,19 @@ export function SessionServerStartDraftComposerModal(props: Props): React.ReactE
     return (
         <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ paddingBottom: 16 }}>
             <ItemGroup title={t('newSession.selectWorkingDirectoryTitle')}>
-                {props.seed.candidates?.map((candidate, index) => (
-                    <Item
+                {props.seed.candidates?.map((candidate, index) => {
+                    const presentation = presentSessionServerStartCandidate({
+                        candidate,
+                        activeServerId: String(activeServer.serverId ?? ''),
+                        activeMachines: machines,
+                        machineListByServerId,
+                    });
+                    return <Item
                         key={'id' in candidate.projectKey
                             ? candidate.projectKey.id
                             : `${candidate.serverId}:${candidate.machineId}:${candidate.rootPath}`}
-                        title={candidate.label ?? candidate.rootPath}
-                        subtitle={`${candidate.machineId} · ${candidate.serverId}`}
+                        title={presentation.title}
+                        subtitle={presentation.subtitle}
                         selected={index === selectedCandidateIndex}
                         onPress={() => {
                             setError(false);
@@ -233,8 +243,8 @@ export function SessionServerStartDraftComposerModal(props: Props): React.ReactE
                         }}
                         showChevron={false}
                         showDivider={true}
-                    />
-                ))}
+                    />;
+                })}
                 <PathSelectionList
                     initialValue={directory}
                     machineHomeDir={machine?.metadata?.homeDir ?? '/home'}
@@ -270,7 +280,17 @@ export function SessionServerStartDraftComposerModal(props: Props): React.ReactE
                         showDivider={index < candidates.length - 1}
                     />
                 ))}
-                {candidates.length === 0 ? (
+                {daemonMergedProjection.phase === 'idle' || daemonMergedProjection.phase === 'loading' ? (
+                    <ItemLoadStateRows state={{ kind: 'loading' }} rows={2} lines={1} accessibilityLabel={t('common.loading')} />
+                ) : daemonMergedProjection.phase !== 'ready' ? (
+                    // The machine answered that it cannot list its agents (`unsupported`), or it did not answer.
+                    <ItemLoadStateRows state={{
+                        kind: 'failed',
+                        reason: daemonMergedProjection.phase === 'unsupported'
+                            ? t('newSession.actionMethodUnavailable')
+                            : t('errors.daemonUnavailableBody'),
+                    }} />
+                ) : candidates.length === 0 ? (
                     <Item
                         title={t('newSession.failedToStart')}
                         mode="info"

@@ -70,8 +70,20 @@ export type HappierService = Readonly<{
   happierHomeDir?: string | null;
   serverUrl?: string | null;
   publicServerUrl?: string | null;
+  /**
+   * `desktop` when the definition carries the desktop management marker
+   * (`HAPPIER_DAEMON_SERVICE_MANAGED_BY=desktop`, set by the desktop's own setup install): the app
+   * created it and may change or remove it. `null`: user-owned. Absent from producers that do not read it.
+   */
+  managedBy?: 'desktop' | null;
   installed: boolean;
   running: boolean;
+  /**
+   * Whether its service manager starts it at login/boot (systemd `UnitFileState`, the launchd
+   * override database, Task Scheduler's task state). `null` when it could not be read; absent from
+   * producers that do not observe it.
+   */
+  enabled?: boolean | null;
 }>;
 
 export type HappierServiceInventory = Readonly<{

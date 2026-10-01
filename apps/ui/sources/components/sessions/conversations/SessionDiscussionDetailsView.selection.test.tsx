@@ -2,22 +2,24 @@ import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SessionMessageAccountActorV1 } from '@happier-dev/protocol';
+import type { SessionDiscussionRepositoryMutationOutcome } from '@/sync/ops/sessionDiscussions/sessionDiscussionRepository';
 
 import { renderScreen } from '@/dev/testkit';
 
-const pane = vi.hoisted(() => ({ openDetailsTab: vi.fn(), closeDetails: vi.fn() }));
+const pane = vi.hoisted(() => ({ openDetailsTab: vi.fn(), closeDetails: vi.fn(), closeDetailsTab: vi.fn() }));
 const clipboard = vi.hoisted(() => vi.fn<(value: string) => Promise<boolean>>(async () => true));
 const focusComposer = vi.hoisted(() => vi.fn(() => true));
 const routerPush = vi.hoisted(() => vi.fn());
 const routerReplace = vi.hoisted(() => vi.fn());
 const deviceType = vi.hoisted(() => ({ current: 'desktop' as 'desktop' | 'phone' }));
 const repositoryRetry = vi.hoisted(() => vi.fn());
+const repositoryRefreshDiscussion = vi.hoisted(() => vi.fn());
 const repositoryCreate = vi.hoisted(() => vi.fn(async () => ({ kind: 'failed', errorCode: 'test-stop' })));
 const repositoryPost = vi.hoisted(() => vi.fn(async () => ({ kind: 'failed', errorCode: 'test-stop' })));
 const repositoryDismiss = vi.hoisted(() => vi.fn(() => true));
 const launchability = vi.hoisted(() => ({ current: true }));
 const shellSession = vi.hoisted(() => ({ current: null as null | Record<string, unknown> }));
-const repositoryRename = vi.hoisted(() => vi.fn(async () => ({ kind: 'succeeded', value: {} })));
+const repositoryRename = vi.hoisted(() => vi.fn<() => Promise<SessionDiscussionRepositoryMutationOutcome<unknown>>>(async () => ({ kind: 'succeeded', value: {} })));
 const repositoryArchive = vi.hoisted(() => vi.fn(async () => ({ kind: 'succeeded', value: {} })));
 const repositoryRestore = vi.hoisted(() => vi.fn(async () => ({ kind: 'succeeded', value: {} })));
 const dropdownProps = vi.hoisted(() => ({ current: null as null | Record<string, unknown> }));
@@ -100,7 +102,7 @@ vi.mock('@/sync/domains/session/humanPresence/useSessionHumanPresence', () => ({
 vi.mock('@/sync/ops/sessionDiscussions/useSessionDiscussionRepositorySnapshot', () => ({ useSessionDiscussionRepositorySnapshot: () => snapshot }));
 vi.mock('@/sync/ops/sessionDiscussions/sessionDiscussionRepositoryRegistry', () => ({ getSessionDiscussionRepository: (options: Record<string, unknown>) => {
     repositoryOptions.current = options;
-    return { mount: () => () => undefined, getSnapshot: () => snapshot, refreshDiscussion: vi.fn(), setReadState: vi.fn(async () => ({ kind: 'succeeded', value: { cursor: { lastReadSeq: 1 } } })), create: repositoryCreate, post: repositoryPost, dismissFailure: repositoryDismiss, rename: repositoryRename, archive: repositoryArchive, restore: repositoryRestore, retry: repositoryRetry, acknowledgeObservedSuccess: vi.fn(), loadOlderMessages: vi.fn() };
+    return { mount: () => () => undefined, getSnapshot: () => snapshot, refreshDiscussion: repositoryRefreshDiscussion, setReadState: vi.fn(async () => ({ kind: 'succeeded', value: { cursor: { lastReadSeq: 1 } } })), create: repositoryCreate, post: repositoryPost, dismissFailure: repositoryDismiss, rename: repositoryRename, archive: repositoryArchive, restore: repositoryRestore, retry: repositoryRetry, acknowledgeObservedSuccess: vi.fn(), loadOlderMessages: vi.fn() };
 } }));
 vi.mock('@/sync/domains/session/discussions/sessionDiscussionVisibleReadController', () => ({ createSessionDiscussionVisibleReadController: () => ({ updateEligibility: updateVisibleReadEligibility, observeVisibleMessageSeqs }) }));
 vi.mock('@/utils/runtime/useHostActivelyViewed', () => ({ useHostActivelyViewed: () => true }));
@@ -126,6 +128,7 @@ vi.mock('@/hooks/session/useSessionExecutionRunLaunchability', () => ({ useSessi
 }) }));
 
 import { SessionDiscussionDetailsView } from './SessionDiscussionDetailsView';
+import { createSessionDiscussionDetailsTab } from '@/components/sessions/panes/details/sessionDetailsTabBuilders';
 import {
     consumeInteractiveExecutionRunDraftNavigationIntent,
     resetInteractiveExecutionRunDraftNavigationIntentsForTests,
@@ -140,6 +143,7 @@ describe('SessionDiscussionDetailsView selection', () => {
     beforeEach(() => {
         pane.openDetailsTab.mockClear();
         pane.closeDetails.mockClear();
+        pane.closeDetailsTab.mockClear();
         clipboard.mockClear();
         focusComposer.mockClear();
         routerPush.mockClear();
@@ -248,11 +252,29 @@ describe('SessionDiscussionDetailsView selection', () => {
         try {
             presenceView.current = { status: 'live', viewers: [viewer] };
             const screen = await renderScreen(<SessionDiscussionDetailsView target={discussionTarget} active />);
-            expect(screen.findByTestId('session-discussion-presence')?.props.children).toBe('Presence Alice · Typing…');
+            expect(screen.findByTestId('session-discussion-presence')?.props.children).toBe('Presence Alice is typing…');
 
             presenceView.current = { status: 'stale', viewers: [viewer] };
             await screen.update(<SessionDiscussionDetailsView target={discussionTarget} active />);
-            expect(screen.findByTestId('session-discussion-presence')?.props.children).toBe('Presence Alice · May be out of date');
+            expect(screen.findByTestId('session-discussion-presence')?.props.children).toBe('Presence Alice is here · May be out of date');
+        } finally {
+            presenceView.current = null;
+        }
+    });
+
+    it('says who is here and who is typing in this conversation, beside their faces', async () => {
+        const discussionTarget = { kind: 'discussion' as const, address: { serverId: 'server-a', sessionId: 'session-a' }, discussionId: 'discussion-a' };
+        try {
+            presenceView.current = { status: 'live', viewers: [
+                { account: { kind: 'account', accountId: 'account-private-123', firstName: 'Ana', lastName: null, username: null, avatarUrl: null }, typing: false },
+                { account: { kind: 'account', accountId: 'mention-private-456', firstName: 'Ben', lastName: null, username: null, avatarUrl: null }, typing: true },
+            ] };
+            const screen = await renderScreen(<SessionDiscussionDetailsView target={discussionTarget} active />);
+
+            expect(screen.findByTestId('session-discussion-presence')?.props.children).toBe('Ana and Ben are here · Ben is typing…');
+            expect(screen.findByTestId('session-discussion-presence-faces')?.props.accessibilityLabel).toContain('Ana');
+            // The header names the people in this conversation now, not a history of past authors.
+            expect(screen.findByTestId('session-discussion-recent-authors')).toBeNull();
         } finally {
             presenceView.current = null;
         }
@@ -261,7 +283,7 @@ describe('SessionDiscussionDetailsView selection', () => {
     it('exposes the conversation title as the details heading', async () => {
         const screen = await renderScreen(<SessionDiscussionDetailsView target={{ kind: 'discussion', address: { serverId: 'server-a', sessionId: 'session-a' }, discussionId: 'discussion-a' }} active />);
 
-        expect(screen.findByTestId('session-discussion-heading')?.props.accessibilityRole).toBe('header');
+        expect(screen.findByTestId('session-discussion-header.title')?.props.accessibilityRole).toBe('header');
     });
 
     it('presents recent authors, quiet lifecycle actions, producer-aware groups, and accessible timestamps', async () => {
@@ -276,11 +298,12 @@ describe('SessionDiscussionDetailsView selection', () => {
         try {
             const screen = await renderScreen(<SessionDiscussionDetailsView target={{ kind: 'discussion', address: { serverId: 'server-a', sessionId: 'session-a' }, discussionId: 'discussion-a' }} active />);
 
-            const authorStack = screen.findByTestId('session-discussion-recent-authors');
-            expect(authorStack?.props.accessibilityLabel).toContain('Alice');
             expect(screen.findByTestId('session-discussion-message-group-start-message-a')).not.toBeNull();
             expect(screen.findByTestId('session-discussion-message-group-start-message-agent')).not.toBeNull();
             expect(screen.findByTestId('session-discussion-message-group-continuation-message-agent-followup')).not.toBeNull();
+            // One header per author group: a continuation carries no second name or time.
+            expect(screen.findByTestId('session-discussion-message-actor-message-agent-followup')).toBeNull();
+            expect(screen.findByTestId('session-discussion-message-timestamp-message-agent-followup')).toBeNull();
 
             const timestamp = screen.findByTestId('session-discussion-message-timestamp-message-a');
             expect(timestamp?.props.accessibilityRole).toBe('text');
@@ -300,6 +323,35 @@ describe('SessionDiscussionDetailsView selection', () => {
         } finally {
             messages.pop();
         }
+    });
+
+    it('keeps rename text and presents typed unknown/refusal outcomes until the next lifecycle success', async () => {
+        repositoryRename
+            .mockResolvedValueOnce({ kind: 'failed', errorCode: 'outcome_unknown' })
+            .mockResolvedValueOnce({ kind: 'failed', errorCode: 'session_discussion_manage_denied' })
+            .mockResolvedValueOnce({ kind: 'succeeded', value: {} });
+        const screen = await renderScreen(<SessionDiscussionDetailsView target={{ kind: 'discussion', address: { serverId: 'server-a', sessionId: 'session-a' }, discussionId: 'discussion-a' }} active />);
+
+        act(() => {
+            (dropdownProps.current?.onSelect as (itemId: string) => void)('rename');
+        });
+        const input = screen.findByTestId('session-discussion-rename-input');
+        act(() => input?.props.onChangeText('Still editing'));
+        const save = screen.find((item) => item.props?.accessibilityLabel === 'Save' && typeof item.props.onPress === 'function');
+        await act(async () => { await save.props.onPress(); });
+
+        expect(screen.findByTestId('session-discussion-rename-input')?.props.value).toBe('Still editing');
+        expect(screen.getTextContent()).toContain('Delivery unknown');
+        expect(screen.getTextContent()).not.toContain('Conversations could not be loaded.');
+
+        await act(async () => { await save.props.onPress(); });
+        expect(screen.findByTestId('session-discussion-rename-input')?.props.value).toBe('Still editing');
+        expect(screen.getTextContent()).toContain('Permission denied');
+        expect(screen.getTextContent()).not.toContain('Conversations could not be loaded.');
+
+        await act(async () => { await save.props.onPress(); });
+        expect(screen.getTextContent()).not.toContain('Permission denied');
+        expect(screen.findByTestId('session-discussion-rename-input')).toBeNull();
     });
 
     it('binds details repository lifetime to the exact Session Home rather than the active Home', async () => {
@@ -406,7 +458,8 @@ describe('SessionDiscussionDetailsView selection', () => {
     it('mounts row selection, copies canonical labeled text, and opens the interactive Agent draft', async () => {
         const screen = await renderScreen(<SessionDiscussionDetailsView target={{ kind: 'discussion', address: { serverId: 'server-a', sessionId: 'session-a' }, discussionId: 'discussion-a' }} active />);
 
-        expect(screen.findByTestId('session-discussion-message-content-message-a')?.props.children).toBe('Check this@Bob');
+        expect(screen.findByTestId('session-discussion-message-content-message-a')?.props.children[0]).toBe('Check this');
+        expect(screen.findByTestId('session-discussion-mention-message-a-1')?.props.children).toBe('@Bob');
         expect(screen.findByTestId('session-discussion-message-actor-message-a')?.props.children).toBe('Alice');
         expect(screen.findByTestId('session-discussion-message-actor-message-agent')?.props.children).toBe('Alice');
         expect(screen.findByTestId('session-discussion-message-producer-message-agent')?.props.children).toBe('Via Agent');
@@ -593,11 +646,45 @@ describe('SessionDiscussionDetailsView selection', () => {
         ]));
     });
 
+    it('tints a mention inside the message and names the person it points at', async () => {
+        const screen = await renderScreen(<SessionDiscussionDetailsView target={{ kind: 'discussion', address: { serverId: 'server-a', sessionId: 'session-a' }, discussionId: 'discussion-a' }} active />);
+
+        const mention = screen.findByTestId('session-discussion-mention-message-a-1');
+        expect(mention?.props.children).toBe('@Bob');
+        expect(screen.findByTestId('session-discussion-message-content-message-a')?.props.children).not.toBe('Check this@Bob');
+    });
+
+    it('keeps retained messages under one freshness line whose Retry re-reads the conversation', async () => {
+        snapshot.threads['discussion-a'].status = 'offline';
+        const screen = await renderScreen(<SessionDiscussionDetailsView target={{ kind: 'discussion', address: { serverId: 'server-a', sessionId: 'session-a' }, discussionId: 'discussion-a' }} active />);
+
+        expect(screen.findByTestId('session-discussion-freshness')).not.toBeNull();
+        expect(screen.findByTestId('session-discussion-message-content-message-a')).not.toBeNull();
+        repositoryRefreshDiscussion.mockClear();
+        await press(screen, 'session-discussion-freshness-action');
+        expect(repositoryRefreshDiscussion).toHaveBeenCalledWith('discussion-a');
+    });
+
+    it('offers Close tab when access to the conversation is removed', async () => {
+        const thread = snapshot.threads['discussion-a'];
+        const previousStatus = thread.status;
+        thread.status = 'revoked';
+        try {
+            const screen = await renderScreen(<SessionDiscussionDetailsView target={{ kind: 'discussion', address: { serverId: 'server-a', sessionId: 'session-a' }, discussionId: 'discussion-a' }} active />);
+
+            expect(screen.getTextContent()).toContain('You no longer have access to this conversation');
+            await press(screen, 'session-discussion-details-state-action');
+            expect(pane.closeDetailsTab).toHaveBeenCalledWith(createSessionDiscussionDetailsTab({ kind: 'discussion', address: { serverId: 'server-a', sessionId: 'session-a' }, discussionId: 'discussion-a' }).key);
+        } finally {
+            thread.status = previousStatus;
+        }
+    });
+
     it.each([
-        ['offline', 'You’re offline. Reconnect to continue.', true],
-        ['locked', 'Preparing encrypted access…', false],
-        ['error', 'Conversations could not be loaded.', true],
-        ['revoked', 'Access removed', false],
+        ['offline', 'This conversation isn’t available offline', true],
+        ['locked', 'Can’t open this conversation on this device yet', true],
+        ['error', 'Couldn’t open this conversation', true],
+        ['revoked', 'You no longer have access to this conversation', false],
     ] as const)('renders the distinct empty %s recovery state before any content is available', async (status, expected, retryable) => {
         const thread = snapshot.threads['discussion-a'];
         const previousStatus = thread.status;
@@ -610,7 +697,9 @@ describe('SessionDiscussionDetailsView selection', () => {
             const screen = await renderScreen(<SessionDiscussionDetailsView target={{ kind: 'discussion', address: { serverId: 'server-a', sessionId: 'session-a' }, discussionId: 'discussion-a' }} active />);
 
             expect(screen.getTextContent()).toContain(expected);
-            expect(screen.findByTestId('session-discussion-details-retry') !== null).toBe(retryable);
+            expect(screen.findByTestId('session-discussion-details-state-action') !== null).toBe(true);
+            // Recoverable states offer Try again; a removed access offers Close tab instead.
+            expect(screen.getTextContent().includes('Try again')).toBe(retryable);
         } finally {
             thread.status = previousStatus;
             thread.summary = previousSummary;

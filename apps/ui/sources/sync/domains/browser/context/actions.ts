@@ -1,5 +1,7 @@
 import {
     BrowserContextItemV1Schema,
+    resolveBrowserContextPrivacyDenial,
+    stripBrowserDiagnosticUrlValues,
     type BrowserAnnotationStrokeV1,
     type BrowserAnnotationStyleIntentV1,
     type BrowserContextItemV1,
@@ -51,28 +53,27 @@ function unavailableReason(
 function resolvePrivacyReason(
     privacyState: BrowserContextKindAvailabilityInput['privacyState'],
 ): BrowserContextUnavailableReason | null {
-    switch (privacyState) {
+    const denial = resolveBrowserContextPrivacyDenial(privacyState);
+    if (!denial) return null;
+    switch (denial.lifecycleState) {
         case 'sensitiveOrigin':
             return unavailableReason(
-                'browser_context_sensitive_origin',
-                'sensitiveOrigin',
+                denial.reasonCode,
+                denial.lifecycleState,
                 'Browser context is unavailable for sensitive origins.',
             );
         case 'sensitiveFieldsPresent':
             return unavailableReason(
-                'browser_context_sensitive_fields_present',
-                'sensitiveFieldsPresent',
+                denial.reasonCode,
+                denial.lifecycleState,
                 'Browser context is unavailable while sensitive fields are present.',
             );
         case 'ephemeralOnly':
             return unavailableReason(
-                'browser_context_ephemeral_only',
-                'ephemeralOnly',
+                denial.reasonCode,
+                denial.lifecycleState,
                 'Browser context is unavailable for private or ephemeral browser profiles.',
             );
-        case null:
-        case undefined:
-            return null;
     }
 }
 
@@ -198,13 +199,7 @@ function normalizeOptionalBoundedString(value: string | null | undefined, maxCha
 }
 
 function stripUrlValues(value: string | undefined): string | undefined {
-    if (!value) return undefined;
-    try {
-        const parsed = new URL(value);
-        return `${parsed.origin}${parsed.pathname}`;
-    } catch {
-        return value.split(/[?#]/, 1)[0] || undefined;
-    }
+    return value ? stripBrowserDiagnosticUrlValues(value) || undefined : undefined;
 }
 
 function resolveOrigin(rawUrl: string | undefined): string | undefined {

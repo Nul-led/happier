@@ -1,7 +1,11 @@
-import { SOCKET_RPC_EVENTS } from '@happier-dev/protocol/socketRpc';
+import {
+  callSocketRpc,
+  createSocketRpcAbortError,
+  markRpcRequestDisposition,
+  readRpcRequestDisposition,
+} from '@happier-dev/sync-client';
 import {
   RPC_ERROR_CODES,
-  SOCKET_RPC_AUTHORIZATION_CONTEXT_KINDS,
   resolveSocketRpcSessionAuthorization,
 } from '@happier-dev/protocol/rpc';
 
@@ -16,18 +20,12 @@ import {
 import { resolveServerAccountRequestContext } from '@/sync/runtime/orchestration/serverScopedRpc/resolveServerAccountRequestContext';
 import type { ResolvedServerAccountRequestContext } from '@/sync/runtime/orchestration/serverScopedRpc/resolveServerAccountRequestContext';
 import { readRpcErrorCode } from '@happier-dev/protocol/rpcErrors';
+import type { SessionTransferRoutingV1 } from '@happier-dev/protocol/socketRpc';
 import {
   areServerAccountScopesEqual,
   createServerAccountScope,
   type ServerAccountScope,
 } from '@/sync/domains/scope/serverAccountScope';
-import {
-  createSocketRpcAbortError,
-  createSocketRpcRequestId,
-} from '@/sync/runtime/socketRpcCallCancellation';
-
-import type { SocketRpcResult } from './serverScopedRpcTypes';
-import { scopedSocketEmitWithAck } from './scopedSocketEmitWithAck';
 
 function normalizeId(raw: unknown): string {
   return String(raw ?? '').trim();
@@ -61,6 +59,7 @@ async function callScopedSessionRpc<R, A>(params: Readonly<{
   operationTimeoutMs: number | null;
   onIssued?: () => void;
   signal?: AbortSignal;
+  transferRouting?: SessionTransferRoutingV1;
 }>): Promise<R> {
   let carrierCustodyTransferred = false;
   let socketForCleanup: Awaited<ReturnType<typeof createEphemeralServerSocketClient>> | null = null;
@@ -94,38 +93,18 @@ async function callScopedSessionRpc<R, A>(params: Readonly<{
       }),
     );
     socketForCleanup = socket;
-    const authorization = resolveSocketRpcSessionAuthorization(params.method)
-      ? {
-          kind: SOCKET_RPC_AUTHORIZATION_CONTEXT_KINDS.SESSION_WRITE,
-          sessionId: params.sessionId,
-        } as const
-      : undefined;
     if (params.signal?.aborted) throw createSocketRpcAbortError();
-    const requestId = params.signal ? createSocketRpcRequestId() : undefined;
     if (cryptoContext.encryptionMode === 'plain') {
-      const result = await scopedSocketEmitWithAck<SocketRpcResult>({
+      return await callSocketRpc<R>({
         socket,
-        event: SOCKET_RPC_EVENTS.CALL,
+        target: { kind: 'session', id: params.sessionId },
+        method: params.method,
+        params: params.payload,
+        content: { mode: 'plain' },
         timeoutMs: params.operationTimeoutMs,
-        payload: {
-          method: `${params.sessionId}:${params.method}`,
-          params: params.payload,
-          ...(params.operationTimeoutMs === null
-            ? {}
-            : { timeoutMs: params.operationTimeoutMs }),
-          ...(requestId ? { requestId } : {}),
-          ...(authorization ? { authorization } : {}),
-        },
         onIssued: params.onIssued,
         signal: params.signal,
-        requestId,
-      });
-
-      if (result.ok) return result.result as R;
-
-      throw createRpcCallError({
-        error: typeof result.error === 'string' ? result.error : 'RPC call failed',
-        errorCode: typeof result.errorCode === 'string' ? result.errorCode : undefined,
+        transferRouting: params.transferRouting,
       });
     }
 
@@ -156,32 +135,19 @@ async function callScopedSessionRpc<R, A>(params: Readonly<{
       });
     }
 
-    const result = await scopedSocketEmitWithAck<SocketRpcResult>({
+    return await callSocketRpc<R>({
       socket,
-      event: SOCKET_RPC_EVENTS.CALL,
+      target: { kind: 'session', id: params.sessionId },
+      method: params.method,
+      params: params.payload,
+      content: { mode: 'e2ee', cipher: sessionEncryption },
       timeoutMs: params.operationTimeoutMs,
-      payload: {
-        method: `${params.sessionId}:${params.method}`,
-        params: await sessionEncryption.encryptRaw(params.payload),
-        ...(params.operationTimeoutMs === null
-          ? {}
-          : { timeoutMs: params.operationTimeoutMs }),
-        ...(requestId ? { requestId } : {}),
-        ...(authorization ? { authorization } : {}),
-      },
       onIssued: params.onIssued,
       signal: params.signal,
-      requestId,
+      transferRouting: params.transferRouting,
     });
-
-    if (result.ok) {
-      return (await sessionEncryption.decryptRaw(result.result)) as R;
-    }
-
-    throw createRpcCallError({
-      error: typeof result.error === 'string' ? result.error : 'RPC call failed',
-      errorCode: typeof result.errorCode === 'string' ? result.errorCode : undefined,
-    });
+  } catch (error) {
+    throw readRpcRequestDisposition(error) === null ? markRpcRequestDisposition(error, 'notSent') : error;
   } finally {
     socketForCleanup?.disconnect();
     if (!carrierCustodyTransferred) await params.context.release?.();
@@ -196,13 +162,14 @@ export async function sessionRpcWithServerScope<R, A>(params: Readonly<{
   timeoutMs?: number | null;
   onIssued?: () => void;
   signal?: AbortSignal;
+  transferRouting?: SessionTransferRoutingV1;
 }>): Promise<R> {
-  if (params.signal?.aborted) throw createSocketRpcAbortError();
+  if (params.signal?.aborted) throw markRpcRequestDisposition(createSocketRpcAbortError(), 'notSent');
   const sessionId = normalizeId(params.sessionId);
   const context = await resolveServerAccountRequestContext({
     serverId: params.serverId,
     ...(typeof params.timeoutMs === 'number' ? { timeoutMs: params.timeoutMs } : {}),
-  });
+  }).catch((error: unknown) => { throw markRpcRequestDisposition(error, 'notSent'); });
   const operationTimeoutMs = params.timeoutMs === null
     ? null
     : context.timeoutMs;
@@ -218,18 +185,23 @@ export async function sessionRpcWithServerScope<R, A>(params: Readonly<{
         timeoutMs: operationTimeoutMs,
         onIssued,
         signal: params.signal,
+        transferRouting: params.transferRouting,
       });
     } catch (error) {
-      if (exactIssuanceAttempted) throw error;
-      if (params.signal?.aborted) throw createSocketRpcAbortError();
-      if (requiresActivePersistentHomeSocket(params.method)) throw error;
-      if (!shouldRetryWithScopedSessionContext(error)) throw error;
+      const callError = readRpcRequestDisposition(error) === null
+        ? markRpcRequestDisposition(error, exactIssuanceAttempted ? 'outcomeUnknown' : 'notSent')
+        : error;
+      if (apiSocket.getSessionScopedTarget()) throw callError;
+      if (exactIssuanceAttempted) throw callError;
+      if (params.signal?.aborted) throw markRpcRequestDisposition(createSocketRpcAbortError(), 'notSent');
+      if (requiresActivePersistentHomeSocket(params.method)) throw callError;
+      if (!shouldRetryWithScopedSessionContext(error)) throw callError;
       const retryContext = await resolveServerAccountRequestContext({
         serverId: params.serverId,
         ...(typeof params.timeoutMs === 'number' ? { timeoutMs: params.timeoutMs } : {}),
         preferScoped: true,
-      });
-      if (retryContext.scope !== 'scoped') throw error;
+      }).catch((error: unknown) => { throw markRpcRequestDisposition(error, 'notSent'); });
+      if (retryContext.scope !== 'scoped') throw callError;
       return await callScopedSessionRpc({
         sessionId,
         method: params.method,
@@ -238,6 +210,7 @@ export async function sessionRpcWithServerScope<R, A>(params: Readonly<{
         operationTimeoutMs,
         onIssued,
         signal: params.signal,
+        transferRouting: params.transferRouting,
       });
     }
   }
@@ -249,6 +222,7 @@ export async function sessionRpcWithServerScope<R, A>(params: Readonly<{
     operationTimeoutMs,
     onIssued,
     signal: params.signal,
+    transferRouting: params.transferRouting,
   });
 }
 
@@ -257,30 +231,34 @@ export async function sessionRpcWithServerAccountScope<R, A>(params: Readonly<{
   scope: ServerAccountScope;
   method: string;
   payload: A;
-  timeoutMs?: number;
+  timeoutMs?: number | null;
   onIssued?: () => void;
   signal?: AbortSignal;
 }>): Promise<R> {
-  if (params.signal?.aborted) throw createSocketRpcAbortError();
+  if (params.signal?.aborted) throw markRpcRequestDisposition(createSocketRpcAbortError(), 'notSent');
   const context = await resolveServerAccountRequestContext({
     serverId: params.scope.serverId,
-    timeoutMs: params.timeoutMs,
+    ...(typeof params.timeoutMs === 'number' ? { timeoutMs: params.timeoutMs } : {}),
     preferScoped: true,
-  });
+  }).catch((error: unknown) => { throw markRpcRequestDisposition(error, 'notSent'); });
   if (context.scope !== 'scoped') {
-    throw new Error('Exact pending dispatch scope did not resolve to scoped credentials');
+    throw markRpcRequestDisposition(new Error('Exact pending dispatch scope did not resolve to scoped credentials'), 'notSent');
   }
   const resolvedScope = createServerAccountScope(context.targetServerId, context.targetAccountId);
   if (!areServerAccountScopesEqual(resolvedScope, params.scope)) {
-    await context.release?.();
-    throw new Error('Exact pending dispatch authenticated account does not match persisted scope');
+    try {
+      await context.release?.();
+    } catch (error) {
+      throw markRpcRequestDisposition(error, 'notSent');
+    }
+    throw markRpcRequestDisposition(new Error('Exact pending dispatch authenticated account does not match persisted scope'), 'notSent');
   }
   return await callScopedSessionRpc({
     sessionId: normalizeId(params.sessionId),
     method: params.method,
     payload: params.payload,
     context,
-    operationTimeoutMs: context.timeoutMs,
+    operationTimeoutMs: params.timeoutMs === null ? null : context.timeoutMs,
     onIssued: params.onIssued,
     signal: params.signal,
   });

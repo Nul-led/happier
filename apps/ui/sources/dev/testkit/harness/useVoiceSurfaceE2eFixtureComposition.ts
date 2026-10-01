@@ -15,7 +15,7 @@ import {
 } from '@/sync/domains/settings/voiceSettings';
 import { normalizeVoiceSettingsLocalDelta } from '@/sync/domains/settings/voiceSettingsPersistence';
 import { storage } from '@/sync/domains/state/storage';
-import type { NormalizedMessage } from '@/sync/typesRaw';
+import type { NormalizedMessage } from "@happier-dev/session-core/raw";
 import { fireAndForget } from '@/utils/system/fireAndForget';
 import { VOICE_AGENT_GLOBAL_SESSION_ID } from '@/voice/agent/voiceAgentGlobalSessionId';
 import { voiceConversationBindingResolver } from '@/voice/binding/VoiceConversationBindingResolver';
@@ -225,8 +225,15 @@ function installSidebarHiddenConversationFixture(
         adapterId: options.bindingAdapterId,
         controlSessionId: VOICE_AGENT_GLOBAL_SESSION_ID,
         conversationSessionId: VOICE_SURFACE_E2E_CONVERSATION_SESSION_ID,
+        conversationSessionAddress: {
+            serverId: activeServerId,
+            sessionId: VOICE_SURFACE_E2E_CONVERSATION_SESSION_ID,
+        },
         transcriptMode: 'synthetic' as const,
-        targetSessionId: VOICE_SURFACE_E2E_ROOT_SESSION_ID,
+        targetSessionAddress: {
+            serverId: activeServerId,
+            sessionId: VOICE_SURFACE_E2E_ROOT_SESSION_ID,
+        },
         updatedAt: VOICE_SURFACE_E2E_UPDATED_AT,
     };
     const hiddenConversationMetadata = {

@@ -8,6 +8,8 @@ import type {
     ScmBranchListRequest,
     ScmBranchListResponse,
     ScmBranchOperationControlRequest,
+    ScmConflictAcceptSideRequest,
+    ScmConflictMarkResolvedRequest,
     ScmChangeApplyRequest,
     ScmChangeApplyResponse,
     ScmChangeDiscardRequest,
@@ -49,6 +51,8 @@ import type {
     ScmStashApplyRequest,
     ScmStashApplyResponse,
     ScmStashDropRequest,
+    ScmStashCreateRequest,
+    ScmStashCreateResponse,
     ScmStashDropResponse,
     ScmStashListRequest,
     ScmStashListResponse,
@@ -57,9 +61,9 @@ import type {
     ScmStashShowRequest,
     ScmStashShowResponse,
     ScmStatusSnapshotRequest,
-    ScmStatusSnapshotResponse,
-} from '@happier-dev/protocol';
-import { SCM_OPERATION_ERROR_CODES } from '@happier-dev/protocol';
+    ScmStatusSnapshotTransportResponse,
+} from '@happier-dev/protocol/scm';
+import { SCM_OPERATION_ERROR_CODES } from '@happier-dev/protocol/scm';
 import { RPC_ERROR_MESSAGES, RPC_METHODS } from '@happier-dev/protocol/rpc';
 
 import { runMachineScmRpc, scmFallbackError } from './scm/machineScm';
@@ -104,7 +108,7 @@ async function callScmPreferMachine<
             { serverId: resolvedServerId },
         );
     } catch (error) {
-        return scmFallbackError<T>(error);
+        return scmFallbackError<T>(error, { method, request: { ...request, cwd } });
     }
 }
 
@@ -112,8 +116,8 @@ export async function sessionScmStatusSnapshot(
     sessionId: string,
     request: ScmStatusSnapshotRequest,
     serverId?: string | null,
-): Promise<ScmStatusSnapshotResponse> {
-    return await callScmPreferMachine<ScmStatusSnapshotResponse, ScmStatusSnapshotRequest>(
+): Promise<ScmStatusSnapshotTransportResponse> {
+    return await callScmPreferMachine<ScmStatusSnapshotTransportResponse, ScmStatusSnapshotRequest>(
         sessionId,
         RPC_METHODS.SCM_STATUS_SNAPSHOT,
         request,
@@ -355,6 +359,18 @@ export async function sessionScmBranchOperationAbort(
     );
 }
 
+export async function sessionScmBranchOperationSkip(sessionId: string, request: ScmBranchOperationControlRequest, serverId?: string | null): Promise<ScmBranchIntegrationResponse> {
+    return callScmPreferMachine(sessionId, RPC_METHODS.SCM_BRANCH_OPERATION_SKIP, request, serverId);
+}
+
+export async function sessionScmConflictAcceptSide(sessionId: string, request: ScmConflictAcceptSideRequest, serverId?: string | null): Promise<ScmBranchIntegrationResponse> {
+    return callScmPreferMachine(sessionId, RPC_METHODS.SCM_CONFLICT_ACCEPT_SIDE, request, serverId);
+}
+
+export async function sessionScmConflictMarkResolved(sessionId: string, request: ScmConflictMarkResolvedRequest, serverId?: string | null): Promise<ScmBranchIntegrationResponse> {
+    return callScmPreferMachine(sessionId, RPC_METHODS.SCM_CONFLICT_MARK_RESOLVED, request, serverId);
+}
+
 export async function sessionScmRemotePublish(
     sessionId: string,
     request: ScmRemotePublishRequest,
@@ -519,6 +535,19 @@ export async function sessionScmStashList(
     return await callScmPreferMachine<ScmStashListResponse, ScmStashListRequest>(
         sessionId,
         RPC_METHODS.SCM_STASH_LIST,
+        request,
+        serverId,
+    );
+}
+
+export async function sessionScmStashCreate(
+    sessionId: string,
+    request: ScmStashCreateRequest,
+    serverId?: string | null,
+): Promise<ScmStashCreateResponse> {
+    return await callScmPreferMachine<ScmStashCreateResponse, ScmStashCreateRequest>(
+        sessionId,
+        RPC_METHODS.SCM_STASH_CREATE,
         request,
         serverId,
     );

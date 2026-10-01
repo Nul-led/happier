@@ -25,6 +25,7 @@ interface ToolDiffViewProps {
 
 export const ToolDiffView = React.memo<ToolDiffViewProps>(({ 
     sessionId,
+    serverId,
     filePath,
     oldText, 
     newText, 

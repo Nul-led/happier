@@ -13,6 +13,5 @@ export * from './ui/WizardGuidedHandoff';
 export * from './ui/WizardTerminalHandoff';
 export * from './preAuth/PreAuthOnboardingWizardEntry';
 export * from './surfaces/OnboardingWizardSurface';
-export * from './surfaces/SetupWizardSurface';
 export * from './steps/webDesktop/WebDesktopDownloadCta';
 export * from './steps/AgentsLogoMultiSelect';

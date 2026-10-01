@@ -260,7 +260,7 @@ describe('initializeSessionClientConnection diagnostics', () => {
     const onSessionFollowInvalidated = vi.fn();
     const connection = initializeSessionClientConnection({
       transport: createAccountSessionClientTransport('token-1'),
-      token: 'token-1', sessionId: 's1', userScopedAccountUpdates: false, getMetadataSnapshot: () => null,
+      token: 'token-1', sessionId: 's1', userScopedAccountUpdates: true, getMetadataSnapshot: () => null,
       setSessionSocket: vi.fn(), rpcHandlerManager: { onSocketConnect: vi.fn(), onSocketDisconnect: vi.fn() },
       handleUserScopedUpdate: vi.fn(), installSessionSocketEventHandlers: vi.fn(), classifyTransportErrorToProbeResult: undefined,
       onStateChange: vi.fn(), shouldKeepUserSocketConnected: () => false, kickUserSocketConnect: vi.fn(),
@@ -276,6 +276,9 @@ describe('initializeSessionClientConnection diagnostics', () => {
     }).triggerConnected();
 
     expect(onSessionFollowInvalidated).toHaveBeenCalledTimes(2);
+    const listener = socketState.userSocket?.on.mock.calls.find(([event]) => event === 'update')?.[1] as ((data: unknown) => void) | undefined;
+    listener?.({ body: { t: 'account-change' } });
+    expect(onSessionFollowInvalidated).toHaveBeenCalledTimes(3);
   });
 
   it('publishes the identical compatibility result to the shared Pending/Runtime consumer', async () => {

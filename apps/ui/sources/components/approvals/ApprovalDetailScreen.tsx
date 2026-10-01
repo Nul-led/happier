@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { View, ScrollView } from 'react-native';
+import { View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { useRouter, type Href } from 'expo-router';
 
@@ -10,6 +10,8 @@ import {
   buildExecutionRunHostActionApprovalArtifactHeaderV1,
   buildTargetActionApprovalArtifactHeaderV1,
   getActionSpec,
+  WorkspaceSyncConflictResolutionResultV1Schema,
+  WorkspaceSyncConflictResolutionV1Schema,
   type ActionId,
   type ExecutionRunHostActionApprovalRequestV1,
   type TargetActionApprovalRequestV1,
@@ -32,12 +34,22 @@ import {
 } from '@/sync/ops/actions/defaultActionExecutor';
 import { readDisplayMachineIdForSession } from '@/sync/ops/sessionMachineTarget';
 import { resolvePreferredServerIdForSessionId } from '@/sync/runtime/orchestration/serverScopedRpc/resolvePreferredServerIdForSessionId';
-import { useLayoutMaxWidthStyle } from '@/components/ui/layout/layout';
+import { PageHeader, type PageHeaderMetaFact } from '@/components/ui/layout/PageHeader';
+import { Item } from '@/components/ui/lists/Item';
+import { ItemGroup } from '@/components/ui/lists/ItemGroup';
+import { ItemList } from '@/components/ui/lists/ItemList';
+import { SectionContentRow } from '@/components/ui/lists/SectionContentRow';
 import { ApprovalSessionContextCard } from './ApprovalSessionContextCard';
 import { ActionApprovalFieldsCard } from './ActionApprovalFieldsCard';
+import { WorkspaceSyncConflictDetailsView } from '@/components/workspaces/sync/WorkspaceSyncConflictDetailsView';
 import { resolveApprovalRequestApproveAdmission } from './approvalFieldValues';
-import { ApprovalPreviewCard } from './ApprovalPreviewCard';
+import { ApprovalPreviewCard, readApprovalPreviewSummary } from './ApprovalPreviewCard';
 import { HandoffTargetConsequencesCard, describeHandoffTargetApproval } from './HandoffTargetConsequencesCard';
+import { ComputerActionApprovalCard } from './ComputerActionApprovalCard';
+import { useComputerApprovalChoice } from './useComputerApprovalChoice';
+import { openComputerTargetPickerForSession } from '@/components/computer/openComputerTargetPickerForSession';
+
+import { SessionStoredImageThumbnail } from '@/components/sessions/media/SessionStoredImageThumbnail';
 import { readApprovalSessionEndpointLabels, readApprovalTargetEndpointLabels } from './approvalEndpointLabels';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
@@ -56,16 +68,13 @@ import {
   projectSessionContextPresentation,
 } from '@/sync/domains/session/presentation/sessionContextPresentation';
 
+/** The picker opener for this page's computer approvals (the page already holds the store). */
+const resolveComputerPicker = () => openComputerTargetPickerForSession;
+
 const styles = StyleSheet.create((theme) => ({
   container: {
     flex: 1,
-    backgroundColor: theme.colors.background.canvas,
-  },
-  scrollContent: {
-    padding: 16,
-    paddingBottom: 64,
-    width: '100%',
-    alignSelf: 'center',
+    backgroundColor: theme.colors.surface.base,
   },
   loading: {
     flex: 1,
@@ -80,45 +89,11 @@ const styles = StyleSheet.create((theme) => ({
     gap: 12,
     marginTop: 12,
   },
-  title: {
-    fontSize: 22,
-    fontWeight: '700',
-    color: theme.colors.text.primary,
-    marginBottom: 4,
-  },
-  subtitle: {
-    fontSize: 14,
-    color: theme.colors.text.secondary,
-    marginBottom: 16,
-  },
-  cardStack: {
-    gap: 12,
-  },
-  statusCard: {
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: theme.colors.border.default,
-    backgroundColor: theme.colors.surface.elevated,
-    padding: 16,
-    gap: 8,
-  },
-  statusLabel: {
-    fontSize: 12,
-    color: theme.colors.text.secondary,
-    fontWeight: '600',
-  },
-  statusValue: {
-    fontSize: 14,
-    color: theme.colors.text.primary,
-  },
-  statusMeta: {
-    fontSize: 12,
-    color: theme.colors.text.secondary,
-  },
+  // The decision closes the page: one primary (approve), the withdrawal quiet, rejection last.
   actionsRow: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: 12,
-    marginTop: 16,
   },
   actionsStack: {
     flexDirection: 'column',
@@ -157,13 +132,6 @@ export const ApprovalDetailScreen = React.memo((props: Readonly<{
   completionFocusFrom?: string;
   completionFocusTo?: string;
 }>) => {
-  // Composed at render time: the module-scope stylesheet evaluates once, so a
-  // baked-in `layout.maxWidth` would freeze the user's content-width preference.
-  const contentMaxWidthStyle = useLayoutMaxWidthStyle();
-  const scrollContentStyle = React.useMemo(
-    () => [styles.scrollContent, contentMaxWidthStyle],
-    [contentMaxWidthStyle],
-  );
   const router = useRouter();
   const retargetNavigationFocusReturn = useRetargetNavigationFocusReturnIntent();
   const { theme } = useUnistyles();
@@ -274,6 +242,18 @@ export const ApprovalDetailScreen = React.memo((props: Readonly<{
     if (requestedServerId) return requestedServerId;
     return sessionId ? resolvePreferredServerIdForSessionId(sessionId) ?? null : null;
   }, [builtInReplayRoute?.serverId, parsed, requestedServerId, sessionId]);
+  const approvedWorkspaceSyncResolution = React.useMemo(() => {
+    if (parsed?.kind !== 'built_in' || parsed.request.v !== 2
+      || parsed.request.actionId !== 'workspace.sync.conflict.resolve') return null;
+    const result = WorkspaceSyncConflictResolutionV1Schema.safeParse(parsed.request.actionArgs);
+    return result.success ? result.data : null;
+  }, [parsed]);
+  const reportedWorkspaceSyncOutcome = React.useMemo(() => {
+    if (!approvedWorkspaceSyncResolution || parsed?.kind !== 'built_in'
+      || parsed.request.status !== 'executed' || !parsed.request.execution?.ok) return null;
+    const result = WorkspaceSyncConflictResolutionResultV1Schema.safeParse(parsed.request.execution.result);
+    return result.success ? result.data : null;
+  }, [approvedWorkspaceSyncResolution, parsed]);
   const approvalOriginHomeId = parsed?.kind === 'built_in' && parsed.request.v === 2
     ? [
         parsed.request.executionOriginV1.serverIdentityId?.trim(),
@@ -314,6 +294,29 @@ export const ApprovalDetailScreen = React.memo((props: Readonly<{
         nowMs: contextNowMs,
       }))
     : null;
+  const computerChoice = useComputerApprovalChoice({
+    actionId: parsed?.kind === 'built_in' ? String(parsed.request.actionId) : '',
+    actionArgs: parsed?.kind === 'built_in' ? parsed.request.actionArgs : null,
+    preview: parsed?.kind === 'built_in' ? parsed.request.preview : null,
+    sessionId,
+    serverId: approvalServerId,
+    resolveOpenPicker: resolveComputerPicker,
+  });
+  const computerAction = computerChoice.presentation;
+  const chooseComputerTarget = computerChoice.chooseTarget;
+  const computerCaptureMedia = computerAction?.captureMedia ?? null;
+  const computerCropMedia = React.useMemo(() => (computerCaptureMedia ? [{
+    id: computerCaptureMedia.mediaId,
+    name: computerAction?.target?.title ?? '',
+    path: computerCaptureMedia.file.path,
+    mimeType: computerCaptureMedia.file.mimeType,
+    sizeBytes: computerCaptureMedia.sizeBytes,
+    sha256: computerCaptureMedia.file.sha256,
+    width: computerCaptureMedia.width,
+    height: computerCaptureMedia.height,
+    category: 'tool-artifact' as const,
+    role: 'output' as const,
+  }] : []), [computerAction?.target?.title, computerCaptureMedia]);
   const handoffTargetApproval = parsed?.kind === 'built_in'
     ? parsed.request.handoffTargetReplacementApproval ?? null
     : null;
@@ -367,6 +370,7 @@ export const ApprovalDetailScreen = React.memo((props: Readonly<{
                 : 'approval_decision_failed';
               throw new Error(errorCode);
             }
+            await refreshArtifact();
             return;
           }
           const now = Date.now();
@@ -404,7 +408,14 @@ export const ApprovalDetailScreen = React.memo((props: Readonly<{
           } else { await sync.updateArtifactWithHeader(props.artifactId, header, JSON.stringify(validated)); }
         } else {
           if (decision === 'cancel') return;
-          if (!await decideBuiltInApproval(decision)) throw new Error('approval_decision_failed');
+          // An agent's window choice is approved with the exact window the person picked.
+          if (decision === 'approve' && computerChoice.needsChoiceBeforeApprove) {
+            computerChoice.chooseTarget();
+            return;
+          }
+          if (!await decideBuiltInApproval(decision, decision === 'approve' ? computerChoice.decisionOptions : undefined)) {
+            throw new Error('approval_decision_failed');
+          }
         }
         await refreshArtifact();
       } catch (err) {
@@ -423,7 +434,7 @@ export const ApprovalDetailScreen = React.memo((props: Readonly<{
         setIsDeciding(false);
       }
     },
-    [approvalWithheld, decideBuiltInApproval, parsed, props.artifactId, refreshArtifact, requestedServerId, sessionId],
+    [approvalWithheld, computerChoice, decideBuiltInApproval, parsed, props.artifactId, refreshArtifact, requestedServerId, sessionId],
   );
 
   if (isLoading) {
@@ -448,6 +459,7 @@ export const ApprovalDetailScreen = React.memo((props: Readonly<{
           <View style={{ height: 12 }} />
           <RoundButton
             size="normal"
+            display="secondary"
             title={t('common.back')}
             onPress={() => router.back()}
           />
@@ -473,6 +485,7 @@ export const ApprovalDetailScreen = React.memo((props: Readonly<{
             ) : null}
             <RoundButton
               size="normal"
+              display="secondary"
               title={t('common.back')}
               accessibilityLabel={t('common.back')}
               onPress={() => router.back()}
@@ -492,74 +505,167 @@ export const ApprovalDetailScreen = React.memo((props: Readonly<{
     || parsed.request.execution?.ok !== false
     ? null
     : parsed.request.execution.error || parsed.request.execution.errorCode || null;
+  // Who is asking for what: the plugin and action of a target request, or the plugin and proposal
+  // count of a host action. The action's name and exact identifiers are the Action row.
+  const headerFacts: PageHeaderMetaFact[] = [];
+  if (targetActionParts) {
+    headerFacts.push({ key: 'target-source', text: targetActionParts[0] ?? '' });
+    if (targetActionParts[1]) headerFacts.push({ key: 'target-action', text: targetActionParts[1] });
+  }
+  if (parsed.kind === 'host_action') {
+    headerFacts.push({ key: 'plugin', text: parsed.request.pluginId });
+    headerFacts.push({ key: 'proposals', text: t('approvals.proposedComments', { count: parsed.request.proposalCount }) });
+  }
+  const actionValue = actionTitle ?? (parsed.kind === 'target' ? parsed.request.qualifiedActionId : String(parsed.request.actionId));
+  const actionIdentifiers = [
+    actionTitle && parsed.kind === 'built_in' && actionTitle !== parsed.request.actionId ? String(parsed.request.actionId) : null,
+    parsed.kind === 'host_action' ? parsed.request.actionId : null,
+    parsed.kind === 'target' ? parsed.request.sourceCustody.kind : null,
+    parsed.kind === 'host_action' ? parsed.request.profileId : null,
+  ].filter((value): value is string => Boolean(value));
+  const previewSummary = parsed.kind === 'built_in' ? readApprovalPreviewSummary(parsed.request.preview) : null;
 
   return (
-    <View style={styles.container}>
-      <ScrollView
-        contentContainerStyle={scrollContentStyle}
-        contentInsetAdjustmentBehavior="automatic"
+    <ItemList presentation="page">
+      <PageHeader
+        testID="approvals.header"
+        alwaysShowTitle
+        title={parsed.request.summary || t('approvals.untitled')}
+        description={parsed.kind === 'target' && parsed.request.detail ? parsed.request.detail : undefined}
+        meta={headerFacts.length > 0 ? headerFacts : undefined}
+      />
+
+      <ItemGroup
+        title={t('detailPages.approval.requestTitle')}
+        description={t('detailPages.approval.requestDescription')}
       >
-        <Text style={styles.title}>{parsed.request.summary || t('approvals.untitled')}</Text>
-        {parsed.kind === 'target' && parsed.request.detail ? (
-          <Text testID="approvals.target-action-detail" style={styles.subtitle}>{parsed.request.detail}</Text>
+        {parsed.kind === 'built_in' && previewSummary ? (
+          <SectionContentRow testID="approvals.preview">
+            <ApprovalPreviewCard preview={parsed.request.preview} />
+          </SectionContentRow>
         ) : null}
-        {actionTitle ? <Text style={styles.subtitle}>{actionTitle}</Text> : null}
-        {targetActionParts ? <Text style={styles.subtitle}>{targetActionParts[0]} · {targetActionParts[1]}</Text> : null}
-        {parsed.kind === 'host_action' ? (
-          <Text style={styles.subtitle}>
-            {parsed.request.pluginId} · {t('approvals.proposedComments', { count: parsed.request.proposalCount })}
-          </Text>
-        ) : null}
-
-        <View style={styles.cardStack}>
-          <ApprovalSessionContextCard
-            session={session}
-            machine={machine}
-            serverId={approvalServerId}
-            context={sessionContext}
-            homeDisplayId={approvalOriginHomeId}
-            requesterAgentId={parsed.request.createdBy.agentId ?? null}
-            requesterSurface={requesterSurface}
+        <Item
+          testID="approvals.action"
+          title={t('approvals.fieldAction')}
+          subtitle={[actionValue, ...actionIdentifiers].join(' · ')}
+          subtitleLines={0}
+          mode="info"
+          showChevron={false}
+        />
+        <Item
+          testID="approvals.status"
+          title={t('approvals.fieldStatus')}
+          detail={statusLabel}
+          mode="info"
+          showChevron={false}
+        />
+        {executionFailure ? (
+          <Item
+            testID="approvals.execution-failure"
+            title={t('detailPages.approval.failureTitle')}
+            subtitle={executionFailure}
+            subtitleLines={0}
+            mode="info"
+            showChevron={false}
           />
+        ) : null}
+        {approvalRouteUnavailable ? (
+          <Item
+            testID="approvals.home-unavailable"
+            title={t('detailPages.approval.homeUnavailableTitle')}
+            subtitle={t('actionConfirmations.homeUnavailable')}
+            subtitleLines={0}
+            mode="info"
+            showChevron={false}
+          />
+        ) : null}
+      </ItemGroup>
 
-          <View style={styles.statusCard}>
-            <Text style={styles.statusLabel}>{t('approvals.fieldStatus')}</Text>
-            <Text style={styles.statusValue}>{statusLabel}</Text>
-            {executionFailure ? (
-              <Text testID="approvals.execution-failure" style={styles.statusMeta}>{executionFailure}</Text>
-            ) : null}
-            {approvalRouteUnavailable ? (
-              <Text testID="approvals.home-unavailable" style={styles.statusMeta}>
-                {t('actionConfirmations.homeUnavailable')}
-              </Text>
-            ) : null}
-            <Text style={styles.statusLabel}>{t('approvals.fieldAction')}</Text>
-            <Text style={styles.statusValue}>{actionTitle ?? (parsed.kind === 'target' ? parsed.request.qualifiedActionId : String(parsed.request.actionId))}</Text>
-            {actionTitle && parsed.kind === 'built_in' && actionTitle !== parsed.request.actionId ? (
-              <Text style={styles.statusMeta}>{String(parsed.request.actionId)}</Text>
-            ) : null}
-            {parsed.kind === 'host_action' ? <Text style={styles.statusMeta}>{parsed.request.actionId}</Text> : null}
-            {parsed.kind === 'target' ? (
-              <Text style={styles.statusMeta}>{t('approvals.generation', { generation: parsed.request.generation })}</Text>
-            ) : null}
-            {parsed.kind === 'host_action' ? <Text style={styles.statusMeta}>{parsed.request.profileId}</Text> : null}
-          </View>
+      <ApprovalSessionContextCard
+        session={session}
+        machine={machine}
+        serverId={approvalServerId}
+        context={sessionContext}
+        homeDisplayId={approvalOriginHomeId}
+        requesterAgentId={parsed.request.createdBy.agentId ?? null}
+        requesterSurface={requesterSurface}
+      />
 
-          {handoffTargetPresentation ? (
+      {computerAction ? (
+        <ItemGroup title={t('computerUse.approval.sectionTitle')}>
+          <SectionContentRow>
+            <ComputerActionApprovalCard
+              presentation={computerAction}
+              onChooseTarget={chooseComputerTarget}
+              media={computerCaptureMedia ? (
+                <SessionStoredImageThumbnail
+                  sessionId={computerCaptureMedia.file.sessionId}
+                  serverId={approvalServerId}
+                  machineId={computerAction.machineId}
+                  storage={computerCaptureMedia.file.storage}
+                  media={computerCropMedia}
+                  mediaPreviewEnabled
+                  testID="approvals.computer-action-crop"
+                />
+              ) : undefined}
+            />
+          </SectionContentRow>
+        </ItemGroup>
+      ) : null}
+
+      {handoffTargetPresentation ? (
+        <ItemGroup title={t('sessionHandoff.targetApproval.title')}>
+          <SectionContentRow>
             <HandoffTargetConsequencesCard presentation={handoffTargetPresentation} />
-          ) : null}
-          {parsed.kind === 'built_in' ? <ApprovalPreviewCard preview={parsed.request.preview} /> : null}
-          {actionFields ? <ActionApprovalFieldsCard presentation={actionFields} /> : null}
-          {parsed.kind === 'host_action' ? parsed.request.proposalPreview.map((proposal, index) => (
-            <View key={`${proposal.pathSha256}:${proposal.bodySha256}:${index}`} style={styles.statusCard}>
-              <Text style={styles.statusLabel}>{proposal.pathLabel}{proposal.startLine ? `:${proposal.startLine}` : ''}</Text>
-              <Text style={styles.statusValue}>{proposal.bodyPreview}</Text>
-              {proposal.severity ? <Text style={styles.statusMeta}>{proposal.severity}</Text> : null}
-            </View>
-          )) : null}
-        </View>
+          </SectionContentRow>
+        </ItemGroup>
+      ) : null}
 
-        {parsed.request.status === 'open' && (
+      {actionFields ? (
+        <ItemGroup surface="none">
+          <ActionApprovalFieldsCard presentation={actionFields} />
+        </ItemGroup>
+      ) : null}
+
+      {approvedWorkspaceSyncResolution ? (
+        <ItemGroup surface="none">
+          <View testID="workspace-sync-approved-review">
+            <WorkspaceSyncConflictDetailsView
+              embedded
+              approvedRequest={approvedWorkspaceSyncResolution}
+              reportedOutcome={reportedWorkspaceSyncOutcome ?? undefined}
+              resource={{ kind: 'workspaceSyncConflicts',
+                hubWorkspaceRefId: approvedWorkspaceSyncResolution.hubWorkspaceRefId,
+                workspaceRefId: approvedWorkspaceSyncResolution.source.workspaceRefId,
+                controllerMachineId: approvedWorkspaceSyncResolution.controllerMachineId,
+                serverId: approvalServerId,
+                initialPath: approvedWorkspaceSyncResolution.path }}
+            />
+          </View>
+        </ItemGroup>
+      ) : null}
+
+      {parsed.kind === 'host_action' && parsed.request.proposalPreview.length > 0 ? (
+        <ItemGroup
+          title={t('approvals.proposedComments', { count: parsed.request.proposalCount })}
+          description={t('detailPages.approval.proposalsDescription')}
+        >
+          {parsed.request.proposalPreview.map((proposal, index) => (
+            <Item
+              key={`${proposal.pathSha256}:${proposal.bodySha256}:${index}`}
+              title={`${proposal.pathLabel}${proposal.startLine ? `:${proposal.startLine}` : ''}`}
+              subtitle={proposal.bodyPreview}
+              subtitleLines={0}
+              detail={proposal.severity ?? undefined}
+              mode="info"
+              showChevron={false}
+            />
+          ))}
+        </ItemGroup>
+      ) : null}
+
+      {parsed.request.status === 'open' ? (
+        <ItemGroup surface="none">
           <View
             testID="approvals.actions"
             style={[styles.actionsRow, handoffTargetPresentation ? styles.actionsStack : null]}
@@ -577,25 +683,11 @@ export const ApprovalDetailScreen = React.memo((props: Readonly<{
               style={handoffTargetPresentation ? styles.actionFullWidth : undefined}
               onPress={() => decide('approve')}
             />
-            <RoundButton
-              testID="approvals.reject"
-              size="normal"
-              title={t('approvals.reject')}
-              accessibilityLabel={t('approvals.reject')}
-              titleNumberOfLines={handoffTargetPresentation ? 'complete' : 1}
-              disabled={isDeciding || approvalRouteUnavailable}
-              accessibilityHint={approvalRouteUnavailable ? t('actionConfirmations.homeUnavailable') : undefined}
-              style={[
-                handoffTargetPresentation ? styles.actionFullWidth : null,
-                { backgroundColor: theme.colors.state.danger.foreground },
-              ]}
-              textStyle={{ color: theme.colors.button.primary.tint }}
-              onPress={() => decide('reject')}
-            />
             {parsed.kind === 'target' || parsed.kind === 'host_action' ? (
               <RoundButton
                 testID="approvals.cancel"
                 size="normal"
+                display="secondary"
                 title={t('common.cancel')}
                 accessibilityLabel={t('common.cancel')}
                 titleNumberOfLines={handoffTargetPresentation ? 'complete' : 1}
@@ -604,10 +696,22 @@ export const ApprovalDetailScreen = React.memo((props: Readonly<{
                 onPress={() => decide('cancel')}
               />
             ) : null}
+            <RoundButton
+              testID="approvals.reject"
+              size="normal"
+              display="destructive"
+              title={t('approvals.reject')}
+              accessibilityLabel={t('approvals.reject')}
+              titleNumberOfLines={handoffTargetPresentation ? 'complete' : 1}
+              disabled={isDeciding || approvalRouteUnavailable}
+              accessibilityHint={approvalRouteUnavailable ? t('actionConfirmations.homeUnavailable') : undefined}
+              style={handoffTargetPresentation ? styles.actionFullWidth : undefined}
+              onPress={() => decide('reject')}
+            />
           </View>
-        )}
-      </ScrollView>
-    </View>
+        </ItemGroup>
+      ) : null}
+    </ItemList>
   );
 });
 

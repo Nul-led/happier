@@ -35,8 +35,8 @@ describe('AgentProfile', () => {
       finishedAtMs: 2,
     })).toEqual({
       status: 'succeeded',
-      summary: 'Agent completed.',
-      toolResultOutput: 'exact final text',
+      summary: '  exact final text  ',
+      toolResultOutput: '  exact final text  ',
     });
   });
 

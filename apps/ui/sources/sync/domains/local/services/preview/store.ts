@@ -3,6 +3,7 @@ import type {
     LocalServicePreviewDiagnosticV1,
     LocalServicePreviewResourceV1,
 } from '@happier-dev/protocol';
+import type { LocalServicePreviewNativeDirectDescriptorV1 } from '@happier-dev/protocol/local/services/preview/v1';
 
 import { readLocalServicePreviewDiagnostics } from './diagnostics';
 
@@ -11,6 +12,8 @@ export type LocalServicePreviewRow = Readonly<{
     resource: LocalServicePreviewResourceV1;
     accessUrl: string | null;
     expiresAt: number | null;
+    accessUnavailableReasonCode?: 'preview_private_route_unavailable';
+    nativeDirect?: LocalServicePreviewNativeDirectDescriptorV1;
     diagnostics: readonly LocalServicePreviewDiagnosticV1[];
 }>;
 

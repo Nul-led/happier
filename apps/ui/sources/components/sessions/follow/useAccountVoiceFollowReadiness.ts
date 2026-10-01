@@ -17,7 +17,10 @@ export function useAccountVoiceFollowReadiness(input: Readonly<{
     serverId: string;
     initialSnapshotPending: boolean;
 }>): AccountVoiceFollowReadiness {
-    const session = useSession(input.sessionId);
+    // Voice readiness is Home-scoped. A bare Session id can resolve whichever
+    // Home hydrated that id last and must never decide encryption readiness for
+    // the Home whose Follow editor is open.
+    const session = useSession(input.sessionId, input.serverId);
     const activeScope = useActiveServerAccountScope();
     const voice = useSetting('voice');
     const voiceSettings = voiceSettingsParse(voice);
@@ -40,9 +43,14 @@ export function useAccountVoiceFollowReadiness(input: Readonly<{
         : null);
     const scopeCurrent = activeScope !== null
         && areServerProfileIdentifiersEquivalent(activeScope.serverId, input.serverId);
-    const sourceEncrypted = session?.encryptionMode !== 'plain';
+    if (!session) return 'waiting_for_runtime';
+
+    const sourceEncrypted = session.encryptionMode !== 'plain';
     const sourceKeyReady = scopeCurrent
-        && (!sourceEncrypted || sync.encryption?.getSessionEncryption(input.sessionId) !== null);
+        && (!sourceEncrypted || (
+            sync.encryption !== null
+            && sync.encryption.getSessionEncryption(input.sessionId) !== null
+        ));
 
     return resolveAccountVoiceFollowReadiness({
         scopeCurrent,

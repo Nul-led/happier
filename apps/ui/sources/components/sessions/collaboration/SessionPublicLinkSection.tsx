@@ -1,117 +1,491 @@
 import * as React from 'react';
-import { Pressable } from 'react-native';
-import { useUnistyles } from 'react-native-unistyles';
+import { View } from 'react-native';
+import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
+import { ToolbarButton } from '@/components/ui/buttons/ToolbarButton';
+import { CopiedPill } from '@/components/ui/copy/CopiedPill';
+import { useTemporaryCopyFeedback } from '@/components/ui/copy/useTemporaryCopyFeedback';
+import { Switch } from '@/components/ui/forms/Switch';
 import { Icon } from '@/components/ui/icons/Icon';
-import { Item } from '@/components/ui/lists/Item';
-import { ItemGroup } from '@/components/ui/lists/ItemGroup';
+import { ITEM_SUBTITLE_TEXT_METRICS, ITEM_TITLE_TEXT_METRICS } from '@/components/ui/lists/itemDensityMetrics';
+import { SegmentedTabBar } from '@/components/ui/navigation/SegmentedTabBar';
+import { StatusDot } from '@/components/ui/status/StatusDot';
+import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
 import { Text } from '@/components/ui/text/Text';
+import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
+import { Typography } from '@/constants/Typography';
+import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
+import { Modal } from '@/modal';
 import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
+import type { SessionPublicLinkPublication } from '@/sync/domains/social/sessionPublicLinkPublication';
 import type { SharingAuthoritySession } from '@/sync/domains/social/sessionSharingMutationAuthority';
 import { t } from '@/text';
+import { HappyError } from '@/utils/errors/errors';
+import { setClipboardStringSafe } from '@/utils/ui/clipboard';
 
 import type { ExternalSessionSharingAvailability } from '@/components/sessions/external/sharing/useExternalSessionSharingAvailability';
-import { useSessionPublicLinkController } from './useSessionPublicLinkController';
-import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
+import { buildPublicShareApplicationUrl, resolvePublicShareApplicationBaseUrl } from '@/components/sessions/sharing/publicShareApplicationUrl';
+import { useSessionPublicLinkController, type SessionPublicLinkCreateOptions } from './useSessionPublicLinkController';
+
+const QR_SIZE_PX = 168;
+/**
+ * The QR renderer (Skia on native) loads only when someone asks for the code, as it did behind the
+ * former publication dialog, so opening Collaboration never pays for it.
+ */
+const LazyQRCode = React.lazy(() => import('@/components/qr/QRCode').then((module) => ({ default: module.QRCode })));
+
+const styles = StyleSheet.create((theme) => ({
+    card: {
+        marginHorizontal: 12,
+        marginBottom: 12,
+        padding: 12,
+        gap: 10,
+        borderRadius: 12,
+        borderWidth: StyleSheet.hairlineWidth,
+        borderColor: theme.colors.border.default,
+        backgroundColor: theme.colors.surface.inset,
+    },
+    top: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+    title: {
+        ...Typography.default('semiBold'),
+        ...ITEM_TITLE_TEXT_METRICS.compact,
+        color: theme.colors.text.primary,
+        flex: 1,
+    },
+    status: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+    statusText: {
+        ...Typography.default('semiBold'),
+        ...ITEM_SUBTITLE_TEXT_METRICS.compact,
+        color: theme.colors.text.secondary,
+    },
+    statusOn: { color: theme.colors.state.success.foreground },
+    url: {
+        minHeight: 34,
+        paddingLeft: 10,
+        paddingRight: 4,
+        borderRadius: 9,
+        borderWidth: StyleSheet.hairlineWidth,
+        borderColor: theme.colors.border.default,
+        backgroundColor: theme.colors.surface.base,
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6,
+    },
+    urlText: {
+        ...Typography.mono(),
+        ...ITEM_SUBTITLE_TEXT_METRICS.compact,
+        color: theme.colors.text.primary,
+        flex: 1,
+        minWidth: 0,
+    },
+    meta: {
+        ...Typography.default(),
+        ...ITEM_SUBTITLE_TEXT_METRICS.compact,
+        color: theme.colors.text.secondary,
+    },
+    actions: { flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
+    grow: { flex: 1 },
+    qr: { alignItems: 'center', paddingVertical: 4 },
+    options: { gap: 10 },
+    optionLabel: {
+        ...Typography.default('semiBold'),
+        ...ITEM_SUBTITLE_TEXT_METRICS.compact,
+        color: theme.colors.text.secondary,
+    },
+    optionGroup: { gap: 6 },
+    consent: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+    consentText: { flex: 1, minWidth: 0, gap: 2 },
+    consentTitle: {
+        ...Typography.default(),
+        ...ITEM_TITLE_TEXT_METRICS.compact,
+        color: theme.colors.text.primary,
+    },
+    line: { marginHorizontal: 4 },
+}));
+
+type Expiry = '7' | '30' | 'never';
+type Uses = 'unlimited' | '10' | '50';
+
+function readOptions(expiry: Expiry, uses: Uses, isConsentRequired: boolean): SessionPublicLinkCreateOptions {
+    return {
+        ...(expiry === 'never' ? {} : { expiresInDays: Number(expiry) }),
+        ...(uses === 'unlimited' ? {} : { maxUses: Number(uses) }),
+        isConsentRequired,
+    };
+}
+
+function presentFailure(error: unknown): void {
+    const message = error instanceof HappyError ? error.message
+        : error instanceof Error ? error.message
+            : t('errors.unknownError');
+    Modal.alert(t('common.error'), message);
+}
+
+/** What the link grants, in plain words, then its limits: "Expires Oct 6 · 3 of 10 uses · asks for consent". */
+export function describeSessionPublicLink(publicShare: SessionPublicLinkPublication): string {
+    const limits = [
+        publicShare.expiresAt
+            ? t('session.collaboration.pane.linkExpires', { date: new Date(publicShare.expiresAt).toLocaleDateString() })
+            : t('session.collaboration.pane.linkNeverExpires'),
+        typeof publicShare.maxUses === 'number'
+            ? t('session.sharing.usageCountWithMax', { used: publicShare.useCount, max: publicShare.maxUses })
+            : t('session.sharing.usageCountUnlimited', { used: publicShare.useCount }),
+        publicShare.isConsentRequired ? t('session.collaboration.pane.linkAsksConsent') : t('session.collaboration.pane.linkNoConsent'),
+    ];
+    return `${t('session.collaboration.pane.linkGrants')} ${limits.join(' · ')}`;
+}
+
+export type SessionCollaborationPublicLink = ReturnType<typeof useSessionPublicLinkController> & Readonly<{
+    /** The exact Home's `sharing.public` decision. */
+    enabled: boolean;
+}>;
 
 /**
- * Publication, rendered beside named access rather than inside it.
+ * The one publication controller for a Collaboration pane: the access card reads whether a link
+ * is on and the Share panel renders the link, from the same instance.
  *
- * A public link is an anonymous, view-only bearer capability: it is not a
- * principal, it grants no input, and it never appears as an access row. The
- * section therefore owns only a calm status/action group and hands every
- * detailed control to the incumbent advanced publication dialog. The secret
- * token is deliberately never rendered here.
- *
- * It fetches nothing without the explicit `managePublicLink` capability, so an
- * ordinary collaborator neither sees publication state nor produces avoidable
- * owner-only rejections.
+ * It fetches nothing without the explicit `managePublicLink` capability, so an ordinary
+ * collaborator neither sees publication state nor produces avoidable owner-only rejections.
  */
-export function SessionPublicLinkSection(props: Readonly<{
+export function useSessionCollaborationPublicLink(input: Readonly<{
     scope: ServerAccountScope;
     sessionId: string;
     session: SharingAuthoritySession | null;
     availability: ExternalSessionSharingAvailability;
-    testID?: string;
-}>): React.ReactElement | null {
-    const { theme } = useUnistyles();
-    // The row is the invoking control: the publication dialog is a modal, and
-    // the shared modal host returns focus only to an explicit trigger ref.
-    const triggerRef = React.useRef<React.ComponentRef<typeof Pressable> | null>(null);
+    authorityCurrent?: boolean;
+}>): SessionCollaborationPublicLink {
     // The canonical exact-server decision owner, like every sibling section:
     // a raw snapshot bit would be a second, fail-open reading of the same fact.
-    const publicLinkEnabled = useFeatureEnabled('sharing.public', {
+    const enabled = useFeatureEnabled('sharing.public', {
         scopeKind: 'spawn',
-        serverId: props.scope.serverId,
+        serverId: input.scope.serverId,
     });
     const controller = useSessionPublicLinkController({
-        scope: props.scope,
-        sessionId: props.sessionId,
-        session: props.session,
-        availability: props.availability,
-        publicLinkEnabled,
+        scope: input.scope,
+        sessionId: input.sessionId,
+        session: input.session,
+        availability: input.availability,
+        authorityCurrent: input.authorityCurrent ?? true,
+        publicLinkEnabled: enabled,
     });
+    return { ...controller, enabled };
+}
 
-    // Publication management is owner-scoped; without it there is no
-    // content-safe status to state, so the section stays absent rather than
-    // rendering a dead control.
-    if (!controller.canManage) return null;
-
-    const publicShare = controller.publicShare;
-    const status = publicShare ? t('session.sharing.publicLinkActive') : t('common.off');
-    const detail = publicShare
-        ? [
-            publicShare.expiresAt
-                ? `${t('session.sharing.expiresOn')}: ${new Date(publicShare.expiresAt).toLocaleDateString()}`
-                : t('session.sharing.never'),
-            typeof publicShare.maxUses === 'number'
-                ? t('session.sharing.usageCountWithMax', { used: publicShare.useCount, max: publicShare.maxUses })
-                : t('session.sharing.usageCountUnlimited', { used: publicShare.useCount }),
-        ].join(' · ')
-        : t('session.sharing.publicLinkDescription');
-
+/**
+ * The public link, shown as the thing itself inside the Share panel (lab `collab` SH): the link with
+ * Copy, what it grants in plain words, its expiry, uses and consent, then QR code, New link… and
+ * Turn off (which asks first).
+ *
+ * A public link is an anonymous, view-only bearer capability: it is not a principal and never
+ * appears as an access row. It cannot be edited — only made again with new options, or turned off —
+ * so those are the only controls offered. The bearer is known only to the client that created it;
+ * a link made elsewhere says so instead of showing a URL it cannot build.
+ *
+ * A viewer without `managePublicLink` is told who can create a link rather than shown a blank section.
+ */
+export function SessionPublicLinkSection(props: Readonly<{
+    link: SessionCollaborationPublicLink;
+    /** The exact Session is known, so a missing capability is a fact rather than a first read. */
+    hasSession: boolean;
+    /** The Session's storage can be published at all (hosted, or materialized). */
+    shareable: boolean;
+    testID?: string;
+}>): React.ReactElement | null {
+    const { link } = props;
+    if (!link.enabled) return null;
+    if (!link.canManage) {
+        if (!props.hasSession) return null;
+        return (
+            <View style={styles.line}>
+                <SurfaceStateCard
+                    testID="session-public-link-denied"
+                    size="line"
+                    kind="denied"
+                    iconName="link"
+                    title={t('session.collaboration.pane.linkDenied')}
+                />
+            </View>
+        );
+    }
+    if (!props.shareable) return null;
     return (
-        <ItemGroup title={t('session.sharing.publicLink')}>
-            {(!controller.error || controller.hasLoaded) ? (
-                <Item
-                    testID={props.testID ?? 'session-public-link-row'}
-                    pressableRef={triggerRef}
-                    title={t('session.sharing.publicLink')}
-                    subtitle={<Text testID="session-public-link-status">{status}</Text>}
-                    subtitleLines={2}
-                    icon={<Icon name="link" size={29} color={publicShare ? theme.colors.state.success.foreground : theme.colors.text.secondary} />}
-                    // Quiet trailing metadata: the link's own limits when it is
-                    // active, and nothing but progress during the first read.
-                    detail={controller.loading ? t('common.loading') : publicShare ? detail : undefined}
-                    detailTestID="session-public-link-detail"
-                    accessibilityLabel={`${t('session.sharing.publicLink')}. ${status}. ${detail}`}
-                    showChevron={controller.canOpen}
-                    disabled={!controller.canOpen}
-                    onPress={controller.canOpen ? () => { void controller.openEditor(triggerRef); } : undefined}
-                />
-            ) : null}
-            {controller.pendingApproval ? (
-                // The change waits on its approval where it is decided; nothing
-                // is published until the approval executes.
-                <Item
-                    testID="session-public-link-approval"
-                    title={t('approvals.title')}
-                    subtitle={t('approvals.status.open')}
-                    accessibilityLiveRegion="polite"
-                    onPress={controller.openPendingApproval}
-                    showChevron={false}
-                />
-            ) : null}
-            {controller.error ? (
-                <Item
+        <SessionPublicLinkCard
+            testID={props.testID ?? 'session-public-link-card'}
+            publicShare={link.publicShare}
+            serverUrl={link.shareableServerUrl}
+            loading={link.loading}
+            loaded={link.hasLoaded}
+            failed={link.error}
+            readOnly={!link.canMutate}
+            pendingApproval={link.pendingApproval !== null}
+            onRetry={link.reload}
+            onOpenPendingApproval={link.openPendingApproval}
+            onCreate={link.create}
+            onDelete={link.remove}
+        />
+    );
+}
+
+/**
+ * The card itself, driven only by its props so every publication state renders from the one
+ * controller. `readOnly` withdraws every mutation while the authority behind it is not current,
+ * without hiding a link that was already issued.
+ */
+export function SessionPublicLinkCard(props: Readonly<{
+    testID: string;
+    publicShare: SessionPublicLinkPublication | null;
+    serverUrl: string | null;
+    loading: boolean;
+    /** The publication has been read at least once, so "off" is a fact. */
+    loaded: boolean;
+    /** The latest read failed; anything read before stays shown. */
+    failed: boolean;
+    readOnly: boolean;
+    pendingApproval: boolean;
+    onRetry: () => void | Promise<void>;
+    onOpenPendingApproval: () => void;
+    onCreate: (options: SessionPublicLinkCreateOptions) => Promise<SessionPublicLinkPublication | null>;
+    onDelete: () => Promise<void>;
+}>): React.ReactElement {
+    const { theme } = useUnistyles();
+    const { publicShare } = props;
+    const [configuring, setConfiguring] = React.useState(false);
+    const [showQr, setShowQr] = React.useState(false);
+    const [expiry, setExpiry] = React.useState<Expiry>('7');
+    const [uses, setUses] = React.useState<Uses>('unlimited');
+    const [consent, setConsent] = React.useState(true);
+    const [creating, setCreating] = React.useState(false);
+    const [revoking, setRevoking] = React.useState(false);
+    const copyFeedback = useTemporaryCopyFeedback();
+    // One outward request at a time: a second create would mint a second link and orphan the
+    // first, and a second DELETE would surface its 404 after the first succeeded. The refs refuse
+    // a same-tick second activation before React has committed the busy state.
+    const inFlight = React.useRef(false);
+    const mounted = React.useRef(true);
+    React.useEffect(() => () => { mounted.current = false; }, []);
+    const shareUrl = React.useMemo(() => (publicShare?.token
+        ? buildPublicShareApplicationUrl({
+            applicationBaseUrl: resolvePublicShareApplicationBaseUrl(),
+            token: publicShare.token,
+            serverUrl: props.serverUrl,
+        })
+        : null), [props.serverUrl, publicShare?.token]);
+    const busy = creating || revoking;
+    const mutationsDisabled = props.readOnly || props.pendingApproval || busy;
+
+    const create = async () => {
+        if (mutationsDisabled || inFlight.current) return;
+        inFlight.current = true;
+        setCreating(true);
+        try {
+            await props.onCreate(readOptions(expiry, uses, consent));
+            if (mounted.current) setConfiguring(false);
+        } catch (error) {
+            if (mounted.current) presentFailure(error);
+        } finally {
+            inFlight.current = false;
+            if (mounted.current) setCreating(false);
+        }
+    };
+    const turnOff = async () => {
+        if (mutationsDisabled || inFlight.current) return;
+        inFlight.current = true;
+        try {
+            const confirmed = await Modal.confirm(
+                t('session.collaboration.pane.turnOffTitle'),
+                t('session.collaboration.pane.turnOffBody'),
+                { confirmText: t('session.collaboration.pane.turnOff'), cancelText: t('common.cancel'), destructive: true },
+            );
+            if (!confirmed || !mounted.current) return;
+            setRevoking(true);
+            await props.onDelete();
+            if (mounted.current) { setShowQr(false); setConfiguring(false); }
+        } catch (error) {
+            if (mounted.current) presentFailure(error);
+        } finally {
+            inFlight.current = false;
+            if (mounted.current) setRevoking(false);
+        }
+    };
+    const copy = async () => {
+        if (!shareUrl) return;
+        const copied = await setClipboardStringSafe(shareUrl);
+        if (!copied) {
+            Modal.alert(t('common.error'), t('textSelection.failedToCopy'));
+            return;
+        }
+        copyFeedback.markCopied('public-link');
+    };
+
+    const on = publicShare !== null;
+    return (
+        <View testID={props.testID} style={styles.card}>
+            <View style={styles.top}>
+                <Icon name="link" size={15} color={theme.colors.text.secondary} />
+                <Text style={styles.title}>{t('session.sharing.publicLink')}</Text>
+                {on || props.loaded ? (
+                    <View style={styles.status}>
+                        {on ? <StatusDot color={theme.colors.state.success.foreground} size={6} /> : null}
+                        <Text testID="session-public-link-status" style={[styles.statusText, on ? styles.statusOn : null]}>
+                            {on ? t('session.collaboration.pane.linkOn') : t('session.collaboration.pane.linkOff')}
+                        </Text>
+                    </View>
+                ) : null}
+            </View>
+            {props.failed ? (
+                <SurfaceStateCard
                     testID="session-public-link-retry"
-                    title={t('errors.operationFailed')}
-                    subtitle={t('common.retry')}
-                    icon={<Icon name="warning-circle" size={29} color={theme.colors.state.warning.foreground} />}
-                    onPress={() => { void controller.reload(); }}
-                    showChevron={false}
+                    size="line"
+                    kind="error"
+                    title={t('session.collaboration.pane.linkLoadFailed')}
+                    action={{ label: t('common.retry'), onPress: () => { void props.onRetry(); } }}
+                />
+            ) : props.loading && !on && !props.loaded ? (
+                <SurfaceStateCard testID="session-public-link-loading" size="line" kind="loading" title={t('common.loading')} />
+            ) : null}
+            {props.pendingApproval ? (
+                <SurfaceStateCard
+                    testID="session-public-link-approval"
+                    size="line"
+                    kind="warning"
+                    title={`${t('approvals.title')} · ${t('approvals.status.open')}`}
+                    action={{ label: t('approvals.title'), onPress: props.onOpenPendingApproval }}
                 />
             ) : null}
-        </ItemGroup>
+            {on && !configuring ? (
+                <>
+                    {shareUrl ? (
+                        <View style={styles.url}>
+                            <Text testID="session-public-link-url" style={styles.urlText} numberOfLines={1} selectable>{shareUrl}</Text>
+                            <CopiedPill visible={copyFeedback.isCopied('public-link')} testID="session-public-link-copy-feedback" />
+                            <ToolbarButton
+                                testID="session-public-link-copy"
+                                label={t('common.copy')}
+                                icon={<Icon name="copy" size={14} color={theme.colors.text.secondary} />}
+                                onPress={() => { void copy(); }}
+                            />
+                        </View>
+                    ) : (
+                        <Text testID="session-public-link-hidden" style={styles.meta}>{t('session.collaboration.pane.linkHidden')}</Text>
+                    )}
+                    <Text testID="session-public-link-detail" style={styles.meta}>{describeSessionPublicLink(publicShare)}</Text>
+                    {showQr && shareUrl ? (
+                        <View style={styles.qr} testID="session-public-link-qr-code">
+                            <React.Suspense fallback={<ActivitySpinner size="small" />}>
+                                <LazyQRCode data={shareUrl} size={QR_SIZE_PX} />
+                            </React.Suspense>
+                        </View>
+                    ) : null}
+                    <View style={styles.actions}>
+                        {shareUrl ? (
+                            <ToolbarButton
+                                testID="session-public-link-qr"
+                                label={showQr ? t('session.collaboration.pane.hideQrCode') : t('session.collaboration.pane.qrCode')}
+                                icon={<Icon name="qr-code" size={14} color={theme.colors.text.secondary} />}
+                                active={showQr}
+                                onPress={() => setShowQr((current) => !current)}
+                            />
+                        ) : null}
+                        <ToolbarButton
+                            testID="session-public-link-new"
+                            label={t('session.collaboration.pane.newLink')}
+                            icon={<Icon name="arrow-clockwise" size={14} color={theme.colors.text.secondary} />}
+                            disabled={mutationsDisabled}
+                            onPress={() => setConfiguring(true)}
+                        />
+                        <View style={styles.grow} />
+                        <ToolbarButton
+                            testID="session-public-link-turn-off"
+                            label={t('session.collaboration.pane.turnOff')}
+                            tone="danger"
+                            disabled={mutationsDisabled}
+                            busy={revoking}
+                            onPress={() => { void turnOff(); }}
+                        />
+                    </View>
+                </>
+            ) : null}
+            {!on && !configuring && props.loaded ? (
+                <>
+                    <Text style={styles.meta}>{t('session.sharing.publicLinkDescription')}</Text>
+                    <View style={styles.actions}>
+                        <ToolbarButton
+                            testID="session-public-link-create"
+                            label={t('session.sharing.createPublicLink')}
+                            tone="primary"
+                            disabled={mutationsDisabled}
+                            onPress={() => setConfiguring(true)}
+                        />
+                    </View>
+                </>
+            ) : null}
+            {configuring ? (
+                <View style={styles.options} testID="session-public-link-options">
+                    <View style={styles.optionGroup}>
+                        <Text style={styles.optionLabel}>{t('session.sharing.expiresIn')}</Text>
+                        <SegmentedTabBar<Expiry>
+                            role="radiogroup"
+                            tabs={[
+                                { id: '7', label: t('session.sharing.days7') },
+                                { id: '30', label: t('session.sharing.days30') },
+                                { id: 'never', label: t('session.sharing.never') },
+                            ]}
+                            activeTabId={expiry}
+                            onSelectTab={setExpiry}
+                            testIDPrefix="session-public-link-expiry"
+                            accessibilityLabel={t('session.sharing.expiresIn')}
+                            disabled={busy}
+                        />
+                    </View>
+                    <View style={styles.optionGroup}>
+                        <Text style={styles.optionLabel}>{t('session.sharing.maxUsesLabel')}</Text>
+                        <SegmentedTabBar<Uses>
+                            role="radiogroup"
+                            tabs={[
+                                { id: 'unlimited', label: t('session.sharing.unlimited') },
+                                { id: '10', label: t('session.sharing.uses10') },
+                                { id: '50', label: t('session.sharing.uses50') },
+                            ]}
+                            activeTabId={uses}
+                            onSelectTab={setUses}
+                            testIDPrefix="session-public-link-uses"
+                            accessibilityLabel={t('session.sharing.maxUsesLabel')}
+                            disabled={busy}
+                        />
+                    </View>
+                    <View style={styles.consent}>
+                        <View style={styles.consentText}>
+                            <Text style={styles.consentTitle}>{t('session.sharing.requireConsent')}</Text>
+                            <Text style={styles.meta}>{t('session.sharing.requireConsentDescription')}</Text>
+                        </View>
+                        <Switch
+                            testID="session-public-link-consent"
+                            accessibilityLabel={t('session.sharing.requireConsent')}
+                            value={consent}
+                            onValueChange={setConsent}
+                            disabled={busy}
+                        />
+                    </View>
+                    {on ? <Text style={styles.meta}>{t('session.collaboration.pane.newLinkReplaces')}</Text> : null}
+                    <View style={styles.actions}>
+                        <View style={styles.grow} />
+                        <ToolbarButton
+                            testID="session-public-link-options-cancel"
+                            label={t('common.cancel')}
+                            disabled={busy}
+                            onPress={() => setConfiguring(false)}
+                        />
+                        <ToolbarButton
+                            testID="session-public-link-options-create"
+                            label={on ? t('session.sharing.regeneratePublicLink') : t('session.sharing.createPublicLink')}
+                            tone="primary"
+                            disabled={mutationsDisabled}
+                            busy={creating}
+                            onPress={() => { void create(); }}
+                        />
+                    </View>
+                </View>
+            ) : null}
+        </View>
     );
 }

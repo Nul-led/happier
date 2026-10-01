@@ -58,6 +58,94 @@ function startInput(input: Readonly<{
 }
 
 describe('createSimulatorFrameProducerCaptureAdapter', () => {
+    it('reports failed viewer input without closing a healthy capture', async () => {
+        const receipts: MachineLiveStreamReceiptV1[] = [];
+        const frames: MachineLiveStreamFrameV1[] = [];
+        let reportInputFailure: (reason: string) => void = () => undefined;
+        let emit: Parameters<SimulatorCaptureFrameProducer['start']>[0]['emitFrame'] = () => undefined;
+        const stop = vi.fn();
+        const adapter = createSimulatorFrameProducerCaptureAdapter({ sourceId: 'source', sourceCodecs: ['image.mjpeg'],
+            producer: { start: async input => { reportInputFailure = input.reportInputFailure ?? input.fail; emit = input.emitFrame; return { stop }; } } });
+        await adapter.start(startInput({ emitReceipt: receipt => receipts.push(receipt), offerFrame: frame => { frames.push(frame); return { ok: true }; } }));
+        reportInputFailure('human_input_failed');
+        emit({ codecId: 'image.mjpeg', payload: Buffer.from('live'), keyframe: true });
+        expect(receipts).toMatchObject([{ reasonCode: 'human_input_failed', terminal: false }]);
+        expect(stop).not.toHaveBeenCalled();
+        expect(frames).toHaveLength(1);
+    });
+    it('coalesces rejected metadata and replays the latest snapshot before recovered pixels', async () => {
+        let emit: Parameters<SimulatorCaptureFrameProducer['start']>[0]['emitFrame'] = () => undefined;
+        let blocked = true;
+        const accepted: MachineLiveStreamFrameV1[] = [];
+        const adapter = createSimulatorFrameProducerCaptureAdapter({ sourceId: 'source', sourceCodecs: ['image.mjpeg'],
+            producer: { start: async ({ emitFrame }) => { emit = emitFrame; return { stop: () => undefined }; } } });
+        await adapter.start(startInput({ offerFrame: frame => {
+            if (blocked) return { ok: false, reasonCode: 'backpressure_window_exhausted' };
+            accepted.push(frame); return { ok: true };
+        } }));
+        emit({ codecId: 'image.mjpeg', payloadKind: 'metadata', payload: Buffer.from('old') });
+        emit({ codecId: 'image.mjpeg', payloadKind: 'metadata', payload: Buffer.from('human') });
+        blocked = false;
+        emit({ codecId: 'image.mjpeg', payload: Buffer.from('pixels'), keyframe: true });
+        expect(accepted.map(frame => [frame.sequence, frame.payloadKind, Buffer.from(frame.payloadBase64, 'base64').toString()]))
+            .toEqual([[1, 'metadata', 'human'], [2, 'image_keyframe', 'pixels']]);
+    });
+    it('requests a new H264 keyframe after backpressure instead of forwarding an orphan delta', async () => {
+        let emit: Parameters<SimulatorCaptureFrameProducer['start']>[0]['emitFrame'] = () => undefined;
+        const offered: string[] = [];
+        const requestKeyframe = vi.fn(() => ({ ok: true as const }));
+        const adapter = createSimulatorFrameProducerCaptureAdapter({ sourceId: 'source', sourceCodecs: ['h264.avcc'],
+            producer: { start: async ({ emitFrame }) => { emit = emitFrame; return { stop: () => undefined, requestKeyframe }; } } });
+        await adapter.start(startInput({ offerFrame: frame => {
+            offered.push(frame.payloadKind);
+            return offered.length === 1 ? { ok: false, reasonCode: 'backpressure_window_exhausted' } : { ok: true };
+        } }));
+        emit({ codecId: 'h264.avcc', payload: new Uint8Array([1]), keyframe: true });
+        emit({ codecId: 'h264.avcc', payloadKind: 'metadata', payload: Buffer.from('controller') });
+        emit({ codecId: 'h264.avcc', payload: new Uint8Array([2]), keyframe: false });
+        emit({ codecId: 'h264.avcc', payload: new Uint8Array([3]), keyframe: true });
+        expect(offered).toEqual(['image_keyframe', 'metadata', 'image_keyframe']);
+        expect(requestKeyframe).toHaveBeenCalledTimes(1);
+    });
+    it('rejects an empty viewer codec set and a requested codec outside that set before capture', async () => {
+        const producer: SimulatorCaptureFrameProducer = { start: vi.fn(async () => ({ stop: () => undefined })) };
+        const adapter = createSimulatorFrameProducerCaptureAdapter({ sourceId: 'source', sourceCodecs: ['image.mjpeg', 'h264.avcc'], producer });
+        expect(await adapter.start(startInput({ startRequest: startRequest({ viewerCodecs: [] }) })))
+            .toEqual({ ok: false, reasonCode: 'unsupported_codec' });
+        expect(await adapter.start(startInput({ startRequest: startRequest({ codecId: 'h264.avcc', viewerCodecs: ['image.mjpeg'] }) })))
+            .toEqual({ ok: false, reasonCode: 'unsupported_codec' });
+        expect(producer.start).not.toHaveBeenCalled();
+    });
+    it('keeps capture alive on temporary backpressure and reuses the unaccepted sequence', async () => {
+        let emit: Parameters<SimulatorCaptureFrameProducer['start']>[0]['emitFrame'] = () => undefined;
+        const stop = vi.fn();
+        const receipts: MachineLiveStreamReceiptV1[] = [];
+        const offered: number[] = [];
+        const adapter = createSimulatorFrameProducerCaptureAdapter({ sourceId: 'source', sourceCodecs: ['image.mjpeg'],
+            producer: { start: async ({ emitFrame }) => { emit = emitFrame; return { stop }; } } });
+        const result = await adapter.start(startInput({ emitReceipt: receipt => receipts.push(receipt),
+            offerFrame: frame => { offered.push(frame.sequence); return offered.length === 1 ? { ok: false, reasonCode: 'backpressure_window_exhausted' } : { ok: true }; } }));
+        expect(result.ok).toBe(true);
+        emit({ codecId: 'image.mjpeg', payload: new Uint8Array([1]) });
+        emit({ codecId: 'image.mjpeg', payload: new Uint8Array([2]) });
+        expect(offered).toEqual([1, 1]);
+        expect(receipts).toEqual([]);
+        expect(stop).not.toHaveBeenCalled();
+    });
+    it('forwards relay transport capture controls to the existing producer hooks', async () => {
+        const kinds: string[] = [];
+        const adapter = createSimulatorFrameProducerCaptureAdapter({ sourceId: 'source', sourceCodecs: ['image.mjpeg'],
+            producer: { start: async () => ({ stop: () => undefined,
+                pause: control => { kinds.push(control.kind); return { ok: true }; },
+                resume: control => { kinds.push(control.kind); return { ok: true }; },
+                requestKeyframe: control => { kinds.push(control.kind); return { ok: true }; } }) } });
+        const result = await adapter.start(startInput());
+        if (!result.ok) throw new Error('capture did not start');
+        expect(result.session.applyControl?.({ v: 1, streamId: 'stream_1', kind: 'pause', reasonCode: 'viewer_paused' })).toEqual({ ok: true });
+        expect(result.session.applyControl?.({ v: 1, streamId: 'stream_1', kind: 'resume' })).toEqual({ ok: true });
+        expect(result.session.applyControl?.({ v: 1, streamId: 'stream_1', kind: 'keyframe_required', reasonCode: 'resync' })).toEqual({ ok: true });
+        expect(kinds).toEqual(['pause_capture', 'resume_capture', 'request_keyframe']);
+    });
     it('emits MJPEG frames with base64 payload size and monotonic sequence numbers', async () => {
         const offeredFrames: MachineLiveStreamFrameV1[] = [];
         const producer: SimulatorCaptureFrameProducer = {
@@ -122,7 +210,7 @@ describe('createSimulatorFrameProducerCaptureAdapter', () => {
         });
 
         const result = await adapter.start(startInput({
-            startRequest: startRequest({ preferredCodec: 'h264.avcc' } as Partial<MachineLiveStreamStartRequestV1>),
+            startRequest: startRequest({ codecId: 'h264.avcc' }),
             emitReceipt: (receipt) => receipts.push(receipt),
         }));
 

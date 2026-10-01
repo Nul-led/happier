@@ -1675,7 +1675,7 @@ describe('buildSessionListRenderableFromSession with transcript aggregate', () =
                 seq: 7,
                 text: 'done',
             },
-        ] as unknown as import('@/sync/domains/messages/messageTypes').Message[];
+        ] as unknown as import("@happier-dev/session-core/messages").Message[];
 
         const session = {
             id: 's_aggregate',

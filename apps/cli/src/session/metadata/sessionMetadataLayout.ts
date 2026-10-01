@@ -1,6 +1,7 @@
 import {
   SESSION_METADATA_LAYOUT_VERSION_V1,
   SessionSharedMetadataV1Schema,
+  normalizeSessionMetadataForRead,
   type SessionSharedMetadataV1,
 } from '@happier-dev/protocol';
 
@@ -31,10 +32,14 @@ function tryParseSessionMetadataLayout(
 
   const layoutVersion = readSessionMetadataLayoutVersion(metadataLayoutVersion);
   if (layoutVersion === 0) {
-    return {
-      layoutVersion,
-      metadata: Object.fromEntries(Object.entries(value)),
-    };
+    try {
+      return {
+        layoutVersion,
+        metadata: normalizeSessionMetadataForRead(Object.fromEntries(Object.entries(value))),
+      };
+    } catch {
+      return null;
+    }
   }
   if (layoutVersion !== SESSION_METADATA_LAYOUT_VERSION_V1) return null;
 

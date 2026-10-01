@@ -6,6 +6,7 @@ import type {
 import {
     buildConnectedAccountsSettingsRoute,
     buildConnectedAccountSettingsRoute,
+    buildNewConnectedAccountPoolRoute,
     readConnectedAccountAddRequest,
     resolveConnectedAccountSettingsRoute,
     resolveQualifiedConnectedAccountSettingsRoute,
@@ -47,7 +48,7 @@ describe('connectedAccountSettingsRoute', () => {
         ));
     });
 
-    it('round-trips a novel external service through only its exact qualified identity', () => {
+    it('sends an unfocused service to the collection instead of a per-service page', () => {
         const service = {
             pluginId: 'acme.connected-accounts-conformance',
             localId: 'vault',
@@ -56,18 +57,12 @@ describe('connectedAccountSettingsRoute', () => {
         const route = buildConnectedAccountSettingsRoute(service);
 
         expect(route).toEqual({
-            pathname: '/(app)/settings/connected-services/account',
-            params: service,
-        });
-        expect(resolveConnectedAccountSettingsRoute(route.params, entries)).toEqual({
-            service,
-            entry: entries[0],
-            legacyServiceId: null,
-            focus: null,
+            pathname: '/(app)/settings/connected-services',
+            params: {},
         });
     });
 
-    it('opens a service page on its new-account draft and still resolves the service', () => {
+    it('opens collection setup for the exact service and reads legacy add requests', () => {
         const service = {
             pluginId: 'acme.connected-accounts-conformance',
             localId: 'vault',
@@ -75,10 +70,27 @@ describe('connectedAccountSettingsRoute', () => {
 
         const route = buildConnectedAccountSettingsRoute(service, null, { add: true });
 
-        expect(route.params).toEqual({ ...service, add: '1' });
-        expect(resolveConnectedAccountSettingsRoute(route.params, entries)).toMatchObject({ service, focus: null });
-        expect(readConnectedAccountAddRequest(route.params)).toBe(true);
+        expect(route).toEqual({
+            pathname: '/(app)/settings/connected-services',
+            params: { connect: '1', service: 'acme.connected-accounts-conformance/vault' },
+        });
+        expect(readConnectedAccountAddRequest({ ...service, add: '1' })).toBe(true);
         expect(readConnectedAccountAddRequest(buildConnectedAccountSettingsRoute(service).params)).toBe(false);
+    });
+
+    it('opens a service page focused on a new-pool draft, which is not a pool', () => {
+        const service = {
+            pluginId: 'acme.connected-accounts-conformance',
+            localId: 'vault',
+        };
+
+        const route = buildNewConnectedAccountPoolRoute(service);
+
+        expect(route.params).toEqual({ ...service, newPool: '1' });
+        expect(resolveConnectedAccountSettingsRoute(route.params, entries)).toMatchObject({ service, focus: { kind: 'newPool' } });
+        // A draft is never also an account or a pool.
+        expect(resolveConnectedAccountSettingsRoute({ ...route.params, groupId: 'work' }, entries)).toBeNull();
+        expect(resolveConnectedAccountSettingsRoute({ ...service, newPool: 'yes' }, entries)).toBeNull();
     });
 
     it('keeps a generated released qualified route reachable before its descriptor projects', () => {
@@ -86,9 +98,7 @@ describe('connectedAccountSettingsRoute', () => {
             pluginId: 'happier.agent.codex',
             localId: 'openai-codex',
         };
-        const route = buildConnectedAccountSettingsRoute(service);
-
-        expect(resolveQualifiedConnectedAccountSettingsRoute(route.params, [])).toMatchObject({
+        expect(resolveQualifiedConnectedAccountSettingsRoute(service, [])).toMatchObject({
             service,
             entry: {
                 serviceId: 'openai-codex',

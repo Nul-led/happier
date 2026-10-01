@@ -339,6 +339,8 @@ describe('production handoff -> Mutagen manager -> broker -> controller -> nativ
       const targetRootOwnership = createWorkspaceRootOwnershipManager({
         lockDirectory: join(targetHome, 'daemon', 'workspace-sync', 'root-ownership'),
       });
+      const targetAgentDataDirectory = join(targetHome, 'daemon', 'workspace-sync', 'mutagen', 'data');
+      await mkdir(targetAgentDataDirectory, { recursive: true, mode: 0o700 });
       const targetAgentStreams: WorkspaceSyncOwnedLocalAgent[] = [];
       const callMachineRpc = vi.fn(async () => {
         throw new Error('The composed target ingress must remain on the authenticated machine carrier');
@@ -352,10 +354,12 @@ describe('production handoff -> Mutagen manager -> broker -> controller -> nativ
           materializationDirectory: join(targetHome, 'daemon', 'workspace-sync', 'bootstrap'),
           rootOwnershipManager: targetRootOwnership,
         },
+        resolutionMaterialDirectory: join(targetHome, 'daemon', 'workspace-sync', 'resolution-material'),
         openRootedAgent: async (request) => {
           const agent = await launchWorkspaceSyncLocalAgent({
             executablePath: binaries.agent,
             args: ['synchronizer', '--external', '--root', request.canonicalRoot],
+            dataDirectory: targetAgentDataDirectory,
             ...(request.signal ? { signal: request.signal } : {}),
           });
           targetAgentStreams.push(agent);
@@ -420,8 +424,10 @@ describe('production handoff -> Mutagen manager -> broker -> controller -> nativ
 
         const targetMachine = {
           id: targetMachineId,
-          daemonStateVersion: 7,
-          daemonState: { peerMediation: { iroh: { endpoint: targetIroh.endpoint } } },
+          operationProtocolCapabilitiesRevision: 7,
+          operationProtocolCapabilities: {
+            irohMachineEndpoint: { protocolVersions: [1], ...targetIroh.endpoint },
+          },
         };
         const readTargetMachine = vi.fn(async () => targetMachine);
         const productionOpen = createWorkspaceMachineCarrierTunnelOpen({

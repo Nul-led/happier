@@ -1,19 +1,17 @@
 import * as React from 'react';
 
-import type { ReadinessProbeResult } from '@happier-dev/connection-supervisor';
-
-import { createEndpointReadinessProbe } from '@/sync/runtime/connectivity/createEndpointReadinessProbe';
+import {
+    createEndpointReadinessProbe,
+    type EndpointReadinessProbeResult,
+} from '@/sync/runtime/connectivity/createEndpointReadinessProbe';
 
 export type EndpointReadinessState = Readonly<{
     status: 'unknown' | 'checking' | 'ready' | 'unavailable' | 'blocked';
-    probeResult?: ReadinessProbeResult;
+    probeResult?: EndpointReadinessProbeResult;
 }>;
 
-function isMixedContentBlockedProbeResult(result: ReadinessProbeResult): boolean {
-    if (result.status !== 'retry_later') return false;
-    const message = typeof result.errorMessage === 'string' ? result.errorMessage : '';
-    if (!message) return false;
-    return message.toLowerCase().includes('mixed content');
+function isMixedContentBlockedProbeResult(result: EndpointReadinessProbeResult): boolean {
+    return result.status === 'retry_later' && result.blockedBy === 'mixed_content';
 }
 
 export function useEndpointReadinessMap(params: Readonly<{

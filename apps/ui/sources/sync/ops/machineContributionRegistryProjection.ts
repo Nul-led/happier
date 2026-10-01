@@ -1,5 +1,6 @@
 import {
     DaemonContributionRegistryProjectionDescribeRequestSchema,
+    DaemonPluginUiTargetedContributionsReadRequestSchema,
     DaemonPluginSettingsGetRequestSchema,
     DaemonPluginSettingsGetResponseSchema,
     DaemonPluginSettingsSetRequestSchema,
@@ -15,6 +16,8 @@ import {
     DaemonPluginStructuredMessageActionExecuteResponseSchema,
     DaemonPluginActionFormConnectedAccountOptionsResolveRequestSchema,
     DaemonPluginActionFormConnectedAccountOptionsResolveResponseSchema,
+    DaemonPluginActionSchemasReadRequestSchema,
+    DaemonPluginActionSchemasReadResponseSchema,
     DaemonPluginUiResourceReadRequestSchema,
     DaemonPluginUiResourceReadResponseSchema,
     DAEMON_PLUGIN_UI_RESOURCE_WATCH_MAX_WAIT_MS,
@@ -34,6 +37,8 @@ import {
     type DaemonPluginStructuredMessageActionExecuteResponse,
     type DaemonPluginActionFormConnectedAccountOptionsResolveRequest,
     type DaemonPluginActionFormConnectedAccountOptionsResolveResponse,
+    type DaemonPluginActionSchemasReadRequest,
+    type DaemonPluginActionSchemasReadResponse,
     type DaemonPluginUiResourceReadRequest,
     type DaemonPluginUiResourceReadResponse,
     type DaemonPluginUiResourceWatchOpenRequest,
@@ -41,7 +46,6 @@ import {
     type DaemonPluginUiResourceWatchNextRequest,
     type DaemonPluginUiResourceWatchNextResponse,
     type DaemonPluginUiResourceWatchCloseRequest,
-    type DaemonContributionRegistryProjectionMountedTargetV1,
     type DaemonContributionRegistryProjectionAutomationEligibleEventsV1,
     type DaemonPluginUiComposerSurfaceCatalogEntryV1,
     type DaemonPluginUiTargetedSurfaceMountV1,
@@ -63,14 +67,13 @@ import {
 } from '@/sync/runtime/rpcErrors';
 import {
     parseDaemonContributionRegistryProjectionDescribeResponse,
+    parseDaemonPluginUiTargetedContributionsReadResponse,
     type DaemonContributionRegistryProjection,
 } from '@/sync/api/daemon/daemonContributionRegistryProjectionProtocol';
-import {
-    resolveNativeReactNativeHostRuntimeIdentity,
-    resolveReactNativeWebLoaderCapability,
-} from '@/components/plugins/reactNative/hostRuntimeIdentity';
+import { resolveNativeReactNativeHostRuntimeIdentity } from '@/components/plugins/reactNative/hostRuntimeIdentity';
 import { resolveHostedWebFrameCapability } from '@/components/plugins/hostedWeb/hostedWebFrameCapability';
 import { getPreferredLanguage } from '@/text';
+import { serverAccountScopeKeySuffix, type ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
 // The projection revision/listener registry lives in its own dependency-light
 // owner so the canonical machine-state writer can advance it without importing
 // this RPC module. It is re-exported here because this is the seam every
@@ -89,20 +92,48 @@ export {
     type MachineContributionRegistryProjectionScope,
 } from './machineContributionRegistryProjectionRevision';
 
+/**
+ * Why a projection read produced no current answer. The transport classifies
+ * the failure once so a fallback can say what actually happened:
+ * - `not-supported`: the daemon does not serve the method;
+ * - `timeout` / `aborted`: the machine RPC budget elapsed or the caller left;
+ * - `invalid-response`: the daemon answered with a body this client cannot
+ *   parse, or one that answers a different question than was asked;
+ * - `error`: any other transport failure.
+ */
+export type MachineContributionRegistryProjectionFailureReason =
+    | MachinePluginTransportReason
+    | 'invalid-response';
+
 export type MachineContributionRegistryProjectionDescribeResult =
     | Readonly<{
         supported: true;
         projection: DaemonContributionRegistryProjection;
         /** The daemon has already selected the concrete Composer renderer for every row. */
         composerSurfaceCatalog?: readonly DaemonPluginUiComposerSurfaceCatalogEntryV1[];
-        /** Present only after this transport correlates it to `mountedTarget`. */
-        targetedContributions?: PluginUiTargetedContributionsV1;
-        /** Present only after every mount is correlated to the same `mountedTarget`. */
-        targetedSurfaceMounts?: readonly DaemonPluginUiTargetedSurfaceMountV1[];
         /** Global current Event-automation composer facts from the same projection response. */
         automationEligibleEvents?: DaemonContributionRegistryProjectionAutomationEligibleEventsV1;
     }>
-    | Readonly<{ supported: false; reason: 'not-supported' | 'error' }>;
+    | Readonly<{ supported: false; reason: MachineContributionRegistryProjectionFailureReason }>;
+
+/**
+ * The current contributions to one mounted target, tagged with the daemon's
+ * current occurrence of that target (`targetedContributions.target`). The tag
+ * may differ from the occurrence the caller mounted: that is a newer plugin
+ * reload, not an error.
+ */
+export type MachinePluginUiTargetedContributionsReadResult =
+    | Readonly<{
+        supported: true;
+        targetedContributions: PluginUiTargetedContributionsV1;
+        targetedSurfaceMounts: readonly DaemonPluginUiTargetedSurfaceMountV1[];
+    }>
+    | Readonly<{
+        supported: false;
+        reason: MachineContributionRegistryProjectionFailureReason | 'unavailable';
+        /** The daemon's own code when it answered `unavailable`. */
+        code?: string;
+    }>;
 
 export type MachinePluginSettingsResult =
     | Readonly<{ supported: true; snapshot: DaemonPluginSettingsSnapshot }>
@@ -140,6 +171,10 @@ export type MachinePluginSecretDeleteResult =
 export type MachinePluginStructuredMessageActionResult =
     | Readonly<{ supported: true; result: DaemonPluginStructuredMessageActionExecuteResponse }>
     | Readonly<{ supported: false; reason: 'not-supported' | 'error' | 'outcomeUnknown' }>;
+
+export type MachinePluginActionSchemasReadResult =
+    | Readonly<{ supported: true; result: DaemonPluginActionSchemasReadResponse }>
+    | Readonly<{ supported: false; reason: MachinePluginTransportReason }>;
 
 export type MachinePluginActionFormConnectedAccountOptionsResult =
     | Readonly<{ supported: true; result: DaemonPluginActionFormConnectedAccountOptionsResolveResponse }>
@@ -205,170 +240,208 @@ function classifyMachinePluginTransportError(error: unknown): MachinePluginTrans
     return 'error';
 }
 
-const projectionDescribeInflightByKey = new Map<string, Promise<MachineContributionRegistryProjectionDescribeResult>>();
+/**
+ * One in-flight read per question. The key is the routed machine scope, its
+ * projection revision (endpoint identity: reconnect, daemon replacement,
+ * explicit invalidation) and the request payload. Nothing caller-specific —
+ * a timeout, a caller epoch — enters it, so every reader of the same question
+ * shares one request.
+ */
+const projectionReadInflightByKey = new Map<string, Promise<unknown>>();
 
-function projectionDescribeInflightKey(params: Readonly<{
-    scope: MachineContributionRegistryProjectionScope;
-    timeoutMs: number | null;
-    revision: number;
-    requestEpoch: string | number | null;
-    payload: unknown;
-}>): string {
-    return JSON.stringify([
-        machineContributionRegistryProjectionScopeKey(params.scope),
-        params.timeoutMs,
-        params.revision,
-        params.requestEpoch,
-        params.payload,
+/**
+ * The Account a read is for. Every handle of one Account shares its reads; a
+ * successor Account never joins a read its predecessor started. Each caller
+ * still fences what it does with the answer on its own lifetime.
+ */
+type ProjectionReadAccount = Readonly<{ scope: ServerAccountScope }>;
+
+function shareProjectionRead<T>(
+    scope: MachineContributionRegistryProjectionScope,
+    payload: unknown,
+    account: ProjectionReadAccount | null | undefined,
+    read: () => Promise<T>,
+): Promise<T> {
+    const key = JSON.stringify([
+        machineContributionRegistryProjectionScopeKey(scope),
+        getMachineContributionRegistryProjectionRevision(scope),
+        account ? serverAccountScopeKeySuffix(account.scope) : null,
+        payload,
     ]);
+    const incumbent = projectionReadInflightByKey.get(key) as Promise<T> | undefined;
+    if (incumbent) return incumbent;
+    const request = read();
+    projectionReadInflightByKey.set(key, request);
+    void request.then(() => {
+        if (projectionReadInflightByKey.get(key) === request) {
+            projectionReadInflightByKey.delete(key);
+        }
+    });
+    return request;
 }
 
-function targetedContributionsMatchMountedTarget(
-    snapshot: PluginUiTargetedContributionsV1 | undefined,
-    target: DaemonContributionRegistryProjectionMountedTargetV1,
-): snapshot is PluginUiTargetedContributionsV1 {
-    return snapshot?.target.pluginId === target.pluginId
-        && snapshot.target.immutableGenerationId === target.immutableGenerationId;
-}
-
-function targetedSurfaceMountsMatchMountedTarget(
-    mounts: readonly DaemonPluginUiTargetedSurfaceMountV1[] | undefined,
-    target: DaemonContributionRegistryProjectionMountedTargetV1,
-): boolean {
-    return mounts === undefined || mounts.every((mount) => (
-        mount.target.pluginId === target.pluginId
-        && mount.target.immutableGenerationId === target.immutableGenerationId
-    ));
-}
-
-async function waitForProjectionDescribeResult(
-    request: Promise<MachineContributionRegistryProjectionDescribeResult>,
+/** A caller that leaves stops waiting; the shared read keeps serving the others. */
+async function waitForSharedRead<T>(
+    request: Promise<T>,
     signal: AbortSignal | undefined,
-): Promise<MachineContributionRegistryProjectionDescribeResult> {
+    aborted: () => T,
+): Promise<T> {
     if (!signal) return await request;
-    if (signal.aborted) return { supported: false, reason: 'error' };
-
+    if (signal.aborted) return aborted();
     return await new Promise((resolve) => {
-        const onAbort = () => resolve({ supported: false, reason: 'error' });
+        const onAbort = () => resolve(aborted());
         signal.addEventListener('abort', onAbort, { once: true });
-        request.then((result) => {
+        void request.then((result) => {
             signal.removeEventListener('abort', onAbort);
             resolve(result);
         });
     });
 }
 
+async function readProjectionClientContext(machineId: string) {
+    const locale = getPreferredLanguage();
+    const reactNativeHostRuntimeIdentity = resolveNativeReactNativeHostRuntimeIdentity();
+    const hostedWebFrameCapability = await resolveHostedWebFrameCapability();
+    return {
+        machineId,
+        // Every projection read narrows plugin translation bundles to what this
+        // client renders: its preferred locale merged over English. Capture it
+        // before asynchronous platform probing so the request and its cache
+        // qualification refer to the same locale, including remote settings updates.
+        locale,
+        ...(reactNativeHostRuntimeIdentity ? { reactNativeHostRuntimeIdentity } : {}),
+        ...(hostedWebFrameCapability ? { hostedWebFrameCapability } : {}),
+    };
+}
+
+/**
+ * The machine-wide projection transport. Its deadline is the machine RPC
+ * owner's own budget; callers do not choose a shorter one.
+ */
 export async function machineContributionRegistryProjectionDescribe(
     machineId: string,
     opts?: Readonly<{
         serverId?: string | null;
-        timeoutMs?: number | null;
         signal?: AbortSignal;
-        requestEpoch?: string | number;
-        /** The sole target whose cold-admitted snapshot this caller may receive. */
-        mountedTarget?: DaemonContributionRegistryProjectionMountedTargetV1;
+        /** The Account the read is for; reads are shared only within it. */
+        accountLifetime?: ProjectionReadAccount | null;
     }>,
 ): Promise<MachineContributionRegistryProjectionDescribeResult> {
-    if (opts?.signal?.aborted) return { supported: false, reason: 'error' };
+    if (opts?.signal?.aborted) return { supported: false, reason: 'aborted' };
+    let payload: ReturnType<typeof DaemonContributionRegistryProjectionDescribeRequestSchema.parse>;
     try {
-        const reactNativeHostRuntimeIdentity = resolveNativeReactNativeHostRuntimeIdentity();
-        const reactNativeWebLoaderCapability = resolveReactNativeWebLoaderCapability();
-        const hostedWebFrameCapability = await resolveHostedWebFrameCapability();
-        const payload = DaemonContributionRegistryProjectionDescribeRequestSchema.parse({
-            machineId,
-            // The one place the describe request is built, so every caller narrows
-            // plugin translation bundles to what this client can actually render:
-            // its preferred locale merged over English. Changing the app language
-            // restarts the app (`settings/language.tsx`), and the in-flight key
-            // below already includes the payload, so a stale locale cannot be
-            // served from this client's own dedupe.
-            locale: getPreferredLanguage(),
-            ...(reactNativeHostRuntimeIdentity ? { reactNativeHostRuntimeIdentity } : {}),
-            ...(reactNativeWebLoaderCapability ? { reactNativeWebLoaderCapability } : {}),
-            ...(hostedWebFrameCapability ? { hostedWebFrameCapability } : {}),
-            ...(opts?.mountedTarget ? { mountedTarget: opts.mountedTarget } : {}),
-        });
-        const scope = {
-            machineId: payload.machineId,
-            serverId: opts?.serverId ?? null,
-        } satisfies MachineContributionRegistryProjectionScope;
-        const timeoutMs = typeof opts?.timeoutMs === 'number' ? opts.timeoutMs : null;
-        const key = projectionDescribeInflightKey({
-            scope,
-            timeoutMs,
-            revision: getMachineContributionRegistryProjectionRevision(scope),
-            requestEpoch: opts?.requestEpoch ?? null,
-            payload,
-        });
-        let request = projectionDescribeInflightByKey.get(key);
-        if (!request) {
-            request = (async (): Promise<MachineContributionRegistryProjectionDescribeResult> => {
-                try {
-                    const response = await machineRpcWithServerScope<unknown, typeof payload>({
-                        machineId: payload.machineId,
-                        serverId: opts?.serverId,
-                        timeoutMs: timeoutMs ?? undefined,
-                        method: RPC_METHODS.DAEMON_MERGED_CONTRIBUTION_REGISTRY_PROJECTION_DESCRIBE,
-                        payload,
-                    });
-                    if (isRpcMethodNotFoundResult(response)) {
-                        return { supported: false, reason: 'not-supported' };
-                    }
-                    const parsed = parseDaemonContributionRegistryProjectionDescribeResponse(response);
-                    if (!parsed) {
-                        return { supported: false, reason: 'error' };
-                    }
-                    const mountedTarget = payload.mountedTarget;
-                    if (mountedTarget) {
-                        if (!targetedContributionsMatchMountedTarget(
-                            parsed.targetedContributions,
-                            mountedTarget,
-                        ) || !targetedSurfaceMountsMatchMountedTarget(
-                            parsed.targetedSurfaceMounts,
-                            mountedTarget,
-                        )) {
-                            return { supported: false, reason: 'error' };
-                        }
-                        return {
-                            supported: true,
-                            projection: parsed.projection,
-                            ...(parsed.composerSurfaceCatalog === undefined
-                                ? {}
-                                : { composerSurfaceCatalog: parsed.composerSurfaceCatalog }),
-                            targetedContributions: parsed.targetedContributions,
-                            ...(parsed.targetedSurfaceMounts === undefined
-                                ? {}
-                                : { targetedSurfaceMounts: parsed.targetedSurfaceMounts }),
-                            ...(parsed.automationEligibleEvents === undefined
-                                ? {}
-                                : { automationEligibleEvents: parsed.automationEligibleEvents }),
-                        };
-                    }
-                    return {
-                        supported: true,
-                        projection: parsed.projection,
-                        ...(parsed.composerSurfaceCatalog === undefined
-                            ? {}
-                            : { composerSurfaceCatalog: parsed.composerSurfaceCatalog }),
-                        ...(parsed.automationEligibleEvents === undefined
-                            ? {}
-                            : { automationEligibleEvents: parsed.automationEligibleEvents }),
-                    };
-                } catch {
-                    return { supported: false, reason: 'error' };
-                }
-            })();
-            projectionDescribeInflightByKey.set(key, request);
-            void request.then(() => {
-                if (projectionDescribeInflightByKey.get(key) === request) {
-                    projectionDescribeInflightByKey.delete(key);
-                }
-            });
-        }
-        return await waitForProjectionDescribeResult(request, opts?.signal);
+        payload = DaemonContributionRegistryProjectionDescribeRequestSchema.parse(
+            await readProjectionClientContext(machineId),
+        );
     } catch {
         return { supported: false, reason: 'error' };
     }
+    const scope = {
+        machineId: payload.machineId,
+        serverId: opts?.serverId ?? null,
+    } satisfies MachineContributionRegistryProjectionScope;
+    const request = shareProjectionRead(scope, payload, opts?.accountLifetime, async (): Promise<MachineContributionRegistryProjectionDescribeResult> => {
+        try {
+            const response = await machineRpcWithServerScope<unknown, typeof payload>({
+                machineId: payload.machineId,
+                serverId: opts?.serverId,
+                accountId: opts?.accountLifetime?.scope.accountId,
+                method: RPC_METHODS.DAEMON_MERGED_CONTRIBUTION_REGISTRY_PROJECTION_DESCRIBE,
+                payload,
+            });
+            if (isRpcMethodNotFoundResult(response)) {
+                return { supported: false, reason: 'not-supported' };
+            }
+            const parsed = parseDaemonContributionRegistryProjectionDescribeResponse(response);
+            if (!parsed) return { supported: false, reason: 'invalid-response' };
+            return {
+                supported: true,
+                projection: parsed.projection,
+                ...(parsed.composerSurfaceCatalog === undefined
+                    ? {}
+                    : { composerSurfaceCatalog: parsed.composerSurfaceCatalog }),
+                ...(parsed.automationEligibleEvents === undefined
+                    ? {}
+                    : { automationEligibleEvents: parsed.automationEligibleEvents }),
+            };
+        } catch (error) {
+            if (isRpcMethodNotFoundError(error) || isRpcMethodNotAvailableError(error)) {
+                return { supported: false, reason: 'not-supported' };
+            }
+            return { supported: false, reason: classifyMachinePluginTransportError(error) };
+        }
+    });
+    return await waitForSharedRead(request, opts?.signal, () => ({ supported: false, reason: 'aborted' }));
+}
+
+/**
+ * Reads the current contributions to one mounted target. The daemon answers
+ * with its current occurrence of that target; it never fences the read.
+ */
+export async function machinePluginUiTargetedContributionsRead(
+    machineId: string,
+    opts: Readonly<{
+        serverId?: string | null;
+        pluginId: string;
+        signal?: AbortSignal;
+        accountLifetime?: ProjectionReadAccount | null;
+    }>,
+): Promise<MachinePluginUiTargetedContributionsReadResult> {
+    if (opts.signal?.aborted) return { supported: false, reason: 'aborted' };
+    let payload: ReturnType<typeof DaemonPluginUiTargetedContributionsReadRequestSchema.parse>;
+    try {
+        payload = DaemonPluginUiTargetedContributionsReadRequestSchema.parse({
+            ...(await readProjectionClientContext(machineId)),
+            pluginId: opts.pluginId,
+        });
+    } catch {
+        return { supported: false, reason: 'error' };
+    }
+    const scope = {
+        machineId: payload.machineId,
+        serverId: opts.serverId ?? null,
+    } satisfies MachineContributionRegistryProjectionScope;
+    const request = shareProjectionRead(scope, payload, opts.accountLifetime, async (): Promise<MachinePluginUiTargetedContributionsReadResult> => {
+        try {
+            const response = await machineRpcWithServerScope<unknown, typeof payload>({
+                machineId: payload.machineId,
+                serverId: opts.serverId,
+                method: RPC_METHODS.DAEMON_PLUGIN_UI_TARGETED_CONTRIBUTIONS_READ,
+                payload,
+            });
+            if (isRpcMethodNotFoundResult(response)) {
+                return { supported: false, reason: 'not-supported' };
+            }
+            const parsed = parseDaemonPluginUiTargetedContributionsReadResponse(response);
+            if (!parsed) return { supported: false, reason: 'invalid-response' };
+            if (parsed.status === 'unavailable') {
+                return { supported: false, reason: 'unavailable', code: parsed.code };
+            }
+            // A snapshot for another plugin, or mounts for another target,
+            // answers a different question: it is never shown for this one.
+            const target = parsed.targetedContributions.target;
+            if (
+                target.pluginId !== payload.pluginId
+                || parsed.targetedSurfaceMounts.some((mount) => (
+                    mount.target.pluginId !== target.pluginId
+                    || mount.target.occurrenceId !== target.occurrenceId
+                ))
+            ) {
+                return { supported: false, reason: 'invalid-response' };
+            }
+            return {
+                supported: true,
+                targetedContributions: parsed.targetedContributions,
+                targetedSurfaceMounts: parsed.targetedSurfaceMounts,
+            };
+        } catch (error) {
+            if (isRpcMethodNotFoundError(error) || isRpcMethodNotAvailableError(error)) {
+                return { supported: false, reason: 'not-supported' };
+            }
+            return { supported: false, reason: classifyMachinePluginTransportError(error) };
+        }
+    });
+    return await waitForSharedRead(request, opts.signal, () => ({ supported: false, reason: 'aborted' }));
 }
 
 export async function machinePluginSettingsGet(
@@ -711,12 +784,9 @@ export async function machinePluginStructuredMessageActionExecute(
         const payload = DaemonPluginStructuredMessageActionExecuteRequestSchema.parse({
             machineId,
             ...(opts.requestId ? { requestId: opts.requestId } : {}),
-            expectedGeneration: opts.expectedGeneration,
+            expectedContributorOccurrenceId: opts.expectedContributorOccurrenceId,
             qualifiedActionId: opts.qualifiedActionId,
             ...(opts.input === undefined ? {} : { input: opts.input }),
-            ...(opts.expectedContributorImmutableGenerationId === undefined
-                ? {}
-                : { expectedContributorImmutableGenerationId: opts.expectedContributorImmutableGenerationId }),
             ...(opts.selectedActionInputCarrier === undefined
                 ? {}
                 : { selectedActionInputCarrier: opts.selectedActionInputCarrier }),
@@ -724,6 +794,7 @@ export async function machinePluginStructuredMessageActionExecute(
             ...(opts.messageActionReference ? { messageActionReference: opts.messageActionReference } : {}),
             executionSurface: opts.executionSurface,
             ...(opts.invocation ? { invocation: opts.invocation } : {}),
+            ...(opts.presentUserIntent ? { presentUserIntent: opts.presentUserIntent } : {}),
         });
         const response = await machineRpcWithServerScope<unknown, typeof payload>({
             machineId,
@@ -762,7 +833,7 @@ export async function machinePluginActionFormConnectedAccountOptionsResolve(
     try {
         const payload = DaemonPluginActionFormConnectedAccountOptionsResolveRequestSchema.parse({
             machineId,
-            expectedGeneration: opts.expectedGeneration,
+            expectedOccurrenceId: opts.expectedOccurrenceId,
             qualifiedActionId: opts.qualifiedActionId,
             fieldPath: opts.fieldPath,
         });
@@ -785,6 +856,78 @@ export async function machinePluginActionFormConnectedAccountOptionsResolve(
 }
 
 /**
+ * Action schemas by routed machine scope and qualified Action id. The bulk
+ * projection omits them, so this is the one reader: an Action occurrence's
+ * declaration cannot change, so a settled answer is kept for that occurrence
+ * and concurrent readers share one request. A reloaded plugin has a new
+ * occurrence id, which replaces the entry and re-reads. Failures are not kept.
+ */
+const actionSchemaReadsByKey = new Map<string, Readonly<{
+    occurrenceId: string;
+    request: Promise<MachinePluginActionSchemasReadResult>;
+}>>();
+
+/** Forgets every shared in-flight projection read and memoised Action schema. */
+export function resetMachineProjectionReadsForTests(): void {
+    projectionReadInflightByKey.clear();
+    actionSchemaReadsByKey.clear();
+}
+
+export async function machinePluginActionSchemasRead(
+    machineId: string,
+    opts: Readonly<Omit<DaemonPluginActionSchemasReadRequest, 'machineId'> & {
+        serverId?: string | null;
+        signal?: AbortSignal;
+    }>,
+): Promise<MachinePluginActionSchemasReadResult> {
+    if (opts.signal?.aborted) return { supported: false, reason: 'aborted' };
+    let payload: DaemonPluginActionSchemasReadRequest;
+    try {
+        payload = DaemonPluginActionSchemasReadRequestSchema.parse({
+            machineId,
+            expectedOccurrenceId: opts.expectedOccurrenceId,
+            qualifiedActionId: opts.qualifiedActionId,
+        });
+    } catch {
+        return { supported: false, reason: 'error' };
+    }
+    const key = JSON.stringify([
+        machineContributionRegistryProjectionScopeKey({ machineId, serverId: opts.serverId ?? null }),
+        payload.qualifiedActionId,
+    ]);
+    const incumbent = actionSchemaReadsByKey.get(key);
+    let request = incumbent?.occurrenceId === payload.expectedOccurrenceId ? incumbent.request : null;
+    if (!request) {
+        const issued = (async (): Promise<MachinePluginActionSchemasReadResult> => {
+            try {
+                const response = await machineRpcWithServerScope<unknown, typeof payload>({
+                    machineId,
+                    serverId: opts.serverId,
+                    method: RPC_METHODS.DAEMON_PLUGIN_ACTION_SCHEMAS_READ,
+                    payload,
+                });
+                if (isRpcMethodNotFoundResult(response)) return { supported: false, reason: 'not-supported' };
+                const parsed = DaemonPluginActionSchemasReadResponseSchema.safeParse(response);
+                return parsed.success
+                    ? { supported: true, result: parsed.data }
+                    : { supported: false, reason: 'error' };
+            } catch (error) {
+                return { supported: false, reason: classifyMachinePluginTransportError(error) };
+            }
+        })();
+        const entry = Object.freeze({ occurrenceId: payload.expectedOccurrenceId, request: issued });
+        actionSchemaReadsByKey.set(key, entry);
+        void issued.then((result) => {
+            if ((!result.supported || !result.result.ok) && actionSchemaReadsByKey.get(key) === entry) {
+                actionSchemaReadsByKey.delete(key);
+            }
+        });
+        request = issued;
+    }
+    return await waitForSharedRead(request, opts.signal, () => ({ supported: false, reason: 'aborted' }));
+}
+
+/**
  * Read one declared plugin resource for a mounted plugin UI surface (§3.6).
  *
  * This is the transport for the snapshot authority; the daemon owns admission,
@@ -801,7 +944,7 @@ export async function machinePluginUiResourceRead(
     try {
         const payload = DaemonPluginUiResourceReadRequestSchema.parse({
             machineId,
-            expectedGeneration: opts.expectedGeneration,
+            expectedCallerOccurrenceId: opts.expectedCallerOccurrenceId,
             callerPluginId: opts.callerPluginId,
             resource: opts.resource,
             ...(opts.context === undefined ? {} : { context: opts.context }),
@@ -845,7 +988,7 @@ export async function machinePluginUiResourceWatchOpen(
     try {
         const payload = DaemonPluginUiResourceWatchOpenRequestSchema.parse({
             machineId,
-            expectedGeneration: opts.expectedGeneration,
+            expectedCallerOccurrenceId: opts.expectedCallerOccurrenceId,
             callerPluginId: opts.callerPluginId,
             subscriptionId: opts.subscriptionId,
             resource: opts.resource,
@@ -879,7 +1022,7 @@ export async function machinePluginUiResourceWatchNext(
     try {
         const payload = DaemonPluginUiResourceWatchNextRequestSchema.parse({
             machineId,
-            expectedGeneration: opts.expectedGeneration,
+            expectedCallerOccurrenceId: opts.expectedCallerOccurrenceId,
             callerPluginId: opts.callerPluginId,
             subscriptionId: opts.subscriptionId,
             ...(opts.waitMs === undefined ? {} : { waitMs: opts.waitMs }),

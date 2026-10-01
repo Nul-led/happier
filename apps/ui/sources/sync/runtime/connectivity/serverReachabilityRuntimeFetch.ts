@@ -43,6 +43,7 @@ function redactUrlForError(raw: string): string {
 
 export async function runtimeFetchWithServerReachability(params: Readonly<{
     serverUrl: string;
+    homeIdentityId?: string;
     token: string | null;
     url: string;
     init: RequestInit;
@@ -125,6 +126,7 @@ export async function runtimeFetchWithServerReachability(params: Readonly<{
         await waitForServerReachable({
             serverUrl: params.serverUrl,
             token: effectiveToken,
+            ...(params.homeIdentityId ? { homeIdentityId: params.homeIdentityId } : {}),
             signal: params.signal ?? (params.init.signal ?? undefined),
             timeoutMs: typeof params.timeoutMs === 'number' ? params.timeoutMs : readServerReachabilityWaitTimeoutMs(),
             acceptAuthFailed: true,

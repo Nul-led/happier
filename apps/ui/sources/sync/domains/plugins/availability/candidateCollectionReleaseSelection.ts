@@ -197,7 +197,6 @@ function sameSourceSelection(
 ): boolean {
     const current = reader.readCurrentReleaseSelection({ pluginId: source.intent.pluginId });
     return current.kind === 'available'
-        && current.availabilityCursor === source.availabilityCursor
         && current.intent.revision === source.intent.revision
         && current.release.ref.pluginId === source.release.ref.pluginId
         && current.release.ref.version === source.release.ref.version;
@@ -390,7 +389,6 @@ async function prepareCandidateCollectionRelease(input: Readonly<{
                 kind: 'direct-ui' as const,
                 candidateTarget: Object.freeze({
                     artifact: resolved.candidateTarget.artifact,
-                    availabilityCursor: resolved.candidateTarget.availabilityCursor,
                 }),
                 artifact: resolved.artifact,
             }),

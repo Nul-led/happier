@@ -3,6 +3,7 @@ import tweetnacl from 'tweetnacl';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  API_TOKEN_FULL_GRANT_V1,
   NO_TEAM_CAPABILITIES_V1,
   computeExternalActionRequestEnvelopeDigestV1,
   EXTERNAL_ACTION_EXECUTION_AUTHORIZATION_HEADER,
@@ -14,7 +15,7 @@ import {
 } from '@happier-dev/protocol';
 import { formatAccountApiTokenCredentialV1 } from '@happier-dev/protocol/auth/accountApiTokens';
 import { encodeBase64 } from '@happier-dev/protocol/crypto/base64';
-import { connect } from '../../../../../packages/sdk/src/index';
+import { connect } from '@happier-dev/sdk';
 import { createAccountEncryptionCurrentnessFixture, createSessionRecordFixture } from '@/testkit/backends/sessionFixtures';
 import { resetInMemoryAccountSettingsContextForTests } from '@/settings/accountSettings/bootstrapAccountSettingsContext';
 import {
@@ -38,7 +39,7 @@ import { registerDaemonExternalActionRoute } from './registerDaemonExternalActio
 
 const credentialId = '00000000-0000-4000-8000-000000000001';
 const principal = { accountId: 'account-1', principalId: 'principal-1', credentialId,
-  authority: 'account_automation' as const };
+  grant: API_TOKEN_FULL_GRANT_V1, authority: 'account_automation' as const };
 const material = { type: 'dataKey' as const, machineKey: new Uint8Array(32).fill(9) };
 const target = { kind: 'machine' as const, machineId: 'machine-1' };
 const installationIdentity = tweetnacl.sign.keyPair();
@@ -54,6 +55,7 @@ function executionAuthorization(actionId: string, envelope: Parameters<typeof co
       accountId: principal.accountId,
       principalId: principal.principalId,
       credentialId,
+      grant: principal.grant,
       machineId: target.machineId,
       actionId,
       requestId: envelope.requestId ?? `generated-${actionId}`,

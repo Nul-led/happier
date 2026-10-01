@@ -1,11 +1,10 @@
 import {
-    LocalServicePreviewResourceV1Schema,
+    LocalServicePreviewSnapshotRowV1Schema,
     type DaemonLocalServicePreviewOpenOrCreateRequestV1,
     type DaemonLocalServicePreviewOpenOrCreateResponseV1,
     type DaemonLocalServicePreviewRevokeRequestV1,
     type DaemonLocalServicePreviewRevokeResponseV1,
-    type LocalServicePreviewResourceV1,
-} from '@happier-dev/protocol';
+} from '@happier-dev/protocol/local/services/preview/v1';
 
 import type { LocalServicePreviewSnapshot, LocalServicePreviewSnapshotRow } from './store';
 
@@ -73,51 +72,16 @@ function readRefreshState(value: unknown): LocalServicePreviewSnapshot['refreshS
     return value === 'idle' || value === 'refreshing' || value === 'error' ? value : null;
 }
 
-function stripResourceFields(value: Readonly<Record<string, unknown>>): Readonly<Record<string, unknown>> {
-    return {
-        previewId: value.previewId,
-        sessionId: value.sessionId,
-        machineId: value.machineId,
-        owner: value.owner,
-        target: value.target,
-        initialPath: value.initialPath,
-        display: value.display,
-        originMode: value.originMode,
-        ...(value.policy !== undefined ? { policy: value.policy } : {}),
-        ...(value.browserTarget !== undefined ? { browserTarget: value.browserTarget } : {}),
-    };
-}
-
-function readResource(value: unknown): LocalServicePreviewResourceV1 | null {
-    if (!isRecord(value)) {
-        return null;
-    }
-    const parsed = LocalServicePreviewResourceV1Schema.safeParse(stripResourceFields(value));
-    return parsed.success ? parsed.data : null;
-}
-
 function readSnapshotRow(
     value: unknown,
     expectedMachineId: string,
 ): LocalServicePreviewSnapshotRow | null {
-    if (!isRecord(value)) {
+    const parsed = LocalServicePreviewSnapshotRowV1Schema.safeParse(value);
+    if (!parsed.success || parsed.data.resource.machineId !== expectedMachineId
+        || parsed.data.previewId !== parsed.data.resource.previewId) {
         return null;
     }
-    const resource = readResource(value.resource) ?? readResource(value);
-    if (!resource || resource.machineId !== expectedMachineId) {
-        return null;
-    }
-    const previewId = readNonEmptyString(value.previewId) ?? resource.previewId;
-    if (previewId !== resource.previewId) {
-        return null;
-    }
-    return {
-        previewId,
-        resource,
-        accessUrl: readNonEmptyString(value.accessUrl),
-        expiresAt: readTimestampOrNull(value.expiresAt),
-        diagnostics: readDiagnostics(value.diagnostics),
-    };
+    return parsed.data;
 }
 
 function readRows(
@@ -126,9 +90,7 @@ function readRows(
 ): readonly LocalServicePreviewSnapshotRow[] | null {
     const rawRows = Array.isArray(snapshot.previews)
         ? snapshot.previews
-        : Array.isArray(snapshot.resources)
-            ? snapshot.resources
-            : null;
+        : null;
     if (!rawRows) {
         return null;
     }

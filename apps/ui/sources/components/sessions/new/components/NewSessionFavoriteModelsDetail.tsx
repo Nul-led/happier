@@ -20,6 +20,7 @@ import {
 import { useNewSessionPreflightModelsState } from '@/components/sessions/new/hooks/screenModel/useNewSessionPreflightModelsState';
 import {
     resolveNewSessionCapabilityProbeContext,
+    resolveNewSessionOperationalBackendTarget,
     resolveNewSessionOperationalProviderId,
 } from '@/components/sessions/new/modules/newSessionCapabilityProbeContext';
 import { computeAcpConfigOptionControlsForProvider } from '@/sync/domains/sessionControl/configOptionsControl';
@@ -53,7 +54,10 @@ import {
 } from '@/sync/domains/models/extendedContextModelControl';
 import { buildFavoriteBackendIdentity } from '@/sync/domains/models/favoriteModelBackendIdentity';
 import { t } from '@/text';
-import { sessionModelSelectionKey } from '@/components/sessions/modelPicker/sessionModelSelectionKey';
+import {
+    isTeamCredentialProviderModelPickerValue,
+    sessionModelSelectionKey,
+} from '@/components/sessions/modelPicker/sessionModelSelectionKey';
 import { useProviderModelProjection } from '@/providers/hooks/useProviderModelProjection';
 import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
 import { ProviderErrorItems } from '@/components/settings/providers/ProviderErrorItems';
@@ -224,9 +228,13 @@ function FavoriteBackendModelsCollector(props: Readonly<{
         runtimeCarrierAgentId: props.entry.agentId,
         machineId: props.selectedMachineId,
     }), [props.entry.agentId, props.entry.backendTarget, props.selectedMachineId, props.settings]);
+    const operationalBackendTarget = React.useMemo(() => resolveNewSessionOperationalBackendTarget({
+        backendTarget: props.entry.backendTarget,
+        runtimeCarrierAgentId: props.entry.agentId,
+    }), [props.entry.agentId, props.entry.backendTarget]);
 
     const { modelOptions, preflightModels, probe: modelProbe } = useNewSessionPreflightModelsState({
-        backendTarget: props.entry.backendTarget,
+        backendTarget: operationalBackendTarget,
         selectedMachineId: props.selectedMachineId,
         capabilityServerId: props.capabilityServerId,
         cwd: props.cwd ?? null,
@@ -283,6 +291,7 @@ function FavoriteBackendModelsCollector(props: Readonly<{
         const refusedPresentationByValue = new Map<string, FavoriteModelOption>();
         for (const option of sections.flatMap((section) => section.options)) {
             if (option.value === null) continue;
+            if (isTeamCredentialProviderModelPickerValue(option.value)) continue;
             if (option.disabled === true) {
                 refusedPresentationByValue.set(sessionModelSelectionKey(option.value), {
                     value: sessionModelSelectionKey(option.value),

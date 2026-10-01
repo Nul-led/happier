@@ -15,9 +15,10 @@ import { describe, expect, it } from 'vitest';
 
 import { buildBrowserAdapterCapabilities } from './capabilities';
 import type { DesktopWebViewSupport } from './desktopWebView';
+import { INJECTED_PAGE_AUTOMATION_ACTIONS } from '../automation/injectedPageActions';
 
 /**
- * UB-1. The 21-verb automation protocol advertises far more than any surface actually performs,
+ * UB-1. The automation protocol advertises far more than any surface actually performs,
  * and until this test existed the real matrix was undocumented — an agent had to dispatch a verb
  * to discover it was dead. `docs/browser-automation-verb-matrix.md` is the published answer, and
  * this test RENDERS that table from {@link buildBrowserAdapterCapabilities} and compares it to the
@@ -38,7 +39,7 @@ const FULL_DESKTOP_SUPPORT: DesktopWebViewSupport = {
     nativeDevtools: true,
     capture: true,
     recording: false,
-    automation: false,
+    automation: true,
 };
 
 type Surface = Readonly<{
@@ -47,9 +48,10 @@ type Surface = Readonly<{
     supportedTargetKinds: readonly BrowserViewTargetKindV1[];
     supportedRenderEngines: readonly BrowserRenderEngineKindV1[];
     desktopWebViewSupport?: DesktopWebViewSupport | null;
+    nativeViewCaptureHandlerRegistered?: boolean;
 }>;
 
-/** Every surface the product can actually mount, in the shape its owner builds it. */
+/** Engine capability scenarios, including factual prerequisites and unavailable target kinds. */
 const SURFACES: readonly Surface[] = [
     {
         label: 'External URL · web (`webIframe`)',
@@ -69,6 +71,14 @@ const SURFACES: readonly Surface[] = [
         supportedTargetKinds: ['externalUrl'],
         supportedRenderEngines: ['desktopWebView'],
         desktopWebViewSupport: FULL_DESKTOP_SUPPORT,
+    },
+    {
+        label: 'External URL · desktop with reverse-capture handler',
+        adapterKind: 'externalUrl',
+        supportedTargetKinds: ['externalUrl'],
+        supportedRenderEngines: ['desktopWebView'],
+        desktopWebViewSupport: FULL_DESKTOP_SUPPORT,
+        nativeViewCaptureHandlerRegistered: true,
     },
     {
         label: 'Local service preview · web (`webIframe`)',
@@ -95,18 +105,17 @@ const SURFACES: readonly Surface[] = [
         supportedRenderEngines: ['streamedSurface'],
     },
     {
-        // DEC-5: the streamed adapter is contracted, so there is no longer a "live" variant of this
-        // surface — it is always the fail-closed one.
-        label: 'Streamed browser surface (contracted, fail-closed)',
+        // Display/navigation are live; daemon automation is not a local render-engine producer.
+        label: 'Streamed browser surface (daemon-owned automation)',
         adapterKind: 'streamedBrowserSurface',
         supportedTargetKinds: ['streamedBrowser'],
         supportedRenderEngines: ['streamedSurface'],
     },
     {
-        label: 'Chromium sidecar (no UI-reachable runtime)',
+        label: 'Chromium sidecar stream (daemon-owned automation)',
         adapterKind: 'chromiumSidecar',
         supportedTargetKinds: ['externalUrl'],
-        supportedRenderEngines: ['unavailable'],
+        supportedRenderEngines: ['streamedSurface'],
     },
 ];
 
@@ -120,6 +129,9 @@ function capabilitiesFor(surface: Surface): BrowserAdapterCapabilitiesV1 {
         ...(surface.desktopWebViewSupport === undefined
             ? {}
             : { desktopWebViewSupport: surface.desktopWebViewSupport }),
+        ...(surface.nativeViewCaptureHandlerRegistered === undefined
+            ? {}
+            : { nativeViewCaptureHandlerRegistered: surface.nativeViewCaptureHandlerRegistered }),
     });
 }
 
@@ -156,7 +168,7 @@ function cell(values: readonly string[]): string {
 
 function renderSurfaceTable(): readonly string[] {
     return [
-        '| Surface | Automation verbs available | Disabled reasons reported |',
+        '| Surface | Capability flags available | Disabled reasons reported |',
         '|---|---|---|',
         ...SURFACES.map((surface) => {
             const actions = automationActionsFor(surface);
@@ -190,11 +202,24 @@ function renderVerbTable(): readonly string[] {
     ];
 }
 
-function renderMatrix(): string {
-    const uncovered = BrowserAutomationActionKindV1Schema.options.filter((actionKind) => (
-        !(CAPABILITY_KINDS as readonly string[]).includes(actionKind)
-    ));
+function renderActionTable(): readonly string[] {
     return [
+        '| Action kind | Installed collector capability | Engine scenarios advertising the injected operation |',
+        '|---|---|---|',
+        ...BrowserAutomationActionKindV1Schema.options.map((actionKind) => {
+            const entry = INJECTED_PAGE_AUTOMATION_ACTIONS.find((candidate) => candidate.action === actionKind);
+            const surfaces = entry
+                ? SURFACES.filter((surface) => automationActionsFor(surface)[entry.capability].available)
+                : [];
+            return `| \`${actionKind}\` | ${entry ? `\`${entry.capability}\`` : '_not registered_'} | ${surfaces.length ? surfaces.map((surface) => surface.label).join('<br>') : '_none_'} |`;
+        }),
+    ];
+}
+
+function renderMatrix(): string {
+    return [
+        `The protocol declares **${BrowserAutomationActionKindV1Schema.options.length} action kinds** and **${CAPABILITY_KINDS.length} adapter capability kinds**. The table covers **${SURFACES.length} engine capability scenarios**, not a fixed surface count.`,
+        '',
         '### Surfaces',
         '',
         ...renderSurfaceTable(),
@@ -203,10 +228,15 @@ function renderMatrix(): string {
         '',
         ...renderVerbTable(),
         '',
-        `Action kinds with no capability bit of their own: ${cell(uncovered)}. `
-        + 'They ride the surface\'s general synthetic-input path — navigation kinds are gated by '
-        + '`navigation.*` instead, and the rest resolve with the same injected-page runtime that '
-        + 'backs `click`.',
+        '### Action kinds and in-app injected dispatch',
+        '',
+        ...renderActionTable(),
+        '',
+        'Only actions declared by `INJECTED_PAGE_AUTOMATION_ACTIONS` enter the installed collector. '
+        + 'Capability flags do not install that collector or prove that a particular page cooperates. '
+        + 'Navigation commands use `browser.control` and `navigation.*`; diagnostics element picking '
+        + 'uses the diagnostics bridge. Neither is an executable injected automation action. '
+        + 'Screenshot references and recording have their own capture owners, not collector action kinds.',
     ].join('\n');
 }
 

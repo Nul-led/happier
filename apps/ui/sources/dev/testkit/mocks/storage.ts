@@ -6,6 +6,7 @@ import type {
 } from '@/sync/domains/settings/settings';
 import type { StorageState } from '@/sync/store/types';
 import type { StoreApi, UseBoundStore } from 'zustand';
+import { authoringMemoryDefaults } from '@/sync/store/domains/authoringMemory';
 
 import {
     createStorageModuleStub as createStorageModuleRuntimeStub,
@@ -57,6 +58,10 @@ function extendModuleMock(module: StorageModule, extra: Partial<StorageModule>):
 export async function createStorageModuleMock(options: CreateStorageModuleMockOptions): Promise<StorageModule> {
     const module = await mergeModuleMock<StorageModule>(options);
     const overrides = options.overrides as Partial<StorageModule>;
+    const moduleWithSettingReader = Object.prototype.hasOwnProperty.call(overrides, 'useSetting')
+        && !Object.prototype.hasOwnProperty.call(overrides, 'useSettingMutable')
+        ? extendModuleMock(module, { useSettingMutable: createUseSettingMutableMock(module.useSetting) })
+        : module;
     const moduleWithCurrentSecretBindings: StorageModule = !Object.prototype.hasOwnProperty.call(
         overrides,
         'useCurrentSecretBindingsByProfileIdMutable',
@@ -64,19 +69,23 @@ export async function createStorageModuleMock(options: CreateStorageModuleMockOp
         Object.prototype.hasOwnProperty.call(overrides, 'useSetting')
         || Object.prototype.hasOwnProperty.call(overrides, 'useSettingMutable')
     )
-        ? extendModuleMock(module, {
+        ? extendModuleMock(moduleWithSettingReader, {
             useCurrentSecretBindingsByProfileIdMutable:
-                createUseCurrentSecretBindingsByProfileIdMutableMock(module.useSetting, {
+                createUseCurrentSecretBindingsByProfileIdMutableMock(moduleWithSettingReader.useSetting, {
                     createMutableSetter: createVitestMutableSetter,
                 }),
         })
-        : module;
+        : moduleWithSettingReader;
     const storageOverride = (options.overrides as { storage?: unknown }).storage;
     if (isStorageStoreLike(storageOverride)) {
         const storage = adaptStorageStoreLike(storageOverride);
         return extendModuleMock(moduleWithCurrentSecretBindings, {
             storage,
             getStorage: () => storage,
+            ...(!Object.prototype.hasOwnProperty.call(overrides, 'useAuthoringMemoryField') ? {
+                useAuthoringMemoryField: ((name: keyof typeof authoringMemoryDefaults) =>
+                    (storage.getState().authoringMemory ?? authoringMemoryDefaults)[name]) as StorageModule['useAuthoringMemoryField'],
+            } : {}),
         });
     }
     if (typeof (options.overrides as { getStorage?: unknown }).getStorage === 'function') {

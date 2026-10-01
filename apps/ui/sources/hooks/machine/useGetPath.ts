@@ -1,4 +1,4 @@
-import { Metadata } from '@/sync/domains/state/storageTypes';
+import { Metadata } from '@happier-dev/session-core/state';
 
 /**
  * Get a relative path from an absolute path using the metadata base path

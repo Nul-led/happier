@@ -52,6 +52,7 @@ export type SelectBrowserTargetAdapterInput = Readonly<{
     platform: BrowserAdapterPlatform;
     targetPolicyDecision?: BrowserTargetPolicyDecisionV1 | null;
     desktopWebViewAvailability?: DesktopWebViewNativeAvailability | null;
+    nativeViewCaptureHandlerRegistered?: boolean;
 }>;
 
 function success(
@@ -60,6 +61,7 @@ function success(
     engineKind: Exclude<BrowserRenderEngineKindV1, 'unavailable'>,
     options: Readonly<{
         desktopWebViewAvailability?: DesktopWebViewNativeAvailability | null;
+        nativeViewCaptureHandlerRegistered?: boolean;
     }> = {},
 ): BrowserAdapterSelection {
     return {
@@ -72,6 +74,7 @@ function success(
             supportedTargetKinds: [targetKind],
             supportedRenderEngines: [engineKind],
             desktopWebViewSupport: options.desktopWebViewAvailability?.supports,
+            nativeViewCaptureHandlerRegistered: options.nativeViewCaptureHandlerRegistered,
         }),
     };
 }
@@ -192,6 +195,7 @@ export function selectBrowserTargetAdapter(input: SelectBrowserTargetAdapterInpu
                 if (desktopWebViewAvailabilitySupportsBrowsing(input.desktopWebViewAvailability)) {
                     return success('externalUrl', input.target.kind, 'desktopWebView', {
                         desktopWebViewAvailability: input.desktopWebViewAvailability,
+                        nativeViewCaptureHandlerRegistered: input.nativeViewCaptureHandlerRegistered,
                     });
                 }
                 // R-3: the in-app engine cannot host this site here, but the user asked for an
@@ -230,16 +234,7 @@ export function selectBrowserTargetAdapter(input: SelectBrowserTargetAdapterInpu
             }));
         }
         case 'streamedBrowser':
-            // DEC-5: CONTRACTED, and now unconditional. Nothing in production produces a
-            // `streamedBrowser` target, no renderer for the kind exists, and the server excludes it
-            // outright — so a reachable daemon control transport is not evidence of a surface. The
-            // old success branch published a full navigable capability set to agents and plugins
-            // for something that could never paint. The `streamedSurface` ENGINE kind is retained;
-            // only this adapter branch is gone.
-            return unavailable('streamedBrowserSurface', resolveBrowserAdapterUnavailableReason({
-                adapterKind: 'streamedBrowserSurface',
-                targetKind: input.target.kind,
-            }));
+            return success('streamedBrowserSurface', input.target.kind, 'streamedSurface');
         case 'simulatorPreview':
             return success('simulatorPreview', input.target.kind, 'streamedSurface');
     }

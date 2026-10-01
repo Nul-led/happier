@@ -80,6 +80,7 @@ import {
   reclaimJsonOwnerFileLockSnapshot,
   withJsonOwnerFileLock,
 } from './jsonOwnerFileLock';
+import { readProcessIdentityByPid } from '@/daemon/processIdentity';
 
 async function settlesWithin(promise: Promise<unknown>, timeoutMs = 100): Promise<boolean> {
   return await Promise.race([
@@ -310,6 +311,37 @@ afterEach(() => {
 });
 
 describe('withJsonOwnerFileLock', () => {
+  it('writes the real Linux process-start witness used by marker-lock contenders', async () => {
+    if (process.platform !== 'linux') return;
+    const dir = await mkdtemp(join(tmpdir(), 'happier-json-owner-lock-real-witness-'));
+    const lockPath = join(dir, 'marker.lock');
+    const readProcessStartedAtMs = async (pid: number) =>
+      (await readProcessIdentityByPid(pid))?.processStartTimeMs ?? null;
+    try {
+      const expected = await readProcessStartedAtMs(process.pid);
+      expect(expected).not.toBeNull();
+      await withJsonOwnerFileLock({
+        lockPath,
+        timeoutMs: 300,
+        staleAfterMs: 1,
+        errorCode: 'real_witness_lock_timeout',
+        readProcessStartedAtMs,
+      }, async () => {
+        const owner = JSON.parse(await readFile(lockPath, 'utf8')) as { processStartedAtMs: number };
+        expect(owner.processStartedAtMs).toBe(expected);
+        await expect(withJsonOwnerFileLock({
+          lockPath,
+          timeoutMs: 50,
+          staleAfterMs: 1,
+          errorCode: 'real_witness_lock_timeout',
+          readProcessStartedAtMs,
+        }, async () => 'stolen')).rejects.toThrow('real_witness_lock_timeout');
+      });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('reads the exact Dev HEAD predecessor artifact and preserves live, fresh-dead, malformed, and missing owners', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'happier-json-owner-lock-predecessor-'));
     const acquiredAt = '1970-01-01T00:00:01.000Z';
@@ -1301,7 +1333,7 @@ await withJsonOwnerFileLock({
       }), 'utf8');
       await expect(withJsonOwnerFileLock({
         lockPath: deadLockPath,
-        timeoutMs: 200,
+        timeoutMs: 1_000,
         staleAfterMs: 1,
         errorCode: 'dead_lock_timeout',
         pollIntervalMs: 2,
@@ -1317,7 +1349,7 @@ await withJsonOwnerFileLock({
       await writeFile(reusedLockPath, ambiguousRaw, 'utf8');
       await expect(withJsonOwnerFileLock({
         lockPath: reusedLockPath,
-        timeoutMs: 200,
+        timeoutMs: 1_000,
         staleAfterMs: 1,
         errorCode: 'reused_pid_lock_timeout',
         pollIntervalMs: 2,
@@ -1346,6 +1378,7 @@ await withJsonOwnerFileLock({
         pid: liveOtherPid,
         ownerToken: 'prior-incarnation',
         processStartedAtMs: observedProcessStartedAtMs - 60_000,
+        processWitness: 'observed',
         createdAtMs: 1,
         updatedAtMs: 1,
       }), 'utf8');
@@ -1362,6 +1395,7 @@ await withJsonOwnerFileLock({
         pid: liveOtherPid,
         ownerToken: 'current-incarnation',
         processStartedAtMs: observedProcessStartedAtMs,
+        processWitness: 'observed',
         createdAtMs: 1,
         updatedAtMs: 1,
       });

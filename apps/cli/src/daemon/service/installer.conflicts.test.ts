@@ -50,9 +50,15 @@ vi.mock('./resolveDaemonServiceInstallRuntimeTarget', () => ({
   resolveDaemonServiceInstallRuntimeTarget: resolveDaemonServiceInstallRuntimeTargetMock,
 }));
 
-vi.mock('./discoverInstalledDaemonServiceEntries', () => ({
-  discoverInstalledDaemonServiceEntries: discoverInstalledDaemonServiceEntriesMock,
-}));
+vi.mock('./discoverInstalledDaemonServiceEntries', async () => {
+  const actual = await vi.importActual<typeof import('./discoverInstalledDaemonServiceEntries')>(
+    './discoverInstalledDaemonServiceEntries',
+  );
+  return {
+    ...actual,
+    discoverInstalledDaemonServiceEntries: discoverInstalledDaemonServiceEntriesMock,
+  };
+});
 
 describe('installDaemonService conflict handling', () => {
   afterEach(() => {
@@ -96,6 +102,42 @@ describe('installDaemonService conflict handling', () => {
 
     expect(planDaemonServiceInstallMock).toHaveBeenCalledTimes(1);
     expect(applyDaemonServiceInstallPlanMock).not.toHaveBeenCalled();
+  });
+
+  it('reapplies a converged exact target when the caller requests a running-daemon restart', async () => {
+    discoverInstalledDaemonServiceEntriesMock.mockResolvedValueOnce([
+      {
+        serverId: 'default',
+        name: 'Default background service',
+        installed: true,
+        path: '/Users/tester/Library/LaunchAgents/com.happier.cli.daemon.default.plist',
+        platform: 'darwin',
+        happierHomeDir: '/Users/tester/.happier',
+        releaseChannel: 'stable',
+        label: 'com.happier.cli.daemon.default',
+        targetMode: 'default-following',
+      },
+    ]);
+    const beforeApply = vi.fn(async () => undefined);
+
+    const { installDaemonService } = await import('./installer');
+
+    await installDaemonService({
+      platform: 'darwin',
+      uid: 501,
+      userHomeDir: '/Users/tester',
+      happierHomeDir: '/Users/tester/.happier',
+      channel: 'stable',
+      targetMode: 'default-following',
+      instanceId: 'default',
+      restartRunningDaemon: true,
+      beforeApply,
+      runCommands: true,
+      commandFailureMode: 'strict',
+    });
+
+    expect(beforeApply).toHaveBeenCalledTimes(1);
+    expect(applyDaemonServiceInstallPlanMock).toHaveBeenCalledTimes(1);
   });
 
   it('treats an existing implicit stable default-following service as the exact target', async () => {
@@ -568,6 +610,101 @@ describe('installDaemonService conflict handling', () => {
     }));
   });
 
+  it('lets a pinned Home service coexist with the default-following service and other Homes\' pinned services', async () => {
+    discoverInstalledDaemonServiceEntriesMock.mockResolvedValueOnce([
+      {
+        serverId: 'default',
+        name: 'Default automatic startup',
+        installed: true,
+        path: '/home/tester/.config/systemd/user/happier-daemon.default.service',
+        platform: 'linux',
+        mode: 'user',
+        happierHomeDir: '/home/tester/.happier',
+        releaseChannel: 'stable',
+        label: 'happier-daemon.default',
+        targetMode: 'default-following',
+        relayUrl: null,
+      },
+      {
+        serverId: 'company',
+        name: 'Company',
+        installed: true,
+        path: '/home/tester/.config/systemd/user/happier-daemon.company.service',
+        platform: 'linux',
+        mode: 'user',
+        happierHomeDir: '/home/tester/.happier',
+        releaseChannel: 'stable',
+        label: 'happier-daemon.company',
+        targetMode: 'pinned',
+        relayUrl: 'https://company.example.test',
+      },
+    ]);
+
+    const { previewDaemonServiceInstall } = await import('./installer');
+
+    const preview = await previewDaemonServiceInstall({
+      platform: 'linux',
+      uid: 123,
+      userHomeDir: '/home/tester',
+      happierHomeDir: '/home/tester/.happier',
+      channel: 'stable',
+      targetMode: 'pinned',
+      instanceId: 'personal-home',
+      activeServerId: 'personal-home',
+      serverUrl: 'http://127.0.0.1:3005',
+      publicServerUrl: 'http://127.0.0.1:3005',
+      webappUrl: 'http://127.0.0.1:3005',
+    });
+
+    expect(preview.conflictPlan.competingServices).toEqual([]);
+  });
+
+  it('treats only the pinned service of the followed server as competing with a default-following install', async () => {
+    discoverInstalledDaemonServiceEntriesMock.mockResolvedValueOnce([
+      {
+        serverId: 'company',
+        name: 'Company',
+        installed: true,
+        path: '/home/tester/.config/systemd/user/happier-daemon.company.service',
+        platform: 'linux',
+        mode: 'user',
+        happierHomeDir: '/home/tester/.happier',
+        releaseChannel: 'stable',
+        label: 'happier-daemon.company',
+        targetMode: 'pinned',
+        relayUrl: 'https://company.example.test',
+      },
+      {
+        serverId: 'cloud',
+        name: 'Cloud',
+        installed: true,
+        path: '/home/tester/.config/systemd/user/happier-daemon.cloud.service',
+        platform: 'linux',
+        mode: 'user',
+        happierHomeDir: '/home/tester/.happier',
+        releaseChannel: 'stable',
+        label: 'happier-daemon.cloud',
+        targetMode: 'pinned',
+        relayUrl: 'https://api.happier.dev',
+      },
+    ]);
+
+    const { previewDaemonServiceInstall } = await import('./installer');
+
+    const preview = await previewDaemonServiceInstall({
+      platform: 'linux',
+      uid: 123,
+      userHomeDir: '/home/tester',
+      happierHomeDir: '/home/tester/.happier',
+      channel: 'stable',
+      targetMode: 'default-following',
+      instanceId: 'default',
+      activeServerId: 'cloud',
+    });
+
+    expect(preview.conflictPlan.competingServices.map((service) => service.serverId)).toEqual(['cloud']);
+  });
+
   it('preserves unrelated pinned services when replacing a default-following install', async () => {
     discoverInstalledDaemonServiceEntriesMock.mockResolvedValueOnce([
       {
@@ -587,6 +724,7 @@ describe('installDaemonService conflict handling', () => {
         installed: true,
         path: '/home/tester/.config/systemd/user/happier-daemon.company.service',
         platform: 'linux',
+        happierHomeDir: '/home/tester/.happier',
         releaseChannel: 'stable',
         label: 'happier-daemon.company',
         targetMode: 'pinned',
@@ -603,13 +741,15 @@ describe('installDaemonService conflict handling', () => {
       channel: 'publicdev',
       targetMode: 'default-following',
       instanceId: 'default',
-      strategy: 'replace-all',
+      strategy: 'replace-ring',
       runCommands: true,
       commandFailureMode: 'strict',
     });
 
     expect(planDaemonServiceUninstallMock).not.toHaveBeenCalled();
     expect(applyDaemonServiceUninstallPlanMock).not.toHaveBeenCalled();
+    // The pinned service targets another server, so it does not compete: the installed exact
+    // default-following target is already converged and is left untouched.
     expect(planDaemonServiceInstallMock).toHaveBeenCalledTimes(1);
     expect(applyDaemonServiceInstallPlanMock).not.toHaveBeenCalled();
   });
@@ -665,6 +805,7 @@ describe('installDaemonService conflict handling', () => {
         installed: true,
         path: '/home/tester/.config/systemd/user/happier-daemon.company.service',
         platform: 'linux',
+        happierHomeDir: '/home/tester/.happier',
         releaseChannel: 'stable',
         label: 'happier-daemon.company',
         targetMode: 'pinned',
@@ -675,6 +816,7 @@ describe('installDaemonService conflict handling', () => {
         installed: true,
         path: '/home/tester/.config/systemd/user/happier-daemon.preview.preview-company.service',
         platform: 'linux',
+        happierHomeDir: '/home/tester/.happier',
         releaseChannel: 'preview',
         label: 'happier-daemon.preview.preview-company',
         targetMode: 'pinned',

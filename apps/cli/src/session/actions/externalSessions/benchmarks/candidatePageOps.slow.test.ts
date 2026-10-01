@@ -144,6 +144,7 @@ describe('MEASURE candidate page operations', () => {
 
         const query = (cursor?: string) => executeExternalSessionCandidateQuery({
             activeServerDir,
+            agentSourceCustody: { kind: 'development', registeredRootId: 'fixture-source-root' },
             agentIdentity: { pluginId: 'happier.claude', localId: 'claude' },
             source,
             ...(cursor ? { cursor } : {}),

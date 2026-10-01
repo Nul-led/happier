@@ -75,6 +75,7 @@ export type RuntimeTranscriptRequiredAdmissionFailureReason =
   | 'durable_enqueue_unavailable'
   | 'durable_enqueue_failed'
   | 'durable_custody_rejected'
+  | 'delivery_not_confirmed'
   | 'streamed_finalization_failed'
   | 'streamed_final_not_durable'
   | 'projection_drain_timed_out';
@@ -334,6 +335,9 @@ export async function commitRequiredRuntimeTranscriptMessage(params: Readonly<{
   try {
     const result = await params.session.enqueueAgentMessageCommitted(params.provider, params.body, opts);
     assertRequiredTranscriptAdmission(params.admission, params.eventKind);
+    if (params.admission?.requireDelivery && !result.delivered) {
+      throw new RuntimeTranscriptRequiredAdmissionError('delivery_not_confirmed', params.eventKind);
+    }
     if (!result.persisted) {
       throw new RuntimeTranscriptRequiredAdmissionError(
         'durable_custody_rejected',
@@ -377,6 +381,9 @@ async function commitRequiredRuntimeTranscriptUserText(params: Readonly<{
       ...(params.admission === undefined ? {} : { admission: params.admission }),
     });
     assertRequiredTranscriptAdmission(params.admission, params.eventKind);
+    if (params.admission?.requireDelivery && !result.delivered) {
+      throw new RuntimeTranscriptRequiredAdmissionError('delivery_not_confirmed', params.eventKind);
+    }
     if (!result.persisted) {
       throw new RuntimeTranscriptRequiredAdmissionError('durable_custody_rejected', params.eventKind);
     }

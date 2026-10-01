@@ -188,6 +188,17 @@ afterEach(() => {
   terminalPromptMocks.promptSecret.mockReset();
 });
 
+function managedDescriptorIdentity(pluginId: string, occurrenceId: string) {
+  return {
+    occurrenceId: `occurrence:${pluginId}:${occurrenceId}`,
+    sourceCustody: {
+      kind: 'managed' as const,
+      immutableGenerationId: occurrenceId,
+      installSource: 'localPath' as const,
+    },
+  };
+}
+
 beforeEach(() => {
   foregroundAdmissionMocks.admit.mockReset();
   foregroundAdmissionMocks.claim.mockReset();
@@ -206,8 +217,10 @@ beforeEach(() => {
         pluginVersion: '1.0.0',
         agentId: 'codex',
         backendId: 'codex',
-        generation: 'generation-1',
-        immutableGenerationId: 'immutable-generation-1',
+        ...managedDescriptorIdentity(
+          'codex-plugin',
+          'immutable-generation-1',
+        ),
       },
     },
     launchPolicy: {
@@ -422,7 +435,7 @@ describe('runBackendSessionCliCommand', () => {
           pluginVersion: '1.0.0',
           agentId: 'pi',
           backendId: 'pi',
-          generation: 'generation-1',
+          ...managedDescriptorIdentity('pi-plugin', 'generation-1'),
         },
       },
       launchPolicy: {
@@ -663,7 +676,7 @@ describe('runBackendSessionCliCommand', () => {
       v: 1,
       updatedAt: 123,
       ref: {
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         providerConnectionId: 'pc_work',
         modelId: 'default',
       },
@@ -903,7 +916,7 @@ describe('runBackendSessionCliCommand', () => {
       modelSelection: expect.objectContaining({
         v: 1,
         ref: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: null,
           modelId: 'gpt-5.1-codex-max',
         },
@@ -1300,7 +1313,7 @@ describe('runBackendSessionCliCommand', () => {
           pluginVersion: '1.0.0',
           agentId: 'codex',
           backendId: 'codex',
-          generation: 'generation-1',
+          ...managedDescriptorIdentity('codex-plugin', 'generation-1'),
         },
       },
       launchPolicy: {
@@ -1525,8 +1538,10 @@ describe('runBackendSessionCliCommand', () => {
             pluginVersion: '1.0.0',
             agentId: 'codex',
             backendId: 'codex',
-            generation: 'generation-1',
-            immutableGenerationId: 'immutable-generation-1',
+            ...managedDescriptorIdentity(
+              'codex-plugin',
+              'immutable-generation-1',
+            ),
           },
         },
         launchPolicy: { reservedEnvironmentVariableNames: [], profileSecretRequirementNamesMissingBinding: [] },
@@ -1544,8 +1559,10 @@ describe('runBackendSessionCliCommand', () => {
             pluginVersion: '1.0.0',
             agentId: 'codex',
             backendId: 'codex',
-            generation: 'generation-2',
-            immutableGenerationId: 'immutable-generation-2',
+            ...managedDescriptorIdentity(
+              'codex-plugin',
+              'immutable-generation-2',
+            ),
           },
         },
         launchPolicy: { reservedEnvironmentVariableNames: [], profileSecretRequirementNamesMissingBinding: [] },
@@ -1588,7 +1605,7 @@ describe('runBackendSessionCliCommand', () => {
       v: 1,
       updatedAt: 123,
       ref: {
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         providerConnectionId: 'pc_gateway',
         modelId: 'vendor/model',
       },
@@ -1638,7 +1655,7 @@ describe('runBackendSessionCliCommand', () => {
           pluginVersion: '1.0.0',
           agentId: 'codex',
           backendId: 'codex',
-          generation: 'generation-1',
+          ...managedDescriptorIdentity('codex-plugin', 'generation-1'),
         },
       },
       launchPolicy: {
@@ -1935,7 +1952,7 @@ describe('runBackendSessionCliCommand', () => {
       v: 1,
       updatedAt: 123,
       ref: {
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         providerConnectionId: 'pc_gateway',
         modelId: 'vendor/model',
       },

@@ -9,6 +9,7 @@ import type {
   VoiceAssistantAction,
 } from '@happier-dev/protocol';
 import type { PermissionIntent } from '@happier-dev/agents';
+import type { ServerAccountScopeLifetime } from '@/sync/domains/scope/serverAccountScope';
 
 export type VoiceAgentAgentSource = 'session' | 'agent';
 export type VoiceAgentVerbosity = 'short' | 'balanced';
@@ -137,6 +138,8 @@ export function readVoiceAgentActionEffectId(action: unknown): string | null {
 }
 
 export type VoiceAgentHandle = Readonly<{
+  accountLifetime: ServerAccountScopeLifetime;
+  metadataSessionId: string | null;
   client: VoiceAgentClient;
   voiceAgentId: string;
   backend: 'daemon';

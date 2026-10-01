@@ -1,7 +1,7 @@
 import { readServerEnabledBit } from '@happier-dev/protocol';
 
 import { getCachedServerFeaturesSnapshot, getServerFeaturesSnapshot } from '@/sync/api/capabilities/serverFeaturesClient';
-import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
+import { areServerProfileIdentifiersEquivalent, resolveServerProfileScopeIdForIdentifier } from '@/sync/domains/server/serverProfiles';
 import { storage } from '@/sync/domains/state/storage';
 import { createScopedSnapshotLoader } from '@/sync/engine/scope/scopedSnapshotLoader';
 import { refreshMachinePools } from '@/sync/ops/machinePools';
@@ -14,11 +14,12 @@ type MachinePoolProjectionTarget = Readonly<{
 
 const forceFeatureRefreshByServerId = new Set<string>();
 
-const targetFor = (serverId: string, forceFeatures: boolean): MachinePoolProjectionTarget => ({
-    key: serverId,
-    serverId,
-    forceFeatures,
-});
+// The Pool store, credentials and Actions key a Home by its portable scope id; callers may pass the
+// local profile id, so every entry point resolves to the scope id before keying the loader.
+const targetFor = (serverIdRaw: string, forceFeatures: boolean): MachinePoolProjectionTarget => {
+    const serverId = resolveServerProfileScopeIdForIdentifier(serverIdRaw) || serverIdRaw;
+    return { key: serverId, serverId, forceFeatures };
+};
 
 const loader = createScopedSnapshotLoader<MachinePoolProjectionTarget>({
     load: async (target, context) => {
@@ -88,8 +89,9 @@ export function invalidateMachinePoolProjection(
 ): Promise<void> {
     const serverId = serverIdRaw.trim();
     if (!serverId) return Promise.resolve();
-    if (options.forceFeatures) forceFeatureRefreshByServerId.add(serverId);
-    return loader.invalidate(targetFor(serverId, options.forceFeatures === true));
+    const target = targetFor(serverId, options.forceFeatures === true);
+    if (options.forceFeatures) forceFeatureRefreshByServerId.add(target.serverId);
+    return loader.invalidate(target);
 }
 
 /** Observation-time hydration and user retry join an already current in-flight request. */

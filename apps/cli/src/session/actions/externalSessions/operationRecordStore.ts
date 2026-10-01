@@ -23,7 +23,7 @@ import {
   type ExternalSessionOperationUpdateDecisionV1,
 } from '@happier-dev/protocol';
 
-import { decodeJwtPayload } from '@/cloud/decodeJwtPayload';
+import { readAccountIdFromToken } from '@/cloud/decodeJwtPayload';
 import { readStoredCredentials } from '@/persistence';
 import { withJsonOwnerFileLock } from '@/utils/fs/jsonOwnerFileLock';
 import { writeJsonAtomic } from '@/utils/fs/writeJsonAtomic';
@@ -145,8 +145,7 @@ export function resolveExternalSessionOperationAccountScope(
   activeServerDir: string,
   token: string,
 ): ExternalSessionOperationAccountScope | null {
-  const payload = decodeJwtPayload(token.trim());
-  const subject = typeof payload?.sub === 'string' ? payload.sub.trim() : '';
+  const subject = readAccountIdFromToken(token.trim());
   return subject
     ? { activeServerDir, accountSubject: subject }
     : null;
@@ -1228,6 +1227,7 @@ export function projectExternalSessionTakeoverIdempotencyIntent(
     targetStorageMode: request.targetStorageMode,
     targetDirectory: request.targetDirectory,
     targetRuntimeMode: request.targetRuntimeMode,
+    ...(request.terminal ? { terminal: request.terminal } : {}),
   };
 }
 

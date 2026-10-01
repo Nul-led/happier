@@ -97,6 +97,7 @@ export async function acquireAdmittedSessionReferenceCorpusOptions(
         }
         covered += 1;
         for (const sessionId of entry.page.sessionIds) {
+            if (entry.page.isSessionCurrent?.(sessionId) === false) continue;
             const normalized = String(sessionId ?? '').trim();
             if (normalized) addresses.push({ serverId: entry.serverId, sessionId: normalized });
         }

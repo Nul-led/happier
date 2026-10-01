@@ -1,5 +1,6 @@
 import {
   normalizeSessionHandoffWorkspaceRootPath,
+  resolveWorkspaceSyncTransferRoute,
   type HandoffWorkspaceActionV1,
   type WorkspaceRefV1,
   type WorkspaceSyncRelationshipV1,
@@ -15,6 +16,8 @@ export type SessionHandoffWorkspaceContext = Readonly<{
   targetRootPath: string;
   controllerMachineId: string;
   contentSelection: 'git_worktree' | 'all_files';
+  relationshipIds: readonly string[];
+  contentSelections: readonly ('git_worktree' | 'all_files')[];
 }>;
 
 /**
@@ -24,7 +27,7 @@ export type SessionHandoffWorkspaceContext = Readonly<{
  * representable here.
  */
 export type ResolveSessionHandoffWorkspaceContextInput = Readonly<{
-  action: Extract<HandoffWorkspaceActionV1, Readonly<{ kind: 'relationship' }>>;
+  action: Extract<HandoffWorkspaceActionV1, Readonly<{ kind: 'relationship' | 'linked_workspace' }>>;
   workspaceRefs: readonly WorkspaceRefV1[];
   relationships: readonly WorkspaceSyncRelationshipV1[];
   sourceMachineId: string;
@@ -35,13 +38,6 @@ export type ResolveSessionHandoffWorkspaceContextInput = Readonly<{
 
 function contextError(code: string, message: string): Error {
   return Object.assign(new Error(message), { code });
-}
-
-function exactRefById(refs: readonly WorkspaceRefV1[], id: string): WorkspaceRefV1 | null {
-  const normalizedId = id.trim();
-  if (!normalizedId) return null;
-  const matches = refs.filter((ref) => ref.id.trim() === normalizedId);
-  return matches.length === 1 ? matches[0]! : null;
 }
 
 function exactRefByScope(
@@ -68,29 +64,34 @@ export function resolveSessionHandoffWorkspaceContext(
     throw contextError('workspace_ref_not_ready', 'Workspace sync machine identity is unavailable');
   }
 
-  const relationshipMatches = input.relationships.filter((candidate) => (
-    candidate.relationshipId.trim() === action.relationshipId.trim() && candidate.enabled
-  ));
-  if (relationshipMatches.length !== 1) {
-    throw contextError('relationship_not_ready', 'Workspace sync relationship is not ready');
-  }
-  const relationship = validateWorkspaceSyncRelationship(relationshipMatches[0]!);
-  const alpha = exactRefById(input.workspaceRefs, relationship.alphaWorkspaceRefId);
-  const beta = exactRefById(input.workspaceRefs, relationship.betaWorkspaceRefId);
-  if (!alpha || !beta) {
-    throw contextError('workspace_ref_not_ready', 'Workspace sync relationship endpoint is unavailable');
-  }
   const sourceByScope = exactRefByScope(input.workspaceRefs, sourceMachineId, sourceRootPath);
-  if (!sourceByScope || (sourceByScope.id !== alpha.id && sourceByScope.id !== beta.id)) {
-    throw contextError('relationship_source_mismatch', 'Source workspace is not an endpoint of the selected relationship');
+  if (!sourceByScope) throw contextError('relationship_source_mismatch', 'Source workspace is not uniquely identified');
+  const requestedTargetRoot = input.targetRootPath === undefined ? null : normalizedRoot(input.targetRootPath);
+  const targetCandidates = input.workspaceRefs.filter((ref) => (
+    ref.machineId.trim() === targetMachineId
+    && (requestedTargetRoot === null || normalizedRoot(ref.rootPath) === requestedTargetRoot)
+  ));
+  const relationships = input.relationships.map(validateWorkspaceSyncRelationship);
+  const routeCandidates = targetCandidates.flatMap((target) => {
+    const route = resolveWorkspaceSyncTransferRoute({
+      workspaceRefs: input.workspaceRefs,
+      relationships,
+      sourceWorkspaceRefId: sourceByScope.id,
+      targetWorkspaceRefId: target.id,
+    });
+    if (!route.ok || route.kind === 'same_workspace') return [];
+    if (action.kind === 'relationship' && (
+      route.kind !== 'direct'
+      || route.relationships[0]?.relationshipId !== action.relationshipId.trim()
+    )) return [];
+    return [{ target, route }];
+  });
+  if (routeCandidates.length !== 1) {
+    throw contextError('relationship_target_mismatch', 'Target workspace is not uniquely reachable through the selected links');
   }
-  const target = sourceByScope.id === alpha.id ? beta : alpha;
-  if (target.machineId.trim() !== targetMachineId) {
-    throw contextError('relationship_target_mismatch', 'Target machine is not the opposite relationship endpoint');
-  }
+  const { target, route } = routeCandidates[0]!;
   const targetRootPath = normalizedRoot(target.rootPath);
-  if (input.targetRootPath !== undefined) {
-    const requestedTargetRoot = normalizedRoot(input.targetRootPath);
+  if (requestedTargetRoot !== null) {
     const requestedTarget = exactRefByScope(input.workspaceRefs, targetMachineId, requestedTargetRoot);
     if (!requestedTarget || requestedTarget.id !== target.id) {
       throw contextError('relationship_target_mismatch', 'Target path is not the opposite relationship endpoint');
@@ -101,7 +102,9 @@ export function resolveSessionHandoffWorkspaceContext(
     targetWorkspaceRefId: target.id,
     sourceRootPath: sourceByScope.rootPath,
     targetRootPath,
-    controllerMachineId: relationship.controllerMachineId,
-    contentSelection: relationship.contentPolicy.selection,
+    controllerMachineId: route.controllerMachineId,
+    contentSelection: route.relationships[0]!.contentPolicy.selection,
+    relationshipIds: route.relationships.map(({ relationshipId }) => relationshipId),
+    contentSelections: route.relationships.map(({ contentPolicy }) => contentPolicy.selection),
   };
 }

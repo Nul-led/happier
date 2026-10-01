@@ -14,7 +14,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { isDeepStrictEqual as nodeIsDeepStrictEqual } from 'node:util';
 
 import {
-  DaemonContributionRegistryProjectionDescribeResponseSchema,
+  DaemonPluginUiTargetedContributionsReadResponseSchema,
 } from '@happier-dev/protocol';
 import { renderPrismaCompatibleSqliteDatabaseUrl } from '@happier-dev/cli-common/firstPartyRuntime';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
@@ -79,12 +79,22 @@ type PackedTargetedDescriptorSemanticBaseline = Readonly<{
 type PackedTargetedContributionProjectionEvidence = Readonly<{
   target: Readonly<{
     pluginId: string;
-    immutableGenerationId: string;
+    occurrenceId: string;
+    sourceCustody: Readonly<{
+      kind: 'managed';
+      immutableGenerationId: string;
+      installSource: 'archive';
+    }>;
   }>;
   contributor: Readonly<{
     pluginId: string;
     contributionId: string;
-    immutableGenerationId: string;
+    occurrenceId: string;
+    sourceCustody: Readonly<{
+      kind: 'managed';
+      immutableGenerationId: string;
+      installSource: 'archive';
+    }>;
   }>;
   renderer: Readonly<{
     pluginId: string;
@@ -107,8 +117,8 @@ export type PackedTargetedContributionProjectionResult = Readonly<{
   }>;
   artifactAdmission: PackedAuthorArtifactAdmission | undefined;
   evidence: Readonly<{
-    targetGeneration: string;
-    contributorGeneration: string;
+    targetImmutableGenerationId: string;
+    contributorImmutableGenerationId: string;
     target: PackedTargetedContributionProjectionEvidence['target'];
     contributor: PackedTargetedContributionProjectionEvidence['contributor'];
     renderer: PackedTargetedContributionProjectionEvidence['renderer'];
@@ -182,7 +192,6 @@ function expectedBuiltInTargetedDescriptor(): JsonRecord {
 function expectedPackedClientTarget(): JsonRecord {
   return {
     artifactId: PACKED_TARGETED_CONTRIBUTION_FIXTURE.clientArtifactId,
-    modulePath: './clientRuntime',
     exportName: 'activate',
   };
 }
@@ -316,29 +325,41 @@ export function assertPackedTargetedClientBoundaryManifest(manifest: unknown): v
   }
 }
 
-function assertExactTarget(value: unknown, targetGeneration: string): void {
+function assertExactTarget(value: unknown, targetImmutableGenerationId: string): void {
   const target = requireRecord(value, 'targeted_projection_target');
   if (
     target.pluginId !== PACKED_TARGETED_CONTRIBUTION_FIXTURE.targetPluginId
-    || target.immutableGenerationId !== targetGeneration
-    || !isDeepStrictEqual(Object.keys(target).sort(), ['immutableGenerationId', 'pluginId'])
+    || typeof target.occurrenceId !== 'string'
+    || target.occurrenceId.trim().length === 0
+    || !isDeepStrictEqual(target.sourceCustody, {
+      kind: 'managed',
+      immutableGenerationId: targetImmutableGenerationId,
+      installSource: 'archive',
+    })
+    || !isDeepStrictEqual(Object.keys(target).sort(), ['occurrenceId', 'pluginId', 'sourceCustody'])
   ) {
-    throw new Error('targeted_projection_target_generation_invalid');
+    throw new Error('targeted_projection_target_currentness_invalid');
   }
 }
 
-function assertExactContributor(value: unknown, contributorGeneration: string): void {
+function assertExactContributor(value: unknown, contributorImmutableGenerationId: string): void {
   const contributor = requireRecord(value, 'targeted_projection_contributor');
   if (
     contributor.pluginId !== PACKED_TARGETED_CONTRIBUTION_FIXTURE.contributorPluginId
     || contributor.contributionId !== PACKED_TARGETED_CONTRIBUTION_FIXTURE.contributionId
-    || contributor.immutableGenerationId !== contributorGeneration
+    || typeof contributor.occurrenceId !== 'string'
+    || contributor.occurrenceId.trim().length === 0
+    || !isDeepStrictEqual(contributor.sourceCustody, {
+      kind: 'managed',
+      immutableGenerationId: contributorImmutableGenerationId,
+      installSource: 'archive',
+    })
     || !isDeepStrictEqual(
       Object.keys(contributor).sort(),
-      ['contributionId', 'immutableGenerationId', 'pluginId'],
+      ['contributionId', 'occurrenceId', 'pluginId', 'sourceCustody'],
     )
   ) {
-    throw new Error('targeted_projection_contributor_generation_invalid');
+    throw new Error('targeted_projection_contributor_currentness_invalid');
   }
 }
 
@@ -350,25 +371,25 @@ function assertExactContributor(value: unknown, contributorGeneration: string): 
  */
 export function assertMountedTargetedContributionProjection(params: Readonly<{
   projection: unknown;
-  targetGeneration: string;
-  contributorGeneration: string;
+  targetImmutableGenerationId: string;
+  contributorImmutableGenerationId: string;
   machineId: string;
   builtInSemanticDescriptor?: unknown;
 }>): PackedTargetedContributionProjectionEvidence {
-  const parsed = DaemonContributionRegistryProjectionDescribeResponseSchema.safeParse(
+  const parsed = DaemonPluginUiTargetedContributionsReadResponseSchema.safeParse(
     params.projection,
   );
   if (!parsed.success) {
     throw new Error(`targeted_projection_response_invalid:${parsed.error.message}`);
   }
 
-  if (parsed.data.projection.v !== 2) {
-    throw new Error('targeted_projection_generation_unavailable');
+  if (parsed.data.status === 'unavailable') {
+    throw new Error(`targeted_projection_unavailable:${parsed.data.code}`);
   }
 
   const targeted = parsed.data.targetedContributions;
   if (!targeted) throw new Error('targeted_projection_public_snapshot_missing');
-  assertExactTarget(targeted.target, params.targetGeneration);
+  assertExactTarget(targeted.target, params.targetImmutableGenerationId);
 
   if (targeted.points.length !== 1) {
     throw new Error('targeted_projection_public_point_count_invalid');
@@ -389,7 +410,7 @@ export function assertMountedTargetedContributionProjection(params: Readonly<{
   }
   const contribution = protocolSnapshot.contributions[0];
   if (!contribution) throw new Error('targeted_projection_public_contribution_missing');
-  assertExactContributor(contribution.contributor, params.contributorGeneration);
+  assertExactContributor(contribution.contributor, params.contributorImmutableGenerationId);
   if (!isDeepStrictEqual(contribution.protocol, expectedProtocol())) {
     throw new Error('targeted_projection_contributor_protocol_invalid');
   }
@@ -487,7 +508,8 @@ export function assertMountedTargetedContributionProjection(params: Readonly<{
   if (!isDeepStrictEqual(mount.contributorTargetedContributions, {
     target: {
       pluginId: PACKED_TARGETED_CONTRIBUTION_FIXTURE.contributorPluginId,
-      immutableGenerationId: params.contributorGeneration,
+      occurrenceId: contribution.contributor.occurrenceId,
+      sourceCustody: contribution.contributor.sourceCustody,
     },
     points: [],
   })) {
@@ -495,8 +517,25 @@ export function assertMountedTargetedContributionProjection(params: Readonly<{
   }
 
   return Object.freeze({
-    target: Object.freeze({ ...targeted.target }),
-    contributor: Object.freeze({ ...contribution.contributor }),
+    target: Object.freeze({
+      pluginId: targeted.target.pluginId,
+      occurrenceId: targeted.target.occurrenceId,
+      sourceCustody: Object.freeze({
+        kind: 'managed' as const,
+        immutableGenerationId: params.targetImmutableGenerationId,
+        installSource: 'archive' as const,
+      }),
+    }),
+    contributor: Object.freeze({
+      pluginId: contribution.contributor.pluginId,
+      contributionId: contribution.contributor.contributionId,
+      occurrenceId: contribution.contributor.occurrenceId,
+      sourceCustody: Object.freeze({
+        kind: 'managed' as const,
+        immutableGenerationId: params.contributorImmutableGenerationId,
+        installSource: 'archive' as const,
+      }),
+    }),
     renderer: Object.freeze({ ...expectedRenderer }),
   });
 }
@@ -740,10 +779,10 @@ export async function assertPackedTargetedFixtureSourcesArePublicOnly(): Promise
     'ui',
     'providerDetailActionFailure.ts',
   );
-  const pluginUiBuildSourcePath = join(
+  const packageJsonSourcePath = join(
     PACKED_TARGETED_FIXTURE_ROOT,
     'contributor',
-    'pluginUiBuild.ts',
+    'package.json',
   );
   const sourcePaths = [
     publicProtocolPath,
@@ -752,7 +791,7 @@ export async function assertPackedTargetedFixtureSourcesArePublicOnly(): Promise
     clientRuntimeSourcePath,
     providerDetailSourcePath,
     providerDetailActionFailureSourcePath,
-    pluginUiBuildSourcePath,
+    packageJsonSourcePath,
   ];
   for (const path of sourcePaths) {
     const source = await readFile(path, 'utf8');
@@ -777,7 +816,7 @@ export async function assertPackedTargetedFixtureSourcesArePublicOnly(): Promise
   const clientRuntimeSource = await readFile(clientRuntimeSourcePath, 'utf8');
   const providerDetailSource = await readFile(providerDetailSourcePath, 'utf8');
   const providerDetailActionFailureSource = await readFile(providerDetailActionFailureSourcePath, 'utf8');
-  const pluginUiBuildSource = await readFile(pluginUiBuildSourcePath, 'utf8');
+  const packageJsonSource = await readFile(packageJsonSourcePath, 'utf8');
   const protocolSource = await readFile(publicProtocolPath, 'utf8');
   if (
     !targetSource.includes('definePlugin')
@@ -829,9 +868,8 @@ export async function assertPackedTargetedFixtureSourcesArePublicOnly(): Promise
     || !providerDetailSource.includes('packed-targeted-writes-local-result')
     || !clientRuntimeSource.includes('packed_targeted_fixture_action_cancelled')
     || !clientRuntimeSource.includes('delayMs')
-    || !pluginUiBuildSource.includes("rendererId: 'packed-client-runtime'")
-    || !pluginUiBuildSource.includes("rendererId: 'provider-detail'")
-    || (pluginUiBuildSource.match(/platforms: \['web', 'ios', 'android'\]/gu)?.length ?? 0) !== 2
+    || !packageJsonSource.includes('"./happier-plugin-ui/packed-client-runtime": "./src/clientRuntime.ts"')
+    || !packageJsonSource.includes('"./happier-plugin-ui/provider-detail": "./ui/providerDetail.native.tsx"')
     || !protocolSource.includes('defineContributionProtocol')
     || !protocolSource.includes("policy: 'additive-open/drop'")
     || !protocolSource.includes('descriptor')
@@ -1288,7 +1326,7 @@ export async function runPackedTargetedContributionProjection(
       projectRoot: targetRoot,
       registryOrigin: candidateRegistry.origin,
     });
-    const targetGeneration = assertCommittedPluginInstall(
+    const targetImmutableGenerationId = assertCommittedPluginInstall(
       await installArchive(targetArchivePath),
       PACKED_TARGETED_CONTRIBUTION_FIXTURE.targetPluginId,
       'packed_targeted_target_install',
@@ -1309,7 +1347,7 @@ export async function runPackedTargetedContributionProjection(
     if (!builtInSemanticBaseline) {
       throw new Error('packed_targeted_built_in_semantic_baseline_missing');
     }
-    const contributorGeneration = assertCommittedPluginInstall(
+    const contributorImmutableGenerationId = assertCommittedPluginInstall(
       await installArchive(contributorArchivePath),
       PACKED_TARGETED_CONTRIBUTION_FIXTURE.contributorPluginId,
       'packed_targeted_contributor_install',
@@ -1331,14 +1369,14 @@ export async function runPackedTargetedContributionProjection(
     assertInstalledPluginCurrent(
       targetInstalled,
       PACKED_TARGETED_CONTRIBUTION_FIXTURE.targetPluginId,
-      targetGeneration,
+      targetImmutableGenerationId,
       'packed_targeted_target_before_restart',
       'dormant',
     );
     assertInstalledPluginCurrent(
       contributorInstalled,
       PACKED_TARGETED_CONTRIBUTION_FIXTURE.contributorPluginId,
-      contributorGeneration,
+      contributorImmutableGenerationId,
       'packed_targeted_contributor_before_restart',
       'applied',
     );
@@ -1381,14 +1419,14 @@ export async function runPackedTargetedContributionProjection(
     assertInstalledPluginCurrent(
       targetAfterRestart,
       PACKED_TARGETED_CONTRIBUTION_FIXTURE.targetPluginId,
-      targetGeneration,
+      targetImmutableGenerationId,
       'packed_targeted_target_after_restart',
       'dormant',
     );
     assertInstalledPluginCurrent(
       contributorAfterRestart,
       PACKED_TARGETED_CONTRIBUTION_FIXTURE.contributorPluginId,
-      contributorGeneration,
+      contributorImmutableGenerationId,
       'packed_targeted_contributor_after_restart',
       'applied',
     );
@@ -1409,21 +1447,18 @@ export async function runPackedTargetedContributionProjection(
     const projection = await callEncryptedMachineRpc({
       ui,
       machineId,
-      method: RPC_METHODS.DAEMON_MERGED_CONTRIBUTION_REGISTRY_PROJECTION_DESCRIBE,
+      method: RPC_METHODS.DAEMON_PLUGIN_UI_TARGETED_CONTRIBUTIONS_READ,
       req: {
         machineId,
-        mountedTarget: {
-          pluginId: PACKED_TARGETED_CONTRIBUTION_FIXTURE.targetPluginId,
-          immutableGenerationId: targetGeneration,
-        },
+        pluginId: PACKED_TARGETED_CONTRIBUTION_FIXTURE.targetPluginId,
       },
       secret,
-      schema: DaemonContributionRegistryProjectionDescribeResponseSchema,
+      schema: DaemonPluginUiTargetedContributionsReadResponseSchema,
     });
     const mountedEvidence = assertMountedTargetedContributionProjection({
       projection,
-      targetGeneration,
-      contributorGeneration,
+      targetImmutableGenerationId,
+      contributorImmutableGenerationId,
       machineId,
       builtInSemanticDescriptor: builtInSemanticBaseline.descriptor,
     });
@@ -1442,14 +1477,14 @@ export async function runPackedTargetedContributionProjection(
     assertInstalledPluginCurrent(
       targetAfterMountedProjection,
       PACKED_TARGETED_CONTRIBUTION_FIXTURE.targetPluginId,
-      targetGeneration,
+      targetImmutableGenerationId,
       'packed_targeted_target_after_mounted_projection',
       'dormant',
     );
     assertInstalledPluginCurrent(
       contributorAfterMountedProjection,
       PACKED_TARGETED_CONTRIBUTION_FIXTURE.contributorPluginId,
-      contributorGeneration,
+      contributorImmutableGenerationId,
       'packed_targeted_contributor_after_mounted_projection',
       'applied',
     );
@@ -1490,8 +1525,8 @@ export async function runPackedTargetedContributionProjection(
       },
       artifactAdmission: options.artifactAdmission,
       evidence: {
-        targetGeneration,
-        contributorGeneration,
+        targetImmutableGenerationId,
+        contributorImmutableGenerationId,
         ...mountedEvidence,
         coldRestart: true,
       },

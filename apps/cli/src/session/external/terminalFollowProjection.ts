@@ -1,8 +1,11 @@
+import type { AgentSessionRuntime } from '@happier-dev/plugin-sdk/agents/runtime';
 import { resolveTranscriptBodySemanticEvent } from '@happier-dev/protocol';
 import {
   AgentSessionRuntimeEventSchema,
   type AgentSessionRuntimeEvent,
 } from '@happier-dev/protocol/runtime';
+
+import type { CommittedTranscriptAdmission } from '@/api/session/transcriptPort';
 
 import type { HostExternalTranscriptFollowEvent, HostExternalTranscriptItem } from './privateContract';
 
@@ -10,10 +13,7 @@ export type ExternalSessionTerminalRuntimeEventProjectionResult =
   | Readonly<{ projected: true }>
   | Readonly<{ projected: false; reason: string }>;
 
-export type ExternalSessionTerminalFollowProjectionAdmission = Readonly<{
-  signal: AbortSignal;
-  deadlineAtMs?: number;
-}>;
+export type ExternalSessionTerminalFollowProjectionAdmission = CommittedTranscriptAdmission;
 
 export type ExternalSessionTerminalFollowProjector = (
   event: HostExternalTranscriptFollowEvent,
@@ -174,6 +174,7 @@ function toRuntimeTranscriptEvent(params: Readonly<{
 export function createExternalSessionTerminalFollowProjector(params: Readonly<{
   sessionId: string;
   agentId: string;
+  observeSourceTranscript?: AgentSessionRuntime['observeSourceTranscript'];
   projectRuntimeEvent(
     event: AgentSessionRuntimeEvent,
     admission?: ExternalSessionTerminalFollowProjectionAdmission,
@@ -183,6 +184,18 @@ export function createExternalSessionTerminalFollowProjector(params: Readonly<{
   return async (event, admission) => {
     if (event.kind !== 'data') return;
     for (const item of event.items) {
+      if (item.kind === 'source_observation') {
+        if (event.phase === 'initial_replay' || !event.providerSessionId || !params.observeSourceTranscript) {
+          throw new Error('external_session_terminal_source_observation_unavailable');
+        }
+        if (admission?.signal.aborted) throw admission.signal.reason;
+        await params.observeSourceTranscript({
+          providerSessionId: event.providerSessionId,
+          sourceId: item.id,
+          row: item.data,
+        });
+        continue;
+      }
       const runtimeEvent = toRuntimeTranscriptEvent({
         sessionId: params.sessionId,
         agentId: params.agentId,
@@ -191,7 +204,9 @@ export function createExternalSessionTerminalFollowProjector(params: Readonly<{
         ...(event.phase ? { phase: event.phase } : {}),
       });
       if (!runtimeEvent) continue;
-      const result = await params.projectRuntimeEvent(runtimeEvent, admission);
+      const result = await params.projectRuntimeEvent(runtimeEvent, admission
+        ? { ...admission, requireDelivery: true }
+        : undefined);
       if (!result.projected) {
         throw new Error('external_session_terminal_transcript_projection_rejected');
       }

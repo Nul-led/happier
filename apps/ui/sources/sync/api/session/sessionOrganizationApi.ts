@@ -12,6 +12,7 @@ import {
     ImportLegacySessionOrganizationResponseSchema,
     MoveSessionFolderAssignmentsResponseSchema,
     ReorderSessionOrganizationResponseSchema,
+    SESSION_ORGANIZATION_CURRENT_PROJECTION_VERSION,
     SESSION_ORGANIZATION_MAX_SCOPED_SNAPSHOT_IDS,
     SESSION_ORGANIZATION_SNAPSHOT_VERSION,
     SessionFolderAssignmentListResponseSchema,
@@ -170,9 +171,10 @@ function appendArrayParam(params: URLSearchParams, key: string, values: readonly
 }
 
 function buildSnapshotQuery(request: Partial<SessionOrganizationSnapshotRequest> | undefined): string {
-    if (!request) return '';
+    request ??= {};
     SessionOrganizationSnapshotRequestSchema.parse(request);
     const params = new URLSearchParams();
+    params.set('projectionVersion', String(SESSION_ORGANIZATION_CURRENT_PROJECTION_VERSION));
     appendBooleanParam(params, 'includeFolders', request.includeFolders);
     appendBooleanParam(params, 'includeTags', request.includeTags);
     appendBooleanParam(params, 'includeLabels', request.includeLabels);
@@ -293,12 +295,14 @@ export async function reorderSessionOrganization(params: Readonly<{
 export async function upsertSessionOrganizationFolder(params: Readonly<{
     credentials: AuthCredentials;
     serverUrl?: string;
+    requestAtEndpoint?: (path: string, init?: RequestInit) => Promise<Response>;
     request: CreateOrUpdateSessionOrganizationFolderRequest;
 }>): Promise<CreateOrUpdateSessionOrganizationFolderResponse> {
     const response = await fetchSessionOrganizationRoute({
         credentials: params.credentials,
         serverUrl: params.serverUrl,
         path: `${SESSION_ORGANIZATION_ROUTE}/folders`,
+        requestAtEndpoint: params.requestAtEndpoint,
         init: {
             method: 'POST',
             headers: authHeaders(params.credentials),
@@ -311,12 +315,14 @@ export async function upsertSessionOrganizationFolder(params: Readonly<{
 export async function deleteSessionOrganizationFolder(params: Readonly<{
     credentials: AuthCredentials;
     serverUrl?: string;
+    requestAtEndpoint?: (path: string, init?: RequestInit) => Promise<Response>;
     request: DeleteSessionOrganizationFolderRequest;
 }>): Promise<DeleteSessionOrganizationFolderResponse> {
     const response = await fetchSessionOrganizationRoute({
         credentials: params.credentials,
         serverUrl: params.serverUrl,
         path: `${SESSION_ORGANIZATION_ROUTE}/folders/${encodeURIComponent(params.request.folderId)}`,
+        requestAtEndpoint: params.requestAtEndpoint,
         init: {
             method: 'DELETE',
             headers: authHeaders(params.credentials),
@@ -399,12 +405,14 @@ export async function fetchSessionFolderAssignmentsForSessions(params: Readonly<
 export async function upsertSessionOrganizationTag(params: Readonly<{
     credentials: AuthCredentials;
     serverUrl?: string;
+    requestAtEndpoint?: (path: string, init?: RequestInit) => Promise<Response>;
     request: CreateOrUpdateSessionOrganizationTagRequest;
 }>): Promise<CreateOrUpdateSessionOrganizationTagResponse> {
     const response = await fetchSessionOrganizationRoute({
         credentials: params.credentials,
         serverUrl: params.serverUrl,
         path: `${SESSION_ORGANIZATION_ROUTE}/tags`,
+        requestAtEndpoint: params.requestAtEndpoint,
         init: {
             method: 'POST',
             headers: authHeaders(params.credentials),
@@ -417,12 +425,14 @@ export async function upsertSessionOrganizationTag(params: Readonly<{
 export async function deleteSessionOrganizationTag(params: Readonly<{
     credentials: AuthCredentials;
     serverUrl?: string;
+    requestAtEndpoint?: (path: string, init?: RequestInit) => Promise<Response>;
     request: DeleteSessionOrganizationTagRequest;
 }>): Promise<DeleteSessionOrganizationTagResponse> {
     const response = await fetchSessionOrganizationRoute({
         credentials: params.credentials,
         serverUrl: params.serverUrl,
         path: `${SESSION_ORGANIZATION_ROUTE}/tags/${encodeURIComponent(params.request.tagId)}`,
+        requestAtEndpoint: params.requestAtEndpoint,
         init: {
             method: 'DELETE',
             headers: authHeaders(params.credentials),

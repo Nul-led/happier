@@ -1,4 +1,8 @@
-import { BrowserContextAttachmentV1Schema, type BrowserContextAttachmentV1 } from '@happier-dev/protocol';
+import {
+    BrowserContextAttachmentV1Schema,
+    buildBrowserContextAnnotationStructuredBlock,
+    type BrowserContextAttachmentV1,
+} from '@happier-dev/protocol';
 
 import type { BrowserContextState } from './types';
 
@@ -67,6 +71,7 @@ export function selectBrowserAnnotationGroups(
 export function selectBrowserContextComposerAttachments(
     state: BrowserContextState,
 ): readonly BrowserContextAttachmentV1[] {
+    const groups = new Map(selectBrowserAnnotationGroups(state).map((group) => [group.annotationId, group]));
     return state.attachmentOrder.flatMap((attachmentId) => {
         const record = state.attachmentsById[attachmentId];
         if (!record) return [];
@@ -75,6 +80,10 @@ export function selectBrowserContextComposerAttachments(
 
         const currentNavigationGeneration = state.navigationGenerationByViewId[item.sourceViewId] ?? item.navigationGeneration;
         const stale = currentNavigationGeneration !== item.navigationGeneration;
+        const group = item.kind === 'browserAnnotation' ? groups.get(item.annotationId) : undefined;
+        const structuredBlock = group ? buildBrowserContextAnnotationStructuredBlock(
+            group.contextIds.flatMap((contextId) => state.itemsById[contextId] ? [state.itemsById[contextId]] : []),
+        ) : undefined;
 
         return [BrowserContextAttachmentV1Schema.parse({
             v: 1,
@@ -85,6 +94,7 @@ export function selectBrowserContextComposerAttachments(
             currentNavigationGeneration,
             state: stale ? 'navigationStale' : item.lifecycleState,
             requiresReconfirmBeforeSend: stale,
+            ...(structuredBlock ? { structuredBlock } : {}),
         })];
     });
 }

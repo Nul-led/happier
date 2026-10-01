@@ -57,6 +57,20 @@ function inventoryEntry(overrides: Partial<NormalizedLocalServiceInventoryEntry>
 
 
 describe('buildLocalServiceLauncherSnapshot', () => {
+    it('preserves preview access both with and before observed listener evidence', () => {
+        const preview = {
+            previewId: 'preview-a', sessionId: 'session-a', machineId: 'machine-a',
+            owner: { kind: 'session' as const, id: 'session-a' },
+            target: { scheme: 'http' as const, host: '127.0.0.1', port: 5173 },
+            initialPath: { pathname: '/', search: '' }, display: { title: 'App', addressLabel: 'localhost:5173' }, originMode: 'host' as const,
+        };
+        const input = { machineId: 'machine-a', updatedAt: 3_000, runTargets: [], previewResources: [preview] };
+        const withListener = buildLocalServiceLauncherSnapshot({ ...input, inventoryEntries: [inventoryEntry()] });
+        expect(withListener.targets.find((target) => target.source === 'inventory_entry')).toMatchObject({ source: 'inventory_entry', actions: ['open_preview', 'register_preview'], browserTarget: { kind: 'localServicePreview', targetId: 'preview-a' } });
+        const withoutListener = buildLocalServiceLauncherSnapshot({ ...input, inventoryEntries: [] });
+        expect(withoutListener.targets).toHaveLength(1);
+        expect(withoutListener.targets[0]).toMatchObject({ source: 'registered_preview', state: 'available', actions: ['open_preview'] });
+    });
     it('projects scripts, inventory entries, and registered previews into stable launcher targets', () => {
         const snapshot = buildLocalServiceLauncherSnapshot({
             machineId: 'machine-a',
@@ -128,10 +142,11 @@ describe('buildLocalServiceLauncherSnapshot', () => {
             browserTarget: { targetId: 'preview-a' },
         });
         expect(snapshot.targets[2]?.unavailableReason).toBe('launch_unavailable');
+        expect(snapshot.targets[2]).not.toHaveProperty('sessionId');
         expect(snapshot.targets[3]?.unavailableReason).toBe('stale_service');
     });
 
-    it('mints an externalUrl loopback open target for a listening loopback entry without a preview', () => {
+    it('requires canonical preview registration rather than handing a remote viewer loopback', () => {
         const snapshot = buildLocalServiceLauncherSnapshot({
             machineId: 'machine-a',
             sessionId: 'session-a',
@@ -144,15 +159,32 @@ describe('buildLocalServiceLauncherSnapshot', () => {
         expect(LocalServiceLauncherSnapshotV1Schema.parse(snapshot)).toEqual(snapshot);
         const target = snapshot.targets[0];
         expect(target?.state).toBe('available');
-        expect(target?.actions).toEqual(['open']);
-        expect(target?.browserTarget).toMatchObject({
-            kind: 'externalUrl',
-            targetId: 'inventory-loopback:inventory-a',
-            url: 'http://127.0.0.1:5173/',
-        });
+        expect(target?.actions).toEqual(['register_preview']);
+        expect(target?.browserTarget).toBeUndefined();
+        expect(target).not.toHaveProperty('sessionId');
     });
 
-    it('mints an HTTPS open target from the daemon-detected endpoint scheme', () => {
+    it('attributes inventory targets only when the scanner recorded an originating session', () => {
+        const snapshot = buildLocalServiceLauncherSnapshot({
+            machineId: 'machine-a',
+            sessionId: 'requesting-session',
+            updatedAt: 3_000,
+            runTargets: [],
+            inventoryEntries: [
+                inventoryEntry({ id: 'owned', provenance: { session: { id: 'origin-session' } } }),
+                inventoryEntry({ id: 'unowned', port: 5174 }),
+                inventoryEntry({ id: 'stale', port: 5175, state: 'stale' }),
+            ],
+            previewResources: [],
+        });
+
+        expect(snapshot.sessionId).toBe('requesting-session');
+        expect(snapshot.targets.find((target) => target.id === 'inventory:owned')?.sessionId).toBe('origin-session');
+        expect(snapshot.targets.find((target) => target.id === 'inventory:unowned')).not.toHaveProperty('sessionId');
+        expect(snapshot.targets.find((target) => target.id === 'inventory:stale')).not.toHaveProperty('sessionId');
+    });
+
+    it('routes detected HTTPS services through the same preview registration owner', () => {
         const snapshot = buildLocalServiceLauncherSnapshot({
             machineId: 'machine-a',
             sessionId: 'session-a',
@@ -173,10 +205,8 @@ describe('buildLocalServiceLauncherSnapshot', () => {
         });
 
         expect(LocalServiceLauncherSnapshotV1Schema.parse(snapshot)).toEqual(snapshot);
-        expect(snapshot.targets[0]?.browserTarget).toMatchObject({
-            kind: 'externalUrl',
-            url: 'https://127.0.0.1:8443/',
-        });
+        expect(snapshot.targets[0]?.browserTarget).toBeUndefined();
+        expect(snapshot.targets[0]?.actions).toEqual(['register_preview']);
     });
 
     it('keeps unknown-scheme loopback entries visible but disables open with a reason', () => {
@@ -228,7 +258,7 @@ describe('buildLocalServiceLauncherSnapshot', () => {
         });
 
         expect(LocalServiceLauncherSnapshotV1Schema.parse(snapshot)).toEqual(snapshot);
-        expect(snapshot.targets[0]?.actions).toEqual(['open', 'terminate_detected']);
+        expect(snapshot.targets[0]?.actions).toEqual(['register_preview', 'terminate_detected']);
     });
 
     it('does not advertise terminate for unowned or disabled detected inventory entries', () => {
@@ -268,12 +298,12 @@ describe('buildLocalServiceLauncherSnapshot', () => {
             terminateDetectedEnabled: true,
         });
 
-        expect(disabled.targets[0]?.actions).toEqual(['open']);
-        expect(unowned.targets[0]?.actions).toEqual(['open']);
-        expect(unestablished.targets[0]?.actions).toEqual(['open']);
+        expect(disabled.targets[0]?.actions).toEqual(['register_preview']);
+        expect(unowned.targets[0]?.actions).toEqual(['register_preview']);
+        expect(unestablished.targets[0]?.actions).toEqual(['register_preview']);
     });
 
-    it('bracket-wraps IPv6 loopback hosts in the minted open url', () => {
+    it('routes IPv6 listeners through canonical preview registration', () => {
         const snapshot = buildLocalServiceLauncherSnapshot({
             machineId: 'machine-a',
             sessionId: 'session-a',
@@ -292,13 +322,11 @@ describe('buildLocalServiceLauncherSnapshot', () => {
             })],
             previewResources: [],
         });
-        expect(snapshot.targets[0]?.browserTarget).toMatchObject({
-            kind: 'externalUrl',
-            url: 'http://[::1]:5173/',
-        });
+        expect(snapshot.targets[0]?.browserTarget).toBeUndefined();
+        expect(snapshot.targets[0]?.actions).toEqual(['register_preview']);
     });
 
-    it('maps wildcard binds to a reachable loopback by family', () => {
+    it('leaves wildcard endpoint normalization to preview registration', () => {
         const ipv4 = buildLocalServiceLauncherSnapshot({
             machineId: 'machine-a',
             updatedAt: 3_000,
@@ -309,7 +337,8 @@ describe('buildLocalServiceLauncherSnapshot', () => {
             })],
             previewResources: [],
         });
-        expect(ipv4.targets[0]?.browserTarget).toMatchObject({ url: 'http://127.0.0.1:5173/' });
+        expect(ipv4.targets[0]?.browserTarget).toBeUndefined();
+        expect(ipv4.targets[0]?.actions).toEqual(['register_preview']);
 
         const ipv6 = buildLocalServiceLauncherSnapshot({
             machineId: 'machine-a',
@@ -328,7 +357,8 @@ describe('buildLocalServiceLauncherSnapshot', () => {
             })],
             previewResources: [],
         });
-        expect(ipv6.targets[0]?.browserTarget).toMatchObject({ url: 'http://[::1]:5173/' });
+        expect(ipv6.targets[0]?.browserTarget).toBeUndefined();
+        expect(ipv6.targets[0]?.actions).toEqual(['register_preview']);
     });
 
     it('does not mint an open target for a non-loopback (LAN) listening entry', () => {
@@ -387,6 +417,7 @@ describe('buildLocalServiceLauncherSnapshot', () => {
             },
         });
         expect(snapshot.targets[0]).not.toHaveProperty('commandPreview');
+        expect(snapshot.targets[0]).not.toHaveProperty('sessionId');
         expect(snapshot.targets[1]).toMatchObject({
             workspaceId: 'workspace-a',
             title: 'App screenshot',
@@ -399,5 +430,6 @@ describe('buildLocalServiceLauncherSnapshot', () => {
             },
         });
         expect(snapshot.targets[1]).not.toHaveProperty('commandPreview');
+        expect(snapshot.targets[1]).not.toHaveProperty('sessionId');
     });
 });

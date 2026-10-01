@@ -12,6 +12,7 @@ import { formatEnvVarTemplate, parseEnvVarTemplate } from '@/utils/profiles/envV
 import { Text } from '@/components/ui/text/Text';
 import { useScrollViewWheelScrollTo } from '@/components/ui/scroll/useScrollViewWheelScrollTo';
 import { Icon } from '@/components/ui/icons/Icon';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 export interface EnvironmentVariablesPreviewPanelProps {
     environmentVariables: Record<string, string>;
@@ -171,7 +172,7 @@ export function EnvironmentVariablesPreviewPanel(props: EnvironmentVariablesPrev
                 <Pressable
                     onPress={props.onClose}
                     hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                    style={({ pressed }) => ({ opacity: pressed ? 0.7 : 1 })}
+                    style={({ pressed }) => ({ opacity: pressed ? motionTokens.press.opacity : 1 })}
                 >
                     {normalizeNodeForView(<Icon name="x" size={20} color={theme.colors.text.secondary} />)}
                 </Pressable>

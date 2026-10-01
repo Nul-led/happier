@@ -1,4 +1,5 @@
 import { logger } from '@/ui/logger';
+import { processIdentityMatches } from '@happier-dev/cli-common/processInstance';
 
 import {
   promoteSessionMarkerPid,
@@ -185,10 +186,7 @@ export async function promoteTrackedSessionPidCustody(
       markerPromotion.targetMarkerOwnership;
     if (
       requireExactTargetOwnership
-      && (
-        !targetMarkerOwnership?.processCommandHash
-        || targetMarkerOwnership.processStartTimeMs === undefined
-      )
+      && targetMarkerOwnership?.processStartTimeMs === undefined
     ) {
       await rollbackTargetMarker();
       logger.debug(
@@ -199,14 +197,11 @@ export async function promoteTrackedSessionPidCustody(
     }
     if (
       expectedTargetProcessIdentity
-      && (
-        targetMarkerOwnership?.processStartTimeMs
-          !== expectedTargetProcessIdentity
-            .processStartTimeMs
-        || targetMarkerOwnership?.processCommandHash
-          !== expectedTargetProcessIdentity
-            .processCommandHash
-      )
+      && !processIdentityMatches({ pid: toPid, ...expectedTargetProcessIdentity }, {
+        pid: toPid,
+        processStartTimeMs: targetMarkerOwnership?.processStartTimeMs,
+        processCommandHash: targetMarkerOwnership?.processCommandHash,
+      })
     ) {
       await rollbackTargetMarker();
       logger.debug(

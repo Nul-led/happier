@@ -9,6 +9,7 @@ import type { ThemeProfileMode, ThemeProfileV1 } from '@/theme/profiles/themePro
 import {
     PLUGIN_UI_THEME_COLOR_TOKEN_IDS,
     projectPluginUiTheme,
+    readPluginUiHostTypography,
 } from './pluginUiThemeProjection';
 
 function themeFor(profile: ThemeProfileV1 | null, mode: ThemeProfileMode = 'light') {
@@ -94,5 +95,21 @@ describe('plugin UI semantic theme projection (§3.3, UI-D12)', () => {
         }
         expect(projected.typography.code.fontFamily).toBeTruthy();
         expect(projected).not.toHaveProperty('elevation');
+    });
+
+    it('projects a descending type ramp whose same-realm role styles agree with the snapshot', () => {
+        const { typography } = projectPluginUiTheme(themeFor(null));
+        const PLUGIN_UI_HOST_TYPOGRAPHY = readPluginUiHostTypography();
+        // Headings over row titles over their own context line over metadata:
+        // a row title smaller than its subtitle is the inversion this guards.
+        expect(PLUGIN_UI_HOST_TYPOGRAPHY.heading.fontSize).toBeGreaterThan(typography.title.fontSize);
+        expect(typography.title.fontSize).toBeGreaterThan(typography.label.fontSize);
+        expect(typography.label.fontSize).toBeGreaterThan(typography.body.fontSize);
+        expect(typography.body.fontSize).toBeGreaterThan(typography.caption.fontSize);
+        for (const role of ['title', 'label', 'body', 'caption'] as const) {
+            expect(PLUGIN_UI_HOST_TYPOGRAPHY[role].fontSize, `${role} size`).toBe(typography[role].fontSize);
+            expect(PLUGIN_UI_HOST_TYPOGRAPHY[role].lineHeight, `${role} line height`).toBe(typography[role].lineHeight);
+        }
+        expect(PLUGIN_UI_HOST_TYPOGRAPHY.caption.fontVariant).toEqual(['tabular-nums']);
     });
 });

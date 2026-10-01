@@ -61,10 +61,15 @@ export async function createBaseSessionForAttach(opts: Readonly<{
   const metadataVersion = attach.snapshot?.metadataVersion ?? -1;
   const agentState = attach.snapshot?.agentState ?? opts.state;
   const agentStateVersion = attach.snapshot?.agentStateVersion ?? -1;
+  const organization = {
+    ...(attach.snapshot?.reportsTo ? { reportsTo: attach.snapshot.reportsTo } : {}),
+    ...(attach.snapshot?.origin ? { origin: attach.snapshot.origin } : {}),
+  };
 
   if (attach.encryptionMode === 'plain') {
     return {
       id: existingSessionId,
+      ...organization,
       seq,
       ...(initialTranscriptAfterSeq !== undefined ? { initialTranscriptAfterSeq } : {}),
       encryptionMode: 'plain',
@@ -87,6 +92,7 @@ export async function createBaseSessionForAttach(opts: Readonly<{
 
   return {
     id: existingSessionId,
+    ...organization,
     seq,
     ...(initialTranscriptAfterSeq !== undefined ? { initialTranscriptAfterSeq } : {}),
     encryptionMode: 'e2ee',

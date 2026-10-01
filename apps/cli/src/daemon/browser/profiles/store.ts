@@ -20,13 +20,15 @@ export type BrowserProfileRegistration = Readonly<{
   displayName?: string;
   createdAt?: number;
   cleanupOnSessionClose?: boolean;
+  /** Settles the profile's running engine before deleting its storage. */
+  beforePurge?: () => Promise<void>;
 }>;
 
 export type BrowserProfilePurgeAuditRecord = Readonly<{
   kind: 'browser_profile_purged' | 'browser_profile_purge_failed';
   profileId: string;
   storageMode: BrowserProfileStorageModeV1;
-  reason: 'session_deleted' | 'logout';
+  reason: 'session_deleted' | 'logout' | 'runtime_stopped';
   reasonCode?: BrowserProfilePurgeFailureReasonCodeV1;
   message?: string;
   occurredAt: number;
@@ -44,6 +46,8 @@ export type BrowserProfileStore = Readonly<{
   resolveProfileDirectory(profileId: string): string;
   purgeForSessionDeleted(input: Readonly<{ sessionId: string }>): Promise<BrowserProfilePurgeOutcome>;
   purgeForLogout(): Promise<BrowserProfilePurgeOutcome>;
+  /** Stops only the named transient runtime profiles, not other profiles of a live session. */
+  purgeForRuntimeStopped(input: Readonly<{ profileIds: readonly string[] }>): Promise<BrowserProfilePurgeOutcome>;
 }>;
 
 export type BrowserProfileStoreOptions = Readonly<{
@@ -63,6 +67,7 @@ export function createBrowserProfileStore(options: BrowserProfileStoreOptions): 
   const now = options.now ?? (() => Date.now());
   const emitAudit = options.emitAudit ?? (() => undefined);
   const profilesById = new Map<string, BrowserProfileV1>();
+  const beforePurgeById = new Map<string, () => Promise<void>>();
   const profilesRoot = join(options.storageRootDirectory, PROFILE_STORAGE_DIRNAME);
 
   function resolveProfileDirectory(profileId: string): string {
@@ -73,7 +78,7 @@ export function createBrowserProfileStore(options: BrowserProfileStoreOptions): 
     profile: BrowserProfileV1,
     reasonCode: BrowserProfilePurgeFailureReasonCodeV1,
     message: string,
-    reason: 'session_deleted' | 'logout',
+    reason: BrowserProfilePurgeAuditRecord['reason'],
   ): void {
     const occurredAt = now();
     const unusable = BrowserProfileV1Schema.parse({
@@ -97,10 +102,18 @@ export function createBrowserProfileStore(options: BrowserProfileStoreOptions): 
 
   async function purgeProfile(
     profile: BrowserProfileV1,
-    reason: 'session_deleted' | 'logout',
+    reason: BrowserProfilePurgeAuditRecord['reason'],
   ): Promise<boolean> {
     const purging = BrowserProfileV1Schema.parse({ ...profile, lifecycleState: 'purging', updatedAt: now() });
     profilesById.set(profile.profileId, purging);
+
+    try {
+      await beforePurgeById.get(profile.profileId)?.();
+    } catch {
+      // Engine/CDP errors can contain private endpoints; the audit carries the typed cause only.
+      markUnusable(profile, 'profile_in_use', 'Browser profile process did not settle.', reason);
+      return false;
+    }
 
     const partitionResult = await options.partitionOwner.purgePartitionsForProfiles(new Set([profile.profileId]));
     if (partitionResult.failures.length > 0) {
@@ -122,6 +135,7 @@ export function createBrowserProfileStore(options: BrowserProfileStoreOptions): 
     }
 
     profilesById.delete(profile.profileId);
+    beforePurgeById.delete(profile.profileId);
     emitAudit({
       kind: 'browser_profile_purged',
       profileId: profile.profileId,
@@ -134,7 +148,7 @@ export function createBrowserProfileStore(options: BrowserProfileStoreOptions): 
 
   async function purgeProfiles(
     targets: readonly BrowserProfileV1[],
-    reason: 'session_deleted' | 'logout',
+    reason: BrowserProfilePurgeAuditRecord['reason'],
   ): Promise<BrowserProfilePurgeOutcome> {
     const purgedProfileIds: string[] = [];
     const failedProfileIds: string[] = [];
@@ -165,6 +179,7 @@ export function createBrowserProfileStore(options: BrowserProfileStoreOptions): 
           : {}),
       });
       profilesById.set(profile.profileId, profile);
+      if (registration.beforePurge) beforePurgeById.set(profile.profileId, registration.beforePurge);
       return profile;
     },
 
@@ -180,7 +195,8 @@ export function createBrowserProfileStore(options: BrowserProfileStoreOptions): 
 
     async purgeForSessionDeleted(input) {
       const targets = [...profilesById.values()].filter(
-        (profile) => profile.storageMode === 'session'
+        (profile) => (profile.storageMode === 'session'
+            || (profile.storageMode === 'ephemeral' && profile.cleanupOnSessionClose))
           && profile.owner.kind === 'session'
           && profile.owner.id === input.sessionId
           && profile.lifecycleState !== 'unusable',
@@ -193,6 +209,12 @@ export function createBrowserProfileStore(options: BrowserProfileStoreOptions): 
         (profile) => profile.storageMode === 'ephemeral' && profile.lifecycleState !== 'unusable',
       );
       return await purgeProfiles(targets, 'logout');
+    },
+    async purgeForRuntimeStopped(input) {
+      const profileIds = new Set(input.profileIds);
+      const targets = [...profilesById.values()].filter(profile => profileIds.has(profile.profileId)
+        && profile.storageMode === 'ephemeral' && profile.lifecycleState !== 'unusable');
+      return await purgeProfiles(targets, 'runtime_stopped');
     },
   };
 }

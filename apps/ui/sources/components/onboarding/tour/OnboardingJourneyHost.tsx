@@ -8,10 +8,10 @@ import type {
     OnboardingWizardSurfaceProps,
 } from '@/components/onboarding/surfaces/useOnboardingWizardController';
 import type { WizardStepId } from '@/components/onboarding/state/wizardTypes';
-import {
-    useSetupWizardController,
-    type SetupWizardController,
-} from '@/components/onboarding/surfaces/useSetupWizardController';
+import { MachineAddForm } from '@/components/machines/add/MachineAddForm';
+import { MachineAgentsSection } from '@/components/machines/agents/MachineAgentsSection';
+import { useMachine } from '@/sync/domains/state/storage';
+import { getMachineDisplayName } from '@/utils/sessions/machineDisplayNames';
 import { usePendingSetupIntent } from '@/components/onboarding/state/usePendingSetupIntent';
 import { WizardChoiceRow } from '@/components/onboarding/ui/WizardChoiceRow';
 import { Text } from '@/components/ui/text/Text';
@@ -28,7 +28,7 @@ import { useApplySettings } from '@/sync/store/settingsWriters';
 import { t } from '@/text';
 
 import { MOBILE_MAX_WIDTH_PX } from '../unauthShell/useUnauthShellLayout';
-import { RelayRetentionDisclosure } from '../unauthShell/RelayRetentionDisclosure';
+import { RelayRetentionDisclosure, type RelayRetentionDisclosureState } from '../unauthShell/RelayRetentionDisclosure';
 import { JourneyConfigSlot, type JourneyConfigControllerSurface } from './config/JourneyConfigSlot';
 import { SplitStageLayout, type SplitStageLayoutOrientation } from './desktop/SplitStageLayout';
 import { StoryScrollerLayout } from './mobile/StoryScrollerLayout';
@@ -61,7 +61,7 @@ export type OnboardingJourneyHostProps = Readonly<{
     wizardSurfaceProps: OnboardingWizardSurfaceProps;
     initialBeatId?: JourneyBeatId;
     initialAttentionChoice?: JourneyAttentionChoice;
-    retentionSummary?: string | null;
+    retentionDisclosure?: RelayRetentionDisclosureState | null;
     reducedMotion?: boolean;
     onExit?: () => void;
     testID?: string;
@@ -167,26 +167,6 @@ export function adaptPreAuthController(
     };
 }
 
-function adaptSetupController(
-    controller: SetupWizardController,
-    journeyBack: (() => void) | null,
-): JourneyConfigControllerSurface {
-    return {
-        body: controller.body,
-        onPrimary: controller.onPrimary,
-        primaryLabel: controller.primaryLabel,
-        primaryDisabled: controller.primaryDisabled,
-        onBack: journeyBack ?? controller.onBack,
-        backLabel: journeyBack ? t('common.back') : controller.backLabel,
-        showBack: journeyBack ? true : controller.showBack,
-        onSkip: controller.onSkip,
-        skipLabel: controller.skipLabel,
-        skipDisabled: controller.skipDisabled,
-        showSkip: controller.showSkip,
-        footerHint: controller.footerHint,
-    };
-}
-
 function AttentionChoiceBody(props: Readonly<{
     choice: JourneyAttentionChoice;
     setChoice: (choice: JourneyAttentionChoice) => void;
@@ -263,10 +243,6 @@ function isPreAuthControllerAuthStep(stepId: OnboardingWizardController['stepId'
         || stepId === 'auth_restore'
         || stepId === 'auth_secret_key'
         || stepId === 'auth_lost_access';
-}
-
-function resolveSetupScope(configStepId: SetupJourneyConfigStepId | undefined): 'machine' | 'all' {
-    return configStepId === 'providers_optional' ? 'all' : 'machine';
 }
 
 function syncConfigStep(params: Readonly<{
@@ -387,52 +363,44 @@ function restoreExactSnapshot(snapshot: StoreSnapshot): void {
 }
 
 function SetupJourneyControllerBridge(props: Readonly<{
-    isDesktopShell: boolean;
     configStepId: SetupJourneyConfigStepId;
     initialSetupAction: 'local' | 'remote';
-    nextBeatId: JourneyBeatId | null;
-    currentBeatId: JourneyBeatId;
+    arrivedMachine: Readonly<{ machineId: string; serverId: string }> | null;
+    onArrived: (machine: Readonly<{ machineId: string; serverId: string }>) => void;
+    testID: string;
     journeyBack: (() => void) | null;
     onExit: () => void;
     advanceJourney: () => void;
     render: (controller: JourneyConfigControllerSurface) => React.ReactElement;
 }>): React.ReactElement {
-    const syncRef = React.useRef<ConfigStepSyncState | null>(null);
-    const controller = useSetupWizardController({
-        isDesktopShell: props.isDesktopShell,
-        initialStepId: props.configStepId,
-        initialSetupAction: props.initialSetupAction,
-        scope: resolveSetupScope(props.configStepId),
-        onExit: props.onExit,
+    const machine = useMachine(props.arrivedMachine?.machineId ?? '');
+    const isMachineBeat = props.configStepId === 'setup_this_computer';
+    const body = isMachineBeat ? (
+        <MachineAddForm
+            layout="panel"
+            testID={`${props.testID}-machine-add`}
+            initialPath={props.initialSetupAction === 'remote' ? 'ssh' : 'thisComputer'}
+            onClose={props.onExit}
+            onStartSession={props.advanceJourney}
+            onArrived={props.onArrived}
+        />
+    ) : props.arrivedMachine ? (
+        <MachineAgentsSection
+            serverId={props.arrivedMachine.serverId}
+            machineId={props.arrivedMachine.machineId}
+            machineName={getMachineDisplayName(machine ?? { absence: 'unlisted' })}
+        />
+    ) : null;
+    return props.render({
+        body,
+        onPrimary: isMachineBeat ? null : props.advanceJourney,
+        primaryLabel: t('common.next'),
+        onBack: props.journeyBack,
+        showBack: Boolean(props.journeyBack),
+        onSkip: props.onExit,
+        skipLabel: t('setupOnboarding.setupThisComputerSkipLabel'),
+        showSkip: true,
     });
-
-    React.useEffect(() => {
-        syncConfigStep({
-            syncRef,
-            beatId: props.currentBeatId,
-            targetStepId: props.configStepId,
-            currentStepId: controller.stepId,
-            goToStep: controller.goToStep,
-            isControllerAtNextBeat: (stepId) => {
-                const nextBeat = props.nextBeatId ? journeyBeatById.get(props.nextBeatId) : undefined;
-                if (!nextBeat || nextBeat.act !== 'setup') return false;
-                if (isSetupJourneyConfigStepId(nextBeat.configStepId)) {
-                    return stepId === nextBeat.configStepId;
-                }
-                return nextBeat.configStepId === undefined && stepId === 'done';
-            },
-            advanceJourney: props.advanceJourney,
-        });
-    }, [
-        controller.goToStep,
-        controller.stepId,
-        props.advanceJourney,
-        props.configStepId,
-        props.currentBeatId,
-        props.nextBeatId,
-    ]);
-
-    return props.render(adaptSetupController(controller, props.journeyBack));
 }
 
 export function OnboardingJourneyHost(props: OnboardingJourneyHostProps): React.ReactElement {
@@ -450,6 +418,7 @@ export function OnboardingJourneyHost(props: OnboardingJourneyHostProps): React.
     const layoutStageFrames = resolveStageFramesForHostDevice(resolveJourneyStageHostDevice(layoutMode));
     const auth = useAuth();
     const pendingSetupIntent = usePendingSetupIntent();
+    const [arrivedMachine, setArrivedMachine] = React.useState<Readonly<{ machineId: string; serverId: string }> | null>(null);
     const applySettings = useApplySettings();
     const demoLifecycleRef = React.useRef<DemoLifecycleGeneration | null>(null);
     const demoTeardownStartedRef = React.useRef(false);
@@ -563,6 +532,11 @@ export function OnboardingJourneyHost(props: OnboardingJourneyHostProps): React.
     const setupConfigStepId = isSetupJourneyConfigStepId(progress.currentBeat.configStepId)
         ? progress.currentBeat.configStepId
         : undefined;
+    const handleMachineArrived = React.useCallback((machine: Readonly<{ machineId: string; serverId: string }>) => {
+        if (arrivedMachine?.machineId === machine.machineId && arrivedMachine.serverId === machine.serverId) return;
+        setArrivedMachine(machine);
+        if (progress.currentBeat.configStepId === 'setup_this_computer') progress.advance();
+    }, [arrivedMachine, progress.currentBeat.configStepId, progress.advance]);
 
     const ensureActTwoDemoTeardown = React.useCallback(async () => {
         await unmountDemoStage();
@@ -788,13 +762,13 @@ export function OnboardingJourneyHost(props: OnboardingJourneyHostProps): React.
     // The journey owns Back on config beats so narration and embedded wizard body move together.
     if (progress.currentBeat.configStepId && PRE_AUTH_CONFIG_STEPS.has(progress.currentBeat.configStepId)) {
         controller = adaptPreAuthController(props.preAuthController, journeyBack);
-        if (progress.currentBeat.configStepId === 'auth' && props.retentionSummary) {
+        if (progress.currentBeat.configStepId === 'auth' && props.retentionDisclosure) {
             controller = {
                 ...controller,
                 footerHint: (
                     <View style={stylesForHost.preAuthFooter}>
                         <RelayRetentionDisclosure
-                            summary={props.retentionSummary}
+                            disclosure={props.retentionDisclosure}
                             testID={`${testID}-retention-disclosure`}
                         />
                         {controller.footerHint}
@@ -863,11 +837,11 @@ export function OnboardingJourneyHost(props: OnboardingJourneyHostProps): React.
     if (setupConfigStepId) {
         return (
             <SetupJourneyControllerBridge
-                isDesktopShell={props.isDesktopShell}
                 configStepId={setupConfigStepId}
                 initialSetupAction={pendingSetupIntent?.branch === 'remoteMachine' ? 'remote' : 'local'}
-                nextBeatId={progress.nextBeatId}
-                currentBeatId={progress.currentBeat.id}
+                arrivedMachine={arrivedMachine}
+                onArrived={handleMachineArrived}
+                testID={testID}
                 journeyBack={journeyBack}
                 onExit={settleJourneyExit}
                 advanceJourney={progress.advance}

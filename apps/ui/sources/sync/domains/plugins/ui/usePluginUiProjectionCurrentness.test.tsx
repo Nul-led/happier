@@ -29,8 +29,10 @@ const projectionSubscriptionState = vi.hoisted(() => ({
     listeners: new Set<() => void>(),
 }));
 
-vi.mock('@/sync/domains/server/serverRuntime', () => ({
-    getActiveServerSnapshot: () => activeServerSnapshot,
+vi.mock('@/sync/runtime/orchestration/connectionManager', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('@/sync/runtime/orchestration/connectionManager')>()),
+    getAppliedActiveServerSnapshot: () => activeServerSnapshot,
+    isAppliedActiveServerRuntimeAvailable: () => true,
 }));
 
 vi.mock('@/sync/domains/state/storageStateReaderBridge', async (importOriginal) => ({
@@ -69,6 +71,7 @@ vi.mock('@/sync/ops/machineContributionRegistryProjection', async (importOrigina
 import {
     retireActiveServerAccountScopeLifetime,
 } from '@/sync/domains/scope/activeServerAccountScope';
+import { clearDaemonMergedProjectionCacheForTests } from '@/agents/backendCatalog/loadDaemonMergedProjectionInputs';
 import { prepareWarmCacheEncryptionKey } from '@/sync/domains/state/warmCacheEncryptionKey';
 import {
     forgetPluginUiProjectionAdmissionSnapshots,
@@ -92,6 +95,7 @@ function projection(title: string) {
                     'translations:acme.preview': {
                         id: 'translations:acme.preview',
                         pluginId: 'acme.preview',
+                        occurrenceId: 'occurrence-preview',
                         contributionKind: 'translations',
                         locales: ['en'],
                         bundles: { en: { title } },
@@ -115,6 +119,9 @@ describe('usePluginUiProjectionCurrentness', () => {
         // resolves, exactly as on a device.
         await prepareWarmCacheEncryptionKey();
         retireActiveServerAccountScopeLifetime();
+        // The one per-machine projection owner is module state shared by
+        // every reader; each case starts from an empty owner.
+        clearDaemonMergedProjectionCacheForTests();
         // The retained admission snapshot is real device custody, so it would
         // otherwise leak between cases in this module.
         forgetPluginUiProjectionAdmissionSnapshots({ serverId: 'server-1', accountId: 'account-a' });
@@ -222,6 +229,7 @@ describe('usePluginUiProjectionCurrentness', () => {
         await flushHookEffects({ cycles: 2, turns: 2 });
         expect(warm.getCurrent().phase).toBe('current');
         await warm.unmount();
+        clearDaemonMergedProjectionCacheForTests();
 
         // Laptop asleep: the Account server still reports the machine online
         // from its last heartbeat, so the fresh process does reach for a daemon
@@ -258,12 +266,13 @@ describe('usePluginUiProjectionCurrentness', () => {
         await flushHookEffects({ cycles: 2, turns: 2 });
         expect(warm.getCurrent().phase).toBe('current');
         await warm.unmount();
+        clearDaemonMergedProjectionCacheForTests();
 
         // A daemon answered for this exact target and its answer was that the
         // machine cannot serve the projection at all. Device custody must not
         // overturn that answer when the machine subsequently drops offline.
         projectionRuntime.describe.mockReset();
-        projectionRuntime.describe.mockResolvedValue({ supported: false, reason: 'unsupported' });
+        projectionRuntime.describe.mockResolvedValue({ supported: false, reason: 'not-supported' });
         const answered = await renderHook(() => usePluginUiProjectionCurrentness({
             machineId: 'machine-1',
             serverId: 'server-1',
@@ -290,6 +299,7 @@ describe('usePluginUiProjectionCurrentness', () => {
         await flushHookEffects({ cycles: 2, turns: 2 });
         expect(warm.getCurrent().phase).toBe('current');
         await warm.unmount();
+        clearDaemonMergedProjectionCacheForTests();
 
         // A transport failure is not the daemon's answer. It must leave the
         // retained snapshot in device custody for the next process.
@@ -362,7 +372,7 @@ describe('usePluginUiProjectionCurrentness', () => {
                                 id: 'acme.preview/add-issue',
                                 pluginId: 'acme.preview',
                                 identity: { pluginId: 'acme.preview', localId: 'add-issue' },
-                                immutableGenerationId: 'preview-generation-42',
+                                occurrenceId: 'preview-generation-42',
                                 definition: {
                                     id: 'add-issue',
                                     label: 'Add issue',
@@ -406,6 +416,33 @@ describe('usePluginUiProjectionCurrentness', () => {
         expect(cold.getCurrent().phase).toBe('retainedOffline');
         expect(cold.getCurrent().pluginUiProjection?.translationsByPluginId['acme.preview']).toBeDefined();
         expect(cold.getCurrent().pluginUiProjection?.composerControlsById).toEqual({});
+    });
+
+    it('presents the retained catalog read-only while an online daemon refresh is still establishing', async () => {
+        projectionRuntime.describe.mockResolvedValueOnce(supportedProjection('Retained catalog'));
+        const warm = await renderHook(() => usePluginUiProjectionCurrentness({
+            machineId: 'machine-1',
+            serverId: 'server-1',
+        }));
+        await flushHookEffects({ cycles: 2, turns: 2 });
+        expect(warm.getCurrent().phase).toBe('current');
+        await warm.unmount();
+        clearDaemonMergedProjectionCacheForTests();
+
+        projectionRuntime.describe.mockReset();
+        projectionRuntime.describe.mockImplementationOnce(() => new Promise(() => {}));
+        const refreshing = await renderHook(() => usePluginUiProjectionCurrentness({
+            machineId: 'machine-1',
+            serverId: 'server-1',
+        }));
+        await flushHookEffects({ cycles: 2, turns: 2 });
+
+        expect(refreshing.getCurrent().phase).toBe('establishing');
+        expect(refreshing.getCurrent().interactionEnabled).toBe(false);
+        expect(refreshing.getCurrent().pluginBrowserProjection).toBeNull();
+        expect(refreshing.getCurrent().pluginUiProjection?.translationsByPluginId['acme.preview']?.bundles).toEqual({
+            en: { title: 'Retained catalog' },
+        });
     });
 
     it('never retains a snapshot for another Account and supersedes the retained one once a daemon answers', async () => {
@@ -476,7 +513,7 @@ describe('usePluginUiProjectionCurrentness', () => {
     });
 
     it('reports an answered unsupported projection as unavailable', async () => {
-        projectionRuntime.describe.mockResolvedValueOnce({ supported: false, reason: 'unsupported' });
+        projectionRuntime.describe.mockResolvedValueOnce({ supported: false, reason: 'not-supported' });
 
         const rendered = await renderHook(() => usePluginUiProjectionCurrentness({
             machineId: 'machine-1',
@@ -511,6 +548,7 @@ describe('usePluginUiProjectionCurrentness', () => {
         expect(rendered.getCurrent().interactionEnabled).toBe(true);
         expect(rendered.getCurrent().phase).toBe('current');
         expect(projectionSubscriptionState).toMatchObject({ subscribes: 1, unsubscribes: 0 });
+        expect(rendered.getCurrent().connectedAccountProjection).toEqual({ kind: 'ready', descriptors: [] });
 
         storageState.profileScope = { serverId: 'server-1', accountId: 'account-b' };
         await act(async () => {
@@ -523,6 +561,7 @@ describe('usePluginUiProjectionCurrentness', () => {
         expect(rendered.getCurrent().pluginUiProjection?.generation).toBeNull();
         expect(rendered.getCurrent().pluginUiProjection?.surfacePlacementsById).toEqual({});
         expect(rendered.getCurrent().pluginBrowserProjection).toBeNull();
+        expect(rendered.getCurrent().connectedAccountProjection).toBeNull();
         expect(rendered.getCurrent().interactionEnabled).toBe(false);
         expect(rendered.getCurrent().phase).not.toBe('current');
         expect(projectionRuntime.describe).toHaveBeenCalledTimes(2);
@@ -593,6 +632,7 @@ describe('usePluginUiProjectionCurrentness', () => {
         expect(rendered.getCurrent().phase).toBe('establishing');
         expect(rendered.getCurrent().interactionEnabled).toBe(false);
         expect(rendered.getCurrent().pluginUiProjection?.translationsByPluginId['acme.preview']).toBeUndefined();
+        expect(rendered.getCurrent().connectedAccountProjection).toBeNull();
 
         await act(async () => {
             resolveAccountB(supportedProjection('Account B'));
@@ -643,9 +683,16 @@ describe('usePluginUiProjectionCurrentness', () => {
         expect(rendered.getCurrent().interactionEnabled).toBe(false);
         expect(rendered.getCurrent().phase).toBe('retainedOffline');
 
+        // A socket reconnect advances every machine's projection revision
+        // (`publishMachineContributionRegistryProjectionReconnect`), so the
+        // one owner issues a fresh read instead of joining the prior flight.
         projectionConnectionState.endpointStatus = 'online';
         projectionConnectionState.isOnline = true;
+        projectionSubscriptionState.revision += 1;
         await rendered.rerender();
+        await act(async () => {
+            for (const listener of projectionSubscriptionState.listeners) listener();
+        });
         await flushHookEffects({ cycles: 2, turns: 2 });
         expect(projectionRuntime.describe).toHaveBeenCalledTimes(3);
 
@@ -694,6 +741,27 @@ describe('usePluginUiProjectionCurrentness', () => {
             en: { title: 'After daemon republish' },
         });
         expect(rendered.getCurrent().interactionEnabled).toBe(true);
+    });
+
+    it('re-describes on explicit refresh even when daemon version and projection revision are unchanged', async () => {
+        projectionRuntime.describe
+            .mockResolvedValueOnce(supportedProjection('Before refresh'))
+            .mockResolvedValueOnce(supportedProjection('After refresh'));
+        let reloadRevision = 0;
+        const rendered = await renderHook(() => usePluginUiProjectionCurrentness({
+            machineId: 'machine-1',
+            serverId: 'server-1',
+            reloadRevision,
+        }));
+        await flushHookEffects({ cycles: 2, turns: 2 });
+        expect(projectionRuntime.describe).toHaveBeenCalledTimes(1);
+
+        reloadRevision = 1;
+        await rendered.rerender();
+        await flushHookEffects({ cycles: 2, turns: 2 });
+        expect(projectionRuntime.describe).toHaveBeenCalledTimes(2);
+        expect(rendered.getCurrent().pluginUiProjection?.translationsByPluginId['acme.preview']?.bundles)
+            .toEqual({ en: { title: 'After refresh' } });
     });
 
     it('retries a transient projection failure while retaining an inert last-known-good snapshot', async () => {

@@ -7,9 +7,10 @@ import { ApprovalDecisionFooter } from '@/components/tools/shell/approvals/Appro
 import { Icon } from '@/components/ui/icons/Icon';
 import { Text } from '@/components/ui/text/Text';
 import { Modal } from '@/modal';
-import { sessionAllow, sessionDeny } from '@/sync/ops';
+import { useSessionTranscriptSource } from '@/components/sessions/transcript/source/SessionTranscriptSourceContext';
 import { t } from '@/text';
 import type { PendingPermissionRequest } from '@/utils/sessions/sessionUtils';
+import type { TranscriptPermissionDisabledReason } from '@/utils/sessions/deriveTranscriptInteraction';
 
 export const HAPPIER_ACTION_REQUEST_SOURCE = 'happier_action';
 
@@ -69,48 +70,33 @@ export const SessionActionConfirmationPromptCard = React.memo(function SessionAc
     sessionId: string;
     serverId?: string;
     canApprovePermissions: boolean;
-    disabledReason?: 'public' | 'readOnly' | 'notGranted' | 'inactive';
+    disabledReason?: TranscriptPermissionDisabledReason;
     chrome?: 'card' | 'inline';
 }>) {
+    const source = useSessionTranscriptSource();
+    const interaction = source.useInteraction();
+    const actions = source.actions;
     const { theme } = useUnistyles();
     const presentation = React.useMemo(
-        () => buildPresentation(props.request, props.sessionId),
-        [props.request, props.sessionId],
+        () => buildPresentation(props.request, source.sessionId),
+        [props.request, source.sessionId],
     );
     const [isDeciding, setIsDeciding] = React.useState(false);
     const decisionInFlightRef = React.useRef(false);
     const chrome = props.chrome ?? 'card';
-    const disabled = !props.canApprovePermissions || Boolean(props.disabledReason);
+    const disabled = actions === null || !interaction.canApprovePermissions || !props.canApprovePermissions || Boolean(props.disabledReason);
 
     const decide = React.useCallback(async (decision: 'approve' | 'reject') => {
-        if (decisionInFlightRef.current || disabled) return;
+        if (decisionInFlightRef.current || disabled || !actions) return;
         decisionInFlightRef.current = true;
         setIsDeciding(true);
         try {
             const turnId = presentation?.turnId ?? props.request.turnId;
             if (decision === 'approve') {
                 if (!presentation?.isCurrentTarget) return;
-                await sessionAllow(
-                    props.sessionId,
-                    props.request.id,
-                    undefined,
-                    undefined,
-                    'approved',
-                    undefined,
-                    turnId,
-                    ...(props.serverId !== undefined ? [{ serverId: props.serverId }] as const : [] as const),
-                );
+                await actions.respondToPermission({ id: props.request.id, approved: true, decision: 'approved', turnId });
             } else {
-                await sessionDeny(
-                    props.sessionId,
-                    props.request.id,
-                    undefined,
-                    undefined,
-                    'denied',
-                    undefined,
-                    turnId,
-                    ...(props.serverId !== undefined ? [{ serverId: props.serverId }] as const : [] as const),
-                );
+                await actions.respondToPermission({ id: props.request.id, approved: false, decision: 'denied', turnId });
             }
         } catch {
             Modal.alert(t('common.error'), t('approvals.decisionError'));
@@ -118,7 +104,7 @@ export const SessionActionConfirmationPromptCard = React.memo(function SessionAc
             decisionInFlightRef.current = false;
             setIsDeciding(false);
         }
-    }, [disabled, presentation, props.request.id, props.request.turnId, props.serverId, props.sessionId]);
+    }, [actions, disabled, presentation, props.request.id, props.request.turnId]);
 
     if (props.disabledReason === 'inactive') return null;
 

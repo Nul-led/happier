@@ -1,8 +1,9 @@
 import * as React from 'react';
-import { Platform, Pressable, ScrollView, View } from 'react-native';
+import { Platform, ScrollView, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
+import { TactilePressable } from '@/components/ui/interactions/TactilePressable';
 import type { SlideTransitionDirection } from '@/components/ui/motion';
 import { Text } from '@/components/ui/text/Text';
 import { Typography } from '@/constants/Typography';
@@ -131,9 +132,11 @@ const stylesheet = StyleSheet.create((theme) => ({
         position: 'absolute',
         zIndex: 6,
     },
-    skipPill: {
+    skipPillFrame: {
         position: 'absolute',
         zIndex: 12,
+    },
+    skipPill: {
         alignItems: 'center',
         justifyContent: 'center',
         borderRadius: 999,
@@ -143,10 +146,6 @@ const stylesheet = StyleSheet.create((theme) => ({
         backgroundColor: theme.dark ? 'rgba(18,18,24,.55)' : 'rgba(255,255,255,.62)',
         paddingHorizontal: 16,
         height: 34,
-        transform: [{ scale: 1 }],
-    },
-    skipPillPressed: {
-        transform: [{ scale: stageVisualTokens.motion.pressScale }],
     },
     skipPillLabel: {
         ...Typography.default('semiBold'),
@@ -183,30 +182,27 @@ function SkipPill(props: Readonly<{
     top: number;
     right: number;
     testID: string;
+    reducedMotion?: boolean;
 }>): React.ReactElement {
     const styles = stylesheet;
     const webGlass = Platform.OS === 'web'
         ? ({ backdropFilter: 'blur(14px)', WebkitBackdropFilter: 'blur(14px)' } as React.ComponentProps<typeof View>['style'])
         : null;
     return (
-        <Pressable
+        <TactilePressable
             testID={props.testID}
-            accessibilityRole="button"
             accessibilityLabel={typeof props.label === 'string' ? props.label : t('journey.actions.skipToSetup')}
             onPress={() => {
                 void props.onPress();
             }}
-            style={({ pressed }) => [
-                styles.skipPill,
-                { top: props.top, right: props.right },
-                webGlass,
-                pressed ? styles.skipPillPressed : null,
-            ]}
+            reduced={props.reducedMotion}
+            containerStyle={[styles.skipPillFrame, { top: props.top, right: props.right }]}
+            style={[styles.skipPill, webGlass]}
         >
             <Text numberOfLines={1} style={styles.skipPillLabel}>
                 {props.label}
             </Text>
-        </Pressable>
+        </TactilePressable>
     );
 }
 
@@ -316,6 +312,7 @@ export function SplitStageLayout(props: SplitStageLayoutProps): React.ReactEleme
                     onPress={controller.onSkip}
                     top={skipTop}
                     right={skipRight}
+                    reducedMotion={props.reducedMotion}
                 />
             ) : null}
         </View>

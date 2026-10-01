@@ -5,13 +5,20 @@ import { SESSION_FOLLOW_WAKE_EVENT_MESSAGE } from '@happier-dev/protocol';
 
 import { renderScreen } from '@/dev/testkit';
 import { setPreferredLanguageFromSettings, t } from '@/text';
-import type { AgentEvent } from '@/sync/typesRaw';
+import type { AgentEvent } from "@happier-dev/session-core/raw";
 
 import { TranscriptEventRow } from './TranscriptEventRow';
+import { AppSessionTranscriptSourceProvider } from '@/components/sessions/transcript/source/appSessionTranscriptSource';
 
 const executeDefaultAction = vi.fn();
 const modalConfirm = vi.fn();
 const modalAlert = vi.fn();
+const workerUpdateRouter = vi.hoisted(() => ({ push: vi.fn() }));
+
+vi.mock('expo-router', async () => {
+    const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
+    return createExpoRouterMock({ router: { push: workerUpdateRouter.push } }).module;
+});
 
 vi.mock('@/sync/ops/actions/defaultActionExecutor', () => ({
     createDefaultActionExecutor: () => ({
@@ -34,12 +41,84 @@ vi.mock('@/modal', async () => {
 });
 
 describe('TranscriptEventRow', () => {
+    it('renders a worker publish summary in its own transcript without lead controls', async () => {
+        const summary = 'Implemented the requested fix; the focused check passed.';
+        const screen = await renderScreen(<TranscriptEventRow event={{ type: 'worker-report', summary }} sessionId="worker" />);
+
+        expect(screen.getTextContent()).toContain(summary);
+        expect(screen.findByTestId('worker-update-inspect')).toBeNull();
+        expect(screen.findByTestId('transcriptEvent.clearTerminalComposer')).toBeNull();
+    });
+    it.each([
+        { pointer: { kind: 'session', sessionId: 'worker', seq: 7 } as const, expected: '/session/worker?serverId=home-b' },
+        { pointer: { kind: 'execution_run', sessionId: 'worker', runId: 'run_1' } as const, expected: '/session/worker/runs/run_1?serverId=home-b' },
+        { pointer: { kind: 'workflow_run', runId: 'workflow_1' } as const, expected: '/workflows/runs/workflow_1?serverId=home-b' },
+    ])('opens an authorized worker pointer within its Home: $pointer.kind', async ({ pointer, expected }) => {
+        const update = {
+            v: 1, workerKind: 'session', workerId: 'worker', ownerState: 'published', wake: 'published',
+            headline: 'Worker report', result: 'Ready for inspection', canInspect: true,
+            transcriptPointer: pointer,
+        } as const;
+        const screen = await renderScreen(<AppSessionTranscriptSourceProvider sessionId="lead" serverId="home-b">
+            <TranscriptEventRow event={{ type: 'worker-update', update }} serverId="home-b" />
+        </AppSessionTranscriptSourceProvider>);
+        await screen.pressByTestIdAsync('worker-update-inspect');
+        expect(workerUpdateRouter.push).toHaveBeenCalledWith(expected);
+    });
+
+    it('keeps a worker pointer read-only on a public transcript', async () => {
+        const screen = await renderScreen(<AppSessionTranscriptSourceProvider sessionId="lead" serverId="home-b"><TranscriptEventRow navigationEnabled={false} event={{ type: 'worker-update', update: {
+            v: 1, workerKind: 'session', workerId: 'worker', ownerState: 'settled', wake: 'finished',
+            headline: 'Finished', result: 'Result', canInspect: true,
+            transcriptPointer: { kind: 'session', sessionId: 'worker' },
+        } }} /></AppSessionTranscriptSourceProvider>);
+        expect(screen.findByTestId('worker-update:worker')).not.toBeNull();
+        expect(screen.findByTestId('worker-update-inspect')).toBeNull();
+    });
+    it('opens a context-only wake with one host row that says it is not a message from you', async () => {
+        const update = {
+            v: 1, workerKind: 'session', workerId: 'worker', ownerState: 'settled', wake: 'finished',
+            headline: 'Finished', result: 'Result', canInspect: false,
+        } as const;
+        const first = await renderScreen(<AppSessionTranscriptSourceProvider sessionId="lead" serverId="home-b">
+            <TranscriptEventRow hostWakeCount={3} event={{ type: 'worker-update', update }} />
+        </AppSessionTranscriptSourceProvider>);
+        const wake = first.findByTestId('transcript-event-host-wake');
+        expect(wake).not.toBeNull();
+        expect(first.getTextContent()).toContain(t('sessionWork.workerUpdate.wokenBy', { count: 3 }));
+        expect(first.getTextContent()).toContain(t('sessionWork.workerUpdate.notFromYou'));
+        expect(first.findByTestId('worker-update:worker')).not.toBeNull();
+
+        const follower = await renderScreen(<AppSessionTranscriptSourceProvider sessionId="lead" serverId="home-b">
+            <TranscriptEventRow event={{ type: 'worker-update', update }} />
+        </AppSessionTranscriptSourceProvider>);
+        expect(follower.findByTestId('transcript-event-host-wake')).toBeNull();
+        expect(follower.findByTestId('worker-update:worker')).not.toBeNull();
+    });
+    it('renders a host worker update as a card with its effective engine and result', async () => {
+        const screen = await renderScreen(<AppSessionTranscriptSourceProvider sessionId="lead" serverId="home-b"><TranscriptEventRow event={{
+            type: 'worker-update', update: {
+                v: 1, workerKind: 'execution_run', workerId: 'run_new', ownerState: 'failed',
+                wake: 'finished', engine: { agentId: 'codex', modelId: 'effective-model' },
+                headline: 'Verification failed', result: 'A regression needs attention.', canInspect: false,
+                truncated: true, transcriptPointer: { kind: 'execution_run', sessionId: 'worker', runId: 'run_new' },
+            },
+        }} /></AppSessionTranscriptSourceProvider>);
+        expect(screen.findByTestId('worker-update:run_new')).not.toBeNull();
+        expect(screen.findByTestId('worker-update-result')?.props.children).toBe('A regression needs attention.');
+        expect(screen.findByTestId('worker-update-engine')?.props.children.join('')).toContain('effective-model');
+        expect(screen.findByTestId('worker-update-pointer')).toBeNull();
+        expect(screen.getTextContent()).not.toContain('run_new');
+        expect(screen.findByTestId('worker-update-truncated')).not.toBeNull();
+        expect(screen.findByTestId('worker-update-inspect')).toBeNull();
+    });
     beforeEach(() => {
         executeDefaultAction.mockReset();
         executeDefaultAction.mockResolvedValue({ ok: true, result: { ok: true, status: 'cleared', sessionId: 's1' } });
         modalConfirm.mockReset();
         modalConfirm.mockResolvedValue(true);
         modalAlert.mockReset();
+        workerUpdateRouter.push.mockReset();
     });
 
     it('visually de-emphasizes a prior-era event without muting a current-era event', async () => {

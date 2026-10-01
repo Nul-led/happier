@@ -1,5 +1,6 @@
 import { execFileWithDeadline, isPidPresent } from '@happier-dev/cli-common/process';
 import { taskkillWindowsProcessTree } from '@/subprocess/supervision/taskkillWindowsProcessTree';
+import { readProcessIdentityByPid } from '@/daemon/processIdentity';
 import type { NormalizedLocalServiceInventorySnapshot } from '../inventory/scanner';
 import type {
     TerminateDescendantResolution,
@@ -8,6 +9,7 @@ import type {
     TerminateProcessControl,
     TerminateProcessSignalInput,
     TerminateProcessSignalOutcome,
+    TerminateProcessIdentity,
     TerminateWindowsTreeInput,
 } from './terminate';
 
@@ -165,7 +167,7 @@ export function createOsProcessControl(input: CreateOsProcessControlInput): Term
         };
     }
 
-    async function resolveDescendantPids(pid: number): Promise<TerminateDescendantResolution> {
+    async function resolveDescendantPids(roots: number | readonly number[]): Promise<TerminateDescendantResolution> {
         if (platform === 'windows') return { status: 'resolved', pids: [] };
         let output: string;
         try {
@@ -201,11 +203,9 @@ export function createOsProcessControl(input: CreateOsProcessControlInput): Term
         }
         return {
             status: 'resolved',
-            pids: collectProcessDescendants({
-                pid,
-                childrenByParent,
-                selfPid: process.pid,
-            }),
+            pids: [...new Set((typeof roots === 'number' ? [roots] : roots).flatMap((pid) => (
+                collectProcessDescendants({ pid, childrenByParent, selfPid: process.pid })
+            )))],
         };
     }
 
@@ -215,6 +215,15 @@ export function createOsProcessControl(input: CreateOsProcessControlInput): Term
         return isPidPresent(pid, (target, signal) => {
             kill(target, signal);
         });
+    }
+
+    async function readProcessIdentity(pid: number): Promise<TerminateProcessIdentity | null> {
+        const identity = await readProcessIdentityByPid(pid, { platform: input.platform ?? process.platform });
+        if (!identity) return null;
+        return {
+            pid: identity.pid,
+            startTime: identity.processStartTimeMs,
+        };
     }
 
     async function signal(signalInput: TerminateProcessSignalInput): Promise<TerminateProcessSignalOutcome> {
@@ -235,10 +244,10 @@ export function createOsProcessControl(input: CreateOsProcessControlInput): Term
                 // delivered" so an all-ESRCH round cannot masquerade as a successful kill.
                 if (code === 'ESRCH') continue;
                 if (code === 'EPERM' || code === 'EACCES') {
-                    if (target === signalInput.pid) permissionDenied = true;
+                    permissionDenied = true;
                     continue;
                 }
-                if (target === signalInput.pid) failed = true;
+                failed = true;
             }
         }
         if (permissionDenied) return { status: 'permission_denied' };
@@ -256,6 +265,7 @@ export function createOsProcessControl(input: CreateOsProcessControlInput): Term
         platform,
         probeListener,
         resolveDescendantPids,
+        readProcessIdentity,
         isProcessAlive,
         signal,
         terminateWindowsTree,

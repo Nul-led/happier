@@ -208,6 +208,24 @@ describe('useNewSessionMcpSelection', () => {
         await renderScreen(React.createElement(Probe));
         await flushHookEffects();
 
+        expect(previewSpy).not.toHaveBeenCalled();
+
+        const intentChip = chip!.render({
+            chipStyle: () => null,
+            iconColor: '#000',
+            showLabel: true,
+            textStyle: null,
+            countTextStyle: null,
+            chipAnchorRef: { current: null },
+            popoverAnchorRef: { current: null },
+            toggleCollapsedPopover,
+        }) as React.ReactElement<{ onPressIn?: () => void }>;
+
+        await act(async () => {
+            intentChip.props.onPressIn?.();
+            await flushHookEffects();
+        });
+
         expect(previewSpy).toHaveBeenCalledWith(
             'machine-1',
             expect.objectContaining({
@@ -330,6 +348,12 @@ describe('useNewSessionMcpSelection', () => {
         await renderScreen(React.createElement(Probe));
         await flushHookEffects({ cycles: 1, turns: 2 });
 
+        expect(previewSpy).not.toHaveBeenCalled();
+        await act(async () => {
+            chip?.onIntent?.();
+            await flushHookEffects({ cycles: 1, turns: 2 });
+        });
+
         expect(chip).toBeTruthy();
         const renderedContent = chip!.collapsedContentPopover.renderContent({
             requestClose: () => {},
@@ -372,6 +396,12 @@ describe('useNewSessionMcpSelection', () => {
 
         await renderScreen(React.createElement(Probe));
         await flushHookEffects({ cycles: 1, turns: 2 });
+
+        expect(previewSpy).not.toHaveBeenCalled();
+        await act(async () => {
+            chip?.onIntent?.();
+            await flushHookEffects({ cycles: 1, turns: 2 });
+        });
 
         expect(chip).toBeTruthy();
         const renderedContent = chip!.collapsedContentPopover.renderContent({

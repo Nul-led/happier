@@ -70,6 +70,12 @@ vi.mock('@/utils/ui/clipboard', () => ({
     setClipboardStringSafe: clipboardState.setClipboardStringSafe,
 }));
 
+// This native rendering package is unavailable in the source runner and never
+// renders in the terminal-controller harness. Keep the actual controller real.
+vi.mock('react-native-enriched-markdown/lib/module/web/streamingReveal.js', () => ({
+    splitStreamingRevealTextParts: () => { throw new Error('Unexpected native Markdown render in terminal controller test'); },
+}));
+
 // Resolve the real controller during collection: cold source transforms must
 // not consume the lifecycle test's fake-clock phase.
 await import('./useMachineTerminalSession');
@@ -94,6 +100,58 @@ describe('useMachineTerminalSession', () => {
     afterEach(() => {
         standardCleanup();
         vi.useRealTimers();
+    });
+
+    it('reads borrowed output with independent credit identities while refusing all process mutations', async () => {
+        terminalOps.streamAcknowledge.mockResolvedValue({ ok: true });
+        terminalOps.streamSendInput.mockResolvedValue({ ok: true });
+        terminalOps.streamReadBytes.mockResolvedValue({ ok: true, terminalId: 'borrowed', frames: [{
+            t: 'bytes', terminalId: 'borrowed', seq: 1, byteOffset: 0, byteLength: 3, encoding: 'base64', data: 'b3V0',
+        }], nextByteOffset: 3, availableByteOffset: 3, droppedBeforeByteOffset: 0, done: true });
+        const renderer = { write: vi.fn(), writeBytes: vi.fn(() => true), clear: vi.fn() } satisfies EmbeddedTerminalRendererHandle;
+        const { useMachineTerminalSession } = await import('./useMachineTerminalSession');
+        const createView = (terminalKey: string) => {
+            const terminalRef = { current: renderer };
+            return renderHook(() => useMachineTerminalSession({
+                machineId: 'machine', serverId: 'home', cwd: '/repo', terminalKey,
+                terminalRef, attachedTerminalId: 'borrowed', readOnly: true, closeOnUnmount: true,
+            }), { flushOptions: { cycles: 1, turns: 1 } });
+        };
+        const first = await createView('borrowed-view-one');
+        const second = await createView('borrowed-view-two');
+        await act(async () => {
+            first.getCurrent().onReady(80, 24);
+            first.getCurrent().onInput('echo forbidden\r');
+            expect(await first.getCurrent().onPaste('echo mutable')).toMatchObject({ kind: 'ignore' });
+            first.getCurrent().onResize(120, 40);
+            first.getCurrent().requestRestart();
+        });
+        await flushHookEffects({ cycles: 4, turns: 2, runOnlyPendingTimers: true });
+        expect(renderer.writeBytes).toHaveBeenCalledWith(expect.objectContaining({ terminalId: 'borrowed', byteOffset: 0 }));
+        expect(terminalOps.streamReadBytes).toHaveBeenCalledWith('machine', expect.objectContaining({ terminalId: 'borrowed' }), expect.objectContaining({ serverId: 'home' }));
+        const rendererIds = new Set(terminalOps.streamReadBytes.mock.calls.map((call) => (call[1] as { rendererId?: string }).rendererId));
+        expect(rendererIds.size).toBe(2);
+        expect(rendererIds.has('embedded-terminal')).toBe(false);
+        await first.unmount();
+        await second.unmount();
+        expect(terminalOps.ensure).not.toHaveBeenCalled();
+        expect(terminalOps.restart).not.toHaveBeenCalled();
+        expect(terminalOps.streamSendInput).not.toHaveBeenCalled();
+        expect(terminalOps.input).not.toHaveBeenCalled();
+        expect(terminalOps.resize).not.toHaveBeenCalled();
+        expect(terminalOps.close).not.toHaveBeenCalled();
+    });
+
+    it('attributes an owned terminal ensure to its Session', async () => {
+        terminalOps.ensure.mockResolvedValue({ ok: true, terminalId: 'attributed', reused: false });
+        terminalOps.streamReadBytes.mockResolvedValue({ ok: true, terminalId: 'attributed', frames: [], nextByteOffset: 0, availableByteOffset: 0, droppedBeforeByteOffset: 0, done: true });
+        const { useMachineTerminalSession } = await import('./useMachineTerminalSession');
+        const terminalRef = { current: { write: vi.fn(), clear: vi.fn() } satisfies EmbeddedTerminalRendererHandle };
+        const hook = await renderHook(() => useMachineTerminalSession({ machineId: 'machine', cwd: '/repo', terminalKey: 'attribution', terminalRef, sessionId: 'own-session' }));
+        await act(async () => hook.getCurrent().onReady(80, 24));
+        await flushHookEffects({ cycles: 4, turns: 2, runOnlyPendingTimers: true });
+        expect(terminalOps.ensure).toHaveBeenCalledWith('machine', expect.objectContaining({ sessionId: 'own-session' }), expect.any(Object));
+        await hook.unmount();
     });
 
     it('closes a late ensure after unmount when terminal cleanup is requested', async () => {

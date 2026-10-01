@@ -44,7 +44,7 @@ function mobileInstallationReview(
     optionalHostAccess: [],
     rawCredentialAccess: [],
     compatibility: { happier: '^0.2.0', runtimeApiVersion: 1 },
-    updatePolicy: 'reviewEveryUpdate',
+    updatePolicy: 'allowed',
   };
 }
 
@@ -277,32 +277,12 @@ describe('Plugin Platform candidate mobile QA', () => {
 
     const materializePackedCli = vi.fn(async () => join(root, 'installed-cli/bin/happier.mjs'));
     const attestPackedInspectorArtifacts = vi.fn(async () => ({
-      contributionId: 'inspector-app-native' as const,
-      webArtifactDigest: 'sha256:web',
-      iosArtifactDigest: 'sha256:ios',
-      androidArtifactDigest: 'sha256:android',
-      repackContainerName: 'happier_inspector_inspector_app_native' as const,
-      repackModulePath: './renderSurface' as const,
-      repackExportName: 'renderSurface' as const,
-      platforms: {
-        web: {
-          artifactDigest: 'sha256:web',
-          builtWith: { bundler: 'vite' as const, version: '7.0.0' },
-          hostUiApiVersion: '1',
-          compat: { react: '19.2.0', reactNative: '0.83.4' },
-        },
-        ios: {
-          artifactDigest: 'sha256:ios',
-          builtWith: { bundler: 'repack' as const, version: '5.2.5' },
-          hostUiApiVersion: '1',
-          compat: { react: '19.2.0', reactNative: '0.83.4' },
-        },
-        android: {
-          artifactDigest: 'sha256:android',
-          builtWith: { bundler: 'repack' as const, version: '5.2.5' },
-          hostUiApiVersion: '1',
-          compat: { react: '19.2.0', reactNative: '0.83.4' },
-        },
+      artifactId: 'inspector-app-native' as const,
+      artifact: {
+        artifactDigest: 'sha256:universal',
+        builtWith: { bundler: 'esbuild' as const, version: '0.27.2' },
+        hostUiApiRange: '^1.0.0',
+        executableExports: ['renderSurface'],
       },
     }));
     let mutatedSharedArtifacts = false;

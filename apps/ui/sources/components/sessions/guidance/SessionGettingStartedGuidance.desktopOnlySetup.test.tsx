@@ -95,7 +95,8 @@ vi.mock('@/hooks/server/useEffectiveServerSelection', () => ({
     }),
 }));
 
-vi.mock('@/sync/domains/server/serverProfiles', () => ({
+vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>()),
     getActiveServerSnapshot: () => ({ serverId: 's1', serverUrl: 'http://127.0.0.1:3005', generation: 1 }),
     getServerProfilesGeneration: () => 1,
     listServerProfiles: () => [{ id: 's1', name: 'dev', serverUrl: 'http://127.0.0.1:3005' }],
@@ -145,23 +146,15 @@ describe('SessionGettingStartedGuidance (desktop-only setup CTA)', () => {
         expect(() => tree.root.findByProps({ testID: 'session-getting-started-open-setup' })).not.toThrow();
     });
 
-    it('suppresses optional setup guidance after the user dismissed the setup wizard', async () => {
+    it('keeps the setup action on the empty state after the user chose "I\'ll do this later" (never a blank pane)', async () => {
         tauriState.desktop = false;
         setSessionGettingStartedGuidanceDismissedForTests(true);
         vi.resetModules();
         const { SessionGettingStartedGuidance } = await import('./SessionGettingStartedGuidance');
 
-        const tree: renderer.ReactTestRenderer = (await renderScreen(<SessionGettingStartedGuidance variant="sidebar" />)).tree;
-        expect(() => tree.root.findByProps({ testID: 'session-getting-started-open-setup' })).toThrow();
-    });
-
-    it('keeps blocking new-session setup guidance visible after the user dismissed optional guidance', async () => {
-        tauriState.desktop = false;
-        setSessionGettingStartedGuidanceDismissedForTests(true);
-        vi.resetModules();
-        const { SessionGettingStartedGuidance } = await import('./SessionGettingStartedGuidance');
-
-        const tree: renderer.ReactTestRenderer = (await renderScreen(<SessionGettingStartedGuidance variant="newSessionBlocking" />)).tree;
-        expect(() => tree.root.findByProps({ testID: 'session-getting-started-open-setup' })).not.toThrow();
+        for (const variant of ['sidebar', 'primaryPane', 'newSessionBlocking'] as const) {
+            const tree: renderer.ReactTestRenderer = (await renderScreen(<SessionGettingStartedGuidance variant={variant} />)).tree;
+            expect(() => tree.root.findByProps({ testID: 'session-getting-started-open-setup' })).not.toThrow();
+        }
     });
 });

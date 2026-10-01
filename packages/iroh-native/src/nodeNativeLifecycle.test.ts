@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { loadIrohNodeNative, resolveIrohNodeAddonPath } from './nodeNative';
 import { IROH_NODE_NATIVE_EXPORTS, type NodeIrohNativeModule } from './nodeNative.types';
+import { createNodeIrohHomeTunnelSession } from './nodeHomeTunnelSession';
 
 /**
  * Shared-owner behavior through the real binding: when the addon artifact is
@@ -124,6 +125,35 @@ function echoOverRuntimeOrigin(origin: string, payload: string, localCapability?
   });
 }
 
+function echoBinaryUpgradeOverPort(port: number, localCapability: string): Promise<void> {
+  const applicationHead = 'GET /peer-mediation/v1/tunnel/stream HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n';
+  const binary = Buffer.from([0x82, 3, 0xff, 0, 0x7f]);
+  const wire = Buffer.concat([
+    Buffer.from(`${applicationHead}Sec-WebSocket-Protocol: happier.iroh.cap.${localCapability}\r\n\r\n`),
+    binary,
+  ]);
+  const expected = Buffer.concat([Buffer.from(`${applicationHead}\r\n`), binary]);
+  return new Promise((resolve, reject) => {
+    const socket = connect(port, '127.0.0.1');
+    const received: Buffer[] = [];
+    let bytes = 0;
+    socket.on('connect', () => socket.write(wire));
+    socket.on('error', reject);
+    socket.on('data', (chunk: Buffer) => {
+      received.push(chunk);
+      bytes += chunk.length;
+      if (bytes >= expected.length) {
+        socket.destroy();
+        if (Buffer.concat(received).equals(expected)) resolve();
+        else reject(new Error('NAPI TCP carrier changed binary upgrade bytes or disclosed its local capability'));
+      }
+    });
+    socket.on('close', () => {
+      if (bytes < expected.length) reject(new Error('NAPI TCP carrier closed before the binary upgrade echo'));
+    });
+  });
+}
+
 /** Resolves true once `origin` refuses connections (bounded polling). */
 async function expectOriginDown(origin: string): Promise<boolean> {
   const port = loopbackPortOf(origin);
@@ -184,6 +214,84 @@ describeWhenNative('Iroh Node lifecycle binding over the shared native runtime',
     expect(availability.surface).toEqual([...IROH_NODE_NATIVE_EXPORTS]);
     await expect(addon.getEndpointStatus('missing-handle')).resolves.toBeNull();
     await expect(addon.getTunnelStatus('missing-tunnel')).resolves.toBeNull();
+  });
+
+  it('isolates Account-client identities and preserves Machine continuity after helper shutdown', { timeout: 90_000 }, async () => {
+    const addon = requireNative();
+    echo = await startEchoServer();
+    keyDir = await mkdtemp(join(tmpdir(), 'happier-iroh-helper-custody-'));
+    const home = await addon.createEndpoint({ keyPath: join(keyDir, 'home.key'), relayPolicy: 'disabled' });
+    const machine = await addon.createEndpoint({
+      keyPath: join(keyDir, 'machine.key'), relayPolicy: 'disabled', capProfile: 'machineBulk',
+    });
+    const helperEndpoints: Awaited<ReturnType<NodeIrohNativeModule['createEndpoint']>>[] = [];
+    const observedNative = {
+      ...addon,
+      createEndpoint: async (input) => {
+        const endpoint = await addon.createEndpoint(input);
+        helperEndpoints.push(endpoint);
+        return endpoint;
+      },
+    } satisfies NodeIrohNativeModule;
+    const first = await createNodeIrohHomeTunnelSession({ native: observedNative, keylessEndpoint: 'account_client', relayPolicy: 'disabled' });
+    const second = await createNodeIrohHomeTunnelSession({ native: observedNative, keylessEndpoint: 'account_client', relayPolicy: 'disabled' });
+    let machineStream: ReturnType<typeof connect> | null = null;
+    try {
+      await addon.startHomeAcceptor({ endpointHandle: home.endpointHandle, targetPort: echo.port });
+      admission = await startAdmissionServer(machine.endpointId, echo.port);
+      await addon.startMachineAcceptor({ endpointHandle: machine.endpointHandle, admissionPort: admission.port });
+      const directAddresses = (await addon.getEndpointStatus(home.endpointHandle))?.directAddresses;
+      if (!directAddresses?.length) throw new Error('Home endpoint direct address missing');
+      const descriptor = {
+        v: 1 as const, homeServerIdentityId: 'srv_home_helper_custody',
+        canonicalServerUrl: 'https://home.example', revision: 1,
+        endpoints: [{ kind: 'iroh' as const, endpointId: home.endpointId, directAddresses }],
+      };
+      const machineLease = await addon.ensureHomeTunnel({
+        endpointHandle: machine.endpointHandle, homeServerIdentityId: descriptor.homeServerIdentityId,
+        endpointId: home.endpointId, directAddresses,
+      });
+      await first.ensureHomeTunnel({ descriptor });
+      const sibling = await second.ensureHomeTunnel({ descriptor });
+      expect(new Set([machine.endpointId, ...helperEndpoints.map((endpoint) => endpoint.endpointId)]).size).toBe(3);
+      const socket = connect(loopbackPortOf(machineLease.runtimeOrigin), '127.0.0.1');
+      machineStream = socket;
+      const echoOnMachineStream = (payload: string) => new Promise<void>((resolve, reject) => {
+        let received = '';
+        const cleanup = () => {
+          socket.off('data', onData);
+          socket.off('error', onError);
+          socket.off('close', onClose);
+        };
+        const onError = (error: Error) => { cleanup(); reject(error); };
+        const onClose = () => onError(new Error('Machine stream closed before echo completed'));
+        const onData = (chunk: Buffer) => {
+          received += chunk.toString('utf8');
+          if (received.length < payload.length) return;
+          cleanup();
+          if (received === payload) resolve();
+          else reject(new Error('Machine stream did not preserve application bytes'));
+        };
+        socket.on('data', onData);
+        socket.once('error', onError);
+        socket.once('close', onClose);
+        socket.write(payload);
+      });
+      await echoOnMachineStream('machine-before-helper-close');
+      await first.shutdown();
+      await expect(addon.getEndpointStatus(helperEndpoints[0]!.endpointHandle)).resolves.toBeNull();
+      expect((await addon.getEndpointStatus(machine.endpointHandle))?.active).toBe(true);
+      expect((await addon.getMachineAcceptorStatus(machine.endpointHandle))?.running).toBe(true);
+      await echoOnMachineStream('same-machine-stream-after-helper-close');
+      await echoOverRuntimeOrigin(sibling.runtimeOrigin, 'sibling-after-helper-close');
+      await addon.releaseHomeTunnel(machineLease.tunnelId);
+    } finally {
+      machineStream?.destroy();
+      await first.shutdown();
+      await second.shutdown();
+      await addon.shutdownEndpoint({ endpointHandle: machine.endpointHandle });
+      await addon.shutdownEndpoint({ endpointHandle: home.endpointHandle });
+    }
   });
 
   it('serves two tunnel leases on one shared endpoint, releases one, and shuts down', { timeout: 90_000 }, async () => {
@@ -277,7 +385,7 @@ describeWhenNative('Iroh Node lifecycle binding over the shared native runtime',
     await addon.shutdownEndpoint({ endpointHandle: serverEndpoint.endpointHandle });
   });
 
-  it('keeps the provider HTTP adapter capability-protected', { timeout: 90_000 }, async () => {
+  it.each(['provider_broker', 'tcp_tunnel'] as const)('keeps the %s HTTP adapter capability-protected through the NAPI lifecycle', { timeout: 90_000 }, async (purpose) => {
     const addon = requireNative();
     echo = await startEchoServer();
     keyDir = await mkdtemp(join(tmpdir(), 'happier-iroh-machine-binding-'));
@@ -293,7 +401,9 @@ describeWhenNative('Iroh Node lifecycle binding over the shared native runtime',
     const serverStatus = await addon.getEndpointStatus(serverEndpoint.endpointHandle);
     const directAddress = serverStatus?.directAddresses[0];
     if (!directAddress) throw new Error('machine endpoint direct address missing');
-    const handshakeJson = JSON.stringify({ v: 1, kind: 'provider_broker' });
+    const handshakeJson = JSON.stringify(purpose === 'tcp_tunnel'
+      ? { v: 1, flow: purpose }
+      : { v: 1, kind: purpose });
     const tunnel = await addon.startMachineHttpTunnel({
       endpointHandle: clientEndpoint.endpointHandle,
       endpointId: serverEndpoint.endpointId,
@@ -305,14 +415,20 @@ describeWhenNative('Iroh Node lifecycle binding over the shared native runtime',
     // The tunnel surfaces the normalized authenticated remote identity.
     expect(tunnel.remoteEndpointId).toBe(serverEndpoint.endpointId);
     await echoOverPort(tunnel.localPort, 'node-machine-http-nonzero-bytes', tunnel.localCapability);
-    expect(admission.requests).toHaveLength(1);
+    if (purpose === 'tcp_tunnel') {
+      // A TCP mux requires more than the finite carrier's single local socket.
+      await echoOverPort(tunnel.localPort, 'node-machine-tcp-second-stream', tunnel.localCapability);
+      await echoBinaryUpgradeOverPort(tunnel.localPort, tunnel.localCapability);
+    }
+    const streamCount = purpose === 'tcp_tunnel' ? 3 : 1;
+    expect(admission.requests).toHaveLength(streamCount);
     expect(admission.requests[0]).toContain(`X-Happier-Iroh-Remote-Endpoint-Id: ${clientEndpoint.endpointId}\r\n`);
     expect(admission.requests[0]?.endsWith(handshakeJson)).toBe(true);
     const status = await addon.getMachineTunnelStatus(tunnel.machineTunnelId);
-    expect(status?.streamsOpened).toBe(1);
+    expect(status?.streamsOpened).toBe(streamCount);
     expect(status?.remoteEndpointId).toBe(serverEndpoint.endpointId);
     const acceptorStatus = await addon.getMachineAcceptorStatus(serverEndpoint.endpointHandle);
-    expect(acceptorStatus?.streamsAccepted).toBe(1);
+    expect(acceptorStatus?.streamsAccepted).toBe(streamCount);
     await addon.stopMachineTunnel(tunnel.machineTunnelId);
     await expect(addon.getMachineTunnelStatus(tunnel.machineTunnelId)).resolves.toBeNull();
     expect(await expectOriginDown(`http://127.0.0.1:${tunnel.localPort}`)).toBe(true);

@@ -1,11 +1,14 @@
 import type {
   ExecutionRunIntent,
   PluginExecutionRunProfileContributionV2,
+  PluginSourceCustodyV1,
   PromptBlockV1,
 } from '@happier-dev/protocol';
 import {
   buildQualifiedPluginContributionKey,
   createPluginContributionIdentity,
+  PluginSourceCustodyV1Schema,
+  pluginSourceCustodyV1Equal,
   ReviewCommentProposalsV1Schema,
 } from '@happier-dev/protocol';
 
@@ -51,13 +54,13 @@ export type ExecutionRunProfileContributionCatalogInput =
   | PluginExecutionRunProfileContributionV2
   | Readonly<{
     pluginId: string;
-    immutableGenerationId: string;
+    sourceCustody: PluginSourceCustodyV1;
     definition: PluginExecutionRunProfileContributionV2;
   }>;
 
 export type OwnedExecutionRunProfileDescriptor = Readonly<{
   pluginId: string | null;
-  immutableGenerationId: string | null;
+  sourceCustody: PluginSourceCustodyV1 | null;
   qualifiedId: string;
   definition: PluginExecutionRunProfileContributionV2;
 }>;
@@ -153,16 +156,10 @@ function normalizeDescriptor(input: ExecutionRunProfileContributionCatalogInput)
   const owned = 'definition' in input;
   const definition = owned ? input.definition : input;
   const pluginId = owned ? input.pluginId : null;
-  const immutableGenerationId = owned ? input.immutableGenerationId.trim() : null;
-  if (owned && !immutableGenerationId) {
-    return failProfileSelection(
-      'execution_run_profile_generation_invalid',
-      `Execution-run profile '${pluginId}/${definition.id}' is missing its immutable generation identity`,
-    );
-  }
+  const sourceCustody = owned ? input.sourceCustody : null;
   return {
     pluginId,
-    immutableGenerationId,
+    sourceCustody,
     qualifiedId: pluginId
       ? buildQualifiedPluginContributionKey(createPluginContributionIdentity({ pluginId, localId: definition.id }))
       : definition.id,
@@ -192,17 +189,25 @@ function withDescriptorBehavior(
   return Object.freeze({
     ...baseProfile,
     prepareStartParams: async (params) => {
-      const requestedGenerationId = typeof params.request.profileGenerationId === 'string'
-        ? params.request.profileGenerationId.trim()
-        : '';
+      const requestedSourceCustody = params.request.profileSourceCustody === undefined
+        ? null
+        : PluginSourceCustodyV1Schema.safeParse(params.request.profileSourceCustody);
       if (
-        ownedDescriptor.immutableGenerationId !== null
-        && requestedGenerationId !== ownedDescriptor.immutableGenerationId
+        ownedDescriptor.sourceCustody !== null
+        && (requestedSourceCustody === null || !requestedSourceCustody.success)
       ) {
         return failProfileSelection(
           'execution_run_profile_stale',
-          `Execution-run profile '${ownedDescriptor.qualifiedId}' is not from the current committed generation`,
+          `Execution-run profile '${ownedDescriptor.qualifiedId}' is missing its source custody`,
         );
+      }
+      if (ownedDescriptor.sourceCustody !== null && requestedSourceCustody?.success) {
+        if (!pluginSourceCustodyV1Equal(requestedSourceCustody.data, ownedDescriptor.sourceCustody)) {
+          return failProfileSelection(
+            'execution_run_profile_stale',
+            `Execution-run profile '${ownedDescriptor.qualifiedId}' is not from the current source custody`,
+          );
+        }
       }
       const agentId = resolveCompatibleAgentId(ownedDescriptor, params.request, options);
       if (descriptor.availability) {
@@ -335,6 +340,7 @@ export function resolveExecutionRunIntentProfileFromCatalog(
   catalog: ExecutionRunProfileContributionCatalog,
   intent: ExecutionRunIntent,
   profileId?: string | null,
+  profileSourceCustody?: PluginSourceCustodyV1 | null,
 ): ExecutionRunIntentProfile {
   const normalizedProfileId = typeof profileId === 'string' ? profileId.trim() : '';
   if (normalizedProfileId.length > 0) {
@@ -349,6 +355,15 @@ export function resolveExecutionRunIntentProfileFromCatalog(
       return failProfileSelection(
         'execution_run_profile_intent_mismatch',
         `Execution-run profile '${normalizedProfileId}' does not own intent '${intent}'`,
+      );
+    }
+    if (descriptor.sourceCustody !== null && (
+      !profileSourceCustody
+      || !pluginSourceCustodyV1Equal(profileSourceCustody, descriptor.sourceCustody)
+    )) {
+      return failProfileSelection(
+        'execution_run_profile_stale',
+        `Execution-run profile '${normalizedProfileId}' is not from the current source custody`,
       );
     }
     const runtimeProfile = catalog.runtimeProfilesById.get(normalizedProfileId);
@@ -374,12 +389,12 @@ export function resolveExecutionRunProfileContributionDescriptor(
 
 export function listExecutionRunProfileContributionDescriptors(
   catalog: ExecutionRunProfileContributionCatalog,
-): readonly (PluginExecutionRunProfileContributionV2 & Readonly<{ generationId: string | null }>)[] {
+): readonly (PluginExecutionRunProfileContributionV2 & Readonly<{ sourceCustody: PluginSourceCustodyV1 | null }>)[] {
   return Object.freeze(Array.from(catalog.profileDescriptorsById.values()).map((descriptor) => {
     return Object.freeze({
       ...descriptor.definition,
       id: descriptor.qualifiedId,
-      generationId: descriptor.immutableGenerationId,
+      sourceCustody: descriptor.sourceCustody,
     });
   }));
 }

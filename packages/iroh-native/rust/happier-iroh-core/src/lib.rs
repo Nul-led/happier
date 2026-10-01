@@ -22,6 +22,8 @@ mod home_tunnel;
 mod limits;
 #[cfg(not(target_arch = "wasm32"))]
 mod machine;
+#[cfg(not(target_arch = "wasm32"))]
+mod native_http_lease;
 mod path;
 mod preamble;
 #[cfg(not(target_arch = "wasm32"))]
@@ -55,6 +57,8 @@ pub use home_tunnel::{
     HomeTunnelStatus, PREAMBLE_READ_TIMEOUT,
 };
 pub use limits::IrohCapProfile;
+#[cfg(not(target_arch = "wasm32"))]
+pub use native_http_lease::NativeHttpLease;
 #[cfg(not(target_arch = "wasm32"))]
 pub use machine::{
     MachineAcceptor, MachineAcceptorConfig, MachineAcceptorStatus, MachineFailureCode,

@@ -1,10 +1,38 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { Metadata } from '@/api/types';
+import type { AgentSessionModesSnapshot } from '@happier-dev/plugin-sdk/agents/runtime';
 import { createSessionRuntimeModelsPublisher } from '@/agent/runtime/controls/sessionRuntimeModelsPublisher';
 import { createNativeAgentSessionPublications } from './nativeAgentSessionPublications';
 
 describe('createNativeAgentSessionPublications', () => {
+  it('admits one native modes source and fences late observations after unbind or retirement', () => {
+    let current = true;
+    const abort = new AbortController();
+    const updateAgentState = vi.fn();
+    const publications = createNativeAgentSessionPublications({ agentId: 'opencode', session: { updateAgentState }, signal: abort.signal, isCurrent: () => current, supportsInFlightSteer: false });
+    const listeners = new Set<(snapshot: AgentSessionModesSnapshot) => void>();
+    const initial = { modes: [{ id: 'build', name: 'Build' }, { id: 'plan', name: 'Plan' }], currentModeId: 'build', observedAt: 1 };
+    const source = { read: () => initial, subscribe(listener: (snapshot: AgentSessionModesSnapshot) => void) { listeners.add(listener); return { dispose: () => { listeners.delete(listener); } }; } };
+    const binding = publications.services.modes.bind(source);
+    expect(publications.modesSource.read()).toEqual(initial);
+    expect(() => publications.services.modes.bind(source)).toThrow();
+    const staleListener = [...listeners][0]!;
+    binding.dispose();
+    expect(publications.modesSource.read()).toEqual({ modes: null });
+    const successor = publications.services.modes.bind(source);
+    staleListener({ modes: [], currentModeId: 'plan', observedAt: 2 });
+    expect(publications.modesSource.read()).toEqual(initial);
+    current = false;
+    for (const listener of listeners) listener({ modes: [], currentModeId: 'plan', observedAt: 3 });
+    expect(publications.modesSource.read()).toEqual(initial);
+    expect(() => publications.services.modes.bind(source)).toThrow();
+    abort.abort();
+    expect(listeners.size).toBe(0);
+    successor.dispose();
+    publications.dispose();
+    expect(updateAgentState).not.toHaveBeenCalled();
+  });
   it('adapts native model evidence without installing a competing metadata writer', async () => {
     const updateMetadata = vi.fn();
     const onMetadata = vi.fn();

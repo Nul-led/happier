@@ -3,6 +3,7 @@ import {
   buildReadyNotificationContent,
   redactBugReportSensitiveText,
   WorkflowRunUpdateNotificationV1Schema,
+  type AttentionPreviewBehavior,
 } from '@happier-dev/protocol';
 
 import type { ActivityNotificationEvent } from './activityNotificationEvent';
@@ -87,6 +88,7 @@ export function buildActivityNotificationContent(
   options: Readonly<{
     readyIncludeMessageText: boolean;
     requestIncludeMessageText?: boolean;
+    previewBehavior?: AttentionPreviewBehavior;
   }>,
 ): Readonly<{
   title: string;
@@ -94,12 +96,29 @@ export function buildActivityNotificationContent(
   data: Record<string, unknown>;
   toolDetails?: string | null;
 }> {
+  const sessionTitle = options.previewBehavior === 'status_only' || !('sessionTitle' in event)
+    ? null
+    : event.sessionTitle;
+  const includePreview = options.previewBehavior === undefined || options.previewBehavior === 'include_preview';
+  if (event.topic === 'notify_me') {
+    return {
+      title: options.previewBehavior === 'status_only' ? 'You have a new notification' : event.title ?? 'Workflow update',
+      body: includePreview ? event.message : '',
+      data: {
+        topic: event.topic,
+        ...(event.open?.kind === 'session' ? { sessionId: event.open.sessionId } : {}),
+        ...(event.open?.kind === 'workflow_run' ? { runId: event.open.runId } : {}),
+      },
+    };
+  }
   if (event.topic === 'workflow_run_update') {
     const workflowEvent = WorkflowRunUpdateNotificationV1Schema.parse(event);
     const presentation = workflowEvent.updateKind === 'completed'
       ? { title: 'Workflow completed', body: 'A workflow Run completed.' }
       : workflowEvent.updateKind === 'completed_with_failures'
         ? { title: 'Workflow completed with failures', body: 'A workflow Run completed with failures.' }
+        : workflowEvent.updateKind === 'review_required'
+          ? { title: 'A workflow needs you', body: "Open it to see what's waiting for you." }
         : workflowEvent.updateKind === 'failed'
           ? { title: 'Workflow failed', body: 'A workflow Run failed.' }
           : workflowEvent.updateKind === 'paused'
@@ -119,12 +138,14 @@ export function buildActivityNotificationContent(
   }
 
   if (event.topic === 'ready') {
+    // Producers may use the private Session title as their waiting label.
+    const waitingForCommandLabel = options.previewBehavior === 'status_only' ? 'Session' : event.waitingForCommandLabel;
     const content = buildReadyNotificationContent({
-      sessionTitle: event.sessionTitle,
-      defaultTitle: event.waitingForCommandLabel,
-      waitingForCommandLabel: event.waitingForCommandLabel,
-      fallbackBody: `${event.waitingForCommandLabel} is waiting for your command`,
-      includeMessageText: options.readyIncludeMessageText,
+      sessionTitle,
+      defaultTitle: waitingForCommandLabel,
+      waitingForCommandLabel,
+      fallbackBody: `${waitingForCommandLabel} is waiting for your command`,
+      includeMessageText: includePreview && options.readyIncludeMessageText,
       messageText: event.assistantPreviewText,
     });
     return {
@@ -132,11 +153,29 @@ export function buildActivityNotificationContent(
       body: content.body,
       data: {
         sessionId: event.sessionId,
+        ...(event.committedLocalId ? { activityEventLocalId: event.committedLocalId } : {}),
+        ...(event.committedSequence ? {
+          activityEvent: { type: 'ready', sequenceDomain: 'session_transcript', messageSeq: event.committedSequence },
+        } : {}),
       },
     };
   }
 
   if (event.topic === 'connected_service_account_switch') {
+    if (!includePreview) {
+      return {
+        title: sessionTitle ?? 'Provider account switched',
+        body: 'Happier switched provider accounts.',
+        data: {
+          topic: event.topic,
+          sessionId: event.sessionId,
+          serviceId: event.serviceId,
+          groupId: event.groupId,
+          fromProfileId: event.fromProfileId,
+          toProfileId: event.toProfileId,
+        },
+      };
+    }
     const serviceDisplayName = resolveConnectedServiceDisplayName(event.serviceId, event.serviceDisplayName);
     const fromProfile = typeof event.fromProfileLabel === 'string' && event.fromProfileLabel.trim()
       ? event.fromProfileLabel.trim()
@@ -164,7 +203,7 @@ export function buildActivityNotificationContent(
       : '';
     const reasonSentence = buildSwitchReasonSentence(event.reason, serviceDisplayName);
     return {
-      title: event.sessionTitle ?? `${serviceDisplayName} account switched`,
+      title: sessionTitle ?? `${serviceDisplayName} account switched`,
       body: `${reasonSentence}${accountClause ? ` Account changed${accountClause}${usageClause}.` : ''}`,
       data: {
         topic: event.topic,
@@ -189,12 +228,28 @@ export function buildActivityNotificationContent(
   }
 
   if (event.topic === 'connected_service_quota_blocked' || event.topic === 'connected_service_quota_recovered') {
-    const serviceDisplayName = resolveConnectedServiceDisplayName(event.serviceId, event.serviceDisplayName);
     const automaticReset = event.topic === 'connected_service_quota_recovered' && event.recoveryReason === 'automatic_quota_reset';
+    if (!includePreview) {
+      const recovered = event.topic === 'connected_service_quota_recovered';
+      return {
+        title: sessionTitle ?? (automaticReset ? 'Provider reset credit used' : recovered ? 'Provider quota recovered' : 'Provider quota blocked'),
+        body: automaticReset ? 'Happier automatically used a reset credit.' : recovered ? 'Provider quota is available again.' : 'Waiting for provider quota availability.',
+        data: {
+          topic: event.topic,
+          ...(automaticReset ? { recoveryReason: 'automatic_quota_reset' } : {}),
+          sessionId: event.sessionId,
+          serviceId: event.serviceId,
+          issueFingerprint: event.issueFingerprint,
+          groupId: event.groupId ?? null,
+          profileId: event.profileId ?? null,
+        },
+      };
+    }
+    const serviceDisplayName = resolveConnectedServiceDisplayName(event.serviceId, event.serviceDisplayName);
     const resetAccount = redactNotificationText(event.profileId ?? 'selected account');
     const resetPool = redactNotificationText(event.groupId ?? 'account pool');
     return {
-      title: automaticReset ? `${serviceDisplayName} reset credit used` : event.sessionTitle ?? (event.topic === 'connected_service_quota_recovered' ? `${serviceDisplayName} quota recovered` : `${serviceDisplayName} quota blocked`),
+      title: automaticReset ? `${serviceDisplayName} reset credit used` : sessionTitle ?? (event.topic === 'connected_service_quota_recovered' ? `${serviceDisplayName} quota recovered` : `${serviceDisplayName} quota blocked`),
       body: automaticReset ? `Happier automatically used a reset credit for ${resetAccount} in pool ${resetPool}.` : event.topic === 'connected_service_quota_recovered'
         ? `Quota is available again for ${serviceDisplayName}.`
         : `Waiting for quota availability for ${serviceDisplayName}.`,
@@ -218,6 +273,20 @@ export function buildActivityNotificationContent(
   }
 
   if (event.topic === 'connected_service_credential_health') {
+    if (!includePreview) {
+      const reconnectRequired = event.status === 'reconnect_required';
+      return {
+        title: sessionTitle ?? (reconnectRequired ? 'Provider account needs reconnect' : 'Provider account refresh failed'),
+        body: reconnectRequired ? 'A provider account needs to be reconnected.' : 'A provider account could not be refreshed. Happier will retry automatically.',
+        data: {
+          topic: event.topic,
+          sessionId: event.sessionId,
+          serviceId: event.serviceId,
+          profileId: event.profileId,
+          status: event.status,
+        },
+      };
+    }
     const serviceDisplayName = resolveConnectedServiceDisplayName(event.serviceId, event.serviceDisplayName);
     const profileLabel = typeof event.profileLabel === 'string' && event.profileLabel.trim()
       ? event.profileLabel.trim()
@@ -230,7 +299,7 @@ export function buildActivityNotificationContent(
       ? `${serviceDisplayName} account ${profileLabel} needs to be reconnected before Happier can use it again.${reasonClause}`
       : `${serviceDisplayName} account ${profileLabel} could not be refreshed. Happier will retry automatically.${reasonClause}`;
     return {
-      title: event.sessionTitle ?? (event.status === 'reconnect_required' ? `${serviceDisplayName} account needs reconnect` : `${serviceDisplayName} account refresh failed`),
+      title: sessionTitle ?? (event.status === 'reconnect_required' ? `${serviceDisplayName} account needs reconnect` : `${serviceDisplayName} account refresh failed`),
       body,
       data: {
         topic: event.topic,
@@ -253,12 +322,12 @@ export function buildActivityNotificationContent(
     const built = buildAgentRequestNotificationContent({
       kind,
       sessionId: event.sessionId,
-      sessionTitle: event.sessionTitle,
+      sessionTitle,
       agentDisplayName: event.agentDisplayName,
       requestId: event.requestId,
       toolName: event.toolName,
       toolInput: event.toolInput,
-      includeMessageText: options.requestIncludeMessageText !== false,
+      includeMessageText: includePreview && options.requestIncludeMessageText !== false,
       toolDetails: event.toolDetails,
     });
     return {
@@ -270,7 +339,7 @@ export function buildActivityNotificationContent(
   }
 
   return {
-    title: event.sessionTitle ?? 'Activity update',
+    title: sessionTitle ?? 'Activity update',
     body: 'Session activity changed.',
     data: {
       topic: event.topic,

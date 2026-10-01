@@ -101,9 +101,6 @@ function tunnelGrantBody(params: Readonly<{ machineId: string; port: number }>):
       kind: 'tcp_tunnel',
       tunnelId: `tunnel_${randomUUID()}`,
       allowedPorts: [params.port],
-      maxIdleMs: 60_000,
-      maxDurationMs: 600_000,
-      maxTotalBytes: 8 * 1024 * 1024,
     },
   };
 }

@@ -84,7 +84,29 @@ The forced-relay test fixture uses the pinned iroh local relay test facility and
 is compiled only under the test-only `test-relay-fixture` cargo feature; it is
 never a release behavior dependency. Build that separate host-only fixture with
 `node packages/iroh-native/scripts/build-node-addon.mjs --test-relay-fixture`;
-it writes a `happier-iroh-native-lifecycle-test.<platform>-<arch>.node` artifact
+it writes a `native-test/happier-iroh-native-lifecycle-test.<platform>-<arch>.node` artifact
 whose force/restore/observed-path operations are absent from the ordinary addon.
 The fixture refuses topology changes while endpoints are active and drops its
 local relay when `restoreAutomatic` succeeds.
+
+## Real transport checks
+
+Run the source-level native and browser journeys through their existing owners:
+
+```sh
+corepack yarn --cwd packages/iroh-native -s test:home-iroh:real
+corepack yarn --cwd apps/ui -s proof:browser-iroh-real-verticals
+```
+
+The Docker relay journey uses the pinned stock relay image in
+`deploy/iroh-relay/Dockerfile` and requires a running Docker engine:
+
+```sh
+corepack yarn --cwd packages/iroh-native -s test:home-iroh:docker
+```
+
+It verifies relayed file and attachment bytes against the stock containerized
+relay, then exercises a fresh production Home and daemon as host test processes.
+The same-host Home connection may take the direct path; its configuration alone
+is not evidence of relay carriage. This does not simulate mobile network
+transitions or arbitrary Internet NATs.

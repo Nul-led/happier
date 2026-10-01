@@ -1,3 +1,4 @@
+import { renderWithSessionTranscriptSource } from '@/dev/testkit';
 import React from 'react';
 import {
     afterEach,
@@ -8,10 +9,9 @@ import {
     vi,
 } from 'vitest';
 import {
-    renderScreen,
     standardCleanup,
 } from '@/dev/testkit';
-import type { ToolCall } from '@/sync/domains/messages/messageTypes';
+import type { ToolCall } from "@happier-dev/session-core/messages";
 import {
     installToolShellCommonModuleMocks,
     makeToolCall,
@@ -193,7 +193,7 @@ describe('ToolView fixtures (v1)', () => {
         renderedFullSpy.mockClear();
         mockSettings.detailLevelDefault = 'title';
 
-        const screen = await renderScreen(React.createElement(ToolView, { tool, metadata: null }));
+        const screen = await renderWithSessionTranscriptSource(React.createElement(ToolView, { tool, metadata: null }));
 
         expect(screen.findByTestId('tool-view-header-primary')).not.toBeNull();
         expect(renderedSummarySpy).not.toHaveBeenCalled();
@@ -207,7 +207,7 @@ describe('ToolView fixtures (v1)', () => {
         renderedFullSpy.mockClear();
         mockSettings.detailLevelDefault = 'summary';
 
-        const screen = await renderScreen(React.createElement(ToolView, { tool, metadata: null }));
+        const screen = await renderWithSessionTranscriptSource(React.createElement(ToolView, { tool, metadata: null }));
 
         expect(screen.findAllByType('SummaryToolView' as any)).toHaveLength(1);
         expect(renderedSummarySpy).toHaveBeenCalledWith(
@@ -229,7 +229,7 @@ describe('ToolView fixtures (v1)', () => {
         renderedFullSpy.mockClear();
         mockSettings.detailLevelDefault = 'full';
 
-        const screen = await renderScreen(React.createElement(ToolView, { tool, metadata: null }));
+        const screen = await renderWithSessionTranscriptSource(React.createElement(ToolView, { tool, metadata: null }));
 
         expect(screen.findAllByType('FullToolView' as any)).toHaveLength(1);
         expect(renderedFullSpy).toHaveBeenCalledWith(

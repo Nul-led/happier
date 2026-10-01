@@ -28,10 +28,12 @@ export type SessionListQueryPresentation =
         kind: 'ready';
         complete: boolean;
         /**
-         * A selected Home read its corpus to the end but withheld historical shared
+         * A selected Home withheld historical shared
          * Sessions pending their owner's metadata upgrade: the list is not whole.
          */
         historicalSharesWithheld?: boolean;
+        /** Whether real pagination can still advance while historical shares are withheld. */
+        hasMore?: boolean;
     }>
     | Readonly<{ kind: 'refreshing'; retainedRows: true }>
     | Readonly<{
@@ -104,7 +106,15 @@ export function resolveSessionListQueryPresentation(input: Readonly<{
         (input.statesByServerId[serverId]?.metadataUpgradeRequiredCount ?? 0) > 0
     ));
     return historicalSharesWithheld
-        ? { kind: 'ready', complete: input.coverageComplete, historicalSharesWithheld }
+        ? {
+            kind: 'ready',
+            complete: input.coverageComplete,
+            historicalSharesWithheld,
+            hasMore: selectedServerIds.some((serverId) => {
+                const state = input.statesByServerId[serverId];
+                return state?.hasNext === true || state?.attentionHasNext === true;
+            }),
+        }
         : { kind: 'ready', complete: input.coverageComplete };
 }
 

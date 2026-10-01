@@ -90,11 +90,23 @@ export function updateMetadataWithExternalSessionFollowStatus(
     ) {
         throw new Error('linked_session_identity_mismatch');
     }
+    const priorStatus = resolved.linkedSession.followStatusV1;
+    const status = priorStatus
+        && priorStatus.status === params.followStatusV1.status
+        && priorStatus.reason === params.followStatusV1.reason
+        ? { ...params.followStatusV1, updatedAtMs: priorStatus.updatedAtMs }
+        : params.followStatusV1;
+    const priorIssue = resolved.linkedSession.lastFollowIssueV1;
+    const issue = params.lastFollowIssueV1 && priorIssue
+        && priorIssue.code === params.lastFollowIssueV1.code
+        && priorIssue.retryable === params.lastFollowIssueV1.retryable
+        ? { ...params.lastFollowIssueV1, observedAtMs: priorIssue.observedAtMs }
+        : params.lastFollowIssueV1;
     return updateLinkedExternalSessionFollowMetadataV1(metadata, {
-        followStatusV1: params.followStatusV1,
-        ...(params.lastFollowIssueV1 === undefined
+        followStatusV1: status,
+        ...(issue === undefined
             ? {}
-            : { lastFollowIssueV1: params.lastFollowIssueV1 }),
+            : { lastFollowIssueV1: issue }),
     }) as Metadata;
 }
 

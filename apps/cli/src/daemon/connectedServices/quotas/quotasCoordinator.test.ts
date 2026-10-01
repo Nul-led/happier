@@ -1,5 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  const { createBundledPluginPublicationFsFixture } = await import(
+    '@/plugins/projection/registry/builtIn/locators.testkit'
+  );
+  // Quota tests consume source manifests, not a machine's live publication result.
+  return createBundledPluginPublicationFsFixture(actual);
+});
+
 import {
   accountSettingsParse,
   buildConnectedServiceCredentialRecord,
@@ -7,11 +16,13 @@ import {
   ConnectedServiceQuotaSnapshotV1Schema,
   FeaturesResponseSchema,
   openProviderAccountUsageSnapshotCiphertext,
+  openSealedProviderAccountUsageSnapshot,
   projectProviderAccountUsageSnapshotToConnectedServiceQuotaSnapshotV1,
   projectProviderAccountUsageSnapshotToQualifiedConnectedAccountQuotaSnapshotV4,
   ProviderAccountUsageSnapshotV1Schema,
   QualifiedProviderAccountUsageWriteV4Schema,
   sealAccountScopedBlobCiphertext,
+  sealProviderAccountUsageSnapshot,
   sealQualifiedConnectedAccountContentEnvelope,
 } from '@happier-dev/protocol';
 import {
@@ -56,6 +67,8 @@ import {
   createPluginTrustRecord,
 } from '@/plugins/store/install/trustIdentity';
 import { writeCommittedLocalPathPluginFixture } from '@/plugins/store/state.testkit';
+import { resolvePluginStorePaths } from '@/plugins/store/paths';
+import { readCurrentCommittedPluginGenerations } from '@/plugins/store/registry/generationStore';
 import { ConnectedServiceAuthGroupGenerationConsumer } from '../accountGroups/generation/ConnectedServiceAuthGroupGenerationConsumer';
 import { createProviderAccountUsageStore } from '../accountUsage/store';
 import { dispatchConnectedServiceAutomaticQuotaResetNotificationAsync } from '../notifications/dispatchConnectedServiceQuotaLifecycleNotification';
@@ -116,6 +129,7 @@ function recordRuntimeUsageLimitExhaustionAndFanoutForTest(
   });
 }
 import {
+  buildProviderAccountUsageSnapshotFromPluginConnectedAccountQuota,
   ConnectedServiceQuotasCoordinator,
   type QualifiedConnectedAccountQuotaRuntime,
 } from './ConnectedServiceQuotasCoordinator';
@@ -621,6 +635,33 @@ function recordGroupMemberAccountUsageFixture(
 }
 
 describe('ConnectedServiceQuotasCoordinator', () => {
+  it('preserves a plugin subscription failure observation in the canonical usage snapshot', () => {
+    const subscription = {
+      status: 'unavailable' as const,
+      renewal: 'unknown' as const,
+      observedAtMs: 1_000_000,
+      staleAfterMs: 60_000,
+      lastRefreshError: { observedAtMs: 1_000_000, code: 'network' as const },
+    };
+    const snapshot = buildProviderAccountUsageSnapshotFromPluginConnectedAccountQuota({
+      profile: {
+        ref: { service: { pluginId: 'acme.novel.accounts', localId: 'work-cloud' }, accountId: 'account-a' },
+        status: 'connected',
+        authenticationModeId: 'manual',
+        revisionSemantics: 'revisioned',
+        credentialRevision: 'csr_abcdefghijklmnopqrstuv',
+        configurationReady: true,
+        configurationRevision: null,
+        providerIdentity: { accountId: 'provider-account-a' },
+        displayName: 'Novel Work',
+        scopes: [],
+      },
+      quota: { observedAtMs: 1_000_000, limits: [], subscription },
+      staleAfterMs: 60_000,
+    });
+    expect(snapshot.subscription).toEqual(subscription);
+  });
+
   it('canonicalizes a legacy scalar quota observation into a qualified V4 PAU write', async () => {
     const now = 1_000_000;
     const credentials: StoredCredentials = {
@@ -1982,8 +2023,26 @@ describe('ConnectedServiceQuotasCoordinator', () => {
     expect(loadQuota).not.toHaveBeenCalled();
   });
 
-  it.each(['enumerated', 'aggregate', 'aggregate_timeout', 'aggregate_network', 'aggregate_malformed', 'read_failure', 'not_available', 'nothing_to_reset', 'already_consumed'] as const)('schedules a novel qualified account through the plugin quota leaf and canonical V4 usage writer (%s recovery)', async (recoveryMode) => {
+  it.each(['enumerated', 'aggregate', 'aggregate_timeout', 'aggregate_network', 'aggregate_malformed', 'read_failure', 'not_available', 'nothing_to_reset', 'already_consumed', 'manual_selected', 'manual_next', 'manual_not_available', 'manual_missing'] as const)('schedules a novel qualified account through the plugin quota leaf and canonical V4 usage writer (%s recovery)', async (recoveryMode) => {
     const now = 1_000_000;
+    const accountMode = recoveryMode === 'enumerated' ? 'e2ee' as const : 'plain' as const;
+    const manual = recoveryMode.startsWith('manual_');
+    const expectedProviderCreditId = recoveryMode === 'enumerated' || recoveryMode === 'manual_next'
+      ? 'earliest'
+      : recoveryMode === 'manual_selected' || recoveryMode === 'manual_not_available' ? 'later' : undefined;
+    const subscription = {
+      status: 'subscribed' as const, renewal: 'off' as const,
+      observedAtMs: now - 1_000, staleAfterMs: 60_000,
+      currentPeriodEndAtMs: 1_800_000_000_000,
+    };
+    const failedSubscription = {
+      status: 'unavailable' as const, renewal: 'unknown' as const,
+      observedAtMs: now, staleAfterMs: 60_000,
+      lastRefreshError: { observedAtMs: now, code: 'network' as const },
+    };
+    const expectedSubscription = accountMode === 'e2ee'
+      ? { ...subscription, lastRefreshError: failedSubscription.lastRefreshError }
+      : subscription;
     const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-quota-home-'));
     const pluginRoot = await mkdtemp(join(tmpdir(), 'happier-quota-plugin-'));
     const profile: QualifiedConnectedAccountProfileV4 = {
@@ -2049,20 +2108,20 @@ describe('ConnectedServiceQuotasCoordinator', () => {
         recoveryCredits: {
           async read() {
             ${recoveryMode === 'read_failure' ? "throw new Error('inventory unavailable');" : ''}
-            return { observedAtMs: ${now} + ++inventoryReadCount, availableCount: 3, credits: ${recoveryMode === 'enumerated' ? `[
+            return { observedAtMs: ${now} + ++inventoryReadCount, availableCount: 3, credits: ${recoveryMode === 'enumerated' || manual ? `[
               { providerCreditId: 'expired', status: 'available', expiresAtMs: ${now - 1} },
               { providerCreditId: 'later', status: 'available', expiresAtMs: ${now + 2000} },
               { providerCreditId: 'earliest', status: 'available', expiresAtMs: ${now + 1000} }
-            ]` : '[]'} };
+            ]${recoveryMode === 'manual_selected' || recoveryMode === 'manual_next' ? `.filter((credit) => credit.providerCreditId !== '${expectedProviderCreditId}' || !consumed)` : ''}` : '[]'} };
           },
           async consume(request, context, options) {
-            if (request.providerCreditId !== ${recoveryMode === 'enumerated' ? "'earliest'" : 'undefined'}) throw new Error('wrong credit');
+            if (request.providerCreditId !== ${JSON.stringify(expectedProviderCreditId) ?? 'undefined'}) throw new Error('wrong credit');
             if (consumed) throw new Error('duplicate consumption');
             consumed = true;
             ${recoveryMode === 'aggregate_network' ? "throw new Error('response lost after debit');" : ''}
             ${recoveryMode === 'aggregate_malformed' ? "return { status: 'invalid_outcome' };" : ''}
             ${recoveryMode === 'aggregate_timeout' ? "await new Promise((resolve, reject) => { options.signal.addEventListener('abort', () => reject(new Error('provider result unknown')), { once: true }); });" : ''}
-            ${recoveryMode === 'not_available' || recoveryMode === 'nothing_to_reset' || recoveryMode === 'already_consumed' ? `return { status: '${recoveryMode}' };` : ''}
+            ${recoveryMode === 'not_available' || recoveryMode === 'nothing_to_reset' || recoveryMode === 'already_consumed' || recoveryMode === 'manual_not_available' ? `return { status: '${recoveryMode === 'manual_not_available' ? 'not_available' : recoveryMode}' };` : ''}
             return { status: 'consumed' };
           }
         },
@@ -2071,6 +2130,7 @@ describe('ConnectedServiceQuotasCoordinator', () => {
           if (token !== 'novel-token') throw new Error('quota credential unavailable');
           return {
             observedAtMs: ${now},
+            ${accountMode === 'e2ee' ? `subscription: ${JSON.stringify(failedSubscription)},` : ''}
             limits: [{
               id: 'monthly',
               used: consumed ? 0 : 25,
@@ -2118,12 +2178,17 @@ describe('ConnectedServiceQuotasCoordinator', () => {
     const fixtureContributes = createResolvedContributionRegistry(
       await resolvePluginContributes({ happyHomeDir }),
     );
+    const fixtureGenerationAuthority = await readCurrentCommittedPluginGenerations(
+      resolvePluginStorePaths({ happyHomeDir }),
+    );
+    if (!fixtureGenerationAuthority) throw new Error('Expected the committed fixture generation');
     const runtimeRegistry =
       await resolveExecutablePluginRuntimeRegistry({
         happyHomeDir,
         // This fixture exercises one installed plugin through the real projection and
-        // activation owners; bundled executable preparation is outside its boundary.
+        // activation owners using its persisted generation authority.
         contributes: fixtureContributes,
+        generationAuthority: fixtureGenerationAuthority,
         accountStorageDependencies: createQuotaFixtureAccountStorageDependencies(),
       });
     const credentials: Credentials = {
@@ -2136,7 +2201,8 @@ describe('ConnectedServiceQuotasCoordinator', () => {
     const credentialContent =
       sealQualifiedConnectedAccountContentEnvelope({
         kind: 'credential',
-        accountMode: 'plain',
+        accountMode,
+        material: credentials.encryption,
         payload: {
           v: 1,
           values: { token: 'novel-token' },
@@ -2168,7 +2234,7 @@ describe('ConnectedServiceQuotasCoordinator', () => {
           },
         },
         credentials,
-        getAccountEncryptionMode: vi.fn(async () => 'plain' as const),
+        getAccountEncryptionMode: vi.fn(async () => accountMode),
         readCredential,
         readConfiguration: vi.fn(async () => null),
         configuration: {
@@ -2181,8 +2247,42 @@ describe('ConnectedServiceQuotasCoordinator', () => {
         },
       });
     const listScheduledAccounts = vi.fn(async () => [profile]);
-    const readQuota = vi.fn(async () => null);
-    const writeProviderAccountUsage = vi.fn(async () => ({
+    const recordKey: ProviderAccountUsageRecordKeyV1 = {
+      providerId: 'acme.novel.accounts/work-cloud', accountSubjectId: 'provider-account-a',
+      subjectKind: 'account', quotaScope: 'account',
+    };
+    const previous: ProviderAccountUsageSnapshotV1 = {
+      v: 1, recordId: buildProviderAccountUsageRecordId(recordKey), recordKey,
+      providerId: recordKey.providerId,
+      accountSubject: { kind: 'providerSubject', id: recordKey.accountSubjectId },
+      observedAtMs: now - 70_000, fetchedAtMs: now - 70_000, staleAfterMs: 60_000,
+      source: 'providerHttp', confidence: 'confirmed', state: 'loaded_empty', meters: [], subscription,
+    };
+    const previousSealed = sealProviderAccountUsageSnapshot({
+      material: credentials.encryption,
+      snapshot: previous,
+      randomBytes: (length) => new Uint8Array(length).fill(3),
+    });
+    const readQuota = vi.fn(async () => ({
+      ref: profile.ref,
+      sourceResolution: {
+        source: { ref: profile.ref, bindingKind: 'account' as const },
+        recordId: previous.recordId, providerAccountId: recordKey.accountSubjectId,
+        fetchedAt: previous.fetchedAtMs, staleAfterMs: previous.staleAfterMs,
+      },
+      content: accountMode === 'e2ee' ? {
+        t: 'encrypted' as const,
+        c: previousSealed.ciphertext,
+        subscription: previousSealed.subscription,
+      } : {
+        t: 'plain' as const,
+        v: projectProviderAccountUsageSnapshotToQualifiedConnectedAccountQuotaSnapshotV4({
+          snapshot: previous, ref: profile.ref,
+        }),
+      },
+      metadata: { fetchedAt: previous.fetchedAtMs, staleAfterMs: previous.staleAfterMs, status: 'ok' as const },
+    }));
+    const writeProviderAccountUsage = vi.fn(async (_params: QualifiedProviderAccountUsageWriteArgs) => ({
       success: true as const,
     }));
     const qualifiedConnectedAccountRuntime = {
@@ -2196,7 +2296,7 @@ describe('ConnectedServiceQuotasCoordinator', () => {
     } as unknown as QualifiedConnectedAccountQuotaRuntime;
     const accountUsageStore = createProviderAccountUsageStore();
     const api = {
-      getAccountEncryptionMode: vi.fn(async () => 'plain' as const),
+      getAccountEncryptionMode: vi.fn(async () => accountMode),
     } as unknown as QuotaApi;
     const notifications: unknown[] = [];
     const pushDeliveries: Record<string, unknown>[] = [];
@@ -2247,37 +2347,38 @@ describe('ConnectedServiceQuotasCoordinator', () => {
           expectedCredentialRevision: profile.credentialRevision,
           expectedConfigurationRevision:
             profile.configurationRevision,
-          payloadMode: 'plain_json_v1',
-          snapshot: expect.objectContaining({
-            providerId:
-              'acme.novel.accounts/work-cloud',
-            accountSubject: {
-              kind: 'providerSubject',
-              id: 'provider-account-a',
-            },
-            accountLabel: 'Novel Work',
-            meters: [
-              expect.objectContaining({
-                meterId: 'monthly',
-                used: 25,
-                remaining: 75,
-              }),
-            ],
-          }),
+          payloadMode: accountMode === 'e2ee' ? 'sealed_account_scoped_v1' : 'plain_json_v1',
         }),
       });
+      const written = writeProviderAccountUsage.mock.calls[0]?.[0].write;
+      if (accountMode === 'e2ee') expect(written?.sealedPayload?.subscription).toBeDefined();
+      const writtenSnapshot = written?.snapshot ?? (written?.sealedPayload
+        ? openSealedProviderAccountUsageSnapshot({ material: credentials.encryption, sealed: written.sealedPayload })
+        : null);
+      expect(writtenSnapshot).toEqual(expect.objectContaining({
+        providerId: 'acme.novel.accounts/work-cloud',
+        subscription: expectedSubscription,
+        accountSubject: { kind: 'providerSubject', id: 'provider-account-a' },
+        accountLabel: 'Novel Work',
+        meters: [expect.objectContaining({ meterId: 'monthly', used: 25, remaining: 75 })],
+      }));
       expect(accountUsageStore.listSnapshots()).toEqual([
         expect.objectContaining({
           providerId:
             'acme.novel.accounts/work-cloud',
           accountLabel: 'Novel Work',
+          subscription: expectedSubscription,
         }),
       ]);
       const request = { serviceId: 'acme.novel.accounts/work-cloud', profileId: 'account-a', groupId: 'team',
         automaticResetContext: { groupId: 'team', ...(recoveryMode === 'enumerated' ? { sessionId: 'session-a' } : {}) },
       } as const;
       const usageSource = { serviceId: request.serviceId, profileId: request.profileId, groupId: request.groupId };
-      const firstPromise = coordinator.consumeAvailableRecoveryCreditForProfile(request);
+      const consume = () => manual
+        ? coordinator.consumeRecoveryCreditForProfile({ serviceId: request.serviceId, profileId: request.profileId,
+            idempotencyKey: 'manual-selected-reset', ...(recoveryMode === 'manual_selected' || recoveryMode === 'manual_not_available' ? { providerCreditId: 'later' } : recoveryMode === 'manual_missing' ? { providerCreditId: 'missing' } : {}) })
+        : coordinator.consumeAvailableRecoveryCreditForProfile(request);
+      const firstPromise = consume();
       if (recoveryMode === 'aggregate_timeout') {
         // Observe the real plugin's debit through its quota leaf while its consume
         // response remains pending, then advance the canonical quota observation.
@@ -2293,18 +2394,22 @@ describe('ConnectedServiceQuotasCoordinator', () => {
       }
       const [first, concurrent] = await Promise.all([
         firstPromise,
-        coordinator.consumeAvailableRecoveryCreditForProfile(request),
+        consume(),
       ]);
       const ambiguous = recoveryMode === 'aggregate_timeout' || recoveryMode === 'aggregate_network' || recoveryMode === 'aggregate_malformed';
       expect(first).toMatchObject(recoveryMode === 'read_failure'
         ? { ok: false }
         : ambiguous
         ? { ok: false, receipt: { status: 'unknown_after_timeout' } }
-        : recoveryMode === 'not_available' || recoveryMode === 'nothing_to_reset'
-        ? { ok: false, receipt: { status: recoveryMode } }
+        : recoveryMode === 'not_available' || recoveryMode === 'nothing_to_reset' || recoveryMode === 'manual_not_available' || recoveryMode === 'manual_missing'
+        ? { ok: false, receipt: { status: recoveryMode === 'manual_not_available' || recoveryMode === 'manual_missing' ? 'not_available' : recoveryMode } }
         : { ok: true, receipt: { status: recoveryMode === 'already_consumed' ? 'already_consumed' : 'consumed', ...(recoveryMode === 'enumerated' ? { providerCreditId: 'earliest' } : {}) } });
       expect(concurrent).toEqual(first);
-      expect(await coordinator.consumeAvailableRecoveryCreditForProfile(request)).toEqual(first);
+      expect(await consume()).toEqual(first);
+      if (manual) expect(first.receipt).toMatchObject({ idempotencyKey: 'manual-selected-reset', providerCreditId: recoveryMode === 'manual_missing' ? 'missing' : expectedProviderCreditId });
+      if (manual) expect(accountUsageStore.resolveBySource({ serviceId: request.serviceId, profileId: request.profileId, bindingKind: 'profile' })).toMatchObject({
+        meters: [expect.objectContaining(recoveryMode === 'manual_missing' ? { used: 25, remaining: 75 } : { used: 0, remaining: 100 })],
+      });
       expect(notifications).toEqual(recoveryMode === 'enumerated' || recoveryMode === 'aggregate'
         ? [{ ...request.automaticResetContext, serviceId: request.serviceId, profileId: request.profileId, receipt: first.receipt }]
         : []);
@@ -2320,10 +2425,17 @@ describe('ConnectedServiceQuotasCoordinator', () => {
         expect(await coordinator.consumeAvailableRecoveryCreditForProfile(request)).toEqual(first);
       }
       if (recoveryMode === 'read_failure') expect(first).not.toHaveProperty('receipt');
-      if (!ambiguous && recoveryMode !== 'read_failure') {
+      if (!manual && !ambiguous && recoveryMode !== 'read_failure') {
         expect(accountUsageStore.resolveBySource({ ...usageSource, bindingKind: 'group_member', groupGeneration: 4 })).toMatchObject({
           meters: [expect.objectContaining({ used: 0, remaining: 100 })],
         });
+      }
+      for (const [params] of writeProviderAccountUsage.mock.calls) {
+        const snapshot = params.write.snapshot ?? (params.write.sealedPayload
+          ? openSealedProviderAccountUsageSnapshot({ material: credentials.encryption, sealed: params.write.sealedPayload })
+          : null);
+        expect(snapshot?.subscription).toEqual(expectedSubscription);
+        if (accountMode === 'e2ee') expect(params.write.sealedPayload?.subscription).toBeDefined();
       }
     } finally {
       await runtimeRegistry.dispose();
@@ -5071,8 +5183,13 @@ describe('ConnectedServiceQuotasCoordinator', () => {
     }));
   });
 
-  it('fetches and uploads sealed quota snapshots for active bindings', async () => {
-    const now = 1_000_000;
+  it('fetches and uploads sealed quota snapshots and retains subscription on an in-band failure', async () => {
+    let now = 1_000_000;
+    const subscription = {
+      status: 'subscribed' as const, renewal: 'off' as const,
+      observedAtMs: now - 1_000, staleAfterMs: 60_000,
+      currentPeriodEndAtMs: 1_800_000_000_000,
+    };
 
     const credentials: Credentials = {
       token: 'happy-token',
@@ -5130,7 +5247,7 @@ describe('ConnectedServiceQuotasCoordinator', () => {
 
     const fetcher: ConnectedServiceQuotaFetcher = {
       serviceId: 'openai-codex',
-      loadQuota: vi.fn(async ({ record: inputRecord }: FetchArgs) => buildAgentAccountUsageSnapshotFixture({
+      loadQuota: vi.fn(async ({ record: inputRecord }: FetchArgs) => ({ ...buildAgentAccountUsageSnapshotFixture({
         record: inputRecord,
         now,
         planLabel: 'Pro',
@@ -5148,15 +5265,17 @@ describe('ConnectedServiceQuotasCoordinator', () => {
             details: {},
           },
         ],
-      })),
+      }), subscription })),
     };
 
+    const accountUsageStore = createProviderAccountUsageStore();
     const coordinator = new ConnectedServiceQuotasCoordinator({
       api,
       credentials,
       quotaFetchers: [fetcher],
       now: () => now,
       randomBytes: (length: number) => randomBytes(length),
+      accountUsageStore,
       qualifiedConnectedAccountRuntime: legacyV4.qualifiedConnectedAccountRuntime,
     });
 
@@ -5175,6 +5294,13 @@ describe('ConnectedServiceQuotasCoordinator', () => {
     expect(legacyV4.writeProviderAccountUsage).toHaveBeenCalledTimes(1);
     expect(uploadedStatus).toBe('ok');
     expect(typeof uploadedCiphertext).toBe('string');
+    const sealed = legacyV4.writeProviderAccountUsage.mock.calls[0]?.[0].write.sealedPayload;
+    expect(sealed?.subscription).toBeDefined();
+    if (!sealed) throw new Error('Expected a sealed PAU write');
+    expect(openSealedProviderAccountUsageSnapshot({
+      material: credentials.encryption,
+      sealed,
+    })?.subscription).toEqual(subscription);
 
     const opened = openProviderAccountUsageSnapshotCiphertext({
       material: { type: 'legacy', secret: credentials.encryption.secret },
@@ -5197,6 +5323,33 @@ describe('ConnectedServiceQuotasCoordinator', () => {
         profileId: 'work',
       }));
     }
+    const previous = openSealedProviderAccountUsageSnapshot({ material: credentials.encryption, sealed });
+    if (!previous) throw new Error('Expected the canonical usage snapshot');
+    const quota = projectProviderAccountUsageSnapshotToConnectedServiceQuotaSnapshotV1({
+      snapshot: previous,
+      source: { serviceId: 'openai-codex', profileId: 'work', bindingKind: 'profile' },
+    });
+    if (!quota) throw new Error('Expected a scalar quota projection');
+    now += 1;
+    const lastRefreshError = { observedAtMs: now, code: 'network' as const };
+    expect(await coordinator.recordInBandQuotaSnapshot({
+      serviceId: 'openai-codex',
+      profileId: 'work',
+      snapshot: {
+        ...quota,
+        fetchedAt: now,
+        fetchedAtMs: now,
+        subscription: {
+          status: 'unavailable', renewal: 'unknown', observedAtMs: now,
+          staleAfterMs: 60_000, lastRefreshError,
+        },
+      },
+    })).toMatchObject({ status: 'enqueued' });
+    await coordinator.flushInBandQuotaPersistence(5_000);
+    const refreshed = legacyV4.writeProviderAccountUsage.mock.calls.at(-1)?.[0].write.sealedPayload;
+    if (!refreshed) throw new Error('Expected a sealed in-band usage write');
+    expect(openSealedProviderAccountUsageSnapshot({ material: credentials.encryption, sealed: refreshed })?.subscription)
+      .toEqual({ ...subscription, lastRefreshError });
   });
 
   it('rejects sealed quota usage when the fetched provider account differs from the credential profile', async () => {

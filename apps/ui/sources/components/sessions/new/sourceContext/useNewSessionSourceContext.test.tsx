@@ -4,10 +4,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { renderHook } from '@/dev/testkit/hooks/renderHook';
 import { standardCleanup } from '@/dev/testkit';
+import { createSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
+import { buildSessionListRenderableFromSession } from '@/sync/domains/session/listing/sessionListRenderable';
+import { storage } from '@/sync/domains/state/storage';
+import {
+    removeServerProfile,
+    setServerProfileIdentityForUrl,
+    upsertServerProfile,
+} from '@/sync/domains/server/serverProfiles';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
-const sessionsRef = vi.hoisted(() => ({ current: {} as Record<string, unknown> }));
 const modalAlertMock = vi.hoisted(() => vi.fn());
 
 vi.mock('react-native', async () => {
@@ -35,13 +42,6 @@ vi.mock('@/modal', async () => {
     modalMock.spies.alert.mockImplementation((...args: any[]) => modalAlertMock(...args));
     return modalMock.module;
 });
-vi.mock('@/sync/domains/state/storage', async () => {
-    const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
-    return createStorageModuleStub({
-        storage: { getState: () => ({ sessions: sessionsRef.current }) } as any,
-    });
-});
-
 import { useNewSessionSourceContext } from './useNewSessionSourceContext';
 
 const SOURCE_CONTEXT = {
@@ -51,18 +51,45 @@ const SOURCE_CONTEXT = {
     forkPoint: { type: 'seq', upToSeqInclusive: 12 },
 } as const;
 
+let previousState: ReturnType<typeof storage.getState>;
 beforeEach(() => {
+    previousState = storage.getState();
     modalAlertMock.mockReset();
-    sessionsRef.current = {
-        parent_1: { id: 'parent_1', metadata: { summary: { text: 'Refactor the fork modal' } } },
-    };
+    storage.setState({ sessions: {
+        parent_1: createSessionFixture({ id: 'parent_1', serverId: 'server_1', metadata: {
+            path: '/repo', host: 'source.local', summary: { text: 'Refactor the fork modal', updatedAt: 1 },
+        } }),
+    }, sessionListRowsByServerId: {}, ordinarySessionListMembershipByServerId: {} });
 });
 
 afterEach(async () => {
     await standardCleanup();
+    storage.setState(previousState, true);
 });
 
 describe('useNewSessionSourceContext', () => {
+    it('keeps the seeded Home title through duplicate ids, source changes, and unavailable source data', async () => {
+        const sourceA = createSessionFixture({ id: 'parent_1', serverId: 'source-a', metadata: { name: 'Source A', path: '/repo-a', host: 'a.local' } });
+        const sourceB = createSessionFixture({ id: 'parent_1', serverId: 'source-b', metadata: { name: 'Source B', path: '/repo-b', host: 'b.local' } });
+        storage.setState({
+            sessions: { parent_1: sourceA },
+            sessionListRowsByServerId: { 'source-b': { parent_1: buildSessionListRenderableFromSession(sourceB) } },
+        });
+        const harness = await renderHook(({ serverId }: { serverId: string }) => useNewSessionSourceContext({
+            seed: { sourceContext: SOURCE_CONTEXT, sourceContextServerId: serverId },
+            targetServerId: serverId,
+        }), { initialProps: { serverId: 'source-b' } });
+
+        expect.soft(harness.getCurrent().presentation?.attachmentRowItem?.label).toContain('Source B');
+        await act(async () => { storage.setState({ sessionListRowsByServerId: {} }); });
+        expect.soft(harness.getCurrent().presentation?.attachmentRowItem?.label).toContain('session.sourceContext.unknownSession');
+        await harness.rerender({ serverId: 'source-a' });
+        expect.soft(harness.getCurrent().presentation?.attachmentRowItem?.label).toContain('Source A');
+        await harness.rerender({ serverId: 'source-missing' });
+        expect.soft(harness.getCurrent().presentation?.attachmentRowItem?.label).toContain('session.sourceContext.unknownSession');
+        expect(harness.getCurrent().presentation?.attachmentRowItem?.label).not.toContain('Source A');
+    });
+
     it('carries no continuation for an ordinary new Session', async () => {
         const harness = await renderHook(() => useNewSessionSourceContext({
             seed: null,
@@ -119,6 +146,36 @@ describe('useNewSessionSourceContext', () => {
             availability: 'invalid',
             error: 'session.sourceContext.serverMismatch',
         });
+    });
+
+    it('accepts a source Home alias when the target uses its canonical profile identity', async () => {
+        const profileUrl = `https://source-alias-${Date.now()}-${Math.random().toString(16).slice(2)}.example.test`;
+        const canonicalServerId = `source-canonical-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+        const profile = await upsertServerProfile({ serverUrl: profileUrl, name: 'Alias test', source: 'manual' });
+        await setServerProfileIdentityForUrl(profileUrl, canonicalServerId);
+        try {
+            storage.setState((state) => ({
+                ...state,
+                sessions: {
+                    ...state.sessions,
+                    parent_1: createSessionFixture({
+                        id: 'parent_1',
+                        serverId: profile.id,
+                        metadata: { name: 'Alias source', path: '/alias-repo', host: 'alias.local' },
+                    }),
+                },
+            }));
+            const harness = await renderHook(() => useNewSessionSourceContext({
+                seed: { sourceContext: SOURCE_CONTEXT as any, sourceContextServerId: profile.id },
+                targetServerId: canonicalServerId,
+            }));
+
+            expect(harness.getCurrent().serverMismatch).toBe(false);
+            expect(harness.getCurrent().presentation?.attachmentRowItem?.availability).not.toBe('invalid');
+            await harness.unmount();
+        } finally {
+            await removeServerProfile(profile.id);
+        }
     });
 
     it('accepts a fresh continuation intent after an earlier one was removed', async () => {

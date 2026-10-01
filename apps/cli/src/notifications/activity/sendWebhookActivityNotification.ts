@@ -10,6 +10,7 @@ import {
   isProviderMetadataHostname,
   parseProviderIpAddress,
   ProviderEndpointSafetyError,
+  type AttentionPreviewBehavior,
   type WebhookNotificationChannelV1,
 } from '@happier-dev/protocol';
 
@@ -118,10 +119,12 @@ export async function sendWebhookActivityNotificationAsync(params: Readonly<{
   settingsSecretsReadKeys?: ReadonlyArray<Uint8Array | null | undefined>;
   nowMs?: () => number;
   network?: WebhookActivityNotificationNetworkDependencies;
+  previewBehavior?: AttentionPreviewBehavior;
 }>): Promise<void> {
   const built = buildActivityNotificationContent(params.event, {
     readyIncludeMessageText: params.channel.readyIncludeMessageText !== false,
     requestIncludeMessageText: params.channel.requestIncludeMessageText !== false,
+    previewBehavior: params.previewBehavior,
   });
   const request = params.event.topic === 'permission_request' || params.event.topic === 'user_action_request'
     ? {
@@ -132,6 +135,7 @@ export async function sendWebhookActivityNotificationAsync(params: Readonly<{
     }
     : null;
   const payload = buildActivityWebhookPayload({
+    ...(params.event.topic === 'notify_me' ? { notificationOpen: params.event.open } : {}),
     channelId: params.channel.id,
     createdAt: (params.nowMs ?? (() => Date.now()))(),
     topic: params.event.topic,
@@ -141,7 +145,7 @@ export async function sendWebhookActivityNotificationAsync(params: Readonly<{
     },
     session: 'sessionId' in params.event && params.event.sessionId ? {
       sessionId: params.event.sessionId,
-      title: params.event.sessionTitle ?? null,
+      title: params.previewBehavior === 'status_only' ? null : params.event.sessionTitle ?? null,
     } : null,
     request,
     workflowRun: params.event.topic === 'workflow_run_update'

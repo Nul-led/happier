@@ -7,6 +7,17 @@ import {
     transcriptNavigationRailMarkerMotionEquals,
     type TranscriptNavigationRailMarkerMotion,
 } from './resolveTranscriptNavigationRailMotion';
+import { isTranscriptNavigationEntryWaiting } from './transcriptNavigationFilters';
+import type { TranscriptNavigationEntry } from './transcriptNavigationTypes';
+
+/** The trail speaks the pane's marker language: amber waits for you, red ended in failure. */
+export type TranscriptNavigationRailMarkerTone = 'waiting' | 'failed' | null;
+
+export function resolveTranscriptNavigationRailMarkerTone(entry: TranscriptNavigationEntry): TranscriptNavigationRailMarkerTone {
+    if (isTranscriptNavigationEntryWaiting(entry)) return 'waiting';
+    if (entry.facts?.lastToolFailed === true) return 'failed';
+    return null;
+}
 
 type WebMarkerViewProps = React.ComponentPropsWithRef<typeof View> & {
     onClick?: () => void;
@@ -28,6 +39,7 @@ export type TranscriptNavigationRailMarkerProps = Readonly<{
     onPress: (index: number) => void;
     pinned: boolean;
     reducedMotion: boolean;
+    tone?: TranscriptNavigationRailMarkerTone;
     topPx: number;
     visible: boolean;
 }>;
@@ -67,6 +79,8 @@ function TranscriptNavigationRailMarkerComponent(props: TranscriptNavigationRail
                     styles.markerLine,
                     props.active ? styles.markerLineActive : null,
                     props.visible && !props.active ? styles.markerLineVisible : null,
+                    !props.active && props.tone === 'waiting' ? styles.markerLineWaiting : null,
+                    !props.active && props.tone === 'failed' ? styles.markerLineFailed : null,
                     resolveTranscriptNavigationRailMarkerTransitionStyle(props.reducedMotion),
                     {
                         height: props.markerHeightPx,
@@ -102,6 +116,7 @@ export const TranscriptNavigationRailMarker = React.memo(
         left.onPress === right.onPress &&
         left.pinned === right.pinned &&
         left.reducedMotion === right.reducedMotion &&
+        (left.tone ?? null) === (right.tone ?? null) &&
         left.topPx === right.topPx &&
         left.visible === right.visible
     ),
@@ -122,6 +137,12 @@ const stylesheet = StyleSheet.create((theme) => ({
     },
     markerLineVisible: {
         backgroundColor: theme.colors.text.secondary,
+    },
+    markerLineWaiting: {
+        backgroundColor: theme.colors.state.warning.foreground,
+    },
+    markerLineFailed: {
+        backgroundColor: theme.colors.state.danger.foreground,
     },
     markerLineActive: {
         backgroundColor: theme.colors.accent.blue,

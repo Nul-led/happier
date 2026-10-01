@@ -31,12 +31,14 @@ export function createPluginSurfaceContextFixture(
             screenReaderEnabled: false,
             safeAreaInsets: { top: 0, right: 0, bottom: 0, left: 0 },
             theme: projectPluginUiTheme(lightTheme),
+            columnVisible: false,
         },
         translations: {},
         targetedContributions: {
             target: {
                 pluginId: 'com.acme.fixture',
-                immutableGenerationId: 'target-generation-a',
+                occurrenceId: 'target-generation-a',
+                sourceCustody: { kind: 'development', registeredRootId: 'fixture-root' },
             },
             points: [],
         },

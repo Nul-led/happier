@@ -1,4 +1,5 @@
 import type { StoreGet, StoreSet } from './_shared';
+import type { SessionMessagesTailBoundary } from '@/sync/runtime/sessionMessagesTailDiscontinuity';
 import type { ExternalSessionsRpcErrorCode } from '@happier-dev/protocol';
 
 import type { ExternalSessionTranscriptUnavailableReason } from '@/sync/runtime/external/externalSessionTranscriptAuthority';
@@ -10,7 +11,17 @@ export type SessionTranscriptLoadIssue =
     }>
     | Readonly<{
         kind: 'read_failed';
-        errorCode: ExternalSessionsRpcErrorCode;
+        errorCode: ExternalSessionsRpcErrorCode
+            | 'session_encryption_not_found'
+            | 'scoped_session_encryption_unavailable'
+            | 'http_error'
+            | 'invalid_response'
+            | 'decryption_failed'
+            | 'network_error'
+            | 'rpc_error'
+            | 'request_failed';
+        httpStatus?: number;
+        causeCode?: string;
     }>
     | Readonly<{
         kind: 'source_discontinuity';
@@ -40,13 +51,12 @@ export type TranscriptLoadingDomain = {
     /** Per-session ref-count of in-flight newer catch-up flows. */
     sessionCatchUpNewerInFlight: Record<string, number>;
     /**
-     * Per-session tail-contiguity floor (MAIN chain). Set while a tail-reset
-     * discontinuity is open (see `sessionMessagesTailDiscontinuity`): only messages at or
-     * above the floor are contiguous with the live tail; the transcript's tail display
-     * must not render loaded-but-disconnected older content below it. Absent = no
+     * Per-session tail-contiguity boundary (MAIN chain), projected by the one
+     * `sessionMessagesTailDiscontinuity` owner. Sequences identify hosted islands;
+     * materialized message IDs identify opaque-source islands. Absent = no
      * discontinuity, the full loaded set is tail-contiguous.
      */
-    sessionTailContiguousFloorSeq: Record<string, number>;
+    sessionTailContiguousBoundary: Record<string, SessionMessagesTailBoundary>;
     /** Last non-authoritative initial transcript outcome, absent after authoritative success. */
     sessionTranscriptLoadIssues: Record<string, SessionTranscriptLoadIssue>;
     /** True while at least one newer catch-up flow is running for the session. */
@@ -55,10 +65,12 @@ export type TranscriptLoadingDomain = {
     beginSessionCatchUpNewer: (sessionId: string) => void;
     /** Mark a newer catch-up flow as finished for the session (ref-counted). */
     endSessionCatchUpNewer: (sessionId: string) => void;
-    /** Read the tail-contiguity floor for the session's main chain (null = none). */
+    /** Read the tail-contiguity boundary for the session's main chain (null = none). */
+    getSessionTailContiguousBoundary: (sessionId: string) => SessionMessagesTailBoundary | null;
+    /** Sequence-only convenience reader; the canonical boundary owns the state. */
     getSessionTailContiguousFloorSeq: (sessionId: string) => number | null;
-    /** Set (positive seq) or clear (null) the tail-contiguity floor for the session. */
-    setSessionTailContiguousFloorSeq: (sessionId: string, floorSeq: number | null) => void;
+    /** Set or clear (null) the tail-contiguity display boundary for the session. */
+    setSessionTailContiguousBoundary: (sessionId: string, boundary: SessionMessagesTailBoundary | null) => void;
     /** Read the last non-authoritative initial transcript outcome for this session. */
     getSessionTranscriptLoadIssue: (sessionId: string) => SessionTranscriptLoadIssue | null;
     /** Replace or clear the last non-authoritative initial transcript outcome. */
@@ -74,18 +86,19 @@ export function createTranscriptLoadingDomain<S extends TranscriptLoadingDomain>
 }): TranscriptLoadingDomain {
     return {
         sessionCatchUpNewerInFlight: {},
-        sessionTailContiguousFloorSeq: {},
+        sessionTailContiguousBoundary: {},
         sessionTranscriptLoadIssues: {},
         isSessionCatchingUpNewer: (sessionId) => {
             if (!sessionId) return false;
             return (get().sessionCatchUpNewerInFlight[sessionId] ?? 0) > 0;
         },
-        getSessionTailContiguousFloorSeq: (sessionId) => {
+        getSessionTailContiguousBoundary: (sessionId) => {
             if (!sessionId) return null;
-            const floorSeq = get().sessionTailContiguousFloorSeq[sessionId];
-            return typeof floorSeq === 'number' && Number.isFinite(floorSeq) && floorSeq > 0
-                ? floorSeq
-                : null;
+            return get().sessionTailContiguousBoundary[sessionId] ?? null;
+        },
+        getSessionTailContiguousFloorSeq: (sessionId) => {
+            const boundary = get().getSessionTailContiguousBoundary(sessionId);
+            return boundary?.kind === 'seq' ? boundary.seq : null;
         },
         getSessionTranscriptLoadIssue: (sessionId) => {
             if (!sessionId) return null;
@@ -106,7 +119,10 @@ export function createTranscriptLoadingDomain<S extends TranscriptLoadingDomain>
                     && (current.kind !== 'authority_unavailable'
                         || (issue.kind === 'authority_unavailable' && current.reason === issue.reason))
                     && (current.kind !== 'read_failed'
-                        || (issue.kind === 'read_failed' && current.errorCode === issue.errorCode))
+                        || (issue.kind === 'read_failed'
+                            && current.errorCode === issue.errorCode
+                            && current.httpStatus === issue.httpStatus
+                            && current.causeCode === issue.causeCode))
                 ) {
                     return state;
                 }
@@ -119,24 +135,27 @@ export function createTranscriptLoadingDomain<S extends TranscriptLoadingDomain>
                 };
             });
         },
-        setSessionTailContiguousFloorSeq: (sessionId, floorSeq) => {
+        setSessionTailContiguousBoundary: (sessionId, boundary) => {
             if (!sessionId) return;
             set((state) => {
-                const normalized = typeof floorSeq === 'number' && Number.isFinite(floorSeq) && floorSeq > 0
-                    ? Math.trunc(floorSeq)
-                    : null;
-                const current = state.sessionTailContiguousFloorSeq[sessionId];
+                const normalized = boundary?.kind === 'seq'
+                    ? (Number.isFinite(boundary.seq) && boundary.seq > 0 ? { kind: 'seq' as const, seq: Math.trunc(boundary.seq) } : null)
+                    : boundary;
+                const current = state.sessionTailContiguousBoundary[sessionId];
                 if (normalized === null) {
-                    if (!(sessionId in state.sessionTailContiguousFloorSeq)) return state;
-                    const next = { ...state.sessionTailContiguousFloorSeq };
+                    if (!(sessionId in state.sessionTailContiguousBoundary)) return state;
+                    const next = { ...state.sessionTailContiguousBoundary };
                     delete next[sessionId];
-                    return { ...state, sessionTailContiguousFloorSeq: next };
+                    return { ...state, sessionTailContiguousBoundary: next };
                 }
-                if (current === normalized) return state;
+                if (current === normalized || (current?.kind === 'seq' && normalized.kind === 'seq' && current.seq === normalized.seq)
+                    || (current?.kind === 'messageIds' && normalized.kind === 'messageIds'
+                        && current.messageIds.length === normalized.messageIds.length
+                        && current.messageIds.every((id, index) => id === normalized.messageIds[index]))) return state;
                 return {
                     ...state,
-                    sessionTailContiguousFloorSeq: {
-                        ...state.sessionTailContiguousFloorSeq,
+                    sessionTailContiguousBoundary: {
+                        ...state.sessionTailContiguousBoundary,
                         [sessionId]: normalized,
                     },
                 };

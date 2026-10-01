@@ -126,6 +126,14 @@ export function useSessionResponsibilityPickerHost(params: Readonly<{
 
     const compactStepOpen = opened !== null && !opened.anchored && opened.targetKey === targetKey;
 
+    // Approval custody belongs to the retained Responsibility section. Once the
+    // shared Action owner creates it, close either presentation so the section's
+    // exact approval link is reachable and the existing focus-return path runs.
+    React.useEffect(() => {
+        if (opened === null || !params.controller.pendingApproval) return;
+        closePicker();
+    }, [closePicker, opened, params.controller.pendingApproval]);
+
     React.useEffect(() => {
         if (compactStepOpen || !focusReturnPending.current) return;
         focusReturnPending.current = false;

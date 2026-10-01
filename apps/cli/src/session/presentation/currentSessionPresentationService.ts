@@ -337,6 +337,17 @@ export function createCurrentSessionPresentationService(params: Readonly<{
       if (!accepted) {
         return { status: 'rejected' as const, reason: 'notCurrent' as const };
       }
+      if (sameBinding) {
+        // Focus and draft revision are binding-local input, not persisted
+        // presentation state. Only a new host or origin changes the snapshot.
+        boundClient = candidate;
+        return Object.freeze({
+          status: 'bound' as const,
+          sessionId: params.session.sessionId,
+          hostNonce,
+          revision,
+        });
+      }
       const replacedBinding = boundClient !== null && !sameBinding;
       const replacedPending = replacedBinding ? [...pendingCommands.values()] : [];
       const snapshot = await updateState((current, storedHostNonce) => {

@@ -38,7 +38,7 @@ function createFeatures(allowedPorts: readonly number[]) {
 const directEndpoint = {
   v: 1,
   routeKind: 'loopback_direct',
-  url: 'http://127.0.0.1:43123/peer-mediation/v1/probe',
+  url: 'http://127.0.0.1:43123',
   endpointFingerprint: 'qa-endpoint-fingerprint',
   expiresAt: Date.now() + 60_000,
 };

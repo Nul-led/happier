@@ -16,11 +16,6 @@ import { withHomeMutationAuthority, type HomeMutationAuthority } from './homeMut
 
 type HomeProfileAdoptionInput = Parameters<typeof adoptHomeProfile>[0];
 
-export type HomeProfileCanonicalUrlMigrationInput = HomeProfileAdoptionInput & Readonly<{
-    /** Newly issued credential that must commit in the same owner transaction as the profile move. */
-    credentials?: AuthCredentials;
-}>;
-
 export type AdoptHomeProfileWithCredentialsInput = HomeProfileAdoptionInput & Readonly<{
     credentials: AuthCredentials;
     shouldCancel?: () => boolean;
@@ -67,15 +62,6 @@ export class HomeProfileAdoptionRequiresCurrentObservationError extends Error {
     }
 }
 
-export type HomeProfileCanonicalUrlMigrationResult =
-    | Readonly<{ kind: 'adopted'; profile: ServerProfile }>
-    | Readonly<{
-        kind: 'migrated';
-        profile: ServerProfile;
-        fromCanonicalServerUrl: string;
-        toCanonicalServerUrl: string;
-    }>;
-
 /**
  * The profile move committed, but its credential verification or obsolete URL-scope
  * cleanup could not be completed. Callers receive the exact incomplete stage rather
@@ -96,41 +82,31 @@ export class HomeProfileCanonicalUrlMigrationPartialCommitError extends Error {
     }
 }
 
-/**
- * Authoritative same-identity canonical URL migration. A Home that proves the same stable
- * identity may move its canonical URL through this one transaction. The profile owner
- * decides the move (so label, aliases, groups, focus pointers and unrelated Homes are
- * preserved by construction); the credential remains in its canonical identity scope,
- * is verified through the destination URL, and only obsolete URL-hash aliases are removed.
- * An incomplete verification or cleanup surfaces typed partial-commit facts instead of a
- * clean result. Advisory descriptors can never reach the migration branch: the profile
- * owner keeps their target pinned to the established URL.
- */
-export async function adoptHomeProfileWithCanonicalUrlMigration(
-    input: HomeProfileCanonicalUrlMigrationInput,
-): Promise<HomeProfileCanonicalUrlMigrationResult> {
-    return await withHomeMutationAuthority(
-        undefined,
-        async (authority) => await adoptHomeProfileWithCanonicalUrlMigrationUnderAuthority(input, authority),
-    );
+export type HomeProfileAdoptionPartialCommitFailure =
+    | HomeProfileAdoptionPartialCommitError
+    | HomeProfileCanonicalUrlMigrationPartialCommitError;
+
+export function isHomeProfileAdoptionPartialCommitFailure(
+    error: unknown,
+): error is HomeProfileAdoptionPartialCommitFailure {
+    return error instanceof HomeProfileAdoptionPartialCommitError
+        || error instanceof HomeProfileCanonicalUrlMigrationPartialCommitError;
 }
 
-async function adoptHomeProfileWithCanonicalUrlMigrationUnderAuthority(
-    input: HomeProfileCanonicalUrlMigrationInput,
+/**
+ * Handles the same-identity canonical URL branch inside the one credentialed-adoption
+ * transaction. The profile owner decides the move (so label, aliases, groups, focus
+ * pointers and unrelated Homes are preserved by construction); the credential remains
+ * in its canonical identity scope, is verified through the destination URL, and only
+ * obsolete URL-hash aliases are removed. Advisory descriptors cannot reach this branch:
+ * the profile owner keeps their target pinned to the established URL.
+ */
+async function migrateExistingHomeCanonicalUrlUnderMutationAuthority(
+    input: AdoptHomeProfileWithCredentialsInput,
+    adoption: HomeProfileAdoptionInput,
+    target: ReturnType<typeof preflightHomeProfileAdoption>,
     authority: HomeMutationAuthority,
-): Promise<HomeProfileCanonicalUrlMigrationResult> {
-    const adoption: HomeProfileAdoptionInput = {
-        descriptor: input.descriptor,
-        source: input.source,
-        ...(input.preserveUserLabel !== undefined
-            ? { preserveUserLabel: input.preserveUserLabel }
-            : {}),
-        ...(input.suggestedName !== undefined ? { suggestedName: input.suggestedName } : {}),
-        ...(input.descriptorAuthority !== undefined
-            ? { descriptorAuthority: input.descriptorAuthority }
-            : {}),
-    };
-    const target = preflightHomeProfileAdoption(adoption);
+): Promise<ServerProfile | null> {
     const identity = target.serverIdentityId;
     const existing = identity ? getServerProfileById(identity) : null;
     const fromCanonicalServerUrl = existing
@@ -144,38 +120,25 @@ async function adoptHomeProfileWithCanonicalUrlMigrationUnderAuthority(
         || !fromCanonicalServerUrl
         || fromCanonicalServerUrl === toCanonicalServerUrl
     ) {
-        const profile = input.credentials
-            ? await adoptHomeProfileWithCredentialsUnderAuthority({ ...adoption, credentials: input.credentials }, authority)
-            : await adoptHomeProfileUnderMutationAuthority(adoption, authority);
-        return { kind: 'adopted', profile };
+        return null;
     }
 
-    let credentialWrite: Awaited<ReturnType<typeof setHomeCredentialsWithRollbackUnderMutationAuthority>> = null;
-    let credentials = input.credentials;
-    if (credentials) {
-        // Until the profile moves, the old canonical URL is the only URL that
-        // the identity owner accepts. Write the newly issued credential there;
-        // its stable-identity primary key remains valid after the URL changes.
-        credentialWrite = await setHomeCredentialsWithRollbackUnderMutationAuthority(
-            authority,
-            fromCanonicalServerUrl,
-            { serverId: identity },
-            credentials,
-        );
-        if (!credentialWrite) throw new Error('Unable to store Home credentials');
-    } else {
-        credentials = await getHomeCredentialsUnderMutationAuthority(
-            authority,
-            fromCanonicalServerUrl,
-            { serverId: identity },
-        ) ?? undefined;
-    }
+    // Until the profile moves, the old canonical URL is the only URL that the
+    // identity owner accepts. Write the newly issued credential there; its
+    // stable-identity primary key remains valid after the URL changes.
+    const credentialWrite = await setHomeCredentialsWithRollbackUnderMutationAuthority(
+        authority,
+        fromCanonicalServerUrl,
+        { serverId: identity },
+        input.credentials,
+    );
+    if (!credentialWrite) throw new Error('Unable to store Home credentials');
 
     let profile: ServerProfile;
     try {
+        if (input.shouldCancel?.()) throw new Error('Home credential adoption cancelled');
         profile = await adoptHomeProfileUnderMutationAuthority(adoption, authority);
     } catch (adoptionError) {
-        if (!credentialWrite) throw adoptionError;
         try {
             const rollbackApplied = await credentialWrite.rollback();
             if (!rollbackApplied) {
@@ -202,47 +165,42 @@ async function adoptHomeProfileWithCanonicalUrlMigrationUnderAuthority(
     // supplied a new destination-issued credential must not report success; undo
     // that pre-profile write before surfacing the declined migration.
     if ((profile.canonicalServerUrl ?? profile.serverUrl) !== toCanonicalServerUrl) {
-        if (credentialWrite) {
-            const declinedMigration = new Error('Home canonical URL migration was not applied');
-            try {
-                const rollbackApplied = await credentialWrite.rollback();
-                if (!rollbackApplied) {
-                    throw new HomeProfileAdoptionPartialCommitError(
-                        declinedMigration,
-                        fromCanonicalServerUrl,
-                        identity,
-                        { kind: 'not_applied', reason: 'ownership_changed' },
-                    );
-                }
-            } catch (rollbackError) {
-                if (rollbackError instanceof HomeProfileAdoptionPartialCommitError) throw rollbackError;
+        const declinedMigration = new Error('Home canonical URL migration was not applied');
+        try {
+            const rollbackApplied = await credentialWrite.rollback();
+            if (!rollbackApplied) {
                 throw new HomeProfileAdoptionPartialCommitError(
                     declinedMigration,
                     fromCanonicalServerUrl,
                     identity,
-                    { kind: 'failed', error: rollbackError },
+                    { kind: 'not_applied', reason: 'ownership_changed' },
                 );
             }
-            throw declinedMigration;
-        }
-        return { kind: 'adopted', profile };
-    }
-
-    if (credentials) {
-        const destinationCredentials = await getHomeCredentialsUnderMutationAuthority(
-            authority,
-            toCanonicalServerUrl,
-            { serverId: identity },
-        );
-        if (JSON.stringify(destinationCredentials) !== JSON.stringify(credentials)) {
-            throw new HomeProfileCanonicalUrlMigrationPartialCommitError(
-                'destination_credential_verification',
-                identity,
+        } catch (rollbackError) {
+            if (rollbackError instanceof HomeProfileAdoptionPartialCommitError) throw rollbackError;
+            throw new HomeProfileAdoptionPartialCommitError(
+                declinedMigration,
                 fromCanonicalServerUrl,
-                toCanonicalServerUrl,
-                profile,
+                identity,
+                { kind: 'failed', error: rollbackError },
             );
         }
+        throw declinedMigration;
+    }
+
+    const destinationCredentials = await getHomeCredentialsUnderMutationAuthority(
+        authority,
+        toCanonicalServerUrl,
+        { serverId: identity },
+    );
+    if (JSON.stringify(destinationCredentials) !== JSON.stringify(input.credentials)) {
+        throw new HomeProfileCanonicalUrlMigrationPartialCommitError(
+            'destination_credential_verification',
+            identity,
+            fromCanonicalServerUrl,
+            toCanonicalServerUrl,
+            profile,
+        );
     }
 
     // Cleanup targets the obsolete URL scope only. A Home that now occupies that URL
@@ -253,8 +211,7 @@ async function adoptHomeProfileWithCanonicalUrlMigrationUnderAuthority(
             || candidate.serverUrl === fromCanonicalServerUrl)
     ));
     if (
-        credentials
-        && !obsoleteUrlReassigned
+        !obsoleteUrlReassigned
         && !await removeHomeCredentialsUnderMutationAuthority(authority, fromCanonicalServerUrl)
     ) {
         throw new HomeProfileCanonicalUrlMigrationPartialCommitError(
@@ -265,7 +222,7 @@ async function adoptHomeProfileWithCanonicalUrlMigrationUnderAuthority(
             profile,
         );
     }
-    return { kind: 'migrated', profile, fromCanonicalServerUrl, toCanonicalServerUrl };
+    return profile;
 }
 
 /**
@@ -307,6 +264,13 @@ async function adoptHomeProfileWithCredentialsUnderAuthority(
         );
     }
     if (input.shouldCancel?.()) throw new Error('Home credential adoption cancelled');
+    const migratedProfile = await migrateExistingHomeCanonicalUrlUnderMutationAuthority(
+        input,
+        adoption,
+        target,
+        authority,
+    );
+    if (migratedProfile) return migratedProfile;
     // Advisory discovery never overwrites an established credential. A signed-out
     // established Home still accepts the newly issued credential in its canonical
     // slot, while its established descriptor facts remain unchanged.

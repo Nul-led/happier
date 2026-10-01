@@ -33,6 +33,7 @@ export type NewSessionConnectedServicesSelectionContentProps = Readonly<{
     groupOptionsByServiceId: ConnectedServicesAccountGroupOptionsByServiceId;
     bindingsByServiceId: Readonly<Record<string, ConnectedServicesServiceBinding | undefined>>;
     teamCredentialResources?: readonly TeamCredentialResourceCatalogEntryV1[];
+    teamCredentialResourceCurrentKeys?: ReadonlySet<string>;
     teamNameById?: Readonly<Record<string, string>>;
     onRecoverTeamCredentialResource?: (resource: TeamCredentialResourceCatalogEntryV1) => void;
     setBindingForService: (serviceId: string, binding: ConnectedServicesServiceBinding) => void;
@@ -158,6 +159,7 @@ export function NewSessionConnectedServicesSelectionContent(props: NewSessionCon
             groupOptionsByServiceId: props.groupOptionsByServiceId,
             bindingsByServiceId: props.bindingsByServiceId,
             teamCredentialResources: props.teamCredentialResources,
+            teamCredentialResourceCurrentKeys: props.teamCredentialResourceCurrentKeys,
             teamNameById: props.teamNameById,
             onRecoverTeamCredentialResource: recoverTeamCredentialResource,
             defaultProfileIdByServiceId: props.defaultProfileIdByServiceId,
@@ -189,6 +191,7 @@ export function NewSessionConnectedServicesSelectionContent(props: NewSessionCon
         props.includeNativeAuthOption,
         props.profileOptionsByServiceId,
         props.teamCredentialResources,
+        props.teamCredentialResourceCurrentKeys,
         props.teamNameById,
         // Kept as a dependency on purpose: unlike the handlers above, these two
         // are INVOKED during the build and their results are baked into every
@@ -210,6 +213,9 @@ export function NewSessionConnectedServicesSelectionContent(props: NewSessionCon
                 testID="new-session.connected-services.selection-list"
                 rootStep={listModel.rootStep}
                 selectedOptionId={listModel.selectedOptionId}
+                // One radio choice per service, drawn by each row's leading mark; the list-level
+                // check would mark only the first service's choice.
+                selectionMark="none"
                 maxHeight={props.maxHeight}
                 heightBehavior={resolvePopoverSelectionListHeightBehavior()}
                 keyboardHintsEnabled={false}

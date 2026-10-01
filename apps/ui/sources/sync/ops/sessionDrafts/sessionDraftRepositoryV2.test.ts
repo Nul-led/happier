@@ -410,6 +410,34 @@ describe('session draft repository V2 addresses', () => {
         });
     });
 
+    it('treats re-reading an unchanged server draft as no change: same projection, no notification', async () => {
+        const address = { kind: 'newSession', draftId: '00000000-0000-4000-8000-000000000031' } as const;
+        const remote = createRemote(address);
+        const author = createSessionDraftRepository({
+            storage: createMemoryStorage(), scope, transport: remote.transport, cipher: plainCipher(), syncEnabled: true,
+        });
+        author.writeNewSessionDraft({ scope, draftId: address.draftId, materializationIntent: 'userEdit', patch: { text: 'kept draft' } });
+        expect(await author.flushSessionDraft({ scope, address })).toEqual({ status: 'clean' });
+
+        const observer = createSessionDraftRepository({
+            storage: createMemoryStorage(), scope, transport: remote.transport, cipher: plainCipher(), syncEnabled: true,
+        });
+        await observer.materializeExact(scope, address);
+        const listed = observer.listNewSessionDraftProjections(scope);
+        expect(listed).toHaveLength(1);
+        const listener = vi.fn();
+        const unsubscribe = observer.subscribeSessionDraftList(scope, listener);
+
+        // The sync feed can report the same draft again (a repeated change, a reconnect catch-up).
+        // Reading the same revision back must not look like an edit to every draft list subscriber.
+        await observer.materializeExact(scope, address);
+        await observer.materializeExact(scope, address);
+
+        expect(observer.listNewSessionDraftProjections(scope)).toBe(listed);
+        expect(listener).not.toHaveBeenCalled();
+        unsubscribe();
+    });
+
     it('keeps a Temporary computer draft visible and preserves independent cross-device edits through the real cipher', async () => {
         const address = { kind: 'newSession', draftId: '00000000-0000-4000-8000-000000000010' } as const;
         const remote = createRemote(address);

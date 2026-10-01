@@ -4,7 +4,7 @@ import {
     type SessionPersonalAttentionProjectionV1,
 } from '@happier-dev/protocol';
 import type { Session } from '@/sync/domains/state/storageTypes';
-import type { Message } from '@/sync/domains/messages/messageTypes';
+import type { Message } from "@happier-dev/session-core/messages";
 import {
     projectUiSessionRuntimeAwareness,
     readSessionRuntimePresentationFreshnessExpirations,

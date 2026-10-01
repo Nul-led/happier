@@ -7,7 +7,7 @@ import { t } from '@/text';
 
 import type { ToolViewProps } from '../core/_registry';
 import { maybeParseJson } from '@happier-dev/protocol';
-import { tailTextWithEllipsis } from '../../normalization/parse/stdStreams';
+import { tailTextWithEllipsis } from "@happier-dev/session-core/tools";
 import { ToolSectionView } from '../../shell/presentation/ToolSectionView';
 
 const MAX_OUTPUT_CHARS = 4000;

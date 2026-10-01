@@ -1,7 +1,7 @@
+import { renderWithSessionTranscriptSource } from '@/dev/testkit';
 import React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-    renderScreen,
     standardCleanup,
 } from '@/dev/testkit';
 import {
@@ -160,7 +160,7 @@ describe('ToolView (diff header actions)', () => {
             result: null,
         });
 
-        const screen = await renderScreen(React.createElement(ToolView, { tool, metadata: null, messages: [] }));
+        const screen = await renderWithSessionTranscriptSource(React.createElement(ToolView, { tool, metadata: null, messages: [] }));
 
         expect(findPressableByText(screen.tree, 'machineLauncher.showAll')).toBeDefined();
     });

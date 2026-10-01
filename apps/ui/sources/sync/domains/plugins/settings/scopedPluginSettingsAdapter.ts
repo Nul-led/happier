@@ -985,6 +985,11 @@ export function createScopedPluginSettingsAdapter(
             if (input.target.kind !== 'daemon' || input.expectedRevision.kind !== 'daemon') {
                 return { status: 'unavailable', reason: 'target-mismatch' };
             }
+            // Daemon secret fields have one writer, `daemonSecret`; the daemon
+            // Settings record writer rejects them.
+            if (input.fields.some((field) => field.redacted && fieldStorageIds(field).includes(input.fieldId))) {
+                return { status: 'unavailable', reason: 'scope-mismatch' };
+            }
             try {
                 const result = await dependencies.daemonSet(input.target.machineId, {
                     serverId: input.target.serverId,

@@ -23,11 +23,10 @@ describe('ExecutionRunProfilePicker', () => {
     it('exposes selected and unavailable profiles through accessibility state', async () => {
         const screen = await renderScreen(<ExecutionRunProfilePicker
             choices={[
-                { id: 'review.coderabbit/review', intent: 'review', title: 'CodeRabbit', compatibleAgentIds: ['coderabbit'], compatibleAgentId: 'coderabbit', generationId: 'g1', available: true, disabled: false, defaults: { retention: 'resumable', runClass: 'bounded', io: 'streaming' } },
-                { id: 'review.deepsec/audit', intent: 'review', title: 'DeepSec Audit', compatibleAgentIds: ['deepsec'], compatibleAgentId: null, generationId: 'g1', available: false, unavailableCode: 'missing_tool', disabled: true, defaults: { retention: 'resumable', runClass: 'bounded', io: 'streaming' } },
+                { id: 'review.coderabbit/review', intent: 'review', title: 'CodeRabbit', compatibleAgentIds: ['coderabbit'], compatibleAgentId: 'coderabbit', sourceCustody: { kind: 'managed', immutableGenerationId: 'g1', installSource: 'archive' }, available: true, disabled: false, defaults: { retention: 'resumable', runClass: 'bounded', io: 'streaming' } },
+                { id: 'review.deepsec/audit', intent: 'review', title: 'DeepSec Audit', compatibleAgentIds: ['deepsec'], compatibleAgentId: null, sourceCustody: { kind: 'managed', immutableGenerationId: 'g1', installSource: 'archive' }, available: false, unavailableCode: 'missing_tool', disabled: true, defaults: { retention: 'resumable', runClass: 'bounded', io: 'streaming' } },
             ]}
             selectedId="review.coderabbit/review"
-            selectedGenerationId="g1"
             sectionLabel="Profiles"
             resolveAccessibilityLabel={(title) => `Select profile ${title}`}
             onSelect={vi.fn()}
@@ -48,10 +47,9 @@ describe('ExecutionRunProfilePicker', () => {
                 Object.defineProperty(Platform, 'OS', { configurable: true, value: platform });
                 const screen = await renderScreen(<ExecutionRunProfilePicker
                     choices={[
-                        { id: 'review.coderabbit/review', intent: 'review', title: 'CodeRabbit', compatibleAgentIds: ['coderabbit'], compatibleAgentId: 'coderabbit', generationId: 'g1', available: true, disabled: false, defaults: { retention: 'resumable', runClass: 'bounded', io: 'streaming' } },
+                        { id: 'review.coderabbit/review', intent: 'review', title: 'CodeRabbit', compatibleAgentIds: ['coderabbit'], compatibleAgentId: 'coderabbit', sourceCustody: { kind: 'managed', immutableGenerationId: 'g1', installSource: 'archive' }, available: true, disabled: false, defaults: { retention: 'resumable', runClass: 'bounded', io: 'streaming' } },
                     ]}
                     selectedId="review.coderabbit/review"
-                    selectedGenerationId="g1"
                     sectionLabel="Profiles"
                     resolveAccessibilityLabel={(title) => `Select profile ${title}`}
                     onSelect={vi.fn()}

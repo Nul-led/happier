@@ -2,6 +2,16 @@ import { describe, expect, it } from 'vitest';
 import { parseAndStripTerminalRuntimeFlags } from './terminalRuntimeFlags';
 
 describe('parseAndStripTerminalRuntimeFlags', () => {
+  it('preserves the Herdr host selection and named session for a daemon-started runner', () => {
+    expect(parseAndStripTerminalRuntimeFlags([
+      'claude', '--happy-terminal-mode', 'herdr', '--happy-terminal-requested', 'herdr',
+      '--happy-herdr-session-name', 'work terminals',
+    ])).toEqual({
+      terminal: { mode: 'herdr', requested: 'herdr', herdrSessionName: 'work terminals' },
+      argv: ['claude'],
+    });
+  });
+
   it('extracts tmux runtime info and strips internal flags from argv', () => {
     const parsed = parseAndStripTerminalRuntimeFlags([
       'claude',

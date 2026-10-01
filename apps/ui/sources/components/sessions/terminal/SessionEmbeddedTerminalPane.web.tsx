@@ -1,4 +1,5 @@
 import * as React from 'react';
+import type { SessionTerminalMemberV1 } from '@happier-dev/protocol';
 import { Pressable, View } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
@@ -30,6 +31,7 @@ export type SessionEmbeddedTerminalPaneProps = Readonly<{
     onRequestClose?: () => void;
     testIdPrefix?: string | null;
     terminalMode?: SessionTerminalMode;
+    terminal?: SessionTerminalMemberV1;
 }>;
 
 export const SessionEmbeddedTerminalPane = React.memo(function SessionEmbeddedTerminalPaneWeb(props: SessionEmbeddedTerminalPaneProps) {
@@ -65,6 +67,7 @@ const SessionEmbeddedTerminalPaneContent = React.memo(function SessionEmbeddedTe
         serverId,
         terminalKey,
         terminalMode,
+        terminalTarget: props.terminalIdentity.terminalTarget,
         terminalRef: terminalRendererRef,
     });
 

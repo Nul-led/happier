@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { renderHook, standardCleanup } from '@/dev/testkit';
 import { storage } from '@/sync/domains/state/storage';
+import { t } from '@/text';
 
 import { useVoiceExecutionMachinePresentation } from './useExecutionMachinePresentation';
 
@@ -57,6 +58,18 @@ describe('useVoiceExecutionMachinePresentation', () => {
     });
 
     expect(hook.getCurrent()).toEqual({ machineId: 'machine-a', machineLabel: 'Machine A', selectionKind: 'resolved' });
+  });
+
+  it('labels an unnamed execution machine as unnamed, never by its id', async () => {
+    storage.setState((state) => ({
+      machines: { 'f98b860d-63e0': { ...machine('f98b860d-63e0', ''), metadata: {} } },
+      settings: {
+        ...state.settings,
+        voice: { executionMachine: { mode: 'fixed', machineId: 'f98b860d-63e0', autoMachineId: null } } as any,
+      },
+    }));
+    const hook = await renderHook(() => useVoiceExecutionMachinePresentation());
+    expect(hook.getCurrent().machineLabel).toBe(t('machine.unnamedMachine'));
   });
 
   it('reacts to a committed machine replacement and its label', async () => {

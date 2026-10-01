@@ -14,19 +14,25 @@ appId: ${HAPPIER_E2E_MOBILE_APP_ID}
     file: _shared/loginCreateAccount.yaml
 
 - tapOn:
-    id: main-header-start-new-session
+    id: tabbar-start-new-session
 
 - runFlow:
     file: _shared/dismissExpoDevMenuOverlayMaybe.yaml
 
 - extendedWaitUntil:
     visible:
-      id: setupWizard-machine-arrival-stack
+      id: session-getting-started-kind-connect_machine
     timeout: 60000
 
 - assertVisible:
-    id: setupWizard-machine-arrival-stack
+    id: session-getting-started-kind-connect_machine
 - assertVisible:
-    id: setupWizard-machine-arrival
+    id: session-getting-started-open-setup
+- tapOn:
+    id: session-getting-started-open-setup
+- extendedWaitUntil:
+    visible:
+      id: settings.machines.draft.form
+    timeout: 60000
 - assertVisible:
-    id: setupWizard-machine-arrival-desktop-app-download-cta
+    id: settings.machines.draft.form

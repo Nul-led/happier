@@ -52,7 +52,8 @@ function createModel(options: Readonly<{
         event: {
             id: 'acme.github/events/repository',
             identity: { pluginId: 'acme.github', localId: 'events/repository' },
-            immutableGenerationId: 'event-generation-a',
+            occurrenceId: 'event-occurrence-a',
+            sourceCustody: { kind: 'development', registeredRootId: 'event-root-a' },
             title: 'Repository changed',
             description: 'A repository changed',
             payloadSchema: {
@@ -74,7 +75,7 @@ function createModel(options: Readonly<{
         setupAction: {
             id: 'acme.github/setup-source',
             identity: { pluginId: 'acme.github', localId: 'setup-source' },
-            immutableGenerationId: 'event-generation-a',
+            occurrenceId: 'event-occurrence-a',
             title: 'Set up source',
             description: null,
             inputSchema: { type: 'object', additionalProperties: false },
@@ -109,7 +110,7 @@ function createModel(options: Readonly<{
             displayName: 'Acme GitHub',
             availability: eventAvailable ? 'available' : 'unavailable',
             installedPackage: null,
-            expectedGeneration: null,
+            expectedOccurrenceId: null,
             machineId: null,
             serverId: null,
             accountLifetime: null,

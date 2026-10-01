@@ -29,7 +29,6 @@ describe('sessionDetailAccessProjection', () => {
                 features: {
                     sessions: {
                         enabled: true,
-                        collaboration: { enabled: true },
                     },
                     sharing: {
                         session: { enabled: true },

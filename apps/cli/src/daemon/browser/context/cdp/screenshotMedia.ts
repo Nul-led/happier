@@ -1,10 +1,9 @@
-import {
-    BrowserScreenshotMediaReferenceV1Schema,
-    type BrowserScreenshotMediaReferenceV1,
-} from '@happier-dev/protocol';
+import type { BrowserScreenshotMediaReferenceV1 } from '@happier-dev/protocol';
 
+import { configuration } from '@/configuration';
 import type { FilesystemAccessPolicy } from '@/rpc/handlers/fileSystem/accessPolicy/filesystemAccessPolicy';
-import { persistSessionMedia } from '@/session/media/persistSessionMedia';
+import { decodeSessionMediaBase64 } from '@/session/media/base64';
+import { createSessionImageMediaWriter } from '@/session/media/createSessionImageMediaWriter';
 import type { TransferPathAllowanceRegistry } from '@/transfers/targets/createTransferPathAllowanceRegistry';
 
 export type BrowserContextScreenshotMediaInput = Readonly<{
@@ -36,6 +35,7 @@ export type BrowserContextSessionMediaTarget = Readonly<{
 
 export type SessionMediaScreenshotWriterOptions = Readonly<{
     workingDirectory: string;
+    storage?: 'session' | 'daemon';
     pathAllowanceRegistry: TransferPathAllowanceRegistry;
     accessPolicy?: FilesystemAccessPolicy;
     /** Maps a captured view to the owning session/message media bucket. */
@@ -45,7 +45,6 @@ export type SessionMediaScreenshotWriterOptions = Readonly<{
         navigationGeneration: number;
     }>): BrowserContextSessionMediaTarget;
     now?: () => number;
-    persistMedia?: typeof persistSessionMedia;
 }>;
 
 /**
@@ -57,62 +56,14 @@ export type SessionMediaScreenshotWriterOptions = Readonly<{
 export function createSessionMediaScreenshotWriter(
     options: SessionMediaScreenshotWriterOptions,
 ): BrowserContextScreenshotMediaWriter {
-    const accessPolicy = options.accessPolicy ?? { kind: 'osUser' as const };
-    const persistMedia = options.persistMedia ?? persistSessionMedia;
-    const now = options.now ?? (() => Date.now());
+    const writer = createSessionImageMediaWriter({ ...options, storage: options.storage ?? 'session' });
 
     return {
         async write(input) {
             const target = options.resolveTarget(input);
-            let persisted: Awaited<ReturnType<typeof persistMedia>>;
-            try {
-                persisted = await persistMedia({
-                    workingDirectory: options.workingDirectory,
-                    accessPolicy,
-                    sourceAccessPolicy: accessPolicy,
-                    pathAllowanceRegistry: options.pathAllowanceRegistry,
-                    input: {
-                        sessionId: target.sessionId,
-                        messageLocalId: target.messageLocalId,
-                        role: 'output',
-                        category: 'tool-artifact',
-                        source: {
-                            kind: 'base64',
-                            data: input.pngBase64,
-                            mimeType: 'image/png',
-                            fileNameHint: 'browser-context-screenshot.png',
-                        },
-                        origin: {
-                            source: 'tool-output',
-                            toolCallId: `browser_context_${input.viewId}_${input.navigationGeneration}`,
-                        },
-                        suggestedName: 'browser-context-screenshot.png',
-                        createdAtMs: now(),
-                    },
-                });
-            } catch {
-                return { ok: false, reason: 'capture_failed' };
-            }
-
-            if (!persisted.success) {
-                return { ok: false, reason: 'capture_failed', disabledReason: persisted.code };
-            }
-
-            const { item } = persisted;
-            if (item.mediaKind !== 'image' || item.width === undefined || item.height === undefined) {
-                return { ok: false, reason: 'capture_failed', disabledReason: 'screenshot_dimensions_unavailable' };
-            }
-
-            return {
-                ok: true,
-                media: BrowserScreenshotMediaReferenceV1Schema.parse({
-                    mediaId: item.id,
-                    mediaKind: 'image',
-                    width: item.width,
-                    height: item.height,
-                    sizeBytes: item.sizeBytes,
-                }),
-            };
+            const png = decodeSessionMediaBase64(input.pngBase64, configuration.filesUploadMaxFileBytes);
+            if (!png.success) return { ok: false, reason: 'capture_failed', disabledReason: png.code };
+            return writer.write({ sessionId: target.sessionId, captureId: target.messageLocalId, png: png.bytes });
         },
     };
 }

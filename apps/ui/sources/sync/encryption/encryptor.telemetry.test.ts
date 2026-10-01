@@ -3,7 +3,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { syncPerformanceTelemetry } from '@/sync/runtime/syncPerformanceTelemetry';
 import { encodeBase64 } from '@/encryption/base64';
 import { encodeUTF8 } from '@/encryption/text';
-import { stringifySerializedJsonValue } from '@happier-dev/protocol';
+import {
+    packSessionDataKeyBundleV0,
+    SESSION_DATA_KEY_NONCE_BYTES,
+    SESSION_DATA_KEY_TAG_BYTES,
+    stringifySerializedJsonValue,
+} from '@happier-dev/protocol';
 import { createDeferred } from '@/dev/testkit';
 
 import { AES256Encryption, SecretBoxEncryption } from './encryptor';
@@ -455,7 +460,12 @@ describe('encryptor telemetry', () => {
 
     it('records AES bridge serialization when native dispatch falls back', async () => {
         const key = new Uint8Array(32).fill(16);
-        const encryptedItem = new Uint8Array([0, ...encodeUTF8('ciphertext')]);
+        // The OS cipher is stubbed, but fallback still admits a real v0 frame.
+        const encryptedItem = packSessionDataKeyBundleV0({
+            nonce: new Uint8Array(SESSION_DATA_KEY_NONCE_BYTES),
+            ciphertext: encodeUTF8('ciphertext'),
+            authTag: new Uint8Array(SESSION_DATA_KEY_TAG_BYTES),
+        });
         const encryption = Reflect.construct(AES256Encryption, [
             key,
             {
@@ -550,11 +560,13 @@ describe('encryptor telemetry', () => {
         let activeDecrypts = 0;
         let maxActiveDecrypts = 0;
         const encryptedItems = ['one', 'two', 'three', 'four'].map((label) => {
-            const bytes = encodeUTF8(label);
-            const item = new Uint8Array(bytes.length + 1);
-            item[0] = 0;
-            item.set(bytes, 1);
-            return item;
+            // The cipher boundary is stubbed for scheduling, but its payload
+            // still carries the real nonce/tag framing admitted by the owner.
+            return packSessionDataKeyBundleV0({
+                nonce: new Uint8Array(SESSION_DATA_KEY_NONCE_BYTES),
+                ciphertext: encodeUTF8(label),
+                authTag: new Uint8Array(SESSION_DATA_KEY_TAG_BYTES),
+            });
         });
 
         const encryption = new AES256Encryption(new Uint8Array(32).fill(10), {

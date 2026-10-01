@@ -17,6 +17,7 @@ import {
 import { readRegisteredBrowserRecordingAttachAdapter } from '@/sync/domains/browser/recording/runtimeAttachRegistry';
 import { readRegisteredBrowserContextAnnotationAdapter } from '@/sync/domains/browser/context/runtimeAnnotationRegistry';
 import { createSimulatorPreviewRuntimeActionExecutor } from '@/sync/domains/devices/simulator/actions/runtimeActionExecutor';
+import { createComputerRuntimeActionExecutor } from '@/sync/domains/computer/actions/runtimeActionExecutor';
 import {
     createLocalServicesRuntimeActionExecutor,
     type CreateLocalServicesRuntimeActionExecutorInput,
@@ -81,6 +82,8 @@ export function createDefaultRuntimeActionExecutor(
         resolveMachineId: resolveSessionMachineId,
         fallback,
     });
+    // The person's computer controls (choose a window, stop, hand back) go to the machine they name.
+    const computer = createComputerRuntimeActionExecutor({ fallback: simulator });
     const localServices = createLocalServicesRuntimeActionExecutor({
         ...input.localServices,
         resolveMachineId: resolveSessionMachineId,
@@ -93,7 +96,7 @@ export function createDefaultRuntimeActionExecutor(
         revokePublicPreviewExposure: revokeLocalServicePublicPreviewExposureViaMachineRpc,
         copyPublicPreviewUrl: copyLocalServicePublicPreviewUrlViaMachineRpc,
         executeLocalServiceAction: input.localServices?.executeLocalServiceAction ?? executeLocalServiceActionViaMachineRpc,
-        fallback: simulator,
+        fallback: computer,
     });
     return createBrowserRuntimeActionExecutor({
         ...(input.browserControl ? { control: input.browserControl } : {}),

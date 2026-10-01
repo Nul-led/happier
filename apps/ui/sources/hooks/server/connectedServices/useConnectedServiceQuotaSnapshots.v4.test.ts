@@ -240,15 +240,13 @@ describe('useConnectedServiceQuotaSnapshots V4 transport', () => {
         );
         expect(getLegacyPlainSpy).not.toHaveBeenCalled();
         expect(getLegacySealedSpy).not.toHaveBeenCalled();
-        expect(operationAdmissionSpy).toHaveBeenCalledWith(
-            ref.service,
-            { kind: 'v4' },
-            'quota_read',
-        );
+        // A read is the server's GET; no machine is asked.
+        expect(operationAdmissionSpy).not.toHaveBeenCalled();
         expect(
             hook.getCurrent().snapshotsByKey['anthropic/work']
                 ?.meters[0]?.meterId,
         ).toBe('weekly');
+        expect(hook.getCurrent().usageRecordIdsByKey['anthropic/work']).toBe(response.sourceResolution.recordId);
         await hook.unmount();
     });
 
@@ -344,30 +342,6 @@ describe('useConnectedServiceQuotaSnapshots V4 transport', () => {
                 },
             },
         );
-        await hook.unmount();
-    });
-
-    it('issues no quota request when daemon operation evidence contradicts advertised V4', async () => {
-        operationAdmissionSpy.mockRejectedValueOnce(Object.assign(
-            new Error('unsupported'),
-            { code: 'connected_account_v4_operation_unsupported' },
-        ));
-        const { useConnectedServiceQuotaSnapshots } = await import(
-            './useConnectedServiceQuotaSnapshots'
-        );
-        const hook = await renderHook(() =>
-            useConnectedServiceQuotaSnapshots([{
-                serviceId: 'anthropic',
-                profileId: 'work',
-            }]));
-        await flushHookEffects({ cycles: 8, turns: 8 });
-
-        expect(getQualifiedSpy).not.toHaveBeenCalled();
-        expect(getLegacyPlainSpy).not.toHaveBeenCalled();
-        expect(getLegacySealedSpy).not.toHaveBeenCalled();
-        expect(
-            hook.getCurrent().snapshotsByKey['anthropic/work'],
-        ).toBeNull();
         await hook.unmount();
     });
 

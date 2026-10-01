@@ -3,14 +3,27 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   fetchTeamCredentialDirectMaterial,
+  withdrawTeamCredentialDirectMaterial,
   TeamCredentialDirectMaterialHttpContractError,
   TeamCredentialDirectMaterialHttpTransportError,
 } from './teamCredentialDirectMaterialHttp';
 
-vi.mock('axios', () => ({ default: { post: vi.fn() } }));
+vi.mock('axios', () => ({ default: { post: vi.fn(), delete: vi.fn() } }));
 
 describe('fetchTeamCredentialDirectMaterial', () => {
   beforeEach(() => vi.mocked(axios.post).mockReset());
+
+  it('withdraws only the exact captured publication through the authenticated material route', async () => {
+    vi.mocked(axios.delete).mockResolvedValue({ data: { status: 'withdrawn' } });
+    const body = { sourceMemberKey: 'member', expectedResourceRevision: 4, expectedPublishedSourceVersion: 'source-v1' };
+    await expect(withdrawTeamCredentialDirectMaterial({
+      token: 'token', teamId: 'team', resourceId: 'resource', body,
+    })).resolves.toEqual({ status: 'withdrawn' });
+    expect(vi.mocked(axios.delete).mock.calls[0]).toEqual([
+      expect.stringContaining('/v2/teams/team/credential-resources/resource/direct-material'),
+      expect.objectContaining({ headers: { Authorization: 'Bearer token' }, data: body }),
+    ]);
+  });
 
   it('fetches and strictly parses the authenticated recipient projection', async () => {
     vi.mocked(axios.post).mockResolvedValue({ status: 200, data: {

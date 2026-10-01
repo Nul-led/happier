@@ -51,6 +51,7 @@ import { useTemporaryCopyFeedback } from '@/components/ui/copy/useTemporaryCopyF
 import { setClipboardStringSafe } from '@/utils/ui/clipboard';
 import { SessionMessageAccountByline } from '@/components/sessions/transcript/SessionMessageAccountByline';
 import { useSessionMessageAuthorshipScope } from '@/components/sessions/transcript/useSessionMessageAuthorshipScope';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 function getPendingText(message: PendingMessage | DiscardedPendingMessage): string {
     const raw = (message.displayText ?? message.text) ?? '';
@@ -97,7 +98,10 @@ function isAcceptedLocalPendingProjection(message: PendingMessage): boolean {
 }
 
 function canUseDirectPendingDeliveryActions(message: PendingMessage, hasDecryptFailure: boolean): boolean {
-    return !isAcceptedLocalPendingProjection(message) && !hasDecryptFailure;
+    // Send/Steer mutate a server Pending row; local delivery remains owned by its sender.
+    return message.source !== 'local_outbound'
+        && !isAcceptedLocalPendingProjection(message)
+        && !hasDecryptFailure;
 }
 
 function canSteerNowForSession(
@@ -108,7 +112,6 @@ function canSteerNowForSession(
     return Boolean(
         runtimeWorking
         && session?.presence === 'online'
-        && (session?.agentStateVersion ?? 0) > 0
         && session?.agentState?.controlledByUser !== true
         && (capabilities?.inFlightSteerAvailable ?? capabilities?.inFlightSteer) === true
     );
@@ -148,7 +151,6 @@ function supportsInFlightSteerForSession(session: ReturnType<typeof useSession>)
     const capabilities = session?.agentState?.capabilities;
     return Boolean(
         session?.presence === 'online'
-        && (session?.agentStateVersion ?? 0) > 0
         && session?.agentState?.controlledByUser !== true
         && (capabilities?.inFlightSteerSupported ?? capabilities?.inFlightSteer) === true
     );
@@ -925,7 +927,7 @@ export function PendingMessagesTranscriptBlock(props: Readonly<{
                                 // utterance that paints dimmer BRIGHTENS one step at the crossover,
                                 // which reads as the message popping rather than settling. The
                                 // delivery state is carried by the status chip, not by the ink.
-                                { backgroundColor: theme.colors.message.user.background, opacity: pressed ? 0.82 : 1 },
+                                { backgroundColor: theme.colors.message.user.background, opacity: pressed ? motionTokens.press.opacitySubtle : 1 },
                             ])}
                         >
                             {isExpanded ? (
@@ -951,7 +953,7 @@ export function PendingMessagesTranscriptBlock(props: Readonly<{
                                     style={({ pressed }) => ({
                                         alignSelf: 'flex-start',
                                         marginTop: 6,
-                                        opacity: pressed ? 0.8 : 1,
+                                        opacity: pressed ? motionTokens.press.opacitySubtle : 1,
                                     })}
                                 >
                                     <Text style={{ color: theme.colors.text.link, fontSize: 12, ...Typography.default('semiBold') }}>
@@ -1285,7 +1287,7 @@ export function PendingMessagesTranscriptBlock(props: Readonly<{
                             accessibilityLabel={text || t('session.pendingMessages.discarded.label')}
                             style={({ pressed }) => ([
                                 styles.userMessageBubble,
-                                { backgroundColor: theme.colors.input.background, opacity: pressed ? 0.75 : 0.82 },
+                                { backgroundColor: theme.colors.input.background, opacity: pressed ? motionTokens.press.opacity : 0.82 },
                             ])}
                         >
                             <Text numberOfLines={collapsedLines} style={{ color: theme.colors.text.primary, ...Typography.default() }}>

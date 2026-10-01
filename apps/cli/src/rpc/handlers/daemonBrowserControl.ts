@@ -2,6 +2,8 @@ import type { RpcHandlerRegistrar } from '@/api/rpc/types';
 import {
     DaemonBrowserControlDispatchRequestV1Schema,
     DaemonBrowserControlDispatchResponseV1Schema,
+    DaemonBrowserViewListRequestV1Schema,
+    DaemonBrowserViewListResponseV1Schema,
     type DaemonBrowserControlDispatchResponseV1,
 } from '@happier-dev/protocol';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
@@ -22,6 +24,12 @@ export function registerDaemonBrowserControlHandler(
     rpc: RpcHandlerRegistrar,
     options: DaemonBrowserControlHandlerOptions = {},
 ): void {
+    rpc.registerHandler(RPC_METHODS.DAEMON_BROWSER_VIEW_LIST, async (raw: unknown) => {
+        const request = DaemonBrowserViewListRequestV1Schema.parse(raw);
+        if (!options.browserControl) throw new Error('Browser control runtime is unavailable');
+        return DaemonBrowserViewListResponseV1Schema.parse({ protocolVersion: 1,
+            views: options.browserControl.listViews(request.browserSessionId) });
+    });
     rpc.registerHandler(
         RPC_METHODS.DAEMON_BROWSER_CONTROL_DISPATCH,
         async (raw: unknown): Promise<DaemonBrowserControlDispatchResponseV1> => {
@@ -29,7 +37,8 @@ export function registerDaemonBrowserControlHandler(
             if (!options.browserControl) {
                 throw new Error('Browser control runtime is unavailable');
             }
-            const result = await options.browserControl.dispatchCommand(request.command);
+            // Owner-scoped machine RPC is the present user's route; never trust payload authority.
+            const result = await options.browserControl.dispatchCommand(request.command, { authority: 'present_user' });
             return DaemonBrowserControlDispatchResponseV1Schema.parse({
                 protocolVersion: 1,
                 result,

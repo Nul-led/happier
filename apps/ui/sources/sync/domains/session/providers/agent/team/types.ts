@@ -1,6 +1,6 @@
 import type { ParticipantRecipientV1 } from '@happier-dev/protocol';
 
-import type { ToolCall } from '@/sync/domains/messages/messageTypes';
+import type { ToolCall } from "@happier-dev/session-core/messages";
 
 export type AgentTeamSessionProviderDescriptor = Readonly<{
     kind: 'session.agentTeamBehavior.v1';

@@ -49,7 +49,7 @@ async function resolveSessionCreateConnectedServices(params: Readonly<{
       const inventoryResult = normalizeActionExecuteResult(await params.executor.execute(
         'sessions.spawn.connected_services.list',
         { agentId: params.agentId, includeUnavailable: false },
-        { surface: 'cli', authority: 'present_user', defaultSessionId: null },
+        { surface: 'cli', defaultSessionId: null },
       ));
       if (!inventoryResult.ok) {
         throw new Error(inventoryResult.errorMessage ?? inventoryResult.errorCode);
@@ -103,6 +103,7 @@ export async function cmdSessionCreate(
   const spawnRequest = { ...parsedOptions.spawnRequest };
   const executor = createCliActionExecutorFromCredentials({
     credentials,
+    externalActionClient: true,
     ...(spawnRequest.machineId ? { machineId: spawnRequest.machineId } : {}),
   });
   if (credentials.credentialProvenance === 'api_token' && !spawnRequest.machineId) {
@@ -140,7 +141,6 @@ export async function cmdSessionCreate(
       resolvedActionInput,
       {
         surface: 'cli',
-        authority: 'present_user',
         defaultSessionId: null,
         actionRequestId: effectiveSpawnAttemptId,
         ...(resumeSpawnAttempt ? { resumeActionRequest: true } : {}),

@@ -6,7 +6,6 @@ import {
   buildQualifiedPluginContributionKey,
   createPluginContributionIdentity,
   PluginProjectionV2Schema,
-  SPAWN_SESSION_ERROR_CODES,
 } from '@happier-dev/protocol';
 import type { BundledVoiceRuntimeContribution } from '@/voice/session/types';
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
@@ -20,9 +19,10 @@ import { encodeBase64 } from '@/encryption/base64';
 const rpcBoundary = vi.hoisted(() => ({
   sessionRpc: vi.fn(),
 }));
+const machineRpcBoundary = vi.hoisted(() => ({
+  machineRpc: vi.fn(),
+}));
 const globalMachineBoundary = vi.hoisted(() => ({
-  trustedSpawn: vi.fn(),
-  completeCustody: vi.fn(),
   projectionDescribe: vi.fn(),
 }));
 
@@ -31,20 +31,9 @@ vi.mock('@/sync/runtime/orchestration/serverScopedRpc/serverScopedSessionRpc', (
   sessionRpcWithServerScope: rpcBoundary.sessionRpc,
 }));
 
-// Machine RPC/projection are genuine boundaries. The production hidden-session
-// owner remains real below, including target resolution and finalization.
-vi.mock('@/sync/ops/machines', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/sync/ops/machines')>();
-  return {
-    ...actual,
-    machineSpawnTrustedHiddenSystemSession: (
-      ...args: Parameters<typeof actual.machineSpawnTrustedHiddenSystemSession>
-    ) => globalMachineBoundary.trustedSpawn(...args),
-    completeMachineSpawnAttemptCustody: (
-      ...args: Parameters<typeof actual.completeMachineSpawnAttemptCustody>
-    ) => globalMachineBoundary.completeCustody(...args),
-  };
-});
+vi.mock('@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc', () => ({
+  machineRpcWithServerScope: machineRpcBoundary.machineRpc,
+}));
 
 vi.mock('@/sync/ops/machineContributionRegistryProjection', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/sync/ops/machineContributionRegistryProjection')>();
@@ -58,10 +47,11 @@ vi.mock('@/sync/ops/machineContributionRegistryProjection', async (importOrigina
 
 import { settingsDefaults } from '@/sync/domains/settings/settings';
 import { apiSocket } from '@/sync/api/session/apiSocket';
-import { readStoredSessionMessages } from '@/sync/domains/messages/readStoredSessionMessages';
+import { readStoredSessionMessages } from "@happier-dev/session-core/messages";
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { storage } from '@/sync/domains/state/storage';
 import { Encryption } from '@/sync/encryption/encryption';
+import { switchConnectionToActiveServer } from '@/sync/runtime/orchestration/connectionManager';
 import { sync } from '@/sync/sync';
 import { resetRuntimeFetch, setRuntimeFetch } from '@/utils/system/runtimeFetch';
 import { voiceSettingsParse } from '@/sync/domains/settings/voiceSettings';
@@ -129,6 +119,7 @@ function activateCodexEntry(input: Readonly<{
   const providerId = readEntryProviderId(entry);
   const scope = createExternalVoiceProviderActivationScope({
     pluginId: entry.pluginId,
+    occurrenceId: `${entry.pluginId}-activation-occurrence`,
     declarations: [entry.declaration],
     hostPlatform: input.host.getPlatform(),
     runtimeHost: input.host,
@@ -241,10 +232,16 @@ describe('realtime_codex normal web composed gate', () => {
     };
   };
 
-  beforeEach(() => {
+  beforeEach(async () => {
     const activeServer = getActiveServerSnapshot();
     if (!activeServer.serverId) throw new Error('Codex composed test requires an active server');
     activeServerId = activeServer.serverId;
+    const credentialsForServer = vi.spyOn(
+      TokenStorage,
+      'getCredentialsForServerUrl',
+    ).mockResolvedValue(null);
+    await switchConnectionToActiveServer();
+    credentialsForServer.mockRestore();
     storage.setState((current) => ({ ...current, profileScope: null }));
     nextTranscriptSeq = 0;
     persistenceCleanup = null;
@@ -276,8 +273,7 @@ describe('realtime_codex normal web composed gate', () => {
       });
     });
     rpcBoundary.sessionRpc.mockReset();
-    globalMachineBoundary.trustedSpawn.mockReset();
-    globalMachineBoundary.completeCustody.mockReset();
+    machineRpcBoundary.machineRpc.mockReset();
     globalMachineBoundary.projectionDescribe.mockReset();
     globalMachineBoundary.projectionDescribe.mockResolvedValue({
       supported: false,
@@ -844,37 +840,16 @@ describe('realtime_codex normal web composed gate', () => {
         familiesById: {},
       }),
     });
-    globalMachineBoundary.trustedSpawn.mockImplementation(async (options, startupInstructions) => {
-      expect(options).toMatchObject({
-        machineId: globalMachine.id,
-        directory: '/Users/global-preflight/.happier/codex-global-preflight',
-        backendTarget: { kind: 'backend', backendId: 'codex' },
-        connectedServices,
-        permissionMode: 'safe-yolo',
-        serverId: activeServerId,
-      });
-      expect(startupInstructions).toMatchObject({ v: 1 });
+    machineRpcBoundary.machineRpc.mockImplementation(async (input) => {
       return {
         type: 'error' as const,
-        errorCode: SPAWN_SESSION_ERROR_CODES.SPAWN_VALIDATION_FAILED,
-        errorMessage: 'connected_service_credential_refresh_unavailable',
-        errorDetail: {
-          kind: 'connected_service_ux_diagnostic',
-          uxDiagnostic: {
-            code: 'connected_service_credential_refresh_unavailable',
-            failurePhase: 'materialization',
-            source: 'spawn_resume',
-            serviceId: 'openai-codex',
-            agentId: 'codex',
-            profileId: 'voice-profile',
-            retryable: true,
-            suggestedActions: ['retry', 'open_connected_accounts'],
-            diagnostics: {
-              reason: 'spawn_preflight',
-              status: 'refresh_failed',
-              category: 'network_error',
-            },
-          },
+        code: 'spawn_failed' as const,
+        retryable: true,
+        providerError: {
+          v: 1 as const,
+          code: 'provider_secret_unavailable' as const,
+          retryable: true,
+          action: 'retry' as const,
         },
       };
     });
@@ -910,8 +885,7 @@ describe('realtime_codex normal web composed gate', () => {
       });
       expect(browser.micSession.ensureActive).not.toHaveBeenCalled();
       expect(browser.peer.createDataChannel).not.toHaveBeenCalled();
-      expect(globalMachineBoundary.trustedSpawn).toHaveBeenCalledTimes(1);
-      expect(globalMachineBoundary.completeCustody).not.toHaveBeenCalled();
+      expect(machineRpcBoundary.machineRpc).toHaveBeenCalledTimes(1);
       expect(createAgentSessionRealtimeService).not.toHaveBeenCalled();
       expect(rpcBoundary.sessionRpc).not.toHaveBeenCalled();
     } finally {
@@ -1231,63 +1205,46 @@ describe('realtime_codex normal web composed gate', () => {
 
     const events: string[] = [];
     const spawnedSessionIds = ['hidden-global-failed', 'hidden-global-ready'];
-    globalMachineBoundary.trustedSpawn.mockImplementation(async (options, startupInstructions) => {
-      const sessionId = spawnedSessionIds[globalMachineBoundary.trustedSpawn.mock.calls.length - 1];
+    machineRpcBoundary.machineRpc.mockImplementation(async (input) => {
+      const sessionId = spawnedSessionIds[machineRpcBoundary.machineRpc.mock.calls.length - 1];
       if (!sessionId) throw new Error('unexpected trusted Global spawn');
       events.push(`spawn:${sessionId}`);
-      expect(options).toMatchObject({
-        machineId: globalMachine.id,
-        directory: '/Users/global/.happier/codex-global-voice',
-        backendTarget: { kind: 'backend', backendId: 'codex' },
-        connectedServices,
-        permissionMode: 'safe-yolo',
-        serverId: activeServerId,
-      });
-      expect(startupInstructions).toMatchObject({ v: 1 });
       storage.setState((current) => ({
         ...current,
         sessions: {
           ...current.sessions,
           [sessionId]: createSessionFixture({
             id: sessionId,
+            serverId: activeServerId,
             active: true,
             encryptionMode: 'plain',
             metadata: {
-              machineId: options.machineId,
-              path: options.directory,
+              machineId: input.machineId,
+              path: input.payload.directory,
               host: 'global.test.local',
-              backendTarget: options.backendTarget,
-              connectedServices: options.connectedServices,
+              backendTarget: { kind: 'backend', backendId: 'codex' },
+              connectedServices,
             },
-            permissionMode: options.permissionMode,
+            permissionMode: input.payload.permissionMode,
           }),
         },
       }) as never);
       return {
         type: 'success' as const,
+        disposition: 'created' as const,
         sessionId,
-        spawnAttemptCustody: {
-          status: 'completed' as const,
-          userAttemptId: options.userAttemptId,
-          spawnNonce: options.spawnNonce,
-          targetFingerprint: 'global-voice-target',
-          machineId: options.machineId,
-          scope: { serverId: activeServerId, accountId: 'codex-global-account' },
-          createdSessionId: sessionId,
-          firstTurnLocalId: 'global-first-turn',
-          attachmentMessageLocalId: 'global-attachment',
-        },
+        executionTarget: { serverId: activeServerId, machineId: globalMachine.id },
+        organizationPlacement: { folderId: null, tagIds: [] },
+        initialInput: { status: 'notRequested' as const },
       };
     });
-    globalMachineBoundary.completeCustody.mockImplementation(async (custody) => {
-      events.push(`custody:${custody.createdSessionId}`);
-      return true;
-    });
-
     let rejectFailedCandidateMetadata = true;
     vi.spyOn(sync, 'refreshSessions').mockResolvedValue(undefined as never);
     vi.spyOn(sync, 'patchSessionMetadataWithRetry').mockImplementation(async (sessionId, patch) => {
       events.push(`metadata:${sessionId}`);
+      if (patch === 'ownerMigration') {
+        throw new Error('unexpected owner migration in voice metadata fixture');
+      }
       if (sessionId === 'hidden-global-failed' && rejectFailedCandidateMetadata) {
         rejectFailedCandidateMetadata = false;
         throw new Error('metadata write must retire the candidate');
@@ -1315,7 +1272,6 @@ describe('realtime_codex normal web composed gate', () => {
           voiceAgentStartupInstructionsV1: expect.objectContaining({ v: 1 }),
         },
       });
-      expect(globalMachineBoundary.completeCustody).toHaveBeenCalledTimes(1);
     };
     rpcBoundary.sessionRpc.mockImplementation(async (input: Readonly<{
       sessionId: string;
@@ -1374,8 +1330,6 @@ describe('realtime_codex normal web composed gate', () => {
           systemSessionV1: { v: 1, key: 'voice_conversation_retired', hidden: true },
         },
       });
-      expect(globalMachineBoundary.completeCustody).not.toHaveBeenCalled();
-
       registerVoiceAdapters([runtime.adapter]);
       const starting = runtime.adapter.start({
         sessionId: host.globalVoiceSessionId,
@@ -1394,16 +1348,16 @@ describe('realtime_codex normal web composed gate', () => {
         transcriptMode: 'native_session',
         targetSessionAddress: null,
       });
-      expect(globalMachineBoundary.trustedSpawn).toHaveBeenCalledTimes(2);
+      expect(machineRpcBoundary.machineRpc).toHaveBeenCalledTimes(2);
       expect(globalMachineBoundary.projectionDescribe).toHaveBeenCalledWith(
         globalMachine.id,
         expect.objectContaining({ serverId: activeServerId }),
       );
-      expect(events.indexOf('custody:hidden-global-ready')).toBeLessThan(
+      expect(events.indexOf('spawn:hidden-global-ready')).toBeLessThan(
         events.indexOf('inspect:hidden-global-ready'),
       );
       expect(events).not.toContain('inspect:hidden-never-reused');
-      expect(events.indexOf('custody:hidden-global-ready')).toBeLessThan(
+      expect(events.indexOf('spawn:hidden-global-ready')).toBeLessThan(
         events.indexOf('start:hidden-global-ready'),
       );
 
@@ -1423,7 +1377,7 @@ describe('realtime_codex normal web composed gate', () => {
         transcriptMode: 'native_session',
         targetSessionAddress: { serverId: activeServerId, sessionId: 'codex-direct-session' },
       });
-      expect(globalMachineBoundary.trustedSpawn).toHaveBeenCalledTimes(2);
+      expect(machineRpcBoundary.machineRpc).toHaveBeenCalledTimes(2);
     } finally {
       await runtime.dispose();
       hostLease.revoke();

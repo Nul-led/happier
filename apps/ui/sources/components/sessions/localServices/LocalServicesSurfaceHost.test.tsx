@@ -167,8 +167,10 @@ describe('LocalServicesSurfaceHost', () => {
                 testID="surface-host-services"
             />,
         );
-        // The session-a preview lands in the This-session band (explicit sessionId threaded host→pane).
-        expect(screen.findByTestId('surface-host-services-band-thisSession')).toBeTruthy();
+        // The session-a preview is attributed to this session (explicit sessionId threaded host→pane),
+        // so it reads "This session" in the Running section.
+        expect(screen.findByTestId('surface-host-services-section-running')).toBeTruthy();
+        expect(screen.getTextContent()).toContain('This session');
     });
 
     it('invokes the injected onOpenServiceInBrowser callback with the launch target when the open affordance fires', async () => {
@@ -185,6 +187,10 @@ describe('LocalServicesSurfaceHost', () => {
             />,
         );
 
+        await pressTestInstanceAsync(
+            screen.findByTestId('surface-host-services-row:preview:host-feed-item'),
+            'surface-host-services-row:preview:host-feed-item',
+        );
         await pressTestInstanceAsync(
             screen.findByTestId('surface-host-services-row:preview:host-feed-open'),
             'surface-host-services-row:preview:host-feed-open',

@@ -45,13 +45,6 @@ const resolveReviewCommentDraftAnchorsForPromptSpy = vi.fn(async (input: {
     drafts: readonly ReviewCommentDraft[];
 }) => [...input.drafts]);
 
-vi.mock('expo-router', () => ({
-    useRouter: () => ({
-        push: routerPushSpy,
-    }),
-    usePathname: () => '/session/session-1',
-}));
-
 vi.mock('@/constants/Typography', () => ({
     Typography: {
         default: () => ({}),
@@ -105,6 +98,7 @@ describe('ReviewCommentsDraftsModal', () => {
             <ReviewCommentsDraftsModal
                 onClose={() => {}}
                 sessionId="session-1"
+                navigation={{ push: routerPushSpy }}
                 reviewScope={{ serverId: 'home-b', machineId: 'machine-1', rootPath: '/repo' }}
                 reviewCommentDrafts={[draft]}
                 onUpdateDraft={() => {}}

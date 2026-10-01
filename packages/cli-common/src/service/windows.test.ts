@@ -48,6 +48,18 @@ describe('Windows scheduled task PowerShell status helper', () => {
 });
 
 describe('Windows scheduled task lifecycle PowerShell helpers', () => {
+  it('renders environment values as literal PowerShell strings', () => {
+    const wrapper = renderWindowsScheduledTaskWrapperPs1({
+      env: {
+        HAPPIER_IROH_RELAY_URL: 'https://relay.example/$tenant/$()/back`tick/"quoted"',
+      },
+    });
+
+    expect(wrapper).toContain(
+      '$env:HAPPIER_IROH_RELAY_URL = "https://relay.example/`$tenant/`$()/back``tick/`"quoted`""',
+    );
+  });
+
   it('records wrapper startup errors and preserves the managed process exit code', () => {
     const wrapper = renderWindowsScheduledTaskWrapperPs1({
       workingDirectory: 'C:\\Happier',

@@ -180,6 +180,89 @@ describe('installDaemonService runtime resolution', () => {
     expect(ensureJavaScriptRuntimeExecutableMock).not.toHaveBeenCalled();
   });
 
+  it('projects the canonical normalized Iroh relay configuration into the install plan', async () => {
+    const previousPolicy = process.env.HAPPIER_IROH_RELAY_POLICY;
+    const previousUrls = process.env.HAPPIER_IROH_RELAY_URLS;
+    process.env.HAPPIER_IROH_RELAY_POLICY = ' AUTOMATIC ';
+    process.env.HAPPIER_IROH_RELAY_URLS = 'https://relay-b.example, https://relay-a.example';
+
+    try {
+      const { previewDaemonServiceInstall } = await import('./installer');
+      await previewDaemonServiceInstall({
+        platform: 'linux',
+        uid: 123,
+        userHomeDir: '/home/test',
+        happierHomeDir: '/home/test/.happier',
+        channel: 'stable',
+        targetMode: 'default-following',
+        instanceId: 'default',
+      });
+
+      expect(planDaemonServiceInstallMock).toHaveBeenCalledWith(expect.objectContaining({
+        irohRelayConfig: {
+          relayPolicy: 'automatic',
+          relayUrls: ['https://relay-a.example', 'https://relay-b.example'],
+          explicitlyConfigured: true,
+        },
+      }));
+    } finally {
+      if (previousPolicy === undefined) delete process.env.HAPPIER_IROH_RELAY_POLICY;
+      else process.env.HAPPIER_IROH_RELAY_POLICY = previousPolicy;
+      if (previousUrls === undefined) delete process.env.HAPPIER_IROH_RELAY_URLS;
+      else process.env.HAPPIER_IROH_RELAY_URLS = previousUrls;
+    }
+  });
+
+  it('projects an explicit Standard-only application carrier choice into the install plan', async () => {
+    const previous = process.env.HAPPIER_HOME_CARRIER_POLICY;
+    process.env.HAPPIER_HOME_CARRIER_POLICY = ' STANDARD_ONLY ';
+    try {
+      const { previewDaemonServiceInstall } = await import('./installer');
+      await previewDaemonServiceInstall({
+        platform: 'linux',
+        uid: 123,
+        userHomeDir: '/home/test',
+        happierHomeDir: '/home/test/.happier',
+        channel: 'stable',
+        targetMode: 'default-following',
+        instanceId: 'default',
+      });
+
+      expect(planDaemonServiceInstallMock).toHaveBeenCalledWith(expect.objectContaining({
+        homeCarrierEligibility: 'standard_only',
+      }));
+    } finally {
+      if (previous === undefined) delete process.env.HAPPIER_HOME_CARRIER_POLICY;
+      else process.env.HAPPIER_HOME_CARRIER_POLICY = previous;
+    }
+  });
+
+  it('rejects an invalid Iroh relay combination before planning an install', async () => {
+    const previousPolicy = process.env.HAPPIER_IROH_RELAY_POLICY;
+    const previousUrls = process.env.HAPPIER_IROH_RELAY_URLS;
+    process.env.HAPPIER_IROH_RELAY_POLICY = 'disabled';
+    process.env.HAPPIER_IROH_RELAY_URLS = 'https://relay.example';
+
+    try {
+      const { previewDaemonServiceInstall } = await import('./installer');
+      await expect(previewDaemonServiceInstall({
+        platform: 'linux',
+        uid: 123,
+        userHomeDir: '/home/test',
+        happierHomeDir: '/home/test/.happier',
+        channel: 'stable',
+        targetMode: 'default-following',
+        instanceId: 'default',
+      })).rejects.toThrow(/cannot be combined/u);
+      expect(planDaemonServiceInstallMock).not.toHaveBeenCalled();
+    } finally {
+      if (previousPolicy === undefined) delete process.env.HAPPIER_IROH_RELAY_POLICY;
+      else process.env.HAPPIER_IROH_RELAY_POLICY = previousPolicy;
+      if (previousUrls === undefined) delete process.env.HAPPIER_IROH_RELAY_URLS;
+      else process.env.HAPPIER_IROH_RELAY_URLS = previousUrls;
+    }
+  });
+
   it('uses the persisted default release channel when daemon service install has no explicit channel', async () => {
     const previousHomeDir = process.env.HAPPIER_HOME_DIR;
     const previousReleaseEnv = {

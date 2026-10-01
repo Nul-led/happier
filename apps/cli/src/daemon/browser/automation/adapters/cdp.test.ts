@@ -57,6 +57,8 @@ describe('browser automation CDP adapter', () => {
     // Mutating-input verbs require the CDP input transport — negotiated away when absent.
     expect(ops.has('click')).toBe(false);
     expect(ops.has('type')).toBe(false);
+    expect(ops.has('upload')).toBe(false);
+    expect(ops.has('drag')).toBe(false);
     // Ops the adapter does not implement are never advertised.
     expect(ops.has('evaluate')).toBe(false);
     expect(ops.has('startElementPicker')).toBe(false);
@@ -73,6 +75,8 @@ describe('browser automation CDP adapter', () => {
     expect(ops.has('type')).toBe(true);
     expect(ops.has('scroll')).toBe(true);
     expect(ops.has('setValue')).toBe(true);
+    expect(ops.has('upload')).toBe(true);
+    expect(ops.has('drag')).toBe(true);
     // Still never advertises verbs it cannot perform.
     expect(ops.has('evaluate')).toBe(false);
   });
@@ -97,7 +101,16 @@ describe('browser automation CDP adapter', () => {
         viewId: 'view_1',
         url: 'https://browser.example.test/next',
       }),
+      expect.objectContaining({ deadlineMs: expect.any(Number) }),
     );
+  });
+  it('reports uncertain cancellation during a navigation instead of a runtime failure', async () => {
+    const controller = new AbortController();
+    const adapter = createBrowserAutomationCdpAdapter({ transport: transport({ dispatchControlCommand: async () => {
+      controller.abort();
+      return { v: 1, commandId: 'cmd', status: 'failed', adapterKind: 'chromiumSidecar', error: { code: 'adapter_unavailable', message: 'CDP canceled' } };
+    } }) });
+    expect(await adapter.execute(request({ actionKind: 'navigate', payload: { url: 'https://example.test' } }), { signal: controller.signal })).toMatchObject({ status: 'canceled', errorCode: 'user_canceled', interruptionCompletion: 'uncertain' });
   });
 
   it('translates a read-only snapshot action into a page query', async () => {

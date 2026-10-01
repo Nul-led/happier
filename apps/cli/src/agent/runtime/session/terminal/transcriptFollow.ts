@@ -68,6 +68,7 @@ export function createHostTerminalTranscriptFollowService(params: Readonly<{
             agentId: string;
             providerSessionId: string;
             initialReplay?: boolean;
+            replay?: 'fresh';
             admissionDeadlineAtMs?: number;
             signal: AbortSignal;
         }>,
@@ -94,7 +95,7 @@ export function createHostTerminalTranscriptFollowService(params: Readonly<{
         if (failure) throw failure.reason;
     };
 
-    const service: HostTerminalTranscriptFollowService = Object.freeze({
+    const sourceService: HostTerminalTranscriptFollowService = Object.freeze({
         async bindProviderSession(request) {
             if (params.signal.aborted || request.signal?.aborted) {
                 const result = unavailable('plugin_operation_aborted');
@@ -131,7 +132,6 @@ export function createHostTerminalTranscriptFollowService(params: Readonly<{
             };
             let result: HostExternalTranscriptFollowResult;
             try {
-                let committedBaseline: CommittedTranscriptLocalIdBaseline | null = null;
                 const loadCommittedLocalIdBaseline =
                     params.loadCommittedLocalIdBaseline;
                 if (!loadCommittedLocalIdBaseline) {
@@ -145,55 +145,31 @@ export function createHostTerminalTranscriptFollowService(params: Readonly<{
                     retirementSignal: params.signal,
                     isCurrent: () => !params.signal.aborted,
                     deadlineAtMs: admissionDeadlineAtMs,
-                    operation: async (baselineSignal, deadlineAtMs) =>
-                        await loadCommittedLocalIdBaseline({
-                            signal: baselineSignal,
-                            deadlineAtMs,
-                        }),
+                    operation: (baselineSignal, deadlineAtMs) => loadCommittedLocalIdBaseline({ signal: baselineSignal, deadlineAtMs }),
                 });
-                if (baselineResult.status === 'timeout') {
-                    bindingAbort.abort();
-                    const unavailableResult = unavailable(
-                        'plugin_external_follow_resync_required',
+                if (baselineResult.status !== 'fulfilled') {
+                    throw terminalFollowFailure(
+                        baselineResult.status === 'timeout' ? 'plugin_external_follow_resync_required'
+                            : baselineResult.status === 'cancelled' || baselineResult.status === 'retired'
+                                ? 'plugin_operation_aborted' : 'plugin_external_follow_unavailable',
+                        'Committed transcript baseline could not be loaded',
                     );
-                    return unavailableResult;
                 }
-                if (
-                    baselineResult.status === 'retired'
-                    || baselineResult.status === 'cancelled'
-                ) {
-                    bindingAbort.abort();
-                    const unavailableResult = unavailable('plugin_operation_aborted');
-                    return unavailableResult;
-                }
-                if (baselineResult.status === 'rejected') {
-                    bindingAbort.abort();
-                    const unavailableResult = unavailable(
-                        'plugin_external_follow_unavailable',
-                    );
-                    return unavailableResult;
-                }
-                committedBaseline = baselineResult.value;
                 if (Date.now() >= admissionDeadlineAtMs) {
-                    bindingAbort.abort();
-                    const unavailableResult = unavailable(
-                        'plugin_external_follow_resync_required',
-                    );
-                    return unavailableResult;
+                    throw terminalFollowFailure('plugin_external_follow_resync_required', 'Committed transcript baseline exceeded admission');
                 }
+                const committedBaseline = baselineResult.value;
                 if (!committedBaseline.complete) {
-                    bindingAbort.abort();
-                    const unavailableResult = unavailable(
-                        'plugin_external_follow_unavailable',
-                    );
-                    return unavailableResult;
+                    throw terminalFollowFailure('plugin_external_follow_unavailable', 'Committed transcript baseline is incomplete');
                 }
                 const committedLocalIds = new Set(committedBaseline.localIds);
+                let admittingSource = true;
                 result = await params.followProviderSession(
                     {
                         agentId: request.agentId,
                         providerSessionId: request.providerSessionId,
                         initialReplay: true,
+                        ...(request.replay === 'fresh' ? { replay: request.replay } : {}),
                         admissionDeadlineAtMs,
                         signal,
                     },
@@ -213,7 +189,7 @@ export function createHostTerminalTranscriptFollowService(params: Readonly<{
                             });
                         }
                         try {
-                            if (!isInitialReplay) {
+                            if (!admittingSource) {
                                 await params.publish(publishEvent, { signal });
                             } else {
                                 const publication =
@@ -304,6 +280,7 @@ export function createHostTerminalTranscriptFollowService(params: Readonly<{
                         }
                     },
                 );
+                admittingSource = false;
             } catch (error) {
                 bindingAbort.abort();
                 const code = readTerminalFollowUnavailableCode(error);
@@ -342,6 +319,7 @@ export function createHostTerminalTranscriptFollowService(params: Readonly<{
                     try {
                         await attempt;
                     } catch (error) {
+                        reportFailure(error);
                         if (disposePromise === attempt) {
                             disposePromise = null;
                         }
@@ -364,8 +342,86 @@ export function createHostTerminalTranscriptFollowService(params: Readonly<{
         releaseActiveBindings,
     });
 
+    type SharedBinding = {
+        references: number;
+        abort: AbortController;
+        acquisition: Promise<HostTerminalTranscriptFollowBindResult>;
+    };
+    const sharedBindings = new Map<string, SharedBinding>();
+    const service: HostTerminalTranscriptFollowService = Object.freeze({
+        async bindProviderSession(request) {
+            if (params.signal.aborted || request.signal?.aborted) return unavailable('plugin_operation_aborted');
+            if (request.replay !== undefined && request.replay !== 'fresh' && request.replay !== 'historical') {
+                return unavailable('plugin_external_follow_identity_mismatch');
+            }
+            const key = JSON.stringify([request.agentId, request.providerSessionId]);
+            let shared = sharedBindings.get(key);
+            if (!shared) {
+                const abort = new AbortController();
+                const acquisition = sourceService.bindProviderSession({ ...request, signal: abort.signal });
+                shared = { references: 0, abort, acquisition };
+                sharedBindings.set(key, shared);
+                const entry = shared;
+                void acquisition.then((result) => {
+                    if (result.status === 'unavailable' && sharedBindings.get(key) === entry) sharedBindings.delete(key);
+                }, () => {
+                    if (sharedBindings.get(key) === entry) sharedBindings.delete(key);
+                });
+            }
+            const entry = shared;
+            entry.references += 1;
+            let released = false;
+            let releasePromise: Promise<void> | null = null;
+            const release = (): Promise<void> => {
+                if (releasePromise) return releasePromise;
+                if (!released) {
+                    released = true;
+                    request.signal?.removeEventListener('abort', onAbort);
+                    entry.references -= 1;
+                }
+                if (entry.references > 0) return Promise.resolve();
+                if (sharedBindings.get(key) === entry) sharedBindings.delete(key);
+                entry.abort.abort();
+                const attempt = entry.acquisition.then(async (result) => {
+                    if (result.status === 'following') await result.binding.dispose();
+                }, () => undefined);
+                releasePromise = attempt.catch((error) => {
+                    releasePromise = null;
+                    throw error;
+                });
+                return releasePromise;
+            };
+            let resolveCancellation!: (result: HostTerminalTranscriptFollowBindResult) => void;
+            const cancellation = new Promise<HostTerminalTranscriptFollowBindResult>((resolve) => { resolveCancellation = resolve; });
+            const onAbort = () => {
+                resolveCancellation(unavailable('plugin_operation_aborted'));
+                void release().catch(() => undefined); // The source binding reports disposal failure through its failure signal.
+            };
+            request.signal?.addEventListener('abort', onAbort, { once: true });
+            if (request.signal?.aborted) onAbort();
+            try {
+                const result = await Promise.race([entry.acquisition, cancellation]);
+                if (result.status === 'unavailable' || released) {
+                    await release();
+                    return result.status === 'unavailable' ? result : unavailable('plugin_operation_aborted');
+                }
+                return Object.freeze({ ...result, binding: Object.freeze({ failure: result.binding.failure, dispose: release }) });
+            } catch (error) {
+                await release();
+                throw error;
+            }
+        },
+        async releaseActiveBindings() {
+            for (const entry of sharedBindings.values()) entry.abort.abort();
+            const acquisitions = Array.from(sharedBindings.values(), (entry) => entry.acquisition);
+            sharedBindings.clear();
+            await Promise.allSettled(acquisitions);
+            await releaseActiveBindings();
+        },
+    });
+
     const releaseOnAbort = () => {
-        void releaseActiveBindings().catch(() => undefined);
+        void service.releaseActiveBindings().catch(() => undefined);
     };
     if (params.signal.aborted) releaseOnAbort();
     else params.signal.addEventListener('abort', releaseOnAbort, { once: true });

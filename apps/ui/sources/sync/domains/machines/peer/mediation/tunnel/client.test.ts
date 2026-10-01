@@ -1,10 +1,24 @@
 import {
     PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2,
+    PEER_TCP_TUNNEL_DEFAULT_INITIAL_WINDOW_BYTES,
+    PEER_TCP_TUNNEL_DEFAULT_MAX_FRAME_BYTES,
     PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT,
     createFeatureDecision,
+    createEphemeralPeerRouteProofHandleV2,
+    createDirectRouteGrantSigningInputV2,
+    type DirectRouteGrantPayloadV2,
     type PeerTcpTunnelOpenV1,
 } from '@happier-dev/protocol';
 import { describe, expect, it, vi } from 'vitest';
+import tweetnacl from 'tweetnacl';
+import { resetRuntimeFetch, setRuntimeFetch } from '@/utils/system/runtimeFetch';
+import { getStorage } from '@/sync/domains/state/storageStore';
+
+const nativeBoundary = vi.hoisted(() => ({ current: null as Record<string, unknown> | null }));
+vi.mock('@happier-dev/iroh-native', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@happier-dev/iroh-native')>(),
+    getOptionalHappierIrohNativeModule: () => nativeBoundary.current,
+}));
 
 type DynamicModule = Record<string, unknown>;
 
@@ -50,8 +64,6 @@ const relayOpen: PeerTcpTunnelOpenV1 = {
             destination: { host: '127.0.0.1', port: 3000 },
             capProfileId: 'interactive',
             maxFrameBytes: 64 * 1024,
-            maxIdleMs: 30_000,
-            maxDurationMs: 300_000,
             iat: 1_000,
             exp: 301_000,
             aud: 'happier-tcp-tunnel-relay-authorization',
@@ -65,6 +77,100 @@ const relayOpen: PeerTcpTunnelOpenV1 = {
 };
 
 describe('openPeerTcpTunnel', () => {
+    it.each(['disabled_direct_policy', 'standard_only'] as const)('keeps the supported relay usable without minting native authority under %s', async (policy) => {
+        const mod = await loadModule('./client');
+        const openTunnel = mod.openPeerTcpTunnel;
+        if (typeof openTunnel !== 'function') throw new Error('canonical tunnel client missing');
+        const store = getStorage();
+        const previous = store.getState().localSettings;
+        store.setState({ localSettings: { ...previous, homeApplicationCarrierEligibility: policy === 'standard_only' ? 'standard_only' : 'automatic' } });
+        const stream = { close: () => undefined, sendFrame: () => undefined, onFrame: () => () => undefined };
+        try {
+            await expect(openTunnel({
+                open: relayOpen,
+                directPeerDecision: featureDecision('machines.tunnel.directPeer', policy !== 'disabled_direct_policy'),
+                serverRoutedDecision: featureDecision('machines.tunnel.serverRouted', true),
+                resolveLoopback: async () => ({ kind: 'fallback', receipt: 'peer.route.fallback', reasonCode: 'route_unavailable' }),
+                resolveIroh: async () => { throw new Error('native grant mint forbidden by the existing policy'); },
+                postOpen: async () => { throw new Error('direct open forbidden'); },
+                openServerRelayStream: async () => stream,
+                serverRelaySocket: { socketId: relaySocketId, send: () => undefined, onEnvelope: () => () => undefined },
+            })).resolves.toMatchObject({ ok: true, routeKind: 'server_relay' });
+        } finally {
+            store.setState({ localSettings: previous });
+        }
+    });
+
+    it('selects the generic native carrier with a separately signed scope and retires its lease on cancellation', async () => {
+        const mod = await loadModule('./client');
+        const openTunnel = mod.openPeerTcpTunnel;
+        if (typeof openTunnel !== 'function') throw new Error('canonical tunnel client missing');
+        const handle = createEphemeralPeerRouteProofHandleV2({ randomBytes: (length) => new Uint8Array(length).fill(4) });
+        const signingKey = tweetnacl.sign.keyPair.fromSeed(new Uint8Array(32).fill(7));
+        const payload: DirectRouteGrantPayloadV2 = {
+            v: 2, grantId: 'native-grant', accountId: 'user_1', machineId: 'machine_1', flowKind: 'tcp_tunnel', routeKind: 'iroh_peer',
+            scope: { kind: 'tcp_tunnel', tunnelId: 'tun_1', allowedPorts: [3000] },
+            iat: 1000, exp: 301000, aud: 'happier-daemon-route-grant', endpointFingerprint: 'b'.repeat(64),
+            iroh: { initiator: { kind: 'account_client', endpointId: 'a'.repeat(64) }, target: { machineId: 'machine_1', endpointId: 'b'.repeat(64) }, operationKind: 'tcp_tunnel' },
+            proofKind: 'ephemeral_ed25519', ephemeralPublicKeyBase64Url: handle.publicKeyBase64Url,
+        };
+        const grant = { payload, signature: { keyId: 'test-key', alg: 'Ed25519' as const, valueBase64Url: Buffer.from(tweetnacl.sign.detached(Buffer.from(createDirectRouteGrantSigningInputV2(payload)), signingKey.secretKey)).toString('base64url') } };
+        const nativeOpen = { ...open, v: 2 as const, routeKind: 'iroh_peer' as const, grant, proof: handle.sign(grant) };
+        const stopped: string[] = [];
+        const capability = 'c'.repeat(64);
+        const sent: unknown[] = [];
+        const sockets: { onopen?: () => void; onclose?: () => void; url: string; protocols?: string | string[] }[] = [];
+        class WebSocketBoundary {
+            onopen?: () => void;
+            onclose?: () => void;
+            constructor(readonly url: string, readonly protocols?: string | string[]) {
+                sockets.push(this);
+                queueMicrotask(() => this.onopen?.());
+            }
+            send(bytes: unknown) { sent.push(bytes); }
+            close() { this.onclose?.(); }
+        }
+        // Native SDK, HTTP and WebSocket are genuine system boundaries. The
+        // route fold, shared endpoint owner, lease custody and codec are real.
+        nativeBoundary.current = {
+            getAvailability: () => ({ available: true }),
+            createEndpoint: async () => ({ endpointHandle: 'client-endpoint', endpointId: 'a'.repeat(64), relayPolicy: 'automatic', relayMode: 'disabled', relayUrls: [], capProfile: 'machineBulk' }),
+            startMachineTunnel: async () => { throw new Error('raw listener bypass'); },
+            startMachineHttpTunnel: async () => ({ machineTunnelId: 'native-tcp', localPort: 48127, localCapability: capability }),
+            stopMachineTunnel: async (leaseId: string) => { stopped.push(leaseId); },
+        };
+        const requests: { url: string; init?: RequestInit }[] = [];
+        setRuntimeFetch(async (url, init) => {
+            requests.push({ url: String(url), init });
+            return new Response(JSON.stringify({ v: 1, tunnelId: 'tun_1', streamPath: '/peer-mediation/v1/tunnel/stream', encoding: PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2, initialWindowBytes: PEER_TCP_TUNNEL_DEFAULT_INITIAL_WINDOW_BYTES, maxFrameBytes: PEER_TCP_TUNNEL_DEFAULT_MAX_FRAME_BYTES }), { status: 200 });
+        });
+        const cancellation = new AbortController();
+        try {
+            const result = await openTunnel({
+                open: relayOpen, directPeerDecision: featureDecision('machines.tunnel.directPeer', true), serverRoutedDecision: featureDecision('machines.tunnel.serverRouted', true),
+                resolveLoopback: async () => ({ kind: 'fallback', receipt: 'peer.route.fallback', reasonCode: 'route_unavailable' }),
+                resolveIroh: async () => ({ kind: 'selected', open: nativeOpen, endpoint: { endpointId: 'b'.repeat(64), directAddresses: ['127.0.0.1:48128'] } }),
+                postOpen: async () => { throw new Error('loopback control bypass'); },
+                WebSocketCtor: WebSocketBoundary, signal: cancellation.signal,
+            });
+            expect(result).toMatchObject({ ok: true, routeKind: 'iroh_peer' });
+            if (!result.ok) return;
+            expect(requests[0]?.url).toBe('http://127.0.0.1:48127/peer-mediation/v2/tunnel/open');
+            expect(new Headers(requests[0]?.init?.headers).get('x-happier-machine-local-capability')).toBe(capability);
+            expect(JSON.parse(String(requests[0]?.init?.body))).toEqual(nativeOpen);
+            expect(sockets[0]?.protocols).toEqual([`happier.iroh.cap.${capability}`]);
+            expect(sockets[0]?.url).not.toContain(capability);
+            await result.stream.sendSubstreamDataFrame('request-1', { tunnelId: 'tun_1', direction: 'client_to_daemon', sequence: 0, payloadBytes: new Uint8Array([0, 255]) });
+            expect(sent[0]).toBeInstanceOf(Uint8Array);
+            cancellation.abort();
+            await result.stream.close();
+            expect(stopped).toEqual(['native-tcp']);
+        } finally {
+            resetRuntimeFetch();
+            nativeBoundary.current = null;
+            handle.dispose();
+        }
+    });
     it('exports the canonical loopback and relay stream owners from the tunnel entrypoint', async () => {
         const mod = await loadModule('./index');
 

@@ -106,8 +106,8 @@ import { encodeBase64 } from '@/encryption/base64';
 import { encodeUTF8 } from '@/encryption/text';
 import { Encryption } from '@/sync/encryption/encryption';
 import { apiSocket } from '@/sync/api/session/apiSocket';
-import { resetServerFeaturesClientForTests } from '@/sync/api/capabilities/serverFeaturesClient';
-import { upsertAndActivateServer } from '@/sync/domains/server/serverRuntime';
+import { getServerFeaturesSnapshot, resetServerFeaturesClientForTests } from '@/sync/api/capabilities/serverFeaturesClient';
+import { getActiveServerSnapshot, upsertAndActivateServer } from '@/sync/domains/server/serverRuntime';
 import { storage } from '@/sync/domains/state/storage';
 import type { SyncTuning } from '@/sync/runtime/syncTuning';
 
@@ -218,6 +218,9 @@ describe('sync.create initial awaits', () => {
             if (url.endsWith('/health')) {
                 return jsonResponse({ status: 'ok' });
             }
+            if (url.includes('/v1/auth/ping')) {
+                return jsonResponse({ status: 'ok' });
+            }
             if (url.includes('/v1/features')) {
                 return jsonResponse(features);
             }
@@ -237,7 +240,8 @@ describe('sync.create initial awaits', () => {
         });
         vi.stubGlobal('fetch', fetchSpy);
 
-        upsertAndActivateServer({ serverUrl: 'http://localhost:53288', scope: 'tab' });
+        await upsertAndActivateServer({ serverUrl: 'http://localhost:53288', scope: 'device' });
+        expect(getActiveServerSnapshot().serverUrl).toBe('http://localhost:53288');
 
         const encryption = await Encryption.create(new Uint8Array(32).fill(9));
         const { sync } = await import('./sync');
@@ -260,6 +264,11 @@ describe('sync.create initial awaits', () => {
         await flushHookEffects({ cycles: 8, turns: 2, advanceTimersMs: 2_500 });
         await createPromise;
         await flushHookEffects({ cycles: 8, turns: 2, advanceTimersMs: 10 });
+
+        expect(storage.getState().syncError).toBeNull();
+        await expect(getServerFeaturesSnapshot({
+            serverId: getActiveServerSnapshot().serverId,
+        })).resolves.toMatchObject({ status: 'ready' });
 
         const requestedUrls = fetchSpy.mock.calls.map(([input]) => String(input));
         expect(requestedUrls).toEqual(expect.arrayContaining([

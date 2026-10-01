@@ -66,6 +66,7 @@ function projection(generation: number): PluginUiProjectionModel {
             'acme.preview/activity': Object.freeze({
                 id: 'acme.preview/activity',
                 pluginId: 'acme.preview',
+                occurrenceId: 'preview-occurrence-7',
                 contributionKind: 'transcriptActivity' as const,
                 descriptorId: 'activity',
                 resource: Object.freeze({ pluginId: 'acme.preview', localId: 'live-activity' }),
@@ -116,20 +117,20 @@ describe('plugin transcript Activity Resource retirement', () => {
         const account = createAccountLifetime();
         const generationSeven = response('Generation seven', 'a');
         const generationEight = response('Generation eight', 'b');
-        transport.read.mockImplementation(async (_machineId: string, options: Readonly<{ expectedGeneration: string }>) => (
-            options.expectedGeneration === '7'
+        transport.read.mockImplementation(async (_machineId: string, options: Readonly<{ expectedCallerOccurrenceId: string }>) => (
+            options.expectedCallerOccurrenceId === '7'
                 ? generationSeven
                 : generationEight
         ));
         transport.open.mockImplementation(async (_machineId: string, options: Readonly<{
-            expectedGeneration: string;
+            expectedCallerOccurrenceId: string;
             subscriptionId: string;
         }>) => ({
             supported: true,
             result: {
                 ok: true,
                 subscriptionId: options.subscriptionId,
-                digest: `sha256:${options.expectedGeneration === '7' ? 'a'.repeat(64) : 'b'.repeat(64)}`,
+                digest: `sha256:${options.expectedCallerOccurrenceId === '7' ? 'a'.repeat(64) : 'b'.repeat(64)}`,
             },
         }));
         transport.next.mockImplementation(async () => await new Promise(() => {}));
@@ -186,18 +187,18 @@ describe('plugin transcript Activity Resource retirement', () => {
         const generationEight = response('Generation eight', 'e');
         const projectionSeven = projection(7);
         const projectionEight = projection(8);
-        transport.read.mockImplementation(async (_machineId: string, options: Readonly<{ expectedGeneration: string }>) => (
-            options.expectedGeneration === '7' ? generationSeven : generationEight
+        transport.read.mockImplementation(async (_machineId: string, options: Readonly<{ expectedCallerOccurrenceId: string }>) => (
+            options.expectedCallerOccurrenceId === '7' ? generationSeven : generationEight
         ));
         transport.open.mockImplementation(async (_machineId: string, options: Readonly<{
-            expectedGeneration: string;
+            expectedCallerOccurrenceId: string;
             subscriptionId: string;
         }>) => ({
             supported: true,
             result: {
                 ok: true,
                 subscriptionId: options.subscriptionId,
-                digest: `sha256:${options.expectedGeneration === '7' ? 'd'.repeat(64) : 'e'.repeat(64)}`,
+                digest: `sha256:${options.expectedCallerOccurrenceId === '7' ? 'd'.repeat(64) : 'e'.repeat(64)}`,
             },
         }));
         transport.next.mockImplementation(async () => await new Promise(() => {}));

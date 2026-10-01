@@ -1,4 +1,4 @@
-import { useActivityOverview } from '@/activity/source/useActivityOverview';
+import { useActivityOverviewSummary } from '@/activity/source/useActivityOverview';
 
 /**
  * Whether any Session currently wants the viewer, for the Sessions tab dot.
@@ -9,7 +9,7 @@ import { useActivityOverview } from '@/activity/source/useActivityOverview';
  * attention that lit it.
  */
 export function useSessionsHaveAttention(): boolean {
-    const { overview } = useActivityOverview();
+    const summary = useActivityOverviewSummary();
 
-    return overview.counts.totalAttention > 0;
+    return summary.totalAttentionCount > 0;
 }

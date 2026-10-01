@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION } from '@happier-dev/protocol';
+import { createSocketIoManagerBoundaryStub } from '@/dev/testkit/mocks/socketIo';
 
 import type { HomeCarrier } from '@/sync/runtime/homeCarrier';
 import { createOwnedHomeCarrierRelease } from '@/sync/runtime/homeCarrierPolicy';
@@ -76,6 +77,7 @@ function createFakeSocket(options: Readonly<{
     });
 
     const socket: any = {
+        io: createSocketIoManagerBoundaryStub(),
         connected: false,
         on,
         off,
@@ -122,6 +124,8 @@ describe('serverScopedRpcSocketPool', () => {
             timeoutMs: 1000,
         });
         client.disconnect();
+
+        expect(socket.io.timeout()).toBe(false);
 
         expect(ioSpy).toHaveBeenCalledWith(
             'https://server.example.test',
@@ -670,6 +674,53 @@ describe('serverScopedRpcSocketPool', () => {
             disconnectSpy.mock.invocationCallOrder[0] as number,
         );
 
+        await pool.stopAll();
+        expect(releaseCarrier).toHaveBeenCalledTimes(1);
+        pool.resetForTests();
+    });
+
+    it('takes authority carrier custody only when creating a physical entry and never again while that entry is reusable', async () => {
+        const { socket } = createFakeSocket();
+        const releaseCarrier = vi.fn(async () => {});
+        const takeFirstCarrierRelease = vi.fn(() => releaseCarrier);
+        const takeSecondCarrierRelease = vi.fn(() => {
+            throw new Error('a reusable entry must not take a second carrier release');
+        });
+        const homeCarrier = createFakeHomeCarrier('endpoint-shared');
+        const pool = createServerScopedRpcSocketPool({
+            createSocket: () => socket,
+            reachability: {
+                waitForReachable: async () => {},
+                startReachability: async () => {},
+                reportUnreachable: () => {},
+                subscribeNetworkAllowed: () => () => {},
+            },
+            readIdleDisconnectMs: () => 5_000,
+        });
+
+        const first = await pool.acquire({
+            serverUrl: 'https://home.example.test',
+            carrier: 'iroh',
+            homeCarrier,
+            takeCarrierRelease: takeFirstCarrierRelease,
+            token: 'token-carrier',
+            timeoutMs: 1_000,
+        });
+        first.disconnect();
+        const second = await pool.acquire({
+            serverUrl: 'https://home.example.test',
+            carrier: 'iroh',
+            homeCarrier,
+            takeCarrierRelease: takeSecondCarrierRelease,
+            token: 'token-carrier',
+            timeoutMs: 1_000,
+        });
+
+        expect(takeFirstCarrierRelease).toHaveBeenCalledTimes(1);
+        expect(takeSecondCarrierRelease).not.toHaveBeenCalled();
+        expect(releaseCarrier).not.toHaveBeenCalled();
+
+        second.disconnect();
         await pool.stopAll();
         expect(releaseCarrier).toHaveBeenCalledTimes(1);
         pool.resetForTests();

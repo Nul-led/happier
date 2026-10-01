@@ -11,14 +11,14 @@
  * immediately before every production child process that loads the addon
  * through its ordinary production resolution path.
  *
- * This helper owns no artifact and creates no release representation: it
- * invokes the repository canonical iroh-native build command through the
- * shared binary-safe logged-process corridor and fails closed unless the
+ * The build step invokes the repository canonical iroh-native command through
+ * the shared binary-safe logged-process corridor and fails closed unless the
  * canonical artifact exists afterwards. Builds are cargo-incremental, so a
  * rebuild immediately after the runner's build is a cheap no-op.
  */
-import { existsSync, mkdirSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { dirname, resolve } from 'node:path';
 
 import { resolveIrohNodeAddonPath } from '@happier-dev/iroh-native/node';
 
@@ -92,4 +92,44 @@ export async function ensureProductionIrohNodeAddon(params: Readonly<{
     );
   }
   return { addonPath, build };
+}
+
+/**
+ * Production children may resolve a physical workspace package copy under
+ * their own node_modules, or a symlink back to the synchronized source package.
+ * Stage only the ordinary sidecar in the consumer-resolved copy. An older
+ * testkit could leave a source-shadowing full copy; remove it only when its
+ * exact ownership marker and known layout prove it belongs to this testkit.
+ */
+export function stageProductionIrohNodeAddonForConsumer(params: Readonly<{
+  sourceAddonPath: string;
+  consumerDir: string;
+}>): string {
+  const sourcePackageRoot = dirname(dirname(params.sourceAddonPath));
+  const formerCopyRoot = resolve(params.consumerDir, 'node_modules', '@happier-dev', 'iroh-native');
+  const ownershipMarker = resolve(formerCopyRoot, '.happier-testkit-source');
+  if (existsSync(formerCopyRoot) && lstatSync(formerCopyRoot).isDirectory()) {
+    const markerStat = lstatSync(ownershipMarker, { throwIfNoEntry: false });
+    if (markerStat) {
+      if (!markerStat.isFile()
+        || readFileSync(ownershipMarker, 'utf8') !== realpathSync(sourcePackageRoot)) {
+        throw new Error(`Iroh testkit package copy belongs to another source: ${formerCopyRoot}`);
+      }
+      const knownEntries = new Set(['package.json', 'dist', 'native', '.happier-testkit-source']);
+      if (readdirSync(formerCopyRoot).some((entry) => !knownEntries.has(entry))) {
+        throw new Error(`Cannot remove modified Iroh testkit package copy: ${formerCopyRoot}`);
+      }
+      rmSync(formerCopyRoot, { recursive: true });
+    }
+  }
+
+  const requireFromConsumer = createRequire(resolve(params.consumerDir, 'package.json'));
+  const nodeModulePath = requireFromConsumer.resolve('@happier-dev/iroh-native/node');
+  const consumerPackageRoot = dirname(dirname(nodeModulePath));
+  const consumerAddonPath = resolveIrohNodeAddonPath(consumerPackageRoot);
+  if (consumerAddonPath !== params.sourceAddonPath) {
+    mkdirSync(dirname(consumerAddonPath), { recursive: true });
+    copyFileSync(params.sourceAddonPath, consumerAddonPath);
+  }
+  return consumerAddonPath;
 }

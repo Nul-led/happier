@@ -1,3 +1,4 @@
+import type { AgentInputFolderChipState } from './definitions/AgentInputFolderChip';
 import * as React from 'react';
 import type { ActionListItem } from '@/components/ui/lists/ActionListSection';
 import { resolveAgentInputControlLines } from './controls/resolveAgentInputControlLines';
@@ -18,6 +19,8 @@ export function buildAgentInputActionMenuActions(opts: {
     engineLabel?: string | null;
     machineName?: string | null;
     currentPath?: string | null;
+    folderChipState?: AgentInputFolderChipState;
+    onRemoveFolder?: () => void;
     resumeSessionId?: string | null;
     sessionId?: string;
     onProfileClick?: () => void;
@@ -32,6 +35,8 @@ export function buildAgentInputActionMenuActions(opts: {
     canStop?: boolean;
     onStop?: () => void;
     extraControlActions?: Partial<Record<AgentInputControlId, ActionListItem | ReadonlyArray<ActionListItem>>>;
+    /** Controls the host keeps on its collapsed bar; the menu leaves them out. */
+    barControlIds?: readonly AgentInputControlId[];
     dismiss: () => void;
     blurInput: () => void;
 }): ActionListItem[] {
@@ -44,9 +49,10 @@ export function buildAgentInputActionMenuActions(opts: {
         controlActionsById[controlId] = Array.isArray(actionOrActions) ? actionOrActions : [actionOrActions];
     }
 
+    const onBar = new Set(opts.barControlIds ?? []);
     const orderedControlIds = resolveAgentInputControlLines({
         layout: 'collapsed',
-        controlIds: Object.keys(controlActionsById) as AgentInputControlId[],
+        controlIds: (Object.keys(controlActionsById) as AgentInputControlId[]).filter((controlId) => !onBar.has(controlId)),
     }).collapsed;
 
     return [

@@ -91,6 +91,30 @@ describe('resolveExecutionRunLauncherBackendChoices', () => {
         }));
     });
 
+    it('preserves the concrete configured ACP review target from the machine snapshot', () => {
+        const targetKey = 'backend:review-bot:configured:review-bot';
+        const choices = resolveExecutionRunLauncherBackendChoices({
+            enabledAgentIds: ['claude'],
+            executionRunsBackends: {
+                claude: { available: true, intents: ['review'] },
+                [targetKey]: { available: true, intents: ['review'], reviewScopes: ['worktree', 'paths'], title: 'Review Bot' },
+            },
+            acpCatalogSettingsV1,
+            intent: 'review',
+        });
+
+        expect(choices).toContainEqual(expect.objectContaining({
+            backendTarget: {
+                kind: 'backend', backendId: 'review-bot', configuredBackendId: 'review-bot', sourceKind: 'configured',
+            },
+            targetKey,
+            backendId: 'review-bot',
+            agentId: 'customAcp',
+            title: 'Review Bot',
+            disabled: false,
+        }));
+    });
+
     it('keeps configured ACP backends enabled when execution-run capability is reported on the configured backend id', () => {
         const choices = resolveExecutionRunLauncherBackendChoices({
             enabledAgentIds: ['claude'],

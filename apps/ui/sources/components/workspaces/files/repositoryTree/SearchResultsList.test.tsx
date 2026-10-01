@@ -79,11 +79,8 @@ vi.mock('@/components/ui/media/FileIcon', () => ({
     FileIcon: 'FileIcon',
 }));
 
-vi.mock('@/constants/Typography', () => ({
-    Typography: {
-        default: () => ({}),
-    },
-}));
+// The real typography owner: the list's states render the shared state composition.
+vi.mock('@/constants/Typography', async () => vi.importActual('@/constants/Typography'));
 
 vi.mock('@/components/ui/lists/Item', () => ({
     Item: 'Item',

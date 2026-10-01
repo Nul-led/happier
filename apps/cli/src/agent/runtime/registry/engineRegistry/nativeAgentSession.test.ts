@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
-import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createJiti } from 'jiti';
+import { PluginError } from '@happier-dev/plugin-sdk';
+import { createSessionRoleContext } from '@/session/roles/sessionRoleContext';
 
 import type {
     AgentRuntime,
@@ -19,6 +21,8 @@ import type {
 import type { AgentSessionCapabilities } from '@/plugins/projection/registry/agentContributionDefinition';
 import {
     ProviderConnectionIdSchema,
+    BUILT_IN_ROLES_V1,
+    buildBackendTargetKeyV2,
     accountSettingsParse,
     redactBugReportSensitiveText,
     type AgentProviderRequirementsV1,
@@ -36,12 +40,14 @@ import type {
     TerminalHostHandle,
     TerminalInputInjectionResult,
 } from '@happier-dev/agents';
+import { applyAcpConfigOptionIntentSessionMetadata } from '@happier-dev/agents/session/state/metadataWriters';
 import {
     HostTerminalModelSelectionBlockedError,
     type HostTerminalLaunchRequest,
 } from '@/agent/runtime/session/terminal/contract';
 import type { Credentials } from '@/persistence';
 import type { Metadata } from '@/api/types';
+import { captureSessionLaunchControlMetadata, createSessionMetadata } from '@/agent/runtime/createSessionMetadata';
 import type { AgentRuntimeRegistrationLease } from '@/plugins/runtime/lifecycle/contributions/targetAgents';
 import type {
     ResolvedAgentContribution,
@@ -55,7 +61,10 @@ import { buildPluginSessionBindingInput } from '@/plugins/runtime/runtimeCore/pl
 import { createSessionTurnLifecycle } from '@/agent/runtime/session/turn/lifecycle';
 import { classifyPrimarySessionRuntimeIssue } from '@/agent/runtime/session/errors/classifyPrimarySessionRuntimeIssue';
 import { MessageQueue2 } from '@/agent/runtime/modeMessageQueue';
-import { logger } from '@/ui/logger';
+import { runTerminalRemoteSessionModeLoop } from '@/agent/runtime/session/loop/runTerminalRemoteSessionModeLoop';
+import { bindProcessLogger, Logger, logger } from '@/ui/logger';
+import { createTestMetadata } from '@/testkit/backends/sessionMetadata';
+import { createRuntimeOverrideSynchronizers, createRuntimeOverrideTarget } from '@/agent/runtime/createRuntimeOverrideSynchronizers';
 import { writeAcpTestAgentScript } from '@/agent/acp/testkit/subprocessHarness';
 import { withTempDir } from '@/testkit/fs/tempDir';
 import {
@@ -659,7 +668,176 @@ function createAgentActivityHeadline() {
 }
 
 describe('native Agent session host adapter', () => {
-    it('preflights declared startup instructions before provider open and commits custody only afterward', async () => {
+    it.each(['attached', 'preparing', 'retiring'] as const)(
+        'keeps provider attach lifecycle coherent when switching while %s', async (phase) => {
+        const agentId = 'codex';
+        const externalContributions = createExternalContributionFixtures(agentId);
+        const contributions = {
+            backend: {
+                ...externalContributions.backend,
+                provenance: 'first_party' as const,
+                source: { kind: 'bundled' as const },
+                pluginId: 'happier.agent.codex',
+            },
+            agent: {
+                ...externalContributions.agent,
+                provenance: 'first_party' as const,
+                source: { kind: 'bundled' as const },
+                pluginId: 'happier.agent.codex',
+            },
+        };
+        let resolveAttachStarted!: (signal: AbortSignal) => void;
+        const attachStarted = new Promise<AbortSignal>((resolve) => {
+            resolveAttachStarted = resolve;
+        });
+        const generation = new AbortController();
+        let releasePreparation!: () => void;
+        const preparationGate = new Promise<void>((resolve) => { releasePreparation = resolve; });
+        let announcePreparation!: () => void;
+        const preparationStarted = new Promise<void>((resolve) => { announcePreparation = resolve; });
+        const attach = vi.fn(async (request: Readonly<{ signal?: AbortSignal }>) => {
+            if (!request.signal) throw new Error('expected attach lifecycle signal');
+            resolveAttachStarted(request.signal);
+            await new Promise<void>((resolve) => {
+                request.signal!.addEventListener('abort', () => resolve(), { once: true });
+            });
+            return { ok: true as const, value: { exitCode: 0 } };
+        });
+        // The plugin-runtime boundary supplies metadata; the host's binding, switch service,
+        // operations proxy and mode loop below remain real.
+        const prepareProviderCliAttach = vi.fn(async () => {
+            announcePreparation();
+            if (phase !== 'attached') await preparationGate;
+            return {
+                path: '/tmp/codex-provider-attach',
+                runtimeDescriptorV1: {
+                    v: 1 as const,
+                    agentId,
+                    agent: { providerSessionId: 'thread-live-1' },
+                },
+            };
+        });
+        const open = vi.fn(async () => ({
+            send: vi.fn(async () => ({ status: 'admitted' as const })),
+            watch: () => ({ dispose: () => undefined }),
+            dispose: vi.fn(async () => undefined),
+            prepareProviderCliAttach,
+            runtimeCapabilities: {
+                localControl: {
+                    supported: true,
+                    topology: 'shared' as const,
+                    attachStrategy: 'provider_attach' as const,
+                    remoteWritable: true,
+                },
+            },
+        }));
+        const plan = await createNativeAgentRuntimeSessionPlan({
+            runtime: { sessions: { open } },
+            lease: {
+                ...createLease(agentId),
+                pluginId: 'happier.agent.codex',
+            },
+            backend: contributions.backend,
+            agent: contributions.agent,
+            executionSurfaces: {
+                ...createEmptyBackendExecutionSurfaces(),
+                attach: { attach },
+            },
+            createSessionHostServiceOwners: () => createSessionHostServiceOwners(),
+            generationSignal: generation.signal,
+            sessionInput: buildPluginSessionBindingInput({
+                credentials,
+                directory: '/tmp/codex-provider-attach',
+                startedBy: 'terminal',
+                backendTarget: { kind: 'backend', backendId: agentId },
+            }),
+        });
+        if (!plan.config.createSessionRuntime) throw new Error('expected a session runtime factory');
+        const session = createNativeSessionClientTestPort('session-provider-attach');
+        const created = await plan.config.createSessionRuntime({
+            directory: '/tmp/codex-provider-attach',
+            metadata: {},
+            machineId: 'machine-1',
+            session,
+            transcriptSession: {},
+            messageQueue: new MessageQueue2<{ permissionMode: string }, { text: string }>(
+                (mode) => mode.permissionMode,
+            ),
+            messageBuffer: {},
+            mcpServers: {},
+            permissionHandler: {},
+            getPermissionMode: () => 'default',
+            setThinking: () => undefined,
+            memoryRecallGuidanceEnabled: false,
+        } as never);
+
+        const modeLoop = created.terminalRemoteModeLoop;
+        expect(modeLoop).toMatchObject({
+            startingMode: 'terminal',
+            topology: 'shared',
+            remoteWritable: true,
+            ownsCurrentTerminalDisplay: true,
+        });
+        let announceRemote!: () => void;
+        const remoteStarted = new Promise<void>((resolve) => { announceRemote = resolve; });
+        let loopSettled = false;
+        const modeChanges: string[] = [];
+        const localPass = runTerminalRemoteSessionModeLoop({
+            ...modeLoop!,
+            onBeforeIteration: async (mode) => {
+                await modeLoop!.onBeforeIteration?.(mode);
+                if (mode === 'remote') announceRemote();
+            },
+            onModeChange: async (mode) => {
+                modeChanges.push(mode);
+                await modeLoop!.onModeChange(mode);
+            },
+        }).finally(() => { loopSettled = true; });
+        await preparationStarted;
+        if (phase === 'attached') {
+            const signal = await attachStarted;
+            expect(signal.aborted).toBe(false);
+            expect(attach).toHaveBeenCalledWith(expect.objectContaining({
+                sessionId: 'session-provider-attach',
+                metadata: expect.objectContaining({ path: '/tmp/codex-provider-attach' }),
+                signal,
+            }));
+            expect(session.getAgentStateSnapshot()).toMatchObject({
+                localControl: {
+                    attached: true,
+                    topology: 'shared',
+                    remoteWritable: true,
+                },
+            });
+        }
+
+        if (phase === 'retiring') {
+            generation.abort();
+            releasePreparation();
+            await expect(localPass).resolves.toBe(0);
+            expect(modeChanges).toEqual([]);
+            expect(attach).not.toHaveBeenCalled();
+            return;
+        }
+        await expect(session.rpcHandlerManager.invokeLocal('switch', { to: 'remote' }))
+            .resolves.toBe(true);
+        releasePreparation();
+        await vi.waitFor(() => expect(modeChanges).toEqual(['remote']));
+        await remoteStarted;
+        expect(loopSettled).toBe(false);
+        expect(session.getAgentStateSnapshot()).toMatchObject({
+            localControl: {
+                attached: false,
+                topology: 'shared',
+                remoteWritable: true,
+            },
+        });
+        if (phase === 'preparing') expect(attach).not.toHaveBeenCalled();
+        generation.abort();
+        await expect(localPass).resolves.toBe(0);
+    });
+
+    it.each(['applied', 'unsupported'] as const)('routes the merged full plan to native startup without a second raw caller delivery (%s)', async (nativeSupport) => {
         const agentId = 'acme-startup-instructions';
         const contributions = createExternalContributionFixtures(agentId);
         const agent: ResolvedAgentContribution = {
@@ -675,6 +853,7 @@ describe('native Agent session host adapter', () => {
                             ...contributions.agent.richDefinition.definition
                                 .capabilities.sessions,
                             startupInstructions: { versions: [1] as const },
+                            workspaceWrites: 'deny' as const,
                         },
                     },
                 },
@@ -687,12 +866,35 @@ describe('native Agent session host adapter', () => {
             instructions: 'Use the project-specific startup instructions.',
         };
         const events: string[] = [];
+        let roleWorkspaceWrites: 'allow' | 'deny' = 'allow';
+        const roleContext = createSessionRoleContext({
+            readMetadata: () => ({ work: { sessionRolesV1: {
+                roleId: 'startup-role', overrides: {}, sessionRoles: {}, notes: '',
+            } } }),
+            readOrganization: async () => ({}), readSettings: () => null,
+            readDefaultEngine: () => ({ agentTargetKey: buildBackendTargetKeyV2({ kind: 'backend', backendId: 'codex' }) }),
+            readRoleSources: async () => [{
+                roleId: 'startup-role', role: { ...BUILT_IN_ROLES_V1.builder, workspaceWrites: roleWorkspaceWrites },
+                shared: false, viewOnly: false, migratedFromV0_2: false,
+            }],
+        });
+        await roleContext.resolvePromptContext();
+        expect(roleContext.readWorkspaceWrites()).toBe('allow');
+        roleWorkspaceWrites = 'deny';
         const open = vi.fn(async (request) => {
             events.push('provider-open');
             expect(request).toMatchObject({
                 kind: 'create',
-                startupInstructions,
+                configuration: { workspaceWrites: 'deny' },
             });
+            if (request.startupInstructions) {
+                expect(request.startupInstructions.revision).toBe(startupInstructions.revision);
+                expect(request.startupInstructions.instructions).toContain('FULL_ROLE_PLAN');
+                expect(request.startupInstructions.instructions).not.toBe(startupInstructions.instructions);
+                if (nativeSupport === 'unsupported') throw new PluginError({
+                    code: 'agent_session_startup_instructions_unsupported', retryable: false,
+                });
+            } else expect(nativeSupport).toBe('unsupported');
             return {
                 send: async () => ({ status: 'admitted' as const }),
                 watch: () => ({ dispose: () => undefined }),
@@ -703,9 +905,11 @@ describe('native Agent session host adapter', () => {
             events.push(`attest-${String(Reflect.get(params, 'phase'))}`);
             expect(params.request).toMatchObject({
                 kind: 'create',
-                startupInstructions,
             });
-            if (Reflect.get(params, 'phase') === 'prepare') {
+            if (params.request.startupInstructions) {
+                expect(params.request.startupInstructions.instructions).toContain('FULL_ROLE_PLAN');
+            } else expect(nativeSupport).toBe('unsupported');
+            if (Reflect.get(params, 'phase') === 'prepare' && params.request.startupInstructions) {
                 expect(open).not.toHaveBeenCalled();
             }
         });
@@ -724,11 +928,12 @@ describe('native Agent session host adapter', () => {
                 agentSessionStartupInstructionsV1: startupInstructions,
             }),
         });
+        expect(plan.opts).toMatchObject({ agentSessionStartupInstructionsV1: startupInstructions });
         if (!plan.config.createSessionRuntime) {
             throw new Error('expected a session runtime factory');
         }
 
-        await plan.config.createSessionRuntime({
+        const created = await plan.config.createSessionRuntime({
             directory: '/tmp/acme-startup-instructions',
             metadata: {},
             machineId: 'machine-1',
@@ -742,9 +947,21 @@ describe('native Agent session host adapter', () => {
             getPermissionMode: () => 'default',
             setThinking: () => undefined,
             memoryRecallGuidanceEnabled: false,
+            getWorkspaceWrites: roleContext.readWorkspaceWrites,
+            resolveFreshSessionSystemPrompt: async () => {
+                const { resolveEffectiveCodingPromptText } = await import('@/agent/prompting/coding/resolveEffectiveCodingPrompt');
+                return resolveEffectiveCodingPromptText({
+                    settings: null, profileId: null, baseOverride: 'FULL_ROLE_PLAN', startupInstructions,
+                    roleContext: await roleContext.resolvePromptContext(),
+                });
+            },
         } as never);
 
-        expect(events).toEqual([
+        expect(created.operations.readSessionStartupInstructions?.()?.instructions.includes('FULL_ROLE_PLAN') ?? false)
+            .toBe(nativeSupport === 'applied');
+        expect(events).toEqual(nativeSupport === 'unsupported' ? [
+            'attest-prepare', 'provider-open', 'attest-prepare', 'provider-open', 'attest-commit',
+        ] : [
             'attest-prepare',
             'provider-open',
             'attest-commit',
@@ -1558,7 +1775,7 @@ describe('native Agent session host adapter', () => {
                     v: 1,
                     updatedAt: 1,
                     ref: {
-                        agentTargetKey: 'backend:codex',
+                        agentTargetKey: 'agent:happier.agent.codex/codex',
                         providerConnectionId: 'pc_late',
                         modelId: 'late-model',
                     },
@@ -1693,7 +1910,7 @@ describe('native Agent session host adapter', () => {
                         v: 1,
                         updatedAt: 1,
                         ref: {
-                            agentTargetKey: 'backend:codex',
+                            agentTargetKey: 'agent:happier.agent.codex/codex',
                             providerConnectionId: 'pc_retained',
                             modelId: 'retained-model',
                         },
@@ -1753,6 +1970,135 @@ describe('native Agent session host adapter', () => {
         } finally {
             runnerRedaction.mockRestore();
             await rm(materializationRoot, { recursive: true, force: true });
+        }
+    });
+
+    it('orders remote source observations after durable output and retires their runtime binding', async () => {
+        const agentId = 'acme-remote-source';
+        const base = createExternalContributionFixtures(agentId);
+        const contexts: AgentSessionRuntimeContext[] = [];
+        const observed: string[] = [];
+        let releaseCommit!: () => void;
+        const commitGate = new Promise<void>((resolve) => { releaseCommit = resolve; });
+        let commitStarted!: () => void;
+        const commitStart = new Promise<void>((resolve) => { commitStarted = resolve; });
+        let sourceDisposed = false;
+        let failSource!: (error: Error) => void;
+        // The native provider transport and durable outbox are the system boundaries;
+        // the host service, ordered projector, and runtime adapters remain real.
+        const executeProviderSessionFollow: ExternalSessionHostOperationPort['executeProviderSessionFollow'] = async (request) => {
+            await request.listener({
+                kind: 'data',
+                providerSessionId: request.providerSessionId,
+                items: [
+                    {
+                        id: 'before-consumption', timestampMs: 1, kind: 'agent',
+                        data: { role: 'agent', content: { type: 'message', message: 'earlier output' } },
+                    },
+                    { id: 'consumption', timestampMs: 2, kind: 'source_observation', data: { type: 'native-consumption' } },
+                ],
+                fromCursor: 'before', nextCursor: 'after',
+            });
+            let reportCancellation!: (error: Error) => void;
+            const failure = new Promise<Error>((resolve) => { reportCancellation = resolve; });
+            failSource = reportCancellation;
+            return {
+                status: 'following', startingCursor: 'before', failure,
+                subscription: { dispose: async () => {
+                    sourceDisposed = true;
+                    // A source transport can finish its cancelled publication after disposal.
+                    reportCancellation(new Error('source publication cancelled'));
+                } },
+            };
+        };
+        const plan = await createNativeAgentRuntimeSessionPlan({
+            runtime: {
+                sessions: {
+                    async open(_request, context) {
+                        contexts.push(context);
+                        return {
+                            send: async () => ({ status: 'admitted' as const }),
+                            watch: () => ({ dispose: () => undefined }),
+                            observeSourceTranscript: async () => { observed.push('consumed'); },
+                            dispose: async () => undefined,
+                        };
+                    },
+                },
+            },
+            lease: createLease(agentId), backend: base.backend, agent: base.agent,
+            externalSessionHostOperations: {
+                bindSession: () => {
+                    let retired = false;
+                    return {
+                        executeFollow: async () => ({ status: 'unavailable' as const, code: 'not-configured' }),
+                        executeProviderSessionFollow: async (request) => {
+                            if (retired) throw new Error('retired provider transport');
+                            return await executeProviderSessionFollow(request);
+                        },
+                        retire: async () => { retired = true; },
+                    };
+                },
+            },
+            sessionInput: buildPluginSessionBindingInput({ credentials, directory: '/tmp/acme-remote-source' }),
+            createSessionHostServiceOwners: () => createSessionHostServiceOwners(),
+        });
+        if (!plan.config.createSessionRuntime) throw new Error('expected runtime factory');
+        const created = await plan.config.createSessionRuntime({
+            directory: '/tmp/acme-remote-source', metadata: {}, machineId: 'machine-1',
+            session: createNativeSessionClientTestPort('remote-source-session', {
+                fetchCommittedTranscriptLocalIdBaseline: async () => ({ localIds: new Set<string>(), complete: true }),
+                enqueueAgentMessageCommitted: async () => {
+                    observed.push('commit-started');
+                    commitStarted();
+                    await commitGate;
+                    observed.push('committed');
+                    return { persisted: true, delivered: true };
+                },
+            }),
+            transcriptSession: {}, messageBuffer: {}, mcpServers: {}, permissionHandler: {},
+            getPermissionMode: () => 'default', setThinking: () => undefined, memoryRecallGuidanceEnabled: false,
+        } as never);
+        let binding: Readonly<{ dispose(): Promise<void> }> | undefined;
+        const following = contexts[0]!.session.services.transcripts.followSource?.({
+            providerSessionId: 'native-source', replay: 'fresh',
+        });
+        try {
+            // Missing remote binding is an observable no-output failure, not a setup throw.
+            await Promise.race([commitStart, following]);
+            expect(observed).toEqual(['commit-started']);
+            releaseCommit();
+            binding = await following;
+            expect(observed).toEqual(['commit-started', 'committed', 'consumed']);
+            await binding?.dispose();
+            expect(contexts[0]!.signal.aborted).toBe(false);
+            binding = await contexts[0]!.session.services.transcripts.followSource!({
+                providerSessionId: 'rotated-native-source', replay: 'fresh',
+            });
+            expect(observed).toEqual([
+                'commit-started', 'committed', 'consumed',
+                'commit-started', 'committed', 'consumed',
+            ]);
+            await created.operations.resetOrDisposeRuntime('runtime_recovery', { kind: 'create' });
+            expect(sourceDisposed).toBe(true);
+            await expect(contexts[0]!.session.services.transcripts.followSource!({
+                providerSessionId: 'native-source', replay: 'historical',
+            })).rejects.toThrow();
+            expect(contexts).toHaveLength(2);
+            binding = await contexts[1]!.session.services.transcripts.followSource!({
+                providerSessionId: 'native-source', replay: 'historical',
+            });
+            expect(observed).toEqual([
+                'commit-started', 'committed', 'consumed',
+                'commit-started', 'committed', 'consumed',
+                'commit-started', 'committed', 'consumed',
+            ]);
+            failSource(new Error('active source transport failed'));
+            await vi.waitFor(() => expect(contexts[1]!.signal.aborted).toBe(true));
+        } finally {
+            releaseCommit();
+            await following?.catch(() => undefined);
+            await binding?.dispose();
+            await created.operations.resetOrDisposeRuntime('runtime_recovery');
         }
     });
 
@@ -3053,6 +3399,12 @@ describe('native Agent session host adapter', () => {
         } as never);
 
         expect(session.getMetadataSnapshot().terminal).toEqual({
+            controlServiceabilityV1: {
+                v: 1,
+                attachmentId: 'native-terminal-attachment',
+                state: 'servable',
+                observedAt: expect.any(Number),
+            },
             mode: 'tmux',
             tmux: {
                 target: 'native-lifecycle-owned:1',
@@ -3414,6 +3766,24 @@ describe('native Agent session host adapter', () => {
             error: 'native_goal_control_unavailable',
         });
         expect(getGoal).toHaveBeenCalledTimes(1);
+
+        vi.mocked(runtime.sessions.open).mockResolvedValueOnce({
+            nativeGoalControlsSupported: false,
+            send: vi.fn(async () => ({ status: 'admitted' as const })),
+            watch: () => ({ dispose: () => undefined }),
+            dispose: vi.fn(),
+        });
+        const openedWithoutGoals = await plan.config.createSessionRuntime!({
+            directory: '/tmp/acme-direct-controls-agent', metadata: {}, machineId: 'machine-1',
+            session: createNativeSessionClientTestPort('session-direct-controls-without-goals'),
+            transcriptSession: {}, messageBuffer: {}, mcpServers: {},
+            permissionHandler: { cancelByPlugin: vi.fn(async () => undefined) },
+            getPermissionMode: () => 'default',
+            setThinking: () => undefined, memoryRecallGuidanceEnabled: false,
+        } as never);
+        expect(openedWithoutGoals.nativeRuntime).not.toHaveProperty('setGoal');
+        expect(openedWithoutGoals.nativeRuntime).not.toHaveProperty('clearGoal');
+        await openedWithoutGoals.operations.resetOrDisposeRuntime();
     });
 
     it('sanitizes and cleans a late-environment resume when continuation verification rejects', async () => {
@@ -4065,6 +4435,85 @@ describe('native Agent session host adapter', () => {
         });
     });
 
+    it.each(['failed', 'unsupported'] as const)('retains a %s native mode override for retry and reports failure without private provider details', async (status) => {
+        await withTempDir('native-mode-override-', async (directory) => {
+            vi.stubEnv('HAPPIER_LOG_LEVEL', 'info');
+            const logPath = join(directory, 'runtime.log');
+            const processLogger = new Logger({ logFilePath: logPath, pruneCurrentProcessLogs: false });
+            const restoreLogger = bindProcessLogger(processLogger);
+            const appliedModes: string[] = [];
+            let accept = false;
+            // This Agent port stands in for the external provider configuration API.
+            const session: AgentSessionRuntime = {
+                send: async () => ({ status: 'admitted' }),
+                updateConfiguration: async (request) => {
+                    if (!accept) return { status, diagnostic: { code: 'provider_rejected', message: 'fixture-private-credential-path' } };
+                    if (request.mode?.value) appliedModes.push(request.mode.value);
+                    return { status: 'applied', changed: ['mode'] };
+                },
+                watch: () => ({ dispose: () => undefined }),
+                dispose: () => undefined,
+            };
+            const runtime = createNativeAgentSessionOperations(session, 'native-mode-override', undefined, undefined, undefined, {
+                mode: { value: 'build', updatedAtMs: 1 },
+                model: { value: null, updatedAtMs: 0 },
+                permissionIntent: { value: null, updatedAtMs: 0 }, options: {},
+            });
+            const sync = createRuntimeOverrideSynchronizers({
+                agentTargetKey: 'agent:acme.agent/native',
+                session: { getMetadataSnapshot: () => createTestMetadata({
+                    acpSessionModeOverrideV1: { v: 1, modeId: 'plan', updatedAt: 51 },
+                }) },
+                runtime: createRuntimeOverrideTarget({
+                    runtime,
+                    transitionModelSelection: async (selection) => ({ ok: true, status: 'already_active', activeSelection: selection }),
+                }),
+                isStarted: () => true,
+            });
+            try {
+                sync.syncFromMetadata();
+                await sync.flushPendingAfterStart();
+                expect(appliedModes).toEqual([]);
+                processLogger.flushSync();
+                const log = await readFile(logPath, 'utf8').catch((error: unknown) => {
+                    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return '';
+                    throw error;
+                });
+                expect(log).toContain('[SessionModeOverrideSync]');
+                expect(log).toContain('"updatedAt":51');
+                expect(log).not.toContain('fixture-private-credential-path');
+                expect(log).not.toContain('"modeId"');
+                accept = true;
+                sync.syncFromMetadata();
+                await sync.flushPendingAfterStart();
+                expect(appliedModes).toEqual(['plan']);
+                sync.syncFromMetadata();
+                await sync.flushPendingAfterStart();
+                expect(appliedModes).toEqual(['plan']);
+            } finally {
+                await runtime.resetOrDisposeRuntime();
+                restoreLogger();
+                vi.unstubAllEnvs();
+            }
+        });
+    });
+
+    it('refuses hands-off when a native runtime can update configuration but has not declared enforcement', async () => {
+        const session: AgentSessionRuntime = {
+            send: async () => ({ status: 'admitted' }),
+            updateConfiguration: async () => ({ status: 'applied', changed: [] }),
+            watch: () => ({ dispose: () => undefined }),
+            dispose: () => undefined,
+        };
+        const runtime = createNativeAgentSessionOperations(session, 'role-policy-unsupported', undefined, undefined, undefined, {
+            mode: { value: null, updatedAtMs: 0 }, model: { value: null, updatedAtMs: 0 },
+            permissionIntent: { value: 'yolo', updatedAtMs: 0 }, options: {},
+        });
+        await expect(runtime.updateSessionRuntimeConfig({ workspaceWrites: 'deny' })).resolves.toMatchObject({
+            status: 'failed', reason: 'role_policy_unenforceable',
+        });
+    });
+
     it('does not offer undeclared native configuration or manual compaction methods', async () => {
         const updateConfiguration = vi.fn<NonNullable<AgentSessionRuntime['updateConfiguration']>>(
             async () => ({ status: 'applied', changed: [] }),
@@ -4243,7 +4692,7 @@ describe('native Agent session host adapter', () => {
         });
     });
 
-    it('projects the bounded VB4 launch without host-owned QA instrumentation into session open', async () => {
+    it.each(['path', 'managed'] as const)('projects the captured %s directory fact and bounded VB4 launch into session open', async (sessionDirectoryKind) => {
         const updateConfiguration = vi.fn<NonNullable<AgentSessionRuntime['updateConfiguration']>>(async () => ({
             status: 'applied' as const,
             changed: ['mode'],
@@ -4324,15 +4773,29 @@ describe('native Agent session host adapter', () => {
                     updatedAt: 104,
                     overrides: {
                         allowIndexing: { value: true, updatedAt: 104 },
+                        layoutRetries: { value: 5, updatedAt: 104 },
                     },
                 },
             }),
         });
         if (!plan.config.createSessionRuntime) throw new Error('expected a session runtime factory');
 
+        const { metadata: startupMetadata } = createSessionMetadata({
+            flavor: agentId,
+            machineId: 'machine-1',
+            directory: '/tmp/acme-vb4-agent',
+            launchControlMetadata: captureSessionLaunchControlMetadata({
+                processEnvironment: { HAPPIER_SESSION_DIRECTORY_KIND: sessionDirectoryKind },
+            }),
+        });
+        const metadata = [
+            { configId: 'effort', value: 'low', updatedAt: 180 },
+            { configId: 'allowIndexing', value: false, updatedAt: 103 },
+            { configId: 'layoutRetries', value: 9, updatedAt: 180 },
+        ].reduce((current, intent) => applyAcpConfigOptionIntentSessionMetadata(current, { v: 1, ...intent }), startupMetadata);
         const created = await plan.config.createSessionRuntime({
             directory: '/tmp/acme-vb4-agent',
-            metadata: {},
+            metadata,
             machineId: 'machine-1',
             session: createNativeSessionClientTestPort('session-vb4'),
             transcriptSession: {},
@@ -4348,6 +4811,7 @@ describe('native Agent session host adapter', () => {
             kind: 'create',
             sessionId: 'session-vb4',
             cwd: '/tmp/acme-vb4-agent',
+            sessionDirectoryKind,
             launchEnvironment: {
                 values: {
                     AUGMENT_SESSION_AUTH: 'host-authorized-auth',
@@ -4361,6 +4825,8 @@ describe('native Agent session host adapter', () => {
                 permissionIntent: { value: 'safe-yolo', updatedAtMs: 103 },
                 options: {
                     allowIndexing: { value: true, updatedAtMs: 104 },
+                    effort: { value: 'low', updatedAtMs: 180 },
+                    layoutRetries: { value: 9, updatedAtMs: 180 },
                 },
             },
             stateSharing: expect.any(Object),
@@ -4404,6 +4870,8 @@ describe('native Agent session host adapter', () => {
             permissionIntent: { value: 'safe-yolo', updatedAtMs: 103 },
             options: {
                 allowIndexing: { value: true, updatedAtMs: 104 },
+                effort: { value: 'low', updatedAtMs: 180 },
+                layoutRetries: { value: 9, updatedAtMs: 180 },
             },
         });
         expect(updateConfiguration.mock.calls[0]?.[0].mode.updatedAtMs).toBeGreaterThanOrEqual(updatedAfterMs);
@@ -4563,6 +5031,23 @@ describe('native Agent session host adapter', () => {
         const agentId = 'acme-runner-bootstrap-agent';
         const contributions = createExternalContributionFixtures(agentId);
         const events: string[] = [];
+        const claimedIdentity = createLease(agentId);
+        let runtimeAuthorityClaimed = false;
+        const bootstrapIdentity = {
+            ...claimedIdentity,
+            get occurrenceId() {
+                if (!runtimeAuthorityClaimed) {
+                    throw new Error('Runner Agent canonical session authority has not been claimed');
+                }
+                return claimedIdentity.occurrenceId;
+            },
+            get sourceCustody() {
+                if (!runtimeAuthorityClaimed) {
+                    throw new Error('Runner Agent canonical session authority has not been claimed');
+                }
+                return claimedIdentity.sourceCustody;
+            },
+        };
         const open = vi.fn<AgentSessionRuntimeFactory['open']>(async () => {
             events.push('open');
             return {
@@ -4600,12 +5085,13 @@ describe('native Agent session host adapter', () => {
             expect(input.signal.aborted).toBe(false);
             expect(events).toEqual(['late-environment']);
             events.push('prepare-runtime-source');
+            runtimeAuthorityClaimed = true;
             expect(createRuntime).not.toHaveBeenCalled();
             expect(createInvocationServices).not.toHaveBeenCalled();
         });
         const plan = await createNativeAgentRuntimeSessionPlan({
             createRuntime,
-            identity: createLease(agentId),
+            identity: bootstrapIdentity,
             backend: contributions.backend,
             agent: contributions.agent,
             prepareRuntimeSource,
@@ -6096,6 +6582,13 @@ describe('native Agent session host adapter', () => {
                     source: { kind: 'bundled' },
                     richDefinition: {
                         ...externalContributions.agent.richDefinition!,
+                        definition: {
+                            ...externalContributions.agent.richDefinition!.definition,
+                            capabilities: {
+                                ...externalContributions.agent.richDefinition!.definition.capabilities,
+                                surfaces: ['terminal'],
+                            },
+                        },
                         provenance: 'first_party',
                     },
                     pluginId: 'happier.agent.codex',
@@ -6226,6 +6719,7 @@ describe('native Agent session host adapter', () => {
             finishServices();
             const created = await createSession;
 
+            expect(created.terminalRemoteModeLoop).toBeUndefined();
             expect(events).toEqual([
                 'prepare-services',
                 'services-ready',
@@ -6810,6 +7304,7 @@ describe('native Agent session host adapter', () => {
             sessionId: 'session-1',
             cwd: '/tmp/acme-current-agent',
             providerSessionId: ' provider-session-resume ',
+            sessionDirectoryKind: 'path',
             launchEnvironment: {
                 values: {},
                 unset: [],

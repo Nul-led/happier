@@ -156,6 +156,29 @@ describe('derivePersonalHomeBootstrapSnapshot', () => {
         expect(snapshot.action).toBe('choose-existing-runtime');
     });
 
+    // R10 D4: a 0.2 Cloud user (implicit, credentialed selection) is asked once before a Personal
+    // Home is created, instead of having one created and focused on first launch.
+    it('asks before creating a Personal Home for a user already signed in to another Home', () => {
+        const signedIn = facts({
+            relayRuntime: null,
+            candidateLocalProfile: null,
+            localHomeIdentity: null,
+            localHomeAuth: 'missing',
+            anonymousSignup: 'unknown',
+            signedInOtherHome: { serverId: 'cloud', label: 'Happier Cloud' },
+        });
+        expect(derivePersonalHomeBootstrapSnapshot(signedIn)).toMatchObject({
+            shouldGateShell: true,
+            phase: 'blocked',
+            action: 'choose-signed-in-home',
+            signedInHomeLabel: 'Happier Cloud',
+        });
+        // Once a Personal Home runtime exists, the choice was already made: setup resumes.
+        expect(derivePersonalHomeBootstrapSnapshot(facts({
+            signedInOtherHome: { serverId: 'cloud', label: 'Happier Cloud' },
+        })).action).not.toBe('choose-signed-in-home');
+    });
+
     it('releases first-run setup when the user has explicitly selected another Home', () => {
         const snapshot = derivePersonalHomeBootstrapSnapshot(facts({
             explicitlySelectedOtherHome: true,

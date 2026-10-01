@@ -1,10 +1,15 @@
 import {
     getOptionalHappierIrohNativeModule,
     ensureIrohApplicationEndpoint,
+    IrohError,
+    IROH_HOME_TUNNEL_SUSPENDED_ERROR,
+    IROH_MACHINE_HTTP_LOCAL_CAPABILITY_HEADER,
+    IROH_MACHINE_WEBSOCKET_CAPABILITY_PROTOCOL_PREFIX,
     type NativeIrohModule,
 } from '@happier-dev/iroh-native';
 
 import { desktopHostKind, invokeDesktopHost } from '@/utils/platform/desktopHost';
+import { isRuntimeActive } from '@/utils/runtime/isRuntimeActive';
 
 export type IrohApplicationEndpoint = Readonly<{ endpointId: string }>;
 export type IrohApplicationEndpointConfiguration = Readonly<{
@@ -15,6 +20,11 @@ export type IrohMachineTransferNativeLease = Readonly<{
     leaseId: string;
     localOrigin: string;
     release: () => Promise<void>;
+}>;
+export type IrohMachineHttpNativeLease = IrohMachineTransferNativeLease & Readonly<{
+    /** Private native-client authentication, never a guest navigation URL. */
+    requestHeaders: Readonly<Record<string, string>>;
+    webSocketProtocols: readonly string[];
 }>;
 
 function readEndpoint(value: unknown): IrohApplicationEndpoint {
@@ -27,9 +37,10 @@ function readEndpoint(value: unknown): IrohApplicationEndpoint {
     return { endpointId };
 }
 
-// Finite-transfer listener leases whose native stop rejected stay owned here
-// until one succeeds, so a later release or dispose retries them instead of
-// leaking a native handle.
+// This inventory owns every active Machine listener so app suspension
+// can stop it immediately and diagnostics can name retained lease ids. The
+// Home-carrier release helper owns only failed release retries, so folding this
+// lifecycle inventory into that helper would erase a real foreground contract.
 // Transfer helpers hand custody back by calling `release` again; none of them
 // implements its own retry.
 type OwnedMachineTransferLease = {
@@ -88,7 +99,7 @@ function createOwnedMachineTransferLeaseRelease(
 }
 
 /**
- * Finite Machine tunnels are foreground-only on mobile. The existing shared
+ * Machine tunnels are foreground-only on mobile. The existing shared
  * app-activity owner invokes this companion runtime; no Machine-specific
  * AppState listener or second lifecycle owner is installed.
  */
@@ -106,10 +117,13 @@ export const irohMachineTransferRuntimeActivity = Object.freeze({
     },
 });
 
+function readLease(value: unknown, stop: (leaseId: string) => Promise<void>, http: true): Promise<IrohMachineHttpNativeLease>;
+function readLease(value: unknown, stop: (leaseId: string) => Promise<void>, http?: false): Promise<IrohMachineTransferNativeLease>;
 async function readLease(
     value: unknown,
     stop: (leaseId: string) => Promise<void>,
-): Promise<IrohMachineTransferNativeLease> {
+    http = false,
+): Promise<IrohMachineTransferNativeLease | IrohMachineHttpNativeLease> {
     const record = typeof value === 'object' && value !== null ? value as Record<string, unknown> : {};
     const leaseId = record.leaseId;
     if (typeof leaseId !== 'string' || leaseId.length === 0) {
@@ -122,7 +136,10 @@ async function readLease(
     const localOrigin = record.localOrigin;
     const localCapability = record.localCapability;
     try {
-        if (localCapability !== undefined && localCapability !== null && localCapability !== '') {
+        if (http && (typeof localCapability !== 'string' || !/^[0-9a-f]{64}$/u.test(localCapability))) {
+            throw new Error('Iroh HTTP machine tunnel lease returned an invalid local capability');
+        }
+        if (!http && localCapability !== undefined && localCapability !== null && localCapability !== '') {
             throw new Error('Iroh raw machine transfer lease returned an unexpected local capability');
         }
         if (typeof localOrigin !== 'string') {
@@ -153,6 +170,10 @@ async function readLease(
             leaseId,
             localOrigin: parsed.origin,
             release,
+            ...(http && typeof localCapability === 'string' ? {
+                requestHeaders: { [IROH_MACHINE_HTTP_LOCAL_CAPABILITY_HEADER]: localCapability },
+                webSocketProtocols: [`${IROH_MACHINE_WEBSOCKET_CAPABILITY_PROTOCOL_PREFIX}${localCapability}`],
+            } : {}),
         };
     } catch (error) {
         await release().catch(() => undefined);
@@ -225,48 +246,77 @@ export async function getIrohApplicationEndpoint(
     return readEndpoint(await ensureIrohApplicationEndpoint(native, configuration));
 }
 
-export async function startIrohMachineTransferTunnel(input: Readonly<{
+export type IrohMachineTunnelStartInput = Readonly<{
     endpointId: string;
     directAddresses?: readonly string[];
     relayUrls?: readonly string[];
     policy?: 'automatic' | 'disabled';
     handshakeJson: string;
-}>): Promise<IrohMachineTransferNativeLease> {
+    /** A guest-safe preview listener; its signed mux open stays in native custody. */
+    nativeHttpLease?: Readonly<{ openJson: string }>;
+}>;
+
+export async function startIrohMachineTransferTunnel(input: IrohMachineTunnelStartInput): Promise<IrohMachineTransferNativeLease> {
+    return await startMachineTunnel(input, false);
+}
+
+export async function startIrohMachineHttpTunnel(input: IrohMachineTunnelStartInput): Promise<IrohMachineHttpNativeLease> {
+    return await startMachineTunnel(input, true);
+}
+
+function startMachineTunnel(input: IrohMachineTunnelStartInput, http: true): Promise<IrohMachineHttpNativeLease>;
+function startMachineTunnel(input: IrohMachineTunnelStartInput, http: false): Promise<IrohMachineTransferNativeLease>;
+async function startMachineTunnel(input: IrohMachineTunnelStartInput, http: boolean): Promise<IrohMachineTransferNativeLease | IrohMachineHttpNativeLease> {
     // Retry cleanup a previous transfer could not complete before this owner
     // adds another native lease. Only already-failed releases are retained, so
     // this never disturbs a lease an in-flight transfer still uses.
     await releaseRetainedIrohMachineTransferLeases();
     if (desktopHostKind() !== null) {
-        const started = await invokeDesktopHost<unknown>('iroh_start_machine_tunnel', { request: input });
+        const started = await invokeDesktopHost<unknown>(http ? 'iroh_start_machine_http_tunnel' : 'iroh_start_machine_tunnel', { request: input });
         const record = typeof started === 'object' && started !== null
             ? started as Record<string, unknown>
             : {};
-        return readLease({
+        const response = {
             leaseId: record.leaseId,
-            localOrigin: typeof record.localPort === 'number'
+            localOrigin: http ? record.localOrigin : typeof record.localPort === 'number'
                 ? `http://127.0.0.1:${record.localPort}`
                 : null,
             localCapability: record.localCapability,
-        }, async (leaseId) => {
+        };
+        const stop = async (leaseId: string): Promise<void> => {
             await invokeDesktopHost('iroh_stop_machine_tunnel', { leaseId });
-        });
+        };
+        return http ? await readLease(response, stop, true) : await readLease(response, stop);
+    }
+    if (!isRuntimeActive()) {
+        throw new IrohError('unavailable', IROH_HOME_TUNNEL_SUSPENDED_ERROR);
     }
     const native = await requireMobileModule();
     const endpoint = await ensureIrohApplicationEndpoint(native, {
         ...(input.policy ? { policy: input.policy } : {}),
         ...(input.relayUrls ? { relayUrls: input.relayUrls } : {}),
     });
-    const started = await native.startMachineTunnel!({
+    const start = http ? native.startMachineHttpTunnel : native.startMachineTunnel;
+    if (!start) throw new Error('Iroh machine tunnel carrier is unavailable');
+    const started = await start.call(native, {
         endpointHandle: endpoint.endpointHandle,
         endpointId: input.endpointId,
         directAddresses: input.directAddresses,
         relayUrls: input.relayUrls,
         handshakeJson: input.handshakeJson,
         capProfile: 'machineBulk',
+        ...(input.nativeHttpLease ? { nativeHttpLease: input.nativeHttpLease } : {}),
     });
-    return readLease({
+    const response = {
         leaseId: started.machineTunnelId,
         localOrigin: `http://127.0.0.1:${started.localPort}`,
         localCapability: started.localCapability,
-    }, async (leaseId) => await native.stopMachineTunnel!(leaseId));
+    };
+    const stop = async (leaseId: string): Promise<void> => await native.stopMachineTunnel!(leaseId);
+    const lease = http ? await readLease(response, stop, true) : await readLease(response, stop);
+    if (!isRuntimeActive()) {
+        await lease.release().catch(() => undefined);
+        throw new IrohError('unavailable', IROH_HOME_TUNNEL_SUSPENDED_ERROR);
+    }
+    return lease;
 }

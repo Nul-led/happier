@@ -1,4 +1,4 @@
-import { readStoredSessionMessages } from '@/sync/domains/messages/readStoredSessionMessages';
+import { readStoredSessionMessages } from "@happier-dev/session-core/messages";
 import { readVoicePrivacySettings } from '@/sync/domains/settings/readVoicePrivacySettings';
 import { storage } from '@/sync/domains/state/storage';
 import {
@@ -7,11 +7,11 @@ import {
   type SessionListQueryV1,
   type SessionListViewV1,
 } from '@happier-dev/protocol';
-import { fetchSessionListQueryPageForHome } from '@/sync/domains/session/listing/sessionListQueryRuntime';
+import { fetchSessionListQueryPageForHome, readOrdinarySessionListLifecycle } from '@/sync/domains/session/listing/sessionListQueryRuntime';
 import { findSessionListLookupSession } from '@/sync/domains/session/listing/sessionListLookupState';
 import { projectUiSessionAwareness } from '@/sync/domains/session/awareness/sessionAwareness';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
-import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
+import { areServerProfileIdentifiersEquivalent, resolveServerProfileScopeIdForIdentifier } from '@/sync/domains/server/serverProfiles';
 import { HappyError } from '@/utils/errors/errors';
 
 import {
@@ -20,7 +20,8 @@ import {
   resolveVoiceUpdatesPrefs,
   toRoleAndText,
 } from './shared';
-import { collectVoiceSessionRows } from './voiceSessionRows';
+import { acquireAdmittedSessionReferenceCorpusOptions } from './admittedSessionReferenceCorpus';
+import { collectVoiceSessionCorpus } from './voiceSessionRows';
 
 type VoiceSessionListCursorKey = Readonly<{
   updatedAt: number;
@@ -131,14 +132,18 @@ export async function listSessionsForVoiceTool(params: Readonly<{
       if (params.signal?.aborted) return failure('tool_cancelled');
       if (!page.current) return failure('stale_response');
       const state = storage.getState();
-      const rows = page.sessionIds.map((sessionId) => findSessionListLookupSession(state, { serverId, sessionId })?.session);
+      const rows = page.sessionIds
+        .filter((sessionId) => page.isSessionCurrent?.(sessionId) !== false)
+        .map((sessionId) => findSessionListLookupSession(state, { serverId, sessionId })?.session);
       if (rows.some((row) => !row)) return failure('invalid_response');
       const sessions = rows.flatMap((row) => row ? [row] : []);
+      const metadataUpgradeRequiredCount = page.metadataUpgradeRequiredCount ?? 0;
       if (params.view === 'awareness') {
         const pageResult = {
           sessions: sessions.map((session) => projectUiSessionAwareness(session, Date.now())),
           nextCursor: page.nextCursor,
           hasNext: page.hasNext,
+          ...(metadataUpgradeRequiredCount > 0 ? { metadataUpgradeRequiredCount } : {}),
         };
         // Lane 07 attention continuation is a strict-query fact: a strict query proves
         // both page families, while an ordinary awareness read never queried that
@@ -164,13 +169,14 @@ export async function listSessionsForVoiceTool(params: Readonly<{
         hasNext: page.hasNext,
         attentionNextCursor: page.attentionNextCursor ?? null,
         attentionHasNext: page.attentionHasNext ?? false,
+        ...(metadataUpgradeRequiredCount > 0 ? { metadataUpgradeRequiredCount } : {}),
       };
       return markSessionListQueryResultV1(result);
     } catch (error) {
       return failure(params.signal?.aborted ? 'tool_cancelled' : error instanceof HappyError && error.code ? error.code : 'network_error');
     }
   }
-  const state = storage.getState();
+  const initialState = storage.getState();
   const limit =
     typeof params.limit === 'number' && Number.isFinite(params.limit)
       ? Math.max(1, Math.min(100, Math.floor(params.limit)))
@@ -178,7 +184,22 @@ export async function listSessionsForVoiceTool(params: Readonly<{
   const includeLastMessagePreview = params.includeLastMessagePreview === true;
   const cursorKey = parseVoiceSessionListCursor(params.cursor ?? null);
 
-  const visibleSessionRows = collectVoiceSessionRows(state);
+  const corpusOptions = await acquireAdmittedSessionReferenceCorpusOptions(initialState, {
+    signal: params.signal,
+  });
+  if (params.signal?.aborted) return { ok: false as const, errorCode: 'tool_cancelled', error: 'tool_cancelled' };
+
+  // Acquisition is a row-only read and may update the shared lookup rows while it is
+  // in flight. Re-read after the await, then enumerate only the qualified corpus it
+  // returned. A missing corpus is incomplete coverage, never permission to fall back
+  // to retained row-cache presence.
+  const state = storage.getState();
+  const corpus = collectVoiceSessionCorpus(state, corpusOptions ?? {
+    knownServerIds: [],
+    addresses: [],
+    coverage: 'incomplete',
+  });
+  const visibleSessionRows = corpus.rows;
   const rows = visibleSessionRows
     .map((row) => {
       const updatedAt = row.updatedAt;
@@ -231,6 +252,22 @@ export async function listSessionsForVoiceTool(params: Readonly<{
     });
 
   const nextCursor = formatVoiceSessionListCursor(pageRows.at(-1)?.key ?? null);
+  // This summary enumerates the retained ordinary corpus. Read its omission
+  // observations from the same per-Home lifecycle, never from a filtered pane.
+  const serverIds = new Set([
+    ...Object.keys(state.ordinarySessionListMembershipByServerId),
+    getActiveServerSnapshot().serverId,
+  ].map(resolveServerProfileScopeIdForIdentifier).filter(Boolean));
+  let metadataUpgradeRequiredCount = 0;
+  for (const serverId of serverIds) {
+    metadataUpgradeRequiredCount += readOrdinarySessionListLifecycle(serverId).frontier.metadataUpgradeRequiredCount ?? 0;
+  }
 
-  return { ok: true, sessions, nextCursor };
+  return {
+    ok: true,
+    sessions,
+    nextCursor,
+    coverage: corpus.coverage.complete ? 'complete' as const : 'incomplete' as const,
+    ...(metadataUpgradeRequiredCount > 0 ? { metadataUpgradeRequiredCount } : {}),
+  };
 }

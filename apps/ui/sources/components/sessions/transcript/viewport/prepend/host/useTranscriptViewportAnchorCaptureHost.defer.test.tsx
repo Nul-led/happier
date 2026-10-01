@@ -29,6 +29,7 @@ function createMembers() {
     return {
         cancelScheduledViewportAnchorCapture: vi.fn(),
         currentSessionIdRef: createRef('s1'),
+        rendererDataKey: '["home-a","s1"]',
         emitViewportChange: vi.fn(),
         isEntryViewportCommandActive: vi.fn(() => false),
         listDataRef: createRef([]),
@@ -472,7 +473,7 @@ describe('useTranscriptViewportAnchorCaptureHost deferral', () => {
                 status: 'captured',
                 capture: {
                     capturedAtMs: 100,
-                    dataKey: 's1',
+                    dataKey: '["home-a","s1"]',
                     itemIndex: 1,
                     itemKey: 'row-physical',
                     itemOffsetPx: -2_196,
@@ -624,7 +625,7 @@ describe('useTranscriptViewportAnchorCaptureHost deferral', () => {
             } as never;
             completePhysicalCapture?.({
                 capturedAtMs: 100,
-                dataKey: 's1',
+                dataKey: '["home-a","s1"]',
                 itemIndex: 0,
                 itemKey: 'row-physical',
                 itemOffsetPx: -2_196,

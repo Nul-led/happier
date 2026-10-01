@@ -29,6 +29,13 @@ function createResource(
 }
 
 describe('local service preview snapshot projection', () => {
+    it('preserves the canonical typed no-private-route decision for the Browser consumer', () => {
+        const snapshot = normalizeLocalServicePreviewSnapshotPayload({
+            machineId: MACHINE_ID, generatedAt: 2_000, refreshState: 'idle', diagnostics: [],
+            previews: [{ previewId: 'preview_1', resource: createResource(), accessUrl: null, expiresAt: null, diagnostics: [], accessUnavailableReasonCode: 'preview_private_route_unavailable' }],
+        }, MACHINE_ID);
+        expect(snapshot?.previews[0]?.accessUnavailableReasonCode).toBe('preview_private_route_unavailable');
+    });
     it('projects the minted accessUrl from canonical preview rows', () => {
         const resource = createResource();
         const snapshot = normalizeLocalServicePreviewSnapshotPayload(
@@ -37,7 +44,6 @@ describe('local service preview snapshot projection', () => {
                 machineId: MACHINE_ID,
                 generatedAt: 2_000,
                 refreshState: 'idle',
-                resources: [resource],
                 previews: [{
                     previewId: 'preview_1',
                     resource,
@@ -55,9 +61,8 @@ describe('local service preview snapshot projection', () => {
         expect(snapshot?.previews[0]?.accessUrl).toBe('http://127.0.0.1:5173/dashboard?tab=preview');
     });
 
-    it('fails safe on an old-daemon snapshot without preview rows or accessUrl (§12.13)', () => {
+    it('rejects an unsupported resources-only daemon snapshot', () => {
         const resource = createResource();
-        // An old daemon emits only `resources` and has no `previews`/`accessUrl` concept.
         const snapshot = normalizeLocalServicePreviewSnapshotPayload(
             {
                 v: 1,
@@ -70,36 +75,38 @@ describe('local service preview snapshot projection', () => {
             MACHINE_ID,
         );
 
-        // No crash: the resource still surfaces, but accessUrl is null so the embed stays
-        // unavailable rather than rendering a bogus URL.
-        expect(snapshot).not.toBeNull();
-        expect(snapshot?.previews).toHaveLength(1);
-        expect(snapshot?.previews[0]?.previewId).toBe('preview_1');
-        expect(snapshot?.previews[0]?.accessUrl).toBeNull();
+        expect(snapshot).toBeNull();
     });
 
-    it('prefers minted preview rows over the legacy resources fallback', () => {
-        const resource = createResource();
+    it('accepts an empty current preview snapshot', () => {
         const snapshot = normalizeLocalServicePreviewSnapshotPayload(
             {
                 v: 1,
                 machineId: MACHINE_ID,
                 generatedAt: 2_000,
                 refreshState: 'idle',
-                // Both present: the canonical `previews` rows (with accessUrl) win.
-                resources: [resource],
-                previews: [{
-                    previewId: 'preview_1',
-                    resource,
-                    accessUrl: 'http://127.0.0.1:5173/dashboard?tab=preview',
-                    expiresAt: null,
-                    diagnostics: [],
-                }],
+                previews: [],
                 diagnostics: [],
             },
             MACHINE_ID,
         );
 
-        expect(snapshot?.previews[0]?.accessUrl).toBe('http://127.0.0.1:5173/dashboard?tab=preview');
+        expect(snapshot?.previews).toEqual([]);
+    });
+
+    it('does not project unsupported flat resource rows as current previews', () => {
+        const snapshot = normalizeLocalServicePreviewSnapshotPayload(
+            {
+                v: 1,
+                machineId: MACHINE_ID,
+                generatedAt: 2_000,
+                refreshState: 'idle',
+                previews: [{ ...createResource(), accessUrl: 'http://127.0.0.1:5173/dashboard' }],
+                diagnostics: [],
+            },
+            MACHINE_ID,
+        );
+
+        expect(snapshot?.previews).toEqual([]);
     });
 });

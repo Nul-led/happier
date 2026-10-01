@@ -32,6 +32,11 @@ const sessionShellModuleState = vi.hoisted(() => ({
     draftStateBySessionId: new Map<string, { currentValue: string }>(),
 }));
 
+/**
+ * Configure before dynamically importing shell consumers, including AppPaneProvider.
+ * Vitest hoists the factories in this module; a static consumer imported by a suite
+ * can otherwise cache the default fixture before the suite supplies its options.
+ */
 export function installSessionShellCommonModuleMocks(
     options: InstallSessionShellCommonModuleMocksOptions = {},
 ) {
@@ -123,7 +128,9 @@ export function installSessionShellCommonModuleMocks(
     });
 
     vi.mock('@/hooks/session/useDraft', () => ({
-        useDraft: (sessionId: string, value: string, onChange: (text: string) => void) => {
+        useDraft: (sessionId: string, textStore: Readonly<{ getPrompt: () => string; setPrompt: (text: string) => void }>) => {
+            const value = textStore.getPrompt();
+            const onChange = textStore.setPrompt;
             const stateKey = String(sessionId ?? '');
             let state = sessionShellModuleState.draftStateBySessionId.get(stateKey);
             if (!state) {

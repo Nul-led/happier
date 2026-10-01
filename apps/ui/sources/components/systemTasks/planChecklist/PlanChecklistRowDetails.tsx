@@ -10,6 +10,7 @@ import { Typography } from '@/constants/Typography';
 import { t } from '@/text';
 
 import type { PlanChecklistExecutionError, PlanChecklistLogEntry } from './types';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 function formatLogTimestamp(ts: number, firstTs: number): string {
     const relative = Math.max(0, ts - firstTs);
@@ -99,7 +100,7 @@ const stylesheet = StyleSheet.create((theme) => ({
         justifyContent: 'flex-start',
     },
     copyButtonPressed: {
-        opacity: 0.7,
+        opacity: motionTokens.press.opacity,
     },
     copyButtonText: {
         ...Typography.default('semiBold'),

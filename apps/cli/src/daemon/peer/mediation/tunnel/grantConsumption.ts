@@ -8,14 +8,14 @@ export type RouteGrantReservation = Readonly<{
 export type AtomicRouteGrantConsumption = Readonly<{
     reserve: (input: Readonly<{
         grantId: string;
-        expiresAt: number;
+        expiresAt: number | null;
         nowMs: number;
     }>) => RouteGrantReservation | null;
     clear: () => void;
 }>;
 
 type GrantConsumptionEntry = {
-    expiresAt: number;
+    expiresAt: number | null;
     state: 'reserved' | 'consumed';
     reservation: object;
 };
@@ -32,7 +32,7 @@ export function createAtomicRouteGrantConsumption(input: Readonly<{
 
     function pruneExpired(nowMs: number): void {
         for (const [grantId, entry] of entriesByGrantId) {
-            if (entry.expiresAt <= nowMs) entriesByGrantId.delete(grantId);
+            if (entry.expiresAt !== null && entry.expiresAt <= nowMs) entriesByGrantId.delete(grantId);
         }
     }
 

@@ -19,6 +19,7 @@ vi.mock('react-native-reanimated', async () => {
                 React.createElement('AnimatedView', props, props.children),
         },
         useAnimatedStyle: (factory: () => unknown) => factory(),
+        Easing: { bezier: () => (value: number) => value, linear: (value: number) => value },
     };
 });
 

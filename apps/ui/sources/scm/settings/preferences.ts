@@ -1,8 +1,8 @@
 import {
     buildQualifiedPluginContributionKey,
     PluginContributionIdentityV1Schema,
-    type ScmDiffArea,
-} from '@happier-dev/protocol';
+} from '@happier-dev/protocol/plugins/contribution-identity';
+import type { ScmDiffArea } from '@happier-dev/protocol/scm';
 
 import {
     getFirstPartyScmBackendLegacyLocalId,

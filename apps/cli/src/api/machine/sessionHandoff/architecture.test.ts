@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 
 import {
-    classifyWorkspaceSyncAdmission,
+    hasUnsupportedWorkspaceAction,
 } from './workspaceSyncGuard';
 import { projectReleasedSessionHandoffRequestForMethod } from './predecessorCompatibility';
 
@@ -116,12 +116,12 @@ describe('sessionHandoff architecture', () => {
             handoffId: 'handoff_retired',
             workspaceTransfer: { enabled: true, strategy: 'sync_changes', conflictPolicy: 'replace_existing' },
         };
-        expect(classifyWorkspaceSyncAdmission(retiredTransferRequest)).toEqual({ kind: 'update_required' });
-        expect(classifyWorkspaceSyncAdmission({
+        expect(hasUnsupportedWorkspaceAction(retiredTransferRequest)).toBe(true);
+        expect(hasUnsupportedWorkspaceAction({
             handoffId: 'handoff_retired_reverse',
             workspaceReplicationReverseSourceRootPath: '/repo/source',
             workspaceReplicationReverseTargetRootPath: '/repo/target',
-        })).toEqual({ kind: 'update_required' });
+        })).toBe(true);
 
         // The released predecessor request projection stays frozen on the released shape, so a
         // retired reverse-root commit is admitted by the compatibility seam and then answered by
@@ -132,12 +132,12 @@ describe('sessionHandoff architecture', () => {
             workspaceReplicationReverseSourceRootPath: '/repo/source',
             workspaceReplicationReverseTargetRootPath: '/repo/target',
         })).toMatchObject({ accepted: true });
-        expect(classifyWorkspaceSyncAdmission({
+        expect(hasUnsupportedWorkspaceAction({
             handoffId: 'handoff_released_reverse',
             mode: 'source_cleanup',
             workspaceReplicationReverseSourceRootPath: '/repo/source',
             workspaceReplicationReverseTargetRootPath: '/repo/target',
-        })).toEqual({ kind: 'update_required' });
+        })).toBe(true);
     });
 
     it('keeps workspace replication engine plumbing out of the RPC handler', async () => {

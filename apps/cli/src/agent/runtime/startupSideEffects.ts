@@ -10,11 +10,10 @@ import {
     writeTerminalHostAttachmentInfo,
     type TerminalAttachmentId,
 } from '@/terminal/attachment/terminalAttachmentInfo';
-import { buildTerminalHostProbeHandleFromMetadata } from '@/terminal/runtime/terminalMetadata';
+import { buildActiveTerminalHostHandleFromMetadata, resolveExistingTerminalHostLifecycle } from '@/terminal/runtime/terminalMetadata';
 import type { TerminalHostHandle } from '@happier-dev/agents';
 import { buildTerminalFallbackMessage } from '@/terminal/attachment/terminalFallbackMessage';
 import { logger } from '@/ui/logger';
-import { updateAgentStateBestEffort } from '@/api/session/sessionWritesBestEffort';
 import { resolveDaemonStartedSessionReportRetryPolicy } from '@/daemon/spawn/sessionWebhookTimeoutPolicy';
 import type {
     HostPrivatePersistedTakeoverAdmission,
@@ -195,18 +194,6 @@ function isTruthyEnvFlag(raw: string | undefined): boolean {
     return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'y';
 }
 
-export function primeAgentStateForUi(session: ApiSessionClient, logPrefix: string): void {
-    // Bump agentStateVersion early so the UI can reliably treat the agent as "ready" to receive messages.
-    // The server does not currently persist agentState during initial session creation; it starts at version 0
-    // and only changes via 'update-state'. The UI uses agentStateVersion > 0 as its readiness signal.
-    updateAgentStateBestEffort(
-        session,
-        (currentState) => ({ ...currentState }),
-        logPrefix,
-        'prime agent state for ui',
-    );
-}
-
 export function resolveTerminalAttachmentPersistenceBinding(
     terminal: NonNullable<Metadata['terminal']>,
 ): Readonly<{
@@ -222,7 +209,7 @@ export function resolveTerminalAttachmentPersistenceBinding(
         : '';
     if (!attachmentIdRaw) return null;
     const attachmentId = attachmentIdRaw as TerminalAttachmentId;
-    const handle = buildTerminalHostProbeHandleFromMetadata(terminal);
+    const handle = buildActiveTerminalHostHandleFromMetadata(terminal);
     if (!handle) return null;
     return {
         attachmentId,
@@ -233,6 +220,7 @@ export function resolveTerminalAttachmentPersistenceBinding(
 export async function persistTerminalAttachmentInfoIfNeeded(opts: {
     sessionId: string;
     terminal: Metadata['terminal'] | undefined;
+    startedBy?: Metadata['startedBy'];
 }): Promise<void> {
     if (!opts.terminal) return;
     const binding = resolveTerminalAttachmentPersistenceBinding(opts.terminal);
@@ -242,6 +230,7 @@ export async function persistTerminalAttachmentInfoIfNeeded(opts: {
                 happyHomeDir: configuration.happyHomeDir,
                 sessionId: opts.sessionId,
                 handle: binding.handle,
+                lifecycle: resolveExistingTerminalHostLifecycle(opts) ?? 'owned',
             });
         }
         await writeTerminalAttachmentInfo({

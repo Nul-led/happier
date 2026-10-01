@@ -1,14 +1,9 @@
 import * as React from 'react';
-import { Platform, Pressable, View, type ViewStyle } from 'react-native';
-import { useUnistyles } from 'react-native-unistyles';
+import type { ViewStyle } from 'react-native';
 import type { LaunchProfileV2 } from '@happier-dev/protocol';
 
 import { EnvironmentVariablesList } from '@/components/profiles/environmentVariables/EnvironmentVariablesList';
-import { MachineSetupTextField } from '@/components/ui/forms/MachineSetupTextField';
-import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ItemList } from '@/components/ui/lists/ItemList';
-import { Text } from '@/components/ui/text/Text';
-import { Typography } from '@/constants/Typography';
 import { Modal } from '@/modal';
 import { t } from '@/text';
 
@@ -18,6 +13,8 @@ import { SlimProfilePlacementFields } from './SlimProfilePlacementFields';
 import { SlimProfilePromptBehaviorFields } from './SlimProfilePromptBehaviorFields';
 import { SlimProfileRoutingFields } from './SlimProfileRoutingFields';
 import { useSlimProfileAgentEntries } from './useSlimProfileAgentEntries';
+import { ProfileEditActions } from './ProfileEditActions';
+import { ProfileNameSection } from './ProfileNameSection';
 
 export type SlimProfileEditFormProps = Readonly<{
     profile: LaunchProfileV2;
@@ -28,11 +25,21 @@ export type SlimProfileEditFormProps = Readonly<{
     onDirtyChange?: (isDirty: boolean) => void;
     containerStyle?: ViewStyle;
     saveRef?: React.MutableRefObject<(() => boolean) | null>;
+    /**
+     * The host's page header (entity header with Save). When present the host owns saving and
+     * leaving, so the editor renders no action row of its own.
+     */
+    header?: React.ReactNode;
+    /** The name as it is typed, for a host that shows it (a collection's draft row). */
+    onNameChange?: (name: string) => void;
 }>;
 
 export function SlimProfileEditForm(props: SlimProfileEditFormProps) {
-    const { theme } = useUnistyles();
     const [name, setName] = React.useState(props.profile.name);
+    const { onNameChange } = props;
+    React.useEffect(() => {
+        onNameChange?.(name);
+    }, [name, onNameChange]);
     const [description, setDescription] = React.useState(props.profile.description ?? '');
     const [extraEnvironmentVariables, setExtraEnvironmentVariables] = React.useState(
         [...props.profile.extraEnvironmentVariables],
@@ -158,28 +165,14 @@ export function SlimProfileEditForm(props: SlimProfileEditFormProps) {
     }, [handleSave, props.saveRef]);
 
     return (
-        <ItemList style={props.containerStyle} keyboardShouldPersistTaps="handled">
-            <ItemGroup title={t('profiles.profileName')}>
-                <View style={{ paddingHorizontal: 16, paddingVertical: 12, gap: 16 }}>
-                    <MachineSetupTextField
-                        testID="profile-slim-name"
-                        label={t('common.name')}
-                        value={name}
-                        placeholder={t('profiles.enterName')}
-                        autoCapitalize="words"
-                        autoCorrect={false}
-                        onChangeText={setName}
-                    />
-                    <MachineSetupTextField
-                        testID="profile-slim-description"
-                        label={t('automations.form.labels.descriptionOptional')}
-                        value={description}
-                        multiline
-                        autoCapitalize="sentences"
-                        onChangeText={setDescription}
-                    />
-                </View>
-            </ItemGroup>
+        <ItemList style={props.containerStyle} keyboardShouldPersistTaps="handled" presentation="page">
+            {props.header}
+            <ProfileNameSection
+                testIDPrefix="profile-slim"
+                name={name}
+                onChangeName={setName}
+                description={{ value: description, onChange: setDescription }}
+            />
 
             <EnvironmentVariablesList
                 environmentVariables={extraEnvironmentVariables}
@@ -222,32 +215,9 @@ export function SlimProfileEditForm(props: SlimProfileEditFormProps) {
                 onChange={setCodingPromptBehaviorOverrides}
             />
 
-            <View style={{ paddingHorizontal: Platform.select({ ios: 16, default: 12 }), paddingTop: 12 }}>
-                <View style={{ flexDirection: 'row', gap: 12 }}>
-                    <Pressable
-                        accessibilityRole="button"
-                        accessibilityLabel={t('common.cancel')}
-                        onPress={props.onCancel}
-                        style={({ pressed }) => ({
-                            flex: 1, backgroundColor: theme.colors.surface.base, borderRadius: 10,
-                            paddingVertical: 12, alignItems: 'center', opacity: pressed ? 0.85 : 1,
-                        })}
-                    >
-                        <Text style={{ color: theme.colors.text.primary, ...Typography.default('semiBold') }}>{t('common.cancel')}</Text>
-                    </Pressable>
-                    <Pressable
-                        accessibilityRole="button"
-                        accessibilityLabel={t('common.save')}
-                        onPress={handleSave}
-                        style={({ pressed }) => ({
-                            flex: 1, backgroundColor: theme.colors.button.primary.background, borderRadius: 10,
-                            paddingVertical: 12, alignItems: 'center', opacity: pressed ? 0.85 : 1,
-                        })}
-                    >
-                        <Text style={{ color: theme.colors.button.primary.tint, ...Typography.default('semiBold') }}>{t('common.save')}</Text>
-                    </Pressable>
-                </View>
-            </View>
+            {props.header ? null : (
+                <ProfileEditActions saveAs={false} onSave={handleSave} onCancel={props.onCancel} />
+            )}
         </ItemList>
     );
 }

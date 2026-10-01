@@ -50,6 +50,7 @@ function placement(input: Readonly<{
     return {
         id: `surfacePlacement:acme.preview:${input.localId}`,
         pluginId: 'acme.preview',
+        occurrenceId: `preview-${input.localId}-occurrence`,
         contributionKind: 'surfacePlacement',
         descriptorId: input.localId,
         binding: normalizedBinding,
@@ -76,7 +77,6 @@ describe('plugin surface placement selectors', () => {
             generation: 12,
             installedPackagesById: {},
             agentsById: {},
-            backendsById: {},
             actionsById: {},
             toolsById: {},
             commandsById: {},
@@ -89,6 +89,7 @@ describe('plugin surface placement selectors', () => {
                         'surfacePlacement:acme.one:inspect': {
                             id: 'surfacePlacement:acme.one:inspect',
                             pluginId: 'acme.one',
+                            occurrenceId: 'acme-one-inspect-occurrence',
                             contributionKind: 'surfacePlacement',
                             descriptorId: 'inspect',
                             binding: firstBinding,
@@ -118,7 +119,6 @@ describe('plugin surface placement selectors', () => {
             generation: 12,
             installedPackagesById: {},
             agentsById: {},
-            backendsById: {},
             actionsById: {},
             toolsById: {},
             commandsById: {},
@@ -216,7 +216,7 @@ describe('embedded Session widget picker inventory', () => {
     function inlinePlacement(input: Readonly<{
         pluginId: string;
         localId: string;
-        role: 'sessionWidget' | 'sessionSubagentDetails';
+        role: 'widget' | 'sessionSubagentDetails';
         availability?: Readonly<{ state: 'available' | 'fallback' | 'blocked' | 'disabled'; reason: string; diagnostics: readonly string[] }>;
     }>): PluginUiProjectedEntry {
         const normalized = normalizePluginUiInlineSurfaceBindingV1({
@@ -230,6 +230,7 @@ describe('embedded Session widget picker inventory', () => {
         return {
             id: `surfacePlacement:${input.pluginId}:${input.localId}`,
             pluginId: input.pluginId,
+            occurrenceId: `${input.pluginId}-${input.localId}-occurrence`,
             contributionKind: 'surfacePlacement',
             descriptorId: input.localId,
             binding: normalized,
@@ -249,13 +250,13 @@ describe('embedded Session widget picker inventory', () => {
             pluginUi: {
                 entriesById: {
                     'surfacePlacement:acme.review:review-status-widget':
-                        inlinePlacement({ pluginId: 'acme.review', localId: 'review-status-widget', role: 'sessionWidget' }),
+                        inlinePlacement({ pluginId: 'acme.review', localId: 'review-status-widget', role: 'widget' }),
                     'surfacePlacement:acme.ci:build-health':
-                        inlinePlacement({ pluginId: 'acme.ci', localId: 'build-health', role: 'sessionWidget' }),
+                        inlinePlacement({ pluginId: 'acme.ci', localId: 'build-health', role: 'widget' }),
                     'surfacePlacement:acme.ci:blocked-widget': inlinePlacement({
                         pluginId: 'acme.ci',
                         localId: 'blocked-widget',
-                        role: 'sessionWidget',
+                        role: 'widget',
                         availability: { state: 'blocked', reason: 'entry_missing', diagnostics: ['entry_missing'] },
                     }),
                     'surfacePlacement:acme.review:review-subagent-details':
@@ -268,8 +269,8 @@ describe('embedded Session widget picker inventory', () => {
         },
     } as unknown as PluginProjectionV2);
 
-    it('inventories every projected sessionWidget placement and excludes other roles and destinations', () => {
-        expect(selectPluginInlineSurfacePlacementsForRole(model, 'sessionWidget')
+    it('inventories every projected widget placement and excludes other roles and destinations', () => {
+        expect(selectPluginInlineSurfacePlacementsForRole(model, 'widget')
             .map((entry) => `${entry.pluginId}:${entry.descriptorId}`)).toEqual([
             'acme.ci:blocked-widget',
             'acme.ci:build-health',
@@ -278,7 +279,7 @@ describe('embedded Session widget picker inventory', () => {
     });
 
     it('offers only currently renderable widgets as new-creation candidates', () => {
-        expect(selectRenderablePluginInlineSurfacePlacementsForRole(model, 'sessionWidget')
+        expect(selectRenderablePluginInlineSurfacePlacementsForRole(model, 'widget')
             .map((entry) => `${entry.pluginId}:${entry.descriptorId}`)).toEqual([
             'acme.ci:build-health',
             'acme.review:review-status-widget',
@@ -289,12 +290,12 @@ describe('embedded Session widget picker inventory', () => {
         expect(selectPluginInlineSurfacePlacementsBySurface(
             model,
             { pluginId: 'acme.review', localId: 'review-status-widget' },
-            'sessionWidget',
+            'widget',
         ).map((entry) => entry.descriptorId)).toEqual(['review-status-widget']);
         expect(selectPluginInlineSurfacePlacementsBySurface(
             model,
             { pluginId: 'acme.review', localId: 'review-subagent-details' },
-            'sessionWidget',
+            'widget',
         )).toEqual([]);
     });
 });

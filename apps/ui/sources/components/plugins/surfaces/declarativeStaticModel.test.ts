@@ -5,14 +5,14 @@ import { admitDeclarativeStaticModel } from './declarativeStaticModel';
 const action = Object.freeze({
     identity: Object.freeze({ pluginId: 'acme.dashboard', localId: 'refresh' }),
     qualifiedId: 'acme.dashboard/refresh',
-    generation: '7',
+    occurrenceId: '7',
     enabled: true,
     title: 'Refresh',
 });
 const destination = Object.freeze({
     identity: Object.freeze({ pluginId: 'acme.dashboard', localId: 'details' }),
     qualifiedId: 'acme.dashboard/details',
-    generation: '7',
+    occurrenceId: '7',
 });
 const setting = Object.freeze({
     pluginId: 'acme.dashboard',
@@ -53,7 +53,7 @@ function model(inventory: Readonly<Record<string, unknown>>) {
             pluginId: 'acme.dashboard',
             localId: 'dashboard',
             qualifiedId: 'acme.dashboard/dashboard',
-            generation: '7',
+            occurrenceId: '7',
         }),
         visible: true,
         requiredHostMethods: Object.freeze([]),
@@ -80,7 +80,7 @@ describe('admitDeclarativeStaticModel', () => {
             expectedPluginId: 'acme.dashboard',
         });
 
-        expect(admitted?.generation).toBe('7');
+        expect(admitted?.occurrenceId).toBe('7');
         expect(admitted?.actions.get(action.qualifiedId)?.enabled).toBe(true);
         expect(admitted?.destinations.get(destination.qualifiedId)?.identity.localId).toBe('details');
         expect(admitted?.settingsById.get('density')?.inventory.qualifiedId).toBe('acme.dashboard/density');
@@ -138,7 +138,7 @@ describe('admitDeclarativeStaticModel', () => {
                 pluginId: 'acme.dashboard',
                 localId: 'dashboard',
                 qualifiedId: 'acme.dashboard/another-surface',
-                generation: '7',
+                occurrenceId: '7',
             }),
         };
         expect(admitDeclarativeStaticModel({

@@ -33,7 +33,7 @@ function takeoverRecord(): ExternalSessionOperationRecordV1 {
       },
       linkGeneration: 'link-1',
       sourceGeneration: 'source-1',
-      contributionGeneration: 'contribution-1',
+      sourceCustody: { kind: 'development' as const, registeredRootId: 'contribution-1' },
     },
     plan: 'takeover' as const,
     targetStorageMode: 'persisted' as const,

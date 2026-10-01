@@ -1,7 +1,7 @@
 import * as React from 'react';
 import type { TeamCredentialResourceCatalogEntryV1 } from '@happier-dev/protocol/teams';
 
-import { observeTeamCredentialResourceCatalog } from '@/sync/engine/teams/teamsDirectoryEngine';
+import { observeTeamCredentialResourceCatalog, refreshTeamCredentialResourceCatalog } from '@/sync/engine/teams/teamsDirectoryEngine';
 import { getTeamCredentialResourceCatalogSnapshot, subscribeTeamsSnapshots } from '@/sync/store/teams/teamsSnapshots';
 import { useTeamsDirectory } from './useTeamsDirectory';
 
@@ -11,6 +11,8 @@ export type HomeTeamCredentialModelCatalog = Readonly<{
     homeNameByTeamId: Readonly<Record<string, string>>;
     currentResourceKeys: ReadonlySet<string>;
     current: boolean;
+    /** Re-reads every observed Team catalog through the canonical directory engine. */
+    reload: () => Promise<void>;
 }>;
 
 const EMPTY_RESOURCES: readonly TeamCredentialResourceCatalogEntryV1[] = Object.freeze([]);
@@ -37,6 +39,11 @@ export function useHomeTeamCredentialModelCatalog(input: Readonly<{
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [input.enabled, rowsKey, scope?.accountId, scope?.serverId]);
 
+    const reload = React.useCallback(async () => {
+        if (!input.enabled || !scope) return;
+        await Promise.all(directory.rows.map((row) => refreshTeamCredentialResourceCatalog(scope, row.address)));
+    }, [directory.rows, input.enabled, scope]);
+
     const snapshotVersion = React.useSyncExternalStore(
         subscribeTeamsSnapshots,
         () => JSON.stringify(directory.rows.map((row) => {
@@ -48,7 +55,14 @@ export function useHomeTeamCredentialModelCatalog(input: Readonly<{
 
     return React.useMemo(() => {
         if (!input.enabled || !scope) {
-            return { resources: EMPTY_RESOURCES, teamNameById: {}, homeNameByTeamId: {}, currentResourceKeys: new Set(), current: false };
+            return {
+                resources: EMPTY_RESOURCES,
+                teamNameById: {},
+                homeNameByTeamId: {},
+                currentResourceKeys: new Set(),
+                current: false,
+                reload,
+            };
         }
         const resources: TeamCredentialResourceCatalogEntryV1[] = [];
         const teamNameById: Record<string, string> = {};
@@ -71,8 +85,9 @@ export function useHomeTeamCredentialModelCatalog(input: Readonly<{
             homeNameByTeamId: Object.freeze(homeNameByTeamId),
             currentResourceKeys,
             current,
+            reload,
         });
         // snapshotVersion is the scoped store change signal.
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [directory.kind, directory.partial, input.enabled, rowsKey, scope?.accountId, scope?.serverId, snapshotVersion]);
+    }, [directory.kind, directory.partial, input.enabled, reload, rowsKey, scope?.accountId, scope?.serverId, snapshotVersion]);
 }

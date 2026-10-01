@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { useRouter, type Href } from 'expo-router';
+import { useRouter, type Href } from '@/components/appShell/workspace/destinationRoute';
 import { Platform, View } from 'react-native';
 
 import { IconButton } from '@/components/ui/buttons/IconButton';
@@ -38,6 +38,7 @@ import { openWorkspaceSyncRelationshipDetails } from './openWorkspaceSyncRelatio
 
 export type WorkspaceSyncRelationshipListProps = Readonly<{
     workspaceRefId?: string | null;
+    onAddMachine?: () => void;
     onOpenDetails?: (summary: WorkspaceSyncRelationshipSummary) => void;
     onOpenConflicts?: (summary: WorkspaceSyncRelationshipSummary) => void;
 }>;
@@ -63,7 +64,9 @@ export const WorkspaceSyncRelationshipRow = React.memo(function WorkspaceSyncRel
         errorCode: status?.errorCode,
         statusPhaseHasError: snapshot.phase === 'error',
     });
-    const errorKey = resolveWorkspaceSyncErrorTranslationKey(status?.errorCode);
+    const errorKey = status?.errorCode
+        ? resolveWorkspaceSyncErrorTranslationKey(status.errorCode) ?? 'workspaceSync.error.needsAttention'
+        : null;
     const [pendingAction, setPendingAction] = React.useState<'sync' | 'disable' | 'enable' | 'terminate' | null>(null);
     const [menuOpen, setMenuOpen] = React.useState(false);
     // Revealing a folder is a local OS action: only an endpoint rooted on the computer
@@ -154,10 +157,10 @@ export const WorkspaceSyncRelationshipRow = React.memo(function WorkspaceSyncRel
         }
     }, [props.summary.alpha, props.summary.beta, revealableEndpoint, router, runAction]);
 
-    const lastSyncLabel = status?.lastSuccessfulSyncAtMs == null
-        ? t('workspaceSync.neverSynced')
-        : t('workspaceSync.lastSynced', {
-            at: formatWithCachedDateTimeFormatter(status.lastSuccessfulSyncAtMs, undefined, { dateStyle: 'medium', timeStyle: 'short' }),
+    const lastCheckedLabel = status?.lastCycleObservedAtMs == null
+        ? null
+        : t('workspaceSync.lastChecked', {
+            at: formatWithCachedDateTimeFormatter(status.lastCycleObservedAtMs, undefined, { dateStyle: 'medium', timeStyle: 'short' }),
         });
     const machineDirectionLabel = props.summary.alpha.machineName || props.summary.beta.machineName
         ? formatWorkspaceSyncRelationshipTitle({
@@ -173,7 +176,7 @@ export const WorkspaceSyncRelationshipRow = React.memo(function WorkspaceSyncRel
         pendingAction ? t('workspaceSync.state.working') : null,
         t(stateKey),
         errorKey ? t(errorKey) : null,
-        lastSyncLabel,
+        lastCheckedLabel,
         status && status.conflictCount > 0 ? t('workspaceSync.conflictCount', { count: status.conflictCount }) : null,
     ].filter(Boolean).join(' · ');
     const conflictCount = status?.conflictCount ?? 0;
@@ -254,7 +257,7 @@ export const WorkspaceSyncRelationshipList = React.memo(function WorkspaceSyncRe
     const summaries = useWorkspaceSyncRelationshipSummaries(props.workspaceRefId);
     const localMachineId = useLocalDaemonControl().status?.machineId ?? null;
     return (
-        <ItemGroup title={t('workspaceSync.title')} footer={t('workspaceSync.footer')}>
+        <ItemGroup title={t(props.onAddMachine ? 'workspaceSync.availableOn' : 'workspaceSync.title')} footer={t('workspaceSync.footer')}>
             {summaries.length === 0 ? (
                 <Item title={t('workspaceSync.none')} mode="info" />
             ) : summaries.map((summary) => (
@@ -267,6 +270,14 @@ export const WorkspaceSyncRelationshipList = React.memo(function WorkspaceSyncRe
                     onOpenConflicts={props.onOpenConflicts}
                 />
             ))}
+            {props.onAddMachine ? (
+                <Item
+                    testID="workspace-sync-add-machine"
+                    title={t('settings.addMachine')}
+                    onPress={props.onAddMachine}
+                    showChevron={true}
+                />
+            ) : null}
         </ItemGroup>
     );
 });

@@ -1,3 +1,4 @@
+import { renderWithSessionTranscriptSource as renderBoundScreen, createTestSessionTranscriptSource } from '@/dev/testkit';
 import React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -13,6 +14,9 @@ vi.mock('@expo/vector-icons', () => ({
 }));
 
 const routerPush = vi.fn();
+function renderWithSessionTranscriptSource(element: React.ReactElement) {
+    return renderBoundScreen(element, createTestSessionTranscriptSource({ sessionId: 'session-1', navigate: routerPush }));
+}
 const navigateWithBlurOnWebSpy = vi.hoisted(() => vi.fn((action: () => void) => action()));
 
 vi.mock('@/utils/platform/navigateWithBlurOnWeb', () => ({
@@ -22,6 +26,11 @@ vi.mock('@/utils/platform/navigateWithBlurOnWeb', () => ({
 let toolDetailSetting: any = 'summary';
 
 installPermissionShellCommonModuleMocks({
+    unistyles: async () => {
+        const { createUnistylesMock } = await import('@/dev/testkit/mocks/unistyles');
+        // A distinctive part radius proves the component reads the theme's part token, not a constant.
+        return createUnistylesMock({ theme: { parts: { approvalCard: { radius: 37 } } } });
+    },
     reactNative: async () => {
         const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
         return createReactNativeWebMock({
@@ -89,6 +98,26 @@ vi.mock('@/components/tools/shell/permissions/PermissionFooter', () => ({
 }));
 
 describe('PermissionPromptCard (preview)', () => {
+    it('rounds the card with the theme approval card radius', async () => {
+        toolDetailSetting = 'summary';
+        mockedToolName = 'edit';
+        mockedToolInput = { path: 'file.ts' };
+        mockedHeaderText = { normalizedToolName: 'edit', title: 'Edit', subtitle: null, statusText: null };
+        const { PermissionPromptCard } = await import('./PermissionPromptCard');
+
+        const request = { id: 'perm1', tool: 'edit', arguments: { path: 'file.ts' } } as PendingPermissionRequest;
+
+        const screen = await renderWithSessionTranscriptSource(<PermissionPromptCard
+                    request={request}
+                    location={{ kind: 'top', messageId: 'v0k1hmbmnud', seq: null }}
+                    sessionId="session-1"
+                    metadata={null}
+                    canApprovePermissions={true}
+                />);
+
+        expect(findStyledNodes(screen.tree.root, 'borderRadius', 37).length).toBeGreaterThan(0);
+    });
+
     it('hides the open-details action when the prompt location is not durably addressable', async () => {
         toolDetailSetting = 'summary';
         mockedToolName = 'edit';
@@ -98,7 +127,7 @@ describe('PermissionPromptCard (preview)', () => {
 
         const request = { id: 'perm1', tool: 'edit', arguments: { path: 'file.ts' } } as PendingPermissionRequest;
 
-        const screen = await renderScreen(<PermissionPromptCard
+        const screen = await renderWithSessionTranscriptSource(<PermissionPromptCard
                     request={request}
                     location={{
                         kind: 'top',
@@ -124,7 +153,7 @@ describe('PermissionPromptCard (preview)', () => {
 
         const request = { id: 'perm1', tool: 'edit', arguments: { path: 'file.ts' } } as PendingPermissionRequest;
 
-        const screen = await renderScreen(<PermissionPromptCard
+        const screen = await renderWithSessionTranscriptSource(<PermissionPromptCard
                     request={request}
                     location={{
                         kind: 'nested',
@@ -155,7 +184,7 @@ describe('PermissionPromptCard (preview)', () => {
 
         const request = { id: 'perm1', tool: 'edit', arguments: { path: 'file.ts' } } as PendingPermissionRequest;
 
-        const screen = await renderScreen(<PermissionPromptCard
+        const screen = await renderWithSessionTranscriptSource(<PermissionPromptCard
                     request={request}
                     location={null}
                     sessionId="s1"
@@ -175,7 +204,7 @@ describe('PermissionPromptCard (preview)', () => {
 
         const request = { id: 'perm1', tool: 'edit', arguments: { path: 'file.ts' } } as PendingPermissionRequest;
 
-        const screen = await renderScreen(<PermissionPromptCard
+        const screen = await renderWithSessionTranscriptSource(<PermissionPromptCard
                     request={request}
                     location={null}
                     sessionId="s1"
@@ -195,7 +224,7 @@ describe('PermissionPromptCard (preview)', () => {
 
         const request = { id: 'perm1', tool: 'edit', arguments: { path: 'file.ts' } } as PendingPermissionRequest;
 
-        const screen = await renderScreen(<PermissionPromptCard
+        const screen = await renderWithSessionTranscriptSource(<PermissionPromptCard
                     request={request}
                     location={null}
                     sessionId="s1"
@@ -215,7 +244,7 @@ describe('PermissionPromptCard (preview)', () => {
 
         const request = { id: 'perm1', tool: 'Bash', arguments: { command: 'COMMAND_SUBTITLE' } } as PendingPermissionRequest;
 
-        const screen = await renderScreen(<PermissionPromptCard
+        const screen = await renderWithSessionTranscriptSource(<PermissionPromptCard
                     request={request}
                     location={null}
                     sessionId="s1"
@@ -242,7 +271,7 @@ describe('PermissionPromptCard (preview)', () => {
         const { PermissionPromptCard } = await import('./PermissionPromptCard');
         const request = { id: 'perm-inactive', tool: 'edit', arguments: { path: 'file.ts' } } as PendingPermissionRequest;
 
-        const screen = await renderScreen(
+        const screen = await renderWithSessionTranscriptSource(
             <PermissionPromptCard
                 request={request}
                 location={null}
@@ -256,3 +285,11 @@ describe('PermissionPromptCard (preview)', () => {
         expect(screen.findAllByTestId('permission-prompt-card')).toHaveLength(0);
     });
 });
+
+function findStyledNodes(root: { findAll: (predicate: (node: any) => boolean) => any[] }, key: string, value: unknown) {
+    const flatten = (style: unknown): Record<string, unknown> => {
+        if (Array.isArray(style)) return Object.assign({}, ...style.map(flatten));
+        return style && typeof style === 'object' ? (style as Record<string, unknown>) : {};
+    };
+    return root.findAll((node) => typeof node.type === 'string' && flatten(node.props?.style)[key] === value);
+}

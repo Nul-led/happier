@@ -115,7 +115,6 @@ describe('registerMachineExternalSessionsRpcHandlers', () => {
             commit: null,
             generations: new Map(),
             rejectedGenerations: new Map(),
-            unavailableBundledPackageNames: new Set(),
             isCurrent: async () => true,
           },
         }),

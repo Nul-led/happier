@@ -1,5 +1,5 @@
 import type { OptionPickerProbeState } from '@/components/sessions/pickers/OptionPickerOverlay';
-import type { CLIAvailability } from '@/hooks/auth/useCLIDetection';
+import type { CLIAvailability } from '@/agents/machineAgents/machineAgentCliAvailability';
 
 export function buildCliAvailabilityProbeState(params: Readonly<{
     selectedMachineId: string | null;
@@ -15,4 +15,3 @@ export function buildCliAvailabilityProbeState(params: Readonly<{
         onRefresh: params.onRefresh,
     };
 }
-

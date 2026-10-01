@@ -4,7 +4,7 @@ import { createSessionSurfaceNoteDocumentV1 } from '@happier-dev/protocol/sessio
 
 import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
 
-import { resolveTranscriptSessionBoardItemReference } from './sessionBoardActionResultReference';
+import { resolveTranscriptSessionBoardItemReference } from './transcriptSessionBoardItemReference';
 
 /**
  * The discriminating step of the Agent visualization journey.

@@ -441,7 +441,7 @@ export type ConnectedAccountPurposeBindingOwner =
     }>): Promise<Readonly<{
       binding: QualifiedConnectedAccountPurposeBindingV1;
       resolved: ConnectedAccountPurposeResolvedTarget;
-      isCurrent(): Promise<boolean>;
+      isCurrent(signal?: AbortSignal): Promise<boolean>;
     }>>;
     /**
      * Resolves one current, immutable launch snapshot from already-authorized qualified
@@ -1666,11 +1666,11 @@ export function createConnectedAccountPurposeBindingOwner(
     return Object.freeze({
       binding,
       resolved,
-      async isCurrent() {
-        if (input.signal.aborted) return false;
+      async isCurrent(signal: AbortSignal = input.signal) {
+        if (signal.aborted) return false;
         try {
-          const current = await dependencies.resolveTarget(target, input.signal);
-          return current !== null
+          const current = await dependencies.resolveTarget(target, signal);
+          return !signal.aborted && current !== null
             && sameQualifiedConnectedAccountRef(current.account, resolved.account)
             && current.group?.groupId === resolved.group?.groupId
             && current.group?.generation === resolved.group?.generation;

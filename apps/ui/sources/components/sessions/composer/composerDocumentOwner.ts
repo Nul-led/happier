@@ -47,6 +47,7 @@ export type ComposerDraftDocumentFieldChanges = Readonly<{
 export type ComposerDraftClearAcceptedResult = Readonly<{
     changed: boolean;
     changes: ComposerDraftDocumentFieldChanges;
+    acceptedFieldsCurrent: ComposerDraftDocumentFieldChanges;
 }>;
 
 const NO_COMPOSER_DOCUMENT_CHANGES: ComposerDraftDocumentFieldChanges = Object.freeze({
@@ -72,6 +73,38 @@ export type MutableComposerDocumentOwner = ComposerDocumentOwner & Readonly<{
     /** Replaces the complete canonical document for host-owned seed hydration. */
     replaceDocument(document: ComposerDraftDocument): number;
 }>;
+
+/**
+ * Promotes the live residual from an accepted source into a known destination
+ * without turning the route into another draft owner. Only destination fields
+ * whose seeded accepted value is still current are replaced, so a concurrent
+ * destination edit survives the handoff.
+ */
+export function promoteAcceptedComposerDocument(input: Readonly<{
+    residual: ComposerDraftDocument;
+    destination: MutableComposerDocumentOwner;
+    destinationAcceptedCurrentness: ComposerDraftFieldCurrentness;
+}>): void {
+    const destinationClear = input.destination.clearAccepted(input.destinationAcceptedCurrentness);
+    if (
+        !destinationClear.acceptedFieldsCurrent.text
+        && !destinationClear.acceptedFieldsCurrent.structuredInputMentions
+        && !destinationClear.acceptedFieldsCurrent.composerAttachments
+    ) {
+        return;
+    }
+    const destination = input.destination.read().document;
+
+    input.destination.replaceDocument({
+        text: destinationClear.acceptedFieldsCurrent.text ? input.residual.text : destination.text,
+        structuredInputMentions: destinationClear.acceptedFieldsCurrent.text
+            ? input.residual.structuredInputMentions
+            : destination.structuredInputMentions,
+        composerAttachments: destinationClear.acceptedFieldsCurrent.composerAttachments
+            ? input.residual.composerAttachments
+            : destination.composerAttachments,
+    });
+}
 
 const EMPTY_DOCUMENT: ComposerDraftDocument = Object.freeze({
     text: '',
@@ -233,7 +266,11 @@ export function createEphemeralComposerDocumentOwner(input: Readonly<{
         }),
         clearAccepted: (currentness) => {
             if (!sameComposerDocumentRef(input.ref, currentness.ref)) {
-                return { changed: false, changes: NO_COMPOSER_DOCUMENT_CHANGES };
+                return {
+                    changed: false,
+                    changes: NO_COMPOSER_DOCUMENT_CHANGES,
+                    acceptedFieldsCurrent: NO_COMPOSER_DOCUMENT_CHANGES,
+                };
             }
             const textCurrent = textMutationRevision === currentness.textMutationRevision;
             const attachmentsCurrent = composerAttachmentsMutationRevision
@@ -260,6 +297,11 @@ export function createEphemeralComposerDocumentOwner(input: Readonly<{
             return {
                 changed: changes.text || changes.structuredInputMentions || changes.composerAttachments,
                 changes,
+                acceptedFieldsCurrent: {
+                    text: textCurrent,
+                    structuredInputMentions: textCurrent,
+                    composerAttachments: attachmentsCurrent,
+                },
             };
         },
         clear: () => {

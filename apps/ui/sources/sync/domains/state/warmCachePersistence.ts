@@ -1,4 +1,5 @@
 import { MMKV } from 'react-native-mmkv';
+import { isEmbedWindowContext } from '@/embed/isEmbedWindowContext';
 import {
     MachineKindFromLegacyProjectionSchema,
     ExternalSessionsSourceSchema,
@@ -20,6 +21,7 @@ import { z } from 'zod';
 
 import { readStorageScopeFromEnv, scopedStorageId } from '@/utils/system/storageScope';
 import { prepareWarmCacheEncryptionKey, readResolvedWarmCacheEncryptionKey } from './warmCacheEncryptionKey';
+import { SESSION_CONTENT_AVAILABILITIES } from '@/sync/domains/session/encryptedContentAvailability';
 
 /**
  * The same predicate the rest of this corridor uses (`state/persistence.ts`,
@@ -40,11 +42,6 @@ type WarmCacheSavedValue = Readonly<{
     raw: string;
     value: Record<string, unknown>;
 }>;
-type WarmCacheBootHydrationSchedule = Readonly<{
-    cancel: () => void;
-    done: Promise<void>;
-}>;
-type RequestIdleCallbackHandle = ReturnType<NonNullable<typeof globalThis.requestIdleCallback>>;
 
 const warmCacheSavedValueByKey = new Map<string, WarmCacheSavedValue>();
 
@@ -183,6 +180,7 @@ function resolveWarmCacheStoragePlacement(
  * `resolveWarmCacheStoragePlacement` for which runtimes those are and why.
  */
 function getWarmCacheStorage(): MMKV | null {
+    if (isEmbedWindowContext()) return null;
     if (warmCacheStorage) return warmCacheStorage;
     if (warmCacheStorageUnopenable) return null;
     const storageScope = warmCacheStorageScope();
@@ -203,6 +201,14 @@ function getWarmCacheStorage(): MMKV | null {
 }
 
 const SESSION_LIST_WARM_CACHE_PREFIX = 'session-list-warm-cache-v1';
+/**
+ * The Home/Account-qualified last-known strict-query memberships: Session ids per corpus
+ * (`buildSessionListQueryKey`), never rows. Rows stay owned by the session-list family above, so
+ * an id whose row this device no longer holds renders nothing. A restored membership is last-known
+ * and never a complete answer. Like the plugin UI family, no build ever wrote it into the legacy
+ * shared plaintext instance, so it is absent from the purge list.
+ */
+const SESSION_LIST_QUERY_WARM_CACHE_PREFIX = 'session-list-query-warm-cache-v1';
 const MACHINE_DISPLAY_WARM_CACHE_PREFIX = 'machine-display-warm-cache-v1';
 /**
  * The Account-qualified last-confirmed plugin UI admission snapshot, one entry
@@ -259,6 +265,10 @@ export const SessionListCacheEntryV1Schema = z.object({
     latestReadyEventSeq: z.number().int().nonnegative().nullable().optional(),
     latestReadyEventAt: z.number().int().nonnegative().nullable().optional(),
     pendingRequestObservedAt: z.number().int().nonnegative().nullable().optional(),
+    // The row's settled content fact, so a cold restore does not read an own readable Session as
+    // locked. Absent (older entries, or unsettled when written) restores as unsettled.
+    encryptionMode: z.enum(['e2ee', 'plain']).optional(),
+    encryptedContentAvailability: z.enum(SESSION_CONTENT_AVAILABILITIES).optional(),
     // Additive current authority. Absence keeps old cache bytes readable and
     // permits only the released flattened fallback; null preserves malformed
     // current ingress as unavailable across a restart.
@@ -362,7 +372,64 @@ export const PluginUiProjectionCacheEntryV1Schema = z.object({
 
 export type PluginUiProjectionCacheEntryV1 = z.infer<typeof PluginUiProjectionCacheEntryV1Schema>;
 
+/**
+ * The last usage summary this device saw for the Account (connected accounts' quota windows), with
+ * the time it was read, so hubs show last-known usage and its "as of" on a cold start.
+ */
+export const UsageSummaryCacheV1Schema = z.object({
+    v: z.literal(1),
+    asOf: z.number().int().nonnegative(),
+    entries: z.array(z.object({
+        key: z.string().min(1),
+        serviceLabel: z.string(),
+        /** Added with per-provider grouping; absent in values saved before it (still readable). */
+        serviceGroupKey: z.string().min(1).optional(),
+        legacyServiceId: z.string().nullable().optional(),
+        accountLabel: z.string().optional(),
+        /** Added with "Hide account emails and IDs": the raw identity the one presenter formats. */
+        accountEmail: z.string().nullable().optional(),
+        accountId: z.string().nullable().optional(),
+        profileLabel: z.string().nullable(),
+        planLabel: z.string().nullable(),
+        meters: z.array(z.object({
+            meterId: z.string().min(1),
+            label: z.string(),
+            remainingPct: z.number().nullable(),
+            resetsAt: z.number().nullable(),
+        })),
+    })),
+});
+
+export type UsageSummaryCacheV1 = z.infer<typeof UsageSummaryCacheV1Schema>;
+
+const USAGE_SUMMARY_WARM_CACHE_PREFIX = 'usage-summary-warm-cache-v1';
+
+export function loadUsageSummaryWarmCache(serverId: string | null | undefined, accountId: string | null | undefined): UsageSummaryCacheV1 | null {
+    return loadScopedRecord(buildScopedKey(USAGE_SUMMARY_WARM_CACHE_PREFIX, serverId, accountId), UsageSummaryCacheV1Schema);
+}
+
+export function saveUsageSummaryWarmCache(
+    serverId: string | null | undefined,
+    accountId: string | null | undefined,
+    value: UsageSummaryCacheV1,
+): void {
+    saveScopedRecord(buildScopedKey(USAGE_SUMMARY_WARM_CACHE_PREFIX, serverId, accountId), value);
+}
+
+export const SessionListQueryMembershipCacheEntryV1Schema = z.object({
+    /** The exact Home identifier the corpus was read under (the query key embeds the same one). */
+    serverId: z.string().min(1),
+    sessionIds: z.array(z.string().min(1)),
+});
+
+export type SessionListQueryMembershipCacheEntryV1 = z.infer<typeof SessionListQueryMembershipCacheEntryV1Schema>;
+
 const SessionListCacheEntriesSchema = z.record(z.string(), SessionListCacheEntryV1Schema);
+const SessionListQueryMembershipCacheEntriesSchema = z.record(z.string().min(1), SessionListQueryMembershipCacheEntryV1Schema);
+const EMPTY_SESSION_LIST_QUERY_MEMBERSHIP_CACHE_ENTRIES = EMPTY_WARM_CACHE_ENTRIES as Record<
+    string,
+    SessionListQueryMembershipCacheEntryV1
+>;
 const MachineDisplayCacheEntriesSchema = z.record(z.string(), MachineDisplayCacheEntryV1Schema);
 const PluginUiProjectionCacheEntriesSchema = z.record(z.string(), PluginUiProjectionCacheEntryV1Schema);
 
@@ -468,60 +535,6 @@ function normalizeEmptyWarmCacheRecord<T extends Record<string, unknown>>(value:
     return hasAnyOwnEntries(value) ? value : (EMPTY_WARM_CACHE_ENTRIES as T);
 }
 
-export function scheduleWarmCacheBootHydration(
-    task: () => void,
-    options?: Readonly<{ fallbackDelayMs?: number }>,
-): WarmCacheBootHydrationSchedule {
-    const fallbackDelayMs = typeof options?.fallbackDelayMs === 'number' && Number.isFinite(options.fallbackDelayMs)
-        ? Math.max(0, Math.trunc(options.fallbackDelayMs))
-        : 100;
-    const requestIdleCallback = globalThis.requestIdleCallback;
-    const cancelIdleCallback = globalThis.cancelIdleCallback;
-    let idleHandle: RequestIdleCallbackHandle | null = null;
-    let fallbackTimer: ReturnType<typeof setTimeout> | null = null;
-    let settled = false;
-    let resolveDone: () => void = () => {};
-    const done = new Promise<void>((resolve) => {
-        resolveDone = resolve;
-    });
-
-    const clearPending = (): void => {
-        if (fallbackTimer) {
-            clearTimeout(fallbackTimer);
-            fallbackTimer = null;
-        }
-        if (idleHandle !== null && typeof cancelIdleCallback === 'function') {
-            cancelIdleCallback(idleHandle);
-            idleHandle = null;
-        }
-    };
-    const run = (): void => {
-        if (settled) return;
-        settled = true;
-        clearPending();
-        try {
-            task();
-        } finally {
-            resolveDone();
-        }
-    };
-
-    if (typeof requestIdleCallback === 'function') {
-        idleHandle = requestIdleCallback(run, { timeout: fallbackDelayMs });
-    }
-    fallbackTimer = setTimeout(run, fallbackDelayMs);
-
-    return {
-        cancel: () => {
-            if (settled) return;
-            settled = true;
-            clearPending();
-            resolveDone();
-        },
-        done,
-    };
-}
-
 export function loadSessionListWarmCacheEntries(serverId: string | null | undefined, accountId: string | null | undefined): Record<string, SessionListCacheEntryV1> {
     const loaded = loadScopedRecord(buildScopedKey(SESSION_LIST_WARM_CACHE_PREFIX, serverId, accountId), SessionListCacheEntriesSchema);
     if (!loaded) return EMPTY_SESSION_LIST_WARM_CACHE_ENTRIES;
@@ -538,6 +551,26 @@ export function saveSessionListWarmCacheEntries(
     entries: Record<string, SessionListCacheEntryV1>,
 ): void {
     saveScopedRecord(buildScopedKey(SESSION_LIST_WARM_CACHE_PREFIX, serverId, accountId), entries);
+}
+
+export function loadSessionListQueryMembershipWarmCacheEntries(
+    serverId: string | null | undefined,
+    accountId: string | null | undefined,
+): Record<string, SessionListQueryMembershipCacheEntryV1> {
+    const loaded = loadScopedRecord(
+        buildScopedKey(SESSION_LIST_QUERY_WARM_CACHE_PREFIX, serverId, accountId),
+        SessionListQueryMembershipCacheEntriesSchema,
+    );
+    if (!loaded) return EMPTY_SESSION_LIST_QUERY_MEMBERSHIP_CACHE_ENTRIES;
+    return normalizeEmptyWarmCacheRecord(loaded);
+}
+
+export function saveSessionListQueryMembershipWarmCacheEntries(
+    serverId: string | null | undefined,
+    accountId: string | null | undefined,
+    entries: Record<string, SessionListQueryMembershipCacheEntryV1>,
+): void {
+    saveScopedRecord(buildScopedKey(SESSION_LIST_QUERY_WARM_CACHE_PREFIX, serverId, accountId), entries);
 }
 
 export function loadMachineDisplayWarmCacheEntries(serverId: string | null | undefined, accountId: string | null | undefined): Record<string, MachineDisplayCacheEntryV1> {

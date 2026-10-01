@@ -1,18 +1,26 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
-    createDirectRouteGrantSigningInputV1,
+    createDirectRouteGrantSigningInputV2,
+    createEphemeralPeerRouteProofHandleV2,
     createSpeechTranscriptionApplicationAuthorityDigestV1,
-    createPeerRouteNonceSigningInputV1,
     decodePeerTcpTunnelBinaryFrameV2,
     encodePeerTcpTunnelBinaryFrameV2,
     PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2,
-    type DirectRouteGrantPayloadV1,
-    type PeerTcpTunnelOpenV1,
+    type DirectRouteGrantPayloadV2,
+    type PeerTcpTunnelOpenV2,
 } from '@happier-dev/protocol';
 import { createServer, type Socket } from 'node:net';
+import { Agent, request as httpRequest } from 'node:http';
+import { once } from 'node:events';
+import { PassThrough } from 'node:stream';
+import { WebSocket } from 'ws';
 import tweetnacl from 'tweetnacl';
+import type { LocalServicePreviewDirectBindingV1 } from '@happier-dev/protocol/local/services/preview/v1';
+import { createLocalServicePreviewRoutes } from '@/daemon/local/services/preview/routes';
+import { createLocalServicePreviewRegistry, registerLocalServicePreview } from '@/daemon/local/services/preview/registry';
 
 import { createPeerMediationLoopbackApp } from '../loopback/server';
+import { createDeferred } from '@/testkit/async/deferred';
 
 type RegisterRoutesModule = typeof import('./registerRoutes');
 
@@ -29,7 +37,6 @@ const loopbackOptions = {
         flowKind: 'tcp_tunnel' as const,
         routeKind: 'loopback_direct' as const,
         endpointFingerprint: 'endpoint_1',
-        accountPublicKey: Buffer.from(new Uint8Array(32)).toString('base64url'),
     },
     trustRoots: [],
 };
@@ -47,7 +54,6 @@ const testVoiceMediaApplicationAuthority = {
 };
 
 const routeGrantKeyPair = tweetnacl.sign.keyPair.fromSeed(new Uint8Array(32).fill(7));
-const routeAccountKeyPair = tweetnacl.sign.keyPair.fromSeed(new Uint8Array(32).fill(9));
 const routeTrustRoots = [{
     keyId: 'key_1',
     publicKey: Buffer.from(routeGrantKeyPair.publicKey).toString('base64url'),
@@ -62,17 +68,21 @@ function createSignedDirectOpen(input: Readonly<{
     exp?: number;
     flowKind?: 'tcp_tunnel' | 'voice_media';
     destinationPort?: number;
-}>): PeerTcpTunnelOpenV1 {
-    const endpointFingerprint = input.endpointFingerprint ?? 'endpoint_1';
+    preview?: LocalServicePreviewDirectBindingV1;
+}>): PeerTcpTunnelOpenV2 {
+    const proofHandle = createEphemeralPeerRouteProofHandleV2({
+        randomBytes: (length) => new Uint8Array(length).fill(length === 32 ? 9 : input.nonceByte ?? 3),
+    });
+    const endpointFingerprint = input.endpointFingerprint ?? (input.preview ? 'b'.repeat(64) : 'endpoint_1');
     const flowKind = input.flowKind ?? 'tcp_tunnel';
     const destinationPort = input.destinationPort ?? 3000;
-    const payload: DirectRouteGrantPayloadV1 = {
-        v: 1,
+    const payload: DirectRouteGrantPayloadV2 = {
+        v: 2,
         grantId: input.grantId,
         accountId: 'account_1',
         machineId: 'machine_1',
         flowKind,
-        routeKind: 'loopback_direct',
+        routeKind: input.preview ? 'iroh_peer' : 'loopback_direct',
         scope: flowKind === 'voice_media'
             ? {
                 kind: 'voice_media',
@@ -88,53 +98,39 @@ function createSignedDirectOpen(input: Readonly<{
                 kind: 'tcp_tunnel',
                 tunnelId: input.signedTunnelId ?? input.tunnelId,
                 allowedPorts: [destinationPort],
-                maxIdleMs: 30_000,
-                maxDurationMs: 300_000,
-                maxTotalBytes: 4096,
+                ...(input.preview ? { preview: input.preview } : {}),
             },
         iat: 1_000,
-        exp: input.exp ?? 601_000,
+        exp: input.preview ? null : input.exp ?? 601_000,
         aud: 'happier-daemon-route-grant',
         endpointFingerprint,
+        proofKind: 'ephemeral_ed25519',
+        ephemeralPublicKeyBase64Url: proofHandle.publicKeyBase64Url,
+        ...(input.preview ? { iroh: {
+            initiator: { kind: 'account_client' as const, endpointId: 'a'.repeat(64) },
+            target: { machineId: 'machine_1', endpointId: endpointFingerprint }, operationKind: 'tcp_tunnel' as const,
+        } } : {}),
     };
-    const nonceBase64Url = Buffer.from(new Uint8Array(32).fill(input.nonceByte ?? 3)).toString('base64url');
-    return {
-        v: 1,
-        kind: 'open',
-        tunnelId: input.tunnelId,
-        targetMachineId: 'machine_1',
-        routeKind: 'loopback_direct',
-        destination: { host: '127.0.0.1', port: destinationPort },
-        grant: {
-            payload,
-            signature: {
-                keyId: 'key_1',
-                alg: 'Ed25519',
-                valueBase64Url: Buffer.from(tweetnacl.sign.detached(
-                    Buffer.from(createDirectRouteGrantSigningInputV1(payload), 'utf8'),
-                    routeGrantKeyPair.secretKey,
-                )).toString('base64url'),
-            },
-        },
-        nonceProof: {
-            v: 1,
-            grantId: payload.grantId,
-            routeKind: payload.routeKind,
-            flowKind: payload.flowKind,
-            endpointFingerprint,
-            nonceBase64Url,
-            signatureBase64Url: Buffer.from(tweetnacl.sign.detached(
-                Buffer.from(createPeerRouteNonceSigningInputV1({
-                    grantId: payload.grantId,
-                    routeKind: payload.routeKind,
-                    flowKind: payload.flowKind,
-                    endpointFingerprint,
-                    nonceBase64Url,
-                }), 'utf8'),
-                routeAccountKeyPair.secretKey,
+    const grant = {
+        payload,
+        signature: {
+            keyId: 'key_1',
+            alg: 'Ed25519' as const,
+            valueBase64Url: Buffer.from(tweetnacl.sign.detached(
+                Buffer.from(createDirectRouteGrantSigningInputV2(payload), 'utf8'),
+                routeGrantKeyPair.secretKey,
             )).toString('base64url'),
         },
     };
+    try {
+        return {
+            v: 2, kind: 'open', tunnelId: input.tunnelId, targetMachineId: 'machine_1',
+            routeKind: input.preview ? 'iroh_peer' : 'loopback_direct', destination: { host: '127.0.0.1', port: destinationPort },
+            grant, proof: proofHandle.sign(grant),
+        };
+    } finally {
+        proofHandle.dispose();
+    }
 }
 
 function registerRealDirectOpenRoute(
@@ -155,7 +151,6 @@ function registerRealDirectOpenRoute(
             accountId: 'account_1',
             machineId: 'machine_1',
             endpointFingerprint: 'endpoint_1',
-            accountPublicKey: Buffer.from(routeAccountKeyPair.publicKey).toString('base64url'),
         },
         trustRoots: routeTrustRoots,
         ...(input.resolveTrustRoots ? { resolveTrustRoots: input.resolveTrustRoots } : {}),
@@ -166,22 +161,12 @@ function registerRealDirectOpenRoute(
     });
 }
 
-function deferred<T>() {
-    let resolve!: (value: T) => void;
-    let reject!: (error: unknown) => void;
-    const promise = new Promise<T>((resolvePromise, rejectPromise) => {
-        resolve = resolvePromise;
-        reject = rejectPromise;
-    });
-    return { promise, resolve, reject };
-}
-
 function waitForBinaryFrameKind(
     ws: Readonly<{
         on(event: 'message', handler: (payload: Buffer) => void): void;
         off(event: 'message', handler: (payload: Buffer) => void): void;
     }>,
-    kind: 'data' | 'abort',
+    kind: 'data' | 'abort' | 'close',
 ): Promise<Buffer> {
     return new Promise((resolve) => {
         const handler = (payload: Buffer) => {
@@ -199,6 +184,213 @@ function waitForBinaryFrameKind(
 }
 
 describe('registerPeerTcpTunnelLoopbackRoutes', () => {
+    it('transfers pending preview custody from the POST socket to an idle signed-id WebSocket', async () => {
+        const mod = await loadRegisterRoutesModule();
+        if (!mod) throw new Error('expected direct tunnel route module');
+        const binding: LocalServicePreviewDirectBindingV1 = {
+            previewId: 'preview_1', machineId: 'machine_1', owner: { kind: 'user', id: 'account_1' },
+            target: { scheme: 'http', host: '127.0.0.1', port: 5173 },
+        };
+        const registry = createLocalServicePreviewRegistry();
+        expect(registerLocalServicePreview(registry, { ...binding, initialPath: { pathname: '/', search: '' },
+            display: { title: 'Preview', addressLabel: 'loopback' }, originMode: 'host' }).ok).toBe(true);
+        const registrations: PassThrough[] = [];
+        const previewRoutes = createLocalServicePreviewRoutes({ machineId: 'machine_1', registry,
+            server: { token: 'account-token', serverBaseUrl: 'https://home.test', http: {
+                // Home HTTP is the genuine network boundary. Its strict registration
+                // readiness bytes and disconnect are consumed by the real daemon owner.
+                async post() {
+                    const stream = new PassThrough();
+                    registrations.push(stream);
+                    queueMicrotask(() => stream.write(JSON.stringify({ v: 1, kind: 'preview_registration_admitted', previewId: 'preview_1' }) + '\n'));
+                    return { data: stream };
+                },
+                async delete() { return { data: { ok: true } }; },
+            } } });
+        const app = createPeerMediationLoopbackApp(loopbackOptions);
+        mod.registerPeerTcpTunnelLoopbackRoutes(app, {
+            nowMs: loopbackOptions.nowMs, trustRoots: routeTrustRoots, maxActiveTunnels: 1,
+            expected: { accountId: 'account_1', machineId: 'machine_1', endpointFingerprint: 'endpoint_1', irohEndpointId: 'b'.repeat(64) },
+            acquirePreviewApplication: previewRoutes.acquireNativeApplication,
+        });
+        const origin = await app.listen({ host: '127.0.0.1', port: 0 });
+        const agents: Agent[] = [];
+        let ws: WebSocket | undefined;
+        const open = async (id: string) => {
+            const agent = new Agent({ keepAlive: true });
+            agents.push(agent);
+            let request: ReturnType<typeof httpRequest>;
+            const response = new Promise<Readonly<{ status: number; body: unknown }>>((resolve, reject) => {
+                request = httpRequest(`${origin}/peer-mediation/v2/tunnel/open`, { agent, method: 'POST',
+                    headers: { connection: 'keep-alive', 'content-type': 'application/json' } }, (reply) => {
+                    const chunks: Buffer[] = [];
+                    reply.on('data', (bytes: Buffer) => chunks.push(bytes));
+                    reply.on('end', () => resolve({ status: reply.statusCode!, body: JSON.parse(Buffer.concat(chunks).toString()) }));
+                    reply.on('error', reject);
+                });
+                request.on('error', reject);
+                request.end(JSON.stringify(createSignedDirectOpen({ grantId: id, tunnelId: id, destinationPort: 5173, preview: binding })));
+            });
+            return { ...(await response), socket: request!.socket! };
+        };
+        try {
+            const pending = await open('pending_preview');
+            expect(pending.status).toBe(200);
+            // Native WS rejection/cancellation drops this held control socket before attachment.
+            pending.socket.destroy();
+            await vi.waitFor(() => expect(registrations[0]?.destroyed).toBe(true));
+            const attached = await open('attached_preview');
+            expect(attached.status).toBe(200); // No abandoned adapter may occupy the sole admission slot.
+            ws = new WebSocket(origin.replace('http:', 'ws:') + '/peer-mediation/v1/tunnel/stream?tunnelId=attached_preview');
+            await once(ws, 'open');
+            attached.socket.destroy();
+            await once(attached.socket, 'close');
+            expect(registrations[1]?.destroyed).toBe(false);
+            registrations[1]!.destroy();
+            await vi.waitFor(() => expect(ws?.readyState).toBe(WebSocket.CLOSED));
+            // No application substream/frame or guest request was sent before revoke.
+        } finally {
+            ws?.terminate();
+            for (const agent of agents) agent.destroy();
+            for (const stream of registrations) stream.destroy();
+            await app.close();
+        }
+    });
+
+    it('drains the real signed child response and forwards TCP EOF after a request half-close', async () => {
+        const mod = await loadRegisterRoutesModule();
+        if (!mod) throw new Error('expected direct tunnel route module');
+        const sockets: Socket[] = [];
+        const received: Buffer[] = [];
+        const destination = createServer({ allowHalfOpen: true }, (socket) => {
+            sockets.push(socket);
+            socket.on('data', (bytes) => received.push(Buffer.from(bytes)));
+            socket.on('end', () => socket.end(Buffer.from([0, 255, 128, 1])));
+        });
+        await new Promise<void>((resolve) => destination.listen(0, '127.0.0.1', resolve));
+        const address = destination.address();
+        if (!address || typeof address === 'string') throw new Error('expected TCP address');
+        const app = createPeerMediationLoopbackApp(loopbackOptions);
+        mod.registerPeerTcpTunnelLoopbackRoutes(app, {
+            nowMs: loopbackOptions.nowMs,
+            expected: {
+                accountId: 'account_1', machineId: 'machine_1', endpointFingerprint: 'endpoint_1',
+            },
+            trustRoots: routeTrustRoots,
+        });
+        try {
+            const opened = await app.inject({
+                method: 'POST', url: '/peer-mediation/v2/tunnel/open',
+                payload: createSignedDirectOpen({ grantId: 'grant_eof', tunnelId: 'tun_eof', destinationPort: address.port }),
+            });
+            expect(opened.statusCode).toBe(200);
+            await app.ready();
+            const ws = await (app as unknown as {
+                injectWS: (path: string) => Promise<{
+                    send: (payload: Uint8Array) => void;
+                    on(event: 'message', handler: (payload: Buffer) => void): void;
+                    off(event: 'message', handler: (payload: Buffer) => void): void;
+                    terminate: () => void;
+                }>;
+            }).injectWS('/peer-mediation/v1/tunnel/stream');
+            const response = waitForBinaryFrameKind(ws, 'data');
+            const eof = waitForBinaryFrameKind(ws, 'close');
+            ws.send(encodePeerTcpTunnelBinaryFrameV2({
+                header: { version: 2, kind: 'open', tunnelId: 'tun_eof', substreamId: 'request', payloadLength: 0 },
+            }));
+            ws.send(encodePeerTcpTunnelBinaryFrameV2({
+                header: { version: 2, kind: 'data', tunnelId: 'tun_eof', substreamId: 'request', direction: 'client_to_daemon', sequence: 0, payloadLength: 3 },
+                payload: new Uint8Array([1, 0, 254]),
+            }));
+            ws.send(encodePeerTcpTunnelBinaryFrameV2({
+                header: { version: 2, kind: 'close', tunnelId: 'tun_eof', substreamId: 'request', direction: 'client_to_daemon', halfClose: true, reasonCode: 'request_finished', payloadLength: 0 },
+            }));
+            const data = decodePeerTcpTunnelBinaryFrameV2({ frame: await response, maxHeaderBytes: 1024, maxPayloadBytes: 1024 });
+            expect(data.ok ? [...data.payload] : null).toEqual([0, 255, 128, 1]);
+            const close = decodePeerTcpTunnelBinaryFrameV2({ frame: await eof, maxHeaderBytes: 1024, maxPayloadBytes: 1024 });
+            expect(close.ok ? close.header : null).toMatchObject({ substreamId: 'request', direction: 'daemon_to_client', halfClose: true });
+            expect(Buffer.concat(received)).toEqual(Buffer.from([1, 0, 254]));
+            await vi.waitFor(() => expect(sockets).toHaveLength(1));
+            await vi.waitFor(() => expect(sockets[0]?.destroyed).toBe(true));
+            ws.terminate();
+        } finally {
+            await app.close();
+            for (const socket of sockets) socket.destroy();
+            await new Promise<void>((resolve) => destination.close(() => resolve()));
+        }
+    });
+
+    it.each(['close', 'abort', 'socket_loss'] as const)(
+        'releases every real signed mux child and tunnel admission on %s',
+        async (terminal) => {
+            const mod = await loadRegisterRoutesModule();
+            if (!mod) throw new Error('expected direct tunnel route module');
+            const sockets: Socket[] = [];
+            const destination = createServer((socket) => {
+                sockets.push(socket);
+                socket.on('data', (bytes) => socket.write(bytes));
+            });
+            await new Promise<void>((resolve) => destination.listen(0, '127.0.0.1', resolve));
+            const address = destination.address();
+            if (!address || typeof address === 'string') throw new Error('expected TCP address');
+            const app = createPeerMediationLoopbackApp(loopbackOptions);
+            mod.registerPeerTcpTunnelLoopbackRoutes(app, {
+                nowMs: loopbackOptions.nowMs,
+                expected: {
+                    accountId: 'account_1', machineId: 'machine_1', endpointFingerprint: 'endpoint_1',
+                },
+                trustRoots: routeTrustRoots,
+            });
+            const signedOpen = createSignedDirectOpen({
+                grantId: `grant_${terminal}`, tunnelId: 'tun_real', destinationPort: address.port,
+            });
+            try {
+                expect((await app.inject({ method: 'POST', url: '/peer-mediation/v2/tunnel/open', payload: signedOpen })).statusCode).toBe(200);
+                expect(sockets).toHaveLength(0);
+                await app.ready();
+                const ws = await (app as unknown as {
+                    injectWS: (path: string) => Promise<{
+                        send: (payload: Uint8Array) => void;
+                        on(event: 'message', handler: (payload: Buffer) => void): void;
+                        off(event: 'message', handler: (payload: Buffer) => void): void;
+                        terminate: () => void;
+                    }>;
+                }).injectWS('/peer-mediation/v1/tunnel/stream');
+                for (const substreamId of ['first', 'second']) {
+                    ws.send(encodePeerTcpTunnelBinaryFrameV2({
+                        header: { version: 2, kind: 'open', tunnelId: 'tun_real', substreamId, payloadLength: 0 },
+                    }));
+                }
+                const echoed = waitForBinaryFrameKind(ws, 'data');
+                const bytes = new Uint8Array([0, 255, 1, 128]);
+                ws.send(encodePeerTcpTunnelBinaryFrameV2({
+                    header: { version: 2, kind: 'data', tunnelId: 'tun_real', substreamId: 'first', direction: 'client_to_daemon', sequence: 0, payloadLength: bytes.length },
+                    payload: bytes,
+                }));
+                const decoded = decodePeerTcpTunnelBinaryFrameV2({ frame: await echoed, maxHeaderBytes: 1024, maxPayloadBytes: 1024 });
+                expect(decoded.ok ? [...decoded.payload] : null).toEqual([...bytes]);
+                await vi.waitFor(() => expect(sockets).toHaveLength(2));
+                if (terminal === 'socket_loss') ws.terminate();
+                else ws.send(encodePeerTcpTunnelBinaryFrameV2({
+                    header: { version: 2, kind: terminal, tunnelId: 'tun_real', payloadLength: 0, reasonCode: 'consumer_closed', ...(terminal === 'close' ? { halfClose: false } : {}) },
+                }));
+                await vi.waitFor(() => expect(sockets.every((socket) => socket.destroyed)).toBe(true));
+                await vi.waitFor(async () => {
+                    const next = await app.inject({
+                        method: 'POST', url: '/peer-mediation/v2/tunnel/open',
+                        payload: createSignedDirectOpen({ grantId: `replacement_${terminal}`, tunnelId: 'tun_real', destinationPort: address.port }),
+                    });
+                    expect(next.statusCode).toBe(200);
+                });
+                ws.terminate();
+            } finally {
+                await app.close();
+                for (const socket of sockets) socket.destroy();
+                await new Promise<void>((resolve) => destination.close(() => resolve()));
+            }
+        },
+    );
+
     it('uses current Home signing roots for each tunnel open and fails closed when authority is unavailable', async () => {
         const mod = await loadRegisterRoutesModule();
         if (!mod) throw new Error('expected direct tunnel route module');
@@ -214,7 +406,7 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
             currentTrustRoots = [];
             const unavailable = await app.inject({
                 method: 'POST',
-                url: '/peer-mediation/v1/tunnel/open',
+                url: '/peer-mediation/v2/tunnel/open',
                 payload: createSignedDirectOpen({ grantId: 'grant_unavailable', tunnelId: 'tun_unavailable' }),
             });
             expect(unavailable.statusCode).toBe(400);
@@ -224,11 +416,11 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
             currentTrustRoots = routeTrustRoots;
             const accepted = await app.inject({
                 method: 'POST',
-                url: '/peer-mediation/v1/tunnel/open',
+                url: '/peer-mediation/v2/tunnel/open',
                 payload: createSignedDirectOpen({ grantId: 'grant_current', tunnelId: 'tun_current' }),
             });
             expect(accepted.statusCode).toBe(200);
-            expect(connectTcp).toHaveBeenCalledOnce();
+            expect(connectTcp).not.toHaveBeenCalled();
         } finally {
             await app.close();
         }
@@ -247,7 +439,7 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
         try {
             const response = await app.inject({
                 method: 'POST',
-                url: '/peer-mediation/v1/tunnel/open',
+                url: '/peer-mediation/v2/tunnel/open',
                 payload: createSignedDirectOpen({
                     grantId: 'grant_voice_ready',
                     tunnelId: 'tun_voice_ready',
@@ -273,7 +465,7 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
         try {
             const first = await app.inject({
                 method: 'POST',
-                url: '/peer-mediation/v1/tunnel/open',
+                url: '/peer-mediation/v2/tunnel/open',
                 payload,
             });
             expect(first.statusCode).toBe(200);
@@ -281,7 +473,7 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
 
             const replay = await app.inject({
                 method: 'POST',
-                url: '/peer-mediation/v1/tunnel/open',
+                url: '/peer-mediation/v2/tunnel/open',
                 payload: createSignedDirectOpen({
                     grantId: 'grant_replay',
                     tunnelId: 'tun_replay',
@@ -291,49 +483,36 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
 
             expect(replay.statusCode).toBe(400);
             expect(replay.json()).toMatchObject({ ok: false, reasonCode: 'grant_already_consumed' });
-            expect(connectTcp).toHaveBeenCalledOnce();
+            expect(connectTcp).not.toHaveBeenCalled();
         } finally {
             await app.close();
         }
     });
 
-    it('atomically reserves a verified direct grant so only one concurrent TCP activation wins', async () => {
+    it('atomically consumes a verified direct grant so only one concurrent admission wins', async () => {
         const mod = await loadRegisterRoutesModule();
         if (!mod) throw new Error('expected direct tunnel route module');
         const app = createPeerMediationLoopbackApp(loopbackOptions);
-        const activation = deferred<Readonly<{ close: () => Promise<void> }>>();
-        const connectTcp = vi.fn(() => activation.promise);
+        const connectTcp = vi.fn(async () => ({ close: async () => undefined }));
         registerRealDirectOpenRoute(mod, app, { connectTcp });
         const payload = createSignedDirectOpen({ grantId: 'grant_concurrent', tunnelId: 'tun_concurrent' });
 
         try {
-            const firstRequest = app.inject({
-                method: 'POST',
-                url: '/peer-mediation/v1/tunnel/open',
-                payload,
-            });
-            await vi.waitFor(() => expect(connectTcp).toHaveBeenCalledOnce());
-            const secondRequest = app.inject({
-                method: 'POST',
-                url: '/peer-mediation/v1/tunnel/open',
-                payload,
-            });
-            await new Promise((resolve) => setTimeout(resolve, 0));
-            activation.resolve({ close: async () => undefined });
-
-            const responses = await Promise.all([firstRequest, secondRequest]);
-            expect(responses.map((response) => response.statusCode).sort()).toEqual([200, 400]);
-            expect(responses.map((response) => response.json())).toContainEqual(expect.objectContaining({
+            const responses = await Promise.all([1, 2].map(() => app.inject({
+                method: 'POST', url: '/peer-mediation/v2/tunnel/open', payload,
+            })));
+            expect(responses.filter((response) => response.statusCode === 200)).toHaveLength(1);
+            expect(responses.find((response) => response.statusCode !== 200)?.json()).toMatchObject({
                 ok: false,
-                reasonCode: 'grant_already_consumed',
-            }));
-            expect(connectTcp).toHaveBeenCalledOnce();
+                reasonCode: expect.stringMatching(/grant_already_consumed|tunnel_id_already_open/),
+            });
+            expect(connectTcp).not.toHaveBeenCalled();
         } finally {
             await app.close();
         }
     });
 
-    it('keeps a direct grant consumed when TCP activation fails before a connection is returned', async () => {
+    it('keeps a child TCP failure scoped to that child and retains consumed admission', async () => {
         const mod = await loadRegisterRoutesModule();
         if (!mod) throw new Error('expected direct tunnel route module');
         const app = createPeerMediationLoopbackApp(loopbackOptions);
@@ -344,13 +523,34 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
         const payload = createSignedDirectOpen({ grantId: 'grant_retry', tunnelId: 'tun_retry' });
 
         try {
-            const failed = await app.inject({ method: 'POST', url: '/peer-mediation/v1/tunnel/open', payload });
-            const retry = await app.inject({ method: 'POST', url: '/peer-mediation/v1/tunnel/open', payload });
-
-            expect(failed.json()).toMatchObject({ ok: false, reasonCode: 'tcp_connect_failed' });
-            expect(retry.statusCode).toBe(400);
-            expect(retry.json()).toMatchObject({ ok: false, reasonCode: 'grant_already_consumed' });
+            const admitted = await app.inject({ method: 'POST', url: '/peer-mediation/v2/tunnel/open', payload });
+            expect(admitted.statusCode).toBe(200);
+            expect(connectTcp).not.toHaveBeenCalled();
+            await app.ready();
+            const ws = await (app as unknown as {
+                injectWS: (path: string) => Promise<{
+                    send: (payload: Uint8Array) => void;
+                    on(event: 'message', handler: (payload: Buffer) => void): void;
+                    off(event: 'message', handler: (payload: Buffer) => void): void;
+                    terminate: () => void;
+                }>;
+            }).injectWS('/peer-mediation/v1/tunnel/stream');
+            const abort = waitForBinaryFrameKind(ws, 'abort');
+            ws.send(encodePeerTcpTunnelBinaryFrameV2({
+                header: { version: 2, kind: 'open', tunnelId: 'tun_retry', substreamId: 'failed', payloadLength: 0 },
+            }));
+            const failed = decodePeerTcpTunnelBinaryFrameV2({ frame: await abort, maxHeaderBytes: 1024, maxPayloadBytes: 1024 });
+            expect(failed.ok ? failed.header : null).toMatchObject({ substreamId: 'failed', reasonCode: 'tcp_connect_failed' });
             expect(connectTcp).toHaveBeenCalledOnce();
+            ws.send(encodePeerTcpTunnelBinaryFrameV2({
+                header: { version: 2, kind: 'open', tunnelId: 'tun_retry', substreamId: 'healthy', payloadLength: 0 },
+            }));
+            await vi.waitFor(() => expect(connectTcp).toHaveBeenCalledTimes(2));
+            ws.terminate();
+            await vi.waitFor(async () => {
+                const replay = await app.inject({ method: 'POST', url: '/peer-mediation/v2/tunnel/open', payload });
+                expect(replay.json()).toMatchObject({ ok: false, reasonCode: 'grant_already_consumed' });
+            });
         } finally {
             await app.close();
         }
@@ -366,7 +566,7 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
         try {
             const mismatch = await app.inject({
                 method: 'POST',
-                url: '/peer-mediation/v1/tunnel/open',
+                url: '/peer-mediation/v2/tunnel/open',
                 payload: createSignedDirectOpen({
                     grantId: 'grant_scope',
                     tunnelId: 'tun_other',
@@ -375,13 +575,13 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
             });
             const scoped = await app.inject({
                 method: 'POST',
-                url: '/peer-mediation/v1/tunnel/open',
+                url: '/peer-mediation/v2/tunnel/open',
                 payload: createSignedDirectOpen({ grantId: 'grant_scope', tunnelId: 'tun_scope' }),
             });
 
             expect(mismatch.json()).toMatchObject({ ok: false, reasonCode: 'grant_scope_mismatch' });
             expect(scoped.statusCode).toBe(200);
-            expect(connectTcp).toHaveBeenCalledOnce();
+            expect(connectTcp).not.toHaveBeenCalled();
         } finally {
             await app.close();
         }
@@ -397,7 +597,7 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
         try {
             const oldEndpointGrant = await app.inject({
                 method: 'POST',
-                url: '/peer-mediation/v1/tunnel/open',
+                url: '/peer-mediation/v2/tunnel/open',
                 payload: createSignedDirectOpen({
                     grantId: 'grant_endpoint_replacement',
                     tunnelId: 'tun_endpoint_replacement',
@@ -406,7 +606,7 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
             });
             const replacementGrant = await app.inject({
                 method: 'POST',
-                url: '/peer-mediation/v1/tunnel/open',
+                url: '/peer-mediation/v2/tunnel/open',
                 payload: createSignedDirectOpen({
                     grantId: 'grant_endpoint_replacement',
                     tunnelId: 'tun_endpoint_replacement',
@@ -416,7 +616,7 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
 
             expect(oldEndpointGrant.json()).toMatchObject({ ok: false, reasonCode: 'grant_endpoint_mismatch' });
             expect(replacementGrant.statusCode).toBe(200);
-            expect(connectTcp).toHaveBeenCalledOnce();
+            expect(connectTcp).not.toHaveBeenCalled();
         } finally {
             await app.close();
         }
@@ -432,7 +632,7 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
         try {
             const first = await app.inject({
                 method: 'POST',
-                url: '/peer-mediation/v1/tunnel/open',
+                url: '/peer-mediation/v2/tunnel/open',
                 payload: createSignedDirectOpen({ grantId: 'grant_first', tunnelId: 'tun_reconnect' }),
             });
             expect(first.statusCode).toBe(200);
@@ -440,47 +640,12 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
 
             const reconnect = await app.inject({
                 method: 'POST',
-                url: '/peer-mediation/v1/tunnel/open',
+                url: '/peer-mediation/v2/tunnel/open',
                 payload: createSignedDirectOpen({ grantId: 'grant_second', tunnelId: 'tun_reconnect' }),
             });
 
             expect(reconnect.statusCode).toBe(200);
-            expect(connectTcp).toHaveBeenCalledTimes(2);
-        } finally {
-            await app.close();
-        }
-    });
-
-    it('does not consume a grant during loopback probe before the direct open', async () => {
-        const mod = await loadRegisterRoutesModule();
-        if (!mod) throw new Error('expected direct tunnel route module');
-        const signedOpen = createSignedDirectOpen({ grantId: 'grant_probe', tunnelId: 'tun_probe' });
-        const app = createPeerMediationLoopbackApp({
-            nowMs: loopbackOptions.nowMs,
-            expected: {
-                ...loopbackOptions.expected,
-                accountPublicKey: Buffer.from(routeAccountKeyPair.publicKey).toString('base64url'),
-            },
-            trustRoots: routeTrustRoots,
-        });
-        const connectTcp = vi.fn(async () => ({ close: vi.fn(async () => undefined) }));
-        registerRealDirectOpenRoute(mod, app, { connectTcp });
-
-        try {
-            const probe = await app.inject({
-                method: 'POST',
-                url: '/peer-mediation/v1/probe',
-                payload: { v: 1, grant: signedOpen.grant, nonceProof: signedOpen.nonceProof },
-            });
-            const opened = await app.inject({
-                method: 'POST',
-                url: '/peer-mediation/v1/tunnel/open',
-                payload: signedOpen,
-            });
-
-            expect(probe.json()).toMatchObject({ ok: true, endpointFingerprint: 'endpoint_1' });
-            expect(opened.statusCode).toBe(200);
-            expect(connectTcp).toHaveBeenCalledOnce();
+            expect(connectTcp).not.toHaveBeenCalled();
         } finally {
             await app.close();
         }
@@ -513,7 +678,7 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
         } as const;
 
         try {
-            const opened = await app.inject({ method: 'POST', url: '/peer-mediation/v1/tunnel/open', payload: admitted });
+            const opened = await app.inject({ method: 'POST', url: '/peer-mediation/v2/tunnel/open', payload: admitted });
             expect(opened.statusCode).toBe(200);
             expect(connectTcp).not.toHaveBeenCalled();
             await app.ready();
@@ -538,7 +703,7 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
 
             const expiredAdmission = await app.inject({
                 method: 'POST',
-                url: '/peer-mediation/v1/tunnel/open',
+                url: '/peer-mediation/v2/tunnel/open',
                 payload: createSignedDirectOpen({
                     grantId: 'grant_expired_new',
                     tunnelId: 'tun_expired_new',
@@ -583,12 +748,13 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
         await app.close();
     });
 
-    it('returns only the open response from the control route and retains the TCP connection for the stream path', async () => {
+    it('returns only the admitted open response from the control route', async () => {
         const mod = await loadRegisterRoutesModule();
         const app = createPeerMediationLoopbackApp(loopbackOptions);
         const connection = { close: vi.fn(async () => undefined) };
         const openTunnel = vi.fn(async () => ({
             ok: true as const,
+            routeKind: 'loopback_direct' as const,
             flowKind: 'tcp_tunnel' as const,
             response: {
                 v: 1 as const,
@@ -617,9 +783,10 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
 
         const response = await app.inject({
             method: 'POST',
-            url: '/peer-mediation/v1/tunnel/open',
+            url: '/peer-mediation/v2/tunnel/open',
             payload: {
-                v: 1,
+            ...createSignedDirectOpen({ grantId: 'grant_fixture_32890', tunnelId: 'tun_1' }),
+                v: 2,
                 kind: 'open',
                 tunnelId: 'tun_1',
                 targetMachineId: 'machine_1',
@@ -648,6 +815,7 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
         let nowMs = 2_000;
         const openTunnel = vi.fn(async (input) => ({
             ok: true as const,
+            routeKind: 'loopback_direct' as const,
             flowKind: 'tcp_tunnel' as const,
             response: {
                 v: 1 as const,
@@ -677,9 +845,10 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
         nowMs = 2_500;
         await app.inject({
             method: 'POST',
-            url: '/peer-mediation/v1/tunnel/open',
+            url: '/peer-mediation/v2/tunnel/open',
             payload: {
-                v: 1,
+            ...createSignedDirectOpen({ grantId: 'grant_fixture_35082', tunnelId: 'tun_now' }),
+                v: 2,
                 kind: 'open',
                 tunnelId: 'tun_now',
                 targetMachineId: 'machine_1',
@@ -716,7 +885,7 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
         await app.close();
     });
 
-    it('bridges binary_frame_v2 loopback websocket frames without JSON/base64 socket payloads', async () => {
+    it('bridges binary_frame_v2 loopback child frames without JSON/base64 socket payloads', async () => {
         const mod = await loadRegisterRoutesModule();
         const app = createPeerMediationLoopbackApp(loopbackOptions);
         const writes: string[] = [];
@@ -737,6 +906,7 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
         };
         const openTunnel = vi.fn(async () => ({
             ok: true as const,
+            routeKind: 'loopback_direct' as const,
             flowKind: 'tcp_tunnel' as const,
             response: {
                 v: 1 as const,
@@ -747,7 +917,7 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
                 maxFrameBytes: 64 * 1024,
             },
             receipt: 'peer.tunnel.opened' as const,
-            connection,
+            destination: { host: '127.0.0.1', port: 3000 },
             limits: testTunnelLimits,
         }));
 
@@ -765,9 +935,10 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
 
         await app.inject({
             method: 'POST',
-            url: '/peer-mediation/v1/tunnel/open',
+            url: '/peer-mediation/v2/tunnel/open',
             payload: {
-                v: 1,
+            ...createSignedDirectOpen({ grantId: 'grant_fixture_38365', tunnelId: 'tun_binary' }),
+                v: 2,
                 kind: 'open',
                 tunnelId: 'tun_binary',
                 targetMachineId: 'machine_1',
@@ -786,10 +957,14 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
             }>;
         }).injectWS('/peer-mediation/v1/tunnel/stream');
         ws.send(encodePeerTcpTunnelBinaryFrameV2({
+            header: { version: 2, kind: 'open', tunnelId: 'tun_binary', substreamId: 'child', payloadLength: 0 },
+        }));
+        ws.send(encodePeerTcpTunnelBinaryFrameV2({
             header: {
                 version: 2,
                 kind: 'data',
                 tunnelId: 'tun_binary',
+                substreamId: 'child',
                 direction: 'client_to_daemon',
                 sequence: 0,
                 payloadLength: 5,
@@ -843,6 +1018,7 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
         });
         const openTunnel = vi.fn(async () => ({
             ok: true as const,
+            routeKind: 'loopback_direct' as const,
             flowKind: 'tcp_tunnel' as const,
             response: {
                 v: 1 as const,
@@ -874,9 +1050,10 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
 
         await app.inject({
             method: 'POST',
-            url: '/peer-mediation/v1/tunnel/open',
+            url: '/peer-mediation/v2/tunnel/open',
             payload: {
-                v: 1,
+            ...createSignedDirectOpen({ grantId: 'grant_fixture_42855', tunnelId: 'tun_mux' }),
+                v: 2,
                 kind: 'open',
                 tunnelId: 'tun_mux',
                 targetMachineId: 'machine_1',
@@ -934,7 +1111,7 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
     it('dispatches voice-bound binary_frame_v2 substream data to the append consumer without opening a substream TCP socket', async () => {
         const mod = await loadRegisterRoutesModule();
         const app = createPeerMediationLoopbackApp(loopbackOptions);
-        const appended = deferred<Readonly<{
+        const appended = createDeferred<Readonly<{
             streamId: string;
             generation: number;
             seq: number;
@@ -961,6 +1138,7 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
         });
         const openTunnel = vi.fn(async () => ({
             ok: true as const,
+            routeKind: 'loopback_direct' as const,
             flowKind: 'voice_media' as const,
             voiceMediaApplicationAuthority: testVoiceMediaApplicationAuthority,
             response: {
@@ -991,9 +1169,10 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
 
         await app.inject({
             method: 'POST',
-            url: '/peer-mediation/v1/tunnel/open',
+            url: '/peer-mediation/v2/tunnel/open',
             payload: {
-                v: 1,
+            ...createSignedDirectOpen({ grantId: 'grant_fixture_47212', tunnelId: 'tun_voice' }),
+                v: 2,
                 kind: 'open',
                 tunnelId: 'tun_voice',
                 targetMachineId: 'machine_1',
@@ -1059,6 +1238,7 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
             trustRoots: [],
             openTunnel: vi.fn(async () => ({
                 ok: true as const,
+                routeKind: 'loopback_direct' as const,
                 flowKind: 'voice_media' as const,
                 voiceMediaApplicationAuthority: testVoiceMediaApplicationAuthority,
                 response: {
@@ -1077,9 +1257,10 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
         });
         await app.inject({
             method: 'POST',
-            url: '/peer-mediation/v1/tunnel/open',
+            url: '/peer-mediation/v2/tunnel/open',
             payload: {
-                v: 1,
+            ...createSignedDirectOpen({ grantId: 'grant_fixture_50602', tunnelId: 'tun_voice_loss' }),
+                v: 2,
                 kind: 'open',
                 tunnelId: 'tun_voice_loss',
                 targetMachineId: 'machine_1',
@@ -1139,6 +1320,7 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
             openStreamTimeoutMs: 10,
             openTunnel: vi.fn(async () => ({
                 ok: true as const,
+                routeKind: 'loopback_direct' as const,
                 flowKind: 'voice_media' as const,
                 voiceMediaApplicationAuthority: testVoiceMediaApplicationAuthority,
                 response: {
@@ -1157,9 +1339,10 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
         });
         await app.inject({
             method: 'POST',
-            url: '/peer-mediation/v1/tunnel/open',
+            url: '/peer-mediation/v2/tunnel/open',
             payload: {
-                v: 1,
+            ...createSignedDirectOpen({ grantId: 'grant_fixture_54018', tunnelId: 'tun_voice_loss_before_frame' }),
+                v: 2,
                 kind: 'open',
                 tunnelId: 'tun_voice_loss_before_frame',
                 targetMachineId: 'machine_1',
@@ -1192,6 +1375,7 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
         const voiceBinaryAppendConsumer = vi.fn();
         const openTunnel = vi.fn(async () => ({
             ok: true as const,
+            routeKind: 'loopback_direct' as const,
             flowKind: 'voice_media' as const,
             voiceMediaApplicationAuthority: testVoiceMediaApplicationAuthority,
             response: {
@@ -1216,9 +1400,10 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
         });
         await app.inject({
             method: 'POST',
-            url: '/peer-mediation/v1/tunnel/open',
+            url: '/peer-mediation/v2/tunnel/open',
             payload: {
-                v: 1,
+            ...createSignedDirectOpen({ grantId: 'grant_fixture_56572', tunnelId: 'tun_voice_malformed' }),
+                v: 2,
                 kind: 'open',
                 tunnelId: 'tun_voice_malformed',
                 targetMachineId: 'machine_1',
@@ -1287,6 +1472,7 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
         }));
         const openTunnel = vi.fn(async () => ({
             ok: true as const,
+            routeKind: 'loopback_direct' as const,
             flowKind: 'voice_media' as const,
             voiceMediaApplicationAuthority: testVoiceMediaApplicationAuthority,
             response: {
@@ -1317,9 +1503,10 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
 
         await app.inject({
             method: 'POST',
-            url: '/peer-mediation/v1/tunnel/open',
+            url: '/peer-mediation/v2/tunnel/open',
             payload: {
-                v: 1,
+            ...createSignedDirectOpen({ grantId: 'grant_fixture_60516', tunnelId: 'tun_voice_response' }),
+                v: 2,
                 kind: 'open',
                 tunnelId: 'tun_voice_response',
                 targetMachineId: 'machine_1',
@@ -1396,6 +1583,7 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
         }));
         const openTunnel = vi.fn(async (input) => ({
             ok: true as const,
+            routeKind: 'loopback_direct' as const,
             flowKind: 'voice_media' as const,
             voiceMediaApplicationAuthority: testVoiceMediaApplicationAuthority,
             response: {
@@ -1425,7 +1613,8 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
         });
 
         const openPayload = {
-            v: 1,
+            ...createSignedDirectOpen({ grantId: 'grant_fixture_64701', tunnelId: 'tun_voice_aggregate' }),
+            v: 2,
             kind: 'open',
             tunnelId: 'tun_voice_aggregate',
             targetMachineId: 'machine_1',
@@ -1433,7 +1622,7 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
             destination: { host: '127.0.0.1', port: 3000 },
             selectedEncoding: PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2,
         } as const;
-        await app.inject({ method: 'POST', url: '/peer-mediation/v1/tunnel/open', payload: openPayload });
+        await app.inject({ method: 'POST', url: '/peer-mediation/v2/tunnel/open', payload: openPayload });
         await app.ready();
 
         const ws = await (app as unknown as {
@@ -1474,7 +1663,7 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
 
         const reopened = await app.inject({
             method: 'POST',
-            url: '/peer-mediation/v1/tunnel/open',
+            url: '/peer-mediation/v2/tunnel/open',
             payload: openPayload,
         });
         expect(reopened.statusCode).toBe(200);
@@ -1512,6 +1701,7 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
         }));
         const openTunnel = vi.fn(async () => ({
             ok: true as const,
+            routeKind: 'loopback_direct' as const,
             flowKind: 'tcp_tunnel' as const,
             response: {
                 v: 1 as const,
@@ -1542,9 +1732,10 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
 
         await app.inject({
             method: 'POST',
-            url: '/peer-mediation/v1/tunnel/open',
+            url: '/peer-mediation/v2/tunnel/open',
             payload: {
-                v: 1,
+            ...createSignedDirectOpen({ grantId: 'grant_fixture_69373', tunnelId: 'tun_non_voice' }),
+                v: 2,
                 kind: 'open',
                 tunnelId: 'tun_non_voice',
                 targetMachineId: 'machine_1',
@@ -1591,6 +1782,7 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
         const app = createPeerMediationLoopbackApp(loopbackOptions);
         const openTunnel = vi.fn(async () => ({
             ok: true as const,
+            routeKind: 'loopback_direct' as const,
             flowKind: 'tcp_tunnel' as const,
             response: {
                 v: 1 as const,
@@ -1618,7 +1810,8 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
         });
 
         const payload = {
-            v: 1,
+            ...createSignedDirectOpen({ grantId: 'grant_fixture_72153', tunnelId: 'tun_1' }),
+            v: 2,
             kind: 'open',
             tunnelId: 'tun_1',
             targetMachineId: 'machine_1',
@@ -1626,8 +1819,8 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
             destination: { host: '127.0.0.1', port: 3000 },
         };
 
-        expect((await app.inject({ method: 'POST', url: '/peer-mediation/v1/tunnel/open', payload })).statusCode).toBe(200);
-        const duplicate = await app.inject({ method: 'POST', url: '/peer-mediation/v1/tunnel/open', payload });
+        expect((await app.inject({ method: 'POST', url: '/peer-mediation/v2/tunnel/open', payload })).statusCode).toBe(200);
+        const duplicate = await app.inject({ method: 'POST', url: '/peer-mediation/v2/tunnel/open', payload });
 
         expect(duplicate.statusCode).toBe(409);
         expect(duplicate.json()).toMatchObject({
@@ -1644,6 +1837,7 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
         const app = createPeerMediationLoopbackApp(loopbackOptions);
         const openTunnel = vi.fn(async (input) => ({
             ok: true as const,
+            routeKind: 'loopback_direct' as const,
             flowKind: 'tcp_tunnel' as const,
             response: {
                 v: 1 as const,
@@ -1674,9 +1868,10 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
 
         const first = await app.inject({
             method: 'POST',
-            url: '/peer-mediation/v1/tunnel/open',
+            url: '/peer-mediation/v2/tunnel/open',
             payload: {
-                v: 1,
+            ...createSignedDirectOpen({ grantId: 'grant_fixture_74505', tunnelId: 'tun_1' }),
+                v: 2,
                 kind: 'open',
                 tunnelId: 'tun_1',
                 targetMachineId: 'machine_1',
@@ -1686,9 +1881,10 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
         });
         const second = await app.inject({
             method: 'POST',
-            url: '/peer-mediation/v1/tunnel/open',
+            url: '/peer-mediation/v2/tunnel/open',
             payload: {
-                v: 1,
+            ...createSignedDirectOpen({ grantId: 'grant_fixture_74919', tunnelId: 'tun_2' }),
+                v: 2,
                 kind: 'open',
                 tunnelId: 'tun_2',
                 targetMachineId: 'machine_1',
@@ -1708,7 +1904,7 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
         await app.close();
     });
 
-    it('cleans up an opened TCP reservation when no websocket stream claims it before the timeout', async () => {
+    it('frees an admitted tunnel when no websocket stream claims it before the admission timeout', async () => {
         const mod = await loadRegisterRoutesModule();
         const app = createPeerMediationLoopbackApp(loopbackOptions);
         const firstConnection = { close: vi.fn(async () => undefined) };
@@ -1718,6 +1914,7 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
             const connection = connections.shift() ?? { close: vi.fn(async () => undefined) };
             return {
                 ok: true as const,
+                routeKind: 'loopback_direct' as const,
                 flowKind: 'tcp_tunnel' as const,
                 response: {
                     v: 1 as const,
@@ -1752,9 +1949,10 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
 
             const first = await app.inject({
                 method: 'POST',
-                url: '/peer-mediation/v1/tunnel/open',
+                url: '/peer-mediation/v2/tunnel/open',
                 payload: {
-                    v: 1,
+            ...createSignedDirectOpen({ grantId: 'grant_fixture_77614', tunnelId: 'tun_1' }),
+                    v: 2,
                     kind: 'open',
                     tunnelId: 'tun_1',
                     targetMachineId: 'machine_1',
@@ -1768,9 +1966,10 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
 
             const second = await app.inject({
                 method: 'POST',
-                url: '/peer-mediation/v1/tunnel/open',
+                url: '/peer-mediation/v2/tunnel/open',
                 payload: {
-                    v: 1,
+            ...createSignedDirectOpen({ grantId: 'grant_fixture_78195', tunnelId: 'tun_2' }),
+                    v: 2,
                     kind: 'open',
                     tunnelId: 'tun_2',
                     targetMachineId: 'machine_1',
@@ -1779,7 +1978,7 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
                 },
             });
 
-            expect(firstConnection.close).toHaveBeenCalledOnce();
+            expect(firstConnection.close).not.toHaveBeenCalled();
             expect(second.statusCode).toBe(200);
             expect(openTunnel).toHaveBeenCalledTimes(2);
         } finally {
@@ -1787,17 +1986,7 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
         }
     });
 
-    /**
-     * §6.5 deciding check. The audit reported an unbounded socket leak of one TCP connection per
-     * voice tunnel. `open.ts:275` returns before the connect for `voice_media`, so the claim is
-     * falsified — but "it does not connect" was only ever read off the code. This measures REAL OS
-     * sockets against a REAL listener across N open/close cycles with the production dialer (no
-     * injected `connectTcp`), and it is measured as GROWTH, not as one count: N `tcp_tunnel`
-     * cycles are the positive control proving the harness observes connections at all, N voice
-     * cycles must add nothing, and a final barrier cycle proves that zero is settled rather than
-     * merely not-yet-arrived. Remove the guard and the voice half takes the control's path, so
-     * the barrier count moves from N+1 to 2N+1.
-     */
+    // Exercise the production dialer at the signed route: only real mux children connect.
     it('opens no TCP socket for voice tunnels and leaks none for TCP tunnels across repeated open/close cycles', async () => {
         const mod = await loadRegisterRoutesModule();
         if (!mod) throw new Error('expected direct tunnel route module');
@@ -1827,7 +2016,6 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
                     accountId: 'account_1',
                     machineId: 'machine_1',
                     endpointFingerprint: 'endpoint_1',
-                    accountPublicKey: Buffer.from(routeAccountKeyPair.publicKey).toString('base64url'),
                 },
                 trustRoots: routeTrustRoots,
                 ...(params.flowKind === 'voice_media'
@@ -1836,7 +2024,7 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
             });
             const response = await app.inject({
                 method: 'POST',
-                url: '/peer-mediation/v1/tunnel/open',
+                url: '/peer-mediation/v2/tunnel/open',
                 payload: createSignedDirectOpen({
                     grantId: `grant_${params.label}`,
                     tunnelId: `tun_${params.label}`,
@@ -1847,8 +2035,15 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
             expect(response.statusCode).toBe(200);
             await app.ready();
             const ws = await (app as unknown as {
-                injectWS: (path: string) => Promise<{ terminate: () => void }>;
+                injectWS: (path: string) => Promise<{ send: (payload: Uint8Array) => void; terminate: () => void }>;
             }).injectWS('/peer-mediation/v1/tunnel/stream');
+            if (params.flowKind !== 'voice_media') {
+                const before = acceptedSockets.length;
+                ws.send(encodePeerTcpTunnelBinaryFrameV2({
+                    header: { version: 2, kind: 'open', tunnelId: `tun_${params.label}`, substreamId: 'child', payloadLength: 0 },
+                }));
+                await vi.waitFor(() => expect(acceptedSockets).toHaveLength(before + 1));
+            }
             ws.terminate();
             await app.close();
         };

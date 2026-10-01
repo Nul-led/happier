@@ -17,7 +17,7 @@ describe('useWizardChromeOverrides', () => {
 
         function Harness() {
             const [tick, setTick] = React.useState(0);
-            const overrides = useWizardChromeOverrides('setup_chooser');
+            const overrides = useWizardChromeOverrides('relay_select');
 
             renderCountRef.current += 1;
             latestPrimaryOverride = overrides.activePrimaryOverride;

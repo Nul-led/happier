@@ -1,4 +1,5 @@
-import type { Metadata } from '@/sync/domains/state/storageTypes';
+import type { Metadata } from '@happier-dev/session-core/state';
+import type { ComposerOptionsInputV1 } from '@happier-dev/protocol/embed';
 import {
     LEGACY_ACP_CONFIG_OPTIONS_STATE_KEY,
     LEGACY_ACP_CONFIG_OPTION_OVERRIDES_KEY,
@@ -407,10 +408,10 @@ function buildSessionConfigOptionControls(params: Readonly<{
  * let the same session disagree with itself about whether an option is on.
  */
 export function resolveSessionConfigOptionOverridesFromMetadata(params: Readonly<{
-    metadata: Metadata | null | undefined;
+    metadata: ComposerOptionsInputV1 | null | undefined;
     configOptions: ReadonlyArray<Readonly<{ id?: unknown }>> | null | undefined;
 }>): Record<string, Readonly<{ value: unknown }>> {
-    const metadataRecord = (params.metadata as any) ?? {};
+    const metadataRecord = params.metadata ?? {};
     const parsedOverrides = parseSessionConfigOptionOverridesState(
         readMetadataAliasValue(metadataRecord, SESSION_CONFIG_OPTION_OVERRIDES_KEY, LEGACY_ACP_CONFIG_OPTION_OVERRIDES_KEY),
     );

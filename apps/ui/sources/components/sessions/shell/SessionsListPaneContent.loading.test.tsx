@@ -151,7 +151,7 @@ describe('SessionsListPaneContent (loading)', () => {
             .toBe(filterControllerState.controller);
     });
 
-    it('shows the loading indicator while the canonical session summary is not ready', async () => {
+    it('holds the list shape with skeleton rows while the canonical session summary is not ready', async () => {
         sessionListState.calls = 0;
         sessionListState.paneState = {
             summary: {
@@ -172,7 +172,8 @@ describe('SessionsListPaneContent (loading)', () => {
             },
         );
 
-        expect(screen.findByType('ActivitySpinner' as any)).toBeTruthy();
+        expect(screen.findByTestId('session-list-skeleton')).toBeTruthy();
+        expect(screen.findAllByType('ActivitySpinner' as any)).toHaveLength(0);
         expect(screen.findAllByType('SessionsListViewWithFilterController' as any)).toHaveLength(0);
     });
 

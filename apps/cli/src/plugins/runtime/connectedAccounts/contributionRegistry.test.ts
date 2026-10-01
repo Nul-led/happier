@@ -4,6 +4,7 @@ import { derivePluginDaemonContributionRegistrationRights } from '@happier-dev/p
 import type { ConnectedAccountRuntime as PluginConnectedAccountRuntime } from '@happier-dev/plugin-sdk/connected-accounts';
 import { createPluginRegistrationScope } from '@happier-dev/plugin-sdk/host/registration';
 import type { ResolvedConnectedAccountDescriptorContribution } from '@/plugins/projection/registry/types';
+import type { PluginRuntimeOccurrenceId } from '@/plugins/runtime/runtimeSlots';
 
 import {
     ConnectedAccountRuntimeInvocationNotStartedError,
@@ -14,17 +15,41 @@ import {
 type RegistryParams = Parameters<typeof createProductionConnectedAccountContributionRegistry>[0];
 
 function createConnectedAccountContributionRegistry(
-    params: Omit<RegistryParams, 'immutableGenerationIdsByPluginId'> & Readonly<{
+    params: Omit<
+        RegistryParams,
+        | 'readPluginOccurrenceId'
+        | 'readPluginSourceCustody'
+        | 'isPluginOccurrenceCurrent'
+    > & Readonly<{
         immutableGenerationIdsByPluginId?: ReadonlyMap<string, string>;
+        isOccurrenceCurrent(pluginId: string): boolean;
     }>,
 ) {
+    const immutableGenerationIdsByPluginId = params.immutableGenerationIdsByPluginId ?? new Map(
+        params.descriptors.flatMap((entry) => entry.pluginId
+            ? [[entry.pluginId, `immutable:${entry.pluginId}:1`] as const]
+            : []),
+    );
+    const occurrenceIdsByPluginId = new Map(params.descriptors.flatMap((entry) => {
+        if (!entry.pluginId) return [];
+        const registration = params.readRegistrations().find((candidate) => (
+            candidate.pluginId === entry.pluginId
+        ));
+        return [[
+            entry.pluginId,
+            (registration?.occurrenceId ?? '7') as PluginRuntimeOccurrenceId,
+        ] as const];
+    }));
     return createProductionConnectedAccountContributionRegistry({
         ...params,
-        immutableGenerationIdsByPluginId: params.immutableGenerationIdsByPluginId ?? new Map(
-            params.descriptors.flatMap((entry) => entry.pluginId
-                ? [[entry.pluginId, `immutable:${entry.pluginId}:1`] as const]
-                : []),
-        ),
+        readPluginOccurrenceId: (pluginId) => occurrenceIdsByPluginId.get(pluginId) ?? null,
+        readPluginSourceCustody: (pluginId) => {
+            const immutableGenerationId = immutableGenerationIdsByPluginId.get(pluginId);
+            return immutableGenerationId
+                ? { kind: 'managed', immutableGenerationId, installSource: 'archive' }
+                : null;
+        },
+        isPluginOccurrenceCurrent: (pluginId) => params.isOccurrenceCurrent(pluginId),
     });
 }
 
@@ -104,40 +129,48 @@ describe('connected-account contribution registry', () => {
         const contribution = descriptor('acme.alpha');
         const registration = {
             pluginId: 'acme.alpha',
-            generation: '7',
+            occurrenceId: '7',
             localId: 'shared',
             runtime: runtime('alpha'),
         };
         const first = createConnectedAccountContributionRegistry({
-            generation: '7',
-            immutableGenerationIdsByPluginId: new Map([['acme.alpha', 'artifact-bytes-1']]),
+                        immutableGenerationIdsByPluginId: new Map([['acme.alpha', 'artifact-bytes-1']]),
             descriptors: [contribution],
             activateOnDemand: async () => {},
             readRegistrations: () => [registration],
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
         const replacement = createConnectedAccountContributionRegistry({
-            generation: '7',
-            immutableGenerationIdsByPluginId: new Map([['acme.alpha', 'artifact-bytes-2']]),
+                        immutableGenerationIdsByPluginId: new Map([['acme.alpha', 'artifact-bytes-2']]),
             descriptors: [contribution],
             activateOnDemand: async () => {},
             readRegistrations: () => [registration],
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
 
         await expect(first.resolve({ pluginId: 'acme.alpha', localId: 'shared' }))
-            .resolves.toMatchObject({ immutableGenerationId: 'artifact-bytes-1' });
+            .resolves.toMatchObject({
+                sourceCustody: {
+                    kind: 'managed',
+                    immutableGenerationId: 'artifact-bytes-1',
+                },
+            });
         await expect(replacement.resolve({ pluginId: 'acme.alpha', localId: 'shared' }))
-            .resolves.toMatchObject({ immutableGenerationId: 'artifact-bytes-2' });
+            .resolves.toMatchObject({
+                sourceCustody: {
+                    kind: 'managed',
+                    immutableGenerationId: 'artifact-bytes-2',
+                },
+            });
         // A descriptor whose plugin has no admitted generation identity is never
         // served — it is omitted rather than admitted without an identity.
         const withoutIdentity = createProductionConnectedAccountContributionRegistry({
-            generation: '7',
-            immutableGenerationIdsByPluginId: new Map(),
+                        readPluginOccurrenceId: () => null,
+            readPluginSourceCustody: () => null,
+            isPluginOccurrenceCurrent: () => false,
             descriptors: [contribution],
             activateOnDemand: async () => {},
             readRegistrations: () => [registration],
-            isGenerationCurrent: () => true,
         });
         expect(withoutIdentity.list()).toEqual([]);
         await expect(withoutIdentity.resolve({ pluginId: 'acme.alpha', localId: 'shared' }))
@@ -148,19 +181,18 @@ describe('connected-account contribution registry', () => {
         const quarantined: Array<Readonly<{ pluginId: string; localId: string }>> = [];
         const healthyRegistration = {
             pluginId: 'acme.healthy',
-            generation: '7',
+            occurrenceId: '7',
             localId: 'shared',
             runtime: runtime('healthy'),
         };
-        const registry = createProductionConnectedAccountContributionRegistry({
-            generation: '7',
-            // Only the healthy plugin's generation was admitted, exactly as a
+        const registry = createConnectedAccountContributionRegistry({
+                        // Only the healthy plugin's generation was admitted, exactly as a
             // stale peer's would be missing after a failed admission.
             immutableGenerationIdsByPluginId: new Map([['acme.healthy', 'artifact-bytes-1']]),
             descriptors: [descriptor('acme.stale'), descriptor('acme.healthy')],
             activateOnDemand: async () => {},
             readRegistrations: () => [healthyRegistration],
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             onDescriptorUnavailable: (ref) => { quarantined.push(ref); },
         });
 
@@ -168,7 +200,9 @@ describe('connected-account contribution registry', () => {
             { pluginId: 'acme.healthy', localId: 'shared' },
         ]);
         await expect(resolveLease(registry, { pluginId: 'acme.healthy', localId: 'shared' }))
-            .resolves.toMatchObject({ immutableGenerationId: 'artifact-bytes-1' });
+            .resolves.toMatchObject({
+                sourceCustody: { immutableGenerationId: 'artifact-bytes-1' },
+            });
         await expect(registry.resolve({ pluginId: 'acme.stale', localId: 'shared' }))
             .resolves.toBeNull();
         expect(quarantined).toEqual([{ pluginId: 'acme.stale', localId: 'shared' }]);
@@ -177,16 +211,16 @@ describe('connected-account contribution registry', () => {
     it('keeps same-local-id services qualified and exact-demand activates only the requested plugin', async () => {
         const registrations: Array<Readonly<{
             pluginId: string;
-            generation: string;
+            occurrenceId: string;
             localId: string;
             runtime: PluginConnectedAccountRuntime;
         }>> = [];
         const activateOnDemand = vi.fn(async (ref: Readonly<{ pluginId: string; localId: string }>) => {
-            registrations.push({ pluginId: ref.pluginId, generation: '7', localId: ref.localId, runtime: runtime(ref.pluginId) });
+            registrations.push({ pluginId: ref.pluginId, occurrenceId: '7', localId: ref.localId, runtime: runtime(ref.pluginId) });
         });
         const registry = createConnectedAccountContributionRegistry({
-            generation: '7', descriptors: [descriptor('acme.alpha'), descriptor('acme.beta')],
-            activateOnDemand, readRegistrations: () => registrations, isGenerationCurrent: () => true,
+            descriptors: [descriptor('acme.alpha'), descriptor('acme.beta')],
+            activateOnDemand, readRegistrations: () => registrations, isOccurrenceCurrent: () => true,
         });
 
         expect(registry.list().map((entry) => entry.ref)).toEqual([
@@ -201,22 +235,22 @@ describe('connected-account contribution registry', () => {
         expect(await resolved.runtime.status({} as never)).toMatchObject({ displayName: 'acme.beta' });
         const listed = registry.list();
         expect(listed).toEqual(expect.arrayContaining([
-            expect.objectContaining({ ref: { pluginId: 'acme.alpha', localId: 'shared' }, generation: '7' }),
-            expect.objectContaining({ ref: { pluginId: 'acme.beta', localId: 'shared' }, generation: '7' }),
+            expect.objectContaining({ ref: { pluginId: 'acme.alpha', localId: 'shared' } }),
+            expect.objectContaining({ ref: { pluginId: 'acme.beta', localId: 'shared' } }),
         ]));
         expect(listed.every((entry) => !Object.prototype.hasOwnProperty.call(entry, 'state'))).toBe(true);
     });
 
     it('re-reads the current generation and rejects duplicate publication without replacing it', async () => {
         const first = runtime('first');
-        const registrations = [{ pluginId: 'acme.alpha', generation: '8', localId: 'shared', runtime: first }];
+        const registrations = [{ pluginId: 'acme.alpha', occurrenceId: '8', localId: 'shared', runtime: first }];
         const registry = createConnectedAccountContributionRegistry({
-            generation: '8', descriptors: [descriptor('acme.alpha')], activateOnDemand: async () => {},
-            readRegistrations: () => registrations, isGenerationCurrent: () => true,
+            descriptors: [descriptor('acme.alpha')], activateOnDemand: async () => {},
+            readRegistrations: () => registrations, isOccurrenceCurrent: () => true,
         });
         expect((await resolveLease(registry, { pluginId: 'acme.alpha', localId: 'shared' })).runtime).toBeDefined();
 
-        registrations.push({ pluginId: 'acme.alpha', generation: '8', localId: 'shared', runtime: runtime('conflict') });
+        registrations.push({ pluginId: 'acme.alpha', occurrenceId: '8', localId: 'shared', runtime: runtime('conflict') });
         await expect(registry.resolve({ pluginId: 'acme.alpha', localId: 'shared' }))
             .rejects.toThrow(/duplicate current-generation registration/i);
         registrations.splice(1, 1);
@@ -227,13 +261,13 @@ describe('connected-account contribution registry', () => {
     it('marks retained leases stale after disposal without deleting another plugin identity', async () => {
         let current = true;
         const registrations = [
-            { pluginId: 'acme.alpha', generation: '9', localId: 'shared', runtime: runtime('alpha') },
-            { pluginId: 'acme.beta', generation: '9', localId: 'shared', runtime: runtime('beta') },
+            { pluginId: 'acme.alpha', occurrenceId: '9', localId: 'shared', runtime: runtime('alpha') },
+            { pluginId: 'acme.beta', occurrenceId: '9', localId: 'shared', runtime: runtime('beta') },
         ];
         const registry = createConnectedAccountContributionRegistry({
-            generation: '9', descriptors: [descriptor('acme.alpha'), descriptor('acme.beta')],
+            descriptors: [descriptor('acme.alpha'), descriptor('acme.beta')],
             activateOnDemand: async () => {}, readRegistrations: () => registrations,
-            isGenerationCurrent: () => current,
+            isOccurrenceCurrent: () => current,
         });
         const alpha = await resolveLease(registry, { pluginId: 'acme.alpha', localId: 'shared' });
         const beta = await resolveLease(registry, { pluginId: 'acme.beta', localId: 'shared' });
@@ -244,9 +278,9 @@ describe('connected-account contribution registry', () => {
         expect(beta.isCurrent()).toBe(false);
 
         const next = createConnectedAccountContributionRegistry({
-            generation: '10', descriptors: [descriptor('acme.beta')], activateOnDemand: async () => {},
-            readRegistrations: () => [{ pluginId: 'acme.beta', generation: '10', localId: 'shared', runtime: runtime('beta-next') }],
-            isGenerationCurrent: () => true,
+            descriptors: [descriptor('acme.beta')], activateOnDemand: async () => {},
+            readRegistrations: () => [{ pluginId: 'acme.beta', occurrenceId: '10', localId: 'shared', runtime: runtime('beta-next') }],
+            isOccurrenceCurrent: () => true,
         });
         expect(await (await resolveLease(next, { pluginId: 'acme.beta', localId: 'shared' })).runtime.status({} as never))
             .toMatchObject({ displayName: 'beta-next' });
@@ -297,16 +331,15 @@ describe('connected-account contribution registry', () => {
 
         let current = true;
         const registry = createConnectedAccountContributionRegistry({
-            generation: '16',
-            descriptors: [descriptor('acme.alpha')],
+                        descriptors: [descriptor('acme.alpha')],
             activateOnDemand: async () => {},
             readRegistrations: () => [{
                 pluginId: 'acme.alpha',
-                generation: '16',
+                occurrenceId: '16',
                 localId: 'shared',
                 runtime: registration.value,
             }],
-            isGenerationCurrent: () => current,
+            isOccurrenceCurrent: () => current,
         });
         const lease = await resolveLease(registry, { pluginId: 'acme.alpha', localId: 'shared' });
 
@@ -330,8 +363,7 @@ describe('connected-account contribution registry', () => {
     it('accepts schema-valid nested descriptor metadata without borrowing manifest input limits', () => {
         const base = descriptor('acme.alpha');
         const registry = createConnectedAccountContributionRegistry({
-            generation: '11',
-            descriptors: [{
+                        descriptors: [{
                 ...base,
                 definition: {
                     ...base.definition,
@@ -340,7 +372,7 @@ describe('connected-account contribution registry', () => {
             } as ResolvedConnectedAccountDescriptorContribution],
             activateOnDemand: async () => {},
             readRegistrations: () => [],
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
 
         expect(registry.list()).toEqual([
@@ -353,12 +385,12 @@ describe('connected-account contribution registry', () => {
     it('isolates a duplicate qualified descriptor through the existing unavailable diagnostic owner', () => {
         const unavailable = vi.fn();
         const registry = createConnectedAccountContributionRegistry({
-            generation: '12', descriptors: [
+            descriptors: [
                 descriptor('acme.alpha'),
                 descriptor('acme.alpha'),
                 descriptor('acme.healthy'),
             ],
-            activateOnDemand: async () => {}, readRegistrations: () => [], isGenerationCurrent: () => true,
+            activateOnDemand: async () => {}, readRegistrations: () => [], isOccurrenceCurrent: () => true,
             onDescriptorUnavailable: unavailable,
         });
 
@@ -378,15 +410,14 @@ describe('connected-account contribution registry', () => {
     it('reports an unresolvable service as a null lease instead of an untyped throw', async () => {
         const activateOnDemand = vi.fn(async () => {});
         const registry = createConnectedAccountContributionRegistry({
-            generation: '14',
-            descriptors: [descriptor('acme.alpha')],
+                        descriptors: [descriptor('acme.alpha')],
             immutableGenerationIdsByPluginId: new Map([
                 ['acme.alpha', 'immutable:acme.alpha:1'],
                 ['acme.beta', 'immutable:acme.beta:1'],
             ]),
             activateOnDemand,
             readRegistrations: () => [],
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
 
         // Undeclared descriptor: nothing to resolve, and demand must not be spent.
@@ -406,13 +437,12 @@ describe('connected-account contribution registry', () => {
     it('keeps a retired generation a typed currentness outcome rather than unavailability', async () => {
         let current = true;
         const registry = createConnectedAccountContributionRegistry({
-            generation: '15',
-            descriptors: [descriptor('acme.alpha')],
+                        descriptors: [descriptor('acme.alpha')],
             activateOnDemand: async () => {},
             readRegistrations: () => [{
-                pluginId: 'acme.alpha', generation: '15', localId: 'shared', runtime: runtime('alpha'),
+                pluginId: 'acme.alpha', occurrenceId: '15', localId: 'shared', runtime: runtime('alpha'),
             }],
-            isGenerationCurrent: () => current,
+            isOccurrenceCurrent: () => current,
         });
         expect(await registry.resolve({ pluginId: 'acme.alpha', localId: 'shared' })).not.toBeNull();
 

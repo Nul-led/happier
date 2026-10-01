@@ -6,7 +6,8 @@ import {
     type HomeAdministrationHomeObservation,
     type HomeAdministrationSettingsAdmission,
 } from '@/sync/domains/home/governance/homeAdministrationSettingsAdmission';
-import { observeHomeGovernance } from '@/sync/engine/home/governance/homeGovernanceEngine';
+import { observeHomeGovernance, refreshHomeGovernanceSnapshot } from '@/sync/engine/home/governance/homeGovernanceEngine';
+import { retryServerCredentialAccountScope } from '@/sync/domains/scope/serverCredentialAccountScope';
 import {
     getHomeGovernanceSnapshot,
     getHomeGovernanceSnapshotsVersion,
@@ -23,6 +24,11 @@ export type {
 
 const NO_SERVER_IDS: readonly string[] = Object.freeze([]);
 
+export type HomeAdministrationSettingsAdmissionBinding = HomeAdministrationSettingsAdmission & Readonly<{
+    /** Asks one Home again: its administration projection, or its credential when that is unreadable. */
+    retry: (serverId: string) => void;
+}>;
+
 /**
  * The Settings admission decision for the Home Administration destination.
  *
@@ -37,11 +43,18 @@ const NO_SERVER_IDS: readonly string[] = Object.freeze([]);
  * projection nobody is refreshing.
  */
 export function useHomeAdministrationSettingsAdmission(
-    options?: Readonly<{ enabled?: boolean }>,
-): HomeAdministrationSettingsAdmission {
+    options?: Readonly<{
+        enabled?: boolean;
+        /**
+         * The Homes to answer for, instead of the Homes in view. The Homes page lists every Home this
+         * device knows and offers the console on each one that admits this account.
+         */
+        serverIds?: readonly string[];
+    }>,
+): HomeAdministrationSettingsAdmissionBinding {
     const enabled = options?.enabled ?? true;
     const selection = useEffectiveServerSelection();
-    const serverIds = enabled ? selection.serverIds : NO_SERVER_IDS;
+    const serverIds = enabled ? options?.serverIds ?? selection.serverIds : NO_SERVER_IDS;
     const serverIdsKey = JSON.stringify([...serverIds]);
 
     const scopes = useServerCredentialAccountScopeResolutions(serverIds);
@@ -84,7 +97,15 @@ export function useHomeAdministrationSettingsAdmission(
         getHomeGovernanceSnapshotsVersion,
     );
 
-    return React.useMemo(() => {
+    const scopesRef = React.useRef(scopes);
+    scopesRef.current = scopes;
+    const retry = React.useCallback((serverId: string) => {
+        const resolution = scopesRef.current.get(serverId);
+        if (resolution?.kind === 'bound') void refreshHomeGovernanceSnapshot(resolution.scope);
+        else retryServerCredentialAccountScope(serverId);
+    }, []);
+
+    const admission = React.useMemo(() => {
         const observationsByServerId: Record<string, HomeAdministrationHomeObservation> = {};
         for (const serverId of serverIds) {
             const resolution = scopes.get(serverId);
@@ -104,4 +125,6 @@ export function useHomeAdministrationSettingsAdmission(
         // Home set and every credential resolution behind it.
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [serverIdsKey, scopesKey, version]);
+
+    return React.useMemo(() => ({ ...admission, retry }), [admission, retry]);
 }

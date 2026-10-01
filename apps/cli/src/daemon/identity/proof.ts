@@ -9,7 +9,7 @@ import {
     type MachineReplacementRegistrationIntent,
 } from '@happier-dev/protocol';
 
-import { decodeJwtPayload } from '@/cloud/decodeJwtPayload';
+import { readAccountIdFromToken } from '@/cloud/decodeJwtPayload';
 
 export type InstallationMachineProofBundle = Readonly<{
     installationId: string;
@@ -21,18 +21,6 @@ export type InstallationMachineProofBundle = Readonly<{
     replacementReason?: MachineReplacementReason;
 }>;
 
-function readAccountIdFromToken(token: string): string | undefined {
-    try {
-        const payload = decodeJwtPayload(token);
-        if (!payload || typeof payload !== 'object') {
-            return undefined;
-        }
-        return typeof payload.sub === 'string' && payload.sub.trim() ? payload.sub.trim() : undefined;
-    } catch {
-        return undefined;
-    }
-}
-
 export function buildInstallationProofForMachine(params: Readonly<{
     identity: MachineInstallationIdentityV1;
     machineId: string;
@@ -43,7 +31,7 @@ export function buildInstallationProofForMachine(params: Readonly<{
     const contentPublicKeyFingerprint = params.contentPublicKey
         ? computeContentPublicKeyFingerprint(params.contentPublicKey)
         : undefined;
-    const accountId = readAccountIdFromToken(params.token);
+    const accountId = readAccountIdFromToken(params.token) ?? undefined;
     const payload: MachineInstallationProofPayloadV1 = {
         version: 1,
         installationId: params.identity.installationId,

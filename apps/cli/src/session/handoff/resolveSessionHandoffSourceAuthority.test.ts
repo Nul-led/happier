@@ -41,6 +41,13 @@ function resolve(rawSession: Record<string, unknown>) {
 }
 
 describe('resolveSessionHandoffSourceAuthority', () => {
+  it('routes an explicit owner managed marker but never infers ownership from its path', () => {
+    expect(resolve(layoutZeroSession({ machineId: 'machine-source', path: '/private/session-directories/allocation',
+      sessionDirectoryV1: { v: 1, kind: 'managed' },
+    }))).toMatchObject({ ok: true, directoryKind: 'managed' });
+    expect(resolve(layoutZeroSession({ machineId: 'machine-source', path: '/private/session-directories/allocation' })))
+      .not.toHaveProperty('directoryKind');
+  });
   it('classifies a Session with no link as persisted and a valid link as direct', () => {
     expect(resolve(layoutZeroSession({ machineId: 'machine-source', path: '/repo', flavor: 'claude' })))
       .toEqual({ ok: true, sourceMachineId: 'machine-source', sourceRootPath: '/repo', sessionStorageMode: 'persisted' });

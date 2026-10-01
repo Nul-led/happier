@@ -211,7 +211,6 @@ const credentialSourceDeclaration = VoiceProviderContributionSchema.parse({
   },
   client: {
     artifactId: 'web-runtime',
-    modulePath: './voiceRuntime',
     exportName: 'activate',
   },
 });

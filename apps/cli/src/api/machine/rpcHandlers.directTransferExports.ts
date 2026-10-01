@@ -5,11 +5,13 @@ import {
     PromptAssetScopeV1Schema,
     PromptRegistryConfiguredSourceV1Schema,
     WorkspaceContentPolicyV1Schema,
+    WorkspaceSyncTargetConflictStageV1Schema,
     type ComposerContentHandleV1,
     type PromptAssetReadRequest,
     type PromptRegistryFetchItemRequestV1,
     type TransferEndpointCandidate,
     type WorkspaceContentPolicyV1,
+    type WorkspaceSyncTargetConflictStageV1,
 } from '@happier-dev/protocol';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 import { z } from 'zod';
@@ -39,6 +41,7 @@ export type DirectTransferExportPrepareRequest =
         /** Complete bounded selection policy, self-verified by its canonical digest. */
         contentPolicy: WorkspaceContentPolicyV1;
     }>
+    | Readonly<{ t: 'workspace_sync_resolution_v1' } & WorkspaceSyncTargetConflictStageV1>
     | Readonly<{
         t: 'composer_media_stage_inspect_v1';
         handle: ComposerContentHandleV1;
@@ -46,7 +49,7 @@ export type DirectTransferExportPrepareRequest =
         maxBytes: number;
     }>;
 
-const DirectTransferExportPrepareRequestSchema = z.discriminatedUnion('t', [
+const DirectTransferExportPrepareRequestSchema = z.union([
     z.object({
         t: z.literal('prompt_asset_download_v1'),
         assetTypeId: z.string().min(1),
@@ -73,6 +76,9 @@ const DirectTransferExportPrepareRequestSchema = z.discriminatedUnion('t', [
         targetMachineId: z.string().min(1),
         contentPolicy: asHostProtocolZod(WorkspaceContentPolicyV1Schema),
     }).strict(),
+    asHostProtocolZod(WorkspaceSyncTargetConflictStageV1Schema.extend({
+        t: z.literal('workspace_sync_resolution_v1'),
+    }).strict()),
     z.object({
         t: z.literal('composer_media_stage_inspect_v1'),
         handle: asHostProtocolZod(ComposerContentHandleV1Schema),
@@ -100,6 +106,7 @@ type DirectTransferExportPrepareResponse = Readonly<
     | {
         success: false;
         error: string;
+        code?: string;
     }
 >;
 
@@ -132,6 +139,10 @@ export function registerMachineDirectTransferExportRpcHandlers(params: Readonly<
             return {
                 success: false,
                 error: error instanceof Error ? error.message : 'Direct transfer export prepare failed',
+                ...(request.t === 'workspace_sync_resolution_v1'
+                    && error && typeof error === 'object' && 'code' in error && typeof error.code === 'string'
+                    ? { code: error.code }
+                    : {}),
             } satisfies DirectTransferExportPrepareResponse;
         }
     });

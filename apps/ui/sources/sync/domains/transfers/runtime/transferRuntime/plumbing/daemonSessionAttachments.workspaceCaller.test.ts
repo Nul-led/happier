@@ -160,6 +160,7 @@ describe('daemonSessionAttachments', () => {
             serverId: 'server-1',
             request: {
                 t: 'session_attachment_upload_v1',
+                sessionId: 's1',
                 workingDirectory: '/repo',
                 messageLocalId: 'm1',
                 fileName: 'a.txt',
@@ -203,6 +204,7 @@ describe('daemonSessionAttachments', () => {
             serverId: 'server-1',
             request: {
                 t: 'session_attachment_upload_v1',
+                sessionId: 's1',
                 workingDirectory: '/repo',
                 messageLocalId: 'm2',
                 fileName: 'b.txt',

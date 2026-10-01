@@ -90,6 +90,7 @@ async function renderModal(overrides?: Partial<React.ComponentProps<typeof Sessi
             request={REQUEST as any}
             availability={{ native: true, replay: true, configure: true, nativeUnavailableReason: null }}
             navigate={navigate}
+            navigation={{ push: routerPushMock }}
             onConfigureNewSession={onConfigureNewSession}
             {...(overrides as any)}
         />,

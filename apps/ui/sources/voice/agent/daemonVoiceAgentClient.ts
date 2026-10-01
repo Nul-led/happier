@@ -1,6 +1,7 @@
 import { createRpcCallError } from '@/sync/runtime/rpcErrors';
-import { sessionRpcWithServerScope } from '@/sync/runtime/orchestration/serverScopedRpc/serverScopedSessionRpc';
-import { isSocketIoAckTimeoutError } from '@/sync/runtime/socketIoAckTimeout';
+import { sessionRpcWithServerAccountScope } from '@/sync/runtime/orchestration/serverScopedRpc/serverScopedSessionRpc';
+import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
+import { isSocketIoAckTimeoutError } from '@happier-dev/sync-client';
 import { SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc';
 import {
   ExecutionRunActionResponseSchema,
@@ -13,7 +14,7 @@ import {
 } from '@happier-dev/protocol';
 import type { ExecutionRunUserTranscriptDirective, VoiceAssistantAction } from '@happier-dev/protocol';
 
-import type { VoiceAgentClient, VoiceAgentHandle, VoiceAgentStartParams, VoiceAgentStartResult, VoiceAgentTurnStreamEvent } from './types';
+import type { VoiceAgentClient, VoiceAgentStartParams, VoiceAgentStartResult, VoiceAgentTurnStreamEvent } from './types';
 import { streamVoiceAgentTurn } from './streamVoiceAgentTurn';
 import { requiresProviderSafeModelSelectionRpc } from '@/sync/ops/providerDaemonSessionCompatibility';
 
@@ -64,6 +65,17 @@ export class VoiceAgentStartOutcomeUnknownError extends Error {
 }
 
 export class DaemonVoiceAgentClient implements VoiceAgentClient {
+  constructor(private readonly scope: ServerAccountScope) {}
+
+  private sessionRpc<R, A>(params: Readonly<{
+    sessionId: string;
+    method: string;
+    payload: A;
+    timeoutMs?: number | null;
+  }>): Promise<R> {
+    return sessionRpcWithServerAccountScope<R, A>({ ...params, scope: this.scope });
+  }
+
   async start(params: VoiceAgentStartParams): Promise<VoiceAgentStartResult> {
     const backendId = String(params.agentId ?? '').trim();
     if (!backendId) {
@@ -115,7 +127,7 @@ export class DaemonVoiceAgentClient implements VoiceAgentClient {
     };
 
     const ensureOrStart = async () => {
-      const res: any = await sessionRpcWithServerScope({
+      const res: any = await this.sessionRpc({
         sessionId: params.sessionId,
         method: ensureOrStartMethod,
         timeoutMs: VOICE_AGENT_LIFECYCLE_RPC_TIMEOUT_MS,
@@ -156,7 +168,7 @@ export class DaemonVoiceAgentClient implements VoiceAgentClient {
     // No output observer is needed in this non-streaming path, but reuse the same
     // poll / timeout / abort / cancel semantics from streamVoiceAgentTurn so there is exactly
     // one parser and one abort path for daemon turns.
-    const handle: VoiceAgentHandle = {
+    const handle = {
       client: this,
       voiceAgentId: params.voiceAgentId,
       backend: 'daemon',
@@ -181,7 +193,7 @@ export class DaemonVoiceAgentClient implements VoiceAgentClient {
   }
 
   async welcome(params: Readonly<{ sessionId: string; voiceAgentId: string; welcomeText?: string }>): Promise<{ assistantText: string }> {
-    const res: any = await sessionRpcWithServerScope({
+    const res: any = await this.sessionRpc({
       sessionId: params.sessionId,
       method: SESSION_RPC_METHODS.EXECUTION_RUN_ACTION,
       timeoutMs: VOICE_AGENT_LIFECYCLE_RPC_TIMEOUT_MS,
@@ -210,7 +222,7 @@ export class DaemonVoiceAgentClient implements VoiceAgentClient {
     resume?: boolean;
     userTranscript?: ExecutionRunUserTranscriptDirective;
   }>): Promise<{ streamId: string }> {
-    const res: any = await sessionRpcWithServerScope({
+    const res: any = await this.sessionRpc({
       sessionId: params.sessionId,
       method: params.userTranscript
         ? SESSION_RPC_METHODS.EXECUTION_RUN_STREAM_START_V2
@@ -237,7 +249,7 @@ export class DaemonVoiceAgentClient implements VoiceAgentClient {
     displayText?: string;
     localId: string;
   }>): Promise<{ ok: true }> {
-    const res: any = await sessionRpcWithServerScope({
+    const res: any = await this.sessionRpc({
       sessionId: params.sessionId,
       method: SESSION_RPC_METHODS.EXECUTION_RUN_USER_TRANSCRIPT_COMMIT_V1,
       payload: {
@@ -254,7 +266,7 @@ export class DaemonVoiceAgentClient implements VoiceAgentClient {
   async readTurnStream(
     params: Readonly<{ sessionId: string; voiceAgentId: string; streamId: string; cursor: number; maxEvents?: number }>,
   ): Promise<{ streamId: string; events: VoiceAgentTurnStreamEvent[]; nextCursor: number; done: boolean }> {
-    const res: any = await sessionRpcWithServerScope({
+    const res: any = await this.sessionRpc({
       sessionId: params.sessionId,
       method: SESSION_RPC_METHODS.EXECUTION_RUN_STREAM_READ,
       payload: {
@@ -269,7 +281,7 @@ export class DaemonVoiceAgentClient implements VoiceAgentClient {
   }
 
   async cancelTurnStream(params: Readonly<{ sessionId: string; voiceAgentId: string; streamId: string }>): Promise<{ ok: true }> {
-    const res: any = await sessionRpcWithServerScope({
+    const res: any = await this.sessionRpc({
       sessionId: params.sessionId,
       method: SESSION_RPC_METHODS.EXECUTION_RUN_STREAM_CANCEL,
       timeoutMs: VOICE_AGENT_LIFECYCLE_RPC_TIMEOUT_MS,
@@ -280,7 +292,7 @@ export class DaemonVoiceAgentClient implements VoiceAgentClient {
   }
 
   async commit(params: Readonly<{ sessionId: string; voiceAgentId: string; kind: 'session_instruction'; maxChars?: number }>): Promise<{ commitText: string }> {
-    const res: any = await sessionRpcWithServerScope({
+    const res: any = await this.sessionRpc({
       sessionId: params.sessionId,
       method: SESSION_RPC_METHODS.EXECUTION_RUN_ACTION,
       timeoutMs: VOICE_AGENT_LIFECYCLE_RPC_TIMEOUT_MS,
@@ -300,7 +312,7 @@ export class DaemonVoiceAgentClient implements VoiceAgentClient {
   }
 
   async stop(params: Readonly<{ sessionId: string; voiceAgentId: string }>): Promise<{ ok: true }> {
-    const res: any = await sessionRpcWithServerScope({
+    const res: any = await this.sessionRpc({
       sessionId: params.sessionId,
       method: SESSION_RPC_METHODS.EXECUTION_RUN_STOP,
       payload: { runId: params.voiceAgentId },

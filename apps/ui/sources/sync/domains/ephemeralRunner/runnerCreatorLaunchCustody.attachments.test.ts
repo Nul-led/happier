@@ -273,6 +273,29 @@ describe('Runner creator attachment launch custody', () => {
         await expect(readSubmittedRunnerCreatorTeamCredentialModel(scope, activationId)).resolves.toBeNull();
     });
 
+    it('requires a persisted first-turn identity even when the submission has no files', async () => {
+        const withoutFiles = { ...preparedAuthoring, files: [] };
+        await writePreparedRunnerCreatorLaunchCustody({ scope, activationId, preparedAuthoring: withoutFiles });
+        await expect(readRunnerCreatorAttachmentUploadCustody(scope, activationId))
+            .rejects.toMatchObject({ code: 'runner_creator_launch_custody_unavailable' });
+
+        await writePreparedRunnerCreatorLaunchCustody({
+            scope,
+            activationId,
+            preparedAuthoring: withoutFiles,
+            attachmentUpload: {
+                attachmentMessageLocalId: 'attachment-message-a',
+                firstTurnLocalId: 'spawn-first-turn:creation-a',
+                maxFileBytes: 1024,
+                files: [],
+            },
+        });
+        await expect(readRunnerCreatorAttachmentUploadCustody(scope, activationId)).resolves.toMatchObject({
+            firstTurnLocalId: 'spawn-first-turn:creation-a',
+            stagedFiles: [],
+        });
+    });
+
     it('reopens exact staged sources and upload identities after a React owner remount', async () => {
         await writePreparedRunnerCreatorLaunchCustody({
             scope,

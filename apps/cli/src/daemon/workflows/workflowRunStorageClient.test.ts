@@ -4,9 +4,24 @@ const { post } = vi.hoisted(() => ({ post: vi.fn() }));
 vi.mock('axios', () => ({ default: { post } }));
 
 import { createWorkflowRunStorageClient } from './workflowRunStorageClient';
+import { EXTERNAL_ACTION_RESPONSE_MAX_SERIALIZED_BYTES } from '@happier-dev/protocol';
 
 describe('workflow Run storage client', () => {
   beforeEach(() => post.mockReset());
+
+  it('reads batched workflow summaries with Account credentials and no worker publication', async () => {
+    const result = { summaries: [], remainingSourceArtifactIds: [] };
+    post.mockResolvedValue({ data: result });
+    const client = createWorkflowRunStorageClient({
+      token: 'token', serverHttpBaseUrl: 'https://home.test',
+      createPublisherHeader: async () => { throw new Error('must_not_publish_worker_facts'); },
+    });
+    await expect(client.execute({ operation: 'summaries', request: {
+      sourceArtifactIds: ['11111111-1111-4111-8111-111111111111'], recent: 3,
+    }, pageByteLimit: EXTERNAL_ACTION_RESPONSE_MAX_SERIALIZED_BYTES })).resolves.toEqual(result);
+    expect(post.mock.calls[0]?.[1]).not.toHaveProperty('publisherMachineId');
+    expect(post.mock.calls[0]?.[2].headers).not.toHaveProperty('x-happier-plugin-installation-manifest-publisher');
+  });
 
   it('uses the incumbent signed Automation-worker HTTP corridor', async () => {
     post.mockResolvedValue({ data: { run: { id: 'run-1' } } });
@@ -14,12 +29,33 @@ describe('workflow Run storage client', () => {
     const client = createWorkflowRunStorageClient({
       token: 'token', machineId: 'machine-1', serverHttpBaseUrl: 'https://home.test', createPublisherHeader,
     });
-    await expect(client.execute({ operation: 'get', runId: 'run-1' })).resolves.toEqual({ run: { id: 'run-1' } });
-    const body = { operation: 'get', publisherMachineId: 'machine-1', runId: 'run-1' };
+    await expect(client.execute({ operation: 'initialize', runId: 'run-1' })).resolves.toEqual({ run: { id: 'run-1' } });
+    const body = { operation: 'initialize', publisherMachineId: 'machine-1', runId: 'run-1' };
     expect(createPublisherHeader).toHaveBeenCalledWith({ method: 'POST', path: '/v3/automations/runs/workflow-storage', body });
     expect(post).toHaveBeenCalledWith('https://home.test/v3/automations/runs/workflow-storage', body, expect.objectContaining({
       headers: expect.objectContaining({ Authorization: 'Bearer token', 'x-happier-plugin-installation-manifest-publisher': 'signed-publisher' }),
     }));
+  });
+
+  it.each(['get', 'list', 'invocations.list', 'pause', 'cancel', 'delete'] as const)(
+    'executes Account %s without a machine or publisher authority', async (operation) => {
+      post.mockResolvedValue({ data: { available: true } });
+      const createPublisherHeader = vi.fn(async () => { throw new Error('publisher unavailable'); });
+      const client = createWorkflowRunStorageClient({
+        token: 'token', serverHttpBaseUrl: 'https://home.test', createPublisherHeader,
+      });
+      await expect(client.execute({ operation, runId: 'run-1' })).resolves.toEqual({ available: true });
+      expect(createPublisherHeader).not.toHaveBeenCalled();
+      expect(post.mock.calls[0]?.[1]).not.toHaveProperty('publisherMachineId');
+      expect(post.mock.calls[0]?.[2].headers).not.toHaveProperty('x-happier-plugin-installation-manifest-publisher');
+    },
+  );
+
+  it.each(['initialize', 'invocations.recover'] as const)('refuses executor %s without its exact publisher before sending', async (operation) => {
+    const client = createWorkflowRunStorageClient({ token: 'token', serverHttpBaseUrl: 'https://home.test' });
+    await expect(client.execute({ operation, runId: 'run-1' }))
+      .rejects.toMatchObject({ code: 'target_unavailable' });
+    expect(post).not.toHaveBeenCalled();
   });
 
   it('leaves workflow waits to the authored deadline and caller abort owner', async () => {
@@ -37,6 +73,8 @@ describe('workflow Run storage client', () => {
       expect.anything(),
       expect.objectContaining({ timeout: 0, signal: controller.signal }),
     );
+    expect(post.mock.calls[0]?.[1]).not.toHaveProperty('publisherMachineId');
+    expect(post.mock.calls[0]?.[2].headers).not.toHaveProperty('x-happier-plugin-installation-manifest-publisher');
   });
 
   it('rejoins an ambiguous initialize with the byte-identical request only', async () => {
@@ -97,23 +135,6 @@ describe('workflow Run storage client', () => {
         id: '7be4d65c-d3b7-4868-a416-b18d9ee29c1c', sequence: '1', parentRecordId: 'root-1',
         memberOrdinal: '0', contentEnvelope: 'bound-row',
       }],
-    })).resolves.toMatchObject({ disposition: 'existing' });
-    expect(post).toHaveBeenCalledTimes(2);
-    expect(post.mock.calls[0]![1]).toEqual(post.mock.calls[1]![1]);
-  });
-
-  it('rejoins an ambiguous caller-bound retry with byte-identical ids and envelopes', async () => {
-    post.mockRejectedValueOnce(Object.assign(new Error('reset'), { code: 'ECONNRESET' }));
-    post.mockResolvedValueOnce({ data: { disposition: 'existing', run: { id: 'run-1' }, invocation: {} } });
-    const client = createWorkflowRunStorageClient({
-      token: 'token', machineId: 'machine-1', serverHttpBaseUrl: 'https://home.test',
-      createPublisherHeader: async () => 'signed-publisher',
-    });
-    await expect(client.execute({
-      operation: 'invocations.retry', runId: 'run-1', expectedRevision: 2,
-      invocationId: '11111111-1111-4111-8111-111111111111',
-      newInvocationId: '22222222-2222-4222-8222-222222222222',
-      checkpointEnvelope: 'checkpoint-2', contentEnvelope: 'bound-retry-row',
     })).resolves.toMatchObject({ disposition: 'existing' });
     expect(post).toHaveBeenCalledTimes(2);
     expect(post.mock.calls[0]![1]).toEqual(post.mock.calls[1]![1]);

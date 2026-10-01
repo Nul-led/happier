@@ -3,7 +3,7 @@ import {
     formatPermissionRequestSummary,
 } from "@happier-dev/protocol";
 import { Session } from "@/sync/domains/state/storageTypes";
-import { Message } from "@/sync/domains/messages/messageTypes";
+import { Message } from "@happier-dev/session-core/messages";
 import { storage } from '@/sync/domains/state/storage';
 import { resolveSessionListPreferredSessionMetadataFromState } from '@/sync/domains/session/listing/sessionListLookupState';
 import { listPendingSessionRequests } from '@/sync/domains/session/pending/listPendingSessionRequests';

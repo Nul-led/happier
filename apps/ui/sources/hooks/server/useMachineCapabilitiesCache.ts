@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { isLatestVersionCheckDue } from '@/updates/latestVersionCheckFreshness';
 import {
     machineCapabilitiesDetect,
     type MachineCapabilitiesDetectResult,
@@ -7,6 +8,7 @@ import type { CapabilitiesDetectRequest, CapabilitiesDetectResponse, CapabilityD
 import { CHECKLIST_IDS } from '@happier-dev/protocol/checklists';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { stableJsonStringify } from '@/utils/json/stableJsonStringify';
+import type { ServerAccountScopeLifetime } from '@/sync/domains/scope/serverAccountScope';
 
 export type MachineCapabilitiesSnapshot = {
     response: CapabilitiesDetectResponse;
@@ -37,6 +39,8 @@ const DEFAULT_CLI_LOGIN_STATUS_TIMEOUT_MS = 20_000;
 type ScheduledFetch = Readonly<{
     requestKey: string;
     promise: Promise<void>;
+    isCurrent(): boolean;
+    retainAccountReader(lifetime: ServerAccountScopeLifetime): void;
 }>;
 
 const scheduledFetchByCacheKey = new Map<string, ScheduledFetch>();
@@ -62,11 +66,11 @@ function normalizeCacheKeySalt(value: string | number | null | undefined): strin
     return null;
 }
 
-function toCacheKey(machineIdRaw: string, serverIdRaw?: string | null, cacheKeySaltRaw?: string | number | null): string {
+function toCacheKey(machineIdRaw: string, serverIdRaw?: string | null, cacheKeySaltRaw?: string | number | null, accountId?: string | null): string {
     const machineId = String(machineIdRaw ?? '').trim();
     const serverId = resolveServerId(serverIdRaw);
     const cacheKeySalt = normalizeCacheKeySalt(cacheKeySaltRaw);
-    return JSON.stringify(['machineCapabilities', serverId || null, machineId, cacheKeySalt]);
+    return JSON.stringify(['machineCapabilities', serverId || null, machineId, cacheKeySalt, accountId ?? null]);
 }
 
 function getEntry(cacheKey: string): CacheEntry | null {
@@ -85,8 +89,9 @@ export function getMachineCapabilitiesCacheState(
     machineId: string,
     serverId?: string | null,
     cacheKeySalt?: string | number | null,
+    accountId?: string | null,
 ): MachineCapabilitiesCacheState | null {
-    const entry = getEntry(toCacheKey(machineId, serverId, cacheKeySalt));
+    const entry = getEntry(toCacheKey(machineId, serverId, cacheKeySalt, accountId));
     return entry ? entry.state : null;
 }
 
@@ -94,8 +99,9 @@ export function getMachineCapabilitiesSnapshot(
     machineId: string,
     serverId?: string | null,
     cacheKeySalt?: string | number | null,
+    accountId?: string | null,
 ): MachineCapabilitiesSnapshot | null {
-    const state = getMachineCapabilitiesCacheState(machineId, serverId, cacheKeySalt);
+    const state = getMachineCapabilitiesCacheState(machineId, serverId, cacheKeySalt, accountId);
     if (!state) return null;
     if (state.status === 'loaded') return state.snapshot;
     if (state.status === 'loading') return state.snapshot ?? null;
@@ -111,9 +117,77 @@ function notify(cacheKey: string) {
     for (const cb of subs) cb(entry.state);
 }
 
+/**
+ * Per machine and capability, the cache key most recently written with that capability's answer.
+ * Surfaces that summarise another page's answers read through this instead of re-deriving that
+ * page's freshness salt (its reconnect generation is page state).
+ */
+const latestKeyByCapability = new Map<string, string>();
+const latestListeners = new Map<string, Set<() => void>>();
+
+function toLatestKey(machineId: string, serverId: string | null | undefined, capabilityId: string, accountId?: string | null): string {
+    return JSON.stringify([resolveServerId(serverId) || null, String(machineId ?? '').trim(), capabilityId, accountId ?? null]);
+}
+
+function recordLatestAnswers(cacheKey: string, state: MachineCapabilitiesCacheState) {
+    const snapshot = 'snapshot' in state ? state.snapshot : undefined;
+    if (!snapshot) return;
+    const parsed = JSON.parse(cacheKey) as [string, string | null, string, unknown, string | null];
+    for (const capabilityId of Object.keys(snapshot.response.results ?? {})) {
+        const latestKey = toLatestKey(parsed[2], parsed[1], capabilityId, parsed[4]);
+        latestKeyByCapability.set(latestKey, cacheKey);
+        for (const listener of latestListeners.get(latestKey) ?? []) listener();
+    }
+}
+
 function setEntry(cacheKey: string, entry: CacheEntry) {
     cache.set(cacheKey, entry);
     notify(cacheKey);
+    recordLatestAnswers(cacheKey, entry.state);
+}
+
+/** The newest answer in the requested Account namespace, whatever salt it was asked under. */
+export function getLatestMachineCapabilityCacheState(
+    machineId: string,
+    serverId: string | null | undefined,
+    capabilityId: string,
+    accountId?: string | null,
+): MachineCapabilitiesCacheState | null {
+    const cacheKey = latestKeyByCapability.get(toLatestKey(machineId, serverId, capabilityId, accountId));
+    return cacheKey ? getEntry(cacheKey)?.state ?? null : null;
+}
+
+/** When the newest cached answer carrying `capabilityId` arrived, for an honest "As of"; `null` when none. */
+export function getLatestMachineCapabilityCacheUpdatedAt(
+    machineId: string,
+    serverId: string | null | undefined,
+    capabilityId: string,
+    accountId?: string | null,
+): number | null {
+    const cacheKey = latestKeyByCapability.get(toLatestKey(machineId, serverId, capabilityId, accountId));
+    return cacheKey ? getEntry(cacheKey)?.updatedAt ?? null : null;
+}
+
+export function subscribeLatestMachineCapabilityCacheState(
+    machineId: string,
+    serverId: string | null | undefined,
+    capabilityId: string,
+    listener: () => void,
+    accountId?: string | null,
+): () => void {
+    const latestKey = toLatestKey(machineId, serverId, capabilityId, accountId);
+    let set = latestListeners.get(latestKey);
+    if (!set) {
+        set = new Set();
+        latestListeners.set(latestKey, set);
+    }
+    set.add(listener);
+    return () => {
+        const current = latestListeners.get(latestKey);
+        if (!current) return;
+        current.delete(listener);
+        if (current.size === 0) latestListeners.delete(latestKey);
+    };
 }
 
 function subscribe(cacheKey: string, cb: (state: MachineCapabilitiesCacheState) => void): () => void {
@@ -129,6 +203,20 @@ function subscribe(cacheKey: string, cb: (state: MachineCapabilitiesCacheState) 
         current.delete(cb);
         if (current.size === 0) listeners.delete(cacheKey);
     };
+}
+
+/**
+ * Observe one machine's cached capabilities without fetching — for a surface that lists several
+ * machines at once and so cannot call the per-machine hook in a loop.
+ */
+export function subscribeMachineCapabilitiesCacheState(
+    machineId: string,
+    serverId: string | null | undefined,
+    cacheKeySalt: string | number | null | undefined,
+    listener: () => void,
+    accountId?: string | null,
+): () => void {
+    return subscribe(toCacheKey(machineId, serverId, cacheKeySalt, accountId), () => listener());
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -156,10 +244,47 @@ function withDurableDepVersionCheckTimestamp(result: CapabilityDetectResult): Ca
     };
 }
 
+/**
+ * K6 — an agent CLI's latest version is only in a detect that asked for it (`includeLatestVersion`).
+ * Other detects of the same `cli.<agent>` (the new-session picker, a machine page) replace the
+ * result without it; the answer is still true, so it is carried forward with the time it was
+ * learned (`latestVersionCheckedAt`), which the freshness policy reads instead of the newer
+ * result's `checkedAt`.
+ */
+function withDurableAgentLatestVersion(next: CapabilityDetectResult, prev: CapabilityDetectResult | undefined): CapabilityDetectResult {
+    if (!next.ok || !isPlainObject(next.data)) return next;
+    if (Object.prototype.hasOwnProperty.call(next.data, 'latestVersion')) {
+        if (typeof next.data.latestVersionCheckedAt === 'number') return next;
+        return { ...next, data: { ...next.data, latestVersionCheckedAt: next.checkedAt } };
+    }
+    if (!prev || !prev.ok || !isPlainObject(prev.data) || !Object.prototype.hasOwnProperty.call(prev.data, 'latestVersion')) return next;
+    const learnedAt = typeof prev.data.latestVersionCheckedAt === 'number' ? prev.data.latestVersionCheckedAt : prev.checkedAt;
+    return { ...next, data: { ...next.data, latestVersion: prev.data.latestVersion, latestVersionCheckedAt: learnedAt } };
+}
+
+/** A `cli.<agent>` request asking for the latest version is unmet by a cached result without it. */
+function isAgentLatestVersionMissing(results: Partial<Record<CapabilityId, CapabilityDetectResult>>, capabilityId: string): boolean {
+    const result = results[capabilityId as CapabilityId];
+    if (!result) return true;
+    // An errored probe was checked and failed: it is asked again on the failure cadence of the
+    // shared latest-version policy, not on every Updates request.
+    if (!result.ok) {
+        const checkedAt = typeof result.checkedAt === 'number' ? result.checkedAt : 0;
+        return checkedAt <= 0 || isLatestVersionCheckDue({ checkedAt, ok: false, now: Date.now() });
+    }
+    if (!isPlainObject(result.data)) return true;
+    // A daemon that predates K6 never answers it; asking again would not change the answer.
+    if (typeof result.data.updateSupported !== 'boolean') return false;
+    return !Object.prototype.hasOwnProperty.call(result.data, 'latestVersion');
+}
+
 function mergeCapabilityResult(id: CapabilityId, prev: CapabilityDetectResult | undefined, next: CapabilityDetectResult): CapabilityDetectResult {
     const normalizedPrev = prev ? withDurableDepVersionCheckTimestamp(prev) : undefined;
     const normalizedNext = withDurableDepVersionCheckTimestamp(next);
 
+    if (normalizedNext.ok && id.startsWith('cli.')) {
+        return withDurableAgentLatestVersion(normalizedNext, normalizedPrev);
+    }
     if (!normalizedPrev) return normalizedNext;
     if (!normalizedPrev.ok || !normalizedNext.ok) return normalizedNext;
 
@@ -277,6 +402,14 @@ function requestNeedsRefetchFromState(state: MachineCapabilitiesCacheState, requ
         }
     }
 
+    for (const entry of requests) {
+        if (!entry?.id?.startsWith('cli.')) continue;
+        if (Boolean((entry.params as { includeLatestVersion?: unknown } | undefined)?.includeLatestVersion)
+            && isAgentLatestVersionMissing(results, entry.id)) {
+            return true;
+        }
+    }
+
     const capabilityIdsNeedingLoginStatus = new Set<string>();
 
     for (const entry of requests) {
@@ -329,18 +462,37 @@ async function fetchAndMerge(params: {
     cacheKeySalt?: string | number | null;
     request: CapabilitiesDetectRequest;
     timeoutMs?: number;
+    accountLifetime?: ServerAccountScopeLifetime;
 }): Promise<void> {
-    const cacheKey = toCacheKey(params.machineId, params.serverId, params.cacheKeySalt);
+    const cacheKey = toCacheKey(params.machineId, params.serverId, params.cacheKeySalt, params.accountLifetime?.scope.accountId);
     const requestKey = detectRequestKey(params.request);
     const scheduled = scheduledFetchByCacheKey.get(cacheKey);
-    if (scheduled && scheduled.requestKey === requestKey) {
+    if (scheduled && scheduled.requestKey === requestKey && scheduled.isCurrent()) {
+        if (params.accountLifetime) scheduled.retainAccountReader(params.accountLifetime);
         return await scheduled.promise;
     }
 
     const previousPromise = scheduled?.promise ?? Promise.resolve();
     const token = Math.floor(Math.random() * Number.MAX_SAFE_INTEGER);
+    const controller = params.accountLifetime ? new AbortController() : null;
+    const accountReaders = new Set<ServerAccountScopeLifetime>();
+    const retirements: Array<Readonly<{ dispose(): void }>> = [];
+    const isCurrent = () => !controller?.signal.aborted && (!params.accountLifetime || [...accountReaders].some((reader) => reader.isCurrent()));
+    const retainAccountReader = (lifetime: ServerAccountScopeLifetime) => {
+        if (accountReaders.has(lifetime)) return;
+        accountReaders.add(lifetime);
+        retirements.push(lifetime.onRetire(() => {
+            if (isCurrent()) return;
+            controller?.abort();
+            if (getEntry(cacheKey)?.inFlightToken === token) {
+                setEntry(cacheKey, { state: { status: 'idle' }, updatedAt: 0 });
+            }
+        }));
+    };
+    if (params.accountLifetime) retainAccountReader(params.accountLifetime);
 
     const scheduledPromise = previousPromise.then(async () => {
+        if (!isCurrent()) return;
         const existing = getEntry(cacheKey);
         const prevSnapshot =
             existing?.state.status === 'loaded'
@@ -366,8 +518,11 @@ async function fetchAndMerge(params: {
             result = await machineCapabilitiesDetect(params.machineId, params.request, {
                 timeoutMs,
                 serverId: params.serverId,
+                accountId: params.accountLifetime?.scope.accountId,
+                signal: controller?.signal,
             });
         } catch {
+            if (!isCurrent()) return;
             const current = getEntry(cacheKey);
             if (!current || current.inFlightToken !== token) {
                 return;
@@ -380,6 +535,7 @@ async function fetchAndMerge(params: {
             return;
         }
 
+        if (!isCurrent()) return;
         const current = getEntry(cacheKey);
         if (!current || current.inFlightToken !== token) {
             return;
@@ -413,6 +569,7 @@ async function fetchAndMerge(params: {
     });
 
     const finalPromise = scheduledPromise.finally(() => {
+        for (const retirement of retirements) retirement.dispose();
         const current = scheduledFetchByCacheKey.get(cacheKey);
         if (current?.promise === finalPromise) {
             scheduledFetchByCacheKey.delete(cacheKey);
@@ -422,6 +579,8 @@ async function fetchAndMerge(params: {
     scheduledFetchByCacheKey.set(cacheKey, {
         requestKey,
         promise: finalPromise,
+        isCurrent,
+        retainAccountReader,
     });
 
     return await finalPromise;
@@ -433,6 +592,7 @@ export function prefetchMachineCapabilities(params: {
     cacheKeySalt?: string | number | null;
     request: CapabilitiesDetectRequest;
     timeoutMs?: number;
+    accountLifetime?: ServerAccountScopeLifetime;
 }): Promise<void> {
     return fetchAndMerge(params);
 }
@@ -444,8 +604,12 @@ export function prefetchMachineCapabilitiesIfStale(params: {
     staleMs: number;
     request: CapabilitiesDetectRequest;
     timeoutMs?: number;
+    accountLifetime?: ServerAccountScopeLifetime;
 }): Promise<void> {
-    const cacheKey = toCacheKey(params.machineId, params.serverId, params.cacheKeySalt);
+    if (params.accountLifetime && !params.accountLifetime.isCurrent()) return Promise.resolve();
+    const cacheKey = toCacheKey(params.machineId, params.serverId, params.cacheKeySalt, params.accountLifetime?.scope.accountId);
+    const scheduled = scheduledFetchByCacheKey.get(cacheKey);
+    if (params.accountLifetime && scheduled?.isCurrent()) scheduled.retainAccountReader(params.accountLifetime);
     const existing = getEntry(cacheKey);
     if (!existing || existing.state.status === 'idle') {
         return fetchAndMerge({
@@ -454,6 +618,7 @@ export function prefetchMachineCapabilitiesIfStale(params: {
             cacheKeySalt: params.cacheKeySalt,
             request: params.request,
             timeoutMs: params.timeoutMs,
+            accountLifetime: params.accountLifetime,
         });
     }
     if (requestNeedsRefetchFromState(existing.state, params.request)) {
@@ -463,6 +628,7 @@ export function prefetchMachineCapabilitiesIfStale(params: {
             cacheKeySalt: params.cacheKeySalt,
             request: params.request,
             timeoutMs: params.timeoutMs,
+            accountLifetime: params.accountLifetime,
         });
     }
     const now = Date.now();
@@ -474,6 +640,7 @@ export function prefetchMachineCapabilitiesIfStale(params: {
             cacheKeySalt: params.cacheKeySalt,
             request: params.request,
             timeoutMs: params.timeoutMs,
+            accountLifetime: params.accountLifetime,
         });
     }
     return Promise.resolve();
@@ -526,7 +693,21 @@ export function useMachineCapabilitiesCache(params: {
             return;
         }
 
-        const unsubscribe = subscribe(cacheKey, (nextState) => setState(nextState));
+        let subscribed = true;
+        const unsubscribeState = subscribe(cacheKey, (nextState) => {
+            setState(nextState);
+            // A server switch interrupted the read and left the entry `idle` (unanswered). A later
+            // ask retries at once; a mounted reader is that ask, so once the interrupted read has
+            // settled it asks again instead of idling.
+            if (!enabled || nextState.status !== 'idle') return;
+            void (scheduledFetchByCacheKey.get(cacheKey)?.promise ?? Promise.resolve()).then(() => {
+                if (subscribed && getEntry(cacheKey)?.state.status === 'idle') refresh();
+            });
+        });
+        const unsubscribe = () => {
+            subscribed = false;
+            unsubscribeState();
+        };
 
         const entry = getEntry(cacheKey);
         if (entry) setState(entry.state);

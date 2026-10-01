@@ -668,6 +668,38 @@ describe('serverProfiles', () => {
         });
     });
 
+    it('keeps virtual All Homes while two Homes remain and falls back when only one remains', async () => {
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
+        const profiles = await importFresh();
+        const { ALL_HOMES_SELECTION_TARGET_ID } = await import('./selection/allHomesSelectionTarget');
+        for (const seeded of profiles.listServerProfiles()) await profiles.removeServerProfile(seeded.id);
+        const homes = await Promise.all([
+            profiles.upsertServerProfile({ serverUrl: 'https://all-a.example.test' }),
+            profiles.upsertServerProfile({ serverUrl: 'https://all-b.example.test' }),
+            profiles.upsertServerProfile({ serverUrl: 'https://all-c.example.test' }),
+        ]);
+        await profiles.saveHomeViewState({
+            version: 1,
+            groups: [{ id: 'custom', name: 'Custom', serverIds: homes.map((home) => home.id) }],
+            activeTargetKind: 'group',
+            activeTargetId: ALL_HOMES_SELECTION_TARGET_ID,
+        });
+
+        await profiles.removeServerProfile(homes[2]!.id);
+        expect(profiles.loadHomeViewState()).toMatchObject({
+            groups: [{ id: 'custom', name: 'Custom', serverIds: homes.slice(0, 2).map((home) => home.id) }],
+            activeTargetKind: 'group',
+            activeTargetId: ALL_HOMES_SELECTION_TARGET_ID,
+        });
+
+        await profiles.removeServerProfile(homes[1]!.id);
+        expect(profiles.loadHomeViewState()).toMatchObject({
+            groups: [{ id: 'custom', name: 'Custom', serverIds: [homes[0]!.id] }],
+            activeTargetKind: 'server',
+            activeTargetId: homes[0]!.id,
+        });
+    });
+
     it('keeps Account Service endpoint separate and adopts strict Home descriptors without focus changes', async () => {
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
         const profiles = await importFresh();
@@ -2860,12 +2892,17 @@ describe('serverProfiles', () => {
         };
 
         // Tab B has captured the old whole state. Tab A commits a disjoint valid
-        // mutation before B resumes and writes its profile rename from that base.
-        await tabB.renameServerProfile(profile.id, 'Home renamed by B');
+        // mutation before B resumes and adopts its profile from that base.
+        await tabB.adoptHomeProfile({
+            descriptor: { serverUrl: profile.serverUrl },
+            source: 'manual',
+            suggestedName: 'Home adopted by B',
+            preserveUserLabel: false,
+        });
         await tabAWrite;
 
         expect(interleaved).toBe(true);
-        expect(tabA.getServerProfileById(profile.id)?.name).toBe('Home renamed by B');
+        expect(tabA.getServerProfileById(profile.id)?.name).toBe('Home adopted by B');
         expect(tabA.getAccountServiceEndpointSnapshot()).toEqual({
             url: 'https://accounts.example.test',
             source: 'user',
@@ -2881,7 +2918,11 @@ describe('serverProfiles', () => {
         web.store.set(key, raw);
         const profiles = await importFresh();
 
-        await expect(profiles.renameServerProfile('home-a', 'Renamed')).rejects.toThrow(
+        await expect(profiles.adoptHomeProfile({
+            descriptor: { serverUrl: 'https://home-a.example.test' },
+            source: 'manual',
+            suggestedName: 'Adopted',
+        })).rejects.toThrow(
             'Browser storage locking is unavailable',
         );
         expect(web.store.get(key)).toBe(raw);
@@ -3354,18 +3395,43 @@ describe('serverProfiles', () => {
         expect(identities).toEqual(expect.arrayContaining(['srv_identity_a', 'srv_identity_b']));
     });
 
-    it('seeds api.happier.dev on app.happier.dev web origin when no preconfigured env exists', async () => {
+    it.each(['https://cloud.happier.dev', 'https://app.happier.dev'])(
+        'seeds api.happier.dev on the hosted web origin %s when no preconfigured env exists',
+        async (webOrigin) => {
+            const scope = randomScope();
+            process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = scope;
+            delete process.env.EXPO_PUBLIC_HAPPY_SERVER_URL;
+            delete process.env.EXPO_PUBLIC_HAPPY_PRECONFIGURED_SERVERS;
+            stubWebRuntime(webOrigin);
+
+            const profiles = await importFresh();
+            const all = profiles.listServerProfiles();
+            expect(all.some((p) => p.serverUrl === 'https://api.happier.dev')).toBe(true);
+            expect(all.some((p) => p.serverUrl === webOrigin)).toBe(false);
+            expect(profiles.getActiveServerUrl()).toBe('https://api.happier.dev');
+        },
+    );
+
+    it('never treats the desktop webview origin as a relay', async () => {
+        // The desktop app's page is its own bundle (http://tauri.localhost on Windows, the Metro
+        // devUrl in `tauri dev`), not a relay: it must neither seed a profile nor become the local
+        // relay that desktop setup hands the CLI as `--local-server-url`.
         const scope = randomScope();
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = scope;
         delete process.env.EXPO_PUBLIC_HAPPY_SERVER_URL;
         delete process.env.EXPO_PUBLIC_HAPPY_PRECONFIGURED_SERVERS;
-        stubWebRuntime('https://app.happier.dev');
+        stubWebRuntime('http://tauri.localhost');
+        vi.stubGlobal('__TAURI_INTERNALS__', { invoke: async () => null });
 
         const profiles = await importFresh();
-        const all = profiles.listServerProfiles();
-        expect(all.some((p) => p.serverUrl === 'https://api.happier.dev')).toBe(true);
-        expect(all.some((p) => p.serverUrl === 'https://app.happier.dev')).toBe(false);
-        expect(profiles.getActiveServerUrl()).toBe('https://api.happier.dev');
+        const created = await profiles.upsertServerProfile({ serverUrl: 'https://relay.example.test', name: 'Relay' });
+        await profiles.setActiveServerId(created.id, { scope: 'device' });
+
+        expect(profiles.listServerProfiles().some((p) => p.serverUrl === 'http://tauri.localhost')).toBe(false);
+        expect(profiles.getActiveServerSnapshot()).toMatchObject({
+            serverUrl: 'https://relay.example.test',
+            activeLocalRelayUrl: null,
+        });
     });
 
     it('does not seed a same-origin server profile when EXPO_PUBLIC_HAPPY_SERVER_URL is set', async () => {
@@ -3400,19 +3466,6 @@ describe('serverProfiles', () => {
         expect(two.name).toBe('Existing');
         expect(profiles.listServerProfiles().filter((profile) => profile.id === one.id)).toHaveLength(1);
         expect(one.id).toMatch(/^[a-z0-9._-]+$/);
-    });
-
-    it('can rename a server profile without changing its id', async () => {
-        const scope = randomScope();
-        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = scope;
-
-        const profiles = await importFresh();
-        const created = await profiles.upsertServerProfile({ serverUrl: 'https://rename.example.test', name: 'Before' });
-        await profiles.renameServerProfile(created.id, 'After');
-
-        const list = profiles.listServerProfiles();
-        const updated = list.find((p) => p.id === created.id);
-        expect(updated?.name).toBe('After');
     });
 
     it('seeds a preconfigured server from EXPO_PUBLIC_HAPPY_SERVER_URL', async () => {

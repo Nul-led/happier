@@ -140,6 +140,29 @@ describe('TranscriptSendToSessionModal', () => {
         expect(renderedText).not.toContain('Source');
     });
 
+    it('names the card in the shared title band instead of a line inside the body', async () => {
+        sessionsRef.current = [createSessionFixture({ id: 'source', serverId: 'server-a', metadata: createNamedMetadata('Source') })];
+        const setChrome = vi.fn();
+
+        const screen = await renderScreen(
+            <TranscriptSendToSessionModal
+                sourceSessionId="source"
+                sourceServerId="server-a"
+                previewText="Preview"
+                onResolve={vi.fn()}
+                onClose={vi.fn()}
+                setChrome={setChrome}
+            />,
+        );
+
+        expect(setChrome).toHaveBeenLastCalledWith(expect.objectContaining({
+            kind: 'card',
+            title: 'Send to session',
+            subtitle: 'Append selected messages to another session draft',
+        }));
+        expect(screen.getTextContent()).not.toContain('Append selected messages to another session draft');
+    });
+
     it('lists destination sessions from the session-list cache when full sessions are not loaded', async () => {
         const source = createSessionFixture({ id: 'source', metadata: createNamedMetadata('Source') });
         const cachedDestination = createSessionFixture({

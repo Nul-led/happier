@@ -98,9 +98,10 @@ vi.mock('@/components/profiles/profileDisplay', () => ({
     getProfileDisplayName: () => 'Profile',
 }));
 
-vi.mock('@/constants/Typography', () => ({
-    Typography: { default: () => ({}) },
-}));
+vi.mock('@/constants/Typography', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/constants/Typography')>();
+    return { ...actual, Typography: { ...actual.Typography, default: () => ({}) } };
+});
 
 vi.mock('@/sync/domains/profiles/profileSecrets', () => ({
     hasRequiredSecret: () => false,
@@ -191,5 +192,43 @@ describe('ProfilesList', () => {
 
         expect(screen.findAllByProps({ testID: 'profiles-list-row:default-environment' }).length).toBeGreaterThan(0);
         expect(screen.findAllByProps({ testID: 'profiles-list-row:anthropic' }).length).toBeGreaterThan(0);
+    });
+
+    it('draws no selection on a page, which lists profiles rather than choosing one', async () => {
+        profilesListState.groups = {
+            favoriteIds: new Set<string>(),
+            favoriteProfiles: [],
+            customProfiles: [],
+            builtInProfiles: [
+                {
+                    id: 'anthropic',
+                    name: 'Anthropic',
+                    isBuiltIn: true,
+                    compatibility: {},
+                    compatibilityByTargetKey: {},
+                    environmentVariables: [],
+                },
+            ],
+        };
+        const { ProfilesList } = await import('./ProfilesList');
+        const render = (presentation: 'page' | 'grouped') => renderScreen(
+            <ProfilesList
+                presentation={presentation}
+                customProfiles={[]}
+                favoriteProfileIds={[]}
+                onFavoriteProfileIdsChange={() => {}}
+                selectedProfileId={null}
+                onPressDefaultEnvironment={() => {}}
+                machineId={null}
+                includeDefaultEnvironmentRow
+            />,
+        );
+        const selectedRowIds = (screen: Awaited<ReturnType<typeof render>>) => screen
+            .findAll((node) => node.props?.selected === true && typeof node.props?.testID === 'string')
+            .map((node) => node.props.testID as string);
+
+        // A picker marks the no-profile choice as the current selection; a page marks nothing.
+        expect(selectedRowIds(await render('grouped'))).toContain('profiles-list-row:default-environment');
+        expect(selectedRowIds(await render('page'))).toEqual([]);
     });
 });

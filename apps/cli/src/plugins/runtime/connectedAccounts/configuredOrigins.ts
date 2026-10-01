@@ -273,7 +273,7 @@ export function resolveHostOwnedConnectedAccountConfiguredOrigins(input: Readonl
 
 export type ConnectedAccountConfiguredOriginResolution = Readonly<{
     service: PluginContributionRef;
-    generation: string;
+    occurrenceId: string;
     configurationRevision: string;
     origins: readonly string[];
     networkScopes: readonly PluginNetworkBindingScope[];
@@ -290,7 +290,7 @@ export type ConnectedAccountConfiguredOriginResolution = Readonly<{
 export async function resolveConnectedAccountConfiguredOrigins(input: Readonly<{
     pluginId: string;
     service: PluginContributionRef;
-    generation: string;
+    occurrenceId: string;
     configuration: RuntimeConfiguration;
     hostAccessRequests: readonly Readonly<{
         request: PluginHostAccessRequestV2;
@@ -303,7 +303,7 @@ export async function resolveConnectedAccountConfiguredOrigins(input: Readonly<{
     isConfigurationCurrent(configuration: RuntimeConfiguration): boolean | Promise<boolean>;
     /** Push revocation from the exact host-owned configuration snapshot. */
     configurationRevocationSignal?: AbortSignal;
-    isGenerationCurrent(generation: string): boolean | Promise<boolean>;
+    isOccurrenceCurrent(occurrenceId: string): boolean | Promise<boolean>;
     /** DNS boundary for the private-network decision; defaults to the host resolver. */
     resolveNetworkAddresses?: PluginNetworkAddressResolver;
 }>): Promise<ConnectedAccountConfiguredOriginResolution> {
@@ -381,8 +381,8 @@ export async function resolveConnectedAccountConfiguredOrigins(input: Readonly<{
     if (!await input.isConfigurationCurrent(input.configuration)) {
         throw new Error('Connected-account configuration changed during origin resolution');
     }
-    if (!await input.isGenerationCurrent(input.generation)) {
-        throw new Error('Connected-account plugin generation changed during origin resolution');
+    if (!await input.isOccurrenceCurrent(input.occurrenceId)) {
+        throw new Error('Connected-account plugin occurrenceId changed during origin resolution');
     }
     /**
      * A declared `httpsHostSuffix` family stays a family here. It is not a
@@ -460,7 +460,7 @@ export async function resolveConnectedAccountConfiguredOrigins(input: Readonly<{
     ].sort());
     return Object.freeze({
         service: input.service,
-        generation: input.generation,
+        occurrenceId: input.occurrenceId,
         configurationRevision: input.configuration.revision,
         origins,
         networkScopes: Object.freeze(networkScopes),
@@ -471,7 +471,7 @@ export async function resolveConnectedAccountConfiguredOrigins(input: Readonly<{
             : { networkRevocationSignal: input.configurationRevocationSignal }),
         isCurrent: async () => (
             await input.isConfigurationCurrent(input.configuration)
-            && await input.isGenerationCurrent(input.generation)
+            && await input.isOccurrenceCurrent(input.occurrenceId)
         ),
     });
 }

@@ -17,22 +17,22 @@ const ref = Object.freeze({
 function createBindingInput(overrides: Partial<Readonly<{
     pluginId: string;
     agentId: string;
-    generationId: string;
+    occurrenceId: string;
     sessionId: string;
     machineId: string;
     readAccountRevision: () => string | null;
     sessionSignal: AbortSignal;
-    generationRetirementSignal: AbortSignal;
-    isGenerationCurrent: () => boolean;
+    occurrenceRetirementSignal: AbortSignal;
+    isOccurrenceCurrent: () => boolean;
 }>> = {}) {
     return {
         pluginId: 'acme.plugin',
         agentId: 'codex',
-        generationId: 'generation-1',
+        occurrenceId: 'generation-1',
         sessionId: 'session-1',
         machineId: 'machine-1',
         readAccountRevision: () => 'account-1',
-        isGenerationCurrent: () => true,
+        isOccurrenceCurrent: () => true,
         ...overrides,
     };
 }
@@ -114,7 +114,7 @@ describe('external-session daemon host-operation owner', () => {
         expect(resolveTarget).toHaveBeenCalledWith(expect.objectContaining({
             pluginId: 'acme.plugin',
             contributionId: 'codex',
-            generationId: 'generation-1',
+            occurrenceId: 'generation-1',
             sessionId: 'session-1',
             machineId: 'machine-1',
             accountRevision: 'account-1',
@@ -304,7 +304,7 @@ describe('external-session daemon host-operation owner', () => {
         expect(followExecute).toHaveBeenCalledWith(expect.objectContaining({
             pluginId: 'acme.plugin',
             contributionId: 'codex',
-            generationId: 'generation-1',
+            occurrenceId: 'generation-1',
             machineId: 'machine-1',
             isCurrent: expect.any(Function),
         }));
@@ -357,7 +357,7 @@ describe('external-session daemon host-operation owner', () => {
         expect(replacementFollow).not.toHaveBeenCalled();
 
         const replacementBinding = owner.bind(createBindingInput({
-            generationId: 'generation-2',
+            occurrenceId: 'generation-2',
             sessionId: 'session-2',
         }));
         await replacementBinding.executeFollow(followRequest());
@@ -387,8 +387,8 @@ describe('external-session daemon host-operation owner', () => {
             });
             const binding = owner.bind(createBindingInput({
                 sessionSignal: session.signal,
-                generationRetirementSignal: generation.signal,
-                isGenerationCurrent: () => !generation.signal.aborted,
+                occurrenceRetirementSignal: generation.signal,
+                isOccurrenceCurrent: () => !generation.signal.aborted,
             }));
             const result = await binding.executeFollow(followRequest(caller.signal));
             expect(result.status).toBe('following');
@@ -462,7 +462,7 @@ describe('external-session daemon host-operation owner', () => {
                 ),
             });
             const secondBinding = owner.bind(createBindingInput({
-                generationId: 'generation-2',
+                occurrenceId: 'generation-2',
                 sessionId: 'session-2',
             }));
             await expect(
@@ -722,8 +722,8 @@ describe('external-session daemon host-operation owner', () => {
             followOperation: unavailableFollowOperation(followExecute),
         });
         const binding = owner.bind(createBindingInput({
-            generationRetirementSignal: generationRetirement.signal,
-            isGenerationCurrent: () => generationCurrent,
+            occurrenceRetirementSignal: generationRetirement.signal,
+            isOccurrenceCurrent: () => generationCurrent,
         }));
 
         const followed = binding.executeFollow(followRequest());
@@ -922,7 +922,7 @@ describe('external-session daemon host-operation owner', () => {
         expect(dispose).toHaveBeenCalledTimes(2);
         expect(owner.canFollowNow()).toBe(true);
         const replacementBinding = owner.bind(createBindingInput({
-            generationId: 'generation-2',
+            occurrenceId: 'generation-2',
             sessionId: 'session-2',
         }));
         await expect(replacementBinding.executeFollow(followRequest()))

@@ -1,9 +1,15 @@
 import * as React from 'react';
 import { View } from 'react-native';
-import { Item } from '@/components/ui/lists/Item';
-import { Icon, ICON_SIZE } from '@/components/ui/icons/Icon';
-import { Text } from '@/components/ui/text/Text';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
+import { Avatar } from '@/components/ui/avatar/Avatar';
+import { AvatarStack } from '@/components/ui/avatar/AvatarStack';
+import { Item } from '@/components/ui/lists/Item';
+import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
+import { Icon } from '@/components/ui/icons/Icon';
+import { ITEM_SUBTITLE_TEXT_METRICS, ITEM_TITLE_TEXT_METRICS } from '@/components/ui/lists/itemDensityMetrics';
+import { StatusDot } from '@/components/ui/status/StatusDot';
+import { Text } from '@/components/ui/text/Text';
+import { Typography } from '@/constants/Typography';
 import { Modal } from '@/modal';
 import { useMountedRef } from '@/hooks/ui/useMountedRef';
 import { t } from '@/text';
@@ -11,21 +17,41 @@ import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
 import { useSessionHumanPresence } from '@/sync/domains/session/humanPresence/useSessionHumanPresence';
 import { PoliteAccessibilityStatus } from '@/components/ui/accessibility/PoliteAccessibilityStatus';
 import { STALE_PRESENCE_OPACITY } from './SessionViewerFacepile';
-import { formatSessionPresenceViewerNames } from './sessionPresenceNames';
+import { formatSessionPresenceHere, formatSessionPresenceTyping, formatSessionPresenceViewerNames } from './sessionPresenceNames';
 
-const styles = StyleSheet.create({
+const AVATAR_PX = 28;
+
+const styles = StyleSheet.create((theme) => ({
     // Retained last-known rows are de-emphasized exactly like the header
     // facepile. The `May be out of date` text carries the meaning; the
     // treatment never relies on color alone.
     stale: { opacity: STALE_PRESENCE_OPACITY },
-});
+    presenceDot: { position: 'absolute', right: -1, bottom: -1 },
+    glyph: { width: AVATAR_PX, height: AVATAR_PX, alignItems: 'center', justifyContent: 'center' },
+    title: {
+        ...Typography.default('semiBold'),
+        ...ITEM_TITLE_TEXT_METRICS.compact,
+        color: theme.colors.text.primary,
+    },
+    titleQuiet: { ...Typography.default(), color: theme.colors.text.secondary },
+    subtitle: {
+        ...Typography.default(),
+        ...ITEM_SUBTITLE_TEXT_METRICS.compact,
+        color: theme.colors.text.secondary,
+    },
+}));
 
+/**
+ * The present, in one line at the top of the Collaboration pane (lab `collab` C1): live avatars with
+ * the presence dot, "Ana and Ben are here", and "Ben is typing…" beneath. It never collapses: while
+ * connecting, alone, unanswered or unsupported it keeps its line and says which.
+ */
 export function SessionPresenceSection(target: SessionAddress) {
     const presence = useSessionHumanPresence(target);
+    const { theme } = useUnistyles();
     // The plan announces a viewer arrival or departure only to someone who has
     // navigated INTO this region; an unfocused polite region speaks every
-    // presence change of every open Session. Focus is read from the existing
-    // summary anchor rather than from a new subscription.
+    // presence change of every open Session.
     const [regionFocused, setRegionFocused] = React.useState(false);
     const onRegionFocus = React.useCallback(() => setRegionFocused(true), []);
     const onRegionBlur = React.useCallback(() => setRegionFocused(false), []);
@@ -38,20 +64,24 @@ export function SessionPresenceSection(target: SessionAddress) {
         if (modalId.current) Modal.hide(modalId.current);
         modalId.current = null;
     }, [target.serverId, target.sessionId]);
-    const { theme } = useUnistyles();
-    if (presence.status === 'unsupported') return null;
-    const hasViewers = presence.viewers.length > 0;
-    const status = presence.status === 'stale' ? t('session.collaboration.stale')
-        : presence.status === 'unavailable' ? t('session.collaboration.unavailable')
-            : presence.status === 'connecting' ? t('session.collaboration.connecting')
-                : hasViewers ? formatSessionPresenceViewerNames(presence.viewers)
-                    : t('session.collaboration.justYou');
-    const names = formatSessionPresenceViewerNames(presence.viewers, { stale: true });
+
+    const viewers = presence.viewers;
+    const hasViewers = viewers.length > 0;
+    const retained = presence.status === 'stale' || (presence.status === 'unavailable' && hasViewers);
+    const live = presence.status === 'live';
+    const title = presence.status === 'unsupported' ? t('session.collaboration.pane.presenceUnsupported')
+        : presence.status === 'connecting' && !hasViewers ? t('session.collaboration.pane.presenceConnecting')
+            : presence.status === 'unavailable' && !hasViewers ? t('session.collaboration.pane.presenceUnavailable')
+                : formatSessionPresenceHere(viewers);
+    const subtitle = retained ? t('session.collaboration.stale')
+        : live && hasViewers ? formatSessionPresenceTyping(viewers) ?? t('session.collaboration.viewingNow')
+            : live ? t('session.collaboration.pane.justYouHint')
+                : null;
+    const names = formatSessionPresenceViewerNames(viewers, { stale: !live });
     // Membership and reachability are the meaningful transitions. A typing
-    // renewal keeps this key, so the one live-region owner coalesces it away
-    // instead of re-reading the row aloud.
-    const membershipTransitionKey = `${presence.status}|${presence.viewers.map((viewer) => viewer.account.accountId).join(',')}`;
-    const announcement = `${t('session.collaboration.viewingNow')}: ${hasViewers ? names : status}`;
+    // renewal keeps this key, so the one live-region owner coalesces it away.
+    const membershipTransitionKey = `${presence.status}|${viewers.map((viewer) => viewer.account.accountId).join(',')}`;
+    const announcement = `${t('session.collaboration.viewingNow')}: ${hasViewers ? formatSessionPresenceViewerNames(viewers, { stale: true }) : title}`;
     const openViewers = async () => {
         const { SessionPresenceViewerList } = await import('./SessionPresenceViewerList');
         if (!mounted.current || currentTarget.current.serverId !== target.serverId || currentTarget.current.sessionId !== target.sessionId) return;
@@ -69,19 +99,42 @@ export function SessionPresenceSection(target: SessionAddress) {
         if (!mounted.current || currentTarget.current.serverId !== target.serverId || currentTarget.current.sessionId !== target.sessionId) Modal.hide(id);
         else modalId.current = id;
     };
+    const lead = hasViewers ? (
+        <AvatarStack size={AVATAR_PX} entries={viewers.slice(0, 3).map((viewer) => ({
+            key: viewer.account.accountId,
+            content: <View>
+                    <Avatar id={viewer.account.accountId} size={AVATAR_PX} imageUrl={viewer.account.avatarUrl} />
+                    {live ? (
+                        <View style={styles.presenceDot}>
+                            <StatusDot color={theme.colors.state.success.foreground} size={8} />
+                        </View>
+                    ) : null}
+                </View>,
+        }))} />
+    ) : (
+        <View style={styles.glyph} accessible={false} importantForAccessibility="no-hide-descendants">
+            {presence.status === 'connecting'
+                ? <ActivitySpinner size="small" />
+                : <Icon name={presence.status === 'unsupported' || presence.status === 'unavailable' ? 'cloud-slash' : 'users'} size={18} color={theme.colors.text.tertiary} />}
+        </View>
+    );
     return <View testID="session-presence-section">
         <View ref={summaryAnchor} tabIndex={-1} testID="session-presence-summary-anchor"
             onFocus={onRegionFocus} onBlur={onRegionBlur}
-            style={presence.status === 'stale' ? styles.stale : undefined}>
-            <Item testID="session-presence-summary" title={t('session.collaboration.viewingNow')}
-                // The visible row always carries the current fact, including typing.
-                // It is deliberately NOT the live region: announcing is owned by the
-                // focus-qualified status below.
-                subtitle={<Text testID="session-presence-status"
-                >{presence.status === 'stale' && hasViewers ? `${names} · ${status}` : status}</Text>}
-                icon={<Icon name="users" size={ICON_SIZE.xl} color={theme.colors.text.secondary} />}
-                showChevron={hasViewers} onPress={hasViewers ? () => { void openViewers(); } : undefined}
-                accessibilityLabel={`${t('session.collaboration.viewingNow')}: ${names}${names ? '. ' : ''}${status}`}
+            style={retained ? styles.stale : undefined}>
+            <Item
+                testID="session-presence-summary"
+                accessibilityRole={hasViewers ? 'button' : 'text'}
+                accessibilityLabel={`${title}${names ? `. ${names}` : ''}${subtitle && !names.includes(subtitle) ? `. ${subtitle}` : ''}`}
+                accessibilityHint={hasViewers ? t('session.collaboration.viewingNow') : undefined}
+                mode={hasViewers ? 'interactive' : 'info'}
+                onPress={hasViewers ? () => { void openViewers(); } : undefined}
+                density="compact"
+                showChevron={false}
+                showDivider={false}
+                leftElement={lead}
+                title={<Text testID="session-presence-title" style={[styles.title, hasViewers ? null : styles.titleQuiet]} numberOfLines={1}>{title}</Text>}
+                subtitle={subtitle ? <Text testID="session-presence-status" style={styles.subtitle} numberOfLines={1}>{subtitle}</Text> : undefined}
             />
             {regionFocused ? (
                 <PoliteAccessibilityStatus

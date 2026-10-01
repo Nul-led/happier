@@ -1,7 +1,7 @@
+import { renderWithSessionTranscriptSource } from '@/dev/testkit';
 import React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-    renderScreen,
     standardCleanup,
 } from '@/dev/testkit';
 import {
@@ -118,7 +118,7 @@ describe('ToolView (description fallback)', () => {
             result: null,
         });
 
-        const screen = await renderScreen(React.createElement(ToolView, { tool, metadata: null, messages: [] }));
+        const screen = await renderWithSessionTranscriptSource(React.createElement(ToolView, { tool, metadata: null, messages: [] }));
 
         const flattened = collectHostText(screen.tree);
         expect(flattened.join(' ')).toContain('Search for foo');

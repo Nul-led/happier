@@ -1,6 +1,6 @@
 import { resolveAnnotationCropClip } from '@happier-dev/protocol';
 
-import type { BrowserContextSource } from '../capture';
+import type { BrowserContextCaptureScope, BrowserContextSource } from '../capture';
 import type { BrowserContextRegionRect } from '../capture';
 import type { SidecarSummaryContextKind } from '../../sidecar/context/capture';
 import type {
@@ -224,21 +224,24 @@ export function createCdpBrowserContextSource(input: CdpBrowserContextSourceInpu
         handle: BrowserContextCdpPageHandle,
         method: string,
         params?: Record<string, unknown>,
+        scope?: BrowserContextCaptureScope,
     ): Promise<unknown> {
         return input.transport.dispatchPageCommand({
             targetId: handle.targetId,
             ...(handle.sessionId ? { sessionId: handle.sessionId } : {}),
             method,
             ...(params ? { params } : {}),
+            ...(scope?.signal ? { signal: scope.signal } : {}),
+            ...(scope?.deadlineMs !== undefined ? { deadlineMs: scope.deadlineMs } : {}),
         });
     }
 
-    async function evaluate(handle: BrowserContextCdpPageHandle, expression: string): Promise<unknown> {
+    async function evaluate(handle: BrowserContextCdpPageHandle, expression: string, scope?: BrowserContextCaptureScope): Promise<unknown> {
         return dispatch(handle, 'Runtime.evaluate', {
             expression,
             returnByValue: true,
             awaitPromise: false,
-        });
+        }, scope);
     }
 
     async function readPageViewportMetrics(handle: BrowserContextCdpPageHandle): Promise<PageViewportMetrics> {
@@ -246,6 +249,19 @@ export function createCdpBrowserContextSource(input: CdpBrowserContextSourceInpu
     }
 
     return {
+        async readPrivacyState(view) {
+            const handle = resolve(view);
+            if (!handle) return ADAPTER_UNAVAILABLE;
+            try {
+                // A boolean presence probe never reads field values or page contents.
+                const present = evaluateValue(await evaluate(handle,
+                    'Boolean(document.querySelector(\'input[type="password"]\'))', view));
+                if (typeof present !== 'boolean') return CAPTURE_FAILED;
+                return { ok: true, privacyState: present ? 'sensitiveFieldsPresent' : null };
+            } catch {
+                return CAPTURE_FAILED;
+            }
+        },
         async capturePage(view) {
             const handle = resolve(view);
             if (!handle) return ADAPTER_UNAVAILABLE;
@@ -470,12 +486,12 @@ export function createCdpBrowserContextSource(input: CdpBrowserContextSourceInpu
 
             try {
                 // URL/title from navigation history (metadata).
-                const entry = readCurrentHistoryEntry(await dispatch(handle, 'Page.getNavigationHistory'));
+                const entry = readCurrentHistoryEntry(await dispatch(handle, 'Page.getNavigationHistory', undefined, view));
                 const url = stringField(entry, 'url');
                 const title = stringField(entry, 'title');
 
                 // Visible text (whitespace-collapsed + capped — never an unbounded DOM dump).
-                const rawText = evaluateString(await evaluate(handle, DOM_TEXT_EXPRESSION)) ?? '';
+                const rawText = evaluateString(await evaluate(handle, DOM_TEXT_EXPRESSION, view)) ?? '';
                 const collapsedText = collapseWhitespace(rawText);
                 const visibleTextTruncated = collapsedText.length > SNAPSHOT_MAX_VISIBLE_TEXT_CHARS;
                 const visibleText = visibleTextTruncated
@@ -484,14 +500,14 @@ export function createCdpBrowserContextSource(input: CdpBrowserContextSourceInpu
 
                 // Interactive elements with synthesized selectors + layout rects (bounded).
                 const interactive = parseInteractiveElements(
-                    evaluateValue(await evaluate(handle, interactiveElementsExpression(SNAPSHOT_MAX_INTERACTIVE_ELEMENTS))),
+                    evaluateValue(await evaluate(handle, interactiveElementsExpression(SNAPSHOT_MAX_INTERACTIVE_ELEMENTS), view)),
                     SNAPSHOT_MAX_INTERACTIVE_ELEMENTS,
                 );
 
                 // Full accessibility tree (bounded `{ role, name }[]`).
-                await dispatch(handle, 'Accessibility.enable');
+                await dispatch(handle, 'Accessibility.enable', undefined, view);
                 const ax = parseAxNodes(
-                    await dispatch(handle, 'Accessibility.getFullAXTree'),
+                    await dispatch(handle, 'Accessibility.getFullAXTree', undefined, view),
                     SNAPSHOT_MAX_AX_NODES,
                 );
 
@@ -509,7 +525,7 @@ export function createCdpBrowserContextSource(input: CdpBrowserContextSourceInpu
                     const captured = await dispatch(handle, 'Page.captureScreenshot', {
                         format: 'png',
                         captureBeyondViewport: false,
-                    });
+                    }, view);
                     const pngBase64 = stringField(captured, 'data');
                     if (pngBase64) {
                         const written = await input.screenshotMediaWriter.write({

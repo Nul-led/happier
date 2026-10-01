@@ -7,6 +7,7 @@ import { resolveExternalSessionObservationLinkInput } from '@/api/session/extern
 import { loadLinkedExternalSession } from '@/api/session/external/takeover/loadLinkedExternalSession';
 import type { DeviceLocalSecretStorage } from '@/daemon/deviceLocalSecretStorage';
 import { readStoredCredentials } from '@/persistence';
+import type { PluginRuntimeOccurrenceId } from '@/plugins/runtime/runtimeSlots';
 
 type ExternalSessionTranscriptRefreshAuthority = Omit<
     ExternalSessionTranscriptRefreshBindingV1,
@@ -31,7 +32,7 @@ export function deriveExternalSessionTranscriptRefreshCursorIdentity(params: Rea
         authority.source.qualifiedIdentity.source.kind,
         authority.source.qualifiedIdentity.source.contractVersion,
         authority.source.generation,
-        authority.contributionGeneration,
+        JSON.stringify(authority.sourceCustody),
         params.cursor,
     ]);
     return `external_session_cursor_binding_v1:${
@@ -42,11 +43,14 @@ export function deriveExternalSessionTranscriptRefreshCursorIdentity(params: Rea
     }`;
 }
 
-export async function resolveExternalSessionTranscriptRefreshBinding(params: Readonly<{
+export async function resolveExternalSessionTranscriptRefreshCurrentness(params: Readonly<{
     sessionId: string;
     cursor: string;
     deviceLocalSecretStorage?: DeviceLocalSecretStorage;
-}>): Promise<ExternalSessionTranscriptRefreshBindingV1 | null> {
+}>): Promise<Readonly<{
+    binding: ExternalSessionTranscriptRefreshBindingV1;
+    occurrenceId: PluginRuntimeOccurrenceId;
+}> | null> {
     if (!params.deviceLocalSecretStorage) return null;
     const credentials = await readStoredCredentials().catch(() => null);
     if (!credentials) return null;
@@ -60,6 +64,7 @@ export async function resolveExternalSessionTranscriptRefreshBinding(params: Rea
         sessionId: params.sessionId,
     }).catch(() => null);
     if (!observation) return null;
+    if (!observation.sourceCustody) return null;
 
     const authority: ExternalSessionTranscriptRefreshAuthority = {
         machineId: loaded.session.machineId,
@@ -72,9 +77,9 @@ export async function resolveExternalSessionTranscriptRefreshBinding(params: Rea
             qualifiedIdentity: observation.target.qualifiedLinkIdentity,
             generation: observation.resource.resourceKey,
         },
-        contributionGeneration: observation.resource.pluginGeneration,
+        sourceCustody: observation.sourceCustody,
     };
-    return ExternalSessionTranscriptRefreshBindingV1Schema.parse({
+    const binding = ExternalSessionTranscriptRefreshBindingV1Schema.parse({
         v: 1,
         ...authority,
         cursorIdentity: deriveExternalSessionTranscriptRefreshCursorIdentity({
@@ -83,4 +88,16 @@ export async function resolveExternalSessionTranscriptRefreshBinding(params: Rea
             authority,
         }),
     });
+    return {
+        binding,
+        occurrenceId: observation.resource.occurrenceId as PluginRuntimeOccurrenceId,
+    };
+}
+
+export async function resolveExternalSessionTranscriptRefreshBinding(params: Readonly<{
+    sessionId: string;
+    cursor: string;
+    deviceLocalSecretStorage?: DeviceLocalSecretStorage;
+}>): Promise<ExternalSessionTranscriptRefreshBindingV1 | null> {
+    return (await resolveExternalSessionTranscriptRefreshCurrentness(params))?.binding ?? null;
 }

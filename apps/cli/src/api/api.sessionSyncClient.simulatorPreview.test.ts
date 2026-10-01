@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   BrowserAutomationActionResultV1Schema,
+  createUnavailableRuntimeActionExecutor,
   FeaturesResponseSchema,
 } from '@happier-dev/protocol';
 
@@ -9,6 +10,8 @@ import { createDaemonPeerMediationObservabilityStore } from '../daemon/peer/medi
 import { createPluginInvocationActionsService } from '../plugins/runtime/invocation/services/actions';
 import { createPluginActionCallerMaterializationFixture } from '../plugins/runtime/invocation/services/actionCaller.testkit';
 import { createCliActionExecutor } from '../session/actions/createCliActionExecutor';
+import { createBrowserAutomationReverseDispatcher } from '../daemon/browser/automation/reverseDispatch';
+import { createBrowserDaemonControlBroker } from '../daemon/browser/control/broker';
 
 const apiSessionClientConstructorMock = vi.hoisted(() => vi.fn());
 
@@ -33,6 +36,35 @@ describe('ApiClient sessionSyncClient runtime-action routes', () => {
   beforeEach(() => {
     apiSessionClientConstructorMock.mockClear();
   });
+
+  it('forwards UI cancellation through current machine ownership without provisioning Chromium', async () => {
+    const { ApiClient } = await import('./api');
+    const api = await ApiClient.create({ token: 'token_1', encryption: { type: 'legacy', secret: new Uint8Array(32) } } satisfies Credentials);
+    api.setServerFeaturesSnapshotProvider(() => ({ status: 'ready', features: FeaturesResponseSchema.parse({ features: {
+      browser: { enabled: true, viewTargets: { enabled: true }, internal: { enabled: true }, automation: { enabled: true } },
+    } }) }));
+    const broker = createBrowserDaemonControlBroker();
+    const provision = vi.fn(async () => 'provisioning' as const);
+    api.setBrowserAutomationRuntimeProvisionerProvider(() => provision);
+    // The machine RPC transport is the system boundary; route composition and forwarding stay real.
+    const payloads: unknown[] = [];
+    const reverse = createBrowserAutomationReverseDispatcher({ getMachineClient: () => ({
+      hasConnectedClientRpcHandler: () => true,
+      callConnectedClientRpc: async (_method, payload) => {
+        payloads.push(payload);
+        return { ok: true, result: { v: 1, outcome: 'no_active', canceledCount: 0 } };
+      },
+    }) });
+    api.setBrowserUiAutomationProvider(() => ({ ownsAutomationView: broker.ownsView, uiAutomation: reverse }));
+    const execute = api.createBrowserRuntimeActionExecutor();
+    const request = { actionId: 'browser.automation.cancelActive', input: { browserSessionId: 'mounted-session', viewId: 'mounted-view' },
+      context: { surface: 'agent', authority: 'present_user', defaultSessionId: 'happier-session' } } as const;
+    expect(await execute(request)).toEqual({ v: 1, outcome: 'no_active', canceledCount: 0 });
+    expect(payloads).toEqual([{ v: 1, actionId: request.actionId, input: request.input, authority: 'present_user' }]);
+    api.setBrowserUiAutomationProvider(null);
+    expect(await execute(request)).toMatchObject({ errorCode: 'runtime_action_disabled' });
+    expect(provision).not.toHaveBeenCalled();
+  }, 60_000);
 
   it('passes configured runtime-action route providers to session clients', async () => {
     const { ApiClient } = await import('./api');
@@ -130,7 +162,7 @@ describe('ApiClient sessionSyncClient runtime-action routes', () => {
       adapterKind: 'chromiumSidecar' as const,
       events: [],
     }));
-    let currentRoutes = { dispatchCommand: firstDispatch };
+    let currentRoutes = { dispatchCommand: firstDispatch, listViews: () => [] };
     api.setBrowserDaemonControlRoutesProvider(() => currentRoutes);
     const execute = api.createBrowserRuntimeActionExecutor();
     const input = {
@@ -150,7 +182,7 @@ describe('ApiClient sessionSyncClient runtime-action routes', () => {
       },
     })).resolves.toMatchObject({ status: 'dispatched' });
 
-    currentRoutes = { dispatchCommand: secondDispatch };
+    currentRoutes = { dispatchCommand: secondDispatch, listViews: () => [] };
     await expect(execute({
       actionId: 'browser.navigate',
       input: { ...input, commandId: 'command-2' },
@@ -279,6 +311,16 @@ describe('ApiClient sessionSyncClient runtime-action routes', () => {
     api.setBrowserDiagnosticsActionRoutesProvider(() => ({ dispatch: diagnosticsDispatch }));
     api.setBrowserDaemonContextRoutesProvider(() => ({ dispatch: contextDispatch }));
     api.setBrowserDaemonAutomationRoutesProvider(() => ({ dispatch: automationDispatch }));
+    const broker = createBrowserDaemonControlBroker();
+    // Physical ownership comes from the real broker; only the Chromium command boundary is fake.
+    broker.registerAdapter({ adapterKind: 'chromiumSidecar',
+      ownsView: view => view.browserSessionId === 'browser_session_1' && view.viewId === 'view_1',
+      supportsOpenView: () => false,
+      dispatchCommand: async command => ({ v: 1, commandId: command.commandId, status: 'dispatched',
+        adapterKind: 'chromiumSidecar', events: [] }),
+    });
+    api.setBrowserUiAutomationProvider(() => ({ ownsAutomationView: broker.ownsView,
+      uiAutomation: createUnavailableRuntimeActionExecutor() }));
     api.setBrowserRecordingRoutesProvider(() => ({
       startRecording: vi.fn(),
       stopRecording: vi.fn(),
@@ -316,10 +358,10 @@ describe('ApiClient sessionSyncClient runtime-action routes', () => {
       seed: {
         plugin: { id: pluginId, version: '1.0.0' },
         resolveCurrentPluginMaterializationRef: callerMaterialization.resolveCurrentPluginMaterializationRef,
-        generation: 'generation_1',
+        occurrenceId: 'generation_1',
         surface: 'cli',
         signal: new AbortController().signal,
-        isGenerationCurrent: () => true,
+        isOccurrenceCurrent: () => true,
       },
       actionExecutor,
       invokeContributedAction: vi.fn(),

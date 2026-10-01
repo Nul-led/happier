@@ -161,6 +161,44 @@ type ByteCapableSessionManager = ReturnType<typeof createTerminalPtySessionManag
 };
 
 describe('TerminalPtySessionManager', () => {
+  it('lists the existing sessions and retained exits without spawning, reaping, or refreshing activity', () => {
+    const provider = new FakePtyProvider();
+    let clock = 0;
+    const manager = createTerminalPtySessionManager({ ptyProvider: provider, config: defaultConfig(), now: () => clock, env: BASH_ENV });
+    try {
+      expect(manager.list()).toEqual([]);
+      const first = manager.ensure({ terminalKey: 'first', cwd: '/one', sessionId: 'session-one' });
+      const second = manager.ensure({ terminalKey: 'second', cwd: '/two', sessionId: 'session-two' });
+      if (!first.ok || !second.ok) throw new Error('expected terminals');
+      provider.spawned[1]!.pty.emitExit({ exitCode: 2, signal: 9 });
+      clock = 59_000;
+      expect(manager.list()).toEqual([
+        { terminalId: first.terminalId, terminalKey: 'first', cwd: '/one', sessionId: 'session-one', ended: false, exit: null },
+        { terminalId: second.terminalId, terminalKey: 'second', cwd: '/two', sessionId: 'session-two', ended: true, exit: { exitCode: 2, signal: 9 } },
+      ]);
+      expect(provider.spawned).toHaveLength(2);
+      expect(provider.spawned.map(({ pty }) => ({ kills: pty.killCount, writes: pty.writes, resizes: pty.resizes })))
+        .toEqual([{ kills: 0, writes: [], resizes: [] }, { kills: 0, writes: [], resizes: [] }]);
+      expect(manager.close({ terminalId: second.terminalId })).toEqual({ ok: true });
+      expect(manager.list().map((terminal) => terminal.terminalId)).toEqual([first.terminalId]);
+      clock = 61_000;
+      expect(manager.list()).toHaveLength(1);
+      expect(provider.spawned[0]!.pty.killCount).toBe(0);
+      manager.ensure({ terminalKey: 'third', cwd: '/three' });
+      expect(manager.list().map((terminal) => terminal.terminalKey)).toEqual(['third']);
+    } finally {
+      manager.dispose();
+    }
+  });
+  it('applies daemon-resolved login input once, including when another presenter reuses the terminal', () => {
+    const provider = new FakePtyProvider();
+    const manager = createTerminalPtySessionManager({ ptyProvider: provider, config: defaultConfig(), env: BASH_ENV });
+    const request = { terminalKey: 'login', cwd: '/tmp', launchProcess: { file: '/fake/claude', args: [], initialInput: '/login\n' } };
+    expect(manager.ensure(request).ok).toBe(true);
+    expect(manager.ensure(request)).toMatchObject({ ok: true, reused: true });
+    expect(provider.spawned[0]?.pty.writes).toEqual(['/login\n']);
+    manager.dispose();
+  });
   it('reuses sessions by terminalKey', () => {
     const provider = new FakePtyProvider();
     const manager = createTerminalPtySessionManager({

@@ -2,11 +2,12 @@ import { describe, expect, it } from 'vitest';
 
 import {
     createFeatureDecision,
-    type DaemonReactNativeHostRuntimeIdentityV1,
     DaemonPluginInvocationLogReadRequestV1Schema,
-    type PluginUiArtifactDigestV1,
 } from '@happier-dev/protocol';
-import { computePluginUiArtifactSha256DigestV1 } from '@happier-dev/protocol/plugins/ui';
+import {
+    computePluginUiArtifactFileSetSha256DigestV1,
+    computePluginUiArtifactSha256DigestV1,
+} from '@happier-dev/protocol/plugins/ui';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 
 import type { RpcHandler, RpcHandlerRegistrar } from '@/api/rpc/types';
@@ -59,7 +60,14 @@ function createRuntimeRegistry(
     };
 }
 
-function createRegistry(artifactDigest: PluginUiArtifactDigestV1) {
+function createRegistry() {
+    const entryBytes = new TextEncoder().encode('// native panel');
+    const entry = 'react-native/native-panel/entry.cjs.bundle';
+    const fileDigest = computePluginUiArtifactSha256DigestV1(entryBytes);
+    const artifactDigest = computePluginUiArtifactFileSetSha256DigestV1([{
+        relativePath: entry,
+        bytes: entryBytes,
+    }]);
     return createResolvedContributionRegistry({
         agents: [],
         uiRenderersV2: [{
@@ -70,26 +78,20 @@ function createRegistry(artifactDigest: PluginUiArtifactDigestV1) {
             manifestPath: '/plugins/runtime/plugin.json',
             pluginRootPath: '/plugins/runtime',
             generatedUiArtifactsManifest: {
-                version: 1,
+                version: 2,
                 entries: [{
-                    contributionId: 'native-panel',
+                    artifactId: 'native-panel',
                     tier: 'reactNative',
-                    platform: 'ios',
-                    entry: 'react-native/native-panel/ios.bundle',
+                    entry,
                     files: [{
-                        relativePath: 'react-native/native-panel/ios.bundle',
-                        digest: artifactDigest,
-                        byteSize: 1024,
+                        relativePath: entry,
+                        digest: fileDigest,
+                        byteSize: entryBytes.byteLength,
                     }],
                     digest: artifactDigest,
-                    builtWith: { bundler: 'repack', version: '5.2.5' },
-                    repack: {
-                        containerName: 'runtime_plugin_native',
-                        modulePath: './renderSurface',
-                        exportName: 'renderSurface',
-                    },
-                    hostUiApiVersion: '1.0.0',
-                    compat: { react: '19.2.0', reactNative: '0.83.4' },
+                    builtWith: { bundler: 'esbuild', version: '0.27.2' },
+                    executable: { exports: ['renderSurface'] },
+                    hostUiApiRange: '^1.0.0',
                 }],
             },
             definition: {
@@ -101,35 +103,18 @@ function createRegistry(artifactDigest: PluginUiArtifactDigestV1) {
     });
 }
 
-async function projectReactNativeRuntime(params?: Readonly<{
-    installedReactNativeArtifactLoaderAvailable?: boolean;
-    reactNativeScriptManagerRuntimeIntegrated?: boolean;
-    reactNativeHostRuntime?: DaemonReactNativeHostRuntimeIdentityV1;
-}>) {
-    const artifactDigest = computePluginUiArtifactSha256DigestV1(
-        new TextEncoder().encode('// native panel'),
-    );
-    const registry = createRegistry(artifactDigest);
+async function projectReactNativeRuntime() {
+    const registry = createRegistry();
     const { handlers, registrar } = createRegistrar();
     registerSessionHandlers(registrar, process.cwd(), {
         daemonContributionRegistryProjection: {
             resolveGeneration: async () => 100,
             resolveRuntimeRegistry: async () => createRuntimeRegistry(registry),
             resolveReactNativeBundlesFeatureDecision: async () => createEnabledReactNativeBundlesFeatureDecision(),
-            installedReactNativeArtifactLoaderAvailable:
-                params?.installedReactNativeArtifactLoaderAvailable ?? true,
-            reactNativeScriptManagerRuntimeIntegrated:
-                params?.reactNativeScriptManagerRuntimeIntegrated ?? true,
-            reactNativeHostRuntime:
-                params && Object.hasOwn(params, 'reactNativeHostRuntime')
-                    ? params.reactNativeHostRuntime
-                    : {
-                        platform: 'ios',
-                        channel: 'internal',
-                        reactVersion: '19.2.0',
-                        reactNativeVersion: '0.83.4',
-                        availableNativeCapabilities: [],
-                    },
+            reactNativeHostRuntime: {
+                platform: 'ios',
+                channel: 'internal',
+            },
         },
     });
 
@@ -154,52 +139,11 @@ describe('registerSessionHandlers daemon contribution registry projection wiring
             diagnostics: [],
             decision: { state: 'load', reason: 'compatible', diagnostics: [] },
             loadPolicy: { source: 'installedArtifact' },
-            cacheIdentity: expect.objectContaining({
-                pluginId: 'runtime.plugin',
-                contributionId: 'native-panel',
-                platform: 'ios',
-                channel: 'internal',
-                projectionGeneration: 100,
-            }),
+            cacheIdentity: {
+                artifactDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/u),
+            },
         });
     });
-
-    it('keeps React Native artifacts fallback when ScriptManager integration is not explicitly proven', async () => {
-        await expect(projectReactNativeRuntime({
-            reactNativeScriptManagerRuntimeIntegrated: false,
-        })).resolves.toMatchObject({
-            state: 'fallback',
-            diagnostics: [
-                'repack_script_manager_unavailable',
-                'repack_script_manager_runtime_not_integrated',
-            ],
-            decision: { state: 'fallback' },
-        });
-    });
-
-    it('keeps React Native artifacts fallback when the installed-artifact loader is not explicitly proven', async () => {
-        await expect(projectReactNativeRuntime({
-            installedReactNativeArtifactLoaderAvailable: false,
-        })).resolves.toMatchObject({
-            state: 'fallback',
-            diagnostics: [
-                'repack_script_manager_unavailable',
-                'repack_script_manager_installed_artifact_loader_unavailable',
-            ],
-            decision: { state: 'fallback' },
-        });
-    });
-
-    it('blocks React Native artifacts when host runtime identity is missing', async () => {
-        await expect(projectReactNativeRuntime({
-            reactNativeHostRuntime: undefined,
-        })).resolves.toMatchObject({
-            state: 'blocked',
-            diagnostics: ['generated_react_native_platform_unresolved'],
-            decision: { state: 'blocked' },
-        });
-    });
-
 });
 
 describe('registerSessionHandlers plugin invocation log wiring', () => {

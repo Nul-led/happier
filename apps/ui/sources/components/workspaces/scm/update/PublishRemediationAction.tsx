@@ -2,6 +2,7 @@ import * as React from 'react';
 import type { ScmFollowupAction } from '@happier-dev/protocol';
 
 import { t } from '@/text';
+import { Modal } from '@/modal';
 import { openExternalUrl } from '@/utils/url/openExternalUrl';
 
 import { SourceControlUpdateButton, type SourceControlUpdateTheme } from './SourceControlUpdateControls';
@@ -60,6 +61,13 @@ export async function runPublishRemediationAction(input: Readonly<{
         await input.onAuthenticateGh?.();
         return;
     }
+    if (input.action.kind === 'authenticate-provider-cli') {
+        Modal.alert(
+            t('connect.unsupported.connectTitle', { name: input.action.providerName }),
+            t('connect.unsupported.runCommandInTerminalWithCommand', { command: input.action.command }),
+        );
+        return;
+    }
     await openValidatedPublishFollowup(input.action.followup, input.openUrl, input.setErrorCode);
 }
 
@@ -87,6 +95,7 @@ function hasPublishRemediationHandler(
         case 'authenticate-gh':
             return Boolean(handlers.onAuthenticateGh);
         case 'open-browser':
+        case 'authenticate-provider-cli':
             return true;
     }
 }
@@ -114,6 +123,8 @@ function getPublishRemediationActionTestId(action: SourceControlPublishRemediati
             return 'scm-publish-remediation-use-managed-gh';
         case 'authenticate-gh':
             return 'scm-publish-remediation-authenticate-gh';
+        case 'authenticate-provider-cli':
+            return 'scm-publish-remediation-authenticate-provider-cli';
         case 'open-browser':
             return 'scm-publish-remediation-open-browser';
     }
@@ -129,6 +140,8 @@ function getPublishRemediationActionLabel(action: SourceControlPublishRemediatio
             return t('files.sourceControlOperations.update.publishRepository.remediation.useManagedGh');
         case 'authenticate-gh':
             return t('files.sourceControlOperations.update.publishRepository.remediation.authenticateGh');
+        case 'authenticate-provider-cli':
+            return t('connect.unsupported.connectTitle', { name: action.providerName });
         case 'open-browser':
             return t('files.sourceControlOperations.update.publishRepository.remediation.openBrowser');
     }

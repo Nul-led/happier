@@ -10,14 +10,12 @@ const BASE_DRAFT = { targetType: 'new_session', automation: null } as SessionAut
 
 function build(params: Readonly<{
     draft: NewSessionAutomationDraft;
-    requested?: boolean;
     supported?: boolean;
     machineActive?: boolean;
 }>) {
     return buildNewSessionAuthoringContext({
         automationDraft: params.draft,
         automationFeatureEnabled: params.supported ?? true,
-        automationRequestedByRoute: params.requested ?? false,
         selectedMachineId: 'machine-1',
         selectedMachine: {
             id: 'machine-1',
@@ -30,23 +28,23 @@ function build(params: Readonly<{
 }
 
 describe('buildNewSessionAuthoringContext', () => {
-    it('uses live launch for an ordinary disabled inline draft', () => {
+    it('launches an ordinary disabled inline draft', () => {
         const context = build({ draft: DISABLED });
-        expect(context.submissionMode).toBe('launch');
         expect(context.canSubmit).toBe(true);
     });
 
-    it('preserves a disabled zero-trigger recipe when entered through the Automation route', () => {
-        const context = build({ draft: DISABLED, requested: true, machineActive: false });
-        expect(context.submissionMode).toBe('createAutomation');
-        expect(context.submitAccessibilityLabelKey).toBe('automations.create.createButtonTitle');
-        expect(context.canSubmit).toBe(true);
-        expect(context.draft.automation).toEqual(DISABLED);
+    it('never turns submit into an Automation write, even for a hydrated enabled draft', () => {
+        // Creating an Automation is the shared wrapper's journey; a persisted
+        // pre-change draft is handed there by the screen, so submit here keeps
+        // ordinary launch gating and never borrows the offline allowance an
+        // Automation write had.
+        const hydrated = build({ draft: { ...DISABLED, enabled: true }, machineActive: false });
+        expect(hydrated.canSubmit).toBe(false);
+        expect(hydrated).not.toHaveProperty('submitAccessibilityLabelKey');
     });
 
-    it('falls back to live launch gating when Automation support is unavailable', () => {
+    it('hides Automation chips when Automation support is unavailable', () => {
         const context = build({ draft: { ...DISABLED, enabled: true }, supported: false, machineActive: false });
-        expect(context.submissionMode).toBe('launch');
         expect(context.showAutomationActionChips).toBe(false);
         expect(context.canSubmit).toBe(false);
     });

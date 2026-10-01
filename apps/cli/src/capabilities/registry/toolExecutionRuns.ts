@@ -4,15 +4,16 @@ import {
   AGENT_IDS,
 } from '@happier-dev/agents';
 import {
-  buildExecutionRunProfileCatalog,
   listExecutionRunProfileContributionDescriptors,
   listExecutionRunSupportedIntents,
-  type ExecutionRunProfileContributionCatalogInput,
 } from '../../agent/executionRuns/profiles/intentRegistry';
 import { resolveCliEngineRegistry } from '../../agent/runtime/registry/engineRegistry';
 import type { ResolvedAgentContribution } from '../../plugins/projection/registry/types';
 import { readAgentExecutionRunCapabilities } from '../../plugins/projection/registry/agentContributionDefinition';
 import { readAgentSessionCapabilities } from '../../plugins/projection/registry/agentContributionDefinition';
+import { selectReviewEngineAgentIds } from '../../session/actions/inventory/buildReviewEngineInventoryItems';
+import { buildConfiguredAcpBackendInventoryItems } from '../../session/actions/inventory/buildAgentBackendInventoryItems';
+import { getActiveAccountSettingsSnapshot } from '../../settings/accountSettings/activeAccountSettingsSnapshot';
 import {
   evaluateContributionAvailability,
   resolveInvocationContributionPolicyFacts,
@@ -60,22 +61,7 @@ export const executionRunsCapability: Capability = {
     const voiceAgentEnabled = voiceAgentDecision.state === 'enabled';
 
     const cliEngineRegistry = await resolveCliEngineRegistry();
-    const profileInputs = await Promise.all(
-      (cliEngineRegistry.contributions.executionRunProfiles ?? []).map(async (
-        profile,
-      ): Promise<ExecutionRunProfileContributionCatalogInput | null> => {
-        if (!profile.pluginId) return profile.definition;
-        const immutableGenerationId = await cliEngineRegistry.resolveCurrentPluginGeneration(profile.pluginId);
-        return immutableGenerationId
-          ? { pluginId: profile.pluginId, immutableGenerationId, definition: profile.definition }
-          : null;
-      }),
-    );
-    const executionRunProfileCatalog = buildExecutionRunProfileCatalog(
-      profileInputs.flatMap<ExecutionRunProfileContributionCatalogInput>((profile) => (
-        profile ? [profile] : []
-      )),
-    );
+    const executionRunProfileCatalog = await cliEngineRegistry.resolveExecutionRunProfileCatalog();
     const sessionId = typeof request.params?.sessionId === 'string' ? request.params.sessionId.trim() : '';
     const executionRunProfiles = listExecutionRunProfileContributionDescriptors(executionRunProfileCatalog)
       .flatMap((profile) => {
@@ -108,6 +94,11 @@ export const executionRunsCapability: Capability = {
     const contributedBackendIds = listEngineRuntimeContributionIds(cliEngineRegistry.contributions);
     const catalogBackendIds = Object.keys(cliEngineRegistry.contributions.catalogEntriesById);
     const knownBuiltInAgentIds = AGENT_IDS;
+    const reviewEngineAgentIds = selectReviewEngineAgentIds(cliEngineRegistry.contributions);
+    const exactPathReviewEngineAgentIds = selectReviewEngineAgentIds(cliEngineRegistry.contributions, 'paths');
+    const configuredBackends = await buildConfiguredAcpBackendInventoryItems(
+      getActiveAccountSettingsSnapshot()?.settings ?? null,
+    );
     const backendIds = Array.from(new Set([
       ...knownBuiltInAgentIds,
       'customAcp',
@@ -125,8 +116,8 @@ export const executionRunsCapability: Capability = {
       ] as const),
     ) as Record<string, boolean>;
 
-    const backends = Object.fromEntries(
-      backendIds.map((backendId) => {
+    const backends = Object.fromEntries([
+      ...backendIds.map((backendId) => {
         const agentContribution = cliEngineRegistry.contributions.agentDefinitionsById.get(backendId);
         const available = resolveExecutionRunBackendAvailability({
           backendId,
@@ -136,12 +127,27 @@ export const executionRunsCapability: Capability = {
           backendId,
           {
             available,
-            intents,
+            intents: reviewEngineAgentIds.has(backendId)
+              ? intents
+              : intents.filter((intent) => intent !== 'review'),
+            reviewScopes: reviewEngineAgentIds.has(backendId)
+              ? exactPathReviewEngineAgentIds.has(backendId) ? ['worktree', 'paths'] : ['worktree']
+              : [],
             supportsVendorResume: supportsVendorResumeByBackend[backendId] === true,
           },
         ] as const;
       }),
-    ) as Record<string, { available: boolean; intents: readonly string[]; supportsVendorResume: boolean }>;
+      ...configuredBackends.map((backend) => [
+        backend.targetKey,
+        {
+          available: backend.enabled,
+          intents: backend.enabled ? intents : intents.filter((intent) => intent !== 'review'),
+          reviewScopes: backend.enabled ? ['worktree', 'paths'] : [],
+          supportsVendorResume: false,
+          title: backend.label,
+        },
+      ] as const),
+    ]) as Record<string, { available: boolean; intents: readonly string[]; supportsVendorResume: boolean }>;
 
     return {
       available: true,

@@ -7,6 +7,8 @@ import type { SessionTranscriptObservationProvenanceV1 } from '@happier-dev/prot
 export type CommittedTranscriptAdmission = Readonly<{
   signal: AbortSignal;
   deadlineAtMs?: number;
+  /** Ordered terminal observations must reach server custody before later input acceptance. */
+  requireDelivery?: boolean;
 }>;
 
 export class CommittedTranscriptAdmissionExpiredError extends Error {

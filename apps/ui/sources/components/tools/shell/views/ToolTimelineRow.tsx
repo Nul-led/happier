@@ -1,14 +1,14 @@
+import { useSessionTranscriptSource } from '@/components/sessions/transcript/source/SessionTranscriptSourceContext';
 import * as React from 'react';
 import { View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
-import { useRouter } from 'expo-router';
 
-import type { Message, ToolCall } from '@/sync/domains/messages/messageTypes';
-import type { Metadata } from '@/sync/domains/state/storageTypes';
+import type { Message, ToolCall } from "@happier-dev/session-core/messages";
+import type { Metadata } from '@happier-dev/session-core/state';
 import type { OpenApprovalArtifactForSession } from '@/sync/domains/artifacts/approvalArtifacts';
 
 import { resolveToolViewDetailLevel } from '@/components/tools/normalization/policy/resolveToolViewDetailLevel';
-import { useSetting } from '@/sync/domains/state/storage';
+import { useToolFeedRowDisplaySettings, type ToolViewDisplaySettings } from './toolViewDisplaySettings';
 import { ToolInlineBody } from '@/components/tools/shell/views/ToolInlineBody';
 import { TranscriptCollapsible } from '@/components/sessions/transcript/motion/TranscriptCollapsible';
 import { buildToolHeaderModel } from '@/components/tools/shell/presentation/buildToolHeaderModel';
@@ -36,7 +36,7 @@ import {
     shouldShowSidechainHydrationInlineStatus,
 } from './SidechainHydrationInlineStatus';
 import { isGenericSubAgentToolName, isSubAgentTranscriptToolName } from '@happier-dev/protocol/tools/v2';
-import { buildToolCallMessageRouteId } from '@/sync/domains/messages/messageRouteIds';
+import { buildToolCallMessageRouteId } from "@happier-dev/session-core/messages";
 import { buildScopedSessionRouteHref } from '@/hooks/session/sessionRouteServerScope';
 import { PermissionFooter } from '../permissions/PermissionFooter';
 import { ApprovalPromptCard } from '../approvals/ApprovalPromptCard';
@@ -55,10 +55,13 @@ import {
 } from '@/components/sessions/transcript/attribution/SessionTranscriptAgentAttributionContext';
 import { SessionBoardActionResultReference } from '@/components/sessions/transcript/references/SessionBoardActionResultReference';
 import { WorkflowRunActionResultReference } from '@/components/sessions/transcript/references/WorkflowRunActionResultReference';
+import { BrowserActionResultReference } from '@/components/sessions/transcript/references/BrowserActionResultReference';
+import { ComputerActionResultReference } from '@/components/sessions/transcript/references/ComputerActionResultReference';
+import type { TranscriptPermissionDisabledReason } from '@/utils/sessions/deriveTranscriptInteraction';
 
 const TOOL_TIMELINE_ROW_HIGHLIGHT_RADIUS = 10;
 
-export const ToolTimelineRow = React.memo((props: {
+type ToolTimelineRowProps = {
     tool: ToolCall;
     metadata: Metadata | null;
     messages?: Message[];
@@ -73,12 +76,31 @@ export const ToolTimelineRow = React.memo((props: {
     interaction?: {
         canSendMessages: boolean;
         canApprovePermissions: boolean;
-        permissionDisabledReason?: 'public' | 'readOnly' | 'notGranted' | 'inactive';
-        disableToolNavigation?: boolean;
+        permissionDisabledReason?: TranscriptPermissionDisabledReason;
     };
-}) => {
+};
+
+/**
+ * A tool call as an activity-feed row. It reads its display settings from the store unless
+ * `displaySettings` is given (settings previews); the choice is fixed for a given caller, so the
+ * row never switches between the two while mounted.
+ */
+export const ToolTimelineRow = React.memo((props: ToolTimelineRowProps & { displaySettings?: ToolViewDisplaySettings }) => (
+    props.displaySettings
+        ? <ToolTimelineRowContent {...props} displaySettings={props.displaySettings} />
+        : <ToolTimelineRowWithStoreSettings {...props} />
+));
+
+const ToolTimelineRowWithStoreSettings = React.memo((props: ToolTimelineRowProps) => {
+    const displaySettings = useToolFeedRowDisplaySettings();
+    return <ToolTimelineRowContent {...props} displaySettings={displaySettings} />;
+});
+
+const ToolTimelineRowContent = React.memo((props: ToolTimelineRowProps & { displaySettings: ToolViewDisplaySettings }) => {
     const { theme } = useUnistyles();
-    const router = useRouter();
+    const transcriptSource = useSessionTranscriptSource();
+    const sourceInteraction = transcriptSource.useInteraction();
+    const interaction = props.interaction ?? sourceInteraction;
     // The canonical transcript row sequence. It already reaches this component
     // for jump targeting; historical Agent attribution is its second reader, and
     // it is published to the whole tool subtree so the body, the permission
@@ -90,9 +112,9 @@ export const ToolTimelineRow = React.memo((props: {
     const toolForSession = React.useMemo(() => {
         return resolveInactiveSessionToolCallFailure({
             tool: props.tool,
-            permissionDisabledReason: props.interaction?.permissionDisabledReason,
+            permissionDisabledReason: interaction.permissionDisabledReason,
         });
-    }, [props.interaction?.permissionDisabledReason, props.tool]);
+    }, [interaction.permissionDisabledReason, props.tool]);
 
     const headerModel = React.useMemo(() => {
         return buildToolHeaderModel({
@@ -106,14 +128,17 @@ export const ToolTimelineRow = React.memo((props: {
     }, [historicalAgentId, props.metadata, theme.colors.text.primary, theme.colors.text.secondary, toolForSession]);
     const toolForRendering = headerModel.toolForRendering;
 
-    const toolViewDetailLevelDefault = useSetting('toolViewDetailLevelDefault');
-    const toolViewDetailLevelDefaultLocalControl = useSetting('toolViewDetailLevelDefaultLocalControl');
-    const toolViewDetailLevelByToolName = useSetting('toolViewDetailLevelByToolName');
-    const toolViewExpandedDetailLevelDefault = useSetting('toolViewExpandedDetailLevelDefault');
-    const toolViewExpandedDetailLevelByToolName = useSetting('toolViewExpandedDetailLevelByToolName');
-    const toolViewTimelineFeedDefaultExpanded = useSetting('toolViewTimelineFeedDefaultExpanded');
-    const toolViewTapAction = useSetting('toolViewTapAction');
-    const permissionPromptSurface = useSetting('permissionPromptSurface');
+    const {
+        toolViewDetailLevelDefault,
+        toolViewDetailLevelDefaultLocalControl,
+        toolViewDetailLevelByToolName,
+        toolViewTapAction,
+        toolViewExpandedDetailLevelDefault,
+        toolViewExpandedDetailLevelByToolName,
+        toolViewTimelineFeedDefaultExpanded,
+        permissionPromptSurface,
+    } = props.displaySettings;
+
     const isWaitingForPermission = headerModel.isWaitingForPermission;
     const isPendingUserAction = isPendingUserActionRequest({
         toolName: toolForRendering.name,
@@ -132,26 +157,25 @@ export const ToolTimelineRow = React.memo((props: {
     }, [forceExpandedForPendingUserAction]);
 
     const routeMessageId = React.useMemo(() => {
-        if (props.interaction?.disableToolNavigation === true) return null;
         return buildToolCallMessageRouteId({
             toolId: typeof toolForRendering.id === 'string' ? toolForRendering.id : null,
             fallbackMessageId: props.messageId,
         });
-    }, [props.interaction?.disableToolNavigation, props.messageId, toolForRendering.id]);
+    }, [props.messageId, toolForRendering.id]);
 
     const handleOpen = React.useCallback(() => {
         const sessionId = props.sessionId;
         if (!sessionId || !routeMessageId) return;
         navigateWithBlurOnWeb(() => {
-            router.push(buildScopedSessionRouteHref({
+            transcriptSource.navigate?.(buildScopedSessionRouteHref({
                 sessionId,
                 serverId: props.serverId,
                 suffix: `/message/${encodeURIComponent(routeMessageId)}`,
-            }) as never);
+            }));
         });
-    }, [props.serverId, props.sessionId, routeMessageId, router]);
+    }, [props.serverId, props.sessionId, routeMessageId, transcriptSource]);
 
-    const canOpen = !!(props.sessionId && routeMessageId);
+    const canOpen = transcriptSource.navigate !== null && !!(props.sessionId && routeMessageId);
     const primaryTapAction: 'expand' | 'open' =
         toolViewTapAction === 'open' && canOpen ? 'open' : 'expand';
 
@@ -225,9 +249,10 @@ export const ToolTimelineRow = React.memo((props: {
     const sidechainHydration = useEnsureSidechainsLoaded({
         enabled:
             effectiveIsExpanded &&
-            props.interaction?.disableToolNavigation !== true &&
+            transcriptSource.loadSidechain !== null &&
             isSubAgentTranscriptTool,
         sessionId: props.sessionId,
+        loadSidechain: transcriptSource.loadSidechain,
         sidechainIds: [transcriptSidechainId],
     });
     const toolMessages = props.messages ?? [];
@@ -275,7 +300,7 @@ export const ToolTimelineRow = React.memo((props: {
                     resolveToolPermissionTerminalErrorMessage({
                         tool: toolForRendering,
                         metadata: props.metadata,
-                        permissionDisabledReason: props.interaction?.permissionDisabledReason,
+                        permissionDisabledReason: interaction.permissionDisabledReason,
                         historicalAgentId,
                     }) ?? t('errors.permissionDenied')
                 )
@@ -361,8 +386,8 @@ export const ToolTimelineRow = React.memo((props: {
                 toolName={normalizedToolName}
                 toolInput={toolForRendering.input}
                 metadata={props.metadata}
-                canApprovePermissions={props.interaction?.canApprovePermissions ?? true}
-                disabledReason={props.interaction?.permissionDisabledReason}
+                canApprovePermissions={interaction.canApprovePermissions && sourceInteraction.canApprovePermissions && transcriptSource.actions !== null}
+                disabledReason={interaction.permissionDisabledReason}
             />
         ) : null;
 
@@ -389,15 +414,15 @@ export const ToolTimelineRow = React.memo((props: {
                 location={location}
                 sessionId={props.sessionId!}
                 metadata={props.metadata}
-                canApprovePermissions={props.interaction?.canApprovePermissions ?? true}
-                disabledReason={props.interaction?.permissionDisabledReason}
+                canApprovePermissions={interaction.canApprovePermissions && sourceInteraction.canApprovePermissions && transcriptSource.actions !== null}
+                disabledReason={interaction.permissionDisabledReason}
             />
         ));
     }, [
         normalizedToolName,
         props.approvalRequests,
-        props.interaction?.canApprovePermissions,
-        props.interaction?.permissionDisabledReason,
+        interaction.canApprovePermissions,
+        interaction.permissionDisabledReason,
         props.messageId,
         props.metadata,
         props.sessionId,
@@ -448,7 +473,7 @@ export const ToolTimelineRow = React.memo((props: {
                             sessionId={props.sessionId}
                             serverId={props.serverId}
                             messageId={props.messageId}
-                            interaction={props.interaction}
+                            interaction={interaction}
                             detailLevel={renderBodyDetailLevel}
                             setHeaderActions={setHeaderActions}
                         />
@@ -469,6 +494,18 @@ export const ToolTimelineRow = React.memo((props: {
             <WorkflowRunActionResultReference
                 tool={toolForRendering}
                 serverId={props.serverId}
+            />
+            <BrowserActionResultReference
+                tool={toolForRendering}
+                sessionId={props.sessionId}
+                serverId={props.serverId}
+                mediaPreviewEnabled={'canPreviewMedia' in interaction && interaction.canPreviewMedia === true}
+            />
+            <ComputerActionResultReference
+                tool={toolForRendering}
+                sessionId={props.sessionId}
+                serverId={props.serverId}
+                mediaPreviewEnabled={'canPreviewMedia' in interaction && interaction.canPreviewMedia === true}
             />
 
             {permissionFooter}

@@ -10,7 +10,6 @@ import {
     computeWorkflowRunRollup,
     resolveActiveWorkflowPhasePosition,
 } from '@/components/sessions/workState/sessionWorkflowActivityPresentation';
-import { resolveWorkflowRunTone } from '@/components/workflows/presentation/workflowPresentation';
 import { useWorkflowRunForToolUseId } from '@/components/sessions/workState/useSessionWorkflowActivity';
 import type { WorkflowActivityRowViewModel } from '@/components/sessions/workState/sessionWorkflowActivityTypes';
 import type { SessionWorkflowAgentStatusV1, SessionWorkflowRunSnapshotV1 } from '@happier-dev/protocol';
@@ -181,7 +180,6 @@ export const WorkflowActivityView = React.memo<ToolViewProps>(({ tool, sessionId
                 completedAgents={snapshot.completedAgents}
                 totalAgents={snapshot.totalAgents}
                 rollup={rollup}
-                tone={resolveWorkflowRunTone(snapshot.status)}
                 {...(summaryLine ? { summaryLine } : {})}
             />
             <View style={styles.body}>

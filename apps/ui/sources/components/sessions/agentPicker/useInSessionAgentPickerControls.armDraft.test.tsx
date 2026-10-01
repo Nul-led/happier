@@ -2,7 +2,7 @@ import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { createResolvedAgentCatalogEntryFixture } from '@/dev/testkit';
+import { createResolvedAgentCatalogEntryFixture } from '@/dev/testkit/fixtures/agentCatalogFixtures';
 import { renderHook } from '@/dev/testkit/hooks/renderHook';
 import type { ResolvedBackendCatalogEntry } from '@/agents/backendCatalog/getResolvedBackendCatalogEntries';
 import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
@@ -47,13 +47,6 @@ vi.mock('@/agents/registry/registryUi', () => ({
     getAgentPickerIconScale: () => 1,
 }));
 
-// Hover-capable throughout: on this host the machine is only asked once the reader
-// reaches for the Agent chip, which is the harder case for a restored arm and the
-// one that shipped broken. Every case below restores without touching the chip.
-vi.mock('@/utils/platform/webMobileHeuristics', () => ({
-    isHoverCapablePrimaryPointer: () => true,
-}));
-
 const SCOPE: ServerAccountScope = { serverId: 'server-1', accountId: 'account-1' };
 
 function entry(
@@ -78,7 +71,7 @@ function entry(
 }
 
 const supportedSource: SessionAgentContinuationSourceState = {
-    currentBackendTargetKey: 'backend:claude',
+    currentBackendTargetKey: 'agent:happier.agent.claude/claude',
     storageKind: 'persisted',
     canEditSession: true,
     machinePresence: 'online',
@@ -138,14 +131,11 @@ async function renderControls(props: HookProps = {}) {
     return hook;
 }
 
-/** Reach for the Agent chip, let the machine answer, then select a target row. */
+/** Let the preflight answer, then select a target row. */
 async function armTarget(
     hook: Awaited<ReturnType<typeof renderControls>>,
     optionId: string,
 ): Promise<void> {
-    await act(async () => {
-        hook.getCurrent().onAgentPickerIntent();
-    });
     await act(async () => { await Promise.resolve(); });
     await act(async () => { await Promise.resolve(); });
     await act(async () => {
@@ -190,7 +180,12 @@ describe('useInSessionAgentPickerControls arm draft', () => {
         resetSessionDraftValueCachesForTests();
         announceAccessibilityMessage.mockClear();
         machineRpcWithServerScope.mockReset();
-        machineRpcWithServerScope.mockResolvedValue(AVAILABLE);
+        machineRpcWithServerScope.mockImplementation((params: { payload: { selections: readonly unknown[] } }) => (
+            Promise.resolve({
+                v: 1,
+                inspections: params.payload.selections.map(() => AVAILABLE),
+            })
+        ));
     });
 
     afterEach(() => {
@@ -199,7 +194,7 @@ describe('useInSessionAgentPickerControls arm draft', () => {
 
     it('keeps the armed Agent across a remount, exactly as the draft text already survives one', async () => {
         const first = await renderControls();
-        await armTarget(first, 'backend:codex');
+        await armTarget(first, 'agent:happier.agent.codex/codex');
         expect(first.getCurrent().armedContinuation).toEqual(armedIntentFor('codex'));
         await first.unmount();
 
@@ -207,7 +202,7 @@ describe('useInSessionAgentPickerControls arm draft', () => {
         const second = await renderControls();
 
         expect(second.getCurrent().armedContinuation).toEqual(armedIntentFor('codex'));
-        expect(second.getCurrent().agentPickerSelectedOptionId).toBe('backend:codex');
+        expect(second.getCurrent().agentPickerSelectedOptionId).toBe('agent:happier.agent.codex/codex');
     });
 
     // The identity is the daemon's dedupe key and the divider correlation key.
@@ -216,7 +211,7 @@ describe('useInSessionAgentPickerControls arm draft', () => {
     // happened.
     it('retains the submitted identity when the same armed switch comes back', async () => {
         const first = await renderControls();
-        await armTarget(first, 'backend:codex');
+        await armTarget(first, 'agent:happier.agent.codex/codex');
         const submittedLocalId = first.getCurrent().armedContinuationLocalId;
         expect(submittedLocalId).toEqual(expect.any(String));
         // The pre-RPC snapshot stays with the arm, not in a second persisted
@@ -255,7 +250,7 @@ describe('useInSessionAgentPickerControls arm draft', () => {
 
     it('mints a fresh identity when a distinct target is armed after a submission', async () => {
         const hook = await renderControls({ entries: [entry('claude'), entry('codex'), entry('gemini')] });
-        await armTarget(hook, 'backend:codex');
+        await armTarget(hook, 'agent:happier.agent.codex/codex');
         const submittedLocalId = hook.getCurrent().armedContinuationLocalId;
         expect(submittedLocalId).toEqual(expect.any(String));
         await act(async () => {
@@ -275,7 +270,7 @@ describe('useInSessionAgentPickerControls arm draft', () => {
             })).toBe(true);
         });
 
-        await armTarget(hook, 'backend:gemini');
+        await armTarget(hook, 'agent:happier.agent.gemini/gemini');
 
         expect(hook.getCurrent().armedContinuation).toEqual(armedIntentFor('gemini'));
         expect(hook.getCurrent().armedContinuationLocalId).toEqual(expect.any(String));
@@ -287,7 +282,7 @@ describe('useInSessionAgentPickerControls arm draft', () => {
         // reach for the Agent chip again would leave the composer promising a
         // continuation whose rail has not been decided.
         writeSessionDraftValue(SCOPE, 'session-1', 'routing.agentContinuation', {
-            backendTargetKey: 'backend:codex',
+            backendTargetKey: 'agent:happier.agent.codex/codex',
             intent: armedIntentFor('codex'),
         });
 
@@ -297,16 +292,17 @@ describe('useInSessionAgentPickerControls arm draft', () => {
         expect(hook.getCurrent().armedContinuation).toEqual(armedIntentFor('codex'));
     });
 
-    it('asks nothing for an unarmed Session until the reader reaches for the chip', async () => {
+    it('preflights an unarmed Session without arming anything', async () => {
         const hook = await renderControls();
 
-        expect(machineRpcWithServerScope).not.toHaveBeenCalled();
+        expect(machineRpcWithServerScope).toHaveBeenCalledTimes(1);
         expect(hook.getCurrent().armedContinuation).toBeNull();
+        expect(readPersistedArm()).toBeUndefined();
     });
 
     it('does not resurrect an arm the reader already cancelled', async () => {
         const first = await renderControls();
-        await armTarget(first, 'backend:codex');
+        await armTarget(first, 'agent:happier.agent.codex/codex');
         // Selecting the running Agent is the cancel gesture.
         await act(async () => {
             first.getCurrent()
@@ -323,11 +319,16 @@ describe('useInSessionAgentPickerControls arm draft', () => {
 
     it('clears a persisted arm whose target Agent is no longer eligible instead of restoring it', async () => {
         writeSessionDraftValue(SCOPE, 'session-1', 'routing.agentContinuation', {
-            backendTargetKey: 'backend:codex',
+            backendTargetKey: 'agent:happier.agent.codex/codex',
             intent: armedIntentFor('codex'),
         });
-        machineRpcWithServerScope.mockImplementation((params: { payload: { selection: { agentId: string } } }) => (
-            Promise.resolve(params.payload.selection.agentId === 'codex' ? UNSUPPORTED : AVAILABLE)
+        machineRpcWithServerScope.mockImplementation((params: { payload: { selections: readonly { agentId: string }[] } }) => (
+            Promise.resolve({
+                v: 1,
+                inspections: params.payload.selections.map((selection) => (
+                    selection.agentId === 'codex' ? UNSUPPORTED : AVAILABLE
+                )),
+            })
         ));
 
         const hook = await renderControls({ entries: [entry('claude'), entry('codex'), entry('gemini')] });
@@ -340,13 +341,13 @@ describe('useInSessionAgentPickerControls arm draft', () => {
         // The Session was switched to Codex elsewhere; an arm that names Claude as
         // its source is a promise about a departure that already happened.
         writeSessionDraftValue(SCOPE, 'session-1', 'routing.agentContinuation', {
-            backendTargetKey: 'backend:gemini',
+            backendTargetKey: 'agent:happier.agent.gemini/gemini',
             intent: armedIntentFor('gemini'),
         });
 
         const hook = await renderControls({
             currentAgentId: 'codex',
-            source: { ...supportedSource, currentBackendTargetKey: 'backend:codex' },
+            source: { ...supportedSource, currentBackendTargetKey: 'agent:happier.agent.codex/codex' },
             entries: [entry('claude'), entry('codex'), entry('gemini')],
         });
 
@@ -357,7 +358,7 @@ describe('useInSessionAgentPickerControls arm draft', () => {
     it('keeps the submitted snapshot when a successful switch makes its old arm ineligible', async () => {
         const submittedLocalId = 'submitted-for-codex';
         writeSessionDraftValue(SCOPE, 'session-1', 'routing.agentContinuation', {
-            backendTargetKey: 'backend:codex',
+            backendTargetKey: 'agent:happier.agent.codex/codex',
             intent: armedIntentFor('codex'),
             modelLabel: null,
             submission: {
@@ -381,7 +382,7 @@ describe('useInSessionAgentPickerControls arm draft', () => {
         // the next message; its nested submission still needs custody recovery.
         const hook = await renderControls({
             currentAgentId: 'codex',
-            source: { ...supportedSource, currentBackendTargetKey: 'backend:codex' },
+            source: { ...supportedSource, currentBackendTargetKey: 'agent:happier.agent.codex/codex' },
             entries: [entry('claude'), entry('codex'), entry('gemini')],
         });
 
@@ -399,7 +400,7 @@ describe('useInSessionAgentPickerControls arm draft', () => {
         // a saved arm is stale. It simply is not restored until the canonical
         // decision answers.
         writeSessionDraftValue(SCOPE, 'session-1', 'routing.agentContinuation', {
-            backendTargetKey: 'backend:codex',
+            backendTargetKey: 'agent:happier.agent.codex/codex',
             intent: armedIntentFor('codex'),
         });
 
@@ -411,10 +412,10 @@ describe('useInSessionAgentPickerControls arm draft', () => {
 
     it('keeps an arm through a daemon reinspection that remains eligible', async () => {
         const hook = await renderControls();
-        await armTarget(hook, 'backend:codex');
+        await armTarget(hook, 'agent:happier.agent.codex/codex');
         const localId = hook.getCurrent().armedContinuationLocalId;
         expect(localId).toEqual(expect.any(String));
-        const reinspection = createDeferred<typeof AVAILABLE>();
+        const reinspection = createDeferred<{ v: 1; inspections: readonly (typeof AVAILABLE)[] }>();
         machineRpcWithServerScope.mockImplementationOnce(() => reinspection.promise);
 
         await hook.rerender({ machine: { ...onlineMachine, daemonGeneration: 2 } });
@@ -428,7 +429,7 @@ describe('useInSessionAgentPickerControls arm draft', () => {
         expect(readPersistedArm()).toBeDefined();
 
         await act(async () => {
-            reinspection.resolve(AVAILABLE);
+            reinspection.resolve({ v: 1, inspections: [AVAILABLE] });
             await Promise.resolve();
         });
         await act(async () => { await Promise.resolve(); });
@@ -440,10 +441,10 @@ describe('useInSessionAgentPickerControls arm draft', () => {
 
     it('clears an arm only after a reconnect reinspection settles unavailable', async () => {
         const hook = await renderControls();
-        await armTarget(hook, 'backend:codex');
+        await armTarget(hook, 'agent:happier.agent.codex/codex');
         const localId = hook.getCurrent().armedContinuationLocalId;
         expect(localId).toEqual(expect.any(String));
-        const reinspection = createDeferred<typeof UNSUPPORTED>();
+        const reinspection = createDeferred<{ v: 1; inspections: readonly (typeof UNSUPPORTED)[] }>();
         machineRpcWithServerScope.mockImplementationOnce(() => reinspection.promise);
 
         await hook.rerender({ machine: { ...onlineMachine, connectionGeneration: 2 } });
@@ -456,7 +457,7 @@ describe('useInSessionAgentPickerControls arm draft', () => {
         expect(readPersistedArm()).toBeDefined();
 
         await act(async () => {
-            reinspection.resolve(UNSUPPORTED);
+            reinspection.resolve({ v: 1, inspections: [UNSUPPORTED] });
             await Promise.resolve();
         });
         await act(async () => { await Promise.resolve(); });
@@ -468,7 +469,7 @@ describe('useInSessionAgentPickerControls arm draft', () => {
 
     it('drops the persisted arm with the live one when the rail that could cancel it goes', async () => {
         const hook = await renderControls({ entries: [entry('claude'), entry('codex'), entry('gemini')] });
-        await armTarget(hook, 'backend:codex');
+        await armTarget(hook, 'agent:happier.agent.codex/codex');
         expect(readPersistedArm()).toBeDefined();
 
         // Every target refused: the rail is gone, and with it the only gesture that

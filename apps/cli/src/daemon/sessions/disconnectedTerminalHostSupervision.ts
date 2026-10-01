@@ -14,10 +14,7 @@ import type { TerminalMode } from '@/terminal/runtime/terminalConfig';
 
 import { removeSessionMarker as removeDefaultSessionMarker } from '../sessionRegistry';
 import type { SessionRunnerServiceabilityProbe } from './isSessionRunnerActive';
-import {
-  requireExactTerminalControlServiceabilityRetirement,
-  type ExactTerminalControlServiceabilityRetirement,
-} from './retireTerminalControlServiceability';
+import type { ExactTerminalControlServiceabilityRetirement } from './retireTerminalControlServiceability';
 
 export type DisconnectedTerminalHostCandidate = Readonly<{
   sessionId: string;
@@ -50,7 +47,7 @@ export function resolveDisconnectedTerminalMode(input: Readonly<{
   hostKind: DisconnectedTerminalHostCandidate['handle']['kind'];
   attachmentId: string;
 }>): TerminalMode | null {
-  if (input.hostKind === 'tmux' || input.hostKind === 'zellij') return input.hostKind;
+  if (input.hostKind === 'tmux' || input.hostKind === 'zellij' || input.hostKind === 'herdr') return input.hostKind;
   const evidenceAttachmentId = input.terminal?.controlServiceabilityV1?.attachmentId;
   if (typeof evidenceAttachmentId === 'string' && evidenceAttachmentId !== input.attachmentId) {
     return null;
@@ -125,14 +122,16 @@ export async function superviseDisconnectedTerminalHostCandidate(input: Readonly
     removeAttachmentInfo: input.removeTerminalAttachmentInfo ?? removeDefaultTerminalHostAttachmentInfo,
     beforeDescriptorRetirement: input.retireExactTerminalControlServiceability
       ? async ({ attachmentInfo }) => {
+          if (attachmentInfo.version !== 2) {
+            throw new Error('disconnected supervision cannot retire a borrowed terminal');
+          }
           try {
-            const retirement = await input.retireExactTerminalControlServiceability!({
+            await input.retireExactTerminalControlServiceability!({
               happyHomeDir: input.candidate.happyHomeDir,
               sessionId: input.candidate.sessionId,
               attachmentInfo,
               terminalMode,
             });
-            requireExactTerminalControlServiceabilityRetirement(retirement);
           } catch (error) {
             logger.debug('[DAEMON RUN] Confirmed-dead terminal host retained for serviceability retirement retry', {
               sessionId: input.candidate.sessionId,

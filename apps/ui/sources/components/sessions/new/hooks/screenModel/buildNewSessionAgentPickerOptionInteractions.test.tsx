@@ -1,10 +1,11 @@
 import * as React from 'react';
 import { act } from 'react-test-renderer';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BackendTargetRefV2 } from '@happier-dev/protocol';
 
 import { installNewSessionComponentsCommonModuleMocks } from '@/components/sessions/new/components/newSessionComponentsTestHelpers';
-import { createResolvedAgentCatalogEntryFixture, renderScreen } from '@/dev/testkit';
+import { createResolvedAgentCatalogEntryFixture } from '@/dev/testkit/fixtures/agentCatalogFixtures';
+import { renderScreen } from '@/dev/testkit';
 import { createReactNativeWebMock } from '@/dev/testkit/mocks/reactNative';
 import { createTextModuleMock } from '@/dev/testkit/mocks/text';
 import { createUnistylesMock } from '@/dev/testkit/mocks/unistyles';
@@ -21,6 +22,8 @@ type CapturedModelPickerProps = Readonly<{
 }>;
 
 const capturedModelPicker = vi.hoisted(() => ({ props: null as CapturedModelPickerProps | null }));
+const providersFeatureEnabled = vi.hoisted(() => ({ value: false }));
+const providerModelProjectionInputs = vi.hoisted(() => [] as unknown[]);
 
 function requireCapturedModelPickerProps(): CapturedModelPickerProps {
     const props = capturedModelPicker.props;
@@ -60,12 +63,23 @@ vi.mock('@/components/ui/text/Text', () => ({
 }));
 
 vi.mock('@/constants/Typography', () => ({
-    Typography: { default: () => ({}) },
+    FontWeights: { regular: '400', semiBold: '500', bold: '600' },
+    Typography: {
+        default: () => ({}),
+        mono: () => ({}),
+        pillLabel: () => ({}),
+        rowMeta: () => ({}),
+    },
 }));
 
 vi.mock('@/agents/catalog/catalog', () => ({
+    AGENT_IDS: ['claude', 'codex', 'custom-preset'],
     isBundledAgentId: (value: string) => ['claude', 'codex', 'custom-preset'].includes(value),
-    getAgentCore: () => ({ model: { supportsFreeform: true, dynamicProbe: 'dynamic' } }),
+    getAgentCore: () => ({
+        availability: { experimental: false },
+        model: { supportsFreeform: true, dynamicProbe: 'dynamic' },
+        ui: { agentPickerIconName: 'layers-outline' },
+    }),
 }));
 
 vi.mock('@/components/sessions/pickers/OptionPickerOverlay', () => ({
@@ -104,18 +118,21 @@ vi.mock('@/components/sessions/new/hooks/screenModel/useNewSessionPreflightConfi
 }));
 
 vi.mock('@/hooks/server/useFeatureEnabled', () => ({
-    useFeatureEnabled: () => false,
+    useFeatureEnabled: () => providersFeatureEnabled.value,
 }));
 
 vi.mock('@/providers/hooks/useProviderModelProjection', () => ({
-    useProviderModelProjection: () => ({
+    useProviderModelProjection: (input: unknown) => {
+        providerModelProjectionInputs.push(input);
+        return {
         data: null,
         error: null,
         loading: false,
         status: 'pending',
         refresh: vi.fn(async () => {}),
         refreshWithResult: vi.fn(async () => null),
-    }),
+        };
+    },
 }));
 
 const backendTarget: BackendTargetRefV2 = {
@@ -163,6 +180,11 @@ const pluginEntry: ResolvedBackendCatalogEntry = {
 };
 
 describe('buildNewSessionAgentPickerOptionInteractions', () => {
+    beforeEach(() => {
+        providersFeatureEnabled.value = false;
+        providerModelProjectionInputs.length = 0;
+    });
+
     it('expands an installed Agent detail under that Agent\'s operational identity', async () => {
         capturedConfigOptionsProbe.runtimeCarrierAgentId = undefined;
         const selection: SessionAgentPickerSelection = {
@@ -190,6 +212,44 @@ describe('buildNewSessionAgentPickerOptionInteractions', () => {
 
         expect(capturedConfigOptionsProbe.runtimeCarrierAgentId).toBe('acme.review.agent');
     }, 180_000);
+
+    it('reuses the New Session provider projection instead of starting a second request in the detail pane', async () => {
+        providersFeatureEnabled.value = true;
+        const selection: SessionAgentPickerSelection = {
+            modelId: 'default',
+            modelSelection: null,
+            sessionModeId: 'default',
+            configOverrides: {},
+        };
+        const screenProjection = {
+            data: null,
+            error: null,
+            loading: true,
+            status: 'pending' as const,
+            refresh: vi.fn(async () => {}),
+            refreshWithResult: vi.fn(async () => null),
+            refreshFailures: [],
+        };
+
+        const { buildNewSessionAgentPickerOptionInteractions } = await import('./buildNewSessionAgentPickerOptionInteractions');
+        const interactions = buildNewSessionAgentPickerOptionInteractions({
+            entry,
+            disabled: false,
+            selectedMachineId: 'machine-1',
+            capabilityServerId: 'server-1',
+            selectedPath: '/repo',
+            settings: settingsDefaults,
+            providerProjection: screenProjection,
+            getEngineSelectionForTargetKey: () => selection,
+            selectEngineSelection: vi.fn(),
+        });
+
+        const renderDetailContent = interactions.renderDetailContent;
+        if (!renderDetailContent) throw new Error('renderDetailContent missing');
+        await renderScreen(<>{renderDetailContent({ onRequestClose: vi.fn() })}</>);
+
+        expect(providerModelProjectionInputs).toContainEqual(expect.objectContaining({ enabled: false }));
+    });
 
     it('selects a model without requesting the engine popover close', async () => {
         capturedModelPicker.props = null;

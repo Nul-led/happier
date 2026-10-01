@@ -31,7 +31,7 @@ vi.mock('react-native', async () => {
 describe('PluginSurfaceInteractionBoundary.native', () => {
     it('omits the loaded runtime marker until a current native runtime identity is present', async () => {
         const { PluginSurfaceInteractionBoundary } = await import('./PluginSurfaceInteractionBoundary.native');
-        const markerA = loadedRuntimeMarkerId('surface-native-load-lifecycle', 'acme.panels', 'generation-a');
+        const markerA = loadedRuntimeMarkerId('surface-native-load-lifecycle', 'acme.panels', 'occurrence-a');
         const screen = await renderScreen(
             <PluginSurfaceInteractionBoundary
                 surfaceId="surface-native-load-lifecycle"
@@ -51,7 +51,7 @@ describe('PluginSurfaceInteractionBoundary.native', () => {
                 enabled
                 loadedRuntimeIdentity={{
                     pluginId: 'acme.panels',
-                    generation: 'generation-a',
+                    occurrenceId: 'occurrence-a',
                     artifactDigest: 'sha256-runtime',
                     machineId: 'machine-a',
                     serverId: 'server-1',
@@ -66,16 +66,16 @@ describe('PluginSurfaceInteractionBoundary.native', () => {
 
     it('replaces the loaded runtime marker when a newer native runtime identity loads', async () => {
         const { PluginSurfaceInteractionBoundary } = await import('./PluginSurfaceInteractionBoundary.native');
-        const markerA = loadedRuntimeMarkerId('surface-native-replacement', 'acme.panels', 'generation-a');
-        const markerB = loadedRuntimeMarkerId('surface-native-replacement', 'acme.panels', 'generation-b');
-        const element = (generation: string) => (
+        const markerA = loadedRuntimeMarkerId('surface-native-replacement', 'acme.panels', 'occurrence-a');
+        const markerB = loadedRuntimeMarkerId('surface-native-replacement', 'acme.panels', 'occurrence-b');
+        const element = (occurrenceId: string) => (
             <PluginSurfaceInteractionBoundary
                 surfaceId="surface-native-replacement"
                 snapshotTitle="Build summary"
                 enabled
                 loadedRuntimeIdentity={{
                     pluginId: 'acme.panels',
-                    generation,
+                    occurrenceId,
                     artifactDigest: 'sha256-runtime',
                     machineId: 'machine-a',
                     serverId: 'server-1',
@@ -84,19 +84,19 @@ describe('PluginSurfaceInteractionBoundary.native', () => {
                 <PluginNativeSnapshot testID="plugin-native-replacement-snapshot" />
             </PluginSurfaceInteractionBoundary>
         );
-        const screen = await renderScreen(element('generation-a'));
+        const screen = await renderScreen(element('occurrence-a'));
 
         expect(screen.findByTestId(markerA)).toBeTruthy();
         expect(screen.findByTestId(markerB)).toBeNull();
 
-        await screen.update(element('generation-b'));
+        await screen.update(element('occurrence-b'));
         expect(screen.findByTestId(markerA)).toBeNull();
         expect(screen.findByTestId(markerB)).toBeTruthy();
     });
 
     it('omits the loaded runtime marker for retained stale or failed native snapshots', async () => {
         const { PluginSurfaceInteractionBoundary } = await import('./PluginSurfaceInteractionBoundary.native');
-        const markerA = loadedRuntimeMarkerId('surface-native-stale', 'acme.panels', 'generation-a');
+        const markerA = loadedRuntimeMarkerId('surface-native-stale', 'acme.panels', 'occurrence-a');
         const screen = await renderScreen(
             <PluginSurfaceInteractionBoundary
                 surfaceId="surface-native-stale"
@@ -120,7 +120,7 @@ describe('PluginSurfaceInteractionBoundary.native', () => {
                 enabled
                 loadedRuntimeIdentity={{
                     pluginId: 'acme.panels',
-                    generation: 'generation-7',
+                    occurrenceId: 'occurrence-7',
                     artifactDigest: 'sha256-runtime',
                     machineId: 'machine-a',
                     serverId: 'server-1',
@@ -137,7 +137,7 @@ describe('PluginSurfaceInteractionBoundary.native', () => {
             'surface-native-loaded-runtime',
             'surface-native-loaded-runtime',
             'acme.panels',
-            'generation-7',
+            'occurrence-7',
             'sha256-runtime',
             'machine-a',
             'server-1',
@@ -302,13 +302,13 @@ describe('PluginSurfaceInteractionBoundary.native', () => {
     });
 });
 
-function loadedRuntimeMarkerId(surfaceId: string, pluginId: string, generation: string): string {
+function loadedRuntimeMarkerId(surfaceId: string, pluginId: string, occurrenceId: string): string {
     return [
         'plugin-surface-interaction-boundary',
         'surface-native-loaded-runtime',
         surfaceId,
         pluginId,
-        generation,
+        occurrenceId,
         'sha256-runtime',
         'machine-a',
         'server-1',

@@ -2,14 +2,18 @@ import * as React from 'react';
 import { Platform, ScrollView, View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
+import { usePaneHeaderSlotContent, type PaneHeaderLine } from '@/components/appShell/panes/paneHeaderSlot';
+import type { MachinePresenceSummary } from '@/components/sessions/model/useMachinePresenceSummary';
 import { IconButton } from '@/components/ui/buttons/IconButton';
+import { Icon } from '@/components/ui/icons/Icon';
 import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
 import { ConstrainedScreenContent } from '@/components/ui/layout/ConstrainedScreenContent';
+import { ExpandableItem } from '@/components/ui/lists/ExpandableItem';
+import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { SegmentedTabBar } from '@/components/ui/navigation/SegmentedTabBar';
+import { SurfaceFreshnessLine } from '@/components/ui/surfaces/SurfaceFreshnessLine';
 import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
-import { Text } from '@/components/ui/text/Text';
-import { Typography } from '@/constants/Typography';
 import { useReducedMotionPreference } from '@/hooks/ui/useReducedMotionPreference';
 import { useLocalServiceInventory } from '@/sync/domains/local/services/inventory/useLocalServiceInventory';
 import type { LocalServiceInventoryState } from '@/sync/domains/local/services/inventory/store';
@@ -18,18 +22,21 @@ import {
     selectLocalServiceLaunchTargets,
     type LocalServiceLauncherState,
 } from '@/sync/domains/local/services/launch';
+import { readLocalServiceDiagnostics } from '@/sync/domains/local/services/presentation';
 import {
-    readLocalServiceDiagnostics,
-    selectLocalServiceServiceCounts,
-} from '@/sync/domains/local/services/presentation';
-import { buildLocalServiceRows, type ServiceRow, type ServiceRowScope } from '@/sync/domains/local/services/serviceRow';
+    buildLocalServiceRows,
+    groupLocalServiceRowsBySection,
+    selectLocalServiceRunningCount,
+    type ServiceRow,
+    type ServiceRowSection,
+} from '@/sync/domains/local/services/serviceRow';
 import type { LocalServicePublicPreviewState } from '@/sync/domains/local/services/publicPreview/store';
 import { resolveReasonCopy } from '@/sync/domains/surfaces/copy';
 import { t } from '@/text';
-import type { TranslationKey } from '@/text/i18n';
+import { useUnistyles } from 'react-native-unistyles';
 
-import { LocalServicePublicPreviewControls } from './LocalServicePublicPreviewControls';
 import type { LocalServicePublicPreviewActions } from './publicPreviewActions';
+import { ServiceStatusDot } from './ServiceStatusDot';
 import type { LocalServiceCapabilityDisabledReasons } from './useLocalServicePublicPreviewFeature';
 import {
     ServiceRowView,
@@ -63,88 +70,67 @@ const stylesheet = StyleSheet.create((theme) => ({
     scrollContent: {
         paddingBottom: 24,
     },
+    /** A whole-pane state that still has plugin surfaces below it: the state keeps the pane's height. */
+    stateScrollContent: {
+        flexGrow: 1,
+        paddingBottom: 24,
+    },
     scopeToggle: {
         marginHorizontal: 16,
         marginBottom: 8,
     },
-    banner: {
-        marginHorizontal: 16,
-        marginTop: 12,
-        paddingHorizontal: 12,
-        paddingVertical: 8,
-        borderRadius: 8,
-        borderWidth: 1,
-        borderColor: theme.colors.border.default,
-        backgroundColor: theme.colors.surface.inset,
-    },
-    bannerText: {
-        color: theme.colors.text.secondary,
-    },
-    countBadge: {
-        marginHorizontal: 16,
-        marginTop: 12,
-        marginBottom: 4,
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 8,
-    },
-    countBadgeSpacer: {
-        flex: 1,
-    },
-    countBadgeText: {
-        ...Typography.tabular(),
-        color: theme.colors.text.secondary,
-        fontWeight: '600',
+    offlineLine: {
+        marginTop: 4,
     },
 }));
 
-const BAND_TITLE_KEYS: Readonly<Record<ServiceRowScope, TranslationKey>> = {
-    thisSession: 'localServices.session.thisSessionTitle',
-    workspace: 'localServices.session.workspaceTitle',
-    machine: 'localServices.band.machine',
-    suggestion: 'localServices.band.suggestions',
-};
+function sectionTitle(section: ServiceRowSection, machineName: string | null): string {
+    switch (section) {
+        case 'running':
+            return t('localServices.pane.sectionRunning');
+        case 'ready':
+            return t('localServices.pane.sectionReady');
+        case 'elsewhere':
+            return machineName
+                ? t('localServices.pane.sectionElsewhereOn', { machine: machineName })
+                : t('localServices.pane.sectionElsewhere');
+        case 'happier':
+            return '';
+    }
+}
 
-const BAND_ORDER: readonly ServiceRowScope[] = ['thisSession', 'workspace', 'machine', 'suggestion'];
-
-function ServiceCountBadge(props: Readonly<{
-    total: number;
-    running: number;
-    isRefreshing: boolean;
-    onRefresh?: (() => void) | undefined;
-    animationEnabled?: boolean;
-    testID: string;
-}>): React.ReactElement {
-    const styles = stylesheet;
-    return (
-        <View testID={props.testID} style={styles.countBadge}>
-            <Text style={styles.countBadgeText}>
-                {t('localServices.inventory.countBadge', { total: String(props.total), running: String(props.running) })}
-            </Text>
-            {props.onRefresh ? (
-                <>
-                    <View style={styles.countBadgeSpacer} />
-                    <IconButton
-                        testID={`${props.testID}-refresh`}
-                        iconName="arrow-clockwise"
-                        accessibilityLabel={t('common.refresh')}
-                        tooltip={t('common.refresh')}
-                        size={28}
-                        iconSize={14}
-                        variant="plain"
-                        // The drawn 28px square stays — it is the right visual weight beside a
-                        // count label — while the press box grows to the platform floor. The
-                        // primitive owns the frame as real box model; never `hitSlop`, which
-                        // react-native-web ignores and the desktop app IS the web bundle.
-                        minimumInteractiveTargetSize={resolveMinimumInteractiveTargetSize(Platform.OS)}
-                        disabled={props.isRefreshing}
-                        animationEnabled={props.animationEnabled}
-                        onPress={props.onRefresh}
-                    />
-                </>
-            ) : null}
-        </View>
-    );
+/**
+ * The pane header's live line (session-tabs lab S/ST): what runs here, on which machine — or that the
+ * machine is offline. The leading marks are module constants so the published line stays
+ * referentially stable between renders.
+ */
+function buildHeaderLine(input: Readonly<{
+    offline: boolean;
+    runningCount: number;
+    machineName: string | null;
+    runningMark: React.ReactNode;
+    idleMark: React.ReactNode;
+    offlineMark: React.ReactNode;
+}>): PaneHeaderLine {
+    const machine = input.machineName;
+    if (input.offline) {
+        return {
+            leading: input.offlineMark,
+            segments: [machine ? t('localServices.pane.offlineOn', { machine }) : t('localServices.pane.offline')],
+        };
+    }
+    if (input.runningCount > 0) {
+        return {
+            leading: input.runningMark,
+            segments: [machine
+                ? t('localServices.pane.runningOn', { count: input.runningCount, machine })
+                : t('localServices.pane.running', { count: input.runningCount })],
+        };
+    }
+    return {
+        leading: input.idleMark,
+        segments: [machine ? t('localServices.pane.nothingRunningOn', { machine }) : t('localServices.pane.nothingRunning')],
+    };
 }
 
 /**
@@ -195,21 +181,20 @@ function DiagnosticsBanner(props: Readonly<{
     }
 
     return (
-        <View testID={props.testID} style={styles.banner}>
+        <View testID={props.testID} style={styles.offlineLine}>
             {diagnostics.map((diagnostic) => {
-                // Scan diagnostics are scan-level facts, not per-service failures: render the ONE
-                // neutral product line via the OWNER-COPY mapper and keep the raw scan code on the
-                // diagnostics-only testID + accessibility hint — never in visible text.
+                // Scan diagnostics are scan-level facts, not per-service failures: the rows stay at
+                // full strength under the canonical quiet line (the offline line's own primitive),
+                // in the OWNER-COPY mapper's neutral words; the raw scan code stays on the
+                // diagnostics-only testID — never in visible text.
                 const copy = resolveReasonCopy({ reasonCode: diagnostic.code, kind: 'localServiceInventory' });
                 return (
-                    <Text
+                    <SurfaceFreshnessLine
                         key={diagnostic.code}
                         testID={`${props.testID}-code-${diagnostic.code}`}
-                        accessibilityHint={copy.diagnosticCode ?? undefined}
-                        style={styles.bannerText}
-                    >
-                        {copy.body}
-                    </Text>
+                        tone="warning"
+                        reason={copy.body}
+                    />
                 );
             })}
         </View>
@@ -235,6 +220,13 @@ export function DetectedLocalServicesPane(props: Readonly<{
     onOpenServiceInBrowser?: ServiceRowOpenHandler;
     publicPreviewActions?: LocalServicePublicPreviewActions;
     publicPreviewCapabilityDisabledReasons?: LocalServiceCapabilityDisabledReasons;
+    /** The machine these services run on: its name for the header and sections, and whether it answers. */
+    machine?: MachinePresenceSummary | null;
+    /**
+     * Plugin surfaces placed in the Services panel. They scroll with the list: stacked beside the
+     * pane's own scroll they took the whole height and squeezed the services out of view.
+     */
+    footer?: React.ReactNode;
     /**
      * User-initiated re-read. Freshness is normally pushed by the daemon inventory watch; this is
      * the explicit control and the recovery path when that watch is unavailable.
@@ -261,11 +253,6 @@ export function DetectedLocalServicesPane(props: Readonly<{
     // Active session for D1 grouping: explicit prop wins, else the launcher feed's session.
     const activeSessionId = props.sessionId ?? launcherState.sessionId ?? null;
 
-    const counts = React.useMemo(
-        () => selectLocalServiceServiceCounts({ inventoryRows: viewModel.rows }),
-        [viewModel.rows],
-    );
-
     // ONE ranked row model (keep-last-good: memoized on structural inputs only — never
     // folds nowMs/updatedAt into row identity, so unchanged rows keep referential identity).
     const rows = React.useMemo(
@@ -278,17 +265,56 @@ export function DetectedLocalServicesPane(props: Readonly<{
         [activeSessionId, launcherTargets, scope, viewModel.rows],
     );
 
-    const bands = React.useMemo(() => {
-        const grouped = new Map<ServiceRowScope, ServiceRow[]>();
-        for (const row of rows) {
-            const band = grouped.get(row.scope) ?? [];
-            band.push(row);
-            grouped.set(row.scope, band);
-        }
-        return BAND_ORDER
-            .map((band) => ({ band, rows: grouped.get(band) ?? [] }))
-            .filter((entry) => entry.rows.length > 0);
-    }, [rows]);
+    const sections = React.useMemo(() => groupLocalServiceRowsBySection(rows), [rows]);
+    const runningCount = React.useMemo(() => selectLocalServiceRunningCount(rows), [rows]);
+    const machineName = props.machine?.name ?? null;
+    // Only a machine we know about and cannot reach is offline; an unknown one (a shared Session)
+    // keeps today's behaviour rather than claiming an outage.
+    const offline = props.machine?.reachability === 'unreachable';
+
+    // One expanded row at a time (lab S signature). A row that leaves the list takes its expansion.
+    const [expandedRowId, setExpandedRowId] = React.useState<string | null>(null);
+    // Happier's own listeners: one quiet group, closed until the person asks.
+    const [happierOpen, setHappierOpen] = React.useState(false);
+    const expandedId = expandedRowId && rows.some((row) => row.id === expandedRowId) ? expandedRowId : null;
+
+    const { theme } = useUnistyles();
+    const runningMark = React.useMemo(() => (
+        <ServiceStatusDot status="running" animationEnabled={false} testID={`${testID}-header-dot`} />
+    ), [testID]);
+    const idleMark = React.useMemo(() => (
+        <Icon name="laptop" size={13} color={theme.colors.text.tertiary} />
+    ), [theme.colors.text.tertiary]);
+    const offlineMark = React.useMemo(() => (
+        <ServiceStatusDot status="unavailable" animationEnabled={false} testID={`${testID}-header-offline-dot`} />
+    ), [testID]);
+    const headerLine = React.useMemo(() => buildHeaderLine({
+        offline,
+        runningCount,
+        machineName,
+        runningMark,
+        idleMark,
+        offlineMark,
+    }), [idleMark, machineName, offline, offlineMark, runningCount, runningMark]);
+    const onRefresh = props.onRefresh;
+    const isRefreshing = viewModel.isRefreshing;
+    const headerAction = React.useMemo(() => (onRefresh ? (
+        <IconButton
+            testID={`${testID}-refresh`}
+            iconName="arrow-clockwise"
+            accessibilityLabel={t('common.refresh')}
+            tooltip={t('common.refresh')}
+            variant="plain"
+            minimumInteractiveTargetSize={resolveMinimumInteractiveTargetSize(Platform.OS)}
+            disabled={isRefreshing}
+            animationEnabled={animationEnabled}
+            onPress={onRefresh}
+        />
+    ) : null), [animationEnabled, isRefreshing, onRefresh, testID]);
+    usePaneHeaderSlotContent(React.useMemo(
+        () => ({ line: headerLine, action: headerAction }),
+        [headerAction, headerLine],
+    ));
 
     const renderRow = React.useCallback((row: ServiceRow) => (
         <ServiceRowView
@@ -299,23 +325,55 @@ export function DetectedLocalServicesPane(props: Readonly<{
             onTerminateDetectedService={props.onTerminateDetectedService}
             onForgetDetectedService={props.onForgetDetectedService}
             onCopyServiceUrl={props.onCopyServiceUrl}
+            publicPreviewState={props.publicPreviewState}
+            publicPreviewActions={props.publicPreviewActions}
+            publicPreviewCapabilityDisabledReasons={props.publicPreviewCapabilityDisabledReasons}
+            expanded={expandedId === row.id}
+            onExpandedChange={(next) => setExpandedRowId(next ? row.id : null)}
             animationEnabled={animationEnabled}
             testID={`${testID}-row:${row.id}`}
         />
     ), [
         animationEnabled,
+        expandedId,
         props.onCopyServiceUrl,
         props.onForgetDetectedService,
         props.onOpenServiceInBrowser,
         props.onStartLauncherTarget,
         props.onTerminateDetectedService,
+        props.publicPreviewActions,
+        props.publicPreviewCapabilityDisabledReasons,
+        props.publicPreviewState,
         testID,
     ]);
 
-    const hasRows = rows.length > 0;
+    // What the person can see or do: rows that are neither running nor startable are not shown.
+    const hasRows = sections.length > 0;
+    const checkAgain = onRefresh ? { label: t('localServices.pane.checkAgain'), onPress: onRefresh } : undefined;
+
+    // A whole-pane state keeps the Services panel's plugin surfaces reachable below it.
+    const withFooter = (state: React.ReactElement): React.ReactElement => (props.footer ? (
+        <ScrollView style={styles.root} contentContainerStyle={styles.stateScrollContent}>
+            {state}
+            {props.footer}
+        </ScrollView>
+    ) : state);
+
+    if (offline && !hasRows) {
+        return withFooter(
+            <SurfaceStateCard
+                testID={`${testID}-offline`}
+                kind="unavailable"
+                iconName="cloud-slash"
+                title={machineName ? t('localServices.pane.offlineOn', { machine: machineName }) : t('localServices.pane.offline')}
+                reason={t('localServices.pane.offlineReason')}
+                {...(checkAgain ? { action: checkAgain } : {})}
+            />
+        );
+    }
 
     if (viewModel.status === 'loading' && !hasLauncherTargets) {
-        return (
+        return withFooter(
             <SurfaceStateCard
                 testID={`${testID}-loading`}
                 kind="loading"
@@ -326,14 +384,15 @@ export function DetectedLocalServicesPane(props: Readonly<{
     }
 
     if (viewModel.status === 'empty' && !hasLauncherTargets) {
-        return (
+        // Pane-states E: an empty pane that invites — what shows up here and why it is worth it.
+        return withFooter(
             <SurfaceStateCard
                 testID={`${testID}-empty`}
                 kind="empty"
-                title={t('localServices.inventory.emptyTitle')}
-                {...(props.onRefresh
-                    ? { action: { label: t('common.refresh'), onPress: props.onRefresh } }
-                    : {})}
+                iconName="globe"
+                title={t('localServices.pane.emptyTitle')}
+                reason={t('localServices.pane.emptyReason')}
+                {...(checkAgain ? { action: checkAgain } : {})}
             />
         );
     }
@@ -342,14 +401,14 @@ export function DetectedLocalServicesPane(props: Readonly<{
         const diagnosticCopy = firstInventoryDiagnosticCopy(viewModel.diagnostics);
         // G16: a failed first read used to be terminal. The card's own primary-action slot is the
         // retry, so the failure recovers through the same invalidation the refresh control uses.
-        return (
+        return withFooter(
             <SurfaceStateCard
                 testID={`${testID}-error`}
                 kind="error"
                 title={t('localServices.inventory.errorTitle')}
                 diagnosticCode={diagnosticCopy?.diagnosticCode}
-                {...(props.onRefresh
-                    ? { action: { label: t('common.retry'), onPress: props.onRefresh } }
+                {...(onRefresh
+                    ? { action: { label: t('common.retry'), onPress: onRefresh } }
                     : {})}
             />
         );
@@ -362,17 +421,17 @@ export function DetectedLocalServicesPane(props: Readonly<{
             contentContainerStyle={styles.scrollContent}
         >
             <ConstrainedScreenContent>
-                <DiagnosticsBanner diagnostics={viewModel.diagnostics} testID={`${testID}-error`} />
-                {counts.total > 0 ? (
-                    <ServiceCountBadge
-                        total={counts.total}
-                        running={counts.running}
-                        isRefreshing={viewModel.isRefreshing}
-                        onRefresh={props.onRefresh}
-                        animationEnabled={animationEnabled}
-                        testID={`${testID}-count-badge`}
-                    />
+                {offline ? (
+                    <View style={styles.offlineLine}>
+                        <SurfaceFreshnessLine
+                            testID={`${testID}-offline-line`}
+                            tone="warning"
+                            reason={machineName ? t('localServices.pane.offlineOn', { machine: machineName }) : t('localServices.pane.offline')}
+                            {...(checkAgain ? { action: checkAgain } : {})}
+                        />
+                    </View>
                 ) : null}
+                <DiagnosticsBanner diagnostics={viewModel.diagnostics} testID={`${testID}-error`} />
                 {props.onChangeScope ? (
                     <ServicesScopeBar
                         scope={scope}
@@ -381,17 +440,45 @@ export function DetectedLocalServicesPane(props: Readonly<{
                     />
                 ) : null}
                 {hasRows
-                    ? bands.map((entry) => (
-                        <View key={entry.band} testID={`${testID}-band-${entry.band}`}>
-                            <ItemGroup
-                                title={t(BAND_TITLE_KEYS[entry.band])}
-                                selectableItemCountOverride={entry.rows.length}
-                            >
-                                {entry.rows.map(renderRow)}
-                            </ItemGroup>
+                    ? sections.map((entry) => (
+                        <View key={entry.section} testID={`${testID}-section-${entry.section}`}>
+                            {entry.section === 'happier' ? (
+                                <ItemGroup selectableItemCountOverride={1}>
+                                    <ExpandableItem
+                                        expanded={happierOpen}
+                                        onExpandedChange={setHappierOpen}
+                                        header={({ headerProps }) => (
+                                            <Item
+                                                {...headerProps}
+                                                testID={`${testID}-happier-item`}
+                                                title={t('localServices.pane.happierServices', { count: entry.rows.length })}
+                                            />
+                                        )}
+                                    >
+                                        {entry.rows.map(renderRow)}
+                                    </ExpandableItem>
+                                </ItemGroup>
+                            ) : (
+                                <ItemGroup
+                                    title={sectionTitle(entry.section, machineName)}
+                                    selectableItemCountOverride={entry.rows.length}
+                                >
+                                    {entry.rows.map(renderRow)}
+                                </ItemGroup>
+                            )}
                         </View>
                     ))
-                    : (
+                    : rows.length > 0 ? (
+                        // Only services with nothing to offer were found: the pane is empty (pane-states E).
+                        <SurfaceStateCard
+                            testID={`${testID}-empty`}
+                            kind="empty"
+                            iconName="globe"
+                            title={t('localServices.pane.emptyTitle')}
+                            reason={t('localServices.pane.emptyReason')}
+                            {...(checkAgain ? { action: checkAgain } : {})}
+                        />
+                    ) : (
                         <SurfaceStateCard
                             testID={`${testID}-launcher-unavailable`}
                             kind="unavailable"
@@ -399,20 +486,7 @@ export function DetectedLocalServicesPane(props: Readonly<{
                             reason={t('localServices.launcher.status.unavailableGeneric')}
                         />
                     )}
-                {/*
-                  * ONE public-preview group for the whole pane (U-10). It used to be mounted inside
-                  * every qualifying service row, which repeated the group heading down the list,
-                  * nested a group inside a band group, and made `activeExposureCount` rescan the
-                  * entire exposure set once per row. Exposure is a pane-level concern — the user
-                  * asks "what of mine is public right now", not "is this row public".
-                  */}
-                <LocalServicePublicPreviewControls
-                    launchTargets={launcherTargets}
-                    state={props.publicPreviewState}
-                    actions={props.publicPreviewActions}
-                    capabilityDisabledReasons={props.publicPreviewCapabilityDisabledReasons}
-                    testID={`${testID}-public-preview`}
-                />
+                {props.footer}
             </ConstrainedScreenContent>
         </ScrollView>
     );

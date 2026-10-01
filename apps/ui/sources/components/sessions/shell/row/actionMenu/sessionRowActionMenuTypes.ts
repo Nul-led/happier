@@ -20,7 +20,7 @@ export type SessionRowMoreMenuBuildParams = Readonly<{
 }>;
 
 export type SessionRowActionMenuState = Readonly<{
-    tagMenuItems: DropdownMenuItem[];
+    tagMenuItems: readonly DropdownMenuItem[];
     handleTagMenuSelect: (tagId: string) => void;
     handleTagMenuCreate: (query: string) => void;
     moreMenuItems: DropdownMenuItem[];

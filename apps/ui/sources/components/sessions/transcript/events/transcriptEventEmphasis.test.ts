@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import type { Message } from '@/sync/domains/messages/messageTypes';
+import type { Message } from "@happier-dev/session-core/messages";
 
-import { resolveTranscriptEventEmphasisByMessageId } from './transcriptEventEmphasis';
+import {
+    resolveTranscriptEventEmphasisByMessageId,
+    resolveTranscriptHostWakeCountByMessageId,
+} from './transcriptEventEmphasis';
 
 function eventMessage(
     id: string,
@@ -45,5 +48,34 @@ describe('resolveTranscriptEventEmphasisByMessageId', () => {
         ], false);
 
         expect(emphasis['old-failure']).toBeUndefined();
+    });
+});
+
+describe('resolveTranscriptHostWakeCountByMessageId', () => {
+    const update = (workerId: string) => ({
+        type: 'worker-update', update: {
+            v: 1, workerKind: 'session', workerId, ownerState: 'settled', wake: 'finished',
+            headline: 'Finished', canInspect: false,
+        },
+    }) as Extract<Message, { kind: 'agent-event' }>['event'];
+    const agentText = (id: string): Message => ({
+        kind: 'agent-text', localId: null, id, createdAt: 1, text: 'Reply', isThinking: false,
+    } as Message);
+
+    it('counts each run of worker updates once, on the update that opens the wake', () => {
+        const messages = [
+            eventMessage('a', update('w1')),
+            eventMessage('b', update('w2')),
+            eventMessage('c', update('w3')),
+            agentText('reply'),
+            eventMessage('d', update('w4')),
+            eventMessage('other', { type: 'message', message: 'Unrelated' }),
+        ];
+        const counts = resolveTranscriptHostWakeCountByMessageId({
+            messageIdsOldestFirst: messages.map((message) => message.id),
+            messagesById: Object.fromEntries(messages.map((message) => [message.id, message])),
+        });
+
+        expect(counts).toEqual({ a: 3, d: 1 });
     });
 });

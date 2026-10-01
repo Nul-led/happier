@@ -14,23 +14,16 @@ import { ProfileRequirementsBadge } from '@/components/profiles/ProfileRequireme
 import { ignoreNextRowPress } from '@/utils/ui/ignoreNextRowPress';
 import { toggleFavoriteProfileId } from '@/sync/domains/profiles/profileGrouping';
 import { buildProfileActions } from '@/components/profiles/profileActions';
-import { getDefaultProfileListStrings, getProfileSubtitle, buildProfilesListGroups } from '@/components/profiles/profileListModel';
+import { getProfileSubtitle } from '@/components/profiles/profileListModel';
+import { useProfilesListModel } from '@/components/profiles/useProfilesListModel';
 import { getProfileDisplayName } from '@/components/profiles/profileDisplay';
 import { t } from '@/text';
 import { Typography } from '@/constants/Typography';
 import { hasRequiredSecret } from '@/sync/domains/profiles/profileSecrets';
-import { useSetting } from '@/sync/domains/state/storage';
-import { getEnabledAgentIds } from '@/agents/catalog/enabled';
-import { getResolvedBackendCatalogEntries } from '@/agents/backendCatalog/getResolvedBackendCatalogEntries';
-import { useDaemonMergedProjectionInputs } from '@/agents/backendCatalog/useDaemonMergedProjectionInputs';
+import type { getResolvedBackendCatalogEntries } from '@/agents/backendCatalog/getResolvedBackendCatalogEntries';
 import { Text } from '@/components/ui/text/Text';
 import { normalizeNodeForView } from '@/components/ui/rendering/normalizeNodeForView';
-import {
-    readProfileEnabledById,
-    type ProfileEnabledById,
-} from '@/sync/domains/profiles/profileEnablement';
-import { resolveVisibleBuiltInLaunchProfiles } from '@/sync/domains/profiles/visibleBuiltInLaunchProfiles';
-import { readProviderSettingsFromAccountSettingsV1 } from '@happier-dev/protocol';
+import type { ProfileEnabledById } from '@/sync/domains/profiles/profileEnablement';
 import { Icon } from '@/components/ui/icons/Icon';
 
 
@@ -73,6 +66,18 @@ export interface ProfilesListProps {
         builtIn?: string;
     };
     builtInGroupFooter?: string;
+    /**
+     * `page` renders the list as a configuration page (Settings › Profiles): sections carry
+     * descriptions and adding a profile is the last row of your own profiles, which always shows.
+     * Pickers keep the default grouped look.
+     */
+    presentation?: 'page' | 'grouped';
+    /** Page presentation: what each section holds, above its rows. */
+    groupDescriptions?: {
+        favorites?: string;
+        custom?: string;
+        builtIn?: string;
+    };
     /**
      * Optional explicit boundary ref for row action popovers. Useful when this list is rendered
      * inside a scroll viewport (e.g. NewSessionWizard) and the popover should be clamped to the
@@ -176,47 +181,19 @@ const ProfileRow = React.memo(function ProfileRow(props: ProfileRowProps) {
 
 export function ProfilesList(props: ProfilesListProps) {
     const { theme, rt } = useUnistyles();
-    const acpCatalogSettingsV1 = useSetting('acpCatalogSettingsV1');
-    const backendEnabledByTargetKey = useSetting('backendEnabledByTargetKey');
-    const settingsProfileEnabledByIdRaw = useSetting('profileEnabledById');
-    const settingsProfileEnabledById = React.useMemo(
-        () => readProfileEnabledById(settingsProfileEnabledByIdRaw),
-        [settingsProfileEnabledByIdRaw],
-    );
-    const lastUsedProfile = useSetting('lastUsedProfile');
-    const secretBindingsByProfileId = useSetting('currentSecretBindingsByProfileId');
-    const providerSettingsV1 = useSetting('providerSettingsV1');
-    const providerMigration = React.useMemo(() => (
-        readProviderSettingsFromAccountSettingsV1({ providerSettingsV1 }).settings.migration
-    ), [providerSettingsV1]);
-    const profileEnabledById = props.profileEnabledById ?? settingsProfileEnabledById;
-    const enabledAgentIds = React.useMemo(() => {
-        return getEnabledAgentIds({ backendEnabledByTargetKey });
-    }, [backendEnabledByTargetKey]);
-    const daemonMergedProjection = useDaemonMergedProjectionInputs({
+    const {
+        groups,
+        enabledAgentIds,
+        resolvedBackendEntries,
+        strings,
+    } = useProfilesListModel({
+        customProfiles: props.customProfiles,
+        favoriteProfileIds: props.favoriteProfileIds,
+        profileEnabledById: props.profileEnabledById,
+        includeDisabledProfiles: props.includeDisabledProfiles,
         machineId: props.machineId,
         serverId: props.serverId,
-        enabled: Boolean(props.machineId),
-        staleMs: 60_000,
     });
-    const resolvedBackendEntries = React.useMemo(() => {
-        return getResolvedBackendCatalogEntries({
-            enabledAgentIds,
-            acpCatalogSettingsV1,
-            backendEnabledByTargetKey,
-            discoveredBackendIds: daemonMergedProjection.inputs?.discoveredBackendIds ?? undefined,
-            mergedProviderProjectionById: daemonMergedProjection.inputs?.mergedProviderProjectionById ?? null,
-            mergedBackendProjectionById: daemonMergedProjection.inputs?.mergedBackendProjectionById ?? null,
-        });
-    }, [
-        acpCatalogSettingsV1,
-        backendEnabledByTargetKey,
-        daemonMergedProjection.inputs?.discoveredBackendIds,
-        daemonMergedProjection.inputs?.mergedBackendProjectionById,
-        daemonMergedProjection.inputs?.mergedProviderProjectionById,
-        enabledAgentIds,
-    ]);
-    const strings = React.useMemo(() => getDefaultProfileListStrings(enabledAgentIds), [enabledAgentIds]);
     const {
         extraActions,
         getHasEnvironmentVariables,
@@ -230,25 +207,12 @@ export function ProfilesList(props: ProfilesListProps) {
     const selectedIndicatorColor = rt.themeName === 'dark' ? theme.colors.text.primary : theme.colors.button.primary.background;
     const isMobile = useWindowDimensions().width < 580;
 
-    const groups = React.useMemo(() => {
-        const builtInProfiles = resolveVisibleBuiltInLaunchProfiles({
-            lastUsedProfile,
-            favoriteProfileIds: props.favoriteProfileIds,
-            profileEnabledById: profileEnabledById ?? {},
-            secretBindingsByProfileId: secretBindingsByProfileId ?? {},
-            migration: providerMigration,
-        });
-        return buildProfilesListGroups({
-            customProfiles: props.customProfiles,
-            builtInProfiles,
-            favoriteProfileIds: props.favoriteProfileIds,
-            enabledAgentIds,
-            profileEnabledById,
-            includeDisabledProfiles: props.includeDisabledProfiles,
-        });
-    }, [enabledAgentIds, lastUsedProfile, profileEnabledById, props.customProfiles, props.favoriteProfileIds, props.includeDisabledProfiles, providerMigration, secretBindingsByProfileId]);
-
     const isDefaultEnvironmentFavorite = groups.favoriteIds.has('');
+    // A picker selects one choice; a page lists them, so it draws no selection.
+    const showsSelection = props.presentation !== 'page';
+    const defaultEnvironmentSelected = showsSelection && !props.selectedProfileId;
+    // On a page, adding happens in the collection it adds to: the last row of your own profiles.
+    const addsInCustomGroup = props.presentation === 'page' && Boolean(props.includeAddProfileRow && props.onAddProfilePress);
     const showFavoritesGroup = groups.favoriteProfiles.length > 0 || (props.includeDefaultEnvironmentRow && isDefaultEnvironmentFavorite);
 
     const toggleFavorite = React.useCallback((profileId: string) => {
@@ -380,11 +344,12 @@ export function ProfilesList(props: ProfilesListProps) {
     ]);
 
     return (
-        <ItemList style={{ paddingTop: 0 }}>
+        <ItemList style={{ paddingTop: 0 }} presentation={props.presentation}>
             {props.header}
             {showFavoritesGroup && (
                 <ItemGroup
                     title={props.groupTitles?.favorites ?? t('profiles.groups.favorites')}
+                    description={props.groupDescriptions?.favorites}
                     selectableItemCountOverride={Math.max(
                         1,
                         (props.includeDefaultEnvironmentRow && isDefaultEnvironmentFavorite ? 1 : 0) + groups.favoriteProfiles.length,
@@ -397,7 +362,7 @@ export function ProfilesList(props: ProfilesListProps) {
                             subtitle={t('profiles.noProfileDescription')}
                             leftElement={<Icon name="house" size={29} color={theme.colors.text.secondary} />}
                             showChevron={false}
-                            selected={!props.selectedProfileId}
+                            selected={defaultEnvironmentSelected}
                             onPress={() => {
                                 if (ignoreRowPressRef.current) {
                                     ignoreRowPressRef.current = false;
@@ -405,14 +370,14 @@ export function ProfilesList(props: ProfilesListProps) {
                                 }
                                 props.onPressDefaultEnvironment?.();
                             }}
-                            rightElement={renderDefaultEnvironmentRightElement(!props.selectedProfileId)}
+                            rightElement={renderDefaultEnvironmentRightElement(defaultEnvironmentSelected)}
                             showDivider={groups.favoriteProfiles.length > 0}
                         />
                     )}
                     {groups.favoriteProfiles.map((profile, index) => {
                         const displayName = getProfileDisplayName(profile);
                         const isLast = index === groups.favoriteProfiles.length - 1;
-                        const isSelected = props.selectedProfileId === profile.id;
+                        const isSelected = showsSelection && props.selectedProfileId === profile.id;
                         const isDisabled = props.getProfileDisabled ? props.getProfileDisabled(profile) : false;
                         const baseSubtitle = getProfileSubtitle({
                             profile,
@@ -451,16 +416,17 @@ export function ProfilesList(props: ProfilesListProps) {
                 </ItemGroup>
             )}
 
-            {groups.customProfiles.length > 0 && (
+            {(groups.customProfiles.length > 0 || addsInCustomGroup) && (
                 <ItemGroup
                     title={props.groupTitles?.custom ?? t('profiles.groups.custom')}
-                    selectableItemCountOverride={Math.max(2, groups.customProfiles.length)}
+                    description={props.groupDescriptions?.custom}
+                    selectableItemCountOverride={Math.max(2, groups.customProfiles.length + (addsInCustomGroup ? 1 : 0))}
                 >
                     {groups.customProfiles.map((profile, index) => {
                         const displayName = getProfileDisplayName(profile);
-                        const isLast = index === groups.customProfiles.length - 1;
+                        const isLast = index === groups.customProfiles.length - 1 && !addsInCustomGroup;
                         const isFavorite = groups.favoriteIds.has(profile.id);
-                        const isSelected = props.selectedProfileId === profile.id;
+                        const isSelected = showsSelection && props.selectedProfileId === profile.id;
                         const isDisabled = props.getProfileDisabled ? props.getProfileDisabled(profile) : false;
                         const baseSubtitle = getProfileSubtitle({
                             profile,
@@ -496,11 +462,20 @@ export function ProfilesList(props: ProfilesListProps) {
                             />
                         );
                     })}
+                    {addsInCustomGroup ? (
+                        <Item
+                            testID="profiles-list-add-profile"
+                            title={t('profiles.addProfile')}
+                            onPress={props.onAddProfilePress}
+                            showDivider={false}
+                        />
+                    ) : null}
                 </ItemGroup>
             )}
 
             <ItemGroup
                 title={props.groupTitles?.builtIn ?? t('profiles.groups.builtIn')}
+                description={props.groupDescriptions?.builtIn}
                 footer={props.builtInGroupFooter}
                 selectableItemCountOverride={
                     Math.max(
@@ -516,7 +491,7 @@ export function ProfilesList(props: ProfilesListProps) {
                         subtitle={t('profiles.noProfileDescription')}
                         leftElement={<Icon name="house" size={29} color={theme.colors.text.secondary} />}
                         showChevron={false}
-                        selected={!props.selectedProfileId}
+                        selected={defaultEnvironmentSelected}
                         onPress={() => {
                             if (ignoreRowPressRef.current) {
                                 ignoreRowPressRef.current = false;
@@ -524,7 +499,7 @@ export function ProfilesList(props: ProfilesListProps) {
                             }
                             props.onPressDefaultEnvironment?.();
                         }}
-                        rightElement={renderDefaultEnvironmentRightElement(!props.selectedProfileId)}
+                        rightElement={renderDefaultEnvironmentRightElement(defaultEnvironmentSelected)}
                         showDivider={groups.builtInProfiles.length > 0}
                     />
                 )}
@@ -532,7 +507,7 @@ export function ProfilesList(props: ProfilesListProps) {
                     const displayName = getProfileDisplayName(profile);
                     const isLast = index === groups.builtInProfiles.length - 1;
                     const isFavorite = groups.favoriteIds.has(profile.id);
-                    const isSelected = props.selectedProfileId === profile.id;
+                    const isSelected = showsSelection && props.selectedProfileId === profile.id;
                     const isDisabled = props.getProfileDisabled ? props.getProfileDisabled(profile) : false;
                     const baseSubtitle = getProfileSubtitle({
                         profile,
@@ -570,7 +545,7 @@ export function ProfilesList(props: ProfilesListProps) {
                 })}
             </ItemGroup>
 
-            {props.includeAddProfileRow && props.onAddProfilePress && (
+            {props.includeAddProfileRow && props.onAddProfilePress && !addsInCustomGroup && (
                 <ItemGroup title="" selectableItemCountOverride={1}>
                     <Item
                         testID="profiles-list-add-profile"

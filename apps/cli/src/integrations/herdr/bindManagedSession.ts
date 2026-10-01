@@ -1,0 +1,165 @@
+import type { EventEmitter } from 'node:events';
+import { resolveManagedCliToolNameForRing } from '@happier-dev/cli-common/firstPartyRuntime';
+import type { PublicReleaseRingId } from '@happier-dev/release-runtime/releaseRings';
+
+import type { Metadata } from '@/api/types';
+import { configuration } from '@/configuration';
+import { createRuntimeContextPrefixArgs } from '@/utils/env/runtimeContextArgv';
+import { resolveHappierRuntimeContextEnvFromConfiguration } from '@/utils/env/resolveHappierRuntimeContextEnvFromConfiguration';
+import { logger } from '@/ui/logger';
+import { readTerminalAttachmentInfo } from '@/terminal/attachment/terminalAttachmentInfo';
+
+import { createHerdrClient, type HerdrClient } from './client';
+import { HERDR_ACTION_TIMEOUT_MS, HERDR_STARTUP_TIMEOUT_MS, resolveHerdrRuntimeBinary } from './runtimeBinary';
+
+type ManagedHerdrBinding = Readonly<{
+  schedule(): void;
+  preserveHostOnClose(): void;
+}>;
+
+const managedHerdrBindings = new WeakMap<EventEmitter, Map<string, ManagedHerdrBinding>>();
+
+export function createHerdrResumeArgv(sessionId: string, releaseRing: PublicReleaseRingId): string[] {
+  return [
+    resolveManagedCliToolNameForRing(releaseRing),
+    ...createRuntimeContextPrefixArgs(resolveHappierRuntimeContextEnvFromConfiguration()),
+    'resume', sessionId,
+  ];
+}
+
+export async function bindHerdrAgentIfNeeded(params: Readonly<{
+  session: EventEmitter;
+  sessionId: string;
+  agent: string;
+  terminal: Metadata['terminal'] | undefined;
+  preserveHostOnClose?: boolean;
+  client?: Pick<HerdrClient, 'findPane' | 'request'>;
+  readTerminalAttachmentInfoFn?: typeof readTerminalAttachmentInfo;
+}>): Promise<void> {
+  let terminal = params.terminal;
+  if (
+    terminal?.mode === 'herdr'
+    && (!terminal.herdr?.sessionName || !terminal.herdr.socketPath || !terminal.herdr.terminalId)
+  ) {
+    const attachment = await (params.readTerminalAttachmentInfoFn ?? readTerminalAttachmentInfo)({
+      happyHomeDir: configuration.happyHomeDir,
+      sessionId: params.sessionId,
+    });
+    if (attachment?.terminal.mode === 'herdr') terminal = attachment.terminal;
+  }
+  const herdr = terminal?.mode === 'herdr' ? terminal.herdr : undefined;
+  if (!herdr?.sessionName || !herdr.socketPath || !herdr.terminalId) return;
+  let client = params.client;
+  if (!client) {
+    const binary = await resolveHerdrRuntimeBinary({ actionTimeoutMs: HERDR_ACTION_TIMEOUT_MS });
+    if (!binary) {
+      logger.infoFile('[WARN] [herdr] Cannot report agent state: a supported Herdr executable is unavailable');
+      return;
+    }
+    client = createHerdrClient({
+      binary,
+      sessionName: herdr.sessionName,
+      socketPath: herdr.socketPath,
+      actionTimeoutMs: HERDR_ACTION_TIMEOUT_MS,
+      startupTimeoutMs: HERDR_STARTUP_TIMEOUT_MS,
+    });
+  }
+  bindManagedHerdrSession({
+    session: params.session,
+    client,
+    terminalId: herdr.terminalId,
+    agent: params.agent,
+    sessionId: params.sessionId,
+    ...(params.preserveHostOnClose ? { preserveHostOnClose: true } : {}),
+  });
+}
+
+export function bindManagedHerdrSession(params: Readonly<{
+  session: EventEmitter;
+  client: Pick<HerdrClient, 'findPane' | 'request'>;
+  terminalId: string;
+  agent: string;
+  sessionId: string;
+  preserveHostOnClose?: boolean;
+}>): void {
+  const bindingKey = `${params.terminalId}\u0000${params.agent}\u0000${params.sessionId}`;
+  let sessionBindings = managedHerdrBindings.get(params.session);
+  const existing = sessionBindings?.get(bindingKey);
+  if (existing) {
+    if (params.preserveHostOnClose) existing.preserveHostOnClose();
+    existing.schedule();
+    return;
+  }
+  sessionBindings ??= new Map();
+  managedHerdrBindings.set(params.session, sessionBindings);
+
+  let desiredState: 'idle' | 'working' = 'idle';
+  let reportedState: 'idle' | 'working' | null = null;
+  let closed = false;
+  let preserveHostOnClose = params.preserveHostOnClose === true;
+  let reporting: Promise<void> | null = null;
+
+  const report = async (state: 'idle' | 'working') => {
+    const pane = await params.client.findPane(params.terminalId);
+    if (!pane) {
+      reportedState = state;
+      logger.infoFile('[WARN] [herdr] Managed agent terminal is no longer available');
+      return;
+    }
+    await params.client.request('pane.report_agent', {
+      pane_id: pane.paneId,
+      source: 'happier',
+      agent: params.agent,
+      state,
+      resume_argv: createHerdrResumeArgv(params.sessionId, configuration.publicReleaseRing),
+    });
+    reportedState = state;
+  };
+
+  const release = async () => {
+    const pane = await params.client.findPane(params.terminalId);
+    if (!pane) return;
+    await params.client.request('pane.release_agent', {
+      pane_id: pane.paneId,
+      source: 'happier',
+      agent: params.agent,
+    });
+  };
+
+  const schedule = () => {
+    if (reporting) return;
+    reporting = (async () => {
+      while (!closed && reportedState !== desiredState) {
+        try {
+          await report(desiredState);
+        } catch {
+          // OS/API errors can contain launch inputs; keep the event observable without serializing them.
+          logger.infoFile('[WARN] [herdr] Failed to report managed agent state');
+          return;
+        }
+      }
+    })().finally(() => { reporting = null; });
+  };
+
+  const onPresence = (presence: { thinking: boolean }) => {
+    desiredState = presence.thinking ? 'working' : 'idle';
+    schedule();
+  };
+  const onClosed = () => {
+    closed = true;
+    params.session.off('local-presence', onPresence);
+    params.session.off('local-closed', onClosed);
+    sessionBindings?.delete(bindingKey);
+    if (preserveHostOnClose) return;
+    void (reporting ?? Promise.resolve()).then(release).catch(() => {
+      logger.infoFile('[WARN] [herdr] Failed to release managed agent state');
+    });
+  };
+  sessionBindings.set(bindingKey, {
+    schedule,
+    preserveHostOnClose: () => { preserveHostOnClose = true; },
+  });
+  params.session.on('local-presence', onPresence);
+  params.session.on('local-closed', onClosed);
+  schedule();
+}

@@ -19,7 +19,7 @@ import { readRemoteHosts, type RemoteHost } from '@/sync/domains/remoteHosts/rem
 import { getRemoteHostLocalOverridesStore } from '@/sync/domains/remoteHosts/remoteHostLocalOverrides';
 import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
 import { isDesktopHost } from '@/utils/platform/desktopHost';
-import { applyConfiguredSshHostSuggestionToDraft, createDefaultSshCredentialsDraft, isSshCredentialsDraftReady } from '@/components/ssh/sshCredentialsDraft';
+import { applyConfiguredSshHostSuggestionToDraft, createDefaultSshCredentialsDraft, isSshCredentialsDraftReady, parseSshPortNumber } from '@/components/ssh/sshCredentialsDraft';
 import { filterConfiguredSshHostSuggestions, type SshConfiguredHostSuggestion } from '@/components/ssh/filterConfiguredSshHostSuggestions';
 import { useConfiguredSshHostSuggestions } from '@/components/ssh/useConfiguredSshHostSuggestions';
 import type { SecretString } from '@/sync/encryption/secretSettings';
@@ -37,7 +37,6 @@ import { RemoteSshChecklistExecutionPhase } from './RemoteSshChecklistExecutionP
 import { RemoteSshChecklistCompletePhase } from './RemoteSshChecklistCompletePhase';
 import { resolveRemoteSshBootstrapFormState } from './resolveRemoteSshBootstrapFormState';
 import { persistRemoteHostAfterRemoteSshCompletion } from './persistRemoteHostAfterRemoteSshCompletion';
-import { useRemoteRelayRuntimeStatusProbe } from './useRemoteRelayRuntimeStatusProbe';
 
 const SAVED_REMOTE_HOST_NEW_ID = '__new__';
 
@@ -126,7 +125,7 @@ function buildRelayAccessTargetFromResolvedFormState(params: Readonly<{
 
     const target = username ? `${username}@${host}` : host;
     const portText = params.sshPort.trim();
-    const port = portText ? Number.parseInt(portText, 10) : Number.NaN;
+    const port = parseSshPortNumber(portText);
     const password = params.sshPassword.trim();
     const identityFile = params.identityFilePath.trim();
 
@@ -142,7 +141,7 @@ function buildRelayAccessTargetFromResolvedFormState(params: Readonly<{
         ssh: {
             target,
             auth: params.sshAuth,
-            ...(Number.isInteger(port) && port > 0 ? { port } : {}),
+            ...(port !== null ? { port } : {}),
             ...(params.sshAuth === 'keyfile' ? { identityFile } : {}),
             ...(params.sshAuth === 'password' ? { password } : {}),
         },
@@ -177,9 +176,8 @@ export const RemoteSshChecklistStep = React.memo(function RemoteSshChecklistStep
         ? (['keyfile', 'password'] as const)
         : undefined;
     const [draft, setDraft] = React.useState<SshCredentialsDraft>(() => ({
-        ...createDefaultSshCredentialsDraft(),
+        ...createDefaultSshCredentialsDraft(props.runner?.mode === 'native' ? 'password' : 'agent'),
         ...(props.initialDraft ?? {}),
-        ...(props.runner?.mode === 'native' && !props.initialDraft?.authMode ? { authMode: 'password' as const } : {}),
     }));
     const remoteHostsRaw = useSetting('remoteHostsV1');
     const remoteHostsV1 = React.useMemo(() => readRemoteHosts(remoteHostsRaw), [remoteHostsRaw]);
@@ -316,6 +314,7 @@ export const RemoteSshChecklistStep = React.memo(function RemoteSshChecklistStep
         webappUrl: props.webappUrl,
         publicRelayUrl: props.publicRelayUrl,
         serviceMode: props.mode === 'remoteRelayHost' ? 'none' : 'user',
+        intent: props.mode === 'remoteRelayHost' ? 'personalHome.create' : 'machineSetup',
     });
 
     const resolveRemoteSshFormStateForExecution = React.useCallback(async (installRelayRuntime: boolean) => {
@@ -349,20 +348,9 @@ export const RemoteSshChecklistStep = React.memo(function RemoteSshChecklistStep
         usingSavedHost,
     ]);
 
-    const resolveRemoteSshFormStateForStatusProbe = React.useCallback(async () => {
-        return await resolveRemoteSshFormStateForExecution(false);
-    }, [resolveRemoteSshFormStateForExecution]);
-
-    const remoteRelayRuntimeStatusProbe = useRemoteRelayRuntimeStatusProbe({
-        enabled: props.mode === 'remoteRelayHost' && phase === 'plan',
-        ...(props.runner ? { runner: props.runner } : {}),
-        resolveFormState: resolveRemoteSshFormStateForStatusProbe,
-    });
-
     const items = React.useMemo(() => buildRemoteSshChecklistItems({
         mode: props.mode,
-        existingRelayRuntime: props.mode === 'remoteRelayHost' ? remoteRelayRuntimeStatusProbe.result : null,
-    }), [props.mode, remoteRelayRuntimeStatusProbe.result]);
+    }), [props.mode]);
     const planItems = React.useMemo(() => items.map((item) => toPlanChecklistItem(item, {
         defaultSelected: item.id === 'install_relay_runtime'
             ? Boolean(props.initialInstallRelayRuntime ?? true)
@@ -431,18 +419,12 @@ export const RemoteSshChecklistStep = React.memo(function RemoteSshChecklistStep
         const relayUrl = typeof relayRuntime?.relayUrl === 'string' ? relayRuntime.relayUrl.trim() : '';
         return relayUrl.length > 0 ? relayUrl : null;
     }, [activeTaskSnapshot]);
-    const detectedRelayRuntimeUrl = React.useMemo(() => {
-        const relayUrl = typeof remoteRelayRuntimeStatusProbe.result?.relayUrl === 'string'
-            ? remoteRelayRuntimeStatusProbe.result.relayUrl.trim()
-            : '';
-        return relayUrl.length > 0 ? relayUrl : null;
-    }, [remoteRelayRuntimeStatusProbe.result?.relayUrl]);
     const completionRelayUrl = React.useMemo(() => {
         return resolveRemoteRelayCompletionUrl({
             publicRelayUrl: props.publicRelayUrl,
-            relayRuntimeUrl: relayRuntimeResult ?? detectedRelayRuntimeUrl,
+            relayRuntimeUrl: relayRuntimeResult,
         });
-    }, [detectedRelayRuntimeUrl, props.publicRelayUrl, relayRuntimeResult]);
+    }, [props.publicRelayUrl, relayRuntimeResult]);
 
     React.useEffect(() => {
         if (phase !== 'execution') {
@@ -615,7 +597,7 @@ export const RemoteSshChecklistStep = React.memo(function RemoteSshChecklistStep
             props.onWizardSkipChange?.(null);
             props.onWizardPrimaryChange?.({
                 label: t('common.continue'),
-                disabled: !checklist.canContinue || remoteRelayRuntimeStatusProbe.isBusy,
+                disabled: !checklist.canContinue,
                 onPress: async () => {
                     await handleStartExecution();
                 },
@@ -707,7 +689,6 @@ export const RemoteSshChecklistStep = React.memo(function RemoteSshChecklistStep
         isStarting,
         phase,
         prompt,
-        remoteRelayRuntimeStatusProbe.isBusy,
         selectedSavedRemoteHostId,
         props.onWizardBackChange,
         props.onWizardPrimaryChange,

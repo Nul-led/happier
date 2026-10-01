@@ -9,16 +9,19 @@ import { observeServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
 export function createLoopbackHomeIdentityProbe(params: Readonly<{
   serverUrl: string;
   expectedServerIdentityId?: string;
+  signal?: AbortSignal;
 }>): () => Promise<ReadinessProbeResult> {
   const serverUrl = resolveLoopbackHttpUrl(params.serverUrl).replace(/\/+$/, '');
 
   return async () => {
     try {
+      params.signal?.throwIfAborted();
       const snapshot = await observeServerFeaturesSnapshot({
         serverUrl,
         projection: 'public',
-        timeoutMs: 5_000,
+        signal: params.signal,
       });
+      params.signal?.throwIfAborted();
 
       if (
         snapshot.status === 'error'
@@ -61,6 +64,7 @@ export function createLoopbackReadinessProbe(params: Readonly<{
   serverUrl: string;
   token: string;
   expectedServerIdentityId?: string;
+  signal?: AbortSignal;
 }>): () => Promise<ReadinessProbeResult> {
   const serverUrl = resolveLoopbackHttpUrl(params.serverUrl).replace(/\/+$/, '');
 
@@ -69,7 +73,9 @@ export function createLoopbackReadinessProbe(params: Readonly<{
     if (identity.status !== 'ready') return identity;
 
     try {
+      params.signal?.throwIfAborted();
       const authResponse = await axios.get(`${serverUrl}/v1/auth/ping`, {
+        signal: params.signal,
         timeout: 5_000,
         validateStatus: () => true,
         headers: {

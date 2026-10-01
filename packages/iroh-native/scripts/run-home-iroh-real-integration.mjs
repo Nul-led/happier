@@ -10,7 +10,6 @@ import { resolveArtifactName } from './build-node-addon.mjs';
 const packageDir = dirname(dirname(fileURLToPath(import.meta.url)));
 const serverDir = resolve(packageDir, '../../apps/server');
 const cliDir = resolve(packageDir, '../../apps/cli');
-const uiDir = resolve(packageDir, '../../apps/ui');
 const testsDir = resolve(packageDir, '../tests');
 const repoRoot = resolve(packageDir, '../..');
 
@@ -20,14 +19,13 @@ export function createHomeIrohRealIntegrationPlan({
   packageDir: selectedPackageDir = packageDir,
   serverDir: selectedServerDir = serverDir,
   cliDir: selectedCliDir = cliDir,
-  uiDir: selectedUiDir = uiDir,
   testsDir: selectedTestsDir = testsDir,
   repoRoot: selectedRepoRoot = repoRoot,
 } = {}) {
   const platformPath = platform === 'win32' ? win32 : posix;
   const addonPath = platformPath.join(
     selectedPackageDir,
-    'native',
+    'native-test',
     resolveArtifactName(platform, arch, { testRelayFixture: true }),
   );
   return {
@@ -44,6 +42,13 @@ export function createHomeIrohRealIntegrationPlan({
     // a stale dist tree or a frozen/archive representation.
     workspacePreparation: {
       args: ['-s', 'workspace', '@happier-dev/server', 'build:shared'],
+      cwd: selectedRepoRoot,
+    },
+    // A source-launched daemon resolves the CLI's bundled physical workspace
+    // packages. Publish the current Protocol build to that runtime copy before
+    // the composed child starts; the server build only prepares its own closure.
+    cliWorkspacePreparation: {
+      args: ['-s', 'workspace', '@happier-dev/cli', 'build:shared', '--source-dev', 'protocol'],
       cwd: selectedRepoRoot,
     },
     tests: {
@@ -82,14 +87,10 @@ export function createHomeIrohRealIntegrationPlan({
       clientMachineDirect: {
         args: [
           '-s',
-          'vitest:local',
-          'run',
-          '--isolate',
-          '-c',
-          'vitest.integration.config.ts',
-          'sources/sync/domains/transfers/runtime/transferRuntime/plumbing/machineCarrierHttp.real.integration.test.ts',
+          'test:core',
+          'suites/core-e2e/machineCarrierHttp.real.integration.test.ts',
         ],
-        cwd: selectedUiDir,
+        cwd: selectedTestsDir,
         env: {
           HAPPIER_RUN_MACHINE_TRANSFER_REAL_INTEGRATION: '1',
           HAPPIER_MACHINE_TRANSFER_TEST_TOPOLOGY: 'direct',
@@ -99,14 +100,10 @@ export function createHomeIrohRealIntegrationPlan({
       clientMachineRelay: {
         args: [
           '-s',
-          'vitest:local',
-          'run',
-          '--isolate',
-          '-c',
-          'vitest.integration.config.ts',
-          'sources/sync/domains/transfers/runtime/transferRuntime/plumbing/machineCarrierHttp.real.integration.test.ts',
+          'test:core',
+          'suites/core-e2e/machineCarrierHttp.real.integration.test.ts',
         ],
-        cwd: selectedUiDir,
+        cwd: selectedTestsDir,
         env: {
           HAPPIER_RUN_MACHINE_TRANSFER_REAL_INTEGRATION: '1',
           HAPPIER_MACHINE_TRANSFER_TEST_TOPOLOGY: 'relay',
@@ -140,6 +137,7 @@ export function runHomeIrohRealIntegration({
   makeTempDirImpl = mkdtempSync,
   copyFileImpl = copyFileSync,
   removeDirImpl = rmSync,
+  dockerOnly = false,
 } = {}) {
   const plan = createHomeIrohRealIntegrationPlan();
   // Remote workspace synchronization deliberately excludes ignored native
@@ -162,12 +160,15 @@ export function runHomeIrohRealIntegration({
         );
       }
     }
-    for (const testPlan of [
-      plan.tests.server,
-      plan.tests.machine,
-      plan.tests.clientMachineDirect,
-      plan.tests.clientMachineRelay,
-    ]) {
+    const testsBeforeOrdinary = dockerOnly
+      ? [plan.tests.server, plan.tests.clientMachineRelay]
+      : [
+          plan.tests.server,
+          plan.tests.machine,
+          plan.tests.clientMachineDirect,
+          plan.tests.clientMachineRelay,
+        ];
+    for (const testPlan of testsBeforeOrdinary) {
       execYarnImpl(testPlan.args, {
         cwd: testPlan.cwd,
         env: {
@@ -180,6 +181,11 @@ export function runHomeIrohRealIntegration({
     }
     execYarnImpl(plan.workspacePreparation.args, {
       cwd: plan.workspacePreparation.cwd,
+      env,
+      stdio: 'inherit',
+    });
+    execYarnImpl(plan.cliWorkspacePreparation.args, {
+      cwd: plan.cliWorkspacePreparation.cwd,
       env,
       stdio: 'inherit',
     });

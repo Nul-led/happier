@@ -198,10 +198,10 @@ pub fn force_direct_only() -> Result<AsyncTask<JsonOpTask>> {
 
 #[cfg(feature = "test-relay-fixture")]
 #[napi]
-pub fn force_relay_only() -> Result<AsyncTask<JsonOpTask>> {
+pub fn force_relay_only(relay_url: Option<String>) -> Result<AsyncTask<JsonOpTask>> {
     json_op(
         happier_iroh_native_test_force_relay_only_json,
-        "{}".to_owned(),
+        serde_json::json!({ "relayUrl": relay_url }).to_string(),
     )
 }
 

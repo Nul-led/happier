@@ -12,14 +12,18 @@ vi.mock('@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc', (
 
 const mountedTarget = {
     pluginId: 'acme.preview',
-    immutableGenerationId: 'target-generation-a',
+    occurrenceId: 'target-generation-a',
 } as const;
 
+function v2Projection(generation = 1) {
+    return { v: 2, generation, familiesById: {} } as const;
+}
+
 function targetedSnapshot(
-    target: Readonly<{ pluginId: string; immutableGenerationId: string }> = mountedTarget,
+    target: Readonly<{ pluginId: string; occurrenceId: string }> = mountedTarget,
 ) {
     return {
-        target,
+        target: { ...target, sourceCustody: { kind: 'development', registeredRootId: 'preview-root' } },
         points: [],
     } as const;
 }
@@ -29,7 +33,8 @@ function automationEligibleEventsSnapshot() {
         event: {
             id: 'acme.events/repository/updated',
             identity: { pluginId: 'acme.events', localId: 'repository/updated' },
-            immutableGenerationId: 'event-generation-a',
+            occurrenceId: 'event-generation-a',
+            sourceCustody: { kind: 'development', registeredRootId: 'events-root' },
             title: 'Repository updated',
             description: null,
             payloadSchema: { type: 'object', additionalProperties: false },
@@ -47,7 +52,7 @@ function automationEligibleEventsSnapshot() {
         setupAction: {
             id: 'acme.events/configure-source',
             identity: { pluginId: 'acme.events', localId: 'configure-source' },
-            immutableGenerationId: 'event-generation-a',
+            occurrenceId: 'event-generation-a',
             title: 'Configure source',
             description: null,
             inputSchema: { type: 'object', additionalProperties: false },
@@ -113,10 +118,10 @@ describe('machine contribution registry projection ops', () => {
         }));
     }
 
-    it('routes projection.describe through server-scoped machine rpc', async () => {
+    it('routes projection.describe through server-scoped machine rpc within the machine RPC budget', async () => {
         machineRpcWithServerScopeMock.mockResolvedValueOnce({
             protocolVersion: 1,
-            projection: { v: 1, agentsById: {}, backendsById: {} },
+            projection: v2Projection(),
             automationEligibleEvents: automationEligibleEventsSnapshot(),
         });
         const { machineContributionRegistryProjectionDescribe } = await import('./machineContributionRegistryProjection');
@@ -125,65 +130,88 @@ describe('machine contribution registry projection ops', () => {
 
         expect(res).toEqual({
             supported: true,
-            projection: expect.objectContaining({
-                v: 1,
-                agentsById: {},
-                backendsById: {},
-            }),
+            projection: expect.objectContaining({ v: 2, generation: 1 }),
             automationEligibleEvents: automationEligibleEventsSnapshot(),
         });
         expect(machineRpcWithServerScopeMock).toHaveBeenCalledWith(expect.objectContaining({
             machineId: 'machine-1',
             serverId: 'server-a',
             method: RPC_METHODS.DAEMON_MERGED_CONTRIBUTION_REGISTRY_PROJECTION_DESCRIBE,
-            payload: expect.objectContaining({ machineId: 'machine-1' }),
+            payload: expect.not.objectContaining({ mountedTarget: expect.anything() }),
         }));
+        // No caller-chosen deadline: the machine RPC owner's own budget applies.
+        expect(machineRpcWithServerScopeMock.mock.calls[0]?.[0]).not.toHaveProperty('timeoutMs', expect.any(Number));
     });
 
-    it('forwards one exact mounted target and preserves only its matching admitted snapshot', async () => {
-        const targetedSurfaceMounts = [] as const;
-        machineRpcWithServerScopeMock.mockResolvedValueOnce({
-            protocolVersion: 1,
-            projection: { v: 1, agentsById: {}, backendsById: {} },
-            targetedContributions: targetedSnapshot(),
-            targetedSurfaceMounts,
-        });
+    it('classifies why a projection read failed', async () => {
         const { machineContributionRegistryProjectionDescribe } = await import('./machineContributionRegistryProjection');
 
-        const res = await machineContributionRegistryProjectionDescribe('machine-1', {
+        machineRpcWithServerScopeMock.mockRejectedValueOnce(Object.assign(new Error('timed out'), {
+            code: 'MACHINE_RPC_TIMEOUT',
+        }));
+        await expect(machineContributionRegistryProjectionDescribe('machine-1', { serverId: 'server-a' }))
+            .resolves.toEqual({ supported: false, reason: 'timeout' });
+
+        machineRpcWithServerScopeMock.mockResolvedValueOnce({ protocolVersion: 1, projection: { v: 1 } });
+        await expect(machineContributionRegistryProjectionDescribe('machine-1', { serverId: 'server-a' }))
+            .resolves.toEqual({ supported: false, reason: 'invalid-response' });
+
+        machineRpcWithServerScopeMock.mockRejectedValueOnce(new Error('socket closed'));
+        await expect(machineContributionRegistryProjectionDescribe('machine-1', { serverId: 'server-a' }))
+            .resolves.toEqual({ supported: false, reason: 'error' });
+    });
+
+    it('reads only the target slice and accepts the daemon’s current occurrence tag', async () => {
+        const reloaded = { pluginId: 'acme.preview', occurrenceId: 'target-generation-b' } as const;
+        machineRpcWithServerScopeMock.mockResolvedValueOnce({
+            status: 'current',
+            targetedContributions: targetedSnapshot(reloaded),
+            targetedSurfaceMounts: [],
+        });
+        const { machinePluginUiTargetedContributionsRead } = await import('./machineContributionRegistryProjection');
+
+        const res = await machinePluginUiTargetedContributionsRead('machine-1', {
             serverId: 'server-a',
-            mountedTarget,
+            pluginId: 'acme.preview',
         });
 
+        // A newer occurrence than the one the caller mounted is a reload, not
+        // an error: the caller follows the tag.
         expect(res).toEqual({
             supported: true,
-            projection: expect.objectContaining({ v: 1 }),
-            targetedContributions: targetedSnapshot(),
-            targetedSurfaceMounts,
+            targetedContributions: targetedSnapshot(reloaded),
+            targetedSurfaceMounts: [],
         });
         expect(machineRpcWithServerScopeMock).toHaveBeenCalledWith(expect.objectContaining({
-            payload: expect.objectContaining({
-                machineId: 'machine-1',
-                mountedTarget,
-            }),
+            method: RPC_METHODS.DAEMON_PLUGIN_UI_TARGETED_CONTRIBUTIONS_READ,
+            payload: expect.objectContaining({ machineId: 'machine-1', pluginId: 'acme.preview' }),
         }));
     });
 
-    it('rejects a targeted snapshot whose target differs from the requested current generation', async () => {
+    it('never shows a target slice that answers for another plugin, and reports a daemon unavailable answer', async () => {
+        const { machinePluginUiTargetedContributionsRead } = await import('./machineContributionRegistryProjection');
         machineRpcWithServerScopeMock.mockResolvedValueOnce({
-            protocolVersion: 1,
-            projection: { v: 1, agentsById: {}, backendsById: {} },
-            targetedContributions: targetedSnapshot({
-                pluginId: 'acme.preview',
-                immutableGenerationId: 'target-generation-b',
-            }),
+            status: 'current',
+            targetedContributions: targetedSnapshot({ pluginId: 'acme.other', occurrenceId: 'other-a' }),
+            targetedSurfaceMounts: [],
         });
-        const { machineContributionRegistryProjectionDescribe } = await import('./machineContributionRegistryProjection');
-
-        await expect(machineContributionRegistryProjectionDescribe('machine-1', {
+        await expect(machinePluginUiTargetedContributionsRead('machine-1', {
             serverId: 'server-a',
-            mountedTarget,
-        })).resolves.toEqual({ supported: false, reason: 'error' });
+            pluginId: 'acme.preview',
+        })).resolves.toEqual({ supported: false, reason: 'invalid-response' });
+
+        machineRpcWithServerScopeMock.mockResolvedValueOnce({
+            status: 'unavailable',
+            code: 'plugin_targeted_contributions_target_unavailable',
+        });
+        await expect(machinePluginUiTargetedContributionsRead('machine-1', {
+            serverId: 'server-a',
+            pluginId: 'acme.preview',
+        })).resolves.toEqual({
+            supported: false,
+            reason: 'unavailable',
+            code: 'plugin_targeted_contributions_target_unavailable',
+        });
     });
 
     it('coalesces concurrent projection reads for the same current scope', async () => {
@@ -193,26 +221,40 @@ describe('machine contribution registry projection ops', () => {
         }));
         const { machineContributionRegistryProjectionDescribe } = await import('./machineContributionRegistryProjection');
 
-        const first = machineContributionRegistryProjectionDescribe('machine-1', {
-            serverId: 'server-a',
-            timeoutMs: 5_000,
-        });
-        const second = machineContributionRegistryProjectionDescribe('machine-1', {
-            serverId: 'server-a',
-            timeoutMs: 5_000,
-        });
+        const first = machineContributionRegistryProjectionDescribe('machine-1', { serverId: 'server-a' });
+        const second = machineContributionRegistryProjectionDescribe('machine-1', { serverId: 'server-a' });
+        await Promise.resolve();
         await Promise.resolve();
         const issuedRpcCount = machineRpcWithServerScopeMock.mock.calls.length;
 
-        resolveRpc({
-            protocolVersion: 1,
-            projection: { v: 1, agentsById: {}, backendsById: {} },
-        });
+        resolveRpc({ protocolVersion: 1, projection: v2Projection() });
         await expect(Promise.all([first, second])).resolves.toEqual([
             expect.objectContaining({ supported: true }),
-            expect.anything(),
+            expect.objectContaining({ supported: true }),
         ]);
         expect(issuedRpcCount).toBe(1);
+    });
+
+    it('shares a read between handles of one Account but never with a successor Account', async () => {
+        const pendingResolvers: Array<(value: unknown) => void> = [];
+        machineRpcWithServerScopeMock.mockImplementation(() => new Promise((resolve) => { pendingResolvers.push(resolve); }));
+        const { machineContributionRegistryProjectionDescribe } = await import('./machineContributionRegistryProjection');
+        const handle = (accountId: string) => ({ scope: { serverId: 'server-a', accountId } });
+
+        const reads = [
+            machineContributionRegistryProjectionDescribe('machine-1', { serverId: 'server-a', accountLifetime: handle('account-a') }),
+            machineContributionRegistryProjectionDescribe('machine-1', { serverId: 'server-a', accountLifetime: handle('account-a') }),
+            machineContributionRegistryProjectionDescribe('machine-1', { serverId: 'server-a', accountLifetime: handle('account-b') }),
+        ];
+        await vi.waitFor(() => expect(pendingResolvers.length).toBeGreaterThanOrEqual(2));
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(machineRpcWithServerScopeMock).toHaveBeenCalledTimes(2);
+        for (const resolve of pendingResolvers) resolve({ protocolVersion: 1, projection: v2Projection() });
+        await expect(Promise.all(reads)).resolves.toEqual([
+            expect.objectContaining({ supported: true }),
+            expect.objectContaining({ supported: true }),
+            expect.objectContaining({ supported: true }),
+        ]);
     });
 
     it('does not join an in-flight fallback projection after the browser observes an exact frame fact', async () => {
@@ -228,20 +270,12 @@ describe('machine contribution registry projection ops', () => {
         }));
         const { machineContributionRegistryProjectionDescribe } = await import('./machineContributionRegistryProjection');
 
-        const beforeBrowserFrame = machineContributionRegistryProjectionDescribe('machine-1', {
-            serverId: 'server-a',
-            timeoutMs: 5_000,
-        });
-        await Promise.resolve();
-        expect(machineRpcWithServerScopeMock).toHaveBeenCalledTimes(1);
+        const beforeBrowserFrame = machineContributionRegistryProjectionDescribe('machine-1', { serverId: 'server-a' });
+        await vi.waitFor(() => expect(machineRpcWithServerScopeMock).toHaveBeenCalledTimes(1));
         browserFrameReady = true;
-        const afterBrowserFrame = machineContributionRegistryProjectionDescribe('machine-1', {
-            serverId: 'server-a',
-            timeoutMs: 5_000,
-        });
+        const afterBrowserFrame = machineContributionRegistryProjectionDescribe('machine-1', { serverId: 'server-a' });
 
-        await Promise.resolve();
-        expect(machineRpcWithServerScopeMock).toHaveBeenCalledTimes(2);
+        await vi.waitFor(() => expect(machineRpcWithServerScopeMock).toHaveBeenCalledTimes(2));
         expect(pendingResolvers).toHaveLength(2);
         expect(machineRpcWithServerScopeMock.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
             payload: expect.not.objectContaining({
@@ -258,42 +292,9 @@ describe('machine contribution registry projection ops', () => {
         }));
 
         for (const resolve of pendingResolvers) {
-            resolve({
-                protocolVersion: 1,
-                projection: { v: 1, agentsById: {}, backendsById: {} },
-            });
+            resolve({ protocolVersion: 1, projection: v2Projection() });
         }
         await expect(Promise.all([beforeBrowserFrame, afterBrowserFrame])).resolves.toHaveLength(2);
-    });
-
-    it('does not join a pre-reconnect projection flight after the caller advances its request epoch', async () => {
-        const pendingResolvers: Array<(value: unknown) => void> = [];
-        machineRpcWithServerScopeMock.mockImplementation(async () => await new Promise((resolve) => {
-            pendingResolvers.push(resolve);
-        }));
-        const { machineContributionRegistryProjectionDescribe } = await import('./machineContributionRegistryProjection');
-
-        const beforeDisconnect = machineContributionRegistryProjectionDescribe('machine-1', {
-            serverId: 'server-a',
-            timeoutMs: 5_000,
-            requestEpoch: 'connection-0',
-        });
-        const afterReconnect = machineContributionRegistryProjectionDescribe('machine-1', {
-            serverId: 'server-a',
-            timeoutMs: 5_000,
-            requestEpoch: 'connection-1',
-        });
-        await Promise.resolve();
-        const issuedRpcCount = machineRpcWithServerScopeMock.mock.calls.length;
-
-        for (const resolve of pendingResolvers) {
-            resolve({
-                protocolVersion: 1,
-                projection: { v: 1, agentsById: {}, backendsById: {} },
-            });
-        }
-        await expect(Promise.all([beforeDisconnect, afterReconnect])).resolves.toHaveLength(2);
-        expect(issuedRpcCount).toBe(2);
     });
 
     it('does not join a stale projection flight after scope invalidation', async () => {
@@ -303,30 +304,20 @@ describe('machine contribution registry projection ops', () => {
         }));
         const mod = await import('./machineContributionRegistryProjection');
 
-        const first = mod.machineContributionRegistryProjectionDescribe('machine-1', {
-            serverId: 'server-a',
-            timeoutMs: 5_000,
-        });
+        const first = mod.machineContributionRegistryProjectionDescribe('machine-1', { serverId: 'server-a' });
+        await Promise.resolve();
         await Promise.resolve();
         mod.publishMachineContributionRegistryProjectionInvalidation({
             machineId: 'machine-1',
             serverId: 'server-a',
         });
-        const refreshed = mod.machineContributionRegistryProjectionDescribe('machine-1', {
-            serverId: 'server-a',
-            timeoutMs: 5_000,
-        });
+        const refreshed = mod.machineContributionRegistryProjectionDescribe('machine-1', { serverId: 'server-a' });
+        await Promise.resolve();
         await Promise.resolve();
 
         expect(machineRpcWithServerScopeMock).toHaveBeenCalledTimes(2);
-        pendingResolvers[0]?.({
-            protocolVersion: 1,
-            projection: { v: 2, generation: 1, installedPackagesById: {}, agentsById: {}, backendsById: {}, actionsById: {}, toolsById: {}, commandsById: {}, resourcesById: {}, settingsById: {}, familiesById: {}, diagnostics: [] },
-        });
-        pendingResolvers[1]?.({
-            protocolVersion: 1,
-            projection: { v: 2, generation: 2, installedPackagesById: {}, agentsById: {}, backendsById: {}, actionsById: {}, toolsById: {}, commandsById: {}, resourcesById: {}, settingsById: {}, familiesById: {}, diagnostics: [] },
-        });
+        pendingResolvers[0]?.({ protocolVersion: 1, projection: v2Projection(1) });
+        pendingResolvers[1]?.({ protocolVersion: 1, projection: v2Projection(2) });
 
         await expect(first).resolves.toMatchObject({ supported: true, projection: { generation: 1 } });
         await expect(refreshed).resolves.toMatchObject({ supported: true, projection: { generation: 2 } });
@@ -360,27 +351,21 @@ describe('machine contribution registry projection ops', () => {
         unsubscribeMachineTwo();
     });
 
-    it('keeps different scopes and timeout budgets independent and retries after failure', async () => {
+    it('keeps different scopes independent and retries after failure', async () => {
         machineRpcWithServerScopeMock
             .mockRejectedValueOnce(new Error('temporary transport failure'))
-            .mockResolvedValue({
-                protocolVersion: 1,
-                projection: { v: 1, agentsById: {}, backendsById: {} },
-            });
+            .mockResolvedValue({ protocolVersion: 1, projection: v2Projection() });
         const { machineContributionRegistryProjectionDescribe } = await import('./machineContributionRegistryProjection');
 
-        await expect(machineContributionRegistryProjectionDescribe('machine-1', {
-            serverId: 'server-a',
-            timeoutMs: 5_000,
-        })).resolves.toEqual({ supported: false, reason: 'error' });
+        await expect(machineContributionRegistryProjectionDescribe('machine-1', { serverId: 'server-a' }))
+            .resolves.toEqual({ supported: false, reason: 'error' });
         await expect(Promise.all([
-            machineContributionRegistryProjectionDescribe('machine-1', { serverId: 'server-a', timeoutMs: 5_000 }),
-            machineContributionRegistryProjectionDescribe('machine-2', { serverId: 'server-a', timeoutMs: 5_000 }),
-            machineContributionRegistryProjectionDescribe('machine-1', { serverId: 'server-b', timeoutMs: 5_000 }),
-            machineContributionRegistryProjectionDescribe('machine-1', { serverId: 'server-a', timeoutMs: 10_000 }),
-        ])).resolves.toHaveLength(4);
+            machineContributionRegistryProjectionDescribe('machine-1', { serverId: 'server-a' }),
+            machineContributionRegistryProjectionDescribe('machine-2', { serverId: 'server-a' }),
+            machineContributionRegistryProjectionDescribe('machine-1', { serverId: 'server-b' }),
+        ])).resolves.toHaveLength(3);
 
-        expect(machineRpcWithServerScopeMock).toHaveBeenCalledTimes(5);
+        expect(machineRpcWithServerScopeMock).toHaveBeenCalledTimes(4);
     });
 
     it('lets one caller cancel its wait without cancelling a same-scope flight', async () => {
@@ -391,13 +376,9 @@ describe('machine contribution registry projection ops', () => {
         const { machineContributionRegistryProjectionDescribe } = await import('./machineContributionRegistryProjection');
         const controller = new AbortController();
 
-        const retained = machineContributionRegistryProjectionDescribe('machine-1', {
-            serverId: 'server-a',
-            timeoutMs: 5_000,
-        });
+        const retained = machineContributionRegistryProjectionDescribe('machine-1', { serverId: 'server-a' });
         const cancelled = machineContributionRegistryProjectionDescribe('machine-1', {
             serverId: 'server-a',
-            timeoutMs: 5_000,
             signal: controller.signal,
         });
         // Desktop capability discovery is an async native boundary. Wait for
@@ -405,12 +386,9 @@ describe('machine contribution registry projection ops', () => {
         await Promise.resolve();
         await Promise.resolve();
         controller.abort();
-        resolveRpc({
-            protocolVersion: 1,
-            projection: { v: 1, agentsById: {}, backendsById: {} },
-        });
+        resolveRpc({ protocolVersion: 1, projection: v2Projection() });
 
-        await expect(cancelled).resolves.toEqual({ supported: false, reason: 'error' });
+        await expect(cancelled).resolves.toEqual({ supported: false, reason: 'aborted' });
         await expect(retained).resolves.toEqual(expect.objectContaining({ supported: true }));
         expect(machineRpcWithServerScopeMock).toHaveBeenCalledTimes(1);
         expect(machineRpcWithServerScopeMock).toHaveBeenCalledWith(expect.not.objectContaining({
@@ -708,23 +686,24 @@ describe('machine contribution registry projection ops', () => {
         })).resolves.toEqual({ supported: false, reason: 'not-supported' });
     });
 
-    it('routes structured-message actions through the canonical generation-leased daemon RPC', async () => {
+    it('routes structured-message actions through the exact contributor occurrence fence', async () => {
         machineRpcWithServerScopeMock.mockResolvedValueOnce({ ok: true, result: { opened: true } });
         const { machinePluginStructuredMessageActionExecute } = await import('./machineContributionRegistryProjection');
         const abortController = new AbortController();
 
         await expect(machinePluginStructuredMessageActionExecute('machine-1', {
             serverId: 'server-a',
-            expectedGeneration: '7',
+            expectedContributorOccurrenceId: 'acme.preview-occurrence-7',
             qualifiedActionId: 'acme.preview/open-preview',
             input: { previewId: 'preview-1' },
-            expectedContributorImmutableGenerationId: 'contributor-generation-a',
             sessionId: 'session-1',
             executionSurface: 'ui',
             invocation: {
                 kind: 'mountedPluginSurface',
                 mountedBinding: {
+                    pluginId: 'acme.preview',
                     contributionLocalId: 'message-preview',
+                    occurrenceId: 'acme.preview:current',
                     materializationRef: {
                         machineId: 'machine-1',
                         materializationId: 'materialization-preview-current',
@@ -743,16 +722,17 @@ describe('machine contribution registry projection ops', () => {
             method: RPC_METHODS.DAEMON_PLUGIN_STRUCTURED_MESSAGE_ACTION_EXECUTE,
             payload: {
                 machineId: 'machine-1',
-                expectedGeneration: '7',
+                expectedContributorOccurrenceId: 'acme.preview-occurrence-7',
                 qualifiedActionId: 'acme.preview/open-preview',
                 input: { previewId: 'preview-1' },
-                expectedContributorImmutableGenerationId: 'contributor-generation-a',
                 sessionId: 'session-1',
                 executionSurface: 'ui',
                 invocation: {
                     kind: 'mountedPluginSurface',
                     mountedBinding: {
+                        pluginId: 'acme.preview',
                         contributionLocalId: 'message-preview',
+                        occurrenceId: 'acme.preview:current',
                         materializationRef: {
                             machineId: 'machine-1',
                             materializationId: 'materialization-preview-current',
@@ -773,13 +753,13 @@ describe('machine contribution registry projection ops', () => {
 
         await expect(machinePluginStructuredMessageActionExecute('machine-1', {
             serverId: 'server-a',
-            expectedGeneration: '7',
+            expectedContributorOccurrenceId: 'preview-occurrence-7',
             qualifiedActionId: 'acme.preview/open-preview',
             executionSurface: 'ui',
         })).resolves.toEqual({ supported: true, result: { ok: true, result: null } });
         await expect(machinePluginStructuredMessageActionExecute('machine-1', {
             serverId: 'server-a',
-            expectedGeneration: '7',
+            expectedContributorOccurrenceId: 'preview-occurrence-7',
             qualifiedActionId: 'acme.preview/open-preview',
             input: null,
             executionSurface: 'ui',
@@ -802,7 +782,7 @@ describe('machine contribution registry projection ops', () => {
         const { machinePluginStructuredMessageActionExecute } = await import('./machineContributionRegistryProjection');
         const input = {
             serverId: 'server-a',
-            expectedGeneration: '7',
+            expectedContributorOccurrenceId: 'preview-occurrence-7',
             qualifiedActionId: 'acme.preview/open-preview',
             executionSurface: 'ui' as const,
         };
@@ -829,7 +809,7 @@ describe('machine contribution registry projection ops', () => {
 
         await expect(mod.machinePluginStructuredMessageActionExecute('machine-1', {
             serverId: 'server-a',
-            expectedGeneration: '7',
+            expectedContributorOccurrenceId: 'preview-occurrence-7',
             qualifiedActionId: 'acme.preview/open-preview',
             input: null,
             executionSurface: 'ui',
@@ -861,7 +841,7 @@ describe('machine contribution registry projection ops', () => {
 
         await expect(machinePluginActionFormConnectedAccountOptionsResolve('machine-1', {
             serverId: 'server-a',
-            expectedGeneration: '7',
+            expectedOccurrenceId: 'preview-occurrence-7',
             qualifiedActionId: 'acme.preview/configure-account',
             fieldPath: 'credentialRef',
         })).resolves.toEqual({
@@ -883,11 +863,79 @@ describe('machine contribution registry projection ops', () => {
             method: RPC_METHODS.DAEMON_PLUGIN_ACTION_FORM_CONNECTED_ACCOUNT_OPTIONS_RESOLVE,
             payload: {
                 machineId: 'machine-1',
-                expectedGeneration: '7',
+                expectedOccurrenceId: 'preview-occurrence-7',
                 qualifiedActionId: 'acme.preview/configure-account',
                 fieldPath: 'credentialRef',
             },
         }));
+    });
+
+    it('reads one Action\'s schemas once per exact occurrence and re-reads after a plugin reload', async () => {
+        const inputSchema = { type: 'object', properties: { title: { type: 'string' } }, additionalProperties: false };
+        const reloadedInputSchema = { type: 'object', properties: { name: { type: 'string' } }, additionalProperties: false };
+        let answerFirst!: (value: unknown) => void;
+        machineRpcWithServerScopeMock
+            .mockImplementationOnce(async () => await new Promise((resolve) => { answerFirst = resolve; }))
+            .mockResolvedValueOnce({ ok: true, inputSchema: reloadedInputSchema });
+        const { machinePluginActionSchemasRead } = await import('./machineContributionRegistryProjection');
+        const read = (expectedOccurrenceId: string) => machinePluginActionSchemasRead('machine-1', {
+            serverId: 'server-a',
+            expectedOccurrenceId,
+            qualifiedActionId: 'acme.preview/refresh',
+        });
+
+        // Concurrent readers of the same Action occurrence share one request.
+        const first = read('occurrence-a');
+        const second = read('occurrence-a');
+        answerFirst({ ok: true, inputSchema, outputSchema: { type: 'object' } });
+        const expected = {
+            supported: true,
+            result: { ok: true, inputSchema, outputSchema: { type: 'object' } },
+        };
+        await expect(first).resolves.toEqual(expected);
+        await expect(second).resolves.toEqual(expected);
+        // A settled answer is kept for that occurrence.
+        await expect(read('occurrence-a')).resolves.toEqual(expected);
+        expect(machineRpcWithServerScopeMock).toHaveBeenCalledTimes(1);
+        expect(machineRpcWithServerScopeMock).toHaveBeenCalledWith(expect.objectContaining({
+            machineId: 'machine-1',
+            serverId: 'server-a',
+            method: RPC_METHODS.DAEMON_PLUGIN_ACTION_SCHEMAS_READ,
+            payload: {
+                machineId: 'machine-1',
+                expectedOccurrenceId: 'occurrence-a',
+                qualifiedActionId: 'acme.preview/refresh',
+            },
+        }));
+
+        // A reloaded plugin is a new occurrence: its declaration is read again.
+        await expect(read('occurrence-b')).resolves.toEqual({
+            supported: true,
+            result: { ok: true, inputSchema: reloadedInputSchema },
+        });
+        expect(machineRpcWithServerScopeMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not keep a failed Action schema read', async () => {
+        machineRpcWithServerScopeMock
+            .mockResolvedValueOnce({ ok: false, code: 'plugin_occurrence_stale' })
+            .mockResolvedValueOnce({ ok: true, inputSchema: { type: 'object' } });
+        const { machinePluginActionSchemasRead } = await import('./machineContributionRegistryProjection');
+        const request = {
+            serverId: 'server-a',
+            expectedOccurrenceId: 'occurrence-a',
+            qualifiedActionId: 'acme.preview/refresh',
+        } as const;
+
+        await expect(machinePluginActionSchemasRead('machine-1', request)).resolves.toEqual({
+            supported: true,
+            result: { ok: false, code: 'plugin_occurrence_stale' },
+        });
+        await expect(machinePluginActionSchemasRead('machine-1', request)).resolves.toEqual({
+            supported: true,
+            result: { ok: true, inputSchema: { type: 'object' } },
+        });
+        expect(machineRpcWithServerScopeMock).toHaveBeenCalledTimes(2);
     });
 
     it('forwards one host-stamped Session Resource context through read and watch-open RPCs', async () => {
@@ -913,14 +961,14 @@ describe('machine contribution registry projection ops', () => {
 
         await machinePluginUiResourceRead('machine-1', {
             serverId: 'server-a',
-            expectedGeneration: '7',
+            expectedCallerOccurrenceId: 'preview-occurrence-7',
             callerPluginId: 'acme.preview',
             resource: { pluginId: 'acme.preview', localId: 'live-activity' },
             context,
         });
         await machinePluginUiResourceWatchOpen('machine-1', {
             serverId: 'server-a',
-            expectedGeneration: '7',
+            expectedCallerOccurrenceId: 'preview-occurrence-7',
             callerPluginId: 'acme.preview',
             subscriptionId: 'watch-1',
             resource: { pluginId: 'acme.preview', localId: 'live-activity' },
@@ -946,7 +994,7 @@ describe('machine contribution registry projection ops', () => {
 
         await expect(machinePluginUiResourceRead('machine-1', {
             serverId: 'server-a',
-            expectedGeneration: '7',
+            expectedCallerOccurrenceId: 'preview-occurrence-7',
             callerPluginId: 'acme.preview',
             resource: { pluginId: 'acme.preview', localId: 'live-activity' },
         })).resolves.toEqual({ supported: false, reason: 'timeout' });
@@ -961,7 +1009,7 @@ describe('machine contribution registry projection ops', () => {
 
         await expect(machinePluginActionFormConnectedAccountOptionsResolve('machine-1', {
             serverId: 'server-a',
-            expectedGeneration: '7',
+            expectedOccurrenceId: 'preview-occurrence-7',
             qualifiedActionId: 'acme.preview/configure-account',
             fieldPath: 'credentialRef',
         })).resolves.toEqual({ supported: false, reason: 'not-supported' });
@@ -971,7 +1019,7 @@ describe('machine contribution registry projection ops', () => {
         await installReactNativeRuntimeMocks('ios');
         machineRpcWithServerScopeMock.mockResolvedValueOnce({
             protocolVersion: 1,
-            projection: { v: 1, agentsById: {}, backendsById: {} },
+            projection: v2Projection(),
         });
         const { machineContributionRegistryProjectionDescribe } = await import('./machineContributionRegistryProjection');
 
@@ -1001,7 +1049,7 @@ describe('machine contribution registry projection ops', () => {
         await installReactNativeRuntimeMocks('web');
         machineRpcWithServerScopeMock.mockResolvedValueOnce({
             protocolVersion: 1,
-            projection: { v: 1, agentsById: {}, backendsById: {} },
+            projection: v2Projection(),
         });
         const { machineContributionRegistryProjectionDescribe } = await import('./machineContributionRegistryProjection');
 
@@ -1045,7 +1093,6 @@ describe('machine contribution registry projection ops', () => {
                     },
                 },
                 agentsById: {},
-                backendsById: {},
                 actionsById: {},
                 toolsById: {},
                 commandsById: {},

@@ -7,7 +7,6 @@ import {
 
 import {
     AttentionDeviceOverridesV1Schema,
-    DEFAULT_ATTENTION_DEVICE_OVERRIDES_V1,
     type AttentionDeviceOverridesV1,
 } from '@/sync/domains/settings/attentionDeviceOverridesV1';
 import { localSettingsParse, type LocalSettings } from '@/sync/domains/settings/localSettings';
@@ -73,6 +72,8 @@ export function deriveDeviceRemoteAlertPolicyV1(params: Readonly<{
     // and inherits the Account policy. It is not a remote mute, so the inherited
     // arm carries the canonical defaults rather than the retained override values.
     const inherits = !overrides.enabled;
+    const accountSoundVolume = accountSettingsParse(params.accountSettings ?? {})
+        .attentionDeliveryPolicyV1.sounds.volume;
 
     const parsed = DeviceRemoteAlertPolicyV1Schema.safeParse({
         v: 1,
@@ -81,7 +82,7 @@ export function deriveDeviceRemoteAlertPolicyV1(params: Readonly<{
         quietHoursOverride: inherits ? { mode: 'account' } : projectQuietHoursOverride(overrides),
         foregroundBehavior: inherits ? 'account' : overrides.foregroundBehavior,
         previewCeiling: inherits ? 'account' : overrides.privacy.previewBehavior,
-        soundVolume: inherits ? DEFAULT_ATTENTION_DEVICE_OVERRIDES_V1.sounds.volume : overrides.sounds.volume,
+        soundVolume: inherits ? accountSoundVolume : overrides.sounds.volume,
     });
     return parsed.success ? parsed.data : null;
 }

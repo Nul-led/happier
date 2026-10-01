@@ -12,6 +12,8 @@ import type {
 } from '@happier-dev/protocol';
 import { AGENT_IDS, type AgentId } from '@happier-dev/agents';
 
+import { resolveAgentMarkAgentId } from './resolveAgentMarkAgentId';
+
 import {
     resolvePluginProjectedActionPresentation,
     type PluginProjectedActionPresentation,
@@ -128,6 +130,8 @@ export type ResolvedPluginProjectionEditableSettingsGroup = Readonly<
 
 export type PluginProjectionAction = Readonly<{
     id: string;
+    /** Exact process-local occurrence of this projected Action contribution. */
+    occurrenceId: string | null;
     title: string;
     description: string | null;
     /**
@@ -146,8 +150,6 @@ export type PluginProjectionAction = Readonly<{
      * the shared registry projection.
      */
     placementBindings: readonly string[];
-    /** Canonical Action input contract used by host-owned selection validation. */
-    inputSchema: PluginProjectedActionV2['inputSchema'] | null;
     /** Protocol-normalized SDK-ACTION-FORM descriptor; no renderer infers a form from schema. */
     inputHints: ActionInputHints | null;
     /** Action-owned composer slash presentation; the picker never parses a manifest itself. */
@@ -171,6 +173,8 @@ export type PluginProjectionResource = Readonly<{
 
 export type PluginProjectionEntry = Readonly<{
     pluginId: string;
+    /** Process-local physical lifetime of this admitted installed package. */
+    occurrenceId?: string | null;
     /**
      * Current committed plugin generation, when this entry came from the
      * resolved daemon registry. Metadata-only and legacy rows have none.
@@ -196,60 +200,22 @@ export type PluginProjectionEntry = Readonly<{
     actions: readonly PluginProjectionAction[];
     resources: readonly PluginProjectionResource[];
     editableSettingsGroups: readonly PluginProjectionEditableSettingsGroup[];
+    /** The mark of the Agent this plugin contributes, when it contributes one with a known mark. */
+    iconAgentId?: AgentId | null;
+    /**
+     * What kinds of things the plugin adds: `agent` first when it contributes an Agent, then each
+     * contribution family it has entries in, in projection order. Empty when nothing is projected.
+     */
+    contributionKinds?: readonly PluginContributionKind[];
 }>;
 
-export type DaemonContributionRegistryProjection =
-    | DaemonContributionRegistryProjectionV1Like
-    | PluginProjectionV2;
+/** A kind of contribution a plugin adds: an Agent, or one of the projected contribution families. */
+export type PluginContributionKind = 'agent' | keyof PluginProjectionV2['familiesById'];
 
-export type DaemonContributionRegistryProjectionV1Like = Readonly<{
-    v: 1;
-    generationId?: string;
-    agentsById?: Readonly<Record<string, Readonly<{
-        id?: string;
-        title?: string;
-        subtitle?: string;
-        channel?: string;
-        isBuiltIn?: boolean;
-        settingsBackendId?: string;
-        catalogAgentId?: string;
-        iconAgentId?: string;
-    }> & Readonly<Record<string, unknown>>>>;
-    backendsById?: Readonly<Record<string, Readonly<{
-        id?: string;
-        agentId: string;
-        title?: string;
-        subtitle?: string;
-        catalogAgentId?: string;
-        iconAgentId?: string;
-        capabilities?: MergedBackendCapabilities;
-    }> & Readonly<Record<string, unknown>>>>;
-    actionsById?: Readonly<Record<string, Readonly<{
-        id?: string;
-        pluginId?: string;
-        title?: string;
-        description?: string | null;
-        safety?: string;
-        surfaces?: Readonly<Record<string, boolean>>;
-    }> & Readonly<Record<string, unknown>>>>;
-    resourcesById?: Readonly<Record<string, Readonly<{
-        id?: string;
-        pluginId?: string;
-        type?: string;
-        path?: string;
-        digest?: string | null;
-        contentType?: string | null;
-    }> & Readonly<Record<string, unknown>>>>;
-}>;
+export type DaemonContributionRegistryProjection = PluginProjectionV2;
 
 function readOptionalString(value: unknown): string | null {
     return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
-}
-
-function isPluginProjectionV2(
-    projection: DaemonContributionRegistryProjection,
-): projection is PluginProjectionV2 {
-    return projection.v === 2;
 }
 
 function isProjectedAgentId(value: unknown): value is AgentId {
@@ -269,6 +235,7 @@ function mapV2Action(action: PluginProjectedActionV2): PluginProjectionAction {
     });
     return {
         id: action.id,
+        occurrenceId: action.occurrenceId,
         title: presentation.title,
         description: presentation.description,
         localizedPresentation,
@@ -276,7 +243,6 @@ function mapV2Action(action: PluginProjectedActionV2): PluginProjectionAction {
         scopes: action.scopes,
         surfaces: action.surfaces,
         placementBindings: action.placementBindings ?? [],
-        inputSchema: action.inputSchema ?? null,
         inputHints: presentation.inputHints,
         slash: action.slash ?? null,
         priority: action.priority ?? null,
@@ -285,10 +251,6 @@ function mapV2Action(action: PluginProjectedActionV2): PluginProjectionAction {
         ...(action.authorization ? { authorization: action.authorization } : {}),
         available: typeof action.available === 'boolean' ? action.available : null,
     };
-}
-
-function mapV1ActionDangerLevel(safety: unknown): PluginProjectedActionV2['dangerLevel'] {
-    return readOptionalString(safety) === 'safe' ? 'safe' : 'writesLocal';
 }
 
 function mapV2Resource(resource: PluginProjectedResourceV2): PluginProjectionResource {
@@ -424,83 +386,6 @@ export function resolvePluginProjectionEditableSettingsGroup(
     };
 }
 
-function buildV1PluginProjectionById(
-    projection: DaemonContributionRegistryProjectionV1Like,
-): Readonly<Record<string, PluginProjectionEntry>> {
-    const actionsByPluginId = new Map<string, PluginProjectionAction[]>();
-    for (const action of Object.values(projection.actionsById ?? {})) {
-        const pluginId = readOptionalString(action.pluginId);
-        const actionId = readOptionalString(action.id);
-        const title = readOptionalString(action.title);
-        if (!pluginId || !actionId || !title) continue;
-        const actions = actionsByPluginId.get(pluginId) ?? [];
-        actions.push({
-            id: actionId,
-            title,
-            description: readOptionalString(action.description),
-            icon: null,
-            scopes: [],
-            surfaces: Object.entries(action.surfaces ?? {})
-                .filter((entry): entry is [string, boolean] => entry[1] === true)
-                .map(([surface]) => surface),
-            placementBindings: ['detailsPanel'],
-            inputSchema: null,
-            inputHints: null,
-            slash: null,
-            priority: null,
-            dangerLevel: mapV1ActionDangerLevel(action.safety),
-            confirmation: null,
-            available: null,
-        });
-        actionsByPluginId.set(pluginId, actions);
-    }
-
-    const resourcesByPluginId = new Map<string, PluginProjectionResource[]>();
-    for (const resource of Object.values(projection.resourcesById ?? {})) {
-        const pluginId = readOptionalString(resource.pluginId);
-        const resourceId = readOptionalString(resource.id);
-        const resourceKind = readOptionalString(resource.type);
-        const path = readOptionalString(resource.path);
-        if (!pluginId || !resourceId || !resourceKind || !path) continue;
-        const resources = resourcesByPluginId.get(pluginId) ?? [];
-        resources.push({
-            id: resourceId,
-            resourceKind,
-            path,
-            digest: readOptionalString(resource.digest),
-            contentType: readOptionalString(resource.contentType),
-        });
-        resourcesByPluginId.set(pluginId, resources);
-    }
-
-    const pluginIds = new Set<string>([
-        ...actionsByPluginId.keys(),
-        ...resourcesByPluginId.keys(),
-    ]);
-
-    const entries: Record<string, PluginProjectionEntry> = {};
-    for (const pluginId of pluginIds) {
-        entries[pluginId] = {
-            pluginId,
-            immutableGenerationId: null,
-            title: pluginId,
-            description: null,
-            version: null,
-            enabled: null,
-            generation: null,
-            generationLabel: readOptionalString(projection.generationId),
-            status: null,
-            provenance: null,
-            diagnostics: [],
-            actions: actionsByPluginId.get(pluginId) ?? [],
-            resources: resourcesByPluginId.get(pluginId) ?? [],
-            editableSettingsGroups: [],
-        };
-    }
-
-    return entries;
-}
-
 function buildV2PluginProjectionById(
     projection: PluginProjectionV2,
 ): Readonly<Record<string, PluginProjectionEntry>> {
@@ -539,10 +424,34 @@ function buildV2PluginProjectionById(
         diagnosticsByPluginId.set(pluginId, diagnostics);
     }
 
+    const iconAgentIdByPluginId = new Map<string, AgentId>();
+    for (const [agentEntryId, agent] of Object.entries(projection.agentsById)) {
+        const pluginId = agent.identity?.pluginId;
+        if (!pluginId || iconAgentIdByPluginId.has(pluginId)) continue;
+        // The same rule the Agent picker's mark reads (`resolveAgentMarkAgentId`).
+        const markAgentId = resolveAgentMarkAgentId({
+            agentId: agentEntryId,
+            iconAgentId: agent.iconAgentId ?? null,
+            catalogAgentId: agent.catalogAgentId ?? null,
+        });
+        if (markAgentId) iconAgentIdByPluginId.set(pluginId, markAgentId);
+    }
+    const contributionKindsByPluginId = new Map<string, PluginContributionKind[]>();
+    const addKind = (pluginId: string | null | undefined, kind: PluginContributionKind) => {
+        if (!pluginId) return;
+        const kinds = contributionKindsByPluginId.get(pluginId) ?? [];
+        if (!kinds.includes(kind)) kinds.push(kind);
+        contributionKindsByPluginId.set(pluginId, kinds);
+    };
+    for (const agent of Object.values(projection.agentsById)) addKind(agent.identity?.pluginId, 'agent');
+    for (const [familyId, family] of Object.entries(projection.familiesById) as [keyof PluginProjectionV2['familiesById'], { entriesById?: Readonly<Record<string, Readonly<{ pluginId?: string | null }>>> } | undefined][]) {
+        for (const entry of Object.values(family?.entriesById ?? {})) addKind(entry.pluginId, familyId);
+    }
     const entries: Record<string, PluginProjectionEntry> = {};
     for (const [pluginId, installedPackage] of Object.entries(projection.installedPackagesById)) {
         entries[pluginId] = {
             pluginId,
+            occurrenceId: installedPackage.occurrenceId ?? null,
             immutableGenerationId: installedPackage.immutableGenerationId ?? null,
             title: installedPackage.displayName,
             description: null,
@@ -560,6 +469,8 @@ function buildV2PluginProjectionById(
             actions: actionsByPluginId.get(pluginId) ?? [],
             resources: resourcesByPluginId.get(pluginId) ?? [],
             editableSettingsGroups: editableSettingsByPluginId.get(pluginId) ?? [],
+            iconAgentId: iconAgentIdByPluginId.get(pluginId) ?? null,
+            contributionKinds: contributionKindsByPluginId.get(pluginId) ?? [],
         };
     }
     return entries;
@@ -604,13 +515,12 @@ export function adaptDaemonContributionRegistryProjectionToMergedProjectionInput
     registryDiagnostics: readonly PluginProjectionDiagnostic[];
 }> {
     const mergedProviderProjectionById: Record<string, MergedProviderProjectionEntry> = {};
+    // The daemon projects no backend rows; the map stays empty for its readers.
     const mergedBackendProjectionById: Record<string, MergedBackendProjectionEntry> = {};
 
-    for (const [agentEntryId, entry] of Object.entries(projection.agentsById ?? {})) {
-        const identity = isPluginProjectionV2(projection)
-            ? projection.agentsById[agentEntryId]?.identity ?? null
-            : null;
-        const installedPackageCandidate = identity && isPluginProjectionV2(projection)
+    for (const [agentEntryId, entry] of Object.entries(projection.agentsById)) {
+        const identity = entry.identity ?? null;
+        const installedPackageCandidate = identity
             ? projection.installedPackagesById[identity.pluginId] ?? null
             : null;
         const installedPackage = installedPackageCandidate?.id === identity?.pluginId
@@ -618,10 +528,10 @@ export function adaptDaemonContributionRegistryProjectionToMergedProjectionInput
             : null;
         mergedProviderProjectionById[agentEntryId] = {
             agentId: agentEntryId,
-            qualifiedId: isPluginProjectionV2(projection) ? agentEntryId : null,
+            qualifiedId: agentEntryId,
             identity,
             installedPackage,
-            projectionGeneration: isPluginProjectionV2(projection) ? projection.generation : null,
+            projectionGeneration: projection.generation,
             title: entry.title ?? null,
             subtitle: entry.subtitle ?? null,
             channel: entry.channel === 'stable' || entry.channel === 'experimental' || entry.channel === 'plugin'
@@ -633,36 +543,16 @@ export function adaptDaemonContributionRegistryProjectionToMergedProjectionInput
                 : null,
             catalogAgentId: isProjectedAgentId(entry.catalogAgentId) ? entry.catalogAgentId : null,
             iconAgentId: isProjectedAgentId(entry.iconAgentId) ? entry.iconAgentId : null,
-            cli: isPluginProjectionV2(projection)
-                ? projection.agentsById[agentEntryId]?.cli ?? null
-                : null,
-            connectedAccounts: isPluginProjectionV2(projection)
-                ? projection.agentsById[agentEntryId]?.connectedAccounts ?? null
-                : null,
-            ui: isPluginProjectionV2(projection)
-                ? projection.agentsById[agentEntryId]?.ui ?? null
-                : null,
-        };
-    }
-
-    for (const [backendId, entry] of Object.entries(projection.backendsById ?? {})) {
-        mergedBackendProjectionById[backendId] = {
-            backendId,
-            agentId: entry.agentId,
-            title: entry.title ?? null,
-            subtitle: entry.subtitle ?? null,
-            catalogAgentId: isProjectedAgentId(entry.catalogAgentId) ? entry.catalogAgentId : null,
-            iconAgentId: isProjectedAgentId(entry.iconAgentId) ? entry.iconAgentId : null,
-            capabilities: entry.capabilities ?? null,
+            cli: entry.cli ?? null,
+            connectedAccounts: entry.connectedAccounts ?? null,
+            ui: entry.ui ?? null,
         };
     }
 
     return {
         mergedProviderProjectionById,
         mergedBackendProjectionById,
-        pluginProjectionById: isPluginProjectionV2(projection)
-            ? buildV2PluginProjectionById(projection)
-            : buildV1PluginProjectionById(projection),
+        pluginProjectionById: buildV2PluginProjectionById(projection),
         registryDiagnostics: [],
     };
 }

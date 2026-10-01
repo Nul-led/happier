@@ -10,10 +10,7 @@ import type {
     BulkTransferFailureResponse,
     BulkTransferFileReader,
 } from './uploadBulkPayloadFromFile';
-import { uploadBulkPayloadFromFile } from './uploadBulkPayloadFromFile';
 import { resolveMachineCarrierRoute } from './machineCarrierHttpLease';
-import { createWorkspaceFileTransferRpcCaller } from '../families/workspaceFileTransferRpcCaller';
-import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 
 function toDirectFailure(error: unknown): BulkTransferFailureResponse {
     return {
@@ -52,42 +49,6 @@ export async function uploadBulkPayloadFromFileViaMachineCarrier<
                 error: machineRoute.error,
                 errorCode: machineRoute.errorCode,
             };
-        }
-
-        if (machineRoute.kind === 'legacy_machine_rpc') {
-            const rpc = createWorkspaceFileTransferRpcCaller({
-                machineId: params.machineId,
-                ...(typeof params.serverId === 'string' ? { serverId: params.serverId } : {}),
-            });
-            return await uploadBulkPayloadFromFile<TResponse & { success: boolean; error?: string }>({
-                fileReader: params.fileReader,
-                closeFileReader: false,
-                init: async (signal) => await rpc.call({
-                    machineMethod: RPC_METHODS.DAEMON_TRANSFER_UPLOAD_INIT,
-                    request: params.directImportRequest,
-                    timeoutMs: params.timeoutMs ?? null,
-                    signal,
-                }),
-                sendChunk: async (request, signal) => await rpc.call({
-                    machineMethod: RPC_METHODS.DAEMON_TRANSFER_UPLOAD_CHUNK,
-                    request,
-                    timeoutMs: params.timeoutMs ?? null,
-                    signal,
-                }),
-                finalize: async (request, signal) => await rpc.call({
-                    machineMethod: RPC_METHODS.DAEMON_TRANSFER_UPLOAD_FINALIZE,
-                    request,
-                    timeoutMs: params.timeoutMs ?? null,
-                    signal,
-                }),
-                abort: async (request) => await rpc.call({
-                    machineMethod: RPC_METHODS.DAEMON_TRANSFER_UPLOAD_ABORT,
-                    request,
-                    timeoutMs: params.timeoutMs ?? null,
-                }),
-                onProgress: params.onProgress ?? null,
-                signal: params.signal ?? null,
-            }) as TResponse | BulkTransferFailureResponse;
         }
 
         try {

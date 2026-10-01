@@ -1,5 +1,4 @@
 import type { Session } from '@/sync/domains/state/storageTypes';
-import { isSessionAccessRecipient } from '@/sync/engine/sessions/normalizeSessionAccessProjection';
 import { readSessionMetadataLayoutVersion } from '@/sync/engine/sessions/parsePlainSessionPayload';
 
 export type SessionTupleApplyCurrentness = Readonly<{
@@ -10,7 +9,7 @@ export type SessionTupleApplyCurrentness = Readonly<{
 
 type SessionTupleOrderingFields = Pick<
     Session,
-    'access' | 'accessLevel' | 'agentStateVersion' | 'metadataLayoutVersion' | 'metadataVersion'
+    'agentStateVersion' | 'metadataLayoutVersion' | 'metadataVersion'
 >;
 
 function normalizeOrderingNumber(value: unknown): number | null {
@@ -48,20 +47,20 @@ export function classifySessionTupleApplyCurrentness(
     const previousLayoutVersion = readSessionMetadataLayoutVersion(previousSession.metadataLayoutVersion);
     const incomingLayoutVersion = readSessionMetadataLayoutVersion(incomingSession.metadataLayoutVersion);
     const metadataLayoutVersionsValid = previousLayoutVersion >= 0 && incomingLayoutVersion >= 0;
-    const isParticipantProjection = isSessionAccessRecipient(incomingSession.access, incomingSession.accessLevel);
-    const isAuthoritativeParticipantPrivacyContraction =
+    // Layout-1 socket frames carry no access projection. The layout transition
+    // itself is the privacy contraction, including when its tuple versions reset.
+    const isAuthoritativePrivacyContraction =
         previousLayoutVersion === 0
-        && incomingLayoutVersion === 1
-        && isParticipantProjection;
+        && incomingLayoutVersion === 1;
     const metadataCurrent =
         metadataLayoutVersionsValid
         && (
-            isAuthoritativeParticipantPrivacyContraction
+            isAuthoritativePrivacyContraction
             || (incomingLayoutVersion >= previousLayoutVersion
                 && isIncomingRevisionCurrent(incomingSession.metadataVersion, previousSession.metadataVersion))
         );
     const agentStateCurrent =
-        isAuthoritativeParticipantPrivacyContraction
+        isAuthoritativePrivacyContraction
         || isIncomingRevisionCurrent(
             incomingSession.agentStateVersion,
             previousSession.agentStateVersion,

@@ -29,6 +29,7 @@ import {
 } from '@/sync/domains/session/sessionSurfaceVisibility';
 import { storage } from '@/sync/domains/state/storage';
 import { loadSessionDrafts, saveSessionDrafts } from '@/sync/domains/state/sessionPersistence';
+import { apiSocket } from '@/sync/api/session/apiSocket';
 
 const sessionRpc = vi.hoisted(() => vi.fn());
 const persistentValues = vi.hoisted(() => new Map<string, string>());
@@ -166,6 +167,104 @@ afterEach(() => {
 });
 
 describe('CurrentSessionPresentationRuntime', () => {
+    it('rebinds once when the authenticated Home socket reconnects', async () => {
+        const sessionId = 'reconnected-session';
+        const address = { serverId: persistentSessionScope.serverId, sessionId } as const;
+        const unregister = registerSessionComposerPresentationTarget(address, createRuntimeSessionComposerTarget(sessionId).target);
+        activeScopeState.value = persistentSessionScope;
+        setFocusedSessionId(sessionId, address.serverId);
+        storage.setState((state) => ({
+            ...state,
+            sessions: { [sessionId]: createSessionFixture({ id: sessionId, serverId: address.serverId, active: true }) },
+        }));
+        sessionRpc.mockImplementation(async (input: Readonly<{ method: string; sessionId: string }>) => {
+            if (input.method === CURRENT_SESSION_PRESENTATION_BIND_RPC_METHOD) {
+                return { status: 'bound', sessionId: input.sessionId, hostNonce: 'host-1', revision: 1 };
+            }
+            if (input.method === CURRENT_SESSION_PRESENTATION_UNBIND_RPC_METHOD) return { status: 'retired' };
+            throw new Error(`Unexpected session presentation RPC: ${input.method}`);
+        });
+        const statusListener: {
+            current: ((status: 'disconnected' | 'connecting' | 'connected' | 'error') => void) | null;
+        } = { current: null };
+        const statusSubscription = vi.spyOn(apiSocket, 'onStatusChange').mockImplementation((listener) => {
+            statusListener.current = listener;
+            listener('connected');
+            return () => {
+                statusListener.current = null;
+                return true;
+            };
+        });
+
+        try {
+            await renderScreen(React.createElement(CurrentSessionPresentationRuntime));
+            await flushHookEffects({ cycles: 6, turns: 3 });
+            expect(sessionRpc.mock.calls.filter(([input]) => (
+                (input as Readonly<{ method: string }>).method === CURRENT_SESSION_PRESENTATION_BIND_RPC_METHOD
+            ))).toHaveLength(1);
+
+            const emitStatus = statusListener.current ?? (() => { throw new Error('Expected socket status subscription'); });
+            emitStatus('disconnected');
+            emitStatus('connected');
+            await flushHookEffects({ cycles: 6, turns: 3 });
+            expect(sessionRpc.mock.calls.filter(([input]) => (
+                (input as Readonly<{ method: string }>).method === CURRENT_SESSION_PRESENTATION_BIND_RPC_METHOD
+            ))).toHaveLength(2);
+        } finally {
+            statusSubscription.mockRestore();
+            unregister();
+        }
+    });
+
+    it('does not rebind when the host echoes its accepted binding or a row omits presentation state', async () => {
+        const sessionId = 'quiet-session';
+        const address = { serverId: persistentSessionScope.serverId, sessionId } as const;
+        const unregister = registerSessionComposerPresentationTarget(address, createRuntimeSessionComposerTarget(sessionId).target);
+        activeScopeState.value = persistentSessionScope;
+        setFocusedSessionId(sessionId, address.serverId);
+        storage.setState((state) => ({
+            ...state,
+            sessions: { [sessionId]: createSessionFixture({ id: sessionId, serverId: address.serverId, active: true }) },
+        }));
+        sessionRpc.mockImplementation(async (input: Readonly<{ method: string; sessionId: string }>) => {
+            if (input.method === CURRENT_SESSION_PRESENTATION_BIND_RPC_METHOD) {
+                return { status: 'bound', sessionId: input.sessionId, hostNonce: 'host-1', revision: 1 };
+            }
+            if (input.method === CURRENT_SESSION_PRESENTATION_UNBIND_RPC_METHOD) return { status: 'retired' };
+            throw new Error(`Unexpected session presentation RPC: ${input.method}`);
+        });
+
+        try {
+            await renderScreen(React.createElement(CurrentSessionPresentationRuntime));
+            await flushHookEffects({ cycles: 6, turns: 3 });
+            storage.setState((state) => ({
+                ...state,
+                sessions: {
+                    ...state.sessions,
+                    [sessionId]: {
+                        ...state.sessions[sessionId]!,
+                        agentState: {
+                            [CURRENT_SESSION_PRESENTATION_AGENT_STATE_KEY]: {
+                                v: 1, hostNonce: 'host-1', revision: 1, statuses: [], widgets: [],
+                            },
+                        },
+                    },
+                },
+            }));
+            await flushHookEffects({ cycles: 6, turns: 3 });
+            storage.setState((state) => ({
+                ...state,
+                sessions: { ...state.sessions, [sessionId]: { ...state.sessions[sessionId]!, agentState: null } },
+            }));
+            await flushHookEffects({ cycles: 6, turns: 3 });
+            expect(sessionRpc.mock.calls.filter(([input]) => (
+                (input as Readonly<{ method: string }>).method === CURRENT_SESSION_PRESENTATION_BIND_RPC_METHOD
+            ))).toHaveLength(1);
+        } finally {
+            unregister();
+        }
+    });
+
     it('retires its exact mounted Session binding when the runtime unmounts', async () => {
         const sessionId = 'mounted-session';
         const address = { serverId: persistentSessionScope.serverId, sessionId } as const;

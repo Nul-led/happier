@@ -402,6 +402,8 @@ describe('usePairingSession (pairing deep link server URL)', () => {
             expect(pairingStartMock).not.toHaveBeenCalled();
             expect(hookApi!.deepLink).toBeNull();
             expect(hookApi!.isStarting).toBe(false);
+            // The failure says why: the Home did not answer.
+            expect(hookApi!.presentation).toEqual({ phase: 'invalid_request', cause: 'home_unreachable' });
         } finally {
             act(() => screen.tree.unmount());
         }
@@ -429,6 +431,28 @@ describe('usePairingSession (pairing deep link server URL)', () => {
             });
             expect(pairingStartMock).not.toHaveBeenCalled();
             expect(hookApi!.deepLink).toBeNull();
+            expect(hookApi!.presentation).toEqual({ phase: 'invalid_request', cause: 'home_identity_unverified' });
+        } finally {
+            act(() => screen.tree.unmount());
+        }
+    });
+
+    it('says the device is signed out of the Home when it holds no credential for it', async () => {
+        cachedCanonicalServerUrl = 'https://home-a.test';
+        cachedServerIdentityId = 'srv_home_a';
+        activeServer.serverUrl = cachedCanonicalServerUrl;
+        getCredentialsForServerUrlMock.mockResolvedValueOnce(null as never);
+
+        const { usePairingSession } = await import('./usePairingSession');
+        let hookApi: ReturnType<typeof usePairingSession> | null = null;
+        function Probe() { hookApi = usePairingSession({ enabled: true, isAuthenticated: true }); return null; }
+        const screen = await renderScreen(<Probe />);
+        try {
+            await act(async () => {
+                await expect(hookApi!.startPairing()).resolves.toEqual({ ok: false, status: 412 });
+            });
+            expect(pairingStartMock).not.toHaveBeenCalled();
+            expect(hookApi!.presentation).toEqual({ phase: 'invalid_request', cause: 'signed_out' });
         } finally {
             act(() => screen.tree.unmount());
         }
@@ -603,7 +627,7 @@ describe('usePairingSession (pairing deep link server URL)', () => {
                 expect.objectContaining({ descriptor: descriptorOverride }),
                 expect.objectContaining({ signal: expect.any(AbortSignal) }),
             );
-            expect(hookApi!.presentation).toEqual({ phase: 'invalid_request' });
+            expect(hookApi!.presentation).toEqual({ phase: 'invalid_request', cause: 'invite_too_large' });
             expect(hookApi!.deepLink).toBeNull();
             expect(enrollmentTransportCloseMock).toHaveBeenCalledTimes(2);
         } finally {
@@ -696,6 +720,8 @@ describe('usePairingSession (pairing deep link server URL)', () => {
     });
 
     it('fails closed when the focused Home has no verified stable identity', async () => {
+        // A reachable Home with no identity is distinct from a network failure.
+        cachedCanonicalServerUrl = 'https://home-a.test';
         const { usePairingSession } = await import('./usePairingSession');
 
         let hookApi: ReturnType<typeof usePairingSession> | null = null;
@@ -715,7 +741,7 @@ describe('usePairingSession (pairing deep link server URL)', () => {
             expect(hookApi!.deepLink).toBeNull();
             expect(pairingStartMock).not.toHaveBeenCalled();
             expect(hookApi!.isStarting).toBe(false);
-            expect(hookApi!.presentation).toEqual({ phase: 'invalid_request' });
+            expect(hookApi!.presentation).toEqual({ phase: 'invalid_request', cause: 'home_identity_unverified' });
 
             await act(async () => {
                 hookApi!.clearSession();

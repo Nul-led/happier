@@ -97,7 +97,6 @@ describe('defaultActionExecutor canonical agent inventory corridor', () => {
             }],
           },
         },
-        backendsById: {},
         familiesById: {},
       },
     } as never);
@@ -241,7 +240,6 @@ describe('defaultActionExecutor canonical agent inventory corridor', () => {
             }],
           },
         },
-        backendsById: {},
         familiesById: {},
       },
     } as never);

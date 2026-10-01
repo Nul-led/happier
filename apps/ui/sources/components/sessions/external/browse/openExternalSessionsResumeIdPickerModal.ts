@@ -2,6 +2,11 @@ import type { ExternalSessionsBrowseScopeLock } from './ExternalSessionsBrowseSc
 import { ExternalSessionsResumeIdPickerModal } from './ExternalSessionsResumeIdPickerModal';
 
 import { Modal } from '@/modal';
+import {
+    buildCommandSurfaceCardChrome,
+    COMMAND_SURFACE_WEB_PLACEMENT,
+} from '@/modal/components/card/commandSurfaceCard';
+import { t } from '@/text';
 import { createDeferredOnce } from '@/modal/async/createDeferredOnce';
 import type { ModalPortalTarget } from '@/modal/portal/ModalPortalTarget';
 
@@ -19,17 +24,12 @@ export async function openExternalSessionsResumeIdPickerModal(params: Readonly<{
             onResolve: deferred.resolve,
         },
         onRequestClose: () => deferred.resolve(null),
-        chrome: {
-            kind: 'card',
-            title: params.title,
+        // The same command-surface card as Search / ⌘K and the Browse route.
+        webPlacement: COMMAND_SURFACE_WEB_PLACEMENT,
+        chrome: buildCommandSurfaceCardChrome({
+            title: params.title ?? t('externalSessions.browseHeaderTitle'),
             testID: 'resume-id-browse-modal',
-            dimensions: {
-                width: 720,
-                maxHeightRatio: 0.96,
-                size: 'lg',
-                viewportMargin: { horizontal: 12, vertical: 12 },
-            },
-        },
+        }),
         closeOnBackdrop: true,
     });
     return await deferred.promise;

@@ -1,5 +1,5 @@
 import * as React from 'react';
-import type { ComposerContentHandleV1 } from '@happier-dev/protocol';
+import type { ComposerContentHandleV1, SessionAttachmentHandleV1 } from '@happier-dev/protocol';
 
 import { getImageMimeTypeFromPath } from '@/scm/utils/filePresentation';
 import { t } from '@/text';
@@ -9,6 +9,7 @@ import type { WorkspaceScopeBase } from '@/sync/domains/workspaces/workspaceScop
 import {
     createComposerStagedMediaPreviewSource,
     createSessionFilePreviewSource,
+    createSessionAttachmentPreviewSource,
     type SessionFilePreviewSource,
 } from '@/sync/domains/sessionFilePreviews/createSessionFilePreviewSource';
 
@@ -64,6 +65,7 @@ export function useSessionImagePreview(input: Readonly<{
      * as SessionMedia. The handle has no filesystem path or direct URI.
      */
     composerStagedMedia?: ComposerContentHandleV1 | null;
+    attachmentHandle?: SessionAttachmentHandleV1 | null;
 }>): SessionImagePreviewState {
     const composerStagedMedia = React.useMemo<ComposerContentHandleV1 | null>(() => (
         input.composerStagedMedia ?? null
@@ -81,6 +83,8 @@ export function useSessionImagePreview(input: Readonly<{
         input.composerStagedMedia?.v,
     ]);
     const sessionId = input.sessionId;
+    const attachmentHandle = React.useMemo(() => input.attachmentHandle ?? null,
+        [input.attachmentHandle?.v, input.attachmentHandle?.sessionId, input.attachmentHandle?.id]);
     const filePath = composerStagedMedia?.name ?? input.filePath;
     const enabled = input.enabled === true;
     const cacheKey =
@@ -97,7 +101,7 @@ export function useSessionImagePreview(input: Readonly<{
             : null;
     const providedScope = input.workspaceScope ?? null;
     const resolvedSessionScope = useSessionWorkspaceTarget(
-        enabled && composerStagedMedia === null && !providedScope ? sessionId : null,
+        enabled && composerStagedMedia === null && attachmentHandle === null && !providedScope ? sessionId : null,
     );
     const resolvedScopeInput = composerStagedMedia === null ? providedScope ?? resolvedSessionScope : null;
     const resolvedScope = React.useMemo<WorkspaceScopeBase | null>(() => {
@@ -113,6 +117,7 @@ export function useSessionImagePreview(input: Readonly<{
         resolvedScopeInput?.serverId,
     ]);
     const cacheScopeId = (() => {
+        if (attachmentHandle !== null) return JSON.stringify(['session-attachment', attachmentHandle.sessionId, attachmentHandle.id]);
         if (composerStagedMedia !== null) {
             return JSON.stringify([
                 'composer-stage',
@@ -170,7 +175,7 @@ export function useSessionImagePreview(input: Readonly<{
 
     const [state, setState] = React.useState<SessionImagePreviewState>(() => {
         if (!enabled || !mime) return { status: 'disabled', uri: null, error: null };
-        if (!resolvedScope && composerStagedMedia === null) return { status: 'loading', uri: null, error: null };
+        if (!resolvedScope && composerStagedMedia === null && attachmentHandle === null) return { status: 'loading', uri: null, error: null };
         if (canCache) {
             const cached = imagePreviewCache.get({ sessionId: cacheScopeId, signature: cacheKey!, filePath });
             if (cached?.status === 'loaded') return { status: 'loaded', uri: cached.uri, error: null };
@@ -184,7 +189,7 @@ export function useSessionImagePreview(input: Readonly<{
             setState({ status: 'disabled', uri: null, error: null });
             return;
         }
-        if (!resolvedScope && composerStagedMedia === null) {
+        if (!resolvedScope && composerStagedMedia === null && attachmentHandle === null) {
             setState({ status: 'loading', uri: null, error: null });
             return;
         }
@@ -236,6 +241,15 @@ export function useSessionImagePreview(input: Readonly<{
                     ? await createComposerStagedMediaPreviewSource({
                         handle: composerStagedMedia,
                         maxBytes: maxPreviewBytes,
+                        signal: controller.signal,
+                    })
+                    : attachmentHandle !== null
+                    ? await createSessionAttachmentPreviewSource({
+                        handle: attachmentHandle,
+                        fileName: filePath,
+                        mimeType: mime,
+                        maxBytes: maxPreviewBytes,
+                        expectedSizeBytes: sizeBytes,
                         signal: controller.signal,
                     })
                     : await createSessionFilePreviewSource({
@@ -310,7 +324,7 @@ export function useSessionImagePreview(input: Readonly<{
                 } catch {}
             }
         };
-    }, [cacheKey, cacheScopeId, canCache, composerStagedMedia, enabled, filePath, maxPreviewBytes, mime, resolvedScope, sizeBytes]);
+    }, [attachmentHandle, cacheKey, cacheScopeId, canCache, composerStagedMedia, enabled, filePath, maxPreviewBytes, mime, resolvedScope, sizeBytes]);
 
     return state;
 }

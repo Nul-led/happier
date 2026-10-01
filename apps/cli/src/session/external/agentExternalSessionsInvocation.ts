@@ -2,7 +2,9 @@ import { createHash } from 'node:crypto';
 
 import {
     AgentExternalSessionTranscriptRawRecordSchema,
+    ExternalSessionCandidateThreadV1Schema,
     ExternalSessionTranscriptItemIdV1Schema,
+    ExternalSessionTerminalSourceObservationV1Schema,
     ExternalSessionTranscriptSourceTimestampV1Schema,
     ExternalSessionUserProjectionSchema,
     ExternalSessionsSourceSchema,
@@ -14,10 +16,12 @@ import {
     SidechainIdSchema,
     type AgentExternalSessionTranscriptRawRecord,
     type PluginAgentExternalSessionLinkData,
+    type PluginSourceCustodyV1,
     type SessionMessageRole,
 } from '@happier-dev/protocol';
 import type {
     AgentExternalSessionTranscriptItem,
+    AgentExternalSessionTerminalObservation,
     AgentExternalSessionsContribution,
     AgentExternalSessionsFailureCode,
     AgentExternalSessionsManagedEndpointRead,
@@ -81,9 +85,9 @@ export const EXTERNAL_SESSIONS_INVOCATION_POLICY = Object.freeze({
 type ContributionIdentity = Readonly<{
     pluginId: string;
     agentId: string;
-    generation: string;
+    occurrenceId: string;
     contributionQualifiedId: string;
-    immutableGenerationId: string | null;
+    sourceCustody: PluginSourceCustodyV1;
 }>;
 
 export type AgentExternalSessionsManagedEndpointReadHost = (
@@ -429,7 +433,7 @@ function parseCandidate(value: unknown): AgentExternalSessionCandidate | null {
     const record = readStrictRecord(
         value,
         ['remoteSessionId', 'updatedAtMs'],
-        ['title', 'createdAtMs', 'archived', 'linkData', 'candidateIndexState'],
+        ['title', 'createdAtMs', 'archived', 'thread', 'linkData', 'candidateIndexState'],
     );
     if (!record) return null;
     const remoteSessionId = parseBoundedString(record.remoteSessionId, MAX_ID_CODE_UNITS);
@@ -439,6 +443,10 @@ function parseCandidate(value: unknown): AgentExternalSessionCandidate | null {
         : parseBoundedString(record.title, MAX_TITLE_CODE_UNITS);
     const createdAtMs = record.createdAtMs === undefined ? undefined : parseTimestamp(record.createdAtMs);
     const archived = parseOptionalBoolean(record.archived);
+    const parsedThread = record.thread === undefined
+        ? undefined
+        : ExternalSessionCandidateThreadV1Schema.safeParse(record.thread);
+    const thread = parsedThread === undefined ? undefined : parsedThread.success ? parsedThread.data : null;
     const linkData = record.linkData === undefined ? undefined : parseLinkData(record.linkData);
     const candidateIndexState = record.candidateIndexState === undefined
         ? undefined
@@ -450,6 +458,7 @@ function parseCandidate(value: unknown): AgentExternalSessionCandidate | null {
         || (title !== undefined && title.trim().length === 0)
         || createdAtMs === null
         || archived === null
+        || thread === null
         || linkData === null
         || candidateIndexState === null
     ) {
@@ -461,6 +470,7 @@ function parseCandidate(value: unknown): AgentExternalSessionCandidate | null {
         ...(title === undefined ? {} : { title }),
         ...(createdAtMs === undefined ? {} : { createdAtMs }),
         ...(archived === undefined ? {} : { archived }),
+        ...(thread === undefined ? {} : { thread }),
         ...(linkData === undefined ? {} : { linkData }),
         ...(candidateIndexState === undefined ? {} : { candidateIndexState }),
     });
@@ -546,7 +556,7 @@ function encodeQualifiedCursor(
         v: 1,
         p: identity.pluginId,
         a: identity.agentId,
-        g: identity.generation,
+        g: identity.occurrenceId,
         s: sourceDigest(scope.source),
         m: scope.method,
         r: scope.remoteSessionId ?? null,
@@ -575,7 +585,7 @@ function decodeInputCursor(
             || record.v !== 1
             || record.p !== identity.pluginId
             || record.a !== identity.agentId
-            || record.g !== identity.generation
+            || record.g !== identity.occurrenceId
             || record.s !== sourceDigest(scope.source)
             || record.m !== scope.method
             || record.r !== (scope.remoteSessionId ?? null)
@@ -703,10 +713,17 @@ function parseTranscriptPageValue(
     maxItems: number,
     identity: ContributionIdentity,
     scope: CursorScope,
+    projection?: 'terminal',
 ): AgentExternalSessionsTranscriptPage | null {
     const record = readStrictRecord(value, ['items', 'nextCursor'], ['tailCursor', 'hasMore', 'truncated']);
     if (!record || !Array.isArray(record.items) || record.items.length > maxItems) return null;
-    const items = record.items.map(parseTranscriptItem);
+    const items = record.items.map((item) => {
+        if (projection === 'terminal') {
+            const observation = ExternalSessionTerminalSourceObservationV1Schema.safeParse(item);
+            if (observation.success) return observation.data;
+        }
+        return parseTranscriptItem(item);
+    });
     if (items.some((item) => item === null)) return null;
     const nextCursor = record.nextCursor === null
         ? null
@@ -738,7 +755,7 @@ function parseTranscriptPageValue(
         return null;
     }
     return Object.freeze({
-        items: Object.freeze(items as AgentExternalSessionTranscriptItem[]),
+        items: Object.freeze(items as (AgentExternalSessionTranscriptItem | AgentExternalSessionTerminalObservation)[]),
         nextCursor,
         ...(tailCursor === undefined ? {} : { tailCursor }),
         ...(hasMore === undefined ? {} : { hasMore }),
@@ -775,6 +792,7 @@ function parseReadAfterTranscriptValue(
     inputCursor: string,
     identity: ContributionIdentity,
     scope: CursorScope,
+    projection?: 'terminal',
 ): AgentExternalSessionsReadAfterTranscriptResult | null {
     const discriminator = readStrictRecord(value, ['outcome'], ['items', 'nextCursor', 'boundary', 'hasMore', 'diagnostics']);
     if (!discriminator || typeof discriminator.outcome !== 'string') return null;
@@ -799,7 +817,13 @@ function parseReadAfterTranscriptValue(
             ) {
                 return null;
             }
-            const items = record.items.map(parseTranscriptItem);
+            const items = record.items.map((item) => {
+                if (projection === 'terminal') {
+                    const observation = ExternalSessionTerminalSourceObservationV1Schema.safeParse(item);
+                    if (observation.success) return observation.data;
+                }
+                return parseTranscriptItem(item);
+            });
             const nextCursor = encodeQualifiedCursor(record.nextCursor, identity, scope);
             const boundary = parseBoundedString(record.boundary, MAX_READ_AFTER_BOUNDARY_CODE_UNITS);
             const diagnostics = record.diagnostics === undefined
@@ -819,7 +843,7 @@ function parseReadAfterTranscriptValue(
             }
             return Object.freeze({
                 outcome: 'advanced',
-                items: Object.freeze(items as AgentExternalSessionTranscriptItem[]),
+                items: Object.freeze(items as (AgentExternalSessionTranscriptItem | AgentExternalSessionTerminalObservation)[]),
                 nextCursor,
                 boundary,
                 hasMore: record.hasMore,
@@ -1098,6 +1122,7 @@ export function createBoundedAgentExternalSessionsContribution(params: Readonly<
                 || maxSerializedBytes === null
                 || searchTerm === null
                 || (request.searchMode !== undefined && request.searchMode !== 'fast' && request.searchMode !== 'full')
+                || (request.includeThreads !== undefined && typeof request.includeThreads !== 'boolean')
                 || (request.cursor !== undefined && cursor === null)
                 || !scope
             ) {
@@ -1123,6 +1148,7 @@ export function createBoundedAgentExternalSessionsContribution(params: Readonly<
                         ...(typeof cursor === 'string' ? { cursor } : {}),
                         ...(searchTerm === undefined ? {} : { searchTerm }),
                         ...(request.searchMode === undefined ? {} : { searchMode: request.searchMode }),
+                        ...(request.includeThreads === undefined ? {} : { includeThreads: request.includeThreads }),
                         ...(request.readCandidateIndexState === undefined
                             ? {}
                             : {
@@ -1215,6 +1241,8 @@ export function createBoundedAgentExternalSessionsContribution(params: Readonly<
         async pageTranscript(request) {
             const terminal = terminalBeforeAdmission(request.signal);
             if (terminal) return terminal;
+            if (request.projection !== undefined && request.projection !== 'terminal') return invalidRequest();
+            if (request.projection === 'terminal' && request.direction !== 'newer') return invalidRequest();
             const parsedSource = parseSource(request.source);
             const remoteSessionId = parseBoundedString(request.remoteSessionId, MAX_ID_CODE_UNITS);
             const maxItems = readMaxItems(request.maxItems, EXTERNAL_SESSIONS_INVOCATION_POLICY.pageTranscript.maxItems);
@@ -1250,6 +1278,7 @@ export function createBoundedAgentExternalSessionsContribution(params: Readonly<
                         signal,
                     );
                     return await params.contribution.pageTranscript({
+                        ...(request.projection ? { projection: request.projection } : {}),
                         source: parsedSource,
                         remoteSessionId,
                         direction: request.direction,
@@ -1263,7 +1292,7 @@ export function createBoundedAgentExternalSessionsContribution(params: Readonly<
                 },
                 parse: (value) => parseAndBoundResult(
                     value,
-                    (candidate) => parseTranscriptPageValue(candidate, maxItems, params.identity, scope),
+                    (candidate) => parseTranscriptPageValue(candidate, maxItems, params.identity, scope, request.projection),
                     maxSerializedBytes,
                 ),
             });
@@ -1271,6 +1300,7 @@ export function createBoundedAgentExternalSessionsContribution(params: Readonly<
         async readAfterTranscript(request) {
             const terminal = terminalBeforeAdmission(request.signal);
             if (terminal) return terminal;
+            if (request.projection !== undefined && request.projection !== 'terminal') return invalidRequest();
             const parsedSource = parseSource(request.source);
             const remoteSessionId = parseBoundedString(request.remoteSessionId, MAX_ID_CODE_UNITS);
             const maxItems = readMaxItems(request.maxItems, EXTERNAL_SESSIONS_INVOCATION_POLICY.readAfterTranscript.maxItems);
@@ -1296,6 +1326,7 @@ export function createBoundedAgentExternalSessionsContribution(params: Readonly<
                         signal,
                     );
                     return await params.contribution.readAfterTranscript({
+                        ...(request.projection ? { projection: request.projection } : {}),
                         source: parsedSource,
                         remoteSessionId,
                         cursor,
@@ -1314,6 +1345,7 @@ export function createBoundedAgentExternalSessionsContribution(params: Readonly<
                         cursor,
                         params.identity,
                         scope,
+                        request.projection,
                     ),
                     maxSerializedBytes,
                 ),

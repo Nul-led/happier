@@ -55,6 +55,29 @@ describe('useEmbeddedTerminalTransportHandlers', () => {
         vi.useRealTimers();
     });
 
+    it('discards queued mutations when the surface becomes read-only and ignores paste without confirmation', async () => {
+        const { useEmbeddedTerminalTransportHandlers } = await import('./useEmbeddedTerminalTransportHandlers');
+        const terminalIdRef = { current: 'borrowed' };
+        const terminalStreamCarrierRef = createTerminalStreamCarrierRef();
+        const hook = await renderHook((props: { readOnly: boolean }) => useEmbeddedTerminalTransportHandlers({
+            machineId: 'machine', terminalIdRef, terminalStreamCarrierRef, readOnly: props.readOnly,
+        }), { initialProps: { readOnly: false } });
+        act(() => {
+            hook.getCurrent().onInput('queued');
+            hook.getCurrent().onResize(100, 30);
+        });
+        await hook.rerender({ readOnly: true });
+        await act(async () => {
+            hook.getCurrent().onInput('ignored');
+            hook.getCurrent().onResize(120, 40);
+            expect(await hook.getCurrent().onPaste('x'.repeat(100_000))).toEqual({ kind: 'ignore', reason: 'read_only' });
+        });
+        await flushHookEffects({ runOnlyPendingTimers: true });
+        await hook.unmount();
+        expect(carrierSendInputSpy).not.toHaveBeenCalled();
+        expect(modalConfirmSpy).not.toHaveBeenCalled();
+    });
+
     it('keeps buffered input until machine and terminal ids are available', async () => {
         const { useEmbeddedTerminalTransportHandlers } = await import('./useEmbeddedTerminalTransportHandlers');
 

@@ -12,6 +12,7 @@ import {
     type SessionListViewFilterDefaultsInput,
     type SessionListFilterDeletedSelections,
     type SessionListViewFilters,
+    type SessionListViewContext,
 } from './sessionListViewFilters';
 
 type RetainedEntry = {
@@ -183,6 +184,8 @@ export type UseSessionListViewFiltersInput = Readonly<{
     /** `global` or a qualified Team-context key. */
     contextKey: string;
     defaults: SessionListViewFilterDefaultsInput;
+    /** Fixed destination semantics, independent of its retention key or catalog. */
+    viewContext?: SessionListViewContext;
     /** Existing exact-Home credential owner projection for every contributing Home. */
     accountScopeResolutions: ReadonlyMap<string, ServerCredentialAccountScopeResolution>;
     /**
@@ -271,11 +274,11 @@ export function useSessionListViewFilters(input: UseSessionListViewFiltersInput)
             const requested = typeof value === 'function'
                 ? (value as (previous: SessionListViewFilters) => SessionListViewFilters)(currentFilters)
                 : value;
-            const filters = normalizeSessionListViewFilters(requested);
+            const filters = normalizeSessionListViewFilters(requested, input.viewContext);
             retained.filters = filters;
             return { key, filters };
         });
-    }, [key, retained]);
+    }, [input.viewContext, key, retained]);
 
     const setSearchQuery = React.useCallback<React.Dispatch<React.SetStateAction<string>>>((value) => {
         updateFilters((current) => ({
@@ -289,12 +292,12 @@ export function useSessionListViewFilters(input: UseSessionListViewFiltersInput)
     const removeAuthoritativelyDeletedSelections = React.useCallback((deleted: SessionListFilterDeletedSelections) => {
         setState((current) => {
             const currentFilters = current.key === key ? current.filters : retained.filters;
-            const filters = removeUnavailableSessionListFilterSelections(currentFilters, deleted);
+            const filters = removeUnavailableSessionListFilterSelections(currentFilters, deleted, input.viewContext);
             if (filters === currentFilters && current.key === key) return current;
             retained.filters = filters;
             return { key, filters };
         });
-    }, [key, retained]);
+    }, [input.viewContext, key, retained]);
 
     const latestDefaults = React.useRef(input.defaults);
     latestDefaults.current = input.defaults;

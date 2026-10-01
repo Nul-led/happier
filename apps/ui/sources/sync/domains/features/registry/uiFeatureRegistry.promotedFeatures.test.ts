@@ -8,6 +8,8 @@ import { settingsDefaults } from '@/sync/domains/settings/settings';
 import type { FeatureId } from '@happier-dev/protocol';
 
 const promotedFeatureIds = [
+    // Graduated with the Workflows destination (FIN 04 §3.1): the switch governs triggers.
+    'automations',
     'files.reviewComments',
     'files.syntaxHighlighting.advanced',
     'sessions.direct',

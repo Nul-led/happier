@@ -1,4 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
+import * as tmp from 'tmp'
+import { configuration } from '@/configuration'
+import { readTerminalHostAttachmentState } from '@/terminal/attachment/terminalAttachmentInfo'
 
 import { initializeBackendRunSession } from '@/agent/runtime/initializeBackendRunSession'
 import type { ApiSessionClient } from '@/api/session/sessionClient'
@@ -6,6 +9,8 @@ import type { AgentState, Metadata, Session } from '@/api/types'
 import { SessionCreationPlacementError } from '@/api/session/sessionCreationPlacementError'
 import { SessionCreationCorrespondenceConflictError } from '@/api/session/sessionCreationCorrespondenceConflictError'
 import { createEnvKeyScope } from '@/testkit/env/envScope'
+import { readSessionRunnerLockStatus, withSessionRunnerOwnership } from '@/daemon/sessionRunnerLock'
+import { isSessionRunnerActive, probeSessionRunnerServiceability, resolveSessionRunnerResumeDecision } from '@/daemon/sessions/isSessionRunnerActive'
 
 function createSessionStub(overrides: Partial<ApiSessionClient> = {}): ApiSessionClient {
   return {
@@ -31,6 +36,96 @@ function createSessionResponse(id: string, metadata: Metadata, state: AgentState
 }
 
 describe('initialize run session', () => {
+  it('owns the fresh Session before its realtime client and releases ownership after startup fails', async () => {
+    const dir = tmp.dirSync({ unsafeCleanup: true })
+    const home = Object.getOwnPropertyDescriptor(configuration, 'happyHomeDir')!
+    Object.defineProperty(configuration, 'happyHomeDir', { ...home, value: dir.name })
+    const sessionId = 'fresh-bootstrap-before-webhook'
+    const metadata = { path: '/workspace', host: 'test', startedBy: 'daemon' } as Metadata
+    const state: AgentState = { controlledByUser: false }
+    let lockAtClientBoundary: Awaited<ReturnType<typeof readSessionRunnerLockStatus>> | null = null
+    let clientReached = false
+    try {
+      await expect(withSessionRunnerOwnership(async () => {
+        await initializeBackendRunSession({
+          api: {
+            getOrCreateSession: async () => createSessionResponse(sessionId, metadata, state),
+            sessionSyncClient: () => {
+              clientReached = true
+              throw new Error('client-construction-failed')
+            },
+          },
+          sessionTag: 'fresh-bootstrap', metadata, state, uiLogPrefix: '[Test]',
+          startupMetadataOverrides: { permissionModeOverride: { mode: 'default', updatedAt: 1 } },
+        }).catch(async (error: unknown) => {
+          lockAtClientBoundary = await readSessionRunnerLockStatus({ sessionId })
+          expect(await isSessionRunnerActive({ sessionId, trackedSessions: [] })).toBe(true)
+          const probe = await probeSessionRunnerServiceability({
+            sessionId, trackedSessions: [],
+            probeCapability: async () => ({ state: 'recoverable_unservable', reason: 'rpc_method_unavailable' }),
+          })
+          expect(resolveSessionRunnerResumeDecision(probe)).toEqual({ action: 'wait_for_exit', reason: 'rpc_method_unavailable' })
+          throw error
+        })
+      })).rejects.toThrow('client-construction-failed')
+      expect(clientReached).toBe(true)
+      expect(lockAtClientBoundary).toMatchObject({ ok: true, lock: { sessionId, pid: process.pid } })
+      await expect(readSessionRunnerLockStatus({ sessionId })).resolves.toEqual({ ok: false, reason: 'not_found' })
+    } finally {
+      Object.defineProperty(configuration, 'happyHomeDir', home)
+      dir.removeCallback()
+    }
+  })
+
+  it.each([
+    ['report-first', 'terminal'],
+    ['persist-first', 'terminal'],
+    ['report-first', 'daemon'],
+    ['persist-first', 'daemon'],
+  ] as const)('persists exact Herdr ownership for %s startup from %s', async (startupSideEffectsOrder, startedBy) => {
+    const dir = tmp.dirSync({ unsafeCleanup: true })
+    const home = Object.getOwnPropertyDescriptor(configuration, 'happyHomeDir')!
+    Object.defineProperty(configuration, 'happyHomeDir', { ...home, value: dir.name })
+    const metadata = {
+      startedBy,
+      terminal: {
+        mode: 'herdr',
+        herdr: { sessionName: 'work', socketPath: '/tmp/work.sock', terminalId: 'term_42', paneId: 'w1:p2' },
+        controlServiceabilityV1: { v: 1, attachmentId: 'attachment-current', state: 'servable', observedAt: 1 },
+      },
+    } as Metadata
+    const state = { controlledByUser: false } as AgentState
+    const session = createSessionStub()
+    try {
+      await initializeBackendRunSession({
+        api: {
+          getOrCreateSession: async () => createSessionResponse('current-terminal', metadata, state),
+          sessionSyncClient: () => session,
+        },
+        sessionTag: 'current-terminal',
+        metadata,
+        state,
+        uiLogPrefix: '[Test]',
+        startupSideEffectsOrder,
+        startupMetadataOverrides: { permissionModeOverride: { mode: 'default', updatedAt: 1 } },
+      }, {
+        reportSessionToDaemonIfRunningFn: async () => {},
+      })
+      expect(await readTerminalHostAttachmentState({ happyHomeDir: dir.name, sessionId: 'current-terminal' })).toMatchObject({
+        status: 'present',
+        info: {
+          version: startedBy === 'terminal' ? 3 : 2,
+          ...(startedBy === 'terminal' ? { lifecycle: 'borrowed' } : {}),
+          attachmentId: 'attachment-current',
+          handle: { kind: 'herdr', terminalId: 'term_42' },
+        },
+      })
+    } finally {
+      Object.defineProperty(configuration, 'happyHomeDir', home)
+      dir.removeCallback()
+    }
+  })
+
   it('reports a canonical creation-correspondence conflict before the runner can attach', async () => {
     const envScope = createEnvKeyScope(['HAPPIER_SESSION_STARTUP_SPAWN_NONCE'])
     envScope.patch({ HAPPIER_SESSION_STARTUP_SPAWN_NONCE: 'creation-conflict-attempt-1' })
@@ -244,7 +339,6 @@ describe('initialize run session', () => {
       resolveSession = resolve
     })
     let observedSignal: AbortSignal | undefined
-    const primeAgentStateForUiFn = vi.fn()
     const reportSessionToDaemonIfRunningFn = vi.fn(async () => {})
     const persistTerminalAttachmentInfoIfNeededFn = vi.fn(async () => {})
     const sendTerminalFallbackMessageIfNeededFn = vi.fn()
@@ -269,7 +363,6 @@ describe('initialize run session', () => {
         },
       },
       {
-        primeAgentStateForUiFn,
         reportSessionToDaemonIfRunningFn,
         persistTerminalAttachmentInfoIfNeededFn,
         sendTerminalFallbackMessageIfNeededFn,
@@ -280,7 +373,6 @@ describe('initialize run session', () => {
 
     await expect(initializing).rejects.toBe('carrier retired')
     expect(observedSignal).toBe(controller.signal)
-    expect(primeAgentStateForUiFn).not.toHaveBeenCalled()
     expect(reportSessionToDaemonIfRunningFn).not.toHaveBeenCalled()
     expect(persistTerminalAttachmentInfoIfNeededFn).not.toHaveBeenCalled()
     expect(sendTerminalFallbackMessageIfNeededFn).not.toHaveBeenCalled()
@@ -319,7 +411,6 @@ describe('initialize run session', () => {
         },
       },
       {
-        primeAgentStateForUiFn: vi.fn(),
         reportSessionToDaemonIfRunningFn: async () => {
           reportStarted()
           await reportGate
@@ -417,7 +508,6 @@ describe('initialize run session', () => {
         createBaseSessionForAttachFn: async () =>
           createSessionResponse('attach-session', metadata, state),
         applyStartupMetadataUpdateToSessionFn,
-        primeAgentStateForUiFn: vi.fn(),
         reportSessionToDaemonIfRunningFn: vi.fn(async () => undefined),
         persistTerminalAttachmentInfoIfNeededFn: vi.fn(async () => undefined),
         sendTerminalFallbackMessageIfNeededFn: vi.fn(),
@@ -448,7 +538,6 @@ describe('initialize run session', () => {
     const daemonReports: string[] = []
     const persisted: string[] = []
     let fallbackCount = 0
-    let primedWithPrefix: string | null = null
 
     const result = await initializeBackendRunSession(
       {
@@ -466,9 +555,6 @@ describe('initialize run session', () => {
         createBaseSessionForAttachFn: async () => createSessionResponse('session-123', metadata, state),
         applyStartupMetadataUpdateToSessionFn: async (opts) => {
           startupUpdates.push({ mode: opts.mode })
-        },
-        primeAgentStateForUiFn: (_session, logPrefix) => {
-          primedWithPrefix = logPrefix
         },
         reportSessionToDaemonIfRunningFn: async (opts) => {
           daemonReports.push(opts.sessionId)
@@ -489,7 +575,6 @@ describe('initialize run session', () => {
     expect(daemonReports).toEqual(['session-123'])
     expect(persisted).toEqual(['session-123'])
     expect(fallbackCount).toBe(1)
-    expect(primedWithPrefix).toBe('[Qwen]')
   })
 
   it('does not apply startup metadata update when attach snapshot is unavailable', async () => {
@@ -533,7 +618,6 @@ describe('initialize run session', () => {
         applyStartupMetadataUpdateToSessionFn: async () => {
           applyStartupCalls += 1
         },
-        primeAgentStateForUiFn: () => {},
         reportSessionToDaemonIfRunningFn: async () => {},
         persistTerminalAttachmentInfoIfNeededFn: async () => {},
         sendTerminalFallbackMessageIfNeededFn: () => {},
@@ -608,7 +692,6 @@ describe('initialize run session', () => {
             lifecycleState: 'running',
           } as Metadata
         },
-        primeAgentStateForUiFn: () => {},
         reportSessionToDaemonIfRunningFn: async () => {},
         persistTerminalAttachmentInfoIfNeededFn: async () => {},
         sendTerminalFallbackMessageIfNeededFn: () => {},
@@ -665,7 +748,6 @@ describe('initialize run session', () => {
         createBaseSessionForAttachFn: async () =>
           createSessionResponse('session-report-merged-metadata', metadata, state),
         applyStartupMetadataUpdateToSessionFn: async () => {},
-        primeAgentStateForUiFn: () => {},
         reportSessionToDaemonIfRunningFn: async (opts) => {
           reportedMetadata = opts.metadata
         },
@@ -731,7 +813,6 @@ describe('initialize run session', () => {
         createBaseSessionForAttachFn: async () =>
           createSessionResponse('session-report-runtime-identity', metadata, state),
         applyStartupMetadataUpdateToSessionFn: async () => {},
-        primeAgentStateForUiFn: () => {},
         reportSessionToDaemonIfRunningFn: async (opts) => {
           reportedMetadata = opts.metadata
         },
@@ -810,7 +891,6 @@ describe('initialize run session', () => {
             } as Metadata
           }
         },
-        primeAgentStateForUiFn: () => {},
         reportSessionToDaemonIfRunningFn: async () => {},
         persistTerminalAttachmentInfoIfNeededFn: async () => {},
         sendTerminalFallbackMessageIfNeededFn: () => {},
@@ -867,9 +947,6 @@ describe('initialize run session', () => {
         applyStartupMetadataUpdateToSessionFn: async () => {
           events.push('startup-update')
         },
-        primeAgentStateForUiFn: () => {
-          events.push('prime-agent-state')
-        },
         reportSessionToDaemonIfRunningFn: async () => {
           events.push('report-session')
         },
@@ -886,7 +963,6 @@ describe('initialize run session', () => {
       'startup-update',
       'attach-callback-start',
       'attach-callback-end',
-      'prime-agent-state',
       'report-session',
       'persist-terminal',
       'send-fallback',
@@ -928,9 +1004,6 @@ describe('initialize run session', () => {
           await Promise.resolve()
           events.push('startup-update-end')
         },
-        primeAgentStateForUiFn: () => {
-          events.push('prime-agent-state')
-        },
         reportSessionToDaemonIfRunningFn: async () => {
           events.push('report-session')
         },
@@ -947,7 +1020,6 @@ describe('initialize run session', () => {
       'startup-update-start',
       'startup-update-end',
       'attach-callback',
-      'prime-agent-state',
       'report-session',
       'persist-terminal',
       'send-fallback',
@@ -980,7 +1052,6 @@ describe('initialize run session', () => {
         },
       },
       {
-        primeAgentStateForUiFn: () => {},
         reportSessionToDaemonIfRunningFn: async (opts) => {
           daemonReports.push({
             sessionId: opts.sessionId,
@@ -1034,7 +1105,6 @@ describe('initialize run session', () => {
         },
       },
       {
-        primeAgentStateForUiFn: () => {},
         reportSessionToDaemonIfRunningFn,
         persistTerminalAttachmentInfoIfNeededFn: async () => {},
         sendTerminalFallbackMessageIfNeededFn: () => {},
@@ -1081,7 +1151,6 @@ describe('initialize run session', () => {
         },
       },
       {
-        primeAgentStateForUiFn: () => {},
         reportSessionToDaemonIfRunningFn: async (report) => {
           expect(report).toMatchObject({
             sessionId: 'fresh-refused-session',
@@ -1154,7 +1223,6 @@ describe('initialize run session', () => {
       {
         createBaseSessionForAttachFn: async () => createSessionResponse('session-order', metadata, state),
         applyStartupMetadataUpdateToSessionFn: async () => {},
-        primeAgentStateForUiFn: () => {},
         persistTerminalAttachmentInfoIfNeededFn: async () => {
           events.push('persist')
         },
@@ -1211,7 +1279,6 @@ describe('initialize run session', () => {
         createBaseSessionForAttachFn: async () =>
           createSessionResponse('session-ordinary-attach-daemon-report', metadata, state),
         applyStartupMetadataUpdateToSessionFn: async () => {},
-        primeAgentStateForUiFn: () => {},
         persistTerminalAttachmentInfoIfNeededFn: async () => {
           events.push('persist')
         },
@@ -1286,7 +1353,6 @@ describe('initialize run session', () => {
         createBaseSessionForAttachFn: async () =>
           createSessionResponse('session-attach-daemon-report', metadata, state),
         applyStartupMetadataUpdateToSessionFn: async () => {},
-        primeAgentStateForUiFn: () => {},
         persistTerminalAttachmentInfoIfNeededFn: async () => {
           events.push('persist')
         },

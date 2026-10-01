@@ -9,10 +9,7 @@ type ModelOptionsProbe = NonNullable<NewSessionSimplePanelProps['modelOptionsPro
 type AcpSessionModeProbe = NonNullable<NewSessionSimplePanelProps['acpSessionModeProbe']>;
 type AcpConfigOptionsProbe = NonNullable<NewSessionSimplePanelProps['acpConfigOptionsProbe']>;
 
-type ModelOptionsProbeState = Readonly<{
-    phase: ModelOptionsProbe['phase'];
-    onRefresh: ModelOptionsProbe['onRefresh'];
-}>;
+type ModelOptionsProbeState = ModelOptionsProbe;
 
 type AcpSessionModeProbeState = Readonly<{
     phase: AcpSessionModeProbe['phase'];
@@ -68,6 +65,7 @@ export function useNewSessionScreenSimplePanelProps(params: Readonly<{
         | 'agentPickerOptions'
         | 'onAgentPickerSelect'
         | 'agentPickerProbe'
+        | 'onAgentPickerVisibilityChange'
     > & Readonly<{
         selectedBackendTargetKey: string;
         selectedBackendEntryTargetKey?: string;
@@ -75,7 +73,7 @@ export function useNewSessionScreenSimplePanelProps(params: Readonly<{
     }>;
     model: Pick<
         NewSessionSimplePanelProps,
-        'permissionMode' | 'handlePermissionModeChange' | 'modelMode' | 'setModelMode' | 'modelOptions'
+        'permissionMode' | 'handlePermissionModeChange' | 'modelMode' | 'setModelMode' | 'modelOptions' | 'modelPickerProps'
     > & Readonly<{
         modelOptionsProbeState: ModelOptionsProbeState;
     }>;
@@ -98,6 +96,8 @@ export function useNewSessionScreenSimplePanelProps(params: Readonly<{
         | 'selectedMachineHomeDir'
         | 'selectedPath'
         | 'pathPopover'
+        | 'folderChipState'
+        | 'onRemoveFolder'
         | 'showResumePicker'
         | 'resumeSessionId'
         | 'resumePopover'
@@ -165,13 +165,11 @@ export function useNewSessionScreenSimplePanelProps(params: Readonly<{
         ...acpProps,
         ...machineAndResumeProps,
         ...params.profile,
+        isTemporaryComputer: executionTarget?.kind === 'temporary_computer',
         targetServerId: params.targetServerId,
         attachmentFlowId: params.attachmentFlowId,
         agentPickerSelectedOptionId: agentPickerSelectedOptionId ?? selectedBackendEntryTargetKey ?? selectedBackendTargetKey,
-        modelOptionsProbe: {
-            phase: modelOptionsProbeState.phase,
-            onRefresh: modelOptionsProbeState.onRefresh,
-        },
+        modelOptionsProbe: modelOptionsProbeState,
         acpSessionModeProbe: {
             phase: acpSessionModeProbeState.phase,
             onRefresh: acpSessionModeProbeState.onRefresh,

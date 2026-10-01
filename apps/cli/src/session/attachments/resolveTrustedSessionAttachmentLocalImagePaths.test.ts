@@ -1,11 +1,14 @@
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { resolveTrustedSessionAttachmentLocalImagePaths } from './resolveTrustedSessionAttachmentLocalImagePaths';
+import {
+    resolveTrustedSessionAttachmentLocalImagePaths,
+    verifySessionStructuredImageInput,
+} from './resolveTrustedSessionAttachmentLocalImagePaths';
 
 const tempDirs: string[] = [];
 
@@ -24,6 +27,99 @@ function sha256(content: string): string {
 }
 
 describe('resolveTrustedSessionAttachmentLocalImagePaths', () => {
+    it('verifies native Session media without browser provenance and refuses scope, integrity and bucket substitutions', async () => {
+        const cwd = await createTempDir();
+        const mediaPath = '.happier/uploads/artifacts/session-1/capture-1/screen.png';
+        const bytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a2ioAAAAASUVORK5CYII=', 'base64');
+        await mkdir(dirname(join(cwd, mediaPath)), { recursive: true });
+        await writeFile(join(cwd, mediaPath), bytes);
+        const image = {
+            id: 'session-media:capture-1', kind: 'localImage', path: mediaPath, mimeType: 'image/png',
+            sha256: createHash('sha256').update(bytes).digest('hex'), sizeBytes: bytes.byteLength,
+            provenance: { kind: 'sessionMediaArtifact', sessionId: 'session-1', storage: 'session' },
+        };
+        const verify = (candidate: typeof image, sessionId = 'session-1') => verifySessionStructuredImageInput({
+            cwd, sessionId, image: candidate, maxBytes: bytes.byteLength,
+        });
+        expect(await verify(image)).toMatchObject({ status: 'verified', bytes, mimeType: 'image/png' });
+        expect(await verify(image, 'session-2')).toEqual({ status: 'untrusted' });
+        expect(await verify({ ...image, sha256: '0'.repeat(64) })).toEqual({ status: 'untrusted' });
+        expect(await verify({ ...image, sizeBytes: bytes.byteLength + 1 })).toEqual({ status: 'untrusted' });
+        expect(await verify({ ...image, mimeType: 'image/jpeg' })).toEqual({ status: 'invalid' });
+        const uploadPath = '.happier/uploads/messages/message-1/screen.png';
+        await mkdir(dirname(join(cwd, uploadPath)), { recursive: true });
+        await writeFile(join(cwd, uploadPath), bytes);
+        expect(await verify({ ...image, path: uploadPath })).toEqual({ status: 'untrusted' });
+        await writeFile(join(cwd, 'outside.png'), bytes);
+        const linkPath = '.happier/uploads/artifacts/session-1/capture-1/link.png';
+        await symlink(join(cwd, 'outside.png'), join(cwd, linkPath), 'file');
+        expect(await verify({ ...image, path: linkPath })).toEqual({ status: 'untrusted' });
+    });
+    it('reads browser media only inside the exact Session bucket and checks actual bytes', async () => {
+        const cwd = await createTempDir();
+        const mediaPath = '.happier/uploads/artifacts/session-1/message-1/screen.png';
+        const bytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a2ioAAAAASUVORK5CYII=', 'base64');
+        await mkdir(dirname(join(cwd, mediaPath)), { recursive: true });
+        await writeFile(join(cwd, mediaPath), bytes);
+        const image = {
+            id: 'browser-media', kind: 'localImage', path: mediaPath, mimeType: 'image/png',
+            sha256: createHash('sha256').update(bytes).digest('hex'), sizeBytes: bytes.byteLength,
+            provenance: { kind: 'browserSessionMedia', sessionId: 'session-1', storage: 'session' },
+        };
+        expect(await verifySessionStructuredImageInput({ cwd, sessionId: 'session-1', image, maxBytes: 100 })).toMatchObject({ status: 'verified', bytes });
+        expect(await verifySessionStructuredImageInput({ cwd, sessionId: 'session-2', image, maxBytes: 100 })).toEqual({ status: 'untrusted' });
+        expect(await verifySessionStructuredImageInput({ cwd, sessionId: 'session-1', image: { ...image, sha256: '0'.repeat(64) }, maxBytes: 100 })).toEqual({ status: 'untrusted' });
+        expect(await verifySessionStructuredImageInput({ cwd, sessionId: 'session-1', image: { ...image, path: '../secret.png' }, maxBytes: 100 })).toEqual({ status: 'untrusted' });
+        // Even matching declared bytes cannot turn a Session-bucket symlink into an outside read.
+        await writeFile(join(cwd, 'outside.png'), bytes);
+        const symlinkPath = '.happier/uploads/artifacts/session-1/message-1/link.png';
+        await symlink(join(cwd, 'outside.png'), join(cwd, symlinkPath), 'file');
+        expect(await verifySessionStructuredImageInput({ cwd, sessionId: 'session-1', image: { ...image, path: symlinkPath }, maxBytes: 100 })).toEqual({ status: 'untrusted' });
+    });
+    it('returns exact bytes, sniffed MIME, and filename only for a verified admitted image input', async () => {
+        const cwd = await createTempDir();
+        const uploadPath = '.happier/uploads/messages/message-1/screen.png';
+        const bytes = Buffer.from([
+            0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+            0x00, 0x00, 0x00, 0x00,
+        ]);
+        await mkdir(dirname(join(cwd, uploadPath)), { recursive: true });
+        await writeFile(join(cwd, uploadPath), bytes);
+
+        await expect(verifySessionStructuredImageInput({
+            cwd,
+            image: {
+                id: 'image-1',
+                kind: 'localImage',
+                path: uploadPath,
+                mimeType: 'image/png',
+                sha256: createHash('sha256').update(bytes).digest('hex'),
+                sizeBytes: bytes.byteLength,
+                provenance: { kind: 'sessionAttachmentUpload' },
+            },
+            maxBytes: bytes.byteLength,
+        })).resolves.toEqual({
+            status: 'verified',
+            bytes,
+            mimeType: 'image/png',
+            filename: 'screen.png',
+        });
+
+        await expect(verifySessionStructuredImageInput({
+            cwd,
+            image: {
+                id: 'image-1',
+                kind: 'localImage',
+                path: uploadPath,
+                mimeType: 'image/jpeg',
+                sha256: createHash('sha256').update(bytes).digest('hex'),
+                sizeBytes: bytes.byteLength,
+                provenance: { kind: 'sessionAttachmentUpload' },
+            },
+            maxBytes: bytes.byteLength,
+        })).resolves.toEqual({ status: 'invalid' });
+    });
+
     it('trusts uploaded local image paths only when the declared file hash matches', async () => {
         const cwd = await createTempDir();
         const uploadPath = '.happier/uploads/messages/message-1/screen.png';

@@ -48,7 +48,7 @@ function createSnapshot(
 }
 
 const profileSource = {
-    serviceId: 'openai-codex',
+    serviceId: 'happier.agent.codex/openai-codex',
     profileId: 'work',
     bindingKind: 'profile',
 } as const satisfies ConnectedServiceUsageSourceV1;
@@ -93,6 +93,47 @@ const enqueued = {
 };
 
 describe('recordProviderAccountUsageSnapshotForSession', () => {
+    it('persists the last valid subscription with a failed subscription refresh', async () => {
+        const previous = {
+            ...createSnapshot(),
+            subscription: {
+                status: 'subscribed' as const, renewal: 'off' as const,
+                observedAtMs: 900, staleAfterMs: 60_000,
+                currentPeriodEndAtMs: 1_800_000_000_000,
+            },
+        };
+        const store = createProviderAccountUsageStore();
+        store.recordSnapshot(previous, { sources: [profileSource] });
+        const failed = {
+            ...createSnapshot(),
+            observedAtMs: 2_000, fetchedAtMs: 2_000,
+            subscription: {
+                status: 'unavailable' as const, renewal: 'unknown' as const,
+                observedAtMs: 2_000, staleAfterMs: 60_000,
+                lastRefreshError: { observedAtMs: 2_000, code: 'network' as const },
+            },
+        };
+        const persistence = { recordInBandSnapshot: vi.fn(async () => enqueued) };
+        await recordProviderAccountUsageSnapshotForSession({
+            getChildren: () => [{ happySessionId: 'sess_1' }],
+            store, persistence, sessionId: 'sess_1', snapshot: failed,
+            observation: { sources: [profileSource] },
+            credentialFingerprint: 'sha256:deadbeef',
+            verifyCredentialFingerprint: async () => true,
+            resolveAuthoritativeSource: async () => profileSource,
+            resolvePersistenceTargets: async () => [createTarget()],
+        });
+        const expectedSubscription = {
+            ...previous.subscription,
+            lastRefreshError: failed.subscription.lastRefreshError,
+        };
+        expect(persistence.recordInBandSnapshot).toHaveBeenCalledWith(
+            expect.objectContaining({ subscription: expectedSubscription }),
+            { targets: [createTarget()] },
+        );
+        expect(store.resolveRecordId(previous.recordId)?.subscription).toEqual(expectedSubscription);
+    });
+
     it('persists only through a caller-proven qualified V4 source and currentness basis', async () => {
         const snapshot = createSnapshot(createRecordKey('acct_live'));
         const target = createTarget();

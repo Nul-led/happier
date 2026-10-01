@@ -217,7 +217,7 @@ describe('current-global External Sessions author binding', () => {
     const binding = createCurrentGlobalExternalSessionsAuthorBinding({
       pluginId: 'acme.sessions',
       signal: new AbortController().signal,
-      isGenerationCurrent: () => true,
+      isOccurrenceCurrent: () => true,
       resolveCurrent: () => null,
       activateConfiguredSources,
     });
@@ -255,7 +255,7 @@ describe('current-global External Sessions author binding', () => {
     const binding = createCurrentGlobalExternalSessionsAuthorBinding({
       pluginId: 'acme.sessions',
       signal: new AbortController().signal,
-      isGenerationCurrent: () => true,
+      isOccurrenceCurrent: () => true,
       resolveCurrent: () => null,
       activateConfiguredSources,
     });
@@ -285,7 +285,7 @@ describe('current-global External Sessions author binding', () => {
     const binding = createCurrentGlobalExternalSessionsAuthorBinding({
       pluginId: 'acme.sessions',
       signal: new AbortController().signal,
-      isGenerationCurrent: () => true,
+      isOccurrenceCurrent: () => true,
       resolveCurrent: () => current,
       activateConfiguredSources,
     });
@@ -317,7 +317,7 @@ describe('current-global External Sessions author binding', () => {
     const binding = createCurrentGlobalExternalSessionsAuthorBinding({
       pluginId: 'acme.sessions',
       signal: new AbortController().signal,
-      isGenerationCurrent: () => true,
+      isOccurrenceCurrent: () => true,
       resolveCurrent: () => current,
       activateConfiguredSources,
     });
@@ -342,7 +342,7 @@ describe('current-global External Sessions author binding', () => {
     const binding = createCurrentGlobalExternalSessionsAuthorBinding({
       pluginId: 'acme.sessions',
       signal: new AbortController().signal,
-      isGenerationCurrent: () => true,
+      isOccurrenceCurrent: () => true,
       resolveCurrent: () => current,
       activateConfiguredSources: async () => {},
       readCurrentPublicAccess: () => publicAccess,
@@ -399,7 +399,7 @@ describe('current-global External Sessions author binding', () => {
     const binding = createCurrentGlobalExternalSessionsAuthorBinding({
       pluginId: 'acme.sessions',
       signal: new AbortController().signal,
-      isGenerationCurrent: () => true,
+      isOccurrenceCurrent: () => true,
       resolveCurrent: () => owner,
       activateConfiguredSources: async () => {},
       readCurrentPublicAccess: () => publicAccess,
@@ -481,7 +481,7 @@ describe('current-global External Sessions author binding', () => {
     const binding = createCurrentGlobalExternalSessionsAuthorBinding({
       pluginId: 'acme.sessions',
       signal: invocationController.signal,
-      isGenerationCurrent: () => callerGenerationCurrent,
+      isOccurrenceCurrent: () => callerGenerationCurrent,
       resolveCurrent: () => owner,
       activateConfiguredSources,
     });
@@ -540,7 +540,7 @@ describe('current-global External Sessions author binding', () => {
     const binding = createCurrentGlobalExternalSessionsAuthorBinding({
       pluginId: 'acme.sessions',
       signal: new AbortController().signal,
-      isGenerationCurrent: () => true,
+      isOccurrenceCurrent: () => true,
       resolveCurrent: () => owner,
       activateConfiguredSources,
     });
@@ -601,7 +601,7 @@ describe('current-global External Sessions author binding', () => {
     const binding = createCurrentGlobalExternalSessionsAuthorBinding({
       pluginId: 'acme.sessions',
       signal: invocationController.signal,
-      isGenerationCurrent: () => true,
+      isOccurrenceCurrent: () => true,
       resolveCurrent: () => owner,
       activateConfiguredSources: vi.fn(async () => {}),
     });
@@ -633,7 +633,7 @@ describe('current-global External Sessions author binding', () => {
     const binding = createCurrentGlobalExternalSessionsAuthorBinding({
       pluginId: 'acme.sessions',
       signal: invocationController.signal,
-      isGenerationCurrent: () => true,
+      isOccurrenceCurrent: () => true,
       resolveCurrent: () => current,
       activateConfiguredSources,
     });
@@ -671,7 +671,7 @@ describe('current-global External Sessions author binding', () => {
     const binding = createCurrentGlobalExternalSessionsAuthorBinding({
       pluginId: 'acme.sessions',
       signal: new AbortController().signal,
-      isGenerationCurrent: () => true,
+      isOccurrenceCurrent: () => true,
       resolveCurrent: () => owner,
       activateConfiguredSources,
     });
@@ -705,7 +705,7 @@ describe('current-global External Sessions author binding', () => {
     const binding = createCurrentGlobalExternalSessionsAuthorBinding({
       pluginId: 'acme.sessions',
       signal: new AbortController().signal,
-      isGenerationCurrent: () => true,
+      isOccurrenceCurrent: () => true,
       resolveCurrent: () => owner,
       activateConfiguredSources,
     });
@@ -740,7 +740,7 @@ describe('current-global External Sessions author binding', () => {
       const binding = createCurrentGlobalExternalSessionsAuthorBinding({
         pluginId: 'acme.sessions',
         signal: new AbortController().signal,
-        isGenerationCurrent: () => true,
+        isOccurrenceCurrent: () => true,
         resolveCurrent: () => owner,
         activateConfiguredSources,
       });
@@ -780,7 +780,7 @@ describe('current-global External Sessions author binding', () => {
       const binding = createCurrentGlobalExternalSessionsAuthorBinding({
         pluginId: 'acme.sessions',
         signal: generationController.signal,
-        isGenerationCurrent: () => generationCurrent,
+        isOccurrenceCurrent: () => generationCurrent,
         resolveCurrent: () => owner,
         activateConfiguredSources: vi.fn(async () => await activation.promise),
       });
@@ -854,14 +854,13 @@ describe('current-global External Sessions takeover source resolution', () => {
         readAfterTranscript: async () => ({ outcome: 'already_current' as const }),
       });
       const service = await createCurrentGlobalExternalSessionsAuthorService({
-        contributionGenerationId: 'registry:g1',
         agents: [configuredAgent],
         activeServerDir,
         readCredentials: async () => ({ token: 'token', encryption: null }),
         resolveMachineId: () => machineId,
         resolveAgentRuntime: () => Object.freeze({
-          generationId: 'generation-1',
-          immutableGenerationId: 'immutable-generation-1',
+          occurrenceId: 'occurrence-1',
+          sourceCustody: { kind: 'managed', immutableGenerationId: 'immutable-generation-1', installSource: 'localPath' } as const,
           retirementSignal: new AbortController().signal,
           isCurrent: () => true,
           surface,
@@ -983,14 +982,13 @@ describe('current-global External Sessions takeover source resolution', () => {
         readAfterTranscript: async () => ({ outcome: 'already_current' as const }),
       });
       const service = await createCurrentGlobalExternalSessionsAuthorService({
-        contributionGenerationId: 'registry:g1',
         agents: [configuredAgent],
         activeServerDir,
         readCredentials: async () => ({ token: 'token', encryption: null }),
         resolveMachineId: () => 'machine-1',
         resolveAgentRuntime: () => Object.freeze({
-          generationId: 'generation-1',
-          immutableGenerationId: 'immutable-generation-1',
+          occurrenceId: 'occurrence-1',
+          sourceCustody: { kind: 'managed', immutableGenerationId: 'immutable-generation-1', installSource: 'localPath' } as const,
           retirementSignal: new AbortController().signal,
           isCurrent: () => true,
           surface,
@@ -1112,14 +1110,13 @@ describe('current-global External Sessions takeover source resolution', () => {
         });
       });
       const service = await createCurrentGlobalExternalSessionsAuthorService({
-        contributionGenerationId: 'registry:g1',
         agents: [multiSourceConfiguredAgent],
         activeServerDir,
         readCredentials: async () => ({ token: 'token', encryption: null }),
         resolveMachineId: () => 'machine-1',
         resolveAgentRuntime: () => Object.freeze({
-          generationId: 'generation-1',
-          immutableGenerationId: 'immutable-generation-1',
+          occurrenceId: 'occurrence-1',
+          sourceCustody: { kind: 'managed', immutableGenerationId: 'immutable-generation-1', installSource: 'localPath' } as const,
           retirementSignal: new AbortController().signal,
           isCurrent: () => true,
           surface,
@@ -1216,7 +1213,7 @@ describe('current-global External Sessions takeover durability without sources',
           },
           linkGeneration: 'link-generation-1',
           sourceGeneration: 'source-generation-1',
-          contributionGeneration: 'contribution-generation-1',
+          sourceCustody: { kind: 'development', registeredRootId: 'source-root-1' } as const,
         },
         plan: 'takeover' as const,
         targetStorageMode: 'persisted' as const,
@@ -1268,7 +1265,7 @@ describe('current-global External Sessions takeover durability without sources',
       const binding = createCurrentGlobalExternalSessionsAuthorBinding({
         pluginId,
         signal: new AbortController().signal,
-        isGenerationCurrent: () => true,
+        isOccurrenceCurrent: () => true,
         activeServerDir,
         takeoverStart: startPluginTakeover as never,
         // The last configured External Sessions source was removed, so the
@@ -1371,13 +1368,12 @@ describe('current-global External Sessions follow lifecycle', () => {
       }),
     });
     const service = await createCurrentGlobalExternalSessionsAuthorService({
-      contributionGenerationId: 'registry:g1',
       agents: [configuredAgent],
       readCredentials: async () => ({ token: 'token', encryption: null }),
       resolveMachineId: () => 'machine-1',
       resolveAgentRuntime: () => Object.freeze({
-        generationId: 'generation-1',
-        immutableGenerationId: 'immutable-generation-1',
+        occurrenceId: 'occurrence-1',
+        sourceCustody: { kind: 'managed', immutableGenerationId: 'immutable-generation-1', installSource: 'localPath' } as const,
         retirementSignal: runtimeRetirement.signal,
         isCurrent: () => true,
         surface,

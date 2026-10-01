@@ -147,6 +147,7 @@ export function reconcileExternalActionTarget(input: Readonly<{
   // a routing selector, but an explicit envelope Session target is already
   // host-owned route metadata and may establish the invocation context.
   const isContributedActionInvocation = input.actionId === 'action.invoke';
+  const bindsEnvelopeSession = isContributedActionInvocation || input.actionId.startsWith('computer.');
   const sessionSelectorId = distinctSessionSelectorIds[0] ?? null;
 
   if (spec.executionPlacement === 'machine') {
@@ -157,10 +158,10 @@ export function reconcileExternalActionTarget(input: Readonly<{
   }
 
   if (input.target?.kind === 'session') {
-    if (!canDeriveSessionTarget && !isContributedActionInvocation) {
+    if (!canDeriveSessionTarget && !bindsEnvelopeSession) {
       return { kind: 'rejected', execution: targetRequired() };
     }
-    if (!isContributedActionInvocation && !sessionSelectorId) {
+    if (!bindsEnvelopeSession && !sessionSelectorId) {
       return { kind: 'rejected', execution: targetRequired() };
     }
     if (sessionSelectorId && sessionSelectorId !== input.target.sessionId) {

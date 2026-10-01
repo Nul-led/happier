@@ -99,12 +99,14 @@ export function subscribeHomeGovernanceSnapshots(listener: () => void): () => vo
 /**
  * Marks a load in flight. A Home that already has an observation goes to
  * `refreshing` and keeps it; only a Home that has never answered shows
- * `loading`.
+ * `loading`. "This Home has no owner yet" is such an observation: it is kept
+ * through the re-read, so the claim page does not flash a loading state.
  */
 export function beginHomeGovernanceLoad(scope: ServerAccountScope): void {
     const current = getHomeGovernanceSnapshot(scope);
-    const status: HomeGovernanceSnapshotStatus = current?.data ? 'refreshing' : 'loading';
-    if (current && current.status === status && current.error === null) return;
+    const ownerless = current?.error?.code === 'home_governance_setup_required' ? current.error : null;
+    const status: HomeGovernanceSnapshotStatus = current?.data || ownerless ? 'refreshing' : 'loading';
+    if (current && current.status === status && current.error === ownerless) return;
     write(scope, Object.freeze({
         scope,
         status,
@@ -112,7 +114,7 @@ export function beginHomeGovernanceLoad(scope: ServerAccountScope): void {
         lastObservedAt: current?.lastObservedAt ?? null,
         stale: current?.stale ?? false,
         reachability: current?.reachability ?? 'unknown',
-        error: null,
+        error: ownerless,
     }));
 }
 

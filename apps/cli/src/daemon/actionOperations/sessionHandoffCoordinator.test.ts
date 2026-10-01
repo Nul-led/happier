@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { coordinateTrackedSessionHandoff } from './sessionHandoffCoordinator';
 import { computeWorkspaceSyncPolicyDigest } from '@/workspaces/sync/workspaceSyncTypes';
+import { createWorkspaceSyncHandoffAdapter } from '@/workspaces/sync/workspaceSyncHandoffAdapter';
 
 const allFilesPolicyInput = {
   v: 1 as const,
@@ -96,6 +97,65 @@ function createDeps(overrides: Record<string, unknown> = {}) {
 }
 
 describe('tracked session handoff coordinator', () => {
+  it('stops before target preparation when the final linked route blocks after source quiescence', async () => {
+    const linkStatus = {
+      relationshipId: 'source-hub', controllerMachineId: 'hub-machine', state: 'watching' as const,
+      alphaPath: '/hub', betaPath: '/source', mode: 'keep_both_in_sync' as const,
+      endpointStates: {
+        alpha: { connected: true, scanned: true, scanProblemCount: 0, transitionProblemCount: 0 },
+        beta: { connected: true, scanned: true, scanProblemCount: 0, transitionProblemCount: 0 },
+      },
+      conflictCount: 0, lastCycleObservedAtMs: null,
+    };
+    const firstLink = { relationshipId: 'source-hub', policyDigest: allFilesContentPolicy.policyDigest, status: linkStatus };
+    const blockedRoute = {
+      ok: false as const,
+      errorCode: 'workspace_sync_not_clean',
+      completed: [firstLink],
+      blockedRelationshipId: 'hub-target',
+      blockedStatus: { ...linkStatus, relationshipId: 'hub-target', state: 'conflicted' as const, conflictCount: 1 },
+    };
+    const prepareBetween = vi.fn()
+      .mockResolvedValueOnce({ ok: true, traversed: [firstLink, { ...firstLink, relationshipId: 'hub-target' }] })
+      .mockResolvedValueOnce(blockedRoute);
+    const workspaceSyncAdapter = createWorkspaceSyncHandoffAdapter({
+      sync: {} as never,
+      bootstrap: async () => ({ release: async () => undefined }),
+      prepareBetween,
+    });
+    const calls: string[] = [];
+    const { deps } = createDeps({
+      workspaceSyncAdapter,
+      start: vi.fn(async () => {
+        calls.push('source-quiesced');
+        return { ok: true as const, result: started };
+      }),
+      prepareTarget: vi.fn(async () => {
+        calls.push('target-prepared');
+        return prepared;
+      }),
+    });
+
+    const result = await coordinateTrackedSessionHandoff({
+      input: {
+        operationId: 'linked-operation', sessionId: 'session-1', targetMachineId: 'target-machine',
+        targetPath: '/target/packages/app', workspaceAction: { kind: 'linked_workspace' },
+        workspaceSyncSourceWorkspaceRefId: 'source-ref', workspaceSyncTargetWorkspaceRefId: 'target-ref',
+        workspaceSyncSourceRootPath: '/source', workspaceSyncTargetRootPath: '/target',
+        workspaceSyncTargetSessionRelativeCwd: 'packages/app',
+      },
+      signal: new AbortController().signal,
+      ...deps,
+    });
+    expect(prepareBetween).toHaveBeenCalledTimes(2);
+    expect(calls).toEqual(['source-quiesced']);
+    expect(result).toMatchObject({
+      ok: false,
+      errorCode: 'workspace_sync_partial_route_blocked',
+      details: blockedRoute,
+    });
+    expect(deps.abort).toHaveBeenCalledTimes(2);
+  });
   it('prepares daemon-owned relationship creation from roots and host Account scope without pre-created refs', async () => {
     const workspaceSyncAdapter = {
       prepare: vi.fn(async (input: { operationId: string; action: { kind: 'create_relationship' } }) => ({

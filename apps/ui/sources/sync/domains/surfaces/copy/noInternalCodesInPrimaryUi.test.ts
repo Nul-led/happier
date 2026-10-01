@@ -3,7 +3,13 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import * as React from 'react';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+
+// The launchpad resolves the content-width preference from storage; the testkit stub is its boundary.
+vi.mock('@/sync/domains/state/storage', async () => {
+    const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
+    return createStorageModuleStub({});
+});
 
 /**
  * §5.2 — the "no internal states in product UI" closure gate this packet owns.
@@ -23,7 +29,8 @@ const read = (relative: string) => readFileSync(resolve(SOURCES_ROOT, relative),
 const FRAME = 'components/browser/frame/BrowserFrameUnavailable.tsx';
 const STATUS_BAR = 'components/browser/BrowserStatusBar.tsx';
 const SURFACE_FALLBACK = 'components/browser/surfaces/BrowserSurfaceFallback.tsx';
-const TARGET_CARD = 'components/browser/launchpad/BrowserTargetCard.tsx';
+// The launchpad draws its non-service rows itself (BrowserTargetCard was folded into it).
+const TARGET_CARD = 'components/browser/launchpad/BrowserLaunchpad.tsx';
 // The origin chip was merged into the security indicator (one identity chip, not two pills).
 const ORIGIN_CHIP = 'components/browser/toolbar/SecurityOriginIndicator.tsx';
 
@@ -110,9 +117,9 @@ describe('migrated surfaces render product copy, raw codes only in diagnostics (
         expect(screen.getTextContent()).not.toContain('host_lost');
     });
 
-    it('BrowserTargetCard shows no raw disabledReason token in the row detail', async () => {
+    it('the launchpad shows no raw disabledReason token in a row detail', async () => {
         const { renderScreen } = await import('@/dev/testkit');
-        const { BrowserTargetCard } = await import('@/components/browser/launchpad/BrowserTargetCard');
+        const { BrowserLaunchpad } = await import('@/components/browser/launchpad/BrowserLaunchpad');
         const row = {
             id: 'unavailable:blocked',
             section: 'unavailable',
@@ -125,8 +132,9 @@ describe('migrated surfaces render product copy, raw codes only in diagnostics (
             lastSeenAt: 1_000,
         } satisfies import('@/sync/domains/browser/targets').BrowserLaunchpadRow;
         const screen = await renderScreen(
-            React.createElement(BrowserTargetCard, { row, testID: 'card' }),
+            React.createElement(BrowserLaunchpad, { rows: [row], platform: 'web', refreshStatus: 'idle', testID: 'launchpad' }),
         );
+        expect(screen.getTextContent()).toContain('Blocked target');
         expect(screen.getTextContent()).not.toContain('external_url_policy_denied');
     });
 });

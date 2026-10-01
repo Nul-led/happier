@@ -1,13 +1,57 @@
-import { Typography } from '@/constants/Typography';
+import { Platform } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
+import {
+    ITEM_GROUP_CONTAINER_HORIZONTAL_PADDING_PX,
+    ITEM_GROUP_HEADER_NO_TITLE_PADDING_TOP_PX,
+} from '@/components/ui/lists/itemGroupSpacing';
+import { Typography } from '@/constants/Typography';
+import { HAPPIER_COLLECTION_LIST_METRICS } from '@happier-dev/plugin-ui/presentation';
+
+/**
+ * The Sessions column's header and section rhythm, measured from the approved lab
+ * (`.happier/design-lab/app-surfaces/sidebar-lab.css`, `.z-S1` inside `xrail-R1`): the title row
+ * (`.z-ttl`) is 36 tall with 30px icon buttons (`.z-ib`) 2 apart; a group label (`.z-h`) sits 14 below
+ * what precedes it and 6 above its sheet. One owner for the list's header, the Drafts group and every
+ * project group, so the rhythm cannot drift between them.
+ */
+export const SESSION_LIST_COLUMN_METRICS = Object.freeze({
+    // The column rhythm every navigation column shares (plugin-ui's list anatomy owner).
+    titleRowHeightPx: HAPPIER_COLLECTION_LIST_METRICS.titleRowHeight,
+    iconButtonSizePx: 30,
+    iconButtonGapPx: 2,
+    /** The close button inside the compact search field: a small square the field's padding frames. */
+    fieldCloseButtonSizePx: 20,
+    /** Title row → the search field opened beneath it. */
+    fieldGapPx: 4,
+    groupLabelPaddingTopPx: HAPPIER_COLLECTION_LIST_METRICS.groupLabelPaddingTop,
+    groupLabelPaddingBottomPx: HAPPIER_COLLECTION_LIST_METRICS.groupLabelPaddingBottom,
+});
+
+/** The column's text edge: the list title and every group label start here (the shared column frame). */
+const SESSION_LIST_TEXT_INSET_PX = HAPPIER_COLLECTION_LIST_METRICS.contentInset;
+/** The column's sheet edge: session rows, the Drafts sheet and the Browse row start here (the shared gutter). */
+export const SESSION_LIST_SHEET_INSET_PX = HAPPIER_COLLECTION_LIST_METRICS.rowInset;
+/**
+ * The title row's trailing inset: the icon buttons' squares end just inside the sheet edge, so their
+ * glyphs sit on the rows' trailing text edge (lab: glyph right edge on `R = W - 22`).
+ */
+const SESSION_LIST_HEADER_PADDING_RIGHT_PX = SESSION_LIST_SHEET_INSET_PX + 4;
+/** The search field spans the sheets' width: outset from the header's text inset back to the sheet edge. */
+const SESSION_LIST_FIELD_OUTSET_LEFT_PX = SESSION_LIST_SHEET_INSET_PX - SESSION_LIST_TEXT_INSET_PX;
+const SESSION_LIST_FIELD_OUTSET_RIGHT_PX = SESSION_LIST_SHEET_INSET_PX - SESSION_LIST_HEADER_PADDING_RIGHT_PX;
+
+/**
+ * The list paints no plane of its own: it lies transparent over its host, which owns one background
+ * (the app shell's column, the phone's main screen, a page's paper), so a column never shows two
+ * colours. Only chips and marks inside rows paint.
+ */
 export const sessionListStyles = StyleSheet.create((theme) => ({
     container: {
         flex: 1,
         flexDirection: 'row',
         justifyContent: 'center',
         alignItems: 'stretch',
-        backgroundColor: theme.colors.background.canvas,
     },
     // `maxWidth` is composed at render time from `useLayoutMaxWidthStyle()`: this
     // factory evaluates once, so baking the content-width preference in here would
@@ -16,22 +60,38 @@ export const sessionListStyles = StyleSheet.create((theme) => ({
         flex: 1,
     },
     headerSection: {
-        backgroundColor: theme.colors.background.canvas,
-        paddingHorizontal: 24,
-        paddingTop: 14,
+        paddingHorizontal: SESSION_LIST_TEXT_INSET_PX,
+        paddingTop: SESSION_LIST_COLUMN_METRICS.groupLabelPaddingTopPx,
+        paddingBottom: SESSION_LIST_COLUMN_METRICS.groupLabelPaddingBottomPx,
     },
     listHeaderSection: {
-        backgroundColor: theme.colors.background.canvas,
     },
+    // Group labels in the rail are sentence case: the `Eyebrow` primitive they render through is
+    // uppercase by default, so the rail's labels turn that off and read by weight instead.
     headerText: {
         fontSize: 13,
         color: theme.colors.text.secondary,
+        textTransform: 'none' as const,
+        letterSpacing: 0,
     },
     groupHeaderSection: {
-        backgroundColor: theme.colors.background.canvas,
-        paddingHorizontal: 24,
-        paddingTop: 10,
-        paddingBottom: 5,
+        paddingHorizontal: SESSION_LIST_TEXT_INSET_PX,
+        paddingTop: SESSION_LIST_COLUMN_METRICS.groupLabelPaddingTopPx,
+        paddingBottom: SESSION_LIST_COLUMN_METRICS.groupLabelPaddingBottomPx,
+    },
+    /**
+     * An untitled `ItemGroup` draws a top spacer in place of a header; a session-list group already has
+     * its label above it, so the sheet cancels exactly that spacer and sits the label's padding below it.
+     */
+    groupSheetUnderLabel: {
+        marginTop: -(Platform.select(ITEM_GROUP_HEADER_NO_TITLE_PADDING_TOP_PX) ?? 0),
+    },
+    /**
+     * An `ItemGroup` sheet in the column (Drafts, the Browse row) on the column's sheet edge: the group's own
+     * container padding plus this margin land it where the session sheets start.
+     */
+    groupSheetInset: {
+        marginHorizontal: SESSION_LIST_SHEET_INSET_PX - (Platform.select(ITEM_GROUP_CONTAINER_HORIZONTAL_PADDING_PX) ?? 0),
     },
     groupHeaderTitle: {
         fontSize: 12,
@@ -39,6 +99,15 @@ export const sessionListStyles = StyleSheet.create((theme) => ({
         color: theme.colors.text.secondary,
         flexShrink: 1,
         ...Typography.default('semiBold'),
+        textTransform: 'none' as const,
+        letterSpacing: 0,
+    },
+    /** A group's quiet count beside its label ("Drafts 3"). */
+    groupHeaderCount: {
+        fontSize: 12,
+        color: theme.colors.text.tertiary,
+        fontVariant: ['tabular-nums'],
+        ...Typography.default(),
     },
     groupHeaderSubtitle: {
         fontSize: 11,
@@ -76,7 +145,6 @@ export const sessionListStyles = StyleSheet.create((theme) => ({
         overflow: 'hidden' as const,
     },
     folderHeaderSection: {
-        backgroundColor: theme.colors.background.canvas,
         paddingHorizontal: 10,
         paddingTop: 0,
         paddingBottom: 0,
@@ -139,37 +207,35 @@ export const sessionListStyles = StyleSheet.create((theme) => ({
         justifyContent: 'center' as const,
         color: theme.colors.text.secondary,
     },
-    headerActionButton: {
-        width: 44,
-        minWidth: 44,
-        height: 44,
-        minHeight: 44,
-        alignItems: 'center' as const,
-        justifyContent: 'center' as const,
-        borderRadius: 999,
-    },
-    headerActiveFilterBadge: {
-        top: -2,
-        right: -3,
-    },
     searchChrome: {
-        paddingHorizontal: 24,
+        paddingLeft: SESSION_LIST_TEXT_INSET_PX,
+        paddingRight: SESSION_LIST_HEADER_PADDING_RIGHT_PX,
         paddingTop: 8,
-        paddingBottom: 4,
-        backgroundColor: theme.colors.background.canvas,
     },
     searchChromeControlsRow: {
+        minHeight: SESSION_LIST_COLUMN_METRICS.titleRowHeightPx,
         flexDirection: 'row' as const,
         alignItems: 'center' as const,
         justifyContent: 'flex-end' as const,
-        gap: 4,
+        gap: SESSION_LIST_COLUMN_METRICS.iconButtonGapPx,
     },
-    searchChromeAuxiliaryControlsRow: {
-        minHeight: 44,
+    /**
+     * The shared `CompactSearchField` on its own row under the title. Its
+     * edges line up with the sheets below, not with the title text.
+     */
+    searchChromeField: {
+        marginTop: SESSION_LIST_COLUMN_METRICS.fieldGapPx,
+        marginLeft: SESSION_LIST_FIELD_OUTSET_LEFT_PX,
+        marginRight: SESSION_LIST_FIELD_OUTSET_RIGHT_PX,
+    },
+    /** The list title (its scope menu) takes the row's leading edge; the search and view controls trail. */
+    searchChromeTitleSlot: {
+        flexGrow: 1,
+        flexShrink: 1,
+        minWidth: 0,
         flexDirection: 'row' as const,
         alignItems: 'center' as const,
-        justifyContent: 'flex-end' as const,
-        gap: 4,
+        justifyContent: 'flex-start' as const,
     },
     searchChromeStatusRow: {
         flexDirection: 'row' as const,
@@ -217,99 +283,12 @@ export const sessionListStyles = StyleSheet.create((theme) => ({
         color: theme.colors.text.secondary,
         ...Typography.default(),
     },
-    headerSearchShell: {
-        position: 'relative' as const,
-        minHeight: 44,
-        flexDirection: 'row' as const,
-        alignItems: 'center' as const,
-        justifyContent: 'center' as const,
-        overflow: 'visible' as const,
-    },
-    headerSearchShellCollapsed: {
-        width: 44,
-        minWidth: 44,
-    },
-    headerSearchShellExpanded: {
-        flexGrow: 1,
-        flexShrink: 1,
-        minWidth: 0,
-        maxWidth: 320,
-        borderRadius: 7,
-        justifyContent: 'flex-start' as const,
-        paddingLeft: 6,
-        paddingRight: 8,
-        gap: 5,
-        zIndex: 2,
-    },
-    headerSearchShellExpandedNative: {
-        maxWidth: '100%' as const,
-    },
-    headerSearchShellBackdrop: {
-        position: 'absolute' as const,
-        top: -3,
-        right: -3,
-        bottom: -3,
-        left: -3,
-        borderRadius: 10,
-        backgroundColor: theme.colors.background.canvas,
-        shadowColor: theme.colors.background.canvas,
-        shadowOpacity: 1,
-        shadowRadius: 8,
-        shadowOffset: { width: 0, height: 2 },
-        boxShadow: `0 0 0 3px ${theme.colors.background.canvas}, 0 4px 12px ${theme.colors.background.canvas}`,
-        zIndex: 0,
-    },
-    headerSearchShellBorder: {
-        position: 'absolute' as const,
-        top: 0,
-        right: 0,
-        bottom: 0,
-        left: 0,
-        borderRadius: 7,
-        borderWidth: 1,
-        borderColor: theme.colors.border.default,
-        zIndex: 1,
-    },
-    headerSearchIcon: {
-        position: 'relative' as const,
-        zIndex: 2,
-    },
-    headerSearchInputContainer: {
-        position: 'relative' as const,
-        zIndex: 2,
-        flex: 1,
-        minWidth: 0,
-        minHeight: 44,
-        justifyContent: 'center' as const,
-    },
     headerSearchTrailingAccessory: {
-        position: 'relative' as const,
-        zIndex: 2,
         width: 18,
         minWidth: 18,
         height: 20,
         alignItems: 'center' as const,
         justifyContent: 'center' as const,
-    },
-    headerSearchAction: {
-        position: 'relative' as const,
-        zIndex: 2,
-        alignItems: 'center' as const,
-        justifyContent: 'center' as const,
-        borderRadius: 999,
-        flexShrink: 0,
-    },
-    headerSearchInput: {
-        flex: 1,
-        minWidth: 0,
-        minHeight: 44,
-        paddingVertical: 8,
-        paddingHorizontal: 0,
-        margin: 0,
-        borderWidth: 0,
-        borderColor: 'transparent',
-        backgroundColor: 'transparent',
-        color: theme.colors.text.primary,
     },
     groupHeaderChevron: {
         width: 16,
@@ -322,18 +301,6 @@ export const sessionListStyles = StyleSheet.create((theme) => ({
     },
     webHoverVisibleChevron: {
         opacity: 1,
-    },
-    footerContainer: {
-        marginTop: -4,
-    },
-    filteredNoResultsContainer: {
-        paddingHorizontal: 24,
-        paddingTop: 12,
-        paddingBottom: 8,
-    },
-    filteredNoResultsText: {
-        color: theme.colors.text.secondary,
-        ...Typography.default(),
     },
     dropIndicator: {
         position: 'absolute' as const,

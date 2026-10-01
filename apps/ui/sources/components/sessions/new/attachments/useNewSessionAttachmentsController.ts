@@ -4,10 +4,7 @@ import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
 import { createReviewCommentsActionChip } from '@/components/sessions/agentInput/definitions/createReviewCommentsActionChip';
 import { resolveReviewCommentDraftAnchorsForPrompt } from '@/components/sessions/reviews/comments/resolveReviewCommentDraftAnchorsForPrompt';
 import { createAttachmentActionChip } from '@/components/sessions/agentInput/sessionActions/createAttachmentActionChip';
-import {
-    readHappierStructuredInputV1FromMeta,
-    ReviewCommentDraftMessageV1Schema,
-} from '@happier-dev/protocol';
+import { RawIngressStructuredInputV1Schema, ReviewCommentDraftMessageV1Schema } from '@happier-dev/protocol';
 
 import type {
     AgentInputAttachmentsRowItem,
@@ -41,20 +38,24 @@ import type { HandleCreateSessionOptions } from '@/components/sessions/new/hooks
 import { buildReviewCommentsOutboundMessage } from '@/sync/domains/input/reviewComments/buildReviewCommentsOutboundMessage';
 import {
     filterReviewCommentDraftsIncludedInPrompt,
+    buildReviewCommentsDisplayText,
+    buildReviewCommentsPromptText,
 } from '@/sync/domains/input/reviewComments/reviewCommentPrompt';
 import type { ReviewCommentDraft } from '@/sync/domains/input/reviewComments/reviewCommentTypes';
+import { normalizeReviewCommentDrafts } from '@/sync/domains/input/reviewComments/reviewCommentDraftBody';
 import { useWorkspaceReviewCommentsDrafts } from '@/sync/domains/state/storage';
 import type { WorkspaceScopeBase } from '@/sync/domains/workspaces/workspaceScope';
 import { fireAndForget } from '@/utils/system/fireAndForget';
 
 import {
-    clearNewSessionAttachmentDrafts,
+    clearAcceptedNewSessionAttachmentDrafts,
     readNewSessionAttachmentDrafts,
     writeNewSessionAttachmentDrafts,
 } from './newSessionAttachmentDraftStore';
 import { resolveNewSessionReviewCommentsScope } from './resolveNewSessionReviewCommentsScope';
 import type { NewSessionComposerDocument } from '@/components/sessions/new/hooks/screenModel/useNewSessionComposerDocument';
 import type { NewSessionPromptStore } from '@/components/sessions/new/hooks/screenModel/newSessionPromptStore';
+import { useNewSessionHostSpawnExecutor } from '@/components/sessions/new/navigation/newSessionHost';
 
 type NewSessionAgentInputSendOptions = AgentInputSendOptions;
 
@@ -79,6 +80,8 @@ function buildDetachedComposerSnapshotMetaOverrides(input: Readonly<{
 }
 
 export function useNewSessionAttachmentsController(params: Readonly<{
+    /** `false` removes the attachment affordance (a host's creation profile). Default `true`. */
+    attachmentsAllowed?: boolean;
     flowId?: string | null;
     isCreating: boolean;
     promptStore: NewSessionPromptStore;
@@ -86,6 +89,7 @@ export function useNewSessionAttachmentsController(params: Readonly<{
     selectedProfileId: string | null;
     targetServerId?: string | null;
     selectedMachineId?: string | null;
+    isTemporaryComputer?: boolean;
     selectedMachineHomeDir?: string | null;
     selectedPath?: string | null;
     baseActionChips?: readonly AgentInputExtraActionChip[];
@@ -109,7 +113,9 @@ export function useNewSessionAttachmentsController(params: Readonly<{
     attachmentRowItems: readonly AgentInputAttachmentsRowItem[];
     handleSend: (options?: NewSessionAgentInputSendOptions) => void;
 }> {
-    const attachmentsUploadsEnabled = useFeatureEnabled('attachments.uploads');
+    const hostCreatesSession = useNewSessionHostSpawnExecutor() !== undefined;
+    // A creation profile can only remove attachments, never enable them past the feature.
+    const attachmentsUploadsEnabled = useFeatureEnabled('attachments.uploads') && params.attachmentsAllowed !== false;
     const reviewCommentsFeatureEnabled = useFeatureEnabled('files.reviewComments');
     const attachmentsUploadConfig = useAttachmentsUploadConfig();
     const normalizedFlowId = React.useMemo(() => {
@@ -133,7 +139,7 @@ export function useNewSessionAttachmentsController(params: Readonly<{
         addWebFiles,
         addPickedAttachments,
         applyDraftPatch,
-        clearDrafts,
+        replaceDrafts,
         getDraftsSnapshot,
     } = attachmentDraftManager;
     const discoverableReviewCommentsScope = React.useMemo<WorkspaceScopeBase | null>(() => {
@@ -158,12 +164,9 @@ export function useNewSessionAttachmentsController(params: Readonly<{
         writeNewSessionAttachmentDrafts(normalizedFlowId, drafts);
     }, [attachmentsUploadsEnabled, drafts, normalizedFlowId]);
 
-    const clearDraftsForFlow = React.useCallback(() => {
-        clearDrafts();
-        if (normalizedFlowId) {
-            clearNewSessionAttachmentDrafts(normalizedFlowId);
-        }
-    }, [clearDrafts, normalizedFlowId]);
+    const clearDraftsForFlow = React.useCallback((accepted: readonly AttachmentDraft[]) => {
+        replaceDrafts(clearAcceptedNewSessionAttachmentDrafts(normalizedFlowId, accepted, getDraftsSnapshot()));
+    }, [getDraftsSnapshot, normalizedFlowId, replaceDrafts]);
 
     const setReviewCommentDraftIncluded = React.useCallback((draftId: string, included: boolean) => {
         const draft = discoverableReviewCommentDrafts.find((candidate) => candidate.id === draftId);
@@ -285,15 +288,62 @@ export function useNewSessionAttachmentsController(params: Readonly<{
                 comments: ReviewCommentDraftMessageV1Schema.array().parse(includedReviewCommentDrafts),
             }
             : null;
-        const submitAfterCreated = (input: Readonly<{
+        const submitAfterCreated = async (input: Readonly<{
             initialPrompt: string;
             structuredInputMetaOverrides?: Record<string, unknown>;
             onAfterCreatedSettled?: HandleCreateSessionOptions['onAfterCreatedSettled'];
             deferAcceptedDraftClearToDocument?: boolean;
-            hasComposerAttachments?: boolean;
-            composerReferences?: HandleCreateSessionOptions['composerReferences'];
             composerSnapshot?: import('@happier-dev/protocol').ComposerSnapshotV1;
         }>) => {
+            const temporaryComputerSubmission = input.composerSnapshot ? {
+                composer: input.composerSnapshot,
+                reviewComments: frozenReviewComments,
+                attachmentDrafts: draftSnapshot,
+                attachmentDestination: {
+                    uploadLocation: attachmentsUploadConfig.uploadLocation,
+                    workspaceRelativeDir: attachmentsUploadConfig.workspaceRelativeDir,
+                    vcsIgnoreStrategy: attachmentsUploadConfig.vcsIgnoreStrategy,
+                    vcsIgnoreWritesEnabled: attachmentsUploadConfig.vcsIgnoreWritesEnabled,
+                },
+                maxFileBytes: attachmentsUploadConfig.maxFileBytes,
+            } : undefined;
+            if (!hostCreatesSession && params.selectedMachineId && !params.isTemporaryComputer && !hasAttachments) {
+                const rawStructuredInput = input.structuredInputMetaOverrides?.happierStructuredInputV1;
+                const structuredInput = rawStructuredInput === undefined
+                    ? undefined
+                    : RawIngressStructuredInputV1Schema.parse(rawStructuredInput);
+                const resolvedReviewCommentDrafts = frozenReviewComments
+                    ? await resolveReviewCommentDraftAnchorsForPrompt({
+                        drafts: frozenReviewComments.comments,
+                        reviewScope: frozenReviewComments.workspace,
+                    })
+                    : [];
+                const reviewComments = resolvedReviewCommentDrafts.length > 0
+                    ? {
+                        comments: ReviewCommentDraftMessageV1Schema.array().parse(normalizeReviewCommentDrafts(resolvedReviewCommentDrafts)),
+                        displayText: buildReviewCommentsDisplayText({ drafts: resolvedReviewCommentDrafts }),
+                    }
+                    : undefined;
+                const initialPrompt = reviewComments
+                    ? buildReviewCommentsPromptText({
+                        drafts: resolvedReviewCommentDrafts,
+                        additionalMessage: input.initialPrompt,
+                    })
+                    : input.initialPrompt;
+                submit({
+                    inputTextOverride: initialPrompt,
+                    ...(structuredInput ? { initialInputStructuredInput: structuredInput } : {}),
+                    ...(reviewComments ? { initialInputReviewComments: reviewComments } : {}),
+                    ...(input.onAfterCreatedSettled || reviewComments ? {
+                        onAfterCreatedSettled: (settlement: import('@/components/sessions/new/hooks/useCreateNewSession').NewSessionAfterCreatedSettlement) => {
+                            if (settlement.status === 'accepted' && reviewComments) clearReviewCommentsForFlow();
+                            input.onAfterCreatedSettled?.(settlement);
+                        },
+                    } : {}),
+                    ...(input.deferAcceptedDraftClearToDocument ? { deferAcceptedDraftClearToDocument: true } : {}),
+                });
+                return;
+            }
             submit({
                 initialMessage: 'skip',
                 ...(input.onAfterCreatedSettled
@@ -302,38 +352,20 @@ export function useNewSessionAttachmentsController(params: Readonly<{
                 ...(input.deferAcceptedDraftClearToDocument
                     ? { deferAcceptedDraftClearToDocument: true }
                     : {}),
-                ...(input.hasComposerAttachments
-                    ? { hasComposerAttachments: true }
-                    : {}),
-                ...(input.composerReferences && input.composerReferences.length > 0
-                    ? { composerReferences: input.composerReferences }
-                    : {}),
-                ...(input.composerSnapshot ? {
-                    temporaryComputerSubmission: {
-                        composer: input.composerSnapshot,
-                        // Frozen here, never deleted here: the workspace drafts
-                        // stay intact until the materialized Session's follow-up
-                        // actually lands, so an abandoned launch loses nothing.
-                        reviewComments: frozenReviewComments,
-                        attachmentDrafts: draftSnapshot,
-                        attachmentDestination: {
-                            uploadLocation: attachmentsUploadConfig.uploadLocation,
-                            workspaceRelativeDir: attachmentsUploadConfig.workspaceRelativeDir,
-                            vcsIgnoreStrategy: attachmentsUploadConfig.vcsIgnoreStrategy,
-                            vcsIgnoreWritesEnabled: attachmentsUploadConfig.vcsIgnoreWritesEnabled,
-                        },
-                        maxFileBytes: attachmentsUploadConfig.maxFileBytes,
-                    },
-                } : {}),
+                ...(temporaryComputerSubmission ? { temporaryComputerSubmission } : {}),
+                // Generic file upload and Temporary Computer need an existing
+                // Session ID; their prepared first turn still enters Message admission.
                 afterCreated: async ({ sessionId, effectiveSpawnServerId, launchAttempt, preuploadedAttachments }) => {
                     const attachmentMessageLocalId = launchAttempt.attachmentMessageLocalId;
-                    // A coordinator-submitted first turn has no upload/review
-                    // envelope to supply a message id. Reuse the launch
-                    // attempt's incumbent first-turn identity so a post-create
-                    // retry cannot invent a second Message.
-                    const messageLocalId = input.deferAcceptedDraftClearToDocument && !hasAttachments && !hasReviewCommentDrafts
+                    // Temporary Computer persists this first-turn id before
+                    // materialization; its mounted send and recovery must agree
+                    // even when files use a separate upload id. The coordinator
+                    // route also reuses its launch attempt id on retry.
+                    const messageLocalId = params.isTemporaryComputer || hostCreatesSession
                         ? launchAttempt.firstTurnLocalId
-                        : (hasAttachments || hasReviewCommentDrafts ? attachmentMessageLocalId : undefined);
+                        : input.deferAcceptedDraftClearToDocument && !hasAttachments && !hasReviewCommentDrafts
+                            ? launchAttempt.firstTurnLocalId
+                            : (hasAttachments || hasReviewCommentDrafts ? attachmentMessageLocalId : undefined);
                     const trimmed = input.initialPrompt.trim();
                     let attachmentsBlock = '';
                     let attachmentsMetaOverrides: Record<string, unknown> | undefined;
@@ -394,7 +426,7 @@ export function useNewSessionAttachmentsController(params: Readonly<{
                                 : {}),
                         });
                         if (hasAttachments) {
-                            clearDraftsForFlow();
+                            clearDraftsForFlow(draftSnapshot);
                         }
                         if (hasReviewCommentDrafts) {
                             clearReviewCommentsForFlow();
@@ -435,31 +467,17 @@ export function useNewSessionAttachmentsController(params: Readonly<{
                             snapshot: submittedSnapshot,
                             options: options?.structuredInputMetaOverrides,
                         });
-                        // The canonical envelope this route already builds is
-                        // the only producer of persisted reference identity:
-                        // reading the references back out of it keeps them
-                        // positionless, deduplicated and admitted against the
-                        // exact submitted text, which `snapshot.references`
-                        // (Composer-only, range-carrying) is not.
-                        const admittedStructuredInput = readHappierStructuredInputV1FromMeta(
-                            structuredInputMetaOverrides,
-                        );
-                        submitAfterCreated({
+                        void submitAfterCreated({
                             initialPrompt: submittedSnapshot.text,
                             ...(structuredInputMetaOverrides ? { structuredInputMetaOverrides } : {}),
                             deferAcceptedDraftClearToDocument: true,
-                            hasComposerAttachments: submittedSnapshot.attachments.length > 0,
-                            // The whole reference set, not a flag: only the one
-                            // refusal owner decides which of them a rendered
-                            // Automation prompt can still carry.
-                            composerReferences: admittedStructuredInput?.mentions ?? [],
-                            composerSnapshot: submittedSnapshot,
+                            composerSnapshot,
                             onAfterCreatedSettled: (settlement) => {
                                 resolve(settlement.status === 'accepted'
                                     ? { status: 'accepted' }
                                     : { status: 'rejected' });
                             },
-                        });
+                        }).catch(() => resolve({ status: 'rejected' }));
                     }),
                 },
                 clearAcceptedSnapshot: composerDocument.clearAcceptedSnapshot,
@@ -478,16 +496,17 @@ export function useNewSessionAttachmentsController(params: Readonly<{
         const hasStructuredInputMetaOverrides = Boolean(
             structuredInputMetaOverrides && Object.keys(structuredInputMetaOverrides).length > 0,
         );
-        if (!hasAttachments && !hasReviewCommentDrafts && !hasStructuredInputMetaOverrides) {
+        if (!hostCreatesSession && !hasAttachments && !hasReviewCommentDrafts && !hasStructuredInputMetaOverrides) {
             submit(promptText ? { inputTextOverride: promptText } : undefined);
             return;
         }
 
-        submitAfterCreated({
+        fireAndForget(submitAfterCreated({
             initialPrompt: promptText,
             structuredInputMetaOverrides,
-        });
+        }), { tag: 'NewSessionAttachmentsController.submitInitialInput' });
     }, [
+        hostCreatesSession,
         applyDraftPatch,
         attachmentsUploadConfig,
         attachmentsUploadsEnabled,
@@ -502,6 +521,7 @@ export function useNewSessionAttachmentsController(params: Readonly<{
         params.selectedProfileId,
         params.promptStore,
         params.selectedMachineId,
+        params.isTemporaryComputer,
         params.targetServerId,
     ]);
 

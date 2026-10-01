@@ -20,7 +20,43 @@ import {
     createLocalServicePublicPreviewState,
 } from '@/sync/domains/local/services/publicPreview/store';
 
+import { PaneHeader } from '@/components/appShell/panes/PaneHeader';
+import {
+    PaneHeaderSlotProvider,
+    PaneHeaderSlotScope,
+    usePublishedPaneHeaderContent,
+} from '@/components/appShell/panes/paneHeaderSlot';
+
 import { DetectedLocalServicesPane } from './DetectedLocalServicesPane';
+
+/** The pane header as the sidebar/cockpit hosts draw it: the title plus what the tab published. */
+function HeaderProbe(): React.ReactElement {
+    const published = usePublishedPaneHeaderContent('services');
+    return (
+        <PaneHeader
+            testID="probe-header"
+            title="Local services"
+            line={published?.line ?? null}
+            actions={published?.action}
+        />
+    );
+}
+
+function inHeaderHost(children: React.ReactNode): React.ReactElement {
+    return (
+        <PaneHeaderSlotProvider>
+            <HeaderProbe />
+            <PaneHeaderSlotScope slotKey="services">{children}</PaneHeaderSlotScope>
+        </PaneHeaderSlotProvider>
+    );
+}
+
+const MACBOOK_ONLINE = { name: 'MacBook Pro', homeDir: null, reachability: 'reachable' as const };
+const MACBOOK_OFFLINE = { name: 'MacBook Pro', homeDir: null, reachability: 'unreachable' as const };
+
+async function expandRow(screen: Awaited<ReturnType<typeof renderScreen>>, rowTestID: string): Promise<void> {
+    await pressTestInstanceAsync(screen.findByTestId(`${rowTestID}-item`), `${rowTestID}-item`);
+}
 
 function launcherStateWith(targets: LocalServiceLauncherSnapshot['targets'], sessionId?: string) {
     return applyLocalServiceLauncherSnapshot(createLocalServiceLauncherState(), {
@@ -63,15 +99,57 @@ describe('DetectedLocalServicesPane', () => {
         expect(screen.findByTestId('local-services-pane-loading-loading-spinner')).toBeTruthy();
     });
 
-    it('renders empty state after an idle empty snapshot', async () => {
+    it('renders empty state after an idle empty snapshot as an invitation (pane-states E)', async () => {
+        const onRefresh = vi.fn();
         const screen = await renderScreen(
             <DetectedLocalServicesPane
                 inventoryState={buildLocalServiceInventoryState({ rows: [] })}
+                machine={MACBOOK_ONLINE}
+                onRefresh={onRefresh}
                 testID="local-services-pane"
             />,
         );
         expect(screen.findByTestId('local-services-pane-empty')).toBeTruthy();
         expect(screen.findByTestId('local-services-pane-empty-card')).toBeTruthy();
+        const text = screen.getTextContent();
+        expect(text).toContain('Preview what you’re building');
+        expect(text).toContain('Dev servers started in this workspace show up here');
+        await pressTestInstanceAsync(screen.findByTestId('local-services-pane-empty-action'), 'empty action');
+        expect(onRefresh).toHaveBeenCalledTimes(1);
+    });
+
+    it('says the machine is offline instead of an empty or failed scan when it cannot be reached', async () => {
+        const onRefresh = vi.fn();
+        const screen = await renderScreen(inHeaderHost(
+            <DetectedLocalServicesPane
+                inventoryState={buildLocalServiceInventoryState({ rows: [], refreshState: 'error' })}
+                machine={MACBOOK_OFFLINE}
+                onRefresh={onRefresh}
+                testID="local-services-pane"
+            />,
+        ));
+        expect(screen.findByTestId('local-services-pane-offline-card')).toBeTruthy();
+        expect(screen.findAllByTestId('local-services-pane-error-card')).toHaveLength(0);
+        expect(screen.findByTestId('probe-header.subtitle')).toBeTruthy();
+        expect(screen.getTextContent()).toContain('MacBook Pro is offline');
+        await pressTestInstanceAsync(screen.findByTestId('local-services-pane-offline-action'), 'offline action');
+        expect(onRefresh).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps last-known rows under one offline line while the machine is unreachable', async () => {
+        const screen = await renderScreen(
+            <DetectedLocalServicesPane
+                inventoryState={buildLocalServiceInventoryState({
+                    rows: [buildLocalServiceInventoryRow({ id: 'openable-row', state: 'listening' })],
+                })}
+                launcherState={launcherStateWith([openableTarget], 'session-a')}
+                machine={MACBOOK_OFFLINE}
+                sessionId="session-a"
+                testID="local-services-pane"
+            />,
+        );
+        expect(screen.findByTestId('local-services-pane-row:inventory:openable-row')).toBeTruthy();
+        expect(screen.findByTestId('local-services-pane-offline-line')).toBeTruthy();
     });
 
     it('renders terminal error state through the shared surface state card', async () => {
@@ -121,22 +199,26 @@ describe('DetectedLocalServicesPane', () => {
         expect(screen.findByTestId('local-services-pane-error-code-scanner_permission_denied')).toBeTruthy();
     });
 
-    it('renders a count badge of total and listening detected rows', async () => {
-        const screen = await renderScreen(
+    it('publishes how many run on which machine and a refresh to the pane header, with no count in the body', async () => {
+        const onRefresh = vi.fn();
+        const screen = await renderScreen(inHeaderHost(
             <DetectedLocalServicesPane
                 inventoryState={buildLocalServiceInventoryState({
-                    rows: [
-                        buildLocalServiceInventoryRow({ id: 'live-1', state: 'listening' }),
-                        buildLocalServiceInventoryRow({ id: 'live-2', state: 'listening' }),
-                        buildLocalServiceInventoryRow({ id: 'stale-1', state: 'stale' }),
-                    ],
+                    rows: [buildLocalServiceInventoryRow({ id: 'openable-row', state: 'listening' })],
                 })}
+                launcherState={launcherStateWith([openableTarget], 'session-a')}
+                machine={MACBOOK_ONLINE}
+                sessionId="session-a"
+                onRefresh={onRefresh}
                 testID="local-services-pane"
             />,
-        );
-        const text = screen.getTextContent();
-        expect(text).toContain('3');
-        expect(text).toContain('2');
+        ));
+        expect(screen.findByTestId('probe-header.subtitle')).toBeTruthy();
+        expect(screen.getTextContent()).toContain('1 running on MacBook Pro');
+        // The body no longer draws its own "N services · M running" strip.
+        expect(screen.findAllByTestId('local-services-pane-count-badge')).toHaveLength(0);
+        await pressTestInstanceAsync(screen.findByTestId('local-services-pane-refresh'), 'header refresh');
+        expect(onRefresh).toHaveBeenCalledTimes(1);
     });
 
     it('renders launcher-unavailable state instead of synthesizing detected rows when daemon targets are empty', async () => {
@@ -156,13 +238,13 @@ describe('DetectedLocalServicesPane', () => {
         expect(screen.findAllByTestId('local-services-pane-row:inventory:inventory-only-open')).toHaveLength(0);
     });
 
-    it('ranks this-session above workspace and suggestions last, in a single banded list (D1, D6)', async () => {
+    it('sections rows into running, ready to start and elsewhere on the machine, in ranking order (D1, D6, lab S)', async () => {
         const screen = await renderScreen(
             <DetectedLocalServicesPane
                 inventoryState={buildLocalServiceInventoryState({
                     rows: [
-                        buildLocalServiceInventoryRow({ id: 'my-session', state: 'listening' }),
-                        buildLocalServiceInventoryRow({ id: 'other-session', state: 'listening' }),
+                        buildLocalServiceInventoryRow({ id: 'my-session', state: 'listening', port: 5173 }),
+                        buildLocalServiceInventoryRow({ id: 'other-session', state: 'listening', port: 5174 }),
                     ],
                 })}
                 launcherState={launcherStateWith([
@@ -194,18 +276,23 @@ describe('DetectedLocalServicesPane', () => {
                         machineId: 'machine-a',
                         title: 'web:dev',
                         confidence: 'medium',
-                        state: 'unavailable',
-                        unavailableReason: 'launch_unavailable',
-                        actions: [],
+                        state: 'available',
+                        actions: ['start'],
                     },
                 ], 'session-a')}
                 sessionId="session-a"
+                scope="machine"
+                machine={MACBOOK_ONLINE}
                 testID="local-services-pane"
             />,
         );
-        expect(screen.findByTestId('local-services-pane-band-thisSession')).toBeTruthy();
-        expect(screen.findByTestId('local-services-pane-band-workspace')).toBeTruthy();
-        expect(screen.findByTestId('local-services-pane-band-suggestion')).toBeTruthy();
+        // Sections by what you can do (lab S): running here, ready to start, elsewhere on the machine.
+        expect(screen.findByTestId('local-services-pane-section-running')).toBeTruthy();
+        expect(screen.findByTestId('local-services-pane-section-ready')).toBeTruthy();
+        expect(screen.findByTestId('local-services-pane-section-elsewhere')).toBeTruthy();
+        const sectionText = screen.getTextContent();
+        expect(sectionText).toContain('Ready to start');
+        expect(sectionText).toContain('Elsewhere on MacBook Pro');
         // No raw reason token rendered (D6, master §3.4).
         expect(screen.getTextContent()).not.toContain('launch_unavailable');
 
@@ -214,9 +301,9 @@ describe('DetectedLocalServicesPane', () => {
                 && /^local-services-pane-row:(inventory:my-session|inventory:other-session|package:web:dev)$/.test(node.props.testID))
             .map((node) => node.props.testID as string);
         expect(order.indexOf('local-services-pane-row:inventory:my-session'))
-            .toBeLessThan(order.indexOf('local-services-pane-row:inventory:other-session'));
-        expect(order.indexOf('local-services-pane-row:inventory:other-session'))
             .toBeLessThan(order.indexOf('local-services-pane-row:package:web:dev'));
+        expect(order.indexOf('local-services-pane-row:package:web:dev'))
+            .toBeLessThan(order.indexOf('local-services-pane-row:inventory:other-session'));
     });
 
     it('threads onOpenServiceInBrowser to an openable row and invokes it with the open target', async () => {
@@ -232,6 +319,7 @@ describe('DetectedLocalServicesPane', () => {
                 testID="local-services-pane"
             />,
         );
+        // One tap: a running row's Open is on the row itself; no expansion first (services lab O).
         await pressTestInstanceAsync(
             screen.findByTestId('local-services-pane-row:inventory:openable-row-open'),
             'local-services-pane-row:inventory:openable-row-open',
@@ -242,15 +330,14 @@ describe('DetectedLocalServicesPane', () => {
     });
 
     /**
-     * §5.7's capability, at its new owner.
+     * §5.7's capability, at its current owner.
      *
-     * The exposure group used to be mounted inside every qualifying ROW, which repeated the group
-     * heading down the pane, nested a group inside a band group, and made `activeExposureCount`
-     * rescan the whole exposure set once per row (U-10). It is now mounted ONCE at pane level, so
-     * these two tests assert the same capability at `…-public-preview` rather than at
-     * `…-row:<id>-public-preview`. Relocated, not removed.
+     * U-10 hoisted the exposure group out of the rows because every qualifying row repeated the group
+     * heading and rescanned the exposure set. Lab S puts the live link back with its service, but only
+     * inside the ONE expanded row: collapsed rows render no public-preview UI at all, so neither the
+     * repeated heading nor the per-row rescan returns. Relocated, not removed.
      */
-    it('preserves the public-preview control for an exposure-bearing target, once at pane level (§5.7)', async () => {
+    it('shows the live public link inside its service row expansion (§5.7, lab S signature)', async () => {
         const previewTarget = {
             id: 'preview:preview_1',
             source: 'registered_preview' as const,
@@ -309,12 +396,10 @@ describe('DetectedLocalServicesPane', () => {
                 testID="local-services-pane"
             />,
         );
-        expect(screen.findByTestId('local-services-pane-public-preview-exposure:public_preview_1-revoke')).toBeTruthy();
-        // Exactly one group, not one per row — that is the whole point of the hoist. Counted over
-        // HOST instances: `findAllByTestId` also matches the composite that receives `testID` as a
-        // prop, so a single group that forwards it to its root view counts twice and the assertion
-        // would fail for a rendering that is correct.
-        expect(screen.findAllHostsByTestId('local-services-pane-public-preview')).toHaveLength(1);
+        // The live link belongs to its service: it shows in that row's expansion, not as a pane group.
+        expect(screen.findAllByTestId('local-services-pane-public-preview')).toHaveLength(0);
+        await expandRow(screen, 'local-services-pane-row:preview:preview_1');
+        expect(screen.findByTestId('local-services-pane-row:preview:preview_1-public-preview-exposure:public_preview_1-revoke')).toBeTruthy();
     });
 
     it('renders disabled public-preview state for a plain loopback open target (§5.7)', async () => {
@@ -348,7 +433,8 @@ describe('DetectedLocalServicesPane', () => {
                 testID="local-services-pane"
             />,
         );
-        expect(screen.findByTestId('local-services-pane-public-preview-target:inventory:openable-row-disabled')).toBeTruthy();
+        await expandRow(screen, 'local-services-pane-row:inventory:openable-row');
+        expect(screen.findByTestId('local-services-pane-row:inventory:openable-row-public-preview-target:inventory:openable-row-disabled')).toBeTruthy();
         expect(screen.getTextContent()).toContain('Open a local preview before creating a public link.');
         expect(screen.findAll((node) => String(node.props?.testID ?? '').endsWith('-create'))).toHaveLength(0);
     });
@@ -373,5 +459,36 @@ describe('DetectedLocalServicesPane', () => {
         // launcher revalidates; the refresh is silent.
         expect(screen.findAllByTestId('local-services-pane-refreshing')).toHaveLength(0);
         expect(screen.findByTestId('local-services-pane-row:inventory:openable-row')).toBeTruthy();
+    });
+
+    it('keeps Happier’s own services in one closed group that the header count leaves out', async () => {
+        const happierTarget = {
+            ...openableTarget,
+            id: 'inventory:happier-ui',
+            title: 'Happier (internal dev)',
+            browserTarget: { ...openableTarget.browserTarget, targetId: 'inventory-loopback:happier-ui' },
+        };
+        const screen = await renderScreen(inHeaderHost(
+            <DetectedLocalServicesPane
+                inventoryState={buildLocalServiceInventoryState({
+                    rows: [
+                        buildLocalServiceInventoryRow({ id: 'openable-row', state: 'listening' }),
+                        buildLocalServiceInventoryRow({ id: 'happier-ui', state: 'listening', port: 19364 }),
+                    ],
+                })}
+                launcherState={launcherStateWith([openableTarget, happierTarget], 'session-a')}
+                machine={MACBOOK_ONLINE}
+                sessionId="session-a"
+                testID="local-services-pane"
+            />,
+        ));
+
+        expect(screen.findByTestId('local-services-pane-section-happier')).toBeTruthy();
+        expect(screen.getTextContent()).toContain('Happier services (1)');
+        // Closed by default: its rows are not mounted until the person opens the group.
+        expect(screen.findAllByTestId('local-services-pane-row:inventory:happier-ui')).toHaveLength(0);
+        expect(screen.getTextContent()).toContain('1 running on MacBook Pro');
+        await pressTestInstanceAsync(screen.findByTestId('local-services-pane-happier-item'), 'happier group');
+        expect(screen.findByTestId('local-services-pane-row:inventory:happier-ui')).toBeTruthy();
     });
 });

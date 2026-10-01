@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { PermissionMode } from './permissionTypes';
-import type { Metadata } from '../state/storageTypes';
+import type { Metadata } from '@happier-dev/session-core/state';
 
 import {
     getPermissionModeBadgeLabelForAgentType,
@@ -10,6 +10,7 @@ import {
     getPermissionModeOptionsForAgentType,
     getPermissionModeOptionsForSession,
     normalizePermissionModeForAgentType,
+    restrictPermissionModeOptions,
 } from './permissionModeOptions';
 import { resolveAgentCatalogProjection } from '@/agents/backendCatalog/agentCatalogProjection';
 import { t } from '@/text';
@@ -100,5 +101,15 @@ describe('permissionModeOptions', () => {
         );
         expect(getPermissionModeLabelForAgentType(projection.agentId, 'default')).toBe(t('common.default'));
         expect(getPermissionModeLabelForAgentType(projection.agentId, 'safe-yolo')).toBe('safe-yolo');
+    });
+
+    it('restricts the options to an allowed subset (an embed grant) without adding any', () => {
+        const all = getPermissionModeOptionsForAgentType('claude');
+        const restricted = restrictPermissionModeOptions(all, ['default', 'read-only', 'not-a-mode' as PermissionMode]);
+
+        expect(restricted.map((option) => option.value)).toEqual(all.map((option) => option.value).filter((mode) => mode === 'default' || mode === 'read-only'));
+        expect(restrictPermissionModeOptions(all, null)).toBe(all);
+        expect(restrictPermissionModeOptions(all, ['acceptEdits', 'bypassPermissions']).map((option) => option.value))
+            .toEqual(['safe-yolo', 'yolo']);
     });
 });

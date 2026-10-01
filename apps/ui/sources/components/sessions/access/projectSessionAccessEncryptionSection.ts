@@ -48,9 +48,8 @@ function recipientState(item: SessionDataKeyEnvelopeItemV1): SessionAccessEncryp
  * The repeat affordance belongs to the rows that can actually use it.
  *
  * `prepared` is the server's shape-only answer: it proves the stored envelope parses,
- * never that this recipient can still open it. A recipient whose Account content key
- * was replaced keeps a permanently `prepared` tuple they cannot read, and nothing
- * deletes it, so the repeat affordance is the manager's only way to re-seal — the same
+ * never that this recipient can open it. Valid-shaped ciphertext may still fail to
+ * open, so the repeat affordance lets the manager re-seal — the same
  * operation, named the same way, as replacing structurally invalid bytes.
  *
  * An Account that has not finished its own encryption setup can only be explained:
@@ -60,8 +59,8 @@ function recipientActionLabel(state: SessionAccessEncryptionRecipientState): str
     switch (state) {
         case 'pending': return t('session.access.prepareNow');
         case 'prepared':
-        case 'invalid':
-        case 'encryption_inconsistent': return t('session.access.prepareAgain');
+        case 'invalid': return t('session.access.prepareAgain');
+        case 'encryption_inconsistent':
         case 'plain_account':
         case 'encryption_setup_required': return undefined;
     }
@@ -69,12 +68,12 @@ function recipientActionLabel(state: SessionAccessEncryptionRecipientState): str
 
 function recipientStateLabel(state: SessionAccessEncryptionRecipientState): string {
     switch (state) {
-        case 'prepared': return t('session.access.ready');
+        case 'prepared': return t('session.access.prepared');
         case 'pending': return t('session.access.pending');
         case 'invalid': return t('session.access.repair');
         case 'plain_account': return t('session.access.recipientPlainAccount');
         case 'encryption_setup_required': return t('session.access.setup');
-        case 'encryption_inconsistent': return t('session.access.repair');
+        case 'encryption_inconsistent': return t('session.access.recipientRepairRequired');
     }
 }
 
@@ -189,13 +188,13 @@ export function projectSessionAccessEncryptionSection(input: Readonly<{
                 };
             }
             if (!summary) return undefined;
-            const actionable = summary.pending + summary.invalid + summary.recipientKeyUnavailable;
-            if (actionable === 0) {
+            const actionable = summary.pending + summary.invalid;
+            if (actionable === 0 && summary.recipientKeyUnavailable === 0) {
                 return {
                     statusKey: 'ready',
                     announcement: t('session.access.preparationAnnouncedComplete'),
-                    summaryLabel: t('session.access.ready'),
-                    accessibilityLabel: t('session.access.ready'),
+                    summaryLabel: t('session.access.prepared'),
+                    accessibilityLabel: t('session.access.prepared'),
                     showAllLabel,
                     ...expansion,
                 };
@@ -210,7 +209,7 @@ export function projectSessionAccessEncryptionSection(input: Readonly<{
                 }),
                 // Replacing structurally invalid bytes is the same operation as first
                 // delivery, so it is named for what the manager is repeating.
-                actionLabel: summary.invalid > 0
+                actionLabel: actionable === 0 ? undefined : summary.invalid > 0
                     ? t('session.access.prepareAgain')
                     : t('session.access.prepareNow'),
                 showAllLabel,

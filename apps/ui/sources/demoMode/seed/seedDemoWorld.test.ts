@@ -13,7 +13,7 @@ import { Socket as SocketIoClientSocket } from 'socket.io-client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DEMO_SERVER_BASE_URL } from '../world/constants';
-import { DEMO_RICH_SESSION_ID } from '../world/buildDemoWorld';
+import { buildDemoWorld, DEMO_RICH_SESSION_ID } from '../world/buildDemoWorld';
 import { isDemoModeActive, resetDemoModeDepthForTests } from '../runtime/enterExitDemoMode';
 import { clearDemoWorld, seedDemoWorld } from './seedDemoWorld';
 import { takeStoreSnapshot } from './storeSnapshot';
@@ -57,6 +57,29 @@ describe('seedDemoWorld and clearDemoWorld', () => {
         resetDemoModeDepthForTests();
         storage.setState(originalState, true);
         vi.restoreAllMocks();
+    });
+
+    it('seeds canonical role documents in memory and restores only demo-owned Artifacts', async () => {
+        const durableRoles = structuredClone(loadSettings().settings.rolesV1);
+        const existing = { ...buildDemoWorld().artifacts[0], body: 'Retain the original document' };
+        storage.setState((current) => ({
+            settings: { ...current.settings, rolesV1: { overrides: { builder: { roleId: 'builder', workspaceWrites: 'deny' } } } },
+            artifacts: { ...current.artifacts, [existing.id]: existing },
+        }));
+        const originalRoles = structuredClone(storage.getState().settings.rolesV1);
+        const originalArtifacts = structuredClone(storage.getState().artifacts);
+        const world = await seedDemoWorld();
+        expect(storage.getState().settings.rolesV1).toEqual({ overrides: {} });
+        expect(world.artifacts).toHaveLength(3);
+        for (const artifact of world.artifacts) {
+            expect(storage.getState().artifacts[artifact.id]).toEqual(artifact);
+        }
+        const foreign = { ...world.artifacts[0], id: 'foreign-role' };
+        storage.getState().addArtifact(foreign);
+        expect(loadSettings().settings.rolesV1).toEqual(durableRoles);
+        await clearDemoWorld();
+        expect(storage.getState().settings.rolesV1).toEqual(originalRoles);
+        expect(storage.getState().artifacts).toEqual({ ...originalArtifacts, [foreign.id]: foreign });
     });
 
     it('restores demo-owned slices while preserving interleaved foreign writes', async () => {

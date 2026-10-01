@@ -1,5 +1,4 @@
 import type { UiWebMode } from './uiWebTypes';
-// @ts-expect-error -- the canonical repository JavaScript helper has no TypeScript declaration.
 import { applyExpoNodeHeapEnv } from '../../../../../scripts/expo/expoNodeHeapEnv.mjs';
 
 const UI_WEB_EXPO_HEAP_ENV_KEY = 'HAPPIER_E2E_UI_WEB_MAX_OLD_SPACE_SIZE_MB';
@@ -25,10 +24,13 @@ export function resolveUiWebExportFallbackToMetro(env: NodeJS.ProcessEnv): boole
 }
 
 export function applyUiWebExpoNodeHeapEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  return applyExpoNodeHeapEnv(env, {
-    envKey: UI_WEB_EXPO_HEAP_ENV_KEY,
-    defaultSizeMb: UI_WEB_EXPO_DEFAULT_MAX_OLD_SPACE_SIZE_MB,
-  });
+  return {
+    ...applyExpoNodeHeapEnv(env, {
+      envKey: UI_WEB_EXPO_HEAP_ENV_KEY,
+      defaultSizeMb: UI_WEB_EXPO_DEFAULT_MAX_OLD_SPACE_SIZE_MB,
+    }),
+    NODE_ENV: env.NODE_ENV,
+  };
 }
 
 export function resolveUiWebExportSuiteTimeoutMs(env: NodeJS.ProcessEnv): number {

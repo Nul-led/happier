@@ -1,42 +1,61 @@
-import type { Settings } from '@/sync/domains/settings/settings';
+import { buildBackendTargetKeyV2, type RoleArtifactV1 } from '@happier-dev/protocol';
+import type { DecryptedArtifact } from '@/sync/domains/artifacts/artifactTypes';
+import { DEMO_NOW_MS } from './constants';
 
 /**
  * A5 "One session. A whole team of agents."
  *
- * The sub-agent settings screen only shows the delegation model once the
- * execution-runs substrate is on AND guidance rules exist; with an empty rule
- * list it renders its own "no rules yet" stub under a headline about a team of
- * agents. These are the rules the stage shows, written the way a real team
- * would write them: which kind of job leaves the session, and who picks it up.
+ * Role documents use the same Artifact shape as the live Roles catalog.
+ * They remain in the demo-owned in-memory store and are removed on teardown.
  */
-export function buildDemoSubagentGuidanceEntries(): Settings['executionRunsGuidanceEntries'] {
-    return [
+export function buildDemoRoleArtifacts(): DecryptedArtifact[] {
+    const roles = [
         {
-            id: 'demo-guidance-review',
-            title: 'Send diffs out for a second opinion',
-            description:
+            id: 'demo-role-review',
+            name: 'Send diffs out for a second opinion',
+            instructions:
                 'Before proposing a large change, delegate a review pass to a different agent and fold its findings back into this session.',
             enabled: true,
-            suggestedIntent: 'review',
-            suggestedBackendTarget: { kind: 'backend', backendId: 'claude', sourceKind: 'built_in' },
+            runsAs: { kind: 'background_run', intent: 'review' },
+            engine: { agentTargetKey: buildBackendTargetKeyV2({ kind: 'agent', identity: { pluginId: 'happier.agent.claude', localId: 'claude' } }) },
+            workspaceWrites: 'deny',
+            secondOpinion: 'off',
         },
         {
-            id: 'demo-guidance-research',
-            title: 'Delegate wide code searches',
-            description:
+            id: 'demo-role-research',
+            name: 'Delegate wide code searches',
+            instructions:
                 'Repository-wide searches and dependency archaeology go to a delegate so the main session keeps its context for the change itself.',
             enabled: true,
-            suggestedIntent: 'delegate',
-            suggestedBackendTarget: { kind: 'backend', backendId: 'codex', sourceKind: 'built_in' },
+            runsAs: { kind: 'background_run', intent: 'delegate' },
+            engine: { agentTargetKey: buildBackendTargetKeyV2({ kind: 'agent', identity: { pluginId: 'happier.agent.codex', localId: 'codex' } }) },
+            workspaceWrites: 'deny',
+            secondOpinion: 'off',
         },
         {
-            id: 'demo-guidance-plan',
-            title: 'Plan migrations before touching files',
-            description:
+            id: 'demo-role-plan',
+            name: 'Plan migrations before touching files',
+            instructions:
                 'Multi-package migrations start with a planning run that lists the owners and the order of the edits; implementation only starts once that plan comes back.',
             enabled: true,
-            suggestedIntent: 'plan',
-            suggestedBackendTarget: { kind: 'backend', backendId: 'opencode', sourceKind: 'built_in' },
+            runsAs: { kind: 'background_run', intent: 'plan' },
+            engine: { agentTargetKey: buildBackendTargetKeyV2({ kind: 'agent', identity: { pluginId: 'happier.agent.opencode', localId: 'opencode' } }) },
+            workspaceWrites: 'deny',
+            secondOpinion: 'off',
         },
-    ];
+    ] satisfies Array<RoleArtifactV1 & { id: string }>;
+    return roles.map(({ id, ...role }, index) => ({
+        id,
+        header: { kind: 'role.v1', title: role.name, name: role.name },
+        title: role.name,
+        body: JSON.stringify(role),
+        isDecrypted: true,
+        storageMode: 'plain',
+        access: 'owner',
+        headerVersion: 1,
+        bodyVersion: 1,
+        seq: index + 1,
+        createdAt: DEMO_NOW_MS,
+        updatedAt: DEMO_NOW_MS,
+    }));
 }

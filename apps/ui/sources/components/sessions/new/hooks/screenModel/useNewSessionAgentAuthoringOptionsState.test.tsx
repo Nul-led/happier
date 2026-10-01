@@ -384,7 +384,7 @@ describe('useNewSessionAgentAuthoringOptionsState', () => {
             hydratedTempAuthoringDraft: null,
             hydratedPersistedAuthoringDraft: {
                 agentTarget: codexTarget,
-                modelSelection: nativeSelection('backend:codex', 'gpt-5.5', 42),
+                modelSelection: nativeSelection('agent:happier.agent.codex/codex', 'gpt-5.5', 42),
                 acpSessionModeId: null,
                 sessionConfigOptionOverrides: null,
             },

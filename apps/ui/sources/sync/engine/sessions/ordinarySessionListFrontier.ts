@@ -76,7 +76,8 @@ export function advanceOrdinarySessionListFrontier(params: Readonly<{
     };
 }
 
-export function isOrdinarySessionListFrontierComplete(
+/** Exhausted pagination can still have withheld metadata; it is not whole-corpus coverage. */
+export function isOrdinarySessionListFrontierExhausted(
     frontier: OrdinarySessionListFrontier,
 ): boolean {
     return !frontier.hasNext && !frontier.attentionHasNext;

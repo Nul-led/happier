@@ -11,6 +11,7 @@ import {
     setChatListHarnessSessionScreenFocused,
 } from '@/dev/testkit/harness/chatListHarness';
 import { installChatListHarnessCommonModuleMocks } from '@/dev/testkit/harness/chatListHarnessModuleMocks';
+import { sessionAddressKey } from '@/sync/domains/session/sessionAddress';
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -79,6 +80,7 @@ describe('ChatList native screen-reveal viewport revalidation (S-E route-pop bla
         const { ChatList } = await import('./ChatList');
         const screen = await renderChatList(React.createElement(ChatList, {
             session: { ...chatListHarnessState.sessionState },
+            sessionSurfaceKey: sessionAddressKey({ serverId: 'test-server', sessionId: 'session-1' }),
         }), { flushOptions: { cycles: 0 } });
 
         const legendRefHandle = chatListHarnessState.legendListRefHandle as {
@@ -123,6 +125,7 @@ describe('ChatList native screen-reveal viewport revalidation (S-E route-pop bla
         const { ChatList } = await import('./ChatList');
         const screen = await renderChatList(React.createElement(ChatList, {
             session: { ...chatListHarnessState.sessionState },
+            sessionSurfaceKey: sessionAddressKey({ serverId: 'test-server', sessionId: 'session-1' }),
         }), { flushOptions: { cycles: 0 } });
 
         const legendRefHandle = chatListHarnessState.legendListRefHandle as {

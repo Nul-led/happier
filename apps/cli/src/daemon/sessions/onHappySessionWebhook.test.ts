@@ -1,3 +1,4 @@
+import { createPersistedTakeoverAdmissionWaiter } from '../spawn/persistedTakeoverAdmission';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { Metadata } from '@/api/types';
@@ -9,6 +10,11 @@ import {
 } from '@/session/shared/spawnSessionContract';
 import os from 'node:os';
 import path from 'node:path';
+import { mkdtemp, rm, unlink, writeFile } from 'node:fs/promises';
+import { createOnChildExited } from './onChildExited';
+import { readSessionMarkerForPid, writeSessionMarker } from '../sessionRegistry';
+import { spawnInlineNodeParentWithChild, spawnInlineNodeTestProcess } from '@/testkit/process/spawn';
+import { once } from 'node:events';
 
 import {
   createOnDaemonSessionStartupFailure,
@@ -37,6 +43,171 @@ function createMetadata(pid: number, startedBy: 'daemon' | 'terminal', rootPath 
 }
 
 describe('createOnHappySessionWebhook', () => {
+  it.skipIf(process.platform === 'win32')('cannot revive a superseded wrapper marker when its real process census completes after strict promotion', async () => {
+    const previousHome = configuration.happyHomeDir;
+    const home = await mkdtemp(path.join(os.tmpdir(), 'happier-wrapper-marker-'));
+    Object.defineProperty(configuration, 'happyHomeDir', { value: home });
+    const { parent, childPid } = await spawnInlineNodeParentWithChild();
+    const pid = parent.pid!;
+    const tracked: TrackedSession = { pid, startedBy: 'daemon', happySessionId: `PID-${pid}`, sessionRunnerPid: childPid, childProcess: parent };
+    const sessions = new Map([[pid, tracked]]);
+    let releaseCensus!: () => void;
+    const census = new Promise<void>((resolve) => { releaseCensus = resolve; });
+    let censusEntered = false;
+    const report = createOnHappySessionWebhook({ pidToTrackedSession: sessions, pidToAwaiter: new Map(),
+      findHappyProcessByPidFn: async (reportedPid) => { if (reportedPid === pid) { censusEntered = true; await census; } return null; } });
+    const exit = createOnChildExited({ pidToTrackedSession: sessions, spawnResourceCleanupByPid: new Map(),
+      sessionAttachCleanupByPid: new Map(), getApiMachineForSessions: () => null });
+    try {
+      await writeSessionMarker({ pid, happySessionId: `PID-${pid}`, startedBy: 'daemon' });
+      await report(`PID-${pid}`, createMetadata(pid, 'daemon'));
+      await vi.waitFor(() => expect(censusEntered).toBe(true));
+      const exited = once(parent, 'exit');
+      parent.kill('SIGTERM');
+      await exited;
+      await exit(pid, { reason: 'process-exited', code: 0, signal: null });
+      expect(sessions.get(childPid)).toBe(tracked);
+      const promotedMarker = await readSessionMarkerForPid(childPid);
+      expect(promotedMarker).not.toBeNull();
+      releaseCensus();
+      await tracked.reportMarkerCustody?.pending;
+      expect(await readSessionMarkerForPid(pid)).toBeNull();
+      expect(await readSessionMarkerForPid(childPid)).toEqual(promotedMarker);
+    } finally {
+      releaseCensus();
+      await tracked.reportMarkerCustody?.pending;
+      try { process.kill(childPid, 'SIGTERM'); } catch {}
+      if (parent.exitCode === null && parent.signalCode === null) parent.kill('SIGTERM');
+      Object.defineProperty(configuration, 'happyHomeDir', { value: previousHome });
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+  it('rejects a positively dead untracked daemon report without changing live or terminal-origin registration', async () => {
+    const child = spawnInlineNodeTestProcess('');
+    const pid = child.pid!;
+    await once(child, 'exit');
+    const sessions = new Map<number, TrackedSession>();
+    const report = createOnHappySessionWebhook({ pidToTrackedSession: sessions, pidToAwaiter: new Map(),
+      getParentPidFn: () => null, readProcessIdentityByPidFn: async () => null,
+      findHappyProcessByPidFn: async () => null, writeSessionMarkerFn: async () => {} });
+    await report(`PID-${pid}`, createMetadata(pid, 'daemon'));
+    expect(sessions.has(pid)).toBe(false);
+    await report(`PID-${process.pid}`, createMetadata(process.pid, 'daemon'));
+    expect(sessions.has(process.pid)).toBe(true);
+    await report(`PID-${pid}`, createMetadata(pid, 'terminal'));
+    expect(sessions.has(pid)).toBe(true);
+  });
+  it.skipIf(process.platform === 'win32')('re-correlates accepted custody installed during the real process-state probe', async () => {
+    const child = spawnInlineNodeTestProcess('');
+    const pid = child.pid!;
+    await once(child, 'exit');
+    const sessions = new Map<number, TrackedSession>();
+    const awaiters = new Map<number, (session: TrackedSession) => void>();
+    const resolvers = new Map<number, (result: SpawnSessionResult) => void>();
+    const timeouts = new Map<number, NodeJS.Timeout>();
+    const tracked: TrackedSession = { pid, startedBy: 'daemon', happySessionId: `PID-${pid}` };
+    let completion: ReturnType<typeof waitForSessionWebhook> | undefined;
+    const kill = process.kill;
+    const probe = vi.spyOn(process, 'kill').mockImplementation((reportedPid, signal) => {
+      if (reportedPid === pid && signal === 0 && !completion) {
+        sessions.set(pid, tracked);
+        completion = waitForSessionWebhook({ pid, pidToTrackedSession: sessions, pidToAwaiter: awaiters,
+          pidToSpawnResultResolver: resolvers, pidToSpawnWebhookTimeout: timeouts, timeoutErrorMessage: 'Fixture timeout' });
+      }
+      return kill(reportedPid, signal);
+    });
+    const report = createOnHappySessionWebhook({ pidToTrackedSession: sessions, pidToAwaiter: awaiters,
+      readProcessIdentityByPidFn: async () => null, findHappyProcessByPidFn: async () => null,
+      readCredentialsFn: async () => null, writeSessionMarkerFn: async () => {} });
+    try {
+      await report('session-admitted-during-probe', createMetadata(pid, 'daemon'));
+      expect(sessions.get(pid)).toBe(tracked);
+      expect(completion).toBeDefined();
+      await expect(completion).resolves.toMatchObject({ type: 'success', sessionId: 'session-admitted-during-probe' });
+    } finally {
+      probe.mockRestore();
+      for (const timeout of timeouts.values()) clearTimeout(timeout);
+      completion?.settleFailure({ type: 'error', errorCode: SPAWN_SESSION_ERROR_CODES.SPAWN_FAILED, errorMessage: 'Fixture cleanup' });
+    }
+  });
+  it.each(['daemon', 'terminal'] as const)('drains correlated %s report marker work before actual exit retirement', async (origin) => {
+    const previousHome = configuration.happyHomeDir;
+    const home = await mkdtemp(path.join(os.tmpdir(), 'happier-report-retirement-'));
+    Object.defineProperty(configuration, 'happyHomeDir', { value: home });
+    const pid = 4812;
+    const sessionId = `PID-${pid}`;
+    const tracked: TrackedSession = { pid, startedBy: origin === 'daemon' ? 'daemon' : 'happy directly - likely by user from terminal', happySessionId: sessionId };
+    const sessions = new Map([[pid, tracked]]);
+    let releaseCensus!: () => void;
+    const census = new Promise<void>((resolve) => { releaseCensus = resolve; });
+    let censusEntered = false;
+    let written = false;
+    const report = createOnHappySessionWebhook({
+      pidToTrackedSession: sessions, pidToAwaiter: new Map(),
+      readProcessIdentityByPidFn: async () => null,
+      findHappyProcessByPidFn: async () => { censusEntered = true; await census; return null; },
+      writeSessionMarkerFn: async (...args) => { await writeSessionMarker(...args); written = true; },
+    });
+    const exit = createOnChildExited({ pidToTrackedSession: sessions,
+      spawnResourceCleanupByPid: new Map(), sessionAttachCleanupByPid: new Map(), getApiMachineForSessions: () => null });
+    let exiting: Promise<void> | undefined;
+    try {
+      await writeSessionMarker({ pid, happySessionId: sessionId, startedBy: origin });
+      await report(sessionId, createMetadata(pid, origin));
+      await vi.waitFor(() => expect(censusEntered).toBe(true));
+      let retired = false;
+      exiting = exit(pid, { reason: 'process-exited', code: 0, signal: null }).then(() => { retired = true; });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(retired).toBe(false);
+      releaseCensus();
+      await exiting;
+      await vi.waitFor(() => expect(written).toBe(true));
+      expect(sessions.has(pid)).toBe(false);
+      expect(await readSessionMarkerForPid(pid)).toBeNull();
+    } finally {
+      releaseCensus();
+      await exiting;
+      await vi.waitFor(() => expect(written).toBe(true));
+      Object.defineProperty(configuration, 'happyHomeDir', { value: previousHome });
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+  it.each(['daemon', 'terminal'] as const)('does not change retiring %s marker identity on a first late canonical report', async (origin) => {
+    const previousHome = configuration.happyHomeDir;
+    const home = await mkdtemp(path.join(os.tmpdir(), 'happier-retiring-report-'));
+    Object.defineProperty(configuration, 'happyHomeDir', { value: home });
+    const pid = 4813;
+    const sessionId = `PID-${pid}`;
+    const tracked: TrackedSession = { pid, startedBy: origin === 'daemon' ? 'daemon' : 'happy directly - likely by user from terminal', happySessionId: sessionId };
+    const sessions = new Map([[pid, tracked]]);
+    const resourcePath = path.join(home, 'owned-resource');
+    let releaseCleanup!: () => void;
+    const cleanup = new Promise<void>((resolve) => { releaseCleanup = resolve; });
+    let cleanupEntered = false;
+    const exit = createOnChildExited({ pidToTrackedSession: sessions,
+      spawnResourceCleanupByPid: new Map([[pid, async () => { cleanupEntered = true; await cleanup; await unlink(resourcePath); }]]),
+      sessionAttachCleanupByPid: new Map(), getApiMachineForSessions: () => null });
+    const report = createOnHappySessionWebhook({ pidToTrackedSession: sessions, pidToAwaiter: new Map(),
+      readProcessIdentityByPidFn: async () => null, findHappyProcessByPidFn: async () => null,
+      readCredentialsFn: async () => null });
+    let exiting: Promise<void> | undefined;
+    try {
+      await writeFile(resourcePath, 'fixture');
+      await writeSessionMarker({ pid, happySessionId: sessionId, startedBy: origin });
+      exiting = exit(pid, { reason: 'process-exited', code: 0, signal: null });
+      await vi.waitFor(() => expect(cleanupEntered).toBe(true));
+      await expect(report('session-late-canonical-report', createMetadata(pid, origin))).rejects.toThrow('retiring');
+      releaseCleanup();
+      await exiting;
+      expect(await readSessionMarkerForPid(pid)).toBeNull();
+      expect(sessions.has(pid)).toBe(false);
+    } finally {
+      releaseCleanup();
+      await exiting;
+      Object.defineProperty(configuration, 'happyHomeDir', { value: previousHome });
+      await rm(home, { recursive: true, force: true });
+    }
+  });
   it('settles only the exact pending daemon spawn awaiter with a typed organization refusal', async () => {
     const pid = 808;
     const tracked: TrackedSession = {
@@ -1122,6 +1293,42 @@ describe('createOnHappySessionWebhook', () => {
     expect(pidToAwaiter.has(789)).toBe(false);
   });
 
+  it('waits for async spawn finalization before acknowledging the session report', async () => {
+    const tracked: TrackedSession = {
+      pid: 792,
+      startedBy: 'daemon',
+    };
+    const pidToTrackedSession = new Map<number, TrackedSession>([[792, tracked]]);
+    let finishFinalization!: () => void;
+    const finalization = new Promise<void>((resolve) => {
+      finishFinalization = resolve;
+    });
+    const awaiter = vi.fn(async () => {
+      await finalization;
+    });
+    const pidToAwaiter = new Map<number, (session: TrackedSession) => void>([[792, awaiter]]);
+    const onWebhook = createOnHappySessionWebhook({
+      pidToTrackedSession,
+      pidToAwaiter,
+      getParentPidFn: () => null,
+      findHappyProcessByPidFn: async () => null,
+      writeSessionMarkerFn: async () => {},
+    });
+
+    const report = onWebhook('session-daemon-792', createMetadata(792, 'daemon'));
+    let acknowledged = false;
+    void report.then(() => {
+      acknowledged = true;
+    });
+
+    await vi.waitFor(() => expect(awaiter).toHaveBeenCalledOnce());
+    expect(acknowledged).toBe(false);
+
+    finishFinalization();
+    await report;
+    expect(acknowledged).toBe(true);
+  });
+
   it('stores the separate create-or-rejoin outcome on the matched daemon runner before resolving', async () => {
     const tracked: TrackedSession = {
       pid: 790,
@@ -1733,7 +1940,7 @@ describe('createOnHappySessionWebhook', () => {
     expect(awaiter).toHaveBeenCalledOnce();
   });
 
-  it('completes original startup waiter custody after pre-canonical wrapper promotion', async () => {
+  it('keeps promoted startup custody until exact takeover admission completes after the ordinary ACK', async () => {
     const wrapperPid = 792;
     const runnerPid = 793;
     const trackedBeforePromotion: TrackedSession = {
@@ -1755,7 +1962,11 @@ describe('createOnHappySessionWebhook', () => {
       new Map<number, (result: SpawnSessionResult) => void>();
     const pidToSpawnWebhookTimeout =
       new Map<number, NodeJS.Timeout>();
+    const admissionWaiter = createPersistedTakeoverAdmissionWaiter();
+    const correlation = { mode: 'persisted' as const, operationId: 'operation-1', attemptId: 'attempt-1' };
+    const admission = admissionWaiter.register(correlation);
     const spawnResult = waitForSessionWebhook({
+      takeoverAdmission: admission,
       pid: wrapperPid,
       pidToTrackedSession,
       pidToAwaiter,
@@ -1764,13 +1975,12 @@ describe('createOnHappySessionWebhook', () => {
       timeoutMs: 1_000,
       timeoutErrorMessage: 'unexpected timeout',
     });
-    const promoted: TrackedSession = {
-      ...trackedBeforePromotion,
+    const promoted = Object.assign(trackedBeforePromotion, {
       pid: runnerPid,
       happySessionId: `PID-${runnerPid}`,
       sessionRunnerPid: undefined,
       spawnStartupAwaiterPid: wrapperPid,
-    };
+    });
     pidToTrackedSession.delete(wrapperPid);
     pidToTrackedSession.set(runnerPid, promoted);
     const writeSessionMarkerFn = vi.fn(async () => undefined);
@@ -1792,6 +2002,10 @@ describe('createOnHappySessionWebhook', () => {
       'session-daemon-promoted',
       createMetadata(runnerPid, 'daemon'),
     )).resolves.toBeUndefined();
+    expect(promoted.spawnStartupAwaiterPid).toBe(wrapperPid);
+    expect(pidToSpawnResultResolver.has(wrapperPid)).toBe(true);
+    expect(admission.readOutcome()).toBeNull();
+    admissionWaiter.settle(correlation, { status: 'committed' });
     await expect(spawnResult).resolves.toEqual({
       type: 'success',
       sessionId: 'session-daemon-promoted',

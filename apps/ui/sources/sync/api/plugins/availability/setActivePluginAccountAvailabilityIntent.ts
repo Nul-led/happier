@@ -13,6 +13,7 @@ import {
 } from '@/sync/domains/scope/activeServerAccountScope';
 import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
+import { retirePluginAccountAvailabilityProjection } from '@/sync/domains/plugins/availability/projection';
 import { captureServerRequestAuthorityForServerAccountScope } from '@/sync/runtime/orchestration/serverScopedRpc/createServerRequestWithServerScope';
 
 type AvailabilityIntentSetServerSnapshot = Readonly<{
@@ -29,6 +30,7 @@ export type ActivePluginAccountAvailabilityIntentSetterDependencies = Readonly<{
     captureLifetime: () => ActiveServerAccountScopeLifetime | null;
     getServerSnapshot: () => AvailabilityIntentSetServerSnapshot;
     captureRequestAuthority: (scope: ServerAccountScope) => Promise<AvailabilityIntentSetRequestAuthority>;
+    retirePluginAuthority: (pluginId: string) => void;
 }>;
 
 export type ActivePluginAccountAvailabilityIntentSetResult =
@@ -58,6 +60,7 @@ function defaultDependencies(): ActivePluginAccountAvailabilityIntentSetterDepen
             });
             return Object.freeze({ request: authority.request, release: authority.release });
         },
+        retirePluginAuthority: (pluginId) => retirePluginAccountAvailabilityProjection([pluginId]),
     };
 }
 
@@ -201,6 +204,9 @@ export function createActivePluginAccountAvailabilityIntentSetter(
                 const output = PluginAvailabilityIntentSetActionOutputV1Schema.safeParse(raw);
                 if (!output.success || !responseMatchesRequest({ response: output.data, request: parsed.data })) {
                     return Object.freeze({ kind: 'unavailable', code: 'response_invalid' });
+                }
+                if (!output.data.intent.enabled || output.data.intent.desiredVersion === null) {
+                    dependencies.retirePluginAuthority(output.data.intent.pluginId);
                 }
                 return Object.freeze({ kind: 'updated', intent: output.data.intent });
             } finally {

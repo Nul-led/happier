@@ -41,46 +41,6 @@ const onboardingVisible = (stepId: WizardStepId) => (context: WizardContext): bo
     }
 };
 
-const setupVisible = (stepId: WizardStepId) => (context: WizardContext): boolean => {
-    if (context.mode !== 'setup') return false;
-    switch (stepId) {
-        case 'setup_chooser':
-            return true;
-        case 'setup_this_computer':
-            return context.setupAction === 'local';
-        case 'host_relay_local':
-            return context.setupAction === 'relayLocal';
-        case 'relay_access': {
-            const url = typeof context.relaySelection.serverUrl === 'string' ? context.relaySelection.serverUrl.trim() : '';
-            if (!url) return false;
-            return context.setupAction === 'relayLocal' || context.setupAction === 'remote';
-        }
-        case 'relay_access_prereqs': {
-            const url = typeof context.relaySelection.serverUrl === 'string' ? context.relaySelection.serverUrl.trim() : '';
-            if (!url) return false;
-            if (context.platform !== 'desktop' || !context.canRunSystemTasks) return false;
-            if (context.setupAction !== 'relayLocal' && context.setupAction !== 'remote') return false;
-            if (!relayAccessProviderNeedsPrerequisitesStep(context.relayAccessProviderId)) return false;
-            return true;
-        }
-        case 'confirm_switch_relay': {
-            if (context.setupAction !== 'relayLocal' && context.setupAction !== 'remote') {
-                return false;
-            }
-            const url = typeof context.relaySelection.serverUrl === 'string' ? context.relaySelection.serverUrl.trim() : '';
-            return url.length > 0;
-        }
-        case 'remote_ssh_setup':
-            return context.setupAction === 'remote';
-        case 'providers_optional':
-            return context.setupAction === 'local' || context.setupAction === 'relayLocal' || context.setupAction === 'remote';
-        case 'done':
-            return context.setupAction != null;
-        default:
-            return false;
-    }
-};
-
 const wizardStepRegistryEntries = [
     {
         id: 'welcome',
@@ -200,35 +160,14 @@ const wizardStepRegistryEntries = [
         visibleWhen: onboardingVisible('auth_lost_access'),
     },
     {
-        id: 'setup_chooser',
-        titleKey: 'setupOnboarding.screenTitle',
-        subtitleKey: 'setupOnboarding.postAuthBody',
-        kind: 'entry',
-        surface: 'setup',
-        canSkip: true,
-        visibleWhen: setupVisible('setup_chooser'),
-    },
-    {
-        id: 'setup_this_computer',
-        titleKey: 'setupOnboarding.setupThisComputerTitle',
-        subtitleKey: 'settings.machineSetupCurrentMachineSubtitle',
-        kind: 'setup',
-        surface: 'setup',
-        canSkip: true,
-        visibleWhen: setupVisible('setup_this_computer'),
-    },
-    {
         id: 'host_relay_local',
         titleKey: 'settings.localRelayRuntime.title',
         subtitleKey: 'settings.localRelayRuntime.footer',
         kind: 'setup',
-        surface: 'setup',
+        surface: 'onboarding',
         canSkip: false,
         visibleWhen: (context) => {
-            if (context.mode === 'onboarding') {
-                return context.canRunSystemTasks && context.relaySelection.choiceId === 'thisComputer';
-            }
-            return setupVisible('host_relay_local')(context);
+            return context.canRunSystemTasks && context.relaySelection.choiceId === 'thisComputer';
         },
     },
     {
@@ -245,30 +184,18 @@ const wizardStepRegistryEntries = [
         },
     },
     {
-        id: 'remote_ssh_setup',
-        titleKey: 'settings.machineSetupSshMachineTitle',
-        subtitleKey: 'settings.machineSetupSshMachineSubtitle',
-        kind: 'setup',
-        surface: 'setup',
-        canSkip: false,
-        visibleWhen: setupVisible('remote_ssh_setup'),
-    },
-    {
         id: 'relay_access',
         titleKey: 'setupOnboarding.relayAccessWizardTitle',
         subtitleKey: 'settings.relayAccess.footer',
         kind: 'setup',
-        surface: 'setup',
+        surface: 'onboarding',
         canSkip: true,
         visibleWhen: (context) => {
             const url = typeof context.relaySelection.serverUrl === 'string' ? context.relaySelection.serverUrl.trim() : '';
             if (!url) return false;
-            if (context.mode === 'onboarding') {
-                return context.platform === 'desktop'
-                    && context.canRunSystemTasks
-                    && (context.relaySelection.choiceId === 'thisComputer' || context.relaySelection.choiceId === 'remoteComputer');
-            }
-            return setupVisible('relay_access')(context);
+            return context.platform === 'desktop'
+                && context.canRunSystemTasks
+                && (context.relaySelection.choiceId === 'thisComputer' || context.relaySelection.choiceId === 'remoteComputer');
         },
     },
     {
@@ -276,7 +203,7 @@ const wizardStepRegistryEntries = [
         titleKey: 'setupOnboarding.relayAccessWizardTitle',
         subtitleKey: 'settings.relayAccess.footer',
         kind: 'setup',
-        surface: 'setup',
+        surface: 'onboarding',
         canSkip: true,
         visibleWhen: (context) => {
             const url = typeof context.relaySelection.serverUrl === 'string' ? context.relaySelection.serverUrl.trim() : '';
@@ -284,12 +211,9 @@ const wizardStepRegistryEntries = [
             if (!relayAccessProviderNeedsPrerequisitesStep(context.relayAccessProviderId)) {
                 return false;
             }
-            if (context.mode === 'onboarding') {
-                return context.platform === 'desktop'
-                    && context.canRunSystemTasks
-                    && (context.relaySelection.choiceId === 'thisComputer' || context.relaySelection.choiceId === 'remoteComputer');
-            }
-            return setupVisible('relay_access_prereqs')(context);
+            return context.platform === 'desktop'
+                && context.canRunSystemTasks
+                && (context.relaySelection.choiceId === 'thisComputer' || context.relaySelection.choiceId === 'remoteComputer');
         },
     },
     {
@@ -297,35 +221,14 @@ const wizardStepRegistryEntries = [
         titleKey: 'setupOnboarding.confirmSwitchRelayTitle',
         subtitleKey: 'setupOnboarding.confirmSwitchRelaySubtitle',
         kind: 'setup',
-        surface: 'setup',
+        surface: 'onboarding',
         canSkip: false,
         visibleWhen: (context) => {
             const url = typeof context.relaySelection.serverUrl === 'string' ? context.relaySelection.serverUrl.trim() : '';
-            if (context.mode === 'setup') {
-                return setupVisible('confirm_switch_relay')(context);
-            }
             return context.mode === 'onboarding'
                 && context.relaySwitchConfirmationPending
                 && url.length > 0;
         },
-    },
-    {
-        id: 'providers_optional',
-        titleKey: 'settingsAgents.setup.startTitle',
-        subtitleKey: 'settingsAgents.setup.selectionFooter',
-        kind: 'finish',
-        surface: 'setup',
-        canSkip: true,
-        visibleWhen: setupVisible('providers_optional'),
-    },
-    {
-        id: 'done',
-        titleKey: 'setupOnboarding.postAuthTitle',
-        subtitleKey: 'setupOnboarding.postAuthBody',
-        kind: 'finish',
-        surface: 'setup',
-        canSkip: true,
-        visibleWhen: setupVisible('done'),
     },
 ] satisfies ReadonlyArray<WizardStepDefinition>;
 

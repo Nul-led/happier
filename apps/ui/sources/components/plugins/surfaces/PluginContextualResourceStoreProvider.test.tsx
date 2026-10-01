@@ -3,6 +3,7 @@ import renderer, { act } from 'react-test-renderer';
 import { describe, expect, it, vi } from 'vitest';
 import type { PluginUiResourceSnapshot } from '@happier-dev/plugin-ui/hostApi';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
+import { PluginSurfaceFocusEligibilityProvider } from '@/components/ui/presentation/PluginSurfaceFocusEligibility';
 
 const machineResourceRpc = vi.hoisted(() => ({
     read: vi.fn(),
@@ -138,21 +139,21 @@ function createAccountLifetime(input: Readonly<{
 
 function binding(
     accountLifetime: AccountLifetime,
-    expectedGeneration = '42',
+    expectedCallerOccurrenceId = 'occurrence-42',
 ): PluginContextualResourceBinding {
     return Object.freeze({
         accountLifetime,
         pluginId: 'acme.composer',
         machineId: 'machine-1',
         serverId: 'server-1',
-        expectedGeneration,
+        expectedCallerOccurrenceId,
         context: Object.freeze({ kind: 'session' as const, sessionId: 'session-1' }),
     });
 }
 
 function installLiveResourceRpc(input?: Readonly<{
     read?: (call: number) => ReturnType<typeof resourceResponse>;
-    openMarker?: (options: Readonly<{ subscriptionId: string; expectedGeneration: string }>) => string;
+    openMarker?: (options: Readonly<{ subscriptionId: string; expectedCallerOccurrenceId: string }>) => string;
     onNext?: (options: Readonly<{ subscriptionId: string; signal: AbortSignal }>) => Promise<unknown>;
 }>) {
     const nextSignals: AbortSignal[] = [];
@@ -166,7 +167,7 @@ function installLiveResourceRpc(input?: Readonly<{
     ));
     machineResourceRpc.open.mockImplementation(async (
         _machineId: string,
-        options: Readonly<{ subscriptionId: string; expectedGeneration: string }>,
+        options: Readonly<{ subscriptionId: string; expectedCallerOccurrenceId: string }>,
     ) => watchOpenResponse(options.subscriptionId, input?.openMarker?.(options) ?? 'a'));
     machineResourceRpc.next.mockImplementation(async (
         _machineId: string,
@@ -206,6 +207,35 @@ function ResourceProbe(props: Readonly<{
 }
 
 describe('PluginContextualResourceStoreProvider', () => {
+    it('keeps only visible panes watching while retained hidden panes keep their snapshots and resume fresh', async () => {
+        const rpc = installLiveResourceRpc();
+        const account = createAccountLifetime({ accountId: 'account-a' });
+        const bindings = Array.from({ length: 12 }, (_, index) => Object.freeze({ ...binding(account.lifetime),
+            context: Object.freeze({ kind: 'session' as const, sessionId: `session-${index}` }) }));
+        const snapshots = new Map<number, PluginUiResourceSnapshot | null>();
+        function App(props: Readonly<{ visibleCount: number }>) {
+            return <PluginContextualResourceStoreProvider>{bindings.map((exactBinding, index) =>
+                <PluginSurfaceFocusEligibilityProvider key={index} active={index === 0} presentationActive={index < props.visibleCount}>
+                    <ResourceProbe binding={exactBinding} onSnapshot={(snapshot) => { snapshots.set(index, snapshot); }} />
+                </PluginSurfaceFocusEligibilityProvider>)}
+            </PluginContextualResourceStoreProvider>;
+        }
+        let tree: renderer.ReactTestRenderer | null = null;
+        try {
+            await act(async () => { tree = renderer.create(<App visibleCount={12} />); });
+            await vi.waitFor(() => { expect(rpc.nextSignals).toHaveLength(12); });
+            await act(async () => { tree?.update(<App visibleCount={2} />); });
+            expect(rpc.nextSignals.filter((signal) => !signal.aborted)).toHaveLength(2);
+            await vi.waitFor(() => { expect(machineResourceRpc.close).toHaveBeenCalledTimes(10); });
+            expect(snapshots.get(11)?.digest).toBe(`sha256:${'a'.repeat(64)}`);
+            const opens = machineResourceRpc.open.mock.calls.length;
+            await act(async () => { tree?.update(<App visibleCount={2} />); });
+            expect(machineResourceRpc.open.mock.calls.length).toBe(opens);
+            await act(async () => { tree?.update(<App visibleCount={3} />); });
+            await vi.waitFor(() => { expect(rpc.nextSignals.filter((signal) => !signal.aborted)).toHaveLength(3); });
+            expect(machineResourceRpc.open.mock.calls.length).toBe(opens + 1);
+        } finally { await act(async () => { tree?.unmount(); }); }
+    });
     it('reuses its nearest contextual owner instead of creating a nested Resource store owner', async () => {
         let outerOwner: PluginContextualResourceStoreOwner | null = null;
         let innerOwner: PluginContextualResourceStoreOwner | null = null;
@@ -358,7 +388,7 @@ describe('PluginContextualResourceStoreProvider', () => {
     it('replaces an observed generation family before an old consumer releases its read and watch', async () => {
         const rpc = installLiveResourceRpc({
             read: (call) => call === 1 ? resourceResponse('a') : resourceResponse('b'),
-            openMarker: (options) => options.expectedGeneration === '7' ? 'a' : 'b',
+            openMarker: (options) => options.expectedCallerOccurrenceId === '7' ? 'a' : 'b',
         });
         const account = createAccountLifetime({ accountId: 'account-a' });
         const generationSeven = binding(account.lifetime, '7');

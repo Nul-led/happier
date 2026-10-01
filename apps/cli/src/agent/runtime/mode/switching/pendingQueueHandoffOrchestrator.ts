@@ -44,6 +44,7 @@ export type ResolvePendingQueueHandoffInput = Readonly<{
   currentMode: PendingQueueHandoffMode;
   remoteTurnInFlight: boolean;
   terminalTopology: PendingQueueHandoffTopology | null;
+  terminalRemoteWritable?: boolean;
   terminalTurnState: TerminalTurnState;
   pendingCount: number;
   resumeReadiness: PendingQueueResumeReadiness;
@@ -156,6 +157,16 @@ export function resolvePendingQueueHandoff(input: ResolvePendingQueueHandoffInpu
   }
 
   if (input.terminalTopology === 'shared') {
+    if (input.terminalRemoteWritable === true) {
+      return {
+        action: { type: 'materialize_remote_pending' },
+        status: createStatus({
+          status: 'none',
+          pendingCount,
+          updatedAtMs: input.nowMs,
+        }),
+      };
+    }
     if (input.terminalPromptInjectionAvailable === true && input.terminalInputReadiness) {
       const action = resolveTerminalInputAction(input.terminalInputReadiness);
       switch (action.type) {

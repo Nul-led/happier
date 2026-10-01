@@ -1,5 +1,5 @@
 import type { SessionPersonalAttentionReasonV1 } from '@happier-dev/protocol';
-import type { Message } from '@/sync/domains/messages/messageTypes';
+import type { Message } from "@happier-dev/session-core/messages";
 import type {
     ActivityOverviewSnapshot,
     SessionActivityAttention,
@@ -23,6 +23,34 @@ export type InboxSessionPresentation = Readonly<{
     readySessions: readonly SessionActivityAttention[];
     markAllReadTargets: readonly SessionBulkActionTarget[];
 }>;
+
+export type InboxSessionCandidateClassification = 'needs_attention' | 'ready' | null;
+
+/**
+ * Classifies one canonical Activity candidate for Inbox without constructing
+ * rows, pending-request details, or bulk-action targets.
+ */
+export function classifyInboxSessionCandidate(
+    candidate: SessionActivityAttention,
+): InboxSessionCandidateClassification {
+    if (!candidate.hasAttention) return null;
+
+    const reasons = candidate.personalAttention.reasons;
+    const hasSessionReadAttention = reasons.some(isClearedBySessionManualRead);
+    const hasOtherAttention = reasons.some((reason) => !isClearedBySessionManualRead(reason));
+    const isWorking = candidate.awareness.operational.reasons.includes('working')
+        || candidate.awareness.operational.reasons.includes('background_activity');
+    const hasReadyForReviewAttention = !isWorking
+        && hasSessionReadAttention
+        && (
+            candidate.attentionState === 'ready'
+            || reasons.includes('ready_after_read')
+            || candidate.awareness.operational.reasons.includes('ready')
+        );
+
+    if (hasOtherAttention) return 'needs_attention';
+    return hasReadyForReviewAttention ? 'ready' : null;
+}
 
 /**
  * Which canonical Activity reasons a session-scoped manual read actually clears.
@@ -62,27 +90,17 @@ export function buildInboxSessionPresentation(params: Readonly<{
     const markAllReadTargets: SessionBulkActionTarget[] = [];
 
     for (const candidate of params.overview.candidates) {
-        if (!candidate.hasAttention) continue;
+        const classification = classifyInboxSessionCandidate(candidate);
+        if (classification === null) continue;
 
         const reasons = candidate.personalAttention.reasons;
-        const hasSessionReadAttention = reasons.some(isClearedBySessionManualRead);
-        const hasOtherAttention = reasons.some((reason) => !isClearedBySessionManualRead(reason));
-        const isWorking = candidate.awareness.operational.reasons.includes('working')
-            || candidate.awareness.operational.reasons.includes('background_activity');
-        const hasReadyForReviewAttention = !isWorking
-            && hasSessionReadAttention
-            && (
-                candidate.attentionState === 'ready'
-                || reasons.includes('ready_after_read')
-                || candidate.awareness.operational.reasons.includes('ready')
-            );
         const serverId = candidate.address?.serverId ?? candidate.serverId ?? null;
 
         // The Inbox follows the Session list's attention lanes: streaming
         // transcript progress remains a server-owned unread fact, but it is not
         // Inbox work until the existing awareness projection says the turn is
         // ready for review. Concurrent actionable reasons still render below.
-        if (hasOtherAttention) {
+        if (classification === 'needs_attention') {
             const mayShowDetails = candidate.personalAttention.presentation === 'full';
             const messages = mayShowDetails ? params.resolveMessages?.(candidate) : undefined;
             sessionsNeedingAttention.push({
@@ -97,7 +115,7 @@ export function buildInboxSessionPresentation(params: Readonly<{
             continue;
         }
 
-        if (hasReadyForReviewAttention) {
+        if (classification === 'ready') {
             readySessions.push(candidate);
             markAllReadTargets.push({
                 key: buildServerScopedSessionKey(candidate.sessionId, serverId),

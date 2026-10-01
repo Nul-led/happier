@@ -1,4 +1,5 @@
-import { mkdir, readFile, rm } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { join, posix, relative, resolve, sep, win32 } from 'node:path';
 
 import { z } from 'zod';
@@ -9,6 +10,8 @@ import type { SessionHandoffAgentBundle } from '../types';
 import { writeSessionHandoffAgentBundleArtifact } from '../agentBundle/file';
 import { buildSessionHandoffAgentBundleTransferId } from '../agentBundle/transferPublication';
 import { writeJsonAtomic } from '@/utils/fs/writeJsonAtomic';
+import { disposeTransferPayloadSource, resolveTransferPayloadManifestHash, resolveTransferPayloadSizeBytes } from '@/machines/transfer/transferPayloadSource';
+import type { createWorkspaceSyncSeedExport } from '@/workspaces/sync/workspaceSyncSeedTransfer';
 
 const SOURCE_EXPORT_SCHEMA_VERSION = 1 as const;
 
@@ -29,6 +32,11 @@ const SourceExportRecordSchemaV1 = z.object({
   targetMachineId: z.string().min(1).optional(),
   exportedAtMs: z.number().int().nonnegative(),
   agentBundle: AgentBundleFileSchema.optional(),
+  workspaceSeed: z.object({
+    transferId: z.string().min(1),
+    files: z.record(z.string(), AgentBundleFileSchema),
+    endpointCandidates: z.array(TransferEndpointCandidateSchema).readonly().optional(),
+  }).strict().optional(),
 }).strict();
 
 export type SessionHandoffSourceExportRecord = z.infer<typeof SourceExportRecordSchemaV1>;
@@ -146,6 +154,11 @@ export function createSessionHandoffSourceExportStore(input: Readonly<{ activeSe
                 },
               }
             : {}),
+          ...(record.workspaceSeed ? { workspaceSeed: { ...record.workspaceSeed,
+            files: Object.fromEntries(Object.entries(record.workspaceSeed.files).map(([id, file]) => [id, {
+              ...file, filePath: resolvePersistedPathUnderActiveServerDir(activeServerDir, file.filePath),
+            }])),
+          } } : {}),
         };
       } catch {
         throw new Error('Invalid session handoff source export record');
@@ -162,6 +175,11 @@ export function createSessionHandoffSourceExportStore(input: Readonly<{ activeSe
         ...(record.sourceMachineId ? { sourceMachineId: record.sourceMachineId } : {}),
         ...(record.targetMachineId ? { targetMachineId: record.targetMachineId } : {}),
         exportedAtMs: record.exportedAtMs,
+        ...(record.workspaceSeed ? { workspaceSeed: { ...record.workspaceSeed,
+          files: Object.fromEntries(Object.entries(record.workspaceSeed.files).map(([id, file]) => [id, {
+            ...file, filePath: resolvePathRelativeToActiveServerDir(activeServerDir, file.filePath),
+          }])),
+        } } : {}),
         ...(record.agentBundle
           ? {
               agentBundle: {
@@ -201,16 +219,40 @@ export function createSessionHandoffSourceExportStore(input: Readonly<{ activeSe
       };
     },
 
+    async writeWorkspaceSeedFiles(params: Readonly<{
+      handoffId: string;
+      transferId: string;
+      seed: Awaited<ReturnType<typeof createWorkspaceSyncSeedExport>>;
+    }>): Promise<NonNullable<SessionHandoffSourceExportRecord['workspaceSeed']>> {
+      const directory = join(resolveHandoffDirectory(activeServerDir, params.handoffId), 'workspace-seed');
+      await mkdir(directory, { recursive: true, mode: 0o700 });
+      const files: Record<string, z.infer<typeof AgentBundleFileSchema>> = {};
+      for (const transferId of [params.transferId, ...params.seed.blobTransferIds]) {
+        const source = transferId === params.transferId ? params.seed.payloadSource
+          : await params.seed.onDemandScope.resolvePayloadSourceOnOpen({ transferId, requestBody: undefined });
+        try {
+          const filePath = join(directory, createHash('sha256').update(transferId).digest('hex'));
+          if (source.kind === 'buffer') await writeFile(filePath, source.payload, { mode: 0o600 });
+          else await copyFile(source.filePath, filePath);
+          files[transferId] = { transferId, filePath,
+            sizeBytes: await resolveTransferPayloadSizeBytes(source), manifestHash: await resolveTransferPayloadManifestHash(source),
+          };
+        } finally { await disposeTransferPayloadSource(source); }
+      }
+      return { transferId: params.transferId, files };
+    },
+
     async releaseTransferFiles(handoffIdRaw: string): Promise<void> {
       const handoffId = assertSafeHandoffId(handoffIdRaw);
       const record = await readPersistedSourceExportRecord(activeServerDir, handoffId);
-      if (record?.agentBundle) {
-        const { agentBundle: _releasedAgentBundle, ...durableRecord } = record;
+      if (record?.agentBundle || record?.workspaceSeed) {
+        const { agentBundle: _releasedAgentBundle, workspaceSeed: _releasedWorkspaceSeed, ...durableRecord } = record;
         await atomicWriteJson(resolveRecordPath(activeServerDir, handoffId), durableRecord);
       }
       await Promise.all([
         rm(resolveAgentBundleFilePath(activeServerDir, handoffId), { force: true }),
         rm(resolveReceivedAgentBundleFilePath(activeServerDir, handoffId), { force: true }),
+        rm(join(resolveHandoffDirectory(activeServerDir, handoffId), 'workspace-seed'), { recursive: true, force: true }),
       ]);
     },
 

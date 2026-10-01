@@ -8,9 +8,10 @@ import type {
 } from '@/components/ui/selectionList';
 import { t } from '@/text';
 import type { Machine } from '@/sync/domains/state/storageTypes';
+import type { MachineDisplayRenderable } from '@/sync/domains/machines/machineDisplayRenderable';
 import type {
-    ServerScopedMachine,
     ServerScopedMachineGroup,
+    ServerScopedMachinePresentation,
 } from '@/components/sessions/new/hooks/machines/useServerScopedMachineOptions';
 
 import {
@@ -18,7 +19,8 @@ import {
     type MachineSelectionBucketId,
     type MachineSelectionFavoriteGroupPlacement,
 } from './buildMachineSelectionBuckets';
-import { MachineSelectionRowAccessory } from './MachineSelectionRowAccessory';
+import { MachinePresenceDot, MachineSelectionRowAccessory } from './MachineSelectionRowAccessory';
+import { describeMachinePresenceLine } from '@/utils/sessions/machinePresenceLine';
 import {
     resolveMachinePoolRowUnavailableReason,
     type MachinePoolRowUnavailableReason,
@@ -40,6 +42,7 @@ import {
     temporaryComputerTargetOptionKey,
 } from './temporaryComputerTargetIdentity';
 import { showTemporaryComputerExpiryModal } from './TemporaryComputerExpiryModal';
+import { resolveMachineDisplayNames } from '@/utils/sessions/machineDisplayNames';
 
 type MachineSelectionListModel = Readonly<{
     rootStep: SelectionListStep;
@@ -94,15 +97,37 @@ const TEMPORARY_COMPUTER_EXPIRY_OFFSETS_MS = {
     inOneWeek: 7 * 24 * 60 * 60 * 1000,
 } as const;
 
-export type BuildMachineSelectionListModelParams = Readonly<{
-    groups: ReadonlyArray<ServerScopedMachineGroup>;
+/** A row of the list: the machine the caller supplied, scoped to the Home that listed it. */
+export type ScopedSelectionMachine<TMachine extends MachineDisplayRenderable = Machine> = TMachine & ServerScopedMachinePresentation;
+
+/**
+ * A consuming domain's own decision about whether a machine row can be chosen. When given, it
+ * replaces the presence default (offline → disabled); `detail` is the row's reason whenever the row
+ * is disabled or the machine is not currently online.
+ */
+export type MachineSelectionAvailability = Readonly<{
+    selectable: boolean;
+    detail?: string;
+}>;
+
+export type MachineSelectionPresentation = Readonly<{
+    title: string;
+    subtitle?: string;
+}>;
+
+export type BuildMachineSelectionListModelParams<TMachine extends MachineDisplayRenderable = Machine> = Readonly<{
+    groups: ReadonlyArray<ServerScopedMachineGroup<ScopedSelectionMachine<TMachine>>>;
     poolGroups?: ReadonlyArray<ServerScopedMachinePoolGroup>;
-    selectedMachine: Machine | null;
+    selectedMachine: TMachine | null;
     selectedServerId: string | null;
-    recentMachines: ReadonlyArray<Machine>;
-    favoriteMachines: ReadonlyArray<Machine>;
-    onSelectMachine: (machine: Machine) => void;
-    onSelectScopedMachine: (machine: ServerScopedMachine) => void;
+    recentMachines: ReadonlyArray<TMachine>;
+    favoriteMachines: ReadonlyArray<TMachine>;
+    onSelectMachine: (machine: TMachine) => void;
+    onSelectScopedMachine: (machine: ScopedSelectionMachine<TMachine>) => void;
+    /** Domain-owned availability; omit it to keep the canonical presence rule. */
+    resolveMachineAvailability?: (machine: TMachine, serverId: string) => MachineSelectionAvailability;
+    /** Domain-owned row naming, for domains that must not disclose opaque machine ids. */
+    resolveMachinePresentation?: (machine: TMachine) => MachineSelectionPresentation;
     onSelectPool?: (selection: ServerScopedMachinePoolSelection) => void;
     poolSelectionStatus?: MachinePoolSelectionStatus;
     /** Re-reads the canonical Machine/Home projection after that projection failed. */
@@ -114,7 +139,7 @@ export type BuildMachineSelectionListModelParams = Readonly<{
     /** Retires the failed Pool feedback so the exact Machine rows are the next choice. */
     onDismissPoolSelection?: () => void;
     serverId?: string | null;
-    onToggleFavorite?: (machine: Machine) => void;
+    onToggleFavorite?: (machine: TMachine) => void;
     showFavorites: boolean;
     showRecent: boolean;
     showSearch: boolean;
@@ -126,20 +151,26 @@ export type BuildMachineSelectionListModelParams = Readonly<{
     testIdPrefix?: string;
 }>;
 
-function machineLabel(machine: Machine): string {
-    return machine.metadata?.displayName || machine.metadata?.host || machine.id;
+
+/** The host, when there is one; a machine's id is never its subtitle. */
+function machineSubtitle(machine: MachineDisplayRenderable): string | undefined {
+    return machine.metadata?.host || undefined;
 }
 
-function machineSubtitle(machine: Machine): string {
-    return machine.metadata?.host || machine.id;
+/**
+ * The machine row's second line (K1 picker anatomy): presence first ("Online", "Offline · last seen
+ * 4 days ago"), then the row's own fact when it has one (a domain's reason, the Home's detail).
+ */
+function machineStatusLine(machine: MachineDisplayRenderable, detail: string | undefined): string {
+    return [describeMachinePresenceLine(machine).label, detail].filter(Boolean).join(' · ');
 }
 
-function buildOptionTestID(testIdPrefix: string | undefined, machine: Machine): string | undefined {
+function buildOptionTestID(testIdPrefix: string | undefined, machine: MachineDisplayRenderable): string | undefined {
     const normalized = typeof testIdPrefix === 'string' ? testIdPrefix.trim() : '';
     return normalized ? `${normalized}-option:${machine.id}` : undefined;
 }
 
-function buildReadinessTestID(testIdPrefix: string | undefined, machine: Machine): string | undefined {
+function buildReadinessTestID(testIdPrefix: string | undefined, machine: MachineDisplayRenderable): string | undefined {
     const normalized = typeof testIdPrefix === 'string' ? testIdPrefix.trim() : '';
     return normalized ? `${normalized}-readiness:${machine.id}` : undefined;
 }
@@ -160,7 +191,7 @@ function buildPoolActionTestID(
 
 function poolMemberSummary(
     pool: MachinePoolViewV1,
-    machines: ReadonlyArray<Machine>,
+    machines: ReadonlyArray<MachineDisplayRenderable>,
     options?: Readonly<{ includeAvailability?: boolean }>,
 ): string {
     const memberLabels = resolveMachinePoolEnabledMemberLabels(pool, machines);
@@ -231,8 +262,27 @@ function bucketIconName(bucketId: MachineSelectionBucketId): IconName {
     return bucketId === 'recent' ? 'clock' : 'desktop';
 }
 
-export function useMachineSelectionListModel(
-    params: BuildMachineSelectionListModelParams,
+/**
+ * Whether a row can be chosen, and the reason it shows. Presence is the default; a consuming domain's
+ * decision replaces it, and its reason is shown whenever the row is disabled or the machine is not
+ * online, so an offline row the domain keeps selectable still says why.
+ */
+function resolveRowAvailability<TMachine extends MachineDisplayRenderable>(
+    machine: TMachine,
+    serverId: string,
+    resolveMachineAvailability: BuildMachineSelectionListModelParams<TMachine>['resolveMachineAvailability'],
+): Readonly<{ selectable: boolean; reason?: string }> {
+    const presence = resolveMachinePickerPresence(machine);
+    const decided = resolveMachineAvailability?.(machine, serverId);
+    if (!decided) return { selectable: presence.selectable };
+    return {
+        selectable: decided.selectable,
+        reason: !decided.selectable || !presence.selectable ? decided.detail : undefined,
+    };
+}
+
+export function useMachineSelectionListModel<TMachine extends MachineDisplayRenderable = Machine>(
+    params: BuildMachineSelectionListModelParams<TMachine>,
 ): MachineSelectionListModel {
     const { theme } = useUnistyles();
 
@@ -274,13 +324,13 @@ export function useMachineSelectionListModel(
             onDismissPoolSelection: params.onDismissPoolSelection,
         };
     });
-    const selectMachine = React.useCallback((machine: Machine) => {
+    const selectMachine = React.useCallback((machine: TMachine) => {
         handlersRef.current.onSelectMachine(machine);
     }, []);
-    const selectScopedMachine = React.useCallback((machine: ServerScopedMachine) => {
+    const selectScopedMachine = React.useCallback((machine: ScopedSelectionMachine<TMachine>) => {
         handlersRef.current.onSelectScopedMachine(machine);
     }, []);
-    const toggleFavorite = React.useCallback((machine: Machine) => {
+    const toggleFavorite = React.useCallback((machine: TMachine) => {
         handlersRef.current.onToggleFavorite?.(machine);
     }, []);
     const selectPool = React.useCallback((selection: ServerScopedMachinePoolSelection) => {
@@ -350,7 +400,7 @@ export function useMachineSelectionListModel(
          */
         const buildPoolSectionOptions = (
             poolGroup: ServerScopedMachinePoolGroup,
-            group: ServerScopedMachineGroup,
+            group: ServerScopedMachineGroup<ScopedSelectionMachine<TMachine>>,
             iconSize: number,
         ): SelectionListOption[] => {
             // A settled feature-off Home has no Pool destinations and no Pool
@@ -673,7 +723,8 @@ export function useMachineSelectionListModel(
 
         if (params.groups.length === 1 && !params.groups[0]!.loading && !params.groups[0]!.signedOut) {
             const group = params.groups[0]!;
-            const bucketModel = buildMachineSelectionBuckets({
+            const machineNames = resolveMachineDisplayNames(group.machines);
+            const bucketModel = buildMachineSelectionBuckets<TMachine>({
                 machines: group.machines,
                 recentMachines: params.recentMachines,
                 favoriteMachines: params.favoriteMachines,
@@ -688,11 +739,19 @@ export function useMachineSelectionListModel(
                 id: bucket.id,
                 title: bucketTitle(bucket.id),
                 options: bucket.machines.map((machine) => {
-                    const presence = resolveMachinePickerPresence(machine);
+                    const availability = resolveRowAvailability(machine, group.serverId, params.resolveMachineAvailability);
+                    const presentation = params.resolveMachinePresentation?.(machine);
                     return {
                         id: machine.id,
                         testID: buildOptionTestID(params.testIdPrefix, machine),
-                        label: machineLabel(machine),
+                        label: presentation?.title ?? machineNames.get(machine.id) ?? machine.id,
+                        subtitle: machineStatusLine(machine, availability.reason ?? presentation?.subtitle),
+                        subtitleLeading: (
+                            <MachinePresenceDot
+                                machine={machine}
+                                readinessTestID={buildReadinessTestID(params.testIdPrefix, machine)}
+                            />
+                        ),
                         icon: (
                             <Icon
                                 name={bucketIconName(bucket.id)}
@@ -700,12 +759,11 @@ export function useMachineSelectionListModel(
                                 color={theme.colors.text.secondary}
                             />
                         ),
-                        disabled: !presence.selectable,
+                        disabled: !availability.selectable,
                         rightAccessory: (
                             <MachineSelectionRowAccessory
                                 machine={machine}
                                 serverId={params.serverId}
-                                readinessTestID={buildReadinessTestID(params.testIdPrefix, machine)}
                                 showCliGlyphs={params.showCliGlyphs}
                                 autoDetectCliGlyphs={params.autoDetectCliGlyphs}
                                 showFavoriteToggle={params.showFavorites}
@@ -714,7 +772,7 @@ export function useMachineSelectionListModel(
                             />
                         ),
                         onSelect: () => {
-                            if (!resolveMachinePickerPresence(machine).selectable) return;
+                            if (!resolveRowAvailability(machine, group.serverId, params.resolveMachineAvailability).selectable) return;
                             selectMachine(machine);
                         },
                     } satisfies SelectionListOption;
@@ -766,13 +824,24 @@ export function useMachineSelectionListModel(
                     disabled: true,
                 }];
             } else {
+                const machineNames = resolveMachineDisplayNames(group.machines);
                 options = group.machines.map((machine) => {
-                    const presence = resolveMachinePickerPresence(machine);
+                    const availability = resolveRowAvailability(machine, group.serverId, params.resolveMachineAvailability);
+                    const presentation = params.resolveMachinePresentation?.(machine);
                     return {
                         id: `${group.serverId}::${machine.id}`,
                         testID: buildOptionTestID(params.testIdPrefix, machine),
-                        label: machineLabel(machine),
-                        subtitle: machineSubtitle(machine),
+                        label: presentation?.title ?? machineNames.get(machine.id) ?? machine.id,
+                        subtitle: machineStatusLine(
+                            machine,
+                            availability.reason ?? (presentation ? presentation.subtitle : machineSubtitle(machine)),
+                        ),
+                        subtitleLeading: (
+                            <MachinePresenceDot
+                                machine={machine}
+                                readinessTestID={buildReadinessTestID(params.testIdPrefix, machine)}
+                            />
+                        ),
                         icon: (
                             <Icon
                                 name="desktop"
@@ -780,20 +849,9 @@ export function useMachineSelectionListModel(
                                 color={theme.colors.text.secondary}
                             />
                         ),
-                        disabled: !presence.selectable,
-                        rightAccessory: (
-                            <MachineSelectionRowAccessory
-                                machine={machine}
-                                serverId={group.serverId}
-                                readinessTestID={buildReadinessTestID(params.testIdPrefix, machine)}
-                                showCliGlyphs={false}
-                                autoDetectCliGlyphs={false}
-                                showFavoriteToggle={false}
-                                isFavorite={false}
-                            />
-                        ),
+                        disabled: !availability.selectable,
                         onSelect: () => {
-                            if (!resolveMachinePickerPresence(machine).selectable) return;
+                            if (!resolveRowAvailability(machine, group.serverId, params.resolveMachineAvailability).selectable) return;
                             selectScopedMachine(machine);
                         },
                     } satisfies SelectionListOption;
@@ -858,6 +916,8 @@ export function useMachineSelectionListModel(
         selectPool,
         selectTemporaryComputer,
         params.recentMachines,
+        params.resolveMachineAvailability,
+        params.resolveMachinePresentation,
         params.selectedMachine,
         params.selectedServerId,
         params.serverId,

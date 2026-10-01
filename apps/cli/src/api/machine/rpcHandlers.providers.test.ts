@@ -168,11 +168,11 @@ describe('machine provider RPC registration', () => {
       action: 'delete', connectionId: 'pc_1', machineId: 'machine-a',
     })).resolves.toMatchObject({ status: 'error', error: { code: 'provider_feature_disabled' } });
     await expect(h.handlers.get(RPC_METHODS.DAEMON_PROVIDERS_MODEL_PROJECTION)!({
-      machineId: 'machine-a', agentTargetKey: 'backend:codex',
+      machineId: 'machine-a', agentTargetKey: 'agent:happier.agent.codex/codex',
     })).resolves.toMatchObject({ status: 'error', error: { code: 'provider_feature_disabled' } });
     await expect(h.handlers.get(RPC_METHODS.DAEMON_PROVIDERS_MODEL_SETTINGS_MUTATE)!({
       action: 'setVisibility', machineId: 'machine-a',
-      ref: { scope: 'agent', agentTargetKey: 'backend:codex', providerConnectionId: null, modelId: 'm' },
+      ref: { scope: 'agent', agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: null, modelId: 'm' },
       hidden: true,
     })).resolves.toMatchObject({ status: 'error', error: { code: 'provider_feature_disabled' } });
     await expect(h.handlers.get(RPC_METHODS.DAEMON_PROVIDERS_PROBE)!({
@@ -298,14 +298,14 @@ describe('machine provider RPC registration', () => {
 
   it('delegates strict exact-target projection and intent-only model settings mutations', async () => {
     const h = harness();
-    const projection = { machineId: 'machine-a', agentTargetKey: 'backend:codex' } as const;
+    const projection = { machineId: 'machine-a', agentTargetKey: 'agent:happier.agent.codex/codex' } as const;
     await expect(h.handlers.get(RPC_METHODS.DAEMON_PROVIDERS_MODEL_PROJECTION)!(projection))
-      .resolves.toEqual({ status: 'success', agentTargetKey: 'backend:codex', groups: [] });
+      .resolves.toEqual({ status: 'success', agentTargetKey: 'agent:happier.agent.codex/codex', groups: [] });
     expect(h.services.projectModels).toHaveBeenCalledWith(projection);
 
     const mutation = {
       action: 'setVisibility' as const, machineId: 'machine-a',
-      ref: { scope: 'agent' as const, agentTargetKey: 'backend:codex', providerConnectionId: null, modelId: 'm' },
+      ref: { scope: 'agent' as const, agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: null, modelId: 'm' },
       hidden: true,
     };
     await expect(h.handlers.get(RPC_METHODS.DAEMON_PROVIDERS_MODEL_SETTINGS_MUTATE)!(mutation))

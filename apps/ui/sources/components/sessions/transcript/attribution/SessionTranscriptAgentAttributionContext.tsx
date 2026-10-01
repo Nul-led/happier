@@ -1,7 +1,7 @@
 import * as React from 'react';
 
 import type { AgentId } from '@/agents/registry/registryCore';
-import type { Message } from '@/sync/domains/messages/messageTypes';
+import type { Message } from "@happier-dev/session-core/messages";
 
 import {
     buildSessionTranscriptAgentAttributionIndex,
@@ -9,7 +9,7 @@ import {
     EMPTY_SESSION_TRANSCRIPT_AGENT_ATTRIBUTION_INDEX,
     resolveHistoricalAgentIdAtSeq,
     type SessionTranscriptAgentAttributionIndex,
-} from './sessionTranscriptAgentAttribution';
+} from "@happier-dev/session-core/messages";
 
 /**
  * Transcript-scoped: the divider boundary index, built once at the transcript

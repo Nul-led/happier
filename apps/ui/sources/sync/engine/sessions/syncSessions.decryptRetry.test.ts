@@ -1,8 +1,9 @@
+import { type SessionMessageV1 } from '@happier-dev/protocol';
 import { describe, expect, it, vi } from 'vitest';
-import type { ApiMessage } from '@/sync/api/types/apiTypes';
+
 import { fetchAndApplyMessages } from './syncSessions';
 
-function buildEncryptedApiMessage(id: string, seq: number): ApiMessage {
+function buildEncryptedApiMessage(id: string, seq: number): SessionMessageV1 {
     return {
         id,
         seq,
@@ -27,7 +28,7 @@ describe('fetchAndApplyMessages (encrypted decrypt retry)', () => {
             { status: 200, headers: { 'Content-Type': 'application/json' } },
         ));
 
-        const decryptMessages = vi.fn(async (apiMessages: ApiMessage[]) =>
+        const decryptMessages = vi.fn(async (apiMessages: SessionMessageV1[]) =>
             apiMessages.map((m) => ({
                 id: m.id,
                 seq: m.seq,
@@ -62,7 +63,7 @@ describe('fetchAndApplyMessages (encrypted decrypt retry)', () => {
         ));
 
         let canDecrypt = false;
-        const decryptMessages = vi.fn(async (messages: ApiMessage[]) => {
+        const decryptMessages = vi.fn(async (messages: SessionMessageV1[]) => {
             return messages.map((m) => ({
                 id: m.id,
                 seq: m.seq,

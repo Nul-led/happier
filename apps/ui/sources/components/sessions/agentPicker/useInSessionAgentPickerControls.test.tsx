@@ -2,7 +2,7 @@ import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { createResolvedAgentCatalogEntryFixture } from '@/dev/testkit';
+import { createResolvedAgentCatalogEntryFixture } from '@/dev/testkit/fixtures/agentCatalogFixtures';
 import { renderHook } from '@/dev/testkit/hooks/renderHook';
 import type { AgentInputChipPickerOption } from '@/components/sessions/agentInput/components/AgentInputChipPickerTypes';
 import type { ResolvedBackendCatalogEntry } from '@/agents/backendCatalog/getResolvedBackendCatalogEntries';
@@ -25,12 +25,6 @@ import type {
 
 const announceAccessibilityMessage = vi.hoisted(() => vi.fn());
 
-// The host's pointer capability is a platform boundary, and it decides WHEN this
-// hook asks its machine anything. Held here so both answers can be exercised.
-const hoverCapablePrimaryPointer = vi.hoisted(() => ({ current: false }));
-vi.mock('@/utils/platform/webMobileHeuristics', () => ({
-    isHoverCapablePrimaryPointer: () => hoverCapablePrimaryPointer.current,
-}));
 const machineRpcWithServerScope = vi.hoisted(() => vi.fn());
 
 vi.mock('@/components/ui/accessibility/announceAccessibilityMessage', () => ({
@@ -165,6 +159,9 @@ function optionsOf(controls: ReturnType<typeof useInSessionAgentPickerControls>)
 /** Open the composer's Agent picker and let its inspections settle. */
 async function openPicker(hook: Awaited<ReturnType<typeof renderControls>>) {
     await act(async () => {
+        await Promise.resolve();
+    });
+    await act(async () => {
         hook.getCurrent().onAgentPickerVisibilityChange(true);
     });
     await act(async () => {
@@ -180,8 +177,14 @@ describe('useInSessionAgentPickerControls', () => {
         deleteRawSessionDraftValues(null);
         announceAccessibilityMessage.mockClear();
         machineRpcWithServerScope.mockReset();
-        machineRpcWithServerScope.mockResolvedValue(AVAILABLE);
-        hoverCapablePrimaryPointer.current = false;
+        machineRpcWithServerScope.mockImplementation((params: {
+            method: string;
+            payload: { selections?: readonly unknown[] };
+        }) => Promise.resolve(
+            params.method === 'session.continuation.inspectBatch'
+                ? { v: 1, inspections: (params.payload.selections ?? []).map(() => AVAILABLE) }
+                : AVAILABLE,
+        ));
         detailSelectionChangeRef.current = null;
         detailModelSummaryRef.current = null;
     });
@@ -208,44 +211,22 @@ describe('useInSessionAgentPickerControls', () => {
         expect(machineRpcWithServerScope).not.toHaveBeenCalled();
     });
 
-    it('has the answer before the popover is ever opened, so it opens decided', async () => {
-        // Asking when the popover opens is too late: the machine round trip and the
-        // popover's own mount take about the same time, so the popover would open
-        // at one width and grow by the width of the rail when the answers land.
+    it('preflights eligible targets before the first click can choose the model-only popover', async () => {
         const hook = await renderControls();
         await act(async () => { await Promise.resolve(); });
 
+        // The click that opens the picker also chooses between the shared Agent
+        // picker and the running Agent's model-only picker. Starting inspection
+        // from press-in is therefore too late: that click observes the old empty
+        // option list and opens the wrong surface. One batched preflight for a
+        // locally eligible Session makes the first click deterministic.
         expect(machineRpcWithServerScope).toHaveBeenCalledTimes(1);
-
-        // Opening it now changes nothing: the decision was already made.
         await act(async () => {
             hook.getCurrent().onAgentPickerVisibilityChange(true);
         });
+
         expect(optionsOf(hook.getCurrent()).map((option) => option.id))
             .toEqual(['engine:claude', 'backend:codex']);
-        expect(machineRpcWithServerScope).toHaveBeenCalledTimes(1);
-    });
-
-    it('waits for the reader to reach for the chip when the pointer can say so first', async () => {
-        // A pointer has to travel over the Agent chip to click it, so intent is a
-        // real signal and Sessions the reader never approaches cost nothing.
-        hoverCapablePrimaryPointer.current = true;
-        const hook = await renderControls();
-        await act(async () => { await Promise.resolve(); });
-
-        expect(machineRpcWithServerScope).not.toHaveBeenCalled();
-
-        await act(async () => {
-            hook.getCurrent().onAgentPickerIntent();
-        });
-        await act(async () => { await Promise.resolve(); });
-
-        // Asked on approach, and the rail is decided before the popover is opened.
-        expect(machineRpcWithServerScope).toHaveBeenCalledTimes(1);
-        await act(async () => {
-            hook.getCurrent().onAgentPickerVisibilityChange(true);
-        });
-        expect(optionsOf(hook.getCurrent()).length).toBeGreaterThan(1);
         expect(machineRpcWithServerScope).toHaveBeenCalledTimes(1);
     });
 
@@ -313,25 +294,16 @@ describe('useInSessionAgentPickerControls', () => {
         }
     });
 
-    it('holds a target still being asked about in the restrained pending treatment', async () => {
-        // A live rail can still contain an unanswered row when its siblings have
-        // already answered. That row is disabled and says it is being checked; it
-        // never claims a refusal it has not been given.
-        machineRpcWithServerScope.mockImplementation((params: { payload: { selection: { agentId: string } } }) => (
-            params.payload.selection.agentId === 'codex'
-                ? Promise.resolve(AVAILABLE)
-                : new Promise(() => {})
-        ));
+    it('publishes every target answer from one ordered picker projection', async () => {
         const hook = await renderControls({ entries: [entry('claude'), entry('codex'), entry('gemini')] });
         await openPicker(hook);
 
-        const geminiOption = optionsOf(hook.getCurrent())
-            .find((option) => option.id === 'backend:gemini');
-        expect(geminiOption).toMatchObject({
-            disabled: true,
-            subtitle: t('session.agentContinuation.checking'),
-        });
-        expect(geminiOption?.onApply).toBeUndefined();
+        expect(machineRpcWithServerScope).toHaveBeenCalledTimes(1);
+        expect(optionsOf(hook.getCurrent()).map((option) => option.id)).toEqual([
+            'engine:claude',
+            'backend:codex',
+            'backend:gemini',
+        ]);
     });
 
     it('makes an eligible Agent armable once its machine reports live support', async () => {
@@ -342,8 +314,8 @@ describe('useInSessionAgentPickerControls', () => {
         expect(machineRpcWithServerScope).toHaveBeenCalledWith(expect.objectContaining({
             machineId: 'machine-1',
             serverId: 'server-1',
-            method: 'session.continuation.inspect',
-            payload: { v: 1, sourceSessionId: 'session-1', selection: { v: 1, agentId: 'codex' } },
+            method: 'session.continuation.inspectBatch',
+            payload: { v: 1, sourceSessionId: 'session-1', selections: [{ v: 1, agentId: 'codex' }] },
         }));
 
         const [, codexOption] = optionsOf(hook.getCurrent());
@@ -370,8 +342,8 @@ describe('useInSessionAgentPickerControls', () => {
         await openPicker(hook);
 
         expect(machineRpcWithServerScope).toHaveBeenCalledWith(expect.objectContaining({
-            method: 'session.continuation.inspect',
-            payload: { v: 1, sourceSessionId: 'session-1', selection: { v: 1, agentId: 'ultracode' } },
+            method: 'session.continuation.inspectBatch',
+            payload: { v: 1, sourceSessionId: 'session-1', selections: [{ v: 1, agentId: 'ultracode' }] },
         }));
         expect(optionsOf(hook.getCurrent())).toEqual(expect.arrayContaining([
             expect.objectContaining({ id: 'backend:ultracode', label: 'UltraCode', disabled: false }),
@@ -528,9 +500,9 @@ describe('useInSessionAgentPickerControls', () => {
         let resolveChangedSelection: ((value: unknown) => void) | null = null;
         machineRpcWithServerScope.mockClear();
         machineRpcWithServerScope.mockImplementation((params: {
-            payload: { selection: Record<string, unknown> };
+            payload: { selections: readonly Record<string, unknown>[] };
         }) => {
-            expect(params.payload.selection).toMatchObject({
+            expect(params.payload.selections[0]).toMatchObject({
                 v: 1,
                 agentId: 'codex',
                 modelId: 'opus-5',
@@ -568,7 +540,7 @@ describe('useInSessionAgentPickerControls', () => {
         expect(machineRpcWithServerScope).toHaveBeenCalledTimes(1);
 
         await act(async () => {
-            resolveChangedSelection?.(AVAILABLE);
+            resolveChangedSelection?.({ v: 1, inspections: [AVAILABLE] });
             await Promise.resolve();
         });
         await act(async () => { await Promise.resolve(); });
@@ -594,12 +566,12 @@ describe('useInSessionAgentPickerControls', () => {
         let resolveChangedSelection: ((value: unknown) => void) | null = null;
         machineRpcWithServerScope.mockClear();
         machineRpcWithServerScope.mockImplementation((params: {
-            payload: { selection: Record<string, unknown> };
+            payload: { selections: readonly Record<string, unknown>[] };
         }) => {
             // The strict transition schema requires a modelId whenever a
             // connection is set, so dropping `default` here makes the exact
             // inspection unparseable and the row unarmable.
-            expect(params.payload.selection).toMatchObject({
+            expect(params.payload.selections[0]).toMatchObject({
                 v: 1,
                 agentId: 'codex',
                 modelId: 'default',
@@ -630,7 +602,7 @@ describe('useInSessionAgentPickerControls', () => {
 
         expect(machineRpcWithServerScope).toHaveBeenCalledTimes(1);
         await act(async () => {
-            resolveChangedSelection?.(AVAILABLE);
+            resolveChangedSelection?.({ v: 1, inspections: [AVAILABLE] });
             await Promise.resolve();
         });
         await act(async () => { await Promise.resolve(); });
@@ -1038,7 +1010,13 @@ describe('useInSessionAgentPickerControls', () => {
         expect(whileWaiting).toEqual(['engine:claude']);
 
         await act(async () => {
-            for (const resolve of answers) resolve({ type: 'unavailable', reason: 'unsupported_session' });
+            for (const resolve of answers) resolve({
+                v: 1,
+                inspections: [
+                    { type: 'unavailable', reason: 'unsupported_session' },
+                    { type: 'unavailable', reason: 'unsupported_session' },
+                ],
+            });
             await Promise.resolve();
         });
         await act(async () => { await Promise.resolve(); });
@@ -1063,7 +1041,7 @@ describe('useInSessionAgentPickerControls', () => {
             .toEqual(['engine:claude']);
 
         await act(async () => {
-            resolveInspection?.(AVAILABLE);
+            resolveInspection?.({ v: 1, inspections: [AVAILABLE] });
             await Promise.resolve();
         });
         await act(async () => { await Promise.resolve(); });

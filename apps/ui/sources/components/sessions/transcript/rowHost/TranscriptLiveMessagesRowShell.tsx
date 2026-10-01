@@ -5,8 +5,9 @@ import type { ChatTranscriptListItem } from '@/components/sessions/transcript/ch
 import type { TranscriptItemHeightValiditySignature } from '@/components/sessions/transcript/measurement/transcriptItemHeightCache';
 import type { TranscriptMeasurementReconciler } from '@/components/sessions/transcript/measurement/transcriptMeasurementReconciler';
 import type { TranscriptRowLayoutMutation } from '@/components/sessions/transcript/measurement/TranscriptRowLayoutMutationContext';
-import type { Message } from '@/sync/domains/messages/messageTypes';
-import { useMessagesByRefs, type MessageStoreRef } from '@/sync/domains/state/storage';
+import type { Message } from "@happier-dev/session-core/messages";
+import type { MessageStoreRef } from '@/sync/domains/state/storage';
+import { useTranscriptMessagesByRefs } from '@/components/sessions/transcript/source/appSessionTranscriptSource';
 
 export const TranscriptLiveMessagesRowShell = React.memo(function TranscriptLiveMessagesRowShell(
     props: Readonly<{
@@ -24,7 +25,7 @@ export const TranscriptLiveMessagesRowShell = React.memo(function TranscriptLive
         children: (messages: readonly Message[]) => React.ReactNode;
     }>,
 ) {
-    const subscribedMessages = useMessagesByRefs(props.messageRefs);
+    const subscribedMessages = useTranscriptMessagesByRefs(props.messageRefs);
     const messages = React.useMemo(() => {
         const initialById = new Map(props.initialMessages.map((message) => [message.id, message]));
         return subscribedMessages.flatMap((message, index) => {

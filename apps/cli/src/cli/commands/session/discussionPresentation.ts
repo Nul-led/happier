@@ -57,30 +57,75 @@ function renderSummary(discussion: SessionDiscussionOpenedSummaryV1): string {
   ]);
 }
 
-function renderContent(content: SessionDiscussionMessageContentV1): string {
+/**
+ * The sanitized display identity this actor projection carries, without the
+ * `@` sigil: an author line spells a username `@bo` while a mention already
+ * carries its own `@`.
+ */
+function resolveActorName(actor: SessionDiscussionOpenedMessageV1['accountActor']): Readonly<{
+  label: string;
+  isUsername: boolean;
+}> | null {
+  const profile = actor?.profile ?? null;
+  if (profile === null) return null;
+  const fullName = [profile.firstName, profile.lastName]
+    .map((part) => part?.trim() ?? '')
+    .filter(Boolean)
+    .join(' ');
+  if (fullName) return { label: fullName, isUsername: false };
+  const username = profile.username?.trim();
+  return username ? { label: username, isUsername: true } : null;
+}
+
+/**
+ * Mention labels for one read page.
+ *
+ * The page already carries a sanitized actor projection for every author, so a
+ * mention of someone who has spoken here renders as that person rather than as
+ * one shared token. Account ids stay out of the human surface (`--json` carries
+ * the exact ids), so a mention this page cannot identify keeps the generic
+ * member label instead of leaking part of a private id.
+ */
+export function buildDiscussionMentionLabels(
+  messages: readonly SessionDiscussionOpenedMessageV1[],
+): ReadonlyMap<string, string> {
+  const labels = new Map<string, string>();
+  for (const message of messages) {
+    const accountId = message.accountActor?.accountId ?? message.authorAccountId;
+    if (accountId === null || labels.has(accountId)) continue;
+    const name = resolveActorName(message.accountActor);
+    if (name) labels.set(accountId, name.label);
+  }
+  return labels;
+}
+
+function renderContent(
+  content: SessionDiscussionMessageContentV1,
+  mentionLabels: ReadonlyMap<string, string>,
+): string {
   return content.parts.map((part) => (
-    part.t === 'text' ? part.text : '@Happier member'
+    part.t === 'text' ? part.text : `@${mentionLabels.get(part.accountId) ?? 'Happier member'}`
   )).join('');
 }
 
 function renderAccountActor(message: SessionDiscussionOpenedMessageV1): string {
   const actor = message.accountActor;
   if (actor === null) return 'Unknown author';
-  const profile = actor.profile;
-  if (profile === null) return 'Former member';
-  const fullName = [profile.firstName, profile.lastName]
-    .map((part) => part?.trim() ?? '')
-    .filter(Boolean)
-    .join(' ');
-  if (fullName) return fullName;
-  const username = profile.username?.trim();
-  return username ? `@${username}` : 'Happier member';
+  if (actor.profile === null) return 'Former member';
+  const name = resolveActorName(actor);
+  if (name === null) return 'Happier member';
+  return name.isUsername ? `@${name.label}` : name.label;
 }
 
-export function formatDiscussionMessageForHuman(message: SessionDiscussionOpenedMessageV1): string {
+export function formatDiscussionMessageForHuman(
+  message: SessionDiscussionOpenedMessageV1,
+  mentionLabels: ReadonlyMap<string, string> = new Map(),
+): string {
   const actor = renderAccountActor(message);
   const author = message.producerV1?.kind === 'agent' ? `${actor} · Via Agent` : actor;
-  const content = message.content === null ? '[content unavailable]' : renderContent(message.content);
+  const content = message.content === null
+    ? '[content unavailable]'
+    : renderContent(message.content, mentionLabels);
   return `${message.seq}. ${author}: ${content}`;
 }
 
@@ -125,7 +170,8 @@ export const SESSION_DISCUSSION_READ_PRESENTATION: ActionCliPresentation = succe
   parse: (payload) => SessionDiscussionReadResultV1Schema.parse(payload),
   human: (result) => {
     if (result.messages.length === 0) console.log('(no messages)');
-    for (const message of result.messages) console.log(formatDiscussionMessageForHuman(message));
+    const mentionLabels = buildDiscussionMentionLabels(result.messages);
+    for (const message of result.messages) console.log(formatDiscussionMessageForHuman(message, mentionLabels));
     if (result.hasMoreOlder) console.log('Older messages are available.');
     if (result.incomplete) console.log('Some message content is unavailable.');
   },

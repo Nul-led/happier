@@ -188,6 +188,34 @@ describe('createSessionFollowSourceKeyPreparationAfterSet', () => {
     }));
   });
 
+  it('uses the authenticated feature-snapshot Home identity carried by Action context', async () => {
+    const { credentials, sourceDataEncryptionKey, envelope } = sealSourceEnvelope(27);
+    mockSourceAndDestination(envelope);
+    let observedHomeServerIdentityId: string | undefined;
+    prepareSessionFollowSourceKey.mockImplementation(async (input: {
+      homeServerIdentityId: string;
+      sourceDataEncryptionKey: Uint8Array;
+    }) => {
+      observedHomeServerIdentityId = input.homeServerIdentityId;
+      expect(input.sourceDataEncryptionKey).toEqual(sourceDataEncryptionKey);
+      return { kind: 'prepared' as const };
+    });
+    const preparation = createSessionFollowSourceKeyPreparationAfterSet({
+      credentials,
+      serverHttpBaseUrl: 'https://home.example',
+    });
+
+    await expect(preparation({
+      sourceSessionId: 'source',
+      destinationSessionId: 'destination',
+      // createCliActionExecutorFromCredentials enriches this from the exact
+      // authenticated feature snapshot before invoking the Follow owner.
+      context: { serverIdentityId: 'srv_snapshot_home' },
+    })).resolves.toEqual({ kind: 'prepared' });
+
+    expect(observedHomeServerIdentityId).toBe('srv_snapshot_home');
+  });
+
   it('returns the current DataKey Runner trust outcome instead of treating an opened source as prepared', async () => {
     const accountKey = new Uint8Array(32).fill(41);
     const recipientPublicKey = nacl.box.keyPair.fromSecretKey(accountKey).publicKey;

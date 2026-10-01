@@ -1,14 +1,15 @@
 import { describe, expect, it } from 'vitest';
+import { AUTOMATION_TEMPLATE_V02_PLAIN, AUTOMATION_TEMPLATE_V02_ENCRYPTED, AUTOMATION_TEMPLATE_V02_RAW_ENCRYPTED,
+  AUTOMATION_TEMPLATE_V02_EXISTING_PLAIN, AUTOMATION_TEMPLATE_V02_EXISTING_ENCRYPTED, AUTOMATION_TEMPLATE_V02_EXISTING_RAW_ENCRYPTED }
+  from '../../../../../packages/protocol/src/automations/automationTemplateV02.testFixtures';
 import { encodeBase64, encryptLegacy } from '@/api/encryption';
 import {
-  MAX_AUTOMATION_MATERIALIZED_INPUT_UTF8_BYTES,
   sealAccountScopedBlobCiphertext,
 } from '@happier-dev/protocol';
 
 import {
   parseAutomationTemplateExecution,
-  materializeAutomationTemplatePrompt,
-  type AutomationClaimedRunPayload,
+  type AutomationTemplateExecutionInput,
 } from './automationTemplateExecution';
 
 function buildEncryptedTemplateCiphertext(
@@ -42,27 +43,32 @@ function buildPlainTemplateCiphertext(
   });
 }
 
-function buildClaimedRun(override?: Partial<AutomationClaimedRunPayload>): AutomationClaimedRunPayload {
-  return {
-    run: {
-      id: 'run-1',
-      automationId: 'a1',
-    },
-    automation: {
-      id: 'a1',
-      name: 'Daily',
-      enabled: true,
-      targetType: 'new_session',
-      templateCiphertext: buildEncryptedTemplateCiphertext({
-        directory: '/tmp/project',
-        agent: 'codex',
-      }),
-    },
-    ...override,
+function buildClaimedRun(override?: Readonly<{ automation?: AutomationTemplateExecutionInput & {
+  id: string; name: string; enabled: boolean;
+} }>): AutomationTemplateExecutionInput {
+  return override?.automation ?? {
+    targetType: 'new_session',
+    templateCiphertext: buildEncryptedTemplateCiphertext({
+      directory: '/tmp/project',
+      agent: 'codex',
+    }),
   };
 }
 
 describe('parseAutomationTemplateExecution', () => {
+  it.each([AUTOMATION_TEMPLATE_V02_PLAIN, AUTOMATION_TEMPLATE_V02_ENCRYPTED, AUTOMATION_TEMPLATE_V02_RAW_ENCRYPTED])('executes exact 0.2 new-session writer bytes', (templateCiphertext) => {
+    const parsed = parseAutomationTemplateExecution(buildClaimedRun({ automation: {
+      id: 'a1', name: '0.2', enabled: true, targetType: 'new_session', templateCiphertext,
+    } }), { type: 'legacy', secret: new Uint8Array(32).fill(7) }, templateCiphertext === AUTOMATION_TEMPLATE_V02_PLAIN || templateCiphertext === AUTOMATION_TEMPLATE_V02_EXISTING_PLAIN ? 'plain' : 'e2ee');
+    expect(parsed).toMatchObject({ ok: true, value: { directory: '/repo', prompt: 'Review the release',
+      backendTarget: { kind: 'backend', backendId: 'claude', sourceKind: 'built_in' }, permissionMode: 'default' } });
+  });
+  it.each([AUTOMATION_TEMPLATE_V02_EXISTING_PLAIN, AUTOMATION_TEMPLATE_V02_EXISTING_ENCRYPTED, AUTOMATION_TEMPLATE_V02_EXISTING_RAW_ENCRYPTED])('executes exact 0.2 existing-session writer bytes', (templateCiphertext) => {
+    const parsed = parseAutomationTemplateExecution(buildClaimedRun({ automation: {
+      id: 'a1', name: '0.2', enabled: true, targetType: 'existing_session', templateCiphertext,
+    } }), { type: 'legacy', secret: new Uint8Array(32).fill(7) }, templateCiphertext === AUTOMATION_TEMPLATE_V02_PLAIN || templateCiphertext === AUTOMATION_TEMPLATE_V02_EXISTING_PLAIN ? 'plain' : 'e2ee');
+    expect(parsed).toMatchObject({ ok: true, value: { existingSessionId: 'session-old', directory: '/repo', prompt: 'Review the release' } });
+  });
   it('decrypts templates encrypted with protocol account-scoped v1 (legacy mode)', () => {
     const secret = new Uint8Array(32).fill(7);
     const payloadCiphertext = sealAccountScopedBlobCiphertext({
@@ -88,7 +94,7 @@ describe('parseAutomationTemplateExecution', () => {
           }),
         },
       }),
-      { type: 'legacy', secret },
+      { type: 'legacy', secret }, 'e2ee'
     );
 
     expect(parsed.ok).toBe(true);
@@ -122,7 +128,7 @@ describe('parseAutomationTemplateExecution', () => {
           }),
         },
       }),
-      { type: 'dataKey', machineKey },
+      { type: 'dataKey', machineKey }, 'e2ee'
     );
 
     expect(parsed.ok).toBe(true);
@@ -148,7 +154,7 @@ describe('parseAutomationTemplateExecution', () => {
       {
         type: 'legacy',
         secret: new Uint8Array(32).fill(7),
-      },
+      }, 'e2ee'
     );
     expect(parsed.ok).toBe(false);
     if (parsed.ok) return;
@@ -170,7 +176,7 @@ describe('parseAutomationTemplateExecution', () => {
           }),
         },
       }),
-      undefined,
+      undefined, 'plain'
     );
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
@@ -198,7 +204,7 @@ describe('parseAutomationTemplateExecution', () => {
           }),
         },
       }),
-      undefined,
+      undefined, 'plain'
     );
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
@@ -237,7 +243,7 @@ describe('parseAutomationTemplateExecution', () => {
           }),
         },
       }),
-      undefined,
+      undefined, 'plain'
     );
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
@@ -272,7 +278,7 @@ describe('parseAutomationTemplateExecution', () => {
           }),
         },
       }),
-      undefined,
+      undefined, 'plain'
     );
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
@@ -299,7 +305,7 @@ describe('parseAutomationTemplateExecution', () => {
           }),
         },
       }),
-      undefined,
+      undefined, 'plain'
     );
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
@@ -321,7 +327,7 @@ describe('parseAutomationTemplateExecution', () => {
               v: 1,
               updatedAt: 42,
               ref: {
-                agentTargetKey: 'backend:codex',
+                agentTargetKey: 'agent:happier.agent.codex/codex',
                 providerConnectionId: 'pc_work',
                 modelId: 'default',
               },
@@ -329,7 +335,7 @@ describe('parseAutomationTemplateExecution', () => {
           }),
         },
       }),
-      undefined,
+      undefined, 'plain'
     );
 
     expect(parsed).toMatchObject({
@@ -339,7 +345,7 @@ describe('parseAutomationTemplateExecution', () => {
           v: 1,
           updatedAt: 42,
           ref: {
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             providerConnectionId: 'pc_work',
             modelId: 'default',
           },
@@ -365,7 +371,7 @@ describe('parseAutomationTemplateExecution', () => {
           }),
         },
       }),
-      undefined,
+      undefined, 'plain'
     );
 
     expect(parsed).toMatchObject({ ok: true });
@@ -394,7 +400,7 @@ describe('parseAutomationTemplateExecution', () => {
           }),
         },
       }),
-      undefined,
+      undefined, 'plain'
     );
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
@@ -420,7 +426,7 @@ describe('parseAutomationTemplateExecution', () => {
           }),
         },
       }),
-      undefined,
+      undefined, 'plain'
     );
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
@@ -451,7 +457,7 @@ describe('parseAutomationTemplateExecution', () => {
           }),
         },
       }),
-      undefined,
+      undefined, 'plain'
     );
 
     expect(parsed.ok).toBe(true);
@@ -483,7 +489,7 @@ describe('parseAutomationTemplateExecution', () => {
           }),
         },
       }),
-      undefined,
+      undefined, 'plain'
     );
 
     expect(parsed.ok).toBe(true);
@@ -517,7 +523,7 @@ describe('parseAutomationTemplateExecution', () => {
           }),
         },
       }),
-      undefined,
+      undefined, 'plain'
     );
 
     expect(parsed.ok).toBe(false);
@@ -543,7 +549,7 @@ describe('parseAutomationTemplateExecution', () => {
           }),
         },
       }),
-      undefined,
+      undefined, 'plain'
     );
 
     expect(parsed.ok).toBe(true);
@@ -572,7 +578,7 @@ describe('parseAutomationTemplateExecution', () => {
           }),
         },
       }),
-      undefined,
+      undefined, 'plain'
     );
 
     expect(parsed.ok).toBe(true);
@@ -595,7 +601,7 @@ describe('parseAutomationTemplateExecution', () => {
           }),
         },
       }),
-      undefined,
+      undefined, 'plain'
     );
 
     expect(parsed.ok).toBe(false);
@@ -617,7 +623,7 @@ describe('parseAutomationTemplateExecution', () => {
           }),
         },
       }),
-      undefined,
+      undefined, 'plain'
     );
 
     expect(parsed.ok).toBe(false);
@@ -631,7 +637,7 @@ describe('parseAutomationTemplateExecution', () => {
       {
         type: 'legacy',
         secret: new Uint8Array(32).fill(7),
-      },
+      }, 'e2ee'
     );
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
@@ -651,7 +657,7 @@ describe('parseAutomationTemplateExecution', () => {
           targetType: 'new_session',
           templateCiphertext: '{not-json',
         },
-      }),
+      }), undefined, 'e2ee'
     );
 
     expect(parsed.ok).toBe(false);
@@ -660,7 +666,7 @@ describe('parseAutomationTemplateExecution', () => {
   });
 
   it('distinguishes a retained encrypted template whose account material is unavailable', () => {
-    const parsed = parseAutomationTemplateExecution(buildClaimedRun());
+    const parsed = parseAutomationTemplateExecution(buildClaimedRun(), undefined, 'e2ee');
 
     expect(parsed).toEqual({
       ok: false,
@@ -689,7 +695,7 @@ describe('parseAutomationTemplateExecution', () => {
       {
         type: 'legacy',
         secret: new Uint8Array(32).fill(7),
-      },
+      }, 'e2ee'
     );
 
     expect(parsed.ok).toBe(true);
@@ -718,7 +724,7 @@ describe('parseAutomationTemplateExecution', () => {
       {
         type: 'legacy',
         secret: new Uint8Array(32).fill(7),
-      },
+      }, 'e2ee'
     );
 
     expect(parsed.ok).toBe(true);
@@ -742,7 +748,7 @@ describe('parseAutomationTemplateExecution', () => {
             prompt: 'Run checks',
           }),
         },
-      }),
+      }), undefined, 'plain'
     );
 
     expect(parsed.ok).toBe(true);
@@ -764,7 +770,7 @@ describe('parseAutomationTemplateExecution', () => {
             { existingSessionId: 'session-outer' },
           ),
         },
-      }),
+      }), undefined, 'plain'
     );
 
     expect(parsed.ok).toBe(false);
@@ -792,7 +798,7 @@ describe('parseAutomationTemplateExecution', () => {
       {
         type: 'legacy',
         secret: new Uint8Array(32).fill(7),
-      },
+      }, 'e2ee'
     );
 
     expect(parsed.ok).toBe(false);
@@ -822,7 +828,7 @@ describe('parseAutomationTemplateExecution', () => {
       {
         type: 'legacy',
         secret: new Uint8Array(32).fill(7),
-      },
+      }, 'e2ee'
     );
 
     expect(parsed.ok).toBe(false);
@@ -859,7 +865,7 @@ describe('parseAutomationTemplateExecution', () => {
       {
         type: 'legacy',
         secret,
-      },
+      }, 'e2ee'
     );
 
     expect(parsed.ok).toBe(true);
@@ -892,7 +898,7 @@ describe('parseAutomationTemplateExecution', () => {
         // The UI seals templates using a symmetric secretbox key derived from the machine key.
         type: 'dataKey',
         machineKey,
-      },
+      }, 'e2ee'
     );
 
     expect(parsed.ok).toBe(true);
@@ -901,33 +907,4 @@ describe('parseAutomationTemplateExecution', () => {
     expect(parsed.value.prompt).toBe('Run secretbox while in dataKey mode');
   });
 
-  it('keeps schedule/manual input legacy-safe and makes the materialized byte limit exact', () => {
-    expect(materializeAutomationTemplatePrompt({
-      prompt: 'Run legacy input: {{input}}',
-    })).toEqual({ ok: true, prompt: 'Run legacy input: ' });
-
-    const atLimit = materializeAutomationTemplatePrompt({
-      prompt: 'a'.repeat(MAX_AUTOMATION_MATERIALIZED_INPUT_UTF8_BYTES),
-    });
-    expect(atLimit.ok).toBe(true);
-    if (atLimit.ok) {
-      expect(atLimit.prompt).toHaveLength(MAX_AUTOMATION_MATERIALIZED_INPUT_UTF8_BYTES);
-    }
-
-    expect(materializeAutomationTemplatePrompt({
-      prompt: 'a'.repeat(MAX_AUTOMATION_MATERIALIZED_INPUT_UTF8_BYTES + 1),
-    })).toEqual({
-      ok: false,
-      code: 'invalid_template',
-      error: 'Invalid automation template: materialized input exceeds its UTF-8 byte limit',
-    });
-
-    expect(materializeAutomationTemplatePrompt({
-      prompt: 'closing }} first',
-    })).toEqual({
-      ok: false,
-      code: 'invalid_template',
-      error: 'Invalid automation template: malformed token',
-    });
-  });
 });

@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
     QUOTA_REMAINING_CRITICAL_THRESHOLD_PCT,
     QUOTA_REMAINING_WARNING_THRESHOLD_PCT,
+    resolveQuotaMeterTone,
     resolveQuotaTone,
 } from './resolveQuotaTone';
 
@@ -29,5 +30,13 @@ describe('resolveQuotaTone', () => {
         expect(resolveQuotaTone(null)).toBe('neutral');
         expect(resolveQuotaTone(Number.NaN)).toBe('neutral');
         expect(resolveQuotaTone(Number.POSITIVE_INFINITY)).toBe('neutral');
+    });
+
+    it('colours a reported meter by what is left, and a meter without a trustworthy value as neutral', () => {
+        expect(resolveQuotaMeterTone({ remainingPct: 25, status: 'ok' })).toBe('warning');
+        expect(resolveQuotaMeterTone({ remainingPct: 5, status: 'ok' })).toBe('danger');
+        // Unavailable and estimated values carry no health claim.
+        expect(resolveQuotaMeterTone({ remainingPct: 5, status: 'unavailable' })).toBe('neutral');
+        expect(resolveQuotaMeterTone({ remainingPct: 5, status: 'estimated' })).toBe('neutral');
     });
 });

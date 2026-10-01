@@ -6,6 +6,7 @@ import type {
     TranscriptRendererNativePhysicalViewportObservationResult,
     TranscriptRendererScrollToIndexParams,
     TranscriptRendererEntryAnchorHold,
+    TranscriptRendererWebHoldTarget,
     TranscriptViewportInputEvidence,
 } from '@/components/sessions/transcript/viewport/shell/renderer/types';
 
@@ -41,10 +42,7 @@ export type ScrollableChatListRef = Readonly<{
      * the held-'end' tail contract or a keyed anchor hold for the exact item — so command
      * re-verification and tail follow-writes do not become competing scroll writers.
      */
-    hasLiveWebHold?: (target:
-        | Readonly<{ kind: 'end' }>
-        | Readonly<{ kind: 'item'; itemId: string }>,
-    ) => boolean;
+    hasLiveWebHold?: (target: TranscriptRendererWebHoldTarget) => boolean;
     /**
      * Web only: an explicit user navigation away from the tail revokes the
      * renderer's held-'end' intent immediately (see the shell renderer contract).

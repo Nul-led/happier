@@ -55,6 +55,7 @@ const sessionScmStashShowSpy = vi.fn<
 const sessionScmStashPopSpy = vi.fn<
     (sessionId: string, request: ScmStashPopRequest) => Promise<ScmStashPopResponse>
 >(async (_sessionId, _request) => ({ success: true }));
+const sessionScmStashApplySpy = vi.fn(async (_sessionId: string, _request: { stashRef: string }) => ({ success: true }));
 const sessionScmStashDropSpy = vi.fn<
     (sessionId: string, request: ScmStashDropRequest) => Promise<ScmStashDropResponse>
 >(async (_sessionId, _request) => ({ success: true }));
@@ -128,6 +129,7 @@ vi.mock('@/sync/ops', async (importOriginal) => {
             sessionScmStashShow: (sessionId: string, request: ScmStashShowRequest) => sessionScmStashShowSpy(sessionId, request),
             sessionScmStashPop: (sessionId: string, request: ScmStashPopRequest) => sessionScmStashPopSpy(sessionId, request),
             sessionScmStashDrop: (sessionId: string, request: ScmStashDropRequest) => sessionScmStashDropSpy(sessionId, request),
+            sessionScmStashApply: (sessionId: string, request: { stashRef: string }) => sessionScmStashApplySpy(sessionId, request),
             sessionScmRepositoryRemoveIndexLock: (sessionId: string, request: ScmRepositoryRemoveIndexLockRequest) =>
                 sessionScmRepositoryRemoveIndexLockSpy(sessionId, request),
         },
@@ -319,6 +321,10 @@ describe('SessionScmStashDetailsView', () => {
             await advanceTimersByCount(4);
             expect(sessionScmStashListSpy).toHaveBeenCalledTimes(5);
 
+            // Pane-states: the failure is a designed state with its recovery; the transport text is
+            // the diagnostic behind its Details disclosure.
+            expect(screen.findByTestId('scm-stash-details-error')).not.toBeNull();
+            await screen.pressByTestIdAsync('scm-stash-details-error-details-toggle');
             expect(screen.getTextContent()).toContain('RPC method not available');
         });
     });
@@ -340,6 +346,8 @@ describe('SessionScmStashDetailsView', () => {
             await advanceTimersByCount(4);
             expect(sessionScmStashShowSpy).toHaveBeenCalledTimes(5);
 
+            expect(screen.findByTestId('scm-stash-diff-error')).not.toBeNull();
+            await screen.pressByTestIdAsync('scm-stash-diff-error-details-toggle');
             expect(screen.getTextContent()).toContain('RPC method not available');
         });
     });
@@ -370,28 +378,43 @@ describe('SessionScmStashDetailsView', () => {
 
         const screen = await renderStashDetailsView();
 
-        const stashSelector = screen.tree.findByProps({ title: 'files.stash.detailsTitle' });
-        expect(String(stashSelector.props.subtitle ?? '')).toContain('stash@{0}');
+        expect(screen.getTextContent()).toContain('stash@{0}');
 
+        // The title is the switcher: choosing another stash through its menu shows that stash.
+        const switcher = screen.tree.root.findAll((node) => Array.isArray(node.props?.items)
+            && typeof node.props?.onSelect === 'function'
+            && node.props.items.some((item: { id?: string }) => item.id === 'stash@{1}'))[0];
+        expect(switcher).toBeTruthy();
         await act(async () => {
-            stashSelector.props.onPress?.();
-            await new Promise<void>((resolve) => {
-                setTimeout(resolve, 0);
-            });
-            await settleStashDetailsView();
-        });
-
-        const unmanagedOption = screen.tree.findByProps({
-            testID: `dropdown-option-${String('stash@{1}').replace(/[^a-zA-Z0-9_-]/g, '_')}`,
-        });
-        await act(async () => {
-            unmanagedOption.props.onPress?.();
+            switcher.props.onSelect('stash@{1}');
             await settleStashDetailsView();
         });
 
         expect(sessionScmStashShowSpy).toHaveBeenCalledWith('s1', expect.objectContaining({ stashRef: 'stash@{1}' }));
-        const updatedSelector = screen.tree.findByProps({ title: 'files.stash.detailsTitle' });
-        expect(String(updatedSelector.props.subtitle ?? '')).toContain('stash@{1}');
+        expect(screen.getTextContent()).toContain('stash@{1}');
+    });
+
+    it('names the stash as where it came from and says what Restore will do before you press it', async () => {
+        const screen = await renderStashDetailsView();
+        const title = screen.findAllByTestId('scm-stash-details-header.title').find((node) => typeof node.type === 'string');
+        expect(title?.children.join('')).toBe('detailsSurface.history.stashKeptOn');
+        expect(screen.getTextContent()).toContain('detailsSurface.history.stashRestoreExplains');
+        expect(screen.getTextContent()).not.toContain('files.stash.detailsTitle');
+    });
+
+    it('applies the selected stash and keeps it', async () => {
+        sessionScmStashApplySpy.mockClear();
+        sessionScmStashPopSpy.mockClear();
+        sessionScmStashDropSpy.mockClear();
+        const screen = await renderStashDetailsView();
+
+        await screen.pressByTestIdAsync('scm-stash-apply-button');
+        await settleStashDetailsView();
+
+        expect(sessionScmStashApplySpy).toHaveBeenCalledWith('s1', expect.objectContaining({ stashRef: 'stash@{0}' }));
+        expect(sessionScmStashPopSpy).not.toHaveBeenCalled();
+        expect(sessionScmStashDropSpy).not.toHaveBeenCalled();
+        expect(invalidateFromMutationAndAwaitSpy).toHaveBeenCalledWith('s1', undefined);
     });
 
     it('pops the selected stash when restoring', async () => {
@@ -401,7 +424,7 @@ describe('SessionScmStashDetailsView', () => {
         await settleStashDetailsView();
 
         expect(sessionScmStashPopSpy).toHaveBeenCalledWith('s1', expect.objectContaining({ stashRef: 'stash@{0}' }));
-        expect(invalidateFromMutationAndAwaitSpy).toHaveBeenCalledWith('s1');
+        expect(invalidateFromMutationAndAwaitSpy).toHaveBeenCalledWith('s1', undefined);
         expect(modalAlertSpy).not.toHaveBeenCalled();
     });
 
@@ -412,7 +435,7 @@ describe('SessionScmStashDetailsView', () => {
         await settleStashDetailsView();
 
         expect(sessionScmStashDropSpy).toHaveBeenCalledWith('s1', expect.objectContaining({ stashRef: 'stash@{0}' }));
-        expect(invalidateFromMutationAndAwaitSpy).toHaveBeenCalledWith('s1');
+        expect(invalidateFromMutationAndAwaitSpy).toHaveBeenCalledWith('s1', undefined);
         expect(modalAlertSpy).not.toHaveBeenCalled();
     });
 
@@ -436,6 +459,6 @@ describe('SessionScmStashDetailsView', () => {
             confirmationToken: REMOVE_INDEX_LOCK_CONFIRMATION_TOKEN,
         });
         expect(sessionScmStashPopSpy).toHaveBeenCalledTimes(2);
-        expect(invalidateFromMutationAndAwaitSpy).toHaveBeenCalledWith('s1');
+        expect(invalidateFromMutationAndAwaitSpy).toHaveBeenCalledWith('s1', undefined);
     });
 });

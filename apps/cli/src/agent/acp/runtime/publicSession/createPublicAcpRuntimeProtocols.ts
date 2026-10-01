@@ -9,7 +9,6 @@ import type {
   AgentSessionOpenRequest,
 } from '@happier-dev/plugin-sdk/agents/runtime';
 
-import type { McpServerConfig } from '@/agent/core/AgentTypes';
 import type { AcpReplayHistorySessionClient } from '@/agent/acp/sessionClient';
 import type { HostCurrentSessionInteractionsService } from '@/agent/runtime/state/currentSessionUiTypes';
 import {
@@ -68,7 +67,7 @@ export function createPublicAcpRuntimeProtocols(params: Readonly<{
   media?: SessionMediaService;
   models?: AgentSessionHostServices['models'];
   resumeHistorySession?: AcpReplayHistorySessionClient;
-  mcpServers?: Record<string, McpServerConfig>;
+  mcpServers?: AgentSessionOpenRequest['mcpServers'];
   transformAgentChildLaunchEnvironment?: (
     environment: Readonly<Record<string, string>>,
   ) => Readonly<Record<string, string>>;

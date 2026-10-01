@@ -178,7 +178,6 @@ describe('compiled Action CLI command dispatch', () => {
       { owner: { kind: 'home' } },
       expect.objectContaining({
         surface: 'cli',
-        authority: 'present_user',
         actionRequestId: expect.stringMatching(/^[0-9a-f-]{36}$/u),
       }),
     );
@@ -325,7 +324,7 @@ describe('compiled Action CLI command dispatch', () => {
     expect(execute).toHaveBeenCalledWith(
       actionId,
       input,
-      expect.objectContaining({ surface: 'cli', authority: 'present_user' }),
+      expect.objectContaining({ surface: 'cli' }),
     );
     process.exitCode = undefined;
   });

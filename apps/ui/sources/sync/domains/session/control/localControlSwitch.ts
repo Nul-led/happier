@@ -1,13 +1,39 @@
 import type { Session } from '@/sync/domains/state/storageTypes';
 import type { CliAuthStatusData } from '@/sync/api/capabilities/capabilitiesProtocol';
 import { isSessionExclusiveLocalControl } from '@/sync/domains/session/control/sessionLocalControl';
+import { getAgentCore, resolveAgentIdFromSessionMetadata } from '@happier-dev/agents';
+import { ConnectedServiceBindingsV2IngressSchema, readBuiltInLegacyConnectedAccountServiceKeyIngress } from '@happier-dev/protocol';
+import type { ResolvedAgentCatalogEntry } from '@/agents/backendCatalog/agentCatalogProjection';
+import { resolveProjectedConnectedAccountServiceKeys } from '@/sync/domains/connectedServices/qualifiedConnectedAccountServiceOptions';
+import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
 
 type SessionControlAuthState = CliAuthStatusData['state'] | null | undefined;
 
-export function shouldRequestRemoteControl(session: Session | null, authState?: SessionControlAuthState): boolean {
-    if (!session) return false;
-    if (authState === 'logged_out') return false;
-    return isSessionExclusiveLocalControl(session);
+export function shouldRequestRemoteControl(
+    session: Session | null,
+    authState?: SessionControlAuthState,
+    agentCatalogEntry?: Pick<ResolvedAgentCatalogEntry, 'agentId' | 'qualifiedId' | 'connectedAccounts'> | null,
+): boolean {
+    if (!session || !isSessionExclusiveLocalControl(session)) return false;
+    if (authState !== 'logged_out') return true;
+
+    const metadata = readSessionOwnerMetadataView(session);
+    const agentId = resolveAgentIdFromSessionMetadata(metadata);
+    if (!agentId) return false;
+    if (agentCatalogEntry && agentCatalogEntry.agentId !== agentId && agentCatalogEntry.qualifiedId !== agentId) return false;
+    const supportedServices = agentCatalogEntry
+        ? resolveProjectedConnectedAccountServiceKeys(agentCatalogEntry.connectedAccounts)
+        : (getAgentCore(agentId)?.connectedServices?.supportedServiceIds ?? [])
+            .map(readBuiltInLegacyConnectedAccountServiceKeyIngress)
+            .filter((key) => key !== null);
+    const bindings = ConnectedServiceBindingsV2IngressSchema.safeParse(metadata?.connectedServices);
+    if (!bindings.success) return false;
+    // Selected account or Team credentials are not proof of login. They only make the machine's
+    // ambient login result unrelated; the runtime/provider still validates it.
+    return supportedServices.some((key) => {
+        const binding = bindings.data.bindingsByServiceId[key];
+        return binding !== undefined && binding.source !== 'native';
+    });
 }
 
 export function shouldRequestRemoteControlAfterPendingEnqueue(session: Session | null, authState?: SessionControlAuthState): boolean {

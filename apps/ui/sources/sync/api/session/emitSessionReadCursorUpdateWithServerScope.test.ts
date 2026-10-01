@@ -4,6 +4,7 @@ const resolveContext = vi.hoisted(() => vi.fn());
 const emitWithAck = vi.hoisted(() => vi.fn());
 const disconnect = vi.hoisted(() => vi.fn());
 const release = vi.hoisted(() => vi.fn(async () => undefined));
+const createSocket = vi.hoisted(() => vi.fn());
 
 vi.mock('@/auth/storage/tokenStorage', () => ({
     subscribeHomeCredentialMutations: () => () => undefined,
@@ -13,15 +14,7 @@ vi.mock('@/sync/runtime/orchestration/serverScopedRpc/resolveServerAccountReques
     resolveServerAccountRequestContext: resolveContext,
 }));
 vi.mock('@/sync/runtime/orchestration/serverScopedRpc/createEphemeralServerSocketClient', () => ({
-    createEphemeralServerSocketClient: vi.fn(async () => ({
-        emitWithAck,
-        timeout: () => ({ emitWithAck }),
-        emit: vi.fn(),
-        on: vi.fn(),
-        off: vi.fn(),
-        getSocketId: () => 'socket-b',
-        disconnect,
-    })),
+    createEphemeralServerSocketClient: (params: unknown) => createSocket(params),
 }));
 
 describe('emitSessionReadCursorUpdateWithServerScope', () => {
@@ -37,6 +30,20 @@ describe('emitSessionReadCursorUpdateWithServerScope', () => {
             release,
         });
         emitWithAck.mockResolvedValue({ result: 'success', lastViewedSessionSeq: 4 });
+        createSocket.mockImplementation(async (params: {
+            takeCarrierRelease?: () => (() => Promise<void>) | undefined;
+        }) => {
+            expect(params.takeCarrierRelease?.()).toBe(release);
+            return {
+                emitWithAck,
+                timeout: () => ({ emitWithAck }),
+                emit: vi.fn(),
+                on: vi.fn(),
+                off: vi.fn(),
+                getSocketId: () => 'socket-b',
+                disconnect,
+            };
+        });
 
         const { emitSessionReadCursorUpdateWithServerScope } = await import('./emitSessionReadCursorUpdateWithServerScope');
         await expect(emitSessionReadCursorUpdateWithServerScope(
@@ -50,6 +57,6 @@ describe('emitSessionReadCursorUpdateWithServerScope', () => {
             lastViewedSessionSeq: 4,
         });
         expect(disconnect).toHaveBeenCalledTimes(1);
-        expect(release).toHaveBeenCalledTimes(1);
+        expect(release).not.toHaveBeenCalled();
     });
 });

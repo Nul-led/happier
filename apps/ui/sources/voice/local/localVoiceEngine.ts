@@ -1399,6 +1399,8 @@ export async function stopLocalVoiceSession(): Promise<void> {
     playbackController.interrupt();
     noteTtsStopped();
     let captureCleanupError: unknown = null;
+    // Capture the admitted run before native cleanup yields across a Home/Account switch.
+    const agentStop = voiceAgentSessions.stop(activeSessionId).catch(() => {});
 
     if (activeTurnAbortController && activeTurnAbortSessionId === activeSessionId) {
       try {
@@ -1430,7 +1432,7 @@ export async function stopLocalVoiceSession(): Promise<void> {
 
     if (typeof activeSessionId === 'string' && activeSessionId.trim().length > 0) {
       try {
-        await voiceAgentSessions.stop(activeSessionId);
+        await agentStop;
       } catch {
         // ignore
       }

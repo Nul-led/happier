@@ -1,6 +1,6 @@
 import type { ParticipantRecipientV1 } from '@happier-dev/protocol';
 
-import type { Message } from '@/sync/domains/messages/messageTypes';
+import type { Message } from "@happier-dev/session-core/messages";
 import type { SessionParticipantTarget } from '@/sync/domains/session/participants/participantTargets';
 import type { SessionSubagentAutoRecipientContext } from '@/sync/domains/session/subagents/autoRecipient/types';
 import type { SessionSubagent } from '@/sync/domains/session/subagents/types';

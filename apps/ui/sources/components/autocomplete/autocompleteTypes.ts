@@ -31,6 +31,11 @@ export type AutocompleteSuggestion = Readonly<{
     promptInvocation?: PromptInvocationSuggestionMetadata;
     /** An already controller-admitted external Action, never a local command handler. */
     pluginContributedAction?: PluginContributedActionDescriptor;
+    /**
+     * A row about the list rather than a candidate; choosing it never inserts text. `retry` runs
+     * the producing kind's search again after it failed; `narrow` says more matched than fit.
+     */
+    listStatus?: Readonly<{ kind: 'retry'; retry: () => void }> | Readonly<{ kind: 'narrow' }>;
 }>;
 
 /**

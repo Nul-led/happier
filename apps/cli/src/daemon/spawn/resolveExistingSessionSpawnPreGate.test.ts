@@ -104,21 +104,50 @@ describe('resolveExistingSessionSpawnPreGate', () => {
   });
 
   it('continues to replacement spawn when the already-running hook reports an unservable runner', async () => {
-    const isSessionRunnerActive = vi.fn(async () => true);
+    const activeStates = [true, true, false];
+    const isSessionRunnerActive = vi.fn(async () => activeStates.shift() ?? false);
     const logDebug = vi.fn();
-    const onAlreadyRunning = vi.fn(async () => ({ action: 'spawn_replacement' as const }));
+    const onAlreadyRunning = vi.fn(async () => ({
+      action: 'wait_for_exit' as const,
+      timeoutResult: {
+        type: 'error' as const,
+        errorCode: 'UNEXPECTED' as const,
+        errorMessage: 'runner remained unresponsive',
+      },
+    }));
 
     const resolved = await resolveExistingSessionSpawnPreGate({
       existingSessionId: 'sess-live',
       pidToTrackedSession: new Map(),
       isSessionRunnerActive,
-      waitForExitTimeoutMs: 0,
-      waitForExitPollIntervalMs: 50,
+      waitForExitTimeoutMs: 100,
+      waitForExitPollIntervalMs: 1,
       logDebug,
       onAlreadyRunning,
     });
 
     expect(resolved).toEqual({ shortCircuitResult: null });
     expect(onAlreadyRunning).toHaveBeenCalledWith('sess-live');
+    expect(isSessionRunnerActive).toHaveBeenCalledTimes(3);
+  });
+
+  it('keeps fencing when an unresponsive runner remains alive through the canonical wait budget', async () => {
+    const timeoutResult = {
+      type: 'error' as const,
+      errorCode: 'UNEXPECTED' as const,
+      errorMessage: 'runner remained unresponsive',
+    };
+
+    const resolved = await resolveExistingSessionSpawnPreGate({
+      existingSessionId: 'sess-live',
+      pidToTrackedSession: new Map(),
+      isSessionRunnerActive: vi.fn(async () => true),
+      waitForExitTimeoutMs: 0,
+      waitForExitPollIntervalMs: 1,
+      logDebug: vi.fn(),
+      onAlreadyRunning: vi.fn(async () => ({ action: 'wait_for_exit' as const, timeoutResult })),
+    });
+
+    expect(resolved).toEqual({ shortCircuitResult: timeoutResult });
   });
 });

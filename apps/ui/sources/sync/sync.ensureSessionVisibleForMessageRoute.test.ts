@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { act } from 'react-test-renderer';
-import { projectLegacySessionAccessCapabilitiesV1 } from '@happier-dev/protocol';
+import { projectLegacySessionAccessCapabilitiesV1, SessionAwarenessListResultV1Schema } from '@happier-dev/protocol';
 
 // Sync imports persistence, which instantiates MMKV. Mock it for deterministic tests.
 const kvStore = vi.hoisted(() => new Map<string, string>());
@@ -71,6 +71,8 @@ const createEncryptionFromAuthCredentialsMock = vi.hoisted(() => vi.fn());
 vi.mock('@/sync/api/session/apiSocket', () => ({
     apiSocket: {
         request: requestMock,
+        // The prepared HTTP adapter shares this suite's transport boundary.
+        createRequestForPreparedTarget: () => requestMock,
         emitWithAck: vi.fn(),
         send: vi.fn(),
         onMessage: vi.fn(),
@@ -110,8 +112,8 @@ import { getActiveServerSnapshot } from './domains/server/serverRuntime';
 import { loadSessionMaterializedMaxSeqById } from './domains/state/persistence';
 import type { AccountSettingsScope } from './domains/settings/scope/accountSettingsScope';
 import type { Session } from './domains/state/storageTypes';
-import { createReducer } from './reducer/reducer';
-import type { Message } from './domains/messages/messageTypes';
+import { createReducer } from "@happier-dev/session-core/reducer";
+import type { Message } from "@happier-dev/session-core/messages";
 import type {
     ServerAccountRequestAuthority,
 } from './runtime/orchestration/serverScopedRpc/createServerRequestWithServerScope';
@@ -176,6 +178,18 @@ function expectRuntimeFetchWithBearer(url: string, token: string): void {
     const init = call?.[1] as RequestInit | undefined;
     expect(init).toEqual(expect.objectContaining({ method: 'GET' }));
     expect(new Headers(init?.headers).get('Authorization')).toBe(`Bearer ${token}`);
+}
+
+async function applySelectedHomeForSessionListTest(): Promise<void> {
+    const { switchConnectionToActiveServer, disconnectActiveServerConnection } = await import('./runtime/orchestration/connectionManager');
+    // Row-only acquisition routes through the applied Home runtime. Apply the
+    // selected Home before each test supplies its HTTP credentials and responses.
+    getCredentialsForServerUrlMock.mockResolvedValue(null);
+    await switchConnectionToActiveServer();
+    const { sync } = await import('./sync');
+    Reflect.set(sync, 'appliedServerTarget', getActiveServerSnapshot());
+    onTestFinished(disconnectActiveServerConnection);
+    onTestFinished(() => sync.disconnectServer());
 }
 
 describe('sync.ensureSessionVisibleForMessageRoute', () => {
@@ -510,9 +524,10 @@ describe('sync.ensureSessionVisibleForMessageRoute', () => {
         },
     );
 
-    it('returns marked awareness from the canonical Home page without transcript acquisition', async () => {
+    it('preserves metadata omissions in mixed and empty canonical Home awareness pages without transcript acquisition', async () => {
         const home = await upsertServerProfile({ serverUrl: 'https://awareness.example.test', name: 'Awareness' });
         await setActiveServerId(home.id, { scope: 'device' });
+        await applySelectedHomeForSessionListTest();
         const otherHomeId = 'other-awareness-home';
         storage.setState((state) => ({
             ...state,
@@ -545,9 +560,9 @@ describe('sync.ensureSessionVisibleForMessageRoute', () => {
         const { sync } = await import('./sync');
         Reflect.set(sync, 'credentials', { token: 'active-token', secret: 'active-secret' });
         requestMock.mockImplementation(async (_path, init) => {
-            const requestBody = JSON.parse(String(init?.body ?? '{}')) as { cursor?: string };
+            const requestBody = JSON.parse(String(init?.body ?? '{}')) as { cursor?: string; attentionCursor?: string };
             return new Response(JSON.stringify({
-                sessions: [{
+                sessions: requestBody.cursor || requestBody.attentionCursor ? [] : [{
                 id: 'page-awareness', createdAt: 1, updatedAt: 2, seq: 3,
                 active: false, activeAt: 2, encryptionMode: 'plain', dataEncryptionKey: null,
                 metadataVersion: 0, metadata: JSON.stringify({ path: '/repo', host: 'host' }),
@@ -566,9 +581,12 @@ describe('sync.ensureSessionVisibleForMessageRoute', () => {
                 },
                 responsibleAccountId: null, responsibleAccount: null,
                 }],
-                nextCursor: requestBody.cursor ? null : 'cursor-next',
-                hasNext: !requestBody.cursor,
+                nextCursor: requestBody.cursor || requestBody.attentionCursor ? null : 'cursor-next',
+                hasNext: !requestBody.cursor && !requestBody.attentionCursor,
                 attentionNextCursor: 'cursor-attention-next', attentionHasNext: true,
+                // Only the ordinary page withheld a row. The supplemental family
+                // stays incomplete but must not duplicate that fixture observation.
+                ...(requestBody.attentionCursor ? {} : { metadataUpgradeRequiredCount: 1 }),
             }), { status: 200, headers: { 'Content-Type': 'application/json' } });
         });
         const { listSessionsForVoiceTool } = await import('@/voice/tools/actionImpl/sessionList');
@@ -602,14 +620,20 @@ describe('sync.ensureSessionVisibleForMessageRoute', () => {
         }).toEqual(membershipBefore);
         expect(result).toMatchObject({
             view: 'awareness', projectionVersion: 1, nextCursor: 'cursor-next', hasNext: true,
+            attentionNextCursor: 'cursor-attention-next', attentionHasNext: true,
+            metadataUpgradeRequiredCount: 1,
             sessions: [{ sessionId: 'page-awareness', lifecycle: 'failed' }],
         });
         expect(continuedResult).toMatchObject({
             view: 'awareness', projectionVersion: 1, nextCursor: null, hasNext: false,
-            sessions: [{ sessionId: 'page-awareness', lifecycle: 'failed' }],
+            attentionNextCursor: 'cursor-attention-next', attentionHasNext: true,
+            metadataUpgradeRequiredCount: 1,
+            sessions: [],
         });
+        expect(SessionAwarenessListResultV1Schema.parse(result)).toEqual(result);
+        expect(SessionAwarenessListResultV1Schema.parse(continuedResult)).toEqual(continuedResult);
         expect(Object.keys(result).sort()).toEqual([
-            'attentionHasNext', 'attentionNextCursor', 'hasNext', 'nextCursor', 'projectionVersion', 'sessions', 'view',
+            'attentionHasNext', 'attentionNextCursor', 'hasNext', 'metadataUpgradeRequiredCount', 'nextCursor', 'projectionVersion', 'sessions', 'view',
         ]);
         expect(requestMock.mock.calls.every(([path]) => !String(path).includes('/messages') && !String(path).includes('/turns'))).toBe(true);
         expect(requestMock).toHaveBeenCalledWith('/v2/sessions/query', expect.objectContaining({
@@ -618,9 +642,10 @@ describe('sync.ensureSessionVisibleForMessageRoute', () => {
         }));
     });
 
-    it('Voice semantic discovery requests marked awareness through its Action handler', async () => {
+    it('Voice semantic discovery preserves metadata omissions through its marked awareness Action result', async () => {
         const home = await upsertServerProfile({ serverUrl: 'https://voice-awareness.example.test', name: 'Voice Awareness' });
         await setActiveServerId(home.id, { scope: 'device' });
+        await applySelectedHomeForSessionListTest();
         storage.setState((state) => ({ settings: { ...state.settings, experiments: true, featureToggles: { ...state.settings.featureToggles, voice: true } } }));
         const { sync } = await import('./sync');
         Reflect.set(sync, 'credentials', { token: 'active-token', secret: 'active-secret' });
@@ -642,17 +667,31 @@ describe('sync.ensureSessionVisibleForMessageRoute', () => {
                 metadataVersion: 0, metadata: JSON.stringify({ path: '/repo', host: 'host' }),
                 agentStateVersion: 0, agentState: null, share: null,
                 latestTurnStatus: 'failed', latestTurnStatusObservedAt: 2,
-            }], nextCursor: null, hasNext: false,
+            }], nextCursor: null, hasNext: false, metadataUpgradeRequiredCount: 1,
         }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
         const { createVoiceToolHandlers } = await import('@/voice/tools/handlers');
         const handlers = createVoiceToolHandlers({ resolveSessionId: () => null });
         const result = JSON.parse(await handlers.listSessions({ limit: 7 }));
-        expect(result).toMatchObject({ view: 'awareness', projectionVersion: 1, sessions: [{ sessionId: 'voice-awareness', lifecycle: 'failed' }] });
+        expect(result).toMatchObject({
+            ok: true,
+            view: 'awareness', projectionVersion: 1, nextCursor: null, hasNext: false,
+            metadataUpgradeRequiredCount: 1,
+            sessions: [{ sessionId: 'voice-awareness', lifecycle: 'failed', address: { serverId: home.id, sessionId: 'voice-awareness' } }],
+        });
+        storage.setState({ socketStatus: 'connected' });
+        const { acquireAdmittedSessionReferenceCorpusOptions } = await import('@/voice/tools/actionImpl/admittedSessionReferenceCorpus');
+        const corpus = await acquireAdmittedSessionReferenceCorpusOptions(storage.getState());
+        expect(corpus).toMatchObject({
+            knownServerIds: [home.id],
+            coverage: 'incomplete',
+            addresses: [{ serverId: home.id, sessionId: 'voice-awareness' }],
+        });
     });
 
-    it('preserves permitted retained previews for a summary query', async () => {
+    it('preserves metadata omissions and permitted retained previews for a summary query', async () => {
         const home = await upsertServerProfile({ serverUrl: 'https://summary-query.example.test', name: 'Summary Query' });
         await setActiveServerId(home.id, { scope: 'device' });
+        await applySelectedHomeForSessionListTest();
         const { sync } = await import('./sync');
         Reflect.set(sync, 'credentials', { token: 'active-token', secret: 'active-secret' });
         storage.setState((state) => ({
@@ -678,6 +717,7 @@ describe('sync.ensureSessionVisibleForMessageRoute', () => {
                 },
                 responsibleAccountId: null, responsibleAccount: null,
             }], nextCursor: null, hasNext: false, attentionNextCursor: null, attentionHasNext: false,
+            metadataUpgradeRequiredCount: 1,
         }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
         const { listSessionsForVoiceTool } = await import('@/voice/tools/actionImpl/sessionList');
         const result = await listSessionsForVoiceTool({
@@ -687,8 +727,36 @@ describe('sync.ensureSessionVisibleForMessageRoute', () => {
         expect(result).toMatchObject({
             ok: true,
             queryVersion: 1,
+            nextCursor: null, hasNext: false, attentionNextCursor: null, attentionHasNext: false,
+            metadataUpgradeRequiredCount: 1,
             sessions: [{ id: 'query-summary', lastMessagePreview: { text: 'Retained preview' } }],
         });
+    });
+
+    it('preserves metadata omissions from the ordinary lifecycle in a retained summary and clears them after refresh', async () => {
+        const home = await upsertServerProfile({ serverUrl: 'https://retained-summary.example.test', name: 'Retained Summary' });
+        await setActiveServerId(home.id, { scope: 'device' });
+        await applySelectedHomeForSessionListTest();
+        const { sync } = await import('./sync');
+        Reflect.set(sync, 'credentials', { token: 'active-token' });
+        let withheld = true;
+        requestMock.mockImplementation(async (path: string) => Response.json({
+            sessions: [], nextCursor: null, hasNext: false,
+            ...(withheld && !path.startsWith('/v2/sessions/active') ? { metadataUpgradeRequiredCount: 1 } : {}),
+        }));
+        const { listSessionsForVoiceTool } = await import('@/voice/tools/actionImpl/sessionList');
+        await sync.refreshSessions({ awaitSessionListHydration: true });
+
+        const withheldResult = await listSessionsForVoiceTool({});
+        expect(withheldResult).toMatchObject({ ok: true, sessions: [], nextCursor: null, metadataUpgradeRequiredCount: 1 });
+        expect(sync.readOrdinarySessionListCoverage()).toEqual({ serverId: home.id, coverage: 'incomplete' });
+
+        withheld = false;
+        await sync.refreshSessions({ awaitSessionListHydration: true });
+        const refreshedResult = await listSessionsForVoiceTool({});
+        expect(refreshedResult).toMatchObject({ ok: true, sessions: [], nextCursor: null });
+        expect(refreshedResult).not.toHaveProperty('metadataUpgradeRequiredCount');
+        expect(sync.readOrdinarySessionListCoverage()).toEqual({ serverId: home.id, coverage: 'complete' });
     });
 
     it('serves uncached activity through exact Home acquisition without reading turns', async () => {
@@ -3074,7 +3142,7 @@ describe('sync.ensureSessionVisibleForMessageRoute', () => {
         expect(initializeSessions).not.toHaveBeenCalled();
     });
 
-    it('falls back to the active server when a route carries a stale unknown server id', async () => {
+    it('fails closed on an unknown explicit route Home without requesting the active Home', async () => {
         const sessionId = 'deep_link_stale_route_server_id';
         const activeServer = await upsertServerProfile({ serverUrl: 'http://localhost:52753', name: 'Active' });
         await setActiveServerId(activeServer.id, { scope: 'device' });
@@ -3118,21 +3186,55 @@ describe('sync.ensureSessionVisibleForMessageRoute', () => {
             forceRefresh: true,
             serverId: '127.0.0.1-52753',
         })).resolves.toMatchObject({
-            kind: 'available',
+            kind: 'missing',
             sessionId,
+            serverId: '127.0.0.1-52753',
+            cause: 'not_found',
         });
 
         expect(runtimeFetchMock).not.toHaveBeenCalled();
-        expect(requestMock).toHaveBeenCalledWith(
-            `/v2/sessions/${sessionId}`,
-            expect.objectContaining({
-                method: 'GET',
-                headers: expect.objectContaining({
-                    Authorization: 'Bearer active-token',
-                }),
-            }),
-        );
-        expect((sync as any).activeServerSessionIds.has(sessionId)).toBe(true);
+        expect(requestMock).not.toHaveBeenCalled();
+        expect((sync as any).activeServerSessionIds.has(sessionId)).toBe(false);
+    });
+
+    it('keeps an explicit route Home through missing credentials despite a hydrated same-ID Session on the active Home', async () => {
+        const { createSessionFixture } = await import('@/dev/testkit/fixtures/sessionFixtures');
+        const { useHydrateSessionForRoute } = await import('@/hooks/session/useHydrateSessionForRoute');
+        const requested = await upsertServerProfile({ serverUrl: 'https://route-a.example.test', name: 'A' });
+        const active = await upsertServerProfile({ serverUrl: 'https://route-b.example.test', name: 'B' });
+        await setActiveServerId(active.id, { scope: 'device' });
+        const { sync } = await import('./sync');
+        Reflect.set(sync, 'credentials', null);
+        const session = createSessionFixture({ id: 'duplicate-route', serverId: active.id, encryptionMode: 'plain' });
+        storage.setState({ sessions: { [session.id]: session } });
+
+        const hook = await renderHook(() => useHydrateSessionForRoute(session.id, 'exact-home', { serverId: requested.id }));
+
+        await waitForAssertion(() => expect(hook.getCurrent()).toMatchObject({
+            kind: 'retrying', sessionId: session.id, serverId: requested.id,
+        }));
+        expect(storage.getState().sessions[session.id].serverId).toBe(active.id);
+        expect(requestMock).not.toHaveBeenCalled();
+        expect(runtimeFetchMock).not.toHaveBeenCalled();
+    });
+
+    it('accepts a profile-proven canonical alias for an already hydrated route Home', async () => {
+        const { createSessionFixture } = await import('@/dev/testkit/fixtures/sessionFixtures');
+        const { useHydrateSessionForRoute } = await import('@/hooks/session/useHydrateSessionForRoute');
+        const { adoptHomeProfile, areServerProfileIdentifiersEquivalent } = await import('@/sync/domains/server/serverProfiles');
+        const legacy = await upsertServerProfile({ serverUrl: 'https://route-alias.example.test', name: 'Alias' });
+        const canonical = await adoptHomeProfile({ source: 'manual', descriptor: {
+            serverUrl: legacy.serverUrl, homeServerIdentityId: 'srv_route_alias',
+        } });
+        await setActiveServerId(canonical.id, { scope: 'device' });
+        expect(areServerProfileIdentifiersEquivalent(legacy.id, canonical.id)).toBe(true);
+        const session = createSessionFixture({ id: 'alias-route', serverId: canonical.id, encryptionMode: 'plain' });
+        storage.setState({ sessions: { [session.id]: session } });
+
+        const hook = await renderHook(() => useHydrateSessionForRoute(session.id, 'alias-home', { serverId: legacy.id }));
+
+        expect(hook.getCurrent()).toMatchObject({ kind: 'available', sessionId: session.id, serverId: legacy.id });
+        expect(requestMock).not.toHaveBeenCalled();
     });
 
     it('ignores localStorage read errors while evaluating debug hydration logging', async () => {

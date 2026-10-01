@@ -1,3 +1,4 @@
+import type { SessionFolderWorkspaceRefV1 } from '@/sync/domains/session/folders/types';
 import type { MachineDisplayRenderable } from '@/sync/domains/machines/machineDisplayRenderable';
 import { formatPathRelativeToHome } from '@/utils/sessions/formatPathRelativeToHome';
 import type { SessionListRenderableSession } from './sessionListRenderable';
@@ -27,6 +28,7 @@ import {
     type WorkspaceTargetForSessionState,
 } from '@/sync/domains/session/resolveWorkspaceTargetForSessionFromState';
 import { buildSessionListDateGroups } from './sessionListDateGroups';
+import { getMachineDisplayName, resolveMachineDisplayNames } from '@/utils/sessions/machineDisplayNames';
 
 export type SessionListViewItem =
     | {
@@ -43,6 +45,8 @@ export type SessionListViewItem =
         machine?: MachineDisplayRenderable;
         folderId?: string;
         folderDepth?: number;
+        /** The group's session-folder scope when it is not a path (the Chats group). */
+        workspace?: SessionFolderWorkspaceRefV1;
     }
     | {
         type: 'session';
@@ -94,7 +98,9 @@ function makeUnknownMachine(id: string): MachineDisplayRenderable {
 
 type ProjectGroup = {
     key: string;
+    /** The group title: the folder, or "Chats" for the machine's no-folder sessions. */
     displayPath: string;
+    bucket: 'path' | 'managed';
     machine: MachineDisplayRenderable;
     latestCreatedAt: number;
     sessions: SessionListRenderableSession[];
@@ -114,6 +120,8 @@ type SessionTargetDisplay = Readonly<{
 function resolveSessionTargetDisplayFromState(params: Readonly<{
     state: SessionMachineTargetState;
     sessionId: string;
+    serverId?: string | null;
+    machines: Record<string, MachineDisplayRenderable>;
     metadata: Readonly<{
         machineId?: string | null;
         path?: string | null;
@@ -123,19 +131,22 @@ function resolveSessionTargetDisplayFromState(params: Readonly<{
     const reachableTarget = resolveDisplayMachineTargetForSessionFromState({
         state: params.state,
         sessionId: params.sessionId,
+        serverId: params.serverId,
         metadata: params.metadata,
-    }) ?? resolveMachineTargetForSessionFromState(params.state, params.sessionId);
+    }) ?? resolveMachineTargetForSessionFromState(params.state, params.serverId
+        ? { serverId: params.serverId, sessionId: params.sessionId }
+        : params.sessionId);
     const targetMachineId = normalizeTrimmedString(reachableTarget?.machineId);
     if (
         targetMachineId
         && !targetMachineId.startsWith('host:')
-        && !params.state.machines?.[targetMachineId]
+        && !params.machines[targetMachineId]
     ) {
         const metadataMachineId = normalizeTrimmedString(params.metadata?.machineId);
         if (
             metadataMachineId
             && !metadataMachineId.startsWith('host:')
-            && params.state.machines?.[metadataMachineId]
+            && params.machines[metadataMachineId]
         ) {
             return {
                 machineId: metadataMachineId,
@@ -144,7 +155,7 @@ function resolveSessionTargetDisplayFromState(params: Readonly<{
         }
         const metadataHomeDir = normalizeTrimmedString(params.metadata?.homeDir);
         const matchingMachine = metadataHomeDir
-            ? Object.values(params.state.machines ?? {}).filter((machine) =>
+            ? Object.values(params.machines).filter((machine) =>
                 normalizeTrimmedString(machine.metadata?.homeDir) === metadataHomeDir,
             )
             : [];
@@ -178,6 +189,8 @@ function groupSessionsByProject(params: Readonly<{
             ? resolveSessionTargetDisplayFromState({
                   state: sessionTargetState,
                   sessionId: session.id,
+                  serverId: params.serverId,
+                  machines: params.machines,
                   metadata: session.metadata ?? null,
               })
             : null;
@@ -208,7 +221,10 @@ function groupSessionsByProject(params: Readonly<{
                 : makeUnknownMachine('unknown');
             groups.set(key, {
                 key,
-                displayPath: groupingParts.pathKey ? formatPathRelativeToHome(groupingParts.pathKey, groupingParts.homeDir ?? undefined) : '',
+                displayPath: groupingParts.bucket === 'managed'
+                    ? t('session.folderless.chats')
+                    : groupingParts.pathKey ? formatPathRelativeToHome(groupingParts.pathKey, groupingParts.homeDir ?? undefined) : '',
+                bucket: groupingParts.bucket,
                 machine: displayMachine,
                 latestCreatedAt: session.createdAt,
                 sessions: [session],
@@ -243,6 +259,8 @@ function pushProjectGroupsToList(params: Readonly<{
     machines: Record<string, MachineDisplayRenderable>;
     sessionTargetState?: WorkspaceTargetForSessionState;
 }>): void {
+    // Group subtitles are machine names shown together, so same-named machines are told apart.
+    const machineNames = resolveMachineDisplayNames(Object.values(params.machines));
     for (const group of params.groups) {
         const hasGroupHeader = Boolean(group.displayPath);
         const groupKey = group.key;
@@ -266,7 +284,13 @@ function pushProjectGroupsToList(params: Readonly<{
                     sessionTargetState: params.sessionTargetState,
                 }),
                 machine: group.machine,
-                subtitle: group.machine.metadata?.displayName || group.machine.metadata?.host || group.machine.id,
+                ...(group.bucket === 'managed' && params.serverScopeMeta.serverId
+                    ? { workspace: { t: 'managedSessions' as const, serverId: params.serverScopeMeta.serverId, machineId: group.machine.id } }
+                    : {}),
+                // A machine missing from the inventory has no name to show; its id is the only identity.
+                subtitle: params.machines[group.machine.id]
+                    ? machineNames.get(group.machine.id) ?? getMachineDisplayName(group.machine)
+                    : group.machine.id,
             },
             sessions: group.sessions,
             variant,
@@ -282,7 +306,8 @@ function resolveWorkspaceScopeHintForGroup(params: Readonly<{
     sessionTargetState?: WorkspaceTargetForSessionState;
 }>): SessionListHeaderItem['workspaceScopeHint'] {
     const serverId = normalizeTrimmedString(params.serverId);
-    if (!serverId) {
+    // Chats are not a workspace: a private folder never becomes a project or a scope.
+    if (!serverId || params.group.bucket === 'managed') {
         return null;
     }
 
@@ -290,16 +315,17 @@ function resolveWorkspaceScopeHintForGroup(params: Readonly<{
         for (const session of params.group.sessions) {
             const target = resolveWorkspaceTargetForSessionFromState(
                 params.sessionTargetState,
-                session.id,
-                { fallbackServerId: serverId },
+                { sessionId: session.id, serverId },
             );
             if (!target) {
                 const displayTarget = resolveSessionTargetDisplayFromState({
                     state: params.sessionTargetState,
                     sessionId: session.id,
+                    serverId,
+                    machines: params.machines,
                     metadata: session.metadata ?? null,
                 });
-                if (!displayTarget.machineId || !displayTarget.path || !params.sessionTargetState.machines?.[displayTarget.machineId]) {
+                if (!displayTarget.machineId || !displayTarget.path || !params.machines[displayTarget.machineId]) {
                     continue;
                 }
                 return {

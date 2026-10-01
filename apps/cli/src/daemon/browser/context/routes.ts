@@ -15,7 +15,8 @@ import {
 
 import {
   createBrowserContextCaptureService,
-  type BrowserContextCaptureGateState,
+  type BrowserContextCaptureGateResolver,
+  type BrowserContextCaptureScope,
   type BrowserContextSource,
   type BrowserContextCaptureResult,
   type BrowserContextRegionRect,
@@ -58,7 +59,7 @@ export type BrowserContextRoutes = Readonly<{
    * it; lightweight consumers that only need the `dispatch` front door (and existing test fakes) need
    * not implement it.
    */
-  captureSnapshot?(input: unknown): Promise<BrowserContextSnapshotRouteResult>;
+  captureSnapshot?(input: unknown, scope?: BrowserContextCaptureScope): Promise<BrowserContextSnapshotRouteResult>;
 }>;
 
 type ContextCaptureOperation = 'page' | 'screenshot' | 'selectedElement';
@@ -289,7 +290,7 @@ export function createBrowserContextRoutes(input: Readonly<{
   now?: () => number;
   // Threaded from the single-owner daemon feature-gate. Read per publish so a server that
   // disables `browser.context` after construction fails capture closed.
-  resolveGate?: () => BrowserContextCaptureGateState;
+  resolveGate?: BrowserContextCaptureGateResolver;
 }>): BrowserContextRoutes {
   const service = createBrowserContextCaptureService({
     ownerAccountId: input.ownerAccountId,
@@ -395,7 +396,7 @@ export function createBrowserContextRoutes(input: Readonly<{
       }
     },
 
-    async captureSnapshot(rawInput) {
+    async captureSnapshot(rawInput, scope) {
       const parsed = parseSnapshotInput(rawInput);
       if (!parsed) return invalidParameters;
 
@@ -406,6 +407,8 @@ export function createBrowserContextRoutes(input: Readonly<{
         viewId: parsed.viewId,
         navigationGeneration: parsed.navigationGeneration,
         contextId: parsed.contextId,
+        ...(scope?.signal ? { signal: scope.signal } : {}),
+        ...(scope?.deadlineMs !== undefined ? { deadlineMs: scope.deadlineMs } : {}),
       });
       if (result.status === 'denied') return disabled('browser_context_denied');
       if (result.status === 'unavailable') return disabled(result.disabledReason);

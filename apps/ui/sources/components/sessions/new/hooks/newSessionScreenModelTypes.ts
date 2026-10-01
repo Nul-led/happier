@@ -1,4 +1,5 @@
 import type { View } from 'react-native';
+import type { NewSessionTemporaryComputerLaunch } from '../components/NewSessionLaunchSurface';
 
 import type { NewSessionSimplePanelProps } from '@/components/sessions/new/components/NewSessionSimplePanel';
 import type {
@@ -21,6 +22,7 @@ export type NewSessionScreenModel =
         variant: 'simple';
         popoverBoundaryRef: React.RefObject<View>;
         launchOverlay: React.ReactNode | null;
+        temporaryComputerLaunch?: NewSessionTemporaryComputerLaunch;
         launchOnRequestClose: () => void;
         overlayPresentation?: 'card' | 'screen';
         overlayFocusReturnRef?: React.RefObject<View | null>;
@@ -31,6 +33,7 @@ export type NewSessionScreenModel =
         variant: 'wizard';
         popoverBoundaryRef: React.RefObject<View>;
         launchOverlay: React.ReactNode | null;
+        temporaryComputerLaunch?: NewSessionTemporaryComputerLaunch;
         launchOnRequestClose: () => void;
         overlayPresentation?: 'card' | 'screen';
         overlayFocusReturnRef?: React.RefObject<View | null>;

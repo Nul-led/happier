@@ -109,6 +109,24 @@ describe('buildLocalRelayRuntimeSystemTaskSpec', () => {
             expect(spec.params).toEqual(baseParams);
         });
 
+        it('builds the hosting-desktop owner claim only for an explicit Account', async () => {
+            vi.resetModules();
+            const { buildLocalRelayRuntimeSystemTaskSpec } = await import('./buildLocalRelayRuntimeSystemTaskSpec');
+            expect(() => buildLocalRelayRuntimeSystemTaskSpec('relay.runtime.personal_home.claim_owner.v1', { purpose })).toThrow();
+            expect(() => buildLocalRelayRuntimeSystemTaskSpec('relay.runtime.personal_home.claim_owner.v1', {
+                purpose, personalHomeOperation: { accountId: '   ' },
+            })).toThrow();
+
+            const spec = buildLocalRelayRuntimeSystemTaskSpec('relay.runtime.personal_home.claim_owner.v1', {
+                purpose, personalHomeOperation: { accountId: '  acct_1  ' },
+            });
+            expect(spec).toEqual({
+                protocolVersion: 1,
+                kind: 'relay.runtime.personal_home.claim_owner.v1',
+                params: { ...baseParams, accountId: 'acct_1' },
+            });
+        });
+
         it('keeps operation specs free of install-time environment facts while binding the inspected purpose', async () => {
             vi.resetModules();
             const { buildLocalRelayRuntimeSystemTaskSpec } = await import('./buildLocalRelayRuntimeSystemTaskSpec');

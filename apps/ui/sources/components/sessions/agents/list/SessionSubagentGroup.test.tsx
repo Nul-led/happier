@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { createSessionAgentActivityRowForTest, installSessionSubagentCommonModuleMocks } from '@/components/sessions/agents/sessionSubagentTestHelpers';
 import type { SessionSubagent } from '@/sync/domains/session/subagents/types';
-import { pressTestInstanceAsync, renderScreen } from '@/dev/testkit';
+import { renderScreen } from '@/dev/testkit';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -21,8 +21,8 @@ installSessionSubagentCommonModuleMocks({
     text: async () => {
         const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
         return createTextModuleMock({ translate: (key: string, values?: Record<string, unknown>) => {
-            if (key === 'session.subagents.panel.groupCount' && typeof values?.count === 'number') {
-                return `${values.count} agents`;
+            if (key === 'sessionAgentActivity.roster.teamLabel' && typeof values?.count === 'number') {
+                return `Team ${String(values.team)} · ${values.count} agents`;
             }
             return key;
         } });
@@ -80,11 +80,12 @@ describe('SessionSubagentGroup', () => {
                     onOpenAdvanced={vi.fn()}
                 />)).tree;
 
-        const [deleteButton] = tree!.findAllByTestId('session-subagent-team-delete:qa-team');
-        expect(deleteButton).toBeTruthy();
+        // Team operations live in the team's quiet menu, not as buttons on its label (lab AG1).
+        const [menu] = tree!.findAllByProps({ testID: 'session-subagent-team-actions:qa-team' });
+        expect(menu.props.items.map((item: { id: string }) => item.id)).toEqual(['delete-team']);
 
         await act(async () => {
-            await pressTestInstanceAsync(deleteButton);
+            menu.props.onSelect('delete-team');
         });
 
         expect(submitMessageSpy).toHaveBeenCalledWith(
@@ -152,8 +153,7 @@ describe('SessionSubagentGroup', () => {
                 />)).tree;
 
         const text = JSON.stringify(tree!.toJSON());
-        expect(text).toContain('qa-team');
-        expect(text).toContain('2 agents');
+        expect(text).toContain('Team qa-team · 2 agents');
     });
 
     it('can request launching a teammate for an existing Claude team group', async () => {
@@ -188,11 +188,11 @@ describe('SessionSubagentGroup', () => {
                     onLaunchTeammate={launchTeammateSpy}
                 />)).tree;
 
-        const [addButton] = tree!.findAllByTestId('session-subagent-team-add:qa-team');
-        expect(addButton).toBeTruthy();
+        const [menu] = tree!.findAllByProps({ testID: 'session-subagent-team-actions:qa-team' });
+        expect(menu.props.items.map((item: { id: string }) => item.id)).toEqual(['add-teammate', 'delete-team']);
 
         await act(async () => {
-            await pressTestInstanceAsync(addButton);
+            menu.props.onSelect('add-teammate');
         });
 
         expect(launchTeammateSpy).toHaveBeenCalledWith('qa-team');

@@ -50,6 +50,86 @@ function normalizeReleaseAssetArch(value: unknown): 'x64' | 'arm64' {
   throw new Error(`Unsupported first-party release architecture: ${normalized}`);
 }
 
+export type ResolvedFirstPartyComponentRelease = Readonly<{
+  versionId: string;
+  bundle: Awaited<ReturnType<typeof resolveReleaseAssetBundle>>;
+  source: Readonly<{ githubRepo: string; githubToken: string; userAgent: string; releaseTag: string }>;
+}>;
+
+/**
+ * The channel's (or an exact version's) release and this platform's asset bundle, without
+ * downloading it. The one latest-version lookup for binary installs — `happier self check` and the
+ * acquisition below both use it, on every OS the release publishes (Windows included, plan R13 S-5).
+ */
+export async function resolveFirstPartyComponentRelease(params: Readonly<{
+  componentId: Exclude<FirstPartyComponentId, 'mutagen-engine'>;
+  channel: PublicReleaseRingId;
+  versionId?: string;
+  os?: string;
+  arch?: string;
+  artifactSource?: FirstPartyReleaseArtifactSource;
+  githubRepo?: string;
+  githubToken?: string;
+  userAgent?: string;
+  signal?: AbortSignal;
+}>): Promise<ResolvedFirstPartyComponentRelease> {
+  const component = getFirstPartyComponentCatalogEntry(params.componentId);
+  const variant = resolveFirstPartyComponentPublicReleaseVariant({
+    componentId: params.componentId,
+    channel: params.channel,
+  });
+  const versionId = params.versionId?.trim();
+  if (params.versionId !== undefined && (!versionId || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(versionId))) {
+    throw new Error('[first-party-release] versionId must be an exact release version');
+  }
+  const releaseTag = versionId ? `${component.rollingReleasePrefix}-v${versionId}` : variant.releaseTag;
+  const os = normalizeReleaseAssetOs(params.os);
+  const arch = normalizeReleaseAssetArch(params.arch);
+  const source = resolveFirstPartyReleaseArtifactSource(params);
+  const githubRepo = source.githubRepo;
+  const githubToken = source.githubToken;
+  const userAgent = source.userAgent;
+  params.signal?.throwIfAborted();
+  const release = await fetchGitHubReleaseByTag({
+    githubRepo,
+    tag: releaseTag,
+    githubToken,
+    userAgent,
+    signal: params.signal,
+  }).catch((error) => {
+    throw wrapFirstPartyReleaseSourceError({
+      componentId: params.componentId,
+      channel: params.channel,
+      stage: 'resolve release tag',
+      githubRepo,
+      releaseTag,
+      githubToken,
+      error,
+    });
+  });
+  const bundle = await Promise.resolve().then(() => resolveReleaseAssetBundle({
+    assets: (release as { assets?: unknown }).assets,
+    product: component.releaseProductName,
+    os,
+    arch,
+    preferZipOnWindows: true,
+  })).catch((error) => {
+    throw wrapFirstPartyReleaseSourceError({
+      componentId: params.componentId,
+      channel: params.channel,
+      stage: 'resolve release assets',
+      githubRepo,
+      releaseTag,
+      githubToken,
+      error,
+    });
+  });
+  if (versionId && bundle.version !== versionId) {
+    throw new Error(`[first-party-release] Expected version ${versionId} for ${params.componentId}, received ${bundle.version}`);
+  }
+  return { versionId: bundle.version, bundle, source: { githubRepo, githubToken, userAgent, releaseTag } };
+}
+
 export async function prepareFirstPartyComponentPayloadFromGitHubRelease(params: FirstPartyAcquisitionOptions & Readonly<{
   componentId: FirstPartyComponentId;
   channel: PublicReleaseRingId;
@@ -76,22 +156,6 @@ export async function prepareFirstPartyComponentPayloadFromGitHubRelease(params:
       engineVersion,
     });
   }
-  const component = getFirstPartyComponentCatalogEntry(params.componentId);
-  const variant = resolveFirstPartyComponentPublicReleaseVariant({
-    componentId: params.componentId,
-    channel: params.channel,
-  });
-  const versionId = params.versionId?.trim();
-  if (params.versionId !== undefined && (!versionId || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(versionId))) {
-    throw new Error('[first-party-release] versionId must be an exact release version');
-  }
-  const releaseTag = versionId ? `${component.rollingReleasePrefix}-v${versionId}` : variant.releaseTag;
-  const os = normalizeReleaseAssetOs(params.os);
-  const arch = normalizeReleaseAssetArch(params.arch);
-  const source = resolveFirstPartyReleaseArtifactSource(params);
-  const githubRepo = source.githubRepo;
-  const githubToken = source.githubToken;
-  const userAgent = source.userAgent;
   params.signal?.throwIfAborted();
   let phase: CliAcquisitionProgress['phase'] = 'resolvingRelease';
   const report = (progress: CliAcquisitionProgress) => {
@@ -102,43 +166,7 @@ export async function prepareFirstPartyComponentPayloadFromGitHubRelease(params:
   const scratchRoot = await mkdtemp(join(tmpdir(), `happier-first-party-${params.componentId}-`));
 
   try {
-    const release = await fetchGitHubReleaseByTag({
-      githubRepo,
-      tag: releaseTag,
-      githubToken,
-      userAgent,
-      signal: params.signal,
-    }).catch((error) => {
-      throw wrapFirstPartyReleaseSourceError({
-        componentId: params.componentId,
-        channel: params.channel,
-        stage: 'resolve release tag',
-        githubRepo,
-        releaseTag,
-        githubToken,
-        error,
-      });
-    });
-    const bundle = await Promise.resolve().then(() => resolveReleaseAssetBundle({
-      assets: (release as { assets?: unknown }).assets,
-      product: component.releaseProductName,
-      os,
-      arch,
-      preferZipOnWindows: true,
-    })).catch((error) => {
-      throw wrapFirstPartyReleaseSourceError({
-        componentId: params.componentId,
-        channel: params.channel,
-        stage: 'resolve release assets',
-        githubRepo,
-        releaseTag,
-        githubToken,
-        error,
-      });
-    });
-    if (versionId && bundle.version !== versionId) {
-      throw new Error(`[first-party-release] Expected version ${versionId} for ${params.componentId}, received ${bundle.version}`);
-    }
+    const { bundle, source: { githubRepo, githubToken, userAgent, releaseTag } } = await resolveFirstPartyComponentRelease({ ...params, componentId: params.componentId });
     const downloaded = await downloadVerifiedReleaseAssetBundle({
       bundle,
       destDir: join(scratchRoot, 'download'),

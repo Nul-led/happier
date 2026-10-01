@@ -82,27 +82,13 @@ export function installSessionHandoffCommonModuleMocks(
         return createModalModuleMock().module;
     });
 
-    vi.mock('@/constants/Typography', async () => {
+    vi.mock('@/constants/Typography', async (importOriginal) => {
         const activeOptions = sessionHandoffModuleState.options;
         if (activeOptions.typography) {
             return await activeOptions.typography();
         }
 
-        return {
-            FontWeights: { regular: '400', semiBold: '500', bold: '600' },
-            Typography: {
-                default: () => ({}),
-                mono: () => ({}),
-                eyebrow: () => ({}),
-                rowTitle: () => ({}),
-                rowMeta: () => ({}),
-                keyHint: () => ({}),
-                pillLabel: () => ({}),
-                tabular: () => ({}),
-                timestamp: () => ({}),
-                logo: () => ({}),
-            },
-        };
+        return importOriginal();
     });
 
     vi.mock('@/text', async () => {

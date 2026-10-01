@@ -72,7 +72,7 @@ describe('resolveMachineLiveStreamAvailability', () => {
         });
     });
 
-    it('does not silently hide server relay when caps are missing', () => {
+    it('does not invent a quality-policy prerequisite for an enabled server relay', () => {
         expect(resolveMachineLiveStreamAvailability({
             serverFeatures: features({ directPeer: false, serverRouted: true, caps: null }),
             localCaptureAvailable: true,
@@ -81,9 +81,9 @@ describe('resolveMachineLiveStreamAvailability', () => {
             relayCaps: null,
             ...directRouteAllowed,
         })).toEqual({
-            status: 'disabled',
-            reasonCode: 'relay_cap_missing',
-            disabledReasons: ['server_direct_disabled', 'relay_cap_missing'],
+            status: 'available',
+            routeKind: 'server_relay',
+            disabledReasons: ['server_direct_disabled'],
         });
     });
 

@@ -1,7 +1,26 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ExecutionRunPublicState } from '@happier-dev/protocol';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+// Install Metro's lazy-loader bridge before storage can import its consumers.
+// The helper returns the actual Sync singleton, without replacing its methods.
+import { loadSyncSingletonForTests } from '@/dev/testkit/harness/syncSingletonLoader';
+import {
+  MACHINE_PLAIN_DATA_KEY_MARKER,
+  encodePlainMachineStoredContent,
+  SessionCurrentProjectionRecordV1Schema,
+  SessionMetadataTuplePatchV1Schema,
+  type ExecutionRunPublicState,
+} from '@happier-dev/protocol';
 
-import { installVoiceAgentCommonModuleMocks } from './voiceAgentTestHelpers';
+import { storage } from '@/sync/domains/state/storage';
+import { upsertAndActivateServer } from '@/sync/domains/server/serverRuntime';
+import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
+import { createSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
+import { createPlainAccountEncryptionCurrentnessFixture } from '@/dev/testkit/fixtures/accountEncryptionCurrentness';
+import { installDisconnectedServerSocketBoundary, restoreServerAccountForTest } from '@/dev/testkit/harness/serverAccountConnectionHarness';
+
+let homeId = '';
+let connection: Awaited<ReturnType<typeof restoreServerAccountForTest>>;
+let unsubscribeStorage: (() => void) | undefined;
+const committedSessionRecords = new Map<string, ReturnType<typeof sessionWireRecord>>();
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -9,7 +28,8 @@ const start = vi.fn(async (params?: any) => ({ voiceAgentId: params?.existingRun
 const sendTurn = vi.fn(async () => ({ assistantText: 'ok', actions: [] }));
 const commit = vi.fn(async () => ({ commitText: 'commit' }));
 const welcome = vi.fn(async () => ({ assistantText: '' }));
-const refreshSessions = vi.fn(async () => {});
+const readSessions = vi.fn(async () => {});
+const readMachines = vi.fn(async () => {});
 const spawnSession = vi.fn<(opts: unknown) => Promise<{ type: 'success'; sessionId: string }>>(async (_opts: unknown) => ({
   type: 'success' as const,
   sessionId: 'sys_voice_new',
@@ -85,7 +105,7 @@ const createVoiceAgentPersistenceTestState = (): any => {
   const sessions = {
     sys_voice: {
       id: 'sys_voice',
-      serverId: 'server-a',
+      serverId: homeId,
       updatedAt: 10,
       active: true,
       presence: 'online',
@@ -104,7 +124,7 @@ const createVoiceAgentPersistenceTestState = (): any => {
     },
     s1: {
       id: 's1',
-      serverId: 'server-a',
+      serverId: homeId,
       updatedAt: 1,
       active: true,
       presence: 'online',
@@ -123,6 +143,7 @@ const createVoiceAgentPersistenceTestState = (): any => {
   };
 
   return {
+    settingsVersion: 1,
     settings: {
       voice: {
         providerId: 'local_conversation',
@@ -136,18 +157,18 @@ const createVoiceAgentPersistenceTestState = (): any => {
       },
     },
     sessionListIndexByServerId: {
-      'server-a': [
-        { type: 'session', sessionId: 'sys_voice', serverId: 'server-a', serverName: null },
-        { type: 'session', sessionId: 's1', serverId: 'server-a', serverName: null },
+      [homeId]: [
+        { type: 'session', sessionId: 'sys_voice', serverId: homeId, serverName: null },
+        { type: 'session', sessionId: 's1', serverId: homeId, serverName: null },
       ],
     },
     sessionListRowsByServerId: {
-      'server-a': {
+      [homeId]: {
         sys_voice: sessions.sys_voice,
         s1: sessions.s1,
       },
     },
-    ordinarySessionListMembershipByServerId: { 'server-a': ['sys_voice', 's1'] },
+    ordinarySessionListMembershipByServerId: { [homeId]: ['sys_voice', 's1'] },
     sessions,
     machines: {},
     machineListByServerId: {},
@@ -157,45 +178,90 @@ const createVoiceAgentPersistenceTestState = (): any => {
 
 let state: any = createVoiceAgentPersistenceTestState();
 
-const applySettingsLocal = (delta: any) => {
-  if (delta?.voice) {
-    state = {
-      ...state,
-      settings: {
-        ...state.settings,
-        voice: delta.voice,
-      },
-    };
+function sessionWireRecord(session: ReturnType<typeof createSessionFixture>) {
+  return SessionCurrentProjectionRecordV1Schema.parse({
+    id: session.id, seq: session.seq ?? 1, createdAt: session.createdAt ?? 1,
+    updatedAt: session.updatedAt, active: session.active,
+    activeAt: session.presence === 'online' ? Date.now() : session.activeAt ?? 1,
+    archivedAt: null, encryptionMode: 'plain', metadataLayoutVersion: 0,
+    metadata: JSON.stringify({ path: '/voice', host: 'voice.test', ...session.metadata }),
+    metadataVersion: session.metadataVersion ?? 1,
+    effectiveAccess: { v: 1, level: 'owner', sources: [{ kind: 'owner' }], capabilities: createSessionFixture().access!.capabilities },
+    responsibleAccountId: null, responsibleAccount: null, share: null,
+    agentState: null, agentStateVersion: session.agentStateVersion ?? 0,
+    pendingCount: 0, pendingVersion: 0, dataEncryptionKey: null,
+  });
+}
+
+// Only the external Home responses are synthetic; metadata parsing, exact Account
+// authority, retries and projection application run through the real Sync owner.
+async function respondToServerRequest(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  const path = new URL(String(input)).pathname;
+  const json = (body: unknown) => new Response(JSON.stringify(body), {
+    status: 200, headers: { 'Content-Type': 'application/json' },
+  });
+  if (path === '/v1/account/encryption/currentness') return json(createPlainAccountEncryptionCurrentnessFixture());
+  if (/^\/v1\/sessions\/[^/]+\/messages$/.test(path)) return json({ messages: [], hasMore: false });
+  const detail = /^\/v2\/sessions\/([^/]+)$/.exec(path);
+  if (detail) {
+    const id = decodeURIComponent(detail[1]);
+    const current = committedSessionRecords.get(id);
+    if (!current) return new Response('{}', { status: 404 });
+    if (init?.method === 'PATCH') {
+      const patch = SessionMetadataTuplePatchV1Schema.parse(JSON.parse(String(init.body)));
+      if (patch.mode !== 'owner_migration' && patch.mode !== 'owner') throw new Error('Expected owner metadata mutation');
+      const target = patch.mode === 'owner_migration' ? patch.target : patch;
+      const committed = SessionCurrentProjectionRecordV1Schema.parse({
+        ...current, metadataLayoutVersion: 1, metadata: target.sharedMetadata.ciphertext,
+        metadataVersion: current.metadataVersion + 1, ownerMetadata: target.ownerMetadata,
+        agentState: target.agentState.ciphertext, agentStateVersion: (current.agentStateVersion ?? 0) + 1,
+      });
+      committedSessionRecords.set(id, committed);
+      return json({ success: true, metadataLayoutVersion: 1,
+        sharedMetadata: { version: committed.metadataVersion }, agentState: { version: committed.agentStateVersion },
+      });
+    }
+    return json({ session: current });
   }
-};
+  if (path === '/v1/machines') {
+    await readMachines();
+    return json(Object.values(state.machines).map((machine: any) => ({
+      ...machine, metadata: machine.metadata ? encodePlainMachineStoredContent(machine.metadata) : null,
+      daemonState: null, dataEncryptionKey: MACHINE_PLAIN_DATA_KEY_MARKER,
+    })));
+  }
+  if (path === '/v2/sessions' || path === '/v1/sessions') {
+    if (spawnSession.mock.calls.length > 0) {
+      await readSessions();
+      for (const session of Object.values(state.sessions) as Array<ReturnType<typeof createSessionFixture>>) {
+        if (!committedSessionRecords.has(session.id)) committedSessionRecords.set(session.id, sessionWireRecord(session));
+      }
+    }
+    return json({ sessions: [...committedSessionRecords.values()], hasNext: false, nextCursor: null });
+  }
+  return new Response('{}', { status: 404 });
+}
 
-installVoiceAgentCommonModuleMocks({
-  modal: async () => {
-    const { createModalModuleMock } = await import('@/dev/testkit/mocks/modal');
-    return createModalModuleMock({
-      spies: {
-        confirm: (title?: unknown, message?: unknown, options?: unknown) => modalConfirm(title, message, options),
-        alert: modalAlert,
-      },
-    }).module;
-  },
-	  storage: async () => {
-	    const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
-	    return createStorageModuleStub({
-	      storage: {
-	        getState: () => state,
-	      },
-	    });
-	  },
-	});
+installDisconnectedServerSocketBoundary((socket) => {
+  socket.connected = true;
+  vi.spyOn(socket, 'emitWithAck').mockImplementation(async (event, payload) => {
+    if (event !== 'update-metadata') throw new Error(`Unexpected socket acknowledgement: ${event}`);
+    return { result: 'success', version: payload.expectedVersion + 1, metadata: payload.metadata };
+  });
+});
 
-state.applySettingsLocal = applySettingsLocal;
+vi.mock('@/modal', async () => {
+  const { createModalModuleMock } = await import('@/dev/testkit/mocks/modal');
+  return createModalModuleMock({
+    spies: {
+      confirm: (title?: unknown, message?: unknown, options?: unknown) => modalConfirm(title, message, options),
+      alert: (...args: Parameters<typeof modalAlert>) => modalAlert(...args),
+    },
+  }).module;
+});
 
-vi.mock('@/sync/domains/server/serverRuntime', () => ({
-  getActiveServerSnapshot: () => ({ serverId: 'server-a', serverUrl: 'http://localhost', generation: 1 }),
-}));
-
-vi.mock('@/sync/ops/machines', () => ({
+vi.mock('@/sync/ops/machines', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/sync/ops/machines')>()),
   machineSpawnNewSession: (opts: unknown) => spawnSession(opts),
 }));
 
@@ -218,9 +284,9 @@ const sessionExecutionRunStop = vi.fn(async (..._args: any[]): Promise<any> => (
 }));
 
 vi.mock('@/sync/ops/sessionExecutionRuns', () => ({
-  sessionExecutionRunGet,
-  sessionExecutionRunList,
-  sessionExecutionRunStop,
+  sessionExecutionRunGet: (...args: unknown[]) => sessionExecutionRunGet(...args),
+  sessionExecutionRunList: (...args: unknown[]) => sessionExecutionRunList(...args),
+  sessionExecutionRunStop: (...args: unknown[]) => sessionExecutionRunStop(...args),
 }));
 
 vi.mock('@/sync/domains/features/featureDecisionInputs', () => ({
@@ -228,63 +294,30 @@ vi.mock('@/sync/domains/features/featureDecisionInputs', () => ({
   isRuntimeFeatureEnabled: async (args: any) => (await resolveRuntimeFeatureDecision(args)).state === 'enabled',
 }));
 
-const patchSessionMetadataWithRetry = vi.fn<(sessionId: string, updater: (m: any) => any) => Promise<void>>(async (sessionId: string, updater: (m: any) => any) => {
-  const existing = state.sessions?.[sessionId];
-  if (!existing) return;
-  const nextMetadata = updater(existing.metadata);
-
-  state = {
-    ...state,
-    sessions: {
-      ...state.sessions,
-      [sessionId]: {
-        ...existing,
-        metadata: nextMetadata,
-      },
-    },
-    sessionListRowsByServerId: {
-      ...(state.sessionListRowsByServerId ?? {}),
-      'server-a': {
-        ...(state.sessionListRowsByServerId?.['server-a'] ?? {}),
-        [sessionId]: {
-          ...(state.sessionListRowsByServerId?.['server-a']?.[sessionId] ?? existing),
-          metadata: nextMetadata,
-        },
-      },
-    },
-  };
-});
-const ensureSessionVisibleForMessageRoute = vi.fn(async (_sessionId: string, _options?: { forceRefresh?: boolean }) => {});
-const refreshSessionMessages = vi.fn(async (_sessionId: string) => {});
-const onSessionVisible = vi.fn((_sessionId: string) => {});
-const refreshMachinesThrottled = vi.fn(async (_params?: { staleMs?: number; force?: boolean }) => {});
-
-// `persistVoiceAutoTargetMachineId` reaches the sync singleton through its own
-// lazy accessor, a bundler-only `require` that never sees the `@/sync/sync`
-// mock below. Mock the accessor that owns it, as `voiceCarrierSession.test.ts` does.
-vi.mock('@/sync/runtime/getSyncSingleton', () => ({
-  getSyncSingleton: () => ({
-    applySettings: (delta: any) => applySettingsLocal(delta),
-    refreshSessions: () => refreshSessions(),
-    patchSessionMetadataWithRetry: (sessionId: string, updater: (m: any) => any) =>
-      patchSessionMetadataWithRetry(sessionId, updater),
-  }),
-}));
-
-vi.mock('@/sync/sync', () => ({
-  sync: {
-    patchSessionMetadataWithRetry: (sessionId: string, updater: (m: any) => any) =>
-      patchSessionMetadataWithRetry(sessionId, updater),
-    ensureSessionVisibleForMessageRoute: (sessionId: string, options?: { forceRefresh?: boolean }) =>
-      ensureSessionVisibleForMessageRoute(sessionId, options),
-    refreshSessionMessages: (sessionId: string) => refreshSessionMessages(sessionId),
-    refreshSessions: () => refreshSessions(),
-    refreshMachinesThrottled: (params?: { staleMs?: number; force?: boolean }) => refreshMachinesThrottled(params),
-    onSessionVisible: (sessionId: string) => onSessionVisible(sessionId),
-  },
-}));
-
 async function loadVoiceAgentPersistenceHarness() {
+  const normalize = (id: string, session: Parameters<typeof createSessionFixture>[0]) =>
+    createSessionFixture({ ...session, id, serverId: homeId,
+      metadata: { path: '/voice', host: 'voice.test',
+        ...(session?.metadata?.flavor === 'claude' ? { agentRuntimeCapabilitiesV1: { localControl: { supported: true } } } : {}),
+        ...session?.metadata },
+    });
+  for (const [id, value] of Object.entries(state.sessions)) {
+    state.sessions[id] = normalize(id, value as Parameters<typeof createSessionFixture>[0]);
+  }
+  for (const [id, value] of Object.entries(state.sessionListRowsByServerId?.[homeId] ?? {})) {
+    state.sessionListRowsByServerId[homeId][id] = normalize(id, value as Parameters<typeof createSessionFixture>[0]);
+  }
+  // The synthetic Home retains full wire records, never reserializes reduced UI list projections.
+  for (const [id, session] of Object.entries(state.sessions)) {
+    committedSessionRecords.set(id, sessionWireRecord(state.sessionListRowsByServerId?.[homeId]?.[id] ?? session));
+  }
+  connection = await restoreServerAccountForTest({
+    serverUrl: 'https://voice-persistence.example.test',
+    request: respondToServerRequest,
+  });
+  storage.setState({ ...state, profileScope: { serverId: homeId, accountId: 'account-a' } });
+  state = storage.getState();
+  unsubscribeStorage = storage.subscribe((current) => { state = current; });
   const [{ useVoiceTargetStore }, { VOICE_AGENT_GLOBAL_SESSION_ID }, { createVoiceExecutionTransport }, { voiceSessionBindingStore }] = await Promise.all([
     import('@/voice/runtime/voiceTargetStore'),
     import('@/voice/agent/voiceAgentGlobalSessionId'),
@@ -294,7 +327,7 @@ async function loadVoiceAgentPersistenceHarness() {
 
   useVoiceTargetStore.setState({
     scope: 'global',
-    primaryActionSessionAddress: { serverId: 'server-a', sessionId: 's1' },
+    primaryActionSessionAddress: { serverId: homeId, sessionId: 's1' },
     voiceLiveContextSessionAddresses: [],
     lastFocusedSessionAddress: null,
   } as any);
@@ -307,9 +340,16 @@ async function loadVoiceAgentPersistenceHarness() {
 }
 
 describe('VoiceExecutionTransport (persistence)', () => {
-  beforeEach(() => {
+  afterEach(async () => {
+    unsubscribeStorage?.();
+    await connection?.dispose();
+    vi.restoreAllMocks();
+  });
+
+  beforeEach(async () => {
     vi.useRealTimers();
-    vi.resetModules();
+    await loadSyncSingletonForTests();
+    committedSessionRecords.clear();
     start.mockReset();
     start.mockImplementation(async (params?: any) => ({ voiceAgentId: params?.existingRunId ?? 'run_1' }));
     sendTurn.mockReset();
@@ -321,19 +361,14 @@ describe('VoiceExecutionTransport (persistence)', () => {
     sessionExecutionRunGet.mockClear();
     sessionExecutionRunList.mockClear();
     sessionExecutionRunStop.mockClear();
-    patchSessionMetadataWithRetry.mockClear();
-    ensureSessionVisibleForMessageRoute.mockReset();
-    refreshSessionMessages.mockReset();
-    refreshSessions.mockReset();
-    refreshMachinesThrottled.mockReset();
-    refreshMachinesThrottled.mockImplementation(async () => {});
+    readSessions.mockReset();
+    readMachines.mockReset();
     spawnSession.mockReset();
     spawnSession.mockImplementation(async () => ({ type: 'success', sessionId: 'sys_voice_new' }));
     modalConfirm.mockReset();
     modalConfirm.mockImplementation(async () => false);
     ensureVoiceAgentInstallablesBackground.mockReset();
     ensureVoiceAgentInstallablesBackground.mockImplementation(async () => {});
-    onSessionVisible.mockReset();
     resolveRuntimeFeatureDecision.mockReset();
     resolveRuntimeFeatureDecision.mockResolvedValue({
       featureId: 'voice.agent',
@@ -345,11 +380,14 @@ describe('VoiceExecutionTransport (persistence)', () => {
       scope: { scopeKind: 'runtime' },
     });
 
+    homeId = (await upsertAndActivateServer({ serverUrl: 'https://voice-persistence.example.test', name: 'Test Home' })).id;
     state = createVoiceAgentPersistenceTestState();
-    state.applySettingsLocal = applySettingsLocal;
-
     state.settings.voice.providers.local_conversation.config.agent.resumabilityMode = 'replay';
     state.settings.voice.executionMachine = { mode: 'auto', machineId: null, autoMachineId: null };
+    const { voiceSessionBindingStore } = await import('@/voice/binding/voiceConversationBindingStore');
+    voiceSessionBindingStore.setState({
+      runtimeBindingsByConversationSessionId: {}, persistedBindingsByConversationSessionId: {}, bindingsByConversationSessionId: {},
+    });
   });
 
   it('persists runId and resumeHandle into carrier session metadata when transcript persistence is enabled', async () => {
@@ -358,18 +396,18 @@ describe('VoiceExecutionTransport (persistence)', () => {
 
     await controller.sendTurn(VOICE_AGENT_GLOBAL_SESSION_ID, 'hello');
 
-    expect(sessionExecutionRunGet).toHaveBeenCalledWith('sys_voice', expect.objectContaining({ runId: 'run_1' }));
-    expect(state.sessions.sys_voice.metadata.voiceAgentRunV1).toMatchObject({
+    expect(sessionExecutionRunGet).toHaveBeenCalledWith('sys_voice', expect.objectContaining({ runId: 'run_1' }), { scope: { serverId: homeId, accountId: 'account-a' } });
+    expect(readSessionOwnerMetadataView(state.sessions.sys_voice)?.voiceAgentRunV1).toMatchObject({
       v: 1,
       runId: 'run_1',
       backendId: 'claude',
       resumeHandle: expect.objectContaining({ kind: 'provider_session.v1', providerSessionId: 'vs_1' }),
       transcriptContractVersion: 2,
     });
+    expect(state.sessions.sys_voice.metadata.voiceAgentRunV1).toBeUndefined();
   });
 
   it('prefers an active hidden voice conversation session over a newer inactive one for the global daemon anchor', async () => {
-    const { VOICE_AGENT_GLOBAL_SESSION_ID, createVoiceExecutionTransport } = await loadVoiceAgentPersistenceHarness();
     state.sessions.sys_voice.updatedAt = 20;
     state.sessions.sys_voice.active = false;
     state.sessions.sys_voice.presence = 'offline';
@@ -382,6 +420,7 @@ describe('VoiceExecutionTransport (persistence)', () => {
       metadata: { flavor: 'claude', systemSessionV1: { v: 1, key: 'voice_conversation', hidden: true } },
     };
 
+    const { VOICE_AGENT_GLOBAL_SESSION_ID, createVoiceExecutionTransport } = await loadVoiceAgentPersistenceHarness();
     const controller = createVoiceExecutionTransport();
 
     await controller.sendTurn(VOICE_AGENT_GLOBAL_SESSION_ID, 'hello');
@@ -426,8 +465,8 @@ describe('VoiceExecutionTransport (persistence)', () => {
 
     await controller.sendTurn(VOICE_AGENT_GLOBAL_SESSION_ID, 'hello');
 
-    expect(sessionExecutionRunGet).toHaveBeenCalledWith('sys_voice', expect.objectContaining({ runId: 'run_1' }));
-    expect(state.sessions.sys_voice.metadata.voiceAgentRunV1).toMatchObject({
+    expect(sessionExecutionRunGet).toHaveBeenCalledWith('sys_voice', expect.objectContaining({ runId: 'run_1' }), { scope: { serverId: homeId, accountId: 'account-a' } });
+    expect(readSessionOwnerMetadataView(state.sessions.sys_voice)?.voiceAgentRunV1).toMatchObject({
       v: 1,
       runId: 'run_1',
       backendId: 'claude',
@@ -485,7 +524,8 @@ describe('VoiceExecutionTransport (persistence)', () => {
     const firstController = createVoiceExecutionTransport();
     await firstController.sendTurn('s1', 'hello');
 
-    expect(state.sessions.s1.metadata.voiceAgentRunV1).toMatchObject({
+    expect(state.sessions.s1.presence).toBe('online');
+    expect(readSessionOwnerMetadataView(state.sessions.s1)?.voiceAgentRunV1).toMatchObject({
       v: 1,
       runId: 'run_1',
       backendId: 'claude',
@@ -523,7 +563,7 @@ describe('VoiceExecutionTransport (persistence)', () => {
         existingRunId: 'run_1',
       }),
     );
-    expect(state.sessions.s1.metadata.voiceAgentRunV1).toMatchObject({
+    expect(readSessionOwnerMetadataView(state.sessions.s1)?.voiceAgentRunV1).toMatchObject({
       v: 1,
       runId: 'run_1',
       backendId: 'claude',
@@ -546,8 +586,8 @@ describe('VoiceExecutionTransport (persistence)', () => {
 
     await controller.stop('s1');
 
-    expect(sessionExecutionRunStop).toHaveBeenCalledWith('s1', { runId: 'run_prev' });
-    expect(state.sessions.s1.metadata.voiceAgentRunV1).toBeNull();
+    expect(sessionExecutionRunStop).toHaveBeenCalledWith('s1', { runId: 'run_prev' }, { scope: { serverId: homeId, accountId: 'account-a' } });
+    expect(readSessionOwnerMetadataView(state.sessions.s1)?.voiceAgentRunV1).toBeUndefined();
   });
 
   it('stops all matching persisted daemon voice runs for a session so stale running runs are not reattached on restart', async () => {
@@ -581,10 +621,10 @@ describe('VoiceExecutionTransport (persistence)', () => {
 
     await controller.stop('s1');
 
-    expect(sessionExecutionRunStop).toHaveBeenCalledWith('s1', { runId: 'run_prev' });
-    expect(sessionExecutionRunStop).toHaveBeenCalledWith('s1', { runId: 'run_stale' });
-    expect(sessionExecutionRunStop).not.toHaveBeenCalledWith('s1', { runId: 'run_other_backend' });
-    expect(state.sessions.s1.metadata.voiceAgentRunV1).toBeNull();
+    expect(sessionExecutionRunStop).toHaveBeenCalledWith('s1', { runId: 'run_prev' }, { scope: { serverId: homeId, accountId: 'account-a' } });
+    expect(sessionExecutionRunStop).toHaveBeenCalledWith('s1', { runId: 'run_stale' }, { scope: { serverId: homeId, accountId: 'account-a' } });
+    expect(sessionExecutionRunStop).not.toHaveBeenCalledWith('s1', { runId: 'run_other_backend' }, { scope: { serverId: homeId, accountId: 'account-a' } });
+    expect(readSessionOwnerMetadataView(state.sessions.s1)?.voiceAgentRunV1).toBeUndefined();
   });
 
   it('reconciles duplicate running session-scoped voice runs by reattaching the newest match and stopping the extras', async () => {
@@ -633,15 +673,15 @@ describe('VoiceExecutionTransport (persistence)', () => {
 
     await controller.sendTurn('s1', 'hello');
 
-    expect(sessionExecutionRunList).toHaveBeenCalledWith('s1', {});
-    expect(sessionExecutionRunStop).toHaveBeenCalledWith('s1', { runId: 'run_old' });
+    expect(sessionExecutionRunList).toHaveBeenCalledWith('s1', {}, { scope: { serverId: homeId, accountId: 'account-a' } });
+    expect(sessionExecutionRunStop).toHaveBeenCalledWith('s1', { runId: 'run_old' }, { scope: { serverId: homeId, accountId: 'account-a' } });
     expect(start).toHaveBeenCalledWith(
       expect.objectContaining({
         sessionId: 's1',
         existingRunId: 'run_new',
       }),
     );
-    expect(state.sessions.s1.metadata.voiceAgentRunV1).toMatchObject({
+    expect(readSessionOwnerMetadataView(state.sessions.s1)?.voiceAgentRunV1).toMatchObject({
       runId: 'run_new',
       resumeHandle: expect.objectContaining({ providerSessionId: 'vs_new' }),
     });
@@ -655,7 +695,7 @@ describe('VoiceExecutionTransport (persistence)', () => {
     const firstController = createVoiceExecutionTransport();
     await firstController.sendTurn(VOICE_AGENT_GLOBAL_SESSION_ID, 'hello');
 
-    expect(state.sessions.sys_voice.metadata.voiceAgentRunV1).toMatchObject({
+    expect(readSessionOwnerMetadataView(state.sessions.sys_voice)?.voiceAgentRunV1).toMatchObject({
       v: 1,
       runId: 'run_1',
       backendId: 'claude',
@@ -826,7 +866,7 @@ describe('VoiceExecutionTransport (persistence)', () => {
         resumeWhenInactive: false,
       }),
     );
-    expect(state.sessions.sys_voice.metadata.voiceAgentRunV1).toMatchObject({
+    expect(readSessionOwnerMetadataView(state.sessions.sys_voice)?.voiceAgentRunV1).toMatchObject({
       runId: 'run_2',
     });
   });
@@ -986,7 +1026,7 @@ describe('VoiceExecutionTransport (persistence)', () => {
     const firstController = createVoiceExecutionTransport();
     await expect(firstController.ensureRunningAndMaybeWelcome(VOICE_AGENT_GLOBAL_SESSION_ID)).resolves.toBe('Welcome!');
 
-    expect(state.sessions.sys_voice.metadata.voiceAgentRunV1).toMatchObject({
+    expect(readSessionOwnerMetadataView(state.sessions.sys_voice)?.voiceAgentRunV1).toMatchObject({
       transcriptContractVersion: 2,
       welcomedEpoch: 1,
     });
@@ -996,7 +1036,7 @@ describe('VoiceExecutionTransport (persistence)', () => {
     await expect(secondController.ensureRunningAndMaybeWelcome(VOICE_AGENT_GLOBAL_SESSION_ID)).resolves.toBeNull();
 
     expect(welcome).toHaveBeenCalledTimes(1);
-    expect(state.sessions.sys_voice.metadata.voiceAgentRunV1).toMatchObject({
+    expect(readSessionOwnerMetadataView(state.sessions.sys_voice)?.voiceAgentRunV1).toMatchObject({
       transcriptContractVersion: 2,
       welcomedEpoch: 1,
     });
@@ -1049,7 +1089,7 @@ describe('VoiceExecutionTransport (persistence)', () => {
         resumeHandle: expect.objectContaining({ kind: 'provider_session.v1', providerSessionId: 'vs_prev' }),
       }),
     );
-    expect(state.sessions.sys_voice.metadata.voiceAgentRunV1).toMatchObject({
+    expect(readSessionOwnerMetadataView(state.sessions.sys_voice)?.voiceAgentRunV1).toMatchObject({
       runId: 'run_4',
       resumeHandle: expect.objectContaining({ providerSessionId: 'vs_4' }),
     });
@@ -1079,13 +1119,15 @@ describe('VoiceExecutionTransport (persistence)', () => {
     const controller = createVoiceExecutionTransport();
 
     await controller.sendTurn(VOICE_AGENT_GLOBAL_SESSION_ID, 'hello');
-    expect(state.sessions.sys_voice.metadata.voiceAgentRunV1?.resumeHandle?.kind).toBe('provider_session.v1');
+    expect(readSessionOwnerMetadataView(state.sessions.sys_voice)).toMatchObject({
+      voiceAgentRunV1: { resumeHandle: { kind: 'provider_session.v1' } },
+    });
 
     await controller.commit(VOICE_AGENT_GLOBAL_SESSION_ID);
 
     expect(commit).toHaveBeenCalledTimes(1);
     expect(sessionExecutionRunGet.mock.calls.length).toBeGreaterThanOrEqual(2);
-    expect(state.sessions.sys_voice.metadata.voiceAgentRunV1).toMatchObject({
+    expect(readSessionOwnerMetadataView(state.sessions.sys_voice)?.voiceAgentRunV1).toMatchObject({
       runId: 'run_1',
       backendId: 'claude',
       resumeHandle: expect.objectContaining({
@@ -1147,7 +1189,7 @@ describe('VoiceExecutionTransport (persistence)', () => {
 
     expect(start).toHaveBeenNthCalledWith(1, expect.objectContaining({ existingRunId: null }));
     expect(start).toHaveBeenNthCalledWith(2, expect.objectContaining({ existingRunId: null, resumeHandle: null }));
-    expect(state.sessions.sys_voice.metadata.voiceAgentRunV1).toMatchObject({
+    expect(readSessionOwnerMetadataView(state.sessions.sys_voice)?.voiceAgentRunV1).toMatchObject({
       runId: 'run_fresh',
       backendId: 'claude',
       resumeHandle: expect.objectContaining({ providerSessionId: 'vs_run_fresh' }),
@@ -1169,9 +1211,9 @@ describe('VoiceExecutionTransport (persistence)', () => {
       adapterId: 'local_conversation',
       controlSessionId: VOICE_AGENT_GLOBAL_SESSION_ID,
       conversationSessionId: 'sys_voice',
-      conversationSessionAddress: { serverId: 'server-a', sessionId: 'sys_voice' },
+      conversationSessionAddress: { serverId: homeId, sessionId: 'sys_voice' },
       transcriptMode: 'native_session',
-      targetSessionAddress: { serverId: 'server-a', sessionId: 's_inactive' },
+      targetSessionAddress: { serverId: homeId, sessionId: 's_inactive' },
       updatedAt: 1,
     });
     const controller = createVoiceExecutionTransport();
@@ -1200,9 +1242,9 @@ describe('VoiceExecutionTransport (persistence)', () => {
       adapterId: 'local_conversation',
       controlSessionId: VOICE_AGENT_GLOBAL_SESSION_ID,
       conversationSessionId: 'sys_voice',
-      conversationSessionAddress: { serverId: 'server-a', sessionId: 'sys_voice' },
+      conversationSessionAddress: { serverId: homeId, sessionId: 'sys_voice' },
       transcriptMode: 'native_session',
-      targetSessionAddress: { serverId: 'server-a', sessionId: 's_offline' },
+      targetSessionAddress: { serverId: homeId, sessionId: 's_offline' },
       updatedAt: 1,
     });
     const controller = createVoiceExecutionTransport();
@@ -1244,9 +1286,9 @@ describe('VoiceExecutionTransport (persistence)', () => {
       adapterId: 'local_conversation',
       controlSessionId: VOICE_AGENT_GLOBAL_SESSION_ID,
       conversationSessionId: 'sys_voice',
-      conversationSessionAddress: { serverId: 'server-a', sessionId: 'sys_voice' },
+      conversationSessionAddress: { serverId: homeId, sessionId: 'sys_voice' },
       transcriptMode: 'native_session',
-      targetSessionAddress: { serverId: 'server-a', sessionId: 's_machine_offline' },
+      targetSessionAddress: { serverId: homeId, sessionId: 's_machine_offline' },
       updatedAt: 1,
     });
     const controller = createVoiceExecutionTransport();
@@ -1275,9 +1317,9 @@ describe('VoiceExecutionTransport (persistence)', () => {
       adapterId: 'local_conversation',
       controlSessionId: VOICE_AGENT_GLOBAL_SESSION_ID,
       conversationSessionId: 'sys_voice',
-      conversationSessionAddress: { serverId: 'server-a', sessionId: 'sys_voice' },
+      conversationSessionAddress: { serverId: homeId, sessionId: 'sys_voice' },
       transcriptMode: 'native_session',
-      targetSessionAddress: { serverId: 'server-a', sessionId: 's_kimi' },
+      targetSessionAddress: { serverId: homeId, sessionId: 's_kimi' },
       updatedAt: 1,
     });
     const controller = createVoiceExecutionTransport();
@@ -1295,7 +1337,8 @@ describe('VoiceExecutionTransport (persistence)', () => {
       id: 's_cached_target',
       updatedAt: 1,
       active: false,
-      presence: 'offline',
+      // Presence is one device observation; only durable metadata/lifecycle is stale here.
+      presence: 'online',
       modelMode: 'default',
       metadata: {
         flavor: 'kimi',
@@ -1304,15 +1347,15 @@ describe('VoiceExecutionTransport (persistence)', () => {
     };
     state.sessionListIndexByServerId = {
       ...(state.sessionListIndexByServerId ?? {}),
-      'server-a': [
-        ...(state.sessionListIndexByServerId?.['server-a'] ?? []),
-        { type: 'session', sessionId: 's_cached_target', serverId: 'server-a', serverName: null },
+      [homeId]: [
+        ...(state.sessionListIndexByServerId?.[homeId] ?? []),
+        { type: 'session', sessionId: 's_cached_target', serverId: homeId, serverName: null },
       ],
     };
     state.sessionListRowsByServerId = {
       ...(state.sessionListRowsByServerId ?? {}),
-      'server-a': {
-        ...(state.sessionListRowsByServerId?.['server-a'] ?? {}),
+      [homeId]: {
+        ...(state.sessionListRowsByServerId?.[homeId] ?? {}),
         s_cached_target: {
           id: 's_cached_target',
           updatedAt: 1,
@@ -1328,7 +1371,7 @@ describe('VoiceExecutionTransport (persistence)', () => {
     };
     state.ordinarySessionListMembershipByServerId = {
       ...(state.ordinarySessionListMembershipByServerId ?? {}),
-      'server-a': [...(state.ordinarySessionListMembershipByServerId?.['server-a'] ?? []), 's_cached_target'],
+      [homeId]: [...(state.ordinarySessionListMembershipByServerId?.[homeId] ?? []), 's_cached_target'],
     };
     state.machines.m_live = {
       id: 'm_live',
@@ -1350,9 +1393,9 @@ describe('VoiceExecutionTransport (persistence)', () => {
       adapterId: 'local_conversation',
       controlSessionId: VOICE_AGENT_GLOBAL_SESSION_ID,
       conversationSessionId: 'sys_voice',
-      conversationSessionAddress: { serverId: 'server-a', sessionId: 'sys_voice' },
+      conversationSessionAddress: { serverId: homeId, sessionId: 'sys_voice' },
       transcriptMode: 'native_session',
-      targetSessionAddress: { serverId: 'server-a', sessionId: 's_cached_target' },
+      targetSessionAddress: { serverId: homeId, sessionId: 's_cached_target' },
       updatedAt: 1,
     });
     const controller = createVoiceExecutionTransport();
@@ -1367,7 +1410,7 @@ describe('VoiceExecutionTransport (persistence)', () => {
   it('switches away from a sticky global voice machine before starting when its daemon is unavailable', async () => {
     const nextSysVoice = {
       id: 'sys_voice',
-      serverId: 'server-a',
+      serverId: homeId,
       updatedAt: 10,
       active: true,
       presence: 'online',
@@ -1388,8 +1431,8 @@ describe('VoiceExecutionTransport (persistence)', () => {
       },
       sessionListRowsByServerId: {
         ...(state.sessionListRowsByServerId ?? {}),
-        'server-a': {
-          ...(state.sessionListRowsByServerId?.['server-a'] ?? {}),
+        [homeId]: {
+          ...(state.sessionListRowsByServerId?.[homeId] ?? {}),
           sys_voice: nextSysVoice,
         },
       },
@@ -1440,7 +1483,7 @@ describe('VoiceExecutionTransport (persistence)', () => {
       },
     };
     state.machineListByServerId = {
-      'server-a': Object.values(state.machines),
+      [homeId]: Object.values(state.machines),
     };
     state.settings.recentMachinePaths = [];
 	    state.settings.voice.executionMachine = { mode: 'auto', machineId: null, autoMachineId: 'm_old' };
@@ -1448,10 +1491,10 @@ describe('VoiceExecutionTransport (persistence)', () => {
 		    modalConfirm
 		      .mockResolvedValueOnce(true)
 		      .mockResolvedValueOnce(true);
-    refreshSessions.mockImplementation(async () => {
+    readSessions.mockImplementation(async () => {
       const sysVoiceNew = {
         id: 'sys_voice_new',
-        serverId: 'server-a',
+        serverId: homeId,
         updatedAt: 11,
         active: true,
         presence: 'online',
@@ -1471,21 +1514,21 @@ describe('VoiceExecutionTransport (persistence)', () => {
         },
         sessionListIndexByServerId: {
           ...(state.sessionListIndexByServerId ?? {}),
-          'server-a': [
-            ...(state.sessionListIndexByServerId?.['server-a'] ?? []),
-            { type: 'session', sessionId: 'sys_voice_new', serverId: 'server-a', serverName: null },
+          [homeId]: [
+            ...(state.sessionListIndexByServerId?.[homeId] ?? []),
+            { type: 'session', sessionId: 'sys_voice_new', serverId: homeId, serverName: null },
           ],
         },
         sessionListRowsByServerId: {
           ...(state.sessionListRowsByServerId ?? {}),
-          'server-a': {
-            ...(state.sessionListRowsByServerId?.['server-a'] ?? {}),
+          [homeId]: {
+            ...(state.sessionListRowsByServerId?.[homeId] ?? {}),
             sys_voice_new: sysVoiceNew,
           },
         },
         ordinarySessionListMembershipByServerId: {
           ...(state.ordinarySessionListMembershipByServerId ?? {}),
-          'server-a': [...(state.ordinarySessionListMembershipByServerId?.['server-a'] ?? []), 'sys_voice_new'],
+          [homeId]: [...(state.ordinarySessionListMembershipByServerId?.[homeId] ?? []), 'sys_voice_new'],
         },
       };
     });
@@ -1514,7 +1557,7 @@ describe('VoiceExecutionTransport (persistence)', () => {
   it('refreshes machines before prompting to switch away from a stale sticky global voice machine', async () => {
     const nextSysVoice = {
       id: 'sys_voice',
-      serverId: 'server-a',
+      serverId: homeId,
       updatedAt: 10,
       active: true,
       presence: 'online',
@@ -1535,8 +1578,8 @@ describe('VoiceExecutionTransport (persistence)', () => {
       },
       sessionListRowsByServerId: {
         ...(state.sessionListRowsByServerId ?? {}),
-        'server-a': {
-          ...(state.sessionListRowsByServerId?.['server-a'] ?? {}),
+        [homeId]: {
+          ...(state.sessionListRowsByServerId?.[homeId] ?? {}),
           sys_voice: nextSysVoice,
         },
       },
@@ -1581,7 +1624,7 @@ describe('VoiceExecutionTransport (persistence)', () => {
       },
     };
     state.machineListByServerId = {
-      'server-a': [state.machines.m_old],
+      [homeId]: [state.machines.m_old],
       'active-server': [state.machines.m_old],
     };
     state.settings.voice.executionMachine = { mode: 'auto', machineId: null, autoMachineId: 'm_old' };
@@ -1591,7 +1634,7 @@ describe('VoiceExecutionTransport (persistence)', () => {
     modalConfirm
       .mockResolvedValueOnce(true)
       .mockResolvedValueOnce(true);
-    refreshMachinesThrottled.mockImplementation(async () => {
+    readMachines.mockImplementation(async () => {
       const nextMachines = {
         ...(state.machines ?? {}),
         m_new: {
@@ -1613,15 +1656,15 @@ describe('VoiceExecutionTransport (persistence)', () => {
         machines: nextMachines,
         machineListByServerId: {
           ...(state.machineListByServerId ?? {}),
-          'server-a': [nextMachines.m_old, nextMachines.m_new],
+          [homeId]: [nextMachines.m_old, nextMachines.m_new],
           'active-server': [nextMachines.m_old, nextMachines.m_new],
         },
       };
     });
-    refreshSessions.mockImplementation(async () => {
+    readSessions.mockImplementation(async () => {
       const sysVoiceNew = {
         id: 'sys_voice_new',
-        serverId: 'server-a',
+        serverId: homeId,
         updatedAt: 11,
         active: true,
         presence: 'online',
@@ -1641,21 +1684,21 @@ describe('VoiceExecutionTransport (persistence)', () => {
         },
         sessionListIndexByServerId: {
           ...(state.sessionListIndexByServerId ?? {}),
-          'server-a': [
-            ...(state.sessionListIndexByServerId?.['server-a'] ?? []),
-            { type: 'session', sessionId: 'sys_voice_new', serverId: 'server-a', serverName: null },
+          [homeId]: [
+            ...(state.sessionListIndexByServerId?.[homeId] ?? []),
+            { type: 'session', sessionId: 'sys_voice_new', serverId: homeId, serverName: null },
           ],
         },
         sessionListRowsByServerId: {
           ...(state.sessionListRowsByServerId ?? {}),
-          'server-a': {
-            ...(state.sessionListRowsByServerId?.['server-a'] ?? {}),
+          [homeId]: {
+            ...(state.sessionListRowsByServerId?.[homeId] ?? {}),
             sys_voice_new: sysVoiceNew,
           },
         },
         ordinarySessionListMembershipByServerId: {
           ...(state.ordinarySessionListMembershipByServerId ?? {}),
-          'server-a': [...(state.ordinarySessionListMembershipByServerId?.['server-a'] ?? []), 'sys_voice_new'],
+          [homeId]: [...(state.ordinarySessionListMembershipByServerId?.[homeId] ?? []), 'sys_voice_new'],
         },
       };
     });
@@ -1665,7 +1708,7 @@ describe('VoiceExecutionTransport (persistence)', () => {
 
     await controller.sendTurn(VOICE_AGENT_GLOBAL_SESSION_ID, 'hello after refresh');
 
-    expect(refreshMachinesThrottled).toHaveBeenCalledWith({ force: true });
+    expect(readMachines).toHaveBeenCalled();
     expect(modalConfirm).toHaveBeenCalledTimes(2);
     expect(spawnSession).toHaveBeenCalledWith(expect.objectContaining({
       machineId: 'm_new',

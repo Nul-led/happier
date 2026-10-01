@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { MetadataSchema } from '@/sync/domains/state/storageTypes';
+import { MetadataSchema } from '@happier-dev/session-core/state';
 
 import { resolveSessionModelSelectionDisposition } from './resolveSessionModelSelectionDisposition';
 
@@ -12,16 +12,16 @@ describe('resolveSessionModelSelectionDisposition', () => {
                 v: 2, updatedAt: 11,
                 ref: {
                     source: 'team_resource', resourceId: 'resource-1', teamId: 'team-1',
-                    expectedResourceRevision: 7, deliveryMode: 'brokered', agentTargetKey: 'backend:claude', modelId: 'team-model',
+                    expectedResourceRevision: 7, deliveryMode: 'brokered', agentTargetKey: 'agent:happier.agent.claude/claude', modelId: 'team-model',
                 },
             },
         });
         expect(resolveSessionModelSelectionDisposition({
-            agentId: 'claude', agentTargetKey: 'backend:claude', metadata,
+            agentId: 'claude', agentTargetKey: 'agent:happier.agent.claude/claude', metadata,
             sessionActive: false, currentRunnerProcessIdentity: null,
         }).proposedSelectionV2?.ref).toEqual({
             source: 'team_resource', resourceId: 'resource-1', teamId: 'team-1',
-            expectedResourceRevision: 7, deliveryMode: 'brokered', agentTargetKey: 'backend:claude', modelId: 'team-model',
+            expectedResourceRevision: 7, deliveryMode: 'brokered', agentTargetKey: 'agent:happier.agent.claude/claude', modelId: 'team-model',
         });
     });
 
@@ -32,13 +32,13 @@ describe('resolveSessionModelSelectionDisposition', () => {
                 v: 2, updatedAt: 11,
                 ref: {
                     source: 'team_resource', resourceId: 'resource-1', teamId: 'team-1',
-                    expectedResourceRevision: 7, deliveryMode: 'brokered', agentTargetKey: 'backend:claude', modelId: 'team-model',
+                    expectedResourceRevision: 7, deliveryMode: 'brokered', agentTargetKey: 'agent:happier.agent.claude/claude', modelId: 'team-model',
                 },
             },
         });
 
         expect(resolveSessionModelSelectionDisposition({
-            agentId: 'claude', agentTargetKey: 'backend:claude', metadata,
+            agentId: 'claude', agentTargetKey: 'agent:happier.agent.claude/claude', metadata,
             sessionActive: true, currentRunnerProcessIdentity: null,
         })).toMatchObject({
             proposedSelectionV2: {
@@ -56,13 +56,13 @@ describe('resolveSessionModelSelectionDisposition', () => {
                 v: 2, updatedAt: 11,
                 ref: {
                     source: 'team_resource', resourceId: 'resource-1', teamId: 'team-1',
-                    expectedResourceRevision: 7, deliveryMode: 'brokered', agentTargetKey: 'backend:claude', modelId: 'team-model',
+                    expectedResourceRevision: 7, deliveryMode: 'brokered', agentTargetKey: 'agent:happier.agent.claude/claude', modelId: 'team-model',
                 },
             },
         });
 
         expect(resolveSessionModelSelectionDisposition({
-            agentId: 'claude', agentTargetKey: 'backend:claude', metadata,
+            agentId: 'claude', agentTargetKey: 'agent:happier.agent.claude/claude', metadata,
             sessionActive: true,
             currentRunnerProcessIdentity: { pid: 42, processStartTimeMs: 12 },
         })).toMatchObject({
@@ -81,7 +81,7 @@ describe('resolveSessionModelSelectionDisposition', () => {
                 v: 1,
                 updatedAt: 11,
                 selection: {
-                    agentTargetKey: 'backend:claude',
+                    agentTargetKey: 'agent:happier.agent.claude/claude',
                     providerConnectionId: null,
                     modelId: 'proposed-model',
                 },
@@ -97,7 +97,7 @@ describe('resolveSessionModelSelectionDisposition', () => {
 
         expect(resolveSessionModelSelectionDisposition({
             agentId: 'claude',
-            agentTargetKey: 'backend:claude',
+            agentTargetKey: 'agent:happier.agent.claude/claude',
             metadata,
             sessionActive: true,
             currentRunnerProcessIdentity: null,
@@ -105,7 +105,7 @@ describe('resolveSessionModelSelectionDisposition', () => {
             activeSelection: null,
             selectionTransitionPending: true,
             reportedSelection: {
-                agentTargetKey: 'backend:claude',
+                agentTargetKey: 'agent:happier.agent.claude/claude',
                 providerConnectionId: null,
                 modelId: 'last-reported-model',
             },
@@ -142,7 +142,7 @@ describe('resolveSessionModelSelectionDisposition', () => {
                 runtimeBindingBasis: {
                     v: 1,
                     deployment: { kind: 'external' },
-                    agentTargetKey: 'backend:claude',
+                    agentTargetKey: 'agent:happier.agent.claude/claude',
                     connectionId: 'pc_provider',
                     contributionKey: 'plugin.openrouter/openrouter',
                     endpoint: {
@@ -212,7 +212,7 @@ describe('resolveSessionModelSelectionDisposition', () => {
 
         expect(resolveSessionModelSelectionDisposition({
             agentId: 'claude',
-            agentTargetKey: 'backend:claude',
+            agentTargetKey: 'agent:happier.agent.claude/claude',
             metadata,
             sessionActive: false,
             currentRunnerProcessIdentity: null,

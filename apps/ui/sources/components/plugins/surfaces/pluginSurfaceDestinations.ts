@@ -1,8 +1,8 @@
 import {
-    PluginUiDestinationGroupHintV1Schema,
+    PluginUiDestinationPlacementV1Schema,
     PluginUiDestinationRankHintV1Schema,
     PluginUiToneV1Schema,
-    type PluginUiDestinationGroupHintV1,
+    type PluginUiDestinationPlacementV1,
     type PluginUiToneV1,
 } from '@happier-dev/protocol/plugins/ui';
 
@@ -57,8 +57,11 @@ export type PluginSurfaceDestination = Readonly<{
     icon: IconName;
     /** Static author metadata after safe display resolution; never dynamic badge state. */
     badge?: PluginSurfaceDestinationBadge;
-    /** A bounded author grouping hint for a host-owned destination catalog. */
-    groupHint?: PluginUiDestinationGroupHintV1;
+    /**
+     * Where the author asked the shell to list it: the rail, or a named column. The host catalog
+     * resolves it against the columns it has; absent means the rail.
+     */
+    requestedPlacement?: PluginUiDestinationPlacementV1;
     /** A bounded author rank hint for a host-owned destination catalog. */
     rankHint?: number;
     order: number;
@@ -195,11 +198,11 @@ export function resolvePluginSurfaceDestinationBadge(
     });
 }
 
-export function resolvePluginSurfaceDestinationGroupHint(
+export function resolvePluginSurfaceDestinationPlacement(
     placement: PluginUiSurfacePlacementProjection,
-): PluginUiDestinationGroupHintV1 | undefined {
-    const groupHint = PluginUiDestinationGroupHintV1Schema.safeParse(placement.display.groupHint);
-    return groupHint.success ? groupHint.data : undefined;
+): PluginUiDestinationPlacementV1 | undefined {
+    const requested = PluginUiDestinationPlacementV1Schema.safeParse(placement.display.placement);
+    return requested.success ? requested.data : undefined;
 }
 
 export function resolvePluginSurfaceDestinationRankHint(
@@ -272,7 +275,7 @@ export function resolvePluginSurfaceDestinations(
             continue;
         }
         const badge = resolvePluginSurfaceDestinationBadge(placement, input.localize);
-        const groupHint = resolvePluginSurfaceDestinationGroupHint(placement);
+        const requestedPlacement = resolvePluginSurfaceDestinationPlacement(placement);
         const rankHint = resolvePluginSurfaceDestinationRankHint(placement);
         destinations.push(Object.freeze({
             id,
@@ -281,7 +284,7 @@ export function resolvePluginSurfaceDestinations(
             label: resolvePluginSurfaceDestinationLabel(placement, input.localize),
             icon: resolvePluginSurfaceDestinationIcon(placement, input.direction),
             ...(badge === null ? {} : { badge }),
-            ...(groupHint === undefined ? {} : { groupHint }),
+            ...(requestedPlacement === undefined ? {} : { requestedPlacement }),
             ...(rankHint === undefined ? {} : { rankHint }),
             order: selection.order ?? Number.MAX_SAFE_INTEGER,
             disabledReason,

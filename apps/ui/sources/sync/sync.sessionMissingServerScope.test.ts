@@ -167,7 +167,7 @@ import { encodeBase64 } from '@/encryption/base64';
 import { encodeUTF8 } from '@/encryption/text';
 import type { Machine, Session } from './domains/state/storageTypes';
 import type { SessionListRenderableSession } from './domains/session/listing/sessionListRenderable';
-import type { NormalizedMessage, RawRecord } from './typesRaw';
+import type { NormalizedMessage, RawRecord } from "@happier-dev/session-core/raw";
 import { enterDemoMode, resetDemoModeDepthForTests } from '@/demoMode/runtime/enterExitDemoMode';
 import {
     computeAccountEncryptionMigrateKeyFingerprintV1,
@@ -180,12 +180,8 @@ import {
 } from '@happier-dev/protocol';
 import { createVoiceHistoryConsumer } from '@/voice/history/voiceHistoryConsumer';
 import type { ServerAccountRequestAuthority } from '@/sync/runtime/orchestration/serverScopedRpc/createServerRequestWithServerScope';
-import {
-    applyTranscriptStreamSegmentDelta,
-    isTranscriptStreamSegmentAssemblyReady,
-    noteTranscriptStreamSegmentSnapshot,
-    resetTranscriptStreamSegmentAssemblyForTests,
-} from './engine/sessions/transcriptStreamSegmentAssembly';
+import { socketTranscriptStreamSegmentAssembler } from './engine/socket/socketTranscriptStreamSegmentAssembler';
+const { applyTranscriptStreamSegmentDelta, isTranscriptStreamSegmentAssemblyReady, noteTranscriptStreamSegmentSnapshot } = socketTranscriptStreamSegmentAssembler;
 import { handleUpdateContainer } from './engine/socket/socket';
 
 const initialStorageState = storage.getState();
@@ -480,7 +476,6 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
         actionOperationStore.reset();
         resolvePreferredServerIdForSessionIdMock.mockReturnValue(undefined);
         resetSessionSurfaceVisibilityForTests();
-        resetTranscriptStreamSegmentAssemblyForTests();
         // `sync` is a module singleton the suite reaches into; without this the
         // applied transport Home a case sets leaks into every later case and
         // silently changes which Home the scope owners address.
@@ -491,7 +486,6 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
         vi.unstubAllGlobals();
         resetDemoModeDepthForTests();
         resetSessionSurfaceVisibilityForTests();
-        resetTranscriptStreamSegmentAssemblyForTests();
         vi.useRealTimers();
         vi.clearAllMocks();
     });
@@ -1135,7 +1129,7 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
         (sync as any).hasFetchedSessionsSnapshotForActiveServer = false;
 
         await expect((sync as any).fetchMessages(sessionId)).rejects.toThrow(
-            `Session encryption not ready for ${sessionId}`,
+            `Session encryption is unavailable for ${sessionId}`,
         );
     });
 
@@ -1150,8 +1144,34 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
         (sync as any).activeServerSessionIds = new Set<string>([sessionId]);
 
         await expect((sync as any).fetchMessages(sessionId)).rejects.toThrow(
-            `Session encryption not ready for ${sessionId}`,
+            `Session encryption is unavailable for ${sessionId}`,
         );
+        expect(storage.getState().sessionMessages[sessionId]?.isLoaded).not.toBe(true);
+        expect(storage.getState().getSessionTranscriptLoadIssue(sessionId)).toEqual({
+            kind: 'read_failed',
+            errorCode: 'session_encryption_not_found',
+        });
+    });
+
+    it('reports the HTTP status of a failed hosted transcript page instead of a generic read error', async () => {
+        const sessionId = 'hosted_http_failure';
+        storage.getState().applySessions([{ ...createSession(sessionId), encryptionMode: 'plain' } as Session]);
+        storage.getState().setSessionTranscriptLoadIssue(sessionId, {
+            kind: 'read_failed',
+            errorCode: 'internal_error',
+        });
+        requestMock.mockResolvedValueOnce(Response.json({ error: 'temporarily unavailable' }, { status: 503 }));
+
+        const { sync } = await import('./sync');
+        (sync as any).activeServerSessionIds = new Set<string>([sessionId]);
+
+        await expect((sync as any).fetchMessages(sessionId)).rejects.toMatchObject({ status: 503 });
+        expect(storage.getState().sessionMessages[sessionId]?.isLoaded).not.toBe(true);
+        expect(storage.getState().getSessionTranscriptLoadIssue(sessionId)).toEqual({
+            kind: 'read_failed',
+            errorCode: 'http_error',
+            httpStatus: 503,
+        });
     });
 
     it('fetches plaintext session messages without requiring session encryption', async () => {
@@ -1196,6 +1216,29 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
         expect(Object.values(messagesById).some((message) => message.kind === 'user-text' && message.text === 'hello plain sync')).toBe(true);
     });
 
+    it('retries a first transcript read after a transient reachability timeout', async () => {
+        const sessionId = 'plain_transient_first_read';
+        storage.getState().applySessions([{ ...createSession(sessionId), encryptionMode: 'plain' } as Session]);
+        const timeout = Object.assign(new Error('Timed out waiting for server reachability'), {
+            name: 'ServerFetchConnectivityTimeoutError',
+            retryable: false,
+        });
+        requestMock
+            .mockRejectedValueOnce(timeout)
+            .mockResolvedValueOnce(Response.json({ messages: [], hasMore: false, nextBeforeSeq: null }));
+
+        const { sync } = await import('./sync');
+        (sync as any).activeServerSessionIds = new Set<string>([sessionId]);
+        (sync as any).hasFetchedSessionsSnapshotForActiveServer = true;
+        const messagesSync = (sync as any).getOrCreateMessagesSync(sessionId);
+        messagesSync.invalidateCoalesced();
+        await messagesSync.awaitQueue({ timeoutMs: 5_000 });
+
+        expect(requestMock).toHaveBeenCalledTimes(2);
+        expect(storage.getState().sessionMessages[sessionId]?.isLoaded).toBe(true);
+        expect(storage.getState().getSessionTranscriptLoadIssue(sessionId)).toBeNull();
+    });
+
     it('treats sessions applied after the initial snapshot as known on the active server', async () => {
         const sessionId = 'new_after_snapshot';
         const { sync } = await import('./sync');
@@ -1208,7 +1251,7 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
         (sync as any).applySessions([createSession(sessionId)]);
 
         await expect((sync as any).fetchMessages(sessionId)).rejects.toThrow(
-            `Session encryption not ready for ${sessionId}`,
+            `Session encryption is unavailable for ${sessionId}`,
         );
     });
 
@@ -1929,6 +1972,17 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
         await expect((sync as any).fetchMessages(sessionId)).rejects.toThrow('Agent unavailable');
 
         expect(storage.getState().sessionMessages[sessionId]?.isLoaded).not.toBe(true);
+        expect(storage.getState().getSessionTranscriptLoadIssue(sessionId)).toEqual({
+            kind: 'read_failed',
+            errorCode: 'agent_unavailable',
+        });
+
+        machineExternalSessionTranscriptPageMock.mockResolvedValueOnce({
+            ok: false,
+            errorCode: 'agent_unavailable',
+            error: 'Agent unavailable again',
+        });
+        await expect((sync as any).fetchMessages(sessionId)).rejects.toThrow('Agent unavailable again');
         expect(storage.getState().getSessionTranscriptLoadIssue(sessionId)).toEqual({
             kind: 'read_failed',
             errorCode: 'agent_unavailable',
@@ -3832,6 +3886,94 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
             expect(requestMock).toHaveBeenCalledTimes(1);
         },
     );
+
+    it('seals an Account-lifetime enqueue with the E2EE Session key its fresh scoped authority hydrates on demand', async () => {
+        // Observed on the web client: a Session this client just created lists, but the
+        // first send failed with `Session … not found`. A captured Account authority
+        // carries a fresh Account encryption owner with no Session readers installed, and
+        // the pending owner handed it to the sealer without hydrating this Session's key.
+        const sessionId = 'lifetime-e2ee-first-send';
+        const localId = 'lifetime-e2ee-local';
+        const prompt = 'List the files in this directory and stop.';
+        const server = await upsertServerProfile({ serverUrl: 'https://lifetime-e2ee.example', name: 'Lifetime E2EE' });
+        await setActiveServerId(server.id, { scope: 'device' });
+        storage.getState().activateProfileScope({ serverId: server.id, accountId: 'e2ee-account' });
+        storage.getState().applySessions([{ ...createSession(sessionId), serverId: server.id, encryptionMode: 'e2ee' } as Session]);
+
+        const accountSecret = new Uint8Array(32).fill(7);
+        const sessionDataKey = new Uint8Array(32).fill(9);
+        const actualEncryptionOwner = await vi.importActual<
+            typeof import('@/auth/encryption/createEncryptionFromAuthCredentials')
+        >('@/auth/encryption/createEncryptionFromAuthCredentials');
+        createEncryptionFromAuthCredentialsMock.mockImplementation(actualEncryptionOwner.createEncryptionFromAuthCredentials);
+        getCredentialsForServerUrlMock.mockResolvedValue({
+            token: buildTokenWithSub('e2ee-account'),
+            secret: encodeBase64(accountSecret, 'base64url'),
+        });
+        const { Encryption } = await import('@/sync/encryption/encryption');
+        const { sealEncryptedDataKeyEnvelopeV1 } = await import('@happier-dev/protocol');
+        const daemonAccount = await Encryption.create(accountSecret);
+        const envelope = encodeBase64(sealEncryptedDataKeyEnvelopeV1({
+            dataKey: sessionDataKey,
+            recipientPublicKey: daemonAccount.contentDataKey,
+            randomBytes: (length) => new Uint8Array(length).fill(3),
+        }), 'base64');
+        await daemonAccount.initializeSessions(new Map([[sessionId, sessionDataKey]]));
+        const daemonReader = daemonAccount.getSessionEncryption(sessionId)!;
+
+        let pendingBody: Record<string, unknown> | null = null;
+        runtimeFetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+            const url = new URL(String(input));
+            if (url.pathname === '/v1/features') return currentPendingInputFeaturesResponse();
+            if (url.pathname === `/v2/sessions/${sessionId}` && (init?.method ?? 'GET') === 'GET') {
+                return Response.json({
+                    session: {
+                        id: sessionId,
+                        seq: 0,
+                        createdAt: 1,
+                        updatedAt: 1,
+                        active: true,
+                        activeAt: 1,
+                        archivedAt: null,
+                        encryptionMode: 'e2ee',
+                        metadata: 'metadata',
+                        metadataVersion: 1,
+                        agentState: null,
+                        agentStateVersion: 0,
+                        pendingCount: 0,
+                        pendingVersion: 0,
+                        dataEncryptionKey: envelope,
+                    },
+                });
+            }
+            if (url.pathname === `/v2/sessions/${sessionId}/pending` && init?.method === 'POST') {
+                pendingBody = JSON.parse(String(init.body)) as Record<string, unknown>;
+                return Response.json({ pending: { localId }, requestedAction: { v: 1, kind: 'enqueue' } });
+            }
+            return new Response(null, { status: 404 });
+        });
+        const lifetime = {
+            scope: createServerAccountScope(server.id, 'e2ee-account')!,
+            isCurrent: () => true,
+            onRetire: () => ({ dispose() {} }),
+        };
+
+        const { sync } = await import('./sync');
+        await expect((sync as any).enqueuePendingMessage(
+            sessionId,
+            prompt,
+            undefined,
+            undefined,
+            { localId, accountLifetime: lifetime },
+        )).resolves.toEqual({ localId, accepted: true });
+
+        expect(requestMock).not.toHaveBeenCalled();
+        const body = pendingBody as Record<string, unknown> | null;
+        expect(body).toMatchObject({ localId, messageRole: 'user' });
+        expect(body?.content).toBeUndefined();
+        const sealed = await daemonReader.decryptRaw(String(body?.ciphertext));
+        expect(sealed).toMatchObject({ role: 'user', content: { type: 'text', text: prompt } });
+    });
 
     it('retains exact enqueue custody when the active-owner postflight fence rejects after a possible commit', async () => {
         const sessionId = 'active_pending_postflight_custody';

@@ -1,6 +1,6 @@
 import type { DaemonExecutionRunEntry, ExecutionRunPublicState } from '@happier-dev/protocol';
 import { convertBackendTargetRefV2ToV1 } from '@happier-dev/protocol';
-import type { Message } from '@/sync/domains/messages/messageTypes';
+import type { Message } from "@happier-dev/session-core/messages";
 
 import { machineExecutionRunsList } from '@/sync/ops/machineExecutionRuns';
 import { storage } from '@/sync/domains/state/storage';

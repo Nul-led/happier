@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { InvalidateSync } from '@/utils/sessions/sync';
 
 // Plan B8 (transcript-viewport-single-owner port): returning to the bottom is a
 // first-class live-tail transition. A stored UNPINNED viewport must poison the catch-up
@@ -10,6 +11,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const kvStore = vi.hoisted(() => new Map<string, string>());
 vi.mock('react-native-mmkv', () => {
     class MMKV {
+        getAllKeys() {
+            return [...kvStore.keys()];
+        }
         getString(key: string) {
             return kvStore.get(key);
         }
@@ -64,6 +68,16 @@ vi.mock('@/track', () => ({
 }));
 
 const requestMock = vi.hoisted(() => vi.fn());
+// Scoped credential persistence and HTTP remain the only request boundaries.
+vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
+    const { createTokenStorageModuleMock } = await import('@/dev/testkit/mocks/tokenStorage');
+    return createTokenStorageModuleMock({
+        importOriginal,
+        tokenStorage: {
+            getCredentialsForServerUrl: async () => ({ token: 'hdr.eyJzdWIiOiJhY2NvdW50LWEifQ.sig' }),
+        },
+    });
+});
 vi.mock('@/sync/api/session/apiSocket', () => ({
     apiSocket: {
         request: requestMock,
@@ -73,6 +87,7 @@ vi.mock('@/sync/api/session/apiSocket', () => ({
         onStatusChange: vi.fn(),
         onReconnected: vi.fn(),
         disconnect: vi.fn(),
+        invalidateRequests: vi.fn(),
         initialize: vi.fn(),
     },
 }));
@@ -83,11 +98,13 @@ import {
     resetSessionSurfaceVisibilityForTests,
 } from './domains/session/sessionSurfaceVisibility';
 import type { Session } from './domains/state/storageTypes';
-import type { NormalizedMessage } from './typesRaw';
+import type { NormalizedMessage } from "@happier-dev/session-core/raw";
 
 type SyncLiveTailCatchUpTestAccess = {
+    getOrCreateMessagesSync(sessionId: string): InvalidateSync;
     encryption: {
         getSessionEncryption: (sessionId: string) => null;
+        removeSessionEncryption: (sessionId: string) => void;
     };
     activeServerSessionIds: Set<string>;
     hasFetchedSessionsSnapshotForActiveServer: boolean;
@@ -162,6 +179,7 @@ async function seedLargeGapSession(): Promise<{ sync: typeof import('./sync').sy
 
     syncForTest.encryption = {
         getSessionEncryption: () => null,
+        removeSessionEncryption: vi.fn(),
     };
     syncForTest.activeServerSessionIds = new Set<string>([SESSION_ID]);
     syncForTest.hasFetchedSessionsSnapshotForActiveServer = true;
@@ -180,7 +198,18 @@ describe('sync live-tail catch-up decision (plan B8)', () => {
         storage.setState(initialStorageState, true);
         kvStore.clear();
         requestMock.mockReset();
+        vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+            const url = String(input instanceof Request ? input.url : input);
+            if (url.endsWith('/v1/auth/ping') || url.endsWith('/health')) {
+                return Response.json({ ok: true });
+            }
+            return requestMock(input, init);
+        });
         resetSessionSurfaceVisibilityForTests();
+    });
+
+    afterEach(() => {
+        vi.unstubAllGlobals();
     });
 
     it('defers forward loading on a large gap while the stored viewport is unpinned', async () => {
@@ -217,11 +246,9 @@ describe('sync live-tail catch-up decision (plan B8)', () => {
             offsetY: 0,
             shouldRestoreViewport: false,
         });
-        expect(sync.hasDeferredNewerMessages(SESSION_ID)).toBe(false);
-
-        // The same large gap now resolves tail_reset_latest_page: a snapshot fetch,
-        // never defer_forward_loading.
-        await sync.refreshSessionMessages(SESSION_ID);
+        const syncForTest = sync as unknown as SyncLiveTailCatchUpTestAccess;
+        expect(await syncForTest.getOrCreateMessagesSync(SESSION_ID).awaitQueue({ timeoutMs: 2_000 }))
+            .toEqual({ status: 'completed' });
 
         expect(sync.hasDeferredNewerMessages(SESSION_ID)).toBe(false);
         expect(messagesRequestPaths().length).toBeGreaterThanOrEqual(1);

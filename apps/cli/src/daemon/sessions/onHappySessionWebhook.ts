@@ -4,6 +4,7 @@ import {
   SPAWN_SESSION_ERROR_CODES,
 } from '@/session/shared/spawnSessionContract';
 import type { SessionCreationTerminalSpawnErrorDetail } from '@happier-dev/protocol';
+import { processIdentityMatches } from '@happier-dev/cli-common/processInstance';
 import { logger } from '@/ui/logger';
 import { readStoredCredentials } from '@/persistence';
 
@@ -17,6 +18,7 @@ import { execFileSync } from 'node:child_process';
 
 import { findHappyProcessByPid } from '../doctor';
 import { readProcessIdentityByPid } from '../processIdentity';
+import { readProcessRunState } from '../processRunState';
 import type { DaemonSpawnStartupReadinessFailure, TrackedSession } from '../types';
 import {
   hashProcessCommand,
@@ -38,6 +40,7 @@ import type {
   WindowsProcessInventoryFact,
 } from '../platform/windows/windowsProcessInventory';
 import type { DeviceLocalSecretStorage } from '../deviceLocalSecretStorage';
+import { resolveWindowsHostedIdentity } from '../platform/windows/windowsHostedSessionRuntime';
 
 const DEFAULT_PARENT_PID_LOOKUP_TIMEOUT_MS = 1000;
 const PARENT_PID_LOOKUP_TIMEOUT_ENV_KEY = 'HAPPIER_DAEMON_PARENT_PID_LOOKUP_TIMEOUT_MS';
@@ -132,41 +135,6 @@ function findTrackedSessionByRunnerPid(
     if (tracked.sessionRunnerPid === runnerPid) return tracked;
   }
   return null;
-}
-
-function resolveWindowsHostedIdentity(
-  terminal: Metadata['terminal'] | undefined,
-):
-  | Readonly<{
-      mode: 'windows_terminal';
-      windowId: string;
-      title: string;
-    }>
-  | Readonly<{ mode: 'windows_console' }>
-  | null {
-  if (
-    terminal?.mode === 'windows_console'
-    && terminal.windows?.host === 'console'
-  ) {
-    return { mode: 'windows_console' };
-  }
-  if (
-    terminal?.mode !== 'windows_terminal'
-    || terminal.windows?.host !== 'windows_terminal'
-  ) {
-    return null;
-  }
-  const windowId =
-    typeof terminal.windows.windowId === 'string'
-      ? terminal.windows.windowId.trim()
-      : '';
-  const title =
-    typeof terminal.windows.title === 'string'
-      ? terminal.windows.title.trim()
-      : '';
-  return windowId && title
-    ? { mode: 'windows_terminal', windowId, title }
-    : null;
 }
 
 type PendingWindowsTerminalMatch =
@@ -272,12 +240,7 @@ async function findPendingWindowsTerminalTrackedSession(params: Readonly<{
       : null;
   return (
     revalidated
-    && revalidated.processStartTimeMs
-      === exactMatches[0]!
-        .cancellationIdentity.processStartTimeMs
-    && revalidated.processCommandHash
-      === exactMatches[0]!
-        .cancellationIdentity.processCommandHash
+    && processIdentityMatches(exactMatches[0]!.cancellationIdentity, revalidated)
   )
     ? {
         kind: 'matched',
@@ -309,6 +272,10 @@ function adoptReportedSessionIdentity(
   metadata: Metadata,
   isPlaceholderSessionId: boolean,
 ): void {
+  if (tracked.reportMarkerCustody?.retiring) {
+    logger.infoFile('[DAEMON RUN] Warning: rejected session report during tracked retirement', { pid: tracked.pid });
+    throw new Error('Tracked session marker custody is retiring');
+  }
   if (!isPlaceholderSessionId && tracked.startedBy === 'daemon') {
     const currentSessionId =
       typeof tracked.happySessionId === 'string'
@@ -541,6 +508,19 @@ export function createOnHappySessionWebhook(params: Readonly<{
       return;
     }
 
+    // The OS sample is only admission evidence for a still-unmatched daemon
+    // report. Re-read correlation maps after this await; acceptance can arrive
+    // while the existing process-state boundary is inspecting the runner.
+    const untrackedDaemonRunState = normalizedMetadata.startedBy === 'daemon'
+      && !pidToTrackedSession.has(pid)
+      && !findTrackedSessionByRunnerPid(pidToTrackedSession, pid)
+        ? await readProcessRunState(pid)
+        : null;
+    const rejectDeadExternalDaemonReport = (): boolean => {
+      if (untrackedDaemonRunState !== 'dead' && untrackedDaemonRunState !== 'zombie') return false;
+      logger.infoFile('[DAEMON RUN] Warning: ignored positively dead untracked daemon report', { pid });
+      return true;
+    };
     // Check if we already have this PID (daemon-spawned)
     const existingSession = pidToTrackedSession.get(pid);
     const isPlaceholderSessionId = isPidPlaceholderSessionId(sessionId);
@@ -733,6 +713,7 @@ export function createOnHappySessionWebhook(params: Readonly<{
             return;
           }
 
+          if (rejectDeadExternalDaemonReport()) return;
           const trackedSession: TrackedSession = {
             startedBy: 'happy directly - likely by user from terminal',
             happySessionId: sessionId,
@@ -784,6 +765,7 @@ export function createOnHappySessionWebhook(params: Readonly<{
             }
           } else {
             // New session started externally (not by this daemon)
+            if (rejectDeadExternalDaemonReport()) return;
             const trackedSession: TrackedSession = {
               startedBy: 'happy directly - likely by user from terminal',
               happySessionId: sessionId,
@@ -798,6 +780,10 @@ export function createOnHappySessionWebhook(params: Readonly<{
       }
     }
 
+    const markerCustody = trackedForPid
+      ? trackedForPid.reportMarkerCustody ??= { pending: Promise.resolve(), retiring: false }
+      : null;
+    const reportTargetsTrackedOwner = trackedForPid?.pid === pid;
     const resolveSessionMarkerPid = (): number =>
       requiresCanonicalMarkerAdoption
         ? trackedForPid?.pid ?? pid
@@ -932,12 +918,14 @@ export function createOnHappySessionWebhook(params: Readonly<{
         return;
       }
       await awaitTrackedMarkerPromotion();
+      if (!requiresCanonicalMarkerAdoption && reportTargetsTrackedOwner && trackedForPid?.pid !== pid) return;
       const currentSessionMarkerPid = resolveSessionMarkerPid();
       const [processIdentity, proc] = await Promise.all([
         readProcessIdentityByPidFn(currentSessionMarkerPid),
         findHappyProcessByPidFn(currentSessionMarkerPid),
       ]);
       await awaitTrackedMarkerPromotion();
+      if (!requiresCanonicalMarkerAdoption && reportTargetsTrackedOwner && trackedForPid?.pid !== pid) return;
       if (currentSessionMarkerPid !== resolveSessionMarkerPid()) {
         await persistSessionMarker(beforeStartupReadiness);
         return;
@@ -1002,6 +990,7 @@ export function createOnHappySessionWebhook(params: Readonly<{
 
       const persistedMetadata = mergeKnownVendorResumeIdIntoMetadata(knownVendorResumeId);
       await awaitTrackedMarkerPromotion();
+      if (!requiresCanonicalMarkerAdoption && reportTargetsTrackedOwner && trackedForPid?.pid !== pid) return;
       if (currentSessionMarkerPid !== resolveSessionMarkerPid()) {
         await persistSessionMarker(beforeStartupReadiness);
         return;
@@ -1032,20 +1021,33 @@ export function createOnHappySessionWebhook(params: Readonly<{
       );
       await awaitTrackedMarkerPromotion();
     };
+    const runReportMarkerPersistence = (beforeStartupReadiness = false): Promise<void> => {
+      if (markerCustody?.retiring) {
+        return requiresCanonicalMarkerAdoption
+          ? Promise.reject(new Error('Daemon session marker custody is retiring'))
+          : Promise.resolve();
+      }
+      const work = persistSessionMarker(beforeStartupReadiness);
+      if (markerCustody) {
+        markerCustody.pending = Promise.all([
+          markerCustody.pending,
+          work.catch(() => {
+            logger.infoFile('[DAEMON RUN] Warning: failed to persist correlated session marker', { pid });
+          }),
+        ]).then(() => {});
+      }
+      return work;
+    };
     let ordinaryMarkerPersistence: Promise<boolean> | null = null;
     const startOrdinaryMarkerPersistence = (
       beforeStartupReadiness = false,
     ): Promise<boolean> => {
       if (ordinaryMarkerPersistence) return ordinaryMarkerPersistence;
-      ordinaryMarkerPersistence = persistSessionMarker(
+      ordinaryMarkerPersistence = runReportMarkerPersistence(
         beforeStartupReadiness,
       )
         .then(() => true)
-        .catch((e) => {
-          logger.debug(
-            '[DAEMON RUN] Failed to write session marker',
-            e,
-          );
+        .catch(() => {
           return false;
         });
       if (trackedForPid && trackedForPid.startedBy !== 'daemon') {
@@ -1073,15 +1075,14 @@ export function createOnHappySessionWebhook(params: Readonly<{
     if (!trackedDaemonCanonicalSession || !startupReadinessGate) return;
     const reconcileTrackedDaemonCanonicalWebhook =
       async (): Promise<void> => {
-    const completeSpawnAwaiter = (): void => {
+    const completeSpawnAwaiter = async (): Promise<void> => {
       const trackedPid =
         trackedDaemonCanonicalSession.spawnStartupAwaiterPid
         ?? trackedDaemonCanonicalSession.pid;
       const awaiter = pidToAwaiter.get(trackedPid);
       if (!awaiter) return;
       pidToAwaiter.delete(trackedPid);
-      delete trackedDaemonCanonicalSession.spawnStartupAwaiterPid;
-      awaiter(trackedDaemonCanonicalSession);
+      await awaiter(trackedDaemonCanonicalSession);
       logger.debug(
         `[DAEMON RUN] Resolved session awaiter for canonical session ${sessionId} via PID ${trackedPid}`,
       );
@@ -1091,7 +1092,7 @@ export function createOnHappySessionWebhook(params: Readonly<{
         .spawnStartupReadinessFailure;
     if (identityFailure) {
       startupReadinessGate.resolve(false);
-      completeSpawnAwaiter();
+      await completeSpawnAwaiter();
       throw new Error(
         identityFailure.errorMessage,
       );
@@ -1205,7 +1206,7 @@ export function createOnHappySessionWebhook(params: Readonly<{
         // Authority installation updates this exact marker with retained
         // generation custody. Adopt the canonical Session id first so the
         // authority owner never observes the provisional PID placeholder.
-        await persistSessionMarker();
+        await runReportMarkerPersistence();
       } else if (
         trackedDaemonCanonicalSession
           .agentRuntimeDaemonServiceAuthorityFilePath
@@ -1244,11 +1245,11 @@ export function createOnHappySessionWebhook(params: Readonly<{
         errorMessage: 'Session startup reconciliation failed',
       };
       startupReadinessGate?.resolve(false);
-      completeSpawnAwaiter();
+      await completeSpawnAwaiter();
       throw error;
     }
     startupReadinessGate.resolve(true);
-    completeSpawnAwaiter();
+    await completeSpawnAwaiter();
     if (
       !requiresCanonicalMarkerAdoption
       && !ordinaryMarkerPersistence

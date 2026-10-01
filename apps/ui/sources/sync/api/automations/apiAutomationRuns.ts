@@ -6,6 +6,7 @@ import {
 } from '@happier-dev/protocol';
 
 import { getAutomationAuthHeaders, readAutomationJsonOrThrow } from './apiAutomationHttp';
+import type { AutomationRequestContext } from './apiAutomations';
 
 /** Current bounded Run summaries for every Automation trigger kind. */
 export async function listAutomationDefinitionRuns(params: {
@@ -13,12 +14,13 @@ export async function listAutomationDefinitionRuns(params: {
     automationId: string;
     limit?: number;
     cursor?: string | null;
+    requestContext?: AutomationRequestContext;
 }): Promise<{ runs: AutomationV3RunListItem[]; nextCursor: string | null }> {
     const limit = typeof params.limit === 'number' && Number.isFinite(params.limit)
         ? Math.min(Math.max(Math.floor(params.limit), 1), 100)
         : 20;
     const cursorParam = params.cursor ? `&cursor=${encodeURIComponent(params.cursor)}` : '';
-    const response = await serverFetch(
+    const response = await (params.requestContext?.request ?? serverFetch)(
         `/v3/automations/${encodeURIComponent(params.automationId)}/runs?limit=${limit}${cursorParam}`,
         {
             headers: getAutomationAuthHeaders(params.credentials),

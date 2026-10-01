@@ -23,6 +23,23 @@ describe('sessionControl.sessionSystemRecordsHttp', () => {
     }
   });
 
+  it('keeps the producer\'s typed record refusal instead of inferring it from the HTTP status', async () => {
+    const { readSessionSystemRecordV1 } = await import('./sessionSystemRecordsHttp');
+    const address = { owner: 'host', namespace: 'surface', kind: 'item.v1', localId: 'note' } as const;
+    vi.spyOn(axios, 'get')
+      .mockResolvedValueOnce({ status: 403, data: { error: 'Forbidden', code: 'plugin_session_record_forbidden' } })
+      .mockResolvedValueOnce({ status: 404, data: { error: 'Not found', code: 'plugin_session_record_feature_disabled' } })
+      .mockResolvedValueOnce({ status: 401, data: { error: 'Unauthorized' } });
+    // A definite authorization denial must not read as "you are not signed in".
+    await expect(readSessionSystemRecordV1({ token: 'token', sessionId: 'session', address }))
+      .rejects.toMatchObject({ code: 'plugin_session_record_forbidden' });
+    await expect(readSessionSystemRecordV1({ token: 'token', sessionId: 'session', address }))
+      .rejects.toMatchObject({ code: 'plugin_session_record_feature_disabled' });
+    // An untyped authentication failure keeps the authentication disposition.
+    await expect(readSessionSystemRecordV1({ token: 'token', sessionId: 'session', address }))
+      .rejects.toMatchObject({ code: 'not_authenticated' });
+  });
+
   it('rejects V1 records outside the requested address before any consumer opens them', async () => {
     const { readSessionSystemRecordV1, listSessionSystemRecordsV1 } = await import('./sessionSystemRecordsHttp');
     const address = { owner: 'host', namespace: 'surface', kind: 'item.v1', localId: 'wanted' } as const;

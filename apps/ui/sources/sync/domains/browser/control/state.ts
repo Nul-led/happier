@@ -1,5 +1,6 @@
 import type {
     BrowserAdapterCapabilitiesV1,
+    BrowserAutomationControllerStateV1,
     BrowserNavigationLoadingStateV1,
     BrowserPlatformV1,
     BrowserRenderEngineKindV1,
@@ -41,6 +42,7 @@ export type BrowserControlViewState = Readonly<{
     openerViewId: string | null;
     adapterRefreshStatus: BrowserAdapterRefreshStatus;
     adapterRefreshError: string | null;
+    automationController?: BrowserAutomationControllerStateV1;
 }>;
 
 /**

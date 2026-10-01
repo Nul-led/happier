@@ -1,7 +1,7 @@
 import { isSubAgentTranscriptToolName } from '@happier-dev/protocol/tools/v2';
 
 import { resolveToolTranscriptSidechainId } from '@/components/tools/shell/views/resolveToolTranscriptSidechainId';
-import type { ToolCallMessage } from '@/sync/domains/messages/messageTypes';
+import type { ToolCallMessage } from "@happier-dev/session-core/messages";
 
 /**
  * Pure render decisions for one grouped tool-call row.

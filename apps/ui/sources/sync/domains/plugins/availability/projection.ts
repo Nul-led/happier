@@ -24,21 +24,9 @@ import {
     type PluginAccountAvailabilityReader,
     type PluginAccountAvailabilityReleaseClassificationV1,
     type PluginAccountAvailabilitySnapshot,
-    type PluginAccountAvailabilityStoredProjection,
 } from './reader';
 
 const readerStore = createPluginAccountAvailabilityReaderStore();
-let projectionRevision = 0;
-// AccountChange clears the active projection before its single coalesced
-// refresh supplies the next verified snapshot. Retain exactly that predecessor
-// in the incumbent writer; it remains unreadable and is not a second cache or
-// persistent identity index.
-let clearedProjection: PluginAccountAvailabilityStoredProjection | null = null;
-let clearedProjectionRetirement: Readonly<{ dispose: () => void }> | null = null;
-
-function advanceProjectionRevision(): void {
-    projectionRevision += 1;
-}
 
 function currentProjectionLifetime(scope: ServerAccountScope): ActiveServerAccountScopeLifetime | null {
     const lifetime = captureActiveServerAccountScopeLifetime();
@@ -50,36 +38,6 @@ function currentProjectionLifetime(scope: ServerAccountScope): ActiveServerAccou
     return lifetime;
 }
 
-function releaseClearedProjection(): void {
-    clearedProjection = null;
-    clearedProjectionRetirement?.dispose();
-    clearedProjectionRetirement = null;
-}
-
-function retainClearedProjection(previous: PluginAccountAvailabilityStoredProjection): void {
-    if (clearedProjection) return;
-    const lifetime = currentProjectionLifetime(previous.scope);
-    if (!lifetime) return;
-
-    clearedProjection = previous;
-    let retirement: Readonly<{ dispose: () => void }> | null = null;
-    retirement = lifetime.onRetire(() => {
-        if (clearedProjection === previous) {
-            clearedProjection = null;
-        }
-        if (clearedProjectionRetirement === retirement) {
-            clearedProjectionRetirement = null;
-        }
-    });
-    // A retirement may win between currentness observation and subscription.
-    // In that terminal path, never retain a predecessor beyond its Account.
-    if (clearedProjection === previous) {
-        clearedProjectionRetirement = retirement;
-    } else {
-        retirement.dispose();
-    }
-}
-
 /**
  * The sole UI projection writer. The Account Availability HTTP/change owner
  * replaces one complete verified snapshot; consumers only read Account
@@ -89,10 +47,9 @@ function retainClearedProjection(previous: PluginAccountAvailabilityStoredProjec
 export function replacePluginAccountAvailabilityProjection(input: Readonly<{
     scope: ServerAccountScope;
     snapshot: PluginAccountAvailabilitySnapshot;
+    failedPluginIds?: readonly string[];
 }>): void {
     readerStore.replace(input);
-    releaseClearedProjection();
-    advanceProjectionRevision();
     const lifetime = currentProjectionLifetime(input.scope);
     if (!lifetime) return;
     // Availability is the current Account projection owner. Binding the
@@ -104,6 +61,21 @@ export function replacePluginAccountAvailabilityProjection(input: Readonly<{
     // deletion stays with logout/forget/explicit clear and with the Artifact custody owner's
     // corruption and eviction owners.
     getInstalledPluginReactNativeBundleCache().bindAccountLifetime(lifetime);
+}
+
+/**
+ * Commits every successful per-plugin read before surfacing an incomplete
+ * refresh to the existing sync retry owner.
+ */
+export function applyPluginAccountAvailabilityProjectionRefresh(input: Readonly<{
+    scope: ServerAccountScope;
+    snapshot: PluginAccountAvailabilitySnapshot;
+    failedPluginIds: readonly string[];
+}>): void {
+    replacePluginAccountAvailabilityProjection(input);
+    if (input.failedPluginIds.length > 0) {
+        throw new Error(`Plugin Availability refresh failed for: ${input.failedPluginIds.join(', ')}`);
+    }
 }
 
 /**
@@ -129,9 +101,12 @@ export function forgetPluginAccountAvailabilityArtifacts(scope: ServerAccountSco
 
 /** Called by the incumbent Account-lifetime/reset owner through its consumer hook. */
 export function clearPluginAccountAvailabilityProjection(): void {
-    const previous = readerStore.clear();
-    if (previous) retainClearedProjection(previous);
-    advanceProjectionRevision();
+    readerStore.clear();
+}
+
+/** An authoritative local withdrawal retires only the named plugins' authority. */
+export function retirePluginAccountAvailabilityProjection(pluginIds: readonly string[]): void {
+    readerStore.retire(pluginIds);
 }
 
 /**
@@ -141,9 +116,7 @@ export function clearPluginAccountAvailabilityProjection(): void {
  */
 export function useActivePluginAccountAvailabilityReader(): PluginAccountAvailabilityReader | null {
     const scope = useActiveServerAccountScope();
-    const subscribe = React.useCallback((listener: () => void) => readerStore.subscribe(listener), []);
-    const getSnapshot = React.useCallback(() => projectionRevision, []);
-    const revision = React.useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+    const snapshot = React.useSyncExternalStore(readerStore.subscribe, readerStore.getSnapshot, readerStore.getSnapshot);
     const serverId = scope?.serverId ?? null;
     const accountId = scope?.accountId ?? null;
 
@@ -157,7 +130,7 @@ export function useActivePluginAccountAvailabilityReader(): PluginAccountAvailab
     return React.useMemo(() => {
         if (!scope) return null;
         return readerStore.bind(scope);
-    }, [accountId, revision, scope, serverId]);
+    }, [accountId, snapshot, scope, serverId]);
 }
 
 /**

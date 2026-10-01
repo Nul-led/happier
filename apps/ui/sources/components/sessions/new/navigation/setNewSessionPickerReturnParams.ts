@@ -44,6 +44,7 @@ const NEW_SESSION_PARAM_KEYS = new Set([
     'backendTargetKey',
     'dataId',
     'directory',
+    'directoryKind',
     'draftId',
     'draftOrigin',
     'machineId',

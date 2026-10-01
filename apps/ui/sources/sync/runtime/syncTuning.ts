@@ -38,7 +38,6 @@ export type SyncTuning = Readonly<{
     messageCatchUpConcurrencyLimit: number;
     sessionListHydrationConcurrencyLimit: number;
     machineDisplayHydrationConcurrencyLimit: number;
-    machineDisplayHydrationMaxRows: number;
     sidechainDemandHydrationConcurrencyLimit: number;
     /**
      * Concurrent private Automation definition detail reads a routed
@@ -231,7 +230,6 @@ export function loadSyncTuning(opts?: {
         messageCatchUpConcurrencyLimit: 1,
         sessionListHydrationConcurrencyLimit: 4,
         machineDisplayHydrationConcurrencyLimit: 4,
-        machineDisplayHydrationMaxRows: 64,
         sidechainDemandHydrationConcurrencyLimit: 2,
         automationDefinitionDetailHydrationConcurrencyLimit: 4,
         sessionTranscriptRetentionRecentKeepCount: 3,
@@ -334,7 +332,6 @@ export function loadSyncTuning(opts?: {
         messageCatchUpConcurrencyLimit: readNumber(merged, 'messageCatchUpConcurrencyLimit', { min: 1, max: 10 }) ?? defaults.messageCatchUpConcurrencyLimit,
         sessionListHydrationConcurrencyLimit: readNumber(merged, 'sessionListHydrationConcurrencyLimit', { min: 1, max: 20 }) ?? defaults.sessionListHydrationConcurrencyLimit,
         machineDisplayHydrationConcurrencyLimit: readNumber(merged, 'machineDisplayHydrationConcurrencyLimit', { min: 1, max: 20 }) ?? defaults.machineDisplayHydrationConcurrencyLimit,
-        machineDisplayHydrationMaxRows: readNumber(merged, 'machineDisplayHydrationMaxRows', { min: 1, max: 10_000 }) ?? defaults.machineDisplayHydrationMaxRows,
         sidechainDemandHydrationConcurrencyLimit: readNumber(merged, 'sidechainDemandHydrationConcurrencyLimit', { min: 1, max: 8 }) ?? defaults.sidechainDemandHydrationConcurrencyLimit,
         automationDefinitionDetailHydrationConcurrencyLimit: readNumber(merged, 'automationDefinitionDetailHydrationConcurrencyLimit', { min: 1, max: 20 }) ?? defaults.automationDefinitionDetailHydrationConcurrencyLimit,
         sessionTranscriptRetentionRecentKeepCount: readNumber(merged, 'sessionTranscriptRetentionRecentKeepCount', { min: 0, max: 200 }) ?? defaults.sessionTranscriptRetentionRecentKeepCount,

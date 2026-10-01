@@ -93,7 +93,7 @@ export async function cmdSessionRunAction(
   const actionRes = await executor.execute(
     'execution.run.action',
     { sessionId, ...request },
-    { surface: 'cli', authority: 'present_user', defaultSessionId: null },
+    { surface: 'cli', defaultSessionId: null },
   );
   const normalized = normalizeActionExecuteResult(actionRes);
   if (!normalized.ok) {

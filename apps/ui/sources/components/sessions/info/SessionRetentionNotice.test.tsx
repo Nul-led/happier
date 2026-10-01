@@ -41,7 +41,7 @@ async function renderSessionRetentionNotice(sessionId: string) {
 describe('SessionRetentionNotice', () => {
     it('renders nothing when the session server cannot be resolved', async () => {
         resolveSessionListLookupSessionServerId.mockReturnValue(null);
-        useServerRetentionPolicy.mockReturnValue(null);
+        useServerRetentionPolicy.mockReturnValue({ status: 'loading' });
 
         const screen = await renderSessionRetentionNotice('session-a');
 
@@ -50,7 +50,7 @@ describe('SessionRetentionNotice', () => {
 
     it('renders a session retention notice when the server deletes inactive sessions', async () => {
         resolveSessionListLookupSessionServerId.mockReturnValue('server-a');
-        useServerRetentionPolicy.mockReturnValue({
+        useServerRetentionPolicy.mockReturnValue({ status: 'ready', policy: {
             enabled: true,
             sessions: {
                 mode: 'delete_inactive',
@@ -69,7 +69,7 @@ describe('SessionRetentionNotice', () => {
             globalLocks: { mode: 'keep_forever' },
             automationRuns: { mode: 'keep_forever' },
             automationRunEvents: { mode: 'keep_forever' },
-        });
+        } });
 
         const screen = await renderSessionRetentionNotice('session-a');
 
@@ -85,7 +85,7 @@ describe('SessionRetentionNotice', () => {
         resolveSessionListLookupSessionServerId.mockReturnValueOnce('server-b');
         useServerRetentionPolicy.mockImplementation((serverId) => {
             if (serverId === 'server-b') {
-                return {
+                return { status: 'ready', policy: {
                     enabled: true,
                     sessions: {
                         mode: 'delete_inactive',
@@ -104,10 +104,10 @@ describe('SessionRetentionNotice', () => {
                     globalLocks: { mode: 'keep_forever' },
                     automationRuns: { mode: 'keep_forever' },
                     automationRunEvents: { mode: 'keep_forever' },
-                };
+                } };
             }
 
-            return null;
+            return { status: 'loading' };
         });
 
         const screen = await renderSessionRetentionNotice('session-a');

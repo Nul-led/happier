@@ -45,7 +45,7 @@ function createTargetActionApprovalRequestCandidate(
     input: action.input,
     ...(action.accountId ? { accountId: action.accountId } : {}),
     ...(action.resourceId ? { resourceId: action.resourceId } : {}),
-    generation: action.generation,
+    sourceCustody: action.sourceCustody,
     policyFingerprint: action.policyFingerprint,
     subjectFingerprint: fingerprint,
     ...(replayPlacement === undefined ? {} : { replayPlacement }),
@@ -64,7 +64,7 @@ function createTargetActionApprovalRequestCandidate(
 /**
  * Rebuilds the persisted approval subject from the current canonical Action
  * owner. The durable placement is supplied only after exact-daemon re-entry,
- * so a stale generation, policy, input, presentation, or placement refuses
+ * so stale source custody, policy, input, presentation, or placement refuses
  * before the target handler begins.
  */
 export function targetActionApprovalMatchesCurrentIntent(

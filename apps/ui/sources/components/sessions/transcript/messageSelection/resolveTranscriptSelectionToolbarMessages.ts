@@ -1,9 +1,9 @@
 import { parseSessionMediaMessageMeta } from '@/sync/domains/session/media/sessionMediaMessageMeta';
-import type { Message } from '@/sync/domains/messages/messageTypes';
-import { readUnsupportedContentMeta } from '@/sync/domains/messages/unsupportedContentMeta';
+import type { Message } from "@happier-dev/session-core/messages";
+import { readUnsupportedContentMeta } from "@happier-dev/session-core/messages";
 import { resolveUnsupportedContentLabel } from '@/sync/domains/messages/resolveUnsupportedContentLabel';
-import { resolveUnsupportedContentPresentation } from '@/sync/domains/messages/unsupportedContentPresentation';
-import type { Metadata } from '@/sync/domains/state/storageTypes';
+import { resolveUnsupportedContentPresentation } from "@happier-dev/session-core/messages";
+import type { Metadata } from '@happier-dev/session-core/state';
 import { isCommittedMessageDiscarded } from '@/utils/sessions/discardedCommittedMessages';
 
 import type { TranscriptSelectionToolbarMessage } from './TranscriptSelectionToolbar';

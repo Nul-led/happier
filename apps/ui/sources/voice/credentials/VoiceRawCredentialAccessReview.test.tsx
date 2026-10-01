@@ -2,7 +2,6 @@ import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { PluginInstallReviewPrincipalDigestSchema } from '@happier-dev/protocol';
 import { renderScreen } from '@/dev/testkit';
 
 const boundary = vi.hoisted(() => ({
@@ -51,8 +50,6 @@ const subject = Object.freeze({
   accessDeclarationDigest: 'b'.repeat(64) as never,
   selectedAuthorityDigest: 'c'.repeat(64) as never,
   selectedRawAccessDigest: 'd'.repeat(64) as never,
-  installedGenerationId: 'generation-1' as never,
-  installReviewPrincipalDigest: PluginInstallReviewPrincipalDigestSchema.parse('a'.repeat(64)),
 });
 // The daemon only ever authorizes as an exact machine installation; a grant
 // approved by another machine, or by an installation this one replaced, is a

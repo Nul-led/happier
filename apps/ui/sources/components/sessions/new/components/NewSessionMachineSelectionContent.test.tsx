@@ -69,6 +69,8 @@ function SelectionListOptionAlias(props: Readonly<{
                 props.onSelect(props.option);
             },
         },
+        // The row's status line leads with the presence dot (K1), the accessory trails it.
+        renderAccessory(props.option.subtitleLeading),
         renderAccessory(props.option.rightAccessory),
     );
 }

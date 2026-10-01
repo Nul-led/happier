@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { CurrentDaemonOwner, DaemonOwnerEvaluation } from '@/daemon/ownership/evaluateCurrentDaemonOwner';
+import { resolveDaemonServiceLaunchdLabel } from '@/daemon/service/plan';
 import { resolveDaemonTakeoverDecision } from './resolveDaemonTakeoverDecision';
 
 function buildOwner(overrides: Partial<CurrentDaemonOwner> = {}): CurrentDaemonOwner {
@@ -145,6 +146,53 @@ describe('resolveDaemonTakeoverDecision', () => {
                 startupSource: 'manual',
                 versionMatches: false,
             }),
+        });
+    });
+
+    describe('a pinned background service and the default-following one on the same server', () => {
+        const defaultFollowingOwner = buildOwner({
+            state: { ...buildOwner().state, serviceLabel: resolveDaemonServiceLaunchdLabel('default', 'stable', 'default-following') },
+        });
+
+        it.each(['background-service', 'self-restart'] as const)(
+            'takes the server over from the default-following daemon when the pinned service starts second (%s)',
+            (startupSource) => {
+                // Login starts both in any order; the pinned service is the server's owner (R10 D3),
+                // so it wins deterministically even when the default one took the lock first.
+                expect(resolveDaemonTakeoverDecision({
+                    ownership: buildEvaluation('compatible', defaultFollowingOwner),
+                    takeoverRequested: true,
+                    startupSource,
+                    serviceTargetMode: 'pinned',
+                })).toEqual({ kind: 'default-following-owner-yield', owner: defaultFollowingOwner });
+            },
+        );
+
+        it('keeps a compatible owner for any other starter', () => {
+            for (const params of [
+                { startupSource: 'manual' as const, serviceTargetMode: 'pinned' as const },
+                { startupSource: 'background-service' as const, serviceTargetMode: 'default-following' as const },
+                { startupSource: 'background-service' as const, serviceTargetMode: null },
+            ]) {
+                expect(resolveDaemonTakeoverDecision({
+                    ownership: buildEvaluation('compatible', defaultFollowingOwner),
+                    takeoverRequested: true,
+                    ...params,
+                })).toEqual({ kind: 'ok' });
+            }
+        });
+
+        it('never displaces another pinned service', () => {
+            const pinnedOwner = buildOwner({
+                state: { ...buildOwner().state, serviceLabel: resolveDaemonServiceLaunchdLabel('home', 'stable', 'pinned') },
+                versionMatches: false,
+            });
+            expect(resolveDaemonTakeoverDecision({
+                ownership: buildEvaluation('conflict', pinnedOwner),
+                takeoverRequested: true,
+                startupSource: 'background-service',
+                serviceTargetMode: 'pinned',
+            })).toEqual({ kind: 'conflict', owner: pinnedOwner });
         });
     });
 });

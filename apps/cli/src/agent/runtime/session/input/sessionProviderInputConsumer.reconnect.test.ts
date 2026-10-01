@@ -2,12 +2,15 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import axios from 'axios';
 
 import { MessageQueue2 } from '@/agent/runtime/modeMessageQueue';
 import { createApiSessionSocketStub, bindApiSessionSocketPairMock } from '@/testkit/backends/apiSessionSocketHarness';
 import { createPlainSessionFixture } from '@/testkit/backends/sessionFixtures';
 import { createTestApiSessionClient } from '@/testkit/backends/createTestApiSessionClient';
 import { createSessionProviderInputConsumer } from './sessionProviderInputConsumer';
+import { waitForNextPermissionModeMessage } from '../../waitForNextPermissionModeMessage';
+import { createSessionModeOverrideSynchronizer } from '../../sessionModeOverrideSync';
 
 const { mockIo } = vi.hoisted(() => ({ mockIo: vi.fn() }));
 // Only network transports are replaced; the client, wake and drain owners stay real.
@@ -23,6 +26,57 @@ describe('active-turn pending wake recovery', () => {
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
     vi.useRealTimers();
+  });
+
+  it('delivers idle control metadata through the shared waiter without granting materialization of blocked Pending rows', async () => {
+    const testHome = await mkdtemp(join(tmpdir(), 'happier-idle-control-wake-'));
+    vi.stubEnv('HAPPIER_HOME_DIR', testHome);
+    const { reloadConfiguration } = await import('@/configuration');
+    reloadConfiguration();
+    const { ApiSessionClient } = await import('@/api/session/sessionClient');
+    const sessionSocket = createApiSessionSocketStub();
+    const userSocket = createApiSessionSocketStub();
+    userSocket.connect.mockImplementation(() => userSocket);
+    sessionSocket.connect.mockImplementation(() => sessionSocket);
+    bindApiSessionSocketPairMock(mockIo, { sessionSocket, userSocket, fallbackSocket: sessionSocket });
+    const session = { ...createPlainSessionFixture({ id: 'idle-control' }), pendingCount: 1, pendingBlockedCount: 1, pendingVersion: 1 };
+    const client = createTestApiSessionClient(ApiSessionClient, 'test-token', session);
+    const posts = vi.spyOn(axios, 'post');
+    const nativeModes: string[] = [];
+    const sync = createSessionModeOverrideSynchronizer({
+      session: client, isStarted: () => true,
+      // The provider/native operation is outside this host input corridor. All metadata and override logic stays real.
+      runtime: { async setSessionMode(modeId) { nativeModes.push(modeId); return { status: 'applied', timing: 'current_window' }; } },
+    });
+    const controller = new AbortController();
+    const wait = waitForNextPermissionModeMessage({
+      session: client, messageQueue: new MessageQueue2<{ id: string }>(() => 'mode'), abortSignal: controller.signal,
+      onMetadataUpdate: async () => { sync.syncFromMetadata(); await sync.flushPendingAfterStart(); },
+    });
+    const update = (sid: string, version: number) => userSocket.trigger('update', {
+      id: `control-${sid}-${version}`, seq: version, createdAt: version,
+      body: { t: 'update-session', sid, metadata: { version, value: JSON.stringify({
+        ...session.metadata, sessionModeOverrideV1: { v: 1, modeId: 'plan', updatedAt: 2 },
+      }) } },
+    });
+    try {
+      await vi.waitFor(() => expect(client.listenerCount('metadata-updated')).toBeGreaterThan(0));
+      expect(client.shouldAttemptPendingMaterialization()).toBe(false);
+      update('other-session', 2);
+      update(session.id, 0);
+      await Promise.resolve();
+      expect(nativeModes).toEqual([]);
+      update(session.id, 2);
+      await vi.waitFor(() => expect(nativeModes).toEqual(['plan']));
+      expect(client.getPendingQueueState()).toMatchObject({ pendingCount: 1, pendingBlockedCount: 1, pendingVersion: 1 });
+      expect(posts.mock.calls.filter(([url]) => String(url).includes('/pending/materialize-next'))).toEqual([]);
+      controller.abort();
+      await expect(wait).resolves.toBeNull();
+    } finally {
+      controller.abort(); await wait; await client.close();
+      await rm(testHome, { recursive: true, force: true });
+      vi.unstubAllEnvs(); reloadConfiguration();
+    }
   });
 
   it.each([

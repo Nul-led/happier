@@ -2,7 +2,7 @@ import React from 'react';
 import { View } from 'react-native';
 import { useSessionProjectScmSnapshot } from '@/sync/domains/state/storage';
 import { StyleSheet } from 'react-native-unistyles';
-import { buildScmStatusSummaryFromSnapshot } from './statusSummary';
+import { buildSessionScmSummary } from './statusSummary';
 import { Text } from '@/components/ui/text/Text';
 import { Icon } from '@/components/ui/icons/Icon';
 
@@ -47,7 +47,7 @@ interface CompactSourceControlStatusProps {
 export function CompactSourceControlStatus({ sessionId }: CompactSourceControlStatusProps) {
     const styles = stylesheet;
     const snapshot = useSessionProjectScmSnapshot(sessionId);
-    const scmStatusSummary = buildScmStatusSummaryFromSnapshot(snapshot);
+    const scmStatusSummary = buildSessionScmSummary(snapshot);
 
     if (!scmStatusSummary || !scmStatusSummary.hasAnyChanges) {
         return null;

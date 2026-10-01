@@ -385,6 +385,10 @@ describe('session input failure copy owner', () => {
         expect(getSessionInputFailureLabelKey(
             Object.assign(new Error('session_input_target_update_required'), { code: 'session_input_target_update_required' }),
         )).toBe('session.pendingMessages.admissionRejected.targetUpdateRequired');
+        expect(getSessionInputFailureLabelKey(createSessionInputFailureError('model_not_granted')))
+            .toBe('session.pendingMessages.admissionRejected.modelNotGranted');
+        expect(getSessionInputFailureLabelKey(createSessionInputFailureError('permission_mode_not_granted')))
+            .toBe('session.pendingMessages.admissionRejected.permissionModeNotGranted');
         expect(getSessionInputFailureLabelKey(createSessionInputFailureError('execution_run_target_changed')))
             .toBe('sessionDrafts.executionRunStart.targetChanged');
         expect(getSessionInputFailureLabelKey(new Error('participant send rejected'))).toBeNull();

@@ -28,7 +28,6 @@ export type ScmUiBackendPlugin = {
     diffModeConfig: (snapshot: ScmWorkingSnapshot | null) => {
         defaultMode: ScmDiffArea;
         availableModes: ScmDiffArea[];
-        labels: Record<ScmDiffArea, string>;
     };
     commitActionConfig: (snapshot: ScmWorkingSnapshot | null) => {
         label: string;

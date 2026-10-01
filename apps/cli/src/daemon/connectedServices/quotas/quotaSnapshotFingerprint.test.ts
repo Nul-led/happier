@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { ConnectedServiceQuotaSnapshotV1 } from '@happier-dev/protocol';
 import type { Credentials, StoredCredentials } from '@/persistence';
+import { shouldPersistQuotaSnapshot } from './shouldPersistQuotaSnapshot';
 
 const baseSnapshot: ConnectedServiceQuotaSnapshotV1 = {
   v: 1,
@@ -27,6 +28,28 @@ const baseSnapshot: ConnectedServiceQuotaSnapshotV1 = {
 };
 
 describe('quotaSnapshotFingerprint', () => {
+  it('persists a changed subscription observation while quota material stays fresh', async () => {
+    const { computeQuotaSnapshotFingerprint, deriveQuotaSnapshotFingerprintKey } = await import('./quotaSnapshotFingerprint');
+    const key = deriveQuotaSnapshotFingerprintKey({
+      credentials: { token: 'token', encryption: null }, serverScope: 'server-a', accountScope: 'account-a',
+    });
+    const previous: ConnectedServiceQuotaSnapshotV1 = {
+      ...baseSnapshot,
+      subscription: { status: 'subscribed', renewal: 'on', observedAtMs: 1_000, staleAfterMs: 60_000 },
+    };
+    const incoming: ConnectedServiceQuotaSnapshotV1 = {
+      ...previous,
+      fetchedAt: 1_001,
+      subscription: { ...previous.subscription!, lastRefreshError: { observedAtMs: 1_001, code: 'network' } },
+    };
+    expect(shouldPersistQuotaSnapshot({
+      previous: { fingerprint: computeQuotaSnapshotFingerprint(previous, key), fetchedAt: previous.fetchedAt, staleAfterMs: previous.staleAfterMs, status: 'ok' },
+      next: { fingerprint: computeQuotaSnapshotFingerprint(incoming, key), fetchedAt: incoming.fetchedAt, staleAfterMs: incoming.staleAfterMs, status: 'ok' },
+      nowMs: 1_001,
+      minFreshnessMs: 60_000,
+    })).toEqual({ persist: true, reason: 'fingerprint_changed' });
+  });
+
   it('uses a stable account-scoped HMAC for material quota fields', async () => {
     const mod = await import('./quotaSnapshotFingerprint').catch(() => null);
     expect(mod?.deriveQuotaSnapshotFingerprintKey).toBeTypeOf('function');

@@ -1,66 +1,87 @@
+import * as React from 'react';
+import type { SessionDiscussionOpenedSummaryV1 } from '@happier-dev/protocol';
 import { describe, expect, it } from 'vitest';
+import { renderScreen } from '@/dev/testkit';
+import { installSettingsViewCommonModuleMocks } from '@/components/settings/settingsViewTestHelpers';
+
+installSettingsViewCommonModuleMocks({
+    storage: async () => {
+        const { createStorageModuleStub, createUseSettingMock } = await import('@/dev/testkit/mocks/storage');
+        return createStorageModuleStub({ useSetting: createUseSettingMock({ values: { avatarStyle: 'gradient', showFlavorIcons: false } }) });
+    },
+});
 
 import { sessionCollaborationTranslations } from '@/text/translations/sessionCollaborationTranslations';
-import { buildSessionDiscussionRowAccessibilityLabel, buildSessionDiscussionRowMeta } from './SessionDiscussionRow';
+import { buildSessionDiscussionRowAccessibilityLabel, buildSessionDiscussionRowSubtitle, SessionDiscussionRow } from './SessionDiscussionRow';
 
-describe('buildSessionDiscussionRowMeta', () => {
-    it('keeps unread and total counts distinct while preserving producer provenance', () => {
-        expect(buildSessionDiscussionRowMeta({
+const labels = {
+    you: 'You',
+    viaAgent: 'Via Agent',
+    messages: (count: number) => `${count} messages`,
+    unread: (count: number) => `${count} unread`,
+    mentions: (count: number) => count === 1 ? '1 unread mention' : `${count} unread mentions`,
+};
+
+describe('SessionDiscussionRow presentation', () => {
+    it('caps the unread badge while announcing the complete count', async () => {
+        const discussion: SessionDiscussionOpenedSummaryV1 = {
+            id: 'many-unread', sessionId: 'session', creationLocalId: null, title: 'Review',
+            latestMessage: { id: 'message', localId: null, seq: 250, authorAccountId: 'author', accountActor: null, producerV1: null, createdAt: 1 },
+            messageSeq: 250, lastReadSeq: 0, unreadCount: 250, unreadMentionCount: 0, recentAuthorAccountIds: [], archivedAt: null,
+            capabilities: { postMessages: true, rename: true, archive: true, restore: false, askAgent: true, sendToSession: true },
+        };
+        const screen = await renderScreen(React.createElement(SessionDiscussionRow, { discussion, viewerAccountId: 'viewer', onPress: () => {} }));
+        const badge = screen.findByTestId('session-discussion-row-unread-many-unread');
+        expect(badge?.findAll((node) => node.children.includes('99+')).length).toBeGreaterThan(0);
+        expect(screen.findByTestId('session-discussion-row-many-unread')?.props.accessibilityLabel).toContain('250');
+    });
+    it('names who wrote last and how long the conversation is, never an unread count in the subtitle', () => {
+        expect(buildSessionDiscussionRowSubtitle({
+            latestAuthor: 'Ben',
+            latestIsViewer: false,
+            producedByAgent: false,
+            messageCount: 14,
+            labels,
+        })).toEqual(['Ben', '14 messages']);
+    });
+
+    it('says You for the viewer’s own last message and keeps agent provenance', () => {
+        expect(buildSessionDiscussionRowSubtitle({
+            latestAuthor: 'Alice',
+            latestIsViewer: true,
+            producedByAgent: true,
+            messageCount: 6,
+            labels,
+        })).toEqual(['You', 'Via Agent', '6 messages']);
+    });
+
+    it('omits an unknown latest author rather than inventing one', () => {
+        expect(buildSessionDiscussionRowSubtitle({
+            latestAuthor: null,
+            latestIsViewer: false,
+            producedByAgent: false,
+            messageCount: 1,
+            labels,
+        })).toEqual(['1 messages']);
+    });
+
+    it('speaks the mention and unread counts the badges show, then the time', () => {
+        expect(buildSessionDiscussionRowAccessibilityLabel({
+            title: 'Relay retry plan',
+            subtitle: ['Ben', '14 messages'],
             unreadCount: 2,
             unreadMentionCount: 1,
-            messageCount: 7,
-            producedByAgent: true,
-            relativeTime: '4m',
-            labels: {
-                unread: (count) => `${count} unread`,
-                mentions: (count) => `${count} mention`,
-                messages: (count) => `${count} messages`,
-                viaAgent: 'Via Agent',
-                collaborator: 'Collaborator',
-            },
-        })).toEqual(['1 mention', '2 unread', '7 messages', 'Via Agent', '4m']);
-    });
-
-    it('omits empty attention and time facts without inventing a replacement', () => {
-        expect(buildSessionDiscussionRowMeta({
+            relativeTime: '2m',
+            labels,
+        })).toBe('Relay retry plan. 1 unread mention, 2 unread, Ben, 14 messages, 2m');
+        expect(buildSessionDiscussionRowAccessibilityLabel({
+            title: 'Release notes wording',
+            subtitle: ['Mei', '9 messages'],
             unreadCount: 0,
             unreadMentionCount: 0,
-            messageCount: 1,
-            producedByAgent: false,
-            relativeTime: '',
-            labels: {
-                unread: (count) => `${count} unread`,
-                mentions: (count) => `${count} mentions`,
-                messages: (count) => `${count} message`,
-                viaAgent: 'Via Agent',
-                collaborator: 'Collaborator',
-            },
-        })).toEqual(['1 message', 'Collaborator']);
-    });
-
-    it('uses the localized semantic unread-mention label in visual and spoken metadata', () => {
-        const visualMeta = buildSessionDiscussionRowMeta({
-            unreadCount: 0,
-            unreadMentionCount: 1,
-            messageCount: 3,
-            producedByAgent: false,
-            relativeTime: '2m',
-            labels: {
-                unread: (count) => `${count} unread`,
-                mentions: (count) => count === 1 ? '1 unread mention' : `${count} unread mentions`,
-                messages: (count) => `${count} messages`,
-                viaAgent: 'Via Agent',
-                collaborator: 'Collaborator',
-            },
-        });
-
-        expect(visualMeta).toContain('1 unread mention');
-        expect(buildSessionDiscussionRowAccessibilityLabel({
-            title: 'Authentication review',
-            visualMeta,
-            unreadMentionCount: 1,
-            mentionLabel: (count) => count === 1 ? '1 unread mention' : `${count} unread mentions`,
-        })).toBe('Authentication review. 1 unread mention, 3 messages, Collaborator, 2m');
+            relativeTime: '1h',
+            labels,
+        })).toBe('Release notes wording. Mei, 9 messages, 1h');
     });
 
     it('provides a semantic unread-mention label for every supported locale', () => {

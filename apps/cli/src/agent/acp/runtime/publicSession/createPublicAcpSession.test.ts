@@ -58,6 +58,7 @@ import { waitForCondition } from '@/testkit/async/waitFor';
 import { withCursorEmptyResponseFailure } from '../../../../../../../packages/plugins/cursor/src/agent/runtime/emptyResponse';
 import { buildAcpModelSuffixOptionControls } from '../definition/modelSuffixOption';
 import { PLUGIN_MANIFEST as ANTIGRAVITY_PLUGIN_MANIFEST } from '../../../../../../../packages/plugins/antigravity/src/manifest';
+import { QWEN_ACP_RUNTIME_DEFINITION } from '../../../../../../../packages/plugins/qwen/src/agent/acp/definition';
 
 import {
   createPublicAcpExecutionRun,
@@ -111,6 +112,9 @@ function writePublicComposerAgent(dir: string): string {
       const decoder = new TextDecoder();
       let buffer = '';
       const scenario = process.env.PUBLIC_ACP_SCENARIO || 'completed';
+      if (scenario === 'launch-argv') {
+        writeFileSync(process.env.PUBLIC_ACP_MEDIA_PATH, JSON.stringify(process.argv.slice(2)));
+      }
       if (scenario.startsWith('gemini-overlay')) {
         const cliHome = process.env.GEMINI_CLI_HOME;
         const settingsPath = cliHome && join(cliHome, '.gemini', 'settings.json');
@@ -160,7 +164,14 @@ function writePublicComposerAgent(dir: string): string {
       const lifecycleMethods = [];
       const selectedOptions = {};
       const send = (message) => process.stdout.write(JSON.stringify(message) + '\\n');
-      const ok = (id, result) => send({ jsonrpc: '2.0', id, result });
+      const ok = (id, result) => {
+        if (result.sessionId && scenario.startsWith('model-observation-')) {
+          if (scenario === 'model-observation-empty') result.models = { currentModelId: 'current', availableModels: [] };
+          if (scenario === 'model-observation-config') result.configOptions = [{ id: 'model', name: 'Model', type: 'select', currentValue: 'current', options: [] }];
+          if (scenario === 'model-observation-current') result.models = { currentModelId: 'current', availableModels: [{ modelId: 'current', name: 'Current' }, { modelId: 'next', name: 'Next' }] };
+        }
+        send({ jsonrpc: '2.0', id, result });
+      };
       const update = (sessionId, text) => send({
         jsonrpc: '2.0',
         method: 'session/update',
@@ -542,7 +553,12 @@ function writePublicComposerAgent(dir: string): string {
             ok(request.id, { success: true });
           } else if (request.method === 'session/prompt') {
             const sessionId = request.params.sessionId;
-            if (scenario === 'request-transform') {
+            if (scenario.startsWith('model-observation-')) {
+              send({ jsonrpc: '2.0', method: 'session/update', params: {
+                sessionId, update: { sessionUpdate: 'config_option_update', configOptions: [{ id: 'model', name: 'Model', type: 'select', currentValue: 'next', options: [] }] },
+              } });
+              ok(request.id, { stopReason: 'end_turn' });
+            } else if (scenario === 'request-transform') {
               const text = request.params.prompt?.find((block) => block?.type === 'text')?.text;
               update(sessionId, typeof text === 'string' ? text : 'missing transformed prompt');
               ok(request.id, { stopReason: 'end_turn' });
@@ -1556,6 +1572,38 @@ describe('createPublicAcpSession', () => {
     });
   });
 
+  it('refuses hands-off before launching an ACP Agent with provider-owned filesystem access', async () => {
+    await withTempDir('happier-public-acp-hands-off-', async (dir) => {
+      const fixture = createFixture(dir, 'configuration-update');
+      await expect(createPublicAcpSession({
+        kind: 'create', sessionId: 'hands-off', cwd: dir,
+        configuration: { mode: { value: null, updatedAtMs: 0 }, model: { value: null, updatedAtMs: 0 },
+          permissionIntent: { value: 'yolo', updatedAtMs: 0 }, options: {}, workspaceWrites: 'deny' },
+      }, fixture.options, fixture.dependencies)).rejects.toMatchObject({ code: 'role_policy_unenforceable' });
+    });
+  });
+
+  it.each(['empty', 'config', 'current'])('preserves catalog observation semantics for %s through ACP transport', async (kind) => {
+    await withTempDir('happier-public-acp-observation-', async (dir) => {
+      const fixture = createFixture(dir, `model-observation-${kind}`);
+      const session = await createPublicAcpSession({ kind: 'create', sessionId: 'model-observation', cwd: dir }, {
+        ...fixture.options, definition: { mcp: { policy: 'drop' }, modelConfigOptionId: 'model' },
+      }, fixture.dependencies);
+      try {
+        if (kind === 'empty' || kind === 'config') {
+          expect(fixture.readModels()).toMatchObject({ currentModelId: 'current', models: [], observedAt: expect.any(Number) });
+          expect(fixture.readModels().observedAt).toBeGreaterThan(0);
+        } else {
+          const observedAt = fixture.readModels().observedAt ?? 0;
+          await session.send({ inputIds: ['observation-input'], input: { text: 'continue' }, delivery: { kind: 'newTurn', turnId: 'observation-turn' } });
+          await vi.waitFor(() => expect(fixture.readModels().currentModelId).toBe('next'));
+          expect(fixture.readModels().observedAt).toBeGreaterThanOrEqual(observedAt);
+          expect(fixture.readModels().models).toEqual([]);
+        }
+      } finally { await session.dispose(); }
+    });
+  });
+
   it('publishes provider-authoritative models and model-scoped options instead of stale host selection', async () => {
     await withTempDir('happier-public-acp-models-', async (dir) => {
       const fixture = createFixture(dir, 'provider-models');
@@ -1614,6 +1662,7 @@ describe('createPublicAcpSession', () => {
       }, fixture.dependencies);
       try {
         expect(fixture.readModels()).toEqual({
+          observedAt: expect.any(Number),
           currentModelId: 'provider-current',
           models: [
             {
@@ -1648,6 +1697,7 @@ describe('createPublicAcpSession', () => {
       }, fixture.options, fixture.dependencies);
       try {
         expect(fixture.readModels()).toEqual({
+          observedAt: expect.any(Number),
           currentModelId: 'provider-current',
           models: [
             {
@@ -1729,6 +1779,7 @@ describe('createPublicAcpSession', () => {
       }, fixture.dependencies);
       try {
         expect(fixture.readModels()).toEqual({
+          observedAt: expect.any(Number),
           currentModelId: 'provider-current',
           models: [{
             id: 'provider-current',
@@ -1842,6 +1893,7 @@ describe('createPublicAcpSession', () => {
       try {
         expect(projectionOrder).toEqual(['provider-current', 'stale-host']);
         expect(fixture.readModels()).toEqual({
+          observedAt: expect.any(Number),
           currentModelId: 'provider-current',
           models: [
             {
@@ -1865,6 +1917,7 @@ describe('createPublicAcpSession', () => {
 
   it('applies a projected active-model option through one provider set-model request without optimistic publication', async () => {
     await withTempDir('happier-public-acp-model-update-', async (dir) => {
+      const observedClock = vi.spyOn(Date, 'now').mockReturnValue(100);
       const fixture = createFixture(dir, 'provider-models');
       const projectModel = (
         rawModel: unknown,
@@ -1919,6 +1972,7 @@ describe('createPublicAcpSession', () => {
       }, fixture.dependencies);
       try {
         const initial = fixture.readModels();
+        observedClock.mockReturnValue(200);
 
         await expect(session.updateConfiguration?.({
           mode: { value: null, updatedAtMs: 1 },
@@ -1940,6 +1994,7 @@ describe('createPublicAcpSession', () => {
         });
         expect(fixture.readModels()).not.toEqual(initial);
         const afterApplied = fixture.readModels();
+        expect(afterApplied.observedAt).toBe(initial.observedAt);
 
         await expect(session.updateConfiguration?.({
           mode: { value: null, updatedAtMs: 1 },
@@ -1949,6 +2004,7 @@ describe('createPublicAcpSession', () => {
         })).resolves.toMatchObject({ status: 'rejected' });
         expect(fixture.readModels()).toEqual(afterApplied);
       } finally {
+        observedClock.mockRestore();
         await session.dispose();
       }
     });
@@ -2700,6 +2756,69 @@ describe('createPublicAcpSession', () => {
         subscription.dispose();
         await session.dispose();
       }
+    });
+  });
+
+  it('launches Qwen with approval-mode enforcement before opening the ACP session', async () => {
+    await withTempDir('happier-public-acp-qwen-permission-argv-', async (dir) => {
+      await mkdir(path.join(dir, 'generated'), { recursive: true });
+      const fixture = createFixture(dir, 'launch-argv');
+      const session = await createPublicAcpSession({
+        kind: 'create',
+        sessionId: 'host-qwen-permission-argv',
+        cwd: dir,
+        configuration: {
+          mode: { value: null, updatedAtMs: 10 },
+          model: { value: null, updatedAtMs: 11 },
+          permissionIntent: { value: 'safe-yolo', updatedAtMs: 12 },
+          options: {},
+        },
+      }, {
+        ...fixture.options,
+        definition: QWEN_ACP_RUNTIME_DEFINITION,
+      }, fixture.dependencies);
+      try {
+        const capturePath = path.join(dir, 'generated', 'generated.png');
+        await waitForCondition(
+          () => existsSync(capturePath),
+          { timeoutMs: 5_000, intervalMs: 10, label: 'Qwen launch argv capture' },
+        );
+        expect(JSON.parse(readFileSync(capturePath, 'utf8'))).toEqual([
+          '--approval-mode',
+          'auto-edit',
+        ]);
+      } finally {
+        await session.dispose();
+      }
+    });
+  });
+
+  it('fails closed before spawn when declared launch enforcement cannot map the requested permission intent', async () => {
+    await withTempDir('happier-public-acp-permission-argv-unmapped-', async (dir) => {
+      const fixture = createFixture(dir, 'launch-argv');
+      await expect(createPublicAcpSession({
+        kind: 'create',
+        sessionId: 'host-permission-argv-unmapped',
+        cwd: dir,
+        configuration: {
+          mode: { value: null, updatedAtMs: 10 },
+          model: { value: null, updatedAtMs: 11 },
+          permissionIntent: { value: 'safe-yolo', updatedAtMs: 12 },
+          options: {},
+        },
+      }, {
+        ...fixture.options,
+        definition: {
+          mcp: { policy: 'drop' },
+          permissionModeArgv: {
+            flag: '--approval-mode',
+            map: { default: null },
+          },
+        },
+      }, fixture.dependencies)).rejects.toThrow(
+        "ACP permission intent 'safe-yolo' has no launch-time enforcement mapping.",
+      );
+      expect(fixture.resolve).not.toHaveBeenCalled();
     });
   });
 

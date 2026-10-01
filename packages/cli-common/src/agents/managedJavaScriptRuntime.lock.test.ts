@@ -124,11 +124,12 @@ describe('managed JavaScript runtime bootstrap lock', () => {
     const homeDir = await createHomeDir();
     const processEnv = { ...process.env, HAPPIER_HOME_DIR: homeDir, PATH: '' };
     const lockPath = join(managedJavaScriptRuntimeInstallDir(processEnv), '.lock', 'bootstrap.lock');
+    const expiredAtMs = Date.now() - 10 * 60 * 1000;
     await mkdir(dirname(lockPath), { recursive: true });
     await writeFile(lockPath, JSON.stringify({
       pid: 2_147_483_647,
-      createdAtMs: Date.now(),
-      updatedAtMs: Date.now(),
+      createdAtMs: expiredAtMs,
+      updatedAtMs: expiredAtMs,
       token: 'dead-owner',
       processInstanceFingerprint: 'dead-owner-fingerprint',
     }), 'utf8');

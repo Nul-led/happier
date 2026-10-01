@@ -65,36 +65,62 @@ function buildSessionListRuntimePriorityPresentationInput(
     };
 }
 
+type SessionListRuntimePriorityProjection = Readonly<{
+    evaluatedAtMs: number;
+    nextFreshnessAtMs: number | null;
+    isPriority: boolean;
+}>;
+
+// Priority selection and its freshness timer read the same immutable store rows.
+// Weak keys let retired rows go; clock rewinds and the runtime owner's deadline
+// invalidate a projection even when the store preserves its row reference.
+const runtimePriorityByRow = new WeakMap<SessionListRuntimePriorityRow, SessionListRuntimePriorityProjection>();
+
+function readSessionListRuntimePriorityProjection(
+    row: SessionListRuntimePriorityRow,
+    nowMs: number,
+): SessionListRuntimePriorityProjection {
+    const previous = runtimePriorityByRow.get(row);
+    if (
+        previous
+        && nowMs >= previous.evaluatedAtMs
+        && (previous.nextFreshnessAtMs === null || nowMs < previous.nextFreshnessAtMs)
+    ) {
+        return previous;
+    }
+
+    const input = buildSessionListRuntimePriorityPresentationInput(row, nowMs);
+    const runtimePresentation = projectUiSessionRuntimeAwareness(input);
+    const expirations = readSessionRuntimePresentationFreshnessExpirations(input, nowMs);
+    const projection = {
+        evaluatedAtMs: nowMs,
+        nextFreshnessAtMs: expirations.length === 0 ? null : Math.min(...expirations),
+        isPriority: row.active === true
+            || runtimePresentation.working
+            || runtimePresentation.runtime === 'background_active'
+            || runtimePresentation.freshPermissionRequired
+            || runtimePresentation.freshActionRequired
+            || runtimePresentation.operational.primary === 'failed'
+            || row.hasPendingPermissionRequests === true
+            || row.hasPendingUserActionRequests === true
+            || row.lastRuntimeIssue != null,
+    };
+    runtimePriorityByRow.set(row, projection);
+    return projection;
+}
+
 export function resolveSessionListRuntimePriorityRowNextFreshnessAtMs(
     row: SessionListRuntimePriorityRow | undefined,
     nowMs: number = Date.now(),
 ): number | null {
-    if (!row) return null;
-    const expirations = readSessionRuntimePresentationFreshnessExpirations(
-        buildSessionListRuntimePriorityPresentationInput(row, nowMs),
-        nowMs,
-    );
-    if (expirations.length === 0) return null;
-    return Math.min(...expirations);
+    return row ? readSessionListRuntimePriorityProjection(row, nowMs).nextFreshnessAtMs : null;
 }
 
 export function isSessionListRuntimePriorityRow(
     row: SessionListRuntimePriorityRow | undefined,
     nowMs: number = Date.now(),
 ): boolean {
-    if (!row) return false;
-    const runtimePresentation = projectUiSessionRuntimeAwareness(
-        buildSessionListRuntimePriorityPresentationInput(row, nowMs),
-    );
-    return row.active === true
-        || runtimePresentation.working
-        || runtimePresentation.runtime === 'background_active'
-        || runtimePresentation.freshPermissionRequired
-        || runtimePresentation.freshActionRequired
-        || runtimePresentation.operational.primary === 'failed'
-        || row?.hasPendingPermissionRequests === true
-        || row?.hasPendingUserActionRequests === true
-        || row?.lastRuntimeIssue != null;
+    return row ? readSessionListRuntimePriorityProjection(row, nowMs).isPriority : false;
 }
 
 export function buildSessionListRuntimePriorityRowKeys(

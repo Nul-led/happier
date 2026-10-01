@@ -31,6 +31,7 @@ import { WelcomeDecisionPanel } from '../preAuth/WelcomeDecisionPanel';
 import { SecretKeyLoginForm } from '@/components/account/restore/SecretKeyLoginForm';
 import { resolveHomeAuthenticationTarget } from '@/auth/flows/resolveHomeAuthenticationTarget';
 import { AccountServiceSelectionForm, type AccountServiceSelectionFormProps } from '@/components/account/auth/AccountServiceSelectionForm';
+import { readAccountServiceDisplayName } from '@/components/account/auth/accountServiceDisplayName';
 import { AccountDirectoryKeyLoginForm, type AccountDirectoryKeyLoginOutcome } from '@/components/account/auth/AccountDirectoryKeyLoginForm';
 import { AccountServiceHomeAuthenticationAdapter } from '@/components/account/auth/AccountServiceHomeAuthenticationAdapter';
 import { AccountServiceContinuation } from '@/components/account/auth/AccountServiceContinuation';
@@ -149,6 +150,7 @@ export function renderOnboardingWizardStepBody(params: Readonly<{
     onRestoreBackToAuth: () => void;
     onRestoreNavigationLockChange: (locked: boolean) => void;
     initialPairingLink: string | null;
+    restoreInitialView?: 'qr';
     onLostAccessBackToAuth: () => void;
 
     onHostRelayLocalAdvance: () => void;
@@ -417,6 +419,7 @@ export function renderOnboardingWizardStepBody(params: Readonly<{
                     onBack={params.onRestoreBackToAuth}
                     onOpenSecretKeyLogin={params.onOpenSecretKeyLogin}
                     initialPairingLink={params.initialPairingLink}
+                    initialView={params.restoreInitialView}
                     onNavigationLockChange={params.onRestoreNavigationLockChange}
                 />
             </View>
@@ -453,10 +456,12 @@ export function renderOnboardingWizardStepBody(params: Readonly<{
             const discovery = accountServiceEntry?.status === 'ready'
                 ? accountServiceEntry.discovery
                 : null;
-            const serviceName = discovery?.accountServiceDisplayName
-                ?? accountServiceEntry?.endpoint.displayName
-                ?? accountServiceEntry?.endpoint.url
-                ?? service.endpointUrl;
+            const serviceName = readAccountServiceDisplayName({
+                url: service.endpointUrl,
+                serverIdentityId: service.serverIdentityId,
+                savedName: accountServiceEntry?.endpoint.displayName,
+                advertisedName: discovery?.accountServiceDisplayName,
+            }) ?? t('welcome.yourSignInService');
             return (
                 <AccountDirectoryKeyLoginForm
                     service={service}

@@ -18,7 +18,23 @@ export type DesktopTrayState = Readonly<{
     status: DesktopTrayStatus;
     label: string;
     detail: string;
+    /** The tray's optional Updates item ("Updates available (2)…"); absent means no item. */
+    updatesLabel?: string;
+    /** Absent means enabled; `false` while an update is already running. */
+    updatesEnabled?: boolean;
 }>;
+
+/** The Updates item the tray should show, already localized by the Updates summary owner. */
+export type DesktopTrayUpdatesItem = Readonly<{ label: string; enabled: boolean }>;
+
+function withUpdatesItem(
+    state: DesktopTrayState,
+    updates: DesktopTrayUpdatesItem | null | undefined,
+): DesktopTrayState {
+    const label = updates?.label.trim() ?? '';
+    if (!updates || !label) return state;
+    return { ...state, updatesLabel: label, updatesEnabled: updates.enabled };
+}
 
 export function buildDesktopTrayState(params: Readonly<{
     health: Readonly<{
@@ -29,17 +45,18 @@ export function buildDesktopTrayState(params: Readonly<{
         machineLabelKey: ConnectionHealthMachineLabelKey;
     }>;
     relayDriftBannerTitle?: string | null;
+    updates?: DesktopTrayUpdatesItem | null;
     t: (key: ConnectionHealthStatusLabelKey | ConnectionHealthMachineLabelKey) => string;
 }>): DesktopTrayState {
     const driftTitle = typeof params.relayDriftBannerTitle === 'string'
         ? params.relayDriftBannerTitle.trim()
         : '';
     if (params.health.kind === 'healthy' && driftTitle) {
-        return {
+        return withUpdatesItem({
             status: 'attention_required',
             label: params.t('status.actionRequired'),
             detail: driftTitle,
-        };
+        }, params.updates);
     }
 
     const label = params.t(params.health.statusLabelKey);
@@ -51,9 +68,9 @@ export function buildDesktopTrayState(params: Readonly<{
             ? 'connecting'
         : params.health.kind;
 
-    return {
+    return withUpdatesItem({
         status,
         label,
         detail: showCounts ? `${machineLabel} · ${params.health.onlineCount}/${params.health.machineCount}` : machineLabel,
-    };
+    }, params.updates);
 }

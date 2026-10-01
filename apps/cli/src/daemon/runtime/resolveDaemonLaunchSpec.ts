@@ -181,11 +181,10 @@ export async function resolveDaemonLaunchSpec(
   cliArgs: readonly string[],
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<DaemonLaunchSpec> {
-  const bundledCurrentProcessLaunchSpec = resolveBundledCurrentProcessLaunchSpec(cliArgs, env);
-  if (bundledCurrentProcessLaunchSpec) {
-    return bundledCurrentProcessLaunchSpec;
-  }
-
+  // The Stack-admitted closure decides which code a stack daemon runs. It must win over reusing
+  // this process's own entrypoint: a daemon started from a last-green pinned runner would
+  // otherwise relaunch that same stale runner on every self-restart, while its environment
+  // (and therefore /ping) already claims the successor fingerprint.
   const admittedDaemonDistFingerprint = String(
     env.HAPPIER_CLI_SUBPROCESS_DAEMON_DIST_CLOSURE_FINGERPRINT ?? '',
   ).trim();
@@ -205,6 +204,11 @@ export async function resolveDaemonLaunchSpec(
       args: launchSpec.args,
       ...(launchSpec.env ? { env: launchSpec.env } : {}),
     };
+  }
+
+  const bundledCurrentProcessLaunchSpec = resolveBundledCurrentProcessLaunchSpec(cliArgs, env);
+  if (bundledCurrentProcessLaunchSpec) {
+    return bundledCurrentProcessLaunchSpec;
   }
 
   const packagedEntrypoint = resolvePackagedRuntimeEntrypoint('index.mjs');

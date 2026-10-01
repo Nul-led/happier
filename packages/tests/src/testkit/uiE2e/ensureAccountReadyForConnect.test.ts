@@ -146,7 +146,7 @@ describe('ensureAccountReadyForConnect', () => {
   it('passes when the authenticated setup surface is visible', async () => {
     const page = createFakePage({
       testIdCounts: {
-        'setupWizard.surface': [1],
+        'settings.machines.draft.form': [1],
       },
     });
 

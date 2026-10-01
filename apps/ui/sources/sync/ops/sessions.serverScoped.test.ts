@@ -1,9 +1,11 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { TokenStorage } from '@/auth/storage/tokenStorage';
 import { SessionModelSelectionV1Schema, SPAWN_SESSION_ERROR_CODES } from '@happier-dev/protocol';
 import { RPC_ERROR_CODES, RPC_METHODS } from '@happier-dev/protocol/rpc';
-import { MetadataSchema } from '@/sync/domains/state/storageTypes';
+import { MetadataSchema } from '@happier-dev/session-core/state';
 import { storage } from '@/sync/domains/state/storage';
 import { createSessionFixture } from '@/dev/testkit';
+import { createRootLayoutFeaturesResponse } from '@/dev/testkit/fixtures/featureFixtures';
 
 const machineRpcWithServerScopeMock = vi.hoisted(() => vi.fn());
 const sessionRpcWithServerScopeMock = vi.hoisted(() => vi.fn());
@@ -66,7 +68,7 @@ describe('sessions ops server-scoped routing', () => {
         v: 1,
         updatedAt: 1,
         ref: {
-            agentTargetKey: 'backend:claude',
+            agentTargetKey: 'agent:happier.agent.claude/claude',
             providerConnectionId: 'pc_work',
             modelId: 'provider-model',
         },
@@ -75,7 +77,7 @@ describe('sessions ops server-scoped routing', () => {
         v: 1,
         updatedAt: 1,
         ref: {
-            agentTargetKey: 'backend:claude',
+            agentTargetKey: 'agent:happier.agent.claude/claude',
             providerConnectionId: null,
             modelId: 'native-model',
         },
@@ -104,6 +106,11 @@ describe('sessions ops server-scoped routing', () => {
         readAgentScopedPluginSettingsSnapshotMock.mockResolvedValue(null);
     });
 
+    afterEach(() => {
+        vi.restoreAllMocks();
+        vi.unstubAllGlobals();
+    });
+
     it('restores an archived session before issuing its resume spawn', async () => {
         const lifecycle: string[] = [];
         storage.setState((state) => ({
@@ -112,10 +119,17 @@ describe('sessions ops server-scoped routing', () => {
                 'session-1': createSessionFixture({ id: 'session-1', archivedAt: 123 }),
             },
         }));
-        apiRequestMock.mockImplementationOnce(async () => {
-            lifecycle.push('unarchive');
-            return makeResponse({ ok: true, json: { success: true, archivedAt: null } });
+        vi.spyOn(TokenStorage, 'getCredentialsForServerUrl').mockResolvedValue({
+            token: `header.${btoa(JSON.stringify({ sub: 'resume-account' }))}.signature`,
         });
+        const fetchMock = vi.fn(async (input: string | URL | Request) => {
+            const isUnarchive = String(input).endsWith('/v2/sessions/session-1/unarchive');
+            if (isUnarchive) lifecycle.push('unarchive');
+            return new Response(JSON.stringify(isUnarchive
+                ? { success: true, archivedAt: null }
+                : createRootLayoutFeaturesResponse()), { status: 200 });
+        });
+        vi.stubGlobal('fetch', fetchMock);
         machineRpcWithServerScopeMock.mockImplementationOnce(async () => {
             lifecycle.push('resume');
             return { type: 'success', sessionId: 'session-1' };
@@ -130,7 +144,7 @@ describe('sessions ops server-scoped routing', () => {
         });
 
         expect(result).toEqual({ type: 'success', sessionId: 'session-1' });
-        expect(apiRequestMock).toHaveBeenCalledWith('/v2/sessions/session-1/unarchive', { method: 'POST' });
+        expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining('/v2/sessions/session-1/unarchive'), expect.objectContaining({ method: 'POST' }));
         expect(lifecycle).toEqual(['unarchive', 'resume']);
     });
 
@@ -141,11 +155,13 @@ describe('sessions ops server-scoped routing', () => {
                 'session-1': createSessionFixture({ id: 'session-1', archivedAt: 123 }),
             },
         }));
-        apiRequestMock.mockResolvedValueOnce(makeResponse({
-            ok: false,
-            status: 403,
-            text: 'Forbidden',
-        }));
+        vi.spyOn(TokenStorage, 'getCredentialsForServerUrl').mockResolvedValue({
+            token: `header.${btoa(JSON.stringify({ sub: 'resume-account' }))}.signature`,
+        });
+        const fetchMock = vi.fn(async (input: string | URL | Request) => String(input).endsWith('/v2/sessions/session-1/unarchive')
+            ? new Response('Forbidden', { status: 403 })
+            : new Response(JSON.stringify(createRootLayoutFeaturesResponse()), { status: 200 }));
+        vi.stubGlobal('fetch', fetchMock);
         const { resumeSession } = await sessionsModulePromise;
 
         const result = await resumeSession({
@@ -160,6 +176,7 @@ describe('sessions ops server-scoped routing', () => {
             errorCode: SPAWN_SESSION_ERROR_CODES.UNEXPECTED,
             errorMessage: 'Forbidden',
         });
+        expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining('/v2/sessions/session-1/unarchive'), expect.objectContaining({ method: 'POST' }));
         expect(machineRpcWithServerScopeMock).not.toHaveBeenCalled();
     });
 
@@ -841,7 +858,7 @@ describe('sessions ops server-scoped routing', () => {
         expect(call?.payload as Record<string, unknown>).not.toHaveProperty('connectedServices');
     });
 
-    it('projects the Codex authoring mode into runtimeDescriptorV1 before resume RPC', async () => {
+    it('preserves the Agent-owned Codex runtime descriptor in the resume RPC', async () => {
         machineRpcWithServerScopeMock.mockResolvedValueOnce({ type: 'success', sessionId: 'sess-1' });
         const { resumeSession } = await sessionsModulePromise;
         await resumeSession({
@@ -849,7 +866,11 @@ describe('sessions ops server-scoped routing', () => {
             machineId: 'machine-1',
             directory: '/tmp',
             backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
-            codexBackendMode: 'appServer',
+            runtimeDescriptorV1: {
+                v: 1,
+                agentId: 'codex',
+                agent: { backendMode: 'appServer' },
+            },
             serverId: 'server-b',
         } as any);
 

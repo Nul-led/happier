@@ -17,6 +17,8 @@ import { SessionListSessionItem } from './sessionListSessionItem';
 import { shouldReadLiveRowRenderables } from './sessionListRowRenderableFreeze';
 import {
     buildSessionListRowViewModel,
+    resolveSessionListRowViewModelAdjacency,
+    resolveSessionListUnscopedSelectionIsUnique,
     type SessionReachableDisplay,
     type SessionListRowViewModel,
 } from './sessionListRowViewModels';
@@ -135,14 +137,24 @@ export const SessionListRowViewModelBoundary = React.memo(function SessionListRo
         scopeKind: 'spawn',
         serverId: props.item.serverId ?? null,
     });
+    const adjacency = React.useMemo(
+        () => resolveSessionListRowViewModelAdjacency(props.items, props.dataIndex),
+        [props.dataIndex, props.items],
+    );
+    const unscopedSelectionIsUnique = React.useMemo(
+        () => !String(props.selectedSessionServerId ?? '').trim()
+            && props.selectedSessionId === props.item.sessionId
+            && resolveSessionListUnscopedSelectionIsUnique(props.items, props.selectedSessionId),
+        [props.item.sessionId, props.items, props.selectedSessionId, props.selectedSessionServerId],
+    );
     const rowViewModel = React.useMemo<SessionListRowViewModel>(() => buildSessionListRowViewModel({
         audienceScopes: props.audienceScope ? new Map([[props.audienceScope.serverId, props.audienceScope]]) : undefined,
         homeObservations: props.item.serverId && props.homeObservation
             ? { [props.item.serverId]: props.homeObservation }
             : undefined,
         item: props.item,
-        index: props.dataIndex,
-        listItems: props.items,
+        adjacency,
+        unscopedSelectionIsUnique,
         reachableSessionDisplayById: props.reachableSessionDisplayById,
         reachableSessionDisplayByKey: props.reachableSessionDisplayByKey,
         rowRenderableByKey,
@@ -167,18 +179,16 @@ export const SessionListRowViewModelBoundary = React.memo(function SessionListRo
         existingDraft: props.draft,
     }), [
         props.audienceScope,
-        props.audienceLabel,
         props.homeObservation,
         props.activeColorMode,
         props.attentionStandingEnabled,
         props.attentionStandingPolicy,
-        props.dataIndex,
+        adjacency,
         props.hasMultipleMachines,
         props.hideInactiveSessions,
         props.identityDisplay,
         props.draft,
         props.item,
-        props.items,
         props.pinnedSessionKeys,
         props.reachableSessionDisplayById,
         props.reachableSessionDisplayByKey,
@@ -192,6 +202,7 @@ export const SessionListRowViewModelBoundary = React.memo(function SessionListRo
         relativeNowMs,
         rowRenderableByKey,
         runtimeNowMs,
+        unscopedSelectionIsUnique,
     ]);
 
     const sessionItem = (

@@ -110,11 +110,11 @@ const DISCOVERED_EXCEPTIONS: SessionAccessEncryptionRecipientsState = Object.fre
 type SessionAccessGrantReconciliationIntent =
     | Readonly<{kind:'set';mutation:SessionGrantMutationV1}>
     | Readonly<{kind:'remove';subject:PrincipalRefV1}>;
-type SessionAccessGrantOperationState = SessionAccessGrantOperationModel
+type SessionAccessGrantOperationState = Exclude<SessionAccessGrantOperationModel, { kind: 'error' }>
     | Readonly<{
         kind:'error';
         error:SessionAccessUiError;
-        reconcileIntent:SessionAccessGrantReconciliationIntent;
+        reconcileIntent?:SessionAccessGrantReconciliationIntent;
     }>;
 
 export type SessionAccessEditorState = Readonly<{
@@ -162,7 +162,7 @@ function reconcileOperations(
 ):SessionAccessEditorState['operations'] {
     let next:Record<string,SessionAccessGrantOperationState>|null=null;
     for(const [key,operation] of Object.entries(operations)){
-        if(operation.kind!=='error'||!('reconcileIntent' in operation)
+        if(operation.kind!=='error'||!operation.reconcileIntent
             ||!snapshotProvesMutationIntent(snapshot,operation.reconcileIntent))continue;
         next??={...operations};
         delete next[key];
@@ -213,11 +213,19 @@ export function reduceSessionAccessEditorState(state:SessionAccessEditorState,ev
         // operation transition. It may settle an idle or already-settled section, but a
         // running pass's committed progress and a failed pass's recovery reason both
         // belong to the operation and are replaced only by that operation's own result.
+        // A device-key stop is also operation-owned: diagnostics cannot turn it into a
+        // misleading incomplete/failed discovery state before the user retries.
         case 'prepared': return event.origin==='discovery'
-            && (state.preparation.kind==='preparing'||state.preparation.kind==='failed')
+            && (state.preparation.kind==='preparing'
+                || (state.preparation.kind==='failed' && state.preparation.origin!=='discovery')
+                || (state.preparation.kind==='settled' && state.preparation.status==='session_data_key_unavailable'))
             ? state
             : {...state,preparation:event.preparation};
-        case 'preparationFailed': return {...state,preparation:{kind:'failed',origin:event.origin,error:event.error}};
+        case 'preparationFailed': return event.origin==='discovery'
+            && (state.preparation.kind==='preparing'
+                || (state.preparation.kind==='settled' && state.preparation.status==='session_data_key_unavailable'))
+            ? state
+            : {...state,preparation:{kind:'failed',origin:event.origin,error:event.error}};
         // Asking for a different view clears the rows it is about to replace; a
         // continuation within the current view keeps them while the page loads.
         case 'recipientsLoading': return {...state,recipients:event.view===state.recipients.view

@@ -1,5 +1,5 @@
 import { SessionSystemRecordStoredSchema, type SessionSystemRecordStored } from '@happier-dev/protocol';
-import { openSessionStoredContent, type SessionStoredContentContext } from '@/sync/encryption/sessionStoredContent';
+import { openSessionStoredContent, type SessionStoredContentContext } from '@happier-dev/sync-client';
 import type { HostSessionSystemRecordAddress } from './transport';
 
 export type SessionSystemRecordPayloadResult<T> =

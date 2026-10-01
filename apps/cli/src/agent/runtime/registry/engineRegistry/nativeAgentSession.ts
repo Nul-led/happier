@@ -7,6 +7,8 @@ import {
     AgentLaunchEnvironmentV1Schema,
     AgentRuntimeJsonValueV1Schema,
     AgentSessionConfigurationSnapshotV1Schema,
+    AgentSessionStartupInstructionsV1Schema,
+    type AgentSessionStartupInstructionsV1,
 } from '@happier-dev/protocol/runtime';
 import {
     applySessionProviderBindingMetadataV1,
@@ -14,7 +16,9 @@ import {
     materializeSessionInputCausalPermissionAuthorityV1,
     projectAgentSessionProviderBindingV1,
     readLeadingSlashCommandName,
+    readSessionDirectoryKind,
     readSessionProviderBindingMetadataV1,
+    readSessionWorkspaceWritesV1,
     registerSensitiveDiagnosticValues,
     resolveLinkedExternalSessionMetadataV1,
     SESSION_AGENT_ACTIVITY_HEADLINE_METADATA_KEY,
@@ -28,10 +32,13 @@ import {
     type PluginSourceCustodyV1,
 } from '@happier-dev/protocol';
 import {
+    getAgentLocalControlCapability,
     parsePermissionIntentAlias,
     readAgentSurfaceRuntimeDescriptorV1FromSessionMetadata,
     resolvePermissionIntentFromSessionMetadata,
 } from '@happier-dev/agents';
+import { applyAcpConfigOptionIntentSessionMetadata } from '@happier-dev/agents/session/state/metadataWriters';
+import { resolveSessionConfigOptionOverridesFromMetadataSnapshot } from '@/agent/runtime/sessionConfigOptionOverrideSync';
 import type {
     HostTerminalOrchestration,
     HostTerminalRunResult,
@@ -70,12 +77,14 @@ import type {
 } from '@happier-dev/plugin-sdk/agents/runtime';
 import {
     PluginError,
+    isPluginError,
     type PluginServices,
 } from '@happier-dev/plugin-sdk';
 import {
     installAgentChildLaunchEnvironmentTransformerForTerminalHost,
 } from '@/plugins/runtime/context/terminalHost';
 import { configuration as happierConfiguration } from '@/configuration';
+import { readTerminalHostAttachmentInfo } from '@/terminal/attachment/terminalAttachmentInfo';
 import type { SessionRuntimeControls } from '@/rpc/handlers/sessionControls';
 import {
     createProviderBindingLaunchMaterializationCleanup,
@@ -211,6 +220,8 @@ import {
 } from './nativeAgentSessionHostServiceOwners';
 import { createPluginExecSystemToolGrantStore } from '@/plugins/runtime/exec/system/tools/grants';
 import { createTerminalRuntimeHostOrchestration } from '@/agent/runtime/session/terminal/orchestration';
+import { createTerminalRuntimeSwitchHandlerService } from '@/agent/runtime/session/terminal/switchHandler';
+import { createAgentRuntimeSwitchState } from '@/agent/runtime/mode/switching/createSwitchState';
 import { createTerminalRuntimeProjectionHostService } from '@/agent/runtime/session/terminal/projection';
 import { createHostTerminalTranscriptFollowService } from '@/agent/runtime/session/terminal/transcriptFollow';
 import {
@@ -219,7 +230,11 @@ import {
 } from '@/agent/runtime/session/transcripts/projectRuntimeTranscriptEvent';
 import { publishRuntimeSessionEvent } from '@/agent/runtime/session/transcripts/publishRuntimeSessionEvent';
 import { createExternalSessionTerminalFollowProjector } from '@/session/external/terminalFollowProjection';
-import { buildTerminalMetadataFromHostHandle } from '@/terminal/runtime/terminalMetadata';
+import {
+    buildTerminalMetadataFromHostHandle,
+    resolveExistingTerminalHostLifecycle,
+} from '@/terminal/runtime/terminalMetadata';
+import { bindHerdrAgentIfNeeded } from '@/integrations/herdr/bindManagedSession';
 import { reportSessionToDaemonIfRunning } from '@/agent/runtime/startupSideEffects';
 import { normalizeUnsetEnvKeys } from '@/utils/processEnv/buildScopedProcessEnv';
 import {
@@ -389,25 +404,12 @@ function createNativeAgentTerminalModeBinding<TRuntime extends RuntimeTurnOperat
             );
         }
     };
-    const releaseTranscriptFollowBindings = async (
-        transcriptFollow: HostTerminalTranscriptFollowService | undefined,
-    ): Promise<void> => {
-        if (!transcriptFollow) return;
-        try {
-            await transcriptFollow.releaseActiveBindings();
-        } catch (error) {
-            reportDegradedTranscriptFollow(
-                readTranscriptFollowFailureCode(error),
-                'release',
-            );
-        }
-    };
     const modeLoop: HostSessionTerminalRemoteModeLoop = Object.freeze({
         startingMode: 'remote',
         remoteExitCode: 0,
         async runTerminal() {
             const transcriptFollow = params.host?.transcriptFollow;
-            await releaseTranscriptFollowBindings(transcriptFollow);
+            let transcriptFollowBinding: HostTerminalTranscriptFollowBinding | null = null;
             try {
                 const run = await params.runWithTerminalModelSelection(
                     async (
@@ -431,9 +433,6 @@ function createNativeAgentTerminalModeBinding<TRuntime extends RuntimeTurnOperat
                         // top of the terminal, so an unavailable or failing bind
                         // degrades to a terminal run without follow and only the
                         // terminal launch itself can fail the run.
-                        let transcriptFollowBinding:
-                            HostTerminalTranscriptFollowBinding
-                            | null = null;
                         if (requiresTranscriptFollow) {
                             if (!transcriptFollow) {
                                 throw new HostTerminalTranscriptFollowAdmissionError(
@@ -589,7 +588,9 @@ function createNativeAgentTerminalModeBinding<TRuntime extends RuntimeTurnOperat
                 }
                 return run.value;
             } finally {
-                await releaseTranscriptFollowBindings(transcriptFollow);
+                if (transcriptFollowBinding) {
+                    await disposeTranscriptFollowBinding(transcriptFollowBinding);
+                }
             }
         },
         runRemote: async () => await waitForNativeAgentTerminalRemoteDisposition({
@@ -613,6 +614,112 @@ function createNativeAgentTerminalModeBinding<TRuntime extends RuntimeTurnOperat
         runtime,
         terminalRemoteModeLoop: modeLoop,
     });
+}
+
+function createNativeAgentProviderAttachModeBinding<TRuntime extends RuntimeTurnOperations>(params: Readonly<{
+    runtime: TRuntime;
+    attach: NonNullable<BackendExecutionSurfaces['attach']>;
+    session: ApiSessionClient;
+    topology: 'exclusive' | 'shared';
+    remoteWritable: boolean;
+    startingMode: 'terminal' | 'remote';
+    generationSignal?: AbortSignal;
+}>): Readonly<{
+    runtime: TRuntime;
+    terminalRemoteModeLoop: HostSessionTerminalRemoteModeLoop;
+}> {
+    const prepareProviderCliAttach = params.runtime.prepareProviderCliAttach;
+    if (!prepareProviderCliAttach) {
+        throw new Error('Provider CLI attach preparation is unavailable');
+    }
+    const lifecycleAbortController = new AbortController();
+    const lifecycleSignal = AbortSignal.any([
+        lifecycleAbortController.signal,
+        ...(params.generationSignal ? [params.generationSignal] : []),
+    ]);
+    const switching = createTerminalRuntimeSwitchHandlerService({
+        registerHandler: params.session.rpcHandlerManager.registerHandler.bind(
+            params.session.rpcHandlerManager,
+        ),
+    });
+    const publishAttached = async (attached: boolean): Promise<void> => {
+        await params.session.updateAgentState((current) => ({
+            ...current,
+            controlledByUser: false,
+            localControl: createAgentRuntimeSwitchState({
+                attached,
+                topology: params.topology,
+                canAttach: true,
+                canDetach: attached,
+                remoteWritable: params.remoteWritable,
+            }),
+        }));
+    };
+    const modeLoop: HostSessionTerminalRemoteModeLoop = Object.freeze({
+        startingMode: params.startingMode,
+        remoteExitCode: 0,
+        topology: params.topology,
+        remoteWritable: params.remoteWritable,
+        ownsCurrentTerminalDisplay: true,
+        async runTerminal() {
+            const localAbortController = new AbortController();
+            const signal = AbortSignal.any([
+                lifecycleSignal,
+                localAbortController.signal,
+            ]);
+            const switchBinding = switching.register(async (request) => {
+                if (request.target === 'local') return true;
+                if (request.target !== 'remote') return false;
+                localAbortController.abort();
+                return true;
+            });
+            try {
+                const metadata = await prepareProviderCliAttach();
+                if (signal.aborted) {
+                    return lifecycleSignal.aborted
+                        ? { type: 'exit' as const, code: 0 }
+                        : { type: 'switch' as const };
+                }
+                await publishAttached(true);
+                const result = await params.attach.attach({
+                    sessionId: params.session.sessionId,
+                    metadata,
+                    signal,
+                });
+                if (!result.ok) {
+                    throw new Error(result.message);
+                }
+                return lifecycleSignal.aborted
+                    ? { type: 'exit' as const, code: result.value.exitCode ?? 0 }
+                    : { type: 'switch' as const };
+            } finally {
+                switchBinding.unsubscribe();
+                await publishAttached(false);
+            }
+        },
+        async runRemote() {
+            await publishAttached(false);
+            return await waitForNativeAgentTerminalRemoteDisposition({
+                signal: lifecycleSignal,
+                switching,
+            });
+        },
+        onModeChange: () => undefined,
+    });
+    const runtime = Object.freeze({
+        ...params.runtime,
+        async resetOrDisposeRuntime(
+            reason?: RuntimeTurnDisposeReason,
+            nextSessionOpenIntent?: RuntimeTurnSessionOpenIntent,
+        ) {
+            lifecycleAbortController.abort();
+            await params.runtime.resetOrDisposeRuntime(
+                reason,
+                nextSessionOpenIntent,
+            );
+        },
+    });
+    return Object.freeze({ runtime, terminalRemoteModeLoop: modeLoop });
 }
 
 function parseNativeAgentForkSource(
@@ -654,6 +761,7 @@ type AgentTerminalHostService = NonNullable<AgentSessionHostServices['terminalHo
 
 function createNativeAgentTerminalHostScope(params: Readonly<{
     owner: AgentTerminalHostService;
+    agentId: string;
     signal: AbortSignal;
     isCurrent: () => boolean;
     session: ApiSessionClient;
@@ -730,6 +838,11 @@ function createNativeAgentTerminalHostScope(params: Readonly<{
             }
             try {
                 const terminal = buildTerminalMetadataFromHostHandle(handle);
+                const attachmentInfo = await readTerminalHostAttachmentInfo({
+                    happyHomeDir: happierConfiguration.happyHomeDir,
+                    sessionId: params.session.sessionId,
+                });
+                const lifecycle = resolveExistingTerminalHostLifecycle({ ...params.session.getMetadataSnapshot(), terminal }, attachmentInfo) ?? 'owned';
                 const attachmentId = terminal?.controlServiceabilityV1?.attachmentId;
                 logger.debug('[native-agent] Publishing attached terminal-host metadata', {
                     sessionId: params.session.sessionId,
@@ -751,6 +864,13 @@ function createNativeAgentTerminalHostScope(params: Readonly<{
                         metadata: updatedMetadata,
                     });
                 }
+                await bindHerdrAgentIfNeeded({
+                    session: params.session,
+                    sessionId: params.session.sessionId,
+                    agent: params.agentId,
+                    terminal,
+                    preserveHostOnClose: lifecycle === 'owned',
+                });
                 logger.debug('[native-agent] Published attached terminal-host metadata', {
                     sessionId: params.session.sessionId,
                     attachmentId,
@@ -892,6 +1012,7 @@ export function createNativeAgentSessionHostServices(params: Readonly<{
     signal: AbortSignal;
     isCurrent: () => boolean;
     terminalHost?: NonNullable<AgentSessionHostServices['terminalHost']>;
+    followSource?: AgentSessionHostServices['transcripts']['followSource'];
     nativeHome?: NonNullable<AgentSessionHostServices['nativeHome']>;
     session: Pick<ApiSessionClient, 'updateMetadata' | 'enqueueAgentMessageCommitted'> & Readonly<{
         sessionId: string;
@@ -1143,6 +1264,7 @@ export function createNativeAgentSessionHostServices(params: Readonly<{
             signal.throwIfAborted();
             const verification = await verifySessionStructuredImageInput({
                 cwd: params.directory,
+                sessionId: params.sessionId,
                 image: input,
                 maxBytes: happierConfiguration.filesUploadMaxFileBytes,
             });
@@ -1216,9 +1338,16 @@ export function createNativeAgentSessionHostServices(params: Readonly<{
         features,
         ...(terminalHost ? { terminalHost } : {}),
         models: params.publications.models,
+        modes: params.publications.modes,
         activeInput: params.publications.activeInput,
         sessionHooks,
         transcripts: Object.freeze({
+            ...(params.followSource ? {
+                async followSource(request: Parameters<NonNullable<AgentSessionHostServices['transcripts']['followSource']>>[0]) {
+                    assertSessionScopeAvailable('transcript-follow');
+                    return await params.followSource!(request);
+                },
+            } : {}),
             fileFollow,
             publishSessionEvent,
             markSourceFactConsumed,
@@ -1281,11 +1410,13 @@ function buildNativeAgentSessionOpenInputs(
     metadata: Readonly<Record<string, unknown>>,
     providerBindingMaterialization: HostSessionRuntimeFactoryParams['providerBindingMaterialization'],
     hostPermissionMode: string,
+    getWorkspaceWrites?: () => 'allow' | 'deny' | undefined,
     buildOptions: Readonly<{
         allowPendingProviderBinding?: boolean;
         sessionConnectedAccounts?: NonNullable<AgentSessionOpenRequest['connectedAccounts']>;
     }> = {},
 ): Readonly<{
+    sessionDirectoryKind: NonNullable<AgentSessionOpenRequest['sessionDirectoryKind']>;
     launchEnvironment: NonNullable<AgentSessionOpenRequest['launchEnvironment']>;
     runtimeDescriptorV1?: NonNullable<AgentSessionOpenRequest['runtimeDescriptorV1']>;
     configuration: AgentSessionConfigurationSnapshot;
@@ -1293,6 +1424,7 @@ function buildNativeAgentSessionOpenInputs(
     connectedAccounts?: NonNullable<AgentSessionOpenRequest['connectedAccounts']>;
     providerBinding?: NonNullable<AgentSessionOpenRequest['providerBinding']>;
 }> {
+    const sessionDirectoryKind = readSessionDirectoryKind(metadata);
     const stateSharing = resolveNativeAgentSessionStateSharingPolicy(agentId);
     const environmentValues = { ...(input.bootstrap.environmentVariables ?? {}) };
     delete environmentValues[HAPPIER_PROVIDER_BINDING_LAUNCH_MATERIALIZATION_V1_ENV_KEY];
@@ -1313,12 +1445,19 @@ function buildNativeAgentSessionOpenInputs(
     const sessionMode = input.runtimePreferences.sessionMode;
     const launchModelSelection = input.runtimePreferences.modelSelection;
     const modelSelection = resolvePublicSessionModelSelection({ sessionInput: input, metadata });
+    let configurationMetadata = metadata;
+    for (const [configId, option] of Object.entries(input.runtimePreferences.configurationOptions?.overrides ?? {})) {
+        configurationMetadata = applyAcpConfigOptionIntentSessionMetadata(configurationMetadata, {
+            v: 1, configId, value: option.value, updatedAt: option.updatedAt,
+        });
+    }
     const options = Object.fromEntries(
-        Object.entries(input.runtimePreferences.configurationOptions?.overrides ?? {}).map(
-            ([id, option]) => [id, { value: option.value, updatedAtMs: option.updatedAt }],
-        ),
+        resolveSessionConfigOptionOverridesFromMetadataSnapshot({ metadata: configurationMetadata })
+            .map(({ configId, valueId, updatedAt }) => [configId, { value: valueId, updatedAtMs: updatedAt }]),
     );
+    const workspaceWrites = getWorkspaceWrites ? getWorkspaceWrites() : readSessionWorkspaceWritesV1(metadata);
     const configuration = AgentSessionConfigurationSnapshotV1Schema.parse({
+        ...(workspaceWrites !== undefined ? { workspaceWrites } : {}),
         mode: {
             value: sessionMode?.id ?? null,
             updatedAtMs: sessionMode?.updatedAt ?? 0,
@@ -1354,6 +1493,7 @@ function buildNativeAgentSessionOpenInputs(
             throw new Error('Native model selection cannot include Provider binding materialization');
         }
         return Object.freeze({
+            sessionDirectoryKind,
             launchEnvironment,
             ...(runtimeDescriptorV1 ? { runtimeDescriptorV1 } : {}),
             configuration,
@@ -1364,6 +1504,7 @@ function buildNativeAgentSessionOpenInputs(
     if (providerBindingMaterialization === undefined) {
         if (buildOptions.allowPendingProviderBinding === true) {
             return Object.freeze({
+                sessionDirectoryKind,
                 launchEnvironment,
                 ...(runtimeDescriptorV1 ? { runtimeDescriptorV1 } : {}),
                 configuration,
@@ -1392,6 +1533,7 @@ function buildNativeAgentSessionOpenInputs(
         throw new Error('Attached Provider model selection does not match launch binding');
     }
     return Object.freeze({
+        sessionDirectoryKind,
         launchEnvironment,
         ...(runtimeDescriptorV1 ? { runtimeDescriptorV1 } : {}),
         configuration,
@@ -1407,6 +1549,7 @@ function buildNativeAgentSessionOpenInputs(
 function applyNativeAgentConfigurationUpdate(
     current: AgentSessionConfigurationSnapshot,
     update: RuntimeTurnConfigUpdate,
+    getWorkspaceWrites?: () => 'allow' | 'deny' | undefined,
 ): Readonly<{
     snapshot: AgentSessionConfigurationSnapshot;
     request: AgentSessionConfigurationUpdate;
@@ -1423,7 +1566,9 @@ function applyNativeAgentConfigurationUpdate(
         || typeof configOptionValue === 'number'
         || typeof configOptionValue === 'boolean'
     );
+    const workspaceWrites = update.workspaceWrites ?? (getWorkspaceWrites ? getWorkspaceWrites() : current.workspaceWrites);
     const snapshot = AgentSessionConfigurationSnapshotV1Schema.parse({
+        ...(workspaceWrites !== undefined ? { workspaceWrites } : {}),
         mode: typeof update.modeId === 'string'
             ? { value: update.modeId, updatedAtMs }
             : current.mode,
@@ -1452,6 +1597,12 @@ function applyNativeAgentConfigurationUpdate(
 function toHostConfigurationOutcome(
     result: Awaited<ReturnType<NonNullable<AgentSessionRuntime['updateConfiguration']>>>,
 ): RuntimeConfigUpdateOutcomeV1 {
+    if ('diagnostic' in result && result.diagnostic.code === 'role_policy_restart_required') {
+        return { status: 'requires_restart', reason: result.diagnostic.code };
+    }
+    if ('diagnostic' in result && result.diagnostic.code === 'role_policy_unenforceable') {
+        return { status: 'failed', reason: result.diagnostic.code };
+    }
     if (result.status === 'applied') {
         return { status: 'applied', timing: 'current_window' };
     }
@@ -1477,6 +1628,7 @@ type NativeAgentSessionUsagePublisher = Readonly<{
 }>;
 
 type NativeAgentSessionDirectFacets = Readonly<{
+    getWorkspaceWrites?: () => 'allow' | 'deny' | undefined;
     prepareRunTeamCredentialProviderBinding?: SessionRuntimeControls['prepareRunTeamCredentialProviderBinding'];
     goals?: AgentSessionGoalControl;
     catalog?: AgentSessionCatalogControl;
@@ -1587,6 +1739,7 @@ type NativeAgentSessionInteractionLifecycle = Readonly<{
     subscribeCommittedUserMessageSeq?(
         listener: (observation: Readonly<{ localId: string; seq: number }>) => void,
     ): () => void;
+    subscribePendingProviderInputRetirement?(listener: (localId: string) => void): () => void;
     getCommittedUserMessageSeq?(localId: string): number | null;
     getLastObservedMessageSeq?(): number;
     updateMetadata?(updater: (metadata: Metadata) => Metadata): Promise<void> | void;
@@ -2380,6 +2533,25 @@ export function createNativeAgentSessionOperations(
             observeCommittedUserMessageSeq,
         );
     }
+    let unsubscribePendingProviderInputRetirement = interactionLifecycle?.subscribePendingProviderInputRetirement?.(
+        (inputId) => {
+            if (disposeStarted) return;
+            const correlation = inputCorrelations.get(inputId);
+            if (!correlation || acceptedInputIds.has(inputId)) return;
+            if (correlation.deliveryKind === 'newTurn' && invariant.read().activeTurnId === correlation.turnId) return;
+            inputCorrelations.delete(inputId);
+            rejectedInputIds.delete(inputId);
+            uncertainInputIds.delete(inputId);
+            pendingRollbackJoinByLocalId.delete(inputId);
+            if (activeTurnAdmissionWitness?.inputId === inputId) activeTurnAdmissionWitness = null;
+            correlation.admissionAbortController?.abort(new Error('Native Agent input retired before admission'));
+            try {
+                publications?.readActiveInputBinding()?.onInputRetired?.(inputId);
+            } finally {
+                settleUnstartedTurn();
+            }
+        },
+    ) ?? null;
     const emitDeliveryOutcome = (outcome: RuntimeExactProviderInputOutcome): void => {
         try {
             const { localInputId, ...rest } = outcome;
@@ -2933,7 +3105,7 @@ export function createNativeAgentSessionOperations(
                     },
                 }
                 : {}),
-            ...(directFacets.capabilities.goals?.active && directFacets.goals
+            ...(directFacets.capabilities.goals?.active && directFacets.goals && session.nativeGoalControlsSupported !== false
                 ? {
                     async refreshGoal() {
                         if (activeControlUnavailable()) {
@@ -3194,6 +3366,7 @@ export function createNativeAgentSessionOperations(
         ...(publications
             ? {
                 models: publications.modelsSource,
+                modes: publications.modesSource,
                 supportsInFlightSteer: () => (
                     directFacets?.capabilities.delivery.includes('steer') === true
                     && publications.readActiveInputBinding() !== null
@@ -3647,6 +3820,13 @@ export function createNativeAgentSessionOperations(
                 }
             });
         },
+        ...(typeof session.prepareProviderCliAttach === 'function'
+            ? {
+                async prepareProviderCliAttach() {
+                    return await session.prepareProviderCliAttach!();
+                },
+            }
+            : {}),
         readSessionIdentity() {
             return { sessionId: invariant.read().providerSessionId };
         },
@@ -3668,7 +3848,10 @@ export function createNativeAgentSessionOperations(
                     reason: 'native_agent_configuration_unsupported',
                 };
             }
-            const nextConfiguration = applyNativeAgentConfigurationUpdate(configuration, update);
+            const nextConfiguration = applyNativeAgentConfigurationUpdate(configuration, update, directFacets.getWorkspaceWrites);
+            if (nextConfiguration.snapshot.workspaceWrites === 'deny' && directFacets.capabilities.workspaceWrites !== 'deny') {
+                return { status: 'failed', reason: 'role_policy_unenforceable' };
+            }
             const result = await directFacets.configuration.updateConfiguration(
                 nextConfiguration.request,
             );
@@ -3768,6 +3951,8 @@ export function createNativeAgentSessionOperations(
                     pendingToolExecutions.clear();
                     unsubscribeCommittedUserMessageSeq?.();
                     unsubscribeCommittedUserMessageSeq = null;
+                    unsubscribePendingProviderInputRetirement?.();
+                    unsubscribePendingProviderInputRetirement = null;
                     invariant.fence();
                     // Retirement abandons unsettled publication without waiting on
                     // plugin cleanup or letting late settlement revive this scope.
@@ -3912,7 +4097,7 @@ export async function createNativeAgentRuntimeSessionPlan(params: Readonly<{
     /** Host-owned executable custody for Account-configured ACP. */
     resolveAcpHostLaunch?: PublicAcpHostLaunchResolver;
     sessionInput: PluginSessionBindingInput;
-    executionSurfaces?: Partial<Pick<BackendExecutionSurfaces, 'externalSession' | 'terminalRuntime'>>;
+    executionSurfaces?: Partial<Pick<BackendExecutionSurfaces, 'attach' | 'externalSession' | 'terminalRuntime' | 'resolveTerminalPresentation'>>;
     externalSessionHostOperations?: Readonly<{
         bindSession(sessionId: string): ExternalSessionHostOperationPort;
     }> | null;
@@ -3995,7 +4180,6 @@ export async function createNativeAgentRuntimeSessionPlan(params: Readonly<{
     if (!identity) {
         throw new Error('Native Agent runtime identity is required');
     }
-    const sourceCustody = identity.sourceCustody ?? null;
     if ((params.runtime === undefined) === (params.createRuntime === undefined)) {
         throw new Error(
             'Native Agent session runtime requires exactly one runtime source',
@@ -4007,12 +4191,9 @@ export async function createNativeAgentRuntimeSessionPlan(params: Readonly<{
         );
     }
     const contributionId = params.agent.identity?.localId ?? identity.agentId;
-    let initialTerminalFollowProviderSession:
-        Parameters<
-            typeof createHostTerminalTranscriptFollowService
-        >[0]['followProviderSession'] | null = null;
-    let initialTerminalTranscriptFollowSignal: AbortSignal | null = null;
+    let currentTerminalTranscriptFollowService: HostTerminalTranscriptFollowService | null = null;
     let runtimeExecutionSurfaces = params.executionSurfaces;
+    let runtimePresentationSelection: AgentSessionOpenRequest | undefined;
     const plan = await createNativeAgentHostSessionRuntimePlan({
         backend: params.backend,
         agent: params.agent,
@@ -4067,6 +4248,30 @@ export async function createNativeAgentRuntimeSessionPlan(params: Readonly<{
                     `Native Agent '${identity.agentId}' does not declare sessions.open ${openIntent.kind} support`,
                 );
             }
+            const ownedAbortController = new AbortController();
+            const signal = AbortSignal.any([
+                ownedAbortController.signal,
+                ...(params.generationSignal ? [params.generationSignal] : []),
+            ]);
+            let startupInstructions: AgentSessionStartupInstructionsV1 | null =
+                openIntent.kind === 'fork' ? null : openIntent.startupInstructions ?? null;
+            const canApplyNativeStartup = sessionCapabilities.startupInstructions?.versions.includes(1) === true
+                && (openIntent.kind === 'create'
+                    || (openIntent.kind === 'resume' && sessionCapabilities.startupInstructions.revisionChanges === 'resume'));
+            if (startupInstructions && !canApplyNativeStartup) {
+                throw new PluginError({ code: 'agent_session_startup_instructions_unsupported', retryable: false });
+            }
+            if (canApplyNativeStartup && openIntent.kind !== 'fork'
+                && openIntent.startupInstructions === undefined && hostRuntimeParams.resolveFreshSessionSystemPrompt) {
+                // Resolve role sources before capturing their native workspace policy below.
+                const text = await hostRuntimeParams.resolveFreshSessionSystemPrompt({ signal });
+                startupInstructions = hostRuntimeParams.resolveFreshSessionSystemPrompt.readStartupInstructions?.()
+                    ?? (text.trim() ? AgentSessionStartupInstructionsV1Schema.parse({
+                    v: 1, id: 'happier.coding_session_plan',
+                    revision: params.sessionInput.agentSessionStartupInstructionsV1?.revision ?? 1,
+                    instructions: text.trim().normalize('NFC'),
+                }) : null);
+            }
             const modelSelection = resolvePublicSessionModelSelection({
                 sessionInput: params.sessionInput,
                 metadata: hostRuntimeParams.metadata,
@@ -4077,17 +4282,13 @@ export async function createNativeAgentRuntimeSessionPlan(params: Readonly<{
                 hostRuntimeParams.metadata,
                 hostRuntimeParams.providerBindingMaterialization,
                 hostRuntimeParams.getPermissionMode(),
+                hostRuntimeParams.getWorkspaceWrites,
                 {
                     allowPendingProviderBinding:
                         params.sessionInput.bootstrap.resolveLateEnvironment
                         !== undefined,
                 },
             );
-            const ownedAbortController = new AbortController();
-            const signal = AbortSignal.any([
-                ownedAbortController.signal,
-                ...(params.generationSignal ? [params.generationSignal] : []),
-            ]);
             const resolveLateEnvironment =
                 params.sessionInput.bootstrap.resolveLateEnvironment;
             let resolvedLateEnvironmentValues:
@@ -4249,6 +4450,7 @@ export async function createNativeAgentRuntimeSessionPlan(params: Readonly<{
                         metadataForOpen,
                         providerBindingHandoff?.materialization,
                         hostRuntimeParams.getPermissionMode(),
+                        hostRuntimeParams.getWorkspaceWrites,
                         {
                             allowPendingProviderBinding:
                                 useRunnerManagedProviderBinding,
@@ -4293,6 +4495,7 @@ export async function createNativeAgentRuntimeSessionPlan(params: Readonly<{
             };
             try {
             assertGenerationCurrent();
+            const sourceCustody = identity.sourceCustody ?? null;
             if (params.managedServiceEndpointReadPort) {
                 registerRunnerManagedServiceEndpointReadRpcHandlers(
                     hostRuntimeParams.session.rpcHandlerManager,
@@ -4314,6 +4517,7 @@ export async function createNativeAgentRuntimeSessionPlan(params: Readonly<{
             const externalSessionHostOperations =
                 params.externalSessionHostOperations?.bindSession(sessionId) ?? null;
             let disposeExternalSessions: (() => Promise<void>) | null = null;
+            let followProviderSession: Parameters<typeof createHostTerminalTranscriptFollowService>[0]['followProviderSession'] | null = null;
             const providerOps = readConfiguredExternalSessionProviderOps(params.executionSurfaces?.externalSession);
             const providerSessionFollowOps =
                 providerOps?.resolveLinkIdentity
@@ -4346,10 +4550,14 @@ export async function createNativeAgentRuntimeSessionPlan(params: Readonly<{
                             ? await fetchAccountProfile({ token: params.sessionInput.credentials.token, signal })
                             : { connectedServicesV2: [] }
                     ),
-                    readAccountRevision: () => resolveActiveAccountConfiguredExternalSessionSourceRevision(getActiveAccountSettingsSnapshot()),
-                    subscribeAccountRevision: (listener) => subscribeActiveAccountSettingsSnapshot(
-                        (_previous, next) => listener(resolveActiveAccountConfiguredExternalSessionSourceRevision(next)),
-                    ),
+                    readAccountRevision: () => hostRuntimeParams.accountSettingsAuthority === 'session'
+                        ? ''
+                        : resolveActiveAccountConfiguredExternalSessionSourceRevision(getActiveAccountSettingsSnapshot()),
+                    subscribeAccountRevision: hostRuntimeParams.accountSettingsAuthority === 'session'
+                        ? () => () => {}
+                        : (listener) => subscribeActiveAccountSettingsSnapshot(
+                            (_previous, next) => listener(resolveActiveAccountConfiguredExternalSessionSourceRevision(next)),
+                        ),
                     isCurrent: identity.isCurrent,
                     resolveAgentOccurrence: () => Object.freeze({
                         occurrenceId: identity.occurrenceId,
@@ -4413,15 +4621,14 @@ export async function createNativeAgentRuntimeSessionPlan(params: Readonly<{
                     // Account/materialization route the configured source was
                     // chosen over, so fail closed with the typed code the
                     // terminal follow service already understands.
-                    initialTerminalFollowProviderSession ??= async () => Object.freeze({
+                    followProviderSession ??= async () => Object.freeze({
                         status: 'unavailable' as const,
                         code: 'plugin_external_follow_unavailable',
                     });
-                    initialTerminalTranscriptFollowSignal ??= signal;
                 }
                 if (lifecycle) {
                     const configuredExternalSessions = lifecycle.compositionPort;
-                    initialTerminalFollowProviderSession ??= async (
+                    followProviderSession ??= async (
                         request,
                         listener,
                     ) => {
@@ -4454,6 +4661,8 @@ export async function createNativeAgentRuntimeSessionPlan(params: Readonly<{
                             .followTranscript(
                                 target,
                                 {
+                                    projection: 'terminal',
+                                    ...(request.replay ? { replay: request.replay } : {}),
                                     ...(request.initialReplay
                                         ? { initialReplay: true }
                                         : {}),
@@ -4465,7 +4674,6 @@ export async function createNativeAgentRuntimeSessionPlan(params: Readonly<{
                                 listener,
                             );
                     };
-                    initialTerminalTranscriptFollowSignal ??= signal;
                     let disposePromise: Promise<void> | null = null;
                     disposeExternalSessions = () => {
                         disposePromise ??= Promise.resolve(lifecycle.dispose());
@@ -4477,10 +4685,10 @@ export async function createNativeAgentRuntimeSessionPlan(params: Readonly<{
                 }
             }
             if (
-                !initialTerminalFollowProviderSession
+                !followProviderSession
                 && externalSessionHostOperations
             ) {
-                initialTerminalFollowProviderSession = async (
+                followProviderSession = async (
                     request,
                     listener,
                 ) => await externalSessionHostOperations
@@ -4491,6 +4699,8 @@ export async function createNativeAgentRuntimeSessionPlan(params: Readonly<{
                             ? { providerOps: providerSessionFollowOps }
                             : {}),
                         options: {
+                            projection: 'terminal',
+                            ...(request.replay ? { replay: request.replay } : {}),
                             ...(request.initialReplay
                                 ? { initialReplay: true }
                                 : {}),
@@ -4501,7 +4711,6 @@ export async function createNativeAgentRuntimeSessionPlan(params: Readonly<{
                         },
                         listener,
                     });
-                initialTerminalTranscriptFollowSignal ??= signal;
             }
             const transcriptMediaPublisher = hostRuntimeParams.transcriptSession.sendAgentSessionMediaCommitted?.bind(
                 hostRuntimeParams.transcriptSession,
@@ -4565,7 +4774,7 @@ export async function createNativeAgentRuntimeSessionPlan(params: Readonly<{
             const nativeSessionServiceParams = {
                 permissionHandler: livePermissionHandler,
                 credentials: params.sessionInput.credentials,
-                readCredentials: readStoredCredentials,
+                readCredentials: hostRuntimeParams.readCredentials ?? readStoredCredentials,
                 ...(params.resolveServerFeaturesSnapshot
                     ? { resolveServerFeaturesSnapshot: params.resolveServerFeaturesSnapshot }
                     : {}),
@@ -4690,6 +4899,7 @@ export async function createNativeAgentRuntimeSessionPlan(params: Readonly<{
                         ),
                         publicBinding.handoff.materialization,
                         hostRuntimeParams.getPermissionMode(),
+                        hostRuntimeParams.getWorkspaceWrites,
                         resolvedLateSessionConnectedAccounts
                             ? {
                                 sessionConnectedAccounts:
@@ -4829,6 +5039,7 @@ export async function createNativeAgentRuntimeSessionPlan(params: Readonly<{
             const terminalHostScope = sessionHostServices.terminalHost
                 ? createNativeAgentTerminalHostScope({
                     owner: sessionHostServices.terminalHost,
+                    agentId: identity.agentId,
                     signal,
                     isCurrent: identity.isCurrent,
                     session: hostRuntimeParams.session,
@@ -4849,6 +5060,34 @@ export async function createNativeAgentRuntimeSessionPlan(params: Readonly<{
             let lateProfileDiagnosticRedaction:
                 ReturnType<typeof registerSensitiveDiagnosticValues>
                 | null = null;
+            let session: AgentSessionRuntime;
+            const fetchCommittedTranscriptLocalIdBaseline = hostRuntimeParams.session.fetchCommittedTranscriptLocalIdBaseline;
+            const terminalTranscriptFollowService = followProviderSession
+                ? createHostTerminalTranscriptFollowService({
+                    followProviderSession,
+                    ...(fetchCommittedTranscriptLocalIdBaseline ? {
+                        loadCommittedLocalIdBaseline: (input) => fetchCommittedTranscriptLocalIdBaseline.call(hostRuntimeParams.session, input),
+                    } : {}),
+                    signal,
+                    publish: createExternalSessionTerminalFollowProjector({
+                        sessionId,
+                        agentId: identity.agentId,
+                        observeSourceTranscript: async (input) => {
+                            if (!session?.observeSourceTranscript) {
+                                throw new Error('external_session_terminal_source_observation_unavailable');
+                            }
+                            await session.observeSourceTranscript(input);
+                        },
+                        projectRuntimeEvent: async (event, admission) => await projectRuntimeTranscriptEvent({
+                            session: hostRuntimeParams.session,
+                            provider: identity.agentId,
+                            event,
+                            ...(admission === undefined ? {} : { admission }),
+                        }),
+                    }),
+                })
+                : null;
+            currentTerminalTranscriptFollowService = terminalTranscriptFollowService;
             let cleanupRuntimeScopePromise: Promise<void> | null = null;
             const sanitizeBoundaryError = (error: unknown) =>
                 sanitizeNativeAgentSessionBoundaryError(
@@ -4865,17 +5104,24 @@ export async function createNativeAgentRuntimeSessionPlan(params: Readonly<{
                                 await terminalHostScope?.dispose();
                             } finally {
                                 publications.dispose();
-                            try {
-                                await disposeExternalSessions?.();
-                            } finally {
                                 try {
-                                    await externalSessionHostOperations?.retire();
+                                    try {
+                                        await terminalTranscriptFollowService?.releaseActiveBindings();
+                                    } finally {
+                                        if (currentTerminalTranscriptFollowService === terminalTranscriptFollowService) {
+                                            currentTerminalTranscriptFollowService = null;
+                                        }
+                                        await disposeExternalSessions?.();
+                                    }
                                 } finally {
-                                    terminalHostLaunchTransformerBinding
-                                        ?.dispose();
-                                    await sessionHostServices.dispose();
+                                    try {
+                                        await externalSessionHostOperations?.retire();
+                                    } finally {
+                                        terminalHostLaunchTransformerBinding
+                                            ?.dispose();
+                                        await sessionHostServices.dispose();
+                                    }
                                 }
-                            }
                             }
                         } catch (error) {
                             throw sanitizeBoundaryError(error);
@@ -4918,6 +5164,33 @@ export async function createNativeAgentRuntimeSessionPlan(params: Readonly<{
                     sessionMachineId: hostRuntimeParams.machineId,
                     memoryRecallGuidanceEnabled: hostRuntimeParams.memoryRecallGuidanceEnabled,
                     ...(terminalHostScope ? { terminalHost: terminalHostScope.service } : {}),
+                    followSource: async (request) => {
+                        assertGenerationCurrent();
+                        if (!terminalTranscriptFollowService) {
+                            throw new HostTerminalTranscriptFollowAdmissionError('plugin_external_follow_unavailable', 'bind');
+                        }
+                        const result = await terminalTranscriptFollowService.bindProviderSession({
+                            agentId: identity.agentId,
+                            providerSessionId: request.providerSessionId,
+                            replay: request.replay,
+                            signal,
+                        });
+                        if (result.status === 'unavailable') {
+                            throw new HostTerminalTranscriptFollowAdmissionError(result.code, 'bind');
+                        }
+                        let active = true;
+                        void result.binding.failure.then((error) => {
+                            if (!active) return;
+                            logger.warn('[NativeAgentSession] source transcript follow failed', { error });
+                            ownedAbortController.abort(error);
+                        });
+                        return { dispose: async () => {
+                            // Releasing an old provider binding may cancel a pending publication.
+                            // Its late cancellation must not retire the still-current runtime.
+                            active = false;
+                            await result.binding.dispose();
+                        } };
+                    },
                     ...(nativeHome ? { nativeHome } : {}),
                     publications: publications.services,
                     readToolExecutionCapability: () => runtime?.toolExecution?.capability ?? null,
@@ -5004,16 +5277,6 @@ export async function createNativeAgentRuntimeSessionPlan(params: Readonly<{
                     .catch(() => [])
                 : [];
             const mcpServers = toAgentSessionMcpLaunchConfigs(hostRuntimeParams.mcpServers);
-            const startupInstructions =
-                params.sessionInput.agentSessionStartupInstructionsV1;
-            const clonedStartupInstructions = startupInstructions
-                ? Object.freeze({
-                    v: startupInstructions.v,
-                    id: startupInstructions.id,
-                    revision: startupInstructions.revision,
-                    instructions: startupInstructions.instructions,
-                })
-                : undefined;
             const buildOpenRequest = (): AgentSessionOpenRequest =>
                 nativeForkSource
                     ? Object.freeze({
@@ -5034,22 +5297,17 @@ export async function createNativeAgentRuntimeSessionPlan(params: Readonly<{
                             ? { strictNativeResumeIdentity: true }
                             : {}),
                         ...openInputs,
+                        ...(startupInstructions ? { startupInstructions } : {}),
                         ...(mcpServers ? { mcpServers } : {}),
-                        ...(clonedStartupInstructions
-                            ? { startupInstructions: clonedStartupInstructions }
-                            : {}),
                     })
                     : Object.freeze({
                         kind: 'create',
                         sessionId,
                         cwd,
                         ...openInputs,
+                        ...(startupInstructions ? { startupInstructions } : {}),
                         ...(mcpServers ? { mcpServers } : {}),
-                        ...(clonedStartupInstructions
-                            ? { startupInstructions: clonedStartupInstructions }
-                            : {}),
                     });
-            let session: AgentSessionRuntime;
             let sessions: NonNullable<AgentRuntime['sessions']> | undefined;
             let continuationRefusalMustRemainPrimary = false;
             let openRequest: AgentSessionOpenRequest;
@@ -5124,6 +5382,7 @@ export async function createNativeAgentRuntimeSessionPlan(params: Readonly<{
                         resolveBackendExecutionSurfacesFromNativeAgentRuntime({
                             backend: params.backend,
                             runtime,
+                            hostExecutionSurfaces: params.executionSurfaces,
                             agentId: identity.agentId,
                             isCurrent: identity.isCurrent,
                             declaredAgentSurfaceFamilies:
@@ -5134,9 +5393,15 @@ export async function createNativeAgentRuntimeSessionPlan(params: Readonly<{
                         ...params.executionSurfaces,
                         terminalRuntime:
                             localRuntimeSurfaces.terminalRuntime,
+                        resolveTerminalPresentation:
+                            localRuntimeSurfaces.resolveTerminalPresentation,
                     };
                 }
                 openRequest = buildOpenRequest();
+                if (openRequest.configuration?.workspaceWrites === 'deny' && sessionCapabilities.workspaceWrites !== 'deny') {
+                    throw Object.assign(new Error('Agent cannot enforce the role workspace-write policy'), { code: 'role_policy_unenforceable' });
+                }
+                runtimePresentationSelection = openRequest;
                 const continuationDeclaration =
                     sessionCapabilities.continuationVerification;
                 if (
@@ -5208,10 +5473,24 @@ export async function createNativeAgentRuntimeSessionPlan(params: Readonly<{
                     signal,
                 });
                 assertGenerationCurrent();
-                session = await openNativeAgentSessionUntilAbort(
-                    () => sessionFactory.open(openRequest, context),
-                    signal,
-                );
+                try {
+                    session = await openNativeAgentSessionUntilAbort(
+                        () => sessionFactory.open(openRequest, context), signal,
+                    );
+                } catch (error) {
+                    if (!startupInstructions || !isPluginError(error)
+                        || error.code !== 'agent_session_startup_instructions_unsupported') throw error;
+                    // The native transport refuses before effects. Retry only this same open,
+                    // leaving the complete plan to the host's ordinary prefix delivery owner.
+                    startupInstructions = null;
+                    openRequest = buildOpenRequest();
+                    runtimePresentationSelection = openRequest;
+                    assertGenerationCurrent();
+                    await params.attestSessionOpen?.({ phase: 'prepare', request: openRequest, providerSessionId, signal });
+                    session = await openNativeAgentSessionUntilAbort(
+                        () => sessionFactory.open(openRequest, context), signal,
+                    );
+                }
                 await params.attestSessionOpen?.({
                     phase: 'commit',
                     request: openRequest,
@@ -5391,6 +5670,7 @@ export async function createNativeAgentRuntimeSessionPlan(params: Readonly<{
                         : {}),
                     context,
                     cwd,
+                    getWorkspaceWrites: hostRuntimeParams.getWorkspaceWrites,
                     connectedAccounts: openRequest.connectedAccounts ?? [],
                         capabilities: sessionCapabilities,
                         cancellation,
@@ -5446,6 +5726,13 @@ export async function createNativeAgentRuntimeSessionPlan(params: Readonly<{
                             throw error;
                         }
                     },
+                    ...(hostRuntimeParams.session.subscribePendingProviderInputRetirement
+                        ? {
+                            subscribePendingProviderInputRetirement: (listener) => (
+                                hostRuntimeParams.session.subscribePendingProviderInputRetirement!(listener)
+                            ),
+                        }
+                        : {}),
                     ...(hostRuntimeParams.session.subscribeCommittedUserMessageSeq
                         ? {
                             subscribeCommittedUserMessageSeq: (listener) => (
@@ -5542,6 +5829,7 @@ export async function createNativeAgentRuntimeSessionPlan(params: Readonly<{
                 operations: {
                     ...operations,
                     getRuntimeLifetimeSignal: () => signal,
+                    readSessionStartupInstructions: () => startupInstructions,
                 },
                 configuration: openInputs.configuration,
                 ...(session.runtimeDescriptorV1
@@ -5572,6 +5860,7 @@ export async function createNativeAgentRuntimeSessionPlan(params: Readonly<{
         || (
             !params.createRuntime
             && !params.executionSurfaces?.terminalRuntime?.launch
+            && !params.executionSurfaces?.attach
         )
     ) {
         return plan;
@@ -5592,44 +5881,62 @@ export async function createNativeAgentRuntimeSessionPlan(params: Readonly<{
                 }
                 const terminalRuntime =
                     runtimeExecutionSurfaces?.terminalRuntime;
-                if (!terminalRuntime?.launch) {
+                if (
+                    runtimePresentationSelection
+                    && runtimeExecutionSurfaces?.resolveTerminalPresentation?.(runtimePresentationSelection) === false
+                ) {
                     return created;
                 }
-                const executableGrants = createPluginExecSystemToolGrantStore();
-                const fetchCommittedTranscriptLocalIdBaseline =
-                    runtimeParams.session.fetchCommittedTranscriptLocalIdBaseline;
-                const terminalTranscriptFollowService =
-                    initialTerminalFollowProviderSession
-                    && initialTerminalTranscriptFollowSignal
-                        ? createHostTerminalTranscriptFollowService({
-                            followProviderSession:
-                                initialTerminalFollowProviderSession,
-                            ...(fetchCommittedTranscriptLocalIdBaseline
-                                ? {
-                                    loadCommittedLocalIdBaseline: (input) =>
-                                        fetchCommittedTranscriptLocalIdBaseline.call(
-                                            runtimeParams.session,
-                                            input,
-                                        ),
-                                }
+                if (!terminalRuntime?.launch) {
+                    const attach = runtimeExecutionSurfaces?.attach;
+                    const localControl =
+                        created.runtimeCapabilities?.localControl
+                        ?? getAgentLocalControlCapability(identity.agentId);
+                    if (
+                        !attach
+                        || typeof runtime.prepareProviderCliAttach !== 'function'
+                        || localControl?.supported !== true
+                        || localControl.attachStrategy !== 'provider_attach'
+                    ) {
+                        return created;
+                    }
+                    const providerAttachModeBinding =
+                        createNativeAgentProviderAttachModeBinding({
+                            runtime,
+                            attach,
+                            session: runtimeParams.session,
+                            topology: localControl.topology ?? 'exclusive',
+                            remoteWritable:
+                                localControl.remoteWritable === true,
+                            startingMode:
+                                params.sessionInput.bootstrap.source === 'terminal'
+                                    ? 'terminal'
+                                    : 'remote',
+                            ...(params.generationSignal
+                                ? { generationSignal: params.generationSignal }
                                 : {}),
-                            signal: initialTerminalTranscriptFollowSignal,
-                            publish:
-                                createExternalSessionTerminalFollowProjector({
-                                    sessionId: runtimeParams.session.sessionId,
-                                    agentId: identity.agentId,
-                                    projectRuntimeEvent: async (event, admission) =>
-                                        await projectRuntimeTranscriptEvent({
-                                            session: runtimeParams.session,
-                                            provider: identity.agentId,
-                                            event,
-                                            ...(admission === undefined
-                                                ? {}
-                                                : { admission }),
-                                        }),
-                                }),
-                        })
-                        : null;
+                        });
+                    return {
+                        ...created,
+                        operations: providerAttachModeBinding.runtime,
+                        nativeRuntime: providerAttachModeBinding.runtime,
+                        terminalRemoteModeLoop:
+                            providerAttachModeBinding.terminalRemoteModeLoop,
+                    };
+                }
+                const executableGrants = createPluginExecSystemToolGrantStore();
+                // Runtime recreation replaces the scoped importer. Local and remote terminal
+                // paths delegate to that same owner rather than retaining the first scope.
+                const terminalTranscriptFollowService: HostTerminalTranscriptFollowService = {
+                    async bindProviderSession(request) {
+                        const service = currentTerminalTranscriptFollowService;
+                        if (!service) return { status: 'unavailable', code: 'plugin_external_follow_unavailable' };
+                        return await service.bindProviderSession(request);
+                    },
+                    async releaseActiveBindings() {
+                        await currentTerminalTranscriptFollowService?.releaseActiveBindings();
+                    },
+                };
                 const host = createTerminalRuntimeHostOrchestration({
                     messageQueue: runtimeParams.messageQueue,
                     session: runtimeParams.session,
@@ -5638,10 +5945,8 @@ export async function createNativeAgentRuntimeSessionPlan(params: Readonly<{
                     }),
                     verifyExecutableGrant: executableGrants.verifyGrant,
                     registerExecutableGrant: executableGrants.register,
-                    ...(terminalTranscriptFollowService
-                        ? {
-                            transcriptFollow: terminalTranscriptFollowService,
-                        }
+                    ...(currentTerminalTranscriptFollowService
+                        ? { transcriptFollow: terminalTranscriptFollowService }
                         : {}),
                 });
                 const terminalModeBinding = createNativeAgentTerminalModeBinding({

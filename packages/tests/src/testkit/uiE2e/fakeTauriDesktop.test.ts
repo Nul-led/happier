@@ -1,9 +1,29 @@
+import type { Page } from '@playwright/test';
+import { runInNewContext } from 'node:vm';
 import { describe, expect, it } from 'vitest';
 
 import {
     applyFakeTauriDesktopCommand,
     createFakeTauriDesktopState,
+    installFakeTauriDesktopBridge,
+    type FakeTauriDesktopState,
 } from './fakeTauriDesktop';
+
+async function installBrowserBridge() {
+    const window: {
+        __TAURI_INTERNALS__?: { invoke: (command: string, args?: Record<string, unknown>) => Promise<unknown> };
+        __HAPPIER_FAKE_TAURI_DESKTOP__?: FakeTauriDesktopState;
+    } = {};
+    // Page is the external browser boundary; execute its serialized init script in an isolated realm.
+    const page = {
+        addInitScript: async (script: (state: FakeTauriDesktopState) => void, state: FakeTauriDesktopState) => {
+            runInNewContext(`(${script.toString()})(initialState)`, { window, initialState: state });
+        },
+        url: () => 'about:blank',
+    } as unknown as Page;
+    await installFakeTauriDesktopBridge(page);
+    return window;
+}
 
 describe('fakeTauriDesktop', () => {
     it('returns the canonical window chrome policy for the active Tauri window', async () => {
@@ -84,25 +104,15 @@ describe('fakeTauriDesktop', () => {
         ]);
     });
 
-    it('persists autostart settings and desktop update install state', async () => {
+    it('persists desktop update install state', async () => {
         const initial = createFakeTauriDesktopState({
-            autostartEnabled: false,
             updateAvailable: {
                 version: '1.2.3',
             },
         });
 
-        const autostartEnabled = await applyFakeTauriDesktopCommand(
-            initial,
-            'desktop_set_autostart_enabled',
-            { enabled: true },
-        );
-        const autostartState = await applyFakeTauriDesktopCommand(
-            autostartEnabled.state,
-            'desktop_get_autostart_enabled',
-        );
         const installResult = await applyFakeTauriDesktopCommand(
-            autostartState.state,
+            initial,
             'desktop_install_update',
         );
         const updateState = await applyFakeTauriDesktopCommand(
@@ -110,13 +120,56 @@ describe('fakeTauriDesktop', () => {
             'desktop_fetch_update',
         );
 
-        expect(autostartEnabled.result).toBe(true);
-        expect(autostartState.result).toBe(true);
         expect(installResult.result).toBe(true);
         expect(updateState.result).toEqual({
             installed: true,
             version: '1.2.3',
         });
+    });
+
+    it.each(['exit', 'menuBar'] as const)('records the %s shutdown outcome in both bridge entry points', async (outcome) => {
+        const args = outcome === 'menuBar' ? { outcome } : undefined;
+        const finished = await applyFakeTauriDesktopCommand(createFakeTauriDesktopState(), 'desktop_finish_shutdown', args);
+        expect(finished.result).toBeNull();
+        expect(finished.state).toMatchObject({ shutdownOutcome: outcome });
+
+        const browser = await installBrowserBridge();
+        await expect(browser.__TAURI_INTERNALS__!.invoke('desktop_finish_shutdown', args)).resolves.toBeNull();
+        expect(browser.__HAPPIER_FAKE_TAURI_DESKTOP__).toMatchObject({ shutdownOutcome: outcome });
+    });
+
+    it('rejects commands missing from the real desktop host in both bridge entry points', async () => {
+        const browser = await installBrowserBridge();
+        await expect(applyFakeTauriDesktopCommand(createFakeTauriDesktopState(), 'desktop_unknown_command')).rejects.toThrow();
+        await expect(browser.__TAURI_INTERNALS__!.invoke('desktop_unknown_command')).rejects.toThrow();
+    });
+
+    it('stores the named tray payload in both bridge entry points', async () => {
+        const state = { serviceAutostart: 'on-demand' };
+        const pushed = await applyFakeTauriDesktopCommand(createFakeTauriDesktopState(), 'desktop_set_tray_state', { state });
+        expect(pushed.state.trayState).toEqual(state);
+        const browser = await installBrowserBridge();
+        await browser.__TAURI_INTERNALS__!.invoke('desktop_set_tray_state', { state });
+        expect(browser.__HAPPIER_FAKE_TAURI_DESKTOP__?.trayState).toEqual(state);
+    });
+
+    it('downloads an offered update separately from installing it, and can fail the download', async () => {
+        const offered = createFakeTauriDesktopState({ updateAvailable: { version: '1.2.3' } });
+
+        const downloaded = await applyFakeTauriDesktopCommand(offered, 'desktop_download_update');
+        expect(downloaded.result).toBe(true);
+        expect(downloaded.state.updateAvailable).toEqual({ version: '1.2.3' });
+
+        const nothingOffered = await applyFakeTauriDesktopCommand(
+            createFakeTauriDesktopState(),
+            'desktop_download_update',
+        );
+        expect(nothingOffered.result).toBe(false);
+
+        await expect(applyFakeTauriDesktopCommand(
+            createFakeTauriDesktopState({ updateAvailable: { version: '1.2.3' }, updateDownload: 'fail' }),
+            'desktop_download_update',
+        )).rejects.toThrow();
     });
 
     it('stores and returns desktop activity overlay window state', async () => {
@@ -151,6 +204,14 @@ describe('fakeTauriDesktop', () => {
             'desktop_activity_overlay_sync',
             'desktop_activity_overlay_get_window_state',
         ]);
+
+        const browser = await installBrowserBridge();
+        await browser.__TAURI_INTERNALS__!.invoke('desktop_activity_overlay_sync', { payload });
+        await browser.__TAURI_INTERNALS__!.invoke('desktop_activity_overlay_set_expanded', { expanded: true });
+        await expect(browser.__TAURI_INTERNALS__!.invoke('desktop_activity_overlay_get_window_state')).resolves.toEqual({
+            ...payload,
+            expanded: true,
+        });
     });
 
     it('admits synthetic pet overlay window state through the canonical desktop bridge', async () => {

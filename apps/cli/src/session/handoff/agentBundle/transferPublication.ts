@@ -24,3 +24,12 @@ export function parseSessionHandoffAgentBundleTransferId(
   ).trim();
   return handoffId.length > 0 ? { handoffId } : null;
 }
+
+export function buildSessionHandoffWorkspaceSeedTransferId(handoffId: string): string {
+  return `session-handoff:${handoffId}:workspace-seed`;
+}
+
+export function parseSessionHandoffWorkspaceSeedTransferId(transferId: string): Readonly<{ handoffId: string }> | null {
+  const match = /^session-handoff:([A-Za-z0-9._-]+):workspace-seed(?::blob:[a-f0-9]{64})?$/u.exec(transferId);
+  return match ? { handoffId: match[1] } : null;
+}

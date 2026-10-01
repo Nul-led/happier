@@ -13,6 +13,14 @@ function buildResumeHappySessionRpcParams(
 }
 
 describe('buildResumeHappySessionRpcParams', () => {
+    test('preserves explicit consent for continuing a chat in a fresh folder', () => {
+        expect(buildResumeHappySessionRpcParams({
+            sessionId: 'session-1', directory: '/private/chat',
+            backendTarget: { kind: 'backend', backendId: 'codex', sourceKind: 'built_in' },
+            approvedNewDirectoryCreation: true,
+        })).toMatchObject({ approvedNewDirectoryCreation: true });
+    });
+
     test('passes the Agent-owned descriptor through unchanged without placing machine identity on the wire', () => {
         const runtimeDescriptorV1 = {
             v: 1 as const,
@@ -42,7 +50,7 @@ describe('buildResumeHappySessionRpcParams', () => {
             modelSelection: SessionModelSelectionV1Schema.parse({
                 v: 1,
                 updatedAt: 123,
-                ref: { agentTargetKey: 'backend:claude', providerConnectionId: 'pc_work', modelId: 'claude-sonnet-4-5' },
+                ref: { agentTargetKey: 'agent:happier.agent.claude/claude', providerConnectionId: 'pc_work', modelId: 'claude-sonnet-4-5' },
             }),
         })).toEqual({
             type: 'resume-session',
@@ -52,7 +60,7 @@ describe('buildResumeHappySessionRpcParams', () => {
             modelSelection: {
                 v: 1,
                 updatedAt: 123,
-                ref: { agentTargetKey: 'backend:claude', providerConnectionId: 'pc_work', modelId: 'claude-sonnet-4-5' },
+                ref: { agentTargetKey: 'agent:happier.agent.claude/claude', providerConnectionId: 'pc_work', modelId: 'claude-sonnet-4-5' },
             },
         });
     });
@@ -91,7 +99,7 @@ describe('buildResumeHappySessionRpcParams', () => {
             modelSelection: {
                 v: 1,
                 updatedAt: 123,
-                ref: { agentTargetKey: 'backend:claude', providerConnectionId: null, modelId: 'default' },
+                ref: { agentTargetKey: 'agent:happier.agent.claude/claude', providerConnectionId: null, modelId: 'default' },
             },
         })).toEqual({
             type: 'resume-session',
@@ -101,7 +109,7 @@ describe('buildResumeHappySessionRpcParams', () => {
             modelSelection: {
                 v: 1,
                 updatedAt: 123,
-                ref: { agentTargetKey: 'backend:claude', providerConnectionId: null, modelId: 'default' },
+                ref: { agentTargetKey: 'agent:happier.agent.claude/claude', providerConnectionId: null, modelId: 'default' },
             },
         });
     });

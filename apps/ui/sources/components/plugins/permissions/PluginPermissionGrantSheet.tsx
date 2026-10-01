@@ -175,7 +175,6 @@ export function PluginPermissionGrantSheet(props: PluginPermissionGrantSheetProp
                 size="small"
                 externallyLabelled
                 theme={presentationTheme}
-                colorScheme={theme.dark ? 'dark' : 'light'}
                 testID={props.testID ? `${props.testID}-brand` : undefined}
             />
             <View

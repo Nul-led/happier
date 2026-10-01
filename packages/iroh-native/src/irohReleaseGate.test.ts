@@ -143,6 +143,12 @@ describe('Iroh mobile release build contract', () => {
 
   it('does not publish the Cargo target directory with the package sources', () => {
     const manifest = JSON.parse(readPackageFile('package.json')) as { files?: string[] };
+    // Development checkouts contain only the current host addon. Publish the
+    // exact native directory, never a glob (the workspace bundler deliberately
+    // accepts only exact relative paths) or the separate test-addon directory.
+    expect(manifest.files).toContain('native');
+    expect(manifest.files?.some((entry) => /[*?{}[\]]/u.test(entry))).toBe(false);
+    expect(manifest.files).not.toContain('native-test');
     expect(manifest.files).not.toContain('rust');
     expect(manifest.files).toEqual(expect.arrayContaining([
       'rust/Cargo.toml',
@@ -152,6 +158,30 @@ describe('Iroh mobile release build contract', () => {
       'rust/happier-iroh-node',
     ]));
     expect(readPackageFile('.npmignore')).toMatch(/^rust\/target\/$/mu);
+  });
+
+  it('keeps the TypeScript and Rust machine carrier constants identical', () => {
+    const descriptor = readPackageFile('src/descriptor.ts');
+    const core = readPackageFile('rust/happier-iroh-core/src/lib.rs');
+    const machine = readPackageFile('rust/happier-iroh-core/src/machine.rs');
+    const typescriptAlpn = descriptor.match(/MACHINE_ALPN\s*=\s*'([^']+)'/u)?.[1];
+    const rustAlpn = core.match(/MACHINE_ALPN:\s*&\[u8\]\s*=\s*b"([^"]+)"/u)?.[1];
+
+    expect(typescriptAlpn).toBeDefined();
+    expect(rustAlpn).toBe(typescriptAlpn);
+    for (const [typescriptName, rustName = typescriptName, caseInsensitive = true] of [
+      ['MACHINE_ADMISSION_PATH', 'MACHINE_ADMISSION_PATH', false],
+      ['MACHINE_REMOTE_ENDPOINT_HEADER'],
+      ['MACHINE_APPLICATION_PORT_HEADER', 'IROH_MACHINE_APPLICATION_PORT_HEADER'],
+      ['MACHINE_APPLICATION_CAPABILITY_HEADER', 'IROH_MACHINE_APPLICATION_CAPABILITY_HEADER'],
+      ['MACHINE_HTTP_LOCAL_CAPABILITY_HEADER', 'IROH_MACHINE_HTTP_LOCAL_CAPABILITY_HEADER'],
+    ] as const) {
+      const typescriptValue = descriptor.match(new RegExp(`${typescriptName}\\s*=\\s*'([^']+)'`, 'u'))?.[1];
+      const rustValue = machine.match(new RegExp(`${rustName}:\\s*&str\\s*=\\s*"([^"]+)"`, 'u'))?.[1];
+      expect(typescriptValue, typescriptName).toBeDefined();
+      expect(caseInsensitive ? rustValue?.toLowerCase() : rustValue, rustName)
+        .toBe(caseInsensitive ? typescriptValue?.toLowerCase() : typescriptValue);
+    }
   });
 
   it('exposes only the canonical endpoint-and-tunnel handle lifecycle on mobile bindings', () => {
@@ -217,14 +247,14 @@ describe('Iroh mobile release build contract', () => {
     expect(rawProjection).not.toContain('"localOrigin"');
     expect(lifecycle).toContain('const localOrigin = record.localOrigin');
     expect(desktopFiniteLifecycle).toContain(
-      "await invokeDesktopHost<unknown>('iroh_start_machine_tunnel'",
+      "await invokeDesktopHost<unknown>(http ? 'iroh_start_machine_http_tunnel' : 'iroh_start_machine_tunnel'",
     );
     expect(desktopFiniteLifecycle).toContain(
       "await invokeDesktopHost('iroh_stop_machine_tunnel'",
     );
     expect(desktopFiniteLifecycle).not.toContain('iroh_stop_machine_http_tunnel');
     expect(desktopFiniteLifecycle).toContain('record.localPort');
-    expect(desktopFiniteLifecycle).not.toContain('record.localOrigin');
+    expect(desktopFiniteLifecycle).toContain("localOrigin: http ? record.localOrigin : typeof record.localPort === 'number'");
     for (const source of [types, ios, android]) {
       expect(source).not.toMatch(/payload(?:Bytes|Base64)/u);
     }

@@ -10,8 +10,8 @@ import {
 } from '@/dev/testkit/harness/chatListHarness';
 import { installChatListHarnessCommonModuleMocks } from '@/dev/testkit/harness/chatListHarnessModuleMocks';
 import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
-import type { PersistedSessionMessagePinV1 } from '@/sync/domains/messages/pins/sessionMessagePins';
-import type { Message } from '@/sync/domains/messages/messageTypes';
+import type { PersistedSessionMessagePinV1 } from "@happier-dev/session-core/pins";
+import type { Message } from "@happier-dev/session-core/messages";
 import { resetUserMessageHistoryRemoteEntriesForTests } from '@/hooks/session/useUserMessageHistory';
 import type { TranscriptNavigationEntry } from './navigation/transcriptNavigationTypes';
 import type { TranscriptNavigationRailJumpRequest } from './navigation/TranscriptNavigationRail';

@@ -1,7 +1,7 @@
 import {
     readStoredSessionMessages,
     type SessionMessagesStateLike,
-} from '@/sync/domains/messages/readStoredSessionMessages';
+} from "@happier-dev/session-core/messages";
 import { storage } from '@/sync/domains/state/storage';
 import { normalizeNonEmptyString } from '@/voice/shared/normalizeNonEmptyString';
 import { VOICE_TRANSCRIPT_SELECTOR_CACHE_MAX } from './voiceTranscriptBounds';

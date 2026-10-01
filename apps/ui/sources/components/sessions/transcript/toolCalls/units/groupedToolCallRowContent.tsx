@@ -1,8 +1,8 @@
 import * as React from 'react';
 
-import type { ToolCallMessage } from '@/sync/domains/messages/messageTypes';
-import type { PersistedSessionMessagePinV1 } from '@/sync/domains/messages/pins/sessionMessagePins';
-import type { Metadata } from '@/sync/domains/state/storageTypes';
+import type { ToolCallMessage } from "@happier-dev/session-core/messages";
+import type { PersistedSessionMessagePinV1 } from "@happier-dev/session-core/pins";
+import type { Metadata } from '@happier-dev/session-core/state';
 import type { OpenApprovalArtifactForSession } from '@/sync/domains/artifacts/approvalArtifacts';
 
 import { ToolView } from '@/components/tools/shell/views/ToolView';
@@ -75,6 +75,7 @@ export function renderGroupedToolCallRowContent(params: Readonly<{
                 forcePermissionPromptsInTranscript={params.forcePermissionPromptsInTranscript}
                 approvalRequests={params.approvalRequests}
                 interaction={params.interaction}
+                displaySettings={params.toolChromeCommon.toolDisplaySettings}
             />
         );
     }
@@ -92,6 +93,7 @@ export function renderGroupedToolCallRowContent(params: Readonly<{
             forcePermissionPromptsInTranscript={params.forcePermissionPromptsInTranscript}
             approvalRequests={params.approvalRequests}
             interaction={params.interaction}
+            displaySettings={params.toolChromeCommon.toolDisplaySettings}
             embedded
         />
     );

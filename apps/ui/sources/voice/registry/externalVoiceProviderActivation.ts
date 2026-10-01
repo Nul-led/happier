@@ -13,8 +13,8 @@ import {
   type VoiceRealtimeJsonValue,
   type VoiceProviderContribution,
   type RecipientContractV1,
-  type DaemonPluginReactNativeBundleCacheIdentityV1,
 } from '@happier-dev/protocol';
+import type { PluginReactNativeBundleCacheIdentity } from '@/sync/domains/plugins/ui/reactNativeRuntime';
 import { PLUGIN_UI_HOST_API_VERSION_V1 } from '@happier-dev/protocol/plugins/ui';
 import type { PluginApi } from '@happier-dev/plugin-sdk';
 import type {
@@ -397,6 +397,9 @@ function createUnavailableInvocationUi(): PluginUiHostApi {
     pickComposerMedia: async () => unavailable(),
     inspectComposerContent: async () => unavailable(),
     releaseComposerContent: async () => unavailable(),
+    readSession: async () => unavailable(),
+    watchSession: async () => unavailable(),
+    respondToSessionPermission: async () => unavailable(),
     executeAction: async () => unavailable(),
     selectActionInput: async () => unavailable(),
     openNewSession: async () => unavailable(),
@@ -459,10 +462,9 @@ function createVoiceCredentialAccess<P extends 'settings' | 'prepare' | 'connect
 export function createDeclaredVoiceClientRawCredentialAccess(input: Readonly<{
   pluginId: string;
   declaration: VoiceConversationProviderContribution;
-  identity: DaemonPluginReactNativeBundleCacheIdentityV1;
+  identity: PluginReactNativeBundleCacheIdentity;
   hostPlatform: 'web' | 'ios' | 'android';
   phase: 'settings' | 'prepare' | 'connection';
-  generation: string;
   signal: AbortSignal;
   isCurrent(): boolean;
 }>): VoiceCredentialAccess<'connection'>['raw'] {
@@ -470,7 +472,6 @@ export function createDeclaredVoiceClientRawCredentialAccess(input: Readonly<{
     input.identity.pluginId !== input.pluginId
     || input.identity.contributionId !== input.declaration.id
     || input.identity.platform !== input.hostPlatform
-    || String(input.identity.projectionGeneration) !== input.generation
   ) return null;
   const declared = input.declaration.credentials?.sources.some((source) => (
     source.rawGrants?.some((grant) => (
@@ -938,7 +939,7 @@ function createCommittedVoiceRuntimeCleanupOwner(
 
 export function createExternalVoiceProviderActivationScope(input: Readonly<{
   pluginId: string;
-  generation?: string;
+  occurrenceId?: string;
   declarations: readonly VoiceConversationProviderContribution[];
   hostPlatform: string;
   /** The generic executable-composition transaction; Voice never rebuilds rights. */
@@ -947,13 +948,13 @@ export function createExternalVoiceProviderActivationScope(input: Readonly<{
   isRuntimeHostCurrent?(): boolean;
   recipientContractsByLocalId?: Readonly<Record<string, RecipientContractV1>>;
   clientRuntimeIdentitiesByLocalId?: Readonly<
-    Record<string, DaemonPluginReactNativeBundleCacheIdentityV1>
+    Record<string, PluginReactNativeBundleCacheIdentity>
   >;
   hostBindingsByLocalId?: Readonly<Record<string, VoiceProviderActivationHostBinding>>;
   createInvocationUi?(input: Readonly<{
     pluginId: string;
     contributionId: string;
-    generation: string;
+    occurrenceId: string;
     signal: AbortSignal;
     isCurrent(): boolean;
   }>): PluginUiHostApi;
@@ -966,7 +967,7 @@ export function createExternalVoiceProviderActivationScope(input: Readonly<{
     }
     return parsed.data;
   });
-  if (input.createInvocationUi && !input.generation) {
+  if (input.createInvocationUi && !input.occurrenceId) {
     throw activationError('external_voice_provider_invocation_identity_required');
   }
   if (Boolean(input.runtimeHost) !== Boolean(input.isRuntimeHostCurrent)) {
@@ -1106,7 +1107,6 @@ export function createExternalVoiceProviderActivationScope(input: Readonly<{
                 identity: clientRuntimeIdentity,
                 hostPlatform,
                 phase,
-                generation: input.generation ?? '',
                 signal,
                 isCurrent,
               })
@@ -1157,7 +1157,10 @@ export function createExternalVoiceProviderActivationScope(input: Readonly<{
                       // projection it came from; a first-party declaration
                       // compiled into this client has none to name.
                       declarationAuthority: clientRuntimeIdentity
-                        ? { kind: 'projected', cacheIdentity: clientRuntimeIdentity }
+                        ? {
+                            kind: 'projected',
+                            cacheIdentity: { artifactDigest: clientRuntimeIdentity.artifactDigest },
+                          }
                         : { kind: 'bundled' },
                       machineId,
                       isCurrent,
@@ -1194,11 +1197,11 @@ export function createExternalVoiceProviderActivationScope(input: Readonly<{
             ...(hostBinding?.resolveSurfaceCapabilities
               ? { resolveSurfaceCapabilities: hostBinding.resolveSurfaceCapabilities }
               : {}),
-            ...(input.createInvocationUi && input.generation ? {
+            ...(input.createInvocationUi && input.occurrenceId ? {
               createInvocationUi: (signal: AbortSignal) => input.createInvocationUi!({
                 pluginId: input.pluginId,
                 contributionId: declaration.id,
-                generation: input.generation!,
+                occurrenceId: input.occurrenceId!,
                 signal,
                 isCurrent,
               }),
@@ -1254,7 +1257,6 @@ export function createExternalVoiceProviderActivationScope(input: Readonly<{
                   identity: input.clientRuntimeIdentitiesByLocalId[declaration.id]!,
                   hostPlatform,
                   phase: 'settings',
-                  generation: input.generation ?? '',
                   signal,
                   isCurrent,
                 })
@@ -1268,7 +1270,8 @@ export function createExternalVoiceProviderActivationScope(input: Readonly<{
                 revocationSignal: settingsOperationsRevocation.signal,
               })
             : undefined;
-          const settingsActions = runtime.settingsActions
+          const occurrenceId = input.occurrenceId;
+          const settingsActions = runtime.settingsActions && occurrenceId
             ? bindVoiceProviderSettingsActions({
                 actions: runtime.settingsActions,
                 declaredActions: declaration.settings?.actions ?? [],
@@ -1278,7 +1281,7 @@ export function createExternalVoiceProviderActivationScope(input: Readonly<{
                     requester: Object.freeze({
                       pluginId: input.pluginId,
                       contributionId: declaration.id,
-                      generationId: input.generation ?? 'bundled',
+                      occurrenceId,
                       invocationId: `settings-${++nextSettingsActionInvocationId}`,
                     }),
                     signal,
@@ -1297,6 +1300,11 @@ export function createExternalVoiceProviderActivationScope(input: Readonly<{
                 revocationSignal: settingsOperationsRevocation.signal,
               })
             : undefined;
+          const settingsActionRegistration = settingsActions && occurrenceId
+            ? Object.freeze({ occurrenceId, settingsActions })
+            : occurrenceId
+              ? Object.freeze({ occurrenceId })
+              : Object.freeze({});
           const selectionOptions = Object.freeze([Object.freeze({
             id: 'default', modeId: 'default', order: 10_000,
             titleKey: declarationTitle(declaration),
@@ -1313,7 +1321,7 @@ export function createExternalVoiceProviderActivationScope(input: Readonly<{
             pluginId: input.pluginId,
             localId: declaration.id,
             providerId,
-            ...(input.generation ? { projectionGeneration: input.generation } : {}),
+            ...settingsActionRegistration,
             descriptor: hostBinding?.descriptor === 'bundled' ? null : Object.freeze({
               pluginId: input.pluginId,
               providerId,
@@ -1330,13 +1338,12 @@ export function createExternalVoiceProviderActivationScope(input: Readonly<{
             }),
             adapter,
             ...(settingsOperations ? { settingsOperations } : {}),
-            ...(settingsActions ? { settingsActions } : {}),
           }));
         }
         unsubscribeRuntimeGeneration = subscribeBundledConversationRuntimeGeneration(() => {
           if (readCurrentHost() === host) return;
           // Authority is withdrawn synchronously; host-owned teardown may finish
-          // asynchronously after the replacement generation becomes current.
+          // asynchronously after the replacement occurrence becomes current.
           removeExternalVoiceProviderRegistration(token);
           void disposeCommittedRuntimes();
         });

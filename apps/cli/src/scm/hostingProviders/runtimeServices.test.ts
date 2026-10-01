@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   PluginConnectedAccountDescriptorContributionV2Schema,
   ScmHostingProviderContributionSchema,
+  type QualifiedConnectedAccountPurposeBindingsV1,
   type ScmHostingProviderRef,
 } from '@happier-dev/protocol';
 import {
@@ -23,6 +24,7 @@ import {
 
 import { runWithHostingProviderExecutionAuthority } from './executionAuthority';
 import { createHostScmHostingProviderRuntimeServices } from './runtimeServices';
+import { createConnectedAccountPurposeBindingOwner } from '@/daemon/connectedServices/purposeBindings/ConnectedAccountPurposeBindingOwner';
 
 type RuntimeServicesInput = Parameters<typeof createHostScmHostingProviderRuntimeServices>[0];
 
@@ -51,7 +53,7 @@ function createRuntimeInput(): RuntimeServicesInput {
       GITHUB_SCM_HOSTING_PROVIDER_ID,
       {
         pluginId: GITHUB_PLUGIN_MANIFEST.id,
-        generation: 'test-generation',
+        occurrenceId: 'test-generation',
         registration: {
           id: 'github',
           adapter: {},
@@ -102,7 +104,7 @@ function createCrossProviderRuntimeInput(): RuntimeServicesInput {
         GITHUB_SCM_HOSTING_PROVIDER_ID,
         {
           pluginId: GITHUB_PLUGIN_MANIFEST.id,
-          generation: 'test-generation',
+          occurrenceId: 'test-generation',
           registration: {
             id: 'github',
             adapter: {},
@@ -113,7 +115,7 @@ function createCrossProviderRuntimeInput(): RuntimeServicesInput {
         BITBUCKET_SCM_HOSTING_PROVIDER_ID,
         {
           pluginId: BITBUCKET_PLUGIN_MANIFEST.id,
-          generation: 'test-generation',
+          occurrenceId: 'test-generation',
           registration: {
             id: 'bitbucket',
             adapter: {},
@@ -192,11 +194,109 @@ function runAsHostingProvider<T>(
   return runWithHostingProviderExecutionAuthority({
     pluginId,
     contributionId,
-    generation: 'test-generation',
+    occurrenceId: 'test-generation',
   }, callback);
 }
 
+
+// Existing scenarios use the real binding owner too; only persistence, Account
+// projection and credential transport are replaced at their system boundaries.
+function createAuthenticationBindingOwner(
+  materializeAccount: Parameters<typeof createConnectedAccountPurposeBindingOwner>[0]['materializeAccount'],
+) {
+  const definitions = [
+    { pluginId: GITHUB_PLUGIN_MANIFEST.id, localId: 'github', serviceId: 'github-account', base: 'https://github.com' },
+    { pluginId: BITBUCKET_PLUGIN_MANIFEST.id, localId: 'bitbucket', serviceId: 'bitbucket-account', base: 'https://bitbucket.org' },
+  ];
+  const accounts = definitions.map((entry) => ({
+    entry, account: { service: { pluginId: entry.pluginId, localId: entry.serviceId }, accountId: 'bound-account' },
+  }));
+  let bindings: QualifiedConnectedAccountPurposeBindingsV1 = {
+    v: 1, bindings: accounts.map(({ entry, account }) => ({
+      purpose: { consumer: { pluginId: entry.pluginId, localId: entry.localId }, purpose: 'authentication' },
+      target: { kind: 'account' as const, account },
+    })),
+  };
+  return createConnectedAccountPurposeBindingOwner({
+    store: {
+      read: async () => bindings,
+      update: async (mutate) => { bindings = mutate(bindings); return bindings; },
+      subscribe: () => ({ dispose() {} }),
+    },
+    selectTarget: async () => { throw new Error('Authentication cannot select a new Account'); },
+    resolveTarget: async (target) => target.kind === 'account'
+      ? { displayName: 'Bound Account', account: target.account } : null,
+    projectTargetAccounts: async ({ target }) => ({
+      status: 'complete' as const,
+      accounts: accounts.filter(({ account }) => target.kind === 'account'
+        && account.service.pluginId === target.account.service.pluginId)
+        .map(({ entry, account }) => createListedDeploymentAccount(account.service, account.accountId, entry.base)),
+    }),
+    assertTargetAccountMaterializable: async () => undefined,
+    materializeAccount,
+  });
+}
+
 describe('createHostScmHostingProviderRuntimeServices', () => {
+  it.each([
+    { selected: 'other-deployment', rotate: false, expected: 'missing' },
+    { selected: 'exact-deployment', rotate: false, expected: 'available' },
+    { selected: 'exact-deployment', rotate: true, expected: 'rejected' },
+  ])('binds deployment credentials to the exact selected group account ($selected, rotate=$rotate)', async ({ selected, rotate, expected }) => {
+    const service = { pluginId: GITHUB_PLUGIN_MANIFEST.id, localId: 'github-account' };
+    const deployment = 'https://forge.example.test:8443/GitLab';
+    let currentAccountId = selected;
+    let bindings: QualifiedConnectedAccountPurposeBindingsV1 = {
+      v: 1,
+      bindings: [{
+        purpose: { consumer: { pluginId: GITHUB_PLUGIN_MANIFEST.id, localId: 'github' }, purpose: 'authentication' },
+        target: { kind: 'group', service, groupId: 'forge-accounts' },
+      }],
+    };
+    // Persistent binding storage and the Account metadata/credential transport are
+    // genuine boundaries. The binding owner and SCM host below are both real.
+    const materializeAccount = vi.fn(async () => ({
+      kind: 'httpHeaders' as const, headers: { Authorization: 'Bearer exact-bound-token' },
+    }));
+    const owner = createConnectedAccountPurposeBindingOwner({
+      store: {
+        read: async () => bindings,
+        update: async (mutate) => { bindings = mutate(bindings); return bindings; },
+        subscribe: () => ({ dispose() {} }),
+      },
+      selectTarget: async () => { throw new Error('This invocation cannot select an account'); },
+      resolveTarget: async () => ({ displayName: 'Selected forge account', account: { service, accountId: currentAccountId } }),
+      materializeAccount,
+      projectTargetAccounts: async () => {
+        if (rotate) currentAccountId = 'other-deployment';
+        return {
+          status: 'complete' as const,
+          accounts: [
+            createListedDeploymentAccount(service, 'other-deployment', 'https://forge.example.test:8443/Other'),
+            createListedDeploymentAccount(service, 'exact-deployment', deployment),
+          ],
+        };
+      },
+      assertTargetAccountMaterializable: async () => undefined,
+    });
+    const services = createHostScmHostingProviderRuntimeServices({
+      ...createRuntimeInput(), resolveConnectedAccountPurposeBindingOwner: () => owner,
+    });
+    const result = runAsHostingProvider(GITHUB_PLUGIN_MANIFEST.id, 'github', () => services.resolveScmHostingTokenMaterialization?.({
+      kind: 'scm_hosting_token', providerId: GITHUB_SCM_HOSTING_PROVIDER_ID,
+      host: 'forge.example.test:8443', provider: { ...githubProvider, baseUrl: deployment },
+    }));
+    if (expected === 'rejected') {
+      await expect(result).rejects.toThrow();
+      expect(materializeAccount).not.toHaveBeenCalled();
+    } else if (expected === 'missing') {
+      await expect(result).resolves.toMatchObject({ kind: 'missing' });
+      expect(materializeAccount).not.toHaveBeenCalled();
+    } else {
+      await expect(result).resolves.toEqual({ kind: 'available', token: 'exact-bound-token' });
+    }
+  });
+
   it('does not expose connected-account credentials outside a provider-qualified invocation', async () => {
     const materialize = vi.fn(async () => ({
       kind: 'httpHeaders' as const,
@@ -204,7 +304,7 @@ describe('createHostScmHostingProviderRuntimeServices', () => {
     }));
     const services = createHostScmHostingProviderRuntimeServices({
       ...createRuntimeInput(),
-      resolveConnectedAccountPurposeBindingOwner: () => ({ materialize }),
+      resolveConnectedAccountPurposeBindingOwner: () => createAuthenticationBindingOwner(materialize),
     });
 
     await expect(services.resolveScmHostingTokenMaterialization?.({
@@ -229,7 +329,7 @@ describe('createHostScmHostingProviderRuntimeServices', () => {
     const baseInput = createRuntimeInput();
     const services = createHostScmHostingProviderRuntimeServices({
       ...baseInput,
-      resolveConnectedAccountPurposeBindingOwner: () => ({ materialize }),
+      resolveConnectedAccountPurposeBindingOwner: () => createAuthenticationBindingOwner(materialize),
     });
 
     await expect(runAsHostingProvider(
@@ -246,14 +346,7 @@ describe('createHostScmHostingProviderRuntimeServices', () => {
       token: 'ghp_exact',
     });
     expect(materialize).toHaveBeenCalledWith({
-      purpose: {
-        consumer: {
-          pluginId: GITHUB_PLUGIN_MANIFEST.id,
-          localId: 'github',
-        },
-        purpose: 'authentication',
-      },
-      serviceRefs: [service],
+      account: { service: { pluginId: GITHUB_PLUGIN_MANIFEST.id, localId: 'github-account' }, accountId: 'bound-account' },
       request: {
         kind: 'httpHeaders',
         origin: 'https://github.com',
@@ -290,7 +383,7 @@ describe('createHostScmHostingProviderRuntimeServices', () => {
     }));
     const services = createHostScmHostingProviderRuntimeServices({
       ...createCrossProviderRuntimeInput(),
-      resolveConnectedAccountPurposeBindingOwner: () => ({ materialize }),
+      resolveConnectedAccountPurposeBindingOwner: () => createAuthenticationBindingOwner(materialize),
     });
 
     await expect(runAsHostingProvider(
@@ -317,7 +410,7 @@ describe('createHostScmHostingProviderRuntimeServices', () => {
     const services = createHostScmHostingProviderRuntimeServices({
       ...baseInput,
       scmHostingProvidersById: registrations,
-      resolveConnectedAccountPurposeBindingOwner: () => ({ materialize }),
+      resolveConnectedAccountPurposeBindingOwner: () => createAuthenticationBindingOwner(materialize),
     });
 
     await expect(runAsHostingProvider(
@@ -339,7 +432,7 @@ describe('createHostScmHostingProviderRuntimeServices', () => {
     }));
     const services = createHostScmHostingProviderRuntimeServices({
       ...createRuntimeInput(),
-      resolveConnectedAccountPurposeBindingOwner: () => ({ materialize }),
+      resolveConnectedAccountPurposeBindingOwner: () => createAuthenticationBindingOwner(materialize),
     });
 
     await expect(runAsHostingProvider(
@@ -421,7 +514,7 @@ describe('createHostScmHostingProviderRuntimeServices', () => {
     services = createHostScmHostingProviderRuntimeServices({
       ...baseInput,
       scmHostingProvidersById: registrations,
-      resolveConnectedAccountPurposeBindingOwner: () => ({ materialize }),
+      resolveConnectedAccountPurposeBindingOwner: () => createAuthenticationBindingOwner(materialize),
     });
     const registry = await services.resolveScmHostingProviderRegistry?.();
     const adapter = registry?.getPullRequests(GITHUB_SCM_HOSTING_PROVIDER_ID);
@@ -527,7 +620,7 @@ describe('createHostScmHostingProviderRuntimeServices', () => {
       'scm-github/scm.github',
       {
         pluginId: 'scm-github',
-        generation: 'test-generation',
+        occurrenceId: 'test-generation',
         registration: {
           id: 'scm.github',
           adapter: {
@@ -587,7 +680,7 @@ describe('createHostScmHostingProviderRuntimeServices', () => {
       });
     const services = createHostScmHostingProviderRuntimeServices({
       ...createRuntimeInput(),
-      resolveConnectedAccountPurposeBindingOwner: () => ({ materialize }),
+      resolveConnectedAccountPurposeBindingOwner: () => createAuthenticationBindingOwner(materialize),
     });
     const request = {
       kind: 'scm_hosting_token' as const,
@@ -647,14 +740,14 @@ describe('createHostScmHostingProviderRuntimeServices', () => {
         BITBUCKET_SCM_HOSTING_PROVIDER_ID,
         {
           pluginId: BITBUCKET_PLUGIN_MANIFEST.id,
-          generation: 'test-generation',
+          occurrenceId: 'test-generation',
           registration: {
             id: 'bitbucket',
             adapter: {},
           },
         },
       ]]),
-      resolveConnectedAccountPurposeBindingOwner: () => ({ materialize }),
+      resolveConnectedAccountPurposeBindingOwner: () => createAuthenticationBindingOwner(materialize),
     });
 
     await expect(runAsHostingProvider(
@@ -678,14 +771,7 @@ describe('createHostScmHostingProviderRuntimeServices', () => {
       password: 'bb-secret',
     });
     expect(materialize).toHaveBeenCalledWith({
-      purpose: {
-        consumer: {
-          pluginId: BITBUCKET_PLUGIN_MANIFEST.id,
-          localId: 'bitbucket',
-        },
-        purpose: 'authentication',
-      },
-      serviceRefs: [service],
+      account: { service: { pluginId: BITBUCKET_PLUGIN_MANIFEST.id, localId: 'bitbucket-account' }, accountId: 'bound-account' },
       request: {
         kind: 'httpHeaders',
         origin: 'https://bitbucket.org',
@@ -711,7 +797,7 @@ describe('createHostScmHostingProviderRuntimeServices', () => {
       const registrations = new Map(baseInput.scmHostingProvidersById);
       registrations.set(GITHUB_SCM_HOSTING_PROVIDER_ID, {
         pluginId: GITHUB_PLUGIN_MANIFEST.id,
-        generation: 'test-generation',
+        occurrenceId: 'test-generation',
         registration: {
           id: 'github',
           adapter: { pullRequests: githubPullRequestAdapter },
@@ -720,7 +806,7 @@ describe('createHostScmHostingProviderRuntimeServices', () => {
       const services = createHostScmHostingProviderRuntimeServices({
         ...baseInput,
         scmHostingProvidersById: registrations,
-        resolveConnectedAccountPurposeBindingOwner: () => ({ materialize }),
+        resolveConnectedAccountPurposeBindingOwner: () => createAuthenticationBindingOwner(materialize),
       });
       const registry = await services.resolveScmHostingProviderRegistry?.();
       const adapter = registry?.getPullRequests(
@@ -734,17 +820,7 @@ describe('createHostScmHostingProviderRuntimeServices', () => {
       })).resolves.toEqual([]);
 
       expect(materialize).toHaveBeenCalledWith({
-        purpose: {
-          consumer: {
-            pluginId: GITHUB_PLUGIN_MANIFEST.id,
-            localId: 'github',
-          },
-          purpose: 'authentication',
-        },
-        serviceRefs: [{
-          pluginId: GITHUB_PLUGIN_MANIFEST.id,
-          localId: 'github-account',
-        }],
+        account: { service: { pluginId: GITHUB_PLUGIN_MANIFEST.id, localId: 'github-account' }, accountId: 'bound-account' },
         request: {
           kind: 'httpHeaders',
           origin: 'https://github.com',
@@ -811,14 +887,14 @@ describe('createHostScmHostingProviderRuntimeServices', () => {
           BITBUCKET_SCM_HOSTING_PROVIDER_ID,
           {
             pluginId: BITBUCKET_PLUGIN_MANIFEST.id,
-            generation: 'test-generation',
+            occurrenceId: 'test-generation',
             registration: {
               id: 'bitbucket',
               adapter: { pullRequests: bitbucketApiAdapter },
             },
           },
         ]]),
-        resolveConnectedAccountPurposeBindingOwner: () => ({ materialize }),
+        resolveConnectedAccountPurposeBindingOwner: () => createAuthenticationBindingOwner(materialize),
       });
       const registry = await services.resolveScmHostingProviderRegistry?.();
       const adapter = registry?.getPullRequests(
@@ -832,17 +908,7 @@ describe('createHostScmHostingProviderRuntimeServices', () => {
       })).resolves.toEqual([]);
 
       expect(materialize).toHaveBeenCalledWith({
-        purpose: {
-          consumer: {
-            pluginId: BITBUCKET_PLUGIN_MANIFEST.id,
-            localId: 'bitbucket',
-          },
-          purpose: 'authentication',
-        },
-        serviceRefs: [{
-          pluginId: BITBUCKET_PLUGIN_MANIFEST.id,
-          localId: 'bitbucket-account',
-        }],
+        account: { service: { pluginId: BITBUCKET_PLUGIN_MANIFEST.id, localId: 'bitbucket-account' }, accountId: 'bound-account' },
         request: {
           kind: 'httpHeaders',
           origin: 'https://bitbucket.org',
@@ -889,7 +955,7 @@ describe('createHostScmHostingProviderRuntimeServices', () => {
         GITHUB_SCM_HOSTING_PROVIDER_ID,
         {
           pluginId: GITHUB_PLUGIN_MANIFEST.id,
-          generation: 'test-generation',
+          occurrenceId: 'test-generation',
           registration: createConfiguredBaseRoutingRegistration('github', 'github'),
         },
       ]]),
@@ -932,7 +998,7 @@ describe('createHostScmHostingProviderRuntimeServices', () => {
         GITHUB_SCM_HOSTING_PROVIDER_ID,
         {
           pluginId: GITHUB_PLUGIN_MANIFEST.id,
-          generation: 'test-generation',
+          occurrenceId: 'test-generation',
           registration: createConfiguredBaseRoutingRegistration('github', 'github'),
         },
       ]]),
@@ -995,7 +1061,7 @@ describe('createHostScmHostingProviderRuntimeServices', () => {
           GITHUB_SCM_HOSTING_PROVIDER_ID,
           {
             pluginId: GITHUB_PLUGIN_MANIFEST.id,
-            generation: 'test-generation',
+            occurrenceId: 'test-generation',
             registration: createConfiguredBaseRoutingRegistration('github', 'github'),
           },
         ],
@@ -1003,7 +1069,7 @@ describe('createHostScmHostingProviderRuntimeServices', () => {
           BITBUCKET_SCM_HOSTING_PROVIDER_ID,
           {
             pluginId: BITBUCKET_PLUGIN_MANIFEST.id,
-            generation: 'test-generation',
+            occurrenceId: 'test-generation',
             registration: createConfiguredBaseRoutingRegistration('bitbucket', 'bitbucket'),
           },
         ],

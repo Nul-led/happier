@@ -2,6 +2,7 @@ import type {
     ActionExecuteResult,
     ExternalSessionTakeoverPersistResponse,
 } from '@happier-dev/protocol';
+import { SPAWN_SESSION_ERROR_DETAIL_KINDS, SpawnSessionErrorCodeSchema } from '@happier-dev/protocol';
 import {
     ExternalSessionTakeoverResultV1Schema,
     type ExternalSessionTakeoverErrorCodeV1,
@@ -19,6 +20,24 @@ import {
 } from '@/session/external/externalSessionFollowFailure';
 import { isExternalSessionProviderFailureError } from '@/session/external/providerOps';
 import { isAgentExternalSessionsFailureCode } from '@happier-dev/plugin-sdk/sessions/external';
+import { ExternalSessionPersistedTakeoverPreflightError } from './materializeAction';
+
+const TAKEOVER_ADMISSION_INVARIANT_CODES = [
+    'persisted_takeover_admission_invalid_metadataVersion',
+    'persisted_takeover_admission_invalid_seq',
+    'persisted_takeover_admission_publication_missing',
+    'persisted_takeover_admission_authority_mismatch',
+    'persisted_takeover_admission_follow_not_suspended',
+    'persisted_takeover_retry_hosted_target_mismatch',
+    'external_linked_takeover_admission_authority_mismatch',
+] as const;
+
+export class ExternalSessionTakeoverAdmissionInvariantError extends Error {
+    constructor(readonly code: typeof TAKEOVER_ADMISSION_INVARIANT_CODES[number]) {
+        super(code);
+        this.name = 'ExternalSessionTakeoverAdmissionInvariantError';
+    }
+}
 
 export type ExternalSessionsErrorCode = ExternalSessionsRpcErrorCode;
 
@@ -58,12 +77,18 @@ const AGENT_FAILURE_CODES_ANSWERED_AS_INVALID_REQUEST: ReadonlySet<string> = new
 ]);
 
 /**
- * Anything else — a host-internal condition such as `conflict`, or a code no
- * owner recognizes — is a genuine internal error. Answering `agent_unavailable`
- * there sends a person to look at their Agent for a fault that is not theirs.
+ * A timeout and an Agent fault each keep their own outward class: a person
+ * retries the first and inspects the session or Agent for the second, and
+ * neither means the Agent is missing. The remaining Agent-side codes say the
+ * Agent cannot serve this request on this machine. Anything else — a
+ * host-internal condition such as `conflict`, or a code no owner recognizes —
+ * is a genuine internal error. Answering `agent_unavailable` there sends a
+ * person to look at their Agent for a fault that is not theirs.
  */
 function mapProviderFailureCodeToExternalSessionsErrorCode(code: string): ExternalSessionsErrorCode {
     if (AGENT_FAILURE_CODES_ANSWERED_AS_INVALID_REQUEST.has(code)) return 'invalid_request';
+    if (code === 'timeout') return 'agent_timeout';
+    if (code === 'agent_error') return 'agent_error';
     if (isAgentExternalSessionsFailureCode(code)) return 'agent_unavailable';
     return 'internal_error';
 }
@@ -72,8 +97,16 @@ export function mapExternalSessionProviderFailureToExternalSessionsError(
     error: unknown,
 ): { ok: false; errorCode: ExternalSessionsErrorCode; error: string; retryable: boolean } | null {
     if (!isExternalSessionProviderFailureError(error)) return null;
+    const errorCode = mapProviderFailureCodeToExternalSessionsErrorCode(error.code);
+    // The Agent's message stays out of the log; its closed code is enough to
+    // tell a timeout from an Agent fault or an unavailable Agent.
+    logger.debug('[externalSessions][agent_failure]', {
+        code: isAgentExternalSessionsFailureCode(error.code) ? error.code : 'unrecognized',
+        errorCode,
+        retryable: error.retryable,
+    });
     return {
-        ...externalSessionsError(mapProviderFailureCodeToExternalSessionsErrorCode(error.code)),
+        ...externalSessionsError(errorCode),
         retryable: error.retryable,
     };
 }
@@ -184,6 +217,36 @@ export function mapExternalTakeoverResultToDirectTakeoverPersistResponse(
     return { ok: true, converted: parsed.data.converted } satisfies ExternalSessionTakeoverPersistResponse;
 }
 
+const MAX_LOGGED_STACK_FRAMES = 8;
+
+/**
+ * Locates a plain `Error` without its message: the message and any fields can
+ * carry paths, transcript text or tokens, while the constructor name, a
+ * symbol-shaped `code` and the stack frames below the message header only
+ * name code locations.
+ */
+function describeErrorLocation(error: Error): Readonly<{
+    errorName: string;
+    code?: string;
+    frames: readonly string[];
+}> {
+    const name = /^[A-Za-z][A-Za-z0-9_]{0,63}$/u.test(error.name) ? error.name : 'Error';
+    const rawCode = (error as { code?: unknown }).code;
+    const code = typeof rawCode === 'string' && /^[A-Za-z0-9_.:-]{1,64}$/u.test(rawCode)
+        ? rawCode
+        : undefined;
+    const header = String(error);
+    const stack = typeof error.stack === 'string' && error.stack.startsWith(header)
+        ? error.stack.slice(header.length)
+        : '';
+    const frames = stack
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((line) => line.startsWith('at '))
+        .slice(0, MAX_LOGGED_STACK_FRAMES);
+    return { errorName: name, ...(code ? { code } : {}), frames };
+}
+
 function sanitizeExternalSessionsLogContext(context: string): string {
     return /^[a-z][a-z0-9_.:-]{0,127}$/u.test(context)
         ? context
@@ -192,6 +255,43 @@ function sanitizeExternalSessionsLogContext(context: string): string {
 
 export function logExternalSessionsInternalError(context: string, error: unknown): void {
     const safeContext = sanitizeExternalSessionsLogContext(context);
+    if (typeof error === 'object' && error !== null
+        && 'type' in error && error.type === 'error' && 'errorCode' in error) {
+        const errorCode = SpawnSessionErrorCodeSchema.safeParse(error.errorCode);
+        if (errorCode.success) {
+            const detail = 'errorDetail' in error ? error.errorDetail : null;
+            const detailKind = typeof detail === 'object' && detail !== null && 'kind' in detail
+                ? Object.values(SPAWN_SESSION_ERROR_DETAIL_KINDS).find((kind) => kind === detail.kind)
+                : undefined;
+            logger.debug('[externalSessions][internal_error]', {
+                context: safeContext,
+                errorCode: errorCode.data,
+                errorKind: 'spawn_failure',
+                ...(detailKind ? { detailKind } : {}),
+            });
+            return;
+        }
+    }
+    if (error instanceof ExternalSessionTakeoverAdmissionInvariantError
+        && TAKEOVER_ADMISSION_INVARIANT_CODES.includes(error.code)) {
+        logger.debug('[externalSessions][internal_error]', {
+            context: safeContext,
+            errorCode: error.code,
+            errorKind: 'takeover_admission_invariant',
+        });
+        return;
+    }
+    if (error instanceof ExternalSessionPersistedTakeoverPreflightError
+        && (error.actionCode === 'source_unavailable'
+            || error.actionCode === 'not_allowed'
+            || error.actionCode === 'reconciliation_required')) {
+        logger.debug('[externalSessions][internal_error]', {
+            context: safeContext,
+            errorCode: error.actionCode,
+            errorKind: 'takeover_preflight',
+        });
+        return;
+    }
     if (isExternalSessionProviderFailureError(error)) {
         logger.debug('[externalSessions][internal_error]', {
             context: safeContext,
@@ -207,6 +307,7 @@ export function logExternalSessionsInternalError(context: string, error: unknown
             context: safeContext,
             errorCode: 'internal_error',
             errorKind: 'error',
+            ...describeErrorLocation(error),
         });
         return;
     }

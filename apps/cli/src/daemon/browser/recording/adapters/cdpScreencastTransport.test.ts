@@ -2,6 +2,7 @@ import type { BrowserRecordingSessionV1 } from '@happier-dev/protocol';
 import { describe, expect, it, vi } from 'vitest';
 
 import { createBrowserRecordingCdpScreencastTransport } from './cdpScreencastTransport';
+import { createBrowserCdpScreencastProducer } from '../../capture/cdpScreencast';
 
 type CdpNotification = Readonly<{
   method: string;
@@ -45,6 +46,7 @@ function createRecording(
 function createHarness(options: { handle?: null; sessionId?: string; canSubscribe?: boolean } = {}) {
   const commands: Array<Record<string, unknown>> = [];
   const listeners: Array<(notification: CdpNotification) => void> = [];
+  const lifecycleListeners: Array<(event: { type: 'bound' | 'unbound'; browserSessionId: string; viewId: string }) => void> = [];
   const unsubscribe = vi.fn();
   const handle = options.handle === null
     ? null
@@ -52,6 +54,7 @@ function createHarness(options: { handle?: null; sessionId?: string; canSubscrib
   return {
     commands,
     listeners,
+    lifecycleListeners,
     unsubscribe,
     contextCapture: {
       transport: {
@@ -61,6 +64,10 @@ function createHarness(options: { handle?: null; sessionId?: string; canSubscrib
         }),
       },
       resolvePageHandle: vi.fn(() => handle),
+      subscribeViewLifecycle: (listener: (typeof lifecycleListeners)[number]) => {
+        lifecycleListeners.push(listener);
+        return () => { lifecycleListeners.splice(lifecycleListeners.indexOf(listener), 1); };
+      },
       ...(options.canSubscribe === false
         ? {}
         : {
@@ -74,11 +81,50 @@ function createHarness(options: { handle?: null; sessionId?: string; canSubscrib
 }
 
 describe('managed-Chromium CDP screencast recording transport', () => {
+  it('retires all consumers when their exact view closes and never forwards late page frames', async () => {
+    const harness = createHarness();
+    const producer = createBrowserCdpScreencastProducer({ contextCapture: harness.contextCapture });
+    const frames: unknown[] = [];
+    const errors: unknown[] = [];
+    await producer.start({ view: createRecording(), onFrame: (frame) => frames.push(frame), onError: (error) => errors.push(error) });
+    harness.lifecycleListeners.forEach((listener) => listener({ type: 'unbound', browserSessionId: 'browser_session_cdp', viewId: 'view_cdp' }));
+    harness.listeners.forEach((listener) => listener({ method: 'Page.screencastFrame', sessionId: 'session_cdp', params: { sessionId: 1, data: 'anBlZw==' } }));
+    expect(frames).toHaveLength(0);
+    expect(errors).toHaveLength(1);
+    await producer.dispose();
+    expect(harness.commands.filter((command) => command.method === 'Page.stopScreencast')).toHaveLength(1);
+  });
+  it.each(['viewer', 'recording'] as const)('shares one per-view producer when %s closes first', async (first) => {
+    const harness = createHarness();
+    const transport = createBrowserRecordingCdpScreencastTransport({ producer: createBrowserCdpScreencastProducer({ contextCapture: harness.contextCapture }) });
+    const recordingFrames: unknown[] = [];
+    const viewerFrames: unknown[] = [];
+    const [recording, viewer] = await Promise.all([
+      transport.start({ recording: createRecording(), onFrame: (frame) => recordingFrames.push(frame) }),
+      transport.start({ recording: createRecording({ recordingId: 'viewer' }), onFrame: (frame) => viewerFrames.push(frame) }),
+    ]);
+    expect(harness.commands.filter((command) => command.method === 'Page.startScreencast')).toHaveLength(1);
+    const emit = (sessionId: number) => harness.listeners.forEach((listener) => listener({
+      method: 'Page.screencastFrame', sessionId: 'session_cdp',
+      params: { sessionId, data: Buffer.from('jpeg-frame').toString('base64') },
+    }));
+    emit(1);
+    expect(recordingFrames).toHaveLength(1);
+    expect(viewerFrames).toHaveLength(1);
+    expect(harness.commands.filter((command) => command.method === 'Page.screencastFrameAck')).toHaveLength(1);
+    await (first === 'viewer' ? viewer : recording)?.stop();
+    expect(harness.commands.filter((command) => command.method === 'Page.stopScreencast')).toHaveLength(0);
+    emit(2);
+    expect(recordingFrames).toHaveLength(first === 'viewer' ? 2 : 1);
+    expect(viewerFrames).toHaveLength(first === 'recording' ? 2 : 1);
+    await (first === 'viewer' ? recording : viewer)?.stop();
+    expect(harness.commands.filter((command) => command.method === 'Page.stopScreencast')).toHaveLength(1);
+  });
   it('starts Page.screencast, forwards matching frames, acks frames, and stops through the existing context-capture surface', async () => {
     const harness = createHarness();
     const frames: unknown[] = [];
     const transport = createBrowserRecordingCdpScreencastTransport({
-      contextCapture: harness.contextCapture,
+      producer: createBrowserCdpScreencastProducer({ contextCapture: harness.contextCapture }),
     });
 
     const session = await transport.start({
@@ -110,7 +156,6 @@ describe('managed-Chromium CDP screencast recording transport', () => {
       }),
     ]);
 
-    session?.ackFrame(7);
     expect(harness.commands.at(-1)).toMatchObject({
       targetId: 'target_cdp',
       sessionId: 'session_cdp',
@@ -129,12 +174,12 @@ describe('managed-Chromium CDP screencast recording transport', () => {
 
   it('fails closed when the recording view has no sidecar page handle or event stream', async () => {
     const noHandle = createBrowserRecordingCdpScreencastTransport({
-      contextCapture: createHarness({ handle: null }).contextCapture,
+      producer: createBrowserCdpScreencastProducer({ contextCapture: createHarness({ handle: null }).contextCapture }),
     });
     await expect(noHandle.start({ recording: createRecording(), onFrame: vi.fn() })).resolves.toBe(null);
 
     const noEvents = createBrowserRecordingCdpScreencastTransport({
-      contextCapture: createHarness({ canSubscribe: false }).contextCapture,
+      producer: createBrowserCdpScreencastProducer({ contextCapture: createHarness({ canSubscribe: false }).contextCapture }),
     });
     await expect(noEvents.start({ recording: createRecording(), onFrame: vi.fn() })).resolves.toBe(null);
   });

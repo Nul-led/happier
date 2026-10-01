@@ -9,6 +9,7 @@ import { updateSessionMetadataWithRetry } from '@/session/metadata/updateSession
 import { isAmbiguousSpawnSessionFailure } from '@/session/shared/spawnNonce';
 import { readNonBlankOpaqueIdentifier, readRuntimeDescriptorV1FromMetadata } from '@happier-dev/protocol';
 import { applyAgentAuthoredSessionStateUpdatesToMetadata } from '@/agent/runtime/state/agentAuthoredSessionStateUpdates';
+import { prepareManagedForkDirectory } from './prepareManagedForkDirectory';
 
 import {
     archiveSessionBestEffort,
@@ -115,6 +116,7 @@ export async function attemptProviderNativeFork(params: Readonly<{
             ...(runtimeDescriptorV1 ? { runtimeDescriptorV1 } : {}),
             ...(nativeFork.launch.environmentVariables ? { environmentVariables: { ...nativeFork.launch.environmentVariables } } : {}),
             ...inheritedForkOverrides.spawn,
+            ...prepareManagedForkDirectory(params),
         } satisfies SpawnSessionOptions);
 
         if (isAmbiguousSpawnSessionFailure(result)) {

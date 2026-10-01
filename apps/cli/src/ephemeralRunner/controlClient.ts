@@ -16,6 +16,7 @@ import type {
 } from '@happier-dev/protocol/ephemeralRunner/progress';
 import type { RunnerActivationProgressUpdateV1 } from '@happier-dev/protocol/ephemeralRunner/progressProof';
 import {
+  RunnerEndpointDeclineResponseV1Schema,
   RunnerEndpointProjectionResponseV1Schema,
   type RunnerEndpointProjectionRequestV1,
   type RunnerEndpointProjectionResponseV1,
@@ -53,7 +54,7 @@ export type EphemeralRunnerMaterializedProjection = Extract<
 type ProjectionProofFactory = (launchManifestCommitment: string | null) => RunnerEndpointProjectionRequestV1 | unknown;
 type ProgressProofFactory = (phase: RunnerActivationProgressPhaseV1) => RunnerActivationProgressUpdateV1 | unknown;
 
-class EphemeralRunnerControlTransportError extends Error {
+export class EphemeralRunnerControlTransportError extends Error {
   constructor(readonly cause: unknown) {
     super('runner_control_transport_unavailable');
   }
@@ -91,7 +92,12 @@ export function createEphemeralRunnerHttpControlConnection<Manifest = RunnerLaun
   deriveManifestAgentTargetKey?: (value: unknown) => string;
   closeTransport?: () => Promise<void>;
 }>): EphemeralRunnerControlPlaneConnection<Manifest> & Readonly<{
-  waitForMaterialization(args: Readonly<{ launchManifestCommitment: string; signal: AbortSignal }>): Promise<EphemeralRunnerMaterializedProjection>;
+  waitForMaterialization(args: Readonly<{
+    launchManifestCommitment: string;
+    signal: AbortSignal;
+    /** Recovery reads fail fast when the Home transport is unavailable. */
+    retryTransportErrors?: boolean;
+  }>): Promise<EphemeralRunnerMaterializedProjection>;
   readBrokerReadinessProjection(): RunnerBrokerReadinessProjectionV1 | null;
 }> {
   const base = `/v1/ephemeral-runners/activations/${encodeURIComponent(input.activationId)}/endpoint`;
@@ -122,6 +128,7 @@ export function createEphemeralRunnerHttpControlConnection<Manifest = RunnerLaun
       for (const listener of listeners) listener('connected');
       return value;
     } catch (error) {
+      if (signal.aborted) throw error;
       if (error instanceof EphemeralRunnerControlHttpError) {
         for (const listener of listeners) listener('connected');
         throw error;
@@ -162,6 +169,7 @@ export function createEphemeralRunnerHttpControlConnection<Manifest = RunnerLaun
     commitment: string | null,
     accept: (value: RunnerEndpointProjectionResponseV1) => boolean,
     signal: AbortSignal,
+    retryTransportErrors = true,
   ): Promise<RunnerEndpointProjectionResponseV1> => {
     while (true) {
       let value: RunnerEndpointProjectionResponseV1;
@@ -170,6 +178,7 @@ export function createEphemeralRunnerHttpControlConnection<Manifest = RunnerLaun
       } catch (error) {
         if (signal.aborted) throw error;
         if (!(error instanceof EphemeralRunnerControlTransportError)) throw error;
+        if (!retryTransportErrors) throw error;
         await delay(pollIntervalMs, signal);
         continue;
       }
@@ -305,7 +314,9 @@ export function createEphemeralRunnerHttpControlConnection<Manifest = RunnerLaun
     },
     async decline({ claim, signal }: { claim: RunnerClaimV1; signal: AbortSignal }) {
       void claim;
-      await callIdempotent(null, 'DELETE', input.createProjectionProof(reviewedLaunchManifestCommitment), signal);
+      return RunnerEndpointDeclineResponseV1Schema.parse(
+        await call(null, 'DELETE', input.createProjectionProof(reviewedLaunchManifestCommitment), signal),
+      );
     },
     onConnectionState(listener) {
       listeners.add(listener);
@@ -317,43 +328,13 @@ export function createEphemeralRunnerHttpControlConnection<Manifest = RunnerLaun
       await input.closeTransport?.();
     },
     readBrokerReadinessProjection: () => readinessProjection,
-    async waitForMaterialization({ launchManifestCommitment, signal }) {
-      let result: RunnerEndpointProjectionResponseV1;
-      try {
-        result = await waitForProjection(
-          launchManifestCommitment,
-          (value) => value.status === 'materialized',
-          signal,
-        );
-      } catch (error) {
-        if (!signal.aborted) throw error;
-
-        // Cancellation may race a committed materialization whose projection
-        // response was lost. Arbitrate that race through the incumbent endpoint
-        // decline transaction: `already_materialized` proves that ordinary
-        // Session Stop now owns teardown, so recover its bootstrap instead of
-        // abandoning the durable Machine and AccessKey.
-        const reconciliationSignal = new AbortController().signal;
-        const decline = await call(
-          null,
-          'DELETE',
-          input.createProjectionProof(reviewedLaunchManifestCommitment),
-          reconciliationSignal,
-        );
-        if (
-          !decline
-          || typeof decline !== 'object'
-          || !('status' in decline)
-          || decline.status !== 'unavailable'
-          || !('reason' in decline)
-          || decline.reason !== 'already_materialized'
-        ) throw error;
-        result = await waitForProjection(
-          launchManifestCommitment,
-          (value) => value.status === 'materialized',
-          reconciliationSignal,
-        );
-      }
+    async waitForMaterialization({ launchManifestCommitment, signal, retryTransportErrors = true }) {
+      const result = await waitForProjection(
+        launchManifestCommitment,
+        (value) => value.status === 'materialized',
+        signal,
+        retryTransportErrors,
+      );
       if (result.status !== 'materialized') throw new Error('runner_materialization_invalid');
       return result;
     },

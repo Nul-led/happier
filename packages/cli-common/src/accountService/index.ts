@@ -391,7 +391,19 @@ export type AccountServiceHomeApproval<SecretKey> = Readonly<{
 export type AccountServiceHomeEnrollmentResult<SecretKey, Commit> =
   | Readonly<{ kind: 'enrolled'; commit: Commit }>
   | Readonly<{ kind: 'approval_required'; approval: AccountServiceHomeApproval<SecretKey> }>
-  | Readonly<{ kind: 'verification_failed'; reason: AccountServiceAssertionVerificationFailureReason | 'transport_destination_mismatch' | 'redemption_identity_mismatch' | 'approval_mismatch' | 'redemption_expired' | 'credential_invalid' | 'authenticated_observation_required' }>
+  | Readonly<{
+      kind: 'verification_failed';
+      reason: AccountServiceAssertionVerificationFailureReason | 'transport_destination_mismatch' | 'redemption_identity_mismatch' | 'approval_mismatch' | 'redemption_expired' | 'credential_invalid';
+    }>
+  | Readonly<{
+      kind: 'verification_failed';
+      stage: 'post_redemption';
+      reason: AccountServiceAssertionVerificationFailureReason | 'authenticated_observation_required' | 'authenticated_reconciliation_failed';
+      retry?: (input?: Readonly<{
+        nowMs?: number;
+        shouldCancel?: () => boolean;
+      }>) => Promise<AccountServiceHomeEnrollmentResult<SecretKey, Commit>>;
+    }>
   | Readonly<{ kind: 'cancelled' }>
   | Readonly<{ kind: 'unavailable'; error: unknown }>;
 
@@ -405,6 +417,9 @@ export async function continueAccountServiceHomeEnrollment<SecretKey, Transport,
   shouldCancel?: () => boolean;
 }>): Promise<AccountServiceHomeEnrollmentResult<SecretKey, Commit>> {
   if (input.shouldCancel?.()) return { kind: 'cancelled' };
+  if (input.assertion.expiresAtMs <= input.nowMs) {
+    return { kind: 'verification_failed', reason: 'redemption_expired' };
+  }
   let opened: Awaited<ReturnType<typeof input.adapters.openHomeTransport>>;
   try {
     opened = await input.adapters.openHomeTransport(input.home);
@@ -490,20 +505,36 @@ export async function continueAccountServiceHomeEnrollment<SecretKey, Transport,
       home: input.home,
     });
     if (observation.provenance !== 'authenticated') {
-      return { kind: 'verification_failed', reason: 'authenticated_observation_required' };
+      return {
+        kind: 'verification_failed',
+        stage: 'post_redemption',
+        reason: 'authenticated_observation_required',
+      };
     }
     const verifiedObservation = verifyAccountServiceAuthenticatedHomeObservation({
       home: input.home,
       assertion: input.assertion,
       observation,
     });
-    if (verifiedObservation.kind !== 'verified') return verifiedObservation;
+    if (verifiedObservation.kind !== 'verified') {
+      return { ...verifiedObservation, stage: 'post_redemption' };
+    }
     if (input.shouldCancel?.()) return { kind: 'cancelled' };
-    await input.adapters.reconcileAuthenticatedHome({
-      home: input.home,
-      assertion: input.assertion,
-      observation,
-    });
+    try {
+      await input.adapters.reconcileAuthenticatedHome({
+        home: input.home,
+        assertion: input.assertion,
+        observation,
+      });
+    } catch {
+      return input.shouldCancel?.()
+        ? { kind: 'cancelled' }
+        : {
+            kind: 'verification_failed',
+            stage: 'post_redemption',
+            reason: 'authenticated_reconciliation_failed',
+          };
+    }
     if (input.shouldCancel?.()) return { kind: 'cancelled' };
     credentialCommitStarted = true;
     const commit = await input.adapters.commitHomeCredential({
@@ -550,14 +581,28 @@ export async function enrollAccountServiceHome<SecretKey, Transport, HomeCredent
     assertion,
   });
   if (verification.kind !== 'verified') return verification;
-  return await continueAccountServiceHomeEnrollment({
-    home: input.home,
-    assertion,
-    requesterSecretKey: keyPair.secretKey,
-    adapters: input.adapters,
-    nowMs: input.nowMs ?? Date.now(),
-    shouldCancel: input.shouldCancel,
-  });
+  const continueInvocation = async (
+    nowMs: number,
+    shouldCancel: (() => boolean) | undefined,
+  ): Promise<AccountServiceHomeEnrollmentResult<SecretKey, Commit>> => {
+    const result = await continueAccountServiceHomeEnrollment({
+      home: input.home,
+      assertion,
+      requesterSecretKey: keyPair.secretKey,
+      adapters: input.adapters,
+      nowMs,
+      shouldCancel,
+    });
+    if (result.kind !== 'verification_failed' || !('stage' in result)) return result;
+    return {
+      ...result,
+      retry: async (retryInput = {}) => await continueInvocation(
+        retryInput.nowMs ?? Date.now(),
+        retryInput.shouldCancel ?? shouldCancel,
+      ),
+    };
+  };
+  return await continueInvocation(input.nowMs ?? Date.now(), input.shouldCancel);
 }
 
 export async function observeAccountServiceHomeApproval<SecretKey, Transport, HomeCredential, Commit>(input: Readonly<{
@@ -566,19 +611,32 @@ export async function observeAccountServiceHomeApproval<SecretKey, Transport, Ho
   nowMs?: number;
   shouldCancel?: () => boolean;
 }>): Promise<AccountServiceHomeEnrollmentResult<SecretKey, Commit>> {
-  const nowMs = input.nowMs ?? Date.now();
-  if (input.approval.expiresAtMs <= nowMs) {
-    return { kind: 'verification_failed', reason: 'redemption_expired' };
-  }
-  return await continueAccountServiceHomeEnrollment({
-    home: input.approval.home,
-    assertion: input.approval.assertion,
-    requesterSecretKey: input.approval.requesterSecretKey,
-    approvalId: input.approval.approvalId,
-    adapters: input.adapters,
-    nowMs,
-    shouldCancel: input.shouldCancel,
-  });
+  const continueInvocation = async (
+    nowMs: number,
+    shouldCancel: (() => boolean) | undefined,
+  ): Promise<AccountServiceHomeEnrollmentResult<SecretKey, Commit>> => {
+    if (input.approval.expiresAtMs <= nowMs) {
+      return { kind: 'verification_failed', reason: 'redemption_expired' };
+    }
+    const result = await continueAccountServiceHomeEnrollment({
+      home: input.approval.home,
+      assertion: input.approval.assertion,
+      requesterSecretKey: input.approval.requesterSecretKey,
+      approvalId: input.approval.approvalId,
+      adapters: input.adapters,
+      nowMs,
+      shouldCancel,
+    });
+    if (result.kind !== 'verification_failed' || !('stage' in result)) return result;
+    return {
+      ...result,
+      retry: async (retryInput = {}) => await continueInvocation(
+        retryInput.nowMs ?? Date.now(),
+        retryInput.shouldCancel ?? shouldCancel,
+      ),
+    };
+  };
+  return await continueInvocation(input.nowMs ?? Date.now(), input.shouldCancel);
 }
 
 export type AccountServiceDirectoryJourneyResult<SecretKey, Commit> =
@@ -598,6 +656,7 @@ export type AccountServiceDirectoryJourneyResult<SecretKey, Commit> =
     }>
   | Readonly<{
       kind: 'home_failed';
+      selection: 'explicit' | 'preferred' | 'sole';
       homeServerIdentityId: string | null;
       adoption: AccountServiceDirectoryAdoptionResult;
       enrollment: Exclude<AccountServiceHomeEnrollmentResult<SecretKey, Commit>, { kind: 'enrolled' | 'approval_required' }>;
@@ -692,6 +751,7 @@ export async function runAccountServiceDirectoryJourney<SecretKey, Transport, Ho
   }
   return {
     kind: 'home_failed',
+    selection: target.basis,
     homeServerIdentityId: target.home.homeServerIdentityId,
     adoption,
     enrollment,

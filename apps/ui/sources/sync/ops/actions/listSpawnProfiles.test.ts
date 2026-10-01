@@ -52,7 +52,7 @@ describe('listSpawnProfilesForActions', () => {
             ...state,
             settings: {
                 ...state.settings,
-                profiles: [
+                profiles: JSON.parse(JSON.stringify([
                     {
                         v: 2,
                         id: 'readable',
@@ -65,7 +65,7 @@ describe('listSpawnProfilesForActions', () => {
                         updatedAt: 1,
                     },
                     { v: 99, id: 'future', opaque: { untouched: true } },
-                ],
+                ])),
             },
             settingsVersion: 1,
         }));

@@ -21,12 +21,13 @@ const selection = Object.freeze({ resourceId: 'resource-1', modelId: 'model-1' }
 
 function resource(
     directMaterialState: 'never_delivered' | 'preparing' | 'current' | 'stale' | 'revoked' = 'never_delivered',
+    history: Readonly<{ directDeliveryRecorded?: true }> = {},
 ) {
     return TeamCredentialResourceCatalogEntryV1Schema.parse({
         id: 'resource-1', teamId: 'team-1', displayName: 'Shared provider', resourceRevision: 4,
         readiness: { kind: 'available' }, recoveryAction: null,
         mayBroker: true, mayReceiveDirect: true,
-        directMaterialState, sessionUsePolicy: 'personal_allowed', providerModels: [],
+        directMaterialState, ...history, sessionUsePolicy: 'personal_allowed', providerModels: [],
         connectedServiceSelections: [],
         sourcePresentation: {
             kind: 'provider',
@@ -118,12 +119,32 @@ describe('useTeamCredentialSelectionCoordinator', () => {
         expect(outcome).toMatchObject({ kind: 'continue', selection });
     });
 
-    it.each(['current', 'stale', 'revoked'] as const)(
-        'does not repeat the disclosure after retained history projects %s',
+    // Child 06 R3 (:84) and first-use RED (:829): readiness is not disclosure.
+    // The custodian prepares a tuple before the recipient ever opens it, so a
+    // `current` or `stale` row alone proves nothing about what was disclosed.
+    it.each(['current', 'stale'] as const)(
+        'asks before first use when a %s prepared tuple has no recorded delivery',
         async (directMaterialState) => {
+            confirmMock.mockResolvedValue(false);
             const { useTeamCredentialSelectionCoordinator } = await import('./useTeamCredentialSelectionCoordinator');
             const hook = await renderHook(() => useTeamCredentialSelectionCoordinator('home-1'));
             const outcome = await hook.getCurrent()({ resource: resource(directMaterialState), deliveryMode: 'direct', selection, isCurrent: () => true });
+            expect(confirmMock).toHaveBeenCalledOnce();
+            expect(outcome.kind).toBe('cancel');
+        },
+    );
+
+    it.each(['current', 'stale'] as const)(
+        'does not repeat the disclosure once retained history records a delivery (%s)',
+        async (directMaterialState) => {
+            const { useTeamCredentialSelectionCoordinator } = await import('./useTeamCredentialSelectionCoordinator');
+            const hook = await renderHook(() => useTeamCredentialSelectionCoordinator('home-1'));
+            const outcome = await hook.getCurrent()({
+                resource: resource(directMaterialState, { directDeliveryRecorded: true }),
+                deliveryMode: 'direct',
+                selection,
+                isCurrent: () => true,
+            });
             expect(confirmMock).not.toHaveBeenCalled();
             expect(outcome.kind).toBe('continue');
         },

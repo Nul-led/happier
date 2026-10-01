@@ -273,6 +273,7 @@ describe('resolveBackendRuntimeCore Session-owned Execution Run scope', () => {
       },
       sessionOwnedRunScope: {
         runId: 'run-a',
+        workDepth: 4,
         sidechainId: 'sidechain-a',
         readCurrentRunOccurrence: occurrences.reader.readCurrentRunOccurrence,
         publishSupportedSessionReadActions: vi.fn(),

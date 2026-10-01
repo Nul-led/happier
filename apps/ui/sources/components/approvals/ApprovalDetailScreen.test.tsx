@@ -2,6 +2,7 @@ import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+    approvalArtifactBodyMatchesHeaderV1,
     TargetActionApprovalRequestV1Schema,
     ApprovalRequestV2Schema,
     buildApprovalRequestArtifactHeaderV1,
@@ -10,6 +11,7 @@ import {
     type ApprovalRequestV1,
     type ApprovalRequestV2,
     type HandoffTargetApprovalConsequenceV1,
+    WorkspaceSyncConflictResolutionResultV1Schema,
 } from '@happier-dev/protocol';
 import type { Machine, Session } from '@/sync/domains/state/storageTypes';
 import { collectRenderedTestIds } from '@/dev/testkit/render/collectRenderedTestIds';
@@ -17,6 +19,17 @@ import { createMachineFixture } from '@/dev/testkit/fixtures/machineFixtures';
 import { createSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
 import { renderScreen } from '@/dev/testkit/render/renderScreen';
 import { installApprovalCommonModuleMocks } from './approvalsTestHelpers';
+
+/**
+ * Everything the approval page shows as text. Row components are pass-through test hosts, so their
+ * title, subtitle and detail props are the text the real `Item`/`ItemGroup` would render.
+ */
+function readRenderedText(screen: Awaited<ReturnType<typeof renderScreen>>): string {
+    const rowText = [...screen.findAllByType('ItemGroup' as never), ...screen.findAllByType('Item' as never)]
+        .flatMap((node) => [node.props.title, node.props.subtitle, node.props.detail, node.props.description])
+        .filter((value): value is string => typeof value === 'string');
+    return [screen.getTextContent(), ...rowText].join(' ');
+}
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -94,12 +107,13 @@ function createBuiltInApprovalArtifact(input: Readonly<{
     summary: string;
     preview?: unknown;
     serverId?: string;
+    executedResult?: unknown;
 }>) {
     const request: ApprovalRequestV2 = {
         v: 2,
-        status: 'open',
+        status: input.executedResult === undefined ? 'open' : 'executed',
         createdAtMs: 1,
-        updatedAtMs: 1,
+        updatedAtMs: input.executedResult === undefined ? 1 : 3,
         createdBy: { surface: 'system', sessionId: 'session-1' },
         requestedSurface: 'ui',
         executionOriginV1: {
@@ -118,6 +132,10 @@ function createBuiltInApprovalArtifact(input: Readonly<{
         actionArgs: input.actionArgs,
         summary: input.summary,
         ...(input.preview === undefined ? {} : { preview: input.preview }),
+        ...(input.executedResult === undefined ? {} : {
+            decision: { kind: 'approve' as const, decidedAtMs: 2 },
+            execution: { executedAtMs: 3, ok: true as const, result: input.executedResult },
+        }),
     };
     return {
         id: 'artifact-1',
@@ -196,7 +214,10 @@ function createTargetActionApprovalArtifact() {
             input: { secretToken: 'must-not-render', body: 'private draft' },
             accountId: 'account-secret',
             resourceId: 'resource-secret',
-            generation: 'generation-7',
+            sourceCustody: {
+                kind: 'bundled_first_party',
+                packagedRuntime: { kind: 'cli_version_root', versionRootId: 'cli-root-7' },
+            },
             policyFingerprint: 'a'.repeat(64),
             subjectFingerprint: 'b'.repeat(64),
             summary: 'Publish the release notes',
@@ -504,8 +525,10 @@ installApprovalCommonModuleMocks({
         }).module;
     },
     storage: async () => {
-        const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
+        const { createStorageModuleStub, createUseSettingMock } = await import('@/dev/testkit/mocks/storage');
         return createStorageModuleStub({
+            useSetting: createUseSettingMock({ values: { workspaceRefsV1: [], workspaceSyncRelationshipsV1: [] } }),
+            useMachineDisplayNamesById: () => ({}),
             useArtifact: () => currentArtifact,
             useSession: (sessionId: string) => sessionFixtures[sessionId] ?? null,
             useMachine: (machineId: string) => machineFixtures[machineId] ?? null,
@@ -579,6 +602,7 @@ vi.mock('@/sync/domains/scope/useServerCredentialAccountScopes', () => ({
     useServerCredentialAccountScopeResolution: (serverId: string | null | undefined) => serverId
         ? getApprovalScopeResolution(serverId)
         : unknownApprovalScopeResolution,
+    useServerCredentialAccountScopeBindings: () => new Map(),
 }));
 
 vi.mock('@/sync/store/hooks', () => ({
@@ -587,6 +611,9 @@ vi.mock('@/sync/store/hooks', () => ({
 }));
 
 vi.mock('@/sync/domains/server/serverProfiles', () => ({
+    loadHomeViewState: () => null,
+    subscribeActiveServer: () => () => {},
+    getActiveServerSnapshot: () => ({ serverId: 'server-approval', source: 'device' }),
     resolveServerProfileForPortableIdentity: () => portableProfileResolution,
     listServerProfiles: () => [portableProfileResolution.profile].filter(Boolean),
     getServerProfileById: (serverId: string) => portableProfileResolution.profile?.id === serverId
@@ -643,7 +670,7 @@ describe('ApprovalDetailScreen', () => {
         const { ApprovalDetailScreen } = await import('./ApprovalDetailScreen');
         const screen = await renderScreen(<ApprovalDetailScreen artifactId={currentArtifact.id} />);
 
-        expect(screen.getTextContent()).toContain('approvals.status.executing');
+        expect(readRenderedText(screen)).toContain('approvals.status.executing');
         expect(screen.findByTestId('approvals.actions')).toBeNull();
         expect(screen.findByTestId('approvals.approve')).toBeNull();
     });
@@ -664,7 +691,7 @@ describe('ApprovalDetailScreen', () => {
         const { ApprovalDetailScreen } = await import('./ApprovalDetailScreen');
         const screen = await renderScreen(<ApprovalDetailScreen artifactId={currentArtifact.id} />);
 
-        expect(screen.getTextContent()).toContain('approvals.status.executing');
+        expect(readRenderedText(screen)).toContain('approvals.status.executing');
         expect(screen.findByTestId('approvals.actions')).toBeNull();
         expect(screen.findByTestId('approvals.approve')).toBeNull();
     });
@@ -674,12 +701,12 @@ describe('ApprovalDetailScreen', () => {
         const { ApprovalDetailScreen } = await import('./ApprovalDetailScreen');
         const screen = await renderScreen(<ApprovalDetailScreen artifactId="target-artifact-1" />);
 
-        const text = screen.getTextContent();
+        const text = readRenderedText(screen);
         expect(text).toContain('Publish the release notes');
         expect(text).toContain('This publishes the approved release notes to the configured remote.');
         expect(text).toContain('acme.publisher');
         expect(text).toContain('releases/publish');
-        expect(text).toContain('approvals.generation');
+        expect(text).toContain('bundled_first_party');
         expect(text).not.toContain('must-not-render');
         expect(text).not.toContain('account-secret');
         expect(text).not.toContain('resource-secret');
@@ -740,6 +767,38 @@ describe('ApprovalDetailScreen', () => {
         expect(executeSpy).not.toHaveBeenCalled();
     });
 
+    it('refreshes the target approval after exact-daemon replay so the decision UI reflects the durable result', async () => {
+        currentArtifact = createApiTargetActionApprovalArtifact();
+        const refreshedRequest = TargetActionApprovalRequestV1Schema.parse({
+            ...JSON.parse(currentArtifact.body),
+            status: 'approved',
+            updatedAtMs: 2,
+            decision: { kind: 'approve', decidedAtMs: 2 },
+        });
+        fetchArtifactWithBodySpy.mockResolvedValueOnce({
+            ...currentArtifact,
+            header: buildTargetActionApprovalArtifactHeaderV1(refreshedRequest),
+            body: JSON.stringify(refreshedRequest),
+        });
+        const { ApprovalDetailScreen } = await import('./ApprovalDetailScreen');
+        const screen = await renderScreen(<ApprovalDetailScreen artifactId="target-api-artifact-1" />);
+
+        await screen.pressByTestIdAsync('approvals.approve');
+
+        expect(replayApprovalRequestAtExactDaemonSpy).toHaveBeenCalledExactlyOnceWith({
+            artifactId: 'target-api-artifact-1',
+            decision: 'approve',
+            executionTarget: {
+                serverId: 'server-exact',
+                machineId: 'machine-exact',
+                defaultSessionId: 'session-1',
+            },
+        });
+        expect(fetchArtifactWithBodySpy).toHaveBeenCalledWith('target-api-artifact-1');
+        expect(readRenderedText(screen)).toContain('approvals.status.approved');
+        expect(screen.findByTestId('approvals.actions')).toBeNull();
+    });
+
     it('routes a current durable Action approval through this device profile while preserving its immutable origin', async () => {
         currentArtifact = createDaemonRoutedApprovalArtifact();
         const { ApprovalDetailScreen } = await import('./ApprovalDetailScreen');
@@ -760,10 +819,10 @@ describe('ApprovalDetailScreen', () => {
         const { ApprovalDetailScreen } = await import('./ApprovalDetailScreen');
         const screen = await renderScreen(<ApprovalDetailScreen artifactId="daemon-approval-1" />);
 
-        expect(screen.getTextContent()).toContain('api');
-        expect(screen.getTextContent()).toContain('actionConfirmations.homeTarget');
-        expect(screen.getTextContent()).not.toContain('principal-1');
-        expect(screen.getTextContent()).not.toContain('credential-1');
+        expect(readRenderedText(screen)).toContain('api');
+        expect(readRenderedText(screen)).toContain('actionConfirmations.homeTarget');
+        expect(readRenderedText(screen)).not.toContain('principal-1');
+        expect(readRenderedText(screen)).not.toContain('credential-1');
     });
 
     it('fails closed when the current route profile does not match the persisted stable Home identity', async () => {
@@ -795,7 +854,7 @@ describe('ApprovalDetailScreen', () => {
             <ApprovalDetailScreen artifactId="daemon-approval-1" serverId="stable-home-a" />,
         );
 
-        expect(screen.getTextContent()).toContain('actionConfirmations.homeUnavailable');
+        expect(readRenderedText(screen)).toContain('actionConfirmations.homeUnavailable');
         expect(screen.findByTestId('approvals.approve')).toBeNull();
         expect(screen.findByTestId('approvals.reject')).toBeNull();
     });
@@ -835,7 +894,7 @@ describe('ApprovalDetailScreen', () => {
         const { ApprovalDetailScreen } = await import('./ApprovalDetailScreen');
         const screen = await renderScreen(<ApprovalDetailScreen artifactId="host-action-artifact-1" />);
 
-        const text = screen.getTextContent();
+        const text = readRenderedText(screen);
         expect(text).toContain('Create 1 proposed review comment');
         expect(text).toContain('acme.review');
         expect(text).toContain('reviews.comments.create');
@@ -883,7 +942,7 @@ describe('ApprovalDetailScreen', () => {
         const { ApprovalDetailScreen } = await import('./ApprovalDetailScreen');
         const screen = await renderScreen(<ApprovalDetailScreen artifactId="target-artifact-1" />);
 
-        expect(screen.getTextContent()).toContain('The selected machine is offline.');
+        expect(readRenderedText(screen)).toContain('The selected machine is offline.');
         expect(screen.findByTestId('approvals.execution-failure')).not.toBeNull();
         expect(screen.findByTestId('approvals.approve')).toBeNull();
         expect(screen.findByTestId('approvals.reject')).toBeNull();
@@ -898,7 +957,7 @@ describe('ApprovalDetailScreen', () => {
         const { ApprovalDetailScreen } = await import('./ApprovalDetailScreen');
         const screen = await renderScreen(<ApprovalDetailScreen artifactId="target-artifact-1" />);
 
-        expect(screen.getTextContent()).toContain('approvals.loadError');
+        expect(readRenderedText(screen)).toContain('approvals.loadError');
         expect(screen.findByTestId('approvals.approve')).toBeNull();
         expect(executeSpy).not.toHaveBeenCalled();
         expect(updateArtifactWithHeaderSpy).not.toHaveBeenCalled();
@@ -996,9 +1055,8 @@ describe('ApprovalDetailScreen', () => {
         });
         const { ApprovalDetailScreen } = await import('./ApprovalDetailScreen');
         const screen = await renderScreen(<ApprovalDetailScreen artifactId="artifact-1" />);
-
         expect(screen.findByTestId('approvals.handoff-target-consequences')).not.toBeNull();
-        const text = screen.getTextContent();
+        const text = readRenderedText(screen);
         expect(text).toContain('sessionHandoff.targetApproval.replaceTarget');
         expect(text).toContain('sessionHandoff.targetApproval.exactMirror');
         // The confirmation must name where the workspace comes from and where it lands.
@@ -1018,6 +1076,31 @@ describe('ApprovalDetailScreen', () => {
         expect(screen.findAllByTestId('approvals.handoff-target-consequences')).toHaveLength(1);
     });
 
+    it('says what a computer input sends, and where, from the computer owner’s display facts', async () => {
+        currentArtifact = createBuiltInApprovalArtifact({
+            actionId: 'computer.input',
+            actionArgs: {
+                machineId: 'machine-2',
+                captureId: 'capture_1',
+                operation: { kind: 'type', text: 'ana@lumen.dev' },
+            },
+            summary: 'Type the QA user email',
+            // Host-resolved by the computer owner (W7); the agent's arguments carry no target.
+            preview: { computerApprovalDisplay: { machineDisplayName: 'Workstation one', requiresTargetSelection: false,
+                target: { kind: 'window', title: 'Sign in to Lumen' } } },
+        });
+        const { ApprovalDetailScreen } = await import('./ApprovalDetailScreen');
+        const screen = await renderScreen(<ApprovalDetailScreen artifactId="artifact-1" />);
+        expect(screen.findByTestId('approvals.computer-action')).not.toBeNull();
+        const text = readRenderedText(screen);
+        expect(text).toContain('computerUse.approval.act.type');
+        expect(text).toContain('ana@lumen.dev');
+        // This suite's `t` drops params, so read what the page handed the card.
+        const card = screen.tree.root.findAll((node) => node.props?.presentation?.machineName === 'Workstation one');
+        expect(card.length).toBeGreaterThan(0);
+        expect(card[0]!.props.presentation.target).toEqual({ kind: 'window', title: 'Sign in to Lumen' });
+    });
+
     it('names both endpoints and uses a consequence-specific decision for an ordinary non-empty replacement', async () => {
         currentArtifact = createHandoffApprovalArtifact({
             mode: 'keep_synced',
@@ -1027,7 +1110,7 @@ describe('ApprovalDetailScreen', () => {
         const { ApprovalDetailScreen } = await import('./ApprovalDetailScreen');
         const screen = await renderScreen(<ApprovalDetailScreen artifactId="artifact-1" />);
 
-        const text = screen.getTextContent();
+        const text = readRenderedText(screen);
         expect(text).toContain('sessionHandoff.targetApproval.replaceTarget');
         expect(text).not.toContain('sessionHandoff.targetApproval.exactMirror');
         expect(text).toContain('machine-target');
@@ -1046,7 +1129,7 @@ describe('ApprovalDetailScreen', () => {
         const { ApprovalDetailScreen } = await import('./ApprovalDetailScreen');
         const screen = await renderScreen(<ApprovalDetailScreen artifactId="artifact-1" />);
 
-        const text = screen.getTextContent();
+        const text = readRenderedText(screen);
         expect(text).toContain('sessionHandoff.targetApproval.modeLabel');
         expect(text).toContain('workspaceSync.mode.copyOnce');
         expect(text).not.toContain('workspaceSync.mode.mirrorExactly');
@@ -1067,7 +1150,7 @@ describe('ApprovalDetailScreen', () => {
 
         const screen = await renderScreen(<ApprovalDetailScreen artifactId="artifact-1" />);
 
-        const text = screen.getTextContent();
+        const text = readRenderedText(screen);
         expect(text).toContain('Approve answering the user');
         expect(text).toContain('Respond to user-action request');
         expect(text).toContain('Repo session');
@@ -1079,6 +1162,66 @@ describe('ApprovalDetailScreen', () => {
         expect(text).toContain('Yes');
     });
 
+    it('shows the exact reviewed source and destination in a conflict approval without a second Use Version action', async () => {
+        currentArtifact = createBuiltInApprovalArtifact({
+            actionId: 'workspace.sync.conflict.resolve', summary: 'Resolve src/tool',
+            actionArgs: {
+                strategy: 'use_source', controllerMachineId: 'machine-a', hubWorkspaceRefId: 'workspace-a',
+                path: 'src/tool', source: { workspaceRefId: 'workspace-c', expected: { kind: 'file', digest: 'a'.repeat(40), executable: true, size: 12 } },
+                targets: [{ workspaceRefId: 'workspace-b', expected: { kind: 'file', digest: 'b'.repeat(40), executable: false, size: 12 } }],
+                relationshipIds: ['a-b', 'a-c'],
+            },
+        });
+        const { ApprovalDetailScreen } = await import('./ApprovalDetailScreen');
+        const screen = await renderScreen(<ApprovalDetailScreen artifactId="artifact-1" />);
+        expect(screen.findByTestId('workspace-sync-approved-review')).not.toBeNull();
+        expect(readRenderedText(screen)).toContain('workspace-c');
+        expect(readRenderedText(screen)).toContain('workspace-b');
+        expect(screen.findByTestId('approvals.approve')).not.toBeNull();
+        expect(screen.findAll((node) => node.props?.title === 'workspaceSync.review.useNamedVersion')).toHaveLength(0);
+    });
+
+    it('shows a completed conflict Action’s per-endpoint and preserved recovery outcomes in the approved comparison', async () => {
+        currentArtifact = createBuiltInApprovalArtifact({
+            actionId: 'workspace.sync.conflict.resolve', summary: 'Resolve src/tool',
+            actionArgs: {
+                strategy: 'keep_both', controllerMachineId: 'machine-a', hubWorkspaceRefId: 'workspace-a',
+                path: 'src/tool', source: { workspaceRefId: 'workspace-a', expected: { kind: 'file', digest: 'a'.repeat(40), executable: false, size: 12 } },
+                targets: [{ workspaceRefId: 'workspace-b', expected: { kind: 'file', digest: 'b'.repeat(40), executable: false, size: 12 } }],
+                relationshipIds: ['a-b'],
+                alternatives: [{
+                    source: { workspaceRefId: 'workspace-b', expected: { kind: 'file', digest: 'b'.repeat(40), executable: false, size: 12 } },
+                    destination: { workspaceRefId: 'workspace-a', path: 'src/tool.happier-conflict.b', expected: { kind: 'missing' } },
+                    consequence: { propagatingToWorkspaceRefIds: ['workspace-b'] },
+                }],
+            },
+            executedResult: {
+                endpoints: [
+                    { workspaceRefId: 'workspace-a', status: 'applied_paused' },
+                    { workspaceRefId: 'workspace-b', status: 'recovery_needed', recoveryPath: '/work/recovery-b' },
+                ],
+                preserved: [{ alternativeIndex: 0, sourceWorkspaceRefId: 'workspace-b', destinationWorkspaceRefId: 'workspace-a',
+                    path: 'src/tool.happier-conflict.b', propagatingToWorkspaceRefIds: [],
+                    unverifiedPropagationToWorkspaceRefIds: ['workspace-b'], outcome: { status: 'not_started' } }],
+            },
+        });
+        expect(WorkspaceSyncConflictResolutionResultV1Schema.safeParse(JSON.parse(currentArtifact.body).execution.result).success).toBe(true);
+        const matched = approvalArtifactBodyMatchesHeaderV1(currentArtifact.header, currentArtifact.body);
+        expect(matched?.request.status).toBe('executed');
+        expect(matched?.family === 'built_in' && matched.request.execution).toMatchObject({ ok: true, result: { endpoints: expect.any(Array) } });
+        const { ApprovalDetailScreen } = await import('./ApprovalDetailScreen');
+        const screen = await renderScreen(<ApprovalDetailScreen artifactId="artifact-1" />);
+        expect(screen.find((node) => node.props?.reportedOutcome !== undefined).props.reportedOutcome.endpoints).toHaveLength(2);
+        expect(screen.find((node) => node.props?.title === 'workspace-a' && node.props?.subtitle?.includes('workspaceSync.review.appliedPaused'))).not.toBeNull();
+        expect(screen.find((node) => node.props?.title === 'workspaceSync.review.recoveryNeeded' && node.props?.copy === '/work/recovery-b')).not.toBeNull();
+        expect(screen.find((node) => node.props?.title === 'workspaceSync.review.preserveAt'
+            && node.props?.subtitle?.includes('workspaceSync.review.notStarted')
+            && node.props?.subtitle?.includes('workspaceSync.review.propagationUnverified')
+            && node.props?.copy === 'src/tool.happier-conflict.b')).not.toBeNull();
+        expect(screen.find((node) => node.props?.title === 'workspaceSync.review.inspectCurrentVersions')).not.toBeNull();
+        await screen.unmount();
+    });
+
     it('shows the exact Team and member targets before approving deferred governance', async () => {
         currentArtifact = createBuiltInApprovalArtifact({
             actionId: 'teams.members.remove',
@@ -1088,7 +1231,7 @@ describe('ApprovalDetailScreen', () => {
         const { ApprovalDetailScreen } = await import('./ApprovalDetailScreen');
 
         const screen = await renderScreen(<ApprovalDetailScreen artifactId="artifact-1" />);
-        const text = screen.getTextContent();
+        const text = readRenderedText(screen);
 
         expect(text).toContain('Team ID');
         expect(text).toContain('team-acme');
@@ -1118,7 +1261,7 @@ describe('ApprovalDetailScreen', () => {
 
         const screen = await renderScreen(<ApprovalDetailScreen artifactId="artifact-1" />);
 
-        const text = screen.getTextContent();
+        const text = readRenderedText(screen);
         expect(text).not.toContain(bearer);
         expect(text).toContain('srv-home-acme');
         expect(text).toContain('team-acme');
@@ -1147,7 +1290,7 @@ describe('ApprovalDetailScreen', () => {
         const { ApprovalDetailScreen } = await import('./ApprovalDetailScreen');
 
         const screen = await renderScreen(<ApprovalDetailScreen artifactId="artifact-1" />);
-        const text = screen.getTextContent();
+        const text = readRenderedText(screen);
 
         // The rendered-text testkit normalizes layout whitespace. Exact value
         // preservation is asserted at the structured-answer projection owner.
@@ -1176,7 +1319,7 @@ describe('ApprovalDetailScreen', () => {
         const { ApprovalDetailScreen } = await import('./ApprovalDetailScreen');
 
         const screen = await renderScreen(<ApprovalDetailScreen artifactId="artifact-1" />);
-        const text = screen.getTextContent();
+        const text = readRenderedText(screen);
 
         expect(screen.findByTestId('approvals.unrepresentable-details')).not.toBeNull();
         expect(text).toContain('approvals.unsafeDetailsTitle');
@@ -1215,7 +1358,7 @@ describe('ApprovalDetailScreen', () => {
         const screen = await renderScreen(<ApprovalDetailScreen artifactId="artifact-1" />);
 
         expect(screen.findByTestId('approvals.unrepresentable-details')).not.toBeNull();
-        expect(screen.getTextContent()).not.toContain('Deploy to production?');
+        expect(readRenderedText(screen)).not.toContain('Deploy to production?');
         expect(screen.findByTestId('approvals.approve')?.props.disabled).toBe(true);
 
         await screen.pressByTestIdAsync('approvals.approve');
@@ -1241,7 +1384,7 @@ describe('ApprovalDetailScreen', () => {
 
         const screen = await renderScreen(<ApprovalDetailScreen artifactId="artifact-1" />);
 
-        expect(screen.getTextContent()).not.toContain('oversized-answer-0');
+        expect(readRenderedText(screen)).not.toContain('oversized-answer-0');
         expect(screen.findByTestId('approvals.unrepresentable-details')).not.toBeNull();
         expect(screen.findByTestId('approvals.approve')?.props.disabled).toBe(true);
 
@@ -1251,6 +1394,8 @@ describe('ApprovalDetailScreen', () => {
 
     it('uses the approval Home for duplicate session ids and opens the scoped session route', async () => {
         currentArtifact = createCurrentApprovalArtifact('server-approval');
+        portableProfileResolution = { kind: 'resolved', serverIdentityId: 'stable-home-a',
+            profile: { id: 'server-approval', serverIdentityId: 'stable-home-a' } };
         sessionFixtures = {
             'session-1': createSessionFixture({
                 id: 'session-1',
@@ -1285,10 +1430,10 @@ describe('ApprovalDetailScreen', () => {
 
         const screen = await renderScreen(<ApprovalDetailScreen artifactId="artifact-1" />);
 
-        expect(screen.getTextContent()).toContain('Approval Home session');
-        expect(screen.getTextContent()).toContain('Approval Home workstation');
-        expect(screen.getTextContent()).toContain('/approval');
-        expect(screen.getTextContent()).not.toContain('Active Home session');
+        expect(readRenderedText(screen)).toContain('Approval Home session');
+        expect(readRenderedText(screen)).toContain('Approval Home workstation');
+        expect(readRenderedText(screen)).toContain('/approval');
+        expect(readRenderedText(screen)).not.toContain('Active Home session');
 
         await act(async () => {
             await screen.pressByTestIdAsync('approvals.open-session');
@@ -1324,9 +1469,9 @@ describe('ApprovalDetailScreen', () => {
 
         const screen = await renderScreen(<ApprovalDetailScreen artifactId="artifact-1" />);
 
-        expect(screen.getTextContent()).not.toContain('Private cached title');
-        expect(screen.getTextContent()).not.toContain('secret-project');
-        expect(screen.getTextContent()).toContain('actionConfirmations.homeTarget');
+        expect(readRenderedText(screen)).not.toContain('Private cached title');
+        expect(readRenderedText(screen)).not.toContain('secret-project');
+        expect(readRenderedText(screen)).toContain('actionConfirmations.homeTarget');
         expect(screen.findByTestId('approvals.approve')?.props.disabled).toBe(false);
         expect(screen.findByTestId('approvals.reject')?.props.disabled).toBe(false);
     });
@@ -1352,8 +1497,8 @@ describe('ApprovalDetailScreen', () => {
 
         const screen = await renderScreen(<ApprovalDetailScreen artifactId="artifact-1" />);
 
-        expect(screen.getTextContent()).not.toContain('Wrong active Home session');
-        expect(screen.getTextContent()).not.toContain('Other Home session');
+        expect(readRenderedText(screen)).not.toContain('Wrong active Home session');
+        expect(readRenderedText(screen)).not.toContain('Other Home session');
         expect(screen.findByTestId('approvals.open-session')).toBeNull();
     });
 
@@ -1399,7 +1544,7 @@ describe('ApprovalDetailScreen', () => {
 
         const screen = await renderScreen(<ApprovalDetailScreen artifactId="artifact-1" />);
 
-        const text = screen.getTextContent();
+        const text = readRenderedText(screen);
         expect(fetchArtifactWithBodySpy).toHaveBeenCalledWith('artifact-1');
         expect(text).toContain('approvals.loadError');
         expect(screen.findAllByType('ActivityIndicator')).toHaveLength(0);
@@ -1433,12 +1578,14 @@ describe('ApprovalDetailScreen', () => {
         const screen = await renderScreen(<ApprovalDetailScreen artifactId="artifact-1" />);
 
         expect(fetchArtifactWithBodySpy).not.toHaveBeenCalled();
-        expect(screen.getTextContent()).toContain('settingsAccount.secretKeyMissing');
+        expect(readRenderedText(screen)).toContain('settingsAccount.secretKeyMissing');
         expect(screen.findAllByType('ActivityIndicator')).toHaveLength(0);
     });
 
     it('creates the action executor with the session-to-server resolver and routes approval decisions with a server hint', async () => {
         currentArtifact = createCurrentApprovalArtifact('server-approval');
+        portableProfileResolution = { kind: 'resolved', serverIdentityId: 'stable-home-a',
+            profile: { id: 'server-approval', serverIdentityId: 'stable-home-a' } };
         const { ApprovalDetailScreen } = await import('./ApprovalDetailScreen');
 
         const screen = await renderScreen(<ApprovalDetailScreen artifactId="artifact-1" />);
@@ -1467,6 +1614,8 @@ describe('ApprovalDetailScreen', () => {
     it('executes approval decisions even when the web confirm modal resolves false (ModalProvider unavailable)', async () => {
         modalConfirmResult = false;
         currentArtifact = createCurrentApprovalArtifact('server-approval');
+        portableProfileResolution = { kind: 'resolved', serverIdentityId: 'stable-home-a',
+            profile: { id: 'server-approval', serverIdentityId: 'stable-home-a' } };
         const { ApprovalDetailScreen } = await import('./ApprovalDetailScreen');
 
         const screen = await renderScreen(<ApprovalDetailScreen artifactId="artifact-1" />);
@@ -1485,29 +1634,21 @@ describe('ApprovalDetailScreen', () => {
         );
     });
 
-    it('renders and approves external session.title.set requests', async () => {
+    it('renders legacy external session.title.set requests without offering an unsafe approval replay', async () => {
         currentArtifact = createSessionTitleApprovalArtifact('server-approval');
         const { ApprovalDetailScreen } = await import('./ApprovalDetailScreen');
 
         const screen = await renderScreen(<ApprovalDetailScreen artifactId="artifact-1" />);
 
-        const text = screen.getTextContent();
+        const text = readRenderedText(screen);
         expect(text).toContain('Set session title');
         expect(text).toContain('New title from MCP');
         expect(text).toContain('Session id');
         expect(text).toContain('Title');
 
-        await act(async () => {
-            await screen.pressByTestIdAsync('approvals.approve');
-        });
-
-        expect(executeSpy).toHaveBeenCalledWith(
-            'approval.request.decide',
-            { artifactId: 'artifact-1', decision: 'approve' },
-            expect.objectContaining({
-                surface: 'ui',
-                serverId: 'server-approval',
-            }),
-        );
+        expect(screen.findByTestId('approvals.approve')?.props.disabled).toBe(true);
+        expect(screen.findByTestId('approvals.reject')?.props.disabled).toBe(false);
+        await screen.pressByTestIdAsync('approvals.approve');
+        expect(executeSpy).not.toHaveBeenCalled();
     });
 });

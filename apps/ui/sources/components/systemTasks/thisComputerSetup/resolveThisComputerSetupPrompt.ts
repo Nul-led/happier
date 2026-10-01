@@ -1,3 +1,5 @@
+import { parseSetupCliChoicePromptData, type SetupCliChoicePromptData } from '@happier-dev/protocol';
+
 import { readLatestSystemTaskPrompt, type SystemTaskPromptEnvelope } from '../prompts/readLatestSystemTaskPrompt';
 import {
     resolveBackgroundServiceReplacementPrompt,
@@ -9,7 +11,10 @@ import {
 } from '../prompts/resolveBackgroundServiceSetupPrompt';
 import type { SystemTaskRunState } from '../types';
 
-export type ThisComputerSetupPrompt = ReleaseChannelSwitchSetupPrompt | Extract<
+/** R12's one question: who manages this computer's `happier` command line. */
+export type CliChoiceSetupPrompt = Readonly<{ kind: 'setup.cliChoice'; message: string }> & SetupCliChoicePromptData;
+
+export type ThisComputerSetupPrompt = CliChoiceSetupPrompt | ReleaseChannelSwitchSetupPrompt | Extract<
     BackgroundServiceReplacementPrompt,
     Readonly<{ kind: 'daemon.replaceLocalBackgroundServices' }>
 > | ManualRelayRuntimeTakeoverPrompt;
@@ -22,6 +27,11 @@ export function resolveThisComputerSetupPrompt(
         : promptOrSnapshot;
     if (!prompt) {
         return null;
+    }
+
+    if (prompt.kind === 'setup.cliChoice') {
+        const data = parseSetupCliChoicePromptData(prompt.data);
+        return data ? { kind: 'setup.cliChoice', message: prompt.message, ...data } : null;
     }
 
     if (prompt.kind === 'releaseChannel.switchDefaultForSetup') {

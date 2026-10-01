@@ -1,4 +1,4 @@
-import type { Message } from '@/sync/domains/messages/messageTypes';
+import type { Message } from "@happier-dev/session-core/messages";
 import type { PendingPermissionRequest } from '@/utils/sessions/sessionUtils';
 
 export const EMPTY_MESSAGES_BY_ID: Readonly<Record<string, Message>> = Object.freeze({});

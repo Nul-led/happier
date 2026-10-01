@@ -110,6 +110,41 @@ describe('withHostSessionRuntimeIdentityPublication', () => {
     expect(sendTurnPrompt).toHaveBeenCalledWith('resume prompt', { userMessageSeq: 92 });
   });
 
+  it('preserves transient provider CLI attach preparation through identity publication decoration', async () => {
+    const metadata = {
+      path: '/repo',
+      runtimeDescriptorV1: {
+        v: 1 as const,
+        agentId: 'codex',
+        agent: { providerSessionId: 'thread-live-1' },
+      },
+    };
+    const prepareProviderCliAttach = vi.fn(async () => metadata);
+    const runtime = createRuntimeTurnOperations({ prepareProviderCliAttach });
+    const plan = {
+      kind: HOST_SESSION_RUNTIME_PLAN_KIND,
+      agentId: 'codex',
+      opts: {},
+      config: {
+        createSessionRuntime: vi.fn(async () => ({ operations: runtime })),
+      },
+    } as unknown as HostSessionRuntimePlan;
+
+    const wrapped = withHostSessionRuntimeIdentityPublication({
+      plan,
+      identity: {
+        runtimeDescriptor: null,
+        runtimeCapabilities: null,
+        runtimeFacets: null,
+      },
+    });
+
+    const created = await wrapped.config.createSessionRuntime?.({} as never);
+
+    await expect(created?.operations.prepareProviderCliAttach?.()).resolves.toEqual(metadata);
+    expect(prepareProviderCliAttach).toHaveBeenCalledOnce();
+  });
+
   it('preserves the explicit terminal mode binding alongside runtime publication decoration', async () => {
     const runtime = createRuntimeTurnOperations();
     const terminalRemoteModeLoop = {

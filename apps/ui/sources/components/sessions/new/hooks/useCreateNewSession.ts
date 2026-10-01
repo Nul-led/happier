@@ -3,10 +3,13 @@ import * as React from 'react';
 
 import { t } from '@/text';
 import { Modal } from '@/modal';
+import { getMachineDisplayName } from '@/utils/sessions/machineDisplayNames';
+import { resolveAgentCatalogProjection } from '@/agents/backendCatalog/agentCatalogProjection';
+import { machineCollectionHref } from '@/components/settings/machines/collection/machineCollectionModel';
 import { sync } from '@/sync/sync';
 import { actionOperationPresentationCoordinator } from '@/components/inbox/actionOperations/actionOperationPresentationRuntime';
 import { actionOperationStore } from '@/sync/domains/actionOperations/actionOperationStore';
-import { useApplySettings } from '@/sync/store/settingsWriters';
+import { useApplyAuthoringMemoryDelta, useApplySettings } from '@/sync/store/settingsWriters';
 import { storage } from '@/sync/domains/state/storage';
 import { resolveTerminalSpawnOptions } from '@/sync/domains/settings/terminalSettings';
 import { CREATED_SESSION_NOT_AVAILABLE_LOCALLY_ERROR } from '@/sync/runtime/sessionMessageDeliveryErrors';
@@ -20,6 +23,7 @@ import type { Settings } from '@/sync/domains/settings/settings';
 import type { SavedSecret } from '@/sync/domains/settings/savedSecretTypes';
 import type { SavedSecretReferenceResolution } from '@/sync/store/settings/savedSecretCatalogSnapshot';
 import { areServerAccountScopesEqual, type ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
+import { captureActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
 import { resolveEffectiveWindowsRemoteSessionLaunchMode } from '@/sync/domains/session/spawn/windowsRemoteSessionLaunchMode';
 import { getAgentCore, isBundledAgentId, type AgentId } from '@/agents/catalog/catalog';
 import { resolveBackendTargetKeyV2 } from '@/agents/backendCatalog/backendTargetKeyV2';
@@ -43,7 +47,8 @@ import {
     type SecretReferenceOverlayV1,
     type WindowsRemoteSessionLaunchMode,
 } from '@happier-dev/protocol';
-import type { AcpConfigOptionOverridesV1, ComposerSnapshotV1 } from '@happier-dev/protocol';
+import type { AcpConfigOptionOverridesV1, ComposerSnapshotV1, RawIngressStructuredInputV1 } from '@happier-dev/protocol';
+import type { SessionSpawnNewInitialInputV1 } from '@happier-dev/protocol/sessions/creation/sessionSpawnNewInputV2';
 import type { AttachmentDraft } from '@/components/sessions/attachments/attachmentDraftModel';
 import type { ReviewCommentDraft } from '@/sync/domains/input/reviewComments/reviewCommentTypes';
 import type { WorkspaceScopeBase } from '@/sync/domains/workspaces/workspaceScope';
@@ -63,6 +68,8 @@ import { captureExceptionIfEnabled } from '@/utils/system/sentry';
 import { fireAndForget } from '@/utils/system/fireAndForget';
 import { useMountedRef } from '@/hooks/ui/useMountedRef';
 import { buildScopedSessionRouteHref } from '@/hooks/session/sessionRouteServerScope';
+import { useNewSessionEmbeddedHost, useNewSessionHostCreationProfile, useNewSessionHostSpawnExecutor } from '@/components/sessions/new/navigation/newSessionHost';
+import { isHostBoundNewSessionMachine } from '@/components/sessions/new/modules/canCreateNewSession';
 import { createNewSessionActionOperationOrigin } from '@/components/sessions/new/navigation/newSessionActionOperationOrigin';
 import {
     presentCreatedNewSession,
@@ -118,6 +125,9 @@ import {
     captureNewSessionDraftWorkflowCurrentness,
     clearCapturedNewSessionDraftAfterLaunch,
     preserveCreatedSessionDraftAfterUnacceptedFirstTurn,
+    preserveCreatedSessionSuccessorDraft,
+    readNewSessionDraftLaunchConfigurationUpdatedAtMs,
+    releaseNewSessionDraftLaunchAttempt,
 } from '@/components/sessions/new/modules/newSessionDraftLifecycle';
 import { actionOperationSelectors } from '@/sync/domains/actionOperations/actionOperationSelectors';
 import type { UploadedAttachment } from '@/components/sessions/attachments/uploadAttachmentDraftsToSession';
@@ -161,6 +171,8 @@ export type TemporaryComputerCreatorSettlement = Readonly<{
 export type HandleCreateSessionOptions = Readonly<{
     initialMessage?: 'send' | 'skip';
     inputTextOverride?: string;
+    initialInputStructuredInput?: RawIngressStructuredInputV1;
+    initialInputReviewComments?: SessionSpawnNewInitialInputV1['reviewComments'];
     afterCreated?: (context: CreatedSessionFollowUpContext) => void | Promise<void>;
     /**
      * Optional projection of this call's incumbent post-create follow-up terminal result.
@@ -268,7 +280,10 @@ export function useCreateNewSession(params: Readonly<{
     router: { push: (options: any) => void; replace: (path: any, options?: any) => void };
 
     selectedMachineId: string | null;
+    /** The authored folder; with `directoryKind: 'managed'` it is only remembered, never launched in. */
     selectedPath: string;
+    /** `managed`: no folder; the target machine keeps a private one for the session. */
+    directoryKind?: 'path' | 'managed';
     getRequestedPath?: () => string;
     selectedMachine: any;
 
@@ -318,6 +333,8 @@ export function useCreateNewSession(params: Readonly<{
     preflightModelsTargetKey?: string | null;
 
     promptStore: NewSessionPromptStore;
+    /** Flushes the mounted input into its canonical draft before an asynchronous handoff. */
+    flushComposerInput?: () => void;
     setSessionPrompt?: (prompt: string) => void;
     resumeSessionId: string;
     agentNewSessionOptions?: Record<string, unknown> | null;
@@ -382,10 +399,21 @@ export function useCreateNewSession(params: Readonly<{
     retryProviderLaunch: () => void;
 }> {
     const collaborationAvailability = useSessionCollaborationAvailability(params.targetServerId ?? '');
+    // The embedding host's creation executor (the embed's new chat), read at Send through the ref.
+    const hostSpawnExecutor = useNewSessionHostSpawnExecutor();
+    const embeddedHost = useNewSessionEmbeddedHost();
+    const presentsInPlaceRef = React.useRef(false);
+    presentsInPlaceRef.current = embeddedHost?.createdSessionPresentation === 'inPlace';
+    const hostSpawnExecutorRef = React.useRef(hostSpawnExecutor);
+    hostSpawnExecutorRef.current = hostSpawnExecutor;
+    const hostCreationProfile = useNewSessionHostCreationProfile();
+    const hostCreationProfileRef = React.useRef(hostCreationProfile);
+    hostCreationProfileRef.current = hostCreationProfile;
     const collaborationAvailabilityRef = React.useRef(collaborationAvailability);
     collaborationAvailabilityRef.current = collaborationAvailability;
     const mountedRef = useMountedRef();
     const applySettings = useApplySettings();
+    const applyAuthoringMemory = useApplyAuthoringMemoryDelta();
     const [providerLaunchFailure, setProviderLaunchFailure] = React.useState<Readonly<{
         error: ProviderErrorV1;
         scopeKey: string;
@@ -496,6 +524,7 @@ export function useCreateNewSession(params: Readonly<{
                     });
                 }
                 const capturedDraftScope = capturedTargetScope;
+                const presentationAccountLifetime = captureActiveServerAccountScopeLifetime();
                 const submittedDraftCurrentness = captureNewSessionDraftWorkflowCurrentness({
                     scope: capturedDraftScope,
                     draftId: capturedDraftId,
@@ -505,6 +534,7 @@ export function useCreateNewSession(params: Readonly<{
                     displayText: opts.temporaryComputerSubmission.composer.text,
                     scopeKey: `temporary-computer:${capturedTargetScope.serverId}:${capturedTargetScope.accountId}:${current.draftId ?? 'unsaved'}`,
                     attemptId: launchUserAttemptIdForCurrentIntentRef.current,
+                    configurationUpdatedAtMs: nowServerMs(),
                     meta: null,
                 });
                 let createdSessionCompletion: ReturnType<typeof createCreatedNewSessionCompletion> | null = null;
@@ -539,7 +569,9 @@ export function useCreateNewSession(params: Readonly<{
                             accountId: capturedTargetScope.accountId,
                             requestId: launchAttempt.attemptId,
                             router: current.router,
-                            isStillActive: () => mountedRef.current,
+                            isStillActive: () => mountedRef.current
+                                && presentationAccountLifetime?.isCurrent() === true
+                                && launchAttemptRef.current?.attemptId === launchAttempt.attemptId,
                         }),
                         ...(!opts.deferAcceptedDraftClearToDocument && capturedDraftScope && capturedDraftId
                             ? { clearCapturedDraft: async () => {
@@ -603,18 +635,24 @@ export function useCreateNewSession(params: Readonly<{
             }
             return;
         }
-        const requestedPath = typeof current.getRequestedPath === 'function'
+        const launchesWithoutFolder = current.directoryKind === 'managed';
+        const requestedPath = typeof current.getRequestedPath === 'function' && !launchesWithoutFolder
             ? current.getRequestedPath()
             : current.selectedPath;
         const effectiveSelectedPath = (typeof requestedPath === 'string'
             ? requestedPath
             : current.selectedPath).trim();
-        if (!selectedMachineId || !current.selectedMachine || current.selectedMachine.id !== selectedMachineId) {
+        const usesHostBoundMachine = Boolean(hostSpawnExecutorRef.current) && isHostBoundNewSessionMachine({
+            selectedMachineId,
+            directoryKind: current.directoryKind,
+            hostBoundMachineId: hostCreationProfileRef.current?.machineId,
+        });
+        if (!selectedMachineId || (!usesHostBoundMachine && (!current.selectedMachine || current.selectedMachine.id !== selectedMachineId))) {
             Modal.alert(t('common.error'), t('newSession.noMachineSelected'));
             reportAfterCreatedSettlement({ status: 'rejected' });
             return;
         }
-        if (effectiveSelectedPath.length === 0) {
+        if (!launchesWithoutFolder && effectiveSelectedPath.length === 0) {
             Modal.alert(t('common.error'), t('newSession.noPathSelected'));
             reportAfterCreatedSettlement({ status: 'rejected' });
             return;
@@ -652,6 +690,7 @@ export function useCreateNewSession(params: Readonly<{
                 machineId: selectedMachineId,
                 serverId: resolvedTargetServerId,
                 selectedPath: effectiveSelectedPath,
+                directoryKind: current.directoryKind,
                 selectedMachineMetadata: current.selectedMachine?.metadata,
                 useProfiles: current.useProfiles,
                 selectedProfileId: current.useProfiles ? current.selectedProfileId : null,
@@ -670,6 +709,7 @@ export function useCreateNewSession(params: Readonly<{
                     machineId: latest.selectedMachineId,
                     serverId: latestResolvedTargetServerId,
                     selectedPath: latestEffectiveSelectedPath,
+                    directoryKind: latest.directoryKind,
                     selectedMachineMetadata: latest.selectedMachine?.metadata,
                     useProfiles: latest.useProfiles,
                     selectedProfileId: latest.useProfiles ? latest.selectedProfileId : null,
@@ -719,16 +759,18 @@ export function useCreateNewSession(params: Readonly<{
             const settingsUpdate: MutableSettingsDelta = {};
             // This history stores local Machine IDs, so its Account Settings
             // scope must be the Home where those IDs were selected.
-            if (areServerProfileIdentifiersEquivalent(
+            // A private folder is never a recent folder: only a chosen one is remembered.
+            if (!launchesWithoutFolder && areServerProfileIdentifiersEquivalent(
                 storage.getState().settingsScope?.serverId,
                 resolvedTargetServerId,
             )) {
-                settingsUpdate.recentMachinePaths = [
+                const recentMachinePaths = [
                     { machineId: selectedMachineId, path: effectiveSelectedPath },
                     ...current.recentMachinePaths.filter((rp) => (
                         rp.machineId !== selectedMachineId || rp.path !== effectiveSelectedPath
                     )),
                 ].slice(0, 10);
+                fireAndForget(applyAuthoringMemory({ recentMachinePaths }), { tag: 'useCreateNewSession.recentPaths' });
             }
             if (current.backendTarget) {
                 Object.assign(settingsUpdate, buildLastUsedBackendTargetSettings({
@@ -827,6 +869,11 @@ export function useCreateNewSession(params: Readonly<{
                 : [];
             const blockingIssue = preflightIssues[0] ?? null;
             if (blockingIssue) {
+                if (presentsInPlaceRef.current) {
+                    Modal.alert(t(blockingIssue.titleKey), t(blockingIssue.messageKey));
+                    current.setIsCreating(false);
+                    return;
+                }
                 const openMachine = await Modal.confirm(
                     t(blockingIssue.titleKey),
                     t(blockingIssue.messageKey),
@@ -849,7 +896,29 @@ export function useCreateNewSession(params: Readonly<{
                 ? current.resumeSessionId
                 : undefined;
             const spawnPermissionMode = parsePermissionIntentAlias(current.permissionMode) ?? 'default';
-            const spawnPermissionModeUpdatedAt = nowServerMs();
+            const retryableLaunchAttempt = launchAttemptRef.current?.status === 'failed_retryable'
+                && isNewSessionLaunchAttemptInScope(launchAttemptRef.current, launchScopeKey)
+                ? launchAttemptRef.current
+                : null;
+            // An attempt id is the daemon's Action request identity, which rejects a
+            // reused id carrying different input. Every submission of one attempt,
+            // including after a reload, replays the timestamp captured when it began.
+            const reusedLaunchUserAttemptId = retryableLaunchAttempt?.attemptId
+                ?? launchUserAttemptIdForCurrentIntentRef.current;
+            const spawnPermissionModeUpdatedAt = (
+                reusedLaunchUserAttemptId !== null
+                && launchAttemptRef.current?.attemptId === reusedLaunchUserAttemptId
+                    ? launchAttemptRef.current.configurationUpdatedAtMs
+                    : null
+            ) ?? (
+                reusedLaunchUserAttemptId !== null && current.draftScope && current.draftId
+                    ? readNewSessionDraftLaunchConfigurationUpdatedAtMs({
+                        scope: current.draftScope,
+                        draftId: current.draftId,
+                        launchUserAttemptId: reusedLaunchUserAttemptId,
+                    })
+                    : null
+            ) ?? nowServerMs();
             const normalizedAcpModeId = typeof current.acpSessionModeId === 'string' ? current.acpSessionModeId.trim() : '';
             const spawnModelId =
                 staticAgentId !== null &&
@@ -915,6 +984,7 @@ export function useCreateNewSession(params: Readonly<{
                     ...(retainedSelectionOrigin ? { selectionOrigin: retainedSelectionOrigin } : {}),
                 } : null,
                 directory: effectiveSelectedPath,
+                directoryKind: current.directoryKind,
                 checkoutCreationDraft: current.checkoutCreationDraft ?? null,
                 organizationPlacement: current.authoringDraft?.organizationPlacement ?? { folderId: null, tagIds: [] },
                 access: current.authoringDraft?.access,
@@ -964,15 +1034,12 @@ export function useCreateNewSession(params: Readonly<{
                 return;
             }
 
-            const retryableLaunchAttempt = launchAttemptRef.current?.status === 'failed_retryable'
-                && isNewSessionLaunchAttemptInScope(launchAttemptRef.current, launchScopeKey)
-                ? launchAttemptRef.current
-                : null;
             let launchAttempt = retryableLaunchAttempt ?? createNewSessionLaunchAttempt({
                 prompt: normalizedSessionPrompt,
                 displayText: normalizedSessionPrompt,
                 scopeKey: launchScopeKey,
                 attemptId: launchUserAttemptIdForCurrentIntentRef.current,
+                configurationUpdatedAtMs: spawnPermissionModeUpdatedAt,
                 meta: null,
             });
             if (!retryableLaunchAttempt && launchUserAttemptIdForCurrentIntentRef.current !== launchAttempt.attemptId) {
@@ -984,8 +1051,30 @@ export function useCreateNewSession(params: Readonly<{
                     draftId: current.draftId,
                     launchUserAttemptId: launchAttempt.attemptId,
                     currentness: submittedDraftCurrentness,
+                    configurationUpdatedAtMs: launchAttempt.configurationUpdatedAtMs,
                 });
             }
+            /**
+             * A terminal failure before any Session exists ends this attempt: the
+             * next submission must mint a new id instead of replaying one the
+             * daemon may already hold with different input.
+             */
+            const endLaunchAttemptWithoutSession = (): void => {
+                const endedAttemptId = launchAttempt.attemptId;
+                publishLaunchAttempt(null);
+                invalidatedLaunchUserAttemptIdRef.current = endedAttemptId;
+                if (launchUserAttemptIdForCurrentIntentRef.current === endedAttemptId) {
+                    launchUserAttemptIdForCurrentIntentRef.current = null;
+                }
+                if (current.draftScope && current.draftId) {
+                    releaseNewSessionDraftLaunchAttempt({
+                        scope: current.draftScope,
+                        draftId: current.draftId,
+                        launchUserAttemptId: endedAttemptId,
+                    });
+                }
+                current.onLaunchUserAttemptIdChange?.(null);
+            };
             publishLaunchAttempt(launchAttempt);
             let createdSessionId = launchAttempt.createdSessionId;
             let manualActionCustody: ManualSessionSpawnNewActionCustody | null = null;
@@ -1039,7 +1128,7 @@ export function useCreateNewSession(params: Readonly<{
                         error: new Error('The selected Agent is unavailable on this machine.'),
                         retryable: false,
                     });
-                    publishLaunchAttempt(null);
+                    endLaunchAttemptWithoutSession();
                     Modal.alert(t('common.error'), t('newSession.failedToStart'));
                     current.setIsCreating(false);
                     return;
@@ -1051,6 +1140,8 @@ export function useCreateNewSession(params: Readonly<{
                         permissionMode: spawnPermissionMode,
                         configurationUpdatedAtMs: spawnPermissionModeUpdatedAt,
                         initialMessage: initialMessageText || null,
+                        initialStructuredInput: opts?.initialInputStructuredInput,
+                        initialReviewComments: opts?.initialInputReviewComments,
                         sourceContext: current.sourceContext ?? null,
                         secretReferenceOverlay,
                     });
@@ -1082,6 +1173,7 @@ export function useCreateNewSession(params: Readonly<{
                                 : '',
                             userAttemptId: launchAttempt.attemptId,
                             seedNonce: launchAttempt.spawnNonce,
+                            ...(hostSpawnExecutorRef.current ? { executeAction: hostSpawnExecutorRef.current } : {}),
                         });
                         if (execution.status === 'custody_unavailable') {
                             throw new Error(
@@ -1125,7 +1217,7 @@ export function useCreateNewSession(params: Readonly<{
                         error: new Error(actionResult.error),
                         retryable: false,
                     });
-                    publishLaunchAttempt(null);
+                    endLaunchAttemptWithoutSession();
                     // An older CLI returning method-unavailable remains a typed
                     // Action failure; ordinary UI creation never falls back.
                     Modal.alert(
@@ -1155,7 +1247,11 @@ export function useCreateNewSession(params: Readonly<{
                         error: new Error(actionResult.result.code),
                         retryable: actionResult.result.retryable,
                     });
-                    publishLaunchAttempt(actionResult.result.retryable ? launchAttempt : null);
+                    if (actionResult.result.retryable) {
+                        publishLaunchAttempt(launchAttempt);
+                    } else {
+                        endLaunchAttemptWithoutSession();
+                    }
                     if (actionResult.result.code === 'machine_offline') {
                         showDaemonUnavailableAlert({
                             titleKey: 'newSession.daemonRpcUnavailableTitle',
@@ -1185,6 +1281,32 @@ export function useCreateNewSession(params: Readonly<{
                         current.setIsCreating(false);
                         return;
                     }
+                    // The agent isn't on the machine or is signed out (typed by the daemon's spawn
+                    // precondition): say which, keep the draft, and lead to its setup (lab agent-setup ST).
+                    if (
+                        (actionResult.result.code === 'agent_cli_missing' || actionResult.result.code === 'agent_signed_out')
+                        && actionResult.result.agentId
+                        && selectedMachineId
+                    ) {
+                        const agentTitle = resolveAgentCatalogProjection(actionResult.result.agentId, { enabledAgentIds: [] }).title;
+                        const machineName = getMachineDisplayName(current.selectedMachine) ?? selectedMachineId;
+                        const setupHref = machineCollectionHref({ machineId: selectedMachineId, serverId: resolvedTargetServerId });
+                        Modal.alert(
+                            actionResult.result.code === 'agent_cli_missing'
+                                ? t('machineAgents.spawnCliMissing', { agent: agentTitle, machine: machineName })
+                                : t('machineAgents.spawnSignedOut', { agent: agentTitle, machine: machineName }),
+                            t('machineAgents.draftKept'),
+                            [
+                                { text: t('machineAgents.actionCancel'), style: 'cancel' },
+                                ...(!presentsInPlaceRef.current ? [{
+                                    text: actionResult.result.code === 'agent_cli_missing' ? t('machineAgents.setUp') : t('machineAgents.actionSignIn'),
+                                    onPress: () => current.router.push(setupHref as never),
+                                }] : []),
+                            ],
+                        );
+                        current.setIsCreating(false);
+                        return;
+                    }
                     Modal.alert(
                         t('common.error'),
                         t(resolveSessionSpawnNewResultFailureMessageKey(actionResult.result)),
@@ -1200,7 +1322,7 @@ export function useCreateNewSession(params: Readonly<{
                 )
                     ? actionResult.result.initialInput.localId
                     : null;
-                initialInputWasNotAccepted = initialMessageText.length > 0 && initialInputLocalId === null;
+                initialInputWasNotAccepted = Boolean(spawnInput.initialInput) && initialInputLocalId === null;
                 if (launchAttempt.createdSessionId !== createdSessionId) {
                     launchAttempt = markNewSessionLaunchAttemptCreated(launchAttempt, { createdSessionId });
                     publishLaunchAttempt(launchAttempt);
@@ -1214,7 +1336,7 @@ export function useCreateNewSession(params: Readonly<{
                     return;
                 }
                 if (profilesActive) {
-                    applySettings({ lastUsedProfile: current.selectedProfileId });
+                    fireAndForget(applyAuthoringMemory({ lastUsedProfile: current.selectedProfileId }), { tag: 'useCreateNewSession.lastUsedProfile' });
                 }
                 const spawnedBackendTargetKey = resolveBackendTargetKeyV2(selectedBackendTarget);
                 const modelPolicyAgentId = current.staticAgentId ?? current.agentType;
@@ -1262,7 +1384,7 @@ export function useCreateNewSession(params: Readonly<{
                     projectAcceptedNewSessionFirstTurn({
                         sessionId: createdSessionId,
                         localId: initialInputLocalId,
-                        text: initialMessageText,
+                        text: opts?.initialInputReviewComments?.displayText ?? initialMessageText,
                         fallbackAgentId: current.agentType,
                         fallbackPermissionMode: current.permissionMode,
                         fallbackModelMode: current.modelMode,
@@ -1475,9 +1597,20 @@ export function useCreateNewSession(params: Readonly<{
                     }
                     return;
                 } else {
+                    if (hostSpawnExecutorRef.current && current.draftScope && current.draftId && isLaunchScopeStillActive()) {
+                        current.flushComposerInput?.();
+                        preserveCreatedSessionSuccessorDraft({
+                            scope: current.draftScope,
+                            draftId: current.draftId,
+                            launchUserAttemptId: launchAttempt.attemptId,
+                            sessionId: createdSessionId,
+                        });
+                    }
                     launchAttempt = markNewSessionLaunchAttemptComplete(launchAttempt);
-                    if (opts?.afterCreated && mountedRef.current && isLaunchScopeStillActive()) {
-                        reportAfterCreatedSettlement({ status: 'accepted', sessionId: createdSessionId });
+                    if (opts?.onAfterCreatedSettled && mountedRef.current && isLaunchScopeStillActive()) {
+                        reportAfterCreatedSettlement(initialInputWasNotAccepted
+                            ? { status: 'rejected' }
+                            : { status: 'accepted', sessionId: createdSessionId });
                     }
                 }
 
@@ -1543,7 +1676,7 @@ export function useCreateNewSession(params: Readonly<{
             }
             createInFlightRef.current = false;
         }
-    }, [applySettings, mountedRef, publishLaunchAttempt]);
+    }, [applyAuthoringMemory, applySettings, mountedRef, publishLaunchAttempt]);
 
     const currentProviderLaunchErrorScopeKey = buildProviderLaunchErrorScopeKey(params);
     React.useEffect(() => {

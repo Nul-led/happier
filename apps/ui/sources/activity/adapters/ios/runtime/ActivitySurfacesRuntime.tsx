@@ -30,9 +30,9 @@ import { resolveActivitySurfaceDeliveryAdmission } from '@/activity/delivery/res
 import { useExactHomeAccountSettings } from '@/activity/delivery/useExactHomeAccountSettings';
 import { createDefaultActionExecutor } from '@/sync/ops/actions/defaultActionExecutor';
 import { getFeatureBuildPolicyDecision } from '@/sync/domains/features/featureBuildPolicy';
-import { resolveLocalFeaturePolicyEnabled } from '@/sync/domains/features/featureLocalPolicy';
+import { resolveLocalFeaturePolicyEnabled, type FeatureLocalPolicySettings } from '@/sync/domains/features/featureLocalPolicy';
 import { useServerFeaturesMainSelectionSnapshot } from '@/sync/domains/features/featureDecisionRuntime';
-import { useLocalSettings, useSettings } from '@/sync/domains/state/storage';
+import { useLocalSettings, useSetting } from '@/sync/domains/state/storage';
 import { activityInstanceKey, sessionAddressKey } from '@/sync/domains/session/sessionAddress';
 
 import {
@@ -92,7 +92,7 @@ const LIVE_ACTIVITY_GRACEFUL_DISMISSAL_MS = 5 * 60_000;
 const LIVE_ACTIVITY_ACTIVE_CAP_MS = 8 * 60 * 60_000;
 type LiveActivityDismissalPolicy = 'default' | 'immediate' | { after: Date };
 
-function isClientFeatureEnabled(featureId: FeatureId, settings: ReturnType<typeof useSettings>): boolean {
+function isClientFeatureEnabled(featureId: FeatureId, settings: FeatureLocalPolicySettings): boolean {
     return getFeatureBuildPolicyDecision(featureId) !== 'deny'
         && resolveLocalFeaturePolicyEnabled(featureId, settings);
 }
@@ -475,7 +475,8 @@ export function ActivitySurfacesRuntime(): React.ReactElement | null {
     const activitySource = useActivityAttentionSource();
     const resolveAccountSettings = useExactHomeAccountSettings(activitySource.audienceScopes);
     const isDataReady = activitySource.isDataReady;
-    const settings = useSettings();
+    const experiments = useSetting('experiments');
+    const featureToggles = useSetting('featureToggles');
     const localSettings = useLocalSettings();
     const activityNowMs = Date.now();
     const [appStateStatus, setAppStateStatus] = React.useState(() => AppState.currentState);
@@ -490,6 +491,7 @@ export function ActivitySurfacesRuntime(): React.ReactElement | null {
     [appStateStatus]);
 
     const policies = React.useMemo(() => {
+        const settings = { experiments, featureToggles };
         const resolved = resolveIosActivitySurfacePolicies({ localSettings });
         return {
             liveActivityPolicy: {
@@ -509,7 +511,7 @@ export function ActivitySurfacesRuntime(): React.ReactElement | null {
                 },
             },
         };
-    }, [localSettings, settings]);
+    }, [experiments, featureToggles, localSettings]);
     const liveActivityPolicy = policies.liveActivityPolicy;
     const widgetPolicy = policies.widgetPolicy;
 

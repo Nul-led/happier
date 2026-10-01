@@ -59,7 +59,11 @@ export type SettingsDomain = {
     activateSettingsScope: (scope: AccountSettingsScope, legacyScopes?: readonly AccountSettingsScope[]) => Promise<void>;
     clearSettingsScope: () => void;
     applySettingsForScope: (scope: AccountSettingsScope, settings: Settings, version: number) => void;
-    applyLocalSettings: (delta: Partial<LocalSettings>, options?: { source?: SettingsAnalyticsSource }) => void;
+    /**
+     * `persist: false` applies a runtime-only value (the embed's text scale): the store changes, the
+     * device's saved local settings and their change events do not.
+     */
+    applyLocalSettings: (delta: Partial<LocalSettings>, options?: { source?: SettingsAnalyticsSource; persist?: boolean }) => void;
     applyPurchases: (customerInfo: CustomerInfo) => void;
 };
 
@@ -283,12 +287,14 @@ export function createSettingsDomain<S extends SettingsDomain & SettingsDomainDe
                 if (areAccountSettingsJsonValuesEqual(updatedLocalSettings, previousLocalSettings)) {
                     return state;
                 }
-                saveLocalSettings(updatedLocalSettings);
-                emitLocalSettingChangedEvents({
-                    previousSettings: previousLocalSettings,
-                    nextSettings: updatedLocalSettings,
-                    source: options?.source,
-                });
+                if (options?.persist !== false) {
+                    saveLocalSettings(updatedLocalSettings);
+                    emitLocalSettingChangedEvents({
+                        previousSettings: previousLocalSettings,
+                        nextSettings: updatedLocalSettings,
+                        source: options?.source,
+                    });
+                }
                 return {
                     ...state,
                     localSettings: updatedLocalSettings,

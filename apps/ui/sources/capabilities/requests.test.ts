@@ -1,73 +1,23 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
-const agentsPackageState = vi.hoisted(() => ({
-    AGENT_IDS: ['claude', 'codex', 'kiro'],
-    CANONICAL_AGENT_IDS: ['claude', 'codex', 'kiro'],
-    AGENT_LOCAL_CLI_CONFIG: {
-        claude: { detectKey: 'claude' },
-        codex: { detectKey: 'codex' },
-        kiro: { detectKey: 'kiro-cli' },
-    },
-    isAgentCliAuthBackgroundCheckSafe: (agentId: string) => agentId !== 'kiro',
-}));
-
-function resolvePackageDetectKey(agentId: string): string {
-    const entry = (agentsPackageState.AGENT_LOCAL_CLI_CONFIG as Record<string, { detectKey: string }>)[agentId];
-    return entry?.detectKey ?? agentId;
-}
-
-vi.mock('@happier-dev/agents', async (importOriginal) => ({
-    ...await importOriginal<typeof import('@happier-dev/agents')>(),
-    ...agentsPackageState,
-    getAgentLocalCliConfig: (agentId: string) => ({
-        agentId,
-        detectKey: resolvePackageDetectKey(agentId),
-        machineLoginKey: agentId,
-        supportKind: 'login_terminal',
-        loginLaunch: null,
-    }),
-}));
-
-const { CAPABILITIES_REQUEST_MACHINE_DETAILS } = await import('./requests');
+import { CAPABILITIES_REQUEST_MACHINE_DETAILS, buildUpdatesCapabilitiesRequest } from './requests';
 
 describe('CAPABILITIES_REQUEST_MACHINE_DETAILS', () => {
-    beforeEach(() => {
-        agentsPackageState.AGENT_LOCAL_CLI_CONFIG.codex.detectKey = 'codex';
-        agentsPackageState.AGENT_LOCAL_CLI_CONFIG.kiro.detectKey = 'kiro-cli';
+    it('asks for non-agent tools and helpers, leaving agent detection to the inventory owner', () => {
+        expect(CAPABILITIES_REQUEST_MACHINE_DETAILS.checklistId).toBeUndefined();
+        expect(CAPABILITIES_REQUEST_MACHINE_DETAILS.requests).toEqual(expect.arrayContaining([
+            { id: 'tool.tmux' }, { id: 'tool.windowsTerminal' }, { id: 'tool.executionRuns' }, { id: 'dep.gh' },
+        ]));
+        expect(CAPABILITIES_REQUEST_MACHINE_DETAILS.requests?.some(({ id }) => id.startsWith('cli.'))).toBe(false);
     });
+});
 
-    it('excludes Kiro from automatic CLI login-status overrides', () => {
-        const overrides = CAPABILITIES_REQUEST_MACHINE_DETAILS.overrides ?? {};
-
-        expect(overrides['cli.codex']).toMatchObject({
-            params: {
-                includeLoginStatus: true,
-            },
-        });
-        expect(overrides['cli.kiro-cli']).toBeUndefined();
-    });
-
-    it('projects login-status overrides from canonical provider ids even when binary detect keys differ', async () => {
-        agentsPackageState.AGENT_LOCAL_CLI_CONFIG.codex.detectKey = 'codex-alt';
-
-        vi.resetModules();
-        vi.doMock('@happier-dev/agents', () => ({
-            ...agentsPackageState,
-            getAgentLocalCliConfig: (agentId: string) => ({
-                agentId,
-                detectKey: resolvePackageDetectKey(agentId),
-                machineLoginKey: agentId,
-                supportKind: 'login_terminal',
-                loginLaunch: null,
-            }),
-        }));
-        const { CAPABILITIES_REQUEST_MACHINE_DETAILS: request } = await import('./requests');
-
-        expect(request.overrides?.['cli.codex']).toMatchObject({
-            params: {
-                includeLoginStatus: true,
-            },
-        });
-        expect(request.overrides?.['cli.codex-alt']).toBeUndefined();
+describe('buildUpdatesCapabilitiesRequest', () => {
+    it('leaves agent probes to the uniform inventory owner while preserving helper and system-task requests', () => {
+        const request = buildUpdatesCapabilitiesRequest([{ requests: [{ id: 'dep.gh', params: { includeLatestVersion: true } }] }]);
+        expect(request.requests).toEqual([
+            { id: 'tool.systemTasks' },
+            { id: 'dep.gh', params: { includeLatestVersion: true } },
+        ]);
     });
 });

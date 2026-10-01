@@ -11,7 +11,6 @@ import {
 
 import { StreamDiagnosticsOverlay } from './StreamDiagnosticsOverlay';
 import { StreamFallbackRenderer } from './StreamFallbackRenderer';
-import { StreamQualityControls } from './StreamQualityControls';
 import { AvccWebCodecsRenderer, type AvccWebCodecsRendererProps } from './renderers/AvccWebCodecsRenderer';
 import { MjpegImageRenderer } from './renderers/MjpegImageRenderer';
 import { streamPlayerStyles } from './styles';
@@ -41,12 +40,11 @@ function rendererDiagnosticToPlayerEvent(diagnostic: LiveStreamPlayerDiagnostic)
 export function LiveStreamPlayer(props: Readonly<{
     state: LiveStreamPlayerDisplayState;
     avcc?: Omit<AvccWebCodecsRendererProps, 'style' | 'testID'>;
-    controls?: Readonly<{
-        canRequestKeyframe: boolean;
-        canSetQuality: boolean;
-    }>;
-    onRequestKeyframe?: () => void;
-    onLowerQuality?: () => void;
+    /**
+     * The surface around the player says the stream's state itself (the browser's status capsule and
+     * state cards), so the player draws no status chip of its own: one message per state.
+     */
+    statusOwnedByHost?: boolean;
     testID: string;
 }>): React.ReactElement {
     const [rendererState, setRendererState] = React.useState<Readonly<{
@@ -65,8 +63,13 @@ export function LiveStreamPlayer(props: Readonly<{
 
     const state = rendererState?.baseState === props.state ? rendererState.state : props.state;
     const avccOnDiagnostic = props.avcc?.onDiagnostic;
+    const avccOnDecoded = props.avcc?.onDecoded;
     const avccOnReconfigured = props.avcc?.onReconfigured;
     const avccOnStartupTimeout = props.avcc?.onStartupTimeout;
+    const handleRendererDecoded = React.useCallback(() => {
+        if (avccOnDecoded) avccOnDecoded();
+        else applyRendererEvent({ type: 'frame_decoded' });
+    }, [applyRendererEvent, avccOnDecoded]);
     const handleRendererDiagnostic = React.useCallback((diagnostic: LiveStreamPlayerDiagnostic) => {
         const event = rendererDiagnosticToPlayerEvent(diagnostic);
         if (event) applyRendererEvent(event);
@@ -111,10 +114,6 @@ export function LiveStreamPlayer(props: Readonly<{
         || state.phase === 'error'
         || state.phase === 'stopped'
     );
-    const controls = props.controls ?? {
-        canRequestKeyframe: false,
-        canSetQuality: false,
-    };
 
     return (
         <View testID={props.testID} style={streamPlayerStyles.root}>
@@ -129,6 +128,7 @@ export function LiveStreamPlayer(props: Readonly<{
                     <AvccWebCodecsRenderer
                         {...props.avcc}
                         onDiagnostic={handleRendererDiagnostic}
+                        onDecoded={handleRendererDecoded}
                         onReconfigured={handleRendererReconfigured}
                         onStartupTimeout={handleRendererStartupTimeout}
                         startupTimeoutMs={props.avcc.startupTimeoutMs ?? DEFAULT_WEB_CODECS_STARTUP_TIMEOUT_MS}
@@ -147,7 +147,7 @@ export function LiveStreamPlayer(props: Readonly<{
                         testID={props.testID}
                     />
                 )}
-                {state.phase !== 'idle' ? (
+                {state.phase !== 'idle' && props.statusOwnedByHost !== true ? (
                     <StreamDiagnosticsOverlay
                         phase={state.phase}
                         preservingLastFrame={preservingLastFrame}
@@ -156,13 +156,6 @@ export function LiveStreamPlayer(props: Readonly<{
                     />
                 ) : null}
             </View>
-            <StreamQualityControls
-                canRequestKeyframe={controls.canRequestKeyframe}
-                canSetQuality={controls.canSetQuality}
-                onLowerQuality={props.onLowerQuality}
-                onRequestKeyframe={props.onRequestKeyframe}
-                testID={props.testID}
-            />
         </View>
     );
 }

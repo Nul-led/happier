@@ -1,8 +1,8 @@
 import * as React from 'react';
 import renderer from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { AppPaneProvider } from '@/components/appShell/panes/AppPaneProvider';
-import { renderScreen } from '@/dev/testkit';
+import { renderScreen } from '@/dev/testkit/render/renderScreen';
+import { createReactNavigationNativeMock } from '@/dev/testkit/mocks/reactNavigation';
 import { createModalModuleMock } from '@/dev/testkit/mocks/modal';
 import { createReactNativeWebMock } from '@/dev/testkit/mocks/reactNative';
 import { createExpoRouterMock } from '@/dev/testkit/mocks/router';
@@ -187,8 +187,8 @@ vi.mock('react-native-safe-area-context', () => ({
 }));
 
 vi.mock('@react-navigation/native', () => ({
+  ...createReactNavigationNativeMock(),
   useFocusEffect: () => {},
-  useIsFocused: () => true,
 }));
 
 vi.mock('@/auth/context/AuthContext', () => ({
@@ -420,6 +420,8 @@ vi.mock('@/sync/domains/automations/automationSessionLink', () => ({
   countEnabledAutomationDefinitionsLinkedToSession: () => 0,
 }));
 
+// The shared boundary factories must be configured before a storage consumer is imported.
+const { AppPaneProvider } = await import('@/components/appShell/panes/AppPaneProvider');
 const { SessionView } = await import('./SessionView');
 
 describe('SessionView attachments gating', () => {

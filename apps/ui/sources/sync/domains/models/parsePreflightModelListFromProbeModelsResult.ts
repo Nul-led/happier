@@ -28,7 +28,8 @@ export function parsePreflightModelListFromProbeModelsResult(raw: unknown): Pref
     };
 
     if (
-        parsed.availableModels.length === 0
+        modelsRaw.length > 0
+        && parsed.availableModels.length === 0
         && parsed.supportsFreeform !== true
         && parsed.unavailable !== true
     ) {

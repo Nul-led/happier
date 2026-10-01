@@ -16,6 +16,24 @@ describe('readStoredSessionRawRecord', () => {
         },
     } as const;
 
+    it('does not disclose a plain stored message from an E2EE Session', async () => {
+        const params = {
+            sessionEncryptionMode: 'e2ee' as const,
+            message: {
+                id: 'mode-mismatch',
+                seq: 1,
+                localId: null,
+                content: {
+                    t: 'plain' as const,
+                    v: { role: 'user', content: { type: 'text', text: 'Must not disclose' } },
+                },
+                createdAt: 1,
+            },
+        };
+
+        await expect(readStoredSessionMessage(params)).resolves.toBeNull();
+    });
+
     it('parses a plain content envelope', async () => {
         const rawRecord = {
             role: 'agent',
@@ -120,6 +138,7 @@ describe('readStoredSessionRawRecord', () => {
         } as const;
 
         const parsed = await readStoredSessionMessage({
+            sessionEncryptionMode: 'plain',
             message: {
                 id: 'msg-synthetic',
                 seq: 12,
@@ -155,6 +174,7 @@ describe('readStoredSessionRawRecord', () => {
         } as const;
 
         const readPlain = (content: unknown) => readStoredSessionMessage({
+            sessionEncryptionMode: 'plain',
             message: {
                 id: 'msg-structured-plain',
                 seq: 13,
@@ -165,6 +185,7 @@ describe('readStoredSessionRawRecord', () => {
             },
         });
         const readE2ee = (content: unknown) => readStoredSessionMessage({
+            sessionEncryptionMode: 'e2ee',
             message: {
                 id: 'msg-structured-e2ee',
                 seq: 14,
@@ -212,6 +233,7 @@ describe('readStoredSessionRawRecord', () => {
         } as const;
 
         const parsedPlain = await readStoredSessionMessage({
+            sessionEncryptionMode: 'plain',
             message: {
                 id: 'msg-ordinary-plain',
                 seq: 15,
@@ -222,6 +244,7 @@ describe('readStoredSessionRawRecord', () => {
             },
         });
         const parsedE2ee = await readStoredSessionMessage({
+            sessionEncryptionMode: 'e2ee',
             message: {
                 id: 'msg-ordinary-e2ee',
                 seq: 16,

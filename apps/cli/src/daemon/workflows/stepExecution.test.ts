@@ -9,7 +9,7 @@ const sessionId = 'c123456789012345678901234';
 import {
   enqueueWorkflowSessionInput,
   observeWorkflowDetachedExecutionRunInput,
-  preflightWorkflowSessionInputAdmissionV2,
+
   sendWorkflowDetachedExecutionRunInput,
 } from './stepExecution';
 
@@ -35,25 +35,14 @@ describe('Workflow Session step execution', () => {
     });
   });
 
-  it('fails closed with the typed update requirement before Session mutation', async () => {
-    expect(preflightWorkflowSessionInputAdmissionV2(undefined)).toEqual({
-      ok: false,
-      code: 'workflow_input_admission_update_required',
-    });
-    expect(preflightWorkflowSessionInputAdmissionV2({
-      sessionInputAdmission: { protocolVersions: [1] },
-    })).toEqual({
-      ok: false,
-      code: 'workflow_input_admission_update_required',
-    });
-
-    const machineAdmissionTransport = vi.fn();
+  it('admits the current Workflow input without an older-daemon capability declaration', async () => {
+    const machineAdmissionTransport = vi.fn(async (request) => ({
+      status: 'accepted' as const, localId: request.localId,
+    }));
     await expect(enqueueWorkflowSessionInput({
       credentials: { token: 'token', encryption: null },
-      sessionId: 'session-1',
-      machineOperationProtocolCapabilities: {
-        sessionInputAdmission: { protocolVersions: [1] },
-      },
+      sessionId,
+
       workflow: {
         purpose: 'invocation',
         runId: 'run-1',
@@ -61,24 +50,10 @@ describe('Workflow Session step execution', () => {
       },
       text: 'Do the work',
       machineAdmissionTransport,
-    })).resolves.toEqual({
-      status: 'update_required',
-      code: 'workflow_input_admission_update_required',
-    });
-    expect(machineAdmissionTransport).not.toHaveBeenCalled();
+    })).resolves.toEqual({ status: 'accepted', localId: expect.any(String) });
   });
 
-  it('accepts only the exact Workflow V2 Session admission capability', () => {
-    expect(preflightWorkflowSessionInputAdmissionV2({
-      sessionInputAdmission: { protocolVersions: [1, 2] },
-    })).toEqual({ ok: true });
-    expect(preflightWorkflowSessionInputAdmissionV2({
-      sessionInputAdmission: { protocolVersions: [1, 2], unexpected: true },
-    })).toEqual({
-      ok: false,
-      code: 'workflow_input_admission_update_required',
-    });
-  });
+
 
   it('authors portable attachments in the canonical raw Session structured-input envelope', async () => {
     const attachment = {
@@ -92,7 +67,7 @@ describe('Workflow Session step execution', () => {
     }));
     await expect(enqueueWorkflowSessionInput({
       credentials: { token: 'token', encryption: null }, sessionId,
-      machineOperationProtocolCapabilities: { sessionInputAdmission: { protocolVersions: [1, 2] } },
+
       workflow: { purpose: 'invocation', runId: 'run-1', invocationRecordId: 'inv-1' },
       text: 'Review', attachments: [attachment], machineAdmissionTransport,
     })).resolves.toEqual({ status: 'accepted', localId: expect.any(String) });
@@ -105,6 +80,38 @@ describe('Workflow Session step execution', () => {
     }));
   });
 
+  it('rejects a frozen invocation identity that does not match the canonical Session identity', async () => {
+    const machineAdmissionTransport = vi.fn();
+    await expect(enqueueWorkflowSessionInput({
+      credentials: { token: 'token', encryption: null }, sessionId,
+
+      workflow: { purpose: 'invocation', runId: 'workflow-run-1', invocationRecordId: 'invocation-1' },
+      localInputId: 'wrong-frozen-id',
+      text: 'Done',
+      machineAdmissionTransport,
+    })).resolves.toEqual({ status: 'rejected', code: 'session_input_invalid' });
+    expect(machineAdmissionTransport).not.toHaveBeenCalled();
+  });
+
+  it('carries the accepted workflow step depth in both protected request and provenance', async () => {
+    const machineAdmissionTransport = vi.fn(async (request) => ({
+      status: 'accepted' as const, localId: request.localId,
+    }));
+    await expect(enqueueWorkflowSessionInput({
+      credentials: { token: 'token', encryption: null }, sessionId,
+
+      workflow: { purpose: 'invocation', runId: 'run-1', invocationRecordId: 'inv-1' },
+      workDepth: 3,
+      text: 'Work', machineAdmissionTransport,
+    })).resolves.toMatchObject({ status: 'accepted' });
+    expect(machineAdmissionTransport).toHaveBeenCalledWith(expect.objectContaining({
+      content: { t: 'plain', v: expect.objectContaining({ meta: expect.objectContaining({
+        happierProvenanceV1: expect.objectContaining({ kind: 'workflow_invocation', workDepth: 3 }),
+        happierInputRequestV1: expect.objectContaining({ workflow: expect.objectContaining({ workDepth: 3 }) }),
+      }) }) },
+    }));
+  });
+
   it('keeps Workflow V2 provenance on the exact attached Execution Run target', async () => {
     const machineAdmissionTransport = vi.fn(async (request) => ({
       status: 'accepted' as const,
@@ -112,7 +119,7 @@ describe('Workflow Session step execution', () => {
     }));
     await expect(enqueueWorkflowSessionInput({
       credentials: { token: 'token', encryption: null }, sessionId,
-      machineOperationProtocolCapabilities: { sessionInputAdmission: { protocolVersions: [1, 2] } },
+
       workflow: { purpose: 'invocation', runId: 'workflow-run-1', invocationRecordId: 'inv-1' },
       executionRunTarget: { runId: 'execution-run-1', resultContract: { kind: 'text' } },
       text: 'Continue the attached run',

@@ -3,13 +3,14 @@ import {
     arePluginMachineMaterializationRefsEqual,
     isExactPluginMachineMaterializationReleaseCorrespondenceV1,
     PluginMachineExecutionOriginV1Schema,
+    resolvePluginCollectionMigrationArtifactOwnerV1,
     type PluginMachineExecutionOriginV1,
     type PluginProjectionV2,
 } from '@happier-dev/protocol';
 import type { PluginReleaseFactsV1 } from '@happier-dev/protocol/plugins/availability';
 import {
-    PluginUiArtifactsManifestEntryV1Schema,
-    type PluginUiArtifactsManifestEntryV1,
+    PluginUiArtifactsManifestEntryV2Schema,
+    type PluginUiArtifactsManifestEntryV2,
 } from '@happier-dev/protocol/plugins/ui';
 
 import type { ActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
@@ -32,7 +33,7 @@ export type CandidateCollectionReleaseDaemonExecution = Readonly<{
     origin: PluginMachineExecutionOriginV1;
     /** Active machine-RPC route paired with the origin-stamped projection. */
     serverId: string;
-    artifactGraph: PluginUiArtifactsManifestEntryV1;
+    artifactGraph: PluginUiArtifactsManifestEntryV2;
     cacheIdentity: PluginReactNativeBundleCacheIdentity;
 }>;
 
@@ -51,15 +52,24 @@ function readRecord(value: unknown): Readonly<Record<string, unknown>> | null {
 }
 
 function graphMatchesExactRelease(input: Readonly<{
-    graph: PluginUiArtifactsManifestEntryV1;
+    graph: PluginUiArtifactsManifestEntryV2;
     facts: PluginReleaseFactsV1;
 }>): boolean {
-    if (input.graph.tier !== 'reactNative' || input.graph.collectionMigrations === undefined) return false;
+    const owner = resolvePluginCollectionMigrationArtifactOwnerV1(
+        input.facts.normalizedManifest.contributes.accountCollections,
+    );
+    if (
+        !owner
+        || input.graph.tier !== 'reactNative'
+        || input.graph.artifactId !== owner.reference.artifactId
+        || !input.graph.executable.exports.includes(owner.reference.exportName)
+    ) return false;
     return input.facts.uiSlots.some((slot) => (
-        slot.contributionId === input.graph.contributionId
+        slot.contributionId === owner.contributionId
+        && slot.artifactId === input.graph.artifactId
         && slot.tier === input.graph.tier
-        && slot.platform === input.graph.platform
         && slot.artifactDigest === input.graph.digest
+        && slot.hostUiApiRange === input.graph.hostUiApiRange
     ));
 }
 
@@ -110,9 +120,22 @@ export function resolveCandidateCollectionReleaseExecution(input: Readonly<{
         ));
     if (candidateEntries.length !== 1) return unavailable();
     const entry = candidateEntries[0]!;
-    const graph = PluginUiArtifactsManifestEntryV1Schema.safeParse(entry.artifactGraph);
+    const graph = PluginUiArtifactsManifestEntryV2Schema.safeParse(entry.artifactGraph);
     const runtime = readRecord(entry.runtime);
-    const cacheIdentity = readPluginUiReactNativeBundleCacheIdentity(runtime?.cacheIdentity);
+    const contributionId = typeof entry.contributionId === 'string' ? entry.contributionId : '';
+    const slot = graph.success ? input.target.facts.uiSlots.find((candidate) => (
+        candidate.contributionId === contributionId
+        && candidate.artifactId === graph.data.artifactId
+        && candidate.artifactDigest === graph.data.digest
+    )) : undefined;
+    const cacheIdentity = graph.success && graph.data.tier === 'reactNative' && slot
+        ? readPluginUiReactNativeBundleCacheIdentity(runtime?.cacheIdentity, {
+            pluginId: input.target.facts.ref.pluginId,
+            contributionId,
+            artifactId: graph.data.artifactId,
+            platform: slot.platform,
+        })
+        : null;
     const origin = PluginMachineExecutionOriginV1Schema.safeParse({
         serverIdentityId: entry.serverIdentityId,
         materializationRef: entry.materializationRef,
@@ -121,13 +144,9 @@ export function resolveCandidateCollectionReleaseExecution(input: Readonly<{
         !graph.success
         || !cacheIdentity
         || !origin.success
-        || entry.contributionId !== graph.data.contributionId
         || !graphMatchesExactRelease({ graph: graph.data, facts: input.target.facts })
         || cacheIdentity.pluginId !== input.target.facts.ref.pluginId
-        || cacheIdentity.contributionId !== graph.data.contributionId
         || cacheIdentity.artifactDigest !== graph.data.digest
-        || cacheIdentity.platform !== graph.data.platform
-        || cacheIdentity.projectionGeneration !== input.projection.generation
         || origin.data.serverIdentityId !== serverIdentityId
         || origin.data.materializationRef.machineId !== machineId
         || origin.data.materializationRef.pluginId !== input.target.facts.ref.pluginId

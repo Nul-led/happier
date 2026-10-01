@@ -189,36 +189,4 @@ describe('useConnectAccount (scanner lifecycle)', () => {
     expect(modalAlertSpy).toHaveBeenCalled();
   });
 
-  it('recognizes legacy account URLs only to show canonical Home QR guidance', async () => {
-    vi.doMock('expo-constants', () => ({
-      default: {
-        expoConfig: {
-          scheme: 'happier-dev',
-        },
-      },
-    }));
-
-    const { useConnectAccount } = await import('./useConnectAccount');
-
-    let hookApi: ReturnType<typeof useConnectAccount> | null = null;
-    function Probe() {
-      hookApi = useConnectAccount();
-      return null;
-    }
-
-    await renderScreen(<Probe />);
-
-    modalAlertSpy.mockClear();
-
-    let ok = false;
-    await act(async () => {
-      ok = await hookApi!.processAuthUrl('happier-dev:///account?abc123');
-    });
-    expect(ok).toBe(false);
-    expect(modalAlertSpy).toHaveBeenCalledWith(
-      'common.unavailable',
-      'connect.legacyAccountQrUnavailable',
-      expect.anything(),
-    );
-  });
 });

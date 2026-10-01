@@ -54,6 +54,8 @@ describe('sessionListViewFilters', () => {
 
         expect(resolved.contextKey).not.toBe('global');
         expect(resolved.defaults).toEqual({
+            show: 'both',
+            startedBy: ['you'],
             scope: 'all_accessible',
             attention: 'any',
             homeServerIds: ['home-b'],
@@ -195,6 +197,8 @@ describe('sessionListViewFilters', () => {
                 { serverId: 'home-b', tagId: 'urgent' },
             ],
         })).toEqual({
+            show: 'both',
+            startedBy: ['you'],
             scope: 'all_accessible',
             attention: 'any',
             homeServerIds: ['home-b', 'home-a'],

@@ -2,7 +2,7 @@ import * as React from 'react';
 import renderer from 'react-test-renderer';
 import { describe, expect, it, vi } from 'vitest';
 
-import type { Message } from '@/sync/domains/messages/messageTypes';
+import type { Message } from "@happier-dev/session-core/messages";
 import type { SessionSubagent } from '@/sync/domains/session/subagents/types';
 import { renderScreen } from '@/dev/testkit';
 import { installSessionSubagentCommonModuleMocks } from '@/components/sessions/agents/sessionSubagentTestHelpers';
@@ -41,6 +41,7 @@ installSessionSubagentCommonModuleMocks({
             useSession: () => sessionState.session,
             useResolvedSessionMessageRouteId: () => sessionState.resolvedMessageId,
             useMessage: () => sessionState.message,
+            useSessionMessages: () => ({ messages: [], isLoaded: sessionState.messagesLoaded }),
         });
     },
 });
@@ -63,6 +64,7 @@ const sessionState: {
     };
     message: Message | null;
     resolvedMessageId: string;
+    messagesLoaded: boolean;
 } = {
     session: {
         id: 's1',
@@ -73,6 +75,7 @@ const sessionState: {
     },
     message: null as Message | null,
     resolvedMessageId: 'tool-msg-1',
+    messagesLoaded: true,
 };
 
 vi.mock('@/sync/store/hooks', () => ({
@@ -102,6 +105,16 @@ vi.mock('@/components/sessions/participants/composer/SessionParticipantComposer'
 }));
 
 describe('SessionSubagentDetailsView', () => {
+    it('distinguishes a roster still loading from an absent subagent', async () => {
+        const { SessionSubagentDetailsView } = await import('./SessionSubagentDetailsView');
+        subagentsState.subagents = [];
+        sessionState.messagesLoaded = false;
+        const screen = await renderScreen(<SessionSubagentDetailsView sessionId="s1" scopeId="session:s1" subagentId="missing" />);
+        expect(screen.findAllByType('Text').map((node) => node.props.children)).toContain('common.loading');
+        sessionState.messagesLoaded = true;
+        await screen.update(<SessionSubagentDetailsView key="loaded" sessionId="s1" scopeId="session:s1" subagentId="missing" />);
+        expect(screen.findAllByType('Text').map((node) => node.props.children)).toContain('session.subagents.details.unavailable');
+    });
     it('delegates execution-run subagents directly to the canonical Run details surface even when a tool transcript exists', async () => {
         const { SessionSubagentDetailsView } = await import('./SessionSubagentDetailsView');
         subagentsState.subagents = [{

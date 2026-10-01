@@ -139,7 +139,7 @@ describe('actions root command', () => {
     expect(execute).toHaveBeenCalledWith(
       'action.spec.search',
       { query: 'machine actions' },
-      expect.objectContaining({ surface: 'cli', authority: 'present_user' }),
+      expect.objectContaining({ surface: 'cli' }),
     );
   });
 
@@ -156,16 +156,15 @@ describe('actions root command', () => {
     await handleActionsCommand(['invoke', 'example.plugin/actions/do-work', '--input-json', '{"note":"hi"}'], deps);
     expect(execute.mock.calls[0]).toEqual(['machines.list', {}, expect.objectContaining({
       surface: 'cli',
-      authority: 'present_user',
     })]);
     expect(execute.mock.calls[1]).toEqual([
       'action.spec.get',
       { id: 'example.plugin/actions/do-work' },
-      expect.objectContaining({ surface: 'cli', authority: 'present_user' }),
+      expect.objectContaining({ surface: 'cli' }),
     ]);
     expect(execute.mock.calls[2]).toEqual(['action.invoke', {
       action: { pluginId: 'example.plugin', localId: 'do-work' }, input: { note: 'hi' },
-    }, expect.objectContaining({ surface: 'cli', authority: 'present_user' })]);
+    }, expect.objectContaining({ surface: 'cli' })]);
   });
 
   it.each([
@@ -313,7 +312,6 @@ describe('actions root command', () => {
     expect(createExecutorFn).toHaveBeenCalledWith(expect.objectContaining({ externalActionClient: true, machineId: 'machine-1' }));
     expect(execute).toHaveBeenCalledWith('action.spec.get', { id: 'machines.list' }, expect.objectContaining({
       surface: 'cli',
-      authority: 'present_user',
     }));
     expect(process.exitCode).toBeUndefined();
   });
@@ -556,7 +554,7 @@ describe('actions root command', () => {
     expect(execute.mock.calls[0]).toEqual([
       'action.spec.get',
       { id: 'example.plugin/actions/do-work' },
-      expect.objectContaining({ surface: 'cli', authority: 'present_user' }),
+      expect.objectContaining({ surface: 'cli' }),
     ]);
     const [actionId, input] = execute.mock.calls[1]!;
     expect(actionId).toBe('action.invoke');

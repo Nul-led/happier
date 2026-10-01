@@ -101,10 +101,11 @@ describe('native prompt loop non-admission recovery', () => {
                 currentPermissionModeUpdatedAt: 0,
                 setCurrentPermissionMode: vi.fn(), setCurrentPermissionModeUpdatedAt: vi.fn(),
                 formatPromptErrorMessage: String,
-              registerProviderAcceptedEffect: () => undefined,
+                resolveFreshSessionSystemPrompt: async () => 'SESSION_PLAN',
+                registerProviderAcceptedEffect: () => undefined,
             });
             try {
-                await vi.waitFor(() => expect(delivered).toEqual(['second']), { timeout: 1000 });
+                await vi.waitFor(() => expect(delivered).toEqual(['SESSION_PLAN\n\nsecond']), { timeout: 1000 });
                 await loop;
             } finally {
                 abort.abort();

@@ -1,8 +1,9 @@
+import { useSessionTranscriptSource } from '@/components/sessions/transcript/source/SessionTranscriptSourceContext';
 import * as React from 'react';
 import { View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
-import type { ToolCallMessage } from '@/sync/domains/messages/messageTypes';
+import type { ToolCallMessage } from "@happier-dev/session-core/messages";
 import type { OpenApprovalArtifactForSession } from '@/sync/domains/artifacts/approvalArtifacts';
 
 import { TranscriptEnterWrapper } from '@/components/sessions/transcript/motion/TranscriptEnterWrapper';
@@ -12,8 +13,8 @@ import {
     useTranscriptSessionCommon,
 } from '@/components/sessions/transcript/transcriptSessionCommon';
 import { resolveToolRowPinAction } from '@/components/sessions/transcript/toolCalls/ToolCallPinAction';
-import { resolveMessageRouteIdForDisplay } from '@/sync/domains/messages/messageRouteIds';
-import type { PersistedSessionMessagePinV1 } from '@/sync/domains/messages/pins/sessionMessagePins';
+import { resolveMessageRouteIdForDisplay } from "@happier-dev/session-core/messages";
+import type { PersistedSessionMessagePinV1 } from "@happier-dev/session-core/pins";
 import { useEnsureSidechainsLoaded } from '@/hooks/session/useEnsureSidechainsLoaded';
 
 import { renderGroupedToolCallRowContent } from './groupedToolCallRowContent';
@@ -39,7 +40,7 @@ type ToolCallsGroupUnitToolRowProps = ToolCallsGroupUnitRowCommonProps & Readonl
 export const ToolCallsGroupUnitToolRow = React.memo(function ToolCallsGroupUnitToolRow(
     props: ToolCallsGroupUnitToolRowProps,
 ) {
-    const transcriptSessionCommon = useTranscriptSessionCommon(props.sessionId);
+    const transcriptSessionCommon = useTranscriptSessionCommon();
 
     return (
         <ToolCallsGroupUnitToolRowWithSessionCommon
@@ -58,6 +59,7 @@ export const ToolCallsGroupUnitToolRow = React.memo(function ToolCallsGroupUnitT
 export const ToolCallsGroupUnitToolRowWithSessionCommon = React.memo(function ToolCallsGroupUnitToolRowWithSessionCommon(
     props: ToolCallsGroupUnitToolRowProps & TranscriptSessionCommonProps,
 ) {
+    const transcriptSource = useSessionTranscriptSource();
     const variant = resolveToolCallsGroupChromeVariant(props.toolChromeCommon);
     const chromeMode = toolCallsGroupChromeModeForVariant(variant);
     const { messagesById, reducerState } = props.toolRouteCommon;
@@ -75,14 +77,13 @@ export const ToolCallsGroupUnitToolRowWithSessionCommon = React.memo(function To
     }, [chromeMode, message, props.expanded]);
 
     useEnsureSidechainsLoaded({
-        enabled: !props.expanded && previewSidechainIds.length > 0 && props.interaction.disableToolNavigation !== true,
+        enabled: !props.expanded && previewSidechainIds.length > 0 && transcriptSource.loadSidechain !== null,
         sessionId: props.sessionId,
+        loadSidechain: transcriptSource.loadSidechain,
         sidechainIds: previewSidechainIds,
     });
 
-    const nestedMessageId = props.interaction.disableToolNavigation
-        ? undefined
-        : resolveMessageRouteIdForDisplay({ message, messagesById, reducerState });
+    const nestedMessageId = resolveMessageRouteIdForDisplay({ message, messagesById, reducerState });
     const toolPinAction = resolveToolRowPinAction({
         sessionId: props.sessionId,
         seq: message.seq ?? null,

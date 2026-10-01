@@ -177,6 +177,10 @@ export async function assertPersonalHomeUninstallPreservesDataContract(): Promis
     await writeFile(shimPath, 'shim');
     await uninstallRelayRuntimePayloadLocal({ installRoot: home.layout.installRoot, shimPath, statePath, logDir: home.layout.logsDir });
     require(!(await exists(join(home.layout.installRoot, 'bin'))), 'Uninstall retained runtime payload');
+    require(!(await exists(resolveInstalledPersonalHomeSqliteMigrationPaths({
+      installRoot: home.layout.installRoot,
+      platform: home.layout.platform,
+    }).migrationsDir)), 'Uninstall retained the installed migration catalog needed to reproduce safe-uninstall erase');
     require(await exists(home.layout.databasePath), 'Uninstall removed the Home database');
     require(await readFile(home.layout.masterSecretPath, 'utf8') === 'fixed-master-secret-bytes', 'Uninstall changed the master secret');
     require(value(home.layout.databasePath, "SELECT value FROM SessionMessage WHERE id = 'msg_fixture'") === 'real transcript bytes', 'Uninstall changed transcript bytes');

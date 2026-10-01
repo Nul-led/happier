@@ -1,0 +1,34 @@
+import { describe, expect, it } from 'vitest';
+import { interactiveElementsExpression, parseInteractiveElements, SNAPSHOT_MAX_INTERACTIVE_ELEMENTS } from './snapshotEvaluators';
+
+describe('CDP interactive element extraction', () => {
+  it('reports overflow at the existing interactive-element boundary', () => {
+    const nodes = Array.from({ length: SNAPSHOT_MAX_INTERACTIVE_ELEMENTS + 1 }, (_, index) => ({
+      id: `element-${index}`, tagName: 'BUTTON', nodeType: 1, textContent: `Button ${index}`, parentElement: null,
+      getAttribute: () => null,
+      getBoundingClientRect: () => ({ left: 0, top: 0, width: 10, height: 10 }),
+    }));
+    const document = { querySelectorAll: (selector: string) => selector.startsWith('#') ? nodes.filter(node => `#${node.id}` === selector) : nodes };
+    const raw = Function('document', 'window', 'CSS', `return ${interactiveElementsExpression(SNAPSHOT_MAX_INTERACTIVE_ELEMENTS)};`)(document, { CSS: true }, { escape: String });
+    const parsed = parseInteractiveElements(raw, SNAPSHOT_MAX_INTERACTIVE_ELEMENTS);
+    expect(parsed.elements).toHaveLength(SNAPSHOT_MAX_INTERACTIVE_ELEMENTS);
+    expect(parsed.truncated).toBe(true);
+  });
+  it('preserves complete executable selectors through evaluator and parser', () => {
+    const id = 'element-'.repeat(100);
+    const name = 'Accessible label '.repeat(12).trim();
+    const element = { id, tagName: 'BUTTON', nodeType: 1, textContent: name, getAttribute: () => null, getBoundingClientRect: () => ({ left: 0, top: 0, width: 40, height: 20 }) };
+    const document = { querySelectorAll: (selector: string) => selector === `#${id}` ? [element] : [element] };
+    const raw = Function('document', 'window', 'CSS', `return ${interactiveElementsExpression(10)}`)(document, { CSS: { escape: (value: string) => value } }, { escape: (value: string) => value });
+    const parsed = parseInteractiveElements(raw, 10);
+    expect(parsed.elements[0]?.selector).toBe(`#${id}`);
+    expect(parsed.elements[0]?.name).toBe(name);
+    expect(parsed.truncated).toBe(false);
+  });
+
+  it('omits selectors beyond the context wire boundary instead of executing a truncated selector', () => {
+    const parsed = parseInteractiveElements([{ role: 'button', selector: `#${'id'.repeat(600)}`, rect: { x: 0, y: 0, width: 1, height: 1 } }], 10);
+    expect(parsed.elements).toEqual([]);
+    expect(parsed.truncated).toBe(true);
+  });
+});

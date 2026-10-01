@@ -3,6 +3,7 @@ import { sessionAddressKey, type SessionAddress } from '@/sync/domains/session/s
 import { useServerCredentialAccountScopeResolution } from '@/sync/domains/scope/useServerCredentialAccountScopes';
 import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
 import type { SessionCollaborationHandoff } from '@/components/sessions/collaboration/sessionCollaborationIntent';
+import { buildScopedSessionRouteHref } from '@/hooks/session/sessionRouteServerScope';
 import { SessionAccessEditor } from './SessionAccessEditor';
 import { UnboundSessionHomeScopeCard } from './UnboundSessionHomeScopeCard';
 import { useLiveSessionAccessEditorController } from './useLiveSessionAccessEditorController';
@@ -20,7 +21,7 @@ function ScopedEditor(props: Readonly<{scope:ServerAccountScope;sessionId:string
     });
     const controller=useLiveSessionAccessEditorController({scope:props.scope,sessionId:props.sessionId,metadataLayoutVersion});
     return <SessionAccessEditor {...controller} presentation={props.presentation} onRequestClose={props.onRequestClose}
-        onOpenFullSurface={props.onOpenFullSurface} testID={props.testID}/>;
+        onOpenFullSurface={props.onOpenFullSurface} linkPath={buildScopedSessionRouteHref({sessionId:props.sessionId})} testID={props.testID}/>;
 }
 
 /** Lazy composer host; exact Account resolution starts only when its popover mounts. */

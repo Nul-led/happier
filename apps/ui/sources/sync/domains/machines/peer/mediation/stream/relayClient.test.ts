@@ -76,14 +76,14 @@ function openInput(overrides?: Partial<Parameters<typeof openMachineLiveStreamRe
 }
 
 describe('openMachineLiveStreamRelayClient', () => {
-    it('tries loopback direct first and does not start the daemon relay when direct capture succeeds (SIM-P1-4)', async () => {
+    it('selects the relay carrier while direct has no receive/control channel', async () => {
         const routeKinds: string[] = [];
         let daemonCalled = false;
 
         await expect(openMachineLiveStreamRelayClient(openInput({
-            startProduction: async (input) => {
+            startProduction: async (input): ReturnType<NonNullable<Parameters<typeof openMachineLiveStreamRelayClient>[0]['startProduction']>> => {
                 routeKinds.push(input.routeKind);
-                return {
+                return input.routeKind === 'loopback_direct' ? {
                     ok: true as const,
                     routeKind: 'loopback_direct' as const,
                     response: {
@@ -91,10 +91,10 @@ describe('openMachineLiveStreamRelayClient', () => {
                         ok: true,
                         receipt: PEER_MEDIATION_RECEIPTS.streamStarted,
                         streamId: input.streamId,
-                        routeKind: 'loopback_direct',
+                        routeKind: 'loopback_direct' as const,
                         expiresAtMs: 61_000,
                     },
-                };
+                } : { ok: true, routeKind: 'server_relay', startRequest: startRequest(), relayAuthorization: startRequest().authorization! };
             },
             startDaemonRelay: async () => {
                 daemonCalled = true;
@@ -102,8 +102,8 @@ describe('openMachineLiveStreamRelayClient', () => {
             },
         }))).resolves.toEqual({ ok: true, streamId: 'stream_1' });
 
-        expect(routeKinds).toEqual(['loopback_direct']);
-        expect(daemonCalled).toBe(false);
+        expect(routeKinds).toEqual(['server_relay']);
+        expect(daemonCalled).toBe(true);
     });
 
     it('falls back to server relay and delivers the signed startRequest over machine RPC when loopback is unavailable', async () => {
@@ -129,7 +129,7 @@ describe('openMachineLiveStreamRelayClient', () => {
             },
         }))).resolves.toEqual({ ok: true, streamId: 'stream_1' });
 
-        expect(routeKinds).toEqual(['loopback_direct', 'server_relay']);
+        expect(routeKinds).toEqual(['server_relay']);
         expect(rpcStarts).toHaveLength(1);
         expect(rpcStarts[0]?.startRequest).toEqual(startRequest());
     });
@@ -167,7 +167,7 @@ describe('openMachineLiveStreamRelayClient', () => {
         expect(daemonCalled).toBe(false);
     });
 
-    it('preserves the direct signing reason and capability when the independent relay is unavailable', async () => {
+    it('reports the selected carrier denial without attempting an incomplete direct route', async () => {
         await expect(openMachineLiveStreamRelayClient(openInput({
             startProduction: async (input) => input.routeKind === 'loopback_direct'
                 ? {
@@ -178,8 +178,7 @@ describe('openMachineLiveStreamRelayClient', () => {
                 : { ok: false as const, reasonCode: 'server_relay_disabled' },
         }))).resolves.toEqual({
             ok: false,
-            reasonCode: 'peer_route_signing_identity_unavailable',
-            requiredCapability: 'peer_route_signing_identity_v1',
+            reasonCode: 'server_relay_disabled',
         });
     });
 });

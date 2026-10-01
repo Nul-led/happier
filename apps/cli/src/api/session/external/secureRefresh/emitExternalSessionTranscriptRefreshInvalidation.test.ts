@@ -27,7 +27,7 @@ describe('emitExternalSessionTranscriptRefreshInvalidation', () => {
                 },
                 generation: 'source-1',
             },
-            contributionGeneration: 'plugin-1',
+            sourceCustody: { kind: 'development' as const, registeredRootId: 'source-root-1' },
             cursorIdentity: `external_session_cursor_binding_v1:${'a'.repeat(64)}`,
         };
         const resolveTranscriptRefreshBinding = vi.fn(async () => binding);
@@ -91,7 +91,7 @@ describe('emitExternalSessionTranscriptRefreshInvalidation', () => {
                 }>;
                 generation: string;
             }>;
-            contributionGeneration: string;
+            sourceCustody: Readonly<{ kind: 'development'; registeredRootId: string }>;
             cursorIdentity: string;
         }>) => void) | undefined;
         const bindingPromise = new Promise<Readonly<{
@@ -107,7 +107,7 @@ describe('emitExternalSessionTranscriptRefreshInvalidation', () => {
                 }>;
                 generation: string;
             }>;
-            contributionGeneration: string;
+            sourceCustody: Readonly<{ kind: 'development'; registeredRootId: string }>;
             cursorIdentity: string;
         }>>((resolve) => {
             resolveBinding = resolve;
@@ -142,7 +142,7 @@ describe('emitExternalSessionTranscriptRefreshInvalidation', () => {
                 },
                 generation: 'source-1',
             },
-            contributionGeneration: 'plugin-1',
+            sourceCustody: { kind: 'development', registeredRootId: 'source-root-1' },
             cursorIdentity: `external_session_cursor_binding_v1:${'a'.repeat(64)}`,
         });
         await pending;

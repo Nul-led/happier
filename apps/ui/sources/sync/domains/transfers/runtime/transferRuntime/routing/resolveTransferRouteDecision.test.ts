@@ -6,7 +6,13 @@ describe('resolveTransferRouteDecision', () => {
     it('selects exact iroh_peer ahead of every fallback when advertised', async () => {
         const { resolveTransferRouteDecision } = await import('./resolveTransferRouteDecision');
         const serverFeatures = FeaturesResponseSchema.parse({
-            features: { machines: { enabled: true, transfer: { enabled: true, directPeer: { enabled: true }, serverRouted: { enabled: true } } } },
+            features: {
+                machines: {
+                    enabled: true,
+                    transfer: { enabled: true, directPeer: { enabled: true }, serverRouted: { enabled: true } },
+                    peerMediation: { enabled: true },
+                },
+            },
             capabilities: {},
         });
         expect(resolveTransferRouteDecision({
@@ -15,6 +21,26 @@ describe('resolveTransferRouteDecision', () => {
             directPeerRouteKinds: ['iroh_peer', 'tailscale_serve_direct'],
             machineRpcDirectRoute: { status: 'viable', checkedAt: 1, expiresAt: 2 },
         })).toMatchObject({ kind: 'selected', preferredRouteKind: 'iroh_peer' });
+    });
+
+    it('uses the existing server fallback instead of Iroh when peer mediation is absent', async () => {
+        const { resolveTransferRouteDecision } = await import('./resolveTransferRouteDecision');
+        const predecessorFeatures = FeaturesResponseSchema.parse({
+            features: {
+                machines: {
+                    enabled: true,
+                    transfer: { enabled: true, directPeer: { enabled: true }, serverRouted: { enabled: true } },
+                },
+            },
+            capabilities: {},
+        });
+
+        expect(resolveTransferRouteDecision({
+            serverFeatures: predecessorFeatures,
+            directPeerRoute: { status: 'viable', checkedAt: 1, expiresAt: 2 },
+            directPeerRouteKinds: ['iroh_peer'],
+            machineRpcDirectRoute: { status: 'unavailable', checkedAt: 1, expiresAt: 2, failureReason: 'unreachable' },
+        })).toMatchObject({ kind: 'selected', preferredRouteKind: 'server_relay_stream' });
     });
     it('prefers direct peer when the route is viable and the server enables direct peer transfers', async () => {
         const { resolveTransferRouteDecision } = await import('./resolveTransferRouteDecision');

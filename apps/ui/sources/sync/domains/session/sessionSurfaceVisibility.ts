@@ -379,10 +379,30 @@ export function clearSessionSurfaceVisibilityForServerScopeReset(): void {
     clearSessionSurfaceVisibility({ notifyMountedSurfaces: true });
 }
 
+function getSessionRouteSegments(pathname: string): string[] {
+    const segments = pathname.trim().split(/[?#]/)[0].split('/')
+        .map((segment) => segment.trim()).filter(Boolean);
+    return segments[0] === 'embed' ? segments.slice(1) : segments;
+}
+
+function decodeRouteSegment(segment: string): string {
+    try { return decodeURIComponent(segment); } catch { return segment; }
+}
+
+export function isSessionRoutePathActive(pathname: string, sessionId: string): boolean {
+    const segments = getSessionRouteSegments(pathname);
+    return segments[0] === 'session' && Boolean(segments[1])
+        && decodeRouteSegment(segments[1]) === String(sessionId ?? '').trim();
+}
+
+export function isSessionRootRoutePathActive(pathname: string, sessionId: string): boolean {
+    return getSessionRouteSegments(pathname).length === 2 && isSessionRoutePathActive(pathname, sessionId);
+}
+
 function isSessionRoutePathname(pathname: string | null | undefined): boolean {
     if (typeof pathname !== 'string') return true;
-    const route = pathname.trim().split('?')[0]?.replace(/\/+$/, '') ?? '';
-    return /^\/session\/[^/]+(?:\/.*)?$/.test(route);
+    const segments = getSessionRouteSegments(pathname);
+    return segments[0] === 'session' && Boolean(segments[1]);
 }
 
 export function clearSessionSurfaceVisibilityForNonSessionRoute(pathname: string | null | undefined): boolean {

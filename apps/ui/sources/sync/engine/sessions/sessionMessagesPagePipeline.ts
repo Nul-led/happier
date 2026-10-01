@@ -1,9 +1,8 @@
-import type { SessionMessageRole } from '@happier-dev/protocol';
+import type { SessionMessageV1, SessionMessagesPageV1, SessionMessageRole } from '@happier-dev/protocol';
+import { fetchSessionMessagesPage } from '@happier-dev/sync-client';
 import type { DecryptOptions } from '@/sync/encryption/encryptor';
-import { applyTranscriptAccountActorMetadata, qualifyTranscriptAccountActor } from '@/sync/domains/messages/transcriptAccountActor';
-
-import type { ApiMessage, ApiSessionMessagesResponse } from '@/sync/api/types/apiTypes';
-import { ApiSessionMessagesResponseSchema } from '@/sync/api/types/apiTypes';
+import { createSessionEncryptionUnavailableError } from '@/sync/encryption/sessionEncryptionUnavailableError';
+import { applyTranscriptAccountActorMetadata, qualifyTranscriptAccountActor } from "@happier-dev/session-core/messages";
 import { isLegacyMemoryArtifactTranscriptRow } from './legacyMemoryArtifactTranscriptRows';
 import {
     readStoredSessionMessage,
@@ -15,20 +14,21 @@ import {
     createRawMessageNormalizationSequenceState,
     normalizeRawMessageInSequence,
     type NormalizedMessage,
-} from '@/sync/typesRaw';
+} from "@happier-dev/session-core/raw";
 import { getTaskLifecycleEventFromRawContent, type TaskLifecycleEvent } from './taskLifecycle';
 import {
     applyTranscriptObservationMetadata,
     isRecoveredHistoryTranscriptObservation,
-} from '@/sync/domains/messages/transcriptObservationProvenance';
+    type TranscriptMessageMetadataUpdate,
+} from "@happier-dev/session-core/messages";
 import {
     advanceSessionReceivedMessageCurrentness,
     isSessionMessageRowCurrent,
     type SessionReceivedMessages,
-} from './sessionMessageCurrentness';
+} from "@happier-dev/session-core/transcript";
 
 export type SessionMessagesEncryption = {
-    decryptMessages: (messages: ApiMessage[], options?: DecryptOptions) => Promise<Array<DecryptedSessionMessage | null>>;
+    decryptMessages: (messages: SessionMessageV1[], options?: DecryptOptions) => Promise<Array<DecryptedSessionMessage | null>>;
 };
 
 export type SessionMessagesEncryptionMode = 'e2ee' | 'plain';
@@ -50,6 +50,7 @@ export type MessageDecryptBatchOptions = {
 };
 
 export type SessionMessagesPageOptions = MessageDecryptBatchOptions & {
+    applyMessageMetadata?: (sessionId: string, updates: readonly TranscriptMessageMetadataUpdate[]) => void;
     isCurrent?: () => boolean;
     sessionEncryptionMode?: SessionMessagesEncryptionMode;
     onContentAuthenticationFailure?: (encryption: SessionMessagesEncryption) => void;
@@ -74,20 +75,53 @@ type SessionMessagesPageRequest = Readonly<{
 
 export type SessionMessagesPagePipelineResult = Readonly<{
     applied: number;
-    page: ApiSessionMessagesResponse;
+    page: SessionMessagesPageV1;
     appliedMessageIds: readonly string[];
     appliedSeqs: readonly number[];
     rawSeqs: readonly number[];
     normalizedMessages: readonly NormalizedMessage[];
     skippedMissingSession: boolean;
+    skippedSuperseded?: boolean;
 }>;
+
+export class SessionMessagePageDecryptionError extends Error {
+    readonly cause?: unknown;
+
+    constructor(sessionId: string, cause?: unknown) {
+        super(`Session message page decryption incomplete for ${sessionId}`);
+        this.name = 'SessionMessagePageDecryptionError';
+        this.cause = cause;
+    }
+}
+
+export class SessionMessagePageResponseError extends Error {
+    readonly code: 'http_error' | 'invalid_response';
+    readonly stage: 'response' | 'response_json' | 'parse';
+    readonly status?: number;
+    readonly cause?: unknown;
+
+    constructor(params: Readonly<{
+        code: 'http_error' | 'invalid_response';
+        stage: 'response' | 'response_json' | 'parse';
+        message: string;
+        status?: number;
+        cause?: unknown;
+    }>) {
+        super(params.message);
+        this.name = 'SessionMessagePageResponseError';
+        this.code = params.code;
+        this.stage = params.stage;
+        this.status = params.status;
+        this.cause = params.cause;
+    }
+}
 
 const DEFAULT_MESSAGE_DECRYPT_BATCH_SIZE = 8;
 const DEFAULT_INITIAL_MESSAGE_DECRYPT_BATCH_SIZE = 64;
 
 const plainSessionMessagesEncryption: SessionMessagesEncryption = {
     decryptMessages: async (messages) => Promise.all(
-        messages.map((message) => readStoredSessionMessage({ message })),
+        messages.map((message) => readStoredSessionMessage({ message, sessionEncryptionMode: 'plain' })),
     ),
 };
 
@@ -157,10 +191,11 @@ function messagePageScopeTelemetryFields(
 }
 
 async function fetchSessionMessagesPageWithTelemetry(params: Readonly<{
+    sessionId: string;
     purpose: MessagePagePurpose;
     request: (path: string) => Promise<Response>;
     page: SessionMessagesPageRequest;
-}>): Promise<ApiSessionMessagesResponse> {
+}>): Promise<SessionMessagesPageV1> {
     const rangeFields: Record<string, number> = {};
     if (typeof params.page.limit === 'number' && Number.isFinite(params.page.limit)) {
         rangeFields.limit = Math.trunc(params.page.limit);
@@ -178,30 +213,58 @@ async function fetchSessionMessagesPageWithTelemetry(params: Readonly<{
         params.page.sidechainId ?? null,
         rangeFields,
     );
-    const response = await syncPerformanceTelemetry.measureAsync(
-        'sync.sessions.messages.request',
-        requestFields,
-        () => params.request(params.page.requestPath),
-    );
-    const json = await syncPerformanceTelemetry.measureAsync(
-        'sync.sessions.messages.responseJson',
-        {
-            ...requestFields,
-            status: typeof response.status === 'number' && Number.isFinite(response.status)
-                ? Math.trunc(response.status)
-                : 0,
+    return fetchSessionMessagesPage({
+        sessionId: params.sessionId,
+        scope: params.page.scope,
+        path: params.page.requestPath,
+        requestJson: async (path) => {
+            const response = await syncPerformanceTelemetry.measureAsync(
+                'sync.sessions.messages.request',
+                requestFields,
+                () => params.request(path),
+            );
+            if (!response.ok) {
+                throw new SessionMessagePageResponseError({
+                    code: 'http_error', stage: 'response', status: response.status,
+                    message: `Session messages request failed with HTTP ${response.status}`,
+                });
+            }
+            let json: unknown;
+            try {
+                json = await syncPerformanceTelemetry.measureAsync(
+                    'sync.sessions.messages.responseJson',
+                    {
+                        ...requestFields,
+                        status: typeof response.status === 'number' && Number.isFinite(response.status)
+                            ? Math.trunc(response.status)
+                            : 0,
+                    },
+                    () => response.json(),
+                );
+            } catch (cause) {
+                throw new SessionMessagePageResponseError({
+                    code: 'invalid_response', stage: 'response_json',
+                    message: 'Session messages response is not valid JSON', cause,
+                });
+            }
+            return json;
         },
-        () => response.json(),
-    );
-    const parsed = syncPerformanceTelemetry.measure(
-        'sync.sessions.messages.parseResponse',
-        requestFields,
-        () => ApiSessionMessagesResponseSchema.safeParse(json),
-    );
-    if (!parsed.success) {
-        throw new Error(`Invalid /messages response: ${parsed.error.message}`);
-    }
-    return parsed.data;
+        onParse: (parse) => syncPerformanceTelemetry.measure(
+            'sync.sessions.messages.parseResponse',
+            requestFields,
+            () => {
+                try {
+                    return parse();
+                } catch (cause) {
+                    throw new SessionMessagePageResponseError({
+                        code: 'invalid_response', stage: 'parse',
+                        message: cause instanceof Error ? cause.message : 'Invalid /messages response',
+                        cause,
+                    });
+                }
+            },
+        ),
+    });
 }
 
 function recordMessagePageTelemetry(purpose: MessagePagePurpose, fetched: number): void {
@@ -220,7 +283,7 @@ async function decryptMessagesInBatchesWithTelemetry(
     purpose: MessagePagePurpose,
     direction: MessagePageDirection,
     encryption: SessionMessagesEncryption,
-    messages: ApiMessage[],
+    messages: SessionMessageV1[],
     options: MessageDecryptBatchOptions & Pick<DecryptOptions, 'onAuthenticationFailure'>,
 ): Promise<Array<DecryptedSessionMessage | null>> {
     const batchSize = resolveMessageDecryptBatchSize(direction, options);
@@ -266,7 +329,7 @@ function measureMessageNormalization<T>(
 
 async function decryptMessagesInBatches(
     encryption: SessionMessagesEncryption,
-    messages: ApiMessage[],
+    messages: SessionMessageV1[],
     options: MessageDecryptBatchOptions & Pick<DecryptOptions, 'onAuthenticationFailure'>,
     batchSize: number,
 ): Promise<Array<DecryptedSessionMessage | null>> {
@@ -312,13 +375,13 @@ function applySidechainScopeMetadata(params: Readonly<{
 }
 
 function orderedMessagesForDirection(
-    messages: readonly ApiMessage[],
+    messages: readonly SessionMessageV1[],
     direction: MessagePageDirection,
-): ApiMessage[] {
+): SessionMessageV1[] {
     return direction === 'newer' ? [...messages] : [...messages].reverse();
 }
 
-function emptyPageForDirection(direction: MessagePageDirection): ApiSessionMessagesResponse {
+function emptyPageForDirection(direction: MessagePageDirection): SessionMessagesPageV1 {
     if (direction === 'newer') {
         return {
             messages: [],
@@ -344,6 +407,10 @@ function skippedMissingSessionResult(direction: MessagePageDirection): SessionMe
     };
 }
 
+function skippedSupersededResult(direction: MessagePageDirection): SessionMessagesPagePipelineResult {
+    return { ...skippedMissingSessionResult(direction), skippedMissingSession: false, skippedSuperseded: true };
+}
+
 export async function runSessionMessagesPagePipeline(params: {
     sessionId: string;
     purpose: MessagePagePurpose;
@@ -351,13 +418,17 @@ export async function runSessionMessagesPagePipeline(params: {
     lifecyclePolicy: LifecyclePolicy;
     getSessionEncryption: (sessionId: string) => SessionMessagesEncryption | null;
     isSessionKnown?: (sessionId: string) => boolean;
+    shouldContinue?: () => boolean;
+    /** Sparse repair admits named rows and already-materialized neighbors, never unseen spill rows. */
+    messageIds?: ReadonlySet<string>;
+    isMessageMaterialized?: (messageId: string, localId: string | null) => boolean;
     /** Exact server rows whose hidden message-updated event authorized replacement. */
     authoritativeUpdateMessageIds?: ReadonlySet<string>;
     request: (path: string) => Promise<Response>;
     sessionReceivedMessages: SessionReceivedMessages;
     applyMessages: (sessionId: string, messages: NormalizedMessage[]) => void;
     onTaskLifecycleEvent?: (event: TaskLifecycleEvent) => void;
-    onMessagesPage?: (page: ApiSessionMessagesResponse) => void;
+    onMessagesPage?: (page: SessionMessagesPageV1) => void;
     onNormalizedMessages?: (messages: NormalizedMessage[]) => void;
     log: { log: (message: string) => void };
 } & SessionMessagesPageOptions): Promise<SessionMessagesPagePipelineResult> {
@@ -365,15 +436,19 @@ export async function runSessionMessagesPagePipeline(params: {
         writeSyncDebugLog(params.log, `💬 session message page: Session ${params.sessionId} is not known on this server; skipping page fetch`);
         return skippedMissingSessionResult(params.page.direction);
     }
+    if (params.shouldContinue?.() === false) {
+        return skippedSupersededResult(params.page.direction);
+    }
 
     const encryption = resolveSessionMessagesEncryption(params);
     if (!encryption) {
-        throw new Error(`Session encryption not ready for ${params.sessionId}`);
+        throw createSessionEncryptionUnavailableError(params.sessionId);
     }
     const isCurrent = () => params.isCurrent?.() !== false && params.isSessionKnown?.(params.sessionId) !== false
         && resolveSessionMessagesEncryption(params) === encryption;
 
     const data = await fetchSessionMessagesPageWithTelemetry({
+        sessionId: params.sessionId,
         purpose: params.purpose,
         request: params.request,
         page: params.page,
@@ -388,14 +463,26 @@ export async function runSessionMessagesPagePipeline(params: {
         writeSyncDebugLog(params.log, `💬 session message page: Session ${params.sessionId} disappeared before page decrypt; dropping response`);
         return skippedMissingSessionResult(params.page.direction);
     }
+    if (params.shouldContinue?.() === false) {
+        return skippedSupersededResult(params.page.direction);
+    }
 
     // Reading must not allocate the shared row-watermark owner. It is created
     // only after a reducer application below; otherwise a delete during
     // decrypt leaves an orphan empty map behind.
     const existingMessages = params.sessionReceivedMessages.get(params.sessionId);
 
-    const messagesToDecrypt: ApiMessage[] = [];
+    const messagesToDecrypt: SessionMessageV1[] = [];
+    const metadataOnlyRows: SessionMessageV1[] = [];
     for (const msg of orderedMessagesForDirection(data.messages, params.page.direction)) {
+        if (
+            params.messageIds
+            && !params.messageIds.has(msg.id)
+            && !existingMessages?.has(msg.id)
+            && params.isMessageMaterialized?.(msg.id, msg.localId ?? null) !== true
+        ) {
+            continue;
+        }
         const msgUpdatedAt = typeof msg.updatedAt === 'number' ? msg.updatedAt : msg.createdAt;
         const existingUpdatedAt = existingMessages?.get(msg.id);
         // A hidden `message-updated` event names the exact durable row whose
@@ -408,24 +495,31 @@ export async function runSessionMessagesPagePipeline(params: {
         if (isSessionMessageRowCurrent({
             existingUpdatedAt,
             incomingUpdatedAt: msgUpdatedAt,
-            isAuthoritativeUpdate: isAuthoritativeUpdate || msg.accountActor !== undefined,
+            isAuthoritativeUpdate,
         })) {
             messagesToDecrypt.push(msg);
+        } else if (existingUpdatedAt === msgUpdatedAt) {
+            metadataOnlyRows.push(msg);
         }
     }
     recordMessageDedupeTelemetry(params.purpose, data.messages.length, messagesToDecrypt.length);
 
-    const authenticationFailures: ApiMessage[] = [];
-    const decryptedMessages = await decryptMessagesInBatchesWithTelemetry(
-        params.purpose,
-        params.page.direction,
-        encryption,
-        messagesToDecrypt,
-        {
-            ...params,
-            onAuthenticationFailure: (index) => authenticationFailures.push(messagesToDecrypt[index]),
-        },
-    );
+    const authenticationFailures: SessionMessageV1[] = [];
+    let decryptedMessages: Array<DecryptedSessionMessage | null>;
+    try {
+        decryptedMessages = await decryptMessagesInBatchesWithTelemetry(
+            params.purpose,
+            params.page.direction,
+            encryption,
+            messagesToDecrypt,
+            {
+                ...params,
+                onAuthenticationFailure: (index) => authenticationFailures.push(messagesToDecrypt[index]),
+            },
+        );
+    } catch (cause) {
+        throw new SessionMessagePageDecryptionError(params.sessionId, cause);
+    }
     const replayableMessages = await Promise.all(decryptedMessages.map(async (decrypted) => {
         if (!decrypted) return null;
         return {
@@ -440,9 +534,12 @@ export async function runSessionMessagesPagePipeline(params: {
         writeSyncDebugLog(params.log, `💬 session message page: Session ${params.sessionId} disappeared before page apply; dropping response`);
         return skippedMissingSessionResult(params.page.direction);
     }
-    params.onMessagesPage?.(data);
+    if (params.shouldContinue?.() === false) {
+        return skippedSupersededResult(params.page.direction);
+    }
 
     const normalizedMessages: NormalizedMessage[] = [];
+    const lifecycleEvents: TaskLifecycleEvent[] = [];
     const appliedRowCurrentness: Array<Readonly<{ messageId: string; updatedAt: number }>> = [];
     const normalizationState = createRawMessageNormalizationSequenceState();
     measureMessageNormalization(params.purpose, replayableMessages.length, () => {
@@ -466,8 +563,9 @@ export async function runSessionMessagesPagePipeline(params: {
             if (!isSessionMessageRowCurrent({
                 existingUpdatedAt: currentUpdatedAt,
                 incomingUpdatedAt: inputUpdatedAt,
-                isAuthoritativeUpdate: isAuthoritativeUpdate || inputMessage?.accountActor !== undefined,
+                isAuthoritativeUpdate,
             })) {
+                if (inputMessage && currentUpdatedAt === inputUpdatedAt) metadataOnlyRows.push(inputMessage);
                 continue;
             }
             if (decrypted.content === null) {
@@ -479,7 +577,7 @@ export async function runSessionMessagesPagePipeline(params: {
             if (params.lifecyclePolicy === 'emit' && !isRecoveredHistoryTranscriptObservation(inputMessage)) {
                 const lifecycleEvent = getTaskLifecycleEventFromRawContent(decrypted.content, decrypted.createdAt);
                 if (lifecycleEvent) {
-                    params.onTaskLifecycleEvent?.(lifecycleEvent);
+                    lifecycleEvents.push(lifecycleEvent);
                 }
             }
             const normalized = normalizeRawMessageInSequence({
@@ -513,14 +611,31 @@ export async function runSessionMessagesPagePipeline(params: {
         }
     });
 
+    // Actor/profile and action-reference changes do not change the durable
+    // content revision. Refresh only those fields; never decrypt or replay
+    // lifecycle/content for an already-applied revision. Recheck after yields
+    // so an older page cannot retract a newer socket delivery's metadata.
+    const metadataUpdates: TranscriptMessageMetadataUpdate[] = [];
+    for (const row of metadataOnlyRows) {
+        if (params.sessionReceivedMessages.get(params.sessionId)?.get(row.id) !== (row.updatedAt ?? row.createdAt)) continue;
+        const update: TranscriptMessageMetadataUpdate = { id: row.id, localId: row.localId ?? null, seq: row.seq };
+        applyTranscriptObservationMetadata(update, row);
+        applyTranscriptAccountActorMetadata(update, {
+            accountActor: qualifyTranscriptAccountActor(row.accountActor, params.serverId),
+        });
+        metadataUpdates.push(update);
+    }
+    if (metadataUpdates.length > 0) params.applyMessageMetadata?.(params.sessionId, metadataUpdates);
     params.onNormalizedMessages?.(normalizedMessages);
-    recordMessageApplyTelemetry(
-        params.purpose,
-        replayableMessages.length,
-        params.sessionId,
-        normalizedMessages,
-        params.applyMessages,
-    );
+    if (normalizedMessages.length > 0 || metadataUpdates.length === 0 || !params.applyMessageMetadata) {
+        recordMessageApplyTelemetry(
+            params.purpose,
+            replayableMessages.length,
+            params.sessionId,
+            normalizedMessages,
+            params.applyMessages,
+        );
+    }
     // The watermark represents a reducer-applied transcript row, not a fetched
     // or merely normalized one. Publishing it after the apply keeps a rejected
     // row retryable and prevents legacy/null/normalization skips from poisoning
@@ -533,14 +648,28 @@ export async function runSessionMessagesPagePipeline(params: {
             row.updatedAt,
         );
     }
+    for (const event of lifecycleEvents) {
+        params.onTaskLifecycleEvent?.(event);
+    }
 
-    if (authenticationFailures.some((message) => isSessionMessageRowCurrent({
+    const isUnresolvedRowCurrent = (message: SessionMessageV1) => isSessionMessageRowCurrent({
         existingUpdatedAt: params.sessionReceivedMessages.get(params.sessionId)?.get(message.id),
         incomingUpdatedAt: message.updatedAt ?? message.createdAt,
         isAuthoritativeUpdate: params.authoritativeUpdateMessageIds?.has(message.id) === true,
-    }))) {
+    });
+    const hasAuthenticationFailure = authenticationFailures.some(isUnresolvedRowCurrent);
+    if (hasAuthenticationFailure) {
         params.onContentAuthenticationFailure?.(encryption);
     }
+    // Keep successfully applied neighbors, but do not certify pagination coverage
+    // across an unreadable row. Authenticated null/unsupported content is not a
+    // cryptographic failure and retains the existing normalization semantics.
+    if (hasAuthenticationFailure || messagesToDecrypt.some((message, index) => (
+        decryptedMessages[index] == null && isUnresolvedRowCurrent(message)
+    ))) {
+        throw new SessionMessagePageDecryptionError(params.sessionId);
+    }
+    params.onMessagesPage?.(data);
 
     return {
         applied: normalizedMessages.length,

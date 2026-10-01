@@ -154,7 +154,8 @@ function eligibleEvent(): DaemonContributionRegistryProjectionAutomationEligible
         event: {
             id: `${PLUGIN_ID}/${EVENT_LOCAL_ID}`,
             identity: { pluginId: PLUGIN_ID, localId: EVENT_LOCAL_ID },
-            immutableGenerationId: 'github-generation-a',
+            occurrenceId: 'github-generation-a',
+            sourceCustody: { kind: 'development', registeredRootId: 'github-root-a' },
             title: 'Repository updates',
             description: null,
             payloadSchema: {
@@ -183,7 +184,7 @@ function eligibleEvent(): DaemonContributionRegistryProjectionAutomationEligible
         setupAction: {
             id: `${PLUGIN_ID}/${SETUP_ACTION_LOCAL_ID}`,
             identity: { pluginId: PLUGIN_ID, localId: SETUP_ACTION_LOCAL_ID },
-            immutableGenerationId: 'github-generation-a',
+            occurrenceId: 'github-generation-a',
             title: 'Configure repository source',
             description: null,
             inputSchema: { type: 'object', additionalProperties: false },
@@ -211,7 +212,7 @@ function eligibleEventWithSetupSurface(
         },
         setupSurface: {
             contribution: event.event.identity,
-            immutableGenerationId: event.event.immutableGenerationId,
+            occurrenceId: event.event.occurrenceId,
             projectionGeneration,
             rendererChain: [{ pluginId: PLUGIN_ID, localId: rendererLocalId }],
             selectedRenderer: {
@@ -231,7 +232,7 @@ function eligibleEventWithSetupSurface(
             contributorTargetedContributions: {
                 target: {
                     pluginId: PLUGIN_ID,
-                    immutableGenerationId: event.event.immutableGenerationId,
+                    occurrenceId: event.event.occurrenceId,
                 },
                 points: [],
             },

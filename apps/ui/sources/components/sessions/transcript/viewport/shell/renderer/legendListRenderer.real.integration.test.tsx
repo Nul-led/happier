@@ -109,6 +109,16 @@ function distanceFromLiveTail(element: HTMLElement): number {
     return Math.max(0, element.scrollHeight - element.clientHeight - element.scrollTop);
 }
 
+function deliverBrowserScrollEventsAsynchronously(): void {
+    // Browser scroll observations arrive after the physical DOM write.
+    const dispatchEvent = HTMLElement.prototype.dispatchEvent;
+    vi.spyOn(HTMLElement.prototype, 'dispatchEvent').mockImplementation(function (this: HTMLElement, event: Event) {
+        if (event.type !== 'scroll') return dispatchEvent.call(this, event);
+        setTimeout(() => dispatchEvent.call(this, event), 0);
+        return true;
+    });
+}
+
 /**
  * Attribute a captured physical scroll write to the owner that issued it. Legend's own
  * bootstrap placement lands through `dispatchInitialScroll`/`advanceMeasuredInitialScroll`
@@ -154,6 +164,7 @@ function renderSizeVersionRow({ item }: Readonly<{ item: SizeVersionRow }>): Rea
 }
 
 type ReactFiberWithRef = Readonly<{
+    memoizedProps?: Readonly<{ value?: unknown }>;
     ref?: unknown;
     return?: ReactFiberWithRef | null;
 }>;
@@ -462,6 +473,168 @@ describe('Legend installed web-package cleanup', () => {
         ));
         expect(postTakeoverCorrectionWrites).toHaveLength(0);
         expect(directScrollTopWrites).toHaveLength(0);
+    });
+
+    it('lands the live tail after a detached entry reconciles offscreen row geometry', async () => {
+        const listRef = React.createRef<LegendListRef>();
+        useMeasuredLegendGeometry = true;
+        deliverBrowserScrollEventsAsynchronously();
+        let isMaintainingScrollAtEnd = false;
+        let widthVersion = 'entry-width';
+        const data = Array.from({ length: 20 }, (_value, index): Row => ({
+            height: index === 10 ? 10_000 : 80,
+            id: `detached-tail-landing-${index}`,
+        }));
+
+        await act(async () => {
+            root.render(
+                <div id="installed-pinned-host" style={{ height: viewportHeight }}>
+                    <LegendList
+                        data={data}
+                        estimatedItemSize={120}
+                        getEstimatedItemSize={(item: Row) => item.height === 10_000 ? item.height : 120}
+                        getItemSizeVersion={() => widthVersion}
+                        keyExtractor={(item: Row) => item.id}
+                        maintainScrollAtEnd={{
+                            animated: false,
+                            isMaintainingScrollAtEnd: () => isMaintainingScrollAtEnd,
+                        }}
+                        maintainVisibleContentPosition={{ data: true, size: true }}
+                        recycleItems={false}
+                        ref={listRef}
+                        renderItem={renderRow}
+                        style={{ flex: 1, minHeight: 0 }}
+                    />
+                </div>,
+            );
+        });
+        await flushLegendWork();
+
+        expect(listRef.current!.getState().sizes.get(data[0]!.id)).toBe(80);
+        act(() => {
+            void listRef.current!.scrollToIndex({ index: 10, viewOffset: -5_000, animated: false });
+        });
+        await flushLegendWork();
+
+        const element = findInstalledScrollElement();
+        expect(distanceFromLiveTail(element)).toBeGreaterThan(viewportHeight);
+        // Offscreen measurements retain the entry width until jump settlement.
+        widthVersion = 'measured-width';
+        isMaintainingScrollAtEnd = true;
+        let landed = false;
+        act(() => {
+            void listRef.current!.scrollToEnd({ animated: false }).then(() => { landed = true; });
+        });
+        await flushLegendWork();
+
+        expect(landed).toBe(true);
+        expect(distanceFromLiveTail(element)).toBeLessThanOrEqual(1);
+        expect(listRef.current!.getState().scroll).toBe(element.scrollTop);
+    });
+
+    it('retains the accepted physical viewport after late bootstrap geometry settles', async () => {
+        const listRef = React.createRef<LegendListRef>();
+        useMeasuredLegendGeometry = true;
+        deliverBrowserScrollEventsAsynchronously();
+        const scheduledFrames: Array<Readonly<{
+            callback: FrameRequestCallback;
+            id: number;
+        }>> = [];
+        let nextFrameId = 1;
+        vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+            const id = nextFrameId++;
+            scheduledFrames.push({ callback, id });
+            return id;
+        });
+        vi.stubGlobal('cancelAnimationFrame', (id: number) => {
+            const index = scheduledFrames.findIndex((frame) => frame.id === id);
+            if (index >= 0) scheduledFrames.splice(index, 1);
+        });
+        let loaded = false;
+        let data = rows(80, 'bootstrap-settle');
+        const render = () => (
+            <div id="installed-pinned-host" style={{ height: viewportHeight }}>
+                <LegendList
+                    data={data}
+                    estimatedItemSize={120}
+                    initialScrollAtEnd
+                    keyExtractor={(item: Row) => item.id}
+                    ListFooterComponent={renderRow({ item: { height: 24, id: 'bootstrap-footer' } })}
+                    maintainScrollAtEnd={{
+                        animated: false,
+                        isMaintainingScrollAtEnd: () => true,
+                        on: { dataChange: true, footerLayout: true, itemLayout: true, layout: true },
+                    }}
+                    maintainVisibleContentPosition={{ data: true, size: true }}
+                    onLoad={() => { loaded = true; }}
+                    recycleItems={false}
+                    ref={listRef}
+                    renderItem={renderRow}
+                    style={{ flex: 1, minHeight: 0 }}
+                />
+            </div>
+        );
+        await act(async () => {
+            root.render(render());
+            flushResizeObservers();
+        });
+        for (let pass = 0; pass < 48 && physicalScrollWrites.length === 0; pass += 1) {
+            await act(async () => {
+                flushResizeObservers();
+                const frame = scheduledFrames.shift();
+                frame?.callback(Date.now());
+                await vi.advanceTimersByTimeAsync(1);
+            });
+        }
+        expect(physicalScrollWrites.length).toBeGreaterThan(0);
+        expect(loaded).toBe(false);
+        const readBootstrapState = () => {
+            const element = findInstalledScrollElement();
+            const fiberKey = Object.keys(element).find((key) => key.startsWith('__reactFiber$'))!;
+            let fiber = (element as unknown as Record<string, unknown>)[fiberKey] as ReactFiberWithRef | undefined;
+            while (fiber) {
+                const context = fiber.memoizedProps?.value as { state?: {
+                    scroll: number;
+                    initialScroll?: unknown;
+                    initialScrollSession?: { bootstrap?: { scroll: number; mountFrameCount: number } };
+                    didFinishInitialScroll?: boolean;
+                } } | undefined;
+                if (context?.state && typeof context.state.scroll === 'number') return context.state;
+                fiber = fiber.return ?? undefined;
+            }
+            throw new Error('Legend context not found');
+        };
+        // The cached window changes while the prior initial dispatch is still completing.
+        // A real viewport-layout delivery rearms the bootstrap for its new last-item target.
+        data = data.slice(0, -1);
+        await act(async () => {
+            root.render(render());
+        });
+        viewportHeight = 601;
+        await act(async () => {
+            flushResizeObservers();
+            await Promise.resolve();
+        });
+        expect(readBootstrapState().initialScrollSession?.bootstrap).toBeDefined();
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(100);
+        });
+        // Finish the old dispatch and all remaining real frames, including the rearmed
+        // bootstrap's watchdog. No user event is needed to reconcile the accepted viewport.
+        for (let pass = 0; pass < 64 && scheduledFrames.length > 0; pass += 1) {
+            await act(async () => {
+                scheduledFrames.shift()!.callback(Date.now());
+                flushResizeObservers();
+                await vi.advanceTimersByTimeAsync(100);
+            });
+        }
+        expect(scheduledFrames).toHaveLength(0);
+
+        const element = findInstalledScrollElement();
+        const state = listRef.current!.getState();
+        expect(distanceFromLiveTail(element)).toBeLessThanOrEqual(1);
+        expect(state.scroll).toBe(element.scrollTop);
+        expect(state.endBuffered).toBe(data.length - 1);
     });
 
     it('hands initial-end ownership to one current-geometry maintain pass without overlap', async () => {
@@ -1792,6 +1965,11 @@ describe('Legend installed web-package cleanup', () => {
         await act(async () => {
             root.render(render(900));
         });
+        expect(() => listRef.current?.observeInitialPresentationSettlement?.({
+            dataKey: 'different-session-surface',
+            revision: 7,
+            onSettled: settled,
+        })).toThrow(/data key/i);
         act(() => {
             listRef.current?.observeInitialPresentationSettlement?.({
                 dataKey: 'rich-settlement-session',

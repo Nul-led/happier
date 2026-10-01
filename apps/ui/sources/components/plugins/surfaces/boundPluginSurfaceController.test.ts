@@ -43,6 +43,7 @@ function resolveDaemonTargetAction(
     return {
         id: identity.localId,
         pluginId: identity.pluginId,
+        occurrenceId: 'daemon-action-occurrence-a',
         title: identity.localId,
         scopes: ['session'],
         surfaces: ['ui'],
@@ -62,6 +63,7 @@ function resolveClientTargetAction(
     return {
         id: identity.localId,
         pluginId: identity.pluginId,
+        occurrenceId: 'client-action-occurrence-a',
         title: identity.localId,
         scopes: ['session'],
         surfaces: ['ui'],
@@ -69,7 +71,6 @@ function resolveClientTargetAction(
             target: 'client',
             client: {
                 artifactId: 'client-action-bundle',
-                modulePath: './actions/clientAction',
                 exportName: 'execute',
             },
             platforms: ['web'],
@@ -100,6 +101,7 @@ const FACTS = {
     machineId: 'machine_1',
     serverId: 'server-1',
     projectionGeneration: 12,
+    occurrenceId: 'acme.browser:12',
     executionOrigin: {
         serverIdentityId: 'srv_browser_fixture',
         materializationRef: {
@@ -445,7 +447,8 @@ describe('BoundPluginSurfaceController (§3.1)', () => {
                 contributor: {
                     pluginId: FACTS.pluginId,
                     contributionId: 'review',
-                    immutableGenerationId: 'review-contributor-generation-a',
+                    occurrenceId: 'review-contributor-generation-a',
+                    sourceCustody: { kind: 'development' as const, registeredRootId: 'browser-root' },
                 },
                 role: 'setup' as const,
                 action: { pluginId: FACTS.pluginId, localId: 'configure' },
@@ -453,7 +456,8 @@ describe('BoundPluginSurfaceController (§3.1)', () => {
             const targetedContributions = {
                 target: {
                     pluginId: FACTS.pluginId,
-                    immutableGenerationId: input.targetGeneration,
+                    occurrenceId: input.targetGeneration,
+                    sourceCustody: { kind: 'development', registeredRootId: 'browser-root' },
                 },
                 points: [{
                     pointId: operation.point.pointId,
@@ -483,13 +487,13 @@ describe('BoundPluginSurfaceController (§3.1)', () => {
                     diagnostics: [],
                     actions: [{
                         id: operation.action.localId,
+                        occurrenceId: 'review-contributor-generation-a',
                         title: input.actionTitle,
                         description: null,
                         icon: null,
                         scopes: [],
                         surfaces: ['plugin'],
                         placementBindings: [],
-                        inputSchema: null,
                         inputHints: null,
                         slash: null,
                         priority: null,
@@ -636,7 +640,7 @@ describe('BoundPluginSurfaceController (§3.1)', () => {
         expect(requests).toEqual([expect.objectContaining({
             machineId: 'machine_1',
             callerPluginId: FACTS.pluginId,
-            expectedGeneration: '12',
+            expectedCallerOccurrenceId: FACTS.occurrenceId,
             resource: { pluginId: FACTS.pluginId, localId: 'review-summary' },
             context,
         })]);
@@ -789,10 +793,43 @@ describe('BoundPluginSurfaceController (§3.1)', () => {
                     kind: 'plugin',
                     pluginId: FACTS.pluginId,
                     contributionLocalId: FACTS.contributionId,
+                    occurrenceId: FACTS.occurrenceId,
                     materialization: FACTS.executionOrigin.materializationRef,
                 },
             }),
         );
+    });
+
+    it('dispatches an originless bundled self-check by its exact mounted occurrence', async () => {
+        const executeContributedAction = vi.fn(async () => ({
+            supported: true as const,
+            result: { ok: true as const, result: { ok: true } },
+        }));
+        const controller = createBoundPluginSurfaceController({
+            facts: { ...FACTS, executionOrigin: null },
+            binding: { executeContributedAction: executeContributedAction as never },
+        });
+
+        await expect(controller.hostApi.handleRequest(request('executeAction', {
+            action: { pluginId: FACTS.pluginId, localId: 'self-check' },
+            input: {},
+        }))).resolves.toEqual({ ok: true });
+
+        expect(executeContributedAction).toHaveBeenCalledWith('machine_1', {
+            serverId: 'server-1',
+            expectedContributorOccurrenceId: 'daemon-action-occurrence-a',
+            qualifiedActionId: `${FACTS.pluginId}/self-check`,
+            input: {},
+            executionSurface: 'ui',
+            invocation: {
+                kind: 'mountedPluginSurface',
+                mountedBinding: {
+                    pluginId: FACTS.pluginId,
+                    contributionLocalId: FACTS.contributionId,
+                    occurrenceId: FACTS.occurrenceId,
+                },
+            },
+        });
     });
 
     it('host-stamps the mounted exact Session for contextual Board Actions', async () => {
@@ -818,6 +855,7 @@ describe('BoundPluginSurfaceController (§3.1)', () => {
                     kind: 'plugin',
                     pluginId: FACTS.pluginId,
                     contributionLocalId: FACTS.contributionId,
+                    occurrenceId: FACTS.occurrenceId,
                     materialization: FACTS.executionOrigin.materializationRef,
                 },
             }),
@@ -843,6 +881,7 @@ describe('BoundPluginSurfaceController (§3.1)', () => {
                 kind: 'plugin',
                 pluginId: FACTS.pluginId,
                 contributionLocalId: FACTS.contributionId,
+                occurrenceId: FACTS.occurrenceId,
                 materialization: FACTS.executionOrigin.materializationRef,
             },
         });
@@ -934,6 +973,7 @@ describe('BoundPluginSurfaceController (§3.1)', () => {
                 diagnostics: [],
                 actions: [{
                     id: 'connection/prepare-v1',
+                    occurrenceId: 'provider-generation-a',
                     title: 'Prepare',
                     description: null,
                     icon: null,
@@ -955,7 +995,8 @@ describe('BoundPluginSurfaceController (§3.1)', () => {
         const targetedContributions: PluginUiTargetedContributionsV1 = {
             target: {
                 pluginId: FACTS.pluginId,
-                immutableGenerationId: 'browser-generation-a',
+                occurrenceId: 'browser-generation-a',
+                sourceCustody: { kind: 'development', registeredRootId: 'browser-root' },
             },
             points: [{
                 pointId: 'connection',
@@ -965,7 +1006,8 @@ describe('BoundPluginSurfaceController (§3.1)', () => {
                         contributor: {
                             pluginId: 'acme.provider',
                             contributionId: 'provider',
-                            immutableGenerationId: 'provider-generation-a',
+                            occurrenceId: 'provider-generation-a',
+                            sourceCustody: { kind: 'development', registeredRootId: 'provider-root' },
                         },
                         protocol: { id: 'provider', version: 1 },
                         operations: [{
@@ -973,7 +1015,8 @@ describe('BoundPluginSurfaceController (§3.1)', () => {
                             contributor: {
                                 pluginId: 'acme.provider',
                                 contributionId: 'provider',
-                                immutableGenerationId: 'provider-generation-a',
+                                occurrenceId: 'provider-generation-a',
+                                sourceCustody: { kind: 'development', registeredRootId: 'provider-root' },
                             },
                             role: 'setup',
                             action: { pluginId: 'acme.provider', localId: 'connection/prepare-v1' },
@@ -1024,7 +1067,8 @@ describe('BoundPluginSurfaceController (§3.1)', () => {
             contributor: {
                 pluginId: 'happier.channel.discord',
                 contributionId: 'discord-provider',
-                immutableGenerationId: 'discord-generation-a',
+                occurrenceId: 'discord-generation-a',
+                sourceCustody: { kind: 'development' as const, registeredRootId: 'discord-root' },
             },
             role: 'setup',
             action: { pluginId: 'happier.channel.discord', localId: 'channels/setup-v1' },
@@ -1058,36 +1102,13 @@ describe('BoundPluginSurfaceController (§3.1)', () => {
                 diagnostics: [],
                 actions: [{
                     id: 'channels/setup-v1',
+                    occurrenceId: 'discord-generation-a',
                     title: 'Set up Discord Channels',
                     description: null,
                     icon: null,
                     scopes: ['settings'],
                     surfaces: ['plugin'],
                     placementBindings: [],
-                    inputSchema: {
-                        type: 'object',
-                        properties: {
-                            credentialRef: {
-                                type: 'object',
-                                properties: {
-                                    service: {
-                                        type: 'object',
-                                        properties: {
-                                            pluginId: { type: 'string' },
-                                            localId: { type: 'string' },
-                                        },
-                                        required: ['pluginId', 'localId'],
-                                        additionalProperties: false,
-                                    },
-                                    accountId: { type: 'string' },
-                                },
-                                required: ['service', 'accountId'],
-                                additionalProperties: false,
-                            },
-                        },
-                        required: ['credentialRef'],
-                        additionalProperties: false,
-                    },
                     inputHints: {
                         fields: [{
                             path: 'credentialRef',
@@ -1110,7 +1131,8 @@ describe('BoundPluginSurfaceController (§3.1)', () => {
         const targetedContributions: PluginUiTargetedContributionsV1 = {
             target: {
                 pluginId: channelsFacts.pluginId,
-                immutableGenerationId: 'channels-generation-a',
+                occurrenceId: 'channels-generation-a',
+                sourceCustody: { kind: 'development', registeredRootId: 'channels-root' },
             },
             points: [{
                 pointId: operation.point.pointId,
@@ -1193,9 +1215,16 @@ describe('BoundPluginSurfaceController (§3.1)', () => {
                 action: operation.action,
                 input: {},
                 selection: {
-                    target: targetedContributions.target,
+                    target: {
+                        pluginId: targetedContributions.target.pluginId,
+                        sourceCustody: targetedContributions.target.sourceCustody,
+                    },
                     point: operation.point,
-                    contributor: operation.contributor,
+                    contributor: {
+                        pluginId: operation.contributor.pluginId,
+                        contributionId: operation.contributor.contributionId,
+                        sourceCustody: operation.contributor.sourceCustody,
+                    },
                 },
                 connectedAccount: { kind: 'selected', ref: account, fieldPath: 'credentialRef' },
                 presentation: {
@@ -1205,7 +1234,7 @@ describe('BoundPluginSurfaceController (§3.1)', () => {
             });
             expect(resolveOptions).toHaveBeenCalledWith('machine_1', expect.objectContaining({
                 serverId: 'server-1',
-                expectedGeneration: '12',
+                expectedOccurrenceId: 'discord-generation-a',
                 qualifiedActionId: 'happier.channel.discord/channels/setup-v1',
                 fieldPath: 'credentialRef',
             }));
@@ -1221,7 +1250,7 @@ describe('BoundPluginSurfaceController (§3.1)', () => {
             }))).resolves.toEqual({ prepared: true });
             expect(executeContributedAction).toHaveBeenCalledWith('machine_1', {
                 serverId: 'server-1',
-                expectedGeneration: '12',
+                expectedContributorOccurrenceId: 'daemon-action-occurrence-a',
                 qualifiedActionId: 'happier.channels/connection/prepare-v1',
                 input: {
                     providerSelection: selection.selection,
@@ -1232,7 +1261,9 @@ describe('BoundPluginSurfaceController (§3.1)', () => {
                 invocation: {
                     kind: 'mountedPluginSurface',
                     mountedBinding: {
+                        pluginId: channelsFacts.pluginId,
                         contributionLocalId: 'settings',
+                        occurrenceId: channelsFacts.occurrenceId,
                         materializationRef: channelsFacts.executionOrigin.materializationRef,
                     },
                 },
@@ -1250,7 +1281,8 @@ describe('BoundPluginSurfaceController (§3.1)', () => {
             contributor: {
                 pluginId: 'happier.channel.discord',
                 contributionId: 'discord-provider',
-                immutableGenerationId: 'discord-generation-a',
+                occurrenceId: 'discord-generation-a',
+                sourceCustody: { kind: 'development' as const, registeredRootId: 'discord-root' },
             },
             role: 'setup',
             action: { pluginId: 'happier.channel.discord', localId: 'channels/setup-v1' },
@@ -1285,18 +1317,13 @@ describe('BoundPluginSurfaceController (§3.1)', () => {
                 diagnostics: [],
                 actions: [{
                     id: 'channels/setup-v1',
+                    occurrenceId: 'discord-generation-a',
                     title: 'Set up Discord Channels',
                     description: null,
                     icon: null,
                     scopes: ['settings'],
                     surfaces: ['plugin'],
                     placementBindings: [],
-                    inputSchema: {
-                        type: 'object',
-                        properties: { workspace: { type: 'string', minLength: 1 } },
-                        required: ['workspace'],
-                        additionalProperties: false,
-                    },
                     inputHints: {
                         fields: [{
                             path: 'workspace',
@@ -1318,7 +1345,8 @@ describe('BoundPluginSurfaceController (§3.1)', () => {
         const targetedContributions: PluginUiTargetedContributionsV1 = {
             target: {
                 pluginId: channelsFacts.pluginId,
-                immutableGenerationId: 'channels-generation-a',
+                occurrenceId: 'channels-generation-a',
+                sourceCustody: { kind: 'development', registeredRootId: 'channels-root' },
             },
             points: [{
                 pointId: operation.point.pointId,
@@ -1441,7 +1469,9 @@ describe('BoundPluginSurfaceController (§3.1)', () => {
         // advertise a daemon-contributed Action merely because the renderer is
         // mounted; that binding requires the exact daemon admission separately.
         // `openNewSession` is locally served from the current Account lifetime,
-        // so it stays installed beside the other local methods.
+        // so it stays installed beside the other local methods, as are the
+        // client-realm linked-Session methods served from the Account's own
+        // Session store.
         expect(controller.installedMethods).toEqual([
             'context',
             'executeAction',
@@ -1452,6 +1482,9 @@ describe('BoundPluginSurfaceController (§3.1)', () => {
             'writeClipboard',
             'openExternalLink',
             'openNewSession',
+            'readSession',
+            'watchSession',
+            'respondToSessionPermission',
         ]);
         expect(controller.interactive).toBe(true);
         await expect(controller.hostApi.handleRequest(request('executeAction', {
@@ -1630,14 +1663,16 @@ describe('BoundPluginSurfaceController (§3.1)', () => {
 
         expect(executeContributedAction).toHaveBeenCalledWith('machine_1', {
             serverId: 'server-1',
-            expectedGeneration: '12',
+            expectedContributorOccurrenceId: 'daemon-action-occurrence-a',
             qualifiedActionId: 'acme.browser/save',
             input: null,
             executionSurface: 'ui',
             invocation: {
                 kind: 'mountedPluginSurface',
                 mountedBinding: {
+                    pluginId: FACTS.pluginId,
                     contributionLocalId: FACTS.contributionId,
+                    occurrenceId: FACTS.occurrenceId,
                     materializationRef: FACTS.executionOrigin.materializationRef,
                 },
             },
@@ -1701,7 +1736,7 @@ describe('BoundPluginSurfaceController (§3.1)', () => {
 
         expect(executeContributedAction).toHaveBeenCalledWith('machine_1', {
             serverId: 'server-1',
-            expectedGeneration: '12',
+            expectedContributorOccurrenceId: 'daemon-action-occurrence-a',
             qualifiedActionId: 'acme.reviewer/publish',
             input: { source: 'mounted-surface' },
             executionSurface: 'ui',
@@ -1710,7 +1745,9 @@ describe('BoundPluginSurfaceController (§3.1)', () => {
             invocation: {
                 kind: 'mountedPluginSurface',
                 mountedBinding: {
+                    pluginId: FACTS.pluginId,
                     contributionLocalId: FACTS.contributionId,
+                    occurrenceId: FACTS.occurrenceId,
                     materializationRef: FACTS.executionOrigin.materializationRef,
                 },
             },
@@ -1734,7 +1771,7 @@ describe('BoundPluginSurfaceController (§3.1)', () => {
 
         expect(executeContributedAction).toHaveBeenCalledWith('machine_1', {
             serverId: 'server-1',
-            expectedGeneration: '12',
+            expectedContributorOccurrenceId: 'daemon-action-occurrence-a',
             qualifiedActionId: 'acme.reviewer/publish',
             input: { source: 'bound-session' },
             executionSurface: 'ui',
@@ -1742,7 +1779,9 @@ describe('BoundPluginSurfaceController (§3.1)', () => {
             invocation: {
                 kind: 'mountedPluginSurface',
                 mountedBinding: {
+                    pluginId: FACTS.pluginId,
                     contributionLocalId: FACTS.contributionId,
+                    occurrenceId: FACTS.occurrenceId,
                     materializationRef: FACTS.executionOrigin.materializationRef,
                 },
             },

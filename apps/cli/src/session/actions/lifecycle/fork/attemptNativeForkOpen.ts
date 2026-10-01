@@ -36,6 +36,7 @@ import type {
     ForkStrategyAttemptResult,
 } from './forkLifecycleTypes';
 import type { SessionLifecycleMachineDeps } from '../sessionLifecycleTypes';
+import { prepareManagedForkDirectory } from './prepareManagedForkDirectory';
 
 function areNativeForkTargetsEquivalent(
     attested: Extract<
@@ -162,6 +163,7 @@ export async function attemptNativeForkOpen(params: Readonly<{
         nativeForkSource,
         ...(runtimeDescriptorV1 ? { runtimeDescriptorV1 } : {}),
         ...inheritedForkOverrides.spawn,
+        ...prepareManagedForkDirectory(params),
     } satisfies SpawnSessionOptions);
 
     if (isAmbiguousSpawnSessionFailure(result)) {

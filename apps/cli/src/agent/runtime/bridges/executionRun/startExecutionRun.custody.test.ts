@@ -92,7 +92,6 @@ describe('execution run start transcript custody', () => {
       enqueueRetainedRunInitialInput,
       attachRetainedRunSessionInput,
       voiceAgentManager,
-      getDepthByCallId: () => null,
     });
 
     try {
@@ -178,7 +177,6 @@ describe('execution run start transcript custody', () => {
       enqueueRetainedRunInitialInput,
       attachRetainedRunSessionInput,
       voiceAgentManager,
-      getDepthByCallId: () => null,
     };
     const result = await startExecutionRun(args);
 
@@ -347,7 +345,6 @@ describe('execution run start transcript custody', () => {
         enqueueRetainedRunInitialInput,
         attachRetainedRunSessionInput,
         voiceAgentManager,
-        getDepthByCallId: () => null,
       });
 
       const startOutcome = await Promise.race([
@@ -439,7 +436,6 @@ describe('execution run start transcript custody', () => {
       executeBoundedRun: async () => { throw new Error('Long-lived start must not execute bounded work'); },
       send: async () => { throw new Error('No initial instructions were supplied'); },
       voiceAgentManager,
-      getDepthByCallId: () => null,
     };
     try {
       await expect(startExecutionRun(args)).rejects.toMatchObject({

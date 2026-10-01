@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ResolvedContributionRegistry } from '@/plugins/projection/registry/types';
 import type { ResolvedExecutablePluginRuntimeRegistry } from '@/plugins/runtime/resolveExecutablePluginRuntimeRegistry';
 import { createUnavailablePluginServices } from '@/plugins/runtime/invocation/services/unavailable';
+import { createPluginRuntimeOccurrenceId } from '@/plugins/runtime/runtimeSlots';
 
 import { resolveCliEngineRegistry } from './engineRegistry';
 
@@ -71,7 +72,7 @@ function createContributionRegistry(
 
 function createRuntimeRegistry(
     contributes: ResolvedContributionRegistry,
-    currentGenerationsByPluginId?: ResolvedExecutablePluginRuntimeRegistry['pluginFinalPolicyCurrentGenerationsById'],
+    currentRuntimesByPluginId?: ResolvedExecutablePluginRuntimeRegistry['pluginFinalPolicyCurrentRuntimesById'],
 ): ResolvedExecutablePluginRuntimeRegistry {
     return {
         contributes,
@@ -82,8 +83,8 @@ function createRuntimeRegistry(
         agentRuntimesByAgentId: new Map(),
         scmHostingProvidersById: new Map(),
         pluginDiagnosticsByPluginId: Object.freeze({}),
-        ...(currentGenerationsByPluginId
-            ? { pluginFinalPolicyCurrentGenerationsById: currentGenerationsByPluginId }
+        ...(currentRuntimesByPluginId
+            ? { pluginFinalPolicyCurrentRuntimesById: currentRuntimesByPluginId }
             : {}),
         addRuntimeDisposable: (_pluginId, disposable) => disposable,
         createAgentInvocationServices: async () => createUnavailablePluginServices(),
@@ -198,46 +199,52 @@ describe('resolveCliEngineRegistry runtime lease convergence', () => {
         expect(releaseGenerationB).toHaveBeenCalledTimes(1);
     });
 
-    it('refreshes a plugin profile identity through the current runtime lifecycle owner', async () => {
-        const releaseDiscovery = vi.fn(async () => undefined);
-        const releaseCurrent = vi.fn(async () => undefined);
+    it('admits execution-run profiles from bundled, managed, and development custody', async () => {
+        const definition = {
+            id: 'review', intent: 'review' as const, title: 'Review', promptAsset: 'review-prompt',
+            compatibleAgents: ['reviewer'],
+            defaults: { retention: 'ephemeral' as const, runClass: 'bounded' as const, io: 'streaming' as const },
+        };
+        const contributions = {
+            ...createContributionRegistry(),
+            executionRunProfiles: Object.freeze([
+                { pluginId: 'happier.review.coderabbit', provenance: 'bundled' as const, source: { kind: 'bundled' as const }, definition },
+                { pluginId: 'acme.managed', provenance: 'external' as const, source: { kind: 'path' as const }, definition },
+                { pluginId: 'happier.review.deepsec', provenance: 'external' as const, source: { kind: 'path' as const }, definition },
+            ]),
+        } as ResolvedContributionRegistry;
+        const current = new Map([
+            ['happier.review.coderabbit', {
+                occurrenceId: createPluginRuntimeOccurrenceId('coderabbit'),
+                sourceCustody: { kind: 'bundled_first_party' as const, packagedRuntime: { kind: 'cli_version_root' as const, versionRootId: 'cli-0.3.0' } },
+                desiredOccurrenceId: createPluginRuntimeOccurrenceId('coderabbit'),
+                appliedOccurrenceId: createPluginRuntimeOccurrenceId('coderabbit'), applied: true, selectedAccess: [],
+            }],
+            ['acme.managed', {
+                occurrenceId: createPluginRuntimeOccurrenceId('managed'),
+                sourceCustody: { kind: 'managed' as const, immutableGenerationId: 'generation-1', installSource: 'npm' as const },
+                desiredOccurrenceId: createPluginRuntimeOccurrenceId('managed'),
+                appliedOccurrenceId: createPluginRuntimeOccurrenceId('managed'), applied: true, selectedAccess: [],
+            }],
+            ['happier.review.deepsec', {
+                occurrenceId: createPluginRuntimeOccurrenceId('deepsec'),
+                sourceCustody: { kind: 'development' as const, registeredRootId: '/plugins/deepsec' },
+                desiredOccurrenceId: createPluginRuntimeOccurrenceId('deepsec'),
+                appliedOccurrenceId: createPluginRuntimeOccurrenceId('deepsec'), applied: true, selectedAccess: [],
+            }],
+        ]);
         acquireAuthoritativePluginRuntimeRegistryLeaseMock
-            .mockResolvedValueOnce({
-                registry: createRuntimeRegistry(
-                    createContributionRegistry(),
-                    new Map([['acme.profile', {
-                        immutableGenerationId: 'immutable-discovery',
-                        desiredImmutableGenerationId: 'immutable-discovery',
-                        appliedImmutableGenerationId: 'immutable-discovery',
-                        distribution: 'archive',
-                        applied: true,
-                        selectedAccess: [],
-                    }]]),
-                ),
-                source: 'active',
-                release: releaseDiscovery,
-            })
-            .mockResolvedValueOnce({
-                registry: createRuntimeRegistry(
-                    createContributionRegistry(),
-                    new Map([['acme.profile', {
-                        immutableGenerationId: 'immutable-current',
-                        desiredImmutableGenerationId: 'immutable-current',
-                        appliedImmutableGenerationId: 'immutable-current',
-                        distribution: 'archive',
-                        applied: true,
-                        selectedAccess: [],
-                    }]]),
-                ),
-                source: 'active',
-                release: releaseCurrent,
-            });
+            .mockResolvedValueOnce({ registry: createRuntimeRegistry(contributions, current), source: 'active', release: vi.fn(async () => undefined) })
+            .mockResolvedValueOnce({ registry: createRuntimeRegistry(contributions, current), source: 'active', release: vi.fn(async () => undefined) });
 
         const registry = await resolveCliEngineRegistry();
+        const catalog = await registry.resolveExecutionRunProfileCatalog();
 
-        await expect(registry.resolveCurrentPluginGeneration('acme.profile'))
-            .resolves.toBe('immutable-current');
-        expect(releaseDiscovery).toHaveBeenCalledTimes(1);
-        expect(releaseCurrent).toHaveBeenCalledTimes(1);
+        expect(Array.from(catalog.profileDescriptorsById.values()).map(({ pluginId, sourceCustody }) => ({ pluginId, sourceCustody })))
+            .toEqual([
+                { pluginId: 'happier.review.coderabbit', sourceCustody: { kind: 'bundled_first_party', packagedRuntime: { kind: 'cli_version_root', versionRootId: 'cli-0.3.0' } } },
+                { pluginId: 'acme.managed', sourceCustody: { kind: 'managed', immutableGenerationId: 'generation-1', installSource: 'npm' } },
+                { pluginId: 'happier.review.deepsec', sourceCustody: { kind: 'development', registeredRootId: '/plugins/deepsec' } },
+            ]);
     });
 });

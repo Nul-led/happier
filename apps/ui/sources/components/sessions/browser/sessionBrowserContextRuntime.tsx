@@ -10,6 +10,8 @@ import {
     type BrowserContextUnavailableReason,
 } from '@/sync/domains/browser/context';
 import { createFrontDoorRuntimeActionExecutor } from '@/sync/ops/actions/frontDoorRuntimeActionExecutor';
+import { useAttachmentsUploadConfig } from '@/components/sessions/attachments/useAttachmentsUploadConfig';
+import { createBrowserAnnotationMediaRegistrar } from './createBrowserAnnotationMediaRegistrar';
 
 const SESSION_BROWSER_CONTEXT_CAPABILITIES = {
     enabled: true,
@@ -61,6 +63,7 @@ const SessionBrowserContextRuntimeContext = React.createContext<SessionBrowserCo
 export function useSessionBrowserContextRuntime(params: Readonly<{
     enabled: boolean;
     scopeKey?: string | null;
+    sessionId?: string | null;
     attachmentsUploadsEnabled?: boolean;
     annotationCaptureProvider?: BrowserAnnotationCaptureProvider | null;
     annotationRuntimeActionExecute?: RuntimeActionExecute | null;
@@ -68,6 +71,10 @@ export function useSessionBrowserContextRuntime(params: Readonly<{
     onAttachUnavailable?: (reason: BrowserContextUnavailableReason) => void;
 }>): SessionBrowserContextRuntime | null {
     const [state, setState] = React.useState(createBrowserContextState);
+    const uploadConfig = useAttachmentsUploadConfig();
+    const annotationMediaRegistrar = React.useMemo(() => params.sessionId
+        ? createBrowserAnnotationMediaRegistrar({ sessionId: params.sessionId, config: uploadConfig })
+        : null, [params.sessionId, uploadConfig]);
     const [attachPageReference, setAttachPageReference] = React.useState<(() => void) | null>(null);
     const annotationRuntimeActionExecute = React.useMemo(
         () => params.annotationRuntimeActionExecute ?? createFrontDoorRuntimeActionExecutor(),
@@ -106,6 +113,7 @@ export function useSessionBrowserContextRuntime(params: Readonly<{
                 enabled: true,
                 attachmentsUploadsEnabled: params.attachmentsUploadsEnabled,
                 annotationCaptureProvider,
+                annotationMediaRegistrar,
                 annotationRuntimeActionExecute,
                 nowMs: params.nowMs,
                 onStateChange: setState,
@@ -123,6 +131,7 @@ export function useSessionBrowserContextRuntime(params: Readonly<{
         attachPageReference,
         onAttachPageReferenceChange,
         params.annotationCaptureProvider,
+        annotationMediaRegistrar,
         annotationRuntimeActionExecute,
         params.attachmentsUploadsEnabled,
         params.enabled,

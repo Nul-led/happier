@@ -4,7 +4,7 @@ import {
     type ExternalSessionAttentionV1,
 } from '@happier-dev/protocol';
 
-import type { Metadata } from '@/sync/domains/state/storageTypes';
+import type { Metadata } from '@happier-dev/session-core/state';
 
 export type ExternalSessionAttention = ExternalSessionAttentionV1;
 

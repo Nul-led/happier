@@ -9,6 +9,7 @@ import { resolveHappyHomeDirFromEnvironment } from '../../agents/resolveHappyHom
 import {
   buildBackgroundServiceSetupGuidance,
   type BackgroundServiceSetupGuidance,
+  type BackgroundServiceSetupServiceTarget,
 } from './buildBackgroundServiceSetupGuidance.js';
 import type { MachineDaemonOwnershipMetadata } from '@happier-dev/protocol';
 
@@ -23,6 +24,8 @@ export async function readBackgroundServiceSetupGuidance(params: Readonly<{
   targetServerUrl: string;
   currentRelayOwner?: Pick<MachineDaemonOwnershipMetadata, 'serviceManaged' | 'publicReleaseChannel' | 'cliVersion'> | null;
   mode?: 'user' | 'system';
+  serviceTarget?: BackgroundServiceSetupServiceTarget;
+  offerDefaultReleaseChannelSwitch?: boolean;
 }>): Promise<BackgroundServiceSetupGuidance> {
   const platform = resolveCurrentHappierServicePlatform();
   const inventory = await discoverHappierInstallations({
@@ -47,5 +50,7 @@ export async function readBackgroundServiceSetupGuidance(params: Readonly<{
     currentRelayOwner: params.currentRelayOwner,
     platform,
     mode: params.mode ?? 'user',
+    ...(params.serviceTarget ? { serviceTarget: params.serviceTarget } : {}),
+    ...(params.offerDefaultReleaseChannelSwitch === false ? { offerDefaultReleaseChannelSwitch: false } : {}),
   });
 }

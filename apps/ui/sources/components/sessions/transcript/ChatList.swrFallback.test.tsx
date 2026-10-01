@@ -2,7 +2,7 @@ import * as React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { renderScreen } from '@/dev/testkit';
-import type { AgentTextMessage } from '@/sync/domains/messages/messageTypes';
+import type { AgentTextMessage } from "@happier-dev/session-core/messages";
 import { installTranscriptCommonModuleMocks, resetTranscriptCommonModuleMockState } from './transcriptTestHelpers';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;

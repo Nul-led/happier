@@ -46,7 +46,7 @@ export function LegacyProfileDefaultsSections(props: Readonly<{
         props.compatibilityByTargetKey[resolveProfileBackendTargetKeyForEntry(entry)] === true);
 
     return <>
-        {compatibleEntries.length > 0 ? <ItemGroup title={t('profiles.defaultPermissions.title')} footer={t('profiles.defaultPermissions.footer')}>
+        {compatibleEntries.length > 0 ? <ItemGroup title={t('profiles.defaultPermissions.title')} description={t('profiles.defaultPermissions.footer')}>
             {compatibleEntries.map((entry, index) => {
                 const targetKey = resolveProfileBackendTargetKeyForEntry(entry);
                 const agentId = props.getPermissionAgentId(entry);
@@ -117,7 +117,7 @@ export function LegacyProfileDefaultsSections(props: Readonly<{
 
         {props.externalSessionsEnabled && compatibleDirectEntries.length > 0 ? <ItemGroup
             title={t('profiles.defaultStorage.title')}
-            footer={t('profiles.defaultStorage.footer')}
+            description={t('profiles.defaultStorage.footer')}
         >
             {compatibleDirectEntries.map((entry, index) => {
                 const targetKey = resolveProfileBackendTargetKeyForEntry(entry);

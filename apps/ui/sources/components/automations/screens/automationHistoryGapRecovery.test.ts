@@ -97,6 +97,26 @@ vi.mock('@/agents/backendCatalog/loadDaemonMergedProjectionInputs', () => ({
     loadDaemonMergedProjectionInputs: async () => projectionInputs(eligibleEvent()),
 }));
 
+// The daemon answers each Action's declared schemas per Action at the machine
+// RPC boundary; the projection does not carry them.
+vi.mock('@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc', async () => {
+    const { RPC_METHODS } = await import('@happier-dev/protocol/rpc');
+    return {
+        machineRpcWithServerScope: async (request: Readonly<{
+            method: string;
+            payload: Readonly<{ qualifiedActionId: string }>;
+        }>) => {
+            if (request.method !== RPC_METHODS.DAEMON_PLUGIN_ACTION_SCHEMAS_READ) return undefined;
+            const event = eligibleEvent();
+            const action = [event.setupAction, event.historyGapResetAction]
+                .find((candidate) => candidate?.id === request.payload.qualifiedActionId);
+            return action
+                ? { ok: true, inputSchema: action.inputSchema }
+                : { ok: false, code: 'plugin_action_schemas_unavailable' };
+        },
+    };
+});
+
 vi.mock('@/components/plugins/surfaces/pluginSurfaceActionDispatch', () => ({
     dispatchPluginSurfaceAction: (...args: readonly unknown[]) => historyGapRecoveryUi.dispatch(...args),
 }));
@@ -115,7 +135,7 @@ function eventSourceStatus(
             materializationId: MATERIALIZATION_ID,
             pluginId: PLUGIN_ID,
         },
-        reporterImmutableGenerationId: 'github-generation-a',
+        reporterSourceCustody: { kind: "development", registeredRootId: 'github-generation-a' },
         state: 'attention',
         code: 'historyGap',
         lastObservedAt: 10,
@@ -196,13 +216,14 @@ function readEventTrigger(
 }
 
 function eligibleEvent(
-    immutableGenerationId = 'github-generation-a',
+    occurrenceId = 'github-occurrence-a',
 ): DaemonContributionRegistryProjectionAutomationEligibleEventV1 {
     return DaemonContributionRegistryProjectionAutomationEligibleEventV1Schema.parse({
         event: {
             id: `${PLUGIN_ID}/${EVENT_LOCAL_ID}`,
             identity: { pluginId: PLUGIN_ID, localId: EVENT_LOCAL_ID },
-            immutableGenerationId,
+            occurrenceId,
+            sourceCustody: { kind: 'development', registeredRootId: 'github-root-a' },
             title: 'Repository updates',
             description: null,
             automation: {
@@ -220,7 +241,7 @@ function eligibleEvent(
         setupAction: {
             id: `${PLUGIN_ID}/automations/setup`,
             identity: { pluginId: PLUGIN_ID, localId: 'automations/setup' },
-            immutableGenerationId,
+            occurrenceId,
             title: 'Configure source',
             description: null,
             inputSchema: { type: 'object', additionalProperties: false },
@@ -229,7 +250,7 @@ function eligibleEvent(
         historyGapResetAction: {
             id: `${PLUGIN_ID}/${ACTION_LOCAL_ID}`,
             identity: { pluginId: PLUGIN_ID, localId: ACTION_LOCAL_ID },
-            immutableGenerationId,
+            occurrenceId,
             title: 'Reset source baseline',
             description: null,
             inputSchema: PluginEventAutomationHistoryGapResetActionInputV1JsonSchema,
@@ -245,13 +266,13 @@ function projectionInputs(
     if (!action) throw new Error('expected recovery Action');
     const projectionAction: PluginProjectionAction = {
         id: action.identity.localId,
+        occurrenceId: action.occurrenceId,
         title: action.title,
         description: action.description,
         icon: null,
         scopes: ['settings'],
         surfaces: ['plugin'],
         placementBindings: [],
-        inputSchema: action.inputSchema,
         inputHints: action.inputHints,
         slash: null,
         priority: null,
@@ -261,7 +282,6 @@ function projectionInputs(
     };
     const plugin: PluginProjectionEntry = {
         pluginId: PLUGIN_ID,
-        immutableGenerationId: action.immutableGenerationId,
         title: 'Acme GitHub',
         description: null,
         version: '1.0.0',
@@ -285,11 +305,11 @@ function projectionInputs(
             generation: GENERATION,
             installedPackagesById: {},
             agentsById: {},
-            backendsById: {},
             actionsById: {
                 [`${PLUGIN_ID}/${action.identity.localId}`]: {
                     id: action.identity.localId,
                     pluginId: PLUGIN_ID,
+                    occurrenceId: action.occurrenceId,
                     title: action.title,
                     scopes: ['settings'],
                     surfaces: ['plugin'],
@@ -483,8 +503,7 @@ describe('automation history-gap recovery status', () => {
             contributedAction: {
                 machineId: MACHINE_ID,
                 serverId: SERVER_ID,
-                expectedGeneration: String(GENERATION),
-                expectedImmutableGenerationId: 'github-generation-a',
+                expectedOccurrenceId: 'github-occurrence-a',
             },
         }));
         expect(dispatch.mock.calls[0]?.[0]?.resolveContributedAction?.({

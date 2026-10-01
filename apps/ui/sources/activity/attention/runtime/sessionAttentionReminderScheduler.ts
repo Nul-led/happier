@@ -3,12 +3,23 @@ import { AppState } from 'react-native';
 import type { SessionAttentionStanding } from '@happier-dev/protocol';
 
 import { sessionAddressKey, type SessionAddress } from '@/sync/domains/session/sessionAddress';
+import type { EnsureSessionVisibleForRouteResult } from '@/sync/domains/session/sessionRouteHydrationState';
 
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
 export type SessionAttentionReminderDeadline = Readonly<{
     address: SessionAddress;
     remindAt: number;
+}>;
+
+/**
+ * Inventory refreshes distinguish a successful projection load from a
+ * fulfilled-but-unable-to-load attempt (for example, while a Home credential
+ * is unavailable). The scheduler must only suppress future retries for the
+ * former.
+ */
+export type SessionAttentionReminderInventoryRefreshResult = Readonly<{
+    kind: 'loaded' | 'retryable_failure';
 }>;
 
 export function resolveSessionAttentionReminderDeadline(
@@ -68,13 +79,13 @@ export function useSessionAttentionReminderRefresh(params: Readonly<{
     connectedByServerId: Readonly<Record<string, boolean>>;
     /**
      * The exact-Home invalidation leaf's own contract: its promise covers the
-     * replacement the controller queues behind an in-flight request. This hook
-     * has no settlement obligation of its own — a due reminder is completed by
-     * `refreshSession` — so the call site discards it with an explicit `void`.
+     * replacement the controller queues behind an in-flight request. Inventory
+     * refreshes return an explicit loaded/retryable settlement; due reminders
+     * are completed by `refreshSession`.
      */
     invalidateSessionListQueryHome: (serverId: string) => Promise<void>;
-    refreshReminderInventory: (serverId: string) => Promise<unknown>;
-    refreshSession: (address: SessionAddress) => Promise<unknown>;
+    refreshReminderInventory: (serverId: string) => Promise<SessionAttentionReminderInventoryRefreshResult>;
+    refreshSession: (address: SessionAddress) => Promise<EnsureSessionVisibleForRouteResult>;
     reminders: readonly SessionAttentionReminderDeadline[];
 }>): void {
     const [wakeRevision, setWakeRevision] = React.useState(0);
@@ -122,9 +133,13 @@ export function useSessionAttentionReminderRefresh(params: Readonly<{
             }
             inventoryRefreshInFlightServerIdsRef.current.add(serverId);
             void params.refreshReminderInventory(serverId).then(
-                () => {
+                (result) => {
                     inventoryRefreshInFlightServerIdsRef.current.delete(serverId);
-                    refreshedInventoryServerIdsRef.current.add(serverId);
+                    if (result.kind === 'loaded') {
+                        refreshedInventoryServerIdsRef.current.add(serverId);
+                    } else {
+                        refreshedInventoryServerIdsRef.current.delete(serverId);
+                    }
                 },
                 () => {
                     inventoryRefreshInFlightServerIdsRef.current.delete(serverId);
@@ -141,9 +156,9 @@ export function useSessionAttentionReminderRefresh(params: Readonly<{
             inFlightTokensRef.current.add(token);
             void params.invalidateSessionListQueryHome(reminder.address.serverId);
             void params.refreshSession(reminder.address).then(
-                () => {
+                (result) => {
                     inFlightTokensRef.current.delete(token);
-                    completedTokensRef.current.add(token);
+                    if (result.kind !== 'retryable_failure') completedTokensRef.current.add(token);
                 },
                 () => {
                     inFlightTokensRef.current.delete(token);

@@ -34,6 +34,7 @@ import { useSetting } from '@/sync/domains/state/storage';
 import { normalizeMcpServersSettingsV1 } from '@/sync/domains/settings/mcpServers/normalizeMcpServersSettingsV1';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { Icon, type IconName } from '@/components/ui/icons/Icon';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 type PreviewSuccess = Extract<DaemonMcpServersPreviewResponse, { ok: true }>;
 
@@ -475,7 +476,7 @@ const stylesheet = StyleSheet.create((theme) => ({
         justifyContent: 'center',
     },
     groupActionButtonPressed: {
-        opacity: 0.82,
+        opacity: motionTokens.press.opacitySubtle,
     },
     scroll: {
         width: '100%',

@@ -3,11 +3,8 @@ import { describe, expect, it, vi } from 'vitest';
 import {
     computePluginUiArtifactFileSetSha256DigestV1,
     computePluginUiArtifactSha256DigestV1,
-    derivePluginUiNativeCapabilitiesDigestV1,
 } from '@happier-dev/protocol/plugins/ui';
 import { PluginReleaseFactsV1Schema } from '@happier-dev/protocol/plugins/availability';
-import type { PluginMachineExecutionOriginV1 } from '@happier-dev/protocol';
-import { encodeBase64 } from '@/encryption/base64';
 import type { PluginArtifactSourceCandidate } from './artifactLease';
 import {
     createPluginReactNativeArtifactLeaseCacheSink,
@@ -21,9 +18,14 @@ import {
     resolveCandidatePluginCollectionMigrationArtifactAccountHostedTarget,
 } from './candidateCollectionMigrationArtifact';
 
+vi.mock('./generatedBundledPluginUiArtifacts', () => ({
+    BUNDLED_PLUGIN_UI_APP_ARTIFACTS: Object.freeze([]),
+}));
+
 const pluginId = 'example.tasks';
 const releaseVersion = '2.0.0';
-const entryPath = 'react-native/ios.bundle';
+const artifactId = 'tasks-ui';
+const entryPath = `react-native/${artifactId}/entry.cjs.bundle`;
 const entryBytes = new TextEncoder().encode('// candidate migration bundle');
 const entryDigest = computePluginUiArtifactSha256DigestV1(entryBytes);
 const artifactDigest = computePluginUiArtifactFileSetSha256DigestV1([
@@ -38,34 +40,21 @@ const accountLifetime = Object.freeze({
 
 const cacheIdentity: PluginReactNativeBundleCacheIdentity = Object.freeze({
     pluginId,
-    contributionId: 'tasks-ui',
+    contributionId: 'tasks',
+    artifactId,
     artifactDigest,
-    hostAppVersion: '1.0.0',
-    hostUiApiVersion: '1.0.0',
-    reactVersion: '19.0.0',
-    reactNativeVersion: '0.83.4',
     platform: 'ios',
-    channel: 'internal',
-    nativeCapabilitiesDigest: `sha256:${'a'.repeat(64)}`,
-    projectionGeneration: 1,
 });
 
 const graph = Object.freeze({
-    contributionId: 'tasks-ui',
+    artifactId,
     tier: 'reactNative' as const,
-    platform: 'ios' as const,
     entry: entryPath,
     files: [{ relativePath: entryPath, digest: entryDigest, byteSize: entryBytes.byteLength }],
     digest: artifactDigest,
-    builtWith: { bundler: 'repack' as const, version: '5.0.0' },
-    repack: { containerName: 'example_tasks', modulePath: './renderSurface', exportName: 'renderSurface' },
-    collectionMigrations: {
-        containerName: 'example_tasks',
-        modulePath: './renderSurface',
-        exportName: 'collectionMigrations',
-    },
-    hostUiApiVersion: cacheIdentity.hostUiApiVersion,
-    compat: { react: cacheIdentity.reactVersion, reactNative: cacheIdentity.reactNativeVersion },
+    builtWith: { bundler: 'esbuild' as const, version: '0.27.2' },
+    executable: { exports: ['collectionMigrations', 'renderSurface'] },
+    hostUiApiRange: '^1.0.0',
 });
 
 const manifest = Object.freeze({
@@ -99,6 +88,10 @@ const manifest = Object.freeze({
                 fromSchemaVersion: 1,
                 toSchemaVersion: 2,
             }],
+            migrationArtifact: {
+                artifactId,
+                exportName: 'collectionMigrations',
+            },
         }],
     },
 });
@@ -109,15 +102,12 @@ const targetFacts = PluginReleaseFactsV1Schema.parse({
     normalizedManifest: manifest,
     collectionContracts: [],
     uiSlots: [{
-        contributionId: graph.contributionId,
+        contributionId: 'tasks',
+        artifactId: graph.artifactId,
         tier: graph.tier,
-        platform: graph.platform,
+        platform: 'ios',
         artifactDigest: graph.digest,
-        compatibility: {
-            hostUiApiVersion: graph.hostUiApiVersion,
-            reactVersion: graph.compat.react,
-            reactNativeVersion: graph.compat.reactNative,
-        },
+        hostUiApiRange: graph.hostUiApiRange,
     }],
     packageAssetArchive: {
         archiveDigestSha256: `sha256:${'f'.repeat(64)}`,
@@ -128,9 +118,7 @@ const targetFacts = PluginReleaseFactsV1Schema.parse({
 function createAppExact(): PluginArtifactSourceCandidate & Readonly<{ kind: 'appExact' }> {
     return Object.freeze({
         kind: 'appExact' as const,
-        readFile: async ({ relativePath }) => relativePath === entryPath
-            ? new Uint8Array(entryBytes)
-            : null,
+        fetch: async () => new Map([[entryPath, new Uint8Array(entryBytes)]]),
     });
 }
 
@@ -142,20 +130,13 @@ describe('candidate Collection migration Artifact loader', () => {
                 value: Object.freeze({
                     link: Object.freeze({
                         release: targetFacts.ref,
-                        contributionId: graph.contributionId,
+                        contributionId: 'tasks',
+                        artifactId: graph.artifactId,
                         tier: graph.tier,
-                        platform: graph.platform,
-                        artifactId: '00000000-0000-4000-8000-000000000001',
+                        platform: 'ios',
+                        accountArtifactId: '00000000-0000-4000-8000-000000000001',
                         artifactDigest: graph.digest,
-                        compatibility: Object.freeze({
-                            hostAppVersion: '1.0.0',
-                            hostUiApiVersion: graph.hostUiApiVersion,
-                            reactVersion: graph.compat.react,
-                            reactNativeVersion: graph.compat.reactNative,
-                            platform: graph.platform,
-                            channel: 'internal' as const,
-                            nativeCapabilities: ['clipboard'],
-                        }),
+                        hostUiApiRange: graph.hostUiApiRange,
                     }),
                     archive: Object.freeze({ artifactGraph: graph }),
                 }),
@@ -165,7 +146,6 @@ describe('candidate Collection migration Artifact loader', () => {
         const result = await resolveCandidatePluginCollectionMigrationArtifactAccountHostedTarget({
             accountLifetime,
             isCurrent: () => true,
-            availabilityCursor: 8,
             facts: targetFacts,
             reader,
         });
@@ -175,40 +155,42 @@ describe('candidate Collection migration Artifact loader', () => {
             candidateTarget: {
                 release: targetFacts.ref,
                 artifact: {
-                    contributionId: graph.contributionId,
-                    platform: graph.platform,
+                    contributionId: 'tasks',
+                    artifactId: graph.artifactId,
+                    platform: 'ios',
                     digest: graph.digest,
+                    hostUiApiRange: graph.hostUiApiRange,
                 },
-                availabilityCursor: 8,
             },
             artifact: {
                 artifactGraph: graph,
                 cacheIdentity: {
                     pluginId,
-                    contributionId: graph.contributionId,
+                    contributionId: 'tasks',
+                    artifactId: graph.artifactId,
                     artifactDigest: graph.digest,
-                    nativeCapabilitiesDigest: derivePluginUiNativeCapabilitiesDigestV1(['clipboard']),
-                    projectionGeneration: 8,
+                    platform: 'ios',
                 },
-                accountHosted: { kind: 'target' },
+                accountHosted: {},
             },
         });
         expect((reader.readTarget as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith({
             accountLifetime,
             release: targetFacts.ref,
             slot: {
-                contributionId: graph.contributionId,
+                contributionId: 'tasks',
+                artifactId: graph.artifactId,
                 tier: graph.tier,
-                platform: graph.platform,
+                platform: 'ios',
             },
             expectedArtifactDigest: graph.digest,
         });
     });
 
-    it('rejects an Account-hosted target whose release slot compatibility differs from its otherwise matching link', async () => {
+    it('rejects an Account-hosted target whose host API range differs from its release slot', async () => {
         const incompatibleGraph = Object.freeze({
             ...graph,
-            hostUiApiVersion: '2.0.0',
+            hostUiApiRange: '^2.0.0',
         });
         const reader = {
             readTarget: vi.fn(async () => Object.freeze({
@@ -216,20 +198,13 @@ describe('candidate Collection migration Artifact loader', () => {
                 value: Object.freeze({
                     link: Object.freeze({
                         release: targetFacts.ref,
-                        contributionId: incompatibleGraph.contributionId,
+                        contributionId: 'tasks',
+                        artifactId: incompatibleGraph.artifactId,
                         tier: incompatibleGraph.tier,
-                        platform: incompatibleGraph.platform,
-                        artifactId: '00000000-0000-4000-8000-000000000001',
+                        platform: 'ios',
+                        accountArtifactId: '00000000-0000-4000-8000-000000000001',
                         artifactDigest: incompatibleGraph.digest,
-                        compatibility: Object.freeze({
-                            hostAppVersion: '1.0.0',
-                            hostUiApiVersion: incompatibleGraph.hostUiApiVersion,
-                            reactVersion: incompatibleGraph.compat.react,
-                            reactNativeVersion: incompatibleGraph.compat.reactNative,
-                            platform: incompatibleGraph.platform,
-                            channel: 'internal' as const,
-                            nativeCapabilities: ['clipboard'],
-                        }),
+                        hostUiApiRange: incompatibleGraph.hostUiApiRange,
                     }),
                     archive: Object.freeze({ artifactGraph: incompatibleGraph }),
                 }),
@@ -239,7 +214,6 @@ describe('candidate Collection migration Artifact loader', () => {
         await expect(resolveCandidatePluginCollectionMigrationArtifactAccountHostedTarget({
             accountLifetime,
             isCurrent: () => true,
-            availabilityCursor: 8,
             facts: targetFacts,
             reader,
         })).resolves.toEqual({ kind: 'unavailable' });
@@ -265,7 +239,7 @@ describe('candidate Collection migration Artifact loader', () => {
             getCache: () => cache,
             createCacheSink: (lifetime) => createPluginReactNativeArtifactLeaseCacheSink({ cache, lifetime }),
             loaderBackend: {
-                backendId: 'repackScriptManager',
+                backendId: 'commonJs',
                 available: true,
                 loadInstalledBundle,
             },
@@ -278,11 +252,12 @@ describe('candidate Collection migration Artifact loader', () => {
             target: {
                 release: { pluginId, version: releaseVersion },
                 artifact: {
-                    contributionId: graph.contributionId,
-                    platform: graph.platform,
+                    contributionId: 'tasks',
+                    artifactId: graph.artifactId,
+                    platform: 'ios',
                     digest: graph.digest,
+                    hostUiApiRange: graph.hostUiApiRange,
                 },
-                availabilityCursor: 8,
             },
             artifactGraph: graph,
             cacheIdentity,
@@ -297,7 +272,7 @@ describe('candidate Collection migration Artifact loader', () => {
             },
         });
         expect(loadInstalledBundle).toHaveBeenCalledWith(expect.objectContaining({
-            moduleReference: graph.collectionMigrations,
+            moduleReference: { exportName: 'collectionMigrations' },
         }));
         expect(activate).not.toHaveBeenCalled();
         if (result.kind !== 'available') throw new Error('Expected the target candidate Artifact to load.');
@@ -308,170 +283,22 @@ describe('candidate Collection migration Artifact loader', () => {
         result.candidate.dispose();
     });
 
-    it('forwards the private collection-migrations owner through the exact daemon byte request', async () => {
-        const cache = createPluginReactNativeBundleCache();
-        const origin: PluginMachineExecutionOriginV1 = Object.freeze({
-            serverIdentityId: 'server-identity-a',
-            materializationRef: Object.freeze({
-                machineId: 'machine-a',
-                materializationId: 'materialization-a',
-                pluginId,
-            }),
-        });
-        const fetchArtifactBytes = vi.fn(async () => Object.freeze({
-            ok: true as const,
-            artifactFamily: 'reactNative' as const,
-            artifactOwnerKind: 'collectionMigrations' as const,
-            cacheIdentity,
-            artifact: {
-                pluginId,
-                contributionId: graph.contributionId,
-                artifactKind: 'reactNativeBundle' as const,
-                digest: graph.digest,
-                format: 'plainJs' as const,
-                byteSize: entryBytes.byteLength,
-            },
-            bytesBase64: encodeBase64(entryBytes),
-            files: [{
-                relativePath: entryPath,
-                digest: entryDigest,
-                byteSize: entryBytes.byteLength,
-                bytesBase64: encodeBase64(entryBytes),
-            }],
-        }));
-        const loader = createCandidatePluginCollectionMigrationArtifactLoader({
-            getCache: () => cache,
-            createCacheSink: (lifetime) => createPluginReactNativeArtifactLeaseCacheSink({ cache, lifetime }),
-            loaderBackend: {
-                backendId: 'repackScriptManager',
-                available: true,
-                loadInstalledBundle: async () => (() => ({
-                    manifest,
-                    collectionMigrations: {
-                        tasks: [{
-                            id: 'upgrade-v1-to-v2',
-                            fromSchemaVersion: 1,
-                            toSchemaVersion: 2,
-                            migrate: (row: Readonly<Record<string, unknown>>) => ({ ...row, migrated: true }),
-                        }],
-                    },
-                })),
-            },
-            hostPlatform: 'ios',
-        });
-
-        await expect(loader.load({
-            accountLifetime,
-            isCurrent: () => true,
-            target: {
-                release: { pluginId, version: releaseVersion },
-                artifact: {
-                    contributionId: graph.contributionId,
-                    platform: graph.platform,
-                    digest: graph.digest,
-                },
-                availabilityCursor: 8,
-            },
-            artifactGraph: graph,
-            cacheIdentity,
-            daemon: { origin, serverId: 'server-a', fetchArtifactBytes },
-        })).resolves.toMatchObject({ kind: 'available' });
-        expect(fetchArtifactBytes).toHaveBeenCalledWith({
-            origin,
-            serverId: 'server-a',
-            identity: cacheIdentity,
-            artifactOwnerKind: 'collectionMigrations',
-        });
-    });
-
-    it('prepares an external target directly from its explicit prospective Account-hosted Artifact link', async () => {
-        const cache = createPluginReactNativeBundleCache();
-        const hostedReadFile = vi.fn(async ({ relativePath, accountHostedArtifactId }: Readonly<{
-            relativePath: string;
-            accountHostedArtifactId?: string;
-        }>) => {
-            expect(accountHostedArtifactId).toBe('candidate-artifact-id');
-            return relativePath === entryPath ? new Uint8Array(entryBytes) : null;
-        });
-        const createAccountHostedSource = vi.fn(() => Object.freeze({
-            kind: 'accountHosted' as const,
-            readFile: hostedReadFile,
-        }));
-        const loader = createCandidatePluginCollectionMigrationArtifactLoader({
-            getCache: () => cache,
-            createCacheSink: (lifetime) => createPluginReactNativeArtifactLeaseCacheSink({ cache, lifetime }),
-            createAccountHostedSource,
-            loaderBackend: {
-                backendId: 'repackScriptManager',
-                available: true,
-                loadInstalledBundle: async () => (() => ({
-                    manifest,
-                    collectionMigrations: {
-                        tasks: [{
-                            id: 'upgrade-v1-to-v2',
-                            fromSchemaVersion: 1,
-                            toSchemaVersion: 2,
-                            migrate: (row: Readonly<Record<string, unknown>>) => ({ ...row, migrated: true }),
-                        }],
-                    },
-                })),
-            },
-            hostPlatform: 'ios',
-        });
-
-        await expect(loader.load({
-            accountLifetime,
-            isCurrent: () => true,
-            target: {
-                release: { pluginId, version: releaseVersion },
-                artifact: {
-                    contributionId: graph.contributionId,
-                    platform: graph.platform,
-                    digest: graph.digest,
-                },
-                availabilityCursor: 8,
-            },
-            artifactGraph: graph,
-            cacheIdentity,
-            accountHosted: { kind: 'linked', artifactId: 'candidate-artifact-id' },
-        })).resolves.toMatchObject({ kind: 'available' });
-        expect(createAccountHostedSource).toHaveBeenCalledWith({ accountLifetime });
-        expect(hostedReadFile).toHaveBeenCalledWith(expect.objectContaining({
-            accountHostedArtifactId: 'candidate-artifact-id',
-            artifact: expect.objectContaining({
-                pluginId,
-                releaseVersion,
-                contributionId: graph.contributionId,
-                digest: graph.digest,
-            }),
-        }));
-    });
-
     it('prepares an external target through its exact Account release slot without borrowing an incumbent Artifact id', async () => {
         const cache = createPluginReactNativeBundleCache();
-        // Account-hosted target cache entries are scoped by the exact
-        // Availability cursor, never an unrelated daemon projection cursor.
-        const targetCacheIdentity = Object.freeze({
-            ...cacheIdentity,
-            projectionGeneration: 8,
-        });
-        const targetReadFile = vi.fn(async ({ relativePath, accountHostedArtifactId }: Readonly<{
-            relativePath: string;
-            accountHostedArtifactId?: string;
-        }>) => {
-            expect(accountHostedArtifactId).toBeUndefined();
-            return relativePath === entryPath ? new Uint8Array(entryBytes) : null;
-        });
+        const targetCacheIdentity = cacheIdentity;
+        const targetReadFile = vi.fn(async (_request: Readonly<{ artifact: unknown; accountHostedArtifactId?: string }>) => (
+            new Map([[entryPath, new Uint8Array(entryBytes)]])
+        ));
         const createAccountHostedTargetSource = vi.fn(() => Object.freeze({
             kind: 'accountHosted' as const,
-            readFile: targetReadFile,
+            fetch: targetReadFile,
         }));
         const loader = createCandidatePluginCollectionMigrationArtifactLoader({
             getCache: () => cache,
             createCacheSink: (lifetime) => createPluginReactNativeArtifactLeaseCacheSink({ cache, lifetime }),
             createAccountHostedTargetSource,
             loaderBackend: {
-                backendId: 'repackScriptManager',
+                backendId: 'commonJs',
                 available: true,
                 loadInstalledBundle: async () => (() => ({
                     manifest,
@@ -494,15 +321,16 @@ describe('candidate Collection migration Artifact loader', () => {
             target: {
                 release: { pluginId, version: releaseVersion },
                 artifact: {
-                    contributionId: graph.contributionId,
-                    platform: graph.platform,
+                    contributionId: 'tasks',
+                    artifactId: graph.artifactId,
+                    platform: 'ios',
                     digest: graph.digest,
+                    hostUiApiRange: graph.hostUiApiRange,
                 },
-                availabilityCursor: 8,
             },
             artifactGraph: graph,
             cacheIdentity: targetCacheIdentity,
-            accountHosted: { kind: 'target' },
+            accountHosted: {},
         })).resolves.toMatchObject({ kind: 'available' });
 
         expect(createAccountHostedTargetSource).toHaveBeenCalledWith({ accountLifetime });
@@ -512,7 +340,7 @@ describe('candidate Collection migration Artifact loader', () => {
             artifact: expect.objectContaining({
                 pluginId,
                 releaseVersion,
-                contributionId: graph.contributionId,
+                contributionId: 'tasks',
                 digest: graph.digest,
             }),
         });
@@ -521,15 +349,15 @@ describe('candidate Collection migration Artifact loader', () => {
     it('does not load candidate code after exact target bytes return for a stale selection', async () => {
         const cache = createPluginReactNativeBundleCache();
         let current = true;
-        let resolveRead!: (value: Uint8Array | null) => void;
-        const delayedRead = new Promise<Uint8Array | null>((resolve) => { resolveRead = resolve; });
+        let resolveRead!: (value: ReadonlyMap<string, Uint8Array> | null) => void;
+        const delayedRead = new Promise<ReadonlyMap<string, Uint8Array> | null>((resolve) => { resolveRead = resolve; });
         const readFile = vi.fn(async () => await delayedRead);
         const loadInstalledBundle = vi.fn(async () => (() => ({ manifest, collectionMigrations: {} })));
         const loader = createCandidatePluginCollectionMigrationArtifactLoader({
             getCache: () => cache,
             createCacheSink: (lifetime) => createPluginReactNativeArtifactLeaseCacheSink({ cache, lifetime }),
             loaderBackend: {
-                backendId: 'repackScriptManager',
+                backendId: 'commonJs',
                 available: true,
                 loadInstalledBundle,
             },
@@ -542,19 +370,20 @@ describe('candidate Collection migration Artifact loader', () => {
             target: {
                 release: { pluginId, version: releaseVersion },
                 artifact: {
-                    contributionId: graph.contributionId,
-                    platform: graph.platform,
+                    contributionId: 'tasks',
+                    artifactId: graph.artifactId,
+                    platform: 'ios',
                     digest: graph.digest,
+                    hostUiApiRange: graph.hostUiApiRange,
                 },
-                availabilityCursor: 8,
             },
             artifactGraph: graph,
             cacheIdentity,
-            appExact: Object.freeze({ kind: 'appExact' as const, readFile }),
+            appExact: Object.freeze({ kind: 'appExact' as const, fetch: readFile }),
         });
         await vi.waitFor(() => expect(readFile).toHaveBeenCalledTimes(1));
         current = false;
-        resolveRead(new Uint8Array(entryBytes));
+        resolveRead(new Map([[entryPath, new Uint8Array(entryBytes)]]));
 
         await expect(pending).resolves.toEqual({
             kind: 'unavailable',

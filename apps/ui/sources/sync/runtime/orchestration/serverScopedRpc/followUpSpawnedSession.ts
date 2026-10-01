@@ -1,5 +1,5 @@
-import type { AuthCredentials } from '@/auth/storage/tokenStorage';
 import { hasRawComposerAttachmentSelectionV1 } from '@happier-dev/protocol';
+import { createServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
 import type { Session } from '@/sync/domains/state/storageTypes';
 import { storage } from '@/sync/domains/state/storage';
 import { createNotAuthenticatedError, isAuthenticationResponseStatus } from '@/sync/runtime/connectivity/authErrors';
@@ -11,6 +11,9 @@ import {
     type EnsureSessionVisibleForMessageRoute,
 } from './localSessionRouteReadiness';
 import { resolveServerAccountRequestContext } from './resolveServerAccountRequestContext';
+import {
+    createServerRequestForResolvedServerScope,
+} from './createServerRequestWithServerScope';
 import {
     createServerScopedSessionSendMessage,
     sendSessionMessageWithServerScope,
@@ -151,6 +154,11 @@ function getDefaultApplySessions(): (sessions: AppliedSession[]) => void {
     };
 }
 
+/**
+ * Post-creation Message admission for Session-ID-bound generic uploads,
+ * Temporary Computer settlement and host-created embed first turns. Ordinary
+ * non-embed text/mention first turns are admitted inside session.spawn_new.
+ */
 export function createFollowUpSpawnedSessionWithServerScope(deps?: Readonly<{
     resolveContext?: typeof resolveServerAccountRequestContext;
     fetchSessionById?: typeof fetchSessionByIdWithServerScope;
@@ -244,18 +252,37 @@ export function createFollowUpSpawnedSessionWithServerScope(deps?: Readonly<{
                 return;
             }
 
+            if (!context.credentials) {
+                throw new Error('Scoped created-session hydration requires target Account credentials');
+            }
+            const hydrationScope = createServerAccountScope(context.targetServerId, context.targetAccountId);
+            if (!hydrationScope) {
+                throw new Error('Scoped created-session hydration requires a server-account scope');
+            }
+            const hydrationRequest = createServerRequestForResolvedServerScope({
+                context,
+                activeRequest: async () => {
+                    throw new Error('Unexpected active request for scoped created-session hydration');
+                },
+            });
             const hydrationResult = await fetchSessionById({
                 sessionId,
                 serverId: context.targetServerId,
-                activeCredentials: { token: context.token, secret: '' } satisfies AuthCredentials,
-                activeEncryption: null,
+                activeCredentials: context.credentials,
+                activeEncryption: context.encryption,
                 sessionDataKeys: new Map<string, Uint8Array>(),
-                activeRequest: async (path: string, init: RequestInit) => {
-                    throw new Error(`Unexpected active scoped request for ${path}`);
+                sessionDataKeyEnvelopes: new Map<string, string>(),
+                activeRequest: hydrationRequest,
+                authority: {
+                    scope: hydrationScope,
+                    context,
+                    request: hydrationRequest,
+                    release: async () => {},
                 },
                 applySessions,
                 getExistingSession: (targetSessionId) => getStoredSession(targetSessionId),
                 log: { log: () => {} },
+                timeoutMs: context.timeoutMs,
             });
             throwForFailedScopedHydration(hydrationResult);
 

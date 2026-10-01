@@ -64,6 +64,7 @@ import {
 import { createSerializedWorkQueueDiagnostics } from '@/utils/serializedWorkQueueDiagnostics';
 import type {
     DaemonUsageLimitRecoveryFieldMutation,
+    DaemonWorkStateFieldMutation,
     QueuedSessionClientDurableMutation,
     RegisteredSessionStateFieldMutationV1,
     SessionEndMutationV1,
@@ -94,6 +95,8 @@ type GenericSessionClientDurableMutationOutbox = Readonly<{
     ): Promise<Readonly<{
         persisted: boolean;
         delivered: boolean;
+        localId?: string;
+        committedSequence?: number;
     }>>;
     enqueueVoiceAgentTranscriptTurn(mutation: VoiceAgentTranscriptTurnMutationV1): Promise<Readonly<{
         persisted: boolean;
@@ -435,6 +438,7 @@ function logUnsupportedSessionTurnMutationDiagnostic(diagnostic: UnsupportedSess
 
 type DurableMutationDeliveryOutcome = Readonly<{
     delivered: boolean;
+    committedSequence?: number;
     ignoredLossy?: boolean;
     unsupportedCapability?: boolean;
     terminalFailureReason?:
@@ -884,11 +888,13 @@ function createGenericSessionClientDurableMutationOutbox(
     const sharedEntry = shared;
     const handleId = Symbol(params.sessionId);
     let handleClosed = false;
+    const deliveryWaitAbort = new AbortController();
     sharedEntry.handles.set(handleId, params);
 
     const closeHandle = async (): Promise<void> => {
         if (handleClosed) return;
         handleClosed = true;
+        deliveryWaitAbort.abort();
         const current = sharedGenericSessionClientDurableMutationOutboxes.get(outboxPath);
         if (!current) return;
         current.handles.delete(handleId);
@@ -914,7 +920,13 @@ function createGenericSessionClientDurableMutationOutbox(
         },
         enqueueTranscriptMessage: async (mutation, opts) => {
             if (handleClosed) return { persisted: false, delivered: false };
-            return await sharedEntry.outbox.enqueueTranscriptMessage(mutation, opts);
+            return await sharedEntry.outbox.enqueueTranscriptMessage(mutation, opts?.admission?.requireDelivery ? {
+                ...opts,
+                admission: {
+                    ...opts.admission,
+                    signal: AbortSignal.any([opts.admission.signal, deliveryWaitAbort.signal]),
+                },
+            } : opts);
         },
         enqueueVoiceAgentTranscriptTurn: async (mutation) => {
             if (handleClosed) return { persisted: false, delivered: false };
@@ -960,6 +972,8 @@ export type RuntimeSessionClientDurableMutationOutbox = Readonly<{
     ): Promise<Readonly<{
         persisted: boolean;
         delivered: boolean;
+        localId?: string;
+        committedSequence?: number;
     }>>;
     enqueueVoiceAgentTranscriptTurn(mutation: VoiceAgentTranscriptTurnMutationV1): Promise<Readonly<{
         persisted: boolean;
@@ -1085,12 +1099,15 @@ export type ExactDaemonSessionTurnEndMutationV1 = ExactSessionTurnEndMutationV1;
 export type DaemonSessionClientDurableMutationOutbox = Readonly<{
     enqueueExactTurnEnd(mutation: ExactDaemonSessionTurnEndMutationV1): Promise<void>;
     enqueueUsageLimitRecovery(mutation: DaemonUsageLimitRecoveryFieldMutation): Promise<void>;
+    enqueueWorkState(mutation: DaemonWorkStateFieldMutation): Promise<void>;
     enqueueTranscriptMessage(
         mutation: TranscriptMessageAppendMutationV1,
         opts?: TranscriptMessageAdmissionOptions,
     ): Promise<Readonly<{
         persisted: boolean;
         delivered: boolean;
+        localId?: string;
+        committedSequence?: number;
     }>>;
     awaitReady(): Promise<void>;
     flush(reason: 'connect' | 'timer' | 'flush' | 'startup' | 'enqueue'): Promise<void>;
@@ -1106,6 +1123,7 @@ export function createDaemonSessionClientDurableMutationOutbox(params: Readonly<
     deliverUsageLimitRecovery?: (
         mutation: DaemonUsageLimitRecoveryFieldMutation,
     ) => Promise<boolean | Readonly<{ delivered: boolean; settlement: 'applied' | 'superseded' }>>;
+    deliverWorkState?: (mutation: DaemonWorkStateFieldMutation) => Promise<boolean>;
     deliverTranscriptMessage?: (
         mutation: TranscriptMessageAppendMutationV1,
     ) => Promise<boolean>;
@@ -1125,10 +1143,15 @@ export function createDaemonSessionClientDurableMutationOutbox(params: Readonly<
         persistenceContext,
         flushOnReady: false,
         supportsSocketDelivery: params.enableExactTurnDelivery
-            ?? params.deliverUsageLimitRecovery === undefined,
-        ...(deliverUsageLimitRecovery
+            ?? (params.deliverUsageLimitRecovery === undefined && params.deliverWorkState === undefined),
+        ...(deliverUsageLimitRecovery || params.deliverWorkState
             ? {
                 deliverRegisteredSessionStateFieldMutation: async (mutation: RegisteredSessionStateFieldMutationV1) => {
+                    if (mutation.fieldId === 'runtime.workState'
+                        && mutation.source === 'daemon'
+                        && mutation.deliveryClass === 'durable_required') {
+                        return await params.deliverWorkState?.(mutation as DaemonWorkStateFieldMutation) ?? false;
+                    }
                     if (
                         mutation.fieldId !== 'runtime.usageLimitRecovery'
                         || mutation.source !== 'daemon'
@@ -1136,9 +1159,9 @@ export function createDaemonSessionClientDurableMutationOutbox(params: Readonly<
                     ) {
                         return false;
                     }
-                    return await deliverUsageLimitRecovery(
+                    return await deliverUsageLimitRecovery?.(
                         mutation as DaemonUsageLimitRecoveryFieldMutation,
-                    );
+                    ) ?? false;
                 },
             }
             : {}),
@@ -1158,6 +1181,13 @@ export function createDaemonSessionClientDurableMutationOutbox(params: Readonly<
             const queued = createQueuedRegisteredSessionStateFieldMutation(mutation);
             if (parseDaemonSessionClientDurableMutation(queued, params.sessionId).mutations.length !== 1) {
                 throw new Error('Daemon mutation custody accepts only daemon-authored usage-limit recovery fields');
+            }
+            await journal.enqueueRegisteredSessionStateFieldMutation(mutation);
+        },
+        async enqueueWorkState(mutation) {
+            const queued = createQueuedRegisteredSessionStateFieldMutation(mutation);
+            if (parseDaemonSessionClientDurableMutation(queued, params.sessionId).mutations.length !== 1) {
+                throw new Error('Daemon mutation custody accepts only daemon-authored work-state fields');
             }
             await journal.enqueueRegisteredSessionStateFieldMutation(mutation);
         },
@@ -1219,7 +1249,50 @@ function createGenericSessionClientDurableMutationOutboxInstance(
     let nextRegisteredFieldAdmissionOrder: number | null = 1;
     const registeredFieldSettlements = new Map<string, RegisteredFieldSettlementGroup>();
     const awaitedDeliveryMutationCounts = new Map<string, number>();
-    const acknowledgedAwaitedDeliveryMutationIds = new Set<string>();
+    const acknowledgedAwaitedDeliveryMutations = new Map<string, number | undefined>();
+    const awaitedDeliveryListeners = new Map<string, Set<(error?: Error) => void>>();
+
+    function notifyAwaitedDelivery(mutationId: string, error?: Error): void {
+        for (const listener of [...(awaitedDeliveryListeners.get(mutationId) ?? [])]) listener(error);
+    }
+
+    function waitForAcknowledgedDelivery(mutationId: string, admission: CommittedTranscriptAdmission): Promise<void> {
+        const promise = new Promise<void>((resolve, reject) => {
+            let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+            const listeners = awaitedDeliveryListeners.get(mutationId) ?? new Set<(error?: Error) => void>();
+            const detach = (): void => {
+                if (deadlineTimer) clearTimeout(deadlineTimer);
+                admission.signal.removeEventListener('abort', onAbort);
+                listeners.delete(check);
+                if (listeners.size === 0) awaitedDeliveryListeners.delete(mutationId);
+            };
+            const check = (error?: Error): void => {
+                try {
+                    assertCommittedTranscriptAdmission(admission);
+                    if (closed) throw new CommittedTranscriptAdmissionExpiredError();
+                    if (error) throw error;
+                    if (!acknowledgedAwaitedDeliveryMutations.has(mutationId)) return;
+                    detach();
+                    resolve();
+                } catch (failure) {
+                    detach();
+                    reject(failure);
+                }
+            };
+            const onAbort = (): void => check();
+            listeners.add(check);
+            awaitedDeliveryListeners.set(mutationId, listeners);
+            admission.signal.addEventListener('abort', onAbort, { once: true });
+            if (admission.deadlineAtMs !== undefined) {
+                deadlineTimer = setTimeout(check, Math.max(0, admission.deadlineAtMs - Date.now()));
+                deadlineTimer.unref?.();
+            }
+            check();
+        });
+        void promise.catch(() => undefined);
+        return promise;
+    }
+
     let deadLetterRecoveryTail: Promise<void> = Promise.resolve();
     let sessionSyncPendingInputServerContractResult: SessionClientConnectionContractResult | null = null;
     const reportedPersistentlyBlockingMutationIds = new Set<string>();
@@ -1754,7 +1827,10 @@ function createGenericSessionClientDurableMutationOutboxInstance(
             )) {
                 return { delivered: false, terminalFailureReason: result.reason };
             }
-            return { delivered: result.delivered };
+            return {
+                delivered: result.delivered,
+                ...(result.delivered && result.ack ? { committedSequence: result.ack.seq } : {}),
+            };
         }
         if (mutation.kind === 'voice_agent_transcript_turn') {
             params.onTranscriptMessageDeliveryAttempt?.(mutation.payload.user);
@@ -2100,7 +2176,8 @@ function createGenericSessionClientDurableMutationOutboxInstance(
                     });
                     if (outcome.delivered) {
                         if (awaitedDeliveryMutationCounts.has(mutation.mutationId)) {
-                            acknowledgedAwaitedDeliveryMutationIds.add(mutation.mutationId);
+                            acknowledgedAwaitedDeliveryMutations.set(mutation.mutationId, outcome.committedSequence);
+                            notifyAwaitedDelivery(mutation.mutationId);
                         }
                         mutationsPendingDurableRemoval.push(mutation);
                         if (outcome.registeredFieldSettlement) {
@@ -2216,6 +2293,11 @@ function createGenericSessionClientDurableMutationOutboxInstance(
                 didChange = true;
                 shouldRequestReconnect = true;
                 break;
+            }
+            for (const failed of deadLetteredMutationsPendingDurableCut) {
+                notifyAwaitedDelivery(failed.mutationId, new Error(
+                    `Committed transcript delivery rejected: ${failedMutationReasons.get(failed.mutationId)}`,
+                ));
             }
             mutations = mergeLiveQueuedMutations(
                 remaining,
@@ -2345,7 +2427,7 @@ function createGenericSessionClientDurableMutationOutboxInstance(
             registeredFieldSettlementGroup?: RegisteredFieldSettlementGroup;
             rejectRegisteredFieldAdmission?: (error: unknown) => void;
         }> = {},
-    ): Promise<Readonly<{ delivered: boolean; persisted: boolean }>> {
+    ): Promise<Readonly<{ delivered: boolean; persisted: boolean; committedSequence?: number }>> {
         await ready;
         assertCommittedTranscriptAdmission(opts.admission);
         if (closed) return { delivered: false, persisted: false };
@@ -2464,6 +2546,9 @@ function createGenericSessionClientDurableMutationOutboxInstance(
                 (awaitedDeliveryMutationCounts.get(deliveryMutationId) ?? 0) + 1,
             );
         }
+        const requiredDelivery = opts.admission?.requireDelivery === true
+            ? waitForAcknowledgedDelivery(deliveryMutationId, opts.admission)
+            : null;
         const flushPromise = flush(reusedDurableCustody ? 'flush' : 'enqueue').catch((error) => {
             logger.debug('[API] Durable session mutation enqueue flush failed', {
                 sessionId: params.sessionId,
@@ -2472,25 +2557,32 @@ function createGenericSessionClientDurableMutationOutboxInstance(
                 error: serializeAxiosErrorForLog(error),
             });
         });
-        if (opts.awaitFlush === true) {
-            await flushPromise;
-        } else {
-            void flushPromise;
-        }
-        const delivered = acknowledgedAwaitedDeliveryMutationIds.has(deliveryMutationId);
-        if (opts.awaitFlush === true) {
-            const waiterCount = awaitedDeliveryMutationCounts.get(deliveryMutationId) ?? 0;
-            if (waiterCount <= 1) {
-                awaitedDeliveryMutationCounts.delete(deliveryMutationId);
-                acknowledgedAwaitedDeliveryMutationIds.delete(deliveryMutationId);
-            } else {
-                awaitedDeliveryMutationCounts.set(deliveryMutationId, waiterCount - 1);
+        try {
+            if (requiredDelivery) {
+                // The canonical outbox retains/retries this exact mutation; the importer waits
+                // for its ACK while its own lifecycle can still cancel a blocked transport.
+                await requiredDelivery;
+            } else if (opts.awaitFlush === true) {
+                await flushPromise;
+            }
+            const delivered = acknowledgedAwaitedDeliveryMutations.has(deliveryMutationId);
+            const committedSequence = acknowledgedAwaitedDeliveryMutations.get(deliveryMutationId);
+            return {
+                delivered,
+                persisted: true,
+                ...(committedSequence === undefined ? {} : { committedSequence }),
+            };
+        } finally {
+            if (opts.awaitFlush === true) {
+                const waiterCount = awaitedDeliveryMutationCounts.get(deliveryMutationId) ?? 0;
+                if (waiterCount <= 1) {
+                    awaitedDeliveryMutationCounts.delete(deliveryMutationId);
+                    acknowledgedAwaitedDeliveryMutations.delete(deliveryMutationId);
+                } else {
+                    awaitedDeliveryMutationCounts.set(deliveryMutationId, waiterCount - 1);
+                }
             }
         }
-        return {
-            delivered,
-            persisted: true,
-        };
     }
 
     if (params.flushOnReady !== false) {
@@ -2514,7 +2606,10 @@ function createGenericSessionClientDurableMutationOutboxInstance(
                 awaitFlush: true,
                 ...(opts?.admission === undefined ? {} : { admission: opts.admission }),
             });
-            return { persisted: result.persisted, delivered: result.delivered };
+            return {
+                ...result,
+                ...(result.persisted ? { localId: mutation.localId } : {}),
+            };
         },
         async enqueueVoiceAgentTranscriptTurn(mutation) {
             const result = await enqueue(createQueuedVoiceAgentTranscriptTurn(mutation));
@@ -2576,6 +2671,7 @@ function createGenericSessionClientDurableMutationOutboxInstance(
         flush,
         async close() {
             closed = true;
+            for (const mutationId of [...awaitedDeliveryListeners.keys()]) notifyAwaitedDelivery(mutationId);
             clearRetryTimer();
             await ready;
             await flush('flush');

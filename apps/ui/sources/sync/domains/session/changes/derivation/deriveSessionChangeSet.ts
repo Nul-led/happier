@@ -4,6 +4,7 @@ import type { TurnChangeSet } from '@happier-dev/protocol';
 
 export function deriveSessionChangeSet(params: Readonly<{
     sessionId: string;
+    repoRootPath?: string | null;
     metadata: unknown;
     turnChangeSets: readonly TurnChangeSet[];
 }>): ReturnType<typeof mergeTurnChangeSets> | null {
@@ -18,6 +19,7 @@ export function deriveSessionChangeSet(params: Readonly<{
         .map((turn) => turn.turnId);
     return mergeTurnChangeSets({
         sessionId: params.sessionId,
+        repoRootPath: params.repoRootPath,
         turns: visibleTurns,
         rolledBackTurnIds,
     });

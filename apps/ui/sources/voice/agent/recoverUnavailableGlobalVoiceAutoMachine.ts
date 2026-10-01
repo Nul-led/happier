@@ -36,7 +36,7 @@ function resolveMachineName(machineId: string | null): string {
 function resolveAlternateOnlineMachineId(state: any, stickyMachineId: string | null): string | null {
     const ordered = listPreferredMachineIds({
         machines: resolveVisibleMachinesForActiveServerFromState(state),
-        recentMachinePaths: Array.isArray(state?.settings?.recentMachinePaths) ? state.settings.recentMachinePaths : [],
+        recentMachinePaths: Array.isArray(state?.authoringMemory?.recentMachinePaths) ? state.authoringMemory.recentMachinePaths : [],
         preferredMachineId: stickyMachineId,
         onlineOnly: true,
     });

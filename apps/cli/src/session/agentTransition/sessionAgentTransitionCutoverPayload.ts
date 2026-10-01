@@ -4,6 +4,7 @@ import {
   SessionAgentTransitionDividerV1Schema,
   SessionStoredMessageContentSchema,
   buildSessionAgentTransitionDividerLocalId,
+  projectSessionMetadataForWire,
   type AccountEncryptionCurrentnessResponse,
   type SessionStoredMessageContent,
 } from '@happier-dev/protocol';
@@ -69,7 +70,7 @@ export async function sealSessionAgentTransitionCurrentView(
           expectedMetadataVersion: snapshot.metadataVersion,
           metadataCiphertext: encryptStoredSessionPayload({
             ...cryptoContext,
-            payload: targetMetadata,
+            payload: projectSessionMetadataForWire(targetMetadata),
           }),
           expectedAgentStateVersion: snapshot.agentStateVersion,
           // The target republishes its own AgentState; the transition never

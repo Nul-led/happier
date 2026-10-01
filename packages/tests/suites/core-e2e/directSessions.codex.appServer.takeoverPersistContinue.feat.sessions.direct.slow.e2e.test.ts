@@ -1,9 +1,10 @@
 import { afterAll, afterEach, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 
-import { readNonAuthoritativeLinkedExternalSessionV1FromMetadata } from '@happier-dev/protocol';
+import { readNonAuthoritativeLinkedExternalSessionV1FromMetadata, type ExternalSessionTakeoverStartInputV1 } from '@happier-dev/protocol';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 
 import { createRunDirs } from '../../src/testkit/runDir';
@@ -14,6 +15,7 @@ import {
 } from '../../src/testkit/process/serverLight';
 import { createTestAuth } from '../../src/testkit/auth';
 import { seedCliAuthForTestAccount } from '../../src/testkit/cliAuth';
+import { enableExternalSessionPassiveRestoreForAccount } from '../../src/testkit/externalSessionLiveLifecycleFixture';
 import {
   replaceTestDaemonWithoutStoppingSessions,
   startTestDaemon,
@@ -24,6 +26,7 @@ import { createDataKeyRpcClient, unwrapDataKeyRpcResult } from '../../src/testki
 import { waitFor } from '../../src/testkit/timing';
 import { fetchSessionMetadataV2 } from '../../src/testkit/sessionHandoffMetadata';
 import { fetchJson } from '../../src/testkit/http';
+import { redactHarnessLogText } from '../../src/testkit/process/harnessLogRedaction';
 import {
   readFakeCodexAppServerRequestLog,
   writeFakeCodexAppServerScript,
@@ -33,6 +36,7 @@ const run = createRunDirs({ runLabel: 'core' });
 const suiteDbProvider = resolveTestDbProvider(process.env, {
   fallbackProvider: 'sqlite',
 });
+const tmuxAvailable = process.platform !== 'win32' && spawnSync('tmux', ['-V'], { stdio: 'ignore' }).status === 0;
 
 type JsonRecord = Record<string, unknown>;
 
@@ -115,14 +119,31 @@ describe('core e2e: direct Codex app-server sessions takeover+continue', () => {
   let server: StartedServer | null = null;
   let daemon: StartedDaemon | null = null;
   let retiredDaemon: StartedDaemon | null = null;
+  let tmuxTmpDir: string | null = null;
 
-  afterEach(async () => {
+  afterEach(async (context) => {
+    if (context.task.result?.state === 'fail' && daemon) {
+      for (const path of [daemon.proc.stderrPath, daemon.state.daemonLogPath]) {
+        if (!path) continue;
+        const log = await readFile(path, 'utf8').catch(() => null);
+        if (log) console.error(`Takeover daemon diagnostics (${path}):\n${redactHarnessLogText(log).slice(-8_000)}`);
+      }
+    }
     await daemon?.stop().catch(() => {});
     daemon = null;
     await retiredDaemon?.proc.stop().catch(() => {});
     retiredDaemon = null;
     await server?.stop().catch(() => {});
     server = null;
+    if (tmuxTmpDir) {
+      try {
+        execFileSync('tmux', ['kill-server'], { env: { ...process.env, TMUX: undefined, TMUX_PANE: undefined, TMUX_TMPDIR: tmuxTmpDir }, stdio: 'ignore' });
+      } catch {
+        // The isolated server may already have exited when its last window closed.
+      }
+      await rm(tmuxTmpDir, { recursive: true, force: true });
+      tmuxTmpDir = null;
+    }
   });
 
   afterAll(async () => {
@@ -131,8 +152,23 @@ describe('core e2e: direct Codex app-server sessions takeover+continue', () => {
     await server?.stop().catch(() => {});
   });
 
-  it('stays passive through a daemon restart after persisted import, then explicitly resumes the same vendor thread', async () => {
-    const testDir = run.testDir('direct-sessions-codex-app-server-takeover-persist-continue');
+  for (const { targetStorageMode, terminalMode, restartDaemon } of [
+    { targetStorageMode: 'persisted', terminalMode: 'plain', restartDaemon: true },
+    { targetStorageMode: 'persisted', terminalMode: 'tmux', restartDaemon: true },
+    { targetStorageMode: 'external-linked', terminalMode: 'tmux', restartDaemon: true },
+    { targetStorageMode: 'persisted', terminalMode: 'tmux', restartDaemon: false },
+  ] as const) {
+    it.skipIf(targetStorageMode === 'persisted' && terminalMode === 'tmux' && !tmuxAvailable)(
+      targetStorageMode === 'external-linked'
+        ? 'rejects external-linked takeover after daemon restart when Codex cannot prevent native writes'
+        : restartDaemon
+          ? `retains ${targetStorageMode} takeover in ${terminalMode} across daemon restart and resumes the same vendor thread`
+          : 'resumes persisted takeover in tmux without daemon restart', async () => {
+    const testDir = run.testDir(`direct-sessions-codex-app-server-takeover-${targetStorageMode}-${terminalMode}-${restartDaemon ? 'restart' : 'initial'}-continue`);
+    if (targetStorageMode === 'persisted' && terminalMode === 'tmux') {
+      // Keep the Unix socket path below the platform limit even when the test root is long.
+      tmuxTmpDir = await mkdtemp('/tmp/h413-tmux-');
+    }
     const daemonHomeDir = resolve(join(testDir, 'daemon-home'));
     const codexHomeDir = resolve(join(testDir, '.codex'));
     const rolloutDir = resolve(join(codexHomeDir, 'sessions', '2026', '07', '26'));
@@ -172,7 +208,26 @@ describe('core e2e: direct Codex app-server sessions takeover+continue', () => {
     const fakeAppServer = await writeFakeCodexAppServerScript({
       dir: testDir,
       requestLogPath: appServerRequestLogPath,
+      captureTerminalEnvironment: true,
     });
+
+    const assertResumedInRequestedTerminal = async () => {
+      await waitFor(async () => (await readFakeCodexAppServerRequestLog(appServerRequestLogPath))
+        .some((entry) => entry.method === 'thread/resume' && entry.params?.threadId === remoteSessionId), {
+        timeoutMs: 45_000,
+        context: `${targetStorageMode} takeover resumes its original Codex thread`,
+      });
+      const resumed = (await readFakeCodexAppServerRequestLog(appServerRequestLogPath))
+        .filter((entry) => entry.method === 'thread/resume' && entry.params?.threadId === remoteSessionId);
+      expect(resumed).toHaveLength(1);
+      if (tmuxTmpDir) {
+        expect(resumed[0]?.terminal?.tmux).toContain(`${tmuxTmpDir}/`);
+        expect(resumed[0]?.terminal?.pane).toMatch(/^%\d+$/);
+        execFileSync('tmux', ['has-session', '-t', 'takeover-terminal'], {
+          env: { ...process.env, TMUX: undefined, TMUX_PANE: undefined, TMUX_TMPDIR: tmuxTmpDir },
+        });
+      }
+    };
 
     server = await startServerLight({
       testDir,
@@ -183,6 +238,10 @@ describe('core e2e: direct Codex app-server sessions takeover+continue', () => {
     });
     const serverBaseUrl = server.baseUrl;
     const auth = await createTestAuth(serverBaseUrl);
+    await enableExternalSessionPassiveRestoreForAccount({
+      account: { auth, machineKey: auth.accountMachineKey },
+      serverBaseUrl,
+    });
 
     const seeded = await seedCliAuthForTestAccount({
       cliHome: daemonHomeDir,
@@ -242,6 +301,23 @@ describe('core e2e: direct Codex app-server sessions takeover+continue', () => {
       );
       expect(linkResult).toEqual(expect.objectContaining({ ok: true, created: true }));
       const sessionId = requireString(linkResult.sessionId, 'linked session id');
+      const linkedMetadata = await fetchSessionMetadataV2({
+        baseUrl: serverBaseUrl,
+        token: auth.token,
+        sessionId,
+        machineKeys: [auth.accountMachineKey],
+      });
+      const linked = readNonAuthoritativeLinkedExternalSessionV1FromMetadata(linkedMetadata);
+      if (!linked?.qualifiedIdentity) {
+        throw new Error('Expected canonical qualified linked-session identity.');
+      }
+      expect(linked.source).toMatchObject({ kind: 'codexHome', home: 'user', homePath: codexHomeDir });
+      expect(linked.linkData).toMatchObject({
+        runtimeDescriptorV1: {
+          agentId: 'codex',
+          agent: { backendMode: 'appServer', providerSessionId: remoteSessionId },
+        },
+      });
       await writeStoppedCodexOwnerMarker({
         daemonHomeDir,
         linkedDirectory,
@@ -253,9 +329,9 @@ describe('core e2e: direct Codex app-server sessions takeover+continue', () => {
         {
           machineId: seeded.machineId,
           sessionId,
-          providerId: 'codex',
-          remoteSessionId,
-          source: { kind: 'codexHome', home: 'user' },
+          agentId: linked.agentId,
+          remoteSessionId: linked.remoteSessionId,
+          source: linked.source,
           enabled: false,
         },
       ), 'disable background follow before persisted takeover')).toEqual(
@@ -266,9 +342,9 @@ describe('core e2e: direct Codex app-server sessions takeover+continue', () => {
         route(RPC_METHODS.DAEMON_EXTERNAL_SESSION_TRANSCRIPT_PAGE),
         {
           machineId: seeded.machineId,
-          providerId: 'codex',
-          remoteSessionId,
-          source: { kind: 'codexHome', home: 'user' },
+          agentId: linked.agentId,
+          remoteSessionId: linked.remoteSessionId,
+          source: linked.source,
           direction: 'older',
         },
       );
@@ -276,16 +352,6 @@ describe('core e2e: direct Codex app-server sessions takeover+continue', () => {
         expect.objectContaining({ ok: true, tailCursor: expect.any(String) }),
       );
 
-      const linkedMetadata = await fetchSessionMetadataV2({
-        baseUrl: serverBaseUrl,
-        token: auth.token,
-        sessionId,
-        machineKeys: [auth.accountMachineKey],
-      });
-      const linked = readNonAuthoritativeLinkedExternalSessionV1FromMetadata(linkedMetadata);
-      if (!linked?.qualifiedIdentity) {
-        throw new Error('Expected canonical qualified linked-session identity.');
-      }
       const request = {
         v: 1 as const,
         idempotencyKey: `codex-takeover-${randomUUID()}`,
@@ -297,9 +363,14 @@ describe('core e2e: direct Codex app-server sessions takeover+continue', () => {
           linkGeneration: String(linked.linkedAtMs),
         },
         plan: 'takeover' as const,
-        targetStorageMode: 'persisted' as const,
+        targetStorageMode,
+        targetDirectory: linkedDirectory,
         targetRuntimeMode: 'terminal' as const,
-      };
+        ...(terminalMode === 'tmux' ? { terminal: {
+          mode: 'tmux' as const,
+          tmux: { sessionName: 'takeover-terminal', isolated: true, tmpDir: tmuxTmpDir ?? testDir },
+        } } : {}),
+      } satisfies ExternalSessionTakeoverStartInputV1['request'];
 
       const start = await machineRpc.call(
         route(RPC_METHODS.DAEMON_EXTERNAL_SESSION_TAKEOVER_START),
@@ -350,6 +421,38 @@ describe('core e2e: direct Codex app-server sessions takeover+continue', () => {
         progress: startProgress,
       });
 
+      if (targetStorageMode === 'external-linked') {
+        const originalDaemon = daemon;
+        if (!originalDaemon) throw new Error('Expected running daemon before takeover restart.');
+        daemon = await replaceTestDaemonWithoutStoppingSessions({
+          testDir, happyHomeDir: daemonHomeDir, env: daemonEnv, originalDaemon,
+        });
+        retiredDaemon = originalDaemon;
+        await waitFor(async () => {
+          try {
+            const recovered = requireRecord(unwrapDataKeyRpcResult(await machineRpc.call(
+              route(RPC_METHODS.DAEMON_EXTERNAL_SESSION_OPERATION_STATUS_GET),
+              { sessionId, operationId, revision: startRevision },
+            ), 'external-linked takeover restart status'), 'external-linked takeover restart status');
+            const progress = requireRecord(recovered.progress, 'external-linked takeover restart progress');
+            return recovered.ok === true && progress.status === 'awaiting_user_resume' && progress.revision === startRevision;
+          } catch {
+            // The replacement daemon may not have reconnected its machine RPC route yet.
+            return false;
+          }
+        }, { timeoutMs: 60_000, context: 'external-linked takeover checkpoint hydrates after daemon restart' });
+        const resumed = requireRecord(unwrapDataKeyRpcResult(await machineRpc.call(
+          route(RPC_METHODS.DAEMON_EXTERNAL_SESSION_OPERATION_RESUME),
+          { sessionId, operationId, revision: startRevision },
+          180_000,
+        ), 'external-linked takeover resume'), 'external-linked takeover resume');
+        // Codex's current declaration does not guarantee native writer prevention.
+        expect(resumed, JSON.stringify(resumed)).toMatchObject({ ok: false, error: { code: 'not_allowed' } });
+        expect((await readFakeCodexAppServerRequestLog(appServerRequestLogPath))
+          .filter((entry) => entry.method === 'thread/resume')).toEqual([]);
+        return;
+      }
+
       const importResume = await machineRpc.call(
         route(RPC_METHODS.DAEMON_EXTERNAL_SESSION_OPERATION_RESUME),
         { sessionId, operationId, revision: startRevision },
@@ -375,63 +478,73 @@ describe('core e2e: direct Codex app-server sessions takeover+continue', () => {
       const importProgress = requireRecord(importResumeResult.progress, 'imported takeover progress');
       const importRevision = requireNumber(importProgress.revision, 'imported takeover revision');
       expect(importRevision).toBeGreaterThan(startRevision);
+      const importedMetadata = await fetchSessionMetadataV2({
+        baseUrl: serverBaseUrl,
+        token: auth.token,
+        sessionId,
+        machineKeys: [auth.accountMachineKey],
+      });
+      expect(readNonAuthoritativeLinkedExternalSessionV1FromMetadata(importedMetadata)?.linkData)
+        .toMatchObject({ runtimeDescriptorV1: { agent: { backendMode: 'appServer' } } });
       expect((await readFakeCodexAppServerRequestLog(appServerRequestLogPath))
         .filter((entry) => entry.method === 'thread/resume')).toEqual([]);
 
-      // This is deliberately after the persisted-takeover import → admission
-      // transition: the operation is now durable but non-terminal, so boot must
-      // hydrate it without reading or resuming the native Codex thread.
-      const appServerRequestsBeforeRestart = await readFakeCodexAppServerRequestLog(
-        appServerRequestLogPath,
-      );
-      const originalDaemon = daemon;
-      if (!originalDaemon) throw new Error('Expected running daemon before persisted takeover restart.');
-      const originalDaemonPid = originalDaemon.state.pid;
-      const replacement = await replaceTestDaemonWithoutStoppingSessions({
-        testDir,
-        happyHomeDir: daemonHomeDir,
-        env: daemonEnv,
-        originalDaemon,
-      });
-      retiredDaemon = originalDaemon;
-      daemon = replacement;
-      expect(replacement.state.pid).not.toBe(originalDaemonPid);
+      if (restartDaemon) {
+        // This is deliberately after the persisted-takeover import → admission
+        // transition: the operation is now durable but non-terminal, so boot must
+        // hydrate it without reading or resuming the native Codex thread.
+        const appServerRequestsBeforeRestart = await readFakeCodexAppServerRequestLog(
+          appServerRequestLogPath,
+        );
+        const originalDaemon = daemon;
+        if (!originalDaemon) throw new Error('Expected running daemon before persisted takeover restart.');
+        const originalDaemonPid = originalDaemon.state.pid;
+        const replacement = await replaceTestDaemonWithoutStoppingSessions({
+          testDir,
+          happyHomeDir: daemonHomeDir,
+          env: daemonEnv,
+          originalDaemon,
+        });
+        retiredDaemon = originalDaemon;
+        daemon = replacement;
+        expect(replacement.state.pid).not.toBe(originalDaemonPid);
 
-      let recoveredStatus: JsonRecord | null = null;
-      await waitFor(async () => {
-        try {
-          const statusAfterRestart = requireRecord(
-            unwrapDataKeyRpcResult(await machineRpc.call(
-              route(RPC_METHODS.DAEMON_EXTERNAL_SESSION_OPERATION_STATUS_GET),
-              { sessionId, operationId, revision: importRevision },
-            ), 'Codex takeover status after daemon restart'),
-            'Codex takeover status after daemon restart',
-          );
-          const progressAfterRestart = requireRecord(
-            statusAfterRestart.progress,
-            'Codex takeover progress after daemon restart',
-          );
-          if (
-            statusAfterRestart.ok === true
-            && progressAfterRestart.operationId === operationId
-            && progressAfterRestart.revision === importRevision
-            && progressAfterRestart.status === 'awaiting_user_resume'
-            && progressAfterRestart.phase === 'admitting'
-          ) {
-            recoveredStatus = statusAfterRestart;
-            return true;
+        let recoveredStatus: JsonRecord | null = null;
+        await waitFor(async () => {
+          try {
+            const statusAfterRestart = requireRecord(
+              unwrapDataKeyRpcResult(await machineRpc.call(
+                route(RPC_METHODS.DAEMON_EXTERNAL_SESSION_OPERATION_STATUS_GET),
+                { sessionId, operationId, revision: importRevision },
+              ), 'Codex takeover status after daemon restart'),
+              'Codex takeover status after daemon restart',
+            );
+            const progressAfterRestart = requireRecord(
+              statusAfterRestart.progress,
+              'Codex takeover progress after daemon restart',
+            );
+            if (
+              statusAfterRestart.ok === true
+              && progressAfterRestart.operationId === operationId
+              && progressAfterRestart.revision === importRevision
+              && progressAfterRestart.status === 'awaiting_user_resume'
+              && progressAfterRestart.phase === 'admitting'
+            ) {
+              recoveredStatus = statusAfterRestart;
+              return true;
+            }
+          } catch {
+            // The replacement daemon may not have reconnected to the machine RPC route yet.
           }
-        } catch {
-          // The replacement daemon may not have reconnected to the machine RPC route yet.
-        }
-        return false;
-      }, {
-        timeoutMs: 60_000,
-        context: 'persisted takeover admission checkpoint hydrates after daemon restart',
-      });
-      expect(recoveredStatus).toEqual(importResumeResult);
-      expect(await readFakeCodexAppServerRequestLog(appServerRequestLogPath))
-        .toEqual(appServerRequestsBeforeRestart);
+          return false;
+        }, {
+          timeoutMs: 60_000,
+          context: 'persisted takeover admission checkpoint hydrates after daemon restart',
+        });
+        expect(recoveredStatus).toEqual(importResumeResult);
+        expect(await readFakeCodexAppServerRequestLog(appServerRequestLogPath))
+          .toEqual(appServerRequestsBeforeRestart);
+      }
 
       const admissionResume = await machineRpc.call(
         route(RPC_METHODS.DAEMON_EXTERNAL_SESSION_OPERATION_RESUME),
@@ -442,7 +555,7 @@ describe('core e2e: direct Codex app-server sessions takeover+continue', () => {
         unwrapDataKeyRpcResult(admissionResume, 'durable Codex takeover admission resume'),
         'durable Codex takeover admission resume',
       );
-      expect(admissionResumeResult).toEqual(expect.objectContaining({
+      expect(admissionResumeResult, JSON.stringify(admissionResumeResult)).toEqual(expect.objectContaining({
         ok: true,
         progress: expect.objectContaining({
           operationId,
@@ -461,21 +574,9 @@ describe('core e2e: direct Codex app-server sessions takeover+continue', () => {
       );
       const completedRevision = requireNumber(completedProgress.revision, 'completed takeover revision');
       expect(completedRevision).toBeGreaterThan(importRevision);
-
-      await waitFor(async () => {
-        const requests = await readFakeCodexAppServerRequestLog(appServerRequestLogPath);
-        return requests.filter((entry) =>
-          entry.method === 'thread/resume'
-          && entry.params?.threadId === remoteSessionId).length === 1;
-      }, {
-        timeoutMs: 45_000,
-        context: 'persisted takeover resumes the same Codex app-server thread exactly once',
-      });
+      await assertResumedInRequestedTerminal();
 
       const appServerRequests = await readFakeCodexAppServerRequestLog(appServerRequestLogPath);
-      expect(appServerRequests.filter((entry) =>
-        entry.method === 'thread/resume'
-        && entry.params?.threadId === remoteSessionId)).toHaveLength(1);
       expect(appServerRequests.some((entry) =>
         entry.method === 'thread/interrupt'
         || entry.method === 'turn/interrupt')).toBe(false);
@@ -521,5 +622,6 @@ describe('core e2e: direct Codex app-server sessions takeover+continue', () => {
     } finally {
       ui.close();
     }
-  }, 300_000);
+    }, 300_000);
+  }
 });

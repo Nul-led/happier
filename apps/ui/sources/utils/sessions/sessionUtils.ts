@@ -1,10 +1,11 @@
 import { projectUiSessionAwareness } from '@/sync/domains/session/awareness/sessionAwareness';
 import { resolveSessionAwarenessContentLabel } from '@/sync/domains/session/awareness/sessionAwarenessContentLabels';
-import { isSessionAwarenessContentReadableV1, type SessionAwarenessEncryptionV1 } from '@happier-dev/protocol';
+import { isSessionAwarenessContentReadableV1, readSessionDirectoryKind, type SessionAwarenessEncryptionV1 } from '@happier-dev/protocol';
 import * as React from 'react';
-import { Message } from '@/sync/domains/messages/messageTypes';
+import { Message } from "@happier-dev/session-core/messages";
 import { readLatestLocalOutboundPendingUserMessageAt } from '@/sync/domains/messages/outgoingUserMessage';
-import { useSession, useSessionMessagesVersion, useSessionPendingMessages, useSetting } from '@/sync/domains/state/storage';
+import { storage, useSession, useSessionMessagesVersion, useSessionPendingMessages, useSetting } from '@/sync/domains/state/storage';
+import { getMachineDisplayName } from './machineDisplayNames';
 import type { Session } from '@/sync/domains/state/storageTypes';
 import type { SessionListRenderableSession } from '@/sync/domains/session/listing/sessionListRenderable';
 import {
@@ -25,12 +26,13 @@ import {
 } from '@/sync/domains/session/pending/listPendingSessionRequests';
 import {
     readDisplayMachineIdForSession,
+    readDisplayIdentityForSession,
     readDisplayMachineTargetForSession,
     readDisplayPathForSession,
-    readMachineTargetForSession,
 } from '@/sync/ops/sessionMachineTarget';
 import { readSessionDisplayTitleField } from '@/sync/state/selectors';
 import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
+import { readSessionListRenderableOwnerMetadataView } from '@/sync/domains/session/listing/sessionListRenderableSessionProjection';
 import { t } from '@/text';
 import { formatWithCachedDateTimeFormatter } from '@/utils/datetime/cachedIntlFormatters';
 import { formatPathRelativeToHome } from './formatPathRelativeToHome';
@@ -77,9 +79,13 @@ export type PendingPermissionRequest = SessionPendingRequest;
 type SessionStatusSource = Session | SessionListRenderableSession;
 type SessionDisplayNameSource = Readonly<{
     id: string;
+    serverId?: string;
     metadata: unknown;
     metadataLayoutVersion?: number;
     ownerMetadataView?: unknown;
+    lockedDisplayTitle?: string | null;
+    access?: Session['access'];
+    accessLevel?: Session['accessLevel'];
 }>;
 type SessionStatusColors = Readonly<{
     connected: string;
@@ -103,21 +109,41 @@ type UseSessionStatusOptions = Readonly<{
     subscribeToTranscript?: boolean;
 }>;
 
+/**
+ * The owner metadata view a display helper may read. A hydrated Session keeps it in its own
+ * field; a list row composes it into `metadata`. Reading a row through the Session-only reader
+ * found no owner view, so an owner's untitled row said "Untitled session" while its detail header
+ * named the workspace — and a locked row then fell to "Encrypted session".
+ * Narrow display projections retain `ownerMetadataView` without runtime `agentState`.
+ */
+function readDisplayOwnerMetadata(session: SessionDisplayNameSource): ReturnType<typeof readSessionOwnerMetadataView> {
+    return 'ownerMetadataView' in session || 'agentState' in session
+        ? readSessionOwnerMetadataView(session)
+        : readSessionListRenderableOwnerMetadataView(session);
+}
+
 function readPrivateDisplayMachineTarget(
     session: SessionDisplayNameSource,
     ownerMetadata: ReturnType<typeof readSessionOwnerMetadataView>,
+    serverId?: string | null,
 ): { machineId: string; basePath: string } | null {
+    const resolvedServerId = serverId?.trim() || session.serverId;
     if (session.metadataLayoutVersion === 1) {
-        return readMachineTargetForSession(session.id) ?? readDisplayMachineTargetForSession({
-            sessionId: null,
+        if (!ownerMetadata) return null;
+        const target = readDisplayIdentityForSession({
+            sessionId: session.id,
+            serverId: resolvedServerId,
             metadata: ownerMetadata,
+            preferProvidedMetadata: true,
         });
+        return target.machineId && target.basePath ? target : null;
     }
     if (session.metadataLayoutVersion !== undefined && session.metadataLayoutVersion !== 0) {
         return null;
     }
     return readDisplayMachineTargetForSession({
         sessionId: session.id,
+        serverId: resolvedServerId,
         metadata: ownerMetadata,
     });
 }
@@ -504,26 +530,38 @@ export function useSessionStatus(session: SessionStatusSource, options: UseSessi
  * about what a locked Session is called.
  */
 export function resolveLockedSessionTitle(title: string): string {
-    return title.trim().length > 0 && title !== t('status.unknown')
+    return title.trim().length > 0 && !isUntitledSessionName(title)
         ? title
         : t('session.access.lockedTitleFallback');
 }
 
 /**
- * Extracts a display name from a session's metadata path.
- * Returns the last segment of the path, or 'unknown' if no path is available.
+ * Whether `name` is the fallback `getSessionName` gives a session with no title, name or path (an
+ * External session imported before its transcript loaded, say). It names the session honestly
+ * ("Untitled session"), never the runtime-status word "unknown".
  */
-export function getSessionName(session: SessionDisplayNameSource): string {
+export function isUntitledSessionName(name: string): boolean {
+    return name === t('session.untitled');
+}
+
+/**
+ * Extracts a display name from a session's metadata path.
+ * Returns the last segment of the path, or "Untitled session" when nothing names it.
+ */
+export function getSessionName(session: SessionDisplayNameSource, serverId?: string | null): string {
     const summaryText = readSessionDisplayTitleField(session).value;
-    const ownerMetadata = readSessionOwnerMetadataView(session);
+    const ownerMetadata = readDisplayOwnerMetadata(session);
     if (summaryText) {
         return summaryText;
     } else if (ownerMetadata?.name) {
         const name = ownerMetadata.name.trim();
         if (name.length > 0) return name;
+    } else if (readSessionDirectoryKind(ownerMetadata) === 'managed') {
+        // A no-folder session is not named after its private folder.
+        return t('session.folderless.untitledChat');
     } else if (ownerMetadata) {
         const displayMetadata = ownerMetadata;
-        const displayPath = readPrivateDisplayMachineTarget(session, ownerMetadata)?.basePath
+        const displayPath = readPrivateDisplayMachineTarget(session, ownerMetadata, serverId)?.basePath
             ?? readDisplayPathForSession({
             sessionId: null,
             metadata: displayMetadata ?? null,
@@ -531,27 +569,31 @@ export function getSessionName(session: SessionDisplayNameSource): string {
         const segments = displayPath.split('/').filter(Boolean);
         const lastSegment = segments.pop();
         if (!lastSegment) {
-            return t('status.unknown');
+            return t('session.untitled');
         }
         return lastSegment;
     }
-    return t('status.unknown');
+    return t('session.untitled');
 }
 
 /**
  * Generates a deterministic avatar ID from machine ID and path.
  * This ensures the same machine + path combination always gets the same avatar.
  */
-export function getSessionAvatarId(session: SessionStatusSource): string {
-    const ownerMetadata = readSessionOwnerMetadataView(session);
+export function getSessionAvatarId(session: SessionStatusSource, serverId?: string | null): string {
+    const ownerMetadata = readDisplayOwnerMetadata(session);
     const displayMetadata = ownerMetadata;
-    const reachableTarget = readPrivateDisplayMachineTarget(session, ownerMetadata);
+    const reachableTarget = readPrivateDisplayMachineTarget(session, ownerMetadata, serverId);
     const reachableMachineId = reachableTarget?.machineId ?? readDisplayMachineIdForSession({
         sessionId: null,
         metadata: displayMetadata ?? null,
     });
     const reachablePath = reachableTarget?.basePath ?? ownerMetadata?.path ?? null;
 
+    if (reachableMachineId && readSessionDirectoryKind(ownerMetadata) === 'managed') {
+        // Every no-folder session has its own private folder; the session, not the folder, is its identity.
+        return `${reachableMachineId}:${session.id}`;
+    }
     if (reachableMachineId && reachablePath) {
         // Combine machine ID and path for a unique, deterministic avatar
         return `${reachableMachineId}:${reachablePath}`;
@@ -563,9 +605,15 @@ export function getSessionAvatarId(session: SessionStatusSource): string {
 /**
  * Returns the session path for the subtitle.
  */
-export function getSessionSubtitle(session: SessionStatusSource): string {
-    const ownerMetadata = readSessionOwnerMetadataView(session);
-    const path = readPrivateDisplayMachineTarget(session, ownerMetadata)?.basePath
+export function getSessionSubtitle(session: SessionStatusSource, serverId?: string | null): string {
+    const ownerMetadata = readDisplayOwnerMetadata(session);
+    if (readSessionDirectoryKind(ownerMetadata) === 'managed') {
+        // Where a no-folder session runs is its machine; its private folder is not a place to show.
+        const machineId = readPrivateDisplayMachineTarget(session, ownerMetadata, serverId)?.machineId ?? ownerMetadata?.machineId;
+        const machine = machineId ? storage.getState().machines[machineId] : undefined;
+        return getMachineDisplayName(machine) ?? ownerMetadata?.host ?? t('status.unknown');
+    }
+    const path = readPrivateDisplayMachineTarget(session, ownerMetadata, serverId)?.basePath
         ?? ownerMetadata?.path
         ?? null;
     if (path) {

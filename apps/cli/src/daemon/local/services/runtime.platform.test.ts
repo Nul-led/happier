@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { ChildProcess } from 'node:child_process';
 
 const execFileMock = vi.hoisted(() => vi.fn());
 
@@ -34,29 +35,36 @@ describe('createLocalServicesDaemonRuntime platform scanner dispatch', () => {
         execFileMock.mockImplementation((
             command: string,
             _args: readonly string[],
-            _options: Readonly<{ timeout: number; maxBuffer: number }>,
-            // Mirrors the real `child_process.execFile` callback contract — `(error, stdout, stderr)`
-            // — because that is the boundary the scan adapter calls. It previously modelled
-            // `promisify(execFile)`'s resolved value instead.
+            _options: Readonly<{ maxBuffer: number }>,
             callback: (error: Error | null, stdout: string, stderr: string) => void,
         ) => {
+            // The real execFile boundary returns a child before asynchronously delivering output
+            // and close; the deadline adapter waits for both the callback and that close event.
+            const child = new ChildProcess();
+            const complete = (error: Error | null, stdout: string) => {
+                queueMicrotask(() => {
+                    Object.defineProperty(child, 'exitCode', { configurable: true, value: error ? 1 : 0 });
+                    child.emit('exit', child.exitCode, null);
+                    callback(error, stdout, '');
+                    child.emit('close', child.exitCode, null);
+                });
+                return child;
+            };
             if (command === 'netstat.exe') {
-                callback(null, [
+                return complete(null, [
                     '  Proto  Local Address          Foreign Address        State           PID',
                     '  TCP    127.0.0.1:5173         0.0.0.0:0              LISTENING       1234',
-                ].join('\r\n'), '');
-                return;
+                ].join('\r\n'));
             }
             if (command === 'powershell.exe') {
-                callback(null, JSON.stringify([{
+                return complete(null, JSON.stringify([{
                     ProcessId: 1234,
                     ParentProcessId: 100,
                     CommandLine: 'npm run dev',
                     ExecutablePath: 'C:\\Program Files\\nodejs\\node.exe',
-                }]), '');
-                return;
+                }]));
             }
-            callback(new Error(`unexpected command ${command}`), '', '');
+            return complete(new Error(`unexpected command ${command}`), '');
         });
 
         try {

@@ -1,16 +1,18 @@
 import React from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { act } from 'react-test-renderer';
-import type { ToolCall } from '@/sync/domains/messages/messageTypes';
+import type { ToolCall } from "@happier-dev/session-core/messages";
 import { createSessionFixture, makeToolCall, makeToolViewProps } from '@/dev/testkit';
 import {
     changeTextTestInstance,
     createDeferred,
     findTestInstanceByTypeContainingText,
     pressTestInstanceAsync,
-    renderScreen,
+    createTestSessionTranscriptSource,
+    renderWithSessionTranscriptSource,
 } from '@/dev/testkit';
 import { installWorkflowRendererCommonModuleMocks } from './workflowRendererTestHelpers';
+import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
 import {
     clearProjectedAgentUiBehaviorDescriptors,
     publishProjectedAgentUiBehaviorDescriptors,
@@ -45,6 +47,44 @@ let activeAskUserQuestionRequestId = 'toolu_1';
 const askUserQuestionSessionState = vi.hoisted(() => ({
     current: null as Record<string, unknown> | null,
 }));
+function readSessionFixture() {
+    return createSessionFixture({
+        id: 's1', serverId: 'server-a',
+        metadata: {
+            path: '', host: '',
+            machineId: 'machine-1',
+            runtimeDescriptorV1: { v: 1, agentId: 'claude', agent: {} },
+        },
+        agentState: {
+            capabilities: { askUserQuestionAnswersInPermission: supportsAnswersInPermission },
+            requests: activeAskUserQuestionRequest
+                ? { [activeAskUserQuestionRequestId]: {
+                    ...activeAskUserQuestionRequest, arguments: {}, createdAt: 1,
+                } } : {},
+        },
+        ...askUserQuestionSessionState.current,
+    });
+}
+
+function renderScreen(element: React.ReactElement) {
+    const props = element.props as Readonly<{ serverId?: string; session?: ReturnType<typeof createSessionFixture> }>;
+    const read = () => props.session ?? readSessionFixture();
+    const source = createTestSessionTranscriptSource({
+        sessionId: 's1', serverId: props.serverId ?? read().serverId ?? null,
+        interaction: { canSendMessages: true, canApprovePermissions: true },
+        actions: {
+            answerUserAction: (params) => sessionAllowWithAnswers(params),
+            respondToPermission: (params) => sessionDeny(params),
+            abort: async () => {}, submitMessage: async () => {},
+        },
+        navigate: () => {},
+    });
+    return renderWithSessionTranscriptSource(element, {
+        ...source,
+        useAgentState: () => read().agentState,
+        useMetadata: () => readSessionOwnerMetadataView(read()),
+    });
+}
 const daemonMergedProjectionState = vi.hoisted(() => ({
     current: {
         phase: 'ready' as const,
@@ -185,11 +225,6 @@ installWorkflowRendererCommonModuleMocks({
     },
 });
 
-vi.mock('@/sync/ops', () => ({
-    sessionDeny: (...args: any[]) => sessionDeny(...args),
-    sessionAllowWithAnswers: (...args: any[]) => sessionAllowWithAnswers(...args),
-}));
-
 vi.mock('@/agents/backendCatalog/useDaemonMergedProjectionInputs', () => ({
     useDaemonMergedProjectionInputs: () => daemonMergedProjectionState.current,
 }));
@@ -267,6 +302,17 @@ describe('AskUserQuestionView', () => {
             ...overrides,
         });
     }
+
+    it('shows serialized structured answers on the completed question card', async () => {
+        const { AskUserQuestionView } = await import('./AskUserQuestionView');
+        const screen = await renderScreen(React.createElement(AskUserQuestionView, makeToolViewProps(makeTool({
+            state: 'completed',
+            result: JSON.stringify({ status: 'answered', answers: { 'Pick one': ['B'] } }),
+        }), { sessionId: 's1' })));
+
+        expect(screen.getTextContent()).toContain('B');
+        expect(screen.getTextContent()).not.toContain('Q1 : -');
+    });
 
     function makeFreeformTool(overrides: Partial<ToolCall> = {}): ToolCall {
         return makeToolCall({
@@ -481,7 +527,7 @@ describe('AskUserQuestionView', () => {
         await chooseOptionAndSubmit(screen, 'A');
 
         expect(sessionAllowWithAnswers).toHaveBeenCalledTimes(1);
-        expect(sessionAllowWithAnswers).toHaveBeenCalledWith('s1', 'toolu_1', { 'Pick one': ['A'] });
+        expect(sessionAllowWithAnswers).toHaveBeenCalledWith({ id: 'toolu_1', answers: { 'Pick one': ['A'] } });
         expect(sessionDeny).toHaveBeenCalledTimes(0);
         expect(sendMessage).toHaveBeenCalledTimes(0);
     });
@@ -496,7 +542,7 @@ describe('AskUserQuestionView', () => {
         });
         const screen = await renderView(makeTool(), { serverId: 'server-b', session });
         await chooseOptionAndSubmit(screen, 'A');
-        expect(sessionAllowWithAnswers).toHaveBeenCalledWith('s1', 'toolu_1', { 'Pick one': ['A'] }, { serverId: 'server-b' });
+        expect(sessionAllowWithAnswers).toHaveBeenCalledWith({ id: 'toolu_1', answers: { 'Pick one': ['A'] } });
     });
 
     it('exposes question choices and submit progress with their current accessible state', async () => {
@@ -539,8 +585,12 @@ describe('AskUserQuestionView', () => {
         const screen = await renderView(makeFreeformTool());
         const input = screen.findByProps({ testID: 'ask-user-question.freeform:0' });
 
-        expect(input.props.accessibilityLabel).toBe('Which file should I inspect?');
+        // The visible header is part of the name, so the field is never separated from its question.
+        expect(input.props.accessibilityLabel).toBe('Q1: Which file should I inspect?');
         expect(input.props.accessibilityState).toEqual({ disabled: false });
+        const group = screen.findByProps({ testID: 'ask-user-question.question:0' });
+        expect(group.props.role).toBe('group');
+        expect(group.props.accessibilityLabel).toBe('Q1: Which file should I inspect?');
     });
 
     it('submits canonical multiple-choice answers by stable question and choice ids while allowing optional omissions', async () => {
@@ -588,9 +638,9 @@ describe('AskUserQuestionView', () => {
         expect(submit!.props.disabled).toBe(false);
         await pressTestInstanceAsync(submit, 'tools.askUserQuestion.submit');
 
-        expect(sessionAllowWithAnswers).toHaveBeenCalledWith('s1', 'toolu_1', {
+        expect(sessionAllowWithAnswers).toHaveBeenCalledWith({ id: 'toolu_1', answers: {
             components: ['api, gateway', 'ui'],
-        });
+        } });
     });
 
     it('honors canonical text presentation and preserves whitespace and commas', async () => {
@@ -621,9 +671,9 @@ describe('AskUserQuestionView', () => {
         });
         await pressPressableByLabel(screen, 'tools.askUserQuestion.submit');
 
-        expect(sessionAllowWithAnswers).toHaveBeenCalledWith('s1', 'toolu_1', {
+        expect(sessionAllowWithAnswers).toHaveBeenCalledWith({ id: 'toolu_1', answers: {
             notes: ['  first, second  '],
-        });
+        } });
     });
 
     it('uses canonical text initial content as the editable answer', async () => {
@@ -650,9 +700,9 @@ describe('AskUserQuestionView', () => {
         expect(input.props.value).toBe('Existing notes');
         await pressPressableByLabel(screen, 'tools.askUserQuestion.submit');
 
-        expect(sessionAllowWithAnswers).toHaveBeenCalledWith('s1', 'toolu_1', {
+        expect(sessionAllowWithAnswers).toHaveBeenCalledWith({ id: 'toolu_1', answers: {
             notes: ['Existing notes'],
-        });
+        } });
     });
 
     it('submits canonical custom single-choice answers unchanged under the question id', async () => {
@@ -673,9 +723,9 @@ describe('AskUserQuestionView', () => {
 
         await fillFreeformAndSubmit(screen, 'Custom goal, with commas');
 
-        expect(sessionAllowWithAnswers).toHaveBeenCalledWith('s1', 'toolu_1', {
+        expect(sessionAllowWithAnswers).toHaveBeenCalledWith({ id: 'toolu_1', answers: {
             goal: ['Custom goal, with commas'],
-        });
+        } });
     });
 
     it('preserves selected choices and one custom value in a canonical multiple-choice answer array', async () => {
@@ -701,9 +751,9 @@ describe('AskUserQuestionView', () => {
         await pressPressableByLabel(screen, 'UI');
         await fillFreeformAndSubmit(screen, 'Custom, other');
 
-        expect(sessionAllowWithAnswers).toHaveBeenCalledWith('s1', 'toolu_1', {
+        expect(sessionAllowWithAnswers).toHaveBeenCalledWith({ id: 'toolu_1', answers: {
             components: ['api, gateway', 'ui', 'Custom, other'],
-        });
+        } });
     });
 
     it('opens a terminal-only dialog without resolving the permission request', async () => {
@@ -866,9 +916,9 @@ describe('AskUserQuestionView', () => {
         expect(screen.findByProps({ testID: 'ask-user-question.open-attached-terminal' })).toBeTruthy();
         await chooseOptionAndSubmit(screen, 'Trust and remember');
 
-        expect(sessionAllowWithAnswers).toHaveBeenCalledWith('s1', 'toolu_1', {
+        expect(sessionAllowWithAnswers).toHaveBeenCalledWith({ id: 'toolu_1', answers: {
             'How should Claude continue?': ['trust_always'],
-        });
+        } });
         expect(scopedPluginSettingsWrite).not.toHaveBeenCalled();
         expect(machinePluginSettingsSet).not.toHaveBeenCalled();
         expect(useSettingMutable).not.toHaveBeenCalledWith('claudeUnifiedTerminalWorkspaceTrust');
@@ -922,9 +972,9 @@ describe('AskUserQuestionView', () => {
 
         await chooseOptionAndSubmit(screen, 'Trust and remember');
 
-        expect(sessionAllowWithAnswers).toHaveBeenCalledWith('s1', 'toolu_1', {
+        expect(sessionAllowWithAnswers).toHaveBeenCalledWith({ id: 'toolu_1', answers: {
             'How should Claude continue?': ['trust_always'],
-        });
+        } });
         // Claude declares both remembered choices in its single `scope: 'account'`
         // Agent Settings contribution, and its runtime reads them back through
         // `services.settings.forScope({ kind: 'account' })`. A daemon-scoped
@@ -1000,9 +1050,9 @@ describe('AskUserQuestionView', () => {
 
         await chooseOptionAndSubmit(screen, 'Always include selected files');
 
-        expect(sessionAllowWithAnswers).toHaveBeenCalledWith('s1', 'toolu_1', {
+        expect(sessionAllowWithAnswers).toHaveBeenCalledWith({ id: 'toolu_1', answers: {
             'Remember this scope?': ['always_include'],
-        });
+        } });
         expect(scopedPluginSettingsWrite).toHaveBeenCalledWith({
             pluginId: 'acme.review',
             fieldId: 'reviewScopePreference',
@@ -1160,9 +1210,9 @@ describe('AskUserQuestionView', () => {
         await act(async () => {
             submit!.props.onPress();
         });
-        expect(sessionAllowWithAnswers).toHaveBeenCalledWith('s1', 'toolu_1', {
+        expect(sessionAllowWithAnswers).toHaveBeenCalledWith({ id: 'toolu_1', answers: {
             'Remember this scope?': ['always_include'],
-        });
+        } });
 
         // The owning Agent replaces only this dialog's allowlist while the
         // approval is in flight. The field remains current and writable, so
@@ -1231,9 +1281,9 @@ describe('AskUserQuestionView', () => {
 
         await chooseOptionAndSubmit(screen, 'Always resume from summary');
 
-        expect(sessionAllowWithAnswers).toHaveBeenCalledWith('s1', 'toolu_1', {
+        expect(sessionAllowWithAnswers).toHaveBeenCalledWith({ id: 'toolu_1', answers: {
             'How should Claude resume this session?': ['always_resume_from_summary'],
-        });
+        } });
         expect(scopedPluginSettingsRead).toHaveBeenCalledWith({
             pluginId: 'happier.agent.claude',
             scope: { kind: 'account' },
@@ -1455,7 +1505,7 @@ describe('AskUserQuestionView', () => {
         await chooseOptionAndSubmit(screen, 'A');
 
         expect(sessionAllowWithAnswers).toHaveBeenCalledTimes(1);
-        expect(sessionAllowWithAnswers).toHaveBeenCalledWith('s1', 'toolu_reconnect', { 'Pick one': ['A'] });
+        expect(sessionAllowWithAnswers).toHaveBeenCalledWith({ id: 'toolu_reconnect', answers: { 'Pick one': ['A'] } });
         expect(sessionDeny).toHaveBeenCalledTimes(0);
         expect(sendMessage).toHaveBeenCalledTimes(0);
         expect(modalAlert).toHaveBeenCalledTimes(0);
@@ -1498,7 +1548,7 @@ describe('AskUserQuestionView', () => {
         await chooseOptionAndSubmit(screen, 'A');
 
         expect(sessionAllowWithAnswers).toHaveBeenCalledTimes(1);
-        expect(sessionAllowWithAnswers).toHaveBeenCalledWith('s1', 'toolu_1', { 'Pick one': ['A'] });
+        expect(sessionAllowWithAnswers).toHaveBeenCalledWith({ id: 'toolu_1', answers: { 'Pick one': ['A'] } });
         expect(sessionDeny).toHaveBeenCalledTimes(0);
         expect(sendMessage).toHaveBeenCalledTimes(0);
     });
@@ -1520,12 +1570,12 @@ describe('AskUserQuestionView', () => {
         expect(sendMessage).toHaveBeenCalledTimes(0);
     });
 
-    it('does not allow answering when canApprovePermissions is false', async () => {
+    it('does not allow answering when conversational Send is unavailable', async () => {
         const screen = await renderView(
             makeTool(),
             {
                 interaction: {
-                    canSendMessages: true,
+                    canSendMessages: false,
                     canApprovePermissions: false,
                     permissionDisabledReason: 'notGranted',
                 },
@@ -1547,6 +1597,46 @@ describe('AskUserQuestionView', () => {
         expect(texts).toContain('session.sharing.permissionApprovalsDisabledNotGranted');
     });
 
+    it('answers an agent question with Send authority when permission approval is unavailable', async () => {
+        sessionAllowWithAnswers.mockResolvedValueOnce(undefined);
+        const screen = await renderView(makeTool(), {
+            interaction: { canSendMessages: true, canApprovePermissions: false },
+        });
+        await chooseOptionAndSubmit(screen, 'A');
+        expect(sessionAllowWithAnswers).toHaveBeenCalledWith({ id: 'toolu_1', answers: { 'Pick one': ['A'] } });
+        expect(sessionDeny).not.toHaveBeenCalled();
+    });
+
+    it('does not answer a stale running question when the Session is inactive', async () => {
+        const screen = await renderView(makeTool(), {
+            interaction: { canSendMessages: true, canApprovePermissions: false, permissionDisabledReason: 'inactive' },
+        });
+        expect(screen.findAllByTestId('ask-user-question.submit')).toHaveLength(0);
+        expect(sessionAllowWithAnswers).not.toHaveBeenCalled();
+    });
+
+    it('withdraws submit when a read-only source contains a pending agent question', async () => {
+        const { AskUserQuestionView } = await import('./AskUserQuestionView');
+        const screen = await renderWithSessionTranscriptSource(
+            React.createElement(AskUserQuestionView, makeToolViewProps(makeTool(), { sessionId: 's1' })),
+            createTestSessionTranscriptSource({ agentState: readSessionFixture().agentState }),
+        );
+        expect(screen.findAllByTestId('ask-user-question.submit')).toHaveLength(0);
+        expect(sessionAllowWithAnswers).not.toHaveBeenCalled();
+    });
+
+    it('answers an execution-run question through its responder without Session authority', async () => {
+        const respond = vi.fn(async () => {});
+        const screen = await renderView(makeTool(), {
+            sessionId: undefined,
+            executionRun: { executionRunId: 'run1', respond, pendingRequestIds: new Set() },
+        });
+        await chooseOptionAndSubmit(screen, 'A');
+        expect(respond).toHaveBeenCalledWith({ requestId: 'toolu_1', answers: { 'Pick one': ['A'] } });
+        expect(sessionAllowWithAnswers).not.toHaveBeenCalled();
+        expect(sessionDeny).not.toHaveBeenCalled();
+    });
+
     it('supports freeform questions with no options by submitting typed answers', async () => {
         sessionAllowWithAnswers.mockResolvedValueOnce(undefined);
 
@@ -1559,7 +1649,7 @@ describe('AskUserQuestionView', () => {
         await fillFreeformAndSubmit(screen, 'README.md');
 
         expect(sessionAllowWithAnswers).toHaveBeenCalledTimes(1);
-        expect(sessionAllowWithAnswers).toHaveBeenCalledWith('s1', 'toolu_1', { 'Which file should I inspect?': ['README.md'] });
+        expect(sessionAllowWithAnswers).toHaveBeenCalledWith({ id: 'toolu_1', answers: { 'Which file should I inspect?': ['README.md'] } });
         expect(sessionDeny).toHaveBeenCalledTimes(0);
         expect(sendMessage).toHaveBeenCalledTimes(0);
     });
@@ -1585,7 +1675,7 @@ describe('AskUserQuestionView', () => {
         await pressTestInstanceAsync(submitAfter, 'tools.askUserQuestion.submit');
 
         expect(sessionAllowWithAnswers).toHaveBeenCalledTimes(1);
-        expect(sessionAllowWithAnswers).toHaveBeenCalledWith('s1', 'toolu_1', { 'What are you trying to achieve?': ['Custom goal, with commas'] });
+        expect(sessionAllowWithAnswers).toHaveBeenCalledWith({ id: 'toolu_1', answers: { 'What are you trying to achieve?': ['Custom goal, with commas'] } });
         expect(sessionDeny).toHaveBeenCalledTimes(0);
         expect(sendMessage).toHaveBeenCalledTimes(0);
     });

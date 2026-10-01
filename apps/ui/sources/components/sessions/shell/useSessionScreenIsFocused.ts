@@ -1,6 +1,5 @@
-import * as ReactNavigation from '@react-navigation/native';
+import { useDestinationFocus } from '@/components/appShell/workspace/DestinationInstanceHost';
 
 export function useSessionScreenIsFocused(): boolean {
-    const useIsFocused = (ReactNavigation as { useIsFocused?: () => boolean }).useIsFocused;
-    return typeof useIsFocused === 'function' ? useIsFocused() : true;
+    return useDestinationFocus();
 }

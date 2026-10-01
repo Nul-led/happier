@@ -1,6 +1,6 @@
 import { resolveProviderMessageMetaOverrides } from '@/sync/domains/messages/messageMetaProviders';
-import { buildOutgoingMessageMeta } from '@/sync/domains/messages/messageMeta';
-import type { MessageMeta } from '@/sync/domains/messages/messageMetaTypes';
+import { buildOutgoingMessageMeta } from "@happier-dev/session-core/messages";
+import type { MessageMeta } from "@happier-dev/session-core/messages";
 
 export function buildSendMessageMeta(args: {
     sentFrom: string;

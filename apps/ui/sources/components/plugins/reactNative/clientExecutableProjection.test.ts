@@ -3,7 +3,7 @@ import {
     PluginContributesV2Schema,
 } from '@happier-dev/protocol';
 import {
-    PluginUiArtifactsManifestEntryV1Schema,
+    PluginUiArtifactsManifestEntryV2Schema,
 } from '@happier-dev/protocol/plugins/ui';
 
 import { EMPTY_PLUGIN_UI_PROJECTION, type PluginUiProjectionModel } from '@/sync/domains/plugins/ui/projection';
@@ -28,28 +28,27 @@ const firstBundleKey = `reactNativeBundle:${pluginId}:${firstActionId}`;
 const voiceLocalId = 'conversation';
 const voiceKey = `${pluginId}/${voiceLocalId}`;
 const voiceBundleKey = `reactNativeBundle:${pluginId}:${voiceLocalId}`;
+const voiceOccurrenceId = 'acme-shared-voice-occurrence-12';
 const target = Object.freeze({
     artifactId: 'shared-action-runtime',
-    modulePath: './sharedActionRuntime',
     exportName: 'activate',
     platform: 'web' as const,
 });
 const artifactDigest: PluginReactNativeBundleCacheIdentity['artifactDigest'] =
     'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
-const artifactGraph = PluginUiArtifactsManifestEntryV1Schema.parse({
-    contributionId: target.artifactId,
+const artifactGraph = PluginUiArtifactsManifestEntryV2Schema.parse({
+    artifactId: target.artifactId,
     tier: 'reactNative',
-    platform: target.platform,
-    entry: 'react-native/shared-action-runtime/index.js',
+    entry: 'react-native/shared-action-runtime/entry.cjs.bundle',
     files: [{
-        relativePath: 'react-native/shared-action-runtime/index.js',
+        relativePath: 'react-native/shared-action-runtime/entry.cjs.bundle',
         digest: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
         byteSize: 1,
     }],
     digest: artifactDigest,
-    builtWith: { bundler: 'vite', version: '7.0.0' },
-    hostUiApiVersion: '1.0.0',
-    compat: { react: '19.0.0', reactNative: '0.83.4' },
+    builtWith: { bundler: 'esbuild', version: '0.27.2' },
+    executable: { exports: [target.exportName] },
+    hostUiApiRange: '^1.0.0',
 });
 const hostOrigin = Object.freeze({
     machineId: origin.materializationRef.machineId,
@@ -66,7 +65,7 @@ type ClientActionBundleFixture = PluginUiProjectionModel['reactNativeBundlesById
     runtime: Readonly<{
         decision: Readonly<{ state: 'load' }>;
         loadPolicy: Readonly<{ source: 'installedArtifact' }>;
-        cacheIdentity: PluginReactNativeBundleCacheIdentity;
+        cacheIdentity: Readonly<{ artifactDigest: PluginReactNativeBundleCacheIdentity['artifactDigest'] }>;
     }>;
     [PLUGIN_UI_CONTRIBUTION_ORIGIN_KEY]: typeof hostOrigin;
 }>;
@@ -79,6 +78,7 @@ function action(localId: string) {
     return {
         id: localId,
         pluginId,
+        occurrenceId: 'acme-shared-actions-occurrence-12',
         title: localId,
         scopes: ['session'],
         surfaces: ['ui'],
@@ -95,19 +95,7 @@ function action(localId: string) {
 }
 
 function bundle(localId: string): ClientActionBundleFixture {
-    const cacheIdentity: PluginReactNativeBundleCacheIdentity = {
-        pluginId,
-        contributionId: localId,
-        artifactDigest,
-        hostAppVersion: '2.0.0',
-        hostUiApiVersion: '1.0.0',
-        reactVersion: '19.0.0',
-        reactNativeVersion: '0.83.4',
-        platform: target.platform,
-        channel: 'internal',
-        nativeCapabilitiesDigest: 'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
-        projectionGeneration: generation,
-    };
+    const cacheIdentity = { artifactDigest };
     return {
         id: `reactNativeBundle:${pluginId}:${localId}`,
         pluginId,
@@ -139,7 +127,6 @@ const voiceDeclaration = PluginContributesV2Schema.parse({
         },
         client: {
             artifactId: target.artifactId,
-            modulePath: target.modulePath,
             exportName: target.exportName,
         },
     }],
@@ -156,6 +143,7 @@ function voiceOnlyProjection(): PluginUiProjectionModel {
     const voice = Object.freeze({
         id: voiceKey,
         pluginId,
+        occurrenceId: voiceOccurrenceId,
         generation,
         contributionKey: voiceKey,
         definition: voiceDeclaration,
@@ -231,6 +219,7 @@ describe('resolveProjectedPluginUiClientExecutables', () => {
         expect(resolved).toHaveLength(1);
         expect(resolved[0]).toMatchObject({
             pluginId,
+            occurrenceId: voiceOccurrenceId,
             target,
             executionOrigin: origin,
             projectionGeneration: generation,
@@ -295,20 +284,7 @@ describe('resolveProjectedPluginUiClientExecutables', () => {
                     [PLUGIN_UI_CONTRIBUTION_ORIGIN_KEY]: malformedExecutionOrigin,
                 }),
             }),
-        }) satisfies PluginUiProjectionModel;
-        const mismatchedOriginGeneration = Object.freeze({
-            ...current,
-            reactNativeBundlesById: Object.freeze({
-                ...current.reactNativeBundlesById,
-                [voiceBundleKey]: Object.freeze({
-                    ...currentBundle,
-                    [PLUGIN_UI_CONTRIBUTION_ORIGIN_KEY]: Object.freeze({
-                        ...hostOrigin,
-                        generation: generation + 1,
-                    }),
-                }),
-            }),
-        }) satisfies PluginUiProjectionModel;
+        }) as unknown as PluginUiProjectionModel; // Deliberately malformed boundary fixture.
         const malformedPlatform = Object.freeze({
             ...current,
             reactNativeBundlesById: Object.freeze({
@@ -332,11 +308,21 @@ describe('resolveProjectedPluginUiClientExecutables', () => {
                 }),
             }),
         }) satisfies PluginUiProjectionModel;
+        const malformedOccurrence = Object.freeze({
+            ...current,
+            voiceProvidersById: Object.freeze({
+                ...current.voiceProvidersById,
+                [voiceKey]: Object.freeze({
+                    ...currentVoice,
+                    occurrenceId: null,
+                }),
+            }),
+        }) as unknown as PluginUiProjectionModel;
 
         expect(resolve(malformedOrigin)).toEqual([]);
-        expect(resolve(mismatchedOriginGeneration)).toEqual([]);
         expect(resolve(malformedPlatform)).toEqual([]);
         expect(resolve(malformedArtifact)).toEqual([]);
+        expect(resolve(malformedOccurrence)).toEqual([]);
     });
 
     it('groups every current Action sharing one exact executable target into one activation input', () => {
@@ -355,6 +341,49 @@ describe('resolveProjectedPluginUiClientExecutables', () => {
                 ],
             },
         });
+    });
+
+    it('routes an originless bundled Action through its projecting daemon', () => {
+        // A bundled or development plugin has no materialization: its union
+        // stamp names only the projecting daemon, which is also its route.
+        const originless = Object.freeze({ ...hostOrigin, executionOrigin: null });
+        const current = singleActionProjection();
+        const projected = Object.freeze({
+            ...current,
+            actionsById: Object.freeze({
+                [firstActionKey]: { ...firstAction(current), [PLUGIN_UI_CONTRIBUTION_ORIGIN_KEY]: originless },
+            }),
+            reactNativeBundlesById: Object.freeze({
+                [firstBundleKey]: { ...firstBundle(current), [PLUGIN_UI_CONTRIBUTION_ORIGIN_KEY]: originless },
+            }),
+        }) satisfies PluginUiProjectionModel;
+
+        const resolved = resolve(projected);
+
+        expect(resolved).toHaveLength(1);
+        expect(resolved[0]).toMatchObject({
+            pluginId,
+            executionOrigin: null,
+            authority: { machineId: hostOrigin.machineId, serverId: hostOrigin.serverId },
+        });
+
+        // An origin, when present, must still live on the projecting daemon.
+        const elsewhere = Object.freeze({
+            ...hostOrigin,
+            executionOrigin: {
+                ...origin,
+                materializationRef: { ...origin.materializationRef, machineId: 'machine-other' },
+            },
+        });
+        expect(resolve(Object.freeze({
+            ...projected,
+            actionsById: Object.freeze({
+                [firstActionKey]: { ...firstAction(current), [PLUGIN_UI_CONTRIBUTION_ORIGIN_KEY]: elsewhere },
+            }),
+            reactNativeBundlesById: Object.freeze({
+                [firstBundleKey]: { ...firstBundle(current), [PLUGIN_UI_CONTRIBUTION_ORIGIN_KEY]: elsewhere },
+            }),
+        }) satisfies PluginUiProjectionModel)).toEqual([]);
     });
 
     it('withholds a web Action whose exact artifact is projected for another platform', () => {
@@ -385,7 +414,13 @@ describe('resolveProjectedPluginUiClientExecutables', () => {
                     ...currentBundle,
                     [PLUGIN_UI_CONTRIBUTION_ORIGIN_KEY]: Object.freeze({
                         ...hostOrigin,
-                        generation: generation + 1,
+                        executionOrigin: Object.freeze({
+                            ...origin,
+                            materializationRef: Object.freeze({
+                                ...origin.materializationRef,
+                                materializationId: 'another-install',
+                            }),
+                        }),
                     }),
                 }),
             }),
@@ -431,29 +466,6 @@ describe('resolveProjectedPluginUiClientExecutables', () => {
         expect(resolve(mismatched)).toEqual([]);
     });
 
-    it('withholds a cache identity bound to another Action declaration', () => {
-        const current = singleActionProjection();
-        const currentBundle = firstBundle(current);
-        const mismatched = Object.freeze({
-            ...current,
-            reactNativeBundlesById: Object.freeze({
-                ...current.reactNativeBundlesById,
-                [firstBundleKey]: Object.freeze({
-                    ...currentBundle,
-                    runtime: Object.freeze({
-                        ...currentBundle.runtime,
-                        cacheIdentity: Object.freeze({
-                            ...bundleCacheIdentity(currentBundle),
-                            contributionId: 'open-second',
-                        }),
-                    }),
-                }),
-            }),
-        }) satisfies PluginUiProjectionModel;
-
-        expect(resolve(mismatched)).toEqual([]);
-    });
-
     it('withholds a cache identity whose bytes do not match the projected artifact graph', () => {
         const current = singleActionProjection();
         const currentBundle = firstBundle(current);
@@ -477,26 +489,4 @@ describe('resolveProjectedPluginUiClientExecutables', () => {
         expect(resolve(mismatched)).toEqual([]);
     });
 
-    it('withholds a cache identity from another projection generation', () => {
-        const current = singleActionProjection();
-        const currentBundle = firstBundle(current);
-        const mismatched = Object.freeze({
-            ...current,
-            reactNativeBundlesById: Object.freeze({
-                ...current.reactNativeBundlesById,
-                [firstBundleKey]: Object.freeze({
-                    ...currentBundle,
-                    runtime: Object.freeze({
-                        ...currentBundle.runtime,
-                        cacheIdentity: Object.freeze({
-                            ...bundleCacheIdentity(currentBundle),
-                            projectionGeneration: generation + 1,
-                        }),
-                    }),
-                }),
-            }),
-        }) as PluginUiProjectionModel;
-
-        expect(resolve(mismatched)).toEqual([]);
-    });
 });

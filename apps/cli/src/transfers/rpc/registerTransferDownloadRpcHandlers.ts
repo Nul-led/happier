@@ -1,6 +1,7 @@
 import type { RpcHandlerRegistrar } from '@/api/rpc/types';
 import { parseTransferRecipientPublicKeyBase64 } from '@/machines/transfer/transferChunkEncryption';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
+import { SessionAttachmentDownloadInitRequestV1Schema, type SessionAttachmentDownloadInitRequestV1 } from '@happier-dev/protocol';
 
 import { TransferSessionStore } from '../core/transferSessionStore';
 import {
@@ -19,7 +20,7 @@ type SessionFileDownloadInitRequest = Readonly<{
   asZip?: boolean;
   recipientPublicKeyBase64?: string;
 }>;
-type TransferDownloadInitRequest = SessionFileDownloadInitRequest | ComposerMediaStageDownloadInitRequest;
+type TransferDownloadInitRequest = SessionFileDownloadInitRequest | ComposerMediaStageDownloadInitRequest | SessionAttachmentDownloadInitRequestV1;
 
 type TransferDownloadInitResponse =
   | Readonly<{ success: true; downloadId: string; chunkSizeBytes: number; sizeBytes: number; name: string }>
@@ -35,6 +36,7 @@ export function registerTransferDownloadRpcHandlers(
     getAdditionalAllowedReadFiles?: () => ReadonlyArray<ExactAllowedReadFile>;
     sessionRpcTransferMaxBytes?: number | null;
     composerMediaStage?: ComposerMediaStageDownloadSourceDeps;
+    sessionAttachment?: Readonly<{ sessionId: string }>;
   }>,
 ): void {
   registerDownloadTransferLifecycleHandlers<TransferDownloadInitResponse>({
@@ -48,6 +50,35 @@ export function registerTransferDownloadRpcHandlers(
     },
     resolveInit: async (data) => {
       const request = data as TransferDownloadInitRequest | null;
+      if (deps.sessionAttachment) {
+        const parsed = SessionAttachmentDownloadInitRequestV1Schema.safeParse(data);
+        const issued = parsed.success && parsed.data.attachmentHandle.sessionId === deps.sessionAttachment.sessionId
+          ? deps.store.getIssuedAttachment(parsed.data.attachmentHandle)
+          : null;
+        if (!parsed.success || !issued) {
+          return { kind: 'rejected', response: { success: false, error: 'Session attachment handle is unavailable' } };
+        }
+        try {
+          parseTransferRecipientPublicKeyBase64(parsed.data.recipientPublicKeyBase64);
+        } catch {
+          return { kind: 'rejected', response: { success: false, error: 'Invalid recipientPublicKeyBase64' } };
+        }
+        const source = await resolveWorkspaceFileDownloadSource({
+          workingDirectory: deps.workingDirectory,
+          accessPolicy: deps.accessPolicy,
+          path: issued.filePath,
+          asZip: false,
+          additionalAllowedReadDirs: deps.getAdditionalAllowedReadDirs?.(),
+          sessionRpcTransferMaxBytes: deps.sessionRpcTransferMaxBytes ?? null,
+        });
+        if (!source.success) return { kind: 'rejected', response: source };
+        return {
+          kind: 'accepted',
+          source: { ...source.source, name: issued.name },
+          recipientPublicKeyBase64: parsed.data.recipientPublicKeyBase64,
+          diagnosticContext: { transferKind: 'session_attachment' },
+        };
+      }
       if (!request || (request.t !== 'session_file_download_v1' && request.t !== 'composer_media_stage_inspect_v1')) {
         return {
           kind: 'rejected',

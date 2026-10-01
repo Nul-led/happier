@@ -6,6 +6,7 @@ import {
 } from '@/auth/storage/resolveAuthCredentialsScopeKey';
 import { useActiveServerSnapshot } from '@/hooks/server/useActiveServerSnapshot';
 import {
+    type ProviderAccountUsageRecordId,
     type QualifiedConnectedAccountQuotaSnapshotV4,
     type QualifiedConnectedAccountRef,
 } from '@happier-dev/protocol';
@@ -24,6 +25,8 @@ import {
 export type UseQualifiedConnectedAccountQuotaResult = Readonly<{
     supported: boolean | null;
     snapshot: QualifiedConnectedAccountQuotaSnapshotV4 | null;
+    /** The provider usage record the server read this quota from (its subscription lives there). */
+    usageRecordId: ProviderAccountUsageRecordId | null;
     loading: boolean;
     refreshing: boolean;
     error: string | null;
@@ -129,6 +132,7 @@ export function useQualifiedConnectedAccountQuota(
     return {
         supported: key ? entry.supported : null,
         snapshot: key ? entry.snapshot : null,
+        usageRecordId: key ? entry.usageRecordId : null,
         loading: key
             ? entry.loading
                 || (

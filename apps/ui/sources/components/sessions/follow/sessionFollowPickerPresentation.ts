@@ -25,7 +25,12 @@ export function buildSessionFollowPickerContextTitle(input: Readonly<{
 export function resolveSessionFollowPickerPresentation(
     presentation: SessionListQueryPresentation,
     visibleRowCount: number,
+    networkAllowed = true,
 ): SessionFollowPickerPresentation {
+    if (!networkAllowed || (presentation.kind === 'partial'
+        && presentation.unavailableHomes.some((home) => home.reason === 'offline'))) {
+        return { statusKey: 'session.follow.offline', canSelect: false, canRetryQuery: networkAllowed };
+    }
     const hasRows = visibleRowCount > 0;
     if (presentation.kind === 'initial_loading') {
         return { statusKey: 'sessionsList.queryInitialLoadingTitle', canSelect: false, canRetryQuery: false };

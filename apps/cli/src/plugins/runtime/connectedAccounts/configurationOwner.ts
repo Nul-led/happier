@@ -405,6 +405,11 @@ export function createConnectedAccountConfigurationOwner(params: Readonly<{
         admit(secretIds: readonly string[], options?: Readonly<{ signal?: AbortSignal }>): Promise<void>;
         has(secretId: string): Promise<boolean>;
         read(secretId: string, options?: Readonly<{ signal?: AbortSignal }>): Promise<string | null>;
+        /** Source snapshots need the canonical materializer's currentness, never a hash of plaintext. */
+        readMaterial?(secretId: string, options?: Readonly<{ signal?: AbortSignal }>): Promise<Readonly<{
+            value: string;
+            fingerprint: string;
+        }> | null>;
     }>;
     isRuntimeCurrent(input: Readonly<{
         pluginId: string;

@@ -50,13 +50,13 @@ describe('createCliActionDeps Automation conversation bindings', () => {
     createAutomationConversationActionExecutor.mockReturnValue(executeAutomationConversationAction);
   });
 
-  it('threads exact materialization and immutable-generation currentness to the Conversation executor', () => {
+  it('threads exact materialization and occurrence currentness to the Conversation executor', () => {
     const credentials = {
       token: 'token',
       encryption: { type: 'legacy' as const, secret: new Uint8Array(32).fill(1) },
     };
     const revalidatePluginActionCallerMaterialization = vi.fn(async () => true);
-    const revalidatePluginActionCallerImmutableGeneration = vi.fn(async () => true);
+    const revalidatePluginActionCallerOccurrence = vi.fn(async () => true);
 
     createCliActionDeps({
       token: credentials.token,
@@ -65,13 +65,13 @@ describe('createCliActionDeps Automation conversation bindings', () => {
       mode: 'plain',
       ctx: null,
       revalidatePluginActionCallerMaterialization,
-      revalidatePluginActionCallerImmutableGeneration,
+      revalidatePluginActionCallerOccurrence,
     });
 
     expect(createAutomationConversationActionExecutor).toHaveBeenCalledWith({
       credentials,
       revalidateCallerMaterialization: revalidatePluginActionCallerMaterialization,
-      revalidateCallerImmutableGeneration: revalidatePluginActionCallerImmutableGeneration,
+      revalidateCallerOccurrence: revalidatePluginActionCallerOccurrence,
     });
   });
 

@@ -7,6 +7,7 @@ import {
     type PluginExecutionInterceptionCapability,
     type AccountSettings,
     type PluginExecutionScopeV1,
+    type PluginSourceCustodyV1,
     type SessionMcpSelectionV1,
 } from '@happier-dev/protocol';
 import type { JsonValue } from '@happier-dev/plugin-sdk';
@@ -18,6 +19,7 @@ import type {
 } from '@happier-dev/plugin-sdk/agents/runtime';
 
 import type { ApiSessionClient } from '@/api/session/sessionClient';
+import type { Metadata } from '@/api/types';
 import type { ProviderEnforcedPermissionHandler } from '@/agent/permissions/providerEnforced/handler';
 import { resolveCliFeatureDecision } from '@/features/featureDecisionService';
 import {
@@ -350,7 +352,8 @@ export function createNativeAgentSessionHostServiceOwners(params: Readonly<{
         pluginId: string;
         agentId: string;
         pluginVersion?: string;
-        generation?: string;
+        occurrenceId: string;
+        sourceCustody?: PluginSourceCustodyV1;
         isCurrent?(): boolean;
     }>;
     backend: EngineResolutionBackend;
@@ -359,12 +362,14 @@ export function createNativeAgentSessionHostServiceOwners(params: Readonly<{
         session: Pick<ApiSessionClient, 'getMetadataSnapshot'>;
         machineId: string;
         accountSettings?: AccountSettings | null;
+        accountSettingsAuthority?: 'account' | 'session';
         permissionHandler: Pick<ProviderEnforcedPermissionHandler, 'handleToolCall'>;
     }>;
     sessionId: string;
     directory: string;
     signal: AbortSignal;
     happyHomeDir?: string;
+    currentTerminalMetadata?: Readonly<Pick<Metadata, 'terminal' | 'startedBy'>>;
 }>): NativeAgentSessionHostServiceOwners {
     const runtimeId = `native-agent-session:${params.identity.pluginId}:${params.identity.agentId}:${randomUUID()}`;
     const storePaths = resolvePluginStorePaths({ happyHomeDir: params.happyHomeDir });
@@ -427,6 +432,7 @@ export function createNativeAgentSessionHostServiceOwners(params: Readonly<{
             happyHomeDir: storePaths.happyHomeDir,
             hasCapability,
             readSessionId: () => params.sessionId,
+            ...(params.currentTerminalMetadata ? { currentTerminalMetadata: params.currentTerminalMetadata } : {}),
             ...(catalogEntry?.getTerminalPromptSubmitVerificationPolicy
                 ? {
                     resolvePromptSubmitVerification:
@@ -442,9 +448,10 @@ export function createNativeAgentSessionHostServiceOwners(params: Readonly<{
         if (input.sessionId.trim() !== params.sessionId) return Object.freeze([]);
         return resolvePluginMcpServersForSession({
             input,
-            accountSettings:
-                params.hostSession.accountSettings
-                ?? readActivePluginAccountSettings(),
+            accountSettings: params.hostSession.accountSettingsAuthority === 'session'
+                ? null
+                : params.hostSession.accountSettings
+                    ?? readActivePluginAccountSettings(),
             machineId: params.hostSession.machineId,
             directory: params.directory,
             sessionMetadata: params.hostSession.session.getMetadataSnapshot(),
@@ -454,6 +461,9 @@ export function createNativeAgentSessionHostServiceOwners(params: Readonly<{
         candidate.pluginId === params.identity.pluginId
     ));
     const pluginVersion = params.identity.pluginVersion ?? target?.manifest.version;
+    const sourceCustody = params.identity.sourceCustody
+        ?? params.runtimeRegistry?.readPluginSourceCustody?.(params.identity.pluginId)
+        ?? null;
     const pluginMcp = pluginVersion && (target?.manifest.contributes.mcp.servers.length ?? 0) > 0
         ? (() => {
             const currentSession = createNativeAgentCurrentSessionUiServices({
@@ -462,7 +472,8 @@ export function createNativeAgentSessionHostServiceOwners(params: Readonly<{
                 contributionId: params.agent.identity?.localId ?? params.identity.agentId,
                 runtimeId,
                 sessionId: params.sessionId,
-                generationId: params.identity.generation ?? String(params.runtimeRegistry?.generation ?? 'unavailable'),
+                occurrenceId: params.identity.occurrenceId,
+                ...(sourceCustody ? { sourceCustody } : {}),
                 isCurrent: params.identity.isCurrent ?? (() => !params.signal.aborted),
                 signal: params.signal,
             });

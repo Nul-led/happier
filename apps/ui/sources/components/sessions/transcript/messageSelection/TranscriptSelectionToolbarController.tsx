@@ -1,45 +1,44 @@
 import * as React from 'react';
 
-import { useSessionMessages } from '@/sync/store/hooks';
 import { useSetting } from '@/sync/domains/state/storage';
-import type { Metadata } from '@/sync/domains/state/storageTypes';
 
 import { useTranscriptSelectionState } from './TranscriptMessageSelectionContext';
 import { TranscriptSelectionToolbar, type TranscriptSelectionToolbarMessage } from './TranscriptSelectionToolbar';
 import { resolveTranscriptSelectionToolbarMessages } from './resolveTranscriptSelectionToolbarMessages';
 import { useSessionDebugInformationEnabled } from '@/sync/runtime/useSessionDebugInformationEnabled';
+import { useSessionTranscriptSource } from '../source/SessionTranscriptSourceContext';
 
-const EMPTY_SELECTABLE_MESSAGES: readonly TranscriptSelectionToolbarMessage[] = Object.freeze([]);
-
-export function TranscriptSelectionToolbarController(props: Readonly<{
-    sessionId: string;
-    metadata?: Metadata | null;
+type TranscriptSelectionToolbarControllerProps = Readonly<{
     enabled?: boolean;
     bulkCopyFormat: React.ComponentProps<typeof TranscriptSelectionToolbar>['bulkCopyFormat'];
     roleLabels: React.ComponentProps<typeof TranscriptSelectionToolbar>['roleLabels'];
     sendToSessionEnabled: boolean;
     maxWidth?: number;
     onSendToSession?: (messages: ReadonlyArray<TranscriptSelectionToolbarMessage>) => void | Promise<void>;
-}>): React.ReactElement | null {
+}>;
+
+export function TranscriptSelectionToolbarController(props: TranscriptSelectionToolbarControllerProps): React.ReactElement | null {
     const selection = useTranscriptSelectionState();
-    const enabled = props.enabled !== false;
-    const shouldReadSelectableMessages = enabled && selection.isSelectionMode;
+    if (props.enabled === false || !selection.isSelectionMode) return null;
+    return <TranscriptSelectionToolbarSourceContent {...props} />;
+}
+
+/** Selection is the consumer of the detailed dataset; closed toolbars do not subscribe. */
+function TranscriptSelectionToolbarSourceContent(props: TranscriptSelectionToolbarControllerProps): React.ReactElement {
+    const source = useSessionTranscriptSource();
+    const ids = source.useMessageIdsOldestFirst();
+    const byId = source.useMessagesById();
+    const metadata = source.useMetadata();
     const sessionThinkingDisplayMode = useSetting('sessionThinkingDisplayMode');
     const debugInformationEnabled = useSessionDebugInformationEnabled();
-    const { messages } = useSessionMessages(props.sessionId, {
-        enabled: shouldReadSelectableMessages,
-    });
+    const messages = React.useMemo(() => ids.flatMap((id) => byId[id] ? [byId[id]] : []), [byId, ids]);
     const selectableMessages = React.useMemo(
-        () => shouldReadSelectableMessages
-            ? resolveTranscriptSelectionToolbarMessages(messages, props.metadata, {
-                sessionThinkingDisplayMode,
-                debugInformationEnabled,
-            })
-            : EMPTY_SELECTABLE_MESSAGES,
-        [debugInformationEnabled, messages, props.metadata, sessionThinkingDisplayMode, shouldReadSelectableMessages],
+        () => resolveTranscriptSelectionToolbarMessages(messages, metadata, {
+            sessionThinkingDisplayMode,
+            debugInformationEnabled,
+        }),
+        [debugInformationEnabled, messages, metadata, sessionThinkingDisplayMode],
     );
-
-    if (!enabled) return null;
 
     return (
         <TranscriptSelectionToolbar

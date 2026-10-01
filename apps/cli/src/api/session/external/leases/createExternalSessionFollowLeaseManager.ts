@@ -47,7 +47,7 @@ export type ExternalSessionFollowLease = Readonly<{
 
 export type ExternalSessionFollowResource = Readonly<{
     linkGeneration: string;
-    pluginGeneration: string;
+    occurrenceId: string;
     retirementSignal?: AbortSignal;
 }>;
 
@@ -133,7 +133,7 @@ type ExternalSessionFollowLeaseManagerParams = Readonly<{
 
 function resourceKey(resource: ExternalSessionFollowResource | undefined): string {
     return resource
-        ? JSON.stringify([resource.linkGeneration, resource.pluginGeneration])
+        ? JSON.stringify([resource.linkGeneration, resource.occurrenceId])
         : 'legacy';
 }
 

@@ -1,53 +1,54 @@
 import * as React from 'react';
-import { useUnistyles } from 'react-native-unistyles';
+import { View } from 'react-native';
+import { StyleSheet } from 'react-native-unistyles';
 
-import { Item } from '@/components/ui/lists/Item';
-import { ItemGroup } from '@/components/ui/lists/ItemGroup';
-import { ItemList } from '@/components/ui/lists/ItemList';
-import { CenteredInfoTile } from '@/components/ui/lists/CenteredInfoTile';
+import { EmptyState } from '@/components/ui/empty/EmptyState';
 import { t } from '@/text';
 import { useSettingMutable } from '@/sync/domains/state/storage';
 import { useSessionListNavigationActions } from './useSessionListNavigationActions';
-import { Icon } from '@/components/ui/icons/Icon';
 
+const stylesheet = StyleSheet.create(() => ({
+    root: {
+        width: '100%',
+        paddingTop: 8,
+    },
+}));
+
+/**
+ * Every Session in view is inactive and inactive Sessions are hidden: one quiet line in the list
+ * ("No active sessions right now") with the two ways forward as inline links. Inactive Sessions
+ * live in the active corpus behind the canonical `hideInactiveSessions` preference; the archived
+ * destination hosts the archived corpus. Offer both rather than sending the user to a destination
+ * that cannot contain what they are looking for.
+ */
 export function HiddenInactiveSessionsEmptyState() {
-    const { theme } = useUnistyles();
+    const styles = stylesheet;
     const { handleOpenArchivedSessions } = useSessionListNavigationActions();
     const [, setHideInactiveSessions] = useSettingMutable('hideInactiveSessions');
     const handleShowInactiveSessions = React.useCallback(() => {
         setHideInactiveSessions(false);
     }, [setHideInactiveSessions]);
+    const showLabel = t('sessionsList.showInactiveSessions');
+    const archivedLabel = t('sessionsList.filtersArchived');
 
     return (
-        <ItemList testID="sessions-hidden-inactive-empty-state-list" containerStyle={{ paddingTop: 12 }}>
-            <CenteredInfoTile
+        <View testID="sessions-hidden-inactive-empty-state" style={styles.root}>
+            <EmptyState
+                layout="line"
+                lineDensity="compact"
                 titleTestID="sessions-hidden-inactive-empty-state-title"
-                descriptionTestID="sessions-hidden-inactive-empty-state-description"
-                icon={<Icon name="chats-circle" size={48} color={theme.colors.text.secondary} style={{ marginBottom: 12 }} />}
                 title={t('settingsFeatures.hiddenInactiveSessionsEmptyStateTitle')}
-                description={t('settingsFeatures.hiddenInactiveSessionsEmptyStateSubtitle')}
+                primaryAction={{
+                    label: showLabel,
+                    onPress: handleShowInactiveSessions,
+                    testID: 'sessions-hidden-inactive-empty-state-show-inactive',
+                }}
+                secondaryAction={{
+                    label: archivedLabel,
+                    onPress: handleOpenArchivedSessions,
+                    testID: 'sessions-hidden-inactive-empty-state-open-archived',
+                }}
             />
-
-            <ItemGroup>
-                {/*
-                  * Inactive Sessions live in the active corpus behind the canonical
-                  * `hideInactiveSessions` preference; the archived destination hosts the
-                  * archived corpus. Offer both rather than sending the user to a
-                  * destination that cannot contain what they are looking for.
-                  */}
-                <Item
-                    testID="sessions-hidden-inactive-empty-state-show-inactive"
-                    title={t('sessionsList.showInactiveSessions')}
-                    icon={<Icon name="eye" size={20} color={theme.colors.text.secondary} />}
-                    onPress={handleShowInactiveSessions}
-                />
-                <Item
-                    testID="sessions-hidden-inactive-empty-state-open-archived"
-                    title={t('sessionInfo.inactiveAndArchivedSessions')}
-                    icon={<Icon name="archive" size={20} color={theme.colors.text.secondary} />}
-                    onPress={handleOpenArchivedSessions}
-                />
-            </ItemGroup>
-        </ItemList>
+        </View>
     );
 }

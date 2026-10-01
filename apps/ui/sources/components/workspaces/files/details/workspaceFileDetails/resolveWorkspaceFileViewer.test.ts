@@ -73,6 +73,7 @@ function candidate(input: Readonly<{
     const placement = {
         id: `surfacePlacement:${input.pluginId}:${input.viewer.destination}`,
         pluginId: input.pluginId,
+        occurrenceId: `${input.pluginId}-occurrence`,
         contributionKind: 'surfacePlacement',
         descriptorId: input.viewer.destination,
         binding,

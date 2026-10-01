@@ -18,6 +18,10 @@ import {
   resolveActivityNotificationPolicyEvent,
 } from './dispatchActivityNotification';
 import type { ActivityNotificationEvent } from './activityNotificationEvent';
+import { createSessionNotificationContextFixture } from '@/testkit/backends/sessionFixtures';
+import { createStablePluginNotificationsOwner } from '@/plugins/runtime/invocation/services/notifications';
+
+const fetchSessionNotificationContext = async (sessionId: string) => createSessionNotificationContextFixture(sessionId);
 
 vi.mock('@/ui/logger', () => ({
   logger: {
@@ -26,6 +30,106 @@ vi.mock('@/ui/logger', () => ({
 }));
 
 describe('dispatchActivityNotificationAsync', () => {
+  it('restricts Notify me channels, applies previews and suppresses request replays', async () => {
+    const sendToAllDevicesAsync = vi.fn(async () => {});
+    const settings = accountSettingsParse({ attentionDeliveryPolicyV1: { v: 1 }, notificationChannelsV1: [{
+      id: 'notify-hook', kind: 'webhook', enabled: true, url: 'https://hooks.example.test/happier',
+    }] });
+    const params = {
+      settings, expoPushSender: { sendToAllDevicesAsync }, webhookNetwork,
+      nowMs: () => 50_000,
+      event: { topic: 'notify_me' as const, title: 'Digest', message: 'Private summary', actionRequestId: 'notify-replay-1',
+        open: { kind: 'workflow_run' as const, runId: 'run-1' } },
+      channels: ['builtin:expo_push'],
+    };
+    expect(await dispatchActivityNotificationAsync(params)).toEqual({ attemptedChannels: 1, deliveredChannels: 1 });
+    expect(sendToAllDevicesAsync).toHaveBeenCalledWith('Digest', 'Private summary', expect.objectContaining({ runId: 'run-1' }), expect.anything());
+    expect(webhookRequests).toHaveLength(0);
+    expect(await dispatchActivityNotificationAsync(params)).toEqual({ attemptedChannels: 0, deliveredChannels: 0 });
+    expect(await dispatchActivityNotificationAsync({ ...params, channels: ['removed-channel'], event: { ...params.event, actionRequestId: 'removed-id' } }))
+      .toEqual({ attemptedChannels: 0, deliveredChannels: 0 });
+    expect(await dispatchActivityNotificationAsync({ ...params, channels: undefined, event: { ...params.event, actionRequestId: 'all-id' } }))
+      .toEqual({ attemptedChannels: 2, deliveredChannels: 2 });
+    expect(webhookRequestBody(webhookRequests[0]).navigation).toEqual({ runId: 'run-1' });
+  });
+
+  it('suppresses Notify me in quiet hours and never discloses previews under status-only policy', async () => {
+    const sendToAllDevicesAsync = vi.fn(async () => {});
+    const event = { topic: 'notify_me' as const, title: 'Private title', message: 'Private message' };
+    expect(await dispatchActivityNotificationAsync({
+      settings: accountSettingsParse({ attentionDeliveryPolicyV1: { v: 1, events: { notify_me: { enabled: false } } } }),
+      event, expoPushSender: { sendToAllDevicesAsync },
+    })).toEqual({ attemptedChannels: 0, deliveredChannels: 0 });
+    expect(await dispatchActivityNotificationAsync({
+      settings: accountSettingsParse({ attentionDeliveryPolicyV1: { v: 1, privacy: { defaultPreviewBehavior: 'status_only' } } }),
+      event, expoPushSender: { sendToAllDevicesAsync },
+    })).toEqual({ attemptedChannels: 1, deliveredChannels: 1 });
+    expect(JSON.stringify(sendToAllDevicesAsync.mock.calls)).not.toContain('Private');
+    expect(await dispatchActivityNotificationAsync({
+      settings: accountSettingsParse({ attentionDeliveryPolicyV1: { v: 1,
+        quietHours: { enabled: true, timezone: 'UTC', windows: [{ startLocalTime: '00:00', endLocalTime: '01:00' }] },
+        events: { notify_me: { quietHoursBehavior: 'suppress' } },
+      }, notificationChannelsV1: [{ id: 'quiet-hook', kind: 'webhook', enabled: true, url: 'https://hooks.example.test/happier' }] }),
+      event, channels: ['quiet-hook'], webhookNetwork, nowMs: () => 50_000,
+    })).toEqual({ attemptedChannels: 0, deliveredChannels: 0 });
+    expect(webhookRequests).toHaveLength(0);
+  });
+
+  it('delivers a restricted plugin channel through the real owner with policy-redacted content', async () => {
+    const sent: unknown[] = [];
+    const pluginNotifications = createStablePluginNotificationsOwner({
+      categories: [],
+      channels: [{ provenance: 'external', source: { kind: 'path' }, pluginId: 'acme.delivery',
+        definition: { id: 'digest', kind: 'plugin', title: 'Digest', configurable: true, defaultEnabled: true } }],
+      activateChannel: async () => {},
+      readChannel: () => ({ occurrenceId: 'current', isCurrent: () => true,
+        send: async (request) => { sent.push(request); return { deliveryId: request.deliveryId,
+          channelId: request.channelId, status: 'accepted', evidence: 'provider' }; } }),
+    });
+    const settings = accountSettingsParse({ attentionDeliveryPolicyV1: { v: 1,
+      privacy: { defaultPreviewBehavior: 'title_only' },
+    } });
+    const event = { topic: 'notify_me' as const, title: 'Digest', message: 'Private body' };
+    expect(await dispatchActivityNotificationAsync({ settings, event,
+      channels: ['acme.delivery/digest'], pluginNotifications,
+    })).toEqual({ attemptedChannels: 1, deliveredChannels: 1 });
+    expect(sent).toEqual([expect.objectContaining({ title: 'Digest', body: '' })]);
+    expect(JSON.stringify(sent)).not.toContain('Private body');
+    expect(await dispatchActivityNotificationAsync({ settings, event,
+      channels: ['removed-plugin/channel'], pluginNotifications,
+    })).toEqual({ attemptedChannels: 0, deliveredChannels: 0 });
+    expect(await dispatchActivityNotificationAsync({ settings: accountSettingsParse({
+      attentionDeliveryPolicyV1: { v: 1, events: { notify_me: { enabled: false } } },
+    }), event, channels: ['acme.delivery/digest'], pluginNotifications,
+    })).toEqual({ attemptedChannels: 0, deliveredChannels: 0 });
+    expect(sent).toHaveLength(1);
+  });
+
+  it.each(['expo_push', 'local_notification'] as const)(
+    'applies the declared %s policy to a contributed notification channel',
+    async (kind) => {
+      const sent: unknown[] = [];
+      const pluginNotifications = createStablePluginNotificationsOwner({
+        categories: [],
+        channels: [{ provenance: 'external', source: { kind: 'path' }, pluginId: 'acme.delivery',
+          definition: { id: 'declared-channel', kind, title: 'Declared channel', configurable: true, defaultEnabled: true } }],
+        activateChannel: async () => {},
+        readChannel: () => ({ occurrenceId: 'current', isCurrent: () => true,
+          send: async (request) => { sent.push(request); return { deliveryId: request.deliveryId,
+            channelId: request.channelId, status: 'accepted', evidence: 'provider' }; } }),
+      });
+      const params = { event: { topic: 'notify_me' as const, message: 'Digest', actionRequestId: `declared-${kind}` },
+        channels: ['acme.delivery/declared-channel'], pluginNotifications };
+      expect(await dispatchActivityNotificationAsync({ ...params, settings: accountSettingsParse({
+        attentionDeliveryPolicyV1: { v: 1, channels: { [kind]: { enabled: false }, plugin: { enabled: true } } },
+      }) })).toEqual({ attemptedChannels: 0, deliveredChannels: 0 });
+      expect(sent).toHaveLength(0);
+      expect(await dispatchActivityNotificationAsync({ ...params, settings: accountSettingsParse({
+        attentionDeliveryPolicyV1: { v: 1, channels: { [kind]: { enabled: true }, plugin: { enabled: false } } },
+      }) })).toEqual({ attemptedChannels: 1, deliveredChannels: 1 });
+      expect(sent).toEqual([expect.objectContaining({ body: 'Digest' })]);
+    },
+  );
   // `fetch` stays stubbed as a guard: webhook delivery must go through the
   // pinned transport, so any call here is a regression back to unpinned dispatch.
   const fetchSpy = vi.fn();
@@ -59,6 +163,44 @@ describe('dispatchActivityNotificationAsync', () => {
     vi.unstubAllGlobals();
   });
 
+  it('applies current Session candidacy before Expo, Live Activity and webhook delivery', async () => {
+    const sendToAllDevicesAsync = vi.fn(async () => {});
+    const sendLiveActivityRemoteUpdateAsync = vi.fn(async (_request: LiveActivityRemoteUpdateRequestV1) => {});
+    const allowed = createSessionNotificationContextFixture('session-candidacy');
+    const settings = accountSettingsParse({
+      attentionDeliveryPolicyV1: { v: 1, liveActivityRemoteUpdates: { enabled: true, preferredMode: 'direct_apns' } },
+      notificationChannelsV1: [{
+        v: 1, id: 'candidacy-hook', kind: 'webhook', enabled: true,
+        url: 'https://hooks.example.test/happier', topics: { ready: true },
+      }],
+    });
+    const dispatch = (context: typeof allowed | null, readerAvailable = true) => dispatchActivityNotificationAsync({
+      settings, webhookNetwork, expoPushSender: { sendToAllDevicesAsync },
+      liveActivityRemoteSender: { serverId: 'home', sendLiveActivityRemoteUpdateAsync },
+      fetchSessionNotificationContext: readerAvailable ? async () => context : undefined,
+      event: { topic: 'ready', sessionId: allowed.id, waitingForCommandLabel: 'Agent' },
+    });
+    const contexts = [
+      null,
+      { ...allowed, id: 'another-session' },
+      { ...allowed, archivedAt: 1 },
+      { ...allowed, viewer: undefined },
+      { ...allowed, effectiveAccess: { ...allowed.effectiveAccess, capabilities: { ...allowed.effectiveAccess.capabilities, readTranscript: false } } },
+      { ...allowed, viewer: { ...allowed.viewer!, follow: { follows: false, notificationLevel: 'none' as const } } },
+    ];
+    for (const context of contexts) {
+      expect(await dispatch(context)).toEqual({ attemptedChannels: 0, deliveredChannels: 0 });
+    }
+    expect(await dispatch(allowed, false)).toEqual({ attemptedChannels: 0, deliveredChannels: 0 });
+    expect(sendToAllDevicesAsync).not.toHaveBeenCalled();
+    expect(sendLiveActivityRemoteUpdateAsync).not.toHaveBeenCalled();
+    expect(webhookRequests).toHaveLength(0);
+    expect(await dispatch(allowed)).toEqual({ attemptedChannels: 3, deliveredChannels: 3 });
+    expect(sendToAllDevicesAsync).toHaveBeenCalledOnce();
+    expect(sendLiveActivityRemoteUpdateAsync).toHaveBeenCalledOnce();
+    expect(webhookRequests).toHaveLength(1);
+  });
+
   it('uses the connected-service account policy for credential health notifications', () => {
     expect(resolveActivityNotificationPolicyEvent({
       topic: 'connected_service_credential_health',
@@ -76,7 +218,7 @@ describe('dispatchActivityNotificationAsync', () => {
       url: 'https://hooks.example.test/happier', requestIncludeMessageText: include,
       topics: { permissionRequest: true },
     })) });
-    await dispatchActivityNotificationAsync({ settings, webhookNetwork, expoPushSender: { sendToAllDevicesAsync }, event: {
+    await dispatchActivityNotificationAsync({ fetchSessionNotificationContext, settings, webhookNetwork, expoPushSender: { sendToAllDevicesAsync }, event: {
       topic: 'permission_request', sessionId: 's1', requestId: 'p1', toolName: 'Bash',
       toolInput: { command: 'git diff -- apps/cli/src/main.ts', justification: 'Review the complete patch' },
     } });
@@ -104,7 +246,7 @@ describe('dispatchActivityNotificationAsync', () => {
       },
     });
 
-    await dispatchActivityNotificationAsync({
+    await dispatchActivityNotificationAsync({ fetchSessionNotificationContext,
       settings,
       webhookNetwork,
       expoPushSender: { sendToAllDevicesAsync },
@@ -153,7 +295,7 @@ describe('dispatchActivityNotificationAsync', () => {
         readyIncludeMessageText: false,
       }],
     });
-    const dispatch = () => dispatchActivityNotificationAsync({
+    const dispatch = () => dispatchActivityNotificationAsync({ fetchSessionNotificationContext,
       settings, event, webhookNetwork, expoPushSender: { sendToAllDevicesAsync }, nowMs: () => 100_000,
       liveActivityRemoteSender: { serverId: 'server-reset', sendLiveActivityRemoteUpdateAsync },
     });
@@ -182,7 +324,7 @@ describe('dispatchActivityNotificationAsync', () => {
   it('dispatches connected-service account switch notifications with structured quota context', async () => {
     const sendToAllDevicesAsync = vi.fn(async () => {});
 
-    const result = await dispatchActivityNotificationAsync({
+    const result = await dispatchActivityNotificationAsync({ fetchSessionNotificationContext,
       settings: accountSettingsParse({}),
       expoPushSender: { sendToAllDevicesAsync },
       event: {
@@ -246,7 +388,7 @@ describe('dispatchActivityNotificationAsync', () => {
       _options?: unknown,
     ) => {});
 
-    const result = await dispatchActivityNotificationAsync({
+    const result = await dispatchActivityNotificationAsync({ fetchSessionNotificationContext,
       settings: accountSettingsParse({}),
       expoPushSender: { sendToAllDevicesAsync },
       event: {
@@ -321,14 +463,14 @@ describe('dispatchActivityNotificationAsync', () => {
       reason: 'usage_limit',
     };
 
-    await dispatchActivityNotificationAsync({
+    await dispatchActivityNotificationAsync({ fetchSessionNotificationContext,
       settings: accountSettingsParse({}),
       expoPushSender: { sendToAllDevicesAsync },
       nowMs: () => 1_000,
       dedupeWindowMs: 60_000,
       event,
     });
-    const duplicate = await dispatchActivityNotificationAsync({
+    const duplicate = await dispatchActivityNotificationAsync({ fetchSessionNotificationContext,
       settings: accountSettingsParse({}),
       expoPushSender: { sendToAllDevicesAsync },
       nowMs: () => 2_000,
@@ -353,14 +495,14 @@ describe('dispatchActivityNotificationAsync', () => {
       reason: 'usage_limit',
     };
 
-    await dispatchActivityNotificationAsync({
+    await dispatchActivityNotificationAsync({ fetchSessionNotificationContext,
       settings: accountSettingsParse({}),
       expoPushSender: { sendToAllDevicesAsync },
       nowMs: () => 1_000,
       dedupeWindowMs: 60_000,
       event,
     });
-    await dispatchActivityNotificationAsync({
+    await dispatchActivityNotificationAsync({ fetchSessionNotificationContext,
       settings: accountSettingsParse({}),
       expoPushSender: { sendToAllDevicesAsync },
       nowMs: () => 2_000,
@@ -397,7 +539,7 @@ describe('dispatchActivityNotificationAsync', () => {
       ],
     });
 
-    const result = await dispatchActivityNotificationAsync({
+    const result = await dispatchActivityNotificationAsync({ fetchSessionNotificationContext,
       settings,
       webhookNetwork,
       expoPushSender: { sendToAllDevicesAsync },
@@ -420,7 +562,7 @@ describe('dispatchActivityNotificationAsync', () => {
   it('dispatches connected-service quota blocked and recovered notifications', async () => {
     const sendToAllDevicesAsync = vi.fn(async () => {});
 
-    await dispatchActivityNotificationAsync({
+    await dispatchActivityNotificationAsync({ fetchSessionNotificationContext,
       settings: accountSettingsParse({}),
       expoPushSender: { sendToAllDevicesAsync },
       event: {
@@ -434,7 +576,7 @@ describe('dispatchActivityNotificationAsync', () => {
         limitCategory: 'usage_limit',
       },
     });
-    await dispatchActivityNotificationAsync({
+    await dispatchActivityNotificationAsync({ fetchSessionNotificationContext,
       settings: accountSettingsParse({}),
       expoPushSender: { sendToAllDevicesAsync },
       event: {
@@ -478,7 +620,7 @@ describe('dispatchActivityNotificationAsync', () => {
       },
     });
 
-    const result = await dispatchActivityNotificationAsync({
+    const result = await dispatchActivityNotificationAsync({ fetchSessionNotificationContext,
       settings,
       webhookNetwork,
       expoPushSender: { sendToAllDevicesAsync },
@@ -530,7 +672,7 @@ describe('dispatchActivityNotificationAsync', () => {
       ],
     });
 
-    const result = await dispatchActivityNotificationAsync({
+    const result = await dispatchActivityNotificationAsync({ fetchSessionNotificationContext,
       settings,
       webhookNetwork,
       expoPushSender: { sendToAllDevicesAsync },
@@ -583,7 +725,7 @@ describe('dispatchActivityNotificationAsync', () => {
       ],
     });
 
-    const result = await dispatchActivityNotificationAsync({
+    const result = await dispatchActivityNotificationAsync({ fetchSessionNotificationContext,
       settings,
       webhookNetwork,
       expoPushSender: { sendToAllDevicesAsync },
@@ -628,7 +770,7 @@ describe('dispatchActivityNotificationAsync', () => {
       ],
     });
 
-    const result = await dispatchActivityNotificationAsync({
+    const result = await dispatchActivityNotificationAsync({ fetchSessionNotificationContext,
       settings,
       webhookNetwork,
       expoPushSender: { sendToAllDevicesAsync },
@@ -675,7 +817,7 @@ describe('dispatchActivityNotificationAsync', () => {
       ],
     });
 
-    const result = await dispatchActivityNotificationAsync({
+    const result = await dispatchActivityNotificationAsync({ fetchSessionNotificationContext,
       settings,
       webhookNetwork,
       expoPushSender: { sendToAllDevicesAsync },
@@ -709,7 +851,7 @@ describe('dispatchActivityNotificationAsync', () => {
       notificationChannelsV1: [],
     });
 
-    const result = await dispatchActivityNotificationAsync({
+    const result = await dispatchActivityNotificationAsync({ fetchSessionNotificationContext,
       settings,
       webhookNetwork,
       expoPushSender: { sendToAllDevicesAsync },
@@ -726,6 +868,118 @@ describe('dispatchActivityNotificationAsync', () => {
     expect(sendToAllDevicesAsync).toHaveBeenCalledTimes(1);
   });
 
+  it.each(['status_only', 'title_only', 'include_preview'] as const)(
+    'preserves the %s privacy decision across rich push and webhook content',
+    async (previewBehavior) => {
+      const sendToAllDevicesAsync = vi.fn(async (_title: string, _body: string, _data: Record<string, unknown>) => {});
+      const privateTitle = 'Private acquisition plan';
+      const privatePreview = 'Private release credentials review';
+      const settings = accountSettingsParse({
+        attentionDeliveryPolicyV1: {
+          v: 1,
+          privacy: { defaultPreviewBehavior: previewBehavior },
+          events: {
+            permission_request: { previewBehavior },
+            user_action_request: { previewBehavior },
+          },
+        },
+        notificationChannelsV1: [{
+          v: 1, id: 'privacy-hook', kind: 'webhook', enabled: true,
+          url: 'https://hooks.example.test/happier',
+          topics: { ready: true, permissionRequest: true, userActionRequest: true },
+          readyIncludeMessageText: true, requestIncludeMessageText: true,
+        }],
+      });
+      const events: ActivityNotificationEvent[] = [
+        { ...{ committedLocalId: 'ready-local-1', committedSequence: 42 },
+          topic: 'ready', sessionId: 'privacy-session', sessionTitle: privateTitle,
+          waitingForCommandLabel: 'Agent', assistantPreviewText: privatePreview },
+        ...(['permission_request', 'user_action_request'] as const).map((topic) => ({
+          topic, sessionId: 'privacy-session', sessionTitle: privateTitle,
+          requestId: `${topic}-privacy`, toolName: 'Bash', toolDetails: privatePreview,
+        })),
+      ];
+      for (const event of events) {
+        await dispatchActivityNotificationAsync({ fetchSessionNotificationContext, settings, event, webhookNetwork, expoPushSender: { sendToAllDevicesAsync } });
+      }
+      expect(sendToAllDevicesAsync.mock.calls).toHaveLength(events.length);
+      expect(sendToAllDevicesAsync.mock.calls[0]?.[2]).toMatchObject({
+        activityEventLocalId: 'ready-local-1',
+        activityEvent: { type: 'ready', sequenceDomain: 'session_transcript', messageSeq: 42 },
+      });
+      expect(webhookRequests).toHaveLength(events.length);
+      for (const output of [
+        ...sendToAllDevicesAsync.mock.calls,
+        ...webhookRequests.map(webhookRequestBody),
+      ]) {
+        const serialized = JSON.stringify(output);
+        expect(serialized.includes(privateTitle)).toBe(previewBehavior !== 'status_only');
+        expect(serialized.includes(privatePreview)).toBe(previewBehavior === 'include_preview');
+      }
+    },
+  );
+
+  it('retains a surface status-only override for connected-service Session titles', async () => {
+    const sendToAllDevicesAsync = vi.fn(async (_title: string, _body: string, _data: Record<string, unknown>) => {});
+    await dispatchActivityNotificationAsync({ fetchSessionNotificationContext,
+      settings: accountSettingsParse({ attentionDeliveryPolicyV1: {
+        v: 1, privacy: { surfaces: { expo_push: 'status_only' } },
+      } }),
+      dedupeWindowMs: 0,
+      expoPushSender: { sendToAllDevicesAsync },
+      event: { topic: 'connected_service_account_switch', sessionId: 'privacy-session',
+        sessionTitle: 'Private acquisition plan', serviceId: 'service', groupId: 'pool',
+        fromProfileId: 'first', toProfileId: 'second', reason: 'manual' },
+    });
+    expect(sendToAllDevicesAsync).toHaveBeenCalled();
+    expect(JSON.stringify(sendToAllDevicesAsync.mock.calls)).not.toContain('Private acquisition plan');
+  });
+
+  it.each(['status_only', 'title_only', 'include_preview'] as const)(
+    'applies %s to connected-service details while retaining routing identities', async (previewBehavior) => {
+      const privateLabel = 'private-account@example.test';
+      const privateDiagnostic = 'private-provider-diagnostic';
+      const sendToAllDevicesAsync = vi.fn(async (_title: string, _body: string, _data: Record<string, unknown>) => {});
+      const settings = accountSettingsParse({
+        attentionDeliveryPolicyV1: { v: 1, privacy: { defaultPreviewBehavior: previewBehavior } },
+        notificationChannelsV1: [{
+          v: 1, id: 'service-privacy', kind: 'webhook', enabled: true,
+          url: 'https://hooks.example.test/happier',
+          topics: { connectedServiceAccountSwitch: true, connectedServiceQuotaRecovered: true },
+        }],
+      });
+      const common = { sessionId: 'service-session', sessionTitle: 'Private Session', serviceId: 'service', serviceDisplayName: privateLabel };
+      const events: ActivityNotificationEvent[] = [
+        { ...common, topic: 'connected_service_account_switch', groupId: 'pool-id',
+          fromProfileId: 'first-id', toProfileId: 'second-id', fromProfileLabel: privateLabel,
+          toProfileLabel: privateLabel, fromUsagePercent: 87, reason: 'manual' },
+        { ...common, topic: 'connected_service_credential_health', profileId: 'profile-id',
+          profileLabel: privateLabel, status: 'reconnect_required', reason: privateDiagnostic,
+          providerErrorCode: privateDiagnostic },
+        { ...common, topic: 'connected_service_quota_recovered', recoveryReason: 'automatic_quota_reset',
+          profileId: 'profile-id', groupId: 'pool-id', issueFingerprint: 'issue-id' },
+      ];
+      for (const event of events) {
+        await dispatchActivityNotificationAsync({ settings, event, dedupeWindowMs: 0,
+          webhookNetwork, expoPushSender: { sendToAllDevicesAsync } });
+      }
+      expect(sendToAllDevicesAsync.mock.calls).toHaveLength(3);
+      expect(webhookRequests).toHaveLength(3);
+      for (const output of [...sendToAllDevicesAsync.mock.calls, ...webhookRequests.map(webhookRequestBody)]) {
+        expect(JSON.stringify(output).includes(privateLabel)).toBe(previewBehavior === 'include_preview');
+        if (previewBehavior === 'status_only') expect(JSON.stringify(output)).not.toContain('Private Session');
+      }
+      const calls = sendToAllDevicesAsync.mock.calls;
+      expect(calls[0]?.[0].includes('Private Session')).toBe(previewBehavior !== 'status_only');
+      expect(calls[0]?.[2]).toMatchObject({ sessionId: 'service-session', serviceId: 'service', groupId: 'pool-id', fromProfileId: 'first-id', toProfileId: 'second-id' });
+      expect(calls[1]?.[2]).toMatchObject({ profileId: 'profile-id', status: 'reconnect_required' });
+      expect(JSON.stringify(calls[1]).includes(privateDiagnostic)).toBe(previewBehavior === 'include_preview');
+      expect(calls[2]?.[2]).toMatchObject({ profileId: 'profile-id', groupId: 'pool-id', issueFingerprint: 'issue-id', recoveryReason: 'automatic_quota_reset' });
+      expect(calls[2]?.[1].includes('profile-id')).toBe(previewBehavior === 'include_preview');
+      expect(calls[2]?.[1].includes('pool-id')).toBe(previewBehavior === 'include_preview');
+    },
+  );
+
   it('passes resolved silent sound options to Expo push senders', async () => {
     const sendToAllDevicesAsync = vi.fn(async () => {});
     const settings = accountSettingsParse({
@@ -737,7 +991,7 @@ describe('dispatchActivityNotificationAsync', () => {
       },
     });
 
-    await dispatchActivityNotificationAsync({
+    await dispatchActivityNotificationAsync({ fetchSessionNotificationContext,
       settings,
       webhookNetwork,
       expoPushSender: { sendToAllDevicesAsync },
@@ -772,7 +1026,7 @@ describe('dispatchActivityNotificationAsync', () => {
       },
     });
 
-    await dispatchActivityNotificationAsync({
+    await dispatchActivityNotificationAsync({ fetchSessionNotificationContext,
       settings,
       webhookNetwork,
       expoPushSender: { sendToAllDevicesAsync },
@@ -805,7 +1059,7 @@ describe('dispatchActivityNotificationAsync', () => {
       },
     });
 
-    await dispatchActivityNotificationAsync({
+    await dispatchActivityNotificationAsync({ fetchSessionNotificationContext,
       settings,
       webhookNetwork,
       expoPushSender: { sendToAllDevicesAsync },
@@ -841,7 +1095,7 @@ describe('dispatchActivityNotificationAsync', () => {
       },
     });
 
-    const result = await dispatchActivityNotificationAsync({
+    const result = await dispatchActivityNotificationAsync({ fetchSessionNotificationContext,
       settings,
       webhookNetwork,
       expoPushSender: { sendToAllDevicesAsync },
@@ -913,7 +1167,7 @@ describe('dispatchActivityNotificationAsync', () => {
       },
     });
 
-    const result = await dispatchActivityNotificationAsync({
+    const result = await dispatchActivityNotificationAsync({ fetchSessionNotificationContext,
       settings,
       webhookNetwork,
       liveActivityRemoteSender: {
@@ -959,7 +1213,7 @@ describe('dispatchActivityNotificationAsync', () => {
       },
     });
 
-    await dispatchActivityNotificationAsync({
+    await dispatchActivityNotificationAsync({ fetchSessionNotificationContext,
       settings,
       webhookNetwork,
       liveActivityRemoteSender: {
@@ -1007,7 +1261,7 @@ describe('dispatchActivityNotificationAsync', () => {
       },
     });
 
-    const result = await dispatchActivityNotificationAsync({
+    const result = await dispatchActivityNotificationAsync({ fetchSessionNotificationContext,
       settings,
       webhookNetwork,
       expoPushSender: { sendToAllDevicesAsync },
@@ -1070,7 +1324,7 @@ describe('dispatchActivityNotificationAsync', () => {
       ],
     });
 
-    await dispatchActivityNotificationAsync({
+    await dispatchActivityNotificationAsync({ fetchSessionNotificationContext,
       settings,
       webhookNetwork,
       expoPushSender: { sendToAllDevicesAsync },
@@ -1096,9 +1350,10 @@ describe('dispatchActivityNotificationAsync', () => {
     });
     const payload = webhookRequestBody(request);
     expect(payload.content).toEqual({
-      title: 'Deploy fix',
-      body: 'Gemini is waiting for your command',
+      title: 'Session',
+      body: 'Session is waiting for your command',
     });
+    expect(payload.session).toEqual({ sessionId: 'session-2', title: null });
   });
 
   it('omits request previews when the webhook explicitly disables them', async () => {
@@ -1126,7 +1381,7 @@ describe('dispatchActivityNotificationAsync', () => {
       ],
     });
 
-    await dispatchActivityNotificationAsync({
+    await dispatchActivityNotificationAsync({ fetchSessionNotificationContext,
       settings,
       webhookNetwork,
       expoPushSender: { sendToAllDevicesAsync },
@@ -1185,7 +1440,7 @@ describe('dispatchActivityNotificationAsync', () => {
       ],
     });
 
-    await dispatchActivityNotificationAsync({
+    await dispatchActivityNotificationAsync({ fetchSessionNotificationContext,
       settings,
       webhookNetwork,
       settingsSecretsReadKeys: [settingsSecretsKey],
@@ -1231,7 +1486,7 @@ describe('dispatchActivityNotificationAsync', () => {
       },
     });
 
-    await dispatchActivityNotificationAsync({
+    await dispatchActivityNotificationAsync({ fetchSessionNotificationContext,
       settings,
       webhookNetwork,
       expoPushSender: { sendToAllDevicesAsync },

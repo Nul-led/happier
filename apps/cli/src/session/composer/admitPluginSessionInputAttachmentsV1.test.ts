@@ -93,14 +93,14 @@ function registry(overrides: Partial<ComposerAttachmentRuntime> = {}) {
     declaredAttachments: DECLARED,
     targetRegistrations: [Object.freeze({
       pluginId: ATTACHMENT.pluginId,
-      generation: '1',
+      occurrenceId: '1',
       registration: Object.freeze({
         family: 'composerAttachments' as const,
         localId: ATTACHMENT.localId,
         value: runtime,
       }),
     })],
-    resolveGenerationLifecycle: () => ({
+    resolveOccurrenceLifecycle: () => ({
       isCurrent: () => true,
       retirementSignal: new AbortController().signal,
     }),

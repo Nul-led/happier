@@ -14,6 +14,8 @@ vi.mock('react-native', () => ({
     View: 'View',
     Text: 'Text',
     Pressable: 'Pressable',
+    // motionTokens (the pressed-opacity owner) builds its easing curves at import.
+    Easing: { bezier: () => (value: number) => value, linear: (value: number) => value },
     useWindowDimensions: () => ({
         width: windowDimensionsState.width,
         height: windowDimensionsState.height,

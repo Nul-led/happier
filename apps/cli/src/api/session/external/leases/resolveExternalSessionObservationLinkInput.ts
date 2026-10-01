@@ -4,6 +4,7 @@ import {
     readNonAuthoritativeLinkedExternalSessionV1FromMetadata,
     type PluginBackendExternalSessionSourceDeclarationV1,
     type ExternalAgentObservationTargetV1,
+    type PluginSourceCustodyV1,
 } from '@happier-dev/protocol';
 import type {
     AgentExternalSessionObservationContribution,
@@ -47,6 +48,7 @@ export type ExternalSessionObservationLinkInput = Readonly<{
     resource: ExternalSessionObservationResourceIdentity;
     link: ExternalSessionObservationLinkIdentity;
     target: ExternalAgentObservationTargetV1;
+    sourceCustody?: PluginSourceCustodyV1;
 }>;
 
 export type ExternalSessionObservationLinkedSession = Pick<
@@ -97,7 +99,7 @@ async function readCurrentAccountProjection(
 }
 
 /**
- * Resolves a persisted external-session link into the generation-bound input
+ * Resolves a persisted external-session link into the occurrence-bound input
  * consumed by the sole observation projection. This is the canonical bridge
  * shared by status reads and daemon status-demand admission.
  */
@@ -114,7 +116,8 @@ export async function resolveExternalSessionObservationLinkInput(
         currentAgent: CurrentExternalSessionAgentIdentity;
         externalSessions: BoundedAgentExternalSessionsContribution;
         externalSessionObservation: AgentExternalSessionObservationContribution;
-        pluginGeneration: string;
+        occurrenceId: string;
+        sourceCustody: PluginSourceCustodyV1;
         sourceDeclaration: PluginBackendExternalSessionSourceDeclarationV1;
         retirementSignal?: AbortSignal;
     }> | null = null;
@@ -140,6 +143,12 @@ export async function resolveExternalSessionObservationLinkInput(
             PluginBackendExternalSessionSourceDeclarationV1Schema.safeParse(
                 sourceDeclarationCandidate,
             );
+        const occurrenceId = runtimeRegistryLease.registry.readPluginOccurrenceId?.(
+            runtimeLease?.pluginId ?? '',
+        ) ?? null;
+        const sourceCustody = runtimeRegistryLease.registry.readPluginSourceCustody?.(
+            runtimeLease?.pluginId ?? '',
+        ) ?? null;
         if (
             !runtimeLease
             || !runtimeLease.isCurrent()
@@ -148,6 +157,8 @@ export async function resolveExternalSessionObservationLinkInput(
             || !currentAgent
             || !sourceDeclaration.success
             || runtimeLease.pluginId !== currentAgent.identity.pluginId
+            || !occurrenceId
+            || !sourceCustody
         ) {
             return null;
         }
@@ -155,7 +166,8 @@ export async function resolveExternalSessionObservationLinkInput(
             currentAgent,
             externalSessions: runtimeLease.externalSessions,
             externalSessionObservation: runtimeLease.externalSessionObservation,
-            pluginGeneration: runtimeLease.generation,
+            occurrenceId,
+            sourceCustody,
             sourceDeclaration: sourceDeclaration.data,
             retirementSignal: runtimeLease.retirementSignal,
         };
@@ -232,7 +244,7 @@ export async function resolveExternalSessionObservationLinkInput(
             resource: {
                 pluginId: qualified.link.qualifiedIdentity.agent.pluginId,
                 agentLocalId: qualified.link.qualifiedIdentity.agent.localId,
-                pluginGeneration: runtimeSnapshot.pluginGeneration,
+                occurrenceId: runtimeSnapshot.occurrenceId,
                 resourceKey: grouping.resourceKey,
                 ...(runtimeSnapshot.retirementSignal
                     ? { retirementSignal: runtimeSnapshot.retirementSignal }
@@ -248,6 +260,7 @@ export async function resolveExternalSessionObservationLinkInput(
                 qualifiedLinkIdentity: qualified.link.qualifiedIdentity,
                 linkGeneration: params.linked.linkGeneration,
             },
+            sourceCustody: runtimeSnapshot.sourceCustody,
         };
     } catch {
         return null;

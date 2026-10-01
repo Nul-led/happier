@@ -6,17 +6,20 @@ import {
   FeaturesResponseSchema,
   MACHINE_UPDATE_OPERATION_PROTOCOL_CAPABILITIES_EVENT_V1,
   PENDING_INPUT_PROTOCOL_VERSION_V3,
+  projectSessionAccessCapabilitiesV1,
   SESSION_SYNC_PROTOCOL_VERSION_RUNTIME_ACTIVITY,
   signMachineInstallationProof,
 } from '@happier-dev/protocol';
 import { encodeBase64 } from '@happier-dev/protocol/crypto/base64';
 import { resolveRunnerMcpMaterialV1 } from '@happier-dev/protocol/ephemeralRunner/runnerMcpMaterial';
 import { runnerArtifactTargetForPlatform } from '@happier-dev/protocol/ephemeralRunner/runnerArtifact';
-import { RPC_METHODS } from '@happier-dev/protocol/rpc';
+import { RPC_METHODS, SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc';
 import { SOCKET_RPC_EVENTS } from '@happier-dev/protocol/socketRpc';
 import tweetnacl from 'tweetnacl';
 import axios from 'axios';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 
 import { createRunnerConnectedAccountsAuthorityV1 } from './runnerConnectedAccountsOwner';
 import { acquireReviewedRunnerPluginRuntimeLease } from './runnerPluginRuntimeLease';
@@ -27,7 +30,7 @@ import {
   createSessionRuntimeActivityHomeStub,
   createSessionTurnMutationAppliedSocketAck,
 } from '@/testkit/backends/apiSessionSocketHarness';
-import { createSessionRecordFixture } from '@/testkit/backends/sessionFixtures';
+import { createCurrentSessionProjectionRecordFixture } from '@/testkit/backends/sessionFixtures';
 import {
   materializeSamplePluginFixture,
   SAMPLE_PLUGIN_ID,
@@ -36,6 +39,9 @@ import {
 import { seedCurrentLocalPathPluginFixture } from '@/plugins/store/registry/currentState.testkit';
 import { ApiSessionClient } from '@/api/session/sessionClient';
 import { createReadyNotificationDispatcher } from '@/agent/runtime/notifications/createReadyNotificationDispatcher';
+import { decodeBase64, decrypt, encrypt } from '@/api/encryption';
+import { openSessionStoredContent } from '@/session/transport/encryption/sessionStoredContentCodec';
+import type { StrictSessionStoredMessageContentEnvelope } from '@happier-dev/protocol';
 
 const boundary = vi.hoisted(() => ({
   io: vi.fn(),
@@ -80,6 +86,7 @@ const temporaryRoots: string[] = [];
 afterEach(async () => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
   boundary.io.mockReset();
   boundary.brokerOpen.mockReset();
   boundary.tunnelRetire.mockClear();
@@ -137,6 +144,10 @@ async function installProviderAwareSamplePlugin(input: Readonly<{
   };
   const agent = manifest.contributes.agents[0];
   if (!agent) throw new Error('Sample plugin fixture has no Agent contribution');
+  agent.capabilities = {
+    ...((agent.capabilities && typeof agent.capabilities === 'object') ? agent.capabilities : {}),
+    tools: { delivery: 'native_mcp' },
+  };
   agent.providerRequirements = {
     acceptsProtocols: ['openai-responses'],
     required: { streaming: true, toolRoundTrips: true },
@@ -219,6 +230,8 @@ export const sampleAgentRuntimeFactory = () => ({
   sessions: {
     async open(request) {
       globalThis.__HAPPIER_RUNNER_PRODUCTION_TEST_EVENTS__?.push('open');
+      globalThis.__HAPPIER_RUNNER_PRODUCTION_TEST_MCP__?.push(request.mcpServers);
+      globalThis.__HAPPIER_RUNNER_PRODUCTION_TEST_CWDS__?.push(request.cwd);
       const binding = request.providerBinding;
       if (binding?.source?.kind !== 'team_resource'
         || binding.source.resourceId !== 'resource-1'
@@ -283,10 +296,23 @@ export const sampleAgentRuntimeFactory = () => ({
 }
 
 describe('production Ephemeral Runner composition', () => {
-  it('reaches the real restricted Machine, Follow, Provider and host-runtime owners from the production factory', async () => {
+  it.each(['plain', 'e2ee'] as const)('reaches restricted tools and ordinary Session writes from the %s production factory', async (mode) => {
     const root = await mkdtemp(join(tmpdir(), 'happier-runner-production-composition-'));
     const agentEvents: string[] = [];
     vi.stubGlobal('__HAPPIER_RUNNER_PRODUCTION_TEST_EVENTS__', agentEvents);
+    const agentWorkingDirectories: string[] = [];
+    vi.stubGlobal('__HAPPIER_RUNNER_PRODUCTION_TEST_CWDS__', agentWorkingDirectories);
+    const agentMcpServers: Array<Readonly<Record<string, { args?: readonly string[] }>> | undefined> = [];
+    vi.stubGlobal('__HAPPIER_RUNNER_PRODUCTION_TEST_MCP__', agentMcpServers);
+    vi.stubEnv('HAPPIER_E2E_PROVIDER_USE_CLI_SOURCE_ENTRYPOINT', '1');
+    const sessionKey = new Uint8Array(32).fill(21);
+    const machineContentKey = new Uint8Array(32).fill(9);
+    const sessionCrypto = mode === 'plain'
+      ? { mode: 'plain' as const, ctx: null }
+      : { mode: 'e2ee' as const, ctx: { encryptionKey: sessionKey, encryptionVariant: 'dataKey' as const } };
+    const sharedMetadata = mode === 'plain'
+      ? JSON.stringify({ v: 1 })
+      : encodeBase64(encrypt(sessionKey, 'dataKey', { v: 1 }));
     temporaryRoots.push(root);
     const activationFilePath = join(root, 'happier-runner.activation.json');
     const pluginRoot = join(root, 'sample-plugin');
@@ -375,7 +401,7 @@ describe('production Ephemeral Runner composition', () => {
             sid: 'session-1',
             metadata: {
               version: 1,
-              value: JSON.stringify({ v: 1 }),
+              value: sharedMetadata,
             },
           },
         }));
@@ -410,6 +436,7 @@ describe('production Ephemeral Runner composition', () => {
         }
         const features = FeaturesResponseSchema.parse({
           features: {
+            sessions: { enabled: true, board: { enabled: true }, conversations: { enabled: true } },
             machines: {
               enabled: true,
               tunnel: {
@@ -448,7 +475,6 @@ describe('production Ephemeral Runner composition', () => {
                   publicKey: Buffer.alloc(32, 7).toString('base64url'),
                   expiresAt: null,
                 }],
-                directRouteGrantProofMintVersions: [2],
               },
             },
           },
@@ -457,7 +483,8 @@ describe('production Ephemeral Runner composition', () => {
       }
       return new Response('{}', { status: 404, headers: { 'content-type': 'application/json' } });
     }));
-    vi.spyOn(axios, 'get').mockImplementation(async (url: string) => {
+    const boardWrites: Array<{ layoutContent: StrictSessionStoredMessageContentEnvelope }> = [];
+    const getBoundary = vi.spyOn(axios, 'get').mockImplementation(async (url: string) => {
       if (url.endsWith('/v1/auth/ping')) {
         return { status: 200, data: { success: true } } as never;
       }
@@ -467,23 +494,41 @@ describe('production Ephemeral Runner composition', () => {
           data: { records: [], nextCursor: null, hasNext: false },
         } as never;
       }
+      if (url.endsWith('/v2/sessions/session-1/system-records/record')) {
+        return { status: 200, data: { record: null } } as never;
+      }
       if (url.includes('/v2/sessions/session-1')) {
         return {
           status: 200,
           data: {
-            session: createSessionRecordFixture({
+            session: createCurrentSessionProjectionRecordFixture({
               id: 'session-1',
               active: true,
-              encryptionMode: 'plain',
+              encryptionMode: mode,
               metadataLayoutVersion: 1,
               share: { accessLevel: 'edit', canApprovePermissions: false },
-              metadata: JSON.stringify({ v: 1 }),
+              metadata: sharedMetadata,
               metadataVersion: 1,
               pendingCount: 0,
               pendingVersion: 1,
+              effectiveAccess: {
+                v: 1, level: 'edit', sources: [{ kind: 'direct', shareId: 'share-1' }],
+                capabilities: projectSessionAccessCapabilitiesV1({
+                  owner: false, grants: [{ accessLevel: 'edit', canApprovePermissions: false }],
+                }),
+              },
             }),
           },
         } as never;
+      }
+      return { status: 404, data: { error: 'Not found' } } as never;
+    });
+    vi.spyOn(axios, 'request').mockImplementation(async (config) => {
+      if (config.method?.toUpperCase() === 'PUT' && config.url?.endsWith('/v2/sessions/session-1/board')) {
+        boardWrites.push(JSON.parse(String(config.data)) as { layoutContent: StrictSessionStoredMessageContentEnvelope });
+        return { status: 200, data: {
+          operation: 'update_layout', outcome: 'updated', layoutRevision: 'ssr1.AAAACHN5c3JlY18xAAAAAQ',
+        } } as never;
       }
       return { status: 404, data: { error: 'Not found' } } as never;
     });
@@ -520,6 +565,8 @@ describe('production Ephemeral Runner composition', () => {
           teamId: 'team-1',
           resourceId: 'resource-1',
           sourceRevision: 'source-3',
+          brokerPlacementFingerprint: 'c'.repeat(64),
+          initiatorTokenEpoch: 0,
           initiator: {
             accountId: 'account-1',
             machineId: 'machine-1',
@@ -540,6 +587,7 @@ describe('production Ephemeral Runner composition', () => {
         brokerMachineId: 'broker-1',
         endpointId: 'b'.repeat(64),
         endpointRevision: 1,
+        endpoint: { endpointId: 'b'.repeat(64) },
       },
       request,
     }));
@@ -623,7 +671,9 @@ describe('production Ephemeral Runner composition', () => {
           runtimeOrigin: 'https://home.example.test',
           runtimeToken: 'runner-token',
           installationProof,
-          bootstrap: { mode: 'plain' },
+          bootstrap: mode === 'plain' ? { mode: 'plain' } : {
+            mode: 'e2ee', machineContentKey, sessionDataEncryptionKey: sessionKey,
+          },
           principal: {
             kind: 'ephemeral_session_runner',
             authority: 'session_runtime',
@@ -675,21 +725,23 @@ describe('production Ephemeral Runner composition', () => {
         }),
       ));
 
+      const followParams = {
+        v: 1,
+        sourceSessionId: 'source-session-1',
+        destinationSessionId: 'session-1',
+        sourceDataEncryptionKeyBase64: encodeBase64(new Uint8Array(32).fill(23), 'base64'),
+      };
       const followResponse = new Promise<unknown>((resolve) => {
         machineSocket.trigger(SOCKET_RPC_EVENTS.REQUEST, {
           method: `machine-1:${RPC_METHODS.DAEMON_SESSION_FOLLOW_SOURCE_KEY_PREPARE}`,
-          params: {
-            v: 1,
-            sourceSessionId: 'source-session-1',
-            destinationSessionId: 'session-1',
-            sourceDataEncryptionKeyBase64: encodeBase64(new Uint8Array(32).fill(23), 'base64'),
-          },
+          params: mode === 'plain' ? followParams : encodeBase64(encrypt(machineContentKey, 'dataKey', followParams)),
           authorization: {
             kind: 'session.follow.sourceKey.prepare',
             sourceSessionId: 'source-session-1',
             destinationSessionId: 'session-1',
           },
-        }, resolve);
+        }, (response: unknown) => resolve(mode === 'plain' ? response
+          : decrypt(machineContentKey, 'dataKey', decodeBase64(String(response)))));
       });
       await expect(followResponse).resolves.toEqual({ v: 1, outcome: 'installed' });
 
@@ -730,8 +782,48 @@ describe('production Ephemeral Runner composition', () => {
 
       await vi.waitFor(() => expect(didAttachProviderInputConsumer).toBe(true), { timeout: 20_000 });
       expect(agentEvents).toContain('open');
+      // The endpoint review chose an ordinary path, not a private managed
+      // allocation. Observe the real native Agent request after preparation.
+      expect([...new Set(agentWorkingDirectories)]).toEqual([root]);
       const activitySession = [...providerInputSessions].at(-1);
       if (!activitySession) throw new Error('Production host did not publish its active Session client');
+      // Both tool transports are created by the ordinary host, not a test that
+      // manually supplies Session scope to the inner MCP helper.
+      const accountAction = { toolName: 'action_execute', args: { actionId: 'machines.list', input: {} } };
+      await expect(activitySession.rpcHandlerManager.invokeLocal(
+        SESSION_RPC_METHODS.SESSION_AGENT_TOOL_CALL_V1,
+        accountAction,
+      )).resolves.toMatchObject({ ok: false, errorCode: 'action_disabled' });
+      const boardAction = {
+        toolName: 'action_execute',
+        args: { actionId: 'session.board.layout.update', input: {
+          expectedLayoutRevision: null, operation: { op: 'tab.create', tabId: 'overview', title: 'Runner notes' },
+        } },
+      };
+      await expect(activitySession.rpcHandlerManager.invokeLocal(
+        SESSION_RPC_METHODS.SESSION_AGENT_TOOL_CALL_V1, boardAction,
+      )).resolves.toMatchObject({ ok: true });
+      expect(boardWrites).toHaveLength(1);
+      expect(boardWrites[0]?.layoutContent.t).toBe(mode === 'plain' ? 'plain' : 'encrypted');
+      expect(openSessionStoredContent({ ...sessionCrypto, content: boardWrites[0]!.layoutContent })).toMatchObject({
+        v: 1, tabs: [{ id: 'overview', title: 'Runner notes' }],
+      });
+      expect(getBoundary.mock.calls.some(([url]) => String(url).endsWith('/v1/machines'))).toBe(false);
+      const happierArgs = agentMcpServers.at(-1)?.happier?.args ?? [];
+      const mcpUrl = happierArgs[happierArgs.indexOf('--url') + 1];
+      expect(mcpUrl).toMatch(/^http:\/\/127\.0\.0\.1:/);
+      const mcpClient = new Client({ name: 'runner-production-scope', version: '1' }, { capabilities: {} });
+      try {
+        await mcpClient.connect(new StreamableHTTPClientTransport(new URL(mcpUrl!)));
+        const result = await mcpClient.callTool({ name: accountAction.toolName, arguments: accountAction.args });
+        expect(result.content).toEqual(expect.arrayContaining([
+          expect.objectContaining({ type: 'text', text: expect.stringContaining('action_disabled') }),
+        ]));
+        const tools = await mcpClient.listTools();
+        expect(tools.tools.map((tool) => tool.name)).toContain('session_board_get');
+      } finally {
+        await mcpClient.close();
+      }
       const enqueueReadyEvent = vi.spyOn(activitySession, 'enqueueSessionEventCommitted');
       await createReadyNotificationDispatcher({
         session: activitySession,

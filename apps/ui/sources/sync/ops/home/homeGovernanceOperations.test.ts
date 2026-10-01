@@ -3,7 +3,9 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
     createHomeGovernanceHarness,
     homeAccountRowFixture,
+    homeAdministrationEventFixture,
     homeGovernancePolicyProjectionFixture,
+    homeSettingsProjectionFixture,
     installHomeGovernanceBoundaries,
     standardCleanup,
 } from '@/dev/testkit';
@@ -245,6 +247,82 @@ describe('home governance mutations', () => {
         });
     });
 
+    it('asks before resending a widening the Home refused, and resends the identical patch confirmed', async () => {
+        const home = await addHome();
+        harness.answer(home, '/v1/home/policy/set', {
+            select: (input) => (input as { confirmWidening?: unknown }).confirmWidening === true
+                ? { body: homeGovernancePolicyProjectionFixture() }
+                : { status: 409, body: { error: 'home_policy_widening_unconfirmed' } },
+        });
+        const { setHomeAuthenticationPolicies } = await operations();
+        const scope = { serverId: home, accountId: 'account-admin' } as const;
+        const asked: string[] = [];
+
+        const outcome = await setHomeAuthenticationPolicies({
+            scope,
+            expectedRevision: 3,
+            authenticationPolicy: { v: 1, admission: 'self_service' },
+            confirmWidening: async () => { asked.push('asked'); return true; },
+        });
+
+        expect(outcome.kind).toBe('succeeded');
+        expect(asked).toEqual(['asked']);
+        const [refused, confirmed] = harness.requestsFor('/v1/home/policy/set');
+        expect(refused?.input).toEqual({ expectedRevision: 3, authenticationPolicy: { v: 1, admission: 'self_service' } });
+        expect(confirmed?.input).toEqual({
+            expectedRevision: 3,
+            authenticationPolicy: { v: 1, admission: 'self_service' },
+            confirmWidening: true,
+        });
+    });
+
+    it('writes nothing more when the widening is declined, and never asks for a narrowing', async () => {
+        const home = await addHome();
+        harness.answer(home, '/v1/home/policy/set', {
+            select: (input) => {
+                const policy = (input as { authenticationPolicy?: { admission?: string } }).authenticationPolicy;
+                return policy?.admission === 'closed'
+                    ? { body: homeGovernancePolicyProjectionFixture() }
+                    : { status: 409, body: { error: 'home_policy_widening_unconfirmed' } };
+            },
+        });
+        const { setHomeAuthenticationPolicies } = await operations();
+        const scope = { serverId: home, accountId: 'account-admin' } as const;
+        let asked = 0;
+        const confirmWidening = async () => { asked += 1; return false; };
+
+        const declined = await setHomeAuthenticationPolicies({
+            scope, expectedRevision: 3, authenticationPolicy: { v: 1, admission: 'self_service' }, confirmWidening,
+        });
+        expect(declined).toMatchObject({ kind: 'failed', failure: { code: 'home_policy_widening_unconfirmed' } });
+        expect(harness.requestsFor('/v1/home/policy/set')).toHaveLength(1);
+
+        const narrowed = await setHomeAuthenticationPolicies({
+            scope, expectedRevision: 3, authenticationPolicy: { v: 1, admission: 'closed' }, confirmWidening,
+        });
+        expect(narrowed.kind).toBe('succeeded');
+        expect(asked).toBe(1);
+        expect(harness.requestsFor('/v1/home/policy/set')).toHaveLength(2);
+    });
+
+    it('claims an ownerless Home with its code and re-reads the Home only once it was accepted', async () => {
+        const home = await addHome();
+        const { claimHomeWithCode } = await operations();
+        const scope = { serverId: home, accountId: 'account-admin' } as const;
+
+        harness.answer(home, '/v1/home/governance/claim', { status: 403, body: { error: 'home_claim_refused' } });
+        const refusedReads = harness.requestsFor(GOVERNANCE_PATH).length;
+        const refused = await claimHomeWithCode({ scope, code: 'ABCD' });
+        expect(refused).toMatchObject({ kind: 'failed', failure: { code: 'home_claim_refused' } });
+        expect(harness.requestsFor(GOVERNANCE_PATH)).toHaveLength(refusedReads);
+
+        harness.answer(home, '/v1/home/governance/claim', { body: { status: 'claimed' } });
+        const claimed = await claimHomeWithCode({ scope, code: 'ABCD' });
+        expect(claimed.kind).toBe('succeeded');
+        expect(harness.requestsFor('/v1/home/governance/claim').at(-1)?.input).toEqual({ code: 'ABCD' });
+        expect(harness.requestsFor(GOVERNANCE_PATH).length).toBeGreaterThan(refusedReads);
+    });
+
     it('reads a People page without re-reading the viewer own capabilities', async () => {
         const home = await addHome();
         harness.answer(home, '/v1/home/accounts/list', {
@@ -292,5 +370,154 @@ describe('home governance mutations', () => {
         expect(outcome.kind).toBe('failed');
         if (outcome.kind !== 'failed') throw new Error('unreachable');
         expect(outcome.failure.kind).toBe('invalid');
+    });
+});
+
+describe('home settings, mail delivery and audit', () => {
+    it('writes settings against the read revision and returns the Home projection without re-reading governance', async () => {
+        const home = await addHome();
+        const saved = homeSettingsProjectionFixture({ revision: 4 });
+        harness.answer(home, '/v1/home/settings/set', { body: saved });
+
+        const { setHomeSettings } = await operations();
+        const outcome = await setHomeSettings({
+            scope: { serverId: home, accountId: 'account-admin' },
+            expectedRevision: 3,
+            values: { HAPPIER_AUTH_EMAIL_SMTP_HOST: 'smtp.example.org', HAPPIER_AUTH_EMAIL_SMTP_PORT: null },
+            secrets: { HAPPIER_AUTH_EMAIL_SMTP_PASSWORD: { replace: 'hunter2' } },
+        });
+
+        expect(outcome).toEqual({ kind: 'succeeded', value: saved });
+        expect(harness.requestsFor('/v1/home/settings/set')[0]?.input).toEqual({
+            expectedRevision: 3,
+            values: { HAPPIER_AUTH_EMAIL_SMTP_HOST: 'smtp.example.org', HAPPIER_AUTH_EMAIL_SMTP_PORT: null },
+            secrets: { HAPPIER_AUTH_EMAIL_SMTP_PASSWORD: { replace: 'hunter2' } },
+        });
+        // Settings are not part of the viewer's governance projection.
+        expect(harness.requestsFor(GOVERNANCE_PATH)).toHaveLength(0);
+    });
+
+    it('names the refused key and reason when the Home rejects a settings value', async () => {
+        const home = await addHome();
+        harness.answer(home, '/v1/home/settings/set', {
+            status: 400,
+            body: { error: 'home_settings_invalid', key: 'HAPPIER_AUTH_EMAIL_SMTP_PORT', reason: 'out_of_bounds' },
+        });
+
+        const { setHomeSettings, readHomeSettingsInvalidFailure } = await operations();
+        const outcome = await setHomeSettings({
+            scope: { serverId: home, accountId: 'account-admin' },
+            expectedRevision: 3,
+            values: { HAPPIER_AUTH_EMAIL_SMTP_PORT: 70000 },
+        });
+
+        expect(outcome.kind).toBe('failed');
+        if (outcome.kind !== 'failed') throw new Error('unreachable');
+        expect(readHomeSettingsInvalidFailure(outcome.failure)).toEqual({
+            key: 'HAPPIER_AUTH_EMAIL_SMTP_PORT',
+            reason: 'out_of_bounds',
+        });
+    });
+
+    it('reports a stale settings revision as the Home conflict code', async () => {
+        const home = await addHome();
+        harness.answer(home, '/v1/home/settings/set', {
+            status: 409,
+            body: { error: 'home_settings_revision_conflict' },
+        });
+
+        const { setHomeSettings, readHomeSettingsInvalidFailure } = await operations();
+        const outcome = await setHomeSettings({
+            scope: { serverId: home, accountId: 'account-admin' },
+            expectedRevision: 1,
+            values: { HAPPIER_AUTH_EMAIL_FROM_NAME: 'Acme' },
+        });
+
+        expect(outcome.kind).toBe('failed');
+        if (outcome.kind !== 'failed') throw new Error('unreachable');
+        expect(outcome.failure.code).toBe('home_settings_revision_conflict');
+        expect(readHomeSettingsInvalidFailure(outcome.failure)).toBeNull();
+    });
+
+    it('reads settings and mail readiness from the exact Home', async () => {
+        const home = await addHome();
+        harness.answer(home, '/v1/home/settings/get', { body: homeSettingsProjectionFixture() });
+        harness.answer(home, '/v1/home/mail-delivery/get', {
+            body: { transportConfigured: true, linkTargetBuildable: false, linkOrigin: null, ready: false, passwordUnreadable: false },
+        });
+
+        const { getHomeSettings, getHomeMailDelivery } = await operations();
+        const scope = { serverId: home, accountId: 'account-admin' } as const;
+        const settings = await getHomeSettings({ scope });
+        const readiness = await getHomeMailDelivery({ scope });
+
+        expect(settings.kind === 'succeeded' ? settings.value.revision : null).toBe(3);
+        expect(readiness).toEqual({
+            kind: 'succeeded',
+            value: { transportConfigured: true, linkTargetBuildable: false, linkOrigin: null, ready: false, passwordUnreadable: false },
+        });
+        expect(harness.requestsFor('/v1/home/settings/get')[0]?.serverId).toBe(home);
+    });
+
+    it('carries a failed test send as its class only', async () => {
+        const home = await addHome();
+        harness.answer(home, '/v1/home/mail-delivery/test', {
+            body: { status: 'failed', reason: 'transport_failed' },
+        });
+
+        const { sendHomeTestEmail } = await operations();
+        const outcome = await sendHomeTestEmail({
+            scope: { serverId: home, accountId: 'account-admin' },
+            to: '  ada@example.com ',
+        });
+
+        expect(outcome).toEqual({ kind: 'succeeded', value: { status: 'failed', reason: 'transport_failed' } });
+        expect(harness.requestsFor('/v1/home/mail-delivery/test')[0]?.input).toEqual({ to: 'ada@example.com' });
+    });
+
+    it('runs a retention dry run on the exact Home and returns its per-domain counts', async () => {
+        const home = await addHome();
+        const result = {
+            ranAt: '2026-09-27T10:42:00.000Z',
+            byDomain: { sessions: { wouldDelete: 1204, candidatesExamined: 5000, stopReason: 'time_budget' } },
+        };
+        harness.answer(home, '/v1/home/retention/dry-run', { body: result });
+
+        const { runHomeRetentionDryRun } = await operations();
+        const outcome = await runHomeRetentionDryRun({ scope: { serverId: home, accountId: 'account-admin' } });
+
+        expect(outcome).toEqual({ kind: 'succeeded', value: result });
+        expect(harness.requestsFor('/v1/home/retention/dry-run')[0]?.input).toEqual({});
+        expect(harness.requestsFor('/v1/home/retention/dry-run')[0]?.serverId).toBe(home);
+    });
+
+    it('carries a sweep that holds the lock as the Home conflict code', async () => {
+        const home = await addHome();
+        harness.answer(home, '/v1/home/retention/dry-run', {
+            status: 409,
+            body: { error: 'retention_sweep_in_progress' },
+        });
+
+        const { runHomeRetentionDryRun } = await operations();
+        const outcome = await runHomeRetentionDryRun({ scope: { serverId: home, accountId: 'account-admin' } });
+
+        expect(outcome.kind).toBe('failed');
+        if (outcome.kind !== 'failed') throw new Error('unreachable');
+        expect(outcome.failure.code).toBe('retention_sweep_in_progress');
+    });
+
+    it('pages the audit trail with the Home cursor', async () => {
+        const home = await addHome();
+        const event = homeAdministrationEventFixture({ id: 'evt-1', action: 'home.owner.claim', summary: {} });
+        harness.answer(home, '/v1/home/audit/list', { body: { items: [event], nextCursor: 'cur-2' } });
+
+        const { listHomeAudit } = await operations();
+        const outcome = await listHomeAudit({
+            scope: { serverId: home, accountId: 'account-admin' },
+            cursor: 'cur-1',
+        });
+
+        expect(outcome).toEqual({ kind: 'succeeded', value: { items: [event], nextCursor: 'cur-2' } });
+        expect(harness.requestsFor('/v1/home/audit/list')[0]?.input).toEqual({ cursor: 'cur-1' });
     });
 });

@@ -4,7 +4,7 @@ import type {
 } from '@happier-dev/agents';
 import { applyDisplayTitleSessionMetadata } from '@happier-dev/agents/session/state/metadataWriters';
 
-import type { Metadata } from '@/sync/domains/state/storageTypes';
+import type { Metadata } from '@happier-dev/session-core/state';
 import { writeUiSessionStateField } from './engine';
 
 type DisplayTitleWriteValue = SessionStateFieldWriteValue<'display.title'>;

@@ -1,10 +1,10 @@
 import { getActiveServerSnapshot } from '../server/serverRuntime';
 import { areSessionAddressesEqual, normalizeSessionAddress, type SessionAddress } from '../session/sessionAddress';
-import type { Message } from './messageTypes';
+import type { Message } from '@happier-dev/session-core/messages';
 import {
     readStoredSessionMessagesFromStateLike,
     type StoredMessageFromStateLike,
-} from './readStoredSessionMessages';
+} from '@happier-dev/session-core/messages';
 
 /**
  * The retained transcript store is keyed by bare session id and holds the rows of

@@ -25,6 +25,7 @@ vi.mock('@/sync/runtime/getSyncSingleton', () => ({
 }));
 
 vi.mock('@/agents/catalog/catalog', () => ({
+    AGENT_IDS: ['codex'],
     getAgentCore: () => ({ model: { defaultMode: 'default', supportsSelection: false } }),
     resolveAgentIdFromFlavor: () => 'codex',
 }));
@@ -190,7 +191,7 @@ describe('followUpSpawnedSessionWithServerScope', () => {
             attachmentMeta,
             {
                 localId: 'spawn-first-turn:nonce-1',
-                requestedAction: { v: 1, kind: 'enqueue' },
+                    requestedAction: { v: 1, kind: 'send_now' },
             },
         );
     });
@@ -302,15 +303,8 @@ describe('followUpSpawnedSessionWithServerScope', () => {
                 targetAccountId: 'account-b',
                 targetServerUrl: 'https://server-b.example.test',
                 token: 'token-b',
-                encryption: {
-                    decryptEncryptionKey: async () => null,
-                    initializeSessions: async () => {},
-                    getSessionEncryption: () => null,
-                    // The real Account encryption owner answers both generation questions, so the
-                    // fixture does too rather than letting consumers probe for them.
-                    getCurrentEncryptionGenerationScope: () => ({ accountId: 'local', serverId: null, generation: 0 }),
-                    isCurrentEncryptionGenerationScope: () => true,
-                },
+                credentials: { token: 'token-b' },
+                encryption: null,
             }),
             fetchSessionById: async ({ applySessions }) => {
                 const session = {
@@ -341,6 +335,77 @@ describe('followUpSpawnedSessionWithServerScope', () => {
         });
 
         expect(syncApplySessions).toHaveBeenCalledTimes(1);
+    });
+
+    it('uses the canonical scoped request owner to hydrate before sending the first message', async () => {
+        const sendSessionMessageWithServerScope = vi.fn(async () => ({ ok: true as const }));
+        const fetchedSession = {
+            id: 'sess_target',
+            createdAt: 1,
+            updatedAt: 2,
+            seq: 3,
+            active: true,
+            activeAt: 2,
+            encryptionMode: 'plain',
+            metadataVersion: 1,
+            metadata: { path: '/tmp/repo', host: 'host' },
+            agentStateVersion: 1,
+            agentState: null,
+            presence: 'online',
+        } as Session;
+        let storedSession: Session | null = null;
+        const fetchSessionById = vi.fn(async ({
+            activeRequest,
+            authority,
+            applySessions,
+        }: {
+            activeRequest: (path: string, init?: RequestInit) => Promise<Response>;
+            authority?: Readonly<{
+                context: Readonly<{ targetServerId: string }>;
+                request: (path: string, init?: RequestInit) => Promise<Response>;
+            }>;
+            applySessions: (sessions: Session[]) => void;
+        }) => {
+            expect(authority?.context.targetServerId).toBe('server-b');
+            expect(authority?.request).toBe(activeRequest);
+            applySessions([fetchedSession]);
+            return { ok: true, session: null };
+        });
+
+        const { createFollowUpSpawnedSessionWithServerScope } = await import('./followUpSpawnedSession');
+        const { followUpSpawnedSessionWithServerScope } = createFollowUpSpawnedSessionWithServerScope({
+            resolveContext: async () => ({
+                scope: 'scoped',
+                timeoutMs: 5_000,
+                targetServerId: 'server-b',
+                targetAccountId: 'account-b',
+                targetServerUrl: 'https://server-b.example.test',
+                token: 'token-b',
+                credentials: { token: 'token-b' },
+                encryption: null,
+            }),
+            fetchSessionById,
+            sendSessionMessageWithServerScope,
+            getStoredSession: () => storedSession,
+            applySessions: (sessions) => {
+                storedSession = sessions[0] ?? null;
+            },
+        });
+
+        await followUpSpawnedSessionWithServerScope({
+            sessionId: 'sess_target',
+            targetServerId: 'server-b',
+            initialMessageText: 'List the files in this directory and stop.',
+        });
+
+        expect(fetchSessionById).toHaveBeenCalledOnce();
+        expect(sendSessionMessageWithServerScope).toHaveBeenCalledOnce();
+        expect(sendSessionMessageWithServerScope).toHaveBeenCalledWith(expect.objectContaining({
+            sessionId: 'sess_target',
+            message: 'List the files in this directory and stop.',
+            providerDeliveryIntent: 'first_turn',
+        }));
+        expect(storedSession).toBe(fetchedSession);
     });
 
     it('hydrates and sends the initial message through the selected server scope without writing workspace metadata', async () => {
@@ -376,15 +441,8 @@ describe('followUpSpawnedSessionWithServerScope', () => {
                 targetAccountId: 'account-b',
                 targetServerUrl: 'https://server-b.example.test',
                 token: 'token-b',
-                encryption: {
-                    decryptEncryptionKey: async () => null,
-                    initializeSessions: async () => {},
-                    getSessionEncryption: () => null,
-                    // The real Account encryption owner answers both generation questions, so the
-                    // fixture does too rather than letting consumers probe for them.
-                    getCurrentEncryptionGenerationScope: () => ({ accountId: 'local', serverId: null, generation: 0 }),
-                    isCurrentEncryptionGenerationScope: () => true,
-                },
+                credentials: { token: 'token-b' },
+                encryption: null,
             }),
             fetchSessionById: async ({ applySessions }) => {
                 applySessions([fetchedSession]);
@@ -446,6 +504,102 @@ describe('followUpSpawnedSessionWithServerScope', () => {
         expect(refreshSessions).not.toHaveBeenCalled();
     });
 
+    it('sends the first turn when the scoped by-id row is older than the stored models seed', async () => {
+        const sendSessionMessageWithServerScope = vi.fn(async () => ({ ok: true as const }));
+        const storedSession = {
+            id: 'sess_target',
+            serverId: 'server-b',
+            createdAt: 1,
+            updatedAt: 2,
+            seq: 3,
+            active: true,
+            activeAt: 2,
+            encryptionMode: 'plain',
+            metadataLayoutVersion: 0,
+            metadataVersion: 2,
+            metadata: { sessionModelsV1: { updatedAt: 2 } },
+            agentStateVersion: 1,
+            agentState: null,
+            thinking: false,
+            thinkingAt: 0,
+        } as Session;
+        const applySessions = vi.fn();
+        const { createFollowUpSpawnedSessionWithServerScope } = await import('./followUpSpawnedSession');
+        const { followUpSpawnedSessionWithServerScope } = createFollowUpSpawnedSessionWithServerScope({
+            resolveContext: async () => ({
+                scope: 'scoped',
+                timeoutMs: 5_000,
+                targetServerId: 'server-b',
+                targetAccountId: 'account-b',
+                targetServerUrl: 'https://server-b.example.test',
+                token: 'token-b',
+                credentials: { token: 'token-b' },
+                encryption: null,
+            }),
+            fetchSessionById: async ({ getExistingSession, applySessions: applyFromById }) =>
+                fetchAndApplySessionById({
+                    sessionId: 'sess_target',
+                    serverId: 'server-b',
+                    credentials: { token: 'token-b' },
+                    accountCurrentness: {
+                        mode: 'plain',
+                        version: 1,
+                        signingKeyFingerprint: null,
+                        contentKeyFingerprint: null,
+                        updatedAt: 1,
+                        recipientEnvelopeReadiness: { status: 'unavailable', reason: 'plain_account' },
+                    },
+                    encryption: {
+                        decryptEncryptionKey: async () => null,
+                        initializeSessions: async () => {},
+                        getSessionEncryption: () => null,
+                    },
+                    sessionDataKeys: new Map(),
+                    request: async () => Response.json({
+                        session: {
+                            id: 'sess_target',
+                            createdAt: 1,
+                            updatedAt: 1,
+                            seq: 2,
+                            active: true,
+                            activeAt: 1,
+                            encryptionMode: 'plain',
+                            dataEncryptionKey: null,
+                            metadataLayoutVersion: 0,
+                            metadataVersion: 1,
+                            metadata: '{}',
+                            agentStateVersion: 1,
+                            agentState: null,
+                            share: null,
+                        },
+                    }),
+                    applySessions: applyFromById,
+                    getExistingSession,
+                    log: { log: () => {} },
+                    includeTurnsProjection: false,
+                }),
+            sendSessionMessageWithServerScope,
+            getStoredSession: () => storedSession,
+            applySessions,
+        });
+
+        await followUpSpawnedSessionWithServerScope({
+            sessionId: 'sess_target',
+            targetServerId: 'server-b',
+            initialMessageText: 'first prompt',
+            messageLocalId: 'first-turn-local-id',
+        });
+
+        expect(sendSessionMessageWithServerScope).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+            sessionId: 'sess_target',
+            message: 'first prompt',
+            messageLocalId: 'first-turn-local-id',
+            providerDeliveryIntent: 'first_turn',
+        }));
+        expect(applySessions).not.toHaveBeenCalled();
+        expect(storedSession.metadataVersion).toBe(2);
+    });
+
     it('routes an attachment-only first turn through the selected server scope after hydration', async () => {
         const sendSessionMessageWithServerScope = vi.fn(async () => ({ ok: true as const }));
         const fetchedSession = {
@@ -472,15 +626,8 @@ describe('followUpSpawnedSessionWithServerScope', () => {
                 targetAccountId: 'account-b',
                 targetServerUrl: 'https://server-b.example.test',
                 token: 'token-b',
-                encryption: {
-                    decryptEncryptionKey: async () => null,
-                    initializeSessions: async () => {},
-                    getSessionEncryption: () => null,
-                    // The real Account encryption owner answers both generation questions, so the
-                    // fixture does too rather than letting consumers probe for them.
-                    getCurrentEncryptionGenerationScope: () => ({ accountId: 'local', serverId: null, generation: 0 }),
-                    isCurrentEncryptionGenerationScope: () => true,
-                },
+                credentials: { token: 'token-b' },
+                encryption: null,
             }),
             fetchSessionById: async ({ applySessions }) => {
                 applySessions([fetchedSession]);
@@ -527,15 +674,8 @@ describe('followUpSpawnedSessionWithServerScope', () => {
                 targetAccountId: 'account-b',
                 targetServerUrl: 'https://server-b.example.test',
                 token: 'token-b',
-                encryption: {
-                    decryptEncryptionKey: async () => null,
-                    initializeSessions: async () => {},
-                    getSessionEncryption: () => null,
-                    // The real Account encryption owner answers both generation questions, so the
-                    // fixture does too rather than letting consumers probe for them.
-                    getCurrentEncryptionGenerationScope: () => ({ accountId: 'local', serverId: null, generation: 0 }),
-                    isCurrentEncryptionGenerationScope: () => true,
-                },
+                credentials: { token: 'token-b' },
+                encryption: null,
             }),
             fetchSessionById: async () => ({
                 ok: false,
@@ -573,15 +713,8 @@ describe('followUpSpawnedSessionWithServerScope', () => {
                 targetAccountId: 'account-b',
                 targetServerUrl: 'https://server-b.example.test',
                 token: 'token-b',
-                encryption: {
-                    decryptEncryptionKey: async () => null,
-                    initializeSessions: async () => {},
-                    getSessionEncryption: () => null,
-                    // The real Account encryption owner answers both generation questions, so the
-                    // fixture does too rather than letting consumers probe for them.
-                    getCurrentEncryptionGenerationScope: () => ({ accountId: 'local', serverId: null, generation: 0 }),
-                    isCurrentEncryptionGenerationScope: () => true,
-                },
+                credentials: { token: 'token-b' },
+                encryption: null,
             }),
             fetchSessionById: async () => {
                 throw createNotAuthenticatedError();

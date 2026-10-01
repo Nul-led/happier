@@ -137,7 +137,7 @@ describe('mergeVoiceAgentRunMetadataFromExecutionRun', () => {
     });
   });
 
-  it('rewrites metadata using the canonical contract when the public run is republished', () => {
+  it('preserves metadata and its timestamp when the public run is republished unchanged', () => {
     const next = mergeVoiceAgentRunMetadataFromExecutionRun({
       metadata: {
       voiceAgentRunV1: {
@@ -181,7 +181,7 @@ describe('mergeVoiceAgentRunMetadataFromExecutionRun', () => {
     expect(next).toMatchObject({
       voiceAgentRunV1: {
         runId: 'run_1',
-        updatedAtMs: 999,
+        updatedAtMs: 123,
         transcriptContractVersion: VOICE_AGENT_RUN_TRANSCRIPT_CONTRACT_VERSION,
         welcomedEpoch: 11,
       },

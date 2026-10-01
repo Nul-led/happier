@@ -1,5 +1,5 @@
-import type { Metadata } from '@/sync/domains/state/storageTypes';
-import type { ToolCall } from '@/sync/domains/messages/messageTypes';
+import type { Metadata } from '@happier-dev/session-core/state';
+import type { ToolCall } from "@happier-dev/session-core/messages";
 import * as z from 'zod';
 import { ICON_EDIT } from '../icons';
 import type { KnownToolDefinition } from '../_types';

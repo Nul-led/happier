@@ -9,6 +9,7 @@ import type { DeviceLocalSecretStorage } from '@/daemon/deviceLocalSecretStorage
 const validateExternalMachineSourceMock = vi.fn();
 const resolveExternalSessionSurfaceOpsMock = vi.fn();
 const resolveTranscriptRefreshBindingMock = vi.fn();
+const resolveTranscriptRefreshOccurrenceIdMock = vi.fn(() => 'occurrence-1');
 const loadLinkedExternalSessionMock = vi.fn();
 const readStoredCredentialsMock = vi.fn();
 
@@ -18,10 +19,19 @@ vi.mock('@/api/session/external/security/validateExternalMachineSource', () => (
 
 vi.mock('./providerOpsResolution', () => ({
   resolveExternalSessionSurfaceOps: (...args: unknown[]) => resolveExternalSessionSurfaceOpsMock(...args),
+  resolveOccurrenceBoundExternalSessionFollowSurface: async (...args: unknown[]) => ({
+    providerOps: await resolveExternalSessionSurfaceOpsMock(...args),
+    occurrenceId: 'occurrence-1',
+    sourceCustody: { kind: 'development', registeredRootId: 'source-root-1' },
+  }),
 }));
 vi.mock('@/api/session/external/secureRefresh/resolveExternalSessionTranscriptRefreshBinding', () => ({
-  resolveExternalSessionTranscriptRefreshBinding: (...args: unknown[]) =>
-    resolveTranscriptRefreshBindingMock(...args),
+  resolveExternalSessionTranscriptRefreshCurrentness: async (...args: unknown[]) => {
+    const binding = await resolveTranscriptRefreshBindingMock(...args);
+    return binding
+      ? { binding, occurrenceId: resolveTranscriptRefreshOccurrenceIdMock() }
+      : null;
+  },
 }));
 vi.mock('@/api/session/external/takeover/loadLinkedExternalSession', () => ({
   loadLinkedExternalSession: (...args: unknown[]) => loadLinkedExternalSessionMock(...args),
@@ -72,7 +82,7 @@ describe('external session transcript actions', () => {
         },
         generation: 'source-1',
       },
-      contributionGeneration: 'contribution-1',
+      sourceCustody: { kind: 'development', registeredRootId: 'source-root-1' },
       cursorIdentity: secureRefreshCursorIdentity,
     };
     resolveTranscriptRefreshBindingMock.mockResolvedValue(binding);
@@ -178,7 +188,7 @@ describe('external session transcript actions', () => {
         },
         generation: 'source-1',
       },
-      contributionGeneration: 'contribution-1',
+      sourceCustody: { kind: 'development', registeredRootId: 'source-root-1' },
       cursorIdentity: secureRefreshCursorIdentity,
     };
     resolveTranscriptRefreshBindingMock.mockResolvedValue(binding);
@@ -225,7 +235,7 @@ describe('external session transcript actions', () => {
         },
         generation: 'source-1',
       },
-      contributionGeneration: 'contribution-1',
+      sourceCustody: { kind: 'development', registeredRootId: 'source-root-1' },
       cursorIdentity: secureRefreshCursorIdentity,
     };
     resolveTranscriptRefreshBindingMock.mockResolvedValue(binding);
@@ -357,7 +367,7 @@ describe('external session transcript actions', () => {
         },
         generation: 'source-1',
       },
-      contributionGeneration: 'contribution-1',
+      sourceCustody: { kind: 'development', registeredRootId: 'source-root-1' },
       cursorIdentity: secureRefreshCursorIdentity,
     };
     resolveTranscriptRefreshBindingMock.mockResolvedValue(binding);
@@ -415,7 +425,7 @@ describe('external session transcript actions', () => {
         },
         generation: 'source-1',
       },
-      contributionGeneration: 'contribution-1',
+      sourceCustody: { kind: 'development', registeredRootId: 'source-root-1' },
       cursorIdentity: secureRefreshCursorIdentity,
     };
     resolveTranscriptRefreshBindingMock.mockResolvedValue({
@@ -435,7 +445,7 @@ describe('external session transcript actions', () => {
     expect(resolveExternalSessionSurfaceOpsMock).not.toHaveBeenCalled();
   });
 
-  it('applies zero source items when the qualified binding changes during readAfter', async () => {
+  it('applies zero source items when the live plugin occurrence changes during readAfter', async () => {
     const binding = {
       v: 1 as const,
       machineId: 'machine-1',
@@ -449,15 +459,13 @@ describe('external session transcript actions', () => {
         },
         generation: 'source-1',
       },
-      contributionGeneration: 'contribution-1',
+      sourceCustody: { kind: 'development', registeredRootId: 'source-root-1' },
       cursorIdentity: secureRefreshCursorIdentity,
     };
-    resolveTranscriptRefreshBindingMock
-      .mockResolvedValueOnce(binding)
-      .mockResolvedValueOnce({
-        ...binding,
-        contributionGeneration: 'contribution-2',
-      });
+    resolveTranscriptRefreshBindingMock.mockResolvedValue(binding);
+    resolveTranscriptRefreshOccurrenceIdMock
+      .mockReturnValueOnce('occurrence-1')
+      .mockReturnValueOnce('occurrence-2');
     readStoredCredentialsMock.mockResolvedValue({ token: 'token', encryption: null });
     loadLinkedExternalSessionMock.mockResolvedValue({
       ok: true,

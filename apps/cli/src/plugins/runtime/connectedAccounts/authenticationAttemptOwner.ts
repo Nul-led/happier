@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from 'node:util';
+
 import type {
     ConnectedAccountAuthenticationContext as PluginConnectedAccountAuthenticationContext,
     ConnectedAccountRuntime as PluginConnectedAccountRuntime } from '@happier-dev/plugin-sdk/connected-accounts';
@@ -7,6 +9,7 @@ import type {
 import {
   CONNECTED_ACCOUNT_DIRECT_EXPORT_CONTRACT_V1,
   QualifiedConnectedAccountIdSchema,
+  pluginSourceCustodyV1Equal,
   sameQualifiedConnectedAccountRef,
   type PluginConnectedAccountAuthenticationModeV2,
 } from '@happier-dev/protocol';
@@ -18,6 +21,7 @@ import {
     cloneBoundedConnectedAccountDiagnostic,
     readStrictConnectedAccountProducerRecord,
 } from './producerResultSnapshot';
+import type { PluginSourceCustody } from '../sourceAuthority';
 
 type MaybePromise<T> = T | Promise<T>;
 type PluginConnectedAccountCredentialStore =
@@ -65,9 +69,10 @@ export type ConnectedAccountAttemptModeAdmission = Readonly<{
     service: PluginContributionRef;
     descriptor: PluginConnectedAccountAuthenticationModeV2;
     authenticationModeCardinality?: 'single' | 'multiple';
-    generation: string;
-    /** Stable immutable plugin artifact identity; unlike process-local registry generation. */
-    immutableGenerationId: string;
+    /** Process-local fence for provider callbacks; never persisted. */
+    occurrenceId: string;
+    /** Durable byte/source authority used to restore the attempt after restart. */
+    sourceCustody: PluginSourceCustody;
 }>;
 
 export type ConnectedAccountAttemptProviderOperation =
@@ -117,7 +122,7 @@ export type ConnectedAccountAttemptSettlementRequest = Readonly<{
     expectedCredentialRevision: string | null;
     expectedCredentialConfigurationRevision: string | null;
     expectedConfigurationRevision: string;
-    generation: string;
+    sourceCustody: PluginSourceCustody;
     stagedCredentials: Readonly<Record<string, string>>;
     stagedAccountConfigurationContent?: unknown;
     providerIdentity?: Readonly<{
@@ -135,7 +140,7 @@ export type ConnectedAccountDeviceTransactionSnapshot = Readonly<{
     service: PluginContributionRef;
     account?: PluginConnectedAccountRef;
     modeId: string;
-    immutableGenerationId: string;
+    sourceCustody: PluginSourceCustody;
     expectedCredentialRevision: string | null;
     expectedCredentialConfigurationRevision: string | null;
     expectedConfigurationRevision: string;
@@ -157,11 +162,12 @@ export type ConnectedAccountOAuthTransactionSnapshot = Readonly<{
     service: PluginContributionRef;
     account?: PluginConnectedAccountRef;
     modeId: string;
-    immutableGenerationId: string;
+    sourceCustody: PluginSourceCustody;
     expectedCredentialRevision: string | null;
     expectedCredentialConfigurationRevision: string | null;
     expectedConfigurationRevision: string;
     phase: 'starting' | 'awaitingOAuth' | 'outcomeUnknown';
+    authorizationUrl?: string;
     expiresAtMs?: number;
     stagedCredentials: Readonly<Record<string, string>>;
     stagedAccountConfigurationContent?: unknown;
@@ -272,6 +278,7 @@ type ActiveStoredAttempt = {
     decisiveSettlement: Promise<AttemptResponse> | null;
     oauthTransaction: ConnectedAccountOAuthTransaction | null;
     oauthExpiresAtMs: number | null;
+    oauthAuthorizationUrl: string | null;
     device: {
         expiresAtMs: number;
         pollIntervalMs: number;
@@ -318,6 +325,8 @@ type CleanupPendingStoredAttempt = {
     phase: 'cleanupPending';
     lastResponse: Extract<AttemptResponse, { status: 'cleanupPending' }>;
     cleanupTerminalResponse: AttemptResponse;
+    logService: PluginContributionRef | null;
+    settlementPrepared: boolean;
     cleanupPromise: Promise<void> | null;
     cleanupTargets: Readonly<{
         oauthTransaction: boolean;
@@ -338,6 +347,13 @@ type StoredAttempt =
 
 function sameService(left: PluginContributionRef, right: PluginContributionRef): boolean {
     return left.pluginId === right.pluginId && left.localId === right.localId;
+}
+
+function snapshotSourceMatchesAdmission(
+    snapshot: ConnectedAccountOAuthTransactionSnapshot | ConnectedAccountDeviceTransactionSnapshot,
+    admission: ConnectedAccountAttemptModeAdmission,
+): boolean {
+    return pluginSourceCustodyV1Equal(snapshot.sourceCustody, admission.sourceCustody);
 }
 
 /**
@@ -679,6 +695,11 @@ export function createConnectedAccountAuthenticationAttemptOwner(params: Readonl
     createAttemptId(): string;
     createAccountId(): string;
     now(): number;
+    onBackgroundTransition?(input: Readonly<{
+        response: ConnectedAccountAttemptResponse;
+        service: PluginContributionRef;
+        settlementPhase: 'notPrepared' | 'prepared' | 'cleanupPending' | 'settled';
+    }>): void;
     attemptTtlMs: number;
     accounts: Readonly<{
         readExact(account: PluginConnectedAccountRef): Promise<Readonly<{
@@ -696,8 +717,8 @@ export function createConnectedAccountAuthenticationAttemptOwner(params: Readonl
             mode: PluginConnectedAccountAuthenticationModeV2;
             attemptId?: string;
             expectedConfigurationRevision?: string;
-            generation: string;
-            immutableGenerationId: string;
+            occurrenceId: string;
+            sourceCustody: PluginSourceCustody;
         }>): Promise<ConnectedAccountAttemptConfigurationAdmission>;
         isCurrent(
             snapshot: PluginConnectedAccountRuntimeConfiguration,
@@ -767,8 +788,8 @@ export function createConnectedAccountAuthenticationAttemptOwner(params: Readonl
             { kind: 'attempt' }
         >;
         mode: PluginConnectedAccountAuthenticationModeV2;
-        generation: string;
-        immutableGenerationId: string;
+        occurrenceId: string;
+        sourceCustody: PluginSourceCustody;
     }> | null>;
     resumeDevice(input: Readonly<{
         attemptId: string;
@@ -792,7 +813,11 @@ export function createConnectedAccountAuthenticationAttemptOwner(params: Readonl
         signal?: AbortSignal;
     }>): Promise<AttemptResponse>;
     cancel(input: Readonly<{ attemptId: string }>): Promise<AttemptResponse>;
-    read(input: Readonly<{ attemptId: string }>): Promise<AttemptResponse>;
+    read(input: Readonly<{ attemptId: string; restoreKind?: 'oauth' }>): Promise<AttemptResponse>;
+    inspectObservability(attemptId: string): Readonly<{
+        service: PluginContributionRef | null;
+        settlementPhase: 'notPrepared' | 'prepared' | 'settling' | 'cleanupPending' | 'settled';
+    }> | null;
     dispose(): void;
 }> {
     if (!Number.isInteger(params.maxAttempts) || params.maxAttempts < 1) {
@@ -807,6 +832,8 @@ export function createConnectedAccountAuthenticationAttemptOwner(params: Readonl
     const terminalResponses = new Map<string, Readonly<{
         createdAtMs: number;
         response: AttemptResponse;
+        service: PluginContributionRef | null;
+        settlementPrepared: boolean;
     }>>();
 
     function unavailable(attemptId?: string): AttemptResponse {
@@ -853,6 +880,8 @@ export function createConnectedAccountAuthenticationAttemptOwner(params: Readonl
                 code: 'connected_account_attempt_cleanup_pending',
             },
             cleanupTerminalResponse: terminalResponse,
+            logService: 'admission' in attempt ? attempt.admission.service : null,
+            settlementPrepared: 'preparedSettlement' in attempt && attempt.preparedSettlement !== null,
             cleanupPromise: null,
             cleanupTargets: Object.freeze({
                 oauthTransaction: options?.skipOAuthTransactionCleanup !== true,
@@ -939,6 +968,8 @@ export function createConnectedAccountAuthenticationAttemptOwner(params: Readonl
             terminalResponses.set(attempt.id, {
                 createdAtMs: params.now(),
                 response: attempt.cleanupTerminalResponse,
+                service: attempt.logService,
+                settlementPrepared: attempt.settlementPrepared,
             });
             while (terminalResponses.size > params.maxAttempts) {
                 terminalResponses.delete(terminalResponses.keys().next().value!);
@@ -1151,8 +1182,8 @@ export function createConnectedAccountAuthenticationAttemptOwner(params: Readonl
                 service: input.service,
                 ...(input.account ? { account: input.account } : {}),
                 mode: admitted.descriptor,
-                generation: admitted.generation,
-                immutableGenerationId: admitted.immutableGenerationId,
+                occurrenceId: admitted.occurrenceId,
+                sourceCustody: admitted.sourceCustody,
                 ...(reservedAttemptId ? { attemptId: reservedAttemptId } : {}),
                 ...(input.expectedConfigurationRevision
                     ? { expectedConfigurationRevision: input.expectedConfigurationRevision }
@@ -1196,6 +1227,7 @@ export function createConnectedAccountAuthenticationAttemptOwner(params: Readonl
                         decisiveSettlement: null,
                         oauthTransaction: null,
                         oauthExpiresAtMs: null,
+                        oauthAuthorizationUrl: null,
                         device: null,
                         phase: 'configurationRequired',
                         lastResponse: response,
@@ -1261,6 +1293,7 @@ export function createConnectedAccountAuthenticationAttemptOwner(params: Readonl
             decisiveSettlement: null,
             oauthTransaction: null,
             oauthExpiresAtMs: null,
+            oauthAuthorizationUrl: null,
             device: null,
             phase,
             lastResponse: null,
@@ -1357,7 +1390,7 @@ export function createConnectedAccountAuthenticationAttemptOwner(params: Readonl
             service: attempt.admission.service,
             ...(attempt.account ? { account: attempt.account } : {}),
             modeId: attempt.admission.modeId,
-            immutableGenerationId: attempt.admission.immutableGenerationId,
+            sourceCustody: attempt.admission.sourceCustody,
             expectedCredentialRevision: attempt.expectedCredentialRevision,
             expectedCredentialConfigurationRevision:
                 attempt.expectedCredentialConfigurationRevision,
@@ -1398,12 +1431,15 @@ export function createConnectedAccountAuthenticationAttemptOwner(params: Readonl
             service: attempt.admission.service,
             ...(attempt.account ? { account: attempt.account } : {}),
             modeId: attempt.admission.modeId,
-            immutableGenerationId: attempt.admission.immutableGenerationId,
+            sourceCustody: attempt.admission.sourceCustody,
             expectedCredentialRevision: attempt.expectedCredentialRevision,
             expectedCredentialConfigurationRevision:
                 attempt.expectedCredentialConfigurationRevision,
             expectedConfigurationRevision: attempt.configuration.snapshot.revision,
             phase,
+            ...(attempt.oauthAuthorizationUrl === null
+                ? {}
+                : { authorizationUrl: attempt.oauthAuthorizationUrl }),
             ...(expiresAtMs === undefined ? {} : { expiresAtMs }),
             stagedCredentials: attempt.credentials.snapshot(),
             ...(attempt.configuration.stagedAccountConfigurationContent === undefined
@@ -1773,6 +1809,8 @@ export function createConnectedAccountAuthenticationAttemptOwner(params: Readonl
                 code: 'connected_account_attempt_cleanup_pending',
             },
             cleanupTerminalResponse: terminalResponse,
+            logService: 'admission' in attempt ? attempt.admission.service : null,
+            settlementPrepared: 'preparedSettlement' in attempt && attempt.preparedSettlement !== null,
             cleanupPromise: null,
             cleanupTargets: Object.freeze({
                 oauthTransaction: target === 'oauth'
@@ -2103,12 +2141,11 @@ export function createConnectedAccountAuthenticationAttemptOwner(params: Readonl
                 attempt.admission.descriptor.kind === 'manual'
                     ? attempt.admission.descriptor.directExport?.contractVersion ?? null
                     : null,
-            contributionContractVersion: attempt.admission.immutableGenerationId,
             expectedCredentialRevision: attempt.expectedCredentialRevision,
             expectedCredentialConfigurationRevision:
                 attempt.expectedCredentialConfigurationRevision,
             expectedConfigurationRevision: attempt.configuration!.snapshot.revision,
-            generation: attempt.admission.generation,
+            sourceCustody: attempt.admission.sourceCustody,
             stagedCredentials: attempt.credentials.snapshot(),
             ...(attempt.configuration!.stagedAccountConfigurationContent !== undefined
                 ? { stagedAccountConfigurationContent: attempt.configuration!.stagedAccountConfigurationContent }
@@ -2229,6 +2266,7 @@ export function createConnectedAccountAuthenticationAttemptOwner(params: Readonl
             // still current: an eager read or completion must never act on
             // authorization this daemon could not recover after a restart.
             attempt.oauthExpiresAtMs = result.expiresAtMs ?? null;
+            attempt.oauthAuthorizationUrl = result.authorizationUrl;
             const response: AttemptResponse = {
                 status: 'awaitingOAuth',
                 attemptId: attempt.id,
@@ -2506,8 +2544,7 @@ export function createConnectedAccountAuthenticationAttemptOwner(params: Readonl
         if (beforeProviderFlow) return beforeProviderFlow;
         if (attempt.admission.descriptor.kind === 'oauthDeviceCode') {
             if (params.deviceTransactions) {
-                let existingTransaction:
-                    ConnectedAccountDeviceTransactionSnapshot | null;
+                let existingTransaction: ConnectedAccountDeviceTransactionSnapshot | null;
                 try {
                     existingTransaction = await params.deviceTransactions.read(
                         attempt.id,
@@ -2607,7 +2644,20 @@ export function createConnectedAccountAuthenticationAttemptOwner(params: Readonl
     }
 
     function startProviderFlowInBackground(attempt: ActiveStoredAttempt): void {
-        void beginProviderFlow(attempt).catch(async () => {
+        const report = (response: AttemptResponse) => {
+            try {
+                params.onBackgroundTransition?.({
+                    response,
+                    service: attempt.admission.service,
+                    settlementPhase: attempt.preparedSettlement
+                        ? attempt.active ? 'prepared' : 'settled'
+                        : 'notPrepared',
+                });
+            } catch {
+                // Observability cannot turn a completed provider transition into a failure.
+            }
+        };
+        void beginProviderFlow(attempt).then(report).catch(async () => {
             if (!attempt.active || attempts.get(attempt.id) !== attempt) return;
             const response: AttemptResponse = {
                 status: 'unavailable',
@@ -2620,6 +2670,7 @@ export function createConnectedAccountAuthenticationAttemptOwner(params: Readonl
             } catch {
                 // destroyAttempt retains cleanup failures for the cleanup retry path.
             }
+            report(response);
         });
     }
 
@@ -2697,7 +2748,7 @@ export function createConnectedAccountAuthenticationAttemptOwner(params: Readonl
             return { response: unavailable(attemptId) };
         }
         restoration.oauthTransaction = transaction;
-        const snapshot = transaction.snapshot;
+        let snapshot = transaction.snapshot;
         restoration.createdAtMs = snapshot?.createdAtMs ?? params.now();
         const cleanUpTerminal = async (
             response: AttemptResponse,
@@ -2713,7 +2764,7 @@ export function createConnectedAccountAuthenticationAttemptOwner(params: Readonl
             !snapshot
             || snapshot.attemptId !== attemptId
             || snapshot.modeId.length === 0
-            || snapshot.immutableGenerationId.length === 0
+            || !snapshot.sourceCustody
             || !Number.isFinite(snapshot.createdAtMs)
             || params.now() - snapshot.createdAtMs >= params.attemptTtlMs
             || (
@@ -2800,7 +2851,7 @@ export function createConnectedAccountAuthenticationAttemptOwner(params: Readonl
             if (
                 admitted.descriptor.kind !== 'oauthAuthorizationCode'
                 || admitted.descriptor.id !== snapshot.modeId
-                || admitted.immutableGenerationId !== snapshot.immutableGenerationId
+                || !snapshotSourceMatchesAdmission(snapshot, admitted)
                 || !sameService(admitted.service, snapshot.service)
                 || !runtimeCurrent
             ) {
@@ -2847,8 +2898,8 @@ export function createConnectedAccountAuthenticationAttemptOwner(params: Readonl
                     service: snapshot.service,
                     ...(snapshot.account ? { account: snapshot.account } : {}),
                     mode: admitted.descriptor,
-                    generation: admitted.generation,
-                    immutableGenerationId: admitted.immutableGenerationId,
+                    occurrenceId: admitted.occurrenceId,
+                    sourceCustody: admitted.sourceCustody,
                     ...(snapshot.intent === 'connect' ? { attemptId: snapshot.attemptId } : {}),
                     expectedConfigurationRevision: snapshot.expectedConfigurationRevision,
                 });
@@ -2895,6 +2946,10 @@ export function createConnectedAccountAuthenticationAttemptOwner(params: Readonl
                 && (
                     preparedSettlement.intent !== snapshot.intent
                     || !sameService(preparedSettlement.service, snapshot.service)
+                    || !pluginSourceCustodyV1Equal(
+                        preparedSettlement.sourceCustody,
+                        admitted.sourceCustody,
+                    )
                     || preparedSettlement.authenticationModeId !== snapshot.modeId
                     || preparedSettlement.expectedCredentialRevision !== snapshot.expectedCredentialRevision
                     || preparedSettlement.expectedCredentialConfigurationRevision
@@ -2921,6 +2976,9 @@ export function createConnectedAccountAuthenticationAttemptOwner(params: Readonl
                     status: 'awaitingOAuth',
                     attemptId,
                     callbackUrl: transaction.request.callbackUrl,
+                    ...(snapshot.authorizationUrl === undefined
+                        ? {}
+                        : { authorizationUrl: snapshot.authorizationUrl }),
                     ...(snapshot.expiresAtMs === undefined
                         ? {}
                         : { expiresAtMs: snapshot.expiresAtMs }),
@@ -2955,6 +3013,7 @@ export function createConnectedAccountAuthenticationAttemptOwner(params: Readonl
                 decisiveSettlement: null,
                 oauthTransaction: transaction,
                 oauthExpiresAtMs: snapshot.expiresAtMs ?? null,
+                oauthAuthorizationUrl: snapshot.authorizationUrl ?? null,
                 device: null,
                 phase: snapshot.phase,
                 lastResponse: response,
@@ -2968,6 +3027,31 @@ export function createConnectedAccountAuthenticationAttemptOwner(params: Readonl
     }
 
     return Object.freeze({
+        inspectObservability(attemptId) {
+            const attempt = attempts.get(attemptId);
+            if (attempt?.phase === 'cleanupPending') {
+                return Object.freeze({
+                    service: attempt.logService,
+                    settlementPhase: 'cleanupPending' as const,
+                });
+            }
+            if (attempt?.phase === 'restoring') {
+                return Object.freeze({ service: null, settlementPhase: 'notPrepared' as const });
+            }
+            if (attempt) {
+                return Object.freeze({
+                    service: attempt.admission.service,
+                    settlementPhase: attempt.preparedSettlement
+                        ? attempt.phase === 'inFlight' ? 'settling' as const : 'prepared' as const
+                        : 'notPrepared' as const,
+                });
+            }
+            const terminal = terminalResponses.get(attemptId);
+            return terminal ? Object.freeze({
+                service: terminal.service,
+                settlementPhase: terminal.settlementPrepared ? 'settled' as const : 'notPrepared' as const,
+            }) : null;
+        },
         async beginConnect(input) {
             return await begin({
                 intent: 'connect',
@@ -3036,8 +3120,8 @@ export function createConnectedAccountAuthenticationAttemptOwner(params: Readonl
             return Object.freeze({
                 target,
                 mode: attempt.admission.descriptor,
-                generation: attempt.admission.generation,
-                immutableGenerationId: attempt.admission.immutableGenerationId,
+                occurrenceId: attempt.admission.occurrenceId,
+                sourceCustody: attempt.admission.sourceCustody,
             });
         },
         async resumeDevice(input) {
@@ -3073,7 +3157,7 @@ export function createConnectedAccountAuthenticationAttemptOwner(params: Readonl
                     code: 'connected_account_attempt_capacity_exhausted',
                 };
             }
-            let snapshot: ConnectedAccountDeviceTransactionSnapshot | null;
+            let snapshot: Awaited<ReturnType<typeof deviceTransactions.read>>;
             const finishDurableOperation =
                 beginDurableOperation(restoration);
             try {
@@ -3123,7 +3207,7 @@ export function createConnectedAccountAuthenticationAttemptOwner(params: Readonl
                 snapshot.attemptId !== input.attemptId
                 || snapshot.expiresAtMs <= params.now()
                 || snapshot.modeId.length === 0
-                || snapshot.immutableGenerationId.length === 0
+                || !snapshot.sourceCustody
                 || (
                     snapshot.expectedCredentialConfigurationRevision !== null
                     && (
@@ -3195,7 +3279,7 @@ export function createConnectedAccountAuthenticationAttemptOwner(params: Readonl
                 if (
                     admitted.descriptor.kind !== 'oauthDeviceCode'
                     || admitted.descriptor.id !== snapshot.modeId
-                    || admitted.immutableGenerationId !== snapshot.immutableGenerationId
+                    || !snapshotSourceMatchesAdmission(snapshot, admitted)
                     || !sameService(admitted.service, snapshot.service)
                     || !runtimeCurrent
                 ) {
@@ -3251,8 +3335,8 @@ export function createConnectedAccountAuthenticationAttemptOwner(params: Readonl
                         service: snapshot.service,
                         ...(snapshot.account ? { account: snapshot.account } : {}),
                         mode: admitted.descriptor,
-                        generation: admitted.generation,
-                        immutableGenerationId: admitted.immutableGenerationId,
+                        occurrenceId: admitted.occurrenceId,
+                        sourceCustody: admitted.sourceCustody,
                         ...(snapshot.intent === 'connect' ? { attemptId: snapshot.attemptId } : {}),
                         expectedConfigurationRevision: snapshot.expectedConfigurationRevision,
                     });
@@ -3302,6 +3386,10 @@ export function createConnectedAccountAuthenticationAttemptOwner(params: Readonl
                     && (
                         preparedSettlement.intent !== snapshot.intent
                         || !sameService(preparedSettlement.service, snapshot.service)
+                        || !pluginSourceCustodyV1Equal(
+                            preparedSettlement.sourceCustody,
+                            admitted.sourceCustody,
+                        )
                         || preparedSettlement.authenticationModeId !== snapshot.modeId
                         || preparedSettlement.expectedCredentialRevision !== snapshot.expectedCredentialRevision
                         || preparedSettlement.expectedCredentialConfigurationRevision
@@ -3344,6 +3432,7 @@ export function createConnectedAccountAuthenticationAttemptOwner(params: Readonl
                     decisiveSettlement: null,
                     oauthTransaction: null,
                     oauthExpiresAtMs: null,
+                    oauthAuthorizationUrl: null,
                     device: {
                         expiresAtMs: snapshot.expiresAtMs,
                         pollIntervalMs: snapshot.pollIntervalMs,
@@ -3436,8 +3525,8 @@ export function createConnectedAccountAuthenticationAttemptOwner(params: Readonl
                     service: attempt.admission.service,
                     mode: attempt.admission.descriptor,
                     attemptId: attempt.id,
-                    generation: attempt.admission.generation,
-                    immutableGenerationId: attempt.admission.immutableGenerationId,
+                    occurrenceId: attempt.admission.occurrenceId,
+                    sourceCustody: attempt.admission.sourceCustody,
                     ...(input.expectedConfigurationRevision
                         ? { expectedConfigurationRevision: input.expectedConfigurationRevision }
                         : {}),
@@ -3840,7 +3929,12 @@ export function createConnectedAccountAuthenticationAttemptOwner(params: Readonl
             return response;
         },
         async read(input) {
-            const attempt = readAttempt(input.attemptId);
+            let attempt = readAttempt(input.attemptId);
+            if (!attempt && input.restoreKind === 'oauth') {
+                const restored = await restoreOAuthAttempt(input.attemptId);
+                if ('response' in restored) return restored.response;
+                attempt = restored.attempt;
+            }
             if (!attempt) {
                 return terminalResponses.get(input.attemptId)?.response
                     ?? unavailable(input.attemptId);

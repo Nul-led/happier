@@ -1,3 +1,5 @@
+import { isMachineReplaced } from '@happier-dev/protocol';
+
 const DEFAULT_MACHINE_ONLINE_GRACE_MS = 60_000;
 const MAX_MACHINE_ONLINE_GRACE_MS = 5 * 60_000;
 
@@ -45,18 +47,27 @@ export function isMachineOnline(
     return ageMs <= graceMs;
 }
 
-export function getMachineDisplayName(
-    machine:
-        | Readonly<{ id?: string | null; metadata?: Readonly<{ displayName?: string | null; host?: string | null }> | null }>
-        | null
-        | undefined,
-): string | null {
-    const displayName = typeof machine?.metadata?.displayName === 'string' ? machine.metadata.displayName.trim() : '';
-    if (displayName) return displayName;
+export type MachinePresenceCounts = Readonly<{ online: number; offline: number }>;
 
-    const host = typeof machine?.metadata?.host === 'string' ? machine.metadata.host.trim() : '';
-    if (host) return host;
-
-    const id = typeof machine?.id === 'string' ? machine.id.trim() : '';
-    return id || null;
+/**
+ * How many of these machines are online and how many are not, by `isMachineOnline` (replaced
+ * identities left out): the one count
+ * behind every "2 online · 1 offline" (the Machines rail tooltip, its popover, Home's Machines
+ * section, the Settings Machines row).
+ */
+export function countMachinePresence(
+    machines: ReadonlyArray<Parameters<typeof isMachineOnline>[0] & Readonly<{ replacedByMachineId?: string | null }>>,
+    nowMs: number = Date.now(),
+): MachinePresenceCounts {
+    let online = 0;
+    let offline = 0;
+    for (const machine of machines) {
+        // An identity replaced by a newer one (a reinstall) is that machine's past, not an offline machine.
+        if (isMachineReplaced(machine)) continue;
+        if (isMachineOnline(machine, nowMs)) online += 1;
+        else offline += 1;
+    }
+    return { online, offline };
 }
+
+export { getMachineDisplayName, resolveMachineDisplayNames } from './machineDisplayNames';

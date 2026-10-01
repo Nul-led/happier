@@ -12,6 +12,8 @@ const payload: ProviderBrokerRouteGrantPayloadV1 = {
     v: 1, grantId: 'grant', aud: 'happier-provider-broker-route-v1', issuedAt: 100, expiresAt: 200,
     teamId: 'team', resourceId: 'resource',
     sourceRevision: 'source-revision-7',
+    brokerPlacementFingerprint: 'c'.repeat(64),
+    initiatorTokenEpoch: 0,
     initiator: { accountId: 'requester', machineId: 'worker', endpointId: 'a'.repeat(64) },
     target: { custodianAccountId: 'custodian', machineId: 'broker', endpointId: 'b'.repeat(64) },
     consumer: { kind: 'session', sessionId: 'session' },
@@ -28,7 +30,7 @@ function sign(value = payload): SignedProviderBrokerRouteGrantV1 {
 const input = {
     authority: sign(), nowMs: 150,
     trustRoots: [{ keyId: 'home', publicKey: Buffer.from(key.publicKey).toString('base64url') }],
-    expected: { teamId: payload.teamId, resourceId: payload.resourceId, sourceRevision: payload.sourceRevision, initiator: payload.initiator, target: payload.target, consumer: payload.consumer, application: payload.application },
+    expected: { teamId: payload.teamId, resourceId: payload.resourceId, sourceRevision: payload.sourceRevision, brokerPlacementFingerprint: payload.brokerPlacementFingerprint, initiator: payload.initiator, target: payload.target, consumer: payload.consumer, application: payload.application },
     authenticatedRemoteEndpointId: payload.initiator.endpointId,
 };
 
@@ -48,6 +50,7 @@ describe('verifyProviderBrokerRouteGrantV1', () => {
         const substitutes: ProviderBrokerRouteGrantPayloadV1[] = [
             { ...payload, resourceId: 'other' }, { ...payload, teamId: 'other' },
             { ...payload, sourceRevision: 'other-source-revision' },
+            { ...payload, brokerPlacementFingerprint: 'd'.repeat(64) },
             { ...payload, consumer: { kind: 'session', sessionId: 'other' } },
             { ...payload, initiator: { ...payload.initiator, accountId: 'other' } },
             { ...payload, initiator: { ...payload.initiator, machineId: 'other' } },

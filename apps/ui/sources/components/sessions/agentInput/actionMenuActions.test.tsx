@@ -49,7 +49,7 @@ describe('buildAgentInputActionMenuActions', () => {
         const path = actions.find((action) => action.id === 'path');
 
         expect(machine?.label).toBe('newSession.selectMachineTitle');
-        expect(path?.label).toBe('newSession.selectPathTitle');
+        expect(path?.label).toBe('newSession.folder.a11y.loading');
     });
 
     it('keeps stop ahead of machine and path in the collapsed control menu order when only a resolved agent label is available', () => {
@@ -226,6 +226,32 @@ describe('buildAgentInputActionMenuActions', () => {
             'machine',
             'path',
         ]);
+    });
+
+    it('leaves out the controls the host keeps on its bar, and keeps everything else in the menu', () => {
+        const actions = buildAgentInputActionMenuActions({
+            actionBarIsCollapsed: true,
+            hasAnyActions: true,
+            tint: '#fff',
+            agentId: 'codex' as any,
+            profileLabel: 'Default',
+            profileIcon: 'user-circle',
+            agentLabel: 'Codex',
+            onAgentClick: () => {},
+            extraControlActions: {
+                attachments: { id: 'attachments', label: 'Attach', icon: null, onPress: () => {} },
+                mcp: { id: 'mcp', label: 'MCP', icon: null, onPress: () => {} },
+            },
+            onMachineClick: () => {},
+            machineName: 'Builder',
+            onPathClick: () => {},
+            currentPath: '/tmp',
+            barControlIds: ['machine', 'path', 'engine', 'permission', 'actionMenu'],
+            dismiss: () => {},
+            blurInput: () => {},
+        });
+
+        expect(actions.map((action) => action.id)).toEqual(['mcp', 'attachments']);
     });
 
     it('places files ahead of machine and path in the collapsed control menu order', () => {

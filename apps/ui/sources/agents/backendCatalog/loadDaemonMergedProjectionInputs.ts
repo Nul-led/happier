@@ -1,16 +1,18 @@
 import {
     getMachineContributionRegistryProjectionRevision,
     machineContributionRegistryProjectionDescribe,
+    type MachineContributionRegistryProjectionFailureReason,
 } from '@/sync/ops/machineContributionRegistryProjection';
 import {
     captureActiveServerAccountScopeLifetime,
     type ActiveServerAccountScopeLifetime,
 } from '@/sync/domains/scope/activeServerAccountScope';
+import { areServerAccountScopesEqual, type ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
 import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
+import { readRegisteredStorageState } from '@/sync/domains/state/storageStateReaderBridge';
 import {
     forgetPluginUiProjectionAdmissionSnapshot,
     pluginUiProjectionAdmissionTargetKey,
-    savePluginUiProjectionTargetedAdmissionSnapshot,
 } from '@/sync/domains/plugins/ui/projectionWarmCache';
 
 import {
@@ -28,38 +30,13 @@ import type {
     MergedProviderProjectionEntry,
 } from './mergedProjectionTypes';
 import type {
-    DaemonContributionRegistryProjectionMountedTargetV1,
     DaemonContributionRegistryProjectionAutomationEligibleEventsV1,
     DaemonPluginUiComposerSurfaceCatalogEntryV1,
-    DaemonPluginUiTargetedSurfaceMountV1,
-    PreparedPluginJsonSchema,
     PluginProjectionV2,
 } from '@happier-dev/protocol';
-import {
-    preparePluginJsonSchema,
-    rehydrateCanonicalProtocolComposableSchema,
-} from '@happier-dev/protocol/plugins/actions/json-schema-validation';
-import type { PluginUiTargetedContributionsV1 } from '@happier-dev/protocol/plugins/ui';
 
-import { stableJsonStringify } from '@/utils/json/stableJsonStringify';
 import { getPreferredLanguage } from '@/text';
 import { normalizePluginUiProjection } from '@/sync/domains/plugins/ui/projection';
-
-/**
- * One exact target/contributor mount plus the sole generation-retained input
- * validator and Protocol parser. This is host-private executable state, never
- * an RPC projection: the response remains raw JSON-schema data and this cache
- * owns the one prepared semantic pair for its exact target snapshot.
- */
-export type PreparedDaemonPluginUiTargetedSurfaceMountV1 = Readonly<
-    Omit<DaemonPluginUiTargetedSurfaceMountV1, 'inputSchema'> & {
-        /** The canonical schema identity paired with `inputValidation`. */
-        inputSchema: PreparedPluginJsonSchema['jsonSchema'];
-        inputValidation: PreparedPluginJsonSchema;
-        /** The sole Protocol rehydrator restores this target-owned normalizer. */
-        inputNormalizer: NonNullable<ReturnType<typeof rehydrateCanonicalProtocolComposableSchema>>;
-    }
->;
 
 export type DaemonMergedProjectionInputs = Readonly<{
     mergedProviderProjectionById: Readonly<Record<string, MergedProviderProjectionEntry>>;
@@ -67,13 +44,6 @@ export type DaemonMergedProjectionInputs = Readonly<{
     discoveredBackendIds: readonly string[];
     pluginProjectionById: Readonly<Record<string, PluginProjectionEntry>>;
     pluginProjectionV2: PluginProjectionV2 | null;
-    /** The one response snapshot correlated to this cache entry's mounted target. */
-    targetedContributions?: PluginUiTargetedContributionsV1;
-    /**
-     * The exact host-private embedded mounts correlated to this target
-     * snapshot, each retaining the sole prepared schema/validator pair.
-     */
-    preparedTargetedSurfaceMounts?: readonly PreparedDaemonPluginUiTargetedSurfaceMountV1[];
     /** One daemon-selected Composer renderer catalog carried by this projection snapshot. */
     composerSurfaceCatalog?: readonly DaemonPluginUiComposerSurfaceCatalogEntryV1[];
     /** Current cold Event-automation composer facts carried by the same daemon projection. */
@@ -81,147 +51,70 @@ export type DaemonMergedProjectionInputs = Readonly<{
     registryDiagnostics: readonly PluginProjectionDiagnostic[];
 }>;
 
-type ProjectionCacheEntry = Readonly<{
-    projectionRevision: number;
-    /** The exact routed Home credential that authorized this projection. */
-    accountCurrentness?: Readonly<{ isCurrent(): boolean }>;
-    /**
-     * Host-private exact-generation validator bindings. A drifted response can
-     * fail closed at the renderer boundary without retiring a previously
-     * admitted binding before a clean response for that same authority arrives.
-     */
-    retainedTargetedSurfaceMounts?: readonly PreparedDaemonPluginUiTargetedSurfaceMountV1[];
-}> & (
+type ProjectionCacheResult = (
     | Readonly<{ kind: 'ready'; fetchedAtMs: number; inputs: DaemonMergedProjectionInputs }>
     | Readonly<{ kind: 'unsupported'; fetchedAtMs: number }>
     | Readonly<{
         kind: 'error';
         fetchedAtMs: number;
+        /** Why the latest read failed; the last good inputs stay available. */
+        reason: MachineContributionRegistryProjectionFailureReason;
         inputs?: DaemonMergedProjectionInputs;
     }>
 );
+type ProjectionCacheEntry = Readonly<{
+    projectionRevision: number;
+    accountScope?: ServerAccountScope | null;
+    daemonStateVersion: number | null;
+    /** The locale whose narrowed translation bundles this answer carries. */
+    locale: string;
+    /** The exact routed Home credential that authorized this projection. */
+    accountCurrentness?: Readonly<{ isCurrent(): boolean }>;
+}> & ProjectionCacheResult;
+type ReusableProjectionCacheEntry = Extract<ProjectionCacheEntry, { kind: 'ready' | 'unsupported' }>;
 
+/**
+ * The one UI owner of each machine's daemon projection. Every reader — the
+ * AppShell plugin UI currentness, `useDaemonMergedProjectionInputs`, and the
+ * direct callers — goes through this cache and its single in-flight request
+ * per machine scope, projection revision and requested locale.
+ */
 const PROJECTION_CACHE = new Map<string, ProjectionCacheEntry>();
+const DEFAULT_PROJECTION_STALE_MS = 60_000;
 type ProjectionRequest = Readonly<{
     revision: number;
+    daemonStateVersion: number | null;
+    locale: string;
+    /** The Account it reads for; a successor Account never joins it. */
+    accountScope: ServerAccountScope | null;
+    /**
+     * Every lifetime handle waiting on it. Readers of one Account hold separate
+     * handles (one per credential-scope hook), so the answer is published while
+     * any of them is still current, not only while the issuer is.
+     */
+    readers: Set<ActiveServerAccountScopeLifetime>;
     promise: Promise<ProjectionCacheEntry | null>;
 }>;
 const LATEST_PROJECTION_REQUEST = new Map<string, ProjectionRequest>();
-type MountedTargetProjectionCacheScope = {
-    retainedHostCount: number;
-};
-/**
- * Exact embedded-target cache residency is owned by mounted React hosts. The
- * generic projection cache predates embedded surfaces; only target entries
- * retain executable validators and therefore must retire with their admitted
- * target generation.
- */
-const MOUNTED_TARGET_CACHE_SCOPES = new Map<string, MountedTargetProjectionCacheScope>();
-
-// This is an opaque identity bridge for the incumbent Account lifetime, not a
-// second projection or validator cache. The lifetime itself remains the sole
-// Account currentness/retirement owner.
-let nextTargetAccountLifetimeIdentity = 0;
-let targetAccountLifetimeIdentities = new WeakMap<ActiveServerAccountScopeLifetime, number>();
 
 export function clearDaemonMergedProjectionCacheForTests(): void {
     PROJECTION_CACHE.clear();
     clearProjectedAgentUiBehaviorDescriptors();
     LATEST_PROJECTION_REQUEST.clear();
-    MOUNTED_TARGET_CACHE_SCOPES.clear();
-    nextTargetAccountLifetimeIdentity = 0;
-    targetAccountLifetimeIdentities = new WeakMap();
 }
 
 function normalizeKeyPart(value: string | null | undefined): string {
     return String(value ?? '').trim();
 }
 
-function targetAccountLifetimeIdentity(lifetime: ActiveServerAccountScopeLifetime | null | undefined): string | null {
-    if (!lifetime) return null;
-    try {
-        if (!lifetime.isCurrent()) return null;
-    } catch {
-        return null;
-    }
-    let identity = targetAccountLifetimeIdentities.get(lifetime);
-    if (identity === undefined) {
-        identity = nextTargetAccountLifetimeIdentity + 1;
-        nextTargetAccountLifetimeIdentity = identity;
-        targetAccountLifetimeIdentities.set(lifetime, identity);
-    }
-    return `account:${identity}`;
-}
-
 function buildCacheKey(
     machineId: string,
     serverId: string | null | undefined,
-    mountedTarget?: DaemonContributionRegistryProjectionMountedTargetV1,
-    accountLifetime?: ActiveServerAccountScopeLifetime | null,
-): string | null {
-    const accountLifetimeIdentity = mountedTarget
-        ? targetAccountLifetimeIdentity(accountLifetime)
-        : null;
-    if (mountedTarget && !accountLifetimeIdentity) return null;
+): string {
     return JSON.stringify([
         normalizeKeyPart(serverId),
         normalizeKeyPart(machineId),
-        mountedTarget
-            ? [mountedTarget.pluginId, mountedTarget.immutableGenerationId, accountLifetimeIdentity]
-            : null,
     ]);
-}
-
-/**
- * Retains the one target-scoped cache entry while a mounted host can consume
- * it. Releasing the final host retires its executable validator pair together
- * with that target generation; this does not create a second cache owner.
- */
-export function retainMountedTargetProjectionCacheScope(params: Readonly<{
-    machineId: string | null | undefined;
-    serverId?: string | null;
-    mountedTarget: DaemonContributionRegistryProjectionMountedTargetV1;
-    /** The exact active Account lifetime that owns this executable target cache. */
-    accountLifetime?: ActiveServerAccountScopeLifetime | null;
-}>): () => void {
-    const machineId = normalizeKeyPart(params.machineId);
-    if (!machineId) return () => {};
-    const cacheKey = buildCacheKey(machineId, params.serverId, params.mountedTarget, params.accountLifetime);
-    if (!cacheKey || !params.accountLifetime) return () => {};
-    const scope = MOUNTED_TARGET_CACHE_SCOPES.get(cacheKey) ?? { retainedHostCount: 0 };
-    scope.retainedHostCount += 1;
-    MOUNTED_TARGET_CACHE_SCOPES.set(cacheKey, scope);
-    let released = false;
-    const release = () => {
-        if (released) return;
-        released = true;
-        if (MOUNTED_TARGET_CACHE_SCOPES.get(cacheKey) !== scope) return;
-        scope.retainedHostCount -= 1;
-        if (scope.retainedHostCount > 0) {
-            return;
-        }
-        MOUNTED_TARGET_CACHE_SCOPES.delete(cacheKey);
-        PROJECTION_CACHE.delete(cacheKey);
-        // A successor mount with the same target coordinates must start its
-        // own request. It cannot join a promise admitted by the retired scope.
-        LATEST_PROJECTION_REQUEST.delete(cacheKey);
-    };
-    const retirement = params.accountLifetime.onRetire(release);
-    return () => {
-        retirement.dispose();
-        release();
-    };
-}
-
-function activeMountedTargetProjectionCacheScope(cacheKey: string): MountedTargetProjectionCacheScope | null {
-    return MOUNTED_TARGET_CACHE_SCOPES.get(cacheKey) ?? null;
-}
-
-function targetCacheScopeIsCurrent(
-    cacheKey: string,
-    scope: MountedTargetProjectionCacheScope | null,
-): boolean {
-    return scope !== null && MOUNTED_TARGET_CACHE_SCOPES.get(cacheKey) === scope;
 }
 
 export function entryIsFresh(entry: Readonly<{ fetchedAtMs: number }>, staleMs: number): boolean {
@@ -241,200 +134,43 @@ function currentProjectionCacheEntry(cacheKey: string): ProjectionCacheEntry | n
 export function readCachedDaemonMergedProjectionCacheEntry(params: Readonly<{
     machineId: string | null | undefined;
     serverId?: string | null;
-    mountedTarget?: DaemonContributionRegistryProjectionMountedTargetV1;
-    accountLifetime?: ActiveServerAccountScopeLifetime | null;
 }>): ProjectionCacheEntry | null {
     const machineId = normalizeKeyPart(params.machineId);
     if (!machineId) {
         return null;
     }
-    const serverId = normalizeKeyPart(params.serverId);
-    const cacheKey = buildCacheKey(machineId, serverId || null, params.mountedTarget, params.accountLifetime);
-    if (!cacheKey) return null;
-    return currentProjectionCacheEntry(cacheKey);
+    return currentProjectionCacheEntry(buildCacheKey(machineId, normalizeKeyPart(params.serverId) || null));
 }
 
-type TargetedSurfaceMountAuthority = Pick<DaemonPluginUiTargetedSurfaceMountV1,
-    'target' | 'point' | 'contributor' | 'role'>;
-
-function targetMountAuthorityKey(mount: TargetedSurfaceMountAuthority): string {
-    return stableJsonStringify({
-        target: {
-            pluginId: mount.target.pluginId,
-            immutableGenerationId: mount.target.immutableGenerationId,
-        },
-        point: {
-            pointId: mount.point.pointId,
-            protocol: {
-                id: mount.point.protocol.id,
-                version: mount.point.protocol.version,
-            },
-        },
-        contributor: {
-            pluginId: mount.contributor.pluginId,
-            immutableGenerationId: mount.contributor.immutableGenerationId,
-        },
-        role: mount.role,
-    });
+function readDaemonStateVersion(machineId: string): number | null {
+    const version = readRegisteredStorageState()?.machines[machineId]?.daemonStateVersion;
+    return typeof version === 'number' ? version : null;
 }
 
-type TargetedSurfaceMountCandidate = Readonly<{
-    mount: DaemonPluginUiTargetedSurfaceMountV1;
-    authorityKey: string;
-    inputSchema: PreparedPluginJsonSchema['jsonSchema'];
-    inputSchemaKey: string;
-    inputNormalizer: NonNullable<ReturnType<typeof rehydrateCanonicalProtocolComposableSchema>>;
-}>;
-
-type PreparedTargetedSurfaceMountPreparation = Readonly<{
-    /** Current response mounts that may reach a renderer. */
-    prepared: readonly PreparedDaemonPluginUiTargetedSurfaceMountV1[];
-    /** Exact generation bindings retained only by this target cache lifecycle. */
-    retained: readonly PreparedDaemonPluginUiTargetedSurfaceMountV1[];
-}>;
-
-function sameTargetedSurfaceMountBinding(
-    left: Readonly<{
-        presentation: DaemonPluginUiTargetedSurfaceMountV1['presentation'];
-        inputSchema: PreparedPluginJsonSchema['jsonSchema'];
-    }>,
-    right: Readonly<{
-        presentation: DaemonPluginUiTargetedSurfaceMountV1['presentation'];
-        inputSchema: PreparedPluginJsonSchema['jsonSchema'];
-    }>,
-): boolean {
-    return left.presentation === right.presentation
-        && stableJsonStringify(left.inputSchema) === stableJsonStringify(right.inputSchema);
-}
-
-function sameTargetedSurfaceMountCandidateBinding(
-    left: TargetedSurfaceMountCandidate,
-    right: TargetedSurfaceMountCandidate,
-): boolean {
-    return left.mount.presentation === right.mount.presentation
-        && left.inputSchemaKey === right.inputSchemaKey;
-}
-
-/**
- * Retain one validator under its exact admitted authority. Presentation and
- * schema are response-consistency facts, not cache identity: drift for the
- * same authority is ambiguous and therefore fails closed. There is no
- * process-wide validator cache; target, contributor, or Account replacement
- * receives a new retained pair.
- */
-function prepareTargetedSurfaceMounts(input: Readonly<{
-    mounts?: readonly DaemonPluginUiTargetedSurfaceMountV1[];
-    previous?: readonly PreparedDaemonPluginUiTargetedSurfaceMountV1[];
-}>): PreparedTargetedSurfaceMountPreparation | undefined {
-    if (input.mounts === undefined) return undefined;
-    const previousByAuthority = new Map<string, PreparedDaemonPluginUiTargetedSurfaceMountV1>();
-    const rejectedAuthorities = new Set<string>();
-    for (const mount of input.previous ?? []) {
-        const authorityKey = targetMountAuthorityKey(mount);
-        const retained = previousByAuthority.get(authorityKey);
-        if (retained && !sameTargetedSurfaceMountBinding(retained, mount)) {
-            rejectedAuthorities.add(authorityKey);
-            previousByAuthority.delete(authorityKey);
-            continue;
-        }
-        if (!retained) previousByAuthority.set(authorityKey, mount);
-    }
-
-    const candidates: TargetedSurfaceMountCandidate[] = [];
-    const candidateByAuthority = new Map<string, TargetedSurfaceMountCandidate>();
-    const seenAuthorities = new Set<string>();
-    for (const mount of input.mounts) {
-        const authorityKey = targetMountAuthorityKey(mount);
-        seenAuthorities.add(authorityKey);
-        try {
-            const inputNormalizer = rehydrateCanonicalProtocolComposableSchema(mount.inputSchema);
-            if (!inputNormalizer) throw new Error('Targeted Surface schema is not Protocol-canonical');
-            const inputSchema = inputNormalizer.jsonSchema;
-            const candidate: TargetedSurfaceMountCandidate = Object.freeze({
-                mount,
-                authorityKey,
-                inputSchema,
-                inputSchemaKey: stableJsonStringify(inputSchema),
-                inputNormalizer,
-            });
-            const priorCandidate = candidateByAuthority.get(authorityKey);
-            if (priorCandidate && !sameTargetedSurfaceMountCandidateBinding(priorCandidate, candidate)) {
-                rejectedAuthorities.add(authorityKey);
-            } else if (!priorCandidate) {
-                candidateByAuthority.set(authorityKey, candidate);
-            }
-            candidates.push(candidate);
-        } catch {
-            // An invalid response-local role schema must not grant this
-            // authority a physical child mount. The raw RPC response remains
-            // transport data only; no fallback validator or renderer exists.
-            rejectedAuthorities.add(authorityKey);
-        }
-    }
-
-    const retainedByAuthority = new Map<string, PreparedDaemonPluginUiTargetedSurfaceMountV1>();
-    for (const authorityKey of seenAuthorities) {
-        const previous = previousByAuthority.get(authorityKey);
-        if (rejectedAuthorities.has(authorityKey)) {
-            // Keep a known-good binding private so a later clean response for
-            // this exact authority can reuse it; the drifted response itself
-            // remains absent from the renderer-facing list below.
-            if (previous) retainedByAuthority.set(authorityKey, previous);
-            continue;
-        }
-        const candidate = candidateByAuthority.get(authorityKey);
-        if (!candidate) continue;
-        if (previous) {
-            if (!sameTargetedSurfaceMountBinding(previous, {
-                presentation: candidate.mount.presentation,
-                inputSchema: candidate.inputSchema,
-            })) {
-                rejectedAuthorities.add(authorityKey);
-                retainedByAuthority.set(authorityKey, previous);
-                continue;
-            }
-            retainedByAuthority.set(authorityKey, previous);
-            continue;
-        }
-        try {
-            const inputValidation = preparePluginJsonSchema(candidate.inputSchema);
-            // Insert the new binding before rendering subsequent duplicate rows
-            // from this response, so exact duplicates compile once and reuse.
-            retainedByAuthority.set(authorityKey, Object.freeze({
-                ...candidate.mount,
-                inputSchema: inputValidation.jsonSchema,
-                inputValidation,
-                inputNormalizer: candidate.inputNormalizer,
-            }));
-        } catch {
-            rejectedAuthorities.add(authorityKey);
-        }
-    }
-
-    const prepared: PreparedDaemonPluginUiTargetedSurfaceMountV1[] = [];
-    for (const candidate of candidates) {
-        if (rejectedAuthorities.has(candidate.authorityKey)) continue;
-        const retained = retainedByAuthority.get(candidate.authorityKey);
-        if (!retained || !sameTargetedSurfaceMountBinding(retained, {
-            presentation: candidate.mount.presentation,
-            inputSchema: candidate.inputSchema,
-        })) {
-            continue;
-        }
-        // Reuse only the generation-owned compiled validator. Renderer,
-        // Artifact, origin, Resource, crash, and child-snapshot facts remain
-        // current response data and replace their prior projection.
-        prepared.push(Object.freeze({
-            ...candidate.mount,
-            inputSchema: retained.inputValidation.jsonSchema,
-            inputValidation: retained.inputValidation,
-            inputNormalizer: retained.inputNormalizer,
-        }));
-    }
-    return Object.freeze({
-        prepared: Object.freeze(prepared),
-        retained: Object.freeze([...retainedByAuthority.values()]),
-    });
+/** The single authoritative reuse decision for every projection reader. */
+export function readReusableDaemonMergedProjectionCacheEntry(params: Readonly<{
+    machineId: string | null | undefined;
+    serverId?: string | null;
+    accountLifetime?: ActiveServerAccountScopeLifetime | null;
+    staleMs?: number;
+}>): ReusableProjectionCacheEntry | null {
+    const machineId = normalizeKeyPart(params.machineId);
+    if (!machineId) return null;
+    const accountLifetime = params.accountLifetime ?? captureActiveServerAccountScopeLifetime();
+    if (!accountLifetime?.isCurrent()) return null;
+    const serverId = normalizeKeyPart(params.serverId) || null;
+    const cached = currentProjectionCacheEntry(buildCacheKey(machineId, serverId));
+    const staleMs = params.staleMs ?? DEFAULT_PROJECTION_STALE_MS;
+    if (
+        !cached || cached.kind === 'error'
+        || !entryIsFresh(cached, staleMs)
+        || cached.projectionRevision !== getMachineContributionRegistryProjectionRevision({ machineId, serverId })
+        || cached.daemonStateVersion !== readDaemonStateVersion(machineId)
+        || cached.locale !== getPreferredLanguage()
+        || (cached.accountScope !== accountLifetime.scope
+            && !areServerAccountScopesEqual(cached.accountScope ?? null, accountLifetime.scope))
+    ) return null;
+    return cached;
 }
 
 function toInputs(params: Readonly<{
@@ -442,8 +178,6 @@ function toInputs(params: Readonly<{
     mergedBackendProjectionById: Readonly<Record<string, MergedBackendProjectionEntry>>;
     pluginProjectionById: Readonly<Record<string, PluginProjectionEntry>>;
     pluginProjectionV2: PluginProjectionV2 | null;
-    targetedContributions?: PluginUiTargetedContributionsV1;
-    preparedTargetedSurfaceMounts?: readonly PreparedDaemonPluginUiTargetedSurfaceMountV1[];
     composerSurfaceCatalog?: readonly DaemonPluginUiComposerSurfaceCatalogEntryV1[];
     automationEligibleEvents?: DaemonContributionRegistryProjectionAutomationEligibleEventsV1;
     registryDiagnostics: readonly PluginProjectionDiagnostic[];
@@ -454,12 +188,6 @@ function toInputs(params: Readonly<{
         discoveredBackendIds: Object.keys(params.mergedBackendProjectionById ?? {}),
         pluginProjectionById: params.pluginProjectionById,
         pluginProjectionV2: params.pluginProjectionV2,
-        ...(params.targetedContributions === undefined
-            ? {}
-            : { targetedContributions: params.targetedContributions }),
-        ...(params.preparedTargetedSurfaceMounts === undefined
-            ? {}
-            : { preparedTargetedSurfaceMounts: params.preparedTargetedSurfaceMounts }),
         ...(params.composerSurfaceCatalog === undefined
             ? {}
             : { composerSurfaceCatalog: params.composerSurfaceCatalog }),
@@ -473,185 +201,136 @@ function toInputs(params: Readonly<{
 export async function loadDaemonMergedProjectionCacheEntry(params: Readonly<{
     machineId: string;
     serverId?: string | null;
-    mountedTarget?: DaemonContributionRegistryProjectionMountedTargetV1;
-    /** Exact routed Account lifetime; required for target execution and background descriptor publication. */
+    /** Exact routed Account lifetime; required for background descriptor publication. */
     accountLifetime?: ActiveServerAccountScopeLifetime | null;
+    /** App-shell readers may reuse the same fresh, Account-qualified projection. */
+    reuseFreshReady?: boolean;
 }>): Promise<ProjectionCacheEntry | null> {
     const accountLifetime = params.accountLifetime ?? captureActiveServerAccountScopeLifetime();
-    const routedAccount = accountLifetime
-        && (!params.serverId || areServerProfileIdentifiersEquivalent(accountLifetime.scope.serverId, params.serverId))
-        ? { kind: 'bound' as const, scope: accountLifetime.scope, currentness: accountLifetime }
-        : null;
-    if (params.mountedTarget
-        && (!routedAccount || routedAccount.kind !== 'bound' || !routedAccount.currentness.isCurrent())) return null;
-    const cacheKey = buildCacheKey(
-        params.machineId,
-        params.serverId,
-        params.mountedTarget,
-        params.accountLifetime,
-    );
-    if (!cacheKey) return null;
+    const locale = getPreferredLanguage();
+    const cacheKey = buildCacheKey(params.machineId, params.serverId);
     // The canonical per-machine projection scope. Its revision advances on
-    // socket reconnect, on an explicit invalidation, and when the machine's
-    // daemon state advances, so it is this request's endpoint identity as well
-    // as its dedupe key.
+    // socket reconnect, on an explicit invalidation, and on a known daemon
+    // replacement. The first machine observation does not bump that revision;
+    // the store-owned daemon state version qualifies reuse separately.
     const projectionScope = {
         machineId: normalizeKeyPart(params.machineId),
         serverId: normalizeKeyPart(params.serverId) || null,
     };
     const requestRevision = getMachineContributionRegistryProjectionRevision(projectionScope);
+    const requestDaemonStateVersion = readDaemonStateVersion(projectionScope.machineId);
+    const accountScope = accountLifetime?.scope ?? null;
     const incumbentRequest = LATEST_PROJECTION_REQUEST.get(cacheKey);
-    if (incumbentRequest?.revision === requestRevision) {
-        return await incumbentRequest.promise;
+    if (
+        incumbentRequest?.revision === requestRevision
+        && incumbentRequest.daemonStateVersion === requestDaemonStateVersion
+        && incumbentRequest.locale === locale
+        && (incumbentRequest.accountScope === accountScope
+            || areServerAccountScopesEqual(incumbentRequest.accountScope, accountScope))
+    ) {
+        if (accountLifetime) incumbentRequest.readers.add(accountLifetime);
+        const shared = await incumbentRequest.promise;
+        return accountLifetime && !accountLifetime.isCurrent() ? null : shared;
     }
-    // A target response can only prepare or publish for the exact mounted-host
-    // lifetime that admitted it. A later remount with the same target key has
-    // a distinct scope object, so it cannot revive an old validator pair.
-    const mountedTargetScopeAtRequest = params.mountedTarget === undefined
-        ? null
-        : activeMountedTargetProjectionCacheScope(cacheKey);
-    let request!: Promise<ProjectionCacheEntry | null>;
-    let requestOwner!: ProjectionRequest;
-    const publishIfLatest = (entry: ProjectionCacheEntry): ProjectionCacheEntry => {
-        if (LATEST_PROJECTION_REQUEST.get(cacheKey) !== requestOwner) {
-            return currentProjectionCacheEntry(cacheKey) ?? entry;
+    if (params.reuseFreshReady === true) {
+        const cached = readReusableDaemonMergedProjectionCacheEntry({
+            machineId: params.machineId,
+            serverId: params.serverId,
+            accountLifetime,
+        });
+        if (cached?.kind === 'ready') {
+            return accountLifetime && !accountLifetime.isCurrent() ? null : cached;
         }
-        // A direct cold target read can consume its response, but it must not
-        // pin a compiled validator. A mounted read can do so only while the
-        // exact lifetime that admitted it remains current.
-        if (!params.mountedTarget || targetCacheScopeIsCurrent(cacheKey, mountedTargetScopeAtRequest)) {
-            PROJECTION_CACHE.set(cacheKey, Object.freeze({
-                ...entry,
-                ...(routedAccount?.kind === 'bound'
-                    ? { accountCurrentness: routedAccount.currentness }
-                    : {}),
-            }));
+    }
+    const readers = new Set<ActiveServerAccountScopeLifetime>(accountLifetime ? [accountLifetime] : []);
+    const routedAccount = accountLifetime
+        && (!params.serverId || areServerProfileIdentifiersEquivalent(accountLifetime.scope.serverId, params.serverId))
+        ? {
+            scope: accountLifetime.scope,
+            currentness: Object.freeze({
+                isCurrent: () => [...readers].some((reader) => reader.isCurrent()),
+            }),
         }
-        return currentProjectionCacheEntry(cacheKey) ?? entry;
+        : null;
+    // Every answer is published tagged with the revision it answered, unless a
+    // newer one is already cached. A read never waits on a newer read: when the
+    // daemon's state keeps advancing, waiting would never settle.
+    const publish = (entry: ProjectionCacheResult & Readonly<{ projectionRevision: number }>): ProjectionCacheEntry => {
+        const current = currentProjectionCacheEntry(cacheKey);
+        if (current !== null && current.projectionRevision > entry.projectionRevision) return current;
+        const published = Object.freeze({
+            ...entry,
+            accountScope,
+            daemonStateVersion: requestDaemonStateVersion,
+            locale,
+            ...(routedAccount ? { accountCurrentness: routedAccount.currentness } : {}),
+        });
+        // A former locale may settle after the current one. It still answers
+        // its reader, but never replaces the current locale's shared cache.
+        if (locale === getPreferredLanguage()) PROJECTION_CACHE.set(cacheKey, published);
+        return published;
     };
-    request = (async () => {
+    const request = (async (): Promise<ProjectionCacheEntry | null> => {
         const fetchedAtMs = Date.now();
         const res = await machineContributionRegistryProjectionDescribe(params.machineId, {
             ...(params.serverId ? { serverId: params.serverId } : {}),
-            timeoutMs: 10_000,
-            ...(params.mountedTarget ? { mountedTarget: params.mountedTarget } : {}),
+            ...(accountLifetime ? { accountLifetime } : {}),
         });
-        if (routedAccount?.kind === 'bound' && !routedAccount.currentness.isCurrent()) return null;
-        if (params.mountedTarget
-            && (routedAccount?.kind !== 'bound' || !routedAccount.currentness.isCurrent())) return null;
-        if (params.mountedTarget && !targetAccountLifetimeIdentity(params.accountLifetime)) {
-            return null;
-        }
-        // The cache entry keeps the transport's existing monotonic revision
-        // with its target-local lifetime. Once H has published, a late G
-        // response cannot compile a validator merely to be discarded.
-        const currentCacheEntry = currentProjectionCacheEntry(cacheKey);
-        if (currentCacheEntry !== null && currentCacheEntry.projectionRevision > requestRevision) {
-            return currentCacheEntry;
-        }
-        // A response has no authority to prepare an executable target-schema
-        // validator once a newer request owns this same target snapshot.
-        const newerRequest = LATEST_PROJECTION_REQUEST.get(cacheKey);
-        if (newerRequest !== undefined && newerRequest !== requestOwner) {
-            return await newerRequest.promise;
-        }
-        if (mountedTargetScopeAtRequest !== null
-            && !targetCacheScopeIsCurrent(cacheKey, mountedTargetScopeAtRequest)) {
-            return null;
-        }
-        // The machine's projection authority can advance while this request is
-        // in flight — a replaced or restarted daemon is a different endpoint,
-        // and its own targetless request has its own cache key, so the
-        // latest-request fences above cannot see that transition. A response
-        // that answered for the previous endpoint may neither publish, persist,
-        // prepare a validator, nor retire retained custody for the current one.
-        // The successor request started by the same revision change owns that.
-        if (getMachineContributionRegistryProjectionRevision(projectionScope) !== requestRevision) {
-            return null;
-        }
+        if (routedAccount && !routedAccount.currentness.isCurrent()) return null;
         if (res.supported !== true) {
             const previous = currentProjectionCacheEntry(cacheKey);
-            if (res.reason === 'not-supported') {
-                // Method-not-found is a machine fact, not a target one: this
-                // client sends one RPC and the endpoint that answered does not
-                // serve it. Retire the whole retained entry for that machine
-                // through its existing custody owner so a later offline process
-                // cannot restore a target the daemon disclaimed. A transient
-                // `error` keeps custody and retries.
+            // Retiring retained custody is destructive, so only the endpoint
+            // that is still current may do it.
+            if (
+                res.reason === 'not-supported'
+                && getMachineContributionRegistryProjectionRevision(projectionScope) === requestRevision
+            ) {
+                // Method-not-found is a machine fact: the endpoint that answered
+                // does not serve the projection. Retire the retained entry for
+                // that machine so a later offline process cannot restore what
+                // the daemon disclaimed. A transient failure keeps custody.
                 forgetPluginUiProjectionAdmissionSnapshot({
-                    scope: params.accountLifetime?.scope ?? null,
+                    scope: accountLifetime?.scope ?? null,
                     targetKey: pluginUiProjectionAdmissionTargetKey(projectionScope),
                 });
             }
-            return publishIfLatest(res.reason === 'not-supported'
+            return publish(res.reason === 'not-supported'
                 ? { kind: 'unsupported', fetchedAtMs, projectionRevision: requestRevision }
                 : {
                     kind: 'error',
                     fetchedAtMs,
                     projectionRevision: requestRevision,
-                    ...(previous?.retainedTargetedSurfaceMounts === undefined
-                        ? {}
-                        : { retainedTargetedSurfaceMounts: previous.retainedTargetedSurfaceMounts }),
+                    reason: res.reason,
                     ...(
                         previous?.kind === 'ready' || previous?.kind === 'error'
-                            ? { inputs: previous.inputs }
+                            ? (previous.inputs ? { inputs: previous.inputs } : {})
                             : {}
                     ),
                 });
         }
 
         const adapted = adaptDaemonContributionRegistryProjectionToMergedProjectionInputs(res.projection);
-        const projectedAgentDescriptors = readProjectedAgentUiBehaviorDescriptors(adapted.mergedProviderProjectionById);
-        // The machine-wide read is the one place that sees every installed
-        // Agent, so it owns this machine's descriptor set. A target-scoped
-        // read sees one plugin and must not retire the rest.
-        if (!params.mountedTarget) {
-            if (routedAccount?.kind === 'bound') {
-                publishProjectedAgentUiBehaviorDescriptors({
-                    machineId: normalizeKeyPart(params.machineId),
-                    accountScope: routedAccount.scope,
-                    accountLifetime: routedAccount.currentness,
-                    descriptorsByAgentId: projectedAgentDescriptors,
-                    pluginUiProjection: normalizePluginUiProjection(res.projection),
-                    locale: getPreferredLanguage(),
-                });
-            }
-        }
-        // This is the one moment a target-scoped admission is confirmed, so it
-        // is the only moment it is recorded for the next fresh process. The
-        // Account-scoped custody owner rejects it unless the same Account's
-        // retained presentation slice still admits this exact generation.
-        if (params.mountedTarget && res.targetedContributions !== undefined) {
-            savePluginUiProjectionTargetedAdmissionSnapshot({
-                scope: params.accountLifetime?.scope ?? null,
-                targetKey: pluginUiProjectionAdmissionTargetKey(projectionScope),
+        // The machine-wide read sees every installed Agent, so it owns this
+        // machine's descriptor set — unless a newer answer already replaced it.
+        const newerPublished = currentProjectionCacheEntry(cacheKey);
+        if (newerPublished !== null && newerPublished.projectionRevision > requestRevision) return newerPublished;
+        if (routedAccount && locale === getPreferredLanguage()) {
+            publishProjectedAgentUiBehaviorDescriptors({
                 machineId: projectionScope.machineId,
-                targetedContributions: res.targetedContributions,
+                accountScope: routedAccount.scope,
+                accountLifetime: routedAccount.currentness,
+                descriptorsByAgentId: readProjectedAgentUiBehaviorDescriptors(adapted.mergedProviderProjectionById),
+                pluginUiProjection: normalizePluginUiProjection(res.projection),
+                locale,
             });
         }
-        const previous = currentProjectionCacheEntry(cacheKey);
-        const targetedSurfaceMountPreparation = res.targetedSurfaceMounts === undefined
-            ? undefined
-            : prepareTargetedSurfaceMounts({
-                mounts: res.targetedSurfaceMounts,
-                previous: previous?.retainedTargetedSurfaceMounts,
-            });
-        return publishIfLatest({
+        return publish({
             kind: 'ready',
             fetchedAtMs,
             projectionRevision: requestRevision,
-            ...(targetedSurfaceMountPreparation === undefined
-                ? {}
-                : { retainedTargetedSurfaceMounts: targetedSurfaceMountPreparation.retained }),
             inputs: toInputs({
                 ...adapted,
-                pluginProjectionV2: res.projection.v === 2 ? res.projection : null,
-                ...(res.targetedContributions === undefined
-                    ? {}
-                    : { targetedContributions: res.targetedContributions }),
-                ...(targetedSurfaceMountPreparation === undefined
-                    ? {}
-                    : { preparedTargetedSurfaceMounts: targetedSurfaceMountPreparation.prepared }),
+                pluginProjectionV2: res.projection,
                 ...(res.composerSurfaceCatalog === undefined
                     ? {}
                     : { composerSurfaceCatalog: res.composerSurfaceCatalog }),
@@ -661,10 +340,18 @@ export async function loadDaemonMergedProjectionCacheEntry(params: Readonly<{
             }),
         });
     })();
-    requestOwner = Object.freeze({ revision: requestRevision, promise: request });
+    const requestOwner: ProjectionRequest = Object.freeze({
+        revision: requestRevision,
+        daemonStateVersion: requestDaemonStateVersion,
+        locale,
+        accountScope,
+        readers,
+        promise: request,
+    });
     LATEST_PROJECTION_REQUEST.set(cacheKey, requestOwner);
     try {
-        return await request;
+        const entry = await request;
+        return accountLifetime && !accountLifetime.isCurrent() ? null : entry;
     } finally {
         if (LATEST_PROJECTION_REQUEST.get(cacheKey) === requestOwner) {
             LATEST_PROJECTION_REQUEST.delete(cacheKey);
@@ -672,11 +359,14 @@ export async function loadDaemonMergedProjectionCacheEntry(params: Readonly<{
     }
 }
 
+/**
+ * Returns this machine's current projection inputs, reusing a ready entry
+ * younger than `staleMs` for the current projection revision.
+ */
 export async function loadDaemonMergedProjectionInputs(params: Readonly<{
     machineId: string | null | undefined;
     serverId?: string | null;
     staleMs?: number;
-    mountedTarget?: DaemonContributionRegistryProjectionMountedTargetV1;
     /** Exact routed Account lifetime; background Home descriptors never borrow focus. */
     accountLifetime?: ActiveServerAccountScopeLifetime | null;
 }>): Promise<DaemonMergedProjectionInputs | null> {
@@ -688,23 +378,20 @@ export async function loadDaemonMergedProjectionInputs(params: Readonly<{
     const serverId = normalizeKeyPart(params.serverId);
     const staleMs = typeof params.staleMs === 'number' && Number.isFinite(params.staleMs) && params.staleMs >= 0
         ? Math.max(0, Math.floor(params.staleMs))
-        : 60_000;
-    const cacheKey = buildCacheKey(machineId, serverId || null, params.mountedTarget, params.accountLifetime);
-    if (!cacheKey) return null;
-    const cached = readCachedDaemonMergedProjectionCacheEntry({
+        : DEFAULT_PROJECTION_STALE_MS;
+    const cached = readReusableDaemonMergedProjectionCacheEntry({
         machineId,
         serverId: serverId || null,
-        ...(params.mountedTarget ? { mountedTarget: params.mountedTarget } : {}),
-        ...(params.accountLifetime ? { accountLifetime: params.accountLifetime } : {}),
+        accountLifetime: params.accountLifetime,
+        staleMs,
     });
-    if (cached?.kind === 'ready' && entryIsFresh(cached, staleMs)) {
+    if (cached?.kind === 'ready') {
         return cached.inputs;
     }
 
     const entry = await loadDaemonMergedProjectionCacheEntry({
         machineId,
         ...(serverId ? { serverId } : {}),
-        ...(params.mountedTarget ? { mountedTarget: params.mountedTarget } : {}),
         ...(params.accountLifetime ? { accountLifetime: params.accountLifetime } : {}),
     });
     return entry?.kind === 'ready' ? entry.inputs : null;

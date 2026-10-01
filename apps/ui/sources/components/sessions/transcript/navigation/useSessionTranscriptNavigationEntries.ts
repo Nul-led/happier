@@ -19,8 +19,8 @@ import {
 import {
     toggleSessionMessagePin,
     type PersistedSessionMessagePinV1,
-} from '@/sync/domains/messages/pins/sessionMessagePins';
-import type { Message } from '@/sync/domains/messages/messageTypes';
+} from "@happier-dev/session-core/pins";
+import type { Message } from "@happier-dev/session-core/messages";
 import { useActiveServerAccountScope } from '@/sync/store/hooks';
 
 export type TranscriptNavigationServerAccountScope = Readonly<{
@@ -32,6 +32,10 @@ export type SessionTranscriptNavigationEntriesState = Readonly<{
     sessionMessagePins: readonly PersistedSessionMessagePinV1[];
     togglePersistedSessionMessagePin: (pin: PersistedSessionMessagePinV1) => void;
     transcriptNavigationEntries: readonly TranscriptNavigationEntry[];
+    /** The remote history reached the session's start: no earlier turn exists that is not listed. */
+    historyComplete: boolean;
+    /** Asks the history owner for its next earlier page (the reader's "Load earlier turns"). */
+    requestEarlierHistory: () => void;
 }>;
 
 /** Enough prior anchors for the rail/panel to feel complete without downloading whole sessions. */
@@ -55,7 +59,7 @@ export type SessionTranscriptNavigationEntriesState = Readonly<{
 export function useSessionTranscriptNavigationEntriesFromMessages(params: Readonly<{
     activeServerAccountScope: TranscriptNavigationServerAccountScope;
     forkedTranscriptEnabled: boolean;
-    messageIdsOldestFirst: string[];
+    messageIdsOldestFirst: readonly string[];
     messagesById: Record<string, Message>;
     sessionId: string;
     /**
@@ -199,6 +203,8 @@ export function useSessionTranscriptNavigationEntriesFromMessages(params: Readon
         sessionMessagePins,
         togglePersistedSessionMessagePin,
         transcriptNavigationEntries,
+        historyComplete: !remoteHistoryHasMore,
+        requestEarlierHistory: requestRemoteHistoryNextPage,
     };
 }
 

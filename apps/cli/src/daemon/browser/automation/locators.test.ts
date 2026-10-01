@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { parseLocator } from '@happier-dev/protocol';
 
 import {
-  parseLocator,
   resolveLocator,
   synthesizeLocatorElementExpression,
   synthesizeLocatorExpression,
@@ -68,14 +68,6 @@ function executeElementExpression(expression: string, documentValue: Readonly<{ 
 }
 
 describe('semantic locators (BA-3)', () => {
-  it('parses each locator strategy', () => {
-    expect(parseLocator('role=button[name="Submit"]')).toEqual({ strategy: 'role', role: 'button', name: 'Submit' });
-    expect(parseLocator('text=Go next')).toEqual({ strategy: 'text', text: 'Go next' });
-    expect(parseLocator('data-testid=email-field')).toEqual({ strategy: 'testid', testId: 'email-field' });
-    expect(parseLocator('testid=email-field')).toEqual({ strategy: 'testid', testId: 'email-field' });
-    expect(parseLocator('.cta')).toEqual({ strategy: 'css', selector: '.cta' });
-  });
-
   it('resolves role= against the fixture DOM (implicit + explicit roles, with name)', () => {
     const button = resolveLocator(parseLocator('role=button[name="Submit"]'), fixture);
     expect(button?.attributes?.id).toBe('submit-btn');

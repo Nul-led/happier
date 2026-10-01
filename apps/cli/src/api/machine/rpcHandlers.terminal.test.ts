@@ -1,5 +1,5 @@
 import { Buffer } from 'node:buffer';
-import { mkdtemp, mkdir, realpath } from 'node:fs/promises';
+import { mkdtemp, mkdir, realpath, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -90,6 +90,34 @@ class FakeInteractivePtyProvider implements PtyProvider {
 }
 
 describe('registerMachineTerminalRpcHandlers', () => {
+  it('resolves selected package scripts from disk into a new shell, never from presentation text', async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), 'happier-script-terminal-')));
+    const cwd = join(root, 'web');
+    await mkdir(cwd);
+    await writeFile(join(root, 'yarn.lock'), '');
+    await writeFile(join(cwd, 'package.json'), JSON.stringify({ name: 'web; echo untrusted', scripts: { dev: 'vite', 'dev; echo injected': 'evil' } }));
+    try {
+      for (const platform of ['linux', 'win32'] as const) {
+        const provider = new FakeInteractivePtyProvider();
+        const env = { SHELL: '/bin/bash', ComSpec: 'cmd.exe' };
+        const sessionManager = createTerminalPtySessionManager({ ptyProvider: provider, env, platform,
+          config: { maxSessions: 10, idleTimeoutMs: 0, bufferMaxBytes: 1000, bufferMaxEvents: 10,
+            bufferRetentionMs: 60_000, urlParseBufferLimit: 1000, maxWriteChunkBytes: 1000, defaultCols: 80, defaultRows: 24 } });
+        const registered = new Map<string, (params: unknown) => Promise<unknown>>();
+        registerMachineTerminalRpcHandlers({ rpcHandlerManager: { registerHandler: (method: string, handler: (params: unknown) => Promise<unknown>) => registered.set(method, handler) } as unknown as RpcHandlerManager,
+          deps: { env, platform, workingDirectory: root, sessionManager } });
+        const ensure = registered.get(RPC_METHODS.DAEMON_TERMINAL_ENSURE)!;
+        try {
+          await expect(ensure({ terminalKey: 'script', cwd, launch: { kind: 'package_script', runTargetId: 'web; echo untrusted:dev' } })).resolves.toMatchObject({ ok: true, reused: false });
+          expect(provider.spawned[0].params.options.cwd).toBe(cwd);
+          expect(provider.spawned[0].params.file).toBe(platform === 'win32' ? 'cmd.exe' : '/bin/bash');
+          expect(provider.spawned[0].pty.writes).toEqual(['yarn run dev\n']);
+          await expect(ensure({ terminalKey: 'malicious', cwd, launch: { kind: 'package_script', runTargetId: 'web; echo untrusted:dev; echo injected' } })).resolves.toMatchObject({ ok: false, errorCode: 'terminal_invalid_request' });
+          expect(provider.spawned).toHaveLength(1);
+        } finally { sessionManager.dispose(); }
+      }
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
   it('lists existing terminals through the owner, rejects unknown input, and narrows restricted sessions', async () => {
     const provider = new FakePtyProvider();
     const sessionManager = createTerminalPtySessionManager({ ptyProvider: provider, env: { SHELL: '/bin/bash' },

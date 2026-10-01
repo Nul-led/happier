@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type { Metadata } from '@/sync/domains/state/storageTypes';
+import type { Metadata } from '@happier-dev/session-core/state';
 import {
     buildSessionModelsSeedRequest,
     computeNextSessionModelsSeedMetadata,
@@ -20,8 +20,8 @@ describe('sessionModelsSeed', () => {
     it('builds a seed only for the preflight catalog belonging to the spawned dynamic target', () => {
         expect(buildSessionModelsSeedRequest({
             agentId: 'pi',
-            currentTargetKey: 'backend:pi',
-            preflightTargetKey: 'backend:pi',
+            currentTargetKey: 'agent:happier.agent.pi/pi',
+            preflightTargetKey: 'agent:happier.agent.pi/pi',
             preflightModels,
             currentModelId: 'openai/gpt-4o-mini',
             hasCuratedStaticModels: false,
@@ -35,8 +35,8 @@ describe('sessionModelsSeed', () => {
 
         expect(buildSessionModelsSeedRequest({
             agentId: 'pi',
-            currentTargetKey: 'backend:pi',
-            preflightTargetKey: 'backend:codex',
+            currentTargetKey: 'agent:happier.agent.pi/pi',
+            preflightTargetKey: 'agent:happier.agent.codex/codex',
             preflightModels,
             currentModelId: 'openai/gpt-4o-mini',
             hasCuratedStaticModels: false,
@@ -45,8 +45,8 @@ describe('sessionModelsSeed', () => {
 
         expect(buildSessionModelsSeedRequest({
             agentId: 'pi',
-            currentTargetKey: 'backend:pi',
-            preflightTargetKey: 'backend:pi',
+            currentTargetKey: 'agent:happier.agent.pi/pi',
+            preflightTargetKey: 'agent:happier.agent.pi/pi',
             preflightModels,
             currentModelId: 'openai/gpt-4o-mini',
             hasCuratedStaticModels: true,
@@ -82,8 +82,8 @@ describe('sessionModelsSeed', () => {
         };
         const seed = buildSessionModelsSeedRequest({
             agentId: 'pi',
-            currentTargetKey: 'backend:pi',
-            preflightTargetKey: 'backend:pi',
+            currentTargetKey: 'agent:happier.agent.pi/pi',
+            preflightTargetKey: 'agent:happier.agent.pi/pi',
             preflightModels: {
                 availableModels: [{
                     id: 'openai/gpt-4o-mini',

@@ -2,7 +2,7 @@ import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { renderScreen } from '@/dev/testkit';
+import { createTestSessionTranscriptSource, renderWithSessionTranscriptSource } from '@/dev/testkit';
 import type { PendingPermissionRequest } from '@/utils/sessions/sessionUtils';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -38,11 +38,6 @@ vi.mock('@/components/ui/text/Text', () => ({
     Text: (props: any) => React.createElement('Text', props, props.children),
 }));
 
-vi.mock('@/sync/ops', () => ({
-    sessionAllow: (...args: unknown[]) => sessionAllowSpy(...args),
-    sessionDeny: (...args: unknown[]) => sessionDenySpy(...args),
-}));
-
 vi.mock('@/modal', () => ({
     Modal: { alert: (...args: unknown[]) => modalAlertSpy(...args) },
 }));
@@ -63,6 +58,17 @@ function actionRequest(overrides: Partial<PendingPermissionRequest> = {}): Pendi
         turnId: 'turn-1',
         ...overrides,
     };
+}
+
+function renderScreen(element: React.ReactElement) {
+    return renderWithSessionTranscriptSource(element, createTestSessionTranscriptSource({
+        sessionId: 'session-1', serverId: 'home-1',
+        interaction: { canSendMessages: true, canApprovePermissions: true },
+        actions: {
+            respondToPermission: (params) => params.approved ? sessionAllowSpy(params) : sessionDenySpy(params),
+            answerUserAction: async () => {}, abort: async () => {}, submitMessage: async () => {},
+        },
+    }));
 }
 
 describe('SessionActionConfirmationPromptCard', () => {
@@ -117,29 +123,13 @@ describe('SessionActionConfirmationPromptCard', () => {
         await act(async () => {
             await screen.pressByTestIdAsync('action-confirmation-approve');
         });
-        expect(sessionAllowSpy).toHaveBeenCalledWith(
-            'session-1',
-            'action:request-1',
-            undefined,
-            undefined,
-            'approved',
-            undefined,
-            'turn-1',
-            { serverId: 'home-1' },
+        expect(sessionAllowSpy).toHaveBeenCalledWith({ id: 'action:request-1', approved: true, decision: 'approved', turnId: 'turn-1' }
         );
 
         await act(async () => {
             await screen.pressByTestIdAsync('action-confirmation-reject');
         });
-        expect(sessionDenySpy).toHaveBeenCalledWith(
-            'session-1',
-            'action:request-1',
-            undefined,
-            undefined,
-            'denied',
-            undefined,
-            'turn-1',
-            { serverId: 'home-1' },
+        expect(sessionDenySpy).toHaveBeenCalledWith({ id: 'action:request-1', approved: false, decision: 'denied', turnId: 'turn-1' }
         );
     });
 

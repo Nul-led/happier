@@ -63,16 +63,24 @@ const callerMaterialization = {
   materializationId: 'materialization-caller',
 } as const;
 const immutableGenerationId = 'github-immutable-generation-a';
+const occurrenceId = 'github-occurrence-a';
+const sourceCustody = {
+  kind: 'managed' as const,
+  immutableGenerationId,
+  installSource: 'archive' as const,
+};
 const actionCaller = {
   kind: 'plugin' as const,
   pluginId: callerMaterialization.pluginId,
   materialization: callerMaterialization,
-  immutableGenerationId,
+  occurrenceId,
+  sourceCustody,
 };
 const httpCaller = {
   pluginId: callerMaterialization.pluginId,
   materialization: callerMaterialization,
-  immutableGenerationId,
+  occurrenceId,
+  sourceCustody,
 };
 const eventDeclarationRelease = {
   release: { pluginId: callerMaterialization.pluginId, version: '1.0.0' },
@@ -104,7 +112,7 @@ type AutomationEventActionExecutorWithAdoptedSet = Parameters<
 >[0] & Readonly<{
   resolveAdoptedDefinitionSet(
     caller: PluginMachineMaterializationRefV1,
-    immutableGenerationId: string,
+    occurrenceId: string,
     transport: AutomationEventSourcesListInputV1['transport'],
   ): AutomationEventPublicProjectionOwner | null;
 }>;
@@ -135,11 +143,11 @@ describe('createAutomationEventActionExecutor', () => {
     transportMocks.createPublisherHeader.mockResolvedValueOnce('publisher-proof');
     transportMocks.post.mockResolvedValueOnce({ data: {} });
     const revalidateCallerMaterialization = vi.fn(async () => true);
-    const revalidateCallerImmutableGeneration = vi.fn(async () => true);
+    const revalidateCallerOccurrence = vi.fn(async () => true);
     const executor = createAutomationEventActionExecutor({
       credentials,
       revalidateCallerMaterialization,
-      revalidateCallerImmutableGeneration,
+      revalidateCallerOccurrence,
       resolveAdoptedDefinitionSet: () => createAvailableAdoptedDefinitionSet('7'),
     });
     const input = {
@@ -159,7 +167,8 @@ describe('createAutomationEventActionExecutor', () => {
         kind: 'plugin',
         pluginId: 'com.acme.github',
         materialization: callerMaterialization,
-        immutableGenerationId: 'github-immutable-generation-a',
+        occurrenceId,
+        sourceCustody,
       },
     })).resolves.toEqual({});
 
@@ -168,7 +177,8 @@ describe('createAutomationEventActionExecutor', () => {
       caller: {
         pluginId: 'com.acme.github',
         materialization: callerMaterialization,
-        immutableGenerationId: 'github-immutable-generation-a',
+        occurrenceId,
+        sourceCustody,
       },
       input,
     };
@@ -188,7 +198,7 @@ describe('createAutomationEventActionExecutor', () => {
     );
   });
 
-  it('does not let the current executor transport a source status without exact caller generation', async () => {
+  it('does not let the current executor transport a source status without exact caller occurrence', async () => {
     const execute = vi.fn(async () => ({}));
     const executor = createAutomationEventActionExecutor({
       credentials,
@@ -215,8 +225,8 @@ describe('createAutomationEventActionExecutor', () => {
       },
     })).resolves.toEqual({
       ok: false,
-      errorCode: 'automation_event_caller_generation_unavailable',
-      error: 'automation_event_caller_generation_unavailable',
+      errorCode: 'automation_event_caller_occurrence_unavailable',
+      error: 'automation_event_caller_occurrence_unavailable',
     });
 
     expect(execute).not.toHaveBeenCalled();
@@ -225,12 +235,12 @@ describe('createAutomationEventActionExecutor', () => {
   it('revalidates and forwards the stamped caller materialization without accepting target authority', async () => {
     const execute = vi.fn(async () => ({}));
     const revalidateCallerMaterialization = vi.fn(async () => true);
-    const revalidateCallerImmutableGeneration = vi.fn(async () => true);
+    const revalidateCallerOccurrence = vi.fn(async () => true);
     const executor = createAutomationEventActionExecutor({
       credentials,
       transport: { execute },
       revalidateCallerMaterialization,
-      revalidateCallerImmutableGeneration,
+      revalidateCallerOccurrence,
       resolveAdoptedDefinitionSet: () => createAvailableAdoptedDefinitionSet('7'),
     });
 
@@ -250,14 +260,15 @@ describe('createAutomationEventActionExecutor', () => {
         pluginId: 'com.acme.github',
         contributionLocalId: 'repository-events',
         materialization: callerMaterialization,
-        immutableGenerationId: 'github-immutable-generation-a',
+        occurrenceId,
+        sourceCustody,
       },
     })).resolves.toEqual({});
 
     expect(revalidateCallerMaterialization).toHaveBeenCalledWith(callerMaterialization);
-    expect(revalidateCallerImmutableGeneration).toHaveBeenCalledWith({
+    expect(revalidateCallerOccurrence).toHaveBeenCalledWith({
       pluginId: 'com.acme.github',
-      immutableGenerationId: 'github-immutable-generation-a',
+      occurrenceId,
     });
     expect(execute).toHaveBeenCalledWith(
       'automation.event.source.status.report',
@@ -267,7 +278,8 @@ describe('createAutomationEventActionExecutor', () => {
           pluginId: 'com.acme.github',
           contributionLocalId: 'repository-events',
           materialization: callerMaterialization,
-          immutableGenerationId: 'github-immutable-generation-a',
+          occurrenceId,
+        sourceCustody,
         },
         input: {
           kind: 'catalogReconciliation',
@@ -282,17 +294,17 @@ describe('createAutomationEventActionExecutor', () => {
     );
   });
 
-  it('does not transport a status report when its exact caller generation retires during preparation', async () => {
+  it('does not transport a status report when its exact caller occurrence retires during preparation', async () => {
     const execute = vi.fn(async () => ({}));
     const revalidateCallerMaterialization = vi.fn(async () => true);
-    const revalidateCallerImmutableGeneration = vi.fn()
+    const revalidateCallerOccurrence = vi.fn()
       .mockResolvedValueOnce(true)
       .mockResolvedValueOnce(false);
     const executor = createAutomationEventActionExecutor({
       credentials,
       transport: { execute },
       revalidateCallerMaterialization,
-      revalidateCallerImmutableGeneration,
+      revalidateCallerOccurrence,
       resolveAdoptedDefinitionSet: () => createAvailableAdoptedDefinitionSet('7'),
     });
 
@@ -312,23 +324,24 @@ describe('createAutomationEventActionExecutor', () => {
         pluginId: 'com.acme.github',
         contributionLocalId: 'repository-events',
         materialization: callerMaterialization,
-        immutableGenerationId: 'github-immutable-generation-a',
+        occurrenceId,
+        sourceCustody,
       },
     })).resolves.toEqual({
       ok: false,
-      errorCode: 'automation_event_caller_generation_unavailable',
-      error: 'automation_event_caller_generation_unavailable',
+      errorCode: 'automation_event_caller_occurrence_unavailable',
+      error: 'automation_event_caller_occurrence_unavailable',
     });
 
     expect(revalidateCallerMaterialization).toHaveBeenCalledTimes(2);
-    expect(revalidateCallerImmutableGeneration).toHaveBeenCalledTimes(2);
-    expect(revalidateCallerImmutableGeneration).toHaveBeenNthCalledWith(1, {
+    expect(revalidateCallerOccurrence).toHaveBeenCalledTimes(2);
+    expect(revalidateCallerOccurrence).toHaveBeenNthCalledWith(1, {
       pluginId: 'com.acme.github',
-      immutableGenerationId: 'github-immutable-generation-a',
+      occurrenceId,
     });
-    expect(revalidateCallerImmutableGeneration).toHaveBeenNthCalledWith(2, {
+    expect(revalidateCallerOccurrence).toHaveBeenNthCalledWith(2, {
       pluginId: 'com.acme.github',
-      immutableGenerationId: 'github-immutable-generation-a',
+      occurrenceId,
     });
     expect(execute).not.toHaveBeenCalled();
   });
@@ -362,7 +375,7 @@ describe('createAutomationEventActionExecutor', () => {
       credentials,
       transport: { execute },
       revalidateCallerMaterialization: async () => true,
-      revalidateCallerImmutableGeneration: async () => true,
+      revalidateCallerOccurrence: async () => true,
     });
     const input = {
       kind: 'catalogReconciliation' as const,
@@ -391,7 +404,8 @@ describe('createAutomationEventActionExecutor', () => {
           pluginId: 'com.acme.github',
           contributionLocalId: 'repository-events',
           materialization: callerMaterialization,
-          immutableGenerationId: 'github-immutable-generation-a',
+          occurrenceId,
+        sourceCustody,
         },
       })).resolves.toEqual({});
     });
@@ -404,7 +418,8 @@ describe('createAutomationEventActionExecutor', () => {
           pluginId: 'com.acme.github',
           contributionLocalId: 'repository-events',
           materialization: callerMaterialization,
-          immutableGenerationId: 'github-immutable-generation-a',
+          occurrenceId,
+        sourceCustody,
         },
         input,
       },
@@ -417,7 +432,7 @@ describe('createAutomationEventActionExecutor', () => {
       credentials,
       transport: { execute },
       revalidateCallerMaterialization: async () => true,
-      revalidateCallerImmutableGeneration: async () => true,
+      revalidateCallerOccurrence: async () => true,
       resolveAdoptedDefinitionSet: () => createAvailableAdoptedDefinitionSet('6'),
     });
 
@@ -436,7 +451,8 @@ describe('createAutomationEventActionExecutor', () => {
         kind: 'plugin',
         pluginId: 'com.acme.github',
         materialization: callerMaterialization,
-        immutableGenerationId: 'github-immutable-generation-a',
+        occurrenceId,
+        sourceCustody,
       },
     })).resolves.toEqual({
       ok: false,
@@ -485,7 +501,7 @@ describe('createAutomationEventActionExecutor', () => {
       credentials,
       transport: { execute },
       revalidateCallerMaterialization,
-      revalidateCallerImmutableGeneration: async () => true,
+      revalidateCallerOccurrence: async () => true,
       resolveAccountId: async () => 'account-1',
       resolveAdoptedDefinitionSet,
     };
@@ -503,7 +519,7 @@ describe('createAutomationEventActionExecutor', () => {
     });
     expect(resolveAdoptedDefinitionSet).toHaveBeenCalledWith(
       callerMaterialization,
-      immutableGenerationId,
+      occurrenceId,
       { kind: 'checkpointedPull' },
     );
     expect(listPublicProjection).toHaveBeenCalledWith({
@@ -569,7 +585,7 @@ describe('createAutomationEventActionExecutor', () => {
       credentials,
       transport: { execute },
       revalidateCallerMaterialization: async () => true,
-      revalidateCallerImmutableGeneration: async () => true,
+      revalidateCallerOccurrence: async () => true,
       resolveAccountId: async () => 'account-1',
       resolveAdoptedDefinitionSet,
     });
@@ -591,7 +607,7 @@ describe('createAutomationEventActionExecutor', () => {
     });
     expect(resolveAdoptedDefinitionSet).toHaveBeenCalledWith(
       callerMaterialization,
-      immutableGenerationId,
+      occurrenceId,
       { kind: 'socket' },
     );
     expect(prepareAdmission).toHaveBeenCalled();
@@ -613,9 +629,9 @@ describe('createAutomationEventActionExecutor', () => {
     const executor = createAutomationEventActionExecutor({
       credentials,
       revalidateCallerMaterialization: async () => true,
-      revalidateCallerImmutableGeneration: async () => true,
+      revalidateCallerOccurrence: async () => true,
       resolveAccountId: async () => 'account-1',
-      resolveAdoptedDefinitionSet: (_caller, _immutableGenerationId, transport) => (
+      resolveAdoptedDefinitionSet: (_caller, _occurrenceId, transport) => (
         transport.kind === 'durablePush' ? adoptedSet : null
       ),
     });
@@ -698,7 +714,7 @@ describe('createAutomationEventActionExecutor', () => {
       credentials,
       transport: { execute },
       revalidateCallerMaterialization: async () => true,
-      revalidateCallerImmutableGeneration: async () => true,
+      revalidateCallerOccurrence: async () => true,
       resolveAccountId: async () => 'account-1',
       resolveAdoptedDefinitionSet: () => adoptedSet,
     };
@@ -799,12 +815,13 @@ describe('createAutomationEventActionExecutor', () => {
     const adoptedSet = createAutomationEventAdoptedDefinitionSetHostV1({
       credentials,
       caller: callerMaterialization,
-      immutableGenerationId: 'github-immutable-generation-a',
+      occurrenceId,
+        sourceCustody,
       transport: { kind: 'checkpointedPull' },
-      generationSignal: new AbortController().signal,
-      isGenerationCurrent: () => true,
+      occurrenceSignal: new AbortController().signal,
+      isOccurrenceCurrent: () => true,
       revalidateCallerMaterialization: async () => true,
-      revalidateCallerImmutableGeneration: async () => true,
+      revalidateCallerOccurrence: async () => true,
       readStoredDefinitions: async ({ input }) => input.knownRevision === '7'
         ? { kind: 'unchanged', revision: '7', eventDeclarationRelease }
         : {
@@ -839,9 +856,9 @@ describe('createAutomationEventActionExecutor', () => {
     const executor = createAutomationEventActionExecutor({
       credentials,
       revalidateCallerMaterialization: async () => true,
-      revalidateCallerImmutableGeneration: async () => true,
+      revalidateCallerOccurrence: async () => true,
       resolveAccountId: async () => 'account-1',
-      resolveAdoptedDefinitionSet: (_caller, _immutableGenerationId, transport) => (
+      resolveAdoptedDefinitionSet: (_caller, _occurrenceId, transport) => (
         transport.kind === 'checkpointedPull' ? adoptedSet : null
       ),
       randomBytes: (length) => Uint8Array.from({ length }, (_, index) => index + 1),
@@ -874,7 +891,7 @@ describe('createAutomationEventActionExecutor', () => {
       postedBody,
     );
     expect(JSON.stringify(request)).not.toContain('"payload"');
-    expect(JSON.stringify(request)).not.toContain('"occurrenceId"');
+    expect(request.hostEvidence).not.toHaveProperty('occurrenceId');
     expect(JSON.stringify(request)).not.toContain('private-repository-source');
     expect(JSON.stringify(request)).not.toContain('private-source-config');
     expect(JSON.stringify(request)).not.toContain('private-repository-source');
@@ -1007,7 +1024,7 @@ describe('createAutomationEventActionExecutor', () => {
       credentials,
       transport: { execute },
       revalidateCallerMaterialization: async () => true,
-      revalidateCallerImmutableGeneration: async () => true,
+      revalidateCallerOccurrence: async () => true,
       resolveAccountId: async () => 'account-1',
       resolveAdoptedDefinitionSet: () => adoptedSet,
     });
@@ -1161,7 +1178,7 @@ describe('createAutomationEventActionExecutor', () => {
       credentials,
       transport: { execute },
       revalidateCallerMaterialization,
-      revalidateCallerImmutableGeneration: async () => true,
+      revalidateCallerOccurrence: async () => true,
       resolveAccountId: async () => 'account-1',
       resolveAdoptedDefinitionSet: () => adoptedSet,
     });
@@ -1254,7 +1271,7 @@ describe('createAutomationEventActionExecutor', () => {
       credentials,
       transport: { execute },
       revalidateCallerMaterialization,
-      revalidateCallerImmutableGeneration: async () => true,
+      revalidateCallerOccurrence: async () => true,
       resolveAccountId: async () => 'account-1',
       resolveAdoptedDefinitionSet: () => adoptedSet,
     });
@@ -1346,7 +1363,7 @@ describe('createAutomationEventActionExecutor', () => {
       credentials,
       transport: { execute },
       revalidateCallerMaterialization: async () => true,
-      revalidateCallerImmutableGeneration: async () => true,
+      revalidateCallerOccurrence: async () => true,
       resolveAccountId: async () => 'account-1',
       resolveAdoptedDefinitionSet: () => adoptedSet,
     });
@@ -1448,9 +1465,9 @@ describe('createAutomationEventActionExecutor', () => {
       credentials,
       transport: { execute },
       revalidateCallerMaterialization: async () => true,
-      revalidateCallerImmutableGeneration: async () => true,
+      revalidateCallerOccurrence: async () => true,
       resolveAccountId: async () => 'account-1',
-      resolveAdoptedDefinitionSet: (_caller, _immutableGenerationId, transport) => (
+      resolveAdoptedDefinitionSet: (_caller, _occurrenceId, transport) => (
         transport.kind === 'durablePush' ? adoptedSet : null
       ),
     });
@@ -1568,7 +1585,7 @@ describe('createAutomationEventActionExecutor', () => {
       credentials,
       transport: { execute },
       revalidateCallerMaterialization: async () => true,
-      revalidateCallerImmutableGeneration: async () => true,
+      revalidateCallerOccurrence: async () => true,
       resolveAccountId: async () => 'account-1',
       resolveAdoptedDefinitionSet: () => adoptedSet,
     });
@@ -1687,7 +1704,7 @@ describe('createAutomationEventActionExecutor', () => {
       credentials,
       transport: { execute },
       revalidateCallerMaterialization: async () => false,
-      revalidateCallerImmutableGeneration: async () => true,
+      revalidateCallerOccurrence: async () => true,
     });
 
     await expect(executor({
@@ -1705,7 +1722,8 @@ describe('createAutomationEventActionExecutor', () => {
         kind: 'plugin',
         pluginId: 'com.acme.github',
         materialization: callerMaterialization,
-        immutableGenerationId: 'github-immutable-generation-a',
+        occurrenceId,
+        sourceCustody,
       },
     })).resolves.toEqual({
       ok: false,

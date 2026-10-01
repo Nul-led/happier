@@ -64,12 +64,7 @@ export function installSessionFilesCommonModuleMocks(
             return await activeOptions.typography();
         }
 
-        return {
-            Typography: {
-                default: () => ({}),
-                mono: () => ({}),
-            },
-        };
+        return await vi.importActual('@/constants/Typography');
     });
 
     vi.mock('@/text', async () => {

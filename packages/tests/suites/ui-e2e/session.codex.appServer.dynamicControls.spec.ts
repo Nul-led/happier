@@ -746,7 +746,9 @@ async function ensureSessionMode(page: Page, optionId: 'plan' | 'default'): Prom
 }
 
 test.describe('ui e2e: Codex app-server dynamic controls', () => {
-    test.describe.configure({ mode: 'serial' });
+    // Apply the budget before Playwright resolves the page fixture. On a retry, runner setup can
+    // exceed Playwright's 30s default before the test body gets a chance to call setTimeout().
+    test.describe.configure({ mode: 'serial', timeout: 540_000 });
 
     const suiteDir = run.testDir('session-codex-app-server-dynamic-controls-suite');
 
@@ -764,11 +766,6 @@ test.describe('ui e2e: Codex app-server dynamic controls', () => {
             extraEnv: {
                 HAPPIER_E2E_PROVIDER_USE_SERVER_SOURCE_ENTRYPOINT: '1',
                 HAPPIER_BUILD_FEATURES_DENY: 'sharing.contentKeys',
-                // Presence updates are throttled in the DB; keep the presence timeout comfortably above
-                // that threshold so the UI doesn't briefly classify the daemon machine as "offline".
-                HAPPIER_PRESENCE_SESSION_TIMEOUT_MS: '300000',
-                HAPPIER_PRESENCE_MACHINE_TIMEOUT_MS: '300000',
-                HAPPIER_PRESENCE_TIMEOUT_TICK_MS: '1000',
                 // UI e2e runs after workspace typechecks/builds in the pipeline runner; avoid
                 // expensive shared-deps/provider-generation work here to reduce beforeAll flake.
                 HAPPIER_E2E_PROVIDER_SKIP_SERVER_SHARED_DEPS_BUILD: '1',
@@ -805,7 +802,6 @@ test.describe('ui e2e: Codex app-server dynamic controls', () => {
     });
 
     test('uses preflight Codex app-server controls on /new before the first prompt', async ({ page }) => {
-        test.setTimeout(540_000);
         if (!server || !uiBaseUrl) throw new Error('missing server/ui fixtures');
 
         const testDir = resolve(join(suiteDir, 't1-codex-app-server-preflight-controls'));
@@ -860,7 +856,6 @@ test.describe('ui e2e: Codex app-server dynamic controls', () => {
     });
 
     test('applies live Codex app-server mode and model changes to the next session turn', async ({ page }) => {
-        test.setTimeout(540_000);
         if (!server || !uiBaseUrl) throw new Error('missing server/ui fixtures');
 
         const testDir = resolve(join(suiteDir, 't2-codex-app-server-live-controls'));
@@ -934,7 +929,6 @@ test.describe('ui e2e: Codex app-server dynamic controls', () => {
     });
 
     test('shows the eligible Codex app-server Fast toggle inside the selected model card and applies it on the first turn', async ({ page }) => {
-        test.setTimeout(540_000);
         if (!server || !uiBaseUrl) throw new Error('missing server/ui fixtures');
 
         const testDir = resolve(join(suiteDir, 't3-codex-app-server-speed-controls'));

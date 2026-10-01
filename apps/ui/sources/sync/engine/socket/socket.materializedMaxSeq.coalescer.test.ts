@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+vi.mock('@/sync/domains/plugins/availability/generatedBundledPluginUiArtifacts', async () => {
+    const { emptyBundledPluginUiAssetsModule } = await import('@/dev/testkit/mocks/bundledPluginUiAssets');
+    return emptyBundledPluginUiAssetsModule;
+});
+
 import type { ApiUpdateContainer } from '@/sync/api/types/apiTypes';
 import type { Session } from '@/sync/domains/state/storageTypes';
 import { storage } from '@/sync/domains/state/storage';
@@ -852,7 +857,7 @@ describe('socket new-message + coalescer: materialized max seq', () => {
         );
     });
 
-    it('projects encrypted cache-only durable maintenance messages when the server supplies trusted non-unread attention impact', async () => {
+    it('keeps completed cache-only sessions read across consecutive trusted non-unread maintenance messages', async () => {
         storage.setState((prev) => ({
             ...prev,
             sessions: {},
@@ -870,7 +875,7 @@ describe('socket new-message + coalescer: materialized max seq', () => {
                     metadataVersion: 1,
                     agentStateVersion: 0,
                     metadata: { path: '/tmp', host: 'localhost' },
-                    latestTurnStatus: 'in_progress',
+                    latestTurnStatus: 'completed',
                     latestTurnStatusObservedAt: 900,
                     hasUnreadMessages: false,
                     thinking: false,
@@ -942,6 +947,30 @@ describe('socket new-message + coalescer: materialized max seq', () => {
             expect.objectContaining({
                 seq: 11,
                 updatedAt: 1_011,
+                meaningfulActivityAt: 800,
+                hasUnreadMessages: false,
+            }),
+        );
+
+        await handleUpdateContainer({
+            ...baseParams,
+            updateData: buildNewMessageUpdate({
+                sessionId: 's-cache-encrypted-maintenance-trusted',
+                messageId: 'm-encrypted-maintenance-trusted-2',
+                messageSeq: 12,
+                attentionImpact: {
+                    affectsUnread: false,
+                    affectsMeaningfulActivity: false,
+                },
+            }),
+        });
+
+        await vi.runAllTimersAsync();
+
+        expect(Object.values(storage.getState().sessionListRowsByServerId).map((rows) => rows['s-cache-encrypted-maintenance-trusted']).find(Boolean)).toEqual(
+            expect.objectContaining({
+                seq: 12,
+                updatedAt: 1_012,
                 meaningfulActivityAt: 800,
                 hasUnreadMessages: false,
             }),

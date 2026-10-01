@@ -245,7 +245,7 @@ describe('AgentInputAttachmentsRow', () => {
             id: 'acme.issues/issue',
             pluginId: 'acme.issues',
             identity: { pluginId: 'acme.issues', localId: 'issue' },
-            immutableGenerationId: 'issues-generation-7',
+            occurrenceId: 'issues-generation-7',
             definition: {
                 id: 'issue',
                 title: 'Issue',

@@ -6,7 +6,7 @@ import type { Page, Response } from '@playwright/test';
 
 import {
   computePluginUiArtifactFileSetSha256DigestV1,
-  PluginUiArtifactsManifestV1Schema,
+  PluginUiArtifactsManifestV2Schema,
 } from '@happier-dev/protocol/plugins/ui';
 
 import type { CliTestLaunchSpec } from '../process/cliLaunchSpec';
@@ -42,14 +42,9 @@ export type PackedCandidateBrowserQaAttestation =
   artifactBasis: 'candidate_manifest';
   artifactRunId: string;
   runId: string;
-  inspectorContributionId: 'inspector-app-native';
-  inspectorWebArtifactDigest: string;
-  inspectorIosArtifactDigest: string;
-  inspectorAndroidArtifactDigest: string;
-  inspectorRepackContainerName: 'happier_inspector_inspector_app_native';
-  inspectorRepackModulePath: './renderSurface';
-  inspectorRepackExportName: 'renderSurface';
-  inspectorPlatforms: PackedInspectorArtifactAttestation['platforms'];
+  inspectorArtifactId: 'inspector-app-native';
+  inspectorArtifactDigest: string;
+  inspectorArtifact: PackedInspectorArtifactAttestation['artifact'];
 }>;
 
 export type PreparedPackedCandidateBrowserQa = Readonly<{
@@ -357,7 +352,7 @@ export function buildPackedCandidateBrowserQaRunOutcome(input: Readonly<{
     outcome.candidateCliVersion = candidateAttestation.cliVersion;
     outcome.candidateCliIntegrity = candidateAttestation.cliIntegrity;
     outcome.candidateInspectorWebArtifactDigest =
-      candidateAttestation.inspectorWebArtifactDigest;
+      candidateAttestation.inspectorArtifactDigest;
   }
   return Object.freeze(outcome);
 }
@@ -638,32 +633,14 @@ export async function preparePackedNovelConnectedAccountBrowserQa(
 
 type PackedInspectorArtifactIdentity = Readonly<{
   artifactDigest: string;
-  builtWith: Readonly<{
-    bundler: 'vite' | 'repack';
-    version: string;
-  }>;
-  hostUiApiVersion: string;
-  compat: Readonly<{
-    react: string;
-    reactNative: string;
-    expoRuntime?: string;
-    hermes?: string;
-  }>;
+  builtWith: Readonly<{ bundler: 'esbuild'; version: string }>;
+  hostUiApiRange: string;
+  executableExports: readonly string[];
 }>;
 
 export type PackedInspectorArtifactAttestation = Readonly<{
-  contributionId: 'inspector-app-native';
-  webArtifactDigest: string;
-  iosArtifactDigest: string;
-  androidArtifactDigest: string;
-  repackContainerName: 'happier_inspector_inspector_app_native';
-  repackModulePath: './renderSurface';
-  repackExportName: 'renderSurface';
-  platforms: Readonly<{
-    web: PackedInspectorArtifactIdentity;
-    ios: PackedInspectorArtifactIdentity;
-    android: PackedInspectorArtifactIdentity;
-  }>;
+  artifactId: 'inspector-app-native';
+  artifact: PackedInspectorArtifactIdentity;
 }>;
 
 export type CandidateInspectorRuntimeAttestation = Readonly<{
@@ -717,7 +694,7 @@ export function attestPackedPublicAuthoringHostedWebRuntime(params: Readonly<{
   const runtime = recordAt(entry, ['runtime']);
   const runtimeMode = recordAt(entry, ['runtimeMode']);
   if (
-    artifactGraph?.contributionId
+    artifactGraph?.artifactId
       !== params.publicAuthoring.hostedWeb.contributionId
     || artifactGraph.tier !== 'hostedWeb'
   ) {
@@ -762,8 +739,7 @@ export function attestCandidateInspectorRuntime(params: Readonly<{
   const cacheIdentity = recordAt(runtime, ['cacheIdentity']);
   const loadPolicy = recordAt(runtime, ['loadPolicy']);
   if (
-    artifactGraph?.contributionId !== 'inspector-app-native'
-    || artifactGraph.platform !== 'web'
+    artifactGraph?.artifactId !== 'inspector-app-native'
   ) {
     throw new Error('packed_candidate_inspector_runtime_graph_missing');
   }
@@ -777,7 +753,6 @@ export function attestCandidateInspectorRuntime(params: Readonly<{
     runtime?.state !== 'loadable'
     || decision?.state !== 'load'
     || loadPolicy?.source !== 'installedArtifact'
-    || cacheIdentity?.projectionGeneration !== generation
   ) {
     throw new Error('packed_candidate_inspector_runtime_not_loadable');
   }
@@ -820,25 +795,20 @@ export async function attestPackedInspectorArtifacts(
   const cliPackageRoot = resolve(dirname(input.cliEntrypoint), '..');
   const artifactRoot = join(cliPackageRoot, INSPECTOR_PACKAGE_RELATIVE_ROOT);
   const rawGraph = await deps.readFile(join(artifactRoot, 'ui-artifacts.json'));
-  const graph = PluginUiArtifactsManifestV1Schema.parse(
+  const graph = PluginUiArtifactsManifestV2Schema.parse(
     JSON.parse(Buffer.from(rawGraph).toString('utf8')),
   );
   const entries = graph.entries.filter(
-    (entry) => entry.contributionId === 'inspector-app-native'
+    (entry) => entry.artifactId === 'inspector-app-native'
       && entry.tier === 'reactNative',
   );
-  if (
-    entries.length !== 3
-    || !entries.some((entry) => entry.platform === 'web')
-    || !entries.some((entry) => entry.platform === 'ios')
-    || !entries.some((entry) => entry.platform === 'android')
-  ) {
-    throw new Error('packed_candidate_inspector_platform_graph_incomplete');
+  if (entries.length !== 1) {
+    throw new Error('packed_candidate_inspector_universal_graph_missing');
   }
 
   for (const entry of entries) {
     if (!entry.files.some((file) => file.relativePath === entry.entry)) {
-      throw new Error(`packed_candidate_inspector_entry_file_missing:${entry.platform}`);
+      throw new Error(`packed_candidate_inspector_entry_file_missing:${entry.artifactId}`);
     }
     const verifiedFiles: Array<Readonly<{ relativePath: string; bytes: Uint8Array }>> = [];
     for (const file of entry.files) {
@@ -846,91 +816,33 @@ export async function attestPackedInspectorArtifacts(
       const digest = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
       if (digest !== file.digest) {
         throw new Error(
-          `packed_candidate_inspector_file_digest_mismatch:${entry.platform}:${file.relativePath}`,
+          `packed_candidate_inspector_file_digest_mismatch:${entry.artifactId}:${file.relativePath}`,
         );
       }
       if (bytes.byteLength !== file.byteSize) {
         throw new Error(
-          `packed_candidate_inspector_file_size_mismatch:${entry.platform}:${file.relativePath}`,
+          `packed_candidate_inspector_file_size_mismatch:${entry.artifactId}:${file.relativePath}`,
         );
       }
       verifiedFiles.push({ relativePath: file.relativePath, bytes });
     }
     if (computePluginUiArtifactFileSetSha256DigestV1(verifiedFiles) !== entry.digest) {
-      throw new Error(`packed_candidate_inspector_graph_digest_mismatch:${entry.platform}`);
+      throw new Error(`packed_candidate_inspector_graph_digest_mismatch:${entry.artifactId}`);
     }
   }
 
-  const web = entries.find((entry) => entry.platform === 'web');
-  const ios = entries.find((entry) => entry.platform === 'ios');
-  const android = entries.find((entry) => entry.platform === 'android');
-  if (!web || !ios || !android) {
-    throw new Error('packed_candidate_inspector_platform_graph_incomplete');
-  }
-  if (
-    !web.compat.react
-    || !ios.compat.react
-    || !android.compat.react
-    || !web.compat.reactNative
-    || !ios.compat.reactNative
-    || !android.compat.reactNative
-  ) {
-    throw new Error('packed_candidate_inspector_react_native_compat_missing');
-  }
-  const expectedRepack = {
-    containerName: 'happier_inspector_inspector_app_native',
-    modulePath: './renderSurface',
-    exportName: 'renderSurface',
-  } as const;
-  for (const entry of [ios, android]) {
-    if (
-      entry.repack?.containerName !== expectedRepack.containerName
-      || entry.repack.modulePath !== expectedRepack.modulePath
-      || entry.repack.exportName !== expectedRepack.exportName
-    ) {
-      throw new Error(`packed_candidate_inspector_repack_identity_mismatch:${entry.platform}`);
-    }
+  const artifact = entries[0];
+  if (!artifact || artifact.tier !== 'reactNative') {
+    throw new Error('packed_candidate_inspector_universal_graph_missing');
   }
 
   return Object.freeze({
-    contributionId: 'inspector-app-native',
-    webArtifactDigest: web.digest,
-    iosArtifactDigest: ios.digest,
-    androidArtifactDigest: android.digest,
-    repackContainerName: expectedRepack.containerName,
-    repackModulePath: expectedRepack.modulePath,
-    repackExportName: expectedRepack.exportName,
-    platforms: Object.freeze({
-      web: Object.freeze({
-        artifactDigest: web.digest,
-        builtWith: Object.freeze({ ...web.builtWith }),
-        hostUiApiVersion: web.hostUiApiVersion,
-        compat: Object.freeze({
-          ...web.compat,
-          react: web.compat.react,
-          reactNative: web.compat.reactNative,
-        }),
-      }),
-      ios: Object.freeze({
-        artifactDigest: ios.digest,
-        builtWith: Object.freeze({ ...ios.builtWith }),
-        hostUiApiVersion: ios.hostUiApiVersion,
-        compat: Object.freeze({
-          ...ios.compat,
-          react: ios.compat.react,
-          reactNative: ios.compat.reactNative,
-        }),
-      }),
-      android: Object.freeze({
-        artifactDigest: android.digest,
-        builtWith: Object.freeze({ ...android.builtWith }),
-        hostUiApiVersion: android.hostUiApiVersion,
-        compat: Object.freeze({
-          ...android.compat,
-          react: android.compat.react,
-          reactNative: android.compat.reactNative,
-        }),
-      }),
+    artifactId: 'inspector-app-native',
+    artifact: Object.freeze({
+      artifactDigest: artifact.digest,
+      builtWith: Object.freeze({ ...artifact.builtWith }),
+      hostUiApiRange: artifact.hostUiApiRange,
+      executableExports: Object.freeze([...artifact.executable.exports]),
     }),
   });
 }
@@ -1164,14 +1076,9 @@ export async function preparePackedCandidateBrowserQa(params: Readonly<{
         artifactBasis: 'candidate_manifest',
         artifactRunId: candidate.runId,
         runId: candidate.runId,
-        inspectorContributionId: inspector.contributionId,
-        inspectorWebArtifactDigest: inspector.webArtifactDigest,
-        inspectorIosArtifactDigest: inspector.iosArtifactDigest,
-        inspectorAndroidArtifactDigest: inspector.androidArtifactDigest,
-        inspectorRepackContainerName: inspector.repackContainerName,
-        inspectorRepackModulePath: inspector.repackModulePath,
-        inspectorRepackExportName: inspector.repackExportName,
-        inspectorPlatforms: inspector.platforms,
+        inspectorArtifactId: inspector.artifactId,
+        inspectorArtifactDigest: inspector.artifact.artifactDigest,
+        inspectorArtifact: inspector.artifact,
       }),
     });
   } catch (error) {

@@ -16,6 +16,9 @@ import type {
 } from './types';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { Icon, type IconName, type IconWeight } from '@/components/ui/icons/Icon';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
+import { HappierStepMarkerView } from '@happier-dev/plugin-ui/presentation';
+import { projectPluginUiTheme } from '@/components/plugins/surfaces/pluginUiThemeProjection';
 
 function getRowStatus(
     item: PlanChecklistItem,
@@ -179,46 +182,6 @@ const stylesheet = StyleSheet.create((theme) => ({
         top: 24,
         bottom: -10,
     },
-    timelineNode: {
-        width: 30,
-        height: 30,
-        borderRadius: 999,
-        borderWidth: 1,
-        borderColor: theme.colors.border.modal,
-        backgroundColor: theme.colors.surface.base,
-        alignItems: 'center',
-        justifyContent: 'center',
-        zIndex: 1,
-    },
-    timelineNodeCompact: {
-        width: 24,
-        height: 24,
-    },
-    timelineNodeDone: {
-        borderColor: theme.colors.state.success.foreground,
-        backgroundColor: theme.colors.surface.pressedOverlay,
-    },
-    timelineNodeError: {
-        borderColor: theme.colors.state.danger.foreground,
-        backgroundColor: theme.colors.surface.pressedOverlay,
-    },
-    timelineNodeRunning: {
-        borderColor: theme.colors.border.default,
-        backgroundColor: theme.colors.surface.pressedOverlay,
-    },
-    timelineNumber: {
-        ...Typography.default('semiBold'),
-        color: theme.colors.text.secondary,
-        fontSize: 12,
-        lineHeight: 16,
-    },
-    iconBox: {
-        alignItems: 'center',
-        justifyContent: 'center',
-    },
-    iconBoxSelected: {
-        borderColor: theme.colors.accent.blue,
-    },
     titleColumn: {
         flex: 1,
         minWidth: 0,
@@ -290,45 +253,8 @@ const stylesheet = StyleSheet.create((theme) => ({
     iconBoxBase: {
         width: 26,
         height: 26,
-        borderRadius: 7,
-        borderWidth: 1,
-        borderColor: theme.colors.border.default,
-        backgroundColor: theme.colors.surface.pressedOverlay,
-    },
-    iconBoxDone: {
-        borderColor: theme.colors.state.success.foreground,
-        backgroundColor: theme.colors.surface.selected,
-    },
-    iconBoxError: {
-        borderColor: theme.colors.state.danger.foreground,
-        backgroundColor: theme.colors.surface.selected,
-    },
-    iconBoxQueued: {
-        borderColor: theme.colors.border.default,
-        backgroundColor: theme.colors.surface.base,
-    },
-    iconBoxRunning: {
-        borderColor: theme.colors.accent.blue,
-        backgroundColor: theme.colors.surface.base,
-    },
-    iconPlainBase: {
-        width: 30,
-        height: 30,
-        borderWidth: 0,
-        borderRadius: 0,
-        backgroundColor: 'transparent',
-    },
-    iconPlainRunning: {
-        width: 30,
-        height: 30,
-    },
-    iconPlainCompactBase: {
-        width: 24,
-        height: 24,
-    },
-    iconPlainCompactRunning: {
-        width: 24,
-        height: 24,
+        alignItems: 'center',
+        justifyContent: 'center',
     },
 }));
 
@@ -351,6 +277,7 @@ export type PlanChecklistRowProps = Readonly<{
 
 export const PlanChecklistRow = React.memo(function PlanChecklistRow(props: PlanChecklistRowProps) {
     const { theme } = useUnistyles();
+    const presentationTheme = React.useMemo(() => projectPluginUiTheme(theme), [theme]);
     const styles = stylesheet;
     const [hovered, setHovered] = React.useState(false);
     const status = getRowStatus(props.item, props.phase, props.selected, props.execution);
@@ -416,7 +343,7 @@ export const PlanChecklistRow = React.memo(function PlanChecklistRow(props: Plan
                 style={({ pressed }) => ([
                     styles.detailsToggle,
                     shouldRevealDetailsToggle ? null : styles.detailsToggleHidden,
-                    pressed ? { opacity: 0.7 } : null,
+                    pressed ? { opacity: motionTokens.press.opacity } : null,
                 ])}
             >
                 <Icon
@@ -463,33 +390,22 @@ export const PlanChecklistRow = React.memo(function PlanChecklistRow(props: Plan
                                 usesCompactNestedRow ? styles.timelineConnectorCompact : null,
                             ]} />
                         ) : null}
-                        <View
-                            testID={statusSlotTestID}
-                            style={[
-                                usesOnboardingVariant ? styles.timelineNode : styles.iconBoxBase,
-                                usesOnboardingVariant && status === 'done' ? styles.timelineNodeDone : null,
-                                usesOnboardingVariant && status === 'error' ? styles.timelineNodeError : null,
-                                usesOnboardingVariant && status === 'running' ? styles.timelineNodeRunning : null,
-                                usesCompactNestedRow ? styles.timelineNodeCompact : null,
-                                !usesOnboardingVariant && status === 'done' ? styles.iconBoxDone : null,
-                                !usesOnboardingVariant && status === 'error' ? styles.iconBoxError : null,
-                                !usesOnboardingVariant && status === 'queued' ? styles.iconBoxQueued : null,
-                                !usesOnboardingVariant && status === 'running' ? styles.iconBoxRunning : null,
-                                !usesOnboardingVariant && props.selected ? styles.iconBoxSelected : null,
-                                usesOnboardingVariant && status === 'running' ? styles.iconPlainRunning : null,
-                                usesCompactNestedRow ? styles.iconPlainCompactBase : null,
-                                usesCompactNestedRow && status === 'running' ? styles.iconPlainCompactRunning : null,
-                            ]}
-                        >
+                        {usesOnboardingVariant ? <HappierStepMarkerView
+                            testID={statusSlotTestID} theme={presentationTheme}
+                            marker={status === 'done' || status === 'error' || status === 'running'
+                                ? { kind: 'state', state: status === 'done' ? 'passed' : status === 'error' ? 'failed' : 'running', label: getStatusLabel(status) ?? '' }
+                                : { kind: 'number', value: timelineNodeIndex }}
+                            markerLabel={getStatusLabel(status) ?? undefined}
+                            numberState={props.selected ? 'current' : 'upcoming'}
+                            stateGlyph={status === 'done' || status === 'error' ? <Icon name={status === 'done' ? 'check' : 'x'} size={12}
+                                color={theme.colors.state[status === 'done' ? 'success' : 'danger'].foreground} /> : undefined}
+                        /> : <View testID={statusSlotTestID} style={styles.iconBoxBase}>
                             {status === 'running' ? (
                                 <ActivitySpinner
                                     size={usesCompactNestedRow ? 16 : (usesOnboardingVariant ? 18 : 16)}
                                     color={usesOnboardingVariant ? theme.colors.text.secondary : theme.colors.accent.blue}
                                 />
                             ) : iconName ? (
-                                usesOnboardingVariant && status !== 'done' && status !== 'error' ? (
-                                    <Text style={styles.timelineNumber}>{timelineNodeIndex}</Text>
-                                ) : (
                                     <Icon
                                         name={iconName}
                                         size={usesCompactNestedRow ? 16 : (usesOnboardingVariant ? 18 : 16)}
@@ -504,9 +420,8 @@ export const PlanChecklistRow = React.memo(function PlanChecklistRow(props: Plan
                                         }
                                         weight={iconWeight}
                                     />
-                                )
                             ) : null}
-                        </View>
+                        </View>}
                     </View>
 
                     <View style={styles.titleColumn}>

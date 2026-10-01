@@ -12,6 +12,7 @@ import {
   type AccountProfile,
   type ExternalSessionsSource,
   type PluginContributionIdentityV1,
+  type PluginSourceCustodyV1,
   validateExternalSessionTranscriptFollowEventV1,
 } from '@happier-dev/protocol';
 import {
@@ -68,6 +69,7 @@ import {
   type ConfiguredExternalSessionSourceRefusal,
   type ConfiguredExternalSessionSourceCandidate,
   type ConfiguredExternalSessionSourceSnapshotBasis,
+  type ConfiguredExternalSessionSourceOccurrence,
 } from './configuredSourceRegistry';
 import {
   createExternalSessionFollowCleanupCustody,
@@ -339,7 +341,10 @@ export async function resolveConfiguredExternalSessionFollowTarget(params: Reado
       const snapshot = await buildConfiguredExternalSessionSourceSnapshot({
         basis: params.basis,
         readCurrentBasis: params.readCurrentBasis,
-        isCurrent,
+        resolveAgentOccurrence: () => Object.freeze({
+          occurrenceId: 'captured-follow-target',
+          isCurrent,
+        }),
         candidates: materializeConfiguredExternalSessionSourceCandidates({
           agents: params.agents,
           account: params.account,
@@ -770,15 +775,18 @@ export async function createConfiguredPluginExternalSessionsAdapter(params: Read
   basis: ConfiguredExternalSessionSourceSnapshotBasis;
   readCurrentBasis: () => ConfiguredExternalSessionSourceSnapshotBasis;
   isCurrent: () => boolean;
+  resolveAgentOccurrence: (
+    agentId: string,
+  ) => ConfiguredExternalSessionSourceOccurrence | null;
   activeServerDir?: string;
   resolveProviderOps: (agentId: string) => Promise<PluginExternalSessionsProviderOps | null>;
   /**
-   * Immutable generation of the Agent plugin behind `agentId`. The candidate
+   * Durable source custody for the Agent plugin behind `agentId`. The candidate
    * index this adapter shares with the daemon's own Browse path is qualified by
-   * it, so both must read it from the same runtime lease: disagreeing values
+   * it, so both must read it from the same runtime lease: disagreeing custody
    * would make each caller reject and rebuild the other's index forever.
    */
-  resolveAgentRuntimeGeneration?: (agentId: string) => string | null;
+  resolveAgentSourceCustody?: (agentId: string) => PluginSourceCustodyV1 | null;
   attach?: NonNullable<Parameters<typeof createPluginExternalSessionsAdapter>[0]['attach']>;
   contextualTakeover?: ContextualExternalSessionTakeoverAdapter;
   followTranscript?: NonNullable<
@@ -798,7 +806,7 @@ export async function createConfiguredPluginExternalSessionsAdapter(params: Read
   const snapshot = await buildConfiguredExternalSessionSourceSnapshot({
     basis: params.basis,
     readCurrentBasis: params.readCurrentBasis,
-    isCurrent: params.isCurrent,
+    resolveAgentOccurrence: params.resolveAgentOccurrence,
     candidates: materializeConfiguredExternalSessionSourceCandidates({
       agents: params.agents,
       account: params.account,
@@ -822,6 +830,17 @@ export async function createConfiguredPluginExternalSessionsAdapter(params: Read
       ...(agent?.identity ? { agentIdentity: agent.identity } : {}),
       sourceId: entry.sourceKey,
       source: entry.source,
+      isCurrent: () => {
+        try {
+          return snapshot.resolve(
+            entry.agentId,
+            entry.sourceKey,
+            params.readCurrentBasis(),
+          ) === entry;
+        } catch {
+          return false;
+        }
+      },
       validatedAtAdmission: true as const,
       externalLinkedTakeoverWriterSafety: ops?.externalLinkedTakeoverWriterSafety
         ?? 'unsupported',
@@ -880,10 +899,21 @@ export async function createConfiguredPluginExternalSessionsAdapter(params: Read
           }
           return page;
         }
+        const sourceCustody = params.resolveAgentSourceCustody?.(entry.agentId) ?? null;
+        if (!sourceCustody) {
+          const page = await ops.listCandidates(request);
+          if (page.preparation) {
+            throw new PluginError({
+              code: 'plugin_external_candidate_index_identity_unavailable',
+              message: 'plugin_external_candidate_index_identity_unavailable',
+            });
+          }
+          return page;
+        }
         return await executeExternalSessionCandidateQuery({
           activeServerDir: candidateIndexServerDir,
           agentIdentity: entry.agentIdentity,
-          agentRuntimeGeneration: params.resolveAgentRuntimeGeneration?.(entry.agentId) ?? null,
+          agentSourceCustody: sourceCustody,
           source,
           ...(cursor ? { cursor } : {}),
           limit,
@@ -1185,7 +1215,9 @@ export async function createConfiguredPluginExternalSessionsAdapter(params: Read
           if (event.kind === 'data') {
             projected = Object.freeze({
               kind: 'data',
-              items: Object.freeze(event.items.map(projectAuthorTranscriptItem)),
+              items: Object.freeze(event.items.map((item) => item.kind === 'source_observation'
+                ? item
+                : projectAuthorTranscriptItem(item))),
               fromCursor: event.fromCursor,
               nextCursor: event.nextCursor,
             });
@@ -1468,16 +1500,18 @@ const EMPTY_CANDIDATE_INDEX_IDENTITIES: readonly ConfiguredExternalSessionCandid
 
 export async function createLiveConfiguredPluginExternalSessionsAdapter(params: Readonly<{
   agents: readonly ConfiguredExternalSessionSourceAgentContribution[];
-  contributionGenerationId: string;
   readAccount: () => Promise<ConfiguredExternalSessionSourceAccountProjection>;
   readAgentSettings?: () => unknown;
   activeServerId?: string | null;
   readAccountRevision: () => string;
   subscribeAccountRevision: (listener: (revision: string) => void) => () => void;
   isCurrent: () => boolean;
+  resolveAgentOccurrence: (
+    agentId: string,
+  ) => ConfiguredExternalSessionSourceOccurrence | null;
   activeServerDir?: string;
   resolveProviderOps: (agentId: string) => Promise<PluginExternalSessionsProviderOps | null>;
-  resolveAgentRuntimeGeneration?: (agentId: string) => string | null;
+  resolveAgentSourceCustody?: (agentId: string) => PluginSourceCustodyV1 | null;
   attach?: NonNullable<Parameters<typeof createPluginExternalSessionsAdapter>[0]['attach']>;
   contextualTakeover?: ContextualExternalSessionTakeoverAdapter;
   followTranscript?: NonNullable<
@@ -1527,7 +1561,6 @@ export async function createLiveConfiguredPluginExternalSessionsAdapter(params: 
     const account = await params.readAccount();
     if (!lifecycleIsCurrent(revision, accountRevision)) return;
     const basis = Object.freeze({
-      contributionGenerationId: params.contributionGenerationId,
       accountSettingsRevision: accountRevision,
     });
     const retirement = new AbortController();
@@ -1539,10 +1572,11 @@ export async function createLiveConfiguredPluginExternalSessionsAdapter(params: 
       basis,
       readCurrentBasis: () => basis,
       isCurrent: () => lifecycleIsCurrent(revision, accountRevision),
+      resolveAgentOccurrence: params.resolveAgentOccurrence,
       ...(params.activeServerDir ? { activeServerDir: params.activeServerDir } : {}),
       resolveProviderOps: params.resolveProviderOps,
-      ...(params.resolveAgentRuntimeGeneration
-        ? { resolveAgentRuntimeGeneration: params.resolveAgentRuntimeGeneration }
+      ...(params.resolveAgentSourceCustody
+        ? { resolveAgentSourceCustody: params.resolveAgentSourceCustody }
         : {}),
       retirementSignal: retirement.signal,
       ...(params.attach ? { attach: params.attach } : {}),

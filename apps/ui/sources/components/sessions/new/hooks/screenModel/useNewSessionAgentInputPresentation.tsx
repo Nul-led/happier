@@ -131,6 +131,7 @@ export function useNewSessionAgentInputPresentation(params: Readonly<{
         color: string;
         dotColor: string;
         isPulsing: boolean;
+        healthy: boolean;
     }> | undefined;
     agentInputExtraActionChips: ReadonlyArray<AgentInputExtraActionChip>;
 }> {
@@ -156,6 +157,7 @@ export function useNewSessionAgentInputPresentation(params: Readonly<{
                 color: params.theme.colors.state.danger.foreground,
                 dotColor: params.theme.colors.state.danger.foreground,
                 isPulsing: false,
+                healthy: false,
             };
         }
         const online = selectedMachineReadinessStatus === 'ready'
@@ -173,6 +175,7 @@ export function useNewSessionAgentInputPresentation(params: Readonly<{
             color: online ? params.theme.colors.state.success.foreground : params.theme.colors.state.danger.foreground,
             dotColor: online ? params.theme.colors.state.success.foreground : params.theme.colors.state.danger.foreground,
             isPulsing: online,
+            healthy: online,
         };
     }, [
         params.selectedMachine?.id,

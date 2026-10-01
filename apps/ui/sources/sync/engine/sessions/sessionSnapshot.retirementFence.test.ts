@@ -8,6 +8,9 @@ import {
 } from '@happier-dev/protocol';
 
 import { storage } from '@/sync/domains/state/storage';
+import { createDeferred } from '@/dev/testkit';
+import { encodeBase64 } from '@/encryption/base64';
+import { Encryption } from '@/sync/encryption/encryption';
 import { createSessionListQueryHomeController } from '@/sync/domains/session/listing/sessionListQueryController';
 import { subscribeSessionListQueryHomeInvalidation } from '@/sync/domains/session/listing/sessionListQueryInvalidation';
 import { fetchAndApplySessions } from './sessionSnapshot';
@@ -83,6 +86,52 @@ function page(ids: readonly string[]) {
     return jsonResponse({ sessions: ids.map(buildSessionRow), nextCursor: null, hasNext: false });
 }
 
+function queryPage(sessions: readonly V2SessionRecord[]) {
+    return jsonResponse({ sessions, nextCursor: null, hasNext: false, attentionNextCursor: null, attentionHasNext: false });
+}
+
+const QUERY = {
+    v: 1, storage: 'active', includeInactive: true, scope: 'all_accessible', attention: 'any',
+    audiences: [], tagIds: [], includeAttention: false,
+} as const;
+
+async function encryptedRow(encryption: Encryption, id: string): Promise<V2SessionRecord> {
+    const key = new Uint8Array(32).fill(7);
+    const cipher = await encryption.openEncryption(key);
+    const [metadata] = await cipher.encrypt([{ path: `/${id}`, host: 'test' }]);
+    return {
+        ...buildSessionRow(id), active: false, encryptionMode: 'e2ee',
+        metadata: encodeBase64(metadata!, 'base64'), agentState: null,
+        dataEncryptionKey: encodeBase64(await encryption.encryptEncryptionKey(key), 'base64'),
+    };
+}
+
+function readEncryptedQuery(input: {
+    encryption: Encryption;
+    request: () => Promise<Response>;
+    signal?: AbortSignal;
+    sessionDataKeys?: Map<string, Uint8Array>;
+    sessionDataKeyEnvelopes?: Map<string, string>;
+}) {
+    return fetchAndApplySessions({
+        serverId: 'home-a', source: { kind: 'query', body: QUERY, allowV1Fallback: false },
+        credentials: { token: 'token-a', secret: encodeBase64(new Uint8Array(32).fill(4), 'base64') },
+        encryption: input.encryption,
+        signal: input.signal,
+        sessionDataKeys: input.sessionDataKeys ?? new Map(),
+        sessionDataKeyEnvelopes: input.sessionDataKeyEnvelopes,
+        accountCurrentness: { ...PLAIN_ACCOUNT_CURRENTNESS, mode: 'e2ee' },
+        request: input.request,
+        // These tests decide DEK and membership publication, not background title hydration.
+        sessionListBackgroundHydrationMaxRows: 0,
+        applySessions: () => {},
+        applySessionListRenderables: (rows) => storage.getState().applyServerScopedSessionListRows(
+            'home-a', rows, { source: 'rowOnly', mode: 'replace' },
+        ),
+        log: { log() {} },
+    });
+}
+
 describe('fetchAndApplySessions exact-Home retirement fence', () => {
     beforeEach(() => {
         storage.setState(initialState, true);
@@ -152,5 +201,149 @@ describe('fetchAndApplySessions exact-Home retirement fence', () => {
 
         expect(homeA.getSnapshot().addresses.map((address) => address.sessionId)).toEqual(['kept']);
         expect(homeB.getSnapshot().addresses.map((address) => address.sessionId)).toEqual(['same-id', 'kept']);
+    });
+
+    it('keeps a post-apply retirement out of final query membership and key publication', async () => {
+        const encryption = await Encryption.create(new Uint8Array(32).fill(4));
+        const rows = await Promise.all(['retired', 'kept'].map((id) => encryptedRow(encryption, id)));
+        const started = createDeferred<void>();
+        const release = createDeferred<void>();
+        // The native worker is an OS boundary; store, query controller, DEK planning,
+        // generation/currentness and initialization remain real.
+        encryption.configureNativeCryptoWorker({
+            worker: {
+                async probe() { return { available: true, failureReason: 0, nativeVersion: 1 }; },
+                async decryptDataKeyEnvelopeV1(request) {
+                    started.resolve();
+                    await release.promise;
+                    return { status: 'ok', source: 'native', items: request.items.map(() => encodeBase64(new Uint8Array(32).fill(7), 'base64')) };
+                },
+                async decryptSecretboxJson() { throw new Error('Unexpected content hydration'); },
+                async decryptAesGcmJson() { throw new Error('Unexpected content hydration'); },
+            },
+            routing: { mode: 'require', maxBatchSize: 50, minPayloadBytes: 0 },
+            scope: { accountId: 'account-a', serverId: 'home-a', generation: 0 },
+        });
+        await readHomeList('home-b', async () => page(['retired']));
+        const sessionDataKeys = new Map<string, Uint8Array>();
+        const sessionDataKeyEnvelopes = new Map<string, string>();
+        let result: Awaited<ReturnType<typeof fetchAndApplySessions>> | undefined;
+        const controller = createSessionListQueryHomeController({
+            serverId: 'home-a',
+            fetchPage: async ({ signal }) => {
+                result = await readEncryptedQuery({ encryption, signal, sessionDataKeys, sessionDataKeyEnvelopes,
+                    request: async () => queryPage(rows),
+                });
+                return result;
+            },
+        });
+        const unsubscribe = subscribeSessionListQueryHomeInvalidation(() => new Map([['home-a', controller]]));
+        try {
+            const read = controller.update({ query: QUERY, selected: true, online: true, supported: true });
+            await Promise.race([started.promise, read.then(() => { throw new Error('Query settled before DEK hydration'); })]);
+            expect(storage.getState().sessionListRowsByServerId['home-a']?.retired).toBeDefined();
+            handleDeleteSessionSocketUpdate({
+                sessionId: 'retired', serverId: 'home-a',
+                deleteSession: (id, serverId) => storage.getState().deleteSession(id, serverId),
+                removeSessionEncryption: (id) => { encryption.removeSessionEncryption(id); },
+                removeProjectManagerSession() {}, clearScmStatusForSession() {}, log: { log() {} },
+            });
+            release.resolve();
+            await read;
+            expect(result?.sessionIds).toEqual(['kept']);
+            expect(controller.getSnapshot().addresses.map((address) => address.sessionId)).toEqual(['kept']);
+            expect(storage.getState().sessionListRowsByServerId['home-a']?.retired).toBeUndefined();
+            expect(storage.getState().sessionListRowsByServerId['home-b']?.retired).toBeDefined();
+            expect(sessionDataKeys.has('retired')).toBe(false);
+            expect(sessionDataKeyEnvelopes.has('retired')).toBe(false);
+            expect(encryption.getSessionEncryption('retired')).toBeNull();
+            expect(sessionDataKeys.has('kept')).toBe(true);
+            expect(encryption.getSessionEncryption('kept')).not.toBeNull();
+        } finally {
+            release.resolve();
+            unsubscribe();
+            controller.dispose();
+        }
+    });
+
+    it('rechecks retirement when a resolved fetch reaches the controller admission microtask', async () => {
+        const controller = createSessionListQueryHomeController({
+            serverId: 'home-a',
+            fetchPage: () => {
+                const read = readHomeList('home-a', async () => page(['retired-at-admission', 'kept']));
+                // Register the committed event before the controller awaits this same
+                // promise: fetch completion and membership admission are distinct turns.
+                void read.then(() => handleDeleteSessionSocketUpdate({
+                    sessionId: 'retired-at-admission', serverId: 'home-a',
+                    deleteSession: (id, serverId) => storage.getState().deleteSession(id, serverId),
+                    removeSessionEncryption() {}, removeProjectManagerSession() {},
+                    clearScmStatusForSession() {}, log: { log() {} },
+                }));
+                return read;
+            },
+        });
+        const unsubscribe = subscribeSessionListQueryHomeInvalidation(() => new Map([['home-a', controller]]));
+        try {
+            await controller.update({ query: QUERY, selected: true, online: true, supported: true });
+            expect(controller.getSnapshot().addresses.map((address) => address.sessionId)).toEqual(['kept']);
+            expect(storage.getState().sessionListRowsByServerId['home-a']?.['retired-at-admission']).toBeUndefined();
+        } finally {
+            unsubscribe();
+            controller.dispose();
+        }
+    });
+
+    it('omits only the retired Session when encryption initialization yields before commit', async () => {
+        const encryption = await Encryption.create(new Uint8Array(32).fill(4));
+        const retired = new Set<string>();
+        const initializing = encryption.initializeSessions(new Map([
+            ['retired-at-initialization', new Uint8Array(32).fill(7)],
+            ['kept', new Uint8Array(32).fill(8)],
+        ]), {
+            serverId: 'home-a',
+            isSessionCurrent: (id) => !retired.has(id),
+        });
+        // openEncryption is genuinely async; retirement wins while it is yielding.
+        retired.add('retired-at-initialization');
+        await initializing;
+        expect(encryption.getSessionEncryption('retired-at-initialization')).toBeNull();
+        expect(encryption.getSessionEncryption('kept')).not.toBeNull();
+    });
+
+    it('lets independent row-only readers of the same query share Encryption without superseding each other', async () => {
+        const encryption = await Encryption.create(new Uint8Array(32).fill(4));
+        encryption.configureNativeCryptoWorker({ routing: { mode: 'off' } });
+        const rows = await Promise.all(['reference', 'awareness'].map((id) => encryptedRow(encryption, id)));
+        const firstResponse = createDeferred<Response>();
+        const first = readEncryptedQuery({ encryption, request: () => firstResponse.promise });
+        const second = readEncryptedQuery({ encryption, request: async () => queryPage([rows[1]!]) });
+        try {
+            await second;
+            firstResponse.resolve(queryPage([rows[0]!]));
+            expect((await first).current).toBe(true);
+            expect((await second).current).toBe(true);
+            expect(storage.getState().sessionListRowsByServerId['home-a']?.reference).toBeDefined();
+            expect(storage.getState().sessionListRowsByServerId['home-a']?.awareness).toBeDefined();
+            expect(storage.getState().ordinarySessionListMembershipByServerId['home-a']).toBeUndefined();
+        } finally {
+            firstResponse.resolve(queryPage([]));
+            await Promise.allSettled([first, second]);
+        }
+    });
+
+    it('cancels only the caller that aborts, leaving an independent shared-Encryption reader current', async () => {
+        const encryption = await Encryption.create(new Uint8Array(32).fill(4));
+        encryption.configureNativeCryptoWorker({ routing: { mode: 'off' } });
+        const row = await encryptedRow(encryption, 'kept');
+        const response = createDeferred<Response>();
+        const firstAbort = new AbortController();
+        const secondAbort = new AbortController();
+        const first = readEncryptedQuery({ encryption, signal: firstAbort.signal, request: async () => (await response.promise).clone() });
+        const second = readEncryptedQuery({ encryption, signal: secondAbort.signal, request: async () => (await response.promise).clone() });
+        secondAbort.abort();
+        response.resolve(queryPage([row]));
+        expect((await first).current).toBe(true);
+        expect((await second).current).toBe(false);
+        expect(firstAbort.signal.aborted).toBe(false);
     });
 });

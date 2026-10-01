@@ -32,6 +32,37 @@ vi.mock('@/text', async () => {
 });
 
 describe('OptionPickerOverlay', () => {
+    it('scrolls its header, rows and custom entry together in one scroll owner (0.2 engine pane)', async () => {
+        const { OptionPickerOverlay } = await import('./OptionPickerOverlay');
+        const screen = await renderScreen(
+            <OptionPickerOverlay
+                title="Model"
+                effectiveLabel="Default"
+                notes={['Model discovery note']}
+                fillAvailableSpace
+                multiColumn
+                options={[
+                    { value: 'model-a', label: 'Model A', description: 'A' },
+                    { value: 'model-b', label: 'Model B', description: 'B' },
+                ]}
+                selectedValue="model-a"
+                emptyText="Empty"
+                canEnterCustomValue
+                getCustomValue={(value: string) => value}
+                onSubmitCustomValue={() => {}}
+                onSelect={() => {}}
+            />,
+        );
+
+        const scrollOwner = screen.findByTestId('model-picker-overlay-selection-list:bodyScroll');
+        expect(scrollOwner).toBeTruthy();
+        const inside = (testID: string) => (scrollOwner?.findAll((node) => node.props?.testID === testID).length ?? 0) > 0;
+        expect(inside('model-picker-overlay-title-row')).toBe(true);
+        expect(inside('model-picker-overlay-summary')).toBe(true);
+        expect(inside('model-picker-overlay-option:model-a')).toBe(true);
+        expect(inside('model-picker-overlay-custom')).toBe(true);
+    });
+
     it('projects controlled multiple selections through the canonical selection list', async () => {
         const onSelect = vi.fn();
         const { OptionPickerOverlay } = await import('./OptionPickerOverlay');
@@ -129,12 +160,12 @@ describe('OptionPickerOverlay', () => {
             modelId: string;
         }>;
         const native: ModelRef = {
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             providerConnectionId: null,
             modelId: 'shared-model',
         };
         const external: ModelRef = {
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             providerConnectionId: 'connection-work',
             modelId: 'shared-model',
         };
@@ -191,7 +222,7 @@ describe('OptionPickerOverlay', () => {
             modelId: string;
         }>;
         const selected: ModelRef = {
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             providerConnectionId: 'connection-work',
             modelId: 'listed-model',
         };
@@ -463,10 +494,11 @@ describe('OptionPickerOverlay', () => {
             mockEnv.windowWidth = 390;
             const screen = await renderPicker(true);
 
-            // 506px is the real detail-pane width: the 720px popover cap minus the
-            // 190px rail minus the pane's 12px horizontal insets. A minimum tuned
-            // for full-width settings lists resolves to one column here forever.
-            await measureSelectionList(screen, 506);
+            // 479px is the detail-pane list width MEASURED live in the /new engine
+            // popover at 1440 (720px popover, 215px rendered rail, the pane's insets).
+            // The previous 240px minimum was derived from an assumed 506px pane and
+            // collapsed this real pane to one column, which is why 0.3 showed a list.
+            await measureSelectionList(screen, 479);
 
             expect(countColumnRows(screen)).toBe(2);
             for (const value of ['default', 'fast', 'balanced', 'deep']) {
@@ -557,6 +589,30 @@ describe('OptionPickerOverlay', () => {
         await screen.pressByTestIdAsync('model-picker-overlay-option:fast');
 
         expect(onSelect).toHaveBeenCalledWith('fast');
+    });
+
+    it('marks the current choice with exactly one check in list presentation', async () => {
+        const { OptionPickerOverlay } = await import('./OptionPickerOverlay');
+
+        const screen = await renderScreen(<OptionPickerOverlay
+                    title="Model"
+                    options={[
+                        { value: 'default', label: 'Default', description: 'd' },
+                        { value: 'fast', label: 'Fast', description: 'f' },
+                    ]}
+                    selectedValue="fast"
+                    emptyText="empty"
+                    canEnterCustomValue={false}
+                    onSelect={vi.fn()}
+                />);
+
+        // The list owns the one trailing check of a single-choice row; the picker must not draw a second.
+        expect(screen.findAll((node) => (
+            typeof node.type === 'string'
+            && typeof node.props?.testID === 'string'
+            && node.props.testID.endsWith('option-selected-mark:fast')
+        ))).toHaveLength(1);
+        expect(screen.findAllHostsByTestId('model-picker-overlay-option-selection-status:fast')).toHaveLength(0);
     });
 
     it('activates a recovery destination without committing the unavailable value', async () => {
@@ -1380,7 +1436,13 @@ describe('OptionPickerOverlay', () => {
 
         const reasoningTab = screen.findByTestId('model-picker-overlay-selected-option-control-option:reasoning_effort:medium');
         expect(reasoningTab?.props.accessibilityLabel).toBe('Medium');
-        expect(reasoningTab?.parent?.props.accessibilityLabel).toBe('modelPickerOverlay.optionControlA11y');
+        expect(reasoningTab?.props.accessibilityRole).toBe('radio');
+        expect(reasoningTab?.props.accessibilityState).toEqual({ checked: true, disabled: false });
+        let reasoningGroup = reasoningTab?.parent;
+        while (reasoningGroup && reasoningGroup.props.accessibilityRole !== 'radiogroup') {
+            reasoningGroup = reasoningGroup.parent;
+        }
+        expect(reasoningGroup?.props.accessibilityLabel).toBe('modelPickerOverlay.optionControlA11y');
 
         await act(async () => {
             speedSwitch?.props.onValueChange?.(true);
@@ -1440,8 +1502,8 @@ describe('OptionPickerOverlay', () => {
         // The FORCED value is highlighted, not the stored one.
         const forcedTab = screen.findByTestId('model-picker-overlay-selected-option-control-option:reasoning_effort:xhigh');
         const storedTab = screen.findByTestId('model-picker-overlay-selected-option-control-option:reasoning_effort:low');
-        expect(forcedTab?.props.accessibilityState).toEqual({ selected: true, disabled: true });
-        expect(storedTab?.props.accessibilityState).toEqual({ selected: false, disabled: true });
+        expect(forcedTab?.props.accessibilityState).toEqual({ checked: true, disabled: true });
+        expect(storedTab?.props.accessibilityState).toEqual({ checked: false, disabled: true });
 
         // Every segment announces as disabled and none of them can be selected.
         await screen.pressByTestIdAsync('model-picker-overlay-selected-option-control-option:reasoning_effort:high');
@@ -1483,7 +1545,7 @@ describe('OptionPickerOverlay', () => {
 
         for (const value of ['low', 'high'] as const) {
             const tab = screen.findByTestId(`model-picker-overlay-selected-option-control-option:reasoning_effort:${value}`);
-            expect(tab?.props.accessibilityState).toEqual({ selected: false, disabled: true });
+            expect(tab?.props.accessibilityState).toEqual({ checked: false, disabled: true });
         }
     });
 
@@ -1552,8 +1614,11 @@ describe('OptionPickerOverlay', () => {
     it('stacks runtime status below the checkmark when the selected model is also running', async () => {
         const { OptionPickerOverlay } = await import('./OptionPickerOverlay');
 
+        // The stacked corner (check above status) is the card's; a single-choice list row gets its
+        // check from SelectionList instead (see "exactly one check in list presentation").
         const screen = await renderScreen(<OptionPickerOverlay
             title="Models"
+            multiColumn
             options={[
                 {
                     value: 'gpt-5.6-sol',

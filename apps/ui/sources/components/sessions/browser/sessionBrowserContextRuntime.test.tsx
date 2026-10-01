@@ -9,12 +9,8 @@ import {
     useSessionBrowserContextRuntimeContext,
 } from './sessionBrowserContextRuntime';
 
-const runtimeExecutorMock = vi.hoisted(() => ({
-    createFrontDoorRuntimeActionExecutor: vi.fn(() => async () => ({
-        v: 1,
-        status: 'ok',
-    })),
-}));
+// This hook test never performs a daemon file transfer.
+vi.mock('@/sync/domains/transfers/ops/uploadSessionAttachment', () => ({ sessionAttachmentsUploadFile: vi.fn() }));
 
 vi.mock('@expo/vector-icons', async () => (await import('@/dev/testkit/mocks/icons')).createExpoVectorIconsMock());
 
@@ -26,35 +22,10 @@ vi.mock('@/text', async () => {
     } });
 });
 
-vi.mock('@/theme', () => ({
-    lightTheme: {
-        colors: {
-            feed: {
-                card: {
-                    background: '#fff',
-                },
-            },
-        },
-    },
-    darkTheme: {
-        colors: {
-            feed: {
-                card: {
-                    background: '#000',
-                },
-            },
-        },
-    },
-}));
-
 vi.mock('react-native-unistyles', async () => {
     const { createUnistylesMock } = await import('@/dev/testkit/mocks/unistyles');
     return createUnistylesMock();
 });
-
-vi.mock('@/sync/ops/actions/frontDoorRuntimeActionExecutor', () => ({
-    createFrontDoorRuntimeActionExecutor: runtimeExecutorMock.createFrontDoorRuntimeActionExecutor,
-}));
 
 function RuntimeProbe(): React.ReactElement {
     function Consumer(): React.ReactElement {
@@ -215,25 +186,4 @@ describe('session browser context runtime', () => {
         expect(screen.findByTestId('annotation-uploads-enabled')?.props.children).toBe('yes');
     });
 
-    it('provides the front-door runtime action executor to browser annotation chrome', async () => {
-        function RuntimeActionProbe(): React.ReactElement {
-            const runtime = useSessionBrowserContextRuntime({ enabled: true });
-            const context = runtime?.browserShellContext as
-                | (NonNullable<typeof runtime>['browserShellContext'] & Readonly<{
-                    annotationRuntimeActionExecute?: unknown;
-                }>)
-                | undefined;
-
-            return (
-                <Text testID="annotation-runtime-executor">
-                    {typeof context?.annotationRuntimeActionExecute === 'function' ? 'yes' : 'no'}
-                </Text>
-            );
-        }
-
-        const screen = await renderScreen(<RuntimeActionProbe />);
-
-        expect(screen.findByTestId('annotation-runtime-executor')?.props.children).toBe('yes');
-        expect(runtimeExecutorMock.createFrontDoorRuntimeActionExecutor).toHaveBeenCalled();
-    });
 });

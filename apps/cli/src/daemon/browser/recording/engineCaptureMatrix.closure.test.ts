@@ -111,7 +111,7 @@ const ENGINE_CAPTURE_MATRIX: Record<BrowserRecordingCaptureKindV1, RecordingCapt
     renderEngineKind: 'unavailable',
     mimeType: 'video/webm',
     bindProducer: () => ({
-      cdpScreencast: { transport: { start: vi.fn(async () => ({ ackFrame: vi.fn(), stop: vi.fn(async () => {}) })) } },
+      cdpScreencast: { transport: { start: vi.fn(async () => ({ stop: vi.fn(async () => {}) })) } },
       streamFrameEncoderFactory: async () => ({
         appendFrame: vi.fn(),
         finish: vi.fn(async () => {

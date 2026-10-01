@@ -168,7 +168,6 @@ function createCurrentVoiceContributions(params: Readonly<{
           },
           client: {
             artifactId: 'acme-voice',
-            modulePath: './voice',
             exportName: 'activate',
           },
         }],
@@ -416,7 +415,11 @@ describe('resolveBackendRuntimeCore retirement signal ownership', () => {
         pluginId,
         pluginVersion: '1.0.0',
         agentId,
-        generation: 'agent-generation',
+        occurrenceId: 'agent-occurrence',
+        sourceCustody: {
+          kind: 'development',
+          registeredRootId: 'agent-development-root',
+        },
         retirementSignal: agentGenerationRetirement.signal,
         isCurrent: () => true,
       },
@@ -442,7 +445,7 @@ describe('resolveBackendRuntimeCore retirement signal ownership', () => {
     expect(voiceAuthority?.resolveDeclaration(voiceProvider)?.id).toBe(
       voiceProvider.localId,
     );
-    expect(voiceAuthority?.resolveProviderGeneration(voiceProvider)).toBe(
+    expect(voiceAuthority?.resolveProviderOccurrenceId(voiceProvider)).toBe(
       'voice-generation',
     );
     expect(voiceAuthority?.isCurrent(voiceProvider)).toBe(true);
@@ -486,7 +489,11 @@ describe('resolveBackendRuntimeCore retirement signal ownership', () => {
         pluginId,
         pluginVersion: '1.0.0',
         agentId,
-        generation: 'agent-generation',
+        occurrenceId: 'agent-occurrence',
+        sourceCustody: {
+          kind: 'development',
+          registeredRootId: 'agent-development-root',
+        },
         retirementSignal: agentGenerationRetirement.signal,
         isCurrent: () =>
           !agentGenerationRetirement.signal.aborted,
@@ -512,7 +519,7 @@ describe('resolveBackendRuntimeCore retirement signal ownership', () => {
       voiceProvider.localId,
     );
     expect(
-      carriedOnlyAuthority?.resolveProviderGeneration(voiceProvider),
+      carriedOnlyAuthority?.resolveProviderOccurrenceId(voiceProvider),
     ).toBe('voice-generation');
     expect(carriedOnlyAuthority?.isCurrent(voiceProvider)).toBe(true);
     agentGenerationRetirement.abort(

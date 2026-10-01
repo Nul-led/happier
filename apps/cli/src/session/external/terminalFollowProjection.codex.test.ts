@@ -33,7 +33,7 @@ const mocks = vi.hoisted(() => ({
     readCredentials: vi.fn(),
     readStoredCredentials: vi.fn(),
     resolveExternalSessionObservationLinkInput: vi.fn(),
-    resolveGenerationBoundExternalSessionFollowSurface: vi.fn(),
+    resolveOccurrenceBoundExternalSessionFollowSurface: vi.fn(),
 }));
 
 vi.mock('@/api/session/external/takeover/loadLinkedExternalSession', () => ({
@@ -48,8 +48,8 @@ vi.mock('@/api/session/external/leases/resolveExternalSessionObservationLinkInpu
         mocks.resolveExternalSessionObservationLinkInput,
 }));
 vi.mock('@/session/actions/externalSessions/providerOpsResolution', () => ({
-    resolveGenerationBoundExternalSessionFollowSurface:
-        mocks.resolveGenerationBoundExternalSessionFollowSurface,
+    resolveOccurrenceBoundExternalSessionFollowSurface:
+        mocks.resolveOccurrenceBoundExternalSessionFollowSurface,
 }));
 
 import { createExternalSessionFollowHostOperation } from './followHostOperation';
@@ -299,7 +299,7 @@ describe('Codex terminal follow projection', () => {
         const grouping = observationContribution.describeResource(linkedSource);
         const sessionId = 'hosted-codex-authority-session';
         const linkGeneration = 'codex-link-generation';
-        const pluginGeneration = 'codex-plugin-generation';
+        const pluginOccurrenceId = 'codex-plugin-generation';
         const qualifiedLinkIdentity =
             buildLinkedExternalSessionQualifiedIdentityV1({
                 agent: {
@@ -310,13 +310,13 @@ describe('Codex terminal follow projection', () => {
             });
         const resource = {
             linkGeneration,
-            pluginGeneration,
+            occurrenceId: pluginOccurrenceId,
         } as const;
         const observation = {
             resource: {
                 pluginId: qualifiedLinkIdentity.agent.pluginId,
                 agentLocalId: qualifiedLinkIdentity.agent.localId,
-                pluginGeneration,
+                occurrenceId: pluginOccurrenceId,
                 resourceKey: grouping.resourceKey,
             },
             link: {
@@ -384,10 +384,10 @@ describe('Codex terminal follow projection', () => {
         mocks.resolveExternalSessionObservationLinkInput.mockResolvedValue(
             observation,
         );
-        mocks.resolveGenerationBoundExternalSessionFollowSurface
+        mocks.resolveOccurrenceBoundExternalSessionFollowSurface
             .mockResolvedValue({
                 resource,
-                immutablePluginGenerationId: pluginGeneration,
+                occurrenceId: pluginOccurrenceId,
                 providerOps: {
                     pageTranscript,
                     readAfterTranscript,
@@ -467,7 +467,7 @@ describe('Codex terminal follow projection', () => {
                         pluginId: qualifiedLinkIdentity.agent.pluginId,
                         contributionId:
                             qualifiedLinkIdentity.agent.localId,
-                        generationId: pluginGeneration,
+                        occurrenceId: pluginOccurrenceId,
                         sessionId,
                         machineId: 'machine-1',
                         ref: {

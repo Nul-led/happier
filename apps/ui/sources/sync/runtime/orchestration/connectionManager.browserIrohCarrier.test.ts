@@ -99,8 +99,8 @@ function mockEnvironment(options: Readonly<{
     vi.doMock('@/sync/runtime/nativeIrohTunnels/runtime', () => ({
         getIrohHomeTunnelRuntime: () => nativeRuntimeMock,
     }));
-    vi.doMock('@/sync/runtime/nativeSshTunnels/runtime', () => ({
-        startNativeSshTunnelRuntimeAppStateLifecycle: vi.fn(),
+    vi.doMock('@/sync/runtime/nativeLoopbackTunnels/runtime', () => ({
+        startNativeLoopbackTunnelRuntimeAppStateLifecycle: vi.fn(),
     }));
     vi.doMock('@/sync/runtime/browserIroh/hostEligibility', () => ({
         resolveBrowserIrohHostDecision: () => (
@@ -126,6 +126,40 @@ afterEach(() => {
 });
 
 describe('focused-Home browser Iroh carrier selection', () => {
+    it('releases the focused Iroh carrier and reselects HTTPS when this device switches to Standard only', async () => {
+        const carrier = createBrowserCarrier('browser-lease-before-policy-change');
+        acquireBrowserCarrierSpy.mockResolvedValue(carrier);
+        mockEnvironment({
+            profile: {
+                id: 'profile-a',
+                serverIdentityId: 'srv_home_a',
+                serverUrl: CANONICAL_URL,
+                publicServerUrl: 'https://public.example.test',
+                homeConnectionDescriptor: {
+                    ...HOME_DESCRIPTOR,
+                    endpoints: [...HOME_DESCRIPTOR.endpoints, { kind: 'https', url: 'https://public.example.test' }],
+                },
+            },
+        });
+
+        const { switchConnectionToActiveServer, retryActiveServerConnection } = await import('./connectionManager');
+        await switchConnectionToActiveServer();
+        expect(publishSpy.mock.calls[0]?.[0].carrier).toBe('iroh');
+
+        const { registerStorageStateReader } = await import('@/sync/domains/state/storageStateReaderBridge');
+        registerStorageStateReader(() => ({
+            localSettings: { homeApplicationCarrierEligibility: 'standard_only' },
+        } as never)); // This test supplies only the policy projection read by the carrier owner.
+        await retryActiveServerConnection();
+
+        expect(carrier.release).toHaveBeenCalledTimes(1);
+        expect(acquireBrowserCarrierSpy).toHaveBeenCalledTimes(1);
+        expect(publishSpy.mock.calls.at(-1)?.[0]).toMatchObject({
+            carrier: 'https',
+            runtimeOrigin: 'https://public.example.test',
+        });
+    });
+
     it('publishes the semantic carrier with no runtime origin and never acquires a native lease', async () => {
         const carrier = createBrowserCarrier('browser-lease-1');
         acquireBrowserCarrierSpy.mockResolvedValue(carrier);

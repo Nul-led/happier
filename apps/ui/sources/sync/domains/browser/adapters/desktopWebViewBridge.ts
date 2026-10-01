@@ -46,12 +46,12 @@ export type DesktopBrowserViewCommandRequest = Readonly<{
 export type DesktopBrowserEvalScriptRequest = Readonly<{
     browserSessionId: string;
     viewId: string;
-    /** A canonical injected diagnostics COMMAND script (eval/getProperties/release/element-picker). */
+    /** A canonical injected diagnostics or automation command script. */
     script: string;
 }>;
 
 /**
- * Trusted reload/stop navigation dispatch. The Rust command DERIVES the injected script from `kind`,
+ * Native history and trusted reload/stop dispatch. The Rust command derives navigation from `kind`,
  * so `script` is advisory only (the native seam never evaluates a caller-provided string). Routed
  * through the canonical `invokeDesktopBrowserCommand` normalizer so the real
  * `DesktopBrowserCommandResult` (availability + disabledReasons) is surfaced — never a blanket
@@ -60,8 +60,8 @@ export type DesktopBrowserEvalScriptRequest = Readonly<{
 export type DesktopBrowserNavigationDispatchPayload = Readonly<{
     browserSessionId: string;
     viewId: string;
-    kind: 'reload' | 'stop';
-    script: string;
+    kind: 'goBack' | 'goForward' | 'reload' | 'stop';
+    script?: string;
 }>;
 
 export type DesktopBrowserBoundsRect = Readonly<{
@@ -104,6 +104,8 @@ export type DesktopBrowserPageInfo = Readonly<{
     currentUrl?: string;
     title?: string;
     loadingState: DesktopBrowserViewLoadingState;
+    canGoBack: boolean;
+    canGoForward: boolean;
     lastError?: DesktopBrowserPageNavigationIssue;
     lastRejectedNavigation?: DesktopBrowserPageNavigationIssue;
 }>;
@@ -322,7 +324,8 @@ function normalizeDesktopBrowserPageInfo(payload: unknown): DesktopBrowserPageIn
     const viewId = readString(record.viewId);
     const requestedUrl = readString(record.requestedUrl);
     const loadingState = readString(record.loadingState);
-    if (!browserSessionId || !viewId || !requestedUrl || !loadingState || !DESKTOP_BROWSER_LOADING_STATES.has(loadingState)) {
+    if (!browserSessionId || !viewId || !requestedUrl || !loadingState || !DESKTOP_BROWSER_LOADING_STATES.has(loadingState)
+        || typeof record.canGoBack !== 'boolean' || typeof record.canGoForward !== 'boolean') {
         return null;
     }
 
@@ -333,6 +336,8 @@ function normalizeDesktopBrowserPageInfo(payload: unknown): DesktopBrowserPageIn
         currentUrl: readOptionalString(record.currentUrl),
         title: readOptionalString(record.title),
         loadingState: loadingState as DesktopBrowserViewLoadingState,
+        canGoBack: record.canGoBack,
+        canGoForward: record.canGoForward,
         lastError: normalizePageNavigationIssue(record.lastError),
         lastRejectedNavigation: normalizePageNavigationIssue(record.lastRejectedNavigation),
     };

@@ -45,15 +45,21 @@ export function resolveVoiceExecutionMachineSelectionFromState(
   if (override) return resolveReplacementAwareSelection(state, override.machineId);
 
   const rawVoice = state?.settings?.voice;
-  if (
-    rawVoice
+  const hasCanonicalTarget = Boolean(rawVoice)
     && typeof rawVoice === 'object'
-    && Object.prototype.hasOwnProperty.call(rawVoice, 'executionMachine')
-    && !VoiceExecutionMachineSettingsSchema.safeParse(rawVoice.executionMachine).success
-  ) {
+    && Object.prototype.hasOwnProperty.call(rawVoice, 'executionMachine');
+  const canonicalTarget = hasCanonicalTarget
+    ? VoiceExecutionMachineSettingsSchema.safeParse(rawVoice.executionMachine)
+    : null;
+  if (canonicalTarget && !canonicalTarget.success) {
     return { kind: 'none' };
   }
-  const target = voiceSettingsParse(state?.settings?.voice).executionMachine;
+  // Store selectors run this on every store change. A present target is exactly
+  // what the full voice settings parse would keep, so only an absent target
+  // (legacy migration or default) pays for the full parse.
+  const target = canonicalTarget?.success
+    ? canonicalTarget.data
+    : voiceSettingsParse(rawVoice).executionMachine;
   const mode = target?.mode === 'fixed' ? 'fixed' : 'auto';
   const persistedMachineId = mode === 'fixed'
     ? normalizeNonEmptyString(target?.machineId)
@@ -65,8 +71,8 @@ export function resolveVoiceExecutionMachineSelectionFromState(
   const visibleMachines = resolveVisibleMachinesForActiveServerFromState(state);
   const preferredMachineIds = listPreferredMachineIds({
     machines: visibleMachines,
-    recentMachinePaths: Array.isArray(state?.settings?.recentMachinePaths)
-      ? state.settings.recentMachinePaths
+    recentMachinePaths: Array.isArray(state?.authoringMemory?.recentMachinePaths)
+      ? state.authoringMemory.recentMachinePaths
       : [],
     onlineOnly: true,
   });

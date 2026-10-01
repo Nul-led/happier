@@ -5,10 +5,6 @@ import { installToolShellPresentationCommonModuleMocks } from './toolShellPresen
 
 installToolShellPresentationCommonModuleMocks();
 
-vi.mock('@/components/tools/normalization/core/normalizeToolCallForRendering', () => ({
-    normalizeToolCallForRendering: (t: any) => t,
-}));
-
 vi.mock('@/components/tools/shell/presentation/resolveToolHeaderTextPresentation', () => ({
     resolveToolHeaderTextPresentation: ({ tool }: any) => ({
         normalizedToolName: tool.name,

@@ -8,12 +8,20 @@ import {
   isPlainArtifactDataKeyMarker,
   openEncryptedDataKeyEnvelopeV1,
   sealEncryptedDataKeyEnvelopeV1,
+  ArtifactAccessErrorCodeV1Schema,
+  ArtifactAccessGrantsListResponseV1Schema,
+  ArtifactAccessGrantMutationResponseV1Schema,
+  ArtifactAccessRecipientCensusResponseV1Schema,
+  ArtifactRecipientKeyEnvelopeCommitResponseV1Schema,
+  runArtifactRecipientKeyPreparationV1,
+  type ArtifactCallerAccessV1,
+  type ArtifactAccessGrantSetInputV1,
+  type ArtifactAccessGrantRemoveInputV1,
 } from '@happier-dev/protocol';
 
 import type { Credentials, StoredCredentials } from '@/persistence';
 import type { ConnectedServiceAccountEncryptionMode } from '@/api/client/connectedServiceCredentialApi';
 import { createConnectedServiceCredentialApi } from '@/api/client/connectedServiceCredentialApi';
-import { requireCurrentAccountStoredContentServerCompatibility } from '@/api/clientCompatibility/accountStoredContentActivation';
 import {
   decodeBase64,
   decryptWithDataKey,
@@ -22,12 +30,13 @@ import {
   getRandomBytes,
   libsodiumPublicKeyFromSecretKey,
 } from '@/api/encryption';
-import { buildCurrentAccountStoredContentCompatibilityHttpHeaders } from '@/api/clientCompatibility/cliClientCompatibility';
 import { resolveServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
 import { deriveKey } from '@/utils/deriveKey';
 
 export type AccountArtifactRevision = Readonly<{ headerVersion: number; bodyVersion: number }>;
 export type AccountArtifact = Readonly<{
+  ownerAccountId: string;
+  access: ArtifactCallerAccessV1;
   artifactId: string;
   header: Readonly<Record<string, unknown>>;
   body: string | null;
@@ -37,6 +46,8 @@ export type AccountArtifact = Readonly<{
   updatedAt: number;
 }>;
 export type AccountArtifactHeader = Readonly<{
+  ownerAccountId: string;
+  access: ArtifactCallerAccessV1;
   artifactId: string; header: Readonly<Record<string, unknown>>; headerVersion: number;
   seq: number; createdAt: number; updatedAt: number;
 }>;
@@ -45,12 +56,16 @@ export function encodeAccountArtifactListCursor(item: Pick<AccountArtifactHeader
 }
 
 type StoredArtifact = Readonly<{
+  ownerAccountId: string;
+  access: ArtifactCallerAccessV1;
+  encryptionMode: 'plain' | 'e2ee';
   id: string; header: string; headerVersion: number; body: string; bodyVersion: number;
   dataEncryptionKey: string; seq: number; createdAt: number; updatedAt: number;
 }>;
 
 type Codec = Readonly<{
   mode: 'plain' | 'e2ee'; dataEncryptionKey: string;
+  dataKey: Uint8Array | null;
   encode(value: unknown): string; decode(value: string): unknown | null;
 }>;
 
@@ -81,11 +96,9 @@ async function recipientSecret(credentials: Credentials): Promise<Uint8Array> {
 
 async function createCodec(params: Readonly<{
   credentials: StoredCredentials; mode: ConnectedServiceAccountEncryptionMode;
-  requirePlainWriteCompatibility: () => Promise<void>;
 }>): Promise<Codec> {
   if (params.mode === 'plain') {
-    await params.requirePlainWriteCompatibility();
-    return { mode: 'plain', dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER,
+    return { mode: 'plain', dataKey: null, dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER,
       encode: encodePlainArtifactStoredContent, decode: decodePlainArtifactStoredContent };
   }
   if (params.mode === 'unknown') throw Object.assign(new Error('account_encryption_mode_unavailable'), { code: 'account_encryption_mode_unavailable' });
@@ -96,15 +109,20 @@ async function createCodec(params: Readonly<{
     : libsodiumPublicKeyFromSecretKey(await recipientSecret(credentials));
   return {
     mode: 'e2ee',
+    dataKey: key,
     dataEncryptionKey: encodeBase64(sealEncryptedDataKeyEnvelopeV1({ dataKey: key, recipientPublicKey: publicKey, randomBytes: getRandomBytes }), 'base64'),
     encode: (value) => encodeBase64(encryptWithDataKey(value, key), 'base64'),
     decode: (value) => decryptWithDataKey(decodeBase64(value), key),
   };
 }
 
-async function openCodec(credentialsInput: StoredCredentials, dataEncryptionKey: string): Promise<Codec> {
+async function openCodec(credentialsInput: StoredCredentials, dataEncryptionKey: string, mode: ConnectedServiceAccountEncryptionMode): Promise<Codec> {
+  if (mode === 'unknown') throw Object.assign(new Error('account_encryption_mode_unavailable'), { code: 'account_encryption_mode_unavailable' });
+  if ((mode === 'plain') !== isPlainArtifactDataKeyMarker(dataEncryptionKey)) {
+    throw Object.assign(new Error('artifact_account_mode_mismatch'), { code: 'artifact_account_mode_mismatch' });
+  }
   if (isPlainArtifactDataKeyMarker(dataEncryptionKey)) return {
-    mode: 'plain', dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER,
+    mode: 'plain', dataKey: null, dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER,
     encode: encodePlainArtifactStoredContent, decode: decodePlainArtifactStoredContent,
   };
   const credentials = requireCredentials(credentialsInput);
@@ -112,7 +130,7 @@ async function openCodec(credentialsInput: StoredCredentials, dataEncryptionKey:
     envelope: decodeBase64(dataEncryptionKey), recipientSecretKeyOrSeed: await recipientSecret(credentials),
   });
   if (!key) throw new ArtifactEncryptionMaterialUnavailableError();
-  return { mode: 'e2ee', dataEncryptionKey,
+  return { mode: 'e2ee', dataKey: key, dataEncryptionKey,
     encode: (value) => encodeBase64(encryptWithDataKey(value, key), 'base64'),
     decode: (value) => decryptWithDataKey(decodeBase64(value), key) };
 }
@@ -139,38 +157,94 @@ function parseStoredArtifact(raw: unknown): StoredArtifact | null {
   const updatedAt = readNonnegativeSafeInteger(value.updatedAt);
   if (headerVersion === null || bodyVersion === null || seq === null || createdAt === null || updatedAt === null) return null;
   return { id: value.id, header: value.header, headerVersion, body: value.body,
-    bodyVersion, dataEncryptionKey: value.dataEncryptionKey, seq, createdAt, updatedAt };
+    bodyVersion, dataEncryptionKey: value.dataEncryptionKey, seq, createdAt, updatedAt, ...readStoredAccess(value) };
+}
+
+const artifactAuthorityProjectionSchema = ArtifactAccessRecipientCensusResponseV1Schema.pick({ ownerAccountId: true, access: true, encryptionMode: true });
+
+function readStoredAccess(value: Record<string, unknown>): Pick<StoredArtifact, 'ownerAccountId' | 'access' | 'encryptionMode'> {
+  const projection = artifactAuthorityProjectionSchema
+    .safeParse({ ownerAccountId: value.ownerAccountId, access: value.access, encryptionMode: value.encryptionMode });
+  if (!projection.success) throw new ArtifactEncryptionMaterialUnavailableError();
+  return projection.data;
 }
 
 export function createAccountArtifactStore(params: Readonly<{
   credentials: StoredCredentials;
   getAccountEncryptionMode: () => Promise<ConnectedServiceAccountEncryptionMode>;
-  requirePlainWriteCompatibility: () => Promise<void>;
 }>) {
-  const headers = () => ({ ...buildCurrentAccountStoredContentCompatibilityHttpHeaders(), Authorization: `Bearer ${params.credentials.token}`, 'Content-Type': 'application/json' });
+  const headers = () => ({ Authorization: `Bearer ${params.credentials.token}`, 'Content-Type': 'application/json' });
   const fetchStored = async (artifactId: string, signal?: AbortSignal): Promise<StoredArtifact | null> => {
     const response = await axios.get(`${resolveServerHttpBaseUrl()}/v1/artifacts/${encodeURIComponent(artifactId)}`, {
       headers: headers(), timeout: 15_000, ...(signal ? { signal } : {}), validateStatus: () => true,
     });
     if (response.status === 404) return null;
+    if (response.data?.error === 'artifact_content_unavailable') throw new ArtifactEncryptionMaterialUnavailableError();
     if (response.status === 500 && response.data?.error === 'Failed to get artifact') throw new ArtifactEncryptionMaterialUnavailableError();
     return response.status >= 200 && response.status < 300 ? parseStoredArtifact(response.data) : null;
+  };
+  const accessUrl = (artifactId: string, leaf: string) => `${resolveServerHttpBaseUrl()}/v1/artifacts/${encodeURIComponent(artifactId)}/access/${leaf}`;
+  const accessConfig = (signal?: AbortSignal) => ({ headers: headers(), timeout: 15_000,
+    ...(signal ? { signal } : {}), validateStatus: () => true });
+  const requireAccessResponse = (response: Readonly<{ status: number; data: unknown }>) => {
+    if (response.status >= 200 && response.status < 300) return response.data;
+    const value = response.data && typeof response.data === 'object' ? response.data as Record<string, unknown> : {};
+    const known = ArtifactAccessErrorCodeV1Schema.safeParse(value.error);
+    const code = known.success ? known.data
+      : response.status === 404 || response.status === 405 ? 'artifact_access_unavailable' : 'artifact_access_failed';
+    throw Object.assign(new Error(code), { code });
+  };
+  const prepare = async (stored: StoredArtifact, codec: Codec, signal?: AbortSignal) => {
+    if (codec.mode === 'plain') return;
+    await runArtifactRecipientKeyPreparationV1({ artifactId: stored.id, dataKey: codec.dataKey,
+      openedDataEncryptionKey: stored.dataEncryptionKey, randomBytes: getRandomBytes, ...(signal ? { signal } : {}),
+      readCensus: async () => ArtifactAccessRecipientCensusResponseV1Schema.parse(requireAccessResponse(
+        await axios.get(accessUrl(stored.id, 'recipients'), accessConfig(signal)))),
+      commit: async (input) => ArtifactRecipientKeyEnvelopeCommitResponseV1Schema.parse(requireAccessResponse(
+        await axios.post(accessUrl(stored.id, 'key-envelopes'), input, accessConfig(signal)))),
+    });
+  };
+  const openStored = async (stored: StoredArtifact) => openCodec(params.credentials, stored.dataEncryptionKey, stored.encryptionMode);
+  const prepareCurrent = async (artifactId: string, signal?: AbortSignal) => {
+    const stored = await fetchStored(artifactId, signal);
+    if (!stored) throw Object.assign(new Error('artifact_not_found'), { code: 'artifact_not_found' });
+    await prepare(stored, await openStored(stored), signal);
   };
   const read = async (artifactId: string, options?: Readonly<{ signal?: AbortSignal }>): Promise<AccountArtifact | null> => {
     options?.signal?.throwIfAborted();
     const stored = await fetchStored(artifactId, options?.signal);
     if (!stored) return null;
-    const codec = await openCodec(params.credentials, stored.dataEncryptionKey);
+    const codec = await openStored(stored);
     const header = decode(codec, stored.header);
     const body = decode(codec, stored.body) as { body?: unknown };
     if (!header || typeof header !== 'object' || Array.isArray(header)) return null;
+    await prepare(stored, codec, options?.signal);
+    options?.signal?.throwIfAborted();
     return { artifactId: stored.id, header: header as Readonly<Record<string, unknown>>,
+      ownerAccountId: stored.ownerAccountId, access: stored.access,
       body: typeof body?.body === 'string' ? body.body : null,
       revision: { headerVersion: stored.headerVersion, bodyVersion: stored.bodyVersion },
       seq: stored.seq, createdAt: stored.createdAt, updatedAt: stored.updatedAt };
   };
   return {
     read,
+    accessGrants: {
+      list: async (input: Readonly<{ artifactId: string }>, signal?: AbortSignal) => {
+        const result = ArtifactAccessGrantsListResponseV1Schema.parse(requireAccessResponse(await axios.get(accessUrl(input.artifactId, 'grants'), accessConfig(signal))));
+        await prepareCurrent(input.artifactId, signal);
+        return result;
+      },
+      set: async (input: ArtifactAccessGrantSetInputV1, signal?: AbortSignal) => {
+        const result = ArtifactAccessGrantMutationResponseV1Schema.parse(requireAccessResponse(await axios.put(accessUrl(input.artifactId, 'grants'), input, accessConfig(signal))));
+        await prepareCurrent(input.artifactId, signal);
+        return result;
+      },
+      remove: async (input: ArtifactAccessGrantRemoveInputV1, signal?: AbortSignal) => {
+        const result = ArtifactAccessGrantMutationResponseV1Schema.parse(requireAccessResponse(await axios.delete(accessUrl(input.artifactId, 'grants'), { ...accessConfig(signal), data: input })));
+        await prepareCurrent(input.artifactId, signal);
+        return result;
+      },
+    },
     list: async (options?: Readonly<{ limit?: number; cursor?: string; signal?: AbortSignal }>): Promise<Readonly<{ items: readonly AccountArtifactHeader[]; nextCursor?: string }>> => {
       options?.signal?.throwIfAborted();
       const url = new URL('/v1/artifacts', resolveServerHttpBaseUrl());
@@ -194,10 +268,12 @@ export function createAccountArtifactStore(params: Readonly<{
         const createdAt = readNonnegativeSafeInteger(value.createdAt);
         const updatedAt = readNonnegativeSafeInteger(value.updatedAt);
         if (headerVersion === null || seq === null || createdAt === null || updatedAt === null) continue;
-        const codec = await openCodec(params.credentials, value.dataEncryptionKey);
+        const access = readStoredAccess(value);
+        const codec = await openCodec(params.credentials, value.dataEncryptionKey, access.encryptionMode);
         const header = decode(codec, value.header);
         if (!header || typeof header !== 'object' || Array.isArray(header)) continue;
         items.push({ artifactId: value.id, header: header as Readonly<Record<string, unknown>>,
+          ownerAccountId: access.ownerAccountId, access: access.access,
           headerVersion, seq, createdAt, updatedAt });
       }
       const last = response.data.at(-1) as Record<string, unknown> | undefined;
@@ -210,7 +286,7 @@ export function createAccountArtifactStore(params: Readonly<{
     },
     create: async (input: Readonly<{ artifactId?: string; header: Readonly<Record<string, unknown>>; body: string; signal?: AbortSignal }>) => {
       input.signal?.throwIfAborted();
-      const codec = await createCodec({ credentials: params.credentials, mode: await params.getAccountEncryptionMode(), requirePlainWriteCompatibility: params.requirePlainWriteCompatibility });
+      const codec = await createCodec({ credentials: params.credentials, mode: await params.getAccountEncryptionMode() });
       const artifactId = input.artifactId ?? randomUUID();
       const response = await axios.post(`${resolveServerHttpBaseUrl()}/v1/artifacts`, {
         id: artifactId, header: codec.encode(input.header), body: codec.encode({ body: input.body }), dataEncryptionKey: codec.dataEncryptionKey,
@@ -221,8 +297,7 @@ export function createAccountArtifactStore(params: Readonly<{
     update: async (input: Readonly<{ artifactId: string; expectedRevision: AccountArtifactRevision; header: Readonly<Record<string, unknown>>; body: string; signal?: AbortSignal }>) => {
       const stored = await fetchStored(input.artifactId, input.signal);
       if (!stored) return { ok: false, errorCode: 'not_found', error: 'artifact_not_found' } as const;
-      const codec = await openCodec(params.credentials, stored.dataEncryptionKey);
-      if (codec.mode === 'plain') await params.requirePlainWriteCompatibility();
+      const codec = await openStored(stored);
       const response = await axios.post(`${resolveServerHttpBaseUrl()}/v1/artifacts/${encodeURIComponent(input.artifactId)}`, {
         header: codec.encode(input.header), expectedHeaderVersion: input.expectedRevision.headerVersion,
         body: codec.encode({ body: input.body }), expectedBodyVersion: input.expectedRevision.bodyVersion,
@@ -234,12 +309,16 @@ export function createAccountArtifactStore(params: Readonly<{
         ? { ok: true, revision: { headerVersion: Number(response.data.headerVersion ?? input.expectedRevision.headerVersion + 1), bodyVersion: Number(response.data.bodyVersion ?? input.expectedRevision.bodyVersion + 1) } } as const
         : { ok: false, errorCode: 'update_failed', error: 'artifact_update_failed' } as const;
     },
-    delete: async (artifactId: string, options?: Readonly<{ signal?: AbortSignal }>) => {
+    delete: async (artifactId: string, options?: Readonly<{ signal?: AbortSignal; expectedRevision?: AccountArtifactRevision }>) => {
       options?.signal?.throwIfAborted();
-      const response = await axios.delete(`${resolveServerHttpBaseUrl()}/v1/artifacts/${encodeURIComponent(artifactId)}`, {
+      // The revision route keeps deletion atomic at the Artifact owner.
+      const revisionPath = options?.expectedRevision
+        ? `/revision/${options.expectedRevision.headerVersion}/${options.expectedRevision.bodyVersion}` : '';
+      const response = await axios.delete(`${resolveServerHttpBaseUrl()}/v1/artifacts/${encodeURIComponent(artifactId)}${revisionPath}`, {
         headers: headers(), timeout: 15_000, ...(options?.signal ? { signal: options.signal } : {}), validateStatus: () => true,
       });
       if (response.status === 404) return { ok: false, errorCode: 'not_found', error: 'artifact_not_found' } as const;
+      if (response.status === 409 && response.data?.error === 'version-mismatch') return { ok: false, errorCode: 'version_mismatch', error: 'artifact_version_mismatch' } as const;
       return response.status >= 200 && response.status < 300
         ? { ok: true } as const
         : { ok: false, errorCode: 'delete_failed', error: 'artifact_delete_failed' } as const;
@@ -252,8 +331,5 @@ export function createCredentialedAccountArtifactStore(credentials: StoredCreden
   return createAccountArtifactStore({
     credentials,
     getAccountEncryptionMode: () => accountModeApi.getAccountEncryptionMode(),
-    requirePlainWriteCompatibility: async () => {
-      await requireCurrentAccountStoredContentServerCompatibility();
-    },
   });
 }

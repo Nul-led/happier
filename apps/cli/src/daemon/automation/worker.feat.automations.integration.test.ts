@@ -6,9 +6,11 @@ import { AddressInfo } from 'node:net';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { encodeBase64, encryptLegacy } from '@/api/encryption';
+import { reloadConfiguration } from '@/configuration';
+import { startAutomationWorker } from './automationWorker';
 import type { sendSessionMessage } from '@/session/services/sendSessionMessage';
 
-import type { AutomationDaemonAssignmentsResponse } from './automationTypes';
+import { createAccountScopedCryptoMaterialSnapshotV1, convertContentPublicKeyFingerprintToAccountEncryptionMigrateKeyFingerprintV1, type AutomationV3WorkerAssignmentsResponse } from '@happier-dev/protocol';
 
 type MachineAdmissionTransport = NonNullable<
   Parameters<typeof sendSessionMessage>[0]['machineAdmissionTransport']
@@ -68,44 +70,20 @@ type RecordedState = {
 function buildDefaultAssignments(params: {
   machineId: string;
   claimRunOnce: { run: Record<string, unknown>; automation: Record<string, unknown> };
-}): AutomationDaemonAssignmentsResponse['assignments'] {
+}): AutomationV3WorkerAssignmentsResponse['assignments'] {
   const now = Date.now();
   const dueAt = params.claimRunOnce.run.dueAt;
   const nextRunAt = typeof dueAt === 'number' && Number.isFinite(dueAt) ? dueAt : now;
 
-  return [
-    {
-      machineId: params.machineId,
-      enabled: true,
-      priority: 0,
-      updatedAt: now,
-      automation: {
-        id: String(params.claimRunOnce.automation.id),
-        name: String(params.claimRunOnce.automation.name),
-        enabled: Boolean(params.claimRunOnce.automation.enabled),
-        schedule: {
-          kind: 'interval',
-          scheduleExpr: null,
-          everyMs: 60_000,
-          timezone: null,
-        },
-        targetType:
-          params.claimRunOnce.automation.targetType === 'existing_session' ? 'existing_session' : 'new_session',
-        templateCiphertext: String(params.claimRunOnce.automation.templateCiphertext),
-        templateVersion: 1,
-        nextRunAt,
-        lastRunAt: null,
-        updatedAt: now,
-      },
-    },
-  ];
+  return [{ machineId: params.machineId, automationId: String(params.claimRunOnce.automation.id), nextClaimAt: nextRunAt }];
+
 }
 
 async function startAutomationServer(params: {
   claimRunOnce: { run: Record<string, unknown>; automation: Record<string, unknown> } | null;
-  assignments?: AutomationDaemonAssignmentsResponse['assignments'];
+  assignments?: AutomationV3WorkerAssignmentsResponse['assignments'];
   missingAutomationRoutes?: boolean;
-  workerProtocol?: 'v2' | 'v3';
+  accountMode?: 'plain' | 'e2ee';
 }): Promise<{ baseUrl: string; close: () => Promise<void>; state: RecordedState }> {
   const state: RecordedState = {
     requests: [],
@@ -119,67 +97,61 @@ async function startAutomationServer(params: {
   };
 
   let claimConsumed = false;
-  const workerProtocol = params.workerProtocol ?? 'v2';
+  const accountMode = params.accountMode ?? 'e2ee';
+  const snapshot = createAccountScopedCryptoMaterialSnapshotV1({ accountEncryptionMode: 'e2ee', material: TEST_ENCRYPTION });
+  const contentKeyFingerprint = accountMode === 'plain' ? null : convertContentPublicKeyFingerprintToAccountEncryptionMigrateKeyFingerprintV1(snapshot.contentPublicKeyFingerprint);
   let accountCurrentnessVersion = 1;
 
   const server = createServer(async (request, response) => {
     const url = new URL(request.url ?? '/', 'http://127.0.0.1');
     state.requests.push(`${String(request.method ?? 'GET').toUpperCase()} ${url.pathname}`);
 
-    if (!params.missingAutomationRoutes && request.method === 'GET' && url.pathname === `/${workerProtocol}/automations/${workerProtocol === 'v3' ? 'worker' : 'daemon'}/assignments`) {
+    if (!params.missingAutomationRoutes && request.method === 'GET' && url.pathname === '/v3/automations/worker/assignments') {
       const machineId = url.searchParams.get('machineId') ?? 'machine-unknown';
-      const assignments =
-        params.assignments ??
-        (params.claimRunOnce ? buildDefaultAssignments({ machineId, claimRunOnce: params.claimRunOnce }) : []);
-      writeJson(response, 200, workerProtocol === 'v3'
-        ? {
-          assignments: assignments.map((assignment) => ({
-            machineId: assignment.machineId,
-            automationId: assignment.automation.id,
-            nextClaimAt: assignment.automation.nextRunAt,
-          })),
-          settings: { maxActiveRunsPerMachine: 4 },
-        }
-        : { assignments });
+      writeJson(response, 200, { assignments: params.assignments ?? (params.claimRunOnce ? buildDefaultAssignments({ machineId, claimRunOnce: params.claimRunOnce }) : []),
+        settings: { maxActiveRunsPerMachine: 4 } });
       return;
     }
 
-    if (!params.missingAutomationRoutes && request.method === 'POST' && url.pathname === `/${workerProtocol}/automations/runs/claim`) {
+    if (!params.missingAutomationRoutes && request.method === 'POST' && url.pathname === '/v3/automations/runs/claim') {
       if (!claimConsumed && params.claimRunOnce) {
         claimConsumed = true;
-        writeJson(response, 200, workerProtocol === 'v3'
-          ? {
-            ...params.claimRunOnce,
-            accountCurrentness: {
-              mode: 'plain',
-              version: 1,
-              contentKeyFingerprint: null,
-            },
-          }
-          : params.claimRunOnce);
+        const original = params.claimRunOnce;
+        const invokedAt = original.run.createdAt ?? Date.now();
+        const cause = original.run.cause ?? { kind: 'manual', invokedAt };
+        const executionInputEnvelope = original.run.executionInputEnvelope ?? JSON.stringify({
+          kind: 'happier_automation_run_execution_input_v1', targetType: original.automation.targetType,
+          templateVersion: 1, templateCiphertext: original.automation.templateCiphertext,
+          origin: { kind: 'manual', invokedAt },
+        });
+        writeJson(response, 200, {
+          run: { id: original.run.id, automationId: original.run.automationId, attempt: original.run.attempt,
+            revision: 0, recipeKind: 'legacy', triggerId: null, triggerRetired: false,
+            executionInputEnvelope, cause, resultDelivery: { kind: 'none' } },
+          automation: { id: original.automation.id, name: original.automation.name, enabled: original.automation.enabled,
+            workflowDefinitionId: null, scopeSessionId: null },
+          accountCurrentness: { mode: accountMode, version: 1, contentKeyFingerprint },
+        });
         return;
       }
-      writeJson(response, 200, workerProtocol === 'v3'
-        ? { run: null, automation: null, accountCurrentness: null }
-        : { run: null, automation: null });
+      writeJson(response, 200, { run: null, automation: null, accountCurrentness: null });
       return;
     }
 
-    if (request.method === 'POST' && /\/v[23]\/automations\/runs\/.+\/start$/.test(url.pathname)) {
+    if (request.method === 'POST' && /\/v3\/automations\/runs\/.+\/start$/.test(url.pathname)) {
       const body = await readJsonBody(request);
       state.started.push(body);
       const claimedRun = params.claimRunOnce?.run;
       const now = Date.now();
-      if (workerProtocol === 'v3') accountCurrentnessVersion = 2;
-      writeJson(response, 200, workerProtocol === 'v3'
-        ? {
+      accountCurrentnessVersion = 2;
+      writeJson(response, 200, {
           run: {
             id: String(claimedRun?.id),
             automationId: String(claimedRun?.automationId),
             state: 'running',
             triggerId: claimedRun?.triggerId ?? null,
             triggerRetired: false,
-            cause: claimedRun?.cause,
+            cause: claimedRun?.cause ?? { kind: 'manual', invokedAt: claimedRun?.createdAt ?? now },
             dueAt: now,
             claimedAt: now,
             startedAt: now,
@@ -199,28 +171,27 @@ async function startAutomationServer(params: {
             updatedAt: now,
           },
           accountCurrentness: {
-            mode: 'plain',
+            mode: accountMode,
             version: accountCurrentnessVersion,
-            contentKeyFingerprint: null,
+            contentKeyFingerprint,
           },
-        }
-        : { ok: true });
+        });
       return;
     }
 
-    if (request.method === 'POST' && /\/v[23]\/automations\/runs\/.+\/heartbeat$/.test(url.pathname)) {
+    if (request.method === 'POST' && /\/v3\/automations\/runs\/.+\/heartbeat$/.test(url.pathname)) {
       state.heartbeats.push(await readJsonBody(request));
       writeJson(response, 200, { ok: true });
       return;
     }
 
-    if (request.method === 'POST' && /\/v[23]\/automations\/runs\/.+\/succeed$/.test(url.pathname)) {
+    if (request.method === 'POST' && /\/v3\/automations\/runs\/.+\/succeed$/.test(url.pathname)) {
       state.succeeded.push(await readJsonBody(request));
       writeJson(response, 200, { ok: true });
       return;
     }
 
-    if (request.method === 'POST' && /\/v[23]\/automations\/runs\/.+\/fail$/.test(url.pathname)) {
+    if (request.method === 'POST' && /\/v3\/automations\/runs\/.+\/fail$/.test(url.pathname)) {
       state.failed.push(await readJsonBody(request));
       writeJson(response, 200, { ok: true });
       return;
@@ -228,10 +199,10 @@ async function startAutomationServer(params: {
 
     if (request.method === 'GET' && url.pathname === '/v1/account/encryption/currentness') {
       writeJson(response, 200, {
-        mode: 'plain',
+        mode: accountMode,
         version: accountCurrentnessVersion,
         signingKeyFingerprint: null,
-        contentKeyFingerprint: null,
+        contentKeyFingerprint,
         updatedAt: 1,
       });
       return;
@@ -335,7 +306,7 @@ describe('automationWorker integration', () => {
     if (previousLogLevel === undefined) delete process.env.HAPPIER_LOG_LEVEL;
     else process.env.HAPPIER_LOG_LEVEL = previousLogLevel;
 
-    vi.resetModules();
+    reloadConfiguration();
   });
 
   it('claims and executes a new-session automation run to success', async () => {
@@ -378,15 +349,14 @@ describe('automationWorker integration', () => {
     process.env.HAPPIER_SERVER_URL = server.baseUrl;
     process.env.HAPPIER_WEBAPP_URL = server.baseUrl;
 
-    vi.resetModules();
-    const { startAutomationWorker } = await import('./automationWorker');
+    reloadConfiguration();
 
     const spawnSession = vi.fn(async () => ({ type: 'success' as const, sessionId: 'session-1' }));
 
     const worker = startAutomationWorker({
       token: 'token-1',
+      credentials: { token: 'token-1', encryption: TEST_ENCRYPTION },
       machineId: 'machine-1',
-      encryption: TEST_ENCRYPTION,
       spawnSession,
       env: {
         HAPPIER_FEATURE_AUTOMATIONS__ENABLED: '1',
@@ -434,7 +404,7 @@ describe('automationWorker integration', () => {
       origin: { kind: 'manual', invokedAt },
     });
     const server = await startAutomationServer({
-      workerProtocol: 'v3',
+      accountMode: 'plain',
       claimRunOnce: {
         run: {
           id: 'run-v2-frozen-through-v3',
@@ -462,8 +432,7 @@ describe('automationWorker integration', () => {
     process.env.HAPPIER_SERVER_URL = server.baseUrl;
     process.env.HAPPIER_WEBAPP_URL = server.baseUrl;
 
-    vi.resetModules();
-    const { startAutomationWorker } = await import('./automationWorker');
+    reloadConfiguration();
     const spawnSession = vi.fn(async () => ({
       type: 'success' as const,
       sessionId: 'session-v2-frozen-through-v3',
@@ -509,7 +478,7 @@ describe('automationWorker integration', () => {
     }
   });
 
-  it('stops polling when automation endpoints are missing (404)', async () => {
+  it('continues current endpoint polling after a missing-route response', async () => {
     const server = await startAutomationServer({
       claimRunOnce: null,
       missingAutomationRoutes: true,
@@ -521,15 +490,14 @@ describe('automationWorker integration', () => {
     process.env.HAPPIER_WEBAPP_URL = server.baseUrl;
     process.env.HAPPIER_LOG_LEVEL = 'debug';
 
-    vi.resetModules();
-    const { startAutomationWorker } = await import('./automationWorker');
+    reloadConfiguration();
     const { logger } = await import('@/ui/logger');
 
     const spawnSession = vi.fn(async () => ({ type: 'success' as const, sessionId: 'session-1' }));
     const worker = startAutomationWorker({
       token: 'token-1',
+      credentials: { token: 'token-1', encryption: TEST_ENCRYPTION },
       machineId: 'machine-1',
-      encryption: TEST_ENCRYPTION,
       spawnSession,
       env: {
         HAPPIER_FEATURE_AUTOMATIONS__ENABLED: '1',
@@ -540,13 +508,11 @@ describe('automationWorker integration', () => {
 
     let serverClosed = false;
     try {
-      await waitForCondition(() => server.state.requests.some((entry) => entry.includes('/v2/automations/')), 1_000);
-      await new Promise((resolve) => setTimeout(resolve, 200));
-
-      // If the worker doesn't self-disable on 404 route-missing errors, we'd see the claim/assignment routes
-      // spammed on a tight interval.
-      const automationRequests = server.state.requests.filter((entry) => entry.includes('/v2/automations/'));
-      expect(automationRequests.length).toBeLessThanOrEqual(4);
+      await waitForCondition(() => server.state.requests.some((entry) => entry.includes('/v3/automations/')), 1_000);
+      const firstReads = server.state.requests.length;
+      await worker.refreshAssignments();
+      expect(server.state.requests.length).toBeGreaterThan(firstReads);
+      expect(server.state.requests.some((entry) => entry.includes('/v2/automations/'))).toBe(false);
 
       worker.stop();
       // Lifecycle telemetry uses this buffered home-directory writer. Drain it
@@ -605,15 +571,14 @@ describe('automationWorker integration', () => {
     process.env.HAPPIER_SERVER_URL = server.baseUrl;
     process.env.HAPPIER_WEBAPP_URL = server.baseUrl;
 
-    vi.resetModules();
-    const { startAutomationWorker } = await import('./automationWorker');
+    reloadConfiguration();
 
     const spawnSession = vi.fn(async () => ({ type: 'success' as const, sessionId: 'session-2' }));
 
     const worker = startAutomationWorker({
       token: 'token-2',
+      credentials: { token: 'token-2', encryption: TEST_ENCRYPTION },
       machineId: 'machine-2',
-      encryption: TEST_ENCRYPTION,
       spawnSession,
       env: {
         HAPPIER_AUTOMATION_CLAIM_POLL_MS: '20',
@@ -681,15 +646,14 @@ describe('automationWorker integration', () => {
     process.env.HAPPIER_SERVER_URL = server.baseUrl;
     process.env.HAPPIER_WEBAPP_URL = server.baseUrl;
 
-    vi.resetModules();
-    const { startAutomationWorker } = await import('./automationWorker');
+    reloadConfiguration();
 
     const spawnSession = vi.fn(async () => ({ type: 'success' as const, sessionId: 'session-3' }));
 
     const worker = startAutomationWorker({
       token: 'token-3',
+      credentials: { token: 'token-3', encryption: TEST_ENCRYPTION },
       machineId: 'machine-3',
-      encryption: TEST_ENCRYPTION,
       spawnSession,
       env: {
         HAPPIER_FEATURE_AUTOMATIONS__ENABLED: '0',
@@ -758,15 +722,14 @@ describe('automationWorker integration', () => {
     process.env.HAPPIER_SERVER_URL = server.baseUrl;
     process.env.HAPPIER_WEBAPP_URL = server.baseUrl;
 
-    vi.resetModules();
-    const { startAutomationWorker } = await import('./automationWorker');
+    reloadConfiguration();
 
     const spawnSession = vi.fn(async () => ({ type: 'success' as const, sessionId: 'session-4' }));
 
     const worker = startAutomationWorker({
       token: 'token-4',
+      credentials: { token: 'token-4', encryption: TEST_ENCRYPTION },
       machineId: 'machine-4',
-      encryption: TEST_ENCRYPTION,
       spawnSession,
       env: {
         HAPPIER_FEATURE_AUTOMATIONS__ENABLED: '1',
@@ -839,17 +802,15 @@ describe('automationWorker integration', () => {
     process.env.HAPPIER_SERVER_URL = server.baseUrl;
     process.env.HAPPIER_WEBAPP_URL = server.baseUrl;
 
-    vi.resetModules();
-    const { startAutomationWorker } = await import('./automationWorker');
+    reloadConfiguration();
 
     const spawnSession = vi.fn(async () => ({ type: 'success' as const, sessionId: 'session-existing' }));
     const machineAdmissionTransport = createAcceptedMachineAdmissionTransport(server.state);
 
     const worker = startAutomationWorker({
       token: 'token-6',
-      credentials: { token: 'token-6', encryption: null },
+      credentials: { token: 'token-6', encryption: TEST_ENCRYPTION },
       machineId: 'machine-6',
-      encryption: TEST_ENCRYPTION,
       spawnSession,
       machineAdmissionTransport,
       env: {
@@ -932,17 +893,15 @@ describe('automationWorker integration', () => {
     process.env.HAPPIER_SERVER_URL = server.baseUrl;
     process.env.HAPPIER_WEBAPP_URL = server.baseUrl;
 
-    vi.resetModules();
-    const { startAutomationWorker } = await import('./automationWorker');
+    reloadConfiguration();
 
     const spawnSession = vi.fn(async () => ({ type: 'success' as const, sessionId: 'session-existing' }));
     const machineAdmissionTransport = createAcceptedMachineAdmissionTransport(server.state);
 
     const worker = startAutomationWorker({
       token: 'token-6-plain',
-      credentials: { token: 'token-6-plain', encryption: null },
+      credentials: { token: 'token-6-plain', encryption: TEST_ENCRYPTION },
       machineId: 'machine-6-plain',
-      encryption: TEST_ENCRYPTION,
       spawnSession,
       machineAdmissionTransport,
       env: {
@@ -1025,17 +984,15 @@ describe('automationWorker integration', () => {
     process.env.HAPPIER_SERVER_URL = server.baseUrl;
     process.env.HAPPIER_WEBAPP_URL = server.baseUrl;
 
-    vi.resetModules();
-    const { startAutomationWorker } = await import('./automationWorker');
+    reloadConfiguration();
 
     const spawnSession = vi.fn(async () => ({ type: 'success' as const, sessionId: 'session-existing' }));
     const machineAdmissionTransport = createAcceptedMachineAdmissionTransport(server.state);
 
     const worker = startAutomationWorker({
       token: 'token-6b',
-      credentials: { token: 'token-6b', encryption: null },
+      credentials: { token: 'token-6b', encryption: TEST_ENCRYPTION },
       machineId: 'machine-6b',
-      encryption: TEST_ENCRYPTION,
       spawnSession,
       machineAdmissionTransport,
       env: {
@@ -1104,8 +1061,7 @@ describe('automationWorker integration', () => {
     process.env.HAPPIER_SERVER_URL = server.baseUrl;
     process.env.HAPPIER_WEBAPP_URL = server.baseUrl;
 
-    vi.resetModules();
-    const { startAutomationWorker } = await import('./automationWorker');
+    reloadConfiguration();
     type StartAutomationWorkerParams = Parameters<typeof startAutomationWorker>[0];
 
     const spawnSession: StartAutomationWorkerParams['spawnSession'] = vi.fn(async () => ({
@@ -1116,8 +1072,8 @@ describe('automationWorker integration', () => {
 
     const worker = startAutomationWorker({
       token: 'token-7-unavailable',
+      credentials: { token: 'token-7-unavailable', encryption: TEST_ENCRYPTION },
       machineId: 'machine-7-unavailable',
-      encryption: TEST_ENCRYPTION,
       spawnSession,
       env: {
         HAPPIER_FEATURE_AUTOMATIONS__ENABLED: '1',
@@ -1186,8 +1142,7 @@ describe('automationWorker integration', () => {
     process.env.HAPPIER_SERVER_URL = server.baseUrl;
     process.env.HAPPIER_WEBAPP_URL = server.baseUrl;
 
-    vi.resetModules();
-    const { startAutomationWorker } = await import('./automationWorker');
+    reloadConfiguration();
 
     const spawnSession = vi.fn<Parameters<typeof startAutomationWorker>[0]['spawnSession']>(async () => ({
       type: 'success' as const,
@@ -1197,9 +1152,8 @@ describe('automationWorker integration', () => {
 
     const worker = startAutomationWorker({
       token: 'token-7',
-      credentials: { token: 'token-7', encryption: null },
+      credentials: { token: 'token-7', encryption: TEST_ENCRYPTION },
       machineId: 'machine-7',
-      encryption: TEST_ENCRYPTION,
       spawnSession,
       machineAdmissionTransport,
       env: {
@@ -1252,7 +1206,7 @@ describe('automationWorker integration', () => {
     }
   });
 
-  it('retains the V2-created Session in each terminal initial-prompt failure', async () => {
+  it('retains the Session created from a retained 0.2 template in each terminal initial-prompt failure', async () => {
     const cases = [
       {
         suffix: 'rejected',
@@ -1323,8 +1277,7 @@ describe('automationWorker integration', () => {
       process.env.HAPPIER_SERVER_URL = server.baseUrl;
       process.env.HAPPIER_WEBAPP_URL = server.baseUrl;
 
-      vi.resetModules();
-      const { startAutomationWorker } = await import('./automationWorker');
+      reloadConfiguration();
       const spawnSession = vi.fn(async () => ({ type: 'success' as const, sessionId }));
       const machineAdmissionTransport = scenario.machineResult === null
         ? undefined
@@ -1337,9 +1290,8 @@ describe('automationWorker integration', () => {
         });
       const worker = startAutomationWorker({
         token: `token-v2-known-${scenario.suffix}`,
-        credentials: { token: `token-v2-known-${scenario.suffix}`, encryption: null },
+        credentials: { token: `token-v2-known-${scenario.suffix}`, encryption: TEST_ENCRYPTION },
         machineId: 'machine-7',
-        encryption: TEST_ENCRYPTION,
         spawnSession,
         ...(machineAdmissionTransport ? { machineAdmissionTransport } : {}),
         env: {
@@ -1377,7 +1329,7 @@ describe('automationWorker integration', () => {
     }
   });
 
-  it('retains and discards only the stable V2 prompt when authoritative cancellation wins after machine emission', async () => {
+  it('retains and discards only the stable retained-template prompt when authoritative cancellation wins after machine emission', async () => {
     const now = Date.now();
     const runId = 'run-v2-post-emit-cancel';
     const sessionId = 'session-v2-post-emit-cancel';
@@ -1420,8 +1372,7 @@ describe('automationWorker integration', () => {
     process.env.HAPPIER_SERVER_URL = server.baseUrl;
     process.env.HAPPIER_WEBAPP_URL = server.baseUrl;
 
-    vi.resetModules();
-    const { startAutomationWorker } = await import('./automationWorker');
+    reloadConfiguration();
     const spawnSession = vi.fn(async () => ({ type: 'success' as const, sessionId }));
     let worker: ReturnType<typeof startAutomationWorker> | null = null;
     const machineAdmissionTransport = vi.fn<MachineAdmissionTransport>(async (request) => {
@@ -1447,9 +1398,8 @@ describe('automationWorker integration', () => {
     });
     worker = startAutomationWorker({
       token: 'token-v2-post-emit-cancel',
-      credentials: { token: 'token-v2-post-emit-cancel', encryption: null },
+      credentials: { token: 'token-v2-post-emit-cancel', encryption: TEST_ENCRYPTION },
       machineId: 'machine-7',
-      encryption: TEST_ENCRYPTION,
       spawnSession,
       machineAdmissionTransport,
       env: {
@@ -1487,7 +1437,7 @@ describe('automationWorker integration', () => {
     }
   });
 
-  it('does not settle or discard an emitted V2 prompt after a wrong-machine generic invalidation', async () => {
+  it('does not settle or discard an emitted retained-template prompt after a wrong-machine generic invalidation', async () => {
     const now = Date.now();
     const runId = 'run-v2-post-emit-wrong-machine';
     const template = buildEncryptedTemplateCiphertext({
@@ -1529,8 +1479,7 @@ describe('automationWorker integration', () => {
     process.env.HAPPIER_SERVER_URL = server.baseUrl;
     process.env.HAPPIER_WEBAPP_URL = server.baseUrl;
 
-    vi.resetModules();
-    const { startAutomationWorker } = await import('./automationWorker');
+    reloadConfiguration();
     let worker: ReturnType<typeof startAutomationWorker> | null = null;
     const spawnSession = vi.fn(async () => ({
       type: 'success' as const,
@@ -1559,9 +1508,8 @@ describe('automationWorker integration', () => {
     });
     worker = startAutomationWorker({
       token: 'token-v2-post-emit-wrong-machine',
-      credentials: { token: 'token-v2-post-emit-wrong-machine', encryption: null },
+      credentials: { token: 'token-v2-post-emit-wrong-machine', encryption: TEST_ENCRYPTION },
       machineId: 'machine-7',
-      encryption: TEST_ENCRYPTION,
       spawnSession,
       machineAdmissionTransport,
       env: {
@@ -1631,8 +1579,7 @@ describe('automationWorker integration', () => {
     process.env.HAPPIER_SERVER_URL = server.baseUrl;
     process.env.HAPPIER_WEBAPP_URL = server.baseUrl;
 
-    vi.resetModules();
-    const { startAutomationWorker } = await import('./automationWorker');
+    reloadConfiguration();
 
     const spawnSession = vi.fn<Parameters<typeof startAutomationWorker>[0]['spawnSession']>(async () => ({
       type: 'success' as const,
@@ -1641,9 +1588,8 @@ describe('automationWorker integration', () => {
 
     const worker = startAutomationWorker({
       token: 'token-7-missing-session-id',
-      credentials: { token: 'token-7-missing-session-id', encryption: null },
+      credentials: { token: 'token-7-missing-session-id', encryption: TEST_ENCRYPTION },
       machineId: 'machine-7',
-      encryption: TEST_ENCRYPTION,
       spawnSession,
       machineAdmissionTransport,
       env: {

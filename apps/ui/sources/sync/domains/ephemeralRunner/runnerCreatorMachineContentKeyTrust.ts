@@ -24,9 +24,8 @@ import {
  * substitute verifier key, binding and an Account-openable envelope together.
  * This module is that storage, and it holds only non-secret public material.
  *
- * The Machine resolver that consumes it is synchronous, so reads are served
- * from an in-memory projection of the same device-local record; a miss loads
- * the record and fails closed until it is present.
+ * Readers await device-local custody before choosing Machine semantics. Only a
+ * successful absent read is cached as absence; storage failure remains retryable.
  */
 export type RunnerCreatorMachineContentKeyTrustV1 = Readonly<{
     activationId: string;
@@ -42,7 +41,7 @@ type StoredRunnerCreatorMachineContentKeyTrustV1 = Readonly<{
 const STORAGE_PREFIX = 'happier-runner-machine-trust-v1';
 
 const trustByScopedMachine = new Map<string, RunnerCreatorMachineContentKeyTrustV1 | null>();
-const pendingLoads = new Map<string, Promise<void>>();
+const pendingLoads = new Map<string, Promise<RunnerCreatorMachineContentKeyTrustV1 | null>>();
 
 function memoKey(scope: ServerAccountScope, machineId: string): string {
     return serverAccountScopedResourceKey(scope, machineId);
@@ -56,19 +55,14 @@ async function storageKey(scope: ServerAccountScope, machineId: string): Promise
 }
 
 function parseStored(value: string | null): RunnerCreatorMachineContentKeyTrustV1 | null {
-    if (!value) return null;
-    let record: unknown;
-    try {
-        record = JSON.parse(value);
-    } catch {
-        return null;
-    }
-    if (!record || typeof record !== 'object') return null;
+    if (value === null) return null;
+    const record: unknown = JSON.parse(value);
+    if (!record || typeof record !== 'object') throw new Error('Invalid Runner Machine trust custody');
     const row = record as Partial<StoredRunnerCreatorMachineContentKeyTrustV1>;
-    if (row.v !== 1) return null;
+    if (row.v !== 1) throw new Error('Invalid Runner Machine trust custody');
     const activationId = z.string().uuid().safeParse(row.activationId);
     const publicKey = RunnerPublicKeySchema.safeParse(row.activationSigningPublicKey);
-    if (!activationId.success || !publicKey.success) return null;
+    if (!activationId.success || !publicKey.success) throw new Error('Invalid Runner Machine trust custody');
     return { activationId: activationId.data, activationSigningPublicKey: publicKey.data };
 }
 
@@ -94,45 +88,29 @@ export async function retainRunnerCreatorMachineContentKeyTrust(input: Readonly<
     });
 }
 
-/** Loads the device-local record into the projection the synchronous reader serves. */
+/** Coalesces cold reads; rejects unavailable custody without caching absence. */
 export async function loadRunnerCreatorMachineContentKeyTrust(
     scope: ServerAccountScope,
     machineId: string,
 ): Promise<RunnerCreatorMachineContentKeyTrustV1 | null> {
     const key = memoKey(scope, machineId);
-    let trust: RunnerCreatorMachineContentKeyTrustV1 | null = null;
-    try {
-        trust = parseStored(await readDeviceLocalStorageString(await storageKey(scope, machineId)));
-    } catch {
-        trust = null;
-    }
-    trustByScopedMachine.set(key, trust);
-    return trust;
-}
-
-/**
- * Synchronous creator-local verifier lookup.
- *
- * Returns `null` while the record has not been loaded yet and schedules that
- * load, so the first refresh after a remount fails closed and the next one
- * carries the proof.
- */
-export function readRunnerCreatorMachineContentKeyTrust(
-    scope: ServerAccountScope,
-    machineId: string,
-): RunnerCreatorMachineContentKeyTrustV1 | null {
-    const key = memoKey(scope, machineId);
     const known = trustByScopedMachine.get(key);
     if (known !== undefined) return known;
-    if (!pendingLoads.has(key)) {
-        const load = loadRunnerCreatorMachineContentKeyTrust(scope, machineId)
-            .catch(() => undefined)
-            .then(() => {
-                pendingLoads.delete(key);
-            });
-        pendingLoads.set(key, load);
+    const pending = pendingLoads.get(key);
+    if (pending) return await pending;
+    const load = (async () => {
+        const stored = parseStored(await readDeviceLocalStorageString(await storageKey(scope, machineId)));
+        // Retention may have completed while the cold read was pending.
+        const trust = trustByScopedMachine.get(key) ?? stored;
+        trustByScopedMachine.set(key, trust);
+        return trust;
+    })();
+    pendingLoads.set(key, load);
+    try {
+        return await load;
+    } finally {
+        if (pendingLoads.get(key) === load) pendingLoads.delete(key);
     }
-    return null;
 }
 
 /** Test-only: drops the in-memory projection so a case starts from storage. */

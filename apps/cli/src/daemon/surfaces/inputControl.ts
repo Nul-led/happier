@@ -1,0 +1,122 @@
+export type SurfaceInputCompletion = 'known' | 'unknown';
+export type SurfaceInputRequester = 'agent' | 'human';
+export type SurfaceInputAdmissionFailure = 'busy' | 'closed' | 'human_interrupted' | 'observation_required' | 'uncertain';
+
+export type SurfaceInputExecutionResult<T> =
+  | Readonly<{ ok: false; errorCode: SurfaceInputAdmissionFailure }>
+  | Readonly<{ ok: true; value: T; interrupted: boolean; completion: SurfaceInputCompletion; reason?: string }>;
+
+export type SurfaceInputControl = Readonly<{
+  getStatus(): Readonly<{ controller: SurfaceInputRequester | 'idle'; controlEpoch: number; stopping: boolean; uncertain: boolean }>;
+  getAdmissionFailure(requestedBy: SurfaceInputRequester): SurfaceInputAdmissionFailure | undefined;
+  isClosed(): boolean;
+  observe(controlEpoch: number): boolean;
+  invalidateObservation(): void;
+  execute<T>(input: Readonly<{
+    requestedBy: SurfaceInputRequester;
+    signal?: AbortSignal;
+    effect(signal: AbortSignal): Promise<T>;
+    classifyCompletion(value: T, signal: AbortSignal): SurfaceInputCompletion;
+  }>): Promise<SurfaceInputExecutionResult<T>>;
+  takeOver(reason?: string): Promise<Readonly<{ active: boolean; completion: SurfaceInputCompletion }>>;
+  handBack(): boolean;
+  close(reason?: string): Promise<SurfaceInputCompletion>;
+}>;
+
+type ActiveInput = Readonly<{
+  requestedBy: SurfaceInputRequester;
+  abort: AbortController;
+  drained: Promise<SurfaceInputCompletion>;
+}>;
+
+/** One instance belongs to one actual input target. The transport owns target lookup and authority. */
+export function createSurfaceInputControl(options: Readonly<{ requireObservation?: boolean }> = {}): SurfaceInputControl {
+  let controlEpoch = 0;
+  let humanHeld = false;
+  let closed = false;
+  let uncertain = false;
+  let observationRequirement: 'required' | 'hand_back' | null = options.requireObservation ? 'required' : null;
+  let active: ActiveInput | null = null;
+
+  function getAdmissionFailure(requestedBy: SurfaceInputRequester): SurfaceInputAdmissionFailure | undefined {
+    if (active) return 'busy';
+    if (closed) return 'closed';
+    if (uncertain && requestedBy === 'agent' && observationRequirement !== 'hand_back') return 'uncertain';
+    if (requestedBy === 'agent' && humanHeld) return 'human_interrupted';
+    if (requestedBy === 'agent' && observationRequirement) return 'observation_required';
+    return undefined;
+  }
+
+  return {
+    getStatus: () => ({
+      controller: humanHeld ? 'human' : active?.requestedBy ?? 'idle',
+      controlEpoch,
+      stopping: active?.abort.signal.aborted ?? false,
+      uncertain,
+    }),
+    getAdmissionFailure,
+    isClosed: () => closed,
+    observe(epoch) {
+      if (closed || active || epoch !== controlEpoch || (uncertain && !humanHeld && observationRequirement !== 'hand_back')) return false;
+      uncertain = false;
+      observationRequirement = null;
+      return true;
+    },
+    invalidateObservation() { observationRequirement ??= 'required'; },
+    async execute<T>(input: Readonly<{
+      requestedBy: SurfaceInputRequester;
+      signal?: AbortSignal;
+      effect(signal: AbortSignal): Promise<T>;
+      classifyCompletion(value: T, signal: AbortSignal): SurfaceInputCompletion;
+    }>): Promise<SurfaceInputExecutionResult<T>> {
+      const errorCode = getAdmissionFailure(input.requestedBy);
+      if (errorCode) return { ok: false, errorCode };
+
+      const abort = new AbortController();
+      let resolveDrained: (completion: SurfaceInputCompletion) => void = () => undefined;
+      const drained = new Promise<SurfaceInputCompletion>((resolve) => { resolveDrained = resolve; });
+      active = { requestedBy: input.requestedBy, abort, drained };
+      const cancelFromCaller = () => { observationRequirement = 'required'; abort.abort('user_canceled'); };
+      if (input.signal?.aborted) cancelFromCaller();
+      else input.signal?.addEventListener('abort', cancelFromCaller, { once: true });
+
+      let completion: SurfaceInputCompletion = 'unknown';
+      try {
+        // Await the real train, including boundary-owned held-input cleanup. Racing abort would
+        // release admission while the previous action can still send input.
+        const value = await input.effect(abort.signal);
+        completion = input.classifyCompletion(value, abort.signal);
+        return { ok: true, value, interrupted: abort.signal.aborted, completion,
+          ...(abort.signal.aborted ? { reason: String(abort.signal.reason) } : {}) };
+      } finally {
+        input.signal?.removeEventListener('abort', cancelFromCaller);
+        if (completion === 'unknown') uncertain = true;
+        active = null;
+        resolveDrained(completion);
+      }
+    },
+    async takeOver(reason = 'user_canceled') {
+      if (!humanHeld) controlEpoch += 1;
+      humanHeld = true;
+      observationRequirement = 'required';
+      const current = active;
+      current?.abort.abort(reason);
+      return { active: current !== null, completion: current ? await current.drained : uncertain ? 'unknown' : 'known' };
+    },
+    handBack() {
+      if (active || closed) return false;
+      if (humanHeld) controlEpoch += 1;
+      humanHeld = false;
+      // Hand back changes admission, not the unsettled-effect fact. A fresh agent
+      // observation must clear that fact before its next mutation.
+      observationRequirement = 'hand_back';
+      return true;
+    },
+    async close(reason = 'closed') {
+      closed = true;
+      const current = active;
+      current?.abort.abort(reason);
+      return current ? await current.drained : uncertain ? 'unknown' : 'known';
+    },
+  };
+}

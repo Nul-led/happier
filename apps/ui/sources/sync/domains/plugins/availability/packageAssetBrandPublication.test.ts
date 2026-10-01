@@ -72,7 +72,7 @@ describe('portable brand publication and daemon-offline consumption', () => {
         const store = createPluginAccountAvailabilityReaderStore();
         const snapshot = {
             availabilityCursor: 1, intentReads: [{ pluginId, response }], materializations: [materialization],
-            snapshots: [{ serverIdentityId: 'identity-a', machineId: 'machine-a', revision: 1, materializations: [materialization] }],
+            snapshots: [{ serverIdentityId: 'identity-a', machineId: 'machine-a', materializations: [materialization] }],
         };
         store.replace({ scope, snapshot });
         const stored: { current: PluginAvailabilityPackageAssetReadActionOutputV1 | null } = { current: null };
@@ -146,7 +146,7 @@ describe('portable brand publication and daemon-offline consumption', () => {
         });
         await expect(readInstalledPluginBrandPresentation({
             installedPackage: projection.installedPackagesById[pluginId], machineId: null, serverId: scope.serverId,
-            expectedGeneration: null, signal: new AbortController().signal, accountLifetime: fresh.lifetime,
+            signal: new AbortController().signal, accountLifetime: fresh.lifetime,
             isCurrent: () => true, packageAssets: { reader: freshReader, source },
         })).resolves.toEqual({ displayName: manifest.displayName, bytes });
         expect(resourceRead).toHaveBeenCalledTimes(1);

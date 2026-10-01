@@ -149,7 +149,7 @@ export async function pasteTextViaTmuxBuffer(params: Readonly<{
   text: string;
   bufferName: string;
   submitDelayMs?: number;
-  submitRetryDelayMs?: number;
+  postSubmitSettleMs?: number;
   timeoutMs?: number;
   wait?: (delayMs: number) => Promise<void>;
   verifyStagedBeforeSubmit?: (params: Readonly<{ text: string; remainingTimeoutMs?: number }>) => Promise<boolean>;
@@ -258,7 +258,7 @@ export async function pasteTextViaTmuxBuffer(params: Readonly<{
       : {}),
     remainingTimeoutMs: () => remainingTerminalHostDeadlineMs(submissionDeadline),
     wait: params.wait ?? defaultWait,
-    submitRetryDelayMs: params.submitRetryDelayMs ?? 0,
+    postSubmitSettleMs: params.postSubmitSettleMs ?? 0,
   });
   progress.submitMayHaveReachedPane = submission.success ? true : submission.submitMayHaveReachedPane;
   if (!submission.success) {

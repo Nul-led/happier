@@ -22,9 +22,9 @@ import type {
 } from '@/sync/domains/sessionSystemRecords/transport';
 import type { SessionSystemRecordRepository } from '@/sync/domains/sessionSystemRecords/repository';
 import { openSessionSystemRecord, type OpenSessionSystemRecordResult } from '@/sync/domains/sessionSystemRecords/codec';
-import { sealSessionStoredContent, type SessionStoredContentContext } from '@/sync/encryption/sessionStoredContent';
+import { sealSessionStoredContent, type SessionStoredContentContext } from '@happier-dev/sync-client';
 import type { PluginUiProjectionModel } from '@/sync/domains/plugins/ui/projection';
-import { selectPluginInlineSurfacePlacementsBySurface } from '@/sync/domains/plugins/ui/surfacePlacementSelectors';
+import { selectWidgetPlacementsBySurface } from '@/sync/domains/plugins/ui/widgetContract';
 import { classifyHttpMutationRequestFailure } from '@/sync/http/mutationRequestOutcome';
 import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
 
@@ -173,7 +173,8 @@ export function createSessionBoardActionAdapter(options: SessionSystemRecordTran
                 : await Promise.all([...new Set(args.itemIds)].map((localId) => records.read(session, { owner: 'host', namespace: 'surface', kind: 'item.v1', localId })));
             const projectedEntries: SessionBoardReadProjectionEntryV1[] = [];
             for (const entry of entries) {
-                if (entry.status !== 'ok') { projectedEntries.push({ status: 'unavailable' }); continue; }
+                if (entry.status === 'not_found') { projectedEntries.push({ status: 'unavailable' }); continue; }
+                if (entry.status !== 'ok') return projectRecordOwnerFailure(actionId, entry.status);
                 const record = entry.value;
                 const opened = await open(record, { owner: 'host', namespace: 'surface', kind: 'item.v1', localId: record.address.localId }, SessionSurfaceItemV1Schema);
                 if (opened.status !== 'ready') { projectedEntries.push({ status: 'unavailable' }); continue; }
@@ -252,7 +253,7 @@ export function createSessionBoardActionAdapter(options: SessionSystemRecordTran
         // update their content/chrome after the source-identity check above.
         if (args.item.source.kind === 'installedSurface' && current.status === 'not_found') {
             const projection = await options.resolveInstalledSurfaceProjection?.(session, signal);
-            const placements = projection ? selectPluginInlineSurfacePlacementsBySurface(projection, args.item.source.surface, 'sessionWidget') : [];
+            const placements = projection ? selectWidgetPlacementsBySurface(projection, args.item.source.surface, 'session') : [];
             if (placements.length !== 1 || placements[0]!.availability.state !== 'available') return createSessionBoardFailureV1('unsupported_action');
         }
         let layout: SessionBoardLayoutV1 | null = null;

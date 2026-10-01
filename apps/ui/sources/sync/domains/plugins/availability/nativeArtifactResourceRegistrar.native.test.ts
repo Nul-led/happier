@@ -97,7 +97,7 @@ describe('Expo native Artifact registrar', () => {
                 kind: 'currentLoad' as const,
                 resources: [{
                     resourceId: 'r0',
-                    digest: `sha256:${'d'.repeat(64)}`,
+                    digest: `sha256:${'d'.repeat(64)}` as const,
                     byteSize: 1,
                     bytes: new Uint8Array([1]),
                 }],

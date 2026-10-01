@@ -1,8 +1,10 @@
 import {
   CHROMIUM_FOR_TESTING_PRODUCT_SOURCE,
   resolveChromiumForTestingPlatform,
+  resolveChromiumForTestingAssetVersion,
   type ChromiumForTestingPlatformAsset,
 } from '@happier-dev/protocol';
+import { DEFAULT_ARCHIVE_EXTRACTION_LIMITS } from '@happier-dev/release-runtime/archiveExtraction';
 import { installPinnedArchive, resolveInstalledPinnedArchiveExecutable } from './pinnedArchive';
 
 /**
@@ -19,20 +21,22 @@ export async function resolveInstalledChromiumForTestingExecutable(params: Reado
   platform?: NodeJS.Platform | string;
   arch?: string;
   executableSubpath?: string;
+  asset?: ChromiumForTestingPlatformAsset;
 }> = {}): Promise<string | null> {
   const platform = params.platform ?? process.platform;
   const arch = params.arch ?? process.arch;
   const platformKey = resolveChromiumForTestingPlatform(platform, arch);
   if (!platformKey) return null;
 
-  const subpath = params.executableSubpath
-    ?? CHROMIUM_FOR_TESTING_PRODUCT_SOURCE.assetsByPlatform[platformKey]?.executableSubpath;
+  const asset = params.asset ?? CHROMIUM_FOR_TESTING_PRODUCT_SOURCE.assetsByPlatform[platformKey];
+  if (!asset) return null;
+  const subpath = params.executableSubpath ?? asset.executableSubpath;
   if (!subpath) return null;
 
   return await resolveInstalledPinnedArchiveExecutable({
     installId: MANAGED_KEY,
     executableSubpath: subpath,
-    version: CHROMIUM_FOR_TESTING_PRODUCT_SOURCE.pinnedVersion,
+    version: resolveChromiumForTestingAssetVersion(asset),
     platform,
   });
 }
@@ -51,10 +55,10 @@ export async function installChromiumForTesting(params: Readonly<{
   }
 
   const asset = params.asset ?? CHROMIUM_FOR_TESTING_PRODUCT_SOURCE.assetsByPlatform[platformKey];
-  const pinnedVersion = params.pinnedVersion ?? CHROMIUM_FOR_TESTING_PRODUCT_SOURCE.pinnedVersion;
   if (!asset) {
     return { ok: false, errorMessage: `No pinned Chrome-for-Testing asset for ${platformKey}` };
   }
+  const pinnedVersion = params.pinnedVersion ?? resolveChromiumForTestingAssetVersion(asset);
 
   // External-artifact remainder: without a real, locally-verifiable digest we never download or
   // promote. This is the fail-closed boundary the product gate depends on.
@@ -80,6 +84,9 @@ export async function installChromiumForTesting(params: Readonly<{
       executableSubpath: asset.executableSubpath,
     },
     platform,
+    // Real pinned Chromium executables exceed the generic per-file budget. Extraction
+    // is streamed; reuse the existing total expansion budget instead of a shorter cap.
+    archiveExtractionLimits: { maxFileBytes: DEFAULT_ARCHIVE_EXTRACTION_LIMITS.maxExpandedBytes },
   });
   return result.ok
     ? { ok: true, executablePath: result.executablePath, pinnedVersion, integrityDigest: result.integrityDigest }

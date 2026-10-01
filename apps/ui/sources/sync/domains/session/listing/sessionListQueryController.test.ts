@@ -57,6 +57,51 @@ function result(
 }
 
 describe('SessionListQueryHomeController', () => {
+    it('does not notify when the same unavailable input is re-applied', async () => {
+        const controller = createSessionListQueryHomeController({
+            serverId: 'home-a',
+            fetchPage: async () => result(['row-a']),
+        });
+        let notifications = 0;
+        controller.subscribe(() => { notifications += 1; });
+        for (const online of [false, null] as const) {
+            await controller.update({ query: QUERY_A, selected: true, online, supported: true });
+            const settled = controller.getSnapshot();
+            notifications = 0;
+            // Surfaces re-apply their input on every socket or machine-status change.
+            await controller.update({ query: QUERY_A, selected: true, online, supported: true });
+            await controller.update({ query: QUERY_A, selected: true, online, supported: true });
+            expect(notifications).toBe(0);
+            expect(controller.getSnapshot()).toBe(settled);
+        }
+    });
+
+    it('skips a row-level (structural-only) invalidation for a corpus the ordinary list can answer', async () => {
+        let requests = 0;
+        const makeController = () => createSessionListQueryHomeController({
+            serverId: 'home-a',
+            fetchPage: async () => {
+                requests += 1;
+                return result(['row-a']);
+            },
+        });
+        const ordinary = makeController();
+        await ordinary.update({ query: QUERY_ORDINARY, selected: true, online: true, supported: true });
+        const structural = makeController();
+        await structural.update({ query: QUERY_A, selected: true, online: true, supported: true });
+        requests = 0;
+
+        await ordinary.invalidate('structural');
+        expect(requests).toBe(0);
+        expect(ordinary.getSnapshot().phase).toBe('ready');
+
+        await structural.invalidate('structural');
+        expect(requests).toBe(1);
+
+        await ordinary.invalidate();
+        expect(requests).toBe(2);
+    });
+
     it.each([401, 403, 503])('retains stale membership only while access permits it after HTTP %s', async (status) => {
         let failure: { status: number } | null = null;
         const controller = createSessionListQueryHomeController({
@@ -90,6 +135,36 @@ describe('SessionListQueryHomeController', () => {
         expect(controller.getSnapshot()).toMatchObject({
             addresses: [{ serverId: 'home-a', sessionId: 'private-row' }],
             appliedQueryKey: KEY_A, phase: 'ready', failureReason: null,
+        });
+    });
+
+    it('lets the first page land when the same input is re-applied while it is in flight', async () => {
+        // The sessions surface re-applies its input on unrelated renders. Re-applying an identical
+        // query before the first page lands must not abort and restart that page: on a busy Account
+        // the list would never leave its skeleton.
+        const requests: SessionListQueryPageRequest[] = [];
+        let release!: () => void;
+        const firstPageHeld = new Promise<void>((resolve) => { release = resolve; });
+        const controller = createSessionListQueryHomeController({
+            serverId: 'home-a',
+            fetchPage: async (request) => {
+                requests.push(request);
+                await firstPageHeld;
+                return result(['row-1']);
+            },
+        });
+        const input = { query: QUERY_ORDINARY, selected: true, online: true, supported: true } as const;
+        const first = controller.update(input);
+        await Promise.resolve();
+        const again = controller.update({ ...input });
+        release();
+        await Promise.all([first, again]);
+
+        expect(requests).toHaveLength(1);
+        expect(requests[0]?.signal.aborted).toBe(false);
+        expect(controller.getSnapshot()).toMatchObject({
+            addresses: [{ serverId: 'home-a', sessionId: 'row-1' }],
+            phase: 'ready',
         });
     });
 
@@ -449,6 +524,24 @@ describe('SessionListQueryHomeController', () => {
             addresses: [{ serverId: 'home-a', sessionId: 'fresh' }],
             nextCursor: null,
             attentionNextCursor: null,
+        });
+    });
+
+    it('keeps retained membership refreshing while Home transport ownership is transferring', async () => {
+        const controller = createSessionListQueryHomeController({
+            serverId: 'home-a',
+            fetchPage: async () => result(['retained']),
+        });
+        const online = { query: QUERY_A, selected: true, online: true, supported: true };
+
+        await controller.update(online);
+        await controller.update({ ...online, online: null });
+
+        expect(controller.getSnapshot()).toMatchObject({
+            phase: 'refreshing',
+            addresses: [{ serverId: 'home-a', sessionId: 'retained' }],
+            failureReason: null,
+            failureCode: null,
         });
     });
 

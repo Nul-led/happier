@@ -144,9 +144,6 @@ function enableCodexStartupInstructionsV1(): void {
           },
         },
       },
-      backendsById: {
-        codex: { id: 'codex', agentId: 'codex' },
-      },
       familiesById: {},
     }),
   });
@@ -179,9 +176,6 @@ function enableExternalVoiceAgentProjection(): void {
             },
           },
         },
-      },
-      backendsById: {
-        'acme-voice-agent': { id: 'acme-voice-agent', agentId: 'acme-voice-agent' },
       },
       familiesById: {},
     }),
@@ -230,13 +224,6 @@ function enableCollidingQualifiedAgentProjection(): void {
           },
         },
       },
-      backendsById: {
-        codex: { id: 'codex', agentId: 'codex' },
-        'acme.codex.runtime': {
-          id: 'acme.codex.runtime',
-          agentId: 'acme.codex.agent',
-        },
-      },
       familiesById: {},
     }),
   });
@@ -259,7 +246,6 @@ function enableBundledCodexAgentOnlyProjection(): void {
           isBuiltIn: true,
         },
       },
-      backendsById: {},
       familiesById: {},
     }),
   });
@@ -494,7 +480,6 @@ describe('ensureVoiceConversationSessionForVoiceHome', () => {
             identity: { pluginId: 'acme.voice', localId: 'agent' },
           },
         },
-        backendsById: {},
         familiesById: {},
       }),
     });
@@ -1080,26 +1065,20 @@ describe('ensureVoiceConversationSessionForVoiceHome', () => {
     state.settings.lastUsedAgent = 'customAcp';
     machineContributionRegistryProjectionDescribe.mockResolvedValue({
       supported: true,
-      projection: {
-        v: 1,
+      projection: PluginProjectionV2Schema.parse({
+        v: 2,
+        generation: 1,
         agentsById: {
           'acme.review.provider': {
             id: 'acme.review.provider',
             title: 'Acme Review Provider',
             channel: 'plugin',
             isBuiltIn: false,
+            providerOwnedEnvironmentKeys: [],
             settingsBackendId: 'acme.review.backend',
           },
         },
-        backendsById: {
-          'acme.review.backend': {
-            id: 'acme.review.backend',
-            backendId: 'acme.review.backend',
-            agentId: 'acme.review.provider',
-            title: 'Acme Review Backend',
-          },
-        },
-      },
+      }),
     });
 
     const { ensureVoiceConversationSessionForVoiceHome } = await import('./voiceConversationSession');
@@ -1326,6 +1305,10 @@ describe('ensureVoiceConversationSessionForVoiceHome', () => {
       metadata: {
         machineId: 'machine-stale',
         path: '/Users/test/.happier/voice-agent-old',
+        voiceAgentRunV1: {
+          v: 1, runId: 'run-retired', backendId: 'codex', resumeHandle: null,
+          updatedAtMs: 1, transcriptContractVersion: 2,
+        },
         voiceConversationScopeV1: {
           v: 1,
           kind: 'voice_home',
@@ -1785,6 +1768,12 @@ describe('ensureVoiceConversationSessionForVoiceHome', () => {
     await expect(ensureVoiceConversationSessionForVoiceHome()).resolves.toBe('voice-home-session');
 
     expect(patchSessionMetadataWithRetry.mock.calls.some(([sessionId]) => sessionId === 'legacy-session')).toBe(true);
+    expect(state.sessions['legacy-session'].metadata).not.toHaveProperty('voiceAgentRunV1');
+    expect(state.sessions['legacy-session'].metadata).toMatchObject({
+      machineId: 'machine-stale',
+      path: '/Users/test/.happier/voice-agent-old',
+      systemSessionV1: { v: 1, key: 'voice_conversation_retired', hidden: true },
+    });
   });
 
   it('does not recover a timed-out voice home spawn by scanning unrelated late sessions', async () => {

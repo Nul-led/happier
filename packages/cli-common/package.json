@@ -38,6 +38,11 @@
       "import": "./bundledPluginResources.mjs",
       "default": "./bundledPluginResources.mjs"
     },
+    "./bundledPluginPublicationPolicy": {
+      "types": "./bundledPluginPublicationPolicy.d.mts",
+      "import": "./bundledPluginPublicationPolicy.mjs",
+      "default": "./bundledPluginPublicationPolicy.mjs"
+    },
     "./pinnedRunnerSnapshot": {
       "types": "./pinnedRunnerSnapshot.d.mts",
       "import": "./pinnedRunnerSnapshot.mjs",

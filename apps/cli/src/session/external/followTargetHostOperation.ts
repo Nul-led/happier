@@ -25,7 +25,7 @@ import type { HostExternalSessionFollowTargetResolution } from './privateContrac
 type FollowTargetRuntimeContext = Readonly<{
     pluginId: string;
     agentId: string;
-    generationId: string;
+    occurrenceId: string;
     agent: ConfiguredExternalSessionSourceAgentContribution;
     providerOps: ExternalSessionFollowProviderOps;
     retirementSignal: AbortSignal;
@@ -123,7 +123,7 @@ export function createExternalSessionFollowTargetHostOperation(params: Readonly<
             const runtimeContext: FollowTargetRuntimeContext = Object.freeze({
                 pluginId: request.pluginId,
                 agentId: request.contributionId,
-                generationId: request.generationId,
+                occurrenceId: request.occurrenceId,
                 agent: request.agentContribution,
                 providerOps: request.providerOps,
                 retirementSignal: signal,
@@ -131,7 +131,7 @@ export function createExternalSessionFollowTargetHostOperation(params: Readonly<
             });
             const outcome = await invokeBoundedExternalSessionsOperation({
                 signal,
-                // Exact-generation currentness and lifecycle authority travel
+                // Exact-occurrence currentness and lifecycle authority travel
                 // with the request and are checked before every context-owned
                 // await below.
                 retirementSignal: new AbortController().signal,
@@ -147,7 +147,7 @@ export function createExternalSessionFollowTargetHostOperation(params: Readonly<
                         if (
                             runtimeContext.pluginId !== request.pluginId
                             || runtimeContext.agentId !== request.contributionId
-                            || runtimeContext.generationId !== request.generationId
+                            || runtimeContext.occurrenceId !== request.occurrenceId
                             || dependencies.readAccountRevision()
                                 !== request.accountRevision
                             || !requestIsCurrent(request, runtimeContext)
@@ -180,7 +180,6 @@ export function createExternalSessionFollowTargetHostOperation(params: Readonly<
                             );
                         }
                         const basis = Object.freeze({
-                            contributionGenerationId: request.generationId,
                             accountSettingsRevision: request.accountRevision,
                         });
                         return await resolveConfiguredExternalSessionFollowTarget({
@@ -191,7 +190,6 @@ export function createExternalSessionFollowTargetHostOperation(params: Readonly<
                             activeServerDir: configuration.activeServerDir,
                             basis,
                             readCurrentBasis: () => Object.freeze({
-                                contributionGenerationId: runtimeContext.generationId,
                                 accountSettingsRevision:
                                     dependencies.readAccountRevision(),
                             }),

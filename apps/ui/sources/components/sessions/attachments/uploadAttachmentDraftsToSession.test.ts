@@ -18,6 +18,24 @@ describe('uploadAttachmentDraftsToSession', () => {
         runTransferFinalizeRecoveryMock.mockReset();
     });
 
+    it('retains the issued attachment handle in message metadata and on uploaded-draft retry', async () => {
+        const { uploadAttachmentDraftsToSession, buildAttachmentMessageMeta } = await import('./uploadAttachmentDraftsToSession');
+        const { AttachmentsMessageMetaV1Schema } = await import('@/sync/domains/attachments/attachmentsMessageMeta');
+        const handle = { v: 1 as const, sessionId: 's1', id: 'issued-handle' };
+        const result = await uploadAttachmentDraftsToSession({
+            sessionId: 's1', messageLocalId: 'm1',
+            drafts: [{ id: 'd1', source: { kind: 'memory', name: 'screen.png', bytes: new Uint8Array([1]), mimeType: 'image/png' },
+                status: 'uploaded', uploadedPath: 'attachments/screen.png', uploadedSizeBytes: 1, attachmentHandle: handle }],
+            config: { uploadLocation: 'workspace', workspaceRelativeDir: '.happier/attachments', vcsIgnoreStrategy: 'none',
+                vcsIgnoreWritesEnabled: false, maxFileBytes: 1024 },
+            applyDraftPatch: () => {},
+        });
+        const metadata = buildAttachmentMessageMeta(result.uploaded);
+        const payload = (metadata.happier as { payload: unknown }).payload;
+        expect(AttachmentsMessageMetaV1Schema.parse(payload).attachments[0]).toMatchObject({ attachmentHandle: handle });
+        expect(sessionAttachmentsUploadFileSpy).not.toHaveBeenCalled();
+    });
+
     it('does not manufacture an empty attachment prompt block', async () => {
         const { formatAttachmentsBlock } = await import('./uploadAttachmentDraftsToSession');
         expect(formatAttachmentsBlock([])).toBe('');

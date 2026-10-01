@@ -3,7 +3,8 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 import renderer, { act } from 'react-test-renderer';
 
 import { makeToolCall, renderScreen } from '@/dev/testkit';
-import type { Message } from '@/sync/domains/messages/messageTypes';
+import { createTestSessionTranscriptSource, wrapWithSessionTranscriptSource } from '@/dev/testkit/sessionTranscriptSource';
+import type { Message } from "@happier-dev/session-core/messages";
 import {
     installTranscriptCommonModuleMocks,
     resetTranscriptCommonModuleMockState,
@@ -30,6 +31,7 @@ const toolGroupUnitHeaderSpy = vi.fn();
 const toolGroupUnitToolSpy = vi.fn();
 const messageViewSpy = vi.fn();
 const messageViewWithCommonSpy = vi.fn();
+const messageSourceSpy = vi.fn();
 
 vi.mock('@/sync/sync', () => ({
     sync: {
@@ -62,16 +64,21 @@ vi.mock('@legendapp/list/react-native', async () => {
     return createCapturingLegendListMock().module;
 });
 
-vi.mock('@/components/sessions/transcript/MessageView', () => ({
+vi.mock('@/components/sessions/transcript/MessageView', async () => {
+    const { useSessionTranscriptSource } = await import('./source/SessionTranscriptSourceContext');
+    return {
     MessageView: (props: any) => {
         messageViewSpy(props);
         return React.createElement('MessageView', props);
     },
     MessageViewWithSessionCommon: (props: any) => {
+        const source = useSessionTranscriptSource();
+        messageSourceSpy({ messages: source.useMessagesById(), actions: source.actions, navigate: source.navigate, loadSidechain: source.loadSidechain, loadOlder: source.history.loadOlder });
         messageViewWithCommonSpy(props);
         return React.createElement('MessageViewWithSessionCommon', props);
     },
-}));
+    };
+});
 
 vi.mock('@/components/sessions/transcript/turns/TurnView', () => ({
     TurnView: (props: any) => {
@@ -118,9 +125,21 @@ vi.mock('@/components/sessions/transcript/toolCalls/units/ToolCallsGroupUnitTool
     },
 }));
 
+
+function createChainTestRoot(Content: typeof import('./ChainTranscriptList')['ChainTranscriptList']) {
+    return function ChainTestRoot(props: React.ComponentProps<typeof Content>) {
+        const [source] = React.useState(() => createTestSessionTranscriptSource({
+            sessionId: props.sessionId, serverId: props.serverId, messages: props.messages,
+            metadata: props.metadata, interaction: props.interaction,
+            loadSidechain: async () => 'not_ready',
+            history: { loadOlder: props.loadOlder ?? (async () => ({ loaded: 0, hasMore: false, status: 'not_ready' })) },
+        }));
+        return wrapWithSessionTranscriptSource(React.createElement(Content, props), source);
+    };
+}
+
 describe('ChainTranscriptList presentation parity', () => {
     beforeEach(() => {
-        vi.resetModules();
         resetTranscriptCommonModuleMockState();
         settings.transcriptGroupingMode = 'linear';
         settings.transcriptGroupToolCalls = true;
@@ -137,6 +156,22 @@ describe('ChainTranscriptList presentation parity', () => {
         toolGroupUnitToolSpy.mockReset();
         messageViewSpy.mockReset();
         messageViewWithCommonSpy.mockReset();
+        messageSourceSpy.mockReset();
+    });
+
+    it('keeps sidechain snapshots isolated and never elevates a read-only parent capability', async () => {
+        settings.transcriptGroupToolCalls = false;
+        const { ChainTranscriptList } = await import('./ChainTranscriptList');
+        const { createTestSessionTranscriptSource, renderWithSessionTranscriptSource } = await import('@/dev/testkit/sessionTranscriptSource');
+        const message: Message = { kind: 'agent-text', id: 'snapshot-child', localId: null, createdAt: 1, text: 'Shared child', isThinking: false };
+        const source = createTestSessionTranscriptSource({ sessionId: 's1', messages: [] });
+        const loadOlder = vi.fn(async () => ({ loaded: 0, hasMore: false, status: 'not_ready' as const }));
+        await renderWithSessionTranscriptSource(React.createElement(ChainTranscriptList, {
+            sessionId: 's1', datasetKey: 'shared-child', messages: [message], metadata: null,
+            interaction: { canSendMessages: true, canApprovePermissions: true }, loadOlder,
+        }), source);
+        expect(messageSourceSpy).toHaveBeenCalledWith({ messages: { 'snapshot-child': message }, actions: null, navigate: null, loadSidechain: null, loadOlder: null });
+        expect(loadOlder).not.toHaveBeenCalled();
     });
 
     it('renders linear messages through parent-provided transcript session common', async () => {
@@ -144,7 +179,8 @@ describe('ChainTranscriptList presentation parity', () => {
         settings.toolViewTimelineChromeMode = 'cards';
         settings.transcriptMessageTimestampDisplayMode = 'always';
 
-        const { ChainTranscriptList } = await import('./ChainTranscriptList');
+        const { ChainTranscriptList: ChainContent } = await import('./ChainTranscriptList');
+        const ChainTranscriptList = createChainTestRoot(ChainContent);
 
         const agentMessage: Message = {
             kind: 'agent-text',
@@ -160,7 +196,7 @@ describe('ChainTranscriptList presentation parity', () => {
             datasetKey: JSON.stringify(['s1', 'test-sidechain']),
             messages: [agentMessage],
             metadata: null,
-            interaction: { canSendMessages: true, canApprovePermissions: true, disableToolNavigation: true },
+            interaction: { canSendMessages: true, canApprovePermissions: true },
         }));
 
         expect(messageViewSpy).not.toHaveBeenCalled();
@@ -179,7 +215,8 @@ describe('ChainTranscriptList presentation parity', () => {
     });
 
     it('groups consecutive tool calls the same way as the main transcript when grouping is enabled', async () => {
-        const { ChainTranscriptList } = await import('./ChainTranscriptList');
+        const { ChainTranscriptList: ChainContent } = await import('./ChainTranscriptList');
+        const ChainTranscriptList = createChainTestRoot(ChainContent);
 
         const toolMessageOne: Message = {
             kind: 'tool-call',
@@ -204,7 +241,7 @@ describe('ChainTranscriptList presentation parity', () => {
                     datasetKey: JSON.stringify(['s1', 'test-sidechain']),
                     messages: [toolMessageOne, toolMessageTwo],
                     metadata: null,
-                    interaction: { canSendMessages: true, canApprovePermissions: true, disableToolNavigation: true },
+                    interaction: { canSendMessages: true, canApprovePermissions: true },
                 }))).tree;
 
         expect(toolCallsGroupRowSpy).not.toHaveBeenCalled();
@@ -224,7 +261,8 @@ describe('ChainTranscriptList presentation parity', () => {
         settings.transcriptGroupingMode = 'turns';
         settings.transcriptTurnToolCallsGroupStrategy = 'all_tools_in_turn';
 
-        const { ChainTranscriptList } = await import('./ChainTranscriptList');
+        const { ChainTranscriptList: ChainContent } = await import('./ChainTranscriptList');
+        const ChainTranscriptList = createChainTestRoot(ChainContent);
 
         const userMessage: Message = {
             kind: 'user-text',
@@ -252,7 +290,7 @@ describe('ChainTranscriptList presentation parity', () => {
                     datasetKey: JSON.stringify(['s1', 'test-sidechain']),
                     messages: [userMessage, ...toolMessages],
                     metadata: null,
-                    interaction: { canSendMessages: true, canApprovePermissions: true, disableToolNavigation: true },
+                    interaction: { canSendMessages: true, canApprovePermissions: true },
                 }));
 
         // N2c per-unit rows: ONE semantic group = ONE header..footer span. The header
@@ -267,7 +305,8 @@ describe('ChainTranscriptList presentation parity', () => {
     it('uses turn layout in tool transcripts when transcript layout is set to turns', async () => {
         settings.transcriptGroupingMode = 'turns';
 
-        const { ChainTranscriptList } = await import('./ChainTranscriptList');
+        const { ChainTranscriptList: ChainContent } = await import('./ChainTranscriptList');
+        const ChainTranscriptList = createChainTestRoot(ChainContent);
 
         const userMessage: Message = {
             kind: 'user-text',
@@ -291,7 +330,7 @@ describe('ChainTranscriptList presentation parity', () => {
                     datasetKey: JSON.stringify(['s1', 'test-sidechain']),
                     messages: [userMessage, toolMessage],
                     metadata: null,
-                    interaction: { canSendMessages: true, canApprovePermissions: true, disableToolNavigation: true },
+                    interaction: { canSendMessages: true, canApprovePermissions: true },
                 }))).tree;
 
         expect(turnViewSpy).not.toHaveBeenCalled();
@@ -316,7 +355,8 @@ describe('ChainTranscriptList presentation parity', () => {
     it('passes forced transcript permission prompts through to turn layouts', async () => {
         settings.transcriptGroupingMode = 'turns';
 
-        const { ChainTranscriptList } = await import('./ChainTranscriptList');
+        const { ChainTranscriptList: ChainContent } = await import('./ChainTranscriptList');
+        const ChainTranscriptList = createChainTestRoot(ChainContent);
 
         const userMessage: Message = {
             kind: 'user-text',
@@ -340,7 +380,7 @@ describe('ChainTranscriptList presentation parity', () => {
                     datasetKey: JSON.stringify(['s1', 'test-sidechain']),
                     messages: [userMessage, toolMessage],
                     metadata: null,
-                    interaction: { canSendMessages: true, canApprovePermissions: true, disableToolNavigation: true },
+                    interaction: { canSendMessages: true, canApprovePermissions: true },
                     forcePermissionPromptsInTranscript: true,
                 }));
 

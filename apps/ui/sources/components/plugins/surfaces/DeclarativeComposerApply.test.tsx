@@ -14,7 +14,7 @@ const model = Object.freeze({
         pluginId: 'acme.composer',
         localId: 'incident-tools',
         qualifiedId: 'acme.composer/incident-tools',
-        generation: 'composer-generation',
+        occurrenceId: 'composer-occurrenceId',
     }),
     declarativeInventory: Object.freeze({
         actions: Object.freeze([]),
@@ -147,14 +147,14 @@ describe('DeclarativePluginSurface composerApply', () => {
                 pluginId: 'acme.composer',
                 localId: 'actions',
                 qualifiedId: 'acme.composer/actions',
-                generation: 'composer-generation',
+                occurrenceId: 'composer-occurrenceId',
             }),
             declarativeInventory: Object.freeze({
                 ...model.declarativeInventory,
                 actions: Object.freeze([Object.freeze({
                     identity: Object.freeze({ pluginId: 'acme.composer', localId: 'run' }),
                     qualifiedId: 'acme.composer/run',
-                    generation: 'composer-generation',
+                    occurrenceId: 'composer-occurrenceId',
                     enabled: true,
                     title: 'Run action',
                 })]),
@@ -168,7 +168,7 @@ describe('DeclarativePluginSurface composerApply', () => {
                 action: Object.freeze({
                     identity: Object.freeze({ pluginId: 'acme.composer', localId: 'run' }),
                     qualifiedId: 'acme.composer/run',
-                    generation: 'composer-generation',
+                    occurrenceId: 'composer-occurrenceId',
                 }),
             }),
         });

@@ -34,7 +34,22 @@ describe('composeWelcomeEntryModel', () => {
             'authenticate', 'authenticate', 'scan_or_paste_home', 'choose_home',
         ]);
         expect(model.actions.filter((row) => row.emphasis === 'primary')).toHaveLength(1);
-        expect(model.notice).toEqual({ kind: 'service_loading', serviceName: 'Happier' });
+        expect(model.notice).toEqual({ kind: 'service_loading', serviceName: 'Happier', hasUsableHomeMethods: true });
+    });
+
+    it('distinguishes an optional-service failure from a Home entry dead end', () => {
+        const base = {
+            target: { kind: 'selected_home' as const, home: target, label: 'Home A' },
+            context: { kind: 'home' as const },
+            allowedNavigation: { changeHome: false, selectService: false, scanOrPasteHome: false, createPersonalHome: false },
+            serviceCatalogState: { kind: 'unavailable' as const, hintName: 'Happier' },
+            userHistory: 'returning' as const,
+        };
+
+        expect(composeWelcomeEntryModel({ ...base, homeMethods: [method('github', 'login', 'keyless')] }).notice)
+            .toEqual({ kind: 'service_unavailable', serviceName: 'Happier', hasUsableHomeMethods: true });
+        expect(composeWelcomeEntryModel({ ...base, homeMethods: [] }).notice)
+            .toEqual({ kind: 'service_unavailable', serviceName: 'Happier', hasUsableHomeMethods: false });
     });
 
     it('preserves every service provider and its exact authority tuple', () => {
@@ -142,6 +157,42 @@ describe('composeWelcomeEntryModel', () => {
             .map((row) => row.action.kind === 'authenticate'
                 ? `${row.action.request.authority.purpose}:${row.action.request.method.id}:${row.action.request.action.id}`
                 : row.action.kind);
+
+        it('targets a chosen sign-in service instead of the unrelated seeded Home', () => {
+            const authority = selfAuthority('identity-service-b');
+            const model = composeWelcomeEntryModel({
+                target: { kind: 'none' },
+                homeMethods: [method('key_challenge', 'provision', 'keyed'), method('github', 'login', 'keyless')],
+                observedHomeServerIdentityId: 'identity-home-a',
+                context: { kind: 'home' },
+                allowedNavigation: { changeHome: true, selectService: true, scanOrPasteHome: true, createPersonalHome: false },
+                serviceCatalogState: {
+                    kind: 'ready', authority, name: 'Service B',
+                    methods: [serviceMethod(authority, 'key_challenge', { kind: 'generated_key' }, 'provision', 'keyed'), serviceMethod(authority, 'github')],
+                },
+                userHistory: 'first_time',
+            });
+            expect(methodIds(model)).toEqual(['account_service:key_challenge:provision', 'account_service:github:login']);
+            expect(model.targetContext).toEqual({ label: 'Service B' });
+            expect(model.showHomeStatus).toBe(false);
+            expect(model.actions[0]?.action).toMatchObject({ kind: 'authenticate', labelRole: 'new_here' });
+            expect(model.actions.filter((row) => row.action.kind === 'authenticate' && row.action.labelRole === 'new_here')).toHaveLength(1);
+        });
+
+        it('keeps a selected service authoritative while unavailable, without fallback Home methods', () => {
+            const model = composeWelcomeEntryModel({
+                target: { kind: 'selected_service', label: 'Service B' },
+                homeMethods: [method('key_challenge', 'provision', 'keyed')],
+                context: { kind: 'home' },
+                allowedNavigation: { changeHome: true, selectService: true, scanOrPasteHome: true, createPersonalHome: false },
+                serviceCatalogState: { kind: 'unavailable', hintName: 'Service B' },
+                userHistory: 'first_time',
+            });
+            expect(methodIds(model)).toEqual([]);
+            expect(model.showHomeStatus).toBe(false);
+            expect(model.notice).toEqual({ kind: 'service_unavailable', serviceName: 'Service B', hasUsableHomeMethods: false });
+            expect(model.actions.some((row) => row.action.kind === 'choose_sign_in_service')).toBe(true);
+        });
 
         it('keeps the direct Home row and drops the identical same-server service row', () => {
             const authority = selfAuthority('identity-home-a');

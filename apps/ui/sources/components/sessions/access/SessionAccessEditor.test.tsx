@@ -15,6 +15,9 @@ vi.mock('@legendapp/list/react-native', async () => {
     return { LegendList: createCapturingLegendListMock({ renderItems: true, renderItemLimit: 20 }).module.LegendList };
 });
 // The platform screen-reader live region is a genuine OS/DOM boundary.
+// The platform clipboard is an OS boundary.
+const clipboard = vi.hoisted(() => ({ written: [] as string[] }));
+vi.mock('expo-clipboard', () => ({ setStringAsync: async (value: string) => { clipboard.written.push(value); } }));
 const announceAccessibilityMessage = vi.fn();
 vi.mock('@/components/ui/accessibility/announceAccessibilityMessage', () => ({
     announceAccessibilityMessage: (message: string) => announceAccessibilityMessage(message),
@@ -23,7 +26,7 @@ vi.mock('@/components/ui/accessibility/announceAccessibilityMessage', () => ({
 const alice: SessionAccessGrantRowModel = {
     grant: { kind: 'account', accountId: 'alice' },
     principal: { ref: { kind: 'account', accountId: 'alice' }, key: 'account:alice', displayName: 'Alice', accessibilityLabel: 'Alice, Account' },
-    level: { kind: 'editable', value: 'edit', options: [{ value: 'view', label: 'View' }, { value: 'edit', label: 'Edit' }] },
+    level: { kind: 'editable', value: 'edit', options: ['view', 'edit'] },
     permissionDelegation: { kind: 'editable', value: true },
     removal: { kind: 'allowed' },
     requiredByTeamPolicy: false,
@@ -46,7 +49,7 @@ function model(overrides: Partial<SessionAccessEditorModel> = {}): SessionAccess
     };
 }
 function actions(): SessionAccessEditorActions {
-    return { setQuery: vi.fn(), retryContent: vi.fn(), retryDirectory: vi.fn(), loadMore: vi.fn(), addPrincipal: vi.fn(), setAccessLevel: vi.fn(), setPermissionDelegation: vi.fn(), requestRemove: vi.fn(), confirmRemove: vi.fn(), cancelRemove: vi.fn(), explain: vi.fn(), setContext: vi.fn(), confirmContext: vi.fn(), cancelContext: vi.fn(), clearAccess: vi.fn(), prepareAccess: vi.fn(), toggleAllRecipients: vi.fn(), loadMoreRecipients: vi.fn() };
+    return { setQuery: vi.fn(), retryContent: vi.fn(), retryDirectory: vi.fn(), loadMore: vi.fn(), addPrincipal: vi.fn(), retryMutation: vi.fn(), setAccessLevel: vi.fn(), setPermissionDelegation: vi.fn(), requestRemove: vi.fn(), confirmRemove: vi.fn(), cancelRemove: vi.fn(), explain: vi.fn(), setContext: vi.fn(), confirmContext: vi.fn(), cancelContext: vi.fn(), clearAccess: vi.fn(), prepareAccess: vi.fn(), toggleAllRecipients: vi.fn(), loadMoreRecipients: vi.fn() };
 }
 /** The status row the list builds for `model.content.issue`, addressed by its canonical option id. */
 const ISSUE_ROW_TEST_ID = 'session-access-editor:list:session-access:option:issue';
@@ -80,6 +83,35 @@ describe('SessionAccessEditor', () => {
         expect(intent.addPrincipal).toHaveBeenNthCalledWith(2, group.principal.ref);
         expect(close).not.toHaveBeenCalled();
         expect(screen.findByTestId('session-access-grant-account:alice')).not.toBeNull();
+    });
+    it('offers level choices in one order whatever order the Home returned them in', async () => {
+        const unordered = { ...alice, level: { kind: 'editable' as const, value: 'edit' as const, options: ['admin', 'view', 'edit'] as const } };
+        const screen = await renderScreen(<SessionAccessEditor model={model({ grants: [unordered] })} actions={actions()} presentation="full" />);
+        await screen.pressByTestIdAsync('session-access-grant-account:alice');
+        const rendered = [...new Set(screen.findAll((node) => typeof node.type === 'string' && typeof node.props.testID === 'string'
+            && node.props.testID.startsWith('session-access-level:account:alice:')).map((node) => node.props.testID as string))];
+        expect(rendered).toEqual(['session-access-level:account:alice:view', 'session-access-level:account:alice:edit',
+            'session-access-level:account:alice:admin']);
+    });
+    it('copies the Session link the host supplies and offers nothing to copy without one', async () => {
+        clipboard.written = [];
+        const screen = await renderScreen(<SessionAccessEditor model={model()} actions={actions()} presentation="full" linkPath="/session/s-1" />);
+        await screen.pressByTestIdAsync('session-access-copy-link');
+        await flushHookEffects();
+        expect(clipboard.written).toHaveLength(1);
+        expect(clipboard.written[0]!.endsWith('/session/s-1')).toBe(true);
+        await screen.update(<SessionAccessEditor model={model()} actions={actions()} presentation="full" />);
+        expect(screen.findByTestId('session-access-copy-link')).toBeNull();
+    });
+    it('offers a row-local retry for an outcome-unknown mutation and preserves its subject', async () => {
+        const intent = actions();
+        const failed = { ...alice, operation: { kind: 'error' as const, error: { code: 'outcome_unknown', message: 'Could not confirm the change.', retryable: true } } };
+        const screen = await renderScreen(<SessionAccessEditor model={model({ grants: [failed] })} actions={intent} presentation="full" />);
+
+        await screen.pressByTestIdAsync('session-access-grant-account:alice');
+        await screen.pressByTestIdAsync('session-access-retry:account:alice');
+
+        expect(intent.retryMutation).toHaveBeenCalledWith(failed.grant);
     });
     it.each(['compact', 'full'] as const)('renders the same truthful inspection-only access projection in %s', async (presentation) => {
         const screen = await renderScreen(<SessionAccessEditor model={model({
@@ -181,6 +213,12 @@ describe('SessionAccessEditor', () => {
         // never offer to open itself.
         await screen.update(<SessionAccessEditor model={model({ revision: 2 })} actions={intent} presentation="full" />);
         expect(screen.findByTestId('session-access-open-collaboration')).toBeNull();
+    });
+    it('tags the person who is responsible for the Session in the access list', async () => {
+        const screen = await renderScreen(<SessionAccessEditor model={model()} actions={actions()} presentation="full" responsibleAccountId="alice" />);
+        expect(screen.getTextContent()).toContain('Responsible');
+        await screen.update(<SessionAccessEditor model={model()} actions={actions()} presentation="full" responsibleAccountId={null} />);
+        expect(screen.getTextContent()).not.toContain('Responsible');
     });
     it('explains a policy lock and exposes no read-only mutations', async () => {
         const intent = actions();
@@ -317,21 +355,21 @@ describe('SessionAccessEditor', () => {
 
         await screen.update(<SessionAccessEditor model={model({ encryption: {
             statusKey: 'ready',
-            summaryLabel: 'Encrypted access ready',
-            accessibilityLabel: 'Encrypted access ready',
-            announcement: 'Encrypted access is ready for everyone.',
+            summaryLabel: 'Encrypted access prepared',
+            accessibilityLabel: 'Encrypted access prepared',
+            announcement: 'Encrypted access preparation complete.',
             showAllLabel: 'Show all people',
             recipientsView: 'exceptions',
         } })} actions={intent} presentation="full" />);
         expect(announceAccessibilityMessage).toHaveBeenCalledTimes(1);
-        expect(announceAccessibilityMessage).toHaveBeenCalledWith('Encrypted access is ready for everyone.');
+        expect(announceAccessibilityMessage).toHaveBeenCalledWith('Encrypted access preparation complete.');
 
         // A later page of the same settled state announces nothing more.
         await screen.update(<SessionAccessEditor model={model({ encryption: {
             statusKey: 'ready',
-            summaryLabel: 'Encrypted access ready',
-            accessibilityLabel: 'Encrypted access ready',
-            announcement: 'Encrypted access is ready for everyone.',
+            summaryLabel: 'Encrypted access prepared',
+            accessibilityLabel: 'Encrypted access prepared',
+            announcement: 'Encrypted access preparation complete.',
             showAllLabel: 'Hide people',
             recipientsView: 'all',
             recipients: { rows: [], hasMore: false, loading: false },
@@ -356,8 +394,8 @@ describe('SessionAccessEditor', () => {
                         actionLabel: 'Prepare now',
                     }, {
                         recipientAccountId: 'account-ready', state: 'prepared',
-                        label: 'Grace Hopper', stateLabel: 'Encrypted access ready',
-                        accessibilityLabel: 'Grace Hopper: Encrypted access ready',
+                        label: 'Grace Hopper', stateLabel: 'Encrypted access prepared',
+                        accessibilityLabel: 'Grace Hopper: Encrypted access prepared',
                     }],
                     hasMore: true,
                     loading: false,

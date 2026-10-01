@@ -2,12 +2,10 @@ import * as React from 'react';
 
 import type { ExactTurnAutomationPrefill } from '@/components/automations/sessionLifecycle/exactTurnAutomationPrefill';
 import {
-    DEFAULT_NEW_SESSION_AUTOMATION_DRAFT,
     replaceExactTurnAutomationRowsWithCurrentTurns,
     sanitizeNewSessionAutomationDraft,
     type NewSessionAutomationDraft,
 } from '@/sync/domains/automations/automationDraft';
-import { createAutomationEditorAutomationId } from '@/sync/domains/automations/automationEditorDraft';
 
 import { useNewSessionPromptStore, type NewSessionPromptStore } from './newSessionPromptStore';
 
@@ -25,7 +23,6 @@ export function useNewSessionPromptAutomationState(params: Readonly<{
     prompt: string | undefined;
     dataId: string | undefined;
     automationParam: string | undefined;
-    automationFeatureEnabled: boolean;
     persistedDraftEntryIntent: string | null | undefined;
     hydratedTempAuthoringDraft: TempAuthoringDraftLike;
     hydratedPersistedAuthoringDraft: PersistedAuthoringDraftLike;
@@ -38,6 +35,12 @@ export function useNewSessionPromptAutomationState(params: Readonly<{
     exactTurnRetargetRequest?: ExactTurnAutomationPrefill | null;
     /** Live current parent-turn reader, injected by the owning screen model. */
     readExactTurn?: (sourceSessionId: string) => ExactTurnAutomationPrefill | null;
+    /**
+     * Opens the shared Automation editor with this screen's composed draft.
+     * Absent while Automations are unavailable, in which case a legacy draft
+     * is kept as-is until it can move.
+     */
+    handOffLegacyAutomation?: ((automation: NewSessionAutomationDraft) => void) | null;
 }>): Readonly<{
     promptStore: NewSessionPromptStore;
     setSessionPrompt: React.Dispatch<React.SetStateAction<string>>;
@@ -74,15 +77,6 @@ export function useNewSessionPromptAutomationState(params: Readonly<{
         if (typeof params.automationParam !== 'string') return false;
         return ['1', 'true', 'yes', 'on'].includes(params.automationParam.trim().toLowerCase());
     }, [params.automationParam]);
-
-    const isForcedAutomationRoute = React.useMemo(() => {
-        if (!automationRequestedByRoute) return false;
-        if (typeof params.dataId === 'string' && params.dataId.trim().length > 0) return false;
-        return true;
-    }, [
-        automationRequestedByRoute,
-        params.dataId,
-    ]);
 
     const shouldIgnorePersistedAutomationDraft = React.useMemo(() => {
         if (automationRequestedByRoute) return false;
@@ -121,18 +115,6 @@ export function useNewSessionPromptAutomationState(params: Readonly<{
         promptStore.setPrompt(hydratedSessionPrompt);
     }, [hydratedSessionPrompt, promptStore]);
 
-    React.useEffect(() => {
-        if (!params.automationFeatureEnabled) return;
-        if (!isForcedAutomationRoute) return;
-        if (hasUserEditedAutomationDraftRef.current) return;
-
-        setAutomationDraftState({
-            ...DEFAULT_NEW_SESSION_AUTOMATION_DRAFT,
-            pendingAutomationId: createAutomationEditorAutomationId(),
-            enabled: true,
-        });
-    }, [params.automationFeatureEnabled, isForcedAutomationRoute]);
-
     // Explicit "Use current turn": advance only the exact-turn rows through
     // this incumbent automation-draft owner; every other field, row, and edit
     // survives. Applying through setAutomationDraft marks the draft
@@ -151,6 +133,23 @@ export function useNewSessionPromptAutomationState(params: Readonly<{
             return replacement.changed ? replacement.automation : current;
         });
     }, [params.exactTurnRetargetRequest, setAutomationDraft]);
+
+    // New Session does not write Automations. A draft saved before creation
+    // moved to the shared Automation editor can still hydrate with an enabled
+    // inline Automation, and an old `/new?automation=1` link still asks for
+    // one. Either is handed, once, to that editor through the chip's handoff,
+    // and this draft continues as an ordinary New Session draft.
+    const handOffLegacyAutomationRef = React.useRef(params.handOffLegacyAutomation);
+    handOffLegacyAutomationRef.current = params.handOffLegacyAutomation;
+    const legacyAutomationHandedOffRef = React.useRef(false);
+    const legacyAutomationEntry = params.handOffLegacyAutomation != null
+        && (automationDraft.enabled || automationRequestedByRoute);
+    React.useEffect(() => {
+        if (!legacyAutomationEntry || legacyAutomationHandedOffRef.current) return;
+        legacyAutomationHandedOffRef.current = true;
+        handOffLegacyAutomationRef.current?.({ ...automationDraft, enabled: true });
+        setAutomationDraft((current) => ({ ...current, enabled: false }));
+    }, [automationDraft, legacyAutomationEntry, setAutomationDraft]);
 
     return {
         promptStore,

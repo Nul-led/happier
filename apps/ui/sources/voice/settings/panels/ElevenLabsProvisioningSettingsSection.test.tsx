@@ -281,6 +281,7 @@ describe('ElevenLabs settings provisioning composed path', () => {
       pluginId: entry.pluginId,
       localId: entry.declaration.id,
       providerId,
+      occurrenceId: 'elevenlabs-settings-occurrence',
       descriptor: null,
       adapter: null,
       settingsOperations: boundSettingsOperations,

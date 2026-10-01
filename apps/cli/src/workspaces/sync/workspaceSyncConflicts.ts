@@ -1,43 +1,190 @@
-import { createHash } from 'node:crypto';
-import { constants } from 'node:fs';
-import { lstat, open, realpath, rename, rm } from 'node:fs/promises';
-import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { constants } from 'node:fs';
+import { chmod, lstat, mkdir, open, readlink, readdir, rm, symlink } from 'node:fs/promises';
+import { resolve } from 'node:path';
+import { WorkspaceSyncEntryExpectationV1Schema } from '@happier-dev/protocol';
 import { withConfinedWorkspaceSyncParent } from './workspaceSyncConfinedFileSystem';
+import { observeWorkspaceSyncEntryAtRoot } from './workspaceSyncFileRead';
 import {
-  runNativeConfinedWorkspaceSyncDelete,
-  type RunNativeConfinedDeleteInput,
+  runNativeConfinedWorkspaceSyncApply,
+  runNativeConfinedWorkspaceSyncCapture,
+  runNativeConfinedWorkspaceSyncRecover,
+  type NativeConfinedApplyOutcome,
+  type NativeConfinedCapturedEntry,
+  type NativeConfinedRecoverOutcome,
+  type RunNativeConfinedApplyInput,
+  type RunNativeConfinedCaptureInput,
+  type RunNativeConfinedRecoverInput,
 } from './workspaceSyncNativeConfinedFileSystem';
 
-export type DeleteWorkspaceSyncConflictLoserAtRootInput = Readonly<{
-  rootPath: string;
-  relativePath: string;
-  expectedKind: 'missing' | 'file' | 'directory' | 'symlink';
-  expectedDigest?: string;
-  /** Revalidates the settings-owned root fence at the final mutation boundary. */
-  assertCurrentAuthority?: () => Promise<void>;
+export type CaptureWorkspaceSyncEntryAtRootInput = RunNativeConfinedCaptureInput;
+export type ApplyCapturedWorkspaceSyncEntryAtRootInput = RunNativeConfinedApplyInput;
+export type RecoverWorkspaceSyncEntryReplacementAtRootInput = RunNativeConfinedRecoverInput;
+
+export type WorkspaceSyncConflictEntryEffectDependencies = Readonly<{
+  runNativeConfinedCapture?: typeof runNativeConfinedWorkspaceSyncCapture;
+  runNativeConfinedApply?: typeof runNativeConfinedWorkspaceSyncApply;
+  runNativeConfinedRecover?: typeof runNativeConfinedWorkspaceSyncRecover;
 }>;
 
-export type DeleteWorkspaceSyncConflictLoserAtRootDependencies = Readonly<{
-  runNativeConfinedDelete?: (input: RunNativeConfinedDeleteInput) => Promise<void>;
-}>;
+function projectNativeConflictError(error: unknown): never {
+  if ((error as { code?: unknown }).code === 'workspace_root_unsafe') {
+    throw conflictError('conflict_resolution_unsupported', (error as Error).message);
+  }
+  throw error;
+}
+
+/** Descend only through held Linux directory descriptors, never a recursive pathname copy. */
+async function copyConfinedLinuxEntry(sourcePath: string, destinationPath: string): Promise<void> {
+  const before = await lstat(sourcePath);
+  if (before.isSymbolicLink()) {
+    const target = await readlink(sourcePath);
+    const after = await lstat(sourcePath);
+    if (!after.isSymbolicLink() || !hasSameObjectIdentity(before, after)) {
+      throw conflictError('conflict_changed', 'Reviewed workspace source symlink changed during capture');
+    }
+    await symlink(target, destinationPath);
+    return;
+  }
+  if (before.isFile()) {
+    const source = await open(sourcePath, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+      const admitted = await source.stat();
+      if (!admitted.isFile() || !hasSameObjectIdentity(before, admitted)) {
+        throw conflictError('conflict_changed', 'Reviewed workspace source file changed during capture');
+      }
+      const destination = await open(destinationPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
+      try {
+        const buffer = Buffer.allocUnsafe(64 * 1024);
+        let offset = 0;
+        while (true) {
+          const { bytesRead } = await source.read(buffer, 0, buffer.byteLength, offset);
+          if (bytesRead === 0) break;
+          let written = 0;
+          while (written < bytesRead) {
+            const result = await destination.write(buffer, written, bytesRead - written, offset + written);
+            if (result.bytesWritten === 0) throw new Error('Reviewed workspace capture could not write staged material');
+            written += result.bytesWritten;
+          }
+          offset += bytesRead;
+        }
+        const after = await source.stat();
+        if (!hasSameObjectIdentity(admitted, after) || admitted.size !== after.size
+          || admitted.mtimeMs !== after.mtimeMs || admitted.mode !== after.mode || offset !== after.size) {
+          throw conflictError('conflict_changed', 'Reviewed workspace source file changed during capture');
+        }
+        await destination.chmod(admitted.mode & 0o777);
+      } finally {
+        await destination.close();
+      }
+    } finally {
+      await source.close();
+    }
+    return;
+  }
+  if (!before.isDirectory()) {
+    throw conflictError('conflict_resolution_unsupported', 'Reviewed workspace source entry type is unsupported');
+  }
+  const directory = await open(sourcePath, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  try {
+    const admitted = await directory.stat();
+    if (!admitted.isDirectory() || !hasSameObjectIdentity(before, admitted)) {
+      throw conflictError('conflict_changed', 'Reviewed workspace source directory changed during capture');
+    }
+    await mkdir(destinationPath, { mode: 0o700 });
+    const heldPath = `/proc/self/fd/${directory.fd}`;
+    const names = (await readdir(heldPath)).sort((left, right) => Buffer.from(left).compare(Buffer.from(right)));
+    for (const name of names) {
+      await copyConfinedLinuxEntry(resolve(heldPath, name), resolve(destinationPath, name));
+    }
+    const after = await directory.stat();
+    if (!hasSameObjectIdentity(admitted, after) || admitted.mtimeMs !== after.mtimeMs) {
+      throw conflictError('conflict_changed', 'Reviewed workspace source directory changed during capture');
+    }
+    await chmod(destinationPath, admitted.mode & 0o777);
+  } finally {
+    await directory.close();
+  }
+}
+
+/** Capture exact reviewed bytes into private file-backed operation material. */
+export async function captureWorkspaceSyncEntryAtRoot(
+  input: CaptureWorkspaceSyncEntryAtRootInput,
+  dependencies: WorkspaceSyncConflictEntryEffectDependencies = {},
+): Promise<NativeConfinedCapturedEntry> {
+  if (process.platform === 'linux') {
+    const expected = WorkspaceSyncEntryExpectationV1Schema.parse(input.expected);
+    const before = await observeWorkspaceSyncEntryAtRoot({
+      rootPath: input.rootPath,
+      relativePath: input.relativePath,
+      ...(input.assertCurrentAuthority ? { assertCurrentAuthority: input.assertCurrentAuthority } : {}),
+    });
+    if (JSON.stringify(before) !== JSON.stringify(expected)) {
+      throw conflictError('conflict_changed', 'Reviewed workspace source changed before capture');
+    }
+    if (expected.kind === 'missing') return { expectation: expected, materialPath: null };
+    await mkdir(input.captureDirectory, { recursive: true });
+    const captureName = `.happier-resolution-capture-${randomUUID()}`;
+    const materialPath = resolve(input.captureDirectory, captureName);
+    try {
+      await withConfinedWorkspaceSyncParent({
+        rootPath: input.rootPath,
+        relativePath: input.relativePath,
+        ...(input.assertCurrentAuthority ? { assertCurrentAuthority: input.assertCurrentAuthority } : {}),
+        run: async ({ parentHandlePath, finalName }) => {
+          await copyConfinedLinuxEntry(resolve(parentHandlePath, finalName), materialPath);
+        },
+      });
+      const [after, captured] = await Promise.all([
+        observeWorkspaceSyncEntryAtRoot({
+          rootPath: input.rootPath,
+          relativePath: input.relativePath,
+          ...(input.assertCurrentAuthority ? { assertCurrentAuthority: input.assertCurrentAuthority } : {}),
+        }),
+        observeWorkspaceSyncEntryAtRoot({ rootPath: input.captureDirectory, relativePath: captureName }),
+      ]);
+      if (JSON.stringify(after) !== JSON.stringify(expected) || JSON.stringify(captured) !== JSON.stringify(expected)) {
+        throw conflictError('conflict_changed', 'Reviewed workspace source changed during capture');
+      }
+      return { expectation: expected, materialPath };
+    } catch (error) {
+      await rm(materialPath, { recursive: true, force: true }).catch(() => undefined);
+      throw error;
+    }
+  }
+  try {
+    return await (dependencies.runNativeConfinedCapture ?? runNativeConfinedWorkspaceSyncCapture)(input);
+  } catch (error) {
+    return projectNativeConflictError(error);
+  }
+}
+
+/** Conditionally install staged reviewed material without overwriting a new public entry. */
+export async function applyCapturedWorkspaceSyncEntryAtRoot(
+  input: ApplyCapturedWorkspaceSyncEntryAtRootInput,
+  dependencies: WorkspaceSyncConflictEntryEffectDependencies = {},
+): Promise<NativeConfinedApplyOutcome> {
+  try {
+    return await (dependencies.runNativeConfinedApply ?? runNativeConfinedWorkspaceSyncApply)(input);
+  } catch (error) {
+    return projectNativeConflictError(error);
+  }
+}
+
+/** Settle an interrupted replacement before any touching sync session may resume. */
+export async function recoverWorkspaceSyncEntryReplacementAtRoot(
+  input: RecoverWorkspaceSyncEntryReplacementAtRootInput,
+  dependencies: WorkspaceSyncConflictEntryEffectDependencies = {},
+): Promise<NativeConfinedRecoverOutcome> {
+  try {
+    return await (dependencies.runNativeConfinedRecover ?? runNativeConfinedWorkspaceSyncRecover)(input);
+  } catch (error) {
+    return projectNativeConflictError(error);
+  }
+}
 
 function conflictError(code: 'conflict_changed' | 'conflict_resolution_unsupported', message: string): Error {
   return Object.assign(new Error(message), { code });
-}
-
-function conflictRecoveryError(cause: unknown, recoveryPath: string): Error {
-  return Object.assign(
-    new Error(`conflict loser could not be safely finalized; recovery material remains at ${recoveryPath}`),
-    { code: 'conflict_changed', cause, recoveryPath },
-  );
-}
-
-function kindOf(stats: Awaited<ReturnType<typeof lstat>>): DeleteWorkspaceSyncConflictLoserAtRootInput['expectedKind'] | 'other' {
-  if (stats.isSymbolicLink()) return 'symlink';
-  if (stats.isFile()) return 'file';
-  if (stats.isDirectory()) return 'directory';
-  return 'other';
 }
 
 function hasSameObjectIdentity(
@@ -45,125 +192,4 @@ function hasSameObjectIdentity(
   right: Awaited<ReturnType<typeof lstat>>,
 ): boolean {
   return left.dev === right.dev && left.ino === right.ino;
-}
-
-async function sha1File(
-  path: string,
-  admitted: Awaited<ReturnType<typeof lstat>>,
-): Promise<string> {
-  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW).catch((error: unknown) => {
-    if ((error as NodeJS.ErrnoException).code === 'ELOOP' || (error as NodeJS.ErrnoException).code === 'ENOENT') {
-      throw conflictError('conflict_changed', 'conflict loser changed before digest verification');
-    }
-    throw error;
-  });
-  try {
-    const before = await handle.stat();
-    if (!before.isFile() || !hasSameObjectIdentity(admitted, before)) {
-      throw conflictError('conflict_changed', 'conflict loser changed before digest verification');
-    }
-    const hash = createHash('sha1');
-    const chunk = Buffer.allocUnsafe(64 * 1024);
-    let offset = 0;
-    while (true) {
-      const { bytesRead } = await handle.read(chunk, 0, chunk.byteLength, offset);
-      if (bytesRead === 0) break;
-      hash.update(chunk.subarray(0, bytesRead));
-      offset += bytesRead;
-    }
-    const after = await handle.stat();
-    if (
-      !hasSameObjectIdentity(before, after)
-      || before.size !== after.size
-      || before.mtimeMs !== after.mtimeMs
-    ) {
-      throw conflictError('conflict_changed', 'conflict loser changed during digest verification');
-    }
-    return hash.digest('hex');
-  } finally {
-    await handle.close();
-  }
-}
-
-export async function deleteWorkspaceSyncConflictLoserAtRoot(
-  input: DeleteWorkspaceSyncConflictLoserAtRootInput,
-  dependencies: DeleteWorkspaceSyncConflictLoserAtRootDependencies = {},
-): Promise<void> {
-  if (input.expectedKind === 'file' && input.expectedDigest === undefined) {
-    throw conflictError('conflict_resolution_unsupported', 'file conflict deletion requires an expected digest');
-  }
-  if (input.expectedKind !== 'file' && input.expectedDigest !== undefined) {
-    throw conflictError('conflict_resolution_unsupported', 'non-file conflict deletion does not accept a digest');
-  }
-  if (process.platform === 'win32' || process.platform === 'darwin') {
-    await (dependencies.runNativeConfinedDelete ?? runNativeConfinedWorkspaceSyncDelete)({
-      rootPath: input.rootPath,
-      relativePath: input.relativePath,
-      expectedKind: input.expectedKind,
-      ...(input.expectedDigest === undefined ? {} : { expectedDigest: input.expectedDigest }),
-      ...(input.assertCurrentAuthority ? { assertCurrentAuthority: input.assertCurrentAuthority } : {}),
-    }).catch((error: unknown) => {
-      if ((error as { code?: unknown }).code === 'workspace_root_unsafe') {
-        throw conflictError('conflict_resolution_unsupported', (error as Error).message);
-      }
-      throw error;
-    });
-    return;
-  }
-  await withConfinedWorkspaceSyncParent({
-    rootPath: input.rootPath,
-    relativePath: input.relativePath,
-    run: async ({ parentHandlePath, finalName }) => {
-  const candidate = resolve(parentHandlePath, finalName);
-  const stats = await lstat(candidate).catch((error: unknown) => {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
-    throw error;
-  });
-  if (!stats) {
-    if (input.expectedKind === 'missing') return;
-    throw conflictError('conflict_changed', 'conflict loser is now missing');
-  }
-  const actualKind = kindOf(stats);
-  if (actualKind !== input.expectedKind) throw conflictError('conflict_changed', 'conflict loser type changed');
-  if (input.expectedDigest !== undefined) {
-    if (actualKind !== 'file') throw conflictError('conflict_changed', 'digest precondition is unavailable for this conflict type');
-    if (await sha1File(candidate, stats) !== input.expectedDigest) throw conflictError('conflict_changed', 'conflict loser digest changed');
-  }
-  await input.assertCurrentAuthority?.();
-  const quarantineName = `.happier-delete-${randomUUID()}`;
-  const quarantine = resolve(parentHandlePath, quarantineName);
-  const physicalRecoveryParent = await realpath(parentHandlePath);
-  let recoveryPath = resolve(physicalRecoveryParent, quarantineName);
-  await rename(candidate, quarantine).catch((error: unknown) => {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw conflictError('conflict_changed', 'conflict loser changed before deletion');
-    throw error;
-  });
-  try {
-    // Refresh the reported path after the rename in case an admitted ancestor
-    // was moved while its retained directory handle remained authoritative.
-    recoveryPath = resolve(await realpath(parentHandlePath), quarantineName);
-    const quarantinedStats = await lstat(quarantine);
-    const quarantinedKind = kindOf(quarantinedStats);
-    if (quarantinedKind !== actualKind) throw conflictError('conflict_changed', 'conflict loser changed before deletion');
-    if (!hasSameObjectIdentity(stats, quarantinedStats)) {
-      throw conflictError('conflict_changed', 'conflict loser changed before deletion');
-    }
-    if (input.expectedDigest !== undefined && await sha1File(quarantine, quarantinedStats) !== input.expectedDigest) {
-      throw conflictError('conflict_changed', 'conflict loser changed before deletion');
-    }
-    await rm(quarantine, { recursive: actualKind === 'directory', force: false });
-  } catch (error) {
-    // A replacement can legitimately appear at the public pathname after the
-    // admitted loser has been quarantined. Never rename back across that name:
-    // portable rename would overwrite the replacement atomically. Preserve the
-    // isolated bytes and expose their confined recovery path instead.
-    throw conflictRecoveryError(error, recoveryPath);
-  }
-    },
-  }).catch((error: unknown) => {
-    if ((error as { code?: unknown }).code === 'workspace_root_unsafe') {
-      throw conflictError('conflict_resolution_unsupported', (error as Error).message);
-    }
-    throw error;
-  });
 }

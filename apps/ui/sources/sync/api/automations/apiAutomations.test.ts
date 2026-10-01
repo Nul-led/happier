@@ -15,6 +15,7 @@ import {
     resumeAutomationDefinition,
     runAutomationDefinitionNow,
     updateAutomationSettings,
+    reconcileAutomationDefinition,
 } from './apiAutomations';
 
 vi.mock('@/sync/domains/server/serverRuntime', async (importOriginal) => ({
@@ -199,6 +200,51 @@ describe('apiAutomations', () => {
 
         expect(admitted.run.id).toBe('run-7');
         expect(admitted.workflowRun).toBeUndefined();
+    });
+
+    it('reads and mutates current Automations without an API epoch advertisement', async () => {
+        const fetchSpy = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+            const url = toUrlString(input);
+            return {
+                ok: true,
+                status: 200,
+                json: async () => url.endsWith('/run-now') ? { run: runSummary }
+                    : init?.method === 'PUT' ? eventDetail : { automations: [eventSummary], nextCursor: null },
+            } as Response;
+        });
+        vi.stubGlobal('fetch', fetchSpy as unknown as typeof fetch);
+
+        await expect(listAutomationDefinitions(credentials)).resolves.toMatchObject({
+            automations: [{ id: eventSummary.id, targetType: 'existingSession' }],
+            nextCursor: null,
+        });
+        await expect(runAutomationDefinitionNow(credentials, eventSummary.id)).resolves.toMatchObject({
+            run: { id: runSummary.id, cause: { kind: 'manual' } },
+        });
+        await expect(reconcileAutomationDefinition(credentials, eventSummary.id, {
+            expectedTemplateVersion: 3, name: eventSummary.name, description: null, enabled: true,
+            assignments: [], triggers: [], removedTriggers: [],
+        })).resolves.toMatchObject({ id: eventSummary.id });
+        expect(fetchSpy.mock.calls.map(([input]) => toUrlString(input))).toEqual([
+            expect.stringContaining('/v3/automations?limit=100'),
+            expect.stringContaining('/v3/automations/automation-event-1/run-now'),
+            expect.stringContaining('/v3/automations/automation-event-1'),
+        ]);
+    });
+
+    it('admits managed Workflow runs through the current route without a capability probe', async () => {
+        const fetchSpy = vi.fn(async () => new Response(JSON.stringify({
+            run: { ...runSummary, automationId: 'workflow-managed' },
+            workflowRun: { recipeKind: 'workflow-v2', workflowRunId: runSummary.id },
+        }), { status: 200 }));
+        vi.stubGlobal('fetch', fetchSpy as unknown as typeof fetch);
+
+        await expect(runAutomationDefinitionNow(credentials, 'workflow-managed'))
+            .resolves.toMatchObject({ workflowRun: { workflowRunId: runSummary.id } });
+        expect(fetchSpy).toHaveBeenCalledWith(expect.stringContaining('/v3/automations/workflow-managed/run-now'), expect.anything());
+        expect(fetchSpy.mock.calls.map(([input]) => toUrlString(input))).toEqual([
+            expect.stringContaining('/v3/automations/workflow-managed/run-now'),
+        ]);
     });
 
     it('keeps current list summaries private-content-free and reads detail only by id', async () => {

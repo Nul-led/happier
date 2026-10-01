@@ -16,7 +16,7 @@ describe('favorite model selections', () => {
                 v: 1,
                 updatedAt: 42,
                 ref: {
-                    agentTargetKey: 'backend:codex',
+                    agentTargetKey: 'agent:happier.agent.codex/codex',
                     providerConnectionId: null,
                     modelId: 'gpt-5.5',
                 },
@@ -31,7 +31,7 @@ describe('favorite model selections', () => {
 
     it('fails closed rather than stripping an unknown legacy favorite field', () => {
         const raw = {
-            backendTargetKey: 'backend:codex',
+            backendTargetKey: 'agent:happier.agent.codex/codex',
             modelId: 'gpt-5.5',
             addedAtMs: 42,
             futureWriterField: true,
@@ -43,7 +43,7 @@ describe('favorite model selections', () => {
 
     it('normalizes a legacy bare favorite into a native structured selection on read', () => {
         const parsed = FavoriteModelSelectionV1Schema.parse({
-            backendTargetKey: 'backend:codex',
+            backendTargetKey: 'agent:happier.agent.codex/codex',
             modelId: 'gpt-5.5',
             modelLabel: 'GPT 5.5',
             addedAtMs: 42,
@@ -54,7 +54,7 @@ describe('favorite model selections', () => {
                 v: 1,
                 updatedAt: 42,
                 ref: {
-                    agentTargetKey: 'backend:codex',
+                    agentTargetKey: 'agent:happier.agent.codex/codex',
                     providerConnectionId: null,
                     modelId: 'gpt-5.5',
                 },
@@ -67,9 +67,9 @@ describe('favorite model selections', () => {
     it('writes a provider-bound structured selection without legacy identity fields', () => {
         const favorites = toggleFavoriteModelSelection({
             favorites: [],
-            backend: { backendTargetKey: 'backend:codex', catalogAgentId: 'codex' },
+            backend: { backendTargetKey: 'agent:happier.agent.codex/codex', catalogAgentId: 'codex' },
             modelRef: ProviderBoundModelRefSchema.parse({
-                agentTargetKey: 'backend:codex',
+                agentTargetKey: 'agent:happier.agent.codex/codex',
                 providerConnectionId: 'pc_work',
                 modelId: 'openai/gpt-5.5',
             }),
@@ -82,7 +82,7 @@ describe('favorite model selections', () => {
                 v: 1,
                 updatedAt: 50,
                 ref: {
-                    agentTargetKey: 'backend:codex',
+                    agentTargetKey: 'agent:happier.agent.codex/codex',
                     providerConnectionId: 'pc_work',
                     modelId: 'openai/gpt-5.5',
                 },
@@ -104,9 +104,9 @@ describe('favorite model selections', () => {
         };
         const favorites = toggleFavoriteModelSelection({
             favorites: [],
-            backend: { backendTargetKey: 'backend:codex' },
+            backend: { backendTargetKey: 'agent:happier.agent.codex/codex' },
             modelRef: ProviderBoundModelRefSchema.parse({
-                agentTargetKey: 'backend:codex',
+                agentTargetKey: 'agent:happier.agent.codex/codex',
                 providerConnectionId: 'pc_work',
                 modelId: 'shared-model',
             }),
@@ -125,9 +125,9 @@ describe('favorite model selections', () => {
     it('allows a provider-bound model literally named default while rejecting the native Automatic sentinel', () => {
         const providerFavorites = toggleFavoriteModelSelection({
             favorites: [],
-            backend: { backendTargetKey: 'backend:opencode' },
+            backend: { backendTargetKey: 'agent:happier.agent.opencode/opencode' },
             modelRef: ProviderBoundModelRefSchema.parse({
-                agentTargetKey: 'backend:opencode',
+                agentTargetKey: 'agent:happier.agent.opencode/opencode',
                 providerConnectionId: 'pc_01J00000000000000000000000',
                 modelId: 'default',
             }),
@@ -135,9 +135,9 @@ describe('favorite model selections', () => {
         });
         const nativeFavorites = toggleFavoriteModelSelection({
             favorites: [],
-            backend: { backendTargetKey: 'backend:opencode' },
+            backend: { backendTargetKey: 'agent:happier.agent.opencode/opencode' },
             modelRef: {
-                agentTargetKey: 'backend:opencode',
+                agentTargetKey: 'agent:happier.agent.opencode/opencode',
                 providerConnectionId: null,
                 modelId: 'default',
             },
@@ -152,7 +152,7 @@ describe('favorite model selections', () => {
                 v: 1,
                 updatedAt: 50,
                 ref: {
-                    agentTargetKey: 'backend:opencode',
+                    agentTargetKey: 'agent:happier.agent.opencode/opencode',
                     providerConnectionId: null,
                     modelId: 'default',
                 },
@@ -167,7 +167,7 @@ describe('favorite model selections', () => {
                 v: 1,
                 updatedAt: 50,
                 ref: {
-                    agentTargetKey: 'backend:codex',
+                    agentTargetKey: 'agent:happier.agent.codex/codex',
                     providerConnectionId: 'pc_01J00000000000000000000000',
                     modelId: 'shared-id',
                 },
@@ -181,7 +181,7 @@ describe('favorite model selections', () => {
 
         expect(resolveAvailableFavoriteModelsForBackend({
             favorites: [providerFavorite],
-            backend: { backendTargetKey: 'backend:codex' },
+            backend: { backendTargetKey: 'agent:happier.agent.codex/codex' },
             availabilityById,
         })).toEqual([]);
     });
@@ -192,7 +192,7 @@ describe('favorite model selections', () => {
                 v: 1,
                 updatedAt: 50,
                 ref: {
-                    agentTargetKey: 'backend:claude',
+                    agentTargetKey: 'agent:happier.agent.claude/claude',
                     providerConnectionId: null,
                     modelId: 'claude-sonnet-4-6[1m]',
                 },
@@ -211,7 +211,7 @@ describe('favorite model selections', () => {
 
         expect(resolveAvailableFavoriteModelsForBackend({
             favorites: [favorite],
-            backend: { backendTargetKey: 'backend:claude' },
+            backend: { backendTargetKey: 'agent:happier.agent.claude/claude' },
             availabilityById,
         })).toEqual([expect.objectContaining({
             modelId: 'claude-sonnet-4-6[1m]',
@@ -222,9 +222,9 @@ describe('favorite model selections', () => {
     it('requires the favorite model ref to match the selected agent target', () => {
         expect(() => toggleFavoriteModelSelection({
             favorites: [],
-            backend: { backendTargetKey: 'backend:codex' },
+            backend: { backendTargetKey: 'agent:happier.agent.codex/codex' },
             modelRef: {
-                agentTargetKey: 'backend:claude',
+                agentTargetKey: 'agent:happier.agent.claude/claude',
                 providerConnectionId: null,
                 modelId: 'claude-sonnet',
             },
@@ -238,15 +238,15 @@ describe('favorite model selections', () => {
                 v: 1,
                 updatedAt: 50,
                 ref: {
-                    agentTargetKey: 'backend:codex',
+                    agentTargetKey: 'agent:happier.agent.codex/codex',
                     providerConnectionId: 'pc_work',
                     modelId: 'openai/gpt-5.5',
                 },
             },
         });
 
-        expect(favoriteModelSelectionMatchesBackend(favorite, { backendTargetKey: 'backend:codex' })).toBe(true);
-        expect(favoriteModelSelectionMatchesBackend(favorite, { backendTargetKey: 'backend:claude' })).toBe(false);
+        expect(favoriteModelSelectionMatchesBackend(favorite, { backendTargetKey: 'agent:happier.agent.codex/codex' })).toBe(true);
+        expect(favoriteModelSelectionMatchesBackend(favorite, { backendTargetKey: 'agent:happier.agent.claude/claude' })).toBe(false);
     });
 
     it('does not fall back to a shared agent id after canonical target keys differ', () => {

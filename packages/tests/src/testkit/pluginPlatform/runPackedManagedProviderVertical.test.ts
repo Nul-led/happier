@@ -9,7 +9,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type {
   PackedChannelProviderLifecycleEvidence,
   PackedManagedProviderPreparedInput,
-  PackedManagedProviderRunInput,
   PackedManagedProviderScenarioDependencies,
 } from '../../../scripts/plugin-platform/run-packed-managed-provider.mjs';
 import {
@@ -462,24 +461,6 @@ function artifactOwners(events: string[]): PackedManagedProviderArtifactOwners {
   };
 }
 
-type PackedChannelProviderContinuityProbe = (
-  input: PackedManagedProviderRunInput,
-  deps: Readonly<{
-    composed: Readonly<{
-      probePackedChannelProviderLifecycle(
-        input: PackedManagedProviderPreparedInput,
-      ): Promise<PackedChannelProviderLifecycleEvidence>;
-    }>;
-    artifactOwners?: PackedManagedProviderArtifactOwners;
-    candidateArtifactVerification?: Readonly<{
-      trustedMinisignPublicKey: string;
-    }>;
-    reserveAvailablePort?: () => Promise<number>;
-    platform?: NodeJS.Platform;
-    arch?: string;
-  }>,
-) => Promise<Readonly<{ status: 'passed' }>>;
-
 afterEach(async () => {
   await Promise.all(roots.splice(0).map(async (root) => {
     await rm(root, { recursive: true, force: true });
@@ -584,13 +565,8 @@ describe('packed managed Provider executable entrypoint', () => {
   });
 
   it('routes the frozen Channels candidate through the continuity composed callback', async () => {
-    const runPackedChannelProviderContinuityProbe = (
-      packedManagedProviderContinuity as {
-        runPackedChannelProviderContinuityProbe?: PackedChannelProviderContinuityProbe;
-      }
-    ).runPackedChannelProviderContinuityProbe;
+    const { runPackedChannelProviderContinuityProbe } = packedManagedProviderContinuity;
     expect(runPackedChannelProviderContinuityProbe).toBeTypeOf('function');
-    if (!runPackedChannelProviderContinuityProbe) return;
 
     const fixture = await writeInputFixture();
     const workRoot = join(fixture.root, 'channel-continuity-lifecycle');

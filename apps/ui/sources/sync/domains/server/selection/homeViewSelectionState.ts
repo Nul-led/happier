@@ -6,7 +6,8 @@ import {
     updateHomeViewState,
     type HomeViewStateV1,
 } from '@/sync/domains/server/serverProfiles';
-import { resolveServerProfileScopeIdForSelectionIdentifier } from './serverSelectionProfileScopeIds';
+import { ALL_HOMES_MINIMUM_HOME_COUNT, isAllHomesSelectionTargetId } from './allHomesSelectionTarget';
+import { listServerProfileScopeIds, resolveServerProfileScopeIdForSelectionIdentifier } from './serverSelectionProfileScopeIds';
 
 const SESSION_STORAGE_HOME_VIEW_TARGET_KEY = 'homeViewActiveTargetV1';
 
@@ -75,6 +76,9 @@ function targetFromState(
 ): HomeViewTarget | null {
     const id = state.activeTargetId?.trim() ?? '';
     if (!id || (state.activeTargetKind !== 'server' && state.activeTargetKind !== 'group')) return null;
+    if (state.activeTargetKind === 'group' && isAllHomesSelectionTargetId(id)) {
+        return listServerProfileScopeIds(profiles).length >= ALL_HOMES_MINIMUM_HOME_COUNT ? { kind: 'group', id } : null;
+    }
     if (state.activeTargetKind === 'group') {
         return state.groups.some((group) => group.id === id && group.serverIds.length > 0)
             ? { kind: 'group', id }

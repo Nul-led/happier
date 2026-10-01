@@ -1,6 +1,7 @@
 import {
   buildBackendTargetKeyV2,
   type BackendTargetRefV2,
+  type ArtifactSharingResourceV1,
 } from '@happier-dev/protocol';
 
 import type { SpawnSessionOptions, SpawnSessionResult } from '@/session/shared/spawnSessionContract';
@@ -35,12 +36,14 @@ export function resolveSpawnLaunchProfileDefaults(input: Readonly<{
   options: SpawnSessionOptions;
   effectiveBackendTarget: BackendTargetRefV2;
   rawSettings: Readonly<Record<string, unknown>> | null | undefined;
+  artifactsById?: ReadonlyMap<string, ArtifactSharingResourceV1>;
 }>): ResolveSpawnLaunchProfileDefaultsResult {
   const profileId = input.options.profileId?.trim() ?? '';
   if (!profileId) return { ok: true, options: input.options };
   const resolved = resolveCanonicalSpawnProfile({
     rawSettings: input.rawSettings,
     profileId,
+    artifactsById: input.artifactsById,
   });
   if (!resolved.ok) return refuseProfile(resolved.message);
   // Legacy profiles retain their existing caller-projected compatibility path.

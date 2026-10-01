@@ -4,6 +4,7 @@ import type { ExecutionRunController } from '@/agent/executionRuns/controllers/t
 import type { FinishExecutionRun } from './executionRunFinishRun';
 import { settleExecutionRunController } from './settleExecutionRunController';
 import { readExecutionRunControllerHostBarrier } from '@/agent/executionRuns/controllers/failureSignal';
+import { createExecutionRunOccurrenceWitnessRegistry, projectExecutionRunInputTurns } from './runOccurrenceWitness';
 
 export async function stopExecutionRun(args: Readonly<{
   runId: string;
@@ -19,6 +20,15 @@ export async function stopExecutionRun(args: Readonly<{
   if (run.status !== 'running') return { ok: false, errorCode: 'execution_run_not_allowed', error: 'Not running' };
   const ctrl = args.controllers.get(args.runId);
   if (ctrl) {
+    // Read the exact-input occurrence before cancellation revokes a retained
+    // Run's live witness; it labels the cancelled turn retained below.
+    const occurrenceId = projectExecutionRunInputTurns({
+      runId: args.runId,
+      retained: run.inputTurns,
+      controller: ctrl,
+      // The canonical reader is a pure projection over this same controller map.
+      reader: createExecutionRunOccurrenceWitnessRegistry(args.controllers).reader,
+    })?.occurrenceId;
     ctrl.cancelled = true;
     if (ctrl.kind === 'backend' && ctrl.currentInputTurn) {
       ctrl.lastInputTurn = { ...ctrl.currentInputTurn, state: 'cancelled' };
@@ -26,7 +36,6 @@ export async function stopExecutionRun(args: Readonly<{
       // unregisters its responder and aborts the runtime's pending permissions.
       // Native detached runtimes resolve the durable store through this field.
       ctrl.currentInputTurn = undefined;
-      const occurrenceId = ctrl.inputTurnOccurrenceId ?? run.inputTurns?.occurrenceId;
       if (occurrenceId) {
         args.runs.set(args.runId, {
           ...run,

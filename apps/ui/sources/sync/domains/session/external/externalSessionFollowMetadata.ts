@@ -5,13 +5,13 @@ import {
     type ExternalSessionFollowPolicy,
 } from '@happier-dev/protocol';
 
-import type { Metadata } from '@/sync/domains/state/storageTypes';
+import type { Metadata } from '@happier-dev/session-core/state';
 
 import { readExternalSessionLink } from './readExternalSessionLink';
 
 export type { ExternalSessionFollowPolicy } from '@happier-dev/protocol';
 
-export function readExternalSessionFollowPolicy(metadata: Metadata | null | undefined): ExternalSessionFollowPolicy {
+export function readExternalSessionFollowPolicy(metadata: unknown): ExternalSessionFollowPolicy {
     const externalSession = readExternalSessionLink(metadata);
     return readExternalSessionFollowPolicyV1(externalSession?.followPolicyV1)?.policy ?? 'attached_only';
 }

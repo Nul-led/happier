@@ -1,5 +1,4 @@
-import { parseAccountConnectDeepLink } from '@/auth/pairing/accountConnectUrl';
-import { classifyLegacyPairingDeepLink, parseHomeQrInviteDeepLink } from '@/auth/pairing/pairingUrl';
+import { classifyPairingLink } from '@/auth/pairing/classifyPairingLink';
 import { normalizeServerUrl } from '@/sync/domains/server/activeServerSwitch';
 
 export type ParsedOnboardingScanPayload =
@@ -17,30 +16,25 @@ export function parseOnboardingScanPayload(raw: string): ParsedOnboardingScanPay
     const trimmed = String(raw ?? '').trim();
     if (!trimmed) return { kind: 'unknown' };
 
-    if (parseHomeQrInviteDeepLink(trimmed)) {
-        return { kind: 'home_qr_invite', rawLink: trimmed };
+    const link = classifyPairingLink(trimmed);
+    switch (link.kind) {
+        case 'home_qr_invite':
+            return { kind: 'home_qr_invite', rawLink: link.rawLink };
+        case 'legacy_pairing':
+            return { kind: 'legacy_pairing_update_required' };
+        case 'account_connect':
+            return { kind: 'account_connect', publicKeyB64Url: link.publicKeyB64Url };
+        case 'terminal_connect':
+            // A terminal link is not a relay address; onboarding has no terminal step.
+            return { kind: 'unknown' };
+        case 'unknown':
+            break;
     }
 
-    if (classifyLegacyPairingDeepLink(trimmed)) {
-        return { kind: 'legacy_pairing_update_required' };
-    }
-
-    const accountConnect = parseAccountConnectDeepLink(trimmed);
-    if (accountConnect) {
-        return {
-            kind: 'account_connect',
-            publicKeyB64Url: accountConnect.publicKeyB64Url,
-        };
-    }
-
+    // Not a pairing link: onboarding also accepts a bare relay address.
     if (isLikelyRelayUrlCandidate(trimmed)) {
         const serverUrl = normalizeServerUrl(trimmed);
-        if (serverUrl) {
-            return {
-                kind: 'relay_url',
-                serverUrl,
-            };
-        }
+        if (serverUrl) return { kind: 'relay_url', serverUrl };
     }
 
     return { kind: 'unknown' };

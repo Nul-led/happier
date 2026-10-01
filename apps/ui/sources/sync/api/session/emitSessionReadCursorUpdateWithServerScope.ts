@@ -1,7 +1,7 @@
 import { createEphemeralServerSocketClient } from '@/sync/runtime/orchestration/serverScopedRpc/createEphemeralServerSocketClient';
 import { createScopedSocketConnectParams } from '@/sync/runtime/orchestration/serverScopedRpc/createScopedSocketConnectParams';
 import { resolveServerAccountRequestContext } from '@/sync/runtime/orchestration/serverScopedRpc/resolveServerAccountRequestContext';
-import { scopedSocketEmitWithAck } from '@/sync/runtime/orchestration/serverScopedRpc/scopedSocketEmitWithAck';
+import { emitWithAckCancellable } from '@happier-dev/sync-client';
 import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
 import { subscribeHomeCredentialMutations } from '@/auth/storage/tokenStorage';
 import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
@@ -44,7 +44,7 @@ export async function emitSessionReadCursorUpdateWithServerScope(
                 return scopedContext.release;
             }),
         );
-        return await scopedSocketEmitWithAck<SessionReadCursorUpdateAck>({
+        return await emitWithAckCancellable<SessionReadCursorUpdateAck>({
             socket,
             event: 'update-read-cursor',
             timeoutMs: context.timeoutMs,

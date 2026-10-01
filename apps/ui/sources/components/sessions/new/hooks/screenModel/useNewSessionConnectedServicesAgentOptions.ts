@@ -38,6 +38,7 @@ export function useNewSessionConnectedServicesAgentOptions(params: Readonly<{
     /** The selected Agent's contribution identity; it keys the Agent's default authentication. */
     agentIdentity?: ResolvedAgentCatalogEntry['identity'];
     teamCredentialResources?: ConnectedServicesParams['teamCredentialResources'];
+    teamCredentialResourceCurrentKeys?: ConnectedServicesParams['teamCredentialResourceCurrentKeys'];
     teamNameById?: ConnectedServicesParams['teamNameById'];
     applyTeamCredentialPolicy?: ConnectedServicesParams['applyTeamCredentialPolicy'];
     setBackendNewSessionOptionStateByTargetKey: React.Dispatch<React.SetStateAction<BackendNewSessionOptionStateByTargetKey>>;
@@ -79,6 +80,7 @@ export function useNewSessionConnectedServicesAgentOptions(params: Readonly<{
         settings: params.settings,
         targetServerId: params.targetServerId,
         teamCredentialResources: params.teamCredentialResources,
+        teamCredentialResourceCurrentKeys: params.teamCredentialResourceCurrentKeys,
         teamNameById: params.teamNameById,
         router: params.router,
         setAgentOptionStateForCurrentAgent,

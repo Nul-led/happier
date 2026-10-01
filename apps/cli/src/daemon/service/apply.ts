@@ -163,11 +163,13 @@ export function runDaemonServiceCommands(
   options: Readonly<{ failureMode?: DaemonServiceCommandFailureMode }> = {},
 ): void {
   const failureMode = options.failureMode ?? 'best-effort';
+  const failures: Error[] = [];
   for (const command of commands) {
+    if (failures.length > 0 && !command.runOnFailure) continue;
     const exists = commandExistsInPath({ cmd: command.cmd, envPath: process.env.PATH, platform: process.platform, pathext: process.env.PATHEXT });
     if (!exists) {
       if (failureMode === 'strict') {
-        throw new Error(`Background service command is not available: ${formatDaemonServiceCommand(command)}`);
+        failures.push(new Error(`Background service command is not available: ${formatDaemonServiceCommand(command)}`));
       }
       continue;
     }
@@ -179,8 +181,12 @@ export function runDaemonServiceCommands(
     }
     if (!result.ok && failureMode === 'strict') {
       const output = result.out ? `\n${result.out}` : '';
-      throw new Error(`Background service command failed: ${formatDaemonServiceCommand(command)}${output}`);
+      failures.push(new Error(`Background service command failed: ${formatDaemonServiceCommand(command)}${output}`));
     }
+  }
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) {
+    throw new AggregateError(failures, failures.map((failure) => failure.message).join('\n'));
   }
 }
 

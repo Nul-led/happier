@@ -6,11 +6,13 @@ import {
   ACCOUNT_API_TOKENS_LIST_HTTP_PATH_V1,
   ACCOUNT_API_TOKENS_REVOKE_ALL_HTTP_PATH_V1,
   ACCOUNT_API_TOKENS_REVOKE_HTTP_PATH_V1,
+  ACCOUNT_API_TOKENS_UPDATE_HTTP_PATH_V1,
   ACCOUNT_EMAIL_CHANGE_REQUEST_PATH_V1,
   ACCOUNT_PASSWORD_CHANGE_PATH_V1,
   ACCOUNT_PASSWORD_ENROLL_PATH_V1,
   ACCOUNT_PASSWORD_REMOVE_PATH_V1,
   ACCOUNT_SECURITY_PATH_V1,
+  ACCOUNT_TERMINAL_PRESENT_USER_POLICY_PATH_V1,
   ACCOUNT_SESSIONS_SIGN_OUT_EVERYWHERE_HTTP_PATH_V1,
   AccountApiTokensCreateActionInputV1Schema,
   AccountApiTokensCreateActionOutputV1Schema,
@@ -20,6 +22,8 @@ import {
   AccountApiTokensRevokeActionOutputV1Schema,
   AccountApiTokensRevokeAllActionInputV1Schema,
   AccountApiTokensRevokeAllActionOutputV1Schema,
+  AccountApiTokensUpdateActionInputV1Schema,
+  AccountApiTokensUpdateActionOutputV1Schema,
   AccountEmailChangeRequestResponseV1Schema,
   AccountEmailChangeRequestV1Schema,
   AccountPasswordChangeRequestV1Schema,
@@ -28,6 +32,8 @@ import {
   AccountPasswordRemoveRequestV1Schema,
   AccountSecurityGetResponseV1Schema,
   AccountSecurityRouteErrorV1Schema,
+  AccountTerminalPresentUserPolicySetRequestV1Schema,
+  AccountTerminalPresentUserPolicySetResponseV1Schema,
   AccountSessionsSignOutEverywhereActionInputV1Schema,
   AccountSessionsSignOutEverywhereServerOutputV1Schema,
   type ActionExecutorDeps,
@@ -53,8 +59,7 @@ import {
   isAuthenticationStatus,
 } from '@/api/client/httpStatusError';
 import { resolveServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
-import { classifyServerEndpointError } from '@/api/client/classifyServerEndpointError';
-import { readNormalizedErrorCode } from '@/api/offline/serverConnectionErrors';
+import { classifyServerEndpointError, isProvenPreDispatchConnectionFailure } from '@/api/client/classifyServerEndpointError';
 import { configuration } from '@/configuration';
 import type { CliServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
 import type { StoredCredentials } from '@/persistence';
@@ -70,15 +75,18 @@ import {
   resolveExternalActionServerRequestHeaders,
   type ExternalActionMachineRequestSigningKey,
 } from '@/api/externalActionExecutionAuthorization';
+import { captureSessionOrganizationDisplayHost } from '@/api/sessionOrganizationDisplayHost';
 
 export type AccountServerActionDeps = Pick<
   ActionExecutorDeps,
   | 'accountSessionsSignOutEverywhereAction'
   | 'accountApiTokensCreateAction'
+  | 'accountApiTokensUpdateAction'
   | 'accountApiTokensListAction'
   | 'accountApiTokensRevokeAction'
   | 'accountApiTokensRevokeAllAction'
   | 'accountSecurityGetAction'
+  | 'accountSecurityTerminalPresentUserSetAction'
   | 'accountPasswordEnrollAction'
   | 'accountPasswordChangeAction'
   | 'accountPasswordRemoveAction'
@@ -186,6 +194,8 @@ async function executeAccountSecurityGet<TOutputSchema extends z.ZodType>(
  */
 export function createAccountServerActionDeps(input: Readonly<{
   token: string;
+  /** Called immediately before a Home Action request is handed to Axios. */
+  onRequestIssued?: () => void;
   /** Existing Machine installation key used only for Home-authorized external Action requests. */
   externalActionMachineRequestPrivateKey?: ExternalActionMachineRequestSigningKey;
   externalActionMachineInstallationId?: string;
@@ -275,6 +285,7 @@ export function createAccountServerActionDeps(input: Readonly<{
       validateStatus: () => true,
     });
     try {
+      input.onRequestIssued?.();
       requestIssued = true;
       const response = await issueRequest();
       return { ok: true, response };
@@ -286,8 +297,7 @@ export function createAccountServerActionDeps(input: Readonly<{
       }
       const classification = classifyServerEndpointError(error);
       if (classification.kind !== 'network' && classification.kind !== 'timeout') throw error;
-      const code = readNormalizedErrorCode(error);
-      const provenPreDispatch = code === 'ECONNREFUSED' || code === 'ENOTFOUND' || code === 'EAI_AGAIN';
+      const provenPreDispatch = isProvenPreDispatchConnectionFailure(error);
       if (mutation && requestIssued && !provenPreDispatch) {
         if (params.replayAmbiguousOnce) {
           try {
@@ -393,7 +403,15 @@ export function createAccountServerActionDeps(input: Readonly<{
       if (actionContext?.serverId && actionContext.serverId !== serverId) {
         return { ok: false, errorCode: 'server_target_mismatch', error: 'server_target_mismatch' };
       }
-      const request = bindHomeDomainActionHttpRequestV1(actionId, actionInput);
+      const hasOrganizationDisplay = (actionId.startsWith('session.folders.') || actionId.startsWith('session.tags.'))
+        && !actionId.endsWith('.delete');
+      const organizationDisplay = hasOrganizationDisplay ? await captureSessionOrganizationDisplayHost({
+        token: input.token, credentials: input.credentials, serverHttpBaseUrl,
+        isCurrent: input.isCredentialCurrent, ...(signal ? { signal } : {}),
+      }) : null;
+      const request = bindHomeDomainActionHttpRequestV1(actionId,
+        organizationDisplay ? organizationDisplay.prepareInput(actionId, actionInput) : actionInput);
+      await organizationDisplay?.assertCurrent();
       const requestHeaders = resolveRequestHeaders({
         context: actionContext,
         effectActionId: actionId,
@@ -436,11 +454,16 @@ export function createAccountServerActionDeps(input: Readonly<{
         }
         throw createHttpStatusError(response.status, `Failed to execute Home Action (${response.status})`);
       }
-      return settleAccountServerActionHttpOutput({
+      const settled = settleAccountServerActionHttpOutput({
         data: response.data,
         outputSchema: homeDomainActionOutputSchemaV1(actionId),
         sideEffectClass: getActionSpec(actionId).sideEffectClass,
       });
+      await organizationDisplay?.assertCurrent();
+      if (organizationDisplay && !(settled !== null && typeof settled === 'object' && 'ok' in settled && settled.ok === false)) {
+        return organizationDisplay.projectOutput(actionId, settled);
+      }
+      return settled;
     },
     sessionAccessAction: async ({ actionId, input: actionInput, context: actionContext, signal }) => {
       if (actionContext?.serverId && actionContext.serverId !== serverId) {
@@ -707,6 +730,36 @@ export function createAccountServerActionDeps(input: Readonly<{
         sideEffectClass: spec.sideEffectClass,
       });
     },
+    accountApiTokensUpdateAction: async ({ input: actionInput, context: actionContext, signal }) => {
+      const targetMismatch = accountServerTargetMismatch(actionContext);
+      if (targetMismatch) return targetMismatch;
+      const spec = getActionSpec('account.apiTokens.update');
+      const body = AccountApiTokensUpdateActionInputV1Schema.parse(actionInput);
+      const requestHeaders = resolveRequestHeaders({
+        context: actionContext,
+        effectActionId: 'account.apiTokens.update',
+        method: 'POST',
+        path: ACCOUNT_API_TOKENS_UPDATE_HTTP_PATH_V1,
+        body,
+      });
+      if (!requestHeaders.ok) return externalAuthorizationUnavailable();
+      const dispatch = await dispatchAccountServerActionHttpRequest({
+        headers: requestHeaders.headers,
+        method: 'POST',
+        path: ACCOUNT_API_TOKENS_UPDATE_HTTP_PATH_V1,
+        body,
+        ...(signal ? { signal } : {}),
+        sideEffectClass: spec.sideEffectClass,
+      });
+      if (!dispatch.ok) return dispatch;
+      const failure = readAccountApiTokenHttpFailure(dispatch.response);
+      if (failure) return failure;
+      return settleAccountServerActionHttpOutput({
+        data: dispatch.response.data,
+        outputSchema: AccountApiTokensUpdateActionOutputV1Schema,
+        sideEffectClass: spec.sideEffectClass,
+      });
+    },
     accountApiTokensListAction: async ({ input: actionInput, context: actionContext, signal }) => {
       const targetMismatch = accountServerTargetMismatch(actionContext);
       if (targetMismatch) return targetMismatch;
@@ -798,7 +851,7 @@ export function createAccountServerActionDeps(input: Readonly<{
       });
     },
     // Lane 02 Account Security family. One exact-Home binding (serverId +
-    // endpoint + signed Account credential) serves all five intents; the Home
+    // endpoint + signed Account credential) serves all intents; the Home
     // transaction remains the authority for every governance decision.
     accountSecurityGetAction: async ({ context: actionContext, signal }) => {
       const targetMismatch = accountServerTargetMismatch(actionContext);
@@ -815,6 +868,28 @@ export function createAccountServerActionDeps(input: Readonly<{
         serverHttpBaseUrl,
         path: ACCOUNT_SECURITY_PATH_V1,
         outputSchema: AccountSecurityGetResponseV1Schema,
+        ...(signal ? { signal } : {}),
+      });
+    },
+    accountSecurityTerminalPresentUserSetAction: async ({ input: actionInput, context: actionContext, signal }) => {
+      const targetMismatch = accountServerTargetMismatch(actionContext);
+      if (targetMismatch) return targetMismatch;
+      const body = AccountTerminalPresentUserPolicySetRequestV1Schema.parse(actionInput);
+      const requestHeaders = resolveRequestHeaders({
+        context: actionContext,
+        effectActionId: 'account.security.terminalPresentUser.set',
+        method: 'POST',
+        path: ACCOUNT_TERMINAL_PRESENT_USER_POLICY_PATH_V1,
+        body,
+      });
+      if (!requestHeaders.ok) return externalAuthorizationUnavailable();
+      return await executeAccountSecurityAction({
+        headers: requestHeaders.headers,
+        serverHttpBaseUrl,
+        path: ACCOUNT_TERMINAL_PRESENT_USER_POLICY_PATH_V1,
+        input: body,
+        inputSchema: AccountTerminalPresentUserPolicySetRequestV1Schema,
+        outputSchema: AccountTerminalPresentUserPolicySetResponseV1Schema,
         ...(signal ? { signal } : {}),
       });
     },

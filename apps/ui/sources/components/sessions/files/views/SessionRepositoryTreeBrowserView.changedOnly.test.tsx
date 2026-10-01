@@ -10,7 +10,17 @@ import { installSessionFilesViewCommonModuleMocks } from './sessionFilesViewsTes
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 const setExpandedPathsSpy = vi.fn();
-const changedFilesPaneProps: any[] = [];
+const treeListProps: any[] = [];
+const CHANGED_ENTRIES = ['src/a.ts', 'src/b.ts', 'README.md', 'scratch/'].map((path) => ({
+    path,
+    previousPath: null,
+    kind: path.endsWith('/') ? 'untracked' : 'modified',
+    includeStatus: '',
+    pendingStatus: '',
+    hasIncludedDelta: false,
+    hasPendingDelta: true,
+    stats: { includedAdded: 0, includedRemoved: 0, pendingAdded: 1, pendingRemoved: 0, isBinary: false },
+}));
 
 installSessionFilesViewCommonModuleMocks({
     reactNative: async () => {
@@ -37,7 +47,7 @@ installSessionFilesViewCommonModuleMocks({
                 capabilities: {} as any,
                 branch: { head: 'main', upstream: null, ahead: 0, behind: 0, detached: false },
                 hasConflicts: false,
-                entries: [],
+                entries: CHANGED_ENTRIES,
                 totals: {
                     includedFiles: 0,
                     pendingFiles: 0,
@@ -84,6 +94,19 @@ vi.mock('@/components/sessions/model/useSessionMachineReachability', () => ({
     }),
 }));
 
+vi.mock('@/components/sessions/agents/presentation/useSessionMachineName', () => ({
+    useSessionMachineName: () => 'MacBook Pro',
+}));
+
+vi.mock('@/components/ui/forms/dropdown/DropdownMenu', () => ({
+    DropdownMenu: (props: any) => {
+        const trigger = typeof props.trigger === 'function'
+            ? props.trigger({ toggle: vi.fn(), openMenu: vi.fn(), closeMenu: vi.fn(), open: Boolean(props.open), selectedItem: null })
+            : props.trigger;
+        return React.createElement('DropdownMenu', props, trigger);
+    },
+}));
+
 vi.mock('@/hooks/session/useSessionWorkspaceTarget', () => ({
     useSessionWorkspaceTarget: (_sessionId: string, serverId?: string | null) => ({
         workspaceCacheKey: `${String(serverId ?? 'server')}:m1:/repo`,
@@ -102,22 +125,10 @@ vi.mock('@/sync/domains/input/suggestionFile', () => ({
     searchFiles: vi.fn(async () => []),
 }));
 
-vi.mock('@/components/sessions/files/content/RepositoryTreeList', () => ({
-    RepositoryTreeList: () => React.createElement('View', { testID: 'repository-tree-list' }),
-}));
-
 vi.mock('@/components/projects/files/WorkspaceRepositoryTreeList', () => ({
-    WorkspaceRepositoryTreeList: () => React.createElement('View', { testID: 'workspace-repository-tree-list' }),
-}));
-
-vi.mock('@/components/workspaces/files/repositoryTree/ChangedFilesTreeList', () => ({
-    ChangedFilesTreeList: () => React.createElement('View', { testID: 'changed-files-tree-list' }),
-}));
-
-vi.mock('@/components/sessions/files/views/repositoryTreeBrowser/RepositoryTreeChangedFilesPane', () => ({
-    RepositoryTreeChangedFilesPane: (props: any) => {
-        changedFilesPaneProps.push(props);
-        return React.createElement('View', { testID: 'repository-tree-changed-files-pane' });
+    WorkspaceRepositoryTreeList: (props: any) => {
+        treeListProps.push(props);
+        return React.createElement('View', { testID: 'workspace-repository-tree-list' });
     },
 }));
 
@@ -147,61 +158,88 @@ vi.mock('@/components/workspaces/files/repositoryTree/computeExpandedPathsForRev
     computeExpandedPathsForReveal: ({ expandedPaths }: any) => expandedPaths,
 }));
 
-describe('SessionRepositoryTreeBrowserView (changed-only toggle)', () => {
+describe('SessionRepositoryTreeBrowserView (Changed only, header, View menu)', () => {
     afterEach(() => {
+        treeListProps.length = 0;
         standardCleanup();
     });
 
-    async function renderRepositoryTreeBrowserView() {
+    async function renderRepositoryTreeBrowserView(serverId?: string) {
         const { SessionRepositoryTreeBrowserView } = await import('./SessionRepositoryTreeBrowserView');
-        return renderScreen(<SessionRepositoryTreeBrowserView sessionId="s1" onOpenFile={vi.fn()} />);
+        return renderScreen(<SessionRepositoryTreeBrowserView sessionId="s1" serverId={serverId} onOpenFile={vi.fn()} />);
     }
 
-    it('toggles between full repository tree and changed-only tree', async () => {
+    it('prunes the same tree in place and names the one changed-file count on its chip', async () => {
+        const { selectScmChangedFiles } = await import('@/scm/scmStatusFiles');
         const screen = await renderRepositoryTreeBrowserView();
+        expect(treeListProps.at(-1)?.changedOnly).toBe(false);
 
+        await act(async () => {
+            screen.pressByTestId('repository-tree-filter-changed');
+        });
+
+        // Same tree owner, still mounted: Changed only is a presentation of it, not another list.
         expect(screen.findAllByTestId('workspace-repository-tree-list')).toHaveLength(1);
-        expect(screen.findAllByTestId('changed-files-tree-list')).toHaveLength(0);
-        expect(screen.findAllByTestId('repository-tree-changed-files-pane')).toHaveLength(0);
+        const listProps = treeListProps.at(-1);
+        expect(listProps?.changedOnly).toBe(true);
+        const chip = screen.findByTestId('repository-tree-changed-only-chip');
+        expect(chip).toBeTruthy();
+        expect(screen.getTextContent()).toContain(String(selectScmChangedFiles(listProps.scmSnapshot).length));
+        expect(selectScmChangedFiles(listProps.scmSnapshot)).toHaveLength(3);
 
-        expect(screen.findAllByTestId('repository-tree-filter-changed').length).toBeGreaterThanOrEqual(1);
+        await act(async () => {
+            screen.pressByTestId('repository-tree-changed-only-chip');
+        });
+        expect(treeListProps.at(-1)?.changedOnly).toBe(false);
+        expect(screen.findAllByTestId('repository-tree-changed-only-chip')).toHaveLength(0);
+    });
 
+    it('reads the working tree of the Home named by the route', async () => {
+        const screen = await renderRepositoryTreeBrowserView('home-b');
         await act(async () => {
             screen.pressByTestId('repository-tree-filter-changed');
         });
-
-        expect(screen.findAllByTestId('workspace-repository-tree-list')).toHaveLength(0);
-        expect(screen.findAllByTestId('changed-files-tree-list')).toHaveLength(0);
-        expect(screen.findAllByTestId('repository-tree-changed-files-pane')).toHaveLength(1);
+        expect(treeListProps.at(-1)?.scmSnapshot?.projectKey).toBe('p:home-b');
     });
 
-    it('hands the changed-files pane the working tree of the Home named by the route', async () => {
-        changedFilesPaneProps.length = 0;
+    it('publishes only the + action to the pane header: the header is just "Files" (user ruling over lab H1)', async () => {
+        const { PaneHeaderSlotProvider, PaneHeaderSlotScope, usePublishedPaneHeaderContent } = await import('@/components/appShell/panes/paneHeaderSlot');
         const { SessionRepositoryTreeBrowserView } = await import('./SessionRepositoryTreeBrowserView');
-        const screen = await renderScreen(
-            <SessionRepositoryTreeBrowserView sessionId="s1" serverId="home-b" onOpenFile={vi.fn()} />,
+        const published: any[] = [];
+        function HeaderReader() {
+            published.push(usePublishedPaneHeaderContent('files'));
+            return null;
+        }
+        await renderScreen(
+            <PaneHeaderSlotProvider>
+                <HeaderReader />
+                <PaneHeaderSlotScope slotKey="files">
+                    <SessionRepositoryTreeBrowserView sessionId="s1" onOpenFile={vi.fn()} />
+                </PaneHeaderSlotScope>
+            </PaneHeaderSlotProvider>,
         );
-
-        await act(async () => {
-            screen.pressByTestId('repository-tree-filter-changed');
-        });
-
-        const paneProps = changedFilesPaneProps.at(-1);
-        expect(paneProps?.serverId).toBe('home-b');
-        expect(paneProps?.scmSnapshot?.projectKey).toBe('p:home-b');
+        const content = published.at(-1);
+        expect(content?.line ?? null).toBeNull();
+        expect(content?.action).toBeTruthy();
     });
 
-    it('renders a collapse-all button when folders are expanded', async () => {
+    it('keeps Collapse all, Size and date and Refresh in the one View menu', async () => {
         setExpandedPathsSpy.mockClear();
-
         const screen = await renderRepositoryTreeBrowserView();
 
-        expect(screen.findAllByTestId('repository-tree-collapse-all').length).toBeGreaterThanOrEqual(1);
+        const menu = screen.findByTestId('repository-tree-view-menu');
+        expect(menu?.props.items.map((item: any) => item.id)).toEqual([
+            'repository-tree-toggle-details',
+            'repository-tree-collapse-all',
+            'repository-tree-refresh',
+        ]);
+        // The nine toolbar icons are gone: creating and uploading live in the header's +.
+        expect(screen.findAllByTestId('repository-tree-create-file')).toHaveLength(0);
+        expect(screen.findAllByTestId('repository-tree-upload')).toHaveLength(0);
 
         await act(async () => {
-            screen.pressByTestId('repository-tree-collapse-all');
+            menu?.props.onSelect('repository-tree-collapse-all');
         });
-
         expect(setExpandedPathsSpy).toHaveBeenCalledWith('s1', []);
     });
 });

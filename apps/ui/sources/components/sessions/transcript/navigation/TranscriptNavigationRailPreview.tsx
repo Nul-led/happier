@@ -10,6 +10,7 @@ import {
     resolveTranscriptNavigationEntryPrimaryText,
     resolveTranscriptNavigationEntrySecondaryText,
 } from './transcriptNavigationAccessibility';
+import { TranscriptNavigationTurnFactsStrip } from './TranscriptNavigationTurnFactsStrip';
 import { resolveTranscriptNavigationRailSoftFadeStyle } from './useTranscriptNavigationRailSoftPresence';
 import type { TranscriptNavigationRailEntry } from './TranscriptNavigationRail';
 
@@ -92,6 +93,15 @@ export function TranscriptNavigationRailPreview(props: TranscriptNavigationRailP
                     >
                         {body}
                     </Text>
+                ) : null}
+                {props.entry.facts ? (
+                    <TranscriptNavigationTurnFactsStrip
+                        facts={props.entry.facts}
+                        createdAtMs={props.entry.createdAtMs}
+                        live={props.entry.facts.running}
+                        showApprovalCounts
+                        testID="transcript-navigation-rail.preview.facts"
+                    />
                 ) : null}
             </GlassPanel>
         </WebPreviewView>

@@ -5,8 +5,11 @@ import {
     type SessionFollowSourceModeV1,
     type SessionFollowSourceV1,
 } from '@happier-dev/protocol';
-import { Pressable } from 'react-native';
+import { Pressable, View } from 'react-native';
 import { IconButton } from '@/components/ui/buttons/IconButton';
+import { RoundButton } from '@/components/ui/buttons/RoundButton';
+import { Icon } from '@/components/ui/icons/Icon';
+import { ExpandableItem } from '@/components/ui/lists/ExpandableItem';
 
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
@@ -84,6 +87,7 @@ export function SessionFollowSourcesEditor(props: Readonly<{
     const [sources, setSources] = React.useState<readonly SessionFollowSourceV1[]>([]);
     const [loading, setLoading] = React.useState(false);
     const [savingId, setSavingId] = React.useState<string | null>(null);
+    const [expandedSourceKey, setExpandedSourceKey] = React.useState<string | null>(null);
     const [failed, setFailed] = React.useState(false);
     const [mutation, dispatchMutation] = React.useReducer(
         reduceSourceMutation,
@@ -360,7 +364,7 @@ export function SessionFollowSourcesEditor(props: Readonly<{
                     hasPendingUpdates: source.hasPendingUpdates,
                     mode: source.mode,
                 });
-                const sourceTitle = session ? getSessionName(session) : source.sourceSessionId;
+                const sourceTitle = session ? getSessionName(session, serverId) : source.sourceSessionId;
                 const preparationSourceKey = sourcePreparationKey(preparationTargetKey, source.sourceSessionId);
                 const currentFlightKey = `${preparationSourceKey}\u0000${edgeVersionBySourceIdRef.current.get(source.sourceSessionId) ?? 0}`;
                 const preparing = preparingFlightKeys.has(currentFlightKey);
@@ -381,50 +385,65 @@ export function SessionFollowSourcesEditor(props: Readonly<{
                 const statusText = presentedRuntimeState === 'eligible'
                     ? modeLabel
                     : sessionFollowSourceRuntimeStateLabel(presentedRuntimeState);
-                // The row press is never destructive: it retries preparation or
-                // toggles the delivery mode, and is inert when neither applies.
-                // Stopping updates always has its own labelled control, so one
-                // gesture means the same thing on every destination, including
-                // an older Runner without the wake capability.
-                const rowAction = canRetryPreparation
-                    ? {
-                        detail: t('common.retry'),
-                        run: () => { void prepareSource(source.sourceSessionId); },
-                    }
-                    : canChangeMode
-                        ? {
-                            detail: source.mode === 'wake_on_human_change'
-                                ? t('session.follow.sources.nextTurn')
-                                : t('session.follow.sources.wakeOnHumanChange'),
-                            run: () => {
-                                void updateMode(
-                                    source.sourceSessionId,
-                                    source.mode === 'wake_on_human_change' ? 'next_turn' : 'wake_on_human_change',
-                                );
-                            },
-                        }
-                        : null;
-                return <Item
+                const expandedKey = `${targetKey}\u0000${source.sourceSessionId}`;
+                return <ExpandableItem
                     key={source.sourceSessionId}
-                    testID={`session-follow-source-${source.sourceSessionId}`}
-                    accessibilityLabel={[
-                        t('session.follow.sources.row', { title: sourceTitle }),
-                        statusText,
-                        ...(rowAction ? [rowAction.detail] : []),
-                    ].join('. ')}
-                    title={t('session.follow.sources.row', { title: sourceTitle })}
-                    subtitle={preparing ? t('session.follow.sources.sourceKeyPreparing') : statusText}
-                    {...(rowAction ? { detail: rowAction.detail, onPress: rowAction.run } : {})}
-                    disabled={!online || savingId !== null || preparing}
-                    rightElementOutsidePressable
-                    rightElement={<IconButton
-                        testID={`session-follow-source-${source.sourceSessionId}-remove`}
-                        iconName="trash"
-                        accessibilityLabel={t('session.follow.sources.stopForSource', { title: sourceTitle })}
-                        disabled={!online || savingId !== null}
-                        onPress={() => { void remove(source.sourceSessionId); }}
+                    expanded={canChangeMode && expandedSourceKey === expandedKey}
+                    onExpandedChange={(expanded) => setExpandedSourceKey(expanded ? expandedKey : null)}
+                    header={({ headerProps }) => <Item
+                        {...(canChangeMode ? headerProps : {})}
+                        accessibilityExpanded={canChangeMode ? expandedSourceKey === expandedKey : undefined}
+                        testID={`session-follow-source-${source.sourceSessionId}`}
+                        accessibilityLabel={[
+                            t('session.follow.sources.row', { title: sourceTitle }),
+                            statusText,
+                        ].join('. ')}
+                        title={t('session.follow.sources.row', { title: sourceTitle })}
+                        titleLines={0}
+                        subtitle={preparing ? t('session.follow.sources.sourceKeyPreparing') : statusText}
+                        subtitleLines={0}
+                        accessoryLayout="adaptive"
+                        disabled={!online || savingId !== null || preparing}
+                        rightElementOutsidePressable
+                        keepChevronWithRightElement={canChangeMode}
+                        rightElement={<View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                            {canRetryPreparation ? <RoundButton
+                                testID={`session-follow-source-${source.sourceSessionId}-retry`}
+                                title={t('common.retry')}
+                                size="small"
+                                display="secondary"
+                                accessibilityLabel={`${t('common.retry')}. ${t('session.follow.sources.row', { title: sourceTitle })}`}
+                                disabled={!online || savingId !== null || preparing}
+                                onPress={() => { void prepareSource(source.sourceSessionId); }}
+                            /> : null}
+                            <IconButton
+                                testID={`session-follow-source-${source.sourceSessionId}-remove`}
+                                iconName="trash"
+                                accessibilityLabel={t('session.follow.sources.stopForSource', { title: sourceTitle })}
+                                disabled={!online || savingId !== null}
+                                onPress={() => { void remove(source.sourceSessionId); }}
+                            />
+                        </View>}
                     />}
-                />;
+                >
+                    <ItemGroup accessibilityRole="radiogroup" accessibilityLabel={t('session.follow.sources.row', { title: sourceTitle })}>
+                        {(['next_turn', 'wake_on_human_change'] as const).map((mode) => <Item
+                            key={mode}
+                            testID={`session-follow-source-${source.sourceSessionId}-mode-${mode}`}
+                            title={t(mode === 'next_turn' ? 'session.follow.sources.nextTurn' : 'session.follow.sources.wakeOnHumanChange')}
+                            subtitle={mode === 'next_turn' ? t('session.follow.sources.includeNextTurn') : undefined}
+                            titleLines={0}
+                            accessibilityRole="radio"
+                            selected={source.mode === mode}
+                            disabled={!online || savingId !== null || (mode === 'wake_on_human_change' && !canChooseWake)}
+                            showChevron={false}
+                            onPress={() => {
+                                if (source.mode !== mode) void updateMode(source.sourceSessionId, mode);
+                            }}
+                            rightElement={source.mode === mode ? <Icon name="check" size={20} /> : undefined}
+                        />)}
+                    </ItemGroup>
+                </ExpandableItem>;
             })}
             {failed || mutation.error !== null ? <Item
                 testID="session-follow-sources-error"

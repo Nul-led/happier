@@ -1,6 +1,12 @@
 import type { RpcHandler, RpcHandlerRegistrar } from '@/api/rpc/types';
 import type { Metadata } from '@/api/types';
 import { resolveSocketRpcSessionAuthorization } from '@happier-dev/protocol/rpc';
+import { configuration } from '@/configuration';
+import { TransferSessionStore } from '@/transfers/core/transferSessionStore';
+import { registerTransferUploadRpcHandlers } from '@/transfers/rpc/registerTransferUploadRpcHandlers';
+import { registerTransferDownloadRpcHandlers } from '@/transfers/rpc/registerTransferDownloadRpcHandlers';
+import { createTransferPathAllowanceRegistry } from '@/transfers/targets/createTransferPathAllowanceRegistry';
+import { resolveServerRoutedTransferMaxBytes } from '@/transfers/policy/serverRoutedTransferPolicy';
 export { SPAWN_SESSION_ERROR_CODES } from '@happier-dev/protocol';
 export type { SpawnSessionErrorCode, SpawnSessionErrorDetail } from '@happier-dev/protocol';
 export type { SpawnSessionOptions, SpawnSessionResult } from '@/session/shared/spawnSessionContract';
@@ -120,6 +126,7 @@ export function registerSessionHandlers(
             attemptId: string;
         }>) => Promise<unknown> | unknown) | null;
         enqueueSessionUserMessage?: ((request: {
+            callerInputAuthorization?: import('@happier-dev/protocol').ExternalActionExecutionAuthorizationV1;
             text: string;
             localId?: string;
             meta: Record<string, unknown>;
@@ -149,9 +156,36 @@ export function registerSessionHandlers(
             Parameters<typeof registerCapabilitiesHandlers>[1]
         >['activatePurposeBindings'];
     }>,
-) {
+): Readonly<{ dispose: () => Promise<void> }> {
     const accessPolicy = opts?.accessPolicy ?? { kind: 'osUser' };
     const authorizedSessionRpcHandlerManager = createAuthorizedSessionRpcRegistrar(rpcHandlerManager);
+    const sessionAttachmentStore = opts?.sessionId
+        ? new TransferSessionStore({ ttlMs: configuration.filesTransferSessionTtlMs, expiryTrigger: 'self' })
+        : null;
+    if (sessionAttachmentStore && opts?.sessionId) {
+        const sessionId = opts.sessionId;
+        const pathAllowanceRegistry = createTransferPathAllowanceRegistry();
+        const sessionRpcTransferMaxBytes = resolveServerRoutedTransferMaxBytes();
+        registerTransferUploadRpcHandlers(authorizedSessionRpcHandlerManager, {
+            workingDirectory,
+            accessPolicy,
+            store: sessionAttachmentStore,
+            sessionRpcTransferMaxBytes,
+            sessionAttachment: { sessionId },
+            attachmentUpload: {
+                pathAllowanceRegistry,
+                resolveSessionWorkingDirectory: async (requestedSessionId) => requestedSessionId === sessionId ? workingDirectory : null,
+            },
+        });
+        registerTransferDownloadRpcHandlers(authorizedSessionRpcHandlerManager, {
+            workingDirectory,
+            accessPolicy,
+            store: sessionAttachmentStore,
+            sessionRpcTransferMaxBytes,
+            sessionAttachment: { sessionId },
+            getAdditionalAllowedReadDirs: () => pathAllowanceRegistry.getAdditionalAllowedReadDirs(),
+        });
+    }
 
     registerBashHandler(rpcHandlerManager, workingDirectory, { accessPolicy });
     // Checklist-based machine capability registry (replaces legacy detect-cli / detect-capabilities / dep-status).
@@ -218,4 +252,12 @@ export function registerSessionHandlers(
                 : {}),
         }),
     });
+    if (opts?.transcriptActionExecutor) {
+        registerActionSpecRpcHandlers({
+            rpcHandlerManager: authorizedSessionRpcHandlerManager,
+            actionExecutor: opts.transcriptActionExecutor,
+            actionIds: ['session.role.set'],
+        });
+    }
+    return { dispose: async () => { await sessionAttachmentStore?.dispose(); } };
 }

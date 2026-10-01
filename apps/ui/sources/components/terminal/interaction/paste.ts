@@ -16,7 +16,7 @@ const utf8Encoder = new TextEncoder();
 export type TerminalPasteAction =
     | Readonly<{ kind: 'send'; input: string; bracketed: boolean }>
     | Readonly<{ kind: 'confirm'; text: string; byteLength: number; afterConfirm: Readonly<{ input: string; bracketed: boolean }> }>
-    | Readonly<{ kind: 'ignore'; reason: 'empty' }>;
+    | Readonly<{ kind: 'ignore'; reason: 'empty' | 'read_only' }>;
 
 function buildPasteInput(text: string, policy: TerminalInteractionPolicy): Readonly<{ input: string; bracketed: boolean }> {
     if (policy.bracketedPaste === 'force-wrap') {

@@ -229,6 +229,104 @@ async fn exchange_echo(local_addr: SocketAddr, payload: &[u8]) -> Vec<u8> {
     echoed
 }
 
+async fn exercise_tcp_tunnel_websocket(
+    server: IrohEndpoint,
+    client: IrohEndpoint,
+    direct_addresses: Vec<SocketAddr>,
+    relay_urls: Vec<iroh::RelayUrl>,
+    expected_path: crate::IrohObservedPath,
+) {
+    let app = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    let app_port = app.local_addr().unwrap().port();
+    let app_task = tokio::spawn(async move {
+        let (mut socket, _) = app.accept().await.unwrap();
+        let head = read_http_head_bytewise(&mut socket).await;
+        let head = String::from_utf8(head).unwrap();
+        assert!(head.contains("Upgrade: websocket\r\n"));
+        assert!(!head.to_lowercase().contains("sec-websocket-protocol"));
+        assert!(!head.to_lowercase().contains("x-happier-machine-local-capability"));
+        socket.write_all(b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n").await.unwrap();
+        let mut binary = [0u8; 5];
+        socket.read_exact(&mut binary).await.unwrap();
+        assert_eq!(binary, [0x82, 3, 0xff, 0, 0x7f]);
+        socket.write_all(&binary).await.unwrap();
+        let mut byte = [0u8; 1];
+        assert!(!matches!(socket.read(&mut byte).await, Ok(n) if n > 0));
+    });
+    let admission_contacts = Arc::new(AtomicUsize::new(0));
+    let admission_target = admission_server(
+        client.id().to_string(),
+        Arc::new(Mutex::new(VecDeque::from([vec![app_port.to_string()]]))),
+        Arc::clone(&admission_contacts),
+    ).await;
+    let acceptor = MachineAcceptor::start(&server, MachineAcceptorConfig { admission_target }).unwrap();
+    let tunnel = MachineHttpTunnel::start(&client, MachineTunnelConfig {
+        endpoint_id: server.id().to_string(),
+        bind_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+        direct_addresses,
+        relay_urls,
+        handshake_json: r#"{"v":1,"flow":"tcp_tunnel"}"#.to_owned(),
+        cap_profile: IrohCapProfile::MachineBulk,
+    }).await.expect("native TCP tunnel carrier");
+    let addr = tunnel.local_addr().unwrap();
+    let mut denied = TcpStream::connect(addr).await.unwrap();
+    denied.write_all(b"GET /peer-mediation/v1/tunnel/stream HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Protocol: happier.iroh.cap.wrong\r\n\r\n").await.unwrap();
+    let mut rejected = Vec::new();
+    denied.read_to_end(&mut rejected).await.unwrap();
+    assert!(rejected.is_empty());
+    assert_eq!(admission_contacts.load(Ordering::Relaxed), 0);
+    let mut socket = TcpStream::connect(addr).await.unwrap();
+    let request = format!("GET /peer-mediation/v1/tunnel/stream HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Protocol: happier.iroh.cap.{}\r\n\r\n", tunnel.local_capability());
+    socket.write_all(request.as_bytes()).await.unwrap();
+    let response = read_http_head_bytewise(&mut socket).await;
+    assert!(response.starts_with(b"HTTP/1.1 101"));
+    socket.write_all(&[0x82, 3, 0xff, 0, 0x7f]).await.unwrap();
+    let mut echoed = [0u8; 5];
+    socket.read_exact(&mut echoed).await.unwrap();
+    assert_eq!(echoed, [0x82, 3, 0xff, 0, 0x7f]);
+    assert_eq!(tunnel.status().observed_path.observed_path, expected_path);
+    tunnel.stop_and_wait().await;
+    let mut byte = [0u8; 1];
+    assert!(!matches!(socket.read(&mut byte).await, Ok(n) if n > 0));
+    acceptor.stop_and_wait().await;
+    app_task.await.unwrap();
+    client.shutdown().await;
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn native_tcp_tunnel_websocket_carries_binary_frames_directly_and_cancels() {
+    let server = endpoint(IrohCapProfile::MachineBulk).await;
+    let client = endpoint(IrohCapProfile::MachineBulk).await;
+    let addr = direct_addr(&server).await;
+    tokio::time::timeout(Duration::from_secs(15), exercise_tcp_tunnel_websocket(
+        server, client, vec![addr], vec![], crate::IrohObservedPath::Direct,
+    )).await.expect("direct native carrier proof");
+}
+
+#[cfg(feature = "test-relay-fixture")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn native_tcp_tunnel_websocket_carries_binary_frames_over_forced_relay_and_cancels() {
+    let relay = crate::LocalTestRelay::spawn().await.unwrap();
+    let config = || EndpointConfig {
+        relay_policy: RelayPolicy::Automatic,
+        relay_urls: vec![relay.url_string()],
+        caps: IrohCapProfile::MachineBulk,
+        disable_ip_transports: true,
+        ..EndpointConfig::default()
+    };
+    let server = IrohEndpoint::bind(&config()).await.unwrap();
+    let client = IrohEndpoint::bind(&config()).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(15), async {
+        server.endpoint().online().await;
+        client.endpoint().online().await;
+    }).await.expect("relay readiness");
+    assert!(server.endpoint().addr().ip_addrs().next().is_none());
+    tokio::time::timeout(Duration::from_secs(15), exercise_tcp_tunnel_websocket(
+        server, client, vec![], vec![relay.url().clone()], crate::IrohObservedPath::Relay,
+    )).await.expect("forced relay native carrier proof");
+}
+
 async fn exchange_echo_with_capability(
     local_addr: SocketAddr,
     local_capability: &str,

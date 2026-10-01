@@ -38,12 +38,12 @@ describe('local Voice Provider-backed Chat configuration', () => {
         providerChat: {
           status: 'configured',
           chat: {
-            agentTargetKey: 'backend:opencode',
+            agentTargetKey: 'agent:happier.agent.opencode/opencode',
             providerConnectionId: 'voice-openai-compatible-chat',
             modelId: 'chat-model',
           },
           commit: {
-            agentTargetKey: 'backend:opencode',
+            agentTargetKey: 'agent:happier.agent.opencode/opencode',
             providerConnectionId: 'voice-openai-compatible-chat',
             modelId: 'commit-model',
           },

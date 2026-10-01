@@ -7,6 +7,7 @@ import {
     type SessionOwnerMetadataEnvelopeV1,
     type SessionOwnerMetadataV1,
 } from '@happier-dev/protocol';
+import type { ComposerOptionsInputV1 } from '@happier-dev/protocol/embed';
 import type {
     SessionMetadataOwnerMigrationCurrentnessV1,
 } from '@happier-dev/cli-common/sessionMetadata';
@@ -283,6 +284,9 @@ export async function fetchSessionByIdWithServerScope(params: Readonly<{
     sessionId: string;
     serverId?: string | null;
     activeCredentials: AuthCredentials;
+    sessionKey?: string | null;
+    composerOptionsInput?: ComposerOptionsInputV1 | null;
+    accountMode?: 'plain' | 'e2ee';
     activeEncryption?: SessionByIdEncryption | null;
     sessionDataKeys: Map<string, Uint8Array>;
     sessionDataKeyEnvelopes?: Map<string, string>;
@@ -302,6 +306,21 @@ export async function fetchSessionByIdWithServerScope(params: Readonly<{
         metadataTupleWriterContext?: SessionMetadataTupleWriterContext;
     }>
 > {
+    if (params.sessionKey !== undefined) {
+        return await fetchAndApplySessionById({
+            sessionId: params.sessionId, serverId: params.serverId,
+            credentials: params.activeCredentials, sessionKey: params.sessionKey,
+            composerOptionsInput: params.composerOptionsInput ?? null,
+            accountMode: params.accountMode,
+            encryption: getScopedSessionByIdEncryption(params.activeEncryption ?? null),
+            sessionDataKeys: params.sessionDataKeys, sessionDataKeyEnvelopes: params.sessionDataKeyEnvelopes,
+            request: params.activeRequest, requestAuthority: params.activeRequest,
+            applySessions: params.applySessions, getExistingSession: params.getExistingSession,
+            log: params.log, timeoutMs: params.timeoutMs,
+            includeTurnsProjection: params.includeTurnsProjection, isCurrent: params.isCurrent,
+            accessProjectionVersion: 1,
+        });
+    }
     const currentSettings = storage.getState().settings;
     const clientEncryptionRequirement = resolveUiClientEncryptionRequirement({
         syncedSettings: currentSettings,

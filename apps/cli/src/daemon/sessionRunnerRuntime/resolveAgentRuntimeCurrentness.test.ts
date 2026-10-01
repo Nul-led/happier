@@ -8,6 +8,9 @@ import {
 import type { TrackedSession } from '@/daemon/types';
 import type { ResolvedProviderContribution } from '@/plugins/projection/registry/types';
 import type { AgentRuntimeRegistrationLease } from '@/plugins/runtime/lifecycle/contributions/targetAgents';
+import {
+  createManagedPluginSourceCustody,
+} from '@/plugins/runtime/lifecycle/contributions/runtimeIdentity.testkit';
 import type { ProviderContributionRegistryView } from '@/providers/registry';
 
 import { resolveTrackedRunnerAgentRuntimeCurrentness } from './resolveAgentRuntimeCurrentness';
@@ -19,7 +22,8 @@ function tracked(overrides: Partial<TrackedSession> = {}): TrackedSession {
   return {
     startedBy: 'daemon',
     pid: 123,
-    runnerAgentImmutableGenerationId: 'generation-g',
+    runnerAgentSourceCustodyV1:
+      createManagedPluginSourceCustody('generation-g'),
     spawnOptions: {
       directory: '/work',
       backendTarget: {
@@ -43,8 +47,11 @@ function registration(input: Readonly<{
     agentId: 'codex',
     localAgentId: 'codex',
     generation: 'registry-generation',
-    immutableGenerationId:
-      'generation' in input ? input.generation : 'generation-g',
+    occurrenceId: 'codex-occurrence',
+    sourceCustody: createManagedPluginSourceCustody(
+      input.generation ?? 'generation-g',
+    ),
+    immutableGenerationId: input.generation ?? 'generation-g',
     retirementSignal: new AbortController().signal,
     isCurrent: input.isCurrent ?? (() => true),
     createAgentRuntimeSurfaceInvocationContext: async () => {
@@ -74,8 +81,10 @@ function managedProviderRuntime(
         throw new Error('not used by currentness tests');
       },
     },
-    activationGeneration: 'registry-generation',
-    immutableGenerationId,
+    activationOccurrenceId: 'registry-generation',
+    sourceCustody: createManagedPluginSourceCustody(
+      immutableGenerationId,
+    ),
     isCurrent: () => true,
   };
 }
@@ -83,17 +92,20 @@ function managedProviderRuntime(
 function retainedManagedProviderTracked(
   immutableGenerationId = RETAINED_PROVIDER_GENERATION,
 ): TrackedSession {
+  const sourceCustody = createManagedPluginSourceCustody(
+    immutableGenerationId,
+  );
   return {
     ...selectedProviderTracked(),
     runnerManagedDependencyRetentionV1: {
       v: 1,
       adoptedManagedProviderAuthority: {
         pluginId: 'acme.gateway',
-        immutableGenerationId,
+        sourceCustody,
         manifestAuthority: 'external',
         hardRevocationRevisionAtAdmission: 0,
       },
-      sourceGenerationIds: [],
+      sourceCustodies: [sourceCustody],
       qualifiedDependencyIds: [],
     },
   };
@@ -148,7 +160,7 @@ function selectedProviderTracked(): TrackedSession {
         v: 1,
         updatedAt: 1,
         ref: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: SELECTED_PROVIDER_CONNECTION_ID,
           modelId: 'model-p',
         },
@@ -190,7 +202,7 @@ describe('resolveTrackedRunnerAgentRuntimeCurrentness', () => {
   it.each([
     ['generation-g', 'current'],
     ['generation-h', 'stale'],
-  ] as const)('compares pinned G with authoritative generation %s', (generation, expected) => {
+  ] as const)('compares pinned G with authoritative managed custody %s', (generation, expected) => {
     expect(resolveTrackedRunnerAgentRuntimeCurrentness({
       tracked: tracked(),
       agentRuntimesByAgentId: new Map([
@@ -204,15 +216,17 @@ describe('resolveTrackedRunnerAgentRuntimeCurrentness', () => {
 
   it('returns unknown when private pinned or authoritative evidence is unverifiable', () => {
     expect(resolveTrackedRunnerAgentRuntimeCurrentness({
-      tracked: tracked({ runnerAgentImmutableGenerationId: undefined }),
+      tracked: tracked({ runnerAgentSourceCustodyV1: undefined }),
       agentRuntimesByAgentId: new Map([
         ['codex', registration()],
       ]),
     }).versionState).toBe('unknown');
+    const malformedRegistration = registration();
+    expect(Reflect.deleteProperty(malformedRegistration, 'sourceCustody')).toBe(true);
     expect(resolveTrackedRunnerAgentRuntimeCurrentness({
       tracked: tracked(),
       agentRuntimesByAgentId: new Map([
-        ['codex', registration({ generation: null })],
+        ['codex', malformedRegistration],
       ]),
     }).versionState).toBe('unknown');
     expect(resolveTrackedRunnerAgentRuntimeCurrentness({
@@ -287,7 +301,7 @@ describe('resolveTrackedRunnerAgentRuntimeCurrentness', () => {
     });
   });
 
-  it('reports a Provider-only update as stale while the retained Agent generation is unchanged', () => {
+  it('reports a Provider-only update as stale while retained Agent custody is unchanged', () => {
     expect(resolveTrackedRunnerAgentRuntimeCurrentness({
       tracked: retainedManagedProviderTracked(),
       agentRuntimesByAgentId: new Map([
@@ -309,7 +323,7 @@ describe('resolveTrackedRunnerAgentRuntimeCurrentness', () => {
     });
   });
 
-  it('keeps the Session current while the retained managed Provider generation is unchanged', () => {
+  it('keeps the Session current while retained managed Provider custody is unchanged', () => {
     expect(resolveTrackedRunnerAgentRuntimeCurrentness({
       tracked: retainedManagedProviderTracked(),
       agentRuntimesByAgentId: new Map([

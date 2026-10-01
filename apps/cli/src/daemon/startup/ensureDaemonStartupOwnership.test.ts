@@ -111,4 +111,66 @@ describe('ensureDaemonStartupOwnership', () => {
       expect(killSpy).not.toHaveBeenCalledWith(processOnlyOwner.pid, 'SIGTERM');
     });
   });
+
+  it('stops the default-following daemon serving this server when the pinned service starts second', async () => {
+    await withTempDir('happier-daemon-startup-pinned-after-default-', async (homeDir) => {
+      const serviceScope = createEnvKeyScope(['HAPPIER_DAEMON_SERVICE_TARGET_MODE']);
+      envScope.patch({
+        HAPPIER_HOME_DIR: homeDir,
+        HAPPIER_ACTIVE_SERVER_ID: 'home',
+        HAPPIER_PUBLIC_RELEASE_CHANNEL: 'stable',
+        HAPPIER_DAEMON_SERVICE_HAPPIER_HOME_DIR: homeDir,
+        HAPPIER_DAEMON_SERVICE_USER_HOME_DIR: homeDir,
+      });
+      serviceScope.patch({ HAPPIER_DAEMON_SERVICE_TARGET_MODE: 'pinned' });
+      try {
+        vi.resetModules();
+        const stopDaemonMock = vi.fn(async () => ({ status: 'stopped' }));
+        const { resolveDaemonServiceLaunchdLabel } = await import('@/daemon/service/plan');
+        vi.doMock('@/daemon/ownership/evaluateCurrentDaemonOwner', async (importOriginal) => ({
+          ...await importOriginal<typeof import('@/daemon/ownership/evaluateCurrentDaemonOwner')>(),
+          evaluateCurrentDaemonOwner: vi.fn(async () => ({
+            kind: 'compatible' as const,
+            owner: {
+              status: 'running' as const,
+              source: 'state' as const,
+              state: {
+                pid: 4343,
+                httpPort: 43140,
+                startedAt: Date.now(),
+                startedWithCliVersion: '0.3.0',
+                startupSource: 'background-service' as const,
+                serviceLabel: resolveDaemonServiceLaunchdLabel('default', 'stable', 'default-following'),
+              },
+              currentCliVersion: '0.3.0',
+              currentPublicReleaseChannel: 'stable' as const,
+              versionMatches: true,
+              releaseChannelMatches: true,
+              serviceManaged: true,
+              startupSource: 'background-service' as const,
+            },
+          })),
+        }));
+        // The daemon control socket is the boundary the takeover talks through.
+        vi.doMock('@/daemon/controlClient', async (importOriginal) => ({
+          ...await importOriginal<typeof import('@/daemon/controlClient')>(),
+          stopDaemon: stopDaemonMock,
+        }));
+
+        const { ensureDaemonStartupOwnership } = await import('./ensureDaemonStartupOwnership');
+        const result = await ensureDaemonStartupOwnership({
+          takeoverRequested: true,
+          startupSource: 'background-service',
+          runtimeId: 'runtime-pinned',
+        });
+
+        expect(result).toEqual({ action: 'continue' });
+        expect(stopDaemonMock).toHaveBeenCalledTimes(1);
+      } finally {
+        serviceScope.restore();
+        vi.doUnmock('@/daemon/ownership/evaluateCurrentDaemonOwner');
+        vi.doUnmock('@/daemon/controlClient');
+      }
+    });
+  });
 });

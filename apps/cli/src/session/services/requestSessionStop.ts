@@ -24,7 +24,7 @@ import { resolveSessionIdOrPrefix } from '@/session/query/resolveSessionId';
 import { fetchSessionByIdCompat } from '@/session/transport/http/sessionsHttp';
 import type { CliServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
 import { resolveSessionOwningMachineId } from './resolveSessionOwningMachine';
-import { callMachineRpc } from '@/session/transport/rpc/machineRpc';
+import { callMachineRpc, readMachineRpcRequestDisposition } from '@/session/transport/rpc/machineRpc';
 import {
   resolveSessionControlStopPollIntervalMs,
   resolveSessionControlStopTimeoutMs,
@@ -32,7 +32,8 @@ import {
 import { delay } from '@/utils/time';
 import { readTerminalHostAttachmentState } from '@/terminal/attachment/terminalAttachmentInfo';
 import { readOrCreateDeviceLocalSecretStorage } from '@/daemon/deviceLocalSecretStorage';
-import { RPC_METHODS, SOCKET_RPC_AUTHORIZATION_CONTEXT_KINDS } from '@happier-dev/protocol/rpc';
+import { RPC_ERROR_CODES, RPC_METHODS, SOCKET_RPC_AUTHORIZATION_CONTEXT_KINDS } from '@happier-dev/protocol/rpc';
+import { readRpcErrorCode } from '@happier-dev/protocol/rpcErrors';
 
 type StopSessionAttemptResult = StopSessionResult | Readonly<{
   status: 'incomplete';
@@ -124,7 +125,27 @@ async function stopSessionOnOwningMachine(params: Readonly<{
     return result.success
       ? result.data
       : { status: 'incomplete', reason: 'target_daemon_unavailable' };
-  } catch {
+  } catch (error) {
+    const rpcErrorCode = readRpcErrorCode(error);
+    const disposition = readMachineRpcRequestDisposition(error);
+    const transportErrorCode = error && typeof error === 'object' && 'code' in error
+      ? error.code
+      : undefined;
+    logger.infoFile('[SESSION STOP] Owning-machine acknowledgement failed', {
+      sessionId: params.sessionId,
+      machineId: params.machineId,
+      disposition,
+      rpcErrorCode: Object.values(RPC_ERROR_CODES).some((code) => code === rpcErrorCode)
+        ? rpcErrorCode
+        : undefined,
+      transportErrorCode: transportErrorCode === 'MACHINE_RPC_TIMEOUT' ? transportErrorCode : undefined,
+    });
+    if (Object.values(RPC_ERROR_CODES).some((code) => code === rpcErrorCode)) {
+      return { status: 'incomplete', reason: 'target_daemon_unavailable' };
+    }
+    if (disposition === 'outcomeUnknown') {
+      return { status: 'incomplete', reason: 'transport_ambiguous' };
+    }
     return { status: 'incomplete', reason: 'target_daemon_unavailable' };
   }
 }
@@ -232,7 +253,7 @@ async function readExactTerminalAttachmentId(sessionId: string): Promise<string 
     happyHomeDir: configuration.happyHomeDir,
     sessionId,
   }).catch(() => ({ status: 'unreadable' as const, reason: 'io_error' as const }));
-  return state.status === 'present' && state.info.version === 2
+  return state.status === 'present' && state.info.version !== 1
     ? state.info.attachmentId
     : null;
 }

@@ -509,6 +509,21 @@ function buildDefaultScenario(spec: SystemTaskSpec, taskId: string): readonly De
             },
         ];
     }
+    if (taskKind === 'daemon.service.relay.disconnect.v1') {
+        // The dev/QA computer serves no Home through a desktop-managed service of its own.
+        return [
+            {
+                delayMs: 30,
+                type: 'result',
+                payload: {
+                    protocolVersion: SYSTEM_TASK_PROTOCOL_VERSION,
+                    taskId,
+                    ok: true,
+                    data: { outcome: 'no_service', label: null },
+                },
+            },
+        ];
+    }
     if (taskKind === 'daemon.service.stop.v1') {
         return [
             {

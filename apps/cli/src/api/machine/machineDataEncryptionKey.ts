@@ -8,7 +8,7 @@ import {
   type AccountScopedCryptoMaterial,
   type ExpectedRunnerMachineContentKeyBindingV1,
 } from '@happier-dev/protocol';
-import { decodeJwtPayload } from '@/cloud/decodeJwtPayload';
+import { readAccountIdFromToken } from '@/cloud/decodeJwtPayload';
 import { decodeBase64, encodeBase64 } from '../encryption';
 import {
   createMachineContentCodec,
@@ -57,17 +57,16 @@ export function resolveExpectedRunnerMachineContentKeyBindingScope(params: Reado
 }>): ExpectedRunnerMachineContentKeyBindingScope | null {
   const homeServerIdentityId = params.homeServerIdentityId.trim();
   const machineId = params.machineId.trim();
-  const accountId = decodeJwtPayload(params.credentials.token)?.sub;
+  const accountId = readAccountIdFromToken(params.credentials.token);
   if (
     !homeServerIdentityId
     || !machineId
-    || typeof accountId !== 'string'
-    || !accountId.trim()
+    || !accountId
     || !params.credentials.encryption
   ) return null;
   return {
     homeServerIdentityId,
-    creatorAccountId: accountId.trim(),
+    creatorAccountId: accountId,
     machineId,
   };
 }

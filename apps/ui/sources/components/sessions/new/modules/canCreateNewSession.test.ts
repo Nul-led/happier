@@ -3,6 +3,22 @@ import { describe, expect, it } from 'vitest';
 import { canCreateNewSession } from '@/components/sessions/new/modules/canCreateNewSession';
 
 describe('canCreateNewSession', () => {
+    it('admits the matching grant-bound managed machine without an Account machine projection', () => {
+        expect(canCreateNewSession({
+            selectedMachineId: 'bound-machine',
+            selectedMachine: null,
+            selectedPath: '',
+            directoryKind: 'managed',
+            hostBoundMachineId: 'bound-machine',
+        })).toBe(true);
+        expect(canCreateNewSession({
+            selectedMachineId: 'other-machine',
+            selectedMachine: null,
+            selectedPath: '',
+            directoryKind: 'managed',
+            hostBoundMachineId: 'bound-machine',
+        })).toBe(false);
+    });
     it('allows an interactive temporary-computer target without inventing a selected machine', () => {
         expect(canCreateNewSession({
             selectedMachineId: null,
@@ -67,16 +83,6 @@ describe('canCreateNewSession', () => {
         })).toBe(false);
     });
 
-    it('allows offline machines when the authoring flow is saving an automation', () => {
-        const offlineMachine: any = { id: 'm1', active: false, activeAt: 0 };
-        expect(canCreateNewSession({
-            selectedMachineId: 'm1',
-            selectedMachine: offlineMachine,
-            selectedPath: '/repo',
-            allowOfflineMachine: true,
-        })).toBe(true);
-    });
-
     it('returns true when selected machine has exact spawn readiness', () => {
         const onlineMachine: any = { id: 'm1', active: true, activeAt: Date.now() };
         expect(canCreateNewSession({
@@ -113,6 +119,22 @@ describe('canCreateNewSession', () => {
             selectedMachine: onlineMachine,
             selectedPath: '/repo',
             spawnReadiness: { status: 'rpcUnavailable', machineId: 'm1' },
+        })).toBe(false);
+    });
+
+    it('needs no folder for a no-folder session, and still needs a ready machine', () => {
+        const machine: any = { id: 'm1', active: true, activeAt: Date.now() };
+        expect(canCreateNewSession({
+            selectedMachineId: 'm1',
+            selectedMachine: machine,
+            selectedPath: '',
+            directoryKind: 'managed',
+        })).toBe(true);
+        expect(canCreateNewSession({
+            selectedMachineId: 'm1',
+            selectedMachine: null,
+            selectedPath: '',
+            directoryKind: 'managed',
         })).toBe(false);
     });
 });

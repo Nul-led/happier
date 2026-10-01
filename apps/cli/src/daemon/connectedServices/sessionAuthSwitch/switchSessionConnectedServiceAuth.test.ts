@@ -51,6 +51,7 @@ async function readCodexRuntimeAuthAdapterRegistration() {
     throw new Error('Expected the bundled Codex manifest to pass canonical ingestion');
   }
   return await projectAgentConnectedAccountLaunchCatalogEntry({
+    pluginId: ingestedManifest.manifest.id,
     agentId: 'codex',
     connectedAccountLaunch: launch,
     hostAccess: ingestedManifest.manifest.hostAccess,
@@ -4136,7 +4137,7 @@ describe('switchSessionConnectedServiceAuth', () => {
           v: 2,
           bindingsByServiceId: {
             'happier.agent.codex/openai-codex': { source: 'connected', selection: 'profile', profileId: 'happier' },
-            openai: { source: 'native' },
+            'happier.voice.openai/openai': { source: 'native' },
           },
         },
       },

@@ -1,11 +1,9 @@
-import {
-  type Metadata,
-} from '@/sync/domains/state/storageTypes';
+import { type Metadata } from '@happier-dev/session-core/state';
 import { readSessionMetadataLayoutVersion } from '@/sync/engine/sessions/parsePlainSessionPayload';
 
 type SessionOwnerMetadataViewInput = Readonly<{
   metadataLayoutVersion?: number;
-  metadata: unknown;
+  metadata?: unknown;
   ownerMetadataView?: unknown;
 }>;
 
@@ -44,6 +42,8 @@ export function resolveSessionOwnerMetadataViewRead(
 ): SessionOwnerMetadataViewRead {
   const metadataLayoutVersion = readSessionMetadataLayoutVersion(session.metadataLayoutVersion);
   if (metadataLayoutVersion === 0) {
+    // An explicit null is producer-owned unavailability, including scoped frame reads.
+    if (session.ownerMetadataView === null) return NOT_PROJECTED;
     return readMetadataView(session.metadata);
   }
   if (metadataLayoutVersion !== 1) {

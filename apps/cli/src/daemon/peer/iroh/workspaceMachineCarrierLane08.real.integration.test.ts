@@ -237,8 +237,10 @@ describe('production workspace opener -> native machine/1 -> Lane 08 ingress', (
 
       const targetMachine = {
         id: targetMachineId,
-        daemonStateVersion: 7,
-        daemonState: { peerMediation: { iroh: { endpoint: targetRuntime.endpoint } } },
+        operationProtocolCapabilitiesRevision: 7,
+        operationProtocolCapabilities: {
+          irohMachineEndpoint: { protocolVersions: [1], ...targetRuntime.endpoint },
+        },
       };
       const readTargetMachine = vi.fn(async () => targetMachine);
       const open = createWorkspaceMachineCarrierTunnelOpen({

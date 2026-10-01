@@ -1,7 +1,9 @@
 import { resolveServerScopedContext } from './resolveServerScopedContext';
 import { createEphemeralServerSocketClient } from './createEphemeralServerSocketClient';
+import { createScopedSocketConnectParams } from './createScopedSocketConnectParams';
 import { storage } from '@/sync/domains/state/storage';
 import { parseToken } from '@/utils/auth/parseToken';
+import type { ScopedServerRpcContext } from './serverScopedRpcTypes';
 
 const DEFAULT_SCOPE_PROFILE_ERROR_MESSAGE = 'Active account profile id is unavailable for server-scoped relay socket';
 
@@ -10,21 +12,22 @@ type SubscribeEventFn<TPayload> = (listener: (payload: TPayload) => void) => () 
 type ScopedTransportConfig<TPayload> = Readonly<{
     send: SendEventFn<TPayload>;
     on: SubscribeEventFn<TPayload>;
+    dispose?: () => void;
 }>;
 type SocketAwareScopedTransportFactory<TPayload> = (socket: {
-    emit: (event: string, payload: TPayload) => void;
+    emit: (event: string, payload: unknown) => void;
     on: (event: string, listener: (payload: TPayload) => void) => void;
     off: (event: string, listener: (payload: TPayload) => void) => void;
     timeout: (ms: number) => {
         emitWithAck: (event: string, payload: TPayload) => Promise<unknown>;
     };
-}) => {
+}, context: ScopedServerRpcContext) => ScopedTransportConfig<TPayload> & {
     send: SendEventFn<TPayload>;
     on: SubscribeEventFn<TPayload>;
     socketId?: string;
 };
 type ScopedSocketClientLike<TPayload> = {
-    emit: (event: string, payload: TPayload) => void;
+    emit: (event: string, payload: unknown) => void;
     on: (event: string, listener: (payload: TPayload) => void) => void;
     off: (event: string, listener: (payload: TPayload) => void) => void;
     timeout: (ms: number) => {
@@ -51,13 +54,13 @@ export function createServerScopedRelaySocket<TPayload>(params: Readonly<{
     missingScopeUserProfileErrorMessage?: string;
     createActiveTransport: ScopedTransportConfig<TPayload>;
     createScopedTransport: (socket: {
-        emit: (event: string, payload: TPayload) => void;
+        emit: (event: string, payload: unknown) => void;
         on: (event: string, listener: (payload: TPayload) => void) => void;
         off: (event: string, listener: (payload: TPayload) => void) => void;
         timeout: (ms: number) => {
             emitWithAck: (event: string, payload: TPayload) => Promise<unknown>;
         };
-    }) => ScopedTransportConfig<TPayload> & Readonly<{
+    }, context: ScopedServerRpcContext) => ScopedTransportConfig<TPayload> & Readonly<{
         socketId?: string;
     }>;
     getActiveSocketId?: () => string;
@@ -76,7 +79,7 @@ export function createServerScopedRelaySocket<TPayload>(params: Readonly<{
         timeoutMs: params.timeoutMs,
         missingScopeUserProfileErrorMessage: params.missingScopeUserProfileErrorMessage,
         activeTransport: params.createActiveTransport,
-        scopedTransport: (socket) => params.createScopedTransport(socket),
+        scopedTransport: (socket, context) => params.createScopedTransport(socket, context),
         getActiveSocketId: params.getActiveSocketId,
         getScopedSocketId: params.getScopedSocketId,
     });
@@ -115,22 +118,25 @@ export async function resolveServerScopedRelaySocket<TPayload>(params: Readonly<
 
     let socket: ScopedSocketClientLike<TPayload> | null = null;
     let retainedByReturnedSocket = false;
-    // The socket is pooled and can outlive this client, so carrier custody moves to
-    // the pool with the acquire call: it releases the lease when the socket that
-    // carries it is torn down, and unwinds custody itself when the call fails.
-    // Nothing here releases it afterwards, including on the failure paths below.
+    let carrierCustodyTransferred = false;
+    let redundantCarrierReleased = false;
+    // The socket is pooled and can outlive this client, so a newly-created pool
+    // entry takes carrier custody and releases it only at physical teardown. A
+    // reused entry does not take this context's redundant release, which remains
+    // ours to release below.
     try {
-        socket = await createEphemeralServerSocketClient({
-            serverUrl: context.runtimeOrigin ?? context.targetServerUrl,
-            reachabilityServerUrl: context.targetServerUrl,
-            ...(context.carrier ? { carrier: context.carrier } : {}),
-            ...(context.homeCarrier ? { homeCarrier: context.homeCarrier } : {}),
-            ...(context.release ? { releaseCarrier: context.release } : {}),
-            token: context.token,
-            timeoutMs: context.timeoutMs,
-        });
+        socket = await createEphemeralServerSocketClient(
+            createScopedSocketConnectParams(context, () => {
+                carrierCustodyTransferred = true;
+                return context.release;
+            }),
+        );
+        if (!carrierCustodyTransferred) {
+            await context.release?.();
+            redundantCarrierReleased = true;
+        }
         const scopedTransport = typeof params.scopedTransport === 'function'
-            ? params.scopedTransport(socket)
+            ? params.scopedTransport(socket, context)
             : params.scopedTransport;
 
         const resolvedSocket: ServerScopedRelaySocket<TPayload> = {
@@ -140,6 +146,7 @@ export async function resolveServerScopedRelaySocket<TPayload>(params: Readonly<
             sendEnvelope: scopedTransport.send,
             onEnvelope: scopedTransport.on,
             disconnect: async () => {
+                scopedTransport.dispose?.();
                 socket?.disconnect();
             },
         };
@@ -148,6 +155,9 @@ export async function resolveServerScopedRelaySocket<TPayload>(params: Readonly<
     } finally {
         if (!retainedByReturnedSocket) {
             socket?.disconnect();
+        }
+        if (!carrierCustodyTransferred && !redundantCarrierReleased) {
+            await context.release?.();
         }
     }
 }

@@ -5,6 +5,7 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { StatusPill, type StatusPillVariant } from '@/components/ui/status/StatusPill';
 
 import type { AgentInputStatusBadge as AgentInputStatusBadgeDescriptor, AgentInputStatusBadgeTone } from '../agentInputContracts';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 type AgentInputStatusBadgeProps = AgentInputStatusBadgeDescriptor & Readonly<{
     anchorRef?: React.RefObject<any>;
@@ -99,7 +100,7 @@ const styles = StyleSheet.create(() => ({
         flexShrink: 1,
     },
     wrapperPressed: {
-        opacity: 0.6,
+        opacity: motionTokens.press.opacity,
     },
     pillDensity: {
         paddingVertical: 4,

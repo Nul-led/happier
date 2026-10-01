@@ -3,7 +3,10 @@ import * as React from 'react';
 import { getAgentCore, type AgentId } from '@/agents/catalog/catalog';
 import { useEnabledAgentIds } from '@/agents/hooks/useEnabledAgentIds';
 import { useStableValueBySignature } from '@/components/sessions/transcript/items/stableValueBySignature';
-import { useExecutionRunsBackendsForSession } from '@/hooks/server/useExecutionRunsBackendsForSession';
+import {
+    useExecutionRunsBackendsForMachine,
+    useExecutionRunsBackendsForSession,
+} from '@/hooks/server/useExecutionRunsBackendsForSession';
 import { usePreferredServerIdForSession } from '@/sync/runtime/orchestration/serverScopedRpc/usePreferredServerIdForSession';
 import { useSessionHasActionDrafts } from '@/sync/store/hooks';
 import { t } from '@/text';
@@ -30,6 +33,29 @@ export function useSessionActionFieldOptions(
 ): ResolveSessionActionFieldOptions {
     const enabledAgentIds = useEnabledAgentIds();
     const executionRunsBackends = useExecutionRunsBackendsForSession(sessionId, serverId);
+    return React.useMemo(
+        () => buildSessionActionFieldOptionsResolver(buildSessionActionFieldOptionLists({
+            enabledAgentIds,
+            executionRunsBackends,
+            resolveAgentLabel,
+        })),
+        [enabledAgentIds, executionRunsBackends],
+    );
+}
+
+/**
+ * The same resolver for an Action authored against an exact Machine rather than
+ * a Session (a workflow's Action step, bound to the workflow's Where). Inert
+ * (no detect RPC) until `enabled`, which the surface sets when an Action field
+ * is actually shown.
+ */
+export function useActionFieldOptionsForMachine(params: Readonly<{
+    machineId: string | null;
+    serverId: string | null;
+    enabled: boolean;
+}>): ResolveSessionActionFieldOptions {
+    const enabledAgentIds = useEnabledAgentIds();
+    const executionRunsBackends = useExecutionRunsBackendsForMachine(params);
     return React.useMemo(
         () => buildSessionActionFieldOptionsResolver(buildSessionActionFieldOptionLists({
             enabledAgentIds,

@@ -15,6 +15,18 @@ import {
 } from './spawnSessionOptionsContract';
 
 describe('SpawnDaemonSessionRequestSchema', () => {
+  it('preserves a strict private managed fork seed without accepting arbitrary source fields', () => {
+    const request = { directory: '/private/child', directoryKind: 'managed', managedDirectorySeed: {
+      sourceSessionId: 'source-1', sourcePath: '/private/source',
+    } };
+    expect(SpawnDaemonSessionRequestSchema.parse(request)).toMatchObject(request);
+    expect(pickDefinedSpawnSessionOptions(SpawnDaemonSessionRequestSchema.parse(request))).toMatchObject(request);
+    expect(SpawnDaemonSessionRequestSchema.safeParse({ ...request, managedDirectorySeed: { ...request.managedDirectorySeed, copyAnything: true } }).success).toBe(false);
+  });
+  it('preserves private fresh-row evidence on an already committed replay attachment', () => {
+    const request = { directory: '/private/allocation', existingSessionId: 'replay-child', freshSessionCreation: true };
+    expect(SpawnDaemonSessionRequestSchema.parse(request)).toMatchObject(request);
+  });
   it.each([
     null,
     {},
@@ -282,7 +294,7 @@ describe('SpawnDaemonSessionRequestSchema', () => {
     expect(parsed.modelSelection).toEqual({
       v: 1,
       updatedAt: 42,
-      ref: { agentTargetKey: 'backend:codex', providerConnectionId: null, modelId: 'gpt-legacy' },
+      ref: { agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: null, modelId: 'gpt-legacy' },
     });
     expect(parsed).not.toHaveProperty('modelId');
     expect(parsed).not.toHaveProperty('modelUpdatedAt');
@@ -292,7 +304,9 @@ describe('SpawnDaemonSessionRequestSchema', () => {
     const modelSelection = {
       v: 1 as const,
       updatedAt: 42,
-      ref: { agentTargetKey: 'backend:codex', providerConnectionId: 'pc_work', modelId: 'provider-model' },
+      // The app and the public Action author this canonical key; the daemon
+      // keys the same bundled Agent identically from its routing target.
+      ref: { agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: 'pc_work', modelId: 'provider-model' },
     };
     expect(SpawnDaemonSessionRequestSchema.parse({
       directory: '/tmp',
@@ -302,7 +316,7 @@ describe('SpawnDaemonSessionRequestSchema', () => {
     expect(() => SpawnDaemonSessionRequestSchema.parse({
       directory: '/tmp',
       backendTarget: { kind: 'backend', backendId: 'codex', sourceKind: 'built_in' },
-      modelSelection: { ...modelSelection, ref: { ...modelSelection.ref, agentTargetKey: 'backend:claude' } },
+      modelSelection: { ...modelSelection, ref: { ...modelSelection.ref, agentTargetKey: 'agent:happier.agent.claude/claude' } },
     })).toThrow(/target/i);
   });
 
@@ -379,6 +393,22 @@ describe('SpawnDaemonSessionRequestSchema', () => {
         requestId: ' pending-local-36 ',
       },
     }));
+  });
+
+  it('admits an initial goal on resume and preserves it for the runtime', () => {
+    const initialGoal = { objective: 'Finish the review' };
+    const parsed = SpawnDaemonSessionRequestSchema.parse({
+      type: 'resume-session',
+      directory: '/tmp',
+      existingSessionId: 'session-1',
+      initialGoal,
+    });
+
+    expect(pickDefinedSpawnSessionOptions(parsed).initialGoal).toEqual(initialGoal);
+    expect(SpawnDaemonSessionRequestSchema.safeParse({
+      directory: '/tmp',
+      initialGoal,
+    }).success).toBe(false);
   });
 
   it('rejects synthetic Action fields rather than stripping them from the daemon spawn contract', () => {

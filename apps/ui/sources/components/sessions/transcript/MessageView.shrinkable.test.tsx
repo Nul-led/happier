@@ -8,6 +8,11 @@ import { installMessageViewCommonModuleMocks } from './messageViewTestHelpers';
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 installMessageViewCommonModuleMocks({
+    unistyles: async () => {
+        const { createUnistylesMock } = await import('@/dev/testkit/mocks/unistyles');
+        // A distinctive part radius proves the component reads the theme's part token, not a constant.
+        return createUnistylesMock({ theme: { parts: { userBubble: { radius: 37 } }, transcript: { messageGap: 31 } } });
+    },
     reactNative: async () => {
         const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
         return createReactNativeWebMock({
@@ -74,6 +79,18 @@ vi.mock('@/sync/sync', () => ({
     sync: { submitMessage: vi.fn(), sendMessage: vi.fn() },
 }));
 
+/** MessageView reads its session through the transcript source; a read-only source is the smallest real one. */
+async function renderMessageView(MessageView: typeof import('./MessageView').MessageView, message: any) {
+    const { SessionTranscriptSourceProvider } = await import('./source/SessionTranscriptSourceContext');
+    const { createReadOnlySessionTranscriptSource } = await import('./source/readOnlySessionTranscriptSource');
+    const source = createReadOnlySessionTranscriptSource({ sessionId: 's1', messages: [message], reducerState: null, metadata: null, agentState: null });
+    return renderScreen(
+        <SessionTranscriptSourceProvider source={source}>
+            <MessageView message={message} metadata={{} as any} sessionId="s1" />
+        </SessionTranscriptSourceProvider>,
+    );
+}
+
 describe('MessageView (shrinkable transcript layout)', () => {
     afterEach(() => {
         standardCleanup();
@@ -89,7 +106,7 @@ describe('MessageView (shrinkable transcript layout)', () => {
             text: 'hello',
         };
 
-        const screen = await renderScreen(<MessageView message={message} metadata={{} as any} sessionId="s1" />);
+        const screen = await renderMessageView(MessageView, message);
 
         const markdown = screen.tree.root.findByType('MarkdownView');
         const messageContent = findAncestorWithStyle(markdown, (style) => {
@@ -104,6 +121,17 @@ describe('MessageView (shrinkable transcript layout)', () => {
             }),
         );
     });
+
+    it('shapes the user bubble and message rhythm from the theme part and transcript tokens', async () => {
+        const { MessageView } = await import('./MessageView');
+
+        const message: any = { kind: 'user-text', localId: 'local-2', id: 'm2', text: 'hello' };
+
+        const screen = await renderMessageView(MessageView, message);
+
+        expect(findStyledNodes(screen.tree.root, 'borderRadius', 37).length).toBeGreaterThan(0);
+        expect(findStyledNodes(screen.tree.root, 'paddingBottom', 31).length).toBeGreaterThan(0);
+    });
 });
 
 function findAncestorWithStyle(
@@ -116,4 +144,12 @@ function findAncestorWithStyle(
         current = current.parent ?? null;
     }
     return null;
+}
+
+function findStyledNodes(root: { findAll: (predicate: (node: any) => boolean) => any[] }, key: string, value: unknown) {
+    const flatten = (style: unknown): Record<string, unknown> => {
+        if (Array.isArray(style)) return Object.assign({}, ...style.map(flatten));
+        return style && typeof style === 'object' ? (style as Record<string, unknown>) : {};
+    };
+    return root.findAll((node) => typeof node.type === 'string' && flatten(node.props?.style)[key] === value);
 }

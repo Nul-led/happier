@@ -3,10 +3,13 @@ import { randomUUID } from 'node:crypto';
 import {
   readPendingLocalId,
   AgentSessionRuntimeEventSchema,
+  AgentSessionStartupInstructionsV1Schema,
   normalizeStrictJsonValue,
   readStructuredInputMentionSourcesV1,
   renderSessionInputContextPromptV1,
   validatePluginHookPayloadV1,
+  isModelRefGrantedV1,
+  isPermissionModeGrantedV1,
   type SessionPendingQueueDeliveryTiming,
   type ProviderBoundModelRef,
   type SessionModelTransitionResultV1,
@@ -14,6 +17,7 @@ import {
   type ComposerAttachmentResolveRequestV1,
   type ComposerAttachmentResolveResultV1,
   type PluginContributionIdentityV1,
+  type AgentSessionStartupInstructionsMarkerV1,
 } from '@happier-dev/protocol';
 import { readNonBlankOpaqueIdentifier } from '@happier-dev/protocol';
 
@@ -92,7 +96,7 @@ import {
 } from '@/agent/runtime/turns/resolveStructuredInputProviderContext';
 import { logger } from '@/ui/logger';
 import type { AgentCompositionToolSelection } from '@/plugins/runtime/hooks/execution/dispatchAgentTurnHooks';
-import type { SessionFollowPreparedContext as RuntimeSessionFollowPreparedContext } from '@/agent/runtime/session/follow/sessionFollowContextReconciler';
+import type { HostPreparedContext } from '@/agent/runtime/session/contextOnly/hostContextOnlyInput';
 
 export type ComposerAttachmentDispatchResolver = (input: Readonly<{
   sessionId: string;
@@ -138,11 +142,13 @@ export type PermissionModePromptLoopTurnOperations = RuntimeTurnOperations & Rea
   listSkills?: () => Promise<unknown>;
   resolveComposerReference?: StructuredInputComposerReferenceResolver['resolve'];
   shouldResumeAfterPermissionModeChange?: () => boolean;
-  prepareSessionFollowContext?: (input: Readonly<{
+  prepareHostContext?: (input: Readonly<{
     signal: AbortSignal;
     /** Final required provider prompt before optional Follow blocks are admitted. */
     requiredPrompt: string;
-  }>) => Promise<RuntimeSessionFollowPreparedContext | null>;
+    contextOnlyWorkerUpdate?: import('@happier-dev/protocol').WorkerUpdateV1;
+    contextOnlyWorkerLocalId?: string;
+  }>) => Promise<HostPreparedContext | null>;
 }>;
 
 export type PromptLoopOverrideSynchronizer = Readonly<{
@@ -179,11 +185,13 @@ export type PromptLoopCheckpointLifecycle = Readonly<{
   onTurnStarted?: (params: Readonly<{
     messageId: string;
     turnId: string;
+    sequence?: number;
   }>) => void | Promise<void>;
   onTurnFinal?: (params: Readonly<{
     messageId: string;
     turnId: string;
     status: 'completed' | 'aborted' | 'interrupted' | 'unknown';
+    sequence?: number;
   }>) => void | Promise<void>;
   onTurnAbortedBeforeStart?: (params: Readonly<{
     messageId: string;
@@ -195,6 +203,7 @@ type CheckpointRuntimeMessage = Readonly<{
   type?: unknown;
   id?: unknown;
   reason?: unknown;
+  sequence?: number;
 }>;
 
 type PromptLoopStatusPublisherOptions = Readonly<{
@@ -292,13 +301,13 @@ function readCheckpointRuntimeMessage(message: unknown): CheckpointRuntimeMessag
     const runtimeEvent = parsedRuntimeEvent.data;
     switch (runtimeEvent.kind) {
       case 'turn-start':
-        return { type: 'task_started', id: runtimeEvent.turnId };
+        return { type: 'task_started', id: runtimeEvent.turnId, sequence: runtimeEvent.sequence };
       case 'turn-complete':
-        return { type: 'task_complete', id: runtimeEvent.turnId };
+        return { type: 'task_complete', id: runtimeEvent.turnId, sequence: runtimeEvent.sequence };
       case 'turn-cancelled':
-        return { type: 'turn_aborted', id: runtimeEvent.turnId, reason: runtimeEvent.cause };
+        return { type: 'turn_aborted', id: runtimeEvent.turnId, reason: runtimeEvent.cause, sequence: runtimeEvent.sequence };
       case 'turn-failed':
-        return { type: 'turn_failed', id: runtimeEvent.turnId };
+        return { type: 'turn_failed', id: runtimeEvent.turnId, sequence: runtimeEvent.sequence };
       default:
         return null;
     }
@@ -660,6 +669,8 @@ export async function runPermissionModePromptLoop(opts: {
   messageQueue: MessageQueue2<PermissionModeQueuedPromptMode, PermissionModeQueuedPrompt>;
   permissionHandler: PromptLoopPermissionHandler;
   runtime: PermissionModePromptLoopTurnOperations;
+  /** Host composition must not clone the Agent's receiver-sensitive operations. */
+  prepareHostContext?: PermissionModePromptLoopTurnOperations['prepareHostContext'];
   createOverrideSynchronizer: (isStarted: () => boolean) => PromptLoopOverrideSynchronizer;
   messageBuffer: MessageBuffer;
   shouldExit: () => boolean;
@@ -694,6 +705,13 @@ export async function runPermissionModePromptLoop(opts: {
     baseOverride?: string | null;
     excludePluginIds?: readonly string[];
   }) => Promise<string | null | undefined>;
+  /** Catalog support and current full-plan native acceptance, supplied by the host owner. */
+  readSessionPromptPlanDeliveryState?: () => Readonly<{
+    marker?: AgentSessionStartupInstructionsMarkerV1;
+    startupInstructionsSupported: boolean;
+    revisionChanges?: 'resume';
+    nativeDeliveredMarker?: AgentSessionStartupInstructionsMarkerV1;
+  }>;
   /**
    * Resolves bounded plugin-selected material for this next provider turn.
    * The loop owns placement; this callback cannot replace a provider prompt
@@ -743,6 +761,8 @@ export async function runPermissionModePromptLoop(opts: {
     localId: string,
     onAccepted: (() => void) | null,
   ) => void;
+  /** Host lifecycle freezes protected cause facts immediately before runtime begin. */
+  onBeforeTurnBegin?: (input: PermissionModeQueuedPrompt) => void;
   /**
    * Session-scoped hold for a replay seed the provider already accepted whose metadata
    * retirement has not succeeded. The loop records failed settlement outcomes here and, at
@@ -756,14 +776,26 @@ export async function runPermissionModePromptLoop(opts: {
   ) => void;
   formatPromptErrorMessage: (error: unknown) => string;
 }): Promise<void> {
+  const prepareHostContext: PermissionModePromptLoopTurnOperations['prepareHostContext'] = opts.prepareHostContext
+    ?? (async (input) => await opts.runtime.prepareHostContext?.(input) ?? null);
   let wasStarted = false;
   let currentRuntimeRestartModeHash: string | null = null;
   let pending: QueuedPermissionModeMessage | null = null;
   let turnInFlight = false;
   let pendingFreshSessionSystemPrompt = false;
+  type SessionSystemPromptDelivery = Readonly<{
+    text: string;
+    marker?: AgentSessionStartupInstructionsMarkerV1;
+    native?: boolean;
+  }>;
+  let lastDeliveredSessionSystemPrompt: SessionSystemPromptDelivery | null = null;
+  let pendingSessionSystemPromptDelivery: SessionSystemPromptDelivery | null = null;
+  let nativeSessionPlanRevision = opts.runtime.readSessionStartupInstructions?.()?.revision ?? 0;
+  let hasNativeStartupPlan = opts.runtime.readSessionStartupInstructions?.() != null;
   let runtimePermissionModeApplied: PermissionMode | null = null;
   let activeCheckpointMessageId: string | null = null;
   let activeCheckpointTurnId: string | null = null;
+  let activeCheckpointFinalSequence: number | undefined;
   let activeCheckpointFinalStatus: 'completed' | 'aborted' | 'interrupted' | 'unknown' = 'unknown';
   let checkpointLifecycleTail: Promise<void> = Promise.resolve();
   const enqueueCheckpointHook = (fn: (() => void | Promise<void>) | undefined): Promise<void> => {
@@ -817,9 +849,16 @@ export async function runPermissionModePromptLoop(opts: {
   };
 
   const unsubscribeCheckpointRuntimeMessages = (() => {
-    if (!opts.checkpointLifecycle) return () => undefined;
     try {
       return opts.runtime.subscribeRuntimeEvents((rawMessage) => {
+        const event = AgentSessionRuntimeEventSchema.safeParse(rawMessage);
+        if (event.success && event.data.kind === 'context-compaction' && event.data.phase === 'completed') {
+          // The canonical event invalidates this delivery owner. No compact
+          // command heuristic, separate cadence or provider-specific marker.
+          pendingFreshSessionSystemPrompt = true;
+          pendingSessionSystemPromptDelivery = null;
+        }
+        if (!opts.checkpointLifecycle) return;
         const message = readCheckpointRuntimeMessage(rawMessage);
         if (!message || typeof message.type !== 'string') return;
         const messageId = activeCheckpointMessageId;
@@ -827,7 +866,9 @@ export async function runPermissionModePromptLoop(opts: {
         const turnId = readCheckpointTurnId(message);
         if (message.type === 'task_started' && turnId) {
           activeCheckpointTurnId = turnId;
-          void enqueueCheckpointHook(() => opts.checkpointLifecycle?.onTurnStarted?.({ messageId, turnId }));
+          void enqueueCheckpointHook(() => opts.checkpointLifecycle?.onTurnStarted?.({
+            messageId, turnId, ...(message.sequence === undefined ? {} : { sequence: message.sequence }),
+          }));
           return;
         }
         if (
@@ -836,6 +877,7 @@ export async function runPermissionModePromptLoop(opts: {
         ) {
           activeCheckpointTurnId = activeCheckpointTurnId ?? turnId;
           activeCheckpointFinalStatus = mapCheckpointFinalStatus(message);
+          activeCheckpointFinalSequence = message.sequence;
         }
       });
     } catch {
@@ -1069,6 +1111,25 @@ export async function runPermissionModePromptLoop(opts: {
       continue;
     }
 
+    const readCallerInputFailure = (): PreTurnFailure | null => {
+      const constraints = message.mode.callerInputConstraints;
+      if (!constraints) return null;
+      const effectiveModel = message.mode.modelSelection ?? opts.readActiveModelSelection?.() ?? 'automatic';
+      const code = !isModelRefGrantedV1(constraints, effectiveModel)
+        ? 'model_not_granted'
+        : !isPermissionModeGrantedV1(constraints, message.mode.permissionMode)
+          ? 'permission_mode_not_granted' : null;
+      return code ? { code, message: code, retryable: false } : null;
+    };
+    // Reject before permission mutation/reset, then recheck under provider dispatch custody.
+    const callerInputFailure = readCallerInputFailure();
+    if (callerInputFailure) {
+      await observePreTurnFailureSettlement({ session: opts.session, message: message.message, error: callerInputFailure });
+      await publishPromptLoopAgentMessage(opts, { type: 'message', message: callerInputFailure.message });
+      await opts.sendReady();
+      continue;
+    }
+
     opts.permissionHandler.setPermissionMode(message.mode.permissionMode);
 
     const runtimeRestartModeHash = readRuntimeRestartModeHash(message.mode);
@@ -1099,6 +1160,8 @@ export async function runPermissionModePromptLoop(opts: {
       await opts.runtime.resetOrDisposeRuntime(undefined, nextSessionOpenIntent);
       wasStarted = false;
       nextSessionIsFresh = nextSessionOpenIntent.kind === 'create';
+      if (nextSessionIsFresh) lastDeliveredSessionSystemPrompt = null;
+      pendingSessionSystemPromptDelivery = null;
       runtimePermissionModeApplied = null;
       pendingFreshSessionSystemPrompt = false;
       await opts.onAfterReset?.({ reason: 'mode_change' });
@@ -1129,6 +1192,8 @@ export async function runPermissionModePromptLoop(opts: {
       resetAssistantTextSnapshotTurnScope(opts.session, 'clear');
       await opts.permissionHandler.reset();
       await opts.runtime.resetOrDisposeRuntime(undefined, { kind: 'create' });
+      lastDeliveredSessionSystemPrompt = null;
+      pendingSessionSystemPromptDelivery = null;
       wasStarted = false;
       nextSessionIsFresh = true;
       runtimePermissionModeApplied = null;
@@ -1194,8 +1259,6 @@ export async function runPermissionModePromptLoop(opts: {
     };
     try {
       turnInFlight = true;
-      let shouldApplyFreshSessionSystemPrompt = pendingFreshSessionSystemPrompt && !providerPromptAlreadyResolved;
-      pendingFreshSessionSystemPrompt = false;
       const promptDeliveryIdentity = readQueuedPromptDeliveryIdentity(message.message);
       const { localIds, userMessageSeq, userMessageSeqs } = promptDeliveryIdentity;
       const localId = localIds[0] ?? null;
@@ -1206,22 +1269,12 @@ export async function runPermissionModePromptLoop(opts: {
           shouldSendReady = false;
           return;
         }
-        shouldApplyFreshSessionSystemPrompt =
-          !providerPromptAlreadyResolved
-          && (runtimeStart.startedFreshSessionForTurn || shouldApplyFreshSessionSystemPrompt);
-      }
-      if (runtimePermissionModeApplied !== message.mode.permissionMode) {
-        await opts.runtime.updateSessionRuntimeConfig({ permissionMode: message.mode.permissionMode });
-        runtimePermissionModeApplied = message.mode.permissionMode;
+        pendingFreshSessionSystemPrompt ||= runtimeStart.startedFreshSessionForTurn;
       }
       const providerNativeCommand = special.type === null
         && opts.runtime.isProviderNativeCommand?.(message.message.text) === true;
       const dispatchProviderNativeCommandVerbatim = providerNativeCommand
         && !(message.message.inputContextBlock?.trim());
-      if (dispatchProviderNativeCommandVerbatim) {
-        pendingFreshSessionSystemPrompt ||= shouldApplyFreshSessionSystemPrompt;
-        shouldApplyFreshSessionSystemPrompt = false;
-      }
       const runProviderInputDispatch = async (
         dispatch: () => Promise<void>,
       ): Promise<'dispatched' | 'cancelled'> => {
@@ -1239,9 +1292,20 @@ export async function runPermissionModePromptLoop(opts: {
       const transitionAndDispatchProviderInput = async (
         dispatch: () => Promise<void>,
       ): Promise<'dispatched' | 'cancelled'> => {
+        const failure = readCallerInputFailure();
+        if (failure) throw new PreTurnPromptFailure(failure);
+        const dispatchGrantedInput = async (): Promise<void> => {
+          const failure = readCallerInputFailure();
+          if (failure) throw new PreTurnPromptFailure(failure);
+          if (runtimePermissionModeApplied !== message.mode.permissionMode) {
+            await opts.runtime.updateSessionRuntimeConfig({ permissionMode: message.mode.permissionMode });
+            runtimePermissionModeApplied = message.mode.permissionMode;
+          }
+          await dispatch();
+        };
         const requestedSelection = message.mode.modelSelection;
         if (!requestedSelection) {
-          return await runProviderInputDispatch(dispatch);
+          return await runProviderInputDispatch(dispatchGrantedInput);
         }
         if (!opts.transitionModelSelectionBeforePrompt) {
           const transition = {
@@ -1261,7 +1325,7 @@ export async function runPermissionModePromptLoop(opts: {
             dispatchStatus = (
               await transferPromptAdmission({
                 abortSignal: opts.getAbortSignal(),
-                dispatch,
+                dispatch: dispatchGrantedInput,
               })
             ).status;
           },
@@ -1399,10 +1463,9 @@ export async function runPermissionModePromptLoop(opts: {
             ? agentComposition.prompt.trim()
             : '';
         snapshotFreshForNextPromptBoundary = false;
-        const explicitBaseOverride = shouldApplyFreshSessionSystemPrompt
-          ? resolveAppendSystemPromptBaseOverride(message.mode)
-          : undefined;
-        const freshSessionSystemPrompt = shouldApplyFreshSessionSystemPrompt
+        const resolveSessionPlan = !providerPromptAlreadyResolved && !dispatchProviderNativeCommandVerbatim;
+        const explicitBaseOverride = resolveAppendSystemPromptBaseOverride(message.mode);
+        const freshSessionSystemPrompt = resolveSessionPlan
           ? await opts.resolveFreshSessionSystemPrompt?.({
               baseOverride: explicitBaseOverride,
               ...(agentComposition?.managedPluginIds.length
@@ -1413,9 +1476,59 @@ export async function runPermissionModePromptLoop(opts: {
         const effectiveAppendSystemPrompt = typeof freshSessionSystemPrompt === 'string'
           ? freshSessionSystemPrompt.trim()
           : '';
+        const planDeliveryState = resolveSessionPlan ? opts.readSessionPromptPlanDeliveryState?.() : undefined;
+        const marker = planDeliveryState?.marker;
+        const nativeMarker = planDeliveryState?.nativeDeliveredMarker;
+        const nativeStartup = opts.runtime.readSessionStartupInstructions?.();
+        if (nativeStartup || nativeMarker) hasNativeStartupPlan = true;
+        const planChanged = lastDeliveredSessionSystemPrompt === null
+          || effectiveAppendSystemPrompt !== lastDeliveredSessionSystemPrompt.text
+          || (marker !== undefined && (marker.id !== lastDeliveredSessionSystemPrompt.marker?.id
+            || marker.revision !== lastDeliveredSessionSystemPrompt.marker?.revision));
+        const canReopenForNativePlan = planDeliveryState?.startupInstructionsSupported === true
+          && planDeliveryState.revisionChanges === 'resume';
+        const nativePlanMatches = () => planDeliveryState?.startupInstructionsSupported === true
+          && opts.runtime.readSessionStartupInstructions?.()?.instructions === effectiveAppendSystemPrompt.normalize('NFC')
+          && (marker === undefined || (opts.runtime.readSessionStartupInstructions?.()?.id === marker.id
+            && opts.runtime.readSessionStartupInstructions?.()?.revision === marker.revision));
+        let preparedNativePlan = lastDeliveredSessionSystemPrompt === null && nativePlanMatches();
+        const lostNativePlan = lastDeliveredSessionSystemPrompt?.native === true && !nativePlanMatches();
+        if (resolveSessionPlan && canReopenForNativePlan
+          && !preparedNativePlan && (planChanged || lostNativePlan)) {
+          const providerSessionId = opts.runtime.readSessionIdentity().sessionId;
+          const nextIntent: RuntimeTurnSessionOpenIntent = providerSessionId
+            ? { kind: 'resume', providerSessionId, importHistory: false }
+            : { kind: 'create' };
+          const startupInstructions = effectiveAppendSystemPrompt
+            ? AgentSessionStartupInstructionsV1Schema.parse({
+                ...(marker ?? { v: 1, id: 'happier.coding_session_plan', revision: ++nativeSessionPlanRevision }),
+                instructions: effectiveAppendSystemPrompt.normalize('NFC'),
+              }) : null;
+          // A preserved terminal host retains old startup text. Close only the native runtime
+          // incarnation and reopen the same conversation through its canonical factory.
+          await opts.runtime.resetOrDisposeRuntime('session_closed', { ...nextIntent, startupInstructions });
+          if (startupInstructions) {
+            nativeSessionPlanRevision = startupInstructions.revision;
+            hasNativeStartupPlan = true;
+          }
+          preparedNativePlan = startupInstructions === null || nativePlanMatches();
+        }
+        const deliveredNatively = preparedNativePlan
+          || (!planChanged && !lostNativePlan && lastDeliveredSessionSystemPrompt?.native === true)
+          || (planDeliveryState?.startupInstructionsSupported === true
+          && marker !== undefined && nativeMarker !== undefined
+          && marker.id === nativeMarker.id && marker.revision === nativeMarker.revision);
+        const shouldApplyFreshSessionSystemPrompt = resolveSessionPlan && !deliveredNatively
+          && (pendingFreshSessionSystemPrompt || planChanged || lostNativePlan);
         const providerPrompt = [
           shouldApplyFreshSessionSystemPrompt && effectiveAppendSystemPrompt.length > 0
-            ? effectiveAppendSystemPrompt
+            ? [
+                (hasNativeStartupPlan || (Boolean(opts.initialResumeId)
+                  && planDeliveryState?.startupInstructionsSupported === true)) && !canReopenForNativePlan
+                  ? 'These instructions supersede the Happier startup instructions and any earlier Happier session plan.'
+                  : '',
+                effectiveAppendSystemPrompt,
+              ].filter(Boolean).join('\n\n')
             : '',
           effectiveAgentCompositionPrompt,
           seedResolution.providerPrompt,
@@ -1517,23 +1630,74 @@ export async function runPermissionModePromptLoop(opts: {
           prompt: requiredDispatchPrompt,
         }));
 
-        // A context-only wake was hydrated and admitted before it was queued and before
-        // the checkpoint capture above. Re-enter the same Follow admission here, the
-        // final boundary before the provider sees its source text (09D §6.3); a wake
-        // whose edge, audience, publisher or input authority changed is withdrawn and
-        // never becomes an empty synthetic turn.
         const hostContextOnly = message.message.hostContextOnly;
-        if (hostContextOnly && !(await hostContextOnly.prepared.recheckAdmission(dispatchAbortSignal))) {
+        // Required workflow text is already FIN-materialized, not optional context.
+        let preparedHostContext: HostPreparedContext | null = hostContextOnly?.kind === 'session_follow'
+          ? hostContextOnly.prepared
+          : hostContextOnly?.kind === 'workflow_step' || dispatchProviderNativeCommandVerbatim
+          || !localId
+          ? null
+          : await prepareHostContext?.({
+              signal: dispatchAbortSignal,
+              requiredPrompt: requiredProviderContextForBudget,
+              ...(hostContextOnly?.kind === 'worker_update' ? {
+                contextOnlyWorkerUpdate: hostContextOnly.update,
+                ...(localId ? { contextOnlyWorkerLocalId: localId } : {}),
+              } : {}),
+            }) ?? null;
+        if (!hostContextOnly && preparedHostContext?.recheckAdmission
+          && !await preparedHostContext.recheckAdmission(dispatchAbortSignal)) preparedHostContext = null;
+        const contextOnlyWorkerUpdate = hostContextOnly?.kind === 'worker_update'
+          ? preparedHostContext?.contextOnlyWorkerUpdate === undefined
+            ? hostContextOnly.update
+            : preparedHostContext.contextOnlyWorkerUpdate
+          : null;
+        if (hostContextOnly?.kind === 'worker_update' && !contextOnlyWorkerUpdate) {
           contextOnlyWakeWithdrawn = true;
           return;
         }
-        const preparedSessionFollowContext = hostContextOnly?.prepared ?? (dispatchProviderNativeCommandVerbatim
-          || !localId
-          ? null
-          : await opts.runtime.prepareSessionFollowContext?.({
-              signal: dispatchAbortSignal,
-              requiredPrompt: requiredProviderContextForBudget,
-            }) ?? null);
+        if (hostContextOnly) {
+          const result = await inputConsumer.finalizeContextOnlyInput({
+            batch: { ...message, isolate: true },
+            abortSignal: dispatchAbortSignal,
+            recheck: async () => {
+              if (hostContextOnly.kind === 'session_follow') {
+                return await hostContextOnly.prepared.recheckAdmission(dispatchAbortSignal);
+              }
+              if (hostContextOnly.kind === 'worker_update') {
+                return await hostContextOnly.recheckAdmission(dispatchAbortSignal)
+                  && (await preparedHostContext?.recheckAdmission?.(dispatchAbortSignal) ?? true);
+              }
+              const identity = { localInputId: hostContextOnly.localInputId };
+              const deliverable = await hostContextOnly.isWorkflowStepDeliverable(identity);
+              if (!deliverable || hostContextOnly.withdrawal.isWithdrawn(identity)) {
+                await hostContextOnly.withdrawal.reportWorkflowStepWithdrawn(identity);
+                return false;
+              }
+              return true;
+            },
+            commit: async () => {
+              if (hostContextOnly.kind !== 'workflow_step') {
+                await hostContextOnly.commitHostEvent([
+                  ...(contextOnlyWorkerUpdate && localId ? [{ localId, update: contextOnlyWorkerUpdate }] : []),
+                  ...(preparedHostContext?.workerUpdateEvents ?? []),
+                ]);
+                return true;
+              }
+              let publication: Promise<void> | null = null;
+              const claimed = hostContextOnly.withdrawal.claimDispatch(
+                { localInputId: hostContextOnly.localInputId },
+                () => { publication = hostContextOnly.commitHostEvent(); },
+              );
+              if (publication) await publication;
+              return claimed;
+            },
+          });
+          if (result !== 'committed') {
+            contextOnlyWakeWithdrawn = true;
+            return;
+          }
+        }
         // The provider parses its own command grammar from the first characters of
         // this text, so only an unattributed native command is dispatched verbatim.
         // Attributed input takes the canonical composed path so provenance cannot vanish.
@@ -1542,9 +1706,10 @@ export async function runPermissionModePromptLoop(opts: {
           : renderSessionInputContextPromptV1({
               provenanceBlock: message.message.inputContextBlock ?? '',
               ...resolvedDispatchContext.promptContext,
-              ...(preparedSessionFollowContext
-                ? { sessionFollowUpdates: preparedSessionFollowContext.updates }
+              ...(preparedHostContext
+                ? { sessionFollowUpdates: preparedHostContext.updates, workerUpdates: preparedHostContext.workerUpdates }
                 : {}),
+              ...(contextOnlyWorkerUpdate ? { workerUpdates: [contextOnlyWorkerUpdate, ...(preparedHostContext?.workerUpdates ?? [])] } : {}),
               transformedUserText: transformedDispatchPrompt,
             });
 
@@ -1580,22 +1745,33 @@ export async function runPermissionModePromptLoop(opts: {
             : null,
         );
         assistantTextSnapshotScope = beginAssistantTextSnapshotTurnScope(opts.session);
+        opts.onBeforeTurnBegin?.(message.message);
         opts.runtime.beginTurnLifecycle();
         beganTurn = true;
         startActiveTurnPendingPump();
-        const acknowledgeSessionFollowAccepted = (): void => {
-          if (!preparedSessionFollowContext || !localId) return;
-          preparedSessionFollowContext.acknowledgeAccepted(message.message.hostContextOnly
+        const acknowledgeHostContextAccepted = (): void => {
+          if (!localId) return;
+          if (hostContextOnly && hostContextOnly.kind !== 'session_follow') hostContextOnly.acknowledgeAccepted();
+          preparedHostContext?.acknowledgeAccepted(message.message.hostContextOnly
             ? { kind: 'context_only_wake', eventLocalId: localId }
             : { kind: 'admitted_input', localInputId: localId, userMessageSeq });
         };
         if (localId) {
+          const sessionSystemPromptDelivery = shouldApplyFreshSessionSystemPrompt || preparedNativePlan
+            ? { text: effectiveAppendSystemPrompt, ...(marker ? { marker } : {}),
+                ...(preparedNativePlan ? { native: true } : {}) } : null;
+          if (sessionSystemPromptDelivery) pendingSessionSystemPromptDelivery = sessionSystemPromptDelivery;
           opts.registerProviderAcceptedEffect(
             localId,
-            pendingReplaySeedSettlement || preparedSessionFollowContext
+            pendingReplaySeedSettlement || preparedHostContext || hostContextOnly || sessionSystemPromptDelivery
               ? () => {
                   if (pendingReplaySeedSettlement) confirmProviderAccepted();
-                  acknowledgeSessionFollowAccepted();
+                  acknowledgeHostContextAccepted();
+                  if (sessionSystemPromptDelivery && pendingSessionSystemPromptDelivery === sessionSystemPromptDelivery) {
+                    lastDeliveredSessionSystemPrompt = sessionSystemPromptDelivery;
+                    pendingSessionSystemPromptDelivery = null;
+                    pendingFreshSessionSystemPrompt = false;
+                  }
                 }
               : null,
           );
@@ -1728,10 +1904,12 @@ export async function runPermissionModePromptLoop(opts: {
         if (currentCheckpointMessageId && activeCheckpointTurnId) {
           const checkpointMessageId = currentCheckpointMessageId;
           const checkpointTurnId = activeCheckpointTurnId;
+          const checkpointFinalSequence = activeCheckpointFinalSequence;
           await enqueueCheckpointHook(() => opts.checkpointLifecycle?.onTurnFinal?.({
             messageId: checkpointMessageId,
             turnId: checkpointTurnId,
             status: activeCheckpointFinalStatus,
+            ...(checkpointFinalSequence === undefined ? {} : { sequence: checkpointFinalSequence }),
           }));
         } else if (currentCheckpointMessageId) {
           await enqueueCheckpointHook(() => opts.checkpointLifecycle?.onTurnAbortedBeforeStart?.({
@@ -1741,6 +1919,7 @@ export async function runPermissionModePromptLoop(opts: {
         activeCheckpointMessageId = null;
         activeCheckpointTurnId = null;
         activeCheckpointFinalStatus = 'unknown';
+        activeCheckpointFinalSequence = undefined;
         // Metadata updates can arrive while we're mid-turn.
         overrideSync.syncFromMetadata();
         opts.setThinking(false);
@@ -1759,6 +1938,7 @@ export async function runPermissionModePromptLoop(opts: {
         activeCheckpointMessageId = null;
         activeCheckpointTurnId = null;
         activeCheckpointFinalStatus = 'unknown';
+        activeCheckpointFinalSequence = undefined;
         opts.setThinking(false);
         opts.keepAlive();
         if (handledPreTurnFailure && shouldSendReady) {

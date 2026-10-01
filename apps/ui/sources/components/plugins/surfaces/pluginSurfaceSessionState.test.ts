@@ -1,0 +1,212 @@
+import type { ResourceSubscriptionEvent } from '@happier-dev/plugin-sdk/ui';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const { mockSessionRpcWithPreferredSessionScope } = vi.hoisted(() => ({
+    mockSessionRpcWithPreferredSessionScope: vi.fn(),
+}));
+
+// The Session RPC transport is the only substituted boundary. The mounted
+// controller, the React Native adapter and its subscription registry, the
+// Session store, the awareness/pending-request/interaction owners and the
+// permission-answer owner are all real.
+vi.mock('@/sync/runtime/orchestration/serverScopedRpc/sessionRpcWithPreferredSessionScope', () => ({
+    sessionRpcWithPreferredSessionScope: (...args: unknown[]) => mockSessionRpcWithPreferredSessionScope(...args),
+}));
+
+vi.mock('@/sync/sync', () => ({
+    sync: {
+        encryption: {
+            getSessionEncryption: () => null,
+            getMachineEncryption: () => null,
+        },
+    },
+}));
+
+import { createCanonicalPluginReactNativeHostApiAdapter } from '@/components/plugins/reactNative/hostApi';
+import { createPluginSurfaceContextFixture } from '@/dev/testkit/fixtures/pluginSurfaceContextFixture';
+import { createSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
+import { storage } from '@/sync/domains/state/storage';
+import type { Session } from '@/sync/domains/state/storageTypes';
+
+import { createBoundPluginSurfaceController } from './boundPluginSurfaceController';
+
+const initialStorageState = storage.getState();
+
+const CURRENT_ACCOUNT_LIFETIME = Object.freeze({
+    scope: { serverId: 'server-1', accountId: 'account-a' },
+    isCurrent: () => true,
+    onRetire: () => Object.freeze({ dispose: () => {} }),
+});
+
+const canonicalSurface = createPluginSurfaceContextFixture({ target: { kind: 'app' } });
+
+function mountSurface() {
+    const controller = createBoundPluginSurfaceController({
+        facts: {
+            pluginId: 'acme.triage',
+            contributionId: 'desk',
+            surfaceId: 'surface_1',
+            placement: 'appSurface',
+            platform: 'ios',
+            channel: 'internal',
+            accountLifetime: CURRENT_ACCOUNT_LIFETIME,
+            interactionEnabled: true,
+            daemonInteractionEnabled: false,
+        },
+    });
+    const adapter = createCanonicalPluginReactNativeHostApiAdapter({
+        surface: canonicalSurface,
+        requestSurface: controller.surfaceContext,
+        requestIdPrefix: 'rn-session',
+        handleRequest: controller.hostApi.handleRequest,
+        installedMethods: controller.hostApi.installedMethods,
+    });
+    const unsubscribe = controller.subscribeResourceInvalidations(
+        (event) => { adapter.publishResourceSubscriptionEvent(event); },
+    );
+    return { controller, api: adapter.api, dispose: () => { unsubscribe(); adapter.dispose(); controller.dispose(); } };
+}
+
+// A live Session: awareness only reports what fresh runtime evidence supports.
+const NOW = Date.now();
+
+function waitingSession(overrides: Partial<Session> = {}): Session {
+    return createSessionFixture({
+        id: 'linked-1',
+        active: true,
+        createdAt: NOW,
+        updatedAt: NOW,
+        activeAt: NOW,
+        metadata: {
+            path: '/work/repo',
+            host: 'box.local',
+            homeDir: '/home/me',
+            machineId: 'machine-1',
+            flavor: 'claude',
+        } as Session['metadata'],
+        agentState: {
+            requests: {
+                'req-1': {
+                    tool: 'Bash',
+                    arguments: { command: 'yarn test' },
+                    createdAt: NOW - 1_000,
+                    turnId: 'turn-1',
+                },
+            },
+        } as Session['agentState'],
+        ...overrides,
+    });
+}
+
+describe('mounted plugin UI linked-Session state (r0.42)', () => {
+    beforeEach(() => {
+        storage.setState(initialStorageState, true);
+        mockSessionRpcWithPreferredSessionScope.mockReset();
+        mockSessionRpcWithPreferredSessionScope.mockResolvedValue(undefined);
+    });
+
+    it('reads what a waiting Session wants to run, where, and which answers the viewer may give', async () => {
+        storage.getState().applySessions([waitingSession()]);
+        const mounted = mountSurface();
+
+        const state = await mounted.api.readSession('linked-1');
+
+        expect(state).toMatchObject({
+            sessionId: 'linked-1',
+            operational: 'permission_required',
+            workspace: { path: '/work/repo' },
+            pendingPermissions: [{
+                requestId: 'req-1',
+                toolName: 'Bash',
+                command: 'yarn test',
+                createdAtMs: NOW - 1_000,
+                answers: ['allowOnce', 'allowForSession', 'deny'],
+            }],
+        });
+        mounted.dispose();
+    });
+
+    it('answers through the Session permission decision owner, attributed to the viewer', async () => {
+        storage.getState().applySessions([waitingSession()]);
+        const mounted = mountSurface();
+
+        await expect(mounted.api.respondToSessionPermission({
+            sessionId: 'linked-1',
+            requestId: 'req-1',
+            answer: 'allowForSession',
+        })).resolves.toEqual({ status: 'answered' });
+
+        const call = mockSessionRpcWithPreferredSessionScope.mock.calls.at(-1)?.[0] as
+            Readonly<{ sessionId: string; method: string; payload: Record<string, unknown> }>;
+        expect(call.sessionId).toBe('linked-1');
+        expect(call).toMatchObject({ serverId: 'server-1' });
+        expect(call.method).toBe('session.permission.respond');
+        expect(call.payload).toMatchObject({
+            id: 'req-1',
+            turnId: 'turn-1',
+            approved: true,
+            allowedTools: ['Bash'],
+        });
+        mounted.dispose();
+    });
+
+    it('refuses a Session the Account cannot reach, a request that is not pending, and an answer the viewer may not give', async () => {
+        storage.getState().applySessions([
+            waitingSession(),
+            waitingSession({ id: 'view-only', canApprovePermissions: false, accessLevel: 'view' }),
+        ]);
+        const mounted = mountSurface();
+
+        await expect(mounted.api.readSession('unknown-session')).resolves.toBeNull();
+        await expect(mounted.api.respondToSessionPermission({
+            sessionId: 'unknown-session',
+            requestId: 'req-1',
+            answer: 'allowOnce',
+        })).resolves.toEqual({ status: 'refused', reason: 'sessionUnavailable' });
+        await expect(mounted.api.respondToSessionPermission({
+            sessionId: 'linked-1',
+            requestId: 'req-gone',
+            answer: 'allowOnce',
+        })).resolves.toEqual({ status: 'refused', reason: 'requestNotPending' });
+
+        const viewOnly = await mounted.api.readSession('view-only');
+        expect(viewOnly?.pendingPermissions[0]?.answers).toEqual([]);
+        await expect(mounted.api.respondToSessionPermission({
+            sessionId: 'view-only',
+            requestId: 'req-1',
+            answer: 'allowOnce',
+        })).resolves.toEqual({ status: 'refused', reason: 'answerUnavailable' });
+
+        expect(mockSessionRpcWithPreferredSessionScope).not.toHaveBeenCalled();
+        mounted.dispose();
+    });
+
+    it('signals a watcher when the Session state changes, and stops after disposal', async () => {
+        storage.getState().applySessions([waitingSession()]);
+        const mounted = mountSurface();
+        const events: ResourceSubscriptionEvent[] = [];
+
+        const subscription = await mounted.api.watchSession('linked-1', (event) => { events.push(event); });
+        // An unrelated Session changing is not this watch's news.
+        storage.getState().applySessions([waitingSession({ id: 'other', agentState: null })]);
+        expect(events).toHaveLength(0);
+
+        storage.getState().applySessions([waitingSession({ agentState: null, updatedAt: NOW + 2 })]);
+        await vi.waitFor(() => expect(events).toHaveLength(1));
+        expect(events[0]).toMatchObject({ kind: 'invalidated' });
+        await expect(mounted.api.readSession('linked-1')).resolves.toMatchObject({ pendingPermissions: [] });
+
+        subscription.dispose();
+        storage.getState().applySessions([waitingSession({ updatedAt: NOW + 3 })]);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(events).toHaveLength(1);
+        mounted.dispose();
+    });
+
+    it('refuses to watch a Session the Account cannot reach', async () => {
+        const mounted = mountSurface();
+        await expect(mounted.api.watchSession('unknown-session', () => undefined))
+            .rejects.toMatchObject({ code: 'unavailable' });
+        mounted.dispose();
+    });
+});

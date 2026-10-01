@@ -12,9 +12,13 @@ import {
 } from '@/components/sessions/actions/sessionHeaderIconMetrics';
 import { SessionHeaderSubagentsButton } from '@/components/sessions/actions/SessionHeaderSubagentsButton';
 import { SessionHeaderTerminalButton } from '@/components/sessions/actions/SessionHeaderTerminalButton';
+import { SessionHeaderWorkStrip } from '@/components/sessions/work/SessionHeaderWorkStrip';
+import { EMPTY_WORK_SUMMARY, type WorkSummary } from '@/components/sessions/work/workProjection';
 import type { DropdownMenuItem } from '@/components/ui/forms/dropdown/DropdownMenu';
 import { Text } from '@/components/ui/text/Text';
 import { t } from '@/text';
+import type { WorkspaceSyncSetAttention } from '@/sync/domains/sessionHandoff/workspaceSyncRelationshipModel';
+import { formatWorkspaceSyncSetAttention } from '@/sync/domains/sessionHandoff/workspaceSyncPresentation';
 import type { SessionRouteHydrationState } from '@/sync/domains/session/sessionRouteHydrationState';
 import { isSessionRouteHydrationPending } from '@/sync/domains/session/sessionRouteHydrationState';
 import type { Session } from '@/sync/domains/state/storageTypes';
@@ -22,7 +26,8 @@ import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSession
 import { readSessionPresentationAgentId } from '@/sync/domains/session/presentation/readSessionPresentationAgentId';
 import { normalizeSessionAddress, type SessionAddress } from '@/sync/domains/session/sessionAddress';
 import type { ServerAccountScopeLifetime } from '@/sync/domains/scope/serverAccountScope';
-import { formatPathRelativeToHome, getSessionAvatarId, getSessionName, getSessionStatus, resolveLockedSessionTitle } from '@/utils/sessions/sessionUtils';
+import { formatPathRelativeToHome, getSessionAvatarId, getSessionName, getSessionStatus, getSessionSubtitle, resolveLockedSessionTitle } from '@/utils/sessions/sessionUtils';
+import { readSessionDirectoryKind } from '@happier-dev/protocol';
 import { LruMap } from '@/utils/cache/lruMap';
 
 import type { PluginUiProjectionModel } from '@/sync/domains/plugins/ui/projection';
@@ -51,6 +56,7 @@ import {
     SESSION_BOARD_DESTINATION,
     SESSION_BOARD_HEADER_MENU_ACTION_ID,
 } from '@/components/sessions/board/sessionBoardDestination';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 const WORKSPACE_SYNC_CONFLICT_TARGET_SIZE = Math.max(
     SESSION_HEADER_ACTION_TAP_TARGET_PX,
@@ -70,8 +76,6 @@ export type SessionViewHeaderProps = Readonly<{
     avatarId?: string;
     agentId?: string | null;
     rightElement?: React.ReactNode;
-    /** The right-sidebar toggle. The header decides whether it fits the margin or joins the icons. */
-    gutterElement?: React.ReactNode;
     backgroundColor?: string;
     tintColor?: string;
     isConnected?: boolean;
@@ -98,11 +102,15 @@ type ResolveSessionViewHeaderPropsInput = Readonly<{
     sessionAutomationsHref: string;
     paneScopeId: string;
     windowWidth: number;
+    actionRailVisible?: boolean;
+    mobileTerminalTabAvailable?: boolean;
     sessionAutomationsEnabledCount: number;
     sessionExecutionRunsSupported: boolean;
     showAutomations: boolean;
     shouldShowSubagentsButton: boolean;
     subagentActiveCount: number;
+    /** The Work projection's closed summary (ORC R-09): the in-row strip reads nothing else. */
+    workSummary?: WorkSummary;
     navigateWithBlurOnWeb: (action: () => void) => void;
     handleHeaderExtraItemSelect: (actionId: string) => boolean;
     headerMenuExtraItems?: ReadonlyArray<DropdownMenuItem>;
@@ -133,7 +141,7 @@ type ResolveSessionViewHeaderPropsInput = Readonly<{
     pluginUiScopeIsCurrent?: (() => boolean) | null;
     actionAccountLifetime?: ServerAccountScopeLifetime | null;
     onOpenPluginSurface?: PluginSurfaceOpenHandler;
-    workspaceSyncConflictCount?: number;
+    workspaceSyncAttention?: WorkspaceSyncSetAttention;
     onOpenWorkspaceSyncConflicts?: () => void;
     /** Board is direct only when the shell's existing width budget admits it. */
     boardHeaderAction?: Readonly<{
@@ -207,9 +215,13 @@ function buildSessionViewHeaderPropsCacheKey(input: Readonly<{
     flavor: string | null;
     storageBadge: string;
     providerBadge: string | null;
+    actionRailVisible: boolean;
+    mobileTerminalTabAvailable: boolean;
     shouldFoldHeaderIconActions: boolean;
     shouldShowSubagentsButton: boolean;
     subagentActiveCount: number;
+    workOutstandingCount: number;
+    workNeedsYouCount: number;
     sessionExecutionRunsSupported: boolean;
     showAutomations: boolean;
     actionIconColor: string;
@@ -222,10 +234,10 @@ function buildSessionViewHeaderPropsCacheKey(input: Readonly<{
     pluginUiLocale: string | null;
     pluginUiScopedServerId: string | null;
     pluginUiScopedMachineId: string | null;
-    pluginUiScopedGeneration: number | null;
     pluginUiInteractionEnabled: boolean;
     externalAgentState: ExternalSessionRuntimePresentation['externalAgent']['state'] | null;
-    workspaceSyncConflictCount: number;
+    workspaceSyncConflictedLinkCount: number;
+    workspaceSyncUnknownLinkCount: number;
     hasBoardHeaderAction: boolean;
     companionAvailability: SessionCompanionAvailability | null;
     companionPreferenceExists: boolean;
@@ -253,9 +265,13 @@ function buildSessionViewHeaderPropsCacheKey(input: Readonly<{
         input.flavor ?? '',
         input.storageBadge,
         input.providerBadge ?? '',
+        input.actionRailVisible,
+        input.mobileTerminalTabAvailable,
         input.shouldFoldHeaderIconActions,
         input.shouldShowSubagentsButton,
         input.subagentActiveCount,
+        input.workOutstandingCount,
+        input.workNeedsYouCount,
         input.sessionExecutionRunsSupported,
         input.showAutomations,
         input.actionIconColor,
@@ -268,10 +284,10 @@ function buildSessionViewHeaderPropsCacheKey(input: Readonly<{
         input.pluginUiLocale ?? '',
         input.pluginUiScopedServerId ?? '',
         input.pluginUiScopedMachineId ?? '',
-        input.pluginUiScopedGeneration ?? '',
         input.pluginUiInteractionEnabled,
         input.externalAgentState ?? '',
-        input.workspaceSyncConflictCount,
+        input.workspaceSyncConflictedLinkCount,
+        input.workspaceSyncUnknownLinkCount,
         input.hasBoardHeaderAction,
         input.companionAvailability ?? '',
         input.companionPreferenceExists,
@@ -328,7 +344,10 @@ export function resolveSessionViewHeaderProps(input: ResolveSessionViewHeaderPro
     const workspaceSubtitle = typeof input.workspaceSubtitle === 'string' && input.workspaceSubtitle.length > 0
         ? input.workspaceSubtitle
         : undefined;
-    const subtitle = workspaceSubtitle ?? fallbackSubtitle;
+    // A no-folder session names where it runs (its machine), never its private folder.
+    const subtitle = readSessionDirectoryKind(ownerMetadata) === 'managed'
+        ? getSessionSubtitle(session)
+        : workspaceSubtitle ?? fallbackSubtitle;
     const subtitleEllipsizeMode = subtitle
         ? input.workspaceSubtitleEllipsizeMode ?? 'head' as const
         : undefined;
@@ -376,9 +395,13 @@ export function resolveSessionViewHeaderProps(input: ResolveSessionViewHeaderPro
         flavor,
         storageBadge: resolvedStorageBadge,
         providerBadge: resolvedProviderBadge,
+        actionRailVisible: input.actionRailVisible === true,
+        mobileTerminalTabAvailable: input.mobileTerminalTabAvailable === true,
         shouldFoldHeaderIconActions,
         shouldShowSubagentsButton: input.shouldShowSubagentsButton,
         subagentActiveCount: input.subagentActiveCount,
+        workOutstandingCount: input.workSummary?.outstanding ?? 0,
+        workNeedsYouCount: input.workSummary?.needsYou ?? 0,
         sessionExecutionRunsSupported: input.sessionExecutionRunsSupported,
         showAutomations: input.showAutomations,
         actionIconColor: input.actionIconColor,
@@ -391,10 +414,10 @@ export function resolveSessionViewHeaderProps(input: ResolveSessionViewHeaderPro
         pluginUiLocale: input.pluginUiLocale ?? null,
         pluginUiScopedServerId: input.pluginUiScopedLaunchFacts?.serverId ?? null,
         pluginUiScopedMachineId: input.pluginUiScopedLaunchFacts?.machineId ?? null,
-        pluginUiScopedGeneration: input.pluginUiScopedLaunchFacts?.generation ?? null,
         pluginUiInteractionEnabled: input.pluginUiScopedLaunchFacts?.interactionEnabled === true,
         externalAgentState: input.externalSessionRuntime?.externalAgent.state ?? null,
-        workspaceSyncConflictCount: input.workspaceSyncConflictCount ?? 0,
+        workspaceSyncConflictedLinkCount: input.workspaceSyncAttention?.conflictedLinkCount ?? 0,
+        workspaceSyncUnknownLinkCount: input.workspaceSyncAttention?.unknownLinkCount ?? 0,
         hasBoardHeaderAction: input.boardHeaderAction !== undefined,
         companionAvailability: input.companionHeaderAction?.availability ?? null,
         companionPreferenceExists: input.companionHeaderAction?.preferenceExists === true,
@@ -410,7 +433,8 @@ export function resolveSessionViewHeaderProps(input: ResolveSessionViewHeaderPro
     // same-count conflict moving between relationships, so retain the LRU only
     // for authority-free headers rather than caching stale action closures.
     const hasLiveUiAuthority = input.pluginUiProjection != null
-        || (input.workspaceSyncConflictCount ?? 0) > 0
+        || (input.workspaceSyncAttention?.conflictedLinkCount ?? 0) > 0
+        || (input.workspaceSyncAttention?.unknownLinkCount ?? 0) > 0
         || input.boardHeaderAction !== undefined;
     if (!hasLiveUiAuthority) {
         const cached = SESSION_VIEW_HEADER_PROPS_CACHE.get(cacheKey);
@@ -427,7 +451,6 @@ export function resolveSessionViewHeaderProps(input: ResolveSessionViewHeaderPro
         shouldFoldHeaderIconActions,
         shouldShowSubagentsButton: input.shouldShowSubagentsButton,
         subagentActiveCount: input.subagentActiveCount,
-        sessionExecutionRunsSupported: input.sessionExecutionRunsSupported,
         showAutomations: input.showAutomations,
         actionIconColor: input.actionIconColor,
     });
@@ -455,7 +478,7 @@ export function resolveSessionViewHeaderProps(input: ResolveSessionViewHeaderPro
     // candidate remains in the incumbent overflow menu.
     const optionalDirectActionOwner = resolveOptionalHeaderActionOwner({
         shouldFoldHeaderIconActions,
-        boardPrefersDirect: input.boardHeaderAction?.preferDirect === true,
+        boardPrefersDirect: !input.actionRailVisible && input.boardHeaderAction?.preferDirect === true,
         companionPrefersDirect: preferredCompanionPlacement === 'direct',
         pluginActionCount: pluginHeaderActions.length,
     });
@@ -492,6 +515,11 @@ export function resolveSessionViewHeaderProps(input: ResolveSessionViewHeaderPro
             return 'session-info';
         },
     } as any));
+    const workspaceSyncAttentionLabel = input.workspaceSyncAttention
+        ? formatWorkspaceSyncSetAttention(input.workspaceSyncAttention)
+        : null;
+    const workspaceSyncAttentionBadgeCount = input.workspaceSyncAttention?.conflictedLinkCount
+        || input.workspaceSyncAttention?.unknownLinkCount || 0;
 
     const next: SessionViewHeaderProps = {
         title,
@@ -499,7 +527,6 @@ export function resolveSessionViewHeaderProps(input: ResolveSessionViewHeaderPro
         subtitleEllipsizeMode,
         avatarId,
         agentId,
-        gutterElement: undefined,
         rightElement: (
             <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                 <ActionOperationActivityButton
@@ -518,7 +545,7 @@ export function resolveSessionViewHeaderProps(input: ResolveSessionViewHeaderPro
                             height: headerInteractiveTargetSize,
                             alignItems: 'center',
                             justifyContent: 'center',
-                            opacity: pressed ? 0.7 : 1,
+                            opacity: pressed ? motionTokens.press.opacity : 1,
                         })}
                         accessibilityRole="button"
                         accessibilityLabel={t(SESSION_BOARD_DESTINATION.labelKey)}
@@ -588,15 +615,24 @@ export function resolveSessionViewHeaderProps(input: ResolveSessionViewHeaderPro
                     companionHeaderIntent={companionHeaderIntent}
                     collaborationHeader={input.collaborationHeader}
                 />
-                {!shouldFoldHeaderIconActions ? (
+                {!shouldFoldHeaderIconActions && (input.workSummary?.outstanding ?? 0) > 0 ? (
+                    <SessionHeaderWorkStrip
+                        sessionId={input.sessionId}
+                        serverId={session.serverId ?? null}
+                        scopeId={input.paneScopeId}
+                        summary={input.workSummary ?? EMPTY_WORK_SUMMARY}
+                    />
+                ) : !shouldFoldHeaderIconActions && !input.actionRailVisible ? (
                     <SessionHeaderSubagentsButton
                         scopeId={input.paneScopeId}
                         activeCount={input.subagentActiveCount}
                     />
                 ) : null}
-                <SessionHeaderTerminalButton sessionId={input.sessionId} scopeId={input.paneScopeId} />
+                {!input.actionRailVisible && !input.mobileTerminalTabAvailable ? (
+                    <SessionHeaderTerminalButton sessionId={input.sessionId} scopeId={input.paneScopeId} />
+                ) : null}
                 <SessionHeaderBrowserButton sessionId={input.sessionId} scopeId={input.paneScopeId} />
-                {(input.workspaceSyncConflictCount ?? 0) > 0 && input.onOpenWorkspaceSyncConflicts ? (
+                {workspaceSyncAttentionLabel && input.onOpenWorkspaceSyncConflicts ? (
                     <Pressable
                         onPress={input.onOpenWorkspaceSyncConflicts}
                         hitSlop={WORKSPACE_SYNC_CONFLICT_HIT_SLOP}
@@ -605,12 +641,15 @@ export function resolveSessionViewHeaderProps(input: ResolveSessionViewHeaderPro
                             height: SESSION_HEADER_ACTION_TAP_TARGET_PX,
                             alignItems: 'center',
                             justifyContent: 'center',
-                            opacity: pressed ? 0.7 : 1,
+                            opacity: pressed ? motionTokens.press.opacity : 1,
                         })}
                         accessibilityRole="button"
-                        accessibilityLabel={t('workspaceSync.openConflicts', { count: input.workspaceSyncConflictCount ?? 0 })}
+                        accessibilityLabel={workspaceSyncAttentionLabel}
                     >
-                        <SessionHeaderIconWithCount count={input.workspaceSyncConflictCount ?? 0} badgeColor={input.statusErrorColor}>
+                        <SessionHeaderIconWithCount
+                            count={workspaceSyncAttentionBadgeCount}
+                            badgeColor={input.statusErrorColor}
+                        >
                             <Icon name="warning" size={SESSION_HEADER_ICON_SIZE_PX} color={input.headerTintColor} />
                         </SessionHeaderIconWithCount>
                     </Pressable>
@@ -628,7 +667,7 @@ export function resolveSessionViewHeaderProps(input: ResolveSessionViewHeaderPro
                             height: 44,
                             alignItems: 'center',
                             justifyContent: 'center',
-                            opacity: pressed ? 0.7 : 1,
+                            opacity: pressed ? motionTokens.press.opacity : 1,
                         })}
                         accessibilityRole="button"
                         accessibilityLabel={t('session.openAutomations')}

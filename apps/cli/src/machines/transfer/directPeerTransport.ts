@@ -61,6 +61,7 @@ import {
 import type { FilesystemAccessPolicy } from '@/rpc/handlers/fileSystem/accessPolicy/filesystemAccessPolicy';
 import { DirectTransferImportOpenRequestSchema } from './directTransferImportOpenRequest';
 import type { ComposerMediaStageUploadTargetDeps } from '@/transfers/targets/resolveComposerMediaStageUploadTarget';
+import type { TransferUploadInitAttachmentDeps } from '@/transfers/targets/resolveTransferUploadInitTarget';
 import type { WorkspaceFinalizeFileOperationsFactory } from '@/transfers/targets/resolveWorkspaceFileUploadTarget';
 import { TRANSFER_FINALIZE_RECOVERY_REQUIRED_ERROR_CODE } from '@/transfers/targets/uploadTransferTarget';
 
@@ -1090,6 +1091,7 @@ export function createDirectPeerTransferApp(params: Readonly<{
 }
 
 export async function startDirectPeerTransferServer(params: Readonly<{
+  attachmentUpload?: TransferUploadInitAttachmentDeps;
   readPublishedTransfer: (input: Readonly<{
     transferId: string;
     transferToken: string;
@@ -1128,6 +1130,7 @@ export async function startDirectPeerTransferServer(params: Readonly<{
   getNextImportSessionExpiryAt: () => number | null;
 }>> {
   const importSessionManager = createDirectTransferImportSessionManager({
+    ...(params.attachmentUpload ? { attachmentUpload: params.attachmentUpload } : {}),
     onActiveSessionCountChanged: params.onImportSessionCountChanged,
     onActivity: params.onImportSessionActivity,
     accessPolicy: params.accessPolicy,

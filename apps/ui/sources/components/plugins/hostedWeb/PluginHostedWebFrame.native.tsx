@@ -153,6 +153,9 @@ export function PluginHostedWebFrame(props: Readonly<{
             navigationCommand={props.navigationCommand}
             diagnostics={props.diagnostics}
             bridge={props.bridge}
+            onLoadStart={props.onLoadStart}
+            onLoad={props.onLoad}
+            onError={props.onError}
         />
     );
 }

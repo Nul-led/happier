@@ -53,6 +53,7 @@ const storeState = vi.hoisted((): QuotaSnapshotTestStoreState => {
             loading: false,
             error: null,
             refreshing: false,
+            read: false,
         },
         releaseQuotaSnapshotPolling,
         retainQuotaSnapshotPolling: vi.fn<RetainQuotaSnapshotPollingMock>(() => releaseQuotaSnapshotPolling),
@@ -189,6 +190,7 @@ beforeEach(() => {
         loading: false,
         error: null,
         refreshing: false,
+        read: false,
     };
     storeState.releaseQuotaSnapshotPolling.mockClear();
     storeState.retainQuotaSnapshotPolling.mockClear();

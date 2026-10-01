@@ -28,7 +28,7 @@ import {
 } from './TargetedPluginSurfaceHost';
 import { createBoundPluginSurfaceController } from './boundPluginSurfaceController';
 import type { PluginSurfaceResourceReadTransport } from './pluginSurfaceResourceRead';
-import type { PreparedDaemonPluginUiTargetedSurfaceMountV1 } from '@/agents/backendCatalog/loadDaemonMergedProjectionInputs';
+import type { PreparedDaemonPluginUiTargetedSurfaceMountV1 } from './mountedTargetedContributions';
 import { createPluginDeclarativeModelFixture } from '@/dev/testkit/fixtures/pluginDeclarativeModelFixture';
 
 function prepareTargetedMount(
@@ -47,7 +47,8 @@ function prepareTargetedMount(
 
 const target = Object.freeze({
     pluginId: 'acme.triage',
-    immutableGenerationId: 'triage-generation-a',
+    occurrenceId: 'triage-generation-a',
+    sourceCustody: Object.freeze({ kind: 'development' as const, registeredRootId: 'triage-root' }),
 });
 
 const surface = Object.freeze({
@@ -58,7 +59,8 @@ const surface = Object.freeze({
     contributor: Object.freeze({
         pluginId: 'acme.review',
         contributionId: 'review-detail',
-        immutableGenerationId: 'review-generation-b',
+        occurrenceId: 'review-generation-b',
+        sourceCustody: Object.freeze({ kind: 'development' as const, registeredRootId: 'review-root' }),
     }),
     role: 'detail',
     presentation: 'content' as const,
@@ -82,12 +84,10 @@ const rawMount = DaemonPluginUiTargetedSurfaceMountV1Schema.parse({
             kind: 'declarative' as const,
             contributionId: 'review-detail',
             model: createPluginDeclarativeModelFixture({
-                // This is the projection-response generation, not the B
-                // immutable generation. Its B association comes from the
-                // correlated producer-selected renderer mount below.
+                // The renderer model is admitted for this exact plugin occurrence.
                 pluginId: 'acme.review',
                 localId: 'review-detail',
-                generation: 'projection-generation-11',
+                occurrenceId: 'review-occurrence-11',
                 document: { version: 1, root: { kind: 'state', state: 'empty', title: 'No review selected' } },
             }),
         }),
@@ -105,7 +105,8 @@ const rawMount = DaemonPluginUiTargetedSurfaceMountV1Schema.parse({
     contributorTargetedContributions: Object.freeze({
         target: Object.freeze({
             pluginId: 'acme.review',
-            immutableGenerationId: 'review-generation-b',
+            occurrenceId: 'review-generation-b',
+            sourceCustody: Object.freeze({ kind: 'development' as const, registeredRootId: 'review-root' }),
         }),
         points: Object.freeze([]),
     }),
@@ -140,10 +141,10 @@ describe('readTargetedPluginSurfaceMountRequest', () => {
         expect(buildTargetedPluginSurfaceReadyTestId(rawMount)).toBe([
             'plugin-targeted-surface-ready',
             target.pluginId,
-            target.immutableGenerationId,
+            target.occurrenceId,
             surface.contributor.pluginId,
             surface.contributor.contributionId,
-            surface.contributor.immutableGenerationId,
+            surface.contributor.occurrenceId,
             rawMount.selectedRenderer.identity.pluginId,
             rawMount.selectedRenderer.identity.localId,
             rawMount.selectedRenderer.renderer.kind,
@@ -190,13 +191,13 @@ describe('readTargetedPluginSurfaceMountRequest', () => {
                 ...rawMount,
                 contributor: Object.freeze({
                     ...mount.contributor,
-                    immutableGenerationId: 'review-generation-c',
+                    occurrenceId: 'review-generation-c',
                 }),
                 contributorTargetedContributions: Object.freeze({
                     ...mount.contributorTargetedContributions,
                     target: Object.freeze({
                         ...mount.contributorTargetedContributions.target,
-                        immutableGenerationId: 'review-generation-c',
+                        occurrenceId: 'review-generation-c',
                     }),
                 }),
             }))],
@@ -530,7 +531,7 @@ describe('readTargetedPluginSurfaceMountRequest', () => {
         expect(readRequests).toEqual([expect.objectContaining({
             machineId: 'machine-a',
             callerPluginId: 'acme.review',
-            expectedGeneration: '11',
+            expectedCallerOccurrenceId: '11',
             resource: { pluginId: 'acme.review', localId: 'review-summary' },
             context: facts.resourceContext,
         })]);

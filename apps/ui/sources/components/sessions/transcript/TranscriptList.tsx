@@ -2,8 +2,8 @@ import * as React from 'react';
 import { findNodeHandle, Platform, View } from 'react-native';
 import { MessageViewWithSessionCommon } from '@/components/sessions/transcript/MessageView';
 import { ChatFooter } from '@/components/sessions/transcript/ChatFooter';
-import type { Message } from '@/sync/domains/messages/messageTypes';
-import type { Metadata } from '@/sync/domains/state/storageTypes';
+import type { Message } from "@happier-dev/session-core/messages";
+import type { Metadata } from '@happier-dev/session-core/state';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import {
     TRANSCRIPT_TOP_GUTTER_PX,
@@ -17,7 +17,6 @@ import { OlderLoadRetryOverlay } from '@/components/sessions/transcript/OlderLoa
 import {
     useTranscriptShellOlderPagination,
 } from '@/components/sessions/transcript/pagination/useTranscriptShellOlderPagination';
-import type { TranscriptOlderPageLoadResult } from '@/sync/domains/messages/transcriptOlderPageLoad';
 import { deriveTranscriptForkCommonForInteraction, useTranscriptSessionCommon } from '@/components/sessions/transcript/transcriptSessionCommon';
 import { useOptionalTranscriptSelectionState } from '@/components/sessions/transcript/messageSelection/TranscriptMessageSelectionContext';
 import { TranscriptListShell } from '@/components/sessions/transcript/viewport/shell/TranscriptListShell';
@@ -49,13 +48,7 @@ import {
 import type {
     ExternalSessionOperationActionRef,
 } from '@/components/sessions/external/progress/ExternalImportProgressCard';
-
-type TranscriptInteraction = {
-    canSendMessages: boolean;
-    canApprovePermissions: boolean;
-    permissionDisabledReason?: 'public' | 'readOnly' | 'notGranted' | 'inactive';
-    disableToolNavigation?: boolean;
-};
+import { useSessionTranscriptSource } from './source/SessionTranscriptSourceContext';
 
 export type TranscriptBottomNotice = {
     title: string;
@@ -101,21 +94,16 @@ const ListFooter = React.memo((props: {
 });
 
 export const TranscriptList = React.memo((props: {
-    sessionId: string;
     datasetKey: string;
     metadata: Metadata | null;
     messages: Message[];
-    interaction: TranscriptInteraction;
     bottomNotice?: TranscriptBottomNotice | null;
-    isLoaded?: boolean;
-    /**
-     * Reads the next older page of this read-only transcript. Omitted when the caller has
-     * the whole history already; supplied by paged readers such as a public share, whose
-     * first response is only the newest page.
-     */
-    loadOlder?: () => Promise<TranscriptOlderPageLoadResult>;
 }) => {
-    const transcriptSessionCommon = useTranscriptSessionCommon(props.sessionId);
+    const source = useSessionTranscriptSource();
+    const sessionId = source.sessionId;
+    const interaction = source.useInteraction();
+    const historyState = source.history.useState();
+    const transcriptSessionCommon = useTranscriptSessionCommon();
     const { motionConfig } = useTranscriptMotionConfig();
     const webDomObservation = React.useMemo(() => createWebDomScrollObservation(), []);
     const {
@@ -124,8 +112,8 @@ export const TranscriptList = React.memo((props: {
     } = useRendererOwnedTranscriptRowLayoutMutation<Message>();
     const transcriptViewportFocusRef = React.useRef<React.ElementRef<typeof View> | null>(null);
     const forkCommon = React.useMemo(
-        () => deriveTranscriptForkCommonForInteraction(transcriptSessionCommon.fork, props.interaction),
-        [props.interaction, transcriptSessionCommon.fork],
+        () => deriveTranscriptForkCommonForInteraction(transcriptSessionCommon.fork, interaction),
+        [interaction, transcriptSessionCommon.fork],
     );
     const transcriptMessageSelection = useOptionalTranscriptSelectionState();
     const externalSessionOperationPresentation = React.useMemo(
@@ -138,12 +126,12 @@ export const TranscriptList = React.memo((props: {
         dismissal: externalSessionOperationDismissal,
         onDismiss: onDismissExternalSessionOperation,
     } = useExternalSessionOperationTranscriptDismissal({
-        sessionId: props.sessionId,
+        sessionId: sessionId,
         presentation: externalSessionOperationPresentation,
     });
     const visibleExternalSessionOperationPresentation =
         externalSessionOperationPresentation
-        && externalSessionOperationDismissal?.sessionId === props.sessionId
+        && externalSessionOperationDismissal?.sessionId === sessionId
         && externalSessionOperationDismissal.operationId
             === externalSessionOperationPresentation.operationId
         && externalSessionOperationDismissal.revision
@@ -203,14 +191,14 @@ export const TranscriptList = React.memo((props: {
     ) => {
         pendingExternalSessionOperationDismissalRef.current = {
             ...actionRef,
-            sessionId: props.sessionId,
+            sessionId: sessionId,
         };
         onDismissExternalSessionOperation(actionRef);
-    }, [onDismissExternalSessionOperation, props.sessionId]);
+    }, [onDismissExternalSessionOperation, sessionId]);
     React.useLayoutEffect(() => {
         const pendingDismissal = pendingExternalSessionOperationDismissalRef.current;
         if (pendingDismissal === null) return;
-        if (pendingDismissal.sessionId !== props.sessionId) {
+        if (pendingDismissal.sessionId !== sessionId) {
             pendingExternalSessionOperationDismissalRef.current = null;
             return;
         }
@@ -228,7 +216,7 @@ export const TranscriptList = React.memo((props: {
         pendingExternalSessionOperationDismissalRef.current = null;
         returnFocusToTranscriptViewport();
     }, [
-        props.sessionId,
+        sessionId,
         returnFocusToTranscriptViewport,
         visibleExternalSessionOperationPresentation,
     ]);
@@ -245,7 +233,7 @@ export const TranscriptList = React.memo((props: {
         datasetKey: props.datasetKey,
         dataOrder: shellFrame.dataOrder,
         listRef,
-        loadOlder: props.loadOlder,
+        loadOlder: source.history.loadOlder ?? undefined,
         readCanonicalItemCount: () => messageCountRef.current,
         readRenderedItemCount: () => messageCountRef.current,
         readSourceIndexForRenderedIndex: (renderedIndex: number) =>
@@ -254,11 +242,11 @@ export const TranscriptList = React.memo((props: {
                 messageCountRef.current,
                 listOrientation,
             ),
-        sessionId: props.sessionId,
+        sessionId: sessionId,
     });
     const shellEdgeSlots = React.useMemo(() => resolveTranscriptListShellEdgeSlots({
         frame: shellFrame,
-        visualTopNode: <ListHeader isLoading={props.isLoaded === false} />,
+        visualTopNode: <ListHeader isLoading={historyState.isLoaded === false} />,
         visualBottomNode: (
             <ListFooter
                 bottomNotice={props.bottomNotice ?? null}
@@ -273,7 +261,7 @@ export const TranscriptList = React.memo((props: {
     }), [
         dismissExternalSessionOperationWithFocus,
         props.bottomNotice,
-        props.isLoaded,
+        historyState.isLoaded,
         shellFrame,
         visibleExternalSessionOperationPresentation,
     ]);
@@ -335,8 +323,8 @@ export const TranscriptList = React.memo((props: {
             <MessageViewWithSessionCommon
                 message={item}
                 metadata={props.metadata}
-                sessionId={props.sessionId}
-                interaction={props.interaction}
+                sessionId={sessionId}
+                interaction={interaction}
                 forkCommon={forkCommon}
                 messageDisplayCommon={transcriptSessionCommon.messageDisplay}
                 toolChromeCommon={transcriptSessionCommon.toolChrome}
@@ -346,9 +334,9 @@ export const TranscriptList = React.memo((props: {
             />
         );
     }, [
-        props.interaction,
+        interaction,
         props.metadata,
-        props.sessionId,
+        sessionId,
         resolveThinkingExpanded,
         sessionThinkingDisplayMode,
         setThinkingExpanded,

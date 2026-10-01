@@ -21,6 +21,22 @@ function initGitWorkspace(): { workspace: string; head: string } {
 }
 
 describe('git RPC handlers (stash)', () => {
+    it('creates a transient managed stash through the SCM write route', async () => {
+        const { workspace, head } = initGitWorkspace();
+        writeFileSync(join(workspace, 'kept.txt'), 'kept\n');
+        const { call } = createTestRpcManager({ workingDirectory: workspace });
+        const created = await call<any, { cwd: string; message: string }>('scm.stash.create', {
+            cwd: '.', message: 'Keep these changes',
+        });
+        expect(created).toMatchObject({ success: true, stashCreated: true });
+        expect(created.stashRef).toMatch(/^stash@\{\d+\}$/);
+        expect(existsSync(join(workspace, 'kept.txt'))).toBe(false);
+        const list = await call<any, { cwd: string }>(RPC_METHODS.SCM_STASH_LIST, { cwd: '.' });
+        expect(list.stashes).toEqual(expect.arrayContaining([
+            expect.objectContaining({ stashRef: created.stashRef, kind: 'transient', branch: head }),
+        ]));
+    });
+
     it('lists all stashes and marks unmanaged entries explicitly', async () => {
         const { workspace, head } = initGitWorkspace();
 

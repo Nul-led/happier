@@ -428,8 +428,8 @@ function collectBoundedRequestItems<TItem>(params: Readonly<{
 }
 
 /**
- * Owns one generation-local, complete source-definition set. It does not
- * schedule scans, retain data across generations, or expose stored envelopes
+ * Owns one occurrence-local, complete source-definition set. It does not
+ * schedule scans, retain data across occurrences, or expose stored envelopes
  * to provider code. The caller supplies the already-authoritative server read,
  * Account-crypto projection, and lifecycle/currentness owners.
  */
@@ -437,8 +437,8 @@ export function createAutomationEventAdoptedDefinitionSetV1(params: Readonly<{
   caller: PluginMachineMaterializationRefV1;
   transport: AutomationEventSourcesListTransportV1;
   pageSize?: number;
-  generationSignal: AbortSignal;
-  isGenerationCurrent(): boolean;
+  occurrenceSignal: AbortSignal;
+  isOccurrenceCurrent(): boolean;
   revalidateCallerMaterialization(
     caller: PluginMachineMaterializationRefV1,
     signal?: AbortSignal,
@@ -472,23 +472,23 @@ export function createAutomationEventAdoptedDefinitionSetV1(params: Readonly<{
   // retained definition snapshot.
   let adoptedSnapshotRefresh: AdoptedSnapshotRefresh | null = null;
 
-  function isGenerationCurrent(signal: AbortSignal): boolean {
-    return !signal.aborted && !params.generationSignal.aborted && params.isGenerationCurrent();
+  function isOccurrenceCurrent(signal: AbortSignal): boolean {
+    return !signal.aborted && !params.occurrenceSignal.aborted && params.isOccurrenceCurrent();
   }
 
   /**
    * Generation and caller-materialization currentness only. Both are local
-   * comparisons against the host's current admitted generation, so they carry
+   * comparisons against the host's current admitted occurrence, so they carry
    * no remote cost and stay on every per-definition step.
    */
   async function isCallerCurrent(signal: AbortSignal): Promise<boolean> {
-    if (!isGenerationCurrent(signal)) return false;
+    if (!isOccurrenceCurrent(signal)) return false;
     try {
       if (!await params.revalidateCallerMaterialization(params.caller, signal)) return false;
     } catch {
       return false;
     }
-    return isGenerationCurrent(signal);
+    return isOccurrenceCurrent(signal);
   }
 
   /**
@@ -516,7 +516,7 @@ export function createAutomationEventAdoptedDefinitionSetV1(params: Readonly<{
     } catch {
       return null;
     }
-    if (encryption === null || !isGenerationCurrent(signal)) return null;
+    if (encryption === null || !isOccurrenceCurrent(signal)) return null;
     return expected === undefined
       || sameAutomationAccountContentIdentityV1(encryption.witness, expected)
       ? encryption
@@ -586,7 +586,7 @@ export function createAutomationEventAdoptedDefinitionSetV1(params: Readonly<{
   async function refresh(
     callerSignal = createEmptySignal(),
   ): Promise<AutomationEventAdoptedDefinitionSetRefreshResultV1> {
-    const signal = AbortSignal.any([params.generationSignal, callerSignal]);
+    const signal = AbortSignal.any([params.occurrenceSignal, callerSignal]);
     // One immutable Account crypto/currentness snapshot for the whole attempt.
     // The adopted catalog publishes atomically, so nothing built under it is
     // observable before the closing recheck admits it; re-reading the Account
@@ -928,9 +928,9 @@ export function createAutomationEventAdoptedDefinitionSetV1(params: Readonly<{
   }
 
   /**
-   * The generation-local owner exists before its first catalog read can
+   * The occurrence-local owner exists before its first catalog read can
    * succeed, and a transient first read must not strand the plugin for the
-   * whole generation. When no snapshot is retained yet, join the one in-flight
+   * whole occurrence. When no snapshot is retained yet, join the one in-flight
    * refresh — or perform it — exactly as a revision-confirming read already
    * does. This adds no retry registry: the single-flight refresh below is the
    * only refresh path, for both transports.
@@ -947,8 +947,8 @@ export function createAutomationEventAdoptedDefinitionSetV1(params: Readonly<{
     readPublicProjection() {
       if (
         adopted === null
-        || params.generationSignal.aborted
-        || !params.isGenerationCurrent()
+        || params.occurrenceSignal.aborted
+        || !params.isOccurrenceCurrent()
       ) return { kind: 'initializing' };
       return {
         kind: 'available',
@@ -958,7 +958,7 @@ export function createAutomationEventAdoptedDefinitionSetV1(params: Readonly<{
     },
     async readCurrentCheckpointedPullSource(request) {
       const reset = PluginEventAutomationHistoryGapResetActionInputV1Schema.safeParse(request.reset);
-      const signal = AbortSignal.any([params.generationSignal, request.signal ?? createEmptySignal()]);
+      const signal = AbortSignal.any([params.occurrenceSignal, request.signal ?? createEmptySignal()]);
       if (
         !reset.success
         || params.transport.kind !== 'checkpointedPull'
@@ -967,7 +967,7 @@ export function createAutomationEventAdoptedDefinitionSetV1(params: Readonly<{
 
       // A history-gap operation must bind only the Account in the current
       // persisted source. Joining the adopted owner's currentness read avoids
-      // a second source registry while fencing selection to this generation.
+      // a second source registry while fencing selection to this occurrence.
       const refreshed = await joinAdoptedSnapshotRefresh(signal);
       if (refreshed.kind === 'discarded' || !await isCurrent(signal)) return null;
       const snapshot = adopted;
@@ -985,7 +985,7 @@ export function createAutomationEventAdoptedDefinitionSetV1(params: Readonly<{
       return projectPublicDefinition(selected.definition);
     },
     async listPublicProjection(request) {
-      const signal = AbortSignal.any([params.generationSignal, request.signal ?? createEmptySignal()]);
+      const signal = AbortSignal.any([params.occurrenceSignal, request.signal ?? createEmptySignal()]);
       if (!await isCurrent(signal)) return { kind: 'unavailable' };
       if (
         !request.accountId.trim()
@@ -1020,7 +1020,7 @@ export function createAutomationEventAdoptedDefinitionSetV1(params: Readonly<{
           });
           if (currentness === 'current') break;
           if (currentness !== 'refresh' || attempt === 1) return { kind: 'unavailable' };
-          // Keep one complete generation-local adopted set. A ref-scoped
+          // Keep one complete occurrence-local adopted set. A ref-scoped
           // private confirmation only proves the exact delivery current; a
           // moved catalog revision is rebuilt from the canonical all-target
           // reader before this delivery may receive a public projection.
@@ -1136,7 +1136,7 @@ export function createAutomationEventAdoptedDefinitionSetV1(params: Readonly<{
       });
     },
     async prepareAdmission(request) {
-      const signal = AbortSignal.any([params.generationSignal, request.signal ?? createEmptySignal()]);
+      const signal = AbortSignal.any([params.occurrenceSignal, request.signal ?? createEmptySignal()]);
       const input = AutomationEventAdmitInputV1Schema.safeParse(request.input);
       if (!input.success || !await isCurrent(signal)) return null;
       const admissionInput = input.data;

@@ -32,8 +32,20 @@ async function hasExecutableOnPath(executable: string): Promise<boolean> {
 }
 
 /**
+ * The single copy owner for the headless browser handoff. A coding machine, VPS
+ * or CI host has no browser to open, which is normal: the caller keeps waiting
+ * on its callback and the user finishes the sign-in from any other browser.
+ */
+export const BROWSER_NOT_OPENED_NOTE = 'No browser opened. This is normal on a headless or remote computer.';
+export const COPY_LINK_INTO_BROWSER_PROMPT = 'Copy this link into any browser:';
+
+export function describeBrowserHandoffFallback(url: string): readonly string[] {
+    return [BROWSER_NOT_OPENED_NOTE, COPY_LINK_INTO_BROWSER_PROMPT, url];
+}
+
+/**
  * Attempts to open a URL in the default browser
- * 
+ *
  * @param url - The URL to open
  * @returns Promise<boolean> - true if successful, false if failed or in headless environment
  */

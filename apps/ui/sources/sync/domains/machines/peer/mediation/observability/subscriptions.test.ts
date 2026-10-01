@@ -1,4 +1,10 @@
 import { describe, expect, it } from 'vitest';
+import { createPeerMediationObservabilitySubscription } from './subscriptions';
+import {
+    applyPeerMediationObservabilityDelta,
+    applyPeerMediationObservabilitySnapshot,
+    createPeerMediationObservabilityUiStore,
+} from './store';
 import {
     createFeatureDecision,
     FeaturesResponseSchema,
@@ -106,6 +112,52 @@ function featureDecision(enabled: boolean): FeatureDecision {
 }
 
 describe('peer mediation observability subscriptions', () => {
+    it('recovers a missing delta from a new snapshot and resumes contiguous updates', () => {
+        const handlers = new Map<string, (payload: unknown) => void>();
+        const emitted: string[] = [];
+        let store = createPeerMediationObservabilityUiStore();
+        const subscription = createPeerMediationObservabilitySubscription({
+            scope: machineScope,
+            source: 'server',
+            serverFeatures: featuresResponse(true, true),
+            transport: {
+                emit: (name) => emitted.push(name),
+                on: (name, handler) => {
+                    handlers.set(name, handler);
+                    return () => handlers.delete(name);
+                },
+            },
+            onSnapshot: (snapshot) => {
+                store = applyPeerMediationObservabilitySnapshot(store, { source: 'server', snapshot });
+            },
+            onDelta: (delta) => {
+                store = applyPeerMediationObservabilityDelta(store, { source: 'server', delta });
+            },
+        });
+        const snapshot = (sequence: number) => ({
+            v: 1, scope: machineScope, sequence, capturedAtMs: 1_000, flows: [],
+        });
+        const delta = (sequence: number) => ({ v: 1, scope: machineScope, sequence, events: [] });
+        handlers.get(PEER_MEDIATION_OBSERVABILITY_SNAPSHOT_SOCKET_EVENT)?.(snapshot(3));
+        handlers.get(PEER_MEDIATION_OBSERVABILITY_DELTA_SOCKET_EVENT)?.(delta(5));
+        expect(Object.values(store.scopesByKey)[0]?.status).toBe('stale');
+        expect(emitted).toEqual([
+            PEER_MEDIATION_OBSERVABILITY_SUBSCRIBE_SOCKET_EVENT,
+            PEER_MEDIATION_OBSERVABILITY_SUBSCRIBE_SOCKET_EVENT,
+        ]);
+        handlers.get(PEER_MEDIATION_OBSERVABILITY_DELTA_SOCKET_EVENT)?.(delta(6));
+        expect(emitted).toHaveLength(2);
+        handlers.get(PEER_MEDIATION_OBSERVABILITY_SNAPSHOT_SOCKET_EVENT)?.(snapshot(5));
+        handlers.get(PEER_MEDIATION_OBSERVABILITY_DELTA_SOCKET_EVENT)?.(delta(6));
+        expect(Object.values(store.scopesByKey)[0]).toMatchObject({
+            status: 'ready', stale: false, lastAppliedSequenceBySource: { server: 6 },
+        });
+        // A duplicate receipt must not turn a recovered stream stale again.
+        handlers.get(PEER_MEDIATION_OBSERVABILITY_DELTA_SOCKET_EVENT)?.(delta(6));
+        expect(Object.values(store.scopesByKey)[0]?.status).toBe('ready');
+        subscription.close();
+    });
+
     it('fails closed without opening a subscription when the feature bit is missing', async () => {
         const mod = await loadSubscriptionsModule();
 

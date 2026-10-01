@@ -2,12 +2,9 @@ import * as React from 'react';
 import { Platform, View } from 'react-native';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 
-import type { Message } from '@/sync/domains/messages/messageTypes';
-import type {
-    DiscardedPendingMessage,
-    Metadata,
-    PendingMessage,
-} from '@/sync/domains/state/storageTypes';
+import type { Message } from "@happier-dev/session-core/messages";
+import type { DiscardedPendingMessage, PendingMessage } from '@/sync/domains/state/storageTypes';
+import type { Metadata } from '@happier-dev/session-core/state';
 import type { TranscriptInteraction } from '@/utils/sessions/deriveTranscriptInteraction';
 
 import {
@@ -33,6 +30,9 @@ import { buildTranscriptTurnUnits, type TranscriptToolGroupUnitItem } from '@/co
 import { resolveTranscriptToolCallsCollapsedPreviewCount } from '@/sync/domains/settings/transcriptToolCallsCollapsedPreviewCount';
 import { fireAndForget } from '@/utils/system/fireAndForget';
 import { useTranscriptSessionCommon } from '@/components/sessions/transcript/transcriptSessionCommon';
+import { SessionTranscriptSourceProvider, useSessionTranscriptSource } from './source/SessionTranscriptSourceContext';
+import { createReadOnlySessionTranscriptSource } from './source/readOnlySessionTranscriptSource';
+import type { SessionTranscriptSource } from './source/types';
 import { useOptionalTranscriptSelectionState } from '@/components/sessions/transcript/messageSelection/TranscriptMessageSelectionContext';
 import { resolveLatestCommittedMessageId } from '@/components/sessions/transcript/resolveLatestCommittedMessageId';
 import { CatchUpProgressOverlay } from '@/components/sessions/transcript/CatchUpProgressOverlay';
@@ -65,7 +65,7 @@ import {
 } from '@/components/sessions/transcript/measurement/TranscriptRowLayoutMutationContext';
 import { resolveRowLayoutMutationViewportOwnershipAction } from '@/components/sessions/transcript/viewport/shell/rowLayoutMutationViewportOwnership';
 
-import type { TranscriptOlderPageLoadResult } from '@/sync/domains/messages/transcriptOlderPageLoad';
+import type { TranscriptOlderPageLoadResult } from "@happier-dev/session-core/messages";
 
 export type ChainTranscriptLoadOlderResult = TranscriptOlderPageLoadResult;
 
@@ -153,10 +153,50 @@ function doesHeaderUnitContainMessageId(item: ChainTranscriptListItem, messageId
 }
 
 export const ChainTranscriptList = React.memo(function ChainTranscriptList(props: ChainTranscriptListProps) {
+    const parentSource = useSessionTranscriptSource();
+    // A sidechain is a projection of its parent source, never authority to open
+    // app storage beneath a share/demo dataset or re-enable a denied capability.
+    const [cell] = React.useState(() => {
+        const dataset = createReadOnlySessionTranscriptSource({
+            sessionId: parentSource.sessionId, serverId: parentSource.serverId,
+            messages: props.messages, metadata: null, reducerState: null, agentState: null,
+        });
+        let loadOlder = props.loadOlder;
+        const branchLoadOlder: NonNullable<SessionTranscriptSource['history']['loadOlder']> = async () => loadOlder
+            ? loadOlder()
+            : { loaded: 0, hasMore: false, status: 'not_ready' };
+        return {
+            dataset,
+            setLoadOlder: (value: ChainTranscriptListProps['loadOlder']) => { loadOlder = value; },
+            source: {
+                ...parentSource,
+                useMessageIdsOldestFirst: dataset.useMessageIdsOldestFirst,
+                useMessagesById: dataset.useMessagesById,
+                useMessage: dataset.useMessage,
+                useMessagesByIds: dataset.useMessagesByIds,
+                history: {
+                    ...parentSource.history,
+                    loadOlder: props.loadOlder && parentSource.loadSidechain !== null && parentSource.history.loadOlder !== null
+                        ? branchLoadOlder : null,
+                },
+            } satisfies SessionTranscriptSource,
+        };
+    });
+    React.useLayoutEffect(() => {
+        cell.dataset.update({ messages: props.messages, metadata: null, reducerState: null, agentState: null });
+    }, [cell, props.messages]);
+    React.useLayoutEffect(() => { cell.setLoadOlder(props.loadOlder); }, [cell, props.loadOlder]);
+    return <SessionTranscriptSourceProvider source={cell.source}>
+        <ChainTranscriptListContent {...props} />
+    </SessionTranscriptSourceProvider>;
+});
+
+function ChainTranscriptListContent(props: ChainTranscriptListProps) {
+    const source = useSessionTranscriptSource();
     const transcriptGroupingMode = useSetting('transcriptGroupingMode');
     const transcriptGroupToolCalls = useSetting('transcriptGroupToolCalls');
     const transcriptTurnToolCallsGroupStrategy = useSetting('transcriptTurnToolCallsGroupStrategy');
-    const transcriptSessionCommon = useTranscriptSessionCommon(props.sessionId, props.serverId);
+    const transcriptSessionCommon = useTranscriptSessionCommon();
     const transcriptMessageSelection = useOptionalTranscriptSelectionState();
     const toolViewTimelineChromeMode = transcriptSessionCommon.toolChrome.toolViewTimelineChromeMode;
     const sessionThinkingDisplayMode = transcriptSessionCommon.messageDisplay.sessionThinkingDisplayMode;
@@ -365,7 +405,7 @@ export const ChainTranscriptList = React.memo(function ChainTranscriptList(props
         canonicalItems: items,
         canonicalSourceIndexById,
         datasetKey,
-        loadOlder: props.loadOlder,
+        loadOlder: source.history.loadOlder ?? undefined,
         renderedItems,
     }), [canonicalSourceIndexById, datasetKey, items, props.loadOlder, renderedItems]);
     const committedProjectionRef = React.useRef<ChainTranscriptCommittedProjection>(committedProjection);
@@ -410,7 +450,7 @@ export const ChainTranscriptList = React.memo(function ChainTranscriptList(props
         datasetKey,
         dataOrder: shellFrame.dataOrder,
         listRef,
-        loadOlder: props.loadOlder,
+        loadOlder: source.history.loadOlder ?? undefined,
         readCanonicalItemCount: () => committedProjectionRef.current.canonicalItems.length,
         readRenderedItemCount: () => committedProjectionRef.current.renderedItems.length,
         readSourceIndexForRenderedIndex: (renderedIndex: number) => {
@@ -722,4 +762,4 @@ export const ChainTranscriptList = React.memo(function ChainTranscriptList(props
             </TranscriptRowLayoutMutationProvider>
         </TranscriptMotionProvider>
     );
-});
+}

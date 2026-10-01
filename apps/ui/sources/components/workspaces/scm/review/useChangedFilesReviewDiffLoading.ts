@@ -56,7 +56,7 @@ export function useChangedFilesReviewDiffLoading(input: {
     maxConcurrency?: number;
     minRefetchMs?: number;
     refreshToken?: number;
-    providerDiffByPath?: ReadonlyMap<string, string> | null;
+    providerDiffByPath?: ReadonlyMap<string, string | null> | null;
     fetchUnifiedDiffForPath?: ScmReviewUnifiedDiffFetcher;
     normalizeError: (input: unknown) => string;
     fallbackError: string;
@@ -124,11 +124,12 @@ export function useChangedFilesReviewDiffLoading(input: {
         return Math.max(0, raw);
     }, [minRefetchMs]);
 
+    const hasScopedDiffs = providerDiffByPath != null;
     React.useEffect(() => {
         diffStateSource.reset();
         lastFetchAtMsByPathRef.current = {};
         inFlightPathsRef.current = new Set();
-    }, [diffArea, sessionId]);
+    }, [diffArea, hasScopedDiffs, sessionId]);
 
     React.useEffect(() => {
         inFlightPathsRef.current = new Set();
@@ -151,15 +152,19 @@ export function useChangedFilesReviewDiffLoading(input: {
         });
         for (const path of pathsToEnsure) {
             const providerDiff = providerDiffByPath.get(path);
-            if (typeof providerDiff !== 'string' || providerDiff.trim().length === 0) continue;
-            diffStateSource.setDiffState(path, {
+            if (providerDiff === undefined) continue;
+            diffStateSource.setDiffState(path, providerDiff === null ? {
+                status: 'error',
+                diff: '',
+                error: fallbackError,
+            } : {
                 status: 'loaded',
                 diff: providerDiff,
                 error: null,
             });
             lastFetchAtMsByPathRef.current[path] = Date.now();
         }
-    }, [diffStateSource, providerDiffByPath, requestedPathsKey, reviewFiles, selectedPath, tooLarge]);
+    }, [diffStateSource, fallbackError, providerDiffByPath, requestedPathsKey, reviewFiles, selectedPath, tooLarge]);
 
     React.useEffect(() => {
         if (!sessionId) return;
@@ -190,8 +195,12 @@ export function useChangedFilesReviewDiffLoading(input: {
                 return;
             }
             const providerDiff = providerDiffByPath?.get(path);
-            if (typeof providerDiff === 'string' && providerDiff.trim().length > 0) {
-                diffStateSource.setDiffState(path, {
+            if (providerDiff !== undefined) {
+                diffStateSource.setDiffState(path, providerDiff === null ? {
+                    status: 'error',
+                    diff: '',
+                    error: fallbackError,
+                } : {
                     status: 'loaded',
                     diff: providerDiff,
                     error: null,

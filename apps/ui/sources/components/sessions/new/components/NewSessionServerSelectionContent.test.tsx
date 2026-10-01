@@ -19,8 +19,14 @@ import type { ActiveServerSwitchResult } from '@/sync/domains/server/activeServe
 const capturedItems: Array<Record<string, unknown>> = [];
 const capturedItemGroups: Array<Record<string, unknown>> = [];
 const capturedItemLists: Array<{ kind: 'scroll' | 'static'; props: Record<string, unknown> }> = [];
+// A parseable credential: the canonical Home credential resolver binds an
+// Account only from a token whose payload names one.
+const SIGNED_IN_CREDENTIALS = { token: 'e30.eyJzdWIiOiJhY2NvdW50LWFkYSJ9.signature', secret: 'secret' };
 const getCredentialsForServerUrlMock = vi.hoisted(() =>
-    vi.fn(async () => ({ token: 'token', secret: 'secret' } as { token: string; secret: string } | null)),
+    vi.fn(async (
+        _serverUrl: string,
+        _options?: Readonly<{ serverId?: string; storageReadFailure?: 'absent' | 'surface' }>,
+    ) => ({ token: 'e30.eyJzdWIiOiJhY2NvdW50LWFkYSJ9.signature', secret: 'secret' } as { token: string; secret: string } | null)),
 );
 const refreshFromActiveServerMock = vi.hoisted(() => vi.fn(async () => {}));
 const setActiveServerAndSwitchMock = vi.hoisted(() => vi.fn(
@@ -113,13 +119,23 @@ vi.mock('@/components/ui/lists/Item', () => ({
 }));
 vi.mock('@/components/ui/text/Text', () => createPassThroughModule(['Text']));
 
-vi.mock('@/sync/domains/server/serverProfiles', () => ({
+vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>(),
     getActiveServerSnapshot: () => ({
         generation: 1,
         serverId: 'server-a',
     }),
     listServerProfiles: () => serverProfilesState.value,
     resolveServerProfileScopeId: (profile: { id: string; serverIdentityId?: string | null }) => profile.serverIdentityId ?? profile.id,
+    getServerProfileById: (id: string) => serverProfilesState.value.find((profile) => (
+        (profile.serverIdentityId ?? profile.id) === id || profile.id === id
+    )) ?? null,
+    resolveServerProfileScopeIdForIdentifier: (id: string | null | undefined) => {
+        const profile = serverProfilesState.value.find((entry) => (
+            (entry.serverIdentityId ?? entry.id) === id || entry.id === id
+        ));
+        return profile ? (profile.serverIdentityId ?? profile.id) : String(id ?? '').trim();
+    },
     loadHomeViewState: () => null,
     loadEffectiveHomeViewState: () => null,
     subscribeHomeViewState: () => () => {},
@@ -131,17 +147,20 @@ vi.mock('@/sync/domains/server/selection/serverSelectionResolution', () => ({
     }),
 }));
 
-vi.mock('@/auth/storage/tokenStorage', () => ({
-    TokenStorage: {
-        getCredentialsForServerUrl: getCredentialsForServerUrlMock,
-    },
-}));
+vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
+    const { createTokenStorageModuleMock } = await import('@/dev/testkit/mocks/tokenStorage');
+    return createTokenStorageModuleMock({
+        importOriginal,
+        tokenStorage: { getCredentialsForServerUrl: getCredentialsForServerUrlMock },
+    });
+});
 
 vi.mock('@/auth/context/AuthContext', () => ({
     useAuth: () => ({ refreshFromActiveServer: refreshFromActiveServerMock }),
 }));
 
-vi.mock('@/components/settings/server/hooks/useServerAuthStatusByServerId', () => ({
+vi.mock('@/components/settings/server/hooks/useServerAuthStatusByServerId', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/components/settings/server/hooks/useServerAuthStatusByServerId')>(),
     useServerAuthStatusByServerId: () => serverAuthStatusState.value,
 }));
 
@@ -181,7 +200,7 @@ describe('NewSessionServerSelectionContent', () => {
             'server-b': 'signedOut',
         };
         getCredentialsForServerUrlMock.mockReset();
-        getCredentialsForServerUrlMock.mockResolvedValue({ token: 'token', secret: 'secret' });
+        getCredentialsForServerUrlMock.mockResolvedValue(SIGNED_IN_CREDENTIALS);
         refreshFromActiveServerMock.mockClear();
         setActiveServerAndSwitchMock.mockReset();
         setActiveServerAndSwitchMock.mockResolvedValue('switched');
@@ -230,7 +249,10 @@ describe('NewSessionServerSelectionContent', () => {
         serverBItem.onPress();
         await Promise.all(fireAndForgetPromises);
 
-        expect(getCredentialsForServerUrlMock).toHaveBeenCalledWith('http://server-b.local', { serverId: 'server-b' });
+        expect(getCredentialsForServerUrlMock).toHaveBeenCalledWith(
+            'http://server-b.local',
+            expect.objectContaining({ serverId: 'server-b' }),
+        );
     });
 
     it('uses device-scoped focus for signed-out Home authentication on native', async () => {
@@ -318,9 +340,14 @@ describe('NewSessionServerSelectionContent', () => {
         expect(capturedItemLists.map((entry) => entry.kind)).toEqual(['static']);
     });
 
-    it('preserves the current Home and draft when target credential lookup fails', async () => {
+    it('preserves the current Home and draft when target credential storage cannot be read', async () => {
         capturedItems.length = 0;
-        getCredentialsForServerUrlMock.mockRejectedValueOnce(new Error('secure storage unavailable'));
+        // Mirrors the real storage owner: an unreadable store reads as absent
+        // unless the caller asks for the failure to surface.
+        getCredentialsForServerUrlMock.mockImplementationOnce(async (_serverUrl, options) => {
+            if (options?.storageReadFailure === 'surface') throw new Error('secure storage unavailable');
+            return null;
+        });
         const { NewSessionServerSelectionContent } = await import('./NewSessionServerSelectionContent');
 
         await renderScreen(<NewSessionServerSelectionContent

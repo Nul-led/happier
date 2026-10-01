@@ -22,17 +22,3 @@ export function normalizePetCompanionSizeScale(value: unknown): number {
 export function petCompanionSizeScaleToPercent(value: unknown): number {
     return Math.round(normalizePetCompanionSizeScale(value) * 100);
 }
-
-export function resolvePetCompanionSizeScaleFromTrackPosition(params: Readonly<{
-    locationX: number;
-    trackWidth: number;
-}>): number {
-    const trackWidth = Number.isFinite(params.trackWidth) && params.trackWidth > 0
-        ? params.trackWidth
-        : 1;
-    const progress = clamp(params.locationX / trackWidth, 0, 1);
-    const raw =
-        PET_COMPANION_SIZE_SCALE_MIN
-        + progress * (PET_COMPANION_SIZE_SCALE_MAX - PET_COMPANION_SIZE_SCALE_MIN);
-    return normalizePetCompanionSizeScale(raw);
-}

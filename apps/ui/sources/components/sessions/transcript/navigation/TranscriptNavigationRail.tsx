@@ -24,7 +24,7 @@ import {
     resolveTranscriptNavigationRailScrollIntoView,
 } from './resolveTranscriptNavigationRailScrollTarget';
 import { TranscriptNavigationRailEdgeAffordance } from './TranscriptNavigationRailEdgeAffordance';
-import { TranscriptNavigationRailMarker } from './TranscriptNavigationRailMarker';
+import { resolveTranscriptNavigationRailMarkerTone, TranscriptNavigationRailMarker } from './TranscriptNavigationRailMarker';
 import { TranscriptNavigationRailPreview } from './TranscriptNavigationRailPreview';
 import type { TranscriptJumpTarget } from '../viewport/jump/transcriptJumpTargetTypes';
 import type { TranscriptNavigationEntry, TranscriptNavigationJumpRequest } from './transcriptNavigationTypes';
@@ -596,6 +596,7 @@ export function TranscriptNavigationRail(props: TranscriptNavigationRailProps) {
                                 onPress={activateEntryAtIndex}
                                 pinned={isPinnedEntry(entry)}
                                 reducedMotion={reducedMotion}
+                                tone={resolveTranscriptNavigationRailMarkerTone(entry)}
                                 topPx={index * (layout.markerHeightPx + layout.markerSpacingPx)}
                                 visible={visibleAnchorIds.has(entry.id)}
                             />

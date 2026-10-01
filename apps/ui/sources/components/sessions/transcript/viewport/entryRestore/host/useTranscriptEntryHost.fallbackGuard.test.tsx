@@ -1,3 +1,15 @@
+import * as TranscriptTestReact from 'react';
+import { createTestSessionTranscriptSource as createHostTestSource, wrapWithSessionTranscriptSource as wrapHostTestSource } from '@/dev/testkit';
+import { sync as transcriptHistorySync } from '@/sync/sync';
+
+const transcriptHostTestSource = createHostTestSource({ sessionId: 's1', history: {
+    loadOlder: (options) => transcriptHistorySync.loadOlderMessages('s1', options),
+    loadTargetWindow: (target, options) => transcriptHistorySync.loadTargetWindowMessages('s1', target, options),
+} });
+function TranscriptHostTestProvider(props: TranscriptTestReact.PropsWithChildren) {
+    return wrapHostTestSource(props.children as TranscriptTestReact.ReactElement, transcriptHostTestSource);
+}
+
 /**
  * Fallback guard regression test for the web anchor restore path.
  *
@@ -211,7 +223,7 @@ describe('useTranscriptEntryHost fallback guard', () => {
         members.sessionOpenLatch.onInitialFillSettled({ sessionId: 's1', nowMs: Date.now() });
         syncMockState.loadTargetWindowMessages.mockResolvedValue({ status: 'not_found', targetPresent: false });
         try {
-            const hook = await renderHook((deps: EntryHostDeps) => useTranscriptEntryHost(deps), {
+            const hook = await renderHook((deps: EntryHostDeps) => useTranscriptEntryHost(deps), { wrapper: TranscriptHostTestProvider,
                 initialProps: { ...buildDeps(members), isLoaded: true, listLayoutHeight: 600 },
             });
             await vi.waitFor(() => expect(members.entryRestoreOwner.telemetryState('s1')).toBe('closed'));
@@ -256,7 +268,7 @@ describe('useTranscriptEntryHost fallback guard', () => {
                     decomposedItems: items, listDataLength: items.length, displayItemsLength: items.length,
                 });
                 return setItems;
-            });
+            }, { wrapper: TranscriptHostTestProvider });
             expect(loadOlder).toHaveBeenCalledTimes(1);
             await act(async () => {
                 hook.getCurrent()([{ kind: 'message', id: 'tail', messageId: 'tail', createdAt: 1, seq: 20 }]);
@@ -345,7 +357,7 @@ describe('useTranscriptEntryHost fallback guard', () => {
         try {
             const hook = await renderHook(
                 (deps: EntryHostDeps) => useTranscriptEntryHost(deps),
-                { initialProps: buildDeps({
+                { wrapper: TranscriptHostTestProvider, initialProps: buildDeps({
                     ...members,
                     decomposedItems: items,
                 }) },
@@ -366,7 +378,7 @@ describe('useTranscriptEntryHost fallback guard', () => {
             members.anchorLookupExhaustedRef.current = true;
             const exhaustedHook = await renderHook(
                 (deps: EntryHostDeps) => useTranscriptEntryHost(deps),
-                { initialProps: buildDeps({
+                { wrapper: TranscriptHostTestProvider, initialProps: buildDeps({
                     ...members,
                     decomposedItems: items,
                 }) },
@@ -443,7 +455,7 @@ describe('useTranscriptEntryHost fallback guard', () => {
         try {
             const hook = await renderHook(
                 (deps: EntryHostDeps) => useTranscriptEntryHost(deps),
-                { initialProps: buildDeps(members) },
+                { wrapper: TranscriptHostTestProvider, initialProps: buildDeps(members) },
             );
 
             await vi.waitFor(() => {
@@ -517,7 +529,7 @@ describe('useTranscriptEntryHost fallback guard', () => {
         try {
             const hook = await renderHook(
                 (deps: EntryHostDeps) => useTranscriptEntryHost(deps),
-                { initialProps: buildDeps(members) },
+                { wrapper: TranscriptHostTestProvider, initialProps: buildDeps(members) },
             );
 
             await vi.waitFor(() => {
@@ -581,7 +593,7 @@ describe('useTranscriptEntryHost fallback guard', () => {
         try {
             const hook = await renderHook(
                 (deps: EntryHostDeps) => useTranscriptEntryHost(deps),
-                { initialProps: buildDeps(members) },
+                { wrapper: TranscriptHostTestProvider, initialProps: buildDeps(members) },
             );
             await vi.waitFor(() => {
                 expect(syncMockState.loadTargetWindowMessages).toHaveBeenCalledTimes(1);
@@ -609,7 +621,7 @@ describe('useTranscriptEntryHost fallback guard', () => {
         const members = createStableMembers();
         const hook = await renderHook(
             (deps: EntryHostDeps) => useTranscriptEntryHost(deps),
-            { initialProps: buildDeps(members) },
+            { wrapper: TranscriptHostTestProvider, initialProps: buildDeps(members) },
         );
         const effects = createEntryRestoreOwner().attempt({
             canMaterializeOlder: true,
@@ -685,7 +697,7 @@ describe('useTranscriptEntryHost fallback guard', () => {
 
         const hook = await renderHook(
             (deps: EntryHostDeps) => useTranscriptEntryHost(deps),
-            { initialProps: buildDeps(members) },
+            { wrapper: TranscriptHostTestProvider, initialProps: buildDeps(members) },
         );
 
         const { applyEntryRestoreOwnerEffects } = hook.getCurrent();
@@ -773,7 +785,7 @@ describe('useTranscriptEntryHost fallback guard', () => {
 
             const hook = await renderHook(
                 (deps: EntryHostDeps) => useTranscriptEntryHost(deps),
-                {
+                { wrapper: TranscriptHostTestProvider,
                     initialProps: buildDeps({
                         ...members,
                         decomposedItems: items,
@@ -856,7 +868,7 @@ describe('useTranscriptEntryHost fallback guard', () => {
         try {
             const hook = await renderHook(
                 (deps: EntryHostDeps) => useTranscriptEntryHost(deps),
-                { initialProps: buildDeps({
+                { wrapper: TranscriptHostTestProvider, initialProps: buildDeps({
                     ...members,
                     decomposedItems: items,
                     listDataRef: { current: items },
@@ -923,7 +935,7 @@ describe('useTranscriptEntryHost fallback guard', () => {
         try {
             const hook = await renderHook(
                 (deps: EntryHostDeps) => useTranscriptEntryHost(deps),
-                { initialProps: buildDeps({
+                { wrapper: TranscriptHostTestProvider, initialProps: buildDeps({
                     ...members,
                     decomposedItems: items,
                     listDataRef: { current: items },
@@ -1015,7 +1027,7 @@ describe('useTranscriptEntryHost fallback guard', () => {
         try {
             const hook = await renderHook(
                 (deps: EntryHostDeps) => useTranscriptEntryHost(deps),
-                {
+                { wrapper: TranscriptHostTestProvider,
                     initialProps: {
                         ...buildDeps(members),
                         committedMessagesCount: items.length,
@@ -1100,7 +1112,7 @@ describe('useTranscriptEntryHost fallback guard', () => {
         try {
             const hook = await renderHook(
                 (deps: EntryHostDeps) => useTranscriptEntryHost(deps),
-                { initialProps: buildDeps(members) },
+                { wrapper: TranscriptHostTestProvider, initialProps: buildDeps(members) },
             );
 
             expect(executeViewportCommand).not.toHaveBeenCalled();

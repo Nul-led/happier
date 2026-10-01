@@ -810,6 +810,23 @@ describe('projectRuntimeTranscriptEvent', () => {
     });
   });
 
+  it.each(['assistant', 'user'] as const)('does not release ordered %s output from local custody without server delivery', async (role) => {
+    const { projectRuntimeTranscriptEvent } = await import('./projectRuntimeTranscriptEvent');
+    const session = {
+      sessionId: 'session-1',
+      enqueueAgentMessageCommitted: vi.fn(async () => ({ persisted: true, delivered: false })),
+      enqueueUserTextMessageCommitted: vi.fn(async () => ({ persisted: true, delivered: false })),
+    };
+    const admission = { signal: new AbortController().signal, requireDelivery: true };
+    await expect(projectRuntimeTranscriptEvent({
+      session, provider: 'opencode', admission,
+      event: canonicalRuntimeEvent({
+        kind: 'transcript-message-committed', sessionId: 'session-1', emittedAtMs: 1,
+        messageId: 'ordered-message', role, text: 'must precede acceptance',
+      }),
+    })).rejects.toMatchObject({ code: 'runtime_transcript_required_admission_failed' });
+  });
+
   it('fails closed when runtime user text is rejected by durable custody', async () => {
     const { projectRuntimeTranscriptEvent } = await import('./projectRuntimeTranscriptEvent');
     const session = {

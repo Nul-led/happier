@@ -14,7 +14,6 @@ const onboardingContext = {
     relayLockConfirmationPending: false,
     relaySwitchConfirmationPending: false,
     authIntent: 'standard' as const,
-    setupAction: null,
 };
 
 function makeState(overrides?: Partial<WizardState>): WizardState {
@@ -71,10 +70,4 @@ describe('wizardReducer', () => {
         expect(withIntent.context.authIntent).toBe('lost_access');
     });
 
-    it('stores the setup action selection without disturbing other context', () => {
-        const state = wizardReducer(makeState(), { type: 'wizard/setSetupAction', setupAction: 'relayLocal' });
-        expect(state.context.setupAction).toBe('relayLocal');
-        expect(state.context.relaySelection).toEqual(onboardingContext.relaySelection);
-        expect(state.context.authIntent).toBe('standard');
-    });
 });

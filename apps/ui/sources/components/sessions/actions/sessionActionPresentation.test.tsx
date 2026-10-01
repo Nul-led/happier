@@ -18,14 +18,26 @@ import {
     SESSION_ACTION_UNPIN_ID,
 } from './sessionActionIds';
 import { getSessionActionMetadata } from './sessionActionMetadata';
-import { createSessionActionInfoItemProps } from './sessionActionPresentation';
+import { createSessionActionInfoItemProps, resolveSessionDeleteWarning } from './sessionActionPresentation';
 import { SESSION_BULK_ACTION_IDS } from './sessionBulkActionTypes';
 
 describe('session action presentation', () => {
+    it('discloses deferred cleanup for an offline managed session without exposing its private path', () => {
+        const input = {
+            defaultWarning: 'delete session',
+            offlineManagedWarning: 'cleanup waits for reconnect',
+            machineOnline: false,
+        };
+        const metadata = { path: '/private/session-root', sessionDirectoryV1: { v: 1, kind: 'managed' } };
+        const warning = resolveSessionDeleteWarning({ ...input, metadata });
+        expect(warning).toBe('delete session\n\ncleanup waits for reconnect');
+        expect(warning).not.toContain(metadata.path);
+        expect(resolveSessionDeleteWarning({ ...input, metadata: {} })).toBe(input.defaultWarning);
+        expect(resolveSessionDeleteWarning({ ...input, metadata, machineOnline: true })).toBe(input.defaultWarning);
+    });
     it('uses unarchive-specific info copy', () => {
         const props = createSessionActionInfoItemProps({
             actionId: SESSION_ACTION_UNARCHIVE_ID,
-            iconColor: '#fff',
         });
 
         expect(props?.title).toBe(t('sessionInfo.unarchiveSession'));

@@ -1,4 +1,4 @@
-import type { BrowserSidecarErrorCodeV1 } from '@happier-dev/protocol';
+import { isLiteralLoopbackHostname, type BrowserSidecarErrorCodeV1 } from '@happier-dev/protocol';
 
 export type BrowserSidecarCdpEndpoint = Readonly<{
     url: string;
@@ -29,13 +29,6 @@ function unavailable(reason: 'missing_endpoint' | 'invalid_endpoint'): BrowserSi
     };
 }
 
-function isLoopbackHost(host: string): boolean {
-    const normalized = host.toLowerCase().replace(/^\[|\]$/gu, '');
-    return normalized === '127.0.0.1'
-        || normalized === 'localhost'
-        || normalized === '::1';
-}
-
 function readEndpoint(source: BrowserSidecarCdpEndpointSource): string | null {
     if (source.kind === 'explicit') {
         return source.endpoint.trim().length > 0 ? source.endpoint.trim() : null;
@@ -54,7 +47,7 @@ function parseEndpoint(endpoint: string): BrowserSidecarCdpEndpoint | null {
 
     if (parsed.protocol !== 'ws:') return null;
     if (parsed.username || parsed.password) return null;
-    if (!isLoopbackHost(parsed.hostname)) return null;
+    if (!isLiteralLoopbackHostname(parsed.hostname)) return null;
     if (parsed.port.length === 0) return null;
 
     const port = Number(parsed.port);

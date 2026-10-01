@@ -5,6 +5,7 @@ import {
   ComposerContentMimeTypeV1Schema,
   PluginContributionIdentityV1Schema,
   SessionExecutionTargetV1Schema,
+  SessionAttachmentUploadInitRequestV1Schema,
 } from '@happier-dev/protocol';
 import { z } from 'zod';
 
@@ -58,18 +59,7 @@ export const DirectTransferImportOpenRequestSchema = z.discriminatedUnion('t', [
       overwrite: z.unknown(),
       sha256: z.unknown().optional(),
     }).strict(),
-    z.object({
-      ...directTransferImportOpenCommonFields,
-      t: z.literal('session_attachment_upload_v1'),
-      messageLocalId: z.unknown(),
-      fileName: z.unknown(),
-      sizeBytes: z.unknown(),
-      uploadLocation: z.enum(['workspace', 'os_temp']).optional(),
-      workspaceRootPath: z.unknown().optional(),
-      workspaceRelativeDir: z.string().optional(),
-      vcsIgnoreStrategy: z.enum(['git_info_exclude', 'gitignore', 'none']).optional(),
-      vcsIgnoreWritesEnabled: z.boolean().optional(),
-    }).strict(),
+    SessionAttachmentUploadInitRequestV1Schema.extend(directTransferImportOpenCommonFields),
     z.object({
       ...directTransferImportOpenCommonFields,
       t: z.literal('prompt_asset_upload_v1'),

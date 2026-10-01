@@ -186,7 +186,7 @@ import { syncPerformanceTelemetry } from '@/sync/runtime/syncPerformanceTelemetr
 import { loadSyncTuning } from '@/sync/runtime/syncTuning';
 import { resolveSessionLiveConsumption } from '@/sync/runtime/sessionLiveConsumption';
 import { resolvePreferredServerIdForSessionId } from '@/sync/runtime/orchestration/serverScopedRpc/resolvePreferredServerIdForSessionId';
-import { normalizeRawMessages } from '@/sync/typesRaw';
+import { normalizeRawMessages } from "@happier-dev/session-core/raw";
 
 class MemoryWebStorage implements Pick<Storage, 'getItem' | 'setItem' | 'removeItem'> {
   readonly values = new Map<string, string>();
@@ -2118,6 +2118,53 @@ describe('sync socket offline tracking', () => {
     );
   }, 60_000);
 
+  it('re-enqueues a visible transcript whose first read failed when snapshot refresh resumes', async () => {
+    upsertAndActivateServer({ serverUrl: 'http://localhost:53288', scope: 'tab' });
+    const sessionId = 'visible-never-loaded';
+    const fetchMock = stubSnapshotRefreshFetch();
+    apiSocketRequestMock.mockImplementation(async (path, init) => {
+      if (String(path).includes(`/v1/sessions/${sessionId}/messages`)) {
+        return new Response(JSON.stringify({ messages: [], hasMore: false, nextBeforeSeq: null }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return fetchMock(path, init);
+    });
+    storage.setState((state) => ({
+      ...state,
+      profile: { ...(state.profile ?? {}), id: 'test-account' } as any,
+      sessions: {
+        ...state.sessions,
+        [sessionId]: {
+          id: sessionId,
+          seq: 1,
+          encryptionMode: 'plain',
+          metadata: {},
+          agentState: null,
+        } as any,
+      },
+    }), true);
+    storage.getState().setSessionTranscriptLoadIssue(sessionId, {
+      kind: 'read_failed',
+      errorCode: 'network_error',
+    });
+    markSessionSurfaceVisible(sessionId);
+    (sync as any).credentials = { token: 'hdr.eyJzdWIiOiJ0ZXN0In0.sig', secret: 'secret' };
+    (sync as any).encryption = {
+      decryptEncryptionKey: async () => null,
+      initializeMachines: async () => {},
+      initializeSessions: async () => {},
+      getSessionEncryption: () => null,
+    };
+
+    await (sync as any).snapshotRefreshOnResume({ mode: 'fallback', reason: 'test' });
+
+    expect(apiSocketRequestMock.mock.calls.some(([path]) => String(path).includes(`/v1/sessions/${sessionId}/messages`))).toBe(true);
+    expect(storage.getState().sessionMessages[sessionId]?.isLoaded).toBe(true);
+    expect(storage.getState().getSessionTranscriptLoadIssue(sessionId)).toBeNull();
+  }, 60_000);
+
   it('captures a fresh snapshot-base cursor before cursor-gone snapshot repair', async () => {
     upsertAndActivateServer({ serverUrl: 'http://localhost:53288', scope: 'tab' });
     fetchChangesMock
@@ -2791,7 +2838,7 @@ describe('sync socket offline tracking', () => {
     vi.stubGlobal('fetch', stagedFetch);
     const automationFeatures = FeaturesResponseSchema.parse({
       features: {},
-      capabilities: { automations: { apiEpoch: 3 } },
+      capabilities: {},
     });
     primeServerFeaturesSnapshot({
       serverId: appliedProfile.id,

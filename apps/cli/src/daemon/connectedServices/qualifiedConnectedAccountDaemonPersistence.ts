@@ -82,6 +82,7 @@ import type {
   ConnectedAccountOAuthTransactionOwner,
   ConnectedAccountOAuthTransactionSnapshot,
 } from '@/plugins/runtime/connectedAccounts/authenticationAttemptOwner';
+import type { PendingConnectedAccountAttemptTransaction } from '@/api/client/connectedAccountAttemptTransactionApi';
 
 import type { ConnectedAccountDaemonPersistence } from './ConnectedAccountDaemonRuntime';
 
@@ -203,6 +204,7 @@ function configurationFailureForAccountSettingsSettlement(
 export type QualifiedConnectedAccountAttemptTransactionAdapters = Readonly<{
   oauth?: ConnectedAccountOAuthTransactionOwner;
   device?: ConnectedAccountDeviceTransactionOwner;
+  listPending?(service: Readonly<{ pluginId: string; localId: string }>): Promise<readonly PendingConnectedAccountAttemptTransaction[]>;
 }>;
 
 class ConfigurationRevisionConflict extends Error {}
@@ -506,6 +508,17 @@ export function createActiveAccountSettingsConnectedAccountSecrets(input: Readon
   /** The daemon's Account; admission never validates refs for another Account. */
   expectedScopeKey: string;
 }>): ConnectedAccountDaemonPersistence['configuration']['secrets'] {
+  const readMaterial: NonNullable<ConnectedAccountDaemonPersistence['configuration']['secrets']['readMaterial']> = async (secretId, options) => {
+    options?.signal?.throwIfAborted();
+    const snapshot = getActiveAccountSettingsSnapshot();
+    if (!snapshot) return null;
+    const resolved = createSavedSecretMaterializerFromSnapshotV1(snapshot).resolve(secretId);
+    if (resolved.status !== 'ready') return null;
+    options?.signal?.throwIfAborted();
+    return getActiveAccountSettingsSnapshot() === snapshot
+      ? Object.freeze({ value: resolved.value, fingerprint: resolved.fingerprint })
+      : null;
+  };
   return Object.freeze({
     async admit(secretIds, options) {
       // A record without references has nothing to admit; the admission owner
@@ -525,18 +538,9 @@ export function createActiveAccountSettingsConnectedAccountSecrets(input: Readon
       );
     },
     async read(secretId, options) {
-      if (options?.signal?.aborted) {
-        throw options.signal.reason ?? new Error('Operation aborted');
-      }
-      const snapshot = getActiveAccountSettingsSnapshot();
-      if (!snapshot) return null;
-      const resolved = createSavedSecretMaterializerFromSnapshotV1(snapshot).resolve(secretId);
-      if (resolved.status !== 'ready') return null;
-      if (options?.signal?.aborted) {
-        throw options.signal.reason ?? new Error('Operation aborted');
-      }
-      return getActiveAccountSettingsSnapshot() === snapshot ? resolved.value : null;
+      return (await readMaterial(secretId, options))?.value ?? null;
     },
+    readMaterial,
   });
 }
 
@@ -1535,6 +1539,9 @@ export function createQualifiedConnectedAccountDaemonPersistence(
       ...(params.attemptTransactions?.device
         ? { deviceTransactions: params.attemptTransactions.device }
         : {}),
+      listPending: params.attemptTransactions?.listPending ?? (async () => {
+        throw new Error('Connected-account pending attempt discovery is unavailable');
+      }),
       settlement: (() => {
         const settle = async (
           request: SettlementRequest,

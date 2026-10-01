@@ -220,12 +220,12 @@ describe('engineRegistry (Pi request-auth compatibility)', () => {
             pluginId: PI_PLUGIN_ID,
             pluginVersion: lease.pluginVersion,
             agentId: PI_AGENT_ID,
-            generation: lease.generation,
+            occurrenceId: lease.occurrenceId,
             correlationId: `pi-request-auth-${version}`,
             cwd: directory,
             environment: launchEnvironment,
             signal,
-            isGenerationCurrent: lease.isCurrent,
+            isOccurrenceCurrent: lease.isCurrent,
           });
           const runtime = await lease.createRuntime({ signal });
           const sessions = runtime.sessions;
@@ -245,7 +245,7 @@ describe('engineRegistry (Pi request-auth compatibility)', () => {
             ui: createPluginInvocationPresentation({
               currentSession: null,
               signal,
-              isGenerationCurrent: () => true,
+              isOccurrenceCurrent: () => true,
             }),
             agent: { id: PI_AGENT_ID },
             protocols: {

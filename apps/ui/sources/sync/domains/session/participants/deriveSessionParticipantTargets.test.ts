@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import type { Message, ToolCallMessage } from '@/sync/domains/messages/messageTypes';
-import type { MessageMeta } from '@/sync/domains/messages/messageMetaTypes';
+import type { Message, ToolCallMessage } from "@happier-dev/session-core/messages";
+import type { MessageMeta } from "@happier-dev/session-core/messages";
 
 import { deriveAutoRecipientFromFocusedToolTranscript, deriveSessionParticipantTargets } from './deriveSessionParticipantTargets';
 

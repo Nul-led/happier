@@ -1,4 +1,4 @@
-import { createReducer } from '@/sync/reducer/reducer';
+import { createReducer } from "@happier-dev/session-core/reducer";
 import type {
     TranscriptSessionCommonProps,
     TranscriptToolChromeCommon,

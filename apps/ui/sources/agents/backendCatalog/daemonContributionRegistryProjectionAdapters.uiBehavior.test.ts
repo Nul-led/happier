@@ -72,7 +72,6 @@ function projectionWithExternalAgent(): PluginProjectionV2 {
                 },
             },
         },
-        backendsById: {},
         actionsById: {},
         toolsById: {},
         commandsById: {},

@@ -1,8 +1,21 @@
+import * as TranscriptTestReact from 'react';
+import { createTestSessionTranscriptSource as createHostTestSource, wrapWithSessionTranscriptSource as wrapHostTestSource } from '@/dev/testkit';
+import { sync as transcriptHistorySync } from '@/sync/sync';
+
+const transcriptHostTestSource = createHostTestSource({ sessionId: 'session-1', history: {
+    loadOlder: (options) => transcriptHistorySync.loadOlderMessages('session-1', options),
+    loadTargetWindow: (target, options) => transcriptHistorySync.loadTargetWindowMessages('session-1', target, options),
+} });
+function TranscriptHostTestProvider(props: TranscriptTestReact.PropsWithChildren) {
+    return wrapHostTestSource(props.children as TranscriptTestReact.ReactElement, transcriptHostTestSource);
+}
+
 // @vitest-environment jsdom
 
+import type * as React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { flushHookEffects, renderHook } from '@/dev/testkit';
+import { createTestSessionTranscriptSource, flushHookEffects, renderHook, wrapWithSessionTranscriptSource } from '@/dev/testkit';
 import { createSessionOpenLatch } from '@/components/sessions/transcript/viewport/sessionOpen/sessionOpenLatch';
 import { sync } from '@/sync/sync';
 
@@ -61,6 +74,19 @@ afterEach(() => {
 });
 
 describe('useTranscriptTargetWindowContinuationOwner', () => {
+    it('loads target windows through the presentation source', async () => {
+        vi.spyOn(sync, 'loadTargetWindowMessages').mockResolvedValue(result());
+        const loadTargetWindow = vi.fn(async () => result());
+        const source = createTestSessionTranscriptSource({ sessionId: 'session-1', history: { loadTargetWindow } });
+        const hook = await renderHook(
+            (input: OwnerParams) => useTranscriptTargetWindowContinuationOwner(input),
+            { initialProps: params(), wrapper: (props) => wrapWithSessionTranscriptSource(props.children as React.ReactElement, source) },
+        );
+        hook.getCurrent().observeReachedEdge('older');
+        await flushHookEffects();
+        expect(loadTargetWindow).toHaveBeenCalledWith({ kind: 'seq', seq: 50 }, { direction: 'older' });
+        await hook.unmount();
+    });
     it('retries the exact older edge with the same cursor after a bounded transient-failure cooldown', async () => {
         vi.useFakeTimers();
         const cooldownMs = sync.getSyncTuning().transcriptOlderLoadCooldownMs;
@@ -69,7 +95,7 @@ describe('useTranscriptTargetWindowContinuationOwner', () => {
             .mockResolvedValue(result());
         const hook = await renderHook(
             (input: OwnerParams) => useTranscriptTargetWindowContinuationOwner(input),
-            { initialProps: params() },
+            { wrapper: TranscriptHostTestProvider, initialProps: params() },
         );
 
         hook.getCurrent().observeReachedEdge('older');
@@ -107,7 +133,7 @@ describe('useTranscriptTargetWindowContinuationOwner', () => {
             .mockResolvedValue(result({ status: 'not_ready', targetPresent: false }));
         const hook = await renderHook(
             (input: OwnerParams) => useTranscriptTargetWindowContinuationOwner(input),
-            { initialProps: params() },
+            { wrapper: TranscriptHostTestProvider, initialProps: params() },
         );
 
         hook.getCurrent().observeReachedEdge('older');
@@ -130,7 +156,7 @@ describe('useTranscriptTargetWindowContinuationOwner', () => {
             .mockResolvedValue(result());
         const hook = await renderHook(
             (input: OwnerParams) => useTranscriptTargetWindowContinuationOwner(input),
-            { initialProps: params() },
+            { wrapper: TranscriptHostTestProvider, initialProps: params() },
         );
 
         hook.getCurrent().observeProximity({ newer: true, older: true });
@@ -155,7 +181,7 @@ describe('useTranscriptTargetWindowContinuationOwner', () => {
         const shared = params();
         const hook = await renderHook(
             (input: OwnerParams) => useTranscriptTargetWindowContinuationOwner(input),
-            { initialProps: shared },
+            { wrapper: TranscriptHostTestProvider, initialProps: shared },
         );
 
         hook.getCurrent().observeProximity({ newer: false, older: true });
@@ -185,7 +211,7 @@ describe('useTranscriptTargetWindowContinuationOwner', () => {
         const shared = params();
         const hook = await renderHook(
             (input: OwnerParams) => useTranscriptTargetWindowContinuationOwner(input),
-            { initialProps: shared },
+            { wrapper: TranscriptHostTestProvider, initialProps: shared },
         );
 
         hook.getCurrent().observeProximity({ newer: false, older: true });
@@ -218,7 +244,7 @@ describe('useTranscriptTargetWindowContinuationOwner', () => {
         const shared = params();
         const hook = await renderHook(
             (input: OwnerParams) => useTranscriptTargetWindowContinuationOwner(input),
-            { initialProps: shared },
+            { wrapper: TranscriptHostTestProvider, initialProps: shared },
         );
 
         hook.getCurrent().observeProximity({ newer: false, older: true });
@@ -261,7 +287,7 @@ describe('useTranscriptTargetWindowContinuationOwner', () => {
             .mockImplementation(() => new Promise(() => {}));
         const hook = await renderHook(
             (input: OwnerParams) => useTranscriptTargetWindowContinuationOwner(input),
-            { initialProps: params() },
+            { wrapper: TranscriptHostTestProvider, initialProps: params() },
         );
 
         hook.getCurrent().observeProximity({ newer: true, older: true });
@@ -280,7 +306,7 @@ describe('useTranscriptTargetWindowContinuationOwner', () => {
         const shared = params();
         const hook = await renderHook(
             (input: OwnerParams) => useTranscriptTargetWindowContinuationOwner(input),
-            { initialProps: shared },
+            { wrapper: TranscriptHostTestProvider, initialProps: shared },
         );
 
         hook.getCurrent().observeReachedEdge('older');
@@ -309,7 +335,7 @@ describe('useTranscriptTargetWindowContinuationOwner', () => {
             .mockResolvedValue(result({ status: 'retryable_error', targetPresent: false }));
         const hook = await renderHook(
             (input: OwnerParams) => useTranscriptTargetWindowContinuationOwner(input),
-            { initialProps: params() },
+            { wrapper: TranscriptHostTestProvider, initialProps: params() },
         );
 
         hook.getCurrent().observeReachedEdge('older');
@@ -328,7 +354,7 @@ describe('useTranscriptTargetWindowContinuationOwner', () => {
         const shared = params({ isReadyForLoad: () => false });
         const hook = await renderHook(
             (input: OwnerParams) => useTranscriptTargetWindowContinuationOwner(input),
-            { initialProps: shared },
+            { wrapper: TranscriptHostTestProvider, initialProps: shared },
         );
 
         hook.getCurrent().observeProximity({ newer: false, older: true });
@@ -355,7 +381,7 @@ describe('useTranscriptTargetWindowContinuationOwner', () => {
         const load = vi.spyOn(sync, 'loadTargetWindowMessages').mockResolvedValue(result());
         const hook = await renderHook(
             (input: OwnerParams) => useTranscriptTargetWindowContinuationOwner(input),
-            {
+            { wrapper: TranscriptHostTestProvider,
                 initialProps: params({
                     isReadyForLoad: () =>
                         sessionOpenLatch.initialFillStatus() === 'done' &&
@@ -391,7 +417,7 @@ describe('useTranscriptTargetWindowContinuationOwner', () => {
         });
         const hook = await renderHook(
             (input: OwnerParams) => useTranscriptTargetWindowContinuationOwner(input),
-            { initialProps: shared },
+            { wrapper: TranscriptHostTestProvider, initialProps: shared },
         );
 
         hook.getCurrent().observeReachedEdge('newer');

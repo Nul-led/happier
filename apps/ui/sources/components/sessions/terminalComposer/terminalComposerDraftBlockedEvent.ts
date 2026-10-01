@@ -1,4 +1,4 @@
-import type { AgentEvent } from '@/sync/typesRaw';
+import type { AgentEvent } from "@happier-dev/session-core/raw";
 
 const TERMINAL_COMPOSER_DRAFT_BLOCKED_EVENT_TYPE = 'terminal-composer-draft-blocked';
 

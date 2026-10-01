@@ -65,6 +65,7 @@ vi.mock('react-native-gesture-handler', () => ({
 }));
 vi.mock('@/utils/sessions/sessionUtils', () => ({
     getSessionName: () => 'Session',
+    resolveLockedSessionTitle: (title: string) => title,
     getSessionSubtitle: () => 'Subtitle',
     getSessionAvatarId: () => 'avatar',
     getSessionStatus: () => ({
@@ -144,14 +145,26 @@ describe('SessionItem pin hover affordance (web)', () => {
         return screen.findByTestId(`session-list-item-${sessionId}`) as any;
     }
 
+    /** The row's hover owner: the nearest ancestor of the press target that tracks the pointer. */
     function findSessionRowContainer(screen: Awaited<ReturnType<typeof renderSessionItem>>, sessionId: string) {
-        const row = findSessionRow(screen, sessionId);
-        if (!row.parent) throw new Error(`expected session row container for ${sessionId}`);
-        return row.parent as any;
+        let node = findSessionRow(screen, sessionId).parent;
+        while (node && typeof node.props?.onPointerEnter !== 'function') node = node.parent;
+        if (!node) throw new Error(`expected session row container for ${sessionId}`);
+        return node as any;
     }
 
+    /** The row actions sit in the trailing area beside the row's press target (never inside its `<button>`). */
     function findPinActions(row: ReturnType<typeof findSessionRow>) {
-        return row.findAllByProps({ accessibilityLabel: 'sessionInfo.pinSession' });
+        let rowRoot = row.parent;
+        while (rowRoot && typeof rowRoot.props?.onPointerEnter !== 'function') rowRoot = rowRoot.parent;
+        const rightArea = (rowRoot ?? row).findAll((node: any) => node.props?.testID === 'session-item-right-area')[0];
+        if (!rightArea) return [];
+        // One action per press handler (a mocked Pressable and its host both carry the label).
+        const byHandler = new Map<unknown, any>();
+        for (const node of rightArea.findAllByProps({ accessibilityLabel: 'sessionInfo.pinSession' })) {
+            if (!byHandler.has(node.props.onPress)) byHandler.set(node.props.onPress, node);
+        }
+        return [...byHandler.values()];
     }
 
     function triggerHoverEnter(node: any) {
@@ -345,7 +358,7 @@ describe('SessionItem pin hover affordance (web)', () => {
         });
 
         const row = findSessionRow(screen, 'sess_6');
-        expect(flattenStyleValue(row.parent?.props.style, 'marginLeft')).toBe(50);
+        expect(flattenStyleValue(findSessionRowContainer(screen, 'sess_6').props.style, 'marginLeft')).toBe(50);
 
         await screen.unmount();
     });

@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ExternalSessionFollowPolicySetResponse } from '@happier-dev/protocol';
 
 import type { ExternalSessionLink } from '@/sync/domains/session/external/readExternalSessionLink';
-import type { Metadata } from '@/sync/domains/state/storageTypes';
+import type { Metadata } from '@happier-dev/session-core/state';
 
 const machineExternalSessionFollowPolicySetSpy = vi.hoisted(() => vi.fn<
     (input: Record<string, unknown>, opts?: { serverId?: string }) => Promise<ExternalSessionFollowPolicySetResponse>

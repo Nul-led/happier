@@ -25,6 +25,13 @@ export type SessionAgentPickerOptionPresentation = Readonly<{
     accessibilityLabel?: string;
     disabled: boolean;
     muted: boolean;
+    /**
+     * The rail group the row belongs to ("Not on devbox yet"), when the surface groups rows by where
+     * the agent can run. Groups keep their `rank` order; rows without one lead.
+     */
+    section?: Readonly<{ id: string; label: string; rank: number }>;
+    /** A state mark in the row's indicator slot (not installed, needs sign-in), drawn when the row is not the selection. */
+    statusMarker?: React.ReactNode;
 }>;
 
 export type SessionAgentPickerOptionBehavior = Pick<
@@ -96,6 +103,7 @@ export function buildSessionAgentPickerOptions(
         (entry) => entry.backendTargetKey,
     );
 
+    const sectionRankById = new Map<string, number>();
     const available: AgentInputChipPickerOption[] = [];
     const muted: AgentInputChipPickerOption[] = [];
     const disabled: AgentInputChipPickerOption[] = [];
@@ -115,9 +123,12 @@ export function buildSessionAgentPickerOptions(
             accessibilityLabel: presentation.accessibilityLabel,
             disabled: presentation.disabled,
             muted: presentation.muted,
+            ...(presentation.section ? { sectionId: presentation.section.id, sectionLabel: presentation.section.label } : {}),
+            ...(presentation.statusMarker ? { statusMarker: presentation.statusMarker } : {}),
             railAction: params.resolveRailAction?.(context),
             ...params.resolveBehavior(context),
         };
+        if (presentation.section) sectionRankById.set(presentation.section.id, presentation.section.rank);
 
         if (option.disabled) {
             disabled.push(option);
@@ -130,10 +141,15 @@ export function buildSessionAgentPickerOptions(
         available.push(option);
     }
 
+    // Grouped rows keep their group's order (the rail draws one heading per group, in first-seen order).
+    const rankOf = (option: AgentInputChipPickerOption) => (option.sectionId ? sectionRankById.get(option.sectionId) ?? 0 : -1);
+    const byGroup = (list: AgentInputChipPickerOption[]) => (sectionRankById.size === 0
+        ? list
+        : list.map((option, index) => ({ option, index }))
+            .sort((a, b) => rankOf(a.option) - rankOf(b.option) || a.index - b.index)
+            .map(({ option }) => option));
     return [
         ...(params.leadingOptions ?? []),
-        ...available,
-        ...muted,
-        ...disabled,
+        ...byGroup([...available, ...muted, ...disabled]),
     ];
 }

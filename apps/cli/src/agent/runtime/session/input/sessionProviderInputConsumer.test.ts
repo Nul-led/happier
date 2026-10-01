@@ -19,6 +19,81 @@ import {
 } from './sessionProviderInputConsumer';
 
 describe('createSessionProviderInputConsumer', () => {
+  it('lets user input win during the final context-only recheck, retaining the taken item for its own later turn', async () => {
+    const barrier = createDeferred<boolean>();
+    const batch = { message: 'required workflow step', mode: { id: 'mode' }, isolate: true, hash: 'step-1' };
+    const messageQueue = new MessageQueue2<{ id: string }, string>(() => 'hash');
+    const events: string[] = [];
+    const consumer = createSessionProviderInputConsumer({
+      messageQueue,
+      session: { waitForMetadataUpdate: () => new Promise<boolean>(() => {}) },
+    });
+    const commit = consumer.finalizeContextOnlyInput({
+      batch,
+      abortSignal: new AbortController().signal,
+      recheck: () => barrier.promise,
+      commit: async () => { events.push('step-1'); return true; },
+    });
+    messageQueue.pushImmediate('human wins', { id: 'mode' });
+    barrier.resolve(true);
+    await expect(commit).resolves.toBe('deferred');
+    expect(events).toEqual([]);
+    await expect(consumer.waitForNextInput({ abortSignal: new AbortController().signal }))
+      .resolves.toMatchObject({ message: 'human wins' });
+    await expect(consumer.waitForNextInput({ abortSignal: new AbortController().signal })).resolves.toEqual(batch);
+    await expect(consumer.finalizeContextOnlyInput({
+      batch, abortSignal: new AbortController().signal, recheck: async () => true,
+      commit: async () => { events.push('step-1'); return true; },
+    })).resolves.toBe('committed');
+    expect(events).toEqual(['step-1']);
+  });
+
+  it('does not publish a context-only event when the final dispatch check declines', async () => {
+    const consumer = createSessionProviderInputConsumer({
+      messageQueue: new MessageQueue2<{ id: string }, string>(() => 'hash'),
+      session: { waitForMetadataUpdate: () => new Promise<boolean>(() => {}) },
+    });
+    const events: string[] = [];
+    await expect(consumer.finalizeContextOnlyInput({
+      batch: { message: 'withdrawn', mode: { id: 'mode' }, isolate: true, hash: 'withdrawn' },
+      abortSignal: new AbortController().signal, recheck: async () => false,
+      commit: async () => { events.push('withdrawn'); return true; },
+    })).resolves.toBe('withdrawn');
+    expect(events).toEqual([]);
+  });
+
+  it('retains context-only input behind Pending input observed during the final recheck', async () => {
+    const barrier = createDeferred<boolean>();
+    let pending = false;
+    const batch = { message: 'host context', mode: { id: 'mode' }, isolate: true, hash: 'wake' };
+    const events: string[] = [];
+    const queue = new MessageQueue2<{ id: string }, string>(() => 'hash');
+    const consumer = createSessionProviderInputConsumer({
+      messageQueue: queue,
+      session: {
+        waitForMetadataUpdate: () => new Promise<boolean>(() => {}),
+        hasPendingProviderInput: () => pending,
+        materializeNextPendingMessageSafely: async () => {
+          if (!pending) return { type: 'no_pending' as const };
+          pending = false;
+          queue.pushImmediate('pending human input', { id: 'mode' });
+          return { type: 'materialized' as const, localId: 'human', seq: 1, content: null };
+        },
+      },
+    });
+    const finalize = consumer.finalizeContextOnlyInput({
+      batch, abortSignal: new AbortController().signal, recheck: () => barrier.promise,
+      commit: async () => { events.push('wake'); return true; },
+    });
+    pending = true;
+    barrier.resolve(true);
+    await expect(finalize).resolves.toBe('deferred');
+    expect(events).toEqual([]);
+    await expect(consumer.waitForNextInput({ abortSignal: new AbortController().signal }))
+      .resolves.toMatchObject({ message: 'pending human input' });
+    await expect(consumer.waitForNextInput({ abortSignal: new AbortController().signal })).resolves.toEqual(batch);
+  });
+
   it('admits host context-only input only after queued and Pending sources are empty', async () => {
     const contextBatch = { message: 'follow context', mode: { id: 'mode' }, isolate: true, hash: 'wake-1' };
     const takeContextOnlyInput = vi.fn(async () => contextBatch);

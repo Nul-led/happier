@@ -7,10 +7,16 @@ import { resolveActivitySurfacePolicy } from '@/activity/attention/resolveActivi
 import { buildActivitySurfaceViewModel } from './buildActivitySurfaceViewModel';
 
 describe('buildActivitySurfaceViewModel', () => {
-    it('carries privacy-safe structural context through status-only locked presentation', () => {
+    it.each([
+        { encryptionMode: 'plain', encryptedContentAvailability: 'ready', presentation: 'status_only' },
+        { encryptionMode: 'e2ee', encryptedContentAvailability: 'encrypted_access_pending', presentation: 'full' },
+        { encryptionMode: 'e2ee', encryptedContentAvailability: undefined, presentation: 'full' },
+    ] as const)('carries privacy-safe structural context through $encryptionMode / $encryptedContentAvailability / $presentation presentation', ({
+        encryptionMode, encryptedContentAvailability, presentation,
+    }) => {
         const session = createSessionFixture({
-            encryptionMode: 'e2ee',
-            encryptedContentAvailability: 'encrypted_access_pending',
+            encryptionMode,
+            encryptedContentAvailability,
             metadata: {
                 path: '/private/PRIVATE-WORKSPACE-SENTINEL',
                 host: 'PRIVATE-HOST-SENTINEL',
@@ -21,7 +27,7 @@ describe('buildActivitySurfaceViewModel', () => {
                 relevance: { relevant: true, reasons: ['responsible_for_me'] },
                 follow: { follows: true, notificationLevel: 'important' },
                 notification: { level: 'important', source: 'preference' },
-                attention: { needsAttention: true, reasons: ['unread'], primary: 'unread', presentation: 'status_only' },
+                attention: { needsAttention: true, reasons: ['unread'], primary: 'unread', presentation },
             },
         });
         const safeContext = 'Home B · Offline · Last updated 18m ago · Developers · Assigned to you · Encrypted access pending';
@@ -47,8 +53,8 @@ describe('buildActivitySurfaceViewModel', () => {
 
         const view = buildActivitySurfaceViewModel({
             candidate,
-            policy: resolveActivitySurfacePolicy({ activitySurfacePrivacyMode: 'title_only' }),
-            showMachinePath: false,
+            policy: resolveActivitySurfacePolicy({ activitySurfacePrivacyMode: 'include_preview' }),
+            showMachinePath: true,
             showPreviewText: true,
             isPrimary: true,
             nowMs: 1_000,

@@ -86,7 +86,7 @@ describe('runner managed Provider binding materialization', () => {
         const controller = new AbortController();
         const scope = {
             pluginId: 'acme.providers',
-            generation: 'provider-p',
+            occurrenceId: 'provider-p',
             correlationId: 'session-one',
         };
         redactor.beginInvocation(scope, controller.signal);

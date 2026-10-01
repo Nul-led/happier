@@ -6,6 +6,7 @@ import { dirname, join } from 'node:path';
 import {
   ExternalSessionOperationRecordV1Schema,
   resolveExternalSessionOperationTimelineV1,
+  type ExternalSessionOperationRecordV1,
 } from '@happier-dev/protocol';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { StoredCredentials } from '@/persistence';
@@ -107,7 +108,7 @@ function terminalOperationRecord(input: Readonly<{
   terminalAtMs?: number;
   status?: 'completed' | 'cancelled' | 'discarded';
 }>) {
-  const request = {
+  const request: ExternalSessionOperationRecordV1['request'] = {
     v: 1 as const,
     idempotencyKey: 'plugin-operation:v1:takeover:test-key',
     sessionId: input.sessionId ?? 'session-1',
@@ -121,7 +122,7 @@ function terminalOperationRecord(input: Readonly<{
       },
       linkGeneration: 'link-1',
       sourceGeneration: 'source-1',
-      contributionGeneration: 'contribution-1',
+      sourceCustody: { kind: 'development', registeredRootId: 'contribution-1' },
     },
     plan: 'takeover' as const,
     targetStorageMode: 'external-linked' as const,

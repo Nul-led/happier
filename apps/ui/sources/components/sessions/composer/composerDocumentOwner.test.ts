@@ -1,7 +1,10 @@
 import type { ComposerAttachmentDraftV1, ComposerRefV1 } from '@happier-dev/protocol';
 import { describe, expect, it, vi } from 'vitest';
 
-import { createEphemeralComposerDocumentOwner } from './composerDocumentOwner';
+import {
+    createEphemeralComposerDocumentOwner,
+    promoteAcceptedComposerDocument,
+} from './composerDocumentOwner';
 import { projectComposerDocumentSnapshot } from './composerSnapshotProjection';
 
 const participantRef: ComposerRefV1 = {
@@ -284,5 +287,82 @@ describe('ComposerDocumentOwner', () => {
             structuredInputMentions: [],
             composerAttachments: [attachment],
         });
+    });
+
+    it('promotes a newer source edit after clearing only the accepted capture', () => {
+        const source = createEphemeralComposerDocumentOwner({
+            ref: participantRef,
+            capabilities: { text: true, references: true, attachments: true, submit: true },
+            initialDocument: { text: 'A', structuredInputMentions: [], composerAttachments: [] },
+        });
+        const sourceAcceptedCurrentness = source.captureCurrentness();
+        const destination = createEphemeralComposerDocumentOwner({
+            ref: { ...participantRef, instanceId: 'run-draft' },
+            capabilities: { text: true, references: true, attachments: true, submit: true },
+            initialDocument: { text: 'A', structuredInputMentions: [], composerAttachments: [] },
+        });
+        const destinationAcceptedCurrentness = destination.captureCurrentness();
+
+        source.replaceDocument({ text: 'B', structuredInputMentions: [], composerAttachments: [] });
+        source.clearAccepted(sourceAcceptedCurrentness);
+        promoteAcceptedComposerDocument({
+            residual: source.read().document,
+            destination,
+            destinationAcceptedCurrentness,
+        });
+
+        expect(source.read().document.text).toBe('B');
+        expect(destination.read().document.text).toBe('B');
+    });
+
+    it('preserves a newer destination edit during accepted-source promotion', () => {
+        const source = createEphemeralComposerDocumentOwner({
+            ref: participantRef,
+            capabilities: { text: true, references: true, attachments: true, submit: true },
+            initialDocument: { text: 'A', structuredInputMentions: [], composerAttachments: [] },
+        });
+        const sourceAcceptedCurrentness = source.captureCurrentness();
+        const destination = createEphemeralComposerDocumentOwner({
+            ref: { ...participantRef, instanceId: 'run-draft' },
+            capabilities: { text: true, references: true, attachments: true, submit: true },
+            initialDocument: { text: 'A', structuredInputMentions: [], composerAttachments: [] },
+        });
+        const destinationAcceptedCurrentness = destination.captureCurrentness();
+
+        source.replaceDocument({ text: 'B', structuredInputMentions: [], composerAttachments: [] });
+        destination.replaceDocument({ text: 'C', structuredInputMentions: [], composerAttachments: [] });
+        source.clearAccepted(sourceAcceptedCurrentness);
+        promoteAcceptedComposerDocument({
+            residual: source.read().document,
+            destination,
+            destinationAcceptedCurrentness,
+        });
+
+        expect(destination.read().document.text).toBe('C');
+    });
+
+    it('promotes newer text when the accepted destination text was already empty', () => {
+        const source = createEphemeralComposerDocumentOwner({
+            ref: participantRef,
+            capabilities: { text: true, references: true, attachments: true, submit: true },
+            initialDocument: { text: '', structuredInputMentions: [], composerAttachments: [] },
+        });
+        const sourceAcceptedCurrentness = source.captureCurrentness();
+        const destination = createEphemeralComposerDocumentOwner({
+            ref: { ...participantRef, instanceId: 'run-draft' },
+            capabilities: { text: true, references: true, attachments: true, submit: true },
+            initialDocument: { text: '', structuredInputMentions: [], composerAttachments: [] },
+        });
+        const destinationAcceptedCurrentness = destination.captureCurrentness();
+
+        source.replaceDocument({ text: 'B', structuredInputMentions: [], composerAttachments: [] });
+        source.clearAccepted(sourceAcceptedCurrentness);
+        promoteAcceptedComposerDocument({
+            residual: source.read().document,
+            destination,
+            destinationAcceptedCurrentness,
+        });
+
+        expect(destination.read().document.text).toBe('B');
     });
 });

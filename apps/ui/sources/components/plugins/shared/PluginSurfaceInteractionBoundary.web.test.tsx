@@ -13,7 +13,7 @@ describe('PluginSurfaceInteractionBoundary.web', () => {
                 enabled
                 loadedRuntimeIdentity={{
                     pluginId: 'happier.inspector',
-                    generation: '17',
+                    occurrenceId: '17',
                     artifactDigest: `sha256:${'a'.repeat(64)}`,
                     machineId: 'machine-a',
                     serverId: 'server-a',
@@ -25,7 +25,7 @@ describe('PluginSurfaceInteractionBoundary.web', () => {
         expect(screen.findByTestId('plugin-surface-interaction-boundary:surface-loaded-runtime')?.props)
             .toMatchObject({
                 'data-plugin-id': 'happier.inspector',
-                'data-plugin-generation': '17',
+                'data-plugin-occurrence-id': '17',
                 'data-plugin-artifact-digest': `sha256:${'a'.repeat(64)}`,
                 'data-plugin-machine-id': 'machine-a',
                 'data-plugin-server-id': 'server-a',

@@ -1,13 +1,73 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { access, copyFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { pluginReloadController } from '@/plugins/runtime/reload/singleton';
+import { resolveExecutablePluginRuntimeRegistry } from '@/plugins/runtime/resolveExecutablePluginRuntimeRegistry';
+import type { PluginRuntimeRegistryLease } from '@/plugins/runtime/reload/controller';
 
 import { createSessionHandoffPrepareTargetJobStore } from '../../../session/handoff/prepare/sessionHandoffPrepareTargetJobStore';
+import { createSessionHandoffSourceExportStore } from '../../../session/handoff/state/sessionHandoffSourceExportStore';
 import { runSessionHandoffPrepareTargetJob } from './prepareTargetRunJob';
+import { createWorkspaceSyncSeedExport } from '@/workspaces/sync/workspaceSyncSeedTransfer';
+import { createMachineTransferRouteCache } from '@/machines/transfer/transferRouteCache';
 
 describe('runSessionHandoffPrepareTargetJob typed native-import failures', () => {
+  let runtimeLease: PluginRuntimeRegistryLease | null = null;
+  beforeAll(async () => {
+    runtimeLease = await pluginReloadController.acquireRuntimeRegistry({
+      resolveRuntimeRegistry: () => resolveExecutablePluginRuntimeRegistry({ pluginIds: [] }),
+    });
+  });
+  afterAll(async () => { await runtimeLease?.release(); await pluginReloadController.shutdown(); });
+  it('materializes the managed source files before native import without WorkspaceRefs', async () => {
+    const activeServerDir = await mkdtemp(join(tmpdir(), 'happier-managed-seed-target-'));
+    const sourcePath = await mkdtemp(join(tmpdir(), 'happier-managed-seed-source-'));
+    const handoffId = 'handoff_managed_seed';
+    const jobId = 'prepare_managed_seed';
+    await writeFile(join(sourcePath, 'notes.txt'), 'source workspace');
+    const transferId = `session-handoff:${handoffId}:workspace-seed`;
+    const seed = await createWorkspaceSyncSeedExport({ operationId: transferId, activeServerDir, sourcePath,
+      workspaceTransfer: { includeIgnoredMode: 'include_selected', ignoredIncludeGlobs: [], includeAllIgnored: true },
+    });
+    const sourceExportStore = createSessionHandoffSourceExportStore({ activeServerDir });
+    const agentBundle = await sourceExportStore.writeAgentBundleFile({ handoffId,
+      agentBundle: { agentId: 'claude', remoteSessionId: 'remote_source', transcriptBase64: 'e30K' },
+    });
+    await sourceExportStore.save({ handoffId, exportedAtMs: 1, agentBundle });
+    let observedFiles: string | null = null;
+    let importedPath = '';
+    try {
+      await runSessionHandoffPrepareTargetJob({ activeServerDir, runtimeConfig: { activeServerDir }, jobId, handoffId, createdAtMs: 1,
+        request: { handoffId, operationId: 'operation_managed_seed', sessionId: 'session_managed_seed', targetDirectory: { kind: 'managed' },
+          sourceMachineId: 'source', targetMachineId: 'target', targetPath: '/untrusted/client/path', negotiatedTransportStrategy: 'direct_peer',
+          sourceSessionStorageMode: 'persisted', endpointCandidates: [], handoffMetadataV2: { workspaceSeedTransferPublication: {
+            transferId, sizeBytes: seed.payloadSource.sizeBytes!, manifestHash: seed.payloadSource.manifestHash!, endpointCandidates: [],
+          } },
+        }, actualTransportStrategy: 'direct_peer', pendingStatus: { handoffId, jobId, status: 'pending', phase: 'staging_target', transportStrategy: 'direct_peer', recoveryActions: [] },
+        prepareJobStore: createSessionHandoffPrepareTargetJobStore({ activeServerDir }), sourceExportStore,
+        prepareTargetJobLeaseOwnerId: `seed-test:${process.pid}`, prepareTargetJobLeaseTtlMs: 5_000, machineTransferChannel: undefined,
+        directPeerTransfer: { publishTransfer: () => [], clearPublishedTransfer: () => undefined,
+          requestPayloadFile: async (request) => {
+            const payload = request.transferId === transferId ? seed.payloadSource : await seed.onDemandScope.resolvePayloadSourceOnOpen({ transferId: request.transferId, requestBody: undefined });
+            if (payload.kind === 'buffer') await writeFile(request.destinationPath, payload.payload);
+            else await copyFile(payload.filePath, request.destinationPath);
+            return { destinationPath: request.destinationPath };
+          },
+        },
+        importSessionBundle: async (_bundle, targetPath) => {
+          importedPath = targetPath;
+          observedFiles = await readFile(join(targetPath, 'notes.txt'), 'utf8').catch(() => null);
+          throw Object.assign(new Error('Observed native import boundary'), { code: 'agent_version_unsupported' });
+        }, getTransferRouteCache: () => createMachineTransferRouteCache({ serverId: 'target-server' }), invalidateDirectPeerRouteCacheForHandoffMachines: () => undefined,
+      });
+      expect(observedFiles).toBe('source workspace');
+      expect(importedPath.startsWith(join(activeServerDir, 'session-directories') + '/')).toBe(true);
+      expect(importedPath).not.toBe('/untrusted/client/path');
+      await expect(access(importedPath)).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally { await rm(activeServerDir, { recursive: true, force: true }); await rm(sourcePath, { recursive: true, force: true }); }
+  });
   it.each([
     ['target_identity_conflict', 'reconciliation_required'],
     ['agent_version_unsupported', 'failed'],

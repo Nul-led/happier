@@ -132,6 +132,23 @@ describe('SessionInstrumentStrip', () => {
         expect(tree!.root.findAll((n) => n.props?.testID === 'host-status-action')).toHaveLength(1);
     });
 
+    it('reserves its row while empty unless the host collapses it, and shows content either way', () => {
+        const emptyHostHeight = () => {
+            const host = tree!.root.findAll((n) => typeof n.type === 'string' && typeof n.props?.onLayout === 'function')[0]!;
+            const style = [host.props.style].flat(Infinity).reduce((acc: Record<string, unknown>, part) => ({ ...acc, ...(part ?? {}) }), {});
+            return (style.minHeight as number | undefined) ?? 0;
+        };
+        act(() => { tree = create(<SessionInstrumentStrip />); });
+        expect(emptyHostHeight()).toBeGreaterThan(0);
+
+        act(() => { tree!.update(<SessionInstrumentStrip collapseWhenEmpty />); });
+        expect(emptyHostHeight()).toBe(0);
+
+        const offline = { text: 'Offline', color: '#f00', dotColor: '#f00' };
+        act(() => { tree!.update(<SessionInstrumentStrip collapseWhenEmpty connectionStatus={offline} />); });
+        expect(tree!.root.findAll((n) => typeof n.type === 'string' && n.props?.testID === 'agent-input-connection-status-text')).toHaveLength(1);
+    });
+
     it('re-renders on usage ticks via its OWN store subscription (no parent props involved)', () => {
         // The real F-UI-11 ship-gate proof (usage tick does NOT re-render the REAL
         // AgentInput) lives in AgentInput.instrumentStripPerf.test.tsx. This case

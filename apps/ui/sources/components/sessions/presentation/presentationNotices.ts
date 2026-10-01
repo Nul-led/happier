@@ -1,15 +1,14 @@
 export type PresentationNoticeSeverity = 'info' | 'warning' | 'error';
 
 /**
- * A caller-owned safe local inverse offered beside the notice.
+ * A caller-owned inverse offered beside the notice.
  *
  * The host renders the control and nothing else: it performs no Board, domain or
  * wire mutation, and it never accepts an executable wire/plugin callback. The
- * publisher binds `run` to its own exact Account/Home/Session and mounted
- * controller, compares only the presentation fields it applied, and restores
- * only those fields while they are unchanged — so a newer manual change is never
- * overwritten. A replaced notice simply stops offering its inverse; there is no
- * undo stack, history or separate lifetime.
+ * publisher binds `run` to its exact target and owns the result. Presentation
+ * inverses restore only unchanged fields; remote inverses use the existing
+ * audited action owner and surface failures through this notice owner. A replaced
+ * notice stops offering its inverse; there is no undo stack or separate lifetime.
  */
 export type PresentationNoticeUndo = Readonly<{
     /** Already-localized action label, e.g. "Undo". */
@@ -25,7 +24,7 @@ export type PresentationNotice = Readonly<{
 }>;
 
 /**
- * The app's transient presentation notice — one owner, two producers.
+ * The app's transient presentation notice owner.
  *
  * `CurrentSessionPresentationRuntime` renders it and is mounted app-globally by
  * `AuthenticatedAppRuntimeMounts`. Until now the notice lived in that
@@ -33,7 +32,8 @@ export type PresentationNotice = Readonly<{
  * `CurrentSessionPresentation` command stream. Mounted plugin UI needs the same
  * outcome for its `notify` host method (§3.4), and UI-T21 forbids a
  * plugin-only notification store — so the state moved out of the component into
- * this module and both producers publish here.
+ * this module. Committed personal recipient facts also publish here; none of
+ * these producers creates a separate queue or notification history.
  *
  * It follows the presentation domain's existing module-store idiom
  * (`sessionComposerPresentationTargets.ts`): a single current value plus

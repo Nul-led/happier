@@ -23,6 +23,8 @@ vi.mock('@/api/session/fetchEncryptedTranscriptWindow', () => ({
   fetchEncryptedTranscriptPageAfterSeq: boundary.fetchEncryptedTranscriptPageAfterSeq,
 }));
 vi.mock('@/api/session/transcriptMessageLookup', () => ({
+  // Both adapters use the same HTTP lookup boundary; the direct form does not poll.
+  findTranscriptEncryptedMessageByLocalId: boundary.waitForTranscriptEncryptedMessageByLocalId,
   waitForTranscriptEncryptedMessageByLocalId: boundary.waitForTranscriptEncryptedMessageByLocalId,
 }));
 vi.mock('./resolveSessionTransportContext', () => ({
@@ -207,7 +209,7 @@ describe('waitForSessionInputResult', () => {
     }));
   });
 
-  it('stops no-deadline observation through the incumbent cancellation signal', async () => {
+  it('reports cancelled observation through the incumbent cancellation signal without claiming pending input evidence', async () => {
     const cancellation = new AbortController();
     cancellation.abort();
     const { waitWithObservation, waitForTranscriptEncryptedMessageByLocalId } = await arrange({
@@ -215,10 +217,8 @@ describe('waitForSessionInputResult', () => {
     });
 
     await expect(waitWithObservation({ kind: 'no_deadline' }, cancellation.signal)).resolves.toEqual({
-      ok: true,
-      sessionId: 'sess-1',
-      localId: 'automation:run:run-1',
-      result: { kind: 'pending' },
+      ok: false,
+      code: 'cancelled',
     });
     expect(waitForTranscriptEncryptedMessageByLocalId).not.toHaveBeenCalled();
   });

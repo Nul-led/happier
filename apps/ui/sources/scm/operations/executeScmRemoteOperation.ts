@@ -24,7 +24,10 @@ import {
     type ScmRemoteResponse,
     type ScmRepositoryRemoveIndexLockRequest,
     type ScmRepositoryRemoveIndexLockResponse,
-} from '@happier-dev/protocol';
+    normalizeScmOperationOutcome,
+    createScmOperationUnknownOutcome,
+    type ScmOperationOutcome,
+} from '@happier-dev/protocol/scm';
 
 export type ScmRemoteOperationKind = RemoteOperationKind;
 
@@ -36,6 +39,7 @@ type RemoteOperationReportInput = Readonly<{
     detail: string;
     rawError?: string;
     errorCode?: ScmOperationErrorCode;
+    outcome?: ScmOperationOutcome;
 }>;
 
 type ScmRemoteOperationLockResult =
@@ -70,7 +74,14 @@ export async function executeScmRemoteOperation(input: Readonly<{
     shouldContinue?: (() => boolean) | null;
     skipConfirmation?: boolean;
     retrySkipConfirmation?: boolean;
+    /**
+     * Where a failure is shown. `outcomeLine`: the surface renders the operation log's terminal result inline
+     * (the session Git pane), so no modal is raised and a rejected push is not followed by a fetch prompt (the
+     * inline failure offers Fetch). `alert` (default): surfaces without an outcome line.
+     */
+    failureFeedback?: 'alert' | 'outcomeLine';
 }>): Promise<void> {
+    const inlineFailures = input.failureFeedback === 'outcomeLine';
     const preflight = evaluateScmOperationPreflight({
         intent: input.kind,
         scmWriteEnabled: input.scmWriteEnabled,
@@ -114,12 +125,13 @@ export async function executeScmRemoteOperation(input: Readonly<{
     }
 
     const lockResult = await input.runWithOperationLock(input.kind, async () => {
+        let appliedOutcome: Extract<ScmOperationOutcome, { kind: 'succeeded' }> | null = null;
         input.setScmOperationBusy(true);
         input.setScmOperationStatus(buildRemoteOperationBusyLabel(input.kind, remoteTarget, t('files.detachedHead')));
         try {
             const runRemoteOperation = () => input.executeRemoteOperation(input.kind, remoteTarget);
             let response = await runRemoteOperation();
-            if (!response.success && input.removeIndexLock) {
+            if (normalizeScmOperationOutcome(response).kind === 'failed' && input.removeIndexLock) {
                 response = await runScmOperationWithGitIndexLockRecovery({
                     cwd: repoPath,
                     failedResponse: response,
@@ -127,7 +139,8 @@ export async function executeScmRemoteOperation(input: Readonly<{
                     retryOriginalOperation: runRemoteOperation,
                 });
             }
-            if (!response.success) {
+            const outcome = normalizeScmOperationOutcome(response);
+            if (outcome.kind !== 'succeeded') {
                 const message = getScmUserFacingError({
                     errorCode: response.errorCode,
                     error: response.error,
@@ -142,10 +155,12 @@ export async function executeScmRemoteOperation(input: Readonly<{
                 input.reportOperation({
                     operation: input.kind,
                     status: 'failed',
+                    outcome,
                     detail: message,
                     rawError: response.error,
                     errorCode: response.errorCode,
                 });
+                if (inlineFailures) return;
                 const shownDaemonUnavailable = tryShowDaemonUnavailableAlertForScmOperationFailure({
                     errorCode: response.errorCode,
                     onRetry: () => {
@@ -163,9 +178,11 @@ export async function executeScmRemoteOperation(input: Readonly<{
                 return;
             }
 
+            appliedOutcome = outcome;
             input.reportOperation({
                 operation: input.kind,
                 status: 'success',
+                outcome,
                 detail: buildRemoteOperationSuccessDetail(
                     input.kind,
                     remoteTarget,
@@ -175,6 +192,15 @@ export async function executeScmRemoteOperation(input: Readonly<{
             });
             input.setScmOperationStatus('Refreshing repository status…');
             await input.refreshAfterSuccess(input.kind);
+        } catch (error) {
+            const outcome: ScmOperationOutcome = appliedOutcome ? {
+                v: 1, kind: 'effect_applied_with_warning', errorCode: SCM_OPERATION_ERROR_CODES.REPOSITORY_REFRESH_FAILED,
+                effect: appliedOutcome.effect ?? { kind: 'remote', remote: remoteTarget.remote, ...(remoteTarget.branch ? { branch: remoteTarget.branch } : {}) },
+                nextActions: [{ kind: 'refresh' }],
+            } : createScmOperationUnknownOutcome({ kind: 'remote_ref', remote: remoteTarget.remote, ...(remoteTarget.branch ? { branch: remoteTarget.branch } : {}) });
+            const detail = getScmUserFacingError({ error: error instanceof Error ? error.message : String(error ?? ''), fallback: `Failed to ${input.kind}` });
+            input.reportOperation({ operation: input.kind, status: 'failed', outcome, errorCode: outcome.errorCode, detail });
+            if (!inlineFailures) Modal.alert(t('common.error'), detail);
         } finally {
             input.setScmOperationBusy(false);
             input.setScmOperationStatus(null);
@@ -198,7 +224,7 @@ export async function executeScmRemoteOperation(input: Readonly<{
         return;
     }
 
-    if (shouldOfferFetchAfterPushReject && input.scmPushRejectPolicy === 'prompt_fetch') {
+    if (shouldOfferFetchAfterPushReject && input.scmPushRejectPolicy === 'prompt_fetch' && !inlineFailures) {
         const fetchDialog = buildNonFastForwardFetchPromptDialog({
             target: remoteTarget,
             detachedHeadLabel: t('files.detachedHead'),

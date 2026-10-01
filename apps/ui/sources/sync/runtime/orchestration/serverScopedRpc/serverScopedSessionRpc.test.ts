@@ -4,9 +4,11 @@ import { parseSerializedJsonValue, stringifySerializedJsonValue } from '@happier
 
 import { TokenStorage } from '@/auth/storage/tokenStorage';
 import { storage } from '@/sync/domains/state/storage';
+import { createSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
+import type { VoiceAgentHandle } from '@/voice/agent/types';
 
 import { SOCKET_RPC_EVENTS } from '@happier-dev/protocol/socketRpc';
-import { RPC_METHODS, SOCKET_RPC_AUTHORIZATION_CONTEXT_KINDS } from '@happier-dev/protocol/rpc';
+import { RPC_METHODS, SESSION_RPC_METHODS, SOCKET_RPC_AUTHORIZATION_CONTEXT_KINDS } from '@happier-dev/protocol/rpc';
 import { CURRENT_SESSION_PRESENTATION_BIND_RPC_METHOD } from '@happier-dev/protocol/sessions';
 
 import { resetScopedSessionDataKeyCacheForTests } from './resolveScopedSessionDataKey';
@@ -50,6 +52,7 @@ vi.mock('@/sync/runtime/orchestration/serverScopedRpc/createEphemeralServerSocke
 
 vi.mock('@/sync/api/session/apiSocket', () => ({
   apiSocket: {
+    getSessionScopedTarget: () => null,
     sessionRPC: (...args: unknown[]) => sessionRpcSpy(...args),
   },
 }));
@@ -177,16 +180,19 @@ describe('sessionRpcWithServerScope', () => {
     controller.abort();
 
     const { sessionRpcWithServerScope } = await import('./serverScopedSessionRpc');
-    await expect(sessionRpcWithServerScope({
+    const outcome = sessionRpcWithServerScope({
       sessionId: 'session-1',
       method: 'method-test',
       payload: { value: 1 },
       timeoutMs: 5000,
       signal: controller.signal,
-    })).rejects.toMatchObject({
+    }).catch((error: unknown) => error);
+    await expect(outcome).resolves.toMatchObject({
       name: 'AbortError',
       code: 'SOCKET_RPC_ABORTED',
     });
+    const { readRpcRequestDisposition } = await import('@happier-dev/sync-client');
+    expect(readRpcRequestDisposition(await outcome)).toBe('notSent');
 
     expect(sessionRpcSpy).not.toHaveBeenCalled();
     expect(createEphemeralSocketSpy).not.toHaveBeenCalled();
@@ -278,6 +284,106 @@ describe('sessionRpcWithServerScope', () => {
       authorization: { kind: 'session.write', sessionId: 'session-1' },
     });
     expect(fakeSocket.disconnect).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['home-switch', 'account-replacement'] as const)('keeps delayed Voice cleanup bound to its admitting Account (%s)', async (transition) => {
+    const { DaemonVoiceAgentClient } = await import('@/voice/agent/daemonVoiceAgentClient');
+    const { captureActiveServerAccountScopeLifetime } = await import('@/sync/domains/scope/activeServerAccountScope');
+    const { createVoiceRunRecovery } = await import('@/voice/runtime/execution/voiceRunRecovery');
+    getActiveServerSnapshotSpy.mockReturnValue({
+      serverId: 'server-a', serverUrl: 'https://server-a.example.test', kind: 'custom', generation: 1,
+    });
+    storage.setState({ profileScope: { serverId: 'server-a', accountId: 'account-a' } });
+    const accountLifetime = captureActiveServerAccountScopeLifetime();
+    if (!accountLifetime) throw new Error('Missing admitting Account fixture');
+    const client = new DaemonVoiceAgentClient({ serverId: 'server-a', accountId: 'account-a' });
+    const handle: VoiceAgentHandle = {
+      client, accountLifetime, metadataSessionId: 'session-1', backend: 'daemon',
+      voiceAgentId: 'run-a', rpcSessionId: 'session-1', agentBackendId: 'claude',
+    };
+    const handles = new Map([['session-1', handle]]);
+    const recovery = createVoiceRunRecovery({
+      createHandle: async () => handle,
+      voiceAgentBySessionId: handles,
+      voiceAgentInitBySessionId: new Map(),
+      voiceAttemptExplicitContextBySessionId: new Map(),
+      deferredTargetSessionContextBySessionId: new Map(),
+      latestAutomaticUiContextBySessionId: new Map(),
+    });
+    // Native capture teardown can finish after sync has installed another Home/Account.
+    let finishCapture!: () => void;
+    const captureStopped = new Promise<void>((resolve) => { finishCapture = resolve; });
+    const cleanup = async () => {
+      await captureStopped;
+      await client.cancelTurnStream({ sessionId: 'session-1', voiceAgentId: 'run-a', streamId: 'stream-a' });
+      await client.stop({ sessionId: 'session-1', voiceAgentId: 'run-a' });
+    };
+    const pending = cleanup();
+    const recoveryStopped = recovery.stop('session-1', () => captureStopped);
+    getActiveServerSnapshotSpy.mockReturnValue({
+      serverId: transition === 'home-switch' ? 'server-b' : 'server-a',
+      serverUrl: transition === 'home-switch' ? 'https://server-b.example.test' : 'https://server-a.example.test',
+      kind: 'custom', generation: 2,
+    });
+    const nextServerId = transition === 'home-switch' ? 'server-b' : 'server-a';
+    const nextMetadata = { path: '/next', host: 'next', voiceAgentRunV1: { runId: 'run-b' } };
+    storage.setState({
+      profileScope: { serverId: nextServerId, accountId: 'account-b' },
+      sessions: { 'session-1': createSessionFixture({ serverId: nextServerId, metadata: nextMetadata }) },
+    });
+    const nextLifetime = captureActiveServerAccountScopeLifetime();
+    if (!nextLifetime) throw new Error('Missing replacement Account fixture');
+    const nextHandle = { ...handle, accountLifetime: nextLifetime, voiceAgentId: 'run-b' };
+    handles.set('session-1', nextHandle);
+    listServerProfilesSpy.mockReturnValue([
+      { id: 'server-a', serverUrl: 'https://server-a.example.test', name: 'Server A' },
+      { id: 'server-b', serverUrl: 'https://server-b.example.test', name: 'Server B' },
+    ]);
+    getCredentialsSpy.mockResolvedValue({ token: transition === 'home-switch' ? TOKEN_A : TOKEN_B, secret: 'secret' });
+    createEncryptionSpy.mockResolvedValue({
+      decryptEncryptionKey: vi.fn(async () => null),
+      initializeSessions: vi.fn(async () => {}),
+      getSessionEncryption: vi.fn(() => null),
+    });
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ session: { ...sessionListByIdFixture, encryptionMode: 'plain', dataEncryptionKey: null } }),
+    })));
+    const emitWithAck = vi.fn(async (_event: string, payload: { method: string; params: unknown }) => ({
+      ok: true,
+      result: payload.method.endsWith(SESSION_RPC_METHODS.EXECUTION_RUN_LIST)
+        ? { runs: [{
+          runId: 'run-a-duplicate', callId: 'call-a', sidechainId: 'sidechain-a', intent: 'voice_agent',
+          backendTarget: { kind: 'builtInAgent', agentId: 'claude' }, permissionMode: 'read_only',
+          retentionPolicy: 'resumable', runClass: 'long_lived', ioMode: 'streaming', status: 'running', startedAtMs: 1,
+        }] }
+        : { ok: true },
+    }));
+    createEphemeralSocketSpy.mockResolvedValue({
+      timeout: vi.fn(() => ({ emitWithAck })), emitWithAck, disconnect: vi.fn(),
+    });
+    sessionRpcSpy.mockResolvedValue({ ok: true });
+    finishCapture();
+    if (transition === 'account-replacement') {
+      await expect(pending).rejects.toThrow(/account.*match/i);
+      expect(createEphemeralSocketSpy).not.toHaveBeenCalled();
+    } else {
+      await pending;
+      await recoveryStopped;
+      expect(createEphemeralSocketSpy).toHaveBeenCalledWith(expect.objectContaining({
+        serverUrl: 'https://server-a.example.test', token: TOKEN_A,
+      }));
+      const cancel = emitWithAck.mock.calls.find((call) => JSON.stringify(call).includes('stream-a'));
+      expect(cancel).toBeDefined();
+      expect(cancel?.[1]).not.toHaveProperty('timeoutMs');
+      expect(emitWithAck.mock.calls.map((call) => call[1].method)).toContain(`session-1:${SESSION_RPC_METHODS.EXECUTION_RUN_LIST}`);
+      expect(emitWithAck.mock.calls.map((call) => call[1].params)).toContainEqual({ runId: 'run-a-duplicate' });
+      expect(createEphemeralSocketSpy.mock.calls.every(([options]) => options.serverUrl === 'https://server-a.example.test')).toBe(true);
+    }
+    await recoveryStopped;
+    expect(sessionRpcSpy).not.toHaveBeenCalled();
+    expect(storage.getState().sessions['session-1'].metadata).toEqual(nextMetadata);
+    expect(handles.get('session-1')).toBe(nextHandle);
   });
 
   it('falls back to a scoped plaintext RPC when active session RPC lacks local encryption context', async () => {
@@ -609,6 +715,57 @@ describe('sessionRpcWithServerScope', () => {
     expect(fakeSocket.disconnect).toHaveBeenCalledTimes(1);
   });
 
+  it('uses a repaired Session envelope on the next scoped RPC with the same bearer', async () => {
+    getActiveServerSnapshotSpy.mockReturnValue({
+      serverId: 'server-a',
+      serverUrl: 'https://server-a.example.test',
+      kind: 'custom',
+      generation: 1,
+    });
+    listServerProfilesSpy.mockReturnValue([
+      { id: 'server-b', serverUrl: 'https://server-b.example.test', name: 'Server B' },
+    ]);
+    const { credentials, envelope, daemon } = await useRealScopedEncryption();
+    getCredentialsSpy.mockResolvedValue(credentials);
+    const { Encryption } = await import('@/sync/encryption/encryption');
+    const { encodeBase64 } = await import('@/encryption/base64');
+    const { sealEncryptedDataKeyEnvelopeV1 } = await import('@happier-dev/protocol');
+    const account = await Encryption.create(scopedAccountSecret);
+    // This is a valid envelope for the right recipient, but contains the wrong
+    // Session DEK. Opening the envelope alone cannot establish its freshness.
+    let publishedEnvelope = encodeBase64(sealEncryptedDataKeyEnvelopeV1({
+      dataKey: new Uint8Array(32).fill(10),
+      recipientPublicKey: account.contentDataKey,
+      randomBytes: (length) => new Uint8Array(length).fill(4),
+    }), 'base64');
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      session: { ...sessionListByIdFixture, encryptionMode: 'e2ee', dataEncryptionKey: publishedEnvelope },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } })));
+
+    const daemonSaw: unknown[] = [];
+    const emitWithAck = vi.fn(async (_event: string, payload: { params: string }) => {
+      const opened = await daemon.decryptRaw(payload.params);
+      daemonSaw.push(opened);
+      if (opened === null) return { ok: false, error: 'Session key does not match', errorCode: 'invalid_session_key' };
+      return { ok: true, result: await daemon.encryptRaw({ accepted: true }) };
+    });
+    createEphemeralSocketSpy.mockResolvedValue({
+      timeout: vi.fn(() => ({ emitWithAck })),
+      emit: vi.fn(),
+      disconnect: vi.fn(),
+    });
+    const { sessionRpcWithServerScope } = await import('./serverScopedSessionRpc');
+    const call = () => sessionRpcWithServerScope({
+      sessionId: 'session-1', serverId: 'server-b', method: 'method-test',
+      payload: { value: 2 }, timeoutMs: 5000,
+    });
+
+    await expect(call()).rejects.toMatchObject({ rpcErrorCode: 'invalid_session_key' });
+    publishedEnvelope = envelope;
+    await expect(call()).resolves.toEqual({ accepted: true });
+    expect(daemonSaw).toEqual([null, { value: 2 }]);
+  });
+
   it('uses an exact same-URL alternate profile context instead of the active socket', async () => {
     getActiveServerSnapshotSpy.mockReturnValue({
       serverId: 'server-a',
@@ -923,6 +1080,8 @@ describe('sessionRpcWithServerScope', () => {
       status: 'rejected',
       error: { name: 'AbortError', code: 'SOCKET_RPC_ABORTED' },
     });
+    const { readRpcRequestDisposition } = await import('@happier-dev/sync-client');
+    expect(settled.status === 'rejected' && readRpcRequestDisposition(settled.error)).toBe('outcomeUnknown');
     expect(issuedPayload.requestId).toEqual(expect.any(String));
     expect(fakeSocket.emit).toHaveBeenCalledWith(SOCKET_RPC_EVENTS.CANCEL, {
       requestId: issuedPayload.requestId,

@@ -1,5 +1,5 @@
 import { resolveAgentIdFromSessionMetadata } from '@happier-dev/agents';
-import type { SessionGoalSetRequestV1 } from '@happier-dev/protocol';
+import { SessionStateWorkStateValueSchema, type SessionGoalSetRequestV1 } from '@happier-dev/protocol';
 import { RPC_ERROR_CODES } from '@happier-dev/protocol/rpc';
 
 import { resolveInactiveSessionGoalControls } from '@/agent/catalog/sessionControlAdapters';
@@ -9,7 +9,8 @@ import {
   resolveMachineControlLocalityProof,
   resolveSessionMachineWorkspacePath,
 } from '@/session/machineControlLocality';
-import { updateSessionMetadataWithRetry } from '@/session/metadata/updateSessionMetadataWithRetry';
+import { splitDurableRegisteredSessionStateMetadata } from '@/agent/runtime/registry/pluginMetadataDurability';
+import type { DaemonWorkStateFieldMutation } from '@/api/session/client/transport/mutations/sessionClientDurableMutationTypes';
 import type { SessionStoredContentCryptoContext } from '@/session/transport/encryption/sessionEncryptionContext';
 import type { RawSessionRecord } from '@/session/transport/http/sessionsHttp';
 import type {
@@ -31,6 +32,7 @@ type RouteSessionGoalControlParams = Readonly<{
   request?: SessionGoalSetRequestV1;
   callLiveSessionRpc: () => Promise<unknown>;
   resolveAdapter?: ResolveSessionGoalControlAdapter;
+  stageWorkStateMutation?: (mutation: DaemonWorkStateFieldMutation) => Promise<void>;
 }> & SessionStoredContentCryptoContext;
 
 function stableError(errorCode: string): Readonly<{ ok: false; errorCode: string; error: string }> {
@@ -115,36 +117,28 @@ function shouldFallbackFromLiveSessionGoalRpc(result: unknown): boolean {
     || error === 'unsupported_session_runtime_method';
 }
 
-function buildGoalMetadataPatch(metadata: Record<string, unknown>): Record<string, unknown> | null {
-  if (!Object.prototype.hasOwnProperty.call(metadata, 'sessionWorkStateV1')) return null;
-  return {
-    sessionWorkStateV1: metadata.sessionWorkStateV1,
-  };
-}
-
 async function persistAdapterMetadataResult(
   params: RouteSessionGoalControlParams,
   result: unknown,
 ): Promise<unknown> {
   const nextMetadata = readMetadataResult(result);
-  const metadataPatch = nextMetadata ? buildGoalMetadataPatch(nextMetadata) : null;
-  if (!metadataPatch || !params.credentials) return result;
-
-  const persisted = await updateSessionMetadataWithRetry({
-    token: params.token,
-    credentials: params.credentials,
+  if (!nextMetadata || !Object.prototype.hasOwnProperty.call(nextMetadata, 'sessionWorkStateV1')) return result;
+  if (nextMetadata.sessionWorkStateV1 !== null
+    && !SessionStateWorkStateValueSchema.safeParse(nextMetadata.sessionWorkStateV1).success) {
+    throw new Error('invalid_daemon_work_state_mutation');
+  }
+  const split = splitDurableRegisteredSessionStateMetadata({
     sessionId: params.sessionId,
-    rawSession: params.rawSession,
-    updater: (currentMetadata) => ({
-      ...currentMetadata,
-      ...metadataPatch,
-    }),
+    current: params.metadata,
+    candidate: nextMetadata,
+    source: 'daemon',
   });
-
-  return {
-    ...(result as Record<string, unknown>),
-    metadata: persisted.metadata,
-  };
+  const mutations = split.mutations.filter((mutation): mutation is DaemonWorkStateFieldMutation =>
+    mutation.fieldId === 'runtime.workState' && mutation.source === 'daemon' && mutation.deliveryClass === 'durable_required');
+  if (mutations.length === 0) return result;
+  if (!params.stageWorkStateMutation) return stableError('session_goal_control_work_state_custody_unavailable');
+  for (const mutation of mutations) await params.stageWorkStateMutation(mutation);
+  return result;
 }
 
 export async function routeSessionGoalControl(params: RouteSessionGoalControlParams): Promise<unknown> {

@@ -19,7 +19,7 @@ describe('home governance eligibility snapshots', () => {
     it('withdraws retained create-Team eligibility after an authoritative refusal', () => {
         applyHomeGovernanceEligibility({
             scope,
-            eligibility: { teamsEnabled: true, createTeam: true },
+            eligibility: { teamsEnabled: true, createTeam: true, createTeamForChosenAccount: false },
             observedAt: 42,
         });
 

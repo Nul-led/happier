@@ -25,6 +25,7 @@ const release = Object.freeze({
 
 const slot = Object.freeze({
     contributionId: 'hosted',
+    artifactId: 'hosted',
     tier: 'hostedWeb' as const,
     platform: 'web' as const,
 });

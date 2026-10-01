@@ -258,6 +258,7 @@ describe('BundledConversationSettingsSection', () => {
       pluginId: 'happier.voice.elevenlabs',
       localId: 'realtime-elevenlabs',
       providerId: 'happier.voice.elevenlabs/realtime-elevenlabs',
+      occurrenceId: 'bundled-settings-occurrence',
       descriptor: null,
       adapter: null,
       settingsActions: Object.freeze({
@@ -475,6 +476,7 @@ describe('BundledConversationSettingsSection', () => {
         pluginId: 'happier.voice.elevenlabs',
         localId: 'realtime-elevenlabs',
         providerId: 'happier.voice.elevenlabs/realtime-elevenlabs',
+        occurrenceId: 'public-settings-occurrence',
         descriptor: null,
         adapter: null,
         settingsActions: Object.freeze({

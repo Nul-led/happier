@@ -34,10 +34,6 @@ vi.doMock('react-native-unistyles', async () => {
     });
 });
 
-vi.doMock('@/hooks/auth/useCLIDetection', () => ({
-    useCLIDetection: () => ({ status: 'unknown', login: { codex: false } }),
-}));
-
 vi.mock('@/hooks/server/useFeatureEnabled', () => ({
     useFeatureEnabled: () => false,
 }));

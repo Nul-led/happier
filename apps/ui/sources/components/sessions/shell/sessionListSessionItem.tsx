@@ -113,6 +113,7 @@ export function SessionListSessionItem(props: SessionListSessionItemProps) {
             isSingle={rowViewModel.isSingle}
             variant={props.item.variant}
             folderDepth={props.item.folderDepth}
+            reportsDepth={props.item.reportsDepth}
             secondaryLineMode={rowViewModel.secondaryLineMode}
             compact={props.compact}
             compactMinimal={props.compactMinimal}

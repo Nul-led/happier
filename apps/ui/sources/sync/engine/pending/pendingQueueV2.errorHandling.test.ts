@@ -16,6 +16,7 @@ import {
     isReleasedServerV021PendingEnqueueResponse,
     markPendingDeliveryHandledV2 as markPendingDeliveryHandledV2Impl,
     reorderPendingMessagesV2 as reorderPendingMessagesV2Impl,
+    replayPersistedPendingOutboxForSession,
     retryPendingOutboxOperationV2 as retryPendingOutboxOperationV2Impl,
     restoreDiscardedPendingMessageV2 as restoreDiscardedPendingMessageV2Impl,
     serializePendingEnqueueBodyForServerWire,
@@ -1278,38 +1279,51 @@ describe('pendingQueueV2 error handling', () => {
         const diagnosticRawRecord = { role: 'user' as const, content: { type: 'text' as const, text: 'diagnostic' }, meta: {} };
         const serverRawRecord = { role: 'user' as const, content: { type: 'text' as const, text: 'external' }, meta: {} };
         storage.getState().applySessions([buildSession({ sessionId, overrides: { encryptionMode: 'plain' } })]);
-        storage.getState().upsertPendingMessage(sessionId, {
-            id: 'pending-outbox-quarantine:handled-diagnostic-first', localId, createdAt: 1, updatedAt: 1,
-            source: 'local_outbound', deliveryStatus: 'accepted', pendingOutboxScope: outboxScope,
-            pendingDeliveryStatus: 'blocked', pendingDeliveryBlockedReason: 'unknown',
-            pendingDeliveryBlockedReasonRaw: 'unsupported persisted operation',
-            text: 'diagnostic', rawRecord: diagnosticRawRecord,
+        await savePendingOutboxMessage({
+            sessionId, localId, createdAt: 1, text: 'diagnostic', rawRecord: diagnosticRawRecord,
+            // Persistence boundary: retained custody from an unsupported writer.
+            operation: 'future-operation' as never,
+            request: { v: 1, body: JSON.stringify({
+                localId, content: { t: 'plain', v: diagnosticRawRecord }, messageRole: 'user',
+                requestedAction: { v: 1, kind: 'enqueue' },
+            }) },
+        }, outboxScope);
+        await replayPersistedPendingOutboxForSession(sessionId, outboxScope);
+        const quarantinedCustody = await loadPendingOutboxForSession(sessionId, outboxScope);
+        expect(quarantinedCustody).toEqual([expect.objectContaining({
+            localId, operation: 'quarantined', quarantineReason: 'unsupported_persisted_operation',
+        })]);
+        const diagnostic = storage.getState().sessionPending[sessionId]?.messages[0];
+        expect(diagnostic).toMatchObject({
+            localId, text: 'diagnostic', rawRecord: diagnosticRawRecord,
+            pendingDeliveryStatus: 'blocked', pendingDeliveryBlockedReasonRaw: 'unsupported_persisted_operation',
         });
         storage.getState().upsertPendingMessage(sessionId, {
-            id: localId, localId, createdAt: 2, updatedAt: 2,
+            id: localId, localId, createdAt: 2, updatedAt: 2, pendingOutboxScope: outboxScope,
             source: 'server_pending', deliveryStatus: 'accepted', pendingDeliveryStatus: 'external_handoff',
             text: 'external', rawRecord: serverRawRecord,
         });
 
+        const paths: string[] = [];
         await markPendingDeliveryHandledV2({
             sessionId,
             pendingId: localId,
             encryption: await createPendingQueueEncryption({ sessionId }),
-            request: async (path) => path.endsWith('/delivery/handled')
-                ? new Response(null, { status: 204 })
-                : Response.json({ pending: [] }),
+            request: async (path) => {
+                paths.push(path);
+                if (path.endsWith('/delivery/handled')) return new Response(null, { status: 204 });
+                // Observe retirement before refresh can reconstruct the diagnostic from custody.
+                expect(storage.getState().sessionPending[sessionId]?.messages).toEqual([diagnostic]);
+                return Response.json({ pending: [] });
+            },
         });
 
-        expect(storage.getState().sessionPending[sessionId]?.messages).toEqual([
-            expect.objectContaining({
-                id: 'pending-outbox-quarantine:handled-diagnostic-first',
-                localId,
-                text: 'diagnostic',
-                pendingDeliveryStatus: 'blocked',
-                pendingDeliveryBlockedReasonRaw: 'unsupported persisted operation',
-                rawRecord: diagnosticRawRecord,
-            }),
+        expect(paths).toEqual([
+            `/v2/sessions/${sessionId}/pending/${localId}/delivery/handled`,
+            `/v2/sessions/${sessionId}/pending?includeDiscarded=1`,
         ]);
+        expect(storage.getState().sessionPending[sessionId]?.messages).toEqual([diagnostic]);
+        expect(await loadPendingOutboxForSession(sessionId, outboxScope)).toEqual(quarantinedCustody);
     });
 
     it.each(['.', '..'])('rejects opaque pending id %j before issuing a request', async (pendingId) => {
@@ -1429,6 +1443,7 @@ describe('pendingQueueV2 error handling', () => {
     it('keeps canonical reorder localIds independent of a quarantined projection-id collider', async () => {
         const sessionId = 's_test_reorder_canonical_local_id_collision';
         const canonicalLocalId = 'reorder-canonical-local-id';
+        const secondLocalId = 'reorder-second-local-id';
         const colliderLocalId = 'reorder-quarantined-collider-local-id';
         const rawRecord = { role: 'user' as const, content: { type: 'text' as const, text: 'quarantined collider' }, meta: {} };
         (await savePendingOutboxMessage({
@@ -1444,6 +1459,7 @@ describe('pendingQueueV2 error handling', () => {
                     localId: colliderLocalId,
                     content: { t: 'plain', v: rawRecord },
                     messageRole: 'user',
+                    requestedAction: { v: 1, kind: 'enqueue' },
                 }),
             },
         }, outboxScope));
@@ -1455,7 +1471,7 @@ describe('pendingQueueV2 error handling', () => {
             source: 'local_outbound',
             deliveryStatus: 'accepted',
             pendingDeliveryStatus: 'blocked',
-            pendingDeliveryBlockedReasonRaw: 'unsupported persisted operation',
+            pendingDeliveryBlockedReasonRaw: 'unsupported_persisted_operation',
             pendingOutboxScope: outboxScope,
             pendingOutboxOperation: undefined,
             sendState: undefined,
@@ -1463,18 +1479,54 @@ describe('pendingQueueV2 error handling', () => {
             rawRecord,
         });
 
+        const quarantinedCustody = await loadPendingOutboxForSession(sessionId, outboxScope);
+        expect(quarantinedCustody).toEqual([expect.objectContaining({
+            localId: colliderLocalId, operation: 'quarantined', quarantineReason: 'unsupported_persisted_operation',
+        })]);
+        storage.getState().applySessions([buildSession({ sessionId, overrides: { encryptionMode: 'plain' } })]);
+        for (const [id, localId] of [
+            ['reorder-canonical-projection', canonicalLocalId],
+            ['reorder-second-projection', secondLocalId],
+        ] as const) {
+            storage.getState().upsertPendingMessage(sessionId, {
+                id, localId, createdAt: 2, updatedAt: 2,
+                source: 'server_pending', pendingOutboxScope: outboxScope,
+                pendingDeliveryStatus: 'server_queued', text: localId,
+                rawRecord: { role: 'user', content: { type: 'text', text: localId }, meta: {} },
+            });
+        }
+        const orderedLocalIds = [secondLocalId, canonicalLocalId];
+        const paths: string[] = [];
+
         await reorderPendingMessagesV2({
             sessionId,
-            orderedLocalIds: [canonicalLocalId],
+            orderedLocalIds,
             encryption: await createPendingQueueEncryption({ sessionId }),
             isOutboxScopeCurrent: () => true,
             request: async (path, init) => {
+                paths.push(path);
                 if (path.endsWith('/reorder')) {
-                    expect(JSON.parse(String(init?.body))).toEqual({ orderedLocalIds: [canonicalLocalId] });
+                    expect(JSON.parse(String(init?.body))).toEqual({ orderedLocalIds });
                     return Response.json({});
                 }
-                return Response.json({ pending: [] });
+                return Response.json({ pending: orderedLocalIds.map((localId, position) => ({
+                    localId, position, status: 'queued', createdAt: 2, updatedAt: 3,
+                    content: { t: 'plain', v: { role: 'user', content: { type: 'text', text: localId }, meta: {} } },
+                    requestedAction: { v: 1, kind: 'enqueue' }, discardedAt: null, discardedReason: null,
+                })) });
             },
         });
+        expect(paths).toEqual([
+            `/v2/sessions/${sessionId}/pending/reorder`,
+            `/v2/sessions/${sessionId}/pending?includeDiscarded=1`,
+        ]);
+        expect(storage.getState().sessionPending[sessionId]?.messages
+            .filter((message) => message.source === 'server_pending')
+            .map((message) => message.localId)).toEqual(orderedLocalIds);
+        expect(storage.getState().sessionPending[sessionId]?.messages).toContainEqual(expect.objectContaining({
+            localId: colliderLocalId, text: 'quarantined collider', rawRecord,
+            pendingDeliveryStatus: 'blocked', pendingDeliveryBlockedReasonRaw: 'unsupported_persisted_operation',
+        }));
+        expect(await loadPendingOutboxForSession(sessionId, outboxScope)).toEqual(quarantinedCustody);
     });
 });

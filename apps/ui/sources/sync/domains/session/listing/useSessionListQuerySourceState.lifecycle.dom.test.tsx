@@ -174,10 +174,13 @@ vi.mock('./sessionListQueryController', async (importOriginal) => {
     };
 });
 
+const EMPTY_QUERY_MEMBERSHIP = vi.hoisted(() => ({}));
+
 vi.mock('@/sync/domains/state/storage', () => ({
     useMachineListByServerId: () => ({}),
     useMachineListStatusByServerId: () => ({}),
     useOrdinarySessionListMembershipByServerId: () => ({}),
+    useSessionListQueryMembershipByKey: () => EMPTY_QUERY_MEMBERSHIP,
     useSessionListRowsByServerId: () => ({}),
     useSettings: () => ({
         sessionListActiveGroupingV1: 'project',

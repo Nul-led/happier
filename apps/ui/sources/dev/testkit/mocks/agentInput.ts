@@ -38,6 +38,7 @@ export function createAgentInputModuleMock(options: Readonly<{
                 ...(testID === undefined ? {} : { testID }),
                 value: props.value,
                 placeholder: props.placeholder,
+                inputAccessibilityLabel: props.inputAccessibilityLabel,
                 onChangeText: props.onChangeText,
                 composerRef: props.composerRef,
                 sessionId: props.sessionId,

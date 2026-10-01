@@ -3,7 +3,6 @@ export {
     resolveReasonCopy,
 } from './resolveReasonCopy';
 export type {
-    PluginSurfacePresentationCopyVariant,
     PluginSurfacePresentationState,
     PluginSurfaceStatePresentation,
     ReasonCopyKind,

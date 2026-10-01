@@ -11,6 +11,7 @@ import type {
 } from '@/agents/backendCatalog/daemonContributionRegistryProjectionAdapters';
 import type { DaemonMergedProjectionInputs } from '@/agents/backendCatalog/loadDaemonMergedProjectionInputs';
 import type { PluginContributedActionDispatch } from '@/components/plugins/actions/pluginContributedActionController';
+import { createPluginDeclarativeModelFixture } from '@/dev/testkit/fixtures/pluginDeclarativeModelFixture';
 import type { FreshPluginMachineExecutionOriginV1 } from '@/sync/domains/machines/administration/usePluginExecutionOriginSelection';
 
 import {
@@ -42,13 +43,14 @@ const ACCOUNT_LIFETIME = Object.freeze({
     onRetire: () => Object.freeze({ dispose() {} }),
 });
 
-function eligibleEvent(immutableGenerationId = 'github-generation-a'):
+function eligibleEvent(occurrenceId = 'github-occurrence-a'):
 DaemonContributionRegistryProjectionAutomationEligibleEventV1 {
     return DaemonContributionRegistryProjectionAutomationEligibleEventV1Schema.parse({
         event: {
             id: `${PLUGIN_ID}/${EVENT_LOCAL_ID}`,
             identity: { pluginId: PLUGIN_ID, localId: EVENT_LOCAL_ID },
-            immutableGenerationId,
+            occurrenceId,
+            sourceCustody: { kind: 'development', registeredRootId: 'github-root-a' },
             title: 'Repository updates',
             description: null,
             payloadSchema: {
@@ -76,7 +78,7 @@ DaemonContributionRegistryProjectionAutomationEligibleEventV1 {
         setupAction: {
             id: `${PLUGIN_ID}/${SETUP_ACTION_LOCAL_ID}`,
             identity: { pluginId: PLUGIN_ID, localId: SETUP_ACTION_LOCAL_ID },
-            immutableGenerationId,
+            occurrenceId,
             title: 'Choose a repository',
             description: null,
             inputSchema: {
@@ -121,9 +123,9 @@ DaemonContributionRegistryProjectionAutomationEligibleEventV1 {
 }
 
 function eligibleEventWithSetupSurface(
-    immutableGenerationId = 'github-generation-a',
+    occurrenceId = 'github-occurrence-a',
 ): DaemonContributionRegistryProjectionAutomationEligibleEventV1 {
-    const event = eligibleEvent(immutableGenerationId);
+    const event = eligibleEvent(occurrenceId);
     return Object.freeze({
         ...event,
         event: Object.freeze({
@@ -138,11 +140,31 @@ function eligibleEventWithSetupSurface(
         }),
         setupSurface: Object.freeze({
             contribution: event.event.identity,
-            immutableGenerationId,
+            occurrenceId,
             projectionGeneration: GENERATION,
+            rendererChain: [
+                Object.freeze({ pluginId: PLUGIN_ID, localId: 'setup/repository-picker' }),
+            ],
             selectedRenderer: Object.freeze({
                 identity: Object.freeze({ pluginId: PLUGIN_ID, localId: 'setup/repository-picker' }),
-                availability: Object.freeze({ state: 'available' }),
+                renderer: Object.freeze({
+                    kind: 'declarative',
+                    contributionId: 'setup/repository-picker',
+                    model: createPluginDeclarativeModelFixture({
+                        pluginId: PLUGIN_ID,
+                        localId: 'setup/repository-picker',
+                        occurrenceId,
+                        document: {
+                            version: 1,
+                            root: { kind: 'state', state: 'empty', title: 'Choose a repository' },
+                        },
+                    }),
+                }),
+                availability: Object.freeze({
+                    state: 'available',
+                    reason: 'available',
+                    diagnostics: [],
+                }),
             }),
             executionOrigin: Object.freeze({
                 serverIdentityId: SERVER_IDENTITY_ID,
@@ -152,7 +174,16 @@ function eligibleEventWithSetupSurface(
                     materializationId: MATERIALIZATION_ID,
                 }),
             }),
-        }) as never,
+            resourceCapability: Object.freeze({ readable: false, dynamic: false }),
+            contributorTargetedContributions: Object.freeze({
+                target: Object.freeze({
+                    pluginId: PLUGIN_ID,
+                    occurrenceId,
+                    sourceCustody: event.event.sourceCustody,
+                }),
+                points: [],
+            }),
+        }),
     });
 }
 
@@ -161,13 +192,13 @@ function projectionAction(
 ): PluginProjectionAction {
     return {
         id: event.setupAction.identity.localId,
+        occurrenceId: event.setupAction.occurrenceId,
         title: event.setupAction.title,
         description: event.setupAction.description,
         icon: null,
         scopes: ['settings'],
         surfaces: ['plugin'],
         placementBindings: [],
-        inputSchema: event.setupAction.inputSchema,
         inputHints: event.setupAction.inputHints,
         slash: null,
         priority: null,
@@ -182,7 +213,6 @@ function projectionInputs(
 ): DaemonMergedProjectionInputs {
     const plugin: PluginProjectionEntry = {
         pluginId: PLUGIN_ID,
-        immutableGenerationId: event.setupAction.immutableGenerationId,
         title: 'Acme GitHub',
         description: null,
         version: '1.0.0',
@@ -206,11 +236,11 @@ function projectionInputs(
             generation: GENERATION,
             installedPackagesById: {},
             agentsById: {},
-            backendsById: {},
             actionsById: {
                 [`${PLUGIN_ID}/${event.setupAction.identity.localId}`]: {
                     id: event.setupAction.identity.localId,
                     pluginId: PLUGIN_ID,
+                    occurrenceId: event.setupAction.occurrenceId,
                     title: event.setupAction.title,
                     scopes: ['settings'],
                     surfaces: ['plugin'],
@@ -440,7 +470,7 @@ describe('Plugin Event Automation setup orchestration', () => {
                 credentialRef: ACCOUNT,
             },
             contributedAction: expect.objectContaining({
-                expectedImmutableGenerationId: 'github-generation-a',
+                expectedOccurrenceId: 'github-occurrence-a',
             }),
         }));
     });
@@ -667,8 +697,7 @@ describe('Plugin Event Automation setup orchestration', () => {
             contributedAction: {
                 machineId: MACHINE_ID,
                 serverId: SERVER_ID,
-                expectedGeneration: String(GENERATION),
-                expectedImmutableGenerationId: 'github-generation-a',
+                expectedOccurrenceId: 'github-occurrence-a',
             },
         }));
         const dispatched = dispatch.mock.calls[0]?.[0];

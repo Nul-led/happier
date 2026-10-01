@@ -1,3 +1,5 @@
+import { createPersistedTakeoverAdmissionWaiter } from '../spawn/persistedTakeoverAdmission';
+import { waitForSessionWebhook } from '../spawn/waitForSessionWebhook';
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -36,6 +38,7 @@ import type { ResolvedPluginHookHandler } from '@/plugins/runtime/types';
 import { createAgentSessionRunnerFactoryBinding } from '@/plugins/runtime/runner/agentSessionRunnerFactoryBinding';
 import type { SpawnSessionOptions } from '@/rpc/handlers/registerSessionHandlers';
 import { SPAWN_SESSION_ERROR_CODES } from '@/rpc/handlers/registerSessionHandlers';
+import type { SpawnSessionResult } from '@/session/shared/spawnSessionContract';
 import { callSessionRpc } from '@/session/transport/rpc/sessionRpc';
 import {
     buildBackendTargetKeyV2,
@@ -47,6 +50,7 @@ import {
     createProviderMachineGrantFingerprintV1,
     AccountSettingsSchema,
     ACCOUNT_API_TOKEN_INTROSPECTION_HTTP_PATH_V1,
+    API_TOKEN_FULL_GRANT_V1,
     DEFAULT_PROVIDER_SETTINGS_V1,
     FeaturesResponseSchema,
     createPlainSessionOwnerMetadataEnvelopeV1,
@@ -95,6 +99,7 @@ import type {
 } from '@/plugins/projection/registry/types';
 import { logger } from '@/ui/logger';
 import { configuration } from '@/configuration';
+import { createTestMetadata } from '@/testkit/backends/sessionMetadata';
 import { resetInMemoryAccountSettingsContextForTests } from '@/settings/accountSettings/bootstrapAccountSettingsContext';
 import type { ActiveAccountSettingsSnapshot } from '@/settings/accountSettings/activeAccountSettingsSnapshot';
 import {
@@ -552,6 +557,7 @@ const startDaemonSessionControlRuntime = async (
             params.cancelInactiveSessionUsageLimitRecoveryAfterExplicitStop ?? (async () => null),
         daemonSessionMutationCustody: {
             async stage() {},
+            async stageTranscriptMessage() { throw new Error('Unexpected recording attachment in this startup fixture'); },
             ...params.daemonSessionMutationCustody,
             async stageTranscriptEvent(input) {
                 if (params.daemonSessionMutationCustody) {
@@ -1938,6 +1944,7 @@ describe('startDaemonSessionControlRuntime', () => {
                         accountId: 'account-external-action-admission',
                         principalId: 'account-external-action-admission',
                         credentialId: 'credential-external-action-admission',
+                        grant: API_TOKEN_FULL_GRANT_V1,
                     },
                     externalActionTarget: {
                         kind: 'machine',
@@ -6330,6 +6337,15 @@ describe('startDaemonSessionControlRuntime', () => {
 
     const createBrowserCapsSidecarAdapterFactory = (dispatchCommand: ReturnType<typeof vi.fn>) => vi.fn(() => ({
         ok: true as const,
+        contextCapture: {
+            // The fixture's already-bound native page carries the same Session/profile facts
+            // production privacy admission requires; the context producer remains below it.
+            resolvePageHandle: () => ({ targetId: 'target_caps' }),
+            resolveProfile: () => ({ profileId: 'profile_caps', storageMode: 'session' as const,
+                owner: { kind: 'session' as const, id: 'browser_session_caps' },
+                lifecycleState: 'active' as const, cleanupOnSessionClose: true }),
+            transport: { dispatchPageCommand: async () => { throw new Error('Unexpected raw CDP command in startup fixture'); } },
+        },
         adapter: {
             adapterKind: 'chromiumSidecar' as const,
             ownsView: ({ browserSessionId, viewId }: { browserSessionId: string; viewId: string }) =>
@@ -6569,6 +6585,7 @@ describe('startDaemonSessionControlRuntime', () => {
                 enqueueSessionPendingByMachine,
                 registerLocalServicesRoutes: vi.fn(),
                 registerSimulatorPreviewRoutes: vi.fn(),
+                registerComputerRoutes: vi.fn(),
             } as never),
             spawnResourceCleanupByPid: new Map(),
             sessionAttachCleanupByPid: new Map(),
@@ -6663,7 +6680,7 @@ describe('startDaemonSessionControlRuntime', () => {
                     status: 'resolved',
                     admission: {
                         status: 'rejected',
-                        code: 'session_input_target_update_required',
+                        code: 'session_input_source_authority_mismatch',
                     },
                 },
             });
@@ -8061,7 +8078,7 @@ describe('startDaemonSessionControlRuntime', () => {
         const retainedRuntimeBindingBasis =
             ProviderRuntimeBindingBasisV1Schema.parse({
                 v: 1,
-                agentTargetKey: 'backend:claude',
+                agentTargetKey: 'agent:happier.agent.claude/claude',
                 connectionId: retainedConnectionId,
                 contributionKey: 'plugin.provider/gateway',
                 runtimeCredentialTransport: null,
@@ -9726,7 +9743,7 @@ describe('startDaemonSessionControlRuntime', () => {
                 },
                 purposeBindings: { v: 1, bindings: [] },
             },
-            agentTargetKey: 'backend:claude',
+            agentTargetKey: 'agent:happier.agent.claude/claude',
             connectionId: 'pc_provider_hard_revocation',
             contributionKey: 'plugin.provider/gateway',
             endpoint: {
@@ -11775,12 +11792,14 @@ describe('startDaemonSessionControlRuntime', () => {
         }
     });
 
-    it('routes a same-daemon final runner exit through exact terminal-host retirement', async () => {
+    it.each(['owned', 'owned_descriptor_replaced', 'borrowed', 'borrowed_descriptor_released', 'borrowed_descriptor_replaced'] as const)('routes a same-daemon final runner exit through exact %s terminal-host retirement', async (lifecycleCase) => {
+        const lifecycle = lifecycleCase.startsWith('owned') ? 'owned' : 'borrowed';
         const sessionId = 'session-same-daemon-runner-exit';
         const trackedPid = 2_147_482_998;
         const attachment = await writeTerminalHostAttachmentInfo({
             happyHomeDir: configuration.happyHomeDir,
             sessionId,
+            lifecycle,
             handle: {
                 kind: 'tmux',
                 sessionName: 'happier-same-daemon-runner-exit',
@@ -11809,6 +11828,7 @@ describe('startDaemonSessionControlRuntime', () => {
             getSessionSyncPendingInputServerContractResult: vi.fn(() => null),
             registerLocalServicesRoutes: vi.fn(),
             registerSimulatorPreviewRoutes: vi.fn(),
+            registerComputerRoutes: vi.fn(),
         };
         const trackedSessions = new Map<number, TrackedSession>([[
             trackedPid,
@@ -11816,6 +11836,8 @@ describe('startDaemonSessionControlRuntime', () => {
                 startedBy: 'daemon',
                 happySessionId: sessionId,
                 pid: trackedPid,
+                publishedTerminalControlServiceabilityAttachmentId: attachment.attachmentId,
+                publishedTerminalControlServiceabilityAttachmentLifecycle: lifecycle,
                 happySessionMetadataFromLocalWebhook: {
                     path: '/tmp/project',
                     host: 'daemon',
@@ -11869,21 +11891,57 @@ describe('startDaemonSessionControlRuntime', () => {
             processEnv: {},
         });
         try {
+            if (lifecycleCase === 'borrowed_descriptor_released') {
+                await removeTerminalHostAttachmentInfo({
+                    happyHomeDir: configuration.happyHomeDir, sessionId,
+                    expectedAttachmentId: attachment.attachmentId,
+                });
+            }
+            const replacement = lifecycleCase.endsWith('descriptor_replaced')
+                ? await writeTerminalHostAttachmentInfo({
+                    happyHomeDir: configuration.happyHomeDir, sessionId, lifecycle: 'borrowed',
+                    handle: { ...attachment.handle, attachmentId: undefined, paneId: 'replacement-pane' },
+                })
+                : null;
+            updateSessionMetadataWithRetryMock.mockClear();
             await runtime.onChildExited(trackedPid, {
                 reason: 'process-exited',
                 code: 0,
                 signal: null,
             });
-            expect(trackedSessions.has(trackedPid)).toBe(false);
-
-            await expect(runtime.stopSession(sessionId)).resolves.toEqual({ status: 'stopped' });
-            expect(dispose).toHaveBeenCalledWith(attachment.handle);
+            if (lifecycleCase === 'owned_descriptor_replaced') {
+                await expect(readTerminalHostAttachmentInfo({
+                    happyHomeDir: configuration.happyHomeDir, sessionId,
+                })).resolves.toEqual(replacement);
+                expect(dispose).not.toHaveBeenCalled();
+                expect(trackedSessions.has(trackedPid)).toBe(true);
+            } else if (lifecycle === 'borrowed') {
+                expect(trackedSessions.has(trackedPid)).toBe(false);
+                await expect(readTerminalHostAttachmentInfo({
+                    happyHomeDir: configuration.happyHomeDir, sessionId,
+                })).resolves.toEqual(replacement);
+                expect(dispose).not.toHaveBeenCalled();
+                expect(removeSessionMarkerIfOwnedMock).toHaveBeenCalledWith(expect.objectContaining({ pid: trackedPid }));
+                await expect(updateSessionMetadataWithRetryMock.mock.results[0]?.value).resolves.toMatchObject({
+                    metadata: {
+                        terminal: {
+                            controlServiceabilityV1: {
+                                attachmentId: attachment.attachmentId, retired: true,
+                                state: 'unknown', reason: 'attachment_retired',
+                            },
+                        },
+                    },
+                });
+            } else {
+                expect(trackedSessions.has(trackedPid)).toBe(false);
+                await expect(runtime.stopSession(sessionId)).resolves.toEqual({ status: 'stopped' });
+                expect(dispose).toHaveBeenCalledWith(attachment.handle);
+            }
         } finally {
             await runtime.stopControlServer();
             await removeTerminalHostAttachmentInfo({
                 happyHomeDir: configuration.happyHomeDir,
                 sessionId,
-                expectedAttachmentId: attachment.attachmentId,
             });
         }
     });
@@ -13074,6 +13132,46 @@ describe('startDaemonSessionControlRuntime', () => {
         expect(adapterDispose).toHaveBeenCalledOnce();
     });
 
+    it('publishes UI automation ownership without a sidecar and retires it on shutdown', async () => {
+        const setBrowserUiAutomationProvider = vi.fn();
+        const runtime = await startDaemonSessionControlRuntime({
+            machineId: 'machine-ui-automation',
+            credentials: {
+                token: 'token-daemon',
+                encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
+            },
+            api: { setBrowserUiAutomationProvider } as never,
+            connectedServicesMaterializationBaseDir: '/tmp/connected-services',
+            getConnectedServiceRefreshCoordinator: () => null,
+            getConnectedServiceQuotasCoordinator: () => null,
+            pidToTrackedSession: new Map(),
+            pidToAwaiter: new Map(),
+            pidToSpawnResultResolver: new Map(),
+            pidToSpawnWebhookTimeout: new Map(),
+            getApiMachineForSessions: () => null,
+            spawnResourceCleanupByPid: new Map(),
+            sessionAttachCleanupByPid: new Map(),
+            connectedServicesRestartRequestedPids: new Set(),
+            beforeShutdown: vi.fn(),
+            onHappySessionWebhook: vi.fn(),
+            requestShutdown: vi.fn(),
+            processEnv: {},
+            browserDaemonFeatureGate: fakeBrowserGate({ 'browser.automation': true }),
+        });
+        try {
+            const provider = setBrowserUiAutomationProvider.mock.calls[0]?.[0] as
+                (() => import('../runtimeActionExecutor').BrowserUiAutomationRouteOwner);
+            const owner = provider();
+            expect(owner.ownsAutomationView({ browserSessionId: 'ui-session', viewId: 'ui-view' })).toBe(false);
+            expect(await owner.uiAutomation({ actionId: 'browser.automation.cancelActive',
+                input: { browserSessionId: 'ui-session', viewId: 'ui-view' }, context: { authority: 'present_user' },
+            })).toMatchObject({ errorCode: 'runtime_action_disabled' });
+        } finally {
+            await runtime.stopControlServer();
+        }
+        expect(setBrowserUiAutomationProvider).toHaveBeenLastCalledWith(null);
+    });
+
     it('registers privileged browser route owners only when the server feature gate is enabled', async () => {
         // E2-F1: this fixture used to hand-feed `resolveBrowserUseAllowed: () => true`, a hook no
         // production caller has ever passed, so it could never have caught the gate being dead in
@@ -13300,6 +13398,7 @@ describe('startDaemonSessionControlRuntime', () => {
                 registerBrowserControlRoutes,
                 registerBrowserContextRoutes,
                 registerSimulatorPreviewRoutes: vi.fn(),
+                registerComputerRoutes: vi.fn(),
             }) as never,
             spawnResourceCleanupByPid: new Map(),
             sessionAttachCleanupByPid: new Map(),
@@ -13376,6 +13475,7 @@ describe('startDaemonSessionControlRuntime', () => {
                 registerBrowserDiagnosticsRoutes,
                 registerBrowserRecordingRoutes,
                 registerSimulatorPreviewRoutes: vi.fn(),
+                registerComputerRoutes: vi.fn(),
             } as never),
             spawnResourceCleanupByPid: new Map(),
             sessionAttachCleanupByPid: new Map(),
@@ -13472,6 +13572,7 @@ describe('startDaemonSessionControlRuntime', () => {
                 registerBrowserDiagnosticsRoutes,
                 registerBrowserRecordingRoutes: vi.fn(),
                 registerSimulatorPreviewRoutes: vi.fn(),
+                registerComputerRoutes: vi.fn(),
                 // SEAM-FINISH-2: an executable sidecar control adapter reaches the browser-control RPC
                 // wiring (`apiMachineForSessions.registerBrowserControlRoutes`). The mock must expose it
                 // or the optional-chained call throws `is not a function`.
@@ -13588,6 +13689,7 @@ describe('startDaemonSessionControlRuntime', () => {
                 registerBrowserDiagnosticsRoutes,
                 registerBrowserRecordingRoutes: vi.fn(),
                 registerSimulatorPreviewRoutes: vi.fn(),
+                registerComputerRoutes: vi.fn(),
                 // SEAM-FINISH-2: an executable sidecar control adapter reaches the browser-control RPC
                 // wiring (`apiMachineForSessions.registerBrowserControlRoutes`). The mock must expose it
                 // or the optional-chained call throws `is not a function`.
@@ -14086,6 +14188,47 @@ describe('startDaemonSessionControlRuntime', () => {
         expect(simulatorPreviewAdapterStopMock).toHaveBeenCalledOnce();
     });
 
+    it('registers exact browser views in the shared live-stream registry and retires them on close', async () => {
+        const { createBrowserSidecarCdpControlAdapter } = await import('../browser/sidecar/controlAdapter');
+        const adapter = createBrowserSidecarCdpControlAdapter({
+            browserSessionId: 'browser_capture', sidecarId: 'sidecar_capture',
+            transport: { openPage: async () => ({ targetId: 'page', sessionId: 'cdp-page' }),
+                dispatchPageCommand: async () => ({}), dispatchBrowserCommand: async () => ({}) },
+        });
+        const liveStreamCaptureRegistry = createMachineLiveStreamCaptureRegistry();
+        const runtime = await startDaemonSessionControlRuntime({
+            machineId: 'machine-browser-capture',
+            credentials: { token: 'token-daemon', encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) } },
+            api: {} as never, connectedServicesMaterializationBaseDir: '/tmp/connected-services',
+            getConnectedServiceRefreshCoordinator: () => null, getConnectedServiceQuotasCoordinator: () => null,
+            pidToTrackedSession: new Map(), pidToAwaiter: new Map(), pidToSpawnResultResolver: new Map(),
+            pidToSpawnWebhookTimeout: new Map(), getApiMachineForSessions: () => null,
+            spawnResourceCleanupByPid: new Map(), sessionAttachCleanupByPid: new Map(),
+            connectedServicesRestartRequestedPids: new Set(), beforeShutdown: vi.fn(),
+            onHappySessionWebhook: vi.fn(), requestShutdown: vi.fn(), processEnv: {}, liveStreamCaptureRegistry,
+            browserDaemonFeatureGate: fakeBrowserGate({ 'browser.sidecar': true, 'browser.automation': true }),
+            browserSidecarControlAdapterFactory: () => ({ ok: true, adapter,
+                contextCapture: { transport: { dispatchPageCommand: async () => ({}) },
+                    resolvePageHandle: view => adapter.resolvePageHandle(view),
+                    subscribeCdpEvents: () => () => undefined,
+                    subscribeViewLifecycle: listener => adapter.subscribeViewLifecycle(listener) },
+                dispose: () => adapter.dispose() }),
+        });
+        try {
+            await adapter.dispatchCommand({ kind: 'openView', commandId: 'open-capture',
+                browserSessionId: 'browser_capture', viewId: 'view_capture', platform: 'web',
+                focus: true,
+                target: { kind: 'externalUrl', targetId: 'external', url: 'https://example.test/' } });
+            const registered = liveStreamCaptureRegistry.list().filter(source => source.streamFamily === 'browser.streamed');
+            expect(registered).toHaveLength(1);
+            expect(registered[0]?.capabilities).toMatchObject({ sourceKind: 'browser', supportedCodecs: ['image.mjpeg'] });
+            expect(liveStreamCaptureRegistry.resolve({ sourceId: registered[0]?.sourceId, streamFamily: 'browser.streamed' }).ok).toBe(true);
+            await adapter.dispatchCommand({ kind: 'closeView', commandId: 'close-capture',
+                browserSessionId: 'browser_capture', viewId: 'view_capture' });
+            expect(liveStreamCaptureRegistry.list().filter(source => source.streamFamily === 'browser.streamed')).toEqual([]);
+        } finally { await runtime.stopControlServer(); }
+    });
+
     it('reconciles startup simulator resources into the shared PMS live-stream capture registry', async () => {
         vi.mocked(startDaemonControlServer).mockClear();
         createComposedSimulatorPreviewAdapterMock.mockImplementationOnce(() => ({
@@ -14251,6 +14394,7 @@ describe('startDaemonSessionControlRuntime', () => {
                 registerBrowserDiagnosticsRoutes: vi.fn(),
                 registerBrowserRecordingRoutes,
                 registerSimulatorPreviewRoutes: vi.fn(),
+                registerComputerRoutes: vi.fn(),
             }) as never,
             spawnResourceCleanupByPid: new Map(),
             sessionAttachCleanupByPid: new Map(),
@@ -14458,6 +14602,7 @@ describe('startDaemonSessionControlRuntime', () => {
                 registerBrowserDiagnosticsRoutes: vi.fn(),
                 registerBrowserRecordingRoutes,
                 registerSimulatorPreviewRoutes: vi.fn(),
+                registerComputerRoutes: vi.fn(),
                 hasConnectedClientRpcHandler: vi.fn(() => false),
             }) as never,
             spawnResourceCleanupByPid: new Map(),
@@ -14638,6 +14783,7 @@ describe('startDaemonSessionControlRuntime', () => {
                 registerBrowserDiagnosticsRoutes: vi.fn(),
                 registerBrowserRecordingRoutes,
                 registerSimulatorPreviewRoutes: vi.fn(),
+                registerComputerRoutes: vi.fn(),
             }) as never,
             spawnResourceCleanupByPid: new Map(),
             sessionAttachCleanupByPid: new Map(),
@@ -14729,6 +14875,7 @@ describe('startDaemonSessionControlRuntime', () => {
                 registerBrowserDiagnosticsRoutes: vi.fn(),
                 registerBrowserRecordingRoutes,
                 registerSimulatorPreviewRoutes: vi.fn(),
+                registerComputerRoutes: vi.fn(),
             }) as never,
             spawnResourceCleanupByPid: new Map(),
             sessionAttachCleanupByPid: new Map(),
@@ -16247,6 +16394,7 @@ describe('startDaemonSessionControlRuntime', () => {
             getSessionSyncPendingInputServerContractResult: vi.fn(() => null),
             registerLocalServicesRoutes: vi.fn(),
             registerSimulatorPreviewRoutes: vi.fn(),
+            registerComputerRoutes: vi.fn(),
         };
         const pidToTrackedSession = new Map<number, TrackedSession>([[
             pid,
@@ -16555,7 +16703,7 @@ describe('startDaemonSessionControlRuntime', () => {
         await runtime.stopControlServer();
     });
 
-    it('transfers connected-service PID ownership when a live runner replaces its wrapper', async () => {
+    it('preserves startup admission across wrapper promotion and revokes it on exact runner exit', async () => {
         const wrapperPid = 9997;
         const runnerPid = 9996;
         const pidToTrackedSession = new Map<number, TrackedSession>([
@@ -16566,6 +16714,7 @@ describe('startDaemonSessionControlRuntime', () => {
                     happySessionId: 'sess-wrapper-promotion',
                     pid: wrapperPid,
                     sessionRunnerPid: runnerPid,
+                    spawnStartupAwaiterPid: wrapperPid,
                     spawnOptions: {
                         directory: '/tmp/project',
                         backendTarget: { kind: 'backend', backendId: 'claude', sourceKind: 'built_in' },
@@ -16573,6 +16722,17 @@ describe('startDaemonSessionControlRuntime', () => {
                 },
             ],
         ]);
+        const admissionWaiter = createPersistedTakeoverAdmissionWaiter();
+        const correlation = { mode: 'persisted' as const, operationId: 'operation-1', attemptId: 'attempt-1' };
+        const admission = admissionWaiter.register(correlation);
+        const pidToAwaiter = new Map<number, (session: TrackedSession) => void>();
+        const pidToSpawnResultResolver = new Map<number, (result: SpawnSessionResult) => void>();
+        const pidToSpawnWebhookTimeout = new Map<number, NodeJS.Timeout>();
+        const startup = waitForSessionWebhook({
+            pid: wrapperPid, pidToTrackedSession, pidToAwaiter, pidToSpawnResultResolver, pidToSpawnWebhookTimeout,
+            takeoverAdmission: admission,
+            timeoutErrorMessage: 'startup timed out',
+        });
         const connectedServicesRestartRequestedPids = new Set<number>([wrapperPid]);
         const refreshCoordinator = {
             transferPid: vi.fn(),
@@ -16604,10 +16764,16 @@ describe('startDaemonSessionControlRuntime', () => {
             getConnectedServiceQuotasCoordinator: () => quotasCoordinator as never,
             connectedServiceRuntimeRegistry,
             pidToTrackedSession,
-            pidToAwaiter: new Map(),
-            pidToSpawnResultResolver: new Map(),
-            pidToSpawnWebhookTimeout: new Map(),
-            getApiMachineForSessions: () => null,
+            pidToAwaiter,
+            pidToSpawnResultResolver,
+            pidToSpawnWebhookTimeout,
+            // Network boundary: this Session already has terminal server authority.
+            getApiMachineForSessions: () => ({
+                registerLocalServicesRoutes: vi.fn(),
+                registerSimulatorPreviewRoutes: vi.fn(),
+                registerComputerRoutes: vi.fn(),
+                captureMachineSessionTerminal: async (sessionId: string) => ({ v: 1, status: 'already_inactive', sessionId }),
+            }) as never,
             spawnResourceCleanupByPid: new Map(),
             sessionAttachCleanupByPid: new Map(),
             connectedServicesRestartRequestedPids,
@@ -16632,7 +16798,17 @@ describe('startDaemonSessionControlRuntime', () => {
             pid: runnerPid,
         }));
 
+        const promoted = pidToTrackedSession.get(runnerPid)!;
+        pidToAwaiter.get(wrapperPid)?.(promoted);
+        expect(promoted.spawnStartupAwaiterPid).toBe(wrapperPid);
+        expect(admission.readOutcome()).toBeNull();
         killSpy.mockRestore();
+        await runtime.onChildExited(runnerPid, { reason: 'process-exited', code: 0, signal: null });
+        await expect(startup).resolves.toMatchObject({ type: 'error', errorCode: SPAWN_SESSION_ERROR_CODES.CHILD_EXITED_BEFORE_WEBHOOK });
+        expect(admission.readOutcome()?.status).toBe('failed');
+        expect(admissionWaiter.reserveRuntimeBound(correlation).status).toBe('unavailable');
+        expect(pidToSpawnResultResolver.size).toBe(0);
+        expect(pidToSpawnWebhookTimeout.size).toBe(0);
         await runtime.stopControlServer();
     });
 
@@ -17830,7 +18006,7 @@ describe('startDaemonSessionControlRuntime', () => {
                         v: 1,
                         updatedAt: 502,
                         ref: {
-                            agentTargetKey: 'backend:codex',
+                            agentTargetKey: 'agent:happier.agent.codex/codex',
                             providerConnectionId: null,
                             modelId: 'gpt-5.1',
                         },
@@ -17863,6 +18039,37 @@ describe('startDaemonSessionControlRuntime', () => {
 
         vi.mocked(executeSpawnSessionRequest).mockClear();
         await runtime.stopControlServer();
+    });
+
+    it.each(['tracked', 'request'] as const)('refuses an already-running managed session with %s routing and no allocation proof before adopting or waking its runner', async (routingSource) => {
+        fetchSessionByIdCompatMock.mockResolvedValue(null);
+        const sessionId = 'managed-live-without-allocation';
+        const directory = '/unproven/private-chat';
+        const pidToTrackedSession = new Map<number, TrackedSession>([[process.pid, {
+            startedBy: 'daemon', pid: process.pid, happySessionId: sessionId,
+            ...(routingSource === 'tracked' ? {
+                happySessionMetadataFromLocalWebhook: createTestMetadata({ path: directory, sessionDirectoryV1: { v: 1, kind: 'managed' } }),
+            } : {}),
+            spawnOptions: { directory, ...(routingSource === 'tracked' ? { directoryKind: 'managed' as const } : {}), existingSessionId: sessionId },
+        }]]);
+        const runtime = await startDaemonSessionControlRuntime({
+            machineId: 'machine-1',
+            credentials: { token: 'token-daemon', encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) } },
+            api: {} as never,
+            connectedServicesMaterializationBaseDir: '/tmp/connected-services',
+            getConnectedServiceRefreshCoordinator: () => null, getConnectedServiceQuotasCoordinator: () => null,
+            pidToTrackedSession, pidToAwaiter: new Map(), pidToSpawnResultResolver: new Map(), pidToSpawnWebhookTimeout: new Map(),
+            getApiMachineForSessions: () => null, spawnResourceCleanupByPid: new Map(), sessionAttachCleanupByPid: new Map(),
+            connectedServicesRestartRequestedPids: new Set(), beforeShutdown: vi.fn(), onHappySessionWebhook: vi.fn(),
+            requestShutdown: vi.fn(), processEnv: {},
+        });
+        try {
+            const result = await runtime.spawnSession({ directory, existingSessionId: sessionId, ...(routingSource === 'request' ? { directoryKind: 'managed' as const } : {}) });
+            expect(result).toMatchObject({ type: 'error', errorCode: SPAWN_SESSION_ERROR_CODES.SESSION_DIRECTORY_MISSING });
+            expect(pidToTrackedSession.has(process.pid)).toBe(true);
+        } finally {
+            await runtime.stopControlServer();
+        }
     });
 
     it('discovers and publishes the fixed pending wake when an existing session is already active', async () => {
@@ -18162,7 +18369,7 @@ describe('startDaemonSessionControlRuntime', () => {
                 v: 1,
                 updatedAt: 202,
                 ref: {
-                    agentTargetKey: 'backend:codex',
+                    agentTargetKey: 'agent:happier.agent.codex/codex',
                     providerConnectionId: null,
                     modelId: 'gpt-5.1',
                 },

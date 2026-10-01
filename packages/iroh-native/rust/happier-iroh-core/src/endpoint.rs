@@ -1019,8 +1019,8 @@ impl EndpointManager {
     }
 
     /// Creates or returns the shared process endpoint for the identity derived
-    /// from the config (key path, or a fresh ephemeral slot for keyless test
-    /// fixtures).
+    /// from the config (key path, or a fresh ephemeral slot for keyless
+    /// Account-client helpers and test fixtures).
     pub async fn acquire(&self, config: &EndpointConfig) -> Result<std::sync::Arc<IrohEndpoint>> {
         let identity = match &config.key_path {
             Some(path) => EndpointIdentity::Keyed(path.clone()),
@@ -1047,8 +1047,8 @@ impl EndpointManager {
     /// - same identity + incompatible application relay policy/test transport
     ///   mode → typed
     ///   [`IrohError::EndpointConfigConflict`] (never a second owner);
-    /// - ephemeral identities never share (tests and first-provisioning
-    ///   callers only; production passes key paths).
+    /// - ephemeral identities never share; finite Account-client helpers and
+    ///   test fixtures use them, while stable services pass key paths.
     pub async fn acquire_identified(
         &self,
         identity: EndpointIdentity,

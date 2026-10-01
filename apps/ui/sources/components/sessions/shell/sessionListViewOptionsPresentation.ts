@@ -31,7 +31,7 @@ type SessionListViewOptionsSettings = SessionListLayoutSettings & Readonly<{
     foldersFeatureEnabled?: boolean;
 }>;
 
-const layoutItems = (): ReadonlyArray<SessionListViewOptionDescriptor> => [
+const layoutItems = (): ReadonlyArray<SessionListViewOptionDescriptor & { id: `layout:${SessionListLayoutChoice}` }> => [
     { id: 'layout:projects', title: t('settingsSession.sessionList.layoutProjectsTitle') },
     { id: 'layout:recent_activity', title: t('settingsSession.sessionList.layoutRecentActivityTitle') },
     { id: 'layout:active_inactive', title: t('settingsSession.sessionList.layoutActiveInactiveTitle') },

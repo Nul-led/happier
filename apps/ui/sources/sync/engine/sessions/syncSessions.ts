@@ -1,17 +1,23 @@
-import type { NormalizedMessage } from '@/sync/typesRaw';
+import { type SessionMessagesPageV1 } from '@happier-dev/protocol';
+import type { NormalizedMessage } from "@happier-dev/session-core/raw";
 import { computeNextSessionSeqFromUpdate } from '@/sync/domains/session/sequence/realtimeSessionSeq';
-import type { AgentState, Metadata, Session } from '@/sync/domains/state/storageTypes';
+import type { Session } from '@/sync/domains/state/storageTypes';
+import type { AgentState, Metadata } from '@happier-dev/session-core/state';
 import { preserveSessionRuntimeLocalMetadata } from '@/sync/domains/session/preserveSessionRuntimeLocalMetadata';
 import {
     deriveSessionListRenderableHasUnreadMessagesFromMetadataPatch,
     derivePendingRequestFlagsFromAgentState,
+    readSessionListRenderableSourceMetadata,
     summarizeSessionListReadableActivityFromMessageRecords,
     type SessionListRenderableSession,
 } from '@/sync/domains/session/listing/sessionListRenderable';
 import { buildSessionListRenderableMetadataComparison } from '@/sync/domains/session/listing/sessionListRenderableMetadataComparison';
-import type { ApiSessionMessagesResponse } from '@/sync/api/types/apiTypes';
+import { isSessionListRenderableOwnerProjection } from '@/sync/domains/session/listing/sessionListRenderableSessionProjection';
+
 import { storage } from '@/sync/domains/state/storage';
+import { readExternalSessionStorageState } from './sessionHttpCompat';
 import { shouldRetireSessionCarrierForServer } from '@/sync/store/domains/sessions';
+import { classifySessionTupleApplyCurrentness } from '@/sync/store/domains/sessionTupleApplyCurrentness';
 import { retireSessionListQueryAddress } from '@/sync/domains/session/listing/sessionListQueryInvalidation';
 import { readRollbackEligibleTurnStarts } from '@/sync/domains/session/rollback/rollbackEligibleTurnStarts';
 import {
@@ -45,7 +51,7 @@ import {
 } from './sessionMessagesPagePipeline';
 import {
     type SessionReceivedMessages,
-} from './sessionMessageCurrentness';
+} from "@happier-dev/session-core/transcript";
 import {
     resolveSessionRuntimeActivityProjectionFields,
     type SessionRuntimeActivityResyncHandler,
@@ -165,6 +171,7 @@ type NewSessionSocketUpdateBody = Readonly<{
     createdAt?: unknown;
     updatedAt?: unknown;
     meaningfulActivityAt?: unknown;
+    currentStorageState?: unknown;
 }>;
 
 function readNewSessionId(body: NewSessionSocketUpdateBody): string | null {
@@ -339,6 +346,7 @@ export async function buildNewSessionFromSocketUpdate(params: {
     const active = typeof updateBody.active === 'boolean' ? updateBody.active : true;
     const activeAt = readTimestamp(updateBody.activeAt, params.updateCreatedAt);
     const pendingFlags = derivePendingRequestFlagsFromAgentState(decryptedState.agentState);
+    const currentStorageState = readExternalSessionStorageState(updateBody.currentStorageState);
 
     return {
         id: sessionId,
@@ -364,6 +372,9 @@ export async function buildNewSessionFromSocketUpdate(params: {
         thinkingAt: 0,
         pendingPermissionRequestCount: pendingFlags.hasPendingPermissionRequests ? 1 : 0,
         pendingUserActionRequestCount: pendingFlags.hasPendingUserActionRequests ? 1 : 0,
+        // Where the transcript lives. A fresh external-session import is `machine_only`; without
+        // the field the transcript authority would read it as a legacy linked session.
+        ...(currentStorageState ? { currentStorageState } : {}),
     };
 }
 
@@ -612,7 +623,13 @@ export async function buildUpdatedSessionFromSocketUpdate(params: {
         storedMetadataLayoutVersion,
         readSessionMetadataLayoutVersion(updateBody.metadataLayoutVersion),
     );
-    const metadataRevisionAdvances = compareSessionMetadataRevisions({
+    const tupleCurrentness = classifySessionTupleApplyCurrentness(session, {
+        ...session,
+        metadataLayoutVersion: updateBody.metadataLayoutVersion ?? session.metadataLayoutVersion,
+        metadataVersion: updateBody.metadata?.version ?? session.metadataVersion,
+        agentStateVersion: updateBody.agentState?.version ?? session.agentStateVersion,
+    });
+    const metadataRevisionAdvances = tupleCurrentness.metadataCurrent && compareSessionMetadataRevisions({
         incomingLayoutVersion: nextMetadataLayoutVersion,
         incomingMetadataVersion: updateBody.metadata?.version,
         storedLayoutVersion: storedMetadataLayoutVersion,
@@ -620,7 +637,7 @@ export async function buildUpdatedSessionFromSocketUpdate(params: {
     }) > 0;
 
     const hydrateAgentState = updateBody.agentState
-        ? params.hydrateState?.agentState !== false
+        ? params.hydrateState?.agentState !== false && tupleCurrentness.agentStateCurrent
         : false;
     const hydrateMetadata = updateBody.metadata
         ? params.hydrateState?.metadata !== false
@@ -725,11 +742,11 @@ export async function buildUpdatedSessionFromSocketUpdate(params: {
         agentStateVersion: hydrateAgentState ? updateBody.agentState.version : session.agentStateVersion,
         metadata: mergedMetadata,
         metadataVersion: hydrateMetadata ? updateBody.metadata.version : session.metadataVersion,
-        ...(hydrateMetadata && nextMetadataLayoutVersion === 1
-            ? {
-                ownerMetadataView: null,
-            }
-            : {}),
+        // A layout-1 socket patch carries only the shared metadata; the owner view for the new
+        // revision is re-read by the caller's targeted owner hydration. Until that lands the
+        // last-known owner view stays (from `projectionSession`): clearing it made the owner's
+        // row unknown-hidden and title-less on every metadata write, so the list lost and
+        // regained rows while idle. The hydration replaces it, or locks it when unreadable.
     };
 
     return { nextSession, agentState };
@@ -754,7 +771,13 @@ export async function buildUpdatedSessionListRenderablePatchFromSocketUpdate(par
         storedMetadataLayoutVersion,
         readSessionMetadataLayoutVersion(updateBody.metadataLayoutVersion),
     );
-    const metadataRevisionAdvances = compareSessionMetadataRevisions({
+    const tupleCurrentness = classifySessionTupleApplyCurrentness(renderable, {
+        ...renderable,
+        metadataLayoutVersion: updateBody.metadataLayoutVersion ?? renderable.metadataLayoutVersion,
+        metadataVersion: updateBody.metadata?.version ?? renderable.metadataVersion,
+        agentStateVersion: updateBody.agentState?.version ?? renderable.agentStateVersion,
+    });
+    const metadataRevisionAdvances = tupleCurrentness.metadataCurrent && compareSessionMetadataRevisions({
         incomingLayoutVersion: nextMetadataLayoutVersion,
         incomingMetadataVersion: updateBody.metadata?.version,
         storedLayoutVersion: storedMetadataLayoutVersion,
@@ -765,7 +788,7 @@ export async function buildUpdatedSessionListRenderablePatchFromSocketUpdate(par
             && metadataRevisionAdvances
         : false;
     const hydrateAgentState = updateBody.agentState
-        ? params.hydrateState?.agentState !== false
+        ? params.hydrateState?.agentState !== false && tupleCurrentness.agentStateCurrent
         : false;
 
     let metadataAuthenticationFailed = false;
@@ -826,10 +849,22 @@ export async function buildUpdatedSessionListRenderablePatchFromSocketUpdate(par
         containerSeq: updateSeq,
         messageSeq: undefined,
     });
+    // The frame's metadata reaches the row through the same audience projection the row builder
+    // uses (strict shared schema and Agent presentation for a recipient), never raw.
     const parsedRenderableMetadata = parsedMetadata === undefined
         ? undefined
-        : buildSessionListRenderableMetadataComparison(parsedMetadata, renderable.metadata);
-    const mergedRenderableMetadata = parsedRenderableMetadata === undefined
+        : buildSessionListRenderableMetadataComparison(readSessionListRenderableSourceMetadata({
+            metadata: parsedMetadata,
+            metadataLayoutVersion: nextMetadataLayoutVersion,
+            ownerMetadataView: null,
+            access: renderable.access,
+            accessLevel: renderable.accessLevel,
+        }), renderable.metadata);
+    // Shared-only socket content cannot replace an existing owner's composed list projection. The
+    // row keeps that projection's own revision, so the next list refresh or warm hydration re-reads
+    // the owner view instead of treating the retained title as current.
+    const retainOwnerProjection = isSessionListRenderableOwnerProjection(renderable);
+    const mergedRenderableMetadata = parsedRenderableMetadata === undefined || retainOwnerProjection
         ? renderable.metadata
         : nextMetadataLayoutVersion === 1
             ? parsedRenderableMetadata
@@ -919,10 +954,12 @@ export async function buildUpdatedSessionListRenderablePatchFromSocketUpdate(par
             typeof updateBody.meaningfulActivityAt === 'number'
                 ? updateBody.meaningfulActivityAt
                 : renderable.meaningfulActivityAt,
-        metadataLayoutVersion: updateBody.metadata && hydrateMetadata
+        metadataLayoutVersion: updateBody.metadata && hydrateMetadata && !retainOwnerProjection
             ? nextMetadataLayoutVersion
             : renderable.metadataLayoutVersion,
-        metadataVersion: updateBody.metadata && hydrateMetadata ? updateBody.metadata.version : renderable.metadataVersion,
+        metadataVersion: updateBody.metadata && hydrateMetadata && !retainOwnerProjection
+            ? updateBody.metadata.version
+            : renderable.metadataVersion,
         agentStateVersion: updateBody.agentState && hydrateAgentState ? updateBody.agentState.version : renderable.agentStateVersion,
         metadata: mergedRenderableMetadata,
         agentActivityHeadline,
@@ -983,7 +1020,7 @@ export async function fetchAndApplyMessages(params: {
     applyMessages: (sessionId: string, messages: NormalizedMessage[]) => void;
     onTaskLifecycleEvent?: (event: TaskLifecycleEvent) => void;
     markMessagesLoaded: (sessionId: string) => void;
-    onMessagesPage?: (page: ApiSessionMessagesResponse) => void;
+    onMessagesPage?: (page: SessionMessagesPageV1) => void;
     log: { log: (message: string) => void };
 } & SessionMessagesPageOptions): Promise<void> {
     const scope = params.scope ?? 'main';
@@ -1017,6 +1054,7 @@ export async function fetchAndApplyMessages(params: {
         request: params.request,
         sessionReceivedMessages: params.sessionReceivedMessages,
         applyMessages: params.applyMessages,
+        applyMessageMetadata: params.applyMessageMetadata,
         onTaskLifecycleEvent: params.onTaskLifecycleEvent,
         onMessagesPage: params.onMessagesPage,
         log: params.log,
@@ -1050,10 +1088,10 @@ export async function fetchAndApplyOlderMessages(params: {
     sessionReceivedMessages: SessionReceivedMessages;
     applyMessages: (sessionId: string, messages: NormalizedMessage[]) => void;
     onTaskLifecycleEvent?: (event: TaskLifecycleEvent) => void;
-    onMessagesPage?: (page: ApiSessionMessagesResponse) => void;
+    onMessagesPage?: (page: SessionMessagesPageV1) => void;
     onNormalizedMessages?: (messages: NormalizedMessage[]) => void;
     log: { log: (message: string) => void };
-} & SessionMessagesPageOptions): Promise<{ applied: number; page: ApiSessionMessagesResponse }> {
+} & SessionMessagesPageOptions): Promise<{ applied: number; page: SessionMessagesPageV1 }> {
     const { sessionId, beforeSeq, limit, request, sessionReceivedMessages, applyMessages, log } = params;
 
     const scope = params.scope ?? 'main';
@@ -1084,6 +1122,7 @@ export async function fetchAndApplyOlderMessages(params: {
         request,
         sessionReceivedMessages,
         applyMessages,
+        applyMessageMetadata: params.applyMessageMetadata,
         onMessagesPage: params.onMessagesPage,
         onNormalizedMessages: params.onNormalizedMessages,
         log,
@@ -1113,10 +1152,10 @@ export async function fetchAndApplyNewerMessages(params: {
     sessionReceivedMessages: SessionReceivedMessages;
     applyMessages: (sessionId: string, messages: NormalizedMessage[]) => void;
     onTaskLifecycleEvent?: (event: TaskLifecycleEvent) => void;
-    onMessagesPage?: (page: ApiSessionMessagesResponse) => void;
+    onMessagesPage?: (page: SessionMessagesPageV1) => void;
     onNormalizedMessages?: (messages: NormalizedMessage[]) => void;
     log: { log: (message: string) => void };
-} & SessionMessagesPageOptions): Promise<{ applied: number; page: ApiSessionMessagesResponse }> {
+} & SessionMessagesPageOptions): Promise<{ applied: number; page: SessionMessagesPageV1 }> {
     const { sessionId, afterSeq, limit, request, sessionReceivedMessages, applyMessages, log } = params;
 
     const scope = params.scope ?? 'main';
@@ -1148,6 +1187,7 @@ export async function fetchAndApplyNewerMessages(params: {
         request,
         sessionReceivedMessages,
         applyMessages,
+        applyMessageMetadata: params.applyMessageMetadata,
         onTaskLifecycleEvent: params.onTaskLifecycleEvent,
         onMessagesPage: params.onMessagesPage,
         onNormalizedMessages: params.onNormalizedMessages,

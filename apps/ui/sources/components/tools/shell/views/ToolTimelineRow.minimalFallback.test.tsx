@@ -1,8 +1,8 @@
+import { renderWithSessionTranscriptSource, createTestSessionTranscriptSource } from '@/dev/testkit';
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
-    renderScreen,
     standardCleanup,
 } from '@/dev/testkit';
 import { installToolShellCommonModuleMocks } from './ToolView.testHelpers';
@@ -119,7 +119,7 @@ describe('ToolTimelineRow (minimal fallback)', () => {
             result: { ok: true },
         };
 
-        const screen = await renderScreen(React.createElement(ToolTimelineRow, { tool, metadata: null }));
+        const screen = await renderWithSessionTranscriptSource(React.createElement(ToolTimelineRow, { tool, metadata: null }), createTestSessionTranscriptSource({ loadSidechain: (sidechainId) => ensureSidechainMessagesLoadedMock('s1', sidechainId) }));
 
         expect(screen.findByTestId('tool-timeline-body')).not.toBeNull();
         expect(screen.findAllByType('ToolSectionView' as any)).toHaveLength(0);

@@ -253,12 +253,14 @@ function channelsProviderTargetedContributions(): PluginUiTargetedContributionsV
   const alphaContributor = {
     pluginId: 'example.channel.alpha',
     contributionId: 'provider',
-    immutableGenerationId: 'alpha-generation-a',
+    occurrenceId: 'alpha-occurrence-a',
+    sourceCustody: { kind: 'development', registeredRootId: 'alpha-provider-root' },
   } as const;
   const betaContributor = {
     pluginId: 'example.channel.beta',
     contributionId: 'provider',
-    immutableGenerationId: 'beta-generation-a',
+    occurrenceId: 'beta-occurrence-a',
+    sourceCustody: { kind: 'development', registeredRootId: 'beta-provider-root' },
   } as const;
   const setupOperation = (contributor: typeof alphaContributor | typeof betaContributor) => ({
     point: { pointId: CONVERSATION_PROVIDERS_CONTRIBUTION_POINT_ID_V1, protocol },
@@ -271,7 +273,11 @@ function channelsProviderTargetedContributions(): PluginUiTargetedContributionsV
   return {
     target: {
       pluginId: 'happier.channels',
-      immutableGenerationId: 'channels-generation-a',
+      occurrenceId: 'channels-occurrence-a',
+      sourceCustody: {
+        kind: 'bundled_first_party',
+        packagedRuntime: { kind: 'cli_version_root', versionRootId: 'cli-version-root-a' },
+      },
     },
     points: [{
       pointId: CONVERSATION_PROVIDERS_CONTRIBUTION_POINT_ID_V1,
@@ -379,7 +385,7 @@ function offlineConnectionStateRow(overrides: Readonly<{
         providerPluginId: 'acme.channel.telegram',
         providerContributionSelection: {
           contributionId: 'provider-private',
-          immutableGenerationId: 'provider-generation-private',
+          occurrenceId: 'provider-occurrence-private',
         },
         providerSetupInput: { authorizationCode: 'opaque-provider-setup-private' },
         credentialRef: null,
@@ -3155,9 +3161,16 @@ describe('Channels settings surface (real source, mounted)', () => {
       .contributions[1]!
       .operations[0]!;
     const selection = {
-      target: targetedContributions.target,
+      target: {
+        pluginId: targetedContributions.target.pluginId,
+        sourceCustody: targetedContributions.target.sourceCustody,
+      },
       point: betaSetupOperation.point,
-      contributor: betaSetupOperation.contributor,
+      contributor: {
+        pluginId: betaSetupOperation.contributor.pluginId,
+        contributionId: betaSetupOperation.contributor.contributionId,
+        sourceCustody: betaSetupOperation.contributor.sourceCustody,
+      },
     };
     const providerSetupInput = { authorizationCode: 'opaque-provider-input' };
     let preparedPayload: unknown;
@@ -3227,9 +3240,16 @@ describe('Channels settings surface (real source, mounted)', () => {
       .contributions[1]!
       .operations[0]!;
     const selection = {
-      target: targetedContributions.target,
+      target: {
+        pluginId: targetedContributions.target.pluginId,
+        sourceCustody: targetedContributions.target.sourceCustody,
+      },
       point: betaSetupOperation.point,
-      contributor: betaSetupOperation.contributor,
+      contributor: {
+        pluginId: betaSetupOperation.contributor.pluginId,
+        contributionId: betaSetupOperation.contributor.contributionId,
+        sourceCustody: betaSetupOperation.contributor.sourceCustody,
+      },
     };
     let deferReconciliationRead = false;
     let resolveReconciliationRead: ((content: ReturnType<typeof connectionResourceContent>) => void) | undefined;
@@ -3314,9 +3334,16 @@ describe('Channels settings surface (real source, mounted)', () => {
       .contributions[1]!
       .operations[0]!;
     const selection = {
-      target: targetedContributions.target,
+      target: {
+        pluginId: targetedContributions.target.pluginId,
+        sourceCustody: targetedContributions.target.sourceCustody,
+      },
       point: betaSetupOperation.point,
-      contributor: betaSetupOperation.contributor,
+      contributor: {
+        pluginId: betaSetupOperation.contributor.pluginId,
+        contributionId: betaSetupOperation.contributor.contributionId,
+        sourceCustody: betaSetupOperation.contributor.sourceCustody,
+      },
     };
     const providerSetupInput = { authorizationCode: 'opaque-provider-input' };
     const credentialRef = {
@@ -3422,9 +3449,16 @@ describe('Channels settings surface (real source, mounted)', () => {
       .contributions[1]!
       .operations[0]!;
     const selection = {
-      target: targetedContributions.target,
+      target: {
+        pluginId: targetedContributions.target.pluginId,
+        sourceCustody: targetedContributions.target.sourceCustody,
+      },
       point: betaSetupOperation.point,
-      contributor: betaSetupOperation.contributor,
+      contributor: {
+        pluginId: betaSetupOperation.contributor.pluginId,
+        contributionId: betaSetupOperation.contributor.contributionId,
+        sourceCustody: betaSetupOperation.contributor.sourceCustody,
+      },
     };
     let deferReconciliationRead = false;
     let resolveReconciliationRead: ((content: ReturnType<typeof connectionResourceContent>) => void) | undefined;
@@ -3514,9 +3548,16 @@ describe('Channels settings surface (real source, mounted)', () => {
       .contributions[1]!
       .operations[0]!;
     const selection = {
-      target: targetedContributions.target,
+      target: {
+        pluginId: targetedContributions.target.pluginId,
+        sourceCustody: targetedContributions.target.sourceCustody,
+      },
       point: betaSetupOperation.point,
-      contributor: betaSetupOperation.contributor,
+      contributor: {
+        pluginId: betaSetupOperation.contributor.pluginId,
+        contributionId: betaSetupOperation.contributor.contributionId,
+        sourceCustody: betaSetupOperation.contributor.sourceCustody,
+      },
     };
     const credentialRef = {
       service: { pluginId: 'example.channel.beta', localId: 'account-service' },
@@ -3587,9 +3628,16 @@ describe('Channels settings surface (real source, mounted)', () => {
       .contributions[1]!
       .operations[0]!;
     const selection = {
-      target: targetedContributions.target,
+      target: {
+        pluginId: targetedContributions.target.pluginId,
+        sourceCustody: targetedContributions.target.sourceCustody,
+      },
       point: betaSetupOperation.point,
-      contributor: betaSetupOperation.contributor,
+      contributor: {
+        pluginId: betaSetupOperation.contributor.pluginId,
+        contributionId: betaSetupOperation.contributor.contributionId,
+        sourceCustody: betaSetupOperation.contributor.sourceCustody,
+      },
     };
     const host = createChannelsHostApi({
       methods: ['executeAction', 'readResource', 'selectActionInput', 'watchContext', 'watchResource'],

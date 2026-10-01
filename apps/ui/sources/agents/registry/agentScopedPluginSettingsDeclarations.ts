@@ -96,9 +96,7 @@ export function resolveAgentScopedPluginSettingsDeclarations(params: Readonly<{
         && group.target.agent.pluginId === identity.pluginId
         && group.target.agent.localId === identity.localId
     ));
-    const generation = entry.immutableGenerationId
-        ?? projectionInputs.pluginProjectionV2?.generation
-        ?? 'unknown';
+    const occurrenceId = entry.occurrenceId ?? 'unavailable';
 
     const buildDeclaration = (
         scope: 'account' | 'daemon',
@@ -117,7 +115,7 @@ export function resolveAgentScopedPluginSettingsDeclarations(params: Readonly<{
             pluginId: identity.pluginId,
             scope: Object.freeze({ kind: scope }),
             fields: Object.freeze(fields),
-            sourceLifetimeIdentity: `agent-settings:${identity.pluginId}/${identity.localId}:${scope}:${generation}`,
+            sourceLifetimeIdentity: `agent-settings:${identity.pluginId}/${identity.localId}:${scope}:${occurrenceId}`,
         });
     };
 

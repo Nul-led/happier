@@ -9,6 +9,8 @@ export type TestReactNativeAppStateStatus =
     | 'inactive'
     | 'unknown';
 type ReactNativeStubModule = typeof import('../../reactNativeStub');
+export type TestReactNativeStubLoader = () => Promise<ReactNativeStubModule>;
+const loadReactNativeStub: TestReactNativeStubLoader = () => import('../../reactNativeStub');
 type DeepMutable<T> = T extends (...args: infer TArgs) => infer TResult
     ? (...args: TArgs) => TResult
     : T extends readonly (infer TValue)[]
@@ -19,8 +21,9 @@ type DeepMutable<T> = T extends (...args: infer TArgs) => infer TResult
 
 export async function createReactNativeWebRuntime(
     overrides?: TestReactNativeRuntimeOverrides,
+    loadStub: TestReactNativeStubLoader = loadReactNativeStub,
 ): Promise<DeepMutable<ReactNativeStubModule> & TestReactNativeRuntimeOverrides> {
-    const stub = await import('../../reactNativeStub');
+    const stub = await loadStub();
     const { Platform: platformOverrides, AppState: appStateOverrides, ...restOverrides } = overrides ?? {};
     const mergedModule = mergeObjects(stub as PlainObject, restOverrides as PlainObject | undefined);
     const basePlatform = {
@@ -47,8 +50,11 @@ export async function createReactNativeWebRuntime(
     } as DeepMutable<ReactNativeStubModule> & TestReactNativeRuntimeOverrides;
 }
 
-export function installReactNativeWebRuntime(overrides?: TestReactNativeRuntimeOverrides) {
-    return async () => createReactNativeWebRuntime(overrides);
+export function installReactNativeWebRuntime(
+    overrides?: TestReactNativeRuntimeOverrides,
+    loadStub: TestReactNativeStubLoader = loadReactNativeStub,
+) {
+    return async () => createReactNativeWebRuntime(overrides, loadStub);
 }
 
 export type TestReactNativeNativePlatformOS = 'ios' | 'android';
@@ -68,8 +74,9 @@ export type TestReactNativeNativePlatformOS = 'ios' | 'android';
 export async function createReactNativeNativeRuntime(
     options: Readonly<{ platformOS: TestReactNativeNativePlatformOS }>,
     overrides?: TestReactNativeRuntimeOverrides,
+    loadStub: TestReactNativeStubLoader = loadReactNativeStub,
 ): Promise<DeepMutable<ReactNativeStubModule> & TestReactNativeRuntimeOverrides> {
-    const stub = await import('../../reactNativeStub');
+    const stub = await loadStub();
     const { Platform: platformOverrides, Animated: animatedOverrides, ...restOverrides } = overrides ?? {};
     const mergedModule = mergeObjects(stub as PlainObject, restOverrides as PlainObject | undefined);
     const { platformOS } = options;

@@ -53,6 +53,17 @@ const baseRequest = {
 const allowGate = () => ({ featureEnabled: true, policyAllowed: true, runtimeAvailable: true });
 
 describe('browser context capture service', () => {
+  it.each(['sensitiveOrigin', 'sensitiveFieldsPresent', 'ephemeralOnly'] as const)(
+    'retains the shared %s privacy floor before reading pixels', async privacyState => {
+      const source = fakeSource();
+      const service = createBrowserContextCaptureService({ ownerAccountId: 'account_owner', source,
+        resolveGate: () => ({ ...allowGate(), privacyState }) });
+      expect(await service.captureScreenshot(baseRequest)).toMatchObject({
+        status: 'unavailable', item: { lifecycleState: privacyState, redactionLevel: 'blocked' },
+      });
+      expect(source.captureScreenshot).not.toHaveBeenCalled();
+    },
+  );
   it('captures a page reference item with the URL redacted by the sidecar owner', async () => {
     const source = fakeSource();
     const service = createBrowserContextCaptureService({
@@ -104,6 +115,7 @@ describe('browser context capture service', () => {
   it('captures a summary item for network/console/page summaries', async () => {
     const service = createBrowserContextCaptureService({
       ownerAccountId: 'account_owner',
+      resolveGate: allowGate,
       source: fakeSource(),
       now: () => 3_000,
     });
@@ -146,6 +158,7 @@ describe('browser context capture service', () => {
   it('publishes an unavailable summary item when the source reports the adapter is unavailable', async () => {
     const service = createBrowserContextCaptureService({
       ownerAccountId: 'account_owner',
+      resolveGate: allowGate,
       source: fakeSource({
         captureSummary: vi.fn(async () => ({
           ok: false as const,
@@ -231,6 +244,7 @@ describe('browser context capture service', () => {
   it('blocks a screenshot capture without leaking media when the source reports capture failed', async () => {
     const service = createBrowserContextCaptureService({
       ownerAccountId: 'account_owner',
+      resolveGate: allowGate,
       source: fakeSource({
         captureScreenshot: vi.fn(async () => ({
           ok: false as const,

@@ -12,6 +12,9 @@ export const instrumentStripStyles = StyleSheet.create((theme) => ({
         alignItems: 'center',
         paddingHorizontal: 4,
     },
+    rootCollapsed: {
+        minHeight: 0,
+    },
     connectionGroup: {
         flexDirection: 'row',
         alignItems: 'center',

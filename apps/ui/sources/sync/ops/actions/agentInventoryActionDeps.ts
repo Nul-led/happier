@@ -9,7 +9,7 @@ import type { ConnectedServicesProfileOption } from '@happier-dev/agents';
 import { getAgentCore, isBundledAgentId } from '@/agents/catalog/catalog';
 import { buildProviderCliCapabilityId } from '@/capabilities/cliCapabilityId';
 import { machineCapabilitiesInvoke } from '@/sync/ops/capabilities';
-import { machineContributionRegistryProjectionDescribe } from '@/sync/ops/machineContributionRegistryProjection';
+import { loadDaemonMergedProjectionInputs } from '@/agents/backendCatalog/loadDaemonMergedProjectionInputs';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { storage } from '@/sync/domains/state/storage';
 import {
@@ -56,11 +56,12 @@ export async function resolveSessionSpawnAgentInventorySelectionForActions(args:
     const machineId = normalizeId(args.machineId);
     if (!machineId) return null;
     const serverId = normalizeId(args.serverId) || normalizeId(getActiveServerSnapshot()?.serverId);
-    const described = await machineContributionRegistryProjectionDescribe(machineId, {
+    const projection = (await loadDaemonMergedProjectionInputs({
+        machineId,
         ...(serverId ? { serverId } : {}),
-    });
-    if (!described.supported || described.projection.v !== 2) return null;
-    const entry = Object.values(described.projection.agentsById).find((candidate) => (
+    }))?.pluginProjectionV2;
+    if (!projection) return null;
+    const entry = Object.values(projection.agentsById).find((candidate) => (
         candidate.identity?.pluginId === args.agentTarget.identity.pluginId
         && candidate.identity.localId === args.agentTarget.identity.localId
     ));
@@ -366,11 +367,12 @@ export async function listSpawnConnectedServicesForActions(args: SpawnConnectedS
     const machineId = normalizeId(args.machineId);
     if (machineId) {
         const serverId = normalizeId(args.serverId) || normalizeId(getActiveServerSnapshot()?.serverId);
-        const described = await machineContributionRegistryProjectionDescribe(machineId, {
+        const projection = (await loadDaemonMergedProjectionInputs({
+            machineId,
             ...(serverId ? { serverId } : {}),
-        });
-        if (described.supported && described.projection.v === 2) {
-            projectedConnectedAccounts = described.projection.agentsById[agentId]?.connectedAccounts ?? [];
+        }))?.pluginProjectionV2;
+        if (projection) {
+            projectedConnectedAccounts = projection.agentsById[agentId]?.connectedAccounts ?? [];
         }
     }
     const supportedServiceIds = projectedConnectedAccounts.length > 0

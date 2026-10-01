@@ -56,6 +56,7 @@ function placement(input: Readonly<{
     return {
         id: `surfacePlacement:${pluginId}:${input.container}:${localId}`,
         pluginId,
+        occurrenceId: `${localId}-occurrence-a`,
         contributionKind: 'surfacePlacement',
         descriptorId: localId,
         binding,
@@ -68,7 +69,6 @@ function placement(input: Readonly<{
             hostOrigin: {
                 machineId: 'machine-a',
                 serverId: 'server-a',
-                generation: 4,
                 phase: 'current',
                 interactionEnabled: true,
                 executionOrigin: executionOrigin({ pluginId }),
@@ -93,6 +93,7 @@ function settingsPage(input: Readonly<{
     return {
         id: `settingsPage:${pluginId}:${localId}`,
         pluginId,
+        occurrenceId: `occurrence-${pluginId}`,
         contributionKind: 'settingsPage',
         descriptorId: localId,
         page: {
@@ -290,7 +291,7 @@ describe('plugin surface destination navigation', () => {
             request,
             authority: expect.objectContaining({
                 machineId: 'machine-a',
-                generation: 4,
+                occurrenceId: 'occurrence-acme.settings',
             }),
         }));
     });
@@ -357,7 +358,7 @@ describe('plugin surface destination navigation', () => {
             request,
             authority: expect.objectContaining({
                 machineId: 'machine-a',
-                generation: 4,
+                occurrenceId: 'notes-occurrence-a',
             }),
         }));
         expect(openPage).not.toHaveBeenCalled();
@@ -423,7 +424,6 @@ describe('plugin surface destination navigation', () => {
             scopedLaunchFacts: {
                 serverId: 'server-a',
                 machineId: 'machine-a',
-                generation: 4,
                 interactionEnabled: false,
             },
             request,

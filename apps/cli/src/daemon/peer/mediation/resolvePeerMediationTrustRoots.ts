@@ -1,6 +1,6 @@
 import type { CliServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
 
-import type { DirectRouteGrantTrustRoot } from './verifyDirectRouteGrantV1';
+import type { DirectRouteGrantTrustRoot } from './verifyDirectRouteGrant';
 
 export function resolvePeerMediationTrustRoots(
   snapshot: CliServerFeaturesSnapshot | undefined,

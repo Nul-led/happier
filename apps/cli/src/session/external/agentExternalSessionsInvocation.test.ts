@@ -31,9 +31,12 @@ import { createUnavailablePluginServices } from '@/plugins/runtime/invocation/se
 const identity = Object.freeze({
     pluginId: 'acme.external',
     agentId: 'acme-agent',
-    generation: 'generation-7',
+    occurrenceId: 'occurrence-7',
     contributionQualifiedId: 'acme.external/agents/acme-agent',
-    immutableGenerationId: 'immutable-generation-7',
+    sourceCustody: Object.freeze({
+        kind: 'development' as const,
+        registeredRootId: 'test-source-root',
+    }),
 });
 const source = Object.freeze({ kind: 'fixture', root: '/tmp/sessions' });
 /**
@@ -473,6 +476,44 @@ describe('bounded Agent External Sessions invocation', () => {
             value: {
                 candidates: [{ candidateIndexState: priorState }],
             },
+        });
+    });
+
+    it('forwards the thread-listing opt-in and admits only a well-formed candidate thread marker', async () => {
+        const observed: AgentExternalSessionsListCandidatesRequest[] = [];
+        const thread = { kind: 'reviewer', parentRemoteSessionId: 'parent-1' } as const;
+        let returnedThread: unknown = thread;
+        const wrapped = createWrapper({
+            contribution: contributionWith((_method, request) => {
+                observed.push(request as AgentExternalSessionsListCandidatesRequest);
+                return {
+                    ok: true,
+                    value: {
+                        candidates: [{ remoteSessionId: 'remote-1', updatedAtMs: 1, thread: returnedThread }],
+                        nextCursor: null,
+                    },
+                };
+            }),
+        });
+
+        await expect(wrapped.listCandidates({
+            ...requestFor('listCandidates'),
+            includeThreads: true,
+        })).resolves.toMatchObject({ ok: true, value: { candidates: [{ remoteSessionId: 'remote-1', thread }] } });
+        expect(observed[0]?.includeThreads).toBe(true);
+
+        await wrapped.listCandidates(requestFor('listCandidates'));
+        expect(observed[1]).not.toHaveProperty('includeThreads');
+
+        await expect(wrapped.listCandidates({
+            ...requestFor('listCandidates'),
+            includeThreads: 'yes' as unknown as boolean,
+        })).resolves.toMatchObject({ ok: false, code: 'invalid_request' });
+
+        returnedThread = { kind: 'fork', parentRemoteSessionId: null };
+        await expect(wrapped.listCandidates(requestFor('listCandidates'))).resolves.toMatchObject({
+            ok: false,
+            code: 'agent_error',
         });
     });
 
@@ -1022,6 +1063,29 @@ describe('bounded Agent External Sessions invocation', () => {
             });
         },
     );
+
+    it('admits ordered native observations only for an explicit terminal source projection', async () => {
+        const item = {
+            id: 'native-line-1', createdAtMs: 1,
+            raw: { role: 'source_observation', content: { type: 'queue-operation', operation: 'enqueue' } },
+        };
+        const wrapped = createWrapper({ contribution: contributionWith((method) => ({
+            ok: true,
+            value: method === 'pageTranscript'
+                ? { items: [item], nextCursor: null }
+                : { outcome: 'advanced', items: [item], nextCursor: 'native-next', boundary: item.id, hasMore: false },
+        })) });
+        await expect(wrapped.readAfterTranscript({
+            ...requestFor('readAfterTranscript'), projection: 'terminal',
+        })).resolves.toMatchObject({ ok: true, value: { items: [item] } });
+        await expect(wrapped.readAfterTranscript(requestFor('readAfterTranscript')))
+            .resolves.toMatchObject({ ok: false, code: 'agent_error' });
+        await expect(wrapped.pageTranscript(requestFor('pageTranscript')))
+            .resolves.toMatchObject({ ok: false, code: 'agent_error' });
+        await expect(wrapped.pageTranscript({
+            ...requestFor('pageTranscript'), projection: 'terminal', direction: 'newer',
+        })).resolves.toMatchObject({ ok: true, value: { items: [item] } });
+    });
 
     describe('transcript item raw record', () => {
         const callWithRaw = async (
@@ -1910,7 +1974,7 @@ describe('bounded Agent External Sessions invocation', () => {
 
         const replacement = createBoundedAgentExternalSessionsContribution({
             contribution: contributionWith((method) => successFor(method)),
-            identity: { ...identity, generation: 'generation-8' },
+            identity: { ...identity, occurrenceId: 'occurrence-8' },
             isCurrent: () => true,
             retirementSignal: new AbortController().signal,
             createInvocationExec: async () => unavailableInvocationExec,

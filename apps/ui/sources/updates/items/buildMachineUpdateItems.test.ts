@@ -1,0 +1,258 @@
+import { describe, expect, it, vi } from 'vitest';
+
+vi.mock('@/text', async () => {
+    const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
+    return createTextModuleMock({ translate: (key: string, params?: Record<string, unknown>) => (params ? `${key}:${JSON.stringify(params)}` : key) });
+});
+
+import {
+    buildAgentCliUpdateItem,
+    buildInstallableUpdateItem,
+    buildRemoteCliUpdateItem,
+    buildThisComputerCliUpdateItem,
+} from './buildMachineUpdateItems';
+import { isUpdateItemActionable } from './updateItem';
+import { projectMachineAgent } from '@/agents/machineAgents/machineAgentModel';
+import type { MachineAgent } from '@/agents/machineAgents/machineAgentTypes';
+
+const IDLE_TASK = { running: false, step: null, errorMessage: null } as const;
+
+function machineAgent(overrides: Partial<MachineAgent> = {}): MachineAgent {
+    return {
+        ...projectMachineAgent({ agentId: 'claude', title: 'Claude Code', facts: null, checking: false, stale: false, connectedServices: [], job: null }),
+        installed: true, version: '2.1.3', latestVersion: '2.1.4', update: { supported: true, command: null },
+        ...overrides,
+    };
+}
+
+describe('this computer — Happier CLI row', () => {
+    it('offers the app-managed update and follows the shared run', () => {
+        const facts = { currentVersion: '0.2.10', latestVersion: '0.2.11', managed: true, updateCommand: null };
+        const available = buildThisComputerCliUpdateItem({ machineId: 'm1', title: 'Happier CLI', facts, task: IDLE_TASK });
+        expect(available).toMatchObject({ state: 'available', action: { kind: 'run', verb: 'update' }, managedBy: 'happier' });
+        expect(available && isUpdateItemActionable(available)).toBe(true);
+
+        const running = buildThisComputerCliUpdateItem({
+            machineId: 'm1', title: 'Happier CLI', facts, task: { running: true, step: 'restartingService', errorMessage: null },
+        });
+        expect(running).toMatchObject({ state: 'running', step: 'restartingService', action: { kind: 'none' } });
+
+        const failed = buildThisComputerCliUpdateItem({
+            machineId: 'm1', title: 'Happier CLI', facts, task: { running: false, step: null, errorMessage: 'The update didn’t finish.' },
+        });
+        expect(failed).toMatchObject({ state: 'failed', action: { kind: 'run', verb: 'retry' }, failure: { kind: 'message', message: 'The update didn’t finish.' } });
+    });
+
+    it('never offers to replace a CLI the person installed, and says up to date only when proven', () => {
+        const own = buildThisComputerCliUpdateItem({
+            machineId: 'm1', title: 'Happier CLI', task: IDLE_TASK,
+            facts: { currentVersion: '0.2.10', latestVersion: '0.2.11', managed: false, updateCommand: 'npm install -g @happier-dev/cli' },
+        });
+        expect(own).toMatchObject({ managedBy: 'user', state: 'available', action: { kind: 'manual', command: 'npm install -g @happier-dev/cli' } });
+        expect(own && isUpdateItemActionable(own)).toBe(false);
+
+        const current = buildThisComputerCliUpdateItem({
+            machineId: 'm1', title: 'Happier CLI', task: IDLE_TASK,
+            facts: { currentVersion: '0.2.11', latestVersion: '0.2.11', managed: true, updateCommand: null },
+        });
+        expect(current?.state).toBe('upToDate');
+
+        const noAnswer = buildThisComputerCliUpdateItem({
+            machineId: 'm1', title: 'Happier CLI', task: IDLE_TASK,
+            facts: { currentVersion: '0.2.11', latestVersion: null, managed: true, updateCommand: null },
+        });
+        expect(noAnswer?.state).toBe('unknown');
+    });
+});
+
+describe('another machine — Happier CLI row (K5)', () => {
+    const k5 = {
+        currentVersion: '0.2.9',
+        latestVersion: '0.2.11',
+        channel: 'stable' as const,
+        installSource: 'managed' as const,
+        updateCommand: 'happier self update',
+        canUpdateRemotely: true,
+        lastUpdate: null,
+    };
+
+    it('offers Update only when the daemon advertises the remote kind; otherwise the command', () => {
+        const advertised = buildRemoteCliUpdateItem({
+            machineId: 'm2', title: 'Happier CLI', online: true, platform: 'darwin', happyCliVersion: '0.2.9',
+            facts: k5, remoteUpdateAdvertised: true, task: IDLE_TASK,
+        });
+        expect(advertised).toMatchObject({ state: 'available', action: { kind: 'run', verb: 'update' } });
+
+        const notAdvertised = buildRemoteCliUpdateItem({
+            machineId: 'm2', title: 'Happier CLI', online: true, platform: 'darwin', happyCliVersion: '0.2.9',
+            facts: k5, remoteUpdateAdvertised: false, task: IDLE_TASK,
+        });
+        expect(notAdvertised).toMatchObject({ state: 'available', action: { kind: 'manual', command: 'happier self update' } });
+        expect(isUpdateItemActionable(notAdvertised)).toBe(false);
+    });
+
+    it('degrades an older daemon to its version and the command, never to "up to date"', () => {
+        const old = buildRemoteCliUpdateItem({
+            machineId: 'm2', title: 'Happier CLI', online: true, platform: 'linux', happyCliVersion: '0.2.12',
+            facts: null, remoteUpdateAdvertised: false, task: IDLE_TASK,
+        });
+        expect(old).toMatchObject({ state: 'unknown', currentVersion: '0.2.12', action: { kind: 'manual', command: 'happier self update' } });
+
+        const windows = buildRemoteCliUpdateItem({
+            machineId: 'm3', title: 'Happier CLI', online: true, platform: 'win32', happyCliVersion: '0.2.12',
+            facts: null, remoteUpdateAdvertised: false, task: IDLE_TASK,
+        });
+        expect(windows.action).toEqual({ kind: 'manual', command: null });
+    });
+
+    it('keeps last-known versions offline, and reads the persisted outcome instead of guessing', () => {
+        const offline = buildRemoteCliUpdateItem({
+            machineId: 'm2', title: 'Happier CLI', online: false, platform: 'darwin', happyCliVersion: '0.2.9',
+            facts: k5, remoteUpdateAdvertised: true, task: IDLE_TASK,
+        });
+        expect(offline).toMatchObject({ state: 'offline', currentVersion: '0.2.9', latestVersion: '0.2.11', action: { kind: 'none' } });
+        expect(isUpdateItemActionable(offline)).toBe(false);
+
+        const rolledBack = buildRemoteCliUpdateItem({
+            machineId: 'm2', title: 'Happier CLI', online: true, platform: 'darwin', happyCliVersion: '0.2.9',
+            facts: { ...k5, lastUpdate: { targetVersion: '0.2.11', outcome: 'rolledBack', at: 1, message: null } },
+            remoteUpdateAdvertised: true, task: IDLE_TASK,
+        });
+        expect(rolledBack).toMatchObject({ state: 'failed', failure: { kind: 'rolledBack', kept: '0.2.9', target: '0.2.11' }, action: { kind: 'run', verb: 'retry' } });
+
+        const failedSilently = buildRemoteCliUpdateItem({
+            machineId: 'm2', title: 'Happier CLI', online: true, platform: 'darwin', happyCliVersion: '0.2.9',
+            facts: { ...k5, lastUpdate: { targetVersion: '0.2.11', outcome: 'failed', at: 1, message: null } },
+            remoteUpdateAdvertised: true, task: IDLE_TASK,
+        });
+        expect(failedSilently).toMatchObject({ state: 'failed', failure: { kind: 'message', message: 'updates.row.failedGeneric' }, action: { kind: 'run', verb: 'retry' } });
+
+        const couldNotStart = buildRemoteCliUpdateItem({
+            machineId: 'm2', title: 'Happier CLI', online: true, platform: 'darwin', happyCliVersion: '0.2.9',
+            facts: { ...k5, lastUpdate: { targetVersion: null, outcome: 'failed', at: 1, message: 'no release for this channel' } },
+            remoteUpdateAdvertised: true, task: IDLE_TASK,
+        });
+        expect(couldNotStart).toMatchObject({ state: 'failed', action: { kind: 'run', verb: 'retry' } });
+        expect(couldNotStart.failure).toEqual({ kind: 'message', message: 'updates.row.couldNotStart:{"message":"no release for this channel"}' });
+
+        const reconnecting = buildRemoteCliUpdateItem({
+            machineId: 'm2', title: 'Happier CLI', online: true, platform: 'darwin', happyCliVersion: '0.2.9',
+            facts: { ...k5, lastUpdate: { targetVersion: '0.2.11', outcome: 'pendingReconnect', at: 1, message: null } },
+            remoteUpdateAdvertised: true, task: IDLE_TASK,
+        });
+        expect(reconnecting).toMatchObject({ state: 'running', step: 'reconnecting' });
+
+        const landed = buildRemoteCliUpdateItem({
+            machineId: 'm2', title: 'Happier CLI', online: true, platform: 'darwin', happyCliVersion: '0.2.11',
+            facts: { ...k5, currentVersion: '0.2.11', lastUpdate: { targetVersion: '0.2.11', outcome: 'pendingReconnect', at: 1, message: null } },
+            remoteUpdateAdvertised: true, task: IDLE_TASK,
+        });
+        expect(landed.state).toBe('upToDate');
+    });
+});
+
+describe('agent CLI rows (K6)', () => {
+    it('uses the canonical inventory installation fact rather than a legacy available flag', () => {
+        const agent = projectMachineAgent({ agentId: 'claude', title: 'Claude Code', facts: null, checking: false, stale: false, connectedServices: [], job: null });
+        expect(buildAgentCliUpdateItem({
+            machineId: 'm1', online: true, task: IDLE_TASK,
+            agent,
+        })).toBeNull();
+    });
+    it('lists an installed agent with its version but claims nothing without a latest version', () => {
+        const item = buildAgentCliUpdateItem({
+            machineId: 'm1', online: true, task: IDLE_TASK,
+            agent: machineAgent({ latestVersion: null, update: null }),
+        });
+        expect(item).toMatchObject({ state: 'unknown', currentVersion: '2.1.3', action: { kind: 'none' } });
+        expect(buildAgentCliUpdateItem({
+            machineId: 'm1', online: true, task: IDLE_TASK, agent: machineAgent({ installed: false }),
+        })).toBeNull();
+    });
+
+    it('offers Update for a supported install and the command for one the person manages', () => {
+        const managed = buildAgentCliUpdateItem({
+            machineId: 'm1', online: true, task: IDLE_TASK,
+            agent: machineAgent(),
+        });
+        expect(managed).toMatchObject({ state: 'available', action: { kind: 'run', verb: 'update' }, managedBy: 'happier' });
+
+        const npm = buildAgentCliUpdateItem({
+            machineId: 'm1', online: true, task: IDLE_TASK,
+            agent: machineAgent({ agentId: 'codex', title: 'Codex', version: '0.60.0', latestVersion: '0.61.0', update: { supported: false, command: 'npm i -g @openai/codex' } }),
+        });
+        expect(npm).toMatchObject({ managedBy: 'user', action: { kind: 'manual', command: 'npm i -g @openai/codex' } });
+        expect(npm && isUpdateItemActionable(npm)).toBe(false);
+
+        const vendor = buildAgentCliUpdateItem({
+            machineId: 'm1', online: true, task: IDLE_TASK,
+            agent: machineAgent({ update: { supported: true, command: '/usr/local/bin/claude update' } }),
+        });
+        expect(vendor).toMatchObject({ state: 'available', action: { kind: 'run', verb: 'update' } });
+    });
+
+    it('never offers Update to a daemon that does not say updateSupported (it would install beside the person’s CLI)', () => {
+        const oldDaemon = buildAgentCliUpdateItem({
+            machineId: 'm1', online: true, task: IDLE_TASK,
+            agent: machineAgent({ update: null }),
+        });
+        expect(oldDaemon?.action).toEqual({ kind: 'none' });
+        expect(oldDaemon && isUpdateItemActionable(oldDaemon)).toBe(false);
+    });
+
+    it('retains stale versions without an update action, and keeps installed CLIs visible when a dependency is missing', () => {
+        const stale = buildAgentCliUpdateItem({ machineId: 'm1', online: true, task: IDLE_TASK, agent: machineAgent({ stale: true }) });
+        expect(stale).toMatchObject({ state: 'offline', currentVersion: '2.1.3', latestVersion: '2.1.4', action: { kind: 'none' } });
+
+        const missingDependency = buildAgentCliUpdateItem({
+            machineId: 'm1', online: true, task: IDLE_TASK,
+            agent: machineAgent({ state: 'notInstalled', dependencies: [{ key: 'dep.codex-acp', title: 'Codex ACP', installed: false, version: null }] }),
+        });
+        expect(missingDependency).toMatchObject({ state: 'available', action: { kind: 'run', verb: 'update' } });
+    });
+});
+
+describe('failed rows keep the executor\'s log', () => {
+    it('carries the install log path of a failed run so the screen can offer View log', () => {
+        const failed = buildAgentCliUpdateItem({
+            machineId: 'm1', online: true,
+            task: { running: false, step: null, errorMessage: 'The update didn’t finish. Try again.', logPath: '/h/.happier/logs/provider-installs/claude.log' },
+            agent: machineAgent(),
+        });
+        expect(failed).toMatchObject({ state: 'failed', logPath: '/h/.happier/logs/provider-installs/claude.log' });
+    });
+});
+
+describe('helper installable rows', () => {
+    it('offers the upgrade when the installables check found a newer version, and says when it could not check', () => {
+        const available = buildInstallableUpdateItem({
+            machineId: 'm1', installableKey: 'gh', title: 'GitHub CLI', online: true, task: IDLE_TASK,
+            data: {
+                installed: true, installedVersion: '2.61.0', sourceKind: 'managed', lastInstallLogPath: null, lastBackgroundUpdateCheckAtMs: null,
+                latestVersionCheck: { ok: true, latestVersion: '2.62.0', label: null },
+            },
+        });
+        expect(available).toMatchObject({ state: 'available', action: { kind: 'run', verb: 'update' } });
+
+        const unknown = buildInstallableUpdateItem({
+            machineId: 'm1', installableKey: 'gh', title: 'GitHub CLI', online: true, task: IDLE_TASK,
+            data: {
+                installed: true, installedVersion: '2.61.0', sourceKind: 'managed', lastInstallLogPath: null, lastBackgroundUpdateCheckAtMs: null,
+                latestVersionCheck: { ok: false, errorMessage: 'rate limited' },
+            },
+        });
+        expect(unknown).toMatchObject({ state: 'unknown', failure: { kind: 'latestUnknown' } });
+        expect(JSON.stringify(unknown)).not.toContain('rate limited');
+    });
+});
+
+describe('an update the runtime found already current', () => {
+    it('reads up to date even while the cached latest version still says otherwise', () => {
+        const row = buildAgentCliUpdateItem({
+            machineId: 'm1', online: true,
+            task: { running: false, step: null, errorMessage: null, alreadyCurrent: true },
+            agent: machineAgent({ version: '2.1.281', latestVersion: '2.1.283' }),
+        });
+        expect(row).toMatchObject({ state: 'upToDate', alreadyCurrent: true, action: { kind: 'none' } });
+    });
+});

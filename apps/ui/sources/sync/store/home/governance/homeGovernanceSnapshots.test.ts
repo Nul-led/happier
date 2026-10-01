@@ -130,6 +130,19 @@ describe('home governance snapshots', () => {
         expect(snapshot?.stale).toBe(true);
     });
 
+    it('keeps an ownerless Home ownerless while it is read again, so its claim page never flashes loading', async () => {
+        const { resolveHomeGovernanceViewState } = await import('@/components/settings/home/governance/homeGovernanceViewState');
+        applyHomeGovernanceFailure({
+            scope: scopeA,
+            error: { kind: 'forbidden', retryable: false, code: 'home_governance_setup_required' },
+        });
+        beginHomeGovernanceLoad(scopeA);
+
+        const snapshot = getHomeGovernanceSnapshot(scopeA);
+        expect(snapshot?.status).toBe('refreshing');
+        expect(resolveHomeGovernanceViewState(snapshot)).toEqual({ kind: 'setup_required' });
+    });
+
     it('invalidates only the wakened Home and leaves other Homes untouched', () => {
         applyHomeGovernanceProjection({ scope: scopeA, projection: projection(), observedAt: 50 });
         applyHomeGovernanceProjection({ scope: scopeB, projection: projection(), observedAt: 51 });

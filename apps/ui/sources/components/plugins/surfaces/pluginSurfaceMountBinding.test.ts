@@ -33,7 +33,7 @@ function eventSetupSurface(
     const localId = 'repository-picker';
     return {
         contribution: { pluginId, localId: 'repository-pushed' },
-        immutableGenerationId: 'events-generation-a',
+        occurrenceId: 'events-generation-a',
         projectionGeneration: 31,
         rendererChain: [{ pluginId, localId }],
         selectedRenderer: {
@@ -51,7 +51,11 @@ function eventSetupSurface(
         },
         resourceCapability: { readable: true, dynamic: true },
         contributorTargetedContributions: {
-            target: { pluginId, immutableGenerationId: 'events-generation-a' },
+            target: {
+                pluginId,
+                occurrenceId: 'events-generation-a',
+                sourceCustody: { kind: 'development', registeredRootId: 'events-root' },
+            },
             points: [],
         },
     };
@@ -120,7 +124,8 @@ const targetedSurfaceHandle = {
     contributor: {
         pluginId: 'acme.source',
         contributionId: 'pull-request-detail',
-        immutableGenerationId: 'source-generation-a',
+        occurrenceId: 'source-generation-a',
+        sourceCustody: { kind: 'development' as const, registeredRootId: 'source-root' },
     },
     role: 'detail',
     presentation: 'content',
@@ -131,7 +136,8 @@ function targetedMount(): DaemonPluginUiTargetedSurfaceMountV1 {
         kind: 'targetedSurface',
         target: {
             pluginId: 'acme.reviews',
-            immutableGenerationId: 'reviews-generation-a',
+            occurrenceId: 'reviews-generation-a',
+            sourceCustody: { kind: 'development', registeredRootId: 'reviews-root' },
         },
         ...targetedSurfaceHandle,
         inputSchema: { type: 'object' },
@@ -157,7 +163,8 @@ function targetedMount(): DaemonPluginUiTargetedSurfaceMountV1 {
         contributorTargetedContributions: {
             target: {
                 pluginId: 'acme.source',
-                immutableGenerationId: 'source-generation-a',
+                occurrenceId: 'source-generation-a',
+                sourceCustody: { kind: 'development', registeredRootId: 'source-root' },
             },
             points: [],
         },
@@ -168,7 +175,7 @@ function composerSurfaceMount() {
     return ComposerSurfaceMountBindingV1Schema.parse({
         kind: 'composer',
         contribution: { pluginId: 'acme.review', localId: 'review-summary' },
-        immutableGenerationId: 'review-generation-a',
+        occurrenceId: 'review-generation-a',
         projectionGeneration: 17,
         role: 'region',
         selectedRenderer: { pluginId: 'acme.review', localId: 'review-summary-view' },
@@ -187,7 +194,7 @@ function composerSurfaceMount() {
 function composerSurfaceCatalogEntry(): DaemonPluginUiComposerSurfaceCatalogEntryV1 {
     return {
         contribution: { pluginId: 'acme.review', localId: 'review-summary' },
-        immutableGenerationId: 'review-generation-a',
+        occurrenceId: 'review-generation-a',
         projectionGeneration: 17,
         role: 'region',
         rendererChain: [{ pluginId: 'acme.review', localId: 'review-summary-view' }],
@@ -212,7 +219,8 @@ function composerSurfaceCatalogEntry(): DaemonPluginUiComposerSurfaceCatalogEntr
         contributorTargetedContributions: {
             target: {
                 pluginId: 'acme.review',
-                immutableGenerationId: 'review-generation-a',
+                occurrenceId: 'review-generation-a',
+                sourceCustody: { kind: 'development', registeredRootId: 'review-root' },
             },
             points: [],
         },
@@ -325,7 +333,7 @@ describe('readPluginSurfaceMountBinding', () => {
         expect(read(mount.target)).toMatchObject({ kind: 'targetedSurface', mount });
         expect(read({
             ...mount.target,
-            immutableGenerationId: 'reviews-generation-b',
+            occurrenceId: 'reviews-generation-b',
         })).toBeNull();
     });
 
@@ -354,7 +362,7 @@ describe('readPluginSurfaceMountBinding', () => {
             mounts: [mount],
             target: {
                 ...mount.target,
-                immutableGenerationId: 'reviews-generation-b',
+                occurrenceId: 'reviews-generation-b',
             },
             surface: targetedSurfaceHandle,
         })).toBeNull();
@@ -404,7 +412,7 @@ describe('readPluginSurfaceComposerMountBinding', () => {
 
         expect(read([{
             ...catalogEntry,
-            immutableGenerationId: 'review-generation-b',
+            occurrenceId: 'review-generation-b',
         }])).toBeNull();
         expect(read([{
             ...catalogEntry,
@@ -504,7 +512,7 @@ describe('readPluginSurfaceEphemeralMountBinding', () => {
                 ...surface.contributorTargetedContributions,
                 target: {
                     ...surface.contributorTargetedContributions.target,
-                    immutableGenerationId: 'events-generation-retired',
+                    occurrenceId: 'events-generation-retired',
                 },
             },
         })).toBeNull();

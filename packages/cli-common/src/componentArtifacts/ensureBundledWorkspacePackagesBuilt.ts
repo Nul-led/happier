@@ -28,6 +28,14 @@ export type EnsureWorkspacePackagesBuiltByName = (
     skipped: string[];
 }>>;
 
+type CliBundledWorkspaceArtifactBuildOwner = (
+    options: Readonly<{
+        repoRoot: string;
+        publicationMode: 'live' | 'artifact';
+        ensureWorkspacePackagesBuiltByNameImpl?: EnsureWorkspacePackagesBuiltByName;
+    }>,
+) => Promise<unknown>;
+
 async function loadWorkspaceBuildOwner(repoRoot: string): Promise<EnsureWorkspacePackagesBuiltByName> {
     const modulePath = join(repoRoot, 'scripts', 'workspaces', 'ensureWorkspacePackagesBuilt.mjs');
     if (!existsSync(modulePath)) {
@@ -40,6 +48,43 @@ async function loadWorkspaceBuildOwner(repoRoot: string): Promise<EnsureWorkspac
         throw new Error(`[component-artifacts] canonical workspace build owner has no by-name entrypoint: ${modulePath}`);
     }
     return module.ensureWorkspacePackagesBuiltByName;
+}
+
+async function loadCliBundledWorkspaceArtifactBuildOwner(
+    repoRoot: string,
+): Promise<CliBundledWorkspaceArtifactBuildOwner> {
+    const modulePath = join(repoRoot, 'apps', 'cli', 'scripts', 'buildSharedDeps.mjs');
+    if (!existsSync(modulePath)) {
+        throw new Error(`[component-artifacts] missing canonical CLI artifact closure owner: ${modulePath}`);
+    }
+    const module = await import(pathToFileURL(modulePath).href) as {
+        buildBundledWorkspaceDependenciesForCli?: CliBundledWorkspaceArtifactBuildOwner;
+    };
+    if (typeof module.buildBundledWorkspaceDependenciesForCli !== 'function') {
+        throw new Error(`[component-artifacts] canonical CLI artifact closure owner has no build entrypoint: ${modulePath}`);
+    }
+    return module.buildBundledWorkspaceDependenciesForCli;
+}
+
+/**
+ * Build the complete artifact-mode CLI workspace closure through its canonical
+ * owner. That owner is responsible for the bundled-plugin publisher, installed
+ * package synchronization, and generated-inventory verification; this bridge
+ * deliberately adds no competing artifact inventory or copy path.
+ */
+export async function buildCliBundledWorkspaceArtifactClosure(params: Readonly<{
+    repoRoot: string;
+    publicationMode?: 'live' | 'artifact';
+    ensureWorkspacePackagesBuiltByName?: EnsureWorkspacePackagesBuiltByName;
+}>): Promise<void> {
+    const build = await loadCliBundledWorkspaceArtifactBuildOwner(params.repoRoot);
+    await build({
+        repoRoot: params.repoRoot,
+        publicationMode: params.publicationMode ?? 'artifact',
+        ...(params.ensureWorkspacePackagesBuiltByName
+            ? { ensureWorkspacePackagesBuiltByNameImpl: params.ensureWorkspacePackagesBuiltByName }
+            : {}),
+    });
 }
 
 function directoryHasAtLeastOneFile(dirPath: string): boolean {

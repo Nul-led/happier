@@ -37,7 +37,7 @@ function nativeHarness(overrides: Partial<NodeIrohNativeModule> = {}): NodeIrohN
 }
 
 describe('createNodeIrohHomeTunnelSession', () => {
-  it('requires production callers to supply persistent identity and makes keyless use explicit', async () => {
+  it('requires an explicit identity role and rejects mixing persistent and keyless identities', async () => {
     const native = nativeHarness();
 
     await expect(createNodeIrohHomeTunnelSession({ native }))

@@ -1,6 +1,6 @@
 import React from 'react';
 import { act } from 'react-test-renderer';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
     AutomationSourceSelectorIdV1Schema,
     AutomationDefinitionDetailSchema,
@@ -16,13 +16,19 @@ import {
     type AutomationTriggerListItem,
 } from '@happier-dev/protocol';
 import { createAutomationDefinitionFromDetail, createAutomationDefinitionSummary } from '@/sync/domains/automations/automationDefinitionProjection';
-import type { AutomationDefinition } from '@/sync/domains/automations/automationTypes';
+import type {
+    AutomationDefinition,
+    AutomationRunNowAdmission,
+} from '@/sync/domains/automations/automationTypes';
 import {
     createCapturingLegendListMock,
     findTestInstanceByTypeContainingText,
+    flattenTestStyle,
     pressTestInstance,
     renderScreen,
+    withPopoverWebGlobals,
 } from '@/dev/testkit';
+import { createThemeFixture } from '@/dev/testkit/fixtures/themeFixtures';
 import { flushHookEffects } from '@/dev/testkit/hooks/flushHookEffects';
 import { createAutomationRunFixture } from '@/dev/testkit/fixtures/workflowRunFixtures';
 import { installAutomationScreensCommonModuleMocks } from './automationScreensTestHelpers';
@@ -74,7 +80,7 @@ function eventSourceStatusFixture(
             machineId: 'watcher-machine',
             materializationId: 'github-materialization',
         },
-        reporterImmutableGenerationId: 'github-generation-1',
+        reporterSourceCustody: { kind: 'development', registeredRootId: 'github-root-1' },
         state: 'observing',
         code: null,
         lastObservedAt: 1,
@@ -101,6 +107,18 @@ function eventSourceCatalogStatusFixture(
     });
 }
 
+function eligibleEventRuntimeFixture(registeredRootId: string) {
+    return {
+        event: {
+            id: 'github-pull-request-opened',
+            identity: { pluginId: 'happier.scm.github', localId: 'pull-request-opened-v1' },
+            occurrenceId: 'github-occurrence-current',
+            sourceCustody: { kind: 'development', registeredRootId },
+            title: 'Pull request opened',
+        },
+    };
+}
+
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 const runHistoryListMock = createCapturingLegendListMock({ renderItems: true });
@@ -113,7 +131,6 @@ const navigateWithBlurOnWebSpy = vi.hoisted(() => vi.fn((action: () => void) => 
 const modalConfirmSpy = vi.hoisted(() => vi.fn(async () => true));
 const modalAlertSpy = vi.hoisted(() => vi.fn(async () => {}));
 const eventRuntimeProjectionState = vi.hoisted(() => ({
-    immutableGenerationId: 'github-generation-1',
     eligibleEvents: [] as any[],
 }));
 const sessionsState = vi.hoisted(() => ({
@@ -124,7 +141,10 @@ const syncSpies = vi.hoisted(() => ({
     refreshAutomations: vi.fn(async () => {}),
     refreshAutomationDefinitionDetail: vi.fn(async () => {}),
     fetchAutomationRuns: vi.fn<FetchAutomationRuns>(async () => ({ nextCursor: null })),
-    runAutomationNow: vi.fn(async () => {}),
+    runAutomationNow: vi.fn<(
+        automationId: string,
+        targetType: AutomationDefinition['targetType'],
+    ) => Promise<AutomationRunNowAdmission>>(),
     pauseAutomation: vi.fn(async () => {}),
     resumeAutomation: vi.fn(async () => {}),
     deleteAutomation: vi.fn(async () => {}),
@@ -157,6 +177,55 @@ const activeAccountLifetimeState = vi.hoisted(() => ({ current: true }));
 const activeAccountScopeState = vi.hoisted(() => ({
     scope: { serverId: 'server-1', accountId: 'account-1' },
 }));
+
+/**
+ * The header's `⋯` menu is the real shared `PageHeaderMenu` → `DropdownMenu` popover. Layout is the
+ * platform boundary: every host node reports a window rect so the popover can anchor.
+ */
+const measuredHostNodes = {
+    createNodeMock: () => ({
+        offsetTop: 0,
+        offsetHeight: 32,
+        measureInWindow: (callback: (x: number, y: number, width: number, height: number) => void) => callback(900, 40, 32, 32),
+        measure: (callback: (x: number, y: number, width: number, height: number, pageX: number, pageY: number) => void) => callback(0, 0, 32, 32, 900, 40),
+    }),
+};
+
+// The popover and the menu's deferred commit run on animation frames (a platform boundary).
+let restoreMenuGlobals: (() => void) | null = null;
+afterEach(() => {
+    restoreMenuGlobals?.();
+    restoreMenuGlobals = null;
+});
+
+async function renderDetailWithMenu() {
+    restoreMenuGlobals ??= withPopoverWebGlobals();
+    const { AutomationDetailScreen } = await import('./AutomationDetailScreen');
+    const { OverlayPortalProvider, OverlayPortalHost } = await import('@/components/ui/popover/OverlayPortal');
+    const scene = () => React.createElement(
+        OverlayPortalProvider,
+        null,
+        React.createElement(AutomationDetailScreen),
+        React.createElement(OverlayPortalHost),
+    );
+    const screen = await renderScreen(scene(), measuredHostNodes);
+    return { screen, update: () => screen.update(scene()) };
+}
+
+async function openDetailMenu(screen: Awaited<ReturnType<typeof renderScreen>>) {
+    const trigger = screen.findAllByProps({ testID: 'automation-detail-menu.trigger' })
+        .find((node) => typeof node.props.onPress === 'function') ?? null;
+    expect(trigger, 'automation menu trigger').not.toBeNull();
+    await act(async () => {
+        pressTestInstance(trigger, 'automation menu trigger');
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
+}
+
+async function findDetailMenuRow(screen: Awaited<ReturnType<typeof renderScreen>>, title: string) {
+    const { SelectableRow } = await import('@/components/ui/lists/SelectableRow');
+    return screen.findAllByType(SelectableRow as never).find((node) => node.props.title === title) ?? null;
+}
 
 installAutomationScreensCommonModuleMocks({
     router: async () => {
@@ -273,9 +342,7 @@ installAutomationScreensCommonModuleMocks({
         return createStorageModuleStub({
             storage: createLiveStorageStoreMock(() => ({
                 automations: { [automationState.automation.id]: automationState.automation },
-                workflowRunsById: Object.fromEntries(
-                    automationRunsState.list.map((entry: { id: string }) => [entry.id, entry]),
-                ),
+                workflowRunsById: {},
                 automationRunIdsByAutomationId: {
                     a1: automationRunsState.list.map((entry: { id: string }) => entry.id),
                 },
@@ -286,6 +353,8 @@ installAutomationScreensCommonModuleMocks({
             useAutomationRuns: () => automationRunsState.list,
             useAutomationRunNextCursor: () => automationRunCursorState.nextCursor,
             useAllMachines: () => machinesState.list,
+            // The fixture's machine list is a settled read.
+            useIsActiveMachineListSettled: () => true,
             useSessions: () => sessionsState.list,
         });
     },
@@ -311,16 +380,7 @@ vi.mock('@/agents/backendCatalog/useDaemonMergedProjectionInputs', () => ({
             pluginProjectionV2: {
                 v: 2,
                 generation: 1,
-                installedPackagesById: {
-                    'happier.scm.github': {
-                        id: 'happier.scm.github',
-                        displayName: 'GitHub',
-                        version: '1.0.0',
-                        enabled: true,
-                        source: { kind: 'bundled', locator: '@happier-dev/plugins-scm-github' },
-                        immutableGenerationId: eventRuntimeProjectionState.immutableGenerationId,
-                    },
-                },
+                installedPackagesById: {},
                 contributionIntrospection: { version: 1, generation: 1, contributions: [], diagnostics: [] },
             },
         },
@@ -425,7 +485,6 @@ describe('AutomationDetailScreen', () => {
     beforeEach(() => {
         activeAccountLifetimeState.current = true;
         activeAccountScopeState.scope = { serverId: 'server-1', accountId: 'account-1' };
-        eventRuntimeProjectionState.immutableGenerationId = 'github-generation-1';
         eventRuntimeProjectionState.eligibleEvents = [];
         sessionsState.list = [];
         runHistoryListMock.state.reset();
@@ -471,7 +530,9 @@ describe('AutomationDetailScreen', () => {
         syncSpies.fetchAutomationRuns.mockReset();
         syncSpies.fetchAutomationRuns.mockResolvedValue({ nextCursor: null });
         syncSpies.runAutomationNow.mockReset();
-        syncSpies.runAutomationNow.mockResolvedValue(undefined);
+        syncSpies.runAutomationNow.mockResolvedValue({
+            run: createAutomationRunFixture(),
+        });
         syncSpies.pauseAutomation.mockReset();
         syncSpies.pauseAutomation.mockResolvedValue(undefined);
         syncSpies.resumeAutomation.mockReset();
@@ -797,6 +858,7 @@ describe('AutomationDetailScreen', () => {
     });
 
     it('leaves a current, online watcher unqualified', async () => {
+        eventRuntimeProjectionState.eligibleEvents = [eligibleEventRuntimeFixture('github-root-1')];
         machinesState.list = [{
             id: 'watcher-machine',
             active: true,
@@ -881,6 +943,7 @@ describe('AutomationDetailScreen', () => {
     });
 
     it('still presents the provider summaries verbatim while the watcher can observe', async () => {
+        eventRuntimeProjectionState.eligibleEvents = [eligibleEventRuntimeFixture('github-root-1')];
         machinesState.list = [{
             id: 'watcher-machine',
             active: true,
@@ -918,7 +981,7 @@ describe('AutomationDetailScreen', () => {
     });
 
     it('does not present retained source health after the plugin generation is replaced', async () => {
-        eventRuntimeProjectionState.immutableGenerationId = 'github-generation-2';
+        eventRuntimeProjectionState.eligibleEvents = [eligibleEventRuntimeFixture('github-root-2')];
         machinesState.list = [{
             id: 'watcher-machine',
             active: true,
@@ -952,6 +1015,7 @@ describe('AutomationDetailScreen', () => {
     });
 
     it('renders missing Event source and catalog status as explicit states rather than omitting the rows', async () => {
+        eventRuntimeProjectionState.eligibleEvents = [eligibleEventRuntimeFixture('github-root-1')];
         automationState.automation = {
             ...automationState.automation,
             triggers: [eventTriggerFixture({ sourceStatus: null, sourceCatalogStatus: null })],
@@ -1066,6 +1130,7 @@ describe('AutomationDetailScreen', () => {
     });
 
     it('renders the bounded Event source status from the canonical projection', async () => {
+        eventRuntimeProjectionState.eligibleEvents = [eligibleEventRuntimeFixture('github-root-1')];
         const sourceStatus = eventSourceStatusFixture({
             reporterMaterializationRef: {
                 pluginId: 'happier.scm.github',
@@ -1282,7 +1347,7 @@ describe('AutomationDetailScreen', () => {
         const screen = await renderScreen(React.createElement(AutomationDetailScreen));
         const refreshCallsBeforeToggle = syncSpies.refreshAutomations.mock.calls.length;
 
-        const toggle = screen.findByType('Switch');
+        const toggle = findMachineAssignmentSwitch(screen);
         expect(toggle.props.accessibilityLabel).toContain('Nightly');
         expect(toggle.props.accessibilityLabel).toContain('Primary machine');
         expect(toggle.props.accessibilityLabel).toContain('Machine assignments');
@@ -1338,7 +1403,7 @@ describe('AutomationDetailScreen', () => {
 
         const { AutomationDetailScreen } = await import('./AutomationDetailScreen');
         const screen = await renderScreen(React.createElement(AutomationDetailScreen));
-        const assignmentToggles = screen.findAllByType('Switch');
+        const assignmentToggles = findMachineAssignmentSwitches(screen);
 
         await act(async () => {
             assignmentToggles[0].props.onValueChange(true);
@@ -1375,7 +1440,7 @@ describe('AutomationDetailScreen', () => {
 
         const { AutomationDetailScreen } = await import('./AutomationDetailScreen');
         const screen = await renderScreen(React.createElement(AutomationDetailScreen));
-        const assignmentToggles = screen.findAllByType('Switch');
+        const assignmentToggles = findMachineAssignmentSwitches(screen);
         await act(async () => {
             assignmentToggles[0].props.onValueChange(true);
             assignmentToggles[1].props.onValueChange(true);
@@ -1407,7 +1472,7 @@ describe('AutomationDetailScreen', () => {
         const { AutomationDetailScreen } = await import('./AutomationDetailScreen');
         const screen = await renderScreen(React.createElement(AutomationDetailScreen));
         await act(async () => {
-            screen.findAllByType('Switch')[0].props.onValueChange(true);
+            findMachineAssignmentSwitches(screen)[0]!.props.onValueChange(true);
             await Promise.resolve();
         });
         expect(syncSpies.replaceAutomationAssignments).toHaveBeenCalledTimes(1);
@@ -1421,7 +1486,7 @@ describe('AutomationDetailScreen', () => {
         };
         await screen.update(React.createElement(AutomationDetailScreen));
         await act(async () => {
-            screen.findAllByType('Switch')[1].props.onValueChange(true);
+            findMachineAssignmentSwitches(screen)[1]!.props.onValueChange(true);
             await Promise.resolve();
         });
 
@@ -1457,14 +1522,17 @@ describe('AutomationDetailScreen', () => {
 
         const { AutomationDetailScreen } = await import('./AutomationDetailScreen');
         const screen = await renderScreen(React.createElement(AutomationDetailScreen));
-        const assignmentToggles = screen.findAllByType('Switch');
+        const assignmentToggles = findMachineAssignmentSwitches(screen);
         await act(async () => {
             assignmentToggles[0].props.onValueChange(true);
             assignmentToggles[1].props.onValueChange(true);
             await secondReplacementStarted.promise;
         });
 
-        expect(modalAlertSpy).toHaveBeenCalledWith('common.error', 'first replacement failed');
+        expect(modalAlertSpy).toHaveBeenCalledWith(
+            'common.error',
+            'automations.detail.assignmentsUpdateFailed errors.tryAgain',
+        );
         expect(syncSpies.replaceAutomationAssignments).toHaveBeenCalledTimes(2);
         expect(syncSpies.replaceAutomationAssignments).toHaveBeenNthCalledWith(2, 'a1', [
             { machineId: 'm2', enabled: true, priority: 0 },
@@ -1482,7 +1550,7 @@ describe('AutomationDetailScreen', () => {
             await pressTestInstance(runNowButton, 'Run now');
         });
 
-        expect(syncSpies.runAutomationNow).toHaveBeenCalledWith('a1');
+        expect(syncSpies.runAutomationNow).toHaveBeenCalledWith('a1', 'newSession');
         expect(syncSpies.fetchAutomationRuns).toHaveBeenCalledTimes(fetchRunsCallsBeforeRunNow);
         // A legacy receipt keeps the incumbent behaviour: acknowledgement in
         // place, no navigation invented from a history row.
@@ -1530,7 +1598,7 @@ describe('AutomationDetailScreen', () => {
 
     it('opens the exact managed Run the admission receipt declared', async () => {
         syncSpies.runAutomationNow.mockResolvedValueOnce({
-            run: { id: 'run-managed', state: 'running' },
+            run: createAutomationRunFixture({ id: 'run-managed', state: 'running' }),
             workflowRun: { recipeKind: 'workflow-v2', workflowRunId: 'run-managed' },
         });
         const { AutomationDetailScreen } = await import('./AutomationDetailScreen');
@@ -1546,7 +1614,7 @@ describe('AutomationDetailScreen', () => {
 
     it('does not navigate when the admission receipt declares no workflow correspondence', async () => {
         syncSpies.runAutomationNow.mockResolvedValueOnce({
-            run: { id: 'run-legacy', state: 'running' },
+            run: createAutomationRunFixture({ id: 'run-legacy', state: 'running' }),
         });
         const { AutomationDetailScreen } = await import('./AutomationDetailScreen');
 
@@ -1560,7 +1628,7 @@ describe('AutomationDetailScreen', () => {
     });
 
     it('submits Run now once and exposes the detail row as pending until it settles', async () => {
-        const deferredRunNow = createDeferred();
+        const deferredRunNow = createDeferred<AutomationRunNowAdmission>();
         syncSpies.runAutomationNow.mockImplementationOnce(() => deferredRunNow.promise);
         const { AutomationDetailScreen } = await import('./AutomationDetailScreen');
 
@@ -1578,7 +1646,7 @@ describe('AutomationDetailScreen', () => {
         expect(pendingRunNowButton?.props.loading).toBe(true);
 
         await act(async () => {
-            deferredRunNow.resolve();
+            deferredRunNow.resolve({ run: createAutomationRunFixture({ id: 'run-pending' }) });
             await deferredRunNow.promise;
         });
 
@@ -1588,7 +1656,7 @@ describe('AutomationDetailScreen', () => {
     });
 
     it('does not surface a completed run-now state after the detail route is reused', async () => {
-        const deferredRunNow = createDeferred();
+        const deferredRunNow = createDeferred<AutomationRunNowAdmission>();
         syncSpies.runAutomationNow.mockImplementationOnce(() => deferredRunNow.promise);
         const { AutomationDetailScreen } = await import('./AutomationDetailScreen');
 
@@ -1609,7 +1677,7 @@ describe('AutomationDetailScreen', () => {
         expect(screen.findAllByType('ActivitySpinner' as any)).toHaveLength(0);
 
         await act(async () => {
-            deferredRunNow.resolve();
+            deferredRunNow.resolve({ run: createAutomationRunFixture({ id: 'run-first-route' }) });
             await deferredRunNow.promise;
         });
 
@@ -1619,7 +1687,7 @@ describe('AutomationDetailScreen', () => {
     });
 
     it('keeps a revisited detail Run now control pending until its original request settles', async () => {
-        const deferredRunNow = createDeferred();
+        const deferredRunNow = createDeferred<AutomationRunNowAdmission>();
         syncSpies.runAutomationNow.mockImplementationOnce(() => deferredRunNow.promise);
         const { AutomationDetailScreen } = await import('./AutomationDetailScreen');
 
@@ -1655,7 +1723,7 @@ describe('AutomationDetailScreen', () => {
         expect(syncSpies.runAutomationNow).toHaveBeenCalledTimes(1);
 
         await act(async () => {
-            deferredRunNow.resolve();
+            deferredRunNow.resolve({ run: createAutomationRunFixture({ id: 'run-revisited' }) });
             await deferredRunNow.promise;
         });
 
@@ -1665,7 +1733,7 @@ describe('AutomationDetailScreen', () => {
     });
 
     it('does not alert for a run-now failure after the detail route is reused', async () => {
-        const deferredRunNow = createDeferred();
+        const deferredRunNow = createDeferred<AutomationRunNowAdmission>();
         syncSpies.runAutomationNow.mockImplementationOnce(() => deferredRunNow.promise);
         const { AutomationDetailScreen } = await import('./AutomationDetailScreen');
 
@@ -1697,9 +1765,9 @@ describe('AutomationDetailScreen', () => {
         const { AutomationDetailScreen } = await import('./AutomationDetailScreen');
 
         const screen = await renderScreen(React.createElement(AutomationDetailScreen));
-        const pauseButton = findTestInstanceByTypeContainingText(screen, 'Pressable', 'automations.detail.pauseAutomation');
+        const enabledSwitch = screen.findByProps({ testID: 'automation-detail-enabled' });
         await act(async () => {
-            pressTestInstance(pauseButton, 'automations.detail.pauseAutomation');
+            enabledSwitch.props.onValueChange(false);
         });
 
         routeParamsState.id = 'a2';
@@ -1725,25 +1793,18 @@ describe('AutomationDetailScreen', () => {
 
         const screen = await renderScreen(React.createElement(AutomationDetailScreen));
         await flushHookEffects();
-        const pauseButton = findTestInstanceByTypeContainingText(
-            screen,
-            'Pressable',
-            'automations.detail.pauseAutomation',
-        );
+        const enabledSwitch = screen.findByProps({ testID: 'automation-detail-enabled' });
         await act(async () => {
-            pressTestInstance(pauseButton, 'automations.detail.pauseAutomation');
-            pressTestInstance(pauseButton, 'automations.detail.pauseAutomation');
+            enabledSwitch.props.onValueChange(false);
+            enabledSwitch.props.onValueChange(false);
             await Promise.resolve();
         });
 
         expect(syncSpies.pauseAutomation).toHaveBeenCalledTimes(1);
-        const pendingPauseButton = findTestInstanceByTypeContainingText(
-            screen,
-            'Pressable',
-            'automations.detail.pauseAutomation',
-        );
-        expect(pendingPauseButton?.props.disabled).toBe(true);
-        expect(pendingPauseButton?.props.loading).toBe(true);
+        // The switch control itself (the header's state switch passes the id down to it).
+        const pendingSwitch = screen.findAll((node) => node.props.testID === 'automation-detail-enabled').at(-1)!;
+        expect(pendingSwitch.props.disabled).toBe(true);
+        expect(pendingSwitch.props.accessibilityState).toEqual({ disabled: true, busy: true });
 
         await act(async () => {
             deferredPause.resolve();
@@ -1761,7 +1822,7 @@ describe('AutomationDetailScreen', () => {
         const { AutomationDetailScreen } = await import('./AutomationDetailScreen');
 
         const screen = await renderScreen(React.createElement(AutomationDetailScreen));
-        const assignmentToggle = screen.findByType('Switch');
+        const assignmentToggle = findMachineAssignmentSwitch(screen);
         await act(async () => {
             assignmentToggle.props.onValueChange(true);
         });
@@ -1785,10 +1846,9 @@ describe('AutomationDetailScreen', () => {
     it('does not delete after a delete confirmation resolves for an earlier reused route', async () => {
         const deferredConfirmation = createDeferred<boolean>();
         modalConfirmSpy.mockImplementationOnce(() => deferredConfirmation.promise);
-        const { AutomationDetailScreen } = await import('./AutomationDetailScreen');
-
-        const screen = await renderScreen(React.createElement(AutomationDetailScreen));
-        const deleteButton = findTestInstanceByTypeContainingText(screen, 'Pressable', 'Delete automation');
+        const { screen, update } = await renderDetailWithMenu();
+        await openDetailMenu(screen);
+        const deleteButton = await findDetailMenuRow(screen, 'Delete automation');
         await act(async () => {
             pressTestInstance(deleteButton, 'Delete automation');
         });
@@ -1799,7 +1859,7 @@ describe('AutomationDetailScreen', () => {
             id: 'a2',
             name: 'Second automation',
         };
-        await screen.update(React.createElement(AutomationDetailScreen));
+        await update();
 
         await act(async () => {
             deferredConfirmation.resolve(true);
@@ -1811,10 +1871,18 @@ describe('AutomationDetailScreen', () => {
     });
 
     it('confirms clear-history and delegates the retained-run refresh to the canonical Sync owner', async () => {
-        const { AutomationDetailScreen } = await import('./AutomationDetailScreen');
+        const deferredClear = createDeferred<{ clearedRuns: number }>();
+        syncSpies.clearAutomationRunHistory.mockImplementationOnce(() => deferredClear.promise);
+        const { screen } = await renderDetailWithMenu();
+        await openDetailMenu(screen);
 
-        const screen = await renderScreen(React.createElement(AutomationDetailScreen));
-        const clearHistoryButton = screen.findByProps({ testID: 'automation-detail-clear-history' });
+        // Both rare operations are irreversible and read in the danger tone.
+        const danger = createThemeFixture().colors.state.danger.foreground;
+        const clearHistoryButton = await findDetailMenuRow(screen, 'automations.detail.clearHistory');
+        expect(clearHistoryButton, 'Clear run history row').not.toBeNull();
+        expect(flattenTestStyle(clearHistoryButton!.props.titleStyle).color).toBe(danger);
+        expect(flattenTestStyle((await findDetailMenuRow(screen, 'Delete automation'))!.props.titleStyle).color).toBe(danger);
+
         const fetchCallsBeforeClear = syncSpies.fetchAutomationRuns.mock.calls.length;
         await act(async () => {
             await pressTestInstance(clearHistoryButton, 'Clear run history');
@@ -1826,16 +1894,26 @@ describe('AutomationDetailScreen', () => {
             { destructive: true, confirmText: 'automations.detail.clearHistoryConfirmButton' },
         );
         expect(syncSpies.clearAutomationRunHistory).toHaveBeenCalledWith('a1');
+
+        // While the clear runs, its row says so and cannot be chosen again.
+        await openDetailMenu(screen);
+        const clearing = await findDetailMenuRow(screen, 'automations.detail.clearHistory');
+        expect(clearing?.props.disabled).toBe(true);
+        expect(clearing?.findAllByType('ActivitySpinner' as never)).toHaveLength(1);
+
+        await act(async () => {
+            deferredClear.resolve({ clearedRuns: 0 });
+            await deferredClear.promise;
+        });
         expect(syncSpies.fetchAutomationRuns).toHaveBeenCalledTimes(fetchCallsBeforeClear);
     });
 
     it('does not navigate after a deletion from an earlier reused route settles', async () => {
         const deferredDelete = createDeferred();
         syncSpies.deleteAutomation.mockImplementationOnce(() => deferredDelete.promise);
-        const { AutomationDetailScreen } = await import('./AutomationDetailScreen');
-
-        const screen = await renderScreen(React.createElement(AutomationDetailScreen));
-        const deleteButton = findTestInstanceByTypeContainingText(screen, 'Pressable', 'Delete automation');
+        const { screen, update } = await renderDetailWithMenu();
+        await openDetailMenu(screen);
+        const deleteButton = await findDetailMenuRow(screen, 'Delete automation');
         await act(async () => {
             pressTestInstance(deleteButton, 'Delete automation');
         });
@@ -1847,7 +1925,7 @@ describe('AutomationDetailScreen', () => {
             id: 'a2',
             name: 'Second automation',
         };
-        await screen.update(React.createElement(AutomationDetailScreen));
+        await update();
 
         await act(async () => {
             deferredDelete.resolve();
@@ -1860,10 +1938,9 @@ describe('AutomationDetailScreen', () => {
     it('does not alert for a deletion failure after the detail route is reused', async () => {
         const deferredDelete = createDeferred();
         syncSpies.deleteAutomation.mockImplementationOnce(() => deferredDelete.promise);
-        const { AutomationDetailScreen } = await import('./AutomationDetailScreen');
-
-        const screen = await renderScreen(React.createElement(AutomationDetailScreen));
-        const deleteButton = findTestInstanceByTypeContainingText(screen, 'Pressable', 'Delete automation');
+        const { screen, update } = await renderDetailWithMenu();
+        await openDetailMenu(screen);
+        const deleteButton = await findDetailMenuRow(screen, 'Delete automation');
         await act(async () => {
             pressTestInstance(deleteButton, 'Delete automation');
         });
@@ -1874,7 +1951,7 @@ describe('AutomationDetailScreen', () => {
             id: 'a2',
             name: 'Second automation',
         };
-        await screen.update(React.createElement(AutomationDetailScreen));
+        await update();
 
         await act(async () => {
             deferredDelete.reject(new Error('first route delete failed'));
@@ -2020,19 +2097,19 @@ describe('AutomationDetailScreen', () => {
         syncSpies.refreshAutomations.mockRejectedValueOnce(new Error('network unavailable'));
         const { AutomationDetailScreen } = await import('./AutomationDetailScreen');
 
-        const screen = await renderScreen(React.createElement(AutomationDetailScreen));
+        const { screen } = await renderDetailWithMenu();
         await act(async () => {
             await Promise.resolve();
             await Promise.resolve();
         });
 
-        const errorState = screen.findByProps({ testID: 'automation-detail-stale-refresh-error' });
+        const errorState = screen.findAllByProps({ testID: 'automation-detail-stale-refresh-error' }).find((node) => node.props.accessibilityRole !== undefined)!;
         expect(errorState.props.accessibilityRole).toBe('alert');
         expect(errorState.props.accessibilityLiveRegion).toBe('assertive');
         expect(findTestInstanceByTypeContainingText(screen, 'Pressable', 'Run now')?.props.disabled).toBe(true);
-        expect(findTestInstanceByTypeContainingText(screen, 'Pressable', 'automations.detail.pauseAutomation')?.props.disabled).toBe(true);
-        expect(findTestInstanceByTypeContainingText(screen, 'Pressable', 'Delete automation')?.props.disabled).toBe(true);
-        expect(screen.findByType('Switch').props.disabled).toBe(true);
+        expect(screen.findByProps({ testID: 'automation-detail-enabled' }).props.disabled).toBe(true);
+        await openDetailMenu(screen);
+        expect((await findDetailMenuRow(screen, 'Delete automation'))?.props.disabled).toBe(true);
         expect(findTestInstanceByTypeContainingText(screen, 'Text', 'Succeeded')).toBeDefined();
         expect(screen.findAllByProps({ testID: 'automation-detail-history-loading' })).toHaveLength(0);
         expect(findTestInstanceByTypeContainingText(screen, 'Text', 'runs.empty')).toBeUndefined();
@@ -2065,7 +2142,7 @@ describe('AutomationDetailScreen', () => {
         });
         expect(syncSpies.fetchAutomationRuns).toHaveBeenCalledWith('a1');
         expect(findTestInstanceByTypeContainingText(screen, 'Pressable', 'Run now')?.props.disabled).toBe(false);
-        expect(findTestInstanceByTypeContainingText(screen, 'Pressable', 'automations.detail.pauseAutomation')?.props.disabled).toBe(false);
+        expect(screen.findByProps({ testID: 'automation-detail-enabled' }).props.disabled).toBe(false);
         expect(findTestInstanceByTypeContainingText(screen, 'Text', 'runs.empty')).toBeUndefined();
         expect(findTestInstanceByTypeContainingText(screen, 'Text', 'common.loading')).toBeDefined();
 
@@ -2334,7 +2411,7 @@ describe('AutomationDetailScreen', () => {
         const screen = await renderScreen(React.createElement(AutomationDetailScreen));
         const machineAssignmentsGroup = screen.findByProps({ title: 'Machine assignments' });
 
-        expect(machineAssignmentsGroup.props.footer).toBeUndefined();
+        expect(machineAssignmentsGroup.props.description).toBe('automationPages.detail.machineAssignmentsDescription');
     });
 
     it('disambiguates duplicate machine rows with online state in the subtitle', async () => {
@@ -2370,11 +2447,10 @@ describe('AutomationDetailScreen', () => {
     });
 
     it('navigates to the automations list after deleting instead of relying on history back', async () => {
-        const { AutomationDetailScreen } = await import('./AutomationDetailScreen');
+        const { screen, update } = await renderDetailWithMenu();
+        await openDetailMenu(screen);
 
-        const screen = await renderScreen(React.createElement(AutomationDetailScreen));
-
-        const deleteButton = findTestInstanceByTypeContainingText(screen, 'Pressable', 'Delete automation');
+        const deleteButton = await findDetailMenuRow(screen, 'Delete automation');
         await act(async () => {
             await pressTestInstance(deleteButton, 'Delete automation');
         });
@@ -2385,3 +2461,15 @@ describe('AutomationDetailScreen', () => {
         expect(routerBackSpy).not.toHaveBeenCalled();
     });
 });
+
+/** The page header carries the automation's own switch; machine assignment rows carry the rest. */
+function findMachineAssignmentSwitches(screen: Awaited<ReturnType<typeof renderScreen>>) {
+    return screen.findAllByType('Switch')
+        .filter((node) => node.props.testID !== 'automation-detail-enabled');
+}
+
+function findMachineAssignmentSwitch(screen: Awaited<ReturnType<typeof renderScreen>>) {
+    const switches = findMachineAssignmentSwitches(screen);
+    expect(switches).toHaveLength(1);
+    return switches[0]!;
+}

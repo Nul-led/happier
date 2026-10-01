@@ -17,6 +17,7 @@ type SettingsSnapshot = Readonly<{
 type CommittedWorkflowTransition = Readonly<{
   run: Readonly<{ id: string }>;
   result: WorkflowCoordinatorResult;
+  reviewEntry?: true;
 }>;
 
 function updateKindForResult(
@@ -27,7 +28,7 @@ function updateKindForResult(
       ? 'completed_with_failures'
       : 'completed';
   }
-  if (result.state === 'cancelled') return null;
+  if (result.state === 'cancelled' || result.state === 'waiting_for_review') return null;
   return result.state;
 }
 
@@ -44,8 +45,8 @@ export function createWorkflowRunCommittedNotificationHandler(params: Readonly<{
 }> = {}): (transition: CommittedWorkflowTransition) => Promise<void> {
   const getSettingsSnapshot = params.getSettingsSnapshot ?? getActiveAccountSettingsSnapshot;
   const dispatch = params.dispatch ?? dispatchActivityNotificationAsync;
-  return async ({ run, result }) => {
-    const updateKind = updateKindForResult(result);
+  return async ({ run, result, reviewEntry }) => {
+    const updateKind = reviewEntry === true ? 'review_required' : updateKindForResult(result);
     if (!updateKind) return;
     try {
       const snapshot = getSettingsSnapshot();
@@ -68,4 +69,12 @@ export function createWorkflowRunCommittedNotificationHandler(params: Readonly<{
       );
     }
   };
+}
+
+/** Called only after a new invocation hold has been durably committed. */
+export function createWorkflowRunReviewEntryNotificationHandler(
+  params: Parameters<typeof createWorkflowRunCommittedNotificationHandler>[0] = {},
+): (entry: Readonly<{ runId: string }>) => Promise<void> {
+  const notify = createWorkflowRunCommittedNotificationHandler(params);
+  return async ({ runId }) => await notify({ run: { id: runId }, result: { state: 'waiting_for_review' }, reviewEntry: true });
 }

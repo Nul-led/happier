@@ -25,10 +25,12 @@ import type {
 } from './externalSessions/pluginExternalSessionAdmissionOwner';
 import type { AccountServerActionDeps } from '@/api/accountServerActionDeps';
 import { resolveAccountSettingsScopeKeyForToken } from '@/settings/accountSettings/accountSettingsScopeKey';
-import { decodeJwtPayload } from '@/cloud/decodeJwtPayload';
+import { readAccountIdFromToken } from '@/cloud/decodeJwtPayload';
 import { configuration } from '@/configuration';
 import { createSpawnConnectedServicesTeamResourceCatalogResolver } from '@/session/services/spawnConnectedServicesDefaults';
 import { createSessionFollowSourceKeyPreparationAfterSet } from '@/agent/runtime/session/follow/createSessionFollowSourceKeyPreparationAfterSet';
+import { resolveInvocationAuthority } from '@happier-dev/protocol/actions/invocationAuthority';
+import { resolveEffectiveTerminalPresentUserPolicy } from '@/settings/accountSettings/resolveEffectiveTerminalPresentUserPolicy';
 
 type CliActionExecutorParams = Parameters<typeof createCliActionExecutorHarness>[0]
   & CliTranscriptActionExecutorOptions
@@ -47,8 +49,6 @@ type CliActionExecutorParams = Parameters<typeof createCliActionExecutorHarness>
     isApprovalExecutionOriginCurrent?: ActionExecutorDeps['isApprovalExecutionOriginCurrent'];
     /** The exact daemon external-session RPC owner for host-stamped API requests. */
     hostExternalSessionAction?: ActionExecutorDeps['hostExternalSessionAction'];
-    /** Canonical daemon-owned workspace conflict Action execution. */
-    workspaceSyncConflictResolve?: ActionExecutorDeps['workspaceSyncConflictResolve'];
     /** Thin adapters to the canonical Account-server-owned auth routes. */
     accountServerActionDeps?: AccountServerActionDeps;
     /** Origin-neutral workflow family handler; absent until its server/session owners are bound. */
@@ -69,28 +69,13 @@ export function createCredentialedTargetActionCurrentIntent(
   });
 }
 
-export function resolveCliActionAuthority(
-  credentials: StoredCredentials | undefined,
-  explicitAuthority: ActionExecutorContext['authority'],
-): NonNullable<ActionExecutorContext['authority']> {
-  if (credentials === undefined || !hasStoredSessionCredentialProvenance(credentials)) {
-    return 'account_automation';
-  }
-  return explicitAuthority === 'account_automation'
-    ? 'account_automation'
-    : 'present_user';
-}
-
 export function createCliActionExecutor(
   params: CliActionExecutorParams,
 ): ReturnType<typeof createCliActionExecutorHarness>['executor'] {
   const actionSettingsProvider = params.actionsSettingsProvider ?? createActionSettingsProvider({
     scopeKey: resolveAccountSettingsScopeKeyForToken(params.token),
   });
-  const tokenPayload = decodeJwtPayload(params.token);
-  const runtimeAccountId = typeof tokenPayload?.sub === 'string' && tokenPayload.sub.trim()
-    ? tokenPayload.sub.trim()
-    : undefined;
+  const runtimeAccountId = readAccountIdFromToken(params.token) ?? undefined;
   const transcriptFollowLeaseRegistry = params.transcriptFollowLeaseRegistry
     ?? createSessionTranscriptFollowLeaseRegistry({
       maxLeases: 16,
@@ -110,7 +95,7 @@ export function createCliActionExecutor(
     params.serverId !== undefined && params.serverHttpBaseUrl !== undefined
       ? { serverId: params.serverId, serverHttpBaseUrl: params.serverHttpBaseUrl }
       : {};
-  const base = createCliActionExecutorHarness(
+  const harness = createCliActionExecutorHarness(
     {
       ...params,
       actionsSettingsProvider: actionSettingsProvider,
@@ -135,9 +120,6 @@ export function createCliActionExecutor(
         : {}),
       ...(params.hostExternalSessionAction
         ? { hostExternalSessionAction: params.hostExternalSessionAction }
-        : {}),
-      ...(params.workspaceSyncConflictResolve
-        ? { workspaceSyncConflictResolve: params.workspaceSyncConflictResolve }
         : {}),
       ...(params.accountServerActionDeps ?? {}),
       ...(params.workflowAction ? { workflowAction: params.workflowAction } : {}),
@@ -191,17 +173,34 @@ export function createCliActionExecutor(
         },
       }),
     },
-  ).executor;
+  );
+  const base = harness.executor;
   const daemonAware = params.pluginActionExecutionOwner === 'current_process'
     ? base
     : createDaemonPluginActionExecutor({ base });
-  const resolveContext = (context: Parameters<typeof base.execute>[2]) => ({
+  const resolveContext = (context: Parameters<typeof base.execute>[2]) => {
+    const currentWorkspaceWrites = harness.deps.getCurrentWorkspaceWrites?.();
+    const credential = params.credentials && hasStoredSessionCredentialProvenance(params.credentials) ? 'terminal' : 'api_token';
+    const surface = context?.surface ?? 'cli';
+    // RPC receivers already have the verified caller stamp. The host's terminal
+    // opt-out cannot narrow an Account/UI caller; an unstamped RPC stays automation.
+    const authority = surface === 'rpc'
+      ? credential === 'terminal' ? context?.authority ?? 'account_automation' : 'account_automation'
+      : context?.authority === 'account_automation' ? 'account_automation' : resolveInvocationAuthority({
+        credential, surface,
+        terminalPolicy: resolveEffectiveTerminalPresentUserPolicy({
+          token: params.token,
+          ...(params.serverHttpBaseUrl ? { serverHttpBaseUrl: params.serverHttpBaseUrl } : {}),
+        }),
+      });
+    return ({
     ...(context ?? {}),
-    surface: context?.surface ?? 'cli',
-    // Credential provenance, not the CLI surface, is the authority owner.
-    // Stored Session credentials represent the authenticated interactive user;
-    // PATs and synthetic credentials remain Account automation.
-    authority: resolveCliActionAuthority(params.credentials, context?.authority),
+    ...((currentWorkspaceWrites || context?.workspaceWrites) ? {
+      workspaceWrites: currentWorkspaceWrites === 'deny' || context?.workspaceWrites === 'deny'
+        ? 'deny' as const : currentWorkspaceWrites ?? context?.workspaceWrites,
+    } : {}),
+    surface,
+    authority,
     // The authenticated runtime token, not a caller-supplied context field,
     // owns the Account portion of portable Agent spawn identity.
     ...(runtimeAccountId ? { runtimeAccountId } : {}),
@@ -209,7 +208,8 @@ export function createCliActionExecutor(
     sessionAgentSpawnPolicyV1:
       context?.sessionAgentSpawnPolicyV1
       ?? actionSettingsProvider.getAccountSettings?.()?.sessionAgentSpawnPolicyV1,
-  });
+    });
+  };
   return {
     prepare: async (actionId, input, context) => {
       const resolvedContext = resolveContext(context);

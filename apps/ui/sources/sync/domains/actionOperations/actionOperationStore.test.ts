@@ -507,4 +507,52 @@ describe('action operation store', () => {
         expect(store.markTerminalSeen(operationAddress('setup'), 200)).toBe(true);
         expect(selectors.selectInbox(store.getSnapshot())).toEqual([]);
     });
+
+    it('projects closed Activity and Inbox state without requiring detail row collections', () => {
+        const store = createActionOperationStore();
+        const selectors = createActionOperationSelectors();
+        merge(store, [
+            operation({ operationId: 'available-active', state: 'running', startedAt: 110 }),
+            operation({ operationId: 'unavailable-active', state: 'running', startedAt: 110 }),
+            operation({
+                operationId: 'failed',
+                revision: 2,
+                state: 'failed',
+                settledAt: 150,
+                error: { errorCode: 'failed', error: 'Failed' },
+            }),
+        ]);
+        store.reconcileMachineProjection({
+            serverId: SERVER_ID,
+            accountId: 'account-a',
+            machineId: 'machine-a',
+            snapshots: [
+                operation({ operationId: 'available-active', state: 'running', startedAt: 110 }),
+                operation({
+                    operationId: 'failed',
+                    revision: 2,
+                    state: 'failed',
+                    settledAt: 150,
+                    error: { errorCode: 'failed', error: 'Failed' },
+                }),
+            ],
+            knownOperationKeys: new Set(store.getSnapshot().operationsByKey.keys()),
+        });
+
+        expect(selectors.selectActivitySummary(store.getSnapshot())).toEqual({
+            activeCount: 1,
+            hasAttention: true,
+        });
+        expect(selectors.selectInboxSummary(store.getSnapshot())).toEqual({
+            count: 2,
+            hasAttention: true,
+        });
+
+        store.markTerminalSeen(operationAddress('failed'), 200);
+        store.dismissUnavailable(operationAddress('unavailable-active'));
+        expect(selectors.selectInboxSummary(store.getSnapshot())).toEqual({
+            count: 0,
+            hasAttention: false,
+        });
+    });
 });

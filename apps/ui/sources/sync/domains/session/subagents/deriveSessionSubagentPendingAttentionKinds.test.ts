@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import type { Message } from '@/sync/domains/messages/messageTypes';
+import type { Message } from "@happier-dev/session-core/messages";
 
-import { deriveSessionSubagentPendingAttentionKinds } from './deriveSessionSubagentPendingAttentionKinds';
+import {
+    deriveSessionSubagentPendingAttentionKinds,
+    listSessionSubagentPendingPrompts,
+} from './deriveSessionSubagentPendingAttentionKinds';
 import type { SessionSubagent } from './types';
 
 const subagent: SessionSubagent = {
@@ -146,5 +149,19 @@ describe('deriveSessionSubagentPendingAttentionKinds', () => {
             reducerState: { sidechains: new Map(), permissions: new Map() },
             messages,
         })).toEqual(['user_action']);
+    });
+
+    it('names the prompts it waits on by the Session request ids that answer them, still-pending only', () => {
+        expect(listSessionSubagentPendingPrompts({
+            subagent,
+            reducerState: sidechainState([
+                { id: 'perm-question', status: 'pending', kind: 'user_action' },
+                { id: 'perm-done', status: 'pending', kind: 'permission' },
+                { id: 'perm-run', status: 'pending', kind: 'permission' },
+            ], new Map([['perm-done', { status: 'approved' }]])),
+        })).toEqual([
+            { id: 'perm-question', kind: 'user_action' },
+            { id: 'perm-run', kind: 'permission' },
+        ]);
     });
 });

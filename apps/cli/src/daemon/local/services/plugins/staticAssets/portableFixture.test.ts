@@ -8,13 +8,10 @@ import {
     PLUGIN_UI_HOST_API_VERSION_V1,
     computePluginUiArtifactFileSetSha256DigestV1,
     computePluginUiArtifactSha256DigestV1,
-    PluginUiArtifactsManifestV1Schema,
+    PluginUiArtifactsManifestV2Schema,
     type PluginUiArtifactDigestV1,
-    type PluginUiArtifactsManifestV1,
+    type PluginUiArtifactsManifestV2,
 } from '@happier-dev/protocol/plugins/ui';
-import {
-    defineBuildConfig,
-} from '@happier-dev/plugin-sdk/ui/build';
 
 import {
     HOSTED_WEB_UI_ARTIFACTS_ROOT_RELATIVE_PATH,
@@ -32,50 +29,40 @@ const hostUiApiVersion = PLUGIN_UI_HOST_API_VERSION_V1;
 
 let pluginRoot: string;
 let builtDigest: PluginUiArtifactDigestV1;
-let builtManifest: PluginUiArtifactsManifestV1;
+let builtManifest: PluginUiArtifactsManifestV2;
 
 function encode(text: string): Uint8Array {
     return new TextEncoder().encode(text);
 }
 
 async function buildPortableFixture(): Promise<void> {
-    const buildConfig = defineBuildConfig({
-        targets: [{
-            rendererId: 'preview-web',
-            entry: 'ui/reviewPanel.web.tsx',
-            kind: 'hostedWeb',
-        }],
-    });
-    const target = buildConfig.targets[0];
-    const viteVersion = '7.0.0';
+    const artifactId = 'preview-web';
     const sourceBytes = await readFile(join(pluginRoot, 'ui/reviewPanel.web.tsx'));
     const emitted = [
         {
-            relativePath: 'hosted-web/preview-web/index.html',
+            relativePath: `hosted-web/${artifactId}/index.html`,
             bytes: encode('<!doctype html><html><body><script type="module" src="./assets/index.js"></script></body></html>'),
         },
         {
-            relativePath: 'hosted-web/preview-web/assets/index.js',
+            relativePath: `hosted-web/${artifactId}/assets/index.js`,
             bytes: new Uint8Array(sourceBytes),
         },
     ];
     const digest = computePluginUiArtifactFileSetSha256DigestV1(emitted);
-    const manifest = PluginUiArtifactsManifestV1Schema.parse({
-        version: 1,
+    const manifest = PluginUiArtifactsManifestV2Schema.parse({
+        version: 2,
         entries: [{
-            contributionId: target.rendererId,
+            artifactId,
             tier: 'hostedWeb',
-            platform: 'web',
-            entry: `hosted-web/${target.rendererId}/index.html`,
+            entry: `hosted-web/${artifactId}/index.html`,
             files: emitted.map((file) => ({
                 relativePath: file.relativePath,
                 digest: computePluginUiArtifactSha256DigestV1(file.bytes),
                 byteSize: file.bytes.byteLength,
             })),
             digest,
-            builtWith: { bundler: 'vite', version: viteVersion },
-            hostUiApiVersion,
-            compat: {},
+            builtWith: { staging: 'staticDirectory' },
+            hostUiApiRange: `^${hostUiApiVersion}`,
         }],
     });
     const artifactsRoot = join(pluginRoot, ...HOSTED_WEB_UI_ARTIFACTS_ROOT_RELATIVE_PATH.split('/'));

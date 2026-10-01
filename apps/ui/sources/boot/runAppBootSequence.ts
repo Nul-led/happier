@@ -32,6 +32,7 @@ export type AppBootReadyState = Readonly<{
 }>;
 
 export type AppBootSequence = Readonly<{
+    context?: 'app' | 'embed';
     loadFonts: () => Promise<unknown>;
     sodiumReady: PromiseLike<unknown>;
     resolveCredentials: () => Promise<AuthCredentials | null>;
@@ -46,6 +47,10 @@ export type AppBootSequence = Readonly<{
     /**
      * `null` when this host must not restore sync (the desktop activity overlay window renders
      * against the already-running main window's sync).
+     *
+     * Contract: the call publishes the local restore phase (warm cache -> store) synchronously
+     * before it returns; the returned promise is the transport phase (carrier, socket, bootstrap),
+     * which first paint never waits for.
      */
     restoreSync: ((credentials: AuthCredentials) => Promise<unknown>) | null;
     onReady: (state: AppBootReadyState) => void;
@@ -64,17 +69,15 @@ function start<T>(operation: () => Promise<T>): Promise<T> {
     }
 }
 
-async function restoreSyncWithoutBlockingBoot(
-    sequence: AppBootSequence,
-    credentials: AuthCredentials,
-): Promise<void> {
+/**
+ * Starts restore: its local phase has run when this returns, its transport phase continues in the
+ * background. A transport failure keeps the app usable; the connection owner's retry path recovers.
+ */
+function startSyncRestore(sequence: AppBootSequence, credentials: AuthCredentials): void {
     if (!sequence.restoreSync) return;
-    try {
-        await sequence.restoreSync(credentials);
-    } catch (error) {
-        // Preserve app usability even if sync restore fails during boot.
+    start(() => sequence.restoreSync!(credentials)).catch((error: unknown) => {
         console.error('Failed to restore sync during init, continuing startup:', error);
-    }
+    });
 }
 
 /**
@@ -92,9 +95,11 @@ async function restoreSyncWithoutBlockingBoot(
  *   session: the same in-flight read is still awaited, and if it yields credentials they are
  *   restored and published with a bumped `authGeneration`.
  *
- * Sync restore stays on the critical path on purpose: the persisted warm cache is what makes the
- * first frame show real session rows instead of an empty list, so trading it for an earlier empty
- * frame would be a regression, not an optimisation.
+ * Only restore's local phase is on the critical path: the persisted warm cache is what makes the
+ * first frame show real session rows instead of an empty list, and it reaches the store
+ * synchronously when restore starts. The transport phase (an Iroh carrier, the socket, bootstrap)
+ * is not: an unreachable Home must paint its last-known list, not hold the splash until the
+ * carrier gives up. The connection owner serializes any switch or retry behind that phase.
  */
 export async function runAppBootSequence(sequence: AppBootSequence): Promise<void> {
     const fontLoadTimeoutMs = sequence.fontLoadTimeoutMs ?? APP_BOOT_FONT_LOAD_TIMEOUT_MS;
@@ -111,6 +116,16 @@ export async function runAppBootSequence(sequence: AppBootSequence): Promise<voi
             console.error('Failed to load fonts during init, continuing startup:', error);
         },
     );
+    const fontGate = withTimeout(fontsLoaded, fontLoadTimeoutMs, 'app font load').catch((error: unknown) => {
+        console.error('Font loading missed its boot deadline, continuing startup:', error);
+    });
+    if (sequence.context === 'embed') {
+        // The bridge is the credential authority in this realm. No persisted app state belongs
+        // to the frame, including drafts or a warm cache from another signed-in Account.
+        await Promise.all([fontGate, Promise.resolve(sequence.sodiumReady)]);
+        sequence.onReady({ credentials: null, authGeneration: 0 });
+        return;
+    }
     const credentialsResolved: Promise<CredentialOutcome> = start(sequence.resolveCredentials).then(
         (credentials) => ({ credentials }),
         (error: unknown) => {
@@ -131,9 +146,6 @@ export async function runAppBootSequence(sequence: AppBootSequence): Promise<voi
     // `fontsLoaded` / `credentialsResolved` never reject, so the only rejection either race can
     // produce is its own `AsyncTimeoutError`; both are attached now so a deadline that fires before
     // it is awaited cannot surface as an unhandled rejection.
-    const fontGate = withTimeout(fontsLoaded, fontLoadTimeoutMs, 'app font load').catch((error: unknown) => {
-        console.error('Font loading missed its boot deadline, continuing startup:', error);
-    });
     const credentialGate: Promise<CredentialOutcome | null> = withTimeout(
         credentialsResolved,
         credentialResolutionTimeoutMs,
@@ -166,7 +178,7 @@ export async function runAppBootSequence(sequence: AppBootSequence): Promise<voi
         // deadline spent) before restore runs; otherwise the boot paints an empty list it could
         // have filled.
         await warmCacheGate;
-        await restoreSyncWithoutBlockingBoot(sequence, initialCredentials);
+        startSyncRestore(sequence, initialCredentials);
     }
     await fontGate;
     sequence.onReady({ credentials: initialCredentials, authGeneration: 0 });
@@ -177,6 +189,6 @@ export async function runAppBootSequence(sequence: AppBootSequence): Promise<voi
     // read: a slow keychain must become a late sign-in, never a silent sign-out.
     const deferredCredentials = (await credentialsResolved).credentials;
     if (!deferredCredentials) return;
-    await restoreSyncWithoutBlockingBoot(sequence, deferredCredentials);
+    startSyncRestore(sequence, deferredCredentials);
     sequence.onReady({ credentials: deferredCredentials, authGeneration: 1 });
 }

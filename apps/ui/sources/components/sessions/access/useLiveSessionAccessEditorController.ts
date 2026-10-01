@@ -357,6 +357,15 @@ export function useLiveSessionAccessEditorController(input: Readonly<{
             await settleFailedMutation(key,mutation,subject,presentSessionAccessFailure(error, { outcomeUnknown: true }));
         }
     },[approvalHeldRef,client,holdForApproval,input.sessionId,isScopeCurrent,lifetime,migrateHistoricalLayout,scopeKey,settleCommittedMutation,settleFailedMutation]);
+    const retryMutation = React.useCallback((subject: PrincipalRefV1) => {
+        const operation = stateRef.current.scopeKey === scopeKey
+            ? stateRef.current.operations[sessionAccessSubjectKey(subject)]
+            : undefined;
+        if (operation?.kind !== 'error' || !operation.error.retryable || !operation.reconcileIntent) return;
+        const intent = operation.reconcileIntent;
+        void mutate(intent.kind === 'set' ? intent.mutation.subject : intent.subject,
+            intent.kind === 'set' ? intent.mutation : null);
+    }, [mutate, scopeKey]);
     const [contextOperation, setContextOperation] = React.useState<'idle' | 'saving' | 'error'>('idle');
     const [contextError, setContextError] = React.useState<SessionAccessUiError | undefined>();
     const submitContext = React.useCallback((teamId: string | null) => {
@@ -466,6 +475,7 @@ export function useLiveSessionAccessEditorController(input: Readonly<{
         setQuery,retryContent:()=>{void refresh();},
         retryDirectory:(kind)=>{directory.retry(kind);setDirectoryRevision(value=>value+1);},
         loadMore:(kind)=>directory.loadMore(kind),
+        retryMutation,
         addPrincipal:(subject)=>{void mutate(subject,sessionAccessGrantMutation(subject,{accessLevel:'view',canApprovePermissions:false}),true);},
         setAccessLevel:(subject,level)=>{
             const row=stateRef.current.snapshot?.grants.find(row=>sessionAccessSubjectKey(row.grant.subject)===sessionAccessSubjectKey(subject));
@@ -495,7 +505,7 @@ export function useLiveSessionAccessEditorController(input: Readonly<{
         loadMoreRecipients,
         openPendingApproval,
         updateHistoricalLayout,
-    }),[confirmContext,directory,loadMoreRecipients,mutate,openPendingApproval,prepareEncryptedAccess,refresh,scopeKey,setContext,toggleAllRecipients,updateHistoricalLayout]);
+    }),[confirmContext,directory,loadMoreRecipients,mutate,openPendingApproval,prepareEncryptedAccess,refresh,retryMutation,scopeKey,setContext,toggleAllRecipients,updateHistoricalLayout]);
     // Lane 04's existing projection names every grant principal; the encryption
     // resource deliberately carries no names, roles or avatars.
     const grantedDisplayNameForAccount=React.useCallback((accountId:string)=>{

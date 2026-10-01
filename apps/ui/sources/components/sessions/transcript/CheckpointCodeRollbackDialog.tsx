@@ -6,6 +6,7 @@ import { Text } from '@/components/ui/text/Text';
 import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
 import { Typography } from '@/constants/Typography';
 import { Modal, type CustomModalInjectedProps } from '@/modal';
+import { useModalCardChrome } from '@/modal/components/card/useModalCardChrome';
 import {
     requiresCheckpointCodeRollbackAdvancedConfirmation,
     resolveCheckpointCodeRollbackChoices,
@@ -30,11 +31,6 @@ const stylesheet = StyleSheet.create((theme) => ({
     body: {
         gap: 12,
         padding: 16,
-    },
-    title: {
-        ...Typography.default('semiBold'),
-        color: theme.colors.text.primary,
-        fontSize: 15,
     },
     choice: {
         borderWidth: 1,
@@ -127,6 +123,14 @@ export function CheckpointCodeRollbackDialog(props: CheckpointCodeRollbackDialog
     );
     const [codeOnlyConfirmed, setCodeOnlyConfirmed] = React.useState(false);
     const [showAdvancedChoices, setShowAdvancedChoices] = React.useState(false);
+    // The shared card owns the title band (and its close button); the body starts with the choices.
+    const chrome = React.useMemo(() => ({
+        kind: 'card' as const,
+        title: t('session.rollback.checkpointCode.title'),
+        testID: 'checkpoint-code-rollback-modal',
+        dimensions: { width: 480, size: 'dialog' as const },
+    }), []);
+    useModalCardChrome(props.setChrome, chrome);
 
     if (props.visible === false) return null;
 
@@ -141,7 +145,6 @@ export function CheckpointCodeRollbackDialog(props: CheckpointCodeRollbackDialog
 
     return (
         <View testID="checkpoint-code-rollback-dialog" style={styles.body}>
-            <Text style={styles.title}>{t('session.rollback.checkpointCode.title')}</Text>
             {visibleChoices.map((rollbackChoice) => (
                 <Pressable
                     key={rollbackChoice.mode}

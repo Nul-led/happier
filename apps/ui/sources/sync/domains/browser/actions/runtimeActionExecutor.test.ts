@@ -346,10 +346,9 @@ describe('browser runtime action executor', () => {
             controlEpochBefore: 0,
             controlEpochAfter: 0,
             diagnostics: {},
-            resultSummary: expect.objectContaining({
-                status: 'succeeded',
-            }),
+            resultSummary: { controller: 'none', controlEpoch: 0 },
         });
+        expect(controlService.getActionTimeline({ browserSessionId: 'browser_session_1', viewId: 'view_1' })).toEqual([]);
     });
 
     it('fails closed when browser automation has no owner evidence to project a canonical result', async () => {
@@ -378,12 +377,33 @@ describe('browser runtime action executor', () => {
         }))).resolves.toEqual({
             ok: false,
             errorCode: 'runtime_action_disabled',
-            error: 'runtime_action_disabled:browser:browser_automation_unavailable',
+            error: 'runtime_action_disabled:browser:browser_view_unavailable',
         });
         expect(controlService.getActionTimeline({
             browserSessionId: 'browser_session_1',
             viewId: 'view_1',
         })).toEqual([]);
+    });
+
+    it('rejects forged human input at Action admission and stamps present-user input', async () => {
+        const { createBrowserRuntimeActionExecutor } = await import('./runtimeActionExecutor');
+        const controlService = createBrowserAutomationControlService({ nowMs: Date.now });
+        const applied: string[] = [];
+        const view = { browserSessionId: 'browser_session_1', viewId: 'view_1' };
+        controlService.registerOwner({ ...view, ownerId: 'human-owner', authority: 'uiLocal', navigationGeneration: 4,
+            adapterKind: 'localPreview', fidelity: 'webIframe', trustedInput: false, supportedActions: ['click'],
+            executeAction: async request => { applied.push(request.requestedBy); return { status: 'succeeded' }; } });
+        controlService.recordHumanInput({ ...view, occurredAtMs: Date.now() });
+        const execute = createBrowserRuntimeActionExecutor({ automation: { controlService } });
+        const input = { v: 1, ...view, automationRequestId: 'request', navigationGeneration: 4,
+            requestedBy: 'user', requesterRef: { kind: 'agent', id: 'agent' }, actionKind: 'click',
+            payload: { locator: { kind: 'css', value: '#submit' } }, timeoutMs: 1000 };
+        expect(await execute(runtimeArgs({ actionId: 'browser.automation.click', input,
+            context: { authority: 'account_automation' } }))).toMatchObject({ ok: false, errorCode: 'invalid_parameters' });
+        expect(applied).toEqual([]);
+        expect(await execute(runtimeArgs({ actionId: 'browser.automation.click', input: { ...input, requestedBy: 'agent' },
+            context: { authority: 'present_user' } }))).toMatchObject({ status: 'succeeded' });
+        expect(applied).toEqual(['user']);
     });
 
     it('dispatches browser automation navigation action ids through the registered automation owner', async () => {
@@ -500,24 +520,33 @@ describe('browser runtime action executor', () => {
         await Promise.resolve();
         const execute = mod.createBrowserRuntimeActionExecutor({ automation: { controlService } });
 
+        for (const context of [{}, { authority: 'account_automation' as const }]) {
+            expect(await execute(runtimeArgs({
+                actionId: 'browser.automation.cancelActive',
+                input: { browserSessionId: 'browser_session_1', viewId: 'view_1' },
+                context,
+            }))).toEqual({ v: 1, outcome: 'owner_mismatch', canceledCount: 0 });
+        }
         const canceled = await execute(runtimeArgs({
             actionId: 'browser.automation.cancelActive',
             input: { browserSessionId: 'browser_session_1', viewId: 'view_1' },
-        }));
-        const noActive = await execute(runtimeArgs({
-            actionId: 'browser.automation.cancelActive',
-            input: { browserSessionId: 'browser_session_1', viewId: 'view_1' },
+            context: { authority: 'present_user' },
         }));
 
         expect(BrowserAutomationCancelActiveResultV1Schema.safeParse(canceled).success).toBe(true);
-        expect(canceled).toEqual({ v: 1, outcome: 'canceled', canceledCount: 1 });
-        expect(BrowserAutomationCancelActiveResultV1Schema.safeParse(noActive).success).toBe(true);
-        expect(noActive).toEqual({ v: 1, outcome: 'no_active', canceledCount: 0 });
+        expect(canceled).toEqual({ v: 1, outcome: 'canceled', canceledCount: 1, completion: 'uncertain' });
+        releaseAction();
         await expect(activeAction).resolves.toMatchObject({
             status: 'canceled',
             errorCode: 'user_canceled',
         });
-        releaseAction();
+        const noActive = await execute(runtimeArgs({
+            actionId: 'browser.automation.cancelActive',
+            input: { browserSessionId: 'browser_session_1', viewId: 'view_1' },
+            context: { authority: 'present_user' },
+        }));
+        expect(BrowserAutomationCancelActiveResultV1Schema.safeParse(noActive).success).toBe(true);
+        expect(noActive).toEqual({ v: 1, outcome: 'no_active', canceledCount: 0 });
     });
 
     it('fails closed when a browser automation action id reaches an owner that does not support the action kind', async () => {

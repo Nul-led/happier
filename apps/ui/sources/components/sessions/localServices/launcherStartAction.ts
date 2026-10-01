@@ -5,6 +5,9 @@ import type {
     RuntimeActionExecute,
 } from '@happier-dev/protocol';
 import { DaemonLocalServiceLauncherStartResponseV1Schema } from '@happier-dev/protocol';
+import { createSessionPaneScopeId } from '@/components/sessions/panes/sessionPaneScopeId';
+import { useDestinationPaneScopeId } from '@/components/appShell/workspace/DestinationInstanceHost';
+import { createFrontDoorActionExecute } from '@/sync/ops/actions/frontDoorRuntimeActionExecutor';
 
 import type {
     LocalServiceLauncherSnapshot,
@@ -77,14 +80,25 @@ export function useLocalServiceLauncherStartAction(
     const sessionId = normalizeNonEmptyString(context.sessionId);
     const workspaceId = normalizeNonEmptyString(context.workspaceId);
     const serverId = normalizeNonEmptyString(context.serverId);
+    const paneScopeId = useDestinationPaneScopeId(createSessionPaneScopeId(sessionId ?? '', serverId));
     const runtimeActionExecute = context.runtimeActionExecute ?? undefined;
     const applyLauncherSnapshot = context.applyLauncherSnapshot;
+    const actionExecute = React.useMemo(() => createFrontDoorActionExecute(), []);
 
     return React.useMemo(() => {
         if (!runtimeActionExecute) {
             return undefined;
         }
         return async (target: LocalServiceLaunchTarget) => {
+            if (target.source === 'package_script') {
+                if (target.sourceClass?.kind !== 'package_script' || !sessionId || !serverId) {
+                    return { ok: false, errorCode: 'terminal_scope_unavailable', error: 'terminal_scope_unavailable' };
+                }
+                return await actionExecute('session.terminals.run_script', {
+                    scopeId: paneScopeId, machineId: target.machineId,
+                    cwd: target.sourceClass.cwd, runTargetId: target.sourceClass.runTargetId, title: target.title,
+                }, { surface: 'ui', defaultSessionId: sessionId, serverId });
+            }
             if (!hasStartAction(target)) {
                 return undefined;
             }
@@ -112,5 +126,5 @@ export function useLocalServiceLauncherStartAction(
             }
             return result;
         };
-    }, [applyLauncherSnapshot, machineId, runtimeActionExecute, serverId, sessionId, workspaceId]);
+    }, [actionExecute, applyLauncherSnapshot, machineId, paneScopeId, runtimeActionExecute, serverId, sessionId, workspaceId]);
 }

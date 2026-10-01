@@ -1,17 +1,18 @@
-import { useRouter } from 'expo-router';
+import { useSessionTranscriptSource } from '@/components/sessions/transcript/source/SessionTranscriptSourceContext';
 import * as React from 'react';
 import { Platform, Pressable, View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
 import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
 import { Text } from '@/components/ui/text/Text';
+import { useWorkflowsAvailability } from '@/components/workflows/gating/workflowsAvailability';
 import { WorkflowRunStateStatus } from '@/components/workflows/presentation/WorkflowLifecycleStatus';
 import { describeWorkflowRunState } from '@/components/workflows/presentation/workflowLifecyclePresentation';
 import { formatWorkflowRunOriginLabel } from '@/components/workflows/run/workflowRunDetailPresentation';
 import { Typography } from '@/constants/Typography';
 import { captureActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
 import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
-import type { ToolCall } from '@/sync/domains/messages/messageTypes';
+import type { ToolCall } from "@happier-dev/session-core/messages";
 import { useActiveServerAccountScope, useWorkflowRun } from '@/sync/store/hooks';
 import { refreshWorkflowRunById } from '@/sync/engine/workflows/refreshWorkflowRun';
 import { createWorkflowRunRoute } from '@/sync/domains/workflows/workflowRunRoute';
@@ -21,7 +22,7 @@ import { navigateWithBlurOnWeb } from '@/utils/platform/navigateWithBlurOnWeb';
 import {
     resolveTranscriptWorkflowRunReference,
     type TranscriptWorkflowRunReference,
-} from './workflowRunActionResultReference';
+} from './transcriptWorkflowRunReference';
 
 /**
  * The transcript's inline managed workflow Run — the exact Session card of
@@ -95,19 +96,25 @@ function MountedWorkflowRunReference(props: Readonly<{
     serverId: string;
 }>): React.ReactElement | null {
     const styles = stylesheet;
-    const router = useRouter();
+    const transcriptSource = useSessionTranscriptSource();
     const { runId, origin } = props.reference;
     const activeScope = useActiveServerAccountScope();
+    // The card answers the one canonical Workflows decision its destination
+    // route answers. A historical start result outlives the feature being
+    // turned off; while Workflows are unavailable — or not yet known to be
+    // available — it neither advertises the Run nor reads it.
+    const workflowsAvailable = useWorkflowsAvailability().available;
     // Exact-Home: the active store holds only the active Account's Runs, so a
     // row from another Home never reads or refreshes it.
     const homeIsActive = activeScope !== null
         && areServerProfileIdentifiersEquivalent(activeScope.serverId, props.serverId);
-    const row = useWorkflowRun(homeIsActive ? runId : null);
+    const readable = workflowsAvailable && homeIsActive;
+    const row = useWorkflowRun(readable ? runId : null);
     const summary = row?.summary ?? null;
     const summaryKnown = summary !== null;
 
     React.useEffect(() => {
-        if (!homeIsActive || summaryKnown) return;
+        if (!readable || summaryKnown) return;
         const lifetime = captureActiveServerAccountScopeLifetime();
         if (lifetime === null) return;
         const controller = new AbortController();
@@ -121,9 +128,9 @@ function MountedWorkflowRunReference(props: Readonly<{
             retirement.dispose();
             controller.abort();
         };
-    }, [homeIsActive, runId, summaryKnown]);
+    }, [readable, runId, summaryKnown]);
 
-    if (!homeIsActive) return null;
+    if (!readable) return null;
 
     // The same three-way name rule as the Workflows collection: the accepted
     // private title when this device can read it, an explicit unavailable
@@ -139,7 +146,7 @@ function MountedWorkflowRunReference(props: Readonly<{
     const stateLabel = summary ? describeWorkflowRunState(summary.state).label : null;
     const open = (): void => {
         navigateWithBlurOnWeb(() => {
-            router.push(createWorkflowRunRoute(runId) as never);
+            transcriptSource.navigate?.(createWorkflowRunRoute(runId));
         });
     };
 
@@ -151,6 +158,7 @@ function MountedWorkflowRunReference(props: Readonly<{
                 accessibilityLabel={[title, originLabel, stateLabel].filter((part) => part !== null).join(', ')}
                 accessibilityHint={t('workflows.run.open')}
                 onPress={open}
+                disabled={transcriptSource.navigate === null}
                 style={styles.row}
             >
                 <View style={styles.body}>
@@ -163,7 +171,7 @@ function MountedWorkflowRunReference(props: Readonly<{
                         />
                     ) : null}
                 </View>
-                <Text style={styles.action}>{t('workflows.run.open')}</Text>
+                {transcriptSource.navigate !== null ? <Text style={styles.action}>{t('workflows.run.open')}</Text> : null}
             </Pressable>
         </View>
     );

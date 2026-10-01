@@ -114,6 +114,8 @@ export type SessionInputFailureCode = SessionInputAdmissionRejectionCodeV1 | Exe
  */
 const sessionInputFailureLabelKeys = {
     session_input_invalid: 'session.pendingMessages.admissionRejected.invalid',
+    model_not_granted: 'session.pendingMessages.admissionRejected.modelNotGranted',
+    permission_mode_not_granted: 'session.pendingMessages.admissionRejected.permissionModeNotGranted',
     session_input_archived: 'session.pendingMessages.admissionRejected.archived',
     session_input_unauthorized: 'session.pendingMessages.admissionRejected.unauthorized',
     session_input_target_unavailable: 'session.pendingMessages.admissionRejected.targetUnavailable',

@@ -13,6 +13,15 @@ vi.mock('@/scm/operations/applyFileStageAction', () => ({
   applyFileStageAction: (...args: any[]) => applySpy(...args),
 }));
 
+// The row density is the user's setting (the storage boundary); the checkbox follows it.
+const settings = vi.hoisted(() => ({ filesChangedFilesRowDensity: 'comfortable' as 'comfortable' | 'compact' }));
+vi.mock('@/sync/domains/state/storage', async () => {
+  const { createStorageModuleStub, createUseSettingMock } = await import('@/dev/testkit/mocks/storage');
+  return createStorageModuleStub({
+    useSetting: createUseSettingMock({ fallback: (key) => (key === 'filesChangedFilesRowDensity' ? settings.filesChangedFilesRowDensity : undefined) as never }),
+  });
+});
+
 vi.mock('@/utils/system/fireAndForget', () => ({
   fireAndForget: (p: any) => void p,
 }));
@@ -101,5 +110,29 @@ describe('ScmCommitSelectionToggleButton', () => {
       })
     );
     expect(afterSpy).toHaveBeenCalled();
+  });
+
+  it('draws the 14 px checkbox on the compact one-line rhythm and the 16 px one beside a two-line row', async () => {
+    const { ScmCommitSelectionToggleButton } = await import('./ScmCommitSelectionToggleButton');
+    const render = () => renderScreen(
+        <ScmCommitSelectionToggleButton
+            sessionId="s1"
+            sessionPath="/tmp/repo"
+            snapshot={null}
+            scmWriteEnabled={true}
+            commitStrategy="atomic"
+            file={{ fullPath: 'src/a.ts' } as any}
+            selectedForCommit={false}
+            surface="files"
+            appearance="checkbox"
+        />,
+    );
+    const boxSize = (screen: Awaited<ReturnType<typeof render>>) => screen.findAll((node) => node.props?.name === 'square' && typeof node.props?.size === 'number')[0]?.props.size;
+    settings.filesChangedFilesRowDensity = 'comfortable';
+    const regular = boxSize(await render());
+    settings.filesChangedFilesRowDensity = 'compact';
+    const compact = boxSize(await render());
+    expect(regular).toBeGreaterThan(compact);
+    expect(compact! / regular!).toBeCloseTo(14 / 16, 1);
   });
 });

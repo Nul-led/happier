@@ -60,6 +60,7 @@ const EMPTY_HIDDEN_NATIVE_MODEL_KEYS: ReadonlySet<string> = new Set();
 
 export type NewSessionModelSelectionContentProps = Readonly<{
     presentation?: 'expanded' | 'compact';
+    modelDiscoveryFailed?: boolean;
     modelOptions: readonly NewSessionModelOption[];
     selectedModelId: ModelMode | undefined;
     selectedModelSelection?: SessionModelSelectionV1 | null;
@@ -248,7 +249,9 @@ export function NewSessionModelSelectionContent(props: NewSessionModelSelectionC
         onRequestClose?: () => void;
         closeAfterSelect?: boolean;
     }>) => (
+        // The wizard section header owns refresh and activity; the shared picker owns failure copy.
         <SessionModelPicker
+            probe={props.modelDiscoveryFailed ? { phase: 'idle', failed: true } : undefined}
             agentTargetKey={agentTargetKey ?? ''}
             nativeModels={agentTargetKey ? props.modelOptions : []}
             providerGroups={providerGroups}

@@ -18,8 +18,6 @@ import tweetnacl from 'tweetnacl';
 
 import packageJson from '../../package.json';
 
-const MAX_ACTIVATION_FILE_BYTES = 64 * 1024;
-
 export type EphemeralRunnerActivationFileErrorCode =
   | 'RUNNER_ACTIVATION_FILE_INVALID'
   | 'RUNNER_ARTIFACT_MISMATCH';
@@ -50,7 +48,6 @@ export async function readStrictEphemeralRunnerActivationDocument(
   } catch {
     throw invalidActivationFile();
   }
-  if (Buffer.byteLength(raw, 'utf8') > MAX_ACTIVATION_FILE_BYTES) throw invalidActivationFile();
   let decoded: unknown;
   try {
     decoded = JSON.parse(raw);

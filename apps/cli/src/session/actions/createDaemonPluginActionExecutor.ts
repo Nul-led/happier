@@ -6,18 +6,18 @@ import {
 } from '@happier-dev/protocol';
 
 import { requestDaemonPluginActionExecution } from '@/daemon/controlClient';
-import type { PluginActionExecutionAttempt } from '@/plugins/projection/actions/execute';
+import type { PluginActionExecutionAttempt } from '@/plugins/runtime/invocation/actions/executeContributedAction';
 
-type GenerationBoundActionExecutorContext = ActionExecutorContext & Readonly<{
+type OccurrenceBoundActionExecutorContext = ActionExecutorContext & Readonly<{
   /** Host-stamped turn admission fence; never Action input or SDK surface. */
-  expectedContributorImmutableGenerationId?: string;
+  expectedContributorOccurrenceId?: string;
 }>;
 
 type ActionExecutorLike = Readonly<{
   execute: (
     actionId: ActionId,
     input: unknown,
-    context?: GenerationBoundActionExecutorContext,
+    context?: OccurrenceBoundActionExecutorContext,
   ) => Promise<ActionExecuteResult>;
 }>;
 
@@ -49,9 +49,8 @@ export type PluginActionExecutionRequestOwner = (request: Readonly<{
     actionId: string;
     input: unknown;
     surface: 'cli' | 'mcp' | 'agent';
-    authority: NonNullable<ActionExecutorContext['authority']>;
     defaultSessionId?: string;
-    expectedContributorImmutableGenerationId?: string;
+    expectedContributorOccurrenceId?: string;
   }>, options?: Readonly<{ signal?: AbortSignal }>) => Promise<PluginActionExecutionAttempt>;
 
 /** Routes dynamic/meta Actions to one explicit execution owner before the built-in executor. */
@@ -73,15 +72,14 @@ export function createPluginActionExecutor(params: Readonly<{
           actionId: normalizedActionId,
           input,
           surface,
-          authority: context?.authority ?? 'account_automation',
           ...(typeof context?.defaultSessionId === 'string'
             ? { defaultSessionId: context.defaultSessionId }
             : {}),
-          ...(typeof context?.expectedContributorImmutableGenerationId === 'string'
-            && context.expectedContributorImmutableGenerationId.trim().length > 0
+          ...(typeof context?.expectedContributorOccurrenceId === 'string'
+            && context.expectedContributorOccurrenceId.trim().length > 0
             ? {
-                expectedContributorImmutableGenerationId:
-                  context.expectedContributorImmutableGenerationId.trim(),
+                expectedContributorOccurrenceId:
+                  context.expectedContributorOccurrenceId.trim(),
               }
             : {}),
         };

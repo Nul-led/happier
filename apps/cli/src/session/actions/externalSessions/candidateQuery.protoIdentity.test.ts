@@ -69,6 +69,7 @@ describe('External Sessions candidate identity persistence', () => {
         const hydrateCandidate = vi.fn(async (candidate: Candidate) => candidate);
         const query = (cursor?: string) => executeExternalSessionCandidateQuery({
             activeServerDir,
+            agentSourceCustody: { kind: 'development', registeredRootId: 'fixture-source-root' },
             agentIdentity: { pluginId: 'happier.fixture', localId: 'fixture' },
             source: { kind: 'fixture' },
             ...(cursor ? { cursor } : {}),

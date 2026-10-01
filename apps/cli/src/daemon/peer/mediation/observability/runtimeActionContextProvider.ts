@@ -1,4 +1,4 @@
-import { decodeJwtPayload } from '@/cloud/decodeJwtPayload';
+import { decodeJwtPayload, readAccountIdFromToken } from '@/cloud/decodeJwtPayload';
 import type { DaemonPeerMediationObservabilityRuntime } from '@/daemon/machine/peerMediationObservabilityRuntime';
 
 import type { DaemonPeerMediationObservabilityRuntimeActionContext } from './runtimeActionExecutor';
@@ -22,12 +22,10 @@ export function installPeerMediationObservabilityRuntimeActionContextProvider(
         logger: PeerMediationObservabilityDiagnosticLogger;
     }>,
 ): void {
-    const payload = decodeJwtPayload(input.credentialsToken);
-    const rawSubject = payload?.sub;
-    const accountId = typeof rawSubject === 'string' ? rawSubject.trim() : '';
+    const accountId = readAccountIdFromToken(input.credentialsToken);
     if (!accountId) {
         input.logger.warn('[DAEMON RUN] Peer mediation observability read-path disabled: JWT subject missing or malformed', {
-            reason: payload ? 'jwt_sub_missing' : 'jwt_payload_invalid',
+            reason: decodeJwtPayload(input.credentialsToken) ? 'jwt_sub_missing' : 'jwt_payload_invalid',
         });
         return;
     }

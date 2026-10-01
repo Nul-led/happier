@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { access, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -51,7 +52,7 @@ async function waitForFile(path: string): Promise<void> {
 }
 
 async function killBootstrapChildAtBoundary(input: Readonly<{
-  mode: 'existing' | 'missing-git';
+  mode: 'existing' | 'existing-quarantined' | 'missing-git';
   target: string;
   staging: string;
   ready: string;
@@ -127,6 +128,38 @@ describe('workspaceSyncTargetBootstrap', () => {
     await expect(readFile(join(target, 'old.txt'), 'utf8')).resolves.toBe('old');
     await expect(readFile(join(target, 'new.txt'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
     await recovered.release();
+    await rm(fixture, { recursive: true, force: true });
+  }, 60_000);
+
+  it('rehydrates an absent target by restoring the quarantined predecessor before binding root identity', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-bootstrap-crash-quarantined-'));
+    const target = join(fixture, 'target');
+    const staging = join(fixture, 'staging');
+    const ready = join(fixture, 'child-ready');
+    await mkdir(target);
+    await writeFile(join(target, 'old.txt'), 'old');
+    await killBootstrapChildAtBoundary({ mode: 'existing-quarantined', target, staging, ready });
+    await expect(access(target)).rejects.toMatchObject({ code: 'ENOENT' });
+
+    const recovered = await rehydrateWorkspaceSyncTargetBootstrap({
+      rootPath: target,
+      relationshipId: 'relationship-crash',
+      endpointRole: 'beta',
+      targetWorkspaceRefId: 'workspace-beta',
+      policyDigest: 'a'.repeat(64),
+      contentSelection: 'all_files',
+      materializationDirectory: staging,
+      rootOwnershipManager: createWorkspaceRootOwnershipManager({ lockDirectory: join(staging, 'root-locks') }),
+      requireMaterializationReceipt: true,
+    });
+
+    expect(recovered).toBeNull();
+    await expect(readFile(join(target, 'old.txt'), 'utf8')).resolves.toBe('old');
+    await expect(access(join(staging, `${createHash('sha256')
+      .update('workspace-sync-bootstrap-v1\0')
+      .update('relationship-crash')
+      .update('\0beta')
+      .digest('hex')}.json`))).rejects.toMatchObject({ code: 'ENOENT' });
     await rm(fixture, { recursive: true, force: true });
   }, 60_000);
 
@@ -729,6 +762,59 @@ describe('workspaceSyncTargetBootstrap', () => {
       expect.stringMatching(/\.ready\.json$/u),
     ]);
     await restarted?.release();
+    await rm(fixture, { recursive: true, force: true });
+  });
+
+  it('never restores the predecessor after exact READY when later Git verification fails', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-bootstrap-ready-verification-failure-'));
+    const target = join(fixture, 'target');
+    const materializationDirectory = join(fixture, 'staging');
+    const lockDirectory = join(fixture, 'locks');
+    await mkdir(target);
+    await writeFile(join(target, 'existing.txt'), 'preserve');
+    const prepared = await workspaceSyncTargetBootstrap(input({
+      rootPath: target,
+      materializationDirectory,
+      rootOwnershipManager: createWorkspaceRootOwnershipManager({ lockDirectory }),
+      targetBootstrap: 'materialize_from_source_workspace',
+      targetReplacementApproval: await replacementApproval(target),
+      materializeSeed: async ({ canonicalRoot, materializationReceiptPath, originalTargetExists }) => {
+        const materialization = await beginWorkspaceTargetMaterialization({
+          targetPath: canonicalRoot,
+          backupDirectoryPrefix: '.happier-sync-backup',
+          receiptPath: materializationReceiptPath,
+          originalTargetExists,
+        });
+        await mkdir(canonicalRoot);
+        await writeFile(join(canonicalRoot, 'seeded.txt'), 'seed');
+        await materialization.custody.bindPromotedTarget();
+        return materialization.custody;
+      },
+    }));
+    await prepared.publishReady();
+    await prepared.release();
+    const verificationFailure = Object.assign(new Error('source unavailable during invalid retry'), {
+      code: 'target_bootstrap_offline',
+    });
+
+    await expect(workspaceSyncTargetBootstrap(input({
+      rootPath: target,
+      materializationDirectory,
+      rootOwnershipManager: createWorkspaceRootOwnershipManager({ lockDirectory }),
+      contentSelection: 'git_worktree',
+      targetBootstrap: 'materialize_from_source_workspace',
+      prepareGitTarget: async ({ targetBootstrap }) => {
+        expect(targetBootstrap).toBe('use_existing');
+        throw verificationFailure;
+      },
+    }))).rejects.toBe(verificationFailure);
+
+    await expect(readFile(join(target, 'seeded.txt'), 'utf8')).resolves.toBe('seed');
+    await expect(readFile(join(target, 'existing.txt'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+    expect((await readdir(fixture)).some((name) => name.startsWith('.happier-sync-backup.'))).toBe(false);
+    await expect(readdir(materializationDirectory)).resolves.toEqual([
+      expect.stringMatching(/\.ready\.json$/u),
+    ]);
     await rm(fixture, { recursive: true, force: true });
   });
 

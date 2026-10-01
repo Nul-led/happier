@@ -1,6 +1,6 @@
 import os from 'os';
 
-import { execFileWithDeadline } from '@happier-dev/cli-common/process';
+import { readLocalHostIdentity, readPreferredHostName } from '@happier-dev/cli-common/process';
 
 import { configuration } from '@/configuration';
 import { projectPath } from '@/projectPath';
@@ -8,43 +8,29 @@ import type { MachineMetadata } from '@/api/types';
 import packageJson from '../../../package.json';
 
 export async function getPreferredHostName(): Promise<string> {
-  const fallback = os.hostname();
-  if (process.platform !== 'darwin') {
-    return fallback;
-  }
-
-  const tryScutil = async (key: 'HostName' | 'LocalHostName' | 'ComputerName'): Promise<string | null> => {
-    try {
-      // 400 ms is a very small budget on a loop that stalls for seconds; with a `child_process`
-      // `timeout` that turns a completed `scutil` into an empty success, which reads exactly like
-      // "this key is not set" and silently demotes the machine to its `os.hostname()` fallback.
-      const { stdout } = await execFileWithDeadline('scutil', ['--get', key], { timeout: 400 });
-      const value = String(stdout).trim();
-      return value.length > 0 ? value : null;
-    } catch {
-      return null;
-    }
-  };
-
-  // Prefer HostName (can be FQDN) → LocalHostName → ComputerName → os.hostname()
-  return (await tryScutil('HostName'))
-    ?? (await tryScutil('LocalHostName'))
-    ?? (await tryScutil('ComputerName'))
-    ?? fallback;
+  return await readPreferredHostName();
 }
 
 type CurrentDaemonMachineMetadataFields = Pick<
   MachineMetadata,
   'host' | 'platform' | 'happyCliVersion' | 'homeDir' | 'happyHomeDir' | 'happyLibDir'
->;
+> & Partial<Pick<MachineMetadata, 'cliUpdate'>>;
+
+/**
+ * The daemon-owned metadata fields, refreshed without touching user-owned ones (e.g.
+ * `displayName`). `cliUpdate` is the daemon's K5 CLI update facts (plan R13): absent from a caller
+ * that does not produce them, which leaves the stored facts as they were.
+ */
 
 export function refreshMachineMetadataForCurrentDaemon(
   current: Partial<MachineMetadata>,
   fields: CurrentDaemonMachineMetadataFields,
 ): MachineMetadata {
+  const { cliUpdate, ...ownedFields } = fields;
   const next: MachineMetadata = {
     ...current,
-    ...fields,
+    ...ownedFields,
+    ...(cliUpdate ? { cliUpdate } : {}),
     daemonTerminalSessionAttachSupported: true,
     daemonSessionGoalControlsSupported: true,
   };
@@ -57,17 +43,25 @@ export function refreshMachineMetadataForCurrentDaemon(
     && current.happyLibDir === next.happyLibDir
     && current.daemonTerminalSessionAttachSupported === next.daemonTerminalSessionAttachSupported
     && current.daemonSessionGoalControlsSupported === next.daemonSessionGoalControlsSupported
+    && JSON.stringify(current.cliUpdate ?? null) === JSON.stringify(next.cliUpdate ?? null)
   ) {
     return current as MachineMetadata;
   }
   return next;
 }
 
-export const initialMachineMetadata: MachineMetadata = refreshMachineMetadataForCurrentDaemon({}, {
-  host: os.hostname(),
-  platform: os.platform(),
+const initialDaemonMetadata = refreshMachineMetadataForCurrentDaemon({}, {
+  host: '',
+  platform: readLocalHostIdentity().platform,
   happyCliVersion: packageJson.version,
   homeDir: os.homedir(),
   happyHomeDir: configuration.happyHomeDir,
   happyLibDir: projectPath(),
 });
+
+export const initialMachineMetadata: MachineMetadata = {
+  ...initialDaemonMetadata,
+  get host() {
+    return readLocalHostIdentity().machineName;
+  },
+};

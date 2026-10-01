@@ -7,7 +7,8 @@ import {
     isTransferFinalizeRecoveryFailure,
     type TransferFinalizeRecoveryFailure,
 } from '@/sync/domains/transfers/runtime/transferRuntime/plumbing/directTransferFinalizeRecovery';
-import type { SessionAttachmentsUploadFinalizeResponse } from '@/sync/domains/transfers/runtime/transferRuntime/families/sessionAttachmentTransfers';
+import type { SessionAttachmentsUploadFinalizeResponse, SessionAttachmentTransferContext } from '@/sync/domains/transfers/runtime/transferRuntime/families/sessionAttachmentTransfers';
+import type { SessionAttachmentHandleV1 } from '@happier-dev/protocol';
 
 export type AttachmentsUploadLocation = 'workspace' | 'os_temp';
 export type VcsIgnoreStrategy = 'git_info_exclude' | 'gitignore' | 'none';
@@ -26,7 +27,7 @@ export type AttachmentsUploadProgress = Readonly<{
 }>;
 
 export type SessionAttachmentsUploadFileResult =
-    | Readonly<{ success: true; path: string; sizeBytes: number; sha256: string }>
+    | Readonly<{ success: true; path: string; sizeBytes: number; sha256: string; attachmentHandle?: SessionAttachmentHandleV1 }>
     | Readonly<{ success: false; error: string; errorCode?: string }>
     | TransferFinalizeRecoveryFailure<SessionAttachmentsUploadFinalizeResponse>;
 
@@ -103,6 +104,7 @@ async function resolveSizeBytesWithTimeout(source: AttachmentsUploadFileSource):
 export async function sessionAttachmentsUploadFile(args: Readonly<{
     sessionId: string;
     sessionTarget?: ExactSessionMachineTargetIdentity;
+    transferContext?: SessionAttachmentTransferContext;
     file: AttachmentsUploadFileSource;
     messageLocalId: string;
     config: AttachmentsUploadConfig;
@@ -137,8 +139,11 @@ export async function sessionAttachmentsUploadFile(args: Readonly<{
             await reader.close();
         };
         try {
+            const transferContext = args.transferContext
+                ?? (await import('@/sync/sync')).sync.getSessionAttachmentTransferContext(args.sessionId);
             const bulkUpload = await uploadDaemonSessionAttachmentFromReader({
                 session: args.sessionTarget ?? args.sessionId,
+                transferContext,
                 fileReader: {
                     sizeBytes: described.sizeBytes,
                     readBytes: async (offset, length) => await reader.readBytes(offset, length),
@@ -171,7 +176,8 @@ export async function sessionAttachmentsUploadFile(args: Readonly<{
                 return { success: false, error: bulkUpload.error ?? 'Upload failed', errorCode: bulkUpload.errorCode };
             }
 
-            return { success: true, path: bulkUpload.path, sizeBytes: bulkUpload.sizeBytes, sha256: bulkUpload.sha256 };
+            return { success: true, path: bulkUpload.path, sizeBytes: bulkUpload.sizeBytes, sha256: bulkUpload.sha256,
+                ...(bulkUpload.attachmentHandle ? { attachmentHandle: bulkUpload.attachmentHandle } : {}) };
         } finally {
             try {
                 await closeReaderOnce();

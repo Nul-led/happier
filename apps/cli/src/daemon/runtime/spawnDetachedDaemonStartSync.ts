@@ -11,6 +11,7 @@ import {
   parsePowerShellStartProcessPid,
 } from '@/daemon/platform/windows/visibleConsoleSpawn';
 import { resolveDaemonLaunchSpec } from './resolveDaemonLaunchSpec';
+import { stripDaemonServiceInstallRequestEnv } from '@/utils/processEnv/stripDaemonServiceInstallRequestEnv';
 
 function escapePowerShellSingleQuoted(value: string): string {
   return value.replaceAll("'", "''");
@@ -113,10 +114,10 @@ export async function spawnDetachedDaemonStartSync(
   const { startupSource, ...spawnOptions } = options;
   const requestedEnv = spawnOptions.env ?? process.env;
   const launchSpec = await resolveDaemonLaunchSpec(['daemon', 'start-sync'], requestedEnv);
-  const env = {
+  const env = stripDaemonServiceInstallRequestEnv({
     ...requestedEnv,
     ...(launchSpec.env ?? {}),
-  };
+  });
 
   // Detached daemon is typically spawned via `node <entry> daemon start-sync`, so argv no longer encodes
   // the shim name (`hprev`/`hdev`). Force the lane into the child environment so daemon state files are

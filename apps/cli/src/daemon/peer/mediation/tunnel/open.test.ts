@@ -10,6 +10,7 @@ import {
     type DirectRouteGrantPayloadV1,
     type DirectRouteGrantPayloadV2,
     type PeerTcpTunnelOpenV1,
+    type PeerTcpTunnelOpenV2,
 } from '@happier-dev/protocol';
 import { createAtomicRouteGrantConsumption } from './grantConsumption';
 
@@ -41,9 +42,6 @@ function createSignedTunnelGrant(overrides: Partial<DirectRouteGrantPayloadV1> =
             kind: 'tcp_tunnel',
             tunnelId: 'tun_1',
             allowedPorts: [3000],
-            maxIdleMs: 30_000,
-            maxDurationMs: 300_000,
-            maxTotalBytes: 4096,
         },
         iat: 1_000,
         exp: 601_000,
@@ -62,7 +60,7 @@ function createSignedTunnelGrant(overrides: Partial<DirectRouteGrantPayloadV1> =
     };
 }
 
-function createOpen(overrides: Partial<PeerTcpTunnelOpenV1> = {}): PeerTcpTunnelOpenV1 {
+function createLegacyOpen(overrides: Partial<PeerTcpTunnelOpenV1> = {}): PeerTcpTunnelOpenV1 {
     const nonceBase64Url = toBase64Url(new Uint8Array(32).fill(3));
     const nonceProof = {
         v: 1 as const,
@@ -96,17 +94,93 @@ function createOpen(overrides: Partial<PeerTcpTunnelOpenV1> = {}): PeerTcpTunnel
     };
 }
 
+function createOpen(overrides: Partial<PeerTcpTunnelOpenV2> = {}): PeerTcpTunnelOpenV2 {
+    const handle = createEphemeralPeerRouteProofHandleV2({ randomBytes: (length) => new Uint8Array(length).fill(9) });
+    const payload: DirectRouteGrantPayloadV2 = {
+        v: 2, grantId: 'grant_1', accountId: 'account_1', machineId: 'machine_1',
+        flowKind: 'tcp_tunnel', routeKind: 'loopback_direct',
+        scope: { kind: 'tcp_tunnel', tunnelId: 'tun_1', allowedPorts: [3000] },
+        iat: 1_000, exp: 601_000, aud: 'happier-daemon-route-grant', endpointFingerprint: 'endpoint_1',
+        proofKind: 'ephemeral_ed25519', ephemeralPublicKeyBase64Url: handle.publicKeyBase64Url,
+    };
+    const grant = {
+        payload,
+        signature: {
+            keyId: 'key_1', alg: 'Ed25519' as const,
+            valueBase64Url: toBase64Url(tweetnacl.sign.detached(
+                Buffer.from(createDirectRouteGrantSigningInputV2(payload), 'utf8'), signingKeyPair.secretKey,
+            )),
+        },
+    };
+    try {
+        return {
+            v: 2, kind: 'open', tunnelId: 'tun_1', targetMachineId: 'machine_1', routeKind: 'loopback_direct',
+            destination: { host: '127.0.0.1', port: 3000 }, grant, proof: handle.sign(grant), ...overrides,
+        };
+    } finally {
+        handle.dispose();
+    }
+}
+
 describe('openPeerTcpTunnel', () => {
-    it('admits a V2 tunnel with the canonical ephemeral proof and no account signing key', async () => {
+    it('refuses a signed preview when its canonical registration authority is absent', async () => {
+        const mod = await loadOpenModule();
+        if (!mod) throw new Error('open owner unavailable');
+        const handle = createEphemeralPeerRouteProofHandleV2({ randomBytes: (length) => new Uint8Array(length).fill(5) });
+        const payload: DirectRouteGrantPayloadV2 = {
+            v: 2, grantId: 'preview-grant', accountId: 'account_1', machineId: 'machine_1',
+            flowKind: 'tcp_tunnel', routeKind: 'iroh_peer',
+            scope: { kind: 'tcp_tunnel', tunnelId: 'preview-tunnel', allowedPorts: [5173], preview: {
+                previewId: 'preview-1', machineId: 'machine_1', owner: { kind: 'user', id: 'account_1' },
+                target: { scheme: 'http', host: '127.0.0.1', port: 5173 },
+            } },
+            iat: 1_000, exp: null, aud: 'happier-daemon-route-grant', endpointFingerprint: 'b'.repeat(64),
+            iroh: { initiator: { kind: 'account_client', endpointId: 'a'.repeat(64) }, target: { machineId: 'machine_1', endpointId: 'b'.repeat(64) }, operationKind: 'tcp_tunnel' },
+            proofKind: 'ephemeral_ed25519', ephemeralPublicKeyBase64Url: handle.publicKeyBase64Url,
+        };
+        const grant = { payload, signature: { keyId: 'key_1', alg: 'Ed25519' as const,
+            valueBase64Url: toBase64Url(tweetnacl.sign.detached(Buffer.from(createDirectRouteGrantSigningInputV2(payload)), signingKeyPair.secretKey)) } };
+        try {
+            const result = await mod.openPeerTcpTunnel({
+                open: { v: 2, kind: 'open', tunnelId: 'preview-tunnel', targetMachineId: 'machine_1', routeKind: 'iroh_peer',
+                    destination: { host: '127.0.0.1', port: 5173 }, grant, proof: handle.sign(grant) },
+                nowMs: 2_000, expected: { accountId: 'account_1', machineId: 'machine_1', endpointFingerprint: 'endpoint_1', irohEndpointId: 'b'.repeat(64) },
+                trustRoots: [{ keyId: 'key_1', publicKey: toBase64Url(signingKeyPair.publicKey) }],
+                grantConsumption: createAtomicRouteGrantConsumption({ activationFailurePolicy: 'release' }),
+            });
+            expect(result).toMatchObject({ ok: false, reasonCode: 'preview_registration_unavailable' });
+        } finally { handle.dispose(); }
+    });
+    it('rejects the retired account-signed direct tunnel before destination admission', async () => {
+        const mod = await loadOpenModule();
+        expect(mod).not.toBeNull();
+        const result = await mod!.openPeerTcpTunnel({
+            open: createLegacyOpen(),
+            nowMs: 2_000,
+            expected: {
+                accountId: 'account_1', machineId: 'machine_1', endpointFingerprint: 'endpoint_1',
+            },
+            trustRoots: [{ keyId: 'key_1', publicKey: toBase64Url(signingKeyPair.publicKey) }],
+            grantConsumption: createAtomicRouteGrantConsumption({ activationFailurePolicy: 'release' }),
+        });
+        expect(result).toMatchObject({ ok: false, reasonCode: 'open_invalid' });
+    });
+
+    it.each(['loopback_direct', 'iroh_peer'] as const)('admits a %s V2 tunnel with the canonical ephemeral proof and no account signing key', async (routeKind) => {
         const mod = await loadOpenModule();
         const handle = createEphemeralPeerRouteProofHandleV2({
             randomBytes: (length) => new Uint8Array(length).fill(length === 32 ? 4 : 5),
         });
         const payload: DirectRouteGrantPayloadV2 = {
             v: 2, grantId: 'grant_v2', accountId: 'account_1', machineId: 'machine_1',
-            flowKind: 'tcp_tunnel', routeKind: 'loopback_direct',
-            scope: { kind: 'tcp_tunnel', tunnelId: 'tun_v2', allowedPorts: [3000], maxIdleMs: 30_000, maxDurationMs: 300_000 },
-            iat: 1_000, exp: 601_000, aud: 'happier-daemon-route-grant', endpointFingerprint: 'endpoint_1',
+            flowKind: 'tcp_tunnel', routeKind,
+            scope: { kind: 'tcp_tunnel', tunnelId: 'tun_v2', allowedPorts: [3000], },
+            iat: 1_000, exp: 601_000, aud: 'happier-daemon-route-grant', endpointFingerprint: routeKind === 'iroh_peer' ? 'b'.repeat(64) : 'endpoint_1',
+            ...(routeKind === 'iroh_peer' ? { iroh: {
+                initiator: { kind: 'account_client' as const, endpointId: 'a'.repeat(64) },
+                target: { machineId: 'machine_1', endpointId: 'b'.repeat(64) },
+                operationKind: 'tcp_tunnel' as const,
+            } } : {}),
             proofKind: 'ephemeral_ed25519', ephemeralPublicKeyBase64Url: handle.publicKeyBase64Url,
         };
         const grant = {
@@ -122,17 +196,28 @@ describe('openPeerTcpTunnel', () => {
         const consumption = createAtomicRouteGrantConsumption({ activationFailurePolicy: 'release' });
         const open = {
             v: 2 as const, kind: 'open' as const, tunnelId: 'tun_v2', targetMachineId: 'machine_1',
-            routeKind: 'loopback_direct' as const, destination: { host: '127.0.0.1', port: 3000 }, grant, proof,
+            routeKind, destination: { host: '127.0.0.1', port: 3000 }, grant, proof,
         };
         const input = {
             open,
             nowMs: 2_000,
-            expected: { accountId: 'account_1', machineId: 'machine_1', endpointFingerprint: 'endpoint_1' },
+            expected: {
+                accountId: 'account_1', machineId: 'machine_1', endpointFingerprint: 'endpoint_1',
+                ...(routeKind === 'iroh_peer' ? { irohEndpointId: 'b'.repeat(64) } : {}),
+            },
             trustRoots: [{ keyId: 'key_1', publicKey: toBase64Url(signingKeyPair.publicKey) }],
             grantConsumption: consumption,
             connectTcp: vi.fn(async () => ({ close: vi.fn() })),
         };
 
+        if (routeKind === 'iroh_peer') {
+            await expect(mod?.openPeerTcpTunnel({ ...input, open: {
+                ...open, destination: { host: '127.0.0.1', port: 3001 },
+            } })).resolves.toMatchObject({ ok: false, reasonCode: 'destination_port_not_allowed' });
+            await expect(mod?.openPeerTcpTunnel({ ...input, expected: {
+                ...input.expected, irohEndpointId: 'c'.repeat(64),
+            } })).resolves.toMatchObject({ ok: false, reasonCode: 'grant_endpoint_mismatch' });
+        }
         await expect(mod?.openPeerTcpTunnel(input)).resolves.toMatchObject({ ok: true, receipt: 'peer.tunnel.opened' });
         await expect(mod?.openPeerTcpTunnel(input)).resolves.toMatchObject({ ok: false, reasonCode: 'grant_already_consumed' });
     });
@@ -149,7 +234,6 @@ describe('openPeerTcpTunnel', () => {
                 accountId: 'account_1',
                 machineId: 'machine_1',
                 endpointFingerprint: 'endpoint_1',
-                accountPublicKey: toBase64Url(accountKeyPair.publicKey),
             },
             trustRoots: [{ keyId: 'key_1', publicKey: toBase64Url(signingKeyPair.publicKey) }],
             grantConsumption: createAtomicRouteGrantConsumption({ activationFailurePolicy: 'release' }),
@@ -163,7 +247,7 @@ describe('openPeerTcpTunnel', () => {
             receipt: 'peer.tunnel.opened',
         });
 
-        expect(connectTcp).toHaveBeenCalledWith({ host: '127.0.0.1', port: 3000 });
+        expect(connectTcp).not.toHaveBeenCalled();
     });
 
     it('returns binary_frame_v2 in the open response when the loopback tunnel selected binary encoding', async () => {
@@ -181,7 +265,6 @@ describe('openPeerTcpTunnel', () => {
                 accountId: 'account_1',
                 machineId: 'machine_1',
                 endpointFingerprint: 'endpoint_1',
-                accountPublicKey: toBase64Url(accountKeyPair.publicKey),
             },
             trustRoots: [{ keyId: 'key_1', publicKey: toBase64Url(signingKeyPair.publicKey) }],
             grantConsumption: createAtomicRouteGrantConsumption({ activationFailurePolicy: 'release' }),
@@ -215,7 +298,6 @@ describe('openPeerTcpTunnel', () => {
                 accountId: 'account_1',
                 machineId: 'machine_1',
                 endpointFingerprint: 'endpoint_1',
-                accountPublicKey: toBase64Url(accountKeyPair.publicKey),
             },
             trustRoots: [{ keyId: 'key_1', publicKey: toBase64Url(signingKeyPair.publicKey) }],
             grantConsumption: createAtomicRouteGrantConsumption({ activationFailurePolicy: 'release' }),
@@ -240,7 +322,6 @@ describe('openPeerTcpTunnel', () => {
                 accountId: 'account_1',
                 machineId: 'machine_1',
                 endpointFingerprint: 'endpoint_1',
-                accountPublicKey: toBase64Url(accountKeyPair.publicKey),
             },
             trustRoots: [{ keyId: 'key_1', publicKey: toBase64Url(signingKeyPair.publicKey) }],
             grantConsumption: createAtomicRouteGrantConsumption({ activationFailurePolicy: 'release' }),
@@ -254,7 +335,15 @@ describe('openPeerTcpTunnel', () => {
         expect(connectTcp).not.toHaveBeenCalled();
     });
 
-    it('normalizes bracketed IPv6 loopback before opening the TCP connection', async () => {
+    it.each(['2130706433', '0177.0.0.1', '::ffff:127.0.0.1'])(
+        'uses the protocol loopback owner for the literal destination %s',
+        async (host) => {
+            const mod = await loadOpenModule();
+            expect(mod?.isPeerTcpTunnelLoopbackDestinationHost(host)).toBe(true);
+        },
+    );
+
+    it('normalizes bracketed IPv6 loopback for the admitted child destination without dialing TCP', async () => {
         const mod = await loadOpenModule();
         const connectTcp = vi.fn(async () => ({ close: vi.fn() }));
         expect(mod?.openPeerTcpTunnel).toBeTypeOf('function');
@@ -266,7 +355,6 @@ describe('openPeerTcpTunnel', () => {
                 accountId: 'account_1',
                 machineId: 'machine_1',
                 endpointFingerprint: 'endpoint_1',
-                accountPublicKey: toBase64Url(accountKeyPair.publicKey),
             },
             trustRoots: [{ keyId: 'key_1', publicKey: toBase64Url(signingKeyPair.publicKey) }],
             grantConsumption: createAtomicRouteGrantConsumption({ activationFailurePolicy: 'release' }),
@@ -274,13 +362,11 @@ describe('openPeerTcpTunnel', () => {
         })).resolves.toMatchObject({
             ok: true,
             receipt: 'peer.tunnel.opened',
-            // The admitted tunnel publishes one canonical destination so every later dial on it
-            // — the base connection here and the substream mux in `registerRoutes` — resolves the
-            // same normalized host instead of re-deriving it from the open frame.
+            // Every child resolves the destination normalized by the signed admission owner.
             destination: { host: '::1', port: 3000 },
         });
 
-        expect(connectTcp).toHaveBeenCalledWith({ host: '::1', port: 3000 });
+        expect(connectTcp).not.toHaveBeenCalled();
     });
 
     it('refuses a loopback direct open that names no TCP destination', async () => {
@@ -300,7 +386,6 @@ describe('openPeerTcpTunnel', () => {
                 accountId: 'account_1',
                 machineId: 'machine_1',
                 endpointFingerprint: 'endpoint_1',
-                accountPublicKey: toBase64Url(accountKeyPair.publicKey),
             },
             trustRoots: [{ keyId: 'key_1', publicKey: toBase64Url(signingKeyPair.publicKey) }],
             grantConsumption: createAtomicRouteGrantConsumption({ activationFailurePolicy: 'release' }),

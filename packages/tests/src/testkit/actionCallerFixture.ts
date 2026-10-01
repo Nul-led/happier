@@ -33,6 +33,8 @@ export function createAutomationRunCallerFixture(input: Readonly<{
 export function createPluginCallerFixture(input: Readonly<{
   pluginId: string;
   contribution: PluginCallerFixture['contribution'];
+  occurrenceId: PluginCallerFixture['occurrenceId'];
+  sourceCustody: PluginCallerFixture['sourceCustody'];
   materialization: PluginCallerFixture['materialization'];
   originSurface?: PluginCallerFixture['originSurface'];
 }>): PluginCallerFixture {
@@ -40,7 +42,11 @@ export function createPluginCallerFixture(input: Readonly<{
     kind: 'plugin' as const,
     pluginId: input.pluginId,
     contribution: Object.freeze({ ...input.contribution }),
-    materialization: Object.freeze({ ...input.materialization }),
+    occurrenceId: input.occurrenceId,
+    sourceCustody: Object.freeze({ ...input.sourceCustody }),
+    ...(input.materialization === undefined ? {} : {
+      materialization: Object.freeze({ ...input.materialization }),
+    }),
     ...(input.originSurface === undefined ? {} : { originSurface: input.originSurface }),
   });
 }

@@ -149,9 +149,9 @@ describe('desktop WebView native bridge', () => {
         });
     });
 
-    it('accepts injected reload/stop support on a backed desktop WebView (capability-truth flip ready)', async () => {
-        // The §5-gated Wry-injection verification can flip the native reload/stop bits true; the
-        // TS contract must accept that shape (recording/automation still false) and preserve the bits.
+    it.each([false, true])('accepts injected reload/stop and automation=%s on a backed desktop WebView', async (automation) => {
+        // Current Rust native_child_view_availability advertises injected automation; retain the
+        // already-supported false fact without downgrading the whole browsing surface.
         isDesktopHostMock.mockReturnValue(true);
         invokeDesktopHostMock.mockResolvedValue({
             available: true,
@@ -169,7 +169,7 @@ describe('desktop WebView native bridge', () => {
                 nativeDevtools: false,
                 capture: false,
                 recording: false,
-                automation: false,
+                automation,
             },
             disabledReasons: [],
         });
@@ -184,7 +184,7 @@ describe('desktop WebView native bridge', () => {
                 reload: true,
                 stop: true,
                 recording: false,
-                automation: false,
+                automation,
             },
             disabledReasons: [],
         });
@@ -456,6 +456,8 @@ describe('desktop WebView native bridge', () => {
                 currentUrl: 'https://example.com/next',
                 title: 'Example',
                 loadingState: 'finished',
+                canGoBack: true,
+                canGoForward: false,
                 lastError: null,
                 lastRejectedNavigation: {
                     url: 'file:///etc/passwd',
@@ -475,6 +477,8 @@ describe('desktop WebView native bridge', () => {
                 currentUrl: 'https://example.com/next',
                 title: 'Example',
                 loadingState: 'finished',
+                canGoBack: true,
+                canGoForward: false,
                 lastRejectedNavigation: {
                     reason: 'unsupported_url',
                 },
@@ -519,6 +523,8 @@ describe('desktop WebView native bridge', () => {
                 currentUrl: 'https://example.com/',
                 title: 'Example',
                 loadingState: 'crashed',
+                canGoBack: false,
+                canGoForward: false,
             },
         });
         const mod = await import('./desktopWebViewBridge');

@@ -3,9 +3,10 @@ import { View } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
 import { useAppPaneScope } from '@/components/appShell/panes/hooks/useAppPaneScope';
-import { Text } from '@/components/ui/text/Text';
-import { ReviewDraftSummary } from '@/components/sessions/reviews/comments/ReviewDraftSummary';
+import { REVIEW_TRAY_RESERVED_PX, ReviewDraftSummary } from '@/components/sessions/reviews/comments/ReviewDraftSummary';
+import { activeReviewFileKeyForSession } from '@/components/workspaces/scm/review/activeReviewFile';
 import { useReviewComposerHandoff } from '@/components/sessions/reviews/comments/useReviewComposerHandoff';
+import { useReviewAskComposer } from '@/components/sessions/reviews/comments/useReviewAskComposer';
 import { ReviewCommentsSessionSurface } from '@/components/reviews/ReviewCommentsSessionSurface';
 import { ChangedFilesReview } from '@/components/workspaces/scm/review/ChangedFilesReview';
 import { ChangedFilesViewModeMenu } from '@/components/sessions/files/ChangedFilesViewModeMenu';
@@ -24,6 +25,7 @@ import { useScmAdaptivePolling } from '@/scm/refresh/useScmAdaptivePolling';
 import { buildSnapshotSignature } from '@/scm/statusSync/projectState';
 import { deferOnWeb } from '@/utils/platform/deferOnWeb';
 import { NotSourceControlRepositoryState, SourceControlStaleSnapshotNotice, SourceControlUnavailableState } from '@/components/workspaces/scm/states';
+import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
 import { t } from '@/text';
 import { useLastNonNullValue } from '@/hooks/ui/useLastNonNullValue';
 import { useDerivedSessionChangeSet } from '@/sync/domains/session/changes/hooks/useDerivedSessionChangeSet';
@@ -35,10 +37,11 @@ import {
     resolveChangedFilesViewMode,
     type ChangedFilesViewMode,
 } from '@/scm/scmAttribution';
-import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { createPluginPermissionGrantActions } from '@/sync/domains/plugins/permissions/actions';
 import { usePluginPermissionGrants } from '@/sync/domains/plugins/permissions/usePluginPermissionGrants';
 import { createFrontDoorUiActionExecutor } from '@/sync/ops/actions/frontDoorRuntimeActionExecutor';
+import { useServerCredentialAccountScopeBindings } from '@/sync/domains/scope/useServerCredentialAccountScopes';
+import { usePreferredServerIdForSession } from '@/sync/runtime/orchestration/serverScopedRpc/usePreferredServerIdForSession';
 import {
     selectPluginPermissionPendingRequests,
 } from '@/sync/domains/plugins/permissions/store';
@@ -57,6 +60,7 @@ export type SessionScmReviewDetailsViewProps = Readonly<{
     sessionId: string;
     serverId?: string | null;
     scopeId: string;
+    active?: boolean;
 }>;
 
 const REVIEW_SCROLL_TOP_PERSIST_DEBOUNCE_MS = 250;
@@ -206,7 +210,18 @@ export const SessionScmReviewDetailsView = React.memo((props: SessionScmReviewDe
     const reviewCommentsEnabled = useFeatureEnabled('files.reviewComments') === true && Boolean(reviewScope);
     const reviewCommentDrafts = useWorkspaceReviewCommentsDrafts(reviewScope);
     const reviewDraftHandlers = useWorkspaceReviewCommentDraftHandlers(reviewScope);
-    const frontDoorActionExecutor = React.useMemo(() => createFrontDoorUiActionExecutor(), []);
+    const reviewServerId = usePreferredServerIdForSession({ serverId: props.serverId ?? null, sessionId: props.sessionId });
+    const accountBindings = useServerCredentialAccountScopeBindings([reviewServerId]);
+    const accountScope = [...accountBindings.values()][0]?.scope;
+    const frontDoorActionExecutor = React.useMemo(() => {
+        const execute = createFrontDoorUiActionExecutor(undefined, accountScope ? {
+            serverId: accountScope.serverId, expectedAccountId: accountScope.accountId,
+        } : undefined);
+        return ((...args: Parameters<typeof execute>) => {
+            if (!accountScope) return Promise.reject(new Error('action_account_scope_unavailable'));
+            return execute(...args);
+        });
+    }, [accountScope]);
     const pluginPermissionGrantActions = React.useMemo(
         () => createPluginPermissionGrantActions({ execute: frontDoorActionExecutor }),
         [frontDoorActionExecutor],
@@ -263,6 +278,7 @@ export const SessionScmReviewDetailsView = React.memo((props: SessionScmReviewDe
     }, [effectiveSnapshot]);
     const getSnapshotSignature = React.useCallback(() => snapshotSignature, [snapshotSignature]);
     const {
+        latestTurnId,
         latestTurnChangeSet,
         latestTurnScopedChangeSet,
         latestTurnDiffByPath,
@@ -270,11 +286,11 @@ export const SessionScmReviewDetailsView = React.memo((props: SessionScmReviewDe
         latestTurnCheckpointDiffByPath,
         sessionChangeSet,
         providerDiffByPath,
-    } = useDerivedSessionChangeSet(sessionAddress);
+    } = useDerivedSessionChangeSet(sessionAddress, effectiveSnapshot?.repo.rootPath);
     const [requestedChangedFilesViewMode, setRequestedChangedFilesViewMode] = React.useState<ChangedFilesViewMode | null>(null);
 
     useScmAdaptivePolling({
-        enabled: Boolean(props.sessionId) && effectiveSnapshot?.repo.isRepo === true,
+        enabled: props.active !== false && Boolean(props.sessionId) && effectiveSnapshot?.repo.isRepo === true,
         baseIntervalMs,
         stepIntervalMs: baseIntervalMs,
         maxIntervalMs,
@@ -282,7 +298,7 @@ export const SessionScmReviewDetailsView = React.memo((props: SessionScmReviewDe
         getSignature: getSnapshotSignature,
         invalidateAndAwait: React.useCallback(async () => {
             await scmStatusSync.invalidateFromAutoRefreshAndAwait(props.sessionId, props.serverId);
-        }, [props.sessionId]),
+        }, [props.serverId, props.sessionId]),
     });
 
     const scrollFades = useScrollEdgeFades({
@@ -297,6 +313,7 @@ export const SessionScmReviewDetailsView = React.memo((props: SessionScmReviewDe
         workspaceTouchedPaths: touchedPaths,
         searchQuery: '',
         showAllRepositoryFiles: true,
+        latestTurnId,
         latestTurnChangeSet: latestTurnScopedChangeSet,
         latestTurnEvidence: latestTurnChangeSet,
         sessionChangeSet,
@@ -448,6 +465,34 @@ export const SessionScmReviewDetailsView = React.memo((props: SessionScmReviewDe
         sessionPath,
     ]);
 
+    const isFileSelectedForNextCommit = React.useCallback((file: ScmFileStatus) => isFileSelectedForCommit({
+        commitStrategy: scmCommitStrategy,
+        file,
+        atomicSelectionPaths: atomicSelectionPathSet,
+    }), [atomicSelectionPathSet, scmCommitStrategy]);
+    const reviewDetailsHeader = React.useMemo(() => ({
+        isSelectedForCommit: scmWriteEnabled ? isFileSelectedForNextCommit : null,
+    }), [isFileSelectedForNextCommit, scmWriteEnabled]);
+    const reviewTrayVisible = reviewCommentsEnabled && reviewCommentDrafts.length > 0;
+    const askComposer = useReviewAskComposer({
+        sessionId: props.sessionId,
+        serverId: props.serverId,
+        drafts: reviewCommentDrafts,
+        reviewScope,
+        deleteDraft: reviewDraftHandlers.onDeleteReviewCommentDraft,
+        handOffToComposer: goToComposer,
+    });
+    // Review and the Git changed-files list share one active file for this Session.
+    const activeReviewFileKey = activeReviewFileKeyForSession(props.sessionId, props.serverId);
+    const activeReviewFile = React.useMemo(
+        () => ({ key: activeReviewFileKey, presented: props.active !== false }),
+        [activeReviewFileKey, props.active],
+    );
+    const onUpsertReviewCommentDraft = reviewDraftHandlers.onUpsertReviewCommentDraft;
+    const detachDraftFromNextMessage = React.useCallback((draft: (typeof reviewCommentDrafts)[number]) => {
+        onUpsertReviewCommentDraft({ ...draft, includeInPrompt: false });
+    }, [onUpsertReviewCommentDraft]);
+
     const reviewViewMenu = React.useMemo(() => (
         changed.showTurnViewToggle || changed.showTurnAgentReportedViewToggle
         || changed.showTurnCheckpointViewToggle || changed.showSessionViewToggle
@@ -466,12 +511,7 @@ export const SessionScmReviewDetailsView = React.memo((props: SessionScmReviewDe
 
     if (!effectiveSnapshot && !snapshotError) {
         return (
-            <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', paddingTop: 24 }}>
-                <ActivitySpinner size="small" color={theme.colors.text.secondary} />
-                <Text style={{ marginTop: 12, fontSize: 12, color: theme.colors.text.secondary }}>
-                    {t('common.loading')}
-                </Text>
-            </View>
+            <SurfaceStateCard testID="session-scm-review-loading" kind="loading" title={t('common.loading')} />
         );
     }
 
@@ -512,9 +552,11 @@ export const SessionScmReviewDetailsView = React.memo((props: SessionScmReviewDe
     return (
         <View style={{ flex: 1, minHeight: 0, position: 'relative' }}>
             {staleSnapshotNotice}
-            {reviewCommentsEnabled && project?.id ? (
+            {reviewCommentsEnabled && reviewScope ? (
                 <ReviewCommentsSessionSurface
-                    projectId={project.id}
+                    scope={accountScope}
+                    projectId={project?.id}
+                    workspace={{ machineId: reviewScope.machineId, path: reviewScope.rootPath }}
                     sessionId={props.sessionId}
                     execute={frontDoorActionExecutor}
                     directWriteGrants={directWriteGrants}
@@ -529,13 +571,11 @@ export const SessionScmReviewDetailsView = React.memo((props: SessionScmReviewDe
                     testID="review-comments-session"
                 />
             ) : null}
-            <ReviewDraftSummary
-                enabled={reviewCommentsEnabled}
-                drafts={reviewCommentDrafts}
-                onGoToComposer={goToComposer}
-            />
             <ChangedFilesReview
                 toolbarLeading={reviewViewMenu}
+                detailsHeader={reviewDetailsHeader}
+                activeReviewFile={activeReviewFile}
+                bottomInsetPx={reviewTrayVisible ? REVIEW_TRAY_RESERVED_PX : 0}
                 theme={theme}
                 sessionId={props.sessionId}
                 snapshot={effectiveSnapshot ?? null}
@@ -580,6 +620,13 @@ export const SessionScmReviewDetailsView = React.memo((props: SessionScmReviewDe
                 color={theme.colors.text.secondary}
                 size={14}
                 opacity={0.35}
+            />
+            <ReviewDraftSummary
+                enabled={reviewCommentsEnabled}
+                drafts={reviewCommentDrafts}
+                onGoToComposer={goToComposer}
+                onDetachDraft={detachDraftFromNextMessage}
+                composer={askComposer}
             />
         </View>
     );

@@ -11,6 +11,13 @@ const routerPushSpy = vi.hoisted(() => vi.fn());
 const openDefaultDetailsSpy = vi.hoisted(() => vi.fn());
 
 installSessionHandoffCommonModuleMocks({
+    storage: async (importOriginal) => {
+        const { createPartialStorageModuleMock } = await import('@/dev/testkit/mocks/storage');
+        return createPartialStorageModuleMock(importOriginal, {
+                useSetting: (key: string) => key === 'workspaceRefsV1' || key === 'workspaceSyncRelationshipsV1' ? [] : undefined,
+                useMachineDisplayNamesById: () => ({}),
+        });
+    },
     typography: async () => ({
         FontWeights: { regular: '400', semiBold: '500', bold: '600' },
         Typography: new Proxy({}, { get: () => () => ({}) }),
@@ -56,7 +63,8 @@ vi.mock('@/components/ui/buttons/IconButton', () => ({
 
 const desktopHostState = vi.hoisted(() => ({ isDesktop: false }));
 const invokeDesktopHostSpy = vi.hoisted(() => vi.fn(async () => undefined));
-vi.mock('@/utils/platform/desktopHost', () => ({
+vi.mock('@/utils/platform/desktopHost', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/utils/platform/desktopHost')>(),
     isDesktopHost: () => desktopHostState.isDesktop,
     invokeDesktopHost: invokeDesktopHostSpy,
 }));
@@ -104,9 +112,9 @@ function createSummary(
             alphaPath: '/alpha',
             betaPath: '/beta',
             mode,
-            changedFiles: conflictCount,
+            endpointStates: { alpha: null, beta: null },
             conflictCount,
-            lastSuccessfulSyncAtMs: 4,
+            lastCycleObservedAtMs: 4,
         },
     };
 }
@@ -153,6 +161,18 @@ describe('WorkspaceSyncRelationshipRow', () => {
         expect(screen.findByTestId('workspace-sync-relationship-relationship-1-conflicts')).toBeNull();
     });
 
+    it('omits Last checked when no cycle observation exists', async () => {
+        const { WorkspaceSyncRelationshipRow } = await import('./WorkspaceSyncRelationshipList');
+        const summary = createSummary(0);
+        if (!summary.status) throw new Error('expected relationship status fixture');
+        summary.status.lastCycleObservedAtMs = null;
+
+        const screen = await renderScreen(<WorkspaceSyncRelationshipRow summary={summary} />);
+
+        expect(screen.findByTestId('workspace-sync-relationship-relationship-1')?.props.subtitle)
+            .not.toContain('workspaceSync.lastChecked');
+    });
+
     it('uses one-way direction and machine display names for relationship and open actions', async () => {
         const { WorkspaceSyncRelationshipRow } = await import('./WorkspaceSyncRelationshipList');
         const summary = createSummary(0, 'keep_synced');
@@ -166,6 +186,18 @@ describe('WorkspaceSyncRelationshipRow', () => {
             expect.objectContaining({ id: 'open-beta', title: 'workspaceSync.actions.openOnMachine:{"machine":"Beta workstation"}' }),
             expect.objectContaining({ id: 'terminate', title: 'workspaceSync.actions.terminate' }),
         ]));
+    });
+
+    it('keeps a generic attention message for an unmapped daemon error code', async () => {
+        const { WorkspaceSyncRelationshipRow } = await import('./WorkspaceSyncRelationshipList');
+        const summary = createSummary(0);
+        if (!summary.status) throw new Error('expected relationship status fixture');
+        summary.status.errorCode = 'indeterminate';
+
+        const screen = await renderScreen(<WorkspaceSyncRelationshipRow summary={summary} />);
+
+        expect(screen.findByTestId('workspace-sync-relationship-relationship-1')?.props.subtitle)
+            .toContain('workspaceSync.error.needsAttention');
     });
 
     it('uses the existing details destination when its host surface has no pane callback', async () => {
@@ -199,5 +231,18 @@ describe('WorkspaceSyncRelationshipRow', () => {
         expect(invokeDesktopHostSpy).toHaveBeenCalledWith('system_tasks_open_log_path', { path: '/alpha' });
 
         desktopHostState.isDesktop = false;
+    });
+});
+
+describe('WorkspaceSyncRelationshipList', () => {
+    it('opens Add machine from Project availability without creating a Session', async () => {
+        const { WorkspaceSyncRelationshipList } = await import('./WorkspaceSyncRelationshipList');
+        const onAddMachine = vi.fn();
+        const screen = await renderScreen(
+            <WorkspaceSyncRelationshipList workspaceRefId="workspace-alpha" onAddMachine={onAddMachine} />,
+        );
+
+        await screen.pressByTestIdAsync('workspace-sync-add-machine');
+        expect(onAddMachine).toHaveBeenCalledOnce();
     });
 });

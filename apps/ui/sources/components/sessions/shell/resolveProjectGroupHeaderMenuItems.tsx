@@ -11,9 +11,9 @@ const PROJECT_GROUP_HEADER_MENU_ITEMS_CACHE = new LruMap<string, ReadonlyArray<D
 });
 
 export function resolveProjectGroupHeaderMenuItems(input: Readonly<{
-    menuEnabled: boolean;
     canOpenProject: boolean;
     canAddFolder: boolean;
+    canRename: boolean;
     hasCustomLabel: boolean;
     actionIconColor: string;
 }>): ReadonlyArray<DropdownMenuItem> {
@@ -21,6 +21,7 @@ export function resolveProjectGroupHeaderMenuItems(input: Readonly<{
         getPreferredLanguage(),
         input.canOpenProject ? '1' : '0',
         input.canAddFolder ? '1' : '0',
+        input.canRename ? '1' : '0',
         input.hasCustomLabel ? '1' : '0',
         input.actionIconColor,
     ].join('|');
@@ -41,13 +42,13 @@ export function resolveProjectGroupHeaderMenuItems(input: Readonly<{
             title: t('sessionsList.addFolder'),
             icon: <Icon name="folder-open" size={16} color={input.actionIconColor} />,
         } satisfies DropdownMenuItem] : []),
-        {
+        ...(input.canRename ? [{
             id: 'rename',
             title: t('sessionsList.renameWorkspace'),
             icon: <Icon name="pencil" size={16} color={input.actionIconColor} />,
-        },
+        } satisfies DropdownMenuItem] : []),
     ];
-    if (input.hasCustomLabel) {
+    if (input.canRename && input.hasCustomLabel) {
         next.push({
             id: 'reset',
             title: t('sessionsList.resetWorkspaceName'),

@@ -191,7 +191,6 @@ describe('voice provider registry', () => {
           },
           client: {
             artifactId: 'client',
-            modulePath: './voiceRuntime',
             exportName: 'activate',
           },
         },
@@ -377,13 +376,13 @@ describe('voice provider registry', () => {
     if (!fallback) throw new Error('expected generated fallback provider');
     const token = Object.freeze({});
     try {
-      replaceExternalVoiceProviderProjectionAuthority(null, token, new Map([[providerId, '7']]));
+      replaceExternalVoiceProviderProjectionAuthority(null, token, new Map([[providerId, 'google-occurrence-7']]));
       commitExternalVoiceProviderRegistration(Object.freeze({
         token,
         pluginId: fallback.pluginId,
         localId: 'gemini-stt',
         providerId,
-        projectionGeneration: '6',
+        occurrenceId: 'google-occurrence-6',
         descriptor: Object.freeze({
           ...fallback,
           settingsSectionId: 'voice.projected.stale-google',
@@ -397,7 +396,7 @@ describe('voice provider registry', () => {
         pluginId: fallback.pluginId,
         localId: 'gemini-stt',
         providerId,
-        projectionGeneration: '7',
+        occurrenceId: 'google-occurrence-7',
         descriptor: Object.freeze({
           ...fallback,
           settingsSectionId: 'voice.projected.current-google',
@@ -432,7 +431,7 @@ describe('voice provider registry', () => {
       replaceExternalVoiceProviderProjectionAuthority(
         null,
         token,
-        new Map([[admittedProviderId, '8']]),
+        new Map([[admittedProviderId, 'elevenlabs-occurrence-8']]),
       );
 
       expect(registry.get('happier.voice.google/gemini-stt')).toBeNull();
@@ -448,9 +447,9 @@ describe('voice provider registry', () => {
         pluginId: 'happier.voice.elevenlabs',
         localId: 'realtime-elevenlabs',
         providerId: admittedProviderId,
-        projectionGeneration: '8',
+        occurrenceId: 'elevenlabs-occurrence-8',
         // Bundled conversations intentionally reuse their generated descriptor;
-        // the live registration supplies enablement/generation authority.
+        // the live registration supplies enablement/occurrence authority.
         descriptor: null,
         adapter: null,
       }));

@@ -155,9 +155,22 @@ describe('getServerUrl', () => {
         delete process.env.EXPO_PUBLIC_SERVER_URL;
         delete process.env.EXPO_PUBLIC_HAPPY_PRECONFIGURED_SERVERS;
 
-        const { getServerUrl } = await importFreshServerConfig();
+        const { getDefaultServerUrl, getServerUrl } = await importFreshServerConfig();
 
+        expect(getDefaultServerUrl()).toBe('https://api.happier.dev');
         expect(getServerUrl()).toBe('https://api.happier.dev');
+    });
+
+    it('keeps the build default independent of the remembered active server', async () => {
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
+        const { getDefaultServerUrl, getServerUrl, setServerUrl } = await importFreshServerConfig();
+        try {
+            await setServerUrl('https://remembered.example.test');
+            expect(getServerUrl()).toBe('https://remembered.example.test');
+            expect(getDefaultServerUrl()).toBe('https://api.happier.dev');
+        } finally {
+            await setServerUrl(null);
+        }
     });
 
     it('trims EXPO_PUBLIC_HAPPY_SERVER_URL to avoid whitespace issues', async () => {

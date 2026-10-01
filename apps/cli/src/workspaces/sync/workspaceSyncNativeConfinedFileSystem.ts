@@ -1,8 +1,14 @@
 import { spawn as nodeSpawn, type SpawnOptionsWithoutStdio } from 'node:child_process';
+import { readdir } from 'node:fs/promises';
+import { join } from 'node:path';
 import type { Readable, Writable } from 'node:stream';
 import { StringDecoder } from 'node:string_decoder';
 
-import { WORKSPACE_SYNC_FILE_PREVIEW_MAX_BYTES } from '@happier-dev/protocol';
+import {
+  WORKSPACE_SYNC_FILE_PREVIEW_MAX_BYTES,
+  WorkspaceSyncEntryExpectationV1Schema,
+  type WorkspaceSyncEntryExpectationV1,
+} from '@happier-dev/protocol';
 
 import { resolveProcessCustodySupportExecutable } from '@/subprocess/supervision/processCustody';
 
@@ -36,23 +42,62 @@ export type WorkspaceSyncNativeConfinedDependencies = Readonly<{
   spawnChild?: SpawnChild;
 }>;
 
-type CommonInput = Readonly<{
+export type WorkspaceSyncNativeConfinedCommonInput = Readonly<{
   rootPath: string;
   relativePath: string;
   assertCurrentAuthority?: () => Promise<void>;
 }>;
 
-export type RunNativeConfinedReadInput = CommonInput & Readonly<{
+export type RunNativeConfinedReadInput = WorkspaceSyncNativeConfinedCommonInput & Readonly<{
   expectedDigest?: string;
   maxBytes: number;
 }>;
 
-export type RunNativeConfinedDeleteInput = CommonInput & Readonly<{
+export type RunNativeConfinedDeleteInput = WorkspaceSyncNativeConfinedCommonInput & Readonly<{
   expectedKind: ConflictKind;
   expectedDigest?: string;
 }>;
 
-const PREPARE_TIMEOUT_MS = 15_000;
+export type NativeConfinedCapturedEntry = Readonly<{
+  expectation: WorkspaceSyncEntryExpectationV1;
+  materialPath: string | null;
+}>;
+
+export type RunNativeConfinedCaptureInput = WorkspaceSyncNativeConfinedCommonInput & Readonly<{
+  expected: WorkspaceSyncEntryExpectationV1;
+  captureDirectory: string;
+  operationId: string;
+}>;
+
+export type RunNativeConfinedApplyInput = WorkspaceSyncNativeConfinedCommonInput & Readonly<{
+  expectedDestination: WorkspaceSyncEntryExpectationV1;
+  selectedExpectation: WorkspaceSyncEntryExpectationV1;
+  materialPath: string | null;
+  recoveryDirectory: string;
+  operationId: string;
+}>;
+
+export type NativeConfinedApplyOutcome =
+  | Readonly<{ status: 'installed' | 'restored' }>
+  | Readonly<{ status: 'recovery_needed'; recoveryPath: string }>;
+
+export type RunNativeConfinedRecoverInput = Readonly<{
+  rootPath: string;
+  recoveryDirectory: string;
+  operationId: string;
+  assertCurrentAuthority?: () => Promise<void>;
+}>;
+
+export type NativeConfinedRecoverOutcome =
+  | Readonly<{ status: 'settled' }>
+  | Readonly<{ status: 'recovery_needed'; recoveryPath: string }>;
+
+export type NativeConfinedRecoveryRecord = Readonly<{
+  operationId: string;
+  rootPath: string;
+  recoveryPath: string;
+}>;
+
 const STDERR_MAX_BYTES = 64 * 1024;
 const STDOUT_MAX_BYTES = Math.ceil(WORKSPACE_SYNC_FILE_PREVIEW_MAX_BYTES * 4 / 3) + 64 * 1024;
 const SHA1_PATTERN = /^[0-9a-f]{40}$/u;
@@ -190,15 +235,103 @@ function parseDeleteResult(line: string): void {
   throw unsafe('native workspace confinement returned an invalid deletion result');
 }
 
+function parseExpectation(value: unknown): WorkspaceSyncEntryExpectationV1 {
+  const parsed = WorkspaceSyncEntryExpectationV1Schema.safeParse(value);
+  if (!parsed.success) throw unsafe('native workspace confinement returned an invalid entry expectation');
+  return parsed.data;
+}
+
+function parseObserveResult(line: string): WorkspaceSyncEntryExpectationV1 {
+  const record = parseRecord(line);
+  if (record.v === 1 && record.t === 'workspace-confined-result' && record.status === 'error') {
+    throw nativeDomainError(record);
+  }
+  if (
+    !exactKeys(record, ['expectation', 'status', 't', 'v'])
+    || record.v !== 1
+    || record.t !== 'workspace-confined-result'
+    || record.status !== 'observed'
+  ) throw unsafe('native workspace confinement returned an invalid observation result');
+  return parseExpectation(record.expectation);
+}
+
+function parseCaptureResult(line: string): NativeConfinedCapturedEntry {
+  const record = parseRecord(line);
+  if (record.v === 1 && record.t === 'workspace-confined-result' && record.status === 'error') {
+    throw nativeDomainError(record);
+  }
+  if (
+    !exactKeys(record, ['expectation', 'materialPath', 'status', 't', 'v'])
+    || record.v !== 1
+    || record.t !== 'workspace-confined-result'
+    || record.status !== 'captured'
+    || (record.materialPath !== null && typeof record.materialPath !== 'string')
+  ) throw unsafe('native workspace confinement returned an invalid capture result');
+  const expectation = parseExpectation(record.expectation);
+  if ((expectation.kind === 'missing') !== (record.materialPath === null)) {
+    throw unsafe('native workspace confinement returned inconsistent capture material');
+  }
+  return { expectation, materialPath: record.materialPath as string | null };
+}
+
+function parseDispositionResult(
+  line: string,
+  settledStatus: 'settled' | 'installed' | 'restored',
+): NativeConfinedApplyOutcome | NativeConfinedRecoverOutcome {
+  const record = parseRecord(line);
+  if (record.v === 1 && record.t === 'workspace-confined-result' && record.status === 'error') {
+    throw nativeDomainError(record);
+  }
+  if (record.v !== 1 || record.t !== 'workspace-confined-result') {
+    throw unsafe('native workspace confinement returned an invalid recovery disposition');
+  }
+  if (record.status === settledStatus && exactKeys(record, ['status', 't', 'v'])) {
+    return { status: settledStatus };
+  }
+  if (
+    record.status === 'recovery_needed'
+    && exactKeys(record, ['recoveryPath', 'status', 't', 'v'])
+    && typeof record.recoveryPath === 'string'
+    && record.recoveryPath.length > 0
+  ) return { status: 'recovery_needed', recoveryPath: record.recoveryPath };
+  throw unsafe('native workspace confinement returned an invalid recovery disposition');
+}
+
+function parseInspectResult(line: string): Readonly<{ rootPath: string; operationId: string }> {
+  const record = parseRecord(line);
+  if (record.v === 1 && record.t === 'workspace-confined-result' && record.status === 'error') {
+    throw nativeDomainError(record);
+  }
+  if (
+    !exactKeys(record, ['operationId', 'rootPath', 'status', 't', 'v'])
+    || record.v !== 1
+    || record.t !== 'workspace-confined-result'
+    || record.status !== 'recovery_record'
+    || typeof record.rootPath !== 'string'
+    || record.rootPath.length === 0
+    || typeof record.operationId !== 'string'
+    || !/^[A-Za-z0-9_-]+$/u.test(record.operationId)
+  ) throw unsafe('native workspace confinement returned an invalid recovery record identity');
+  return { rootPath: record.rootPath, operationId: record.operationId };
+}
+
 async function runExchange<T>(input: Readonly<{
-  command: 'workspace-confined-read' | 'workspace-confined-delete';
+  command:
+    | 'workspace-confined-read'
+    | 'workspace-confined-delete'
+    | 'workspace-confined-observe'
+    | 'workspace-confined-capture'
+    | 'workspace-confined-apply'
+    | 'workspace-confined-inspect'
+    | 'workspace-confined-recover';
   request: Readonly<Record<string, unknown>>;
   assertCurrentAuthority?: () => Promise<void>;
   parseResult(line: string): T;
   dependencies: WorkspaceSyncNativeConfinedDependencies;
 }>): Promise<T> {
   const platform = input.dependencies.platform ?? process.platform;
-  if (platform !== 'win32' && platform !== 'darwin') {
+  const linuxPromotionCommand = input.command === 'workspace-confined-apply' || input.command === 'workspace-confined-inspect' || input.command === 'workspace-confined-recover';
+  if (platform !== 'win32' && platform !== 'darwin' && !(platform === 'linux' && linuxPromotionCommand)) {
     throw unsafe(`native workspace filesystem confinement is unavailable on ${platform}`);
   }
   const resolveExecutable = input.dependencies.resolveExecutable ?? resolveProcessCustodySupportExecutable;
@@ -231,19 +364,13 @@ async function runExchange<T>(input: Readonly<{
     const finishReject = (error: unknown, kill = true) => {
       if (settled) return;
       settled = true;
-      clearTimeout(prepareTimer);
       if (kill) child.kill();
       reject(error);
     };
-    const prepareTimer = setTimeout(() => {
-      finishReject(unsafe('native workspace confinement did not prepare in time'));
-    }, PREPARE_TIMEOUT_MS);
-    prepareTimer.unref?.();
 
     const handleLine = async (line: string) => {
       if (phase === 'preparing') {
         parsePrepared(line);
-        clearTimeout(prepareTimer);
         phase = 'authority';
         try {
           await input.assertCurrentAuthority?.();
@@ -303,7 +430,6 @@ async function runExchange<T>(input: Readonly<{
           return;
         }
         settled = true;
-        clearTimeout(prepareTimer);
         resolve(result.value);
       }, (error: unknown) => finishReject(error, false));
     });
@@ -350,4 +476,115 @@ export async function runNativeConfinedWorkspaceSyncDelete(
     parseResult: parseDeleteResult,
     dependencies,
   });
+}
+
+
+export async function runNativeConfinedWorkspaceSyncObserve(
+  input: WorkspaceSyncNativeConfinedCommonInput,
+  dependencies: WorkspaceSyncNativeConfinedDependencies = {},
+): Promise<WorkspaceSyncEntryExpectationV1> {
+  return await runExchange({
+    command: 'workspace-confined-observe',
+    request: { v: 1, rootPath: input.rootPath, relativePath: input.relativePath },
+    ...(input.assertCurrentAuthority ? { assertCurrentAuthority: input.assertCurrentAuthority } : {}),
+    parseResult: parseObserveResult,
+    dependencies,
+  });
+}
+
+export async function runNativeConfinedWorkspaceSyncCapture(
+  input: RunNativeConfinedCaptureInput,
+  dependencies: WorkspaceSyncNativeConfinedDependencies = {},
+): Promise<NativeConfinedCapturedEntry> {
+  return await runExchange({
+    command: 'workspace-confined-capture',
+    request: {
+      v: 1,
+      rootPath: input.rootPath,
+      relativePath: input.relativePath,
+      expected: input.expected,
+      captureDirectory: input.captureDirectory,
+      operationId: input.operationId,
+    },
+    ...(input.assertCurrentAuthority ? { assertCurrentAuthority: input.assertCurrentAuthority } : {}),
+    parseResult: parseCaptureResult,
+    dependencies,
+  });
+}
+
+export async function runNativeConfinedWorkspaceSyncApply(
+  input: RunNativeConfinedApplyInput,
+  dependencies: WorkspaceSyncNativeConfinedDependencies = {},
+): Promise<NativeConfinedApplyOutcome> {
+  if ((input.selectedExpectation.kind === 'missing') !== (input.materialPath === null)) {
+    throw unsafe('native workspace confinement apply material does not match the selected entry');
+  }
+  return await runExchange({
+    command: 'workspace-confined-apply',
+    request: {
+      v: 1,
+      rootPath: input.rootPath,
+      relativePath: input.relativePath,
+      expectedDestination: input.expectedDestination,
+      selectedExpectation: input.selectedExpectation,
+      materialPath: input.materialPath,
+      recoveryDirectory: input.recoveryDirectory,
+      operationId: input.operationId,
+    },
+    ...(input.assertCurrentAuthority ? { assertCurrentAuthority: input.assertCurrentAuthority } : {}),
+    parseResult: (line) => {
+      const parsed = parseRecord(line);
+      if (parsed.status === 'installed') return parseDispositionResult(line, 'installed') as NativeConfinedApplyOutcome;
+      if (parsed.status === 'restored') return parseDispositionResult(line, 'restored') as NativeConfinedApplyOutcome;
+      return parseDispositionResult(line, 'installed') as NativeConfinedApplyOutcome;
+    },
+    dependencies,
+  });
+}
+
+export async function runNativeConfinedWorkspaceSyncRecover(
+  input: RunNativeConfinedRecoverInput,
+  dependencies: WorkspaceSyncNativeConfinedDependencies = {},
+): Promise<NativeConfinedRecoverOutcome> {
+  return await runExchange({
+    command: 'workspace-confined-recover',
+    request: {
+      v: 1,
+      rootPath: input.rootPath,
+      recoveryDirectory: input.recoveryDirectory,
+      operationId: input.operationId,
+    },
+    ...(input.assertCurrentAuthority ? { assertCurrentAuthority: input.assertCurrentAuthority } : {}),
+    parseResult: (line) => parseDispositionResult(line, 'settled') as NativeConfinedRecoverOutcome,
+    dependencies,
+  });
+}
+
+/** Discover retained native recovery records; the helper alone parses their payloads. */
+export async function discoverNativeConfinedWorkspaceSyncRecovery(
+  input: Readonly<{ recoveryDirectory: string }>,
+  dependencies: WorkspaceSyncNativeConfinedDependencies = {},
+): Promise<readonly NativeConfinedRecoveryRecord[]> {
+  const names = await readdir(input.recoveryDirectory).catch((error: unknown) => {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw error;
+  });
+  const records: NativeConfinedRecoveryRecord[] = [];
+  for (const name of names.sort()) {
+    if (!name.startsWith('workspace-recovery-')) continue;
+    const match = /^workspace-recovery-([A-Za-z0-9_-]+)\.json$/u.exec(name);
+    if (!match || !match[1]) throw unsafe('workspace recovery directory contains an invalid native record name');
+    const operationId = match[1];
+    const inspected = await runExchange({
+      command: 'workspace-confined-inspect',
+      request: { v: 1, recoveryDirectory: input.recoveryDirectory, operationId },
+      parseResult: parseInspectResult,
+      dependencies,
+    });
+    if (inspected.operationId !== operationId) {
+      throw unsafe('native workspace recovery record identity changed during inspection');
+    }
+    records.push({ operationId, rootPath: inspected.rootPath, recoveryPath: join(input.recoveryDirectory, name) });
+  }
+  return records;
 }

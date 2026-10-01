@@ -1,8 +1,16 @@
 /** Device-local large records. A successful write means the IndexedDB transaction committed. */
+import { isEmbedWindowContext } from '@/embed/isEmbedWindowContext';
+
 const DATABASE = 'happier-local-records';
 const STORE = 'records';
 
 let connection: Promise<IDBDatabase> | undefined;
+const memoryRecords = new Map<string, string>();
+
+/** Hard embed retirement never opens or clears full-app IndexedDB storage. */
+export function clearEmbedBrowserRecords(): void {
+    if (isEmbedWindowContext()) memoryRecords.clear();
+}
 
 function openDatabase(): Promise<IDBDatabase> {
     if (connection) return connection;
@@ -19,9 +27,17 @@ function openDatabase(): Promise<IDBDatabase> {
         request.onblocked = () => reject(new Error('Browser storage upgrade is blocked by another tab.'));
         request.onsuccess = () => {
             const database = request.result;
+            const openedConnection = connection;
+            const invalidateConnection = () => {
+                if (connection === openedConnection) connection = undefined;
+            };
+            database.onclose = () => {
+                invalidateConnection();
+                console.warn('Browser record storage connection closed unexpectedly; the next operation will reopen it.');
+            };
             database.onversionchange = () => {
                 database.close();
-                connection = undefined;
+                invalidateConnection();
             };
             resolve(database);
         };
@@ -33,6 +49,7 @@ function openDatabase(): Promise<IDBDatabase> {
 }
 
 export async function readBrowserRecord(key: string): Promise<string | undefined> {
+    if (isEmbedWindowContext()) return memoryRecords.get(key);
     const database = await openDatabase();
     return new Promise((resolve, reject) => {
         const transaction = database.transaction(STORE, 'readonly');
@@ -54,6 +71,14 @@ export async function updateBrowserRecord<T>(
     key: string,
     update: (current: string | undefined) => { value: string | undefined; result: T },
 ): Promise<T> {
+    if (isEmbedWindowContext()) {
+        // The synchronous update preserves the transaction owner's read/modify/write semantics
+        // in the frame's one JavaScript realm, without cross-tab storage or coordination.
+        const next = update(memoryRecords.get(key));
+        if (next.value === undefined) memoryRecords.delete(key);
+        else memoryRecords.set(key, next.value);
+        return next.result;
+    }
     const database = await openDatabase();
     return new Promise<T>((resolve, reject) => {
         const transaction = database.transaction(STORE, 'readwrite', { durability: 'strict' });
@@ -89,6 +114,7 @@ export function deleteBrowserRecord(key: string): Promise<void> {
 }
 
 export async function clearBrowserRecords(): Promise<void> {
+    if (isEmbedWindowContext()) { memoryRecords.clear(); return; }
     const database = await openDatabase();
     return new Promise((resolve, reject) => {
         const transaction = database.transaction(STORE, 'readwrite', { durability: 'strict' });
@@ -100,6 +126,7 @@ export async function clearBrowserRecords(): Promise<void> {
 }
 
 export async function listBrowserRecords(prefix: string): Promise<Map<string, string>> {
+    if (isEmbedWindowContext()) return new Map(Array.from(memoryRecords).filter(([key]) => key.startsWith(prefix)));
     const database = await openDatabase();
     return new Promise((resolve, reject) => {
         const transaction = database.transaction(STORE, 'readonly');

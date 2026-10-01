@@ -247,6 +247,81 @@ describe('SessionHandoffPickerModal', () => {
         expect(screen.findByType('ItemList').props.keyboardAware).toBe(true);
     });
 
+    it('keeps comma-separated include patterns editable until the handoff choice is committed', async () => {
+        const onResolve = vi.fn();
+        let chrome: CustomModalChromeConfig | null = null;
+        const { SessionHandoffPickerModal } = await import('./SessionHandoffPickerModal');
+        const screen = await renderScreen(<SessionHandoffPickerModal
+            onClose={vi.fn()}
+            setChrome={(next) => { chrome = next; }}
+            onResolve={onResolve}
+            sessionId="sess_1"
+            sourceMachineId="machine_source"
+            serverId="server_a"
+        />);
+
+        await act(async () => {
+            invokeTestInstanceHandler(screen.tree.findByType('MachineSelector' as any), 'onSelect', {
+                id: 'machine_target', active: true,
+                metadata: { displayName: 'Target machine', homeDir: '/home/target' },
+            });
+            screen.changeTextByTestId('path-selection-list:header:input', '/home/target/repo');
+            invokeTestInstanceHandler(
+                screen.tree.find((node: any) => node.props?.testID === 'session-handoff-advanced'),
+                'onExpandedChange', true,
+            );
+        });
+        const field = () => screen.tree.find((node: any) =>
+            node.type === 'TextInput'
+            && node.props?.accessibilityLabel === 'settingsSession.handoff.includeIgnoredMode.globsTitle');
+        for (const draft of ['dist/**,', 'dist/**, ', 'dist/**, .env.local']) {
+            await act(async () => invokeTestInstanceHandler(field(), 'onChangeText', draft));
+            expect(field().props.value).toBe(draft);
+        }
+
+        const startButton = findElementByTestId(requireCardChrome(chrome).footer, 'session-handoff-start');
+        await act(async () => { await (startButton!.props as { onPress: () => unknown }).onPress(); });
+        expect(onResolve).toHaveBeenCalledWith(expect.objectContaining({
+            workspaceAction: expect.objectContaining({
+                contentPolicy: expect.objectContaining({ extraIncludePatterns: ['dist/**', '.env.local'] }),
+            }),
+        }));
+    });
+
+    it('holds the selected draft and exposes pending admission while Start is unavailable', async () => {
+        const onResolve = vi.fn();
+        let chrome: CustomModalChromeConfig | null = null;
+        const { SessionHandoffPickerModal } = await import('./SessionHandoffPickerModal');
+        const renderPicker = (awaitingAdmission: boolean) => <SessionHandoffPickerModal
+            onClose={vi.fn()} setChrome={(next) => { chrome = next; }} onResolve={onResolve}
+            sessionId="sess_1" sourceMachineId="machine_source" serverId="server_a"
+            awaitingAdmission={awaitingAdmission}
+        />;
+        const screen = await renderScreen(renderPicker(false));
+        await act(async () => {
+            invokeTestInstanceHandler(screen.tree.findByType('MachineSelector' as any), 'onSelect', { id: 'machine_target', metadata: { displayName: 'Target machine' } });
+            screen.changeTextByTestId('path-selection-list:header:input', '/home/target/repo');
+        });
+        await act(async () => screen.tree.update(renderPicker(true)));
+        const pendingStart = findElementByTestId(requireCardChrome(chrome).footer, 'session-handoff-start');
+        expect((pendingStart!.props as { disabled?: boolean }).disabled).toBe(true);
+        expect(findElementByTestId(requireCardChrome(chrome).footer, 'session-handoff-awaiting-admission')).toBeTruthy();
+        const pendingFooter = requireCardChrome(chrome).footer as React.ReactElement<{ children?: React.ReactNode }>;
+        expect(React.Children.toArray(pendingFooter.props.children).some((child) =>
+            React.isValidElement(child) && (child.props as { title?: string; disabled?: boolean }).title === 'common.close'
+            && (child.props as { disabled?: boolean }).disabled !== true)).toBe(true);
+        expect((findElementByTestId(requireCardChrome(chrome).footer, 'session-handoff-awaiting-admission')!.props as { accessibilityLiveRegion?: string }).accessibilityLiveRegion).toBe('polite');
+        const pendingMenus = screen.tree.findAllByType('DropdownMenu' as any);
+        expect(pendingMenus.find((node: any) => node.props?.itemTrigger?.title === 'settingsSession.handoff.workspaceMode.title')?.props.itemTrigger.itemProps.disabled).toBe(true);
+        expect(pendingMenus.find((node: any) => node.props?.itemTrigger?.title === 'settingsSession.handoff.directTargetMode.title')?.props.itemTrigger.itemProps.disabled).toBe(true);
+        invokeTestInstanceHandler(screen.tree.findByType('MachineSelector' as any), 'onSelect', { id: 'another-machine' });
+        await act(async () => screen.tree.update(renderPicker(false)));
+        const readyStart = findElementByTestId(requireCardChrome(chrome).footer, 'session-handoff-start');
+        expect((readyStart!.props as { disabled?: boolean }).disabled).toBe(false);
+        await act(async () => (readyStart!.props as { onPress: () => void }).onPress());
+        expect(onResolve).toHaveBeenCalledWith(expect.objectContaining({ targetMachineId: 'machine_target', targetPath: '/home/target/repo' }));
+    });
+
     it('uses one authoritative machine hydration request without a QA polling timer', async () => {
         machineListByServerIdState = { server_a: [] };
         allMachinesState = [];
@@ -510,9 +585,9 @@ describe('SessionHandoffPickerModal', () => {
             alphaPath: '/Users/tester/projects/happier',
             betaPath: '/home/target/happier',
             mode: 'keep_synced',
-            changedFiles: 0,
+            endpointStates: { alpha: { connected: true, scanned: true, scanProblemCount: 0, transitionProblemCount: 0 }, beta: { connected: true, scanned: true, scanProblemCount: 0, transitionProblemCount: 0 } },
             conflictCount: 0,
-            lastSuccessfulSyncAtMs: 1,
+            lastCycleObservedAtMs: 1,
         });
         setWorkspaceSyncStatus({
             serverId: 'server_a',
@@ -525,9 +600,9 @@ describe('SessionHandoffPickerModal', () => {
             alphaPath: '/Users/tester/projects/happier',
             betaPath: '/home/target/other',
             mode: 'mirror_exactly',
-            changedFiles: 0,
+            endpointStates: { alpha: { connected: true, scanned: true, scanProblemCount: 0, transitionProblemCount: 0 }, beta: { connected: true, scanned: true, scanProblemCount: 0, transitionProblemCount: 0 } },
             conflictCount: 0,
-            lastSuccessfulSyncAtMs: 1,
+            lastCycleObservedAtMs: 1,
         });
 
         const onResolve = vi.fn();
@@ -588,6 +663,60 @@ describe('SessionHandoffPickerModal', () => {
                 relationshipId: 'relationship-secret',
                 flushBeforeCommit: true,
             },
+        }));
+    });
+
+    it('offers the existing linked destination through its hub without exposing route refs in the Action', async () => {
+        const policyFields = { v: 1 as const, selection: 'all_files' as const, extraIgnorePatterns: [], extraIncludePatterns: [] };
+        const policy = { ...policyFields, policyDigest: computeWorkspaceSyncPolicyDigest(policyFields) };
+        settingsState.workspaceRefsV1 = [
+            { id: 'source-c', serverId: 'server_a', machineId: 'machine_source', rootPath: '/Users/tester/projects/happier', label: 'Source project', createdAtMs: 1 },
+            { id: 'hub-a', serverId: 'server_a', machineId: 'machine_hub', rootPath: '/Users/hub/projects/happier', label: 'Hub project', createdAtMs: 1 },
+            { id: 'target-b', serverId: 'server_a', machineId: 'machine_target', rootPath: '/home/target/happier', label: 'Destination project', createdAtMs: 1 },
+        ];
+        settingsState.workspaceSyncRelationshipsV1 = [
+            { v: 1, relationshipId: 'c-a', controllerMachineId: 'machine_hub', alphaWorkspaceRefId: 'hub-a', betaWorkspaceRefId: 'source-c', mode: 'keep_both_in_sync', contentPolicy: policy, enabled: true, createdAtMs: 1, updatedAtMs: 1 },
+            { v: 1, relationshipId: 'a-b', controllerMachineId: 'machine_hub', alphaWorkspaceRefId: 'hub-a', betaWorkspaceRefId: 'target-b', mode: 'keep_synced', contentPolicy: policy, enabled: true, createdAtMs: 1, updatedAtMs: 1 },
+        ];
+        machineListByServerIdState.server_a.push({ id: 'machine_hub', active: true, metadata: { displayName: 'Mac Studio' } });
+        allMachinesState.push({ id: 'machine_hub', active: true, metadata: { displayName: 'Mac Studio' } });
+        const readinessStore = await import('@/sync/domains/sessionHandoff/workspaceSyncEngineReadinessStore');
+        readinessStore.applyWorkspaceSyncEngineReadinessEvent({ serverId: 'server_a', machineId: 'machine_hub' }, {
+            engine: { state: 'ready' }, carrier: { state: 'ready' },
+        });
+        const onResolve = vi.fn();
+        let chrome: CustomModalChromeConfig | null = null;
+        const { SessionHandoffPickerModal } = await import('./SessionHandoffPickerModal');
+        const screen = await renderScreen(<SessionHandoffPickerModal
+            onClose={vi.fn()}
+            setChrome={(next) => { chrome = next; }}
+            onResolve={onResolve}
+            sessionId="sess_1"
+            sourceMachineId="machine_source"
+            serverId="server_a"
+        />);
+        await act(async () => {
+            invokeTestInstanceHandler(screen.tree.findByType('MachineSelector' as any), 'onSelect', {
+                id: 'machine_target', active: true, metadata: { displayName: 'Target machine', homeDir: '/home/target' },
+            });
+            screen.changeTextByTestId('path-selection-list:header:input', '/home/target/happier');
+        });
+        const menu = screen.tree.findAllByType('DropdownMenu' as any)
+            .find((node: any) => node.props?.itemTrigger?.itemProps?.testID === 'session-handoff-workspace-sync-mode-trigger');
+        const linkedChoice = menu?.props.items.find((item: any) => item.id === 'linked_workspace');
+        expect(linkedChoice).toMatchObject({
+            title: 'settingsSession.handoff.workspaceMode.linkedTitle',
+            subtitle: 'Source project → Hub project → Destination project',
+        });
+        await act(async () => invokeTestInstanceHandler(menu!, 'onSelect', 'linked_workspace'));
+        expect(screen.tree.findAll((node: any) => node.props?.testID === 'session-handoff-advanced')).toHaveLength(0);
+        const start = findElementByTestId(requireCardChrome(chrome).footer, 'session-handoff-start');
+        expect((start?.props as { disabled?: boolean } | undefined)?.disabled).toBe(false);
+        await act(async () => { await (start!.props as { onPress: () => unknown }).onPress(); });
+        expect(onResolve).toHaveBeenCalledWith(expect.objectContaining({
+            targetMachineId: 'machine_target',
+            targetPath: '/home/target/happier',
+            workspaceAction: { kind: 'linked_workspace' },
         }));
     });
 

@@ -7,7 +7,7 @@ import { localSettingsParse } from '@/sync/domains/settings/localSettings';
 import { saveAccountSettings } from '@/sync/domains/state/accountSettingsPersistence';
 import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
 
-import { resetActivityAlertPresentationNotesForTests } from './remoteAlerts/activityAlertPresentationNotes';
+import { consumeOtherLegActivityAlertPresentation, noteActivityAlertPresented, resetActivityAlertPresentationNotesForTests } from './remoteAlerts/activityAlertPresentationNotes';
 
 // Device secure-credential storage is the only mocked boundary: which Account
 // this device holds for a Home. The saved-Home profiles, the strict remote-alert
@@ -131,6 +131,78 @@ describe('resolveForegroundNotificationBehavior', () => {
             now: NOON,
             isSessionVisible: nothingVisible,
         })).resolves.toBe('off');
+    });
+
+    it.each(['ready', 'ready_local_id', 'permission_request'] as const)('shares the committed %s identity between rich push and local presentation in both orders', async (event) => {
+        const home = await enrollHome('rich-identity', { attentionDeliveryPolicyV1: { v: 1, foregroundBehavior: 'full' } });
+        const address = { serverId: home.scope.serverId, sessionId: 'session-1' };
+        const personalEvent = event === 'permission_request' ? 'permission_required' : 'ready';
+        const identity = event === 'ready' ? 'message-seq:session_transcript:7'
+            : event === 'ready_local_id' ? 'message-local-id:session_transcript:local-1'
+                : 'request:request-1';
+        const content = {
+            data: {
+                sessionId: address.sessionId,
+                serverUrl: home.serverUrl,
+                ...(event === 'ready_local_id'
+                    ? { activityEventLocalId: 'local-1' }
+                    : event === 'ready'
+                    ? { activityEvent: { type: 'ready', sequenceDomain: 'session_transcript', messageSeq: 7 } }
+                    : { requestId: 'request-1' }),
+            },
+            ...(event === 'permission_request' ? { categoryIdentifier: PUSH_NOTIFICATION_CATEGORY_IDS.permissionRequestV1 } : {}),
+        };
+        const localIdentity = event === 'ready_local_id' ? 'message-seq:session_transcript:7' : identity;
+        const correlation = { accountId: home.scope.accountId, ...(event === 'ready_local_id' ? { committedLocalId: 'local-1' } : {}) };
+        noteActivityAlertPresented({ address, event: personalEvent, identity: localIdentity, ...correlation, source: 'local_notification' });
+        await expect(resolveForegroundNotificationBehavior({ content, localSettings: null, now: NOON, isSessionVisible: nothingVisible })).resolves.toBe('off');
+
+        resetActivityAlertPresentationNotesForTests();
+        await expect(resolveForegroundNotificationBehavior({ content, localSettings: null, now: NOON, isSessionVisible: nothingVisible })).resolves.toBe('full');
+        expect(consumeOtherLegActivityAlertPresentation({ address, event: personalEvent, identity: localIdentity, ...correlation, source: 'local_notification' })).toBe(true);
+        expect(consumeOtherLegActivityAlertPresentation({ address, accountId: home.scope.accountId, event: personalEvent, identity: `${identity}-next`, source: 'local_notification' })).toBe(false);
+    });
+
+    it('consumes both existing ready identity representations together without crossing a Home or Session', async () => {
+        const home = await enrollHome('ready-aliases', { attentionDeliveryPolicyV1: { v: 1, foregroundBehavior: 'full' } });
+        const address = { serverId: home.scope.serverId, sessionId: 'session-1' };
+        const content = { data: { sessionId: address.sessionId, serverUrl: home.serverUrl, activityEventLocalId: 'local-1' } };
+        noteActivityAlertPresented({ address, accountId: home.scope.accountId, event: 'ready', identity: 'message-seq:session_transcript:7', committedLocalId: 'local-1', source: 'local_notification' });
+        expect(consumeOtherLegActivityAlertPresentation({ address: { ...address, sessionId: 'session-2' }, accountId: home.scope.accountId, event: 'ready', identity: 'message-seq:session_transcript:7', source: 'rich_push' })).toBe(false);
+        expect(consumeOtherLegActivityAlertPresentation({ address: { ...address, serverId: 'another-home' }, accountId: home.scope.accountId, event: 'ready', identity: 'message-seq:session_transcript:7', source: 'rich_push' })).toBe(false);
+        await expect(resolveForegroundNotificationBehavior({ content, localSettings: null, now: NOON, isSessionVisible: nothingVisible })).resolves.toBe('off');
+        expect(consumeOtherLegActivityAlertPresentation({ address, accountId: home.scope.accountId, event: 'ready', identity: 'message-seq:session_transcript:7', source: 'home_remote_alert' })).toBe(false);
+        await expect(resolveForegroundNotificationBehavior({ content: { data: { ...content.data, activityEventLocalId: 'local-2' } }, localSettings: null, now: NOON, isSessionVisible: nothingVisible })).resolves.toBe('full');
+    });
+
+    it('presents only one simultaneous local and rich ready arrival after asynchronous policy resolution', async () => {
+        const home = await enrollHome('simultaneous-ready', { attentionDeliveryPolicyV1: { v: 1, foregroundBehavior: 'full' } });
+        const data = { sessionId: 'session-1', serverUrl: home.serverUrl, activityEventLocalId: 'local-1' };
+        const arrivals = await Promise.all([
+            resolveForegroundNotificationBehavior({ content: { data: { ...data, serverId: home.scope.serverId, activityEvent: { type: 'ready', sequenceDomain: 'session_transcript', messageSeq: 7 } } }, localSettings: null, now: NOON, isSessionVisible: nothingVisible }),
+            resolveForegroundNotificationBehavior({ content: { data }, localSettings: null, now: NOON, isSessionVisible: nothingVisible }),
+        ]);
+        expect(arrivals.sort()).toEqual(['full', 'off']);
+    });
+
+    it('does not consume another leg while the Home Account policy is unavailable', async () => {
+        const home = await enrollHome('unavailable-policy', { attentionDeliveryPolicyV1: { v: 1, foregroundBehavior: 'full' } });
+        const address = { serverId: home.scope.serverId, sessionId: 'session-1' };
+        noteActivityAlertPresented({ address, accountId: home.scope.accountId, event: 'ready', identity: 'message-seq:session_transcript:7', source: 'local_notification' });
+        credentialScopes.delete(home.scope.serverId);
+        await expect(resolveForegroundNotificationBehavior({ content: { data: readyAlert(home) }, localSettings: null, now: NOON, isSessionVisible: nothingVisible })).resolves.toBe('off');
+        credentialScopes.set(home.scope.serverId, home.scope);
+        await expect(resolveForegroundNotificationBehavior({ content: { data: readyAlert(home) }, localSettings: null, now: NOON, isSessionVisible: nothingVisible })).resolves.toBe('off');
+    });
+
+    it('never borrows a presentation note from another Account on the same Home', async () => {
+        const home = await enrollHome('account-switch', { attentionDeliveryPolicyV1: { v: 1, foregroundBehavior: 'full' } });
+        const localContent = { data: { serverId: home.scope.serverId, sessionId: 'session-1', activityEvent: { type: 'ready', sequenceDomain: 'session_transcript', messageSeq: 7 } } };
+        await expect(resolveForegroundNotificationBehavior({ content: localContent, localSettings: null, now: NOON, isSessionVisible: nothingVisible })).resolves.toBe('full');
+        const nextScope = { ...home.scope, accountId: 'replacement-account' };
+        credentialScopes.set(nextScope.serverId, nextScope);
+        saveAccountSettings(nextScope, settingsParse({ attentionDeliveryPolicyV1: { v: 1, foregroundBehavior: 'full' } }), 1);
+        await expect(resolveForegroundNotificationBehavior({ content: { data: { ...readyAlert(home), accountId: nextScope.accountId } }, localSettings: null, now: NOON, isSessionVisible: nothingVisible })).resolves.toBe('full');
     });
 
     it('classifies a device-local permission request as a permission request, not as ready', async () => {

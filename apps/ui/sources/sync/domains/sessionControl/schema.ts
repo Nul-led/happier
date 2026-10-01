@@ -1,19 +1,10 @@
-import { AgentModelOptionOverrideRuleReadSchema } from '@happier-dev/protocol';
+import { AgentModelOptionOverrideRuleReadSchema, SessionOwnerModeCatalogV1Schema, SessionOwnerModeCatalogV2Schema } from '@happier-dev/protocol';
 import { z } from 'zod';
 
-const SessionModeOptionSchema = z.object({
-    id: z.string().trim().min(1),
-    name: z.string().trim().min(1),
-    description: z.string().trim().min(1).optional(),
-});
-
-const SessionModesStateSchema = z.object({
-    v: z.literal(1),
-    agentId: z.string().trim().min(1),
-    updatedAt: z.number(),
-    currentModeId: z.string().trim().min(1),
-    availableModes: z.array(SessionModeOptionSchema).default([]),
-});
+const SessionModesStateSchema = z.union([
+    SessionOwnerModeCatalogV2Schema,
+    SessionOwnerModeCatalogV1Schema.transform((state) => ({ ...state, v: 2 as const })),
+]);
 
 const SessionModelOptionChoiceSchema = z.object({
     value: z.union([z.string(), z.number(), z.boolean(), z.null()]),

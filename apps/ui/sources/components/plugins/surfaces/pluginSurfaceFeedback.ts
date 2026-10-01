@@ -152,19 +152,19 @@ export function createPluginActionCurrentIntentHandler(input: Readonly<{
                 code: 'plugin_action_generation_retired',
             });
         }
-        const confirmation = request.action.confirmation;
-        if (!confirmation) {
-            return Object.freeze({
-                status: 'unavailable' as const,
-                code: 'plugin_action_current_intent_unavailable',
-            });
-        }
         const readConfirmationText = createConfirmationTextResolver(
             request.action.pluginId,
             input.pluginUiProjection,
         );
+        // A non-safe Action always declares its own wording. An Action asked
+        // about only because of the person's Ask-first setting may not, so it
+        // is presented by its own title and description.
+        const confirmation = request.action.confirmation ?? {
+            title: request.action.title,
+            ...(request.action.description ? { body: request.action.description } : {}),
+        };
         const title = readConfirmationText(confirmation.title);
-        const confirmLabel = confirmation.confirmLabel
+        const confirmLabel = 'confirmLabel' in confirmation && confirmation.confirmLabel
             ? readConfirmationText(confirmation.confirmLabel)
             : undefined;
         const outcome = await interactions.confirm({

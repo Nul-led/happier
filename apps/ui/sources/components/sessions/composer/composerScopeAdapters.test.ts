@@ -29,7 +29,7 @@ const issueAttachmentCatalogEntry = {
     id: 'acme.issues/issue',
     pluginId: 'acme.issues',
     identity: { pluginId: 'acme.issues', localId: 'issue' },
-    immutableGenerationId: 'issues-generation-1',
+    occurrenceId: 'issues-generation-1',
     definition: {
         id: 'issue',
         title: 'Issue',
@@ -55,7 +55,6 @@ function composerAttachmentProjection(
         generation,
         installedPackagesById: {},
         agentsById: {},
-        backendsById: {},
         actionsById: {},
         toolsById: {},
         commandsById: {},
@@ -169,7 +168,7 @@ describe('composer scope adapters', () => {
 
             const replacement = {
                 ...issueAttachmentCatalogEntry,
-                immutableGenerationId: 'issues-generation-2',
+                occurrenceId: 'issues-generation-2',
                 definition: {
                     ...issueAttachmentCatalogEntry.definition,
                     valueSchema: {
@@ -278,7 +277,7 @@ describe('composer scope adapters', () => {
 
         const updatedButCompatible = {
             ...issueAttachmentCatalogEntry,
-            immutableGenerationId: 'issues-generation-2',
+            occurrenceId: 'issues-generation-2',
         } satisfies PluginProjectedComposerAttachmentEntryV1;
         expect(composerAttachmentDraftToView(draft, catalog(updatedButCompatible))).toMatchObject({
             instanceId: draft.instanceId,
@@ -287,7 +286,7 @@ describe('composer scope adapters', () => {
 
         const updatedWithIncompatibleValue = {
             ...updatedButCompatible,
-            immutableGenerationId: 'issues-generation-3',
+            occurrenceId: 'issues-generation-3',
             definition: {
                 ...updatedButCompatible.definition,
                 valueSchema: {
@@ -307,7 +306,7 @@ describe('composer scope adapters', () => {
 
         const reinstalled = {
             ...issueAttachmentCatalogEntry,
-            immutableGenerationId: 'issues-generation-4',
+            occurrenceId: 'issues-generation-4',
         } satisfies PluginProjectedComposerAttachmentEntryV1;
         const reinstalledView = composerAttachmentDraftToView(draft, catalog(reinstalled));
         expect(reinstalledView).toMatchObject({

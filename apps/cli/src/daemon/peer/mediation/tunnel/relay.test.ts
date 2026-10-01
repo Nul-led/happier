@@ -12,6 +12,9 @@ import {
     type ProviderBrokerRelayApplicationBindingV1,
 } from '@happier-dev/protocol';
 import tweetnacl from 'tweetnacl';
+import { once } from 'node:events';
+import { createServer, type Socket } from 'node:net';
+import { connectPeerTcpTunnelTcp } from './open';
 import { describe, expect, it, vi } from 'vitest';
 
 type RelayModule = typeof import('./relay');
@@ -184,9 +187,11 @@ function createRelayAuthorization(
             : { destination }),
         capProfileId: 'interactive',
         maxFrameBytes: overrides?.maxFrameBytes ?? 64 * 1024,
-        maxIdleMs: 30_000,
-        maxDurationMs: overrides?.maxDurationMs ?? 300_000,
-        maxTotalBytes: overrides?.maxTotalBytes ?? 64 * 1024 * 1024,
+        ...(flowKind === 'tcp_tunnel' ? {} : {
+            maxIdleMs: 30_000,
+            maxDurationMs: overrides?.maxDurationMs ?? 300_000,
+            maxTotalBytes: overrides?.maxTotalBytes ?? 64 * 1024 * 1024,
+        }),
         iat: overrides?.iat ?? 1_000,
         exp: overrides?.exp ?? 301_000,
         aud: 'happier-tcp-tunnel-relay-authorization',
@@ -295,6 +300,7 @@ function createBinarySubstreamEnvelope(input: Readonly<{
     payload?: string | Uint8Array;
     sequence?: number;
     reasonCode?: string;
+    halfClose?: boolean;
 }>) {
     const payload = Buffer.from(input.payload ?? '');
     return {
@@ -319,6 +325,7 @@ function createBinarySubstreamEnvelope(input: Readonly<{
                     ? {
                         direction: 'client_to_daemon' as const,
                         reasonCode: input.reasonCode ?? 'client_closed',
+                        ...(input.halfClose !== undefined ? { halfClose: input.halfClose } : {}),
                     }
                     : {}),
                 ...(input.kind === 'abort'
@@ -342,13 +349,73 @@ function deferred<T>() {
 }
 
 describe('registerPeerTcpTunnelRelayTerminator', () => {
+    it('admits signed TCP authority without a dummy peer and carries child data and EOF over real TCP', async () => {
+        const mod = await loadRelayModule();
+        if (!mod) throw new Error('Relay module unavailable');
+        const server = createServer({ allowHalfOpen: true });
+        const peers = new Set<Socket>();
+        server.on('connection', (peer) => {
+            peers.add(peer);
+            peer.on('close', () => peers.delete(peer));
+            peer.on('end', () => peer.end());
+            peer.once('data', () => peer.end(Buffer.from([0, 255, 7])));
+        });
+        server.listen(0, '127.0.0.1');
+        await once(server, 'listening');
+        const address = server.address();
+        if (!address || typeof address === 'string') throw new Error('TCP fixture did not listen');
+        const destination = { host: '127.0.0.1', port: address.port };
+        const socket = createSocket();
+        const terminator = mod.registerPeerTcpTunnelRelayTerminator({
+            accountId: 'user_1', machineId: 'machine_1', socket,
+            nowMs: () => 2_000, relayAuthorizationTrustRoots,
+            connectTcp: connectPeerTcpTunnelTcp,
+        });
+        const decodedFrames = () => socket.emit.mock.calls.flatMap(([, envelope]) => {
+            if (envelope.v !== 2) return [];
+            const frame = decodePeerTcpTunnelBinaryFrameV2({ frame: envelope.frame, maxHeaderBytes: 1024, maxPayloadBytes: 1024 });
+            return frame.ok ? [frame] : [];
+        });
+        try {
+            await socket.trigger(PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT,
+                createOpenEnvelope('real_mux', { destination }));
+            expect(peers.size).toBe(0);
+            await socket.trigger(PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT,
+                createBinarySubstreamEnvelope({ tunnelId: 'real_mux', substreamId: 'http_1', kind: 'open' }));
+            await socket.trigger(PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT,
+                createBinarySubstreamEnvelope({ tunnelId: 'real_mux', substreamId: 'http_1', kind: 'data', payload: 'request' }));
+            await expect.poll(() => decodedFrames().some((frame) => frame.header.kind === 'close')).toBe(true);
+            expect(decodedFrames().filter((frame) => frame.header.kind === 'data').flatMap((frame) => [...frame.payload]))
+                .toEqual([0, 255, 7]);
+            expect(decodedFrames().find((frame) => frame.header.kind === 'close')?.header)
+                .toMatchObject({ substreamId: 'http_1', direction: 'daemon_to_client', halfClose: true });
+            await socket.trigger(PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT,
+                createBinarySubstreamEnvelope({ tunnelId: 'real_mux', substreamId: 'http_1', kind: 'close', halfClose: true }));
+            await expect.poll(() => peers.size).toBe(0);
+            await socket.trigger(PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT,
+                createBinarySubstreamEnvelope({ tunnelId: 'real_mux', substreamId: 'hmr_2', kind: 'open' }));
+            expect(peers.size).toBe(1);
+            await socket.trigger(PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT, createCloseEnvelope('real_mux'));
+            await expect.poll(() => peers.size).toBe(0);
+        } finally {
+            await terminator.dispose();
+            for (const peer of peers) peer.destroy();
+            await new Promise<void>((resolve) => server.close(() => resolve()));
+        }
+    });
+
     it('carries the authenticated Resource Test relay authorization to one target-local capability stream', async () => {
         const mod = await loadRelayModule();
         expect(mod?.registerPeerTcpTunnelRelayTerminator).toBeTypeOf('function');
         if (!mod?.registerPeerTcpTunnelRelayTerminator) return;
 
         const socket = createSocket();
-        const connection = { write: vi.fn(), onData: vi.fn(), close: vi.fn() };
+        let upstreamError: ((error: unknown) => void) | undefined;
+        const connection = {
+            write: vi.fn(), onData: vi.fn(), close: vi.fn(),
+            // The local TCP adapter is the OS boundary; the session and admission owner stay real.
+            onError: (handler: (error: unknown) => void) => { upstreamError = handler; return () => undefined; },
+        };
         const binding = {
             v: 1 as const,
             kind: 'resource_test' as const,
@@ -388,6 +455,7 @@ describe('registerPeerTcpTunnelRelayTerminator', () => {
             relayAuthorizationTrustRoots,
             connectTcp,
             resolveProviderBrokerApplicationTarget,
+            maxActiveTunnels: 1,
         });
         const tunnelId = 'provider-broker-1';
         const authorization = createRelayAuthorization(tunnelId, {
@@ -408,6 +476,18 @@ describe('registerPeerTcpTunnelRelayTerminator', () => {
         });
         expect(connectTcp).toHaveBeenCalledWith({ host: '127.0.0.1', port: 47_001 });
         expect(connection.write).toHaveBeenCalledWith(Buffer.from('c'.repeat(64), 'ascii'));
+        upstreamError?.(new Error('upstream failed'));
+        await expect.poll(() => connection.close.mock.calls.length).toBe(1);
+        const nextAuthorization = createRelayAuthorization('provider-broker-2', {
+            flowKind: 'provider_broker', providerBroker: binding,
+        });
+        const next = createOpenEnvelope('provider-broker-2', { relayAuthorization: nextAuthorization });
+        if (next.frame.kind !== 'open') throw new Error('expected open frame fixture');
+        const { destination: _nextDestination, ...nextApplicationOpen } = next.frame.open;
+        await socket.trigger(PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT, {
+            ...next, frame: { ...next.frame, open: nextApplicationOpen },
+        });
+        expect(connectTcp).toHaveBeenCalledTimes(2);
         await runtime.dispose();
     });
     it('settles the surviving daemon application exactly once when the user relay socket disconnects', async () => {
@@ -626,7 +706,12 @@ describe('registerPeerTcpTunnelRelayTerminator', () => {
         });
 
         await socket.trigger(PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT, createOpenEnvelope('tun_1'));
-        await socket.trigger(PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT, createDataEnvelope('tun_1', 'hello'));
+        await socket.trigger(PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT, createBinarySubstreamEnvelope({
+            tunnelId: 'tun_1', substreamId: 'request', kind: 'open',
+        }));
+        await socket.trigger(PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT, createBinarySubstreamEnvelope({
+            tunnelId: 'tun_1', substreamId: 'request', kind: 'data', payload: 'hello',
+        }));
 
         expect(connectTcp).toHaveBeenCalledWith({ host: '127.0.0.1', port: 3000 });
         expect(writes).toEqual(['hello']);
@@ -751,6 +836,10 @@ describe('registerPeerTcpTunnelRelayTerminator', () => {
             recipientMachineId: testCase.authorizedTargetMachineId,
             relayAuthorization,
         }));
+        expect(connectTcp).not.toHaveBeenCalled();
+        await socket.trigger(PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT, createBinarySubstreamEnvelope({
+            tunnelId: testCase.authorizedTunnelId, substreamId: 'request', kind: 'open',
+        }));
 
         expect(connectTcp).toHaveBeenCalledTimes(1);
         expect(connectTcp).toHaveBeenCalledWith({
@@ -785,6 +874,10 @@ describe('registerPeerTcpTunnelRelayTerminator', () => {
         });
 
         await socket.trigger(PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT, createOpenEnvelope('tun_replay'));
+        expect(connectTcp).not.toHaveBeenCalled();
+        await socket.trigger(PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT, createBinarySubstreamEnvelope({
+            tunnelId: 'tun_replay', substreamId: 'request', kind: 'open',
+        }));
         await socket.trigger(PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT, createCloseEnvelope('tun_replay'));
         await socket.trigger(PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT, createOpenEnvelope('tun_replay'));
 
@@ -815,6 +908,17 @@ describe('registerPeerTcpTunnelRelayTerminator', () => {
         });
 
         await socket.trigger(PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT, createOpenEnvelope('tun_activation_failed'));
+        expect(connectTcp).not.toHaveBeenCalled();
+        await socket.trigger(PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT, createBinarySubstreamEnvelope({
+            tunnelId: 'tun_activation_failed', substreamId: 'request', kind: 'open',
+        }));
+        expect(socket.emit.mock.calls.some(([, envelope]) => {
+            if (envelope.v !== 2) return false;
+            const decoded = decodePeerTcpTunnelBinaryFrameV2({ frame: envelope.frame, maxHeaderBytes: 1024, maxPayloadBytes: 1024 });
+            return decoded.ok && decoded.header.substreamId === 'request'
+                && decoded.header.kind === 'abort' && decoded.header.reasonCode === 'tcp_connect_failed';
+        })).toBe(true);
+        await socket.trigger(PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT, createCloseEnvelope('tun_activation_failed'));
         await socket.trigger(PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT, createOpenEnvelope('tun_activation_failed'));
 
         expect(connectTcp).toHaveBeenCalledOnce();
@@ -870,7 +974,12 @@ describe('registerPeerTcpTunnelRelayTerminator', () => {
                 },
             },
         });
-        await socket.trigger(PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT, createBinaryEnvelope('tun_binary', 'hello'));
+        await socket.trigger(PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT, createBinarySubstreamEnvelope({
+            tunnelId: 'tun_binary', substreamId: 'request', kind: 'open',
+        }));
+        await socket.trigger(PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT, createBinarySubstreamEnvelope({
+            tunnelId: 'tun_binary', substreamId: 'request', kind: 'data', payload: 'hello',
+        }));
 
         expect(writes).toEqual(['hello']);
         expect(dataHandler).toBeTypeOf('function');
@@ -941,10 +1050,12 @@ describe('registerPeerTcpTunnelRelayTerminator', () => {
                 },
             },
         });
-        await socket.trigger(PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT, createBinaryEnvelope(
-            'tun_binary_raw_cap',
-            'twelve-bytes',
-        ));
+        await socket.trigger(PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT, createBinarySubstreamEnvelope({
+            tunnelId: 'tun_binary_raw_cap', substreamId: 'request', kind: 'open',
+        }));
+        await socket.trigger(PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT, createBinarySubstreamEnvelope({
+            tunnelId: 'tun_binary_raw_cap', substreamId: 'request', kind: 'data', payload: 'twelve-bytes',
+        }));
 
         expect(writes).toEqual(['twelve-bytes']);
     });
@@ -1016,10 +1127,10 @@ describe('registerPeerTcpTunnelRelayTerminator', () => {
             kind: 'data',
             payload: 'beta',
         }));
-        await dataHandlers[1]?.(Buffer.from('one'));
+        await dataHandlers[0]?.(Buffer.from('one'));
 
-        expect(connectTcp).toHaveBeenCalledTimes(3);
-        expect(writesByConnection.slice(1)).toEqual([['alpha'], ['beta']]);
+        expect(connectTcp).toHaveBeenCalledTimes(2);
+        expect(writesByConnection).toEqual([['alpha'], ['beta']]);
         const binaryEmit = socket.emit.mock.calls.find(([, payload]) => {
             const envelope = payload as { v?: number; frame?: Uint8Array };
             if (envelope.v !== 2 || !(envelope.frame instanceof Uint8Array)) return false;
@@ -1093,8 +1204,8 @@ describe('registerPeerTcpTunnelRelayTerminator', () => {
             payload: 'twelve-bytes',
         }));
 
-        expect(connectTcp).toHaveBeenCalledTimes(2);
-        expect(writesByConnection[1]).toEqual(['twelve-bytes']);
+        expect(connectTcp).toHaveBeenCalledOnce();
+        expect(writesByConnection).toEqual([['twelve-bytes']]);
     });
 
     it('dispatches voice-bound relay binary_frame_v2 substream data to the append consumer without opening a substream TCP socket', async () => {
@@ -1348,11 +1459,6 @@ describe('registerPeerTcpTunnelRelayTerminator', () => {
             maxActiveTunnels: 1,
             substreamCaps: {
                 maxConcurrentSubstreams: 1,
-                maxTotalSubstreams: 1,
-                maxBytesPerSubstream: 64 * 1024,
-                maxAggregateBytes: 64 * 1024,
-                maxSubstreamIdleMs: 30_000,
-                maxSessionIdleMs: 30_000,
             },
             observability: {
                 emit: (event) => emitted.push(event),
@@ -1536,6 +1642,10 @@ describe('registerPeerTcpTunnelRelayTerminator', () => {
             connectTcp: connectA,
         });
         await socketA.trigger(PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT, open);
+        expect(connectA).not.toHaveBeenCalled();
+        await socketA.trigger(PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT, createBinarySubstreamEnvelope({
+            tunnelId, substreamId: 'request', kind: 'open',
+        }));
         expect(connectA).toHaveBeenCalledOnce();
 
         // A replacement daemon terminator has a fresh process-local consumption
@@ -1573,6 +1683,10 @@ describe('registerPeerTcpTunnelRelayTerminator', () => {
                 iat: 1_000,
                 exp: 301_000,
             }),
+        }));
+        expect(connectB).not.toHaveBeenCalled();
+        await socketB.trigger(PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT, createBinarySubstreamEnvelope({
+            tunnelId: replacementTunnelId, substreamId: 'request', kind: 'open',
         }));
         expect(connectB).toHaveBeenCalledOnce();
     });
@@ -2142,22 +2256,19 @@ describe('registerPeerTcpTunnelRelayTerminator', () => {
         }));
 
         expect(voiceBinaryAppendConsumer).not.toHaveBeenCalled();
-        expect(connectTcp).toHaveBeenCalledTimes(2);
-        expect(writesByConnection[1]).toEqual(['hello']);
+        expect(connectTcp).toHaveBeenCalledOnce();
+        expect(writesByConnection).toEqual([['hello']]);
     });
 
-    it('queues binary_frame_v2 substream frames that arrive while the authorized relay tunnel is opening', async () => {
+    it('drains back-to-back binary substream data after the signed child TCP connection opens', async () => {
         const mod = await loadRelayModule();
         expect(mod?.registerPeerTcpTunnelRelayTerminator).toBeTypeOf('function');
         if (!mod?.registerPeerTcpTunnelRelayTerminator) return;
 
         const socket = createSocket();
-        const baseConnection = { write: vi.fn(), close: vi.fn() };
         const substreamConnection = { write: vi.fn(), onData: vi.fn(), close: vi.fn() };
-        const baseConnect = deferred<typeof baseConnection>();
-        const connectTcp = vi.fn()
-            .mockImplementationOnce(async () => await baseConnect.promise)
-            .mockResolvedValueOnce(substreamConnection);
+        const childConnect = deferred<typeof substreamConnection>();
+        const connectTcp = vi.fn(async () => await childConnect.promise);
 
         mod.registerPeerTcpTunnelRelayTerminator({
             accountId: 'user_1',
@@ -2171,7 +2282,7 @@ describe('registerPeerTcpTunnelRelayTerminator', () => {
         const openEnvelope = createOpenEnvelope('tun_mux_opening');
         expect(openEnvelope.frame.kind).toBe('open');
         if (openEnvelope.frame.kind !== 'open') throw new Error('expected open frame fixture');
-        const openPromise = socket.trigger(PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT, {
+        await socket.trigger(PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT, {
             ...openEnvelope,
             frame: {
                 v: 1,
@@ -2183,27 +2294,54 @@ describe('registerPeerTcpTunnelRelayTerminator', () => {
                 },
             },
         });
-        await Promise.resolve();
-
-        await socket.trigger(PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT, createBinarySubstreamEnvelope({
+        expect(connectTcp).not.toHaveBeenCalled();
+        const openPromise = socket.trigger(PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT, createBinarySubstreamEnvelope({
             tunnelId: 'tun_mux_opening',
             substreamId: 'sub_early',
             kind: 'open',
         }));
-
-        expect(socket.emit).not.toHaveBeenCalledWith(PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT, expect.objectContaining({
-            frame: expect.objectContaining({
-                kind: 'abort',
-                reasonCode: 'tunnel_not_open',
-            }),
+        await vi.waitFor(() => expect(connectTcp).toHaveBeenCalledOnce());
+        const dataPromise = socket.trigger(PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT, createBinarySubstreamEnvelope({
+            tunnelId: 'tun_mux_opening', substreamId: 'sub_early', kind: 'data', payload: 'first-request-bytes',
         }));
+        await Promise.resolve();
+        childConnect.resolve(substreamConnection);
+        await Promise.all([openPromise, dataPromise]);
+        expect(substreamConnection.write).toHaveBeenCalledWith(new TextEncoder().encode('first-request-bytes'));
+        expect(socket.emit.mock.calls.some(([, envelope]) => {
+            if (envelope.v !== 2) return false;
+            const decoded = decodePeerTcpTunnelBinaryFrameV2({ frame: envelope.frame, maxHeaderBytes: 1024, maxPayloadBytes: 1024 });
+            return decoded.ok && decoded.header.substreamId === 'sub_early' && decoded.header.kind === 'abort';
+        })).toBe(false);
+        expect(connectTcp).toHaveBeenCalledOnce();
+    });
 
-        baseConnect.resolve(baseConnection);
+    it.each(['close', 'dispose'] as const)('releases a child that finishes connecting after parent %s', async (terminal) => {
+        const mod = await loadRelayModule();
+        if (!mod) throw new Error('Relay module unavailable');
+        const socket = createSocket();
+        const connection = { write: vi.fn(), onData: vi.fn(), close: vi.fn() };
+        const childConnect = deferred<typeof connection>();
+        const connectTcp = vi.fn(async () => await childConnect.promise);
+        const terminator = mod.registerPeerTcpTunnelRelayTerminator({
+            accountId: 'user_1', machineId: 'machine_1', socket,
+            nowMs: () => 2_000, relayAuthorizationTrustRoots, connectTcp,
+        });
+        await socket.trigger(PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT, createOpenEnvelope(`pending_${terminal}`));
+        const openPromise = socket.trigger(PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT, createBinarySubstreamEnvelope({
+            tunnelId: `pending_${terminal}`, substreamId: 'pending', kind: 'open',
+        }));
+        await vi.waitFor(() => expect(connectTcp).toHaveBeenCalledOnce());
+        if (terminal === 'close') {
+            await socket.trigger(PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT, createCloseEnvelope(`pending_${terminal}`));
+        } else {
+            await terminator.dispose();
+        }
+        childConnect.resolve(connection);
         await openPromise;
-
-        expect(connectTcp).toHaveBeenCalledTimes(2);
-        expect(connectTcp).toHaveBeenNthCalledWith(1, { host: '127.0.0.1', port: 3000 });
-        expect(connectTcp).toHaveBeenNthCalledWith(2, { host: '127.0.0.1', port: 3000 });
+        expect(connection.close).toHaveBeenCalledOnce();
+        expect(connection.write).not.toHaveBeenCalled();
+        await terminator.dispose();
     });
 
     it('does not echo terminal frames for unknown relay tunnels', async () => {
@@ -2301,8 +2439,8 @@ describe('registerPeerTcpTunnelRelayTerminator', () => {
             payload: 'beta-after',
         }));
 
-        expect(connectTcp).toHaveBeenCalledTimes(3);
-        expect(writesByConnection[2]).toEqual(['beta-after']);
+        expect(connectTcp).toHaveBeenCalledTimes(2);
+        expect(writesByConnection[1]).toEqual(['beta-after']);
     });
 
     it('emits daemon observability lifecycle events for accepted relay tunnels', async () => {
@@ -2330,7 +2468,12 @@ describe('registerPeerTcpTunnelRelayTerminator', () => {
         });
 
         await socket.trigger(PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT, createOpenEnvelope('tun_observable'));
-        await socket.trigger(PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT, createDataEnvelope('tun_observable', 'secret-payload'));
+        await socket.trigger(PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT, createBinarySubstreamEnvelope({
+            tunnelId: 'tun_observable', substreamId: 'request', kind: 'open',
+        }));
+        await socket.trigger(PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT, createBinarySubstreamEnvelope({
+            tunnelId: 'tun_observable', substreamId: 'request', kind: 'data', payload: 'secret-payload',
+        }));
         await socket.trigger(PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT, createCloseEnvelope('tun_observable'));
 
         expect(emitted).toEqual(expect.arrayContaining([

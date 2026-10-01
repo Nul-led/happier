@@ -50,6 +50,10 @@ export async function acquireReviewedRunnerPluginRuntimeLease(input: Readonly<{
   target: AgentExecutionTargetV1;
   signal?: AbortSignal;
   connectedAccounts?: StablePluginConnectedAccountsOwner;
+  /** Exact trusted development-root authority selected by the owning runtime slot. */
+  resolveDevelopmentSourceAuthority?: NonNullable<
+    Parameters<typeof resolveExecutablePluginRuntimeRegistry>[0]
+  >['resolveDevelopmentSourceAuthority'];
   /** Exact restricted runtime authority for plugin-to-plugin Action calls. */
   scopedActionRuntime?: Readonly<{
     credentials: StoredCredentials | null;
@@ -61,6 +65,9 @@ export async function acquireReviewedRunnerPluginRuntimeLease(input: Readonly<{
     happyHomeDir: input.happyHomeDir,
     generation: 1,
     pluginIds: [input.target.identity.pluginId],
+    ...(input.resolveDevelopmentSourceAuthority
+      ? { resolveDevelopmentSourceAuthority: input.resolveDevelopmentSourceAuthority }
+      : {}),
     ...(input.connectedAccounts ? { connectedAccounts: input.connectedAccounts } : {}),
     ...(input.scopedActionRuntime ? { scopedActionRuntime: input.scopedActionRuntime } : {}),
   });
@@ -73,10 +80,11 @@ export async function acquireReviewedRunnerPluginRuntimeLease(input: Readonly<{
     const contribution = selected
       ? registry.contributes.agentDefinitionsById.get(selected.agentId)
       : null;
-    const currentGeneration = registry.pluginFinalPolicyCurrentGenerationsById
+    const currentRuntime = registry.pluginFinalPolicyCurrentRuntimesById
       ?.get(input.target.identity.pluginId) ?? null;
     const reviewedExternalGenerationId = contribution?.provenance === 'external'
-      ? currentGeneration?.immutableGenerationId ?? null
+      && currentRuntime?.sourceCustody.kind === 'managed'
+      ? currentRuntime.sourceCustody.immutableGenerationId
       : null;
     const reviewedIdentity = contribution?.identity;
     if (
@@ -89,7 +97,8 @@ export async function acquireReviewedRunnerPluginRuntimeLease(input: Readonly<{
         contribution.provenance === 'external'
         && (
           reviewedExternalGenerationId === null
-          || currentGeneration?.desiredImmutableGenerationId !== reviewedExternalGenerationId
+          || currentRuntime === null
+          || currentRuntime.desiredOccurrenceId !== currentRuntime.occurrenceId
         )
       )
     ) {
@@ -101,7 +110,7 @@ export async function acquireReviewedRunnerPluginRuntimeLease(input: Readonly<{
 
     await activateAgentRuntimeContributionOnDemand(registry, selected.agentId);
     input.signal?.throwIfAborted();
-    const appliedGeneration = registry.pluginFinalPolicyCurrentGenerationsById
+    const appliedRuntime = registry.pluginFinalPolicyCurrentRuntimesById
       ?.get(input.target.identity.pluginId) ?? null;
     // On-demand activation reports diagnostics instead of throwing for several
     // integrity/currentness failures. A cold declaration is not an executable
@@ -113,8 +122,9 @@ export async function acquireReviewedRunnerPluginRuntimeLease(input: Readonly<{
       || (
         contribution.provenance === 'external'
         && (
-          appliedGeneration?.applied !== true
-          || appliedGeneration.immutableGenerationId !== reviewedExternalGenerationId
+          appliedRuntime?.applied !== true
+          || appliedRuntime.sourceCustody.kind !== 'managed'
+          || appliedRuntime.sourceCustody.immutableGenerationId !== reviewedExternalGenerationId
         )
       )
     ) {
@@ -131,7 +141,9 @@ export async function acquireReviewedRunnerPluginRuntimeLease(input: Readonly<{
         agentId: selected.agentId,
         backendId: selected.backendId,
         runtimeSpec: selected.runtimeSpec,
-        immutableGenerationId: appliedGeneration?.immutableGenerationId ?? null,
+        immutableGenerationId: appliedRuntime?.sourceCustody.kind === 'managed'
+          ? appliedRuntime.sourceCustody.immutableGenerationId
+          : null,
       }),
       release: lease.release,
     });

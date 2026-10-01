@@ -21,6 +21,12 @@ const callerMaterialization: PluginMachineMaterializationRefV1 = {
   materializationId: 'materialization-caller',
 };
 const callerImmutableGenerationId = 'github-immutable-generation-current';
+const callerOccurrenceId = 'github-occurrence-current';
+const callerSourceCustody = {
+  kind: 'managed' as const,
+  immutableGenerationId: callerImmutableGenerationId,
+  installSource: 'archive' as const,
+};
 
 describe('Automation Event E2 transport boundary', () => {
   it('normalizes a plain admission into one strict request before a custom transport receives it', async () => {
@@ -53,7 +59,7 @@ describe('Automation Event E2 transport boundary', () => {
       credentials,
       transport: { execute },
       revalidateCallerMaterialization: async () => true,
-      revalidateCallerImmutableGeneration: async () => true,
+      revalidateCallerOccurrence: async () => true,
       resolveAccountId: async () => 'account-1',
       resolveAdoptedDefinitionSet: () => adoptedSet,
     });
@@ -80,7 +86,8 @@ describe('Automation Event E2 transport boundary', () => {
       caller: {
         kind: 'plugin',
         pluginId: 'com.acme.github',
-        immutableGenerationId: callerImmutableGenerationId,
+        occurrenceId: callerOccurrenceId,
+        sourceCustody: callerSourceCustody,
         materialization: callerMaterialization,
       },
     })).resolves.toEqual({
@@ -92,7 +99,8 @@ describe('Automation Event E2 transport boundary', () => {
       v: 1,
       caller: {
         pluginId: 'com.acme.github',
-        immutableGenerationId: callerImmutableGenerationId,
+        occurrenceId: callerOccurrenceId,
+        sourceCustody: callerSourceCustody,
         materialization: callerMaterialization,
       },
       input,
@@ -141,7 +149,7 @@ describe('Automation Event E2 transport boundary', () => {
       credentials,
       transport: { execute },
       revalidateCallerMaterialization: async () => true,
-      revalidateCallerImmutableGeneration: async () => true,
+      revalidateCallerOccurrence: async () => true,
       resolveAccountId: async () => 'account-1',
       resolveAdoptedDefinitionSet: () => adoptedSet,
     });
@@ -176,7 +184,8 @@ describe('Automation Event E2 transport boundary', () => {
       caller: {
         kind: 'plugin',
         pluginId: 'com.acme.github',
-        immutableGenerationId: callerImmutableGenerationId,
+        occurrenceId: callerOccurrenceId,
+        sourceCustody: callerSourceCustody,
         materialization: callerMaterialization,
       },
     })).resolves.toEqual({

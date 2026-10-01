@@ -1,11 +1,26 @@
 export type {
+  AgentInstallProgressEvent,
+  AgentInstallProgressCallback,
   InstallAgentCliResult,
   AgentCliInstallCommand,
   AgentCliInstallIntent,
   AgentCliInstallMode,
   AgentCliInstallPlan,
   AgentCliInstallPlanResult,
+  AgentCliUpdateTarget,
 } from './install.js';
+export type {
+  AgentCliInstallSource,
+  AgentCliLatestVersionFacts,
+  AgentCliLatestVersionSource,
+  AgentCliUpdateFacts,
+} from './update.js';
+export {
+  classifyAgentCliInstall,
+  fetchAgentCliLatestVersion,
+  resolveAgentCliLatestVersionSource,
+  resolveAgentCliNpmPackageName,
+} from './update.js';
 export {
   installAgentCli,
   installAgentCliForRuntime,
@@ -51,7 +66,7 @@ export {
   resolveExplicitJavaScriptRuntimeCommand,
   resolveExistingManagedJavaScriptRuntimeCommand,
 } from './managedJavaScriptRuntime.js';
-export { downloadGitHubReleaseAsset } from './downloadGitHubReleaseAsset.js';
+export { AgentCliDownloadError, downloadGitHubReleaseAsset } from './downloadGitHubReleaseAsset.js';
 export { extractGitHubReleaseAsset } from './extractGitHubReleaseAsset.js';
 export { createManagedToolScratchDir } from './createManagedToolScratchDir.js';
 export { promoteManagedCurrentInstall } from './promoteManagedCurrentInstall.js';
@@ -85,6 +100,7 @@ export {
   ensureManagedPnpmCommand,
   managedPnpmBinPath,
   managedPnpmInstallDir,
+  readManagedPnpmMinimumReleaseAgeMs,
   resolveExistingPnpmCommand,
 } from './managedPnpm.js';
 export { resolveHappyHomeDirFromEnvironment } from './resolveHappyHomeDir.js';

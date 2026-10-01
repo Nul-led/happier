@@ -64,9 +64,9 @@ import type { AgentMessage } from '@/agent/core/AgentMessage';
 import { DefaultTransport } from '@/agent/transport';
 import { DEFAULT_IDLE_TIMEOUT_MS } from '@/agent/acp/sessionUpdateHandlers';
 import { createAgentSessionRuntimeEventStream } from '@/agent/runtime/session/events/agentSessionRuntimeEventStream';
-import type { McpServerConfig } from '@/agent/core/AgentTypes';
 import type { AcpReplayHistorySessionClient } from '@/agent/acp/sessionClient';
 import { createAcpTransportHandlerFromDefinition } from '@/agent/acp/runtime/definition/transport';
+import { appendAcpPermissionModeArgs } from '@/agent/acp/runtime/definition/launch';
 import {
   resolveAcpTransportLaunch,
   type PublicAcpHostLaunch,
@@ -123,7 +123,12 @@ export type PublicAcpComposerDependencies = Readonly<{
   media: SessionMediaService;
   models: AgentSessionHostServices['models'];
   resumeHistorySession?: AcpReplayHistorySessionClient;
-  mcpServers?: Record<string, McpServerConfig>;
+  /**
+   * MCP servers this Session launches with, in the SDK's published launch
+   * shape. The composer only enumerates the record, so a Run's tool binding
+   * (`NativeAgentSessionRunToolBinding.mcpServers`) reaches it as-is.
+   */
+  mcpServers?: AgentSessionOpenRequest['mcpServers'];
   transformAgentChildLaunchEnvironment?: (
     environment: Readonly<Record<string, string>>,
   ) => Readonly<Record<string, string>>;
@@ -471,6 +476,33 @@ function createExtensionRegistrations(
   return Object.freeze(registrations);
 }
 
+function projectPermissionModeLaunchTransport(
+  transport: PluginAgentAcpTransport,
+  request: PublicAcpOpenRequest,
+  definition: AgentAcpRuntimeDefinition | undefined,
+): PluginAgentAcpTransport {
+  const permissionIntent = request.configuration?.permissionIntent.value;
+  const argv = definition?.permissionModeArgv;
+  if (!permissionIntent || !argv) return transport;
+
+  const args = appendAcpPermissionModeArgs({
+    args: transport.kind === 'stdio' ? transport.args ?? [] : [],
+    spec: argv,
+    permissionMode: permissionIntent,
+    requireMappedValue: permissionIntent !== 'default',
+  });
+  if (args.length === 0) return transport;
+  if (transport.kind !== 'stdio') {
+    throw new Error(
+      `ACP permission intent '${permissionIntent}' requires a stdio launch transport.`,
+    );
+  }
+  return Object.freeze({
+    ...transport,
+    args: Object.freeze(args),
+  });
+}
+
 async function resolveTransport(
   transport: PluginAgentAcpTransport,
   request: PublicAcpOpenRequest,
@@ -551,8 +583,15 @@ async function createPublicAcpConversationFromAwaitableAdapter(
   awaitableAdapter: PublicAcpAwaitableAdapter,
 ): Promise<PublicAcpSessionRuntime | PublicAcpConversationRuntime> {
   const executionRunRequest = 'runId' in request ? request : null;
+  if (request.configuration?.workspaceWrites === 'deny') {
+    throw Object.assign(new Error('This ACP Agent cannot enforce the hands-off role policy.'), { code: 'role_policy_unenforceable' });
+  }
   assertComposerCurrent(dependencies);
-  const transport = PluginAgentAcpTransportSchema.parse(options.transport);
+  const transport = projectPermissionModeLaunchTransport(
+    PluginAgentAcpTransportSchema.parse(options.transport),
+    request,
+    options.definition,
+  );
   const resolvedLaunch = await resolveTransport(transport, request, dependencies);
   let nativeMcpDelivery: NativeSessionMcpConfigDelivery | null = null;
   let launchReleased = false;
@@ -672,6 +711,7 @@ async function createPublicAcpConversationFromAwaitableAdapter(
   let backend: AcpBackend;
   let modelPublicationReady = false;
   let providerModelPublicationPending = false;
+  let modelObservedAt = 0;
   let modelSnapshot: AgentSessionModelsSnapshot = Object.freeze({ models: null });
   const modelSubscribers = new Set<(snapshot: AgentSessionModelsSnapshot) => void>();
   const modelSource: AgentSessionModelsSource = Object.freeze({
@@ -687,6 +727,7 @@ async function createPublicAcpConversationFromAwaitableAdapter(
   const publishProviderModels = (): void => {
     const state = backend.getSessionModelState();
     modelSnapshot = Object.freeze({
+      observedAt: modelObservedAt,
       models: state
         ? Object.freeze(state.availableModels.map((model) => Object.freeze({
             id: model.id,
@@ -1360,6 +1401,7 @@ async function createPublicAcpConversationFromAwaitableAdapter(
       message.type === 'event'
       && (message.name === 'session_models_state' || message.name === 'current_model_update')
     ) {
+      if (message.name === 'session_models_state') modelObservedAt = Date.now();
       if (modelPublicationReady) publishProviderModels();
       else providerModelPublicationPending = true;
     }
@@ -1642,6 +1684,7 @@ async function createPublicAcpConversationFromAwaitableAdapter(
           try {
             promptContent = await buildAcpPromptContentBlocks({
               cwd: request.cwd,
+              sessionId: request.sessionId,
               text: sendRequest.input.text,
               ...(sendRequest.input.structuredInput === undefined
                 ? {}
@@ -1710,6 +1753,7 @@ async function createPublicAcpConversationFromAwaitableAdapter(
       try {
         promptContent = await buildAcpPromptContentBlocks({
           cwd: request.cwd,
+          sessionId: request.sessionId,
           text: sendRequest.input.text,
           ...(sendRequest.input.structuredInput === undefined
             ? {}
@@ -1984,6 +2028,9 @@ async function createPublicAcpConversationFromAwaitableAdapter(
           };
         }
         const update = parsed.data;
+        if (update.workspaceWrites === 'deny') {
+          return { status: 'rejected', diagnostic: diagnostic('role_policy_unenforceable') };
+        }
         const result = await applyConfigurationControls(
           update,
           currentConfiguration,
@@ -2143,6 +2190,7 @@ async function createPublicAcpConversationFromAwaitableAdapter(
       currentConfiguration = mergeConfigurationSnapshot(null, initialConfiguration);
     }
     modelPublicationReady = true;
+    if (backend.getSessionModelState() && modelObservedAt === 0) modelObservedAt = Date.now();
     if (providerModelPublicationPending || backend.getSessionModelState()) publishProviderModels();
     publish({ kind: 'provider-session-id', providerSessionId: opened.sessionId });
     if (dependencies.signal.aborted) await session.dispose();

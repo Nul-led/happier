@@ -19,7 +19,6 @@ import {
 import { announceAccessibilityMessage } from '@/components/ui/accessibility/announceAccessibilityMessage';
 import { randomUUID } from '@/platform/randomUUID';
 import { t } from '@/text';
-import { isHoverCapablePrimaryPointer } from '@/utils/platform/webMobileHeuristics';
 
 import type {
     SessionArmedAgentContinuation,
@@ -343,12 +342,6 @@ export type InSessionAgentPickerControls = Readonly<{
      */
     recordArmedContinuationSubmission: (submission: SessionArmedAgentContinuationSubmission) => boolean;
     /**
-     * The reader is reaching for the Agent chip — hovering it, focusing it, or
-     * pressing it down. Continuation support is inspected from here, so a Session
-     * whose picker is never approached asks its machine nothing.
-     */
-    onAgentPickerIntent: () => void;
-    /**
      * The composer's Agent picker became visible or hidden. It scopes the rail
      * decision: one open popover keeps the one shape it opened with.
      */
@@ -423,17 +416,6 @@ export function useInSessionAgentPickerControls(
     const accountScopeKey = accountScope ? serverAccountScopeKeySuffix(accountScope) : 'local';
 
     const currentAgentReportedStatus = resolveReportedModelStatus(params.currentAgentSessionActive);
-    // Read once per mount rather than at module evaluation: this file is reached
-    // from the session shell, and importing it must not touch `window`.
-    const pointerCanSignalIntent = React.useMemo(() => isHoverCapablePrimaryPointer(), []);
-    // Whether the reader has reached for the Agent chip on this Session yet.
-    // One-way: an answer is cached for the whole connection, so there is nothing to
-    // give back by forgetting the intent that bought it.
-    const [pickerApproached, setPickerApproached] = React.useState(false);
-    const signalAgentPickerIntent = React.useCallback(() => {
-        setPickerApproached((current) => (current ? current : true));
-    }, []);
-
     const [armed, setArmed] = React.useState<ArmedAgentContinuation | null>(null);
     const draftSessionId = sessionId.trim().length > 0 ? sessionId.trim() : null;
     const persistedArmedContinuation = draftSessionId === null || !accountScopeIsCurrent()
@@ -476,12 +458,6 @@ export function useInSessionAgentPickerControls(
     // the rail decision below to one open popover.
     const [pickerVisible, setPickerVisible] = React.useState(false);
 
-    // A Session the reader already armed HAS been approached — in an earlier mount,
-    // with the choice carried across it by the draft. Demanding the gesture again
-    // would leave the composer promising "Continue with {Agent}" while the rail it
-    // depends on is still undecided, so the persisted arm is its own intent signal.
-    const hasPersistedArmedContinuation = persistedArmedContinuation !== undefined;
-
     const targetEntries = React.useMemo(() => entries.filter((entry) => (
         entry.backendTargetKey !== source.currentBackendTargetKey
     )), [entries, source.currentBackendTargetKey]);
@@ -518,32 +494,22 @@ export function useInSessionAgentPickerControls(
             : []
     ), [featureEnabled, sessionReason, targetEntries, targetSelectionByTargetKey]);
 
-    // The rail decision has to be settled BEFORE the popover paints, or the
-    // popover opens at one width and then grows by the width of the rail. That is
-    // the same defect as a rail appearing and vanishing, seen as geometry.
+    // The rail decision has to be settled BEFORE the click that opens the popover.
+    // That click also chooses between the shared Agent picker and the running
+    // Agent's model-only picker. Starting this request from hover, focus or
+    // press-in is therefore racy: the click can observe the old empty option list
+    // and open the model-only surface even though switching is supported.
     //
-    // Asking when the popover opens is structurally too late: the machine round
-    // trip and the popover's own mount take about the same time, so which one
-    // wins is a coin flip, and the reader sees the loser. The question is
-    // therefore asked as soon as the rail is a live possibility for this Session.
-    //
-    // It is still not asked for every Session. `inspectableTargetSelections` is
-    // already empty for a closed gate, a read-only or external Session and one
-    // with no other Agent; the inspection hook itself never calls a machine it
-    // knows is offline; and one answer serves the whole realtime connection.
+    // Preflight the exact eligible targets when this Session view is ready. This
+    // remains bounded: a closed gate, read-only or external Session, offline
+    // machine, or Session with no other Agent supplies no request, and one batched
+    // answer serves the mounted view for the current runtime pair.
     const inspections = useSessionContinuationInspections({
         sessionId,
         machine: params.machine,
         machinePresence: source.machinePresence,
         targetSelections: inspectableTargetSelections,
-        // Asked on APPROACH where a pointer can announce one. A mouse has to travel
-        // over the Agent chip to click it and a keyboard has to focus it, which is a
-        // real head start; where the primary pointer can give none — a finger —
-        // the question falls back to being asked as soon as the rail is a live
-        // possibility, because a rail arriving after the popover has painted is a
-        // worse outcome than an early ask.
-        demanded: inspectableTargetSelections.length > 0
-            && (pickerApproached || hasPersistedArmedContinuation || !pointerCanSignalIntent),
+        demanded: inspectableTargetSelections.length > 0,
     });
     const readInspection = inspections.read;
 
@@ -1079,7 +1045,6 @@ export function useInSessionAgentPickerControls(
         clearArmedContinuation,
         clearArmedContinuationSubmissionIfCurrent,
         recordArmedContinuationSubmission,
-        onAgentPickerIntent: signalAgentPickerIntent,
         onAgentPickerVisibilityChange,
     };
 }

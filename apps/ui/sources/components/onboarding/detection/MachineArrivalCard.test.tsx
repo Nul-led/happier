@@ -1,16 +1,20 @@
-import * as fs from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act } from 'react-test-renderer';
 
-import { createMachineFixture, renderScreen, standardCleanup } from '@/dev/testkit';
+import { createMachineFixture } from '@/dev/testkit/fixtures/machineFixtures';
+import { renderScreen } from '@/dev/testkit/render/renderScreen';
+import { standardCleanup } from '@/dev/testkit/cleanup/standardCleanup';
+
+// Locale is an environment boundary; these contracts exercise routes/commands, not translation loading.
+vi.mock('@/text', async () => {
+    const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
+    return createTextModuleMock();
+});
 import { StatusPill } from '@/components/ui/status/StatusPill';
 import { Text } from '@/components/ui/text/Text';
 import { storage } from '@/sync/domains/state/storageStore';
-import {
-    buildCliInstallAndRunCommandForCurrentApp,
-    buildCliInstallAndRunPowershellCommandForCurrentApp,
-} from '@/components/onboarding/commands/wizardCliCommands';
+import { removeServerProfile, upsertServerProfile } from '@/sync/domains/server/serverProfiles';
+import { buildMachineAddCommand } from '@/components/machines/add/machineAddCommand';
 
 import { MachineArrivalCard } from './MachineArrivalCard';
 
@@ -29,49 +33,19 @@ describe('MachineArrivalCard', () => {
             { flushOptions: { cycles: 1, turns: 4 } },
         );
 
-        expect(screen.getTextContent()).toContain("After you sign in, we'll detect it automatically.");
-        expect(screen.getTextContent()).not.toContain('Watching for your machine...');
+        expect(screen.findByTestId('machine-arrival-card-status')).toBeNull();
         expect(screen.findAllByType(StatusPill as never)).toHaveLength(0);
-        expect(normalizeRenderedCodeText(screen.getTextContent())).toContain(buildCliInstallAndRunCommandForCurrentApp({
-            action: 'setup',
-            args: ['--home-url', 'https://relay.example.test'],
+        expect(normalizeRenderedCodeText(screen.getTextContent())).toContain(buildMachineAddCommand({
+            kind: 'joinHome', os: 'macos', descriptor: null, profileSource: null,
+            fallbackHomeUrl: 'https://relay.example.test',
         }));
-    });
-
-    it('wraps the command onto multiple lines so it is fully readable (never faded/cut)', async () => {
-        const screen = await renderScreen(
-            <MachineArrivalCard mode="instructional" serverUrl="https://relay.example.test" />,
-            { flushOptions: { cycles: 1, turns: 4 } },
-        );
-
-        // Spec §2 / F-W13-1: the one-command row must show the FULL command —
-        // wrapped in-flow, NOT inside a horizontal overflow scroller whose
-        // edge fade hides unread content. When CodeBlockView wraps, it renders
-        // a plain padded View and the scrollTestID'd scroller never mounts.
-        expect(screen.findByTestId('machine-arrival-card-command-setup')).toBeNull();
-        expect(normalizeRenderedCodeText(screen.getTextContent())).toContain(buildCliInstallAndRunCommandForCurrentApp({
-            action: 'setup',
-            args: ['--home-url', 'https://relay.example.test'],
-        }));
-    });
-
-    it('uses wizardCliCommands builders instead of inlining command strings', () => {
-        const sourcePath = fileURLToPath(new URL('./MachineArrivalCard.tsx', import.meta.url));
-        const source = fs.readFileSync(sourcePath, 'utf8');
-
-        expect(source).toContain('buildCliInstallAndRunCommandForCurrentApp');
-        expect(source).toContain('buildCliInstallAndRunPowershellCommandForCurrentApp');
-        expect(source).toContain("from '@/components/ui/status/StatusPill'");
-        expect(source).not.toContain('curl -fsSL');
-        expect(source).not.toContain('happier setup');
-        expect(source).not.toContain('hprev setup');
-        expect(source).not.toContain('hdev setup');
     });
 
     it('renders live mode as watching, then flips to connected and calls onArrived once', async () => {
         const previousState = storage.getState();
         const now = Date.now();
         const onArrived = vi.fn();
+        const home = await upsertServerProfile({ serverUrl: 'https://card-arrival.example.test', name: 'Arrival test Home' });
         try {
             storage.setState((state) => ({
                 ...state,
@@ -79,18 +53,19 @@ describe('MachineArrivalCard', () => {
                 machines: {},
                 machineListByServerId: {},
             }));
+            // The wait begins from a loaded (empty) machine list.
+            storage.getState().applyMachines([], true, { sourceServerId: home.id });
 
             const screen = await renderScreen(
                 <MachineArrivalCard
                     mode="live"
-                    serverUrl="https://relay.example.test"
+                    serverUrl={home.serverUrl}
                     onArrived={onArrived}
                     notSeeingYourMachine={<Text>diagnostic slot</Text>}
                 />,
                 { flushOptions: { cycles: 2, turns: 4 } },
             );
 
-            expect(screen.getTextContent()).toContain('Watching for your machine...');
             expect(screen.findByTestId('machine-arrival-card-status:variant:neutral')).toBeTruthy();
             expect(screen.findByTestId('machine-arrival-card-details')).not.toBeNull();
 
@@ -110,10 +85,9 @@ describe('MachineArrivalCard', () => {
                             homeDir: '/Users/tester',
                         },
                     }),
-                ]);
+                ], false, { sourceServerId: home.id });
             });
 
-            expect(screen.getTextContent()).toContain('Connected');
             expect(screen.getTextContent()).toContain('Workstation');
             expect(screen.findByTestId('machine-arrival-card-status:variant:success')).toBeTruthy();
             expect(onArrived).toHaveBeenCalledTimes(1);
@@ -122,27 +96,35 @@ describe('MachineArrivalCard', () => {
             await act(async () => {
                 storage.getState().applyMachines([
                     createMachineFixture({ id: 'm-live', active: true, activeAt: now + 1000, updatedAt: now + 1000 }),
-                ]);
+                ], false, { sourceServerId: home.id });
             });
 
             expect(onArrived).toHaveBeenCalledTimes(1);
             await screen.unmount();
         } finally {
             storage.setState(previousState);
+            await removeServerProfile(home.id);
         }
     });
 
-    it('renders PowerShell from the wizard command builder when the Windows tab is selected', async () => {
+    it('offers exactly one checked OS choice and switches the copied command to Windows', async () => {
         const screen = await renderScreen(
             <MachineArrivalCard mode="instructional" serverUrl="https://relay.example.test" />,
-            { flushOptions: { cycles: 1, turns: 4 } },
         );
+        const radios = screen.findAllByProps({ accessibilityRole: 'radio' })
+            .filter((node) => typeof node.type === 'string');
+        expect(radios).toHaveLength(3);
+        expect(radios.filter((radio) => radio.props.accessibilityState?.checked)).toHaveLength(1);
 
-        await screen.pressByTestIdAsync('machine-arrival-card-command-setup-platform:windows');
-
-        expect(normalizeRenderedCodeText(screen.getTextContent())).toContain(buildCliInstallAndRunPowershellCommandForCurrentApp({
-            action: 'setup',
-            args: ['--home-url', 'https://relay.example.test'],
+        await screen.pressByTestIdAsync('machine-arrival-card-command-setup.os:windows');
+        expect(normalizeRenderedCodeText(screen.getTextContent())).toContain(buildMachineAddCommand({
+            kind: 'joinHome', os: 'windows', descriptor: null, profileSource: null,
+            fallbackHomeUrl: 'https://relay.example.test',
         }));
+        expect(screen.findByTestId('machine-arrival-card-command-setup.os:windows')?.props.accessibilityState.checked).toBe(true);
+
+        await screen.pressByTestIdAsync('machine-arrival-card-command-setup.os:linux');
+        expect(screen.findByTestId('machine-arrival-card-command-setup.os:windows')?.props.accessibilityState.checked).toBe(false);
+        expect(screen.findByTestId('machine-arrival-card-command-setup.os:linux')?.props.accessibilityState.checked).toBe(true);
     });
 });

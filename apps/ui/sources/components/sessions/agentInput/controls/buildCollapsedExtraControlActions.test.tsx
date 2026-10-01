@@ -4,6 +4,34 @@ import type { AgentInputExtraActionChip } from '../agentInputContracts';
 import { buildCollapsedExtraControlActions } from './buildCollapsedExtraControlActions';
 
 describe('buildCollapsedExtraControlActions', () => {
+    it('signals chip intent before opening content from the collapsed action menu', () => {
+        const onIntent = vi.fn();
+        const openCollapsedOptionsPopover = vi.fn();
+        const chip: AgentInputExtraActionChip = {
+            key: 'mcp',
+            controlId: 'mcp',
+            onIntent,
+            collapsedContentPopover: {
+                title: 'MCP',
+                renderContent: () => null,
+            },
+            render: () => null,
+        };
+
+        const actions = buildCollapsedExtraControlActions({
+            chips: [chip],
+            tint: 'currentColor',
+            dismiss: vi.fn(),
+            blurInput: vi.fn(),
+            openCollapsedOptionsPopover,
+        });
+
+        actions.mcp?.[0]?.onPress?.();
+
+        expect(onIntent).toHaveBeenCalledTimes(1);
+        expect(openCollapsedOptionsPopover).toHaveBeenCalledWith('mcp');
+    });
+
     it('preserves an authored accessibility name for a collapsed content control', () => {
         const actions = buildCollapsedExtraControlActions({
             chips: [{

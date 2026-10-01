@@ -4,9 +4,7 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { ToolViewProps } from '../core/_registry';
 import { resolvePermissionRequestId } from '../core/resolvePermissionRequestId';
 import { ToolSectionView } from '../../shell/presentation/ToolSectionView';
-import { sessionAllowWithAnswers } from '@/sync/ops';
-import { storage } from '@/sync/domains/state/storage';
-import { captureActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
+import { useSessionTranscriptSource } from '@/components/sessions/transcript/source/SessionTranscriptSourceContext';
 import { Modal } from '@/modal';
 import { t } from '@/text';
 import { Text, TextInput } from '@/components/ui/text/Text';
@@ -25,25 +23,16 @@ import { Icon } from '@/components/ui/icons/Icon';
 import { getAgentBehavior } from '@/agents/catalog/catalog';
 import { useDaemonMergedProjectionInputs } from '@/agents/backendCatalog/useDaemonMergedProjectionInputs';
 import type { PluginProjectionEditableSettingField } from '@/agents/backendCatalog/daemonContributionRegistryProjectionAdapters';
-import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
 import { useServerCredentialAccountScopeResolution } from '@/sync/domains/scope/useServerCredentialAccountScopes';
 import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
-import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
-import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
 import { resolveSessionMachineId } from '@/sync/domains/session/external/resolveSessionMachineId';
 import { getMachineContributionRegistryProjectionRevision } from '@/sync/ops/machineContributionRegistryProjection';
+import { projectScopedPluginSettingsField } from '@/sync/domains/plugins/settings/scopedPluginSettingsProjection';
 import {
-    resolveScopedPluginSettingsTarget,
-    type ScopedPluginSettingsScope,
-} from '@/sync/domains/plugins/settings/scopedPluginSettingsAdapter';
-import {
-    resolveScopedPluginSettingsServerIdentity,
-    scopedPluginSettingsAdapter,
-} from '@/sync/domains/plugins/settings/scopedPluginSettingsRuntime';
-import {
-    commitScopedPluginSettingsField,
-    projectScopedPluginSettingsField,
-} from '@/sync/domains/plugins/settings/scopedPluginSettingsProjection';
+    persistDeclaredAskUserQuestionSetting,
+    type DeclaredAskUserQuestionSettingMutation,
+} from '@/sync/domains/plugins/settings/askUserQuestionSettings';
+import { resolvePermissionDisabledMessage } from '@/components/tools/shell/permissions/permissionDisabledMessage';
 
 
 interface QuestionOption {
@@ -79,29 +68,6 @@ interface AskUserQuestionInput {
     happierDialog?: unknown;
 }
 
-/**
- * A dialog option can carry an Agent-owned candidate setting mutation, but the
- * host accepts it only after the current qualified Agent descriptor allowlists
- * that exact dialog, setting, and value. The declared Account Settings catalog
- * remains the sole persistence authority below this bridge.
- */
-type DeclaredAskUserQuestionSettingMutation = Readonly<{
-    sessionId: string;
-    serverId: string;
-    agentId: string;
-    machineId: string;
-    pluginId: string;
-    agentLocalId: string;
-    dialogId: string;
-    settingId: string;
-    fieldId: string;
-    projectionGeneration: number;
-    projectionRevision: number;
-    scope: ScopedPluginSettingsScope;
-    field: PluginProjectionEditableSettingField;
-    value: string;
-}>;
-
 type AskUserQuestionDeclarationAuthority = Readonly<{
     accountScope: ServerAccountScope | null | undefined;
     serverId: string;
@@ -122,83 +88,6 @@ function resolveDeclaredAskUserQuestionSettingFieldId(
     return fieldId.trim().length > 0 ? fieldId : null;
 }
 
-async function persistDeclaredAskUserQuestionSetting(
-    input: DeclaredAskUserQuestionSettingMutation & Readonly<{
-        resolveCurrentDeclaration: () => DeclaredAskUserQuestionSettingMutation | null;
-    }>,
-): Promise<void> {
-    const serverId = input.serverId;
-    const target = resolveScopedPluginSettingsTarget({
-        scope: input.scope,
-        serverIdentityId: resolveScopedPluginSettingsServerIdentity(serverId),
-        machineId: input.machineId,
-        serverId,
-    });
-    if (!target) {
-        throw new Error(input.scope.kind === 'account'
-            ? 'Unable to persist the selected setting without an exact Account target.'
-            : 'Unable to persist the selected setting without an exact daemon target.');
-    }
-    const accountLifetime = captureActiveServerAccountScopeLifetime();
-    if (!accountLifetime) {
-        throw new Error('Unable to persist the selected setting outside the active Account lifetime.');
-    }
-    const projectedField = projectScopedPluginSettingsField(input.field);
-    if (projectedField.binding?.kind === 'perActiveServer') {
-        throw new Error('Unable to persist a selected setting with a server-dependent binding.');
-    }
-    const isTargetCurrent = (): boolean => {
-        const currentSession = storage.getState().sessions[input.sessionId];
-        const currentServerId = typeof currentSession?.serverId === 'string'
-            ? currentSession.serverId.trim()
-            : '';
-        if (currentServerId !== serverId) return false;
-        const metadata = currentSession ? readSessionOwnerMetadataView(currentSession) : null;
-        if (
-            resolveAgentIdFromSessionMetadata(metadata) !== input.agentId
-            || resolveSessionMachineId(metadata) !== input.machineId
-        ) {
-            return false;
-        }
-        const currentDeclaration = input.resolveCurrentDeclaration();
-        if (
-            !currentDeclaration
-            || getMachineContributionRegistryProjectionRevision({
-                machineId: input.machineId,
-                serverId,
-            }) !== input.projectionRevision
-        ) {
-            return false;
-        }
-        return currentDeclaration.sessionId === input.sessionId
-            && currentDeclaration.serverId === input.serverId
-            && currentDeclaration.agentId === input.agentId
-            && currentDeclaration.machineId === input.machineId
-            && currentDeclaration.pluginId === input.pluginId
-            && currentDeclaration.agentLocalId === input.agentLocalId
-            && currentDeclaration.dialogId === input.dialogId
-            && currentDeclaration.settingId === input.settingId
-            && currentDeclaration.fieldId === input.fieldId
-            && currentDeclaration.value === input.value
-            && currentDeclaration.projectionGeneration === input.projectionGeneration
-            && currentDeclaration.projectionRevision === input.projectionRevision
-            && currentDeclaration.scope.kind === input.scope.kind;
-    };
-    const result = await commitScopedPluginSettingsField({
-        pluginId: input.pluginId,
-        scope: input.scope,
-        target,
-        accountLifetime,
-        fields: [projectedField],
-        adapter: scopedPluginSettingsAdapter,
-        fieldId: input.fieldId,
-        mutation: { kind: 'set', value: input.value },
-        isCurrent: isTargetCurrent,
-    });
-    if (result?.status !== 'ready' && result?.status !== 'applied') {
-        throw new Error('Unable to persist the selected setting.');
-    }
-}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
     return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -487,8 +376,16 @@ function resolveAttachedTerminalUnavailableMessage(
 }
 
 function parseAskUserQuestionAnswersFromToolResult(result: unknown): Record<string, string> | null {
-    if (!result || typeof result !== 'object') return null;
-    const maybeAnswers = (result as any).answers;
+    let parsedResult = result;
+    if (typeof parsedResult === 'string') {
+        try {
+            parsedResult = JSON.parse(parsedResult) as unknown;
+        } catch {
+            return null;
+        }
+    }
+    if (!parsedResult || typeof parsedResult !== 'object') return null;
+    const maybeAnswers = (parsedResult as { answers?: unknown }).answers;
     if (!maybeAnswers || typeof maybeAnswers !== 'object' || Array.isArray(maybeAnswers)) return null;
 
     const answers: Record<string, string> = {};
@@ -660,7 +557,19 @@ const styles = StyleSheet.create((theme) => ({
     },
 }));
 
-export const AskUserQuestionView = React.memo<ToolViewProps>(({ tool, sessionId, serverId: explicitServerId, session: suppliedSession, interaction }) => {
+/** The name a question's controls carry, so each answer is reachable with its question. */
+function resolveQuestionAccessibilityLabel(question: Question): string {
+    return question.header ? `${question.header}: ${question.question}` : question.question;
+}
+
+export const AskUserQuestionView = React.memo<ToolViewProps>(({ tool, sessionId, serverId: explicitServerId, session: suppliedSession, interaction, executionRun }) => {
+    const source = useSessionTranscriptSource();
+    const sourceInteraction = source.useInteraction();
+    const actions = source.actions;
+    const agentState = source.useAgentState();
+    const ownerMetadata = source.useMetadata();
+    const currentFacts = React.useRef({ agentState, ownerMetadata });
+    currentFacts.current = { agentState, ownerMetadata };
     const { theme } = useUnistyles();
     const [selections, setSelections] = React.useState<Map<number, Set<number>>>(new Map());
     const [freeformAnswers, setFreeformAnswers] = React.useState<Map<number, string>>(new Map());
@@ -669,18 +578,10 @@ export const AskUserQuestionView = React.memo<ToolViewProps>(({ tool, sessionId,
 
     // Parse input
     const rawInput = tool.input;
-    const readSession = () => {
-        if (!sessionId) return undefined;
-        if (suppliedSession?.id === sessionId) return suppliedSession;
-        if (explicitServerId !== undefined && !areServerProfileIdentifiersEquivalent(explicitServerId, getActiveServerSnapshot().serverId)) return undefined;
-        return storage.getState().sessions[sessionId];
-    };
-    const session = readSession();
-    const attachedSessionTerminal = useOpenAttachedSessionTerminal(sessionId ?? null, explicitServerId, session);
-    const ownerMetadata = session ? readSessionOwnerMetadataView(session) : null;
+    const attachedSessionTerminal = useOpenAttachedSessionTerminal(sessionId ?? null, source.serverId, suppliedSession);
     const agentId = resolveAgentIdFromSessionMetadata(ownerMetadata);
     const machineId = resolveSessionMachineId(ownerMetadata);
-    const serverId = explicitServerId ?? (typeof session?.serverId === 'string' ? session.serverId.trim() : '');
+    const serverId = source.serverId ?? '';
     const accountScopeResolution = useServerCredentialAccountScopeResolution(explicitServerId);
     const accountScope = explicitServerId === undefined ? undefined
         : accountScopeResolution.kind === 'bound' ? accountScopeResolution.scope : null;
@@ -726,12 +627,21 @@ export const AskUserQuestionView = React.memo<ToolViewProps>(({ tool, sessionId,
     }
 
     const isRunning = tool.state === 'running';
-    const canApprovePermissions = interaction?.canApprovePermissions ?? true;
+    // Agent questions are conversational Send authority; Execution Runs keep
+    // their own responder contract rather than borrowing Session actions.
+    const canApprovePermissions = executionRun !== undefined
+        ? executionRun.respond !== undefined && interaction?.canApprovePermissions !== false
+        : actions !== null && sourceInteraction.canSendMessages && interaction?.canSendMessages !== false
+            && sourceInteraction.permissionDisabledReason !== 'inactive'
+            && interaction?.permissionDisabledReason !== 'inactive';
     const toolCallId = resolvePermissionRequestId(tool);
-    const activeMatchingRequest = toolCallId ? (session as any)?.agentState?.requests?.[toolCallId] : null;
-    const hasActiveAskUserQuestionRequest =
-        activeMatchingRequest?.tool === 'AskUserQuestion' &&
-        resolveAgentRequestKind({ toolName: activeMatchingRequest.tool, requestKind: activeMatchingRequest.kind }) === 'user_action';
+    const activeMatchingRequest = toolCallId ? agentState?.requests?.[toolCallId] : null;
+    // An Execution Run's caller vouches for the request by supplying a
+    // responder; an answer it still holds keeps the form withdrawn.
+    const hasActiveAskUserQuestionRequest = executionRun !== undefined
+        ? executionRun.respond !== undefined && toolCallId !== null && !executionRun.pendingRequestIds.has(toolCallId)
+        : activeMatchingRequest?.tool === 'AskUserQuestion' &&
+            resolveAgentRequestKind({ toolName: activeMatchingRequest.tool, requestKind: activeMatchingRequest.kind }) === 'user_action';
     const canInteract =
         isRunning &&
         !isSubmitted &&
@@ -739,11 +649,7 @@ export const AskUserQuestionView = React.memo<ToolViewProps>(({ tool, sessionId,
         canApprovePermissions &&
         hasActiveAskUserQuestionRequest;
     const disabledMessage =
-        interaction?.permissionDisabledReason === 'public'
-            ? t('session.sharing.permissionApprovalsDisabledPublic')
-            : interaction?.permissionDisabledReason === 'readOnly'
-                ? t('session.sharing.permissionApprovalsDisabledReadOnly')
-                : t('session.sharing.permissionApprovalsDisabledNotGranted');
+        resolvePermissionDisabledMessage(interaction?.permissionDisabledReason ?? sourceInteraction.permissionDisabledReason);
     const attachedTerminalNotice = Boolean(
         declaredDialog?.terminalNotice
         && isRecord(normalizedInput?.happierDialog)
@@ -752,7 +658,7 @@ export const AskUserQuestionView = React.memo<ToolViewProps>(({ tool, sessionId,
     );
     const attachedTerminalSecondaryAction = declaredDialog?.terminalSecondaryAction;
     const canOpenAttachedTerminal = Boolean(
-        sessionId && isRunning && canApprovePermissions && attachedSessionTerminal.available,
+        source.navigate !== null && source.actions !== null && sessionId && isRunning && canApprovePermissions && attachedSessionTerminal.available,
     );
     const attachedTerminalUnavailableMessage = resolveAttachedTerminalUnavailableMessage(
         attachedSessionTerminal.unavailableReason,
@@ -849,7 +755,7 @@ export const AskUserQuestionView = React.memo<ToolViewProps>(({ tool, sessionId,
     }, [canInteract]);
 
     const handleSubmit = React.useCallback(async () => {
-        if (!sessionId || !allQuestionsAnswered || isSubmitting) return;
+        if ((!sessionId && executionRun === undefined) || !canInteract || !allQuestionsAnswered || isSubmitting) return;
 
         const answers: Record<string, readonly string[]> = {};
         questions.forEach((q, qIndex) => {
@@ -887,8 +793,17 @@ export const AskUserQuestionView = React.memo<ToolViewProps>(({ tool, sessionId,
                 return;
             }
 
-            const latestSession = readSession();
-            const latestRequest = (latestSession as any)?.agentState?.requests?.[toolCallId];
+            if (executionRun !== undefined) {
+                const respond = executionRun.respond;
+                if (respond === undefined || executionRun.pendingRequestIds.has(toolCallId)) return;
+                setIsSubmitting(true);
+                await respond({ requestId: toolCallId, answers });
+                setIsSubmitted(true);
+                return;
+            }
+            if (!sessionId || !actions) return;
+
+            const latestRequest = currentFacts.current.agentState?.requests?.[toolCallId];
             const hasLiveMatchingRequest =
                 latestRequest?.tool === 'AskUserQuestion' &&
                 resolveAgentRequestKind({ toolName: latestRequest.tool, requestKind: latestRequest.kind }) === 'user_action';
@@ -923,15 +838,14 @@ export const AskUserQuestionView = React.memo<ToolViewProps>(({ tool, sessionId,
                 : null;
             setIsSubmitting(true);
 
-            await sessionAllowWithAnswers(sessionId, toolCallId, answers, ...(explicitServerId !== undefined ? [{ serverId: explicitServerId }] as const : [] as const));
+            await actions.answerUserAction({ id: toolCallId, answers });
             // The requester has accepted this answer, so the interaction is
             // terminal here. Remembering the choice is a SEPARATE outcome: a
             // failed preference write must be reported as such and must never
             // re-offer submit for a request that has already been answered.
             setIsSubmitted(true);
-            const currentSession = readSession();
-            const currentOwnerMetadata = currentSession ? readSessionOwnerMetadataView(currentSession) : null;
-            const currentServerId = typeof currentSession?.serverId === 'string' ? currentSession.serverId.trim() : '';
+            const currentOwnerMetadata = currentFacts.current.ownerMetadata;
+            const currentServerId = source.serverId ?? '';
             const currentAgentId = resolveAgentIdFromSessionMetadata(currentOwnerMetadata);
             const currentMachineId = resolveSessionMachineId(currentOwnerMetadata);
             if (
@@ -978,6 +892,10 @@ export const AskUserQuestionView = React.memo<ToolViewProps>(({ tool, sessionId,
         }
     }, [
         sessionId,
+        executionRun,
+        source,
+        actions,
+        canInteract,
         explicitServerId,
         suppliedSession,
         questions,
@@ -1073,9 +991,16 @@ export const AskUserQuestionView = React.memo<ToolViewProps>(({ tool, sessionId,
                 {questions.map((question, qIndex) => {
                     const selectedOptions = selections.get(qIndex) || new Set();
                     const options = Array.isArray(question.options) ? question.options : [];
+                    const questionLabel = resolveQuestionAccessibilityLabel(question);
 
                     return (
-                        <View key={`${question.answerKey}:${qIndex}`} style={styles.questionSection}>
+                        <View
+                            key={`${question.answerKey}:${qIndex}`}
+                            testID={`ask-user-question.question:${qIndex}`}
+                            style={styles.questionSection}
+                            role={options.length > 0 && !question.multiSelect ? 'radiogroup' : 'group'}
+                            accessibilityLabel={questionLabel}
+                        >
                             {question.header ? (
                                 <View style={styles.headerChip}>
                                     <Text style={styles.headerText}>{question.header}</Text>
@@ -1113,7 +1038,7 @@ export const AskUserQuestionView = React.memo<ToolViewProps>(({ tool, sessionId,
                                             placeholderTextColor={theme.colors.text.secondary}
                                             multiline={question.freeform?.inputMode === 'multiLine'}
                                             editable={canInteract}
-                                            accessibilityLabel={question.question}
+                                            accessibilityLabel={questionLabel}
                                             accessibilityHint={question.freeform?.description}
                                             accessibilityState={{ disabled: !canInteract }}
                                             autoCapitalize="none"

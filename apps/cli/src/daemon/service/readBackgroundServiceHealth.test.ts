@@ -1,4 +1,5 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createEnvKeyScope } from '@/testkit/env/envScope';
 
 const { spawnSyncMock } = vi.hoisted(() => ({
   spawnSyncMock: vi.fn<typeof import('node:child_process').spawnSync>(),
@@ -12,9 +13,36 @@ vi.mock('node:child_process', async (importOriginal) => {
   };
 });
 
-import { readBackgroundServiceHealth } from './readBackgroundServiceHealth';
+import { readBackgroundServiceHealth, readBackgroundServiceAutostartMode } from './readBackgroundServiceHealth';
 
 describe('readBackgroundServiceHealth', () => {
+  const envScope = createEnvKeyScope(['XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS']);
+  beforeEach(() => {
+    spawnSyncMock.mockReset();
+    envScope.patch({ XDG_RUNTIME_DIR: undefined, DBUS_SESSION_BUS_ADDRESS: undefined });
+  });
+  afterEach(() => envScope.restore());
+  it('reads launchd overrides and real Windows triggers, returning unknown on failed queries', () => {
+    spawnSyncMock.mockReturnValue({ status: 0, stdout: 'disabled services = {\n "com.happier.cli.daemon.company" => false\n}', stderr: '' } as never);
+    expect(readBackgroundServiceAutostartMode({ platform: 'darwin', uid: 501, label: 'com.happier.cli.daemon.company', installedMode: 'on-demand' })).toBe('on-demand');
+    spawnSyncMock.mockReturnValue({ status: 0, stdout: 'disabled services = {\n "com.happier.cli.daemon.company" => true\n}', stderr: '' } as never);
+    expect(readBackgroundServiceAutostartMode({ platform: 'darwin', uid: 501, label: 'com.happier.cli.daemon.company', installedMode: 'at-login' })).toBe('on-demand');
+    spawnSyncMock.mockReturnValue({ status: 0, stdout: JSON.stringify({ exists: true, enabled: true, autostart: false }), stderr: '' } as never);
+    expect(readBackgroundServiceAutostartMode({ platform: 'win32', uid: null, label: 'Happier\\happier-daemon.company', installedMode: 'at-login' })).toBe('on-demand');
+    spawnSyncMock.mockReturnValue({ status: 0, stdout: JSON.stringify({ exists: true, enabled: true, autostart: true }), stderr: '' } as never);
+    expect(readBackgroundServiceAutostartMode({ platform: 'win32', uid: null, label: 'Happier\\happier-daemon.company', installedMode: 'on-demand' })).toBe('at-login');
+    spawnSyncMock.mockReturnValue({ status: 1, stdout: '', stderr: 'unavailable' } as never);
+    expect(readBackgroundServiceAutostartMode({ platform: 'darwin', uid: 501, label: 'com.happier.cli.daemon.company', installedMode: 'at-login' })).toBeNull();
+  });
+  it('reads actual systemd login enablement rather than trusting the definition marker', () => {
+    spawnSyncMock.mockReturnValue({ status: 0, stdout: 'UnitFileState=disabled\n', stderr: '' } as never);
+    expect(readBackgroundServiceAutostartMode({ platform: 'linux', uid: 501, label: 'happier-daemon.company', installedMode: 'at-login' })).toBe('on-demand');
+    spawnSyncMock.mockReturnValue({ status: 0, stdout: 'UnitFileState=enabled\n', stderr: '' } as never);
+    expect(readBackgroundServiceAutostartMode({ platform: 'linux', uid: 501, label: 'happier-daemon.company', installedMode: 'on-demand' })).toBe('at-login');
+    spawnSyncMock.mockReturnValue({ status: 1, stdout: '', stderr: 'no bus' } as never);
+    expect(readBackgroundServiceAutostartMode({ platform: 'linux', uid: 501, label: 'happier-daemon.company', installedMode: 'at-login' })).toBeNull();
+  });
+
   it('classifies a failed restarting systemd user service as crash-looping', () => {
     spawnSyncMock.mockImplementation((cmd, args) => {
       if (cmd === 'systemctl') {

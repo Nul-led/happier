@@ -1,3 +1,4 @@
+import type { SessionModelOptionsContext } from '@/sync/domains/models/modelOptions';
 import type { TodoState } from '@/sync/domains/todos/todoOps';
 
 import type { DecryptedArtifact } from '../domains/artifacts/artifactTypes';
@@ -8,25 +9,27 @@ import type { LocalSettings } from '../domains/settings/localSettings';
 import type { ReviewCommentDraft } from '../domains/input/reviewComments/reviewCommentTypes';
 import type { PendingMessage, Session, Machine, ScmStatus, ScmWorkingSnapshot, DiscardedPendingMessage } from '../domains/state/storageTypes';
 import type { ScmCommitSelectionPatch } from '../domains/state/storageTypes';
-import type { NormalizedMessage } from '../typesRaw';
 import type { PermissionMode } from '../domains/permissions/permissionTypes';
 import type { WorkflowRunsDomain } from './domains/workflowRuns';
+import type { AutomationsDomain } from './domains/automations';
 import type { Profile } from '../domains/profiles/profile';
 import type { Purchases } from '../domains/purchases/purchases';
 import type { AccountPetMetadata } from '../domains/pets/accountPetLibraryTypes';
 import type { LocalPetSourceMetadata } from '../domains/pets/localPetSourceTypes';
 import type { Settings } from '../domains/settings/settings';
+import type { AuthoringMemoryDomain } from './domains/authoringMemory';
 import type { AccountSettingsSyncStatus } from '../domains/settings/accountSettingsSyncStatus';
 import type { AccountSettingsScope } from '../domains/settings/scope/accountSettingsScope';
 import type { ServerAccountScope } from '../domains/scope/serverAccountScope';
 import type { SessionListRenderableSession } from '../domains/session/listing/sessionListRenderable';
 import type { ConcurrentSessionListCacheByServerId } from '../domains/session/listing/concurrentSessionListCache';
+import type { SessionListQueryMembership } from '../domains/session/listing/sessionListQueryController';
 import type { SessionListIndexItem } from '../domains/sessionList/sessionListIndex';
 import type { MachineDisplayRenderable } from '../domains/machines/machineDisplayRenderable';
 import type { CustomerInfo } from '../domains/purchases/types';
 import type { ApplyMachinesOptions } from './domains/machines';
 import type { MachinePoolsDomain } from './domains/machinePools';
-import type { SessionMessages } from './domains/messages';
+import type { MessagesDomain, SessionMessages } from './domains/messages';
 import type { SessionPending } from './domains/pending';
 import type {
     EndpointConnectivitySnapshot,
@@ -56,7 +59,7 @@ export interface SettingsDomainSlice {
     clearSettingsScope: () => void;
     applySettingsForScope: (scope: AccountSettingsScope, settings: Settings, version: number) => void;
     applySettingsLocal: (settings: Partial<Settings>) => void;
-    applyLocalSettings: (settings: Partial<LocalSettings>, options?: { source?: SettingsAnalyticsSource }) => void;
+    applyLocalSettings: (settings: Partial<LocalSettings>, options?: { source?: SettingsAnalyticsSource; persist?: boolean }) => void;
 }
 
 export interface ProfileDomainSlice {
@@ -86,6 +89,14 @@ export interface SessionsDomainSlice {
     archivedSessionListMembershipByServerId: Readonly<Record<string, readonly string[] | undefined>>;
     sessionListIndexByServerId: Readonly<Record<string, SessionListIndexItem[] | null | undefined>>;
     concurrentSessionListCacheByServerId: ConcurrentSessionListCacheByServerId;
+    /**
+     * Last applied strict-query membership per corpus (`buildSessionListQueryKey`), qualified by
+     * the Home and Account it was read under. The query controller owns requests and cursors and
+     * commits each applied page here; list surfaces render from this, so a remounted controller,
+     * a refresh or an unreachable Home keeps the last-known rows until an authoritative page
+     * replaces them. Access denial and credential retirement remove it.
+     */
+    sessionListQueryMembershipByKey: Readonly<Record<string, SessionListQueryMembership | undefined>>;
     sessionScmStatus: Record<string, ScmStatus | null>;
     sessionLastViewed: Record<string, number>;
     sessionRepositoryTreeExpandedPathsBySessionId: Record<string, string[]>;
@@ -117,6 +128,8 @@ export interface SessionsDomainSlice {
     ) => void;
     mergeSessionListRowsForServerScope: (serverId: string, sessions: SessionListRenderableSession[]) => void;
     clearSessionListRowsForServerScope: (serverId: string) => void;
+    commitSessionListQueryMembership: (queryKey: string, membership: SessionListQueryMembership | null) => void;
+    restoreSessionListQueryMemberships: (serverId: string, accountId: string) => void;
     applyScmStatus: (sessionId: string, status: ScmStatus | null) => void;
     getActiveSessions: () => Session[];
     getSessionRepositoryTreeExpandedPaths: (sessionId: string) => string[];
@@ -158,7 +171,7 @@ export interface SessionsDomainSlice {
     /** Applies the server's authoritative responsible Account after a committed mutation. */
     applySessionResponsibleAccount: (sessionId: string, responsibleAccountId: string | null, scope: ServerAccountScope, responsibleAccount?: import('@happier-dev/protocol').SessionAccessAccountSummaryV1 | null) => void;
     updateSessionPermissionMode: (sessionId: string, mode: PermissionMode) => void;
-    updateSessionModelMode: (sessionId: string, mode: SessionModelMode) => void;
+    updateSessionModelMode: (sessionId: string, mode: SessionModelMode, context?: SessionModelOptionsContext) => void;
     /**
      * Retire a Session locally for ONE Home, or for every Home when `serverId` is
      * omitted or null. Only the addressed Home's row/membership/index goes; the
@@ -179,14 +192,15 @@ export interface MachinesDomainSlice {
     machineListStatusByServerId: Record<string, 'idle' | 'loading' | 'signedOut' | 'error'>;
     applyMachines: (machines: Machine[], replace?: boolean, options?: ApplyMachinesOptions) => void;
     replaceMachineDisplays: (machines: MachineDisplayRenderable[], options?: ApplyMachinesOptions) => void;
+    markMachineListUnavailable: (serverId: string) => void;
 }
 
 export interface MessagesDomainSlice {
     sessionMessages: Record<string, SessionMessages>;
     sessionMessagesHistoryStartLoaded: Record<string, true>;
     markSessionMessagesHistoryStartLoaded: (sessionId: string) => void;
-    applyMessages: (sessionId: string, messages: NormalizedMessage[]) => { changed: string[]; hasReadyEvent: boolean };
-    replaceSessionMessages: (sessionId: string, messages: NormalizedMessage[]) => { changed: string[]; hasReadyEvent: boolean };
+    applyMessages: MessagesDomain['applyMessages'];
+    replaceSessionMessages: MessagesDomain['replaceSessionMessages'];
     applyMessagesLoaded: (sessionId: string) => void;
     evictSessionMessages: (sessionId: string) => void;
     resetSessionMessages: (sessionId: string) => void;
@@ -261,7 +275,8 @@ export interface ArtifactsDomainSlice {
  */
 export type WorkflowRunsDomainSlice = WorkflowRunsDomain;
 
-export interface AutomationsDomainSlice {
+export interface AutomationsDomainSlice extends Pick<AutomationsDomain,
+    'workflowTriggerSetsById' | 'workflowTriggerSetIdsByQuery' | 'applyWorkflowTriggerSetPage' | 'upsertWorkflowTriggerSet'> {
     automations: Record<string, AutomationDefinition>;
     automationDefinitionNextCursor: string | null;
     automationDefinitionWindowExtended: boolean;
@@ -371,6 +386,7 @@ export interface ProjectDomainSlice {
         serverId?: string | null,
     ) => import('../runtime/orchestration/projectManager').BeginScmProjectOperationResult;
     finishSessionProjectScmOperation: (sessionId: string, operationId: string, serverId?: string | null) => boolean;
+    updateSessionProjectScmOperationProgress: (sessionId: string, operationId: string, progressText?: string, serverId?: string | null) => boolean;
 
     getWorkspaceScmStatus: (scope: WorkspaceScopeBase) => ScmStatus | null;
     updateWorkspaceScmStatus: (scope: WorkspaceScopeBase, status: ScmStatus | null) => void;
@@ -405,6 +421,7 @@ export interface ProjectDomainSlice {
         operation: import('../runtime/orchestration/projectManager').ScmProjectOperationKind,
     ) => import('../runtime/orchestration/projectManager').BeginScmProjectOperationResult;
     finishWorkspaceScmOperation: (scope: WorkspaceScopeBase, operationId: string) => boolean;
+    updateWorkspaceScmOperationProgress: (scope: WorkspaceScopeBase, operationId: string, progressText?: string) => boolean;
 }
 
 export interface FriendsDomainSlice {
@@ -435,6 +452,7 @@ export interface BootstrapSlice {
 }
 
 export type StorageState = SettingsDomainSlice
+    & AuthoringMemoryDomain
     & ProfileDomainSlice
     & SessionsDomainSlice
     & SessionOrganizationDomain

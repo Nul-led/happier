@@ -11,7 +11,7 @@ import type { SavedSecret } from '@/sync/domains/settings/savedSecretTypes';
 import type { Machine } from '@/sync/domains/state/storageTypes';
 import type { PermissionMode, ModelMode } from '@/sync/domains/permissions/permissionTypes';
 import type { SessionModelSelectionV1 } from '@happier-dev/protocol';
-import type { CLIAvailability } from '@/hooks/auth/useCLIDetection';
+import type { CLIAvailability } from '@/agents/machineAgents/machineAgentCliAvailability';
 import type { UseMachineEnvPresenceResult } from '@/hooks/machine/useMachineEnvPresence';
 import { prefetchMachineCapabilities } from '@/hooks/server/useMachineCapabilitiesCache';
 import { CAPABILITIES_REQUEST_NEW_SESSION } from '@/capabilities/requests';
@@ -29,7 +29,6 @@ import type {
     NewSessionWizardProfilesProps,
     NewSessionWizardProps,
 } from '../components/NewSessionWizard';
-import type { CliNotDetectedBannerDismissScope } from '../components/CliNotDetectedBanner';
 import type { NewSessionPromptStore } from '@/components/sessions/new/hooks/screenModel/newSessionPromptStore';
 
 function tNoParams(key: string): string {
@@ -83,8 +82,6 @@ export function useNewSessionWizardProps(params: Readonly<{
     tmuxRequested: boolean;
     enabledAgentIds: AgentId[];
     isAgentSelectable: (agentId: AgentId) => boolean;
-    isCliBannerDismissed: (agentId: AgentId) => boolean;
-    dismissCliBanner: (agentId: AgentId, scope: CliNotDetectedBannerDismissScope) => void;
     agentType: string;
     agentLabel?: string;
     setAgentType: (agent: AgentId) => void;
@@ -156,6 +153,7 @@ export function useNewSessionWizardProps(params: Readonly<{
     composerDocument?: NewSessionWizardFooterProps['composerDocument'];
     setSessionPrompt: (v: string) => void;
     handleCreateSession: () => void;
+    registerTemporaryComputerReplacementLaunch?: NewSessionWizardFooterProps['registerTemporaryComputerReplacementLaunch'];
     canCreate: boolean;
     isCreating: boolean;
     pendingLaunchAttempt?: NewSessionWizardFooterProps['pendingLaunchAttempt'];
@@ -171,6 +169,8 @@ export function useNewSessionWizardProps(params: Readonly<{
     statusTrailingActions?: NewSessionWizardFooterProps['statusTrailingActions'];
     machinePopover?: NewSessionWizardFooterProps['machinePopover'];
     pathPopover?: NewSessionWizardFooterProps['pathPopover'];
+    folderChipState?: NewSessionWizardFooterProps['folderChipState'];
+    onRemoveFolder?: NewSessionWizardFooterProps['onRemoveFolder'];
     resumeSessionId: string;
     resumePopover?: NewSessionWizardFooterProps['resumePopover'];
     isResumeSupportChecking: boolean;
@@ -367,8 +367,6 @@ export function useNewSessionWizardProps(params: Readonly<{
             tmuxRequested: params.tmuxRequested,
             enabledAgentIds: params.enabledAgentIds,
             isAgentSelectable: params.isAgentSelectable,
-            isCliBannerDismissed: params.isCliBannerDismissed,
-            dismissCliBanner: params.dismissCliBanner,
             agentType: params.agentType,
             agentLabel: params.agentLabel,
             setAgentType: params.setAgentType,
@@ -423,10 +421,8 @@ export function useNewSessionWizardProps(params: Readonly<{
         params.selectedBackendEntry,
         params.cliAvailability,
         params.selectedMachineId,
-        params.dismissCliBanner,
         params.enabledAgentIds,
         params.isAgentSelectable,
-        params.isCliBannerDismissed,
         params.modelMode,
         params.modelSelection,
         params.providerModelGroups,
@@ -521,6 +517,7 @@ export function useNewSessionWizardProps(params: Readonly<{
             composerDocument: params.composerDocument,
             setSessionPrompt: params.setSessionPrompt,
             handleCreateSession: params.handleCreateSession,
+            registerTemporaryComputerReplacementLaunch: params.registerTemporaryComputerReplacementLaunch,
             canCreate: params.canCreate,
             isCreating: params.isCreating,
             pendingLaunchAttempt: params.pendingLaunchAttempt,
@@ -536,6 +533,8 @@ export function useNewSessionWizardProps(params: Readonly<{
             statusTrailingActions: params.statusTrailingActions,
             machinePopover: params.machinePopover,
             pathPopover: params.pathPopover,
+            folderChipState: params.folderChipState,
+            onRemoveFolder: params.onRemoveFolder,
             resumeSessionId: params.resumeSessionId,
             resumePopover: params.resumePopover,
             resumeIsChecking: params.isResumeSupportChecking,
@@ -558,12 +557,15 @@ export function useNewSessionWizardProps(params: Readonly<{
         params.emptyAutocompleteKinds,
         params.emptyAutocompleteSuggestions,
         params.handleCreateSession,
+        params.registerTemporaryComputerReplacementLaunch,
         params.isCreating,
         params.isResumeSupportChecking,
         params.machinePopover,
         params.pendingLaunchAttempt,
         params.launchPendingPreviewVisible,
         params.pathPopover,
+        params.folderChipState,
+        params.onRemoveFolder,
         params.providerLaunchError,
         params.resumePopover,
         params.resumeSessionId,

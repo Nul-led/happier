@@ -7,7 +7,8 @@ import { resolveBackendTargetKeyV2 } from '@/agents/backendCatalog/backendTarget
 import { getPermissionModeOptionsForAgentType } from '@/sync/domains/permissions/permissionModeOptions';
 
 import { useNewSessionBackendTargetState } from './useNewSessionBackendTargetState';
-import { createResolvedAgentCatalogEntryFixture, renderScreen } from '@/dev/testkit';
+import { createResolvedAgentCatalogEntryFixture } from '@/dev/testkit/fixtures/agentCatalogFixtures';
+import { renderScreen } from '@/dev/testkit';
 
 
 const applySettingsMock = vi.fn();
@@ -44,7 +45,7 @@ const entries: ReadonlyArray<ResolvedBackendCatalogEntry> = [
 const configuredPreferredEntries: ReadonlyArray<ResolvedBackendCatalogEntry> = [
     resolvedEntryFixture({
         backendTarget: { kind: 'backend', backendId: 'codex' },
-        backendTargetKey: 'backend:codex',
+        backendTargetKey: 'agent:happier.agent.codex/codex',
         kind: 'builtInAgent',
         backendId: 'codex',
         agentId: 'codex',
@@ -127,7 +128,7 @@ describe('useNewSessionBackendTargetState', () => {
         const fallbackEntries: ReadonlyArray<ResolvedBackendCatalogEntry> = [
             resolvedEntryFixture({
                 backendTarget: { kind: 'backend', backendId: 'codex' },
-                backendTargetKey: 'backend:codex',
+                backendTargetKey: 'agent:happier.agent.codex/codex',
                 kind: 'builtInAgent',
                 backendId: 'codex',
                 agentId: 'codex',
@@ -179,7 +180,7 @@ describe('useNewSessionBackendTargetState', () => {
         const pluginEntries: ReadonlyArray<ResolvedBackendCatalogEntry> = [
             resolvedEntryFixture({
                 backendTarget: { kind: 'backend', backendId: 'codex' },
-                backendTargetKey: 'backend:codex',
+                backendTargetKey: 'agent:happier.agent.codex/codex',
                 kind: 'builtInAgent',
                 backendId: 'codex',
                 agentId: 'codex',
@@ -232,7 +233,7 @@ describe('useNewSessionBackendTargetState', () => {
         const pluginEntries: ReadonlyArray<ResolvedBackendCatalogEntry> = [
             resolvedEntryFixture({
                 backendTarget: { kind: 'backend', backendId: 'codex' },
-                backendTargetKey: 'backend:codex',
+                backendTargetKey: 'agent:happier.agent.codex/codex',
                 kind: 'builtInAgent',
                 backendId: 'codex',
                 agentId: 'codex',
@@ -303,7 +304,7 @@ describe('useNewSessionBackendTargetState', () => {
         const pluginEntries: ReadonlyArray<ResolvedBackendCatalogEntry> = [
             resolvedEntryFixture({
                 backendTarget: { kind: 'backend', backendId: 'codex' },
-                backendTargetKey: 'backend:codex',
+                backendTargetKey: 'agent:happier.agent.codex/codex',
                 kind: 'builtInAgent',
                 backendId: 'codex',
                 agentId: 'codex',

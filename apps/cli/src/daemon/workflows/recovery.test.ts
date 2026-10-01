@@ -1,54 +1,226 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  createAccountScopedCryptoMaterialSnapshotV1,
+  prepareWorkflowRunDataKeyV1,
+  convertContentPublicKeyFingerprintToAccountEncryptionMigrateKeyFingerprintV1,
   openWorkflowProgressStoredEnvelopeV1,
   parseWorkflowStoredContentEnvelopeV1,
   sealWorkflowAcceptedSnapshotStoredEnvelopeV1,
   sealWorkflowCheckpointStoredEnvelopeV1,
-  sealWorkflowFinalResultStoredEnvelopeV1,
   sealWorkflowProgressStoredEnvelopeV1,
   serializeWorkflowStoredContentEnvelopeV1,
   type JsonValue,
+  type WorkflowDefinitionV1,
+  type WorkflowProgressEnvelopeV1,
+  type WorkflowRunInvocationIndexV1,
+  type WorkflowStep,
+  type WorkflowMaterializedLeafV1,
+  WorkflowRunSummaryV1Schema,
 } from '@happier-dev/protocol';
 
-import { createWorkflowRunRecoveryReader } from './recovery';
-import { projectWorkflowResultDeliverySettlement } from './production';
+import { createWorkflowRunRecoveryReader, createWorkflowInvocationRecoveryFactWriter } from './recovery';
+import { createWorkflowInvocationRecoveryObserver } from './daemonRuntime';
+import { createPlainWorkflowRunKeyCensusFixture, createWorkflowRunStorageTestkit, type WorkflowRunStorageTestkitOperation } from './workflowRunStorage.testkit';
+import type { AvailableAutomationAccountEncryptionV1 } from '@/plugins/runtime/automations/automationAccountCurrentness';
+import type { SessionInputResultV1 } from '@/session/services/sendSessionMessage';
 
 const accountId = 'account-1';
 const machineId = 'machine-1';
 const runId = '7be4d65c-d3b7-4868-a416-b18d9ee29c1c';
 const now = '2026-09-08T12:00:00.000Z';
-const availability = { pause: false, resumeBoundary: false, recoverSameConversation: false,
-  recoverFreshAgent: false, retry: false, restoreWorkspace: false, cancel: false, inspectExecution: true, disabledReasons: [] };
+const availability = { pause: false, resumeBoundary: false,
+    restoreWorkspace: false, cancel: false, inspectExecution: true, disabledReasons: [] };
+
+it.each([
+  { generation: true, kind: 'cancelled', code: 'session_input_turn_cancel_requested', lifecycle: 'cancel_requested' },
+  // A pending stop cannot resolve outcome uncertainty; storage requires definitive terminal evidence.
+  { generation: true, kind: 'cancelled', code: 'session_input_turn_cancel_requested', lifecycle: 'outcome_uncertain', initialLifecycle: 'outcome_uncertain' },
+  { generation: true, kind: 'cancelled', code: 'provider_stopped', lifecycle: 'waiting_for_review' },
+  { generation: true, kind: 'failed', code: 'provider_failed', lifecycle: 'waiting_for_review' },
+  { generation: true, kind: 'completed', lifecycle: 'completed' },
+  { generation: false, kind: 'failed', code: 'provider_failed', lifecycle: 'failed' },
+] as const)('preserves recovered review input custody ($kind/$code, generation=$generation, from=$initialLifecycle)', async (scenario) => {
+  const rootId = '33333333-3333-4333-8333-333333333333';
+  const priorId = '22222222-2222-4222-8222-222222222222';
+  const recordId = '44444444-4444-4444-8444-444444444444';
+  const definition: WorkflowDefinitionV1 = { version: 1, inputs: [], defaults: {}, blocks: [{ kind: 'step', id: 'step', pauseForReview: true,
+    document: { text: 'Draft', references: [], attachments: [] }, input: [], result: { kind: 'text' } }] };
+  const kit = createWorkflowRunStorageTestkit({ runId, machineId, now, state: 'running', origin: { kind: 'direct' },
+    acceptedEnvelope: directAcceptedEnvelope({ definition }) });
+  const seal = (id: string, sequence: string, parentRecordId: string | null, progress: WorkflowProgressEnvelopeV1) =>
+    serializeWorkflowStoredContentEnvelopeV1(sealWorkflowProgressStoredEnvelopeV1({ mode: 'plain',
+      binding: { v: 1, purpose: 'invocation_progress', accountId, runId, recordId: id, sequence, parentRecordId,
+        memberOrdinal: '0', attempt: progress.attempt }, progress }));
+  const checkpoint = checkpointEnvelope();
+  await kit.execute({ operation: 'initialize', runId, expectedRevision: 0, checkpointEnvelope: checkpoint,
+    rootInvocation: { id: rootId, contentEnvelope: seal(rootId, '0', null, { kind: 'happier.workflow-progress.v1', blockKind: 'root',
+      invocationPath: { blockId: '$root', scope: [] }, attempt: '0', logicalInvocationRecordId: rootId }) } });
+  await kit.execute({ operation: 'invocations.admit', runId, expectedRevision: 1, checkpointEnvelope: checkpoint,
+    invocations: [
+      { id: priorId, sequence: '1', parentRecordId: rootId, memberOrdinal: '0', lifecycle: 'superseded',
+        contentEnvelope: seal(priorId, '1', rootId, { kind: 'happier.workflow-progress.v1', blockKind: 'step',
+          invocationPath: { blockId: 'step', scope: [] }, attempt: '0', logicalInvocationRecordId: priorId, result: 'prior',
+          ...(scenario.generation ? { review: { decision: { kind: 'generate', requestedFromContentRevision: '0' } } } : {}) }) },
+      { id: recordId, sequence: '2', parentRecordId: rootId, memberOrdinal: '0', lifecycle: 'running',
+        contentEnvelope: seal(recordId, '2', rootId, { kind: 'happier.workflow-progress.v1', blockKind: 'step',
+          invocationPath: { blockId: 'step', scope: [] }, attempt: '1', logicalInvocationRecordId: priorId, previousAttemptRecordId: priorId,
+          execution: { kind: 'session', sessionId: 'session', localInputId: 'generation-input' } }) },
+    ] });
+  // Seed the retained replacement row through the canonical storage boundary fixture.
+  const replacement = kit.rowById(recordId)!;
+  replacement.index = { ...replacement.index, attempt: '1',
+    lifecycle: 'initialLifecycle' in scenario ? scenario.initialLifecycle : 'running' };
+  let reviewEntries = 0;
+  const writer = createWorkflowInvocationRecoveryFactWriter({ accountId, run: kit.run(), parentAttempt: 0, storage: kit,
+    encryption: { witness: { mode: 'plain', version: 1, contentKeyFingerprint: null }, runCrypto: { mode: 'plain' } },
+    onReviewEntered: async () => { reviewEntries += 1; } });
+  const invocation = await writer.readInvocation(recordId);
+  if (!invocation) throw new Error('fixture_invocation_unavailable');
+  await writer.commitObservation(invocation, scenario.kind === 'completed' ? { kind: 'completed', result: 'generated' }
+    : { kind: scenario.kind, code: scenario.code });
+  expect(kit.rowById(recordId)?.index.lifecycle).toBe(scenario.lifecycle);
+  expect(reviewEntries).toBe(scenario.lifecycle === 'waiting_for_review' ? 1 : 0);
+  if (scenario.kind === 'cancelled' && scenario.code === 'session_input_turn_cancel_requested') {
+    expect((await writer.readInvocation(recordId))?.progress.uncertainPriorEffects).toBeUndefined();
+  }
+  expect(kit.run().workflowCustodyState).toBe('pending');
+});
+
+it('reapplies a recovered terminal fact after concurrent publication and enters review with the published value', async () => {
+  const recordId = '22222222-2222-4222-8222-222222222222';
+  const rootId = '33333333-3333-4333-8333-333333333333';
+  const run = WorkflowRunSummaryV1Schema.parse({ sourceArtifactId: null, ownerAccountId: 'account-1', visibleTeamId: null, id: runId, origin: { kind: 'direct' }, state: 'running', revision: 2,
+    machineId, workflowCustodyState: 'pending', originDeliveryAckRevision: null, availability, createdAt: now, updatedAt: now });
+  let index: WorkflowRunInvocationIndexV1 = { id: recordId, runId, sequence: '1', parentRecordId: rootId,
+    memberOrdinal: '0', attempt: '0', contentRevision: '0', lifecycle: 'running', createdAt: now, updatedAt: now };
+  const binding = { v: 1 as const, purpose: 'invocation_progress' as const, accountId, runId, recordId,
+    sequence: '1', parentRecordId: rootId, memberOrdinal: '0', attempt: '0' };
+  let progress: WorkflowProgressEnvelopeV1 = { kind: 'happier.workflow-progress.v1', blockKind: 'step',
+    invocationPath: { blockId: 'step', scope: [] }, attempt: '0', logicalInvocationRecordId: recordId,
+    execution: { kind: 'session', sessionId: 'session', localInputId: 'input' } };
+  const seal = () => serializeWorkflowStoredContentEnvelopeV1(sealWorkflowProgressStoredEnvelopeV1({ mode: 'plain', binding, progress }));
+  let envelope = seal();
+  let facts = 0;
+  const definition: WorkflowDefinitionV1 = { version: 1, inputs: [], defaults: {}, blocks: [{ kind: 'step', id: 'step', pauseForReview: true,
+    document: { text: 'Draft', references: [], attachments: [] }, input: [], result: { kind: 'json', schema: { type: 'object', required: ['answer'] } } }] };
+  const rootIndex = { ...index, id: rootId, sequence: '0', parentRecordId: null };
+  const rootEnvelope = serializeWorkflowStoredContentEnvelopeV1(sealWorkflowProgressStoredEnvelopeV1({ mode: 'plain',
+    binding: { ...binding, recordId: rootId, sequence: '0', parentRecordId: null }, progress: { kind: 'happier.workflow-progress.v1',
+      blockKind: 'root', invocationPath: { blockId: '$root', scope: [] }, attempt: '0', logicalInvocationRecordId: rootId } }));
+  const writer = createWorkflowInvocationRecoveryFactWriter({ accountId, run, parentAttempt: 0,
+    encryption: { witness: { mode: 'plain', version: 1, contentKeyFingerprint: null }, runCrypto: { mode: 'plain' } },
+    storage: { execute: async (operation) => {
+      if (operation.operation === 'get') return { run, acceptedEnvelope: directAcceptedEnvelope({ definition }) };
+      if (operation.operation === 'invocations.get') return { invocation: operation.invocationId === rootId
+        ? { index: rootIndex, contentEnvelope: rootEnvelope } : { index, contentEnvelope: envelope } };
+      if (operation.operation !== 'invocations.fact') throw new Error('unexpected_operation');
+      facts += 1;
+      if (facts === 1) {
+        progress = { ...progress, result: { answer: 42 }, review: { resultSource: { kind: 'published', by: 'agent' } } };
+        index = { ...index, contentRevision: '1' }; envelope = seal();
+        throw Object.assign(new Error('currentness_conflict'), { response: { status: 409 } });
+      }
+      expect(operation.expectedContentRevision).toBe(index.contentRevision);
+      const opened = openWorkflowProgressStoredEnvelopeV1({ mode: 'plain', binding,
+        envelope: parseWorkflowStoredContentEnvelopeV1(operation.contentEnvelope) });
+      if (opened.kind !== 'available') throw new Error('fixture_content_unavailable');
+      progress = opened.content;
+      index = { ...index, lifecycle: operation.lifecycle as WorkflowRunInvocationIndexV1['lifecycle'],
+        contentRevision: (BigInt(index.contentRevision) + 1n).toString() };
+      envelope = String(operation.contentEnvelope);
+      return index;
+    } },
+  });
+  const invocation = await writer.readInvocation(recordId);
+  if (!invocation) throw new Error('fixture_content_unavailable');
+  await writer.commitObservation(invocation, { kind: 'completed', result: 'Here is the plan.' });
+  expect(index.lifecycle).toBe('waiting_for_review');
+  expect(progress.result).toEqual({ answer: 42 });
+  expect(progress.review?.resultSource).toEqual({ kind: 'published', by: 'agent' });
+  expect(progress.execution).toEqual({ kind: 'session', sessionId: 'session', localInputId: 'input' });
+});
+
+it.each(['step', 'action'] as const)('reattach decodes the frozen %s JSON contract and settles only the exact row without creating parent custody', async (kind) => {
+  const recordId = '2aaf1a39-4c48-4904-83a4-7eae318dfc2c';
+  const rootId = '33333333-3333-4333-8333-333333333333';
+  const run = WorkflowRunSummaryV1Schema.parse({ sourceArtifactId: null, ownerAccountId: 'account-1', visibleTeamId: null, id: runId, origin: { kind: 'direct' }, state: 'interrupted', revision: 2,
+    machineId, workflowCustodyState: 'pending', originDeliveryAckRevision: null, availability, createdAt: now, updatedAt: now });
+  const index: WorkflowRunInvocationIndexV1 = { id: recordId, runId, sequence: '1', parentRecordId: rootId, memberOrdinal: '0',
+    attempt: '0', contentRevision: '0', lifecycle: 'running', createdAt: now, updatedAt: now };
+  const binding = { v: 1 as const, purpose: 'invocation_progress' as const, accountId, runId, recordId,
+    sequence: '1', parentRecordId: rootId, memberOrdinal: '0', attempt: '0' };
+  const contentEnvelope = serializeWorkflowStoredContentEnvelopeV1(sealWorkflowProgressStoredEnvelopeV1({ mode: 'plain', binding,
+    progress: { kind: 'happier.workflow-progress.v1', blockKind: kind, invocationPath: { blockId: 'step', scope: [] },
+      attempt: '0', logicalInvocationRecordId: recordId, resultContract: { kind: 'text' },
+      execution: kind === 'step' ? { kind: 'session', sessionId: 'session-1', localInputId: 'input-1' }
+        : { kind: 'action', actionId: 'session.goal.set', actionRequestId: 'request', localInputId: 'request', input: {} } },
+  }));
+  const schema = { type: 'object' as const, required: ['answer'] };
+  const definition: WorkflowDefinitionV1 = { version: 1, inputs: [], defaults: {}, blocks: [kind === 'step' ? { kind: 'step', id: 'step',
+    document: { text: 'Work', references: [], attachments: [] }, input: [], result: { kind: 'json', schema } }
+    : { kind: 'action', id: 'step', actionId: 'session.goal.set', input: {} }] };
+  const materializedLeaves: WorkflowMaterializedLeafV1[] | undefined = kind === 'action' ? [{ authoredWorkspace: { kind: 'inherit' as const },
+    sourceKey: '$root', blockId: 'step', kind: 'action', selection: {}, executionTarget: { kind: 'session' },
+    actionId: 'session.goal.set', actionContract: { inputSchema: {}, outputSchema: schema },
+  }] : undefined;
+  const operations: Readonly<Record<string, unknown>>[] = [];
+  const rootIndex = { ...index, id: rootId, sequence: '0', parentRecordId: null, lifecycle: 'completed' };
+  const rootEnvelope = serializeWorkflowStoredContentEnvelopeV1(sealWorkflowProgressStoredEnvelopeV1({ mode: 'plain',
+    binding: { ...binding, recordId: rootId, sequence: '0', parentRecordId: null },
+    progress: { kind: 'happier.workflow-progress.v1', blockKind: 'root', invocationPath: { blockId: '$root', scope: [] },
+      attempt: '0', logicalInvocationRecordId: rootId },
+  }));
+  const writer = createWorkflowInvocationRecoveryFactWriter({ accountId, run,
+    encryption: { witness: { mode: 'plain', version: 1, contentKeyFingerprint: null }, runCrypto: { mode: 'plain' } },
+    expectedRevision: 2,
+    storage: { execute: async (operation) => {
+      operations.push(operation);
+      if (operation.operation === 'invocations.get') return { invocation: operation.invocationId === rootId
+        ? { index: rootIndex, contentEnvelope: rootEnvelope } : { index, contentEnvelope } };
+      if (operation.operation === 'get') return { run, acceptedEnvelope: directAcceptedEnvelope({ definition, materializedLeaves }) };
+      if (operation.operation === 'invocations.fact') return {};
+      throw new Error('unexpected_replacement_or_claim');
+    } },
+  });
+  const invocation = await writer.readInvocation(recordId);
+  if (!invocation) throw new Error('fixture_invocation_unavailable');
+  expect(await writer.commitObservation(invocation, { kind: 'completed', result: kind === 'step' ? '{"answer":42}' : { answer: 42 } }))
+    .toMatchObject({ id: recordId, lifecycle: 'completed' });
+  const fact = operations.find((operation) => operation.operation === 'invocations.fact')!;
+  expect(fact).toMatchObject({ expectedRevision: 2, resolution: 'observed_terminal_execution', invocationId: recordId,
+    invocationAttempt: '0', expectedLifecycle: 'running', lifecycle: 'completed' });
+  expect(fact).not.toHaveProperty('parentAttempt');
+  const opened = openWorkflowProgressStoredEnvelopeV1({ mode: 'plain', binding,
+    envelope: parseWorkflowStoredContentEnvelopeV1(fact.contentEnvelope) });
+  expect(opened.kind === 'available' ? opened.content.result : undefined).toEqual({ answer: 42 });
+  expect(operations.some((operation) => operation.operation === 'invocations.admit' || operation.operation === 'initialize')).toBe(false);
+});
 
 function isPlainAccountCurrentness(value: unknown): boolean {
   return value !== null && typeof value === 'object' && 'mode' in value && value.mode === 'plain';
 }
 
-function directAcceptedEnvelope() {
+function directAcceptedEnvelope(params: Readonly<{
+  definition?: WorkflowDefinitionV1;
+  materializedLeaves?: WorkflowMaterializedLeafV1[];
+  sealMode?: { mode: 'plain' } | Pick<Extract<Parameters<typeof sealWorkflowAcceptedSnapshotStoredEnvelopeV1>[0], { mode: 'e2ee' }>, 'mode' | 'runDataKey' | 'randomBytes'>;
+}> = {}) {
+  const definition: WorkflowDefinitionV1 = params.definition ?? { version: 1, inputs: [], defaults: { agentTarget: { kind: 'agent', identity: { pluginId: 'agent.test', localId: 'test' } } }, blocks: [{
+    kind: 'step', id: 'step', document: { text: 'Work', references: [], attachments: [] }, input: [], result: { kind: 'text' },
+  }] };
   return serializeWorkflowStoredContentEnvelopeV1(sealWorkflowAcceptedSnapshotStoredEnvelopeV1({
-    mode: 'plain',
+    ...(params.sealMode ?? { mode: 'plain' as const }),
     binding: { v: 1, purpose: 'accepted_snapshot', accountId, runId },
     acceptedSnapshot: {
-      definition: { version: 1, inputs: [], defaults: { agentTarget: { kind: 'agent', identity: { pluginId: 'agent.test', localId: 'test' } } }, blocks: [{
-        kind: 'step', id: 'step', document: { text: 'Work', references: [], attachments: [] }, input: [], result: { kind: 'text' },
-      }] },
+      definition, authoredDefinition: definition, workDepth: 0, metadata: null, frozenChildren: {},
+      materializedLeaves: params.materializedLeaves ?? [{ sourceKey: '$root', blockId: 'step', kind: 'step',
+        authoredWorkspace: { kind: 'inherit' }, selection: definition.defaults, executionTarget: { kind: 'session' } }],
       source: { kind: 'inline' }, inputs: {}, machineId,
       executionTarget: { kind: 'session' },
       workspaceTarget: { project: { machineId, directory: '/repo', checkoutRootPath: '/repo', workspaceRefId: 'workspace-1' }, originalCommittedRevision: 'a'.repeat(40) },
       origin: { kind: 'direct', originSessionId: 'session-origin' },
       authorization: { admittedPermissionCeiling: 'default', principal: { kind: 'host' } },
-      resultDelivery: { kind: 'originating_session', originSessionId: 'session-origin', localInputId: `workflow-run:${runId}:result-delivery` },
-    },
-  }));
-}
-
-function finalResultEnvelope(result: { kind: 'text'; value: string } | { kind: 'json'; value: JsonValue } = { kind: 'text', value: 'selected result' }) {
-  return serializeWorkflowStoredContentEnvelopeV1(sealWorkflowFinalResultStoredEnvelopeV1({
-    mode: 'plain', binding: { v: 1, purpose: 'final_result', accountId, runId },
-    finalResult: {
-      kind: 'happier.workflow-final-result.v1',
-      result,
-      producerInvocation: { recordId: '2aaf1a39-4c48-4904-83a4-7eae318dfc2c' },
+      resultDelivery: { kind: 'originating_session', originSessionId: 'session-origin' },
     },
   }));
 }
@@ -66,109 +238,244 @@ function checkpointEnvelope() {
   }));
 }
 
-describe('workflow Run startup/reconnect recovery', () => {
-  it.each([
-    ['absent', null],
-    ['object', { answer: 42 }],
-    ['array', [1, 2]],
-    ['null', null],
-  ] as const)('settles configured non-text result delivery as workflow_outcome_unresolved for %s output', async (kind, value) => {
-    const run = { id: runId, origin: { kind: 'direct' as const, originSessionId: 'session-origin' }, state: 'succeeded' as const,
-      revision: 9, machineId, workflowCustodyState: 'pending' as const, workflowResultDeliveryState: 'pending' as const,
-      availability, createdAt: now, updatedAt: now };
-    const execute = vi.fn(async (operation: Readonly<Record<string, unknown>>) => {
-      if (operation.operation === 'recovery.list') return { candidates: [{ run, parentAttempt: 3 }] };
-      if (operation.operation === 'get') return {
-        run,
-        acceptedEnvelope: directAcceptedEnvelope(),
-        checkpointEnvelope: null,
-        resultEnvelope: kind === 'absent' ? null : finalResultEnvelope({ kind: 'json', value }),
-      };
-      if (operation.operation === 'result-delivery.settle') return { run: { ...run, revision: 10 } };
-      if (operation.operation === 'invocations.list') return { invocations: [], parentRevision: 10 };
-      throw new Error(`unexpected:${String(operation.operation)}`);
-    });
-    const deliverResult = vi.fn();
-    const recover = createWorkflowRunRecoveryReader({
-      accountId, machineId, storage: { execute },
-      resolveAccountEncryption: async () => ({ kind: 'available', witness: { mode: 'plain', version: 1, contentKeyFingerprint: null } }),
-      deliverResult,
-      reconcileInvocation: vi.fn(async () => ({ kind: 'unresolved' as const })),
-    });
+describe.each(['plain', 'e2ee'] as const)('frozen result recovery (%s)', (mode) => {
+  const cases: readonly Readonly<{
+    name: string;
+    contract: WorkflowStep['result'];
+    observed: SessionInputResultV1 | { kind: 'typed'; value: JsonValue };
+    expected: Pick<WorkflowProgressEnvelopeV1, 'result' | 'reason'>;
+    lifecycle: 'completed' | 'failed' | 'cancelled';
+  }>[] = [
+    { name: 'successful no-text', contract: { kind: 'text' },
+      observed: { kind: 'terminal_no_result', reason: 'missing_final_assistant_text', usage: { inputTokens: 8 } },
+      expected: { result: '' }, lifecycle: 'completed' },
+    { name: 'raw JSON at the selected nested leaf', contract: { kind: 'json', schema: { type: 'object', required: ['answer'] } },
+      observed: { kind: 'final_text', text: '{"answer":42}', usage: { inputTokens: 8 } },
+      expected: { result: { answer: 42 } }, lifecycle: 'completed' },
+    { name: 'typed JSON string without reparsing', contract: { kind: 'json', schema: { type: 'string' } },
+      observed: { kind: 'typed', value: '{"answer":42}' },
+      expected: { result: '{"answer":42}' }, lifecycle: 'completed' },
+    { name: 'missing required JSON output', contract: { kind: 'json', schema: {} },
+      observed: { kind: 'terminal_no_result', reason: 'missing_final_assistant_text', usage: { inputTokens: 8 } },
+      expected: { reason: { code: 'invalid_result_contract', message: 'not_json' } }, lifecycle: 'failed' },
+    { name: 'missing permitted decision', contract: { kind: 'decision', decisions: ['continue', 'stop'] },
+      observed: { kind: 'terminal_no_result', reason: 'missing_final_assistant_text', usage: { inputTokens: 8 } },
+      expected: { reason: { code: 'invalid_result_contract', message: 'not_json' } }, lifecycle: 'failed' },
+    { name: 'failed input is not successful no-text', contract: { kind: 'text' },
+      observed: { kind: 'failed', message: 'provider failed', usage: { inputTokens: 8 } },
+      expected: { reason: { code: 'session_input_failed', message: 'provider failed' } }, lifecycle: 'failed' },
+    { name: 'cancelled exact input retains usage', contract: { kind: 'text' },
+      observed: { kind: 'cancelled', message: 'input cancelled', usage: { inputTokens: 8 } },
+      expected: { reason: { code: 'session_input_pending_retired' } }, lifecycle: 'cancelled' },
+  ];
 
-    await recover('startup');
+  async function recoverResult(test: (typeof cases)[number], options: Readonly<{
+    acceptedAvailable?: boolean;
+    observationAvailable?: boolean;
+    initialReason?: WorkflowProgressEnvelopeV1['reason'];
+  }> = {}) {
+    const material = mode === 'e2ee' ? createAccountScopedCryptoMaterialSnapshotV1({
+      accountEncryptionMode: 'e2ee', material: { type: 'legacy', secret: new Uint8Array(32).fill(7) },
+    }) : undefined;
+    const encryption: AvailableAutomationAccountEncryptionV1 = mode === 'plain'
+      ? { kind: 'available', witness: { mode, version: 1, contentKeyFingerprint: null } }
+      : { kind: 'available', witness: { mode, version: 1, contentKeyFingerprint: convertContentPublicKeyFingerprintToAccountEncryptionMigrateKeyFingerprintV1(material!.contentPublicKeyFingerprint) }, material: material! };
+    const prepared = prepareWorkflowRunDataKeyV1({ accountId, encryption, randomBytes: (length: number) => new Uint8Array(length).fill(3) });
+    const sealMode = prepared.runCrypto.mode === 'plain' ? prepared.runCrypto
+      : { ...prepared.runCrypto, randomBytes: (length: number) => new Uint8Array(length).fill(3) };
+    const ownerEnvelope = prepared.recipientKeyEnvelopes[0]?.encryptedDataKey ?? null;
+    const rootId = '1aaf1a39-4c48-4904-83a4-7eae318dfc2c';
+    const parentId = '2aaf1a39-4c48-4904-83a4-7eae318dfc2c';
+    const leafId = '3aaf1a39-4c48-4904-83a4-7eae318dfc2c';
+    const leaf: WorkflowStep = { kind: 'step', id: 'shared', document: { text: 'Work', references: [], attachments: [] }, input: [], result: test.contract };
+    // Both branches deliberately reuse an id. Recovery must follow the stored
+    // structural slot, not the first global match or the row's display contract.
+    const definition: WorkflowDefinitionV1 = { version: 1, inputs: [], defaults: {}, blocks: [{
+      kind: 'if', id: 'choice', when: { kind: 'exists', value: { kind: 'literal', value: true } },
+      then: [{ ...leaf, result: { kind: 'text' } }], otherwise: [leaf],
+    }] };
+    const kit = createWorkflowRunStorageTestkit({ runId, machineId, origin: { kind: 'direct' },
+      keyCensus: { runId, ownerAccountId: accountId, access: 'owner', visibleTeamId: null, encryptionMode: mode,
+        ownerAccountCurrentness: encryption.witness, dataEncryptionKey: ownerEnvelope,
+        callerDataEncryptionKey: ownerEnvelope, recipients: [] },
+      acceptedEnvelope: options.acceptedAvailable !== false ? directAcceptedEnvelope({ definition, sealMode }) : 'unavailable' });
+    const checkpoint = serializeWorkflowStoredContentEnvelopeV1(sealWorkflowCheckpointStoredEnvelopeV1({
+      ...sealMode, binding: { v: 1, purpose: 'checkpoint', accountId, runId },
+      checkpoint: { kind: 'happier.workflow-checkpoint.v1', rootRecordId: rootId, nextSequence: '3', frontier: { nextBlockOrdinal: 1, paused: false } },
+    }));
+    const sealRow = (index: Pick<WorkflowRunInvocationIndexV1, 'id' | 'sequence' | 'parentRecordId' | 'memberOrdinal'>, progress: WorkflowProgressEnvelopeV1) =>
+      serializeWorkflowStoredContentEnvelopeV1(sealWorkflowProgressStoredEnvelopeV1({ ...sealMode,
+        binding: { v: 1, purpose: 'invocation_progress', accountId, runId, recordId: index.id,
+          sequence: index.sequence, parentRecordId: index.parentRecordId, memberOrdinal: index.memberOrdinal, attempt: '0' }, progress }));
+    const root = { id: rootId, sequence: '0', parentRecordId: null, memberOrdinal: '0' };
+    const parent = { id: parentId, sequence: '1', parentRecordId: rootId, memberOrdinal: '0' };
+    const child = { id: leafId, sequence: '2', parentRecordId: parentId, memberOrdinal: '0' };
+    const rootEnvelope = sealRow(root, { kind: 'happier.workflow-progress.v1', blockKind: 'root', invocationPath: { blockId: '$root', scope: [] }, attempt: '0', logicalInvocationRecordId: rootId });
+    await kit.execute({ operation: 'initialize', runId, expectedRevision: 0, checkpointEnvelope: checkpoint, rootInvocation: { id: rootId, contentEnvelope: rootEnvelope } });
+    await kit.execute({ operation: 'invocations.fact', runId, invocationId: rootId, invocationAttempt: '0',
+      expectedContentRevision: kit.rowById(rootId)!.index.contentRevision,
+      expectedLifecycle: 'pending', lifecycle: 'completed', contentEnvelope: rootEnvelope });
+    await kit.execute({ operation: 'invocations.admit', runId, expectedRevision: 1, checkpointEnvelope: checkpoint, invocations: [
+      { ...parent, lifecycle: 'completed', contentEnvelope: sealRow(parent, { kind: 'happier.workflow-progress.v1', blockKind: 'if', invocationPath: { blockId: 'choice', scope: [] },
+        container: { kind: 'if', selected: 'otherwise', nextBlockOrdinal: '0' }, attempt: '0', logicalInvocationRecordId: parentId }) },
+      { ...child, lifecycle: options.initialReason ? 'needs_attention' : 'running', contentEnvelope: sealRow(child, { kind: 'happier.workflow-progress.v1', blockKind: 'step', invocationPath: { blockId: 'shared', scope: [] },
+        attempt: '0', logicalInvocationRecordId: leafId, resultContract: { kind: 'text' },
+        ...(options.initialReason ? { reason: options.initialReason } : {}),
+        execution: test.observed.kind === 'typed' ? { kind: 'detached_run', runId: 'execution-1', localInputId: 'input-1', runtimeSelection: {} }
+          : { kind: 'session', sessionId: 'session-1', localInputId: 'input-1' } }) },
+    ] });
+    await kit.execute({ operation: 'transition', runId, expectedRevision: 2, state: 'failed', checkpointEnvelope: checkpoint });
+    const seeded = kit.calls.length;
+    const observeSession = vi.fn(async () => {
+      if (test.observed.kind === 'typed') throw new Error('wrong_execution_correspondence');
+      if (options.observationAvailable === false) return { ok: false as const, code: 'session_not_found' as const };
+      return { ok: true as const, sessionId: 'session-1', localId: 'input-1', result: test.observed };
+    });
+    const observer = createWorkflowInvocationRecoveryObserver({ credentials: { token: 'token', encryption: null }, machineId,
+      observeSession, cancelSession: async () => {
+        if (test.observed.kind === 'cancelled') return { kind: 'pending_retired' as const };
+        throw new Error('completed_input_must_not_be_cancelled');
+      },
+      actionExecutor: { execute: async () => ({ ok: true as const, result: { run: {
+        runId: 'execution-1', callId: 'call-1', sidechainId: 'sidechain-1', intent: 'agent',
+        backendTarget: { kind: 'builtInAgent', agentId: 'claude' }, permissionMode: 'read_only',
+        retentionPolicy: 'resumable', runClass: 'long_lived', ioMode: 'request_response', status: 'running', startedAtMs: 1,
+        inputTurns: { occurrenceId: 'occurrence-1', last: { turnId: 'turn-1', inputIds: ['input-1'], state: 'completed',
+          result: { kind: 'json', value: test.observed.kind === 'typed' ? test.observed.value : null } } },
+      } } }) },
+    });
+    await createWorkflowRunRecoveryReader({ accountId, machineId,
+      storage: { execute: async (operation, options) => operation.operation === 'recovery.list'
+        ? { candidates: [{ run: kit.run(), parentAttempt: 1 }] } : await kit.execute(operation, options) },
+      resolveAccountEncryption: async () => encryption, reconcileInvocation: observer,
+    })('reconnect');
+    const row = kit.rowById(leafId)!;
+    const opened = openWorkflowProgressStoredEnvelopeV1({ ...prepared.runCrypto,
+      binding: { v: 1, purpose: 'invocation_progress', accountId, runId, recordId: leafId,
+        sequence: '2', parentRecordId: parentId, memberOrdinal: '0', attempt: '0' },
+      envelope: parseWorkflowStoredContentEnvelopeV1(row.contentEnvelope) });
+    if (opened.kind !== 'available') throw new Error('recovered_row_unavailable');
+    expect(kit.run().state).toBe('failed');
+    expect(kit.calls.slice(seeded).some((operation) => operation.operation === 'initialize' || operation.operation === 'invocations.admit')).toBe(false);
+    return { lifecycle: row.index.lifecycle, progress: opened.content, custody: kit.run().workflowCustodyState, observeSession };
+  }
 
-    expect(deliverResult).not.toHaveBeenCalled();
-    expect(execute).toHaveBeenCalledWith(expect.objectContaining({
-      operation: 'result-delivery.settle',
-      state: 'unavailable',
-      reason: 'workflow_outcome_unresolved',
-    }), {});
+  it.each(cases)('$name retains exact custody and validates the frozen contract', async (test) => {
+    const recovered = await recoverResult(test);
+    expect(recovered.lifecycle).toBe(test.lifecycle);
+    expect(recovered.progress.result).toEqual(test.expected.result);
+    expect(recovered.progress.reason).toEqual(test.expected.reason);
+    expect(recovered.progress.usage).toEqual(test.observed.kind === 'typed' ? undefined : { inputTokens: 8 });
+    expect(recovered.custody).toBe('settled');
+    if (test.observed.kind !== 'typed') expect(recovered.observeSession).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'session-1', localId: 'input-1' }));
   });
 
-  it('pages recovery candidates and rejoins exact direct result delivery before CAS settlement', async () => {
-    const run = { id: runId, origin: { kind: 'direct' as const, originSessionId: 'session-origin' }, state: 'succeeded' as const,
-      revision: 9, machineId, workflowCustodyState: 'pending' as const, workflowResultDeliveryState: 'pending' as const,
+  it('keeps completion unresolved when the accepted contract cannot be opened', async () => {
+    const recovered = await recoverResult(cases[1]!, { acceptedAvailable: false });
+    expect(recovered.lifecycle).toBe('running');
+    expect(recovered.progress.result).toBeUndefined();
+    expect(recovered.custody).toBe('pending');
+  });
+
+  it('settles a terminal provider failure while preserving the previously published timeout reason', async () => {
+    const failedInput = cases.find((test) => test.observed.kind === 'failed');
+    if (!failedInput) throw new Error('missing_failed_input_fixture');
+    const initialReason = { code: 'workflow_step_timeout' };
+    const recovered = await recoverResult(failedInput, { initialReason });
+    expect(recovered.lifecycle).toBe('failed');
+    expect(recovered.progress.reason).toEqual(initialReason);
+    expect(recovered.progress.result).toBeUndefined();
+    expect(recovered.progress.usage).toEqual({ inputTokens: 8 });
+    expect(recovered.custody).toBe('settled');
+  });
+
+  it('does not turn an unavailable exact Session into successful empty text', async () => {
+    const recovered = await recoverResult(cases[0]!, { observationAvailable: false });
+    expect(recovered.lifecycle).toBe('running');
+    expect(recovered.progress.result).toBeUndefined();
+    expect(recovered.custody).toBe('pending');
+  });
+});
+
+describe('workflow Run startup/reconnect recovery', () => {
+  it('pages terminal candidates and settles custody while origin updates remain unacknowledged', async () => {
+    const run = { sourceArtifactId: null, ownerAccountId: 'account-1', visibleTeamId: null, id: runId, origin: { kind: 'direct' as const, originSessionId: 'session-origin' }, state: 'succeeded' as const,
+      revision: 9, machineId, workflowCustodyState: 'pending' as const, originDeliveryAckRevision: 0,
       availability, createdAt: now, updatedAt: now };
     const execute = vi.fn(async (operation: Readonly<Record<string, unknown>>) => {
-      if (operation.operation === 'recovery.list') {
-        return operation.cursor ? { candidates: [] } : { candidates: [{ run, parentAttempt: 3 }], nextCursor: 'page-2' };
-      }
-      if (operation.operation === 'get') return { run, acceptedEnvelope: directAcceptedEnvelope(), checkpointEnvelope: null, resultEnvelope: finalResultEnvelope() };
-      if (operation.operation === 'result-delivery.settle') return { ...run, revision: 10, workflowCustodyState: 'settled', workflowResultDeliveryState: operation.state };
-      if (operation.operation === 'invocations.list') return { invocations: [], parentRevision: 10 };
+      if (operation.operation === 'recovery.list') return operation.cursor
+        ? { candidates: [] } : { candidates: [{ run, parentAttempt: 3 }], nextCursor: 'page-2' };
+      if (operation.operation === 'run-key.census') return createPlainWorkflowRunKeyCensusFixture({ runId, accountId });
+      if (operation.operation === 'invocations.list') return { invocations: [], parentRevision: 9 };
+      if (operation.operation === 'get') return { run, checkpointEnvelope: checkpointEnvelope() };
+      if (operation.operation === 'transition') return { ...run, revision: 10, workflowCustodyState: 'settled' };
       throw new Error(`unexpected:${String(operation.operation)}`);
     });
-    const deliverResult = vi.fn(async () => ({ status: 'accepted' as const, localId: 'stable' }));
     const recover = createWorkflowRunRecoveryReader({
       accountId, machineId, storage: { execute },
       resolveAccountEncryption: async () => ({ kind: 'available', witness: { mode: 'plain', version: 1, contentKeyFingerprint: null } }),
-      deliverResult,
       reconcileInvocation: vi.fn(async () => ({ kind: 'unresolved' as const })),
     });
-
     await recover('startup');
-
-    expect(deliverResult).toHaveBeenCalledWith(expect.objectContaining({ runId, sessionId: 'session-origin', text: 'selected result' }));
-    expect(execute.mock.calls.some(([operation]) => operation.operation === 'result-delivery.settle'
-      && operation.runId === runId && operation.parentAttempt === 3
-      && operation.expectedRevision === 9 && operation.state === 'accepted')).toBe(true);
+    expect(execute).toHaveBeenCalledWith(expect.objectContaining({
+      operation: 'transition', runId, parentAttempt: 3, expectedRevision: 9, state: 'succeeded', custodyState: 'settled',
+    }), {});
     expect(execute.mock.calls.some(([operation]) => operation.operation === 'recovery.list' && operation.cursor === 'page-2')).toBe(true);
   });
 
   it('opens only lifecycle-selected invocation rows and never coordinates or starts terminal parents', async () => {
     const invocationId = '2aaf1a39-4c48-4904-83a4-7eae318dfc2c';
-    const run = { id: runId, origin: { kind: 'automation' as const, automationId: 'automation-1' }, state: 'cancelled' as const,
-      revision: 4, machineId, workflowCustodyState: 'pending' as const, workflowResultDeliveryState: null,
-      availability, createdAt: now, updatedAt: now };
-    const index = { id: invocationId, runId, sequence: '7', parentRecordId: null, memberOrdinal: '0', attempt: '0',
-      lifecycle: 'cancel_requested' as const, createdAt: now, updatedAt: now };
+    const rootId = '33333333-3333-4333-8333-333333333333';
+    const completedId = '44444444-4444-4444-8444-444444444444';
+    const root = { id: rootId, sequence: '0', parentRecordId: null, memberOrdinal: '0' };
+    const child = { id: invocationId, sequence: '1', parentRecordId: rootId, memberOrdinal: '0' };
+    const completed = { id: completedId, sequence: '2', parentRecordId: rootId, memberOrdinal: '1' };
     const progress = { kind: 'happier.workflow-progress.v1' as const, invocationPath: { blockId: 'work', scope: [] }, blockKind: 'step' as const,
       attempt: '0', logicalInvocationRecordId: invocationId, execution: { kind: 'session' as const, sessionId: 'session-1', localInputId: 'input-1' } };
-    const contentEnvelope = serializeWorkflowStoredContentEnvelopeV1(sealWorkflowProgressStoredEnvelopeV1({
-      mode: 'plain', binding: { v: 1, purpose: 'invocation_progress', accountId, runId, recordId: invocationId,
-        sequence: '7', parentRecordId: null, memberOrdinal: '0', attempt: '0' }, progress,
+    const sealRow = (row: Pick<WorkflowRunInvocationIndexV1, 'id' | 'sequence' | 'parentRecordId' | 'memberOrdinal'>, content: WorkflowProgressEnvelopeV1) =>
+      serializeWorkflowStoredContentEnvelopeV1(sealWorkflowProgressStoredEnvelopeV1({
+        mode: 'plain', binding: { v: 1, purpose: 'invocation_progress', accountId, runId, recordId: row.id,
+          sequence: row.sequence, parentRecordId: row.parentRecordId, memberOrdinal: row.memberOrdinal, attempt: '0' }, progress: content,
+      }));
+    const checkpoint = serializeWorkflowStoredContentEnvelopeV1(sealWorkflowCheckpointStoredEnvelopeV1({
+      mode: 'plain', binding: { v: 1, purpose: 'checkpoint', accountId, runId },
+      checkpoint: { kind: 'happier.workflow-checkpoint.v1', rootRecordId: rootId, nextSequence: '3',
+        frontier: { nextBlockOrdinal: 2, paused: false } },
     }));
-    const execute = vi.fn(async (operation: Readonly<Record<string, unknown>>) => {
+    // The real storage-boundary testkit advances lifecycle/contentRevision and
+    // sealed bytes together, so settlement rereads observe the committed fact.
+    const kit = createWorkflowRunStorageTestkit({ runId, machineId, now,
+      origin: { kind: 'automation', automationId: 'automation-1' }, invocationPageSize: 1,
+      acceptedEnvelope: directAcceptedEnvelope({ definition: { version: 1, inputs: [], defaults: {}, blocks: [
+        { kind: 'step', id: 'work', document: { text: 'Work', references: [], attachments: [] }, input: [], result: { kind: 'text' } },
+        { kind: 'step', id: 'finished', document: { text: 'Finished', references: [], attachments: [] }, input: [], result: { kind: 'text' } },
+      ] } }),
+    });
+    await kit.execute({ operation: 'initialize', runId, expectedRevision: 0, checkpointEnvelope: checkpoint,
+      rootInvocation: { id: rootId, contentEnvelope: sealRow(root, { kind: 'happier.workflow-progress.v1',
+        invocationPath: { blockId: '$root', scope: [] }, blockKind: 'root', attempt: '0', logicalInvocationRecordId: rootId }) },
+    });
+    await kit.execute({ operation: 'invocations.admit', runId, expectedRevision: 1, checkpointEnvelope: checkpoint,
+      invocations: [{ ...child, lifecycle: 'running', contentEnvelope: sealRow(child, progress) },
+        { ...completed, lifecycle: 'completed', contentEnvelope: sealRow(completed, { kind: 'happier.workflow-progress.v1',
+          invocationPath: { blockId: 'finished', scope: [] }, blockKind: 'step', attempt: '0', logicalInvocationRecordId: completedId,
+          result: 'already done' }) }],
+    });
+    kit.requestControl('cancelled');
+    const run = kit.run();
+    const index = kit.rowById(invocationId)!.index;
+    const execute = vi.fn(async (operation: WorkflowRunStorageTestkitOperation, options?: Readonly<{ signal?: AbortSignal }>) => {
       if (operation.operation === 'recovery.list') return { candidates: [{ run, parentAttempt: 2 }] };
-      if (operation.operation === 'invocations.list' && operation.limit === 1) {
-        return { invocations: [], parentRevision: 4 };
-      }
       if (operation.operation === 'invocations.list') {
         expect(operation.lifecycles).toEqual(['pending', 'waiting_for_capacity', 'admitting', 'running', 'waiting_for_approval', 'needs_attention', 'cancel_requested', 'outcome_uncertain']);
-        return operation.cursor ? { invocations: [], parentRevision: 4 } : { invocations: [index], parentRevision: 4, nextCursor: 'inv-2' };
       }
-      if (operation.operation === 'invocations.get') return { invocation: { index, contentEnvelope, parentRevision: 4 } };
-      if (operation.operation === 'invocations.fact') return { ...index, lifecycle: operation.lifecycle };
-      if (operation.operation === 'get') return { run, acceptedEnvelope: directAcceptedEnvelope(), checkpointEnvelope: checkpointEnvelope(), resultEnvelope: null };
-      if (operation.operation === 'transition') return { ...run, revision: 5, workflowCustodyState: 'settled' };
-      throw new Error(`unexpected:${String(operation.operation)}`);
+      return await kit.execute(operation, options);
     });
-    const reconcileInvocation = vi.fn(async () => ({ kind: 'cancelled' as const, code: 'session_input_turn_cancel_requested' }));
+    const reconcileInvocation = vi.fn(async () => ({ kind: 'cancelled' as const, code: 'provider_stopped' }));
     const recover = createWorkflowRunRecoveryReader({
       accountId, machineId, storage: { execute },
       resolveAccountEncryption: async () => ({ kind: 'available', witness: { mode: 'plain', version: 1, contentKeyFingerprint: null } }),
-      deliverResult: vi.fn(), reconcileInvocation,
+      reconcileInvocation,
     });
 
     await recover('reconnect');
@@ -182,111 +489,64 @@ describe('workflow Run startup/reconnect recovery', () => {
       parentAttempt: 2,
       trigger: 'reconnect',
     }));
-    expect(execute.mock.calls.filter(([operation]) => operation.operation === 'invocations.get')).toHaveLength(1);
+    const exactReads = execute.mock.calls.filter(([operation]) => operation.operation === 'invocations.get');
+    expect(exactReads.length).toBeGreaterThan(0);
+    expect(exactReads.every(([operation]) => operation.runId === runId
+      && (operation.invocationId === rootId || operation.invocationId === invocationId))).toBe(true);
+    expect(execute.mock.calls.some(([operation]) => operation.operation === 'invocations.list' && operation.cursor !== undefined)).toBe(true);
+    const settledIndex = kit.rowById(invocationId)!.index;
+    expect(settledIndex).toMatchObject({ lifecycle: 'cancelled', contentRevision: (BigInt(index.contentRevision) + 1n).toString() });
+    expect(kit.rowById(completedId)?.index).toMatchObject({ lifecycle: 'completed', contentRevision: '0' });
+    expect(kit.run()).toMatchObject({ state: 'cancelled', revision: run.revision + 1, workflowCustodyState: 'settled' });
     expect(execute.mock.calls.some(([operation]) => operation.operation === 'invocations.fact'
       && operation.runId === runId && operation.parentAttempt === 2
       && isPlainAccountCurrentness(operation.accountCurrentness)
       && operation.invocationId === invocationId && operation.invocationAttempt === '0'
+      && operation.expectedContentRevision === index.contentRevision
       && operation.expectedLifecycle === 'cancel_requested' && operation.lifecycle === 'cancelled')).toBe(true);
     expect(execute.mock.calls.some(([operation]) => operation.operation === 'transition'
       && operation.runId === runId && operation.parentAttempt === 2
       && isPlainAccountCurrentness(operation.accountCurrentness)
-      && operation.expectedRevision === 4 && operation.state === 'cancelled'
+      && operation.expectedRevision === run.revision && operation.state === 'cancelled'
       && operation.custodyState === 'settled'
       && Array.isArray(operation.invocationTransitions)
       && operation.invocationTransitions.some((transition: Readonly<Record<string, unknown>>) => transition.id === invocationId
-        && transition.expectedLifecycle === 'cancelled' && transition.lifecycle === 'cancelled'))).toBe(true);
+        && transition.expectedLifecycle === 'cancelled' && transition.lifecycle === 'cancelled'
+        && transition.expectedContentRevision === settledIndex.contentRevision))).toBe(true);
+    expect(execute.mock.calls.some(([operation]) => operation.operation === 'initialize' || operation.operation === 'invocations.admit')).toBe(false);
+  });
+
+  it('rejoins a concurrently settled terminal Run after a custody response loss', async () => {
+    const run = { sourceArtifactId: null, ownerAccountId: 'account-1', visibleTeamId: null, id: runId, origin: { kind: 'direct' as const, originSessionId: 'session-origin' }, state: 'succeeded' as const,
+      revision: 9, machineId, workflowCustodyState: 'pending' as const, originDeliveryAckRevision: 0,
+      availability, createdAt: now, updatedAt: now };
+    let settled = false;
+    const execute = vi.fn(async (operation: Readonly<Record<string, unknown>>) => {
+      if (operation.operation === 'recovery.list') return { candidates: [{ run, parentAttempt: 3 }] };
+      if (operation.operation === 'run-key.census') return createPlainWorkflowRunKeyCensusFixture({ runId, accountId });
+      if (operation.operation === 'invocations.list') return { invocations: [], parentRevision: 9 };
+      if (operation.operation === 'get') return { run: settled
+        ? { ...run, revision: 10, workflowCustodyState: 'settled' } : run, checkpointEnvelope: checkpointEnvelope() };
+      if (operation.operation === 'transition') { settled = true; throw new Error('response_lost'); }
+      throw new Error(`unexpected:${String(operation.operation)}`);
+    });
+    const recover = createWorkflowRunRecoveryReader({
+      accountId, machineId, storage: { execute },
+      resolveAccountEncryption: async () => ({ kind: 'available', witness: { mode: 'plain', version: 1, contentKeyFingerprint: null } }),
+      reconcileInvocation: vi.fn(async () => ({ kind: 'unresolved' as const })),
+    });
+    await expect(recover('reconnect')).resolves.toBeUndefined();
+    expect(execute.mock.calls.filter(([operation]) => operation.operation === 'transition')).toHaveLength(1);
     expect(execute.mock.calls.some(([operation]) => operation.operation === 'initialize')).toBe(false);
-  });
-
-  it('retains pending custody after an ambiguous direct-delivery error for later stable rejoin', async () => {
-    const run = { id: runId, origin: { kind: 'direct' as const, originSessionId: 'session-origin' }, state: 'succeeded' as const,
-      revision: 9, machineId, workflowCustodyState: 'pending' as const, workflowResultDeliveryState: 'pending' as const,
-      availability, createdAt: now, updatedAt: now };
-    const execute = vi.fn(async (operation: Readonly<Record<string, unknown>>) => {
-      if (operation.operation === 'recovery.list') return { candidates: [{ run, parentAttempt: 3 }] };
-      if (operation.operation === 'get') return { run, acceptedEnvelope: directAcceptedEnvelope(), checkpointEnvelope: null, resultEnvelope: finalResultEnvelope() };
-      if (operation.operation === 'invocations.list') return { invocations: [], parentRevision: 9 };
-      throw new Error(`unexpected:${String(operation.operation)}`);
-    });
-    const recover = createWorkflowRunRecoveryReader({
-      accountId, machineId, storage: { execute },
-      resolveAccountEncryption: async () => ({ kind: 'available', witness: { mode: 'plain', version: 1, contentKeyFingerprint: null } }),
-      deliverResult: async () => { throw new Error('connection reset after write'); },
-      reconcileInvocation: vi.fn(async () => ({ kind: 'unresolved' as const })),
-    });
-
-    await expect(recover('reconnect')).resolves.toBeUndefined();
-    expect(execute.mock.calls.some(([operation]) => operation.operation === 'result-delivery.settle')).toBe(false);
-  });
-
-  it('keeps outcome-unknown direct delivery pending and discoverable for a later recovery pass', async () => {
-    const run = { id: runId, origin: { kind: 'direct' as const, originSessionId: 'session-origin' }, state: 'succeeded' as const,
-      revision: 9, machineId, workflowCustodyState: 'pending' as const, workflowResultDeliveryState: 'pending' as const,
-      availability, createdAt: now, updatedAt: now };
-    const execute = vi.fn(async (operation: Readonly<Record<string, unknown>>) => {
-      if (operation.operation === 'recovery.list') return { candidates: [{ run, parentAttempt: 3 }] };
-      if (operation.operation === 'get') return { run, acceptedEnvelope: directAcceptedEnvelope(), checkpointEnvelope: null, resultEnvelope: finalResultEnvelope() };
-      if (operation.operation === 'invocations.list') return { invocations: [], parentRevision: 9 };
-      if (operation.operation === 'result-delivery.settle') return { ...run, revision: 10 };
-      throw new Error(`unexpected:${String(operation.operation)}`);
-    });
-    const deliverResult = vi.fn(async () => ({
-      status: projectWorkflowResultDeliverySettlement('outcomeUnknown') ?? 'unresolved' as const,
-    }));
-    const recover = createWorkflowRunRecoveryReader({
-      accountId, machineId, storage: { execute },
-      resolveAccountEncryption: async () => ({ kind: 'available', witness: { mode: 'plain', version: 1, contentKeyFingerprint: null } }),
-      deliverResult,
-      reconcileInvocation: vi.fn(async () => ({ kind: 'unresolved' as const })),
-    });
-
-    await recover('startup');
-    await recover('reconnect');
-
-    expect(deliverResult).toHaveBeenCalledTimes(2);
-    expect(execute.mock.calls.filter(([operation]) => operation.operation === 'recovery.list')).toHaveLength(2);
-    expect(execute.mock.calls.some(([operation]) => operation.operation === 'result-delivery.settle')).toBe(false);
-  });
-
-  it('rejoins a concurrent CAS settlement without redelivering or reopening execution', async () => {
-    const pendingRun = { id: runId, origin: { kind: 'direct' as const, originSessionId: 'session-origin' }, state: 'succeeded' as const,
-      revision: 9, machineId, workflowCustodyState: 'pending' as const, workflowResultDeliveryState: 'pending' as const,
-      availability, createdAt: now, updatedAt: now };
-    const settledRun = { ...pendingRun, revision: 10, workflowCustodyState: 'settled' as const, workflowResultDeliveryState: 'accepted' as const };
-    let getCount = 0;
-    const execute = vi.fn(async (operation: Readonly<Record<string, unknown>>) => {
-      if (operation.operation === 'recovery.list') return { candidates: [{ run: pendingRun, parentAttempt: 3 }] };
-      if (operation.operation === 'get') {
-        getCount += 1;
-        return getCount === 1
-          ? { run: pendingRun, acceptedEnvelope: directAcceptedEnvelope(), checkpointEnvelope: null, resultEnvelope: finalResultEnvelope() }
-          : { run: settledRun, acceptedEnvelope: directAcceptedEnvelope(), checkpointEnvelope: null, resultEnvelope: finalResultEnvelope() };
-      }
-      if (operation.operation === 'result-delivery.settle') throw new Error('currentness_conflict');
-      if (operation.operation === 'invocations.list') return { invocations: [], parentRevision: 10 };
-      throw new Error(`unexpected:${String(operation.operation)}`);
-    });
-    const deliverResult = vi.fn(async () => ({ status: 'accepted' as const }));
-    const recover = createWorkflowRunRecoveryReader({
-      accountId, machineId, storage: { execute },
-      resolveAccountEncryption: async () => ({ kind: 'available', witness: { mode: 'plain', version: 1, contentKeyFingerprint: null } }),
-      deliverResult, reconcileInvocation: vi.fn(async () => ({ kind: 'unresolved' as const })),
-    });
-
-    await expect(recover('reconnect')).resolves.toBeUndefined();
-    expect(deliverResult).toHaveBeenCalledTimes(1);
-    expect(getCount).toBe(3);
-    expect(execute.mock.calls.some(([operation]) => operation.operation === 'initialize' || operation.operation === 'transition')).toBe(false);
   });
 
   it('reconciles a terminal structural row without native observation or rewriting its truth', async () => {
     const invocationId = '2aaf1a39-4c48-4904-83a4-7eae318dfc2c';
-    const run = { id: runId, origin: { kind: 'automation' as const, automationId: 'automation-1' }, state: 'outcome_uncertain' as const,
-      revision: 6, machineId, workflowCustodyState: 'pending' as const, workflowResultDeliveryState: null,
+    const run = { sourceArtifactId: null, ownerAccountId: 'account-1', visibleTeamId: null, id: runId, origin: { kind: 'automation' as const, automationId: 'automation-1' }, state: 'outcome_uncertain' as const,
+      revision: 6, machineId, workflowCustodyState: 'pending' as const, originDeliveryAckRevision: null,
       availability, createdAt: now, updatedAt: now };
     const index = { id: invocationId, runId, sequence: '7', parentRecordId: null, memberOrdinal: '0', attempt: '0',
-      lifecycle: 'outcome_uncertain' as const, createdAt: now, updatedAt: now };
+      contentRevision: '0', lifecycle: 'outcome_uncertain' as const, createdAt: now, updatedAt: now };
     const progress = { kind: 'happier.workflow-progress.v1' as const, invocationPath: { blockId: '$root', scope: [] }, blockKind: 'root' as const,
       attempt: '0', logicalInvocationRecordId: invocationId,
       result: { retained: true }, reason: { code: 'delivery_ambiguous' } };
@@ -296,6 +556,7 @@ describe('workflow Run startup/reconnect recovery', () => {
     }));
     const execute = vi.fn(async (operation: Readonly<Record<string, unknown>>) => {
       if (operation.operation === 'recovery.list') return { candidates: [{ run, parentAttempt: 4 }] };
+      if (operation.operation === 'run-key.census') return createPlainWorkflowRunKeyCensusFixture({ runId, accountId });
       if (operation.operation === 'invocations.list') return { invocations: [index], parentRevision: 6 };
       if (operation.operation === 'invocations.get') return { invocation: { index, contentEnvelope, parentRevision: 6 } };
       if (operation.operation === 'invocations.fact') return { ...index, lifecycle: operation.lifecycle };
@@ -307,7 +568,7 @@ describe('workflow Run startup/reconnect recovery', () => {
     const recover = createWorkflowRunRecoveryReader({
       accountId, machineId, storage: { execute },
       resolveAccountEncryption: async () => ({ kind: 'available', witness: { mode: 'plain', version: 1, contentKeyFingerprint: null } }),
-      deliverResult: vi.fn(), reconcileInvocation,
+      reconcileInvocation,
     });
 
     await recover('startup');
@@ -331,11 +592,11 @@ describe('workflow Run startup/reconnect recovery', () => {
 
   it('marks an uncertain step retryable only after its exact execution owner proves it stopped', async () => {
     const invocationId = '5aaf1a39-4c48-4904-83a4-7eae318dfc2c';
-    const run = { id: runId, origin: { kind: 'direct' as const }, state: 'interrupted' as const,
-      revision: 6, machineId, workflowCustodyState: 'pending' as const, workflowResultDeliveryState: null,
+    const run = { sourceArtifactId: null, ownerAccountId: 'account-1', visibleTeamId: null, id: runId, origin: { kind: 'direct' as const }, state: 'interrupted' as const,
+      revision: 6, machineId, workflowCustodyState: 'pending' as const, originDeliveryAckRevision: null,
       availability, createdAt: now, updatedAt: now };
     const index = { id: invocationId, runId, sequence: '7', parentRecordId: null, memberOrdinal: '0', attempt: '0',
-      lifecycle: 'outcome_uncertain' as const, createdAt: now, updatedAt: now };
+      contentRevision: '0', lifecycle: 'outcome_uncertain' as const, createdAt: now, updatedAt: now };
     const progress = { kind: 'happier.workflow-progress.v1' as const, invocationPath: { blockId: 'work', scope: [] }, blockKind: 'step' as const,
       attempt: '0', logicalInvocationRecordId: invocationId,
       execution: { kind: 'session' as const, sessionId: 'session-1', localInputId: 'input-1' } };
@@ -345,6 +606,7 @@ describe('workflow Run startup/reconnect recovery', () => {
     }));
     const execute = vi.fn(async (operation: Readonly<Record<string, unknown>>) => {
       if (operation.operation === 'recovery.list') return { candidates: [{ run, parentAttempt: 4 }] };
+      if (operation.operation === 'run-key.census') return createPlainWorkflowRunKeyCensusFixture({ runId, accountId });
       if (operation.operation === 'invocations.list') return { invocations: [index], parentRevision: 6 };
       if (operation.operation === 'invocations.get') return { invocation: { index, contentEnvelope, parentRevision: 6 } };
       if (operation.operation === 'invocations.fact') return { ...index, lifecycle: operation.lifecycle };
@@ -354,7 +616,7 @@ describe('workflow Run startup/reconnect recovery', () => {
     const recover = createWorkflowRunRecoveryReader({
       accountId, machineId, storage: { execute },
       resolveAccountEncryption: async () => ({ kind: 'available', witness: { mode: 'plain', version: 1, contentKeyFingerprint: null } }),
-      deliverResult: vi.fn(), reconcileInvocation: vi.fn(async () => ({ kind: 'cancelled' as const, code: 'observed_stopped' })),
+      reconcileInvocation: vi.fn(async () => ({ kind: 'cancelled' as const, code: 'observed_stopped' })),
     });
 
     await recover('reconnect');
@@ -376,12 +638,12 @@ describe('workflow Run startup/reconnect recovery', () => {
   it('settles a running cancellation through structural and executable row facts before parent custody', async () => {
     const rootId = '2aaf1a39-4c48-4904-83a4-7eae318dfc2c';
     const childId = '5ebde945-7386-438c-9bc0-12f1f7c76e76';
-    const run = { id: runId, origin: { kind: 'automation' as const, automationId: 'automation-1' }, state: 'running' as const,
-      revision: 8, machineId, workflowCustodyState: 'pending' as const, workflowResultDeliveryState: null,
+    const run = { sourceArtifactId: null, ownerAccountId: 'account-1', visibleTeamId: null, id: runId, origin: { kind: 'automation' as const, automationId: 'automation-1' }, state: 'running' as const,
+      revision: 8, machineId, workflowCustodyState: 'pending' as const, originDeliveryAckRevision: null,
       availability, createdAt: now, updatedAt: now };
     const indexes = [
-      { id: rootId, runId, sequence: '0', parentRecordId: null, memberOrdinal: '0', attempt: '0', lifecycle: 'cancel_requested' as const, createdAt: now, updatedAt: now },
-      { id: childId, runId, sequence: '1', parentRecordId: rootId, memberOrdinal: '0', attempt: '0', lifecycle: 'cancel_requested' as const, createdAt: now, updatedAt: now },
+      { id: rootId, runId, sequence: '0', parentRecordId: null, memberOrdinal: '0', attempt: '0', contentRevision: '0', lifecycle: 'cancel_requested' as const, createdAt: now, updatedAt: now },
+      { id: childId, runId, sequence: '1', parentRecordId: rootId, memberOrdinal: '0', attempt: '0', contentRevision: '0', lifecycle: 'cancel_requested' as const, createdAt: now, updatedAt: now },
     ];
     const progresses = [
       { kind: 'happier.workflow-progress.v1' as const, invocationPath: { blockId: '$root', scope: [] }, blockKind: 'root' as const,
@@ -397,6 +659,7 @@ describe('workflow Run startup/reconnect recovery', () => {
     const lifecycleById = new Map<string, string>(indexes.map((index) => [index.id, index.lifecycle]));
     const execute = vi.fn(async (operation: Readonly<Record<string, unknown>>) => {
       if (operation.operation === 'recovery.list') return { candidates: [{ run, parentAttempt: 5 }] };
+      if (operation.operation === 'run-key.census') return createPlainWorkflowRunKeyCensusFixture({ runId, accountId });
       if (operation.operation === 'invocations.list') return { invocations: indexes };
       if (operation.operation === 'invocations.get') {
         const ordinal = indexes.findIndex((index) => index.id === operation.invocationId);
@@ -407,7 +670,7 @@ describe('workflow Run startup/reconnect recovery', () => {
         lifecycleById.set(String(operation.invocationId), String(operation.lifecycle));
         return { lifecycle: operation.lifecycle };
       }
-      if (operation.operation === 'get') return { run, checkpointEnvelope: checkpointEnvelope() };
+      if (operation.operation === 'get') return { run, acceptedEnvelope: directAcceptedEnvelope(), checkpointEnvelope: checkpointEnvelope() };
       if (operation.operation === 'transition') return { ...run, state: 'cancelled', workflowCustodyState: 'settled' };
       throw new Error(`unexpected:${String(operation.operation)}`);
     });
@@ -415,7 +678,7 @@ describe('workflow Run startup/reconnect recovery', () => {
     const recover = createWorkflowRunRecoveryReader({
       accountId, machineId, storage: { execute },
       resolveAccountEncryption: async () => ({ kind: 'available', witness: { mode: 'plain', version: 1, contentKeyFingerprint: null } }),
-      deliverResult: vi.fn(), reconcileInvocation,
+      reconcileInvocation,
     });
 
     await recover('control');

@@ -21,7 +21,7 @@ import type {
   SpawnSessionOptions,
   SpawnSessionResult,
 } from '../../../session/shared/spawnSessionContract';
-import { classifyWorkspaceSyncAdmission, workspaceSyncUpdateRequired } from './workspaceSyncGuard';
+import { hasUnsupportedWorkspaceAction, workspaceSyncUpdateRequired } from './workspaceSyncGuard';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -291,17 +291,13 @@ function projectStatus(value: unknown): unknown {
   };
 }
 
-function projectPublication(value: unknown, includeSizeAndHash: boolean): unknown {
+function projectPublication(value: unknown): unknown {
   const publication = asRecord(value);
   if (!publication) return value;
   return {
     transferId: publication.transferId,
-    ...(includeSizeAndHash
-      ? {
-          sizeBytes: publication.sizeBytes,
-          manifestHash: publication.manifestHash,
-        }
-      : {}),
+    sizeBytes: publication.sizeBytes,
+    manifestHash: publication.manifestHash,
     ...(Array.isArray(publication.endpointCandidates)
       ? { endpointCandidates: publication.endpointCandidates.map(projectEndpointCandidate) }
       : {}),
@@ -317,27 +313,7 @@ function projectMetadata(value: unknown): unknown {
   return {
     ...(agentPublication !== undefined
       ? {
-          providerBundleTransferPublication: projectPublication(agentPublication, true),
-        }
-      : {}),
-    ...(metadata.workspaceReplicationSourceRootPath !== undefined
-      ? { workspaceReplicationSourceRootPath: metadata.workspaceReplicationSourceRootPath }
-      : {}),
-    ...(metadata.workspaceReplicationHandoffBackTargetRootPath !== undefined
-      ? { workspaceReplicationHandoffBackTargetRootPath: metadata.workspaceReplicationHandoffBackTargetRootPath }
-      : {}),
-    ...(metadata.workspaceReplicationManifestTransferPublication !== undefined
-      ? {
-          workspaceReplicationManifestTransferPublication: projectPublication(
-            metadata.workspaceReplicationManifestTransferPublication,
-            false,
-          ),
-        }
-      : {}),
-    ...(metadata.workspaceReplicationSourceControllerMetadata !== undefined
-      ? {
-          workspaceReplicationSourceControllerMetadata:
-            metadata.workspaceReplicationSourceControllerMetadata,
+          providerBundleTransferPublication: projectPublication(agentPublication),
         }
       : {}),
   };
@@ -577,7 +553,7 @@ export function registerSessionHandoffPredecessorCompatibilityHandlers(input: Re
     async (raw: unknown) => {
       const parsed = PredecessorPrepareTargetRequestV2Schema.safeParse(raw);
       if (!parsed.success) return invalidRequest();
-      if (classifyWorkspaceSyncAdmission(parsed.data).kind === 'update_required') return workspaceSyncUpdateRequired();
+      if (hasUnsupportedWorkspaceAction(parsed.data)) return workspaceSyncUpdateRequired();
       const { sessionId, ...canonicalRequest } = parsed.data;
       const result = await input.prepareTarget(canonicalRequest);
       const finalResponse = SessionHandoffPrepareTargetResponseSchema.safeParse(result);
@@ -676,7 +652,7 @@ export function registerSessionHandoffPredecessorCompatibilityHandlers(input: Re
     async (raw: unknown) => {
       const parsed = PredecessorCommitRequestV2Schema.safeParse(raw);
       if (!parsed.success || (parsed.data.mode ?? 'target') !== 'target') return invalidRequest();
-      if (classifyWorkspaceSyncAdmission(parsed.data).kind === 'update_required') return workspaceSyncUpdateRequired();
+      if (hasUnsupportedWorkspaceAction(parsed.data)) return workspaceSyncUpdateRequired();
       const found = await input.prepareJobStore.findByHandoffId(parsed.data.handoffId);
       const job = found?.schemaVersion === 2 ? found : null;
       if (!isExactPreparedTarget(job, parsed.data)) {

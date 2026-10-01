@@ -53,6 +53,14 @@ describe('quotaPersistenceKey', () => {
     }));
   });
 
+  it('keeps the persisted account scope keyed by the trimmed JWT subject', async () => {
+    const { hashQuotaPersistenceScope, resolveQuotaPersistenceAccountScope } = await import('./quotaPersistenceKey');
+    const expected = { kind: 'known', value: `sub-${hashQuotaPersistenceScope('account-a')}` };
+
+    expect(resolveQuotaPersistenceAccountScope({ token: createJwtWithSub('account-a', 'one') })).toEqual(expected);
+    expect(resolveQuotaPersistenceAccountScope({ token: createJwtWithSub('  account-a  ', 'two') })).toEqual(expected);
+  });
+
   it('resolves quota account scope from JWT subject instead of token body', async () => {
     const mod = await import('./quotaPersistenceKey').catch(() => null);
     expect(mod?.resolveQuotaPersistenceAccountScope).toBeTypeOf('function');

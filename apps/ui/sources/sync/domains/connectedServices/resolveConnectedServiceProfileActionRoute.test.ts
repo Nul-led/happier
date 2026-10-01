@@ -55,10 +55,10 @@ describe('resolveConnectedServiceProfileActionRoute', () => {
             { serviceId: 'happier.agent.codex/openai-codex' },
             entries,
         )).toEqual({
-            pathname: '/(app)/settings/connected-services/account',
+            pathname: '/(app)/settings/connected-services',
             params: {
-                pluginId: 'happier.agent.codex',
-                localId: 'openai-codex',
+                connect: '1',
+                service: 'happier.agent.codex/openai-codex',
             },
         });
         expect(resolveConnectedServiceProfileActionRoute(

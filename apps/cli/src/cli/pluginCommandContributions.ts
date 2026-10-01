@@ -24,6 +24,7 @@ import {
 } from './pluginCommandFields';
 import type { ActionCliField } from '@/cli/actions/compiledCommands';
 import { listActionCliCommandFlags, parseActionCliInput } from '@/cli/actions/parseCommandInput';
+import { buildFieldOptionRows } from '@/cli/actions/commandHelp';
 
 export type PluginCommandExecutionResult = Readonly<
   | {
@@ -282,8 +283,9 @@ function renderPluginCommandHelp(params: Readonly<{
       registry: params.registry,
       qualifiedActionId: exact.qualifiedActionId,
     });
-    const fieldUsage = actionInput && !actionInput.flagCollision
-      ? `${listActionCliCommandFlags({ fields: actionInput.fields, positionals: [] }).map((flag) => `[${flag}]`).join(' ')} `
+    const documentedFields = actionInput && !actionInput.flagCollision ? actionInput.fields : [];
+    const fieldUsage = documentedFields.length > 0
+      ? `${listActionCliCommandFlags({ fields: documentedFields, positionals: [] }).map((flag) => `[${flag}]`).join(' ')} `
       : '';
     return [
       `${exact.title}`,
@@ -291,6 +293,9 @@ function renderPluginCommandHelp(params: Readonly<{
       '',
       `Usage: happier ${exact.path.join(' ')} ${fieldUsage}[--input-json <json>] [--json]`,
       'Alias: --input <json>',
+      ...(documentedFields.length > 0
+        ? ['', 'Options:', ...buildFieldOptionRows(documentedFields).map((row) => `  ${row.label}  ${row.description}`), '']
+        : []),
       `Command: ${exact.qualifiedId}`,
       `Action: ${exact.qualifiedActionId}`,
       ...(exact.status === 'available'
@@ -367,7 +372,6 @@ export async function handlePluginCommandCliCommand(
     actionId: invocation.qualifiedActionId,
     input: invocation.input,
     surface: 'cli',
-    authority: 'present_user',
   });
   const result: PluginCommandExecutionResult = !attempt.matched
     ? {

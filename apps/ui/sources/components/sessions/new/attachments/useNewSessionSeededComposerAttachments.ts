@@ -105,7 +105,7 @@ export function useNewSessionSeededComposerAttachments(params: Readonly<{
                 ref,
                 admittedContributor: {
                     identity: { pluginId: seed.pluginId, localId: seed.attachmentLocalId },
-                    immutableGenerationId: entry.immutableGenerationId,
+                    occurrenceId: entry.occurrenceId,
                 },
                 transaction: {
                     // Re-read per operation: each applied attachment advances

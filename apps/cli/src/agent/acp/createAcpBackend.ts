@@ -13,7 +13,6 @@
 
 import { AcpBackend, type AcpBackendOptions } from './AcpBackend';
 import type { AcpPermissionHandler } from './permissions/acpPermissionHandler';
-import type { McpServerConfig } from '../core';
 import { DefaultTransport, type TransportHandler } from '../transport';
 import type {
   AcpExtensionContextFactory,
@@ -49,7 +48,7 @@ export interface CreateAcpBackendOptions {
   networkTransport?: AcpBackendOptions['networkTransport'];
 
   /** MCP servers to make available to the agent */
-  mcpServers?: Record<string, McpServerConfig>;
+  mcpServers?: AcpBackendOptions['mcpServers'];
 
   /** Optional permission handler for tool approval */
   permissionHandler?: AcpPermissionHandler;

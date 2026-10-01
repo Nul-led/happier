@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { extractCompactRow, normalizeTranscriptHistoryResult } from './transcriptHistoryRows';
+import { createTranscriptHistoryNormalizationSequenceState, extractCompactRow, normalizeTranscriptHistoryResult, shouldSuppressTranscriptItemForEmptyCanonicalTurnDiff } from './transcriptHistoryRows';
 
 describe('extractCompactRow', () => {
   it('extracts assistant text from output rows', () => {
@@ -84,6 +84,21 @@ describe('extractCompactRow', () => {
 });
 
 describe('normalizeTranscriptHistoryResult', () => {
+  it('keeps a re-remembered empty diff call among the most recent 256 ids', () => {
+    const state = createTranscriptHistoryNormalizationSequenceState();
+    const call = (callId: string) => ({ role: 'agent', content: { type: 'acp', data: {
+      type: 'tool-call', callId, name: 'Diff', input: { _happier: { canonicalToolName: 'Diff' }, files: [] },
+    } } });
+    for (let i = 0; i < 256; i++) shouldSuppressTranscriptItemForEmptyCanonicalTurnDiff(call(`diff-${i}`), state);
+    shouldSuppressTranscriptItemForEmptyCanonicalTurnDiff(call('diff-0'), state);
+    shouldSuppressTranscriptItemForEmptyCanonicalTurnDiff(call('diff-256'), state);
+    expect(shouldSuppressTranscriptItemForEmptyCanonicalTurnDiff({ role: 'agent', content: { type: 'acp', data: {
+      type: 'tool-result', callId: 'diff-0', output: {},
+    } } }, state)).toBe(true);
+    expect(shouldSuppressTranscriptItemForEmptyCanonicalTurnDiff({ role: 'agent', content: { type: 'acp', data: {
+      type: 'tool-result', callId: 'diff-0', output: {},
+    } } }, state)).toBe(false);
+  });
   it('preserves seq on compact and raw rows so transcript consumers can order by durable sequence', () => {
     const payload = {
       sessionId: 'session-1',

@@ -1,5 +1,6 @@
 import * as React from 'react';
-import { useRouter } from 'expo-router';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
+import { useDestinationNavigation } from '@/components/appShell/workspace/DestinationInstanceHost';
 import type { FeatureDecision } from '@happier-dev/protocol';
 
 import { SurfaceStateCard, type SurfaceStateKind } from '@/components/ui/surfaces/SurfaceStateCard';
@@ -73,10 +74,11 @@ export function ExternalSessionsBrowseRouteGate(props: React.PropsWithChildren<R
 }>>): React.ReactElement {
     const decision = useFeatureDecision('sessions.direct', props.scope);
     const router = useRouter();
+    const navigation = useDestinationNavigation();
     const presentation = resolveExternalSessionsBrowseRouteGatePresentation(decision);
     const onExit = React.useCallback(
-        () => safeRouterBack({ router, fallbackHref: '/' }),
-        [router],
+        () => safeRouterBack({ router, navigation, fallbackHref: '/' }),
+        [router, navigation],
     );
 
     if (!presentation) {

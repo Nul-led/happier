@@ -110,6 +110,25 @@ describe('apiLiveActivityTargets', () => {
         expect(mocks.runtimeFetchWithServerReachability).not.toHaveBeenCalled();
     });
 
+    it.each(['register', 'delete'] as const)('binds the %s request to the Home it resolved, not the Home active at dispatch', async (operation) => {
+        const mod = await loadModule();
+        expect(mod).not.toBeNull();
+        if (!mod) return;
+        mocks.serverFetch.mockResolvedValueOnce(jsonResponse({ success: true, target: { id: 'target-1' } }));
+
+        if (operation === 'register') {
+            await mod.registerLiveActivityTarget(createRegistrationInput());
+        } else {
+            await mod.markLiveActivityTargetEnded('target-1', { serverId: 'active-server' });
+        }
+
+        // The transport re-reads the active snapshot at call time, so the exact
+        // basis must travel with the request and reject a Home switched in between.
+        expect(mocks.serverFetch.mock.calls[0]?.[2]).toMatchObject({
+            expectedActiveServer: { serverId: 'active-server', generation: 1 },
+        });
+    });
+
     it('routes registration to the requested server profile instead of assuming the active server', async () => {
         const mod = await loadModule();
         expect(mod).not.toBeNull();

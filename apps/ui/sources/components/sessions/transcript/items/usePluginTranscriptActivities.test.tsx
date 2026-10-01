@@ -39,6 +39,8 @@ vi.mock('@/sync/ops/machineContributionRegistryProjection', () => ({
     machinePluginSecretStatus: vi.fn(async () => ({ supported: false, reason: 'not-supported' })),
     machinePluginSecretSet: vi.fn(async () => ({ supported: false, reason: 'not-supported' })),
     machinePluginSecretDelete: vi.fn(async () => ({ supported: false, reason: 'not-supported' })),
+    machinePluginSettingsGet: vi.fn(async () => ({ supported: false, reason: 'not-supported' })),
+    machinePluginSettingsSet: vi.fn(async () => ({ supported: false, reason: 'not-supported' })),
 }));
 
 const ACCOUNT_LIFETIME = Object.freeze({
@@ -88,6 +90,7 @@ const projection: PluginUiProjectionModel = Object.freeze({
         'acme.preview/activity': Object.freeze({
             id: 'acme.preview/activity',
             pluginId: 'acme.preview',
+            occurrenceId: 'preview-occurrence-7',
             contributionKind: 'transcriptActivity' as const,
             descriptorId: 'activity',
             resource: Object.freeze({ pluginId: 'acme.preview', localId: 'live-activity' }),
@@ -123,7 +126,6 @@ function channelsProjectionFromDaemonEntry(): PluginUiProjectionModel {
         generation: 17,
         installedPackagesById: {},
         agentsById: {},
-        backendsById: {},
         actionsById: {},
         toolsById: {},
         commandsById: {},
@@ -136,6 +138,7 @@ function channelsProjectionFromDaemonEntry(): PluginUiProjectionModel {
                     'transcriptActivity:happier.channels:outward-delivery': {
                         id: 'transcriptActivity:happier.channels:outward-delivery',
                         pluginId: 'happier.channels',
+                        occurrenceId: 'preview-occurrence-7',
                         contributionKind: 'transcriptActivity',
                         descriptorId: 'outward-delivery',
                         resource: {
@@ -174,7 +177,7 @@ describe('plugin transcript Activity Resource projection', () => {
     it('retires a zero-consumer dismissal when the canonical Session owner records deletion', async () => {
         const account = createAccountLifetime('dismissal-retirement');
         const sessionA = 'dismissal-retirement-session-a';
-        let latest: ReturnType<typeof usePluginTranscriptActivityDismissal> | null = null;
+        let latest!: ReturnType<typeof usePluginTranscriptActivityDismissal>;
         function Probe(props: Readonly<{ sessionId: string }>) {
             latest = usePluginTranscriptActivityDismissal({
                 accountLifetime: account.lifetime,
@@ -192,11 +195,11 @@ describe('plugin transcript Activity Resource projection', () => {
             await Promise.resolve();
         });
         await act(async () => {
-            latest!.dismissActivity('activity-a', 'source-a');
+            latest.dismissActivity('activity-a', 'source-a');
             tree?.update(<PluginTranscriptActivityDismissalProvider><Probe sessionId="dismissal-retirement-session-b" /></PluginTranscriptActivityDismissalProvider>);
             await Promise.resolve();
         });
-        expect(latest?.dismissedActivityIds).toEqual(new Set());
+        expect(latest.dismissedActivityIds).toEqual(new Set());
 
         await act(async () => {
             storage.getState().deleteSession(sessionA);
@@ -206,13 +209,13 @@ describe('plugin transcript Activity Resource projection', () => {
             tree?.update(<PluginTranscriptActivityDismissalProvider><Probe sessionId={sessionA} /></PluginTranscriptActivityDismissalProvider>);
             await Promise.resolve();
         });
-        expect(latest?.dismissedActivityIds).toEqual(new Set());
+        expect(latest.dismissedActivityIds).toEqual(new Set());
         await act(async () => { tree?.unmount(); });
     });
 
     it('retires a dormant prior-generation dismissal when the same Session is reacquired at a new generation', async () => {
         const account = createAccountLifetime('generation-retirement');
-        let latest: ReturnType<typeof usePluginTranscriptActivityDismissal> | null = null;
+        let latest!: ReturnType<typeof usePluginTranscriptActivityDismissal>;
         function Probe(props: Readonly<{ sessionId: string; generation: string }>) {
             latest = usePluginTranscriptActivityDismissal({
                 accountLifetime: account.lifetime,
@@ -231,7 +234,7 @@ describe('plugin transcript Activity Resource projection', () => {
             await Promise.resolve();
         });
         await act(async () => {
-            latest!.dismissActivity('activity-a', 'source-a');
+            latest.dismissActivity('activity-a', 'source-a');
             await Promise.resolve();
         });
         await act(async () => {
@@ -247,7 +250,7 @@ describe('plugin transcript Activity Resource projection', () => {
             tree?.update(<PluginTranscriptActivityDismissalProvider><Probe sessionId="generation-session-a" generation="1" /></PluginTranscriptActivityDismissalProvider>);
             await Promise.resolve();
         });
-        expect(latest?.dismissedActivityIds).toEqual(new Set());
+        expect(latest.dismissedActivityIds).toEqual(new Set());
         await act(async () => { tree?.unmount(); });
     });
 
@@ -339,6 +342,7 @@ describe('plugin transcript Activity Resource projection', () => {
                 'acme.preview/activity': Object.freeze({
                     id: 'acme.preview/activity',
                     pluginId: 'acme.preview',
+                    occurrenceId: 'preview-occurrence-7',
                     contributionKind: 'transcriptActivity' as const,
                     descriptorId: 'activity',
                     resource: Object.freeze({ pluginId: 'acme.preview', localId: 'live-activity' }),
@@ -788,6 +792,7 @@ describe('plugin transcript Activity Resource projection', () => {
                 'acme.preview/activity-copy': Object.freeze({
                     id: 'acme.preview/activity-copy',
                     pluginId: 'acme.preview',
+                    occurrenceId: 'preview-occurrence-7',
                     contributionKind: 'transcriptActivity' as const,
                     descriptorId: 'activity-copy',
                     resource: Object.freeze({ pluginId: 'acme.preview', localId: 'live-activity' }),

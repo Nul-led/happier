@@ -9,6 +9,7 @@ import { ActivitySpinner, iconMatchedSpinnerSize } from '@/components/ui/feedbac
 import { IconButton } from '@/components/ui/buttons/IconButton';
 import { ToolbarButton } from '@/components/ui/buttons/ToolbarButton';
 import { Icon } from '@/components/ui/icons/Icon';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 // One glyph size for the composer's action row, so its spinner and icons agree.
 const COMPOSER_GLYPH_SIZE_PX = 16;
@@ -20,9 +21,12 @@ export type ScmCommitComposerCardProps = Readonly<{
     onDraftMessageChange: (value: string) => void;
     busy: boolean;
     status: string | null;
+    /** Overrides the message field's placeholder (the Git pane asks for a selection first). */
+    placeholder?: string;
     commitAllowed: boolean;
     commitBlockedMessage: string | null;
     onCommitFromMessage: (message: string) => void;
+    selectionSummary?: Readonly<{ fileCount: number; linesAdded: number; linesRemoved: number }> | null;
     selectionCount?: number;
     onClearSelection?: () => void;
     onSelectAllSelection?: () => void;
@@ -198,7 +202,7 @@ export const ScmCommitComposerCard = React.memo((props: ScmCommitComposerCardPro
                     onChangeText={props.onDraftMessageChange}
                     editable={!props.busy}
                     multiline
-                    placeholder={t('files.commitMessageEditor.placeholder')}
+                    placeholder={props.placeholder ?? t('files.commitMessageEditor.placeholder')}
                     placeholderTextColor={props.theme.colors.text.secondary}
                     style={{
                         fontSize: 13,
@@ -207,7 +211,6 @@ export const ScmCommitComposerCard = React.memo((props: ScmCommitComposerCardPro
                         maxHeight: 96,
                         padding: 0,
                         textAlignVertical: 'top' as any,
-                        ...(Platform.select({ web: { outlineStyle: 'none' as any } }) as any),
                     }}
                 />
             </View>
@@ -215,6 +218,12 @@ export const ScmCommitComposerCard = React.memo((props: ScmCommitComposerCardPro
             {!props.commitAllowed && props.commitBlockedMessage ? (
                 <Text style={{ marginTop: 8, fontSize: 11, color: props.theme.colors.text.secondary, ...Typography.default() }}>
                     {props.commitBlockedMessage}
+                </Text>
+            ) : null}
+
+            {props.selectionSummary ? (
+                <Text testID="scm-commit-selection-lines" style={{ marginTop: 8, fontSize: 11, color: props.theme.colors.text.secondary, ...Typography.default() }}>
+                    {`${props.selectionSummary.fileCount} · +${props.selectionSummary.linesAdded} / -${props.selectionSummary.linesRemoved}`}
                 </Text>
             ) : null}
 
@@ -257,7 +266,7 @@ export const ScmCommitComposerCard = React.memo((props: ScmCommitComposerCardPro
                         backgroundColor: commitDisabled ? (props.theme.colors.surface.inset ?? props.theme.colors.surface.base) : props.theme.colors.state.success.foreground,
                         alignItems: 'center',
                         justifyContent: 'center',
-                        opacity: commitDisabled ? 0.55 : pressed ? 0.85 : 1,
+                        opacity: commitDisabled ? 0.55 : pressed ? motionTokens.press.opacitySubtle : 1,
                     })}
                 >
                     {props.busy ? (

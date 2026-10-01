@@ -3,9 +3,29 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { FeaturesResponseSchema } from '@happier-dev/protocol';
 
 import { createExternalSessionOperationExclusion } from '@/session/external/operationExclusion';
 import { createSessionHandoffStartActionHandler } from './start';
+
+
+const enabledServerFeaturesSnapshot = {
+  status: 'ready' as const,
+  features: FeaturesResponseSchema.parse({
+    features: {
+      sessions: { enabled: true, handoff: { enabled: true } },
+      machines: {
+        enabled: true,
+        transfer: {
+          enabled: true,
+          directPeer: { enabled: true },
+          serverRouted: { enabled: true },
+        },
+      },
+    },
+    capabilities: {},
+  }),
+};
 
 describe('session handoff start operation exclusion', () => {
   afterEach(() => {
@@ -35,6 +55,7 @@ describe('session handoff start operation exclusion', () => {
       loadSessionMetadata: async () => ({ path: '/tmp/project' }),
       machineTransferChannelPresent: true,
       directPeerTransfer: undefined,
+      resolveServerFeaturesSnapshot: async () => enabledServerFeaturesSnapshot,
       stopSessionForHandoff: vi.fn(async () => 'already_inactive' as const),
       prepareJobStore: { write: vi.fn() },
       sourceExportStore: { save: vi.fn(), writeAgentBundleFile: vi.fn() } as never,
@@ -88,6 +109,7 @@ describe('session handoff start operation exclusion', () => {
       loadSessionMetadata,
       machineTransferChannelPresent: false,
       directPeerTransfer: undefined,
+      resolveServerFeaturesSnapshot: async () => enabledServerFeaturesSnapshot,
       stopSessionForHandoff,
       prepareJobStore: { write: vi.fn() },
       sourceExportStore: { save: vi.fn(), writeAgentBundleFile: vi.fn() } as never,
@@ -153,6 +175,7 @@ describe('session handoff start operation exclusion', () => {
       loadSessionMetadata: async () => ({ path: '/tmp/project' }),
       machineTransferChannelPresent: true,
       directPeerTransfer: undefined,
+      resolveServerFeaturesSnapshot: async () => enabledServerFeaturesSnapshot,
       stopSessionForHandoff,
       prepareJobStore: { write: vi.fn() },
       sourceExportStore: { save: vi.fn(), writeAgentBundleFile: vi.fn() } as never,
@@ -235,6 +258,7 @@ describe('session handoff start operation exclusion', () => {
       loadSessionMetadata: async () => ({ path: '/tmp/project' }),
       machineTransferChannelPresent: true,
       directPeerTransfer: undefined,
+      resolveServerFeaturesSnapshot: async () => enabledServerFeaturesSnapshot,
       stopSessionForHandoff,
       prepareJobStore: { write: vi.fn() },
       sourceExportStore: { save: vi.fn(), writeAgentBundleFile: vi.fn() } as never,
@@ -314,6 +338,7 @@ describe('session handoff start operation exclusion', () => {
         loadSessionMetadata: async () => ({ path: '/tmp/project' }),
         machineTransferChannelPresent: true,
         directPeerTransfer: undefined,
+        resolveServerFeaturesSnapshot: async () => enabledServerFeaturesSnapshot,
         stopSessionForHandoff,
         prepareJobStore: { write: prepareJobStoreWrite },
         sourceExportStore: {
@@ -377,4 +402,124 @@ describe('session handoff start operation exclusion', () => {
       expect(release).toHaveBeenCalledOnce();
     },
   );
+
+  it('rejects handoff before source metadata when the daemon snapshot disables session handoff', async () => {
+    const loadSessionMetadata = vi.fn(async () => ({ path: '/tmp/project' }));
+    const stopSessionForHandoff = vi.fn(async () => 'already_inactive' as const);
+    const acquire = vi.fn();
+    const handler = createSessionHandoffStartActionHandler({
+      activeServerDir: '/tmp/happier-handoff-server-policy-test',
+      createUuid: () => 'server-policy',
+      loadSessionMetadata,
+      machineTransferChannelPresent: true,
+      directPeerTransfer: undefined,
+      resolveServerFeaturesSnapshot: vi.fn(async () => ({
+        status: 'ready' as const,
+        features: FeaturesResponseSchema.parse({
+          features: {
+            sessions: { enabled: true, handoff: { enabled: false } },
+            machines: {
+              enabled: true,
+              transfer: {
+                enabled: true,
+                directPeer: { enabled: true },
+                serverRouted: { enabled: true },
+              },
+            },
+          },
+          capabilities: {},
+        }),
+      })),
+      stopSessionForHandoff,
+      prepareJobStore: { write: vi.fn() },
+      sourceExportStore: { save: vi.fn(), writeAgentBundleFile: vi.fn() } as never,
+      prepareStartedState: vi.fn() as never,
+      exportSessionBundle: vi.fn() as never,
+      waitForPersistedSourceExport: vi.fn() as never,
+      invalidateDirectPeerRouteCacheForHandoffMachines: vi.fn(),
+      buildStartPendingStatus: vi.fn() as never,
+      buildStartRecoveryStatus: vi.fn() as never,
+      buildPrepareJobRecord: vi.fn() as never,
+      invalidRequest: () => ({ ok: false, errorCode: 'invalid_request' }),
+      sessionOperationExclusion: { acquire } as never,
+      retainSessionOperationClaim: vi.fn(),
+      releaseSessionOperationClaim: vi.fn(async () => undefined),
+    });
+
+    await expect(handler({
+      sessionId: 'session-1',
+      sourceMachineId: 'machine-source',
+      targetMachineId: 'machine-target',
+      sessionStorageMode: 'persisted',
+      preferredTransportStrategies: ['direct_peer', 'server_routed_stream'],
+      negotiatedTransportStrategy: 'direct_peer',
+    })).resolves.toEqual({
+      ok: false,
+      errorCode: 'handoff_disabled',
+      error: 'Session handoff is disabled on the selected server',
+    });
+    expect(loadSessionMetadata).not.toHaveBeenCalled();
+    expect(stopSessionForHandoff).not.toHaveBeenCalled();
+    expect(acquire).not.toHaveBeenCalled();
+  });
+
+  it('rejects handoff before source metadata when machine transfer is disabled', async () => {
+    const loadSessionMetadata = vi.fn(async () => ({ path: '/tmp/project' }));
+    const stopSessionForHandoff = vi.fn(async () => 'already_inactive' as const);
+    const acquire = vi.fn();
+    const handler = createSessionHandoffStartActionHandler({
+      activeServerDir: '/tmp/happier-handoff-server-policy-test',
+      createUuid: () => 'server-policy',
+      loadSessionMetadata,
+      machineTransferChannelPresent: true,
+      directPeerTransfer: undefined,
+      resolveServerFeaturesSnapshot: async () => ({
+        status: 'ready' as const,
+        features: FeaturesResponseSchema.parse({
+          features: {
+            sessions: { enabled: true, handoff: { enabled: true } },
+            machines: {
+              enabled: true,
+              transfer: {
+                enabled: false,
+                directPeer: { enabled: true },
+                serverRouted: { enabled: true },
+              },
+            },
+          },
+          capabilities: {},
+        }),
+      }),
+      stopSessionForHandoff,
+      prepareJobStore: { write: vi.fn() },
+      sourceExportStore: { save: vi.fn(), writeAgentBundleFile: vi.fn() } as never,
+      prepareStartedState: vi.fn() as never,
+      exportSessionBundle: vi.fn() as never,
+      waitForPersistedSourceExport: vi.fn() as never,
+      invalidateDirectPeerRouteCacheForHandoffMachines: vi.fn(),
+      buildStartPendingStatus: vi.fn() as never,
+      buildStartRecoveryStatus: vi.fn() as never,
+      buildPrepareJobRecord: vi.fn() as never,
+      invalidRequest: () => ({ ok: false, errorCode: 'invalid_request' }),
+      sessionOperationExclusion: { acquire } as never,
+      retainSessionOperationClaim: vi.fn(),
+      releaseSessionOperationClaim: vi.fn(async () => undefined),
+    });
+
+    await expect(handler({
+      sessionId: 'session-1',
+      sourceMachineId: 'machine-source',
+      targetMachineId: 'machine-target',
+      sessionStorageMode: 'persisted',
+      preferredTransportStrategies: ['direct_peer', 'server_routed_stream'],
+      negotiatedTransportStrategy: 'direct_peer',
+    })).resolves.toEqual({
+      ok: false,
+      errorCode: 'transfer_disabled',
+      error: 'Machine transfer is disabled on the selected server',
+    });
+    expect(loadSessionMetadata).not.toHaveBeenCalled();
+    expect(stopSessionForHandoff).not.toHaveBeenCalled();
+    expect(acquire).not.toHaveBeenCalled();
+  });
 });

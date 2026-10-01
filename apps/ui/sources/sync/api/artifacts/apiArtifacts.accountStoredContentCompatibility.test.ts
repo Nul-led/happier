@@ -13,13 +13,35 @@ vi.mock('@/sync/http/client', () => ({
     serverFetch: mocks.serverFetch,
 }));
 
-import { deleteArtifact } from './apiArtifacts';
+import { deleteArtifact, fetchArtifact, fetchArtifacts } from './apiArtifacts';
+
+const authority = { ownerAccountId: 'account-a', access: 'owner', encryptionMode: 'plain' };
 
 describe('deleteArtifact stored-content compatibility', () => {
     beforeEach(() => {
         mocks.getServerFeaturesSnapshot.mockReset();
         mocks.serverFetch.mockReset();
     });
+
+    it('selects only the captured owner for an Account migration, not received document grants', async () => {
+        mocks.serverFetch.mockResolvedValueOnce(new Response(JSON.stringify([
+            { id: 'owned', ...authority },
+            { id: 'received', ...authority, ownerAccountId: 'account-b', access: 'admin' },
+        ]), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+        const rows = await fetchArtifacts({ token: 'token' }, { retry: 'none', ownerAccountId: 'account-a' });
+        expect(rows.map(row => row.id)).toEqual(['owned']);
+    });
+
+    it.each([{}, { ownerAccountId: 'account-a', access: 'owner' }, { ...authority, access: 'invalid' }])(
+        'refuses incomplete or invalid current Artifact authority before returning read/list content', async (projection) => {
+            const row = { id: 'private', header: 'private-header', ...projection };
+            mocks.serverFetch.mockResolvedValueOnce(new Response(JSON.stringify(row), { status: 200 }));
+            await expect(fetchArtifact({ token: 'token' }, 'private', { retry: 'none' }))
+                .rejects.toMatchObject({ code: 'artifact_content_unavailable' });
+            mocks.serverFetch.mockResolvedValueOnce(new Response(JSON.stringify([row]), { status: 200 }));
+            await expect(fetchArtifacts({ token: 'token' }, { retry: 'none' }))
+                .rejects.toMatchObject({ code: 'artifact_content_unavailable' });
+        });
 
     it('deletes by id without reading stored content or requiring current protocol support', async () => {
         mocks.serverFetch.mockResolvedValueOnce(new Response(null, { status: 204 }));
@@ -49,7 +71,7 @@ describe('deleteArtifact stored-content compatibility', () => {
                     Authorization: 'Bearer token-only',
                 }),
             }),
-            { includeAuth: false },
+            expect.objectContaining({ includeAuth: false }),
         );
         expect(mocks.getServerFeaturesSnapshot).not.toHaveBeenCalled();
     });

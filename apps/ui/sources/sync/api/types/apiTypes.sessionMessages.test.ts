@@ -1,19 +1,20 @@
+import { SessionMessageV1Schema } from '@happier-dev/protocol';
 import { describe, expect, it } from 'vitest'
 
-import { ApiMessageSchema } from './apiTypes'
 
-describe('ApiMessageSchema', () => {
+
+describe('SessionMessageV1Schema', () => {
   it('preserves evaluated actor objects and explicit null while accepting older omissions', () => {
     const row = { id: 'm1', seq: 1, createdAt: 1, content: { t: 'plain', v: {} } };
     const actor = { v: 1, accountId: 'alice', profile: null };
-    expect(ApiMessageSchema.parse({ ...row, accountActor: actor })).toHaveProperty('accountActor', actor);
-    expect(ApiMessageSchema.parse({ ...row, accountActor: null })).toHaveProperty('accountActor', null);
-    expect(ApiMessageSchema.parse(row)).not.toHaveProperty('accountActor');
-    expect(ApiMessageSchema.safeParse({ ...row, accountActor: { ...actor, role: 'owner' } }).success).toBe(false);
+    expect(SessionMessageV1Schema.parse({ ...row, accountActor: actor })).toHaveProperty('accountActor', actor);
+    expect(SessionMessageV1Schema.parse({ ...row, accountActor: null })).toHaveProperty('accountActor', null);
+    expect(SessionMessageV1Schema.parse(row)).not.toHaveProperty('accountActor');
+    expect(SessionMessageV1Schema.safeParse({ ...row, accountActor: { ...actor, role: 'owner' } }).success).toBe(false);
   });
 
   it('accepts encrypted message envelopes', () => {
-    const parsed = ApiMessageSchema.safeParse({
+    const parsed = SessionMessageV1Schema.safeParse({
       id: 'm1',
       seq: 1,
       localId: null,
@@ -24,7 +25,7 @@ describe('ApiMessageSchema', () => {
   })
 
   it('accepts plaintext message envelopes', () => {
-    const parsed = ApiMessageSchema.safeParse({
+    const parsed = SessionMessageV1Schema.safeParse({
       id: 'm1',
       seq: 1,
       localId: null,
@@ -43,7 +44,7 @@ describe('ApiMessageSchema', () => {
       observedRevision: 'revision-4',
     } as const
 
-    const parsed = ApiMessageSchema.safeParse({
+    const parsed = SessionMessageV1Schema.safeParse({
       id: 'm1',
       seq: 1,
       localId: null,
@@ -55,7 +56,7 @@ describe('ApiMessageSchema', () => {
     if (!parsed.success) return
     expect(parsed.data.messageActionReference).toEqual(reference)
 
-    expect(ApiMessageSchema.safeParse({
+    expect(SessionMessageV1Schema.safeParse({
       id: 'm1',
       seq: 1,
       localId: null,
@@ -71,7 +72,7 @@ describe('ApiMessageSchema', () => {
   })
 
   it('rejects unsupported message role metadata', () => {
-    const parsed = ApiMessageSchema.safeParse({
+    const parsed = SessionMessageV1Schema.safeParse({
       id: 'm1',
       seq: 1,
       localId: null,

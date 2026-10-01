@@ -1,20 +1,24 @@
 import {
   computeWorkspaceSyncPolicyDigest as computeCanonicalWorkspaceSyncPolicyDigest,
-  type DeleteWorkspaceSyncConflictLoserV1,
+  type WorkspaceSyncConflictResolutionResultV1,
+  type WorkspaceSyncConflictResolutionV1,
   type ReadWorkspaceSyncFileResultV1,
   type ReadWorkspaceSyncFileV1,
   type WorkspaceContentPolicyV1,
   type WorkspaceSyncConflictPageRequestV1,
   type WorkspaceSyncConflictPageV1,
+  type WorkspaceSyncConflictInspectRpcRequestV1,
+  type WorkspaceSyncConflictInspectRpcResultV1,
   type WorkspaceSyncCopyOnceV1,
   type WorkspaceSyncRelationshipV1,
+  type WorkspaceSyncRelationshipsListRpcRequestV1,
+  type WorkspaceSyncRelationshipsListRpcResultV1,
   type WorkspaceSyncStatusV1,
   type HandoffTargetReplacementApprovalV1,
 } from '@happier-dev/protocol';
 import type { WorkspaceRootOwnershipHandle } from './workspaceSyncRootOwnership';
 
 export type {
-  DeleteWorkspaceSyncConflictLoserV1,
   ReadWorkspaceSyncFileResultV1,
   ReadWorkspaceSyncFileV1,
   WorkspaceContentPolicyV1,
@@ -22,10 +26,14 @@ export type {
   WorkspaceSyncConflictPageRequestV1,
   WorkspaceSyncConflictPageV1,
   WorkspaceSyncConflictV1,
+  WorkspaceSyncConflictInspectRpcRequestV1,
+  WorkspaceSyncConflictInspectRpcResultV1,
   WorkspaceSyncCopyOnceV1,
   WorkspaceSyncModeV1,
   WorkspaceSyncPersistentModeV1,
   WorkspaceSyncRelationshipV1,
+  WorkspaceSyncRelationshipsListRpcRequestV1,
+  WorkspaceSyncRelationshipsListRpcResultV1,
   WorkspaceSyncStatusV1,
 } from '@happier-dev/protocol';
 
@@ -41,8 +49,20 @@ export type WorkspaceSyncRelationshipPreparation = Readonly<{
   targetReplacementApprovalActionInput?: unknown;
 }>;
 
+/** A read-only participant in a root already fenced by a linked workspace. */
+export type WorkspaceSyncSourceRootLoan = Readonly<{
+  handle: WorkspaceRootOwnershipHandle;
+  release(): Promise<void>;
+}>;
+
 /** Daemon-local lifecycle interface; wire shapes remain protocol-owned. */
 export interface ManagedWorkspaceSync {
+  /** Daemon-local retained root authority for a reviewed entry effect. */
+  resolveLocalResolutionEndpoint(relationshipId: string, workspaceRefId: string): Promise<Readonly<{
+    canonicalRoot: string;
+    assertCurrentAuthority(): Promise<void>;
+  }> | null>;
+  borrowSourceRootForCopy(operationId: string, workspaceRefId: string): Promise<WorkspaceSyncSourceRootLoan | null>;
   get(relationshipId: string, signal?: AbortSignal): Promise<WorkspaceSyncStatusV1 | null>;
   list(signal?: AbortSignal): Promise<readonly WorkspaceSyncStatusV1[]>;
   subscribe(relationshipId: string, signal: AbortSignal): AsyncIterable<WorkspaceSyncStatusV1>;
@@ -53,11 +73,13 @@ export interface ManagedWorkspaceSync {
   resume(relationshipId: string, signal?: AbortSignal): Promise<WorkspaceSyncStatusV1>;
   terminate(relationshipId: string, signal?: AbortSignal): Promise<void>;
   listConflicts(request: WorkspaceSyncConflictPageRequestV1, signal?: AbortSignal): Promise<WorkspaceSyncConflictPageV1>;
-  deleteConflictLoser(
-    request: DeleteWorkspaceSyncConflictLoserV1,
+  listRelationships(request: WorkspaceSyncRelationshipsListRpcRequestV1, signal?: AbortSignal): Promise<WorkspaceSyncRelationshipsListRpcResultV1>;
+  inspectConflict(request: WorkspaceSyncConflictInspectRpcRequestV1, signal?: AbortSignal): Promise<WorkspaceSyncConflictInspectRpcResultV1>;
+  resolveConflict(
+    request: WorkspaceSyncConflictResolutionV1,
     signal: AbortSignal | undefined,
     actionReceiptId: string,
-  ): Promise<WorkspaceSyncStatusV1>;
+  ): Promise<WorkspaceSyncConflictResolutionResultV1>;
   readFile(request: ReadWorkspaceSyncFileV1, signal?: AbortSignal): Promise<ReadWorkspaceSyncFileResultV1>;
   withAuthorizedSourceSeedExport<T>(
     request: Readonly<{

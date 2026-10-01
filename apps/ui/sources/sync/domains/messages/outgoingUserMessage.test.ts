@@ -5,9 +5,56 @@ import { storage } from '@/sync/domains/state/storage';
 const initialStorageState = storage.getState();
 
 describe('outgoing user message projection', () => {
+    it('uses the admitted permission mode after caller overrides, without changing unrestricted messages', async () => {
+        const { buildOutgoingUserTextRecord } = await import('./outgoingUserMessage');
+        const send = (permissionMode: 'yolo' | 'safe-yolo', allowedPermissionModes: readonly ('default' | 'safe-yolo')[] | null) => buildOutgoingUserTextRecord({
+            text: 'hello', agentId: 'codex', permissionMode, settings: {}, session: null,
+            allowedPermissionModes, metaOverrides: { permissionMode: 'yolo' },
+        });
+        expect(send('yolo', ['default', 'safe-yolo']).meta?.permissionMode).toBe('default');
+        expect(send('safe-yolo', ['default', 'safe-yolo']).meta?.permissionMode).toBe('default');
+        expect(send('yolo', null).meta?.permissionMode).toBe('yolo');
+        expect(buildOutgoingUserTextRecord({ text: 'hello', agentId: 'codex', permissionMode: 'safe-yolo', settings: {},
+            session: null, allowedPermissionModes: ['default', 'safe-yolo'] }).meta?.permissionMode).toBe('safe-yolo');
+    });
+    it('carries bounded model intent using shared Agent identity without exposing a full owner view', async () => {
+        const { buildOutgoingUserTextRecord } = await import('./outgoingUserMessage');
+        const selection = { agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: null, modelId: 'sealed-model' };
+        const raw = buildOutgoingUserTextRecord({ text: 'hello', agentId: 'codex', permissionMode: 'default', settings: {},
+            session: { metadataLayoutVersion: 1, metadata: { v: 1, agentPresentation: { agentId: 'codex' } },
+                ownerMetadataView: null, composerOptionsInput: { modelSelectionIntentV1: { v: 1, updatedAt: 20, selection } } } });
+        expect(raw.meta).toEqual(expect.objectContaining({
+            model: 'sealed-model', modelSelectionV1: { v: 1, updatedAt: 20, ref: selection },
+        }));
+    });
     afterEach(() => {
         storage.setState(initialStorageState, true);
         vi.restoreAllMocks();
+    });
+
+    it('runs a model-restricted message on the first allowed model when the Session is on Automatic or a refused model', async () => {
+        const { buildOutgoingUserTextRecord } = await import('./outgoingUserMessage');
+        const agentTargetKey = 'agent:happier.agent.codex/codex';
+        const m1 = { agentTargetKey, providerConnectionId: null, modelId: 'model-one' };
+        const m2 = { agentTargetKey, providerConnectionId: null, modelId: 'model-two' };
+        const refused = { agentTargetKey, providerConnectionId: null, modelId: 'model-refused' };
+        const sessionOn = (selection: typeof m1 | null) => ({
+            metadataLayoutVersion: 1,
+            metadata: { v: 1, agentPresentation: { agentId: 'codex' } },
+            ownerMetadataView: null,
+            composerOptionsInput: selection ? { modelSelectionIntentV1: { v: 1, updatedAt: 20, selection } } : {},
+        });
+        const send = (selection: typeof m1 | null) => buildOutgoingUserTextRecord({
+            text: 'hello', agentId: 'codex', permissionMode: 'default', settings: {},
+            session: sessionOn(selection), allowedModels: [m1, m2],
+        });
+
+        expect(send(null).meta).toEqual(expect.objectContaining({ modelSelectionV1: expect.objectContaining({ ref: m1 }) }));
+        expect(send(refused).meta).toEqual(expect.objectContaining({ modelSelectionV1: expect.objectContaining({ ref: m1 }) }));
+        expect(send(m2).meta).toEqual(expect.objectContaining({ modelSelectionV1: { v: 1, updatedAt: 20, ref: m2 } }));
+        // Unrestricted: the Session's own choice, Automatic included, is untouched.
+        expect(buildOutgoingUserTextRecord({ text: 'hello', agentId: 'codex', permissionMode: 'default', settings: {},
+            session: sessionOn(null), allowedModels: null }).meta).not.toHaveProperty('modelSelectionV1');
     });
 
     it('projects a local outbound pending user message before the session row is hydrated', async () => {
@@ -88,7 +135,7 @@ describe('outgoing user message projection', () => {
                         v: 1,
                         updatedAt: 20,
                         selection: {
-                            agentTargetKey: 'backend:opencode',
+                            agentTargetKey: 'agent:happier.agent.opencode/opencode',
                             providerConnectionId: 'pc_openrouter',
                             modelId: 'default',
                         },
@@ -102,7 +149,7 @@ describe('outgoing user message projection', () => {
                 v: 1,
                 updatedAt: 20,
                 ref: {
-                    agentTargetKey: 'backend:opencode',
+                    agentTargetKey: 'agent:happier.agent.opencode/opencode',
                     providerConnectionId: 'pc_openrouter',
                     modelId: 'default',
                 },
@@ -130,7 +177,7 @@ describe('outgoing user message projection', () => {
                         v: 1,
                         updatedAt: 20,
                         selection: {
-                            agentTargetKey: 'backend:codex',
+                            agentTargetKey: 'agent:happier.agent.codex/codex',
                             providerConnectionId: null,
                             modelId: 'gpt-5.5',
                         },
@@ -145,7 +192,7 @@ describe('outgoing user message projection', () => {
                 v: 1,
                 updatedAt: 20,
                 ref: {
-                    agentTargetKey: 'backend:codex',
+                    agentTargetKey: 'agent:happier.agent.codex/codex',
                     providerConnectionId: null,
                     modelId: 'gpt-5.5',
                 },

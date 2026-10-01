@@ -1,5 +1,7 @@
 import { isPidPresent } from '@happier-dev/cli-common/process';
+import { processGenerationMatches } from '@happier-dev/cli-common/processInstance';
 import { logger } from '@/ui/logger';
+import { daemonProcessMatchesCurrentScope } from '../ownership/daemonProcessScopeIdentity';
 import type { StoredCredentials } from '@/persistence';
 import { parseOptionalBooleanEnv } from '@happier-dev/protocol';
 import { readNonBlankOpaqueIdentifier } from '@happier-dev/protocol';
@@ -21,6 +23,7 @@ import { findAllHappyProcesses, findHappyProcessByPid, type HappyProcessInfo } f
 import {
   adoptLiveDaemonSessionsFromProcesses,
   adoptSessionsFromMarkers,
+  hasAuthorityRestorationMarker,
   isOwnedLiveDaemonSessionProcessCommand,
 } from '../reattach';
 import {
@@ -32,6 +35,7 @@ import {
   type DaemonSessionMarker,
 } from '../sessionRegistry';
 import { resolveSessionRuntimeSnapshot } from './runtimeSnapshot/resolveSessionRuntimeSnapshot';
+import { resolveReattachedRunnerAgentInvocationContext } from './trackedSessionFromMarker';
 import { extractResumeIdFromCommand } from './extractResumeIdFromCommand';
 import { readTerminalHostAttachmentState } from '@/terminal/attachment/terminalAttachmentInfo';
 import {
@@ -45,6 +49,8 @@ import {
 import { readProcessIdentityByPid } from '../processIdentity';
 import type { LocalServiceProcessFact } from '../local/services/inventory/provenance';
 import type { DeviceLocalSecretStorage } from '../deviceLocalSecretStorage';
+import { readSessionDirectoryKind } from '@happier-dev/protocol/sessions/metadata/directory';
+import { createManagedSessionDirectories } from '@/session/creation/managedSessionDirectories';
 
 function extractExistingSessionIdFromCommand(command: string): string | null {
   const match = /(?:^|\s)--existing-session(?:=|\s+)(\S+)/.exec(command);
@@ -243,13 +249,7 @@ async function includePidSpecificHappyProcessesForAliveMarkers(params: Readonly<
 }
 
 async function recoverMarkerlessDaemonSpawnedSessions(params: Readonly<{
-  happyProcesses: ReadonlyArray<{
-    pid: number;
-    command: string;
-    type: string;
-    cwd?: string;
-    environmentVariables?: Record<string, string>;
-  }>;
+  happyProcesses: ReadonlyArray<HappyProcessInfo>;
   incompleteMarkerByPid: ReadonlyMap<number, Readonly<{
     happySessionId: string;
     startedBy?: string;
@@ -267,12 +267,13 @@ async function recoverMarkerlessDaemonSpawnedSessions(params: Readonly<{
       DaemonSessionMarker['agentRuntimeDaemonServiceAuthorityFilePath'];
     agentRuntimeDaemonServiceActiveAdmission?:
       DaemonSessionMarker['agentRuntimeDaemonServiceActiveAdmission'];
-    runnerAgentImmutableGenerationId?:
-      DaemonSessionMarker['runnerAgentImmutableGenerationId'];
+    runnerAgentSourceCustodyV1?:
+      DaemonSessionMarker['runnerAgentSourceCustodyV1'];
     runnerManagedDependencyRetentionV1?:
       DaemonSessionMarker['runnerManagedDependencyRetentionV1'];
   }>>;
   markedPids: ReadonlySet<number>;
+  claimedSessionIds: Set<string>;
   pidToTrackedSession: Map<number, TrackedSession>;
   credentials?: StoredCredentials | null;
   deviceLocalSecretStorage?: DeviceLocalSecretStorage;
@@ -285,6 +286,7 @@ async function recoverMarkerlessDaemonSpawnedSessions(params: Readonly<{
     happyProcesses,
     incompleteMarkerByPid,
     markedPids,
+    claimedSessionIds,
     pidToTrackedSession,
     credentials,
     deviceLocalSecretStorage,
@@ -297,6 +299,7 @@ async function recoverMarkerlessDaemonSpawnedSessions(params: Readonly<{
       continue;
     }
     const incompleteMarker = incompleteMarkerByPid.get(processInfo.pid);
+    if (!daemonProcessMatchesCurrentScope(processInfo, { requireScopeIdentity: !incompleteMarker })) continue;
     const isGenericHappySession = processInfo.type === 'user-session' || processInfo.type === 'dev-session';
     const liveExistingSessionId = extractExistingSessionIdFromCommand(processInfo.command);
     const incompleteMarkerSessionId =
@@ -352,6 +355,7 @@ async function recoverMarkerlessDaemonSpawnedSessions(params: Readonly<{
     if (!happySessionId) {
       continue;
     }
+    if (claimedSessionIds.has(happySessionId)) continue;
 
     const processCommandHash = hashProcessCommand(processInfo.command);
     const processIdentity = processIdentityByPid?.get(
@@ -359,18 +363,21 @@ async function recoverMarkerlessDaemonSpawnedSessions(params: Readonly<{
     );
     const observedProcessStartTimeMs =
       processIdentity?.pid === processInfo.pid
-      && hashProcessCommand(processIdentity.command)
-        === processCommandHash
         ? processIdentity.processStartTimeMs
         : undefined;
     if (
       incompleteMarker?.processStartTimeMs !== undefined
-      && observedProcessStartTimeMs
-        !== incompleteMarker.processStartTimeMs
+      && !processGenerationMatches(
+        incompleteMarker.processStartTimeMs,
+        observedProcessStartTimeMs,
+      )
     ) {
       continue;
     }
     const parsedRespawnDescriptor = parseRecoveredRespawnDescriptor(incompleteMarker?.respawn);
+    if (incompleteMarker?.respawn && !parsedRespawnDescriptor) {
+      continue;
+    }
     const persistedMetadata = readRuntimeSnapshotMetadata(incompleteMarker?.metadata);
     let persistedProviderResumeState: ReturnType<typeof readPersistedProviderResumeState>;
     try {
@@ -384,13 +391,16 @@ async function recoverMarkerlessDaemonSpawnedSessions(params: Readonly<{
     }
     const liveSpawnOptions = buildRecoveredSpawnOptions({
       ...processInfo,
-      cwd: processInfo.cwd ?? incompleteMarker?.cwd,
+      cwd: incompleteMarker?.cwd,
     });
     const respawnSpawnOptions = restoreSpawnOptionsFromRespawnDescriptor({
       parsedRespawnDescriptor,
       credentials,
       deviceLocalSecretStorage,
     });
+    if (parsedRespawnDescriptor?.version === 2 && !respawnSpawnOptions) {
+      continue;
+    }
     const recoveredSpawnOptions = mergeRecoveredSpawnOptions({
       liveSpawnOptions,
       respawnSpawnOptions,
@@ -416,6 +426,15 @@ async function recoverMarkerlessDaemonSpawnedSessions(params: Readonly<{
       ?? vendorResumeId
       ?? parsedRespawnDescriptor?.vendorResumeId
       ?? null;
+    const runnerAgentInvocationContext =
+      resolveReattachedRunnerAgentInvocationContext({
+        startedBy: 'daemon',
+        cwd: spawnOptions?.directory ?? incompleteMarker?.cwd,
+        agentRuntimeDaemonServiceAuthorityFilePath:
+          incompleteMarker?.agentRuntimeDaemonServiceAuthorityFilePath,
+        runnerManagedDependencyRetentionV1:
+          incompleteMarker?.runnerManagedDependencyRetentionV1,
+      });
     pidToTrackedSession.set(processInfo.pid, {
       startedBy: 'daemon',
       happySessionId,
@@ -428,6 +447,9 @@ async function recoverMarkerlessDaemonSpawnedSessions(params: Readonly<{
       reattachedFromDiskMarker: true,
       ...(resolvedVendorResumeId ? { vendorResumeId: resolvedVendorResumeId } : {}),
       ...(spawnOptions ? { spawnOptions } : {}),
+      ...(runnerAgentInvocationContext
+        ? { runnerAgentInvocationContext }
+        : {}),
       ...(incompleteMarker
         ?.agentRuntimeDaemonServiceAuthorityFilePath
         ? {
@@ -458,10 +480,10 @@ async function recoverMarkerlessDaemonSpawnedSessions(params: Readonly<{
             ],
           }
         : {}),
-      ...(incompleteMarker?.runnerAgentImmutableGenerationId
+      ...(incompleteMarker?.runnerAgentSourceCustodyV1
         ? {
-            runnerAgentImmutableGenerationId:
-              incompleteMarker.runnerAgentImmutableGenerationId,
+            runnerAgentSourceCustodyV1:
+              incompleteMarker.runnerAgentSourceCustodyV1,
           }
         : {}),
       ...(incompleteMarker?.runnerManagedDependencyRetentionV1
@@ -522,10 +544,10 @@ async function recoverMarkerlessDaemonSpawnedSessions(params: Readonly<{
                 .agentRuntimeDaemonServiceActiveAdmission,
           }
         : {}),
-      ...(incompleteMarker?.runnerAgentImmutableGenerationId
+      ...(incompleteMarker?.runnerAgentSourceCustodyV1
         ? {
-            runnerAgentImmutableGenerationId:
-              incompleteMarker.runnerAgentImmutableGenerationId,
+            runnerAgentSourceCustodyV1:
+              incompleteMarker.runnerAgentSourceCustodyV1,
           }
         : {}),
       ...(incompleteMarker?.runnerManagedDependencyRetentionV1
@@ -543,6 +565,7 @@ async function recoverMarkerlessDaemonSpawnedSessions(params: Readonly<{
         : {}),
     });
     recovered++;
+    claimedSessionIds.add(happySessionId);
   }
 
   return recovered;
@@ -563,6 +586,7 @@ export type ReattachTrackedSessionsFromMarkersResult = Readonly<{
   disconnectedTerminalHostCandidates?: ReadonlyArray<DisconnectedTerminalHostCandidate>;
   unresolvedTerminalHostSessionIds?: ReadonlyArray<string>;
   connectedServiceRestartIntents: ReadonlyArray<never>;
+  directoryMissingSessions?: ReadonlyArray<Readonly<{ sessionId: string; errorCode: 'SESSION_DIRECTORY_MISSING' }>>;
 }>;
 
 function buildReattachResult(params: Readonly<{
@@ -570,18 +594,21 @@ function buildReattachResult(params: Readonly<{
   recoveredLiveSessionIds: ReadonlySet<string>;
   disconnectedTerminalHostCandidates?: ReadonlyArray<DisconnectedTerminalHostCandidate>;
   unresolvedTerminalHostSessionIds?: ReadonlyArray<string>;
+  directoryMissingSessions: ReadonlyArray<Readonly<{ sessionId: string; errorCode: 'SESSION_DIRECTORY_MISSING' }>>;
 }>): ReattachTrackedSessionsFromMarkersResult {
+  const missingSessionIds = new Set(params.directoryMissingSessions.map((session) => session.sessionId));
+  const recoveredLiveSessionIds = new Set([...params.recoveredLiveSessionIds].filter((id) => !missingSessionIds.has(id)));
   const orphanedDeadDaemonSessions = params.orphanedDeadDaemonSessions.map((session) => ({
     ...session,
-    ...(params.recoveredLiveSessionIds.has(session.sessionId)
+    ...(recoveredLiveSessionIds.has(session.sessionId)
       ? { recoveredLiveSession: true as const }
       : {}),
   }));
 
   return {
     orphanedDeadDaemonSessions,
-    ...(params.recoveredLiveSessionIds.size > 0
-      ? { recoveredLiveSessionIds: Array.from(params.recoveredLiveSessionIds).sort() }
+    ...(recoveredLiveSessionIds.size > 0
+      ? { recoveredLiveSessionIds: Array.from(recoveredLiveSessionIds).sort() }
       : {}),
     ...(params.disconnectedTerminalHostCandidates?.length
       ? { disconnectedTerminalHostCandidates: params.disconnectedTerminalHostCandidates }
@@ -590,6 +617,7 @@ function buildReattachResult(params: Readonly<{
       ? { unresolvedTerminalHostSessionIds: Array.from(new Set(params.unresolvedTerminalHostSessionIds)) }
       : {}),
     connectedServiceRestartIntents: [],
+    ...(params.directoryMissingSessions.length ? { directoryMissingSessions: params.directoryMissingSessions } : {}),
   };
 }
 
@@ -607,6 +635,7 @@ export async function reattachTrackedSessionsFromMarkers(params: Readonly<{
   const orphanedDeadDaemonSessions: OrphanedDeadDaemonSession[] = [];
   const disconnectedTerminalHostCandidates: DisconnectedTerminalHostCandidate[] = [];
   const unresolvedTerminalHostSessionIds: string[] = [];
+  const directoryMissingSessions: Array<Readonly<{ sessionId: string; errorCode: 'SESSION_DIRECTORY_MISSING' }>> = [];
   // On daemon restart, reattach to still-running sessions via disk markers (stack-scoped by HAPPIER_HOME_DIR).
   try {
     const markers = await listSessionMarkers();
@@ -693,14 +722,37 @@ export async function reattachTrackedSessionsFromMarkers(params: Readonly<{
       processIdentityByPid,
     });
     if (adopted > 0) logger.debug(`[DAEMON RUN] Reattached ${adopted} sessions from disk markers`);
+    const directories = createManagedSessionDirectories();
+    for (const marker of aliveMarkers) {
+      const tracked = pidToTrackedSession.get(marker.pid);
+      const sessionId = normalizeSessionId(marker.happySessionId);
+      if (!tracked || !sessionId || readSessionDirectoryKind(marker.metadata) !== 'managed') continue;
+      if (tracked.spawnOptions) {
+        tracked.spawnOptions = { ...tracked.spawnOptions, directoryKind: 'managed', approvedNewDirectoryCreation: false };
+      }
+      const path = tracked.spawnOptions?.directory ?? marker.cwd ?? '';
+      const resolved = await directories.resolveForSession({ sessionId, path, sessionCreationTag: tracked.spawnOptions?.sessionCreationTag });
+      if (!resolved.ok) directoryMissingSessions.push({ sessionId, errorCode: resolved.errorCode });
+    }
     const adoptedPidSet = new Set(pidToTrackedSession.keys());
+    const claimedSessionIds = new Set(
+      [...pidToTrackedSession.values()]
+        .map((tracked) => normalizeSessionId(tracked.happySessionId))
+        .filter(Boolean),
+    );
+    for (const marker of aliveMarkers) {
+      if (hasAuthorityRestorationMarker(marker)) {
+        claimedSessionIds.add(normalizeSessionId(marker.happySessionId));
+      }
+    }
     const safetyBlockedMarkerPidSet = new Set(
       aliveMarkers
         .filter((marker) => !adoptedPidSet.has(marker.pid))
         .filter((marker) => {
-          const hasProcessCommandHash = typeof marker.processCommandHash === 'string' && marker.processCommandHash.trim().length > 0;
+          const hasProcessIdentity = marker.processStartTimeMs !== undefined
+            || (typeof marker.processCommandHash === 'string' && marker.processCommandHash.trim().length > 0);
           const hasRespawnDescriptor = typeof marker.respawn === 'object' && marker.respawn !== null;
-          return hasProcessCommandHash && !hasRespawnDescriptor;
+          return hasProcessIdentity && !hasRespawnDescriptor;
         })
         .map((marker) => marker.pid),
     );
@@ -709,9 +761,10 @@ export async function reattachTrackedSessionsFromMarkers(params: Readonly<{
       aliveMarkers
         .filter((marker) => {
           if (adoptedPidSet.has(marker.pid)) return false;
-          const hasProcessCommandHash = typeof marker.processCommandHash === 'string' && marker.processCommandHash.trim().length > 0;
+          const hasProcessIdentity = marker.processStartTimeMs !== undefined
+            || (typeof marker.processCommandHash === 'string' && marker.processCommandHash.trim().length > 0);
           const hasRespawnDescriptor = typeof marker.respawn === 'object' && marker.respawn !== null;
-          return !hasProcessCommandHash || hasRespawnDescriptor;
+          return !hasProcessIdentity || hasRespawnDescriptor;
         })
         .map((marker) => [
           marker.pid,
@@ -735,8 +788,8 @@ export async function reattachTrackedSessionsFromMarkers(params: Readonly<{
               marker.agentRuntimeDaemonServiceAuthorityFilePath,
             agentRuntimeDaemonServiceActiveAdmission:
               marker.agentRuntimeDaemonServiceActiveAdmission,
-            runnerAgentImmutableGenerationId:
-              marker.runnerAgentImmutableGenerationId,
+            runnerAgentSourceCustodyV1:
+              marker.runnerAgentSourceCustodyV1,
             runnerManagedDependencyRetentionV1:
               marker.runnerManagedDependencyRetentionV1,
           },
@@ -747,6 +800,7 @@ export async function reattachTrackedSessionsFromMarkers(params: Readonly<{
           happyProcesses: happyProcessesForReattach,
           incompleteMarkerByPid,
           markedPids: markerlessRecoveryBlockedPidSet,
+          claimedSessionIds,
           pidToTrackedSession,
           credentials,
           deviceLocalSecretStorage,
@@ -758,8 +812,13 @@ export async function reattachTrackedSessionsFromMarkers(params: Readonly<{
     }
     const liveRecoveredWithoutMarkers = markerlessRecoveryEnabled
       ? await adoptLiveDaemonSessionsFromProcesses({
-          happyProcesses: happyProcessesForReattach,
-          markedPids: markerlessRecoveryBlockedPidSet,
+          happyProcesses: happyProcessesForReattach.filter((processInfo) => {
+            const sessionId = extractExistingSessionIdFromCommand(processInfo.command);
+            return !sessionId || !claimedSessionIds.has(sessionId);
+          }),
+          // A rejected marker must not be bypassed by the path for processes
+          // with no marker. That path cannot restore its session authority.
+          markedPids: new Set([...markerlessRecoveryBlockedPidSet, ...aliveMarkers.map((marker) => marker.pid)]),
           pidToTrackedSession,
         })
       : 0;
@@ -784,6 +843,7 @@ export async function reattachTrackedSessionsFromMarkers(params: Readonly<{
       recoveredLiveSessionIds,
       disconnectedTerminalHostCandidates,
       unresolvedTerminalHostSessionIds,
+      directoryMissingSessions,
     });
   } catch (e) {
     logger.debug('[DAEMON RUN] Failed to reattach sessions from disk markers', e);
@@ -801,5 +861,6 @@ export async function reattachTrackedSessionsFromMarkers(params: Readonly<{
     recoveredLiveSessionIds,
     disconnectedTerminalHostCandidates,
     unresolvedTerminalHostSessionIds,
+    directoryMissingSessions,
   });
 }

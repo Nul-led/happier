@@ -46,7 +46,7 @@ vi.mock('@/persistence', () => ({
   readStoredCredentials: defaultDependencies.readCredentials,
 }));
 vi.mock('./providerOpsResolution', () => ({
-  resolveGenerationBoundExternalSessionFollowSurface:
+  resolveOccurrenceBoundExternalSessionFollowSurface:
     defaultDependencies.resolveGenerationBoundSurface,
 }));
 
@@ -77,7 +77,7 @@ const semanticRequest = {
     },
     linkGeneration: 'link-current',
     sourceGeneration: 'source-current',
-    contributionGeneration: 'plugin-current',
+    sourceCustody: { kind: 'development', registeredRootId: 'plugin-current' },
   },
 } satisfies ExternalSessionOperationSemanticRequestV1;
 
@@ -173,8 +173,10 @@ function configureDefaultLinkedSource(): void {
   });
   defaultDependencies.resolveGenerationBoundSurface.mockResolvedValue({
     providerOps: { pageTranscript },
+    sourceCustody: { kind: 'development', registeredRootId: 'plugin-current' },
+    occurrenceId: 'plugin-occurrence-1',
     resource: {
-      pluginGeneration: 'plugin-current',
+      pluginOccurrenceId: 'plugin-current',
       retirementSignal: new AbortController().signal,
     },
   });
@@ -498,8 +500,10 @@ describe('external-session materialize start intent', () => {
     });
     defaultDependencies.resolveGenerationBoundSurface.mockResolvedValue({
       providerOps: { pageTranscript },
+    sourceCustody: { kind: 'development', registeredRootId: 'plugin-current' },
+    occurrenceId: 'plugin-occurrence-1',
       resource: {
-        pluginGeneration: 'plugin-current',
+        pluginOccurrenceId: 'plugin-current',
         retirementSignal: new AbortController().signal,
       },
     });

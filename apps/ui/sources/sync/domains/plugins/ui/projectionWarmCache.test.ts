@@ -1,4 +1,4 @@
-import { PluginProjectionV2Schema } from '@happier-dev/protocol';
+import { PluginProjectionV2Schema, type PluginSourceCustodyV1 } from '@happier-dev/protocol';
 import { PluginUiTargetedContributionsV1Schema } from '@happier-dev/protocol/plugins/ui';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -48,7 +48,15 @@ const ACCOUNT_B = { serverId: 'server-a', accountId: 'account-b' } as const;
 const MACHINE_ID = 'machine-1';
 const TARGET_KEY = pluginUiProjectionAdmissionTargetKey({ serverId: 'server-1', machineId: MACHINE_ID });
 
-function projectionAtGeneration(immutableGenerationId: string, generation: number) {
+function managedSourceCustody(immutableGenerationId: string): PluginSourceCustodyV1 {
+    return { kind: 'managed', immutableGenerationId, installSource: 'archive' };
+}
+
+function immutableGenerationForOccurrence(occurrenceId: string): string {
+    return `artifact-for:${occurrenceId}`;
+}
+
+function projectionAtGeneration(occurrenceId: string, generation: number) {
     return PluginProjectionV2Schema.parse({
         v: 2,
         generation,
@@ -59,7 +67,7 @@ function projectionAtGeneration(immutableGenerationId: string, generation: numbe
                 version: '3.2.1',
                 enabled: true,
                 source: { kind: 'bundled', locator: 'acme.browser' },
-                immutableGenerationId,
+                immutableGenerationId: immutableGenerationForOccurrence(occurrenceId),
                 brand: { state: 'missing' },
             },
         },
@@ -70,6 +78,7 @@ function projectionAtGeneration(immutableGenerationId: string, generation: numbe
                     'translations:acme.browser': {
                         id: 'translations:acme.browser',
                         pluginId: 'acme.browser',
+                        occurrenceId,
                         contributionKind: 'translations',
                         locales: ['en'],
                         bundles: { en: { title: 'Browser Inspector' } },
@@ -85,9 +94,13 @@ function projectionAtGeneration(immutableGenerationId: string, generation: numbe
  * fixture carries one admitted point. `emptyTargetedContributionsFor` is the
  * live-but-not-retainable shape: schema-valid, and never offline authority.
  */
-function targetedContributionsFor(immutableGenerationId: string) {
+function targetedContributionsFor(occurrenceId: string) {
     return PluginUiTargetedContributionsV1Schema.parse({
-        target: { pluginId: 'acme.browser', immutableGenerationId },
+        target: {
+            pluginId: 'acme.browser',
+            occurrenceId,
+            sourceCustody: managedSourceCustody(immutableGenerationForOccurrence(occurrenceId)),
+        },
         points: [{
             pointId: 'review-detail',
             protocols: [{
@@ -96,7 +109,8 @@ function targetedContributionsFor(immutableGenerationId: string) {
                     contributor: {
                         pluginId: 'acme.review',
                         contributionId: 'detail',
-                        immutableGenerationId: 'review-generation-a',
+                        occurrenceId: 'review-generation-a',
+                        sourceCustody: managedSourceCustody('review-generation-a'),
                     },
                     protocol: { id: 'review/detail', version: 1 },
                     operations: [],
@@ -107,9 +121,13 @@ function targetedContributionsFor(immutableGenerationId: string) {
     });
 }
 
-function emptyTargetedContributionsFor(immutableGenerationId: string) {
+function emptyTargetedContributionsFor(occurrenceId: string) {
     return PluginUiTargetedContributionsV1Schema.parse({
-        target: { pluginId: 'acme.browser', immutableGenerationId },
+        target: {
+            pluginId: 'acme.browser',
+            occurrenceId,
+            sourceCustody: managedSourceCustody(immutableGenerationForOccurrence(occurrenceId)),
+        },
         points: [],
     });
 }
@@ -144,7 +162,7 @@ describe('plugin UI projection admission custody', () => {
             scope: ACCOUNT_A,
             targetKey: TARGET_KEY,
             machineId: MACHINE_ID,
-            target: { pluginId: 'acme.browser', immutableGenerationId: 'browser-generation-unadmitted' },
+            target: { pluginId: 'acme.browser', occurrenceId: 'browser-generation-unadmitted' },
         })).toBeNull();
 
         // The admitted generation from the same response is recorded, so the
@@ -160,7 +178,7 @@ describe('plugin UI projection admission custody', () => {
             scope: ACCOUNT_A,
             targetKey: TARGET_KEY,
             machineId: MACHINE_ID,
-            target: { pluginId: 'acme.browser', immutableGenerationId: 'browser-generation-a' },
+            target: { pluginId: 'acme.browser', occurrenceId: 'browser-generation-a' },
         })).toEqual(admitted);
     });
 
@@ -191,7 +209,7 @@ describe('plugin UI projection admission custody', () => {
             scope: ACCOUNT_A,
             targetKey: TARGET_KEY,
             machineId: MACHINE_ID,
-            target: { pluginId: 'acme.browser', immutableGenerationId: 'browser-generation-a' },
+            target: { pluginId: 'acme.browser', occurrenceId: 'browser-generation-a' },
         })).toEqual(admitted);
 
         // The plugin is then upgraded while a daemon is reachable. The carried
@@ -208,7 +226,7 @@ describe('plugin UI projection admission custody', () => {
             scope: ACCOUNT_A,
             targetKey: TARGET_KEY,
             machineId: MACHINE_ID,
-            target: { pluginId: 'acme.browser', immutableGenerationId: 'browser-generation-b' },
+            target: { pluginId: 'acme.browser', occurrenceId: 'browser-generation-b' },
         })).toBeNull();
     });
 
@@ -242,7 +260,7 @@ describe('plugin UI projection admission custody', () => {
             scope: ACCOUNT_A,
             targetKey: TARGET_KEY,
             machineId: MACHINE_ID,
-            target: { pluginId: 'acme.browser', immutableGenerationId: 'browser-generation-a' },
+            target: { pluginId: 'acme.browser', occurrenceId: 'browser-generation-a' },
         });
         expect(restored).toEqual(admitted);
         expect(restored).not.toBe(admitted);
@@ -276,7 +294,7 @@ describe('plugin UI projection admission custody', () => {
             scope: ACCOUNT_A,
             targetKey: TARGET_KEY,
             machineId: MACHINE_ID,
-            target: { pluginId: 'acme.browser', immutableGenerationId: 'browser-generation-a' },
+            target: { pluginId: 'acme.browser', occurrenceId: 'browser-generation-a' },
         })).toBeNull();
         // The row is physically gone rather than replaced by an empty envelope,
         // while the presentation slice is a separate retained fact and survives.
@@ -310,7 +328,7 @@ describe('plugin UI projection admission custody', () => {
             scope: ACCOUNT_A,
             targetKey: TARGET_KEY,
             machineId: MACHINE_ID,
-            target: { pluginId: 'acme.browser', immutableGenerationId: 'browser-generation-a' },
+            target: { pluginId: 'acme.browser', occurrenceId: 'browser-generation-a' },
         })).toBeNull();
     });
 
@@ -332,7 +350,7 @@ describe('plugin UI projection admission custody', () => {
             scope: ACCOUNT_B,
             targetKey: TARGET_KEY,
             machineId: MACHINE_ID,
-            target: { pluginId: 'acme.browser', immutableGenerationId: 'browser-generation-a' },
+            target: { pluginId: 'acme.browser', occurrenceId: 'browser-generation-a' },
         })).toBeNull();
     });
 });

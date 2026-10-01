@@ -7,6 +7,7 @@ import {
 } from '@/sync/domains/plugins/ui/projection';
 import { setPreferredLanguageFromSettings } from '@/text';
 import type { PluginProjectedActionV2 } from '@happier-dev/protocol';
+import type { SessionServerStartSpawnDraftV1 } from '@happier-dev/protocol/sessions/creation/sessionSpawnNewInputV2';
 import type {
     PluginUiTargetedContributionOperationV1,
     PluginUiTargetedContributionsV1,
@@ -27,7 +28,8 @@ const operation: PluginUiTargetedContributionOperationV1 = {
     contributor: {
         pluginId: 'acme.setup',
         contributionId: 'provider',
-        immutableGenerationId: 'setup-generation-a',
+        occurrenceId: 'setup-generation-a',
+        sourceCustody: { kind: 'development', registeredRootId: 'setup-root' },
     },
     role: 'setup',
     action: { pluginId: 'acme.setup', localId: 'connection/prepare-v1' },
@@ -35,18 +37,19 @@ const operation: PluginUiTargetedContributionOperationV1 = {
 
 const serverStartDraft = {
     executionTarget: { serverId: 'server-a', machineId: 'machine-a' },
-    directory: '/workspace',
+    directory: { kind: 'path', path: '/workspace' },
     agentTarget: {
         kind: 'agent' as const,
         identity: { pluginId: 'happier.agent.claude', localId: 'claude' },
     },
-};
+} satisfies SessionServerStartSpawnDraftV1;
 
 function targetedContributions(): PluginUiTargetedContributionsV1 {
     return {
         target: {
             pluginId: 'acme.caller',
-            immutableGenerationId: 'caller-generation-a',
+            occurrenceId: 'caller-generation-a',
+            sourceCustody: { kind: 'development', registeredRootId: 'caller-root' },
         },
         points: [{
             pointId: 'connection',
@@ -79,18 +82,13 @@ function projection(): Readonly<Record<string, PluginProjectionEntry>> {
             diagnostics: [],
             actions: [{
                 id: 'connection/prepare-v1',
+                occurrenceId: 'setup-generation-a',
                 title: 'Prepare connection',
                 description: null,
                 icon: null,
                 scopes: ['settings'],
                 surfaces: ['plugin'],
                 placementBindings: [],
-                inputSchema: {
-                    type: 'object',
-                    properties: { repository: { type: 'string', minLength: 1 } },
-                    required: ['repository'],
-                    additionalProperties: false,
-                },
                 inputHints: {
                     fields: [{ path: 'repository', title: 'Repository', widget: 'text', required: true }],
                 },
@@ -114,6 +112,7 @@ function clientProjectedAction(): PluginProjectedActionV2 {
     return {
         id: operation.action.localId,
         pluginId: operation.action.pluginId,
+        occurrenceId: operation.contributor.occurrenceId,
         title: 'Prepare connection',
         scopes: ['settings'],
         surfaces: ['plugin'],
@@ -121,7 +120,6 @@ function clientProjectedAction(): PluginProjectedActionV2 {
             target: 'client',
             client: {
                 artifactId: 'client-main',
-                modulePath: './dist/client.js',
                 exportName: 'activate',
             },
             platforms: ['web', 'ios', 'android'],
@@ -166,7 +164,6 @@ describe('plugin Action input selection Host API producer', () => {
             host: {
                 machineId: 'machine-a',
                 serverId: 'server-a',
-                expectedGeneration: 7,
                 targetPluginId: 'acme.caller',
                 accountLifetime,
             },
@@ -245,7 +242,6 @@ describe('plugin Action input selection Host API producer', () => {
                 host: {
                     machineId: 'machine-a',
                     serverId: 'server-a',
-                    expectedGeneration: 7,
                     targetPluginId: 'acme.caller',
                     accountLifetime,
                 },
@@ -281,7 +277,6 @@ describe('plugin Action input selection Host API producer', () => {
             targetedContributions: targetedContributions(),
             host: {
                 machineId: 'machine-a',
-                expectedGeneration: 7,
                 targetPluginId: 'acme.caller',
                 accountLifetime,
             },
@@ -299,7 +294,6 @@ describe('plugin Action input selection Host API producer', () => {
             targetedContributions: targetedContributions(),
             host: {
                 machineId: 'machine-a',
-                expectedGeneration: 7,
                 targetPluginId: 'acme.caller',
                 accountLifetime,
             },
@@ -323,7 +317,6 @@ describe('plugin Action input selection Host API producer', () => {
             targetedContributions: targetedContributions(),
             host: {
                 machineId: 'machine-a',
-                expectedGeneration: 7,
                 targetPluginId: 'acme.caller',
                 accountLifetime,
             },
@@ -349,7 +342,6 @@ describe('plugin Action input selection Host API producer', () => {
             targetedContributions: targetedContributions(),
             host: {
                 machineId: 'machine-a',
-                expectedGeneration: 7,
                 targetPluginId: 'acme.caller',
                 accountLifetime,
             },
@@ -382,7 +374,6 @@ describe('plugin Action input selection Host API producer', () => {
             host: {
                 machineId: 'machine-a',
                 serverId: 'server-a',
-                expectedGeneration: 7,
                 targetPluginId: 'acme.caller',
                 accountLifetime,
             },
@@ -409,7 +400,6 @@ describe('plugin Action input selection Host API producer', () => {
             host: {
                 machineId: 'machine-a',
                 serverId: 'server-b',
-                expectedGeneration: 7,
                 targetPluginId: 'acme.caller',
                 accountLifetime,
             },
@@ -444,7 +434,6 @@ describe('plugin Action input selection Host API producer', () => {
             host: {
                 machineId: 'machine-a',
                 serverId: 'server-a',
-                expectedGeneration: 7,
                 targetPluginId: 'acme.caller',
                 accountLifetime,
             },
@@ -475,7 +464,6 @@ describe('plugin Action input selection Host API producer', () => {
             host: {
                 machineId: 'machine-a',
                 serverId: 'server-a',
-                expectedGeneration: 7,
                 targetPluginId: 'acme.caller',
                 accountLifetime,
             },

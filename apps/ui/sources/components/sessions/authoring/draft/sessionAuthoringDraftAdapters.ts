@@ -5,6 +5,8 @@ import {
     SessionCreationKeyV1Schema,
     SessionServerStartSpawnDraftV1Schema,
     SessionSpawnNewInputV2Schema,
+    RawIngressStructuredInputV1Schema,
+    buildSessionConfigOptionOverridesFromServerStart,
     type SecretReferenceOverlayV1,
     SessionModelSelectionV1Schema,
     buildBackendTargetKeyV2,
@@ -17,10 +19,13 @@ import {
     type SessionCreationKeyV1,
     type SessionServerStartSpawnDraftV1,
     type SessionSpawnNewInputV2,
+    type RawIngressStructuredInputV1,
     type SessionSpawnSourceContextV1,
     type SessionExecutionTargetV1,
     type MachinePoolSelectionOriginV1,
+    type SessionDirectoryIntentV1,
 } from '@happier-dev/protocol';
+import type { SessionSpawnNewInitialInputV1 } from '@happier-dev/protocol/sessions/creation/sessionSpawnNewInputV2';
 import type { PluginUiSessionPlacementCandidateV1 } from '@happier-dev/protocol/plugins/ui';
 import {
     ConnectedServiceBindingsV2IngressSchema,
@@ -375,6 +380,7 @@ export function buildNewSessionAuthoringDraft(params: NewSessionAuthoringDraftPa
             ? { temporaryComputerActivationRef: params.temporaryComputerActivationRef }
             : {}),
         directory: normalizeRequiredString(params.directory),
+        ...(params.directoryKind === 'managed' ? { directoryKind: 'managed' as const } : {}),
         checkoutCreationDraft: params.checkoutCreationDraft,
         organizationPlacement: normalizeOrganizationPlacement(params.organizationPlacement),
         ...(params.access !== undefined ? { access: params.access } : {}),
@@ -412,6 +418,7 @@ type ResolvedNewSessionAuthoringDraftInputs = Readonly<{
     executionTarget?: SessionAuthoringDraft['executionTarget'];
     temporaryComputerActivationRef?: SessionAuthoringDraft['temporaryComputerActivationRef'];
     directory: string;
+    directoryKind?: SessionAuthoringDraft['directoryKind'];
     checkoutCreationDraft?: SessionAuthoringDraft['checkoutCreationDraft'];
     organizationPlacement?: SessionAuthoringDraft['organizationPlacement'];
     access?: SessionAuthoringDraft['access'];
@@ -448,6 +455,7 @@ export function buildNewSessionAuthoringDraftFromResolvedInputs(
         executionTarget: params.executionTarget ?? null,
         temporaryComputerActivationRef: params.temporaryComputerActivationRef,
         directory: params.directory,
+        directoryKind: params.directoryKind,
         checkoutCreationDraft: params.checkoutCreationDraft ?? null,
         organizationPlacement: params.organizationPlacement ?? { folderId: null, tagIds: [] },
         ...(params.access !== undefined ? { access: params.access } : {}),
@@ -528,7 +536,9 @@ function buildNewSessionAuthoringDraftFromSource(source: NewSessionAuthoringDraf
                 : null
         ),
         temporaryComputerActivationRef: source.source.temporaryComputerActivationRef,
-        directory: resolveNewSessionSourceDirectory(source) ?? '/',
+        // A no-folder seed has no folder to remember; any other seed without one keeps the old fallback.
+        directory: resolveNewSessionSourceDirectory(source) ?? (source.source.directoryKind === 'managed' ? '' : '/'),
+        ...(source.source.directoryKind === 'managed' ? { directoryKind: 'managed' as const } : {}),
         checkoutCreationDraft: source.source.checkoutCreationDraft ?? null,
         organizationPlacement: source.source.organizationPlacement ?? { folderId: null, tagIds: [] },
         ...(source.source.access !== undefined ? { access: source.source.access } : {}),
@@ -733,13 +743,34 @@ export function buildAutomationTemplateFromSessionAuthoringDraft(draft: SessionA
 }
 
 /**
+ * The one mapping from authored directory fields to the spawn contract's directory intent.
+ * `directory` is the remembered folder; `directoryKind: 'managed'` means no folder (the target
+ * daemon keeps a private one). A draft without the kind predates folder-less sessions: a folder.
+ */
+export function resolveSessionAuthoringDirectoryIntent(
+    draft: Readonly<Pick<SessionAuthoringDraft, 'directory' | 'directoryKind'>>,
+): SessionDirectoryIntentV1 {
+    return draft.directoryKind === 'managed'
+        ? { kind: 'managed' }
+        : { kind: 'path', path: normalizeRequiredString(draft.directory) };
+}
+
+function authoringDirectoryFieldsFromIntent(
+    intent: SessionDirectoryIntentV1,
+): Readonly<{ directory: string; directoryKind?: 'managed' }> {
+    return intent.kind === 'managed'
+        ? { directory: '', directoryKind: 'managed' }
+        : { directory: intent.path };
+}
+
+/**
  * Shared normalization for both creation boundaries. The private compatibility
  * payload remains only for its existing callers, but it must not reinterpret
  * model/config/connected-service facts differently from strict V2.
  */
 function resolveSharedSessionAuthoringSpawnFields(draft: SessionAuthoringDraft) {
     return {
-        directory: normalizeRequiredString(draft.directory),
+        directory: resolveSessionAuthoringDirectoryIntent(draft),
         profileId: typeof draft.profileId === 'string' ? draft.profileId.trim() : '',
         resumeSessionId: readNonBlankOpaqueIdentifier(draft.resumeSessionId),
         agentModeId: normalizeOptionalString(draft.acpSessionModeId),
@@ -879,23 +910,6 @@ function resolveSessionAuthoringAgentTargetCatalogEntry(params: Readonly<{
     return { kind: 'available', entry: matches[0]! };
 }
 
-function buildSessionConfigOptionOverridesFromServerStart(
-    configuration: NonNullable<SessionServerStartSpawnDraftV1['configuration']>,
-): SessionAuthoringDraft['sessionConfigOptionOverrides'] {
-    const entries = Object.entries(configuration.options);
-    if (entries.length === 0) return null;
-
-    const updatedAt = Math.max(...entries.map(([, option]) => option.updatedAtMs));
-    return AcpConfigOptionOverridesV1Schema.parse({
-        v: 1,
-        updatedAt,
-        overrides: Object.fromEntries(entries.map(([key, option]) => [key, {
-            value: option.value,
-            updatedAt: option.updatedAtMs,
-        }])),
-    });
-}
-
 /**
  * Projects the Session-owned server-start shape into the generic authoring
  * draft used by the new-session editor. Prompt/display text are separate
@@ -966,7 +980,7 @@ export function buildSessionAuthoringDraftFromServerStartSpawnDraftV1(params: Re
                     ...spawn.executionTarget,
                     ...(spawn.placementOrigin ? { selectionOrigin: spawn.placementOrigin } : {}),
                 }),
-                directory: spawn.directory,
+                ...authoringDirectoryFieldsFromIntent(spawn.directory),
                 checkoutCreationDraft: spawn.checkoutCreationDraft ?? null,
                 organizationPlacement: spawn.organizationPlacement ?? { folderId: null, tagIds: [] },
                 prompt: params.prompt,
@@ -1053,63 +1067,10 @@ export function buildSessionServerStartSpawnDraftV1FromAuthoringDraft(
             ? { placementOrigin: executionTarget.selectionOrigin }
             : {}),
         ...(terminal ? { terminal } : {}),
-        checkoutCreationDraft: params.draft.checkoutCreationDraft,
+        // A checkout needs a folder. The draft keeps it while there is none, so choosing a folder
+        // again restores it; only the spawn leaves it out.
+        checkoutCreationDraft: fields.directory.kind === 'managed' ? null : params.draft.checkoutCreationDraft,
     });
-}
-
-/**
- * The workflow-definition selection an incumbent one-shot spawn already
- * expresses.
- *
- * The shared Workflow editor shows a saved Automation's settings through the
- * same chips ordinary Session authoring uses, so the seam needs one projection
- * rather than a second settings vocabulary. Fields the spawn does not carry are
- * omitted, which the workflow contract reads as "inherited" — it never invents
- * an explicit value the author did not choose.
- */
-/**
- * The Connected Service bindings a workflow definition carries.
- *
- * The definition consumes the same canonical V2 ingress the one-shot spawn
- * accepts, so a persisted V1 map, the built-in legacy map and a current V2 map
- * all normalize to one V2 selection with every binding — native, profile,
- * group and Team resource — intact. Narrowing to V1 here silently dropped the
- * Team resource selections a V1 map cannot express; only a map the canonical
- * ingress rejects leaves the selection unstated.
- */
-function portableConnectedServiceBindings(
-    value: unknown,
-): ConnectedServiceBindingsV2 | null {
-    if (value === null || value === undefined) return null;
-    const parsed = ConnectedServiceBindingsV2IngressSchema.safeParse(value);
-    return parsed.success ? parsed.data : null;
-}
-
-export function buildWorkflowSelectionFromServerStartSpawnDraftV1(
-    spawn: SessionServerStartSpawnDraftV1,
-): WorkflowSessionAuthoringSelection {
-    const windows = spawn.terminal?.windows;
-    const connectedServices = portableConnectedServiceBindings(spawn.connectedServices ?? null);
-    return {
-        agentTarget: spawn.agentTarget,
-        ...(spawn.modelSelection === undefined ? {} : { modelSelection: spawn.modelSelection }),
-        ...(spawn.profileId === undefined ? {} : { profileId: spawn.profileId }),
-        ...(spawn.permissionMode === undefined ? {} : { permissionMode: spawn.permissionMode }),
-        ...(spawn.agentModeId === undefined ? {} : { acpSessionModeId: spawn.agentModeId }),
-        ...(spawn.configuration === undefined
-            ? {}
-            : (() => {
-                const overrides = buildSessionConfigOptionOverridesFromServerStart(spawn.configuration);
-                return overrides === null ? {} : { sessionConfigOptionOverrides: overrides };
-            })()),
-        ...(spawn.mcpSelection === undefined ? {} : { mcpSelection: spawn.mcpSelection }),
-        ...(connectedServices === null ? {} : { connectedServices }),
-        ...(spawn.transcriptStorage === undefined ? {} : { transcriptStorage: spawn.transcriptStorage }),
-        ...(spawn.terminal === undefined ? {} : { terminal: spawn.terminal }),
-        ...(windows?.launchMode === undefined ? {} : { windowsRemoteSessionLaunchMode: windows.launchMode }),
-        ...(windows?.console === undefined ? {} : { windowsRemoteSessionConsole: windows.console }),
-        ...(windows?.windowName === undefined ? {} : { windowsTerminalWindowName: windows.windowName }),
-    } as WorkflowSessionAuthoringSelection;
 }
 
 export type WorkflowSelectionSpawnWriteBackUnavailableReason =
@@ -1158,7 +1119,9 @@ export function applyWorkflowSelectionToServerStartSpawnDraftV1(params: Readonly
             ...params.spawn.executionTarget,
             ...(params.spawn.placementOrigin ? { selectionOrigin: params.spawn.placementOrigin } : {}),
         }),
-        directory: normalizeOptionalString(params.directory) ?? params.spawn.directory,
+        ...(normalizeOptionalString(params.directory)
+            ? { directory: normalizeOptionalString(params.directory)! }
+            : authoringDirectoryFieldsFromIntent(params.spawn.directory)),
         checkoutCreationDraft: params.spawn.checkoutCreationDraft ?? null,
         organizationPlacement: params.spawn.organizationPlacement ?? { folderId: null, tagIds: [] },
         prompt: '',
@@ -1221,6 +1184,8 @@ export function buildSessionSpawnNewInputV2FromAuthoringDraft(params: Readonly<
     SessionServerStartSpawnDraftFromAuthoringParams & {
         creationKey: string;
         initialMessage?: string | null;
+        initialStructuredInput?: RawIngressStructuredInputV1 | null;
+        initialReviewComments?: SessionSpawnNewInitialInputV1['reviewComments'] | null;
         /**
          * Continuation recipe for a Replay-seeded child. Required semantics, not
          * a hint: the target daemon resolves the source transcript before any
@@ -1233,13 +1198,22 @@ export function buildSessionSpawnNewInputV2FromAuthoringDraft(params: Readonly<
 >): StrictSessionSpawnNewInputV2 {
     const creationKey = SessionCreationKeyV1Schema.parse(params.creationKey);
     const normalizedInitialMessage = normalizeOptionalString(params.initialMessage);
+    const structuredInput = params.initialStructuredInput
+        ? RawIngressStructuredInputV1Schema.parse(params.initialStructuredInput)
+        : null;
     const spawnDraft = buildSessionServerStartSpawnDraftV1FromAuthoringDraft(params);
 
     return {
         ...SessionSpawnNewInputV2Schema.parse({
             ...spawnDraft,
             creationKey,
-            ...(normalizedInitialMessage ? { initialInput: { text: normalizedInitialMessage } } : {}),
+            ...(normalizedInitialMessage || structuredInput?.composerAttachments?.length || params.initialReviewComments
+                ? { initialInput: {
+                    ...(normalizedInitialMessage ? { text: normalizedInitialMessage } : {}),
+                    ...(structuredInput ? { structuredInput } : {}),
+                    ...(params.initialReviewComments ? { reviewComments: params.initialReviewComments } : {}),
+                } }
+                : {}),
             ...(params.sourceContext ? { sourceContext: params.sourceContext } : {}),
             ...(params.secretReferenceOverlay ? { secretReferenceOverlay: params.secretReferenceOverlay } : {}),
             ...(params.draft.access?.grants.length ? { initialAccess: params.draft.access } : {}),
@@ -1289,6 +1263,7 @@ export function buildNewSessionTempDataFromAuthoringDraft(params: Readonly<{
             ? { temporaryComputerActivationRef: params.draft.temporaryComputerActivationRef }
             : {}),
         directory: params.draft.directory,
+        ...(params.draft.directoryKind === 'managed' ? { directoryKind: 'managed' as const } : {}),
         organizationPlacement: params.draft.organizationPlacement,
         ...(params.draft.access !== undefined ? { access: params.draft.access } : {}),
         ...(params.draft.primaryTeamId !== undefined ? { primaryTeamId: params.draft.primaryTeamId } : {}),
@@ -1372,6 +1347,7 @@ export function buildPersistedNewSessionDraftFromAuthoringDraft(params: Readonly
             ? { temporaryComputerActivationRef: params.draft.temporaryComputerActivationRef }
             : {}),
         selectedPath: params.draft.directory,
+        ...(params.draft.directoryKind === 'managed' ? { directoryKind: 'managed' as const } : {}),
         organizationPlacement: params.draft.organizationPlacement,
         ...(params.draft.access !== undefined ? { access: params.draft.access } : {}),
         ...(targetServerId ? { targetServerId } : {}),

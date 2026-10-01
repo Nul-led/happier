@@ -328,12 +328,11 @@ vi.mock('@/components/account/RecoveryKeyReminderBanner', () => ({
     RecoveryKeyReminderBanner: 'RecoveryKeyReminderBanner',
 }));
 
-vi.mock('@/components/ui/feedback/UpdateBanner', () => ({
-    UpdateBanner: 'UpdateBanner',
-}));
 
 vi.mock('@/utils/sessions/sessionUtils', () => ({
     getSessionName: () => 'Session',
+    // Rows ask whether the title is the untitled fallback; these fixtures are all named.
+    isUntitledSessionName: () => false,
     getSessionSubtitle: () => 'Subtitle',
     formatPathRelativeToHome: (path: string) => path,
     getSessionAvatarId: () => 'avatar',
@@ -404,7 +403,7 @@ vi.mock('@/sync/ops/sessionOrganization', () => ({
 
 vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
     const actual = await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>();
-    const serverProfile = { id: 'server_a', serverUrl: 'https://server-a.example.test' };
+    const serverProfile = { id: 'server_a', name: 'Server A', serverUrl: 'https://server-a.example.test' };
     return {
         ...actual,
         listServerProfiles: () => [serverProfile],
@@ -611,35 +610,27 @@ describe('SessionsList pinning + per-group ordering', () => {
         standardCleanup();
     });
 
-    it('renders the archived sessions footer on web and routes to archived sessions', async () => {
+    it('leaves Archived to the list title\'s scope menu instead of a footer card', async () => {
         const screen = await renderSessionsList();
 
-        const footerPressable = expectPresent(
-            findTestInstanceByTypeContainingText(screen.root, 'Pressable', 'sessionInfo.archivedSessions'),
-            'expected archived sessions footer button',
-        );
+        expect(findTestInstanceByTypeContainingText(screen.root, 'Pressable', 'sessionInfo.archivedSessions')).toBeUndefined();
+        expect(findTestInstanceByTypeContainingText(screen.root, 'Pressable', 'sessionInfo.inactiveAndArchivedSessions')).toBeUndefined();
 
-        await act(async () => {
-            pressTestInstance(footerPressable, 'expected archived sessions footer button');
-        });
-
-        expect(routerPushSpy).toHaveBeenCalledWith('/session/archived');
+        // The scope menu itself is covered by the filter control's DOM test; here the list offers it.
+        expect(screen.findByTestId('session-list-filter-trigger')).toBeTruthy();
     });
 
-    it('renames the footer to inactive and archived sessions when hide inactive sessions is enabled', async () => {
-        hideInactiveSessions = true;
+    it('hands the scope editor the number of sessions the list shows, counted from the list rows', async () => {
         const screen = await renderSessionsList();
 
-        const footerPressable = expectPresent(
-            findTestInstanceByTypeContainingText(screen.root, 'Pressable', 'sessionInfo.inactiveAndArchivedSessions'),
-            'expected inactive and archived sessions footer button',
-        );
-
-        await act(async () => {
-            pressTestInstance(footerPressable, 'expected inactive and archived sessions footer button');
-        });
-
-        expect(routerPushSpy).toHaveBeenCalledWith('/session/archived');
+        // The popover itself needs a DOM (covered by the editor and portal tests); here the list is
+        // the producer: its own rows, not a second derivation, are the count the editor states.
+        const [control] = screen.findAll((node) => (
+            typeof node.props?.editor === 'object'
+            && node.props.editor !== null
+            && 'resetFilters' in node.props.editor
+        ));
+        expect(control?.props.editor.resultCount).toBe(2);
     });
 
     it('exposes stable test ids on primary section headers', async () => {

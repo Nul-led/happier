@@ -294,7 +294,7 @@ function startReplacementHarness(modules: LoadedModules, input: Readonly<{
             resolveAgentContributionIdentity: async () => Object.freeze({
                 pluginId: 'happier.agent.codex',
                 localId: 'codex',
-                immutableGenerationId: 'gen-1',
+                sourceCustody: { kind: 'managed' as const, immutableGenerationId: 'gen-1', installSource: 'npm' as const },
             }),
             isCurrent: () => true,
             release: async () => undefined,
@@ -466,7 +466,7 @@ describe('execution-run Connected Services across daemon control-owner replaceme
             agentContribution: {
                 pluginId: 'happier.agent.codex',
                 localId: 'codex',
-                immutableGenerationId: 'gen-1',
+                sourceCustody: { kind: 'managed' as const, immutableGenerationId: 'gen-1', installSource: 'npm' as const },
             },
         });
         expect(await assertPathExists(runRoot)).toBe(true);

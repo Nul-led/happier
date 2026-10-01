@@ -28,7 +28,7 @@ import {
   listSessionSubagentCustody,
   mutateSessionSubagentCustody,
   probeSessionSubagentCustody,
-  retireSessionSubagentCustodyGeneration,
+  retireSessionSubagentCustodySource,
   SessionSubagentCustodyHttpError,
 } from '@/session/transport/http/sessionSubagentCustodyHttp';
 
@@ -63,7 +63,7 @@ function boundedGroupId(value: string | undefined): string | null {
   if (value === undefined) return null;
   const prefix = 'plugin-group-v1:sha256:';
   const probe = SessionSubagentCustodyMutationRequestV1Schema.safeParse({
-    operationId: 'probe', scope: { pluginId: 'acme.probe', contributionId: 'probe', immutableGenerationId: 'probe' },
+    operationId: 'probe', scope: { pluginId: 'acme.probe', contributionId: 'probe', sourceCustody: { kind: 'managed', immutableGenerationId: 'probe', installSource: 'npm' } },
     custodyKey: `sha256:${'0'.repeat(64)}`, subagentId: 'probe', groupId: value,
     expectedRevision: null, status: 'running', content: { t: 'plain', v: null },
     contentFingerprint: createSessionSubagentCustodyPlainContentFingerprintV1(null),
@@ -120,7 +120,7 @@ export function createServerPluginSubagentDurableCustody(params: Readonly<{
   const scope = Object.freeze({
     pluginId: params.identity.pluginId,
     contributionId: params.identity.contributionId,
-    immutableGenerationId: params.identity.immutableGenerationId,
+    sourceCustody: params.identity.sourceCustody,
   });
   const key = createSessionSubagentCustodyKeyV1({ ...scope, sessionId: params.identity.parentSessionId });
   let capability: 'unknown' | 'available' = 'unknown';
@@ -293,10 +293,10 @@ export function createServerPluginSubagentDurableCustody(params: Readonly<{
       const credentials = await readCurrentCredentials(options.signal);
       await ensureCapability(credentials, options.signal);
       try {
-        await retireSessionSubagentCustodyGeneration({
+        await retireSessionSubagentCustodySource({
           token: credentials.token,
           pluginId: scope.pluginId,
-          immutableGenerationId: scope.immutableGenerationId,
+          sourceCustody: scope.sourceCustody,
           signal: options.signal,
         });
       } catch (error) {

@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Platform, Pressable, View } from 'react-native';
+import { Pressable, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { getAgentCore, isBundledAgentId, type AgentId } from '@/agents/catalog/catalog';
@@ -10,6 +10,7 @@ import { t, tLoose } from '@/text';
 import { getClipboardStringSafe } from '@/utils/ui/clipboard';
 import { readNonBlankOpaqueIdentifier } from '@happier-dev/protocol';
 import { Icon } from '@/components/ui/icons/Icon';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 const stylesheet = StyleSheet.create((theme) => ({
     container: {
@@ -46,13 +47,6 @@ const stylesheet = StyleSheet.create((theme) => ({
         minHeight: 24,
         textAlignVertical: 'center',
         ...Typography.default(),
-        ...(Platform.OS === 'web'
-            ? ({
-                outlineStyle: 'none',
-                outlineWidth: 0,
-                boxShadow: 'none',
-            } as any)
-            : undefined),
     },
     buttonRow: {
         flexDirection: 'row',
@@ -201,7 +195,7 @@ export function NewSessionResumeSelectionContent(props: NewSessionResumeSelectio
                             style={({ pressed }) => [
                                 styles.button,
                                 styles.buttonSecondary,
-                                { opacity: pressed ? 0.7 : 1 },
+                                { opacity: pressed ? motionTokens.press.opacity : 1 },
                             ]}
                         >
                             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
@@ -217,7 +211,7 @@ export function NewSessionResumeSelectionContent(props: NewSessionResumeSelectio
                             style={({ pressed }) => [
                                 styles.button,
                                 styles.buttonPrimary,
-                                { opacity: pressed ? 0.7 : 1 },
+                                { opacity: pressed ? motionTokens.press.opacity : 1 },
                             ]}
                         >
                             <Text style={[styles.buttonText, styles.buttonTextPrimary]}>
@@ -231,7 +225,7 @@ export function NewSessionResumeSelectionContent(props: NewSessionResumeSelectio
                             onPress={handleClear}
                             style={({ pressed }) => [
                                 styles.clearButton,
-                                { opacity: pressed ? 0.7 : 1 },
+                                { opacity: pressed ? motionTokens.press.opacity : 1 },
                             ]}
                         >
                             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>

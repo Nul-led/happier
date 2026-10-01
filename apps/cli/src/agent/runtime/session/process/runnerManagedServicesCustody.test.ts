@@ -45,10 +45,10 @@ import {
 
 type TestRunnerManagedServicesCustodyPortInput = Omit<
     Parameters<typeof createProductionRunnerManagedServicesCustodyPort>[0],
-    'readCurrentProviderImmutableGenerationIntegrityCurrentness'
+    'readCurrentProviderSourceCustodyIntegrityCurrentness'
 > & Partial<Pick<
     Parameters<typeof createProductionRunnerManagedServicesCustodyPort>[0],
-    'readCurrentProviderImmutableGenerationIntegrityCurrentness'
+    'readCurrentProviderSourceCustodyIntegrityCurrentness'
 >>;
 
 function createRunnerManagedServicesCustodyPort(
@@ -56,9 +56,9 @@ function createRunnerManagedServicesCustodyPort(
 ) {
     return createProductionRunnerManagedServicesCustodyPort({
         ...input,
-        readCurrentProviderImmutableGenerationIntegrityCurrentness:
+        readCurrentProviderSourceCustodyIntegrityCurrentness:
             input
-                .readCurrentProviderImmutableGenerationIntegrityCurrentness
+                .readCurrentProviderSourceCustodyIntegrityCurrentness
             ?? (() => true),
     });
 }
@@ -143,7 +143,7 @@ function managedRuntimeBindingBasis(
             },
             purposeBindings: { v: 1, bindings: [] },
         },
-        agentTargetKey: 'backend:claude',
+        agentTargetKey: 'agent:happier.agent.claude/claude',
         connectionId: ProviderConnectionIdSchema.parse(connectionId),
         contributionKey: `${pluginId}/${providerLocalId}`,
         endpoint: {
@@ -193,8 +193,12 @@ function providerScope(
         ),
         pluginId,
         providerLocalId,
-        activationGeneration: immutableGenerationId,
-        immutableGenerationId,
+        occurrenceId: `occurrence-${immutableGenerationId}`,
+        sourceCustody: {
+            kind: 'managed' as const,
+            immutableGenerationId,
+            installSource: 'npm' as const,
+        },
         manifestAuthority,
         operationClaimId:
             `session-demand:${sessionId}:${immutableGenerationId}`,
@@ -392,7 +396,7 @@ describe('runner managed-services Provider custody', () => {
                 })),
             readCurrentProviderPluginHardRevocationRevision: () =>
                 hardRevocationRevision,
-            readCurrentProviderImmutableGenerationIntegrityCurrentness:
+            readCurrentProviderSourceCustodyIntegrityCurrentness:
                 async () => {
                     if (advanceDuringIntegrityCheck) {
                         await Promise.resolve();
@@ -1406,7 +1410,7 @@ describe('runner managed-services Provider custody', () => {
                 }
                 return 0;
             },
-            readCurrentProviderImmutableGenerationIntegrityCurrentness: () => {
+            readCurrentProviderSourceCustodyIntegrityCurrentness: () => {
                 if (nextWrapper === 2) {
                     deferFinalRevisionRead = true;
                 }
@@ -2813,8 +2817,8 @@ describe('runner managed-services Provider custody', () => {
                     })]),
                 }),
             }),
-            activationGeneration: scope.activationGeneration,
-            immutableGenerationId: scope.immutableGenerationId,
+            activationOccurrenceId: scope.occurrenceId,
+            sourceCustody: scope.sourceCustody,
             isCurrent: () => desiredQCurrent,
         }) satisfies ResolvedManagedProviderRuntime;
         const launchResourceScope = createProviderLaunchResourceScope();
@@ -2922,8 +2926,8 @@ describe('runner managed-services Provider custody', () => {
                     })]),
                 }),
             }),
-            activationGeneration: scope.activationGeneration,
-            immutableGenerationId: scope.immutableGenerationId,
+            activationOccurrenceId: scope.occurrenceId,
+            sourceCustody: scope.sourceCustody,
             isCurrent: () => true,
         }) satisfies ResolvedManagedProviderRuntime;
         const launchResourceScope = createProviderLaunchResourceScope();
@@ -3018,8 +3022,8 @@ describe('runner managed-services Provider custody', () => {
                     })]),
                 }),
             }),
-            activationGeneration: scope.activationGeneration,
-            immutableGenerationId: scope.immutableGenerationId,
+            activationOccurrenceId: scope.occurrenceId,
+            sourceCustody: scope.sourceCustody,
             isCurrent: () => true,
         }) satisfies ResolvedManagedProviderRuntime;
 
@@ -3140,7 +3144,7 @@ describe('runner managed-services Provider custody', () => {
         expect(retainAdoptedProviderAuthority).toHaveBeenCalledOnce();
         expect(retainAdoptedProviderAuthority).toHaveBeenCalledWith({
             pluginId: p.pluginId,
-            immutableGenerationId: p.immutableGenerationId,
+            sourceCustody: p.sourceCustody,
             manifestAuthority: 'bundled_first_party',
             hardRevocationRevisionAtAdmission: 0,
         });
@@ -3394,7 +3398,7 @@ describe('runner managed-services Provider custody', () => {
         expect(releaseAdoptedProviderAuthority).toHaveBeenCalledOnce();
         expect(releaseAdoptedProviderAuthority).toHaveBeenCalledWith({
             pluginId: scope.pluginId,
-            immutableGenerationId: scope.immutableGenerationId,
+            sourceCustody: scope.sourceCustody,
             manifestAuthority: scope.manifestAuthority,
             hardRevocationRevisionAtAdmission: 0,
         });
@@ -3592,16 +3596,18 @@ describe('runner managed-services Provider custody', () => {
         ]);
         const readGenerationCurrentness = vi.fn((authority: Readonly<{
             pluginId: string;
-            immutableGenerationId: string;
+            sourceCustody: RunnerManagedProviderCustodyScopeV1['sourceCustody'];
             manifestAuthority: 'external' | 'bundled_first_party';
         }>) => expectedAuthorityByGeneration.get(
-            authority.immutableGenerationId,
+            authority.sourceCustody.kind === 'managed'
+                ? authority.sourceCustody.immutableGenerationId
+                : '',
         ) === authority.manifestAuthority);
         const runner = createRunnerManagedServicesCustodyPort({
             resolveAuthorizedServicesForSupervise: () =>
                 supervisionAdmission(services, 7),
             readCurrentProviderPluginHardRevocationRevision: () => 7,
-            readCurrentProviderImmutableGenerationIntegrityCurrentness:
+            readCurrentProviderSourceCustodyIntegrityCurrentness:
                 readGenerationCurrentness,
         });
         const bundledScope = providerScope(
@@ -3643,16 +3649,14 @@ describe('runner managed-services Provider custody', () => {
         expect(readGenerationCurrentness).toHaveBeenCalledWith(
             {
                 pluginId: bundledScope.pluginId,
-                immutableGenerationId:
-                    bundledScope.immutableGenerationId,
+                sourceCustody: bundledScope.sourceCustody,
                 manifestAuthority: bundledScope.manifestAuthority,
             },
         );
         expect(readGenerationCurrentness).toHaveBeenCalledWith(
             {
                 pluginId: externalScope.pluginId,
-                immutableGenerationId:
-                    externalScope.immutableGenerationId,
+                sourceCustody: externalScope.sourceCustody,
                 manifestAuthority: externalScope.manifestAuthority,
             },
         );
@@ -3902,7 +3906,7 @@ describe('runner managed-services Provider custody', () => {
             resolveAuthorizedServicesForSupervise: () =>
                 supervisionAdmission(services, 7),
             readCurrentProviderPluginHardRevocationRevision: () => 7,
-            readCurrentProviderImmutableGenerationIntegrityCurrentness:
+            readCurrentProviderSourceCustodyIntegrityCurrentness:
                 () => true,
         });
         const scopeG1 = providerScope(
@@ -3911,8 +3915,12 @@ describe('runner managed-services Provider custody', () => {
         );
         const scopeG2 = {
             ...scopeG1,
-            activationGeneration: '2',
-            immutableGenerationId: 'provider-g2',
+            occurrenceId: 'occurrence-provider-g2',
+            sourceCustody: {
+                kind: 'managed' as const,
+                immutableGenerationId: 'provider-g2',
+                installSource: 'npm' as const,
+            },
             operationClaimId:
                 'session-provider-claim-provider-g2',
         };
@@ -3934,7 +3942,7 @@ describe('runner managed-services Provider custody', () => {
             v: 1,
             kind: 'fenceHardRevocation',
             pluginId: scopeG1.pluginId,
-            immutableGenerationId: scopeG1.immutableGenerationId,
+            sourceCustody: scopeG1.sourceCustody,
         })).resolves.toEqual({
             v: 1,
             kind: 'hardRevocationFenced',
@@ -4142,7 +4150,7 @@ describe('runner managed-services Provider custody', () => {
         expect(releaseAdoptedProviderAuthority).toHaveBeenCalledTimes(2);
         const retainedAuthority = {
             pluginId: scope.pluginId,
-            immutableGenerationId: scope.immutableGenerationId,
+            sourceCustody: scope.sourceCustody,
             manifestAuthority: scope.manifestAuthority,
             hardRevocationRevisionAtAdmission: 7,
         };
@@ -4215,7 +4223,7 @@ describe('runner managed-services Provider custody', () => {
         expect(releaseAdoptedProviderAuthority).toHaveBeenCalledOnce();
         expect(releaseAdoptedProviderAuthority).toHaveBeenCalledWith({
             pluginId: scope.pluginId,
-            immutableGenerationId: scope.immutableGenerationId,
+            sourceCustody: scope.sourceCustody,
             manifestAuthority: scope.manifestAuthority,
             hardRevocationRevisionAtAdmission: 7,
         });
@@ -4557,7 +4565,7 @@ describe('runner managed-services Provider custody', () => {
                 }
                 return 0;
             },
-            readCurrentProviderImmutableGenerationIntegrityCurrentness: () => {
+            readCurrentProviderSourceCustodyIntegrityCurrentness: () => {
                 if (superviseReturned) {
                     deferFinalRevisionRead = true;
                 }

@@ -4,6 +4,7 @@ import {
     resolveTeamViewState,
     type TeamViewState,
 } from '@/components/settings/teams/teamViewState';
+import { resolveHomeDisplayLabel } from '@/components/settings/server/homeDisplayName';
 import { useServerCredentialAccountScopeResolution } from '@/sync/domains/scope/useServerCredentialAccountScopes';
 import { createServerAccountScope, type ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
 import { getServerProfileById } from '@/sync/domains/server/serverProfiles';
@@ -18,15 +19,18 @@ import {
 /**
  * What this device can currently say about one explicitly addressed Team.
  *
- * `unknown_home`, `signed_out` and `invalid_address` are facts about this
- * device's saved Homes and the route it was given, never answers from the Home,
- * and are deliberately distinct from every state the Home itself reports.
+ * `unknown_home`, `signed_out`, `credential_unreadable` and `invalid_address`
+ * are facts about this device's saved Homes and the route it was given, never
+ * answers from the Home, and are deliberately distinct from every state the
+ * Home itself reports. `credential_unreadable` is settled: this device failed
+ * to read its saved credential, and only a re-read helps.
  */
 export type TeamBinding =
     | Readonly<{ kind: 'resolving' }>
     | Readonly<{ kind: 'invalid_address' }>
     | Readonly<{ kind: 'unknown_home' }>
     | Readonly<{ kind: 'signed_out'; homeName: string }>
+    | Readonly<{ kind: 'credential_unreadable'; serverId: string }>
     | Readonly<{
         kind: 'bound';
         scope: ServerAccountScope;
@@ -66,9 +70,7 @@ export function useTeamBinding(serverIdRaw: string, teamIdRaw: string): TeamBind
         () => (address ? getServerProfileById(address.serverId) : null),
         [address],
     );
-    const homeName = (profile?.name ?? '').trim()
-        || (profile?.serverUrl ?? '').trim()
-        || (address?.serverId ?? '');
+    const homeName = resolveHomeDisplayLabel(profile, address?.serverId ?? '');
 
     const resolution = useServerCredentialAccountScopeResolution(address?.serverId ?? null);
     const scope = resolution.kind === 'bound' ? resolution.scope : null;
@@ -108,6 +110,8 @@ export function useTeamBinding(serverIdRaw: string, teamIdRaw: string): TeamBind
         switch (resolution.kind) {
             case 'resolving':
                 return RESOLVING;
+            case 'unavailable':
+                return Object.freeze({ kind: 'credential_unreadable' as const, serverId: address.serverId });
             case 'unknown_home':
                 return UNKNOWN_HOME;
             case 'signed_out':

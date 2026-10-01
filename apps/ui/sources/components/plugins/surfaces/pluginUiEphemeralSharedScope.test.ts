@@ -8,6 +8,7 @@ import type { ActiveServerAccountScopeLifetime } from '@/sync/domains/scope/acti
 
 import {
     getPluginUiEphemeralSharedScope,
+    retireIdlePluginUiEphemeralSharedValuesExcept,
     usePluginUiEphemeralSharedScopeBinding,
 } from './pluginUiEphemeralSharedScope';
 
@@ -50,18 +51,18 @@ function executionOrigin(machineId: string) {
 }
 
 describe('plugin UI ephemeral shared scope', () => {
-    it('shares one value within an Account, plugin, and immutable generation until the final lease releases', () => {
+    it('shares one value within an Account, plugin, and process occurrence until the final lease releases', () => {
         const accountLifetime = createAccountLifetime();
         const scopeA = getPluginUiEphemeralSharedScope({
             accountLifetime,
             pluginId: 'acme.triage',
-            immutableGenerationId: 'generation-a',
+            occurrenceId: 'occurrence-a',
             isCurrent: () => true,
         });
         const scopeB = getPluginUiEphemeralSharedScope({
             accountLifetime,
             pluginId: 'acme.triage',
-            immutableGenerationId: 'generation-a',
+            occurrenceId: 'occurrence-a',
             isCurrent: () => true,
         });
         const dispose = vi.fn();
@@ -81,26 +82,98 @@ describe('plugin UI ephemeral shared scope', () => {
         expect(create).toHaveBeenCalledTimes(2);
     });
 
-    it('shares one generation value across execution origins and notifies only when its active origin changes', () => {
+    it('retains an opted-in value after idle and retires it with its Account', () => {
+        const accountLifetime = createAccountLifetime();
+        const scope = getPluginUiEphemeralSharedScope({
+            accountLifetime,
+            pluginId: 'acme.triage',
+            occurrenceId: 'occurrence-a',
+            isCurrent: () => true,
+        });
+        const onIdle = vi.fn();
+        const dispose = vi.fn();
+        const create = vi.fn(() => Object.freeze({
+            value: { rows: ['warm'] }, retainWhenIdle: true as const, onIdle, dispose,
+        }));
+        const first = scope?.acquire('window', create);
+        first?.release();
+        expect(onIdle).toHaveBeenCalledTimes(1);
+        expect(dispose).not.toHaveBeenCalled();
+        const second = scope?.acquire('window', create);
+        expect(second?.value).toBe(first?.value);
+        expect(create).toHaveBeenCalledTimes(1);
+        second?.release();
+        expect(onIdle).toHaveBeenCalledTimes(2);
+        accountLifetime.retire();
+        expect(dispose).toHaveBeenCalledTimes(1);
+    });
+
+    it('disposes an idle retained value when its occurrence retires', () => {
+        const accountLifetime = createAccountLifetime();
+        const previous = getPluginUiEphemeralSharedScope({
+            accountLifetime, pluginId: 'acme.triage', occurrenceId: 'occurrence-a', isCurrent: () => true,
+        });
+        const dispose = vi.fn();
+        const retained = Object.freeze({
+            value: { token: 'retained' }, retainWhenIdle: true as const, onIdle: vi.fn(), dispose,
+        });
+        previous?.acquire('window', () => retained)?.release();
+        expect(dispose).not.toHaveBeenCalled();
+        getPluginUiEphemeralSharedScope({
+            accountLifetime, pluginId: 'acme.triage', occurrenceId: 'occurrence-b', isCurrent: () => true,
+        });
+        expect(dispose).toHaveBeenCalledTimes(1);
+    });
+
+    it('disposes a disabled plugin\'s idle retained values, never a value in use or another plugin\'s', () => {
+        const accountLifetime = createAccountLifetime();
+        const scopeFor = (pluginId: string) => getPluginUiEphemeralSharedScope({
+            accountLifetime, pluginId, occurrenceId: `${pluginId}#1`, isCurrent: () => true,
+        });
+        const retainedValue = (key: string) => {
+            const dispose = vi.fn();
+            const create = () => Object.freeze({ value: { key }, retainWhenIdle: true as const, onIdle: vi.fn(), dispose });
+            return { dispose, create };
+        };
+        const idle = retainedValue('window');
+        scopeFor('acme.triage')?.acquire('window', idle.create)?.release();
+        const inUse = retainedValue('picker');
+        const lease = scopeFor('acme.triage')?.acquire('picker', inUse.create);
+        const enabled = retainedValue('window');
+        scopeFor('acme.ci')?.acquire('window', enabled.create)?.release();
+
+        retireIdlePluginUiEphemeralSharedValuesExcept(accountLifetime, new Set(['acme.ci']));
+
+        expect(idle.dispose).toHaveBeenCalledTimes(1);
+        expect(inUse.dispose).not.toHaveBeenCalled();
+        expect(enabled.dispose).not.toHaveBeenCalled();
+        // Enabling it again starts cold rather than handing back a disposed value.
+        const create = vi.fn(() => Object.freeze({ value: { fresh: true }, dispose: vi.fn() }));
+        expect(scopeFor('acme.triage')?.acquire('window', create)?.value).toEqual({ fresh: true });
+        expect(create).toHaveBeenCalledTimes(1);
+        lease?.release();
+    });
+
+    it('shares one occurrence value across execution origins and notifies only when its active origin changes', () => {
         const accountLifetime = createAccountLifetime();
         const scopeA1 = getPluginUiEphemeralSharedScope({
             accountLifetime,
             pluginId: 'acme.triage',
-            immutableGenerationId: 'generation-a',
+            occurrenceId: 'occurrence-a',
             executionOrigin: executionOrigin('machine-a'),
             isCurrent: () => true,
         });
         const scopeA2 = getPluginUiEphemeralSharedScope({
             accountLifetime,
             pluginId: 'acme.triage',
-            immutableGenerationId: 'generation-a',
+            occurrenceId: 'occurrence-a',
             executionOrigin: executionOrigin('machine-a'),
             isCurrent: () => true,
         });
         const scopeB = getPluginUiEphemeralSharedScope({
             accountLifetime,
             pluginId: 'acme.triage',
-            immutableGenerationId: 'generation-a',
+            occurrenceId: 'occurrence-a',
             executionOrigin: executionOrigin('machine-b'),
             isCurrent: () => true,
         });
@@ -130,18 +203,18 @@ describe('plugin UI ephemeral shared scope', () => {
         expect(dispose).toHaveBeenCalledTimes(1);
     });
 
-    it('gives unqualified and materialized mounts equal access to the same generation value', () => {
+    it('gives unqualified and materialized mounts equal access to the same occurrence value', () => {
         const accountLifetime = createAccountLifetime();
         const local = getPluginUiEphemeralSharedScope({
             accountLifetime,
             pluginId: 'acme.triage',
-            immutableGenerationId: 'generation-a',
+            occurrenceId: 'occurrence-a',
             isCurrent: () => true,
         });
         const materialized = getPluginUiEphemeralSharedScope({
             accountLifetime,
             pluginId: 'acme.triage',
-            immutableGenerationId: 'generation-a',
+            occurrenceId: 'occurrence-a',
             executionOrigin: executionOrigin('machine-a'),
             isCurrent: () => true,
         });
@@ -159,54 +232,54 @@ describe('plugin UI ephemeral shared scope', () => {
         materializedLease?.release();
     });
 
-    it('retires an older generation and refuses a stale overlapping request after the successor exists', () => {
+    it('retires an older occurrence and refuses a stale overlapping request after the successor exists', () => {
         const accountLifetime = createAccountLifetime();
-        let currentGeneration = 'generation-a';
-        const generationA = getPluginUiEphemeralSharedScope({
+        let currentOccurrence = 'occurrence-a';
+        const occurrenceA = getPluginUiEphemeralSharedScope({
             accountLifetime,
             pluginId: 'acme.triage',
-            immutableGenerationId: 'generation-a',
-            isCurrent: () => currentGeneration === 'generation-a',
+            occurrenceId: 'occurrence-a',
+            isCurrent: () => currentOccurrence === 'occurrence-a',
         });
         const disposeA = vi.fn();
-        const leaseA = generationA?.acquire(
+        const leaseA = occurrenceA?.acquire(
             'mounted-window',
-            () => Object.freeze({ value: { generation: 'a' }, dispose: disposeA }),
+            () => Object.freeze({ value: { occurrence: 'a' }, dispose: disposeA }),
         );
 
-        currentGeneration = 'generation-b';
-        const generationB = getPluginUiEphemeralSharedScope({
+        currentOccurrence = 'occurrence-b';
+        const occurrenceB = getPluginUiEphemeralSharedScope({
             accountLifetime,
             pluginId: 'acme.triage',
-            immutableGenerationId: 'generation-b',
-            isCurrent: () => currentGeneration === 'generation-b',
+            occurrenceId: 'occurrence-b',
+            isCurrent: () => currentOccurrence === 'occurrence-b',
         });
-        expect(generationB).not.toBeNull();
+        expect(occurrenceB).not.toBeNull();
         expect(disposeA).toHaveBeenCalledTimes(1);
-        expect(generationA?.acquire(
+        expect(occurrenceA?.acquire(
             'mounted-window',
-            () => Object.freeze({ value: { generation: 'revived-a' }, dispose(): void {} }),
+            () => Object.freeze({ value: { occurrence: 'revived-a' }, dispose(): void {} }),
         )).toBeNull();
 
         expect(getPluginUiEphemeralSharedScope({
             accountLifetime,
             pluginId: 'acme.triage',
-            immutableGenerationId: 'generation-a',
-            isCurrent: () => currentGeneration === 'generation-a',
+            occurrenceId: 'occurrence-a',
+            isCurrent: () => currentOccurrence === 'occurrence-a',
         })).toBeNull();
-        expect(generationB?.acquire(
+        expect(occurrenceB?.acquire(
             'mounted-window',
-            () => Object.freeze({ value: { generation: 'b' }, dispose(): void {} }),
-        )?.value).toEqual({ generation: 'b' });
+            () => Object.freeze({ value: { occurrence: 'b' }, dispose(): void {} }),
+        )?.value).toEqual({ occurrence: 'b' });
         leaseA?.release();
         expect(disposeA).toHaveBeenCalledTimes(1);
 
-        currentGeneration = 'generation-a';
+        currentOccurrence = 'occurrence-a';
         expect(getPluginUiEphemeralSharedScope({
             accountLifetime,
             pluginId: 'acme.triage',
-            immutableGenerationId: 'generation-a',
-            isCurrent: () => currentGeneration === 'generation-a',
+            occurrenceId: 'occurrence-a',
+            isCurrent: () => currentOccurrence === 'occurrence-a',
         })).not.toBeNull();
     });
 
@@ -217,7 +290,7 @@ describe('plugin UI ephemeral shared scope', () => {
         const scopeA = getPluginUiEphemeralSharedScope({
             accountLifetime,
             pluginId: 'acme.triage',
-            immutableGenerationId: 'generation-a',
+            occurrenceId: 'occurrence-a',
             executionOrigin: executionOrigin('machine-a'),
             isCurrent: () => true,
         });
@@ -225,7 +298,7 @@ describe('plugin UI ephemeral shared scope', () => {
         const scopeB = getPluginUiEphemeralSharedScope({
             accountLifetime,
             pluginId: 'acme.triage',
-            immutableGenerationId: 'generation-b',
+            occurrenceId: 'occurrence-b',
             executionOrigin: executionOrigin('machine-b'),
             isCurrent: () => true,
         });
@@ -236,7 +309,7 @@ describe('plugin UI ephemeral shared scope', () => {
         const replacementA = getPluginUiEphemeralSharedScope({
             accountLifetime,
             pluginId: 'acme.triage',
-            immutableGenerationId: 'generation-a-next',
+            occurrenceId: 'occurrence-a-next',
             executionOrigin: executionOrigin('machine-a'),
             isCurrent: () => true,
         });
@@ -254,7 +327,7 @@ describe('plugin UI ephemeral shared scope', () => {
         const scope = getPluginUiEphemeralSharedScope({
             accountLifetime,
             pluginId: 'acme.triage',
-            immutableGenerationId: 'generation-a',
+            occurrenceId: 'occurrence-a',
             isCurrent: () => true,
         });
         const dispose = vi.fn();
@@ -267,7 +340,7 @@ describe('plugin UI ephemeral shared scope', () => {
         expect(getPluginUiEphemeralSharedScope({
             accountLifetime,
             pluginId: 'acme.triage',
-            immutableGenerationId: 'generation-a',
+            occurrenceId: 'occurrence-a',
             isCurrent: () => true,
         })).toBeNull();
     });
@@ -277,13 +350,13 @@ describe('plugin UI ephemeral shared scope', () => {
         expect(getPluginUiEphemeralSharedScope({
             accountLifetime: null,
             pluginId: 'acme.triage',
-            immutableGenerationId: 'generation-a',
+            occurrenceId: 'occurrence-a',
             isCurrent: () => true,
         })).toBeNull();
         expect(getPluginUiEphemeralSharedScope({
             accountLifetime,
             pluginId: 'acme.triage',
-            immutableGenerationId: 'generation-a',
+            occurrenceId: 'occurrence-a',
             isCurrent: () => false,
         })).toBeNull();
     });
@@ -295,7 +368,7 @@ describe('plugin UI ephemeral shared scope', () => {
             getPluginUiEphemeralSharedScope({
                 accountLifetime,
                 pluginId,
-                immutableGenerationId: 'generation-a',
+                occurrenceId: 'occurrence-a',
                 isCurrent: () => true,
             })!
         );
@@ -317,7 +390,7 @@ describe('plugin UI ephemeral shared scope', () => {
         const scope = getPluginUiEphemeralSharedScope({
             accountLifetime,
             pluginId: 'acme.triage',
-            immutableGenerationId: 'generation-a',
+            occurrenceId: 'occurrence-a',
             isCurrent: () => true,
         });
         const dispose = vi.fn();
@@ -334,7 +407,7 @@ describe('plugin UI ephemeral shared scope', () => {
         const scope = getPluginUiEphemeralSharedScope({
             accountLifetime,
             pluginId: 'acme.triage',
-            immutableGenerationId: 'generation-a',
+            occurrenceId: 'occurrence-a',
             isCurrent: () => true,
         });
         const laterDispose = vi.fn();
@@ -348,20 +421,20 @@ describe('plugin UI ephemeral shared scope', () => {
         expect(laterDispose).toHaveBeenCalledTimes(1);
     });
 
-    it('does not retire the committed generation from an abandoned successor render', () => {
+    it('does not retire the committed occurrence from an abandoned successor render', () => {
         const accountLifetime = createAccountLifetime();
-        let currentGeneration = 'generation-a';
+        let currentOccurrence = 'occurrence-a';
         let observedScope: ReturnType<typeof usePluginUiEphemeralSharedScopeBinding> = null;
         const mountLifetimes = Object.freeze({
-            'generation-a': Object.freeze({ isCurrent: () => currentGeneration === 'generation-a' }),
-            'generation-b': Object.freeze({ isCurrent: () => currentGeneration === 'generation-b' }),
+            'occurrence-a': Object.freeze({ isCurrent: () => currentOccurrence === 'occurrence-a' }),
+            'occurrence-b': Object.freeze({ isCurrent: () => currentOccurrence === 'occurrence-b' }),
         });
-        function Probe(props: Readonly<{ generation: keyof typeof mountLifetimes; fail?: boolean }>) {
+        function Probe(props: Readonly<{ occurrence: keyof typeof mountLifetimes; fail?: boolean }>) {
             observedScope = usePluginUiEphemeralSharedScopeBinding({
                 accountLifetime,
                 pluginId: 'acme.triage',
-                immutableGenerationId: props.generation,
-                mountLifetime: mountLifetimes[props.generation],
+                occurrenceId: props.occurrence,
+                mountLifetime: mountLifetimes[props.occurrence],
             });
             if (props.fail) throw new Error('abandoned render');
             return null;
@@ -369,20 +442,20 @@ describe('plugin UI ephemeral shared scope', () => {
 
         let committed: ReturnType<typeof create> | undefined;
         act(() => {
-            committed = create(createElement(Probe, { generation: 'generation-a' }));
+            committed = create(createElement(Probe, { occurrence: 'occurrence-a' }));
         });
         const scopeA = observedScope as PluginUiEphemeralSharedScope | null;
         const disposeA = vi.fn();
         scopeA?.acquire('window', () => Object.freeze({ value: {}, dispose: disposeA }));
 
-        currentGeneration = 'generation-b';
+        currentOccurrence = 'occurrence-b';
         expect(() => act(() => {
-            create(createElement(Probe, { generation: 'generation-b', fail: true }));
+            create(createElement(Probe, { occurrence: 'occurrence-b', fail: true }));
         })).toThrow('abandoned render');
         expect(disposeA).not.toHaveBeenCalled();
 
         act(() => {
-            committed?.update(createElement(Probe, { generation: 'generation-b' }));
+            committed?.update(createElement(Probe, { occurrence: 'occurrence-b' }));
         });
         expect(disposeA).toHaveBeenCalledTimes(1);
         act(() => {

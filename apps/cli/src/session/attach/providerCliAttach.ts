@@ -2,7 +2,11 @@ import { spawn } from 'node:child_process';
 import { stat } from 'node:fs/promises';
 import { createConnection } from 'node:net';
 
-import { resolveWindowsCommandInvocation, type CommandInvocation } from '@happier-dev/cli-common/process';
+import {
+    execFileWithDeadline,
+    resolveWindowsCommandInvocation,
+    type CommandInvocation,
+} from '@happier-dev/cli-common/process';
 import type { CatalogAgentLookupId } from '@/agent/catalog/types';
 import type {
     AttachAvailabilityRequestV1,
@@ -14,13 +18,54 @@ import type {
 } from '@happier-dev/plugin-sdk/agents/runtime';
 import type { AgentCliLaunchSpec } from '@/packagedRuntime/managedTools/requireAgentCliLaunchSpec';
 import { requireAgentCliLaunchSpec } from '@/packagedRuntime/managedTools/requireAgentCliLaunchSpec';
+import { logger } from '@/ui/logger';
 
 type SpawnedAttachProcess = Readonly<{
+    exitCode?: number | null;
     once: {
         (event: 'exit', handler: (code: number | null, signal: NodeJS.Signals | null) => void): void;
         (event: 'error', handler: (error: Error) => void): void;
     };
+    kill: (signal?: NodeJS.Signals | number) => boolean;
 }>;
+
+const PROVIDER_ATTACH_STOP_GRACE_MS = 3_000;
+
+type ProviderCliAttachHostFacts = Readonly<{ cliVersion: string | null }>;
+
+export type ProviderCliAttachManagedServiceAccess = Readonly<{
+    baseUrl: string;
+    request(input: Readonly<{
+        pathAndQuery: string;
+        signal: AbortSignal;
+    }>): Promise<Readonly<{ ok: boolean }>>;
+    childEnvironment: Readonly<Record<string, string>>;
+}>;
+
+async function readProviderCliVersion(params: Readonly<{
+    launch: AgentCliLaunchSpec;
+    args: readonly string[];
+    env: NodeJS.ProcessEnv;
+}>): Promise<string | null> {
+    try {
+        const result = await execFileWithDeadline(
+            params.launch.command,
+            [...params.launch.args, ...params.args],
+            {
+                env: params.env,
+                timeout: 5_000,
+                windowsHide: true,
+            },
+        );
+        const stdout = typeof result.stdout === 'string'
+            ? result.stdout
+            : result.stdout.toString('utf8');
+        const normalized = stdout.trim();
+        return normalized.length > 0 ? normalized : null;
+    } catch {
+        return null;
+    }
+}
 
 export type ProviderCliAttachTargetResult<TTarget extends object> =
     | Readonly<{ ok: true; value: TTarget }>
@@ -112,12 +157,30 @@ async function resolveTargetWithFallback<TTarget extends object>(params: Readonl
 export function createProviderCliAttachSurface<TTarget extends object>(params: Readonly<{
     agentId: CatalogAgentLookupId;
     resolveTarget: ProviderCliAttachTargetResolver<TTarget>;
-    createArgs: (target: TTarget) => readonly string[];
-    resolveReachability?: (target: TTarget) => AgentProviderCliAttachReachabilityV1 | null;
+    createArgs: (target: TTarget, host: ProviderCliAttachHostFacts) => readonly string[];
+    resolveReachability?: (
+        target: TTarget,
+        host: ProviderCliAttachHostFacts,
+    ) => AgentProviderCliAttachReachabilityV1 | null;
+    cliVersionArgs?: readonly string[];
+    resolveCliVersion?: (input: Readonly<{
+        launch: AgentCliLaunchSpec;
+        args: readonly string[];
+        env: NodeJS.ProcessEnv;
+    }>) => Promise<string | null>;
     readFallbackServerBaseUrl?: (
         input: Readonly<{ sessionId: string }>,
     ) => Promise<string | null>;
-    resolveLaunchSpec?: (env?: NodeJS.ProcessEnv) => AgentCliLaunchSpec;
+    managedServiceTargetBaseUrl?: (target: TTarget) => string | null;
+    managedServiceCredentialEnvironmentKey?: string;
+    managedServiceCredentialEnvironmentAliases?: readonly string[];
+    resolveManagedServiceAccess?: (input: Readonly<{
+        sessionId: string;
+        targetBaseUrl: string;
+    }>) => Promise<ProviderCliAttachManagedServiceAccess | null>;
+    resolveLaunchSpec?: (
+        env?: NodeJS.ProcessEnv,
+    ) => AgentCliLaunchSpec | Promise<AgentCliLaunchSpec>;
     resolveCommandInvocation?: (params: Readonly<{
         command: string;
         args: readonly string[];
@@ -131,6 +194,44 @@ export function createProviderCliAttachSurface<TTarget extends object>(params: R
 }>): AttachSurface {
     const resolveReachability = params.resolveReachability;
     const resolveInvocation = params.resolveCommandInvocation ?? resolveWindowsCommandInvocation;
+    const resolveLaunch = async (env: NodeJS.ProcessEnv): Promise<AgentCliLaunchSpec> => await (
+        params.resolveLaunchSpec ?? ((processEnv) =>
+            requireAgentCliLaunchSpec(params.agentId, { processEnv }))
+    )(env);
+    const resolveHostFacts = async (
+        env: NodeJS.ProcessEnv,
+        selectedLaunch?: AgentCliLaunchSpec,
+    ): Promise<ProviderCliAttachHostFacts> => {
+        if (!params.cliVersionArgs) return Object.freeze({ cliVersion: null });
+        const launch = selectedLaunch ?? await resolveLaunch(env);
+        return Object.freeze({
+            cliVersion: await (params.resolveCliVersion ?? readProviderCliVersion)({
+                launch,
+                args: params.cliVersionArgs,
+                env,
+            }),
+        });
+    };
+    const resolveExactManagedServiceAccess = async (
+        sessionId: string,
+        target: TTarget,
+    ): Promise<ProviderCliAttachManagedServiceAccess | null> => {
+        const targetBaseUrl = params.managedServiceTargetBaseUrl?.(target);
+        if (!targetBaseUrl || !params.resolveManagedServiceAccess) return null;
+        try {
+            const access = await params.resolveManagedServiceAccess({
+                sessionId,
+                targetBaseUrl,
+            });
+            if (!access) return null;
+            return new URL(access.baseUrl).toString()
+                === new URL(targetBaseUrl).toString()
+                ? access
+                : null;
+        } catch {
+            return null;
+        }
+    };
     return {
         evaluateAvailability: async (request) => {
             const target = await resolveTargetWithFallback({
@@ -156,7 +257,10 @@ export function createProviderCliAttachSurface<TTarget extends object>(params: R
                         safeMessage: 'Provider attach reachability is unavailable.',
                     };
                 }
-                const reachability = resolveReachability(target.value);
+                const reachability = resolveReachability(
+                    target.value,
+                    await resolveHostFacts(params.env ?? process.env),
+                );
                 if (!reachability) {
                     return {
                         available: false,
@@ -173,6 +277,19 @@ export function createProviderCliAttachSurface<TTarget extends object>(params: R
                         const timeout = setTimeout(() => controller.abort(), timeoutMs);
                         timeout.unref?.();
                         try {
+                            const access = await resolveExactManagedServiceAccess(
+                                request.sessionId,
+                                target.value,
+                            );
+                            if (access) {
+                                const targetUrl = new URL(reachability.url);
+                                const accessUrl = new URL(access.baseUrl);
+                                if (targetUrl.origin !== accessUrl.origin) return false;
+                                return (await access.request({
+                                    pathAndQuery: `${targetUrl.pathname}${targetUrl.search}`,
+                                    signal: controller.signal,
+                                })).ok;
+                            }
                             return Boolean((await (params.fetchFn ?? fetch)(reachability.url, {
                                 method: 'GET',
                                 signal: controller.signal,
@@ -192,7 +309,10 @@ export function createProviderCliAttachSurface<TTarget extends object>(params: R
             }
             return { available: true };
         },
-        attach: async ({ metadata, sessionId }) => {
+        attach: async ({ metadata, sessionId, signal }) => {
+            if (signal?.aborted) {
+                return { ok: true, value: { exitCode: 0 } };
+            }
             const target = await resolveTargetWithFallback({
                 metadata,
                 sessionId,
@@ -208,21 +328,45 @@ export function createProviderCliAttachSurface<TTarget extends object>(params: R
             }
 
             const env = params.env ?? process.env;
-            const launch = (params.resolveLaunchSpec ?? ((processEnv) =>
-                requireAgentCliLaunchSpec(params.agentId, { processEnv })))(env);
+            const managedServiceAccess = await resolveExactManagedServiceAccess(
+                sessionId,
+                target.value,
+            );
+            const childEnv = { ...env };
+            const credentialEnvironmentKey =
+                params.managedServiceCredentialEnvironmentKey;
+            const credentialEnvironmentDestinations = credentialEnvironmentKey
+                ? [
+                    credentialEnvironmentKey,
+                    ...(params.managedServiceCredentialEnvironmentAliases ?? []),
+                ]
+                : [];
+            if (managedServiceAccess && credentialEnvironmentKey) {
+                for (const environmentKey of credentialEnvironmentDestinations) {
+                    delete childEnv[environmentKey];
+                }
+                const materializedCredential =
+                    managedServiceAccess.childEnvironment[credentialEnvironmentKey];
+                if (typeof materializedCredential === 'string') {
+                    for (const environmentKey of credentialEnvironmentDestinations) {
+                        childEnv[environmentKey] = materializedCredential;
+                    }
+                }
+            }
+            const launch = await resolveLaunch(childEnv);
             const invocation = resolveInvocation({
                 command: launch.command,
                 args: [
                     ...launch.args,
-                    ...params.createArgs(target.value),
+                    ...params.createArgs(target.value, await resolveHostFacts(childEnv, launch)),
                 ],
-                env,
+                env: childEnv,
             });
             const child = (params.spawnProcess ?? spawn)(
                 invocation.command,
                 invocation.args,
                 {
-                    env,
+                    env: childEnv,
                     shell: false,
                     stdio: 'inherit',
                     ...(invocation.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
@@ -230,8 +374,41 @@ export function createProviderCliAttachSurface<TTarget extends object>(params: R
             ) as unknown as SpawnedAttachProcess;
 
             const exitCode = await new Promise<number>((resolve) => {
-                child.once('error', () => resolve(1));
-                child.once('exit', (code) => resolve(typeof code === 'number' ? code : 1));
+                let stopTimer: NodeJS.Timeout | null = null;
+                const finish = (code: number): void => {
+                    if (stopTimer) {
+                        clearTimeout(stopTimer);
+                        stopTimer = null;
+                    }
+                    signal?.removeEventListener('abort', stop);
+                    resolve(code);
+                };
+                const stop = (): void => {
+                    try {
+                        child.kill('SIGINT');
+                    } catch {
+                        logger.infoFile('[provider-attach] Failed to signal foreground attach process', {
+                            error: 'provider_attach_cleanup_signal_failed', sessionId, signal: 'SIGINT',
+                        });
+                        // The exit/error event remains the authoritative settlement.
+                    }
+                    stopTimer = setTimeout(() => {
+                        if (child.exitCode !== null && child.exitCode !== undefined) return;
+                        try {
+                            child.kill('SIGKILL');
+                        } catch {
+                            logger.infoFile('[provider-attach] Failed to signal foreground attach process', {
+                                error: 'provider_attach_cleanup_signal_failed', sessionId, signal: 'SIGKILL',
+                            });
+                            // The exit/error event remains the authoritative settlement.
+                        }
+                    }, PROVIDER_ATTACH_STOP_GRACE_MS);
+                    stopTimer.unref?.();
+                };
+                child.once('error', () => finish(1));
+                child.once('exit', (code) => finish(typeof code === 'number' ? code : 1));
+                signal?.addEventListener('abort', stop, { once: true });
+                if (signal?.aborted) stop();
             });
             return { ok: true, value: { exitCode } };
         },

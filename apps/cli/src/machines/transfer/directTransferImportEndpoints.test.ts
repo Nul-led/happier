@@ -470,6 +470,9 @@ describe('direct transfer import endpoints', () => {
     const payload = Buffer.from('hello', 'utf8');
     const importSessionManager = createDirectTransferImportSessionManager({
       ttlMs: 10_000,
+      attachmentUpload: {
+        resolveSessionWorkingDirectory: async (sessionId) => sessionId === 'session-a' ? sessionWorkspaceRoot : null,
+      },
     });
     const app = createDirectPeerTransferApp({
       readPublishedTransfer: () => null,
@@ -484,6 +487,7 @@ describe('direct transfer import endpoints', () => {
 
       const openAuthorization = importSessionManager.issueImportOpenAuthorizationToken({
         t: 'session_attachment_upload_v1',
+        sessionId: 'session-a',
         workingDirectory: handlerWorkingDirectory,
         messageLocalId: 'message-4',
         fileName: 'hello.txt',
@@ -503,6 +507,7 @@ describe('direct transfer import endpoints', () => {
         },
         payload: {
           t: 'session_attachment_upload_v1',
+          sessionId: 'session-a',
           workingDirectory: handlerWorkingDirectory,
           messageLocalId: 'message-4',
           fileName: 'hello.txt',

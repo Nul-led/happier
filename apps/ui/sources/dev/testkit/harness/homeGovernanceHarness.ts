@@ -32,6 +32,11 @@ import { createArtifactStoreBoundary, type ArtifactStoreBoundary } from './artif
  */
 
 export type HomeDomainAnswer = Readonly<{
+    /**
+     * One path serving several reads told apart by their body (the active and the archived Team
+     * list): return the answer for this request, or `undefined` for this answer's own fields.
+     */
+    select?: (input: unknown) => HomeDomainAnswer | undefined;
     status?: number;
     /** Sent as the JSON body. Omit for an empty body. */
     body?: unknown;
@@ -157,6 +162,11 @@ export type HomeGovernanceHarness = Readonly<{
      * the real Home-view selection owner rather than a stubbed selection hook.
      */
     selectHomes(serverIds: readonly string[]): Promise<void>;
+    /**
+     * Someone else signs in on one saved Home: its credential now belongs to `accountId`, written
+     * through the real credential store so every credential-lifetime observer sees the change.
+     */
+    switchAccount(serverId: string, accountId: string): Promise<void>;
     /** Used by the installed boundaries; tests address Homes by id. */
     findByServerUrl(serverUrl: string): HomeRecord | null;
     reset(): Promise<void>;
@@ -344,6 +354,18 @@ export function createHomeGovernanceHarness(): HomeGovernanceHarness {
             if (!record) throw new Error(`No Home saved for ${serverId}`);
             return record.artifacts;
         },
+        async switchAccount(serverId: string, accountId: string): Promise<void> {
+            const record = homesByServerId.get(serverId);
+            if (!record) throw new Error(`No saved Home ${serverId}`);
+            record.accountId = accountId;
+            record.token = createAccountTokenForTests(accountId);
+            const stored = await TokenStorage.setCredentialsForServerUrl(
+                record.serverUrl,
+                { serverId },
+                { token: record.token, secret: `harness-secret-${accountId}` },
+            );
+            if (!stored) throw new Error(`The credential store refused the switch on ${serverId}`);
+        },
         async selectHomes(serverIds: readonly string[]): Promise<void> {
             const groupId = 'home-governance-test-group';
             await updateEffectiveHomeViewState((current) => ({
@@ -431,7 +453,8 @@ async function answerForEndpoint(
     }));
 
     const method = (init?.method ?? 'GET').toUpperCase();
-    const answer = record?.answers.get(`${method} ${path}`) ?? record?.answers.get(path);
+    const pathAnswer = record?.answers.get(`${method} ${path}`) ?? record?.answers.get(path);
+    const answer = pathAnswer?.select?.(input) ?? pathAnswer;
     if (!answer) {
         const artifactResponse = record?.artifacts.handle(path, init);
         if (artifactResponse) return await artifactResponse;

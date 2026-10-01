@@ -9,7 +9,7 @@ import type { FileItem } from '@/sync/domains/input/suggestionFile';
 import { t } from '@/text';
 import { normalizeRepoPathParts } from '@/utils/path/normalizeRepoPathParts';
 import { InlineRepoPathLabel } from '@/components/ui/path/InlineRepoPathLabel';
-import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
+import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
 import { VirtualizedList } from '@/components/ui/lists/virtualized/VirtualizedList';
 import { Icon } from '@/components/ui/icons/Icon';
 
@@ -101,71 +101,24 @@ export const SearchResultsList = React.memo(({
         theme.colors.text.link,
     ]);
 
+    // A search in progress or without results is one quiet line in the list (lab 0 "N"); a project with
+    // no files at all is the pane's own empty state.
     const listEmptyComponent = React.useMemo(() => (
         isSearching ? (
-            <View
-                style={{
-                    flex: 1,
-                    justifyContent: 'center',
-                    alignItems: 'center',
-                    paddingTop: 40,
-                }}
-            >
-                <ActivitySpinner size="small" color={theme.colors.text.secondary} />
-                <Text
-                    style={{
-                        fontSize: 16,
-                        color: theme.colors.text.secondary,
-                        textAlign: 'center',
-                        marginTop: 16,
-                        ...Typography.default(),
-                    }}
-                >
-                    {t('files.searching')}
-                </Text>
-            </View>
+            <SurfaceStateCard testID="files-search-searching" size="line" kind="loading" title={t('files.searching')} />
+        ) : searchQuery ? (
+            <SurfaceStateCard
+                testID="files-search-no-results"
+                size="line"
+                kind="empty"
+                iconName="magnifying-glass"
+                title={t('files.noFilesFound')}
+                reason={t('files.tryDifferentTerm')}
+            />
         ) : (
-            <View
-                style={{
-                    flex: 1,
-                    justifyContent: 'center',
-                    alignItems: 'center',
-                    paddingTop: 40,
-                    paddingHorizontal: 20,
-                }}
-            >
-                <Icon
-                    name={searchQuery ? 'magnifying-glass' : 'folder'}
-                    size={48}
-                    color={theme.colors.text.secondary}
-                />
-                <Text
-                    style={{
-                        fontSize: 16,
-                        color: theme.colors.text.secondary,
-                        textAlign: 'center',
-                        marginTop: 16,
-                        ...Typography.default(),
-                    }}
-                >
-                    {searchQuery ? t('files.noFilesFound') : t('files.noFilesInProject')}
-                </Text>
-                {Boolean(searchQuery) && (
-                    <Text
-                        style={{
-                            fontSize: 14,
-                            color: theme.colors.text.secondary,
-                            textAlign: 'center',
-                            marginTop: 8,
-                            ...Typography.default(),
-                        }}
-                    >
-                        {t('files.tryDifferentTerm')}
-                    </Text>
-                )}
-            </View>
+            <SurfaceStateCard testID="files-search-empty" kind="empty" iconName="folder" title={t('files.noFilesInProject')} />
         )
-    ), [isSearching, searchQuery, theme.colors.text.secondary]);
+    ), [isSearching, searchQuery]);
 
     const renderItem = React.useCallback(({ item: file, index }: { item: FileItem; index: number }) => (
         <Item

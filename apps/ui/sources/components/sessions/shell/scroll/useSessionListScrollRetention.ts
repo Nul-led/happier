@@ -117,6 +117,8 @@ export function useSessionListScrollRetention(params: Readonly<{
     surfaceActive?: boolean;
 }>) {
     const surfaceActive = params.surfaceActive !== false;
+    // Native event handlers stay stable and read activity when delivered, including
+    // callbacks already held when the list becomes inactive.
     const surfaceActiveRef = React.useRef(surfaceActive);
     surfaceActiveRef.current = surfaceActive;
     const retentionKeyRef = React.useRef(params.retentionKey);
@@ -161,7 +163,7 @@ export function useSessionListScrollRetention(params: Readonly<{
     }, [retentionEntry]);
 
     const handleViewableItemsChanged = React.useCallback((info: SessionListViewabilityInfo) => {
-        if (!surfaceActive) return;
+        if (!surfaceActiveRef.current) return;
         const firstVisibleSession = [...info.viewableItems]
             .filter((token) => token.isViewable !== false)
             .sort((left, right) => (left.index ?? Number.MAX_SAFE_INTEGER) - (right.index ?? Number.MAX_SAFE_INTEGER))
@@ -205,7 +207,7 @@ export function useSessionListScrollRetention(params: Readonly<{
                     restorePendingMembershipAnchor();
                 },
             );
-    }, [restorePendingMembershipAnchor, retentionEntry, surfaceActive]);
+    }, [restorePendingMembershipAnchor, retentionEntry]);
 
     const previousMembershipRef = React.useRef<Readonly<{
         retentionKey: string;
@@ -256,7 +258,7 @@ export function useSessionListScrollRetention(params: Readonly<{
 
     const handleScroll = React.useCallback((event: SessionListScrollRetentionScrollEvent) => {
         // An inactive surface's scroll events are not the reader's intent.
-        if (!surfaceActive) return;
+        if (!surfaceActiveRef.current) return;
         const offsetY = readFiniteNumber(event.nativeEvent?.contentOffset?.y);
         if (offsetY == null) return;
 
@@ -283,7 +285,7 @@ export function useSessionListScrollRetention(params: Readonly<{
         // in remote-dev: a restore landing mid-gesture yanks them back to the old position, which is
         // worse than the stale position it was trying to fix.
         retentionEntry.restorePending = false;
-    }, [retentionEntry, surfaceActive]);
+    }, [retentionEntry]);
 
     const handleLayout = React.useCallback((event: SessionListScrollRetentionLayoutEvent) => {
         const height = event.nativeEvent?.layout?.height;

@@ -174,16 +174,6 @@ describe('INTERNAL_ONLY_RPC_METHODS', () => {
         expect(INTERNAL_ONLY_RPC_METHODS.filter((entry) => entry.method.startsWith('daemon.sshTunnels.'))).toEqual([]);
     });
 
-    it('classifies React Native crash report submission as an A.16x.10 internal daemon transport', () => {
-        const entry = INTERNAL_ONLY_RPC_METHODS.find((candidate) =>
-            candidate.method === RPC_METHODS.DAEMON_PLUGIN_UI_REACT_NATIVE_CRASH_REPORT_SUBMIT);
-
-        expect(entry).toEqual(expect.objectContaining({
-            ownerPacket: 'A.16x.10',
-        }));
-        expect(isInternalOnlyRpcMethod(RPC_METHODS.DAEMON_PLUGIN_UI_REACT_NATIVE_CRASH_REPORT_SUBMIT)).toBe(true);
-    });
-
     it('classifies BRW-15 browser recording route methods as internal daemon transports', () => {
         const expected = [
             RPC_METHODS.DAEMON_BROWSER_RECORDING_START,
@@ -208,6 +198,7 @@ describe('INTERNAL_ONLY_RPC_METHODS', () => {
             { method: RPC_METHODS.DAEMON_BROWSER_CONTROL_DISPATCH, ownerPacket: 'BRW-2' },
             { method: RPC_METHODS.DAEMON_BROWSER_CONTEXT_DISPATCH, ownerPacket: 'BRW-11' },
             { method: RPC_METHODS.UI_BROWSER_RECORDING_CAPTURE_FRAME, ownerPacket: 'BRW-15' },
+            { method: RPC_METHODS.UI_BROWSER_AUTOMATION_DISPATCH, ownerPacket: 'BRW-7' },
         ];
 
         for (const { method, ownerPacket } of expected) {

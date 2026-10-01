@@ -139,8 +139,13 @@ async function boardItemTitles(page: Page): Promise<string[]> {
     .allTextContents();
 }
 
+async function chooseBoardAddIntent(page: Page, intent: 'note' | 'interactiveView' | 'fromPlugins'): Promise<void> {
+  await page.getByTestId('session-board-pane-surface-add-trigger').click();
+  await page.getByTestId(`add-${intent}`).click();
+}
+
 async function createNote(page: Page, params: Readonly<{ title: string; body: string }>): Promise<string> {
-  await page.getByTestId('session-board-pane-surface-add-note').click();
+  await chooseBoardAddIntent(page, 'note');
   await expect(page.getByTestId('session-board-note-editor')).toBeVisible();
   await page.getByTestId('session-board-note-editor-title').fill(params.title);
   const body = noteBodyInput(page);
@@ -243,7 +248,7 @@ async function attachLoadedRuntimeEvidence(params: Readonly<{
  * A sibling enabled-generation journey creates caller-authored HTML through the
  * reachable Board control and drives its real browser frame and external-link
  * containment. The external-style plugin journey proves a Session-targeted
- * `sessionWidget` beyond the Board's native wrapper.
+ * `widget` beyond the Board's native wrapper.
  *
  * Not covered here, with the live recipe that owns each:
  * - E2EE Board: needs an Account with encryption material and a Session created
@@ -253,7 +258,7 @@ async function attachLoadedRuntimeEvidence(params: Readonly<{
  * - Agent authoring: the four `session.board.*` Actions are exercised against a
  *   real Agent turn by the umbrella's Recipe 1 step 2; this suite drives only
  *   the human callers of those same Actions.
- * - Installed `sessionWidget`: the fourth test below, which additionally needs
+ * - Installed `widget`: the fourth test below, which additionally needs
  *   `HAPPIER_E2E_SESSION_BOARD_WIDGET=1` and the daemon control token.
  */
 test.describe('current managed Stack Session Board', () => {
@@ -356,6 +361,12 @@ test.describe('current managed Stack Session Board', () => {
       await second.getByTestId('session-board-note-editor-save').click();
       await expect(second.getByTestId('session-board-note-editor')).toHaveCount(0, { timeout: 120_000 });
       await expect(second.getByTestId(`session-board-item-${itemId}-body`)).toContainText('writer two wins after review');
+
+      // The first mounted client must converge through the ordinary Session
+      // change transport while it stays open. Reload below separately proves
+      // persistence; it cannot stand in for delivery to an active viewer.
+      await expect(page.getByTestId(`session-board-item-${itemId}-body`))
+        .toContainText('writer two wins after review', { timeout: 120_000 });
 
       await page.reload({ waitUntil: 'domcontentloaded' });
       await waitForAuthenticatedRouteUi({
@@ -518,7 +529,7 @@ test.describe('current managed Stack Session Board', () => {
       await page.setViewportSize({ width: 1440, height: 900 });
       await visitSession({ page, context, sessionId: hostedSessionId });
       await openBoard(page);
-      await page.getByTestId('session-board-pane-surface-add-interactiveView').click();
+      await chooseBoardAddIntent(page, 'interactiveView');
       await expect(page.getByTestId('session-board-hosted-html-editor')).toBeVisible();
       await page.getByTestId('session-board-hosted-html-editor-title').fill(title);
       await replaceHostedHtmlEditorSource(page, html);
@@ -570,7 +581,7 @@ test.describe('current managed Stack Session Board', () => {
     await attachLoadedRuntimeEvidence({ testInfo, context, uiResponses });
   });
 
-  test('places the real public-authoring external-style sessionWidget and retains it through uninstall/reinstall tombstone', async ({ page }, testInfo) => {
+  test('places the real public-authoring external-style widget and retains it through uninstall/reinstall tombstone', async ({ page }, testInfo) => {
     test.skip(expectedFeatureState !== 'enabled', 'This journey belongs to the feature-enabled Stack generation.');
     test.skip(!widgetJourneyEnabled, 'Set HAPPIER_E2E_SESSION_BOARD_WIDGET=1 to exercise the installed widget journey on the managed Stack.');
     const uiResponses = installUiByteCapture(page, context.uiUrl);
@@ -589,7 +600,7 @@ test.describe('current managed Stack Session Board', () => {
       await page.setViewportSize({ width: 1440, height: 900 });
       await visitSession({ page, context, sessionId: widgetSessionId });
       await openBoard(page);
-      await page.getByTestId('session-board-pane-surface-add-fromPlugins').click();
+      await chooseBoardAddIntent(page, 'fromPlugins');
       await expect(page.getByTestId('session-board-pane-widget-picker')).toBeVisible({ timeout: 60_000 });
       await page.getByTestId(`session-board-pane-widget-picker-candidate-${PUBLIC_AUTHORING_PLUGIN_ID}-${PUBLIC_AUTHORING_WIDGET_LOCAL_ID}`).click();
       const widgetTitle = page.locator('[data-testid^="session-board-item-"][data-testid$="-title"]', { hasText: 'Review status' }).first();
@@ -600,7 +611,7 @@ test.describe('current managed Stack Session Board', () => {
       await expect(page.getByTestId(`session-board-item-${widgetItemId}-provenance`)).toContainText('Review Assistant');
       // This control is rendered inside the external-style plugin, beyond the
       // Board's native title/provenance chrome. It appears only after the real
-      // sessionWidget receives a Session target and reaches its Session-scoped
+      // widget receives a Session target and reaches its Session-scoped
       // resource runtime; a missing target renders "needs a Session" instead.
       await expect(page.getByText('Refresh status').first()).toBeVisible({ timeout: 120_000 });
       await expect(page.getByText('Review status needs a Session')).toHaveCount(0);

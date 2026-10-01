@@ -4,9 +4,9 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { PinIcon, PinSlashIcon } from '@/components/sessions/shell/sessionPinIcons';
 import { t } from '@/text';
-import type { PersistedSessionMessagePinV1 } from '@/sync/domains/messages/pins/sessionMessagePins';
+import type { PersistedSessionMessagePinV1 } from "@happier-dev/session-core/pins";
 
-import type { SessionMessagePinRole } from '@/sync/domains/messages/pins/sessionMessagePinIdentity';
+import type { SessionMessagePinRole } from "@happier-dev/session-core/pins";
 import { ICON_SIZE } from '@/components/ui/icons/Icon';
 
 import {

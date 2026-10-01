@@ -1,7 +1,8 @@
 import * as React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { createUseSettingMock, renderScreen, standardCleanup } from '@/dev/testkit';
+import { createUseSettingMock, createTestSessionTranscriptSource, renderWithSessionTranscriptSource, standardCleanup } from '@/dev/testkit';
+import type { Message } from '@happier-dev/session-core/messages';
 import { installTranscriptCommonModuleMocks } from './transcriptTestHelpers';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -49,22 +50,21 @@ describe('TranscriptList motion composition', () => {
 
     it('installs the effective reduced-motion config for the public/read-only transcript surface', async () => {
         const { TranscriptList } = await import('./TranscriptList');
-        await renderScreen(
+        const messages: Message[] = [{
+            kind: 'agent-text', id: 'assistant-1', localId: null, createdAt: 1,
+            text: 'Hello', isThinking: false,
+        }];
+        const source = createTestSessionTranscriptSource({
+            sessionId: 'public-session', metadata: null, messages,
+            interaction: { canSendMessages: false, canApprovePermissions: false, permissionDisabledReason: 'public' },
+        });
+        await renderWithSessionTranscriptSource(
             <TranscriptList
-                sessionId="public-session"
                 datasetKey="public:public-session:1"
                 metadata={null}
-                messages={[
-                    {
-                        kind: 'agent-text',
-                        id: 'assistant-1',
-                        localId: null,
-                        createdAt: 1,
-                        text: 'Hello',
-                    },
-                ]}
-                interaction={{ canSendMessages: false, canApprovePermissions: false, permissionDisabledReason: 'public' }}
+                messages={messages}
             />,
+            source,
         );
 
         expect(hostState.motionConfigs).toContainEqual(expect.objectContaining({

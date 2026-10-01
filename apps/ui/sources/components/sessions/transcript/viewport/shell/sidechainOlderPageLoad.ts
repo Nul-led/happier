@@ -1,4 +1,4 @@
-import type { TranscriptOlderPageLoadResult } from '@/sync/domains/messages/transcriptOlderPageLoad';
+import type { TranscriptOlderPageLoadResult } from "@happier-dev/session-core/messages";
 
 export type SidechainOlderPageLoadResult = TranscriptOlderPageLoadResult;
 

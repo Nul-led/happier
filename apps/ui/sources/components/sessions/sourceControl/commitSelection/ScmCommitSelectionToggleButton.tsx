@@ -12,7 +12,9 @@ import { toTestIdSafeValue } from '@/utils/ui/toTestIdSafeValue';
 import { ActivitySpinner, iconMatchedSpinnerSize } from '@/components/ui/feedback/ActivitySpinner';
 import { IconButton } from '@/components/ui/buttons/IconButton';
 import { Icon } from '@/components/ui/icons/Icon';
+import { SelectionCheckGlyph, type SelectionCheckState } from '@/components/ui/selection/SelectionCheckGlyph';
 import { isAtomicCommitStrategy } from '@/scm/settings/commitStrategy';
+import { useChangedFileRowLayout } from '@/components/workspaces/scm/changes/useChangedFileRowLayout';
 
 export type ScmCommitSelectionToggleButtonProps = Readonly<{
     sessionId: string;
@@ -25,13 +27,29 @@ export type ScmCommitSelectionToggleButtonProps = Readonly<{
     selectedForCommit: boolean;
     surface: 'file' | 'files';
     onAfterToggle?: () => void | Promise<void>;
+    /**
+     * `toggle` (default): the "+" / "✓" include control of a file header. `checkbox`: the Git list's
+     * leading checkbox column (session-tabs G1), drawn by {@link ScmCommitSelectionCheckGlyph}.
+     */
+    appearance?: 'toggle' | 'checkbox';
 }>;
 
 const COMMIT_TOGGLE_ICON_SIZE_PX = 14;
 
+/**
+ * The commit selection's checkbox mark: one file (checked or not) or a whole group (`mixed` when some
+ * of it is selected). The Git list's rows and group headers draw the same mark, at the list's density:
+ * 16 px beside a two-line row, 14 px on the compact one-line rhythm (Git lab TV).
+ */
+export function ScmCommitSelectionCheckGlyph(props: Readonly<{ state: SelectionCheckState }>): React.ReactElement {
+    const layout = useChangedFileRowLayout();
+    return <SelectionCheckGlyph state={props.state} size={layout === 'compact' ? 'compact' : 'regular'} />;
+}
+
 export const ScmCommitSelectionToggleButton = React.memo((props: ScmCommitSelectionToggleButtonProps) => {
     const { theme } = useUnistyles();
     const [busy, setBusy] = React.useState(false);
+    const compactRow = useChangedFileRowLayout() === 'compact' && props.appearance === 'checkbox';
 
     const iconName = props.selectedForCommit ? 'check' : 'plus';
     const iconColor = props.selectedForCommit ? theme.colors.state.success.foreground : theme.colors.text.secondary;
@@ -47,13 +65,18 @@ export const ScmCommitSelectionToggleButton = React.memo((props: ScmCommitSelect
         <View style={Platform.OS === 'web' ? { marginVertical: -3 } : undefined}>
             <IconButton
                 variant="plain"
-                size={28}
+                size={compactRow ? 24 : 28}
                 testID={`scm-commit-selection-toggle-${toTestIdSafeValue(props.file.fullPath)}`}
                 accessibilityLabel={accessibilityLabel}
                 disabled={busy || !props.scmWriteEnabled}
+                {...(props.appearance === 'checkbox'
+                    ? { accessibilityRole: 'checkbox' as const, checked: props.selectedForCommit, selectedBackground: false }
+                    : {})}
                 icon={busy
                     ? <ActivitySpinner size={iconMatchedSpinnerSize(COMMIT_TOGGLE_ICON_SIZE_PX)} color={theme.colors.text.secondary} />
-                    : <Icon name={iconName as any} size={COMMIT_TOGGLE_ICON_SIZE_PX} color={iconColor} />}
+                    : props.appearance === 'checkbox'
+                        ? <ScmCommitSelectionCheckGlyph state={props.selectedForCommit ? 'checked' : 'unchecked'} />
+                        : <Icon name={iconName as any} size={COMMIT_TOGGLE_ICON_SIZE_PX} color={iconColor} />}
                 onPress={(e: any) => {
                     e?.stopPropagation?.();
                     fireAndForget((async () => {

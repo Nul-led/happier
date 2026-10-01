@@ -3,6 +3,7 @@ import type {
   TerminalHostKind,
   TerminalHostPreference,
 } from '@happier-dev/agents';
+import type { AgentTerminalHostResolutionReason } from '@happier-dev/plugin-sdk/agents/runtime';
 
 export type {
   TerminalHostAdapter,
@@ -18,20 +19,7 @@ export type TerminalHostResolverPlatform = Readonly<{
   arch: NodeJS.Architecture;
 }>;
 
-export type TerminalHostResolutionReason =
-  | 'tmux_available'
-  | 'tmux_forced'
-  | 'tmux_unavailable'
-  | 'tmux_unsupported_on_windows'
-  | 'zellij_forced'
-  | 'zellij_unavailable'
-  | 'zellij_unavailable_tmux_fallback'
-  | 'windows_console_available'
-  | 'windows_console_forced'
-  | 'windows_console_unavailable'
-  | 'windows_zellij_unvalidated'
-  | 'windows_arm64_unsupported'
-  | 'no_host_available';
+export type TerminalHostResolutionReason = AgentTerminalHostResolutionReason;
 
 export type TerminalHostResolution =
   | Readonly<{

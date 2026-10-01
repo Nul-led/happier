@@ -2,6 +2,7 @@ import {
     AcpConfigOptionOverridesV1Schema,
     buildBackendTargetKeyV2,
     BackendTargetKeyV2Schema,
+    parseBackendTargetKeyV2,
     readBackendTargetRefV2,
     SessionModelSelectionV1Schema,
     type AcpConfigOptionOverridesV1,
@@ -25,7 +26,9 @@ export type RememberedEngineSelectionV1 = z.infer<typeof RememberedEngineSelecti
 function normalizeTargetKey(rawTargetKey: string): BackendTargetKeyV2 | null {
     const parsedV2 = BackendTargetKeyV2Schema.safeParse(rawTargetKey);
     try {
-        if (parsedV2.success) return parsedV2.data;
+        // One Agent, one key: a V2 key is re-derived through the key owner so a
+        // bundled Agent's `backend:` spelling reads as its canonical Agent key.
+        if (parsedV2.success) return buildBackendTargetKeyV2(parseBackendTargetKeyV2(parsedV2.data));
         const target = readBackendTargetRefV2(rawTargetKey as BackendTargetRefV2Input);
         return buildBackendTargetKeyV2(target);
     } catch {

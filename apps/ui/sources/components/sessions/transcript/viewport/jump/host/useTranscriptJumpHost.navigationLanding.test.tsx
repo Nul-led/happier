@@ -1,3 +1,15 @@
+import * as TranscriptTestReact from 'react';
+import { createTestSessionTranscriptSource as createHostTestSource, wrapWithSessionTranscriptSource as wrapHostTestSource } from '@/dev/testkit';
+import { sync as transcriptHistorySync } from '@/sync/sync';
+
+const transcriptHostTestSource = createHostTestSource({ sessionId: 'session-landing', history: {
+    loadOlder: (options) => transcriptHistorySync.loadOlderMessages('session-landing', options),
+    loadTargetWindow: (target, options) => transcriptHistorySync.loadTargetWindowMessages('session-landing', target, options),
+} });
+function TranscriptHostTestProvider(props: TranscriptTestReact.PropsWithChildren) {
+    return wrapHostTestSource(props.children as TranscriptTestReact.ReactElement, transcriptHostTestSource);
+}
+
 /**
  * A jump landing OWNS the current navigation anchor until the reader genuinely
  * scrolls. A landing settles the renderer window one or two rows ABOVE the target
@@ -9,7 +21,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act } from 'react-test-renderer';
 
 import { flushHookEffects, renderHook } from '@/dev/testkit';
-import type { Message } from '@/sync/domains/messages/messageTypes';
+import type { Message } from "@happier-dev/session-core/messages";
 import type { TranscriptNavigationEntry } from '@/components/sessions/transcript/navigation/transcriptNavigationTypes';
 
 import type { ScrollableChatListRef } from '../../transcriptScrollableListTypes';
@@ -18,6 +30,11 @@ import {
     getTranscriptNavigationVisibilityStore,
 } from '../../visibility/transcriptNavigationVisibilityStore';
 import { useTranscriptJumpHost } from './useTranscriptJumpHost';
+
+vi.mock('@/sync/domains/plugins/availability/generatedBundledPluginUiArtifacts', async () => {
+    const { emptyBundledPluginUiAssetsModule } = await import('@/dev/testkit/mocks/bundledPluginUiAssets');
+    return emptyBundledPluginUiAssetsModule;
+});
 
 vi.mock('@/sync/sync', () => ({
     sync: {
@@ -147,6 +164,7 @@ function buildDeps(overrides: Readonly<{
         executeViewportCommandWithAnimation: vi.fn(() => true),
         forkedTranscriptEnabled: false,
         hasMoreOlderRef: createRef<boolean | null>(false),
+        observeOlderLoadResult: () => {},
         invalidateViewportAnchorCapture: vi.fn(),
         isLoaded: true,
         isPinnedRef: createRef(false),
@@ -210,7 +228,7 @@ describe('transcript jump landing owns the navigation anchor', () => {
         const { listRef, rendererWindow } = createHostMembers({ startIndex: 3, endIndex: 8 });
         const hook = await renderHook(
             (deps: JumpHostDeps) => useTranscriptJumpHost(deps),
-            { initialProps: buildDeps({ listRef }) },
+            { wrapper: TranscriptHostTestProvider, initialProps: buildDeps({ listRef }) },
         );
         let unsubscribe = () => {};
         try {
@@ -260,7 +278,7 @@ describe('transcript jump landing owns the navigation anchor', () => {
         const { listRef } = createHostMembers({ startIndex: 3, endIndex: 8 });
         const hook = await renderHook(
             (deps: JumpHostDeps) => useTranscriptJumpHost(deps),
-            { initialProps: buildDeps({ listRef }) },
+            { wrapper: TranscriptHostTestProvider, initialProps: buildDeps({ listRef }) },
         );
         let unsubscribe = () => {};
         try {

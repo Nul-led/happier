@@ -66,6 +66,33 @@ async function expandProgressDetails(screen: Awaited<ReturnType<typeof renderScr
 }
 
 describe('SessionHandoffProgressModal', () => {
+    it('offers the blocked link from validated request-local failure without redispatching on return', async () => {
+        const { SessionHandoffProgressModal } = await import('./SessionHandoffProgressModal');
+        const onOpenConflicts = vi.fn();
+        const screen = await renderScreen(<SessionHandoffProgressModal
+            onClose={vi.fn()} setChrome={vi.fn()}
+            requestFailure={{
+                ok: false, error: 'route blocked', errorCode: 'workspace_sync_partial_route_blocked',
+                workspacePreparation: { ok: false, errorCode: 'relationship_conflicted', completed: [], blockedRelationshipId: 'a-b' },
+            }}
+            onOpenConflicts={onOpenConflicts}
+        />);
+        expect(onOpenConflicts).not.toHaveBeenCalled();
+        await screen.pressByTestIdAsync('session-handoff-open-conflicts');
+        expect(onOpenConflicts).toHaveBeenCalledWith('a-b');
+        expect(onOpenConflicts).toHaveBeenCalledTimes(1);
+    });
+
+    it('offers general set review when immediate failure has no validated blocked-link detail', async () => {
+        const { SessionHandoffProgressModal } = await import('./SessionHandoffProgressModal');
+        const onOpenConflicts = vi.fn();
+        const screen = await renderScreen(<SessionHandoffProgressModal onClose={vi.fn()} setChrome={vi.fn()}
+            requestFailure={{ ok: false, error: 'unavailable', errorCode: 'workspace_sync_unavailable' }}
+            onOpenConflicts={onOpenConflicts} />);
+        await screen.pressByTestIdAsync('session-handoff-open-conflicts');
+        expect(onOpenConflicts).toHaveBeenCalledWith(null);
+    });
+
     const completedOperation = (workspace: unknown) => ({
         version: 1 as const,
         operationId: 'handoff-operation-outcome',
@@ -114,6 +141,7 @@ describe('SessionHandoffProgressModal', () => {
                 onClose={onClose}
                 setChrome={setChrome}
                 operation={operation}
+                serverId="home-a"
             />,
         );
 
@@ -121,7 +149,7 @@ describe('SessionHandoffProgressModal', () => {
         expect(React.isValidElement(chrome?.footer)).toBe(true);
         const footer = await renderScreen(chrome.footer);
         await footer.pressByTestIdAsync('action-operation-cancel');
-        expect(requestActionOperationStopMock).toHaveBeenCalledWith(operation);
+        expect(requestActionOperationStopMock).toHaveBeenCalledWith({ serverId: 'home-a', snapshot: operation });
         await footer.pressByTestIdAsync('action-operation-collapse');
         expect(onClose).toHaveBeenCalledTimes(1);
     });
@@ -672,6 +700,47 @@ describe('SessionHandoffProgressModal', () => {
         expect(findProgressIndicators(screen)).toHaveLength(0);
     });
 
+    it.each([
+        ['workspace_sync_update_required', 'workspaceSync.error.updateRequired'],
+        ['machine_carrier_unavailable', 'workspaceSync.error.machineOffline'],
+    ] as const)('presents the owned %s operation failure guidance and no retry control', async (errorCode, expectedKey) => {
+        const { SessionHandoffProgressModal } = await import('./SessionHandoffProgressModal');
+        const setChrome = vi.fn();
+
+        const screen = await renderScreen(
+            <SessionHandoffProgressModal
+                onClose={() => {}}
+                setChrome={setChrome}
+                operation={{
+                    version: 1,
+                    operationId: 'handoff-operation-update-required',
+                    requestId: 'handoff-request-update-required',
+                    revision: 2,
+                    actionId: 'session.handoff',
+                    state: 'failed',
+                    scope: { accountId: 'account-1', machineId: 'source-machine', sessionId: 'session-1' },
+                    title: 'Hand off session',
+                    createdAt: 1,
+                    startedAt: 2,
+                    settledAt: 3,
+                    cancellation: 'supported',
+                    error: {
+                        errorCode,
+                        error: errorCode,
+                    },
+                }}
+            />,
+        );
+
+        expect(screen.getTextContent()).toContain(expectedKey);
+        expect(screen.getTextContent()).not.toContain('sessionHandoff.failure.message');
+
+        const chrome = setChrome.mock.calls.at(-1)?.[0];
+        const footer = await renderScreen(chrome.footer);
+        expect(footer.findByTestId('action-operation-done')).toBeTruthy();
+        expect(footer.findByTestId('action-operation-cancel')).toBeNull();
+    });
+
     it('surfaces the phase detail when the handoff is awaiting recovery', async () => {
         const { SessionHandoffProgressModal } = await import('./SessionHandoffProgressModal');
         const setChrome = vi.fn();
@@ -1060,6 +1129,44 @@ describe('SessionHandoffProgressModal', () => {
             />,
         );
         expect(copied.getTextContent()).toContain('sessionHandoff.workspaceOutcome.copied');
+    });
+
+    it('confirms only the linked route that actually completed', async () => {
+        const { SessionHandoffProgressModal } = await import('./SessionHandoffProgressModal');
+        const status = {
+            relationshipId: 'c-a', controllerMachineId: 'machine-a', state: 'watching',
+            alphaPath: '/a', betaPath: '/c', mode: 'keep_both_in_sync',
+            endpointStates: {
+                alpha: { connected: true, scanned: true, scanProblemCount: 0, transitionProblemCount: 0 },
+                beta: { connected: true, scanned: true, scanProblemCount: 0, transitionProblemCount: 0 },
+            },
+            conflictCount: 0, lastCycleObservedAtMs: 1,
+        };
+        const screen = await renderScreen(<SessionHandoffProgressModal
+            onClose={() => {}}
+            operation={completedOperation({ kind: 'linked_workspace', traversed: [
+                { relationshipId: 'c-a', policyDigest: 'a'.repeat(64), status },
+                { relationshipId: 'a-b', policyDigest: 'b'.repeat(64), status: { ...status, relationshipId: 'a-b' } },
+            ], cleanupWarning: { code: 'workspace_sync_commit_failed', message: 'Fence cleanup needs attention.' } })}
+        />);
+        expect(screen.getTextContent()).toContain('sessionHandoff.workspaceOutcome.linked');
+        expect(screen.getTextContent()).toContain('Fence cleanup needs attention.');
+        expect(screen.getTextContent()).not.toContain('Current everywhere');
+    });
+
+    it('states partial linked transfer rather than presenting a generic failure', async () => {
+        const { SessionHandoffProgressModal } = await import('./SessionHandoffProgressModal');
+        const screen = await renderScreen(<SessionHandoffProgressModal
+            onClose={() => {}}
+            operation={{
+                ...completedOperation({ kind: 'none' }),
+                state: 'failed', result: undefined,
+                error: { errorCode: 'workspace_sync_partial_route_blocked', error: 'Some files synchronized through C–A; A–B is blocked.' },
+            }}
+        />);
+        expect(screen.findByTestId('session-handoff-progress-status')?.props.children).toBe('sessionHandoff.failure.partialLinked');
+        await expandProgressDetails(screen);
+        expect(screen.getTextContent()).toContain('Some files synchronized through C–A; A–B is blocked.');
     });
 
 });

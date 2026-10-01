@@ -79,6 +79,11 @@ export type NewSessionEngineOptionDetailProps = Readonly<{
         favorite: boolean;
         onToggle: () => void;
     }>;
+    /**
+     * New Session owns the Provider-model projection for its selected target.
+     * In-session callers omit this and retain the detail pane's local projection.
+     */
+    providerProjection?: ReturnType<typeof useProviderModelProjection>;
     experimentalConfirmation?: SessionModelPickerExperimentalConfirmationController;
     onSelectionChange?: (selection: Readonly<{
         modelId: string;
@@ -267,11 +272,11 @@ export function NewSessionEngineOptionDetail(props: NewSessionEngineOptionDetail
     const modelNotes = React.useMemo(
         () => [
             ...(props.modelSummary ? [props.modelSummary] : []),
-            ...(preflightModels?.unavailable === true && modelProbe.phase === 'idle'
+            ...((preflightModels?.unavailable === true && !modelProbe.failed) && modelProbe.phase === 'idle'
                 ? [t('agentInput.model.unavailable')]
                 : []),
         ],
-        [modelProbe.phase, preflightModels?.unavailable, props.modelSummary],
+        [modelProbe.failed, modelProbe.phase, preflightModels?.unavailable, props.modelSummary],
     );
     const configNotes = React.useMemo(
         () => configOptionsUnavailable
@@ -360,13 +365,14 @@ export function NewSessionEngineOptionDetail(props: NewSessionEngineOptionDetail
         scopeKind: 'spawn',
         serverId: props.capabilityServerId,
     });
-    const providerProjection = useProviderModelProjection({
-        enabled: providersFeatureEnabled && props.selectedMachineId !== null,
+    const localProviderProjection = useProviderModelProjection({
+        enabled: !props.providerProjection && providersFeatureEnabled && props.selectedMachineId !== null,
         machineId: props.selectedMachineId,
         serverId: props.capabilityServerId,
         agentTargetKey,
         ...(selectedModelSelection ? { currentSelection: selectedModelSelection.ref } : {}),
     });
+    const providerProjection = props.providerProjection ?? localProviderProjection;
 
     const unifiedProbe = React.useMemo(() => {
         return mergeOptionPickerProbes([

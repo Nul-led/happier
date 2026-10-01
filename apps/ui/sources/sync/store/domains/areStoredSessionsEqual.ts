@@ -89,6 +89,11 @@ export function areStoredSessionsEqual(
         && areSessionValueEqual(previous.viewer, next.viewer)
         && (previous.pendingPermissionRequestCount ?? null) === (next.pendingPermissionRequestCount ?? null)
         && (previous.pendingUserActionRequestCount ?? null) === (next.pendingUserActionRequestCount ?? null)
+        && (previous.reportsTo?.sessionId ?? null) === (next.reportsTo?.sessionId ?? null)
+        && previous.origin?.kind === next.origin?.kind
+        && previous.origin?.runId === next.origin?.runId
+        && previous.workDepth === next.workDepth
+        && areSessionValueEqual(previous.reports ?? null, next.reports ?? null)
         && (previous.latestTurnStatus ?? null) === (next.latestTurnStatus ?? null)
         && (previous.latestTurnStatusObservedAt ?? null) === (next.latestTurnStatusObservedAt ?? null)
         && (previous.runtimeActivityState ?? null) === (next.runtimeActivityState ?? null)
@@ -103,6 +108,7 @@ export function areStoredSessionsEqual(
         && readSessionMetadataLayoutVersion(previous.metadataLayoutVersion)
             === readSessionMetadataLayoutVersion(next.metadataLayoutVersion)
         && previous.metadataVersion === next.metadataVersion
+        && (previous.lockedDisplayTitle ?? null) === (next.lockedDisplayTitle ?? null)
         && previous.agentStateVersion === next.agentStateVersion
         && previous.thinking === next.thinking
         && previous.thinkingAt === next.thinkingAt

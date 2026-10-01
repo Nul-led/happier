@@ -53,10 +53,12 @@ export function createPermissionModeQueueState(opts: {
         permissionMode: resolveQueueKey ? resolveQueueKey(mode.permissionMode) : mode.permissionMode,
         appendSystemPrompt: resolveAppendSystemPromptQueueKeyValue(mode),
         modelSelection: mode.modelSelection ?? null,
+        callerInputConstraints: mode.callerInputConstraints ?? null,
         suppressUserEcho: mode.suppressUserEcho === true,
         providerPromptAlreadyResolved: mode.providerPromptAlreadyResolved === true,
         causalPermissionAuthority: mode.causalPermissionAuthority ?? null,
         inputContextBlock: mode.inputContextBlock ?? '',
+        inputProvenance: mode.inputProvenance ?? null,
       }),
     {
       batcher: (messages) => combinePermissionModeQueuedPrompts(messages),

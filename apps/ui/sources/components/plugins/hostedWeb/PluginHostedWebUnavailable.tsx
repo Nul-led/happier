@@ -1,14 +1,20 @@
 import * as React from 'react';
 
-import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
+import { resolvePluginSurfaceStateAction } from '@/components/sessions/panes/PluginSurfaceFallback';
+import { SurfaceStateCard, type SurfaceStateAction } from '@/components/ui/surfaces/SurfaceStateCard';
 import { resolvePluginSurfaceStatePresentation } from '@/sync/domains/surfaces/copy';
 import { t } from '@/text';
 
 export type PluginHostedWebUnavailableDiagnosticCode =
     | 'account_scope_changed'
+    | 'artifact_incompatible'
+    | 'artifact_lease_revoked'
+    | 'artifact_source_integrity_invalid'
+    | 'artifact_source_unavailable'
     | 'artifact_hosting_not_opted_in'
     | 'artifact_hosting_unsupported'
     | 'e2ee_unavailable'
+    | 'disabled'
     | 'feature_disabled'
     | 'hosted_web_bridge_nonce_unavailable'
     | 'hosted_web_bridge_policy_absent'
@@ -23,9 +29,20 @@ export type PluginHostedWebUnavailableDiagnosticCode =
     | 'hosted_web_security_unavailable'
     | 'hosted_web_static_artifact_missing'
     | 'operation_cancelled'
+    | 'host_ui_api_incompatible'
+    | 'invalid_executable_export'
+    | 'module_instantiation_failed'
+    | 'plugin_disabled'
+    | 'plugin_revoked'
+    | 'plugin_uninstalled'
     | 'response_invalid'
     | 'server_generation_changed'
-    | 'transport_unavailable';
+    | 'source_unavailable'
+    | 'transport_unavailable'
+    | 'unknown_host_module'
+    | 'revoked'
+    | 'uninstalled'
+    | 'update_required';
 
 /**
  * Keep the state-card diagnostic channel bounded to known host/runtime facts.
@@ -36,9 +53,14 @@ export function readPluginHostedWebUnavailableDiagnosticCode(
 ): PluginHostedWebUnavailableDiagnosticCode | null {
     switch (value) {
         case 'account_scope_changed':
+        case 'artifact_incompatible':
+        case 'artifact_lease_revoked':
+        case 'artifact_source_integrity_invalid':
+        case 'artifact_source_unavailable':
         case 'artifact_hosting_not_opted_in':
         case 'artifact_hosting_unsupported':
         case 'e2ee_unavailable':
+        case 'disabled':
         case 'feature_disabled':
         case 'hosted_web_bridge_nonce_unavailable':
         case 'hosted_web_bridge_policy_absent':
@@ -52,10 +74,21 @@ export function readPluginHostedWebUnavailableDiagnosticCode(
         case 'hosted_web_sandbox_unavailable':
         case 'hosted_web_security_unavailable':
         case 'hosted_web_static_artifact_missing':
+        case 'host_ui_api_incompatible':
+        case 'invalid_executable_export':
+        case 'module_instantiation_failed':
         case 'operation_cancelled':
+        case 'plugin_disabled':
+        case 'plugin_revoked':
+        case 'plugin_uninstalled':
         case 'response_invalid':
         case 'server_generation_changed':
+        case 'source_unavailable':
         case 'transport_unavailable':
+        case 'unknown_host_module':
+        case 'revoked':
+        case 'uninstalled':
+        case 'update_required':
             return value;
         default:
             return null;
@@ -67,6 +100,8 @@ export function PluginHostedWebUnavailable(props: Readonly<{
     diagnosticCode?: PluginHostedWebUnavailableDiagnosticCode | null;
     /** Mount-local retry; source selection and capability issuance remain with their incumbent owners. */
     onRetry?: () => void;
+    /** Route-owned recovery callback; the shared presentation owner supplies its semantic label. */
+    recoveryAction?: SurfaceStateAction;
 }>): React.ReactElement {
     const presentation = resolvePluginSurfaceStatePresentation({
         state: 'unavailable',
@@ -77,6 +112,11 @@ export function PluginHostedWebUnavailable(props: Readonly<{
     if (!card) {
         throw new Error('plugin_hosted_web_unavailable_presentation_missing_card');
     }
+    const action = resolvePluginSurfaceStateAction({
+            recoveryAction: presentation.recoveryAction,
+            onRetry: props.onRetry,
+            manageAction: props.recoveryAction,
+        });
     return (
         <SurfaceStateCard
             testID="plugin-hosted-web-unavailable"
@@ -85,7 +125,7 @@ export function PluginHostedWebUnavailable(props: Readonly<{
             reason={card.reason}
             diagnosticCode={presentation.diagnosticCode}
             accessibilitySemantics={card.accessibilitySemantics}
-            action={props.onRetry ? { label: t('common.retry'), onPress: props.onRetry } : undefined}
+            action={action}
         />
     );
 }

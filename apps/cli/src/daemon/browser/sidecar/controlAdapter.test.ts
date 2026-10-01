@@ -3,6 +3,7 @@ import {
     type BrowserCommandV1,
 } from '@happier-dev/protocol';
 import { describe, expect, it, vi } from 'vitest';
+import { createBrowserSidecarCdpControlAdapter, type BrowserSidecarCdpEventSubscriber } from './controlAdapter';
 
 type SidecarCdpPageHandle = Readonly<{
     targetId: string;
@@ -105,6 +106,86 @@ function createTransport(overrides: Partial<SidecarCdpControlTransport> = {}): S
 }
 
 describe('browser sidecar CDP control adapter', () => {
+    it('unbinds every owned view on disposal and rejects a pending open completion', async () => {
+        let finishOpen: ((page: SidecarCdpPageHandle) => void) | undefined;
+        const transport = createTransport();
+        const adapter = createBrowserSidecarCdpControlAdapter({
+            browserSessionId: 'browser_session_1', sidecarId: 'sidecar_1', transport,
+        });
+        const events: SidecarViewLifecycleEvent[] = [];
+        adapter.subscribeViewLifecycle(event => events.push(event));
+        await adapter.dispatchCommand(externalOpenViewCommand());
+        vi.mocked(transport.openPage).mockImplementationOnce(() => new Promise(resolve => { finishOpen = resolve; }));
+        const opening = adapter.dispatchCommand(externalOpenViewCommand({ viewId: 'pending' }));
+        expect('dispose' in adapter).toBe(true);
+        if (!('dispose' in adapter) || typeof adapter.dispose !== 'function') return;
+        adapter.dispose();
+        finishOpen?.({ targetId: 'late', sessionId: 'late' });
+        expect(await opening).toMatchObject({ status: 'failed', error: { code: 'adapter_unavailable' } });
+        expect(events).toEqual([
+            { type: 'bound', browserSessionId: 'browser_session_1', viewId: 'view_1' },
+            { type: 'unbound', browserSessionId: 'browser_session_1', viewId: 'view_1' },
+        ]);
+        expect(adapter.resolvePageHandle({ browserSessionId: 'browser_session_1', viewId: 'view_1' })).toBeNull();
+        expect(adapter.supportsOpenView(externalOpenViewCommand())).toBe(false);
+        adapter.dispose();
+        expect(events).toHaveLength(2);
+    });
+    it('publishes engine redirects, title/loading and document generations through the bound view', async () => {
+        let listener: BrowserSidecarCdpEventSubscriber | undefined;
+        const adapter = createBrowserSidecarCdpControlAdapter({ browserSessionId: 'browser_session_1', sidecarId: 'sidecar_1',
+            transport: { ...createTransport(), subscribeCdpEvents: callback => { listener = callback; return () => undefined; } },
+        });
+        const events: unknown[] = [];
+        adapter.subscribeBrowserEvents(event => events.push(event));
+        const opened = await adapter.dispatchCommand(externalOpenViewCommand());
+        expect(opened).toMatchObject({ events: expect.arrayContaining([expect.objectContaining({ kind: 'navigationStateChanged', navigationGeneration: 0 })]) });
+        listener?.({ method: 'Page.frameNavigated', sessionId: 'cdp_session_secret', params: { frame: { id: 'sub', parentId: 'main', loaderId: 'sub_loader', url: 'https://child.test/' } } });
+        expect(adapter.getNavigationState({ browserSessionId: 'browser_session_1', viewId: 'view_1' })?.navigationGeneration).toBe(0);
+        listener?.({ method: 'Page.frameNavigated', sessionId: 'cdp_session_secret', params: { frame: { id: 'main', loaderId: 'document_1', url: 'https://redirect.test/' } } });
+        listener?.({ method: 'Target.targetInfoChanged', params: { targetInfo: { targetId: 'cdp_target_secret', title: 'Redirected', url: 'https://redirect.test/' } } });
+        listener?.({ method: 'Page.frameStoppedLoading', sessionId: 'cdp_session_secret', params: { frameId: 'main' } });
+        expect(events.at(-1)).toMatchObject({ kind: 'navigationStateChanged', currentUrl: 'https://redirect.test/', title: 'Redirected', loadingState: 'ready', navigationGeneration: 1 });
+        listener?.({ method: 'Page.frameNavigated', sessionId: 'cdp_session_secret', params: { frame: { id: 'main', loaderId: 'document_2', url: 'https://redirect.test/' } } });
+        expect(adapter.getNavigationState({ browserSessionId: 'browser_session_1', viewId: 'view_1' })?.navigationGeneration).toBe(2);
+        await adapter.dispatchCommand({ kind: 'closeView', commandId: 'close', browserSessionId: 'browser_session_1', viewId: 'view_1' });
+        const count = events.length;
+        listener?.({ method: 'Page.frameNavigated', sessionId: 'cdp_session_secret', params: { frame: { id: 'main', loaderId: 'late', url: 'https://late.test/' } } });
+        expect(events).toHaveLength(count);
+    });
+    it('does not regress a committed redirect when the bootstrap frame tree replies late', async () => {
+        let listener!: BrowserSidecarCdpEventSubscriber;
+        let releaseTree!: (tree: unknown) => void;
+        let entered!: () => void;
+        const started = new Promise<void>(resolve => { entered = resolve; });
+        const adapter = createBrowserSidecarCdpControlAdapter({ browserSessionId: 'browser_session_1', sidecarId: 'sidecar_1',
+            transport: { ...createTransport(), subscribeCdpEvents: callback => { listener = callback; return () => undefined; },
+                dispatchPageCommand: async command => {
+                    if (command.method === 'Page.getFrameTree') { entered(); return new Promise(resolve => { releaseTree = resolve; }); }
+                    return {};
+                },
+            },
+        });
+        const opening = adapter.dispatchCommand(externalOpenViewCommand());
+        await started;
+        listener({ method: 'Page.frameNavigated', sessionId: 'cdp_session_secret', params: { frame: { id: 'main', loaderId: 'redirect', url: 'https://redirect.test/' } } });
+        releaseTree({ frameTree: { frame: { id: 'main', loaderId: 'initial', url: 'https://browser.example.test/start' } } });
+        expect(await opening).toMatchObject({ status: 'dispatched' });
+        expect(adapter.getNavigationState({ browserSessionId: 'browser_session_1', viewId: 'view_1' }))
+            .toMatchObject({ currentUrl: 'https://redirect.test/', navigationGeneration: 1 });
+    });
+    it('retires the binding and closes the page when engine event bootstrap fails', async () => {
+        const transport = { ...createTransport(), subscribeCdpEvents: () => () => undefined,
+            dispatchPageCommand: async () => { throw new Error('CDP disconnected during bootstrap'); },
+        };
+        const adapter = createBrowserSidecarCdpControlAdapter({ browserSessionId: 'browser_session_1', sidecarId: 'sidecar_1', transport });
+        const lifecycle: SidecarViewLifecycleEvent[] = [];
+        adapter.subscribeViewLifecycle(event => lifecycle.push(event));
+        expect(await adapter.dispatchCommand(externalOpenViewCommand())).toMatchObject({ status: 'failed' });
+        expect(adapter.ownsView({ browserSessionId: 'browser_session_1', viewId: 'view_1' })).toBe(false);
+        expect(lifecycle.map(event => event.type)).toEqual(['bound', 'unbound']);
+        expect(transport.dispatchBrowserCommand).toHaveBeenCalledWith({ method: 'Target.closeTarget', params: { targetId: 'cdp_target_secret' } });
+    });
     it('emits view-binding lifecycle on openView/closeView for diagnostics subscribers', async () => {
         const mod = await loadControlAdapter();
 

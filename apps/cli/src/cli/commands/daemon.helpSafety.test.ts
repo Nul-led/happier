@@ -59,6 +59,7 @@ vi.mock('@/configuration', () => ({
 
 vi.mock('@/cloud/decodeJwtPayload', () => ({
   decodeJwtPayload: vi.fn(() => sideEffectMock('decodeJwtPayload')),
+  readAccountIdFromToken: vi.fn(() => sideEffectMock('readAccountIdFromToken')),
 }));
 
 vi.mock('@/utils/readPositiveIntEnv', () => ({

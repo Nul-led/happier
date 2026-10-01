@@ -4,7 +4,7 @@ import path, { delimiter as PATH_DELIMITER } from 'node:path';
 import { accessSync, constants as fsConstants, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 
-import { createScmCapabilities, type ScmWorkingSnapshot } from '@happier-dev/protocol';
+import { createScmCapabilities, type ScmWorkingSnapshot } from '@happier-dev/protocol/scm';
 import { resolveWindowsCommandOnPath } from '@happier-dev/cli-common/process';
 
 import { validatePath } from '@/rpc/handlers/pathSecurity';

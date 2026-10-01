@@ -576,6 +576,92 @@ describe('computeVisibleSessionListIndex', () => {
         ]);
     });
 
+    it('classifies global attention and working placement in one row-resolution pass', () => {
+        const now = 1_000_000;
+        const groupKey = 'server:s1:active:project:repo';
+        const source: SessionListIndexItem[] = [
+            { type: 'header', headerKind: 'active', title: 'Active', serverId: 's1' },
+            { type: 'header', headerKind: 'project', title: '~/repo', serverId: 's1', groupKey },
+            { type: 'session', sessionId: 'ready', serverId: 's1', section: 'active', groupKey, groupKind: 'project' },
+            { type: 'session', sessionId: 'working', serverId: 's1', section: 'active', groupKey, groupKind: 'project' },
+            { type: 'session', sessionId: 'retained-working', serverId: 's1', section: 'active', groupKey, groupKind: 'project' },
+            { type: 'session', sessionId: 'idle', serverId: 's1', section: 'active', groupKey, groupKind: 'project' },
+        ];
+        const rows = {
+            's1:ready': makeSessionRow('ready', {
+                seq: 4,
+                latestTurnStatus: 'completed' as const,
+                latestTurnStatusObservedAt: now - 2_000,
+                lastTurnCompletedAt: now - 2_000,
+                lastViewedSessionSeq: 1,
+            }),
+            's1:working': makeSessionRow('working', {
+                active: true,
+                presence: 'online' as const,
+                thinking: true,
+                latestTurnStatus: 'in_progress' as const,
+                latestTurnStatusObservedAt: now - 1_000,
+            }),
+            's1:retained-working': makeSessionRow('retained-working', {
+                active: true,
+                activeAt: now - 130_000,
+                presence: 'online' as const,
+                thinking: true,
+                latestTurnStatus: 'in_progress' as const,
+                latestTurnStatusObservedAt: now - 130_000,
+            }),
+            's1:idle': makeSessionRow('idle'),
+        };
+        const common = {
+            source,
+            hideInactiveSessions: false,
+            pinnedSessionKeysV1: [],
+            sessionListGroupOrderV1: {},
+            sessionListOrderingModeV1: 'custom' as const,
+            presentation: { enabled: false, presentation: 'grouped' as const, selectedServerIds: [] },
+            attentionPlacement: { mode: 'global' as const },
+            nowMs: now,
+        };
+        const resolveRow = makeResolver(rows);
+
+        let attentionOnlyRowResolutions = 0;
+        computeVisibleSessionListIndex({
+            ...common,
+            resolveSessionRow: (serverId, sessionId) => {
+                attentionOnlyRowResolutions += 1;
+                return resolveRow(serverId, sessionId);
+            },
+        });
+
+        let combinedRowResolutions = 0;
+        const combined = computeVisibleSessionListIndex({
+            ...common,
+            resolveSessionRow: (serverId, sessionId) => {
+                combinedRowResolutions += 1;
+                return resolveRow(serverId, sessionId);
+            },
+            workingPlacement: {
+                mode: 'global',
+                retainSessionKeys: ['s1:retained-working'],
+            },
+        })!;
+
+        expect(combined.map((item) => item.type === 'header'
+            ? `h:${item.headerKind}`
+            : `s:${item.sessionId}:${item.groupKind ?? 'none'}:${item.attentionPlacementReason ?? item.workingPlacementReason ?? 'none'}`
+        )).toEqual([
+            'h:attention',
+            's:ready:attention:ready',
+            'h:working',
+            's:working:working:working',
+            's:retained-working:working:working',
+            'h:active',
+            'h:project',
+            's:idle:project:none',
+        ]);
+        expect(combinedRowResolutions).toBe(attentionOnlyRowResolutions);
+    });
+
     it('keeps old and recent canonical active-turn projections live', () => {
         const now = Date.now();
         const activeGroup = 'server:s1:active:project:repo';

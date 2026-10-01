@@ -50,11 +50,12 @@ import {
     type TerminalStreamRuntime,
 } from '@/sync/domains/terminal/stream/runtime';
 import { machineTerminalClose, machineTerminalEnsure, machineTerminalRestart } from '@/sync/ops/machineTerminal';
+import { buildMachineTerminalSessionRequest } from './machineTerminalSessionRequest';
 import { delay } from '@/utils/timing/time';
 
 export type TerminalStatus = 'idle' | 'connecting' | 'connected' | 'error' | 'exited';
 
-const embeddedTerminalRendererId = 'embedded-terminal';
+const mutableTerminalRendererId = 'embedded-terminal';
 
 type PendingRendererWrite = EmbeddedTerminalWriteCompleteEvent & Readonly<{
     previewBytes: Uint8Array;
@@ -75,10 +76,17 @@ export function useMachineTerminalSession(params: Readonly<{
     terminalRef: React.MutableRefObject<EmbeddedTerminalRendererHandle | null>;
     initialCommand?: string | null;
     closeOnUnmount?: boolean;
+    sessionId?: string;
+    /** A borrowed view may read output, but never mutate its owning process. */
+    readOnly?: boolean;
     /** An existing process owned by another lifecycle. Null waits for that owner;
      * undefined retains this controller's normal ensure/restart ownership. */
     attachedTerminalId?: string | null;
 }>) {
+    const rendererInstanceId = React.useId();
+    const embeddedTerminalRendererId = params.readOnly
+        ? `embedded-terminal-view:${rendererInstanceId}`
+        : mutableTerminalRendererId;
     const byteStreamEnabled = useFeatureEnabled(
         'terminal.transport.byteStream',
         params.serverId ? { scopeKind: 'spawn', serverId: params.serverId } : undefined,
@@ -208,7 +216,7 @@ export function useMachineTerminalSession(params: Readonly<{
         }
         terminalCreditStateRef.current = result.state;
         delivery.enqueue(ack);
-    }, []);
+    }, [embeddedTerminalRendererId]);
     const replaceCachedPreviewWithReplay = React.useCallback((terminalId: string) => {
         if (!replaceCachedPreviewOnReplayRef.current) {
             return;
@@ -237,6 +245,7 @@ export function useMachineTerminalSession(params: Readonly<{
         onReady: notifyTransportReady,
     } = useEmbeddedTerminalTransportHandlers({
         machineId: params.machineId,
+        readOnly: params.readOnly,
         terminalIdRef,
         terminalStreamCarrierRef,
         onInputError: handleInputError,
@@ -259,6 +268,7 @@ export function useMachineTerminalSession(params: Readonly<{
     }, [clearTerminalOutput]);
 
     const requestRestart = React.useCallback(() => {
+        if (params.readOnly) return;
         resetAutoRetryState();
         restartRequestedRef.current = true;
         terminalPreviewDecoderRef.current.reset();
@@ -267,7 +277,7 @@ export function useMachineTerminalSession(params: Readonly<{
         clearTerminalOutput();
         syncDetectedUrl(null);
         bumpConnectionNonce();
-    }, [byteStreamEnabled, clearActiveTerminalStream, clearTerminalOutput, resetAutoRetryState, syncDetectedUrl]);
+    }, [byteStreamEnabled, clearActiveTerminalStream, clearTerminalOutput, params.readOnly, resetAutoRetryState, syncDetectedUrl]);
 
     const retryConnect = React.useCallback(() => {
         resetAutoRetryState();
@@ -327,7 +337,7 @@ export function useMachineTerminalSession(params: Readonly<{
             setError(null);
             setStatus('connecting');
 
-            if (!params.machineId || (!params.cwd && !params.launch)) {
+            if (!params.machineId || (!params.cwd && !params.launch && params.attachedTerminalId === undefined)) {
                 setStatus('error');
                 setError('terminal_missing_machine_target');
                 return;
@@ -342,36 +352,29 @@ export function useMachineTerminalSession(params: Readonly<{
                 setError('terminal_machine_unreachable');
                 return;
             }
-            if (params.attachedTerminalId === null || (params.attachedTerminalId === undefined && !initialTerminalSize)) {
+            if ((params.readOnly && !params.attachedTerminalId) || params.attachedTerminalId === null || (params.attachedTerminalId === undefined && !initialTerminalSize)) {
                 setStatus('connecting');
                 return;
             }
 
             const terminalSize = latestTerminalSizeRef.current ?? initialTerminalSize;
 
-            const request = params.launch
-                ? {
-                    terminalKey: params.terminalKey,
-                    cols: terminalSize?.cols,
-                    rows: terminalSize?.rows,
-                    launch: params.launch,
-                }
-                : {
-                    terminalKey: params.terminalKey,
-                    cwd: params.cwd!,
-                    cols: terminalSize?.cols,
-                    rows: terminalSize?.rows,
-                    initialCommand: params.initialCommand ?? undefined,
-                };
+            const request = buildMachineTerminalSessionRequest({
+                terminalKey: params.terminalKey, cwd: params.cwd, cols: terminalSize?.cols, rows: terminalSize?.rows,
+                launch: params.launch, initialCommand: params.initialCommand ?? undefined,
+            });
             const ensured = params.attachedTerminalId
                 ? { ok: true as const, terminalId: params.attachedTerminalId, reused: true }
                 : restartRequestedRef.current
                 ? await machineTerminalRestart(params.machineId, request, { serverId: params.serverId })
-                : await machineTerminalEnsure(params.machineId, request, { serverId: params.serverId });
+                : await machineTerminalEnsure(params.machineId, {
+                    ...request,
+                    ...(params.sessionId ? { sessionId: params.sessionId } : {}),
+                }, { serverId: params.serverId });
             restartRequestedRef.current = false;
 
             if (canceled) {
-                if (ensured.ok && !mountedRef.current && params.closeOnUnmount && params.attachedTerminalId === undefined) {
+                if (ensured.ok && !mountedRef.current && params.closeOnUnmount && !params.readOnly && params.attachedTerminalId === undefined) {
                     await machineTerminalClose(params.machineId, { terminalId: ensured.terminalId }, { serverId: params.serverId });
                 }
                 return;
@@ -676,6 +679,7 @@ export function useMachineTerminalSession(params: Readonly<{
         acknowledgeAcceptedBytes,
         connectionNonce,
         byteStreamEnabled,
+        embeddedTerminalRendererId,
         clearActiveTerminalStream,
         hydrateTerminalRendererIfNeeded,
         initialTerminalSize,
@@ -684,6 +688,8 @@ export function useMachineTerminalSession(params: Readonly<{
         params.initialCommand,
         params.launch,
         params.attachedTerminalId,
+        params.readOnly,
+        params.sessionId,
         params.closeOnUnmount,
         params.machineId,
         params.serverId,
@@ -704,10 +710,10 @@ export function useMachineTerminalSession(params: Readonly<{
 
     React.useEffect(() => {
         return () => {
-            if (!params.closeOnUnmount || !params.machineId || !terminalIdRef.current) return;
+            if (!params.closeOnUnmount || params.readOnly || params.attachedTerminalId !== undefined || !params.machineId || !terminalIdRef.current) return;
             void machineTerminalClose(params.machineId, { terminalId: terminalIdRef.current }, { serverId: params.serverId });
         };
-    }, [params.closeOnUnmount, params.machineId, params.serverId]);
+    }, [params.attachedTerminalId, params.closeOnUnmount, params.machineId, params.readOnly, params.serverId]);
 
     React.useEffect(() => {
         if (status !== 'connected' && status !== 'exited') {

@@ -14,7 +14,6 @@ const serverFeatures = {
     machines: {
       peerMediation: {
         grantSigningKeys: [],
-        directRouteGrantProofMintVersions: [2],
       },
     },
   },
@@ -88,10 +87,9 @@ function createFixture() {
       endpoint: {
         v: 1 as const,
         routeKind: 'loopback_direct' as const,
-        url: 'http://127.0.0.1:47001/peer-mediation/v1/probe',
+        url: 'http://127.0.0.1:47001',
         endpointFingerprint: 'pmrpc_fixture',
         expiresAt: Date.now() + 60_000,
-        directRouteGrantProofVerifierVersions: [2] as const,
       },
       activeFlows: { machine_rpc: true as const },
       stop: loopbackStop,

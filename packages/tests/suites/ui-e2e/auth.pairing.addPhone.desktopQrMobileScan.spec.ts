@@ -568,9 +568,9 @@ async function runWelcomeEntryScenario(params: Readonly<{
       // desktop sidebar action.
       await expect.poll(async () => {
         for (const testId of [
-          'main-header-start-new-session',
+          'tabbar-start-new-session',
           'home-header-start-new-session',
-          'nav-new-session',
+          'sidebar-start-new-session',
         ] as const) {
           if (await joiningPage.getByTestId(testId).first().isVisible().catch(() => false)) return true;
         }

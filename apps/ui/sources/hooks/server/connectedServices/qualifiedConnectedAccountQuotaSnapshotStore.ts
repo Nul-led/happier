@@ -1,4 +1,6 @@
 import type {
+    ProviderAccountUsageRecordId,
+    QualifiedConnectedAccountRef,
     QualifiedConnectedAccountQuotaSnapshotV4,
 } from '@happier-dev/protocol';
 
@@ -22,14 +24,18 @@ export type QualifiedQuotaSnapshotStoreContext =
 
 export type QualifiedQuotaSnapshotStoreEntry = Readonly<{
     snapshot: QualifiedConnectedAccountQuotaSnapshotV4 | null;
+    usageRecordId: ProviderAccountUsageRecordId | null;
     supported: boolean | null;
     loading: boolean;
     refreshing: boolean;
     error: string | null;
+    /** A read has completed (with or without a snapshot): "no snapshot" is then an answer, not a wait. */
+    read: boolean;
 }>;
 
 type InternalEntry = {
     snapshot: QualifiedConnectedAccountQuotaSnapshotV4 | null;
+    usageRecordId: ProviderAccountUsageRecordId | null;
     supported: boolean | null;
     loading: boolean;
     refreshing: boolean;
@@ -52,10 +58,12 @@ const QUOTA_SNAPSHOT_POLL_MS = 30_000;
 const QUOTA_SNAPSHOT_MISS_RETRY_MS = 30_000;
 const EMPTY_VIEW: QualifiedQuotaSnapshotStoreEntry = Object.freeze({
     snapshot: null,
+    usageRecordId: null,
     supported: null,
     loading: false,
     refreshing: false,
     error: null,
+    read: false,
 });
 
 const entries = new Map<string, InternalEntry>();
@@ -82,6 +90,7 @@ function getOrCreateEntry(key: string): InternalEntry {
     if (existing) return existing;
     const created: InternalEntry = {
         snapshot: null,
+        usageRecordId: null,
         supported: null,
         loading: false,
         refreshing: false,
@@ -104,10 +113,12 @@ function getOrCreateEntry(key: string): InternalEntry {
 function publish(key: string, entry: InternalEntry): void {
     entry.view = Object.freeze({
         snapshot: entry.snapshot,
+        usageRecordId: entry.usageRecordId,
         supported: entry.supported,
         loading: entry.loading,
         refreshing: entry.refreshing,
         error: entry.error,
+        read: entry.loadAttempted && !entry.loading,
     });
     const listeners = listenersByKey.get(key);
     if (!listeners) return;
@@ -175,9 +186,11 @@ async function runLoad(
 
     const promise = (async () => {
         try {
-            const snapshot =
+            const read =
                 await readQualifiedConnectedAccountQuota(context);
+            const snapshot = read?.snapshot ?? null;
             entry.snapshot = snapshot;
+            entry.usageRecordId = read?.recordId ?? null;
             entry.supported = snapshot !== null;
             entry.error = null;
             entry.consecutiveErrors = 0;
@@ -239,6 +252,42 @@ export function subscribeQualifiedQuotaSnapshotEntry(
     };
 }
 
+/** Read an account's snapshot once per launch (if nothing was read yet) without polling. */
+export function loadQualifiedQuotaSnapshotOnce(
+    key: string,
+    context: QualifiedQuotaSnapshotStoreContext,
+): () => void {
+    const entry = getOrCreateEntry(key);
+    entry.pollContext = context;
+    entry.credentialScope = context.credentialScope;
+    evictEntriesOutsideCredentialScope(context.credentialScope);
+    if (!entry.loadAttempted) {
+        entry.loadAttempted = true;
+        void runLoad(key, context);
+    }
+    return () => {};
+}
+
+/** Recovery already refreshed the provider and persisted its usage; only read that result. */
+export async function reloadQualifiedQuotaSnapshotAfterRecovery(input: Readonly<{
+    ref: QualifiedConnectedAccountRef;
+    serverBasis: QualifiedQuotaSnapshotStoreContext['serverBasis'];
+}>): Promise<void> {
+    await Promise.all([...entries].flatMap(([key, entry]) => {
+        const context = entry.pollContext;
+        if (!context
+            || context.serverBasis.serverId !== input.serverBasis.serverId
+            || context.serverBasis.generation !== input.serverBasis.generation
+            || context.ref.service.pluginId !== input.ref.service.pluginId
+            || context.ref.service.localId !== input.ref.service.localId
+            || context.ref.accountId !== input.ref.accountId) return [];
+        return [(async () => {
+            await entry.loadPromise;
+            await runLoad(key, context);
+        })()];
+    }));
+}
+
 export function retainQualifiedQuotaSnapshotPolling(
     key: string,
     context: QualifiedQuotaSnapshotStoreContext,
@@ -265,7 +314,6 @@ export function retainQualifiedQuotaSnapshotPolling(
         if (entries.get(key) !== entry) return;
         entry.retainCount = Math.max(0, entry.retainCount - 1);
         if (entry.retainCount === 0) {
-            entry.pollContext = null;
             clearPollTimer(entry);
         }
     };

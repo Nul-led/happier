@@ -13,7 +13,6 @@ import type {
 } from '@/daemon/spawn/persistedTakeoverAdmission';
 import {
   resolveExternalTakeoverSpawnOptions,
-  type ExternalTakeoverSpawnResolution,
   type ResolvedExternalTakeoverSpawn,
 } from '@/api/session/external/takeover/resolveExternalTakeoverSpawnOptions';
 import type {
@@ -32,7 +31,10 @@ import {
 import type {
   ExternalSessionPersistedTakeoverImportRecord,
 } from './materializeAction';
-import { logExternalSessionsInternalError } from './responseErrors';
+import {
+  ExternalSessionTakeoverAdmissionInvariantError,
+  logExternalSessionsInternalError,
+} from './responseErrors';
 import {
   loadCurrentExternalSessionExternalLinkedTakeoverSource,
   loadCurrentExternalSessionPersistedTakeoverTarget,
@@ -116,12 +118,7 @@ type PersistedTakeoverAdmissionOwnerDependencies = Readonly<{
     linked: LoadedLinkedExternalSession;
     importedAtMs: number;
   }>): Promise<PersistedTakeoverMetadataPatch>;
-  resolveSpawnOptions?(input: Readonly<{
-    linked: PreparedExternalSessionPersistedTakeoverSource['linked'];
-    sessionId: string;
-    targetDirectory: string;
-    signal?: AbortSignal;
-  }>): Promise<ExternalTakeoverSpawnResolution>;
+  resolveSpawnOptions?: typeof resolveExternalTakeoverSpawnOptions;
   nowMs?: () => number;
 }>;
 
@@ -218,7 +215,7 @@ function assertAdmissionRecord(
 
 function readNonnegativeInteger(
   record: Readonly<Record<string, unknown>>,
-  key: string,
+  key: 'metadataVersion' | 'seq',
 ): number {
   const value = record[key];
   if (
@@ -226,51 +223,51 @@ function readNonnegativeInteger(
     || !Number.isSafeInteger(value)
     || value < 0
   ) {
-    throw new Error(`persisted_takeover_admission_invalid_${key}`);
+    throw new ExternalSessionTakeoverAdmissionInvariantError(`persisted_takeover_admission_invalid_${key}`);
   }
   return value;
 }
 
+// Session detail is a publication-filtered viewer projection. Only the server
+// admission transaction can read/fence live publisher and Pending state.
 function assertCurrentAuthority(
   record: PersistedTakeoverAdmissionRecord,
   current: PreparedExternalSessionPersistedTakeoverSource,
 ): Readonly<{
   metadataVersion: number;
   seq: number;
-  pendingVersion: number;
-  pendingCount: number;
-  pendingBlockedCount: number;
 }> {
   const raw = current.linked.rawSession as Readonly<Record<string, unknown>>;
   const metadataVersion = readNonnegativeInteger(raw, 'metadataVersion');
   const seq = readNonnegativeInteger(raw, 'seq');
-  const pendingVersion = readNonnegativeInteger(raw, 'pendingVersion');
-  const pendingCount = readNonnegativeInteger(raw, 'pendingCount');
-  const pendingBlockedCount = readNonnegativeInteger(raw, 'pendingBlockedCount');
   const publication = record.publication;
   if (!publication) {
-    throw new Error('persisted_takeover_admission_publication_missing');
+    throw new ExternalSessionTakeoverAdmissionInvariantError('persisted_takeover_admission_publication_missing');
   }
   if (
-    current.pluginGeneration !== record.request.source.contributionGeneration
-    || current.linked.machineId !== record.request.source.machineId
+    current.linked.machineId !== record.request.source.machineId
     || current.linked.remoteSessionId !== record.request.source.remoteSessionId
     || current.linked.linkGeneration !== record.request.source.linkGeneration
     || seq !== publication.publishedThroughServerSeq
     || raw.currentStorageState !== 'snapshot_complete'
     || raw.acceptedThroughServerSeq !== null
-    || raw.active !== true
-    || raw.thinking === true
   ) {
-    throw new Error('persisted_takeover_admission_authority_mismatch');
+    throw new ExternalSessionTakeoverAdmissionInvariantError('persisted_takeover_admission_authority_mismatch');
   }
   return {
     metadataVersion,
     seq,
-    pendingVersion,
-    pendingCount,
-    pendingBlockedCount,
   };
+}
+
+// The publication projector exposes live facts only for hosted Sessions.
+// Keep hosted retry/recovery readiness separate from snapshot admission,
+// where active/thinking are deliberately hidden by the viewer projection.
+function isHostedIdleTarget(raw: Readonly<Record<string, unknown>>): boolean {
+  return raw.currentStorageState === 'hosted'
+    && raw.active === true
+    && raw.thinking === false
+    && raw.acceptedThroughServerSeq === null;
 }
 
 function isExactHostedAuthority(
@@ -279,9 +276,6 @@ function isExactHostedAuthority(
   expected: Readonly<{
     metadataVersion: number;
     seq: number;
-    pendingVersion: number;
-    pendingCount: number;
-    pendingBlockedCount: number;
   }>,
 ): boolean {
   const raw = linked.rawSession as Readonly<Record<string, unknown>>;
@@ -290,13 +284,7 @@ function isExactHostedAuthority(
     && linked.linkGeneration === record.request.source.linkGeneration
     && raw.metadataVersion === expected.metadataVersion + 1
     && raw.seq === expected.seq
-    && raw.pendingVersion === expected.pendingVersion
-    && raw.pendingCount === expected.pendingCount
-    && raw.pendingBlockedCount === expected.pendingBlockedCount
-    && raw.currentStorageState === 'hosted'
-    && raw.active === true
-    && raw.thinking === false
-    && raw.acceptedThroughServerSeq === null;
+    && isHostedIdleTarget(raw);
 }
 
 function isAuthorityReconciliationRecord(
@@ -314,7 +302,6 @@ function isAuthorityReconciliationRecord(
     && record.publication !== undefined
     && record.fence.kind === 'none'
     && record.canonicalOwnerEvidence.transcriptAuthorityRevision !== undefined
-    && record.canonicalOwnerEvidence.pendingAdmissionRevision !== undefined
     && record.bindings.operationClaimId !== undefined
     && record.bindings.targetRuntimeAttemptId !== undefined
     && record.canonicalOwnerEvidence.disagreement === undefined;
@@ -331,11 +318,7 @@ function canonicalTargetMatchesPersistedFence(
     && linked.linkGeneration === record.request.source.linkGeneration
     && raw.metadataVersion === metadataVersion
     && raw.seq
-      === record.canonicalOwnerEvidence.transcriptAuthorityRevision
-    && raw.pendingVersion
-      === record.canonicalOwnerEvidence.pendingAdmissionRevision
-    && raw.active === true
-    && raw.thinking === false;
+      === record.canonicalOwnerEvidence.transcriptAuthorityRevision;
 }
 
 function isExactPersistedHostedTarget(
@@ -348,8 +331,7 @@ function isExactPersistedHostedTarget(
     linked,
     record.canonicalOwnerEvidence.linkedSessionRevision + 1,
   )
-    && raw.currentStorageState === 'hosted'
-    && raw.acceptedThroughServerSeq === null;
+    && isHostedIdleTarget(raw);
 }
 
 function isExactPersistedSnapshotTarget(
@@ -420,10 +402,7 @@ function isCurrentHostedTarget(
     && linked.linkGeneration === record.request.source.linkGeneration
     && raw.metadataVersion
       === record.canonicalOwnerEvidence.linkedSessionRevision + 1
-    && raw.currentStorageState === 'hosted'
-    && raw.active === true
-    && raw.thinking === false
-    && raw.acceptedThroughServerSeq === null;
+    && isHostedIdleTarget(raw);
 }
 
 function isExactPostcommitCandidate(
@@ -596,36 +575,24 @@ function assertExternalLinkedCurrentAuthority(
 ): Readonly<{
   metadataVersion: number;
   seq: number;
-  pendingVersion: number;
-  pendingCount: number;
-  pendingBlockedCount: number;
 }> {
   const raw = current.linked.rawSession as Readonly<Record<string, unknown>>;
   const metadataVersion = readNonnegativeInteger(raw, 'metadataVersion');
   const seq = readNonnegativeInteger(raw, 'seq');
-  const pendingVersion = readNonnegativeInteger(raw, 'pendingVersion');
-  const pendingCount = readNonnegativeInteger(raw, 'pendingCount');
-  const pendingBlockedCount = readNonnegativeInteger(raw, 'pendingBlockedCount');
   if (
     !current.permitsAdmission
     || current.externalLinkedTakeoverWriterSafety !== 'native_prevention'
-    || current.pluginGeneration !== record.request.source.contributionGeneration
     || current.linked.machineId !== record.request.source.machineId
     || current.linked.remoteSessionId !== record.request.source.remoteSessionId
     || current.linked.linkGeneration !== record.request.source.linkGeneration
     || publisherPrecondition.machineId !== record.request.source.machineId
-    || raw.active !== true
-    || raw.thinking === true
     || !externalLinkedStableStorageMatches(record, raw)
   ) {
-    throw new Error('external_linked_takeover_admission_authority_mismatch');
+    throw new ExternalSessionTakeoverAdmissionInvariantError('external_linked_takeover_admission_authority_mismatch');
   }
   return {
     metadataVersion,
     seq,
-    pendingVersion,
-    pendingCount,
-    pendingBlockedCount,
   };
 }
 
@@ -813,7 +780,6 @@ export function createExternalSessionPersistedTakeoverAdmissionOwner(
     authority: Readonly<{
       metadataVersion: number;
       seq: number;
-      pendingVersion: number;
     }>,
   ): Promise<void> => {
     for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -846,7 +812,6 @@ export function createExternalSessionPersistedTakeoverAdmissionOwner(
             ...fresh.canonicalOwnerEvidence,
             linkedSessionRevision: authority.metadataVersion,
             transcriptAuthorityRevision: authority.seq,
-            pendingAdmissionRevision: authority.pendingVersion,
           },
           updatedAtMs: nowMs(),
           retryTargetPhase: 'admitting',
@@ -968,13 +933,9 @@ export function createExternalSessionPersistedTakeoverAdmissionOwner(
           assertExternalLinkedAdmissionRecord(fresh, input);
           const priorTranscriptRevision =
             fresh.canonicalOwnerEvidence.transcriptAuthorityRevision;
-          const priorPendingRevision =
-            fresh.canonicalOwnerEvidence.pendingAdmissionRevision;
           if (
-            (priorTranscriptRevision !== undefined
-              && priorTranscriptRevision !== authority.seq)
-            || (priorPendingRevision !== undefined
-              && priorPendingRevision !== authority.pendingVersion)
+            priorTranscriptRevision !== undefined
+            && priorTranscriptRevision !== authority.seq
           ) {
             throw new Error('external_linked_takeover_admission_prepared_authority_mismatch');
           }
@@ -985,7 +946,6 @@ export function createExternalSessionPersistedTakeoverAdmissionOwner(
               ...fresh.canonicalOwnerEvidence,
               linkedSessionRevision: authority.metadataVersion,
               transcriptAuthorityRevision: authority.seq,
-              pendingAdmissionRevision: authority.pendingVersion,
             },
             updatedAtMs: nowMs(),
           };
@@ -1018,11 +978,6 @@ export function createExternalSessionPersistedTakeoverAdmissionOwner(
         publisherPrecondition,
         expectedSessionMetadataVersion: finalAuthority.metadataVersion,
         expectedSessionSeq: finalAuthority.seq,
-        expectedPending: {
-          version: finalAuthority.pendingVersion,
-          count: finalAuthority.pendingCount,
-          blockedCount: finalAuthority.pendingBlockedCount,
-        },
         expectedPriorStableStorage: authorityRecord.priorStableStorage,
       };
       let response: ExternalSessionOperationSocketResponseV1;
@@ -1282,12 +1237,13 @@ export function createExternalSessionPersistedTakeoverAdmissionOwner(
           record as ExternalSessionPersistedTakeoverImportRecord,
         );
         if (!isCurrentHostedTarget(record, linked)) {
-          throw new Error('persisted_takeover_retry_hosted_target_mismatch');
+          throw new ExternalSessionTakeoverAdmissionInvariantError('persisted_takeover_retry_hosted_target_mismatch');
         }
         const options = await resolveSpawnOptions({
           linked,
           sessionId: input.sessionId,
           targetDirectory: record.request.targetDirectory,
+          ...(record.request.terminal ? { terminal: record.request.terminal } : {}),
           ...(signal ? { signal } : {}),
         });
         if (!options.ok) {
@@ -1306,7 +1262,7 @@ export function createExternalSessionPersistedTakeoverAdmissionOwner(
         await dependencies.suspendFollow(suspension);
       }
       if (!dependencies.isFollowSuspended(suspension)) {
-        throw new Error('persisted_takeover_admission_follow_not_suspended');
+        throw new ExternalSessionTakeoverAdmissionInvariantError('persisted_takeover_admission_follow_not_suspended');
       }
       const current = await loadAdmissionAuthority(
         record as ExternalSessionPersistedTakeoverImportRecord,
@@ -1316,6 +1272,7 @@ export function createExternalSessionPersistedTakeoverAdmissionOwner(
         linked: current.linked,
         sessionId: input.sessionId,
         targetDirectory: record.request.targetDirectory,
+        ...(record.request.terminal ? { terminal: record.request.terminal } : {}),
         ...(signal ? { signal } : {}),
       });
       if (!options.ok) {
@@ -1406,17 +1363,9 @@ export function createExternalSessionPersistedTakeoverAdmissionOwner(
             assertAdmissionRecord(fresh, input);
             const priorTranscriptRevision =
               fresh.canonicalOwnerEvidence.transcriptAuthorityRevision;
-            const priorPendingRevision =
-              fresh.canonicalOwnerEvidence.pendingAdmissionRevision;
             if (
-              (
-                priorTranscriptRevision !== undefined
-                && priorTranscriptRevision !== authority.seq
-              )
-              || (
-                priorPendingRevision !== undefined
-                && priorPendingRevision !== authority.pendingVersion
-              )
+              priorTranscriptRevision !== undefined
+              && priorTranscriptRevision !== authority.seq
             ) {
               throw new Error(
                 'persisted_takeover_admission_prepared_authority_mismatch',
@@ -1429,7 +1378,6 @@ export function createExternalSessionPersistedTakeoverAdmissionOwner(
                 ...fresh.canonicalOwnerEvidence,
                 linkedSessionRevision: authority.metadataVersion,
                 transcriptAuthorityRevision: authority.seq,
-                pendingAdmissionRevision: authority.pendingVersion,
               },
               updatedAtMs: nowMs(),
             };
@@ -1459,11 +1407,6 @@ export function createExternalSessionPersistedTakeoverAdmissionOwner(
           publisherPrecondition,
           expectedSessionMetadataVersion: authority.metadataVersion,
           expectedSessionSeq: authority.seq,
-          expectedPending: {
-            version: authority.pendingVersion,
-            count: authority.pendingCount,
-            blockedCount: authority.pendingBlockedCount,
-          },
           expectedPublication: authorityRecord.publication,
           metadataPatch,
         };

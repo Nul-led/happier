@@ -29,6 +29,12 @@ export type NewSessionLaunchAttempt = Readonly<{
     createdSessionId: string | null;
     firstTurnLocalId: string;
     attachmentMessageLocalId: string;
+    /**
+     * Configuration timestamp captured once for this attempt. The daemon rejects
+     * a reused Action request id whose input differs, so every submission of
+     * the same attempt must carry this exact value.
+     */
+    configurationUpdatedAtMs: number;
     status: NewSessionLaunchAttemptStatus;
     prompt: Readonly<{
         prompt: string;
@@ -42,6 +48,7 @@ type CreateNewSessionLaunchAttemptParams = Readonly<{
     prompt: string;
     displayText: string;
     scopeKey: string;
+    configurationUpdatedAtMs: number;
     meta?: unknown;
     attemptId?: string | null;
     spawnNonce?: string | null;
@@ -72,6 +79,7 @@ export function createNewSessionLaunchAttempt(params: CreateNewSessionLaunchAtte
         scopeKey: params.scopeKey,
         firstTurnLocalId: buildSpawnedFirstTurnLocalId(spawnNonce) ?? createId('first-turn'),
         attachmentMessageLocalId: createId('attachment-message'),
+        configurationUpdatedAtMs: params.configurationUpdatedAtMs,
         createdSessionId: null,
         status: 'idle',
         prompt: {

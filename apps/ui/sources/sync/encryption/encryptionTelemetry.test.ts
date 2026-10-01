@@ -1,6 +1,7 @@
+import { type SessionMessageV1 } from '@happier-dev/protocol';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import type { ApiMessage } from '@/sync/api/types/apiTypes';
+
 import { syncPerformanceTelemetry } from '@/sync/runtime/syncPerformanceTelemetry';
 import { encodeBase64 } from '@/encryption/base64';
 import {
@@ -107,7 +108,7 @@ describe('encryption telemetry', () => {
         const encrypted = await encryptor.encrypt([
             { role: 'user', content: { type: 'text', text: 'encrypted' } },
         ]);
-        const encryptedMessage: ApiMessage = {
+        const encryptedMessage: SessionMessageV1 = {
             id: 'm_encrypted',
             seq: 1,
             localId: null,
@@ -115,7 +116,7 @@ describe('encryption telemetry', () => {
             updatedAt: 1,
             content: { t: 'encrypted' as const, c: encodeBase64(encrypted[0], 'base64') },
         };
-        const plainMessage: ApiMessage = {
+        const plainMessage: SessionMessageV1 = {
             id: 'm_plain',
             seq: 2,
             localId: null,

@@ -53,7 +53,7 @@ export function resolveCurrentComposerAttachmentCatalogEntry<
         || entry.identity.pluginId !== attachment.attachment.pluginId
         || entry.identity.localId !== attachment.attachment.localId
         || entry.definition.id !== attachment.attachment.localId
-        || entry.immutableGenerationId.trim().length === 0
+        || entry.occurrenceId.trim().length === 0
     ) {
         return null;
     }

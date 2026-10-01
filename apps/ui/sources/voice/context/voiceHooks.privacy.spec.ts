@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 import { composeCurrentUiContextSnapshot } from '@/components/appShell/currentUiContext/currentUiContextModel';
 import { storage } from '@/sync/domains/state/storage';
-import type { Message } from '@/sync/domains/messages/messageTypes';
+import type { Message } from "@happier-dev/session-core/messages";
 import { projectParameterFreeRoute } from '@/track/parameterFreeRouteProjection';
 import { useVoiceTargetStore } from '@/voice/runtime/voiceTargetStore';
 

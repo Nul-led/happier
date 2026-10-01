@@ -10,9 +10,9 @@ describe('resolveExecutionRunLauncherProfileChoices', () => {
         const choices = resolveExecutionRunLauncherProfileChoices({
             intent: 'review',
             profiles: [
-                { id: 'review.coderabbit/review', intent: 'review', title: 'CodeRabbit', compatibleAgentIds: ['coderabbit'], generationId: 'g1', available: true, defaults: { retention: 'resumable', runClass: 'bounded', io: 'streaming' } },
-                { id: 'review.deepsec/review', intent: 'review', title: 'DeepSec Review', compatibleAgentIds: ['deepsec'], generationId: 'g1', available: true, defaults: { retention: 'resumable', runClass: 'bounded', io: 'streaming' } },
-                { id: 'review.deepsec/audit', intent: 'review', title: 'DeepSec Audit', compatibleAgentIds: ['deepsec'], generationId: 'g1', available: false, unavailableCode: 'missing_tool', defaults: { retention: 'resumable', runClass: 'bounded', io: 'streaming' } },
+                { id: 'review.coderabbit/review', intent: 'review', title: 'CodeRabbit', compatibleAgentIds: ['coderabbit'], sourceCustody: { kind: 'managed', immutableGenerationId: 'g1', installSource: 'archive' }, available: true, defaults: { retention: 'resumable', runClass: 'bounded', io: 'streaming' } },
+                { id: 'review.deepsec/review', intent: 'review', title: 'DeepSec Review', compatibleAgentIds: ['deepsec'], sourceCustody: { kind: 'managed', immutableGenerationId: 'g1', installSource: 'archive' }, available: true, defaults: { retention: 'resumable', runClass: 'bounded', io: 'streaming' } },
+                { id: 'review.deepsec/audit', intent: 'review', title: 'DeepSec Audit', compatibleAgentIds: ['deepsec'], sourceCustody: { kind: 'managed', immutableGenerationId: 'g1', installSource: 'archive' }, available: false, unavailableCode: 'missing_tool', defaults: { retention: 'resumable', runClass: 'bounded', io: 'streaming' } },
             ],
             backendChoices: [
                 { backendId: 'coderabbit', disabled: false },
@@ -30,7 +30,7 @@ describe('resolveExecutionRunLauncherProfileChoices', () => {
     it('disables a profile when no compatible Agent is currently available', () => {
         expect(resolveExecutionRunLauncherProfileChoices({
             intent: 'review',
-            profiles: [{ id: 'review.deepsec/review', intent: 'review', title: 'DeepSec', compatibleAgentIds: ['deepsec'], generationId: 'g1', available: true, defaults: { retention: 'resumable', runClass: 'bounded', io: 'streaming' } }],
+            profiles: [{ id: 'review.deepsec/review', intent: 'review', title: 'DeepSec', compatibleAgentIds: ['deepsec'], sourceCustody: { kind: 'managed', immutableGenerationId: 'g1', installSource: 'archive' }, available: true, defaults: { retention: 'resumable', runClass: 'bounded', io: 'streaming' } }],
             backendChoices: [{ backendId: 'deepsec', disabled: true }],
         })[0]).toMatchObject({ disabled: true, compatibleAgentId: null });
     });

@@ -1,7 +1,9 @@
 import {
     FEATURES_RESPONSE_MAX_UTF8_BYTES_V1,
     FeaturesResponseSchema,
+    HomeHostFactSchema,
     type FeaturesResponse as ServerFeatures,
+    type HomeHostFact,
 } from '@happier-dev/protocol';
 
 import { decodeBoundedJsonResponse } from './decodeBoundedJsonResponse';
@@ -11,6 +13,12 @@ export const SERVER_FEATURES_RESPONSE_MAX_UTF8_BYTES = FEATURES_RESPONSE_MAX_UTF
 export function parseServerFeatures(raw: unknown): ServerFeatures | null {
     const parsed = FeaturesResponseSchema.safeParse(raw);
     return parsed.success ? parsed.data : null;
+}
+
+/** The authenticated feature projection is the only Home host source. */
+export function readHomeHostFact(features: ServerFeatures | null | undefined): HomeHostFact {
+    const parsed = HomeHostFactSchema.safeParse(features?.homeHostFact);
+    return parsed.success ? parsed.data : { kind: 'unknown' };
 }
 
 /**

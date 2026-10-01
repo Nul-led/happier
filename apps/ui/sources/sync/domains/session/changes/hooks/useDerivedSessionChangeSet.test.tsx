@@ -1,4 +1,4 @@
-import { createStorageModuleStub, createToolCallMessageFixture, renderHook } from '@/dev/testkit';
+import { createSessionFixture, createToolCallMessageFixture, renderHook } from '@/dev/testkit';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -50,6 +50,10 @@ function createTurnEvidenceMessage(params: Readonly<{
     source: string;
     confidence: string;
     unifiedDiff: string;
+    turnId?: string;
+    oldText?: string;
+    newText?: string;
+    filePath?: string;
 }>) {
     return createToolCallMessageFixture({
         id: params.id,
@@ -60,12 +64,14 @@ function createTurnEvidenceMessage(params: Readonly<{
             input: {
                 files: [
                     {
-                        file_path: 'src/app.ts',
+                        file_path: params.filePath ?? 'src/app.ts',
                         change_kind: 'modified',
                         source: params.source,
                         confidence: params.confidence,
                         provider: 'codex',
                         unified_diff: params.unifiedDiff,
+                        oldText: params.oldText,
+                        newText: params.newText,
                     },
                 ],
                 _happier: {
@@ -75,7 +81,7 @@ function createTurnEvidenceMessage(params: Readonly<{
                     rawToolName: 'CodexDiff',
                     canonicalToolName: 'Diff',
                     sessionChangeScope: 'turn',
-                    turnId: 'turn_1',
+                    turnId: params.turnId ?? 'turn_1',
                     sessionId: 'session_1',
                     source: params.source,
                     confidence: params.confidence,
@@ -112,11 +118,12 @@ const laterProviderEvidence = createTurnEvidenceMessage({
 });
 
 let transcriptMessages: unknown[] = [message];
+let session = createSessionFixture({ id: 'session_1', serverId: 'home-b' });
 
 vi.mock('@/sync/domains/state/storage', async () => {
     const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
     return createStorageModuleStub({
-        useSession: () => ({ serverId: 'home-b', metadata: {} }),
+        useSession: () => session,
         useSessionMessages: () => ({
             messages: transcriptMessages,
         }),
@@ -126,6 +133,75 @@ vi.mock('@/sync/domains/state/storage', async () => {
 describe('useDerivedSessionChangeSet', () => {
     beforeEach(() => {
         transcriptMessages = [message];
+        session = createSessionFixture({ id: 'session_1', serverId: 'home-b' });
+    });
+
+    it.each([
+        { finalText: 'c\n', intermediateText: 'b\n', expected: '-a\n+c' },
+        { finalText: 'a\n', intermediateText: 'b\n', expected: null },
+        { finalText: 'c\n', intermediateText: 'unobserved\n', expected: null },
+    ])('renders the Session net comparison through its consumed diff map: $expected', async ({ finalText, intermediateText, expected }) => {
+        transcriptMessages = [message, createTurnEvidenceMessage({
+            id: 'turn-2-evidence', createdAt: 20, turnId: 'turn_2',
+            source: 'provider_native', confidence: 'exact',
+            oldText: intermediateText, newText: finalText,
+            unifiedDiff: `diff --git a/src/app.ts b/src/app.ts\n@@ -1 +1 @@\n-${intermediateText}+${finalText}`,
+        })];
+        const { useDerivedSessionChangeSet } = await import('./useDerivedSessionChangeSet');
+        const { getCurrent } = await renderHook(() => useDerivedSessionChangeSet({ serverId: 'home-b', sessionId: 'session_1' }));
+        const diff = getCurrent().providerDiffByPath?.get('src/app.ts');
+        if (expected) expect(diff).toContain(expected);
+        else expect(diff).toBe(expected);
+        expect(getCurrent().latestTurnDiffByPath?.get('src/app.ts')).toContain(`-${intermediateText}+${finalText}`);
+    });
+
+    it('composes absolute and relative evidence under the mounted repository path', async () => {
+        transcriptMessages = [message, createTurnEvidenceMessage({
+            id: 'turn-2-evidence', createdAt: 20, turnId: 'turn_2', filePath: '/repo/src/app.ts',
+            source: 'provider_native', confidence: 'exact', oldText: 'b\n', newText: 'c\n',
+            unifiedDiff: 'diff --git a/src/app.ts b/src/app.ts\n@@ -1 +1 @@\n-b\n+c\n',
+        })];
+        const { useDerivedSessionChangeSet } = await import('./useDerivedSessionChangeSet');
+        const { getCurrent } = await renderHook(() => useDerivedSessionChangeSet({ serverId: 'home-b', sessionId: 'session_1' }, '/repo'));
+        expect([...getCurrent().providerDiffByPath!.keys()]).toEqual(['src/app.ts']);
+        expect(getCurrent().providerDiffByPath?.get('src/app.ts')).toContain('-a\n+c');
+    });
+
+    it('clears latest-turn files when the canonical latest turn has no published file evidence', async () => {
+        session = { ...session, latestTurnId: 'turn_1', latestTurnStatus: 'completed' };
+        const { useDerivedSessionChangeSet } = await import('./useDerivedSessionChangeSet');
+        const { useChangedFilesData } = await import('@/hooks/session/files/useChangedFilesData');
+        const { getCurrent, rerender } = await renderHook(() => {
+            const derived = useDerivedSessionChangeSet({ serverId: 'home-b', sessionId: 'session_1' });
+            const files = useChangedFilesData({
+                sessionId: 'session_1',
+                scmSnapshot: null,
+                workspaceTouchedPaths: [],
+                searchQuery: '',
+                showAllRepositoryFiles: false,
+                latestTurnId: derived.latestTurnId,
+                latestTurnChangeSet: derived.latestTurnScopedChangeSet,
+                latestTurnEvidence: derived.latestTurnChangeSet,
+                sessionChangeSet: derived.sessionChangeSet,
+            });
+            return { derived, files };
+        });
+        expect(getCurrent().files.turnAttributedFiles.map((entry) => entry.file.fullPath)).toEqual(['src/app.ts']);
+
+        // Both a no-change turn and an unavailable checkpoint intentionally publish no Diff row.
+        // The independently published Session lifecycle still advances to their exact turn id.
+        session = { ...session, latestTurnId: 'turn_2', latestTurnStatus: 'completed' };
+        await rerender();
+
+        expect(getCurrent().derived.latestTurnChangeSet).toBeNull();
+        expect(getCurrent().derived.latestTurnScopedChangeSet).toBeNull();
+        expect(getCurrent().derived.latestTurnDiffByPath).toBeNull();
+        expect(getCurrent().derived.latestTurnAgentReportedDiffByPath).toBeNull();
+        expect(getCurrent().derived.latestTurnCheckpointDiffByPath).toBeNull();
+        expect(getCurrent().files.turnAttributedFiles).toEqual([]);
+        expect(getCurrent().files.showTurnViewToggle).toBe(true);
+        expect(getCurrent().files.sessionAttributedFiles.map((entry) => entry.file.fullPath)).toEqual(['src/app.ts']);
+        expect(transcriptMessages).toEqual([message]);
     });
 
     it('presents the canonical patch for a path whatever order the turn evidence arrived in', async () => {

@@ -51,7 +51,7 @@ describe('projectSessionAccessEncryptionSection', () => {
 
     it('stays quiet for a healthy audience but keeps the diagnostic reachable', () => {
         const healthy = project(settled('complete', { prepared: 12 }));
-        expect(healthy?.summaryLabel).toBe('Encrypted access ready');
+        expect(healthy?.summaryLabel).toBe('Encrypted access prepared');
         // Nothing to act on, so no action — but inspection must not require a defect.
         expect(healthy?.actionLabel).toBeUndefined();
         expect(healthy?.showAllLabel).toBe('Show all people');
@@ -138,7 +138,7 @@ describe('projectSessionAccessEncryptionSection', () => {
 
         // `prepared` proves shape only — the Home cannot tell whether the recipient can
         // still open it — so a delivered row keeps a repeat affordance for the manager to
-        // re-seal against a replaced content key. A recipient who has not finished
+        // replace ciphertext the recipient cannot open. A recipient who has not finished
         // encryption setup can only be explained, not repaired.
         expect(rows.map((row) => [row.state, row.actionLabel])).toEqual([
             ['prepared', 'Prepare again'],
@@ -159,6 +159,19 @@ describe('projectSessionAccessEncryptionSection', () => {
         expect(section?.recipients?.rows.map((row) => [row.label, row.state])).toEqual([['account-pending', 'pending']]);
         // A healthy audience lists nobody: the quiet ready line is the whole section.
         expect(project(settled('complete'), COLLAPSED)?.recipients).toBeUndefined();
+    });
+
+    it('does not offer delivery for unavailable Account keys, while retaining real tuple repair', () => {
+        const section = project(settled('incomplete', { recipientKeyUnavailable: 3 }), {
+            ...COLLAPSED,
+            rows: ['encryption_inconsistent', 'encryption_setup_required', 'plain_account'].map((reason) => item({
+                recipientAccountId: reason,
+                contentKey: { status: 'unavailable', reason: reason as 'encryption_inconsistent' | 'encryption_setup_required' | 'plain_account' },
+            })),
+        });
+        expect(section?.actionLabel).toBeUndefined();
+        expect(section?.recipients?.rows.every((row) => row.actionLabel === undefined)).toBe(true);
+        expect(project(settled('incomplete', { invalid: 1, recipientKeyUnavailable: 3 }))?.actionLabel).toBeDefined();
     });
 
     it('projects the all-people diagnostic rows with their exact per-Account state', () => {
@@ -182,7 +195,7 @@ describe('projectSessionAccessEncryptionSection', () => {
         expect(expanded?.showAllLabel).toBe('Hide people');
         expect(expanded?.recipients?.hasMore).toBe(true);
         expect(expanded?.recipients?.rows.map((row) => [row.label, row.state, row.stateLabel])).toEqual([
-            ['Ada Lovelace', 'prepared', 'Encrypted access ready'],
+            ['Ada Lovelace', 'prepared', 'Encrypted access prepared'],
             ['account-pending', 'pending', 'Encrypted access pending'],
             ['account-plain', 'plain_account', 'Account without encryption'],
         ]);

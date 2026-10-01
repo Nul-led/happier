@@ -66,7 +66,7 @@ describe('useAutomationRunNowController', () => {
 
         let invocation!: Promise<AutomationRunNowAdmission | null>;
         await act(async () => {
-            invocation = hook.getCurrent().runNow('automation-1');
+            invocation = hook.getCurrent().runNow('automation-1', 'existingSession');
         });
         expect(hook.getCurrent().stateFor('automation-1')).toBe('submitting');
 
@@ -93,7 +93,7 @@ describe('useAutomationRunNowController', () => {
 
         let invocationA!: Promise<AutomationRunNowAdmission | null>;
         await act(async () => {
-            invocationA = hook.getCurrent().runNow('automation-1');
+            invocationA = hook.getCurrent().runNow('automation-1', 'existingSession');
         });
         expect(hook.getCurrent().stateFor('automation-1')).toBe('submitting');
 
@@ -109,7 +109,7 @@ describe('useAutomationRunNowController', () => {
         runAutomationNowMock.mockReturnValueOnce(heldB.promise);
         let invocationB!: Promise<AutomationRunNowAdmission | null>;
         await act(async () => {
-            invocationB = hook.getCurrent().runNow('automation-1');
+            invocationB = hook.getCurrent().runNow('automation-1', 'existingSession');
         });
         expect(hook.getCurrent().stateFor('automation-1')).toBe('submitting');
         expect(runAutomationNowMock).toHaveBeenCalledTimes(2);
@@ -141,7 +141,7 @@ describe('useAutomationRunNowController', () => {
 
         let result: AutomationRunNowAdmission | null | undefined;
         await act(async () => {
-            result = await hook.getCurrent().runNow('automation-1');
+            result = await hook.getCurrent().runNow('automation-1', 'existingSession');
         });
 
         expect(result).toBeNull();
@@ -159,8 +159,8 @@ describe('useAutomationRunNowController', () => {
         let first!: Promise<AutomationRunNowAdmission | null>;
         let duplicate!: Promise<AutomationRunNowAdmission | null>;
         await act(async () => {
-            first = hook.getCurrent().runNow('automation-1');
-            duplicate = hook.getCurrent().runNow('automation-1');
+            first = hook.getCurrent().runNow('automation-1', 'existingSession');
+            duplicate = hook.getCurrent().runNow('automation-1', 'existingSession');
         });
 
         await expect(duplicate).resolves.toBeNull();
@@ -183,7 +183,7 @@ describe('useAutomationRunNowController', () => {
 
         let invocation!: Promise<AutomationRunNowAdmission | null>;
         await act(async () => {
-            invocation = hook.getCurrent().runNow('automation-1', {
+            invocation = hook.getCurrent().runNow('automation-1', 'existingSession', {
                 isInvocationCurrent: () => invocationCurrent,
             });
         });
@@ -206,7 +206,7 @@ describe('useAutomationRunNowController', () => {
 
         let invocation!: Promise<AutomationRunNowAdmission | null>;
         await act(async () => {
-            invocation = hook.getCurrent().runNow('automation-1');
+            invocation = hook.getCurrent().runNow('automation-1', 'existingSession');
         });
         expect(hook.getCurrent().stateFor('automation-1')).toBe('submitting');
 
@@ -236,7 +236,7 @@ describe('useAutomationRunNowController', () => {
         ));
         let managed: AutomationRunNowAdmission | null | undefined;
         await act(async () => {
-            managed = await hook.getCurrent().runNow('automation-managed');
+            managed = await hook.getCurrent().runNow('automation-managed', null);
         });
         expect(managed).not.toBeNull();
         expect(managed?.workflowRun).toEqual({ recipeKind: 'workflow-v2', workflowRunId: 'run-managed' });
@@ -244,7 +244,7 @@ describe('useAutomationRunNowController', () => {
         runAutomationNowMock.mockResolvedValueOnce(admission({ id: 'run-legacy', state: 'running' }));
         let legacy: AutomationRunNowAdmission | null | undefined;
         await act(async () => {
-            legacy = await hook.getCurrent().runNow('automation-legacy');
+            legacy = await hook.getCurrent().runNow('automation-legacy', 'existingSession');
         });
         expect(legacy).not.toBeNull();
         // A legacy receipt keeps the incumbent contract: no correspondence is

@@ -4,11 +4,12 @@ import { useMachineDisplayNamesById, useSetting } from '@/sync/domains/state/sto
 import {
     projectWorkspaceSyncRelationships,
     projectWorkspaceSyncRelationshipSummaries,
+    resolveWorkspaceSyncSetSummaries,
     type WorkspaceSyncRelationshipSummary,
 } from './workspaceSyncRelationshipModel';
 import {
     getWorkspaceSyncStatusSnapshot,
-    refreshWorkspaceSyncStatus,
+    refreshWorkspaceSyncStatuses,
     subscribeWorkspaceSyncStatus,
     type WorkspaceSyncStatusScope,
 } from './workspaceSyncStatusStore';
@@ -48,45 +49,34 @@ export function useWorkspaceSyncRelationshipSummaries(
         [machineNamesById, relationshipModel, workspaceRefs],
     );
     const scopedBaseSummaries = React.useMemo(
-        () => baseSummaries.filter((summary) => workspaceRefId === undefined
-            || (workspaceRefId !== null && (
-                summary.alpha.workspaceRefId === workspaceRefId
-                || summary.beta.workspaceRefId === workspaceRefId
-            ))),
+        () => workspaceRefId === undefined
+            ? baseSummaries
+            : workspaceRefId === null ? [] : resolveWorkspaceSyncSetSummaries(baseSummaries, workspaceRefId),
         [baseSummaries, workspaceRefId],
     );
     const [revision, incrementRevision] = React.useReducer((value: number) => value + 1, 0);
 
     React.useEffect(() => {
+        const idleScopes: WorkspaceSyncStatusScope[] = [];
         const unsubscribers = scopedBaseSummaries.map((summary) => {
             if (!summary.relationship.enabled) return () => {};
             const scope = scopeFor(summary);
             const unsubscribe = subscribeWorkspaceSyncStatus(scope, incrementRevision);
             if (getWorkspaceSyncStatusSnapshot(scope).phase === 'idle') {
-                void refreshWorkspaceSyncStatus(scope).catch(() => undefined);
+                idleScopes.push(scope);
             }
             return unsubscribe;
         });
+        if (idleScopes.length > 0) void refreshWorkspaceSyncStatuses(idleScopes).catch(() => undefined);
         return () => unsubscribers.forEach((unsubscribe) => unsubscribe());
     }, [scopedBaseSummaries]);
 
     return React.useMemo(() => {
-        const statuses = scopedBaseSummaries.flatMap((summary) => {
-            if (!summary.relationship.enabled) return [];
-            const status = getWorkspaceSyncStatusSnapshot(scopeFor(summary)).status;
-            return status ? [status] : [];
-        });
-        return projectWorkspaceSyncRelationshipSummaries({
-            relationships: relationshipModel,
-            workspaceRefs,
-            statuses,
-            machineNamesById,
-        }).filter((summary) => workspaceRefId === undefined
-            || (workspaceRefId !== null && (
-                summary.alpha.workspaceRefId === workspaceRefId
-                || summary.beta.workspaceRefId === workspaceRefId
-            )));
-    }, [machineNamesById, relationshipModel, revision, scopedBaseSummaries, workspaceRefId, workspaceRefs]);
+        return scopedBaseSummaries.map((summary) => ({
+            ...summary,
+            status: summary.relationship.enabled ? getWorkspaceSyncStatusSnapshot(scopeFor(summary)).status : null,
+        }));
+    }, [revision, scopedBaseSummaries]);
 }
 
 export function resolveWorkspaceSyncStatusScope(summary: WorkspaceSyncRelationshipSummary): WorkspaceSyncStatusScope {

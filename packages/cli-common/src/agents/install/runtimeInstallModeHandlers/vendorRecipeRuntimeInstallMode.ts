@@ -1,3 +1,5 @@
+import { execFileWithDeadline } from '../../../process/index.js';
+
 import { buildRuntimeInstallModeErrorResult, buildRuntimeInstallModeOkResult } from '../runtimeInstallModeResult.js';
 import { runVendorRecipeInstall } from '../vendorRecipeInstall.js';
 
@@ -6,14 +8,16 @@ import type { RuntimeInstallModeHandlerEntry, RuntimeInstallModeHandlerParams } 
 export const vendorRecipeRuntimeInstallModeHandler: RuntimeInstallModeHandlerEntry = {
     matchesPlan: (plan) => plan.managedInstall == null,
     run: async (params: RuntimeInstallModeHandlerParams) => {
-        const { runtimeSpec, plan, env, lifecycleContext, spawn } = params;
+        const { runtimeSpec, plan, env, lifecycleContext, deps } = params;
         const vendorResult = await runVendorRecipeInstall({
             runtimeSpec,
             commands: plan.commands,
             env,
             logPath: lifecycleContext.logPath,
             vendorScratchDir: lifecycleContext.vendorScratchDir,
-            spawn,
+            runCommand: deps.execFileWithDeadline ?? execFileWithDeadline,
+            signal: params.signal,
+            onProgress: params.onProgress,
             appendCommandLog: lifecycleContext.appendCommandLog,
             appendLogLine: lifecycleContext.appendLogLine,
         });

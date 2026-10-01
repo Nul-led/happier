@@ -7,8 +7,6 @@ import {
   resolveConfiguredAttachmentTransferTarget,
   resolveAttachmentTransferConfigFromRequest,
   type AttachmentTransferConfig,
-  type AttachmentUploadLocation,
-  type AttachmentVcsIgnoreStrategy,
 } from './resolveAttachmentTransferTarget';
 import { resolvePromptAssetUploadTarget } from './resolvePromptAssetUploadTarget';
 import {
@@ -22,7 +20,12 @@ import {
   type ComposerMediaStageUploadTargetDeps,
 } from './resolveComposerMediaStageUploadTarget';
 import type { PromptAssetAdapter } from '@happier-dev/plugin-sdk/resources';
+import {
+  SessionAttachmentUploadInitRequestV1Schema,
+  type SessionAttachmentUploadInitRequestV1,
+} from '@happier-dev/protocol';
 import type { FilesystemAccessPolicy } from '@/rpc/handlers/fileSystem/accessPolicy/filesystemAccessPolicy';
+import { filesystemPathComparisonKey } from '@/rpc/handlers/fileSystem/accessPolicy/filesystemAccessPolicy';
 import type { TransferLifecycleDiagnosticContext } from '../rpc/transferLifecycleDiagnostics';
 
 type WorkspaceLikeTransferUploadTarget = Extract<
@@ -47,17 +50,7 @@ export type SessionFileUploadInitRequest = Readonly<{
   sha256?: unknown;
 }>;
 
-export type SessionAttachmentUploadInitRequest = Readonly<{
-  t: 'session_attachment_upload_v1';
-  messageLocalId: unknown;
-  fileName: unknown;
-  sizeBytes: unknown;
-  uploadLocation?: AttachmentUploadLocation;
-  workspaceRootPath?: unknown;
-  workspaceRelativeDir?: string;
-  vcsIgnoreStrategy?: AttachmentVcsIgnoreStrategy;
-  vcsIgnoreWritesEnabled?: boolean;
-}>;
+export type SessionAttachmentUploadInitRequest = SessionAttachmentUploadInitRequestV1;
 
 export type PromptAssetUploadInitRequest = Readonly<{
   t: 'prompt_asset_upload_v1';
@@ -79,6 +72,7 @@ export type NonPromptTransferUploadInitRequest =
 
 export type TransferUploadInitAttachmentDeps = Readonly<{
   pathAllowanceRegistry?: TransferPathAllowanceRegistry;
+  resolveSessionWorkingDirectory: (sessionId: string) => Promise<string | null>;
 }>;
 
 export type TransferUploadInitPromptAssetDeps = Readonly<{
@@ -203,18 +197,21 @@ export async function resolveTransferUploadInitTarget(params: Readonly<{
   }
 
   if (params.request.t === 'session_attachment_upload_v1') {
-    const config = resolveAttachmentTransferConfigFromRequest(params.request) as AttachmentTransferConfig | null;
+    const parsed = SessionAttachmentUploadInitRequestV1Schema.safeParse(params.request);
+    if (!parsed.success) return { success: false, error: 'Invalid attachment upload request' };
+    const request = parsed.data;
+    const hostedDirectory = await params.attachmentUpload?.resolveSessionWorkingDirectory(request.sessionId);
+    const attachmentWorkingDirectory = normalizeAttachmentWorkspaceRootPath(hostedDirectory);
+    if (!attachmentWorkingDirectory) return { success: false, error: 'Attachment Session is not hosted by this daemon' };
+    if (request.workspaceRootPath != null) {
+      const requestedRoot = normalizeAttachmentWorkspaceRootPath(request.workspaceRootPath);
+      if (!requestedRoot || filesystemPathComparisonKey(requestedRoot) !== filesystemPathComparisonKey(attachmentWorkingDirectory)) {
+        return { success: false, error: 'Attachment workspace root does not match its Session' };
+      }
+    }
+    const config = resolveAttachmentTransferConfigFromRequest(request) as AttachmentTransferConfig | null;
     if (!config) {
       return { success: false, error: 'Invalid workspaceRelativeDir' };
-    }
-
-    const attachmentWorkingDirectory = (() => {
-      if (config.uploadLocation !== 'workspace') return params.workingDirectory;
-      if (params.request.workspaceRootPath == null) return params.workingDirectory;
-      return normalizeAttachmentWorkspaceRootPath(params.request.workspaceRootPath);
-    })();
-    if (!attachmentWorkingDirectory) {
-      return { success: false, error: 'Invalid workspaceRootPath' };
     }
 
     const resolvedTarget = resolveConfiguredAttachmentTransferTarget({
@@ -227,25 +224,25 @@ export async function resolveTransferUploadInitTarget(params: Readonly<{
       return { success: false, error: resolvedTarget.error };
     }
 
-    const messageLocalId = normalizeMessageLocalIdSegment(params.request.messageLocalId);
+    const messageLocalId = normalizeMessageLocalIdSegment(request.messageLocalId);
     if (!messageLocalId) {
       return { success: false, error: 'Invalid messageLocalId' };
     }
-    if (typeof params.request.fileName !== 'string' || params.request.fileName.trim().length === 0) {
+    if (typeof request.fileName !== 'string' || request.fileName.trim().length === 0) {
       return { success: false, error: 'Missing fileName' };
     }
 
     const path = buildAttachmentUploadPath({
       uploadBasePath: resolvedTarget.uploadBasePath,
       messageLocalId,
-      fileName: params.request.fileName,
+      fileName: request.fileName,
     });
 
     const target = resolveWorkspaceFileUploadTarget({
       workingDirectory: attachmentWorkingDirectory,
       accessPolicy: params.accessPolicy,
       path,
-      sizeBytes: params.request.sizeBytes,
+      sizeBytes: request.sizeBytes,
       overwrite: false,
       additionalAllowedWriteDirs: resolvedTarget.target.additionalAllowedWriteDirs,
       sessionRpcTransferMaxBytes: params.sessionRpcTransferMaxBytes ?? null,

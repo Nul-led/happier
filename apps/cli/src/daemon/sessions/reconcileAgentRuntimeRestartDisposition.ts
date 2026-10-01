@@ -17,15 +17,14 @@ function hasAttachedRunnerAuthority(
     tracked.agentRuntimeDaemonServiceAuthorityFilePath?.trim() ?? '';
   const capabilityHash =
     tracked.agentRuntimeDaemonServiceCapabilityHash?.trim() ?? '';
-  const immutableGenerationId =
-    tracked.runnerAgentImmutableGenerationId?.trim() ?? '';
+  const sourceCustody = tracked.runnerAgentSourceCustodyV1;
   const runnerPid = tracked.sessionRunnerPid ?? tracked.pid;
   const processStartTimeMs = tracked.processStartTimeMs;
 
   return sessionId.length > 0
     && authorityFilePath.length > 0
     && capabilityHash.length > 0
-    && immutableGenerationId.length > 0
+    && sourceCustody !== undefined
     && Number.isInteger(runnerPid)
     && runnerPid > 0
     && typeof processStartTimeMs === 'number'

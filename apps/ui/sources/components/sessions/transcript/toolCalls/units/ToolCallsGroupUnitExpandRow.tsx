@@ -21,7 +21,7 @@ type ToolCallsGroupUnitExpandRowProps = ToolCallsGroupUnitRowCommonProps & Reado
 export const ToolCallsGroupUnitExpandRow = React.memo(function ToolCallsGroupUnitExpandRow(
     props: ToolCallsGroupUnitExpandRowProps,
 ) {
-    const transcriptSessionCommon = useTranscriptSessionCommon(props.sessionId);
+    const transcriptSessionCommon = useTranscriptSessionCommon();
 
     return (
         <ToolCallsGroupUnitExpandRowWithSessionCommon

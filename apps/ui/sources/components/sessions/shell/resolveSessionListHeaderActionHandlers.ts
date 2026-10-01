@@ -13,13 +13,32 @@ export type SessionListHeaderActionHandlers = Readonly<{
 
 type SessionListHeaderToggleCollapseHandler = (collapseKey: string, ...args: readonly unknown[]) => void;
 type WorkspaceScopeHint = Readonly<{ serverId: string; machineId: string; rootPath: string }>;
+/**
+ * Where "New session" from a list group starts: a folder group's workspace scope, or a machine's
+ * Chats group, which starts another no-folder session on that machine.
+ */
+export type NewSessionGroupTarget =
+    | WorkspaceScopeHint
+    | Readonly<{ kind: 'managed'; serverId: string; machineId: string }>;
 export type CreateSessionFromWorkspaceScopeOptions = Readonly<{
     seedSessionId?: string | null;
 }>;
 export type CreateSessionFromWorkspaceScopeHandler = (
-    scopeHint: WorkspaceScopeHint,
+    target: NewSessionGroupTarget,
     options?: CreateSessionFromWorkspaceScopeOptions,
 ) => void;
+
+/** The one reading of a list header's new-session target (folder scope, else its Chats scope). */
+export function resolveNewSessionGroupTarget(header: Readonly<{
+    workspaceScopeHint?: WorkspaceScopeHint | null;
+    workspace?: Readonly<{ t: string; serverId?: string | null; machineId?: string | null }> | null;
+}>): NewSessionGroupTarget | null {
+    if (header.workspaceScopeHint) return header.workspaceScopeHint;
+    const workspace = header.workspace;
+    return workspace?.t === 'managedSessions' && workspace.serverId && workspace.machineId
+        ? { kind: 'managed', serverId: workspace.serverId, machineId: workspace.machineId }
+        : null;
+}
 
 const SESSION_LIST_HEADER_ACTION_HANDLERS_CACHE = new LruMap<string, SessionListHeaderActionHandlers>({
     maxEntries: readSessionListShellCacheMaxEntriesFromEnv(),
@@ -141,10 +160,10 @@ export function resolveSessionListHeaderActionHandlers(input: Readonly<{
                 input.onOpenProject(headerViewState.workspaceRefId);
             },
             onCreateSession: () => {
-                if (!headerViewState.scopeHint) {
+                if (!headerViewState.newSessionTarget) {
                     return;
                 }
-                input.onCreateSessionFromWorkspaceScope(headerViewState.scopeHint, {
+                input.onCreateSessionFromWorkspaceScope(headerViewState.newSessionTarget, {
                     seedSessionId: headerViewState.seedSessionId,
                 });
             },

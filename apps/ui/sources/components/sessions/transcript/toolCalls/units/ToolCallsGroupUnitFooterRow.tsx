@@ -18,7 +18,7 @@ type ToolCallsGroupUnitFooterRowProps = ToolCallsGroupUnitRowCommonProps;
 export const ToolCallsGroupUnitFooterRow = React.memo(function ToolCallsGroupUnitFooterRow(
     props: ToolCallsGroupUnitFooterRowProps,
 ) {
-    const transcriptSessionCommon = useTranscriptSessionCommon(props.sessionId);
+    const transcriptSessionCommon = useTranscriptSessionCommon();
 
     return (
         <ToolCallsGroupUnitFooterRowWithSessionCommon

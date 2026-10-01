@@ -72,6 +72,7 @@ const EMPTY_CAPTURE_RETRY_LIMIT = 3;
 type ViewportAnchorCaptureHostDeps = Readonly<{
     cancelScheduledViewportAnchorCapture: () => void;
     currentSessionIdRef: MutableRef<string>;
+    rendererDataKey: string;
     debounceMs: number;
     emitViewportChange: ((nextState: TranscriptViewportChangeState) => void) | undefined;
     isEntryViewportCommandActive: () => boolean;
@@ -180,7 +181,7 @@ export function useTranscriptViewportAnchorCaptureHost(deps: ViewportAnchorCaptu
                 ? null
                 : resolveTranscriptViewportAnchorDescriptor(item);
             if (
-                capture.dataKey !== deps.currentSessionIdRef.current
+                capture.dataKey !== deps.rendererDataKey
                 || descriptor == null
                 || descriptor.itemId !== capture.itemKey
                 || !Number.isFinite(capture.capturedAtMs)
@@ -273,6 +274,7 @@ export function useTranscriptViewportAnchorCaptureHost(deps: ViewportAnchorCaptu
         deps.listLayoutHeightRef,
         deps.listRef,
         deps.readCurrentNativeDistanceFromBottom,
+        deps.rendererDataKey,
         deps.resolveWebScrollMetrics,
         deps.wantsPinnedRef,
     ]);

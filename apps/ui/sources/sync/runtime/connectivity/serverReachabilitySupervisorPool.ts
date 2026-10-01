@@ -16,6 +16,7 @@ import { runtimeFetch } from '@/utils/system/runtimeFetch';
 
 import { createNotAuthenticatedError } from './authErrors';
 import { buildRetryLaterProbeResultFromResponse } from './retryLaterProbeResult';
+import { recordFailedHomeReach } from './homeReachFailures';
 import { readServerReachabilityBackgroundRetryMs, readServerReachabilityProbeTimeoutMs } from './serverReachabilityTuning';
 
 export class ServerReachabilityWaitTimeoutError extends Error {
@@ -226,6 +227,7 @@ type ReachabilitySupervisorEntry = {
     ownerCount: number;
     pendingStartCount: number;
     stopInFlight: Promise<void> | null;
+    recordedFailuresForOfflineEpisode: Set<string>;
 };
 
 const entriesByScopeKey = new Map<string, ReachabilitySupervisorEntry>();
@@ -304,6 +306,8 @@ function getOrCreateEntry(serverUrlRaw: string, token: string | null = null): Re
         }),
         onStateChange: (state) => {
             entry.state = state;
+            // Caller retries and supervisor restarts do not end a Home outage.
+            if (state.phase === 'online') entry.recordedFailuresForOfflineEpisode.clear();
             subscribers.forEach((listener) => listener(state));
         },
         }),
@@ -314,6 +318,7 @@ function getOrCreateEntry(serverUrlRaw: string, token: string | null = null): Re
         ownerCount: 0,
         pendingStartCount: 0,
         stopInFlight: null,
+        recordedFailuresForOfflineEpisode: new Set(),
     };
 
     entriesByScopeKey.set(scopeKey, entry);
@@ -469,7 +474,14 @@ export function subscribeServerReachabilityState(
 ): () => void {
     const entry = getOrCreateEntry(serverUrl, token);
     entry.subscribers.add(listener);
-    listener(entry.state);
+    try {
+        listener(entry.state);
+    } catch (error) {
+        // A failed initial publication never hands its caller an unsubscribe
+        // handle, so it must not retain ownership of this shared supervisor.
+        entry.subscribers.delete(listener);
+        throw error;
+    }
     return () => entry.subscribers.delete(listener);
 }
 
@@ -485,6 +497,7 @@ export function peekServerReachabilityState(serverUrl: string, token?: string | 
 export async function waitForServerReachable(params: Readonly<{
     serverUrl: string;
     token: string | null;
+    homeIdentityId?: string;
     signal?: AbortSignal;
     timeoutMs: number;
     acceptAuthFailed?: boolean;
@@ -514,12 +527,28 @@ export async function waitForServerReachable(params: Readonly<{
         await entry.supervisor.stop();
         await entry.supervisor.start();
     }
-    await waitForState({
-        entry,
-        signal: params.signal,
-        timeoutMs: params.timeoutMs,
-        predicate: (state) => state.phase === 'online' || (params.acceptAuthFailed === true && state.phase === 'auth_failed'),
-    });
+    const homeIdentityId = params.homeIdentityId?.trim() || null;
+    try {
+        await waitForState({
+            entry,
+            signal: params.signal,
+            timeoutMs: params.timeoutMs,
+            predicate: (state) => state.phase === 'online' || (params.acceptAuthFailed === true && state.phase === 'auth_failed'),
+        });
+    } catch (error) {
+        if (homeIdentityId && networkAllowed && (typeof navigator === 'undefined' || navigator.onLine !== false)
+            && entry.state.phase === 'offline'
+            && error instanceof ServerReachabilityWaitTimeoutError
+            && !entry.recordedFailuresForOfflineEpisode.has(homeIdentityId)) {
+            entry.recordedFailuresForOfflineEpisode.add(homeIdentityId);
+            try {
+                recordFailedHomeReach(homeIdentityId, Date.now());
+            } catch (storageError) {
+                console.warn('[serverReachability] Failed to persist a Home reach failure', storageError);
+            }
+        }
+        throw error;
+    }
 }
 
 export async function invalidateServerReachabilitySupervisor(params: Readonly<{

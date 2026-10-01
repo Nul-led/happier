@@ -152,6 +152,175 @@ describe('terminalAttachmentInfo', () => {
     }
   });
 
+  it('round-trips the stable Herdr terminal identity through the canonical attachment record', async () => {
+    const dir = tmp.dirSync({ unsafeCleanup: true });
+    const handle = {
+      kind: 'herdr' as const,
+      sessionName: 'default',
+      paneId: 'w1:p7',
+      terminalId: 'terminal_immutable_7',
+      socketPath: '/tmp/herdr.sock',
+      attachMetadata: {
+        attachStrategy: 'terminal_host' as const,
+        topology: 'shared' as const,
+        locality: 'same_machine' as const,
+        liveProbe: 'required' as const,
+      },
+    };
+    try {
+      await writeTerminalAttachmentInfo({
+        happyHomeDir: dir.name,
+        sessionId: 'session-herdr',
+        terminal: {
+          mode: 'herdr', requested: 'herdr',
+          herdr: { sessionName: 'default', socketPath: handle.socketPath, terminalId: handle.terminalId },
+        },
+      });
+      await writeTerminalHostAttachmentInfo({ happyHomeDir: dir.name, sessionId: 'session-herdr', handle });
+      await expect(readTerminalHostAttachmentInfo({ happyHomeDir: dir.name, sessionId: 'session-herdr' }))
+        .resolves.toMatchObject({ handle: { ...handle } });
+      await expect(readTerminalAttachmentInfo({ happyHomeDir: dir.name, sessionId: 'session-herdr' }))
+        .resolves.toMatchObject({ terminal: { mode: 'herdr', herdr: { terminalId: handle.terminalId } } });
+    } finally {
+      dir.removeCallback();
+    }
+  });
+
+  it('persists a borrowed Herdr host as a fail-closed lifecycle descriptor', async () => {
+    const dir = tmp.dirSync({ unsafeCleanup: true });
+    const handle = {
+      kind: 'herdr' as const,
+      sessionName: 'default',
+      paneId: 'pane-7',
+      terminalId: 'terminal-7',
+      socketPath: '/tmp/herdr.sock',
+      attachMetadata: {
+        attachStrategy: 'terminal_host' as const,
+        topology: 'shared' as const,
+        locality: 'same_machine' as const,
+        liveProbe: 'required' as const,
+      },
+    };
+    try {
+      const written = await writeTerminalHostAttachmentInfo({
+        happyHomeDir: dir.name,
+        sessionId: 'session-borrowed-herdr',
+        handle,
+        lifecycle: 'borrowed',
+      });
+      expect(written).toMatchObject({
+        version: 3,
+        lifecycle: 'borrowed',
+        sessionId: 'session-borrowed-herdr',
+        handle,
+      });
+      await expect(readTerminalHostAttachmentInfo({
+        happyHomeDir: dir.name,
+        sessionId: 'session-borrowed-herdr',
+      })).resolves.toEqual(written);
+      await expect(removeTerminalHostAttachmentInfo({
+        happyHomeDir: dir.name,
+        sessionId: 'session-borrowed-herdr',
+        expectedAttachmentId: 'different-attachment',
+        expectedHandle: written.handle,
+      })).resolves.toBe(false);
+      await expect(removeTerminalHostAttachmentInfo({
+        happyHomeDir: dir.name,
+        sessionId: 'session-borrowed-herdr',
+        expectedAttachmentId: written.attachmentId,
+      })).resolves.toBe(true);
+    } finally {
+      dir.removeCallback();
+    }
+  });
+
+  it('preserves borrowed ownership while reading and retiring a 0.2 v3 combined descriptor', async () => {
+    const dir = tmp.dirSync({ unsafeCleanup: true });
+    const sessionId = 'session-predecessor-borrowed';
+    const handle = {
+      attachmentId: 'attachment-predecessor-borrowed' as NonNullable<TerminalHostHandle['attachmentId']>,
+      kind: 'herdr' as const,
+      sessionName: 'work',
+      paneId: 'w1:p2',
+      terminalId: 'term_42',
+      socketPath: '/tmp/work.sock',
+      attachMetadata: {
+        attachStrategy: 'terminal_host' as const,
+        topology: 'shared' as const,
+        locality: 'same_machine' as const,
+        maxClients: null,
+        requiresLocalAttachmentInfo: true,
+        liveProbe: 'required' as const,
+      },
+    };
+    // Current 0.2 writer at 17ba05d plus its validated borrowed-host change writes
+    // this v3 combined record at .json, rather than 0.3's separate .host.json.
+    const predecessor = {
+      version: 3,
+      lifecycle: 'borrowed',
+      attachmentId: handle.attachmentId,
+      sessionId,
+      handle,
+      terminal: {
+        mode: 'herdr',
+        herdr: { sessionName: 'work', socketPath: '/tmp/work.sock', terminalId: 'term_42', paneId: 'w1:p2' },
+      },
+      updatedAt: 1,
+    };
+    const sessionsDir = join(dir.name, 'terminal', 'sessions');
+    try {
+      await mkdir(sessionsDir, { recursive: true });
+      await writeFile(join(sessionsDir, `${sessionId}.json`), JSON.stringify(predecessor), 'utf8');
+      await disposeTerminalAttachmentInfoForSession({ happyHomeDir: dir.name, sessionId });
+      await expect(readTerminalHostAttachmentState({ happyHomeDir: dir.name, sessionId })).resolves.toEqual({
+        status: 'present',
+        info: { version: 3, lifecycle: 'borrowed', attachmentId: handle.attachmentId, sessionId, handle, updatedAt: 1 },
+      });
+      await expect(readTerminalAttachmentInfo({ happyHomeDir: dir.name, sessionId })).resolves.toMatchObject({
+        version: 1,
+        terminal: { mode: 'herdr' },
+      });
+      await expect(removeTerminalHostAttachmentInfo({
+        happyHomeDir: dir.name, sessionId, expectedAttachmentId: 'different-attachment',
+      })).resolves.toBe(false);
+      await expect(removeTerminalHostAttachmentInfo({
+        happyHomeDir: dir.name, sessionId, expectedAttachmentId: handle.attachmentId,
+      })).resolves.toBe(true);
+      await expect(readTerminalHostAttachmentState({ happyHomeDir: dir.name, sessionId })).resolves.toEqual({ status: 'absent' });
+    } finally {
+      dir.removeCallback();
+    }
+  });
+
+  it.each(['lifecycle', 'attachmentId', 'terminalId'] as const)('rejects a 0.2 v3 descriptor with mismatched %s', async (mismatch) => {
+    const dir = tmp.dirSync({ unsafeCleanup: true });
+    const sessionId = 'session-predecessor-invalid';
+    const sessionsDir = join(dir.name, 'terminal', 'sessions');
+    try {
+      await mkdir(sessionsDir, { recursive: true });
+      await writeFile(join(sessionsDir, `${sessionId}.json`), JSON.stringify({
+        version: 3,
+        lifecycle: mismatch === 'lifecycle' ? 'owned' : 'borrowed',
+        attachmentId: 'attachment-current',
+        sessionId,
+        handle: {
+          attachmentId: mismatch === 'attachmentId' ? 'attachment-other' : 'attachment-current',
+          kind: 'herdr', sessionName: 'work', socketPath: '/tmp/work.sock', terminalId: 'term_42',
+          attachMetadata: { attachStrategy: 'terminal_host', topology: 'shared' },
+        },
+        terminal: {
+          mode: 'herdr',
+          herdr: { sessionName: 'work', socketPath: '/tmp/work.sock', terminalId: mismatch === 'terminalId' ? 'term_other' : 'term_42' },
+        },
+        updatedAt: 1,
+      }), 'utf8');
+      await expect(readTerminalHostAttachmentState({ happyHomeDir: dir.name, sessionId }))
+        .resolves.toEqual({ status: 'unreadable', reason: 'invalid' });
+    } finally {
+      dir.removeCallback();
+    }
+  });
+
   it('reads and retires a Remote Dev v2 descriptor from the predecessor metadata path', async () => {
     const dir = tmp.dirSync({ unsafeCleanup: true });
     const sessionId = 'session-remote-v2';
@@ -232,6 +401,18 @@ describe('terminalAttachmentInfo', () => {
         happyHomeDir: dir.name,
         sessionId: 'sess_invalid',
       })).resolves.toEqual({ status: 'unreadable', reason: 'invalid' });
+
+      await writeFile(join(sessionsDir, 'sess_predecessor_invalid.json'), '{', 'utf8');
+      await expect(readTerminalHostAttachmentState({
+        happyHomeDir: dir.name,
+        sessionId: 'sess_predecessor_invalid',
+      })).resolves.toEqual({ status: 'unreadable', reason: 'invalid' });
+
+      await writeFile(join(sessionsDir, 'sess_predecessor_v1.json'), JSON.stringify({ version: 1 }), 'utf8');
+      await expect(readTerminalHostAttachmentState({
+        happyHomeDir: dir.name,
+        sessionId: 'sess_predecessor_v1',
+      })).resolves.toEqual({ status: 'absent' });
 
       await mkdir(join(sessionsDir, 'sess_io.host.json'));
       await expect(readTerminalHostAttachmentState({
@@ -485,7 +666,8 @@ describe('terminalAttachmentInfo', () => {
           },
         },
       });
-      vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
+      // Model the filesystem refusal without redirecting real process-identity
+      // probes to Windows tools on a non-Windows host.
       filesystemBoundary.beforeUnlink = async (path) => {
         if (path !== descriptorPath) return;
         throw Object.assign(new Error('sharing violation'), { code: 'EPERM' });

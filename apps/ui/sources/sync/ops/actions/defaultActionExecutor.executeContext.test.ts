@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
+import { projectLegacySessionAccessCapabilitiesV1 } from '@happier-dev/protocol';
 
 // Imported from their owning testkit modules, never the `@/dev/testkit` barrel:
 // the harness installs its network boundaries with `vi.doMock`, which only
@@ -26,8 +27,8 @@ vi.mock('./actionAccountContext', async (importOriginal) => {
     const original = await importOriginal<typeof import('./actionAccountContext')>();
     return {
         ...original,
-        captureActionAccountContext: (async (...args: Parameters<typeof original.captureActionAccountContext>) => {
-            const context = await original.captureActionAccountContext(...args);
+        captureLazyActionAccountContext: (async (...args: Parameters<typeof original.captureLazyActionAccountContext>) => {
+            const context = await original.captureLazyActionAccountContext(...args);
             return {
                 ...context,
                 dispose: () => {
@@ -39,7 +40,7 @@ vi.mock('./actionAccountContext', async (importOriginal) => {
                     return await context.runPrepared(run);
                 },
             };
-        }) as typeof original.captureActionAccountContext,
+        }) as typeof original.captureLazyActionAccountContext,
     };
 });
 
@@ -638,6 +639,35 @@ describe('withDefaultActionExecuteContext', () => {
 
         expect(openSession).toHaveBeenCalledWith('session-a', { serverId });
         expect(lifetime.disposed).toBe(1);
+    });
+
+    it('resumes fresh-folder consent from the exact Home snapshot before navigating', async () => {
+        const serverId = await addHome();
+        harness.answer(serverId, '/v1/account/encryption/currentness', { body: {
+            mode: 'plain', version: 1, signingKeyFingerprint: null, contentKeyFingerprint: null, updatedAt: 1,
+        } });
+        harness.answer(serverId, '/v2/sessions/session-a?accessProjectionVersion=1', { body: { session: {
+            id: 'session-a', createdAt: 1, updatedAt: 2, seq: 1, active: false, activeAt: 2,
+            encryptionMode: 'plain', dataEncryptionKey: null, metadataVersion: 1,
+            metadata: JSON.stringify({ machineId: 'machine-a', path: '/managed/session-a', host: 'host-a',
+                runtimeDescriptorV1: { v: 1, agentId: 'claude', agent: {} } }),
+            agentStateVersion: 1, agentState: null, share: null,
+            effectiveAccess: { v: 1, level: 'owner', sources: [{ kind: 'owner' }],
+                capabilities: projectLegacySessionAccessCapabilitiesV1({ level: 'owner' }) },
+            responsibleAccountId: null, responsibleAccount: null,
+        } } });
+        rpc.machine.mockResolvedValue({ type: 'error', errorCode: 'SESSION_DIRECTORY_MISSING', errorMessage: 'Missing folder' });
+        const { createDefaultActionExecutor } = await loadExecutor();
+        const openSession = vi.fn();
+
+        await expect(createDefaultActionExecutor({ openSession }).execute('session.open', {
+            sessionId: 'session-a', approvedNewDirectoryCreation: true,
+        }, { serverId })).resolves.toMatchObject({ ok: false, errorCode: 'SESSION_DIRECTORY_MISSING' });
+        expect(rpc.machine).toHaveBeenCalledWith(expect.objectContaining({
+            machineId: 'machine-a', preferScoped: true, accountId: ACCOUNT_ID,
+            payload: expect.objectContaining({ directory: '/managed/session-a', approvedNewDirectoryCreation: true }),
+        }));
+        expect(openSession).not.toHaveBeenCalled();
     });
 
     it('lets a mounted host supply one complete-corpus resolver and carries its exact address to open', async () => {

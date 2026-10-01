@@ -3,6 +3,9 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "exports": {
+    "./happier-plugin-ui/qa-native": "./ui/nativeSurface.tsx"
+  },
   "happier": {
     "manifest": ".happier-plugin/plugin.json"
   },
@@ -20,15 +23,9 @@
     "react-native-web": "0.21.2"
   },
   "devDependencies": {
-    "@callstack/repack": "5.2.5",
-    "@react-native-community/cli": "20.1.2",
-    "@rspack/core": "2.1.3",
-    "@swc/helpers": "0.5.23",
     "@types/node": "25.0.10",
     "@types/react": "19.2.0",
     "@typescript/native": "npm:typescript@7.0.2",
-    "@vitejs/plugin-react": "4.7.0",
-    "typescript": "5.9.3",
-    "vite": "7.3.1"
+    "typescript": "5.9.3"
   }
 }

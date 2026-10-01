@@ -843,6 +843,7 @@ describe('ApiMachineClient /v2/changes reconnect', () => {
             },
             daemonSessionMutationCustody: {
                 stageTranscriptEvent: async () => ({ persisted: true, delivered: true }),
+                stageTranscriptMessage: async () => ({ persisted: true, delivered: true }),
             },
             api: {
                 getAccountEncryptionMode: vi.fn(async () => 'plain'),
@@ -915,7 +916,7 @@ describe('ApiMachineClient /v2/changes reconnect', () => {
             })),
             startMemoryWorkerForMachine: vi.fn(async () => null),
             spawnSession: vi.fn(async () => ({ type: 'success', sessionId: 'unused' })) as never,
-            stopSession: vi.fn(async () => true),
+            stopSession: vi.fn(async () => ({ status: 'stopped' as const })),
             isSessionAlreadyRunning: vi.fn(async () => false),
             loadLocalSessionMetadataForHandoff: vi.fn(async () => null),
             beforeShutdown: vi.fn(async () => {}),

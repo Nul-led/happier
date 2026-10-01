@@ -1,3 +1,4 @@
+import type { AgentInputFolderChipState } from '../definitions/AgentInputFolderChip';
 import * as React from 'react';
 
 import { hapticsLight } from '@/components/ui/theme/haptics';
@@ -8,8 +9,11 @@ import { useAgentInputActionMenuActions } from './useAgentInputActionMenuActions
 import type { AgentInputSelectionOverlayId } from '../selection/agentInputSelectionOverlayTypes';
 import type { IconName } from '@/components/ui/icons/Icon';
 import type { FocusReturnRef } from '@/keyboard/focusReturn';
+import type { AgentInputControlId } from './agentInputControlTypes';
 
 export function useAgentInputActionMenuControls(params: Readonly<{
+    /** Collapsed layout: the controls the host keeps on its bar (see `resolveRenderedAgentInputControls`). */
+    barControlIds?: readonly AgentInputControlId[];
     showActionMenu: boolean;
     setShowActionMenu: React.Dispatch<React.SetStateAction<boolean>>;
     closeSelectionOverlay: (id?: AgentInputSelectionOverlayId) => void;
@@ -41,6 +45,8 @@ export function useAgentInputActionMenuControls(params: Readonly<{
     engineLabel?: string | null;
     machineName?: string | null;
     currentPath?: string | null;
+    folderChipState?: AgentInputFolderChipState;
+    onRemoveFolder?: () => void;
     resumeSessionId?: string | null;
     sessionId?: string;
     extraActionChips?: readonly AgentInputExtraActionChip[];
@@ -152,6 +158,7 @@ export function useAgentInputActionMenuControls(params: Readonly<{
 
     const actionMenuActions = useAgentInputActionMenuActions({
         actionBarIsCollapsed: params.actionBarIsCollapsed,
+        ...(params.barControlIds ? { barControlIds: params.barControlIds } : {}),
         hasAnyActions: params.hasAnyActions,
         tint: params.tint,
         agentId: params.agentId,
@@ -163,6 +170,8 @@ export function useAgentInputActionMenuControls(params: Readonly<{
         engineLabel: params.engineLabel,
         machineName: params.machineName,
         currentPath: params.currentPath,
+        folderChipState: params.folderChipState,
+        onRemoveFolder: params.onRemoveFolder,
         resumeSessionId: params.resumeSessionId,
         sessionId: params.sessionId,
         extraActionChips: params.extraActionChips,

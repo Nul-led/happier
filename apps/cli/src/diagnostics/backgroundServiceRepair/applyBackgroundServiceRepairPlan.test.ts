@@ -103,12 +103,22 @@ describe('applyBackgroundServiceRepairPlan', () => {
             releaseChannel: 'publicdev',
             targetMode: 'default-following',
             instanceId: 'default',
+            irohRelayConfig: {
+              relayPolicy: 'automatic',
+              relayUrls: ['https://relay-a.example', 'https://relay-b.example'],
+              explicitlyConfigured: true,
+            },
           },
         },
         {
           kind: 'install-default-following-service',
           releaseChannel: 'preview',
           mode: 'user',
+          irohRelayConfig: {
+            relayPolicy: 'disabled',
+            relayUrls: [],
+            explicitlyConfigured: true,
+          },
         },
       ],
     };
@@ -158,6 +168,11 @@ describe('applyBackgroundServiceRepairPlan', () => {
       channel: 'preview',
       targetMode: 'default-following',
       strategy: 'replace-ring',
+      irohRelayConfig: {
+        relayPolicy: 'disabled',
+        relayUrls: [],
+        explicitlyConfigured: true,
+      },
       runCommands: true,
     }));
     expect(installDaemonServiceMock).toHaveBeenNthCalledWith(2, expect.objectContaining({
@@ -168,6 +183,11 @@ describe('applyBackgroundServiceRepairPlan', () => {
       mode: 'user',
       channel: 'publicdev',
       targetMode: 'default-following',
+      irohRelayConfig: {
+        relayPolicy: 'automatic',
+        relayUrls: ['https://relay-a.example', 'https://relay-b.example'],
+        explicitlyConfigured: true,
+      },
       runCommands: true,
     }));
 

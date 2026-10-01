@@ -1,8 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
-import fs, { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import fs, { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+
+import { tmpdir } from 'node:os';
+import { resolve as resolveMetro, type ResolutionContext } from 'metro-resolver';
 
 function getUiDir(): string {
     return join(fileURLToPath(new URL('.', import.meta.url)), '..', '..', '..');
@@ -38,6 +41,85 @@ function loadMetroConfig(uiDir: string, envOverrides: Record<string, string | nu
 }
 
 describe('metro.config.js (web)', () => {
+    it.each(['ios', 'android', 'web'])('resolves React runtime peers from the app on %s despite nested copies', (platform) => {
+        const uiDir = getUiDir();
+        const config = loadMetroConfig(uiDir);
+        const fixture = realpathSync(mkdtempSync(join(tmpdir(), 'happier-metro-peers-')));
+        try {
+            // Real filesystem boundary and real Metro resolver: nested packages reproduce
+            // Yarn's hoisted native dependencies carrying their own runtime peers.
+            for (const name of ['react', 'react-dom', 'react-native', 'unrelated-peer']) {
+                const root = join(fixture, 'node_modules', name);
+                mkdirSync(root, { recursive: true });
+                writeFileSync(join(root, 'package.json'), JSON.stringify({ name, main: 'index.js' }));
+                writeFileSync(join(root, 'index.js'), 'module.exports = {};');
+                if (name === 'react') writeFileSync(join(root, 'jsx-runtime.js'), 'module.exports = {};');
+                if (name === 'react-dom') writeFileSync(join(root, 'client.js'), 'module.exports = {};');
+            }
+            const context: ResolutionContext = {
+                ...config.resolver,
+                allowHaste: false,
+                assetExts: new Set(config.resolver.assetExts),
+                customResolverOptions: Object.create(null),
+                dev: true,
+                mainFields: config.resolver.resolverMainFields,
+                nodeModulesPaths: config.resolver.nodeModulesPaths ?? [],
+                originModulePath: join(fixture, 'index.js'),
+                preferNativePlatform: platform !== 'web',
+                resolveRequest: resolveMetro,
+                doesFileExist: existsSync,
+                fileSystemLookup(filePath) {
+                    if (!existsSync(filePath)) return { exists: false };
+                    return { exists: true, type: statSync(filePath).isDirectory() ? 'd' : 'f', realPath: realpathSync(filePath) };
+                },
+                getPackage(filePath) {
+                    return existsSync(filePath) ? JSON.parse(readFileSync(filePath, 'utf8')) : null;
+                },
+                getPackageForModule(filePath) {
+                    for (let dir = dirname(filePath); dirname(dir) !== dir; dir = dirname(dir)) {
+                        const manifest = join(dir, 'package.json');
+                        if (existsSync(manifest)) return { rootPath: dir, packageRelativePath: relative(dir, filePath), packageJson: JSON.parse(readFileSync(manifest, 'utf8')) };
+                        if (dir.endsWith('node_modules')) break;
+                    }
+                    return null;
+                },
+                resolveAsset: () => null,
+                resolveHasteModule: () => null,
+                resolveHastePackage: () => null,
+                redirectModulePath: (modulePath) => modulePath,
+                unstable_logWarning: (message) => { throw new Error(message); },
+            };
+            const appRequire = createRequire(join(uiDir, 'package.json'));
+            writeFileSync(join(fixture, 'generatedBundledPluginUiArtifacts.d.ts'), 'export declare const BUNDLED_PLUGIN_UI_APP_ARTIFACTS: readonly unknown[];');
+            expect(() => config.resolver.resolveRequest(context, './generatedBundledPluginUiArtifacts', platform)).toThrow();
+            writeFileSync(join(fixture, 'generatedBundledPluginUiArtifacts.js'), 'export const BUNDLED_PLUGIN_UI_APP_ARTIFACTS = [];');
+            expect(config.resolver.resolveRequest(context, './generatedBundledPluginUiArtifacts', platform)).toEqual({
+                type: 'sourceFile', filePath: join(fixture, 'generatedBundledPluginUiArtifacts.js'),
+            });
+            expect(resolveMetro(context, 'react', platform)).toEqual({
+                type: 'sourceFile', filePath: join(fixture, 'node_modules', 'react', 'index.js'),
+            });
+            for (const name of ['react', 'react/jsx-runtime', ...(platform === 'web' ? ['react-dom', 'react-dom/client'] : ['react-native'])]) {
+                expect(config.resolver.resolveRequest(context, name, platform)).toEqual({
+                    type: 'sourceFile', filePath: realpathSync(appRequire.resolve(name)),
+                });
+            }
+            if (platform !== 'web') {
+                const subpath = 'react-native/Libraries/Utilities/Platform';
+                // Preserve the installed package's exports behavior, including its priority
+                // over platform suffixes, rather than resolving this private file with Node.
+                expect(config.resolver.resolveRequest(context, subpath, platform)).toEqual(
+                    resolveMetro({ ...context, originModulePath: join(uiDir, 'index.ts') }, subpath, platform),
+                );
+            }
+            expect(config.resolver.resolveRequest(context, 'unrelated-peer', platform)).toEqual({
+                type: 'sourceFile', filePath: join(fixture, 'node_modules', 'unrelated-peer', 'index.js'),
+            });
+        } finally {
+            rmSync(fixture, { recursive: true, force: true });
+        }
+    });
+
     afterEach(() => {
         vi.doUnmock('@sentry/react-native/metro');
         vi.resetModules();
@@ -217,44 +299,30 @@ describe('metro.config.js (web)', () => {
         const repoRoot = resolve(uiDir, '..', '..');
         const config = loadMetroConfig(uiDir);
         const defaultResolution = { type: 'empty' };
-        const relativeArtifactPath = 'react-native-web/inspector-app-native/entry.mjs.bundle';
+        const relativeArtifactPath = 'react-native/inspector-app-native/entry.cjs.bundle';
 
-        const resolved = config.resolver.resolveRequest(
-            {
-                originModulePath: join(
-                    uiDir,
-                    'sources/sync/domains/plugins/availability/generatedBundledPluginUiArtifacts.web.ts',
-                ),
-                resolveRequest: () => defaultResolution,
-            },
-            `@happier-dev/plugins-inspector/happier-plugin-ui/${relativeArtifactPath}`,
-            'web',
-        );
+        for (const platform of ['web', 'ios', 'android']) {
+            const resolved = config.resolver.resolveRequest(
+                {
+                    originModulePath: join(
+                        uiDir,
+                        'sources/sync/domains/plugins/availability/generatedBundledPluginUiArtifacts.js',
+                    ),
+                    resolveRequest: () => defaultResolution,
+                },
+                `@happier-dev/plugins-inspector/happier-plugin-ui/${relativeArtifactPath}`,
+                platform,
+            );
 
-        expect(resolved).toEqual({
-            type: 'assetFiles',
-            filePaths: [resolve(
-                repoRoot,
-                'packages/plugins/inspector/dist/happier-plugin-ui',
-                relativeArtifactPath,
-            )],
-        });
-    });
-
-    it('exports generated bundled Plugin UI artifact imports to the package consumer', () => {
-        const uiDir = getUiDir();
-        const repoRoot = resolve(uiDir, '..', '..');
-        const requireFromGeneratedConsumer = createRequire(join(
-            uiDir,
-            'sources/sync/domains/plugins/availability/generatedBundledPluginUiArtifacts.web.ts',
-        ));
-
-        expect(requireFromGeneratedConsumer.resolve(
-            '@happier-dev/plugins-inspector/happier-plugin-ui/react-native-web/inspector-app-native/entry.mjs.bundle',
-        )).toBe(resolve(
-            repoRoot,
-            'packages/plugins/inspector/dist/happier-plugin-ui/react-native-web/inspector-app-native/entry.mjs.bundle',
-        ));
+            expect(resolved).toEqual({
+                type: 'assetFiles',
+                filePaths: [resolve(
+                    repoRoot,
+                    'packages/plugins/inspector/dist/happier-plugin-ui',
+                    relativeArtifactPath,
+                )],
+            });
+        }
     });
 
     it('keeps packaged Plugin UI artifact bytes hashable while blocking unrelated workspace dist output', () => {
@@ -277,7 +345,7 @@ describe('metro.config.js (web)', () => {
         );
 
         expect(config.watchFolders).toContain(resolve(repoRoot, 'packages/plugins/inspector'));
-        expect(isBlocked(join(artifactRoot, 'react-native-web/inspector-app-native/entry.mjs.bundle'))).toBe(false);
+        expect(isBlocked(join(artifactRoot, 'react-native/inspector-app-native/entry.cjs.bundle'))).toBe(false);
         expect(isBlocked(resolve(repoRoot, 'packages/plugins/inspector/dist/index.js'))).toBe(true);
     });
 
@@ -426,7 +494,7 @@ describe('metro.config.js (web)', () => {
         expect(isBlocked(join(cliRoot, '.runner-snapshot-scratch', 'src/index.ts'))).toBe(false);
     });
 
-    it('blocks pack publication trees and regular internal workspace dist while retaining canonical source', () => {
+    it('blocks transient package build trees and regular internal workspace dist while retaining canonical source', () => {
         const uiDir = getUiDir();
         const repoRoot = resolve(uiDir, '..', '..');
         const config = loadMetroConfig(uiDir);
@@ -444,6 +512,7 @@ describe('metro.config.js (web)', () => {
             '.restore.publish-1',
             '.dist.build.publish-1',
             '.dist.hstack-stage-publish-1',
+            '.dist.hstack-backup.1452086.1790630931232',
             'dist.staging.publish-1',
             'dist.probe.publish-1',
             'dist.__finalize_backup__.publish-1',
@@ -461,6 +530,22 @@ describe('metro.config.js (web)', () => {
         ).toBe(true);
         expect(
             isBlocked(String.raw`C:\repo\packages\protocol\dist.__finalize_backup__.publish-1\index.js`),
+        ).toBe(true);
+        expect(
+            isBlocked(String.raw`C:\repo\packages\protocol\.dist.hstack-backup.1452086.1790630931232\agents\install\index.js`),
+        ).toBe(true);
+        expect(
+            isBlocked(join(
+                packageRoot,
+                '.happier',
+                'typescript-package-build',
+                'compiler-cache',
+                'dist',
+                'index.js',
+            )),
+        ).toBe(true);
+        expect(
+            isBlocked(String.raw`C:\repo\packages\protocol\.happier\typescript-package-build\compiler-cache\dist\index.js`),
         ).toBe(true);
         expect(isBlocked(join(packageRoot, 'src/index.ts'))).toBe(false);
         expect(isBlocked(join(packageRoot, 'dist/index.js'))).toBe(true);

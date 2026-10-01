@@ -161,7 +161,6 @@ const declaration = VoiceProviderContributionSchema.parse({
   },
   client: {
     artifactId: 'web-runtime',
-    modulePath: './voiceRuntime',
     exportName: 'activate',
   },
 });

@@ -3,6 +3,7 @@ import * as React from 'react';
 import { View } from 'react-native';
 
 import { SelectionList, type SelectionListOption, type SelectionListStep } from '@/components/ui/selectionList';
+import { SelectionListSkeletonRow } from '@/components/ui/selectionList/SelectionListSkeletonRow';
 import { Text } from '@/components/ui/text/Text';
 import { Item } from '@/components/ui/lists/Item';
 import type { CustomModalInjectedProps } from '@/modal';
@@ -68,8 +69,8 @@ export const SessionFollowDestinationPickerModal = React.memo(function SessionFo
     const fixedAddress: SessionAddress = props.source ?? props.destination;
     const choosingDestination = props.source !== undefined;
     const title = choosingDestination
-        ? t('session.follow.sources.add')
-        : t('session.follow.sources.addSource');
+        ? t('session.follow.sources.chooseDestinationTitle')
+        : t('session.follow.sources.chooseSourceTitle');
     useModalCardChrome(props.setChrome, React.useMemo(() => ({
         kind: 'card' as const,
         title,
@@ -146,7 +147,10 @@ export const SessionFollowDestinationPickerModal = React.memo(function SessionFo
         coverageComplete: querySource.coverageComplete,
         retainedRowCount: destinations.length,
     }), [destinations.length, fixedAddress.serverId, querySource.coverageComplete, querySource.statesByServerId]);
-    const pickerPresentation = resolveSessionFollowPickerPresentation(queryPresentation, destinations.length);
+    const pickerPresentation = resolveSessionFollowPickerPresentation(queryPresentation, destinations.length, online);
+    // The first page is still loading: reserve the rows instead of an empty list plus a status line.
+    const firstPageLoading = queryPresentation.kind === 'initial_loading' && destinations.length === 0 && online;
+    const statusKey = firstPageLoading ? null : pickerPresentation.statusKey;
 
     const loadNext = querySource.loadNext;
     React.useEffect(() => {
@@ -219,9 +223,9 @@ export const SessionFollowDestinationPickerModal = React.memo(function SessionFo
                 onPress: () => { if (committedRelation) void prepareCommittedRelation(committedRelation); },
             })}
         /> : null}
-        {pickerPresentation.statusKey && pickerPresentation.canRetryQuery ? <Item
+        {statusKey && pickerPresentation.canRetryQuery ? <Item
             testID="session-follow-picker-currentness"
-            title={t(pickerPresentation.statusKey)}
+            title={t(statusKey)}
             titleLines={0}
             // Discovery only advances itself while the query is ready, so a failed or partial
             // corpus is retried through the shared query owner — the search input and any
@@ -230,15 +234,16 @@ export const SessionFollowDestinationPickerModal = React.memo(function SessionFo
             disabled={saving}
             onPress={() => { void querySource.refresh(); }}
             accessibilityLiveRegion="polite"
-        /> : pickerPresentation.statusKey ? <Text
+        /> : statusKey ? <Text
             testID="session-follow-picker-currentness"
             accessibilityLiveRegion="polite"
-        >{t(pickerPresentation.statusKey)}</Text> : null}
+        >{t(statusKey)}</Text> : null}
         <SelectionList
             testID="session-follow-destination-list"
             rootStep={rootStep}
             onSelect={(destinationSessionId) => {
-                if (saving || !pickerPresentation.canSelect || !destinations.some((candidate) => candidate.id === destinationSessionId)) return;
+                if (!isServerReachabilityNetworkAllowed() || saving || committedRelation !== null
+                    || !pickerPresentation.canSelect || !destinations.some((candidate) => candidate.id === destinationSessionId)) return;
                 setSaving(true);
                 setFailed(false);
                 const relation = {
@@ -265,6 +270,15 @@ export const SessionFollowDestinationPickerModal = React.memo(function SessionFo
                 });
             }}
             onRequestClose={props.onClose}
+            contentState={firstPageLoading ? (
+                <View
+                    testID="session-follow-destination-loading"
+                    accessibilityRole="progressbar"
+                    accessibilityLabel={t('sessionsList.queryInitialLoadingTitle')}
+                >
+                    {[0, 1, 2, 3].map((index) => <SelectionListSkeletonRow key={index} index={index} />)}
+                </View>
+            ) : undefined}
             autoFocusInputOnWeb
             keyboardHintsEnabled
             heightBehavior="content"

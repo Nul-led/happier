@@ -72,6 +72,28 @@ describe('buildSessionListIndexFromViewData', () => {
         expect(first).not.toBe(second);
     });
 
+    it('keeps delimiter-bearing header node ids distinct', () => {
+        // Header ids are React keys and collapsed-state keys. A workspace key or Home id
+        // that contains the joining delimiter must not alias two different headers.
+        const first = buildSessionListIndexNodeId({
+            type: 'header',
+            title: 'Workspace',
+            headerKind: 'project',
+            serverId: 'home-a',
+            workspaceKey: 'project|folder:folder-a',
+        });
+        const second = buildSessionListIndexNodeId({
+            type: 'header',
+            title: 'Workspace',
+            headerKind: 'project',
+            serverId: 'home-a',
+            workspaceKey: 'project',
+            folderId: 'folder-a',
+        });
+
+        expect(first).not.toBe(second);
+    });
+
     it('reuses the previous index reference when inputs are semantically identical', () => {
         const session = makeRenderable('s1');
         const viewData: SessionListViewItem[] = [

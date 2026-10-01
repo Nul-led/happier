@@ -1,10 +1,11 @@
+import { archiveSessionReports, confirmSessionArchive } from '@/components/sessions/actions/confirmSessionArchive';
 import { resolveAgentIdFromSessionMetadata } from '@happier-dev/agents';
 import * as React from 'react';
 import { Platform, Pressable, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { listActionSpecs } from '@happier-dev/protocol';
 import { useUnistyles } from 'react-native-unistyles';
-import { useRouter } from 'expo-router';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 
 import { storage, useProfile, useSetting, useSettings, useSessionOrganizationProjection } from '@/sync/domains/state/storage';
 import type { ServerAccountScopeLifetime } from '@/sync/domains/scope/serverAccountScope';
@@ -113,6 +114,7 @@ import {
   useSessionCollaborationHeaderState,
 } from '@/components/sessions/collaboration/SessionCollaborationHeaderEntry';
 import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 const SESSION_FOLLOW_IN_ANOTHER_SESSION_ACTION_ID = 'session.follow.sources.add';
 
@@ -719,7 +721,7 @@ function SessionHeaderActionMenuInner(props: SessionHeaderActionMenuProps) {
             height: headerInteractiveTargetSize,
             alignItems: 'center',
             justifyContent: 'center',
-            opacity: !action.enabled ? 0.45 : pressed ? 0.7 : 1,
+            opacity: !action.enabled ? 0.45 : pressed ? motionTokens.press.opacity : 1,
           })}
         >
           <Icon
@@ -783,15 +785,6 @@ function SessionHeaderActionMenuInner(props: SessionHeaderActionMenuProps) {
           }, followEditor.triggerRef);
           return;
         }
-        if (actionId === 'header.openRuns') {
-          if (!sessionServerId) return;
-          router.push(buildScopedSessionRouteHref({
-            sessionId: props.sessionId,
-            serverId: sessionServerId,
-            suffix: '/runs',
-          }) as any);
-          return;
-        }
         if (actionId === 'header.openAutomations') {
           navigateWithBlurOnWeb(() => router.push(buildScopedSessionRouteHref({
             sessionId: props.sessionId,
@@ -834,17 +827,23 @@ function SessionHeaderActionMenuInner(props: SessionHeaderActionMenuProps) {
                 });
                 return;
               }
-              if (actionId === SESSION_ACTION_STOP_ID || actionId === SESSION_ACTION_ARCHIVE_ID) {
+              let alsoArchiveReports = false;
+              if (actionId === SESSION_ACTION_STOP_ID) {
                 const confirmed = await Modal.confirm(
-                  actionId === SESSION_ACTION_STOP_ID ? t('sessionInfo.stopSession') : t('sessionInfo.archiveSession'),
-                  actionId === SESSION_ACTION_STOP_ID ? t('sessionInfo.stopSessionConfirm') : t('sessionInfo.archiveSessionConfirm'),
+                  t('sessionInfo.stopSession'),
+                  t('sessionInfo.stopSessionConfirm'),
                   {
                     cancelText: t('common.cancel'),
-                    confirmText: actionId === SESSION_ACTION_STOP_ID ? t('sessionInfo.stopSession') : t('sessionInfo.archiveSession'),
+                    confirmText: t('sessionInfo.stopSession'),
                     destructive: true,
                   },
                 );
                 if (!confirmed) return;
+              }
+              if (actionId === SESSION_ACTION_ARCHIVE_ID) {
+                const confirmation = await confirmSessionArchive({ reportCount: session?.reports?.total ?? 0 });
+                if (!confirmation.confirmed) return;
+                alsoArchiveReports = confirmation.alsoArchiveReports;
               }
               await executeSessionAction({
                 actionId: actionId as any,
@@ -864,6 +863,9 @@ function SessionHeaderActionMenuInner(props: SessionHeaderActionMenuProps) {
                     }
                   : {}),
               });
+              if (alsoArchiveReports) {
+                await archiveSessionReports({ leadSessionId: props.sessionId, serverId: sessionServerId ?? null });
+              }
             } catch (error) {
               showSessionHeaderActionError(error);
             }
@@ -875,6 +877,7 @@ function SessionHeaderActionMenuInner(props: SessionHeaderActionMenuProps) {
           // path behind the modal: the user chooses Native, Replay or Configure
           // before any fork effect is issued.
           openSessionForkStrategyFlow({
+            navigation: router,
             sessionId: props.sessionId,
             forkSupportSource: session,
             serverId: sessionServerId ?? null,
@@ -995,7 +998,7 @@ function SessionHeaderActionMenuInner(props: SessionHeaderActionMenuProps) {
               height: headerInteractiveTargetSize,
               alignItems: 'center',
               justifyContent: 'center',
-              opacity: pressed ? 0.7 : 1,
+              opacity: pressed ? motionTokens.press.opacity : 1,
             })}
           >
             {icon}

@@ -18,6 +18,7 @@ import type { PluginAccountAvailabilityReader } from '@/sync/domains/plugins/ava
 export type InstalledPluginBrandPresentation = Readonly<{
     displayName: string;
     bytes?: Uint8Array;
+    monochrome?: boolean;
 }>;
 
 /**
@@ -40,7 +41,6 @@ export type InstalledPluginBrandPresentationInput = Readonly<{
     installedPackage: PluginProjectionInstalledPackageV2 | null | undefined;
     machineId: string | null | undefined;
     serverId?: string | null;
-    expectedGeneration: string | number | null | undefined;
     signal: AbortSignal;
     accountLifetime: ActiveServerAccountScopeLifetime | null | undefined;
     isCurrent: () => boolean;
@@ -51,13 +51,6 @@ export type InstalledPluginBrandPresentationInput = Readonly<{
 function readRequiredString(value: string | null | undefined): string | null {
     const normalized = value?.trim();
     return normalized ? normalized : null;
-}
-
-function readExpectedGeneration(value: string | number | null | undefined): string | null {
-    if (typeof value === 'number') {
-        return Number.isFinite(value) ? String(value) : null;
-    }
-    return readRequiredString(value);
 }
 
 function isCurrent(input: InstalledPluginBrandPresentationInput): boolean {
@@ -88,10 +81,11 @@ function isCurrent(input: InstalledPluginBrandPresentationInput): boolean {
 function admittedBrandPresentation(
     displayName: string,
     bytes: Uint8Array | null | undefined,
+    monochrome?: boolean,
 ): InstalledPluginBrandPresentation | null {
     if (!bytes || bytes.byteLength === 0) return null;
     return materializeHappierRenderableImage(bytes).admitted
-        ? Object.freeze({ displayName, bytes })
+        ? Object.freeze({ displayName, bytes, ...(monochrome ? { monochrome: true } : {}) })
         : null;
 }
 
@@ -112,9 +106,10 @@ function presentationKey(input: InstalledPluginBrandPresentationInput): string {
         brand?.state === 'available' ? brand.resource.pluginId : null,
         brand?.state === 'available' ? brand.resource.localId : null,
         brand?.state === 'available' ? brand.digest : null,
+        brand?.state === 'available' ? brand.monochrome === true : null,
         readRequiredString(input.machineId),
         input.serverId ?? null,
-        readExpectedGeneration(input.expectedGeneration),
+        installedPackage?.occurrenceId ?? null,
         input.packageAssets?.reader ?? null,
         input.packageAssets?.source ?? null,
     ]);
@@ -150,6 +145,7 @@ async function readPortableBrandPresentation(input: Readonly<{
     displayName: string;
     resourceId: string;
     digest: string;
+    monochrome?: boolean;
 }>): Promise<InstalledPluginBrandPresentation | null> {
     const path = readDeclaredPortableBrandPath({
         packageAssets: input.packageAssets,
@@ -167,7 +163,7 @@ async function readPortableBrandPresentation(input: Readonly<{
     try {
         const bytes = await acquired.lease.readDeclaredAsset(path);
         if (!isCurrent(input.presentation)) return null;
-        return admittedBrandPresentation(input.displayName, bytes)
+        return admittedBrandPresentation(input.displayName, bytes, input.monochrome)
             ?? neutralFallback(input.presentation);
     } finally {
         acquired.lease.dispose();
@@ -201,6 +197,7 @@ export async function readInstalledPluginBrandPresentation(
                 displayName: installedPackage.displayName,
                 resourceId: brand.resource.localId,
                 digest: brand.digest,
+                monochrome: brand.monochrome,
             });
         } catch {
             return neutralFallback(input);
@@ -210,8 +207,8 @@ export async function readInstalledPluginBrandPresentation(
     if (installedPackage.source.kind !== 'localPath') return fallback;
 
     const machineId = readRequiredString(input.machineId);
-    const expectedGeneration = readExpectedGeneration(input.expectedGeneration);
-    if (!machineId || !expectedGeneration) return fallback;
+    const expectedCallerOccurrenceId = readRequiredString(installedPackage.occurrenceId);
+    if (!machineId || !expectedCallerOccurrenceId) return fallback;
 
     try {
         const client = createPluginContextualResourceReadClient({
@@ -219,7 +216,7 @@ export async function readInstalledPluginBrandPresentation(
             resource: {
                 machineId,
                 serverId: input.serverId ?? null,
-                expectedGeneration,
+                expectedCallerOccurrenceId,
             },
             isCurrent: () => isCurrent(input),
         });
@@ -231,6 +228,7 @@ export async function readInstalledPluginBrandPresentation(
         return admittedBrandPresentation(
             installedPackage.displayName,
             resource.bytes,
+            brand.monochrome,
         ) ?? fallback;
     } catch {
         // The package remains current, but its optional visual Resource did not
@@ -306,11 +304,16 @@ export function useInstalledPluginBrandPresentation(
                 : current);
         };
         const retire = () => {
+            if (retired) return;
             retired = true;
+            // Without an admitted fallback this effect never starts a mark read
+            // or owns a non-null presentation to withdraw.
+            if (capturedFallback === null) return;
             setState((current) => (
                 current.key === capturedState.key
                 && current.accountLifetime === capturedState.accountLifetime
                 && current.signal === capturedState.signal
+                && current.presentation !== null
                     ? {
                         key: capturedState.key,
                         accountLifetime: capturedState.accountLifetime,

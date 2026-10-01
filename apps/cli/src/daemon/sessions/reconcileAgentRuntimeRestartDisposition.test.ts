@@ -54,7 +54,11 @@ describe('reconcileAgentRuntimeRestartDisposition', () => {
         '/tmp/happier/runner-authority.json',
       agentRuntimeDaemonServiceCapabilityHash:
         `sha256:${'a'.repeat(64)}`,
-      runnerAgentImmutableGenerationId: 'generation-1',
+      runnerAgentSourceCustodyV1: {
+        kind: 'managed',
+        immutableGenerationId: 'generation-1',
+        installSource: 'localPath',
+      },
     });
     const acquireRegistryLease = vi.fn();
 

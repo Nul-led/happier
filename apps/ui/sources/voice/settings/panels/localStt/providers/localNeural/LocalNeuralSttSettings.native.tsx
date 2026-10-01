@@ -4,12 +4,12 @@ import { Platform, Pressable } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
 import { DropdownMenu } from '@/components/ui/forms/dropdown/DropdownMenu';
+import { FieldValueItem } from '@/components/ui/forms/FieldValueItem';
 import { Item } from '@/components/ui/lists/Item';
 import { Modal } from '@/modal';
 import type { VoiceLocalSttSettings } from '@/sync/domains/settings/voiceLocalSttSettings';
 import type { VoiceDaemonRouteDiagnosticReason } from '@/voice/settings/voiceProviderLocalAvailability';
 import { t } from '@/text';
-import { fireAndForget } from '@/utils/system/fireAndForget';
 import { formatDownloadProgressDetail } from '@/voice/downloads/downloadProgress';
 import { checkModelPackUpdateAvailable, ensureModelPackInstalled, getModelPackInstallSummary, removeModelPack } from '@/voice/modelPacks/installer.native';
 import { formatModelPackBuildLabel } from '@/voice/modelPacks/formatBuildLabel';
@@ -39,6 +39,8 @@ export function LocalNeuralSttSettings(props: {
 }) {
   const { theme } = useUnistyles();
   const [openMenu, setOpenMenu] = React.useState<null | 'packId' | 'language'>(null);
+  /** The Custom language entry is typed inline beneath the language menu. */
+  const [customLanguageOpen, setCustomLanguageOpen] = React.useState(false);
   const executionPolicy = React.useMemo(() => resolveLocalNeuralExecutionPolicy({
     requestedExecution: props.cfg.localNeural.execution,
   }), [props.cfg.localNeural.execution]);
@@ -384,16 +386,7 @@ export function LocalNeuralSttSettings(props: {
         items={languageOptions}
         onSelect={(id) => {
           if (id === '__custom__') {
-            fireAndForget((async () => {
-              const raw = await Modal.prompt(
-                t('settingsVoice.local.localNeuralStt.language.promptTitle'),
-                t('settingsVoice.local.localNeuralStt.language.promptBody'),
-                { placeholder: effectiveLanguage },
-              );
-              if (raw === null) return;
-              const next = String(raw).trim();
-              setLocalNeural({ language: next ? next : null });
-            })(), { tag: 'LocalNeuralSttSettings.prompt.language' });
+            setCustomLanguageOpen(true);
             setOpenMenu(null);
             return;
           }
@@ -401,6 +394,21 @@ export function LocalNeuralSttSettings(props: {
           setOpenMenu(null);
         }}
       />
+      {!customLanguageOpen ? null : (
+        <FieldValueItem
+          title={t('settingsVoice.local.localNeuralStt.language.promptTitle')}
+          subtitle={t('settingsVoice.local.localNeuralStt.language.promptBody')}
+          fieldTestID="settings.voice.localNeuralStt.language.custom.field"
+          autoCapitalize="none"
+          autoFocus
+          placeholder={t('settingsVoice.language.autoDetect')}
+          value={effectiveLanguage}
+          onCommit={(draft) => {
+            setCustomLanguageOpen(false);
+            setLocalNeural({ language: draft ? draft : null });
+          }}
+        />
+      )}
     </>
   );
 }

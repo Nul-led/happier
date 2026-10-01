@@ -21,6 +21,30 @@ function canonicalRuntimeEvent(input: Readonly<Record<string, unknown>>): AgentS
 }
 
 describe('createSessionTurnLifecycle', () => {
+    it('freezes host turn facts into begin before later inputs change the host snapshot', async () => {
+        const mutations: SessionTurnMutationV1[] = [];
+        let facts = { initiator: 'agent_session' as const, workDepth: 5 };
+        const lifecycle = createSessionTurnLifecycle({
+            session: { sessionId: 'session-1', enqueueSessionTurnMutation: async (mutation) => { mutations.push(mutation); } },
+            readTurnFacts: () => facts,
+        });
+        lifecycle.observeRuntimeEvent(canonicalRuntimeEvent({ kind: 'turn-start', sessionId: 'session-1', emittedAtMs: 100, turnId: 'turn-1' }));
+        facts = { initiator: 'agent_session', workDepth: 9 };
+        await lifecycle.drainAcceptedLifecycle();
+        expect(mutations[0]).toMatchObject({ action: 'begin', initiator: 'agent_session', workDepth: 5 });
+    });
+
+    it('persists the workflow invocation identity with the host frozen depth', async () => {
+        const mutations: SessionTurnMutationV1[] = [];
+        const lifecycle = createSessionTurnLifecycle({
+            session: { sessionId: 'session-1', enqueueSessionTurnMutation: async (mutation) => { mutations.push(mutation); } },
+            readTurnFacts: () => ({ initiator: 'workflow', workDepth: 3, workflowInvocation: { runId: 'run-1', invocationRecordId: 'invocation-1' } }),
+        });
+        lifecycle.observeRuntimeEvent(canonicalRuntimeEvent({ kind: 'turn-start', sessionId: 'session-1', emittedAtMs: 100, turnId: 'turn-1' }));
+        await lifecycle.drainAcceptedLifecycle();
+        expect(mutations[0]).toMatchObject({ action: 'begin', initiator: 'workflow', workDepth: 3, workflowInvocation: { runId: 'run-1', invocationRecordId: 'invocation-1' } });
+    });
+
     it('records exact begin marker custody before publishing the server begin mutation', async () => {
         let recordMarker!: () => void;
         const markerRecorded = new Promise<void>((resolve) => {

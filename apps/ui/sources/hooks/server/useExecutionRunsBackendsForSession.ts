@@ -37,10 +37,24 @@ export function useExecutionRunsBackendsForSession(
   // borrowing a same-id Session's Machine from another Home.
   const machineId = machineTarget?.machineId ?? (serverId ? null : sessionMetadataMachineId);
 
+  return useExecutionRunsBackendsForMachine({ machineId, serverId: serverId ?? null, enabled });
+}
+
+/**
+ * The execution-run backends one exact Machine reports — the capability read the
+ * Session hook above makes for its Session's Machine. A surface that already
+ * knows the Machine (a workflow's Where) reads it here instead of borrowing a
+ * Session. `enabled: false` (or no Machine) issues no detect RPC.
+ */
+export function useExecutionRunsBackendsForMachine(params: Readonly<{
+  machineId: string | null;
+  serverId: string | null;
+  enabled: boolean;
+}>): ExecutionRunBackendCapabilityMap {
   const machineCapabilities = useMachineCapabilitiesCache({
-    machineId,
-    ...(serverId ? { serverId } : {}),
-    enabled: enabled && Boolean(machineId),
+    machineId: params.machineId,
+    ...(params.serverId ? { serverId: params.serverId } : {}),
+    enabled: params.enabled && Boolean(params.machineId),
     request: { requests: [{ id: 'tool.executionRuns' }] } as any,
   });
 

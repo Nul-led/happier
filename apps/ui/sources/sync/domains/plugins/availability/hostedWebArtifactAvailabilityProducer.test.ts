@@ -89,6 +89,7 @@ const projectionCleanupScope = Object.freeze({ serverId: 'server-cleanup', accou
 const slot = Object.freeze({
     pluginId: 'com.acme.hosted',
     contributionId: 'hosted',
+    artifactId: 'acme',
     tier: 'hostedWeb' as const,
     platform: 'web' as const,
 });
@@ -142,10 +143,11 @@ function fixture() {
             collectionContracts: [],
             uiSlots: [{
                 contributionId: slot.contributionId,
+                artifactId: slot.artifactId,
                 tier: slot.tier,
                 platform: slot.platform,
                 artifactDigest: digest,
-                compatibility: { hostUiApiVersion: '1.0.0' },
+                hostUiApiRange: '^1.0.0',
             }],
             packageAssetArchive: {
                 archiveDigestSha256: `sha256:${'d'.repeat(64)}`,
@@ -155,38 +157,30 @@ function fixture() {
         uiArtifacts: [{
             release: { pluginId: slot.pluginId, version: '1.2.3' },
             contributionId: slot.contributionId,
+            artifactId: slot.artifactId,
             tier: slot.tier,
             platform: slot.platform,
-            artifactId: '00000000-0000-4000-8000-000000000001',
+            accountArtifactId: '00000000-0000-4000-8000-000000000001',
             artifactDigest: digest,
-            compatibility: {
-                hostAppVersion: '1.0.0',
-                hostUiApiVersion: '1.0.0',
-                reactVersion: '19.0.0',
-                platform: 'web',
-                channel: 'store',
-                nativeCapabilities: [],
-            },
+            hostUiApiRange: '^1.0.0',
         }],
     };
     return Object.freeze({
         graph: Object.freeze({
-            contributionId: slot.contributionId,
+            artifactId: slot.artifactId,
             tier: slot.tier,
-            platform: slot.platform,
             entry: entryPath,
             files,
             digest,
-            builtWith: { bundler: 'vite' as const, version: '7.0.0' },
-            hostUiApiVersion: '1.0.0',
-            compat: {},
+            builtWith: { staging: 'staticDirectory' as const },
+            hostUiApiRange: '^1.0.0',
         }),
         cacheIdentity: Object.freeze({
             pluginId: slot.pluginId,
             contributionId: slot.contributionId,
+            artifactId: slot.artifactId,
             artifactDigest: digest,
             platform: 'web' as const,
-            projectionGeneration: 1,
         }),
         snapshot: Object.freeze({
             availabilityCursor: 1,
@@ -295,11 +289,6 @@ function persistentRecordFor(current: ReturnType<typeof fixture>): PluginUiPersi
     return Object.freeze({
         persistentIdentity: Object.freeze({
             accountScope: scope,
-            releaseVersion: '1.2.3',
-            pluginId: slot.pluginId,
-            contributionId: slot.contributionId,
-            tier: 'hostedWeb',
-            platform: 'web',
             artifactDigest: current.graph.digest,
         }),
         bytes: new Uint8Array(entry.bytes),
@@ -397,6 +386,8 @@ function createCurrentPersistentAccountOperation() {
         isCurrent: () => true,
         isCacheCurrent: () => true,
         isOpen: () => true,
+        readPersistentArtifact: async () => null,
+        writePersistentArtifact: async () => null,
         awaitPendingPersistentArtifactRemoval: async () => undefined,
         removePersistentArtifact: async () => undefined,
         removePersistentArtifactsForAccount: async () => undefined,
@@ -408,7 +399,7 @@ beforeEach(() => {
     bundledAppExactArtifactSource.create.mockReset();
     bundledAppExactArtifactSource.create.mockReturnValue(Object.freeze({
         kind: 'appExact' as const,
-        readFile: async () => null,
+        fetch: async () => null,
     }));
 });
 
@@ -450,21 +441,17 @@ describe('hosted-web Artifact availability producer', () => {
             }),
         });
         const { lifetime } = createLifetime();
-        const appExact = vi.fn(async ({ relativePath }: Readonly<{ relativePath: string }>) => (
-            current.bytesByPath.get(relativePath) ?? null
-        ));
+        const appExact = vi.fn(async () => current.bytesByPath);
         bundledAppExactArtifactSource.create.mockReset();
         bundledAppExactArtifactSource.create.mockReturnValue(Object.freeze({
             kind: 'appExact' as const,
-            readFile: appExact,
+            fetch: appExact,
         }));
-        const accountHosted = vi.fn(async ({ relativePath }: Readonly<{ relativePath: string }>) => (
-            current.bytesByPath.get(relativePath) ?? null
-        ));
+        const accountHosted = vi.fn(async () => current.bytesByPath);
         activeAccountHostedArtifactSource.create.mockReset();
         activeAccountHostedArtifactSource.create.mockReturnValue(Object.freeze({
             kind: 'accountHosted' as const,
-            readFile: accountHosted,
+            fetch: accountHosted,
         }));
 
         const acquired = await producer.acquire({
@@ -518,12 +505,10 @@ describe('hosted-web Artifact availability producer', () => {
             }),
         });
         const { lifetime } = createLifetime();
-        const accountHosted = vi.fn(async ({ relativePath }: Readonly<{ relativePath: string }>) => (
-            current.bytesByPath.get(relativePath) ?? null
-        ));
+        const accountHosted = vi.fn(async () => current.bytesByPath);
         const accountHostedCandidate = Object.freeze({
             kind: 'accountHosted' as const,
-            readFile: accountHosted,
+            fetch: accountHosted,
         });
         activeAccountHostedArtifactSource.create.mockReset();
         activeAccountHostedArtifactSource.create.mockReturnValue(accountHostedCandidate);
@@ -543,7 +528,7 @@ describe('hosted-web Artifact availability producer', () => {
             handle: expect.objectContaining({ token: 'opaque-1' }),
         });
         if (first.kind !== 'available') throw new Error('expected Account-hosted native Artifact handle');
-        expect(accountHosted).toHaveBeenCalledTimes(2);
+        expect(accountHosted).toHaveBeenCalledTimes(1);
         expect(activeAccountHostedArtifactSource.create).toHaveBeenCalledWith({ accountLifetime: lifetime });
         expect(persistent.write).toHaveBeenCalledOnce();
         expect(bindAccountLifetime).toHaveBeenCalledWith(lifetime);
@@ -560,7 +545,7 @@ describe('hosted-web Artifact availability producer', () => {
             handle: expect.objectContaining({ token: 'opaque-2' }),
         });
         expect(persistent.write).toHaveBeenCalledOnce();
-        expect(accountHosted).toHaveBeenCalledTimes(2);
+        expect(accountHosted).toHaveBeenCalledTimes(1);
         if (second.kind === 'available') second.handle.dispose();
     });
 
@@ -597,15 +582,15 @@ describe('hosted-web Artifact availability producer', () => {
         bundledAppExactArtifactSource.create.mockReset();
         bundledAppExactArtifactSource.create.mockReturnValue(Object.freeze({
             kind: 'appExact' as const,
-            readFile: async ({ relativePath }: Readonly<{ relativePath: string }>) => {
-                custodyEvents.push(`verified:${relativePath}`);
-                return current.bytesByPath.get(relativePath) ?? null;
+            fetch: async () => {
+                custodyEvents.push('fetched');
+                return current.bytesByPath;
             },
         }));
         activeAccountHostedArtifactSource.create.mockReset();
         activeAccountHostedArtifactSource.create.mockReturnValue(Object.freeze({
             kind: 'accountHosted' as const,
-            readFile: async () => null,
+            fetch: async () => null,
         }));
         activeAccountHostedArtifactSource.publish.mockClear();
         activeAccountHostedArtifactSource.publish.mockImplementationOnce(async () => {
@@ -623,25 +608,19 @@ describe('hosted-web Artifact availability producer', () => {
 
         expect(acquired.kind).toBe('available');
         expect(activeAccountHostedArtifactSource.publish).toHaveBeenCalledOnce();
-        // A hosted-web frame declares no framework compatibility at all: the one
-        // version that decides which hosts a stored link may serve comes from
-        // the verified graph, and the app/channel facts are this host's own.
+        // The immutable generated slot carries the exact host API range used by
+        // both the verified graph and its Account-hosted link.
         expect(activeAccountHostedArtifactSource.publish).toHaveBeenCalledWith(expect.objectContaining({
             accountLifetime: lifetime,
             release: { pluginId: slot.pluginId, version: '1.2.3' },
             slot: expect.objectContaining({
                 contributionId: slot.contributionId,
+                artifactId: slot.artifactId,
                 tier: 'hostedWeb',
                 platform: 'web',
                 artifactDigest: current.graph.digest,
+                hostUiApiRange: current.graph.hostUiApiRange,
             }),
-            hostCompatibility: {
-                hostAppVersion: '1.4.2',
-                hostUiApiVersion: '1.0.0',
-                platform: 'web',
-                channel: 'store',
-                nativeCapabilities: [],
-            },
             artifactGraph: current.graph,
         }));
         const published = activeAccountHostedArtifactSource.publish.mock.calls[0]?.[0] as
@@ -649,10 +628,7 @@ describe('hosted-web Artifact availability producer', () => {
             | undefined;
         expect(published?.files.map((file) => file.relativePath))
             .toEqual(current.graph.files.map((file) => file.relativePath));
-        expect(custodyEvents).toEqual([
-            ...current.graph.files.map((file) => `verified:${file.relativePath}`),
-            'published',
-        ]);
+        expect(custodyEvents).toEqual(['fetched', 'published']);
         if (acquired.kind === 'available') acquired.handle.dispose();
     });
 
@@ -689,17 +665,16 @@ describe('hosted-web Artifact availability producer', () => {
         bundledAppExactArtifactSource.create.mockReset();
         bundledAppExactArtifactSource.create.mockReturnValue(Object.freeze({
             kind: 'appExact' as const,
-            readFile: async ({ relativePath }: Readonly<{ relativePath: string }>) => {
-                const bytes = current.bytesByPath.get(relativePath) ?? null;
+            fetch: async () => {
                 verifiedFiles += 1;
-                if (verifiedFiles === current.graph.files.length) retire();
-                return bytes;
+                retire();
+                return current.bytesByPath;
             },
         }));
         activeAccountHostedArtifactSource.create.mockReset();
         activeAccountHostedArtifactSource.create.mockReturnValue(Object.freeze({
             kind: 'accountHosted' as const,
-            readFile: async () => null,
+            fetch: async () => null,
         }));
         activeAccountHostedArtifactSource.publish.mockClear();
 
@@ -712,12 +687,12 @@ describe('hosted-web Artifact availability producer', () => {
             hostedWebPolicy: hostedWebPolicy(current.graph),
         });
 
-        expect(verifiedFiles).toBe(current.graph.files.length);
+        expect(verifiedFiles).toBe(1);
         expect(acquired).toEqual({ kind: 'unavailable', code: 'artifact_lease_revoked' });
         expect(activeAccountHostedArtifactSource.publish).not.toHaveBeenCalled();
     });
 
-    it('publishes nothing when the host cannot describe its own adoption facts', async () => {
+    it('publishes from immutable slot compatibility without transient host adoption facts', async () => {
         const current = fixture();
         const persistent = createNativePersistentStore();
         const registry = createPluginNativeArtifactResourceRegistry({
@@ -732,9 +707,6 @@ describe('hosted-web Artifact availability producer', () => {
             registry,
         });
         const producer = createPluginHostedWebArtifactAvailabilityProducer({
-            // Same admitted slot, same verified bytes; only the host's ability to
-            // name itself is missing. A fabricated key would publish a link whose
-            // recorded provenance no host actually reported.
             getHostRuntimeIdentity: () => null,
             getNativeResources: () => Object.freeze({ nativePersistentStore, registry }),
             getCache: () => Object.freeze({
@@ -747,14 +719,12 @@ describe('hosted-web Artifact availability producer', () => {
         bundledAppExactArtifactSource.create.mockReset();
         bundledAppExactArtifactSource.create.mockReturnValue(Object.freeze({
             kind: 'appExact' as const,
-            readFile: async ({ relativePath }: Readonly<{ relativePath: string }>) => (
-                current.bytesByPath.get(relativePath) ?? null
-            ),
+            fetch: async () => current.bytesByPath,
         }));
         activeAccountHostedArtifactSource.create.mockReset();
         activeAccountHostedArtifactSource.create.mockReturnValue(Object.freeze({
             kind: 'accountHosted' as const,
-            readFile: async () => null,
+            fetch: async () => null,
         }));
         activeAccountHostedArtifactSource.publish.mockClear();
 
@@ -768,7 +738,13 @@ describe('hosted-web Artifact availability producer', () => {
         });
 
         expect(acquired.kind).toBe('available');
-        expect(activeAccountHostedArtifactSource.publish).not.toHaveBeenCalled();
+        expect(activeAccountHostedArtifactSource.publish).toHaveBeenCalledOnce();
+        expect(activeAccountHostedArtifactSource.publish).toHaveBeenCalledWith(expect.objectContaining({
+            slot: expect.objectContaining({
+                artifactId: slot.artifactId,
+                hostUiApiRange: current.graph.hostUiApiRange,
+            }),
+        }));
         if (acquired.kind === 'available') acquired.handle.dispose();
     });
 
@@ -784,11 +760,6 @@ describe('hosted-web Artifact availability producer', () => {
         let record: PluginUiPersistentArtifactRecord | null = Object.freeze({
             persistentIdentity: Object.freeze({
                 accountScope: scope,
-                releaseVersion: '1.2.3',
-                pluginId: slot.pluginId,
-                contributionId: slot.contributionId,
-                tier: 'hostedWeb' as const,
-                platform: 'web',
                 artifactDigest: current.graph.digest,
             }),
             bytes: new Uint8Array(entry.bytes),
@@ -851,12 +822,12 @@ describe('hosted-web Artifact availability producer', () => {
         bundledAppExactArtifactSource.create.mockReset();
         bundledAppExactArtifactSource.create.mockReturnValue(Object.freeze({
             kind: 'appExact' as const,
-            readFile: async () => null,
+            fetch: async () => null,
         }));
         activeAccountHostedArtifactSource.create.mockReset();
         activeAccountHostedArtifactSource.create.mockReturnValue(Object.freeze({
             kind: 'accountHosted' as const,
-            readFile: async () => null,
+            fetch: async () => null,
         }));
 
         retire();
@@ -953,14 +924,12 @@ describe('hosted-web Artifact availability producer', () => {
         bundledAppExactArtifactSource.create.mockReset();
         bundledAppExactArtifactSource.create.mockReturnValue(Object.freeze({
             kind: 'appExact' as const,
-            readFile: async ({ relativePath }: Readonly<{ relativePath: string }>) => (
-                current.bytesByPath.get(relativePath) ?? null
-            ),
+            fetch: async () => current.bytesByPath,
         }));
         activeAccountHostedArtifactSource.create.mockReset();
         activeAccountHostedArtifactSource.create.mockReturnValue(Object.freeze({
             kind: 'accountHosted' as const,
-            readFile: async () => null,
+            fetch: async () => null,
         }));
 
         const oldAcquisition = producer.acquire({
@@ -1026,7 +995,7 @@ describe('hosted-web Artifact availability producer', () => {
         activeAccountHostedArtifactSource.create.mockReset();
         activeAccountHostedArtifactSource.create.mockReturnValue(Object.freeze({
             kind: 'accountHosted' as const,
-            readFile: async () => null,
+            fetch: async () => null,
         }));
 
         const acquired = await producer.acquire({
@@ -1095,7 +1064,7 @@ describe('hosted-web Artifact availability producer', () => {
         const accountHostedRead = vi.fn(async () => null);
         activeAccountHostedArtifactSource.create.mockReturnValue(Object.freeze({
             kind: 'accountHosted' as const,
-            readFile: accountHostedRead,
+            fetch: accountHostedRead,
         }));
 
         replacePluginAccountAvailabilityProjection({ scope, snapshot: current.snapshot });
@@ -1193,7 +1162,7 @@ describe('hosted-web Artifact availability producer', () => {
         activeAccountHostedArtifactSource.create.mockReset();
         activeAccountHostedArtifactSource.create.mockReturnValue(Object.freeze({
             kind: 'accountHosted' as const,
-            readFile: async () => null,
+            fetch: async () => null,
         }));
 
         replacePluginAccountAvailabilityProjection({ scope, snapshot: current.snapshot });

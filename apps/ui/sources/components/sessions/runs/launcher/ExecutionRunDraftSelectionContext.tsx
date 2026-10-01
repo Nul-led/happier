@@ -1,0 +1,72 @@
+import type { SessionDiscussionSelectionSourceV1 } from '@happier-dev/protocol';
+import * as React from 'react';
+import { View } from 'react-native';
+import { StyleSheet, useUnistyles } from 'react-native-unistyles';
+
+import { useSessionDiscussionTitles } from '@/components/sessions/conversations/useSessionDiscussionTitles';
+import { ExecutionRunAgentMark } from '@/components/sessions/runs/ExecutionRunAgentMark';
+import { ExecutionRunContextChip } from '@/components/sessions/runs/ExecutionRunContextChip';
+import { Text } from '@/components/ui/text/Text';
+import { Typography } from '@/constants/Typography';
+import { normalizeSessionAddress } from '@/sync/domains/session/sessionAddress';
+import { t } from '@/text';
+
+const stylesheet = StyleSheet.create((theme) => ({
+    root: {
+        gap: 16,
+    },
+    lead: {
+        alignItems: 'center',
+        gap: 8,
+        paddingTop: 8,
+        paddingHorizontal: 16,
+    },
+    title: {
+        ...Typography.default('semiBold'),
+        color: theme.colors.text.primary,
+        fontSize: 17,
+        textAlign: 'center',
+    },
+    body: {
+        ...Typography.default(),
+        color: theme.colors.text.secondary,
+        fontSize: 13.5,
+        lineHeight: 19,
+        textAlign: 'center',
+        maxWidth: 380,
+    },
+}));
+
+/**
+ * The Ask Agent draft's lead: what is about to happen, then the selected messages as the draft's
+ * context chip ("From Relay retry plan · 2 messages"). The real composer follows it; nothing runs
+ * until the person sends.
+ */
+export const ExecutionRunDraftSelectionContext = React.memo((props: Readonly<{
+    sessionId: string;
+    serverId: string | null;
+    origin: SessionDiscussionSelectionSourceV1;
+    contextText: string;
+    agentId: string | null;
+}>) => {
+    const styles = stylesheet;
+    useUnistyles();
+    const address = React.useMemo(() => normalizeSessionAddress(props.serverId, props.sessionId), [props.serverId, props.sessionId]);
+    const discussionIds = React.useMemo(() => [props.origin.discussionId], [props.origin.discussionId]);
+    const titles = useSessionDiscussionTitles({ address, discussionIds });
+    return (
+        <View testID="execution-run-draft-context" style={styles.root}>
+            <View style={styles.lead}>
+                <ExecutionRunAgentMark agentId={props.agentId} size={44} />
+                <Text accessibilityRole="header" style={styles.title}>{t('sessionConversation.draft.leadTitle')}</Text>
+                <Text style={styles.body}>{t('sessionConversation.draft.leadBody')}</Text>
+            </View>
+            <ExecutionRunContextChip
+                testID="execution-run-draft-context-chip"
+                title={titles.get(props.origin.discussionId) ?? null}
+                messageCount={props.origin.messageIds.length}
+                quote={props.contextText}
+            />
+        </View>
+    );
+});

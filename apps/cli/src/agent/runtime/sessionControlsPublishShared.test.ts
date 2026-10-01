@@ -35,7 +35,7 @@ describe('sessionControls publish helpers (shared)', () => {
     const next = applyModelIntentSessionMetadata({ modelOverrideV1: { v: 1, updatedAt: 10, modelId: 'model-a' } } as any, {
       v: 1,
       selection: {
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         providerConnectionId: ProviderConnectionIdSchema.parse('provider-connection-1'),
         modelId: 'model-b',
       },
@@ -46,7 +46,7 @@ describe('sessionControls publish helpers (shared)', () => {
       v: 1,
       updatedAt: 11,
       selection: {
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         providerConnectionId: ProviderConnectionIdSchema.parse('provider-connection-1'),
         modelId: 'model-b',
       },

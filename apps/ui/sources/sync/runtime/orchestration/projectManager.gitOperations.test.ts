@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { projectManager } from './projectManager';
+import { selectScmWriteOperation } from '@/scm/operations/selectScmWriteOperation';
 
 function createSession(id: string, machineId: string, path: string) {
     return {
@@ -26,6 +27,30 @@ function createSession(id: string, machineId: string, path: string) {
 }
 
 describe('projectManager git operation in-flight state', () => {
+    it('projects one queued, progressing, then classified terminal write outcome to sibling sessions', () => {
+        projectManager.clear();
+        projectManager.addSession(createSession('s1', 'm1', '/repo') as any);
+        projectManager.addSession(createSession('s2', 'm1', '/repo') as any);
+        const started = projectManager.beginSessionProjectScmOperation('s1', 'push', 100);
+        expect(started.started).toBe(true);
+        if (!started.started) return;
+
+        const read = () => selectScmWriteOperation({
+            inFlight: projectManager.getSessionProjectScmInFlightOperation('s2'),
+            log: projectManager.getSessionProjectScmOperationLog('s2'),
+            machine: 'Workstation', provider: 'GitHub', machineReachable: true,
+        });
+        expect(read()).toMatchObject({ phase: 'queued', action: 'push' });
+        expect(projectManager.updateSessionProjectScmOperationProgress('s1', started.operation.id, 'Pushing to origin')).toBe(true);
+        expect(read()).toMatchObject({ phase: 'running', action: 'push', progressText: 'Pushing to origin' });
+        projectManager.appendSessionProjectScmOperation('s1', {
+            operation: 'push', status: 'failed', timestamp: 101,
+            detail: 'Remote rejected the push', errorCode: 'REMOTE_NON_FAST_FORWARD',
+        });
+        projectManager.finishSessionProjectScmOperation('s1', started.operation.id);
+        expect(read()).toMatchObject({ phase: 'failed', action: 'push', cause: 'rejected-non-fast-forward' });
+    });
+
     it('locks operations per project and exposes lock state to sibling sessions', () => {
         projectManager.clear();
         projectManager.addSession(createSession('s1', 'm1', '/repo') as any);

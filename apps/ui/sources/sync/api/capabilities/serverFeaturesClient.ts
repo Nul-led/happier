@@ -20,9 +20,12 @@ import {
 import { decodeServerFeaturesResponse } from './serverFeaturesParse';
 import { runtimeFetchWithServerReachability } from '@/sync/runtime/connectivity/serverReachabilityRuntimeFetch';
 import { normalizeBaseUrl } from './probeAuthenticatedServerAuthPingEndpoint';
+import { isServerFeaturesProbeRetryable } from './serverFeaturesProbeRetryability';
 import { recordAccountStoredContentServerRequirements } from '@/sync/http/accountStoredContentCompatibility';
 import type { HomeCarrier } from '@/sync/runtime/homeCarrier';
 import type { ResolvedServerScopedTransport } from '@/sync/runtime/orchestration/serverScopedRpc/resolveServerScopedTransport';
+
+export { isServerFeaturesProbeRetryable } from './serverFeaturesProbeRetryability';
 
 const TTL_READY_MS = 10 * 60 * 1000;
 const TTL_UNSUPPORTED_ENDPOINT_MISSING_MS = 60 * 60 * 1000;
@@ -49,13 +52,6 @@ export type ServerFeaturesSnapshot =
     | Readonly<{ status: 'ready'; features: ServerFeatures; serverIdentityId?: string | null }>
     | Readonly<{ status: 'unsupported'; reason: 'endpoint_missing' | 'invalid_payload' }>
     | Readonly<{ status: 'error'; reason: 'network' | 'timeout' | 'response_status' | 'identity_conflict'; httpStatus?: number }>;
-
-export function isServerFeaturesProbeRetryable(snapshot: ServerFeaturesSnapshot): boolean {
-    if (snapshot.status !== 'error') return false;
-    if (snapshot.reason === 'network' || snapshot.reason === 'timeout') return true;
-    return snapshot.reason === 'response_status' && snapshot.httpStatus !== undefined
-        && (snapshot.httpStatus === 408 || snapshot.httpStatus === 429 || snapshot.httpStatus >= 500);
-}
 
 const cache = new AsyncTtlCache<ServerFeaturesSnapshot>({
     successTtlMs: TTL_READY_MS,
@@ -283,10 +279,10 @@ async function resolveExplicitServerFeatureTransport(params: Readonly<{
 }
 
 async function drainExplicitServerFeatureTransportReleaseCustody(): Promise<void> {
-    const { drainRetainedServerScopedTransportReleases } = await import(
-        '@/sync/runtime/orchestration/serverScopedRpc/resolveServerScopedTransport'
+    const { drainRetainedHomeCarrierReleases } = await import(
+        '@/sync/runtime/homeCarrierPolicy'
     );
-    await drainRetainedServerScopedTransportReleases();
+    await drainRetainedHomeCarrierReleases();
 }
 
 async function getServerFeaturesSnapshotWithRetry(
@@ -437,6 +433,9 @@ async function getServerFeaturesSnapshotWithRetry(
                         } else {
                             response = await runtimeFetchWithServerReachability({
                                 serverUrl: explicitServerUrl!,
+                                ...(explicitServerProfile?.serverIdentityId
+                                    ? { homeIdentityId: explicitServerProfile.serverIdentityId }
+                                    : {}),
                                 token: null,
                                 url: joinBaseAndPath(
                                     explicitServerUrl!,
@@ -455,6 +454,9 @@ async function getServerFeaturesSnapshotWithRetry(
                                 if (isEndpointMissing(response.status)) {
                                     response = await runtimeFetchWithServerReachability({
                                         serverUrl: explicitServerUrl!,
+                                        ...(explicitServerProfile?.serverIdentityId
+                                            ? { homeIdentityId: explicitServerProfile.serverIdentityId }
+                                            : {}),
                                         token: null,
                                         url: joinBaseAndPath(explicitServerUrl!, '/v1/features'),
                                         init: {
@@ -811,7 +813,11 @@ export function deleteServerFeaturesSnapshot(params?: { serverId?: string }): vo
 }
 
 export type ProbeServerFeaturesAtUrlOptions = Readonly<{
-    /** Bound for the feature request itself. Defaults to the active probe bound. */
+    /**
+     * How long this caller waits for the shared request before acting on its own fallback.
+     * Defaults to `FOREGROUND_FEATURE_PROBE_WAIT_BUDGET_MS`; `0` waits for the shared request's
+     * own attempt bound (for callers with no fallback of their own).
+     */
     timeoutMs?: number;
     /** Force a refresh even when a URL-scoped snapshot is still fresh. */
     force?: boolean;

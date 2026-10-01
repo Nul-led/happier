@@ -1,3 +1,5 @@
+import { readSessionDirectoryKind } from '@happier-dev/protocol';
+import { t } from '@/text';
 import * as React from 'react';
 import { useShallow } from 'zustand/react/shallow';
 
@@ -34,6 +36,7 @@ type SessionSearchKey = Readonly<{
 type SearchableSessionMetadata = Readonly<{
     name?: string | null;
     path?: string | null;
+    sessionDirectoryV1?: unknown;
     host?: string | null;
     machineId?: string | null;
 }>;
@@ -52,7 +55,9 @@ function appendText(parts: string[], value: string | null | undefined): void {
 
 function appendSessionMetadataText(parts: string[], metadata: SearchableSessionMetadata | null | undefined): void {
     appendText(parts, metadata?.name);
-    appendText(parts, metadata?.path);
+    // A no-folder session is found as a chat; its private folder is never indexed.
+    if (readSessionDirectoryKind(metadata) === 'managed') appendText(parts, t('session.folderless.chats'));
+    else appendText(parts, metadata?.path);
     appendText(parts, metadata?.host);
     appendText(parts, metadata?.machineId);
 }

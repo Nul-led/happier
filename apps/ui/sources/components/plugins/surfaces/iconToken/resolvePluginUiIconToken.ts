@@ -40,6 +40,14 @@ const PLUGIN_UI_ICON_TOKEN_TO_ICON_NAME: Readonly<Record<PluginUiIconTokenV1, Ic
     search: 'magnifying-glass',
     'change-open': 'git-pull-request',
     'change-complete': 'git-merge',
+    issue: 'target',
+    bug: 'bug',
+    pin: 'push-pin',
+    conversations: 'chats-circle',
+    pause: 'pause-circle',
+    failure: 'warning-circle',
+    unavailable: 'cloud-slash',
+    denied: 'lock',
 });
 
 /** Glyph rendered for a missing or non-canonical semantic icon token. */

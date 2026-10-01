@@ -1,4 +1,4 @@
-import { readStoredSessionMessages } from '@/sync/domains/messages/readStoredSessionMessages';
+import { readStoredSessionMessages } from "@happier-dev/session-core/messages";
 import { normalizeNonEmptyString } from '@/voice/shared/normalizeNonEmptyString';
 import { hasVoiceTranscriptNoteMeta } from './voiceTranscriptNoteMeta';
 import { resolveVoiceTranscriptEntryId } from './voiceTranscriptEntryIdentity';

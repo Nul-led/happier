@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { ScmFileStatus } from '@/scm/scmStatusFiles';
-import { buildAllRepositoryChangedFiles, formatFileSubtitle, formatLineChanges, normalizeFilePath } from './filesUtils';
+import { formatFileSubtitle, formatLineChanges, normalizeFilePath } from './filesUtils';
 
 function makeFile(path: string, input?: Partial<ScmFileStatus>): ScmFileStatus {
     return {
@@ -21,16 +21,6 @@ describe('normalizeFilePath', () => {
         expect(normalizeFilePath('src/app.ts')).toBe('src/app.ts');
         expect(normalizeFilePath('src/dir/')).toBe('src/dir');
         expect(normalizeFilePath('')).toBe('');
-    });
-});
-
-describe('buildAllRepositoryChangedFiles', () => {
-    it('merges staged and unstaged lists, deduplicates by path, and sorts', () => {
-        const unstaged = [makeFile('b.ts'), makeFile('a.ts')];
-        const staged = [makeFile('a.ts', { isIncluded: true }), makeFile('c.ts', { isIncluded: true })];
-
-        const result = buildAllRepositoryChangedFiles({ includedFiles: staged, pendingFiles: unstaged });
-        expect(result.map((file) => file.fullPath)).toEqual(['a.ts', 'b.ts', 'c.ts']);
     });
 });
 

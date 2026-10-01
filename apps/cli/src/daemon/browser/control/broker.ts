@@ -108,6 +108,8 @@ export function createBrowserDaemonControlBroker(): BrowserDaemonControlBroker {
   return {
     registerAdapter,
     dispatchCommand,
+    ownsView: (view) => [...adapters].some(adapter => adapter.ownsView(view)),
     hasExecutableAdapters: () => adapters.size > 0,
+    listViews: (browserSessionId) => [...adapters].flatMap(adapter => adapter.listViews?.(browserSessionId) ?? []),
   };
 }

@@ -10,7 +10,7 @@ import {
     type SessionSystemRecordOpenInput,
     type SessionSystemRecordPayloadResult,
 } from '@/sync/domains/sessionSystemRecords/codec';
-import type { SessionStoredContentContext } from '@/sync/encryption/sessionStoredContent';
+import type { SessionStoredContentContext } from '@happier-dev/sync-client';
 
 function decodeWorkflowSnapshot(runId: string, value: unknown): SessionSystemRecordPayloadResult<SessionWorkflowRunSnapshotV1> {
     if (value && typeof value === 'object' && !Array.isArray(value)) {

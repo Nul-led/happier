@@ -6,7 +6,7 @@ import { createHash, randomUUID } from 'node:crypto';
 
 import * as tar from 'tar';
 import { PUBLIC_TOOLCHAIN_SCAFFOLD_BINDINGS_V1 } from '@happier-dev/plugin-sdk/ui/build';
-import type { MarketplaceIndexSourceSnapshotV1 } from '@happier-dev/protocol';
+import { DEFAULT_CURATED_MARKETPLACE_SOURCE_URL, type MarketplaceIndexSourceSnapshotV1 } from '@happier-dev/protocol';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { configuration, reloadConfiguration } from '@/configuration';
@@ -17,6 +17,11 @@ import { createTempDir, removeTempDir } from '@/testkit/fs/tempDir';
 import { captureConsoleJsonOutput, captureConsoleText } from '@/testkit/logger/captureOutput';
 import { materializeSamplePluginFixture, SAMPLE_PLUGIN_ID } from '@/plugins/testkit/samplePackage';
 import { createPluginStateStore } from '@/plugins/store/state.testkit';
+import {
+  managedPnpmBinPath,
+  resolveExistingPnpmCommand,
+} from '@/packagedRuntime/managedTools/pnpm/managedPnpm';
+import { managedJavaScriptRuntimeBinPath } from '@/packagedRuntime/js/managedJavaScriptRuntime';
 import { resolvePluginStorePaths } from '@/plugins/store/paths';
 import { createMarketplaceSourceRegistryStore } from '@/plugins/store/marketplace/sources/store';
 import { createMarketplaceIndex } from '@/plugins/store/marketplace/index';
@@ -33,6 +38,7 @@ import {
   createPluginReloadController,
   type PluginReloadController,
 } from '@/plugins/runtime/reload/controller';
+import { writeExecutableShim } from '@/testkit/fs/executableShim';
 
 import { handlePluginsCommand } from './plugins';
 
@@ -65,8 +71,36 @@ vi.mock('@/terminal/prompts/promptConfirmYesNo', () => ({
 let activePluginChangeService: DaemonPluginChangeService | null = null;
 let activePluginReloadController: PluginReloadController | null = null;
 const TEST_PLUGIN_SECRET_KEY = new Uint8Array(32).fill(7);
+let testPnpmCommand: string | null = null;
 
-function createPluginChangeService(): DaemonPluginChangeService {
+async function materializeManagedPnpmTestShim(happyHomeDir: string): Promise<void> {
+  const pnpmCommand = testPnpmCommand ?? resolveExistingPnpmCommand(process.env);
+  if (!pnpmCommand) throw new Error('The plugin command test requires a package-manager boundary');
+  testPnpmCommand = pnpmCommand;
+  const managedPath = managedPnpmBinPath({ ...process.env, HAPPIER_HOME_DIR: happyHomeDir });
+  await mkdir(dirname(managedPath), { recursive: true });
+  await writeExecutableShim({
+    dir: dirname(managedPath),
+    fileName: basename(managedPath),
+    contents: process.platform === 'win32'
+      ? `@echo off\r\n"${process.execPath}" "${pnpmCommand}" %*\r\n`
+      : `#!/bin/sh\nexec "${process.execPath}" "${pnpmCommand}" "$@"\n`,
+  });
+  const managedRuntimePath = managedJavaScriptRuntimeBinPath({
+    ...process.env,
+    HAPPIER_HOME_DIR: happyHomeDir,
+  });
+  await mkdir(dirname(managedRuntimePath), { recursive: true });
+  await writeExecutableShim({
+    dir: dirname(managedRuntimePath),
+    fileName: basename(managedRuntimePath),
+    contents: process.platform === 'win32'
+      ? `@echo off\r\n"${process.execPath}" %*\r\n`
+      : `#!/bin/sh\nexec "${process.execPath}" "$@"\n`,
+  });
+}
+
+async function createPluginChangeService(): Promise<DaemonPluginChangeService> {
   const connectedAccounts: StablePluginConnectedAccountsOwner = Object.freeze({
     getBinding: vi.fn(async () => null),
     requestSelection: vi.fn(async () => {
@@ -87,7 +121,7 @@ function createPluginChangeService(): DaemonPluginChangeService {
     happyHomeDir: configuration.happyHomeDir,
   });
   activePluginReloadController = reloadController;
-  return createDaemonPluginRuntimeOwner({
+  const owner = createDaemonPluginRuntimeOwner({
     happyHomeDir: configuration.happyHomeDir,
     reloadController,
     staleCandidateCleanup: 'disabled',
@@ -100,7 +134,8 @@ function createPluginChangeService(): DaemonPluginChangeService {
       retireGeneration: async () => undefined,
       readRunnerRetainedGenerationIds: async () => new Set(),
     },
-  }).changeService;
+  });
+  return owner.changeService;
 }
 
 async function materializeStrictIntrospectionPluginFixture(targetRoot: string): Promise<void> {
@@ -266,7 +301,10 @@ async function seedExactCuratedMarketplaceListing(params: Readonly<{
   freshnessState?: 'fresh' | 'stale' | 'stale-offline';
   contributions?: readonly string[];
 }>) {
-  const source = (await createMarketplaceSourceRegistryStore({ happyHomeDir: params.happyHomeDir }).read()).sources[0];
+  const source = (await createMarketplaceSourceRegistryStore({
+    happyHomeDir: params.happyHomeDir,
+    curatedSourceUrl: params.sourceUrl,
+  }).read()).sources[0];
   if (!source || source.origin !== 'curated' || source.sourceUrl !== params.sourceUrl) {
     throw new Error('Expected the configured curated marketplace source');
   }
@@ -303,7 +341,7 @@ async function seedExactCuratedMarketplaceListing(params: Readonly<{
       review: { status: params.reviewStatus ?? 'approved', reviewedAt: '2026-07-21T00:00:00.000Z' },
       categories: ['actions'],
       media: [],
-      updatePolicy: 'reviewSensitiveChanges' as const,
+      updatePolicy: 'allowed' as const,
       links: {},
     }],
     diagnostics: [],
@@ -495,7 +533,7 @@ async function writeImportSideEffectPlugin(rootDir: string, importMarkerPath: st
       'import { appendFile } from "node:fs/promises";',
       `await appendFile(${JSON.stringify(importMarkerPath)}, "imported\\n", "utf8");`,
       'export async function activate() {',
-      '  return {};',
+      '  return undefined;',
       '}',
       '',
     ].join('\n'),
@@ -599,7 +637,7 @@ describe('handlePluginsCommand', () => {
       code: 'daemon_unavailable',
     });
     daemonBoundary.requestChange.mockImplementation(async (request) => {
-      activePluginChangeService ??= createPluginChangeService();
+      activePluginChangeService ??= await createPluginChangeService();
       return await activePluginChangeService.requestPluginChange(request);
     });
     daemonBoundary.decideChange.mockImplementation(async (decision) => {
@@ -632,10 +670,11 @@ describe('handlePluginsCommand', () => {
       expect(output.text()).toContain('happier plugins update <pluginId> [--json]');
       expect(output.text()).toContain('happier plugins rollback <pluginId> [--json]');
       expect(output.text()).toContain('happier plugins uninstall <pluginId> [--delete-data --yes] [--json]');
-      expect(output.text()).toContain('happier plugins create <name> [--id <plugin.id>] [--name <display name>] [--template session-agent] [--ui hostedWeb|reactNative] [--json]');
+      expect(output.text()).toContain('happier plugins create <name> [--id <plugin.id>] [--name <display name>] [--template session-agent] [--ui declarative|hostedWeb|reactNative] [--json]');
       expect(output.text()).toContain('happier plugins dev [path] [--sdk-registry <origin>] [--json]');
       expect(output.text()).toContain('happier plugins dev install <path> [--sdk-registry <origin>] [--json]');
       expect(output.text()).toContain('happier plugins dev typecheck|build|test <path> [--json]');
+      expect(output.text()).toContain('happier plugins dev unregister <path> [--json]');
       expect(output.text()).toContain('happier plugins test [path] [--packed] [--with-plugin <root-or-archive>]… [--sdk-registry <origin>] [--json]');
       expect(output.text()).not.toContain('happier plugins scaffold');
       expect(output.text()).not.toContain('happier plugins author');
@@ -649,6 +688,7 @@ describe('handlePluginsCommand', () => {
       expect(output.text()).toContain('community-npm');
       expect(output.text()).not.toContain('happier plugins call');
       expect(output.text()).not.toContain('happier plugins trust');
+      expect(output.text()).not.toContain('--trust');
       expect(output.text()).toContain('--sdk-registry <origin>');
       expect(output.text()).not.toMatch(/\b(?:fence|last-known-good|LKG)\b/iu);
       expect(output.text()).toContain('plugin-provided agent CLI surfaces');
@@ -656,6 +696,16 @@ describe('handlePluginsCommand', () => {
     } finally {
       output.restore();
     }
+  });
+
+  it('rejects the retired --trust install option before contacting the daemon', async () => {
+    await expect(handlePluginsCommand([
+      'install',
+      '/tmp/acme-dev',
+      '--dev',
+      '--trust',
+      '--json',
+    ])).rejects.toThrow('Unknown option: --trust');
   });
 
   it('rejects the retired scaffold SDK-version override instead of silently ignoring it', async () => {
@@ -971,872 +1021,100 @@ describe('handlePluginsCommand', () => {
     }
   });
 
-  it('rejects an invalid development source before materializing dependencies or contacting the daemon', async () => {
-    const projectRoot = await mkdtemp(join(tmpdir(), 'happier-plugin-dev-invalid-'));
-    await mkdir(join(projectRoot, '.happier-plugin'), { recursive: true });
-    await writeFile(
-      join(projectRoot, '.happier-plugin', 'plugin.json'),
-      JSON.stringify({ schemaVersion: 2, id: 'acme.invalid' }),
-      'utf8',
-    );
-    const runPluginAuthorToolchain = vi.fn(async () => ({
-      ok: true as const,
-      operation: 'install' as const,
-      projectRoot,
+  it('registers plugins dev with the daemon and never starts a CLI source observer', async () => {
+    const ensureDaemon = vi.fn(async () => undefined);
+    const controlPluginDevelopment = vi.fn(async () => ({
+      kind: 'status' as const,
+      status: { roots: [], plugins: [] },
     }));
-    const startPluginDevelopmentSourceObserver = vi.fn(async () => ({ stop: vi.fn(), failure: new Promise<Error>(() => {}) }));
-    const requestDevelopmentChange = vi.fn(async () => ({ ok: true as const }));
     const controller = new AbortController();
     controller.abort();
-    const previousExitCode = process.exitCode;
-    process.exitCode = undefined;
     const output = captureConsoleJsonOutput();
     try {
-      await handlePluginsCommand(['dev', projectRoot, '--json'], {
-        runPluginAuthorToolchain,
-        startPluginDevelopmentSourceObserver,
-        requestDevelopmentChange,
+      await handlePluginsCommand(['dev', '/fixture/plugin', '--sdk-registry', 'https://registry.example', '--json'], {
+        ensureDaemon,
+        controlPluginDevelopment,
       }, { signal: controller.signal });
 
+      expect(controlPluginDevelopment).toHaveBeenCalledWith({
+        kind: 'registerExplicit',
+        rootPath: '/fixture/plugin',
+        sdkRegistryOrigin: 'https://registry.example',
+      }, { signal: controller.signal });
+      expect(ensureDaemon).toHaveBeenCalledOnce();
+      expect(ensureDaemon).toHaveBeenCalledBefore(controlPluginDevelopment);
       expect(output.json()).toMatchObject({
-        ok: false,
-        kind: 'plugins_dev',
-        error: {
-          code: 'plugin_dev_source_invalid',
-          diagnostics: expect.arrayContaining([
-            expect.objectContaining({ code: 'plugin_dev_manifest_invalid' }),
-          ]),
-        },
-      });
-      expect(process.exitCode).toBe(1);
-      expect(runPluginAuthorToolchain).not.toHaveBeenCalled();
-      expect(startPluginDevelopmentSourceObserver).not.toHaveBeenCalled();
-      expect(requestDevelopmentChange).not.toHaveBeenCalled();
-    } finally {
-      output.restore();
-      process.exitCode = previousExitCode;
-      await rm(projectRoot, { recursive: true, force: true });
-    }
-  });
-
-  it('prepares an unmaterialized author root once before submitting the initial development request', async () => {
-    const controller = new AbortController();
-    const inspectPluginDevelopmentSource = vi.fn(async () => ({
-      ok: true as const,
-      sourceKind: 'packageRoot' as const,
-      sourceRootPath: '/canonical/plugin',
-      request: { kind: 'development' as const, pluginId: 'acme.example', projectRoot: '/canonical/plugin' },
-      developmentEntryPath: '/canonical/plugin/src/index.ts',
-      observedRelativePaths: ['.happier-plugin/plugin.json', 'src/index.ts'],
-      declaredDependencies: { '@happier-dev/plugin-sdk': '0.1.0' },
-      observedDirectoryPaths: ['/canonical/plugin', '/canonical/plugin/src'],
-    }));
-    const runPluginAuthorToolchain = vi.fn(async () => ({
-      ok: true as const,
-      operation: 'install' as const,
-      projectRoot: '/canonical/plugin',
-    }));
-    const requestDevelopmentChange = vi.fn(async () => {
-      setTimeout(() => controller.abort(), 0);
-      return { ok: true as const, diagnostics: [] };
-    });
-    const stop = vi.fn();
-    const startPluginDevelopmentSourceObserver = vi.fn(async (input: {
-      onObservation(observation: Readonly<{
-        ok: true;
-        sourceKind: 'packageRoot';
-        sourceRootPath: string;
-        request: Readonly<{ kind: 'development'; pluginId?: string; projectRoot: string }>;
-        developmentEntryPath: string;
-        observedRelativePaths: readonly string[];
-        declaredDependencies: Readonly<Record<string, string>>;
-        observedDirectoryPaths: readonly string[];
-      }>): 'adopted' | 'retained' | Promise<'adopted' | 'retained'>;
-    }) => {
-      await input.onObservation({
         ok: true,
-        sourceKind: 'packageRoot',
-        sourceRootPath: '/canonical/plugin',
-        request: { kind: 'development', pluginId: 'acme.example', projectRoot: '/canonical/plugin' },
-        developmentEntryPath: '/canonical/plugin/src/index.ts',
-        observedRelativePaths: ['.happier-plugin/plugin.json', 'src/index.ts'],
-        declaredDependencies: { '@happier-dev/plugin-sdk': '0.1.0' },
-        observedDirectoryPaths: ['/canonical/plugin', '/canonical/plugin/src'],
-      });
-      return { stop, failure: new Promise<Error>(() => {}) };
-    });
-    const output = captureConsoleText();
-    try {
-      await handlePluginsCommand(['dev', '/fixture/plugin'], {
-        inspectPluginDevelopmentSource,
-        runPluginAuthorToolchain,
-        startPluginDevelopmentSourceObserver,
-        requestDevelopmentChange,
-      }, { signal: controller.signal });
-
-      expect(inspectPluginDevelopmentSource).toHaveBeenCalledWith({ projectRoot: '/fixture/plugin' });
-      // Cold start materializes the directory the author edits, keyed to the
-      // canonical source root rather than the requested locator.
-      expect(runPluginAuthorToolchain).toHaveBeenCalledTimes(1);
-      expect(runPluginAuthorToolchain).toHaveBeenCalledWith({
-        operation: 'install',
-        projectRoot: '/canonical/plugin',
-        signal: controller.signal,
-      });
-      expect(requestDevelopmentChange).toHaveBeenCalledWith({
-        kind: 'development',
-        pluginId: 'acme.example',
-        projectRoot: '/canonical/plugin',
-      }, { signal: controller.signal, approval: 'none' });
-      expect(stop).toHaveBeenCalledTimes(1);
-      expect(output.text()).toContain('Development candidate accepted');
-    } finally {
-      output.restore();
-    }
-  });
-
-  it('reports the author-root install diagnostic and never starts watching when cold-start preparation fails', async () => {
-    const controller = new AbortController();
-    const observation = {
-      ok: true as const,
-      sourceKind: 'packageRoot' as const,
-      sourceRootPath: '/canonical/plugin',
-      request: { kind: 'development' as const, pluginId: 'acme.example', projectRoot: '/canonical/plugin' },
-      developmentEntryPath: '/canonical/plugin/src/index.ts',
-      observedRelativePaths: ['src/index.ts'],
-      declaredDependencies: { '@happier-dev/plugin-sdk': '0.1.0' },
-      observedDirectoryPaths: ['/canonical/plugin'],
-    };
-    const runPluginAuthorToolchain = vi.fn(async () => ({
-      ok: false as const,
-      operation: 'install' as const,
-      projectRoot: '/canonical/plugin',
-      diagnostics: [{
-        code: 'plugin_author_tool_failed' as const,
-        message: 'author dependency resolution failed',
-      }],
-    }));
-    const startPluginDevelopmentSourceObserver = vi.fn(async () => ({ stop: vi.fn(), failure: new Promise<Error>(() => {}) }));
-    const requestDevelopmentChange = vi.fn(async () => ({ ok: true as const }));
-    const previousExitCode = process.exitCode;
-    process.exitCode = undefined;
-    const output = captureConsoleJsonOutput();
-    try {
-      await handlePluginsCommand(['dev', '/fixture/plugin', '--json'], {
-        inspectPluginDevelopmentSource: async () => observation,
-        runPluginAuthorToolchain,
-        startPluginDevelopmentSourceObserver,
-        requestDevelopmentChange,
-      }, { signal: controller.signal });
-
-      expect(output.json()).toMatchObject({
-        ok: false,
         kind: 'plugins_dev',
-        error: {
-          code: 'plugin_dev_dependency_install_failed',
-          diagnostics: [{
-            code: 'plugin_author_tool_failed',
-            message: 'author dependency resolution failed',
-          }],
-        },
+        data: { status: { roots: [], plugins: [] } },
       });
-      expect(process.exitCode).toBe(1);
-      expect(startPluginDevelopmentSourceObserver).not.toHaveBeenCalled();
-      expect(requestDevelopmentChange).not.toHaveBeenCalled();
     } finally {
       output.restore();
-      process.exitCode = previousExitCode;
     }
   });
 
-  it('leaves an already materialized author root alone on a later dev cold start', async () => {
-    const projectRoot = await realpath(await mkdtemp(join(tmpdir(), 'happier-plugin-dev-warm-')));
-    await mkdir(join(projectRoot, 'node_modules', '@happier-dev', 'plugin-sdk'), { recursive: true });
-    await writeFile(
-      join(projectRoot, 'node_modules', '@happier-dev', 'plugin-sdk', 'package.json'),
-      JSON.stringify({ name: '@happier-dev/plugin-sdk', version: '0.1.0' }),
-      'utf8',
-    );
-    const controller = new AbortController();
-    const observation = {
-      ok: true as const,
-      sourceKind: 'packageRoot' as const,
-      sourceRootPath: projectRoot,
-      request: { kind: 'development' as const, pluginId: 'acme.example', projectRoot },
-      developmentEntryPath: join(projectRoot, 'src', 'index.ts'),
-      observedRelativePaths: ['src/index.ts'],
-      declaredDependencies: { '@happier-dev/plugin-sdk': '0.1.0' },
-      observedDirectoryPaths: [projectRoot],
-    };
-    const runPluginAuthorToolchain = vi.fn(async () => ({
-      ok: true as const,
-      operation: 'install' as const,
-      projectRoot,
+  it('unregisters an exact plugins dev root without entering the watch wait', async () => {
+    const ensureDaemon = vi.fn(async () => undefined);
+    const controlPluginDevelopment = vi.fn(async () => ({
+      kind: 'status' as const,
+      status: { roots: [], plugins: [] },
     }));
-    const requestDevelopmentChange = vi.fn(async () => {
-      setTimeout(() => controller.abort(), 0);
-      return { ok: true as const, diagnostics: [] };
-    });
-    const stop = vi.fn();
-    const startPluginDevelopmentSourceObserver = vi.fn(async (input: {
-      onObservation(value: typeof observation): 'adopted' | 'retained' | Promise<'adopted' | 'retained'>;
-    }) => {
-      await input.onObservation(observation);
-      return { stop, failure: new Promise<Error>(() => {}) };
-    });
-    const output = captureConsoleText();
-    try {
-      await handlePluginsCommand(['dev', projectRoot], {
-        inspectPluginDevelopmentSource: async () => observation,
-        runPluginAuthorToolchain,
-        startPluginDevelopmentSourceObserver,
-        requestDevelopmentChange,
-      }, { signal: controller.signal });
-
-      // A warm author root must not pay a full install on every watch start;
-      // refreshing a stale tree is `happier plugins dev install`.
-      expect(runPluginAuthorToolchain).not.toHaveBeenCalled();
-      expect(output.text()).toContain('Development candidate accepted');
-    } finally {
-      output.restore();
-      await rm(projectRoot, { recursive: true, force: true });
-    }
-  });
-
-  it('repairs an interrupted author root whose node_modules never received the declared SDK', async () => {
-    const projectRoot = await realpath(await mkdtemp(join(tmpdir(), 'happier-plugin-dev-interrupted-')));
-    // pnpm creates its store directory before any package lands, so an
-    // interrupted first `plugins dev` leaves a node_modules that looks
-    // materialized and resolves nothing the author declared.
-    await mkdir(join(projectRoot, 'node_modules', '.pnpm'), { recursive: true });
-    const controller = new AbortController();
-    const observation = {
-      ok: true as const,
-      sourceKind: 'packageRoot' as const,
-      sourceRootPath: projectRoot,
-      request: { kind: 'development' as const, pluginId: 'acme.example', projectRoot },
-      developmentEntryPath: join(projectRoot, 'src', 'index.ts'),
-      observedRelativePaths: ['src/index.ts'],
-      declaredDependencies: { '@happier-dev/plugin-sdk': '0.1.0' },
-      observedDirectoryPaths: [projectRoot],
-    };
-    const runPluginAuthorToolchain = vi.fn(async () => ({
-      ok: true as const,
-      operation: 'install' as const,
-      projectRoot,
-    }));
-    const requestDevelopmentChange = vi.fn(async () => {
-      setTimeout(() => controller.abort(), 0);
-      return { ok: true as const, diagnostics: [] };
-    });
-    const stop = vi.fn();
-    const startPluginDevelopmentSourceObserver = vi.fn(async (input: {
-      onObservation(value: typeof observation): 'adopted' | 'retained' | Promise<'adopted' | 'retained'>;
-    }) => {
-      await input.onObservation(observation);
-      return { stop, failure: new Promise<Error>(() => {}) };
-    });
-    const output = captureConsoleText();
-    try {
-      await handlePluginsCommand(['dev', projectRoot], {
-        inspectPluginDevelopmentSource: async () => observation,
-        runPluginAuthorToolchain,
-        startPluginDevelopmentSourceObserver,
-        requestDevelopmentChange,
-      }, { signal: controller.signal });
-
-      expect(runPluginAuthorToolchain).toHaveBeenCalledWith(expect.objectContaining({
-        operation: 'install',
-        projectRoot,
-      }));
-    } finally {
-      output.restore();
-      await rm(projectRoot, { recursive: true, force: true });
-    }
-  });
-
-  it('leaves dependency preparation failures to the daemon-owned development candidate', async () => {
-    const controller = new AbortController();
-    const observation = {
-      ok: true as const,
-      sourceKind: 'packageRoot' as const,
-      sourceRootPath: '/canonical/plugin',
-      request: { kind: 'development' as const, pluginId: 'acme.example', projectRoot: '/canonical/plugin' },
-      developmentEntryPath: '/canonical/plugin/src/index.ts',
-      observedRelativePaths: ['src/index.ts'],
-      declaredDependencies: { '@happier-dev/plugin-sdk': '0.1.0' },
-      observedDirectoryPaths: ['/canonical/plugin'],
-    };
-    const runPluginAuthorToolchain = vi.fn(async () => ({
-      ok: true as const,
-      operation: 'install' as const,
-      projectRoot: '/canonical/plugin',
-    }));
-    const requestDevelopmentChange = vi.fn(async () => {
-      setTimeout(() => controller.abort(), 0);
-      return {
-        ok: false as const,
-        diagnostics: [{
-          code: 'plugin_dev_dependency_preparation_failed',
-          message: 'daemon-owned dependency materialization failed',
-        }],
-      };
-    });
-    const stop = vi.fn();
-    const startPluginDevelopmentSourceObserver = vi.fn(async (input: {
-      onObservation(value: typeof observation): 'adopted' | 'retained' | Promise<'adopted' | 'retained'>;
-    }) => {
-      await input.onObservation(observation);
-      return { stop, failure: new Promise<Error>(() => {}) };
-    });
-    const previousExitCode = process.exitCode;
-    process.exitCode = undefined;
     const output = captureConsoleJsonOutput();
+    const controller = new AbortController();
+    controller.abort();
     try {
-      await handlePluginsCommand(['dev', '/fixture/plugin', '--json'], {
-        inspectPluginDevelopmentSource: async () => observation,
-        runPluginAuthorToolchain,
-        startPluginDevelopmentSourceObserver,
-        requestDevelopmentChange,
+      await handlePluginsCommand(['dev', 'unregister', '/fixture/plugin', '--json'], {
+        ensureDaemon,
+        controlPluginDevelopment,
       }, { signal: controller.signal });
 
-      // The author root is prepared once at cold start; a candidate-side
-      // materialization failure stays the daemon's to report.
-      expect(runPluginAuthorToolchain).toHaveBeenCalledTimes(1);
-      expect(startPluginDevelopmentSourceObserver).toHaveBeenCalledTimes(1);
-      expect(requestDevelopmentChange).toHaveBeenCalledWith(
-        observation.request,
-        { signal: controller.signal, approval: 'none' },
-      );
+      expect(controlPluginDevelopment).toHaveBeenCalledWith({
+        kind: 'unregisterExplicit',
+        rootPath: '/fixture/plugin',
+      }, { signal: controller.signal });
       expect(output.json()).toMatchObject({
-        ok: false,
-        kind: 'plugins_dev_change',
-        error: {
-          code: 'plugin_dev_dependency_preparation_failed',
-          stage: 'source_validated',
-          diagnostics: [{
-            code: 'plugin_dev_dependency_preparation_failed',
-            message: 'daemon-owned dependency materialization failed',
-          }],
-        },
-      });
-      expect(stop).toHaveBeenCalledTimes(1);
-    } finally {
-      output.restore();
-      process.exitCode = previousExitCode;
-    }
-  });
-
-  it('keeps a source-root review pending with its canonical DTO and tells headless callers how to rejoin', async () => {
-    let controller = new AbortController();
-    const observation = {
-      ok: true as const,
-      sourceKind: 'packageRoot' as const,
-      sourceRootPath: '/canonical/plugin',
-      request: { kind: 'development' as const, pluginId: 'acme.example', projectRoot: '/canonical/plugin' },
-      developmentEntryPath: '/canonical/plugin/src/index.ts',
-      observedRelativePaths: ['.happier-plugin/plugin.json', 'src/index.ts'],
-      declaredDependencies: {},
-      observedDirectoryPaths: ['/canonical/plugin', '/canonical/plugin/src'],
-    };
-    const inspectPluginDevelopmentSource = vi.fn(async () => observation);
-    const runPluginAuthorToolchain = vi.fn(async () => ({
-      ok: true as const,
-      operation: 'install' as const,
-      projectRoot: '/canonical/plugin',
-    }));
-    const pendingReview = {
-      kind: 'sourceRootReviewRequired' as const,
-      pendingChangeId: 'pending-source-root',
-      review: { source: { kind: 'path' as const, locator: '/canonical/plugin' } },
-    };
-    const requestDevelopmentChange = vi.fn(async () => {
-      setTimeout(() => controller.abort(), 0);
-      return {
-        ok: false as const,
-        pendingReview,
-        diagnostics: [{
-          code: 'plugin_dev_review_pending',
-          message: 'The daemon is still awaiting a plugin trust decision.',
-        }],
-      };
-    });
-    const stop = vi.fn();
-    const startPluginDevelopmentSourceObserver = vi.fn(async (input: {
-      onObservation(value: typeof observation): 'adopted' | 'retained' | Promise<'adopted' | 'retained'>;
-    }) => {
-      await input.onObservation(observation);
-      return { stop, failure: new Promise<Error>(() => {}) };
-    });
-    const output = captureConsoleJsonOutput();
-    try {
-      await handlePluginsCommand(['dev', '/fixture/plugin', '--json'], {
-        inspectPluginDevelopmentSource,
-        runPluginAuthorToolchain,
-        startPluginDevelopmentSourceObserver,
-        requestDevelopmentChange,
-      }, { signal: controller.signal });
-
-      expect(requestDevelopmentChange).toHaveBeenCalledWith(
-        observation.request,
-        { signal: controller.signal, approval: 'none' },
-      );
-      expect(output.json()).toMatchObject({
-        ok: false,
-        kind: 'plugins_dev_change',
-        error: {
-          code: 'plugin_dev_review_pending',
-          stage: 'admitted',
-          pendingReview,
-        },
-      });
-    } finally {
-      output.restore();
-    }
-
-    controller = new AbortController();
-    const humanOutput = captureConsoleText();
-    try {
-      await handlePluginsCommand(['dev', '/fixture/plugin'], {
-        isInteractiveTerminal: () => false,
-        inspectPluginDevelopmentSource,
-        runPluginAuthorToolchain,
-        startPluginDevelopmentSourceObserver,
-        requestDevelopmentChange,
-      }, { signal: controller.signal });
-
-      expect(requestDevelopmentChange).toHaveBeenLastCalledWith(
-        observation.request,
-        { signal: controller.signal, approval: 'none' },
-      );
-      expect(humanOutput.text()).toContain('happier plugins change status pending-source-root');
-      expect(humanOutput.text()).toContain('happier plugins change approve pending-source-root');
-      expect(humanOutput.text()).toContain('happier plugins change reject pending-source-root');
-    } finally {
-      humanOutput.restore();
-    }
-    expect(stop).toHaveBeenCalledTimes(2);
-  });
-
-  it('starts literal one-file development without invoking the package toolchain', async () => {
-    const controller = new AbortController();
-    const inspectPluginDevelopmentSource = vi.fn(async () => ({
-      ok: true as const,
-      sourceKind: 'singleFile' as const,
-      sourceRootPath: '/canonical',
-      request: { kind: 'development' as const, projectRoot: '/canonical/plugin.ts' },
-      developmentEntryPath: '/canonical/plugin.ts',
-      observedRelativePaths: ['plugin.ts'],
-      declaredDependencies: {},
-      observedDirectoryPaths: ['/canonical/plugin.ts'],
-    }));
-    const runPluginAuthorToolchain = vi.fn();
-    const requestDevelopmentChange = vi.fn(async () => {
-      setTimeout(() => controller.abort(), 0);
-      return { ok: true as const, diagnostics: [] };
-    });
-    const stop = vi.fn();
-    const startPluginDevelopmentSourceObserver = vi.fn(async (input: {
-      projectRoot: string;
-      onObservation(
-        observation: Awaited<ReturnType<typeof inspectPluginDevelopmentSource>>,
-      ): 'adopted' | 'retained' | Promise<'adopted' | 'retained'>;
-    }) => {
-      await input.onObservation(await inspectPluginDevelopmentSource());
-      return { stop, failure: new Promise<Error>(() => {}) };
-    });
-    const output = captureConsoleText();
-    try {
-      await handlePluginsCommand(['dev', '/fixture/plugin.ts'], {
-        inspectPluginDevelopmentSource,
-        runPluginAuthorToolchain,
-        startPluginDevelopmentSourceObserver,
-        requestDevelopmentChange,
-      }, { signal: controller.signal });
-
-      expect(runPluginAuthorToolchain).not.toHaveBeenCalled();
-      expect(startPluginDevelopmentSourceObserver).toHaveBeenCalledWith(expect.objectContaining({
-        projectRoot: '/canonical/plugin.ts',
-      }));
-      expect(requestDevelopmentChange).toHaveBeenCalledWith({
-        kind: 'development',
-        projectRoot: '/canonical/plugin.ts',
-      }, { signal: controller.signal, approval: 'none' });
-      expect(stop).toHaveBeenCalledOnce();
-      expect(output.text()).toContain('Development candidate accepted');
-    } finally {
-      output.restore();
-    }
-  });
-
-  it('keeps the watch loop alive and reports a coded candidate diagnostic when the daemon request fails', async () => {
-    const controller = new AbortController();
-    const inspectPluginDevelopmentSource = vi.fn(async () => ({
-      ok: true as const,
-      sourceKind: 'packageRoot' as const,
-      sourceRootPath: '/canonical/plugin',
-      request: { kind: 'development' as const, pluginId: 'acme.example', projectRoot: '/canonical/plugin' },
-      developmentEntryPath: '/canonical/plugin/src/index.ts',
-      observedRelativePaths: ['.happier-plugin/plugin.json', 'src/index.ts'],
-      declaredDependencies: {},
-      observedDirectoryPaths: ['/canonical/plugin', '/canonical/plugin/src'],
-    }));
-    const runPluginAuthorToolchain = vi.fn(async () => ({
-      ok: true as const,
-      operation: 'install' as const,
-      projectRoot: '/canonical/plugin',
-    }));
-    let requestCount = 0;
-    const requestDevelopmentChange = vi.fn(async () => {
-      requestCount += 1;
-      if (requestCount === 1) {
-        throw new Error('daemon transport closed');
-      }
-      setTimeout(() => controller.abort(), 0);
-      return { ok: true };
-    });
-    const stop = vi.fn();
-    const startPluginDevelopmentSourceObserver = vi.fn(async (input: {
-      onObservation(
-        observation: Awaited<ReturnType<typeof inspectPluginDevelopmentSource>>,
-      ): 'adopted' | 'retained' | Promise<'adopted' | 'retained'>;
-    }) => {
-      await input.onObservation(await inspectPluginDevelopmentSource());
-      await input.onObservation(await inspectPluginDevelopmentSource());
-      return { stop, failure: new Promise<Error>(() => {}) };
-    });
-    const previousExitCode = process.exitCode;
-    process.exitCode = undefined;
-    const output = captureConsoleJsonOutput();
-    try {
-      await expect(handlePluginsCommand(['dev', '/fixture/plugin', '--json'], {
-        inspectPluginDevelopmentSource,
-        runPluginAuthorToolchain,
-        startPluginDevelopmentSourceObserver,
-        requestDevelopmentChange,
-      }, { signal: controller.signal })).resolves.toBeUndefined();
-
-      expect(output.logs).toHaveLength(2);
-      expect(JSON.parse(output.logs[0]!) as unknown).toMatchObject({
-        ok: false,
-        kind: 'plugins_dev_change',
-        error: {
-          code: 'plugin_dev_candidate_request_failed',
-          diagnostics: [{
-            code: 'plugin_dev_candidate_request_failed',
-            message: expect.stringContaining('daemon transport closed'),
-          }],
-        },
-      });
-      expect(JSON.parse(output.logs[1]!) as unknown).toMatchObject({
         ok: true,
-        kind: 'plugins_dev_change',
+        kind: 'plugins_dev_unregister',
+        data: { status: { roots: [], plugins: [] } },
+      });
+    } finally {
+      output.restore();
+    }
+  });
+
+  it('renders the daemon-owned development status from the top-level status command', async () => {
+    const ensureDaemon = vi.fn(async () => undefined);
+    const controlPluginDevelopment = vi.fn(async () => ({
+      kind: 'status' as const,
+      status: {
+        roots: [{ kind: 'explicit' as const, rootPath: '/fixture', trusted: true, persisted: true }],
+        plugins: [{
+          sourceRootPath: '/fixture/plugin',
+          pluginId: 'acme.fixture',
+          phase: 'retained_incumbent' as const,
+          occurrenceId: 'occurrence-7',
+          uiArtifactDigest: 'sha256:fixture',
+          diagnostic: { code: 'plugin_build_failed', message: 'Candidate build failed.' },
+        }],
+      },
+    }));
+    const output = captureConsoleJsonOutput();
+    try {
+      await handlePluginsCommand(['status', '--json'], { ensureDaemon, controlPluginDevelopment });
+
+      expect(controlPluginDevelopment).toHaveBeenCalledWith({ kind: 'status' }, {});
+      expect(output.json()).toMatchObject({
+        ok: true,
+        kind: 'plugins_status',
         data: {
-          projectRoot: '/canonical/plugin',
-          observedFiles: 2,
+          roots: [{ rootPath: '/fixture', trusted: true, persisted: true }],
+          plugins: [{
+            pluginId: 'acme.fixture',
+            phase: 'retained_incumbent',
+            occurrenceId: 'occurrence-7',
+            uiArtifactDigest: 'sha256:fixture',
+          }],
         },
-      });
-      expect(requestDevelopmentChange).toHaveBeenCalledTimes(2);
-      expect(stop).toHaveBeenCalledTimes(1);
-      expect(process.exitCode).toBe(0);
-    } finally {
-      output.restore();
-      process.exitCode = previousExitCode;
-    }
-  });
-
-  it('aborts a pending initial daemon submission and stops the observer promptly', async () => {
-    const controller = new AbortController();
-    const inspectPluginDevelopmentSource = vi.fn(async () => ({
-      ok: true as const,
-      sourceKind: 'packageRoot' as const,
-      sourceRootPath: '/canonical/plugin',
-      request: { kind: 'development' as const, pluginId: 'acme.example', projectRoot: '/canonical/plugin' },
-      developmentEntryPath: '/canonical/plugin/src/index.ts',
-      observedRelativePaths: ['.happier-plugin/plugin.json', 'src/index.ts'],
-      declaredDependencies: {},
-      observedDirectoryPaths: ['/canonical/plugin', '/canonical/plugin/src'],
-    }));
-    const runPluginAuthorToolchain = vi.fn(async () => ({
-      ok: true as const,
-      operation: 'install' as const,
-      projectRoot: '/canonical/plugin',
-    }));
-    const requestDevelopmentChange = vi.fn((
-      _request: { kind: 'development'; pluginId?: string; projectRoot: string },
-      options?: { signal?: AbortSignal },
-    ) => new Promise<Readonly<{ ok: boolean }>>((_resolve, reject) => {
-      options?.signal?.addEventListener('abort', () => {
-        reject(options.signal?.reason ?? new DOMException('Aborted', 'AbortError'));
-      }, { once: true });
-    }));
-    const stop = vi.fn();
-    const startPluginDevelopmentSourceObserver = vi.fn(async (input: {
-      onObservation(
-        observation: Awaited<ReturnType<typeof inspectPluginDevelopmentSource>>,
-      ): 'adopted' | 'retained' | Promise<'adopted' | 'retained'>;
-    }) => {
-      await input.onObservation(await inspectPluginDevelopmentSource());
-      return { stop, failure: new Promise<Error>(() => {}) };
-    });
-
-    const command = handlePluginsCommand(['dev', '/fixture/plugin'], {
-      inspectPluginDevelopmentSource,
-      runPluginAuthorToolchain,
-      startPluginDevelopmentSourceObserver,
-      requestDevelopmentChange,
-    }, { signal: controller.signal });
-    await vi.waitFor(() => expect(requestDevelopmentChange).toHaveBeenCalledTimes(1));
-    controller.abort();
-
-    await expect(Promise.race([
-      command.then(() => 'resolved' as const),
-      new Promise<'timed-out'>((resolveTimeout) => setTimeout(() => resolveTimeout('timed-out'), 250)),
-    ])).resolves.toBe('resolved');
-    expect(requestDevelopmentChange).toHaveBeenCalledWith(
-      { kind: 'development', pluginId: 'acme.example', projectRoot: '/canonical/plugin' },
-      { signal: controller.signal, approval: 'none' },
-    );
-    expect(stop).toHaveBeenCalledTimes(1);
-  });
-
-  it('exits through the observer failure settlement instead of waiting when a post-start refresh fails', async () => {
-    const controller = new AbortController();
-    const inspectPluginDevelopmentSource = vi.fn(async () => ({
-      ok: true as const,
-      sourceKind: 'singleFile' as const,
-      sourceRootPath: '/canonical/plugin.ts',
-      request: { kind: 'development' as const, projectRoot: '/canonical/plugin.ts' },
-      developmentEntryPath: '/canonical/plugin.ts',
-      observedRelativePaths: ['plugin.ts'],
-      declaredDependencies: {},
-      observedDirectoryPaths: ['/canonical/plugin.ts'],
-    }));
-    const stop = vi.fn();
-    let failObserver!: (error: Error) => void;
-    const failure = new Promise<Error>((_resolve, reject) => {
-      failObserver = reject;
-    });
-    const startPluginDevelopmentSourceObserver = vi.fn(async () => ({ stop, failure }));
-    const requestDevelopmentChange = vi.fn(async () => ({ ok: true as const }));
-    const output = captureConsoleText();
-    const previousExitCode = process.exitCode;
-    process.exitCode = undefined;
-    try {
-      const command = handlePluginsCommand(['dev', '/fixture/plugin.ts'], {
-        inspectPluginDevelopmentSource,
-        startPluginDevelopmentSourceObserver,
-        requestDevelopmentChange,
-      }, { signal: controller.signal });
-      await vi.waitFor(() => expect(startPluginDevelopmentSourceObserver).toHaveBeenCalledOnce());
-      failObserver(new Error('observer watch failed'));
-
-      await expect(command).rejects.toThrow('observer watch failed');
-      expect(stop).toHaveBeenCalledOnce();
-    } finally {
-      output.restore();
-      process.exitCode = previousExitCode;
-    }
-  });
-
-  it('submits the captured UI edit batch without repeating author-root preparation or CLI UI work', async () => {
-    const controller = new AbortController();
-    const observation = {
-      ok: true as const,
-      sourceKind: 'packageRoot' as const,
-      sourceRootPath: '/canonical/plugin',
-      request: {
-        kind: 'development' as const,
-        pluginId: 'acme.example',
-        projectRoot: '/canonical/plugin',
-        changedPaths: ['src/ui/renderSurface.tsx'] as readonly string[],
-      },
-      developmentEntryPath: '/canonical/plugin/src/index.ts',
-      observedRelativePaths: ['src/index.ts', 'src/ui/renderSurface.tsx'],
-      declaredDependencies: {},
-      observedDirectoryPaths: ['/canonical/plugin'],
-    };
-    const inspectPluginDevelopmentSource = vi.fn(async () => observation);
-    const runPluginAuthorToolchain = vi.fn(async () => ({
-      ok: true as const,
-      operation: 'install' as const,
-      projectRoot: '/canonical/plugin',
-    }));
-    const requestDevelopmentChange = vi.fn(async () => {
-      setTimeout(() => controller.abort(), 0);
-      return {
-        ok: true as const,
-        generation: { desired: 'gen-1', applied: 'gen-1', pendingSurfaces: [] as const },
-      };
-    });
-    const stop = vi.fn();
-    const startPluginDevelopmentSourceObserver = vi.fn(async (input: {
-      onObservation(value: typeof observation): 'adopted' | 'retained' | Promise<'adopted' | 'retained'>;
-    }) => {
-      await input.onObservation(observation);
-      return { stop, failure: new Promise<Error>(() => {}) };
-    });
-    const output = captureConsoleJsonOutput();
-    try {
-      await handlePluginsCommand(['dev', '/fixture/plugin', '--json'], {
-        inspectPluginDevelopmentSource,
-        runPluginAuthorToolchain,
-        startPluginDevelopmentSourceObserver,
-        requestDevelopmentChange,
-      }, { signal: controller.signal });
-
-      expect(runPluginAuthorToolchain).toHaveBeenCalledTimes(1);
-      const [submitted] = requestDevelopmentChange.mock.calls[0] as unknown as readonly [
-        Readonly<{ changedPaths?: readonly string[] }>,
-      ];
-      expect(submitted.changedPaths).toEqual(['src/ui/renderSurface.tsx']);
-      expect(output.json()).toMatchObject({
-        ok: true,
-        kind: 'plugins_dev_change',
-        data: { stage: 'projected', generation: { applied: 'gen-1' } },
-      });
-      // UI-T23: the CLI never claims a stage it cannot observe.
-      expect(output.logs.join('\n')).not.toMatch(/"stage":\s*"(loaded|rendered)"/u);
-    } finally {
-      output.restore();
-    }
-  });
-
-  it('keeps the last projected generation when the daemon reports a UI build failure', async () => {
-    const controller = new AbortController();
-    const observation = {
-      ok: true as const,
-      sourceKind: 'packageRoot' as const,
-      sourceRootPath: '/canonical/plugin',
-      request: {
-        kind: 'development' as const,
-        pluginId: 'acme.example',
-        projectRoot: '/canonical/plugin',
-        changedPaths: ['src/ui/renderSurface.tsx'] as readonly string[],
-      },
-      developmentEntryPath: '/canonical/plugin/src/index.ts',
-      observedRelativePaths: ['src/index.ts', 'src/ui/renderSurface.tsx'],
-      declaredDependencies: {},
-      observedDirectoryPaths: ['/canonical/plugin'],
-    };
-    const inspectPluginDevelopmentSource = vi.fn(async () => observation);
-    const runPluginAuthorToolchain = vi.fn(async () => ({
-      ok: true as const,
-      operation: 'install' as const,
-      projectRoot: '/canonical/plugin',
-    }));
-    let submissionCount = 0;
-    const requestDevelopmentChange = vi.fn(async () => {
-      submissionCount += 1;
-      return submissionCount === 1
-        ? {
-            ok: true as const,
-            generation: { desired: 'gen-1', applied: 'gen-1', pendingSurfaces: [] as const },
-          }
-        : {
-            ok: false as const,
-            diagnostics: [{
-              code: 'plugin_dev_ui_build_failed',
-              message: 'Plugin author build failed with 1: Unexpected token',
-            }],
-          };
-    });
-    const stop = vi.fn();
-    const deliveries: Array<'adopted' | 'retained'> = [];
-    const startPluginDevelopmentSourceObserver = vi.fn(async (input: {
-      onObservation(value: typeof observation): 'adopted' | 'retained' | Promise<'adopted' | 'retained'>;
-    }) => {
-      deliveries.push(await input.onObservation(observation));
-      deliveries.push(await input.onObservation(observation));
-      setTimeout(() => controller.abort(), 0);
-      return { stop, failure: new Promise<Error>(() => {}) };
-    });
-    const output = captureConsoleJsonOutput();
-    try {
-      await handlePluginsCommand(['dev', '/fixture/plugin', '--json'], {
-        inspectPluginDevelopmentSource,
-        runPluginAuthorToolchain,
-        startPluginDevelopmentSourceObserver,
-        requestDevelopmentChange,
-      }, { signal: controller.signal });
-
-      // The second batch reaches the one daemon owner, which rejects it before
-      // admission; gen-1 remains the only generation this CLI observed current.
-      expect(requestDevelopmentChange).toHaveBeenCalledTimes(2);
-      expect(deliveries).toEqual(['adopted', 'retained']);
-      expect(output.logs).toHaveLength(2);
-      expect(JSON.parse(output.logs[1]!) as unknown).toMatchObject({
-        ok: false,
-        kind: 'plugins_dev_change',
-        error: {
-          code: 'plugin_dev_ui_build_failed',
-          stage: 'built',
-          retainedGeneration: 'gen-1',
-        },
-      });
-    } finally {
-      output.restore();
-    }
-  });
-
-  it('reports admitted rather than projected while surface reconciliation is still pending', async () => {
-    const controller = new AbortController();
-    const observation = {
-      ok: true as const,
-      sourceKind: 'packageRoot' as const,
-      sourceRootPath: '/canonical/plugin',
-      request: {
-        kind: 'development' as const,
-        pluginId: 'acme.example',
-        projectRoot: '/canonical/plugin',
-      },
-      developmentEntryPath: '/canonical/plugin/src/index.ts',
-      observedRelativePaths: ['src/index.ts'],
-      declaredDependencies: {},
-      observedDirectoryPaths: ['/canonical/plugin'],
-    };
-    const inspectPluginDevelopmentSource = vi.fn(async () => observation);
-    const runPluginAuthorToolchain = vi.fn(async () => ({
-      ok: true as const,
-      operation: 'install' as const,
-      projectRoot: '/canonical/plugin',
-    }));
-    const requestDevelopmentChange = vi.fn(async () => {
-      setTimeout(() => controller.abort(), 0);
-      return {
-        ok: true as const,
-        generation: {
-          desired: 'gen-2',
-          applied: 'gen-2',
-          pendingSurfaces: ['reconciliation'] as const,
-        },
-      };
-    });
-    const stop = vi.fn();
-    const startPluginDevelopmentSourceObserver = vi.fn(async (input: {
-      onObservation(value: typeof observation): 'adopted' | 'retained' | Promise<'adopted' | 'retained'>;
-    }) => {
-      await input.onObservation(observation);
-      return { stop, failure: new Promise<Error>(() => {}) };
-    });
-    const output = captureConsoleJsonOutput();
-    try {
-      await handlePluginsCommand(['dev', '/fixture/plugin', '--json'], {
-        inspectPluginDevelopmentSource,
-        runPluginAuthorToolchain,
-        startPluginDevelopmentSourceObserver,
-        requestDevelopmentChange,
-      }, { signal: controller.signal });
-
-      // A project with no UI build config must not be reported as "built".
-      const [submitted] = requestDevelopmentChange.mock.calls[0] as unknown as readonly [
-        Readonly<{ changedPaths?: readonly string[] }>,
-      ];
-      expect(submitted.changedPaths).toBeUndefined();
-      expect(output.json()).toMatchObject({
-        ok: false,
-        kind: 'plugins_dev_change',
-        error: { stage: 'admitted', code: 'plugin_dev_adoption_pending' },
       });
     } finally {
       output.restore();
@@ -1845,13 +1123,12 @@ describe('handlePluginsCommand', () => {
 
   it('boots the curated marketplace source into the shared registry and uses it without an explicit source reference', async () => {
     const home = await createTempDir('happier-plugin-marketplace-curated-default-');
-    const envScope = createEnvKeyScope(['HAPPIER_HOME_DIR', 'PATH', 'HAPPIER_MARKETPLACE_CURATED_SOURCE_URL']);
-    envScope.patch({ HAPPIER_HOME_DIR: home, PATH: '', HAPPIER_MARKETPLACE_CURATED_SOURCE_URL: '' });
+    const envScope = createEnvKeyScope(['HAPPIER_HOME_DIR', 'PATH']);
+    envScope.patch({ HAPPIER_HOME_DIR: home, PATH: '' });
     reloadConfiguration();
 
     const marketplace = await createRemoteMarketplaceServer();
-    const sourceUrl = 'https://marketplace.example.test/catalog.json';
-    envScope.patch({ HAPPIER_MARKETPLACE_CURATED_SOURCE_URL: sourceUrl });
+    const sourceUrl = DEFAULT_CURATED_MARKETPLACE_SOURCE_URL;
 
     try {
       const sourcesOutput = captureConsoleJsonOutput();
@@ -1943,6 +1220,9 @@ describe('handlePluginsCommand', () => {
 
   it('creates a packable public SDK plugin template without internal imports', async () => {
     const parentDir = await mkdtemp(join(tmpdir(), 'happier-plugin-scaffold-parent-'));
+    const envScope = createEnvKeyScope(['HAPPIER_HOME_DIR']);
+    envScope.patch({ HAPPIER_HOME_DIR: join(parentDir, 'home') });
+    await materializeManagedPnpmTestShim(join(parentDir, 'home'));
     const targetDir = join(parentDir, 'acme-scaffold');
     const archivePath = join(parentDir, 'acme-scaffold.happier-plugin.tgz');
     let registry: Awaited<ReturnType<typeof startLoopbackPluginSdkRegistry>> | null = null;
@@ -2063,6 +1343,7 @@ describe('handlePluginsCommand', () => {
       }
       expect(registry.requests).toContain('/@happier-dev/plugin-sdk');
     } finally {
+      envScope.restore();
       await registry?.close();
       await rm(parentDir, { recursive: true, force: true });
     }
@@ -2436,13 +1717,13 @@ describe('handlePluginsCommand', () => {
           target: {
             pluginId: 'acme.packed',
             pointId: 'providers',
-            immutableGenerationId: 'generation-packed-1',
+            occurrenceId: 'generation-packed-1',
           },
           protocol: { id: 'packed-provider', version: 1 },
           contributor: {
             pluginId: 'acme.contributor',
             contributionId: 'provider-a',
-            immutableGenerationId: 'generation-contributor-1',
+            occurrenceId: 'generation-contributor-1',
           },
         }],
       }],
@@ -2536,13 +1817,13 @@ describe('handlePluginsCommand', () => {
               target: {
                 pluginId: 'acme.packed',
                 pointId: 'providers',
-                immutableGenerationId: 'generation-packed-1',
+                occurrenceId: 'generation-packed-1',
               },
               protocol: { id: 'packed-provider', version: 1 },
               contributor: {
                 pluginId: 'acme.contributor',
                 contributionId: 'provider-a',
-                immutableGenerationId: 'generation-contributor-1',
+                occurrenceId: 'generation-contributor-1',
               },
             }],
           }],
@@ -2647,13 +1928,13 @@ describe('handlePluginsCommand', () => {
           target: {
             pluginId: 'acme.packed',
             pointId: 'providers',
-            immutableGenerationId: 'generation-packed-1',
+            occurrenceId: 'generation-packed-1',
           },
           protocol: { id: 'packed-provider', version: 1 },
           contributor: {
             pluginId: 'acme.contributor',
             contributionId: 'provider-a',
-            immutableGenerationId: 'generation-contributor-1',
+            occurrenceId: 'generation-contributor-1',
           },
         }],
       }],
@@ -2740,22 +2021,19 @@ describe('handlePluginsCommand', () => {
       expect(uiEntry).toContain("from '@happier-dev/plugin-ui';");
       expect(uiEntry).not.toContain("from 'react-native'");
 
-      // The SDK builder owns the operation-local Vite/Re.Pack configs, so a
+      // The SDK builder owns the universal CommonJS artifact build, so a
       // scaffold has no package-root compiler configuration to drift.
       for (const configPath of ['vite.config.mjs', 'rspack.config.mjs', 'react-native.config.cjs']) {
         await expect(readFile(join(targetDir, configPath), 'utf8'))
           .rejects.toMatchObject({ code: 'ENOENT' });
       }
-      const uiBuildConfig = await readFile(join(targetDir, 'pluginUiBuild.ts'), 'utf8');
-      expect(uiBuildConfig).toContain('defineBuildConfig');
-      expect(uiBuildConfig).not.toContain('createManagedRuntimeBundlerRunner');
-      expect(uiBuildConfig).not.toContain('bundlerConfig');
+      await expect(readFile(join(targetDir, 'pluginUiBuild.ts'), 'utf8'))
+        .rejects.toMatchObject({ code: 'ENOENT' });
       const scaffoldPackageJson = JSON.parse(
         await readFile(join(targetDir, 'package.json'), 'utf8'),
       ) as { scripts?: Record<string, string>; devDependencies?: Record<string, string> };
       expect(scaffoldPackageJson.scripts?.['build:ui']).toBe('happier-plugin-build-ui --project-root .');
-      expect(scaffoldPackageJson.devDependencies?.vite)
-        .toBe(PUBLIC_TOOLCHAIN_SCAFFOLD_BINDINGS_V1.devDependencies.vite);
+      expect(scaffoldPackageJson.devDependencies).not.toHaveProperty('vite');
 
     } finally {
       await rm(parentDir, { recursive: true, force: true });
@@ -2790,12 +2068,22 @@ describe('handlePluginsCommand', () => {
         expect(parsed.ok).toBe(true);
         expect(parsed.kind).toBe('plugins_create');
         expect(parsed.data?.plugin).toMatchObject({ pluginId: 'acme.hostedweb', title: 'Acme Hosted Web' });
-        expect(parsed.data?.scaffold.uiEntryPath).toBe(join(targetDir, 'src', 'ui', 'index.ts'));
+        expect(parsed.data?.scaffold.uiEntryPath).toBe(join(
+          targetDir,
+          '.happier-plugin',
+          'ui',
+          'hosted-web',
+          'main-renderer',
+          'entry.ts',
+        ));
       } finally {
         output.restore();
       }
 
-      const uiEntry = await readFile(join(targetDir, 'src', 'ui', 'index.ts'), 'utf8');
+      const uiEntry = await readFile(
+        join(targetDir, '.happier-plugin', 'ui', 'hosted-web', 'main-renderer', 'entry.ts'),
+        'utf8',
+      );
       expect(uiEntry).toContain("from '@happier-dev/plugin-sdk/ui/client'");
       expect(uiEntry).toContain('createPluginUiRenderContext');
       expect(uiEntry).not.toContain('context.launchInput');
@@ -2809,19 +2097,15 @@ describe('handlePluginsCommand', () => {
       // derives its target from that declaration instead of restating it.
       const uiSurfaceModule = await readFile(join(targetDir, 'src', 'ui', 'surfaces.ts'), 'utf8');
       expect(uiSurfaceModule).toContain("kind: 'hostedWeb'");
-      const uiBuildConfig = await readFile(join(targetDir, 'pluginUiBuild.ts'), 'utf8');
-      expect(uiBuildConfig).toContain('defineBuildConfig');
-      expect(uiBuildConfig).toContain('buildUiSurfaceTargets(mainSurface)');
-      expect(uiBuildConfig).not.toContain("kind: 'hostedWeb'");
-      expect(uiBuildConfig).not.toContain('bundlerConfig');
+      await expect(readFile(join(targetDir, 'pluginUiBuild.ts'), 'utf8'))
+        .rejects.toMatchObject({ code: 'ENOENT' });
 
       const packageJson = JSON.parse(await readFile(join(targetDir, 'package.json'), 'utf8')) as {
         scripts?: Record<string, string>;
         devDependencies?: Record<string, string>;
       };
       expect(packageJson.scripts?.['build:ui']).toBe('happier-plugin-build-ui --project-root .');
-      expect(packageJson.devDependencies?.vite)
-        .toBe(PUBLIC_TOOLCHAIN_SCAFFOLD_BINDINGS_V1.devDependencies.vite);
+      expect(packageJson.devDependencies).not.toHaveProperty('vite');
     } finally {
       await rm(parentDir, { recursive: true, force: true });
     }
@@ -2969,6 +2253,9 @@ describe('handlePluginsCommand', () => {
     const registry = await startLoopbackPluginSdkRegistry(sdkTarball);
     const previousExitCode = process.exitCode;
     process.exitCode = undefined;
+    const envScope = createEnvKeyScope(['HAPPIER_HOME_DIR']);
+    envScope.patch({ HAPPIER_HOME_DIR: join(outDir, 'home') });
+    await materializeManagedPnpmTestShim(join(outDir, 'home'));
 
     try {
       await writeFile(join(sourceRoot, 'package.json'), JSON.stringify({
@@ -3019,6 +2306,7 @@ describe('handlePluginsCommand', () => {
       )).rejects.toMatchObject({ code: 'ENOENT' });
     } finally {
       process.exitCode = previousExitCode;
+      envScope.restore();
       await registry.close();
       await rm(sourceRoot, { recursive: true, force: true });
       await rm(outDir, { recursive: true, force: true });
@@ -3275,13 +2563,12 @@ describe('handlePluginsCommand', () => {
 
   it('persists marketplace sources and uses the registry when browsing without an explicit source reference', async () => {
     const home = await createTempDir('happier-plugin-marketplace-registry-cli-');
-    const envScope = createEnvKeyScope(['HAPPIER_HOME_DIR', 'PATH', 'HAPPIER_MARKETPLACE_CURATED_SOURCE_URL']);
+    const envScope = createEnvKeyScope(['HAPPIER_HOME_DIR', 'PATH']);
     envScope.patch({ HAPPIER_HOME_DIR: home, PATH: '' });
     reloadConfiguration();
 
     const marketplace = await createRemoteMarketplaceServer();
-    const sourceUrl = 'https://marketplace.example.test/catalog.json';
-    envScope.patch({ HAPPIER_MARKETPLACE_CURATED_SOURCE_URL: sourceUrl });
+    const sourceUrl = DEFAULT_CURATED_MARKETPLACE_SOURCE_URL;
     try {
       const addOutput = captureConsoleJsonOutput();
       try {
@@ -3409,11 +2696,10 @@ describe('handlePluginsCommand', () => {
   it('projects canonical marketplace contribution IDs in both human list and show output', async () => {
     const home = await createTempDir('happier-plugin-marketplace-contribution-summary-');
     const sourceUrl = 'https://marketplace.invalid/catalog.json';
-    const envScope = createEnvKeyScope(['HAPPIER_HOME_DIR', 'PATH', 'HAPPIER_MARKETPLACE_CURATED_SOURCE_URL']);
+    const envScope = createEnvKeyScope(['HAPPIER_HOME_DIR', 'PATH']);
     envScope.patch({
       HAPPIER_HOME_DIR: home,
       PATH: process.env.PATH ?? '',
-      HAPPIER_MARKETPLACE_CURATED_SOURCE_URL: sourceUrl,
     });
     reloadConfiguration();
     const contributions = ['2-actions', '1-hooks', '3-ui', '4-targeted'];
@@ -3462,11 +2748,10 @@ describe('handlePluginsCommand', () => {
   it('sends an approved exact curated listing through the canonical daemon change request', async () => {
     const home = await createTempDir('happier-plugin-marketplace-exact-install-');
     const sourceUrl = 'https://marketplace.invalid/catalog.json';
-    const envScope = createEnvKeyScope(['HAPPIER_HOME_DIR', 'PATH', 'HAPPIER_MARKETPLACE_CURATED_SOURCE_URL']);
+    const envScope = createEnvKeyScope(['HAPPIER_HOME_DIR', 'PATH']);
     envScope.patch({
       HAPPIER_HOME_DIR: home,
       PATH: process.env.PATH ?? '',
-      HAPPIER_MARKETPLACE_CURATED_SOURCE_URL: sourceUrl,
     });
     reloadConfiguration();
     const previousExitCode = process.exitCode;
@@ -3542,7 +2827,7 @@ describe('handlePluginsCommand', () => {
           integrity: listing.integrity,
           manifestDigest: listing.manifestDigest,
           review: { status: 'approved', reviewedAt: '2026-07-21T00:00:00.000Z' },
-          updatePolicy: 'reviewSensitiveChanges',
+          updatePolicy: 'allowed',
         },
       });
       expect(daemonBoundary.decideChange).not.toHaveBeenCalled();
@@ -3557,11 +2842,10 @@ describe('handlePluginsCommand', () => {
   it('requires the selected Community npm package name for exact install when it differs from the plugin id', async () => {
     const home = await createTempDir('happier-plugin-marketplace-community-install-');
     const sourceUrl = 'https://marketplace.invalid/community-source.json';
-    const envScope = createEnvKeyScope(['HAPPIER_HOME_DIR', 'PATH', 'HAPPIER_MARKETPLACE_CURATED_SOURCE_URL']);
+    const envScope = createEnvKeyScope(['HAPPIER_HOME_DIR', 'PATH']);
     envScope.patch({
       HAPPIER_HOME_DIR: home,
       PATH: process.env.PATH ?? '',
-      HAPPIER_MARKETPLACE_CURATED_SOURCE_URL: sourceUrl,
     });
     reloadConfiguration();
     const previousExitCode = process.exitCode;
@@ -3583,7 +2867,7 @@ describe('handlePluginsCommand', () => {
         ...entry,
         distribution: { ...entry.distribution, packageName },
         review: { status: 'unreviewed', reviewedAt: null },
-        updatePolicy: 'reviewEveryUpdate',
+        updatePolicy: 'allowed',
       })),
     };
     const marketplaceIndexService = marketplaceIndexServiceForSnapshot(communitySnapshot);
@@ -3657,11 +2941,10 @@ describe('handlePluginsCommand', () => {
     const packageName = '@acme/community-alias';
     const home = await createTempDir('happier-plugin-marketplace-community-alias-');
     const sourceUrl = 'https://marketplace.invalid/community-alias.json';
-    const envScope = createEnvKeyScope(['HAPPIER_HOME_DIR', 'PATH', 'HAPPIER_MARKETPLACE_CURATED_SOURCE_URL']);
+    const envScope = createEnvKeyScope(['HAPPIER_HOME_DIR', 'PATH']);
     envScope.patch({
       HAPPIER_HOME_DIR: home,
       PATH: process.env.PATH ?? '',
-      HAPPIER_MARKETPLACE_CURATED_SOURCE_URL: sourceUrl,
     });
     reloadConfiguration();
     const previousExitCode = process.exitCode;
@@ -3682,7 +2965,7 @@ describe('handlePluginsCommand', () => {
         ...entry,
         distribution: { ...entry.distribution, packageName },
         review: { status: 'unreviewed', reviewedAt: null },
-        updatePolicy: 'reviewEveryUpdate',
+        updatePolicy: 'allowed',
       })),
     };
     try {
@@ -3733,11 +3016,10 @@ describe('handlePluginsCommand', () => {
   ])('fails closed for a curated listing with %s before contacting the daemon', async (_label, listingOverride, expectedMessage) => {
     const home = await createTempDir('happier-plugin-marketplace-refused-install-');
     const sourceUrl = 'https://marketplace.invalid/catalog.json';
-    const envScope = createEnvKeyScope(['HAPPIER_HOME_DIR', 'PATH', 'HAPPIER_MARKETPLACE_CURATED_SOURCE_URL']);
+    const envScope = createEnvKeyScope(['HAPPIER_HOME_DIR', 'PATH']);
     envScope.patch({
       HAPPIER_HOME_DIR: home,
       PATH: process.env.PATH ?? '',
-      HAPPIER_MARKETPLACE_CURATED_SOURCE_URL: sourceUrl,
     });
     reloadConfiguration();
     const previousExitCode = process.exitCode;
@@ -3767,7 +3049,7 @@ describe('handlePluginsCommand', () => {
     }
   });
 
-  it('installs a local-path plugin only through the present-user terminal review', async () => {
+  it('treats an explicit local-path install as the source-code trust action', async () => {
     const home = await createTempDir('happier-plugin-cli-');
     const envScope = createEnvKeyScope(['HAPPIER_HOME_DIR', 'PATH']);
     envScope.patch({ HAPPIER_HOME_DIR: home, PATH: '' });
@@ -3778,12 +3060,9 @@ describe('handlePluginsCommand', () => {
 
     try {
       await installPluginThroughPresentUserTerminal(sourceRoot);
-      expect(promptBoundary.confirm).toHaveBeenCalledWith(
-        expect.stringContaining('Install & Trust Acme Sample 1.0.0'),
-        { default: 'no' },
-      );
+      expect(promptBoundary.confirm).not.toHaveBeenCalled();
       expect(daemonBoundary.requestChange).toHaveBeenCalledWith({
-        kind: 'installPath', locator: sourceRoot, development: false,
+        kind: 'installPath', locator: sourceRoot,
       });
       expect(daemonBoundary.decideChange).toHaveBeenCalledWith(expect.objectContaining({
         decision: 'installAndTrust',
@@ -3944,7 +3223,7 @@ describe('handlePluginsCommand', () => {
     }
   });
 
-  it('updates an installed plugin through one daemon-owned review without reconstructing its channel client-side', async () => {
+  it('updates an installed plugin on its trusted allowed channel without reconstructing that channel client-side', async () => {
     const home = await createTempDir('happier-plugin-update-cli-');
     const envScope = createEnvKeyScope(['HAPPIER_HOME_DIR', 'PATH']);
     envScope.patch({ HAPPIER_HOME_DIR: home, PATH: '' });
@@ -3958,52 +3237,25 @@ describe('handlePluginsCommand', () => {
       const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as Record<string, unknown>;
       await writeFile(manifestPath, JSON.stringify({ ...manifest, version: '2.0.0' }, null, 2), 'utf8');
 
-      let pendingChangeId = '';
       const output = captureConsoleJsonOutput();
       try {
         await handlePluginsCommand(['update', SAMPLE_PLUGIN_ID, '--json']);
         const result = output.json<{
           ok: boolean;
           kind: string;
-          error?: {
-            code?: string;
-            pendingChangeId?: string;
-          };
+          data?: { pluginId?: string; desiredGeneration?: string | null; appliedGeneration?: string | null };
         }>();
         expect(result).toMatchObject({
-          ok: false,
+          ok: true,
           kind: 'plugins_update',
-          error: {
-            code: 'review_required',
-            pendingChangeId: expect.any(String),
+          data: {
+            pluginId: SAMPLE_PLUGIN_ID,
+            desiredGeneration: expect.any(String),
+            appliedGeneration: expect.any(String),
           },
         });
-        pendingChangeId = result.error?.pendingChangeId ?? '';
       } finally {
         output.restore();
-      }
-
-      process.exitCode = undefined;
-      const decisionOutput = captureConsoleJsonOutput();
-      try {
-        await handlePluginsCommand(['change', 'approve', pendingChangeId, '--json']);
-        expect(decisionOutput.json()).toMatchObject({
-          ok: true,
-          kind: 'plugins_change_decision',
-          data: {
-            outcome: 'applied',
-            pendingChangeId,
-            decision: 'approve',
-            result: {
-              kind: 'committed',
-              pluginId: SAMPLE_PLUGIN_ID,
-              desiredGeneration: expect.any(String),
-              appliedGeneration: expect.any(String),
-            },
-          },
-        });
-      } finally {
-        decisionOutput.restore();
       }
 
       expect(daemonBoundary.requestChange).toHaveBeenLastCalledWith({ kind: 'update', pluginId: SAMPLE_PLUGIN_ID });
@@ -4145,7 +3397,7 @@ describe('handlePluginsCommand', () => {
     }
   });
 
-  it('requests a fresh daemon-owned generation for a development plugin', async () => {
+  it('requests a daemon-owned source-in-place reload for a development plugin', async () => {
     const home = await createTempDir('happier-plugin-reload-cli-');
     const envScope = createEnvKeyScope(['HAPPIER_HOME_DIR', 'PATH']);
     envScope.patch({ HAPPIER_HOME_DIR: home, PATH: '' });
@@ -4176,25 +3428,23 @@ describe('handlePluginsCommand', () => {
           },
         },
       });
-      daemonBoundary.requestChange.mockResolvedValueOnce({
-        kind: 'committed',
-        pluginId: 'acme.reload-disposable',
-        desiredGeneration: 'generation-2',
-        appliedGeneration: 'generation-2',
-        pendingSurfaces: [],
-      });
+      const controlPluginDevelopment = vi.fn(async () => ({
+        kind: 'status' as const,
+        status: { roots: [], plugins: [] },
+      }));
 
       const reloadOutput = captureConsoleJsonOutput();
       try {
-        await handlePluginsCommand(['reload', 'acme.reload-disposable', '--json']);
+        await handlePluginsCommand(['reload', 'acme.reload-disposable', '--json'], {
+          controlPluginDevelopment,
+        });
 
         const parsed = reloadOutput.json<{
           ok: boolean;
           kind: string;
           data?: {
             pluginId: string;
-            desiredGeneration: string | null;
-            appliedGeneration: string | null;
+            sourceRootPath: string;
           };
         }>();
 
@@ -4202,13 +3452,11 @@ describe('handlePluginsCommand', () => {
         expect(parsed.kind).toBe('plugins_reload');
         expect(parsed.data).toMatchObject({
           pluginId: 'acme.reload-disposable',
-          desiredGeneration: expect.any(String),
-          appliedGeneration: expect.any(String),
-        });
-        expect(daemonBoundary.requestChange).toHaveBeenLastCalledWith({
-          kind: 'development',
-          pluginId: 'acme.reload-disposable',
           sourceRootPath: sourceRoot,
+        });
+        expect(controlPluginDevelopment).toHaveBeenLastCalledWith({
+          kind: 'reload',
+          rootPath: sourceRoot,
         });
       } finally {
         reloadOutput.restore();
@@ -4253,28 +3501,24 @@ describe('handlePluginsCommand', () => {
         },
       },
     });
-    daemonBoundary.requestChange.mockResolvedValueOnce({
-      kind: 'committed',
-      pluginId: 'acme.reload-current-directory',
-      desiredGeneration: 'generation-2',
-      appliedGeneration: 'generation-2',
-      pendingSurfaces: [],
-    });
+    const controlPluginDevelopment = vi.fn(async () => ({
+      kind: 'status' as const,
+      status: { roots: [], plugins: [] },
+    }));
 
     const output = captureConsoleJsonOutput();
     try {
       process.chdir(nestedDirectory);
-      await handlePluginsCommand(['reload', '--json']);
+      await handlePluginsCommand(['reload', '--json'], { controlPluginDevelopment });
 
       expect(output.json()).toMatchObject({
         ok: true,
         kind: 'plugins_reload',
         data: { pluginId: 'acme.reload-current-directory' },
       });
-      expect(daemonBoundary.requestChange).toHaveBeenLastCalledWith({
-        kind: 'development',
-        pluginId: 'acme.reload-current-directory',
-        sourceRootPath: await realpath(sourceRoot),
+      expect(controlPluginDevelopment).toHaveBeenLastCalledWith({
+        kind: 'reload',
+        rootPath: await realpath(sourceRoot),
       });
     } finally {
       process.chdir(previousWorkingDirectory);
@@ -4415,7 +3659,7 @@ describe('handlePluginsCommand', () => {
           kind: string;
           data?: {
             dryRun: boolean;
-            request: { kind: string; locator: string; development: boolean };
+            request: { kind: string; locator: string };
           };
         }>();
 
@@ -4423,7 +3667,7 @@ describe('handlePluginsCommand', () => {
         expect(parsed.kind).toBe('plugins_install');
         expect(parsed.data).toMatchObject({
           dryRun: true,
-          request: { kind: 'installPath', locator: sourceRoot, development: false },
+          request: { kind: 'installPath', locator: sourceRoot },
         });
         expect(daemonBoundary.requestChange).not.toHaveBeenCalled();
       } finally {
@@ -4622,7 +3866,6 @@ describe('handlePluginsCommand', () => {
           source: 'localPath',
         },
         defaultStage: 'normalization',
-        generation: installed.desiredGeneration ?? undefined,
         host: 'daemon',
         platform: process.platform,
         occurredAtMs: 0,
@@ -4703,58 +3946,20 @@ describe('handlePluginsCommand', () => {
     }
   });
 
-  it('requires explicit --trust for a headless development install and records the atomic Install-and-trust decision', async () => {
-    const home = await createTempDir('happier-plugin-cli-trust-home-');
-    const envScope = createEnvKeyScope(['HAPPIER_HOME_DIR', 'PATH']);
-    envScope.patch({ HAPPIER_HOME_DIR: home, PATH: '' });
-    reloadConfiguration();
-
-    const sourceRoot = await mkdtemp(join(tmpdir(), 'happier-plugin-cli-trust-source-'));
-    await writeCliActionPlugin(sourceRoot, 'acme.cli-actions-trust');
-    const previousExitCode = process.exitCode;
-    process.exitCode = undefined;
-
-    try {
-      const blockedOutput = captureConsoleJsonOutput();
-      try {
-        process.exitCode = undefined;
-        await handlePluginsCommand(['install', sourceRoot, '--dev', '--json']);
-        const parsed = blockedOutput.json<{ ok: boolean; error?: { code: string; pendingChangeId?: string } }>();
-        expect(parsed.ok).toBe(false);
-        expect(parsed.error).toMatchObject({ code: 'review_required', pendingChangeId: expect.any(String) });
-        expect(process.exitCode).toBe(1);
-      } finally {
-        blockedOutput.restore();
-      }
-      await activePluginChangeService?.shutdown();
-      await activePluginReloadController?.shutdown();
-      activePluginChangeService = null;
-      activePluginReloadController = null;
-
-      const trustedOutput = captureConsoleJsonOutput();
-      try {
-        process.exitCode = undefined;
-        await handlePluginsCommand(['install', sourceRoot, '--dev', '--trust', '--json']);
-        const parsed = trustedOutput.json<{ ok: boolean; data?: { pluginId: string } }>();
-        expect(parsed.ok).toBe(true);
-        expect(parsed.data?.pluginId).toBe('acme.cli-actions-trust');
-        expect(process.exitCode).toBe(0);
-      } finally {
-        trustedOutput.restore();
-      }
-
-      const installed = await createPluginStateStore({ happyHomeDir: home }).read();
-      expect(installed.plugins['acme.cli-actions-trust']?.install.trust?.state).toBe('trusted');
-    } finally {
-      process.exitCode = previousExitCode;
-      envScope.restore();
-      reloadConfiguration();
-      await removeTempDir(home);
-      await rm(sourceRoot, { recursive: true, force: true });
-    }
-  });
-
-  it('forwards the normalized SDK registry to daemon-owned development dependency materialization', async () => {
+  it('routes the legacy install --dev spelling through daemon development-root registration', async () => {
+    const ensureDaemon = vi.fn(async () => undefined);
+    const controlPluginDevelopment = vi.fn(async () => ({
+      kind: 'status' as const,
+      status: {
+        roots: [{
+          kind: 'explicit' as const,
+          rootPath: '/fixture/plugin',
+          trusted: true,
+          persisted: true,
+        }],
+        plugins: [],
+      },
+    }));
     const output = captureConsoleJsonOutput();
     try {
       await handlePluginsCommand([
@@ -4763,22 +3968,25 @@ describe('handlePluginsCommand', () => {
         '--dev',
         '--sdk-registry',
         'http://127.0.0.1:43127/',
-        '--dry-run',
         '--json',
-      ]);
+      ], { ensureDaemon, controlPluginDevelopment });
 
       expect(output.json()).toMatchObject({
         ok: true,
         kind: 'plugins_install',
         data: {
-          request: {
-            kind: 'installPath',
-            locator: '/fixture/plugin',
-            development: true,
-            sdkRegistryOrigin: 'http://127.0.0.1:43127',
+          status: {
+            roots: [expect.objectContaining({ kind: 'explicit', rootPath: '/fixture/plugin' })],
           },
         },
       });
+      expect(ensureDaemon).toHaveBeenCalledOnce();
+      expect(controlPluginDevelopment).toHaveBeenCalledWith({
+        kind: 'registerExplicit',
+        rootPath: '/fixture/plugin',
+        sdkRegistryOrigin: 'http://127.0.0.1:43127',
+      });
+      expect(daemonBoundary.requestChange).not.toHaveBeenCalled();
     } finally {
       output.restore();
     }

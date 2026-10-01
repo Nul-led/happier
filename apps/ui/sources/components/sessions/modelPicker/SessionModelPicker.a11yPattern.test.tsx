@@ -1,3 +1,4 @@
+import { t } from '@/text';
 /**
  * The model picker's ARIA pattern must not move while the popup is open.
  *
@@ -29,13 +30,13 @@ const CONTROLS_TEST_ID = 'model-picker-overlay-selected-controls';
 const connectionId = ProviderConnectionIdSchema.parse('pc_pattern');
 
 const nativeSelection = {
-    agentTargetKey: 'backend:codex',
+    agentTargetKey: 'agent:happier.agent.codex/codex',
     providerConnectionId: null,
     modelId: 'gpt-5.6-sol',
 } as const;
 
 const providerSelection = {
-    agentTargetKey: 'backend:codex',
+    agentTargetKey: 'agent:happier.agent.codex/codex',
     providerConnectionId: connectionId,
     modelId: 'listed',
 } as const;
@@ -88,16 +89,34 @@ const optionControls = [{
     isPending: false,
 }];
 
+const { SessionModelPicker } = await import('./SessionModelPicker');
+const { NewSessionModelSelectionContent } = await import('@/components/sessions/new/components/NewSessionModelSelectionContent');
+
 describe('SessionModelPicker — the popup pattern survives every selection, single column', () => {
+    it('keeps cached choices usable and exposes a failed discovery in the shared picker', async () => {
+        const screen = await renderScreen(<NewSessionModelSelectionContent
+            modelOptions={[{ value: 'cached-model', label: 'Cached model', description: '' }]}
+            providerGroups={[]}
+            providerProjectionAuthoritative
+            selectedModelId="cached-model"
+            selectedIndicatorColor="#fff"
+            selectedModelSelection={{ v: 1, updatedAt: 1, ref: { agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: null, modelId: 'cached-model' } }}
+            modelDiscoveryFailed
+            onSelectModel={() => {}}
+        />);
+        expect(screen.getTextContent()).toContain('Cached model');
+        expect(screen.getTextContent()).toContain(t('agentInput.model.unavailable'));
+        await screen.unmount();
+    });
+
     it('holds the grid pattern across a provider-connection selection and a full control withdrawal', async () => {
-        const { SessionModelPicker } = await import('./SessionModelPicker');
         const onSelectOptionControlValue = vi.fn();
         const element = (
             selected: typeof nativeSelection | typeof providerSelection,
             controls: typeof optionControls | undefined,
         ) => (
             <SessionModelPicker
-                agentTargetKey="backend:codex"
+                agentTargetKey="agent:happier.agent.codex/codex"
                 nativeModels={[{ value: 'gpt-5.6-sol', label: '5.6 Sol' }]}
                 providerGroups={providerGroups}
                 providerProjectionAuthoritative
@@ -134,10 +153,9 @@ describe('SessionModelPicker — the popup pattern survives every selection, sin
     });
 
     it('keeps the plain listbox for a picker that wires no option controls at all', async () => {
-        const { SessionModelPicker } = await import('./SessionModelPicker');
         const screen = await renderScreen(
             <SessionModelPicker
-                agentTargetKey="backend:codex"
+                agentTargetKey="agent:happier.agent.codex/codex"
                 nativeModels={[{ value: 'gpt-5.6-sol', label: '5.6 Sol' }]}
                 providerGroups={[]}
                 providerProjectionAuthoritative

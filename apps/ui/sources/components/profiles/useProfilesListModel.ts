@@ -1,3 +1,4 @@
+import { useAuthoringMemoryField } from '@/sync/domains/state/storage';
 import * as React from 'react';
 import { readProviderSettingsFromAccountSettingsV1 } from '@happier-dev/protocol';
 
@@ -31,7 +32,7 @@ export function useProfilesListModel(params: Readonly<{
         () => readProfileEnabledById(settingsProfileEnabledByIdRaw),
         [settingsProfileEnabledByIdRaw],
     );
-    const lastUsedProfile = useSetting('lastUsedProfile');
+    const lastUsedProfile = useAuthoringMemoryField('lastUsedProfile');
     const secretBindingsByProfileId = useSetting('currentSecretBindingsByProfileId');
     const providerSettingsV1 = useSetting('providerSettingsV1');
     const providerMigration = React.useMemo(() => (

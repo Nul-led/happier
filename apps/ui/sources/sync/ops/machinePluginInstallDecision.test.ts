@@ -10,6 +10,25 @@ vi.mock('@/platform/randomUUID', () => ({
     randomUUID: () => randomUUIDMock(),
 }));
 describe('machinePluginInstallDecision', () => {
+    it('treats a workspace project-trust acceptance as a successful terminal decision', async () => {
+        machineRpcWithServerScopeMock.mockResolvedValueOnce({
+            kind: 'projectTrustAccepted',
+            projectRoot: '/workspace/project',
+        });
+        const { machinePluginInstallDecision } = await import('./machinePluginInstallDecision');
+        await expect(machinePluginInstallDecision('machine-1', {
+            isAuthorityCurrent: () => true,
+            decision: {
+                pendingChangeId: 'workspace-trust-1',
+                decision: 'installAndTrust',
+                confirmPresentUser: async () => [],
+            },
+        })).resolves.toEqual({
+            supported: true,
+            outcome: { kind: 'projectTrustAccepted', detail: null },
+        });
+    });
+
     afterEach(() => {
         machineRpcWithServerScopeMock.mockReset();
         randomUUIDMock.mockClear();

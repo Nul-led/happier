@@ -7,7 +7,7 @@ const providerSelection = SessionModelSelectionV1Schema.parse({
   v: 1,
   updatedAt: 12,
   ref: {
-    agentTargetKey: 'backend:codex',
+    agentTargetKey: 'agent:happier.agent.codex/codex',
     providerConnectionId: ProviderConnectionIdSchema.parse('pc_work'),
     modelId: 'default',
   },
@@ -16,7 +16,7 @@ const providerSelection = SessionModelSelectionV1Schema.parse({
 describe('resolveInitialHostSessionModelSelection', () => {
   it('preserves provider identity and literal provider model id default', () => {
     expect(resolveInitialHostSessionModelSelection({
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       lifecycleSelection: providerSelection,
     })).toEqual(providerSelection);
   });
@@ -26,18 +26,18 @@ describe('resolveInitialHostSessionModelSelection', () => {
       v: 1,
       updatedAt: 13,
       ref: {
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         providerConnectionId: null,
         modelId: 'native-model',
       },
     });
     expect(resolveInitialHostSessionModelSelection({
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       runtimeSelection,
       lifecycleSelection: providerSelection,
     })).toEqual(runtimeSelection);
     expect(() => resolveInitialHostSessionModelSelection({
-      agentTargetKey: 'backend:claude',
+      agentTargetKey: 'agent:happier.agent.claude/claude',
       lifecycleSelection: providerSelection,
     })).toThrow(/target mismatch/i);
   });
@@ -53,7 +53,7 @@ describe('resolveInitialHostSessionModelSelection', () => {
       },
     });
     const runtimeBindingBasis = {
-      agentTargetKey: 'backend:claude',
+      agentTargetKey: 'agent:happier.agent.claude/claude',
       connectionId: ProviderConnectionIdSchema.parse('pc_work'),
     } as const;
 
@@ -83,7 +83,7 @@ describe('resolveInitialHostSessionModelSelection', () => {
     });
 
     expect(() => resolveInitialHostSessionModelSelection({
-      agentTargetKey: 'backend:claude',
+      agentTargetKey: 'agent:happier.agent.claude/claude',
       lifecycleSelection: configuredSelection,
     })).toThrow(/target mismatch/i);
   });

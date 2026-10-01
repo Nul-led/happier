@@ -2,7 +2,7 @@ import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { describe, expect, it, vi, afterEach } from 'vitest';
 
-import { createResolvedAgentCatalogEntryFixture } from '@/dev/testkit';
+import { createResolvedAgentCatalogEntryFixture } from '@/dev/testkit/fixtures/agentCatalogFixtures';
 import { renderHook } from '@/dev/testkit/hooks/renderHook';
 import { installNewSessionScreenModelCommonModuleMocks } from '../newSessionScreenModelTestHelpers';
 
@@ -12,7 +12,7 @@ import { formatBackendTargetKeyV2 } from '@/agents/backendCatalog/backendTargetK
 import type { ResolvedBackendCatalogEntry } from '@/agents/backendCatalog/getResolvedBackendCatalogEntries';
 import type { AgentId } from '@/agents/catalog/catalog';
 import { FavoriteModelSelectionV1Schema } from '@/sync/domains/models/favoriteModelSelections';
-import { SessionModelSelectionV1Schema } from '@happier-dev/protocol';
+import { SessionModelSelectionV1Schema, type PersistedBackendTargetRefV2 } from '@happier-dev/protocol';
 
 function favoriteModel(backendTargetKey: string, modelId: string, extra: Record<string, unknown> = {}) {
     return FavoriteModelSelectionV1Schema.parse({ backendTargetKey, modelId, ...extra });
@@ -968,8 +968,12 @@ describe('useNewSessionAgentPickerControls', () => {
         const codexEntry = createBuiltInBackendEntry('codex', 'Codex', null);
 
         function useHarness() {
-            const [backendTarget, setBackendTarget] = React.useState(claudeEntry.backendTarget);
-            const selectedEntry = backendTarget.backendId === 'codex' ? codexEntry : claudeEntry;
+            const [backendTarget, setBackendTarget] = React.useState<PersistedBackendTargetRefV2>(
+                () => claudeEntry.backendTarget,
+            );
+            const selectedEntry = formatBackendTargetKeyV2(backendTarget) === codexEntry.backendTargetKey
+                ? codexEntry
+                : claudeEntry;
             const authoring = useNewSessionAgentAuthoringOptionsState({
                 agentType: selectedEntry.catalogAgentId as AgentId,
                 backendTargetKey: selectedEntry.backendTargetKey,

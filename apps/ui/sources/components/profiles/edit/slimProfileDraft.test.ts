@@ -123,14 +123,14 @@ describe('buildSlimProfileSave', () => {
         }, () => 10)).toMatchObject({
             status: 'success',
             profile: {
-                defaultPermissionModeByTargetKey: { 'backend:codex': 'plan' },
-                defaultPersistenceModeByTargetKey: { 'backend:codex': 'direct' },
-                preferredAgentTargetKey: 'backend:codex',
+                defaultPermissionModeByTargetKey: { 'agent:happier.agent.codex/codex': 'plan' },
+                defaultPersistenceModeByTargetKey: { 'agent:happier.agent.codex/codex': 'direct' },
+                preferredAgentTargetKey: 'agent:happier.agent.codex/codex',
                 preferredModelSelection: {
                     ...preferredModelSelection,
                     ref: {
                         ...preferredModelSelection.ref,
-                        agentTargetKey: 'backend:codex',
+                        agentTargetKey: 'agent:happier.agent.codex/codex',
                     },
                 },
             },

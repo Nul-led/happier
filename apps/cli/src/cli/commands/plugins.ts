@@ -45,7 +45,9 @@ import {
   pluginSettingsHelpRows,
   type PluginsSettingsCommandDeps,
 } from './pluginsSettings';
-import { readDaemonPluginCatalog } from '@/daemon/controlClient';
+import { controlDaemonPluginDevelopment, readDaemonPluginCatalog } from '@/daemon/controlClient';
+import type { DaemonPluginDevelopmentStatus } from '@/plugins/daemon/developmentRoots';
+import { ensureDaemonRunningForSessionCommand } from '@/daemon/ensureDaemon';
 import type { PluginInvocationLogQuery } from '@/ui/logger';
 import {
   readPluginInvocationLogsOnMachine,
@@ -63,34 +65,21 @@ import {
   type PluginAuthorToolchainOperation,
 } from '@/plugins/authoring/toolchain';
 import {
-  describePluginAuthoringStageReport,
   pluginAuthoringStageFailure,
   pluginAuthoringStageReached,
-  projectPluginAuthoringAdmission,
-  type PluginAuthoringStageReport,
 } from '@/plugins/authoring/lifecycleStage';
 import { formatPluginDiagnosticSourceLocation } from '@/plugins/validation/diagnostics/sourceLocation';
-import { runPluginDevelopmentCycle } from '@/plugins/authoring/developmentCycle';
 import {
   runPackedPluginTest as runPackedPluginTestOwner,
   type PackedPluginTestDiagnostic,
   type PackedPluginTestResult,
 } from '@/plugins/authoring/packedTest';
-import {
-  inspectPluginDevelopmentSource,
-  startPluginDevelopmentSourceObserver,
-  type PluginDevelopmentSourceRequest,
-} from '@/plugins/authoring/sourceObserver';
 import { runPluginAuthorDoctor } from '@/plugins/authoring/doctor';
 import {
   diagnoseInstalledPluginGenerations,
   type InstalledPluginGenerationReport,
 } from '@/plugins/store/registry/installedGenerationDiagnosis';
 import type { PluginCompatibilityDiagnostic } from '@/plugins/validation/diagnostics/types';
-import {
-  requestPluginDevelopmentChange,
-  type DevelopmentChangeResult,
-} from '@/plugins/daemon/developmentClient';
 import {
   decideUserPluginChange,
   requestUserPluginChange,
@@ -128,6 +117,7 @@ function projectMarketplaceIndexItemForCliOutput(
 }
 
 type PluginsCommandDeps = Readonly<{
+  ensureDaemon?: () => Promise<void>;
   isInteractiveTerminal?: () => boolean;
   registry?: Omit<PluginsRegistryCommandDeps, 'write'>;
   runPluginAuthorToolchain?: typeof runPluginAuthorToolchain;
@@ -138,15 +128,7 @@ type PluginsCommandDeps = Readonly<{
   }>) => Promise<PackedPluginTestResult>;
   runPluginAuthorDoctor?: typeof runPluginAuthorDoctor;
   diagnoseInstalledPluginGenerations?: typeof diagnoseInstalledPluginGenerations;
-  inspectPluginDevelopmentSource?: typeof inspectPluginDevelopmentSource;
-  startPluginDevelopmentSourceObserver?: typeof startPluginDevelopmentSourceObserver;
-  requestDevelopmentChange?: (
-    request: PluginDevelopmentSourceRequest,
-    options?: Readonly<{
-      signal?: AbortSignal;
-      approval?: 'prompt' | 'none';
-    }>,
-  ) => Promise<DevelopmentChangeResult>;
+  controlPluginDevelopment?: typeof controlDaemonPluginDevelopment;
   readPluginChangeStatus?: typeof readUserPluginChangeStatus;
   resolvePluginInvocationLogTarget?: (params: Readonly<{
     requestedMachineId?: string;
@@ -167,7 +149,8 @@ type PluginsCommandRuntime = Readonly<{
 
 const defaultPluginsCommandDeps: PluginsCommandDeps = {
   isInteractiveTerminal,
-  requestDevelopmentChange: async (request, options) => await requestPluginDevelopmentChange(request, {}, options),
+  ensureDaemon: ensureDaemonRunningForSessionCommand,
+  controlPluginDevelopment: controlDaemonPluginDevelopment,
   runPackedPluginTest: runPackedPluginTestOwner,
 };
 
@@ -181,13 +164,15 @@ function usage(): string {
       { label: `${pluginCommand} list [--json]`, description: 'List installed plugins and their descriptors' },
       { label: `${pluginCommand} show <pluginId> [--json]`, description: 'Show one installed plugin in detail' },
       { label: `${pluginCommand} actions <pluginId> [--json]`, description: 'List invocable actions and tools declared by one installed plugin' },
-      { label: `${pluginCommand} install <path|archive|package> [--kind path|archive|npm] [--selector <version>] [--integrity <sha256-SRI>] [--dev --trust] [--dry-run] [--json]`, description: 'Review, trust, and install through the active daemon' },
+      { label: `${pluginCommand} install <path|archive|package> [--kind path|archive|npm] [--selector <version>] [--integrity <sha256-SRI>] [--dev] [--dry-run] [--json]`, description: 'Install through the active daemon; an explicit local path is the code-trust action' },
       { label: `${pluginCommand} update <pluginId> [--json]`, description: 'Apply a compatible newer release to one installed plugin through its daemon-owned update channel' },
       { label: `${pluginCommand} rollback <pluginId> [--json]`, description: 'Restore the retained prior plugin version through the active daemon' },
       { label: `${pluginCommand} enable|disable <pluginId> [--json]`, description: 'Change plugin admission through the active daemon' },
       { label: `${pluginCommand} uninstall <pluginId> [--delete-data --yes] [--json]`, description: 'Remove a local installed plugin; preserve its data unless --delete-data --yes is supplied' },
-      { label: `${pluginCommand} create <name> [--id <plugin.id>] [--name <display name>] [--template session-agent] [--ui hostedWeb|reactNative] [--json]`, description: 'Create a minimal TypeScript plugin, optionally from a first-party starting template or with a wired UI surface' },
-      { label: `${pluginCommand} dev [path] [--sdk-registry <origin>] [--json]`, description: 'Watch a source plugin and submit captured edit batches to the daemon-owned development cycle' },
+      { label: `${pluginCommand} create <name> [--id <plugin.id>] [--name <display name>] [--template session-agent] [--ui ${PluginScaffoldUiModeSchema.options.join('|')}] [--json]`, description: 'Create a minimal TypeScript plugin with a declarative UI surface by default, or from a first-party starting template' },
+      { label: `${pluginCommand} dev [path] [--sdk-registry <origin>] [--json]`, description: 'Register a trusted source with the daemon and show its canonical development status' },
+      { label: `${pluginCommand} dev unregister <path> [--json]`, description: 'Stop observing an exact explicit source and forget its remembered registration' },
+      { label: `${pluginCommand} status [--json]`, description: 'Show daemon-owned development roots, phases, current occurrences, and diagnostics' },
       { label: `${pluginCommand} dev install <path> [--sdk-registry <origin>] [--json]`, description: 'Repair or refresh a stale or wiped author root; the watch loop already materializes it' },
       { label: `${pluginCommand} dev typecheck|build|test <path> [--json]`, description: 'Run one managed focused development check' },
       { label: `${pluginCommand} test [path] [--packed] [--with-plugin <root-or-archive>]… [--sdk-registry <origin>] [--json]`, description: 'Run unit tests or pack, install, and exercise the plugin through a disposable daemon' },
@@ -232,9 +217,11 @@ function parseInstallFlags(args: readonly string[]): Readonly<{
   selector: string | null;
   integrity: string | null;
   dev: boolean;
-  trust: boolean;
   sdkRegistryOrigin: string | null;
 }> {
+  if (args.some((argument) => argument === '--trust' || argument.startsWith('--trust='))) {
+    throw new Error('Unknown option: --trust');
+  }
   const rawKind = readFlagValue(args, '--kind');
   if (rawKind !== null && rawKind !== 'path' && rawKind !== 'archive' && rawKind !== 'npm') {
     throw new Error(`Unknown plugin source kind: ${rawKind}`);
@@ -245,7 +232,6 @@ function parseInstallFlags(args: readonly string[]): Readonly<{
     selector: readFlagValue(args, '--selector'),
     integrity: readFlagValue(args, '--integrity'),
     dev: args.includes('--dev'),
-    trust: args.includes('--trust'),
     sdkRegistryOrigin: normalizePluginSdkRegistryOrigin(readFlagValue(args, '--sdk-registry')),
   };
 }
@@ -292,10 +278,6 @@ async function createPluginInstallRequest(
   return {
     kind: 'installPath',
     locator,
-    development: flags.dev,
-    ...(flags.dev && flags.sdkRegistryOrigin
-      ? { sdkRegistryOrigin: flags.sdkRegistryOrigin }
-      : {}),
   };
 }
 
@@ -708,17 +690,33 @@ function describePluginChangeFailure(result: Exclude<UserPluginChangeResult, { k
   details?: Readonly<Record<string, unknown>>;
 }> {
   switch (result.kind) {
-    case 'sourceRootReviewRequired':
+    case 'projectTrustAccepted':
       return {
-        code: 'source_root_review_required',
-        message: `Source-root review is required for ${result.review.source.locator}.`,
-        details: { pendingChangeId: result.pendingChangeId, review: result.review },
+        code: 'project_trust_accepted',
+        message: `Plugin project trust was accepted for ${result.projectRoot}.`,
+        details: { projectRoot: result.projectRoot },
       };
     case 'reviewRequired':
+      return result.reviewKind === 'projectTrust'
+        ? {
+            code: 'project_trust_review_required',
+            message: `Project trust review is required for ${result.review.source.locator}.`,
+            details: { pendingChangeId: result.pendingChangeId, review: result.review },
+          }
+        : {
+            code: 'review_required',
+            message: `Install and trust review is required for ${result.review.displayName}.`,
+            details: { pendingChangeId: result.pendingChangeId, review: result.review },
+          };
+    case 'registryProfileRequired':
       return {
-        code: 'review_required',
-        message: `Install and trust review is required for ${result.review.displayName}.`,
-        details: { pendingChangeId: result.pendingChangeId, review: result.review },
+        code: 'plugin_registry_profile_required',
+        message: `Npm registry '${result.registryOrigin}' requires a usable registry profile before installing ${result.packageName}.`,
+        details: {
+          registryOrigin: result.registryOrigin,
+          packageName: result.packageName,
+          registryProfileId: result.registryProfileId,
+        },
       };
     case 'cancelled':
       return { code: 'cancelled', message: 'The plugin change was cancelled before it was applied.' };
@@ -772,8 +770,8 @@ function describePendingPluginReviewForTerminal(
   pendingReview: PluginChangePendingReviewResult,
 ): readonly string[] {
   return [
-    pendingReview.kind === 'sourceRootReviewRequired'
-      ? `Source-root review remains pending for ${pendingReview.review.source.locator}.`
+    pendingReview.reviewKind === 'projectTrust'
+      ? `Project trust review remains pending for ${pendingReview.review.source.locator}.`
       : `Install and trust review remains pending for ${pendingReview.review.displayName}.`,
     ...pluginChangeReviewRejoinCommands(pendingReview.pendingChangeId),
   ];
@@ -797,7 +795,7 @@ async function reportPluginChangeFailure(
     }, { exitCode: 1 });
     return;
   }
-  const pendingChangeId = result.kind === 'sourceRootReviewRequired' || result.kind === 'reviewRequired'
+  const pendingChangeId = result.kind === 'reviewRequired'
     ? result.pendingChangeId
     : null;
   console.error(errorFrame('Error:', [
@@ -838,10 +836,10 @@ async function printPluginChangeStatus(
   }
 
   const out = createOutputBuilder();
-  if (status.kind === 'sourceRootReviewRequired') {
-    out.line(neutral(`Source-root review remains pending for ${status.review.source.locator}.`));
-  } else if (status.kind === 'reviewRequired') {
-    out.line(neutral(`Install and trust review remains pending for ${status.review.displayName}.`));
+  if (status.kind === 'reviewRequired') {
+    out.line(neutral(status.reviewKind === 'projectTrust'
+      ? `Project trust review remains pending for ${status.review.source.locator}.`
+      : `Install and trust review remains pending for ${status.review.displayName}.`));
   } else if (status.kind === 'applying') {
     out.line(neutral(`Plugin change ${pendingChangeId} is still applying.`));
   } else if (status.kind === 'terminal') {
@@ -892,7 +890,7 @@ async function printPluginChangeDecisionResult(
     return;
   }
 
-  if (result.kind === 'sourceRootReviewRequired' || result.kind === 'reviewRequired') {
+  if (result.kind === 'reviewRequired') {
     const failure = describePluginChangeFailure(result);
     if (wantsJson(args)) {
       await printJsonEnvelope({
@@ -1227,6 +1225,54 @@ async function runPluginsInstallCommand(args: readonly string[], deps: PluginsCo
   }
 
   const flags = parseInstallFlags(args.slice(2));
+  if (flags.dev) {
+    const kind = flags.sourceKind ?? inferPluginInstallSourceKind(locator);
+    if (kind !== 'path') throw new Error('--dev is only valid for local path plugin sources');
+    if (flags.integrity) throw new Error('--integrity is only valid for archive plugin installs');
+    if (flags.selector) throw new Error('--selector is only valid for npm plugin installs');
+    const developmentRequest = {
+      kind: 'registerExplicit' as const,
+      rootPath: locator,
+      ...(flags.sdkRegistryOrigin ? { sdkRegistryOrigin: flags.sdkRegistryOrigin } : {}),
+    };
+    if (flags.dryRun) {
+      if (wantsJson(args)) {
+        await printJsonEnvelope({
+          ok: true,
+          kind: 'plugins_install',
+          data: { dryRun: true, request: developmentRequest },
+        });
+        return;
+      }
+      console.log(`Dry run: would register development root ${locator}.`);
+      return;
+    }
+    await (deps.ensureDaemon ?? ensureDaemonRunningForSessionCommand)();
+    const result = await (deps.controlPluginDevelopment ?? controlDaemonPluginDevelopment)(developmentRequest);
+    if (result.kind === 'failed') {
+      if (wantsJson(args)) {
+        await printJsonEnvelope({
+          ok: false,
+          kind: 'plugins_install',
+          error: { code: result.code, message: result.message },
+        }, { exitCode: 1 });
+        return;
+      }
+      console.error(errorFrame('Error:', [result.message]));
+      process.exitCode = 1;
+      return;
+    }
+    if (wantsJson(args)) {
+      await printJsonEnvelope({
+        ok: true,
+        kind: 'plugins_install',
+        data: { rootPath: locator, status: result.status },
+      });
+    } else {
+      printPluginDevelopmentStatus(result.status);
+    }
+    return;
+  }
   // Preview the exact request the daemon will receive, including the
   // client-resolved source path.
   const request = resolvePluginChangeRequestClientPaths(
@@ -1240,11 +1286,12 @@ async function runPluginsInstallCommand(args: readonly string[], deps: PluginsCo
     console.log(`Dry run: would request ${request.kind} for ${locator}.`);
     return;
   }
-  const approval = resolveUserPluginChangeApproval({
-    interactive: (deps.isInteractiveTerminal ?? isInteractiveTerminal)(),
-    json: wantsJson(args),
-    explicitTrust: flags.trust,
-  });
+  const approval = request.kind === 'installPath'
+    ? 'explicitNonInteractiveTrust'
+    : resolveUserPluginChangeApproval({
+        interactive: (deps.isInteractiveTerminal ?? isInteractiveTerminal)(),
+        json: wantsJson(args),
+      });
   const result = await requestUserPluginChange({ request, approval });
 
   if (result.kind !== 'committed') {
@@ -1715,16 +1762,63 @@ async function waitForPluginDevStop(signal?: AbortSignal): Promise<void> {
   });
 }
 
-function projectDaemonDevelopmentFailureStage(
-  diagnostics: readonly Readonly<{ code: string; message: string }>[],
-): PluginAuthoringStageReport['stage'] {
-  if (diagnostics.some((diagnostic) => diagnostic.code === 'plugin_dev_ui_build_failed')) {
-    return 'built';
+function printPluginDevelopmentStatus(status: DaemonPluginDevelopmentStatus): void {
+  const out = createOutputBuilder();
+  out.line(sectionTitle('Plugin development'));
+  if (status.roots.length === 0 && status.plugins.length === 0) {
+    out.line(neutral('No development roots are registered.'));
+    console.log(out.render());
+    return;
   }
-  if (diagnostics.some((diagnostic) => diagnostic.code === 'plugin_dev_dependency_preparation_failed')) {
-    return 'source_validated';
+  for (const root of status.roots) {
+    const trust = root.trusted ? ok('trusted') : neutral('not trusted');
+    const persistence = root.persisted ? dim('remembered') : dim('process-local');
+    out.line(`${root.rootPath} ${trust} ${persistence}`);
   }
-  return 'admitted';
+  for (const plugin of status.plugins) {
+    out.line(`${plugin.pluginId ?? plugin.sourceRootPath} ${neutral(plugin.phase)}`);
+    out.line(`  ${dim('Source:')} ${plugin.sourceRootPath}`);
+    if (plugin.occurrenceId) out.line(`  ${dim('Occurrence:')} ${plugin.occurrenceId}`);
+    if (plugin.uiArtifactDigest) out.line(`  ${dim('UI digest:')} ${plugin.uiArtifactDigest}`);
+    if (plugin.diagnostic) {
+      out.line(`  ${dim('Diagnostic:')} ${plugin.diagnostic.message ?? plugin.diagnostic.code}`);
+    }
+  }
+  console.log(out.render());
+}
+
+async function runPluginsStatusCommand(
+  args: readonly string[],
+  deps: PluginsCommandDeps,
+  runtime: PluginsCommandRuntime,
+): Promise<void> {
+  await (deps.ensureDaemon ?? ensureDaemonRunningForSessionCommand)();
+  const result = await (deps.controlPluginDevelopment ?? controlDaemonPluginDevelopment)(
+    { kind: 'status' },
+    runtime.signal ? { signal: runtime.signal } : {},
+  );
+  if (result.kind === 'failed') {
+    if (wantsJson(args)) {
+      await printJsonEnvelope({
+        ok: false,
+        kind: 'plugins_status',
+        error: { code: result.code, message: result.message },
+      }, { exitCode: 1 });
+      return;
+    }
+    console.error(errorFrame('Error:', [result.message]));
+    process.exitCode = 1;
+    return;
+  }
+  if (wantsJson(args)) {
+    await printJsonEnvelope({ ok: true, kind: 'plugins_status', data: result.status });
+    return;
+  }
+  printPluginDevelopmentStatus(result.status);
+}
+
+function isPluginAuthorOperation(value: string): value is PluginAuthorToolchainOperation {
+  return value === 'install' || value === 'typecheck' || value === 'build' || value === 'test';
 }
 
 async function runPluginsDevCommand(
@@ -1733,30 +1827,62 @@ async function runPluginsDevCommand(
   runtime: PluginsCommandRuntime,
 ): Promise<void> {
   const operation = String(args[1] ?? '').trim();
+  if (operation === 'unregister') {
+    const requestedPath = readCommandPositionals(args, { startIndex: 2 })[0];
+    if (!requestedPath) {
+      const message = 'Plugin development unregister requires an exact source path.';
+      if (wantsJson(args)) {
+        await printJsonEnvelope({
+          ok: false,
+          kind: 'plugins_dev_unregister',
+          error: { code: 'plugin_author_invalid_input', message },
+        }, { exitCode: 1 });
+        return;
+      }
+      console.error(errorFrame('Error:', [message]));
+      process.exitCode = 1;
+      return;
+    }
+    await (deps.ensureDaemon ?? ensureDaemonRunningForSessionCommand)();
+    const result = await (deps.controlPluginDevelopment ?? controlDaemonPluginDevelopment)({
+      kind: 'unregisterExplicit',
+      rootPath: requestedPath,
+    }, runtime.signal ? { signal: runtime.signal } : {});
+    if (result.kind === 'failed') {
+      if (wantsJson(args)) {
+        await printJsonEnvelope({
+          ok: false,
+          kind: 'plugins_dev_unregister',
+          error: { code: result.code, message: result.message },
+        }, { exitCode: 1 });
+        return;
+      }
+      console.error(errorFrame('Error:', [result.message]));
+      process.exitCode = 1;
+      return;
+    }
+    if (wantsJson(args)) {
+      await printJsonEnvelope({
+        ok: true,
+        kind: 'plugins_dev_unregister',
+        data: { rootPath: requestedPath, status: result.status },
+      });
+    } else {
+      printPluginDevelopmentStatus(result.status);
+    }
+    return;
+  }
   if (isPluginAuthorOperation(operation)) {
     await runPluginsDevToolchainCommand(args, deps, operation);
     return;
   }
+
   const requestedPath = readCommandPositionals(args, {
     startIndex: 1,
     valueFlags: ['--sdk-registry'],
   })[0] ?? '.';
   if (requestedPath === 'help' || requestedPath === '--help' || requestedPath === '-h') {
     console.log(usage());
-    return;
-  }
-  if (!deps.requestDevelopmentChange) {
-    const message = 'Plugin development daemon integration is not available in this build.';
-    if (wantsJson(args)) {
-      await printJsonEnvelope({
-        ok: false,
-        kind: 'plugins_dev',
-        error: { code: 'plugin_dev_daemon_unavailable', message },
-      }, { exitCode: 1 });
-      return;
-    }
-    console.error(errorFrame('Error:', [message]));
-    process.exitCode = 1;
     return;
   }
 
@@ -1769,7 +1895,7 @@ async function runPluginsDevCommand(
       await printJsonEnvelope({
         ok: false,
         kind: 'plugins_dev',
-        error: { code: 'plugin_dev_dependency_install_failed', diagnostics: [{ code: 'plugin_author_invalid_input', message }] },
+        error: { code: 'plugin_author_invalid_input', message },
       }, { exitCode: 1 });
       return;
     }
@@ -1778,245 +1904,38 @@ async function runPluginsDevCommand(
     return;
   }
 
-  const sourceInspection = await (deps.inspectPluginDevelopmentSource ?? inspectPluginDevelopmentSource)({
-    projectRoot: requestedPath,
+  const control = deps.controlPluginDevelopment ?? controlDaemonPluginDevelopment;
+  await (deps.ensureDaemon ?? ensureDaemonRunningForSessionCommand)();
+  const result = await control({
+    kind: 'registerExplicit',
+    rootPath: requestedPath,
     ...(sdkRegistryOrigin ? { sdkRegistryOrigin } : {}),
-  });
-  if (!sourceInspection.ok) {
-    const stage = pluginAuthoringStageFailure({
-      stage: 'source_validated',
-      diagnostics: sourceInspection.diagnostics,
-    });
+  }, runtime.signal ? { signal: runtime.signal } : {});
+  if (result.kind === 'failed') {
     if (wantsJson(args)) {
       await printJsonEnvelope({
         ok: false,
         kind: 'plugins_dev',
-        error: { code: 'plugin_dev_source_invalid', stage: stage.stage, diagnostics: stage.diagnostics },
+        error: { code: result.code, message: result.message },
       }, { exitCode: 1 });
       return;
     }
-    console.error(errorFrame('Plugin source diagnostics:', [
-      ...sourceInspection.diagnostics.map((entry) => entry.message),
-      ...describePluginAuthoringStageReport(stage),
-    ]));
+    console.error(errorFrame('Error:', [result.message]));
     process.exitCode = 1;
     return;
   }
 
-  // Cold start prepares the author root exactly once, and only when nothing has
-  // materialized it yet: the author edits this directory, so its editor and
-  // compiler resolution must not depend on a separate command. A root whose
-  // declared SDK already resolves is left alone rather than paying a full
-  // install on every watch start — refreshing a stale one is
-  // `plugins dev install` — and a literal one-file source has no package
-  // root to prepare at all.
-  if (
-    sourceInspection.sourceKind === 'packageRoot'
-    && !(await isPluginAuthorRootMaterialized(sourceInspection.sourceRootPath))
-  ) {
-    const dependencyPreparation = await (deps.runPluginAuthorToolchain ?? runPluginAuthorToolchain)({
-      operation: 'install',
-      projectRoot: sourceInspection.sourceRootPath,
-      ...(sdkRegistryOrigin ? { sdkRegistryOrigin } : {}),
-      ...(runtime.signal ? { signal: runtime.signal } : {}),
+  if (wantsJson(args)) {
+    await printJsonEnvelope({
+      ok: true,
+      kind: 'plugins_dev',
+      data: { rootPath: requestedPath, status: result.status },
     });
-    if (runtime.signal?.aborted) return;
-    if (!dependencyPreparation.ok) {
-      if (wantsJson(args)) {
-        await printJsonEnvelope({
-          ok: false,
-          kind: 'plugins_dev',
-          error: {
-            code: 'plugin_dev_dependency_install_failed',
-            diagnostics: dependencyPreparation.diagnostics,
-          },
-        }, { exitCode: 1 });
-        return;
-      }
-      console.error(errorFrame('Error:', dependencyPreparation.diagnostics.map((entry) => entry.message)));
-      process.exitCode = 1;
-      return;
-    }
+  } else {
+    printPluginDevelopmentStatus(result.status);
   }
-
-  const observerProjectRoot = sourceInspection.request.projectRoot;
-
-  // The last generation this session is KNOWN to have made current. It is the
-  // only honest basis for a "previous generation retained" claim; before the
-  // first admission the CLI simply does not know whether one exists.
-  let lastProjectedGeneration: string | undefined;
-
-  const reportDevChangeStage = async (
-    stage: PluginAuthoringStageReport,
-    context: Readonly<{
-      projectRoot: string;
-      observedFiles: number;
-      cycle?: Readonly<{
-        id: string;
-        changedPathCount: number | null;
-        dependencyInputChanged: boolean;
-        dependencyInputChangeUnknown: boolean;
-        durations: Readonly<{ submissionMs?: number }>;
-      }>;
-      pendingReview?: PluginChangePendingReviewResult;
-    }>,
-  ): Promise<void> => {
-    if (wantsJson(args)) {
-      if (!stage.ok) {
-        await printJsonEnvelope({
-          ok: false,
-          kind: 'plugins_dev_change',
-          error: {
-            code: stage.diagnostics[0]?.code ?? 'plugin_dev_candidate_rejected',
-            stage: stage.stage,
-            diagnostics: stage.diagnostics,
-            ...(stage.retainedGeneration ? { retainedGeneration: stage.retainedGeneration } : {}),
-            ...(context.cycle ? { cycle: context.cycle } : {}),
-            ...(context.pendingReview ? { pendingReview: context.pendingReview } : {}),
-          },
-        }, { exitCode: 0 });
-        return;
-      }
-      await printJsonEnvelope({
-        ok: true,
-        kind: 'plugins_dev_change',
-        data: {
-          ...context,
-          stage: stage.stage,
-          ...(stage.generation ? { generation: stage.generation } : {}),
-        },
-      });
-      return;
-    }
-    if (!stage.ok) {
-      console.error(errorFrame(
-        stage.stage === 'source_validated'
-          ? 'Plugin source diagnostics:'
-          : stage.stage === 'built'
-            ? 'Plugin UI build diagnostics:'
-            : 'Plugin candidate diagnostics:',
-        [
-          ...describePluginAuthoringStageReport(stage),
-          ...(context.pendingReview ? describePendingPluginReviewForTerminal(context.pendingReview) : []),
-        ],
-      ));
-      return;
-    }
-    const out = createOutputBuilder();
-    out.line(ok(`Development candidate accepted from ${context.projectRoot}.`));
-    for (const line of describePluginAuthoringStageReport(stage)) out.line(`  ${line}`);
-    console.log(out.render());
-  };
-
-  let nextCycleNumber = 0;
-  const developmentApproval = resolveUserPluginChangeApproval({
-    interactive: (deps.isInteractiveTerminal ?? isInteractiveTerminal)(),
-    json: wantsJson(args),
-  });
-
-  const observer = await (deps.startPluginDevelopmentSourceObserver ?? startPluginDevelopmentSourceObserver)({
-    projectRoot: observerProjectRoot,
-    ...(sdkRegistryOrigin ? { sdkRegistryOrigin } : {}),
-    onObservation: async (observation) => {
-      if (!observation.ok) {
-        await reportDevChangeStage(
-          pluginAuthoringStageFailure({
-            stage: 'source_validated',
-            diagnostics: observation.diagnostics,
-            ...(lastProjectedGeneration ? { retainedGeneration: lastProjectedGeneration } : {}),
-          }),
-          { projectRoot: observerProjectRoot, observedFiles: 0 },
-        );
-        return 'retained';
-      }
-
-      const cycle = await runPluginDevelopmentCycle<DevelopmentChangeResult>({
-        observation,
-        submit: async (request, options) => await deps.requestDevelopmentChange!(request, {
-          ...(options?.signal ? { signal: options.signal } : {}),
-          ...(developmentApproval === 'none' ? { approval: developmentApproval } : {}),
-        }),
-        ...(runtime.signal ? { signal: runtime.signal } : {}),
-      });
-      if (cycle.kind === 'cancelled') return 'retained';
-
-      const context = {
-        projectRoot: observation.request.projectRoot,
-        observedFiles: observation.observedRelativePaths.length,
-        cycle: {
-          id: `dev-${++nextCycleNumber}`,
-          changedPathCount: cycle.changedPathCount,
-          dependencyInputChanged: cycle.dependencyInputChanged,
-          dependencyInputChangeUnknown: cycle.dependencyInputChangeUnknown,
-          durations: cycle.durations,
-        },
-      };
-      if (cycle.kind === 'submissionFailed') {
-        await reportDevChangeStage(
-          pluginAuthoringStageFailure({
-            stage: 'admitted',
-            diagnostics: cycle.diagnostics,
-            ...(lastProjectedGeneration ? { retainedGeneration: lastProjectedGeneration } : {}),
-          }),
-          context,
-        );
-        return 'retained';
-      }
-
-      const response = cycle.submission;
-
-      if (response.generation) {
-        const stage = projectPluginAuthoringAdmission({
-          desiredGeneration: response.generation.desired,
-          appliedGeneration: response.generation.applied,
-          pendingSurfaces: response.generation.pendingSurfaces,
-        });
-        if (stage.stage === 'projected' && response.generation.applied) {
-          lastProjectedGeneration = response.generation.applied;
-        }
-        await reportDevChangeStage(stage, context);
-        return response.ok ? 'adopted' : 'retained';
-      }
-      if (!response.ok) {
-        const diagnostics = response.diagnostics ?? [{
-          code: 'plugin_dev_candidate_rejected',
-          message: 'The daemon rejected the development candidate.',
-        }];
-        await reportDevChangeStage(
-          pluginAuthoringStageFailure({
-            stage: projectDaemonDevelopmentFailureStage(diagnostics),
-            diagnostics,
-            ...(lastProjectedGeneration ? { retainedGeneration: lastProjectedGeneration } : {}),
-          }),
-          { ...context, ...(response.pendingReview ? { pendingReview: response.pendingReview } : {}) },
-        );
-        return 'retained';
-      }
-      // A committed change with no generation identity: the daemon accepted the
-      // candidate but exposed nothing to project beyond admission.
-      await reportDevChangeStage(pluginAuthoringStageReached('admitted'), context);
-      return 'adopted';
-    },
-  });
-
-  try {
-    // The observer owns exactly-once termination: a post-start refresh failure
-    // stops it and settles `failure`, so the command exits through the same
-    // error reporting as a failed start instead of waiting forever next to an
-    // unhandled rejection.
-    await Promise.race([
-      waitForPluginDevStop(runtime.signal),
-      observer.failure,
-    ]);
-  } finally {
-    observer.stop();
-  }
+  await waitForPluginDevStop(runtime.signal);
 }
-
-function isPluginAuthorOperation(value: string): value is PluginAuthorToolchainOperation {
-  return value === 'install' || value === 'typecheck' || value === 'build' || value === 'test';
-}
-
 async function runPluginsDevToolchainCommand(
   args: readonly string[],
   deps: PluginsCommandDeps,
@@ -2229,7 +2148,7 @@ function printHumanPackedPluginTestContributor(
 ): void {
   printHumanPackedPluginTestParticipant(out, 'Contributor', contributor);
   for (const admission of contributor.targetedAdmissions) {
-    out.line(`  ${dim('Targeted admission:')} ${admission.target.pluginId}@${admission.target.immutableGenerationId}; point ${admission.target.pointId}; protocol ${admission.protocol.id}@${admission.protocol.version}; contributor ${admission.contributor.contributionId}@${admission.contributor.immutableGenerationId}`);
+    out.line(`  ${dim('Targeted admission:')} ${admission.target.pluginId}@${admission.target.occurrenceId}; point ${admission.target.pointId}; protocol ${admission.protocol.id}@${admission.protocol.version}; contributor ${admission.contributor.contributionId}@${admission.contributor.occurrenceId}`);
   }
 }
 
@@ -2540,73 +2459,22 @@ async function runPluginsReloadCommand(args: readonly string[], deps: PluginsCom
     return;
   }
 
-  const sourceInspection = await (deps.inspectPluginDevelopmentSource ?? inspectPluginDevelopmentSource)({
-    projectRoot: target.sourceRootPath,
+  await (deps.ensureDaemon ?? ensureDaemonRunningForSessionCommand)();
+  const result = await (deps.controlPluginDevelopment ?? controlDaemonPluginDevelopment)({
+    kind: 'reload',
+    rootPath: target.sourceRootPath,
   });
-  if (!sourceInspection.ok) {
-    const failure = sourceInspection.diagnostics[0] ?? {
-      code: 'plugin_dev_source_invalid',
-      message: 'The development source is no longer valid.',
-    };
+  if (result.kind === 'failed') {
     if (wantsJson(args)) {
       await printJsonEnvelope({
         ok: false,
         kind: 'plugins_reload',
-        error: { code: failure.code, message: failure.message, diagnostics: sourceInspection.diagnostics },
+        error: { code: result.code, message: result.message },
       }, { exitCode: 1 });
-    } else {
-      console.error(errorFrame('Plugin source diagnostics:', sourceInspection.diagnostics.map((entry) => entry.message)));
-      process.exitCode = 1;
+      return;
     }
-    return;
-  }
-
-  const cycle = await runPluginDevelopmentCycle<UserPluginChangeResult>({
-    observation: Object.freeze({
-      ...sourceInspection,
-      request: Object.freeze({
-        ...sourceInspection.request,
-        pluginId: target.pluginId,
-        projectRoot: target.sourceRootPath,
-      }),
-    }),
-    submit: async (request, options) => await requestUserPluginChange({
-      request: {
-        kind: 'development',
-        ...(request.pluginId ? { pluginId: request.pluginId } : {}),
-        sourceRootPath: request.projectRoot,
-        ...(request.changedPaths ? { changedPaths: request.changedPaths } : {}),
-        ...(request.sdkRegistryOrigin ? { sdkRegistryOrigin: request.sdkRegistryOrigin } : {}),
-      },
-      approval: resolveUserPluginChangeApproval({
-        interactive: (deps.isInteractiveTerminal ?? isInteractiveTerminal)(),
-        json: wantsJson(args),
-      }),
-      ...(options?.signal ? { signal: options.signal } : {}),
-    }),
-  });
-  if (cycle.kind !== 'submitted') {
-    if (cycle.kind === 'cancelled') return;
-    const failure = cycle.diagnostics[0] ?? {
-      code: 'plugin_dev_candidate_rejected',
-      message: 'The development candidate was not submitted.',
-    };
-    if (wantsJson(args)) {
-      await printJsonEnvelope({
-        ok: false,
-        kind: 'plugins_reload',
-        error: { code: failure.code, message: failure.message, diagnostics: cycle.diagnostics },
-      }, { exitCode: 1 });
-    } else {
-      console.error(errorFrame('Plugin development diagnostics:', cycle.diagnostics.map((entry) => entry.message)));
-      process.exitCode = 1;
-    }
-    return;
-  }
-
-  const result = cycle.submission;
-  if (result.kind !== 'committed') {
-    await reportPluginChangeFailure(args, 'plugins_reload', result);
+    console.error(errorFrame('Error:', [result.message]));
+    process.exitCode = 1;
     return;
   }
 
@@ -2614,22 +2482,12 @@ async function runPluginsReloadCommand(args: readonly string[], deps: PluginsCom
     await printJsonEnvelope({
       ok: true,
       kind: 'plugins_reload',
-      data: {
-        pluginId: result.pluginId,
-        desiredGeneration: result.desiredGeneration,
-        appliedGeneration: result.appliedGeneration,
-        pendingSurfaces: result.pendingSurfaces,
-      },
+      data: { pluginId: target.pluginId, sourceRootPath: target.sourceRootPath, status: result.status },
     });
     return;
   }
-
-  const out = createOutputBuilder();
-  out.line(ok(`Reloaded development plugin ${result.pluginId}.`));
-  if (result.pendingSurfaces.length > 0) out.line(neutral(`  Pending reconciliation: ${result.pendingSurfaces.join(', ')}`));
-  console.log(out.render());
+  console.log(ok(`Reload requested for ${target.pluginId}.`));
 }
-
 async function runPluginsMarketplaceListCommand(
   args: readonly string[],
   deps: PluginsCommandDeps,
@@ -3166,6 +3024,11 @@ export async function handlePluginsCommand(
 
   if (subcommand === 'dev') {
     await runPluginsDevCommand(args, deps, runtime);
+    return;
+  }
+
+  if (subcommand === 'status') {
+    await runPluginsStatusCommand(args, deps, runtime);
     return;
   }
 

@@ -1,3 +1,6 @@
+import { readSessionDirectoryKind } from '@happier-dev/protocol';
+
+import { t } from '@/text';
 import type { WorkspaceRefV1 } from '@/sync/domains/workspaces/workspaceRefModel';
 import {
     type WorkspaceDisplayEllipsizeMode,
@@ -12,6 +15,7 @@ type SessionWorkspaceDisplayMetadata = Readonly<{
     homeDir?: unknown;
     machineId?: unknown;
     path?: unknown;
+    sessionDirectoryV1?: unknown;
 }> | null | undefined;
 
 type SessionWorkspaceDisplayMachineTarget = Readonly<{
@@ -20,6 +24,8 @@ type SessionWorkspaceDisplayMachineTarget = Readonly<{
 }> | null | undefined;
 
 export type SessionWorkspaceDisplayPresentation = Readonly<{
+    /** `managed`: no user folder; the private folder is never identity, a workspace or a project. */
+    directoryKind: 'path' | 'managed';
     displayTitle: string;
     subtitleEllipsizeMode: WorkspaceDisplayEllipsizeMode;
     hasCustomLabel: boolean;
@@ -38,6 +44,16 @@ export function resolveSessionWorkspaceDisplayPresentation(input: Readonly<{
     workspaceRefs: ReadonlyArray<WorkspaceRefV1>;
     workspacePathDisplayModeV1?: WorkspacePathDisplayModeV1 | null;
 }>): SessionWorkspaceDisplayPresentation {
+    if (readSessionDirectoryKind(input.metadata) === 'managed') {
+        return {
+            directoryKind: 'managed',
+            displayTitle: t('session.folderless.privateToSession'),
+            subtitleEllipsizeMode: 'tail',
+            hasCustomLabel: false,
+            workspaceRefId: null,
+            workspaceScope: null,
+        };
+    }
     const rawRootPath = input.machineTarget?.basePath ?? input.metadata?.path ?? null;
     const homeDir = normalizeId(input.metadata?.homeDir) || undefined;
     const canonicalRootPath = normalizeSessionPathForProjectGrouping(rawRootPath, homeDir);
@@ -57,6 +73,7 @@ export function resolveSessionWorkspaceDisplayPresentation(input: Readonly<{
 
     return {
         ...presentation,
+        directoryKind: 'path',
         workspaceScope,
     };
 }

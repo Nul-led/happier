@@ -43,8 +43,8 @@ function session(overrides: Readonly<Record<string, unknown>> = {}) {
       'external.operation_kind': 'relationship',
       'external.policy_selection': relationship.contentPolicy.selection,
     },
-    alpha: { protocol: 'external', host: deriveWorkspaceSyncEndpointId(relationship.relationshipId, 'alpha'), path: '', connected: true, scanned: true },
-    beta: { protocol: 'external', host: deriveWorkspaceSyncEndpointId(relationship.relationshipId, 'beta'), path: '', connected: true, scanned: true },
+    alpha: { protocol: 'external', host: deriveWorkspaceSyncEndpointId(relationship.relationshipId, 'alpha'), path: '', state: { connected: true, scanned: true, scanProblemCount: 0, transitionProblemCount: 0 } },
+    beta: { protocol: 'external', host: deriveWorkspaceSyncEndpointId(relationship.relationshipId, 'beta'), path: '', state: { connected: true, scanned: true, scanProblemCount: 0, transitionProblemCount: 0 } },
     mode: 'one-way-safe', paused: false, status: 'watching', successfulCycles: 1, conflictCount: 0,
     ...overrides,
   };
@@ -122,7 +122,6 @@ function boundaries(options: Readonly<{
   });
   const brokerBootstrapDescriptor = new Uint8Array([1, 2, 3]);
   const createBroker = vi.fn<DaemonWorkspaceSyncRuntimeDependencies['createBroker']>(async () => ({ bootstrapDescriptor: brokerBootstrapDescriptor, waitForReady: async () => undefined, command, close: closeBroker }));
-  const deleteConflictLoserAtTarget = vi.fn(async () => undefined);
   const readFileAtTarget = vi.fn(async () => ({ status: 'missing' as const }));
   const resolveInstalledComponentPaths = vi.fn(() => ({ currentPath: '/installed/current', resolvedCurrentPath: '/installed/version' }));
   const resolveArtifactPaths = vi.fn((_payloadRoot: string, targetTriple: 'darwin-arm64' | 'darwin-amd64' | 'linux-amd64' | 'linux-arm64' | 'windows-amd64') => {
@@ -162,7 +161,6 @@ function boundaries(options: Readonly<{
       },
       prepareRelationshipTarget,
       bootstrap: vi.fn(async () => ({ release: async () => undefined })),
-      deleteConflictLoserAtTarget,
       readFileAtTarget,
       createBroker, spawnSidecar,
       launchLocalAgent: vi.fn(async () => {
@@ -179,7 +177,7 @@ function boundaries(options: Readonly<{
     publishSnapshot: (next: ReturnType<typeof snapshot>) => { listener?.(null, next); },
     command, closeBroker, stopSidecar, spawnSidecar, createBroker, unsubscribeSettings,
     resolveInstalledComponentPaths, ensureInstalledComponent, resolveArtifactPaths, assertArtifactPayload, resolveDataLayout,
-    deleteConflictLoserAtTarget, readFileAtTarget, brokerBootstrapDescriptor,
+    readFileAtTarget, brokerBootstrapDescriptor,
     prepareRelationshipTarget,
   };
 }
@@ -639,6 +637,7 @@ describe('createDaemonWorkspaceSyncRuntime', () => {
       expect(harness.deps.launchLocalAgent).toHaveBeenCalledWith({
         executablePath: '/installed/version/bin/happier-mutagen-agent',
         args: ['synchronizer', '--external', '--root', canonicalRoot],
+        dataDirectory: '/daemon/workspace-sync/mutagen/data',
       });
       await runtime.stop();
     } finally {
@@ -695,46 +694,4 @@ describe('createDaemonWorkspaceSyncRuntime', () => {
     await runtime.stop();
   });
 
-  it('composes exact Action receipt authorization into local source conflict deletion', async () => {
-    const harness = boundaries();
-    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-runtime-source-delete-'));
-    const sourceRoot = join(fixture, 'source');
-    const loserPath = join(sourceRoot, 'loser.txt');
-    const loserBytes = 'local loser';
-    const expectedDigest = createHash('sha1').update(loserBytes).digest('hex');
-    await mkdir(sourceRoot);
-    await writeFile(loserPath, loserBytes);
-    const assertConflictResolutionAuthorized = vi.fn(async () => undefined);
-    const runtime = createDaemonWorkspaceSyncRuntime({
-      ...harness.deps,
-      assertConflictResolutionAuthorized,
-      resolveWorkspaceRef: (id) => id === 'alpha-ref'
-        ? { serverId: 'server-1', machineId: 'machine-1', rootPath: sourceRoot }
-        : { serverId: 'server-1', machineId: 'machine-2', rootPath: '/remote/beta' },
-    });
-    const request = {
-      relationshipId: relationship.relationshipId,
-      path: 'loser.txt',
-      keep: 'beta' as const,
-      expectedKind: 'file' as const,
-      expectedDigest,
-    };
-    try {
-      await runtime.start();
-      harness.activateRelationships();
-      await runtime.whenSettingsSettled();
-
-      await runtime.managedWorkspaceSync.deleteConflictLoser(request, undefined, 'approval-local-source');
-
-      expect(assertConflictResolutionAuthorized).toHaveBeenCalledWith('approval-local-source', {
-        controllerMachineId: 'machine-1',
-        request,
-      });
-      expect(harness.deleteConflictLoserAtTarget).not.toHaveBeenCalled();
-      await expect(access(loserPath)).rejects.toMatchObject({ code: 'ENOENT' });
-    } finally {
-      await runtime.stop();
-      await rm(fixture, { recursive: true, force: true });
-    }
-  });
 });

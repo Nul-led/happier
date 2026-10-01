@@ -23,6 +23,7 @@ import {
     drainRetainedHomeCarrierReleases,
 } from './homeCarrierPolicy';
 import { createIrohHomeTunnelSupervisor } from './nativeIrohTunnels/supervisor';
+import { getStorage } from '@/sync/domains/state/storageStore';
 
 const endpoint = { endpointId: 'a'.repeat(64), relayUrls: ['https://relay.example.test/'] };
 const baseInput = {
@@ -47,6 +48,20 @@ describe('acquireEligibleHomeCarrier', () => {
         acquireNativeSpy.mockReset();
         browserEligibilitySpy.mockReset();
         browserHostSpy.mockReset();
+    });
+
+    it('uses device-local Standard only even when a caller requests automatic selection', async () => {
+        const store = getStorage();
+        const previous = store.getState().localSettings;
+        store.setState({ localSettings: { ...previous, homeApplicationCarrierEligibility: 'standard_only' } });
+        try {
+            const acquired = await acquireEligibleHomeCarrier(baseInput);
+            expect(acquired).toEqual({ kind: 'https', runtimeOrigin: 'https://public.example.test' });
+            expect(acquireBrowserSpy).not.toHaveBeenCalled();
+            expect(acquireNativeSpy).not.toHaveBeenCalled();
+        } finally {
+            store.setState({ localSettings: previous });
+        }
     });
 
     it('selects the declared HTTPS endpoint when it differs from the canonical audience and Iroh is absent', async () => {

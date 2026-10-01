@@ -1288,6 +1288,47 @@ describe('runSessionLoopLifecycle daemon exact-turn custody', () => {
 });
 
 describe('runSessionLoopLifecycle runtime transcript projection', () => {
+  it('terminates the runner when its native runtime ends', async () => {
+    const baseParams = createLifecycleParams({ policyAgentId: 'codex' });
+    let runtimeEventHandler: RuntimeTurnMessageHandler | null = null;
+    const runtime = baseParams.runtime as unknown as {
+      subscribeRuntimeEvents: ReturnType<typeof vi.fn>;
+    };
+    runtime.subscribeRuntimeEvents = vi.fn((handler: RuntimeTurnMessageHandler) => {
+      runtimeEventHandler = handler;
+      return () => undefined;
+    });
+    const requestTermination = vi.fn();
+    const params: SessionLoopLifecycleParams = {
+      ...baseParams,
+      deps: {
+        ...baseParams.deps,
+        registerRunnerTerminationHandlersFn: vi.fn(() => ({
+          dispose: vi.fn(),
+          requestTermination,
+          whenTerminated: Promise.resolve({
+            event: { kind: 'exit' as const, code: 0 },
+            outcome: computeRunnerTerminationOutcome({ kind: 'exit', code: 0 }),
+          }),
+        })),
+        runPermissionModePromptLoopFn: vi.fn(async () => {
+          runtimeEventHandler?.(canonicalRuntimeEvent({
+            kind: 'runtime-ended',
+            sessionId: 'session-1',
+            emittedAtMs: 1,
+            cause: 'providerEnded',
+            retryable: false,
+          }));
+        }),
+      },
+    };
+
+    await runSessionLoopLifecycle(params);
+
+    expect(requestTermination).toHaveBeenCalledOnce();
+    expect(requestTermination).toHaveBeenCalledWith({ kind: 'exit', code: 0 });
+  });
+
   it('publishes one native runtime observation to the Host Event broker exactly once', async () => {
     const baseParams = createLifecycleParams({ policyAgentId: 'codex' });
     let observeNativeEvent!: (event: AgentSessionRuntimeEvent) => void;
@@ -1583,14 +1624,7 @@ describe('runSessionLoopLifecycle runtime transcript projection', () => {
         reason: 'pending_queue_after_terminal_boundary',
       },
     );
-    expect(agentState).toMatchObject({
-      terminalControl: {
-        pendingHandoffV1: {
-          status: 'switch_failed',
-          detail: 'remote_handoff_failed',
-        },
-      },
-    });
+    expect(agentState).not.toHaveProperty('terminalControl.pendingHandoffV1');
   });
 
   it('closes the session exactly once when the initial terminal child exits', async () => {
@@ -1627,6 +1661,35 @@ describe('runSessionLoopLifecycle runtime transcript projection', () => {
     expect(baseParams.deps.cleanupBackendRunResourcesFn).toHaveBeenCalledOnce();
   });
 
+  it('publishes the active terminal mode through the canonical keep-alive when no provider override exists', async () => {
+    const baseParams = createLifecycleParams({ policyAgentId: 'codex' });
+    const params: SessionLoopLifecycleParams = {
+      ...baseParams,
+      opts: {
+        ...baseParams.opts,
+        startedBy: 'terminal',
+        startingMode: 'terminal',
+      },
+      terminalRemoteModeLoop: {
+        startingMode: 'terminal',
+        remoteExitCode: 0,
+        topology: 'shared',
+        remoteWritable: true,
+        runTerminal: vi.fn(async () => ({ type: 'switch' as const })),
+        runRemote: vi.fn(async () => 'exit' as const),
+        onModeChange: vi.fn(),
+      },
+      deps: {
+        ...baseParams.deps,
+        runPermissionModePromptLoopFn: vi.fn(async () => undefined),
+      },
+    };
+
+    await runSessionLoopLifecycle(params);
+
+    expect(baseParams.session.keepAlive).toHaveBeenCalledWith(false, 'local');
+  });
+
   it('uses an injected foreground daemon bridge for agent context transforms without a process-global handoff', async () => {
     const previousTokenFile =
       process.env[RETIRED_AGENT_RUNTIME_DAEMON_BRIDGE_TOKEN_FILE_ENV_KEY];
@@ -1653,7 +1716,7 @@ describe('runSessionLoopLifecycle runtime transcript projection', () => {
           inputSchema: { type: 'object', additionalProperties: false },
           surfaces: ['agent', 'mcp'],
         },
-        expectedContributorImmutableGenerationId: 'generation-g',
+        expectedContributorOccurrenceId: 'occurrence-g',
       }],
       promptAssetBlocks: [],
       toolPromptContributions: [],
@@ -1785,7 +1848,7 @@ describe('runSessionLoopLifecycle runtime transcript projection', () => {
             inputSchema: { type: 'object', additionalProperties: false },
             surfaces: ['agent', 'mcp'],
           },
-          expectedContributorImmutableGenerationId: 'generation-g',
+          expectedContributorOccurrenceId: 'occurrence-g',
         }],
         prompt: expect.stringContaining('Use the bounded review cursor for this next turn.'),
       });

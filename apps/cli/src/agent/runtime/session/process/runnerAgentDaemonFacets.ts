@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { pluginSourceCustodyV1Equal } from '@happier-dev/protocol';
 
 import type {
   AgentSessionRealtimeVoiceAuthority,
@@ -97,12 +98,16 @@ function projectHostExternalTranscriptFollowEvent(
   }
   return Object.freeze({
     ...event,
-    items: Object.freeze(event.items.map(({ sidechainId, ...item }) => Object.freeze({
+    items: Object.freeze(event.items.map((sourceItem) => {
+      if (sourceItem.kind === 'source_observation') return sourceItem;
+      const { sidechainId, ...item } = sourceItem;
+      return Object.freeze({
       ...item,
       ...(sidechainId === undefined || sidechainId === null
         ? {}
         : { sidechainId }),
-    }))),
+      });
+    })),
   });
 }
 
@@ -582,6 +587,8 @@ export async function createRunnerAgentDaemonFacets(input: Readonly<{
                   ...(currentCursor
                     ? { cursor: currentCursor }
                     : {}),
+                  ...(currentOperation.projection ? { projection: currentOperation.projection } : {}),
+                  ...(currentOperation.replay ? { replay: currentOperation.replay } : {}),
                   ...(replacementNeedsInitialReplay
                     ? { initialReplay: true }
                     : {}),
@@ -984,6 +991,8 @@ export async function createRunnerAgentDaemonFacets(input: Readonly<{
                 ...(request.options.cursor
                   ? { cursor: request.options.cursor }
                   : {}),
+                ...(request.options.projection ? { projection: request.options.projection } : {}),
+                ...(request.options.replay ? { replay: request.options.replay } : {}),
                 ...(request.options.initialReplay
                   ? { initialReplay: true }
                   : {}),
@@ -1008,6 +1017,8 @@ export async function createRunnerAgentDaemonFacets(input: Readonly<{
                 ...(request.options.cursor
                   ? { cursor: request.options.cursor }
                   : {}),
+                ...(request.options.projection ? { projection: request.options.projection } : {}),
+                ...(request.options.replay ? { replay: request.options.replay } : {}),
                 ...(request.options.initialReplay
                   ? { initialReplay: true }
                   : {}),
@@ -1058,15 +1069,17 @@ export async function createRunnerAgentDaemonFacets(input: Readonly<{
       response.ok
       && response.result.kind
         === 'voice.authority.snapshot'
-      && response.result.agentGeneration
-        === binding.immutableGenerationId
+      && pluginSourceCustodyV1Equal(
+        response.result.agentSourceCustody,
+        binding.sourceCustody,
+      )
     ) {
       const policyAgentRef = Object.freeze({
         pluginId: binding.pluginId,
         localId: binding.localAgentId,
       });
       voiceAuthority = createAgentSessionRealtimeVoiceAuthority({
-        generation: response.result.agentGeneration,
+        occurrenceId: JSON.stringify(response.result.agentSourceCustody),
         policyAgentRef,
         isAgentRuntimeCurrent: () => !lifetime.signal.aborted,
         providers: response.result.providers.map((provider) => {
@@ -1125,7 +1138,7 @@ export async function createRunnerAgentDaemonFacets(input: Readonly<{
           return Object.freeze({
             provider: provider.provider,
             declaration: provider.declaration,
-            generation: provider.providerGeneration,
+            occurrenceId: provider.providerGeneration,
             isCurrent: () => !retirementSignal.aborted,
             retirementSignal,
           });

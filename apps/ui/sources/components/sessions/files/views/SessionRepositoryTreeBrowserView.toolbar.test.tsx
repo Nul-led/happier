@@ -88,6 +88,10 @@ vi.mock('@/utils/sessions/machineUtils', () => ({
     isMachineOnline: () => true,
 }));
 
+vi.mock('@/components/sessions/agents/presentation/useSessionMachineName', () => ({
+    useSessionMachineName: () => 'MacBook Pro',
+}));
+
 vi.mock('@/components/sessions/model/useSessionMachineReachability', () => ({
     useSessionMachineReachability: () => ({
         machineReachable: true,
@@ -131,18 +135,6 @@ const mountCount = { current: 0 };
 const reloadCount = { current: 0 };
 const workspaceRepositoryTreeRootLoading = { current: false };
 const latestWorkspaceRepositoryTreeListProps = { current: null as any };
-vi.mock('@/components/sessions/files/content/RepositoryTreeList', () => ({
-    RepositoryTreeList: (props: any) => {
-        React.useEffect(() => {
-            mountCount.current += 1;
-        }, []);
-        React.useEffect(() => {
-            reloadCount.current += 1;
-        }, [props?.reloadToken]);
-        return React.createElement('View', { testID: 'repository-tree-list' });
-    },
-}));
-
 vi.mock('@/components/projects/files/WorkspaceRepositoryTreeList', () => ({
     WorkspaceRepositoryTreeList: (props: any) => {
         latestWorkspaceRepositoryTreeListProps.current = props;
@@ -157,14 +149,6 @@ vi.mock('@/components/projects/files/WorkspaceRepositoryTreeList', () => ({
         }, [props]);
         return React.createElement('View', { testID: 'workspace-repository-tree-list' });
     },
-}));
-
-vi.mock('@/components/workspaces/files/repositoryTree/ChangedFilesTreeList', () => ({
-    ChangedFilesTreeList: () => React.createElement('ChangedFilesTreeList'),
-}));
-
-vi.mock('@/components/sessions/files/views/repositoryTreeBrowser/RepositoryTreeChangedFilesPane', () => ({
-    RepositoryTreeChangedFilesPane: () => React.createElement('RepositoryTreeChangedFilesPane'),
 }));
 
 vi.mock('@/components/workspaces/files/repositoryTree/SearchResultsList', () => ({
@@ -205,60 +189,25 @@ describe('SessionRepositoryTreeBrowserView (toolbar)', () => {
         return renderScreen(<SessionRepositoryTreeBrowserView sessionId="s1" onOpenFile={vi.fn()} />);
     }
 
-    it('moves lower-priority toolbar actions into overflow when the toolbar is narrow', async () => {
-        const screen = await renderRepositoryTreeBrowserView();
-
-        const toolbar = screen.findByTestId('repository-tree-toolbar');
-        expect(toolbar).toBeTruthy();
-        await act(async () => {
-            toolbar?.props.onLayout?.({ nativeEvent: { layout: { width: 320, height: 42, x: 0, y: 0 } } });
-        });
-
-        expect(screen.findAllByTestId('repository-tree-create-file')).toHaveLength(0);
-        const overflowMenu = screen.findByType('ItemRowActions' as any);
-        expect(overflowMenu.props.overflowTriggerTestID).toBe('repository-tree-toolbar-overflow');
-        const refreshInlineCount = screen.findAllByTestId('repository-tree-refresh').length;
-        const refreshInOverflow = overflowMenu.props.actions.some((item: any) => item.id === 'repository-tree-refresh');
-        expect(refreshInlineCount > 0 || refreshInOverflow).toBe(true);
-        const filterInlineCount = screen.findAllByTestId('repository-tree-filter-changed').length;
-        const filterInOverflow = overflowMenu.props.actions.some((item: any) => item.id === 'repository-tree-filter-changed');
-        expect(filterInlineCount > 0 || filterInOverflow).toBe(true);
-        expect(overflowMenu.props.actions.map((item: any) => item.id)).toEqual(
-            expect.arrayContaining([
-                'repository-tree-create-file',
-                'repository-tree-create-folder',
-            ]),
-        );
-    });
-
-    it('keeps refresh visible and uses it as the tree refresh loading indicator', async () => {
+    it('shows the tree loading on the View menu while the root refreshes', async () => {
         workspaceRepositoryTreeRootLoading.current = true;
         const screen = await renderRepositoryTreeBrowserView();
 
-        expect(latestWorkspaceRepositoryTreeListProps.current).toBeTruthy();
-        expect(typeof latestWorkspaceRepositoryTreeListProps.current?.onRootLoadingChange).toBe('function');
         await act(async () => {
             latestWorkspaceRepositoryTreeListProps.current?.onRootLoadingChange?.(true);
         });
 
-        const toolbar = screen.findByTestId('repository-tree-toolbar');
-        expect(toolbar).toBeTruthy();
-        await act(async () => {
-            toolbar?.props.onLayout?.({ nativeEvent: { layout: { width: 320, height: 42, x: 0, y: 0 } } });
-        });
-
-        expect(screen.findAllByTestId('repository-tree-refresh').length).toBeGreaterThanOrEqual(1);
-        const overflowMenu = screen.findByType('ItemRowActions' as any);
-        expect(overflowMenu.props.actions.some((item: any) => item.id === 'repository-tree-refresh')).toBe(false);
         expect(screen.findByTestId('repository-tree-refresh-loading')).toBeTruthy();
     });
 
-    it('hides collapse-all when no folders are expanded', async () => {
+    it('leaves Collapse all out of the View menu when no folders are expanded', async () => {
         const screen = await renderRepositoryTreeBrowserView();
 
-        expect(screen.findAllByTestId('repository-tree-collapse-all')).toHaveLength(0);
-        const overflowMenu = screen.findAllByType('ItemRowActions' as any)[0] ?? null;
-        expect(overflowMenu?.props.actions.some((item: any) => item.id === 'repository-tree-collapse-all') ?? false).toBe(false);
+        const menu = screen.findByTestId('repository-tree-view-menu');
+        expect(menu?.props.items.map((item: any) => item.id)).toEqual([
+            'repository-tree-toggle-details',
+            'repository-tree-refresh',
+        ]);
     });
 
     it('shows clear button when search is non-empty and refresh clears search cache + reloads tree', async () => {
@@ -288,10 +237,8 @@ describe('SessionRepositoryTreeBrowserView (toolbar)', () => {
 
         expect(screen.findByTestId('repository-tree-search')?.props.value).toBe('');
 
-        expect(screen.findAllByTestId('repository-tree-refresh').length).toBeGreaterThanOrEqual(1);
-
         await act(async () => {
-            screen.pressByTestId('repository-tree-refresh');
+            screen.findByTestId('repository-tree-view-menu')?.props.onSelect('repository-tree-refresh');
         });
 
         // Cleared BY SCOPE: the search cache derives its own key, so the refresh cannot name a

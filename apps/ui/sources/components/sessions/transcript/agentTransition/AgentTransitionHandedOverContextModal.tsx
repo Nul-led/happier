@@ -19,6 +19,7 @@ import {
 import { t } from '@/text';
 
 import { readHandedOverBriefSections } from './handedOverBriefSections';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 export const AGENT_TRANSITION_HANDED_OVER_MODAL_TEST_ID = 'agent-transition-handed-over-modal';
 
@@ -235,7 +236,7 @@ export function AgentTransitionHandedOverContextModal(
                         }}
                         style={({ pressed }) => [
                             styles.action,
-                            { borderColor: theme.colors.border.default, opacity: pressed ? 0.7 : 1 },
+                            { borderColor: theme.colors.border.default, opacity: pressed ? motionTokens.press.opacity : 1 },
                         ]}
                     >
                         <Icon name="arrow-down" size={14} color={theme.colors.text.link} />
@@ -251,7 +252,7 @@ export function AgentTransitionHandedOverContextModal(
                         onPress={retry}
                         style={({ pressed }) => [
                             styles.action,
-                            { borderColor: theme.colors.border.default, opacity: pressed ? 0.7 : 1 },
+                            { borderColor: theme.colors.border.default, opacity: pressed ? motionTokens.press.opacity : 1 },
                         ]}
                     >
                         <Icon name="arrow-clockwise" size={14} color={theme.colors.text.link} />

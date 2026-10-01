@@ -1,78 +1,15 @@
 import { browserViewKey } from '@happier-dev/protocol';
 import { describe, expect, it } from 'vitest';
+import type {
+    BrowserAutomationRequest as AutomationRequest,
+    BrowserAutomationResult as AutomationResult,
+    BrowserAutomationOwner as AutomationOwner,
+} from './controlService';
 
-type AutomationRequest = Readonly<{
-    v: 1;
-    automationRequestId: string;
-    browserSessionId: string;
-    viewId: string;
-    navigationGeneration: number;
-    requestedBy: 'agent' | 'plugin' | 'system' | 'user';
-    requesterRef: Readonly<{
-        kind: string;
-        id: string;
-    }>;
-    actionKind: string;
-    timeoutMs: number;
-    payload?: Readonly<Record<string, unknown>>;
-}>;
-
-type AutomationResult = Readonly<{
-    status: string;
-    errorCode?: string;
-    resultSummary?: Readonly<Record<string, unknown>>;
-}>;
-
-type AutomationCancelActiveResult =
-    | Readonly<{ v: 1; outcome: 'canceled'; canceledCount: number }>
-    | Readonly<{ v: 1; outcome: 'no_active' | 'owner_mismatch'; canceledCount: 0 }>;
-
-type AutomationOwner = Readonly<{
-    ownerId: string;
-    authority: 'uiLocal' | 'daemon' | 'serverBroker';
-    browserSessionId: string;
-    viewId: string;
-    navigationGeneration: number;
-    adapterKind: string;
-    fidelity: string;
-    trustedInput: boolean;
-    supportedActions: readonly string[];
-    executeAction: (
-        request: AutomationRequest,
-        context: Readonly<{ signal: AbortSignal }>,
-    ) => Promise<AutomationResult>;
-}>;
-
-type BrowserAutomationControlService = Readonly<{
-    registerOwner: (owner: AutomationOwner) => Readonly<{ ok: true } | { ok: false; reasonCode: string }>;
-    unregisterOwner: (input: Readonly<{ ownerId: string; reasonCode: string }>) => void;
-    closeView: (input: Readonly<{ browserSessionId: string; viewId: string }>) => void;
-    updateNavigationGeneration: (
-        input: Readonly<{ browserSessionId: string; viewId: string; navigationGeneration: number }>,
-    ) => void;
-    executeAction: (request: AutomationRequest) => Promise<AutomationResult>;
-    cancelActiveAction: (
-        input: Readonly<{ browserSessionId: string; viewId: string; reasonCode?: string }>,
-    ) => AutomationCancelActiveResult;
-    recordHumanInput: (
-        input: Readonly<{ browserSessionId: string; viewId: string; inputKind: string; occurredAtMs: number }>,
-    ) => void;
-    getActionTimeline: (
-        input: Readonly<{ browserSessionId: string; viewId: string }>,
-    ) => readonly Readonly<Record<string, unknown>>[];
-    subscribe: (listener: () => void) => () => void;
-    getSnapshot: () => Readonly<Record<string, unknown>>;
-}>;
-
-type BrowserAutomationControlServiceModule = Readonly<{
-    createBrowserAutomationControlService?: (
-        input: Readonly<{ nowMs: () => number; maxTimelineEntries?: number }>,
-    ) => BrowserAutomationControlService;
-}>;
+type BrowserAutomationControlServiceModule = typeof import('./controlService');
 
 async function loadControlServiceModule(): Promise<BrowserAutomationControlServiceModule | null> {
-    const path = './controlService';
-    return import(path).catch(() => null) as Promise<BrowserAutomationControlServiceModule | null>;
+    return import('./controlService').catch(() => null);
 }
 
 function createOwner(overrides: Partial<AutomationOwner> = {}): AutomationOwner {
@@ -128,6 +65,32 @@ function createPendingResult(): Readonly<{
 }
 
 describe('browser automation control service', () => {
+    it('retains UI admission until canceled engine work settles and reports uncertain acknowledgement', async () => {
+        const { createBrowserAutomationControlService } = await import('./controlService');
+        const pending = createPendingResult();
+        const service = createBrowserAutomationControlService({ nowMs: () => 1000 });
+        service.registerOwner(createOwner({ executeAction: () => pending.promise }));
+        const action = service.executeAction(createRequest({ actionKind: 'click' }));
+        const view = { browserSessionId: 'browser_session_1', viewId: 'browser_view_1' };
+        expect(service.cancelActiveAction(view)).toMatchObject({ outcome: 'canceled', completion: 'uncertain' });
+        expect(service.getStatus(createRequest())?.resultSummary).toMatchObject({ activeAutomationRequestId: 'automation_request_1', controller: 'human' });
+        pending.resolve({ status: 'succeeded' });
+        expect(await action).toMatchObject({ status: 'canceled', resultSummary: { completion: 'uncertain' } });
+        expect(service.getStatus(createRequest())?.resultSummary).not.toHaveProperty('activeAutomationRequestId');
+    });
+    it('holds UI human control through explicit release and requires fresh observation', async () => {
+        const { createBrowserAutomationControlService } = await import('./controlService');
+        const service = createBrowserAutomationControlService({ nowMs: () => 1000 });
+        // The registered engine boundary supplies deterministic page replies; admission stays real.
+        service.registerOwner(createOwner());
+        const view = { browserSessionId: 'browser_session_1', viewId: 'browser_view_1' };
+        service.recordHumanInput({ ...view, inputKind: 'pointer', occurredAtMs: 1000 });
+        expect(await service.executeAction(createRequest({ actionKind: 'click' }))).toMatchObject({ errorCode: 'human_interrupted' });
+        service.releaseHumanControl(view);
+        expect(await service.executeAction(createRequest({ actionKind: 'click' }))).toMatchObject({ errorCode: 'stale_navigation' });
+        expect(await service.executeAction(createRequest())).toMatchObject({ status: 'succeeded' });
+        expect(await service.executeAction(createRequest({ actionKind: 'click' }))).toMatchObject({ status: 'succeeded' });
+    });
     it('registers one automation authority per view, rejects stale actions, and dispatches mutating ones', async () => {
         let now = 1_000;
         const mod = await loadControlServiceModule();
@@ -237,6 +200,7 @@ describe('browser automation control service', () => {
             occurredAtMs: now,
         });
 
+        pending.resolve({ status: 'succeeded' });
         const result = await action;
         expect(result).toMatchObject({
             status: 'interrupted',
@@ -246,7 +210,29 @@ describe('browser automation control service', () => {
         expect(JSON.stringify(service.getSnapshot())).toContain('"controlEpoch":1');
     });
 
-    it('cancels waitFor actions on navigation changes, owner disconnect, and view close', async () => {
+    it('names the in-flight action on the controller snapshot so surfaces can narrate it', async () => {
+        const mod = await loadControlServiceModule();
+        if (!mod?.createBrowserAutomationControlService) throw new Error('control service missing');
+        const pending = createPendingResult();
+        const service = mod.createBrowserAutomationControlService({ nowMs: () => 4_000 });
+        service.registerOwner(createOwner({ executeAction: async () => pending.promise }));
+        const action = service.executeAction(createRequest({
+            automationRequestId: 'automation_request_click_named',
+            actionKind: 'click',
+        }));
+        await Promise.resolve();
+
+        const controller = (service.getSnapshot().controllerByViewId as Record<string, Record<string, unknown>>)
+            .browser_view_1;
+        expect(controller).toMatchObject({ controller: 'agent', activeActionKind: 'click' });
+
+        pending.resolve({ status: 'succeeded' });
+        await action;
+        expect((service.getSnapshot().controllerByViewId as Record<string, Record<string, unknown>>).browser_view_1)
+            .toMatchObject({ controller: 'none', activeActionKind: null });
+    });
+
+    it.each([false, true])('cancels waitFor actions on navigation changes, owner disconnect, and view close (reopened: %s)', async (reopened) => {
         const mod = await loadControlServiceModule();
 
         expect(mod?.createBrowserAutomationControlService).toBeTypeOf('function');
@@ -272,6 +258,7 @@ describe('browser automation control service', () => {
             viewId: 'browser_view_1',
             navigationGeneration: 3,
         });
+        pendingNavigation.resolve({ status: 'succeeded' });
         expect(await navigationWait).toMatchObject({
             status: 'stale',
             errorCode: 'stale_navigation',
@@ -297,6 +284,7 @@ describe('browser automation control service', () => {
             ownerId: 'owner_ui_2',
             reasonCode: 'owner_disconnected',
         });
+        pendingDisconnect.resolve({ status: 'succeeded' });
         expect(await disconnectWait).toMatchObject({
             status: 'canceled',
             errorCode: 'owner_disconnected',
@@ -318,10 +306,27 @@ describe('browser automation control service', () => {
             browserSessionId: 'browser_session_1',
             viewId: 'browser_view_1',
         });
+        // Retirement must survive eviction from the recent-closed-view projection while the
+        // real engine action is still draining. 512 is the existing projection's boundary.
+        for (let index = 0; index < 512; index += 1) {
+            service.closeView({ browserSessionId: 'browser_session_1', viewId: `other_closed_${index}` });
+        }
+        if (reopened) {
+            service.registerOwner(createOwner({ ownerId: 'owner_ui_reopened', navigationGeneration: 3 }));
+        }
+        pendingClose.resolve({ status: 'succeeded' });
         expect(await closeWait).toMatchObject({
             status: 'canceled',
             errorCode: 'view_closed',
         });
+        const closedView = { browserSessionId: 'browser_session_1', viewId: 'browser_view_1' };
+        expect(service.getActionTimeline(closedView)).toEqual([]);
+        const key = viewKey(closedView.browserSessionId, closedView.viewId);
+        if (reopened) {
+            expect(service.getSnapshot().controllerByViewKey).toHaveProperty(key, expect.objectContaining({ controller: 'none' }));
+        } else {
+            expect(service.getSnapshot().controllerByViewKey).not.toHaveProperty(key);
+        }
     });
 
     it('keeps the action timeline bounded and redacted', async () => {
@@ -493,8 +498,7 @@ describe('browser automation control service', () => {
             executeAction: async () => pending.promise,
         }));
 
-        // A read-only snapshot is not a mutating action: it registers as the active request but
-        // must not claim the view as a controller, and finishing it must clear the claim.
+        // A read-only snapshot does not claim mutation admission or displace its controller.
         const snapshotAction = service.executeAction(createRequest({
             automationRequestId: 'automation_request_system_snapshot',
             actionKind: 'snapshot',
@@ -508,7 +512,7 @@ describe('browser automation control service', () => {
         };
         expect(snapshotWhilePending.controllerByViewKey?.[viewKey('browser_session_1', 'browser_view_1')]).toMatchObject({
             controller: 'none',
-            activeAutomationRequestId: 'automation_request_system_snapshot',
+            activeAutomationRequestId: null,
         });
 
         pending.resolve({ status: 'succeeded' });
@@ -606,7 +610,7 @@ describe('browser automation control service', () => {
         }));
         const action = service.executeAction(createRequest({
             automationRequestId: 'automation_request_wait_cancel',
-            actionKind: 'waitFor',
+            actionKind: 'click',
         }));
         await Promise.resolve();
 
@@ -617,8 +621,8 @@ describe('browser automation control service', () => {
             viewId: 'browser_view_1',
             reasonCode: 'user_canceled',
         });
-        expect(canceled).toEqual({ v: 1, outcome: 'canceled', canceledCount: 1 });
-
+        expect(canceled).toEqual({ v: 1, outcome: 'canceled', canceledCount: 1, completion: 'uncertain' });
+        pending.resolve({ status: 'succeeded' });
         await expect(action).resolves.toMatchObject({
             status: 'canceled',
             errorCode: 'user_canceled',

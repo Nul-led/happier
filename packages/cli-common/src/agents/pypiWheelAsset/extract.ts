@@ -1,6 +1,8 @@
-import { inflateRawSync } from 'node:zlib';
+import { createInflateRaw } from 'node:zlib';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
+import { Readable, Writable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 
 import { PypiWheelAssetError } from './types.js';
 
@@ -71,7 +73,7 @@ function readCentralDirectory(buffer: Buffer): readonly ZipCentralEntry[] {
   return entries;
 }
 
-function readEntryData(buffer: Buffer, entry: ZipCentralEntry, maxOutputLength: number): Buffer {
+async function readEntryData(buffer: Buffer, entry: ZipCentralEntry, maxOutputLength: number, signal?: AbortSignal): Promise<Buffer> {
   const offset = entry.localHeaderOffset;
   if (offset + 30 > buffer.length || buffer.readUInt32LE(offset) !== 0x04034b50) {
     throw new PypiWheelAssetError('wheel_asset_corrupt', '[pypi-wheel-asset] corrupt wheel local header');
@@ -86,12 +88,23 @@ function readEntryData(buffer: Buffer, entry: ZipCentralEntry, maxOutputLength: 
   const compressed = buffer.subarray(dataStart, dataEnd);
   if (entry.compressionMethod === 0) return Buffer.from(compressed);
   if (entry.compressionMethod === 8) {
+    const chunks: Buffer[] = [];
+    let bytesDone = 0;
     try {
-      return inflateRawSync(compressed, { maxOutputLength });
+      await pipeline(Readable.from([compressed]), createInflateRaw(), new Writable({
+        write(chunk: Buffer, _encoding, callback) {
+          bytesDone += chunk.length;
+          if (bytesDone > maxOutputLength) {
+            callback(new PypiWheelAssetError('wheel_asset_oversize', '[pypi-wheel-asset] wheel asset exceeds configured size cap'));
+            return;
+          }
+          chunks.push(chunk);
+          callback();
+        },
+      }), { signal });
+      return Buffer.concat(chunks, bytesDone);
     } catch (error) {
-      if (typeof (error as { code?: unknown }).code === 'string' && (error as { code: string }).code === 'ERR_BUFFER_TOO_LARGE') {
-        throw new PypiWheelAssetError('wheel_asset_oversize', '[pypi-wheel-asset] wheel asset exceeds configured size cap');
-      }
+      if (signal?.aborted && error instanceof Error && error.name === 'AbortError') throw signal.reason;
       throw error;
     }
   }
@@ -108,9 +121,16 @@ export async function extractExactWheelAsset(params: Readonly<{
   assetPath: string;
   outputPath: string;
   maxAssetSizeBytes: number;
+  signal?: AbortSignal;
 }>): Promise<void> {
+  params.signal?.throwIfAborted();
   validateRelativeMemberPath(params.assetPath);
-  const wheel = await readFile(params.wheelPath);
+  const wheel = await readFile(params.wheelPath, { signal: params.signal }).catch((error: unknown) => {
+    if (params.signal?.aborted && error instanceof Error && error.name === 'AbortError') throw params.signal.reason;
+    if (params.signal?.aborted && error === params.signal.reason) throw error;
+    throw error;
+  });
+  params.signal?.throwIfAborted();
   const matches = readCentralDirectory(wheel).filter((entry) => entry.name === params.assetPath);
   if (matches.length === 0) {
     throw new PypiWheelAssetError('wheel_asset_not_found', `[pypi-wheel-asset] wheel asset not found: ${params.assetPath}`);
@@ -134,11 +154,12 @@ export async function extractExactWheelAsset(params: Readonly<{
     throw new PypiWheelAssetError('wheel_asset_oversize', '[pypi-wheel-asset] wheel asset exceeds configured size cap');
   }
 
-  const data = readEntryData(wheel, entry, params.maxAssetSizeBytes);
+  const data = await readEntryData(wheel, entry, params.maxAssetSizeBytes, params.signal);
+  params.signal?.throwIfAborted();
   if (data.length > params.maxAssetSizeBytes) {
     throw new PypiWheelAssetError('wheel_asset_oversize', '[pypi-wheel-asset] wheel asset exceeds configured size cap');
   }
 
   await mkdir(dirname(params.outputPath), { recursive: true });
-  await writeFile(params.outputPath, data);
+  await writeFile(params.outputPath, data, { signal: params.signal });
 }

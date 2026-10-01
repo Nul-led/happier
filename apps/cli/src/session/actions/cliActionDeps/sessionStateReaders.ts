@@ -10,6 +10,7 @@ import {
   decryptStoredSessionPayload,
   type SessionStoredContentCryptoContext,
 } from '@/session/transport/encryption/sessionEncryptionContext';
+import { normalizeSessionMetadataForRead } from '@happier-dev/protocol';
 
 export function normalizeLimit(value: unknown): number | null {
   const parsed = Number(value);
@@ -46,10 +47,14 @@ export function readSessionMetadata(
     rawSession?: Readonly<{ metadata?: unknown }> | null;
   }> & SessionStoredContentCryptoContext,
 ): Record<string, unknown> | null {
-  return readStoredSessionRecord({
-    ...params,
-    rawValue: params.rawSession?.metadata,
-  });
+  try {
+    return normalizeSessionMetadataForRead(readStoredSessionRecord({
+      ...params,
+      rawValue: params.rawSession?.metadata,
+    }));
+  } catch {
+    return null;
+  }
 }
 
 export function readSessionAgentState(

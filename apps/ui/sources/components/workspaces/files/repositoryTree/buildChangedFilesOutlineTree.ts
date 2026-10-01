@@ -1,3 +1,4 @@
+import type { LazyDirectoryTreeNode } from '@/hooks/ui/filesystem/lazyDirectoryTreeTypes';
 import type { ScmFileStatus } from '@/scm/scmStatusFiles';
 
 export type ChangedFilesOutlineNode =
@@ -55,7 +56,7 @@ function toNode(dir: DirBuilder): ChangedFilesOutlineNode & { kind: 'dir' } {
     };
 }
 
-export function buildChangedFilesOutlineTree(files: ScmFileStatus[]): ChangedFilesOutlineNode[] {
+export function buildChangedFilesOutlineTree(files: readonly Pick<ScmFileStatus, 'fullPath'>[]): ChangedFilesOutlineNode[] {
     const root = createDir('', '');
 
     for (const file of files) {
@@ -86,9 +87,41 @@ export function buildChangedFilesOutlineTree(files: ScmFileStatus[]): ChangedFil
             kind: 'file',
             name: fileName,
             fullPath,
-            file,
+            file: file as ScmFileStatus,
         });
     }
 
     return toNode(root).children;
+}
+
+/**
+ * Changed only (session tabs lab FC): the Files tree pruned to the changed files, as tree rows. Every
+ * folder is open unless the person closed it, and a folder whose only child is one folder merges
+ * into it ("components/settings/modal"), so a deep change never costs seven rows in a narrow pane.
+ * A merged row stands for its deepest folder: its path opens, reveals and counts that folder.
+ */
+export function buildChangedOnlyTreeNodes(
+    files: readonly Pick<ScmFileStatus, 'fullPath'>[],
+    closedPaths: ReadonlySet<string>,
+): LazyDirectoryTreeNode[] {
+    const rows: LazyDirectoryTreeNode[] = [];
+    const emit = (nodes: readonly ChangedFilesOutlineNode[], depth: number, parentDirectoryPath: string) => {
+        for (const node of nodes) {
+            if (node.kind === 'file') {
+                rows.push({ path: node.fullPath, name: node.name, type: 'file', depth, isExpanded: false, isLoadingChildren: false, parentDirectoryPath });
+                continue;
+            }
+            let folder = node;
+            let name = node.name;
+            while (folder.children.length === 1 && folder.children[0]!.kind === 'dir') {
+                folder = folder.children[0] as typeof folder;
+                name = `${name}/${folder.name}`;
+            }
+            const isExpanded = !closedPaths.has(folder.fullPath);
+            rows.push({ path: folder.fullPath, name, type: 'directory', depth, isExpanded, isLoadingChildren: false, parentDirectoryPath });
+            if (isExpanded) emit(folder.children, depth + 1, folder.fullPath);
+        }
+    };
+    emit(buildChangedFilesOutlineTree(files), 0, '');
+    return rows;
 }

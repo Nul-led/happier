@@ -24,7 +24,7 @@ import { createStableSpawnNonce } from '@/session/shared/spawnNonce';
 import { callMachineRpc } from '@/session/transport/rpc/machineRpc';
 import { refreshAccountSettingsForMinimumVersion } from '@/settings/accountSettings/refreshAccountSettingsForMinimumVersion';
 import { resolveWorkspaceTransferRootWithScmWorkspace } from '@/scm/workspace';
-import { resolveSessionHandoffWorkspaceSessionPath } from '@/session/handoff/paths/sessionHandoffPathNormalization';
+import { getPathRemainderWithinBase, resolveSessionHandoffWorkspaceSessionPath } from '@/session/handoff/paths/sessionHandoffPathNormalization';
 
 import type { ActionOperationOwnerUpdate } from './actionOperationTypes';
 import { coordinateTrackedSessionHandoff } from './sessionHandoffCoordinator';
@@ -37,6 +37,7 @@ type SourceContext =
       ok: true;
       sourceMachineId: string;
       sourceRootPath?: string;
+      directoryKind?: 'path' | 'managed';
       sessionStorageMode: SessionHandoffStorageMode;
     }>
   | Readonly<{ ok: false; errorCode: string; error: string }>;
@@ -169,6 +170,7 @@ export function buildTrackedSessionHandoffSpawnOptions(params: Readonly<{
   return {
     machineId: params.targetMachineId,
     directory: prepared.resume.directory,
+    ...(prepared.resume.directoryKind === 'managed' ? { directoryKind: 'managed' as const } : {}),
     agentTarget,
     resume: prepared.resume.resume,
     attachMetadataIdentityPolicy: 'replace_with_runtime_identity',
@@ -210,7 +212,7 @@ export function createTrackedSessionHandoffCoordinator(deps: CoordinatorDeps) {
       : {};
     const sessionId = readNonEmptyString(rawInput.sessionId);
     const targetMachineId = readNonEmptyString(rawInput.targetMachineId);
-    const targetPath = readNonEmptyString(rawInput.targetPath);
+    let targetPath = readNonEmptyString(rawInput.targetPath);
     const operationId = readNonEmptyString(hostInput.operationId);
     if (!operationId || !sessionId || !targetMachineId) {
       return { ok: false, errorCode: 'invalid_input', error: 'invalid_input' };
@@ -221,6 +223,8 @@ export function createTrackedSessionHandoffCoordinator(deps: CoordinatorDeps) {
     }
     const source = await resolveSource(credentials, sessionId, hostInput.signal);
     if (!source.ok) return source;
+    const managedTarget = source.directoryKind === 'managed';
+    if (managedTarget) targetPath = null;
     const {
       sessionId: _untrustedSessionId,
       sourceMachineId: _untrustedSourceMachineId,
@@ -228,6 +232,9 @@ export function createTrackedSessionHandoffCoordinator(deps: CoordinatorDeps) {
       sessionStorageMode: _untrustedSessionStorageMode,
       preferredTransportStrategies: _untrustedPreferredTransportStrategies,
       targetPath: _untrustedTargetPath,
+      targetDirectory: _untrustedTargetDirectory,
+      operationId: _untrustedOperationId,
+      workspaceAction: _untrustedWorkspaceAction,
       ...forwardedActionInput
     } = rawInput;
     const privateStartInput = {
@@ -237,16 +244,18 @@ export function createTrackedSessionHandoffCoordinator(deps: CoordinatorDeps) {
       targetMachineId,
       sessionStorageMode: source.sessionStorageMode,
       preferredTransportStrategies: ['direct_peer', 'server_routed_stream'] as const,
+      ...(managedTarget ? { operationId, targetDirectory: { kind: 'managed' as const } } : {}),
       ...(targetPath ? { targetPath } : {}),
     };
 
-    const parsedWorkspaceAction = rawInput.workspaceAction === undefined
+    const parsedWorkspaceAction = managedTarget || rawInput.workspaceAction === undefined
       ? null
       : HandoffWorkspaceActionV1Schema.safeParse(rawInput.workspaceAction);
     if (parsedWorkspaceAction && !parsedWorkspaceAction.success) {
       return { ok: false, errorCode: 'invalid_input', error: 'invalid_input' };
     }
     const workspaceAction = parsedWorkspaceAction?.data;
+    if (workspaceAction) Object.assign(privateStartInput, { workspaceAction });
     const parsedTargetReplacementApproval = rawInput.handoffTargetReplacementApproval === undefined
       ? null
       : HandoffTargetReplacementApprovalV1Schema.safeParse(rawInput.handoffTargetReplacementApproval);
@@ -276,21 +285,39 @@ export function createTrackedSessionHandoffCoordinator(deps: CoordinatorDeps) {
     let workspaceContext: ReturnType<typeof resolveSessionHandoffWorkspaceContext> | undefined;
     let sessionRelativeCwd = '';
     let sourceWorkspaceRootPath = source.sourceRootPath;
-    let relationshipContentSelection: 'git_worktree' | 'all_files' | undefined;
-    if (workspaceAction?.kind === 'relationship') {
+    if (workspaceAction?.kind === 'relationship' || workspaceAction?.kind === 'linked_workspace') {
       try {
         // Endpoint identity and the settings version that proves it are
         // daemon-owned: read the canonical Account settings owner rather than
         // trusting a caller-supplied ref id or version floor.
         const settings = await refreshWorkspaceSettings({ credentials });
-        relationshipContentSelection = settings.settings.workspaceSyncRelationshipsV1.find(
-          (relationship) => relationship.relationshipId === workspaceAction.relationshipId,
-        )?.contentPolicy.selection;
-        if (relationshipContentSelection === 'git_worktree' && source.sourceRootPath) {
-          const transferRoot = await resolveWorkspaceTransferRoot({ sessionCwd: source.sourceRootPath });
-          if (!transferRoot) throw Object.assign(new Error('Git worktree selection is unavailable'), { code: 'git_selection_unavailable' });
-          sourceWorkspaceRootPath = transferRoot.repositoryRoot;
-          sessionRelativeCwd = transferRoot.sessionRelativeCwd;
+        const sessionCwd = source.sourceRootPath;
+        if (!sessionCwd) throw Object.assign(new Error('Source workspace path is unavailable'), { code: 'workspace_ref_not_ready' });
+        const selectedRelationship = workspaceAction.kind === 'relationship'
+          ? settings.settings.workspaceSyncRelationshipsV1.find((relationship) => relationship.relationshipId === workspaceAction.relationshipId)
+          : undefined;
+        const sourceCandidates = settings.settings.workspaceRefsV1.filter((ref) => (
+          ref.machineId === source.sourceMachineId
+          && getPathRemainderWithinBase(sessionCwd, ref.rootPath) !== null
+          && (workspaceAction.kind !== 'relationship' || !selectedRelationship
+            || ref.id === selectedRelationship.alphaWorkspaceRefId || ref.id === selectedRelationship.betaWorkspaceRefId)
+        ));
+        if (sourceCandidates.length !== 1) {
+          throw Object.assign(new Error('Source workspace is not uniquely identified'), { code: 'relationship_source_mismatch' });
+        }
+        sourceWorkspaceRootPath = sourceCandidates[0]!.rootPath;
+        sessionRelativeCwd = getPathRemainderWithinBase(sessionCwd, sourceWorkspaceRootPath)!;
+        const sourceHasGitLink = workspaceAction.kind === 'relationship'
+          ? selectedRelationship?.contentPolicy.selection === 'git_worktree'
+          : settings.settings.workspaceSyncRelationshipsV1.some((relationship) => (
+            (relationship.alphaWorkspaceRefId === sourceCandidates[0]!.id || relationship.betaWorkspaceRefId === sourceCandidates[0]!.id)
+            && relationship.contentPolicy.selection === 'git_worktree'
+          ));
+        if (sourceHasGitLink) {
+          const transferRoot = await resolveWorkspaceTransferRoot({ sessionCwd });
+          if (!transferRoot || transferRoot.repositoryRoot !== sourceWorkspaceRootPath) {
+            throw Object.assign(new Error('Git worktree selection is unavailable for the source'), { code: 'git_selection_unavailable' });
+          }
         }
         workspaceContext = resolveSessionHandoffWorkspaceContext({
           action: workspaceAction,
@@ -320,7 +347,10 @@ export function createTrackedSessionHandoffCoordinator(deps: CoordinatorDeps) {
     }
     const workspaceTargetRootPath = workspaceContext?.targetRootPath ?? targetPath ?? undefined;
     let targetSessionPath = workspaceTargetRootPath;
-    if ((relationshipContentSelection ?? directContentSelection) === 'git_worktree' && workspaceTargetRootPath) {
+    const preservesWorkspaceSessionPath = workspaceAction?.kind === 'relationship'
+      || workspaceAction?.kind === 'linked_workspace'
+      || directContentSelection === 'git_worktree';
+    if (preservesWorkspaceSessionPath && workspaceTargetRootPath) {
       try {
         targetSessionPath = resolveSessionHandoffWorkspaceSessionPath({
           targetRoot: workspaceTargetRootPath,
@@ -368,8 +398,9 @@ export function createTrackedSessionHandoffCoordinator(deps: CoordinatorDeps) {
         operationId,
         sessionId,
         targetMachineId,
+        ...(managedTarget ? { targetDirectory: { kind: 'managed' as const } } : {}),
         ...(targetSessionPath ? { targetPath: targetSessionPath } : {}),
-        ...((relationshipContentSelection ?? directContentSelection) === 'git_worktree' && workspaceTargetRootPath
+        ...(preservesWorkspaceSessionPath && workspaceTargetRootPath
           ? { workspaceSyncTargetSessionRelativeCwd: sessionRelativeCwd }
           : {}),
         ...(rawInput.targetSessionStorageMode === 'direct' || rawInput.targetSessionStorageMode === 'persisted'

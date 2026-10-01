@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { createProjectedAgentLocalAuthPlugin } from './createProjectedAgentLocalAuthPlugin';
 
 describe('createProjectedAgentLocalAuthPlugin', () => {
-    it('exposes ordered native login actions and executes them with the host-resolved command', () => {
+    it('exposes ordered native login intents for daemon resolution', () => {
         const plugin = createProjectedAgentLocalAuthPlugin({
             agentId: 'acme',
             cli: {
@@ -32,18 +32,18 @@ describe('createProjectedAgentLocalAuthPlugin', () => {
             resolvedCommand: "'/opt/runtime/bun' '/opt/acme/acme.js'",
             platform: 'darwin',
         })).toEqual({
-            initialCommand: "'/opt/runtime/bun' '/opt/acme/acme.js' login",
+            launch: { kind: 'agent_login', agentId: 'acme', launchId: 'primary' },
         });
         expect(plugin.buildLoginLaunch?.({
             kind: 'device_code',
             resolvedPath: '/Applications/Acme CLI/bin/acme',
             platform: 'darwin',
         })).toEqual({
-            initialCommand: "'/Applications/Acme CLI/bin/acme' login --device-code",
+            launch: { kind: 'agent_login', agentId: 'acme', launchId: 'device_code' },
         });
     });
 
-    it('preserves each declared login argument as one shell argument', () => {
+    it('does not copy executable paths or manifest arguments into a UI shell command', () => {
         const plugin = createProjectedAgentLocalAuthPlugin({
             agentId: 'acme',
             cli: {
@@ -69,7 +69,32 @@ describe('createProjectedAgentLocalAuthPlugin', () => {
             resolvedPath: '/opt/acme',
             platform: 'darwin',
         })).toEqual({
-            initialCommand: "/opt/acme login --account 'Jane Doe' '$(touch /tmp/not-run)' 'O'\\''Brien'",
+            launch: { kind: 'agent_login', agentId: 'acme', launchId: 'primary' },
+        });
+    });
+
+    it('projects ACP login through the same daemon-owned intent', () => {
+        const plugin = createProjectedAgentLocalAuthPlugin({
+            agentId: 'antigravity',
+            cli: {
+                executable: {
+                    binaryName: 'agy',
+                    sourcePreference: 'system-first',
+                },
+                install: { manual: { kind: 'none' } },
+                auth: {
+                    support: 'login_terminal',
+                    loginLaunches: [{ kind: 'primary', target: 'agent_acp', args: [] }],
+                },
+            },
+        });
+
+        expect(plugin.buildLoginLaunch?.({ kind: 'primary' })).toEqual({
+            launch: {
+                kind: 'agent_login',
+                agentId: 'antigravity',
+                launchId: 'primary',
+            },
         });
     });
 });

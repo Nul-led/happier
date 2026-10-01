@@ -317,6 +317,45 @@ describe('planSyncActionsFromChanges', () => {
         }
     });
 
+    it('refreshes only the rows of listed Sessions for row-level writes, never the whole list', () => {
+        const listed = new Set(['listed-message', 'listed-metadata', 'listed-pending']);
+        const planned = planSyncActionsFromChanges([
+            buildChange({ cursor: 1, kind: 'session', entityId: 'listed-message', hint: { lastMessageSeq: 5, lastMessageId: 'm5' } }),
+            // Metadata, agent-state and runtime-activity writes carry no hint.
+            buildChange({ cursor: 2, kind: 'session', entityId: 'listed-metadata' }),
+            buildChange({ cursor: 3, kind: 'session', entityId: 'listed-pending', hint: { pendingVersion: 3, pendingCount: 1 } }),
+        ], { isSessionListMember: (sessionId) => listed.has(sessionId) });
+
+        expect(planned.invalidate.sessions).toBe(false);
+        expect(planned.sessionRowRefreshIds).toEqual(['listed-message', 'listed-metadata', 'listed-pending']);
+        expect(planned.sessionIdsToCatchUp).toEqual(['listed-message', 'listed-metadata', 'listed-pending']);
+        // Ordinary-answerable corpora are unaffected; a structural filter may still move.
+        expect(plannedChangesAffectSessionListQuery(planned)).toBe('structural');
+    });
+
+    it('keeps one list refresh for changes that can alter which Sessions are listed', () => {
+        const listed = new Set(['listed-archived', 'listed-deleted', 'listed-shared', 'listed-responsible']);
+        const cases = [
+            buildChange({ cursor: 1, kind: 'session', entityId: 'unlisted', hint: { lastMessageSeq: 1, lastMessageId: 'm1' } }),
+            buildChange({ cursor: 2, kind: 'session', entityId: 'listed-archived', hint: { archivedAt: 10 } }),
+            buildChange({ cursor: 3, kind: 'session', entityId: 'listed-deleted', hint: { v: 1, lifecycle: 'deleted' } }),
+            buildChange({ cursor: 4, kind: 'share', entityId: 'listed-shared' }),
+            buildChange({ cursor: 5, kind: 'session', entityId: 'listed-responsible', hint: { responsibleAccountId: null, responsibleAccount: null } }),
+        ];
+        for (const change of cases) {
+            const planned = planSyncActionsFromChanges([change], { isSessionListMember: (sessionId) => listed.has(sessionId) });
+            expect(planned.invalidate.sessions, change.entityId).toBe(true);
+            expect(planned.sessionRowRefreshIds, change.entityId).toEqual([]);
+            expect(plannedChangesAffectSessionListQuery(planned), change.entityId).toBe(true);
+        }
+        // Without list knowledge every Session write stays a conservative list refresh.
+        const conservative = planSyncActionsFromChanges([
+            buildChange({ cursor: 6, kind: 'session', entityId: 'listed-archived', hint: { lastMessageSeq: 2, lastMessageId: 'm2' } }),
+        ]);
+        expect(conservative.invalidate.sessions).toBe(true);
+        expect(conservative.sessionRowRefreshIds).toEqual([]);
+    });
+
     it.each(['teams', 'home-governance'] as const)(
         'routes account/%s through the scoped snapshot owner without broad Settings or Profile refresh',
         (entityId) => {
@@ -493,6 +532,7 @@ describe('planSyncActionsFromChanges', () => {
             sessionId: 's1',
             minSeq: 10,
             messageIds: ['m10', 'm15'],
+            messageSeqs: { m10: 10, m15: 15 },
         }]);
     });
 

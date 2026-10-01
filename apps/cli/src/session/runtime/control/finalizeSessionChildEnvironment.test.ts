@@ -8,6 +8,8 @@ describe('finalizeSessionChildEnvironment', () => {
       environment: {
         PATH: '/bin',
         SAFE_VALUE: 'kept',
+        HAPPIER_DAEMON_SERVICE_BUNDLE_ID: 'dev.happier.app',
+        HAPPIER_DAEMON_SERVICE_AUTOSTART: 'at-login',
         HAPPIER_SESSION_PROFILE_ID: 'ambient-profile',
         HAPPIER_SESSION_ATTACH_FILE: '/tmp/ambient-attach.json',
         HAPPIER_CONNECTED_SERVICE_SELECTIONS_JSON: 'ambient-selections',
@@ -37,6 +39,8 @@ describe('finalizeSessionChildEnvironment', () => {
     });
     expect(env.HAPPIER_SESSION_ATTACH_FILE).toBeUndefined();
     expect(env.TMUX_SESSION_NAME).toBeUndefined();
+    expect(env.HAPPIER_DAEMON_SERVICE_BUNDLE_ID).toBeUndefined();
+    expect(env.HAPPIER_DAEMON_SERVICE_AUTOSTART).toBeUndefined();
   });
 
   it('rejects non-control values in the trusted control channel', () => {

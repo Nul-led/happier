@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { router } from 'expo-router';
+import { useDestinationRouter } from '@/components/appShell/workspace/DestinationInstanceHost';
 import { useAuth } from '@/auth/context/AuthContext';
 import {
     TokenStorage,
@@ -124,6 +124,7 @@ async function resolveTerminalApprovalTarget(params: Readonly<{
 }
 
 export function useConnectTerminal(options?: UseConnectTerminalOptions) {
+    const router = useDestinationRouter();
     const auth = useAuth();
     const [isLoading, setIsLoading] = React.useState(false);
 
@@ -286,7 +287,7 @@ export function useConnectTerminal(options?: UseConnectTerminalOptions) {
         } finally {
             setIsLoading(false);
         }
-    }, [auth.credentials, options]);
+    }, [auth.credentials, options, router]);
 
     const processAuthUrl = React.useCallback(async (url: string) => {
         const parsed = parseTerminalConnectUrl(url);
@@ -304,7 +305,7 @@ export function useConnectTerminal(options?: UseConnectTerminalOptions) {
             return;
         }
         router.push('/scan/terminal');
-    }, []);
+    }, [router]);
 
     const connectWithUrl = React.useCallback(async (url: string) => {
         return await processAuthUrl(url);

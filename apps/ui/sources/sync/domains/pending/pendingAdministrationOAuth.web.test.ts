@@ -21,7 +21,7 @@ describe('pendingAdministrationOAuth (web)', () => {
                 accountId: 'account-1',
                 providerId: 'provider-1',
                 attemptId: 'attempt-1',
-                returnTo: '/settings/home/home-a/policies/identity/provider-1',
+                returnTo: '/settings/home/home-a/sign-in-providers/identity/provider-1',
             },
         });
 
@@ -35,7 +35,7 @@ describe('pendingAdministrationOAuth (web)', () => {
             accountId: 'account-1',
             providerId: 'provider-1',
             attemptId: 'attempt-1',
-            returnTo: '/settings/home/home-a/policies/identity/provider-1',
+            returnTo: '/settings/home/home-a/sign-in-providers/identity/provider-1',
         });
         expect(returned.consumePendingAdministrationOAuth('identity_provider_test')).toBeNull();
     });

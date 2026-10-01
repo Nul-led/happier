@@ -7,4 +7,13 @@ describe('expo vitest stub', () => {
         expect(expo.requireOptionalNativeModule('ExpoHaptics')).toBeNull();
         expect(expo.default.requireOptionalNativeModule('ExpoHaptics')).toBeNull();
     });
+
+    it('keeps Expo crypto importable without silently simulating native AES', () => {
+        const crypto = expo.requireNativeModule<{
+            EncryptionKey: new () => unknown;
+            SealedData: new () => unknown;
+        }>('ExpoCryptoAES');
+        expect(() => new crypto.EncryptionKey()).toThrow(Error);
+        expect(() => new crypto.SealedData()).toThrow(Error);
+    });
 });

@@ -3,6 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const kvStore = vi.hoisted(() => new Map<string, string>());
 vi.mock('react-native-mmkv', () => {
     class MMKV {
+        getAllKeys() {
+            return [...kvStore.keys()];
+        }
         getString(key: string) {
             return kvStore.get(key);
         }
@@ -54,6 +57,16 @@ vi.mock('@/track', () => ({
 }));
 
 const requestMock = vi.hoisted(() => vi.fn());
+// Scoped credential persistence and HTTP remain the only request boundaries.
+vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
+    const { createTokenStorageModuleMock } = await import('@/dev/testkit/mocks/tokenStorage');
+    return createTokenStorageModuleMock({
+        importOriginal,
+        tokenStorage: {
+            getCredentialsForServerUrl: async () => ({ token: 'hdr.eyJzdWIiOiJhY2NvdW50LWEifQ.sig' }),
+        },
+    });
+});
 vi.mock('@/sync/api/session/apiSocket', () => ({
     apiSocket: {
         request: requestMock,
@@ -63,6 +76,7 @@ vi.mock('@/sync/api/session/apiSocket', () => ({
         onStatusChange: vi.fn(),
         onReconnected: vi.fn(),
         disconnect: vi.fn(),
+        invalidateRequests: vi.fn(),
         initialize: vi.fn(),
     },
 }));
@@ -71,6 +85,7 @@ import { createInactiveSessionMessagesWindowState } from '@/sync/runtime/session
 
 import { storage } from './domains/state/storage';
 import type { Session } from './domains/state/storageTypes';
+import { getActiveServerSnapshot } from './domains/server/serverRuntime';
 
 type SyncTargetWindowTestAccess = {
     encryption: {
@@ -92,6 +107,7 @@ function createSession(sessionId: string): Session {
     const now = Date.now();
     return {
         id: sessionId,
+        serverId: getActiveServerSnapshot().serverId,
         seq: 452,
         encryptionMode: 'plain',
         createdAt: now,
@@ -157,6 +173,13 @@ describe('sync target-window message adapter', () => {
         storage.setState(initialStorageState, true);
         kvStore.clear();
         requestMock.mockReset();
+        vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+            const url = String(input instanceof Request ? input.url : input);
+            if (url.endsWith('/v1/auth/ping') || url.endsWith('/health')) {
+                return Response.json({ ok: true });
+            }
+            return requestMock(input, init);
+        });
     });
 
     afterEach(() => {
@@ -219,6 +242,43 @@ describe('sync target-window message adapter', () => {
             .filter((message): message is NonNullable<typeof message> => message != null);
         expect(loadedMessages.map((message) => message.seq)).toEqual([329, 330, 331, 332, 333]);
         expect(loadedMessages.map((message) => (message as { realID?: string }).realID)).toEqual(['m329', 'm330', 'm331', 'm332', 'm333']);
+    });
+
+    it('refreshes retained metadata through the real Sync page callback without replaying equal-revision content', async () => {
+        await seedSession();
+        let refreshed = false;
+        requestMock.mockImplementation(async (input: RequestInfo | URL) => {
+            const url = new URL(String(input instanceof Request ? input.url : input), 'https://sync.test');
+            const row = plainMessage('metadata-target', 331);
+            return Response.json({
+                messages: url.searchParams.has('afterSeq') ? [] : [{
+                    ...row,
+                    content: refreshed
+                        ? { t: 'plain', v: { role: 'user', content: { type: 'text', text: 'must not replay' } } }
+                        : row.content,
+                    accountActor: refreshed
+                        ? { v: 1, accountId: 'alice', profile: { firstName: 'Alice', lastName: null, username: null, avatarUrl: null } }
+                        : null,
+                    messageActionReference: { v: 1, sessionId: SESSION_ID, messageId: row.id, observedRevision: refreshed ? 'rev-2' : 'rev-1' },
+                }],
+                hasMore: false,
+            });
+        });
+        const { sync } = await import('./sync');
+        expect(await sync.loadTargetWindowMessages(SESSION_ID, { kind: 'seq', seq: 331 })).toMatchObject({ status: 'loaded' });
+        const initial = Object.values(storage.getState().sessionMessages[SESSION_ID].messagesById)[0];
+        expect(initial).toMatchObject({ text: 'metadata-target', accountActor: null });
+
+        refreshed = true;
+        expect(await sync.loadTargetWindowMessages(SESSION_ID, { kind: 'seq', seq: 331 })).toMatchObject({ status: 'loaded' });
+        expect(Object.values(storage.getState().sessionMessages[SESSION_ID].messagesById)).toEqual([
+            expect.objectContaining({
+                id: initial.id,
+                text: 'metadata-target',
+                accountActor: expect.objectContaining({ accountId: 'alice', profile: expect.objectContaining({ firstName: 'Alice' }) }),
+                messageActionReference: expect.objectContaining({ observedRevision: 'rev-2' }),
+            }),
+        ]);
     });
 
     it('distinguishes web and native transient request failures from persistent not-ready failure', async () => {

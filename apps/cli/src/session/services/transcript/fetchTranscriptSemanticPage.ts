@@ -1,6 +1,6 @@
 import { logger } from '@/ui/logger';
 import { fetchEncryptedTranscriptMessagesPage } from '@/session/replay/fetchEncryptedTranscriptMessages';
-import { SessionMessageContentSchema } from '@/api/types';
+import { SessionMessagesPageV1Schema } from '@happier-dev/protocol';
 import { createSessionTranscriptStoredContentUnavailableError } from '@/api/session/sessionTranscriptStoredContentUnavailable';
 import { openSessionMessageContent, type SessionStoredContentCryptoContext } from '@/session/transport/encryption/sessionEncryptionContext';
 
@@ -189,7 +189,7 @@ export async function fetchTranscriptSemanticPage(params: Readonly<{
 
   while (items.length < limit && rawRowsScanned < maxRawRowsToScan) {
     throwIfTranscriptReadAborted(params.signal);
-    const page = await fetchPage({
+    const rawPage = await fetchPage({
       token: params.token,
       ...(params.resolveAuthorizationHeaders
         ? { resolveAuthorizationHeaders: params.resolveAuthorizationHeaders }
@@ -205,21 +205,22 @@ export async function fetchTranscriptSemanticPage(params: Readonly<{
       ...(params.signal ? { signal: params.signal } : {}),
     });
     throwIfTranscriptReadAborted(params.signal);
+    const parsedPage = SessionMessagesPageV1Schema.safeParse(rawPage);
+    if (!parsedPage.success) throw createSessionTranscriptStoredContentUnavailableError();
+    const page = parsedPage.data;
     pagesFetched += 1;
 
     nextCursor = params.direction === 'after'
       ? (typeof page.nextAfterSeq === 'number' ? String(page.nextAfterSeq) : null)
       : (typeof page.nextBeforeSeq === 'number' ? String(page.nextBeforeSeq) : null);
-    hasMore = page.hasMore;
+    hasMore = page.hasMore ?? false;
 
     for (let index = 0; index < page.messages.length && rawRowsScanned < maxRawRowsToScan; index += 1) {
       const row = page.messages[index]!;
       rawRowsScanned += 1;
       const rowSeq = typeof row.seq === 'number' && Number.isFinite(row.seq) ? Math.floor(row.seq) : null;
-      const content = SessionMessageContentSchema.safeParse(row.content);
-      if (!content.success) throw createSessionTranscriptStoredContentUnavailableError();
       const extracted = extractSemanticTranscriptItemFromDecryptedPayload({
-        decrypted: openSessionMessageContent({ ...params.contentContext, content: content.data }),
+        decrypted: openSessionMessageContent({ ...params.contentContext, content: row.content }),
         row,
         index,
         sequenceState,

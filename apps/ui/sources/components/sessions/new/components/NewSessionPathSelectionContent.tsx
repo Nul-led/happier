@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { View, type ViewStyle } from 'react-native';
 
-import { layout } from '@/components/ui/layout/layout';
+import { useLayoutMaxWidthStyle } from '@/components/ui/layout/layout';
 import { resolvePopoverSelectionListHeightBehavior } from '@/components/ui/selectionList';
 import { machineMetadataPlatformToTarget } from '@/utils/path/machinePlatform';
 import {
@@ -43,9 +43,12 @@ export type NewSessionPathSelectionContentProps = Readonly<{
     }>;
     machinePlatform?: string | null;
     maxHeight?: number;
+    /** Offers "No folder" first (the composer's picker); see `PathSelectionList`. */
+    noFolderOption?: React.ComponentProps<typeof PathSelectionList>['noFolderOption'];
 }>;
 
 export function NewSessionPathSelectionContent(props: NewSessionPathSelectionContentProps) {
+    const maxWidthStyle = useLayoutMaxWidthStyle();
     const machineId = props.machineBrowse?.enabled === true ? props.machineBrowse.machineId : null;
     const [optimisticFavoriteDirectories, setOptimisticFavoriteDirectories] = React.useState<ReadonlyArray<string>>(
         () => normalizeDirectoryFavoritePaths(props.favoriteDirectories, props.machineHomeDir),
@@ -94,7 +97,7 @@ export function NewSessionPathSelectionContent(props: NewSessionPathSelectionCon
     }, [props.machineHomeDir, props.onChangeFavoriteDirectories, visibleFavoriteDirectories]);
 
     return (
-        <View style={styles.contentWrapper}>
+        <View style={[styles.contentWrapper, maxWidthStyle]}>
             <PathSelectionList
                 initialValue={props.selectedPath}
                 initialSuggestionMode={props.initialSuggestionMode}
@@ -115,6 +118,7 @@ export function NewSessionPathSelectionContent(props: NewSessionPathSelectionCon
                 isFavorite={(path) => favoriteKeys.has(resolveDirectoryFavoriteComparisonKey(path, props.machineHomeDir))}
                 onToggleFavorite={handleToggleFavorite}
                 maxHeight={props.maxHeight}
+                noFolderOption={props.noFolderOption}
                 heightBehavior={
                     props.maxHeight === undefined
                         ? undefined
@@ -128,7 +132,6 @@ export function NewSessionPathSelectionContent(props: NewSessionPathSelectionCon
 const styles = {
     contentWrapper: {
         width: '100%' as const,
-        maxWidth: layout.maxWidth,
         alignSelf: 'center' as const,
     } satisfies ViewStyle,
 };

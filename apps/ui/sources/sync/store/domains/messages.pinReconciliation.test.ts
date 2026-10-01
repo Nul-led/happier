@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createMessagesDomain } from './messages';
 import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
-import type { PersistedSessionMessagePinV1 } from '@/sync/domains/messages/pins/sessionMessagePins';
+import type { PersistedSessionMessagePinV1 } from "@happier-dev/session-core/pins";
 import {
     readPersistedSessionMessagePins,
     savePersistedSessionMessagePins,

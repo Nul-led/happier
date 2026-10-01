@@ -1,9 +1,12 @@
 import React from 'react';
+import { useAiLaunchProfiles } from './useAiLaunchProfiles';
+import type { AuthoringMemory } from './domains/authoringMemory';
 import type { SessionMessagesTailBoundary } from '@/sync/runtime/sessionMessagesTailDiscontinuity';
 import { isPendingMessageForRecipient } from '@/sync/domains/pending/pendingMessageRecipient';
 import { useShallow } from 'zustand/react/shallow';
-import type { MachinePoolViewV1, PrimaryTurnStatusV1 } from '@happier-dev/protocol';
+import { readSessionDirectoryKind, type MachinePoolViewV1, type PrimaryTurnStatusV1 } from '@happier-dev/protocol';
 import { readSessionMetadataLayoutVersion } from '@/sync/engine/sessions/parsePlainSessionPayload';
+import { readSessionListRenderableOwnerMetadataView } from '@/sync/domains/session/listing/sessionListRenderableSessionProjection';
 import {
   resolveAutomationRunProjections,
   resolveWorkflowRunRows,
@@ -45,9 +48,9 @@ import {
 } from '../domains/settings/mobileSurfacePersistence';
 import { buildRealmQualifiedSessionCompanionPreferenceKey } from '@/components/sessions/companion/state/sessionCompanionPreferenceKey';
 import { resolveSessionLocalPreferenceRealm } from '../domains/settings/sessionLocalPreferenceKey';
-import type { AgentTextMessage, Message } from '../domains/messages/messageTypes';
-import { messageAttentionImpact } from '../domains/messages/messageUserAttention';
-import { projectSidechainMessages } from '../reducer/reducer';
+import type { AgentTextMessage, Message } from "@happier-dev/session-core/messages";
+import { messageAttentionImpact } from "@happier-dev/session-core/messages";
+import { projectSidechainMessages } from "@happier-dev/session-core/reducer";
 import type {
   Settings,
   SettingsWriteDelta,
@@ -57,6 +60,7 @@ import { settingsDefaults } from '../domains/settings/settings';
 import {
   mergeCurrentSecretBindingsIntoRawBindings,
   readRetainedSecretBindingsByProfileId,
+  projectCurrentSecretBindingsByProfileId,
 } from '../domains/settings/secretBindings';
 import {
   deriveSessionListRenderableHasUnreadMessagesFromSession,
@@ -82,7 +86,7 @@ import { readExecutionRunResultStatus } from '../domains/session/subagents/execu
 import type { ReviewCommentDraft } from '../domains/input/reviewComments/reviewCommentTypes';
 import type { SessionActionDraft } from '../domains/sessionActions/sessionActionDraftTypes';
 import type { UserProfile } from '../domains/social/friendTypes';
-import { buildSessionMessageRouteId, resolveSessionMessageRouteId } from '../domains/messages/messageRouteIds';
+import { buildSessionMessageRouteId, resolveSessionMessageRouteId } from "@happier-dev/session-core/messages";
 import {
   buildMessageLegacySignature,
   buildMessageRefsSelectionKey,
@@ -128,7 +132,7 @@ import {
   buildSessionOrganizationProjections,
   type SessionOrganizationProjection,
 } from '../domains/session/organization';
-import { isMachineOnline } from '@/utils/sessions/machineUtils';
+import { countMachinePresence, isMachineOnline, type MachinePresenceCounts } from '@/utils/sessions/machineUtils';
 import { resolveServerScopedMachine } from './domains/machines/resolveServerScopedMachine';
 import {
   buildSessionRealtimeScmScopeFromSnapshot,
@@ -142,7 +146,7 @@ import { SESSION_RUNTIME_STATUS_STALE_SIGNAL_MS } from '../domains/session/atten
 import {
   compareTranscriptMessagesOldestFirst,
   normalizeTranscriptSeq,
-} from '../domains/messages/transcriptOrdering';
+} from "@happier-dev/session-core/messages";
 
 import { getStorage } from '../domains/state/storageStore';
 import type { KnownEntitlements } from '../domains/state/storageStore';
@@ -176,8 +180,24 @@ export function useSessions() {
   }, [snapshot.isDataReady, snapshot.sessions]);
 }
 
-export function useSession(id: string): Session | null {
-  return getStorage()(useShallow((state) => state.sessions[id] ?? null));
+export function useSession(id: string, serverId?: string | null): Session | null {
+  const normalizedSessionId = normalizeSessionId(id);
+  const normalizedServerId = normalizeTrimmedString(serverId);
+  const activeServerId = useActiveServerSnapshot(Boolean(normalizedServerId)).serverId;
+  return getStorage()(useShallow((state) => {
+    const session = state.sessions[normalizedSessionId] ?? null;
+    if (!normalizedServerId) return session;
+    if (!session) return null;
+    if (normalizeTrimmedString(session.serverId)) {
+      return areServerProfileIdentifiersEquivalent(session.serverId, normalizedServerId) ? session : null;
+    }
+    // Older live carriers omitted serverId. They belong to the applied active
+    // Home only; selection can change before Sync retires the previous carrier.
+    return areServerProfileIdentifiersEquivalent(activeServerId, normalizedServerId)
+      && areServerProfileIdentifiersEquivalent(state.sessionLocalStateScope?.serverId, normalizedServerId)
+      ? session
+      : null;
+  }));
 }
 
 /**
@@ -187,21 +207,55 @@ export function useSession(id: string): Session | null {
  */
 export type SessionDisplayNameSource = Readonly<Pick<
   Session,
-  'id' | 'metadata' | 'metadataLayoutVersion' | 'ownerMetadataView'
->>;
+  'id' | 'serverId' | 'metadataLayoutVersion' | 'ownerMetadataView'
+> & { metadata: Session['metadata'] | SessionListRenderableSession['metadata'] }>;
 
-export function useSessionDisplayNameSource(sessionId: string): SessionDisplayNameSource | null {
+export function useSessionDisplayNameSource(sessionId: string, serverId?: string | null): SessionDisplayNameSource | null {
+  const normalizedSessionId = normalizeSessionId(sessionId);
+  const normalizedServerId = normalizeTrimmedString(serverId);
   return getStorage()(
-    useShallow((state) => {
-      const session = state.sessions[sessionId];
-      if (!session) return null;
-      return {
-        id: session.id,
-        metadata: session.metadata,
-        metadataLayoutVersion: session.metadataLayoutVersion,
-        ownerMetadataView: session.ownerMetadataView,
-      };
-    }),
+    useShallow((state) => selectSessionDisplayNameSource(state, normalizedSessionId, normalizedServerId)),
+  );
+}
+
+/**
+ * The display-name projection of one Home-qualified session: the hydrated record when it belongs to
+ * that Home, else its list row. One selection owner for every title reader (a session header, a
+ * workspace tab), so they cannot disagree about which record names a session.
+ */
+export function selectSessionDisplayNameSource(
+  state: StorageState,
+  sessionId: string,
+  serverId?: string | null,
+): SessionDisplayNameSource | null {
+  const normalizedSessionId = normalizeSessionId(sessionId);
+  const normalizedServerId = normalizeTrimmedString(serverId);
+  const directSession = state.sessions[normalizedSessionId];
+  const session = !normalizedServerId || areServerProfileIdentifiersEquivalent(directSession?.serverId, normalizedServerId)
+    ? directSession
+    : findSessionListLookupSession(state, { serverId: normalizedServerId, sessionId: normalizedSessionId })?.session;
+  if (!session) return null;
+  return {
+    id: session.id,
+    serverId: normalizedServerId || directSession?.serverId,
+    metadata: session.metadata,
+    metadataLayoutVersion: session.metadataLayoutVersion,
+    ownerMetadataView: session === directSession
+      ? directSession?.ownerMetadataView
+      : readSessionListRenderableOwnerMetadataView(session),
+  };
+}
+
+/**
+ * Projects several sessions through `project` in one subscription; the result keeps its identity
+ * while every projected value is unchanged (`project` should return a primitive, such as a title).
+ */
+export function useSessionDisplayNameProjections<T>(
+  addresses: ReadonlyArray<Readonly<{ sessionId: string; serverId?: string | null }>>,
+  project: (source: SessionDisplayNameSource | null) => T,
+): readonly T[] {
+  return getStorage()(
+    useShallow((state) => addresses.map((address) => project(selectSessionDisplayNameSource(state, address.sessionId, address.serverId)))),
   );
 }
 
@@ -279,29 +333,54 @@ const sessionForkSupportSourceCache = new Map<string, Readonly<{
   value: SessionForkSupportSource;
 }>>();
 
-export function useSessionForkSupportSource(sessionId: string | null): SessionForkSupportSource | null {
+export function useSessionForkSupportSource(
+  sessionId: string | null,
+  serverId?: string | null,
+): SessionForkSupportSource | null {
   return getStorage()(
     useShallow((state) => {
       const normalizedSessionId = normalizeSessionId(sessionId);
-      const session = normalizedSessionId ? state.sessions[normalizedSessionId] ?? null : null;
-      if (!session || !normalizedSessionId) return null;
+      const normalizedServerId = normalizeTrimmedString(serverId);
+      if (!normalizedSessionId) return null;
+      const directSession = state.sessions[normalizedSessionId] ?? null;
+      const session = normalizedServerId
+        ? directSession && areServerProfileIdentifiersEquivalent(directSession.serverId, normalizedServerId)
+          ? directSession
+          : findSessionListLookupSession(state, {
+              serverId: normalizedServerId,
+              sessionId: normalizedSessionId,
+            })?.session ?? null
+        : directSession;
+      if (!session) return null;
 
-      const ownerMetadataView = readSessionOwnerMetadataView(session);
+      const ownerMetadataView = 'ownerMetadataView' in session
+        ? readSessionOwnerMetadataView(session)
+        : null;
+      const resolvedServerId = normalizedServerId || directSession?.serverId || null;
+      const cacheKey = resolvedServerId
+        ? sessionAddressKey({ serverId: resolvedServerId, sessionId: normalizedSessionId })
+        : `legacy:${normalizedSessionId}`;
       const signature = [
-        session.serverId ?? '',
-        readSessionMetadataLayoutVersion(session.metadataLayoutVersion),
-        buildSessionMetadataStabilitySignature(ownerMetadataView),
+        resolvedServerId ?? '',
+        'metadataLayoutVersion' in session
+          ? readSessionMetadataLayoutVersion(session.metadataLayoutVersion)
+          : 0,
+        buildSessionMetadataStabilitySignature(ownerMetadataView ?? session.metadata),
       ].join('\u0000');
-      const cached = sessionForkSupportSourceCache.get(normalizedSessionId);
+      const cached = sessionForkSupportSourceCache.get(cacheKey);
       if (cached?.signature === signature) return cached.value;
 
       const value: SessionForkSupportSource = {
         metadata: session.metadata,
-        metadataLayoutVersion: session.metadataLayoutVersion,
-        ownerMetadataView: session.ownerMetadataView,
-        serverId: session.serverId,
+        ...('ownerMetadataView' in session
+          ? {
+              metadataLayoutVersion: session.metadataLayoutVersion,
+              ownerMetadataView: session.ownerMetadataView,
+            }
+          : {}),
+        serverId: resolvedServerId,
       };
-      sessionForkSupportSourceCache.set(normalizedSessionId, { signature, value });
+      sessionForkSupportSourceCache.set(cacheKey, { signature, value });
       return value;
     })
   );
@@ -385,6 +464,19 @@ export function useSessionMachineId(sessionId: string): string | null {
   return getStorage()((state) => {
     const session = state.sessions[sessionId];
     return session ? resolveSessionMachineId(readSessionOwnerMetadataView(session)) : null;
+  });
+}
+
+/**
+ * Whether the session works in a user folder (`'path'`) or a private one (`'managed'`), as a
+ * PRIMITIVE for the same reason as {@link useSessionMachineId}: the directory record is an owner
+ * key, read through the owner view, and a surface that only names its root must not re-render for
+ * every unrelated metadata push. `null` while the session is unknown here.
+ */
+export function useSessionDirectoryKind(sessionId: string): 'path' | 'managed' | null {
+  return getStorage()((state) => {
+    const session = state.sessions[sessionId];
+    return session ? readSessionDirectoryKind(readSessionOwnerMetadataView(session)) : null;
   });
 }
 
@@ -631,12 +723,42 @@ export type SessionListAttentionRow = Readonly<{
   session: SessionListRenderableSession;
 }>;
 
-export function useSessionListRowsByServerId(): SessionsDomainSlice['sessionListRowsByServerId'] {
-  return getStorage()(useShallow((state) => state.sessionListRowsByServerId));
+const EMPTY_SESSION_LIST_ROWS_BY_SERVER_ID: SessionsDomainSlice['sessionListRowsByServerId'] = Object.freeze({});
+
+/**
+ * Session rows, keyed by Home. Pass `serverIds` to subscribe to those Homes only: a row write on any
+ * other Home then re-renders nothing, and an empty selection (a disabled consumer) never re-renders.
+ * Without it the consumer follows every Home's rows.
+ */
+export function useSessionListRowsByServerId(
+  serverIds?: ReadonlyArray<string>,
+): SessionsDomainSlice['sessionListRowsByServerId'] {
+  const serverIdsKey = serverIds ? serverIds.join('\u0001') : null;
+  const selectedServerIds = React.useMemo(
+    () => (serverIds
+      ? [...new Set(serverIds.map((serverId) => normalizeTrimmedString(serverId)).filter((serverId): serverId is string => Boolean(serverId)))]
+      : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the key is the selection's identity
+    [serverIdsKey],
+  );
+  return getStorage()(useShallow((state) => {
+    if (!selectedServerIds) return state.sessionListRowsByServerId;
+    if (selectedServerIds.length === 0) return EMPTY_SESSION_LIST_ROWS_BY_SERVER_ID;
+    const selected: Record<string, SessionsDomainSlice['sessionListRowsByServerId'][string]> = {};
+    for (const serverId of selectedServerIds) {
+      const rows = readSessionListRowsForServerId(state.sessionListRowsByServerId, serverId);
+      if (rows) selected[serverId] = rows;
+    }
+    return selected;
+  }));
 }
 
 export function useOrdinarySessionListMembershipByServerId(): SessionsDomainSlice['ordinarySessionListMembershipByServerId'] {
   return getStorage()(useShallow((state) => state.ordinarySessionListMembershipByServerId ?? {}));
+}
+
+export function useSessionListQueryMembershipByKey(): SessionsDomainSlice['sessionListQueryMembershipByKey'] {
+  return getStorage()((state) => state.sessionListQueryMembershipByKey);
 }
 
 export function useArchivedSessionListMembershipByServerId(): SessionsDomainSlice['archivedSessionListMembershipByServerId'] {
@@ -1390,10 +1512,22 @@ export function useSessionMessages(
   const messagesById = useSessionMessagesById(normalizedSessionId, enabled);
   const version = useSessionMessagesVersion(normalizedSessionId, enabled);
 
-  const messages = React.useMemo(() => {
-    if (!enabled) {
-      return emptyArray as any as Message[];
-    }
+  const messages = React.useMemo(() => enabled
+    ? readSessionMessagesSnapshot(normalizedSessionId, ids, messagesById, version, isLoaded)
+    : emptyArray as Message[], [enabled, ids, isLoaded, messagesById, normalizedSessionId, version]);
+
+  return React.useMemo(() => ({ messages, isLoaded }), [isLoaded, messages]);
+}
+
+/** Canonical ordered/continuity snapshot, shared by full and narrowly selected transcript readers. */
+export function readSessionMessagesSnapshot(
+  sessionId: string,
+  ids: readonly string[],
+  messagesById: Record<string, Message>,
+  version: number,
+  isLoaded: boolean,
+): Message[] {
+    const normalizedSessionId = normalizeSessionId(sessionId);
 
     if (!Array.isArray(ids) || ids.length === 0) {
       if (messagesById && Object.keys(messagesById).length > 0) {
@@ -1439,7 +1573,7 @@ export function useSessionMessages(
         sessionMessagesArrayCache.delete(normalizedSessionId);
       }
 
-      return emptyArray as any as Message[];
+      return emptyArray as Message[];
     }
 
     const cached = sessionMessagesArrayCache.get(normalizedSessionId);
@@ -1474,9 +1608,12 @@ export function useSessionMessages(
     }
 
     return out;
-  }, [enabled, ids, isLoaded, messagesById, normalizedSessionId, version]);
+}
 
-  return React.useMemo(() => ({ messages, isLoaded }), [isLoaded, messages]);
+/** Whether the Session's transcript has been read at least once; a boolean subscription, no ids. */
+export function useSessionTranscriptLoaded(sessionId: string): boolean {
+  const normalizedSessionId = normalizeSessionId(sessionId);
+  return getStorage()((state) => state.sessionMessages[normalizedSessionId]?.isLoaded ?? false);
 }
 
 export function useSessionTranscriptIds(sessionId: string, enabled: boolean = true): { ids: string[]; isLoaded: boolean } {
@@ -2026,6 +2163,21 @@ export function useSettings(): Settings {
   return getStorage()(useShallow((state) => state.settings ?? settingsDefaults));
 }
 
+/** Subscribe to a settings-domain projection while retaining unchanged selected fields. */
+export function useSettingsSelector<T>(selector: (settings: Settings) => T): T {
+  const selectState = React.useMemo(() => {
+    let previous: { settings: Settings; value: T } | null = null;
+    return (state: StorageState): T => {
+      const settings = state.settings ?? settingsDefaults;
+      if (!previous || previous.settings !== settings) {
+        previous = { settings, value: selector(settings) };
+      }
+      return previous.value;
+    };
+  }, [selector]);
+  return getStorage()(useShallow(selectState));
+}
+
 export function useSettingsVersion(): number | null {
   return getStorage()((state) => state.settingsVersion);
 }
@@ -2058,7 +2210,11 @@ export function useCurrentSecretBindingsByProfileIdMutable(): [
   const rawBindings = getStorage()(useShallow((state) => (
     readRetainedSecretBindingsByProfileId(state.settings ?? settingsDefaults)
   )));
-  const currentBindings = useSetting('currentSecretBindingsByProfileId');
+  const profiles = useAiLaunchProfiles(useSetting('profiles'));
+  const secrets = useSetting('secrets');
+  const currentBindings = React.useMemo(() => projectCurrentSecretBindingsByProfileId({
+    profiles: [], secrets, secretBindingsByProfileId: rawBindings,
+  }, profiles), [profiles, secrets, rawBindings]);
   const setCurrentBindings = React.useCallback(
     (nextBindings: Settings['currentSecretBindingsByProfileId']) => {
       applyRetainedBindings(mergeCurrentSecretBindingsIntoRawBindings({
@@ -2100,13 +2256,13 @@ export function useCurrentFavoriteModelSelectionsV1Mutable(): [
  * key, including after a concurrent CAS winner arrives.
  */
 export function useCurrentRememberedEngineSelectionsByScopeV1Mutable(): [
-  Settings['currentRememberedEngineSelectionsByScopeV1'],
-  (value: Settings['currentRememberedEngineSelectionsByScopeV1']) => void,
+  AuthoringMemory['currentRememberedEngineSelectionsByScopeV1'],
+  (value: AuthoringMemory['currentRememberedEngineSelectionsByScopeV1']) => void,
 ] {
   const applyRememberedReplacement = useApplyRememberedEngineSelectionReplacementIntent();
-  const currentSelections = useSetting('currentRememberedEngineSelectionsByScopeV1');
+  const currentSelections = useAuthoringMemoryField('currentRememberedEngineSelectionsByScopeV1');
   const setCurrentSelections = React.useCallback(
-    (nextSelections: Settings['currentRememberedEngineSelectionsByScopeV1']) => {
+    (nextSelections: AuthoringMemory['currentRememberedEngineSelectionsByScopeV1']) => {
       fireAndForget(
         applyRememberedReplacement({ base: currentSelections, proposed: nextSelections }),
         { tag: 'useCurrentRememberedEngineSelectionsByScopeV1Mutable' },
@@ -2115,6 +2271,10 @@ export function useCurrentRememberedEngineSelectionsByScopeV1Mutable(): [
     [applyRememberedReplacement, currentSelections],
   );
   return [currentSelections, setCurrentSelections];
+}
+
+export function useAuthoringMemoryField<K extends keyof AuthoringMemory>(name: K): AuthoringMemory[K] {
+  return getStorage()((state) => state.authoringMemory[name]);
 }
 
 export function useSetting<K extends keyof Settings>(name: K): Settings[K] {
@@ -2131,6 +2291,22 @@ export function useAllMachines(): Machine[] {
       return resolveVisibleMachinesForActiveServerFromState(state);
     })
   );
+}
+
+/**
+ * This Home's machines online and offline, for always-mounted chrome (the rail's Machines tooltip,
+ * the Settings Machines row). The selector returns a primitive key, so a heartbeat or a metadata
+ * edit that leaves both counts unchanged re-renders nothing, and the counts keep their identity.
+ */
+export function useMachinePresenceCounts(): MachinePresenceCounts {
+  const key = getStorage()((state) => {
+    const counts = countMachinePresence(resolveVisibleMachinesForActiveServerFromState(state));
+    return `${counts.online}:${counts.offline}`;
+  });
+  return React.useMemo(() => {
+    const [online = 0, offline = 0] = key.split(':').map(Number);
+    return { online, offline };
+  }, [key]);
 }
 
 type LaunchSelectionMachinesCache = Readonly<{
@@ -2257,6 +2433,17 @@ export function useMachineListStatusByServerId(enabled = true): Record<string, '
       ? (machineListStatusByServerId as unknown as Record<string, 'idle' | 'loading' | 'signedOut' | 'error'>)
       : {};
   }, [machineListStatusByServerId]);
+}
+
+/**
+ * Whether the active Home's machine list has been read and applied, so a machine absent from it has
+ * really left. App data readiness (sessions) can arrive before the machine list does.
+ */
+export function useIsActiveMachineListSettled(): boolean {
+  const activeServerId = useActiveServerSnapshot().serverId;
+  return getStorage()((state) => Object.entries(state.machineListStatusByServerId ?? {}).some(([serverId, status]) => (
+    status === 'idle' && areServerProfileIdentifiersEquivalent(serverId, activeServerId)
+  )));
 }
 
 export function useMachineListStatusForServer(serverId: string): 'idle' | 'loading' | 'signedOut' | 'error' {
@@ -2583,6 +2770,15 @@ export function useProjectScmSnapshot(projectId: string | null): ScmWorkingSnaps
   return getStorage()(
     useShallow((state) => (projectId ? state.getProjectScmSnapshot(projectId) : null))
   );
+}
+
+/** Whether the session's folder is a repository (null until known); re-renders only when that flips. */
+export function useSessionProjectScmIsRepo(sessionId: string | null, serverId?: string | null): boolean | null {
+  return getStorage()((state) => {
+    if (!sessionId) return null;
+    const snapshot = state.getSessionProjectScmSnapshot(sessionId, serverId);
+    return snapshot ? snapshot.repo.isRepo === true : null;
+  });
 }
 
 export function useSessionProjectScmSnapshot(sessionId: string | null, serverId?: string | null): ScmWorkingSnapshot | null {

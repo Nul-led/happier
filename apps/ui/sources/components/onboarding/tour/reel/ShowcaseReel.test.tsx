@@ -30,7 +30,7 @@ describe('ShowcaseReel', () => {
         expect(screen.getTextContent()).toContain('Semantic memory search across your sessions');
         expect(screen.findByType(SlideTransitionSwitch).props).toMatchObject({
             contentKey: 'memorySearch',
-            preset: 'soft',
+            preset: 'signature',
             blur: true,
             direction: 'replace',
         });

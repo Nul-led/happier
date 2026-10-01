@@ -1,5 +1,7 @@
 import {
+    deriveWorkspaceSyncTopology,
     WorkspaceSyncRelationshipV1Schema,
+    resolveWorkspaceSyncTransferRoute,
     type WorkspaceRefV1,
     type WorkspaceSyncRelationshipV1,
     type WorkspaceSyncStatusV1,
@@ -31,6 +33,14 @@ export type WorkspaceSyncRelationshipSummary = Readonly<{
     alpha: WorkspaceSyncRelationshipEndpoint;
     beta: WorkspaceSyncRelationshipEndpoint;
     status: WorkspaceSyncStatusV1 | null;
+}>;
+
+export type WorkspaceSyncLinkedHandoffChoice = Readonly<{
+    sourceWorkspaceRefId: string;
+    targetWorkspaceRefId: string;
+    hubMachineName: string;
+    routeLabel: string;
+    relationshipIds: readonly string[];
 }>;
 
 const EMPTY_RELATIONSHIPS: readonly unknown[] = [];
@@ -150,18 +160,138 @@ export function selectWorkspaceSyncRelationshipSummariesForHandoff(
     });
 }
 
-export function resolveWorkspaceSyncConflictCountForWorkspaceRef(
+/** Uses the Protocol topology owner for the linked route; this UI projection
+ * only maps the selected Machine/path scopes to exact current WorkspaceRefs. */
+export function selectWorkspaceSyncLinkedHandoffChoice(
+    summaries: readonly WorkspaceSyncRelationshipSummary[],
+    scopes: Readonly<{ source: WorkspaceScopeBase; target: WorkspaceScopeBase }>,
+): WorkspaceSyncLinkedHandoffChoice | null {
+    const source = normalizeWorkspaceScopeBase(scopes.source);
+    const target = normalizeWorkspaceScopeBase(scopes.target);
+    if (!source || !target || source.serverId !== target.serverId) return null;
+    const endpoints = [...new Map(summaries.flatMap((summary) => [summary.alpha, summary.beta])
+        .filter((endpoint) => endpoint.workspaceRef !== null)
+        .map((endpoint) => [endpoint.workspaceRefId, endpoint] as const)).values()];
+    const sourceEndpoints = endpoints.filter((endpoint) => endpointMatchesScope(endpoint, source, { allowScopeDescendantOfEndpointRoot: true }));
+    const targetEndpoints = endpoints.filter((endpoint) => endpointMatchesScope(endpoint, target));
+    const relationships = [...new Map(summaries.map((summary) => [summary.relationshipId, summary.relationship] as const)).values()];
+    const workspaceRefs = endpoints.flatMap((endpoint) => endpoint.workspaceRef ? [endpoint.workspaceRef] : []);
+    const choices = sourceEndpoints.flatMap((sourceEndpoint) => targetEndpoints.flatMap((targetEndpoint) => {
+        const route = resolveWorkspaceSyncTransferRoute({
+            workspaceRefs,
+            relationships,
+            sourceWorkspaceRefId: sourceEndpoint.workspaceRefId,
+            targetWorkspaceRefId: targetEndpoint.workspaceRefId,
+        });
+        if (!route.ok || route.kind !== 'via_hub') return [];
+        const hub = endpoints.find((endpoint) => endpoint.workspaceRefId === route.hubWorkspaceRefId);
+        return [{
+            sourceWorkspaceRefId: sourceEndpoint.workspaceRefId,
+            targetWorkspaceRefId: targetEndpoint.workspaceRefId,
+            hubMachineName: hub?.machineName ?? hub?.label ?? route.controllerMachineId,
+            routeLabel: [sourceEndpoint.label, hub?.label ?? route.hubWorkspaceRefId, targetEndpoint.label].join(' → '),
+            relationshipIds: route.relationships.map(({ relationshipId }) => relationshipId),
+        }];
+    }));
+    return choices.length === 1 ? choices[0]! : null;
+}
+
+export type WorkspaceSyncSetAttention = Readonly<{
+    conflictedLinkCount: number;
+    unknownLinkCount: number;
+}>;
+
+const EMPTY_SET_ATTENTION: WorkspaceSyncSetAttention = Object.freeze({ conflictedLinkCount: 0, unknownLinkCount: 0 });
+
+function projectWorkspaceSyncLinkAttention(summary: WorkspaceSyncRelationshipSummary): WorkspaceSyncSetAttention {
+    if (!summary.relationship.enabled) return EMPTY_SET_ATTENTION;
+    const status = summary.status;
+    return {
+        conflictedLinkCount: status && (status.conflictCount > 0 || status.state === 'conflicted') ? 1 : 0,
+        unknownLinkCount: !status || status.state === 'controller_unavailable'
+            || status.state === 'disconnected' || status.state === 'error' || status.state === 'stopped'
+            || status.endpointStates.alpha === null || status.endpointStates.beta === null ? 1 : 0,
+    };
+}
+
+/** One Protocol topology projection feeds all closed-row attention badges. */
+export function projectWorkspaceSyncSetAttentionByWorkspaceRefId(
+    summaries: readonly WorkspaceSyncRelationshipSummary[],
+): ReadonlyMap<string, WorkspaceSyncSetAttention> {
+    const refs = new Map<string, WorkspaceRefV1>();
+    const summariesById = new Map(summaries.map((summary) => [summary.relationshipId, summary] as const));
+    for (const summary of summaries) {
+        if (summary.alpha.workspaceRef) refs.set(summary.alpha.workspaceRefId, summary.alpha.workspaceRef);
+        if (summary.beta.workspaceRef) refs.set(summary.beta.workspaceRefId, summary.beta.workspaceRef);
+    }
+    const topology = deriveWorkspaceSyncTopology({
+        workspaceRefs: [...refs.values()],
+        relationships: summaries.map((summary) => summary.relationship),
+    });
+    const result = new Map<string, WorkspaceSyncSetAttention>();
+    for (const set of topology.sets) {
+        let conflictedLinkCount = 0;
+        let unknownLinkCount = 0;
+        for (const relationship of set.relationships) {
+            const summary = summariesById.get(relationship.relationshipId);
+            if (!summary) continue;
+            const attention = projectWorkspaceSyncLinkAttention(summary);
+            conflictedLinkCount += attention.conflictedLinkCount;
+            unknownLinkCount += attention.unknownLinkCount;
+        }
+        const attention = { conflictedLinkCount, unknownLinkCount };
+        for (const relationship of set.relationships) {
+            result.set(relationship.alphaWorkspaceRefId, attention);
+            result.set(relationship.betaWorkspaceRefId, attention);
+        }
+    }
+    return result;
+}
+
+/** The Protocol topology owner decides which saved links share this WorkspaceRef. */
+export function resolveWorkspaceSyncSetSummaries(
     summaries: readonly WorkspaceSyncRelationshipSummary[],
     workspaceRefId: string,
-): number {
-    const conflictsByRelationshipId = new Map<string, number>();
+): readonly WorkspaceSyncRelationshipSummary[] {
+    const refs = new Map<string, WorkspaceRefV1>();
     for (const summary of summaries) {
-        if (!summary.relationship.enabled) continue;
-        if (
-            summary.alpha.workspaceRefId !== workspaceRefId
-            && summary.beta.workspaceRefId !== workspaceRefId
-        ) continue;
-        conflictsByRelationshipId.set(summary.relationshipId, summary.status?.conflictCount ?? 0);
+        if (summary.alpha.workspaceRef) refs.set(summary.alpha.workspaceRefId, summary.alpha.workspaceRef);
+        if (summary.beta.workspaceRef) refs.set(summary.beta.workspaceRefId, summary.beta.workspaceRef);
     }
-    return [...conflictsByRelationshipId.values()].reduce((total, count) => total + count, 0);
+    const topology = deriveWorkspaceSyncTopology({
+        workspaceRefs: [...refs.values()],
+        relationships: summaries.map((summary) => summary.relationship),
+    });
+    const set = topology.sets.find((candidate) => candidate.hubWorkspaceRefId === workspaceRefId
+        || candidate.relationships.some((relationship) => relationship.alphaWorkspaceRefId === workspaceRefId
+            || relationship.betaWorkspaceRefId === workspaceRefId));
+    if (!set) return [];
+    const relationshipIds = new Set(set.relationships.map((relationship) => relationship.relationshipId));
+    return summaries.filter((summary) => relationshipIds.has(summary.relationshipId));
+}
+
+/** Select the source shown by Add machine from the current link set. */
+export function selectWorkspaceSyncAddMachineHub(
+    summaries: readonly WorkspaceSyncRelationshipSummary[],
+    workspaceRefId: string,
+): WorkspaceRefV1 | null {
+    const refs = new Map<string, WorkspaceRefV1>();
+    for (const summary of summaries) {
+        if (summary.alpha.workspaceRef) refs.set(summary.alpha.workspaceRefId, summary.alpha.workspaceRef);
+        if (summary.beta.workspaceRef) refs.set(summary.beta.workspaceRefId, summary.beta.workspaceRef);
+    }
+    const set = deriveWorkspaceSyncTopology({
+        workspaceRefs: [...refs.values()],
+        relationships: summaries.map((summary) => summary.relationship),
+    }).sets.find((candidate) => candidate.relationships.some((relationship) => (
+        relationship.alphaWorkspaceRefId === workspaceRefId || relationship.betaWorkspaceRefId === workspaceRefId
+    )));
+    return set ? refs.get(set.hubWorkspaceRefId) ?? null : null;
+}
+
+export function resolveWorkspaceSyncSetAttention(
+    summaries: readonly WorkspaceSyncRelationshipSummary[],
+    workspaceRefId: string,
+): WorkspaceSyncSetAttention {
+    return projectWorkspaceSyncSetAttentionByWorkspaceRefId(summaries).get(workspaceRefId) ?? EMPTY_SET_ATTENTION;
 }

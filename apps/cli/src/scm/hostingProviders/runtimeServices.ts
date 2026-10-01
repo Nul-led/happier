@@ -1,6 +1,7 @@
 import {
     ConnectedAccountHttpHeadersRequestSchema,
     ScmHostingProviderRefSchema,
+    sameQualifiedConnectedAccountRef,
     type ManagedExecutableRef,
 } from '@happier-dev/protocol';
 import type {
@@ -35,6 +36,7 @@ import type {
 import type { ResolvedExecutablePluginRuntimeRegistry } from '@/plugins/runtime/resolveExecutablePluginRuntimeRegistry';
 import { clonePluginPlainData } from '@/plugins/runtime/plainData';
 import { readHostingProviderExecutionAuthority } from './executionAuthority';
+import { normalizeConnectedAccountConfiguredBase } from '@/plugins/runtime/connectedAccounts/configuredOrigins';
 
 type ScmHostingProviderRuntimeRegistryInput = Readonly<{
     contributes: Readonly<{
@@ -49,7 +51,7 @@ type ScmHostingProviderRuntimeRegistryInput = Readonly<{
         Pick<StablePluginConnectedAccountsOwner, 'materialize'>
         // Optional: a host that cannot list accounts recognizes no configured deployment, which
         // is exactly what an absent projection should mean.
-        & Partial<Pick<StablePluginConnectedAccountsOwner, 'listAccounts'>>
+        & Partial<Pick<StablePluginConnectedAccountsOwner, 'getBinding' | 'listAccounts'>>
     ) | null;
     executeCommand?: (
         input: Readonly<{
@@ -322,7 +324,7 @@ export function createHostScmHostingProviderRegistry(
         ...input.scmHostingProvidersById.values(),
     ].map((entry) => ({
         pluginId: entry.pluginId,
-        generation: entry.generation,
+        occurrenceId: entry.occurrenceId,
         registration: entry.registration,
     }));
 
@@ -361,10 +363,45 @@ export function createHostScmHostingProviderRuntimeServices(
     ): void => {
         assertHostingOperationCurrent(signal);
         const current = input.scmHostingProvidersById.get(authority.qualifiedId);
-        if (!current || current.generation !== authority.generation) {
+        if (!current || current.occurrenceId !== authority.occurrenceId) {
             throw new Error('SCM hosting authentication generation is stale');
         }
     };
+    async function resolveBoundHostingAccount(
+        owner: NonNullable<ReturnType<NonNullable<ScmHostingProviderRuntimeRegistryInput['resolveConnectedAccountPurposeBindingOwner']>>>,
+        authorization: NonNullable<ReturnType<typeof resolveProviderPurposeAuthorization>>,
+        request: ScmHostingProviderRuntimeMaterializationRequest,
+        origin: string,
+        authority: ReturnType<typeof captureHostingAuthAuthority>,
+        signal: AbortSignal,
+    ) {
+        if (!owner.getBinding || !owner.listAccounts) return null;
+        let deployment: ReturnType<typeof normalizeConnectedAccountConfiguredBase>;
+        try {
+            deployment = normalizeConnectedAccountConfiguredBase(request.provider.baseUrl);
+        } catch { return null; }
+        if (deployment.origin !== origin) return null;
+        const binding = await owner.getBinding({ ...authorization, signal });
+        assertHostingAuthCurrent(authority, signal);
+        if (!binding) return null;
+        const listed = await owner.listAccounts({ ...authorization, limit: CONNECTED_ACCOUNT_METADATA_LIST_MAX_LIMIT, signal });
+        assertHostingAuthCurrent(authority, signal);
+        const selected = listed.accounts.find((account) => sameQualifiedConnectedAccountRef(account.account, binding.account));
+        if (!selected) return null;
+        if (selected.connectedAccountBases.length > 0) {
+            const matches = selected.connectedAccountBases.some((base) => {
+                try { return normalizeConnectedAccountConfiguredBase(base).base === deployment.base; }
+                catch { return false; }
+            });
+            if (!matches) return null;
+        } else if (deployment.base !== deployment.origin) {
+            return null;
+        }
+        // Fixed-origin services may publish no configured base. Only a bare
+        // origin can use that retained seam: the canonical account runtime still
+        // validates origin, and expectedAccount pins its exact selected identity.
+        return binding.account;
+    }
     const systemToolContext = createDaemonSpawnToolResolutionContext({ processEnv: process.env });
     const executableResolver = createStableManagedExecutableResolver({
         systemTools: input.contributes.systemTools ?? [],
@@ -418,8 +455,11 @@ export function createHostScmHostingProviderRuntimeServices(
                 input.resolveConnectedAccountPurposeBindingOwner?.() ?? null;
             if (!owner) return { kind: 'missing', reason: 'credential_unavailable' };
             const signal = options?.signal ?? new AbortController().signal;
+            const expectedAccount = await resolveBoundHostingAccount(owner, authorization, requestSnapshot, origin, authority, signal);
+            if (!expectedAccount) return { kind: 'missing', reason: 'credential_unavailable' };
             const result = await owner.materialize({
                 ...authorization,
+                expectedAccount,
                 request: createScmConnectedAccountMaterializationRequest(origin),
                 signal,
             });
@@ -464,8 +504,11 @@ export function createHostScmHostingProviderRuntimeServices(
                 input.resolveConnectedAccountPurposeBindingOwner?.() ?? null;
             if (!owner) return { kind: 'missing', reason: 'credential_unavailable' };
             const signal = options?.signal ?? new AbortController().signal;
+            const expectedAccount = await resolveBoundHostingAccount(owner, authorization, requestSnapshot, origin, authority, signal);
+            if (!expectedAccount) return { kind: 'missing', reason: 'credential_unavailable' };
             const result = await owner.materialize({
                 ...authorization,
+                expectedAccount,
                 request: createScmConnectedAccountMaterializationRequest(origin),
                 signal,
             });
@@ -496,7 +539,7 @@ export function createHostScmHostingProviderRuntimeServices(
                 }
                 const qualifiedId = `${authority.pluginId}/${authority.contributionId}`;
                 const current = input.scmHostingProvidersById.get(qualifiedId);
-                if (!current || current.generation !== authority.generation) {
+                if (!current || current.occurrenceId !== authority.occurrenceId) {
                     throw new Error('SCM hosting command execution generation is stale');
                 }
                 if (options?.signal?.aborted) {
@@ -508,9 +551,9 @@ export function createHostScmHostingProviderRuntimeServices(
                     allowedExecutables: [request.executable],
                     allowedEnvKeys: [...(input.envAllowedNamesByPluginId?.get(authority.pluginId) ?? [])],
                     signal,
-                    isGenerationCurrent: () => {
+                    isOccurrenceCurrent: () => {
                         const latest = input.scmHostingProvidersById.get(qualifiedId);
-                        return latest?.generation === authority.generation;
+                        return latest?.occurrenceId === authority.occurrenceId;
                     },
                     resolveExecutable: async (executable) => await executableResolver(executable, authority.pluginId),
                     async resolvePath() {

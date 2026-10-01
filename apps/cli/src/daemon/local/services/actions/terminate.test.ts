@@ -111,6 +111,7 @@ function fakeControl(overrides: ControlOverrides = {}): TerminateProcessControl 
             aliveIndex += 1;
             return value;
         }),
+        readProcessIdentity: overrides.readProcessIdentity ?? (async (pid) => ({ pid, startTime: 1_717_171_717_000 })),
         resolveDescendantPids,
         signal,
         terminateWindowsTree,
@@ -119,6 +120,52 @@ function fakeControl(overrides: ControlOverrides = {}): TerminateProcessControl 
 }
 
 describe('createTerminateDetectedService', () => {
+    it.each([4_321, 4_322])('never follows or kills a captured pid reused during the grace window (%s)', async (reusedPid) => {
+        let reused = false;
+        const control = fakeControl({
+            descendantPids: [4_322],
+            isProcessAlive: async (pid) => pid === reusedPid,
+            readProcessIdentity: async (pid) => ({ pid, startTime: pid === reusedPid && reused ? 1_717_171_718_000 : 1_717_171_717_000 }),
+            wait: async () => { reused = true; },
+        });
+        const result = await createTerminateDetectedService(control, { graceMs: 0 })({ request: request(), entry: entry(), now: 0 });
+
+        expect(result).toEqual({ status: 'denied', reasonCode: 'identity_changed' });
+        expect(control.signal.mock.calls.map(([input]) => input.signal)).toEqual(['SIGTERM']);
+        expect(control.resolveDescendantPids).toHaveBeenCalledTimes(1);
+    });
+
+    it('refuses escalation when a surviving orphan identity cannot be verified', async () => {
+        let afterGrace = false;
+        const control = fakeControl({
+            descendantPids: [4_322],
+            isProcessAlive: async (pid) => pid === 4_322,
+            readProcessIdentity: async (pid) => afterGrace ? null : { pid, startTime: 1_717_171_717_000 },
+            wait: async () => { afterGrace = true; },
+        });
+        const result = await createTerminateDetectedService(control, { graceMs: 0 })({ request: request(), entry: entry(), now: 0 });
+
+        expect(result).toEqual({ status: 'failed', reasonCode: 'process_tree_unresolved' });
+        expect(control.signal.mock.calls.map(([input]) => input.signal)).toEqual(['SIGTERM']);
+    });
+
+    it('revalidates captured identities again when a pid is reused during descendant discovery', async () => {
+        let reused = false;
+        const control = fakeControl({
+            descendantPids: [4_322],
+            isProcessAlive: async (pid) => pid === 4_322,
+            readProcessIdentity: async (pid) => ({ pid, startTime: pid === 4_322 && reused ? 1_717_171_718_000 : 1_717_171_717_000 }),
+        });
+        control.resolveDescendantPids.mockImplementation(async (roots: number | readonly number[]) => {
+            if (Array.isArray(roots)) reused = true;
+            return { status: 'resolved', pids: [4_322] };
+        });
+        const result = await createTerminateDetectedService(control, { graceMs: 0 })({ request: request(), entry: entry(), now: 0 });
+
+        expect(result).toEqual({ status: 'denied', reasonCode: 'identity_changed' });
+        expect(control.signal.mock.calls.map(([input]) => input.signal)).toEqual(['SIGTERM']);
+    });
+
     it('refuses an unsafe pid (never signals pid 0/1)', async () => {
         const control = fakeControl();
         const terminate = createTerminateDetectedService(control);
@@ -231,10 +278,15 @@ describe('createTerminateDetectedService', () => {
     });
 
     it('escalates to SIGKILL when the process is still alive after grace', async () => {
+        let treeAlive = true;
         const control = fakeControl({
             probeResults: [held({ pid: 4_321, startTime: 1_717_171_717_000 }), { status: 'free' }],
-            aliveResults: [true],
+            isProcessAlive: async () => treeAlive,
             descendantPids: [4_322],
+        });
+        control.signal.mockImplementation(async ({ pid, signal, descendantPids }) => {
+            if (signal === 'SIGKILL') treeAlive = false;
+            return { status: 'delivered', deliveredPids: [pid, ...descendantPids] };
         });
         const terminate = createTerminateDetectedService(control, { graceMs: 1 });
 
@@ -253,16 +305,70 @@ describe('createTerminateDetectedService', () => {
         });
     });
 
-    it('unions descendants spawned during the grace window into the SIGKILL round', async () => {
-        // Surviving SIGTERM is exactly when a dev server may fork a replacement worker; the
-        // first round's pids stay in the set because they may since have been orphaned onto init.
+    it('escalates a surviving descendant after the listener exits and verifies it is gone', async () => {
+        let childAlive = true;
         const control = fakeControl({
-            probeResults: [held({ pid: 4_321, startTime: 1_717_171_717_000 }), { status: 'free' }],
-            aliveResults: [true],
+            descendantPids: [4_322],
+            isProcessAlive: async (pid) => pid === 4_322 && childAlive,
+        });
+        control.signal.mockImplementation(async ({ signal }) => {
+            if (signal === 'SIGKILL') childAlive = false;
+            return { status: 'delivered', deliveredPids: signal === 'SIGKILL' ? [4_322] : [4_321, 4_322] };
+        });
+        const terminate = createTerminateDetectedService(control, { graceMs: 1, verifyPollMs: 0, verifyAttempts: 1 });
+
+        await expect(terminate({ request: request(), entry: entry(), now: 0 })).resolves.toEqual({ status: 'succeeded' });
+        expect(childAlive).toBe(false);
+    });
+
+    it('refuses success when the port is released but a descendant remains present', async () => {
+        const control = fakeControl({
+            descendantPids: [4_322],
+            isProcessAlive: async (pid) => pid === 4_322,
+        });
+        const terminate = createTerminateDetectedService(control, { graceMs: 1, verifyPollMs: 0, verifyAttempts: 1 });
+
+        await expect(terminate({ request: request(), entry: entry(), now: 0 }))
+            .resolves.toMatchObject({ status: 'failed' });
+    });
+
+    it('discovers workers spawned by a surviving orphan during the grace window', async () => {
+        const alive = new Set([4_322, 4_323]);
+        const control = fakeControl({
+            isProcessAlive: async (pid) => alive.has(pid),
             descendantRounds: [
                 { status: 'resolved', pids: [4_322] },
                 { status: 'resolved', pids: [4_323] },
             ],
+        });
+        control.signal.mockImplementation(async ({ pid, signal, descendantPids }) => {
+            if (signal === 'SIGKILL') {
+                for (const target of [pid, ...descendantPids]) alive.delete(target);
+            }
+            return { status: 'delivered', deliveredPids: [pid, ...descendantPids] };
+        });
+        const terminate = createTerminateDetectedService(control, { graceMs: 1, verifyPollMs: 0, verifyAttempts: 1 });
+
+        await expect(terminate({ request: request(), entry: entry(), now: 0 })).resolves.toEqual({ status: 'succeeded' });
+        expect(alive.size).toBe(0);
+    });
+
+
+    it('unions descendants spawned during the grace window into the SIGKILL round', async () => {
+        // Surviving SIGTERM is exactly when a dev server may fork a replacement worker; the
+        // first round's pids stay in the set because they may since have been orphaned onto init.
+        let treeAlive = true;
+        const control = fakeControl({
+            probeResults: [held({ pid: 4_321, startTime: 1_717_171_717_000 }), { status: 'free' }],
+            isProcessAlive: async () => treeAlive,
+            descendantRounds: [
+                { status: 'resolved', pids: [4_322] },
+                { status: 'resolved', pids: [4_323] },
+            ],
+        });
+        control.signal.mockImplementation(async ({ pid, signal, descendantPids }) => {
+            if (signal === 'SIGKILL') treeAlive = false;
+            return { status: 'delivered', deliveredPids: [pid, ...descendantPids] };
         });
         const terminate = createTerminateDetectedService(control, { graceMs: 1 });
 
@@ -357,10 +463,14 @@ describe('createTerminateDetectedService', () => {
     });
 
     it('uses taskkill /T then /F on Windows', async () => {
+        let treeAlive = true;
         const control = fakeControl({
             platform: 'windows',
             probeResults: [held({ pid: 4_321, startTime: 1_717_171_717_000 }), { status: 'free' }],
-            aliveResults: [true],
+            isProcessAlive: async () => treeAlive,
+        });
+        control.terminateWindowsTree.mockImplementation(async ({ force }) => {
+            if (force) treeAlive = false;
         });
         const terminate = createTerminateDetectedService(control, { graceMs: 1 });
 

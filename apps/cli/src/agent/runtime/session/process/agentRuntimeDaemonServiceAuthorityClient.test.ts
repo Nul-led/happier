@@ -76,7 +76,11 @@ async function createTestAuthority(input: Readonly<{
       pluginVersion: '1.2.3',
       agentId: 'acme-agent',
       localAgentId: 'acme-agent',
-      immutableGenerationId: `sha256:${'1'.repeat(64)}`,
+      sourceCustody: {
+        kind: 'managed',
+        immutableGenerationId: `sha256:${'1'.repeat(64)}`,
+        installSource: 'localPath',
+      },
       locator: {
         module: './runtime.mjs',
         export: 'createRuntime',
@@ -89,6 +93,62 @@ async function createTestAuthority(input: Readonly<{
 }
 
 describe('current Agent runtime daemon service authority client', () => {
+  it('admits a new prompt after daemon replacement changes only the runner command witness', async () => {
+    const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-reattached-input-'));
+    roots.push(happyHomeDir);
+    const runner = {
+      pid: process.pid,
+      processStartTimeMs: 23_346,
+      processCommandHash: hashProcessCommand('happier runner --launch-wrapper'),
+      snapshotIdentity: 'snapshot:runner-a',
+    };
+    const authority = await createTestAuthority({ happyHomeDir, runner });
+    await publishAgentRuntimeDaemonServiceAuthority({
+      ...authority,
+      httpPort: 31_001,
+      capability: 'A'.repeat(43),
+    });
+    await publishAgentRuntimeDaemonServiceAuthority({
+      ...authority,
+      runner: {
+        ...runner,
+        processCommandHash: hashProcessCommand('happier runner --existing-session session-1'),
+      },
+      httpPort: 31_002,
+      capability: 'B'.repeat(43),
+    });
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      expect(JSON.parse(String(init?.body))).toMatchObject({
+        operation: { kind: 'session.input.admit' },
+      });
+      return new Response(JSON.stringify({
+        ok: true,
+        result: {
+          kind: 'session.input.admission',
+          status: 'resolved',
+          admission: { status: 'alreadyAccepted', localId: 'local-reattached' },
+        },
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(admitCurrentRunnerSessionInput({
+      authority,
+      requestId: 'admission-after-replacement',
+      request: {
+        v: 1,
+        sessionId: authority.sessionId,
+        targetMachineId: 'machine-1',
+        localId: 'local-reattached',
+        content: { t: 'plain', v: { role: 'user' } },
+        requestedAction: { v: 1, kind: 'enqueue' },
+      },
+      timeoutMs: null,
+    })).resolves.toEqual({ status: 'alreadyAccepted', localId: 'local-reattached' });
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(new URL(String(fetchMock.mock.calls[0]?.[0])).port).toBe('31002');
+  });
+
   it('opens the exact Team credential binding through the current daemon Session authority', async () => {
     const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-agent-team-provider-'));
     roots.push(happyHomeDir);
@@ -246,7 +306,14 @@ describe('current Agent runtime daemon service authority client', () => {
         status: 200,
         headers: { 'content-type': 'application/json' },
       }))
-      .mockRejectedValueOnce(new TypeError('daemon response lost after dispatch'));
+      .mockRejectedValueOnce(new TypeError('daemon response lost after dispatch'))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ok: false,
+        error: {
+          code: 'agent_runtime_daemon_service_generation_not_current',
+          message: 'Runner generation is not current',
+        },
+      }), { status: 200, headers: { 'content-type': 'application/json' } }));
     vi.stubGlobal('fetch', fetchMock);
     const request = {
       v: 1 as const,
@@ -273,6 +340,12 @@ describe('current Agent runtime daemon service authority client', () => {
       localId: 'local-1',
       code: 'machine_admission_daemon_response_unknown',
     });
+    await expect(admitCurrentRunnerSessionInput({
+      authority,
+      requestId: 'admission-stale-generation',
+      request,
+      timeoutMs: null,
+    })).resolves.toEqual({ status: 'rejected', code: 'session_input_source_authority_mismatch' });
 
     const cancellation = new AbortController();
     cancellation.abort();
@@ -286,7 +359,7 @@ describe('current Agent runtime daemon service authority client', () => {
       status: 'rejected',
       code: 'session_input_cancelled',
     });
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
   it('preserves daemon-settled service errors while only the pre-service invocation miss enables safe reprepare', async () => {

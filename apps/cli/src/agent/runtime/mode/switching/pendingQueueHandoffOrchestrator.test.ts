@@ -118,6 +118,25 @@ describe('pendingQueueHandoffOrchestrator', () => {
     });
   });
 
+  it('keeps materializing remote input while a shared provider attach remains remotely writable', () => {
+    expect(
+      resolvePendingQueueHandoff({
+        currentMode: 'terminal',
+        remoteTurnInFlight: false,
+        terminalTopology: 'shared',
+        terminalRemoteWritable: true,
+        terminalTurnState: { state: 'running', source: 'hook' },
+        pendingCount: 1,
+        resumeReadiness: { ready: true },
+        intent: 'queue',
+        nowMs: 55,
+      }),
+    ).toMatchObject({
+      action: { type: 'materialize_remote_pending' },
+      status: { status: 'none', pendingCount: 1 },
+    });
+  });
+
   it('injects pending input into an active terminal only when explicit injection capability is ready', () => {
     const input: ResolvePendingQueueHandoffInput & {
       terminalPromptInjectionAvailable: true;

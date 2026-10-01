@@ -26,7 +26,10 @@ describe('deriveDeviceRemoteAlertPolicyV1', () => {
 
     it('treats disabled device overrides as Account inheritance and keeps local-only controls local', () => {
         expect(deriveDeviceRemoteAlertPolicyV1({
-            accountSettings: { sessionRemoteAlertsEnabled: true },
+            accountSettings: {
+                sessionRemoteAlertsEnabled: true,
+                attentionDeliveryPolicyV1: { v: 1, sounds: { volume: 0.4 } },
+            },
             localSettings: {
                 deviceRemoteAlertsEnabled: true,
                 attentionDeviceOverridesV1: {
@@ -46,7 +49,7 @@ describe('deriveDeviceRemoteAlertPolicyV1', () => {
             quietHoursOverride: { mode: 'account' },
             foregroundBehavior: 'account',
             previewCeiling: 'account',
-            soundVolume: 1,
+            soundVolume: 0.4,
         });
     });
 

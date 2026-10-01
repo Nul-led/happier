@@ -6,6 +6,9 @@ import {
   TeamCredentialDirectMaterialCensusOutputV1Schema,
   TeamCredentialDirectMaterialUpsertRequestV1Schema,
   TeamCredentialDirectMaterialUpsertResponseV1Schema,
+  TeamCredentialDirectMaterialWithdrawRequestV1Schema,
+  TeamCredentialDirectMaterialWithdrawResponseV1Schema,
+  type TeamCredentialDirectMaterialWithdrawRequestV1,
   type TeamCredentialDirectMaterialUpsertRequestV1,
   TeamCredentialDirectMaterialOpenRequestV1Schema,
   type TeamCredentialDirectMaterialOpenRequestV1,
@@ -116,4 +119,17 @@ export async function upsertTeamCredentialDirectMaterial(params: Readonly<{
   const body = TeamCredentialDirectMaterialUpsertRequestV1Schema.parse(params.body);
   const response = await axios.put(route(params), body, config(params.token, params.signal));
   return TeamCredentialDirectMaterialUpsertResponseV1Schema.parse(response.data);
+}
+
+export async function withdrawTeamCredentialDirectMaterial(params: Readonly<{
+  token: string;
+  serverUrl?: string;
+  teamId: string;
+  resourceId: string;
+  body: TeamCredentialDirectMaterialWithdrawRequestV1;
+  signal?: AbortSignal;
+}>) {
+  const body = TeamCredentialDirectMaterialWithdrawRequestV1Schema.parse(params.body);
+  const response = await axios.delete(route(params), { ...config(params.token, params.signal), data: body });
+  return TeamCredentialDirectMaterialWithdrawResponseV1Schema.parse(response.data);
 }

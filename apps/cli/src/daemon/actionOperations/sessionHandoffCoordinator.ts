@@ -24,7 +24,7 @@ import type {
   WorkspaceSyncHandoffPrepared,
 } from '@/workspaces/sync/workspaceSyncHandoffAdapter';
 
-type Failure = Readonly<{ ok: false; errorCode: string; error: string }>;
+type Failure = Extract<ActionExecuteResult, { ok: false }>;
 type RpcResult = unknown;
 
 type HandoffInput = Readonly<{
@@ -32,6 +32,7 @@ type HandoffInput = Readonly<{
   sessionId: string;
   targetMachineId: string;
   targetPath?: string;
+  targetDirectory?: Readonly<{ kind: 'managed' }>;
   targetSessionStorageMode?: SessionHandoffStorageMode;
   /** Canonical wire action. */
   workspaceAction?: HandoffWorkspaceActionV1;
@@ -115,7 +116,12 @@ function readThrownFailure(error: unknown, fallback: string): Failure {
     : typeof record?.error === 'string' && record.error.trim()
       ? record.error.trim()
       : errorCode;
-  return { ok: false, errorCode, error: message };
+  return {
+    ok: false,
+    errorCode,
+    error: message,
+    ...(record?.details === undefined ? {} : { details: record.details }),
+  };
 }
 
 function cleanupFailureMessage(error: unknown): string {
@@ -268,6 +274,13 @@ function buildWorkspaceOutcome(
       ...shared,
     });
   }
+  if (committed.kind === 'linked_workspace') {
+    return HandoffWorkspaceOutcomeV1Schema.parse({
+      kind: 'linked_workspace',
+      traversed: committed.traversed,
+      ...(cleanupWarning ? { cleanupWarning } : {}),
+    });
+  }
   if (!committed.relationshipId) return { kind: 'none' };
   return HandoffWorkspaceOutcomeV1Schema.parse({
     kind: 'relationship',
@@ -325,7 +338,10 @@ export async function coordinateTrackedSessionHandoff(
   ) {
     const sourceWorkspaceRefId = input.input.workspaceSyncSourceWorkspaceRefId?.trim();
     const targetWorkspaceRefId = input.input.workspaceSyncTargetWorkspaceRefId?.trim();
-    if (!workspaceOperationId || (workspaceSyncAction.kind === 'relationship' && (!sourceWorkspaceRefId || !targetWorkspaceRefId))) {
+    if (!workspaceOperationId || (
+      (workspaceSyncAction.kind === 'relationship' || workspaceSyncAction.kind === 'linked_workspace')
+      && (!sourceWorkspaceRefId || !targetWorkspaceRefId)
+    )) {
       return {
         ok: false,
         errorCode: 'workspace_ref_not_ready',
@@ -359,6 +375,9 @@ export async function coordinateTrackedSessionHandoff(
       signal: input.signal,
     };
     try {
+      if (workspaceSyncAction.kind === 'linked_workspace') {
+        publishPhase(input.publishOwnerUpdate, 'preparing_linked_workspace', 'Updating linked workspace');
+      }
       preparedWorkspace = await input.workspaceSyncAdapter.prepare(workspaceInput);
     } catch (error) {
       return readThrownFailure(error, 'workspace_sync_prepare_failed');
@@ -401,7 +420,9 @@ export async function coordinateTrackedSessionHandoff(
   // an empty/stale root. Finalize also durably publishes a newly-created
   // relationship; the post-target adapter commit only releases its fence.
   if (preparedWorkspace) {
-    publishPhase(input.publishOwnerUpdate, 'finalizing_workspace', 'Finalizing workspace');
+    publishPhase(input.publishOwnerUpdate, 'finalizing_workspace', workspaceSyncAction?.kind === 'linked_workspace'
+      ? 'Updating linked destination'
+      : 'Finalizing workspace');
     try {
       finalizedWorkspace = await input.workspaceSyncAdapter.finalize({
         operationId: workspaceOperationId,
@@ -426,7 +447,9 @@ export async function coordinateTrackedSessionHandoff(
     handoffId,
     sourceMachineId: source.sourceMachineId,
     targetMachineId: input.input.targetMachineId,
-    targetPath: input.input.targetPath ?? started.data.targetPath,
+    ...(input.input.targetDirectory?.kind === 'managed'
+      ? { targetDirectory: input.input.targetDirectory, operationId: input.input.operationId, sessionId: input.input.sessionId }
+      : { targetPath: input.input.targetPath ?? started.data.targetPath }),
     ...(input.input.workspaceSyncTargetRootPath
       && input.input.workspaceSyncTargetSessionRelativeCwd !== undefined
       ? {

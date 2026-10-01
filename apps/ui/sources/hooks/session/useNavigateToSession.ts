@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { Platform } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useDestinationRouter } from '@/components/appShell/workspace/DestinationInstanceHost';
 
 import { setActiveServerAndSwitch } from '@/sync/domains/server/activeServerSwitch';
 import { normalizeSessionId } from '@/sync/domains/session/normalizeSessionId';
@@ -12,7 +12,7 @@ import { resolveRoutineServerSelectionScope } from '@/sync/domains/server/select
 import { isDesktopHost } from '@/utils/platform/desktopHost';
 
 export function useNavigateToSession() {
-    const router = useRouter();
+    const router = useDestinationRouter();
     const auth = useAuth();
 
     /**

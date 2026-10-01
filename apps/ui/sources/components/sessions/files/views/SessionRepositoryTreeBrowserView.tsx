@@ -1,22 +1,22 @@
 import { useRepositoryTreeVisibility } from '@/hooks/workspaces/files/useRepositoryTreeVisibility';
 import { RepositoryTreeVisibilityControl } from '@/components/workspaces/files/repositoryTree/RepositoryTreeVisibilityControl';
 import * as React from 'react';
-import { Platform, Pressable, StyleSheet, View } from 'react-native';
+import { Platform, StyleSheet, View } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
 import { SearchResultsList } from '@/components/workspaces/files/repositoryTree/SearchResultsList';
-import { SafeIonicons } from '@/components/ui/icons/SafeIonicons';
-import { DropdownMenu } from '@/components/ui/forms/dropdown/DropdownMenu';
-import type { ItemAction } from '@/components/ui/lists/itemActions';
-import { FileBrowserToolbarIconButton } from '@/components/ui/filesystemBrowser/FileBrowserToolbar';
-import { FilesystemBrowserToolbarChrome, type FilesystemBrowserToolbarAction } from '@/components/ui/filesystemBrowser/FilesystemBrowserToolbarChrome';
+import { RepositoryTreeToolbar } from '@/components/workspaces/files/repositoryTree/RepositoryTreeToolbar';
+import { RepositoryTreeCreateMenu, type RepositoryTreeCreateMenuItemId } from '@/components/workspaces/files/repositoryTree/RepositoryTreeCreateMenu';
+import { usePaneHeaderSlotContent } from '@/components/appShell/panes/paneHeaderSlot';
+import { useSessionMachineName } from '@/components/sessions/agents/presentation/useSessionMachineName';
+import { selectScmChangedFiles } from '@/scm/scmStatusFiles';
 import { RepositoryTreeDropOverlay } from '@/components/workspaces/files/repositoryTree/RepositoryTreeDropOverlay';
 import { RepositoryTreeTransferStatusBar } from '@/components/workspaces/files/repositoryTree/RepositoryTreeTransferStatusBar';
 import { WebDropTargetView } from '@/components/workspaces/files/repositoryTree/WebDropTargetView';
 import { useSessionMachineReachability } from '@/components/sessions/model/useSessionMachineReachability';
 import { useSessionFileUploadAvailability } from '@/components/sessions/files/useSessionFileUploadAvailability';
 import type { FileItem } from '@/sync/domains/input/suggestionFile';
-import { storage, useSessionProjectScmSnapshot, useSessionRepositoryTreeExpandedPaths } from '@/sync/domains/state/storage';
+import { storage, useSessionDirectoryKind, useSessionProjectScmSnapshot, useSessionRepositoryTreeExpandedPaths } from '@/sync/domains/state/storage';
 import { t } from '@/text';
 import { Modal } from '@/modal';
 import { isSafeWorkspaceRelativePath } from '@/utils/path/isSafeWorkspaceRelativePath';
@@ -32,10 +32,8 @@ import { applyWebDirectoryInputAttributes } from '@/utils/files/applyWebDirector
 import { useWorkspaceFileTransfers, type WorkspaceUploadEntry } from '@/hooks/session/files/useWorkspaceFileTransfers';
 import { showUploadConflictResolutionDialog } from '@/components/workspaces/files/repositoryTree/showUploadConflictResolutionDialog';
 import { shouldUseRepositoryRootDropTarget } from '@/components/workspaces/files/repositoryTree/shouldUseRepositoryRootDropTarget';
-import { createRepositoryTreeUploadMenuConfig } from '@/components/workspaces/files/repositoryTree/createRepositoryTreeUploadMenuConfig';
 import { useRepositoryTreeWebDropState } from '@/components/sessions/files/repositoryTree/useRepositoryTreeWebDropState';
 import { promptRepositoryUploadDestination } from '@/components/workspaces/files/repositoryTree/promptRepositoryUploadDestination';
-import { RepositoryTreeChangedFilesPane } from '@/components/sessions/files/views/repositoryTreeBrowser/RepositoryTreeChangedFilesPane';
 import { WorkspaceRepositoryTreeList } from '@/components/projects/files/WorkspaceRepositoryTreeList';
 import { clearCachedWorkspaceRepositoryDirectoryEntries } from '@/sync/domains/workspaces/files/workspaceRepositoryDirectory';
 import { searchWorkspaceFiles, workspaceFileSearchCache } from '@/sync/domains/workspaces/files/workspaceFileSearch';
@@ -47,10 +45,11 @@ import { tryBuildWorkspaceCacheKey, type WorkspaceScopeBase } from '@/sync/domai
 import { resolveWorkspaceTargetForSession } from '@/sync/domains/session/resolveWorkspaceTargetForSession';
 import { workspaceCreateDirectory, workspaceWriteFile } from '@/sync/ops/workspaceFileSystem';
 import { SourceControlUnavailableState } from '@/components/workspaces/scm/states';
-import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { Icon } from '@/components/ui/icons/Icon';
-
-const Ionicons = SafeIonicons;
+import { Text } from '@/components/ui/text/Text';
+import { Typography } from '@/constants/Typography';
+import { TREE_ROW_METRICS } from '@/components/ui/lists/itemDensityMetrics';
+import { isTouchPrimaryPointer } from '@/components/ui/interactiveTargetSize';
 
 const repositoryTreeBrowserStyles = StyleSheet.create({
     root: {
@@ -63,7 +62,35 @@ const repositoryTreeBrowserStyles = StyleSheet.create({
         flex: 1,
         position: 'relative',
     },
+    sessionFilesRoot: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+        paddingLeft: TREE_ROW_METRICS.basePaddingPx,
+        paddingRight: 12,
+    },
 });
+
+/**
+ * The root of a no-folder session's tree (plan 03 §3.5, lab FL3): the private folder is never
+ * named by its path, so the tree is titled "Session files". A folder session's tree has no heading.
+ */
+function SessionFilesRootHeading(props: Readonly<{ label: string }>) {
+    const { theme } = useUnistyles();
+    return (
+        <View
+            testID="repository-tree-session-files-root"
+            accessibilityRole="header"
+            style={[
+                repositoryTreeBrowserStyles.sessionFilesRoot,
+                { minHeight: isTouchPrimaryPointer() ? TREE_ROW_METRICS.minHeightPx.touch : TREE_ROW_METRICS.minHeightPx.precise },
+            ]}
+        >
+            <Icon name="folder" size={16} color={theme.colors.text.secondary} />
+            <Text numberOfLines={1} style={[Typography.rowTitle(), { color: theme.colors.text.primary }]}>{props.label}</Text>
+        </View>
+    );
+}
 
 export type SessionRepositoryTreeBrowserViewProps = Readonly<{
     sessionId: string;
@@ -76,20 +103,9 @@ export type SessionRepositoryTreeBrowserViewProps = Readonly<{
     showSearchBar?: boolean;
     onRequestClose?: () => void;
     revealRequest?: Readonly<{ path: string }>;
+    /** The file open in Details: its row stays selected (lab F1). */
+    selectedPath?: string | null;
 }>;
-
-type ToolbarActionId =
-    | 'repository-tree-filter-changed'
-    | 'repository-tree-toggle-details'
-    | 'repository-tree-upload'
-    | 'repository-tree-create-file'
-    | 'repository-tree-create-folder'
-    | 'repository-tree-clear-search'
-    | 'repository-tree-refresh'
-    | 'repository-tree-collapse-all'
-    | 'repository-tree-close';
-
-type ToolbarActionConfig = FilesystemBrowserToolbarAction;
 
 const EMPTY_FILE_SEARCH_RESULTS: FileItem[] = [];
 
@@ -115,6 +131,9 @@ export const SessionRepositoryTreeBrowserView = React.memo((props: SessionReposi
     ), [workspaceTarget?.serverId, workspaceTarget?.machineId, workspaceTarget?.rootPath]);
 
     const expandedPaths = useSessionRepositoryTreeExpandedPaths(props.sessionId);
+    // A no-folder session names its root "Session files" everywhere this pane names the root.
+    const withoutFolder = useSessionDirectoryKind(props.sessionId) === 'managed';
+    const rootLabel = withoutFolder ? t('session.folderless.sessionFiles') : t('files.projectRoot');
     // Read through the same qualified Home the resolved workspace scope and the changed-files pane
     // already use, so a second Home hosting this Session id cannot supply the working tree.
     const scmSnapshot = useSessionProjectScmSnapshot(props.sessionId, workspaceScope?.serverId ?? props.serverId);
@@ -128,7 +147,6 @@ export const SessionRepositoryTreeBrowserView = React.memo((props: SessionReposi
     const [detailsMode, setDetailsMode] = React.useState(false);
     const [treeReloadNonce, setTreeReloadNonce] = React.useState(0);
     const [treeRootLoading, setTreeRootLoading] = React.useState(false);
-    const [uploadMenuOpen, setUploadMenuOpen] = React.useState(false);
     const [uploadDestinationDir, setUploadDestinationDir] = React.useState('');
     const [searchResultState, setSearchResultState] = React.useState<Readonly<{ sessionId: string; scope: WorkspaceScopeBase | null; query: string; files: FileItem[] }> | null>(null);
     const searchResults = searchResultState?.sessionId === props.sessionId && searchResultState.scope === workspaceScope
@@ -249,7 +267,6 @@ export const SessionRepositoryTreeBrowserView = React.memo((props: SessionReposi
     }, [props.sessionId, searchQuery, showChangedOnly, treeReloadNonce, workspaceScope]);
 
     const shouldShowSearchResults = !showChangedOnly && searchQuery.trim().length > 0;
-    const canClearSearch = searchQuery.length > 0;
 
     React.useEffect(() => {
         if (shouldShowSearchResults || showChangedOnly) {
@@ -295,7 +312,7 @@ export const SessionRepositoryTreeBrowserView = React.memo((props: SessionReposi
         onRequestDownload: handleRequestDownload,
     });
 
-    const renderRowActions = React.useCallback((node: Parameters<NonNullable<React.ComponentProps<typeof WorkspaceRepositoryTreeList>['renderRowActions']>>[0]) => {
+    const renderRowActions = React.useCallback<NonNullable<React.ComponentProps<typeof WorkspaceRepositoryTreeList>['renderRowActions']>>((node, control) => {
         if (node.type !== 'file' && node.type !== 'directory') return null;
         const nodeKind: 'file' | 'directory' = node.type === 'file' ? 'file' : 'directory';
         const transferSizeBytes = node.type === 'file' && typeof node.sizeBytes === 'number'
@@ -308,6 +325,7 @@ export const SessionRepositoryTreeBrowserView = React.memo((props: SessionReposi
                 disableWriteActions={!allowCreateActions}
                 downloadActionsEnabled={canDownload(transferSizeBytes)}
                 onSelect={(itemId) => rowActions.onSelectRowMenuItem({ path: node.path, type: nodeKind }, itemId)}
+                control={control}
             />
         );
     }, [allowCreateActions, canDownload, rowActions]);
@@ -354,6 +372,7 @@ export const SessionRepositoryTreeBrowserView = React.memo((props: SessionReposi
     }, [props.sessionId]);
 
     const createFile = React.useCallback(() => {
+        if (!allowCreateActions) return;
         void (async () => {
             const raw = await Modal.prompt(
                 t('files.createFilePromptTitle'),
@@ -394,9 +413,10 @@ export const SessionRepositoryTreeBrowserView = React.memo((props: SessionReposi
             revealPath(path);
             (props.onOpenFilePinned ?? props.onOpenFile)(path);
         })();
-    }, [expandedPaths, props.onOpenFile, props.onOpenFilePinned, props.sessionId, refresh, revealPath]);
+    }, [allowCreateActions, expandedPaths, props.onOpenFile, props.onOpenFilePinned, props.sessionId, refresh, revealPath]);
 
     const createFolder = React.useCallback(() => {
+        if (!allowCreateActions) return;
         void (async () => {
             const raw = await Modal.prompt(
                 t('files.createFolderPromptTitle'),
@@ -437,7 +457,7 @@ export const SessionRepositoryTreeBrowserView = React.memo((props: SessionReposi
             storage.getState().setSessionRepositoryTreeExpandedPaths(props.sessionId, withDir);
             refresh();
         })();
-    }, [expandedPaths, props.sessionId, refresh, revealPath]);
+    }, [allowCreateActions, expandedPaths, props.sessionId, refresh, revealPath]);
 
     const startWebUploads = React.useCallback(async (files: readonly File[], destinationDir: string) => {
         const entries: WorkspaceUploadEntry[] = files.map((file) => ({
@@ -470,37 +490,20 @@ export const SessionRepositoryTreeBrowserView = React.memo((props: SessionReposi
     }, [transfers.startUploads, uploadDestinationDir]);
 
     const selectUploadDestination = React.useCallback(async () => {
-        const nextDestination = await promptRepositoryUploadDestination(uploadDestinationDir);
+        const nextDestination = await promptRepositoryUploadDestination(uploadDestinationDir, rootLabel);
         if (nextDestination === null) return;
         setUploadDestinationDir(nextDestination);
-    }, [uploadDestinationDir]);
+    }, [rootLabel, uploadDestinationDir]);
 
-    const uploadMenuConfig = React.useMemo(() => createRepositoryTreeUploadMenuConfig({
-        uploadActionsAvailable,
-        isWeb: Platform.OS === 'web',
-    }), [uploadActionsAvailable]);
-
-    const uploadMenuItems = React.useMemo(() => [
-        {
-            id: 'repository-tree-upload-destination-select',
-            title: t('settingsAttachments.workspaceDirectory.uploadsDirectory.title'),
-            subtitle: uploadDestinationDir || t('files.projectRoot'),
-            category: t('common.path'),
-            icon: <Icon name="folder-open" size={16} color={theme.colors.text.secondary} />,
-            disabled: !uploadActionsAvailable,
-        },
-        ...uploadMenuConfig.items.map((item) => ({
-            id: item.id,
-            title: t(item.titleKey),
-            subtitle: uploadDestinationDir || t('files.projectRoot'),
-            category: t('files.toolbar.upload'),
-            icon: <Icon name={item.iconName} size={16} color={theme.colors.text.secondary} />,
-            disabled: item.disabled,
-        })),
-    ], [theme.colors.text.secondary, uploadActionsAvailable, uploadDestinationDir, uploadMenuConfig.items]);
-
-    const onSelectUploadMenuItem = React.useCallback((itemId: string) => {
-        setUploadMenuOpen(false);
+    const onSelectCreateMenuItem = React.useCallback((itemId: RepositoryTreeCreateMenuItemId) => {
+        if (itemId === 'repository-tree-create-file') {
+            createFile();
+            return;
+        }
+        if (itemId === 'repository-tree-create-folder') {
+            createFolder();
+            return;
+        }
         if (!uploadActionsAvailable) return;
         if (itemId === 'repository-tree-upload-destination-select') {
             void selectUploadDestination();
@@ -517,205 +520,31 @@ export const SessionRepositoryTreeBrowserView = React.memo((props: SessionReposi
             if (Platform.OS !== 'web') return;
             webFolderInputRef.current?.click();
         }
-    }, [selectUploadDestination, startNativeUploads, uploadActionsAvailable]);
+    }, [createFile, createFolder, selectUploadDestination, startNativeUploads, uploadActionsAvailable]);
 
-    const toolbarActions = React.useMemo<ToolbarActionConfig[]>(() => {
-        const actions: ToolbarActionConfig[] = [
-            {
-                id: 'repository-tree-filter-changed',
-                priority: 1,
-                order: 0,
-                icon: <Icon name="funnel-simple" size={16} color={showChangedOnly ? theme.colors.text.link : theme.colors.text.secondary} />,
-                menuIcon: 'funnel-simple',
-                accessibilityLabel: t('files.toolbar.changedFiles'),
-                selected: showChangedOnly,
-                onPress: () => setShowChangedOnly((prev) => !prev),
-            },
-            {
-                id: 'repository-tree-toggle-details',
-                priority: 2,
-                order: 1,
-                icon: <Icon name="list" size={16} color={detailsMode ? theme.colors.text.link : theme.colors.text.secondary} />,
-                menuIcon: 'list',
-                accessibilityLabel: t('common.details'),
-                selected: detailsMode,
-                onPress: () => setDetailsMode((prev) => !prev),
-            },
-            {
-                id: 'repository-tree-upload',
-                priority: 3,
-                order: 2,
-                icon: <Icon name="cloud-arrow-up" size={16} color={theme.colors.text.secondary} />,
-                menuIcon: 'cloud-arrow-up',
-                accessibilityLabel: t('files.toolbar.upload'),
-                disabled: !uploadActionsAvailable,
-                selected: uploadDestinationDir.length > 0,
-                onPress: () => setUploadMenuOpen(true),
-            },
-            {
-                id: 'repository-tree-create-file',
-                priority: 5,
-                order: 3,
-                icon: <Icon name="file-text" size={16} color={theme.colors.text.secondary} />,
-                menuIcon: 'file-text',
-                accessibilityLabel: t('files.createFileA11y'),
-                disabled: !allowCreateActions,
-                onPress: createFile,
-            },
-            {
-                id: 'repository-tree-create-folder',
-                priority: 6,
-                order: 4,
-                icon: <Icon name="folder" size={16} color={theme.colors.text.secondary} />,
-                menuIcon: 'folder',
-                accessibilityLabel: t('files.createFolderA11y'),
-                disabled: !allowCreateActions,
-                onPress: createFolder,
-            },
-            {
-                id: 'repository-tree-clear-search',
-                priority: 4,
-                order: 5,
-                icon: <Icon name="x" size={16} color={theme.colors.text.secondary} />,
-                menuIcon: 'x',
-                accessibilityLabel: t('files.clearSearchA11y'),
-                onPress: () => setSearchQuery(''),
-            },
-            {
-                id: 'repository-tree-refresh',
-                priority: 10,
-                order: 6,
-                icon: treeRootLoading ? (
-                    <ActivitySpinner testID="repository-tree-refresh-loading" size="small" color={theme.colors.text.secondary} />
-                ) : (
-                    <Icon name="arrows-clockwise" size={16} color={theme.colors.text.secondary} />
-                ),
-                menuIcon: 'arrow-clockwise',
-                accessibilityLabel: t('common.refresh'),
-                onPress: refresh,
-            },
-        ];
+    // The pane header is just "Files" with the + menu as its trailing action (user ruling over lab H1: no
+    // live line); the one change count lives on the Changed only chip. Outside a header-owning pane (the
+    // link picker) nothing is published.
+    const machineName = useSessionMachineName(props.sessionId, workspaceScope?.serverId ?? props.serverId);
+    const changedCount = showChangedOnly && scmSnapshot?.repo.isRepo === true ? selectScmChangedFiles(scmSnapshot).length : null;
+    // The menu reads its handlers through a ref, so the header action keeps one identity while the
+    // tree underneath changes (expanding a folder must not re-publish the header).
+    const createMenuSelectRef = React.useRef(onSelectCreateMenuItem);
+    createMenuSelectRef.current = onSelectCreateMenuItem;
+    const selectCreateMenuItem = React.useCallback((itemId: RepositoryTreeCreateMenuItemId) => createMenuSelectRef.current(itemId), []);
+    const uploadDestinationLabel = uploadDestinationDir || rootLabel;
+    const headerAction = React.useMemo(() => (
+        <RepositoryTreeCreateMenu
+            createEnabled={allowCreateActions}
+            uploadEnabled={uploadActionsAvailable}
+            isWeb={Platform.OS === 'web'}
+            uploadDestinationLabel={uploadDestinationLabel}
+            onSelect={selectCreateMenuItem}
+        />
+    ), [allowCreateActions, selectCreateMenuItem, uploadActionsAvailable, uploadDestinationLabel]);
+    usePaneHeaderSlotContent(React.useMemo(() => ({ action: headerAction }), [headerAction]));
 
-        if (expandedPaths.length > 0) {
-            actions.push({
-                id: 'repository-tree-collapse-all',
-                priority: 0,
-                order: 7,
-                icon: <Icon name="arrows-in" size={16} color={theme.colors.text.secondary} />,
-                menuIcon: 'arrows-in',
-                accessibilityLabel: t('files.repositoryCollapseAll'),
-                onPress: collapseAll,
-            });
-        }
-
-        if (props.onRequestClose) {
-            actions.push({
-                id: 'repository-tree-close',
-                priority: 8,
-                order: 8,
-                icon: <Icon name="x" size={16} color={theme.colors.text.secondary} />,
-                menuIcon: 'x',
-                accessibilityLabel: t('common.close'),
-                onPress: props.onRequestClose,
-            });
-        }
-
-        if (canClearSearch !== true) {
-            return actions.filter((action) => action.id !== 'repository-tree-clear-search');
-        }
-
-        return actions;
-    }, [
-        allowCreateActions,
-        uploadActionsAvailable,
-        canClearSearch,
-        collapseAll,
-        createFile,
-        createFolder,
-        detailsMode,
-        expandedPaths.length,
-        refresh,
-        setSearchQuery,
-        showChangedOnly,
-        treeRootLoading,
-        uploadDestinationDir.length,
-        props.onRequestClose,
-        theme.colors.text.link,
-        theme.colors.text.secondary,
-    ]);
-
-    const buildOverflowItems = React.useCallback((hiddenActions: readonly ToolbarActionConfig[]) => {
-        const hiddenItems = hiddenActions
-            .filter((action) => action.id !== 'repository-tree-upload')
-            .map((action) => ({
-                id: action.id,
-                title: action.accessibilityLabel,
-                icon: action.menuIcon,
-                disabled: action.disabled,
-                onPress: action.onPress,
-            }));
-        if (!hiddenActions.some((action) => action.id === 'repository-tree-upload')) {
-            return hiddenItems;
-        }
-
-        const uploadOverflowItems: ItemAction[] = [
-            {
-                id: 'repository-tree-upload-destination-select',
-                title: t('settingsAttachments.workspaceDirectory.uploadsDirectory.title'),
-                icon: 'folder-open',
-                disabled: !uploadActionsAvailable,
-                onPress: () => onSelectUploadMenuItem('repository-tree-upload-destination-select'),
-            },
-            ...uploadMenuConfig.items.map((item) => ({
-                id: item.id,
-                title: t(item.titleKey),
-                icon: item.iconName,
-                disabled: item.disabled,
-                onPress: () => onSelectUploadMenuItem(item.id),
-            })),
-        ];
-
-        return [...uploadOverflowItems, ...hiddenItems];
-    }, [onSelectUploadMenuItem, uploadActionsAvailable, uploadMenuConfig.items]);
-
-    const renderToolbarIconButton = React.useCallback((action: ToolbarActionConfig) => {
-        if (action.id === 'repository-tree-upload') {
-            return (
-                <DropdownMenu
-                    key={action.id}
-                    open={uploadMenuOpen}
-                    onOpenChange={setUploadMenuOpen}
-                    items={uploadMenuItems}
-                    onSelect={onSelectUploadMenuItem}
-                    matchTriggerWidth={uploadMenuConfig.matchTriggerWidth}
-                    trigger={({ toggle }) => (
-                        <FileBrowserToolbarIconButton
-                            testID="repository-tree-upload"
-                            accessibilityLabel={action.accessibilityLabel}
-                            onPress={toggle}
-                            selected={action.selected}
-                            disabled={action.disabled}
-                        >
-                            {action.icon}
-                        </FileBrowserToolbarIconButton>
-                    )}
-                />
-            );
-        }
-
-        return (
-            <FileBrowserToolbarIconButton
-                key={action.id}
-                testID={action.id}
-                accessibilityLabel={action.accessibilityLabel}
-                onPress={action.onPress}
-                selected={action.selected}
-                disabled={action.disabled}
-            >
-                {action.icon}
-            </FileBrowserToolbarIconButton>
-        );
-    }, [onSelectUploadMenuItem, uploadMenuConfig.matchTriggerWidth, uploadMenuItems, uploadMenuOpen]);
+    const canCollapseAll = !showChangedOnly && expandedPaths.length > 0;
 
     const repositoryTreeTheme = React.useMemo(() => theme, [
         theme.colors.state.danger.foreground,
@@ -741,19 +570,9 @@ export const SessionRepositoryTreeBrowserView = React.memo((props: SessionReposi
 
     const dropZoneContent = React.useMemo(() => (
         <>
+            {withoutFolder && workspaceScope && !shouldShowSearchResults ? <SessionFilesRootHeading label={rootLabel} /> : null}
             <View style={repositoryTreeBrowserStyles.content}>
-                {showChangedOnly ? (
-                    <RepositoryTreeChangedFilesPane
-                        sessionId={props.sessionId}
-                        serverId={workspaceScope?.serverId ?? props.serverId}
-                        scmSnapshot={scmSnapshot}
-                        searchQuery={searchQuery}
-                        onSearchQueryChange={setSearchQuery}
-                        onShowAllRepositoryFiles={handleShowAllRepositoryFiles}
-                        onOpenFile={handleTreeOpenFile}
-                        onOpenFilePinned={handleTreeOpenFilePinned}
-                    />
-                ) : shouldShowSearchResults ? (
+                {shouldShowSearchResults ? (
                     <SearchResultsList
                         theme={repositoryTreeTheme}
                         isSearching={isSearching}
@@ -785,6 +604,10 @@ export const SessionRepositoryTreeBrowserView = React.memo((props: SessionReposi
                         onOpenFile={handleTreeOpenFile}
                         onOpenFilePinned={handleTreeOpenFilePinned}
                         scmSnapshot={scmSnapshot}
+                        changedOnly={showChangedOnly}
+                        onShowAllFiles={handleShowAllRepositoryFiles}
+                        selectedPath={props.selectedPath ?? null}
+                        machineName={machineName}
                         showInlineLoadingHeader={false}
                         onRootLoadingChange={setTreeRootLoading}
                         onLayout={scrollFades.onViewportLayout}
@@ -800,7 +623,7 @@ export const SessionRepositoryTreeBrowserView = React.memo((props: SessionReposi
                 )}
                 <RepositoryTreeDropOverlay
                     visible={webDropState.fileDragActive}
-                    destinationLabel={webDropState.dropDestinationDir || t('files.projectRoot')}
+                    destinationLabel={webDropState.dropDestinationDir || rootLabel}
                 />
                 <ScrollEdgeFades
                     color={repositoryTreeTheme.colors.surface.base}
@@ -824,10 +647,14 @@ export const SessionRepositoryTreeBrowserView = React.memo((props: SessionReposi
     ), [
         detailsMode,
         expandedPaths,
+        rootLabel,
+        withoutFolder,
         handleExpandedPathsChange,
         visibilityMode,
         revealedPaths,
         latestRequest,
+        machineName,
+        props.selectedPath,
         setGitIgnoreAvailable,
         handleTreeOpenFile,
         handleTreeOpenFilePinned,
@@ -868,16 +695,19 @@ export const SessionRepositoryTreeBrowserView = React.memo((props: SessionReposi
     return (
         <View style={repositoryTreeBrowserStyles.root}>
             {showSearchBar ? (
-                <FilesystemBrowserToolbarChrome
-                    testID="repository-tree-toolbar"
-                    searchTestID="repository-tree-search"
-                    searchPlaceholder={t('files.searchPlaceholder')}
+                <RepositoryTreeToolbar
+                    testIDPrefix="repository-tree"
                     searchValue={searchQuery}
                     onSearchValueChange={setSearchQuery}
-                    actions={toolbarActions}
-                    buildOverflowItems={buildOverflowItems}
-                    overflowTriggerTestID="repository-tree-toolbar-overflow"
-                    renderActionNode={renderToolbarIconButton}
+                    changedOnly={showChangedOnly}
+                    changedCount={changedCount}
+                    onChangedOnlyChange={setShowChangedOnly}
+                    detailsMode={detailsMode}
+                    onDetailsModeChange={setDetailsMode}
+                    onCollapseAll={canCollapseAll ? collapseAll : null}
+                    onRefresh={refresh}
+                    refreshing={treeRootLoading}
+                    onRequestClose={props.onRequestClose}
                 />
             ) : null}
             {!showChangedOnly && !shouldShowSearchResults ? <RepositoryTreeVisibilityControl mode={visibilityMode} available={gitIgnoreAvailable} onChange={setVisibilityMode} /> : null}

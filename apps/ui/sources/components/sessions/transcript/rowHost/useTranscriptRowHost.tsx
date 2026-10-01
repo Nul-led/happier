@@ -1,8 +1,9 @@
 import * as React from 'react';
+import { TranscriptOriginSourceProvider } from '@/components/sessions/transcript/source/appSessionTranscriptSource';
 import { View } from 'react-native';
 import type { ExternalSessionOperationSharedPresentationV1 } from '@happier-dev/protocol';
 
-import type { Message, ToolCallMessage } from '@/sync/domains/messages/messageTypes';
+import type { Message, ToolCallMessage } from "@happier-dev/session-core/messages";
 import type { TranscriptListOrientation } from '@/components/sessions/transcript/listOrientation';
 import { resolveOlderNeighborRenderedIndex } from '@/components/sessions/transcript/listOrientation';
 import type { ChatListInternalProps, ChatTranscriptListItem } from '@/components/sessions/transcript/chatListTypes';
@@ -128,6 +129,7 @@ export function useTranscriptItemRenderer(deps: TranscriptItemRendererDeps) {
         forkedTranscriptEnabled,
         interaction: transcriptInteraction,
         eventEmphasisByMessageId,
+        hostWakeCountByMessageId,
         externalSessionOperationOwnerTarget,
         messageDisplayCommon,
         messagePins,
@@ -352,7 +354,7 @@ export function useTranscriptItemRenderer(deps: TranscriptItemRendererDeps) {
         );
     }, [buildRowShellSignature, handleRowLayoutMutation, handleRowShellMeasured, measurementReconciler]);
 
-    const renderItem = React.useCallback(({ item, index }: { item: ChatTranscriptListItem; index: number }) => {
+    const renderItemContent = React.useCallback(({ item, index }: { item: ChatTranscriptListItem; index: number }) => {
         if (item.kind === 'transcript-window-gap') {
             // Projection-only pagination geometry must not publish an anchor
             // identity that disappears as soon as the window closes the gap.
@@ -673,6 +675,7 @@ export function useTranscriptItemRenderer(deps: TranscriptItemRendererDeps) {
                             setThinkingExpanded={setThinkingExpanded}
                             interaction={transcriptInteraction}
                             eventEmphasisByMessageId={eventEmphasisByMessageId}
+                            hostWakeCount={hostWakeCountByMessageId?.[item.messageId]}
                             rollbackAction={rollbackActionsByMessageId[item.messageId] ?? null}
                             rollbackRanges={rollbackRanges}
                             approvalRequests={approvalRequests}
@@ -703,6 +706,7 @@ export function useTranscriptItemRenderer(deps: TranscriptItemRendererDeps) {
         forkedTranscriptEnabled,
         transcriptInteraction,
         eventEmphasisByMessageId,
+        hostWakeCountByMessageId,
         externalSessionOperationOwnerTarget,
         messageDisplayCommon,
         messagePins,
@@ -730,6 +734,25 @@ export function useTranscriptItemRenderer(deps: TranscriptItemRendererDeps) {
         toolTimelineChromeMode,
         wrapTranscriptItemForAnchor,
     ]);
+    const renderItem = React.useCallback((info: { item: ChatTranscriptListItem; index: number }) => {
+        const item = info.item;
+        if (!('isReadOnlyContext' in item) || item.isReadOnlyContext !== true) {
+            return renderItemContent(info);
+        }
+        const firstMessageId = 'toolMessageId' in item
+            ? item.toolMessageId
+            : 'toolMessageIds' in item ? item.toolMessageIds[0] : null;
+        const originSessionId = ('originSessionId' in item ? item.originSessionId : undefined)
+            ?? (firstMessageId ? forkMessageMetadataById?.[firstMessageId]?.originSessionId : undefined);
+        return (
+            <TranscriptOriginSourceProvider
+                originSessionId={originSessionId}
+                readOnly={'isReadOnlyContext' in item && item.isReadOnlyContext === true}
+            >
+                {renderItemContent(info)}
+            </TranscriptOriginSourceProvider>
+        );
+    }, [forkMessageMetadataById, renderItemContent]);
     const renderTranscriptItemAtIndex = React.useCallback((item: ChatTranscriptListItem, index: number) => {
         return renderItem({ item, index });
     }, [renderItem]);

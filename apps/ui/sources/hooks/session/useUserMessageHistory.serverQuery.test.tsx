@@ -2,7 +2,7 @@ import { act } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createDeferred, flushHookEffects, renderHook } from '@/dev/testkit';
-import { createReducer } from '@/sync/reducer/reducer';
+import { createReducer } from "@happier-dev/session-core/reducer";
 import { storage } from '@/sync/domains/state/storageStore';
 import { fetchUserMessageHistoryPage } from '@/sync/engine/sessions/fetchUserMessageHistoryPage';
 

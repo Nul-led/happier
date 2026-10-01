@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { SessionModelSelectionV1Schema, type BackendTargetRefV2, type SessionModelSelectionV1 } from '@happier-dev/protocol';
+import { SessionModelSelectionV1Schema, type PersistedBackendTargetRefV2, type SessionModelSelectionV1 } from '@happier-dev/protocol';
 
 import { flushHookEffects, renderHook, standardCleanup } from '@/dev/testkit';
 import { AIBackendProfileSchema, type AIBackendProfile } from '@/sync/domains/profiles/profileCompatibility';
@@ -12,6 +12,7 @@ import {
     useNewSessionProfileBackendReconciliation,
 } from './useNewSessionProfileBackendReconciliation';
 import type { NewSessionSelectableBackendEntry } from '@/components/sessions/new/modules/newSessionAgentSelection';
+import type { MachineAgent } from '@/agents/machineAgents/machineAgentTypes';
 
 type ScheduledInteractionTask = {
     cancelled: boolean;
@@ -57,6 +58,19 @@ function createProfile(id: string): AIBackendProfile {
     });
 }
 
+function createMachineAgent(agentId: MachineAgent['agentId'], stale = false, state: MachineAgent['state'] = 'ready'): MachineAgent {
+    return {
+        agentId, title: agentId, state, stale, installed: true,
+        version: null, latestVersion: null, update: null,
+        signIn: { status: state === 'needsSignIn' ? 'signedOut' : 'signedIn', via: null, nativeLogin: 'unsupported', connectedServices: [] },
+        platform: { supported: true },
+        install: { available: false, mode: 'none', sizeBytes: null, guideUrl: null, requiresVendorConsent: false },
+        dependencies: [], job: null,
+    };
+}
+
+const readyMachineAgentsById = { claude: createMachineAgent('claude'), codex: createMachineAgent('codex') };
+
 function shiftInteractionTask(): ScheduledInteractionTask | undefined {
     return interactionTasks.shift();
 }
@@ -75,14 +89,10 @@ async function flushNextInteractionTask() {
 
 type HarnessProps = Readonly<{
     initialSelectedProfileId: string | null;
-    initialBackendTarget: BackendTargetRefV2;
+    initialBackendTarget: PersistedBackendTargetRefV2;
     compatibleEntriesByProfileId: Readonly<Record<string, readonly NewSessionSelectableBackendEntry[]>>;
     profileMap: ReadonlyMap<string, AIBackendProfile>;
-    cliAvailabilityTimestamp?: number;
-    cliAvailabilityByAgentId?: Readonly<Partial<Record<'claude' | 'codex', boolean | null>>>;
-    cliAuthStatusByAgentId?: Readonly<Partial<Record<'claude' | 'codex', { state: 'logged_in' | 'logged_out' | 'unknown'; checkedAt: number } | null>>>;
-    installableDepKeyCountByAgentId?: Readonly<Partial<Record<'claude' | 'codex', number>>>;
-    selectableWithoutCliByAgentId?: Readonly<Partial<Record<'claude' | 'codex', boolean>>>;
+    machineAgentsById?: Readonly<Record<string, MachineAgent | undefined>>;
     useProfiles?: boolean;
     applyPermissionModeSpy: ReturnType<typeof vi.fn<(mode: PermissionMode, source: 'user' | 'auto') => void>>;
     prepareSecretPromptForProfileSelectionSpy: ReturnType<typeof vi.fn<(prevProfileId: string | null) => void>>;
@@ -96,7 +106,9 @@ type HarnessProps = Readonly<{
 
 function useHarness(props: HarnessProps) {
     const [selectedProfileId, setSelectedProfileId] = React.useState<string | null>(props.initialSelectedProfileId);
-    const [backendTarget, setBackendTarget] = React.useState<BackendTargetRefV2>(props.initialBackendTarget);
+    const [backendTarget, setBackendTarget] = React.useState<PersistedBackendTargetRefV2>(
+        () => props.initialBackendTarget,
+    );
     const hasUserSelectedPermissionModeRef = React.useRef(false);
     const permissionModeRef = React.useRef<PermissionMode>('default');
     const hasUserTouchedProfileSelectionRef = React.useRef(false);
@@ -109,11 +121,7 @@ function useHarness(props: HarnessProps) {
         getCompatibleProfileBackendEntries: (profile) => props.compatibleEntriesByProfileId[profile.id] ?? [],
         selectedBackendTargetKey: resolveBackendTargetKeyV2(backendTarget),
         setBackendTarget,
-        cliAvailabilityTimestamp: props.cliAvailabilityTimestamp ?? 0,
-        cliAvailabilityByAgentId: props.cliAvailabilityByAgentId ?? {},
-        cliAuthStatusByAgentId: props.cliAuthStatusByAgentId ?? {},
-        installableDepKeyCountByAgentId: props.installableDepKeyCountByAgentId ?? {},
-        selectableWithoutCliByAgentId: props.selectableWithoutCliByAgentId ?? {},
+        machineAgentsById: props.machineAgentsById ?? readyMachineAgentsById,
         hasUserSelectedPermissionModeRef,
         permissionModeRef,
         applyPermissionMode: (mode, source) => {
@@ -158,14 +166,14 @@ describe('useNewSessionProfileBackendReconciliation', () => {
                 compatibleEntriesByProfileId: {
                     'profile-a': [{
                         backendTarget: { kind: 'backend', backendId: 'claude' },
-                        backendTargetKey: 'backend:claude',
+                        backendTargetKey: 'agent:happier.agent.claude/claude',
                         builtInAgentId: 'claude',
                         agentId: 'claude',
                         kind: 'builtInAgent',
                     }],
                     'profile-b': [{
                         backendTarget: { kind: 'backend', backendId: 'codex' },
-                        backendTargetKey: 'backend:codex',
+                        backendTargetKey: 'agent:happier.agent.codex/codex',
                         builtInAgentId: 'codex',
                         agentId: 'codex',
                         kind: 'builtInAgent',
@@ -201,7 +209,7 @@ describe('useNewSessionProfileBackendReconciliation', () => {
         expect(applyPermissionModeSpy).not.toHaveBeenCalledWith('read-only', 'auto');
     });
 
-    it('applies the selected slim profile preferred target and exact provider model intent', async () => {
+    it.each([false, true])('applies the exact model intent and selects the preferred Agent only while current (stale=%s)', async (stale) => {
         const applyPermissionModeSpy = vi.fn<(mode: PermissionMode, source: 'user' | 'auto') => void>();
         const prepareSecretPromptForProfileSelectionSpy = vi.fn<(prevProfileId: string | null) => void>();
         const setModelSelectionForBackendTargetSpy = vi.fn<(backendTargetKey: string, selection: SessionModelSelectionV1 | null) => void>();
@@ -230,9 +238,7 @@ describe('useNewSessionProfileBackendReconciliation', () => {
                     }],
                 },
                 profileMap: new Map([[profile.id, profile]]),
-                cliAvailabilityTimestamp: 1,
-                cliAvailabilityByAgentId: { claude: true },
-                installableDepKeyCountByAgentId: { claude: 0 },
+                machineAgentsById: { claude: createMachineAgent('claude', stale), codex: createMachineAgent('codex') },
                 applyPermissionModeSpy,
                 prepareSecretPromptForProfileSelectionSpy,
                 resolveDefaultPermissionMode: () => 'default',
@@ -250,7 +256,7 @@ describe('useNewSessionProfileBackendReconciliation', () => {
         await flushHookEffects({ cycles: 1, turns: 2 });
         await flushNextInteractionTask();
 
-        expect(hook.getCurrent().backendTarget).toEqual({ kind: 'backend', backendId: 'claude' });
+        expect(hook.getCurrent().backendTarget).toEqual({ kind: 'backend', backendId: stale ? 'codex' : 'claude' });
         expect(setModelSelectionForBackendTargetSpy).toHaveBeenCalledWith(claudeTargetKey, selection);
     });
 
@@ -267,14 +273,14 @@ describe('useNewSessionProfileBackendReconciliation', () => {
                     [profile.id]: [
                         {
                             backendTarget: { kind: 'backend', backendId: 'claude' },
-                            backendTargetKey: 'backend:claude',
+                            backendTargetKey: 'agent:happier.agent.claude/claude',
                             builtInAgentId: 'claude',
                             agentId: 'claude',
                             kind: 'builtInAgent',
                         },
                         {
                             backendTarget: { kind: 'backend', backendId: 'codex' },
-                            backendTargetKey: 'backend:codex',
+                            backendTargetKey: 'agent:happier.agent.codex/codex',
                             builtInAgentId: 'codex',
                             agentId: 'codex',
                             kind: 'builtInAgent',
@@ -282,15 +288,7 @@ describe('useNewSessionProfileBackendReconciliation', () => {
                     ],
                 },
                 profileMap: new Map([[profile.id, profile]]),
-                cliAvailabilityTimestamp: 1,
-                cliAvailabilityByAgentId: {
-                    claude: false,
-                    codex: true,
-                },
-                installableDepKeyCountByAgentId: {
-                    claude: 0,
-                    codex: 0,
-                },
+                machineAgentsById: { codex: createMachineAgent('codex') },
                 applyPermissionModeSpy,
                 prepareSecretPromptForProfileSelectionSpy,
                 resolveDefaultPermissionMode: () => 'default',
@@ -300,7 +298,11 @@ describe('useNewSessionProfileBackendReconciliation', () => {
         expect(hook.getCurrent().backendTarget).toEqual({ kind: 'backend', backendId: 'codex' });
     });
 
-    it('reconciles away from a logged-out backend when another compatible backend remains selectable', async () => {
+    it.each([
+        { stale: true, state: 'ready' },
+        { stale: false, state: 'needsSignIn' },
+    ] satisfies ReadonlyArray<Pick<MachineAgent, 'stale' | 'state'>>)(
+        'reconciles away from an unavailable inventory row (%s) when another compatible backend remains ready', async (unavailable) => {
         const applyPermissionModeSpy = vi.fn<(mode: PermissionMode, source: 'user' | 'auto') => void>();
         const prepareSecretPromptForProfileSelectionSpy = vi.fn<(prevProfileId: string | null) => void>();
         const profile = createProfile('profile-a');
@@ -313,14 +315,14 @@ describe('useNewSessionProfileBackendReconciliation', () => {
                     [profile.id]: [
                         {
                             backendTarget: { kind: 'backend', backendId: 'claude' },
-                            backendTargetKey: 'backend:claude',
+                            backendTargetKey: 'agent:happier.agent.claude/claude',
                             builtInAgentId: 'claude',
                             agentId: 'claude',
                             kind: 'builtInAgent',
                         },
                         {
                             backendTarget: { kind: 'backend', backendId: 'codex' },
-                            backendTargetKey: 'backend:codex',
+                            backendTargetKey: 'agent:happier.agent.codex/codex',
                             builtInAgentId: 'codex',
                             agentId: 'codex',
                             kind: 'builtInAgent',
@@ -328,18 +330,9 @@ describe('useNewSessionProfileBackendReconciliation', () => {
                     ],
                 },
                 profileMap: new Map([[profile.id, profile]]),
-                cliAvailabilityTimestamp: 1,
-                cliAvailabilityByAgentId: {
-                    claude: true,
-                    codex: true,
-                },
-                cliAuthStatusByAgentId: {
-                    claude: { state: 'logged_out', checkedAt: 1 },
-                    codex: { state: 'logged_in', checkedAt: 1 },
-                },
-                installableDepKeyCountByAgentId: {
-                    claude: 0,
-                    codex: 0,
+                machineAgentsById: {
+                    claude: createMachineAgent('claude', unavailable.stale, unavailable.state),
+                    codex: createMachineAgent('codex'),
                 },
                 applyPermissionModeSpy,
                 prepareSecretPromptForProfileSelectionSpy,

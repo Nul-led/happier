@@ -36,6 +36,29 @@ import type { useSessionResponsibilityController as UseController } from './useS
  */
 
 const routerPush = vi.hoisted(() => vi.fn());
+const layout = vi.hoisted(() => ({ tablet: true }));
+vi.mock('@/utils/platform/responsive', async () => {
+    const actual = await vi.importActual<typeof import('@/utils/platform/responsive')>('@/utils/platform/responsive');
+    return { ...actual, useIsTablet: () => layout.tablet };
+});
+vi.mock('@legendapp/list/react-native', async () => {
+    const { createCapturingLegendListMock } = await import('@/dev/testkit/mocks/legendList');
+    return { LegendList: createCapturingLegendListMock({ renderItems: true, renderItemLimit: 20 }).module.LegendList };
+});
+// Only the portal/geometry boundary is replaced; selection and approval stay real.
+vi.mock('@/components/ui/popover', async () => {
+    const actual = await vi.importActual<typeof import('@/components/ui/popover')>('@/components/ui/popover');
+    return {
+        ...actual,
+        Popover: (props: Record<string, unknown>) => React.createElement(
+            'Popover',
+            { testID: 'responsibility-popover', focusReturnRef: props.focusReturnRef },
+            typeof props.children === 'function'
+                ? (props.children as (input: { maxHeight: number }) => React.ReactNode)({ maxHeight: 480 })
+                : props.children as React.ReactNode,
+        ),
+    };
+});
 vi.mock('expo-router', async () => {
     const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
     return createExpoRouterMock({ router: { push: routerPush } }).module;
@@ -75,7 +98,10 @@ async function addResponsibilityHome(): Promise<string> {
     }
     harness.answer(serverId, '/v1/features', { body: features });
     harness.answer(serverId, '/v1/features/authenticated', { body: features });
-    harness.answer(serverId, '/v2/sessions/responsibility/candidates', { body: { candidates: [], nextCursor: null } });
+    harness.answer(serverId, '/v2/sessions/responsibility/candidates', { body: {
+        candidates: [{ accountId: 'account-bob', profile: { firstName: 'Bob', lastName: null, username: 'bob', avatarUrl: null } }],
+        nextCursor: null,
+    } });
     const { primeServerFeaturesSnapshot } = await import('@/sync/api/capabilities/serverFeaturesClient');
     primeServerFeaturesSnapshot({ serverId, snapshot: { status: 'ready', features } });
 
@@ -98,6 +124,8 @@ async function renderAssignment(serverId: string) {
     const { SessionResponsibilitySection } = await import('./SessionResponsibilitySection');
     const { useSessionResponsibilityController } = await import('./useSessionResponsibilityController');
     const { useSessionResponsibilityPickerHost } = await import('./useSessionResponsibilityPickerHost');
+    const { RetainedPanelSurface } = await import('@/components/ui/panels/RetainedPanelSurface');
+    const rowNode = { focus: vi.fn(), isConnected: true };
     const scope = { serverId, accountId: ACCOUNT_ID };
     let latest: ReturnType<typeof UseController> | null = null;
     function Mounted() {
@@ -111,16 +139,25 @@ async function renderAssignment(serverId: string) {
             editable: controller.availability === 'editable',
             available: controller.availability === 'editable' || controller.availability === 'read_only',
         });
-        return <SessionResponsibilitySection controller={controller} pickerHost={pickerHost} />;
+        return <>
+            <RetainedPanelSurface isActive={!pickerHost.compactStepOpen} testID="responsibility-main">
+                <SessionResponsibilitySection controller={controller} pickerHost={pickerHost} />
+            </RetainedPanelSurface>
+            {pickerHost.compactStep}
+        </>;
     }
-    const screen = await renderScreen(<Mounted />);
+    const screen = await renderScreen(<Mounted />, {
+        createNodeMock: (element: React.ReactElement) => (
+            (element.props as Readonly<{ testID?: string }>).testID === 'session-responsibility-row' ? rowNode : null
+        ),
+    });
     const { storage } = await import('@/sync/domains/state/storage');
     await waitForHomeGovernance(() => expect(latest!.availability, JSON.stringify({
         availability: latest?.availability,
         rows: storage.getState().sessionListRowsByServerId,
         requests: harness.requests.map((request) => request.path),
     })).toBe('editable'));
-    return { screen, controller: () => latest! };
+    return { screen, rowNode, controller: () => latest! };
 }
 
 /** The one approval the Home persisted for this assignment, decoded as stored. */
@@ -134,15 +171,25 @@ describe('responsibility assignment awaiting its default confirmation', () => {
     beforeEach(async () => {
         await harness.reset();
         routerPush.mockReset();
+        layout.tablet = true;
     });
 
     afterEach(() => standardCleanup());
 
-    it('shows the wait, withholds a second submission, and applies the executed approval once', async () => {
+    it.each([['compact', false], ['anchored', true]] as const)('returns from the %s picker to an accessible approval and settles once', async (_host, tablet) => {
+        layout.tablet = tablet;
         const serverId = await addResponsibilityHome();
-        const { screen, controller } = await renderAssignment(serverId);
+        const { screen, rowNode, controller } = await renderAssignment(serverId);
 
-        await act(async () => { expect(await controller().setResponsibleAccount('account-bob')).toBe(false); });
+        await screen.pressByTestIdAsync('session-responsibility-row');
+        const choice = 'session-responsibility-picker.list:root:option:session-responsibility:account:account-bob';
+        await waitForHomeGovernance(() => expect(screen.findByTestId(choice)).not.toBeNull());
+        if (tablet) {
+            expect(screen.findByTestId('responsibility-popover')!.props.focusReturnRef.current).toBe(rowNode);
+        } else {
+            expect(screen.findHostByTestId('responsibility-main')!.props.pointerEvents).toBe('none');
+        }
+        await screen.pressByTestIdAsync(choice);
         const approval = storedApproval(serverId);
         expect(approval.request).toMatchObject({
             status: 'open',
@@ -157,6 +204,11 @@ describe('responsibility assignment awaiting its default confirmation', () => {
         expect(harness.requestsFor(RESPONSIBILITY_SET_PATH)).toHaveLength(0);
         expect(screen.findByTestId('session-responsibility-value')!.props.children).toBe('Alice');
         expect(screen.findByTestId('session-responsibility-approval')).not.toBeNull();
+        expect(screen.findByTestId('session-responsibility-step')).toBeNull();
+        expect(screen.findByTestId('session-responsibility-picker-anchored')).toBeNull();
+        expect(screen.findHostByTestId('responsibility-main')!.props.pointerEvents).toBe('auto');
+        expect(screen.findHostByTestId('responsibility-main')!.props['aria-hidden']).not.toBe(true);
+        if (!tablet) expect(rowNode.focus).toHaveBeenCalled();
 
         // One approval at a time: a second intent is held, not a second request.
         await act(async () => { expect(await controller().setResponsibleAccount('account-carol')).toBe(false); });
@@ -185,6 +237,52 @@ describe('responsibility assignment awaiting its default confirmation', () => {
         expect(controller().pending).toBe(false);
         expect(controller().failure).toBeNull();
         expect(harness.requestsFor(RESPONSIBILITY_SET_PATH)).toHaveLength(1);
+        expect(screen.findByTestId('session-responsibility-step')).toBeNull();
+        expect(screen.findByTestId('session-responsibility-picker-anchored')).toBeNull();
+    });
+
+    it.each([
+        [404, 'session_access_session_not_found', 'not-found', 'read_only'],
+        [403, 'session_access_authentication_required', 'session_access_authentication_required', 'editable'],
+    ] as const)('honors a typed detail denial after an unknown approved mutation: %s %s', async (status, code, failure, availability) => {
+        const serverId = await addResponsibilityHome();
+        const { screen, controller } = await renderAssignment(serverId);
+        await act(async () => { await controller().loadCandidates(); });
+        expect(controller().candidates.candidates.map(candidate => candidate.accountId)).toEqual(['account-bob']);
+        await act(async () => { expect(await controller().setResponsibleAccount('account-bob')).toBe(false); });
+        const approval = storedApproval(serverId);
+        harness.answer(serverId, RESPONSIBILITY_SET_PATH, { dispatchThenFail: true });
+        harness.answer(serverId, `/v2/sessions/${SESSION_ID}?accessProjectionVersion=1`, { status, body: { error: code } });
+        await decideApprovalAsInbox(serverId, approval.id, 'approve');
+        await waitForHomeGovernance(() => {
+            expect(controller().pending).toBe(false);
+            expect(controller().failure).toBe(failure);
+            expect(controller().candidates.candidates).toEqual([]);
+            expect(controller().availability).toBe(availability);
+        });
+        expect(harness.requestsFor(RESPONSIBILITY_SET_PATH)).toHaveLength(1);
+        if (availability === 'read_only') {
+            await act(async () => { expect(await controller().setResponsibleAccount('account-bob')).toBe(false); });
+            expect(harness.artifacts(serverId).list()).toHaveLength(1);
+        } else {
+            // Authentication loss is recoverable, unlike final access loss:
+            // reopening shows its typed explanation and no private candidates.
+            harness.answer(serverId, '/v2/sessions/responsibility/candidates', { status, body: { error: code } });
+            await screen.pressByTestIdAsync('session-responsibility-row');
+            await waitForHomeGovernance(() => expect(controller().candidates.failed).toBe(true));
+            expect(screen.findByTestId('session-responsibility-picker-error')!.props.accessibilityRole).toBe('alert');
+            expect(screen.findByTestId('session-responsibility-picker.list:root:option:session-responsibility:account:account-bob')).toBeNull();
+            harness.answer(serverId, '/v2/sessions/responsibility/candidates', { body: {
+                candidates: [{ accountId: 'account-bob', profile: { firstName: 'Bob', lastName: null, username: 'bob', avatarUrl: null } }],
+                nextCursor: null,
+            } });
+            await screen.pressByTestIdAsync('session-responsibility-picker.list:pagination:retry');
+            await waitForHomeGovernance(() => {
+                expect(controller().failure).toBeNull();
+                expect(screen.findByTestId('session-responsibility-picker.list:root:option:session-responsibility:account:account-bob')).not.toBeNull();
+            });
+            expect(harness.requestsFor(RESPONSIBILITY_SET_PATH)).toHaveLength(1);
+        }
     });
 
     it('releases the wait without changing anything when the approval is declined', async () => {

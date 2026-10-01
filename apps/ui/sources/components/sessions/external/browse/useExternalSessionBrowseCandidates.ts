@@ -1,6 +1,7 @@
 import * as React from 'react';
 import type {
     ExternalSessionActivityV1,
+    ExternalSessionCandidateThreadV1,
     ExternalSessionsAgentId,
     ExternalSessionsCandidatesListResponse,
     ExternalSessionsSource,
@@ -21,6 +22,8 @@ export type ExternalSessionBrowseCandidate = Readonly<{
     title?: string;
     updatedAtMs: number;
     activity?: ExternalSessionActivityV1;
+    /** Present only for one of the Agent's internal threads. */
+    thread?: ExternalSessionCandidateThreadV1;
     details?: Record<string, unknown>;
     linkData?: PluginAgentExternalSessionLinkData;
     linkedSessionId?: string;
@@ -96,6 +99,7 @@ function mergeExternalSessionBrowseCandidate(
         title: hasCandidateTitle(next) ? next.title : current.title,
         updatedAtMs: Math.max(current.updatedAtMs, next.updatedAtMs),
         activity: next.activity ?? current.activity,
+        thread: next.thread ?? current.thread,
         details: mergeCandidateDetails(current.details, next.details),
         linkData: next.linkData ?? current.linkData,
         linkedSessionId: next.linkedSessionId ?? current.linkedSessionId,
@@ -184,9 +188,12 @@ export function useExternalSessionBrowseCandidates(params: Readonly<{
     providerId: ExternalSessionsAgentId | null;
     source: ExternalSessionsSource | null;
     searchTerm?: string;
+    /** List the Agent's internal threads too (the "Sub-agent threads" filter). */
+    includeThreads?: boolean;
     enabled?: boolean;
 }>) {
     const { machineId, providerId, searchTerm, source, serverId } = params;
+    const includeThreads = params.includeThreads === true;
     const enabled = params.enabled !== false;
     const normalizedSearchTerm = typeof searchTerm === 'string' ? searchTerm.trim() : '';
     const currentScopeKey = React.useMemo(() => JSON.stringify({
@@ -194,8 +201,21 @@ export function useExternalSessionBrowseCandidates(params: Readonly<{
         serverId: serverId ?? null,
         providerId,
         source,
+        includeThreads,
         searchTerm: normalizedSearchTerm || null,
-    }), [machineId, normalizedSearchTerm, providerId, serverId, source]);
+    }), [includeThreads, machineId, normalizedSearchTerm, providerId, serverId, source]);
+    /**
+     * The listing the rows belong to: machine, Home, Agent, source and whether it includes internal
+     * threads. A search within one listing keeps its rows on screen while the query changes; a
+     * different listing never inherits them.
+     */
+    const currentListingKey = React.useMemo(() => JSON.stringify({
+        machineId,
+        serverId: serverId ?? null,
+        providerId,
+        source,
+        includeThreads,
+    }), [includeThreads, machineId, providerId, serverId, source]);
     const scopedSourceRef = React.useRef<Readonly<{
         scopeKey: string;
         source: ExternalSessionsSource | null;
@@ -253,6 +273,8 @@ export function useExternalSessionBrowseCandidates(params: Readonly<{
 
     const loadGenerationRef = React.useRef(0);
     const loadedScopeKeyRef = React.useRef<string | null>(null);
+    /** The listing that served the rows in `candidates` (see `currentListingKey`). */
+    const candidatesListingKeyRef = React.useRef<string | null>(null);
     const activePageRequestKeysRef = React.useRef(new Set<string>());
     const activeScopeAbortControllerRef = React.useRef<AbortController | null>(null);
     /**
@@ -357,6 +379,14 @@ export function useExternalSessionBrowseCandidates(params: Readonly<{
                 setLoadedScopeKey(null);
                 setAutoLinkPolicyScope(null);
             }
+            if (candidatesListingKeyRef.current !== currentListingKey) {
+                // Another Agent, source or machine: its rows are not this listing's, even while
+                // this one is still building its index or answers with nothing yet.
+                candidatesListingKeyRef.current = currentListingKey;
+                setCandidates([]);
+                setNextPage(null);
+                setAnnotationsIncomplete(false);
+            }
             seenPageContinuationsRef.current = {
                 scopeKey: currentScopeKey,
                 continuations: new Set<string>(),
@@ -404,6 +434,8 @@ export function useExternalSessionBrowseCandidates(params: Readonly<{
                 ...(normalizedSearchTerm ? { searchTerm: normalizedSearchTerm } : {}),
                 ...(cursor ? { cursor } : {}),
                 ...(searchMode ? { searchMode } : {}),
+                // Absent means top-level only, which is also all a daemon predating the field lists.
+                ...(includeThreads ? { includeThreads: true } : {}),
             };
             return machineExternalSessionsCandidatesList(request, {
                 ...(serverId ? { serverId } : {}),
@@ -446,6 +478,7 @@ export function useExternalSessionBrowseCandidates(params: Readonly<{
                 title: candidate.title,
                 updatedAtMs: candidate.updatedAtMs,
                 activity: candidate.activity,
+                thread: candidate.thread,
                 details: candidate.details,
                 linkData: candidate.linkData,
                 linkedSessionId: candidate.linkedSessionId,
@@ -729,7 +762,7 @@ export function useExternalSessionBrowseCandidates(params: Readonly<{
                 }
             }
         }
-    }, [currentScopeKey, enabled, machineId, normalizedSearchTerm, providerId, scopedSource, serverId]);
+    }, [currentListingKey, currentScopeKey, enabled, includeThreads, machineId, normalizedSearchTerm, providerId, scopedSource, serverId]);
 
     React.useEffect(() => {
         void loadCandidates();

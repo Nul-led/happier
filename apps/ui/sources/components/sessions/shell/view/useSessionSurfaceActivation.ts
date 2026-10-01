@@ -67,7 +67,6 @@ export function useSessionSurfaceActivation(
     React.useLayoutEffect(() => {
         if (!normalizedSessionId) return;
         if (!input.surfaceVisible || !input.surfaceFocused) {
-            clearFocusedSessionId(normalizedSessionId, input.serverId);
             return;
         }
         setFocusedSessionId(normalizedSessionId, input.serverId);
@@ -99,7 +98,6 @@ export function useSessionSurfaceActivation(
     React.useLayoutEffect(() => {
         if (!normalizedSessionId) return;
         if (!input.routeAnchor) {
-            clearRouteAnchorSessionId(normalizedSessionId);
             return;
         }
         setRouteAnchorSessionId(normalizedSessionId);

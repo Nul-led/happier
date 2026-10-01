@@ -10,6 +10,7 @@ import {
 } from '@happier-dev/cli-common/firstPartyRuntime';
 import type { PublicReleaseRingId } from '@happier-dev/release-runtime/releaseRings';
 import type { WorkspaceSyncCopyOnceV1, WorkspaceSyncRelationshipV1, WorkspaceSyncRuntimeReadinessV1, WorkspaceSyncStatusV1 } from '@happier-dev/protocol';
+import type { WorkspaceSyncPrepareBetweenRequestV1, WorkspaceSyncPrepareBetweenResultV1 } from '@happier-dev/protocol';
 import { randomBytes, randomUUID } from 'node:crypto';
 
 import {
@@ -20,12 +21,13 @@ import {
 } from '@/settings/accountSettings/activeAccountSettingsSnapshot';
 import {
   WorkspaceSyncController,
+  type WorkspaceSyncControllerOptions,
   type WorkspaceSyncLocalAgentStreamOpen,
   type WorkspaceSyncConflictResolutionAuthorizationAssert,
   type WorkspaceSyncOwnedLocalAgent,
   type WorkspaceSyncResolvedRef,
-  type WorkspaceSyncTargetConflictDelete,
   type WorkspaceSyncTargetFileRead,
+  type WorkspaceSyncTargetEntryObserve,
 } from '@/workspaces/sync/workspaceSyncController';
 import type { WorkspaceSyncMachineTunnelOpen } from '@/workspaces/sync/workspaceSyncMachineCarrierStream';
 import {
@@ -63,6 +65,8 @@ type DataLayout = Readonly<{ rootDir: string; dataDir: string; brokerDir: string
 export type LaunchWorkspaceSyncLocalAgent = (input: Readonly<{
   executablePath: string;
   args: readonly string[];
+  /** The same private Mutagen state root used by this daemon's sidecar. */
+  dataDirectory: string;
   signal?: AbortSignal;
   environment?: never;
 }>) => Promise<WorkspaceSyncOwnedLocalAgent>;
@@ -80,6 +84,7 @@ export type DaemonWorkspaceSyncRuntimeDependencies = Readonly<{
   recoverCopyOnceTarget?(operation: WorkspaceSyncCopyOnceV1): Promise<Readonly<{
     release(reason: 'abort' | 'commit'): Promise<void>;
   }>>;
+  borrowLinkedSourceRoot?: WorkspaceSyncControllerOptions['borrowLinkedSourceRoot'];
   bootstrap(input: PrepareWorkspaceSyncHandoffInput): Promise<Readonly<{
     release(reason: 'abort' | 'commit'): Promise<void>;
     ownershipHandles?: readonly WorkspaceRootOwnershipHandle[];
@@ -90,9 +95,15 @@ export type DaemonWorkspaceSyncRuntimeDependencies = Readonly<{
   stopRetainedNativeProcesses?: () => Promise<void>;
   openMachineCarrierTunnel?: WorkspaceSyncMachineTunnelOpen;
   handoffRelationshipController?: Pick<ManagedWorkspaceSync, 'flush'>;
+  handoffPrepareBetween?: (request: WorkspaceSyncPrepareBetweenRequestV1, signal?: AbortSignal) => Promise<WorkspaceSyncPrepareBetweenResultV1>;
   relationshipOwner?: Pick<WorkspaceSyncRelationshipOwner, 'materializeEndpoints' | 'prepareCreate'>;
-  deleteConflictLoserAtTarget?: WorkspaceSyncTargetConflictDelete;
+  stageConflictResolutionAtTarget?: NonNullable<WorkspaceSyncControllerOptions['stageConflictResolutionAtTarget']>;
+  applyStagedConflictResolutionAtTarget?: NonNullable<WorkspaceSyncControllerOptions['applyStagedConflictResolutionAtTarget']>;
+  discardStagedConflictResolutionAtTarget?: NonNullable<WorkspaceSyncControllerOptions['discardStagedConflictResolutionAtTarget']>;
+  releaseConflictResolutionCaptureAtSource?: NonNullable<WorkspaceSyncControllerOptions['releaseConflictResolutionCaptureAtSource']>;
+  recoverConflictResolutionAtTarget?: NonNullable<WorkspaceSyncControllerOptions['recoverConflictResolutionAtTarget']>;
   readFileAtTarget?: WorkspaceSyncTargetFileRead;
+  observeEntryAtTarget?: WorkspaceSyncTargetEntryObserve;
   assertConflictResolutionAuthorized?: WorkspaceSyncConflictResolutionAuthorizationAssert;
   getSettingsSnapshot?: () => ActiveAccountSettingsSnapshot | null;
   subscribeSettingsSnapshot?: (listener: ActiveAccountSettingsSnapshotListener) => () => void;
@@ -231,6 +242,7 @@ export function createDaemonWorkspaceSyncRuntime(
     return await dependencies.launchLocalAgent({
       executablePath: runtime.agentPath,
       args: ['synchronizer', '--external', '--root', input.canonicalRoot],
+      dataDirectory: runtime.dataDir,
       ...(input.signal ? { signal: input.signal } : {}),
     });
   };
@@ -251,10 +263,16 @@ export function createDaemonWorkspaceSyncRuntime(
     },
     prepareRelationshipTarget: dependencies.prepareRelationshipTarget,
     ...(dependencies.recoverCopyOnceTarget ? { recoverCopyOnceTarget: dependencies.recoverCopyOnceTarget } : {}),
+    ...(dependencies.borrowLinkedSourceRoot ? { borrowLinkedSourceRoot: dependencies.borrowLinkedSourceRoot } : {}),
     ...(dependencies.openMachineCarrierTunnel ? { openMachineCarrierTunnel: dependencies.openMachineCarrierTunnel } : {}),
     openLocalWorkspaceAgentStream: openRootedAgent,
-    ...(dependencies.deleteConflictLoserAtTarget ? { deleteConflictLoserAtTarget: dependencies.deleteConflictLoserAtTarget } : {}),
+    ...(dependencies.stageConflictResolutionAtTarget ? { stageConflictResolutionAtTarget: dependencies.stageConflictResolutionAtTarget } : {}),
+    ...(dependencies.applyStagedConflictResolutionAtTarget ? { applyStagedConflictResolutionAtTarget: dependencies.applyStagedConflictResolutionAtTarget } : {}),
+    ...(dependencies.discardStagedConflictResolutionAtTarget ? { discardStagedConflictResolutionAtTarget: dependencies.discardStagedConflictResolutionAtTarget } : {}),
+    ...(dependencies.releaseConflictResolutionCaptureAtSource ? { releaseConflictResolutionCaptureAtSource: dependencies.releaseConflictResolutionCaptureAtSource } : {}),
+    ...(dependencies.recoverConflictResolutionAtTarget ? { recoverConflictResolutionAtTarget: dependencies.recoverConflictResolutionAtTarget } : {}),
     ...(dependencies.readFileAtTarget ? { readFileAtTarget: dependencies.readFileAtTarget } : {}),
+    ...(dependencies.observeEntryAtTarget ? { observeEntryAtTarget: dependencies.observeEntryAtTarget } : {}),
     ...(dependencies.assertConflictResolutionAuthorized ? { assertConflictResolutionAuthorized: dependencies.assertConflictResolutionAuthorized } : {}),
     ...(dependencies.assertLegacyStateAvailable ? { assertLegacyStateAvailable: dependencies.assertLegacyStateAvailable } : {}),
     ...(dependencies.onStatusPublished ? { onStatusPublished: dependencies.onStatusPublished } : {}),
@@ -264,6 +282,7 @@ export function createDaemonWorkspaceSyncRuntime(
     ...(dependencies.handoffRelationshipController
       ? { relationshipController: dependencies.handoffRelationshipController }
       : {}),
+    ...(dependencies.handoffPrepareBetween ? { prepareBetween: dependencies.handoffPrepareBetween } : {}),
     ...(dependencies.relationshipOwner ? { relationshipOwner: dependencies.relationshipOwner } : {}),
     bootstrap: dependencies.bootstrap,
   });

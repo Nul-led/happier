@@ -1,0 +1,7 @@
+# Test-only stock iroh-relay profile. The source Docker journey reaches this
+# loopback-published HTTP relay with normal Iroh endpoint authentication.
+# Production TLS/certificate policy remains in deploy/iroh-relay/relay.toml.
+enable_relay = true
+enable_quic_addr_discovery = false
+http_bind_addr = "0.0.0.0:8080"
+access = "everyone"

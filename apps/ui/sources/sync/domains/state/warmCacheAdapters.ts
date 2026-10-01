@@ -135,6 +135,8 @@ function areSessionListCacheEntriesEqual(
                 && areCacheJsonValuesEqual(nextEntry.effectiveAccess, previousEntry.effectiveAccess)
             )
         )
+        && nextEntry.encryptionMode === previousEntry.encryptionMode
+        && nextEntry.encryptedContentAvailability === previousEntry.encryptedContentAvailability
         && nextEntry.accessLevel === previousEntry.accessLevel
         && nextEntry.canApprovePermissions === previousEntry.canApprovePermissions
         && nextEntry.responsibleAccountId === previousEntry.responsibleAccountId
@@ -193,6 +195,10 @@ export function buildSessionListRenderableFromCacheEntry(entry: SessionListCache
         pendingActivationAuthorization: entry.pendingActivationAuthorization ?? null,
         lastViewedSessionSeq: normalizeNonNegativeInteger(entry.lastViewedSessionSeq),
         viewer: entry.viewer,
+        ...(entry.encryptionMode !== undefined ? { encryptionMode: entry.encryptionMode } : {}),
+        ...(entry.encryptedContentAvailability !== undefined
+            ? { encryptedContentAvailability: entry.encryptedContentAvailability }
+            : {}),
         metadataLayoutVersion: entry.metadataLayoutVersion,
         metadataVersion: entry.metadataVersion,
         agentStateVersion: entry.agentStateVersion,
@@ -277,9 +283,13 @@ export function buildSessionListCacheEntryFromRenderable(
     const preserveMetadata = shouldPreserveSessionMetadataFromPreviousEntry(session, previousEntry);
     const preserveAgentState = shouldPreserveSessionAgentStateFromPreviousEntry(session, previousEntry);
     const preserveReadState = shouldPreserveSessionReadStateFromPreviousEntry(session, previousEntry);
-    const legacyMetadata = readSessionMetadataLayoutVersion(session.metadataLayoutVersion) === 0
-        ? session.metadata
-        : null;
+    // The row's metadata is already this viewer's projection for its layout (layout 0: the
+    // metadata; layout 1: the owner view for an owner, the shared view for a recipient), with the
+    // hidden-system fact folded in. Persisting it for every layout is what lets a cold restore
+    // render current-layout rows; the reader (`buildSessionListRenderableFromCacheEntry`) and the
+    // snapshot's layout-matched cache fallback already expect it. A contracted row (`metadata`
+    // null) still persists nothing private.
+    const projectedMetadata = session.metadata;
     const viewer = normalizeSessionViewerCompatibility(session);
     const nextEntry: SessionListCacheEntryV1 = {
         sessionId: session.id,
@@ -313,6 +323,14 @@ export function buildSessionListCacheEntryFromRenderable(
         pendingRequestObservedAt: preserveAgentState
             ? previousEntry.pendingRequestObservedAt ?? null
             : normalizeNonNegativeNumber(session.pendingRequestObservedAt),
+        // The settled content fact travels with the row it describes (an enum, never key or
+        // content bytes); an unsettled row persists nothing, so a restore never invents one.
+        ...(session.encryptionMode === 'e2ee' || session.encryptionMode === 'plain'
+            ? { encryptionMode: session.encryptionMode }
+            : {}),
+        ...(session.encryptedContentAvailability != null
+            ? { encryptedContentAvailability: session.encryptedContentAvailability }
+            : {}),
         ...(session.access === null
             ? { effectiveAccess: null }
             : session.access?.sources !== undefined
@@ -339,17 +357,17 @@ export function buildSessionListCacheEntryFromRenderable(
         ...(Object.prototype.hasOwnProperty.call(session, 'responsibleAccount')
             ? { responsibleAccount: session.responsibleAccount }
             : {}),
-        name: preserveMetadata ? previousEntry.name : legacyMetadata?.name,
+        name: preserveMetadata ? previousEntry.name : projectedMetadata?.name,
         summaryText: preserveMetadata ? previousEntry.summaryText ?? null : session.metadata?.summaryText ?? null,
-        path: preserveMetadata ? previousEntry.path : legacyMetadata?.path ?? '',
-        homeDir: preserveMetadata ? previousEntry.homeDir ?? null : legacyMetadata?.homeDir ?? null,
-        host: preserveMetadata ? previousEntry.host ?? null : legacyMetadata?.host ?? null,
-        machineId: preserveMetadata ? previousEntry.machineId ?? null : legacyMetadata?.machineId ?? null,
-        flavor: preserveMetadata ? previousEntry.flavor ?? null : legacyMetadata?.flavor ?? null,
-        externalSessionV1: preserveMetadata ? previousEntry.externalSessionV1 ?? null : legacyMetadata?.externalSessionV1 ?? null,
+        path: preserveMetadata ? previousEntry.path : projectedMetadata?.path ?? '',
+        homeDir: preserveMetadata ? previousEntry.homeDir ?? null : projectedMetadata?.homeDir ?? null,
+        host: preserveMetadata ? previousEntry.host ?? null : projectedMetadata?.host ?? null,
+        machineId: preserveMetadata ? previousEntry.machineId ?? null : projectedMetadata?.machineId ?? null,
+        flavor: preserveMetadata ? previousEntry.flavor ?? null : projectedMetadata?.flavor ?? null,
+        externalSessionV1: preserveMetadata ? previousEntry.externalSessionV1 ?? null : projectedMetadata?.externalSessionV1 ?? null,
         hiddenSystemSession: preserveMetadata
             ? previousEntry.hiddenSystemSession === true
-            : legacyMetadata?.hiddenSystemSession === true,
+            : projectedMetadata?.hiddenSystemSession === true,
         keepVisibleWhenInactive: session.keepVisibleWhenInactive === true,
         // Verbatim, not `=== true`: coercing an absent flag to `false` would claim
         // "no pending requests" for a row that is simply not hydrated yet, and it makes the

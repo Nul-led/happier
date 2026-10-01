@@ -16,6 +16,19 @@ const envScope = createEnvKeyScope([
 ]);
 
 describe('createBaseSessionForAttach', () => {
+  it('restores the current server relation and origin independently from an inherited role snapshot', async () => {
+    const { createBaseSessionForAttach } = await import('./createBaseSessionForAttach');
+    const session = await createBaseSessionForAttach({ existingSessionId: 'worker',
+      metadata: createTestMetadata(), state: { controlledByUser: false },
+      sessionAttachSecret: { encryptionMode: 'plain', snapshot: {
+        metadata: { ...createTestMetadata(), work: { sessionRolesV1: {
+          inheritedFrom: 'old-lead', overrides: {}, sessionRoles: {}, notes: '',
+        } } }, metadataVersion: 1, agentState: null, agentStateVersion: 1,
+        reportsTo: { sessionId: 'current-lead' }, origin: { kind: 'run_step' },
+      } },
+    });
+    expect(session).toMatchObject({ reportsTo: { sessionId: 'current-lead' }, origin: { kind: 'run_step' } });
+  });
   it('accepts a process-local attach secret without consulting ambient process state', async () => {
     envScope.patch({ HAPPIER_SESSION_ATTACH_FILE: '/ambient/must-not-be-read.json' });
     try {

@@ -2,12 +2,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { accountSettingsParse } from '@happier-dev/protocol';
 
 import { createStorageStoreMock } from '@/dev/testkit/mocks/storage';
-import type { Message } from '@/sync/domains/messages/messageTypes';
+import type { Message } from "@happier-dev/session-core/messages";
 import { localSettingsDefaults } from '@/sync/domains/settings/localSettings';
 import { registerStorageStateReader } from '@/sync/domains/state/storageStateReaderBridge';
 import type { SessionListRenderableSession } from '@/sync/domains/session/listing/sessionListRenderable';
 import type { Session } from '@/sync/domains/state/storageTypes';
-import { createReducer } from '@/sync/reducer/reducer';
+import { createReducer } from "@happier-dev/session-core/reducer";
 import type { SessionMessages } from '@/sync/store/domains/messages';
 import type { StorageState } from '@/sync/store/types';
 import { createLocalActivityBadgeSnapshotSelector } from './createLocalActivityBadgeSnapshotSelector';

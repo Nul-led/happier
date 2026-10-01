@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import {
     canonicalSessionDraftAddressV2,
     NewSessionDraftDocumentV2Schema,
@@ -60,6 +61,11 @@ type DraftFieldMutationV1 = Readonly<{
 export type SessionDraftLaunchCurrentnessCapture = Readonly<{
     userAttemptId: string;
     currentness: SessionDraftCurrentness;
+    /**
+     * Spawn configuration timestamp first submitted under this attempt. Reusing
+     * the attempt id after a reload must replay the identical Action input.
+     */
+    configurationUpdatedAtMs?: number;
 }>;
 
 export type SessionDiscussionDraftMutationAttempt = Readonly<
@@ -129,7 +135,60 @@ export type ExistingSessionDraftPatch = Readonly<{
         executionRunRequestedAction?: StrictJsonValue;
     }>;
     sessionDiscussionSelectionSourceV1?: Omit<SessionDiscussionSelectionSourceV1, 'draftCorrelationId'> | null;
+    /** The session Git pane's commit message; `null` clears it. */
+    scmCommitMessageV1?: string | null;
+    /** The session's new pull request form (sidebar or Details); `null` clears it. */
+    scmPullRequestV1?: SessionScmPullRequestDraftV1 | null;
 }>;
+
+/** A new pull request being written for this session's branch (Git lab PR / PRD). */
+export type SessionScmPullRequestDraftV1 = Readonly<{
+    title: string;
+    body: string;
+    draft: boolean;
+    /** The branch it merges into; `null` means the provider's default. */
+    base: string | null;
+}>;
+
+export type SessionScmDraft = Readonly<{
+    commitMessage: string;
+    pullRequest: SessionScmPullRequestDraftV1 | null;
+}>;
+
+const SESSION_SCM_COMMIT_MESSAGE_DRAFT_PATH = Object.freeze({
+    kind: 'extension' as const,
+    pluginId: 'happier',
+    fieldId: 'scmCommitMessageV1',
+});
+const SESSION_SCM_PULL_REQUEST_DRAFT_PATH = Object.freeze({
+    kind: 'extension' as const,
+    pluginId: 'happier',
+    fieldId: 'scmPullRequestV1',
+});
+/** Git pane drafts ride on the Session draft but are not a message draft (no session-list mark, kept on send). */
+const SESSION_SCM_DRAFT_FIELD_KEYS: ReadonlySet<string> = new Set([
+    'extensions.happier.scmCommitMessageV1',
+    'extensions.happier.scmPullRequestV1',
+]);
+
+const SessionScmPullRequestDraftV1Schema = z.object({
+    title: z.string(),
+    body: z.string(),
+    draft: z.boolean(),
+    base: z.string().nullable(),
+}).strict();
+
+const EMPTY_SESSION_SCM_DRAFT: SessionScmDraft = Object.freeze({ commitMessage: '', pullRequest: null });
+
+export function readSessionScmDraftFromDraft(document: SessionDraftDocumentV2 | null | undefined): SessionScmDraft {
+    const commitMessage = getField(document ?? null, SESSION_SCM_COMMIT_MESSAGE_DRAFT_PATH)?.value;
+    const pullRequest = SessionScmPullRequestDraftV1Schema.safeParse(getField(document ?? null, SESSION_SCM_PULL_REQUEST_DRAFT_PATH)?.value);
+    if (typeof commitMessage !== 'string' && !pullRequest.success) return EMPTY_SESSION_SCM_DRAFT;
+    return {
+        commitMessage: typeof commitMessage === 'string' ? commitMessage : '',
+        pullRequest: pullRequest.success ? pullRequest.data : null,
+    };
+}
 
 const SESSION_DISCUSSION_SELECTION_SOURCE_DRAFT_PATH = Object.freeze({
     kind: 'extension' as const,
@@ -191,12 +250,25 @@ export type SessionDraftRepositoryScopedRuntime = Readonly<{
 }>;
 
 export type ExistingSessionDraftProjection = Readonly<{
+    /** The draft holds a message (or its routing), not only the Git pane's drafts: the session list marks it. */
+    listed: boolean;
     text: string;
     preview: string;
     status: SessionDraftStatus;
     conflict: SessionDraftConflict | null;
     updatedAt: number;
 }>;
+
+/**
+ * Whether a kept New Session draft belongs in the user's draft list: it holds
+ * authored content, or a launch attempt is still in custody for it. A kept
+ * configuration-only draft (an explicit seed, or one whose text was cleared)
+ * stays openable by its route but is not listed.
+ */
+export function isNewSessionDraftListed(draft: Pick<NewSessionDraftProjection, 'document' | 'localSupplement'>): boolean {
+    return hasMeaningfulContent(draft.document)
+        || (draft.localSupplement.launchUserAttemptId?.trim().length ?? 0) > 0;
+}
 
 export type NewSessionDraftProjection = Readonly<{
     draftId: string;
@@ -417,16 +489,36 @@ function isNonEmptyArray(value: StrictJsonValue): boolean {
 }
 
 /**
- * A Run address seeds its own manual recipient so the sealed payload matches the
- * address. That structural selection is not authored content, so an otherwise
- * empty Run draft still deletes when empty.
+ * New Session authoring the user would expect to keep on its own. Everything
+ * else in `authoring` (Machine, folder, Agent, model, permission, ...) is
+ * configuration the composer resolves and autosaves as soon as it opens, so a
+ * draft carrying only that is not a draft: it is neither kept nor listed.
  */
-function hasMeaningfulContent(document: SessionDraftDocumentV2, address?: SessionDraftAddressV2): boolean {
+function hasNewSessionAuthoredContent(authoring: NewSessionDraftDocument['target']['authoring']): boolean {
+    const record = authoring as Readonly<Record<string, { value?: unknown } | undefined>>;
+    // A Runner package already exists for this draft; losing the reference would strand it.
+    if (record.temporaryComputerActivationRef?.value != null) return true;
+    // An Automation definition is authored content, not a resolved default.
+    return record.automation?.value != null;
+}
+
+/**
+ * The one "does this draft hold something the user wrote" decision, used both to
+ * keep/sync a draft and to list it. A Run address seeds its own manual recipient
+ * so the sealed payload matches the address. That structural selection is not
+ * authored content, so an otherwise empty Run draft still deletes when empty.
+ */
+function hasMeaningfulContent(
+    document: SessionDraftDocumentV2,
+    address?: SessionDraftAddressV2,
+    options?: Readonly<{ excludeScmDrafts?: boolean }>,
+): boolean {
     if (document.composer.text.value.trim().length > 0) return true;
     if (isNonEmptyArray(document.composer.mentions.value) || isNonEmptyArray(document.composer.attachments.value)) return true;
     if (isDiscussionDocument(document)) return (document.title?.value.trim().length ?? 0) > 0;
-    if (Object.keys(document.extensions).some((pluginId) => Object.keys(document.extensions[pluginId] ?? {}).length > 0)) return true;
-    if (document.target.kind === 'newSession') return Object.keys(document.target.authoring).length > 0;
+    const counted = (pluginId: string, fieldId: string) => !(options?.excludeScmDrafts && SESSION_SCM_DRAFT_FIELD_KEYS.has(`extensions.${pluginId}.${fieldId}`));
+    if (Object.keys(document.extensions).some((pluginId) => Object.keys(document.extensions[pluginId] ?? {}).some((fieldId) => counted(pluginId, fieldId)))) return true;
+    if (document.target.kind === 'newSession') return hasNewSessionAuthoredContent(document.target.authoring);
     const recipientIsStructural = address?.kind === 'run'
         && areJsonValuesEqual(document.target.routing.recipient.value, runRecipientValue(address.runId));
     return (!recipientIsStructural && isMeaningfulSessionDraftRecipientValueV1(document.target.routing.recipient.value))
@@ -509,9 +601,13 @@ function normalizeLocalSupplement(value: unknown, expectedAddress: SessionDraftA
                 && mutationIds && typeof mutationIds === 'object' && !Array.isArray(mutationIds)
                 && Object.values(mutationIds).every((id) => typeof id === 'string' && id.length > 0)
             ) {
+                const configurationUpdatedAtMs = captureCandidate.configurationUpdatedAtMs;
                 normalized.launchCurrentnessCapture = {
                     userAttemptId: capturedAttemptId,
                     currentness: { address: parsedAddress.data, mutationIds: { ...(mutationIds as Readonly<Record<string, string>>) } },
+                    ...(typeof configurationUpdatedAtMs === 'number' && Number.isFinite(configurationUpdatedAtMs) && configurationUpdatedAtMs >= 0
+                        ? { configurationUpdatedAtMs }
+                        : {}),
                 };
             }
         }
@@ -580,6 +676,15 @@ export class SessionDraftRepository {
     private readonly snapshotCache = new WeakMap<PersistedReplica, SessionDraftSnapshot>();
     private readonly existingProjectionCache = new WeakMap<PersistedReplica, ExistingSessionDraftProjection | null>();
     private readonly newListProjectionCache = new Map<string, readonly NewSessionDraftProjection[]>();
+    /**
+     * The last projection of each new-session draft replica. A replica is replaced on every write,
+     * so an unchanged replica with an unchanged status keeps its projection object across list
+     * rebuilds: every draft row renders from these objects, and a rebuild caused by one draft (or by
+     * a repository notification that changed nothing) must not hand every other row a new one.
+     */
+    private readonly newProjectionCache = new WeakMap<PersistedReplica, NewSessionDraftProjection>();
+    /** The last list per scope, reused when a rebuild yields the same projections in the same order. */
+    private readonly lastNewListProjection = new Map<string, readonly NewSessionDraftProjection[]>();
     private runtime: RepositoryRuntime;
     private readonly storage: SessionDraftRepositoryStorage;
     private readonly randomUUID: () => string;
@@ -639,6 +744,7 @@ export class SessionDraftRepository {
         this.mutationBatches.clear();
         this.draftRemovalCleanups.clear();
         this.newListProjectionCache.clear();
+        this.lastNewListProjection.clear();
     }
 
     private scopeKey(scope: SessionDraftRepositoryScope): string {
@@ -973,7 +1079,11 @@ export class SessionDraftRepository {
         const materialized = existing?.materialized === true
             || materializationIntent === 'seeded'
             || materializationIntent === 'launchInterrupted'
-            || (materializationIntent === 'userEdit' && (changed || hasMeaningfulContent(document, address)));
+            || (materializationIntent === 'userEdit' && (address.kind === 'newSession'
+                // Opening the composer autosaves resolved configuration; only
+                // authored content turns a New Session into a kept draft.
+                ? hasMeaningfulContent(document, address)
+                : changed || hasMeaningfulContent(document, address)));
         if (!materialized && address.kind === 'newSession') return;
         const meaningfulContent = hasMeaningfulContent(document, address);
         this.writeReplica(scope, {
@@ -1073,6 +1183,22 @@ export class SessionDraftRepository {
                     : StrictJsonValueSchema.parse(params.patch.sessionDiscussionSelectionSourceV1),
             });
         }
+        if (params.patch.scmCommitMessageV1 !== undefined) {
+            writes.push({
+                path: SESSION_SCM_COMMIT_MESSAGE_DRAFT_PATH,
+                value: params.patch.scmCommitMessageV1 === null || params.patch.scmCommitMessageV1 === ''
+                    ? undefined
+                    : params.patch.scmCommitMessageV1,
+            });
+        }
+        if (params.patch.scmPullRequestV1 !== undefined) {
+            writes.push({
+                path: SESSION_SCM_PULL_REQUEST_DRAFT_PATH,
+                value: params.patch.scmPullRequestV1 === null
+                    ? undefined
+                    : StrictJsonValueSchema.parse(SessionScmPullRequestDraftV1Schema.parse(params.patch.scmPullRequestV1)),
+            });
+        }
         const address: SessionDraftAddressV2 = params.runId
             ? { kind: 'run', sessionId: params.sessionId, runId: params.runId }
             : { kind: 'session', sessionId: params.sessionId };
@@ -1139,6 +1265,8 @@ export class SessionDraftRepository {
         userAttemptId: string;
         /** Submission-time revisions, captured before asynchronous preparation. */
         currentness?: SessionDraftCurrentness;
+        /** Kept only by the first capture of this attempt, like its revisions. */
+        configurationUpdatedAtMs?: number;
     }>): SessionDraftCurrentness | null {
         const userAttemptId = params.userAttemptId.trim();
         const replica = this.readReplica(params.scope, params.address);
@@ -1152,10 +1280,31 @@ export class SessionDraftRepository {
             localSupplement: {
                 ...replica.localSupplement,
                 launchUserAttemptId: userAttemptId,
-                launchCurrentnessCapture: { userAttemptId, currentness },
+                launchCurrentnessCapture: {
+                    userAttemptId,
+                    currentness,
+                    ...(params.configurationUpdatedAtMs !== undefined
+                        ? { configurationUpdatedAtMs: params.configurationUpdatedAtMs }
+                        : {}),
+                },
             },
         });
         return currentness;
+    }
+
+    readSessionDraftLaunchCapture(params: Readonly<{
+        scope: SessionDraftRepositoryScope;
+        address: SessionDraftAddressV2;
+        userAttemptId: string;
+    }>): SessionDraftLaunchCurrentnessCapture | null {
+        const supplement = this.readReplica(params.scope, params.address)?.localSupplement;
+        const capture = supplement?.launchCurrentnessCapture;
+        return capture
+            && supplement?.launchUserAttemptId === params.userAttemptId.trim()
+            && capture.userAttemptId === params.userAttemptId.trim()
+            && addressesEqual(capture.currentness.address, params.address)
+            ? capture
+            : null;
     }
 
     readSessionDraftLaunchCurrentness(params: Readonly<{
@@ -1163,14 +1312,7 @@ export class SessionDraftRepository {
         address: SessionDraftAddressV2;
         userAttemptId: string;
     }>): SessionDraftCurrentness | null {
-        const supplement = this.readReplica(params.scope, params.address)?.localSupplement;
-        const capture = supplement?.launchCurrentnessCapture;
-        return capture
-            && supplement?.launchUserAttemptId === params.userAttemptId.trim()
-            && capture.userAttemptId === params.userAttemptId.trim()
-            && addressesEqual(capture.currentness.address, params.address)
-            ? capture.currentness
-            : null;
+        return this.readSessionDraftLaunchCapture(params)?.currentness ?? null;
     }
 
     clearSessionDraftLaunchCurrentness(params: Readonly<{
@@ -1872,6 +2014,22 @@ export class SessionDraftRepository {
         localSupplement: SessionDraftLocalSupplement = {},
     ): void {
         const existing = this.readReplica(scope, record.address);
+        // Reading back the revision this replica already holds (the sync feed can report the same
+        // draft again) is not a change: keep the replica, so no list rebuilds and no subscriber is told.
+        if (
+            existing
+            && existing.baseRevision === record.revision
+            && existing.status === 'clean'
+            && existing.conflict === null
+            && existing.pendingFieldMutations.length === 0
+            && existing.materialized
+            && !existing.deleteWhenEmpty
+            && existing.createdAt === record.createdAt
+            && existing.updatedAt === record.updatedAt
+            && areJsonValuesEqual(existing.localRawDocument, document)
+            && areJsonValuesEqual(existing.baseRawDocument, document)
+            && areJsonValuesEqual(existing.localSupplement as StrictJsonValue, localSupplement as StrictJsonValue)
+        ) return;
         this.writeReplica(scope, {
             address: record.address,
             baseRevision: record.revision,
@@ -2019,6 +2177,7 @@ export class SessionDraftRepository {
         const status = this.projectedStatus(scope, replica);
         if (cached?.status === status) return cached;
         const projection: ExistingSessionDraftProjection = {
+            listed: hasMeaningfulContent(replica.localRawDocument, address, { excludeScmDrafts: true }),
             text: replica.localRawDocument.composer.text.value,
             preview: normalizePreview(replica.localRawDocument.composer.text.value),
             status,
@@ -2039,18 +2198,30 @@ export class SessionDraftRepository {
                 && replica.materialized
                 && replica.localRawDocument?.target.kind === 'newSession'
             ))
-            .map((replica) => ({
-                draftId: (replica.address as Extract<SessionDraftAddressV2, { kind: 'newSession' }>).draftId,
-                document: replica.localRawDocument,
-                status: this.projectedStatus(scope, replica),
-                conflict: replica.conflict,
-                createdAt: replica.createdAt,
-                updatedAt: replica.updatedAt,
-                localSupplement: replica.localSupplement,
-            }))
+            .map((replica) => {
+                const status = this.projectedStatus(scope, replica);
+                const previous = this.newProjectionCache.get(replica);
+                if (previous && previous.status === status) return previous;
+                const next: NewSessionDraftProjection = {
+                    draftId: (replica.address as Extract<SessionDraftAddressV2, { kind: 'newSession' }>).draftId,
+                    document: replica.localRawDocument,
+                    status,
+                    conflict: replica.conflict,
+                    createdAt: replica.createdAt,
+                    updatedAt: replica.updatedAt,
+                    localSupplement: replica.localSupplement,
+                };
+                this.newProjectionCache.set(replica, next);
+                return next;
+            })
             .sort((left, right) => right.updatedAt - left.updatedAt || left.draftId.localeCompare(right.draftId));
-        this.newListProjectionCache.set(scopeKey, projection);
-        return projection;
+        const last = this.lastNewListProjection.get(scopeKey);
+        const list = last && last.length === projection.length && last.every((draft, index) => draft === projection[index])
+            ? last
+            : projection;
+        this.lastNewListProjection.set(scopeKey, list);
+        this.newListProjectionCache.set(scopeKey, list);
+        return list;
     }
 
     isSessionDraftRemoteAcknowledged(scope: SessionDraftRepositoryScope, address: SessionDraftAddressV2): boolean {
@@ -2178,6 +2349,7 @@ export const writeNewSessionDraft = singleton.writeNewSessionDraft.bind(singleto
 export const writeSessionDraftLocalSupplement = singleton.writeSessionDraftLocalSupplement.bind(singleton);
 export const captureSessionDraftCurrentness = singleton.captureSessionDraftCurrentness.bind(singleton);
 export const captureSessionDraftLaunchCurrentness = singleton.captureSessionDraftLaunchCurrentness.bind(singleton);
+export const readSessionDraftLaunchCapture = singleton.readSessionDraftLaunchCapture.bind(singleton);
 export const readSessionDraftLaunchCurrentness = singleton.readSessionDraftLaunchCurrentness.bind(singleton);
 export const clearSessionDraftLaunchCurrentness = singleton.clearSessionDraftLaunchCurrentness.bind(singleton);
 export const clearSessionDraftCurrentnessLocal = singleton.clearSessionDraftCurrentnessLocal.bind(singleton);

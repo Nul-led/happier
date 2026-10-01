@@ -1,9 +1,7 @@
 import {
-    ProviderAccountUsageSnapshotV1Schema,
-    openProviderAccountUsageSnapshotCiphertext,
+    openSealedProviderAccountUsageSnapshot,
     type ProviderAccountUsageSnapshotV1,
     type SealedProviderAccountUsageSnapshotV1,
-    type StoredJsonContentEnvelope,
 } from '@happier-dev/protocol';
 
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
@@ -13,15 +11,21 @@ export function openProviderAccountUsageSnapshot(
     credentials: AuthCredentials,
     content:
         | SealedProviderAccountUsageSnapshotV1
-        | Extract<StoredJsonContentEnvelope, Readonly<{ t: 'encrypted' }>>,
+        | Readonly<{
+            t: 'encrypted';
+            c: string;
+            subscription?: SealedProviderAccountUsageSnapshotV1['subscription'];
+        }>,
 ): ProviderAccountUsageSnapshotV1 | null {
     const material = resolveAccountScopedCryptoMaterialFromCredentials(credentials);
-    const ciphertext = 't' in content
-        ? content.c
-        : content.ciphertext;
-    const opened = openProviderAccountUsageSnapshotCiphertext({ material, ciphertext });
-    if (!opened || !opened.value) return null;
-
-    const parsed = ProviderAccountUsageSnapshotV1Schema.safeParse(opened.value);
-    return parsed.success ? parsed.data : null;
+    return openSealedProviderAccountUsageSnapshot({
+        material,
+        sealed: 't' in content
+            ? {
+                format: 'account_scoped_v1',
+                ciphertext: content.c,
+                ...(content.subscription ? { subscription: content.subscription } : {}),
+            }
+            : content,
+    });
 }

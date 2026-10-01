@@ -50,6 +50,7 @@ export function buildCollapsedExtraControlActions(params: Readonly<{
                 ...(disabled ? { disabled: true } : {}),
                 onPress: () => {
                     if (isDisabled()) return;
+                    chip.onIntent?.();
                     params.dismiss();
                     params.resetCorePopovers?.();
                     params.openCollapsedOptionsPopover(chip.key);
@@ -69,6 +70,7 @@ export function buildCollapsedExtraControlActions(params: Readonly<{
                 ...(disabled ? { disabled: true } : {}),
                 onPress: () => {
                     if (isDisabled()) return;
+                    chip.onIntent?.();
                     params.dismiss();
                     params.resetCorePopovers?.();
                     params.openCollapsedOptionsPopover(chip.key);

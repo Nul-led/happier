@@ -36,6 +36,18 @@ function request(
 }
 
 describe('browser automation action runtime', () => {
+  it('returns complete page results while persisting a compact timeline projection', async () => {
+    const visibleText = 'Readable page content '.repeat(100);
+    const selector = `[data-testid="${'long-id'.repeat(100)}"]`;
+    const details = { visibleText, visibleTextTruncated: false, interactiveElements: Array.from({ length: 40 }, () => ({ role: 'button', selector })), interactiveElementsTruncated: false };
+    const { result, timelineEntry } = await executeBrowserAutomationAction({
+      request: request(), adapter: adapter({ status: 'succeeded', fidelity: 'cdp', trustedInput: true, resultSummary: details }),
+      controlEpoch: 1, navigationGenerationBefore: 0, generateTimelineEntryId: () => 'timeline_full',
+    });
+    expect(result.resultSummary).toEqual(details);
+    expect(timelineEntry.resultSummary.visibleText).not.toBe(visibleText);
+    expect(timelineEntry.resultSummary.interactiveElements).toHaveLength(25);
+  });
   it('produces a schema-valid result and timeline entry for a succeeded read-only action', async () => {
     let clock = 1_000;
     const { result, timelineEntry } = await executeBrowserAutomationAction({

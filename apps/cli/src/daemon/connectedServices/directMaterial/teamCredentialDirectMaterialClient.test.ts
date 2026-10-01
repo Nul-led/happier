@@ -1,3 +1,4 @@
+import tweetnacl from 'tweetnacl';
 import { describe, expect, it, vi } from 'vitest';
 import {
   computeTeamCredentialSourceMemberKeyV1,
@@ -73,6 +74,36 @@ describe('TeamCredentialDirectMaterialClient', () => {
     });
     const result = await client.open({ resourceId: 'resource-1', ...use });
     expect(result).toEqual({ ok: true, payload });
+  });
+
+  it('opens a recipient-bound E2EE tuple on first use without exposing a plain fallback', async () => {
+    const recipientSecretKey = new Uint8Array(32).fill(7);
+    const recipientContentPublicKey = tweetnacl.box.keyPair.fromSecretKey(recipientSecretKey).publicKey;
+    const stored = createTeamCredentialDirectMaterialStoredV1({
+      payload,
+      recipientMode: 'e2ee',
+      recipientContentPublicKey,
+      randomBytes: tweetnacl.randomBytes,
+    });
+    const client = createTeamCredentialDirectMaterialClient({
+      fetchCurrent: async () => ({
+        ok: true,
+        recipientMode: 'e2ee',
+        stored,
+        expected: {
+          homeServerIdentityId: 'home-1',
+          teamId: 'team-1',
+          resourceId: 'resource-1',
+          resourceRevision: 7,
+          recipientAccountId: 'recipient-1',
+          sourceMemberKey: computeTeamCredentialSourceMemberKeyV1(payload.sourceMember),
+          sourceVersion: 'source-version-1',
+        },
+      }),
+      readRecipientEncryptionMaterial: async () => ({ mode: 'e2ee', secretKeyOrSeed: recipientSecretKey }),
+    });
+
+    await expect(client.open({ resourceId: 'resource-1', ...use })).resolves.toEqual({ ok: true, payload });
   });
 
   it('fails closed before disclosure when currentness changes or E2EE material is unavailable', async () => {

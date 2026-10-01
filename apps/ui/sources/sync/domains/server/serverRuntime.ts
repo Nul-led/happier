@@ -26,7 +26,6 @@ export {
     getAccountServiceEndpointSnapshot,
     setAccountServiceEndpoint,
     subscribeAccountServiceEndpoint,
-    resetAccountServiceToDefault,
 } from './serverProfiles';
 
 export function getActiveServerSnapshot(): ActiveServerSnapshot {

@@ -31,17 +31,14 @@ describe('createWorkspaceSyncRelationshipDetailsTab', () => {
         const tab = createWorkspaceSyncRelationshipDetailsTab(summary, 'workspace-alpha');
 
         expect(tab).toEqual(expect.objectContaining({
-            key: 'workspace-sync-conflicts:relationship-1',
+            key: 'workspace-sync-conflicts:workspace-alpha',
             kind: 'workspaceSyncConflicts',
             title: 'Alpha → Beta',
             resource: expect.objectContaining({
                 kind: 'workspaceSyncConflicts',
-                relationshipId: 'relationship-1',
+                hubWorkspaceRefId: 'workspace-alpha',
+                workspaceRefId: 'workspace-alpha',
                 controllerMachineId: 'machine-alpha',
-                localSide: 'alpha',
-                mode: 'keep_synced',
-                alpha: expect.objectContaining({ machineName: 'Alpha Mac' }),
-                beta: expect.objectContaining({ machineName: 'Beta workstation' }),
             }),
         }));
     });

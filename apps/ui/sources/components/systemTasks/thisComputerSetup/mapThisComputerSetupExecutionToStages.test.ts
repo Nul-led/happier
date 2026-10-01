@@ -263,4 +263,34 @@ describe('mapThisComputerSetupExecutionToStages', () => {
             },
         });
     });
+    it('lands an unanswered one-CLI question (R12) on the install-tools stage', () => {
+        const execution = mapThisComputerSetupExecutionToStages({
+            taskId: 'task-cli',
+            status: 'failed',
+            currentStepId: 'setup.thisComputer.cliChoice',
+            latestMessage: null,
+            awaitingInput: false,
+            cancelRequested: false,
+            events: [{
+                protocolVersion: 1,
+                taskId: 'task-cli',
+                tsMs: 5,
+                type: 'prompt',
+                stepId: 'setup.thisComputer.cliChoice',
+                message: 'Happier CLI 0.2.13 is already installed at /usr/local/bin/happier.',
+                data: { kind: 'setup.cliChoice', command: '/usr/local/bin/happier' },
+            }],
+            result: {
+                protocolVersion: 1,
+                taskId: 'task-cli',
+                ok: false,
+                error: {
+                    code: 'cli_choice_unanswered',
+                    message: 'Setup stopped before changing anything: choose who manages the Happier command line to continue.',
+                },
+            },
+        }, []);
+
+        expect(execution['setup.thisComputer.stage.installTools']?.status).toBe('error');
+    });
 });

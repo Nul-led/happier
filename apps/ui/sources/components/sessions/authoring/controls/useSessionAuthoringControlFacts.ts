@@ -16,7 +16,7 @@ import { supportsDirectTranscriptStorageForNewSession } from '@/components/sessi
 import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
 import { useDaemonScopedMachineCapabilitiesCache } from '@/hooks/server/useDaemonScopedMachineCapabilitiesCache';
 import { CAPABILITIES_REQUEST_NEW_SESSION } from '@/capabilities/requests';
-import { readUiAiLaunchProfilesForLegacyUi } from '@/sync/domains/profiles/aiLaunchProfileCollection';
+import { useAiLaunchProfilesForLegacyUi } from '@/sync/store/useAiLaunchProfiles';
 import { useAllMachines, useSetting, useSettings } from '@/sync/domains/state/storage';
 import { getMachineDisplayName } from '@/utils/sessions/machineUtils';
 import { resolvePluginLocalizedText } from '@/sync/domains/plugins/ui/i18n';
@@ -203,14 +203,15 @@ export function useSessionAuthoringControlFacts(params: Readonly<{
         projectionInputs,
     ]);
 
+    const launchProfiles = useAiLaunchProfilesForLegacyUi(rawProfiles);
     const profiles = React.useMemo(() => {
         if (!useProfiles) return [];
-        return readUiAiLaunchProfilesForLegacyUi(rawProfiles).map((profile) => ({
+        return launchProfiles.map((profile) => ({
             id: profile.id,
             label: getProfileDisplayName(profile),
             ...(profile.description === undefined ? {} : { subtitle: profile.description }),
         }));
-    }, [rawProfiles, useProfiles]);
+    }, [launchProfiles, useProfiles]);
 
     const selectedMachine = React.useMemo(
         () => (machineId === null ? null : machines.find((machine) => machine.id === machineId) ?? null),
@@ -258,9 +259,10 @@ export function useSessionAuthoringControlFacts(params: Readonly<{
         agentTargets,
         contextualDefaultAgentTarget,
         profiles,
+        machineName,
         targetIsWindows,
         windowsTerminalAvailable,
         connectedServices,
         ...(mcp === undefined ? {} : { mcp }),
-    }), [agentTargets, connectedServices, contextualDefaultAgentTarget, mcp, profiles, targetIsWindows, windowsTerminalAvailable]);
+    }), [agentTargets, connectedServices, contextualDefaultAgentTarget, machineName, mcp, profiles, targetIsWindows, windowsTerminalAvailable]);
 }

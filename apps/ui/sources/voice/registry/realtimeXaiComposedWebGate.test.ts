@@ -10,7 +10,7 @@ import { TokenStorage } from '@/auth/storage/tokenStorage';
 import { createSessionFixture } from '@/dev/testkit';
 import { encodeBase64 } from '@/encryption/base64';
 import { apiSocket } from '@/sync/api/session/apiSocket';
-import { readStoredSessionMessages } from '@/sync/domains/messages/readStoredSessionMessages';
+import { readStoredSessionMessages } from "@happier-dev/session-core/messages";
 import { setActiveServerId, upsertServerProfile } from '@/sync/domains/server/serverProfiles';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { settingsDefaults, settingsParse } from '@/sync/domains/settings/settings';
@@ -18,6 +18,7 @@ import { storage } from '@/sync/domains/state/storage';
 import { voiceSettingsParse } from '@/sync/domains/settings/voiceSettings';
 import { Encryption } from '@/sync/encryption/encryption';
 import { resetServerReachabilitySupervisors } from '@/sync/runtime/connectivity/serverReachabilitySupervisorPool';
+import { switchConnectionToActiveServer } from '@/sync/runtime/orchestration/connectionManager';
 import { sync } from '@/sync/sync';
 import { resetRuntimeFetch, setRuntimeFetch } from '@/utils/system/runtimeFetch';
 import { voiceSessionBindingManager } from '@/voice/binding/voiceConversationBindingRuntime';
@@ -75,7 +76,7 @@ function installProviderConversationMetadata(
           metadata: writeVoiceProviderConversationMetadata(session.metadata, {
             providerId: 'happier.voice.xai/realtime-grok',
             state: { conversationId },
-            updatedAt: 1,
+            updatedAt: Date.now(),
           }),
         },
       },
@@ -307,6 +308,7 @@ function createSourceComposedXaiRuntime() {
   const requestAccountOperation = vi.fn();
   const scope = createExternalVoiceProviderActivationScope({
     pluginId: entry.pluginId,
+    occurrenceId: `${entry.pluginId}-activation-occurrence`,
     declarations: [entry.declaration],
     hostPlatform: 'web',
     runtimeHost: host,
@@ -383,6 +385,11 @@ describe('realtime_grok source-composed direct-media persistence gate', () => {
       name: 'xAI composed test',
     });
     await setActiveServerId(server.id, { scope: 'device' });
+    const credentialsForServer = vi.spyOn(
+      TokenStorage,
+      'getCredentialsForServerUrl',
+    ).mockResolvedValue(null);
+    await switchConnectionToActiveServer();
     storage.getState().activateProfileScope({
       serverId: server.id,
       accountId: 'xai-composed-account',
@@ -394,7 +401,7 @@ describe('realtime_grok source-composed direct-media persistence gate', () => {
     };
     Reflect.set(sync, 'credentials', credentials);
     sync.encryption = await Encryption.create(secretBytes);
-    vi.spyOn(TokenStorage, 'getCredentialsForServerUrl').mockResolvedValue(credentials);
+    credentialsForServer.mockResolvedValue(credentials);
     resetVoiceAdapterRegistryForTests();
     resetVoiceSessionStoreForTests();
     voiceConversationRuntimeMachine.reset();
@@ -479,6 +486,9 @@ describe('realtime_grok source-composed direct-media persistence gate', () => {
         const session = storage.getState().sessions[sessionId];
         if (!session) throw new Error(`missing session ${sessionId}`);
         if (!session.metadata) throw new Error(`missing session metadata ${sessionId}`);
+        if (updater === 'ownerMigration') {
+          throw new Error('unexpected owner migration in voice metadata fixture');
+        }
         const metadata = updater(session.metadata);
         storage.setState((current) => ({
           ...current,
@@ -543,7 +553,10 @@ describe('realtime_grok source-composed direct-media persistence gate', () => {
         activeAdapterId: 'happier.voice.xai/realtime-grok',
         providerId: 'happier.voice.xai/realtime-grok',
         requestedTargetSessionId: null,
-      })).resolves.toEqual({ conversationSessionId: null });
+      })).resolves.toEqual({
+        conversationSessionId: null,
+        conversationServerId: null,
+      });
 
       FakeWebSocket.instances[0]!.emitConversationId('conv-runtime-only');
       await Promise.resolve();
@@ -730,7 +743,7 @@ describe('realtime_grok source-composed direct-media persistence gate', () => {
           }, {
             providerId: 'happier.voice.xai/realtime-grok',
             state: { conversationId: 'conv-direct-before' },
-            updatedAt: 1,
+            updatedAt: Date.now(),
           }),
         }),
       },

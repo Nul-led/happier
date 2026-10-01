@@ -1,3 +1,15 @@
+import * as TranscriptTestReact from 'react';
+import { createTestSessionTranscriptSource as createHostTestSource, wrapWithSessionTranscriptSource as wrapHostTestSource } from '@/dev/testkit';
+import { sync as transcriptHistorySync } from '@/sync/sync';
+
+const transcriptHostTestSource = createHostTestSource({ sessionId: 's1', history: {
+    loadOlder: (options) => transcriptHistorySync.loadOlderMessages('s1', options),
+    loadTargetWindow: (target, options) => transcriptHistorySync.loadTargetWindowMessages('s1', target, options),
+} });
+function TranscriptHostTestProvider(props: TranscriptTestReact.PropsWithChildren) {
+    return wrapHostTestSource(props.children as TranscriptTestReact.ReactElement, transcriptHostTestSource);
+}
+
 /**
  * Legend is the dev transcript's sole initial-bottom positioning owner. The mounted app
  * host may publish load/layout/fill facts, but it must never write or schedule a competing
@@ -169,7 +181,7 @@ describe('useTranscriptEntryHost renderer-owned initial bottom', () => {
             const harness = createEnvelopeHarness();
             const hook = await renderHook(
                 (deps: EntryHostDeps) => useTranscriptEntryHost(deps),
-                {
+                { wrapper: TranscriptHostTestProvider,
                     initialProps: harness.buildDeps({
                         isLoaded: false,
                         listContentHeight: 0,

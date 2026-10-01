@@ -38,6 +38,12 @@ describe('Action caller fixtures', () => {
     const caller = createPluginCallerFixture({
       pluginId: 'happier.channels',
       contribution,
+      occurrenceId: 'channels-occurrence-1',
+      sourceCustody: {
+        kind: 'managed',
+        immutableGenerationId: 'channels-generation-1',
+        installSource: 'npm',
+      },
       materialization: {
         pluginId: 'happier.channels',
         machineId: 'machine-1',
@@ -55,6 +61,12 @@ describe('Action caller fixtures', () => {
         id: 'automation/result-deliver-v1',
         qualifiedId: 'happier.channels/actions/automation/result-deliver-v1',
       },
+      occurrenceId: 'channels-occurrence-1',
+      sourceCustody: {
+        kind: 'managed',
+        immutableGenerationId: 'channels-generation-1',
+        installSource: 'npm',
+      },
       materialization: {
         pluginId: 'happier.channels',
         machineId: 'machine-1',
@@ -63,6 +75,7 @@ describe('Action caller fixtures', () => {
       originSurface: 'background',
     });
     expect(Object.isFrozen(caller.contribution)).toBe(true);
+    expect(Object.isFrozen(caller.sourceCustody)).toBe(true);
     expect(caller.kind).not.toBe('automationRun');
   });
 });

@@ -1,7 +1,7 @@
+import { renderWithSessionTranscriptSource } from '@/dev/testkit';
 import React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-    renderScreen,
     standardCleanup,
 } from '@/dev/testkit';
 
@@ -130,7 +130,7 @@ describe('ToolView (permission denied)', () => {
             permission: { id: 'perm1', status: 'denied', decision: 'denied' },
         });
 
-        const screen = await renderScreen(
+        const screen = await renderWithSessionTranscriptSource(
             React.createElement(ToolView, { tool, metadata: null, messages: [], sessionId: 's1', messageId: 'm1' }),
         );
 
@@ -153,7 +153,7 @@ describe('ToolView (permission denied)', () => {
             permission: { id: 'perm1', status: 'denied' },
         });
 
-        const screen = await renderScreen(
+        const screen = await renderWithSessionTranscriptSource(
             React.createElement(ToolView, {
                 tool,
                 metadata: { flavor: 'claude', permissionMode: 'read-only' } as any,
@@ -180,7 +180,7 @@ describe('ToolView (permission denied)', () => {
             permission: { id: 'perm1', status: 'denied' },
         });
 
-        const screen = await renderScreen(
+        const screen = await renderWithSessionTranscriptSource(
             React.createElement(ToolView, {
                 tool,
                 metadata: { flavor: 'codex', permissionMode: 'read-only' } as any,

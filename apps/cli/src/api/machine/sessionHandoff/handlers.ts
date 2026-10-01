@@ -25,6 +25,7 @@ import {
 import { createSessionHandoffSourceExportStore } from '../../../session/handoff/state/sessionHandoffSourceExportStore';
 import {
   parseSessionHandoffAgentBundleTransferId,
+  parseSessionHandoffWorkspaceSeedTransferId,
 } from '../../../session/handoff/agentBundle/transferPublication';
 import {
   createSessionHandoffPrepareTargetJobStore,
@@ -34,6 +35,7 @@ import {
 } from '../../../session/handoff/prepare/sessionHandoffPrepareTargetJobLease';
 
 import type { RpcHandlerManager } from '../../rpc/RpcHandlerManager';
+import type { CliServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
 import {
   createSessionLifecycleRpcActionExecutor,
   registerSessionLifecycleRpcHandlers,
@@ -114,6 +116,7 @@ export function registerMachineSessionHandoffRpcHandlers(params: Readonly<{
   }>>;
   machineTransferChannel?: MachineTransferChannel;
   directPeerTransfer?: SessionHandoffDirectPeerTransferHandle;
+  resolveServerFeaturesSnapshot?: () => Promise<CliServerFeaturesSnapshot | undefined> | CliServerFeaturesSnapshot | undefined;
   runtimeConfig?: SessionHandoffRuntimeConfig;
   runtimeDependencies?: Partial<SessionHandoffRuntimeDependencies>;
   observeExecution?: RegisterActionSpecRpcHandlersParams['observeExecution'];
@@ -336,6 +339,7 @@ export function registerMachineSessionHandoffRpcHandlers(params: Readonly<{
     callInput: PrepareStartedStateCallInput,
   ) => {
     return await prepareStartedStateCore({
+      activeServerDir: runtimeConfig.activeServerDir,
       callInput,
       exportSessionBundle,
       sourceExportStore,
@@ -348,6 +352,13 @@ export function registerMachineSessionHandoffRpcHandlers(params: Readonly<{
 	    registerServerRoutedTransferResponder({
 	      machineTransferChannel: params.machineTransferChannel,
 	      loadTransferPayloadSource: async (request) => {
+	        const workspaceSeedTransfer = parseSessionHandoffWorkspaceSeedTransferId(request.transferId);
+	        if (workspaceSeedTransfer) {
+	          const persisted = await sourceExportStore.load(workspaceSeedTransfer.handoffId);
+	          const files = persisted?.workspaceSeed?.files;
+	          const file = files && Object.hasOwn(files, request.transferId) ? files[request.transferId] : undefined;
+	          return file ? createFileTransferPayloadSource(file) : null;
+	        }
 	        const agentBundleTransfer = parseSessionHandoffAgentBundleTransferId(request.transferId);
 	        if (!agentBundleTransfer) return null;
         const transferTimeoutMsOverride =
@@ -373,6 +384,7 @@ export function registerMachineSessionHandoffRpcHandlers(params: Readonly<{
     loadSessionMetadata,
     machineTransferChannelPresent: params.machineTransferChannel !== undefined,
     directPeerTransfer: params.directPeerTransfer,
+    ...(params.resolveServerFeaturesSnapshot ? { resolveServerFeaturesSnapshot: params.resolveServerFeaturesSnapshot } : {}),
     stopSessionForHandoff: params.stopSessionForHandoff,
     prepareJobStore,
     sourceExportStore,
@@ -412,6 +424,7 @@ export function registerMachineSessionHandoffRpcHandlers(params: Readonly<{
   });
 
   const commitActionHandler = createSessionHandoffCommitActionHandler({
+    activeServerDir: runtimeConfig.activeServerDir,
     prepareJobStore,
     sourceExportStore,
     directPeerTransfer: params.directPeerTransfer,
@@ -436,6 +449,7 @@ export function registerMachineSessionHandoffRpcHandlers(params: Readonly<{
   };
 
   const abortActionHandler = createSessionHandoffAbortActionHandler({
+    activeServerDir: runtimeConfig.activeServerDir,
     prepareJobStore,
     sourceExportStore,
     directPeerTransfer: params.directPeerTransfer,

@@ -1,8 +1,30 @@
 import { describe, expect, it } from 'vitest';
 
 import { unavailableMachineLiveStreamCaptureAdapter } from './captureAdapter';
+import { createMachineLiveStreamCaptureRegistry } from './captureRegistry';
 
 describe('createMachineLiveStreamCaptureRegistry', () => {
+    it('requires an exact source when a family contains multiple views and checks that source belongs to the family', () => {
+        const registry = createMachineLiveStreamCaptureRegistry();
+        for (const sourceId of ['view-a', 'view-b']) {
+            registry.register({
+                sourceId,
+                streamFamily: 'browser.streamed',
+                adapter: unavailableMachineLiveStreamCaptureAdapter,
+                capabilities: {
+                    v: 1, sourceId, sourceKind: 'browser', supportedCodecs: ['image.mjpeg'],
+                    maxFramesPerSecond: 12, inputMode: 'shared', sidebands: [], health: { status: 'available' },
+                },
+            });
+        }
+        expect(registry.resolve({ streamFamily: 'browser.streamed' })).toMatchObject({ ok: false });
+        expect(registry.resolve({ sourceId: 'view-b', streamFamily: 'browser.streamed' })).toMatchObject({
+            ok: true, source: { sourceId: 'view-b' },
+        });
+        expect(registry.resolve({ sourceId: 'view-b', streamFamily: 'screen' })).toMatchObject({ ok: false });
+        registry.unregister('view-b');
+        expect(registry.resolve({ sourceId: 'view-b', streamFamily: 'browser.streamed' })).toMatchObject({ ok: false });
+    });
     it('resolves a registered source by id and exposes typed unavailable diagnostics for missing sources', async () => {
         const mod = await import('./captureRegistry').catch((error: unknown) => ({ importError: error }));
 

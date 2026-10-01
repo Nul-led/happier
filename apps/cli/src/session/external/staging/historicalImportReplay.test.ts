@@ -1233,8 +1233,12 @@ describe('historical import replay', () => {
             isBatchWithinSerializedByteLimit: () => true,
             writeHistoricalBatch: async (batch) => {
                 writeAttempt += 1;
+                const content = batch.items[0]!.content;
+                if (content.t !== 'plain' || !content.v || typeof content.v !== 'object' || !('text' in content.v)) {
+                    throw new Error('The fixture must publish a plain text record');
+                }
                 publishedTexts.push(
-                    String((batch.items[0]!.content as { v: { text: string } }).v.text),
+                    String(content.v.text),
                 );
                 return writeAttempt === 1
                     ? { ok: false as const, error: 'server_unavailable' }

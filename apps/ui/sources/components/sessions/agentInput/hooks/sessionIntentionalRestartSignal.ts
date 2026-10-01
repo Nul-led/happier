@@ -1,5 +1,5 @@
 import type { SessionRuntimeIssueV1 } from '@happier-dev/protocol';
-import type { AgentEvent } from '@/sync/typesRaw';
+import type { AgentEvent } from "@happier-dev/session-core/raw";
 
 export const SESSION_INTENTIONAL_RESTART_FAILSAFE_MS = 30_000;
 

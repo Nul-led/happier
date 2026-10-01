@@ -410,14 +410,15 @@ describe('provider-neutral loopback tunnel supervisor', () => {
 
     it('keeps supervising after a transient native status-read error until authoritative closure', async () => {
         const { createLoopbackTunnelSupervisor } = await import('./supervisor');
-        let nativeListener: ((event: {
+        type NativeListener = (event: {
             type: 'ready' | 'path_changed' | 'degraded' | 'closed' | 'error';
             tunnelHandle: string;
             status: 'ready' | 'degraded' | 'closed' | 'error';
             observedPath?: string;
             errorCode?: string;
             atMs: number;
-        }) => void) | null = null;
+        }) => void;
+        const nativeListenerRef: { current: NativeListener | null } = { current: null };
         const stopLoopbackTunnel = vi.fn(async () => undefined);
         const unsubscribeNative = vi.fn();
         const supervisor = createLoopbackTunnelSupervisor<Request, LoopbackTunnelLease>({
@@ -425,7 +426,7 @@ describe('provider-neutral loopback tunnel supervisor', () => {
                 startLoopbackTunnel: vi.fn(async () => ({ nativeTunnelId: 'native-1', localPort: 49152 })),
                 stopLoopbackTunnel,
                 subscribeLoopbackTunnelEvents: (_nativeTunnelId, listener) => {
-                    nativeListener = listener;
+                    nativeListenerRef.current = listener;
                     return unsubscribeNative;
                 },
             },
@@ -436,8 +437,10 @@ describe('provider-neutral loopback tunnel supervisor', () => {
         const observed: unknown[] = [];
         supervisor.subscribe((event) => observed.push(event));
         const lease = await supervisor.ensureTunnel(createRequest());
+        const nativeListener = nativeListenerRef.current;
+        if (!nativeListener) throw new Error('Native tunnel listener was not registered');
 
-        nativeListener?.({
+        nativeListener({
             type: 'error',
             tunnelHandle: 'native-1',
             status: 'error',
@@ -452,7 +455,7 @@ describe('provider-neutral loopback tunnel supervisor', () => {
         expect(stopLoopbackTunnel).not.toHaveBeenCalled();
         expect(unsubscribeNative).not.toHaveBeenCalled();
 
-        nativeListener?.({
+        nativeListener({
             type: 'path_changed',
             tunnelHandle: 'native-1',
             status: 'ready',
@@ -464,7 +467,7 @@ describe('provider-neutral loopback tunnel supervisor', () => {
             expect.objectContaining({ type: 'path_changed', observedPath: 'relay' }),
         ]));
 
-        nativeListener?.({
+        nativeListener({
             type: 'closed',
             tunnelHandle: 'native-1',
             status: 'closed',

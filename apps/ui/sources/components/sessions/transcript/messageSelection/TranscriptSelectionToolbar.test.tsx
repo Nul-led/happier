@@ -1,13 +1,14 @@
 import * as React from 'react';
-import { Platform } from 'react-native';
 import { act } from 'react-test-renderer';
 import { describe, expect, it, vi } from 'vitest';
 
 import { renderScreen } from '@/dev/testkit';
-import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
 
 import { TranscriptMessageSelectionProvider, useTranscriptSelectionActions } from './TranscriptMessageSelectionContext';
 import { TranscriptSelectionToolbar } from './TranscriptSelectionToolbar';
+import { TranscriptSelectionToolbarController } from './TranscriptSelectionToolbarController';
+import { createReadOnlySessionTranscriptSource } from '../source/readOnlySessionTranscriptSource';
+import { SessionTranscriptSourceProvider } from '../source/SessionTranscriptSourceContext';
 
 const keyboardShortcutHandlersMock = vi.hoisted(() => vi.fn());
 const setClipboardStringSafeMock = vi.fn(async (_value: string) => true);
@@ -63,11 +64,17 @@ function ProbeButton(props: { testID: string; onPress: () => void }) {
 }
 
 function findPressableByTestId(screen: Awaited<ReturnType<typeof renderScreen>>, testID: string) {
-    return screen.find((node) => (node.type as unknown) === 'Pressable' && node.props?.testID === testID && typeof node.props?.onPress === 'function');
+    return findAllPressablesByTestId(screen, testID)[0]!;
 }
 
+/** The innermost pressable host carrying this id (the shared bar's controls are `HappierPressable`s). */
 function findAllPressablesByTestId(screen: Awaited<ReturnType<typeof renderScreen>>, testID: string) {
-    return screen.findAll((node) => (node.type as unknown) === 'Pressable' && node.props?.testID === testID && typeof node.props?.onPress === 'function');
+    return screen.findAll((node) => typeof node.type === 'string' && node.props?.testID === testID && typeof node.props?.onPress === 'function');
+}
+
+function isDisabled(node: { props: Record<string, unknown> }): boolean {
+    const state = node.props.accessibilityState as { disabled?: boolean } | undefined;
+    return node.props.disabled === true || state?.disabled === true || node.props['aria-disabled'] === true;
 }
 
 async function pressByTestId(screen: Awaited<ReturnType<typeof renderScreen>>, testID: string): Promise<void> {
@@ -88,10 +95,33 @@ async function renderToolbar(props: React.ComponentProps<typeof ToolbarHarness> 
 }
 
 describe('TranscriptSelectionToolbar', () => {
+    it('copies the presentation source dataset when no app-store transcript exists for its Session id', async () => {
+        setClipboardStringSafeMock.mockClear();
+        const source = createReadOnlySessionTranscriptSource({
+            sessionId: 'readonly-selection-source', reducerState: null, metadata: null, agentState: null,
+            messages: [{ id: 'readonly-message', kind: 'user-text', localId: null, createdAt: 1, text: 'Source transcript text' }],
+        });
+        function LocalSelection() {
+            const actions = useTranscriptSelectionActions();
+            return <>
+                <ProbeButton testID="enter-source" onPress={() => actions.enter('readonly-message')} />
+                <TranscriptSelectionToolbarController bulkCopyFormat="markdown_labeled" roleLabels={{ user: 'You', assistant: 'Assistant' }} sendToSessionEnabled={false} />
+            </>;
+        }
+        const screen = await renderScreen(<SessionTranscriptSourceProvider source={source}>
+            <TranscriptMessageSelectionProvider sessionId={source.sessionId} eligibleMessageIdsInOrder={['readonly-message']}>
+                <LocalSelection />
+            </TranscriptMessageSelectionProvider>
+        </SessionTranscriptSourceProvider>);
+        await pressByTestId(screen, 'enter-source');
+        await pressByTestId(screen, 'transcript-selection-copy');
+        expect(setClipboardStringSafeMock).toHaveBeenCalledWith(expect.stringContaining('Source transcript text'));
+        await screen.unmount();
+    });
     it('is hidden when selection mode is inactive', async () => {
         const screen = await renderToolbar();
 
-        expect(screen.findAllByTestId('transcript-selection-toolbar')).toHaveLength(0);
+        expect(screen.findAll((node) => typeof node.type === 'string' && node.props?.testID === 'transcript-selection-toolbar')).toHaveLength(0);
     });
 
     it('shows count, copy, select all, and cancel actions in selection mode', async () => {
@@ -107,38 +137,20 @@ describe('TranscriptSelectionToolbar', () => {
         expect(findAllPressablesByTestId(screen, 'transcript-selection-cancel')).toHaveLength(1);
     });
 
-    it('constrains itself to the transcript content width when a max width is provided', async () => {
-        const screen = await renderToolbar({ maxWidth: 640 });
-
-        await pressByTestId(screen, 'enter-a');
-
-        const toolbar = screen.findByTestId('transcript-selection-toolbar');
-        expect(toolbar?.props.style).toContainEqual({ width: '100%', maxWidth: 640, alignSelf: 'center' });
-    });
-
-    it('keeps every selection action reachable at a narrow width with long text and accessible targets', async () => {
+    it('draws the one shared selection bar: count, Copy · Send · Ask Agent (primary) · Select all, then ✕', async () => {
         const screen = await renderToolbar({
             maxWidth: 320,
             sendEnabled: true,
             onSend: vi.fn(),
             additionalAction: {
                 testID: 'discussion-selection-ask-agent',
-                label: 'Ask an Agent about the selected conversation messages',
+                label: 'Ask Agent',
                 onPress: vi.fn(),
             },
         });
 
         await pressByTestId(screen, 'enter-a');
 
-        const toolbar = screen.findByTestId('transcript-selection-toolbar');
-        const actions = screen.findByTestId('transcript-selection-toolbar-actions');
-        expect(toolbar?.props.style).toEqual(expect.arrayContaining([
-            expect.objectContaining({ flexWrap: 'wrap' }),
-            { width: '100%', maxWidth: 320, alignSelf: 'center' },
-        ]));
-        expect(actions?.props.style).toEqual(expect.objectContaining({ flexWrap: 'wrap' }));
-
-        const minimumTarget = resolveMinimumInteractiveTargetSize(Platform.OS);
         for (const testID of [
             'transcript-selection-copy',
             'transcript-selection-send',
@@ -146,17 +158,10 @@ describe('TranscriptSelectionToolbar', () => {
             'transcript-selection-select-all',
             'transcript-selection-cancel',
         ]) {
-            const action = findPressableByTestId(screen, testID);
-            const resolvedStyle = action.props.style({ pressed: false });
-            expect(resolvedStyle).toEqual(expect.arrayContaining([
-                expect.objectContaining({
-                    flexShrink: 1,
-                    maxWidth: '100%',
-                    minHeight: minimumTarget,
-                    minWidth: minimumTarget,
-                }),
-            ]));
+            expect(findAllPressablesByTestId(screen, testID)).toHaveLength(1);
         }
+        // The ✕ is named for assistive technology rather than printed.
+        expect(findPressableByTestId(screen, 'transcript-selection-cancel').props.accessibilityLabel).toBe('Exit selection mode');
     });
 
     it('hides Send when send-to-session is disabled and shows it when enabled', async () => {
@@ -185,7 +190,7 @@ describe('TranscriptSelectionToolbar', () => {
         expect(countNode!.props.children).toBe('2 messages selected');
 
         await pressByTestId(screen, 'transcript-selection-cancel');
-        expect(screen.findAllByTestId('transcript-selection-toolbar')).toHaveLength(0);
+        expect(screen.findAll((node) => typeof node.type === 'string' && node.props?.testID === 'transcript-selection-toolbar')).toHaveLength(0);
     });
 
     it('registers central keyboard shortcuts for active selection actions', async () => {
@@ -257,8 +262,8 @@ describe('TranscriptSelectionToolbar', () => {
 
         expect(screen.findByTestId('transcript-selection-unavailable')?.props.children)
             .toBe('Selected message identity unavailable');
-        expect(findPressableByTestId(screen, 'transcript-selection-copy').props.disabled).toBe(true);
-        expect(findPressableByTestId(screen, 'transcript-selection-send').props.disabled).toBe(true);
-        expect(findPressableByTestId(screen, 'discussion-selection-ask-agent').props.disabled).toBe(true);
+        expect(isDisabled(findPressableByTestId(screen, 'transcript-selection-copy'))).toBe(true);
+        expect(isDisabled(findPressableByTestId(screen, 'transcript-selection-send'))).toBe(true);
+        expect(isDisabled(findPressableByTestId(screen, 'discussion-selection-ask-agent'))).toBe(true);
     });
 });

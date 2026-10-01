@@ -1,5 +1,5 @@
-import type { ScmOperationErrorCode } from '@happier-dev/protocol';
-import { classifyScmOperationErrorCode, SCM_OPERATION_ERROR_CODES } from '@happier-dev/protocol';
+import type { ScmOperationErrorCode } from '@happier-dev/protocol/scm';
+import { classifyScmOperationErrorCode, mapGitScmErrorCode, SCM_OPERATION_ERROR_CODES } from '@happier-dev/protocol/scm';
 
 export function getScmUserFacingError(input: {
     errorCode?: ScmOperationErrorCode;
@@ -81,6 +81,7 @@ export function isRecoverableGitIndexLockError(input: {
     stderr?: string;
 }): boolean {
     if (input.success) return false;
+    if (input.errorCode === SCM_OPERATION_ERROR_CODES.INDEX_LOCKED) return true;
     if (
         input.errorCode !== SCM_OPERATION_ERROR_CODES.COMMAND_FAILED
         && input.errorCode !== SCM_OPERATION_ERROR_CODES.CHANGE_APPLY_FAILED
@@ -110,10 +111,7 @@ function looksLikeRawScmOutput(value: string | undefined): boolean {
 }
 
 function looksLikeLockContention(error: string, fallback: string): boolean {
-    const combined = `${error}\n${fallback}`;
-    return (
-        combined.includes('index.lock') ||
-        combined.includes('another git process seems to be running') ||
-        (combined.includes('unable to create') && combined.includes('file exists'))
-    );
+    // Supported legacy responses carry generic codes. The protocol owns diagnostic
+    // classification; current typed responses need no diagnostic interpretation.
+    return mapGitScmErrorCode(`${error}\n${fallback}`) === SCM_OPERATION_ERROR_CODES.INDEX_LOCKED;
 }

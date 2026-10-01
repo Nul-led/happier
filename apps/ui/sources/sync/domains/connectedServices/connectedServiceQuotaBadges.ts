@@ -16,6 +16,15 @@ export type ConnectedServiceQuotaSelectedMeter = Readonly<{
 
 export type ConnectedServiceQuotaSummaryStrategy = 'primary' | 'min_remaining';
 
+export type ConnectedServiceQuotaSummaryMeter = Readonly<{
+  meterId: string;
+  label: string;
+  remainingPct: number | null;
+  utilizationPct: number | null;
+  status: ConnectedServiceQuotaMeterV1['status'];
+  resetsAt: number | null;
+}>;
+
 /** Both released V2/V3 and exact V4 quota snapshots carry this display fact. */
 export type ConnectedServiceQuotaSnapshotForBadge = Readonly<{
   meters: ReadonlyArray<ConnectedServiceQuotaMeterV1>;
@@ -88,4 +97,24 @@ export function computeConnectedServiceQuotaSummaryBadges(params: Readonly<{
     meterId,
     text: remainingPct === null ? '—' : `${label} ${Math.round(remainingPct)}%`,
   }));
+}
+
+/** Usage cards select and project the same meters as the settings-row badges. */
+export function buildSummaryMeters(
+  meters: ReadonlyArray<ConnectedServiceQuotaMeterV1>,
+  pinnedMeterIds: ReadonlyArray<string>,
+  strategy: ConnectedServiceQuotaSummaryStrategy,
+): ReadonlyArray<ConnectedServiceQuotaSummaryMeter> {
+  return selectConnectedServiceQuotaSummaryMeters({
+    meters,
+    meterIds: pinnedMeterIds.length > 0 ? pinnedMeterIds : meters.map((meter) => meter.meterId),
+    strategy,
+  }).flatMap((selected) => selected.meter ? [{
+    meterId: selected.meterId,
+    label: selected.label,
+    utilizationPct: selected.utilizationPct,
+    remainingPct: selected.remainingPct,
+    status: selected.meter.status,
+    resetsAt: selected.meter.resetsAt ?? null,
+  } satisfies ConnectedServiceQuotaSummaryMeter] : []);
 }

@@ -1,4 +1,4 @@
-export const DEFAULT_SESSION_WEBHOOK_TIMEOUT_MS = 5 * 60_000;
+export { DEFAULT_SESSION_WEBHOOK_TIMEOUT_MS } from '@happier-dev/protocol';
 
 function resolveBoundedTimeout(
   raw: string | undefined,

@@ -23,8 +23,10 @@ export type RpcActionDispatchRequest = Readonly<{
     input: unknown;
     defaultSessionId?: string | null;
     serverId?: string | null;
+    externalActionTarget?: ActionExecutorContext['externalActionTarget'];
     signal?: AbortSignal;
     localActionContext?: RpcLocalActionContext;
+    callerAuthority?: ActionExecutorContext['authority'];
     executor?: RpcActionExecutor;
     executorParams?: CliActionExecutorParams;
 }>;
@@ -38,7 +40,7 @@ function normalizeOptionalString(value: string | null | undefined): string | und
 }
 
 export function buildActionExecutorContextForRpc(
-    params: Pick<RpcActionDispatchRequest, 'defaultSessionId' | 'serverId' | 'signal' | 'localActionContext'>,
+    params: Pick<RpcActionDispatchRequest, 'defaultSessionId' | 'serverId' | 'externalActionTarget' | 'signal' | 'localActionContext' | 'callerAuthority'>,
 ): RpcActionExecutorContext {
     const defaultSessionId = normalizeOptionalString(params.defaultSessionId);
     const serverId = normalizeOptionalString(params.serverId);
@@ -56,7 +58,12 @@ export function buildActionExecutorContextForRpc(
     return {
         ...(defaultSessionId ? { defaultSessionId } : {}),
         ...(serverId ? { serverId } : {}),
+        ...(params.externalActionTarget ? { externalActionTarget: params.externalActionTarget } : {}),
         ...(params.signal ? { signal: params.signal } : {}),
+        ...(localActionContext?.agentStartContext ? { agentStartContext: localActionContext.agentStartContext } : {}),
+        ...(localActionContext?.agentStartWorkDepth !== undefined ? { agentStartWorkDepth: localActionContext.agentStartWorkDepth } : {}),
+        ...(localActionContext?.agentStartWorkspaceWrites !== undefined ? { agentStartWorkspaceWrites: localActionContext.agentStartWorkspaceWrites } : {}),
+        ...(localActionContext?.sessionAgentSpawnPolicyV1 !== undefined ? { sessionAgentSpawnPolicyV1: localActionContext.sessionAgentSpawnPolicyV1 } : {}),
         ...(localActionContext?.operationProgress
             ? { operationProgress: localActionContext.operationProgress }
             : {}),
@@ -69,8 +76,11 @@ export function buildActionExecutorContextForRpc(
         ...(localActionContext?.executionRunWorkflowObservationSink === undefined
             ? {}
             : { executionRunWorkflowObservationSink: localActionContext.executionRunWorkflowObservationSink }),
+        ...(localActionContext?.executionRunWorkflowRunId
+            ? { executionRunWorkflowRunId: localActionContext.executionRunWorkflowRunId }
+            : {}),
         surface,
-        authority: localActionContext?.authority ?? 'account_automation',
+        authority: params.callerAuthority ?? localActionContext?.authority ?? 'account_automation',
         ...(localActionContext?.actionRequestId
             ? { actionRequestId: localActionContext.actionRequestId }
             : {}),

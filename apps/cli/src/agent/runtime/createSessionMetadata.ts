@@ -36,6 +36,7 @@ import {
 } from './compat/sessionMetadataOverrides';
 import {
     resolveRequestedSessionDirectory,
+    SESSION_DIRECTORY_KIND_ENV,
     SESSION_MACHINE_WORKSPACE_PATH_ENV,
 } from './resolveRequestedSessionDirectory';
 import {
@@ -86,6 +87,7 @@ type LaunchControlEnvKey =
     | 'HAPPIER_SESSION_PROFILE_ID'
     | 'HAPPIER_SESSION_CONFIG_OPTION_OVERRIDES_JSON'
     | 'HAPPIER_SESSION_MCP_SELECTION_JSON'
+    | typeof SESSION_DIRECTORY_KIND_ENV
     | typeof SESSION_MACHINE_WORKSPACE_PATH_ENV
     | typeof HAPPIER_SESSION_CONNECTED_SERVICES_BINDINGS_ENV_KEY
     | typeof HAPPIER_SESSION_CONNECTED_SERVICE_MATERIALIZATION_IDENTITY_ENV_KEY;
@@ -94,6 +96,7 @@ const ONE_SHOT_LAUNCH_CONTROL_ENV_KEYS = [
     'HAPPIER_SESSION_CONFIG_OPTION_OVERRIDES_JSON',
     'HAPPIER_SESSION_MCP_SELECTION_JSON',
     SESSION_MACHINE_WORKSPACE_PATH_ENV,
+    SESSION_DIRECTORY_KIND_ENV,
     HAPPIER_SESSION_CONNECTED_SERVICES_BINDINGS_ENV_KEY,
     HAPPIER_SESSION_CONNECTED_SERVICE_MATERIALIZATION_IDENTITY_ENV_KEY,
 ] as const satisfies readonly LaunchControlEnvKey[];
@@ -105,6 +108,7 @@ export type SessionLaunchControlMetadata = Readonly<{
     connectedServiceMaterializationIdentity: ReturnType<typeof parseSessionConnectedServiceMaterializationIdentityJson>;
     sessionConfigOptionOverrides: SessionMetadataConfigOptionOverrides | null;
     machineWorkspacePath: string | null;
+    sessionDirectoryKind: 'path' | 'managed';
 }>;
 
 export function captureSessionLaunchControlMetadata(params: Readonly<{
@@ -138,6 +142,7 @@ export function captureSessionLaunchControlMetadata(params: Readonly<{
             readNonEmpty('HAPPIER_SESSION_CONFIG_OPTION_OVERRIDES_JSON'),
         ),
         machineWorkspacePath: readNonEmpty(SESSION_MACHINE_WORKSPACE_PATH_ENV),
+        sessionDirectoryKind: read(SESSION_DIRECTORY_KIND_ENV) === 'managed' ? 'managed' : 'path',
     });
     for (const key of ONE_SHOT_LAUNCH_CONTROL_ENV_KEYS) {
         delete processEnvironment[key];
@@ -251,6 +256,9 @@ export function createSessionMetadata(opts: CreateSessionMetadataOptions): Sessi
             agentPath: sessionPath,
             machinePath: launchControlMetadata.machineWorkspacePath ?? sessionPath,
         }),
+        ...(launchControlMetadata.sessionDirectoryKind === 'managed'
+            ? { sessionDirectoryV1: { v: 1 as const, kind: 'managed' as const } }
+            : {}),
         ...(launchControlMetadata.mcpSelection ? { mcpSelectionV1: launchControlMetadata.mcpSelection } : {}),
         ...(launchControlMetadata.connectedServices ? { connectedServices: launchControlMetadata.connectedServices } : {}),
         ...(launchControlMetadata.connectedServiceMaterializationIdentity

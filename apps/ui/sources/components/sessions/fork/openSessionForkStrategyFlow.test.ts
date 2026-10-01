@@ -52,6 +52,7 @@ function openFlow(agentSwitchingEnabled: boolean, replayEnabled = true) {
         executionRunsEnabled: false,
         agentSwitchingEnabled,
         navigateToSession: vi.fn(),
+        navigation: { push: vi.fn() },
         navigateToNewSession,
     });
     return { modalId, navigateToNewSession, opened: openedModals.at(-1) ?? null };

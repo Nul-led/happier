@@ -1,7 +1,6 @@
 import * as React from 'react';
-import { AccessibilityInfo, Platform, StyleSheet, View } from 'react-native';
 
-import { Text } from '@/components/ui/text/Text';
+import { PoliteAccessibilityStatus } from '@/components/ui/accessibility/PoliteAccessibilityStatus';
 import {
     useVoiceAttemptControl,
     VOICE_ATTEMPT_IDLE_TARGET_GLOBAL,
@@ -209,49 +208,12 @@ export const VoiceAnnouncerSurface = React.memo(function VoiceAnnouncerSurface(p
         props.transcriptEntries,
     ]);
 
-    /*
-     * `accessibilityLiveRegion` is Android + web only — it is absent from
-     * `BaseViewConfig.ios.js` and present at `BaseViewConfig.android.js:227`. A
-     * declarative-only announcer leaves VoiceOver silent while every declarative
-     * test passes, so iOS announces imperatively instead. Shape proven at
-     * `components/sessions/external/progress/ExternalSessionOperationAccessibilityStatus.tsx:17-51`.
-     */
-    const lastSpokenKeyRef = React.useRef<string | null>(null);
-    React.useEffect(() => {
-        if (Platform.OS !== 'ios' || announcement === null) return;
-        if (lastSpokenKeyRef.current === announcement.key) return;
-        lastSpokenKeyRef.current = announcement.key;
-        try {
-            AccessibilityInfo.announceForAccessibility(announcement.text);
-        } catch {
-            // Accessibility announcements are best effort on native platforms.
-        }
-    }, [announcement]);
-
-    if (Platform.OS === 'ios') return null;
-
-    const text = announcement?.text ?? '';
     return (
-        <View
-            testID={VOICE_ANNOUNCER_TEST_ID}
-            accessible
-            accessibilityLabel={text}
-            accessibilityLiveRegion="polite"
-            pointerEvents="none"
-            style={styles.region}
-            {...({
-                role: 'status',
-                'aria-live': 'polite',
-                'aria-atomic': true,
-            } as Record<string, unknown>)}
-        >
-            {/*
-              * Keyed on the announcement so an identical string announced twice
-              * still remounts the node. Android fires on content change, and two
-              * byte-identical renders are not one.
-              */}
-            <Text key={announcement?.key ?? 'voice-announcer:idle'}>{text}</Text>
-        </View>
+        <PoliteAccessibilityStatus
+            announcement={announcement?.text ?? ''}
+            transitionKey={announcement?.key ?? 'voice-announcer:idle'}
+            statusTestID={VOICE_ANNOUNCER_TEST_ID}
+        />
     );
 });
 
@@ -346,13 +308,4 @@ export const VoiceAnnouncer = React.memo(function VoiceAnnouncer(): React.ReactE
             transcriptEntries={visibleTranscriptEntries}
         />
     );
-});
-
-const styles = StyleSheet.create({
-    region: {
-        position: 'absolute',
-        width: 1,
-        height: 1,
-        overflow: 'hidden',
-    },
 });

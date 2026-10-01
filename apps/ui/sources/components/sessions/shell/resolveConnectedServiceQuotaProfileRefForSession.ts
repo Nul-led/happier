@@ -20,7 +20,7 @@ import {
 import {
     resolveProjectedConnectedAccountServiceKeys,
 } from '@/sync/domains/connectedServices/qualifiedConnectedAccountServiceOptions';
-import type { Metadata } from '@/sync/domains/state/storageTypes';
+import type { Metadata } from '@happier-dev/session-core/state';
 
 type AccountProfileConnectedService = AccountProfile['connectedServicesV2'][number];
 

@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
+import type { MachineAgent } from '@/agents/machineAgents/machineAgentTypes';
+import { resolveMachineAgentState } from '@/agents/machineAgents/resolveMachineAgentState';
 import {
     getSelectableBackendEntriesForNewSession,
     getSelectableAgentIdsForNewSession,
@@ -8,231 +10,151 @@ import {
     resolveNextSelectableBackendEntryForNewSession,
     resolveNextSelectableAgentForNewSession,
     resolveProfileAvailabilityForNewSession,
+    type NewSessionSelectableBackendEntry,
 } from './newSessionAgentSelection';
 
+function createMachineAgent(agentId: MachineAgent['agentId'], overrides: Partial<MachineAgent> = {}): MachineAgent {
+    const agent: MachineAgent = {
+        agentId, title: agentId, state: 'ready', stale: false, installed: true,
+        version: null, latestVersion: null, update: null,
+        signIn: { status: 'signedIn', via: null, nativeLogin: 'unsupported', connectedServices: [] },
+        platform: { supported: true },
+        install: { available: false, mode: 'none', sizeBytes: null, guideUrl: null, requiresVendorConsent: false },
+        dependencies: [], job: null, ...overrides,
+    };
+    return { ...agent, state: overrides.state ?? resolveMachineAgentState(agent) };
+}
+
+const claudeEntry: NewSessionSelectableBackendEntry = {
+    backendTarget: { kind: 'backend', backendId: 'claude' }, backendTargetKey: 'agent:happier.agent.claude/claude',
+    builtInAgentId: 'claude', agentId: 'claude', kind: 'builtInAgent',
+};
+const codexEntry: NewSessionSelectableBackendEntry = {
+    backendTarget: { kind: 'backend', backendId: 'codex' }, backendTargetKey: 'agent:happier.agent.codex/codex',
+    builtInAgentId: 'codex', agentId: 'codex', kind: 'builtInAgent',
+};
+const configuredEntry: NewSessionSelectableBackendEntry = {
+    backendTarget: { kind: 'backend', backendId: 'review-bot', configuredBackendId: 'review-bot' },
+    backendTargetKey: 'backend:review-bot:configured:review-bot',
+    builtInAgentId: null, agentId: 'review-bot', kind: 'configuredBackend',
+};
+
 describe('newSessionAgentSelection', () => {
-    it('treats all agents as selectable before detection completes', () => {
-        expect(isAgentSelectableForNewSession({
-            agentId: 'codex',
-            detectionTimestamp: 0,
-            availabilityById: { codex: false },
-            installableDepKeyCountByAgentId: { codex: 0 },
-        })).toBe(true);
+    it('fails closed before the selected machine has been checked', () => {
+        expect(isAgentSelectableForNewSession({ agentId: 'codex', machineAgentsById: {} })).toBe(false);
     });
 
-    it('keeps unavailable agents selectable when they have installable dependencies', () => {
+    it('does not select Antigravity when its dependency exists but its own CLI is missing', () => {
         expect(isAgentSelectableForNewSession({
-            agentId: 'codex',
-            detectionTimestamp: 1,
-            availabilityById: { codex: false },
-            installableDepKeyCountByAgentId: { codex: 1 },
-        })).toBe(true);
-    });
-
-    it('keeps unavailable agents selectable when the UI marks them as selectable without CLI detection', () => {
-        expect(isAgentSelectableForNewSession({
-            agentId: 'codex',
-            detectionTimestamp: 1,
-            availabilityById: { codex: false },
-            installableDepKeyCountByAgentId: { codex: 0 },
-            selectableWithoutCliByAgentId: { codex: true },
-        })).toBe(true);
-    });
-
-    it('treats logged-out agents as unavailable when authentication has been checked', () => {
-        expect(isAgentSelectableForNewSession({
-            agentId: 'codex',
-            detectionTimestamp: 1,
-            availabilityById: { codex: true },
-            authStatusById: {
-                codex: { state: 'logged_out', checkedAt: 1 },
-            },
-            installableDepKeyCountByAgentId: { codex: 0 },
-        } as any)).toBe(false);
-    });
-
-    it('treats missing availability as unavailable after detection completes unless another path keeps it selectable', () => {
-        expect(isAgentSelectableForNewSession({
-            agentId: 'codex',
-            detectionTimestamp: 1,
-            availabilityById: {},
-            installableDepKeyCountByAgentId: { codex: 0 },
+            agentId: 'antigravity',
+            machineAgentsById: { antigravity: createMachineAgent('antigravity', {
+                installed: false,
+                dependencies: [{ key: 'dep.antigravity-acp', title: 'ACP server', installed: true, version: '1.0.0' }],
+            }) },
         })).toBe(false);
     });
 
-    it('resolves the next selectable agent while skipping unavailable intermediates', () => {
+    it.each([
+        ['signed out', { signIn: { status: 'signedOut', via: null, nativeLogin: 'terminal', connectedServices: [] } }],
+        ['missing dependency', { dependencies: [{ key: 'dep.acp', title: 'ACP server', installed: false, version: null }] }],
+        ['stale', { stale: true }],
+        ['checking', { state: 'checking' }],
+        ['unknown inventory', { state: 'unknown' }],
+        ['installing', { state: 'installing' }],
+        ['failed', { state: 'failed' }],
+        ['unsupported', { platform: { supported: false, reason: 'arch' } }],
+    ] satisfies ReadonlyArray<readonly [string, Partial<MachineAgent>]>)('does not select an agent that is %s', (_label, overrides) => {
+        expect(isAgentSelectableForNewSession({
+            agentId: 'codex', machineAgentsById: { codex: createMachineAgent('codex', overrides) },
+        })).toBe(false);
+    });
+
+    it('trusts canonical readiness when the installed Agent has an unknown sign-in status', () => {
+        expect(isAgentSelectableForNewSession({
+            agentId: 'codex',
+            machineAgentsById: { codex: createMachineAgent('codex', {
+                state: 'ready',
+                signIn: { status: 'unknown', via: null, nativeLogin: 'unsupported', connectedServices: [] },
+            }) },
+        })).toBe(true);
+    });
+
+    it('accepts ready and update-available rows through the same list and cycling policy', () => {
+        const machineAgentsById = {
+            claude: createMachineAgent('claude'), codex: createMachineAgent('codex', { installed: false }),
+            opencode: createMachineAgent('opencode', {
+                version: '1.0.0', latestVersion: '2.0.0', update: { supported: true, command: 'update' },
+            }),
+        };
+        expect(getSelectableAgentIdsForNewSession({
+            candidateAgentIds: ['claude', 'codex', 'opencode'], machineAgentsById,
+        })).toEqual(['claude', 'opencode']);
         expect(resolveNextSelectableAgentForNewSession({
-            candidateAgentIds: ['claude', 'codex', 'opencode'],
-            currentAgentId: 'claude',
-            detectionTimestamp: 1,
-            availabilityById: { claude: true, codex: false, opencode: true },
-            installableDepKeyCountByAgentId: { codex: 0 },
+            candidateAgentIds: ['claude', 'codex', 'opencode'], currentAgentId: 'claude', machineAgentsById,
+        })).toBe('opencode');
+        expect(resolveNextSelectableAgentForNewSession({
+            candidateAgentIds: ['claude', 'codex', 'opencode'], currentAgentId: 'opencode', machineAgentsById,
+        })).toBe('claude');
+        expect(resolveNextSelectableAgentForNewSession({
+            candidateAgentIds: ['claude', 'codex', 'opencode'], currentAgentId: 'codex', machineAgentsById,
         })).toBe('opencode');
     });
 
-    it('builds the selectable list from candidates using the same policy as chip cycling', () => {
-        expect(getSelectableAgentIdsForNewSession({
-            candidateAgentIds: ['claude', 'codex', 'opencode'],
-            detectionTimestamp: 1,
-            availabilityById: { claude: true, codex: false, opencode: true },
-            installableDepKeyCountByAgentId: { codex: 0 },
-        })).toEqual(['claude', 'opencode']);
+    it('does not offer a next agent when no inventory row is ready', () => {
+        expect(resolveNextSelectableAgentForNewSession({
+            candidateAgentIds: ['claude', 'codex'], currentAgentId: 'claude', machineAgentsById: {},
+        })).toBeNull();
     });
 
-    it('marks multi-cli profiles as available when at least one supported agent remains selectable', () => {
+    it('marks profiles available only when a compatible inventory row remains ready', () => {
         expect(resolveProfileAvailabilityForNewSession({
-            candidateBackendEntries: [
-                { backendTarget: { kind: 'backend', backendId: 'claude' }, backendTargetKey: 'backend:claude', builtInAgentId: 'claude', agentId: 'claude', kind: 'builtInAgent' },
-                { backendTarget: { kind: 'backend', backendId: 'codex' }, backendTargetKey: 'backend:codex', builtInAgentId: 'codex', agentId: 'codex', kind: 'builtInAgent' },
-            ],
-            detectionTimestamp: 1,
-            availabilityById: { claude: false, codex: false },
-            installableDepKeyCountByAgentId: { codex: 1 },
+            candidateBackendEntries: [claudeEntry, codexEntry],
+            machineAgentsById: { claude: createMachineAgent('claude', { installed: false }), codex: createMachineAgent('codex') },
         })).toEqual({ available: true });
-    });
-
-    it('marks a single-cli profile unavailable with a logged-out reason when that agent is logged out', () => {
         expect(resolveProfileAvailabilityForNewSession({
-            candidateBackendEntries: [
-                {
-                    backendTarget: { kind: 'backend', backendId: 'codex' },
-                    backendTargetKey: 'backend:codex',
-                    builtInAgentId: 'codex',
-                    agentId: 'codex',
-                    kind: 'builtInAgent',
-                },
-            ],
-            detectionTimestamp: 1,
-            availabilityById: { codex: true },
-            authStatusById: {
-                codex: { state: 'logged_out', checkedAt: 1 },
-            },
-            installableDepKeyCountByAgentId: { codex: 0 },
-        } as any)).toEqual({ available: false, reason: 'logged-out:codex' });
+            candidateBackendEntries: [claudeEntry, codexEntry], machineAgentsById: {},
+        })).toEqual({ available: false, reason: 'cli-not-detected:any' });
     });
 
-    it('treats configured ACP backend entries as selectable without built-in CLI detection', () => {
-        const entry = {
-            backendTarget: { kind: 'backend', backendId: 'review-bot', configuredBackendId: 'review-bot' } as const,
-            backendTargetKey: 'backend:review-bot:configured:review-bot',
-            builtInAgentId: null,
-            agentId: 'review-bot',
-            kind: 'configuredBackend' as const,
+    it('preserves profile sign-in failure reasons from inventory state', () => {
+        const machineAgentsById = {
+            claude: createMachineAgent('claude', { state: 'needsSignIn' }),
+            codex: createMachineAgent('codex', { state: 'needsSignIn' }),
         };
-        expect(isBackendEntrySelectableForNewSession({
-            entry,
-            detectionTimestamp: 1,
-            availabilityById: {},
-            installableDepKeyCountByAgentId: {},
-        })).toBe(true);
-        expect(getSelectableBackendEntriesForNewSession({
-            candidateBackendEntries: [entry],
-            detectionTimestamp: 1,
-            availabilityById: {},
-            installableDepKeyCountByAgentId: {},
-        })).toEqual([entry]);
-    });
-
-    it('applies the operational installed Agent declaration to plugin backend availability', () => {
-        const entry = {
-            backendTarget: { kind: 'backend', backendId: 'acme.review' } as const,
-            backendTargetKey: 'backend:acme.review',
-            builtInAgentId: null,
-            agentId: 'acme.review/assistant',
-            kind: 'pluginBackend' as const,
-        };
-
-        expect(isBackendEntrySelectableForNewSession({
-            entry,
-            detectionTimestamp: 1,
-            availabilityById: { 'acme.review/assistant': false },
-            installableDepKeyCountByAgentId: { 'acme.review/assistant': 0 },
-            selectableWithoutCliByAgentId: { 'acme.review/assistant': false },
-        })).toBe(false);
-        expect(isBackendEntrySelectableForNewSession({
-            entry,
-            detectionTimestamp: 1,
-            availabilityById: { 'acme.review/assistant': false },
-            installableDepKeyCountByAgentId: { 'acme.review/assistant': 1 },
-            selectableWithoutCliByAgentId: { 'acme.review/assistant': false },
-        })).toBe(true);
-        expect(isBackendEntrySelectableForNewSession({
-            entry,
-            detectionTimestamp: 1,
-            availabilityById: { 'acme.review/assistant': false },
-            installableDepKeyCountByAgentId: { 'acme.review/assistant': 0 },
-            selectableWithoutCliByAgentId: { 'acme.review/assistant': true },
-        })).toBe(true);
-    });
-
-    it('excludes backend entries that explicitly do not support session runtime', () => {
-        const entry = {
-            backendTarget: { kind: 'backend', backendId: 'review-bot', configuredBackendId: 'review-bot' } as const,
-            backendTargetKey: 'backend:review-bot:configured:review-bot',
-            builtInAgentId: null,
-            agentId: 'review-bot',
-            kind: 'configuredBackend' as const,
-            capabilities: {
-                session: { supported: false },
-                executionRun: { supported: true },
-            },
-        };
-
-        expect(isBackendEntrySelectableForNewSession({
-            entry,
-            detectionTimestamp: 1,
-            availabilityById: {},
-            installableDepKeyCountByAgentId: {},
-        })).toBe(false);
-        expect(getSelectableBackendEntriesForNewSession({
-            candidateBackendEntries: [entry],
-            detectionTimestamp: 1,
-            availabilityById: {},
-            installableDepKeyCountByAgentId: {},
-        })).toEqual([]);
-    });
-
-    it('resolves profile availability from configured ACP backend targets', () => {
         expect(resolveProfileAvailabilityForNewSession({
-            candidateBackendEntries: [
-                {
-                    backendTarget: { kind: 'backend', backendId: 'review-bot', configuredBackendId: 'review-bot' },
-                    backendTargetKey: 'backend:review-bot:configured:review-bot',
-                    builtInAgentId: null,
-                    agentId: 'review-bot',
-                    kind: 'configuredBackend',
-                },
-            ],
-            detectionTimestamp: 1,
-            availabilityById: {},
-            installableDepKeyCountByAgentId: {},
+            candidateBackendEntries: [codexEntry], machineAgentsById,
+        })).toEqual({ available: false, reason: 'logged-out:codex' });
+        expect(resolveProfileAvailabilityForNewSession({
+            candidateBackendEntries: [claudeEntry, codexEntry], machineAgentsById,
+        })).toEqual({ available: false, reason: 'logged-out:any' });
+    });
+
+    it('keeps configured ACP targets selectable without Agent inventory', () => {
+        expect(isBackendEntrySelectableForNewSession({ entry: configuredEntry, machineAgentsById: {} })).toBe(true);
+        expect(resolveProfileAvailabilityForNewSession({
+            candidateBackendEntries: [configuredEntry], machineAgentsById: {},
         })).toEqual({ available: true });
+        expect(resolveNextSelectableBackendEntryForNewSession({
+            candidateBackendEntries: [claudeEntry, configuredEntry], currentTargetKey: claudeEntry.backendTargetKey,
+            machineAgentsById: {},
+        })).toEqual(configuredEntry);
     });
 
-    it('cycles to a compatible configured ACP backend when no compatible built-in backend remains selectable', () => {
-        const next = resolveNextSelectableBackendEntryForNewSession({
-            candidateBackendEntries: [
-                {
-                    backendTarget: { kind: 'backend', backendId: 'claude' },
-                    backendTargetKey: 'backend:claude',
-                    builtInAgentId: 'claude',
-                    agentId: 'claude',
-                    kind: 'builtInAgent',
-                },
-                {
-                    backendTarget: { kind: 'backend', backendId: 'review-bot', configuredBackendId: 'review-bot' },
-                    backendTargetKey: 'backend:review-bot:configured:review-bot',
-                    builtInAgentId: null,
-                    agentId: 'review-bot',
-                    kind: 'configuredBackend',
-                },
-            ],
-            currentTargetKey: 'backend:claude',
-            detectionTimestamp: 1,
-            availabilityById: { claude: false },
-            installableDepKeyCountByAgentId: { claude: 0 },
-        });
+    it('requires the contributed Agent inventory row for plugin backends', () => {
+        const entry: NewSessionSelectableBackendEntry = {
+            backendTarget: { kind: 'backend', backendId: 'acme.review' }, backendTargetKey: 'backend:acme.review',
+            builtInAgentId: null, agentId: 'acme.review/assistant', kind: 'pluginBackend',
+        };
+        expect(isBackendEntrySelectableForNewSession({ entry, machineAgentsById: {} })).toBe(false);
+        expect(isBackendEntrySelectableForNewSession({
+            entry, machineAgentsById: { 'acme.review/assistant': createMachineAgent('acme.review/assistant') },
+        })).toBe(true);
+    });
 
-        expect(next?.backendTarget).toEqual({ kind: 'backend', backendId: 'review-bot', configuredBackendId: 'review-bot' });
+    it('excludes targets that explicitly do not support session runtime', () => {
+        const entry = { ...configuredEntry, capabilities: { session: { supported: false }, executionRun: { supported: true } } };
+        expect(getSelectableBackendEntriesForNewSession({ candidateBackendEntries: [entry], machineAgentsById: {} })).toEqual([]);
+        expect(resolveProfileAvailabilityForNewSession({ candidateBackendEntries: [entry], machineAgentsById: {} }))
+            .toEqual({ available: false, reason: 'no-supported-cli' });
     });
 });

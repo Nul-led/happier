@@ -11,17 +11,14 @@ import {
 } from '@/daemon/controlClient';
 import type { DaemonSessionRunnerRestartMode, RestartAllDaemonSessionRunnersResult } from '@/daemon/controlClient';
 import { startDaemon } from '@/daemon/startDaemon';
-import {
-  resolveDaemonServiceInstallationSnapshotFromEnv,
-  runDaemonServiceCliCommand,
-} from '@/daemon/service/cli';
+import { runDaemonServiceCliCommand } from '@/daemon/service/cli';
 import { getLatestDaemonLog } from '@/ui/logger';
 import { runDoctorCommand } from '@/ui/doctor';
 import { listDaemonStatusesForAllKnownServers, stopAllDaemonsBestEffort } from '@/daemon/multiDaemon';
 import { spawnDetachedDaemonStartSync } from '@/daemon/runtime/spawnDetachedDaemonStartSync';
 import { readSettings, readStoredCredentials } from '@/persistence';
 import { configuration } from '@/configuration';
-import { decodeJwtPayload } from '@/cloud/decodeJwtPayload';
+import { readAccountIdFromToken } from '@/cloud/decodeJwtPayload';
 import { readPositiveIntEnv } from '@/utils/readPositiveIntEnv';
 import {
   hasObservableDaemonStartProcessExited,
@@ -37,11 +34,14 @@ import { evaluateCurrentDaemonOwner } from '@/daemon/ownership/evaluateCurrentDa
 import { renderDaemonOwnerConflict } from '@/daemon/ownership/renderDaemonOwnerConflict';
 import {
   buildDaemonTakeoverNotice,
+  readStartingServiceTargetModeFromEnv,
   resolveDaemonTakeoverDecision,
 } from '@/daemon/ownership/resolveDaemonTakeoverDecision';
 import {
   evaluateDaemonStartupServiceConflict,
+  evaluateDefaultFollowingServiceStartup,
   renderDaemonInstalledServiceConflict,
+  renderDefaultFollowingServiceStandingBy,
 } from '@/daemon/ownership/daemonServiceInventory';
 import {
   isDaemonStartupSourceServiceManaged,
@@ -322,9 +322,7 @@ export async function handleDaemonCliCommand(context: CommandContext): Promise<v
       let account: string | undefined;
       try {
         const creds = await readStoredCredentials();
-        const payload = creds?.token ? decodeJwtPayload(creds.token) : null;
-        const sub = typeof payload?.sub === 'string' ? payload.sub : '';
-        if (sub) account = sub;
+        account = (creds?.token ? readAccountIdFromToken(creds.token) : null) ?? undefined;
       } catch {
         // ignore
       }
@@ -386,19 +384,40 @@ export async function handleDaemonCliCommand(context: CommandContext): Promise<v
   if (daemonSubcommand === 'start-sync') {
     const takeoverRequested = args.includes('--takeover');
     const pluginRecoveryRequested = args.includes('--plugin-recovery');
-    const ownership = await evaluateCurrentDaemonOwner();
     const startupSource = resolveDaemonStartupSourceFromEnv(process.env);
-    if (ownership.kind === 'compatible' && startupSource !== 'self-restart') {
+    // The default-following service never competes with this home's pinned service for the server
+    // it follows: it stands by, and a clean exit keeps its service manager from respawning it.
+    const defaultFollowingStartup = await evaluateDefaultFollowingServiceStartup({
+      startupSource,
+      processEnv: process.env,
+      resolveRuntime: () => resolveDaemonServiceCliRuntimeFromEnv({ processEnv: process.env }),
+    });
+    if (defaultFollowingStartup.kind === 'yield-to-pinned-service') {
+      const message = renderDefaultFollowingServiceStandingBy({
+        serverId: configuration.activeServerId,
+        services: defaultFollowingStartup.services,
+      });
+      console.log(ok(message.title));
+      for (const line of message.lines) console.log(line);
+      process.exit(0);
+    }
+    const ownership = await evaluateCurrentDaemonOwner();
+    const takeoverDecision = resolveDaemonTakeoverDecision({
+      ownership,
+      takeoverRequested,
+      startupSource,
+      serviceTargetMode: readStartingServiceTargetModeFromEnv(process.env),
+    });
+    if (
+      ownership.kind === 'compatible'
+      && startupSource !== 'self-restart'
+      && takeoverDecision.kind !== 'default-following-owner-yield'
+    ) {
       console.log(ok('Daemon already running'));
       console.log(`  ${kv('Relay:', configuration.serverUrl)}`);
       console.log(`  ${kv('Relay ID:', configuration.activeServerId)}`);
       process.exit(0);
     }
-    const takeoverDecision = resolveDaemonTakeoverDecision({
-      ownership,
-      takeoverRequested,
-      startupSource,
-    });
 
     if (takeoverDecision.kind === 'conflict') {
       const message = renderDaemonOwnerConflict({
@@ -426,6 +445,9 @@ export async function handleDaemonCliCommand(context: CommandContext): Promise<v
 
     if (takeoverDecision.kind === 'manual-owner-takeover') {
       console.log(warn('Taking over the current manual relay runtime before starting a new relay...'));
+    }
+    if (takeoverDecision.kind === 'default-following-owner-yield') {
+      console.log(warn('This relay has its own background service: taking it over from the default background service...'));
     }
 
     await startDaemon({
@@ -700,25 +722,8 @@ export async function handleDaemonCliCommand(context: CommandContext): Promise<v
             return null;
           }
         })();
-        const entries = await Promise.all(statuses.map(async (entry) => {
-          let servicePlatform = typeof entry.service.platform === 'string' ? entry.service.platform : null;
-          let serviceInstalledPath = typeof entry.service.installedPath === 'string' ? entry.service.installedPath : null;
-          if (!servicePlatform || !serviceInstalledPath) {
-            try {
-              const snapshot = await resolveDaemonServiceInstallationSnapshotFromEnv({
-                processEnv: {
-                  ...process.env,
-                  HAPPIER_DAEMON_SERVICE_INSTANCE_ID: entry.serverId,
-                  HAPPIER_DAEMON_SERVICE_SERVER_URL: entry.serverUrl,
-                },
-              });
-              if (!servicePlatform) servicePlatform = snapshot.platform;
-              if (!serviceInstalledPath) serviceInstalledPath = snapshot.installedPath;
-            } catch {
-              // ignore
-            }
-          }
-
+        // `listDaemonStatusesForAllKnownServers` owns which service serves each server.
+        const entries = statuses.map((entry) => {
           return {
             serverId: entry.serverId,
             name: entry.name,
@@ -732,8 +737,8 @@ export async function handleDaemonCliCommand(context: CommandContext): Promise<v
               running: typeof entry.service.running === 'boolean'
                 ? entry.service.running
                 : entry.service.installed && entry.daemon.running,
-              platform: servicePlatform,
-              installedPath: serviceInstalledPath,
+              platform: entry.service.platform ?? null,
+              installedPath: entry.service.installedPath ?? null,
             },
             daemon: {
               installed: entry.service.installed,
@@ -743,7 +748,7 @@ export async function handleDaemonCliCommand(context: CommandContext): Promise<v
               staleStateFile: Boolean(entry.daemon.staleStateFile),
             },
           };
-        }));
+        });
         await writeJsonStdout({
           active: {
             serverId: configuration.activeServerId,

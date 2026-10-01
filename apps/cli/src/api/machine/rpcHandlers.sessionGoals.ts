@@ -45,7 +45,7 @@ import {
   routeSessionUsageLimitRecoveryWaitResumeEnable,
 } from '@/session/usageLimitRecoveryControls/sessionUsageLimitRecoveryControlRouter';
 import { routeSessionUsageLimitRecoverySwitchAccountNow } from '@/session/usageLimitRecoveryControls/sessionUsageLimitRecoverySwitchAccountNow';
-import type { DaemonUsageLimitRecoveryFieldMutation } from '@/api/session/client/transport/mutations/sessionClientDurableMutationTypes';
+import type { DaemonUsageLimitRecoveryFieldMutation, DaemonWorkStateFieldMutation } from '@/api/session/client/transport/mutations/sessionClientDurableMutationTypes';
 import { getActiveAccountSettingsSnapshot } from '@/settings/accountSettings/activeAccountSettingsSnapshot';
 import {
   readQualifiedConnectedAccountGroupV4,
@@ -89,6 +89,10 @@ type RegisterMachineSessionGoalRpcHandlersDeps = Readonly<{
   currentMachineId?: string;
   stageUsageLimitRecoveryMutation?: (input: Readonly<{
     mutation: DaemonUsageLimitRecoveryFieldMutation;
+    rawSession: RawSessionRecord;
+  }>) => Promise<void>;
+  stageWorkStateMutation?: (input: Readonly<{
+    mutation: DaemonWorkStateFieldMutation;
     rawSession: RawSessionRecord;
   }>) => Promise<void>;
 }>;
@@ -136,11 +140,16 @@ async function resolveActionDeps(params: Readonly<{
     idOrPrefix: params.sessionId,
   });
   if (!transport.ok) return { ok: false, result: transportError(transport) };
+  const stageDaemonWorkStateMutation = params.deps?.stageWorkStateMutation;
   const common = {
     token: credentials.token,
     credentials,
     sessionId: transport.sessionId,
     rawSession: transport.rawSession,
+    ...(stageDaemonWorkStateMutation
+      ? { stageWorkStateMutation: (mutation: DaemonWorkStateFieldMutation) =>
+          stageDaemonWorkStateMutation({ mutation, rawSession: transport.rawSession }) }
+      : {}),
   };
   const actionDeps = transport.mode === 'plain'
     ? (params.deps?.createCliActionDeps ?? createCliActionDeps)({

@@ -116,7 +116,7 @@ export const RemoteSshChecklistCredentialsPhase = React.memo(function RemoteSshC
                     <>
                     <SshCredentialsFields
                         testIDPrefix={props.testID ? `${props.testID}-ssh` : 'remote-ssh-checklist-ssh'}
-                        layoutVariant="wizard"
+                        layoutVariant="form"
                         value={props.draft}
                         onChange={props.onChangeDraft}
                         supportedAuthModes={props.supportedAuthModes}

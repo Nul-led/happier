@@ -1,5 +1,5 @@
-import type { Metadata } from '@/sync/domains/state/storageTypes';
-import type { ToolCall, Message } from '@/sync/domains/messages/messageTypes';
+import type { Metadata } from '@happier-dev/session-core/state';
+import type { ToolCall, Message } from "@happier-dev/session-core/messages";
 import type { ReactNode } from 'react';
 import type * as z from 'zod';
 

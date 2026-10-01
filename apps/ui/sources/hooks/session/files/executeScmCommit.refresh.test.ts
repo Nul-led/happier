@@ -1,4 +1,4 @@
-import { SCM_OPERATION_ERROR_CODES } from '@happier-dev/protocol';
+import { SCM_OPERATION_ERROR_CODES } from '@happier-dev/protocol/scm';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
 import { installSessionFilesHookCommonModuleMocks } from './sessionFilesHookTestHelpers';
@@ -11,8 +11,6 @@ installSessionFilesHookCommonModuleMocks({
     storage: async (original) => original(),
 });
 vi.mock('@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc', () => ({ machineRpcWithServerScope: rpc }));
-// Load the real SCM operations without the unrelated sync operations barrel.
-vi.mock('@/sync/ops', async () => import('@/sync/ops/sessionScm'));
 vi.mock('@/sync/sync', () => ({ sync: { encryption: { getSessionEncryption: () => null } } }));
 const { storage } = await import('@/sync/domains/state/storage');
 const { projectManager } = await import('@/sync/runtime/orchestration/projectManager');
@@ -52,11 +50,8 @@ describe('commit result survives refresh failure', () => {
             expect.objectContaining({ operation: 'refresh', status: 'failed' }),
         ]));
         expect(log).not.toEqual(expect.arrayContaining([expect.objectContaining({ operation: 'commit', status: 'failed' })]));
-        const buttons = alert.mock.calls[0]?.[2] as Array<{ text: string; onPress?: () => Promise<void> }>;
-        await buttons.find((button) => button.text === 'files.retryRefresh')?.onPress?.();
-        expect(refreshScmData).toHaveBeenCalledTimes(refreshAttempts + 1);
-        expect(rpc).toHaveBeenCalledTimes(1);
-        expect(storage.getState().getSessionProjectScmOperationLog('s1')).toEqual(expect.arrayContaining([expect.objectContaining({ operation: 'refresh', status: 'success' })]));
+        // The pane's outcome line says it (and offers Try again); nothing is a modal.
+        expect(alert).not.toHaveBeenCalled();
         expect(storage.getState().getSessionProjectScmInFlightOperation('s1')).toBeNull();
     });
     it('never repeats creation when final index sync fails after a commit SHA exists', async () => {
@@ -78,5 +73,22 @@ describe('commit result survives refresh failure', () => {
         expect(confirm).not.toHaveBeenCalled();
         expect(storage.getState().getSessionProjectScmCommitSelectionPaths('s1')).toEqual(['a.txt']);
         expect(storage.getState().getSessionProjectScmCommitSelectionPatches('s1')).toEqual(selectedPatches);
+        expect(storage.getState().getSessionProjectScmOperationLog('s1')[0]).toMatchObject({
+            operation: 'commit',
+            outcome: { kind: 'effect_applied_with_warning', effect: { kind: 'commit', commitSha: 'abc123' } },
+        });
+    });
+    it('retains canonical commit identity when a new response omits the legacy SHA field', async () => {
+        rpc.mockResolvedValueOnce({ success: true, outcome: { v: 1, kind: 'succeeded', effect: { kind: 'commit', commitSha: 'canonical-sha' }, nextActions: [] } });
+        await executeScmCommit({
+            sessionId: 's1', repoPath: '/tmp/commit-test', commitMessage: 'commit', scmCommitStrategy: 'atomic',
+            commitSelectionPaths: ['a.txt'], commitSelectionPatches: [],
+            refreshScmData: async () => { throw new Error('status unavailable'); }, loadCommitHistory: async () => {},
+            setScmOperationBusy: vi.fn(), setScmOperationStatus: vi.fn(), tracking: null,
+        });
+        expect(storage.getState().getSessionProjectScmOperationLog('s1')[0]).toMatchObject({
+            operation: 'refresh', outcome: { kind: 'effect_applied_with_warning', effect: { kind: 'commit', commitSha: 'canonical-sha' } },
+        });
+        expect(rpc).toHaveBeenCalledTimes(1);
     });
 });

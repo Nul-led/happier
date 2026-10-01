@@ -11,12 +11,14 @@ import {
  */
 export function deriveLatestTurnScopedChangeSet(params: Readonly<{
     sessionId: string;
+    repoRootPath?: string | null;
     latestTurnChangeSet: TurnChangeSet | null;
     evidenceScope?: ChangedFilesTurnEvidenceScope;
 }>): SessionChangeSet | null {
     if (!params.latestTurnChangeSet) return null;
     return combineChangedFilesAttribution({
         sessionId: params.sessionId,
+        repoRootPath: params.repoRootPath,
         turns: [params.latestTurnChangeSet],
         evidenceScope: params.evidenceScope ?? 'all',
         rolledBackTurnIds: [],

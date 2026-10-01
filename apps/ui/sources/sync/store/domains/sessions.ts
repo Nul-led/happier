@@ -5,15 +5,17 @@ import type {
     Machine,
     Session,
 } from '../../domains/state/storageTypes';
-import type { NormalizedMessage } from '../../typesRaw';
+import type { NormalizedMessage } from "@happier-dev/session-core/raw";
 import type { ConcurrentSessionListCacheByServerId } from '../../domains/session/listing/concurrentSessionListCache';
-import { readStoredSessionMessagesFromStateLike } from '../../domains/messages/readStoredSessionMessages';
+import type { SessionListQueryMembership } from '../../domains/session/listing/sessionListQueryController';
+import { readStoredSessionMessagesFromStateLike } from "@happier-dev/session-core/messages";
 import {
     areSessionListRenderablesEqual,
     applySessionListRenderablePatch,
     buildSessionListRenderableFromSession,
     preserveSessionListRenderableStaleFields,
     preserveSessionListRenderableTransientState,
+    readSessionListRenderableSourceMetadata,
     type SessionListRenderablePatchFields,
     type SessionListRenderableSession,
 } from '../../domains/session/listing/sessionListRenderable';
@@ -48,13 +50,20 @@ import {
     resolveWarmCacheAccountScope,
     peekSessionListWarmCacheEntries,
     type SessionListCacheEntryV1,
+    type SessionListQueryMembershipCacheEntryV1,
+    loadSessionListQueryMembershipWarmCacheEntries,
+    saveSessionListQueryMembershipWarmCacheEntries,
     saveSessionListWarmCacheEntries,
 } from '../../domains/state/warmCachePersistence';
-import { buildPersistedSessionListCacheEntriesFromRenderables } from '../../domains/state/warmCacheAdapters';
+import {
+    buildPersistedSessionListCacheEntriesFromRenderables,
+    SESSION_LIST_WARM_CACHE_MAX_ENTRIES,
+} from '../../domains/state/warmCacheAdapters';
 import { projectManager } from '../../runtime/orchestration/projectManager';
 import { syncPerformanceTelemetry } from '../../runtime/syncPerformanceTelemetry';
 import { type PermissionMode } from '@/sync/domains/permissions/permissionTypes';
-import { isModelSelectableForSession } from '@/sync/domains/models/modelOptions';
+import { isModelSelectableForSession, type SessionModelOptionsContext } from '@/sync/domains/models/modelOptions';
+import { readSessionPresentationAgentId } from '@/sync/domains/session/presentation/readSessionPresentationAgentId';
 import {
     resolveAgentIdFromSessionMetadata,
 } from '@happier-dev/agents';
@@ -64,6 +73,8 @@ import type { ReviewCommentDraft } from '@/sync/domains/input/reviewComments/rev
 import type { SessionActionDraft } from '@/sync/domains/sessionActions/sessionActionDraftTypes';
 import type { SessionActionDraftStatus } from '@/sync/domains/sessionActions/sessionActionDraftTypes';
 import { normalizeSessionAddress, sessionAddressKey, type SessionAddress } from '@/sync/domains/session/sessionAddress';
+import { isSessionAccessRecipient } from '@/sync/engine/sessions/normalizeSessionAccessProjection';
+import { readSessionDisplayTitleField } from '@/sync/state/selectors';
 import type { WorkspaceScopeBase } from '@/sync/domains/workspaces/workspaceScope';
 import { areScmWorkingSnapshotsEquivalentIgnoringFetchedAt } from '@/scm/sync/snapshotDiff';
 import { areServerAccountScopesEqual, createServerAccountScope, type ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
@@ -103,13 +114,14 @@ import {
 import { resolveWorkspaceTargetForSessionFromState } from '@/sync/domains/session/resolveWorkspaceTargetForSessionFromState';
 import { preserveSessionRuntimeLocalMetadata } from '@/sync/domains/session/preserveSessionRuntimeLocalMetadata';
 import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
+import { readSessionMetadataLayoutVersion } from '@/sync/engine/sessions/parsePlainSessionPayload';
 import { createKeyedTimeoutScheduler } from '@/utils/time/keyedTimeoutScheduler';
 import {
     hasTerminalPrimaryTurnStatus,
     resolveSessionRuntimePresenceFields,
     SESSION_RESUMING_PRESENTATION_TIMEOUT_MS,
 } from '@/sync/domains/session/attention/runtimePresentation';
-import { reconcileLatestUsageContextSnapshotModel } from '@/sync/reducer/reducer';
+import { reconcileLatestUsageContextSnapshotModel } from "@happier-dev/session-core/reducer";
 import { classifySessionTupleApplyCurrentness } from './sessionTupleApplyCurrentness';
 import {
     buildMachineDisplaysByIdFromMachineList,
@@ -301,6 +313,14 @@ export type SessionsDomain = {
     archivedSessionListMembershipByServerId: Readonly<Record<string, readonly string[] | undefined>>;
     sessionListIndexByServerId: Readonly<Record<string, SessionListIndexItem[] | null | undefined>>;
     concurrentSessionListCacheByServerId: ConcurrentSessionListCacheByServerId;
+    /**
+     * Last applied strict-query membership per corpus (`buildSessionListQueryKey`), qualified by
+     * the Home and Account it was read under. The query controller owns requests and cursors and
+     * commits each applied page here; list surfaces render from this, so a remounted controller,
+     * a refresh or an unreachable Home keeps the last-known rows until an authoritative page
+     * replaces them. Access denial and credential retirement remove it.
+     */
+    sessionListQueryMembershipByKey: Readonly<Record<string, SessionListQueryMembership | undefined>>;
     sessionScmStatus: Record<string, ScmStatus | null>;
     sessionLastViewed: Record<string, number>;
     sessionRepositoryTreeExpandedPathsBySessionId: Record<string, string[]>;
@@ -334,6 +354,12 @@ export type SessionsDomain = {
     ) => void;
     mergeSessionListRowsForServerScope: (serverId: string, sessions: SessionListRenderableSession[]) => void;
     clearSessionListRowsForServerScope: (serverId: string) => void;
+    commitSessionListQueryMembership: (queryKey: string, membership: SessionListQueryMembership | null) => void;
+    /**
+     * Local restore phase: publish the focused Home's persisted strict-query memberships for this
+     * Account as `lastKnown`, for corpora the store does not already hold.
+     */
+    restoreSessionListQueryMemberships: (serverId: string, accountId: string) => void;
     applyReady: () => void;
 
     applyScmStatus: (sessionId: string, status: ScmStatus | null) => void;
@@ -354,7 +380,7 @@ export type SessionsDomain = {
     /** Applies the server's authoritative responsible Account after a committed mutation. */
     applySessionResponsibleAccount: (sessionId: string, responsibleAccountId: string | null, scope: ServerAccountScope, responsibleAccount?: import('@happier-dev/protocol').SessionAccessAccountSummaryV1 | null) => void;
     updateSessionPermissionMode: (sessionId: string, mode: PermissionMode) => void;
-    updateSessionModelMode: (sessionId: string, mode: SessionModelMode) => void;
+    updateSessionModelMode: (sessionId: string, mode: SessionModelMode, context?: SessionModelOptionsContext) => void;
     upsertSessionReviewCommentDraft: (sessionId: string, draft: ReviewCommentDraft) => void;
     setSessionReviewCommentDraftIncluded: (sessionId: string, commentId: string, included: boolean) => void;
     deleteSessionReviewCommentDraft: (sessionId: string, commentId: string) => void;
@@ -421,6 +447,7 @@ export type SessionsDomain = {
         serverId?: string | null,
     ) => BeginScmOperationResult;
     finishSessionProjectScmOperation: (sessionId: string, operationId: string, serverId?: string | null) => boolean;
+    updateSessionProjectScmOperationProgress: (sessionId: string, operationId: string, progressText?: string, serverId?: string | null) => boolean;
 
     getWorkspaceScmStatus: (scope: WorkspaceScopeBase) => ScmStatus | null;
     updateWorkspaceScmStatus: (scope: WorkspaceScopeBase, status: ScmStatus | null) => void;
@@ -446,6 +473,7 @@ export type SessionsDomain = {
     getWorkspaceScmInFlightOperation: (scope: WorkspaceScopeBase) => ScmInFlightOperation | null;
     beginWorkspaceScmOperation: (scope: WorkspaceScopeBase, operation: import('../../runtime/orchestration/projectManager').ScmProjectOperationKind) => BeginScmOperationResult;
     finishWorkspaceScmOperation: (scope: WorkspaceScopeBase, operationId: string) => boolean;
+    updateWorkspaceScmOperationProgress: (scope: WorkspaceScopeBase, operationId: string, progressText?: string) => boolean;
 
     /**
      * Retire a Session locally for ONE Home, or for every Home when `serverId` is
@@ -539,14 +567,27 @@ function resolveOrderedSessionApply(
     const applyPatch = (patch: Partial<IncomingSessionApply>): void => {
         nextSession = { ...nextSession, ...patch };
     };
+    // HTTP hydration omits device-local presence. Keep its last observation only
+    // for this Home's carrier; an explicit undefined still invalidates it.
+    const previousServerId = normalizeTrimmedString(previousSession.serverId);
+    const incomingServerId = normalizeTrimmedString(incomingSession.serverId);
+    const isSameHome = previousServerId === incomingServerId || (
+        previousServerId !== null && incomingServerId !== null
+        && areServerProfileIdentifiersEquivalent(previousServerId, incomingServerId)
+    );
+    if (isSameHome && !Object.prototype.hasOwnProperty.call(incomingSession, 'presence')) {
+        applyPatch({ presence: previousSession.presence });
+    }
     const tupleCurrentness = classifySessionTupleApplyCurrentness(previousSession, incomingSession);
 
     if (!tupleCurrentness.metadataCurrent) {
         applyPatch({
             metadataLayoutVersion: previousSession.metadataLayoutVersion,
+            metadataProjection: previousSession.metadataProjection,
             metadata: previousSession.metadata,
             metadataVersion: previousSession.metadataVersion,
             ownerMetadataView: previousSession.ownerMetadataView,
+            composerOptionsInput: previousSession.composerOptionsInput,
         });
     }
     if (!tupleCurrentness.agentStateCurrent) {
@@ -623,6 +664,44 @@ function resolveOrderedSessionApply(
     return nextSession;
 }
 
+/**
+ * Keep the one safe shared projection that an authorized layout-v1 recipient already saw while
+ * a subsequent hydration is locked. This belongs at the Session store owner so HTTP, socket and
+ * snapshot writers cannot disagree. The projection is deliberately discarded on any content,
+ * access, or Home change; owner rows never qualify.
+ */
+function resolveLockedDisplayTitle(
+    previousSession: Session | undefined,
+    incomingSession: IncomingSessionApply,
+): string | null {
+    if (
+        readSessionMetadataLayoutVersion(incomingSession.metadataLayoutVersion) !== 1
+        || incomingSession.metadata !== null
+        || !isSessionAccessRecipient(incomingSession.access, incomingSession.accessLevel)
+    ) {
+        return null;
+    }
+
+    const incomingServerId = normalizeTrimmedString(incomingSession.serverId);
+    if (!previousSession) return null;
+    const previousServerId = normalizeTrimmedString(previousSession.serverId);
+    if (
+        !incomingServerId
+        || !previousServerId
+        || !areServerProfileIdentifiersEquivalent(previousServerId, incomingServerId)
+        || readSessionMetadataLayoutVersion(previousSession.metadataLayoutVersion) !== 1
+        || !isSessionAccessRecipient(previousSession.access, previousSession.accessLevel)
+    ) {
+        return null;
+    }
+
+    const sharedMetadata = readSessionListRenderableSourceMetadata(previousSession);
+    return readSessionDisplayTitleField({ metadata: sharedMetadata }).value
+        ?? (typeof previousSession.lockedDisplayTitle === 'string'
+            ? previousSession.lockedDisplayTitle.trim() || null
+            : null);
+}
+
 function measureSessionApplyPhase<T>(
     name: string,
     fields: () => Record<string, number>,
@@ -685,6 +764,53 @@ function saveWarmSessionCacheForState(
         accountId,
         nextEntries,
     );
+}
+
+/**
+ * The strict-query warm cache mirrors the store: each change to the focused Home's memberships
+ * rewrites that Account's record from the memberships a page confirmed in this process. Retirement
+ * (access denial, credential retirement, Account replacement) therefore deletes it too, and a
+ * restored-only (`lastKnown`) corpus the process never read again is not carried forward, which is
+ * what keeps the record bounded. Ids per corpus follow the session-list row window: only rows that
+ * window persists can render after a reload.
+ */
+function saveSessionListQueryMembershipWarmCacheForChange(
+    memberships: SessionsDomain['sessionListQueryMembershipByKey'],
+    changed: ReadonlyArray<SessionListQueryMembership>,
+): void {
+    const activeServerId = String(getActiveServerSnapshot().serverId ?? '').trim();
+    if (!activeServerId) return;
+    const accountIds = new Set(changed
+        .filter((membership) => areServerProfileIdentifiersEquivalent(membership.serverId, activeServerId))
+        .map((membership) => membership.accountId));
+    for (const accountId of accountIds) {
+        const entries: Record<string, SessionListQueryMembershipCacheEntryV1> = {};
+        for (const [queryKey, membership] of Object.entries(memberships)) {
+            if (!membership || membership.lastKnown || membership.accountId !== accountId) continue;
+            if (!areServerProfileIdentifiersEquivalent(membership.serverId, activeServerId)) continue;
+            entries[queryKey] = {
+                serverId: membership.serverId,
+                sessionIds: membership.sessionIds.slice(0, SESSION_LIST_WARM_CACHE_MAX_ENTRIES),
+            };
+        }
+        saveSessionListQueryMembershipWarmCacheEntries(activeServerId, accountId, entries);
+    }
+}
+
+function listChangedSessionListQueryMemberships(
+    previous: SessionsDomain['sessionListQueryMembershipByKey'],
+    next: SessionsDomain['sessionListQueryMembershipByKey'],
+): SessionListQueryMembership[] {
+    if (previous === next) return [];
+    const changed: SessionListQueryMembership[] = [];
+    for (const queryKey of new Set([...Object.keys(previous), ...Object.keys(next)])) {
+        const before = previous[queryKey];
+        const after = next[queryKey];
+        if (before === after) continue;
+        if (before) changed.push(before);
+        if (after) changed.push(after);
+    }
+    return changed;
 }
 
 export function createSessionsDomain<S extends SessionsDomain & SessionsDomainDependencies>({
@@ -818,6 +944,87 @@ export function createSessionsDomain<S extends SessionsDomain & SessionsDomainDe
         });
     };
 
+    const clearServerScopedSessionListRows = (serverIdRaw: string): void => set((state) => {
+        const activeServerId = String(getActiveServerSnapshot().serverId ?? '').trim();
+        const trimmedServerId = serverIdRaw.trim();
+        const serverId = activeServerId
+            && areServerProfileIdentifiersEquivalent(trimmedServerId, activeServerId)
+            ? activeServerId
+            : trimmedServerId;
+        const retainedQueryMemberships = Object.entries(state.sessionListQueryMembershipByKey)
+            .filter(([, membership]) => membership && !areServerProfileIdentifiersEquivalent(membership.serverId, serverId));
+        const didRemoveQueryMembership = retainedQueryMemberships.length
+            !== Object.keys(state.sessionListQueryMembershipByKey).length;
+        if (!serverId || (
+            !state.sessionListRowsByServerId[serverId]
+            && state.sessionListIndexByServerId[serverId] == null
+            && !Object.prototype.hasOwnProperty.call(state.ordinarySessionListMembershipByServerId, serverId)
+            && !Object.prototype.hasOwnProperty.call(state.archivedSessionListMembershipByServerId, serverId)
+            && !didRemoveQueryMembership
+        )) {
+            return state;
+        }
+        const nextRowsByServerId = { ...state.sessionListRowsByServerId };
+        const nextOrdinaryMembershipByServerId = { ...state.ordinarySessionListMembershipByServerId };
+        const nextArchivedMembershipByServerId = { ...state.archivedSessionListMembershipByServerId };
+        const nextIndexByServerId = { ...state.sessionListIndexByServerId };
+        delete nextRowsByServerId[serverId];
+        delete nextOrdinaryMembershipByServerId[serverId];
+        delete nextArchivedMembershipByServerId[serverId];
+        delete nextIndexByServerId[serverId];
+        const removedSessionIds = state.ordinarySessionListMembershipByServerId[serverId] ?? [];
+        const nextStateBase = {
+            ...state,
+            sessionListRowsByServerId: nextRowsByServerId,
+            ordinarySessionListMembershipByServerId: nextOrdinaryMembershipByServerId,
+            archivedSessionListMembershipByServerId: nextArchivedMembershipByServerId,
+            sessionListIndexByServerId: nextIndexByServerId,
+            ...(didRemoveQueryMembership
+                ? { sessionListQueryMembershipByKey: Object.fromEntries(retainedQueryMemberships) }
+                : {}),
+        };
+        return finalizeSessionListRenderablePublication(
+            state,
+            nextStateBase,
+            state.sessionListIndexByServerId[serverId] != null,
+            serverId === activeServerId && removedSessionIds.length > 0,
+            false,
+            { warmCacheEventName: 'sync.store.sessions.renderables.clear.warmCache' },
+            {
+                saveImmediately: saveWarmSessionCacheImmediately,
+                scheduleDeferredSave: scheduleWarmSessionCacheSave,
+            },
+            removedSessionIds.length > 0 ? { changedSessionIds: [], removedSessionIds } : undefined,
+        );
+    });
+
+    const applySessionListQueryMembershipCommit = (
+        queryKey: string,
+        membership: SessionListQueryMembership | null,
+    ): void => set((state) => {
+        const previous = state.sessionListQueryMembershipByKey[queryKey];
+        if (!membership) {
+            if (!previous) return state;
+            const next = { ...state.sessionListQueryMembershipByKey };
+            delete next[queryKey];
+            return { ...state, sessionListQueryMembershipByKey: next };
+        }
+        if (
+            previous
+            // A restored `lastKnown` entry is always replaced by an applied page.
+            && previous.lastKnown !== true
+            && previous.serverId === membership.serverId
+            && previous.accountId === membership.accountId
+            && areStringArraysEqual(previous.sessionIds, membership.sessionIds)
+        ) {
+            return state;
+        }
+        return {
+            ...state,
+            sessionListQueryMembershipByKey: { ...state.sessionListQueryMembershipByKey, [queryKey]: membership },
+        };
+    });
+
     return {
         sessions: {},
         deletedSessionIds: {},
@@ -832,6 +1039,7 @@ export function createSessionsDomain<S extends SessionsDomain & SessionsDomainDe
         archivedSessionListMembershipByServerId: {},
         sessionListIndexByServerId: {},
         concurrentSessionListCacheByServerId: {},
+        sessionListQueryMembershipByKey: {},
         sessionScmStatus: {},
         sessionLastViewed,
         sessionRepositoryTreeExpandedPathsBySessionId,
@@ -1179,6 +1387,7 @@ export function createSessionsDomain<S extends SessionsDomain & SessionsDomainDe
                             session.metadata,
                         )
                         : session.metadata,
+                    lockedDisplayTitle: resolveLockedDisplayTitle(previousSession, session),
                     thinking: runtimePresence.thinking,
                     thinkingAt: runtimePresence.thinkingAt,
                     presence,
@@ -2237,50 +2446,37 @@ export function createSessionsDomain<S extends SessionsDomain & SessionsDomainDe
                 didOrdinaryProjectionChange ? { changedSessionIds, removedSessionIds: [] } : undefined,
             );
         }),
-        clearSessionListRowsForServerScope: (serverIdRaw) => set((state) => {
-            const activeServerId = String(getActiveServerSnapshot().serverId ?? '').trim();
-            const trimmedServerId = serverIdRaw.trim();
-            const serverId = activeServerId
-                && areServerProfileIdentifiersEquivalent(trimmedServerId, activeServerId)
-                ? activeServerId
-                : trimmedServerId;
-            if (!serverId || (
-                !state.sessionListRowsByServerId[serverId]
-                && state.sessionListIndexByServerId[serverId] == null
-                && !Object.prototype.hasOwnProperty.call(state.ordinarySessionListMembershipByServerId, serverId)
-                && !Object.prototype.hasOwnProperty.call(state.archivedSessionListMembershipByServerId, serverId)
-            )) {
-                return state;
-            }
-            const nextRowsByServerId = { ...state.sessionListRowsByServerId };
-            const nextOrdinaryMembershipByServerId = { ...state.ordinarySessionListMembershipByServerId };
-            const nextArchivedMembershipByServerId = { ...state.archivedSessionListMembershipByServerId };
-            const nextIndexByServerId = { ...state.sessionListIndexByServerId };
-            delete nextRowsByServerId[serverId];
-            delete nextOrdinaryMembershipByServerId[serverId];
-            delete nextArchivedMembershipByServerId[serverId];
-            delete nextIndexByServerId[serverId];
-            const removedSessionIds = state.ordinarySessionListMembershipByServerId[serverId] ?? [];
-            const nextStateBase = {
-                ...state,
-                sessionListRowsByServerId: nextRowsByServerId,
-                ordinarySessionListMembershipByServerId: nextOrdinaryMembershipByServerId,
-                archivedSessionListMembershipByServerId: nextArchivedMembershipByServerId,
-                sessionListIndexByServerId: nextIndexByServerId,
-            };
-            return finalizeSessionListRenderablePublication(
-                state,
-                nextStateBase,
-                state.sessionListIndexByServerId[serverId] != null,
-                serverId === activeServerId && removedSessionIds.length > 0,
-                false,
-                { warmCacheEventName: 'sync.store.sessions.renderables.clear.warmCache' },
-                {
-                    saveImmediately: saveWarmSessionCacheImmediately,
-                    scheduleDeferredSave: scheduleWarmSessionCacheSave,
-                },
-                removedSessionIds.length > 0 ? { changedSessionIds: [], removedSessionIds } : undefined,
+        clearSessionListRowsForServerScope: (serverIdRaw) => {
+            const previousQueryMemberships = get().sessionListQueryMembershipByKey;
+            clearServerScopedSessionListRows(serverIdRaw);
+            const nextQueryMemberships = get().sessionListQueryMembershipByKey;
+            saveSessionListQueryMembershipWarmCacheForChange(
+                nextQueryMemberships,
+                listChangedSessionListQueryMemberships(previousQueryMemberships, nextQueryMemberships),
             );
+        },
+        commitSessionListQueryMembership: (queryKey, membership) => {
+            const previousQueryMemberships = get().sessionListQueryMembershipByKey;
+            applySessionListQueryMembershipCommit(queryKey, membership);
+            const nextQueryMemberships = get().sessionListQueryMembershipByKey;
+            saveSessionListQueryMembershipWarmCacheForChange(
+                nextQueryMemberships,
+                listChangedSessionListQueryMemberships(previousQueryMemberships, nextQueryMemberships),
+            );
+        },
+        restoreSessionListQueryMemberships: (serverIdRaw, accountIdRaw) => set((state) => {
+            const serverId = serverIdRaw.trim();
+            const accountId = accountIdRaw.trim();
+            if (!serverId || !accountId) return state;
+            let next: Record<string, SessionListQueryMembership | undefined> | null = null;
+            const persisted = loadSessionListQueryMembershipWarmCacheEntries(serverId, accountId);
+            for (const [queryKey, entry] of Object.entries(persisted)) {
+                if (state.sessionListQueryMembershipByKey[queryKey]) continue;
+                if (!areServerProfileIdentifiersEquivalent(entry.serverId, serverId)) continue;
+                next ??= { ...state.sessionListQueryMembershipByKey };
+                next[queryKey] = { serverId: entry.serverId, accountId, sessionIds: entry.sessionIds, lastKnown: true };
+            }
+            return next ? { ...state, sessionListQueryMembershipByKey: next } : state;
         }),
         applyReady: () => set((state) => ({
             ...state,
@@ -2684,7 +2880,7 @@ export function createSessionsDomain<S extends SessionsDomain & SessionsDomainDe
                 sessions: updatedSessions
             };
         }),
-	        updateSessionModelMode: (sessionId: string, mode: SessionModelMode) => set((state) => {
+	        updateSessionModelMode: (sessionId: string, mode: SessionModelMode, context?: SessionModelOptionsContext) => set((state) => {
 	            const session = state.sessions[sessionId];
 	            if (!session) return state;
 	
@@ -2692,9 +2888,10 @@ export function createSessionsDomain<S extends SessionsDomain & SessionsDomainDe
                 const normalized = typeof mode === 'string' ? mode.trim() : '';
                 const candidate: SessionModelMode = (normalized || 'default') as any;
                 const ownerMetadataView = readSessionOwnerMetadataView(session);
-                const resolvedAgentId = resolveAgentIdFromSessionMetadata(ownerMetadataView);
+                const composerOptionsInput = session.composerOptionsInput === undefined ? ownerMetadataView : session.composerOptionsInput;
+                const resolvedAgentId = readSessionPresentationAgentId(session) ?? resolveAgentIdFromSessionMetadata(ownerMetadataView);
                 const effectiveMode: SessionModelMode =
-                    resolvedAgentId && candidate !== 'default' && !isModelSelectableForSession(resolvedAgentId, ownerMetadataView, candidate)
+                    resolvedAgentId && candidate !== 'default' && !isModelSelectableForSession(resolvedAgentId, composerOptionsInput, candidate, context)
                         ? 'default'
                         : candidate;
 
@@ -3023,6 +3220,16 @@ export function createSessionsDomain<S extends SessionsDomain & SessionsDomainDe
             }
             return finished;
         },
+        updateSessionProjectScmOperationProgress: (sessionId, operationId, progressText, serverId) => {
+            if (serverId != null) {
+                const scope = resolveWorkspaceTargetForSessionFromState(get(), { sessionId, serverId });
+                return scope ? get().updateWorkspaceScmOperationProgress(scope, operationId, progressText) : false;
+            }
+            ensureProjectManagerSession(sessionId);
+            const updated = projectManager.updateSessionProjectScmOperationProgress(sessionId, operationId, progressText);
+            if (updated) set((state) => ({ ...state }));
+            return updated;
+        },
         getWorkspaceScmStatus: (scope) => projectManager.getWorkspaceScmStatus(scope),
         updateWorkspaceScmStatus: (scope, status) => {
             projectManager.updateWorkspaceScmStatus(scope, status);
@@ -3104,6 +3311,11 @@ export function createSessionsDomain<S extends SessionsDomain & SessionsDomainDe
                 set((state) => ({ ...state }));
             }
             return finished;
+        },
+        updateWorkspaceScmOperationProgress: (scope, operationId, progressText) => {
+            const updated = projectManager.updateWorkspaceScmOperationProgress(scope, operationId, progressText);
+            if (updated) set((state) => ({ ...state }));
+            return updated;
         },
         deleteSession: (sessionId: string, serverId?: string | null) => set((state) => {
             const targetServerId = normalizeTrimmedString(serverId) || null;

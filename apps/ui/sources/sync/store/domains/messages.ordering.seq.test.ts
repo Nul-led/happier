@@ -619,6 +619,8 @@ describe('messages domain: ordering', () => {
         expect(thinkingMessage?.isThinking).toBe(true);
         expect(get().sessionMessages.s1.latestThinkingMessageActivityAtMs).toBe(1_000);
 
+        const beforeTool = get().sessionMessages.s1.messagesById;
+
         nowSpy.mockReturnValue(2_000);
         domain.applyMessages('s1', [
             {
@@ -641,8 +643,13 @@ describe('messages domain: ordering', () => {
         ]);
 
         // Tool-only updates should not bump thinking activity.
+        expect(get().sessionMessages.s1.messagesById).not.toBe(beforeTool);
+        expect(Object.keys(beforeTool)).toEqual([thinkingId]);
+        expect(get().sessionMessages.s1.messagesById[thinkingId]).toBe(beforeTool[thinkingId]);
         expect(get().sessionMessages.s1.latestThinkingMessageId).toBe(thinkingId);
         expect(get().sessionMessages.s1.latestThinkingMessageActivityAtMs).toBe(1_000);
+
+        const beforeRevision = get().sessionMessages.s1.messagesById;
 
         nowSpy.mockReturnValue(3_000);
         domain.applyMessages('s1', [
@@ -659,6 +666,9 @@ describe('messages domain: ordering', () => {
 
         expect(get().sessionMessages.s1.latestThinkingMessageId).toBe(thinkingId);
         expect(get().sessionMessages.s1.latestThinkingMessageActivityAtMs).toBe(3_000);
+        expect(get().sessionMessages.s1.messagesById).not.toBe(beforeRevision);
+        expect(beforeRevision[thinkingId]).toBe(thinkingMessage);
+        expect(beforeRevision[thinkingId].text).toBe('step 1');
 
         nowSpy.mockRestore();
     });

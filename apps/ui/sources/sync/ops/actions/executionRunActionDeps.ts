@@ -1,9 +1,4 @@
-import {
-    normalizeExecutionRunWaitPollIntervalMs,
-    normalizeExecutionRunWaitTimeoutMs,
-    waitForExecutionRunTerminal,
-    type ActionExecutorDeps,
-} from '@happier-dev/protocol';
+import { type ActionExecutorDeps } from '@happier-dev/protocol';
 import { SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc';
 import { readRpcErrorCode } from '@happier-dev/protocol/rpcErrors';
 
@@ -12,10 +7,12 @@ import { readProtocolV2ExecutionRunSupport } from '@/sync/ops/actions/executionR
 import { readMachineControlTargetForSession } from '@/sync/ops/sessionMachineTarget';
 import {
     sessionExecutionRunAction,
+    sessionExecutionRunCancelTurn,
     sessionExecutionRunGet,
     sessionExecutionRunList,
     sessionExecutionRunStart,
     sessionExecutionRunStop,
+    sessionExecutionRunWait,
 } from '@/sync/ops/sessionExecutionRuns';
 import { machineRpcWithServerScope } from '@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc';
 
@@ -27,6 +24,7 @@ type UiExecutionRunActionDeps = Pick<
     | 'executionRunGet'
     | 'detachedExecutionRunSend'
     | 'executionRunStop'
+    | 'executionRunCancelTurn'
     | 'executionRunAction'
     | 'executionRunWait'
 >;
@@ -43,24 +41,6 @@ function executionRunFailure(code: string, error = code): Readonly<{
     error: string;
 }> {
     return { ok: false, errorCode: code, error };
-}
-
-function readRecord(value: unknown): Readonly<Record<string, unknown>> | null {
-    return value && typeof value === 'object' && !Array.isArray(value)
-        ? value as Readonly<Record<string, unknown>>
-        : null;
-}
-
-function toExecutionRunWaitReadResult(value: unknown):
-    | Readonly<{ ok: true; data: unknown }>
-    | Readonly<{ ok: false; code: string; message?: string }> {
-    const record = readRecord(value);
-    if (record && (record.ok === false || typeof record.error === 'string')) {
-        const code = normalizeId(record.errorCode) ?? 'execution_run_target_unavailable';
-        const message = typeof record.error === 'string' ? record.error : undefined;
-        return { ok: false, code, ...(message ? { message } : {}) };
-    }
-    return { ok: true, data: value };
 }
 
 function resolveExactExecutionRunMachineId(
@@ -168,30 +148,17 @@ export function createUiExecutionRunActionDeps(): UiExecutionRunActionDeps {
         executionRunStop: async (sessionId, request, opts) => sessionId === null
             ? await callDetachedExecutionRunRpc(SESSION_RPC_METHODS.EXECUTION_RUN_STOP, request, opts)
             : await sessionExecutionRunStop(sessionId, request, { serverId: opts?.serverId }),
+        executionRunCancelTurn: async (sessionId, request, opts) => sessionId === null
+            ? await callDetachedExecutionRunRpc(SESSION_RPC_METHODS.EXECUTION_RUN_CANCEL_TURN_V1, request, opts)
+            : await sessionExecutionRunCancelTurn(sessionId, request, { serverId: opts?.serverId }),
         executionRunAction: async (sessionId, request, opts) => sessionId === null
             ? await callDetachedExecutionRunRpc(SESSION_RPC_METHODS.EXECUTION_RUN_ACTION, request, opts)
             : await sessionExecutionRunAction(sessionId, request, { serverId: opts?.serverId }),
-        executionRunWait: async (sessionId, request, opts) => await waitForExecutionRunTerminal({
-            runId: String(readRecord(request)?.runId ?? ''),
-            timeoutMs: normalizeExecutionRunWaitTimeoutMs(readRecord(request)?.timeoutSeconds),
-            pollIntervalMs: normalizeExecutionRunWaitPollIntervalMs(
-                readRecord(request)?.pollIntervalMs,
-            ),
-            ...(opts?.signal ? { signal: opts.signal } : {}),
-            readRun: async ({ runId }) => {
-                const response = sessionId === null
-                    ? await callDetachedExecutionRunRpc(
-                    SESSION_RPC_METHODS.EXECUTION_RUN_GET,
-                    { runId, includeStructured: true },
-                    opts,
-                )
-                    : await sessionExecutionRunGet(
-                    sessionId,
-                    { runId, includeStructured: true },
-                    { serverId: opts?.serverId },
-                );
-                return toExecutionRunWaitReadResult(response);
-            },
-        }),
+        executionRunWait: async (sessionId, request, opts) => sessionId === null
+            ? await callDetachedExecutionRunRpc(SESSION_RPC_METHODS.EXECUTION_RUN_WAIT, request, opts)
+            : await sessionExecutionRunWait(sessionId, request, {
+                serverId: opts?.serverId,
+                ...(opts?.signal ? { signal: opts.signal } : {}),
+            }),
     };
 }

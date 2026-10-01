@@ -43,7 +43,7 @@ import {
   settlePriorTerminalExternalSessionOperationProgressProjections,
 } from './operationProgressPublisher';
 import {
-  resolveGenerationBoundExternalSessionFollowSurface,
+  resolveOccurrenceBoundExternalSessionFollowSurface,
 } from './providerOpsResolution';
 import {
   createExternalSessionSourceGenerationAnchor,
@@ -229,7 +229,7 @@ export function createDefaultExternalSessionTakeoverStartActionExecutor(
       ) {
         throw new Error('external_session_takeover_start_source_changed');
       }
-      const resolved = await resolveGenerationBoundExternalSessionFollowSurface(
+      const resolved = await resolveOccurrenceBoundExternalSessionFollowSurface(
         loaded.session.agentId,
         loaded.session.linkGeneration,
       );
@@ -257,7 +257,7 @@ export function createDefaultExternalSessionTakeoverStartActionExecutor(
           source: {
             ...intent.source,
             sourceGeneration: captured.sourceGeneration,
-            contributionGeneration: resolved.resource.pluginGeneration,
+            sourceCustody: resolved.sourceCustody,
           },
         },
         sourceSnapshotEvidenceRef: captured.sourceSnapshotEvidenceRef,

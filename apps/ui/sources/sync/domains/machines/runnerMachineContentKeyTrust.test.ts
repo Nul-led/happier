@@ -8,6 +8,7 @@ import {
     signRunnerMachineContentKeyBindingV1,
 } from '@happier-dev/protocol';
 import { encodeBase64 } from '@/encryption/base64';
+import * as deviceLocalStorage from '@/auth/storage/deviceLocalStorage';
 import {
     loadRunnerCreatorMachineContentKeyTrust,
     resetRunnerCreatorMachineContentKeyTrustProjectionForTests,
@@ -95,6 +96,7 @@ beforeEach(() => {
     } });
 });
 afterEach(() => {
+    vi.restoreAllMocks();
     resetRunnerCreatorMachineContentKeyTrustProjectionForTests();
     vi.unstubAllGlobals();
 });
@@ -109,12 +111,74 @@ async function retainCreatorTrust(activationSigningPublicKey: string): Promise<v
 }
 
 describe('resolveRunnerMachineContentKeyTrustV1', () => {
+    it('awaits retained creator custody on the first resolution after a remount', async () => {
+        const signing = tweetnacl.sign.keyPair.fromSeed(new Uint8Array(32).fill(7));
+        const publicKey = encodeBase64(signing.publicKey, 'base64url');
+        await retainCreatorTrust(publicKey);
+        resetRunnerCreatorMachineContentKeyTrustProjectionForTests();
+
+        const trust = await resolveRunnerMachineContentKeyTrustV1({
+            credentials: dataKeyCredentials, homeServerIdentityId: scope.serverId, machineId: 'machine-one',
+        });
+        expect(trust?.trustedMachineKind).toBe('ephemeral_session_runner');
+        expect(trust?.expectedRunnerBinding.accountSigningPublicKeyBase64Url).toBe(publicKey);
+        expect(resolvePublishedMachineDataEncryptionKeyV1({
+            machine: { id: 'machine-one', kind: 'persistent', dataEncryptionKey: 'home-chosen-envelope' },
+            openedDataEncryptionKey: new Uint8Array(32).fill(22),
+            ...trust,
+        })).toEqual({ status: 'unavailable' });
+    });
+
+    it('shares a delayed durable read without accepting weaker trust while it is pending', async () => {
+        const signing = tweetnacl.sign.keyPair.fromSeed(new Uint8Array(32).fill(7));
+        await retainCreatorTrust(encodeBase64(signing.publicKey, 'base64url'));
+        resetRunnerCreatorMachineContentKeyTrustProjectionForTests();
+        let release!: () => void;
+        const pending = new Promise<void>((resolve) => { release = resolve; });
+        const read = deviceLocalStorage.readDeviceLocalStorageString;
+        const readSpy = vi.spyOn(deviceLocalStorage, 'readDeviceLocalStorageString').mockImplementation(async (key) => {
+            await pending;
+            return await read(key);
+        });
+        const input = { credentials: dataKeyCredentials, homeServerIdentityId: scope.serverId, machineId: 'machine-one' };
+        let settled = false;
+        const first = resolveRunnerMachineContentKeyTrustV1(input).then((trust) => { settled = true; return trust; });
+        const second = resolveRunnerMachineContentKeyTrustV1(input);
+        await vi.waitFor(() => expect(readSpy).toHaveBeenCalledTimes(1));
+        expect(settled).toBe(false);
+        release();
+        for (const trust of await Promise.all([first, second])) {
+            expect(trust?.trustedMachineKind).toBe('ephemeral_session_runner');
+        }
+    });
+
+    it('does not treat corrupt retained custody as confirmed absence', async () => {
+        const signing = tweetnacl.sign.keyPair.fromSeed(new Uint8Array(32).fill(7));
+        await retainCreatorTrust(encodeBase64(signing.publicKey, 'base64url'));
+        resetRunnerCreatorMachineContentKeyTrustProjectionForTests();
+        for (const key of values.keys()) values.set(key, '{broken');
+        expect(await resolveRunnerMachineContentKeyTrustV1({
+            credentials: dataKeyCredentials, homeServerIdentityId: scope.serverId, machineId: 'machine-one',
+        })).toBeNull();
+    });
+
+    it('does not turn failed creator storage into confirmed absence and retries after recovery', async () => {
+        const signing = tweetnacl.sign.keyPair.fromSeed(new Uint8Array(32).fill(7));
+        await retainCreatorTrust(encodeBase64(signing.publicKey, 'base64url'));
+        resetRunnerCreatorMachineContentKeyTrustProjectionForTests();
+        const getItem = vi.spyOn(window.localStorage, 'getItem').mockImplementation(() => { throw new Error('storage unavailable'); });
+        const input = { credentials: dataKeyCredentials, homeServerIdentityId: scope.serverId, machineId: 'machine-one' };
+        expect(await resolveRunnerMachineContentKeyTrustV1(input)).toBeNull();
+        getItem.mockRestore();
+        expect((await resolveRunnerMachineContentKeyTrustV1(input))?.trustedMachineKind).toBe('ephemeral_session_runner');
+    });
+
     it('trusts the creator activation identity for a data-key credential with no Account signing key', async () => {
         const activationSigning = tweetnacl.sign.keyPair.fromSeed(new Uint8Array(32).fill(7));
         const activationSigningPublicKey = encodeBase64(activationSigning.publicKey, 'base64url');
         await retainCreatorTrust(activationSigningPublicKey);
 
-        const expected = resolveRunnerMachineContentKeyTrustV1({
+        const expected = await resolveRunnerMachineContentKeyTrustV1({
             credentials: dataKeyCredentials,
             homeServerIdentityId: 'home-one',
             machineId: 'machine-one',
@@ -181,7 +245,7 @@ describe('resolveRunnerMachineContentKeyTrustV1', () => {
             activationSigningSecretKey: colluding.secretKey,
         });
 
-        const expected = resolveRunnerMachineContentKeyTrustV1({
+        const expected = await resolveRunnerMachineContentKeyTrustV1({
             credentials: dataKeyCredentials,
             homeServerIdentityId: 'home-one',
             machineId: 'machine-one',
@@ -206,7 +270,7 @@ describe('resolveRunnerMachineContentKeyTrustV1', () => {
 
     it('resolves the Account-material route on a device without creator activation custody', async () => {
         await expect(loadRunnerCreatorMachineContentKeyTrust(scope, 'machine-one')).resolves.toBeNull();
-        expect(resolveRunnerMachineContentKeyTrustV1({
+        expect(await resolveRunnerMachineContentKeyTrustV1({
             credentials: secondDeviceCredentials,
             homeServerIdentityId: 'home-one',
             machineId: 'machine-one',
@@ -223,7 +287,7 @@ describe('resolveRunnerMachineContentKeyTrustV1', () => {
     });
 
     it('locks the Runner Machine for a token-only device, which holds neither custody nor Account material', async () => {
-        expect(resolveRunnerMachineContentKeyTrustV1({
+        expect(await resolveRunnerMachineContentKeyTrustV1({
             credentials: { token: TOKEN } as never,
             homeServerIdentityId: 'home-one',
             machineId: 'machine-one',
@@ -240,7 +304,7 @@ describe('resolveRunnerMachineContentKeyTrustV1', () => {
                 activationSigningPublicKey: encodeBase64(activationSigning.publicKey, 'base64url'),
             }),
         });
-        const expected = resolveRunnerMachineContentKeyTrustV1({
+        const expected = await resolveRunnerMachineContentKeyTrustV1({
             credentials: secondDeviceCredentials,
             homeServerIdentityId: 'home-one',
             machineId: 'machine-one',
@@ -265,7 +329,7 @@ describe('resolveRunnerMachineContentKeyTrustV1', () => {
         // consistent triple whose verifier fact it cannot seal under the Account.
         const colluding = tweetnacl.sign.keyPair.fromSeed(new Uint8Array(32).fill(23));
         const substitutedKey = new Uint8Array(32).fill(12);
-        const expected = resolveRunnerMachineContentKeyTrustV1({
+        const expected = await resolveRunnerMachineContentKeyTrustV1({
             credentials: secondDeviceCredentials,
             homeServerIdentityId: 'home-one',
             machineId: 'machine-one',
@@ -303,7 +367,7 @@ describe('resolveRunnerMachineContentKeyTrustV1', () => {
         // the creator-sealed fact of a different Runner onto this Machine row.
         const otherRunnerSigning = tweetnacl.sign.keyPair.fromSeed(new Uint8Array(32).fill(31));
         const dataKey = new Uint8Array(32).fill(13);
-        const expected = resolveRunnerMachineContentKeyTrustV1({
+        const expected = await resolveRunnerMachineContentKeyTrustV1({
             credentials: secondDeviceCredentials,
             homeServerIdentityId: 'home-one',
             machineId: 'machine-one',
@@ -336,21 +400,16 @@ describe('resolveRunnerMachineContentKeyTrustV1', () => {
         await retainCreatorTrust(encodeBase64(activationSigning.publicKey, 'base64url'));
         resetRunnerCreatorMachineContentKeyTrustProjectionForTests();
 
-        expect(resolveRunnerMachineContentKeyTrustV1({
-            credentials: dataKeyCredentials,
-            homeServerIdentityId: 'home-one',
-            machineId: 'machine-one',
-        })?.expectedRunnerBinding.accountSigningPublicKeyBase64Url).toBeUndefined();
         await expect(loadRunnerCreatorMachineContentKeyTrust(scope, 'machine-one'))
             .resolves.toEqual({
                 activationId: ACTIVATION_ID,
                 activationSigningPublicKey: encodeBase64(activationSigning.publicKey, 'base64url'),
             });
-        expect(resolveRunnerMachineContentKeyTrustV1({
+        expect((await resolveRunnerMachineContentKeyTrustV1({
             credentials: dataKeyCredentials,
             homeServerIdentityId: 'home-one',
             machineId: 'machine-one',
-        })?.expectedRunnerBinding.accountSigningPublicKeyBase64Url)
+        }))?.expectedRunnerBinding.accountSigningPublicKeyBase64Url)
             .toBe(encodeBase64(activationSigning.publicKey, 'base64url'));
     });
 });

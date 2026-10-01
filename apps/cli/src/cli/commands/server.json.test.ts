@@ -51,6 +51,40 @@ describe('happier server --json', () => {
     }
   });
 
+  // RV-11: two profiles may share one endpoint (a Home recreated at the same URL); the recorded
+  // Home identity is what lets a caller tell them apart.
+  it('lists the Home identity recorded for each profile', async () => {
+    const output = captureConsoleLogAndMuteStdout();
+    const prevExitCode = process.exitCode;
+    process.exitCode = undefined;
+    try {
+      const { adoptServerProfileHomeConnectionDescriptor } = await import('@/server/serverProfiles');
+      const home = await addServerProfile({ name: 'Home', serverUrl: 'https://home.example.test', webappUrl: 'https://home.example.test', use: false });
+      await adoptServerProfileHomeConnectionDescriptor({
+        descriptor: {
+          v: 1,
+          homeServerIdentityId: 'srv_home_new',
+          canonicalServerUrl: 'https://home.example.test',
+          revision: 1,
+          endpoints: [{ kind: 'https', url: 'https://home.example.test' }],
+        },
+        expectedProfileId: home.id,
+        observation: 'exact',
+      });
+      const plain = await addServerProfile({ name: 'Plain', serverUrl: 'https://plain.example.test', webappUrl: 'https://plain.example.test', use: false });
+
+      await handleServerCommand(['list', '--json']);
+
+      const parsed = JSON.parse(output.logs.join('\n').trim());
+      const byId = new Map((parsed.data.profiles as Array<Record<string, unknown>>).map((entry) => [entry.id, entry]));
+      expect(byId.get(home.id)?.homeServerIdentityId).toBe('srv_home_new');
+      expect(byId.get(plain.id)).not.toHaveProperty('homeServerIdentityId');
+    } finally {
+      output.restore();
+      process.exitCode = prevExitCode;
+    }
+  });
+
   it('does not crash when a stored serverUrl is not a valid URL', async () => {
     const output = captureConsoleLogAndMuteStdout();
     const prevExitCode = process.exitCode;
@@ -195,6 +229,67 @@ describe('happier server --json', () => {
       expect(parsed.kind).toBe('server_set');
       expect(parsed.data?.active?.serverUrl).toBe('https://s.example.test');
       expect(process.exitCode).toBe(0);
+    } finally {
+      output.restore();
+      process.exitCode = prevExitCode;
+    }
+  });
+
+  it('saves a relay profile without selecting it when --no-use is passed', async () => {
+    const output = captureConsoleLogAndMuteStdout();
+    const prevExitCode = process.exitCode;
+    process.exitCode = undefined;
+    try {
+      const existing = await addServerProfile({
+        name: 'Mine',
+        serverUrl: 'https://mine.example.test',
+        webappUrl: 'https://mine.example.test',
+        use: true,
+      });
+
+      await handleServerCommand([
+        'set',
+        '--server-url',
+        'https://home.example.test',
+        '--webapp-url',
+        'https://home.example.test',
+        '--no-use',
+        '--json',
+      ]);
+
+      const parsed = JSON.parse(output.logs.join('\n').trim());
+      expect(parsed.ok).toBe(true);
+      expect(parsed.kind).toBe('server_set');
+      expect(parsed.data?.used).toBe(false);
+      expect(parsed.data?.profile?.serverUrl).toBe('https://home.example.test');
+      expect(parsed.data?.active?.id).toBe(existing.id);
+
+      output.logs.length = 0;
+      await handleServerCommand(['current', '--json']);
+      const current = JSON.parse(output.logs.join('\n').trim());
+      expect(current.data?.active?.id).toBe(existing.id);
+    } finally {
+      output.restore();
+      process.exitCode = prevExitCode;
+    }
+  });
+
+  it('reports the selected profile as both profile and active on the default set path', async () => {
+    const output = captureConsoleLogAndMuteStdout();
+    const prevExitCode = process.exitCode;
+    process.exitCode = undefined;
+    try {
+      await handleServerCommand([
+        'set',
+        '--server-url',
+        'https://s2.example.test',
+        '--webapp-url',
+        'https://s2.example.test',
+        '--json',
+      ]);
+      const parsed = JSON.parse(output.logs.join('\n').trim());
+      expect(parsed.data?.used).toBe(true);
+      expect(parsed.data?.profile?.id).toBe(parsed.data?.active?.id);
     } finally {
       output.restore();
       process.exitCode = prevExitCode;

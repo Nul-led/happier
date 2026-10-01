@@ -1,10 +1,12 @@
 import * as React from 'react';
+import { createReactNavigationNativeMock } from '@/dev/testkit/mocks/reactNavigation';
 import { act } from 'react-test-renderer';
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { SESSION_RUNNER_RUNTIME_METADATA_KEY } from '@happier-dev/protocol';
 
-import { AppPaneProvider } from '@/components/appShell/panes/AppPaneProvider';
-import { createSessionFixture, flushHookEffects, renderScreen } from '@/dev/testkit';
+import { createSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
+import { flushHookEffects } from '@/dev/testkit/hooks/flushHookEffects';
+import { renderScreen } from '@/dev/testkit/render/renderScreen';
 import { sessionRunnerRuntimeStatusRetention } from '@/sync/domains/sessionRunnerRuntime/sessionRunnerRuntimeStatusRetention';
 import { installSessionShellCommonModuleMocks } from './sessionShellTestHelpers';
 
@@ -163,6 +165,7 @@ installSessionShellCommonModuleMocks({
 });
 
 vi.mock('@react-navigation/native', () => ({
+    ...createReactNavigationNativeMock(),
   useFocusEffect: () => {},
   useIsFocused: () => true,
 }));
@@ -228,19 +231,6 @@ vi.mock('@/components/sessions/attachments/AttachmentFilePicker', () => ({
 }));
 vi.mock('@/hooks/server/useFeatureEnabled', () => ({
   useFeatureEnabled: useFeatureEnabledSpy,
-}));
-vi.mock('@/hooks/auth/useCLIDetection', () => ({
-  useCLIDetection: () => ({
-    available: {},
-    login: {},
-    authStatus: cliDetectionState.authStatus,
-    resolvedPath: {},
-    resolutionSource: {},
-    tmux: null,
-    isDetecting: false,
-    timestamp: 1,
-    refresh: vi.fn(),
-  }),
 }));
 vi.mock('@/utils/platform/responsive', () => ({
   getDeviceType: () => 'tablet',
@@ -359,6 +349,8 @@ vi.mock('@/sync/domains/session/control/localControlSwitch', async (importOrigin
     ...actual,
   };
 });
+
+const { AppPaneProvider } = await import('@/components/appShell/panes/AppPaneProvider');
 
 describe('SessionView (control switch timeout)', () => {
   const AppPaneProviderWrapper = ({ children }: { children?: React.ReactNode }) => (

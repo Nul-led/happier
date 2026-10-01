@@ -103,28 +103,7 @@ const authEntryOptionsState = vi.hoisted(() => ({
         serverAvailability: 'ready',
         serverUrlForCopy: 'https://relay.example.test',
         showAuthActions: true,
-        showProviderSignup: false,
-        showAnonymousSignup: false,
-        showMtlsLogin: false,
-        showKeylessProviderLogin: false,
-        providerId: null,
-        keylessProviderId: null,
-        providerSignupTitle: '',
-        providerKeylessTitle: '',
-        anonymousSignupTitle: '',
-        mtlsTitle: '',
-        primaryAction: null,
-        mtlsPrimary: false,
-        keylessPrimary: false,
-        retentionSummary: null as string | null,
-        autoRedirect: {
-            enabled: false,
-            providerId: null,
-            toKeyedProvision: false,
-            toKeylessLogin: false,
-            toMtls: false,
-            toLegacySignupProvider: false,
-        },
+        retentionDisclosure: null as { kind: 'summary'; summary: string } | null,
         retryServerCheck: () => {},
     },
 }));
@@ -306,8 +285,9 @@ vi.mock('@/components/onboarding/unauthShell', () => ({
     useApplyBrandHeroSeen: () => applyBrandHeroSeenMock,
 }));
 
-vi.mock('@/components/ui/feedback/AppUpdateStatusTag', () => ({
-    AppUpdateStatusTag: (props: Record<string, unknown>) => React.createElement('AppUpdateStatusTag', props),
+vi.mock('@/components/updates/UpdatesPopoverButton', () => ({
+    UpdatesEntry: (props: Record<string, unknown>) => React.createElement('UpdatesEntry', props),
+    UpdatesPopoverButton: (props: Record<string, unknown>) => React.createElement('UpdatesPopoverButton', props),
 }));
 
 vi.mock('@/text', async () => {
@@ -336,28 +316,7 @@ describe('PreAuthOnboardingWizardEntry', () => {
             serverAvailability: 'ready',
             serverUrlForCopy: 'https://relay.example.test',
             showAuthActions: true,
-            showProviderSignup: false,
-            showAnonymousSignup: false,
-            showMtlsLogin: false,
-            showKeylessProviderLogin: false,
-            providerId: null,
-            keylessProviderId: null,
-            providerSignupTitle: '',
-            providerKeylessTitle: '',
-            anonymousSignupTitle: '',
-            mtlsTitle: '',
-            primaryAction: null,
-            mtlsPrimary: false,
-            keylessPrimary: false,
-            retentionSummary: null,
-            autoRedirect: {
-                enabled: false,
-                providerId: null,
-                toKeyedProvision: false,
-                toKeylessLogin: false,
-                toMtls: false,
-                toLegacySignupProvider: false,
-            },
+            retentionDisclosure: null,
             retryServerCheck: () => {},
         };
         loginMock.mockReset();
@@ -472,6 +431,29 @@ describe('PreAuthOnboardingWizardEntry', () => {
         expect(wizardControllerMock.lastProps?.initialStepId).toBe('relay_select');
     });
 
+    it('hands a supplied Home address to the connection step without consuming the URL first', async () => {
+        onboardingTourFeatureState.state = 'enabled';
+        const replaceState = vi.fn();
+        vi.stubGlobal('window', {
+            location: {
+                href: 'https://app.example.test/?server=https%3A%2F%2Fhome.example.test',
+                search: '?server=https%3A%2F%2Fhome.example.test',
+            },
+            history: { replaceState },
+        });
+        vi.stubGlobal('document', {});
+
+        const { PreAuthOnboardingWizardEntry } = await import('./PreAuthOnboardingWizardEntry');
+        const screen = await renderScreen(React.createElement(PreAuthOnboardingWizardEntry));
+
+        expect(wizardControllerMock.lastProps?.initialServerUrl).toBe('https://home.example.test');
+        expect(wizardControllerMock.lastProps?.initialStepId).toBe('relay_enter_url');
+        expect(screen.findAllByType('OnboardingWizardSurfacePresentation' as never)).toHaveLength(1);
+        expect(replaceState).not.toHaveBeenCalled();
+        (wizardControllerMock.lastProps?.onInitialServerUrlConnected as (() => void) | undefined)?.();
+        expect(replaceState).toHaveBeenCalledWith(null, '', '/');
+    });
+
     it('does not flash the current wizard while the enabled journey chunk is loading', async () => {
         onboardingTourFeatureState.state = 'enabled';
         journeyHostState.deferModuleLoad = true;
@@ -498,7 +480,7 @@ describe('PreAuthOnboardingWizardEntry', () => {
 
     it('renders the lazy journey host as the unauth shell replacement when onboardingTour is enabled', async () => {
         onboardingTourFeatureState.state = 'enabled';
-        authEntryOptionsState.current.retentionSummary = 'This relay cleans up subagent transcripts after 7 days.';
+        authEntryOptionsState.current.retentionDisclosure = { kind: 'summary', summary: 'This relay cleans up subagent transcripts after 7 days.' };
 
         const { PreAuthOnboardingWizardEntry } = await import('./PreAuthOnboardingWizardEntry');
         const screen = await renderScreen(React.createElement(PreAuthOnboardingWizardEntry));
@@ -510,7 +492,7 @@ describe('PreAuthOnboardingWizardEntry', () => {
         expect(journeyHostState.lastProps).toMatchObject({
             isDesktopShell: false,
             surface: 'web',
-            retentionSummary: 'This relay cleans up subagent transcripts after 7 days.',
+            retentionDisclosure: { kind: 'summary', summary: 'This relay cleans up subagent transcripts after 7 days.' },
             preAuthController: wizardControllerMock.current,
         });
     });
@@ -669,7 +651,7 @@ describe('PreAuthOnboardingWizardEntry', () => {
         expect(wizard.props.shellChrome).toBeTruthy();
         expect(screen.findByTestId('desktop-window-controls-host')).toBeTruthy();
         expect(screen.findByTestId('desktop-window-controls-slot')).toBeTruthy();
-        expect(screen.findAllByType('AppUpdateStatusTag' as never)).toHaveLength(1);
+        expect(screen.findAllByType('UpdatesEntry' as never)).toHaveLength(1);
     });
 
     it('does not inject pre-auth shell chrome on non-desktop flows', async () => {
@@ -678,7 +660,7 @@ describe('PreAuthOnboardingWizardEntry', () => {
 
         const wizard = screen.findByType('OnboardingWizardSurfacePresentation' as never);
         expect(wizard.props.shellChrome ?? null).toBeNull();
-        expect(screen.findAllByType('AppUpdateStatusTag' as never)).toHaveLength(0);
+        expect(screen.findAllByType('UpdatesEntry' as never)).toHaveLength(0);
     });
 
     it('routes the shell footer relay action to the wizard relay selection step', async () => {

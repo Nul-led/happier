@@ -8,7 +8,6 @@ import {
     type ActionExecutorContext,
     type ActionExecutorDeps,
     type ActionsSettingsV1,
-    type ApprovalRequestV1,
     type RuntimeActionExecute,
 } from '@happier-dev/protocol';
 
@@ -220,7 +219,7 @@ describe('front door approval default (agent vs ui)', () => {
         const runtimeLeaf = vi.fn<RuntimeActionExecute>(async () => VALID_OUTPUT);
         const approvalsCreate = vi.fn(async () => ({ artifactId: 'approval_1' }));
         const approvalsUpdate = vi.fn(async () => ({ ok: true as const }));
-        const approvalsWaitForDecision = vi.fn(async (args: { request: ApprovalRequestV1 }) => ({
+        const approvalsWaitForDecision: NonNullable<ActionExecutorDeps['approvalsWaitForDecision']> = vi.fn(async (args) => ({
             decision: 'reject' as const,
             request: {
                 ...args.request,
@@ -254,7 +253,7 @@ describe('front door approval default (agent vs ui)', () => {
         const runtimeLeaf = vi.fn<RuntimeActionExecute>(async () => VALID_OUTPUT);
         const approvalsCreate = vi.fn(async () => ({ artifactId: 'approval_ok' }));
         const approvalsUpdate = vi.fn(async () => ({ ok: true as const }));
-        const approvalsWaitForDecision = vi.fn(async (args: { request: ApprovalRequestV1 }) => ({
+        const approvalsWaitForDecision: NonNullable<ActionExecutorDeps['approvalsWaitForDecision']> = vi.fn(async (args) => ({
             decision: 'approve' as const,
             request: {
                 ...args.request,

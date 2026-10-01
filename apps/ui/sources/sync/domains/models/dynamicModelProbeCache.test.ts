@@ -33,6 +33,7 @@ describe('dynamic model probe cache', () => {
                 supportsFreeform: false,
             },
             cacheable: true,
+            errorUpdatedAt: 2_000,
         });
     });
 
@@ -53,6 +54,7 @@ describe('dynamic model probe cache', () => {
                 unavailable: true,
             },
             cacheable: false,
+            errorUpdatedAt: 2_000,
         });
     });
 
@@ -67,4 +69,14 @@ describe('dynamic model probe cache', () => {
             kind: 'success', updatedAt: 1_000, expiresAt: 301_000,
         });
     });
+    it('hydrates an authoritative empty catalog from persisted storage after reload', async () => {
+        resetDynamicModelProbeCacheForTests();
+        writeDynamicModelProbeCacheSuccess('empty-catalog', { availableModels: [], supportsFreeform: false });
+        vi.resetModules();
+        const reloaded = await import('./dynamicModelProbeCache');
+        expect(reloaded.readDynamicModelProbeCache('empty-catalog')).toMatchObject({
+            kind: 'success', value: { availableModels: [], supportsFreeform: false },
+        });
+    });
+
 });

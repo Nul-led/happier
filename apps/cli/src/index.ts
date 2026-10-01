@@ -7,7 +7,7 @@
  */
 
 import { dispatchCli } from '@/cli/dispatch';
-import { normalizeCliArgv, parseCliArgs } from '@/cli/parseArgs';
+import { readCliProcessArgs, parseCliArgs } from '@/cli/parseArgs';
 import { initToolTraceIfEnabled } from '@/agent/tools/trace/toolTrace';
 import axios from 'axios';
 import { configuration } from '@/configuration';
@@ -22,6 +22,9 @@ import { ensureWindowsUtf8CodePage } from '@/utils/platform/windows/ensureWindow
 import { installConsoleWriteErrorGuards, shouldInstallConsoleWriteErrorGuards } from '@/utils/writeConsoleBestEffort';
 import { logger } from '@/ui/logger';
 import { applyStackSessionPriority } from '@/utils/process/applyStackSessionPriority';
+import { installTerminalAuthorityCeiling } from '@/api/client/terminalAuthorityCeiling';
+import { refreshTerminalPresentUserPolicy } from '@/settings/accountSettings/resolveEffectiveTerminalPresentUserPolicy';
+import { readStoredCredentials } from '@/persistence';
 
 const isCliDistIntegrityProbe = process.env.HAPPIER_CLI_DIST_INTEGRITY_PROBE === '1';
 
@@ -39,8 +42,9 @@ if (!isCliDistIntegrityProbe) {
     }
     initToolTraceIfEnabled();
     installAxiosProxySupport({ axios, env: process.env });
+    installTerminalAuthorityCeiling(axios);
     const cliRootDir = dirname(dirname(fileURLToPath(import.meta.url)));
-    const normalizedArgv = normalizeCliArgv(process.argv.slice(2));
+    const normalizedArgv = readCliProcessArgs();
     const updatePackageName = resolveNpmPackageNameOverride({
       envValue: process.env.HAPPIER_CLI_UPDATE_PACKAGE_NAME,
       fallback: packageJson.name,
@@ -62,6 +66,11 @@ if (!isCliDistIntegrityProbe) {
       publicReleaseRing: configuration.publicReleaseRing,
     });
     const { args, terminalRuntime } = parseCliArgs(normalizedArgv);
+    // Authentication commands must remain reachable during the one-way CLI re-login.
+    if (args[0] !== 'auth') {
+      const credentials = await readStoredCredentials();
+      if (credentials) await refreshTerminalPresentUserPolicy({ token: credentials.token });
+    }
     await dispatchCli({ args, terminalRuntime, rawArgv: process.argv });
   })().catch((error) => {
     logger.fatal(error);

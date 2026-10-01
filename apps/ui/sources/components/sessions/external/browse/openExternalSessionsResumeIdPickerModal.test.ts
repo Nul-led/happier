@@ -93,12 +93,11 @@ describe('openExternalSessionsResumeIdPickerModal', () => {
             testID: 'resume-id-browse-modal',
         }));
         expect(config.webPortalTarget).toBe(webPortalTarget);
-        expect(config.chrome.dimensions).toEqual({
-            width: 720,
-            maxHeightRatio: 0.96,
-            size: 'lg',
-            viewportMargin: { horizontal: 12, vertical: 12 },
-        });
+        // The same command-surface card as Search / ⌘K: band at the top, the same frame, top placement.
+        const { COMMAND_SURFACE_CARD_DIMENSIONS } = await import('@/modal/components/card/commandSurfaceCard');
+        expect(config.chrome).toEqual(expect.objectContaining({ header: 'none', scrollHost: 'body' }));
+        expect(config.chrome.dimensions).toEqual(COMMAND_SURFACE_CARD_DIMENSIONS);
+        expect((config as unknown as { webPlacement?: string }).webPlacement).toBe('top');
         expect(config.closeOnBackdrop).toBe(true);
         expect(config.props.lockScope).toEqual({
             machineId: 'machine_1',

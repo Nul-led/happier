@@ -154,12 +154,13 @@ describe('resolveServerScopedRelaySocket', () => {
             getScopedSocketId: getScopedSocketIdSpy,
         });
 
-        expect(createEphemeralServerSocketClientSpy).toHaveBeenCalledWith({
+        expect(createEphemeralServerSocketClientSpy).toHaveBeenCalledWith(expect.objectContaining({
             serverUrl: 'https://server-b.example.test',
             reachabilityServerUrl: 'https://server-b.example.test',
             token: 'token-b',
             timeoutMs: 2_000,
-        });
+            takeCarrierRelease: expect.any(Function),
+        }));
         expect(scopedTransportFactorySpy).toHaveBeenCalledWith(expect.objectContaining({
             emit: expect.any(Function),
             on: expect.any(Function),
@@ -193,13 +194,16 @@ describe('resolveServerScopedRelaySocket', () => {
             },
             createWebSocket: () => ({}),
         };
-        createEphemeralServerSocketClientSpy.mockResolvedValue({
-            emit: vi.fn(),
-            timeout: vi.fn(),
-            disconnect: disconnectSpy,
-            on: vi.fn(),
-            off: vi.fn(),
-            getSocketId: vi.fn(() => 'socket-release'),
+        createEphemeralServerSocketClientSpy.mockImplementation(async (params) => {
+            expect(params.takeCarrierRelease?.()).toBe(release);
+            return {
+                emit: vi.fn(),
+                timeout: vi.fn(),
+                disconnect: disconnectSpy,
+                on: vi.fn(),
+                off: vi.fn(),
+                getSocketId: vi.fn(() => 'socket-release'),
+            };
         });
         resolveServerScopedContextSpy.mockResolvedValue({
             scope: 'scoped',
@@ -227,7 +231,7 @@ describe('resolveServerScopedRelaySocket', () => {
         // for as long as it can reuse it; this client only drops its own use.
         expect(createEphemeralServerSocketClientSpy).toHaveBeenCalledWith(expect.objectContaining({
             homeCarrier,
-            releaseCarrier: release,
+            takeCarrierRelease: expect.any(Function),
         }));
 
         await socket.disconnect();
@@ -346,7 +350,10 @@ describe('resolveServerScopedRelaySocket', () => {
             runtimeOrigin: 'http://127.0.0.1:4312',
             release: releaseSpy,
         });
-        createEphemeralServerSocketClientSpy.mockRejectedValue(new Error('socket failed'));
+        createEphemeralServerSocketClientSpy.mockImplementation(async (params) => {
+            await params.takeCarrierRelease?.()?.();
+            throw new Error('socket failed');
+        });
 
         const { createServerScopedRelaySocket } = await import('./serverScopedRelaySocket');
         await expect(createServerScopedRelaySocket<string>({
@@ -356,24 +363,27 @@ describe('resolveServerScopedRelaySocket', () => {
             createScopedTransport: () => ({ send: () => {}, on: () => () => {} }),
         })).rejects.toThrow('socket failed');
 
-        // Custody moves with the acquire call, so failing there is the pool's to
-        // unwind; releasing here as well would double-release a shared lease.
+        // The pool's failed physical acquisition unwinds the transferred carrier;
+        // relay cleanup must not release it a second time.
         expect(createEphemeralServerSocketClientSpy).toHaveBeenCalledWith(expect.objectContaining({
-            releaseCarrier: releaseSpy,
+            takeCarrierRelease: expect.any(Function),
         }));
-        expect(releaseSpy).not.toHaveBeenCalled();
+        expect(releaseSpy).toHaveBeenCalledTimes(1);
     });
 
     it('disconnects the pooled socket and leaves carrier custody with the pool when transport construction fails', async () => {
         const releaseSpy = vi.fn(async () => {});
         const disconnectSpy = vi.fn();
-        createEphemeralServerSocketClientSpy.mockResolvedValue({
-            emit: vi.fn(),
-            timeout: vi.fn(),
-            disconnect: disconnectSpy,
-            on: vi.fn(),
-            off: vi.fn(),
-            getSocketId: vi.fn(() => 'socket-b'),
+        createEphemeralServerSocketClientSpy.mockImplementation(async (params) => {
+            expect(params.takeCarrierRelease?.()).toBe(releaseSpy);
+            return {
+                emit: vi.fn(),
+                timeout: vi.fn(),
+                disconnect: disconnectSpy,
+                on: vi.fn(),
+                off: vi.fn(),
+                getSocketId: vi.fn(() => 'socket-b'),
+            };
         });
         resolveServerScopedContextSpy.mockResolvedValue({
             scope: 'scoped',

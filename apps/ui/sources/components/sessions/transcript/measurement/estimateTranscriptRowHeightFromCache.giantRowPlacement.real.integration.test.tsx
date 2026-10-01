@@ -6,7 +6,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { LegendList, type LegendListRef } from '@legendapp/list/react-native';
 
-import type { Message } from '@/sync/domains/messages/messageTypes';
+import type { Message } from "@happier-dev/session-core/messages";
 
 import {
     estimateTranscriptRowHeightFromCache,
@@ -70,6 +70,16 @@ type ProbeRow = Readonly<{
     item: TranscriptRowShellItem;
     signature: TranscriptItemHeightValiditySignature;
 }>;
+
+function messageItem(id: string, messageId = `msg:${id}`): Extract<TranscriptRowShellItem, { kind: 'message' }> {
+    return {
+        kind: 'message',
+        id,
+        messageId,
+        createdAt: 0,
+        seq: null,
+    };
+}
 
 type ResizeObserverRecord = Readonly<{
     callback: ResizeObserverCallback;
@@ -316,7 +326,7 @@ describe('the installed Legend positions a transcript row from this owner\'s siz
         const listRef = React.createRef<LegendListRef>();
         const base: ProbeRow[] = Array.from({ length: 60 }, (_, index) => ({
             id: `move-${index}`, height: 56,
-            item: { kind: 'message', id: `move-${index}`, messageId: `msg:move-${index}` },
+            item: messageItem(`move-${index}`),
             signature: messageSignature({ itemId: `move-${index}`, rowState: 'stable', structuralKey: `move-${index}` }),
         }));
         let measured: number | undefined;
@@ -333,7 +343,7 @@ describe('the installed Legend positions a transcript row from this owner\'s siz
         await act(async () => { root.render(renderList(base, listRef, <MeasurementBoundary />)); });
         await flushLegendWork();
         armed = true;
-        const next: ProbeRow[] = [{ id: 'inserted', height: 56, item: { kind: 'message', id: 'inserted', messageId: 'msg:inserted' }, signature: messageSignature({ itemId: 'inserted', rowState: 'stable', structuralKey: 'inserted' }) }, ...base];
+        const next: ProbeRow[] = [{ id: 'inserted', height: 56, item: messageItem('inserted'), signature: messageSignature({ itemId: 'inserted', rowState: 'stable', structuralKey: 'inserted' }) }, ...base];
         await act(async () => { root.render(renderList(next, listRef, <MeasurementBoundary />)); });
         expect(measured).toBe(100);
     });
@@ -343,13 +353,13 @@ describe('the installed Legend positions a transcript row from this owner\'s siz
             {
                 id: 'A',
                 height: MEASURED_REPLY_PX,
-                item: { kind: 'message', id: 'A', messageId: 'msg:A' } as TranscriptRowShellItem,
+                item: messageItem('A'),
                 signature: replySignature,
             },
             ...Array.from({ length: 40 }, (_value, index): ProbeRow => ({
                 id: `after-${index}`,
                 height: 100,
-                item: { kind: 'message', id: `after-${index}`, messageId: `msg:after-${index}` } as TranscriptRowShellItem,
+                item: messageItem(`after-${index}`),
                 signature: messageSignature({
                     itemId: `after-${index}`,
                     rowState: 'stable',
@@ -377,7 +387,7 @@ describe('the installed Legend positions a transcript row from this owner\'s siz
         const contentEstimatePx = estimateTranscriptRowHeightFromContent({
         platformIsWeb: false,
             getMessageById: (messageId) => messagesById.get(messageId) ?? null,
-            item: { kind: 'message', id: 'A', messageId: 'msg:A' } as TranscriptRowShellItem,
+            item: messageItem('A'),
             toolCallsGroupChromeVariant: 'feed_background',
         }) as number;
         // The device-measured overshoot, reproduced from the row's own shape: this fixture flows to
@@ -436,7 +446,7 @@ describe('the installed Legend positions a transcript row from this owner\'s siz
         const contentEstimatePx = estimateTranscriptRowHeightFromContent({
         platformIsWeb: false,
             getMessageById: (messageId) => messagesById.get(messageId) ?? null,
-            item: { kind: 'message', id: 'A', messageId: 'msg:A' } as TranscriptRowShellItem,
+            item: messageItem('A'),
             toolCallsGroupChromeVariant: 'feed_background',
         }) as number;
 
@@ -480,7 +490,7 @@ describe('the installed Legend positions a transcript row from this owner\'s siz
         const giantEstimatePx = estimateTranscriptRowHeightFromContent({
         platformIsWeb: false,
             getMessageById: (messageId) => messagesById.get(messageId) ?? null,
-            item: { kind: 'message', id: 'A', messageId: 'msg:A' } as TranscriptRowShellItem,
+            item: messageItem('A'),
             toolCallsGroupChromeVariant: 'feed_background',
         }) as number;
         expect(giantEstimatePx).toBeGreaterThanOrEqual(CAPTURED_GIANT_ROW_PX);
@@ -490,19 +500,19 @@ describe('the installed Legend positions a transcript row from this owner\'s siz
             {
                 id: 'head',
                 height: 56,
-                item: { kind: 'message', id: 'head', messageId: 'msg:head' } as TranscriptRowShellItem,
+                item: messageItem('head'),
                 signature: messageSignature({ itemId: 'head', rowState: 'stable', structuralKey: 'msg:head:r1' }),
             },
             {
                 id: 'A',
                 height: CAPTURED_GIANT_ROW_PX,
-                item: { kind: 'message', id: 'A', messageId: 'msg:A' } as TranscriptRowShellItem,
+                item: messageItem('A'),
                 signature: messageSignature({ rowState: 'stable', structuralKey: 'msg:A:r1' }),
             },
             {
                 id: 'B',
                 height: 50,
-                item: { kind: 'message', id: 'B', messageId: 'msg:B' } as TranscriptRowShellItem,
+                item: messageItem('B'),
                 signature: messageSignature({ itemId: 'B', rowState: 'stable', structuralKey: 'msg:B:r1' }),
             },
         ];

@@ -1,0 +1,210 @@
+import * as React from 'react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { flushHookEffects, renderScreen } from '@/dev/testkit';
+import { SELECTION_LIST_DEFAULT_DYNAMIC_DEBOUNCE_MS } from '@/components/ui/selectionList/_constants';
+import { ARTIFACT_PLAIN_DATA_KEY_MARKER, encodePlainArtifactStoredContent } from '@happier-dev/protocol';
+import { serveActionHomes } from '@/dev/testkit/harness/actionHomesHttpHarness';
+import { invalidateAccountEncryptionModeCache } from '@/sync/api/account/apiAccountEncryptionMode';
+import { retireActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
+import { getStorage } from '@/sync/domains/state/storage';
+import { DocumentShareSheet } from './DocumentShareSheet';
+
+vi.mock('react-native', async () => {
+    const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
+    return createReactNativeWebMock();
+});
+// The virtualized list is a third-party rendering boundary; the testkit owns it.
+vi.mock('@legendapp/list/react-native', async () => {
+    const { createCapturingLegendListMock } = await import('@/dev/testkit');
+    return { LegendList: createCapturingLegendListMock({ renderItems: true, renderItemLimit: 40 }).module.LegendList };
+});
+vi.mock('@/components/ui/accessibility/announceAccessibilityMessage', () => ({ announceAccessibilityMessage: vi.fn() }));
+
+/**
+ * HTTP is the sheet's boundary: the real Action front door, its policy, the Artifact grant Actions,
+ * the document-kind adapters and the Home's account context all run. The fake Home keeps one stored
+ * document and its grant list and answers the routes the way the server does.
+ */
+const host = vi.hoisted(() => ({
+    serverId: '',
+    /** Grant requests the Home received: `GET`, or the mutation with its body. */
+    requests: [] as Array<Readonly<{ method: string; body?: Record<string, unknown> }>>,
+    access: 'owner' as string,
+    grants: [] as any[],
+    grantStatus: 200,
+    document: { header: {} as Record<string, unknown>, body: '' },
+}));
+
+const WORKFLOW_DOCUMENT = {
+    header: { kind: 'workflow-definition.v1', definitionId: 'wf-1', revision: { headerVersion: 1, bodyVersion: 1 }, metadata: { title: 'Workflow' } },
+    body: 'definition',
+};
+const PROFILE_DOCUMENT = {
+    header: { kind: 'launch-profile.v1', profileId: 'deploy', name: 'Deploy' },
+    body: JSON.stringify({ kind: 'launch-profile.v1', profile: { v: 2, id: 'deploy', name: 'Deploy', createdAt: 1, updatedAt: 1 }, secretBindings: {} }),
+};
+
+let disposeHome: (() => void) | null = null;
+async function serveHome(): Promise<void> {
+    const served = await serveActionHomes({
+        homes: [
+            { key: 'home', serverUrl: 'https://document-share-sheet.test', accountId: 'owner' },
+            { key: 'focused', serverUrl: 'https://document-share-focused.test', accountId: 'another-owner' },
+        ],
+        route: (request) => {
+            // The sheet targets its captured profile scope, not the focused Home's transport.
+            if (request.home !== 'home') return undefined;
+            const route = /^\/v1\/artifacts\/([^/]+)(\/access\/grants)?$/.exec(request.path);
+            if (!route) return undefined;
+            const artifactId = decodeURIComponent(route[1]!);
+            if (!route[2]) {
+                return Response.json({ id: artifactId, header: encodePlainArtifactStoredContent(host.document.header),
+                    body: encodePlainArtifactStoredContent({ body: host.document.body }), dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER,
+                    headerVersion: 1, bodyVersion: 1, seq: 1, createdAt: 1, updatedAt: 1, ownerAccountId: 'owner', access: host.access, encryptionMode: 'plain' });
+            }
+            const input = request.body as any;
+            host.requests.push({ method: request.method, ...(input ? { body: input } : {}) });
+            if (host.grantStatus !== 200) return Response.json({ error: 'not_found' }, { status: host.grantStatus });
+            const same = (row: any) => JSON.stringify(row.principal) === JSON.stringify(input.principal);
+            if (request.method === 'PUT') {
+                const display = host.grants.find(same)?.display ?? (input.principal.kind === 'team' ? { name: 'Payments squad' } : { name: 'Someone' });
+                host.grants = [...host.grants.filter((row) => !same(row)),
+                    { principal: input.principal, accessLevel: input.accessLevel, createdByAccountId: 'owner', createdAt: 1, display }];
+            }
+            if (request.method === 'DELETE') host.grants = host.grants.filter((row) => !same(row));
+            return Response.json({ artifactId, ownerAccountId: 'owner', access: host.access, grants: host.grants,
+                ...(request.method === 'GET' ? {} : { changed: true }) });
+        },
+    });
+    host.serverId = served.homes.home!.id;
+    const sheetScope = { serverId: host.serverId, accountId: 'owner' };
+    getStorage().setState({ profileScope: sheetScope, settingsScope: sheetScope });
+    disposeHome = served.dispose;
+}
+
+// Team and Account directories are Home reads, a network boundary below the existing principal search.
+vi.mock('@/sync/ops/teams/teamActionClient', () => ({
+    runTeamAction: vi.fn(async () => ({ kind: 'succeeded', value: { items: [{
+        id: 'payments', name: 'Payments squad', policy: { sessionCreationPolicy: 'personal_allowed', externalSharingPolicy: 'allowed' },
+    }], nextCursor: null } })),
+}));
+vi.mock('@/sync/ops/teams/teamGroupOperations', () => ({
+    listTeamGroups: vi.fn(async () => ({ kind: 'succeeded', value: { items: [], nextCursor: null } })),
+}));
+vi.mock('@/sync/api/session/sessionAccessApi', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/sync/api/session/sessionAccessApi')>(),
+    searchSessionAccessAccountPage: vi.fn(async () => ({ rows: [], nextCursor: null })),
+}));
+
+const ana = { principal: { kind: 'account', accountId: 'ana' }, accessLevel: 'edit', createdByAccountId: 'owner', createdAt: 1,
+    display: { name: 'Ana Silva', username: 'ana' } };
+const studio = { principal: { kind: 'team', teamId: 'studio' }, accessLevel: 'view', createdByAccountId: 'owner', createdAt: 2,
+    display: { name: 'Studio' } };
+
+function renderedTestIds(screen: Awaited<ReturnType<typeof renderScreen>>, prefix: string): string[] {
+    // A pressable renders more than one host node carrying its testID; keep each id once, in render order.
+    return [...new Set(screen.findAll((node) => typeof node.props.testID === 'string' && node.props.testID.startsWith(prefix)
+        && typeof node.type === 'string').map((node) => node.props.testID as string))];
+}
+
+async function settle() {
+    await flushHookEffects({ advanceTimersMs: SELECTION_LIST_DEFAULT_DYNAMIC_DEBOUNCE_MS });
+    await flushHookEffects();
+}
+
+describe('DocumentShareSheet', () => {
+    beforeEach(async () => {
+        host.requests = [];
+        host.access = 'owner';
+        host.grants = [ana, studio];
+        host.grantStatus = 200;
+        host.document = WORKFLOW_DOCUMENT;
+        await serveHome();
+        vi.useFakeTimers();
+    });
+    afterEach(() => {
+        vi.useRealTimers();
+        disposeHome?.();
+        disposeHome = null;
+        retireActiveServerAccountScopeLifetime();
+        invalidateAccountEncryptionModeCache();
+        vi.restoreAllMocks();
+    });
+
+    it('lists a workflow\'s grants with the document labels and the Team-run rule', async () => {
+        const screen = await renderScreen(<DocumentShareSheet artifactId="wf-1" kind="workflow-definition.v1" />);
+        await settle();
+
+        expect(host.requests[0]).toEqual({ method: 'GET' });
+        expect(screen.findByTestId('document-share-grant-account:ana')).not.toBeNull();
+        expect(screen.findByTestId('document-share-grant-team:studio')).not.toBeNull();
+        const text = screen.getTextContent();
+        expect(text).toContain('Can edit');
+        expect(text).toContain('Can use');
+        expect(text).not.toContain('Can steer');
+        expect(text).toContain('The team sees every run');
+    });
+
+    it('changes, adds and removes access only through the Artifact grant Actions', async () => {
+        const screen = await renderScreen(<DocumentShareSheet artifactId="wf-1" kind="workflow-definition.v1" />);
+        await settle();
+
+        await screen.pressByTestIdAsync('document-share-level:account:ana');
+        // Levels keep one order whatever the adapter or the grant says.
+        expect(renderedTestIds(screen, 'document-share-level:account:ana:')).toEqual([
+            'document-share-level:account:ana:view', 'document-share-level:account:ana:edit', 'document-share-level:account:ana:admin',
+        ]);
+        await screen.pressByTestIdAsync('document-share-level:account:ana:admin');
+        await settle();
+        expect(host.requests.at(-1)).toEqual({ method: 'PUT',
+            body: { artifactId: 'wf-1', principal: { kind: 'account', accountId: 'ana' }, accessLevel: 'admin' } });
+
+        await screen.pressByTestIdAsync('document-share-candidate-team:payments');
+        await settle();
+        expect(host.requests.at(-1)).toEqual({ method: 'PUT',
+            body: { artifactId: 'wf-1', principal: { kind: 'team', teamId: 'payments' }, accessLevel: 'view' } });
+        expect(screen.findByTestId('document-share-grant-team:payments')).not.toBeNull();
+
+        await screen.pressByTestIdAsync('document-share-grant-team:studio');
+        await screen.pressByTestIdAsync('document-share-remove:team:studio');
+        expect(host.requests.at(-1)?.method).not.toBe('DELETE');
+        await screen.pressByTestIdAsync('document-share-remove-confirm:team:studio');
+        await settle();
+        expect(host.requests.at(-1)).toEqual({ method: 'DELETE',
+            body: { artifactId: 'wf-1', principal: { kind: 'team', teamId: 'studio' } } });
+        expect(screen.findByTestId('document-share-grant-team:studio')).toBeNull();
+    });
+
+    it('shows a recipient the roster without any way to change it', async () => {
+        host.access = 'edit';
+        const screen = await renderScreen(<DocumentShareSheet artifactId="wf-1" kind="workflow-definition.v1" />);
+        await settle();
+
+        expect(screen.findByTestId('document-share-grant-account:ana')).not.toBeNull();
+        expect(screen.findByTestId('document-share-candidate-team:payments')).toBeNull();
+        await screen.pressByTestIdAsync('document-share-grant-account:ana');
+        expect(screen.findByTestId('document-share-remove:account:ana')).toBeNull();
+        expect(screen.findByTestId('document-share-level:account:ana:admin')).toBeNull();
+    });
+
+    it('tells a profile owner that secret values never travel', async () => {
+        host.grants = [];
+        host.document = PROFILE_DOCUMENT;
+        const screen = await renderScreen(<DocumentShareSheet artifactId="profile-1" kind="launch-profile.v1" />);
+        await settle();
+
+        expect(host.requests[0]).toEqual({ method: 'GET' });
+        expect(screen.getTextContent()).toContain('Secret values never travel');
+    });
+
+    it('keeps the sheet explaining itself when this device cannot reach document sharing', async () => {
+        // An older Home without the grant routes.
+        host.grantStatus = 404;
+        const screen = await renderScreen(<DocumentShareSheet artifactId="wf-1" kind="workflow-definition.v1" />);
+        await settle();
+
+        expect(screen.findByTestId('document-share-grant-account:ana')).toBeNull();
+        expect(screen.findByTestId('document-share-candidate-team:payments')).toBeNull();
+        expect(screen.findByTestId('document-share-editor:list:document-share:option:issue')).not.toBeNull();
+    });
+});

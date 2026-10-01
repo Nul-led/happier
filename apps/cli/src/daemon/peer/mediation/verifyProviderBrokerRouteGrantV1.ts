@@ -7,7 +7,7 @@ import {
 import { findRouteGrantTrustRoot, verifyRouteGrantSignature, type DirectRouteGrantTrustRoot } from './verifyRouteGrantSignature';
 
 export type ProviderBrokerRouteGrantExpectedBindingV1 = Pick<ProviderBrokerRouteGrantPayloadV1,
-    'teamId' | 'resourceId' | 'sourceRevision' | 'initiator' | 'target' | 'consumer' | 'application'>;
+    'teamId' | 'resourceId' | 'sourceRevision' | 'brokerPlacementFingerprint' | 'initiator' | 'target' | 'consumer' | 'application'>;
 
 /** The signed identity of one broker operation, as every carrier and handler
  * binds it. The model is deliberately not part of it: it is a current request
@@ -20,6 +20,7 @@ export function providerBrokerRouteGrantExpectedBindingV1(
         teamId: payload.teamId,
         resourceId: payload.resourceId,
         sourceRevision: payload.sourceRevision,
+        brokerPlacementFingerprint: payload.brokerPlacementFingerprint,
         initiator: payload.initiator,
         target: payload.target,
         consumer: payload.consumer,
@@ -68,6 +69,7 @@ export function verifyProviderBrokerRouteGrantV1(input: Readonly<{
         payload.teamId !== expected.teamId
         || payload.resourceId !== expected.resourceId
         || payload.sourceRevision !== expected.sourceRevision
+        || payload.brokerPlacementFingerprint !== expected.brokerPlacementFingerprint
         || payload.initiator.accountId !== expected.initiator.accountId
         || payload.initiator.machineId !== expected.initiator.machineId
         || payload.initiator.endpointId !== expected.initiator.endpointId

@@ -56,6 +56,7 @@ type DirectTransferExportPrepareRequest =
     }>
     | Readonly<{
         t: 'composer_media_stage_inspect_v1';
+        sessionId?: string;
         handle: import('@happier-dev/protocol').ComposerContentHandleV1;
         offset: number;
         maxBytes: number;

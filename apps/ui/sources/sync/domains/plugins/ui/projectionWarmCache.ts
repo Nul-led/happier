@@ -1,4 +1,7 @@
-import { PluginProjectionV2Schema } from '@happier-dev/protocol';
+import {
+    PluginProjectionV2Schema,
+    type DaemonContributionRegistryProjectionMountedTargetV1,
+} from '@happier-dev/protocol';
 import type {
     PluginUiPlatformV1,
     PluginUiTargetedContributionsV1,
@@ -86,7 +89,7 @@ function hasAnyProjectionEntries(model: PluginUiProjectionModel): boolean {
 function buildRetainedAdmissionProjection(
     projection: DaemonContributionRegistryProjection | null,
 ): PluginUiProjectionCacheEntryV1['projection'] | null {
-    if (!projection || projection.v !== 2) return null;
+    if (!projection) return null;
     const pluginUi = projection.familiesById.pluginUi;
     if (!pluginUi || !hasAnyOwnKey(pluginUi.entriesById)) return null;
     const retained = PluginProjectionV2Schema.safeParse({
@@ -99,18 +102,18 @@ function buildRetainedAdmissionProjection(
 }
 
 /**
- * Whether a retained presentation slice still admits this exact target. A
- * package row carries its own committed `immutableGenerationId`, so matching it
- * is what makes a restored target admission current — no generation is ever
- * synthesized, inferred, or carried forward past its package row.
+ * Whether the retained presentation slice admits the target's durable source
+ * custody. Runtime occurrences are process-local and must never be compared to
+ * the package row's immutable Artifact generation.
  */
 function admitsExactTarget(
     projection: PluginUiProjectionCacheEntryV1['projection'],
     target: PluginUiTargetedContributionsV1['target'],
 ): boolean {
-    const immutableGenerationId = projection.installedPackagesById[target.pluginId]?.immutableGenerationId;
-    return immutableGenerationId !== undefined
-        && immutableGenerationId === target.immutableGenerationId;
+    const installedPackage = projection.installedPackagesById[target.pluginId];
+    if (!installedPackage) return false;
+    return target.sourceCustody.kind !== 'managed'
+        || installedPackage.immutableGenerationId === target.sourceCustody.immutableGenerationId;
 }
 
 /**
@@ -258,7 +261,7 @@ export function readPluginUiProjectionTargetedAdmissionSnapshot(input: Readonly<
     scope: ServerAccountScope | null;
     targetKey: string;
     machineId: string;
-    target: PluginUiTargetedContributionsV1['target'];
+    target: DaemonContributionRegistryProjectionMountedTargetV1;
 }>): PluginUiTargetedContributionsV1 | null {
     if (!input.scope) return null;
     const entry = loadPluginUiProjectionWarmCacheEntries(
@@ -271,7 +274,7 @@ export function readPluginUiProjectionTargetedAdmissionSnapshot(input: Readonly<
     // a persisted empty snapshot cannot keep authorizing a mount.
     return retained
         && retained.target.pluginId === input.target.pluginId
-        && retained.target.immutableGenerationId === input.target.immutableGenerationId
+        && retained.target.occurrenceId === input.target.occurrenceId
         && isRetainableTargetAdmission(retained)
         ? retained
         : null;

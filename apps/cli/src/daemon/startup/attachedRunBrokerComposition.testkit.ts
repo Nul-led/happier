@@ -307,6 +307,7 @@ export async function composeAttachedRunJourney(params: Readonly<{
             encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
         },
         daemonSessionMutationCustody: {
+            stageTranscriptMessage: async () => { throw new Error('Unexpected recording attachment in this fixture'); },
             stageTranscriptEvent: async () => ({ persisted: true, delivered: true }),
         },
         api: {} as never,
@@ -558,4 +559,3 @@ export async function composeAttachedRunJourney(params: Readonly<{
         runOpenOperations,
     };
 }
-

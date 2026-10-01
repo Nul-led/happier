@@ -2,7 +2,7 @@ import {
   ConnectedServiceCredentialRevisionV1Schema,
   QualifiedConnectedServiceUsageSourceV4Schema,
   ProviderAccountUsageSnapshotV1Schema,
-  sealProviderAccountUsageSnapshotCiphertext,
+  sealProviderAccountUsageSnapshot,
   type ConnectedServiceCredentialRevisionV1,
   type QualifiedConnectedServiceUsageSourceV4,
   type ProviderAccountUsageSnapshotV1,
@@ -201,21 +201,18 @@ export function createProviderAccountUsagePersistenceScheduler(params: Readonly<
       ...(accountMode === 'plain'
         ? { snapshot: payload.snapshot }
         : {
-            sealedPayload: {
-              format: 'account_scoped_v1' as const,
-              ciphertext: sealProviderAccountUsageSnapshotCiphertext({
+            sealedPayload: sealProviderAccountUsageSnapshot({
                 material: requireAccountEncryptionCredentials(
                   params.credentials,
                 ).encryption,
-                payload: payload.snapshot,
+                snapshot: payload.snapshot,
                 randomBytes: params.randomBytes
                   ?? (() => {
                     throw new Error(
                       'Provider account usage sealed persistence requires randomBytes',
                     );
                   }),
-              }),
-            },
+            }),
           }),
       fetchedAt: payload.snapshot.fetchedAtMs,
       staleAfterMs: payload.snapshot.staleAfterMs,

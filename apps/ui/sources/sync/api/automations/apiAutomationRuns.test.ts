@@ -3,7 +3,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
 import { listAutomationDefinitionRuns } from './apiAutomationRuns';
 
-vi.mock('@/sync/domains/server/serverRuntime', () => ({
+vi.mock('@/sync/domains/server/serverRuntime', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/sync/domains/server/serverRuntime')>(),
     getActiveServerSnapshot: () => ({
         serverId: 'test',
         serverUrl: 'https://api.example.test',
@@ -78,6 +79,19 @@ describe('apiAutomationRuns', () => {
             '/v3/automations/automation-event-1/runs?limit=25&cursor=cursor-event-1',
         );
         expect(String(fetchSpy.mock.calls[0]?.[0])).not.toContain('/v2/');
+    });
+
+    it('reads current run history without the retired API epoch advertisement', async () => {
+        const fetchSpy = vi.fn(async (input: RequestInfo | URL) => {
+            if (!String(input).includes('/v3/automations/automation-event-1/runs')) throw new Error('unexpected_capability_probe');
+            return new Response(JSON.stringify({ runs: [eventRun], nextCursor: null }), { status: 200 });
+        });
+        vi.stubGlobal('fetch', fetchSpy as unknown as typeof fetch);
+
+        await expect(listAutomationDefinitionRuns({
+            credentials,
+            automationId: 'automation-event-1',
+        })).resolves.toEqual({ runs: [eventRun], nextCursor: null });
     });
 
 });

@@ -2,15 +2,26 @@ import React from 'react';
 import renderer from 'react-test-renderer';
 import { describe, expect, it, vi } from 'vitest';
 
-import { createToolCallMessageFixture, renderScreen } from '@/dev/testkit';
-import type { ToolCallMessage } from '@/sync/domains/messages/messageTypes';
-import { createReducer } from '@/sync/reducer/reducer';
+import { createToolCallMessageFixture, renderWithSessionTranscriptSource, createTestSessionTranscriptSource } from '@/dev/testkit';
+import type { SessionTranscriptSource } from '@/components/sessions/transcript/source/types';
+import type { ToolCallMessage } from "@happier-dev/session-core/messages";
+import { createReducer } from "@happier-dev/session-core/reducer";
 import { installToolCallsGroupViewCommonModuleMocks } from './toolCallsGroupViewTestHelpers';
 import { createUseSettingMock } from '@/dev/testkit/mocks/storage';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 let collapsedPreviewCount = 1;
+function renderScreen(
+    element: React.ReactElement<React.ComponentProps<typeof import('./ToolCallsGroupView')['ToolCallsGroupView']>>,
+    source: SessionTranscriptSource = createTestSessionTranscriptSource({
+        sessionId: element.props.sessionId, messages: element.props.toolMessages,
+        metadata: element.props.metadata, interaction: element.props.interaction,
+        navigate: () => {}, loadSidechain: async () => 'loaded',
+    }),
+) {
+    return renderWithSessionTranscriptSource(element, source);
+}
 
 installToolCallsGroupViewCommonModuleMocks({
     reactNative: async () => {
@@ -133,9 +144,8 @@ describe('ToolCallsGroupView (subagent preview rendering)', () => {
                 canSendMessages: false,
                 canApprovePermissions: false,
                 permissionDisabledReason: 'readOnly',
-                disableToolNavigation: true,
             },
-        }));
+        }), createTestSessionTranscriptSource({ sessionId: 'child-session', navigate: null, loadSidechain: null }));
 
         expect(ensureSidechainsLoadedCalls).toEqual(
             expect.arrayContaining([

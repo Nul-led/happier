@@ -17,6 +17,7 @@ import type { TransferPayloadSource } from './transferPayloadSource';
 import { resolveDirectPeerTransferBindHost } from './transferRuntimeConfig';
 import type { FilesystemAccessPolicy } from '@/rpc/handlers/fileSystem/accessPolicy/filesystemAccessPolicy';
 import type { ComposerMediaStageUploadTargetDeps } from '@/transfers/targets/resolveComposerMediaStageUploadTarget';
+import type { TransferUploadInitAttachmentDeps } from '@/transfers/targets/resolveTransferUploadInitTarget';
 
 export type DirectTransferListenerClass =
   | 'loopback_http'
@@ -146,6 +147,7 @@ function resolveAdvertisedEndpointCandidates(params: Readonly<{
 }
 
 export function createDirectTransferServerLifecycle(params: Readonly<{
+  attachmentUpload?: TransferUploadInitAttachmentDeps;
   bindPort: number;
   bindHost?: string;
   accessPolicy?: FilesystemAccessPolicy;
@@ -355,6 +357,7 @@ export function createDirectTransferServerLifecycle(params: Readonly<{
     startPromise = (async () => {
       void emitState('starting');
       const started = await startServer({
+        ...(params.attachmentUpload ? { attachmentUpload: params.attachmentUpload } : {}),
         readPublishedTransfer: (input) => registry?.readPublishedTransfer(input) ?? null,
         ...(typeof params.bindPort === 'number' && params.bindPort > 0
           ? { bindPort: params.bindPort }

@@ -1,28 +1,19 @@
 import * as React from 'react';
 
 import {
-    canSelectAgentWithoutDetectedCli,
-    getAgentCore,
-    getAgentBehavior,
     getAgentResumeExperimentsFromSettings,
     getNewSessionRelevantInstallableDepKeys,
-    isBundledAgentId,
     type AgentId,
 } from '@/agents/catalog/catalog';
 import {
     type ResolvedBackendCatalogEntry,
 } from '@/agents/backendCatalog/getResolvedBackendCatalogEntries';
 import { getInstallablesRegistryEntries } from '@/capabilities/installablesRegistry';
-import { CAPABILITIES_REQUEST_NEW_SESSION } from '@/capabilities/requests';
-import { useCLIDetection } from '@/hooks/auth/useCLIDetection';
+import { useMachineAgents } from '@/agents/machineAgents/useMachineAgents';
+import { projectMachineAgentsToCliAvailability } from '@/agents/machineAgents/machineAgentCliAvailability';
 import { useDaemonScopedMachineCapabilitiesCache } from '@/hooks/server/useDaemonScopedMachineCapabilitiesCache';
 import type { AIBackendProfile } from '@/sync/domains/profiles/profileCompatibility';
 import { isProfileCompatibleWithBackendTarget } from '@/sync/domains/profiles/profileCompatibility';
-import {
-    applyCliWarningDismissal,
-    isCliWarningDismissed,
-    type DismissedCliWarnings,
-} from '@/agents/runtime/cliWarnings';
 import { useResumeCapabilityOptions } from '@/agents/hooks/useResumeCapabilityOptions';
 import { canAgentResume } from '@/agents/runtime/resumeCapabilities';
 import {
@@ -31,7 +22,6 @@ import {
     resolveBackendEntryUnavailabilityReasonForNewSession,
     resolveProfileAvailabilityForNewSession,
 } from '@/components/sessions/new/modules/newSessionAgentSelection';
-import { stableJsonStringify } from '@/utils/json/stableJsonStringify';
 import { runAfterInteractionsWithFallback } from '@/utils/timing/runAfterInteractionsWithFallback';
 import { resolveTerminalSpawnOptions } from '@/sync/domains/settings/terminalSettings';
 import { resolveWindowsTerminalAvailable } from '@/capabilities/windowsTerminalAvailability';
@@ -49,72 +39,11 @@ import { resolveNewSessionBehaviorAgentId } from '@/components/sessions/new/modu
 
 type ProfileAvailability = Readonly<{ available: boolean; reason?: string }>;
 
-const TEMPORARY_CLI_WARNING_GLOBAL_MACHINE_KEY = '__global__';
-const temporaryHiddenCliWarningKeysByMachineId: Record<string, Readonly<Record<string, boolean>>> = {};
-
-function readTemporaryHiddenCliWarningKeys(machineId: string | null | undefined): Readonly<Record<string, boolean>> {
-    const key = machineId ?? TEMPORARY_CLI_WARNING_GLOBAL_MACHINE_KEY;
-    return temporaryHiddenCliWarningKeysByMachineId[key] ?? {};
-}
-
-function writeTemporaryHiddenCliWarningKey(machineId: string | null | undefined, warningKey: string): void {
-    const key = machineId ?? TEMPORARY_CLI_WARNING_GLOBAL_MACHINE_KEY;
-    const existing = temporaryHiddenCliWarningKeysByMachineId[key] ?? {};
-    temporaryHiddenCliWarningKeysByMachineId[key] = { ...existing, [warningKey]: true };
-}
-
-export function resolveNewSessionDeclarationAvailabilityFacts(params: Readonly<{
-    resolvedBackendEntries: readonly ResolvedBackendCatalogEntry[];
-    selectedMachineId: string | null;
-    settings: Settings;
-    pluginSettings?: AgentPluginSettingsSnapshot | null;
-    /** Qualified/runtime identity whose declaration owns pluginSettings. */
-    pluginSettingsAgentId?: string | null;
-    /** Readiness of the exact selected Agent Settings record, when declared. */
-    pluginSettingsReadiness?: AgentPluginSettingsReadiness | null;
-    resumeSessionId: string | null;
-    externalSessionsFeatureEnabled: boolean;
-    backendNewSessionOptionStateByTargetKey: Readonly<BackendNewSessionOptionStateByTargetKey>;
-}>): Readonly<{
-    installableDepKeyCountByAgentId: Readonly<Partial<Record<AgentId, number>>>;
-    selectableWithoutCliByAgentId: Readonly<Partial<Record<AgentId, boolean>>>;
-}> {
-    const installableDepKeyCountByAgentId: Partial<Record<AgentId, number>> = {};
-    const selectableWithoutCliByAgentId: Partial<Record<AgentId, boolean>> = {};
-    for (const entry of params.resolvedBackendEntries) {
-        if (entry.kind === 'configuredBackend') continue;
-        const id = entry.agentId;
-        if (!id || Object.prototype.hasOwnProperty.call(installableDepKeyCountByAgentId, id)) continue;
-        const agentPluginSettings = params.pluginSettingsAgentId === id
-            ? params.pluginSettings
-            : null;
-        const experiments = getAgentResumeExperimentsFromSettings(id, params.settings, params.selectedMachineId, agentPluginSettings);
-        installableDepKeyCountByAgentId[id] = getNewSessionRelevantInstallableDepKeys({
-            agentId: id,
-            settings: params.settings,
-            pluginSettings: agentPluginSettings,
-            experiments,
-            resumeSessionId: params.resumeSessionId ?? '',
-            machineId: params.selectedMachineId,
-        }).length;
-        const supportsExternalSessionBrowse = isBundledAgentId(id)
-            && params.externalSessionsFeatureEnabled
-            && getAgentCore(id).sessionStorage.direct === true
-            && typeof getAgentBehavior(id).externalSessions?.browse?.getSourceOptions === 'function';
-        selectableWithoutCliByAgentId[id] = supportsExternalSessionBrowse || canSelectAgentWithoutDetectedCli({
-            agentId: id,
-            settings: params.settings,
-            pluginSettings: agentPluginSettings,
-            machineId: params.selectedMachineId,
-            agentOptionState: params.backendNewSessionOptionStateByTargetKey[entry.backendTargetKey] ?? null,
-        });
-    }
-    return { installableDepKeyCountByAgentId, selectableWithoutCliByAgentId };
-}
-
 export function useNewSessionAvailabilityState(params: Readonly<{
     selectedMachineId: string | null;
     selectedMachine: Machine | null;
+    /** Demand comes from the picker/popover visibility owner, never mount. */
+    agentInventoryDemanded?: boolean;
     capabilityServerId: string;
     externalSessionsFeatureEnabled: boolean;
     settings: Settings;
@@ -138,8 +67,6 @@ export function useNewSessionAvailabilityState(params: Readonly<{
     selectedBackendEntry: ResolvedBackendCatalogEntry | null;
     setBackendTarget: React.Dispatch<React.SetStateAction<PersistedBackendTargetRefV2>>;
     machines: ReadonlyArray<Machine>;
-    dismissedCliWarnings: DismissedCliWarnings | null | undefined;
-    setDismissedCliWarnings: (next: DismissedCliWarnings) => void;
     allProfiles: ReadonlyArray<AIBackendProfile>;
 }>) {
     const staticAgentId = params.staticAgentId ?? params.agentType ?? null;
@@ -151,43 +78,18 @@ export function useNewSessionAvailabilityState(params: Readonly<{
     const selectedAgentSettingsReady = params.pluginSettingsReadiness === null
         || params.pluginSettingsReadiness === undefined
         || params.pluginSettingsReadiness.ready;
-    const cliAgentIds = React.useMemo(() => {
-        const out: string[] = [];
-        for (const entry of params.resolvedBackendEntries) {
-            if (entry.kind === 'configuredBackend') continue;
-            const agentId = entry.agentId.trim();
-            if (!agentId || out.includes(agentId)) continue;
-            out.push(agentId);
-        }
-        return out;
-    }, [params.resolvedBackendEntries]);
-    const automaticLoginStatusAgentIds = React.useMemo(() => {
-        const out: string[] = [];
-        for (const entry of params.resolvedBackendEntries) {
-            if (entry.kind === 'configuredBackend') continue;
-            const agentId = entry.agentId.trim();
-            if (!agentId || !entry.cliAuthBackgroundCheckSafe || out.includes(agentId)) continue;
-            out.push(agentId);
-        }
-        return out;
-    }, [params.resolvedBackendEntries]);
-    const automaticLoginStatusAgentIdsKey = React.useMemo(
-        () => stableJsonStringify(automaticLoginStatusAgentIds),
-        [automaticLoginStatusAgentIds],
-    );
-    const cliAvailability = useCLIDetection(params.selectedMachineId, {
-        autoDetect: false,
-        agentIds: cliAgentIds,
-        includeLoginStatus: automaticLoginStatusAgentIds.length > 0,
-        includeLoginStatusForAgentIds: automaticLoginStatusAgentIds,
-        serverId: params.capabilityServerId,
-    });
+    const machineAgents = useMachineAgents({ machineId: params.selectedMachineId, serverId: params.capabilityServerId, load: params.agentInventoryDemanded === true });
+    const machineAgentsById = React.useMemo(() => Object.fromEntries(machineAgents.agents.map((agent) => [agent.agentId, agent])), [machineAgents.agents]);
+    const systemRequest = React.useMemo(() => ({ requests: [
+        { id: 'tool.tmux' as const }, { id: 'tool.windowsTerminal' as const },
+        ...getInstallablesRegistryEntries({ pluginProjection: params.pluginProjectionV2 ?? undefined }).map((entry) => ({ id: entry.capabilityId })),
+    ] }), [params.pluginProjectionV2]);
     const { state: selectedMachineCapabilities, refresh: refreshSelectedMachineCapabilities } = useDaemonScopedMachineCapabilitiesCache({
         machineId: params.selectedMachineId,
         serverId: params.capabilityServerId,
         daemonStateVersion: params.selectedMachine?.daemonStateVersion ?? 0,
         enabled: false,
-        request: CAPABILITIES_REQUEST_NEW_SESSION,
+        request: systemRequest,
     });
     const selectedMachineCapabilitiesSnapshot = React.useMemo(() => {
         return selectedMachineCapabilities.status === 'loaded'
@@ -198,6 +100,11 @@ export function useNewSessionAvailabilityState(params: Readonly<{
                     ? selectedMachineCapabilities.snapshot
                     : undefined;
     }, [selectedMachineCapabilities]);
+
+    const cliAvailability = React.useMemo(() => projectMachineAgentsToCliAvailability({
+        ...machineAgents,
+        systemToolCapabilities: selectedMachineCapabilitiesSnapshot?.response,
+    }), [machineAgents, selectedMachineCapabilitiesSnapshot]);
 
     const tmuxRequested = React.useMemo(() => {
         return Boolean(resolveTerminalSpawnOptions({
@@ -258,57 +165,26 @@ export function useNewSessionAvailabilityState(params: Readonly<{
         behaviorAgentId,
     ]);
 
-    const declarationAvailabilityFacts = React.useMemo(() => resolveNewSessionDeclarationAvailabilityFacts({
-        resolvedBackendEntries: params.resolvedBackendEntries,
-        selectedMachineId: params.selectedMachineId,
-        settings: params.settings,
-        pluginSettings: params.pluginSettings,
-        resumeSessionId: params.resumeSessionId,
-        externalSessionsFeatureEnabled: params.externalSessionsFeatureEnabled,
-        backendNewSessionOptionStateByTargetKey: params.backendNewSessionOptionStateByTargetKey,
-    }), [
-        params.backendNewSessionOptionStateByTargetKey,
-        params.externalSessionsFeatureEnabled,
-        params.resolvedBackendEntries,
-        params.resumeSessionId,
-        params.selectedMachineId,
-        params.pluginSettings,
-        params.settings,
-    ]);
-    const { installableDepKeyCountByAgentId, selectableWithoutCliByAgentId } = declarationAvailabilityFacts;
-
     const isAgentSelectable = React.useCallback((agentId: AgentId): boolean => {
         return isAgentSelectableForNewSession({
             agentId,
-            detectionTimestamp: cliAvailability.timestamp,
-            availabilityById: cliAvailability.available,
-            authStatusById: cliAvailability.authStatus,
-            installableDepKeyCountByAgentId,
-            selectableWithoutCliByAgentId,
+            machineAgentsById,
         });
-    }, [cliAvailability.authStatus, cliAvailability.available, cliAvailability.timestamp, installableDepKeyCountByAgentId, selectableWithoutCliByAgentId]);
+    }, [machineAgentsById]);
 
     const isBackendEntrySelectable = React.useCallback((entry: ResolvedBackendCatalogEntry): boolean => {
         return isBackendEntrySelectableForNewSession({
             entry,
-            detectionTimestamp: cliAvailability.timestamp,
-            availabilityById: cliAvailability.available,
-            authStatusById: cliAvailability.authStatus,
-            installableDepKeyCountByAgentId,
-            selectableWithoutCliByAgentId,
+            machineAgentsById,
         });
-    }, [cliAvailability.authStatus, cliAvailability.available, cliAvailability.timestamp, installableDepKeyCountByAgentId, selectableWithoutCliByAgentId]);
+    }, [machineAgentsById]);
 
     const getBackendEntryUnavailabilityReason = React.useCallback((entry: ResolvedBackendCatalogEntry) => {
         return resolveBackendEntryUnavailabilityReasonForNewSession({
             entry,
-            detectionTimestamp: cliAvailability.timestamp,
-            availabilityById: cliAvailability.available,
-            authStatusById: cliAvailability.authStatus,
-            installableDepKeyCountByAgentId,
-            selectableWithoutCliByAgentId,
+            machineAgentsById,
         });
-    }, [cliAvailability.authStatus, cliAvailability.available, cliAvailability.timestamp, installableDepKeyCountByAgentId, selectableWithoutCliByAgentId]);
+    }, [machineAgentsById]);
 
     const selectedMachineOnline = React.useMemo(() => {
         if (!params.selectedMachineId) return false;
@@ -358,8 +234,8 @@ export function useNewSessionAvailabilityState(params: Readonly<{
         const machineId = String(params.selectedMachineId ?? '').trim();
         if (!machineId) return null;
         const serverId = String(params.capabilityServerId ?? '').trim() || 'active';
-        return `${serverId}:${machineId}:${automaticLoginStatusAgentIdsKey}`;
-    }, [automaticLoginStatusAgentIdsKey, params.capabilityServerId, params.selectedMachineId]);
+        return `${serverId}:${machineId}`;
+    }, [params.capabilityServerId, params.selectedMachineId]);
 
     const initialRefreshHandledKeyRef = React.useRef<string | null>(null);
 
@@ -377,46 +253,9 @@ export function useNewSessionAvailabilityState(params: Readonly<{
         initialRefreshHandledKeyRef.current = initialRefreshKey;
 
         return runAfterInteractionsWithFallback(() => {
-            // Bypass daemon-side probe caches so newly installed CLIs become selectable immediately.
-            cliAvailability.refresh({ bypassCache: true });
             refreshSelectedMachineCapabilities();
         });
-    }, [cliAvailability.refresh, initialRefreshKey, refreshSelectedMachineCapabilities, selectedMachineOnline]);
-
-    const [hiddenCliWarningKeys, setHiddenCliWarningKeys] = React.useState<Record<string, boolean>>(() => ({
-        ...readTemporaryHiddenCliWarningKeys(params.selectedMachineId),
-    }));
-    React.useEffect(() => {
-        setHiddenCliWarningKeys({
-            ...readTemporaryHiddenCliWarningKeys(params.selectedMachineId),
-        });
-    }, [params.selectedMachineId]);
-
-    const isCliBannerDismissed = React.useCallback((agentId: AgentId): boolean => {
-        const warningKey = getAgentCore(agentId)?.cli.detectKey;
-        // No bundled CLI detect key means there is no CLI banner to dismiss.
-        if (!warningKey) return true;
-        if (hiddenCliWarningKeys[warningKey] === true) return true;
-        return isCliWarningDismissed({ dismissed: params.dismissedCliWarnings, machineId: params.selectedMachineId, warningKey });
-    }, [hiddenCliWarningKeys, params.dismissedCliWarnings, params.selectedMachineId]);
-
-    const dismissCliBanner = React.useCallback((agentId: AgentId, scope: 'machine' | 'global' | 'temporary') => {
-        const warningKey = getAgentCore(agentId)?.cli.detectKey;
-        if (!warningKey) return;
-        if (scope === 'temporary') {
-            writeTemporaryHiddenCliWarningKey(params.selectedMachineId, warningKey);
-            setHiddenCliWarningKeys((prev) => ({ ...prev, [warningKey]: true }));
-            return;
-        }
-        params.setDismissedCliWarnings(
-            applyCliWarningDismissal({
-                dismissed: params.dismissedCliWarnings,
-                machineId: params.selectedMachineId,
-                warningKey,
-                scope,
-            }),
-        );
-    }, [params.dismissedCliWarnings, params.selectedMachineId, params.setDismissedCliWarnings]);
+    }, [initialRefreshKey, refreshSelectedMachineCapabilities, selectedMachineOnline]);
 
     const getCompatibleProfileBackendEntries = React.useCallback((profile: AIBackendProfile) => {
         // Fail closed: malformed/untyped projection entries must not crash profile availability resolution.
@@ -429,13 +268,9 @@ export function useNewSessionAvailabilityState(params: Readonly<{
     const isProfileAvailable = React.useCallback((profile: AIBackendProfile): ProfileAvailability => {
         return resolveProfileAvailabilityForNewSession({
             candidateBackendEntries: getCompatibleProfileBackendEntries(profile),
-            detectionTimestamp: cliAvailability.timestamp,
-            availabilityById: cliAvailability.available,
-            authStatusById: cliAvailability.authStatus,
-            installableDepKeyCountByAgentId,
-            selectableWithoutCliByAgentId,
+            machineAgentsById,
         });
-    }, [cliAvailability.authStatus, cliAvailability.available, cliAvailability.timestamp, getCompatibleProfileBackendEntries, installableDepKeyCountByAgentId, selectableWithoutCliByAgentId]);
+    }, [getCompatibleProfileBackendEntries, machineAgentsById]);
 
     const profileAvailabilityById = React.useMemo(() => {
         const map = new Map<string, ProfileAvailability>();
@@ -460,13 +295,11 @@ export function useNewSessionAvailabilityState(params: Readonly<{
         tmuxRequested,
         showResumePicker,
         wizardInstallableDeps,
-        installableDepKeyCountByAgentId,
-        selectableWithoutCliByAgentId,
+        machineAgents,
+        machineAgentsById,
         isAgentSelectable,
         isBackendEntrySelectable,
         getBackendEntryUnavailabilityReason,
-        isCliBannerDismissed,
-        dismissCliBanner,
         getCompatibleProfileBackendEntries,
         profileAvailabilityById,
         selectedMachineIsWindows,

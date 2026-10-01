@@ -110,6 +110,45 @@ describe('prepareDaemonSpawnChildEnvironment pending first input', () => {
     expect(result.trackedSpawnOptions).not.toHaveProperty('pendingFirstInput');
   });
 
+  it('carries a resumed goal only into the live child environment', async () => {
+    vi.mocked(resolveSpawnChildEnvironment).mockResolvedValue({
+      ok: true,
+      expandedEnvironmentVariables: {},
+      extraEnvForChild: { HAPPIER_DAEMON_INITIAL_GOAL: 'ambient-goal' },
+      providerEnvKeys: [],
+      cleanupOnFailure: null,
+      cleanupOnExit: null,
+    });
+
+    const result = await prepareDaemonSpawnChildEnvironment({
+      effectiveModelSelection: undefined,
+      options: {
+        directory: '/tmp/repo',
+        existingSessionId: 'session-1',
+        initialGoal: { objective: 'Finish the review' },
+      },
+      terminal: undefined,
+      profileEnvironmentVariables: {},
+      daemonSpawnHooks: null,
+      pluginRuntimeRegistry,
+      processEnv: {},
+      connectedServiceAuth: null,
+      connectedServiceMaterializationIdentity: null,
+      providerBindingAttempt: null,
+      providerAgentTargetKey: null,
+      providerDiagnosticRedactionLease: createProviderRedactionLease({ values: [] }),
+      launchResourceScope: createProviderLaunchResourceScope(),
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.extraEnvForChild.HAPPIER_DAEMON_INITIAL_GOAL).toBe(JSON.stringify({
+      objective: 'Finish the review',
+    }));
+    expect(result.trackedSpawnOptions).not.toHaveProperty('initialGoal');
+    expect(result.trackedSpawnOptions.environmentVariables ?? {}).not.toHaveProperty('HAPPIER_DAEMON_INITIAL_GOAL');
+  });
+
   it('carries takeover correlation only into the first live child environment while retaining the canonical runtime descriptor', async () => {
     const selectedSessionFile = '/home/lee/.pi/agent/sessions/workspace-a/pi-shared.jsonl';
     const runtimeDescriptorV1 = {

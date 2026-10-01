@@ -137,7 +137,7 @@ describe('createPluginSessionHandleCapabilitiesFactory', () => {
       caller: {
         pluginId: 'acme.plugin',
         contributionId: 'action-a',
-        immutableGenerationId: 'immutable-generation-a',
+        sourceCustody: { kind: 'managed', immutableGenerationId: 'immutable-generation-a', installSource: 'npm' },
       },
       signal: caller.signal,
       isCurrent: () => true,
@@ -206,7 +206,7 @@ describe('createPluginSessionHandleCapabilitiesFactory', () => {
       caller: {
         pluginId: 'acme.plugin',
         contributionId: 'action-a',
-        immutableGenerationId: 'immutable-generation-a',
+        sourceCustody: { kind: 'managed', immutableGenerationId: 'immutable-generation-a', installSource: 'npm' },
         runtimeId: 'runtime-a',
       },
       signal: new AbortController().signal,
@@ -293,7 +293,7 @@ describe('createPluginSessionHandleCapabilitiesFactory', () => {
       caller: {
         pluginId: 'acme.plugin',
         contributionId,
-        immutableGenerationId: 'immutable-generation-a',
+        sourceCustody: { kind: 'managed', immutableGenerationId: 'immutable-generation-a', installSource: 'npm' },
         runtimeId: `acme.plugin/actions/${contributionId}`,
       },
       signal: new AbortController().signal,
@@ -331,8 +331,7 @@ describe('createPluginSessionHandleCapabilitiesFactory', () => {
       credentials,
       caller: {
         pluginId: 'acme.plugin',
-        contributionId: 'action-a',
-        immutableGenerationId: 'immutable-generation-a',
+        contributionId: 'action-a', sourceCustody: { kind: 'managed', immutableGenerationId: 'immutable-generation-a', installSource: 'npm' },
       },
       signal: new AbortController().signal,
       isCurrent: () => true,
@@ -364,8 +363,7 @@ describe('createPluginSessionHandleCapabilitiesFactory', () => {
       credentials,
       caller: {
         pluginId: 'acme.plugin',
-        contributionId: 'action-a',
-        immutableGenerationId: 'immutable-generation-a',
+        contributionId: 'action-a', sourceCustody: { kind: 'managed', immutableGenerationId: 'immutable-generation-a', installSource: 'npm' },
       },
       signal: new AbortController().signal,
       isCurrent: () => current,
@@ -410,8 +408,7 @@ describe('createPluginSessionHandleCapabilitiesFactory', () => {
       credentials,
       caller: {
         pluginId: 'acme.plugin',
-        contributionId: 'action-a',
-        immutableGenerationId: 'immutable-generation-a',
+        contributionId: 'action-a', sourceCustody: { kind: 'managed', immutableGenerationId: 'immutable-generation-a', installSource: 'npm' },
       },
       signal: new AbortController().signal,
       isCurrent: () => true,
@@ -478,8 +475,7 @@ describe('createPluginSessionHandleCapabilitiesFactory', () => {
       credentials,
       caller: {
         pluginId: 'acme.plugin',
-        contributionId: 'action-a',
-        immutableGenerationId: 'immutable-generation-a',
+        contributionId: 'action-a', sourceCustody: { kind: 'managed', immutableGenerationId: 'immutable-generation-a', installSource: 'npm' },
       },
       signal: new AbortController().signal,
       isCurrent: () => true,
@@ -560,8 +556,7 @@ describe('SessionHandle System Records capability', () => {
       credentials,
       caller: {
         pluginId: 'acme.notes',
-        contributionId: 'notes',
-        immutableGenerationId: 'generation-g',
+        contributionId: 'notes', sourceCustody: { kind: 'managed', immutableGenerationId: 'generation-g', installSource: 'npm' },
       },
       signal: caller.signal,
       isCurrent: () => true,
@@ -650,8 +645,7 @@ describe('SessionHandle System Records capability', () => {
       credentials,
       caller: {
         pluginId: 'acme.notes',
-        contributionId: 'notes',
-        immutableGenerationId: 'generation-g',
+        contributionId: 'notes', sourceCustody: { kind: 'managed', immutableGenerationId: 'generation-g', installSource: 'npm' },
       },
       signal: new AbortController().signal,
       isCurrent: () => true,
@@ -681,8 +675,7 @@ describe('SessionHandle System Records capability', () => {
       credentials,
       caller: {
         pluginId: 'acme.notes',
-        contributionId: 'notes',
-        immutableGenerationId: 'generation-g',
+        contributionId: 'notes', sourceCustody: { kind: 'managed', immutableGenerationId: 'generation-g', installSource: 'npm' },
       },
       signal: caller.signal,
       isCurrent: () => true,
@@ -717,8 +710,7 @@ describe('SessionHandle System Records capability', () => {
       credentials,
       caller: {
         pluginId: 'acme.notes',
-        contributionId: 'notes',
-        immutableGenerationId: 'generation-g',
+        contributionId: 'notes', sourceCustody: { kind: 'managed', immutableGenerationId: 'generation-g', installSource: 'npm' },
       },
       signal: lifetime.signal,
       isCurrent: () => true,
@@ -746,8 +738,7 @@ describe('SessionHandle System Records capability', () => {
       credentials,
       caller: {
         pluginId: 'acme.notes',
-        contributionId: 'notes',
-        immutableGenerationId: 'generation-g',
+        contributionId: 'notes', sourceCustody: { kind: 'managed', immutableGenerationId: 'generation-g', installSource: 'npm' },
       },
       signal: new AbortController().signal,
       isCurrent: () => priorCurrent,
@@ -758,8 +749,7 @@ describe('SessionHandle System Records capability', () => {
       credentials,
       caller: {
         pluginId: 'acme.notes',
-        contributionId: 'notes',
-        immutableGenerationId: 'generation-h',
+        contributionId: 'notes', sourceCustody: { kind: 'managed', immutableGenerationId: 'generation-h', installSource: 'npm' },
       },
       signal: new AbortController().signal,
       isCurrent: () => true,
@@ -793,8 +783,7 @@ describe('SessionHandle System Records capability', () => {
       credentials,
       caller: {
         pluginId: 'acme.notes',
-        contributionId: 'notes',
-        immutableGenerationId: 'generation-g',
+        contributionId: 'notes', sourceCustody: { kind: 'managed', immutableGenerationId: 'generation-g', installSource: 'npm' },
       },
       signal: new AbortController().signal,
       isCurrent: () => true,
@@ -860,8 +849,7 @@ describe('SessionHandle System Records capability', () => {
       credentials: e2eeCredentials,
       caller: {
         pluginId: 'acme.notes',
-        contributionId: 'notes',
-        immutableGenerationId: 'generation-g',
+        contributionId: 'notes', sourceCustody: { kind: 'managed', immutableGenerationId: 'generation-g', installSource: 'npm' },
       },
       signal: new AbortController().signal,
       isCurrent: () => true,

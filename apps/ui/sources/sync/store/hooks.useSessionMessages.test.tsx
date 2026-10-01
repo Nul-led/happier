@@ -5,8 +5,8 @@ import { renderHook, standardCleanup } from '@/dev/testkit';
 
 import { useSessionPendingMessages, useSessionMessages, useSessionSubagentSourceMessages, useSessionTranscriptIds, useSessionVisibleReadSeq } from '@/sync/domains/state/storage';
 import { storage } from '@/sync/domains/state/storageStore';
-import type { Message } from '@/sync/domains/messages/messageTypes';
-import type { NormalizedMessage } from '@/sync/typesRaw';
+import type { Message } from "@happier-dev/session-core/messages";
+import type { NormalizedMessage } from "@happier-dev/session-core/raw";
 import { createSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
 
 afterEach(() => {

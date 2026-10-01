@@ -261,6 +261,7 @@ describe('External Sessions persisted candidate-index page locality', () => {
             for (let attempt = 0; attempt < 4; attempt += 1) {
                 const page = await executeExternalSessionCandidateQuery({
                     activeServerDir,
+                    agentSourceCustody: { kind: 'development', registeredRootId: 'fixture-source-root' },
                     agentIdentity,
                     source,
                     limit: 1,
@@ -312,6 +313,7 @@ describe('External Sessions persisted candidate-index page locality', () => {
             for (let attempt = 0; attempt < 4; attempt += 1) {
                 const page = await executeExternalSessionCandidateQuery({
                     activeServerDir,
+                    agentSourceCustody: { kind: 'development', registeredRootId: 'fixture-source-root' },
                     agentIdentity,
                     source,
                     limit: 1,
@@ -371,6 +373,7 @@ describe('External Sessions persisted candidate-index page locality', () => {
             }));
             const query = (cursor?: string) => executeExternalSessionCandidateQuery({
                 activeServerDir,
+                agentSourceCustody: { kind: 'development', registeredRootId: 'fixture-source-root' },
                 agentIdentity: { pluginId: 'happier.claude', localId: 'claude' },
                 source: { kind: 'claudeConfig', configDir: '/private/source' },
                 ...(cursor ? { cursor } : {}),
@@ -453,6 +456,7 @@ describe('External Sessions persisted candidate-index page locality', () => {
         const listCandidates = createBoundedCandidateSource(corpus);
         const query = (cursor?: string) => executeExternalSessionCandidateQuery({
             activeServerDir,
+            agentSourceCustody: { kind: 'development', registeredRootId: 'fixture-source-root' },
             agentIdentity: { pluginId: 'happier.claude', localId: 'claude' },
             source: { kind: 'claudeConfig', configDir: '/private/source' },
             ...(cursor ? { cursor } : {}),
@@ -523,6 +527,7 @@ describe('External Sessions persisted candidate-index page locality', () => {
         const listCandidates = createBoundedCandidateSource(corpus);
         const query = (cursor?: string) => executeExternalSessionCandidateQuery({
             activeServerDir,
+            agentSourceCustody: { kind: 'development', registeredRootId: 'fixture-source-root' },
             agentIdentity: { pluginId: 'happier.claude', localId: 'claude' },
             source: { kind: 'claudeConfig', configDir: '/private/source' },
             ...(cursor ? { cursor } : {}),
@@ -600,6 +605,7 @@ describe('External Sessions persisted candidate-index page locality', () => {
         const listCandidates = createBoundedCandidateSource(corpus);
         const query = () => executeExternalSessionCandidateQuery({
             activeServerDir,
+            agentSourceCustody: { kind: 'development', registeredRootId: 'fixture-source-root' },
             agentIdentity: { pluginId: 'happier.claude', localId: 'claude' },
             source: { kind: 'claudeConfig', configDir: '/private/source' },
             limit: 1,
@@ -672,6 +678,7 @@ describe.runIf(process.env.HAPPIER_RUN_EXTERNAL_SESSION_BENCHMARK === '1')(
             };
             const query = () => executeExternalSessionCandidateQuery({
                 activeServerDir,
+                agentSourceCustody: { kind: 'development', registeredRootId: 'fixture-source-root' },
                 agentIdentity: { pluginId: 'happier.claude', localId: 'claude' },
                 source: { kind: 'claudeConfig', configDir: '/private/source' },
                 limit: 50,

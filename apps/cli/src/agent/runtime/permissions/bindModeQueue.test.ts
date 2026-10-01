@@ -2,10 +2,12 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { Metadata, PermissionMode, UserMessage } from '@/api/types';
 import { registerPermissionModeMessageQueueBinding } from './bindModeQueue';
+import { MessageQueue2 } from '@/agent/runtime/modeMessageQueue';
 import type {
   PermissionModeQueuedPrompt,
   PermissionModeQueuedPromptMode,
 } from '@/agent/runtime/permissions/queuedPrompt';
+import { combinePermissionModeQueuedPrompts } from '@/agent/runtime/permissions/queuedPrompt';
 import {
   ProviderConnectionIdSchema,
   type ProviderBoundModelRef,
@@ -16,6 +18,62 @@ source_kind="legacyUnknown"
 </happier_input_context>`;
 
 describe('registerPermissionModeMessageQueueBinding', () => {
+  it('rejects a restricted mode before metadata mutation and preserves unrestricted input', async () => {
+    const queue = new MessageQueue2<PermissionModeQueuedPromptMode, PermissionModeQueuedPrompt>((mode) => JSON.stringify(mode), { batcher: combinePermissionModeQueuedPrompts });
+    const harness = createSessionHarness();
+    let current: PermissionMode | undefined = 'default';
+    const rejected = vi.fn();
+    registerPermissionModeMessageQueueBinding({
+      session: harness.session,
+      queue,
+      getCurrentPermissionMode: () => current,
+      setCurrentPermissionMode: (mode) => { current = mode; },
+      inFlightSteer: { isTurnInFlight: () => false, supportsInFlightSteer: () => false,
+        steerText: async () => {}, registerProviderAcceptedEffect: () => {}, rejectPromptBeforeProvider: rejected },
+    });
+    harness.emit({ role: 'user', content: { type: 'text', text: 'restricted' }, localId: 'restricted',
+      meta: { permissionMode: 'bypassPermissions' },
+      callerInputConstraints: { models: null, permissionModes: ['default'] },
+    });
+    expect(current).toBe('default');
+    expect(harness.getMetadata().permissionMode).toBe('default');
+    expect(queue.size()).toBe(0);
+    expect(rejected).toHaveBeenCalledWith(expect.objectContaining({
+      localIds: ['restricted'], reason: 'permission_mode_not_granted',
+    }));
+    harness.emit({ role: 'user', content: { type: 'text', text: 'unrestricted' }, localId: 'unrestricted',
+      meta: { permissionMode: 'bypassPermissions' },
+    });
+    expect((await queue.waitForMessagesAndGetAsString())?.mode.permissionMode).toBe('yolo');
+  });
+
+  it('rechecks the effective model before in-flight steer and does not constrain the next caller', async () => {
+    const queue = new MessageQueue2<PermissionModeQueuedPromptMode, PermissionModeQueuedPrompt>((mode) => JSON.stringify(mode), { batcher: combinePermissionModeQueuedPrompts });
+    const harness = createSessionHarness();
+    const modelA: ProviderBoundModelRef = { agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: null, modelId: 'A' };
+    let active = modelA;
+    const rejected = vi.fn();
+    const steerText = vi.fn(async () => {});
+    registerPermissionModeMessageQueueBinding({
+      session: harness.session,
+      agentTargetKey: modelA.agentTargetKey,
+      queue, getCurrentPermissionMode: () => 'default', setCurrentPermissionMode: () => {},
+      inFlightSteer: { readActiveModelSelection: () => active, isTurnInFlight: () => true,
+        supportsInFlightSteer: () => true, steerText, registerProviderAcceptedEffect: () => {}, rejectPromptBeforeProvider: rejected,
+      },
+    });
+    harness.emit({ role: 'user', content: { type: 'text', text: 'restricted' }, localId: 'restricted', meta: {},
+      callerInputConstraints: { models: [modelA], permissionModes: null },
+    });
+    active = { ...modelA, modelId: 'B' };
+    await vi.waitFor(() => expect(rejected).toHaveBeenCalledWith(expect.objectContaining({
+      localIds: ['restricted'], reason: 'model_not_granted',
+    })));
+    expect(steerText).not.toHaveBeenCalled();
+    harness.emit({ role: 'user', content: { type: 'text', text: 'unrestricted' }, localId: 'unrestricted', meta: {} });
+    await vi.waitFor(() => expect(steerText).toHaveBeenCalledWith(expect.stringContaining('unrestricted'), expect.anything()));
+  });
+
   function createSessionHarness(initialMetadata?: Metadata) {
     let userMessageHandler: ((message: UserMessage) => boolean | void) | null = null;
     let metadata =
@@ -39,7 +97,7 @@ describe('registerPermissionModeMessageQueueBinding', () => {
   }
 
   function createHarness(activeSelection: ProviderBoundModelRef = {
-    agentTargetKey: 'backend:opencode',
+    agentTargetKey: 'agent:happier.agent.opencode/opencode',
     providerConnectionId: null,
     modelId: 'default',
   }) {
@@ -54,7 +112,7 @@ describe('registerPermissionModeMessageQueueBinding', () => {
 
     const binding = registerPermissionModeMessageQueueBinding({
       session: sessionHarness.session,
-      agentTargetKey: 'backend:opencode',
+      agentTargetKey: 'agent:happier.agent.opencode/opencode',
       queue: {
         push: (message: PermissionModeQueuedPrompt, mode: PermissionModeQueuedPromptMode) =>
           queueCalls.push({ type: 'push', message, mode }),
@@ -630,7 +688,7 @@ describe('registerPermissionModeMessageQueueBinding', () => {
           permissionMode: 'default',
           inputContextBlock: LEGACY_UNKNOWN_INPUT_CONTEXT_BLOCK,
           modelSelection: {
-            agentTargetKey: 'backend:opencode',
+            agentTargetKey: 'agent:happier.agent.opencode/opencode',
             providerConnectionId: null,
             modelId: 'opencode/big-pickle',
           },
@@ -652,7 +710,7 @@ describe('registerPermissionModeMessageQueueBinding', () => {
           v: 1,
           updatedAt: 42,
           ref: {
-            agentTargetKey: 'backend:opencode',
+            agentTargetKey: 'agent:happier.agent.opencode/opencode',
             providerConnectionId: 'pc_openrouter',
             modelId: 'default',
           },
@@ -673,7 +731,7 @@ describe('registerPermissionModeMessageQueueBinding', () => {
           permissionMode: 'default',
           inputContextBlock: LEGACY_UNKNOWN_INPUT_CONTEXT_BLOCK,
           modelSelection: {
-            agentTargetKey: 'backend:opencode',
+            agentTargetKey: 'agent:happier.agent.opencode/opencode',
             providerConnectionId: 'pc_openrouter',
             modelId: 'default',
           },
@@ -684,7 +742,7 @@ describe('registerPermissionModeMessageQueueBinding', () => {
 
   it('fails closed for a legacy model-only message when the active selection is Provider-bound', () => {
     const harness = createHarness({
-      agentTargetKey: 'backend:opencode',
+      agentTargetKey: 'agent:happier.agent.opencode/opencode',
       providerConnectionId: ProviderConnectionIdSchema.parse('pc_openrouter'),
       modelId: 'provider-active',
     });
@@ -703,8 +761,8 @@ describe('registerPermissionModeMessageQueueBinding', () => {
     const harness = createHarness();
 
     for (const [localId, modelSelectionV1] of [
-      ['local-invalid-model', { v: 1, updatedAt: 42, ref: { agentTargetKey: 'backend:opencode', providerConnectionId: 'pc_1', modelId: 'invalid model' } }],
-      ['local-wrong-target', { v: 1, updatedAt: 43, ref: { agentTargetKey: 'backend:codex', providerConnectionId: 'pc_1', modelId: 'provider-model' } }],
+      ['local-invalid-model', { v: 1, updatedAt: 42, ref: { agentTargetKey: 'agent:happier.agent.opencode/opencode', providerConnectionId: 'pc_1', modelId: 'invalid model' } }],
+      ['local-wrong-target', { v: 1, updatedAt: 43, ref: { agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: 'pc_1', modelId: 'provider-model' } }],
     ] as const) {
       harness.emit({
         role: 'user',

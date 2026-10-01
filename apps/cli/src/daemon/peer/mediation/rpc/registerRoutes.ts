@@ -1,17 +1,15 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import {
-    PEER_MACHINE_RPC_DIRECT_PATH_V1,
     PEER_MACHINE_RPC_DIRECT_PATH_V2,
     PEER_MEDIATION_RECEIPTS,
     createPeerMachineRpcResultHashV1,
     type PeerMachineRpcCommandReceiptSuccessV1,
-    type PeerMachineRpcDirectResponseV1,
     type PeerMachineRpcDirectResponseV2,
 } from '@happier-dev/protocol';
 import { RPC_ERROR_CODES } from '@happier-dev/protocol/rpc';
 
 import type { DaemonPeerMediationDirectFlowObserver } from '../observability/events';
-import type { DirectRouteGrantTrustRoot } from '../verifyDirectRouteGrantV1';
+import type { DirectRouteGrantTrustRoot } from '../verifyDirectRouteGrant';
 import { createAtomicRouteGrantConsumption } from '../tunnel/grantConsumption';
 import {
     type PeerMachineRpcDirectExpectedBinding,
@@ -146,7 +144,7 @@ export function registerPeerMediationMachineRpcDirectRoutes(
     const handleRequest = async (
         body: unknown,
         signal: AbortSignal,
-    ): Promise<PeerMachineRpcDirectResponseV1 | PeerMachineRpcDirectResponseV2> => {
+    ): Promise<PeerMachineRpcDirectResponseV2> => {
         const validation = validatePeerMachineRpcDirectRequest({
             body,
             expected: options.expected,
@@ -205,7 +203,6 @@ export function registerPeerMediationMachineRpcDirectRoutes(
                     kind: 'flow.errored',
                     reasonCode: 'handler_unavailable',
                 });
-                if (validation.request.v === 1) throw error;
                 return {
                     v: 2,
                     ok: false,
@@ -265,6 +262,5 @@ export function registerPeerMediationMachineRpcDirectRoutes(
         }
     };
 
-    app.post(PEER_MACHINE_RPC_DIRECT_PATH_V1, handleRouteRequest);
     app.post(PEER_MACHINE_RPC_DIRECT_PATH_V2, handleRouteRequest);
 }

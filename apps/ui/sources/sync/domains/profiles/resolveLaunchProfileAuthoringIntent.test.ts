@@ -30,10 +30,10 @@ describe('resolveLaunchProfileAuthoringIntent', () => {
         expect(resolveLaunchProfileAuthoringIntent({ profileId: 'work', profiles: [profile], migration: undefined }))
             .toEqual({
                 profileId: 'work',
-                preferredAgentTargetKey: 'backend:claude',
+                preferredAgentTargetKey: 'agent:happier.agent.claude/claude',
                 modelSelection: {
                     ...profile.preferredModelSelection,
-                    ref: { ...profile.preferredModelSelection!.ref, agentTargetKey: 'backend:claude' },
+                    ref: { ...profile.preferredModelSelection!.ref, agentTargetKey: 'agent:happier.agent.claude/claude' },
                 },
             });
     });
@@ -53,11 +53,11 @@ describe('resolveLaunchProfileAuthoringIntent', () => {
             }]),
         })).toEqual({
             profileId: null,
-            preferredAgentTargetKey: 'backend:claude',
+            preferredAgentTargetKey: 'agent:happier.agent.claude/claude',
             modelSelection: {
                 v: 1,
                 updatedAt: 20,
-                ref: { ...providerRef, agentTargetKey: 'backend:claude' },
+                ref: { ...providerRef, agentTargetKey: 'agent:happier.agent.claude/claude' },
             },
         });
     });
@@ -112,7 +112,7 @@ describe('resolveLaunchProfileAuthoringIntent', () => {
             }]),
         })).toEqual({
             profileId: 'deepseek',
-            preferredAgentTargetKey: 'backend:claude',
+            preferredAgentTargetKey: 'agent:happier.agent.claude/claude',
             modelSelection: null,
         });
     });

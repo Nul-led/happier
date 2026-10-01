@@ -13,12 +13,12 @@ describe('materializeWorkflowRunAccountChange', () => {
 
         await materializeWorkflowRunAccountChange({
             runId: 'run-1',
-            getRun: async () => ({ run: summary }),
+            getRun: async () => ({ run: summary, metadata: null }),
             upsertRun,
             removeRun,
         });
 
-        expect(upsertRun).toHaveBeenCalledWith({ run: summary });
+        expect(upsertRun).toHaveBeenCalledWith({ run: summary, metadata: null });
         expect(removeRun).not.toHaveBeenCalled();
     });
 

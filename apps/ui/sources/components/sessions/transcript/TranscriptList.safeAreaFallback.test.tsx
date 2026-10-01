@@ -2,7 +2,8 @@ import * as React from 'react';
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { renderScreen } from '@/dev/testkit';
+import { createTestSessionTranscriptSource, renderWithSessionTranscriptSource } from '@/dev/testkit';
+import type { Message } from '@happier-dev/session-core/messages';
 import { installTranscriptCommonModuleMocks, resetTranscriptCommonModuleMockState } from './transcriptTestHelpers';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -123,14 +124,18 @@ describe('TranscriptList safe area', () => {
 
     it('uses a compact transcript gutter instead of chrome-safe area inside the list header', async () => {
         const { TranscriptList } = await import('./TranscriptList');
-        await renderScreen(
+        const messages: Message[] = [{ kind: 'user-text', id: 'u1', localId: null, createdAt: 1, text: 'hi' }];
+        const source = createTestSessionTranscriptSource({
+            sessionId: 's1', metadata: null, messages,
+            interaction: { canSendMessages: true, canApprovePermissions: true },
+        });
+        await renderWithSessionTranscriptSource(
             <TranscriptList
-                sessionId="s1"
                 datasetKey="public:s1:1"
                 metadata={null}
-                messages={[{ kind: 'user-text', id: 'u1', localId: null, createdAt: 1, text: 'hi' } as any]}
-                interaction={{ canSendMessages: true, canApprovePermissions: true }}
+                messages={messages}
             />,
+            source,
         );
 
         expect(capturedHeaderSpacerHeight).toBe(12);

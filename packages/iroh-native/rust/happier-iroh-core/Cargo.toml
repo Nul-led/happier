@@ -28,6 +28,8 @@ iroh-relay = { version = "=1.1.0", features = ["server"], optional = true }
 # Only the native filesystem key store mints a fresh endpoint seed; a browser
 # endpoint always receives its persisted seed from the caller.
 getrandom = "=0.3.3"
+futures-util = { version = "0.3", features = ["sink"] }
+tokio-tungstenite = { version = "=0.28.0", default-features = false, features = ["handshake"] }
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt", "sync", "time"] }
 
 # The browser build carries no native TCP/loopback modules, so tokio's `net`

@@ -13,6 +13,7 @@ import {
     withChatListHarnessWebScrollerDom,
 } from '@/dev/testkit/harness/chatListHarness';
 import { installChatListHarnessCommonModuleMocks } from '@/dev/testkit/harness/chatListHarnessModuleMocks';
+import { sessionAddressKey } from '@/sync/domains/session/sessionAddress';
 import {
     TranscriptSameSessionHandoffProvider,
     useTranscriptSameSessionHandoffRoute,
@@ -131,6 +132,7 @@ describe('ChatList Legend-primary host axis', () => {
     async function renderLegendPrimaryChatList() {
         return renderChatList(React.createElement(ChatList, {
             session: { ...chatListHarnessState.sessionState },
+            sessionSurfaceKey: sessionAddressKey({ serverId: 'test-server', sessionId: 'session-1' }),
         }), { flushOptions: { cycles: 0 } });
     }
 
@@ -289,7 +291,7 @@ describe('ChatList Legend-primary host axis', () => {
                 >
                     {(experience) => experience === 'classic'
                         ? <OutgoingTranscript />
-                        : <ChatList session={{ ...chatListHarnessState.sessionState }} sessionSurfaceKey={JSON.stringify(['test-server', 'session-1'])} />}
+                        : <ChatList session={{ ...chatListHarnessState.sessionState }} sessionSurfaceKey='["server-a","session-1"]' />}
                 </TranscriptSameSessionHandoffProvider>
             );
         }

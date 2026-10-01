@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import tweetnacl from 'tweetnacl';
+import * as React from 'react';
 import type { RunnerActivationBindingV1 } from '@happier-dev/protocol/ephemeralRunner/activation';
 import type { RunnerActivationProjectionV1 } from '@happier-dev/protocol/ephemeralRunner/projection';
 import { signRunnerClaimV1 } from '@happier-dev/protocol/ephemeralRunner/endpoint';
@@ -12,6 +13,11 @@ import {
     readRunnerActivationSigningKey,
 } from './runnerActivationKeyCustody';
 import { retireRunnerActivationKeyCustodyAfterVerifiedClaim } from './runnerActivationCustody';
+import { acceptRunnerCreatorActivationBinding, writePreparedRunnerCreatorLaunchCustody } from './runnerCreatorLaunchCustody';
+import { createRunnerActivationClient } from '@/sync/api/ephemeralRunner/runnerActivationClient';
+import { renderScreen } from '@/dev/testkit';
+import { NewSessionLaunchSurface } from '@/components/sessions/new/components/NewSessionLaunchSurface';
+import type { TemporaryComputerLaunchController } from '@/components/sessions/new/hooks/useTemporaryComputerLaunch';
 
 vi.mock('react-native', async () => {
     const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
@@ -125,6 +131,28 @@ describe('Runner activation custody retirement', () => {
             materialization: null,
         };
         const projection: RunnerActivationProjectionV1 = { ...claimedProjection, review };
+        await writePreparedRunnerCreatorLaunchCustody({
+            scope, activationId: custody.activationId,
+            preparedAuthoring: {
+                v: 1, actionsSettings: { v: 1, actions: {} }, mcpMaterial: null,
+                agentPluginDistribution: null,
+                authoring: {
+                    targetType: 'new_session',
+                    executionTarget: { kind: 'temporary_computer', serverId: scope.serverId, artifactTarget: 'linux-x64', workspace: binding.workspace },
+                    agentTarget: { kind: 'agent', identity: { pluginId: 'happier.agent.codex', localId: 'codex' } },
+                    permissionMode: 'default', modelSelection: null, transcriptStorage: 'persisted',
+                    profileId: null, environmentVariables: null,
+                    mcpSelection: { v: 1, managedServersEnabled: true, forceIncludeServerIds: [], forceExcludeServerIds: [] },
+                    connectedServices: null, checkoutCreationDraft: null, resumeSessionId: null, terminal: null,
+                    windowsRemoteSessionLaunchMode: null, windowsRemoteSessionConsole: null, windowsTerminalWindowName: null,
+                    acpSessionModeId: null, sessionConfigOptionOverrides: null, access: null, primaryTeamId: null,
+                    organizationPlacement: { folderId: null, tagIds: [] },
+                },
+                composer: { text: 'Inspect this', references: [], attachments: [] }, files: [],
+                attachmentDestination: { uploadLocation: 'workspace', workspaceRelativeDir: '.happier/uploads', vcsIgnoreStrategy: 'git_info_exclude', vcsIgnoreWritesEnabled: true },
+            },
+        });
+        await acceptRunnerCreatorActivationBinding(scope, claimedProjection);
 
         await expect(retireRunnerActivationKeyCustodyAfterVerifiedClaim({
             scope,
@@ -149,5 +177,42 @@ describe('Runner activation custody retirement', () => {
         await expect(openRunnerActivationKeyCustody(scope, custody.activationId)).rejects.toMatchObject({
             code: 'runner_activation_key_unavailable',
         });
+
+        // A fresh presentation mount has no process-local key handle. Retired
+        // signing authority must not turn retained creator custody into an
+        // observer, nor re-enable export after the endpoint claimed the package.
+        const surface = React.createElement(NewSessionLaunchSurface, {
+            children: React.createElement('View'), overlay: null, onRequestClose: () => undefined,
+            temporaryComputerLaunch: {
+                input: {
+                    client: createRunnerActivationClient(async () => Response.json(projection)),
+                    serverId: scope.serverId, draftId: 'draft-a', existingPublicRef: null,
+                    prepareActivation: async () => { throw new Error('Unexpected activation creation'); },
+                    persistPublicRef: () => undefined, onMaterialized: () => undefined,
+                },
+                controlRef: { current: null as TemporaryComputerLaunchController | null },
+                scope, committedTarget: null, homeLabel: 'Home A', accountLabel: null,
+                exportPackage: async () => { throw new Error('Claimed package must not export'); },
+                onActiveChange: () => undefined, onLeave: () => undefined,
+            },
+        });
+        const screen = await renderScreen(surface);
+        await vi.waitFor(() => expect(screen.findByTestId('temporary-computer-export-claimed')).not.toBeNull());
+        expect(screen.findByTestId('temporary-computer-other-device-guidance')).toBeNull();
+        expect(screen.findByTestId('temporary-computer-export')?.props.accessibilityState?.disabled).toBe(true);
+        await screen.unmount();
+
+        // The same Account on a genuinely different device has no retained custody.
+        vi.stubGlobal('window', { localStorage: {
+            getItem: () => null,
+            setItem: () => undefined,
+            removeItem: () => undefined,
+        } });
+        const observer = await renderScreen(surface);
+        await vi.waitFor(() => expect(observer.findByTestId('temporary-computer-other-device-guidance')).not.toBeNull());
+        expect(observer.findByTestId('temporary-computer-export')).toBeNull();
+        expect(observer.findByTestId('temporary-computer-retry')).toBeNull();
+        expect(observer.findByTestId('temporary-computer-cancel')).not.toBeNull();
+        await observer.unmount();
     });
 });

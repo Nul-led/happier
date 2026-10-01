@@ -20,7 +20,6 @@ describe('configuration env url fallback', () => {
     'HAPPIER_EXECUTION_RUNS_BOUNDED_TIMEOUT_MS',
     'HAPPIER_EXECUTION_RUNS_REVIEW_BOUNDED_TIMEOUT_MS',
     'HAPPIER_EXECUTION_RUNS_MAX_TURNS',
-    'HAPPIER_EXECUTION_RUNS_MAX_DEPTH',
     'HAPPIER_EXECUTION_BUDGET_MAX_CONCURRENT_TOTAL_PER_SESSION',
     'HAPPIER_EXECUTION_BUDGET_MAX_CONCURRENT_BY_CLASS_JSON',
     'HAPPIER_STACK_PROCESS_KIND',
@@ -447,7 +446,6 @@ describe('configuration env url fallback', () => {
     process.env.HAPPIER_EXECUTION_RUNS_BOUNDED_TIMEOUT_MS = '45000';
     process.env.HAPPIER_EXECUTION_RUNS_REVIEW_BOUNDED_TIMEOUT_MS = '180000';
     process.env.HAPPIER_EXECUTION_RUNS_MAX_TURNS = '9';
-    process.env.HAPPIER_EXECUTION_RUNS_MAX_DEPTH = '2';
     process.env.HAPPIER_EXECUTION_BUDGET_MAX_CONCURRENT_TOTAL_PER_SESSION = '5';
     process.env.HAPPIER_EXECUTION_BUDGET_MAX_CONCURRENT_BY_CLASS_JSON = JSON.stringify({ review: 1, automation: 2 });
 
@@ -458,7 +456,6 @@ describe('configuration env url fallback', () => {
     expect(configMod.configuration.executionRunsBoundedTimeoutMs).toBe(45000);
     expect(Reflect.get(configMod.configuration, 'executionRunsReviewBoundedTimeoutMs')).toBe(180000);
     expect(configMod.configuration.executionRunsMaxTurns).toBe(9);
-    expect(configMod.configuration.executionRunsMaxDepth).toBe(2);
     expect(configMod.configuration.executionBudgetMaxConcurrentTotalPerSession).toBe(5);
     expect(configMod.configuration.executionBudgetMaxConcurrentByClass).toEqual({ review: 1, automation: 2 });
   });

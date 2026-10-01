@@ -4,9 +4,9 @@ import type { Session } from '@/sync/domains/state/storageTypes';
 import { EncryptionCache } from '@/sync/encryption/encryptionCache';
 import { SessionEncryption } from '@/sync/encryption/sessionEncryption';
 import { createSessionMessageApplyCoalescer } from '@/sync/engine/sessions/sessionMessageApplyCoalescer';
-import type { NormalizedMessage } from '@/sync/typesRaw';
+import type { NormalizedMessage } from "@happier-dev/session-core/raw";
 
-import { resetTranscriptStreamSegmentAssemblyForTests } from '@/sync/engine/sessions/transcriptStreamSegmentAssembly';
+
 import {
     createTranscriptStreamSegmentSocketQueueController,
     type TranscriptStreamSegmentSocketQueueEntry,
@@ -360,11 +360,11 @@ describe('createTranscriptStreamSegmentSocketQueueController', () => {
 
     describe('delta composition', () => {
         beforeEach(() => {
-            resetTranscriptStreamSegmentAssemblyForTests();
+
         });
 
         afterEach(() => {
-            resetTranscriptStreamSegmentAssemblyForTests();
+
         });
 
         function buildPlainSnapshotEntry(sessionId: string, text: string, opts: { localId?: string; tick: number }): TranscriptStreamSegmentSocketQueueEntry {

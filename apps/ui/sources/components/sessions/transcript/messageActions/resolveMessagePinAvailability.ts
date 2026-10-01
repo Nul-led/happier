@@ -3,8 +3,8 @@ import {
     resolveSessionMessagePinRowIdentityKey,
     sessionMessagePinRowsMatch,
     type SessionMessagePinRole,
-} from '@/sync/domains/messages/pins/sessionMessagePinIdentity';
-import type { PersistedSessionMessagePinV1 } from '@/sync/domains/messages/pins/sessionMessagePins';
+} from "@happier-dev/session-core/pins";
+import type { PersistedSessionMessagePinV1 } from "@happier-dev/session-core/pins";
 
 export type MessagePinUnavailableReason =
     | 'missing-session'

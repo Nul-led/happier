@@ -108,7 +108,6 @@ export async function runBackendTargetStartWorkflow(
   });
   if (!composed.ok) throw invalidCommandArguments(usage, composed.message);
   const started = await executor.execute(workflow.actionId, composed.input, {
-    authority: 'present_user',
     defaultSessionId: sessionId,
   });
   const normalized = normalizeSessionStartActionResults(started);

@@ -33,8 +33,9 @@ export async function listKnownServiceDefinitionFiles(params: Readonly<{
     let entries;
     try {
       entries = await readdir(rootPath, { withFileTypes: true });
-    } catch {
-      continue;
+    } catch (error) {
+      if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') continue;
+      throw error;
     }
 
     for (const entry of entries) {

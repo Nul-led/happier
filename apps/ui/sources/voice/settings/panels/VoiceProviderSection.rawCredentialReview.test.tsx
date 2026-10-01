@@ -147,7 +147,6 @@ async function activateRawCredentialOnlyProvider(
       },
       client: {
         artifactId: 'voice-runtime-web',
-        modulePath: './voiceRuntime',
         exportName: 'activate',
       },
     }],
@@ -156,6 +155,7 @@ async function activateRawCredentialOnlyProvider(
 
   const scope = createExternalVoiceProviderActivationScope({
     pluginId,
+    occurrenceId: `${pluginId}-occurrence-1`,
     declarations: [declaration],
     hostPlatform: 'web',
   });
@@ -350,11 +350,11 @@ describe('VoiceProviderSection raw credential review reachability', () => {
       expect(sourceSelectors[0]?.props.declaration).toStrictEqual(fixture.declaration);
     }
     const externalCredentialGroups = tree.findAllByType('ItemGroup' as any).filter((group) => (
-      group.props.footer === 'settingsVoice.externalCredentials.rawFooter'
-      || group.props.footer === 'settingsVoice.externalCredentials.footer'
+      group.props.description === 'settingsVoice.externalCredentials.rawFooter'
+      || group.props.description === 'settingsVoice.externalCredentials.footer'
     ));
     expect(externalCredentialGroups).toHaveLength(1);
-    expect(externalCredentialGroups[0]?.props.footer).toBe(
+    expect(externalCredentialGroups[0]?.props.description).toBe(
       expectedRawCopy
         ? 'settingsVoice.externalCredentials.rawFooter'
         : 'settingsVoice.externalCredentials.footer',

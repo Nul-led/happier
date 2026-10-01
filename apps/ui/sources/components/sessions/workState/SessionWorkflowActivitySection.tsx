@@ -11,7 +11,6 @@ import { WorkflowAgentRow } from '@/components/workflows/presentation/WorkflowAg
 import { WorkflowPhaseHeader } from '@/components/workflows/presentation/WorkflowPhaseHeader';
 import { WorkflowRunHeader } from '@/components/workflows/presentation/WorkflowRunHeader';
 import { formatWorkflowRunStatusLabel } from '@/components/workflows/presentation/workflowStatusLabel';
-import { resolveWorkflowRunTone } from '@/components/workflows/presentation/workflowPresentation';
 
 import {
     buildWorkflowActivityRows,
@@ -138,7 +137,6 @@ const SessionWorkflowRunPanel = React.memo<SessionWorkflowRunPanelProps>((props)
                     completedAgents={props.runHeadline.completedAgents}
                     totalAgents={props.runHeadline.totalAgents}
                     rollup={headerRollup}
-                    tone={resolveWorkflowRunTone(props.runHeadline.status)}
                     expanded={expanded}
                     {...(summaryLine ? { summaryLine } : {})}
                 />

@@ -120,7 +120,7 @@ describe('bootstrapMachineSyncRuntime memory startup ordering', () => {
       startMemoryWorkerForMachine,
       startVoiceInferenceWorkerForMachine: vi.fn(async (): Promise<VoiceInferenceWorkerHandle | null> => null),
       spawnSession: vi.fn(async (): Promise<SpawnSessionResult> => ({ type: 'success', sessionId: 'session-1' })),
-      stopSession: vi.fn(async () => true),
+      stopSession: vi.fn(async () => ({ status: 'stopped' as const })),
       isSessionAlreadyRunning: vi.fn(async () => false),
       loadLocalSessionMetadataForHandoff: vi.fn(async () => null),
       beforeShutdown: vi.fn(async () => {}),
@@ -135,9 +135,12 @@ describe('bootstrapMachineSyncRuntime memory startup ordering', () => {
 
     await vi.waitFor(() => expect(startMemoryWorkerForMachine).toHaveBeenCalledOnce());
     expect(connect).not.toHaveBeenCalled();
-    expect(deletedListener).toBeNull();
+    // Directory cleanup is subscribed while memory startup is still pending;
+    // the memory consumer itself remains unavailable until startup resolves.
+    expect(deletedListener).not.toBeNull();
     expect(revokedListener).toBeNull();
-    expect(resetListener).toBeNull();
+    expect(resetListener).not.toBeNull();
+    expect(removeSessions).not.toHaveBeenCalled();
 
     memoryStartup.resolve(memoryWorker);
     await bootstrap;

@@ -23,7 +23,7 @@ describe('fetchTranscriptSemanticPage', () => {
     const fetchPage = vi.fn<FetchTranscriptRawPage>().mockResolvedValueOnce({
       messages: [
         {
-          seq: 10,
+          id: 'm10', seq: 10,
           createdAt: 100,
           messageRole: 'user',
           content: {
@@ -32,7 +32,7 @@ describe('fetchTranscriptSemanticPage', () => {
           },
         },
         {
-          seq: 9,
+          id: 'm9', seq: 9,
           createdAt: 90,
           messageRole: 'user',
           content: {
@@ -63,7 +63,7 @@ describe('fetchTranscriptSemanticPage', () => {
 
     expect(page.items).toEqual([
       expect.objectContaining({
-        id: '10',
+        id: 'm10',
         role: 'user',
         text: 'first message',
       }),
@@ -77,12 +77,12 @@ describe('fetchTranscriptSemanticPage', () => {
       .mockResolvedValueOnce({
         messages: [
           {
-            seq: 10,
+            id: 'm10', seq: 10,
             createdAt: 100,
             content: { t: 'plain', v: { role: 'agent', content: { type: 'codex', data: { type: 'token_count' } } } },
           },
           {
-            seq: 9,
+            id: 'm9', seq: 9,
             createdAt: 90,
             content: { t: 'plain', v: { role: 'agent', content: { type: 'codex', data: { type: 'token_count' } } } },
           },
@@ -124,7 +124,7 @@ describe('fetchTranscriptSemanticPage', () => {
     const fetchPage = vi.fn<FetchTranscriptRawPage>().mockResolvedValueOnce({
       messages: [
         {
-          seq: 10,
+          id: 'm10', seq: 10,
           createdAt: 100,
           content: {
             t: 'plain',
@@ -177,7 +177,7 @@ describe('fetchTranscriptSemanticPage', () => {
     const fetchPage = vi.fn<FetchTranscriptRawPage>().mockResolvedValueOnce({
       messages: [
         {
-          seq: 10,
+          id: 'm10', seq: 10,
           createdAt: 100,
           content: {
             t: 'plain',
@@ -191,7 +191,7 @@ describe('fetchTranscriptSemanticPage', () => {
           },
         },
         {
-          seq: 9,
+          id: 'm9', seq: 9,
           createdAt: 90,
           content: {
             t: 'plain',
@@ -225,7 +225,7 @@ describe('fetchTranscriptSemanticPage', () => {
 
     expect(page.items).toEqual([
       expect.objectContaining({
-        id: '9',
+        id: 'm9',
         kind: 'usage',
       }),
     ]);
@@ -251,7 +251,7 @@ describe('fetchTranscriptSemanticPage', () => {
     const fetchPage = vi.fn<FetchTranscriptRawPage>().mockResolvedValueOnce({
       messages: [
         {
-          seq: 10,
+          id: 'm10', seq: 10,
           createdAt: 100,
           messageRole: 'agent',
           content: {
@@ -272,7 +272,7 @@ describe('fetchTranscriptSemanticPage', () => {
           },
         },
         {
-          seq: 11,
+          id: 'm11', seq: 11,
           createdAt: 101,
           messageRole: 'agent',
           content: {
@@ -336,7 +336,7 @@ describe('fetchTranscriptSemanticPage', () => {
     const fetchPage = vi.fn<FetchTranscriptRawPage>().mockResolvedValueOnce({
       messages: [
         {
-          seq: 11,
+          id: 'm11', seq: 11,
           createdAt: 101,
           messageRole: 'agent',
           content: {
@@ -383,7 +383,7 @@ describe('fetchTranscriptSemanticPage', () => {
     const fetchPage = vi.fn<FetchTranscriptRawPage>().mockResolvedValueOnce({
       messages: [
         {
-          seq: 11,
+          id: 'm11', seq: 11,
           createdAt: 101,
           messageRole: 'agent',
           content: {

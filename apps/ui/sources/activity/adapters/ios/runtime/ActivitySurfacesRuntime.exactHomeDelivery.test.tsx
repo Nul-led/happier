@@ -164,7 +164,7 @@ vi.mock('@/hooks/teams/useSessionAudienceContext', async () => {
 });
 
 vi.mock('@/sync/domains/state/storage', async () => {
-    const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
+    const { createStorageModuleStub, createUseSettingMock } = await import('@/dev/testkit/mocks/storage');
     const buildState = () => {
         const sessionListRowsByServerId: Record<string, Record<string, unknown>> = {};
         const ordinarySessionListMembershipByServerId: Record<string, string[]> = {};
@@ -205,7 +205,7 @@ vi.mock('@/sync/domains/state/storage', async () => {
     );
     return createStorageModuleStub({
         storage,
-        useSettings: () => settingsState.value,
+        useSetting: createUseSettingMock({ fallback: (key) => settingsParse(settingsState.value)[key] }),
         useLocalSettings: () => localSettingsState.value,
         useIsDataReady: () => true,
     });

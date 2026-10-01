@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import { createEnvKeyScope } from '@/testkit/env/envScope';
 
@@ -13,6 +13,13 @@ const envScope = createEnvKeyScope([
   'HAPPIER_ACTIVE_SERVER_ID',
   'HAPPIER_SERVER_URL',
   'HAPPIER_WEBAPP_URL',
+  'HAPPIER_DAEMON_SERVICE_PLATFORM',
+  'HAPPIER_DAEMON_SERVICE_USER_HOME_DIR',
+  'HAPPIER_DAEMON_SERVICE_HAPPIER_HOME_DIR',
+  'HAPPIER_DAEMON_SERVICE_CHANNEL',
+  'HAPPIER_DAEMON_SERVICE_TARGET_MODE',
+  'HAPPIER_DAEMON_SERVICE_INSTANCE_ID',
+  'HAPPIER_DAEMON_LIFECYCLE_SCOPE_ID',
 ]);
 
 describe('multiDaemon daemon ownership path resolution', () => {
@@ -277,5 +284,69 @@ describe('multiDaemon daemon ownership path resolution', () => {
     } finally {
       await sleepy.kill();
     }
+  });
+
+  it('reports for each server the background service that serves it: its pinned service, or the default one for the selected server', async () => {
+    homeDir = join(tmpdir(), `happier-multi-daemon-service-per-server-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    const happierHomeDir = join(homeDir, '.happier');
+    envScope.patch({
+      HAPPIER_HOME_DIR: happierHomeDir,
+      HAPPIER_RELEASE_RING: undefined,
+      HAPPIER_ACTIVE_SERVER_ID: undefined,
+      HAPPIER_SERVER_URL: undefined,
+      HAPPIER_WEBAPP_URL: undefined,
+      HAPPIER_DAEMON_SERVICE_PLATFORM: 'linux',
+      HAPPIER_DAEMON_SERVICE_USER_HOME_DIR: homeDir,
+      HAPPIER_DAEMON_SERVICE_HAPPIER_HOME_DIR: happierHomeDir,
+      HAPPIER_DAEMON_SERVICE_CHANNEL: 'stable',
+      HAPPIER_DAEMON_SERVICE_TARGET_MODE: undefined,
+      HAPPIER_DAEMON_SERVICE_INSTANCE_ID: undefined,
+      HAPPIER_DAEMON_LIFECYCLE_SCOPE_ID: undefined,
+    });
+    mkdirSync(happierHomeDir, { recursive: true });
+    const profile = (id: string, url: string) => ({ id, name: id, serverUrl: url, webappUrl: url, createdAt: 1, updatedAt: 1, lastUsedAt: 1 });
+    writeFileSync(join(happierHomeDir, 'settings.json'), JSON.stringify({
+      schemaVersion: 6,
+      activeServerId: 'cloud',
+      servers: {
+        cloud: profile('cloud', 'https://api.happier.dev'),
+        personal: profile('personal', 'https://personal.example.test'),
+        company: profile('company', 'https://company.example.test'),
+      },
+    }), 'utf-8');
+
+    const { planDaemonServiceInstall } = await import('./service/plan');
+    const writeServiceDefinition = (params: Readonly<{ targetMode: 'pinned' | 'default-following'; serverId: string; serverUrl: string }>) => {
+      const plan = planDaemonServiceInstall({
+        platform: 'linux',
+        channel: 'stable',
+        targetMode: params.targetMode,
+        instanceId: params.serverId,
+        activeServerId: params.serverId,
+        userHomeDir: homeDir,
+        happierHomeDir,
+        serverUrl: params.serverUrl,
+        webappUrl: params.serverUrl,
+        publicServerUrl: params.serverUrl,
+        nodePath: '/usr/local/bin/happier',
+        entryPath: '',
+      });
+      const file = plan.files[0]!;
+      mkdirSync(dirname(file.path), { recursive: true });
+      writeFileSync(file.path, file.content, 'utf-8');
+      return file.path;
+    };
+    const personalServicePath = writeServiceDefinition({ targetMode: 'pinned', serverId: 'personal', serverUrl: 'https://personal.example.test' });
+    const defaultServicePath = writeServiceDefinition({ targetMode: 'default-following', serverId: 'default', serverUrl: 'https://api.happier.dev' });
+
+    vi.resetModules();
+    const { listDaemonStatusesForAllKnownServers } = await import('./multiDaemon');
+    const entries = await listDaemonStatusesForAllKnownServers();
+    const byId = new Map(entries.map((entry) => [entry.serverId, entry]));
+
+    expect(byId.get('personal')?.service).toMatchObject({ installed: true, installedPath: personalServicePath });
+    expect(byId.get('cloud')?.service).toMatchObject({ installed: true, installedPath: defaultServicePath });
+    expect(byId.get('company')?.service.installed).toBe(false);
+    expect(byId.get('company')?.service.installedPath).not.toBe(defaultServicePath);
   });
 });

@@ -24,7 +24,7 @@ import { startFileWatcher } from '@/integrations/watcher/startFileWatcher';
 export type ExternalSessionObservationResourceIdentity = Readonly<{
     pluginId: string;
     agentLocalId: string;
-    pluginGeneration: string;
+    occurrenceId: string;
     resourceKey: ExternalAgentObservationResourceKeyV1;
     retirementSignal?: AbortSignal;
 }>;
@@ -150,14 +150,14 @@ type ExternalSessionObservationReconcilerParams = Readonly<{
         sessionId: string;
         resource: Readonly<{
             linkGeneration: string;
-            pluginGeneration: string;
+            occurrenceId: string;
         }>;
     }>) => unknown | Promise<unknown>;
     isTranscriptRefreshDemanded?: (input: Readonly<{
         sessionId: string;
         resource: Readonly<{
             linkGeneration: string;
-            pluginGeneration: string;
+            occurrenceId: string;
         }>;
     }>) => boolean;
     reconcileResource?: (input: Readonly<{
@@ -189,7 +189,7 @@ function resourceIdentityKey(identity: ExternalSessionObservationResourceIdentit
     return JSON.stringify([
         identity.pluginId,
         identity.agentLocalId,
-        identity.pluginGeneration,
+        identity.occurrenceId,
         identity.resourceKey,
     ]);
 }
@@ -1083,7 +1083,7 @@ export function createExternalSessionObservationReconciler(
             sessionId: link.identity.sessionId,
             resource: {
                 linkGeneration: link.identity.linkGeneration,
-                pluginGeneration: link.resource.identity.pluginGeneration,
+                occurrenceId: link.resource.identity.occurrenceId,
             },
         };
         if (params.isTranscriptRefreshDemanded?.(input) !== true) return;

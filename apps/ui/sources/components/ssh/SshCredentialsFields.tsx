@@ -1,5 +1,5 @@
 import React from 'react';
-import { View } from 'react-native';
+import { ScrollView, View } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
 import { parseSshTarget } from '@happier-dev/protocol';
@@ -43,7 +43,7 @@ export const SshCredentialsFields = React.memo(function SshCredentialsFields(pro
     value: SshCredentialsDraft;
     supportedAuthModes?: ReadonlyArray<SshAuthMode>;
     disabled?: boolean;
-    layoutVariant?: 'settings' | 'wizard';
+    layoutVariant?: 'settings' | 'form';
     onChange: (next: SshCredentialsDraft) => void;
     onChooseIdentityFile?: () => void;
     afterAuthGroups?: React.ReactNode;
@@ -58,7 +58,7 @@ export const SshCredentialsFields = React.memo(function SshCredentialsFields(pro
     const resolveTestID = (suffix: keyof NonNullable<typeof testIDs> | string) => `${props.testIDPrefix}-${suffix}`;
     const margins = theme.margins ?? lightTheme.margins;
     const layoutVariant = props.layoutVariant ?? 'settings';
-    const isWizardLayout = layoutVariant === 'wizard';
+    const isFormLayout = layoutVariant === 'form';
     const supportedAuthModes = props.supportedAuthModes ?? DEFAULT_SSH_AUTH_MODES;
     const supportsAgentAuth = supportedAuthModes.includes('agent');
     const supportsKeyfileAuth = supportedAuthModes.includes('keyfile');
@@ -211,48 +211,49 @@ export const SshCredentialsFields = React.memo(function SshCredentialsFields(pro
 
     return (
         <>
-            {isWizardLayout ? (
-                <View style={{ gap: margins.sm }}>
-                    <MachineSetupTextField
-                        testID={testIDs.sshUsername ?? resolveTestID('sshUsernameInput')}
-                        label={t('settings.machineSetupRemoteSshUsernameLabel')}
-                        placeholder={t('settings.machineSetupRemoteSshUsernamePlaceholder')}
-                        value={value.username}
-                        editable={!formDisabled}
-                        autoCapitalize="none"
-                        autoCorrect={false}
-                        onChangeText={(nextUsername) => {
-                            updateValue({
-                                username: nextUsername.trim(),
-                            });
-                        }}
-                    />
-                    <View style={{ flexDirection: 'row', gap: margins.sm }}>
-                        <View style={{ flex: 1 }}>
-                            <MachineSetupTextField
-                                testID={testIDs.sshHost ?? resolveTestID('sshHostInput')}
-                                label={t('settings.machineSetupRemoteSshHostLabel')}
-                                placeholder={t('settings.machineSetupRemoteSshHostPlaceholder')}
-                                value={value.host}
-                                editable={!formDisabled}
-                                autoCapitalize="none"
-                                autoCorrect={false}
-                                onChangeText={handleHostChange}
-                            />
-                        </View>
-                        <View style={{ width: 110 }}>
-                            <MachineSetupTextField
-                                testID={testIDs.sshPort ?? resolveTestID('sshPortInput')}
-                                label={t('settings.machineSetupRemoteSshPortLabel')}
-                                placeholder={t('settings.machineSetupRemoteSshPortPlaceholder')}
-                                value={value.port}
-                                editable={!formDisabled}
-                                keyboardType="number-pad"
-                                autoCapitalize="none"
-                                autoCorrect={false}
-                                onChangeText={handlePortChange}
-                            />
-                        </View>
+            {isFormLayout ? (
+                // Host · User · Port on one line (lab `add-flows` M3); narrow widths wrap user and port under the host.
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: margins.sm }}>
+                    <View style={{ flexGrow: 2, flexBasis: 180, minWidth: 0 }}>
+                        <MachineSetupTextField
+                            testID={testIDs.sshHost ?? resolveTestID('sshHostInput')}
+                            label={t('settings.machineSetupRemoteSshHostLabel')}
+                            placeholder={t('settings.machineSetupRemoteSshHostPlaceholder')}
+                            value={value.host}
+                            editable={!formDisabled}
+                            autoCapitalize="none"
+                            autoCorrect={false}
+                            onChangeText={handleHostChange}
+                        />
+                    </View>
+                    <View style={{ flexGrow: 1.4, flexBasis: 120, minWidth: 0 }}>
+                        <MachineSetupTextField
+                            testID={testIDs.sshUsername ?? resolveTestID('sshUsernameInput')}
+                            label={t('settings.machineSetupRemoteSshUsernameLabel')}
+                            placeholder={t('settings.machineSetupRemoteSshUsernamePlaceholder')}
+                            value={value.username}
+                            editable={!formDisabled}
+                            autoCapitalize="none"
+                            autoCorrect={false}
+                            onChangeText={(nextUsername) => {
+                                updateValue({
+                                    username: nextUsername.trim(),
+                                });
+                            }}
+                        />
+                    </View>
+                    <View style={{ flexGrow: 0, flexBasis: 88 }}>
+                        <MachineSetupTextField
+                            testID={testIDs.sshPort ?? resolveTestID('sshPortInput')}
+                            label={t('settings.machineSetupRemoteSshPortLabel')}
+                            placeholder={t('settings.machineSetupRemoteSshPortPlaceholder')}
+                            value={value.port}
+                            editable={!formDisabled}
+                            keyboardType="number-pad"
+                            autoCapitalize="none"
+                            autoCorrect={false}
+                            onChangeText={handlePortChange}
+                        />
                     </View>
                 </View>
             ) : (
@@ -297,18 +298,39 @@ export const SshCredentialsFields = React.memo(function SshCredentialsFields(pro
                 </ItemGroup>
             )}
 
-            {isWizardLayout ? (
-                <View style={{ gap: margins.sm }}>
-                    <Text style={{ color: theme.colors.text.secondary }}>
-                        {t('settings.machineSetupRemoteSshAuthMethodLabel')}
-                    </Text>
-                    <SegmentedTabBar
-                        tabs={authTabs}
-                        activeTabId={value.authMode}
-                        onSelectTab={handleAuthModeChange}
-                        testIDPrefix={testIDs.sshAuthMethod ?? resolveTestID('sshAuthMethod')}
-                        compact={true}
-                    />
+            {isFormLayout ? (
+                // "Sign in with" and what it means on the left, the choice on the right; stacked when narrow.
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: margins.sm }}>
+                    <View style={{ flexGrow: 1, flexBasis: 160, minWidth: 0 }}>
+                        <Text style={{ color: theme.colors.text.primary }}>
+                            {t('settings.machineSetupRemoteSshAuthMethodLabel')}
+                        </Text>
+                        <Text style={{ color: theme.colors.text.secondary, fontSize: 13, lineHeight: 18 }}>
+                            {t(value.authMode === 'keyfile'
+                                ? 'addFlows.sshSignInKeyFile'
+                                : value.authMode === 'password'
+                                    ? 'addFlows.sshSignInPassword'
+                                    : 'addFlows.sshSignInAgent')}
+                        </Text>
+                    </View>
+                    {/* Long translations stay reachable: the choice scrolls rather than clipping a label. */}
+                    <ScrollView
+                        testID={`${testIDs.sshAuthMethod ?? resolveTestID('sshAuthMethod')}-scroller`}
+                        horizontal
+                        showsHorizontalScrollIndicator={false}
+                        style={{ flexGrow: 0, maxWidth: '100%' }}
+                    >
+                        <SegmentedTabBar
+                            role="radiogroup"
+                            tabs={authTabs}
+                            activeTabId={value.authMode}
+                            onSelectTab={handleAuthModeChange}
+                            testIDPrefix={testIDs.sshAuthMethod ?? resolveTestID('sshAuthMethod')}
+                            accessibilityLabel={t('settings.machineSetupRemoteSshAuthMethodLabel')}
+                            segmentSizing="content"
+                            targetSize="platform"
+                        />
+                    </ScrollView>
                 </View>
             ) : (
                 <ItemGroup>
@@ -320,7 +342,7 @@ export const SshCredentialsFields = React.memo(function SshCredentialsFields(pro
 
             {supportsKeyfileAuth && value.authMode === 'keyfile' ? (
                 <>
-                    {isWizardLayout ? (
+                    {isFormLayout ? (
                         <View style={{ gap: margins.sm }}>
                             {renderIdentityFileField()}
                             {renderPrivateKeyPasteField()}
@@ -346,7 +368,7 @@ export const SshCredentialsFields = React.memo(function SshCredentialsFields(pro
                         </ItemGroup>
                     )}
 
-                    {!isWizardLayout && props.onChooseIdentityFile ? (
+                    {!isFormLayout && props.onChooseIdentityFile ? (
                         <ItemGroup>
                             <Item
                                 testID={testIDs.chooseIdentityFile ?? resolveTestID('chooseIdentityFile')}
@@ -360,7 +382,7 @@ export const SshCredentialsFields = React.memo(function SshCredentialsFields(pro
             ) : null}
 
             {supportsPasswordAuth && value.authMode === 'password' ? (
-                isWizardLayout ? (
+                isFormLayout ? (
                     <View style={{ gap: margins.sm }}>
                         {renderPasswordField()}
                     </View>

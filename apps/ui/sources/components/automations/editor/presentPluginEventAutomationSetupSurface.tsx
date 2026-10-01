@@ -124,7 +124,7 @@ function PluginEventAutomationSetupSurfaceModal(
         boundaryResetKey: [
             setupSurface.contribution.pluginId,
             setupSurface.contribution.localId,
-            setupSurface.immutableGenerationId,
+            setupSurface.occurrenceId,
             setupSurface.projectionGeneration,
         ].join(':'),
         physicalTarget: Object.freeze({ kind: 'app' as const }),
@@ -167,7 +167,6 @@ export async function presentPluginEventAutomationSetupSurface(params: Readonly<
         || !readPluginSurfaceEphemeralMountBinding(setupSurface)
         || setupSurface.selectedRenderer.availability.state !== 'available'
         || plugin?.enabled !== true
-        || plugin.immutableGenerationId !== setupSurface.immutableGenerationId
         || params.projection.pluginProjectionV2?.generation !== setupSurface.projectionGeneration
         || params.signal?.aborted
         || !params.accountLifetime.isCurrent()

@@ -6,7 +6,6 @@ import type { HomeCarrier } from '@/sync/runtime/homeCarrier';
 import { ServerScopedTransportUnavailableError } from '@/sync/runtime/homeCarrier';
 import {
     acquireEligibleHomeCarrier,
-    drainRetainedHomeCarrierReleases,
 } from '@/sync/runtime/homeCarrierPolicy';
 import type { HomeConnectionDescriptorV1 } from '@happier-dev/protocol';
 
@@ -65,14 +64,6 @@ export function onceAsync(release: () => Promise<void>): () => Promise<void> {
 }
 
 /**
- * Thin compatibility name for the existing scoped-feature caller. The carrier
- * owner retains and retries the physical releases.
- */
-export async function drainRetainedServerScopedTransportReleases(): Promise<void> {
-    await drainRetainedHomeCarrierReleases();
-}
-
-/**
  * Resolves one Home's stable identity/audience and acquired request carrier.
  * Canonical identity remains the reachability key; the verified runtime origin
  * is mutable transport metadata and is never persisted as the Home URL.
@@ -96,7 +87,6 @@ export async function resolveServerScopedTransport(params: Readonly<{
     if (descriptor) {
         const acquired = await acquireEligibleHomeCarrier({
             mode: 'initial_selection',
-            applicationCarrierEligibility: 'automatic',
             descriptor,
             verification: { kind: 'authenticated', token: params.credentials.token },
             credentials: params.credentials,

@@ -1,5 +1,6 @@
 import { createBackoff, delay, linearBackoffDelay } from "@/utils/timing/time";
 import type { PauseController } from "@/utils/timing/pauseController";
+import { shouldRetryError } from '@/sync/runtime/connectivity/transientConnectivityErrors';
 
 type InvalidateSyncCycleOutcome =
     | Readonly<{ ok: true }>
@@ -66,19 +67,7 @@ export class InvalidateSync {
         };
         this._shouldRetry =
             opts?.shouldRetry
-            ?? ((e: any) => {
-                // Default: do not retry explicitly non-retryable errors.
-                // Duck-typed to avoid coupling this util to higher-level error classes.
-                if (e && typeof e === 'object') {
-                    if ((e as any).retryable === false) {
-                        return false;
-                    }
-                    if (typeof (e as any).canTryAgain === 'boolean' && (e as any).canTryAgain === false) {
-                        return false;
-                    }
-                }
-                return true;
-            });
+            ?? shouldRetryError;
     }
 
     invalidate() {

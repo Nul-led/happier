@@ -2,6 +2,7 @@ import * as React from 'react';
 import { Platform } from 'react-native';
 import { describe, expect, it, vi } from 'vitest';
 import { act } from 'react-test-renderer';
+import type { TerminalNativeQaRendererCrashInjectionResult } from '@happier-dev/terminal-native';
 import { renderScreen } from '@/dev/testkit';
 import type { EmbeddedTerminalRendererHandle } from '@/components/terminal/embedded/embeddedTerminalRendererHandle';
 
@@ -35,7 +36,11 @@ const nativeAvailabilityState = vi.hoisted(() => ({
 
 const nativeQaState = vi.hoisted(() => ({
     enabled: false,
-    injectRendererCrash: vi.fn(async (_surfaceId: string) => ({ injected: false, reason: 'qa-disabled' })),
+    injectRendererCrash: vi.fn<(
+        surfaceId: string,
+    ) => Promise<TerminalNativeQaRendererCrashInjectionResult>>(
+        async (_surfaceId: string) => ({ injected: false, reason: 'qa-disabled' }),
+    ),
 }));
 
 const localSettingState = vi.hoisted(() => ({
@@ -1100,6 +1105,7 @@ describe('EmbeddedTerminalPane native renderer selection', () => {
                 nativeRenderer={{
                     featureEnabled: true,
                     platform: 'ios',
+                    accessibilityAccepted: false,
                     packageProofAccepted: true,
                     crashFallbackAvailable: true,
                     availability: {

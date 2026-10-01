@@ -1,6 +1,10 @@
 import {
     ACTIVITY_REMOTE_ALERT_POLICY_EVENT_V1,
+    ActivityRemoteAlertEventV2Schema,
     PUSH_NOTIFICATION_CATEGORY_IDS,
+    resolveActivityEventIdentityV2,
+    resolveActivityRequestEventIdentityV1,
+    resolveActivityTranscriptLocalIdEventIdentityV1,
 } from '@happier-dev/protocol';
 
 import { localSettingsParse, type LocalSettings } from '@/sync/domains/settings/localSettings';
@@ -10,7 +14,8 @@ import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
 import type { ActivityAttentionDeliveryChannel, ActivityAttentionDeliveryEventKind } from '../delivery/activityAttentionDeliveryPlanTypes';
 import { readExactHomeAccountSettings } from '../delivery/useExactHomeAccountSettings';
 import { resolveActivityAttentionDeliveryPlan } from '../delivery/resolveActivityAttentionDeliveryPlan';
-import { noteActivityAlertPresented } from './remoteAlerts/activityAlertPresentationNotes';
+import { consumeOtherLegActivityAlertPresentation, noteActivityAlertPresented } from './remoteAlerts/activityAlertPresentationNotes';
+import { REMOTE_ALERT_EVENT_KIND, type ActivityAlertEventKind } from './remoteAlerts/activityRemoteAlertRouting';
 import { resolveRemoteAlertForegroundPresentation } from './remoteAlerts/resolveRemoteAlertForegroundPresentation';
 import { resolveNotificationSavedHome } from './resolveNotificationSavedHome';
 
@@ -21,6 +26,9 @@ type ForegroundNotificationArrival = Readonly<{
     sessionId: string | null;
     event: ActivityAttentionDeliveryEventKind;
     channel: ActivityAttentionDeliveryChannel;
+    personalEvent: ActivityAlertEventKind;
+    eventIdentity?: string;
+    committedLocalId?: string;
 }>;
 
 function readTrimmedString(record: Readonly<Record<string, unknown>>, key: string): string | null {
@@ -50,12 +58,27 @@ function resolveArrival(content: Readonly<{ data?: unknown; categoryIdentifier?:
     if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
     const record = data as Readonly<Record<string, unknown>>;
     const sessionId = readTrimmedString(record, 'sessionId');
-    const event = readArrivalEvent(content.categoryIdentifier);
+    const parsedEvent = ActivityRemoteAlertEventV2Schema.safeParse(record.activityEvent);
+    if (record.activityEvent !== undefined && !parsedEvent.success) return null;
+    const event = parsedEvent.success
+        ? ACTIVITY_REMOTE_ALERT_POLICY_EVENT_V1[parsedEvent.data.type]
+        : readArrivalEvent(content.categoryIdentifier);
+    const personalEvent = parsedEvent.success
+        ? REMOTE_ALERT_EVENT_KIND[parsedEvent.data.type]
+        : event === 'permission_request' ? 'permission_required'
+            : event === 'user_action_request' ? 'user_action_required' : 'ready';
+    const committedLocalId = personalEvent === 'ready' ? readTrimmedString(record, 'activityEventLocalId') ?? undefined : undefined;
+    const requestId = readTrimmedString(record, 'requestId');
+    const eventIdentity = parsedEvent.success ? resolveActivityEventIdentityV2(parsedEvent.data)
+        : requestId && (personalEvent === 'permission_required' || personalEvent === 'user_action_required')
+            ? resolveActivityRequestEventIdentityV1(requestId)
+            : committedLocalId ? resolveActivityTranscriptLocalIdEventIdentityV1(committedLocalId) : undefined;
+    const identity = { personalEvent, eventIdentity, committedLocalId };
     const localServerId = readTrimmedString(record, 'serverId');
-    if (localServerId) return { serverId: localServerId, sessionId, event, channel: 'local_notification' };
+    if (localServerId) return { serverId: localServerId, sessionId, event, channel: 'local_notification', ...identity };
     const serverUrl = readTrimmedString(record, 'serverUrl');
     const home = serverUrl ? resolveNotificationSavedHome({ serverId: null, serverUrl }) : null;
-    return home ? { serverId: home.id, sessionId, event, channel: 'expo_push' } : null;
+    return home ? { serverId: home.id, sessionId, event, channel: 'expo_push', ...identity } : null;
 }
 
 /**
@@ -66,8 +89,8 @@ function resolveArrival(content: Readonly<{ data?: unknown; categoryIdentifier?:
  * channel, suppresses it only while that exact Home Session is visible, and asks
  * the canonical delivery-plan owner. The active Home's Account policy is never a
  * substitute, and a Home whose Account settings this device cannot name fails
- * closed. A presented Home alert is noted so the device's own local leg does not
- * repeat the same committed event.
+ * closed. Every presented committed event is noted so another transport leg
+ * does not repeat it, including a rich push sent before the transcript ACK.
  */
 export async function resolveForegroundNotificationBehavior(params: Readonly<{
     /** The arriving Expo notification content. */
@@ -88,6 +111,8 @@ export async function resolveForegroundNotificationBehavior(params: Readonly<{
             sessionId: target.address.sessionId,
             event: ACTIVITY_REMOTE_ALERT_POLICY_EVENT_V1[target.alert.event.type],
             channel: 'expo_push',
+            personalEvent: target.event,
+            eventIdentity: target.eventIdentity,
         }
         : resolveArrival(params.content);
     if (!arrival) return 'off';
@@ -104,7 +129,7 @@ export async function resolveForegroundNotificationBehavior(params: Readonly<{
     const accountSettings = resolution.kind === 'bound'
         ? readExactHomeAccountSettings(resolution.scope)
         : null;
-    if (!accountSettings) return 'off';
+    if (!accountSettings || resolution.kind !== 'bound') return 'off';
 
     const plan = resolveActivityAttentionDeliveryPlan({
         localSettings: localSettingsParse(params.localSettings ?? {}),
@@ -122,13 +147,20 @@ export async function resolveForegroundNotificationBehavior(params: Readonly<{
         : plan.delivery === 'silent' && plan.foregroundBehavior === 'full'
             ? 'silent'
             : plan.foregroundBehavior;
-    if (target?.eventIdentity && behavior !== 'off') {
-        noteActivityAlertPresented({
-            address: target.address,
-            event: target.event,
-            identity: target.eventIdentity,
-            source: 'home_remote_alert',
-        });
+    if (arrival.sessionId && arrival.eventIdentity && behavior !== 'off') {
+        const presentation = {
+            address: { serverId: arrival.serverId, sessionId: arrival.sessionId },
+            accountId: resolution.scope.accountId,
+            event: arrival.personalEvent,
+            identity: arrival.eventIdentity,
+            committedLocalId: arrival.committedLocalId,
+            source: target ? 'home_remote_alert' as const
+                : arrival.channel === 'local_notification' ? 'local_notification' as const : 'rich_push' as const,
+        };
+        // This synchronous decision follows the async policy read, so concurrent
+        // local and remote arrivals cannot both win foreground presentation.
+        if (consumeOtherLegActivityAlertPresentation(presentation)) return 'off';
+        noteActivityAlertPresented(presentation);
     }
     return behavior;
 }

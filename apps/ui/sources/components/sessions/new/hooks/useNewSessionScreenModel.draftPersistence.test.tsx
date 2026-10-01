@@ -1,3 +1,4 @@
+import { authoringMemoryDefaults, projectAuthoringMemory } from '@/sync/store/domains/authoringMemory';
 import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -10,12 +11,12 @@ import { renderScreen } from '@/dev/testkit/render/renderScreen';
 import { createMachineFixture } from '@/dev/testkit/fixtures/machineFixtures';
 import { installNewSessionScreenModelCommonModuleMocks } from './newSessionScreenModelTestHelpers';
 import { settingsDefaults } from '@/sync/domains/settings/settings';
+import { profileDefaults } from '@/sync/domains/profiles/profile';
 import {
     attachCurrentSessionAuthoringSelectionsRuntimeProjection,
     mergeCurrentFavoriteModelSelectionsIntoRaw,
     mergeCurrentRememberedEngineSelectionsIntoRaw,
     readRetainedFavoriteModelSelectionsV1,
-    readRetainedRememberedEngineSelectionsByScopeV1,
 } from '@/sync/domains/settings/sessionAuthoringSelectionPersistence';
 import { buildRememberedEngineSelectionScopeKey } from '@/sync/domains/session/authoring/rememberedEngineSelections';
 import { ProviderConnectionIdSchema, SessionModelSelectionV1Schema } from '@happier-dev/protocol';
@@ -438,7 +439,9 @@ function buildMockStorageState() {
             ...settingsDefaults,
             ...settingsState,
         }),
+        authoringMemory: projectAuthoringMemory(authoringMemoryState),
         profileScope: activeServerAccountScopeState.value,
+        profile: profileDefaults,
         createSessionActionDraft: createSessionActionDraftMock,
         sessions: mockEmptySessions,
         workspaceLocations: workspaceGraphState.workspaceLocations,
@@ -521,9 +524,7 @@ function readMockMachineListByServerId(): Record<string, unknown> {
 
 const settingsState = {
     ...settingsDefaults,
-    recentMachinePaths: [] as Array<{ machineId: string; path: string }>,
     lastUsedAgent: 'codex',
-    lastUsedProfile: null as string | null,
     lastUsedPermissionMode: 'default',
     useEnhancedSessionWizard: false,
     useProfiles: false,
@@ -548,6 +549,8 @@ const settingsState = {
         backends: [] as Array<Record<string, unknown>>,
     },
 };
+
+const authoringMemoryState = { ...authoringMemoryDefaults };
 
 installNewSessionScreenModelCommonModuleMocks({
     reactNative: async () => {
@@ -701,15 +704,16 @@ function installNewSessionScreenModelStorageMock() {
                 ] as const;
             },
             useCurrentRememberedEngineSelectionsByScopeV1Mutable: () => {
-                const settings = getMockStorageState().settings;
+                const memory = getMockStorageState().authoringMemory;
                 return [
-                    settings.currentRememberedEngineSelectionsByScopeV1,
-                    (next: typeof settings.currentRememberedEngineSelectionsByScopeV1) => {
-                        setMockSettingValue('lastEngineSelectionsByScopeV1', mergeCurrentRememberedEngineSelectionsIntoRaw({
-                            rawSelections: readRetainedRememberedEngineSelectionsByScopeV1(settings),
-                            currentSelections: settings.currentRememberedEngineSelectionsByScopeV1,
+                    memory.currentRememberedEngineSelectionsByScopeV1,
+                    (next: typeof memory.currentRememberedEngineSelectionsByScopeV1) => {
+                        authoringMemoryState.lastEngineSelectionsByScopeV1 = mergeCurrentRememberedEngineSelectionsIntoRaw({
+                            rawSelections: memory.lastEngineSelectionsByScopeV1,
+                            currentSelections: memory.currentRememberedEngineSelectionsByScopeV1,
                             nextSelections: next,
-                        }));
+                        });
+                        notifyMockStorageSubscribers();
                     },
                 ] as const;
             },
@@ -888,20 +892,6 @@ vi.mock('@/utils/sessions/recentPaths', () => ({
     getRecentPathsForMachine: () => [],
 }));
 
-vi.mock('@/hooks/auth/useCLIDetection', () => ({
-    useCLIDetection: () => ({
-        available: { codex: true, claude: true } as any,
-        login: {} as any,
-        authStatus: {} as any,
-        resolvedPath: {} as any,
-        resolvedCommand: {} as any,
-        resolutionSource: {} as any,
-        tmux: null,
-        isDetecting: false,
-        timestamp: 123,
-        refresh: vi.fn(),
-    }),
-}));
 
 vi.mock('@/hooks/machine/useMachineEnvPresence', () => ({
     useMachineEnvPresence: () => ({ isPreviewEnvSupported: true, isLoading: false, meta: {}, refresh: vi.fn() }),
@@ -1083,11 +1073,6 @@ vi.mock('@/sync/domains/profiles/profileUtils', () => ({
     isProfileCompatibleWithAnyAgent: () => true,
 }));
 
-vi.mock('@/agents/runtime/cliWarnings', () => ({
-    applyCliWarningDismissal: () => ({}),
-    isCliWarningDismissed: () => false,
-}));
-
 vi.mock('@/utils/secrets/secretSatisfaction', () => ({
     getSecretSatisfaction: () => ({ missingRequired: [], missingOptional: [] }),
 }));
@@ -1253,8 +1238,8 @@ describe('useNewSessionScreenModel (draft hydration)', () => {
         settingsState.useEnhancedSessionWizard = false;
         settingsState.useProfiles = false;
         (settingsState as any).rememberLastEngineSelectionsV1 = settingsDefaults.rememberLastEngineSelectionsV1;
-        (settingsState as any).lastEngineSelectionsByScopeV1 = readRetainedRememberedEngineSelectionsByScopeV1(settingsDefaults);
-        settingsState.lastUsedProfile = null;
+        authoringMemoryState.lastEngineSelectionsByScopeV1 = authoringMemoryDefaults.lastEngineSelectionsByScopeV1;
+        authoringMemoryState.lastUsedProfile = null;
         settingsState.profileEnabledById = {};
         settingsState.profiles = [];
         workspaceGraphState.workspacesByServerId = {
@@ -1453,6 +1438,63 @@ describe('useNewSessionScreenModel (draft hydration)', () => {
             },
         });
     }
+
+    it('opens blocked Agent setup on the canonical capability Home when the spawn target is unresolved', async () => {
+        const { TokenStorage } = await import('@/auth/storage/tokenStorage');
+        const { upsertServerProfile } = await import('@/sync/domains/server/serverProfiles');
+        const { getActiveServerSnapshot, setActiveServer } = await import('@/sync/domains/server/serverRuntime');
+        const { serverAccountScopedResourceKey } = await import('@/sync/domains/scope/serverAccountScope');
+        const { machineAgentInventoryStore } = await import('@/agents/machineAgents/machineAgentInventoryStore');
+        const { useMachineAgent } = await import('@/agents/machineAgents/useMachineAgents');
+        const { machineCollectionHref } = await import('@/components/settings/machines/collection/machineCollectionModel');
+        const previousServerId = getActiveServerSnapshot().serverId;
+        const profile = await upsertServerProfile({ serverUrl: 'https://new-session-blocker.example.test' });
+        const accountId = 'new-session-blocker-account';
+        const machineId = 'machine-2';
+        const inventoryKey = serverAccountScopedResourceKey({ serverId: profile.id, accountId }, 'machine-agents', machineId);
+        // Secure credential storage is the boundary. Scope binding, inventory,
+        // blocker presentation, and the screen model's route callback stay real.
+        const credentialsRead = vi.spyOn(TokenStorage, 'getCredentialsForServerUrl').mockResolvedValue({
+            token: `header.${Buffer.from(JSON.stringify({ sub: accountId })).toString('base64')}.signature`, secret: 's',
+        });
+        let hook: Awaited<ReturnType<typeof renderNewSessionScreenModel>> | null = null;
+        let unmountAgent: (() => Promise<void>) | null = null;
+        try {
+            await setActiveServer({ serverId: profile.id });
+            activeServerAccountScopeState.value = { serverId: profile.id, accountId };
+            invalidateMockStorageSnapshot();
+            targetServerState.targetServerId = null;
+            hook = await renderNewSessionScreenModel(() => {});
+            const agent = await renderHook(() => useMachineAgent({ serverId: profile.id, machineId, agentId: 'claude', load: false }));
+            unmountAgent = agent.unmount;
+            await act(async () => { machineAgentInventoryStore.publish(inventoryKey, {
+                status: 'ready', lastCheckedAt: Date.now(), items: [{
+                    agentId: 'claude', title: 'Claude', installed: true, version: '1', latestVersion: '1',
+                    update: { supported: false, command: null },
+                    signIn: { status: 'signedOut', loginSupport: 'status_only' },
+                    platform: { supported: true },
+                    install: { available: false, mode: 'manual', sizeBytes: null, guideUrl: null }, dependencies: [],
+                }],
+            }); });
+            expect(agent.getCurrent()).toMatchObject({
+                agentId: 'claude', stale: false, state: 'needsSignIn', signIn: { status: 'signedOut' },
+            });
+            const model = hook.getCurrent();
+            expect(model.variant).toBe('simple');
+            if (model.variant !== 'simple') throw new Error('Expected the simple composer');
+            const screen = await renderScreen(<>{model.simpleProps.composerTopContent}</>);
+            expect(screen.findByTestId('new-session-agent-blocker.action')).not.toBeNull();
+            await screen.pressByTestIdAsync('new-session-agent-blocker.action');
+            expect(routerPushMock).toHaveBeenLastCalledWith(machineCollectionHref({ machineId, serverId: profile.id }));
+            await screen.unmount();
+        } finally {
+            await unmountAgent?.();
+            await hook?.unmount();
+            machineAgentInventoryStore.publish(inventoryKey, { status: 'ready', items: [], descriptors: [], lastCheckedAt: null });
+            credentialsRead.mockRestore();
+            await setActiveServer({ serverId: previousServerId });
+        }
+    });
 
     // Typing is the hottest interaction on this screen. The composer must stay fully controlled and
     // fully live, but the live text must not be a render dependency of the ~1,900-line screen model:
@@ -1748,7 +1790,7 @@ describe('useNewSessionScreenModel (draft hydration)', () => {
             backendTarget,
         });
         (settingsState as any).rememberLastEngineSelectionsV1 = true;
-        (settingsState as any).lastEngineSelectionsByScopeV1 = {
+        authoringMemoryState.lastEngineSelectionsByScopeV1 = {
             [scopeKey]: {
                 v: 1,
                 modelId: 'default',
@@ -1777,7 +1819,7 @@ describe('useNewSessionScreenModel (draft hydration)', () => {
 
         standardCleanup();
 
-        expect((settingsState as any).lastEngineSelectionsByScopeV1?.[scopeKey]?.acpSessionModeId).toBeNull();
+        expect(authoringMemoryState.lastEngineSelectionsByScopeV1?.[scopeKey]?.acpSessionModeId).toBeNull();
     });
 
     it('does not expose a retained Provider projection after the spawn-scoped feature decision disables Providers', async () => {
@@ -1821,7 +1863,7 @@ describe('useNewSessionScreenModel (draft hydration)', () => {
             updatedAt: 100,
             ref: {
                 ...retainedGroup.rows[0]?.ref,
-                agentTargetKey: 'backend:claude',
+                agentTargetKey: 'agent:happier.agent.claude/claude',
             },
         });
         await act(async () => {
@@ -1858,7 +1900,7 @@ describe('useNewSessionScreenModel (draft hydration)', () => {
         await settleNewSessionScreenModel();
 
         const initialOption = model?.wizardProps?.agent?.agentPickerOptions?.find?.(
-            (option: { id: string }) => option.id === 'backend:claude',
+            (option: { id: string }) => option.id === 'agent:happier.agent.claude/claude',
         );
         const initialConfirmation = model?.wizardProps?.agent?.experimentalModelConfirmation;
         expect(initialOption).toBeTruthy();
@@ -1913,7 +1955,7 @@ describe('useNewSessionScreenModel (draft hydration)', () => {
             v: 1,
             updatedAt: 100,
             ref: {
-                agentTargetKey: 'backend:codex',
+                agentTargetKey: 'agent:happier.agent.codex/codex',
                 providerConnectionId: ProviderConnectionIdSchema.parse('pc_work'),
                 modelId: 'shared-model',
             },
@@ -1929,7 +1971,7 @@ describe('useNewSessionScreenModel (draft hydration)', () => {
         await settleNewSessionScreenModel({ cycles: 2, turns: 2 });
         standardCleanup();
 
-        expect((settingsState as any).lastEngineSelectionsByScopeV1?.[scopeKey]?.modelSelection).toEqual(selection);
+        expect(authoringMemoryState.lastEngineSelectionsByScopeV1?.[scopeKey]?.modelSelection).toEqual(selection);
     });
 
     it('does not remember stale engine state when route params select a different backend', async () => {
@@ -1944,7 +1986,7 @@ describe('useNewSessionScreenModel (draft hydration)', () => {
             backendTarget: opencodeTarget,
         });
         (settingsState as any).rememberLastEngineSelectionsV1 = true;
-        (settingsState as any).lastEngineSelectionsByScopeV1 = {
+        authoringMemoryState.lastEngineSelectionsByScopeV1 = {
             [codexScopeKey]: {
                 v: 1,
                 modelId: 'gpt-5.5',
@@ -1959,7 +2001,7 @@ describe('useNewSessionScreenModel (draft hydration)', () => {
         persistedDraft.acpSessionModeId = 'plan';
         searchParamsState.value = {
             backendTarget: JSON.stringify(opencodeTarget),
-            backendTargetKey: 'backend:opencode',
+            backendTargetKey: 'agent:happier.agent.opencode/opencode',
         };
 
         await renderNewSessionScreenModel(() => {});
@@ -1967,8 +2009,8 @@ describe('useNewSessionScreenModel (draft hydration)', () => {
 
         standardCleanup();
 
-        expect((settingsState as any).lastEngineSelectionsByScopeV1?.[opencodeScopeKey]).toBeUndefined();
-        expect((settingsState as any).lastEngineSelectionsByScopeV1?.[codexScopeKey]?.modelId).toBe('gpt-5.5');
+        expect(authoringMemoryState.lastEngineSelectionsByScopeV1?.[opencodeScopeKey]).toBeUndefined();
+        expect(authoringMemoryState.lastEngineSelectionsByScopeV1?.[codexScopeKey]?.modelId).toBe('gpt-5.5');
     });
 
     it('hydrates permission, agent, and path from the persisted draft', async () => {
@@ -2430,7 +2472,7 @@ describe('useNewSessionScreenModel (draft hydration)', () => {
     it('drops a persisted Claude model when a route-selected Codex backend owns the new session', async () => {
         searchParamsState.value = {
             backendTarget: JSON.stringify({ kind: 'backend', backendId: 'codex' }),
-            backendTargetKey: 'backend:codex',
+            backendTargetKey: 'agent:happier.agent.codex/codex',
         };
         persistedDraft.agentType = 'claude';
         persistedDraft.backendTarget = { kind: 'backend', backendId: 'claude' } as any;
@@ -2853,7 +2895,7 @@ describe('useNewSessionScreenModel (draft hydration)', () => {
         }));
         expect(pushPayload?.params?.backendTarget).toContain('"backendId":"codex"');
         expect(pushPayload?.params?.backendTarget).not.toContain('stale-review-bot');
-        expect(pushPayload?.params?.backendTargetKey).toBe('backend:codex');
+        expect(pushPayload?.params?.backendTargetKey).toBe('agent:happier.agent.codex/codex');
     });
 
     it('clears backend route seed params after an explicit agent picker selection', async () => {
@@ -2870,7 +2912,7 @@ describe('useNewSessionScreenModel (draft hydration)', () => {
 
         expect(model?.simpleProps?.agentType).toBe('codex');
 
-        const claudeOption = model?.simpleProps?.agentPickerOptions?.find?.((option: { id: string }) => option.id === 'backend:claude');
+        const claudeOption = model?.simpleProps?.agentPickerOptions?.find?.((option: { id: string }) => option.id === 'agent:happier.agent.claude/claude');
         expect(claudeOption).toBeTruthy();
 
         await act(async () => {
@@ -3112,7 +3154,7 @@ describe('useNewSessionScreenModel (draft hydration)', () => {
     it('does not seed new-session profile selection from a disabled last-used profile', async () => {
         settingsState.useProfiles = true;
         settingsState.useEnhancedSessionWizard = true;
-        settingsState.lastUsedProfile = 'profile_disabled';
+        authoringMemoryState.lastUsedProfile = 'profile_disabled';
         settingsState.profileEnabledById = { profile_disabled: false };
         settingsState.profiles = [{
             id: 'profile_disabled',
@@ -3300,7 +3342,7 @@ describe('useNewSessionScreenModel (draft hydration)', () => {
     it('keeps an explicit Default Environment selection when last-used profile state changes', async () => {
         settingsState.useProfiles = true;
         settingsState.useEnhancedSessionWizard = true;
-        settingsState.lastUsedProfile = 'profile_previous';
+        authoringMemoryState.lastUsedProfile = 'profile_previous';
         const previousProfile = {
             id: 'profile_previous',
             name: 'Previous profile',
@@ -3335,7 +3377,7 @@ describe('useNewSessionScreenModel (draft hydration)', () => {
         });
         expect(model?.wizardProps?.profiles?.selectedProfileId).toBeNull();
 
-        settingsState.lastUsedProfile = 'profile_new';
+        authoringMemoryState.lastUsedProfile = 'profile_new';
         await hook.rerender();
 
         expect(model?.wizardProps?.profiles?.selectedProfileId).toBeNull();

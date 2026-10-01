@@ -112,7 +112,7 @@ export type SidecarUnavailableContextInput = SidecarContextBaseInput & Readonly<
     kind: SidecarSummaryContextKind;
     lifecycleState: Extract<
         BrowserContextLifecycleStateV1,
-        'adapterUnavailable' | 'captureFailed' | 'policyDenied' | 'sensitiveOrigin'
+        'adapterUnavailable' | 'captureFailed' | 'policyDenied' | 'sensitiveOrigin' | 'sensitiveFieldsPresent' | 'ephemeralOnly'
     >;
     disabledReason: string;
 }>;

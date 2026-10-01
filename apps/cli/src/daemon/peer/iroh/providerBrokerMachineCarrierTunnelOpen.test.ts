@@ -25,6 +25,8 @@ function authority(overrides: Partial<ProviderBrokerRouteGrantPayloadV1> = {}): 
     teamId: 'team-1',
     resourceId: 'resource-1',
     sourceRevision: 'source-revision-7',
+    brokerPlacementFingerprint: 'c'.repeat(64),
+    initiatorTokenEpoch: 0,
     initiator: { accountId: 'account-worker', machineId: 'machine-worker', endpointId: initiatorEndpoint },
     target: { custodianAccountId: 'account-custodian', machineId: 'machine-broker', endpointId: targetEndpoint },
     consumer: { kind: 'session', sessionId: 'session-1' },
@@ -61,13 +63,21 @@ function brokerOpen(
       brokerMachineId: signed.payload.target.machineId,
       endpointId: signed.payload.target.endpointId,
       endpointRevision: 7,
+      endpoint: {
+        endpointId: targetOverrides.endpointId ?? signed.payload.target.endpointId,
+        directAddresses: ['10.0.0.2:7777'],
+        relayUrls: ['https://target-relay.example.test/'],
+      },
       ...targetOverrides,
     },
   };
 }
 
 describe('createProviderBrokerMachineCarrierTunnelOpen', () => {
-  it('uses the Home-signed cross-Account target without broad Machine-read authority', async () => {
+  it.each([
+    { consumer: { kind: 'session' as const, sessionId: 'session-1' } },
+    { consumer: { kind: 'execution_run' as const, executionRunId: 'run-1' }, executionRunOccurrenceId: 'run-occurrence-1' },
+  ])('uses the complete Home-signed cross-Account target without broad Machine-read authority ($consumer.kind)', async (consumerBinding) => {
     const close = vi.fn(async () => undefined);
     const openHttpTunnel = vi.fn<DaemonMachineIrohRuntime['openHttpTunnel']>(async () => ({
       localPort: 41_001,
@@ -84,9 +94,10 @@ describe('createProviderBrokerMachineCarrierTunnelOpen', () => {
       nowMs: () => 200,
     });
 
-    const refreshBrokerOpen = vi.fn(async () => brokerOpen(authority({ grantId: 'grant-2' })));
+    const opened = brokerOpen(authority(consumerBinding));
+    const refreshBrokerOpen = vi.fn(async () => brokerOpen(authority({ ...consumerBinding, grantId: 'grant-2' })));
 
-    await expect(open({ brokerOpen: brokerOpen(), refreshBrokerOpen })).resolves.toMatchObject({
+    await expect(open({ brokerOpen: opened, refreshBrokerOpen })).resolves.toMatchObject({
       localPort: 41_001,
       localCapability: 'c'.repeat(64),
       observedPath: 'relay',
@@ -95,7 +106,7 @@ describe('createProviderBrokerMachineCarrierTunnelOpen', () => {
       flow: 'provider_broker',
       remoteEndpointId: targetEndpoint,
       handshake: { v: 1, kind: 'provider_broker', authority: expect.any(Object) },
-    }), { endpointId: targetEndpoint });
+    }), opened.target.endpoint);
     const transport = openHttpTunnel.mock.calls[0]?.[0];
     await expect(transport?.handshakeProvider?.()).resolves.toEqual({
       v: 1,

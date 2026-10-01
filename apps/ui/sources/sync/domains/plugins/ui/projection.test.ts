@@ -17,6 +17,8 @@ import {
     normalizePluginUiProjection,
     resolvePluginUiProjectionState,
 } from './projection';
+
+const PREVIEW_OCCURRENCE_ID = 'preview-runtime-occurrence-a';
 import { resolvePluginUiText } from './i18n';
 
 function binding(input: Parameters<typeof normalizePluginUiDestinationBindingV1>[0]) {
@@ -56,6 +58,7 @@ function placementEntryWithPlatforms(input: Readonly<{
     return parsePluginUiEntry(id, {
         id,
         pluginId: 'acme.preview',
+        occurrenceId: `${input.descriptorId}-occurrence-a`,
         contributionKind: 'surfacePlacement',
         descriptorId: input.descriptorId,
         binding: parsed,
@@ -75,7 +78,6 @@ function parsePluginUiEntry(
         generation: 0,
         installedPackagesById: {},
         agentsById: {},
-        backendsById: {},
         actionsById: {},
         toolsById: {},
         commandsById: {},
@@ -137,11 +139,11 @@ function createProjection(): PluginProjectionV2 {
         generation: 12,
         installedPackagesById: {},
         agentsById: {},
-        backendsById: {},
         actionsById: {
             'acme.preview/open-preview': {
                 id: 'open-preview',
                 pluginId: 'acme.preview',
+                occurrenceId: 'occurrence-preview',
                 title: 'Open preview',
                 icon: 'open-outline',
                 scopes: ['session'],
@@ -171,7 +173,7 @@ function createProjection(): PluginProjectionV2 {
                 family: 'voiceProviders',
                 entriesById: {
                     'acme.preview/conversation': {
-                        id: 'acme.preview/conversation', pluginId: 'acme.preview', generation: 12,
+                        id: 'acme.preview/conversation', pluginId: 'acme.preview', occurrenceId: PREVIEW_OCCURRENCE_ID,
                         contributionKey: 'acme.preview/conversation',
                         definition: {
                             id: 'conversation', title: 'Conversation', kind: 'conversation',
@@ -198,16 +200,16 @@ function createProjection(): PluginProjectionV2 {
                                     }],
                                 }],
                             },
-                            client: { artifactId: 'voice-runtime', modulePath: './voiceRuntime', exportName: 'activate' },
+                            client: { artifactId: 'voice-runtime', exportName: 'activate' },
                         },
                     },
                     'acme.preview/stale': {
-                        id: 'acme.preview/stale', pluginId: 'acme.preview', generation: 11,
+                        id: 'acme.preview/stale', pluginId: 'acme.preview', occurrenceId: 'stale-preview-runtime-occurrence-a',
                         contributionKey: 'acme.preview/stale',
                         definition: {
                             id: 'stale', title: 'Stale', kind: 'conversation', roles: ['realtime_conversation'], platforms: ['web'],
                             capabilities: { readiness: { requirements: [] }, turn: { cancelResponse: false, bargeIn: false } },
-                            client: { artifactId: 'voice-runtime', modulePath: './voiceRuntime', exportName: 'activate' },
+                            client: { artifactId: 'voice-runtime', exportName: 'activate' },
                         },
                     },
                 },
@@ -218,6 +220,7 @@ function createProjection(): PluginProjectionV2 {
                     'translations:acme.preview': {
                         id: 'translations:acme.preview',
                         pluginId: 'acme.preview',
+                        occurrenceId: PREVIEW_OCCURRENCE_ID,
                         contributionKind: 'translations',
                         locales: ['en'],
                         bundles: {
@@ -229,6 +232,7 @@ function createProjection(): PluginProjectionV2 {
                     'surfacePlacement:acme.preview:preview-pane': {
                         id: 'surfacePlacement:acme.preview:preview-pane',
                         pluginId: 'acme.preview',
+                        occurrenceId: PREVIEW_OCCURRENCE_ID,
                         contributionKind: 'surfacePlacement',
                         descriptorId: 'preview-pane',
                         binding: previewPaneBinding,
@@ -240,6 +244,7 @@ function createProjection(): PluginProjectionV2 {
                     'sessionHeaderAction:acme.preview:open-preview': {
                         id: 'sessionHeaderAction:acme.preview:open-preview',
                         pluginId: 'acme.preview',
+                        occurrenceId: PREVIEW_OCCURRENCE_ID,
                         contributionKind: 'sessionHeaderAction',
                         descriptorId: 'open-preview',
                         title: { key: 'title', fallback: 'Open preview' },
@@ -251,6 +256,7 @@ function createProjection(): PluginProjectionV2 {
                     'searchProvider:acme.preview:entries': {
                         id: 'searchProvider:acme.preview:entries',
                         pluginId: 'acme.preview',
+                        occurrenceId: PREVIEW_OCCURRENCE_ID,
                         contributionKind: 'searchProvider',
                         descriptorId: 'entries',
                         identity: { pluginId: 'acme.preview', localId: 'entries' },
@@ -265,6 +271,7 @@ function createProjection(): PluginProjectionV2 {
                     'searchProvider:acme.preview:foreign': {
                         id: 'searchProvider:acme.preview:foreign',
                         pluginId: 'acme.preview',
+                        occurrenceId: PREVIEW_OCCURRENCE_ID,
                         contributionKind: 'searchProvider',
                         descriptorId: 'foreign',
                         identity: { pluginId: 'acme.preview', localId: 'foreign' },
@@ -273,6 +280,7 @@ function createProjection(): PluginProjectionV2 {
                     'hostedWeb:acme.preview:preview-web': {
                         id: 'hostedWeb:acme.preview:preview-web',
                         pluginId: 'acme.preview',
+                        occurrenceId: PREVIEW_OCCURRENCE_ID,
                         contributionKind: 'hostedWeb',
                         contributionId: 'preview-web',
                         service: { kind: 'sessionEndpoint', endpointIdPath: '/endpointId' },
@@ -284,6 +292,7 @@ function createProjection(): PluginProjectionV2 {
                     'reactNativeBundle:acme.preview:native-preview': {
                         id: 'reactNativeBundle:acme.preview:native-preview',
                         pluginId: 'acme.preview',
+                        occurrenceId: PREVIEW_OCCURRENCE_ID,
                         contributionKind: 'reactNativeBundle',
                         contributionId: 'native-preview',
                         compatibility: {
@@ -295,6 +304,7 @@ function createProjection(): PluginProjectionV2 {
                     'surfacePlacement:acme.preview:project-preview': {
                         id: 'surfacePlacement:acme.preview:project-preview',
                         pluginId: 'acme.preview',
+                        occurrenceId: PREVIEW_OCCURRENCE_ID,
                         contributionKind: 'surfacePlacement',
                         descriptorId: 'project-preview',
                         binding: projectPreviewBinding,
@@ -316,6 +326,7 @@ function createProjection(): PluginProjectionV2 {
                     'surfacePlacement:acme.preview:browser-inspector': {
                         id: 'surfacePlacement:acme.preview:browser-inspector',
                         pluginId: 'acme.preview',
+                        occurrenceId: PREVIEW_OCCURRENCE_ID,
                         contributionKind: 'surfacePlacement',
                         descriptorId: 'browser-inspector',
                         binding: browserInspectorBinding,
@@ -332,6 +343,7 @@ function createProjection(): PluginProjectionV2 {
                     'surfacePlacement:acme.preview:session-review-tab': {
                         id: 'surfacePlacement:acme.preview:session-review-tab',
                         pluginId: 'acme.preview',
+                        occurrenceId: PREVIEW_OCCURRENCE_ID,
                         contributionKind: 'surfacePlacement',
                         descriptorId: 'session-review-tab',
                         binding: sessionReviewBinding,
@@ -352,6 +364,7 @@ function createProjection(): PluginProjectionV2 {
                     'surfacePlacement:acme.preview:service-inspector': {
                         id: 'surfacePlacement:acme.preview:service-inspector',
                         pluginId: 'acme.preview',
+                        occurrenceId: PREVIEW_OCCURRENCE_ID,
                         contributionKind: 'surfacePlacement',
                         descriptorId: 'service-inspector',
                         binding: serviceInspectorBinding,
@@ -368,6 +381,7 @@ function createProjection(): PluginProjectionV2 {
                     'uiArtifact:acme.preview:native-preview-ios': {
                         id: 'uiArtifact:acme.preview:native-preview-ios',
                         pluginId: 'acme.preview',
+                        occurrenceId: PREVIEW_OCCURRENCE_ID,
                         contributionKind: 'uiArtifact',
                         artifactId: 'native-preview-ios',
                         integrity: { digest: 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' },
@@ -375,6 +389,7 @@ function createProjection(): PluginProjectionV2 {
                     'unknown:acme.preview': {
                         id: 'unknown:acme.preview',
                         pluginId: 'acme.preview',
+                        occurrenceId: PREVIEW_OCCURRENCE_ID,
                         contributionKind: 'futureUnknown',
                     },
                 },
@@ -395,7 +410,7 @@ describe('plugin UI projection normalization', () => {
                     id: 'acme.preview/issue',
                     pluginId: 'acme.preview',
                     identity: { pluginId: 'acme.preview', localId: 'issue' },
-                    immutableGenerationId: 'preview-generation-42',
+                    occurrenceId: 'preview-generation-42',
                     definition: {
                         id: 'issue',
                         title: 'Issue',
@@ -414,7 +429,7 @@ describe('plugin UI projection normalization', () => {
                     id: 'acme.preview/add-issue',
                     pluginId: 'acme.preview',
                     identity: { pluginId: 'acme.preview', localId: 'add-issue' },
-                    immutableGenerationId: 'preview-generation-42',
+                    occurrenceId: 'preview-generation-42',
                     definition: {
                         id: 'add-issue',
                         label: 'Add issue',
@@ -437,7 +452,7 @@ describe('plugin UI projection normalization', () => {
                     id: 'acme.preview/issue-summary',
                     pluginId: 'acme.preview',
                     identity: { pluginId: 'acme.preview', localId: 'issue-summary' },
-                    immutableGenerationId: 'preview-generation-42',
+                    occurrenceId: 'preview-generation-42',
                     definition: {
                         id: 'issue-summary',
                         placement: 'afterComposer',
@@ -452,7 +467,7 @@ describe('plugin UI projection normalization', () => {
 
         expect(model.composerAttachmentsById['acme.preview/issue']).toMatchObject({
             identity: { pluginId: 'acme.preview', localId: 'issue' },
-            immutableGenerationId: 'preview-generation-42',
+            occurrenceId: 'preview-generation-42',
             definition: { display: { kind: 'badge' } },
         });
         expect(model.composerControlsById['acme.preview/add-issue']).toMatchObject({
@@ -535,6 +550,7 @@ describe('plugin UI projection normalization', () => {
         entries['surfacePlacement:acme.preview:preview-pane'] = {
             id: 'surfacePlacement:acme.preview:preview-pane',
             pluginId: 'acme.preview',
+            occurrenceId: PREVIEW_OCCURRENCE_ID,
             contributionKind: 'surfacePlacement',
             descriptorId: 'preview-pane',
             binding: {
@@ -587,7 +603,7 @@ describe('plugin UI projection normalization', () => {
                 surfaceId: 'web-only-widget',
                 rendererId: 'preview-placeholder',
                 availableRendererIds: ['preview-placeholder'],
-                role: 'sessionWidget',
+                role: 'widget',
                 target: { kind: 'session' },
             }),
             platforms: ['web'],
@@ -619,6 +635,50 @@ describe('plugin UI projection normalization', () => {
         // Only the physical placement family is gated; unrelated families keep
         // their exact contents.
         expect(Object.keys(ios.settingsPagesById)).toEqual(Object.keys(web.settingsPagesById));
+    });
+
+    it("carries an app page's own column renderer with its availability, and drops a malformed one", () => {
+        const projection = createProjection();
+        const entries = projection.familiesById.pluginUi?.entriesById;
+        if (!entries) throw new Error('pluginUi fixture family is required');
+        const pageBinding = binding({
+            pluginId: 'acme.preview',
+            destinationId: 'triage',
+            rendererId: 'preview-placeholder',
+            container: 'appPage',
+            target: { kind: 'app' },
+        });
+        const page = placementEntryWithPlatforms({ descriptorId: 'triage', binding: pageBinding, platforms: ['desktop', 'web'] });
+        // The page's own column, as the CLI projection publishes it on the placement row.
+        const withColumn: Readonly<Record<string, unknown>> = {
+            ...page,
+            column: {
+                renderer: { kind: 'reactNative', contributionId: 'views-column' },
+                availability: { state: 'available', reason: 'available', diagnostics: [] },
+            },
+        };
+        entries['surfacePlacement:acme.preview:triage'] = withColumn as typeof page;
+        const broken = placementEntryWithPlatforms({
+            descriptorId: 'broken',
+            binding: binding({
+                pluginId: 'acme.preview',
+                destinationId: 'broken',
+                rendererId: 'preview-placeholder',
+                container: 'appPage',
+                target: { kind: 'app' },
+            }),
+            platforms: ['desktop', 'web'],
+        });
+        const brokenColumn: Readonly<Record<string, unknown>> = { ...broken, column: { renderer: 'views-column' } };
+        entries['surfacePlacement:acme.preview:broken'] = brokenColumn as typeof broken;
+
+        const web = normalizePluginUiProjection(projection, 'web');
+        expect(web.surfacePlacementsById['surfacePlacement:acme.preview:triage']?.column).toEqual({
+            renderer: { kind: 'reactNative', contributionId: 'views-column' },
+            availability: { state: 'available', reason: 'available', diagnostics: [] },
+        });
+        expect(web.surfacePlacementsById['surfacePlacement:acme.preview:broken']).toBeDefined();
+        expect(web.surfacePlacementsById['surfacePlacement:acme.preview:broken']?.column).toBeUndefined();
     });
 
     it('carries the current client platform through the currentness resolver', () => {
@@ -658,6 +718,7 @@ describe('plugin UI projection normalization', () => {
             {
             id: 'openableContentViewer:acme.preview:markdown',
             pluginId: 'acme.preview',
+            occurrenceId: 'markdown-viewer-occurrence-a',
             contributionKind: 'openableContentViewer',
             descriptorId: 'markdown',
             identity: { pluginId: 'acme.preview', localId: 'markdown' },
@@ -700,6 +761,7 @@ describe('plugin UI projection normalization', () => {
             {
             id: 'settingsGroup:acme.preview:review',
             pluginId: 'acme.preview',
+            occurrenceId: 'review-settings-group-occurrence-a',
             contributionKind: 'settingsGroup',
             group: {
                 id: { pluginId: 'acme.preview', localId: 'review' },
@@ -714,6 +776,7 @@ describe('plugin UI projection normalization', () => {
             {
             id: 'settingsPage:acme.preview:review-settings',
             pluginId: 'acme.preview',
+            occurrenceId: 'review-settings-page-occurrence-a',
             contributionKind: 'settingsPage',
             descriptorId: 'review-settings',
             page: {
@@ -734,7 +797,7 @@ describe('plugin UI projection normalization', () => {
                         pluginId: 'acme.preview',
                         localId: 'settings-panel',
                         qualifiedId: 'acme.preview/settings-panel',
-                        generation: '12',
+                        occurrenceId: 'review-settings-model-occurrence-a',
                     },
                     visible: true,
                     requiredHostMethods: [],
@@ -787,6 +850,7 @@ describe('plugin UI projection normalization', () => {
         const generatedEntry = parsePluginUiEntry('surfacePlacement:acme.generated:review', {
             id: 'surfacePlacement:acme.generated:review',
             pluginId: 'acme.generated',
+            occurrenceId: 'generated-review-occurrence-a',
             contributionKind: 'surfacePlacement',
             descriptorId: 'review',
             container: binding.container,
@@ -953,6 +1017,7 @@ describe('plugin UI projection normalization', () => {
         entries['structuredMessage:other.preview:preview-card'] = {
             id: 'structuredMessage:other.preview:preview-card',
             pluginId: 'other.preview',
+            occurrenceId: 'other-preview-runtime-occurrence-a',
             contributionKind: 'structuredMessage',
             descriptorId: 'preview-card',
             kind: 'acme.preview/preview-card.v1',
@@ -990,6 +1055,7 @@ describe('plugin UI projection normalization', () => {
         entries['transcriptActivity:acme.preview:import-progress-card'] = {
             id: 'transcriptActivity:acme.preview:import-progress-card',
             pluginId: 'acme.preview',
+            occurrenceId: PREVIEW_OCCURRENCE_ID,
             contributionKind: 'transcriptActivity',
             descriptorId: 'import-progress-card',
             resource: { pluginId: 'acme.preview', localId: 'import-progress' },
@@ -998,6 +1064,7 @@ describe('plugin UI projection normalization', () => {
         entries['transcriptActivity:acme.preview:cross-plugin'] = {
             id: 'transcriptActivity:acme.preview:cross-plugin',
             pluginId: 'acme.preview',
+            occurrenceId: PREVIEW_OCCURRENCE_ID,
             contributionKind: 'transcriptActivity',
             descriptorId: 'cross-plugin',
             resource: { pluginId: 'other.plugin', localId: 'import-progress' },
@@ -1031,6 +1098,7 @@ describe('plugin UI projection normalization', () => {
         entries['sessionInfoSection:acme.preview:overview'] = {
             id: 'sessionInfoSection:acme.preview:overview',
             pluginId: 'acme.preview',
+            occurrenceId: PREVIEW_OCCURRENCE_ID,
             pluginVersion: '1.0.0',
             contributionKind: 'sessionInfoSection',
             descriptorId: 'overview',
@@ -1046,6 +1114,7 @@ describe('plugin UI projection normalization', () => {
             placement: {
                 id: 'sessionInfoSectionPlacement:acme.preview:overview',
                 pluginId: 'acme.preview',
+                occurrenceId: PREVIEW_OCCURRENCE_ID,
                 contributionKind: 'surfacePlacement',
                 descriptorId: 'overview',
                 binding: sessionInfoBinding,
@@ -1089,6 +1158,7 @@ describe('plugin UI projection normalization', () => {
         entries['sessionInfoSection:acme.preview:wrong-container'] = {
             id: 'sessionInfoSection:acme.preview:wrong-container',
             pluginId: 'acme.preview',
+            occurrenceId: PREVIEW_OCCURRENCE_ID,
             pluginVersion: '1.0.0',
             contributionKind: 'sessionInfoSection',
             descriptorId: 'wrong-container',
@@ -1121,11 +1191,5 @@ describe('plugin UI projection normalization', () => {
         const previous = normalizePluginUiProjection(createProjection());
 
         expect(resolvePluginUiProjectionState(previous, createProjection())).not.toBe(previous);
-    });
-
-    it('clears the previous model when an authoritative projection refresh is non-v2', () => {
-        const previous = normalizePluginUiProjection(createProjection());
-
-        expect(resolvePluginUiProjectionState(previous, { v: 1, agentsById: {}, backendsById: {} })).toBe(EMPTY_PLUGIN_UI_PROJECTION);
     });
 });

@@ -6,6 +6,7 @@ import type {
 
 import type { ApiSessionClient } from '@/api/session/sessionClient';
 import { buildAgentRuntimeFirstInputAdmissionV1 } from '@/session/services/sessionInputAdmissionIdentity';
+import { resolveSessionUserMessageRequestedAction } from '@/session/services/resolveSessionUserMessageRequestedAction';
 
 export const HAPPIER_DAEMON_PENDING_FIRST_INPUT_ENV_KEY = 'HAPPIER_DAEMON_PENDING_FIRST_INPUT';
 
@@ -118,6 +119,7 @@ export function createPendingFirstInputCommitter(
           },
           inputAdmission: pendingFirstInput.inputAdmission
             ?? buildAgentRuntimeFirstInputAdmissionV1(),
+          requestedAction: resolveSessionUserMessageRequestedAction({ deliveryIntent: 'runtime_bootstrap' }),
         });
         committed = true;
         clearPendingFirstInputFromEnv(env);

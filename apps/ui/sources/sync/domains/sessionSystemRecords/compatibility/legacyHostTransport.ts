@@ -2,6 +2,7 @@ import {
     LegacyHostSessionSystemRecordLookupResponseSchema,
 } from '@happier-dev/protocol';
 import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
+import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
 import type { SessionSystemRecordCompatibilityOpenInput } from '../codec';
 import type { SessionSystemRecordFetchResult, SessionSystemRecordTransportOptions } from '../transport';
 
@@ -61,7 +62,7 @@ export async function readLegacyWorkflowSystemRecord(
     session: SessionAddress,
     localId: string,
 ): Promise<SessionSystemRecordFetchResult<LegacyWorkflowRecordProjection>> {
-    if (session.serverId !== options.scope.serverId) return { status: 'forbidden' };
+    if (!areServerProfileIdentifiersEquivalent(session.serverId, options.scope.serverId)) return { status: 'forbidden' };
     try {
         const query = new URLSearchParams({ namespace: 'activity', localId });
         const response = await options.request(`/v2/sessions/${encodeURIComponent(session.sessionId)}/system-records/record?${query}`, { method: 'GET' });

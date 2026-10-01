@@ -37,12 +37,55 @@ import { createUnavailablePluginServices } from '@/plugins/runtime/invocation/se
 import { resolveConnectedServiceMaterializedHomeRoot } from '@/daemon/connectedServices/catalogHooks';
 
 import {
-  createConfiguredPluginExternalSessionsAdapter,
-  createLiveConfiguredPluginExternalSessionsAdapter,
+  createConfiguredPluginExternalSessionsAdapter as createConfiguredPluginExternalSessionsAdapterOwner,
+  createLiveConfiguredPluginExternalSessionsAdapter as createLiveConfiguredPluginExternalSessionsAdapterOwner,
   materializeConfiguredExternalSessionSourceCandidates,
   resolveConfiguredExternalSessionFollowTarget,
   type ConfiguredExternalSessionSourceAccountProjection,
 } from './configuredSourceMaterializer';
+
+const testAgentOccurrence = (agentId: string) => Object.freeze({
+  occurrenceId: `${agentId}:test-occurrence`,
+  isCurrent: () => true,
+});
+
+function createConfiguredPluginExternalSessionsAdapter(
+  params: Omit<
+    Parameters<typeof createConfiguredPluginExternalSessionsAdapterOwner>[0],
+    'resolveAgentOccurrence' | 'resolveAgentSourceCustody'
+  > & Partial<Pick<
+    Parameters<typeof createConfiguredPluginExternalSessionsAdapterOwner>[0],
+    'resolveAgentOccurrence' | 'resolveAgentSourceCustody'
+  >>,
+) {
+  return createConfiguredPluginExternalSessionsAdapterOwner({
+    ...params,
+    resolveAgentOccurrence: params.resolveAgentOccurrence ?? testAgentOccurrence,
+    resolveAgentSourceCustody: params.resolveAgentSourceCustody ?? ((agentId) => ({
+      kind: 'development',
+      registeredRootId: `${agentId}:test-source-root`,
+    })),
+  });
+}
+
+function createLiveConfiguredPluginExternalSessionsAdapter(
+  params: Omit<
+    Parameters<typeof createLiveConfiguredPluginExternalSessionsAdapterOwner>[0],
+    'resolveAgentOccurrence' | 'resolveAgentSourceCustody'
+  > & Partial<Pick<
+    Parameters<typeof createLiveConfiguredPluginExternalSessionsAdapterOwner>[0],
+    'resolveAgentOccurrence' | 'resolveAgentSourceCustody'
+  >>,
+) {
+  return createLiveConfiguredPluginExternalSessionsAdapterOwner({
+    ...params,
+    resolveAgentOccurrence: params.resolveAgentOccurrence ?? testAgentOccurrence,
+    resolveAgentSourceCustody: params.resolveAgentSourceCustody ?? ((agentId) => ({
+      kind: 'development',
+      registeredRootId: `${agentId}:test-source-root`,
+    })),
+  });
+}
 
 const codexContribution = {
   id: 'codex',
@@ -214,9 +257,12 @@ function providerOpsFromCodexContribution(
       identity: {
         pluginId: CODEX_PLUGIN_MANIFEST.id,
         agentId: 'codex',
-        generation: 'configured-source-materializer-test',
+        occurrenceId: 'configured-source-materializer-test',
         contributionQualifiedId: `${CODEX_PLUGIN_MANIFEST.id}/agents/codex`,
-        immutableGenerationId: null,
+        sourceCustody: {
+          kind: 'development',
+          registeredRootId: 'configured-source-materializer-test',
+        },
       },
       isCurrent: () => true,
       retirementSignal: retirement.signal,
@@ -261,6 +307,69 @@ function isAbortedSignal(signal: AbortSignal | null): boolean {
 }
 
 describe('configured external-session source materializer', () => {
+  it('retires only the replaced Agent occurrence while retaining the other Agent provider cache', async () => {
+    const pi = agent(readManifestAgentContribution(PI_PLUGIN_MANIFEST, 'pi'));
+    const ohmypi = agent(readManifestAgentContribution(OHMYPI_PLUGIN_MANIFEST, 'ohmypi'));
+    const occurrences = new Map([
+      ['pi', 'pi:1'],
+      ['ohmypi', 'ohmypi:1'],
+    ]);
+    const resolveProviderOps = vi.fn(async (agentId: string): Promise<ExternalSessionProviderOps> => ({
+      validateSource: async ({ source }) => ({ ok: true, source }),
+      listCandidates: async () => ({
+        candidates: [{ remoteSessionId: `${agentId}-session`, updatedAtMs: 1 }],
+        nextCursor: null,
+      }),
+      pageTranscript: async () => ({
+        items: [],
+        nextCursor: null,
+        tailCursor: null,
+        hasMore: false,
+        truncated: false,
+      }),
+      readAfterTranscript: async () => ({ outcome: 'already_current' }),
+    }));
+    const basis = { accountSettingsRevision: 'account:occurrence-isolation' };
+    const composition = await createConfiguredPluginExternalSessionsAdapter({
+      agents: [pi, ohmypi],
+      account: { connectedServicesV2: [] },
+      basis,
+      readCurrentBasis: () => basis,
+      isCurrent: () => true,
+      resolveAgentOccurrence: (agentId) => {
+        const occurrenceId = occurrences.get(agentId);
+        return occurrenceId
+          ? {
+              occurrenceId,
+              isCurrent: () => occurrences.get(agentId) === occurrenceId,
+            }
+          : null;
+      },
+      resolveProviderOps,
+    });
+
+    await expect(composition.authorService.list({ limit: 10 })).resolves.toMatchObject({
+      items: expect.arrayContaining([
+        expect.objectContaining({ ref: expect.objectContaining({ remoteSessionId: 'pi-session' }) }),
+        expect.objectContaining({ ref: expect.objectContaining({ remoteSessionId: 'ohmypi-session' }) }),
+      ]),
+    });
+    expect(resolveProviderOps).toHaveBeenCalledTimes(2);
+
+    occurrences.set('pi', 'pi:2');
+
+    await expect(composition.authorService.list({ agentId: 'ohmypi', limit: 10 }))
+      .resolves.toMatchObject({
+        items: [expect.objectContaining({
+          ref: expect.objectContaining({ remoteSessionId: 'ohmypi-session' }),
+        })],
+      });
+    await expect(composition.authorService.list({ agentId: 'pi', limit: 10 }))
+      .rejects.toMatchObject({ code: 'plugin_external_source_unavailable' });
+    expect(resolveProviderOps).toHaveBeenCalledTimes(2);
+    composition.dispose();
+  });
+
   it('materializes independent Pi-family roots and changes only the configured Agent', () => {
     const pi = agent(readManifestAgentContribution(PI_PLUGIN_MANIFEST, 'pi'));
     const ohmypi = agent(readManifestAgentContribution(OHMYPI_PLUGIN_MANIFEST, 'ohmypi'));
@@ -362,7 +471,6 @@ describe('configured external-session source materializer', () => {
         await ops.listCandidates(request));
       const observedOps: ExternalSessionProviderOps = { ...ops, listCandidates };
       const basis = {
-        contributionGenerationId: 'registry:codex-connected-home',
         accountSettingsRevision: 'account:connected-home',
       };
       const composition = await createConfiguredPluginExternalSessionsAdapter({
@@ -496,7 +604,6 @@ describe('configured external-session source materializer', () => {
       readAfterTranscript: async () => ({ outcome: 'already_current' }),
     };
     const basis = {
-      contributionGenerationId: 'registry:g1',
       accountSettingsRevision: 'account:1',
     };
 
@@ -547,7 +654,6 @@ describe('configured external-session source materializer', () => {
       }],
     };
     const basis = {
-      contributionGenerationId: 'registry:g1',
       accountSettingsRevision: 'account:1',
     };
     const resolveLinkIdentity = vi.fn<
@@ -635,7 +741,6 @@ describe('configured external-session source materializer', () => {
     let validationSignal: AbortSignal | null = null;
     const resolveLinkIdentity = vi.fn(resolveExactLinkIdentity);
     const basis = {
-      contributionGenerationId: 'registry:g1',
       accountSettingsRevision: 'account:1',
     };
     let outcome: Awaited<ReturnType<typeof resolveConfiguredExternalSessionFollowTarget>> | null = null;
@@ -696,7 +801,6 @@ describe('configured external-session source materializer', () => {
     >[0]) => ({ ok: true as const, source }));
     const resolveLinkIdentity = vi.fn(resolveExactLinkIdentity);
     const basis = {
-      contributionGenerationId: 'registry:g1',
       accountSettingsRevision: 'account:1',
     };
     let outcome: Awaited<ReturnType<typeof resolveConfiguredExternalSessionFollowTarget>> | null = null;
@@ -755,11 +859,9 @@ describe('configured external-session source materializer', () => {
       agents: [agent(sourceWithoutTerminalFollow)],
       account: { connectedServicesV2: [] },
       basis: {
-        contributionGenerationId: 'registry:g1',
         accountSettingsRevision: 'account:1',
       },
       readCurrentBasis: () => ({
-        contributionGenerationId: 'registry:g1',
         accountSettingsRevision: 'account:1',
       }),
       isCurrent: () => true,
@@ -795,11 +897,9 @@ describe('configured external-session source materializer', () => {
       agents: [agent()],
       account: { connectedServicesV2: [] },
       basis: {
-        contributionGenerationId: 'registry:g1',
         accountSettingsRevision: 'account:1',
       },
       readCurrentBasis: () => ({
-        contributionGenerationId: 'registry:g1',
         accountSettingsRevision: 'account:1',
       }),
       isCurrent: () => true,
@@ -855,11 +955,9 @@ describe('configured external-session source materializer', () => {
       agents: [agent()],
       account: { connectedServicesV2: [] },
       basis: {
-        contributionGenerationId: 'registry:g1',
         accountSettingsRevision: 'account:1',
       },
       readCurrentBasis: () => ({
-        contributionGenerationId: 'registry:g1',
         accountSettingsRevision: 'account:1',
       }),
       isCurrent: () => true,
@@ -875,11 +973,9 @@ describe('configured external-session source materializer', () => {
       agents: [agent()],
       account: { connectedServicesV2: [] },
       basis: {
-        contributionGenerationId: 'registry:g1',
         accountSettingsRevision: 'account:1',
       },
       readCurrentBasis: () => ({
-        contributionGenerationId: 'registry:g1',
         accountSettingsRevision: 'account:1',
       }),
       isCurrent: () => true,
@@ -932,11 +1028,9 @@ describe('configured external-session source materializer', () => {
       }],
       account: { connectedServicesV2: [] },
       basis: {
-        contributionGenerationId: 'registry:g1',
         accountSettingsRevision: 'account:1',
       },
       readCurrentBasis: () => ({
-        contributionGenerationId: 'registry:g1',
         accountSettingsRevision: 'account:1',
       }),
       isCurrent: () => true,
@@ -952,7 +1046,6 @@ describe('configured external-session source materializer', () => {
 
   it('composes opaque configured sources into the native adapter and retires on account drift', async () => {
     let currentBasis = {
-      contributionGenerationId: 'registry:g1',
       accountSettingsRevision: 'account:1',
     };
     const listCandidates = vi.fn<ExternalSessionProviderOps['listCandidates']>(async (_params) => ({
@@ -1034,9 +1127,8 @@ describe('configured external-session source materializer', () => {
       const adapter = await createConfiguredPluginExternalSessionsAdapter({
         agents: [agent()],
         account: { connectedServicesV2: [] },
-        basis: { contributionGenerationId: 'registry:g1', accountSettingsRevision: 'account:1' },
+        basis: { accountSettingsRevision: 'account:1' },
         readCurrentBasis: () => ({
-          contributionGenerationId: 'registry:g1',
           accountSettingsRevision: 'account:1',
         }),
         isCurrent: () => true,
@@ -1073,9 +1165,8 @@ describe('configured external-session source materializer', () => {
       const successor = await createConfiguredPluginExternalSessionsAdapter({
         agents: [agent()],
         account: { connectedServicesV2: [] },
-        basis: { contributionGenerationId: 'registry:g2', accountSettingsRevision: 'account:1' },
+        basis: { accountSettingsRevision: 'account:1' },
         readCurrentBasis: () => ({
-          contributionGenerationId: 'registry:g2',
           accountSettingsRevision: 'account:1',
         }),
         isCurrent: () => true,
@@ -1120,7 +1211,7 @@ describe('configured external-session source materializer', () => {
         }),
         readAfterTranscript: async () => ({ outcome: 'already_current' }),
       };
-      const basis = { contributionGenerationId: 'registry:g1', accountSettingsRevision: 'account:1' };
+      const basis = { accountSettingsRevision: 'account:1' };
       const adapter = await createConfiguredPluginExternalSessionsAdapter({
         agents: [agent()],
         account: { connectedServicesV2: [] },
@@ -1167,7 +1258,6 @@ describe('configured external-session source materializer', () => {
       readAfterTranscript: async () => ({ outcome: 'already_current' }),
     };
     const basis = {
-      contributionGenerationId: 'registry:g1',
       accountSettingsRevision: 'account:1',
     };
     const composition = await createConfiguredPluginExternalSessionsAdapter({
@@ -1214,8 +1304,8 @@ describe('configured external-session source materializer', () => {
     const adapter = await createConfiguredPluginExternalSessionsAdapter({
       agents: [agent()],
       account: { connectedServicesV2: [] },
-      basis: { contributionGenerationId: 'registry:g1', accountSettingsRevision: 'account:1' },
-      readCurrentBasis: () => ({ contributionGenerationId: 'registry:g1', accountSettingsRevision: 'account:1' }),
+      basis: { accountSettingsRevision: 'account:1' },
+      readCurrentBasis: () => ({ accountSettingsRevision: 'account:1' }),
       isCurrent: () => true,
       resolveProviderOps: async () => ops,
       followTranscript,
@@ -1265,8 +1355,8 @@ describe('configured external-session source materializer', () => {
     const adapter = await createConfiguredPluginExternalSessionsAdapter({
       agents: [agent()],
       account: { connectedServicesV2: [] },
-      basis: { contributionGenerationId: 'registry:g1', accountSettingsRevision: 'account:1' },
-      readCurrentBasis: () => ({ contributionGenerationId: 'registry:g1', accountSettingsRevision: 'account:1' }),
+      basis: { accountSettingsRevision: 'account:1' },
+      readCurrentBasis: () => ({ accountSettingsRevision: 'account:1' }),
       isCurrent: () => true,
       resolveProviderOps: async () => ops,
       followTranscript,
@@ -1322,8 +1412,8 @@ describe('configured external-session source materializer', () => {
     const composition = await createConfiguredPluginExternalSessionsAdapter({
       agents: [agent()],
       account: { connectedServicesV2: [] },
-      basis: { contributionGenerationId: 'registry:g1', accountSettingsRevision: 'account:1' },
-      readCurrentBasis: () => ({ contributionGenerationId: 'registry:g1', accountSettingsRevision: 'account:1' }),
+      basis: { accountSettingsRevision: 'account:1' },
+      readCurrentBasis: () => ({ accountSettingsRevision: 'account:1' }),
       isCurrent: () => true,
       resolveProviderOps: async () => ops,
       followTranscript,
@@ -1429,8 +1519,8 @@ describe('configured external-session source materializer', () => {
     const composition = await createConfiguredPluginExternalSessionsAdapter({
       agents: [agent()],
       account: { connectedServicesV2: [] },
-      basis: { contributionGenerationId: 'registry:g1', accountSettingsRevision: 'account:1' },
-      readCurrentBasis: () => ({ contributionGenerationId: 'registry:g1', accountSettingsRevision: 'account:1' }),
+      basis: { accountSettingsRevision: 'account:1' },
+      readCurrentBasis: () => ({ accountSettingsRevision: 'account:1' }),
       isCurrent: () => true,
       resolveProviderOps: async () => ops,
       contextualTakeover: { takeover },
@@ -1496,8 +1586,8 @@ describe('configured external-session source materializer', () => {
     const composition = await createConfiguredPluginExternalSessionsAdapter({
       agents: [agent()],
       account: { connectedServicesV2: [] },
-      basis: { contributionGenerationId: 'registry:g1', accountSettingsRevision: 'account:1' },
-      readCurrentBasis: () => ({ contributionGenerationId: 'registry:g1', accountSettingsRevision: 'account:1' }),
+      basis: { accountSettingsRevision: 'account:1' },
+      readCurrentBasis: () => ({ accountSettingsRevision: 'account:1' }),
       isCurrent: () => true,
       resolveProviderOps: async () => ops,
       contextualTakeover: { takeover },
@@ -1538,8 +1628,8 @@ describe('configured external-session source materializer', () => {
     const composition = await createConfiguredPluginExternalSessionsAdapter({
       agents: [agent()],
       account: { connectedServicesV2: [] },
-      basis: { contributionGenerationId: 'registry:g1', accountSettingsRevision: 'account:1' },
-      readCurrentBasis: () => ({ contributionGenerationId: 'registry:g1', accountSettingsRevision: 'account:1' }),
+      basis: { accountSettingsRevision: 'account:1' },
+      readCurrentBasis: () => ({ accountSettingsRevision: 'account:1' }),
       isCurrent: () => true,
       resolveProviderOps: async () => ops,
     });
@@ -1629,8 +1719,8 @@ describe('configured external-session source materializer', () => {
     const composition = await createConfiguredPluginExternalSessionsAdapter({
       agents: [agent()],
       account: { connectedServicesV2: [] },
-      basis: { contributionGenerationId: 'registry:g1', accountSettingsRevision: 'account:1' },
-      readCurrentBasis: () => ({ contributionGenerationId: 'registry:g1', accountSettingsRevision: 'account:1' }),
+      basis: { accountSettingsRevision: 'account:1' },
+      readCurrentBasis: () => ({ accountSettingsRevision: 'account:1' }),
       isCurrent: () => true,
       resolveProviderOps: async () => ops,
       attach,
@@ -1713,8 +1803,8 @@ describe('configured external-session source materializer', () => {
     const composition = await createConfiguredPluginExternalSessionsAdapter({
       agents: [agent()],
       account: { connectedServicesV2: [] },
-      basis: { contributionGenerationId: 'registry:g1', accountSettingsRevision: 'account:1' },
-      readCurrentBasis: () => ({ contributionGenerationId: 'registry:g1', accountSettingsRevision: 'account:1' }),
+      basis: { accountSettingsRevision: 'account:1' },
+      readCurrentBasis: () => ({ accountSettingsRevision: 'account:1' }),
       isCurrent: () => true,
       resolveProviderOps: async () => ops,
       attach,
@@ -1791,7 +1881,6 @@ describe('configured external-session source materializer', () => {
       { source }: Parameters<ExternalSessionProviderOps['validateSource']>[0],
     ) => ({ ok: true as const, source }));
     const readCurrentBasis = vi.fn(() => ({
-      contributionGenerationId: 'registry:g1',
       accountSettingsRevision: 'account:1',
     }));
     const isCurrent = vi.fn(() => true);
@@ -1804,7 +1893,7 @@ describe('configured external-session source materializer', () => {
     const composition = await createConfiguredPluginExternalSessionsAdapter({
       agents: [agent()],
       account: { connectedServicesV2: [] },
-      basis: { contributionGenerationId: 'registry:g1', accountSettingsRevision: 'account:1' },
+      basis: { accountSettingsRevision: 'account:1' },
       readCurrentBasis,
       isCurrent,
       resolveProviderOps: async () => ops,
@@ -1996,8 +2085,8 @@ describe('configured external-session source materializer', () => {
     const composition = await createConfiguredPluginExternalSessionsAdapter({
       agents: [agent()],
       account: { connectedServicesV2: [] },
-      basis: { contributionGenerationId: 'registry:g1', accountSettingsRevision: 'account:1' },
-      readCurrentBasis: () => ({ contributionGenerationId: 'registry:g1', accountSettingsRevision: 'account:1' }),
+      basis: { accountSettingsRevision: 'account:1' },
+      readCurrentBasis: () => ({ accountSettingsRevision: 'account:1' }),
       isCurrent: () => true,
       resolveProviderOps: async () => ops,
       attach,
@@ -2058,8 +2147,8 @@ describe('configured external-session source materializer', () => {
     const composition = await createConfiguredPluginExternalSessionsAdapter({
       agents: [agent()],
       account: { connectedServicesV2: [] },
-      basis: { contributionGenerationId: 'registry:g1', accountSettingsRevision: 'account:1' },
-      readCurrentBasis: () => ({ contributionGenerationId: 'registry:g1', accountSettingsRevision: 'account:1' }),
+      basis: { accountSettingsRevision: 'account:1' },
+      readCurrentBasis: () => ({ accountSettingsRevision: 'account:1' }),
       isCurrent: () => true,
       resolveProviderOps: async () => ({
         validateSource,
@@ -2095,8 +2184,8 @@ describe('configured external-session source materializer', () => {
     const composition = await createConfiguredPluginExternalSessionsAdapter({
       agents: [agent()],
       account: { connectedServicesV2: [] },
-      basis: { contributionGenerationId: 'registry:g1', accountSettingsRevision: 'account:1' },
-      readCurrentBasis: () => ({ contributionGenerationId: 'registry:g1', accountSettingsRevision: 'account:1' }),
+      basis: { accountSettingsRevision: 'account:1' },
+      readCurrentBasis: () => ({ accountSettingsRevision: 'account:1' }),
       isCurrent: () => true,
       resolveProviderOps: async () => ({
         validateSource: async ({ source }) => ({ ok: true as const, source }),
@@ -2137,8 +2226,8 @@ describe('configured external-session source materializer', () => {
     const composition = await createConfiguredPluginExternalSessionsAdapter({
       agents: [agent()],
       account: { connectedServicesV2: [] },
-      basis: { contributionGenerationId: 'registry:g1', accountSettingsRevision: 'account:1' },
-      readCurrentBasis: () => ({ contributionGenerationId: 'registry:g1', accountSettingsRevision: 'account:1' }),
+      basis: { accountSettingsRevision: 'account:1' },
+      readCurrentBasis: () => ({ accountSettingsRevision: 'account:1' }),
       isCurrent: () => true,
       resolveProviderOps: async () => ({
         validateSource: async ({ source }) => ({ ok: true as const, source }),
@@ -2192,8 +2281,8 @@ describe('configured external-session source materializer', () => {
             groups: [],
           }],
         },
-        basis: { contributionGenerationId: 'registry:g1', accountSettingsRevision: 'account:1' },
-        readCurrentBasis: () => ({ contributionGenerationId: 'registry:g1', accountSettingsRevision: 'account:1' }),
+        basis: { accountSettingsRevision: 'account:1' },
+        readCurrentBasis: () => ({ accountSettingsRevision: 'account:1' }),
         isCurrent: () => true,
         activeServerDir,
         resolveProviderOps: async () => ({
@@ -2259,8 +2348,8 @@ describe('configured external-session source materializer', () => {
     const composition = await createConfiguredPluginExternalSessionsAdapter({
       agents: [agent()],
       account: { connectedServicesV2: [] },
-      basis: { contributionGenerationId: 'registry:g1', accountSettingsRevision: 'account:1' },
-      readCurrentBasis: () => ({ contributionGenerationId: 'registry:g1', accountSettingsRevision: 'account:1' }),
+      basis: { accountSettingsRevision: 'account:1' },
+      readCurrentBasis: () => ({ accountSettingsRevision: 'account:1' }),
       isCurrent: () => true,
       resolveProviderOps: async () => ({
         validateSource: async ({ source }) => ({ ok: true as const, source }),
@@ -2325,8 +2414,8 @@ describe('configured external-session source materializer', () => {
     const composition = await createConfiguredPluginExternalSessionsAdapter({
       agents: [agent()],
       account: { connectedServicesV2: [] },
-      basis: { contributionGenerationId: 'registry:g1', accountSettingsRevision: 'account:1' },
-      readCurrentBasis: () => ({ contributionGenerationId: 'registry:g1', accountSettingsRevision: 'account:1' }),
+      basis: { accountSettingsRevision: 'account:1' },
+      readCurrentBasis: () => ({ accountSettingsRevision: 'account:1' }),
       isCurrent: () => true,
       resolveProviderOps: async () => ops,
       followTranscript: followTranscript as never,
@@ -2343,8 +2432,8 @@ describe('configured external-session source materializer', () => {
     const invalid = await createConfiguredPluginExternalSessionsAdapter({
       agents: [agent()],
       account: { connectedServicesV2: [] },
-      basis: { contributionGenerationId: 'registry:g2', accountSettingsRevision: 'account:1' },
-      readCurrentBasis: () => ({ contributionGenerationId: 'registry:g2', accountSettingsRevision: 'account:1' }),
+      basis: { accountSettingsRevision: 'account:1' },
+      readCurrentBasis: () => ({ accountSettingsRevision: 'account:1' }),
       isCurrent: () => true,
       resolveProviderOps: async () => ops,
       followTranscript: (async () => ({
@@ -2391,8 +2480,8 @@ describe('configured external-session source materializer', () => {
     const composition = await createConfiguredPluginExternalSessionsAdapter({
       agents: [agent()],
       account: { connectedServicesV2: [] },
-      basis: { contributionGenerationId: 'registry:g1', accountSettingsRevision: 'account:1' },
-      readCurrentBasis: () => ({ contributionGenerationId: 'registry:g1', accountSettingsRevision: 'account:1' }),
+      basis: { accountSettingsRevision: 'account:1' },
+      readCurrentBasis: () => ({ accountSettingsRevision: 'account:1' }),
       isCurrent: () => true,
       resolveProviderOps: async () => ops,
       followTranscript,
@@ -2467,8 +2556,8 @@ describe('configured external-session source materializer', () => {
     const composition = await createConfiguredPluginExternalSessionsAdapter({
       agents: [agent()],
       account: { connectedServicesV2: [] },
-      basis: { contributionGenerationId: 'registry:g1', accountSettingsRevision: 'account:1' },
-      readCurrentBasis: () => ({ contributionGenerationId: 'registry:g1', accountSettingsRevision: 'account:1' }),
+      basis: { accountSettingsRevision: 'account:1' },
+      readCurrentBasis: () => ({ accountSettingsRevision: 'account:1' }),
       isCurrent: () => true,
       resolveProviderOps: async () => ops,
       followTranscript,
@@ -2528,8 +2617,8 @@ describe('configured external-session source materializer', () => {
     const composition = await createConfiguredPluginExternalSessionsAdapter({
       agents: [agent()],
       account: { connectedServicesV2: [] },
-      basis: { contributionGenerationId: 'registry:g1', accountSettingsRevision: 'account:1' },
-      readCurrentBasis: () => ({ contributionGenerationId: 'registry:g1', accountSettingsRevision: 'account:1' }),
+      basis: { accountSettingsRevision: 'account:1' },
+      readCurrentBasis: () => ({ accountSettingsRevision: 'account:1' }),
       isCurrent: () => true,
       resolveProviderOps: async () => ops,
       followTranscript,
@@ -2547,8 +2636,8 @@ describe('configured external-session source materializer', () => {
     const second = await createConfiguredPluginExternalSessionsAdapter({
       agents: [agent()],
       account: { connectedServicesV2: [] },
-      basis: { contributionGenerationId: 'registry:g2', accountSettingsRevision: 'account:1' },
-      readCurrentBasis: () => ({ contributionGenerationId: 'registry:g2', accountSettingsRevision: 'account:1' }),
+      basis: { accountSettingsRevision: 'account:1' },
+      readCurrentBasis: () => ({ accountSettingsRevision: 'account:1' }),
       isCurrent: () => true,
       resolveProviderOps: async () => ops,
       followTranscript,
@@ -2595,8 +2684,8 @@ describe('configured external-session source materializer', () => {
     const composition = await createConfiguredPluginExternalSessionsAdapter({
       agents: [agent()],
       account: { connectedServicesV2: [] },
-      basis: { contributionGenerationId: 'registry:g1', accountSettingsRevision: 'account:1' },
-      readCurrentBasis: () => ({ contributionGenerationId: 'registry:g1', accountSettingsRevision: 'account:1' }),
+      basis: { accountSettingsRevision: 'account:1' },
+      readCurrentBasis: () => ({ accountSettingsRevision: 'account:1' }),
       isCurrent: () => true,
       resolveProviderOps: async () => ops,
       followTranscript,
@@ -2689,8 +2778,8 @@ describe('configured external-session source materializer', () => {
       const composition = await createConfiguredPluginExternalSessionsAdapter({
         agents: [agent()],
         account: { connectedServicesV2: [] },
-        basis: { contributionGenerationId: 'registry:g1', accountSettingsRevision: 'account:1' },
-        readCurrentBasis: () => ({ contributionGenerationId: 'registry:g1', accountSettingsRevision: 'account:1' }),
+        basis: { accountSettingsRevision: 'account:1' },
+        readCurrentBasis: () => ({ accountSettingsRevision: 'account:1' }),
         isCurrent: () => true,
         resolveProviderOps: async () => ops,
         followTranscript,
@@ -2756,8 +2845,8 @@ describe('configured external-session source materializer', () => {
       const composition = await createConfiguredPluginExternalSessionsAdapter({
         agents: [agent()],
         account: { connectedServicesV2: [] },
-        basis: { contributionGenerationId: 'registry:g1', accountSettingsRevision: 'account:1' },
-        readCurrentBasis: () => ({ contributionGenerationId: 'registry:g1', accountSettingsRevision: 'account:1' }),
+        basis: { accountSettingsRevision: 'account:1' },
+        readCurrentBasis: () => ({ accountSettingsRevision: 'account:1' }),
         isCurrent: () => true,
         resolveProviderOps: async () => ops,
         followTranscript,
@@ -2830,8 +2919,8 @@ describe('configured external-session source materializer', () => {
       const composition = await createConfiguredPluginExternalSessionsAdapter({
         agents: [agent()],
         account: { connectedServicesV2: [] },
-        basis: { contributionGenerationId: 'registry:g1', accountSettingsRevision: 'account:1' },
-        readCurrentBasis: () => ({ contributionGenerationId: 'registry:g1', accountSettingsRevision: 'account:1' }),
+        basis: { accountSettingsRevision: 'account:1' },
+        readCurrentBasis: () => ({ accountSettingsRevision: 'account:1' }),
         isCurrent: () => true,
         resolveProviderOps: async () => ops,
         followTranscript,
@@ -2911,8 +3000,8 @@ describe('configured external-session source materializer', () => {
     const composition = await createConfiguredPluginExternalSessionsAdapter({
       agents: [agent()],
       account: { connectedServicesV2: [] },
-      basis: { contributionGenerationId: 'registry:g1', accountSettingsRevision: 'account:1' },
-      readCurrentBasis: () => ({ contributionGenerationId: 'registry:g1', accountSettingsRevision: 'account:1' }),
+      basis: { accountSettingsRevision: 'account:1' },
+      readCurrentBasis: () => ({ accountSettingsRevision: 'account:1' }),
       isCurrent: () => true,
       resolveProviderOps: async () => ops,
       followTranscript,
@@ -2977,8 +3066,8 @@ describe('configured external-session source materializer', () => {
     const composition = await createConfiguredPluginExternalSessionsAdapter({
       agents: [agent()],
       account: { connectedServicesV2: [] },
-      basis: { contributionGenerationId: 'registry:g1', accountSettingsRevision: 'account:1' },
-      readCurrentBasis: () => ({ contributionGenerationId: 'registry:g1', accountSettingsRevision: 'account:1' }),
+      basis: { accountSettingsRevision: 'account:1' },
+      readCurrentBasis: () => ({ accountSettingsRevision: 'account:1' }),
       isCurrent: () => true,
       resolveProviderOps: async () => ops,
       followTranscript,
@@ -3026,8 +3115,8 @@ describe('configured external-session source materializer', () => {
     const composition = await createConfiguredPluginExternalSessionsAdapter({
       agents: [agent()],
       account: { connectedServicesV2: [] },
-      basis: { contributionGenerationId: 'registry:g1', accountSettingsRevision: 'account:1' },
-      readCurrentBasis: () => ({ contributionGenerationId: 'registry:g1', accountSettingsRevision: 'account:1' }),
+      basis: { accountSettingsRevision: 'account:1' },
+      readCurrentBasis: () => ({ accountSettingsRevision: 'account:1' }),
       isCurrent: () => current,
       resolveProviderOps: async () => ops,
       followTranscript,
@@ -3076,8 +3165,8 @@ describe('configured external-session source materializer', () => {
     const composition = await createConfiguredPluginExternalSessionsAdapter({
       agents: [agent()],
       account: { connectedServicesV2: [] },
-      basis: { contributionGenerationId: 'registry:g1', accountSettingsRevision: 'account:1' },
-      readCurrentBasis: () => ({ contributionGenerationId: 'registry:g1', accountSettingsRevision: 'account:1' }),
+      basis: { accountSettingsRevision: 'account:1' },
+      readCurrentBasis: () => ({ accountSettingsRevision: 'account:1' }),
       isCurrent: () => true,
       resolveProviderOps: async () => ops,
       followTranscript,
@@ -3138,7 +3227,6 @@ describe('configured external-session source materializer', () => {
       };
       const createLifecycle = async () => await createLiveConfiguredPluginExternalSessionsAdapter({
         agents: [agent()],
-        contributionGenerationId: 'registry:g1',
         readAccount: async () => account,
         readAccountRevision: () => revision,
         subscribeAccountRevision: () => () => {},
@@ -3256,7 +3344,6 @@ describe('configured external-session source materializer', () => {
       const workSource = connectedCodexSource(activeServerDir, 'work');
       const lifecycle = await createLiveConfiguredPluginExternalSessionsAdapter({
         agents: [agent()],
-        contributionGenerationId: 'registry:g1',
         activeServerDir,
         readAccount,
         readAccountRevision: () => revision,
@@ -3337,7 +3424,6 @@ describe('configured external-session source materializer', () => {
 
     const lifecycle = await createLiveConfiguredPluginExternalSessionsAdapter({
       agents: [agent(), flakyAgent],
-      contributionGenerationId: 'registry:g1',
       readAccount: async () => ({ connectedServicesV2: [] }),
       readAccountRevision: () => 'settings:1',
       subscribeAccountRevision: () => () => {},
@@ -3399,7 +3485,6 @@ describe('configured external-session source materializer', () => {
     };
     const lifecycle = await createLiveConfiguredPluginExternalSessionsAdapter({
       agents: [agent(), flakyAgent],
-      contributionGenerationId: 'registry:g1',
       readAccount: async () => ({ connectedServicesV2: [] }),
       readAccountRevision: () => revision,
       subscribeAccountRevision: (listener) => {
@@ -3473,7 +3558,6 @@ describe('configured external-session source materializer', () => {
       const backupSource = connectedCodexSource(activeServerDir, 'backup');
       const lifecycle = await createLiveConfiguredPluginExternalSessionsAdapter({
         agents: [agent()],
-        contributionGenerationId: 'registry:g1',
         activeServerDir,
         readAccount: async () => account,
         readAccountRevision: () => revision,
@@ -3536,7 +3620,6 @@ describe('configured external-session source materializer', () => {
     };
     const lifecycle = await createLiveConfiguredPluginExternalSessionsAdapter({
       agents: [agent()],
-      contributionGenerationId: 'registry:g1',
       readAccount,
       readAccountRevision: () => revision,
       subscribeAccountRevision: (listener) => {
@@ -3589,7 +3672,6 @@ describe('configured external-session source materializer', () => {
     const resolveProviderOps = vi.fn(async (): Promise<ExternalSessionProviderOps> => ops);
     const lifecycle = await createLiveConfiguredPluginExternalSessionsAdapter({
       agents: [agent()],
-      contributionGenerationId: 'registry:g1',
       readAccount: async () => ({ connectedServicesV2: [] }),
       readAccountRevision: () => revision,
       subscribeAccountRevision: (listener) => {
@@ -3636,7 +3718,6 @@ describe('configured external-session source materializer', () => {
     const resolveProviderOps = vi.fn(async (): Promise<ExternalSessionProviderOps> => ops);
     const lifecycle = await createLiveConfiguredPluginExternalSessionsAdapter({
       agents: [agent()],
-      contributionGenerationId: 'registry:g1',
       readAccount,
       readAccountRevision: () => revision,
       subscribeAccountRevision: (listener) => {
@@ -3690,7 +3771,6 @@ describe('configured external-session source materializer', () => {
     };
     const lifecyclePromise = createLiveConfiguredPluginExternalSessionsAdapter({
       agents: [agent()],
-      contributionGenerationId: 'registry:g1',
       readAccount,
       readAccountRevision: () => revision,
       subscribeAccountRevision: (listener) => {
@@ -3740,7 +3820,6 @@ describe('configured external-session source materializer', () => {
     };
     const create = async () => await createLiveConfiguredPluginExternalSessionsAdapter({
       agents: [agent()],
-      contributionGenerationId: 'registry:g1',
       readAccount: async () => ({ connectedServicesV2: [] }),
       readAccountRevision: () => revision,
       subscribeAccountRevision: (listener) => {
@@ -3785,10 +3864,11 @@ describe('configured external-session source materializer', () => {
     expect(listeners).toHaveLength(0);
   });
 
-  it('rejects noncanonical transcript item identities and source timestamps from author follow events', async () => {
+  it('rejects noncanonical transcript identities, timestamps, and terminal observations from author follow events', async () => {
     const invalidItems = [
-      { id: ' source-event-1 ', timestampMs: 1 },
-      { id: 'source-event-1', timestampMs: 1.5 },
+      { id: ' source-event-1 ', timestampMs: 1, kind: 'event' },
+      { id: 'source-event-1', timestampMs: 1.5, kind: 'event' },
+      { id: 'source-event-1', timestampMs: 1, kind: 'source_observation' },
     ] as const;
     const ops: ExternalSessionProviderOps = {
       validateSource: async ({ source }) => ({ ok: true, source }),
@@ -3807,14 +3887,14 @@ describe('configured external-session source materializer', () => {
       const adapter = await createConfiguredPluginExternalSessionsAdapter({
         agents: [agent()],
         account: { connectedServicesV2: [] },
-        basis: { contributionGenerationId: 'registry:g1', accountSettingsRevision: 'account:1' },
-        readCurrentBasis: () => ({ contributionGenerationId: 'registry:g1', accountSettingsRevision: 'account:1' }),
+        basis: { accountSettingsRevision: 'account:1' },
+        readCurrentBasis: () => ({ accountSettingsRevision: 'account:1' }),
         isCurrent: () => true,
         resolveProviderOps: async () => ops,
         followTranscript: async ({ listener }) => {
           await listener({
             kind: 'data',
-            items: [{ ...item, kind: 'event', data: { provider: 'source' } }],
+            items: [{ ...item, data: { provider: 'source' } }],
             fromCursor: null,
             nextCursor: 'cursor-1',
           } as HostExternalTranscriptFollowEvent);

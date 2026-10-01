@@ -6,6 +6,39 @@ import {
 } from './sessionListRuntimePriorityRows';
 
 describe('isSessionListRuntimePriorityRow', () => {
+    it('reuses immutable priority inputs until their freshness deadline and rechecks after a clock rewind', () => {
+        let runtimeReads = 0;
+        const row = {
+            active: true,
+            presence: 'online',
+            thinking: true,
+            thinkingAt: 990_000,
+            get latestTurnStatus() {
+                runtimeReads += 1;
+                return null;
+            },
+        };
+        const nowMs = 1_000_000;
+        expect(isSessionListRuntimePriorityRow(row, nowMs)).toBe(true);
+        const deadline = resolveSessionListRuntimePriorityRowNextFreshnessAtMs(row, nowMs);
+        expect(deadline).not.toBeNull();
+        const initialReads = runtimeReads;
+        expect(initialReads).toBeGreaterThan(0);
+
+        expect(isSessionListRuntimePriorityRow(row, nowMs + 1)).toBe(true);
+        expect(resolveSessionListRuntimePriorityRowNextFreshnessAtMs(row, nowMs + 1)).toBe(deadline);
+        expect(runtimeReads).toBe(initialReads);
+
+        expect(isSessionListRuntimePriorityRow(row, deadline!)).toBe(true);
+        expect(runtimeReads).toBeGreaterThan(initialReads);
+        expect(isSessionListRuntimePriorityRow(row, deadline! + 1)).toBe(true);
+        expect(resolveSessionListRuntimePriorityRowNextFreshnessAtMs(row, deadline! + 1)).toBeNull();
+        expect(runtimeReads).toBeGreaterThan(initialReads);
+        expect(isSessionListRuntimePriorityRow(row, nowMs)).toBe(true);
+        expect(resolveSessionListRuntimePriorityRowNextFreshnessAtMs(row, nowMs)).toBe(deadline);
+        expect(isSessionListRuntimePriorityRow({ ...row, active: false, thinking: false }, nowMs)).toBe(false);
+    });
+
     it('prioritizes canonical background activity without sourceClass or timestamp freshness inference', () => {
         const nowMs = 1_000_000;
         const row = {

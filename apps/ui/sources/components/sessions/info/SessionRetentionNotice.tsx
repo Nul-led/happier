@@ -18,7 +18,9 @@ type SessionRetentionNoticeProps = Readonly<{
 export function SessionRetentionNotice(props: SessionRetentionNoticeProps) {
     const { theme } = useUnistyles();
     const serverId = resolveSessionListLookupSessionServerId(storage.getState(), props.sessionId);
-    const policy = useServerRetentionPolicy(serverId);
+    const retention = useServerRetentionPolicy(serverId);
+    // A notice about deletion is shown only from a policy that answered, never while it is being read.
+    const policy = retention.status === 'ready' ? retention.policy : null;
     const sessionsPolicy = policy
         ? normalizeServerRetentionPolicy(policy).domains.find((domain) => domain.id === 'sessions')?.policy
         : null;

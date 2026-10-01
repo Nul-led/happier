@@ -4,6 +4,7 @@ import { join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 import type { ActionExecutorContext, ReviewCommentCreateRequestV1 } from '@happier-dev/protocol';
+import { createPluginRuntimeOccurrenceId } from '@/plugins/runtime/runtimeSlots';
 
 import {
   createReviewCommentHostActionMaterializer,
@@ -57,15 +58,21 @@ function twoProposalCandidate(): ReviewCommentHostActionCandidate {
 }
 
 const currentPluginAuthority: ReviewCommentHostPluginAuthority = Object.freeze({
-  immutableGenerationId: 'generation-1',
+  sourceCustody: {
+    kind: 'managed',
+    immutableGenerationId: 'generation-1',
+    installSource: 'archive',
+  },
 });
 
 describe('createReviewCommentHostActionMaterializer', () => {
   it('admits review-comment host effects only through an applied final-policy generation', () => {
+    const occurrenceId = createPluginRuntimeOccurrenceId('acme.review-current');
     const current = {
-      immutableGenerationId: 'generation-1',
-      desiredImmutableGenerationId: 'generation-1',
-      appliedImmutableGenerationId: 'generation-1',
+      occurrenceId,
+      sourceCustody: currentPluginAuthority.sourceCustody,
+      desiredOccurrenceId: occurrenceId,
+      appliedOccurrenceId: occurrenceId,
       applied: true,
       selectedAccess: [],
     } as const;
@@ -73,18 +80,21 @@ describe('createReviewCommentHostActionMaterializer', () => {
     expect(resolveReviewCommentHostPluginAuthority({
       pluginId: 'acme.review',
       current,
+      sourceCustody: currentPluginAuthority.sourceCustody,
     })).toEqual(currentPluginAuthority);
     expect(resolveReviewCommentHostPluginAuthority({
       pluginId: 'acme.review',
       current: {
         ...current,
         applied: false,
-        appliedImmutableGenerationId: null,
+        appliedOccurrenceId: null,
       },
+      sourceCustody: currentPluginAuthority.sourceCustody,
     })).toBeNull();
     expect(resolveReviewCommentHostPluginAuthority({
       pluginId: 'acme.review',
       current: null,
+      sourceCustody: null,
     })).toBeNull();
   });
 
@@ -115,6 +125,7 @@ describe('createReviewCommentHostActionMaterializer', () => {
       anchor: { kind: 'line', filePath: 'a.ts', line: 2 },
       snapshot: { kind: 'text', selectedLines: ['two'] },
       metadata: { severity: 'warning' },
+      fingerprint: expect.objectContaining({ engineId: 'acme.review' }),
       linkedRefs: [{ kind: 'executionRun', id: 'run-1' }, { kind: 'session', id: 'session-1' }],
     });
     expect(dispatches[0]?.input.clientMutationId).toMatch(/^review-run:[a-f0-9]{64}$/);
@@ -137,7 +148,7 @@ describe('createReviewCommentHostActionMaterializer', () => {
       agentId: 'claude',
       projectId: 'project-1',
       workspaceId: 'workspace-1',
-      immutableGenerationId: 'generation-1',
+      sourceCustody: currentPluginAuthority.sourceCustody,
     });
     current = null;
   });
@@ -164,7 +175,13 @@ describe('createReviewCommentHostActionMaterializer', () => {
       requestCurrentIntent: async (subject) => {
         if (mode === 'denied') return { status: 'rejected', code: 'execution_run_host_action_current_intent_rejected' };
         if (mode === 'stale') current = { ...candidate(), callId: 'call-2' };
-        if (mode === 'authority') authority = { ...currentPluginAuthority, immutableGenerationId: 'generation-2' };
+        if (mode === 'authority') authority = {
+          sourceCustody: {
+            kind: 'managed',
+            immutableGenerationId: 'generation-2',
+            installSource: 'archive',
+          },
+        };
         return { status: 'approved', fingerprint: subject.subjectFingerprint };
       },
       executeHostAction: async () => {

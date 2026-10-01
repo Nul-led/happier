@@ -17,6 +17,67 @@ async function pathExists(target: string): Promise<boolean> {
 }
 
 describe('browser profile store disk purge', () => {
+  it('purges only the stopped runtime ephemeral profile without deleting other profiles for that session', async () => {
+    const store = createBrowserProfileStore({ storageRootDirectory: '/unused',
+      partitionOwner: createBrowserStoragePartitionOwner({ storageRootDirectory: '/unused' }),
+      removeDirectory: async () => {} });
+    store.register({ profileId: 'sidecar', storageMode: 'ephemeral', owner: { kind: 'session', id: 'session' } });
+    store.register({ profileId: 'persistent_session', storageMode: 'session', owner: { kind: 'session', id: 'session' } });
+    expect(await store.purgeForRuntimeStopped({ profileIds: ['sidecar', 'persistent_session'] }))
+      .toEqual({ purgedProfileIds: ['sidecar'], failedProfileIds: [] });
+    expect(store.listProfiles().map(profile => profile.profileId)).toEqual(['persistent_session']);
+  });
+  it('purges a session-owned ephemeral profile after its process settles and retains other sessions', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'happier-browser-profiles-'));
+    try {
+      let settle: (() => void) | undefined;
+      const processSettled = new Promise<void>((resolve) => { settle = resolve; });
+      const removeDirectory = vi.fn(async () => {});
+      const store = createBrowserProfileStore({
+        storageRootDirectory: root,
+        partitionOwner: createBrowserStoragePartitionOwner({ storageRootDirectory: root }),
+        removeDirectory,
+      });
+      store.register({
+        profileId: 'ephemeral_session', storageMode: 'ephemeral',
+        owner: { kind: 'session', id: 'session_1' }, cleanupOnSessionClose: true,
+        beforePurge: () => processSettled,
+      });
+      store.register({
+        profileId: 'ephemeral_other', storageMode: 'ephemeral',
+        owner: { kind: 'session', id: 'session_2' }, cleanupOnSessionClose: true,
+      });
+      const purge = store.purgeForSessionDeleted({ sessionId: 'session_1' });
+      await Promise.resolve();
+      expect(removeDirectory).not.toHaveBeenCalled();
+      settle?.();
+      expect(await purge).toEqual({ purgedProfileIds: ['ephemeral_session'], failedProfileIds: [] });
+      expect(store.getProfile('ephemeral_other')?.lifecycleState).toBe('active');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('retains storage and audits a failed process settlement', async () => {
+    const partitionOwner = createBrowserStoragePartitionOwner({ storageRootDirectory: '/unused' });
+    const removeDirectory = vi.fn(async () => {});
+    const auditRecords: unknown[] = [];
+    const store = createBrowserProfileStore({ storageRootDirectory: '/unused', partitionOwner, removeDirectory,
+      emitAudit: record => auditRecords.push(record) });
+    store.register({
+      profileId: 'running_profile', storageMode: 'ephemeral',
+      owner: { kind: 'session', id: 'session' }, cleanupOnSessionClose: true,
+      beforePurge: async () => { throw new Error('CDP ws://127.0.0.1/private_token failed'); },
+    });
+    expect(await store.purgeForSessionDeleted({ sessionId: 'session' }))
+      .toEqual({ purgedProfileIds: [], failedProfileIds: ['running_profile'] });
+    expect(removeDirectory).not.toHaveBeenCalled();
+    expect(store.getProfile('running_profile')).toMatchObject({
+      lifecycleState: 'unusable', purgeFailure: { reasonCode: 'profile_in_use' },
+    });
+    expect(JSON.stringify([store.getProfile('running_profile'), auditRecords])).not.toContain('private_token');
+  });
+
   it('purges session-mode profiles and their bound partitions on session delete', async () => {
     const root = await mkdtemp(join(tmpdir(), 'happier-browser-profiles-'));
     try {

@@ -2,9 +2,9 @@ import { Platform } from 'react-native';
 import type { UnistylesThemes } from 'react-native-unistyles';
 
 import { Typography } from '@/constants/Typography';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 import { resolveThemeSurfaceBorderStyle } from '@/components/ui/surfaces/resolveThemeHairlineBorderStyle';
 
-import { COMPOSER_SURFACE_RADIUS } from '../composerContentInset';
 
 type Theme = UnistylesThemes[keyof UnistylesThemes];
 
@@ -17,12 +17,12 @@ type Theme = UnistylesThemes[keyof UnistylesThemes];
 export const NATIVE_ACTION_CHIP_GAP_Y = 1;
 export const AGENT_INPUT_PANEL_PADDING_TOP = 2;
 export const AGENT_INPUT_PANEL_PADDING_BOTTOM = 8;
-export const AGENT_INPUT_PANEL_RADIUS = COMPOSER_SURFACE_RADIUS;
 
 export function resolveAgentInputPanelStyle(theme: Theme) {
     return {
         backgroundColor: theme.colors.input.background,
-        borderRadius: AGENT_INPUT_PANEL_RADIUS,
+        // The composer stack's radius (`theme.parts.composer`), shared with the banners above it.
+        borderRadius: theme.parts.composer.radius,
         ...resolveThemeSurfaceBorderStyle({
             borderColor: theme.colors.border.surface,
             highlightColor: theme.colors.effect.surfaceHighlight,
@@ -44,6 +44,11 @@ export const AGENT_INPUT_ACTION_CHIP_STYLE = {
     height: 32,
     gap: 6,
     ...(Platform.OS === 'web' ? {} : { marginRight: 6, marginBottom: NATIVE_ACTION_CHIP_GAP_Y }),
+};
+
+/** A chip while pressed: the standard pressed dip. */
+export const AGENT_INPUT_ACTION_CHIP_PRESSED_STYLE = {
+    opacity: motionTokens.press.opacity,
 };
 
 /** A chip whose label is hidden (icon-only density). */

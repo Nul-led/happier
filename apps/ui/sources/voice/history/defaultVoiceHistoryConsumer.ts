@@ -5,8 +5,8 @@ import {
   isAccountStoredContentClientUpgradeRequiredError,
   requireCurrentAccountStoredContentServerCompatibility,
 } from '@/sync/api/capabilities/accountStoredContentCompatibility';
-import type { Message } from '@/sync/domains/messages/messageTypes';
-import { readStoredSessionMessages } from '@/sync/domains/messages/readStoredSessionMessages';
+import type { Message } from "@happier-dev/session-core/messages";
+import { readStoredSessionMessages } from "@happier-dev/session-core/messages";
 import { getActiveServerAccountScope } from '@/sync/domains/scope/activeServerAccountScope';
 import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
 import { serverAccountScopeKeySuffix } from '@/sync/domains/scope/serverAccountScope';

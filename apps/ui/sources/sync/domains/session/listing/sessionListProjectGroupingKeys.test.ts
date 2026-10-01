@@ -61,6 +61,7 @@ describe('sessionListProjectGroupingKeys', () => {
             machineId: 'm1',
             homeDir: '/home/machine',
             pathKey: '/home/machine/repo',
+            bucket: 'path',
         });
     });
 

@@ -7,6 +7,7 @@ import {
 } from '@/sync/domains/messages/outgoingUserMessage';
 import type { ModelMode, PermissionMode } from '@/sync/domains/permissions/permissionTypes';
 import { storage } from '@/sync/domains/state/storage';
+import { captureActiveServerAccountScopeCurrentness } from '@/sync/domains/scope/activeServerAccountScope';
 import type { QualifiedActionOperation } from '@/sync/domains/actionOperations/qualifiedActionOperation';
 import { sync } from '@/sync/sync';
 import {
@@ -75,6 +76,7 @@ export async function presentCreatedNewSession(params: Readonly<{
     prepareDestination?: () => void;
     operation?: QualifiedActionOperation;
 }>): Promise<PresentCreatedNewSessionResult> {
+    const accountCurrentness = captureActiveServerAccountScopeCurrentness();
     try {
         await requireSpawnedSessionVisibleForRoute({
             sessionId: params.sessionId,
@@ -91,7 +93,7 @@ export async function presentCreatedNewSession(params: Readonly<{
         throw error;
     }
 
-    if (params.isStillActive && !params.isStillActive()) {
+    if (!accountCurrentness.isCurrent() || (params.isStillActive && !params.isStillActive())) {
         return 'inactive';
     }
 

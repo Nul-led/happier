@@ -33,7 +33,7 @@ export function SessionSplitCanvasDragHandle(props: SessionSplitCanvasDragHandle
         dataTransfer.setData('text/plain', encodeSessionSplitCanvasDragData({
             sessionId: props.sessionId,
         }));
-        emitSessionSplitCanvasDragState(true);
+        emitSessionSplitCanvasDragState(true, props.sessionId);
     }, [props.sessionId]);
 
     const handleDragEnd = React.useCallback((event: any) => {

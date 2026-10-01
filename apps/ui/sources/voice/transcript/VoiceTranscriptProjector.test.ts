@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { readStoredSessionMessages } from '@/sync/domains/messages/readStoredSessionMessages';
+import { readStoredSessionMessages } from "@happier-dev/session-core/messages";
 
 describe('VoiceTranscriptProjector', () => {
     it('keeps the exact realtime provider source on the canonical turn origin', async () => {

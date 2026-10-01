@@ -1,12 +1,11 @@
 import { AGENT_IDS } from '@/agents/catalog/catalog';
-import { adaptDaemonContributionRegistryProjectionToMergedProjectionInputs } from '@/agents/backendCatalog/daemonContributionRegistryProjectionAdapters';
 import { getResolvedBackendCatalogEntries } from '@/agents/backendCatalog/getResolvedBackendCatalogEntries';
 import { resolveBackendTargetKeyV2 } from '@/agents/backendCatalog/backendTargetKeyV2';
 import { getMachineCapabilitiesSnapshot } from '@/hooks/server/useMachineCapabilitiesCache';
 import { extractExecutionRunsBackendsFromMachineCapabilitiesState } from '@/sync/domains/executionRuns/extractExecutionRunsBackendsFromMachineCapabilities';
-import { machineContributionRegistryProjectionDescribe } from '@/sync/ops/machineContributionRegistryProjection';
+import { loadDaemonMergedProjectionInputs } from '@/agents/backendCatalog/loadDaemonMergedProjectionInputs';
 import { storage } from '@/sync/domains/state/storage';
-import { buildAvailableReviewEngineOptions } from '@/sync/domains/reviews/reviewEngineCatalog';
+import { buildAvailableReviewEngineOptions, resolveReviewEngineTarget } from '@/sync/domains/reviews/reviewEngineCatalog';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { resolveSessionListPreferredServerIdFromState } from '@/sync/domains/session/listing/sessionListLookupState';
 import { resolveVoiceContextSessionFromState } from '@/voice/context/resolveVoiceContextSession';
@@ -17,7 +16,7 @@ function normalizeId(raw: unknown): string {
   return String(raw ?? '').trim();
 }
 
-export async function listReviewEnginesForVoiceTool(params: Readonly<{ sessionId: string; includeDisabled?: boolean }>): Promise<unknown> {
+export async function listReviewEnginesForVoiceTool(params: Readonly<{ sessionId: string | null; includeDisabled?: boolean; scope?: 'paths' }>): Promise<unknown> {
   const sessionId = normalizeId(params.sessionId);
   if (!sessionId) {
     return { ok: false, errorCode: 'session_not_selected', errorMessage: 'session_not_selected' };
@@ -38,14 +37,12 @@ export async function listReviewEnginesForVoiceTool(params: Readonly<{ sessionId
 
   const daemonMergedProjectionInputs = machineId
     ? await (async () => {
-      const res = await machineContributionRegistryProjectionDescribe(machineId, { serverId, timeoutMs: 5_000 });
-      if (res.supported !== true) return null;
-      const adapted = adaptDaemonContributionRegistryProjectionToMergedProjectionInputs(res.projection);
-      const discoveredBackendIds = Object.keys(adapted.mergedBackendProjectionById ?? {});
+      const inputs = await loadDaemonMergedProjectionInputs({ machineId, serverId });
+      if (!inputs) return null;
       return {
-        mergedProviderProjectionById: adapted.mergedProviderProjectionById,
-        mergedBackendProjectionById: adapted.mergedBackendProjectionById,
-        discoveredBackendIds,
+        mergedProviderProjectionById: inputs.mergedProviderProjectionById,
+        mergedBackendProjectionById: inputs.mergedBackendProjectionById,
+        discoveredBackendIds: inputs.discoveredBackendIds,
       };
     })()
     : null;
@@ -79,10 +76,11 @@ export async function listReviewEnginesForVoiceTool(params: Readonly<{ sessionId
   const items = buildAvailableReviewEngineOptions({
     enabledAgentIds: agentIds,
     executionRunsBackends,
+    scope: params.scope,
     resolveAgentLabel: (agentId) => labelByAgentId.get(agentId) ?? agentId,
   })
     .map((item) => {
-      const defaultTargetKey = resolveBackendTargetKeyV2({ kind: 'backend', backendId: item.id });
+      const defaultTargetKey = resolveBackendTargetKeyV2(resolveReviewEngineTarget(item.id));
       const effectiveTargetKey = enabledTargetKeyByEngineId.get(item.id) ?? defaultTargetKey;
       return {
         engineId: item.id,

@@ -128,8 +128,8 @@ vi.mock('@/components/projects/files/WorkspaceRepositoryTreeList', () => ({
     },
 }));
 
-vi.mock('@/components/workspaces/files/repositoryTree/ChangedFilesTreeList', () => ({
-    ChangedFilesTreeList: () => React.createElement('ChangedFilesTreeList'),
+vi.mock('@/components/sessions/agents/presentation/useSessionMachineName', () => ({
+    useSessionMachineName: () => 'MacBook Pro',
 }));
 
 vi.mock('@/components/workspaces/files/repositoryTree/SearchResultsList', () => ({
@@ -189,13 +189,31 @@ describe('SessionRepositoryTreeBrowserView (create actions)', () => {
         overrides: Partial<React.ComponentProps<typeof import('./SessionRepositoryTreeBrowserView').SessionRepositoryTreeBrowserView>> = {},
     ) {
         const { SessionRepositoryTreeBrowserView } = await import('./SessionRepositoryTreeBrowserView');
+        const { PaneHeaderSlotProvider, PaneHeaderSlotScope, usePublishedPaneHeaderContent } = await import('@/components/appShell/panes/paneHeaderSlot');
+        // The + menu is the Files pane header's trailing action: render it where the header would.
+        function HeaderAction() {
+            return <>{usePublishedPaneHeaderContent('files')?.action ?? null}</>;
+        }
         return renderScreen(
-            <SessionRepositoryTreeBrowserView
-                sessionId="s1"
-                onOpenFile={vi.fn()}
-                {...overrides}
-            />,
+            <PaneHeaderSlotProvider>
+                <HeaderAction />
+                <PaneHeaderSlotScope slotKey="files">
+                    <SessionRepositoryTreeBrowserView
+                        sessionId="s1"
+                        onOpenFile={vi.fn()}
+                        {...overrides}
+                    />
+                </PaneHeaderSlotScope>
+            </PaneHeaderSlotProvider>,
         );
+    }
+
+    function createMenu(screen: Awaited<ReturnType<typeof renderRepositoryTreeBrowserView>>) {
+        return screen.findByTestId('repository-tree-create-menu');
+    }
+
+    function createMenuItem(screen: Awaited<ReturnType<typeof renderRepositoryTreeBrowserView>>, id: string) {
+        return createMenu(screen)?.props.items.find((item: any) => item.id === id);
     }
 
     it('keeps create actions enabled when the session is inactive but the machine target is available', async () => {
@@ -204,10 +222,8 @@ describe('SessionRepositoryTreeBrowserView (create actions)', () => {
 
         const screen = await renderRepositoryTreeBrowserView();
 
-        const createFileButton = screen.findByTestId('repository-tree-create-file');
-        const uploadMenu = screen.findByType('DropdownMenu' as any);
-        expect(uploadMenu.props.items.find((item: any) => item.id === 'repository-tree-upload-files')?.disabled).toBe(false);
-        expect(createFileButton?.props.disabled).toBe(false);
+        expect(createMenuItem(screen, 'repository-tree-upload-files')?.disabled).toBe(false);
+        expect(createMenuItem(screen, 'repository-tree-create-file')?.disabled).toBe(false);
     });
 
     it('disables create actions when no machine RPC target is available', async () => {
@@ -215,10 +231,8 @@ describe('SessionRepositoryTreeBrowserView (create actions)', () => {
 
         const screen = await renderRepositoryTreeBrowserView();
 
-        const createFileButton = screen.findByTestId('repository-tree-create-file');
-        const uploadMenu = screen.findByType('DropdownMenu' as any);
-        expect(uploadMenu.props.items.find((item: any) => item.id === 'repository-tree-upload-files')?.disabled).toBe(true);
-        expect(createFileButton?.props.disabled).toBe(true);
+        expect(createMenuItem(screen, 'repository-tree-upload-files')?.disabled).toBe(true);
+        expect(createMenuItem(screen, 'repository-tree-create-file')?.disabled).toBe(true);
     });
 
     it('disables create and upload actions when no workspace target is resolvable', async () => {
@@ -227,10 +241,8 @@ describe('SessionRepositoryTreeBrowserView (create actions)', () => {
 
         const screen = await renderRepositoryTreeBrowserView();
 
-        const createFileButton = screen.findByTestId('repository-tree-create-file');
-        const uploadMenu = screen.findByType('DropdownMenu' as any);
-        expect(uploadMenu.props.items.find((item: any) => item.id === 'repository-tree-upload-files')?.disabled).toBe(true);
-        expect(createFileButton?.props.disabled).toBe(true);
+        expect(createMenuItem(screen, 'repository-tree-upload-files')?.disabled).toBe(true);
+        expect(createMenuItem(screen, 'repository-tree-create-file')?.disabled).toBe(true);
     });
 
     it('renders stable web upload input testIDs for UI e2e', async () => {
@@ -246,9 +258,8 @@ describe('SessionRepositoryTreeBrowserView (create actions)', () => {
 
         const screen = await renderRepositoryTreeBrowserView();
 
-        const uploadMenu = screen.findByType('DropdownMenu' as any);
         await act(async () => {
-            await uploadMenu.props.onSelect('repository-tree-upload-destination-select');
+            await createMenu(screen)?.props.onSelect('repository-tree-upload-destination-select');
         });
 
         expect(promptSpy).toHaveBeenCalledWith(
@@ -260,8 +271,7 @@ describe('SessionRepositoryTreeBrowserView (create actions)', () => {
             }),
         );
 
-        const rerenderedUploadMenu = screen.findByType('DropdownMenu' as any);
-        expect(rerenderedUploadMenu.props.items.find((item: any) => item.id === 'repository-tree-upload-destination-select'))
+        expect(createMenuItem(screen, 'repository-tree-upload-destination-select'))
             .toMatchObject({ subtitle: 'src/uploads' });
 
         const [fileInput] = screen.findAllByProps({ 'data-testid': 'repository-tree-upload-input-files' });
@@ -305,10 +315,8 @@ describe('SessionRepositoryTreeBrowserView (create actions)', () => {
         await act(async () => {});
         expect(mountCount.current).toBe(1);
 
-        expect(screen.findAllByTestId('repository-tree-create-file').length).toBeGreaterThan(0);
-
         await act(async () => {
-            screen.pressByTestId('repository-tree-create-file');
+            createMenu(screen)?.props.onSelect('repository-tree-create-file');
         });
 
         expect(writeFileSpy).toHaveBeenCalledWith(
@@ -328,7 +336,7 @@ describe('SessionRepositoryTreeBrowserView (create actions)', () => {
 
         const screen = await renderRepositoryTreeBrowserView();
         await act(async () => {
-            screen.pressByTestId('repository-tree-create-file');
+            createMenu(screen)?.props.onSelect('repository-tree-create-file');
         });
 
         expect(writeFileSpy).toHaveBeenCalledTimes(0);
@@ -341,10 +349,8 @@ describe('SessionRepositoryTreeBrowserView (create actions)', () => {
         alertSpy.mockClear();
 
         const screen = await renderRepositoryTreeBrowserView();
-        expect(screen.findAllByTestId('repository-tree-create-folder').length).toBeGreaterThan(0);
-
         await act(async () => {
-            screen.pressByTestId('repository-tree-create-folder');
+            createMenu(screen)?.props.onSelect('repository-tree-create-folder');
         });
 
         expect(createDirectorySpy).toHaveBeenCalledWith(

@@ -114,7 +114,7 @@ installed from an archive.
 ```bash
 hdev plugins dev                       # trusts this source root once, then watches it
 # or, with no present user to answer the trust prompt:
-hdev plugins install . --dev --trust --json
+hdev plugins install . --dev --json
 hdev plugins reload --json             # applies later edits
 ```
 

@@ -9,6 +9,7 @@ import {
   ExternalSessionAgentIdSchema,
   ExternalSessionRefSchema,
   ExternalSessionTranscriptItemIdV1Schema,
+  ExternalSessionTerminalSourceObservationV1Schema,
   ExternalSessionTranscriptSourceTimestampV1Schema,
   MAX_PLUGIN_TRANSCRIPT_SOURCES_PER_CONTRIBUTION,
   resolveTranscriptBodySemanticEvent,
@@ -33,6 +34,7 @@ import type {
   HostExternalSessionRef,
   HostExternalTranscriptFollowResult,
   HostExternalTranscriptItem,
+  HostExternalTerminalSourceObservation,
   PluginExternalSessionsDomainAuthorService,
   PluginExternalSessionsDomainComposition,
 } from './privateContract';
@@ -51,6 +53,8 @@ type SourceEntry = Readonly<{
   source: ExternalSessionsSource;
   validatedAtAdmission?: true;
   supportsFollow?: boolean;
+  /** Process-local lease check for the Agent occurrence that admitted this source. */
+  isCurrent?: () => boolean;
 }>;
 export type PluginExternalSessionSourceEntry = SourceEntry;
 export type PluginExternalSessionsProviderOps = Pick<
@@ -167,6 +171,13 @@ function boundedInteger(value: number | undefined, fallback: number, max: number
 }
 function assertNotAborted(signal: AbortSignal | undefined): void {
   if (signal?.aborted) fail('plugin_operation_aborted');
+}
+function sourceEntryIsCurrent(entry: SourceEntry): boolean {
+  try {
+    return entry.isCurrent?.() !== false;
+  } catch {
+    return false;
+  }
 }
 /**
  * Sizes a projected response through the canonical iterative Protocol byte owner.
@@ -379,6 +390,8 @@ export async function resolvePluginExternalSessionFollowTarget(params: Readonly<
       }
       const entries = params.sources.filter(
         (entry) => (
+          sourceEntryIsCurrent(entry)
+          &&
           entry.agentId === parsedAgentId.data
           && (params.sourceId === undefined || entry.sourceId === params.sourceId)
           && (
@@ -401,8 +414,14 @@ export async function resolvePluginExternalSessionFollowTarget(params: Readonly<
       const outcomes = await Promise.all(entries.map(async (entry) => {
         try {
           checkCurrent();
+          if (!sourceEntryIsCurrent(entry)) {
+            return Object.freeze({ kind: 'unavailable' as const });
+          }
           const ops = await params.resolveProviderOps(entry.agentId);
           checkCurrent();
+          if (!sourceEntryIsCurrent(entry)) {
+            return Object.freeze({ kind: 'unavailable' as const });
+          }
           if (!ops?.resolveLinkIdentity) {
             return Object.freeze({ kind: 'unavailable' as const });
           }
@@ -414,6 +433,7 @@ export async function resolvePluginExternalSessionFollowTarget(params: Readonly<
                   signal: operationSignal,
                 });
                 checkCurrent();
+                if (!sourceEntryIsCurrent(entry)) return null;
                 return configured.ok
                   && preservesExternalSessionSourceIdentity(entry.source, configured.source)
                   ? configured.source
@@ -428,6 +448,9 @@ export async function resolvePluginExternalSessionFollowTarget(params: Readonly<
             signal: operationSignal,
           });
           checkCurrent();
+          if (!sourceEntryIsCurrent(entry)) {
+            return Object.freeze({ kind: 'unavailable' as const });
+          }
           if (
             identity.remoteSessionId !== params.remoteSessionId
             || !preservesExternalSessionSourceIdentity(
@@ -505,6 +528,21 @@ function snapshotPlainJson(value: unknown): JsonValue {
     invalid: () => failure('plugin_external_transcript_invalid'),
   });
   return cloned as JsonValue;
+}
+
+export function mapPluginExternalTerminalSourceItem(
+  item: unknown,
+): HostExternalTranscriptItem | HostExternalTerminalSourceObservation {
+  const observation = ExternalSessionTerminalSourceObservationV1Schema.safeParse(item);
+  if (observation.success) {
+    return Object.freeze({
+      id: observation.data.id,
+      timestampMs: observation.data.createdAtMs,
+      kind: 'source_observation',
+      data: observation.data.raw.content,
+    });
+  }
+  return mapPluginExternalTranscriptItem(item);
 }
 
 export function mapPluginExternalTranscriptItem(
@@ -779,7 +817,7 @@ export function createPluginExternalSessionsAdapter(params: Readonly<{
       candidate.agentId === parsedRef.data.agentId
       && candidate.sourceId === parsedRef.data.sourceId
     ));
-    if (!entry) fail('plugin_external_source_unavailable');
+    if (!entry || !sourceEntryIsCurrent(entry)) fail('plugin_external_source_unavailable');
     return entry;
   };
   const providerFor = async (
@@ -788,15 +826,15 @@ export function createPluginExternalSessionsAdapter(params: Readonly<{
     sourceValidationUnavailableIsLocal = false,
   ): Promise<Readonly<{ ops: PluginExternalSessionsProviderOps; source: ExternalSessionsSource }>> => {
     assertNotAborted(signal);
-    if (!isCurrent()) fail('plugin_generation_retired');
+    if (!isCurrent() || !sourceEntryIsCurrent(entry)) fail('plugin_generation_retired');
     const ops = await params.resolveProviderOps(entry.agentId);
     assertNotAborted(signal);
-    if (!isCurrent()) fail('plugin_generation_retired');
+    if (!isCurrent() || !sourceEntryIsCurrent(entry)) fail('plugin_generation_retired');
     if (!ops) fail('plugin_external_agent_unavailable');
     if (!entry.validatedAtAdmission) {
       const validation = await ops.validateSource({ source: entry.source, ...(signal ? { signal } : {}) });
       assertNotAborted(signal);
-      if (!isCurrent()) fail('plugin_generation_retired');
+      if (!isCurrent() || !sourceEntryIsCurrent(entry)) fail('plugin_generation_retired');
       if (!validation.ok) {
         if (sourceValidationUnavailableIsLocal) {
           throw new ExternalSessionSourceValidationUnavailableError();
@@ -848,13 +886,16 @@ export function createPluginExternalSessionsAdapter(params: Readonly<{
   );
   const caps = () => {
     const current = isCurrent();
-    const hasSources = current && params.sources.length > 0;
+    const currentSources = current
+      ? params.sources.filter(sourceEntryIsCurrent)
+      : [];
+    const hasSources = currentSources.length > 0;
     return Object.freeze({
       list: hasSources ? available() : unavailable(current ? 'plugin_external_list_unavailable' : 'plugin_generation_retired'),
       attach: hasSources && params.attach ? available() : unavailable(current ? 'plugin_external_attach_unavailable' : 'plugin_generation_retired'),
       takeover: unavailable(current ? 'plugin_external_takeover_unavailable' : 'plugin_generation_retired'),
       transcript: hasSources ? available() : unavailable(current ? 'plugin_external_transcript_unavailable' : 'plugin_generation_retired'),
-      follow: hasSources && params.sources.some(sourceFollowAvailableNow)
+      follow: hasSources && currentSources.some(sourceFollowAvailableNow)
         ? available()
         : unavailable(current ? 'plugin_external_follow_unavailable' : 'plugin_generation_retired'),
     });
@@ -886,7 +927,10 @@ export function createPluginExternalSessionsAdapter(params: Readonly<{
           deleteSnapshot(query.cursor);
           if (snapshot.queryKey !== queryKey) fail('plugin_external_cursor_invalid');
         } else {
-          const entries = params.sources.filter((entry) => !query.agentId || entry.agentId === query.agentId).filter((entry) => !query.sourceId || entry.sourceId === query.sourceId);
+          const entries = params.sources
+            .filter(sourceEntryIsCurrent)
+            .filter((entry) => !query.agentId || entry.agentId === query.agentId)
+            .filter((entry) => !query.sourceId || entry.sourceId === query.sourceId);
           if (entries.length === 0) fail('plugin_external_source_unavailable');
           if (entries.length > MAX_PLUGIN_TRANSCRIPT_SOURCES_PER_CONTRIBUTION) {
             fail('plugin_external_inventory_capacity_exceeded');
@@ -1479,6 +1523,8 @@ export function createPluginExternalSessionsAdapter(params: Readonly<{
                   ? { cursor: rawRequestedCursor }
                   : {}),
                 ...(options.initialReplay ? { initialReplay: true } : {}),
+                ...(options.projection ? { projection: options.projection } : {}),
+                ...(options.replay ? { replay: options.replay } : {}),
                 ...(options.admissionDeadlineAtMs !== undefined
                   ? { admissionDeadlineAtMs: options.admissionDeadlineAtMs }
                   : {}),
@@ -1530,7 +1576,10 @@ export function createPluginExternalSessionsAdapter(params: Readonly<{
         : {}),
     });
     if (resolvedTarget.status === 'unavailable') return resolvedTarget;
-    return await service.followTranscript(resolvedTarget, options, listener);
+    return await service.followTranscript(resolvedTarget, {
+      ...(options.cursor === undefined ? {} : { cursor: options.cursor }),
+      ...(options.signal ? { signal: options.signal } : {}),
+    }, listener);
   };
   const unwrapListCursor = (cursor: string): string | null => {
     if (!cursor.startsWith(CURSOR_PREFIX) || !snapshots.has(cursor)) {

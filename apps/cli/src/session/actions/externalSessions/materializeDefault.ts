@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 
 import {
   EXTERNAL_SESSION_REQUIRED_ITEM_DIAGNOSTIC_CAP_V1,
+  pluginSourceCustodyV1Equal,
   readNonAuthoritativeLinkedExternalSessionV1FromMetadata,
   type ExternalSessionOperationRecordV1,
   type ExternalSessionOperationSocketCommandV1,
@@ -49,7 +50,7 @@ import {
   readExternalSessionOperationRecord,
   type ExternalSessionOperationAccountScope,
 } from './operationRecordStore';
-import { resolveGenerationBoundExternalSessionFollowSurface } from './providerOpsResolution';
+import { resolveOccurrenceBoundExternalSessionFollowSurface } from './providerOpsResolution';
 import { preservesExternalSessionSourceIdentity } from '@/session/external/sourceIdentity';
 
 const MAX_CAPTURE_PAGES = 10_000;
@@ -86,7 +87,7 @@ function sourceIdentity(linked: LoadedLinkedExternalSession): string {
 async function resolveMaterializeSourceReadRoots(input: Readonly<{
   linked: LoadedLinkedExternalSession;
   providerOps: Awaited<
-    ReturnType<typeof resolveGenerationBoundExternalSessionFollowSurface>
+    ReturnType<typeof resolveOccurrenceBoundExternalSessionFollowSurface>
   >['providerOps'];
 }>): Promise<readonly string[]> {
   if (!input.providerOps.validateSource) return [];
@@ -310,7 +311,7 @@ function mergeRequiredItemFailures(
 
 type MaterializeCaptureStart = Readonly<{
   linked: LoadedLinkedExternalSession;
-  resolved: Awaited<ReturnType<typeof resolveGenerationBoundExternalSessionFollowSurface>>;
+  resolved: Awaited<ReturnType<typeof resolveOccurrenceBoundExternalSessionFollowSurface>>;
   sourceReadRoots: readonly string[];
   firstPage: ExternalSessionTranscriptPage;
   sourceIdentity: string;
@@ -600,12 +601,12 @@ export function createDefaultExternalSessionMaterializeActionExecutor(input: Rea
       : {}),
     describeSource: async (request) => {
       const { linked } = await loadCurrentLinked(request);
-      const resolved = await resolveGenerationBoundExternalSessionFollowSurface(
+      const resolved = await resolveOccurrenceBoundExternalSessionFollowSurface(
         linked.agentId,
         request.source.linkGeneration,
       );
-      if (resolved.resource.pluginGeneration !== request.source.contributionGeneration) {
-        throw new Error('external_session_contribution_generation_replaced');
+      if (!pluginSourceCustodyV1Equal(resolved.sourceCustody, request.source.sourceCustody)) {
+        throw new Error('external_session_source_custody_replaced');
       }
       if (!resolved.providerOps.pageTranscript) {
         throw new Error('external_session_transcript_page_unavailable');
@@ -661,12 +662,12 @@ export function createDefaultExternalSessionMaterializeActionExecutor(input: Rea
           'External session source identity changed before explicit continuation.',
         );
       }
-      const resolved = await resolveGenerationBoundExternalSessionFollowSurface(
+      const resolved = await resolveOccurrenceBoundExternalSessionFollowSurface(
         current.linked.agentId,
         request.source.linkGeneration,
       );
       if (
-        resolved.resource.pluginGeneration !== request.source.contributionGeneration
+        !pluginSourceCustodyV1Equal(resolved.sourceCustody, request.source.sourceCustody)
         || Boolean(resolved.resource.retirementSignal?.aborted)
       ) {
         throw new ExternalSessionMaterializeSourceInterruptionError(
@@ -911,12 +912,12 @@ export function createDefaultExternalSessionMaterializeActionExecutor(input: Rea
         persistedTakeoverWorkingDirectory,
       });
       const identity = sourceIdentity(current.linked);
-      const resolved = await resolveGenerationBoundExternalSessionFollowSurface(
+      const resolved = await resolveOccurrenceBoundExternalSessionFollowSurface(
         current.linked.agentId,
         request.source.linkGeneration,
       );
       if (
-        resolved.resource.pluginGeneration !== request.source.contributionGeneration
+        !pluginSourceCustodyV1Equal(resolved.sourceCustody, request.source.sourceCustody)
         || Boolean(resolved.resource.retirementSignal?.aborted)
       ) {
         throw new ExternalSessionMaterializeSourceInterruptionError(
@@ -1129,13 +1130,16 @@ export function createDefaultExternalSessionMaterializeActionExecutor(input: Rea
         );
       }
       const finalCurrent = await loadCurrentLinked(request);
-      const finalResolved = await resolveGenerationBoundExternalSessionFollowSurface(
+      const finalResolved = await resolveOccurrenceBoundExternalSessionFollowSurface(
         finalCurrent.linked.agentId,
         request.source.linkGeneration,
       );
       if (
         sourceIdentity(finalCurrent.linked) !== identity
-        || finalResolved.resource.pluginGeneration !== request.source.contributionGeneration
+        || !pluginSourceCustodyV1Equal(
+          finalResolved.sourceCustody,
+          request.source.sourceCustody,
+        )
         || Boolean(finalResolved.resource.retirementSignal?.aborted)
         || !finalResolved.providerOps.pageTranscript
       ) {

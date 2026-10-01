@@ -28,6 +28,7 @@ import {
     readBackendTargetEnabled,
 } from './backendTargetEnablement';
 import { resolveCliAuthBackgroundCheckSafe } from './resolveCliAuthBackgroundCheckSafe';
+import { resolveAgentMarkAgentId } from './resolveAgentMarkAgentId';
 
 export type ResolvedAgentCatalogEntry = Readonly<{
     agentId: string;
@@ -225,11 +226,15 @@ function resolveProviderIconName(agentId: string): string {
 }
 
 function resolveProviderIconAgentId(
+    agentId: string,
     mergedProviderProjection: MergedProviderProjectionEntry | null,
     primaryMergedBackendProjection: MergedBackendProjectionEntry | null,
-    behaviorProviderId: AgentId | null,
 ): AgentId | null {
-    return mergedProviderProjection?.iconAgentId ?? primaryMergedBackendProjection?.iconAgentId ?? behaviorProviderId ?? null;
+    return resolveAgentMarkAgentId({
+        agentId,
+        iconAgentId: mergedProviderProjection?.iconAgentId ?? primaryMergedBackendProjection?.iconAgentId ?? null,
+        catalogAgentId: mergedProviderProjection?.catalogAgentId ?? primaryMergedBackendProjection?.catalogAgentId ?? null,
+    });
 }
 
 function resolveProviderDisplayIconName(
@@ -358,7 +363,7 @@ export function getResolvedAgentCatalogEntries(params: Readonly<{
         const isBuiltIn = isBuiltInProvider(agentId, mergedProviderProjection);
         const behaviorProviderId = resolveBehaviorProviderId(agentId, mergedProviderProjection, settingsBackendProjection);
         const behaviorProjection = resolveBundledAgentUiBehaviorProjection(behaviorProviderId);
-        const iconAgentId = resolveProviderIconAgentId(mergedProviderProjection, settingsBackendProjection, behaviorProviderId);
+        const iconAgentId = resolveProviderIconAgentId(agentId, mergedProviderProjection, settingsBackendProjection);
         const identity = mergedProviderProjection?.identity ?? null;
         const backendTargetKey = resolveProviderTargetKeyFromSettingsBackend(
             agentId,
@@ -417,7 +422,7 @@ export function resolveAgentCatalogProjection(agentId: string, params: Readonly<
     const isBuiltIn = isBuiltInProvider(normalizedProviderId, mergedProviderProjection);
     const behaviorProviderId = resolveBehaviorProviderId(normalizedProviderId, mergedProviderProjection, settingsBackendProjection);
     const behaviorProjection = resolveBundledAgentUiBehaviorProjection(behaviorProviderId);
-    const iconAgentId = resolveProviderIconAgentId(mergedProviderProjection, settingsBackendProjection, behaviorProviderId);
+    const iconAgentId = resolveProviderIconAgentId(normalizedProviderId, mergedProviderProjection, settingsBackendProjection);
     const identity = mergedProviderProjection?.identity ?? null;
     const backendTargetKey = resolveProviderTargetKeyFromSettingsBackend(
         normalizedProviderId,

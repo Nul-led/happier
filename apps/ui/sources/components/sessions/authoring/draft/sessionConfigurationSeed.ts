@@ -1,3 +1,4 @@
+import { readSessionDirectoryKind } from '@happier-dev/protocol';
 import {
     AcpConfigOptionOverridesV1Schema,
     AcpSessionModeOverrideV1Schema,
@@ -61,10 +62,14 @@ export function buildNewSessionTempDataFromSessionConfiguration(params: Readonly
         session: params.session,
     });
     const metadata = readSessionOwnerMetadataView(params.session);
+    // Continuing from a no-folder session starts another no-folder session: each gets its own
+    // private folder, so the source's is never seeded as a directory.
+    const withoutFolder = readSessionDirectoryKind(metadata) === 'managed';
     const directoryOverride = normalizeOptionalString(params.directoryOverride);
     const draft = buildNewSessionAuthoringDraft({
         executionTarget: null,
-        directory: directoryOverride ?? snapshot.directory,
+        directory: withoutFolder ? '' : directoryOverride ?? snapshot.directory,
+        ...(withoutFolder ? { directoryKind: 'managed' as const } : {}),
         checkoutCreationDraft: null,
         organizationPlacement: { folderId: null, tagIds: [] },
         prompt: '',

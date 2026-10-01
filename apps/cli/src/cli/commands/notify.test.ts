@@ -1,65 +1,31 @@
 import { describe, expect, it } from 'vitest';
+import { findCompiledActionCliCommand, listCompiledActionCliCommands } from '@/cli/actions/compiledCommands';
+import { composeActionCliInput, parseActionCliInput } from '@/cli/actions/parseCommandInput';
 
-import { sendPushNotification } from './notify';
-
-describe('sendPushNotification', () => {
-  it('awaits the push send call so errors are surfaced', async () => {
-    const api = {
-      push() {
-        return {
-          async sendToAllDevicesAsync() {
-            throw new Error('push failed');
-          },
-        };
-      },
-    };
-
-    await expect(sendPushNotification({ api, title: 'Happy', message: 'hi', nowMs: 123 })).rejects.toThrow('push failed');
+describe('happier notify Action surface', () => {
+  it('preserves aliases and channel selection through the generated Action schema', () => {
+    const command = findCompiledActionCliCommand(['notify'], listCompiledActionCliCommands());
+    expect(command?.actionId).toBe('notifications.notify_me');
+    if (!command) throw new Error('notify command unavailable');
+    const parsed = parseActionCliInput(command, ['-p', 'Deployment ready', '-t', 'Deploy', '--channels', 'builtin:expo_push']);
+    expect(parsed.ok, parsed.ok ? undefined : parsed.message).toBe(true);
+    if (!parsed.ok) throw new Error(parsed.message);
+    expect(composeActionCliInput({ parsed, canonicalSchema: command.spec.inputSchema,
+      callerSchema: command.callerSchema, bindInput: command.spec.cli?.bindInput,
+      context: { actionId: command.actionId, invocationId: 'notify-1', output: 'json' },
+    })).toMatchObject({ ok: true, input: { message: 'Deployment ready', title: 'Deploy', channels: ['builtin:expo_push'] } });
   });
 
-  it('sends the expected metadata payload', async () => {
-    const calls: unknown[] = [];
-    const api = {
-      push() {
-        return {
-          async sendToAllDevicesAsync(title: string, message: string, meta: unknown) {
-            calls.push({ title, message, meta });
-          },
-        };
-      },
-    };
-
-    await sendPushNotification({ api, title: 'T', message: 'M', nowMs: 456 });
-
-    expect(calls).toEqual([
-      {
-        title: 'T',
-        message: 'M',
-        meta: { source: 'cli', timestamp: 456 },
-      },
-    ]);
+  it('refuses another Account and duplicate channels at the canonical input owner', () => {
+    const command = findCompiledActionCliCommand(['notify'], listCompiledActionCliCommands());
+    if (!command) throw new Error('notify command unavailable');
+    expect(command.spec.inputSchema.safeParse({ message: 'ready', accountId: 'someone-else' }).success).toBe(false);
+    expect(command.spec.inputSchema.safeParse({ message: 'ready', channels: ['builtin:expo_push', 'builtin:expo_push'] }).success).toBe(false);
   });
 
-  it('preserves zero timestamp metadata values', async () => {
-    const calls: unknown[] = [];
-    const api = {
-      push() {
-        return {
-          async sendToAllDevicesAsync(title: string, message: string, meta: unknown) {
-            calls.push({ title, message, meta });
-          },
-        };
-      },
-    };
-
-    await sendPushNotification({ api, title: 'T', message: 'M', nowMs: 0 });
-
-    expect(calls).toEqual([
-      {
-        title: 'T',
-        message: 'M',
-        meta: { source: 'cli', timestamp: 0 },
-      },
-    ]);
+  it('keeps a declared alias literal after the option terminator', () => {
+    const command = findCompiledActionCliCommand(['notify'], listCompiledActionCliCommands());
+    if (!command) throw new Error('notify command unavailable');
+    expect(parseActionCliInput(command, ['--', '-p'])).toMatchObject({ ok: true, callerOverlay: { message: '-p' } });
   });
 });

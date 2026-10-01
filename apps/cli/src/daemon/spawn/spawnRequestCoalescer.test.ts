@@ -61,6 +61,19 @@ const providerBindingSecurityChangeConfirmation = {
 };
 
 describe('computeDaemonSpawnRequestKey', () => {
+  it('does not coalesce managed and ordinary path launches at the same physical directory', () => {
+    const base = { directory: '/private/chat' };
+    expect(computeDaemonSpawnRequestKey({ ...base, directoryKind: 'managed' }).key)
+      .not.toBe(computeDaemonSpawnRequestKey({ ...base, directoryKind: 'path' }).key);
+  });
+
+  it('does not coalesce distinct creation origins or depths without a shared create nonce', () => {
+    const base = { directory: '/workspace', originKind: 'session' as const, originSessionId: 'lead-1', workDepth: 1 };
+    const key = (fields: Partial<SpawnSessionOptions>) => computeDaemonSpawnRequestKey({ ...base, ...fields }).key;
+    expect(key({})).not.toBe(key({ originSessionId: 'lead-2' }));
+    expect(key({})).not.toBe(key({ workDepth: 2 }));
+    expect(key({ spawnNonce: 'same-create' })).toBe(key({ spawnNonce: 'same-create', workDepth: 2 }));
+  });
   it('distinguishes fresh access semantics and absent versus personal Team context', () => {
     const base = { directory: '/workspace' };
     const initialAccess = { grants: [{ subject: { kind: 'team' as const, teamId: 'team-1' }, accessLevel: 'edit' as const, canApprovePermissions: false }] };
@@ -158,6 +171,16 @@ describe('computeDaemonSpawnRequestKey', () => {
     expect(k.key).toMatch(/^existing:sess_1:request:[a-f0-9]{64}$/);
     if (k.kind !== 'existing') throw new Error('Expected existing-session key');
     expect(k.serializationKey).toBe('existing:sess_1');
+  });
+
+  it('does not coalesce distinct one-shot initial goals on authorized resume', () => {
+    const keyFor = (objective: string) => computeDaemonSpawnRequestKey({
+      directory: '/tmp',
+      existingSessionId: 'sess_1',
+      executionAuthorization: { provenance: 'user_request', requestId: 'resume-1' },
+      initialGoal: { objective },
+    } satisfies SpawnSessionOptions);
+    expect(keyFor('Finish review').key).not.toBe(keyFor('Publish review').key);
   });
 
   it('keys the Agent resume id byte-exact so a stripped sibling never coalesces with it', () => {

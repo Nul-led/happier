@@ -7,6 +7,9 @@ import {
   LegacyHostSessionSystemRecordPageResponseSchema as SessionSystemRecordPageResponseSchema,
   LegacyHostSessionSystemRecordUpsertResponseSchema as SessionSystemRecordUpsertResponseSchema,
   SESSION_SYSTEM_RECORDS_PLUGIN_ID_HEADER,
+  SESSION_SYSTEM_RECORDS_PROTOCOL_HTTP_HEADER,
+  SESSION_SYSTEM_RECORDS_PROTOCOL_V1_HTTP_HEADER_VALUE,
+  readSessionSystemRecordErrorCodeV1,
   PluginIdSchema,
   SessionSystemRecordDeleteResponseSchema,
   SessionSystemRecordStoredPageResponseSchema,
@@ -83,7 +86,7 @@ function buildV1RecordHeaders(
   }
   return buildHeaders(token, {
     ...(identity?.success ? { [SESSION_SYSTEM_RECORDS_PLUGIN_ID_HEADER]: identity.data } : {}),
-    'x-happier-session-system-records-protocol': '1',
+    [SESSION_SYSTEM_RECORDS_PROTOCOL_HTTP_HEADER]: SESSION_SYSTEM_RECORDS_PROTOCOL_V1_HTTP_HEADER_VALUE,
   }, authorizationHeaders);
 }
 
@@ -115,18 +118,23 @@ function handleCommonStatus(status: number, route: string): void {
 }
 
 function throwV1PluginRecordStatus(status: number, data: unknown): never {
-  if (isAuthenticationStatus(status)) {
-    throwAuthenticationStatusError(status);
+  // The producer answers in the typed body, so read it before any status inference:
+  // an operation-scoped 403 denial is `forbidden`, not "you are not signed in".
+  const typedCode = readSessionSystemRecordErrorCodeV1(data);
+  if (typedCode === null) {
+    if (isAuthenticationStatus(status)) {
+      throwAuthenticationStatusError(status);
+    }
+    throw createHttpStatusError(
+      status,
+      'Plugin Session system record request failed',
+      'plugin_session_record_transport_error',
+    );
   }
-  const payload = data && typeof data === 'object' && !Array.isArray(data)
-    ? data as Record<string, unknown>
-    : {};
-  const code = typeof payload.code === 'string'
-    ? payload.code
-    : 'plugin_session_record_transport_error';
-  const error = createHttpStatusError(status, 'Plugin Session system record request failed', code);
+  const payload = data as Record<string, unknown>;
+  const error = createHttpStatusError(status, 'Plugin Session system record request failed', typedCode);
   Object.assign(error, {
-    code,
+    code: typedCode,
     ...(typeof payload.currentRevision === 'string' ? { currentRevision: payload.currentRevision } : {}),
   });
   throw error;
@@ -307,7 +315,7 @@ export async function upsertSessionSystemRecord(params: Readonly<{
   namespace: LegacyHostSessionSystemRecordUpsertRequest['namespace'];
   kind: LegacyHostSessionSystemRecordUpsertRequest['kind'];
   localId: string;
-  content: SessionSystemRecordContent;
+  content: LegacyHostSessionSystemRecordUpsertRequest['content'];
   signal?: AbortSignal;
 }>): Promise<LegacyHostSessionSystemRecord> {
   const serverUrl = resolveServerHttpBaseUrl();

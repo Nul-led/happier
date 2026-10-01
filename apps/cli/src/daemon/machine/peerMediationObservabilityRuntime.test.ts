@@ -4,9 +4,36 @@ import { createDaemonPeerMediationObservabilityRuntime } from './peerMediationOb
 import { createDaemonPeerMediationFlowEvent } from '../peer/mediation/observability/events';
 
 describe('createDaemonPeerMediationObservabilityRuntime', () => {
+    it('does not retain events while collection is disabled or its setting is unknown', () => {
+        for (const isEnabled of [undefined, () => false]) {
+            const runtime = createDaemonPeerMediationObservabilityRuntime({ isEnabled, nowMs: () => 1_000 });
+            runtime.emitter.emit(createDaemonPeerMediationFlowEvent({
+                accountId: 'account_1', machineId: 'machine_1', flowKind: 'live_stream',
+                flowId: 'stream_1', kind: 'flow.started', nowMs: 1_000,
+            }));
+            expect(runtime.store.snapshot('machine_1', 'account_1').flows).toEqual([]);
+        }
+    });
+
+    it('uses the live collection setting without replacing the runtime', () => {
+        let enabled = true;
+        const runtime = createDaemonPeerMediationObservabilityRuntime({ isEnabled: () => enabled, nowMs: () => 1_000 });
+        const emit = (flowId: string) => runtime.emitter.emit(createDaemonPeerMediationFlowEvent({
+            accountId: 'account_1', machineId: 'machine_1', flowKind: 'live_stream',
+            flowId, kind: 'flow.started', nowMs: 1_000,
+        }));
+        emit('enabled_1');
+        enabled = false;
+        emit('disabled');
+        enabled = true;
+        emit('enabled_2');
+        expect(runtime.store.snapshot('machine_1', 'account_1').flows.map((entry) => entry.flow.flowId))
+            .toEqual(['enabled_1', 'enabled_2']);
+    });
+
     it('feeds emitted relay flow events into the store snapshot (counters go live)', () => {
         let now = 1_000;
-        const runtime = createDaemonPeerMediationObservabilityRuntime({ nowMs: () => now });
+        const runtime = createDaemonPeerMediationObservabilityRuntime({ nowMs: () => now, isEnabled: () => true });
 
         // The snapshot starts empty (no flows observed yet → dark counters).
         expect(runtime.store.snapshot('machine_1', 'account_1').flows).toEqual([]);
@@ -41,7 +68,7 @@ describe('createDaemonPeerMediationObservabilityRuntime', () => {
     });
 
     it('scopes snapshots per machine/account (no cross-scope leakage)', () => {
-        const runtime = createDaemonPeerMediationObservabilityRuntime({ nowMs: () => 2_000 });
+        const runtime = createDaemonPeerMediationObservabilityRuntime({ nowMs: () => 2_000, isEnabled: () => true });
         runtime.emitter.emit(createDaemonPeerMediationFlowEvent({
             accountId: 'account_1',
             machineId: 'machine_1',

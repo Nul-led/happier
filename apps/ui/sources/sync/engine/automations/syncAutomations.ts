@@ -4,7 +4,10 @@ import type {
     AutomationDefinitionRun,
 } from '@/sync/domains/automations/automationTypes';
 import { createAutomationDefinitionSummary } from '@/sync/domains/automations/automationDefinitionProjection';
-import { listAutomationDefinitions } from '@/sync/api/automations/apiAutomations';
+import {
+    listAutomationDefinitions,
+    type AutomationRequestContext,
+} from '@/sync/api/automations/apiAutomations';
 import { listAutomationDefinitionRuns } from '@/sync/api/automations/apiAutomationRuns';
 import { resolveRuntimeFeatureDecisionOrThrow } from '@/sync/domains/features/featureDecisionInputs';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
@@ -34,6 +37,8 @@ export async function fetchAndApplyAutomations(params: {
         nextCursor: string | null,
     ) => void;
     runsLimit?: number;
+    /** The incumbent Sync binding supplies both HTTP and feature identity. */
+    requestContext?: AutomationRequestContext;
     shouldContinue?: () => boolean;
 }): Promise<{ nextCursor: string | null; traversalToken: number | null }> {
     const shouldContinue = params.shouldContinue ?? (() => true);
@@ -42,7 +47,7 @@ export async function fetchAndApplyAutomations(params: {
     }
     if (!shouldContinue()) return { nextCursor: null, traversalToken: null };
 
-    const { serverId } = getActiveServerSnapshot();
+    const serverId = params.requestContext?.serverId ?? getActiveServerSnapshot().serverId;
     const automationsDecision = await resolveRuntimeFeatureDecisionOrThrow({
         featureId: 'automations',
         serverId,
@@ -54,7 +59,7 @@ export async function fetchAndApplyAutomations(params: {
 
     const result = await listAutomationDefinitions(params.credentials, {
         ...(params.cursor ? { cursor: params.cursor } : {}),
-    });
+    }, params.requestContext);
     if (!shouldContinue()) return { nextCursor: null, traversalToken: null };
     const automations = result.automations.map(createAutomationDefinitionSummary);
     if (!shouldContinue()) return { nextCursor: null, traversalToken: null };
@@ -103,6 +108,7 @@ export async function fetchAndApplyAutomations(params: {
                 credentials: params.credentials!,
                 automationId,
                 limit,
+                ...(params.requestContext ? { requestContext: params.requestContext } : {}),
             });
             if (!shouldContinue()) return;
             params.refreshAutomationRunsWindow?.(automationId, result.runs, result.nextCursor);
@@ -130,6 +136,8 @@ export async function fetchAndApplyAutomationRuns(params: {
         runs: AutomationDefinitionRun[],
         nextCursor: string | null,
     ) => boolean;
+    /** The incumbent Sync binding supplies both HTTP and feature identity. */
+    requestContext?: AutomationRequestContext;
     shouldContinue?: () => boolean;
 }): Promise<{ nextCursor: string | null; traversalToken: number | null }> {
     const shouldContinue = params.shouldContinue ?? (() => true);
@@ -138,7 +146,7 @@ export async function fetchAndApplyAutomationRuns(params: {
     }
     if (!shouldContinue()) return { nextCursor: null, traversalToken: null };
 
-    const { serverId } = getActiveServerSnapshot();
+    const serverId = params.requestContext?.serverId ?? getActiveServerSnapshot().serverId;
     const automationsDecision = await resolveRuntimeFeatureDecisionOrThrow({
         featureId: 'automations',
         serverId,
@@ -153,6 +161,7 @@ export async function fetchAndApplyAutomationRuns(params: {
         automationId: params.automationId,
         limit: params.limit,
         cursor: params.cursor,
+        ...(params.requestContext ? { requestContext: params.requestContext } : {}),
     });
     if (!shouldContinue()) return { nextCursor: null, traversalToken: null };
     let traversalToken: number | null;

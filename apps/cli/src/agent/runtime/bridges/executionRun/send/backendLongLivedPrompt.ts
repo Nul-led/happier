@@ -33,8 +33,8 @@ import { readExecutionRunErrorCode } from '../errors';
 import {
   buildExecutionRunResultContractPrompt,
   decodeExecutionRunProfileResult,
-} from '@/agent/executionRuns/profiles/resultContract';
-import type { ExecutionRunWorkflowObservationSink } from '../executionRunWorkflowObservation';
+} from '@happier-dev/protocol';
+import { projectExecutionRunWorkflowInputAcceptance, type ExecutionRunWorkflowObservationSink } from '../executionRunWorkflowObservation';
 import { createExactTurnUsageAccumulator } from '@/usage/exactTurnUsage';
 
 function buildObservedTurnResult(
@@ -283,6 +283,7 @@ export async function sendBackendLongLivedRun(args: Readonly<{
     };
     if (args.params.workflowObservationSink) {
       ctrl2.workflowObservation = {
+        workflowRunId: args.params.workflowObservationSink.workflowRunId,
         localInputId,
         sink: args.params.workflowObservationSink,
         usage: createExactTurnUsageAccumulator(),
@@ -311,6 +312,21 @@ export async function sendBackendLongLivedRun(args: Readonly<{
   }
   // One effectful provider send only. A thrown error after invocation does not prove the
   // provider rejected the prompt, so replaying it here could execute the same input twice.
+  const unsubscribeAcceptance = ctrl2.workflowObservation?.localInputId === localInputId
+    ? ctrl2.backend.subscribeRuntimeEvents?.((event) => {
+      if (event.kind === 'input-accepted' && localInputId && event.inputIds.includes(localInputId)) {
+        projectExecutionRunWorkflowInputAcceptance(ctrl2, args.runId, event);
+      }
+    }) : undefined;
+  const runtimeLifetime = ctrl2.backend.getRuntimeLifetimeSignal();
+  const releaseAcceptanceObservation = () => {
+    unsubscribeAcceptance?.();
+    runtimeLifetime.removeEventListener('abort', releaseAcceptanceObservation);
+  };
+  if (unsubscribeAcceptance) {
+    if (runtimeLifetime.aborted) releaseAcceptanceObservation();
+    else runtimeLifetime.addEventListener('abort', releaseAcceptanceObservation, { once: true });
+  }
   let providerSendInvoked = false;
   const sendPromise = Promise.resolve().then(async () => {
     const resultPrompt = buildExecutionRunResultContractPrompt(args.params.resultContract);
@@ -498,6 +514,7 @@ export async function sendBackendLongLivedRun(args: Readonly<{
         }
       }
     } finally {
+      releaseAcceptanceObservation();
       await args.writeActivityMarker(args.runId, args.getNowMs(), { force: true }).catch(() => {});
     }
   };
@@ -508,6 +525,7 @@ export async function sendBackendLongLivedRun(args: Readonly<{
   try {
     const admission = await raceExecutionRunControllerFailure(ctrl2, sendPromise);
     if (admission.status !== 'admitted') {
+      releaseAcceptanceObservation();
       if (ctrl2.turnEpoch === thisEpoch) {
         ctrl2.turnInFlight = false;
         ctrl2.turnCount -= 1;

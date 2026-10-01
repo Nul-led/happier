@@ -672,15 +672,12 @@ describe('useMachineSelectionListModel', () => {
         await rendered.unmount();
     });
 
-    it('uses the shared Pool-member identity label when decrypted Machine metadata is unavailable', async () => {
+    it('names a Pool member whose decrypted Machine metadata is unavailable as a locked machine', async () => {
         const fixture = createFixture();
         const machineId = 'machine-without-readable-metadata';
         const unidentifiedMachine = createMachine(machineId);
-        unidentifiedMachine.metadata = {
-            ...unidentifiedMachine.metadata,
-            displayName: '',
-            host: '',
-        };
+        // A Machine whose decrypted metadata is unavailable is locked: sync projects it with no metadata.
+        unidentifiedMachine.metadata = null;
         const rendered = await renderHook(() => useMachineSelectionListModel({
             ...buildParams({
                 ...fixture,
@@ -717,8 +714,9 @@ describe('useMachineSelectionListModel', () => {
         }));
 
         const poolOption = firstStaticOption(rendered.getCurrent());
-        expect(poolOption.subtitle).toContain(machineId.slice(0, 8));
-        expect(poolOption.subtitle).not.toContain(machineId);
+        // A member whose details cannot be read is a locked machine, never a raw or short id.
+        expect(poolOption.subtitle).toContain('machine.lockedMachine');
+        expect(poolOption.subtitle).not.toContain(machineId.slice(0, 8));
         await rendered.unmount();
     });
 
@@ -910,6 +908,56 @@ describe('useMachineSelectionListModel', () => {
         // resolve; only the Home's own currentness may deny activation.
         expect(optionIdsOf().find((option) => option.id === `pool:server-a:${poolId}`)?.disabled).toBe(false);
         await rendered.unmount();
+    });
+
+    it('lets a consuming domain decide which rows are selectable and shows its reason', async () => {
+        const fixture = createFixture();
+        const handlers = makeHandlers();
+        const offline: Machine = { ...fixture.machines[1]!, active: false, activeAt: 0 };
+        const machines = [fixture.machines[0]!, offline].map(createScopedMachine);
+        const params = (withDomainDecision: boolean): BuildMachineSelectionListModelParams => ({
+            ...buildParams(fixture, handlers),
+            groups: [{ ...fixture.groups[0]!, machines }],
+            recentMachines: [],
+            favoriteMachines: [],
+            showFavorites: false,
+            showRecent: false,
+            ...(withDomainDecision ? {
+                resolveMachineAvailability: (machine: Machine) => machine.id === offline.id
+                    ? { selectable: true, detail: 'offline but eligible' }
+                    : { selectable: false, detail: 'update required' },
+            } : {}),
+        });
+        const rowsOf = (model: ReturnType<typeof UseMachineSelectionListModel>) => {
+            const section = model.rootStep.sections.find((candidate) => candidate.id === 'all');
+            if (section?.kind !== 'static') throw new Error('expected the all-machines section');
+            return new Map(section.options.map((option) => [option.id, option]));
+        };
+
+        const canonical = await renderHook(() => useMachineSelectionListModel(params(false)));
+        const canonicalRows = rowsOf(canonical.getCurrent());
+        expect(canonicalRows.get('m-1')?.disabled).toBe(false);
+        expect(canonicalRows.get('m-2')?.disabled).toBe(true);
+        // K1 anatomy: the second line is the machine's status line, presence first, with the
+        // presence dot leading it (online / offline) instead of a trailing "● Online" label.
+        expect(canonicalRows.get('m-1')?.subtitle).toBe('settingsOverview.machineOnline');
+        expect(canonicalRows.get('m-2')?.subtitle).toBe('settingsOverview.machineOffline');
+        expect(canonicalRows.get('m-1')?.subtitleLeading).toBeTruthy();
+        expect(canonicalRows.get('m-2')?.subtitleLeading).toBeTruthy();
+        await canonical.unmount();
+
+        const decided = await renderHook(() => useMachineSelectionListModel(params(true)));
+        const rows = rowsOf(decided.getCurrent());
+        expect(rows.get('m-2')?.disabled).toBe(false);
+        expect(rows.get('m-2')?.subtitle).toBe('settingsOverview.machineOffline · offline but eligible');
+        expect(rows.get('m-1')?.disabled).toBe(true);
+        expect(rows.get('m-1')?.subtitle).toBe('settingsOverview.machineOnline · update required');
+
+        rows.get('m-1')?.onSelect?.();
+        expect(handlers.selectSpy).not.toHaveBeenCalled();
+        rows.get('m-2')?.onSelect?.();
+        expect(handlers.selectSpy).toHaveBeenCalledWith('m-2');
+        await decided.unmount();
     });
 
     it('reuses the derived model when only the caller handler identities change', async () => {

@@ -22,7 +22,11 @@ function trackedRunner(): TrackedSession {
       'node /Users/alice/.happier/cli-dev/versions/0.2.10/package-dist/index.mjs codex --happy-starting-mode remote --started-by daemon',
     processCommandHash: 'runner-command-hash',
     processStartTimeMs: 12_345,
-    runnerAgentImmutableGenerationId: 'generation-g',
+    runnerAgentSourceCustodyV1: {
+      kind: 'managed',
+      immutableGenerationId: 'generation-g',
+      installSource: 'localPath',
+    },
     spawnOptions: {
       directory: '/work',
       backendTarget: {
@@ -35,7 +39,7 @@ function trackedRunner(): TrackedSession {
   };
 }
 
-describe('resolveSessionRunnerRuntimeState retained Agent generation aggregate', () => {
+describe('resolveSessionRunnerRuntimeState retained Agent custody aggregate', () => {
   it.each([
     ['current', 'current'],
     ['stale', 'stale'],
@@ -58,7 +62,7 @@ describe('resolveSessionRunnerRuntimeState retained Agent generation aggregate',
     },
   );
 
-  it('keeps private Agent generation and component identities out of strict V1 status', () => {
+  it('keeps private Agent custody and component identities out of strict V1 status', () => {
     const state = resolveSessionRunnerRuntimeState({
       sessionId: 'sess-1',
       tracked: trackedRunner(),

@@ -26,6 +26,70 @@ function readAuthorizationHeader(headers: RequestInit['headers']): string {
 }
 
 describe('resolveScopedMachineTransport', () => {
+    it('does not let a short cold read decide a later caller with a longer budget', async () => {
+        let releaseShortRead!: () => void;
+        const shortReadPending = new Promise<void>((resolve) => { releaseShortRead = resolve; });
+        let machineReads = 0;
+        vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+            if (!url.includes('/v1/machines/')) {
+                return Response.json({});
+            }
+            machineReads += 1;
+            if (machineReads === 1) {
+                await shortReadPending;
+                return new Response(null, { status: 500 });
+            }
+            return Response.json({
+                machine: { id: 'machine-plain', dataEncryptionKey: MACHINE_PLAIN_DATA_KEY_MARKER },
+            });
+        }));
+        const input = {
+            serverId: 'server-b', serverUrl: 'https://server-b.example.test',
+            token: 'token-b', machineId: 'machine-plain', expectedAccountMode: 'plain' as const,
+        };
+        const short = resolveScopedMachineTransport({ ...input, timeoutMs: 1_000 });
+        await vi.waitFor(() => expect(machineReads).toBe(1));
+        const long = resolveScopedMachineTransport({ ...input, timeoutMs: 5_000 });
+        releaseShortRead();
+        await expect(short).resolves.toBeNull();
+        await expect(long).resolves.toEqual({ mode: 'plain' });
+    });
+
+    it('does not reuse a cached Plain decision for an E2EE caller', async () => {
+        vi.stubGlobal('fetch', vi.fn(async () => Response.json({
+            machine: { id: 'machine-plain', dataEncryptionKey: MACHINE_PLAIN_DATA_KEY_MARKER },
+        })));
+        const input = {
+            serverId: 'server-b', serverUrl: 'https://server-b.example.test', token: 'token-b', machineId: 'machine-plain',
+        };
+        await expect(resolveScopedMachineTransport({ ...input, expectedAccountMode: 'plain' }))
+            .resolves.toEqual({ mode: 'plain' });
+        await expect(resolveScopedMachineTransport({ ...input, expectedAccountMode: 'e2ee' }))
+            .resolves.toBeNull();
+    });
+
+    it.each(['cached', 'in-flight'] as const)('rechecks current Runner trust for a %s Machine key', async (state) => {
+        let release!: () => void;
+        const opened = new Promise<void>((resolve) => { release = resolve; });
+        const dataKey = new Uint8Array(32).fill(23);
+        vi.stubGlobal('fetch', vi.fn(async () => Response.json({
+            machine: { id: 'runner-1', kind: 'persistent', dataEncryptionKey: 'envelope' },
+        })));
+        const input = {
+            serverId: 'server-b', serverUrl: 'https://server-b.example.test', token: 'token-b', machineId: 'runner-1',
+            decryptEncryptionKey: async () => { await opened; return dataKey; },
+        };
+        const first = resolveScopedMachineTransport(input);
+        if (state === 'cached') {
+            release();
+            await expect(first).resolves.toEqual({ mode: 'e2ee', dataKey });
+        }
+        const trusted = resolveScopedMachineTransport({ ...input, trustedMachineKind: 'ephemeral_session_runner' });
+        release();
+        await expect(first).resolves.toEqual({ mode: 'e2ee', dataKey });
+        await expect(trusted).resolves.toBeNull();
+    });
+
     afterEach(async () => {
         vi.unstubAllGlobals();
         delete process.env.EXPO_PUBLIC_HAPPIER_SCOPED_RPC_MACHINE_KEY_CACHE_MAX;
@@ -186,6 +250,49 @@ describe('resolveScopedMachineTransport', () => {
         expect(fetchSpy.mock.calls.some(([url]) =>
             String(url) === 'http://127.0.0.1:3010/v1/machines/machine-iroh',
         )).toBe(false);
+    });
+
+    it('loads the exact Machine row through a selected semantic Home carrier', async () => {
+        const canonicalUrl = 'https://ingressless.happier.invalid';
+        const token = 'machine-scope-token';
+        const carried: Array<{ url: string; init: RequestInit }> = [];
+        const networkFetch = vi.fn(async () => {
+            throw new Error('the canonical Home URL has no public ingress');
+        });
+        vi.stubGlobal('fetch', networkFetch);
+        const homeCarrier = {
+            endpointId: 'a'.repeat(64),
+            readObservedPath: () => 'relay' as const,
+            request: async (url: string, init: RequestInit) => {
+                carried.push({ url, init });
+                return Response.json({
+                    machine: {
+                        id: 'machine-exact',
+                        kind: 'persistent',
+                        dataEncryptionKey: MACHINE_PLAIN_DATA_KEY_MARKER,
+                    },
+                });
+            },
+            createWebSocket: () => {
+                throw new Error('Machine key discovery must not open a socket');
+            },
+        };
+
+        await expect(resolveScopedMachineTransport({
+            serverId: 'server-b',
+            serverUrl: canonicalUrl,
+            runtimeOrigin: canonicalUrl,
+            homeCarrier,
+            token,
+            machineId: 'machine-exact',
+            expectedAccountMode: 'plain',
+            timeoutMs: 100,
+        })).resolves.toEqual({ mode: 'plain' });
+
+        expect(networkFetch).not.toHaveBeenCalled();
+        expect(carried).toHaveLength(1);
+        expect(carried[0]?.url).toBe(`${canonicalUrl}/v1/machines/machine-exact`);
+        expect(new Headers(carried[0]?.init.headers).get('Authorization')).toBe(`Bearer ${token}`);
     });
 
     it('fetches and decrypts machine key on first request then uses cache', async () => {

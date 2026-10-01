@@ -65,6 +65,19 @@ const REMOTE_DEV_NATIVE_RESPAWN_DESCRIPTOR_V1 = {
 };
 
 describe('sessionRunnerRespawnDescriptor', () => {
+  it('retains managed directory classification across daemon restart without retaining recreation consent', () => {
+    const descriptor = buildSessionRunnerRespawnDescriptorV1FromSpawnOptions({
+      directory: '/private/chat', directoryKind: 'managed', approvedNewDirectoryCreation: true,
+      freshSessionCreation: true, managedDirectorySeed: { sourceSessionId: 'source', sourcePath: '/private/source' },
+      backendTarget: { kind: 'backend', backendId: 'codex', sourceKind: 'built_in' },
+    });
+    expect(descriptor).not.toBeNull();
+    const restored = buildSpawnSessionOptionsFromRespawnDescriptorV1(descriptor!);
+    expect(restored).toMatchObject({ directoryKind: 'managed', approvedNewDirectoryCreation: false });
+    expect(restored).not.toHaveProperty('freshSessionCreation');
+    expect(restored).not.toHaveProperty('managedDirectorySeed');
+  });
+
   it('rejects a Provider binding model that disagrees with the retained active selection', () => {
     const spawnOptions = {
       directory: '/tmp/repo',
@@ -73,7 +86,7 @@ describe('sessionRunnerRespawnDescriptor', () => {
         v: 1,
         updatedAt: 10,
         ref: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: ProviderConnectionIdSchema.parse('pc_gateway'),
           modelId: 'selection-model',
         },
@@ -258,7 +271,7 @@ describe('sessionRunnerRespawnDescriptor', () => {
         v: 1,
         updatedAt: 42,
         ref: {
-          agentTargetKey: 'backend:ohMyPi',
+          agentTargetKey: 'agent:happier.agent.ohmypi/ohmypi',
           providerConnectionId: null,
           modelId: 'anthropic/claude-sonnet-4-6',
         },
@@ -318,7 +331,7 @@ describe('sessionRunnerRespawnDescriptor', () => {
         v: 1,
         updatedAt: 9,
         ref: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: providerBindingMetadataV1.connectionId,
           modelId: 'vendor/model',
         },
@@ -345,7 +358,7 @@ describe('sessionRunnerRespawnDescriptor', () => {
       v: 1,
       updatedAt: 7,
       ref: {
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         providerConnectionId: null,
         modelId: 'legacy-native',
       },
@@ -358,7 +371,7 @@ describe('sessionRunnerRespawnDescriptor', () => {
         v: 1,
         updatedAt: 8,
         ref: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: null,
           modelId: 'native-current',
         },
@@ -587,7 +600,7 @@ describe('sessionRunnerRespawnDescriptor', () => {
         v: 1 as const,
         updatedAt: 9,
         ref: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: providerBindingMetadataV1.connectionId,
           modelId: 'vendor/model',
         },
@@ -643,7 +656,7 @@ describe('sessionRunnerRespawnDescriptor', () => {
       backendTarget: { kind: 'backend', backendId: 'codex', sourceKind: 'built_in' },
       modelSelection: {
         v: 1, updatedAt: 10,
-        ref: { agentTargetKey: 'backend:codex', providerConnectionId: null, modelId: 'native-model' },
+        ref: { agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: null, modelId: 'native-model' },
       },
       providerBindingMetadataV1,
     });
@@ -675,7 +688,7 @@ describe('sessionRunnerRespawnDescriptor', () => {
         v: 1,
         updatedAt: 42,
         ref: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: ProviderConnectionIdSchema.parse('pc_work'),
           modelId: 'provider-model',
         },
@@ -695,7 +708,7 @@ describe('sessionRunnerRespawnDescriptor', () => {
     }).modelSelection).toEqual({
       v: 1,
       updatedAt: 7,
-      ref: { agentTargetKey: 'backend:codex', providerConnectionId: null, modelId: 'legacy-native' },
+      ref: { agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: null, modelId: 'legacy-native' },
     });
   });
 
@@ -708,7 +721,7 @@ describe('sessionRunnerRespawnDescriptor', () => {
         v: 1,
         updatedAt: 8,
         ref: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: 'pc_work',
           modelId: '',
         },
@@ -951,6 +964,22 @@ describe('sessionRunnerRespawnDescriptor', () => {
       },
     });
     expect(REMOTE_DEV_RESPAWN_DESCRIPTOR_V1_READER.safeParse(descriptor).success).toBe(false);
+  });
+
+  it('round-trips Herdr terminal placement through the respawn descriptor', () => {
+    const spawnOptions = {
+      directory: '/tmp/repo',
+      backendTarget: { kind: 'backend', backendId: 'codex', sourceKind: 'built_in' },
+      terminal: {
+        mode: 'herdr',
+        herdr: { sessionName: 'work' },
+      },
+    } satisfies SpawnSessionOptions;
+
+    const descriptor = buildSessionRunnerRespawnDescriptorV1FromSpawnOptions(spawnOptions);
+
+    expect(descriptor?.terminal).toEqual(spawnOptions.terminal);
+    expect(buildSpawnSessionOptionsFromRespawnDescriptorV1(descriptor!).terminal).toEqual(spawnOptions.terminal);
   });
 
   it('tolerates newer persisted respawn fields while preserving known ones', () => {

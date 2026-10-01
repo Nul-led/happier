@@ -22,7 +22,7 @@ vi.mock('../sync', () => ({
     },
 }));
 
-import { sessionAllow, sessionAllowWithAnswers, sessionAllowWithPermissionUpdates, sessionDeny } from './sessions';
+import { sessionAllow, sessionAllowWithAnswers, sessionAllowWithPermissionUpdates, sessionDeny, sessionRespondToPermission } from './sessions';
 
 const initialStorageState = storage.getState();
 
@@ -92,6 +92,19 @@ describe('session permission/user-action RPC methods', () => {
         mockSessionRpcWithPreferredSessionScope.mockResolvedValue(undefined);
     });
 
+    it('stops after delivering the abort decision and propagates an abort failure', async () => {
+        mockSessionRpcWithPreferredSessionScope.mockImplementation(async (request) => {
+            if (request.method === 'abort') throw new Error('abort unavailable');
+        });
+        await expect(sessionRespondToPermission('s_stop', {
+            id: 'perm_stop', approved: false, decision: 'abort', turnId: 'turn-stop',
+        }, { serverId: 'home-b' })).rejects.toThrow('abort unavailable');
+        expect(mockSessionRpcWithPreferredSessionScope.mock.calls.map(([request]) => request.method))
+            .toEqual([RPC_METHODS.SESSION_PERMISSION_RESPOND, 'abort']);
+        expect(mockSessionRpcWithPreferredSessionScope.mock.calls.every(([request]) => request.serverId === 'home-b'))
+            .toBe(true);
+    });
+
     it('routes direct permission approvals through the canonical permission RPC method', async () => {
         const sessionId = 's_permission_allow';
 
@@ -109,6 +122,22 @@ describe('session permission/user-action RPC methods', () => {
                 execPolicyAmendment: { command: ['npm', 'test'] },
             },
         });
+    });
+
+    it('resolves a loaded owning Home request turn without borrowing another Home same-ID request', async () => {
+        const session = {
+            ...buildSession('same-session'), serverId: 'home-b',
+            agentState: { requests: { request: { tool: 'Read', arguments: {}, turnId: 'turn-b' } } },
+        };
+        storage.getState().applySessions([session]);
+        await sessionRespondToPermission(session.id, { id: 'request', approved: true }, { serverId: 'home-b' });
+        expect(mockSessionRpcWithPreferredSessionScope).toHaveBeenLastCalledWith(expect.objectContaining({
+            serverId: 'home-b', payload: expect.objectContaining({ turnId: 'turn-b' }),
+        }));
+        await sessionRespondToPermission(session.id, { id: 'request', approved: true }, { serverId: 'home-a' });
+        expect(mockSessionRpcWithPreferredSessionScope).toHaveBeenLastCalledWith(expect.objectContaining({
+            serverId: 'home-a', payload: expect.objectContaining({ turnId: undefined }),
+        }));
     });
 
     it('routes direct permission-update approvals through the canonical permission RPC method', async () => {

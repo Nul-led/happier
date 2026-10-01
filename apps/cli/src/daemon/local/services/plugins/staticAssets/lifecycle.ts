@@ -17,7 +17,6 @@ export type HostedWebStaticAssetLifecycleContribution = Readonly<{
     installedRoot: string;
     runtimeMode: unknown;
     artifactManifest: unknown;
-    manifestContributionId?: string;
     routeMode?: 'hostOrigin' | 'pathFallback';
     security: PluginHostedWebSecurityPolicyV1;
     sourceMaps?: StartHostedWebStaticAssetServerInput['sourceMaps'];
@@ -203,7 +202,6 @@ export function createHostedWebStaticAssetLifecycle(
             const key = identityKey(contribution);
             const runtime = resolveHostedWebAssetRuntime({
                 contributionId: contribution.contributionId,
-                manifestContributionId: contribution.manifestContributionId,
                 runtimeMode: contribution.runtimeMode,
                 manifest: contribution.artifactManifest,
             });

@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { createMixedAgentTranscriptFixture } from '@/dev/testkit/fixtures/sessionAgentTransitionFixtures';
+import { createMixedAgentTranscriptFixture } from "../../../../../../../packages/session-core/src/testkit/sessionAgentTransitionFixtures.js";
 
 import {
     EMPTY_SESSION_TRANSCRIPT_AGENT_ATTRIBUTION_INDEX,
     buildSessionTranscriptAgentAttributionIndex,
     resolveHistoricalAgentIdAtSeq,
-} from './sessionTranscriptAgentAttribution';
+} from "@happier-dev/session-core/messages";
 
 describe('sessionTranscriptAgentAttribution', () => {
     it('attributes rows on either side of the divider to the Agent that was running', () => {

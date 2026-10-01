@@ -1,6 +1,8 @@
 import type { BrowserCommandV1 } from '@happier-dev/protocol';
 import { describe, expect, it, vi } from 'vitest';
 
+import * as launchOwner from './launchOwner';
+
 type ExitListener = (code: number | null, signal: NodeJS.Signals | null) => void;
 type ErrorListener = (error: Error) => void;
 type StderrListener = (chunk: string | Uint8Array) => void;
@@ -72,7 +74,7 @@ function openViewCommand(): Extract<BrowserCommandV1, { kind: 'openView' }> {
 
 describe('browser sidecar launch owner', () => {
     it('fails closed without spawning when the launch plan is unavailable', async () => {
-        const mod = await import('./launchOwner');
+        const mod = launchOwner;
 
         expect(mod?.createBrowserSidecarLaunchOwnerControlAdapterFactory).toBeTypeOf('function');
         if (!mod?.createBrowserSidecarLaunchOwnerControlAdapterFactory) return;
@@ -115,7 +117,7 @@ describe('browser sidecar launch owner', () => {
     });
 
     it('fails closed without spawning system Chrome candidates until a binary-safe system owner is proven', async () => {
-        const mod = await import('./launchOwner');
+        const mod = launchOwner;
 
         expect(mod?.createBrowserSidecarLaunchOwnerControlAdapterFactory).toBeTypeOf('function');
         if (!mod?.createBrowserSidecarLaunchOwnerControlAdapterFactory) return;
@@ -158,7 +160,7 @@ describe('browser sidecar launch owner', () => {
     });
 
     it('launches the sidecar, discovers the private endpoint, connects CDP, and cleans up on dispose', async () => {
-        const mod = await import('./launchOwner');
+        const mod = launchOwner;
 
         expect(mod?.createBrowserSidecarLaunchOwnerControlAdapterFactory).toBeTypeOf('function');
         if (!mod?.createBrowserSidecarLaunchOwnerControlAdapterFactory) return;
@@ -233,14 +235,18 @@ describe('browser sidecar launch owner', () => {
             focus: true,
         });
 
-        await result.dispose?.();
+        const disposal = result.dispose?.();
+        await waitForCondition(() => fake.kill.mock.calls.length === 1);
+        expect(cleanupProfileDirectory).not.toHaveBeenCalled();
+        fake.emitExit(0, 'SIGTERM');
+        await disposal;
         expect(disposeTransport).toHaveBeenCalledOnce();
         expect(fake.kill).toHaveBeenCalledWith('SIGTERM');
         expect(cleanupProfileDirectory).toHaveBeenCalledWith('/tmp/happier/browser/profile_launch_owner');
     });
 
     it('stops the sidecar and cleans the profile when adapter disposal fails', async () => {
-        const mod = await import('./launchOwner');
+        const mod = launchOwner;
 
         expect(mod?.createBrowserSidecarLaunchOwnerControlAdapterFactory).toBeTypeOf('function');
         if (!mod?.createBrowserSidecarLaunchOwnerControlAdapterFactory) return;
@@ -292,14 +298,18 @@ describe('browser sidecar launch owner', () => {
         expect(result).toMatchObject({ ok: true });
         if (!result.ok) return;
 
-        await expect(result.dispose?.()).rejects.toThrow('CDP dispose failed');
+        const disposal = result.dispose?.();
+        const assertion = expect(disposal).rejects.toThrow('CDP dispose failed');
+        await waitForCondition(() => fake.kill.mock.calls.length === 1);
+        fake.emitExit(0, 'SIGTERM');
+        await assertion;
         expect(disposeTransport).toHaveBeenCalledOnce();
         expect(fake.kill).toHaveBeenCalledWith('SIGTERM');
         expect(cleanupProfileDirectory).toHaveBeenCalledWith('/tmp/happier/browser/profile_launch_owner_dispose_failure');
     });
 
     it('fails closed, stops the process, and does not leak stderr when the endpoint never appears', async () => {
-        const mod = await import('./launchOwner');
+        const mod = launchOwner;
 
         expect(mod?.createBrowserSidecarLaunchOwnerControlAdapterFactory).toBeTypeOf('function');
         if (!mod?.createBrowserSidecarLaunchOwnerControlAdapterFactory) return;
@@ -332,7 +342,11 @@ describe('browser sidecar launch owner', () => {
         });
 
         fake.emitStderr('DevTools listening on ws://198.51.100.10:9222/devtools/browser/secret-token\n');
-        const result = await factory({ machineId: 'machine_launch_owner' });
+        const resultPromise = Promise.resolve(factory({ machineId: 'machine_launch_owner' }));
+        await waitForCondition(() => fake.kill.mock.calls.length === 1);
+        expect(cleanupProfileDirectory).not.toHaveBeenCalled();
+        fake.emitExit(0, 'SIGTERM');
+        const result = await resultPromise;
 
         expect(result).toMatchObject({
             ok: false,

@@ -17,6 +17,7 @@ import {
 import { sync } from '@/sync/sync';
 import { useProfile, useSettings, useSettingsVersion } from '@/sync/store/hooks';
 import { tLoose } from '@/text';
+import { useConnectedAccountIdentityPrivacy } from '@/hooks/ui/useConnectedAccountIdentityPrivacy';
 import { fireAndForget } from '@/utils/system/fireAndForget';
 import {
   useProjectedConnectedServicesRegistry,
@@ -81,6 +82,7 @@ export function VoiceCredentialSourceField(props: Readonly<{
   const expectedSettingsScope = useAccountSettingsScope();
   const savedSecretCatalog = useSavedSecretCatalog();
   const profile = useProfile();
+  const { present } = useConnectedAccountIdentityPrivacy();
   const projectedConnectedServicesRegistry = useProjectedConnectedServicesRegistry();
   const localizePluginText = useProjectedPluginLocalizedTextResolver();
   const [open, setOpen] = React.useState(false);
@@ -168,6 +170,7 @@ export function VoiceCredentialSourceField(props: Readonly<{
       }) === 'usable';
       const presentation = presentQualifiedConnectedAccountTarget({
         target,
+        presentIdentity: present,
         accounts: profile.connectedAccountsV4 ?? [],
         groups: profile.connectedAccountGroupsV4 ?? [],
         labelsByKey: settings.connectedServicesProfileLabelByKey ?? EMPTY_CONNECTED_ACCOUNT_LABELS,
@@ -207,6 +210,7 @@ export function VoiceCredentialSourceField(props: Readonly<{
       }) === 'usable';
       const presentation = presentQualifiedConnectedAccountTarget({
         target,
+        presentIdentity: present,
         accounts: profile.connectedAccountsV4 ?? [],
         groups: profile.connectedAccountGroupsV4 ?? [],
         labelsByKey: settings.connectedServicesProfileLabelByKey ?? EMPTY_CONNECTED_ACCOUNT_LABELS,
@@ -248,6 +252,7 @@ export function VoiceCredentialSourceField(props: Readonly<{
     localizePluginText,
     profile.connectedAccountGroupsV4,
     profile.connectedAccountsV4,
+    present,
     projectedConnectedServicesRegistry,
     props.credentials.sources,
     resolution,

@@ -1,10 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { ProcessRunState } from '../processRunState';
+import { waitForExistingSessionExitIfStopRequested } from './waitForExistingSessionExitIfStopRequested';
 
 describe('waitForExistingSessionExitIfStopRequested', () => {
   it('does nothing when no tracked session has a stopRequestedAtMs marker for the session id', async () => {
-    const { waitForExistingSessionExitIfStopRequested } = await import('./waitForExistingSessionExitIfStopRequested');
 
-    const isSessionRunnerActive = vi.fn(async () => true);
+    const readRunState = vi.fn(async () => 'servable' as const);
     const pidToTrackedSession = new Map<number, any>([
       [1, { happySessionId: 'sess-1' }],
     ]);
@@ -12,20 +13,19 @@ describe('waitForExistingSessionExitIfStopRequested', () => {
     await waitForExistingSessionExitIfStopRequested({
       sessionId: 'sess-1',
       pidToTrackedSession,
-      isSessionRunnerActive,
+      readRunState,
       timeoutMs: 10,
       pollIntervalMs: 1,
     });
 
-    expect(isSessionRunnerActive).not.toHaveBeenCalled();
+    expect(readRunState).not.toHaveBeenCalled();
   });
 
   it('waits for the runner to exit when the session has an in-flight stop marker', async () => {
     vi.useFakeTimers();
-    const { waitForExistingSessionExitIfStopRequested } = await import('./waitForExistingSessionExitIfStopRequested');
 
-    const activeStates = [true, true, false];
-    const isSessionRunnerActive = vi.fn(async () => activeStates.shift() ?? false);
+    const runStates: ProcessRunState[] = ['servable', 'servable', 'dead'];
+    const readRunState = vi.fn(async () => runStates.shift() ?? 'dead');
     const pidToTrackedSession = new Map<number, any>([
       [1, { happySessionId: 'sess-1', stopRequestedAtMs: 123 }],
     ]);
@@ -33,7 +33,7 @@ describe('waitForExistingSessionExitIfStopRequested', () => {
     const promise = waitForExistingSessionExitIfStopRequested({
       sessionId: 'sess-1',
       pidToTrackedSession,
-      isSessionRunnerActive,
+      readRunState,
       timeoutMs: 1_000,
       pollIntervalMs: 50,
     });
@@ -43,14 +43,13 @@ describe('waitForExistingSessionExitIfStopRequested', () => {
     await vi.advanceTimersByTimeAsync(50);
     await promise;
 
-    expect(isSessionRunnerActive).toHaveBeenCalled();
+    expect(readRunState).toHaveBeenCalled();
     vi.useRealTimers();
   });
 
   it('notifies the caller when a stopped tracked runner is no longer active', async () => {
-    const { waitForExistingSessionExitIfStopRequested } = await import('./waitForExistingSessionExitIfStopRequested');
 
-    const isSessionRunnerActive = vi.fn(async () => false);
+    const readRunState = vi.fn(async () => 'dead' as const);
     const onExitObserved = vi.fn();
     const pidToTrackedSession = new Map<number, any>([
       [1, { happySessionId: 'sess-1', stopRequestedAtMs: 123 }],
@@ -59,7 +58,7 @@ describe('waitForExistingSessionExitIfStopRequested', () => {
     await waitForExistingSessionExitIfStopRequested({
       sessionId: 'sess-1',
       pidToTrackedSession,
-      isSessionRunnerActive,
+      readRunState,
       timeoutMs: 1_000,
       pollIntervalMs: 50,
       onExitObserved,
@@ -73,7 +72,6 @@ describe('waitForExistingSessionExitIfStopRequested', () => {
   });
 
   it('does not report stop completion until durable exit observation staging completes', async () => {
-    const { waitForExistingSessionExitIfStopRequested } = await import('./waitForExistingSessionExitIfStopRequested');
 
     let releaseStaging!: () => void;
     const staging = new Promise<void>((resolve) => {
@@ -90,7 +88,7 @@ describe('waitForExistingSessionExitIfStopRequested', () => {
     const wait = waitForExistingSessionExitIfStopRequested({
       sessionId: 'sess-1',
       pidToTrackedSession,
-      isSessionRunnerActive: async () => false,
+      readRunState: async () => 'dead',
       timeoutMs: 1_000,
       pollIntervalMs: 50,
       onExitObserved,

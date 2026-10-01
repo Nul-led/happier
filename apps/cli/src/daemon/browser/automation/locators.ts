@@ -8,7 +8,7 @@
  *  - any other string                          — treated as a raw CSS selector
  *
  * The module is intentionally framework-free (no Playwright launch). It exposes:
- *  - `parseLocator` — normalize a locator string into a structured descriptor
+ * Protocol owns `parseLocator`, the grammar shared with transcript references. This module owns:
  *  - `resolveLocator` — resolve a descriptor against a minimal DOM model (deterministic, testable
  *    without a browser/jsdom) used by unit tests and any in-process resolution
  *  - `synthesizeLocatorExpression` — emit a self-contained JS expression that resolves the locator
@@ -18,11 +18,7 @@
  * unit-tested resolver is a faithful model of the in-page behavior.
  */
 
-export type ParsedLocator =
-  | Readonly<{ strategy: 'role'; role: string; name?: string }>
-  | Readonly<{ strategy: 'text'; text: string }>
-  | Readonly<{ strategy: 'testid'; testId: string }>
-  | Readonly<{ strategy: 'css'; selector: string }>;
+import type { ParsedLocator } from '@happier-dev/protocol';
 
 /** Minimal DOM element model: enough to resolve every locator strategy deterministically. */
 export type LocatorElement = Readonly<{
@@ -31,51 +27,6 @@ export type LocatorElement = Readonly<{
   text?: string;
   children?: readonly LocatorElement[];
 }>;
-
-const ROLE_NAME_PATTERN = /^([A-Za-z][\w-]*)(?:\[name=(?:"([^"]*)"|'([^']*)'|([^\]]*))\])?$/u;
-
-function stripPrefix(input: string, prefix: string): string | null {
-  return input.startsWith(prefix) ? input.slice(prefix.length) : null;
-}
-
-export function parseLocator(rawInput: string): ParsedLocator {
-  const input = rawInput.trim();
-
-  const roleBody = stripPrefix(input, 'role=');
-  if (roleBody !== null) {
-    const match = ROLE_NAME_PATTERN.exec(roleBody.trim());
-    if (match) {
-      const name = match[2] ?? match[3] ?? match[4];
-      return name !== undefined && name.length > 0
-        ? { strategy: 'role', role: match[1].toLowerCase(), name }
-        : { strategy: 'role', role: match[1].toLowerCase() };
-    }
-    return { strategy: 'role', role: roleBody.trim().toLowerCase() };
-  }
-
-  const textBody = stripPrefix(input, 'text=');
-  if (textBody !== null) {
-    return { strategy: 'text', text: unquote(textBody.trim()) };
-  }
-
-  const testIdBody = stripPrefix(input, 'data-testid=') ?? stripPrefix(input, 'testid=');
-  if (testIdBody !== null) {
-    return { strategy: 'testid', testId: unquote(testIdBody.trim()) };
-  }
-
-  return { strategy: 'css', selector: input };
-}
-
-function unquote(value: string): string {
-  if (value.length >= 2) {
-    const first = value[0];
-    const last = value[value.length - 1];
-    if ((first === '"' && last === '"') || (first === "'" && last === "'")) {
-      return value.slice(1, -1);
-    }
-  }
-  return value;
-}
 
 // ARIA roles that can be inferred from a tag when no explicit `role` attribute is present. This is a
 // pragmatic subset (not the full HTML-AAM) covering the elements agents target most.
@@ -191,6 +142,11 @@ export function synthesizeLocatorExpression(locator: ParsedLocator): string {
   return resolveExpression(synthesizeLocatorElementExpression(locator));
 }
 
+/** Shared page-realm label extraction; response owners apply their wire projection afterwards. */
+export function synthesizeLocatorNameExpression(element: string): string {
+  return `(${element}.getAttribute('aria-label') || ${element}.textContent || '').replace(/\\s+/g, ' ').trim()`;
+}
+
 export function synthesizeLocatorElementExpression(locator: ParsedLocator): string {
   switch (locator.strategy) {
     case 'css':
@@ -202,7 +158,7 @@ export function synthesizeLocatorElementExpression(locator: ParsedLocator): stri
       const structuralTags = JSON.stringify(TEXT_LOCATOR_STRUCTURAL_TAGS);
       return `(() => {
         const structural = new Set(${structuralTags});
-        const textOf = (el) => (el.getAttribute('aria-label') || el.textContent || '').replace(/\\s+/g, ' ').trim();
+        const textOf = (el) => ${synthesizeLocatorNameExpression('el')};
         const candidateMatches = (el) => !structural.has(el.tagName.toLowerCase()) && textOf(el).includes(${needle});
         const descendantMatches = (el) => {
           const stack = Array.prototype.slice.call(el.children || []);
@@ -232,7 +188,7 @@ export function synthesizeLocatorElementExpression(locator: ParsedLocator): stri
           const r = (el.getAttribute('role') || implicit[el.tagName.toLowerCase()] || el.tagName.toLowerCase()).toLowerCase();
           if (r !== wanted) continue;
           if (wantedName !== undefined) {
-            const n = (el.getAttribute('aria-label') || el.textContent || '').replace(/\\s+/g, ' ').trim();
+            const n = ${synthesizeLocatorNameExpression('el')};
             if (n !== wantedName) continue;
           }
           return el;

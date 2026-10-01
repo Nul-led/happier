@@ -29,6 +29,7 @@ describe('iOS simulator helper frame producer', () => {
             },
             emitFrame: () => undefined,
             fail: () => undefined,
+            reportInputFailure: () => undefined,
             ...overrides,
         };
     }

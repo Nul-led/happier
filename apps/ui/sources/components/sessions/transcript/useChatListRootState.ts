@@ -8,7 +8,7 @@ import {
 import { buildSessionMetadataStabilitySignatureValue, buildStableJsonSignature } from '@/sync/domains/session/metadata/sessionMetadataStability';
 import { useActiveServerAccountScope, useMachine } from '@/sync/store/hooks';
 import { fireAndForget } from '@/utils/system/fireAndForget';
-import { deriveTranscriptInteractionFromSession } from '@/utils/sessions/deriveTranscriptInteraction';
+import { useSessionTranscriptSource } from './source/SessionTranscriptSourceContext';
 import {
     EMPTY_MESSAGES_BY_ID,
 } from '@/components/sessions/transcript/chatListEmptyValues';
@@ -25,9 +25,12 @@ import { useTranscriptRootPendingRequests } from '@/components/sessions/transcri
 import { useTranscriptRootRollbackActions } from '@/components/sessions/transcript/items/useTranscriptRootRollbackActions';
 import { useTranscriptRootThinkingState } from '@/components/sessions/transcript/thinking/useTranscriptRootThinkingState';
 import { useTranscriptRootMessages } from '@/components/sessions/transcript/items/useTranscriptRootMessages';
-import { resolveTranscriptEventEmphasisByMessageId } from '@/components/sessions/transcript/events/transcriptEventEmphasis';
-import type { Message } from '@/sync/domains/messages/messageTypes';
-import { isRecoveredHistoryTranscriptObservation } from '@/sync/domains/messages/transcriptObservationProvenance';
+import {
+    resolveTranscriptEventEmphasisByMessageId,
+    resolveTranscriptHostWakeCountByMessageId,
+} from '@/components/sessions/transcript/events/transcriptEventEmphasis';
+import type { Message } from "@happier-dev/session-core/messages";
+import { isRecoveredHistoryTranscriptObservation } from "@happier-dev/session-core/messages";
 import { readExternalSessionOperationPresentationFromMetadata } from '@/components/sessions/transcript/items/externalSessionOperationMetadata';
 import { useExternalSessionOperationTranscriptDismissal } from '@/components/sessions/transcript/items/useExternalSessionOperationTranscriptDismissal';
 import { useExternalSessionOperationOwnerHydration } from '@/components/sessions/transcript/items/useExternalSessionOperationOwnerHydration';
@@ -103,7 +106,7 @@ export function useChatListRootState(props: ChatListProps) {
     const transcriptGroupingMode = useSetting('transcriptGroupingMode');
     const transcriptGroupToolCalls = useSetting('transcriptGroupToolCalls');
     const transcriptTurnToolCallsGroupStrategy = useSetting('transcriptTurnToolCallsGroupStrategy');
-    const transcriptSessionCommon = useTranscriptSessionCommon(props.session.id, props.session.serverId);
+    const transcriptSessionCommon = useTranscriptSessionCommon();
     const toolViewTimelineChromeMode = transcriptSessionCommon.toolChrome.toolViewTimelineChromeMode;
 
     const activeServerAccountScope = useActiveServerAccountScope();
@@ -263,14 +266,16 @@ export function useChatListRootState(props: ChatListProps) {
             sessionActive: props.session.active === true,
         })
     ), [messageIdsOldestFirst, messagesById, props.session.active]);
+    const hostWakeCounts = React.useMemo(() => (
+        resolveTranscriptHostWakeCountByMessageId({ messageIdsOldestFirst, messagesById })
+    ), [messageIdsOldestFirst, messagesById]);
+    // Rows re-render only when a wake's count changes, not on every transcript update.
+    const hostWakeCountByMessageId = useStableValueBySignature(
+        hostWakeCounts,
+        Object.entries(hostWakeCounts).map(([id, count]) => `${id}:${count}`).join('|'),
+    );
 
-    const interaction = React.useMemo(() => {
-        return deriveTranscriptInteractionFromSession({
-            access: props.session.access,
-            active: props.session.active,
-            presence: props.session.presence,
-        });
-    }, [props.session.access, props.session.active, props.session.presence]);
+    const interaction = useSessionTranscriptSource().useInteraction();
     // Whole-message Actions consume the generic normalized daemon projection,
     // but only while this transcript's existing local-owner projection remains
     // current. The generation agreement prevents an Action catalog refresh from
@@ -325,7 +330,6 @@ export function useChatListRootState(props: ChatListProps) {
             host: {
                 machineId: pluginActivityProjection.machineId,
                 serverId: pluginActivityProjection.serverId,
-                expectedGeneration: actionGeneration,
                 sessionId: props.session.id,
                 signal: pluginMessageActionScope.signal,
                 accountLifetime: pluginActivityLifetime,
@@ -442,6 +446,7 @@ export function useChatListRootState(props: ChatListProps) {
             onToggleMessagePin: togglePersistedSessionMessagePin,
             messagesById: internalMessagesById,
             eventEmphasisByMessageId,
+            hostWakeCountByMessageId,
             forkMessageMetadataById: forkAwareMessageDescriptors?.metadataByMessageId ?? null,
             committedMessagesCount: messageIdsOldestFirst.length,
             latestCommittedActivityKey,

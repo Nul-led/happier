@@ -1,19 +1,10 @@
+import { type DaemonReactNativeHostRuntimeIdentityV1 } from '@happier-dev/protocol';
 import {
-    DaemonPluginHostedWebArtifactCacheIdentityV1Schema,
-    isSameDaemonPluginHostedWebArtifactCacheIdentityV1,
-    type DaemonPluginHostedWebArtifactCacheIdentityV1,
-    type DaemonPluginUiArtifactBytesReadResponse,
-    type DaemonReactNativeHostRuntimeIdentityV1,
-    type PluginMachineExecutionOriginV1,
-} from '@happier-dev/protocol';
-import {
-    PluginUiArtifactCompatibilityKeyV1Schema,
-    PluginUiArtifactsManifestEntryV1Schema,
+    PluginUiArtifactsManifestEntryV2Schema,
     type HostedWebAssetPolicyInput,
-    type PluginUiArtifactCompatibilityKeyV1,
+    type PluginUiArtifactDigestV1,
 } from '@happier-dev/protocol/plugins/ui';
 
-import { decodeBase64 } from '@/encryption/base64';
 import {
     createActivePluginAccountHostedArtifactSourceCandidate,
 } from '@/sync/api/plugins/availability/activePluginAccountHostedArtifactRead';
@@ -33,19 +24,23 @@ import {
 } from '@/sync/domains/scope/serverAccountScope';
 import type { ActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
 import type {
+    PluginArtifactDaemonProjectionSelectionInput,
+    PluginArtifactDaemonTransport,
     PluginArtifactLeasePersistentScope,
     PluginArtifactSourceCandidate,
+    PluginDaemonProjectionArtifactSelection,
     PluginSelectedArtifactLease,
     PluginSelectedArtifactLeaseAcquireResult,
 } from './artifactLease';
 import {
     acquirePluginSelectedArtifactLease,
     createPluginArtifactPersistentSource,
-    isExactDaemonPluginArtifactOriginCurrent,
-    isPluginArtifactPersistentScopeCurrent,
     persistVerifiedPluginArtifactLease,
-    wrapPluginArtifactLeaseCurrentness,
 } from './artifactLease';
+import {
+    createPluginArtifactDaemonSource,
+    type PluginArtifactDaemonByteFetcher,
+} from './artifactDaemonSource';
 import {
     publishVerifiedPluginArtifactToAccountHosting,
 } from './accountHostedArtifactPublication';
@@ -55,158 +50,48 @@ import type {
     PluginNativeArtifactPersistentStore,
 } from './nativeArtifactResource';
 import type { PluginAccountAvailabilityReader } from './reader';
-import { fetchHostedWebExactArtifactBytesViaMachineRpc } from './hostedWebArtifactDaemonTransport';
 import { createBundledPluginUiAppExactArtifactSource } from './bundledAppExactArtifactSource';
 
-export type PluginHostedWebExactArtifactByteFetcher = (input: Readonly<{
-    origin: PluginMachineExecutionOriginV1;
-    serverId: string;
-    identity: DaemonPluginHostedWebArtifactCacheIdentityV1;
-}>) => Promise<DaemonPluginUiArtifactBytesReadResponse>;
+/** Semantic selected slot context around digest-only executable byte identity. */
+export type PluginHostedWebArtifactIdentity = Readonly<{
+    pluginId: string;
+    contributionId: string;
+    artifactId: string;
+    artifactDigest: PluginUiArtifactDigestV1;
+    platform: 'web';
+}>;
 
 export type PluginHostedWebArtifactLeasePersistentScope = PluginArtifactLeasePersistentScope;
 
 /**
- * Artifact-owned input for one renderer's already-admitted hosted-web slot.
- * The renderer supplies only its technical renderer identity and an exact
- * Administration-stamped origin; this owner decides whether either may become
- * a candidate in the canonical Artifact source order.
+ * Artifact-owned input for one renderer's already-admitted hosted-web slot:
+ * its technical renderer identity plus the daemon byte route, if any.
  */
 export type PluginHostedWebArtifactLeaseInput = Readonly<{
     reader: PluginAccountAvailabilityReader;
     artifactGraph: unknown;
-    cacheIdentity: DaemonPluginHostedWebArtifactCacheIdentityV1;
+    cacheIdentity: PluginHostedWebArtifactIdentity;
+    accountLifetime: ActiveServerAccountScopeLifetime;
     persistent?: PluginHostedWebArtifactLeasePersistentScope;
-    daemon?: Readonly<{
-        origin: PluginMachineExecutionOriginV1;
-        /** Active server route; absent routes do not fall back to a default server. */
-        serverId: string;
-        /** Artifact transport boundary supplied by the hosted-web platform adapter. */
-        fetchArtifactBytes: PluginHostedWebExactArtifactByteFetcher;
-    }>;
+    /** Daemon route for an Account-release selection (the mount's machine). */
+    daemon?: PluginArtifactDaemonTransport;
+    /** Daemon RPC boundary; production uses the canonical machine-RPC transport. */
+    fetchDaemonArtifactBytes?: PluginArtifactDaemonByteFetcher;
     appExact?: PluginArtifactSourceCandidate & Readonly<{ kind: 'appExact' }>;
     accountHosted?: PluginArtifactSourceCandidate & Readonly<{ kind: 'accountHosted' }>;
+    daemonProjectionSelection?: PluginArtifactDaemonProjectionSelectionInput;
 }>;
-
-function cacheIdentityMatches(
-    left: DaemonPluginHostedWebArtifactCacheIdentityV1,
-    right: DaemonPluginHostedWebArtifactCacheIdentityV1,
-): boolean {
-    return isSameDaemonPluginHostedWebArtifactCacheIdentityV1(left, right);
-}
 
 function artifactMatchesCacheIdentity(input: Readonly<{
     artifact: PluginSelectedArtifactLease['artifact'];
-    identity: DaemonPluginHostedWebArtifactCacheIdentityV1;
+    identity: PluginHostedWebArtifactIdentity;
 }>): boolean {
     return input.artifact.pluginId === input.identity.pluginId
+        && input.artifact.contributionId === input.identity.contributionId
+        && input.artifact.artifactId === input.identity.artifactId
         && input.artifact.tier === 'hostedWeb'
         && input.artifact.platform === 'web'
         && input.artifact.digest === input.identity.artifactDigest;
-}
-
-function exactDaemonOriginIsCurrent(input: Readonly<{
-    reader: PluginAccountAvailabilityReader;
-    origin: PluginMachineExecutionOriginV1;
-    artifact: PluginSelectedArtifactLease['artifact'];
-    identity: DaemonPluginHostedWebArtifactCacheIdentityV1;
-}>): boolean {
-    if (!artifactMatchesCacheIdentity({ artifact: input.artifact, identity: input.identity })) return false;
-    return isExactDaemonPluginArtifactOriginCurrent({
-        reader: input.reader,
-        origin: input.origin,
-        artifact: input.artifact,
-    });
-}
-
-function decodeDaemonFileSet(input: Readonly<{
-    response: DaemonPluginUiArtifactBytesReadResponse;
-    identity: DaemonPluginHostedWebArtifactCacheIdentityV1;
-    entryRelativePath: string;
-}>): ReadonlyMap<string, Uint8Array> | null {
-    const { response } = input;
-    if (
-        !response.ok
-        || response.artifactFamily !== 'hostedWeb'
-        || response.artifact.artifactKind !== 'hostedWebAsset'
-    ) {
-        return null;
-    }
-    const parsedIdentity = DaemonPluginHostedWebArtifactCacheIdentityV1Schema.safeParse(response.cacheIdentity);
-    if (!parsedIdentity.success || !cacheIdentityMatches(parsedIdentity.data, input.identity)) return null;
-    if (
-        response.artifact.pluginId !== input.identity.pluginId
-        || response.artifact.contributionId !== input.identity.contributionId
-        || response.artifact.digest !== input.identity.artifactDigest
-    ) {
-        return null;
-    }
-    let entryBytes: Uint8Array;
-    try {
-        entryBytes = decodeBase64(response.bytesBase64, 'base64');
-    } catch {
-        return null;
-    }
-    if (entryBytes.byteLength !== response.artifact.byteSize || !response.files?.length) return null;
-    const files = new Map<string, Uint8Array>();
-    for (const file of response.files) {
-        if (files.has(file.relativePath)) return null;
-        let bytes: Uint8Array;
-        try {
-            bytes = decodeBase64(file.bytesBase64, 'base64');
-        } catch {
-            return null;
-        }
-        if (bytes.byteLength !== file.byteSize) return null;
-        files.set(file.relativePath, bytes);
-    }
-    const entry = files.get(input.entryRelativePath);
-    if (
-        !entry
-        || entry.byteLength !== entryBytes.byteLength
-        || entry.some((value, index) => value !== entryBytes[index])
-    ) {
-        return null;
-    }
-    return files;
-}
-
-function createDaemonSource(input: Readonly<{
-    reader: PluginAccountAvailabilityReader;
-    origin: PluginMachineExecutionOriginV1;
-    serverId: string;
-    identity: DaemonPluginHostedWebArtifactCacheIdentityV1;
-    entryRelativePath: string;
-    fetchArtifactBytes: PluginHostedWebExactArtifactByteFetcher;
-}>): PluginArtifactSourceCandidate {
-    let pending: Promise<ReadonlyMap<string, Uint8Array> | null> | null = null;
-    return Object.freeze({
-        kind: 'daemon',
-        readFile: async ({ artifact, relativePath }) => {
-            const current = () => exactDaemonOriginIsCurrent({
-                reader: input.reader,
-                origin: input.origin,
-                artifact,
-                identity: input.identity,
-            });
-            if (!current()) return null;
-            if (!pending) {
-                pending = input.fetchArtifactBytes({
-                    origin: input.origin,
-                    serverId: input.serverId,
-                    identity: input.identity,
-                }).then((response) => decodeDaemonFileSet({
-                    response,
-                    identity: input.identity,
-                    entryRelativePath: input.entryRelativePath,
-                })).catch(() => null);
-            }
-            const files = await pending;
-            if (!files || !current()) return null;
-            const bytes = files.get(relativePath);
-            return bytes ? new Uint8Array(bytes) : null;
-        },
-    });
 }
 
 /**
@@ -218,74 +103,68 @@ function createDaemonSource(input: Readonly<{
 export async function acquirePluginHostedWebArtifactLease(
     input: PluginHostedWebArtifactLeaseInput,
 ): Promise<PluginSelectedArtifactLeaseAcquireResult> {
-    const graph = PluginUiArtifactsManifestEntryV1Schema.safeParse(input.artifactGraph);
+    const graph = PluginUiArtifactsManifestEntryV2Schema.safeParse(input.artifactGraph);
+    if (
+        !graph.success
+        || graph.data.tier !== 'hostedWeb'
+        || graph.data.artifactId !== input.cacheIdentity.artifactId
+        || graph.data.digest !== input.cacheIdentity.artifactDigest
+    ) {
+        return Object.freeze({ kind: 'unavailable', code: 'artifact_graph_mismatch' });
+    }
     const sources: PluginArtifactSourceCandidate[] = [];
     if (input.appExact) sources.push(input.appExact);
-    if (input.persistent && isPluginArtifactPersistentScopeCurrent(input.persistent)) {
-        sources.push(createPluginArtifactPersistentSource({
-            scope: input.persistent,
-            identity: input.cacheIdentity,
-            artifactMatchesIdentity: (artifact, identity) => artifactMatchesCacheIdentity({ artifact, identity }),
-        }));
+    if (input.persistent?.isCurrent()) {
+        sources.push(createPluginArtifactPersistentSource({ scope: input.persistent }));
     }
-    if (input.daemon && graph.success) {
-        sources.push(createDaemonSource({
-            reader: input.reader,
-            origin: input.daemon.origin,
-            serverId: input.daemon.serverId,
-            identity: input.cacheIdentity,
-            entryRelativePath: graph.data.entry,
-            fetchArtifactBytes: input.daemon.fetchArtifactBytes,
+    const daemonTransport = input.daemonProjectionSelection?.transport ?? input.daemon;
+    if (daemonTransport) {
+        sources.push(createPluginArtifactDaemonSource({
+            transport: daemonTransport,
+            family: 'hostedWeb',
+            ...(input.fetchDaemonArtifactBytes ? { fetchArtifactBytes: input.fetchDaemonArtifactBytes } : {}),
         }));
     }
     if (input.accountHosted) sources.push(input.accountHosted);
 
+    const daemonProjectionSelection: PluginDaemonProjectionArtifactSelection | undefined =
+        input.daemonProjectionSelection
+            ? Object.freeze({
+                occurrenceId: input.daemonProjectionSelection.occurrenceId,
+                artifact: Object.freeze({
+                    pluginId: input.cacheIdentity.pluginId,
+                    contributionId: input.daemonProjectionSelection.contributionId,
+                    artifactId: graph.data.artifactId,
+                    tier: 'hostedWeb' as const,
+                    platform: 'web' as const,
+                    digest: graph.data.digest,
+                    hostUiApiRange: graph.data.hostUiApiRange,
+                    releaseVersion: input.daemonProjectionSelection.releaseVersion,
+                }),
+                isCurrent: input.daemonProjectionSelection.isCurrent,
+            })
+            : undefined;
+
     const acquired = await acquirePluginSelectedArtifactLease({
         reader: input.reader,
+        accountLifetime: input.accountLifetime,
         slot: Object.freeze({
             pluginId: input.cacheIdentity.pluginId,
             // The renderer identity is not necessarily the generated Account
             // slot contribution. The signed graph names that Artifact slot.
-            contributionId: graph.success
-                ? graph.data.contributionId
-                : input.cacheIdentity.contributionId,
+            contributionId: input.cacheIdentity.contributionId,
             tier: 'hostedWeb',
             platform: 'web',
-            ...(input.daemon
-                ? {
-                    materializationOrigin: Object.freeze({
-                        serverIdentityId: input.daemon.origin.serverIdentityId,
-                        materializationRef: input.daemon.origin.materializationRef,
-                    }),
-                }
-                : {}),
         }),
+        ...(daemonProjectionSelection ? { daemonProjectionSelection } : {}),
         artifactGraph: input.artifactGraph,
         sources,
     });
     if (acquired.kind !== 'available') return acquired;
-    if (!artifactMatchesCacheIdentity({ artifact: acquired.lease.artifact, identity: input.cacheIdentity })) {
-        acquired.lease.dispose();
-        return Object.freeze({ kind: 'unavailable', code: 'artifact_graph_mismatch' });
-    }
-
-    // Daemon provenance gates ACQUISITION only: `createDaemonSource` proves the
-    // exact origin before every byte it hands over. Once those bytes are copied
-    // and integrity-verified into host custody, the Account's current Artifact
-    // admission (owned by the generic lease) plus Account cache custody are the
-    // authorities. A daemon blip must not blank verified content the user is
-    // already looking at.
-    const requiresPersistentCurrentness = input.persistent !== undefined;
-    const lease = requiresPersistentCurrentness
-        ? wrapPluginArtifactLeaseCurrentness({
-            lease: acquired.lease,
-            reader: input.reader,
-            isAdditionalCurrent: () => isPluginArtifactPersistentScopeCurrent(input.persistent),
-        })
-        : acquired.lease;
-    if (!lease.isCurrent()) {
+    const lease = acquired.lease;
+    if (!artifactMatchesCacheIdentity({ artifact: lease.artifact, identity: input.cacheIdentity })) {
         lease.dispose();
-        return Object.freeze({ kind: 'unavailable', code: 'artifact_lease_revoked' });
+        return Object.freeze({ kind: 'unavailable', code: 'artifact_graph_mismatch' });
     }
     if (input.persistent && (lease.sourceKind === 'daemon' || lease.sourceKind === 'accountHosted')) {
         await persistVerifiedPluginArtifactLease({ lease, persistent: input.persistent });
@@ -336,13 +215,8 @@ type PluginHostedWebArtifactAvailabilityUnavailable =
  */
 export type PluginHostedWebArtifactAvailabilityInput = Omit<
     PluginHostedWebArtifactLeaseInput,
-    'persistent' | 'daemon' | 'appExact' | 'accountHosted'
+    'persistent' | 'appExact' | 'accountHosted' | 'fetchDaemonArtifactBytes'
 > & Readonly<{
-    /** Exact Administration-stamped daemon route, never a loose machine fallback. */
-    daemon?: Readonly<{
-        origin: PluginMachineExecutionOriginV1;
-        serverId: string;
-    }>;
     accountLifetime: ActiveServerAccountScopeLifetime;
     /** Bound surface currentness; it never becomes Artifact/cache authority. */
     isCurrent: () => boolean;
@@ -494,39 +368,6 @@ export async function projectSelectedHostedWebArtifactAvailability(
 }
 
 /**
- * The publishing host's adoption facts for one hosted-web archive.
- *
- * A hosted-web renderer is a frame, not a second React runtime: its signed
- * graph declares NO framework compatibility, and the one version that decides
- * whether a stored link may serve a host is the host UI API version the graph
- * itself carries. Reading it from the verified graph rather than inventing one
- * here is what keeps the published link and the archive the publication Action
- * re-derives from the same bytes in agreement.
- *
- * Which app and which channel published it remain this host's own facts and
- * are recorded, not matched — `isPluginUiReleaseSlotCompatibleWithArtifactLinkV1`
- * ignores them for this tier, so a link stays reachable by every other host.
- * A host that cannot describe itself publishes nothing rather than a guess.
- */
-function hostedWebHostCompatibility(input: Readonly<{
-    artifactGraph: unknown;
-    hostRuntimeIdentity: DaemonReactNativeHostRuntimeIdentityV1 | null;
-}>): PluginUiArtifactCompatibilityKeyV1 | null {
-    const graph = PluginUiArtifactsManifestEntryV1Schema.safeParse(input.artifactGraph);
-    const identity = input.hostRuntimeIdentity;
-    if (!graph.success || graph.data.tier !== 'hostedWeb') return null;
-    if (!identity || !identity.appVersion) return null;
-    const parsed = PluginUiArtifactCompatibilityKeyV1Schema.safeParse({
-        hostAppVersion: identity.appVersion,
-        hostUiApiVersion: graph.data.hostUiApiVersion,
-        platform: 'web',
-        channel: identity.channel,
-        nativeCapabilities: [],
-    });
-    return parsed.success ? parsed.data : null;
-}
-
-/**
  * The one production Artifact producer for a hosted native frame. It supplies
  * the shared native-token-gated persistent store to source selection, binds
  * the incumbent Account lifetime, and then projects the selected lease into
@@ -566,6 +407,7 @@ export function createPluginHostedWebArtifactAvailabilityProducer(
                     reader: input.reader,
                     artifactGraph: input.artifactGraph,
                     cacheIdentity: input.cacheIdentity,
+                    accountLifetime: input.accountLifetime,
                     appExact: createBundledPluginUiAppExactArtifactSource(),
                     persistent: Object.freeze({
                         scope: input.accountLifetime.scope,
@@ -576,14 +418,9 @@ export function createPluginHostedWebArtifactAvailabilityProducer(
                             operation.isCurrent,
                         ),
                     }),
-                    ...(input.daemon
-                        ? {
-                            daemon: {
-                                origin: input.daemon.origin,
-                                serverId: input.daemon.serverId,
-                                fetchArtifactBytes: fetchHostedWebExactArtifactBytesViaMachineRpc,
-                            },
-                        }
+                    ...(input.daemon ? { daemon: input.daemon } : {}),
+                    ...(input.daemonProjectionSelection
+                        ? { daemonProjectionSelection: input.daemonProjectionSelection }
                         : {}),
                     accountHosted: createActivePluginAccountHostedArtifactSourceCandidate({
                         accountLifetime: input.accountLifetime,
@@ -598,18 +435,11 @@ export function createPluginHostedWebArtifactAvailabilityProducer(
                 // reach while every daemon is offline, and this frame's tier is
                 // no exception: these verified bytes are the only copy this
                 // process holds beside a current Account authority.
-                const hostCompatibility = hostedWebHostCompatibility({
-                    artifactGraph: input.artifactGraph,
-                    hostRuntimeIdentity: dependencies.getHostRuntimeIdentity(),
+                await publishVerifiedPluginArtifactToAccountHosting({
+                    reader: input.reader,
+                    accountLifetime: input.accountLifetime,
+                    lease: selected.lease,
                 });
-                if (hostCompatibility) {
-                    await publishVerifiedPluginArtifactToAccountHosting({
-                        reader: input.reader,
-                        accountLifetime: input.accountLifetime,
-                        lease: selected.lease,
-                        hostCompatibility,
-                    });
-                }
                 if (!operation.isCurrent()) {
                     selected.lease.dispose();
                     return Object.freeze({ kind: 'unavailable', code: 'artifact_lease_revoked' });

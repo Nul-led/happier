@@ -1,8 +1,13 @@
-import { isMessageStructuredPresentationV1Candidate } from '@happier-dev/protocol';
+import {
+    isMessageStructuredPresentationV1Candidate,
+    resolveStoredContentKindForSessionEncryptionMode,
+    type SessionEncryptionMode,
+    type SessionMessageV1,
+} from '@happier-dev/protocol';
 
-import type { ApiMessage } from '@/sync/api/types/apiTypes';
+
 import type { DecryptedMessage } from '@/sync/domains/state/storageTypes';
-import { RawRecordSchema, type RawRecord } from '@/sync/typesRaw';
+import { RawRecordSchema, type RawRecord } from "@happier-dev/session-core/raw";
 
 type StoredSessionEncryptedContent = Readonly<{
     t: 'encrypted';
@@ -67,11 +72,17 @@ export async function readStoredSessionRawRecord(params: Readonly<{
 }
 
 export async function readStoredSessionMessage(params: Readonly<{
-    message: ApiMessage | null | undefined;
-    decryptMessage?: (message: ApiMessage) => Promise<DecryptedMessage | null>;
+    message: SessionMessageV1 | null | undefined;
+    sessionEncryptionMode: SessionEncryptionMode;
+    decryptMessage?: (message: SessionMessageV1) => Promise<DecryptedMessage | null>;
 }>): Promise<DecryptedMessage | null> {
     const message = params.message;
     if (!message) {
+        return null;
+    }
+    // This is the typed wire boundary, so consume Protocol's mode decision
+    // without reparsing each socket event or inferring mode from key presence.
+    if (message.content?.t !== resolveStoredContentKindForSessionEncryptionMode(params.sessionEncryptionMode)) {
         return null;
     }
 

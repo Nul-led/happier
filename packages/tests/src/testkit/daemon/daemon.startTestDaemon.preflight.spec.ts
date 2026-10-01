@@ -153,6 +153,7 @@ describe('startTestDaemon', () => {
         env: {},
       });
       const resolverCallCountBefore = cliLaunchSpecMock.resolveCliTestLaunchSpec.mock.calls.length;
+      let beforeSpawnCalls = 0;
 
       const daemon = await startTestDaemon({
         testDir,
@@ -160,8 +161,12 @@ describe('startTestDaemon', () => {
         env: {},
         startupTimeoutMs: 15_000,
         cliLaunchSpec: candidateLaunchSpec,
+        __beforeSpawn: async () => {
+          beforeSpawnCalls += 1;
+        },
       });
 
+      expect(beforeSpawnCalls).toBe(1);
       expect(cliLaunchSpecMock.resolveCliTestLaunchSpec.mock.calls.length)
         .toBe(resolverCallCountBefore);
       expect(await readFile(resolve(testDir, 'daemon.stdout.log'), 'utf8')).toBe('');

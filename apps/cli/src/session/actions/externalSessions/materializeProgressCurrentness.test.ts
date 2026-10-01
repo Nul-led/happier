@@ -1,3 +1,4 @@
+import { createStoppedTakeoverQuiescenceFixture } from '@/testkit/backends/externalSessionFixtures';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -103,7 +104,7 @@ function inspectAuthorityResponse(
 
 function validatingTakeoverRecord(): ExternalSessionOperationRecordV1 {
   const sourceSnapshotEvidenceRef = 'source-cursor-a';
-  const request = {
+  const request: ExternalSessionOperationRecordV1['request'] = {
     v: 1 as const,
     idempotencyKey: 'takeover-progress-currentness-1',
     sessionId: 'session-1',
@@ -119,7 +120,7 @@ function validatingTakeoverRecord(): ExternalSessionOperationRecordV1 {
       sourceGeneration: createExternalSessionSourceGenerationAnchor(
         sourceSnapshotEvidenceRef,
       ),
-      contributionGeneration: 'contribution-1',
+      sourceCustody: { kind: 'development', registeredRootId: 'contribution-1' },
     },
     plan: 'takeover' as const,
     targetStorageMode: 'persisted' as const,
@@ -164,7 +165,7 @@ function validatingTakeoverRecord(): ExternalSessionOperationRecordV1 {
 
 function validatingMaterializeRecord(): ExternalSessionOperationRecordV1 {
   const sourceSnapshotEvidenceRef = 'source-cursor-materialize-a';
-  const request = {
+  const request: ExternalSessionOperationRecordV1['request'] = {
     v: 1 as const,
     idempotencyKey: 'materialize-progress-currentness-1',
     sessionId: 'session-1',
@@ -180,7 +181,7 @@ function validatingMaterializeRecord(): ExternalSessionOperationRecordV1 {
       sourceGeneration: createExternalSessionSourceGenerationAnchor(
         sourceSnapshotEvidenceRef,
       ),
-      contributionGeneration: 'contribution-1',
+      sourceCustody: { kind: 'development', registeredRootId: 'contribution-1' },
     },
     plan: 'materialize' as const,
     targetStorageMode: 'external-linked' as const,
@@ -715,6 +716,7 @@ describe('materialize semantic currentness after operation progress publication'
         },
       }),
       preparePersistedTakeover: async () => ({
+        destructiveQuiescence: createStoppedTakeoverQuiescenceFixture(initial),
         workingDirectory: '/workspace',
         resumeFollowOnFailure: async () => undefined,
       }),
@@ -892,6 +894,7 @@ describe('materialize semantic currentness after operation progress publication'
         },
       }),
       preparePersistedTakeover: async () => ({
+        destructiveQuiescence: createStoppedTakeoverQuiescenceFixture(initial),
         workingDirectory: '/workspace',
         resumeFollowOnFailure: async () => undefined,
       }),

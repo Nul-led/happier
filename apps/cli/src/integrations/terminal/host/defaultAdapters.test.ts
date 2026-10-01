@@ -15,6 +15,29 @@ function adapter(kind: TerminalHostAdapter['kind']): TerminalHostAdapter {
 }
 
 describe('default terminal host adapter inventory', () => {
+  it('registers a supported Herdr adapter for an explicit Herdr preference', async () => {
+    const herdr = adapter('herdr');
+    const createHerdr = vi.fn(() => herdr);
+    const result = await createDefaultTerminalHostAdapterInventory({
+      happyHomeDir: '/tmp/happier',
+      platform: 'linux',
+      preference: 'herdr',
+      dependencies: {
+        isTmuxAvailable: async () => false,
+        resolveZellijRuntimeBinary: async () => null,
+        prepareZellijSocketDir: async () => undefined,
+        resolveZellijSocketDir: () => '/tmp/happier/zellij',
+        createTmuxTerminalHostAdapter: vi.fn(() => adapter('tmux')),
+        createZellijTerminalHostAdapter: vi.fn(() => adapter('zellij')),
+        createPtyTerminalHostAdapter: vi.fn(() => adapter('windows_console')),
+        resolveHerdrRuntimeBinary: vi.fn(async () => '/managed/herdr'),
+        createHerdrTerminalHostAdapter: createHerdr,
+      },
+    });
+    expect(result.adapters.herdr).toBe(herdr);
+    expect(createHerdr).toHaveBeenCalledWith(expect.objectContaining({ binary: '/managed/herdr' }));
+  });
+
   it('builds one shared Unix inventory for plugin selection and daemon recovery', async () => {
     const tmux = adapter('tmux');
     const zellij = adapter('zellij');
@@ -33,6 +56,8 @@ describe('default terminal host adapter inventory', () => {
         createTmuxTerminalHostAdapter: createTmux,
         createZellijTerminalHostAdapter: createZellij,
         createPtyTerminalHostAdapter: vi.fn(() => adapter('windows_console')),
+        resolveHerdrRuntimeBinary: vi.fn(async () => null),
+        createHerdrTerminalHostAdapter: vi.fn(() => adapter('herdr')),
       },
     });
 
@@ -70,6 +95,8 @@ describe('default terminal host adapter inventory', () => {
         createTmuxTerminalHostAdapter: vi.fn(() => adapter('tmux')),
         createZellijTerminalHostAdapter: vi.fn(() => adapter('zellij')),
         createPtyTerminalHostAdapter,
+        resolveHerdrRuntimeBinary: vi.fn(async () => null),
+        createHerdrTerminalHostAdapter: vi.fn(() => adapter('herdr')),
       },
     });
 

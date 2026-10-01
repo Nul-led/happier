@@ -29,6 +29,9 @@ export function normalizePluginDeclarativeAcpRuntime(
   const parsed = PluginAgentRuntimeAcpV2Schema.parse(runtime);
   const definition = parsed.definition
     ? Object.freeze({
+      ...(parsed.definition.auth
+        ? { auth: parsed.definition.auth }
+        : {}),
       ...(parsed.definition.modelConfigOptionId
         ? { modelConfigOptionId: parsed.definition.modelConfigOptionId }
         : {}),
@@ -37,6 +40,9 @@ export function normalizePluginDeclarativeAcpRuntime(
         : {}),
       ...(parsed.definition.permissionModeMapping
         ? { permissionModeMapping: parsed.definition.permissionModeMapping }
+        : {}),
+      ...(parsed.definition.permissionModeArgv
+        ? { permissionModeArgv: parsed.definition.permissionModeArgv }
         : {}),
       ...(parsed.definition.models
         ? {

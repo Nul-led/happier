@@ -26,6 +26,7 @@ describe('getOrCreateSessionByTag creation placement transport', () => {
     process.env.HAPPIER_SERVER_URL = 'http://server.example.test';
     vi.doMock('@/api/session/resolveSessionCreateEncryptionMode', () => ({
       resolveSessionCreateEncryptionMode: vi.fn(async () => ({
+        status: 'resolved',
         desiredSessionEncryptionMode: 'plain',
         accountEncryptionCurrentness: plainAccountEncryptionCurrentness,
         serverSupportsFeatureSnapshot: true,

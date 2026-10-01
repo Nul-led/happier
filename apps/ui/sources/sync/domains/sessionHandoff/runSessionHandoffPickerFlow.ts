@@ -3,9 +3,12 @@ import type {
     ActionExecutorContext,
     ActionUiPlacement,
 } from '@happier-dev/protocol';
+import { router } from 'expo-router';
 
 import { openSessionHandoffPicker } from '@/components/sessions/handoff/openSessionHandoffPicker';
+import type { SessionHandoffPickerResult } from '@/components/sessions/handoff/openSessionHandoffPicker';
 import { openObservedSessionHandoffProgressModal } from '@/components/sessions/handoff/openSessionHandoffProgressModal';
+import { openWorkspaceSyncConflictDetails } from '@/components/workspaces/sync/openWorkspaceSyncRelationshipDetails';
 import { sync } from '@/sync/sync';
 import { randomUUID } from '@/platform/randomUUID';
 import { getStorage } from '@/sync/domains/state/storageStore';
@@ -26,30 +29,6 @@ type ExecuteAction = (
     context?: ActionExecutorContext,
 ) => Promise<ActionExecuteResult>;
 
-function readRetainedHandoffRequestId(input: Readonly<{
-    store: Pick<ActionOperationStore, 'getSnapshot'>;
-    serverId: string | null;
-    accountId: string;
-    sessionId: string;
-    sourceMachineId?: string | null;
-}>): string | null {
-    const serverId = input.serverId?.trim() ?? '';
-    const accountId = input.accountId.trim();
-    const sourceMachineId = input.sourceMachineId?.trim() ?? '';
-    if (!serverId || !accountId) return null;
-    const candidates = [...input.store.getSnapshot().operationsByKey.values()]
-        .filter((operation) => operation.serverId === serverId)
-        .map((operation) => operation.snapshot)
-        .filter((snapshot) => snapshot.actionId === 'session.handoff'
-            && snapshot.state === 'running'
-            && snapshot.scope.accountId === accountId
-            && snapshot.scope.sessionId === input.sessionId
-            && (!sourceMachineId || snapshot.scope.machineId === sourceMachineId)
-            && Boolean(snapshot.requestId))
-        .sort((left, right) => right.createdAt - left.createdAt);
-    return candidates[0]?.requestId ?? null;
-}
-
 /**
  * The destination confirmation belongs to the Action approval corridor: the
  * target daemon inspects the exact destination and stamps one proof covering
@@ -62,37 +41,68 @@ export async function runSessionHandoffPickerFlow(args: Readonly<{
     sourceMachineId?: string | null;
     serverId: string | null;
     placement: ActionUiPlacement;
-    operationStore?: Pick<ActionOperationStore, 'getSnapshot'>;
+    operationStore?: Pick<ActionOperationStore, 'getSnapshot' | 'subscribe'>;
 }>): Promise<ExecuteSessionHandoffActionResult | null> {
-    const selection = await openSessionHandoffPicker({
-        sessionId: args.sessionId,
-        sourceMachineId: args.sourceMachineId ?? null,
-        serverId: args.serverId,
-    });
-    if (!selection) return null;
-
+    let closePicker = () => {};
+    let setAwaitingAdmission = (_awaiting: boolean) => {};
+    let isPickerOpen = () => true;
+    let submitting = false;
+    const runSelection = async (selection: SessionHandoffPickerResult): Promise<ExecuteSessionHandoffActionResult | null> => {
+    if (submitting) return null;
+    submitting = true;
+    setAwaitingAdmission(true);
     const releaseUserRequestLease = sync.acquireUserRequestLease();
     const profileScope = getStorage().getState().profileScope;
     const accountId = profileScope?.serverId === args.serverId
         ? profileScope.accountId ?? ''
         : '';
-    const requestId = readRetainedHandoffRequestId({
-        store: args.operationStore ?? actionOperationStore,
-        serverId: args.serverId,
-        accountId,
-        sessionId: args.sessionId,
-        sourceMachineId: args.sourceMachineId,
-    }) ?? randomUUID();
+    // Picking a new destination is a new submission. Reopening an already
+    // admitted operation belongs to its existing Action Operation entry.
+    const requestId = randomUUID();
     const workspaceSyncEnabled = selection.workspaceAction !== undefined
         && selection.workspaceAction.kind !== 'none';
+    let result: ExecuteSessionHandoffActionResult | null = null;
+    let progressDismissed = false;
     const openProgress = () => openObservedSessionHandoffProgressModal({
         requestId,
         sessionId: args.sessionId,
         serverId: args.serverId,
         accountId,
         workspaceSyncEnabled,
+        onDismiss: () => { progressDismissed = true; if (result?.ok) closePicker(); },
+        ...(selection.workspaceSyncReviewResource ? { onOpenConflicts: (blockedRelationshipId: string | null) => {
+            const verifiedBlockedId = blockedRelationshipId && selection.workspaceSyncReviewRelationshipIds?.includes(blockedRelationshipId)
+                ? blockedRelationshipId : null;
+            openWorkspaceSyncConflictDetails({
+                ...selection.workspaceSyncReviewResource!,
+                ...(verifiedBlockedId ? { initialRelationshipId: verifiedBlockedId } : {}),
+            });
+        } } : {}),
     });
-    const progressPresentation = openProgress();
+    let progressPresentation: ReturnType<typeof openObservedSessionHandoffProgressModal> | null = null;
+    const currentProgress = (): ReturnType<typeof openObservedSessionHandoffProgressModal> | null => progressPresentation;
+    const ensureProgress = () => {
+        if (progressPresentation?.isAttached()) return progressPresentation;
+        progressPresentation = openProgress();
+        return progressPresentation;
+    };
+    const operationStore = args.operationStore ?? actionOperationStore;
+    const showAdmittedProgress = () => {
+        if (progressDismissed || !isPickerOpen()) return;
+        if (progressPresentation?.isAttached()) return;
+        const admitted = [...operationStore.getSnapshot().operationsByKey.values()].some((operation) => (
+            operation.serverId === args.serverId
+            && operation.snapshot.requestId === requestId
+            && operation.snapshot.actionId === 'session.handoff'
+            && operation.snapshot.scope.accountId === accountId
+        ));
+        if (admitted) {
+            setAwaitingAdmission(false);
+            ensureProgress();
+        }
+    };
+    const unsubscribeAdmission = operationStore.subscribe(showAdmittedProgress);
+    showAdmittedProgress();
     actionOperationPresentationCoordinator.register({
         serverId: args.serverId,
         accountId: profileScope?.serverId === args.serverId ? profileScope.accountId : '',
@@ -101,12 +111,15 @@ export async function runSessionHandoffPickerFlow(args: Readonly<{
         origin: {
             resolve: (snapshot) => (
                 snapshot.state === 'accepted' || snapshot.state === 'running'
-                    ? () => { openProgress(); }
+                    ? () => {
+                        progressDismissed = false;
+                        const presentation = ensureProgress();
+                        if (result && !result.ok) presentation.showRequestFailure(result);
+                    }
                     : null
             ),
         },
     });
-    let result: ExecuteSessionHandoffActionResult | null = null;
     try {
         result = await executeSessionHandoffAction({
             execute: args.execute,
@@ -123,14 +136,48 @@ export async function runSessionHandoffPickerFlow(args: Readonly<{
                 actionRequestId: requestId,
             },
         });
+        setAwaitingAdmission(false);
+        if (result.ok && 'kind' in result && result.kind === 'approval_required') {
+            unsubscribeAdmission();
+            if (!isPickerOpen()) return result;
+            closePicker();
+            router.push(`/inbox/approvals/${encodeURIComponent(result.artifactId)}${args.serverId
+                ? `?serverId=${encodeURIComponent(args.serverId)}`
+                : ''}` as never);
+            return result;
+        }
+        showAdmittedProgress();
+        if (!result.ok && !progressDismissed && isPickerOpen()) {
+            ensureProgress().showRequestFailure(result);
+        }
+        if (result.ok && progressDismissed) closePicker();
+        if (result.ok && !progressDismissed && isPickerOpen() && !currentProgress()?.isAttached()) {
+            // A completed Action result proves admission even when its operation
+            // projection has not reached this client yet.
+            ensureProgress();
+        }
         return result;
     } finally {
+        unsubscribeAdmission();
         // Workspace outcomes and failures remain visible through the canonical
         // Action operation result. Only an ordinary handoff with no workspace
         // result retains the compact auto-close behavior.
-        if (result?.ok && result.result.workspace?.kind === 'none') {
-            progressPresentation.close();
+        if (result?.ok && 'result' in result && result.result.workspace?.kind === 'none') {
+            currentProgress()?.close();
+            closePicker();
         }
         releaseUserRequestLease();
+        setAwaitingAdmission(false);
+        submitting = false;
     }
+    };
+    const selection = await openSessionHandoffPicker({
+        sessionId: args.sessionId,
+        sourceMachineId: args.sourceMachineId ?? null,
+        serverId: args.serverId,
+        retainOnSubmit: true,
+        onRetained: (close, setPending, isOpen) => { closePicker = close; setAwaitingAdmission = setPending; isPickerOpen = isOpen; },
+        onSubmitAgain: (next) => { void runSelection(next); },
+    });
+    return selection ? await runSelection(selection) : null;
 }

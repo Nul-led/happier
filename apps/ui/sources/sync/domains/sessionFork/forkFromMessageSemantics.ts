@@ -1,5 +1,5 @@
-import { readMessageDisplayText } from '@/sync/domains/messages/messageDisplayText';
-import type { Message } from '@/sync/domains/messages/messageTypes';
+import { readMessageDisplayText } from "@happier-dev/session-core/messages";
+import type { Message } from "@happier-dev/session-core/messages";
 
 export function resolveForkFromMessageSemantics(params: Readonly<{
   message: Message;

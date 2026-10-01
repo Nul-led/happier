@@ -1,5 +1,6 @@
 import * as React from 'react';
 import { Platform, Pressable, View } from 'react-native';
+import Animated from 'react-native-reanimated';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import {
     AUTOMATION_SESSION_LIFECYCLE_MAX_MATCH_COUNT,
@@ -9,17 +10,19 @@ import {
     type AutomationTriggerDefinitionInput,
 } from '@happier-dev/protocol';
 
-import { DropdownMenu, type DropdownMenuItem } from '@/components/ui/forms/dropdown/DropdownMenu';
 import { FieldItem } from '@/components/ui/forms/FieldItem';
-import { SETTINGS_TEXT_INPUT_METRICS } from '@/components/ui/forms/settingsTextInputMetrics';
+import { FieldTextInput } from '@/components/ui/forms/FieldTextInput';
+import { SelectionTiles } from '@/components/ui/forms/SelectionTiles';
 import { Switch } from '@/components/ui/forms/Switch';
 import { Icon } from '@/components/ui/icons/Icon';
+import { usePressFeedback } from '@/components/ui/interactions/usePressFeedback';
 import { layout } from '@/components/ui/layout/layout';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ItemGroupColumn, ItemGroupColumns } from '@/components/ui/lists/ItemGroupColumns';
 import { ItemList } from '@/components/ui/lists/ItemList';
-import { usePopoverBoundaryRef } from '@/components/ui/popover';
+import { SegmentedChoiceItem } from '@/components/ui/lists/SegmentedChoiceItem';
+import { PageHeader } from '@/components/ui/layout/PageHeader';
 import {
     SelectionList,
     type SelectionListOption,
@@ -153,52 +156,6 @@ const stylesheet = StyleSheet.create((theme) => ({
     root: {
         width: '100%',
     },
-    input: {
-        ...SETTINGS_TEXT_INPUT_METRICS,
-        backgroundColor: theme.colors.input.background,
-        borderRadius: 10,
-        paddingHorizontal: 12,
-        paddingVertical: Platform.select({ ios: 10, default: 12 }),
-        borderWidth: 0.5,
-        borderColor: theme.colors.border.default,
-        color: theme.colors.text.primary,
-    },
-    sectionLead: {
-        paddingHorizontal: Platform.select({ ios: 32, default: 24 }),
-        paddingTop: 6,
-        paddingBottom: 2,
-    },
-    sectionLeadText: {
-        color: theme.colors.text.secondary,
-    },
-    kindGrid: {
-        flexDirection: 'row',
-        flexWrap: 'wrap',
-        gap: 10,
-        paddingHorizontal: Platform.select({ ios: 32, default: 24 }),
-        paddingTop: 10,
-    },
-    kindButton: {
-        minHeight: Platform.select({ ios: 44, android: 48, default: 44 }),
-        flexGrow: 1,
-        minWidth: 144,
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'center',
-        gap: 8,
-        paddingHorizontal: 16,
-        borderRadius: 12,
-        backgroundColor: theme.colors.surface.base,
-        borderWidth: 0.5,
-        borderColor: theme.colors.border.default,
-    },
-    kindButtonPressed: {
-        opacity: 0.72,
-        transform: [{ scale: 0.99 }],
-    },
-    kindButtonText: {
-        color: theme.colors.text.primary,
-    },
     pickerFrame: {
         marginHorizontal: Platform.select({ ios: 16, default: 24 }),
         borderRadius: 16,
@@ -217,11 +174,11 @@ const stylesheet = StyleSheet.create((theme) => ({
         width: '100%',
     },
     /**
-     * The pinned page-action surface: opaque canvas plus the canonical hairline,
+     * The pinned page-action surface: opaque page paper plus the canonical hairline,
      * so the document slides beneath it instead of showing through.
      */
     commandBar: {
-        backgroundColor: theme.colors.background.canvas,
+        backgroundColor: theme.colors.surface.base,
         borderBottomWidth: StyleSheet.hairlineWidth,
         borderBottomColor: theme.colors.border.default,
         paddingTop: 10,
@@ -394,10 +351,6 @@ function ScheduleEditor(props: Readonly<{
     /** Receives focus when the trigger editor opens; whichever schedule field is mounted takes it. */
     fieldRef?: React.Ref<React.ComponentRef<typeof TextInput>>;
 }>): React.ReactElement {
-    const { theme } = useUnistyles();
-    const styles = stylesheet;
-    const boundaryRef = usePopoverBoundaryRef();
-    const [menuOpen, setMenuOpen] = React.useState(false);
     // The interval field owns a local draft so intermediate strings ("", "0",
     // partial numbers) stay editable; validated minutes commit through the
     // editor draft owner on end-editing/submit. A committed change arriving
@@ -433,20 +386,40 @@ function ScheduleEditor(props: Readonly<{
             },
         });
     }, [intervalDraft, props]);
-    const scheduleItems = React.useMemo<ReadonlyArray<DropdownMenuItem>>(() => [
+    const scheduleKindOptions = React.useMemo(() => [
         {
-            id: 'interval',
-            title: t('automations.form.schedule.intervalTitle'),
-            subtitle: t('automations.form.schedule.intervalSubtitle'),
-            icon: <Icon name="repeat" size={16} color={theme.colors.text.secondary} />,
+            id: 'interval' as const,
+            label: t('automations.form.schedule.intervalTitle'),
+            description: t('automations.form.schedule.intervalSubtitle'),
         },
         {
-            id: 'cron',
-            title: t('automations.form.schedule.cronTitle'),
-            subtitle: t('automations.form.schedule.cronSubtitle'),
-            icon: <Icon name="calendar" size={16} color={theme.colors.text.secondary} />,
+            id: 'cron' as const,
+            label: t('automations.form.schedule.cronTitle'),
+            description: t('automations.form.schedule.cronSubtitle'),
         },
-    ], [theme.colors.text.secondary]);
+    ], []);
+    const selectScheduleKind = React.useCallback((kind: 'interval' | 'cron') => {
+        if (kind === props.value.schedule.kind) return;
+        props.onChange(kind === 'cron'
+            ? {
+                ...props.value,
+                schedule: {
+                    kind: 'cron',
+                    scheduleExpr: '0 * * * *',
+                    everyMs: null,
+                    timezone: props.value.schedule.timezone,
+                },
+            }
+            : {
+                ...props.value,
+                schedule: {
+                    kind: 'interval',
+                    scheduleExpr: null,
+                    everyMs: 60 * 60_000,
+                    timezone: props.value.schedule.timezone,
+                },
+            });
+    }, [props]);
 
     const updateTimezone = React.useCallback((raw: string) => {
         const timezone = raw.trim().length > 0 ? raw : null;
@@ -458,68 +431,30 @@ function ScheduleEditor(props: Readonly<{
 
     return (
         <ItemGroup title={t('automations.pluralEditor.editScheduleTitle')}>
-            <DropdownMenu
-                open={menuOpen}
-                onOpenChange={setMenuOpen}
-                selectedId={props.value.schedule.kind}
-                rowKind="item"
-                variant="selectable"
-                search={false}
-                showCategoryTitles={false}
-                matchTriggerWidth
-                connectToTrigger
-                popoverBoundaryRef={boundaryRef}
-                popoverPortalWebTarget="body"
-                itemTrigger={{
-                    title: t('automations.pluralEditor.scheduleType'),
-                    icon: <Icon
-                        name={props.value.schedule.kind === 'cron' ? 'calendar' : 'repeat'}
-                        size={16}
-                        color={theme.colors.text.secondary}
-                    />,
-                }}
-                items={scheduleItems}
-                onSelect={(id) => {
-                    props.onChange(id === 'cron'
-                        ? {
-                            ...props.value,
-                            schedule: {
-                                kind: 'cron',
-                                scheduleExpr: '0 * * * *',
-                                everyMs: null,
-                                timezone: props.value.schedule.timezone,
-                            },
-                        }
-                        : {
-                            ...props.value,
-                            schedule: {
-                                kind: 'interval',
-                                scheduleExpr: null,
-                                everyMs: 60 * 60_000,
-                                timezone: props.value.schedule.timezone,
-                            },
-                        });
-                    setMenuOpen(false);
-                }}
+            <SegmentedChoiceItem
+                testID="automation-trigger-schedule-kind"
+                testIDPrefix="automation-trigger-schedule-kind"
+                title={t('automations.pluralEditor.scheduleType')}
+                options={scheduleKindOptions}
+                value={props.value.schedule.kind}
+                onChange={selectScheduleKind}
             />
             <ItemGroupColumns paddingVertical={14} rowGap={18}>
                 <ItemGroupColumn>
                     {props.value.schedule.kind === 'interval' ? (
                         <FieldItem label={t('automations.form.labels.everyMinutes')}>
-                            <TextInput
+                            <FieldTextInput
                                 testID="automation-trigger-interval-minutes"
-                                style={styles.input}
                                 value={intervalDraft ?? committedIntervalText}
                                 onChangeText={(value) => setIntervalDraftState({
                                     basisKind: scheduleKind,
                                     basisText: committedIntervalText,
                                     value,
                                 })}
-                                onEndEditing={commitIntervalDraft}
+                                onBlur={commitIntervalDraft}
                                 onSubmitEditing={commitIntervalDraft}
                                 keyboardType="numeric"
                                 accessibilityLabel={t('automations.form.labels.everyMinutes')}
-                                autoCorrect={false}
                                 autoCapitalize="none"
                                 ref={props.fieldRef}
                             />
@@ -529,9 +464,8 @@ function ScheduleEditor(props: Readonly<{
                             label={t('automations.form.labels.cronExpression')}
                             supportingText={t('automations.form.schedule.cronHelpText')}
                         >
-                            <TextInput
+                            <FieldTextInput
                                 testID="automation-trigger-cron-expression"
-                                style={styles.input}
                                 value={props.value.schedule.scheduleExpr}
                                 onChangeText={(scheduleExpr) => props.onChange({
                                     ...props.value,
@@ -542,7 +476,6 @@ function ScheduleEditor(props: Readonly<{
                                         timezone: props.value.schedule.timezone,
                                     },
                                 })}
-                                autoCorrect={false}
                                 autoCapitalize="none"
                                 accessibilityLabel={t('automations.form.labels.cronExpression')}
                                 ref={props.fieldRef}
@@ -552,14 +485,11 @@ function ScheduleEditor(props: Readonly<{
                 </ItemGroupColumn>
                 <ItemGroupColumn>
                     <FieldItem label={t('automations.form.labels.timezoneOptional')}>
-                        <TextInput
+                        <FieldTextInput
                             testID="automation-trigger-timezone"
-                            style={styles.input}
                             value={props.value.schedule.timezone ?? ''}
                             onChangeText={updateTimezone}
                             placeholder={t('automations.form.placeholders.timezone')}
-                            placeholderTextColor={theme.colors.input.placeholder}
-                            autoCorrect={false}
                             autoCapitalize="none"
                             accessibilityLabel={t('automations.form.labels.timezoneOptional')}
                         />
@@ -580,7 +510,6 @@ function EditorActions(props: Readonly<{
                 <Item
                     testID="automation-trigger-remove"
                     title={t('common.remove')}
-                    icon={<Icon name="trash" size={18} />}
                     onPress={props.onRemove}
                     destructive
                     showChevron={false}
@@ -892,6 +821,9 @@ const AutomationTriggerEditorContents = React.memo(function AutomationTriggerEdi
      * beneath them, and the reason explaining a refused action travels with it.
      */
     const hasPageActions = props.onSubmit !== undefined || props.onCancel !== undefined;
+    // Page actions keep a near-static press: an eased opacity, no movement.
+    const cancelFeedback = usePressFeedback({ static: true });
+    const submitFeedback = usePressFeedback({ static: true });
     /**
      * The pinned Save, as the one submit path the control, the keyboard command
      * and a host intent all press. Eligibility is enforced here rather than
@@ -934,13 +866,13 @@ const AutomationTriggerEditorContents = React.memo(function AutomationTriggerEdi
                             accessibilityRole="button"
                             disabled={props.submitting}
                             onPress={props.onCancel}
-                            style={({ pressed }) => [
-                                styles.actionButton,
-                                props.submitting ? styles.disabled : null,
-                                pressed ? styles.kindButtonPressed : null,
-                            ]}
+                            onPressIn={cancelFeedback.onPressIn}
+                            onPressOut={cancelFeedback.onPressOut}
+                            style={props.submitting ? styles.disabled : null}
                         >
-                            <Text>{t('common.cancel')}</Text>
+                            <Animated.View style={[styles.actionButton, cancelFeedback.animatedStyle]}>
+                                <Text>{t('common.cancel')}</Text>
+                            </Animated.View>
                         </Pressable>
                     ) : null}
                     {props.onSubmit ? (
@@ -956,18 +888,17 @@ const AutomationTriggerEditorContents = React.memo(function AutomationTriggerEdi
                                 : {})}
                             disabled={submitBlocked}
                             onPress={submit}
-                            style={({ pressed }) => [
-                                styles.actionButton,
-                                styles.primaryAction,
-                                props.submitDisabled || props.submitting ? styles.disabled : null,
-                                pressed ? styles.kindButtonPressed : null,
-                            ]}
+                            onPressIn={submitFeedback.onPressIn}
+                            onPressOut={submitFeedback.onPressOut}
+                            style={props.submitDisabled || props.submitting ? styles.disabled : null}
                         >
-                            <Text style={styles.primaryActionText}>
-                                {props.submitting
-                                    ? t('artifacts.saving')
-                                    : props.variant === 'edit' ? t('common.save') : t('common.create')}
-                            </Text>
+                            <Animated.View style={[styles.actionButton, styles.primaryAction, submitFeedback.animatedStyle]}>
+                                <Text style={styles.primaryActionText}>
+                                    {props.submitting
+                                        ? t('artifacts.saving')
+                                        : props.variant === 'edit' ? t('common.save') : t('common.create')}
+                                </Text>
+                            </Animated.View>
                         </Pressable>
                     ) : null}
                 </View>
@@ -996,13 +927,11 @@ const AutomationTriggerEditorContents = React.memo(function AutomationTriggerEdi
                 <ItemGroupColumns paddingVertical={14} rowGap={18}>
                     <ItemGroupColumn>
                         <FieldItem label={t('automations.form.labels.name')}>
-                            <TextInput
+                            <FieldTextInput
                                 testID="automation-name"
-                                style={styles.input}
                                 value={props.value.name}
                                 onChangeText={(name) => updateMetadata({ name })}
                                 placeholder={t('automations.form.placeholders.name')}
-                                placeholderTextColor={theme.colors.input.placeholder}
                                 autoCapitalize="words"
                                 accessibilityLabel={t('automations.form.labels.name')}
                             />
@@ -1010,15 +939,13 @@ const AutomationTriggerEditorContents = React.memo(function AutomationTriggerEdi
                     </ItemGroupColumn>
                     <ItemGroupColumn>
                         <FieldItem label={t('automations.form.labels.descriptionOptional')}>
-                            <TextInput
+                            <FieldTextInput
                                 testID="automation-description"
-                                style={styles.input}
                                 value={props.value.description ?? ''}
                                 onChangeText={(description) => updateMetadata({
                                     description: description.length > 0 ? description : null,
                                 })}
                                 placeholder={t('automations.form.placeholders.description')}
-                                placeholderTextColor={theme.colors.input.placeholder}
                                 autoCapitalize="sentences"
                                 accessibilityLabel={t('automations.form.labels.descriptionOptional')}
                             />
@@ -1029,14 +956,11 @@ const AutomationTriggerEditorContents = React.memo(function AutomationTriggerEdi
 
             {props.recipeEditor ?? null}
 
-            <View style={styles.sectionLead}>
-                <Text style={styles.sectionLeadText}>{t('automations.pluralEditor.orSemantics')}</Text>
-            </View>
             <ItemGroup
                 title={t('automations.pluralEditor.triggersTitle')}
-                footer={props.value.triggers.length === 0
+                description={props.value.triggers.length === 0
                     ? t('automations.pluralEditor.emptyBody')
-                    : t('automations.pluralEditor.triggersFooter')}
+                    : t('automations.pluralEditor.orSemantics')}
             >
                 {props.value.triggers.map((trigger) => {
                     const subtitle = triggerSubtitle(
@@ -1112,24 +1036,18 @@ const AutomationTriggerEditorContents = React.memo(function AutomationTriggerEdi
             </ItemGroup>
 
             {editor.kind === 'chooseKind' ? (
-                <View style={styles.kindGrid}>
-                    {([
-                        ['schedule', 'repeat', t('automations.pluralEditor.scheduleTitle')],
-                        ['pluginEvent', 'radio', t('automations.pluralEditor.eventTitle')],
-                        ['sessionLifecycle', 'timer', t('automations.pluralEditor.lifecycleTitle')],
-                    ] as const).map(([kind, icon, label]) => (
-                        <Pressable
-                            key={kind}
-                            testID={`automation-trigger-kind-${kind}`}
-                            accessibilityRole="button"
-                            onPress={() => chooseTriggerKind(kind)}
-                            style={({ pressed }) => [styles.kindButton, pressed ? styles.kindButtonPressed : null]}
-                        >
-                            <Icon name={icon} size={18} color={theme.colors.text.secondary} />
-                            <Text style={styles.kindButtonText}>{label}</Text>
-                        </Pressable>
-                    ))}
-                </View>
+                <ItemGroup surface="none">
+                    <SelectionTiles
+                        variant="action"
+                        accessibilityLabel={t('automations.pluralEditor.addTrigger')}
+                        options={[
+                            { id: 'schedule', title: t('automations.pluralEditor.scheduleTitle'), icon: 'repeat', testID: 'automation-trigger-kind-schedule' },
+                            { id: 'pluginEvent', title: t('automations.pluralEditor.eventTitle'), icon: 'radio', testID: 'automation-trigger-kind-pluginEvent' },
+                            { id: 'sessionLifecycle', title: t('automations.pluralEditor.lifecycleTitle'), icon: 'timer', testID: 'automation-trigger-kind-sessionLifecycle' },
+                        ]}
+                        onPress={chooseTriggerKind}
+                    />
+                </ItemGroup>
             ) : null}
 
             {editor.kind === 'schedule' && selectedSchedule?.definition?.kind === 'schedule' ? (
@@ -1276,9 +1194,8 @@ const AutomationTriggerEditorContents = React.memo(function AutomationTriggerEdi
                                     <ItemGroupColumns paddingVertical={14} rowGap={18}>
                                         <ItemGroupColumn>
                                             <FieldItem label={t('automations.pluralEditor.lifecycleMatchCount')}>
-                                                <TextInput
+                                                <FieldTextInput
                                                     testID="automation-lifecycle-match-count"
-                                                    style={styles.input}
                                                     value={matchCountDraft ?? committedMatchCountText}
                                                     keyboardType="number-pad"
                                                     onChangeText={(value) => setMatchCountDraftState({
@@ -1287,7 +1204,7 @@ const AutomationTriggerEditorContents = React.memo(function AutomationTriggerEdi
                                                         basisText: committedMatchCountText,
                                                         value,
                                                     })}
-                                                    onEndEditing={() => {
+                                                    onBlur={() => {
                                                         if (commitMatchCountDraft() === null) setMatchCountDraftState(null);
                                                     }}
                                                     onSubmitEditing={() => { commitMatchCountDraft(); }}
@@ -1321,7 +1238,7 @@ const AutomationTriggerEditorContents = React.memo(function AutomationTriggerEdi
     return (
         <ItemList
             testID="automation-editor-scroll"
-            style={{ paddingTop: 0 }}
+            presentation="page"
             // A form with focusable name, description, prompt and trigger
             // fields: the list's shared native keyboard owner keeps the
             // focused field above the keyboard instead of beneath it.
@@ -1333,6 +1250,10 @@ const AutomationTriggerEditorContents = React.memo(function AutomationTriggerEdi
             stickyHeaderIndices={[0]}
         >
             {actionSurface}
+            <PageHeader
+                title={props.variant === 'edit' ? t('automations.edit.title') : t('navigation.newAutomation')}
+                description={t('automationPages.editor.description')}
+            />
             <View style={styles.content}>
                 {props.leading ?? null}
                 {document}

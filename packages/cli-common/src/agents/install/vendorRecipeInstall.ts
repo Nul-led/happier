@@ -1,8 +1,9 @@
-import { spawnSync } from 'node:child_process';
-import { delimiter, join } from 'node:path';
+import { existsSync } from 'node:fs';
+import { delimiter, isAbsolute, join } from 'node:path';
 
-import { commandExistsOnPath, resolveWindowsCommandInvocation } from '../../process/index.js';
+import { commandExistsOnPath, execFileWithDeadline, ExecFileTerminationError, resolveWindowsCommandInvocation } from '../../process/index.js';
 import { resolveAgentCliCommandForRuntime, type AgentCliRuntimeDescriptor } from '../resolution.js';
+import type { AgentInstallProgressCallback } from '../installProgress.js';
 
 type VendorRecipeInstallCommand = Readonly<{
   cmd: string;
@@ -42,7 +43,7 @@ export type VendorRecipeInstallResult =
   | Readonly<{ ok: true }>
   | Readonly<{
       ok: false;
-      errorCode: 'command-not-found' | 'command-exec-failed' | 'command-timed-out' | 'command-failed';
+      errorCode: 'command-not-found' | 'command-exec-failed' | 'command-timed-out' | 'command-failed' | 'termination-failed';
       errorMessage: string;
     }>;
 
@@ -73,7 +74,8 @@ function buildVendorRecipePath(runtimeSpec: AgentCliRuntimeDescriptor, env: Node
   return [...uniqueEntries].join(delimiter);
 }
 
-function resolveVendorInstallTimeoutMs(env: NodeJS.ProcessEnv): number {
+/** The budget for one agent install/update command: `HAPPIER_VENDOR_INSTALL_TIMEOUT_MS`, default 180 s, `0` disables it. */
+export function resolveVendorInstallTimeoutMs(env: NodeJS.ProcessEnv): number {
   const raw = typeof env.HAPPIER_VENDOR_INSTALL_TIMEOUT_MS === 'string'
     ? env.HAPPIER_VENDOR_INSTALL_TIMEOUT_MS.trim()
     : '';
@@ -83,90 +85,144 @@ function resolveVendorInstallTimeoutMs(env: NodeJS.ProcessEnv): number {
   return Math.min(parsed, 900_000);
 }
 
+type AgentCommandFailure = Readonly<{
+  ok: false;
+  errorCode: 'command-not-found' | 'command-exec-failed' | 'command-timed-out' | 'command-failed' | 'termination-failed';
+  errorMessage: string;
+}>;
+
+/**
+ * Runs one vendor-owned command (an install recipe step or a declared vendor updater) with the
+ * vendor PATH and scratch env, the `HAPPIER_VENDOR_INSTALL_TIMEOUT_MS` budget and the install log,
+ * without blocking the caller's event loop: the daemon keeps serving sessions and RPCs while a
+ * vendor installer downloads. A non-zero exit after which the agent resolves counts as success.
+ */
+export async function runLoggedAgentCommand(params: Readonly<{
+  runtimeSpec: AgentCliRuntimeDescriptor;
+  command: VendorRecipeInstallCommand;
+  env: NodeJS.ProcessEnv;
+  logPath: string;
+  vendorScratchDir: string | null;
+  runCommand: typeof execFileWithDeadline;
+  appendCommandLog: AppendCommandLogFn;
+  appendLogLine: AppendLogLineFn;
+  /**
+   * An install recipe may exit non-zero after it already placed the CLI, so by default a resolvable
+   * agent counts as success. A vendor updater runs against an agent that already resolves, so it
+   * passes `false` and a failed exit stays a failure.
+   */
+  acceptResolvedAfterFailure?: boolean;
+  signal?: AbortSignal;
+  onProgress?: AgentInstallProgressCallback;
+}>): Promise<Readonly<{ ok: true }> | AgentCommandFailure> {
+  const { runtimeSpec, command: c, env, logPath, vendorScratchDir, appendCommandLog, appendLogLine } = params;
+  params.signal?.throwIfAborted();
+  // An absolute command is the executable detect resolved; `command -v`/`where` answer PATH names.
+  const exists = isAbsolute(c.cmd) ? existsSync(c.cmd) : commandExistsOnPath(c.cmd, { env });
+  if (!exists) {
+    return { ok: false, errorCode: 'command-not-found', errorMessage: `Command not found: ${c.cmd}` };
+  }
+  const timeoutMs = resolveVendorInstallTimeoutMs(env);
+  const childEnv = {
+    ...process.env,
+    ...env,
+    PATH: buildVendorRecipePath(runtimeSpec, {
+      ...process.env,
+      ...env,
+    }),
+    ...(vendorScratchDir ? { TMPDIR: vendorScratchDir, TMP: vendorScratchDir, TEMP: vendorScratchDir } : {}),
+  };
+  const invocation = resolveWindowsCommandInvocation({
+    command: c.cmd,
+    args: c.args,
+    env: childEnv,
+    resolveCommandOnPath: true,
+  });
+  let status: number | null = 0;
+  let signal: NodeJS.Signals | null = null;
+  let stdout = '';
+  let stderr = '';
+  params.onProgress?.({ t: 'log', line: `Running ${c.cmd}` });
+  try {
+    const result = await params.runCommand(invocation.command, invocation.args, {
+      encoding: 'utf8',
+      env: childEnv,
+      ...(timeoutMs > 0 ? { timeout: timeoutMs } : {}),
+      windowsHide: true,
+      windowsVerbatimArguments: invocation.windowsVerbatimArguments,
+      signal: params.signal,
+    });
+    stdout = String(result.stdout ?? '');
+    stderr = String(result.stderr ?? '');
+  } catch (error) {
+    if (error instanceof ExecFileTerminationError) {
+      appendLogLine(logPath, error.message);
+      return { ok: false, errorCode: 'termination-failed', errorMessage: error.message };
+    }
+    params.signal?.throwIfAborted();
+    // `execFile`'s rejection contract: numeric `code` is the exit status, a string `code` is a
+    // spawn errno, `killed` means this boundary's deadline ended the command.
+    const failure = error as NodeJS.ErrnoException & {
+      code?: string | number;
+      killed?: boolean;
+      signal?: NodeJS.Signals | null;
+      stdout?: unknown;
+      stderr?: unknown;
+    };
+    stdout = String(failure.stdout ?? '');
+    stderr = String(failure.stderr ?? '');
+    signal = failure.signal ?? null;
+    status = typeof failure.code === 'number' ? failure.code : null;
+    if (failure.killed === true && timeoutMs > 0) {
+      appendCommandLog(logPath, c.cmd, c.args, stdout, stderr, status, signal);
+      appendLogLine(logPath, `# vendor command timed out after ${timeoutMs}ms`);
+      return {
+        ok: false,
+        errorCode: 'command-timed-out',
+        errorMessage: `Vendor command timed out after ${timeoutMs}ms: ${c.cmd}`,
+      };
+    }
+    if (typeof failure.code === 'string') {
+      appendCommandLog(logPath, c.cmd, c.args, stdout, failure.message, null, signal);
+      return { ok: false, errorCode: 'command-exec-failed', errorMessage: failure.message };
+    }
+  }
+  params.signal?.throwIfAborted();
+  appendCommandLog(logPath, c.cmd, c.args, stdout, stderr, status, signal);
+  if (status === 0 && signal === null) return { ok: true };
+
+  const resolvedAfterFailure = params.acceptResolvedAfterFailure === false
+    ? null
+    : resolveAgentCliCommandForRuntime(runtimeSpec, { processEnv: childEnv });
+  if (resolvedAfterFailure) {
+    appendLogLine(
+      logPath,
+      `# vendor command exited ${status ?? 'unknown'} but ${runtimeSpec.id} became available at ${resolvedAfterFailure.command}`,
+    );
+    return { ok: true };
+  }
+  return {
+    ok: false,
+    errorCode: 'command-failed',
+    errorMessage: resolveVendorRecipeFailureMessage({ cmd: c.cmd, status, signal, stderr }),
+  };
+}
+
 export async function runVendorRecipeInstall(params: Readonly<{
   runtimeSpec: AgentCliRuntimeDescriptor;
   commands: ReadonlyArray<VendorRecipeInstallCommand>;
   env: NodeJS.ProcessEnv;
   logPath: string;
   vendorScratchDir: string | null;
-  spawn: typeof spawnSync;
+  runCommand: typeof execFileWithDeadline;
   appendCommandLog: AppendCommandLogFn;
   appendLogLine: AppendLogLineFn;
+  signal?: AbortSignal;
+  onProgress?: AgentInstallProgressCallback;
 }>): Promise<VendorRecipeInstallResult> {
-  const {
-    runtimeSpec,
-    commands,
-    env,
-    logPath,
-    vendorScratchDir,
-    spawn,
-    appendCommandLog,
-    appendLogLine,
-  } = params;
-
-  for (const c of commands) {
-    if (!commandExistsOnPath(c.cmd, { env })) {
-      return { ok: false, errorCode: 'command-not-found', errorMessage: `Command not found: ${c.cmd}` };
-    }
-    const timeoutMs = resolveVendorInstallTimeoutMs(env);
-    const childEnv = {
-      ...process.env,
-      ...env,
-      PATH: buildVendorRecipePath(runtimeSpec, {
-        ...process.env,
-        ...env,
-      }),
-      ...(vendorScratchDir ? { TMPDIR: vendorScratchDir, TMP: vendorScratchDir, TEMP: vendorScratchDir } : {}),
-    };
-    const invocation = resolveWindowsCommandInvocation({
-      command: c.cmd,
-      args: c.args,
-      env: childEnv,
-      resolveCommandOnPath: true,
-    });
-    const res = spawn(invocation.command, invocation.args, {
-      encoding: 'utf8',
-      env: childEnv,
-      ...(timeoutMs > 0 ? { timeout: timeoutMs } : {}),
-      windowsHide: true,
-      windowsVerbatimArguments: invocation.windowsVerbatimArguments,
-    });
-    if (res.error) {
-      appendCommandLog(logPath, c.cmd, c.args, '', res.error.message, res.status ?? null, res.signal ?? null);
-      if ((res.error as NodeJS.ErrnoException).code === 'ETIMEDOUT') {
-        appendLogLine(logPath, `# vendor recipe timed out after ${timeoutMs}ms`);
-        return {
-          ok: false,
-          errorCode: 'command-timed-out',
-          errorMessage: `Vendor install timed out after ${timeoutMs}ms: ${c.cmd}`,
-        };
-      }
-      return { ok: false, errorCode: 'command-exec-failed', errorMessage: res.error.message };
-    }
-    const status = typeof res.status === 'number' ? res.status : null;
-    const signal = res.signal ?? null;
-    appendCommandLog(logPath, c.cmd, c.args, String(res.stdout ?? ''), String(res.stderr ?? ''), status, signal);
-    if (status !== 0) {
-      const resolvedAfterFailure = resolveAgentCliCommandForRuntime(runtimeSpec, { processEnv: childEnv });
-      if (resolvedAfterFailure) {
-        appendLogLine(
-          logPath,
-          `# vendor recipe exited ${status ?? 'unknown'} but ${runtimeSpec.id} became available at ${resolvedAfterFailure.command}`,
-        );
-        return { ok: true };
-      }
-      return {
-        ok: false,
-        errorCode: 'command-failed',
-        errorMessage: resolveVendorRecipeFailureMessage({
-          cmd: c.cmd,
-          status,
-          signal,
-          stderr: String(res.stderr ?? ''),
-        }),
-      };
-    }
+  for (const command of params.commands) {
+    const result = await runLoggedAgentCommand({ ...params, command });
+    if (!result.ok) return result;
   }
-
   return { ok: true };
 }

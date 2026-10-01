@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { Platform, View } from 'react-native';
 
-import { TactilePressable } from '@/components/voice/controls/VoiceControls';
+import { TactilePressable } from '@/components/ui/interactions/TactilePressable';
 import { PlanetOrb, VoiceWaveform } from '@/components/voice/light/VoiceLight';
 import { useVoiceEnergyPresence } from '@/components/voice/light/useVoiceEnergy';
 import { light, onPlanetInk, useVoiceLightTokens, type VoiceLightStop } from '@/components/voice/light/voiceLightTokens';

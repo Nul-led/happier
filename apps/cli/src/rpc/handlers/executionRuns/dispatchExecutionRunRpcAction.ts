@@ -3,6 +3,7 @@ import {
   ExecutionRunEnsureOrStartRequestSchema,
   ExecutionRunEnsureRequestSchema,
   ExecutionRunActionRequestSchema,
+  ExecutionRunCancelTurnRequestSchema,
   ExecutionRunGetRequestSchema,
   ExecutionRunListRequestSchema,
   ExecutionRunSendRequestSchema,
@@ -18,10 +19,13 @@ import {
   type ActionExecuteResult,
   type PluginPermissionGrantRequestActionInputV1,
   isRuntimeActionIdV1,
+  isAgentStartActionV1,
+  AGENT_START_REFUSAL_CODES_V1,
   isActionEnabledByActionsSettings,
   isApprovalRequiredByActionsSettings,
   type RuntimeActionIdV1,
   type SessionInputCausalPermissionAuthorityV1,
+  type RequiredSessionTeamCredentialV1,
   waitForExecutionRunTerminal,
   withExecutionRunStartFailureDetails,
 } from '@happier-dev/protocol';
@@ -38,7 +42,7 @@ import type {
 } from '@/daemon/browser/recording/attachToComposer';
 import type { LocalServicesRuntimeActionRoutes } from '@/daemon/local/services/actions/runtimeActionExecutor';
 import type { DaemonPeerMediationObservabilityRuntimeActionContext } from '@/daemon/peer/mediation/observability/runtimeActionExecutor';
-import { createDaemonRuntimeActionExecutor } from '@/daemon/runtimeActionExecutor';
+import { createDaemonRuntimeActionExecutor, type BrowserUiAutomationRouteOwner } from '@/daemon/runtimeActionExecutor';
 import {
   resolveExecutionRunIntentPolicy,
   resolveExecutionRunStartBoundedTimeoutMs,
@@ -102,6 +106,7 @@ type ExecutionRunRpcFailure = Readonly<{
 export type GrantAttachedRunTeamVisibility = (input: Readonly<{
   sessionId: string;
   teamId: string;
+  requiredTeamCredential: RequiredSessionTeamCredentialV1;
 }>) => Promise<Readonly<{ ok: true } | ExecutionRunRpcFailure>>;
 // The host bridge owns what a started run reports; this dispatcher only marks
 // the successful case, so it reads that shape back instead of restating it.
@@ -127,6 +132,7 @@ type ExecutionRunRpcActionContext = Readonly<{
   browserControl?: BrowserDaemonControlRoutes | null;
   browserContext?: BrowserContextRoutes | null;
   browserAutomation?: BrowserAutomationRoutes | null;
+  getBrowserUiAutomation?: () => BrowserUiAutomationRouteOwner | null;
   browserDiagnostics?: BrowserDiagnosticsActionRoutes | null;
   browserRecording?: BrowserRecordingRoutes | null;
   // Canonical composer/session-media attach owner for finalized browser recordings. When
@@ -145,6 +151,9 @@ type ExecutionRunRpcActionContext = Readonly<{
   resolveAccountSettings?: () => Promise<Record<string, unknown> | null> | Record<string, unknown> | null;
   /** Session-owned Run listing dependency, injected by the runtime principal owner. */
   sessionList?: ActionExecutorDeps['sessionList'];
+  /** Exact target-host role/context owner for a present-user start. */
+  resolveAgentStartContext?: ActionExecutorDeps['resolveAgentStartContext'];
+  readPromptCredentials?: () => Promise<import('@/persistence').StoredCredentials | null>;
   /** Session access owner for a Run's consented Team visibility requirement. */
   grantAttachedRunTeamVisibility?: GrantAttachedRunTeamVisibility;
 }>;
@@ -211,10 +220,13 @@ export function createExecutionRunRpcActionDeps(params: ExecutionRunRpcActionDep
     ? null
     : executionRunsDisabled();
   // One daemon composition owner serves execution-run actions and plugin API actions. This adapter
-  // contributes only the execution-run's fixed route owners and cached server-feature accessor.
+  // contributes the execution-run's routes, current UI owner and cached server-feature accessor.
   const runtimeActionExecute = createDaemonRuntimeActionExecutor({
     env: process.env,
-    resolveRouteOwners: () => params.context,
+    resolveRouteOwners: () => ({
+      ...params.context,
+      browserUiAutomation: params.context.getBrowserUiAutomation?.() ?? null,
+    }),
     resolveServerFeaturesSnapshot: () => params.context.getServerFeaturesSnapshot?.(),
   });
   let actionDeps: ActionExecutorDeps | null = null;
@@ -401,17 +413,6 @@ export function createExecutionRunRpcActionDeps(params: ExecutionRunRpcActionDep
 
     const parentRunId = readParentRef(raw, 'parentRunId');
     const parentCallId = readParentRef(raw, 'parentCallId');
-    if (parentRunId || parentCallId) {
-      const parentDepth = parentRunId
-        ? getRunInAuthoritativeScope(parentRunId, sessionId)?.depth ?? null
-        : params.manager.getDepthByCallId(parentCallId!, sessionId);
-      if (typeof parentDepth !== 'number') {
-        return beforeStart({ ok: false, error: 'Invalid parent run reference', errorCode: 'execution_run_invalid_action_input' });
-      }
-      if (parentDepth + 1 > params.policy.maxDepth) {
-        return beforeStart({ ok: false, error: 'Run depth exceeded', errorCode: 'run_depth_exceeded' });
-      }
-    }
     let accountSettings: Record<string, unknown> | null;
     try {
       accountSettings = await params.context.resolveAccountSettings?.() ?? null;
@@ -457,7 +458,14 @@ export function createExecutionRunRpcActionDeps(params: ExecutionRunRpcActionDep
         }
         let granted: Awaited<ReturnType<GrantAttachedRunTeamVisibility>>;
         try {
-          granted = await grantVisibility({ sessionId, teamId: consent.teamId });
+          granted = await grantVisibility({
+            sessionId, teamId: consent.teamId,
+            requiredTeamCredential: {
+              resourceId: parsed.data.teamCredentialModel.resourceId,
+              expectedResourceRevision: parsed.data.teamCredentialModel.expectedResourceRevision,
+              deliveryMode: parsed.data.teamCredentialModel.deliveryMode,
+            },
+          });
         } catch (error) {
           return beforeStart({
             ok: false,
@@ -474,6 +482,13 @@ export function createExecutionRunRpcActionDeps(params: ExecutionRunRpcActionDep
       const started = await params.manager.start({
         ...(accountSettings ? { accountSettings } : {}),
         ...runStartRequest,
+        // The accepted Action context supplies role content and write policy;
+        // the public request carries identity only.
+        resolvedRole: parsed.data.roleId ? actionOptions?.agentStartContext?.roles[parsed.data.roleId] : undefined,
+        ...((parsed.data.roleId || parsed.data.intent === 'review') && params.context.readPromptCredentials
+          ? { promptCredentials: await params.context.readPromptCredentials() ?? undefined } : {}),
+        workspaceWrites: actionOptions?.workspaceWrites,
+        workDepth: actionOptions?.workDepth ?? 0,
         // The outer Action/RPC scope is authoritative; a passthrough field in
         // the nested start request must not select a second scope.
         sessionId,
@@ -489,6 +504,8 @@ export function createExecutionRunRpcActionDeps(params: ExecutionRunRpcActionDep
           ? { getPermissionRequestStore: () => permissionRequestStore }
           : {}),
         ...(workflowObservationSink ? { workflowObservationSink } : {}),
+        // Explicitly replace any passthrough request field with host-only proof.
+        workflowRunId: actionOptions?.workflowRunId,
         ...(() => {
           const boundedTimeoutMs = resolveExecutionRunStartBoundedTimeoutMs({
             policy: params.policy,
@@ -506,6 +523,10 @@ export function createExecutionRunRpcActionDeps(params: ExecutionRunRpcActionDep
         : undefined;
       const runCreation = readExecutionRunStartRunCreation(rawDetails);
       const code = error && typeof error === 'object' ? (error as { code?: unknown }).code : undefined;
+      if (typeof code === 'string' && (AGENT_START_REFUSAL_CODES_V1 as readonly string[]).includes(code)) {
+        return classifyFailure({ ok: false, errorCode: code, error: code,
+          ...(rawDetails !== undefined ? { details: rawDetails } : {}) }, runCreation);
+      }
       if (code === 'execution_run_budget_exceeded') {
         return classifyFailure({
           ok: false,
@@ -724,7 +745,7 @@ export function createExecutionRunRpcActionDeps(params: ExecutionRunRpcActionDep
       }
       return { streamId: started.streamId };
     },
-    executionRunStreamRead: async (sessionId, request) => {
+    executionRunStreamRead: async (sessionId, request, actionOptions) => {
       const disabled = ensureEnabled();
       if (disabled) return disabled;
       if (!isAuthoritativeScope(sessionId)) return executionRunScopeMismatch();
@@ -734,6 +755,8 @@ export function createExecutionRunRpcActionDeps(params: ExecutionRunRpcActionDep
         streamId: parsed.streamId,
         cursor: parsed.cursor,
         maxEvents: parsed.maxEvents,
+        waitForEvents: parsed.waitForEvents,
+        ...(actionOptions?.signal ? { signal: actionOptions.signal } : {}),
       });
       if (!read.ok) {
         return { ok: false, error: read.error, errorCode: read.errorCode };
@@ -751,6 +774,14 @@ export function createExecutionRunRpcActionDeps(params: ExecutionRunRpcActionDep
         return { ok: false, error: cancelled.error, errorCode: cancelled.errorCode };
       }
       return { ok: true };
+    },
+    executionRunCancelTurn: async (sessionId, request) => {
+      const disabled = ensureEnabled();
+      if (disabled) return disabled;
+      if (!isAuthoritativeScope(sessionId)) return executionRunScopeMismatch();
+      const parsed = ExecutionRunCancelTurnRequestSchema.parse(request);
+      if (!getRunInAuthoritativeScope(parsed.runId, sessionId)) return executionRunNotFound();
+      return await params.manager.cancelCurrentTurn(parsed.runId, parsed);
     },
     executionRunStop: async (sessionId, request) => {
       const disabled = ensureEnabled();
@@ -774,7 +805,8 @@ export function createExecutionRunRpcActionDeps(params: ExecutionRunRpcActionDep
       if (!isAuthoritativeScope(sessionId)) return executionRunScopeMismatch();
       const parsed = ExecutionRunActionRequestSchema.parse(request);
       const runState = getRunInAuthoritativeScope(parsed.runId, sessionId);
-      if (!runState) return executionRunNotFound();
+      if (!runState && params.manager.get(parsed.runId)) return executionRunScopeMismatch();
+      if (!runState && parsed.actionId !== 'review.triage') return executionRunNotFound();
       if (isRuntimeActionIdV1(parsed.actionId)) {
         if (sessionId === null) {
           return { ok: false, errorCode: 'execution_run_not_allowed', error: 'Runtime actions require a Session scope' };
@@ -921,5 +953,17 @@ export function createExecutionRunRpcActionDeps(params: ExecutionRunRpcActionDep
 export function createExecutionRunRpcActionExecutor(
   params: ExecutionRunRpcActionDepsParams,
 ): RpcActionExecutor {
-  return createActionExecutor(createExecutionRunRpcActionDeps(params));
+  const executor = createActionExecutor(createExecutionRunRpcActionDeps(params));
+  return {
+    execute: async (actionId, input, context) => {
+      if (context?.authority === 'present_user' && isAgentStartActionV1(actionId)
+        && input && typeof input === 'object' && 'roleId' in input && typeof input.roleId === 'string'
+        && !context.agentStartContext) {
+        const resolved = await params.context.resolveAgentStartContext?.(context);
+        if (!resolved) return { ok: false, errorCode: 'target_unavailable', error: 'target_unavailable' };
+        context = { ...context, agentStartContext: resolved };
+      }
+      return await executor.execute(actionId, input, context);
+    },
+  };
 }

@@ -9,7 +9,7 @@ export function SessionAgentCatalogIdentityIcon(props: Readonly<{
     agentId: string;
     machineId: string | null;
     serverId: string | null;
-    color: string;
+    color?: string;
     size?: number;
     testID?: string;
 }>): React.ReactElement {

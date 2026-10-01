@@ -96,12 +96,33 @@ describe('createSpawnAttemptKeyForFreshSpawnOptions', () => {
         expect(() => createSpawnAttemptKeyForSessionSpawnNewInput({
             creationKey: SessionCreationKeyV1Schema.parse('manual:attempt-a'),
             executionTarget: { serverId: 'server-a', machineId: 'machine-1' },
-            directory: '/repo',
+            directory: { kind: 'path', path: '/repo' },
             agentTarget: {
                 kind: 'agent',
                 identity: { pluginId: 'happier.claude', localId: 'claude' },
             },
             environmentVariables: { SECRET_TOKEN: 'must-not-enter-custody' },
         }, '/Users/alice')).toThrow(/raw environment variables/u);
+    });
+
+    it('keys a no-folder attempt by its own creation key, never by a folder, and never throws for it', () => {
+        const input = (creationKey: string, directory: { kind: 'managed' } | { kind: 'path'; path: string }) => ({
+            creationKey: SessionCreationKeyV1Schema.parse(creationKey),
+            executionTarget: { serverId: 'server-a', machineId: 'machine-1' },
+            directory,
+            agentTarget: {
+                kind: 'agent' as const,
+                identity: { pluginId: 'happier.claude', localId: 'claude' },
+            },
+        });
+        const managedA = createSpawnAttemptKeyForSessionSpawnNewInput(input('manual:a', { kind: 'managed' }), '/Users/alice');
+        expect(createSpawnAttemptKeyForSessionSpawnNewInput(input('manual:a', { kind: 'managed' }), '/Users/alice')).toBe(managedA);
+        // Two separate no-folder chats with the same settings are two attempts.
+        expect(createSpawnAttemptKeyForSessionSpawnNewInput(input('manual:b', { kind: 'managed' }), '/Users/alice')).not.toBe(managedA);
+        // A folder attempt keeps its folder identity (the creation key does not split it).
+        expect(createSpawnAttemptKeyForSessionSpawnNewInput(input('manual:a', { kind: 'path', path: '~/repo' }), '/Users/alice'))
+            .toBe(createSpawnAttemptKeyForSessionSpawnNewInput(input('manual:b', { kind: 'path', path: '/Users/alice/repo' }), '/Users/alice'));
+        expect(createSpawnAttemptKeyForSessionSpawnNewInput(input('manual:a', { kind: 'path', path: '/repo' }), '/Users/alice'))
+            .not.toBe(managedA);
     });
 });

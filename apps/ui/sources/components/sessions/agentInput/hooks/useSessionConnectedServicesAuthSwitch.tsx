@@ -1,5 +1,6 @@
 import * as React from 'react';
-import { useRouter } from 'expo-router';
+import { useConnectedAccountIdentityPrivacy } from '@/hooks/ui/useConnectedAccountIdentityPrivacy';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 
 import type {
     ConnectedAccountServiceKey,
@@ -420,6 +421,7 @@ export function useSessionConnectedServicesAuthSwitch(params: Readonly<{
     connectedAccounts: readonly PluginProjectedAgentConnectedAccountPurposeV2[];
     agentIdentity?: PluginContributionIdentityV1 | null;
     teamCredentialResources?: readonly TeamCredentialResourceCatalogEntryV1[];
+    teamCredentialResourceCurrentKeys?: ReadonlySet<string>;
     teamNameById?: Readonly<Record<string, string>>;
     sessionMetadata: unknown;
     settings: {
@@ -434,16 +436,19 @@ export function useSessionConnectedServicesAuthSwitch(params: Readonly<{
     passiveProviderRecoveryServiceId?: ConnectedAccountServiceKey | null;
 }>): SessionConnectedServicesAuthSwitchResult {
     const accountProfile = useProfile();
+    const { present } = useConnectedAccountIdentityPrivacy();
     const router = useRouter();
     const connectedServicesRegistry = useProjectedConnectedServicesRegistry();
     const coordinateTeamCredentialSelection = useTeamCredentialSelectionCoordinator(params.serverId);
     const teamCredentialContextRef = React.useRef({
         serverId: params.serverId ?? null,
         resources: params.teamCredentialResources ?? [],
+        currentResourceKeys: params.teamCredentialResourceCurrentKeys,
     });
     teamCredentialContextRef.current = {
         serverId: params.serverId ?? null,
         resources: params.teamCredentialResources ?? [],
+        currentResourceKeys: params.teamCredentialResourceCurrentKeys,
     };
     const accountGroupsFeatureEnabled = useFeatureEnabled('connectedServices.accountGroups', {
         scopeKind: 'spawn',
@@ -472,10 +477,11 @@ export function useSessionConnectedServicesAuthSwitch(params: Readonly<{
             accounts: accountProfile?.connectedAccountsV4 ?? [],
             supportedServiceIds: supportedConnectedServiceIds,
             labelsByKey: params.settings.connectedServicesProfileLabelByKey,
+            presentIdentity: present,
             }),
             connectedAccounts: params.connectedAccounts,
         })
-    ), [accountProfile?.connectedAccountsV4, params.connectedAccounts, params.settings.connectedServicesProfileLabelByKey, supportedConnectedServiceIds]);
+    ), [accountProfile?.connectedAccountsV4, params.connectedAccounts, params.settings.connectedServicesProfileLabelByKey, supportedConnectedServiceIds, present]);
 
     const groupOptionsByServiceId = React.useMemo(() => (
         buildQualifiedConnectedAccountGroupOptionsByServiceId({
@@ -563,6 +569,8 @@ export function useSessionConnectedServicesAuthSwitch(params: Readonly<{
                     deliveryMode: requestedTeamBinding.deliveryMode,
                     selection: requestedTeamBinding,
                     isCurrent: () => teamCredentialContextRef.current.serverId === startedServerId
+                        && (teamCredentialContextRef.current.currentResourceKeys === undefined
+                            || teamCredentialContextRef.current.currentResourceKeys.has(`${selectedResource.teamId}:${requestedTeamBinding.resourceId}`))
                         && teamCredentialContextRef.current.resources.some((resource) => (
                             resource.id === requestedTeamBinding.resourceId
                             && resource.readiness.kind === 'available'
@@ -580,7 +588,9 @@ export function useSessionConnectedServicesAuthSwitch(params: Readonly<{
                         t('teams.credentials.usePolicy.visibilityNote'),
                         { confirmText: t('common.continue'), cancelText: t('common.cancel') },
                     );
-                    if (!confirmed || !teamCredentialContextRef.current.resources.some((resource) => (
+                    if (!confirmed || (teamCredentialContextRef.current.currentResourceKeys !== undefined
+                        && !teamCredentialContextRef.current.currentResourceKeys.has(`${selectedResource.teamId}:${selectedResource.id}`))
+                        || !teamCredentialContextRef.current.resources.some((resource) => (
                         resource.id === selectedResource.id
                         && resource.resourceRevision === selectedResource.resourceRevision
                         && resource.readiness.kind === 'available'
@@ -889,6 +899,7 @@ export function useSessionConnectedServicesAuthSwitch(params: Readonly<{
             groupOptionsByServiceId={groupOptionsByServiceId}
             bindingsByServiceId={optimisticBindingsByServiceId}
             teamCredentialResources={params.teamCredentialResources}
+            teamCredentialResourceCurrentKeys={params.teamCredentialResourceCurrentKeys}
             teamNameById={params.teamNameById}
             onRecoverTeamCredentialResource={(resource) => {
                 requestClose();
@@ -912,6 +923,7 @@ export function useSessionConnectedServicesAuthSwitch(params: Readonly<{
         optimisticBindingsByServiceId,
         params.settings.connectedServicesDefaultProfileByServiceId,
         params.teamCredentialResources,
+        params.teamCredentialResourceCurrentKeys,
         params.teamNameById,
         params.serverId,
         profileOptionsByServiceId,

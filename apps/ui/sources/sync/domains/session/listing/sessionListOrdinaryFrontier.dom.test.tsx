@@ -13,11 +13,12 @@ const controllerHarness = vi.hoisted(() => ({ createdServerIds: [] as string[] }
 
 const runtimeHarness = vi.hoisted(() => ({
     fetchPage: vi.fn(),
-    loadNextSync: vi.fn(async () => undefined),
-    refreshSync: vi.fn(async () => undefined),
+    loadNextOrdinary: vi.fn(async (_serverId: string) => undefined),
+    refreshOrdinary: vi.fn(async (_serverId: string) => undefined),
     retryHome: vi.fn(async (_serverId: string) => undefined),
-    syncOwnedServerIds: new Set<string>(),
-    // Sync's own frontier facts for the applied Home.
+    /** Homes whose ordinary corpus an incumbent runtime owns, and which one. */
+    ordinaryOwnerByServerId: new Map<string, 'sync' | 'concurrent'>(),
+    // The incumbent owner's frontier facts for that Home.
     ordinaryState: {
         addresses: [] as ReadonlyArray<Readonly<{ serverId: string; sessionId: string }>>,
         nextCursor: null as string | null,
@@ -83,10 +84,13 @@ vi.mock('./sessionListQueryController', async (importOriginal) => {
     };
 });
 
+const EMPTY_QUERY_MEMBERSHIP = vi.hoisted(() => ({}));
+
 vi.mock('@/sync/domains/state/storage', () => ({
     useMachineListByServerId: () => ({}),
     useMachineListStatusByServerId: () => ({}),
     useOrdinarySessionListMembershipByServerId: () => ({}),
+    useSessionListQueryMembershipByKey: () => EMPTY_QUERY_MEMBERSHIP,
     useSessionListRowsByServerId: () => ({}),
     useSettings: () => ({
         sessionListActiveGroupingV1: 'project',
@@ -119,9 +123,11 @@ vi.mock('./sessionListQueryRuntime', () => ({
     fetchSessionListQueryPageForHome: runtimeHarness.fetchPage,
     getSessionListQueryHomeAvailability: () => 'online',
     isSessionListQueryHomeOnline: () => true,
-    isSyncOwnedOrdinarySessionListHome: (serverId: string) => runtimeHarness.syncOwnedServerIds.has(serverId),
-    loadNextSyncOrdinarySessionListPage: runtimeHarness.loadNextSync,
-    readSyncOrdinarySessionListHomeState: (input: Readonly<{ serverId: string; requestedQueryKey: string }>) => ({
+    resolveOrdinarySessionListHomeOwner: (serverId: string) => (
+        runtimeHarness.ordinaryOwnerByServerId.get(serverId) ?? null
+    ),
+    loadNextOrdinarySessionListPage: runtimeHarness.loadNextOrdinary,
+    readOrdinarySessionListHomeState: (input: Readonly<{ serverId: string; requestedQueryKey: string }>) => ({
         requestedQueryKey: input.requestedQueryKey,
         appliedQueryKey: input.requestedQueryKey,
         addresses: runtimeHarness.ordinaryState.addresses,
@@ -135,7 +141,7 @@ vi.mock('./sessionListQueryRuntime', () => ({
         failureCode: null,
         appliedSourceKind: 'ordinary',
     } satisfies SessionListQueryHomeState),
-    refreshSyncOrdinarySessionList: runtimeHarness.refreshSync,
+    refreshOrdinarySessionList: runtimeHarness.refreshOrdinary,
     retrySessionListQueryHome: runtimeHarness.retryHome,
 }));
 
@@ -198,10 +204,10 @@ describe('ordinary Session-list frontier on the Home Sync owns', () => {
         scopeHarness.bindings.clear();
         controllerHarness.createdServerIds.length = 0;
         runtimeHarness.fetchPage.mockReset();
-        runtimeHarness.loadNextSync.mockReset();
-        runtimeHarness.refreshSync.mockReset();
+        runtimeHarness.loadNextOrdinary.mockReset();
+        runtimeHarness.refreshOrdinary.mockReset();
         runtimeHarness.retryHome.mockReset();
-        runtimeHarness.syncOwnedServerIds.clear();
+        runtimeHarness.ordinaryOwnerByServerId.clear();
         runtimeHarness.ordinaryState = {
             addresses: [],
             nextCursor: null,
@@ -211,7 +217,7 @@ describe('ordinary Session-list frontier on the Home Sync owns', () => {
     });
 
     it('reads Sync\'s frontier instead of opening a second paginator over the same corpus', async () => {
-        runtimeHarness.syncOwnedServerIds.add('home-a');
+        runtimeHarness.ordinaryOwnerByServerId.set('home-a', 'sync');
         runtimeHarness.ordinaryState = {
             addresses: [
                 { serverId: 'home-a', sessionId: 'page-1' },
@@ -239,26 +245,62 @@ describe('ordinary Session-list frontier on the Home Sync owns', () => {
             await act(async () => {
                 await harness.read()?.loadNext();
             });
-            expect(runtimeHarness.loadNextSync).toHaveBeenCalledOnce();
+            expect(runtimeHarness.loadNextOrdinary).toHaveBeenCalledExactlyOnceWith('home-a');
 
             await act(async () => {
                 await harness.read()?.refresh();
             });
-            expect(runtimeHarness.refreshSync).toHaveBeenCalledOnce();
+            expect(runtimeHarness.refreshOrdinary).toHaveBeenCalledExactlyOnceWith('home-a');
             expect(runtimeHarness.retryHome).not.toHaveBeenCalled();
         } finally {
             await harness.dispose();
         }
     });
 
-    it('keeps its own controller for a Home whose ordinary corpus Sync does not own', async () => {
+    it('reads a managed secondary Home\'s incumbent frontier instead of truncating it to page one', async () => {
+        // A legacy secondary Home the concurrent cache manages: two ordinary pages
+        // are already loaded and its own cursor is open.
+        runtimeHarness.ordinaryOwnerByServerId.set('home-b', 'concurrent');
+        runtimeHarness.ordinaryState = {
+            addresses: [
+                { serverId: 'home-b', sessionId: 'page-1' },
+                { serverId: 'home-b', sessionId: 'page-2' },
+            ],
+            nextCursor: 'concurrent-cursor-3',
+            hasNext: true,
+            phase: 'ready',
+        };
         const harness = await renderSource([
             { serverId: 'home-b', query: QUERY, ordinaryAdapter: ORDINARY_ADAPTER },
         ]);
 
         try {
-            expect(controllerHarness.createdServerIds).toEqual(['home-b']);
-            expect(runtimeHarness.loadNextSync).not.toHaveBeenCalled();
+            // Mounting a Source filter must not create a second paginator that
+            // replaces the loaded corpus with page one.
+            expect(controllerHarness.createdServerIds).toEqual([]);
+            expect(runtimeHarness.fetchPage).not.toHaveBeenCalled();
+
+            const state = harness.read()?.statesByServerId['home-b'];
+            expect(state?.addresses.map((address) => address.sessionId)).toEqual(['page-1', 'page-2']);
+            expect(state?.nextCursor).toBe('concurrent-cursor-3');
+
+            await act(async () => {
+                await harness.read()?.loadNext();
+            });
+            expect(runtimeHarness.loadNextOrdinary).toHaveBeenCalledExactlyOnceWith('home-b');
+        } finally {
+            await harness.dispose();
+        }
+    });
+
+    it('keeps its own controller for a Home no incumbent ordinary owner manages', async () => {
+        const harness = await renderSource([
+            { serverId: 'home-c', query: QUERY, ordinaryAdapter: ORDINARY_ADAPTER },
+        ]);
+
+        try {
+            expect(controllerHarness.createdServerIds).toEqual(['home-c']);
+            expect(runtimeHarness.loadNextOrdinary).not.toHaveBeenCalled();
         } finally {
             await harness.dispose();
         }

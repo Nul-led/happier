@@ -1,11 +1,7 @@
 import * as React from 'react';
 import { Platform, Pressable, View } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
-import {
-    SessionAuthoringExecutionTargetV2Schema,
-    TemporaryComputerActivationRefV1Schema,
-} from '@happier-dev/protocol';
 
 import {
     buildNewSessionDraftRowPresentation,
@@ -19,8 +15,11 @@ import { useAppShellPluginUiProjection } from '@/components/appShell/plugins/App
 import { Icon, ICON_SIZE } from '@/components/ui/icons/Icon';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
+import { Eyebrow } from '@/components/ui/text/Eyebrow';
+import { Text } from '@/components/ui/text/Text';
 import { Modal } from '@/modal';
-import { isNewSessionDraftLaunchInCustody } from '@/components/sessions/new/modules/newSessionDraftLaunchCustody';
+import { isNewSessionDraftDeletionBlocked, resolveRunnerDraftActivation } from '@/components/sessions/drafts/newSessionDraftDeletion';
+export { isNewSessionDraftDeletionBlocked } from '@/components/sessions/drafts/newSessionDraftDeletion';
 import { readAllActionOperations, useAllActionOperations } from '@/sync/domains/actionOperations/useActionOperations';
 import {
     useActiveServerAccountScope,
@@ -31,6 +30,7 @@ import {
     deleteSessionDraftWithScopedRuntime,
     deleteSessionDraft,
     ensureSessionDraftRepositoryHydratedWithScopedRuntime,
+    isNewSessionDraftListed,
     listNewSessionDraftProjections,
     subscribeSessionDraftList,
     type NewSessionDraftProjection,
@@ -66,6 +66,7 @@ import {
 import { homeDisplayName } from '@/components/settings/home/governance/homeGovernanceLabels';
 import { serverAccountScopeKeySuffix, type ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
 import type { SessionListViewContext } from './search/sessionListViewFilters';
+import { sessionListStyles } from './sessionListStyles';
 import { deleteNewSessionDraftAfterConfirmation } from '@/components/sessions/drafts/deleteNewSessionDraftAfterConfirmation';
 import { runWithSessionDraftRepositoryScopedRuntime } from '@/sync/ops/sessionDrafts/runWithSessionDraftRepositoryScopedRuntime';
 
@@ -120,46 +121,12 @@ export function resolveNewSessionDraftWaitingSectionTitle(input: Readonly<{
     return t('sessionDrafts.waitingSectionTitleForHome', { home });
 }
 
-function resolveRunnerDraftActivation(input: NewSessionDraftProjection): Readonly<{
-    isTemporaryComputer: boolean;
-    publicRef: ReturnType<typeof TemporaryComputerActivationRefV1Schema.parse> | null;
-}> {
-    // Temporary-computer authoring exists only in the current catalogued
-    // document; the released V1 vocabulary cannot carry either field.
-    const document = input.document;
-    if (document.v !== 2 || document.target.kind !== 'newSession') {
-        return { isTemporaryComputer: false, publicRef: null };
-    }
-    const targetResult = SessionAuthoringExecutionTargetV2Schema.nullable().safeParse(
-        document.target.authoring.executionTarget?.value ?? null,
-    );
-    const referenceResult = TemporaryComputerActivationRefV1Schema.nullable().safeParse(
-        document.target.authoring.temporaryComputerActivationRef?.value ?? null,
-    );
-    const publicRef = referenceResult.success ? referenceResult.data : null;
-    return {
-        isTemporaryComputer: (targetResult.success && targetResult.data?.kind === 'temporary_computer') || publicRef !== null,
-        publicRef,
-    };
-}
 
 function runnerDraftStatusKey(status: TemporaryComputerLaunchStatus): Parameters<typeof t>[0] | null {
     if (status === 'idle') return null;
     return `newSession.temporaryComputer.status.${status}` as Parameters<typeof t>[0];
 }
 
-export function isNewSessionDraftDeletionBlocked(input: Readonly<{
-    draft: NewSessionDraftProjection;
-    accountId: string;
-    operations: Parameters<typeof isNewSessionDraftLaunchInCustody>[0]['operations'];
-}>): boolean {
-    if (resolveRunnerDraftActivation(input.draft).isTemporaryComputer) return false;
-    return isNewSessionDraftLaunchInCustody({
-        accountId: input.accountId,
-        launchUserAttemptId: input.draft.localSupplement.launchUserAttemptId,
-        operations: input.operations,
-    });
-}
 
 export function resolveNewSessionDraftMachineUnavailable(input: Readonly<{
     machineId: unknown;
@@ -173,9 +140,14 @@ export function resolveNewSessionDraftMachineUnavailable(input: Readonly<{
 }
 
 const stylesheet = StyleSheet.create(() => ({
-    section: { width: '100%', paddingBottom: 8 },
+    // The next group's label brings its own top padding (`SESSION_LIST_COLUMN_METRICS`).
+    section: { width: '100%' },
     group: { borderRadius: SESSION_LIST_ROW_CORNER_RADIUS },
+    headerTitleRow: { flexDirection: 'row', alignItems: 'baseline', gap: 6 },
     actionSlot: { width: 24, alignItems: 'flex-end' },
+    // Web shows the delete on row hover or keyboard focus only; it stays in the tab order.
+    actionSlotHidden: { opacity: 0 },
+    actionSlotShown: { opacity: 1 },
     deleteButton: { width: 24, height: 24, alignItems: 'center', justifyContent: 'center' },
     deleteIcon: {
         // RN Web gives a custom component child a 17px inline box. Move the 14px glyph itself,
@@ -199,6 +171,18 @@ const NewSessionDraftRow = React.memo(function NewSessionDraftRow(props: Readonl
 }>) {
     const { theme } = useUnistyles();
     const isTablet = useIsTablet();
+    const isWeb = Platform.OS === 'web';
+    const [rowHovered, setRowHovered] = React.useState(false);
+    const [deleteHovered, setDeleteHovered] = React.useState(false);
+    const [deletePressed, setDeletePressed] = React.useState(false);
+    const [deleteFocused, setDeleteFocused] = React.useState(false);
+    // The one draft action stays on the row, but quiet: secondary ink at rest, danger only while
+    // the pointer or a press is on it (the confirmation carries the weight). Touch always shows it;
+    // web shows it on row hover or keyboard focus.
+    const deleteShown = !isWeb || rowHovered || deleteHovered || deleteFocused;
+    const deleteGlyphColor = !props.deleteDisabled && (deleteHovered || deletePressed)
+        ? theme.colors.state.danger.foreground
+        : theme.colors.text.secondary;
     const presentation = buildNewSessionDraftRowPresentation(props.draft, props.availability);
     // Schema parsing returns a fresh public-reference object. Preserve it for
     // the draft revision so the observer effect does not refetch on each state
@@ -250,6 +234,8 @@ const NewSessionDraftRow = React.memo(function NewSessionDraftRow(props: Readonl
     return (
         <Item
             testID={`session-draft-row:new-session:${draftId}`}
+            onHoverIn={isWeb ? () => setRowHovered(true) : undefined}
+            onHoverOut={isWeb ? () => setRowHovered(false) : undefined}
             title={presentation.title}
             subtitle={!minimal ? (status || undefined) : undefined}
             subtitleTestID={!minimal && status ? `session-draft-status:new-session:${draftId}` : undefined}
@@ -282,7 +268,10 @@ const NewSessionDraftRow = React.memo(function NewSessionDraftRow(props: Readonl
             rightElement={(
                 <View
                     testID={`session-draft-action-slot:new-session:${draftId}`}
-                    style={stylesheet.actionSlot}
+                    style={[
+                        stylesheet.actionSlot,
+                        deleteShown ? stylesheet.actionSlotShown : stylesheet.actionSlotHidden,
+                    ]}
                 >
                     <Pressable
                         testID={`session-draft-delete:new-session:${draftId}`}
@@ -295,6 +284,12 @@ const NewSessionDraftRow = React.memo(function NewSessionDraftRow(props: Readonl
                         accessibilityLabel={t('sessionDrafts.delete.action')}
                         accessibilityState={{ disabled: props.deleteDisabled }}
                         hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                        onHoverIn={() => setDeleteHovered(true)}
+                        onHoverOut={() => setDeleteHovered(false)}
+                        onPressIn={() => setDeletePressed(true)}
+                        onPressOut={() => setDeletePressed(false)}
+                        onFocus={() => setDeleteFocused(true)}
+                        onBlur={() => setDeleteFocused(false)}
                         onPress={(event) => {
                             event.stopPropagation();
                             fireAndForget(
@@ -308,7 +303,7 @@ const NewSessionDraftRow = React.memo(function NewSessionDraftRow(props: Readonl
                         <Icon
                             name="trash"
                             size={ICON_SIZE.xs}
-                            color={theme.colors.state.danger.foreground}
+                            color={deleteGlyphColor}
                             style={stylesheet.deleteIcon}
                         />
                     </Pressable>
@@ -369,11 +364,28 @@ export const NewSessionDraftsSectionView = React.memo(function NewSessionDraftsS
         setPendingFocusRestore(null);
     }, [listFocusFallbackRef, pendingFocusRestore, props.drafts]);
     if (props.drafts.length === 0) return null;
+    const sectionTitle = props.sectionTitle ?? t('sessionDrafts.sectionTitle');
+    const headerStyles = sessionListStyles;
     return (
         <View testID={props.sectionTestID ?? 'session-drafts-section'} style={stylesheet.section}>
+            {/* The drafts group reads like a project group: a sentence-case label and a quiet count. */}
+            <View
+                testID="session-drafts-header"
+                style={headerStyles.groupHeaderSection}
+                accessibilityRole="header"
+                accessibilityLabel={`${sectionTitle}, ${props.drafts.length}`}
+            >
+                <View style={stylesheet.headerTitleRow}>
+                    <Eyebrow style={headerStyles.groupHeaderTitle} numberOfLines={1}>{sectionTitle}</Eyebrow>
+                    <Text testID="session-drafts-header-count" style={headerStyles.groupHeaderCount}>
+                        {props.drafts.length}
+                    </Text>
+                </View>
+            </View>
+            {/* One sheet, like each project group below it (S1 Grouped). */}
             <ItemGroup
-                title={props.sectionTitle ?? t('sessionDrafts.sectionTitle')}
-                containerStyle={stylesheet.group}
+                style={headerStyles.groupSheetUnderLabel}
+                containerStyle={[stylesheet.group, headerStyles.groupSheetInset]}
                 selectableItemCountOverride={props.drafts.length}
             >
                 {props.drafts.map((draft) => (
@@ -421,7 +433,9 @@ const ServerScopedNewSessionDraftsSection = React.memo(function ServerScopedNewS
             // activation exists. A merely selected Temporary-computer target is
             // still that Home's ordinary authoring draft.
             ? allDrafts.filter((draft) => resolveRunnerDraftActivation(draft).publicRef !== null)
-            : allDrafts
+            // A draft with only resolved configuration (Machine, folder, ...) is
+            // not something the user wrote; the draft owner decides which are.
+            : allDrafts.filter(isNewSessionDraftListed)
     ), [allDrafts, props.temporaryComputerOnly]);
     const actionOperations = useAllActionOperations();
     const pluginProjection = useAppShellPluginUiProjection();

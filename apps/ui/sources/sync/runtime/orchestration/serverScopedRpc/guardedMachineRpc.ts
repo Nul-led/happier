@@ -1,4 +1,5 @@
 import { machineRpcWithServerScope } from './serverScopedMachineRpc';
+import { resolveMachineRpcTargetServerId } from './resolveMachineRpcTargetServerId';
 import {
     isGuardedMachineRpcMethod,
     resolveTransferPolicyAllowsMachineRpcDirect,
@@ -16,15 +17,16 @@ export async function callGuardedMachineRpcWithPolicy<R, A>(params: Readonly<{
     signal?: AbortSignal;
     preferScoped?: boolean;
 }>): Promise<R> {
+    const targetServerId = resolveMachineRpcTargetServerId(params.serverId);
     const guarded = isGuardedMachineRpcMethod(params.method);
     const allowDirect = guarded
-        ? await resolveTransferPolicyAllowsMachineRpcDirect({ serverId: params.serverId ?? undefined })
+        ? await resolveTransferPolicyAllowsMachineRpcDirect({ serverId: targetServerId })
         : true;
     const preferScoped = params.preferScoped === true || (guarded && !allowDirect);
 
     return await machineRpcWithServerScope<R, A>({
         machineId: params.machineId,
-        serverId: params.serverId ?? undefined,
+        serverId: targetServerId,
         accountId: params.accountId ?? undefined,
         method: params.method,
         payload: params.payload,

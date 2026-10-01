@@ -1,9 +1,10 @@
 import 'fake-indexeddb/auto';
+import { createReactNavigationNativeMock } from '@/dev/testkit/mocks/reactNavigation';
 import * as React from 'react';
 import renderer, { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { PluginProjectionV2Schema } from '@happier-dev/protocol';
-import { findTestInstanceByTypeWithProps, invokeTestInstanceHandler, renderScreen } from '@/dev/testkit';
+import { findTestInstanceByTypeWithProps, invokeTestInstanceHandler, renderScreen } from '@/dev/testkit/render/renderScreen';
 import {
     installSessionShellCommonModuleMocks,
     readSessionShellDraftTextForTest,
@@ -183,6 +184,7 @@ vi.mock('react-native-safe-area-context', () => ({
 }));
 
 vi.mock('@react-navigation/native', () => ({
+    ...createReactNavigationNativeMock(),
     useFocusEffect: () => {},
   useIsFocused: () => true,
 }));
@@ -328,10 +330,10 @@ const patchSessionMetadataWithRetrySpy = vi.fn(async (..._args: any[]) => {});
 
 function setCurrentComposerAttachmentProjection(input: Readonly<{
     generation?: number;
-    immutableGenerationId?: string;
+    occurrenceId?: string;
 }> = {}): void {
     const generation = input.generation ?? 7;
-    const immutableGenerationId = input.immutableGenerationId ?? 'issue-generation-a';
+    const occurrenceId = input.occurrenceId ?? 'issue-generation-a';
     daemonMergedProjectionState.value = {
         phase: 'ready',
         inputs: {
@@ -341,7 +343,6 @@ function setCurrentComposerAttachmentProjection(input: Readonly<{
                 generation,
                 installedPackagesById: {},
                 agentsById: {},
-                backendsById: {},
                 actionsById: {},
                 toolsById: {},
                 commandsById: {},
@@ -355,7 +356,7 @@ function setCurrentComposerAttachmentProjection(input: Readonly<{
                                 id: 'acme.issues/issue',
                                 pluginId: 'acme.issues',
                                 identity: { pluginId: 'acme.issues', localId: 'issue' },
-                                immutableGenerationId,
+                                occurrenceId,
                                 definition: {
                                     id: 'issue',
                                     title: 'Issue',
@@ -1106,7 +1107,7 @@ describe('SessionView (attachments.uploads resumable send)', () => {
             TEST_SERVER_ACCOUNT_SCOPE,
             's1',
             'routing.recipient',
-            { mode: 'manual', recipient: { kind: 'execution_run', runId: 'run-a' } },
+            { kind: 'execution_run', runId: 'run-a' },
         );
         writeSessionDraftValue(TEST_SERVER_ACCOUNT_SCOPE, 's1', 'routing.executionRunRequestedAction', { v: 1, kind: 'enqueue' });
 
@@ -1180,7 +1181,7 @@ describe('SessionView (attachments.uploads resumable send)', () => {
             TEST_SERVER_ACCOUNT_SCOPE,
             's1',
             'routing.recipient',
-            { mode: 'manual', recipient: { kind: 'agent_team_broadcast', teamId: 'team-a' } },
+            { kind: 'agent_team_broadcast', teamId: 'team-a' },
         );
 
         let tree: renderer.ReactTestRenderer | undefined;
@@ -1353,7 +1354,7 @@ describe('SessionView (attachments.uploads resumable send)', () => {
         const handlers = createComposerPresentationHostHandlers({
             owner: {
                 identity: { pluginId: 'acme.fixture', localId: 'composer-tools' },
-                immutableGenerationId: 'generation-1',
+                occurrenceId: 'generation-1',
                 surfaceInstanceKey: 'mounted-1',
             },
         });
@@ -1438,7 +1439,7 @@ describe('SessionView (attachments.uploads resumable send)', () => {
         const handlers = createComposerPresentationHostHandlers({
             owner: {
                 identity: { pluginId: 'acme.fixture', localId: 'composer-tools' },
-                immutableGenerationId: 'generation-1',
+                occurrenceId: 'generation-1',
                 surfaceInstanceKey: 'mounted-1',
             },
         });
@@ -2517,7 +2518,7 @@ describe('SessionView (attachments.uploads resumable send)', () => {
                     ref: pendingRef,
                     admittedContributor: {
                         identity: { pluginId: 'acme.issues', localId: 'pending-editor' },
-                        immutableGenerationId: 'issue-generation-a',
+                        occurrenceId: 'issue-generation-a',
                     },
                     transaction: {
                         expectedRevision: current.revision,
@@ -2691,7 +2692,7 @@ describe('SessionView (attachments.uploads resumable send)', () => {
                     ref: pendingRef,
                     admittedContributor: {
                         identity: { pluginId: 'acme.issues', localId: 'pending-editor' },
-                        immutableGenerationId: 'issue-generation-a',
+                        occurrenceId: 'issue-generation-a',
                     },
                     transaction: {
                         expectedRevision: current.revision,
@@ -3932,6 +3933,63 @@ describe('SessionView (attachments.uploads resumable send)', () => {
                 for (const listener of sessionPendingMessagesState.listeners) listener();
             });
         }
+
+        it('keeps same-mount Agent switching in the composer send state until the transition answers', async () => {
+            setCurrentComposerAttachmentProjection();
+            armSecondAgent();
+            resolveSessionComposerSendMock.mockImplementationOnce(() => ({
+                kind: 'send',
+                text: 'switch and send this',
+            }));
+            let settleTransition: (result: unknown) => void = () => {};
+            runSessionAgentTransitionSpy.mockImplementationOnce(() => new Promise((resolve) => {
+                settleTransition = resolve;
+            }) as any);
+
+            const screen = await renderScreen(<AppPaneProvider>
+                        <SessionView id="s1" />
+                    </AppPaneProvider>);
+            pendingFireAndForget.length = 0;
+            if (!screen.tree) throw new Error('SessionView test renderer did not mount');
+            try {
+                const agentInput = findTestInstanceByTypeWithProps(screen.tree, 'AgentInput' as any, {}) as any;
+                await act(async () => {
+                    invokeTestInstanceHandler(agentInput, 'onChangeText', 'switch and send this', 'AgentInput');
+                });
+                await act(async () => {
+                    invokeTestInstanceHandler(agentInput, 'onSend', undefined, 'AgentInput');
+                    await Promise.resolve();
+                });
+
+                expect(runSessionAgentTransitionSpy).toHaveBeenCalledTimes(1);
+                expect(screen.getTextContent()).not.toContain('session.agentContinuation.transition.unknown');
+                expect(screen.findAllByTestId('session.agentTransitionOutcome.banner')).toHaveLength(0);
+
+                // The Pending row can synchronize before the transition RPC answers.
+                // While the same-mount send still owns the operation, the generic
+                // inactive-session recovery must not compete with its spinner or
+                // imply that the reader needs to resume the source Agent.
+                syncPendingRowForLocalId('armed-local-id');
+                expect(screen.findAllByTestId('session-pendingActivation')).toHaveLength(0);
+                const inFlightInput = findTestInstanceByTypeWithProps(screen.tree, 'AgentInput' as any, {}) as any;
+                expect(inFlightInput.props.isSending).toBe(true);
+                expect((inFlightInput.props.statusBadges as readonly { testID?: string }[])
+                    .some((badge) => badge.testID === 'session.pendingActivation.badge')).toBe(false);
+
+                await act(async () => {
+                    settleTransition({ type: 'accepted', localId: 'armed-local-id' });
+                    await pendingFireAndForget[0];
+                });
+
+                // Suppression is only for the live operation. If the target has
+                // not become active yet, the existing pending-activation owner is
+                // still the post-operation recovery surface.
+                expect(screen.findAllByTestId('session-pendingActivation').length).toBeGreaterThan(0);
+            } finally {
+                act(() => { screen.tree?.unmount(); });
+                pendingFireAndForget.length = 0;
+            }
+        });
 
         it('tells the reader when custody of the queued input only lands after the switch answered', async () => {
             // The case below seeds the pending row BEFORE the send, so it passes

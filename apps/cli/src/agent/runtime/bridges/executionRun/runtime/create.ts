@@ -160,6 +160,7 @@ function createEngineExecutionRunRuntimeShellConfig(opts: Readonly<{
     backendTarget?: BackendTargetRefV2Input;
     backendSourceKind?: string;
     modelId?: string;
+    onEffectiveEngine?: (engine: Readonly<{ agentId: string; modelId?: string }>) => void;
     modelSelection?: ProviderBoundModelRef;
     teamCredentialModel?: TeamCredentialProviderModelSelectionV1;
     sessionConfigOptionOverrides?: AcpConfigOptionOverridesV1;
@@ -168,6 +169,7 @@ function createEngineExecutionRunRuntimeShellConfig(opts: Readonly<{
     secretReferenceEnvironment?: Readonly<Record<string, string>>;
     causalPermissionAuthority?: SessionInputCausalPermissionAuthorityV1;
     permissionMode: string;
+    workspaceWrites?: 'allow' | 'deny';
     /** Normalized Protocol settings; the outer input normalizes raw settings exactly once. */
     accountSettings?: AccountSettings | null;
     connectedServices?: ConnectedServiceBindingsV2 | null;
@@ -232,6 +234,7 @@ function createEngineExecutionRunRuntimeShellConfig(opts: Readonly<{
                         ? { acpSessionModeId: opts.start.acpSessionModeId }
                         : {}),
                     permissionMode: opts.permissionMode,
+                    workspaceWrites: opts.workspaceWrites,
                     updatedAtMs: Date.now(),
                 })
                 : null;
@@ -437,6 +440,7 @@ function createEngineExecutionRunRuntimeShellConfig(opts: Readonly<{
                     }
                     : {}),
                 permissionMode: opts.permissionMode,
+                workspaceWrites: opts.workspaceWrites,
                 accountSettings: opts.accountSettings ?? null,
                 start: opts.start ?? null,
                 ...(opts.parentSessionStateTarget ? { parentSessionStateTarget: opts.parentSessionStateTarget } : {}),
@@ -494,9 +498,23 @@ function createEngineExecutionRunRuntimeShellConfig(opts: Readonly<{
                 runtime,
                 identity: buildExecutionRunRuntimeIdentityPublication(engineResolution),
             });
-            const withPluginIsolationCleanup = pluginIsolationBundle?.shouldCleanupIsolation && pluginIsolationBundle.cleanup
-                ? withExecutionRunHostRuntimeCleanup(runtimeWithIdentity, pluginIsolationBundle.cleanup)
+            opts.onEffectiveEngine?.({
+                agentId: engineResolution.agentId,
+            });
+            // Authored model preferences are not proof of the model the Agent used.
+            const unsubscribeEffectiveEngine = opts.onEffectiveEngine
+                ? runtimeWithIdentity.subscribeRuntimeEvents?.((event) => {
+                    if (event.kind !== 'usage-observed') return;
+                    const observedModel = event.modelId ?? (event.context?.source !== 'derived_estimate' ? event.context?.modelId : null);
+                    if (observedModel) opts.onEffectiveEngine?.({ agentId: engineResolution.agentId, modelId: observedModel });
+                })
+                : undefined;
+            const withEffectiveEngineCleanup = unsubscribeEffectiveEngine
+                ? withExecutionRunHostRuntimeCleanup(runtimeWithIdentity, unsubscribeEffectiveEngine)
                 : runtimeWithIdentity;
+            const withPluginIsolationCleanup = pluginIsolationBundle?.shouldCleanupIsolation && pluginIsolationBundle.cleanup
+                ? withExecutionRunHostRuntimeCleanup(withEffectiveEngineCleanup, pluginIsolationBundle.cleanup)
+                : withEffectiveEngineCleanup;
             // Connected-services release runs at run end for EVERY retention policy: it
             // unregisters the run's runtime-registry targets and triggers daemon-side cleanup.
             const withProviderCleanup = providerLaunch?.cleanupOnExit
@@ -534,6 +552,7 @@ export function createExecutionRunRuntime(opts: Readonly<{
     backendId: string;
     backendTarget?: BackendTargetRefV2Input;
     modelId?: string;
+    onEffectiveEngine?: (engine: Readonly<{ agentId: string; modelId?: string }>) => void;
     modelSelection?: ProviderBoundModelRef;
     teamCredentialModel?: TeamCredentialProviderModelSelectionV1;
     sessionConfigOptionOverrides?: AcpConfigOptionOverridesV1;
@@ -541,6 +560,7 @@ export function createExecutionRunRuntime(opts: Readonly<{
     secretReferenceEnvironment?: Readonly<Record<string, string>>;
     causalPermissionAuthority?: SessionInputCausalPermissionAuthorityV1;
     permissionMode: string;
+    workspaceWrites?: 'allow' | 'deny';
     accountSettings?: Readonly<Record<string, unknown>> | null;
     connectedServices?: ConnectedServiceBindingsV2 | null;
     connectedServicesDefaultServiceIds?: readonly string[];
@@ -601,6 +621,7 @@ export function createExecutionRunRuntime(opts: Readonly<{
             ...(runtimeBackendTarget ? { backendTarget: runtimeBackendTarget } : {}),
             backendSourceKind: resolvedBackendTarget?.canonical.sourceKind ?? 'built_in',
             modelId: opts.modelId,
+            ...(opts.onEffectiveEngine ? { onEffectiveEngine: opts.onEffectiveEngine } : {}),
             ...(opts.modelSelection
                 ? { modelSelection: opts.modelSelection }
                 : {}),
@@ -620,6 +641,7 @@ export function createExecutionRunRuntime(opts: Readonly<{
                 ? { causalPermissionAuthority: opts.causalPermissionAuthority }
                 : {}),
             permissionMode: opts.permissionMode,
+            workspaceWrites: opts.workspaceWrites,
             accountSettings,
             ...(opts.connectedServices !== undefined ? { connectedServices: opts.connectedServices } : {}),
             ...(opts.connectedServicesDefaultServiceIds && opts.connectedServicesDefaultServiceIds.length > 0

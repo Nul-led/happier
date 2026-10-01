@@ -1,8 +1,12 @@
 import {
     DaemonBrowserControlDispatchRequestV1Schema,
     DaemonBrowserControlDispatchResponseV1Schema,
+    DaemonBrowserViewListRequestV1Schema,
+    DaemonBrowserViewListResponseV1Schema,
+    type BrowserDaemonViewV1,
     type BrowserCommandDispatchResultV1,
     type BrowserCommandV1,
+    type BrowserEventV1,
 } from '@happier-dev/protocol';
 import { isRpcMethodNotFoundResult, RPC_METHODS } from '@happier-dev/protocol/rpc';
 
@@ -30,6 +34,23 @@ export type BrowserDaemonControlDispatchClientInput = Readonly<{
 export type BrowserDaemonControlDispatchClientResult =
     | Readonly<{ ok: true; result: BrowserCommandDispatchResultV1 }>
     | Readonly<{ ok: false; reason: 'unavailable' | 'invalid_response' | 'request_failed' }>;
+
+/** Session-filtered discovery from the same daemon owner as navigation and automation. */
+export async function listBrowserDaemonViewsViaMachineRpc(input: Readonly<{
+    machineId: string; serverId: string; browserSessionId: string; signal?: AbortSignal;
+}>): Promise<Readonly<{ ok: true; views: readonly BrowserDaemonViewV1[] }>
+    | Readonly<{ ok: false; reason: 'invalid_response' | 'request_failed' }>> {
+    if (input.signal?.aborted) return { ok: false, reason: 'request_failed' };
+    try {
+        const payload = DaemonBrowserViewListRequestV1Schema.parse({ machineId: input.machineId,
+            browserSessionId: input.browserSessionId });
+        const raw = await machineRpcWithServerScope<unknown, typeof payload>({ machineId: input.machineId,
+            serverId: input.serverId, method: RPC_METHODS.DAEMON_BROWSER_VIEW_LIST, payload,
+            ...(input.signal ? { signal: input.signal } : {}) });
+        const parsed = DaemonBrowserViewListResponseV1Schema.safeParse(raw);
+        return parsed.success ? { ok: true, views: parsed.data.views } : { ok: false, reason: 'invalid_response' };
+    } catch { return { ok: false, reason: 'request_failed' }; }
+}
 
 export async function dispatchBrowserDaemonControlCommandViaMachineRpc(
     input: BrowserDaemonControlDispatchClientInput,
@@ -63,23 +84,28 @@ export async function dispatchBrowserDaemonControlCommandViaMachineRpc(
 
 /**
  * Build the fire-and-forget `sendDaemonCommand` the control adapter consumes. The daemon applies the
- * command and emits the authoritative browser events back through the streamed/sidecar surface's own
- * event ingestion, so the transport does not feed the result back into the local reducer; the
- * optional `onResult` sink exists only for observability/testing.
+ * command. Its validated authoritative response events feed the surface's canonical event reducer;
+ * the optional `onResult` sink remains observability only.
  */
+export type BrowserDaemonControlCommandSender = (
+    command: BrowserCommandV1,
+    onEvents?: (events: readonly BrowserEventV1[]) => void,
+) => void;
+
 export function createBrowserDaemonControlCommandSender(
     input: Readonly<{
         machineId: string;
         serverId: string;
         onResult?: (result: BrowserDaemonControlDispatchClientResult) => void;
     }>,
-): (command: BrowserCommandV1) => void {
-    return (command) => {
+): BrowserDaemonControlCommandSender {
+    return (command, onEvents) => {
         void dispatchBrowserDaemonControlCommandViaMachineRpc({
             machineId: input.machineId,
             serverId: input.serverId,
             command,
         }).then((result) => {
+            if (result.ok && result.result.status === 'dispatched') onEvents?.(result.result.events);
             input.onResult?.(result);
         }).catch(() => {
             input.onResult?.({ ok: false, reason: 'request_failed' });

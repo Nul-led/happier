@@ -21,7 +21,8 @@ describe('ReviewDraftSummary', () => {
         let destination = 'review';
         const before = JSON.stringify(drafts);
         const screen = await renderScreen(<ReviewDraftSummary enabled drafts={drafts} onGoToComposer={() => { destination = 'composer'; }} />);
-        expect(screen.getTextContent()).toContain('"included":1,"count":2');
+        // Only the comment that rides along is counted; the detached one stays saved but out.
+        expect(screen.getTextContent()).toContain('{"count":1}');
         await act(async () => { screen.pressByTestId('review-drafts-go-to-composer'); });
         expect(destination).toBe('composer');
         expect(JSON.stringify(drafts)).toBe(before);
@@ -32,4 +33,41 @@ describe('ReviewDraftSummary', () => {
         await act(async () => { screen.tree.update(<ReviewDraftSummary enabled drafts={[]} onGoToComposer={() => {}} />); });
         expect(screen.findAllByTestId('review-drafts-go-to-composer')).toHaveLength(0);
     });
+    it('opens in place to show each comment that goes with the next message, and leaves one out on request', async () => {
+        const detached: string[] = [];
+        const screen = await renderScreen(
+            <ReviewDraftSummary enabled drafts={drafts} onGoToComposer={() => {}} onDetachDraft={(draft) => { detached.push(draft.id); }} />,
+        );
+        expect(screen.findAllByTestId('review-drafts-chips')).toHaveLength(0);
+        await act(async () => { screen.pressByTestId('review-drafts-expand'); });
+        expect(screen.findAllByTestId('review-draft-chip-0').length).toBeGreaterThan(0);
+        expect(screen.findAllByTestId('review-draft-chip-1')).toHaveLength(0);
+        await act(async () => { screen.pressByTestId('review-draft-chip-detach-0'); });
+        expect(detached).toEqual(['0']);
+    });
+    it('grows into the composer in place when Review can send, sharing the session draft', async () => {
+        const typed: string[] = [];
+        let sent = 0;
+        let handedOff = 0;
+        const screen = await renderScreen(
+            <ReviewDraftSummary
+                enabled
+                drafts={drafts}
+                onGoToComposer={() => { handedOff += 1; }}
+                composer={{ text: 'Address these', onChangeText: (text) => { typed.push(text); }, onSend: () => { sent += 1; }, sending: false }}
+            />,
+        );
+        expect(screen.findAllByTestId('review-ask-composer')).toHaveLength(0);
+        await act(async () => { screen.pressByTestId('review-drafts-go-to-composer'); });
+        expect(handedOff).toBe(0);
+        expect(screen.findAllByTestId('review-ask-composer').length).toBeGreaterThan(0);
+        expect(screen.findAllByTestId('review-draft-chip-0').length).toBeGreaterThan(0);
+        const input = screen.findByTestId('review-ask-input');
+        expect(input?.props.value).toBe('Address these');
+        await act(async () => { input?.props.onChangeText('Address these, then rerun'); });
+        expect(typed).toEqual(['Address these, then rerun']);
+        await act(async () => { screen.pressByTestId('review-ask-send'); });
+        expect(sent).toBe(1);
+    });
 });
+

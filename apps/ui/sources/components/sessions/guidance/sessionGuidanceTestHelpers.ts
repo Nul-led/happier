@@ -45,8 +45,6 @@ const sessionGuidanceTranslations: Record<string, string> = {
     'sessionGettingStarted.steps.daemonStart.title': 'Start the background service once',
     'sessionGettingStarted.steps.daemonStart.description': 'Use this if you only need it running right now.',
     'sessionGettingStarted.steps.daemonStart.copyLabel': 'Daemon start',
-    'sessionGettingStarted.manualDisclosure.show': 'Show manual terminal steps',
-    'sessionGettingStarted.manualDisclosure.hide': 'Hide manual terminal steps',
     'sessionGettingStarted.steps.createSession.title': 'Create a session',
     'sessionGettingStarted.steps.createSession.description': 'Use the + button in the app, or run one of these from your terminal.',
     'sessionGettingStarted.steps.createSession.copyLabel': 'Create session',

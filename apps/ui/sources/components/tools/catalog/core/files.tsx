@@ -1,5 +1,5 @@
-import type { Metadata } from '@/sync/domains/state/storageTypes';
-import type { ToolCall } from '@/sync/domains/messages/messageTypes';
+import type { Metadata } from '@happier-dev/session-core/state';
+import type { ToolCall } from "@happier-dev/session-core/messages";
 import { resolvePath } from '@/utils/path/pathUtils';
 import { t } from '@/text';
 import { ICON_READ, ICON_EDIT, ICON_DELETE } from '../icons';

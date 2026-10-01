@@ -1,4 +1,10 @@
+import { DEFAULT_HAPPIER_CLOUD_SERVER_URL } from '@happier-dev/cli-common/happierCloud';
+
+import { resolveHomeTargetSummary } from '@/components/navigation/connectionStatus/resolveHomeConnectionSummary';
 import { resolveServerScopedMachines } from '@/sync/domains/machines/resolveServerScopedMachines';
+import { computeMachinesSummary, type MachinesSummary } from './computeMachinesSummary';
+
+export { computeMachinesSummary, type MachinesSummary } from './computeMachinesSummary';
 
 export type SessionGettingStartedDecisionKind =
     | 'loading'
@@ -13,29 +19,6 @@ export type ServerTargetLabel = Readonly<{
 }>;
 
 export type MachineListStatus = 'idle' | 'loading' | 'signedOut' | 'error';
-
-export type MachinesSummary = Readonly<{
-    hasUnknownServers: boolean;
-    machineCount: number;
-    onlineCount: number;
-}>;
-
-export function computeMachinesSummary(
-    servers: ReadonlyArray<Readonly<{ machineCount: number | null; onlineCount: number | null }>>,
-): MachinesSummary {
-    let hasUnknownServers = false;
-    let machineCount = 0;
-    let onlineCount = 0;
-    for (const server of servers) {
-        if (server.machineCount === null || server.onlineCount === null) {
-            hasUnknownServers = true;
-            continue;
-        }
-        machineCount += server.machineCount;
-        onlineCount += server.onlineCount;
-    }
-    return { hasUnknownServers, machineCount, onlineCount };
-}
 
 export function computeSessionGettingStartedDecision(params: Readonly<{
     sessionsReady: boolean;
@@ -57,12 +40,6 @@ export type SessionGettingStartedViewModelInput = Readonly<{
     sessionsReady: boolean;
     sessionCount: number;
     activeMachines: ReadonlyArray<Readonly<{ active: boolean; revokedAt?: number | null }>>;
-    localDaemonStatus?: Readonly<{
-        serviceInstalled: boolean;
-        daemonRunning: boolean;
-        needsAuth: boolean;
-        machineId: string | null;
-    }> | null;
     selection: Readonly<{
         activeTarget: Readonly<{ kind: 'server' | 'group'; id: string; groupId?: string }>;
         activeServerId: string;
@@ -77,10 +54,14 @@ export type SessionGettingStartedViewModelInput = Readonly<{
         legacyServerIds?: readonly string[];
     }>;
     machineListByServerId: Readonly<Record<string, ReadonlyArray<Readonly<{ active: boolean; revokedAt?: number | null }>> | null | undefined>>;
+    /** Each Home's machine-list status: the per-Home reachability fact the Homes status also reads. */
+    machineListStatusByServerId?: Readonly<Record<string, MachineListStatus | undefined>>;
 }>;
 
 export type SessionGettingStartedViewModel = Readonly<{
     kind: SessionGettingStartedDecisionKind;
+    /** Selected Homes that are not answering (or need sign-in): reported, never waited on. */
+    unavailableServerIds: readonly string[];
     targetLabel: string;
     serverId: string;
     serverName: string;
@@ -98,34 +79,20 @@ type SessionGettingStartedServerProfile = Readonly<{
 
 export type SessionGettingStartedMachinesInput = Readonly<{
     activeMachines: SessionGettingStartedViewModelInput['activeMachines'];
-    localDaemonStatus?: SessionGettingStartedViewModelInput['localDaemonStatus'];
     selection: SessionGettingStartedViewModelInput['selection'];
     activeServerProfile?: SessionGettingStartedViewModelInput['activeServerProfile'] | null;
     machineListByServerId: SessionGettingStartedViewModelInput['machineListByServerId'];
+    machineListStatusByServerId?: SessionGettingStartedViewModelInput['machineListStatusByServerId'];
 }>;
 
-function hasHealthyLocalDaemon(status: SessionGettingStartedViewModelInput['localDaemonStatus']): boolean {
-    return status?.serviceInstalled === true
-        && status?.daemonRunning === true
-        && status?.needsAuth !== true
-        && typeof status?.machineId === 'string'
-        && status.machineId.trim().length > 0;
-}
+export type SessionGettingStartedMachinesResolution = MachinesSummary & Readonly<{
+    unavailableServerIds: readonly string[];
+}>;
 
-function applyLocalDaemonHealthHint(
-    summary: Readonly<{ machineCount: number | null; onlineCount: number | null }>,
-    localDaemonHealthy: boolean,
-): Readonly<{ machineCount: number | null; onlineCount: number | null }> {
-    if (!localDaemonHealthy) {
-        return summary;
-    }
-    if (summary.machineCount === null || summary.onlineCount === null) {
-        return summary;
-    }
-    return {
-        machineCount: Math.max(summary.machineCount, 1),
-        onlineCount: Math.max(summary.onlineCount, 1),
-    };
+/** Same reading as the Homes status: a Home whose projection failed, or needs sign-in, is not answering. */
+function isHomeUnavailable(status: MachineListStatus | undefined): boolean {
+    const kind = resolveHomeTargetSummary({ authStatus: 'unknown', projectionStatus: status }).kind;
+    return kind === 'unavailable' || kind === 'sign_in';
 }
 
 function resolveActiveProfileServerIdAliases(
@@ -181,10 +148,25 @@ function resolveTargetLabel(input: SessionGettingStartedViewModelInput, activeSe
     return match?.name ?? 'Selected servers';
 }
 
-export function resolveSessionGettingStartedMachinesSummary(input: SessionGettingStartedMachinesInput): MachinesSummary {
-    const localDaemonHealthy = hasHealthyLocalDaemon(input.localDaemonStatus);
-
-    const selectedServerIds = input.selection.allowedServerIds;
+/**
+ * Only the signed-in account's machine list says which machines are the user's. A daemon running on
+ * this computer is not counted: it may be signed in to another account or serve another Home, and
+ * the shared this-computer connection owner explains that state instead.
+ */
+export function resolveSessionGettingStartedMachinesSummary(input: SessionGettingStartedMachinesInput): SessionGettingStartedMachinesResolution {
+    const machinesFor = (serverId: string) => resolveServerScopedMachines({
+        serverId,
+        activeServerId: input.selection.activeServerId,
+        serverIdAliases: resolveActiveProfileServerIdAliases(input.activeServerProfile, serverId),
+        activeMachines: input.activeMachines,
+        machineListByServerId: input.machineListByServerId,
+    });
+    // A Home that is not answering never holds the decision: it is reported, and the Homes that
+    // answer (or the active Home) decide.
+    const unavailableServerIds = input.selection.allowedServerIds.filter((serverId) => (
+        !machinesFor(serverId) && isHomeUnavailable(input.machineListStatusByServerId?.[serverId])
+    ));
+    const selectedServerIds = input.selection.allowedServerIds.filter((serverId) => !unavailableServerIds.includes(serverId));
     const activeServerMachines = resolveServerScopedMachines({
         serverId: input.selection.activeServerId,
         activeServerId: input.selection.activeServerId,
@@ -204,21 +186,23 @@ export function resolveSessionGettingStartedMachinesSummary(input: SessionGettin
             return { machineCount: null, onlineCount: null };
         }
         const online = machines.filter((m) => m.active === true).length;
-        return applyLocalDaemonHealthHint(
-            { machineCount: machines.length, onlineCount: online },
-            serverId === input.selection.activeServerId && localDaemonHealthy,
-        );
+        return { machineCount: machines.length, onlineCount: online };
     });
     const selectedMachines = computeMachinesSummary(perServer);
     const activeServerSummary = activeServerMachines
-        ? applyLocalDaemonHealthHint(
-            {
-                machineCount: activeServerMachines.length,
-                onlineCount: activeServerMachines.filter((machine) => machine.active === true).length,
-            },
-            localDaemonHealthy,
-        )
+        ? {
+            machineCount: activeServerMachines.length,
+            onlineCount: activeServerMachines.filter((machine) => machine.active === true).length,
+        }
         : null;
+    if (selectedServerIds.length === 0 && unavailableServerIds.length > 0) {
+        return {
+            ...(activeServerSummary
+                ? { hasUnknownServers: false, machineCount: activeServerSummary.machineCount, onlineCount: activeServerSummary.onlineCount }
+                : { hasUnknownServers: true, machineCount: 0, onlineCount: 0 }),
+            unavailableServerIds,
+        };
+    }
     const machines = selectedMachines.machineCount > 0
         ? selectedMachines
         : !selectedMachines.hasUnknownServers && activeServerSummary && activeServerSummary.machineCount && activeServerSummary.machineCount > 0
@@ -229,7 +213,7 @@ export function resolveSessionGettingStartedMachinesSummary(input: SessionGettin
             }
             : selectedMachines;
 
-    return machines;
+    return { ...machines, unavailableServerIds };
 }
 
 export function buildSessionGettingStartedViewModel(input: SessionGettingStartedViewModelInput): SessionGettingStartedViewModel {
@@ -243,10 +227,11 @@ export function buildSessionGettingStartedViewModel(input: SessionGettingStarted
         machines,
     });
 
-    const showServerSetup = Boolean(activeProfile.serverUrl) && activeProfile.serverUrl !== 'https://api.happier.dev';
+    const showServerSetup = Boolean(activeProfile.serverUrl) && activeProfile.serverUrl !== DEFAULT_HAPPIER_CLOUD_SERVER_URL;
 
     return {
         kind,
+        unavailableServerIds: machines.unavailableServerIds,
         targetLabel,
         serverId: activeProfile.id,
         serverName: activeProfile.name,

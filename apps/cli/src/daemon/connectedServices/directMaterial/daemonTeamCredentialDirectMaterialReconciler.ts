@@ -27,6 +27,7 @@ import {
   fetchTeamCredentialDirectMaterialCensus,
   fetchTeamCredentialDirectMaterialPreparation,
   upsertTeamCredentialDirectMaterial,
+  withdrawTeamCredentialDirectMaterial,
 } from './teamCredentialDirectMaterialHttp';
 import { reconcileTeamCredentialDirectMaterial } from './reconcileTeamCredentialDirectMaterial';
 
@@ -238,6 +239,17 @@ export function createDaemonTeamCredentialDirectMaterialReconciler(params: Reado
               return result?.status === 'stored'
                 ? { ok: true as const }
                 : { ok: false as const, reason: result?.reason ?? 'source_changed' };
+            },
+            withdrawPublication: async (body) => {
+              await withdrawTeamCredentialDirectMaterial({
+                token: params.token,
+                teamId: resource.teamId,
+                resourceId: resource.id,
+                body,
+                ...(params.serverUrl ? { serverUrl: params.serverUrl } : {}),
+                ...(signal ? { signal } : {}),
+              });
+              return { ok: true };
             },
             ...(signal ? { signal } : {}),
           });

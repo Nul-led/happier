@@ -1,6 +1,6 @@
 import { EXTERNAL_SESSION_HISTORICAL_IMPORT_LOCAL_ID_PREFIX } from '@happier-dev/protocol';
 
-import type { NormalizedMessage } from '@/sync/typesRaw';
+import type { NormalizedMessage } from "@happier-dev/session-core/raw";
 
 import type { ExternalSessionTranscriptAuthority } from './externalSessionTranscriptAuthority';
 
@@ -9,17 +9,19 @@ function hasHistoricalImportIdentity(value: unknown): value is string {
         && value.startsWith(EXTERNAL_SESSION_HISTORICAL_IMPORT_LOCAL_ID_PREFIX);
 }
 
-function isWithinServerBound(message: NormalizedMessage, maxServerSeq: number): boolean {
+type TranscriptRowIdentity = Pick<NormalizedMessage, 'id' | 'localId' | 'seq'>;
+
+function isWithinServerBound(message: TranscriptRowIdentity, maxServerSeq: number): boolean {
     return typeof message.seq === 'number'
         && Number.isSafeInteger(message.seq)
         && message.seq >= 0
         && message.seq <= maxServerSeq;
 }
 
-export function filterExternalSessionTranscriptAuthorityMessages(
-    messages: readonly NormalizedMessage[],
+export function filterExternalSessionTranscriptAuthorityMessages<T extends TranscriptRowIdentity>(
+    messages: readonly T[],
     authority: ExternalSessionTranscriptAuthority,
-): NormalizedMessage[] {
+): T[] {
     if (authority.kind === 'unavailable') return [];
     if (authority.kind === 'hosted') return messages.slice();
     if (authority.kind === 'live_agent') {

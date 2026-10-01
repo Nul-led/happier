@@ -1,4 +1,5 @@
 import type { SessionForkPoint } from '@happier-dev/protocol';
+import type { Router } from 'expo-router';
 
 import type { CurrentProjectedAgentCapabilities } from '@/agents/backendCatalog/currentAgentCapabilities';
 import { buildNewSessionSourceContextNavigation } from '@/components/sessions/new/navigation/newSessionSourceContextNavigation';
@@ -41,6 +42,7 @@ export type OpenSessionForkStrategyFlowParams = Readonly<{
     sourcePreview?: string | null;
     writeForkInitialPrompt?: boolean;
     navigateToSession: (childSessionId: string, options?: Readonly<{ serverId?: string }>) => void | Promise<void>;
+    navigation: Pick<Router, 'push'>;
     navigateToNewSession: (
         route: Readonly<{ pathname: '/new'; params: Readonly<Record<string, string>> }>,
     ) => void;
@@ -86,6 +88,7 @@ export function openSessionForkStrategyFlow(params: OpenSessionForkStrategyFlowP
             ...replayOptions,
         },
         navigate: params.navigateToSession,
+        navigation: params.navigation,
         // Configure new Session is the one route here that continues this
         // conversation with another Agent. The decision is not re-derived here:
         // `availability.configure` IS the caller's `sessions.agentSwitching`

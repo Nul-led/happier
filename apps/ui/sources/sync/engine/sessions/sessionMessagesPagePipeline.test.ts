@@ -1,15 +1,21 @@
+import { type SessionMessageV1 } from '@happier-dev/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+vi.mock('@/sync/domains/plugins/availability/generatedBundledPluginUiArtifacts', async () => {
+    const { emptyBundledPluginUiAssetsModule } = await import('@/dev/testkit/mocks/bundledPluginUiAssets');
+    return emptyBundledPluginUiAssetsModule;
+});
+
 import type { MessageActionReferenceV1 } from '@happier-dev/protocol';
-import type { ApiMessage } from '@/sync/api/types/apiTypes';
+
 import type { Session } from '@/sync/domains/state/storageTypes';
 import { storage } from '@/sync/domains/state/storage';
-import { createSessionFixture } from '@/dev/testkit';
+import { createSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
 import { syncPerformanceTelemetry } from '@/sync/runtime/syncPerformanceTelemetry';
-import type { NormalizedMessage } from '@/sync/typesRaw';
+import type { NormalizedMessage } from "@happier-dev/session-core/raw";
 
 import { runSessionMessagesPagePipeline, type SessionMessagesEncryption } from './sessionMessagesPagePipeline';
-import { handleMessageUpdatedSocketUpdate } from './sessionSocketUpdate';
+import { handleMessageUpdatedSocketUpdate, handleNewMessageSocketUpdate } from './sessionSocketUpdate';
 
 // Match the production encryption owner's stable cipher identity until replacement.
 function sessionEncryptionGetter(encryption: SessionMessagesEncryption) {
@@ -28,7 +34,7 @@ function buildEncryptedApiMessage(params: {
         source: 'background' | 'external' | 'sidechain' | 'history';
     };
     messageActionReference?: MessageActionReferenceV1;
-}): ApiMessage {
+}): SessionMessageV1 {
     return {
         id: params.id,
         seq: params.seq,
@@ -48,10 +54,10 @@ function buildEncryptedApiMessage(params: {
         ...(params.messageActionReference !== undefined
             ? { messageActionReference: params.messageActionReference }
             : {}),
-    } as ApiMessage;
+    } as SessionMessageV1;
 }
 
-function buildTextContent(message: ApiMessage, text = `hello-${message.id}`) {
+function buildTextContent(message: SessionMessageV1, text = `hello-${message.id}`) {
     return {
         id: message.id,
         seq: message.seq,
@@ -64,7 +70,7 @@ function buildTextContent(message: ApiMessage, text = `hello-${message.id}`) {
     };
 }
 
-function buildLifecycleContent(message: ApiMessage) {
+function buildLifecycleContent(message: SessionMessageV1) {
     return {
         id: message.id,
         seq: message.seq,
@@ -82,6 +88,117 @@ function buildLifecycleContent(message: ApiMessage) {
 }
 
 describe('runSessionMessagesPagePipeline', () => {
+    it.each(['new-message', 'message-updated'] as const)(
+        'does not disclose or consume a plain row delivered to an E2EE Session by %s',
+        async (updateType) => {
+            const { Encryption } = await import('@/sync/encryption/encryption');
+            const encryption = await Encryption.create(new Uint8Array(32).fill(7));
+            const sessionId = 'socket-mode-mismatch';
+            await encryption.initializeSessions(new Map([[sessionId, new Uint8Array(32).fill(8)]]));
+            storage.getState().applySessions([createSessionFixture({
+                id: sessionId, seq: 1, encryptionMode: 'e2ee', encryptedContentAvailability: 'ready',
+            })]);
+            const message = {
+                ...buildEncryptedApiMessage({ id: 'disallowed-plain-row', seq: 2 }),
+                content: {
+                    t: 'plain' as const,
+                    v: { role: 'user', content: { type: 'text', text: 'Must not disclose' } },
+                },
+            };
+            const sessionReceivedMessages = new Map<string, Map<string, number>>();
+            let materializedSeq = 1;
+            const handleUpdate = updateType === 'new-message'
+                ? handleNewMessageSocketUpdate
+                : handleMessageUpdatedSocketUpdate;
+
+            await handleUpdate({
+                updateData: { id: 'mismatch-update', seq: 10, createdAt: 2_000,
+                    body: { t: updateType, sid: sessionId, message } },
+                getSession: (id) => storage.getState().sessions[id],
+                getSessionEncryption: (id) => encryption.getSessionEncryption(id),
+                applySessions: (sessions) => storage.getState().applySessions(sessions),
+                applyMessages: (id, messages) => storage.getState().applyMessages(id, messages),
+                fetchSessions: () => {},
+                isMutableToolCall: () => false,
+                invalidateScmStatus: () => {},
+                isSessionMessagesLoaded: () => true,
+                getSessionMaterializedMaxSeq: () => materializedSeq,
+                markSessionMaterializedMaxSeq: (_id, seq) => { materializedSeq = seq; },
+                onMessageGapDetected: () => {},
+                sessionReceivedMessages,
+            });
+
+            expect(Object.keys(storage.getState().sessionMessages[sessionId]?.messagesById ?? {})).toEqual([]);
+            expect(sessionReceivedMessages.get(sessionId)?.has(message.id) ?? false).toBe(false);
+            expect(materializedSeq).toBe(1);
+            expect(storage.getState().sessions[sessionId].seq).toBe(1);
+        },
+    );
+
+    it.each(['rejected', 'unresolved'] as const)('does not certify or consume a %s encrypted page and retries the same rows', async (failure) => {
+        const message = buildEncryptedApiMessage({ id: 'm101', seq: 101 });
+        const received = new Map<string, Map<string, number>>();
+        const applied: NormalizedMessage[] = [];
+        let materializedSeq = 100;
+        let appliedIdsAtCommit: string[] = [];
+        let failDecryption = true;
+        const params: Parameters<typeof runSessionMessagesPagePipeline>[0] = {
+            sessionId: 's1',
+            purpose: 'newer',
+            page: { direction: 'newer', requestPath: '/v1/sessions/s1/messages?afterSeq=100', scope: 'main' },
+            lifecyclePolicy: 'suppress',
+            getSessionEncryption: sessionEncryptionGetter({
+                decryptMessages: async (messages) => {
+                    if (failDecryption) {
+                        if (failure === 'rejected') throw new Error('Decryption unavailable');
+                        return messages.map(() => null);
+                    }
+                    return messages.map((row) => buildTextContent(row));
+                },
+            }),
+            request: async () => new Response(JSON.stringify({ messages: [message], nextAfterSeq: null })),
+            sessionReceivedMessages: received,
+            applyMessages: (_sessionId, messages) => { applied.push(...messages); },
+            onMessagesPage: (page) => {
+                appliedIdsAtCommit = applied.map((row) => row.id);
+                materializedSeq = page.messages[0].seq;
+            },
+            log: { log: () => {} },
+        };
+
+        await expect(runSessionMessagesPagePipeline(params)).rejects.toThrow();
+        expect(materializedSeq).toBe(100);
+        expect(received.get('s1')?.has('m101') ?? false).toBe(false);
+        expect(applied).toEqual([]);
+
+        failDecryption = false;
+        await runSessionMessagesPagePipeline(params);
+        expect(materializedSeq).toBe(101);
+        expect(appliedIdsAtCommit).toEqual(['m101']);
+        expect(received.get('s1')?.get('m101')).toBe(message.updatedAt);
+        expect(applied.map((row) => row.id)).toEqual(['m101']);
+    });
+
+    it('repairs only selected identities without applying or consuming neighboring page rows', async () => {
+        const selected = buildEncryptedApiMessage({ id: 'selected', seq: 15 });
+        const neighbor = buildEncryptedApiMessage({ id: 'neighbor', seq: 9000 });
+        const received = new Map<string, Map<string, number>>();
+        const result = await runSessionMessagesPagePipeline({
+            sessionId: 's1',
+            purpose: 'newer',
+            page: { direction: 'newer', requestPath: '/v1/sessions/s1/messages?afterSeq=14', scope: 'all' },
+            lifecyclePolicy: 'suppress',
+            messageIds: new Set(['selected']),
+            getSessionEncryption: sessionEncryptionGetter({ decryptMessages: async (messages) => messages.map((row) => buildTextContent(row)) }),
+            request: async () => new Response(JSON.stringify({ messages: [selected, neighbor], nextAfterSeq: null })),
+            sessionReceivedMessages: received,
+            applyMessages: () => {},
+            log: { log: () => {} },
+        });
+        expect(result.appliedMessageIds).toEqual(['selected']);
+        expect([...received.get('s1')!.keys()]).toEqual(['selected']);
+    });
+
     it('drops a held page after the Session cipher is replaced without applying rows or advancing currentness', async () => {
         const { Encryption } = await import('@/sync/encryption/encryption');
         const encryption = await Encryption.create(new Uint8Array(32).fill(7));
@@ -116,7 +233,7 @@ describe('runSessionMessagesPagePipeline', () => {
     });
 
     it.each(['authentication_failure', 'unsupported_content', 'authenticated_false', 'authenticated_zero', 'authenticated_empty_string', 'authenticated_null'] as const)(
-        'reports only cryptographic unreadability while preserving valid page rows (%s)',
+        'preserves valid rows without certifying cryptographically unreadable pages (%s)',
         async (failure) => {
             const { Encryption } = await import('@/sync/encryption/encryption');
             const encryption = await Encryption.create(new Uint8Array(32).fill(7));
@@ -142,11 +259,12 @@ describe('runSessionMessagesPagePipeline', () => {
             const applied: NormalizedMessage[] = [];
             const sessionReceivedMessages = new Map<string, Map<string, number>>();
             let contentFailure = false;
+            let pagePublished = false;
             storage.getState().applySessions([createSessionFixture({
                 id: 's1', encryptionMode: 'e2ee', encryptedContentAvailability: 'ready',
             })]);
 
-            const result = await runSessionMessagesPagePipeline({
+            const load = runSessionMessagesPagePipeline({
                 sessionId: 's1', purpose: 'initial',
                 page: { direction: 'initial', requestPath: '/messages', scope: 'main' },
                 lifecyclePolicy: 'suppress', sessionEncryptionMode: 'e2ee',
@@ -158,10 +276,16 @@ describe('runSessionMessagesPagePipeline', () => {
                     storage.getState().applyMessages(id, rows);
                 },
                 onContentAuthenticationFailure: () => { contentFailure = true; },
+                onMessagesPage: () => { pagePublished = true; },
                 log: { log: () => {} },
             });
 
-            expect(result.appliedMessageIds).toEqual(['crypto-row-0']);
+            if (failure === 'authentication_failure') {
+                await expect(load).rejects.toMatchObject({ name: 'SessionMessagePageDecryptionError' });
+            } else {
+                expect((await load).appliedMessageIds).toEqual(['crypto-row-0']);
+            }
+            expect(pagePublished).toBe(failure !== 'authentication_failure');
             expect(applied).toEqual([expect.objectContaining({ id: 'crypto-row-0' })]);
             expect(Object.values(storage.getState().sessionMessages.s1?.messagesById ?? {})).toEqual([
                 expect.objectContaining({ realID: 'crypto-row-0', kind: 'user-text', text: 'kept content' }),
@@ -190,21 +314,26 @@ describe('runSessionMessagesPagePipeline', () => {
         const row = buildEncryptedApiMessage({ id: 'actor-refresh', seq: 1 });
         const sessionReceivedMessages = new Map<string, Map<string, number>>();
         const profile = { firstName: 'Alice', lastName: null, username: null, avatarUrl: null };
-        const refresh = (accountActor: { v: 1; accountId: string; profile: typeof profile | null } | null) =>
+        const decryptMessages = vi.fn(async (rows: SessionMessageV1[]) => rows.map((item) => buildTextContent(item)));
+        let messageActionReference: MessageActionReferenceV1 | undefined = { v: 1, sessionId: 's1', messageId: row.id, observedRevision: 'revision-1' };
+        const refresh = (accountActor: { v: 1; accountId: string; profile: typeof profile | null } | null | undefined) =>
             runSessionMessagesPagePipeline({
                 sessionId: 's1', serverId: 'home-a', purpose: 'initial',
                 page: { direction: 'initial', requestPath: '/messages', scope: 'main' },
                 lifecyclePolicy: 'suppress',
-                getSessionEncryption: sessionEncryptionGetter({ decryptMessages: async (rows) => rows.map((item) => buildTextContent(item)) }),
-                request: async () => Response.json({ messages: [{ ...row, accountActor }] }),
+                getSessionEncryption: sessionEncryptionGetter({ decryptMessages }),
+                request: async () => Response.json({ messages: [{ ...row, accountActor, messageActionReference }] }),
                 sessionReceivedMessages,
                 applyMessages: (sessionId, messages) => storage.getState().applyMessages(sessionId, messages),
+                applyMessageMetadata: (sessionId, metadataUpdates) => storage.getState().applyMessages(sessionId, [], { metadataUpdates }),
                 log: { log: () => {} },
             });
         storage.getState().applySessions([createSessionFixture({ id: 's1' })]);
         await refresh({ v: 1, accountId: 'alice', profile });
         const initial = Object.values(storage.getState().sessionMessages.s1?.messagesById ?? {});
         expect(initial).toHaveLength(1);
+        await refresh({ v: 1, accountId: 'alice', profile });
+        expect(decryptMessages).toHaveBeenCalledTimes(1);
 
         await refresh({ v: 1, accountId: 'alice', profile: null });
         expect(Object.values(storage.getState().sessionMessages.s1?.messagesById ?? {})).toEqual([
@@ -218,6 +347,61 @@ describe('runSessionMessagesPagePipeline', () => {
         expect(Object.values(storage.getState().sessionMessages.s1?.messagesById ?? {})).toEqual([
             expect.objectContaining({ id: initial[0].id, realID: row.id, accountActor: null }),
         ]);
+        await refresh(null);
+        expect(decryptMessages).toHaveBeenCalledTimes(1);
+        messageActionReference = { ...messageActionReference!, observedRevision: 'revision-2' };
+        await refresh(undefined);
+        expect(Object.values(storage.getState().sessionMessages.s1.messagesById)[0]).toMatchObject({ accountActor: null, messageActionReference });
+        messageActionReference = undefined;
+        await refresh(undefined);
+        expect(Object.values(storage.getState().sessionMessages.s1.messagesById)[0]).not.toHaveProperty('messageActionReference');
+        expect(decryptMessages).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not rediscover the known absence of thinking while refreshing transcript metadata', () => {
+        storage.getState().applySessions([createSessionFixture({ id: 'metadata-store' })]);
+        storage.getState().applyMessages('metadata-store', [{
+            id: 'stored', localId: null, seq: 1, createdAt: 1, role: 'user', isSidechain: false,
+            content: { type: 'text', text: 'unchanged' }, accountActor: null,
+        }]);
+        const before = storage.getState().sessionMessages['metadata-store'];
+        expect(before.latestThinkingMessageId).toBeNull();
+        const row = Object.values(before.messagesById)[0];
+        let kindReads = 0;
+        const kind = row.kind;
+        Object.defineProperty(row, 'kind', { configurable: true, get: () => { kindReads++; return kind; } });
+        storage.getState().applyMessages('metadata-store', [], { metadataUpdates: [{ id: 'stored', localId: null, accountActor: null }] });
+        expect(kindReads).toBe(0);
+        expect(storage.getState().sessionMessages['metadata-store']).toBe(before);
+    });
+
+    it('does not apply equal-revision metadata after a newer socket delivery advances its row during page decryption', async () => {
+        const row = buildEncryptedApiMessage({ id: 'metadata-race', seq: 1, updatedAt: 100 });
+        const newRow = buildEncryptedApiMessage({ id: 'new-content', seq: 2, updatedAt: 200 });
+        const received = new Map([['s1', new Map([[row.id, 100]])]]);
+        const applyMessageMetadata = vi.fn();
+        const decryptMessages = vi.fn(async (rows: SessionMessageV1[]) => {
+            // A newer authenticated socket update wins while this page yields.
+            received.get('s1')!.set(row.id, 300);
+            return rows.map((message) => buildTextContent(message));
+        });
+        const result = await runSessionMessagesPagePipeline({
+            sessionId: 's1', serverId: 'home-a', purpose: 'newer',
+            page: { direction: 'newer', requestPath: '/messages', scope: 'main' },
+            lifecyclePolicy: 'suppress',
+            getSessionEncryption: sessionEncryptionGetter({ decryptMessages }),
+            request: async () => Response.json({ messages: [
+                { ...row, accountActor: null, messageActionReference: { v: 1, sessionId: 's1', messageId: row.id, observedRevision: 'old' } },
+                { ...newRow, accountActor: null },
+            ] }),
+            sessionReceivedMessages: received,
+            applyMessages: () => {}, applyMessageMetadata,
+            log: { log: () => {} },
+        });
+        expect(decryptMessages.mock.calls[0][0].map((message) => message.id)).toEqual([newRow.id]);
+        expect(applyMessageMetadata).not.toHaveBeenCalled();
+        expect(result.normalizedMessages).toEqual([expect.objectContaining({ id: newRow.id, accountActor: null })]);
+        expect(received.get('s1')!.get(row.id)).toBe(300);
     });
 
     afterEach(() => {
@@ -232,7 +416,7 @@ describe('runSessionMessagesPagePipeline', () => {
             JSON.stringify({ messages: [message], hasMore: false, nextAfterSeq: null }),
             { status: 200, headers: { 'Content-Type': 'application/json' } },
         ));
-        const decryptMessages = vi.fn(async (messages: ApiMessage[]) => messages.map((candidate) =>
+        const decryptMessages = vi.fn(async (messages: SessionMessageV1[]) => messages.map((candidate) =>
             buildTextContent(candidate, 'server-corrected text'),
         ));
         const applyMessages = vi.fn<(sessionId: string, messages: NormalizedMessage[]) => void>();
@@ -294,7 +478,7 @@ describe('runSessionMessagesPagePipeline', () => {
         const pendingDecryption = new Promise<DecryptedPageMessage[]>((resolve) => {
             releaseDecryption = resolve;
         });
-        const decryptMessages = vi.fn((_messages: ApiMessage[]) => pendingDecryption);
+        const decryptMessages = vi.fn((_messages: SessionMessageV1[]) => pendingDecryption);
         const sessionReceivedMessages = new Map<string, Map<string, number>>([
             ['s1', new Map([['stale-row', 2_010]])],
         ]);
@@ -447,7 +631,7 @@ describe('runSessionMessagesPagePipeline', () => {
         const requestStarted = new Promise<void>((resolve) => {
             markRequestStarted = resolve;
         });
-        const decryptMessages = vi.fn(async (messages: ApiMessage[]) => messages.map((candidate) => buildTextContent(candidate)));
+        const decryptMessages = vi.fn(async (messages: SessionMessageV1[]) => messages.map((candidate) => buildTextContent(candidate)));
         const sessionReceivedMessages = new Map<string, Map<string, number>>();
         const applyMessages = vi.fn<(sessionId: string, messages: NormalizedMessage[]) => void>();
 
@@ -557,7 +741,7 @@ describe('runSessionMessagesPagePipeline', () => {
             ...buildEncryptedApiMessage({ id: 'plugin-transcript-plain', seq: 43 }),
             messageRole: 'agent' as const,
             content: { t: 'plain' as const, v: structuredPresentation },
-        } as ApiMessage;
+        } as SessionMessageV1;
         const futureMessage = {
             ...buildEncryptedApiMessage({ id: 'plugin-transcript-future-plain', seq: 44 }),
             messageRole: 'agent' as const,
@@ -565,7 +749,7 @@ describe('runSessionMessagesPagePipeline', () => {
                 t: 'plain' as const,
                 v: { ...structuredPresentation, profile: 'pluginTranscriptV2' },
             },
-        } as ApiMessage;
+        } as SessionMessageV1;
         const request = vi.fn(async () => new Response(
             JSON.stringify({ messages: [currentMessage, futureMessage], hasMore: false }),
             { status: 200, headers: { 'Content-Type': 'application/json' } },
@@ -739,7 +923,7 @@ describe('runSessionMessagesPagePipeline', () => {
             { status: 200, headers: { 'Content-Type': 'application/json' } },
         ));
 
-        const decryptMessages = vi.fn(async (messages: ApiMessage[]) =>
+        const decryptMessages = vi.fn(async (messages: SessionMessageV1[]) =>
             messages.map((message) => buildTextContent(message)),
         );
         const applyMessages = vi.fn<(sessionId: string, messages: NormalizedMessage[]) => void>();
@@ -806,7 +990,7 @@ describe('runSessionMessagesPagePipeline', () => {
             }),
             { status: 200, headers: { 'Content-Type': 'application/json' } },
         ));
-        const decryptMessages = vi.fn(async (messages: ApiMessage[]) =>
+        const decryptMessages = vi.fn(async (messages: SessionMessageV1[]) =>
             messages.map((message) => buildLifecycleContent(message)),
         );
         const onTaskLifecycleEvent = vi.fn();
@@ -887,7 +1071,7 @@ describe('runSessionMessagesPagePipeline', () => {
             },
             lifecyclePolicy: 'emit',
             getSessionEncryption: sessionEncryptionGetter({
-                decryptMessages: async (messages: ApiMessage[]) => messages.map((message) => (
+                decryptMessages: async (messages: SessionMessageV1[]) => messages.map((message) => (
                     message.id === recoveredLifecycle.id
                         ? buildLifecycleContent(message)
                         : buildTextContent(message)
@@ -945,7 +1129,7 @@ describe('runSessionMessagesPagePipeline', () => {
             },
             lifecyclePolicy: 'suppress',
             getSessionEncryption: sessionEncryptionGetter({
-                decryptMessages: async (messages: ApiMessage[]) => messages.map((message) => buildTextContent(message)),
+                decryptMessages: async (messages: SessionMessageV1[]) => messages.map((message) => buildTextContent(message)),
             }),
             request,
             sessionReceivedMessages: new Map<string, Map<string, number>>(),

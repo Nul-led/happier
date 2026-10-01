@@ -115,7 +115,7 @@ describe('uploadComposerMediaStageFromReader', () => {
         });
 
         const { inspectComposerContent, releaseComposerContent } = await import('./composerMediaStageTransfers');
-        const inspection = await inspectComposerContent(handle, { offset: 2, maxBytes: 2 });
+        const inspection = await inspectComposerContent(handle, { offset: 2, maxBytes: 2 }, { sessionId: 'session-a' });
         expect(inspection).toEqual({
             success: true,
             result: {
@@ -134,6 +134,7 @@ describe('uploadComposerMediaStageFromReader', () => {
             serverId: 'server-current',
             request: {
                 t: 'composer_media_stage_inspect_v1',
+                sessionId: 'session-a',
                 handle,
                 offset: 2,
                 maxBytes: 2,

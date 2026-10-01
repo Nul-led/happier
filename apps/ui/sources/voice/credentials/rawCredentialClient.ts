@@ -2,13 +2,13 @@ import {
     DaemonVoiceClientRawCredentialMaterializeRequestV1Schema,
     DaemonVoiceClientRawCredentialMaterializeResponseV1Schema,
     type ConnectedServiceCredentialRevisionV1,
-    type DaemonPluginReactNativeBundleCacheIdentityV1,
 } from '@happier-dev/protocol';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 import { PluginError } from '@happier-dev/plugin-sdk';
 import type { VoiceCredentialAccessPhase, VoiceRawCredentialAccess } from '@happier-dev/plugin-sdk/voice';
 
 import { mergeAbortSignals, throwIfAborted } from '@/utils/runtime/abortSignals';
+import type { PluginReactNativeBundleCacheIdentity } from '@/sync/domains/plugins/ui/reactNativeRuntime';
 
 import { createSelectedVoiceMachineClient } from './selectedMachineClient';
 
@@ -44,7 +44,7 @@ function materializationFailed(): PluginError {
 }
 
 export function createVoiceClientRawCredentialAccess(input: Readonly<{
-    identity: DaemonPluginReactNativeBundleCacheIdentityV1;
+    identity: PluginReactNativeBundleCacheIdentity;
     phase: ClientVoiceCredentialPhase;
     /** Host-owned lifetime for the one settings/prepare/connection invocation. */
     signal: AbortSignal;
@@ -67,7 +67,12 @@ export function createVoiceClientRawCredentialAccess(input: Readonly<{
             options: VoiceRawCredentialCancellationOptions = {},
         ) {
             const request = DaemonVoiceClientRawCredentialMaterializeRequestV1Schema.safeParse({
-                cacheIdentity: identity,
+                contribution: {
+                    pluginId: identity.pluginId,
+                    localId: identity.contributionId,
+                },
+                platform: identity.platform,
+                cacheIdentity: { artifactDigest: identity.artifactDigest },
                 phase: input.phase,
                 expectedCredentialRevision,
                 request: rawRequest,

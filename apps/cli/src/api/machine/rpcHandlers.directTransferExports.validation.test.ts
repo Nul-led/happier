@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
+import { deriveWorkspaceSyncConflictOperationId } from '@happier-dev/protocol';
 
 import { registerMachineDirectTransferExportRpcHandlers } from './rpcHandlers.directTransferExports';
 import type { RpcHandlerRegistrar } from '../rpc/types';
@@ -23,6 +24,54 @@ function createRpcHandlerRegistrar(): {
 }
 
 describe('direct transfer export request validation', () => {
+    it('accepts a valid workspace file export when reviewed resolution export is also registered', async () => {
+        const prepareExportSession = vi.fn(async () => ({ transferId: 'workspace-export', endpointCandidates: [], expiresAt: 9_000 }));
+        const registrar = createRpcHandlerRegistrar();
+        registerMachineDirectTransferExportRpcHandlers({ rpcHandlerManager: registrar.registrar, prepareExportSession });
+        const handler = registrar.handlers.get(RPC_METHODS.DAEMON_DIRECT_TRANSFER_EXPORT_PREPARE);
+        if (!handler) throw new Error('expected direct transfer export prepare handler');
+        const request = {
+            t: 'workspace_file_download_v1' as const,
+            workingDirectory: '/repo',
+            path: 'file.txt',
+            asZip: false,
+        };
+
+        await expect(handler(request)).resolves.toMatchObject({ success: true, transferId: 'workspace-export' });
+        expect(prepareExportSession).toHaveBeenCalledWith(request);
+    });
+
+    it('accepts a reviewed resolution export only with the complete approved source and target expectation', async () => {
+        const operationId = deriveWorkspaceSyncConflictOperationId({
+            actionReceiptId: 'receipt-1', kind: 'selected', workspaceRefId: 'workspace-a', path: 'value.bin',
+        });
+        const prepareExportSession = vi.fn(async () => ({ transferId: operationId, endpointCandidates: [], expiresAt: 9_000 }));
+        const registrar = createRpcHandlerRegistrar();
+        registerMachineDirectTransferExportRpcHandlers({ rpcHandlerManager: registrar.registrar, prepareExportSession });
+        const handler = registrar.handlers.get(RPC_METHODS.DAEMON_DIRECT_TRANSFER_EXPORT_PREPARE);
+        if (!handler) throw new Error('expected direct transfer export prepare handler');
+        const source = { kind: 'file' as const, digest: 'a'.repeat(40), executable: false, size: 3 };
+        const target = { kind: 'file' as const, digest: 'b'.repeat(40), executable: false, size: 3 };
+        const request = {
+            t: 'workspace_sync_resolution_v1' as const,
+            actionReceiptId: 'receipt-1',
+            actionInput: {
+                controllerMachineId: 'machine-a', hubWorkspaceRefId: 'workspace-a', path: 'value.bin',
+                source: { workspaceRefId: 'workspace-b', expected: source },
+                targets: [{ workspaceRefId: 'workspace-a', expected: target }],
+                relationshipIds: ['relationship-1'], strategy: 'use_source' as const,
+            },
+            operationId, alternativeIndex: null, relationshipId: 'relationship-1', sourceRelationshipId: 'relationship-1',
+            sourceMachineId: 'machine-b', sourceWorkspaceRefId: 'workspace-b', sourceExpected: source,
+            targetMachineId: 'machine-a', targetWorkspaceRefId: 'workspace-a', targetExpected: target,
+            path: 'value.bin',
+        };
+        await expect(handler(request)).resolves.toMatchObject({ success: true, transferId: operationId });
+        expect(prepareExportSession).toHaveBeenCalledWith(request);
+        await expect(handler({ ...request, targetExpected: undefined })).resolves.toMatchObject({ success: false });
+        await expect(handler({ ...request, rootPath: '/unreviewed' })).resolves.toMatchObject({ success: false });
+        expect(prepareExportSession).toHaveBeenCalledOnce();
+    });
     it.each([
         {
             t: 'workspace_file_download_v1',

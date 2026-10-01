@@ -185,8 +185,12 @@ describe('ApiMachineClient connected-account authentication command', () => {
                     }],
                 },
             },
-            generation: 'generation-1',
-            immutableGenerationId: 'artifact-1',
+            occurrenceId: 'occurrence-1',
+            sourceCustody: {
+                kind: 'managed' as const,
+                immutableGenerationId: 'artifact-1',
+                installSource: 'npm' as const,
+            },
             accounts: [],
         }));
         const client = new ApiMachineClient('token', createMachine());
@@ -208,7 +212,12 @@ describe('ApiMachineClient connected-account authentication command', () => {
         )).resolves.toMatchObject({
             status: 'described',
             service,
-            generation: 'generation-1',
+            occurrenceId: 'occurrence-1',
+            sourceCustody: {
+                kind: 'managed',
+                immutableGenerationId: 'artifact-1',
+                installSource: 'npm',
+            },
         });
         expect(control).toHaveBeenCalledWith({
             operation: 'describeService',

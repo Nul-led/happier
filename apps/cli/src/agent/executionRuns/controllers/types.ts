@@ -67,6 +67,8 @@ export type ExecutionRunBackendController = {
   }>;
   /** Host-private Workflow persistence route for exactly `currentInputTurn`. */
   workflowObservation?: ExecutionRunWorkflowObservationBinding;
+  /** Admitted Workflow Action leaf identity retained only by this live controller. */
+  workflowRunId?: string;
   /** The first provider-emitted resume identity won over any provisional runtime address. */
   providerResumeIdentityObserved?: boolean;
   lastInputTurn?: ExecutionRunInputTurnV1;

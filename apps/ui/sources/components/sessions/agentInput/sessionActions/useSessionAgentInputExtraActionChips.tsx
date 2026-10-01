@@ -1,5 +1,6 @@
 import { createSessionAccessActionChip } from '@/components/sessions/agentInput/definitions/createSessionAccessActionChip';
 import * as React from 'react';
+import { useDestinationRouter } from '@/components/appShell/workspace/DestinationInstanceHost';
 import type { BackendTargetRefV2Input } from '@happier-dev/protocol';
 
 import type {
@@ -38,7 +39,8 @@ export function useSessionAgentInputExtraActionChips(params: Readonly<{
     reviewCommentDrafts: readonly ReviewCommentDraft[];
     defaultBackendTarget?: BackendTargetRefV2Input | null;
     defaultBackendId: string | null;
-    instructionsText: string;
+    /** The composer text, read when an action chip is pressed. */
+    readInstructionsText: () => string;
     browserContext?: Readonly<{
         state: BrowserContextState;
         onAttachPageReference?: () => void;
@@ -49,6 +51,7 @@ export function useSessionAgentInputExtraActionChips(params: Readonly<{
     actionChips: readonly AgentInputExtraActionChip[];
     attachmentRowItems: readonly AgentInputAttachmentsRowItem[];
 }> {
+    const navigation = useDestinationRouter();
     const reviewWorkspaceCacheKey = React.useMemo(() => (
         params.reviewScope ? tryBuildWorkspaceCacheKey(params.reviewScope) : null
     ), [params.reviewScope]);
@@ -88,6 +91,7 @@ export function useSessionAgentInputExtraActionChips(params: Readonly<{
         if (params.reviewCommentsEnabled) {
             const reviewCommentsPresentation = createReviewCommentsActionChip({
                 sessionId: params.sessionId,
+                navigation,
                 reviewScope: params.reviewScope,
                 reviewCommentDrafts: params.reviewCommentDrafts,
                 onSetDraftIncluded: (draftId, included) => {
@@ -133,16 +137,17 @@ export function useSessionAgentInputExtraActionChips(params: Readonly<{
             accountScopeIsCurrent: params.accountScopeIsCurrent,
             defaultBackendTarget: params.defaultBackendTarget ?? null,
             defaultBackendId: params.defaultBackendId,
-            instructionsText: params.instructionsText,
+            readInstructionsText: params.readInstructionsText,
         }));
 
         return { actionChips: chips, attachmentRowItems };
     }, [
+        navigation,
         params.sessionAccess,
         params.attachmentsUploadsEnabled,
         params.defaultBackendId,
         params.defaultBackendTarget,
-        params.instructionsText,
+        params.readInstructionsText,
         params.isReadOnly,
         params.isUploadingAttachments,
         params.onAppendLinkedPath,

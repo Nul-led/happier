@@ -1,4 +1,5 @@
 import http from 'node:http';
+import { resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { reloadConfiguration } from '@/configuration';
@@ -56,14 +57,16 @@ describe('daemon control client plugin changes', () => {
         response.end(JSON.stringify(
           request.url?.endsWith('/request')
             ? parsedBody.locator === '/tmp/plugin-invalid'
-              ? { kind: 'reviewRequired', pendingChangeId: 'pending-invalid', review: {} }
+              ? { kind: 'reviewRequired', reviewKind: 'installation', reason: 'firstInstall', currentVersion: null, authorityExpansion: [], pendingChangeId: 'pending-invalid', review: {} }
               : {
-                  kind: 'reviewRequired',
+                  kind: 'reviewRequired', reviewKind: 'installation', reason: 'firstInstall', currentVersion: null, authorityExpansion: [],
                   pendingChangeId: 'pending-1',
                   review: createPluginInstallationReviewFixture(),
                 }
             : request.url?.endsWith('/status')
               ? { kind: 'applying', pendingChangeId: parsedBody.pendingChangeId }
+            : request.url?.endsWith('/plugins/development/control')
+              ? { kind: 'status', status: { roots: [], plugins: [] } }
             : request.url?.endsWith('/execute')
               ? { matched: true, result: { ok: true, result: { stored: 'hello' } } }
               : { kind: 'cancelled' },
@@ -89,7 +92,7 @@ describe('daemon control client plugin changes', () => {
         locator: '/tmp/plugin',
         development: false,
       })).resolves.toMatchObject({
-        kind: 'reviewRequired',
+        kind: 'reviewRequired', reviewKind: 'installation', reason: 'firstInstall', currentVersion: null, authorityExpansion: [],
         pendingChangeId: 'pending-1',
         review: { pluginId: 'acme.example' },
       });
@@ -111,17 +114,19 @@ describe('daemon control client plugin changes', () => {
         kind: 'applying',
         pendingChangeId: 'pending-1',
       });
+      await expect(client.controlDaemonPluginDevelopment({
+        kind: 'registerExplicit',
+        rootPath: './relative-plugin',
+      })).resolves.toMatchObject({ kind: 'status' });
       await client.requestDaemonPluginActionExecution({
         actionId: 'acme.notes/store',
         input: { value: 'hello' },
         surface: 'cli',
-        authority: 'present_user',
       });
       await expect(client.requestDaemonPluginActionExecution({
         actionId: 'acme.older-daemon/run',
         input: {},
         surface: 'cli',
-        authority: 'present_user',
       })).resolves.toEqual({
         matched: true,
         result: {
@@ -156,13 +161,17 @@ describe('daemon control client plugin changes', () => {
           body: { pendingChangeId: 'pending-1' },
         },
         {
+          url: '/plugins/development/control',
+          token: 'control-token',
+          body: { kind: 'registerExplicit', rootPath: resolve('./relative-plugin') },
+        },
+        {
           url: '/plugins/actions/execute',
           token: 'control-token',
           body: {
             actionId: 'acme.notes/store',
             input: { value: 'hello' },
             surface: 'cli',
-            authority: 'present_user',
           },
         },
         {
@@ -172,7 +181,6 @@ describe('daemon control client plugin changes', () => {
             actionId: 'acme.older-daemon/run',
             input: {},
             surface: 'cli',
-            authority: 'present_user',
           },
         },
       ]);
@@ -239,15 +247,15 @@ describe('daemon control client plugin changes', () => {
         response.end(JSON.stringify({
           changes: [
             {
-              kind: 'sourceRootReviewRequired',
+              kind: 'reviewRequired', reviewKind: 'projectTrust',
               pendingChangeId: 'pending-1',
               review: { source: { kind: 'path', locator: '/tmp/agent-authored' } },
             },
-            { kind: 'reviewRequired', pendingChangeId: 'pending-2', review },
+            { kind: 'reviewRequired', reviewKind: 'installation', reason: 'firstInstall', currentVersion: null, authorityExpansion: [], pendingChangeId: 'pending-2', review },
             { kind: 'applying', pendingChangeId: 'pending-3' },
             // A malformed review is dropped rather than shown to a user who
             // would be asked to approve a payload the client cannot read.
-            { kind: 'reviewRequired', pendingChangeId: 'pending-4', review: {} },
+            { kind: 'reviewRequired', reviewKind: 'installation', reason: 'firstInstall', currentVersion: null, authorityExpansion: [], pendingChangeId: 'pending-4', review: {} },
             { kind: 'terminal', pendingChangeId: 'pending-5' },
           ],
         }));
@@ -269,7 +277,7 @@ describe('daemon control client plugin changes', () => {
 
       const listed = await client.listDaemonPluginChanges();
       expect(listed.changes.map((entry) => [entry.kind, entry.pendingChangeId])).toEqual([
-        ['sourceRootReviewRequired', 'pending-1'],
+        ['reviewRequired', 'pending-1'],
         ['reviewRequired', 'pending-2'],
         ['applying', 'pending-3'],
       ]);

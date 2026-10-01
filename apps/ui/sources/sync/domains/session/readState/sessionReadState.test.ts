@@ -42,7 +42,7 @@ describe('sessionReadState', () => {
         expect(deriveSessionReadState(session)).toBe('read');
     });
 
-    it('does not offer manual controls for an untracked viewer despite stale unread facts', () => {
+    it('offers mark-unread to an untracked reader, matching the Home that admits the explicit operation', () => {
         const session = {
             seq: 3,
             lastViewedSessionSeq: 0,
@@ -56,7 +56,14 @@ describe('sessionReadState', () => {
                 notification: { level: 'none' as const, source: 'none' as const },
             },
         };
-        expect(resolveSessionReadStateAction(session)).toEqual({ kind: 'none', visible: false });
+        // The Home seeds the actor's own row for an explicit mark-read/mark-unread
+        // without any prior tracking, so an untracked reader is offered the control
+        // rather than silently losing it.
+        expect(resolveSessionReadStateAction(session)).toEqual({
+            kind: 'mark-unread',
+            visible: true,
+            targetState: 'unread',
+        });
         const trackedViewOnlySession = {
             ...session,
             accessLevel: 'view' as const,

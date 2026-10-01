@@ -12,6 +12,7 @@ export type FinishExecutionRun = (
     | 'depth'
     | 'intent'
     | 'profileId'
+    | 'profileSourceCustody'
     | 'backendTarget'
     | 'backendId'
     | 'instructions'

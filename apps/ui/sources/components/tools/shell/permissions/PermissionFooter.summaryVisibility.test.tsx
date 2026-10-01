@@ -2,11 +2,13 @@ import React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
 import { PermissionFooter } from '../permissions/PermissionFooter';
-import { installPermissionShellCommonModuleMocks } from './permissionShellTestHelpers';
-import { renderScreen } from '@/dev/testkit';
+import { installPermissionShellCommonModuleMocks, createPermissionShellRenderer } from './permissionShellTestHelpers';
+
 
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+const renderScreen = createPermissionShellRenderer();
+
 
 installPermissionShellCommonModuleMocks({
     storage: async (importOriginal) => {
@@ -22,12 +24,7 @@ vi.mock('@expo/vector-icons', () => ({
     Ionicons: 'Ionicons',
 }));
 
-vi.mock('@/sync/ops', () => ({
-    sessionAllow: vi.fn(async () => {}),
-    sessionAllowWithPermissionUpdates: vi.fn(async () => {}),
-    sessionDeny: vi.fn(async () => {}),
-    sessionAbort: vi.fn(async () => {}),
-}));
+
 
 vi.mock('@/sync/sync', () => ({
     sync: {

@@ -20,7 +20,14 @@ describe('connected-service catalog hooks', () => {
   let runtime!: ResolvedExecutablePluginRuntimeRegistry;
 
   beforeAll(async () => {
-    runtime = await resolveExecutablePluginRuntimeRegistry();
+    runtime = await resolveExecutablePluginRuntimeRegistry({
+      resolveDevelopmentSourceAuthority: ({ pluginId, rootPath }) => ({
+        kind: 'development',
+        registeredRootId: `connected-service-catalog-test:${pluginId}`,
+        canonicalRoot: rootPath,
+        observedRevision: 1,
+      }),
+    });
     acquireAuthoritativePluginRuntimeRegistryLease.mockImplementation(async () => ({
       registry: runtime,
       source: 'ephemeral',
@@ -30,7 +37,7 @@ describe('connected-service catalog hooks', () => {
   });
 
   afterAll(async () => {
-    await runtime.dispose();
+    await runtime?.dispose();
   });
 
   it('loads focused Agent-auth hooks from the authoritative runtime catalog', async () => {
@@ -190,20 +197,20 @@ describe('connected-service catalog hooks', () => {
     const baseParams = {
       sessionId: 'sess_1',
       agentId: 'gemini' as const,
-      serviceId: 'gemini' as const,
-      fromBindings: { v: 2 as const, bindingsByServiceId: { gemini: { source: 'native' as const } } },
-      toBindings: { v: 2 as const, bindingsByServiceId: { gemini: { source: 'connected' as const, selection: 'profile' as const, profileId: 'work' } } },
+      serviceId: 'happier.agent.gemini/gemini-account' as const,
+      fromBindings: { v: 2 as const, bindingsByServiceId: { 'happier.agent.gemini/gemini-account': { source: 'native' as const } } },
+      toBindings: { v: 2 as const, bindingsByServiceId: { 'happier.agent.gemini/gemini-account': { source: 'connected' as const, selection: 'profile' as const, profileId: 'work' } } },
       previousBinding: {
         source: 'native' as const,
         selection: 'native' as const,
-        serviceId: 'gemini' as const,
+        serviceId: 'happier.agent.gemini/gemini-account' as const,
         profileId: null,
         groupId: null,
       },
       nextBinding: {
         source: 'connected' as const,
         selection: 'profile' as const,
-        serviceId: 'gemini' as const,
+        serviceId: 'happier.agent.gemini/gemini-account' as const,
         profileId: 'work',
         groupId: null,
       },
@@ -215,11 +222,11 @@ describe('connected-service catalog hooks', () => {
     const claudeParams = {
       ...baseParams,
       agentId: 'claude' as const,
-      serviceId: 'anthropic' as const,
-      previousBinding: { ...baseParams.previousBinding, serviceId: 'anthropic' as const },
-      nextBinding: { ...baseParams.nextBinding, serviceId: 'anthropic' as const },
-      fromBindings: { v: 2 as const, bindingsByServiceId: { anthropic: { source: 'native' as const } } },
-      toBindings: { v: 2 as const, bindingsByServiceId: { anthropic: { source: 'connected' as const, selection: 'profile' as const, profileId: 'work' } } },
+      serviceId: 'happier.agent.claude/anthropic' as const,
+      previousBinding: { ...baseParams.previousBinding, serviceId: 'happier.agent.claude/anthropic' as const },
+      nextBinding: { ...baseParams.nextBinding, serviceId: 'happier.agent.claude/anthropic' as const },
+      fromBindings: { v: 2 as const, bindingsByServiceId: { 'happier.agent.claude/anthropic': { source: 'native' as const } } },
+      toBindings: { v: 2 as const, bindingsByServiceId: { 'happier.agent.claude/anthropic': { source: 'connected' as const, selection: 'profile' as const, profileId: 'work' } } },
     };
     await expect(resolveConnectedServiceSwitchContinuity('claude', claudeParams)).resolves.toEqual({
       mode: 'restart_shared_state_required',
@@ -228,26 +235,26 @@ describe('connected-service catalog hooks', () => {
     const codexNativeToConnectedParams = {
       ...baseParams,
       agentId: 'codex' as const,
-      serviceId: 'openai-codex' as const,
-      previousBinding: { ...baseParams.previousBinding, serviceId: 'openai-codex' as const },
-      nextBinding: { ...baseParams.nextBinding, serviceId: 'openai-codex' as const },
-      fromBindings: { v: 2 as const, bindingsByServiceId: { 'openai-codex': { source: 'native' as const } } },
-      toBindings: { v: 2 as const, bindingsByServiceId: { 'openai-codex': { source: 'connected' as const, selection: 'profile' as const, profileId: 'work' } } },
+      serviceId: 'happier.agent.codex/openai-codex' as const,
+      previousBinding: { ...baseParams.previousBinding, serviceId: 'happier.agent.codex/openai-codex' as const },
+      nextBinding: { ...baseParams.nextBinding, serviceId: 'happier.agent.codex/openai-codex' as const },
+      fromBindings: { v: 2 as const, bindingsByServiceId: { 'happier.agent.codex/openai-codex': { source: 'native' as const } } },
+      toBindings: { v: 2 as const, bindingsByServiceId: { 'happier.agent.codex/openai-codex': { source: 'connected' as const, selection: 'profile' as const, profileId: 'work' } } },
     };
     await expect(resolveConnectedServiceSwitchContinuity('codex', codexNativeToConnectedParams)).resolves.toEqual({
-      mode: 'restart_shared_state_required',
+      mode: 'hot_apply',
     });
     await expect(resolveConnectedServiceSwitchContinuity('codex', {
       ...codexNativeToConnectedParams,
       previousBinding: {
         source: 'connected' as const,
         selection: 'profile' as const,
-        serviceId: 'openai-codex' as const,
+        serviceId: 'happier.agent.codex/openai-codex' as const,
         profileId: 'old',
         groupId: null,
       },
-      fromBindings: { v: 2 as const, bindingsByServiceId: { 'openai-codex': { source: 'connected' as const, selection: 'profile' as const, profileId: 'old' } } },
-    })).resolves.toEqual({ mode: 'restart_shared_state_required' });
+      fromBindings: { v: 2 as const, bindingsByServiceId: { 'happier.agent.codex/openai-codex': { source: 'connected' as const, selection: 'profile' as const, profileId: 'old' } } },
+    })).resolves.toEqual({ mode: 'hot_apply' });
   });
 
   it('loads focused runtime auth adapters from Agent registration', async () => {

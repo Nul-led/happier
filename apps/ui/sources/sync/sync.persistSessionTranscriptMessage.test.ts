@@ -1,18 +1,24 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+vi.mock('@/sync/domains/plugins/availability/generatedBundledPluginUiArtifacts', async () => {
+    const { emptyBundledPluginUiAssetsModule } = await import('@/dev/testkit/mocks/bundledPluginUiAssets');
+    return emptyBundledPluginUiAssetsModule;
+});
+
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
 import { TokenStorage } from '@/auth/storage/tokenStorage';
 import { createSessionFixture } from '@/dev/testkit';
 import { encodeBase64 } from '@/encryption/base64';
 import { apiSocket } from '@/sync/api/session/apiSocket';
-import { readStoredSessionMessages } from '@/sync/domains/messages/readStoredSessionMessages';
-import type { PersistSessionTranscriptMessageInput } from '@/sync/domains/messages/persistSessionTranscriptMessage';
+import { readStoredSessionMessages } from "@happier-dev/session-core/messages";
+import type { PersistSessionTranscriptMessageInput } from "@happier-dev/session-core/messages";
 import { setActiveServerId, upsertServerProfile } from '@/sync/domains/server/serverProfiles';
 import { storage } from '@/sync/domains/state/storage';
 import { Encryption } from '@/sync/encryption/encryption';
 import { resetServerReachabilitySupervisors } from '@/sync/runtime/connectivity/serverReachabilitySupervisorPool';
+import { switchConnectionToActiveServer } from '@/sync/runtime/orchestration/connectionManager';
 import { sync } from '@/sync/sync';
-import type { NormalizedMessage } from '@/sync/typesRaw';
+import type { NormalizedMessage } from "@happier-dev/session-core/raw";
 import { resetRuntimeFetch, setRuntimeFetch } from '@/utils/system/runtimeFetch';
 import { buildVoiceTranscriptHistorySessionMetadata } from '@/voice/persistence/voiceTranscriptHistorySession';
 import { createVoiceTranscriptProjector } from '@/voice/transcript/VoiceTranscriptProjector';
@@ -97,6 +103,9 @@ describe('sync.persistSessionTranscriptMessage', () => {
             name: 'Voice History owner',
         })).id;
         await setActiveServerId(activeServerId, { scope: 'device' });
+        // Publish the selected Home through its real runtime owner before mounting the Account.
+        const credentialsForServer = vi.spyOn(TokenStorage, 'getCredentialsForServerUrl').mockResolvedValue(null);
+        await switchConnectionToActiveServer();
         storage.getState().activateProfileScope({
             serverId: activeServerId,
             accountId: 'voice-account-a',
@@ -110,7 +119,7 @@ describe('sync.persistSessionTranscriptMessage', () => {
         activeEncryption = await Encryption.create(secretBytes);
         Reflect.set(sync, 'credentials', credentials);
         sync.encryption = activeEncryption;
-        vi.spyOn(TokenStorage, 'getCredentialsForServerUrl').mockResolvedValue(credentials);
+        credentialsForServer.mockResolvedValue(credentials);
         vi.spyOn(apiSocket, 'request').mockRejectedValue(
             new Error('dynamic active request must not own transcript persistence'),
         );

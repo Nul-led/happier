@@ -1,12 +1,14 @@
 import {
+  ApprovalRequestSchema,
   createActionExecutor,
   isActionEnabledByActionsSettings,
   isApprovalRequiredByActionsSettings,
-  createUnavailableRuntimeActionExecutor,
+  readSessionRolesV1,
   type ActionExecutorDeps,
 } from '@happier-dev/protocol';
 
 import { createActionSettingsProvider, type RuntimeActionSettingsProvider } from '@/settings/actionsSettingsProvider';
+import { createCliBrowserRuntimeActionExecutor } from '@/daemon/browser/actions/controlTransport';
 
 import { createCliActionDeps } from './createCliActionDeps';
 import { createActionExecutionHookDeps } from './createActionExecutionHookDeps';
@@ -93,7 +95,7 @@ export function createCliActionExecutorHarness(
           return getApproval ? await getApproval({ artifactId: args.artifactId, serverId: args.serverId ?? null }) : null;
         },
       });
-      return { ...result, request: args.request };
+      return { ...result, request: ApprovalRequestSchema.parse(result.request) };
     },
     approvalsResolveBlockingDecision: async (args: ApprovalResolveBlockingDecisionArgs) =>
       await coordinator.resolveBlockingDecision({
@@ -103,7 +105,7 @@ export function createCliActionExecutorHarness(
       }),
     isActionEnabled,
     isActionApprovalRequired,
-    runtimeActionExecute: createUnavailableRuntimeActionExecutor(),
+    runtimeActionExecute: createCliBrowserRuntimeActionExecutor({ sessionId: params.sessionId }),
     ...createActionExecutionHookDeps(),
     ...(overrides ?? {}),
   };
@@ -140,6 +142,9 @@ export function createCliActionExecutorHarness(
     ...(params.actionsSettingsProvider
       ? { actionsSettings: params.actionsSettingsProvider.getActionsSettings() }
       : {}),
+    ...(params.getCurrentSessionMetadata ? {
+      sessionRoleConfiguration: readSessionRolesV1(params.getCurrentSessionMetadata()) ?? undefined,
+    } : {}),
   });
 
   return {

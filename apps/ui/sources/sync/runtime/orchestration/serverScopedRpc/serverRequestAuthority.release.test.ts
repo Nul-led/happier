@@ -45,6 +45,28 @@ describe('server account session request authority disposal', () => {
         expect(releaseTransport).toHaveBeenCalledTimes(1);
     });
 
+    it('transfers carrier release custody to a pooled socket exactly once without leaving authority.release as a competing releaser', async () => {
+        const authority = await captureServerRequestAuthorityForServerAccountScope({
+            scope: { serverId: 'server-a', accountId: 'account-a' },
+            activeRequest: vi.fn(),
+        });
+
+        const transferCarrierCustody = authority.transferCarrierCustody;
+        expect(transferCarrierCustody).toBeTypeOf('function');
+        if (!transferCarrierCustody) throw new Error('Expected carrier custody transfer support');
+        const releaseCarrier = transferCarrierCustody();
+        expect(() => transferCarrierCustody()).toThrow('carrier custody is no longer available');
+        await authority.release();
+        await authority.release();
+
+        expect(releaseTransport).not.toHaveBeenCalled();
+
+        await releaseCarrier();
+        await releaseCarrier();
+
+        expect(releaseTransport).toHaveBeenCalledTimes(1);
+    });
+
     it('keeps release retry custody after a rejection: coalesces concurrent callers, propagates the first rejection, retries once on the next explicit call, then idles', async () => {
         releaseTransport.mockRejectedValueOnce(new Error('release failed'));
 

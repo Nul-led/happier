@@ -64,6 +64,7 @@ installSessionShellCommonModuleMocks({
 });
 
 vi.mock('@/utils/sessions/sessionUtils', () => ({
+    isUntitledSessionName: (name: string) => name === 'session.untitled',
     getSessionName: () => 'Session',
     getSessionSubtitle: () => 'Subtitle',
     getSessionAvatarId: () => 'avatar',

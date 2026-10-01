@@ -361,7 +361,7 @@ vi.mock('@/sync/ops/sessionOrganization', () => ({
         const result = await resolveSessionOrganizationMutationScopeSpy(serverId);
         if (result.ok) return result.scope;
         const { HappyError } = await import('@/utils/errors/errors');
-        throw new HappyError(`homeGovernance.unavailableTitle: ${result.requestedServerId || serverId}`, true);
+        throw new HappyError(`homeGovernance.unavailableTitle: ${serverId}`, true);
     },
     writeSessionOrganizationFolderAssignment: setSessionFolderAssignmentSpy,
     writeSessionOrganizationFolders: vi.fn(async () => undefined),
@@ -388,9 +388,6 @@ vi.mock('@/components/account/RecoveryKeyReminderBanner', () => ({
     },
 }));
 
-vi.mock('@/components/ui/feedback/UpdateBanner', () => ({
-    UpdateBanner: 'UpdateBanner',
-}));
 
 vi.mock('@/components/ui/text/Text', () => ({
     Text: 'Text',

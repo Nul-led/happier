@@ -136,16 +136,6 @@ function createRunner({
         const taskId = startResult?.taskId ?? defaultTaskId;
         if (startResult && 'snapshot' in startResult) {
             setSnapshot(taskId, startResult.snapshot ?? null);
-        } else if (spec.kind === 'remote.ssh.manageHost.v1' && (spec.params as any)?.action === 'relayRuntime.status' && !snapshotById.has(taskId)) {
-            setSnapshot(taskId, createSucceededSnapshot(taskId, {
-                currentStepId: 'relay.runtime.status',
-                latestMessage: 'Not installed',
-                data: {
-                    relayRuntime: {
-                        installed: false,
-                    },
-                },
-            }));
         } else if (snapshot !== undefined && !defaultSnapshotAssigned && !snapshotById.has(taskId)) {
             defaultSnapshotAssigned = true;
             setSnapshot(taskId, snapshot);
@@ -570,8 +560,8 @@ describe('RemoteSshChecklistStep', () => {
             await (requirePrimary().onPress as any)?.();
         });
 
-        expect(runnerHarness.startSpy).toHaveBeenCalledTimes(2);
-        const spec = runnerHarness.startSpy.mock.calls[1]?.[0] as SystemTaskSpec | undefined;
+        expect(runnerHarness.startSpy).toHaveBeenCalledTimes(1);
+        const spec = runnerHarness.startSpy.mock.calls[0]?.[0] as SystemTaskSpec | undefined;
         expect((spec?.params as any)?.ssh?.auth).toBe('keyfile');
         expect((spec?.params as any)?.ssh?.identityPrivateKey).toBe('MY_PRIVATE_KEY');
     });
@@ -634,8 +624,8 @@ describe('RemoteSshChecklistStep', () => {
             await (requirePrimary().onPress as any)?.();
         });
 
-        expect(runnerHarness.startSpy).toHaveBeenCalledTimes(2);
-        const spec = runnerHarness.startSpy.mock.calls[1]?.[0] as SystemTaskSpec | undefined;
+        expect(runnerHarness.startSpy).toHaveBeenCalledTimes(1);
+        const spec = runnerHarness.startSpy.mock.calls[0]?.[0] as SystemTaskSpec | undefined;
         expect((spec?.params as any)?.ssh?.target).toBe('dev@example.test');
         expect((spec?.params as any)?.ssh?.port).toBe(2222);
         expect((spec?.params as any)?.ssh?.auth).toBe('password');
@@ -787,7 +777,7 @@ describe('RemoteSshChecklistStep', () => {
         expect(screen.findAllByTestId('remote-ssh-step-remote-host-picker')).toHaveLength(0);
     });
 
-    it('branches remote relay hosting into a relay-host plan and uses serviceMode=none for the bootstrap task', async () => {
+    it('routes the remote Personal Home plan through the canonical remote host action', async () => {
         const { RemoteSshChecklistStep } = await import('./RemoteSshChecklistStep');
         const runnerHarness = createRunner();
         let primary: { onPress: (() => void) | (() => Promise<void>); disabled: boolean } | null = null;
@@ -838,11 +828,21 @@ describe('RemoteSshChecklistStep', () => {
             await (requirePrimary().onPress as any)?.();
         });
 
-        expect(runnerHarness.startSpy).toHaveBeenCalledTimes(2);
-        const spec = runnerHarness.startSpy.mock.calls[1]?.[0] as SystemTaskSpec | undefined;
-        expect(spec?.kind).toBe('remote.ssh.bootstrapMachine.v1');
-        expect((spec?.params as any)?.serviceMode).toBe('none');
-        expect((spec?.params as any)?.relayRuntime?.enabled).toBe(true);
+        expect(runnerHarness.startSpy).toHaveBeenCalledTimes(1);
+        const spec = runnerHarness.startSpy.mock.calls[0]?.[0] as SystemTaskSpec | undefined;
+        expect(spec).toMatchObject({
+            kind: 'remote.ssh.manageHost.v1',
+            params: {
+                action: 'personalHome.create',
+                relayRuntime: { mode: 'user' },
+                pairDevice: true,
+                enrollInvokingClient: true,
+                ssh: { target: 'dev@example.test', auth: 'agent' },
+            },
+        });
+        expect(runnerHarness.startSpy.mock.calls.some(
+            ([candidate]) => candidate.kind === 'remote.ssh.bootstrapMachine.v1',
+        )).toBe(false);
         const executionStatusSlot = screen.findByTestId('remote-ssh-step-execution-row-install_relay_runtime-status-slot');
         if (!executionStatusSlot) {
             throw new Error('Expected remote SSH execution status slot');
@@ -1017,141 +1017,6 @@ describe('RemoteSshChecklistStep', () => {
         expect(screen.getTextContent()).not.toContain('127.0.0.1:53288');
     });
 
-    it('allows deselecting relay runtime install from the plan and forwards that choice into the bootstrap task spec', async () => {
-        const { RemoteSshChecklistStep } = await import('./RemoteSshChecklistStep');
-        const runnerHarness = createRunner();
-        let primary: { onPress: (() => void) | (() => Promise<void>); disabled: boolean } | null = null;
-
-        const screen = await renderScreen(React.createElement(RemoteSshChecklistStep, {
-            testID: 'remote-ssh-step',
-            mode: 'remoteRelayHost',
-            relayUrl: 'https://relay.example.test',
-            runner: runnerHarness.runner,
-            initialDraft: {
-                username: 'dev',
-                host: 'example.test',
-            },
-            onWizardPrimaryChange: (state) => {
-                primary = state as any;
-            },
-        }));
-
-        const requirePrimary = () => {
-            if (!primary) {
-                throw new Error('Expected wizard primary override');
-            }
-            return primary;
-        };
-
-        await act(async () => {
-            await (requirePrimary().onPress as any)?.();
-        });
-        await flushHookEffects({ cycles: 3, turns: 3 });
-
-        expect(screen.findByTestId('remote-ssh-step-plan-row-install_relay_runtime')).toBeTruthy();
-
-        await act(async () => {
-            await screen.pressByTestIdAsync('remote-ssh-step-plan-row-install_relay_runtime');
-        });
-
-        await act(async () => {
-            await (requirePrimary().onPress as any)?.();
-        });
-
-        const spec = runnerHarness.startSpy.mock.calls[1]?.[0] as SystemTaskSpec | undefined;
-        expect(((spec?.params as any)?.relayRuntime?.enabled ?? false)).toBe(false);
-    });
-
-    it('detects an existing remote relay runtime during the plan phase and skips reinstalling it during bootstrap', async () => {
-        const { RemoteSshChecklistStep } = await import('./RemoteSshChecklistStep');
-        const runnerHarness = createRunner();
-        runnerHarness.startSpy.mockImplementation(async (spec: SystemTaskSpec) => {
-            const taskId = `task-${runnerHarness.startSpy.mock.calls.length + 1}`;
-            if (spec.kind === 'remote.ssh.manageHost.v1' && (spec.params as any)?.action === 'relayRuntime.status') {
-                runnerHarness.setSnapshot(taskId, createSucceededSnapshot(taskId, {
-                    currentStepId: 'relay.runtime.status',
-                    latestMessage: 'Detected',
-                    data: {
-                        relayRuntime: {
-                            installed: true,
-                            relayUrl: 'https://relay.remote.example.test',
-                        },
-                    },
-                }));
-            } else if (spec.kind === 'remote.ssh.bootstrapMachine.v1') {
-                runnerHarness.setSnapshot(taskId, createSucceededSnapshot(taskId, {
-                    currentStepId: 'ssh.complete',
-                    latestMessage: 'Complete',
-                    data: {
-                        machineId: 'machine-1',
-                    },
-                }));
-            }
-            return taskId;
-        });
-        const completed: Array<{
-            machineId: string | null;
-            relayRuntimeUrl: string | null;
-            relayAccessTarget: RelayAccessTaskTarget | null;
-            mode: RemoteSshChecklistMode;
-        }> = [];
-        let primary: { onPress: (() => void) | (() => Promise<void>); disabled: boolean } | null = null;
-
-        const screen = await renderScreen(React.createElement(RemoteSshChecklistStep, {
-            testID: 'remote-ssh-step',
-            mode: 'remoteRelayHost',
-            relayUrl: 'https://relay.example.test',
-            runner: runnerHarness.runner,
-            initialDraft: {
-                username: 'dev',
-                host: 'example.test',
-            },
-            onCompleted: (payload) => {
-                completed.push(payload);
-            },
-            onWizardPrimaryChange: (state) => {
-                primary = state as any;
-            },
-        }));
-
-        const requirePrimary = () => {
-            if (!primary) {
-                throw new Error('Expected wizard primary override');
-            }
-            return primary;
-        };
-
-        await act(async () => {
-            await (requirePrimary().onPress as any)?.();
-        });
-        await flushHookEffects({ cycles: 3, turns: 3 });
-
-        expect(runnerHarness.startSpy).toHaveBeenCalledTimes(1);
-        expect(runnerHarness.startSpy.mock.calls[0]?.[0]).toMatchObject({
-            kind: 'remote.ssh.manageHost.v1',
-            params: {
-                action: 'relayRuntime.status',
-            },
-        });
-        expect(screen.getTextContent()).toContain('https://relay.remote.example.test');
-
-        await act(async () => {
-            await (requirePrimary().onPress as any)?.();
-        });
-
-        expect(runnerHarness.startSpy).toHaveBeenCalledTimes(2);
-        const bootstrapSpec = runnerHarness.startSpy.mock.calls[1]?.[0] as SystemTaskSpec | undefined;
-        expect(bootstrapSpec?.kind).toBe('remote.ssh.bootstrapMachine.v1');
-        expect((bootstrapSpec?.params as any)?.relayRuntime).toBeUndefined();
-        await flushHookEffects({ cycles: 3, turns: 3 });
-        expect(completed).toEqual([
-            expect.objectContaining({
-                machineId: 'machine-1',
-                relayRuntimeUrl: 'https://relay.remote.example.test',
-            }),
-        ]);
-    });
-
     it('uses wizard chrome actions for SSH password prompts', async () => {
         const { RemoteSshChecklistStep } = await import('./RemoteSshChecklistStep');
         const runnerHarness = createRunner({
@@ -1217,7 +1082,7 @@ describe('RemoteSshChecklistStep', () => {
             await (requirePrimary().onPress as any)?.();
         });
 
-        expect(runnerHarness.startSpy).toHaveBeenCalledTimes(2);
+        expect(runnerHarness.startSpy).toHaveBeenCalledTimes(1);
         expect(screen.findByTestId('remote-ssh-step-execution')).toBeTruthy();
 
         expect(requireSkip().hidden).not.toBe(true);

@@ -14,6 +14,8 @@ import { fetchAndApplyMachines, type MachineDataKeyCacheEntry } from '@/sync/eng
 import { fetchAndApplySessions } from '@/sync/engine/sessions/sessionSnapshot';
 import { resolveUiClientEncryptionRequirementForScope } from '@/sync/domains/settings/clientEncryptionRequirement';
 import { createServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
+import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
+import { getActiveServerAccountScope } from '@/sync/domains/scope/activeServerAccountScope';
 import {
     getEffectiveServerSelectionFromRawSettings,
     type RawServerSelectionSettings,
@@ -41,6 +43,7 @@ import {
     subscribeApplyingActiveServer,
 } from '@/sync/runtime/orchestration/connectionManager';
 import { storage } from '@/sync/domains/state/storageStore';
+import { resolveWarmCacheAccountScope } from '@/sync/domains/state/warmCachePersistence';
 import type { Machine, Session } from '@/sync/domains/state/storageTypes';
 import { canonicalizeServerUrl } from '@/sync/domains/server/url/serverUrlCanonical';
 import {
@@ -111,7 +114,7 @@ import { actionOperationPresentationCoordinator } from '@/components/inbox/actio
 import {
     advanceOrdinarySessionListFrontier,
     EMPTY_ORDINARY_SESSION_LIST_FRONTIER,
-    isOrdinarySessionListFrontierComplete,
+    isOrdinarySessionListFrontierExhausted,
     resolveOrdinarySessionListContinuation,
     type OrdinarySessionListFrontier,
 } from '@/sync/engine/sessions/ordinarySessionListFrontier';
@@ -154,7 +157,7 @@ type ManagedConcurrentServer = {
     machineDataKeys: Map<string, MachineDataKeyCacheEntry>;
     irohLease: ResolvedServerScopedTransport | null;
     irohConfigKey: string | null;
-    refreshQueued: boolean;
+    refreshQueued: 'continue' | 'replace' | null;
     refreshInFlight: Promise<void> | null;
     refreshAbortController: AbortController | null;
     refreshTimer: ReturnType<typeof setTimeout> | null;
@@ -181,6 +184,51 @@ function readRefreshIntervalMs(): number {
 }
 
 const managedServers = new Map<string, ManagedConcurrentServer>();
+
+function readCredentialAccountId(credentials: AuthCredentials): string | null {
+    try {
+        return parseToken(credentials.token);
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Before the focused runtime is applied (a cold restore still preparing its carrier,
+ * or a Home that cannot be reached), the focused Home's rows come only from Sync's
+ * local warm-cache phase, which is keyed by the credential's own Account. That key
+ * is the proof of their Account; without it the rows were cleared, and the empty
+ * membership then deleted the persisted cache, so an offline reload came up empty.
+ */
+function readFocusedHomeLocalRowsAccountId(serverId: string): string | null {
+    if (!areServerProfileIdentifiersEquivalent(getActiveServerSnapshot().serverId, serverId)) return null;
+    return resolveWarmCacheAccountScope(null);
+}
+
+/** Retained rows are trusted only while an existing runtime (or Account-keyed local restore) proves their Account. */
+function retireReplacedSessionListAccount(serverId: string, accountId: string | null): boolean {
+    const entry = managedServers.get(serverId);
+    const activeScope = entry ? null : getActiveServerAccountScope();
+    const existingAccountId = entry
+        ? readCredentialAccountId(entry.credentials)
+        : activeScope && areServerProfileIdentifiersEquivalent(activeScope.serverId, serverId)
+            ? activeScope.accountId
+            : readFocusedHomeLocalRowsAccountId(serverId);
+    if (accountId && existingAccountId === accountId) return false;
+    // Stop the old publisher before withdrawing its rows, membership and frontier.
+    // This also fences a late HTTP/hydration completion from the previous Account.
+    if (entry) stopManagedServer(serverId);
+    storage.getState().clearSessionListRowsForServerScope(serverId);
+    updateConcurrentSessionListCache({ serverId, entry: null });
+    return entry !== undefined;
+}
+
+/** Validate a consumer binding through the runtime that owns the retained corpus. */
+export function prepareSessionListAccountScope(scope: ServerAccountScope): void {
+    const serverId = normalizeServerId(scope.serverId);
+    if (!serverId) return;
+    if (retireReplacedSessionListAccount(serverId, scope.accountId)) scheduleReconcile();
+}
 
 function areAuthCredentialsEquivalent(a: AuthCredentials, b: AuthCredentials): boolean {
     if (a.token !== b.token) return false;
@@ -697,10 +745,10 @@ async function refreshServerSnapshot(entry: ManagedConcurrentServer, signal: Abo
             continuation,
             result,
         });
-        if (isOrdinarySessionListFrontierComplete(entry.sessionListFrontier)) {
+        if (isOrdinarySessionListFrontierExhausted(entry.sessionListFrontier)) {
             noteConcurrentSessionListObserved(entry);
         } else {
-            entry.refreshQueued = true;
+            entry.refreshQueued ??= 'continue';
         }
 
         await fetchAndApplyMachines({
@@ -787,6 +835,7 @@ export function readConcurrentOrdinarySessionListLifecycle(
 export async function loadNextConcurrentOrdinarySessionListPage(serverIdRaw: string): Promise<void> {
     const entry = managedServers.get(normalizeServerId(serverIdRaw));
     if (!entry) return;
+    if (entry.refreshInFlight) return entry.refreshInFlight;
     if (!resolveOrdinarySessionListContinuation(entry.sessionListFrontier)) return;
     await runRefresh(entry, 'other');
 }
@@ -795,8 +844,7 @@ export async function loadNextConcurrentOrdinarySessionListPage(serverIdRaw: str
 export async function refreshConcurrentOrdinarySessionList(serverIdRaw: string): Promise<void> {
     const entry = managedServers.get(normalizeServerId(serverIdRaw));
     if (!entry) return;
-    entry.sessionListFrontier = EMPTY_ORDINARY_SESSION_LIST_FRONTIER;
-    await runRefresh(entry, 'other');
+    await runRefresh(entry, 'other', 'replace');
 }
 
 export function isConcurrentSessionListQueryHomeOnline(serverIdRaw: string): boolean {
@@ -820,6 +868,9 @@ export function getConcurrentSessionListQueryHomeAvailability(
     if (entry) {
         if (entry.reachabilityState.phase === 'online') return 'online';
         if (entry.reachabilityState.phase === 'idle' || entry.reachabilityState.phase === 'connecting') {
+            if (!entry.irohLease && storage.getState().concurrentSessionListCacheByServerId?.[serverId]?.listObservation?.phase === 'offline') {
+                return 'offline';
+            }
             return 'pending';
         }
         return 'offline';
@@ -877,9 +928,7 @@ export async function fetchConcurrentSessionListQueryPage(
         clientEncryptionRequirement: resolveEntryClientEncryptionRequirement(entry),
         serverId,
         source: page.source,
-        // Each membership is a distinct reader of this Home: an ad-hoc row-only
-        // read must not abort the mounted list's in-flight hydration.
-        sessionListReadScopeId: page.membership,
+        signal: page.signal,
         sessionListPageSize: page.limit ?? (page.source.kind === 'query' ? page.source.body.limit : undefined),
         sessionListCursor: page.cursor,
         sessionListAttentionCursor: page.attentionCursor,
@@ -911,7 +960,7 @@ export async function fetchConcurrentSessionListQueryPage(
             // Row hydration from an ad-hoc Voice/Action read is not a list observation: it owns no
             // membership, so letting it advance this Home's currentness would make a one-off
             // command answer "how fresh is this Home's Session list" (Lane 07.2 §6, L07-I35).
-            if (page.membership !== 'rowOnly') noteConcurrentSessionListObserved(entry);
+            if (page.membership === 'ordinary') noteConcurrentSessionListObserved(entry);
         },
         applySessions: () => {},
         log: { log: () => {} },
@@ -925,12 +974,7 @@ export async function fetchConcurrentSessionListQueryPage(
  * is read under the strictest requirement rather than borrowing another Account's.
  */
 function resolveEntryClientEncryptionRequirement(entry: ManagedConcurrentServer): ClientEncryptionRequirement {
-    let accountId: string | null = null;
-    try {
-        accountId = parseToken(entry.credentials.token);
-    } catch {
-        accountId = null;
-    }
+    const accountId = readCredentialAccountId(entry.credentials);
     const scope = createServerAccountScope(entry.id, accountId);
     return scope
         ? resolveUiClientEncryptionRequirementForScope({ scope, focusedSettings: storage.getState().settings })
@@ -959,15 +1003,26 @@ function queueRefresh(entry: ManagedConcurrentServer, source: 'socket' | 'other'
     }, REFRESH_DEBOUNCE_MS);
 }
 
-async function runRefresh(entry: ManagedConcurrentServer, source: 'socket' | 'other'): Promise<void> {
+async function runRefresh(
+    entry: ManagedConcurrentServer,
+    source: 'socket' | 'other',
+    intent: 'continue' | 'replace' = 'continue',
+): Promise<void> {
     if (!isManagedServerActive(entry)) return;
     if (entry.reachabilityState.phase !== 'online') return;
     if (entry.refreshInFlight) {
-        entry.refreshQueued = true;
+        if (intent === 'replace' || entry.refreshQueued === null) entry.refreshQueued = intent;
         if (source === 'socket') {
             syncPerformanceTelemetry.count('sync.concurrent.refresh.socket', { inFlightQueued: 1 });
         }
-        return;
+        // The current attempt installs the coalesced replacement before settling.
+        // A Refresh caller must await that replacement, not just the old page.
+        return entry.refreshInFlight.then(() => entry.refreshInFlight ?? Promise.resolve());
+    }
+    if (intent === 'replace') {
+        if (entry.refreshTimer) clearTimeout(entry.refreshTimer);
+        entry.refreshTimer = null;
+        entry.sessionListFrontier = EMPTY_ORDINARY_SESSION_LIST_FRONTIER;
     }
     entry.refreshInFlight = (async () => {
         const abortController = new AbortController();
@@ -1008,21 +1063,21 @@ async function runRefresh(entry: ManagedConcurrentServer, source: 'socket' | 'ot
                 entry.refreshAbortController = null;
             }
         }
-    })();
-    try {
-        await entry.refreshInFlight;
-    } finally {
+    })().finally(() => {
         entry.refreshInFlight = null;
         if (entry.refreshQueued && isManagedServerActive(entry)) {
-            entry.refreshQueued = false;
-            queueRefresh(entry);
+            const queuedIntent = entry.refreshQueued;
+            entry.refreshQueued = null;
+            if (queuedIntent === 'replace') void runRefresh(entry, 'other', 'replace');
+            else queueRefresh(entry);
         }
-    }
+    });
+    await entry.refreshInFlight;
 }
 
 async function disposeManagedServer(entry: ManagedConcurrentServer): Promise<void> {
     entry.reachabilityAcquireGeneration += 1;
-    entry.refreshQueued = false;
+    entry.refreshQueued = null;
     entry.refreshAbortController?.abort('secondary-runtime-disposed');
     entry.refreshAbortController = null;
     if (entry.refreshTimer) {
@@ -1059,11 +1114,11 @@ function stopManagedServer(serverId: string): void {
     void disposeManagedServer(entry);
 }
 
-async function createManagedServer(
+function createManagedServer(
     target: ConcurrentTarget,
     credentials: AuthCredentials,
-    irohLease: ResolvedServerScopedTransport | null,
-): Promise<ManagedConcurrentServer> {
+    previous: ManagedConcurrentServer | undefined,
+): ManagedConcurrentServer {
     const normalizedServerUrl = normalizeServerUrl(target.serverUrl) || target.serverUrl;
     const entry: ManagedConcurrentServer = {
         id: target.id,
@@ -1089,14 +1144,14 @@ async function createManagedServer(
         sessionDataKeys: new Map<string, Uint8Array>(),
         sessionDataKeyEnvelopes: new Map<string, string>(),
         machineDataKeys: new Map<string, MachineDataKeyCacheEntry>(),
-        irohLease,
+        irohLease: null,
         irohConfigKey: target.irohConfigKey ?? null,
-        refreshQueued: false,
+        refreshQueued: null,
         refreshInFlight: null,
         refreshAbortController: null,
         refreshTimer: null,
-        sessionListFrontier: EMPTY_ORDINARY_SESSION_LIST_FRONTIER,
-        hasFetchedSessionListSnapshot: false,
+        sessionListFrontier: previous?.sessionListFrontier ?? EMPTY_ORDINARY_SESSION_LIST_FRONTIER,
+        hasFetchedSessionListSnapshot: previous?.hasFetchedSessionListSnapshot ?? false,
         // Recreating the managed entry (credential rotation, carrier change) does not un-observe
         // this Home: its retained rows keep the success time already published for that exact
         // serverId, so the first attempt of the new entry cannot report "never observed".
@@ -1105,10 +1160,26 @@ async function createManagedServer(
             ?.listObservation?.lastSuccessAt ?? null,
     };
 
-    // The reachability subscription emits synchronously. Publish the exact
-    // entry first so an already-online shared supervisor can initialize it.
+    // This exact Account owns the retained corpus while its replacement carrier
+    // is acquired. Idle entries admit no reads or socket ingress; the retired
+    // transport is never kept alive as a fallback for an unverified carrier.
     managedServers.set(entry.id, entry);
-    try {
+    publishConcurrentSessionListObservation({
+        entry,
+        phase: entry.lastSessionListSuccessAt === null ? 'loading' : 'refreshing',
+    });
+    return entry;
+}
+
+async function connectManagedServer(
+    entry: ManagedConcurrentServer,
+    irohLease: ResolvedServerScopedTransport,
+): Promise<void> {
+    const normalizedServerUrl = entry.serverUrl;
+    const credentials = entry.credentials;
+    entry.irohLease = irohLease;
+    // The reachability subscription emits synchronously. The exact entry is
+    // already published, and only its verified carrier can initialize it.
     entry.reachabilityUnsubscribe = subscribeServerReachabilityState(normalizedServerUrl, (state) => {
         if (!isManagedServerActive(entry)) return;
         const previousPhase = entry.reachabilityState.phase;
@@ -1116,6 +1187,7 @@ async function createManagedServer(
 
         if (state.phase === 'auth_failed') {
             updateConcurrentSessionListCache({ serverId: entry.id, entry: null });
+            clearConcurrentSessionListCache(entry.id);
             updateConcurrentMachineListCache({
                 serverId: entry.id,
                 machines: null,
@@ -1232,14 +1304,10 @@ async function createManagedServer(
     }, credentials.token);
 
     await acquireManagedServerReachability(entry);
-    return entry;
-    } catch (error) {
-        await disposeManagedServer(entry);
-        throw error;
-    }
 }
 
 async function acquireManagedServerReachability(entry: ManagedConcurrentServer): Promise<void> {
+    if (!isManagedServerActive(entry) || !entry.irohLease) return;
     const acquireGeneration = entry.reachabilityAcquireGeneration + 1;
     entry.reachabilityAcquireGeneration = acquireGeneration;
     const lease = await acquireServerReachabilitySupervisor({
@@ -1344,8 +1412,7 @@ async function reconcileConcurrentServers(requestRevision: number): Promise<void
             return;
         }
         if (!credentials) {
-            stopManagedServer(target.id);
-            updateConcurrentSessionListCache({ serverId: target.id, entry: null });
+            retireReplacedSessionListAccount(target.id, null);
             updateConcurrentMachineListCache({
                 serverId: target.id,
                 machines: null,
@@ -1354,13 +1421,14 @@ async function reconcileConcurrentServers(requestRevision: number): Promise<void
             return;
         }
 
+        retireReplacedSessionListAccount(target.id, readCredentialAccountId(credentials));
         const existing = managedServers.get(target.id);
         if (
             existing
             && existing.serverUrl === target.serverUrl
             && areAuthCredentialsEquivalent(existing.credentials, credentials)
             && existing.irohConfigKey === (target.irohConfigKey ?? null)
-            && (target.irohConfigKey === undefined || existing.irohLease !== null)
+            && existing.irohLease !== null
         ) {
             if (existing.serverName !== target.serverName) {
                 existing.serverName = target.serverName;
@@ -1381,11 +1449,12 @@ async function reconcileConcurrentServers(requestRevision: number): Promise<void
         if (existing) {
             stopManagedServer(target.id);
         }
-        let irohLease: ResolvedServerScopedTransport | null;
+        const next = createManagedServer(target, credentials, existing);
+        let irohLease: ResolvedServerScopedTransport;
         try {
             irohLease = await acquireConcurrentHomeTransport(target, credentials);
         } catch {
-            if (!started || requestRevision !== reconcileRequestRevision) {
+            if (!started || requestRevision !== reconcileRequestRevision || !isManagedServerActive(next)) {
                 return;
             }
             // Unsafe Iroh verification failures fail this Home closed. Do not
@@ -1401,19 +1470,24 @@ async function reconcileConcurrentServers(requestRevision: number): Promise<void
             publishConcurrentSessionListTargetObservation({ target, phase: 'offline' });
             return;
         }
-        if (!started || requestRevision !== reconcileRequestRevision) {
-            await irohLease?.release().catch(() => undefined);
+        if (!started || requestRevision !== reconcileRequestRevision || !isManagedServerActive(next)) {
+            await irohLease.release().catch(() => undefined);
             return;
         }
-        let next: ManagedConcurrentServer;
         try {
-            next = await createManagedServer(target, credentials, irohLease);
+            await connectManagedServer(next, irohLease);
         } catch {
-            // Construction rollback is exact and local; a later reconciliation
-            // retries this Home without poisoning other secondary runtimes.
-            if (started && requestRevision === reconcileRequestRevision) {
+            // Replace only this failed owner, before asynchronous cleanup. Its
+            // Account/frontier remain proven, but none of its partial network
+            // resources become the retained corpus's new publisher.
+            const retained = isManagedServerActive(next)
+                ? createManagedServer(target, credentials, next)
+                : null;
+            const disposing = disposeManagedServer(next);
+            if (retained && isManagedServerActive(retained)) {
                 publishConcurrentSessionListTargetObservation({ target, phase: 'offline' });
             }
+            await disposing;
             return;
         }
         // Reconcile the complete descriptor through this secondary Home's

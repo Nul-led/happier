@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  API_TOKEN_FULL_GRANT_V1,
   ApprovalRequestV2Schema,
   CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION,
   ENCRYPTED_DATA_KEY_ENVELOPE_V1_BYTES,
@@ -377,6 +378,10 @@ describe('approval settlement through the real CLI Artifact store', () => {
         expiresAt: null,
         hasEncryptionAccess: false,
         hasUnattendedTeamAccess: false,
+        grant: API_TOKEN_FULL_GRANT_V1,
+        parentTokenId: null,
+        activeChildCount: 0,
+        embedConfig: null,
       },
     };
     const effect = vi.fn(async () => created);

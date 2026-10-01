@@ -16,7 +16,6 @@ import { hasPublishedSessionRuntimeIdentityForAttach } from '@/agent/runtime/ide
 import { normalizeLegacySessionModeMetadataCompat } from '@/agent/runtime/startup/normalizeLegacySessionModeMetadataCompat'
 import {
   persistTerminalAttachmentInfoIfNeeded,
-  primeAgentStateForUi,
   reportSessionToDaemonIfRunning,
   reportSessionStartupFailureToDaemonIfRunning,
   sendTerminalFallbackMessageIfNeeded,
@@ -25,12 +24,18 @@ import { readSessionStartupSpawnNonceFromEnv } from '@/session/runtime/control/s
 import {
   createPendingFirstInputCommitter,
 } from '@/daemon/spawn/pendingFirstInput'
+import { bindHerdrAgentIfNeeded } from '@/integrations/herdr/bindManagedSession'
+import { readSessionCreateOriginFromEnv } from '@/session/shared/sessionCreateOrigin'
+import { readSessionCreateReportsToFromEnv } from '@/session/shared/sessionCreateReportsTo'
+import { readSessionCreateRolesFromEnv } from '@/session/shared/sessionCreateRoles'
+import { claimSessionRunnerOwnership } from '@/daemon/sessionRunnerLock'
 
 export interface InitializeBackendRunSessionOptions {
   api: Pick<ApiClient, 'getOrCreateSession' | 'sessionSyncClient'>
   sessionTag: string
   organizationPlacement?: import('@happier-dev/protocol').SessionOrganizationPlacementV1
   initialAccess?: import('@happier-dev/protocol').SessionInitialAccessDraftV1
+  reportsTo?: import('@happier-dev/protocol').SessionReportsToV1
   primaryTeamId?: string | null
   teamCredentialBindings?: import('@happier-dev/protocol/teams').SessionTeamCredentialBindingIntentListV1
   metadata: Metadata
@@ -40,6 +45,8 @@ export interface InitializeBackendRunSessionOptions {
   sessionAttachSecret?: import('@/agent/runtime/sessionAttach').SessionAttachSecret
   sessionClientOptions?: Parameters<ApiClient['sessionSyncClient']>[1]
   uiLogPrefix: string
+  /** Present only when this runner's own terminal represents the agent session. */
+  terminalAgentLabel?: string
   startupMetadataOverrides: {
     permissionModeOverride: PermissionModeOverride
     sessionModeOverride?: SessionModeOverride
@@ -83,7 +90,6 @@ const HANDOFF_ATTACH_METADATA_PUBLISH_MAX_ATTEMPTS = 3
 type InitializeBackendRunSessionDeps = {
   createBaseSessionForAttachFn?: typeof createBaseSessionForAttach
   applyStartupMetadataUpdateToSessionFn?: typeof applyStartupMetadataUpdateToSession
-  primeAgentStateForUiFn?: typeof primeAgentStateForUi
   reportSessionToDaemonIfRunningFn?: typeof reportSessionToDaemonIfRunning
   reportSessionStartupFailureToDaemonIfRunningFn?: typeof reportSessionStartupFailureToDaemonIfRunning
   persistTerminalAttachmentInfoIfNeededFn?: typeof persistTerminalAttachmentInfoIfNeeded
@@ -168,7 +174,6 @@ export async function initializeBackendRunSession(
 ): Promise<InitializeBackendRunSessionResult> {
   const createBaseSessionForAttachFn = deps.createBaseSessionForAttachFn ?? createBaseSessionForAttach
   const applyStartupMetadataUpdateToSessionFn = deps.applyStartupMetadataUpdateToSessionFn ?? applyStartupMetadataUpdateToSession
-  const primeAgentStateForUiFn = deps.primeAgentStateForUiFn ?? primeAgentStateForUi
   const reportSessionToDaemonIfRunningFn = deps.reportSessionToDaemonIfRunningFn ?? reportSessionToDaemonIfRunning
   const reportSessionStartupFailureToDaemonIfRunningFn =
     deps.reportSessionStartupFailureToDaemonIfRunningFn
@@ -210,6 +215,8 @@ export async function initializeBackendRunSession(
     ?? readSessionAttachMetadataIdentityPolicyFromEnv()
     ?? null
   const terminal = opts.metadata.terminal
+  const terminalAgentBindingRequiresDaemonAttachment = terminal?.mode === 'herdr'
+    && (!terminal.herdr?.sessionName || !terminal.herdr.socketPath || !terminal.herdr.terminalId)
   const startDaemonReport = (
     sessionId: string,
     metadata: Metadata,
@@ -238,9 +245,20 @@ export async function initializeBackendRunSession(
     requireDaemonAck: boolean,
     sessionCreationOutcome?: SessionCreationOutcome,
   ): Promise<void> => {
+    const bindTerminalAgent = async () => {
+      if (!opts.terminalAgentLabel) return
+      await bindHerdrAgentIfNeeded({
+        session: sessionToUse,
+        sessionId,
+        agent: opts.terminalAgentLabel,
+        terminal,
+      })
+    }
     if (startupSideEffectsOrder === 'persist-first') {
       throwIfAborted()
-      await persistTerminalAttachmentInfoIfNeededFn({ sessionId, terminal })
+      await persistTerminalAttachmentInfoIfNeededFn({ sessionId, terminal, startedBy: opts.metadata.startedBy })
+      throwIfAborted()
+      if (!terminalAgentBindingRequiresDaemonAttachment) await bindTerminalAgent()
       throwIfAborted()
       await sendTerminalFallbackMessageIfNeededFn({ session: sessionToUse, terminal })
       throwIfAborted()
@@ -251,6 +269,8 @@ export async function initializeBackendRunSession(
         requireDaemonAck,
         sessionCreationOutcome,
       )
+      throwIfAborted()
+      if (terminalAgentBindingRequiresDaemonAttachment) await bindTerminalAgent()
       throwIfAborted()
       return
     }
@@ -264,13 +284,16 @@ export async function initializeBackendRunSession(
       sessionCreationOutcome,
     )
     throwIfAborted()
-    await persistTerminalAttachmentInfoIfNeededFn({ sessionId, terminal })
+    await persistTerminalAttachmentInfoIfNeededFn({ sessionId, terminal, startedBy: opts.metadata.startedBy })
+    throwIfAborted()
+    await bindTerminalAgent()
     throwIfAborted()
     await sendTerminalFallbackMessageIfNeededFn({ session: sessionToUse, terminal })
     throwIfAborted()
   }
 
   if (existingSessionId) {
+    await claimSessionRunnerOwnership(existingSessionId)
     throwIfAborted()
     const baseSession = await createBaseSessionForAttachFn({
       existingSessionId,
@@ -377,7 +400,6 @@ export async function initializeBackendRunSession(
       }
 
       throwIfAborted()
-      primeAgentStateForUiFn(session, opts.uiLogPrefix)
       commitPendingFirstInputAfterRuntimeReady =
         await deferOrCommitPendingFirstInput(session)
       throwIfAborted()
@@ -425,9 +447,15 @@ export async function initializeBackendRunSession(
   throwIfAborted()
   let response: Awaited<ReturnType<ApiClient['getOrCreateSession']>>
   try {
+    const reportsTo = opts.reportsTo ?? readSessionCreateReportsToFromEnv();
+    const initialSessionRolesV1 = readSessionCreateRolesFromEnv();
     response = await opts.api.getOrCreateSession({
+      ...readSessionCreateOriginFromEnv(),
+      ...(reportsTo !== undefined ? { reportsTo } : {}),
       tag: opts.sessionTag,
-      metadata: opts.metadata,
+      metadata: initialSessionRolesV1
+        ? { ...opts.metadata, work: { ...opts.metadata.work, sessionRolesV1: initialSessionRolesV1 } }
+        : opts.metadata,
       state: opts.state,
       ...(opts.initialAccess !== undefined ? { initialAccess: opts.initialAccess } : {}),
       ...(opts.primaryTeamId !== undefined ? { primaryTeamId: opts.primaryTeamId } : {}),
@@ -465,6 +493,8 @@ export async function initializeBackendRunSession(
   }
 
   const reportedSessionId = response.id
+  await claimSessionRunnerOwnership(reportedSessionId)
+  throwIfAborted()
   let ranStartupSideEffects = false
   const runStartupSideEffectsOnce = async (
     sessionToUse: ApiSessionClient,
@@ -501,7 +531,6 @@ export async function initializeBackendRunSession(
 
   try {
     throwIfAborted()
-    primeAgentStateForUiFn(session, opts.uiLogPrefix)
     if (reportedSessionId) {
       commitPendingFirstInputAfterRuntimeReady =
         await deferOrCommitPendingFirstInput(session)

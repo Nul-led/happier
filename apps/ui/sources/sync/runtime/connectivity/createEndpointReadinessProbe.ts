@@ -7,6 +7,11 @@ import { buildRetryLaterProbeResultFromResponse } from './retryLaterProbeResult'
 import { sanitizeEndpointErrorMessage } from './sanitizeEndpointErrorMessage';
 import { isRuntimeActive } from '@/utils/runtime/isRuntimeActive';
 
+/** Probe-local browser refusal detail, independent of the message shown to people. */
+export type EndpointReadinessProbeResult = ReadinessProbeResult & Readonly<{
+    blockedBy?: 'mixed_content';
+}>;
+
 function normalizeAbsoluteHttpBaseUrl(raw: string): string | null {
     const value = String(raw ?? '').trim();
     if (!value) return null;
@@ -73,7 +78,7 @@ export function createEndpointReadinessProbe(params: Readonly<{
     token: string | null | (() => string | null) | (() => Promise<string | null>);
     timeoutMs?: number;
     signal?: AbortSignal;
-}>): () => Promise<ReadinessProbeResult> {
+}>): () => Promise<EndpointReadinessProbeResult> {
     const endpoint = normalizeAbsoluteHttpBaseUrl(params.endpoint);
     const timeoutMs = params.timeoutMs ?? 800;
     const backgroundRetryAfterMs = 60_000;
@@ -107,6 +112,7 @@ export function createEndpointReadinessProbe(params: Readonly<{
             return {
                 status: 'retry_later',
                 retryAfterMs: backgroundRetryAfterMs,
+                blockedBy: 'mixed_content',
                 errorMessage: 'Browser blocked mixed content (HTTPS app cannot reach HTTP endpoint)',
             };
         }

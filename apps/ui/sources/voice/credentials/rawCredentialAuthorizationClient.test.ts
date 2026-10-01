@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { PluginInstallReviewPrincipalDigestSchema } from '@happier-dev/protocol';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 
 import {
@@ -32,8 +31,6 @@ function authorization() {
       accessDeclarationDigest: 'b'.repeat(64) as never,
       selectedAuthorityDigest: 'c'.repeat(64) as never,
       selectedRawAccessDigest: 'd'.repeat(64) as never,
-      installedGenerationId: 'generation-1' as never,
-      installReviewPrincipalDigest: PluginInstallReviewPrincipalDigestSchema.parse('a'.repeat(64)),
     },
     // The daemon only ever authorizes as an exact machine installation, so the
     // response carries the installation whose approval a client must match.

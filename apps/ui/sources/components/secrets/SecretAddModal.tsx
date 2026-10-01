@@ -8,6 +8,7 @@ import { ItemListStatic } from '@/components/ui/lists/ItemList';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { Text, TextInput } from '@/components/ui/text/Text';
 import { Icon } from '@/components/ui/icons/Icon';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 
 export interface SecretAddModalResult {
@@ -43,7 +44,7 @@ export function SecretAddModal(props: SecretAddModalProps) {
                 <Pressable
                     onPress={props.onClose}
                     hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                    style={({ pressed }) => ({ opacity: pressed ? 0.7 : 1 })}
+                    style={({ pressed }) => ({ opacity: pressed ? motionTokens.press.opacity : 1 })}
                 >
                     <Icon name="x" size={20} color={theme.colors.text.secondary} />
                 </Pressable>
@@ -97,7 +98,7 @@ export function SecretAddModal(props: SecretAddModalProps) {
                                 borderRadius: 10,
                                 paddingVertical: 12,
                                 alignItems: 'center',
-                                opacity: pressed ? 0.85 : 1,
+                                opacity: pressed ? motionTokens.press.opacitySubtle : 1,
                             })}
                         >
                             <Text style={{ color: theme.colors.text.primary, ...Typography.default('semiBold') }}>
@@ -114,7 +115,7 @@ export function SecretAddModal(props: SecretAddModalProps) {
                                 borderRadius: 10,
                                 paddingVertical: 12,
                                 alignItems: 'center',
-                                opacity: (!name.trim() || value.length === 0) ? 0.5 : (pressed ? 0.85 : 1),
+                                opacity: (!name.trim() || value.length === 0) ? 0.5 : (pressed ? motionTokens.press.opacitySubtle : 1),
                             })}
                         >
                             <Text style={{ color: theme.colors.button.primary.tint, ...Typography.default('semiBold') }}>
@@ -185,17 +186,5 @@ const stylesheet = StyleSheet.create((theme) => ({
         lineHeight: Platform.select({ ios: 22, default: 24 }),
         letterSpacing: Platform.select({ ios: -0.41, default: 0.15 }),
         color: theme.colors.input.text,
-        ...(Platform.select({
-            web: {
-                outline: 'none',
-                outlineStyle: 'none',
-                outlineWidth: 0,
-                outlineColor: 'transparent',
-                boxShadow: 'none',
-                WebkitBoxShadow: 'none',
-                WebkitAppearance: 'none',
-            },
-            default: {},
-        }) as object),
     },
 }));

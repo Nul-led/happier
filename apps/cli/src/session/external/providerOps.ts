@@ -11,6 +11,7 @@ import type {
 } from '@happier-dev/agents';
 import type {
   AgentExternalSessionCandidateIndexLookup,
+  AgentExternalSessionTerminalObservation,
   AgentExternalSessionCandidateIndexState,
 } from '@happier-dev/plugin-sdk/sessions/external';
 
@@ -30,13 +31,13 @@ export type ExternalSessionCandidatesPage = Readonly<{
   }>;
 }>;
 
-export type ExternalSessionTranscriptPage = TranscriptSourcePage<ExternalSessionTranscriptRawMessageV1>;
+export type ExternalSessionTranscriptPage = TranscriptSourcePage<ExternalSessionTranscriptRawMessageV1 | AgentExternalSessionTerminalObservation>;
 
 export type ExternalSessionTranscriptReadAfter =
   | Readonly<{ outcome: 'already_current' }>
   | Readonly<{
     outcome: 'advanced';
-    items: readonly ExternalSessionTranscriptRawMessageV1[];
+    items: readonly (ExternalSessionTranscriptRawMessageV1 | AgentExternalSessionTerminalObservation)[];
     nextCursor: string;
     boundary: string;
     hasMore: boolean;
@@ -97,11 +98,13 @@ export type ExternalSessionProviderOps = Readonly<{
     limit: number;
     searchTerm?: string;
     searchMode?: 'fast' | 'full';
+    includeThreads?: boolean;
     maxBytes?: number;
     signal?: AbortSignal;
     readCandidateIndexState?: AgentExternalSessionCandidateIndexLookup;
   }>) => Promise<ExternalSessionCandidatesPage>;
   pageTranscript: (params: Readonly<{
+    projection?: 'terminal';
     source: ExternalSessionsSource;
     remoteSessionId: string;
     direction: 'older' | 'newer';
@@ -118,6 +121,7 @@ export type ExternalSessionProviderOps = Readonly<{
     signal?: AbortSignal;
   }>) => Promise<ExternalSessionTranscriptPage>;
   readAfterTranscript: (params: Readonly<{
+    projection?: 'terminal';
     source: ExternalSessionsSource;
     remoteSessionId: string;
     cursor: string;
@@ -156,8 +160,9 @@ export class ExternalSessionProviderFailureError extends Error {
     message: string;
     operation: string;
     retryable?: boolean;
+    cause?: unknown;
   }>) {
-    super(params.message);
+    super(params.message, params.cause === undefined ? undefined : { cause: params.cause });
     this.name = 'ExternalSessionProviderFailureError';
     this.code = params.code;
     this.operation = params.operation;

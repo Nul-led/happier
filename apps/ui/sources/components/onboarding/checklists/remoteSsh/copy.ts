@@ -74,8 +74,14 @@ export function getRemoteSshChecklistCopy(mode: RemoteSshChecklistMode): RemoteS
         installDaemonTitle: t('setupOnboarding.remoteSshChecklist.installDaemonTitle'),
         installDaemonSubtitle: t('setupOnboarding.remoteSshChecklist.installDaemonSubtitle'),
         installDaemonDetails: t('setupOnboarding.remoteSshChecklist.installDaemonDetails'),
-        installRelayRuntimeTitle: t('settings.machineSetupRemoteRelayRuntimeTitle'),
-        installRelayRuntimeSubtitle: t('settings.machineSetupRemoteRelayRuntimeLabel'),
-        installRelayRuntimeDetails: t('settings.machineSetupRemoteRelayRuntimeReadySubtitle'),
+        installRelayRuntimeTitle: mode === 'remoteRelayHost'
+            ? t('setupOnboarding.remoteRelayHostInstallTitle')
+            : t('settings.machineSetupRemoteRelayRuntimeTitle'),
+        installRelayRuntimeSubtitle: mode === 'remoteRelayHost'
+            ? t('setupOnboarding.relayOnRemoteComputerSubtitle')
+            : t('settings.machineSetupRemoteRelayRuntimeLabel'),
+        installRelayRuntimeDetails: mode === 'remoteRelayHost'
+            ? t('setupOnboarding.remoteSshChecklist.planSubtitleRelayHost')
+            : t('settings.machineSetupRemoteRelayRuntimeReadySubtitle'),
     };
 }

@@ -1,5 +1,5 @@
-import type { ToolCall } from '@/sync/domains/messages/messageTypes';
-import type { Metadata } from '@/sync/domains/state/storageTypes';
+import type { ToolCall } from "@happier-dev/session-core/messages";
+import type { Metadata } from '@happier-dev/session-core/state';
 
 import { knownTools } from '@/components/tools/catalog';
 import { inferToolNameForRendering } from '@/components/tools/normalization/policy/toolNameInference';

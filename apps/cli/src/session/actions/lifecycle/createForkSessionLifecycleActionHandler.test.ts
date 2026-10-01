@@ -856,7 +856,7 @@ describe('createForkSessionLifecycleActionHandler', () => {
         v: 1,
         updatedAt: 1,
         selection: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: 'pc_work',
           modelId: 'provider-model',
         },
@@ -889,7 +889,7 @@ describe('createForkSessionLifecycleActionHandler', () => {
         v: 1,
         updatedAt: 1,
         selection: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: 'pc_work',
           modelId: 'provider-model',
         },

@@ -11,6 +11,7 @@ import type {
   ConnectedAccountDeviceTransactionSnapshot,
   ConnectedAccountOAuthTransactionSnapshot,
 } from '@/plugins/runtime/connectedAccounts/authenticationAttemptOwner';
+import type { PluginSourceCustody } from '@/plugins/runtime/sourceAuthority';
 
 import {
   createQualifiedConnectedAccountAttemptTransactionAdapters,
@@ -27,6 +28,7 @@ function createTransactionApi(): ConnectedAccountAttemptTransactionStoreApi & {
   records: Map<string, ConnectedAccountAttemptTransactionRecord>;
 } {
   const records = new Map<string, ConnectedAccountAttemptTransactionRecord>();
+  const scopes = new Map<string, Parameters<ConnectedAccountAttemptTransactionStoreApi['create']>[0]['scope']>();
   return {
     records,
     async create(input) {
@@ -42,6 +44,7 @@ function createTransactionApi(): ConnectedAccountAttemptTransactionStoreApi & {
         expiresAtMs: input.expiresAtMs,
       });
       records.set(key, record);
+      scopes.set(key, input.scope);
       return record;
     },
     async read(input) {
@@ -61,6 +64,7 @@ function createTransactionApi(): ConnectedAccountAttemptTransactionStoreApi & {
         expiresAtMs: input.expiresAtMs,
       });
       records.set(key, record);
+      scopes.set(key, input.scope);
       return record;
     },
     async delete(input) {
@@ -72,6 +76,20 @@ function createTransactionApi(): ConnectedAccountAttemptTransactionStoreApi & {
         );
       }
       records.delete(key);
+      scopes.delete(key);
+    },
+    async listPending(input) {
+      return [...scopes.entries()].flatMap(([key, scope]) => {
+        const record = records.get(key);
+        if (!record || scope.machineId !== input.machineId
+          || scope.service.pluginId !== input.service.pluginId
+          || scope.service.localId !== input.service.localId
+          || scope.phase === 'starting') return [];
+        const [kind, attemptId] = key.split(':');
+        if (kind !== 'oauth' && kind !== 'device' || !attemptId) return [];
+        return [{ attemptId, kind, modeId: scope.modeId, intent: scope.intent,
+          phase: scope.phase, createdAtMs: scope.createdAtMs, expiresAtMs: record.expiresAtMs }];
+      });
     },
   };
 }
@@ -92,8 +110,10 @@ function tokenOnlyCredentials(): StoredCredentials {
   return { token: 'account-token', encryption: null };
 }
 
-const e2eeAccount = { getAccountEncryptionMode: async () => 'e2ee' as const };
-const plainAccount = { getAccountEncryptionMode: async () => 'plain' as const };
+const e2eeAccount = { getAccountEncryptionMode: async () => 'e2ee' as const,
+  getMachineId: () => 'machine-1' };
+const plainAccount = { getAccountEncryptionMode: async () => 'plain' as const,
+  getMachineId: () => 'machine-1' };
 
 function storedContentJson(
   record: ConnectedAccountAttemptTransactionRecord | undefined,
@@ -106,14 +126,22 @@ const service = Object.freeze({
   localId: 'example.account-service',
 });
 
-function oauthSnapshot(): ConnectedAccountOAuthTransactionSnapshot {
+const managedCustody = Object.freeze({
+  kind: 'managed' as const,
+  immutableGenerationId: 'artifact-sha256',
+  installSource: 'npm' as const,
+});
+
+function oauthSnapshot(
+  sourceCustody: PluginSourceCustody = managedCustody,
+): ConnectedAccountOAuthTransactionSnapshot {
   return Object.freeze({
     attemptId: 'oauth-attempt',
     createdAtMs: 1_000,
     intent: 'connect',
     service,
     modeId: 'oauth',
-    immutableGenerationId: 'artifact-sha256',
+    sourceCustody,
     expectedCredentialRevision: null,
     expectedCredentialConfigurationRevision: null,
     expectedConfigurationRevision: 'configuration-1',
@@ -128,7 +156,9 @@ function oauthSnapshot(): ConnectedAccountOAuthTransactionSnapshot {
   });
 }
 
-function deviceSnapshot(): ConnectedAccountDeviceTransactionSnapshot {
+function deviceSnapshot(
+  sourceCustody: PluginSourceCustody = managedCustody,
+): ConnectedAccountDeviceTransactionSnapshot {
   return Object.freeze({
     attemptId: 'device-attempt',
     createdAtMs: 2_000,
@@ -139,7 +169,7 @@ function deviceSnapshot(): ConnectedAccountDeviceTransactionSnapshot {
       accountId: 'account-1',
     }),
     modeId: 'device',
-    immutableGenerationId: 'artifact-sha256',
+    sourceCustody,
     expectedCredentialRevision: 'credential-1',
     expectedCredentialConfigurationRevision: 'account-configuration-1',
     expectedConfigurationRevision: 'configuration-1',
@@ -160,6 +190,36 @@ function deviceSnapshot(): ConnectedAccountDeviceTransactionSnapshot {
 }
 
 describe('qualified Connected Account attempt transaction adapters', () => {
+  it('discovers only safe pending metadata and restores a sealed OAuth link', async () => {
+    const api = createTransactionApi();
+    const owner = createQualifiedConnectedAccountAttemptTransactionAdapters({
+      credentials: credentials(7), ...e2eeAccount, api,
+      now: () => 5_000,
+      randomBytes: (length) => new Uint8Array(length).fill(3),
+    });
+    const starting = oauthSnapshot();
+    const handle = await owner.oauth.create({
+      attemptId: starting.attemptId, service: starting.service, snapshot: starting,
+    });
+    expect(await owner.listPending(service)).toEqual([]);
+    const authorizationUrl = 'https://provider.example/authorize?state=secret-state';
+    await handle.acknowledge!({ ...starting, phase: 'awaitingOAuth', authorizationUrl });
+    const pending = await owner.listPending(service);
+    expect(pending).toEqual([expect.objectContaining({
+      attemptId: starting.attemptId, kind: 'oauth', modeId: 'oauth', phase: 'awaitingOAuth',
+    })]);
+    expect(JSON.stringify(pending)).not.toContain(authorizationUrl);
+    expect(JSON.stringify(pending)).not.toContain('super-secret');
+    const replacement = createQualifiedConnectedAccountAttemptTransactionAdapters({
+      credentials: credentials(7), ...e2eeAccount, api,
+      now: () => 5_000,
+      randomBytes: (length) => new Uint8Array(length).fill(4),
+    });
+    expect((await replacement.oauth.read!(starting.attemptId))?.snapshot.authorizationUrl)
+      .toBe(authorizationUrl);
+    expect(await replacement.listPending({ pluginId: service.pluginId, localId: 'other' }))
+      .toEqual([]);
+  });
   it('seals OAuth custody, rehydrates after restart, and consumes completion once by CAS', async () => {
     const api = createTransactionApi();
     const first = createQualifiedConnectedAccountAttemptTransactionAdapters({
@@ -318,6 +378,16 @@ describe('qualified Connected Account attempt transaction adapters', () => {
     await first.device!.acknowledge(initial);
     const persisted = api.records.get('device:device-attempt');
     expect(persisted?.content.t).toBe('plain');
+    expect(persisted?.content).toMatchObject({
+      t: 'plain',
+      v: {
+        version: 2,
+        snapshot: {
+          sourceCustody: managedCustody,
+        },
+      },
+    });
+    expect(JSON.stringify(persisted?.content)).not.toContain('"generation"');
 
     const afterRestart =
       createQualifiedConnectedAccountAttemptTransactionAdapters({
@@ -342,6 +412,64 @@ describe('qualified Connected Account attempt transaction adapters', () => {
         snapshot: oauthInitial,
         request: created.request,
       });
+  });
+
+  it.each([
+    Object.freeze({
+      name: 'bundled CLI version root',
+      custody: Object.freeze({
+        kind: 'bundled_first_party' as const,
+        packagedRuntime: Object.freeze({
+          kind: 'cli_version_root' as const,
+          versionRootId: 'cli-version-1',
+        }),
+      }),
+    }),
+    Object.freeze({
+      name: 'bundled pinned runner snapshot',
+      custody: Object.freeze({
+        kind: 'bundled_first_party' as const,
+        packagedRuntime: Object.freeze({
+          kind: 'pinned_runner_snapshot' as const,
+          snapshotId: 'runner-snapshot-1',
+        }),
+      }),
+    }),
+    Object.freeze({
+      name: 'registered development root',
+      custody: Object.freeze({
+        kind: 'development' as const,
+        registeredRootId: 'development-root-1',
+      }),
+    }),
+  ])('round-trips $name custody across restart without persisting occurrence', async ({ custody }) => {
+    const api = createTransactionApi();
+    const first = createQualifiedConnectedAccountAttemptTransactionAdapters({
+      credentials: tokenOnlyCredentials(),
+      ...plainAccount,
+      api,
+      now: () => 5_000,
+    });
+    const initial = deviceSnapshot(custody);
+
+    await first.device!.acknowledge(initial);
+    const persisted = api.records.get('device:device-attempt');
+    expect(persisted?.content).toMatchObject({
+      t: 'plain',
+      v: {
+        version: 2,
+        snapshot: { sourceCustody: custody },
+      },
+    });
+    expect(JSON.stringify(persisted?.content)).not.toContain('occurrence');
+
+    const restarted = createQualifiedConnectedAccountAttemptTransactionAdapters({
+      credentials: tokenOnlyCredentials(),
+      ...plainAccount,
+      api,
+      now: () => 5_000,
+    });
+    await expect(restarted.device!.read(initial.attemptId)).resolves.toEqual(initial);
   });
 
   it('refuses a stored envelope whose kind disagrees with the persisted Account mode', async () => {
@@ -409,5 +537,63 @@ describe('qualified Connected Account attempt transaction adapters', () => {
     await expect(adapters.device!.acknowledge(
       oldDevice as ConnectedAccountDeviceTransactionSnapshot,
     )).rejects.toThrow();
+  });
+
+  it('strictly rejects occurrence and retired generation fields in V2 payloads', async () => {
+    const api = createTransactionApi();
+    const snapshot = deviceSnapshot();
+    api.records.set('device:device-attempt', Object.freeze({
+      revision: 1,
+      expiresAtMs: 60_000,
+      content: {
+        t: 'plain' as const,
+        v: {
+          version: 2,
+          kind: 'device',
+          snapshot: {
+            ...snapshot,
+            occurrenceId: 'process-local-occurrence',
+            generation: 'retired-generation',
+          },
+        },
+      },
+    }));
+    const adapters = createQualifiedConnectedAccountAttemptTransactionAdapters({
+      credentials: tokenOnlyCredentials(),
+      ...plainAccount,
+      api,
+      now: () => 5_000,
+    });
+
+    await expect(adapters.device!.read(snapshot.attemptId)).rejects.toThrow();
+  });
+
+  it('rejects the obsolete V1 generation-shaped payload instead of fabricating source custody', async () => {
+    const api = createTransactionApi();
+    const current = deviceSnapshot();
+    const { sourceCustody: _custody, ...legacyRest } = current;
+    api.records.set('device:device-attempt', Object.freeze({
+      revision: 1,
+      expiresAtMs: 60_000,
+      content: {
+        t: 'plain' as const,
+        v: {
+          version: 1,
+          kind: 'device',
+          snapshot: {
+            ...legacyRest,
+            immutableGenerationId: 'artifact-sha256',
+          },
+        },
+      },
+    }));
+    const adapters = createQualifiedConnectedAccountAttemptTransactionAdapters({
+      credentials: tokenOnlyCredentials(),
+      ...plainAccount,
+      api,
+      now: () => 5_000,
+    });
+
+    await expect(adapters.device!.read(current.attemptId)).rejects.toThrow();
   });
 });

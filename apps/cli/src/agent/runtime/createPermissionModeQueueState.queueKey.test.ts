@@ -69,6 +69,13 @@ describe('createPermissionModeQueueState (queue key)', () => {
         happierProvenanceV1: { v: 1, kind: 'cli' },
       },
     });
+    for (const callerDepth of [1, 3]) {
+      emit({
+        role: 'user', content: { type: 'text', text: `depth ${callerDepth}` },
+        localId: `depth-${callerDepth}`,
+        meta: { happierProvenanceV1: { v: 1, kind: 'happierSession', sourceSessionId: 'sender', via: 'mcp', callerDepth } },
+      });
+    }
     // Keep a distinct batch behind the two provenance cases so a regression
     // merges them into a visible wrong result instead of leaving this test
     // blocked waiting for a fourth queue entry.
@@ -83,6 +90,8 @@ describe('createPermissionModeQueueState (queue key)', () => {
     const second = await state.messageQueue.waitForMessagesAndGetAsString();
     const legacyUnattributed = await state.messageQueue.waitForMessagesAndGetAsString();
     const knownCli = await state.messageQueue.waitForMessagesAndGetAsString();
+    const depthOne = await state.messageQueue.waitForMessagesAndGetAsString();
+    const depthThree = await state.messageQueue.waitForMessagesAndGetAsString();
 
     expect(first?.message).toMatchObject({
       text: 'first',
@@ -110,6 +119,8 @@ describe('createPermissionModeQueueState (queue key)', () => {
       text: 'known cli',
     });
     expect(knownCli?.message).not.toHaveProperty('inputContextBlock');
+    expect(depthOne?.message).toMatchObject({ text: 'depth 1', inputProvenance: { callerDepth: 1 } });
+    expect(depthThree?.message).toMatchObject({ text: 'depth 3', inputProvenance: { callerDepth: 3 } });
   });
 
   it('rebinds user-message delivery when the session client swaps', async () => {

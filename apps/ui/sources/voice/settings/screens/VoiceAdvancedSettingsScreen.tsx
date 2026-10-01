@@ -2,6 +2,8 @@ import * as React from 'react';
 import { View } from 'react-native';
 
 import { ItemList } from '@/components/ui/lists/ItemList';
+import { SettingsPageHeader } from '@/components/settings/shell/SettingsPageHeader';
+import { t } from '@/text';
 import { useLocalSettingMutable } from '@/sync/domains/state/storage';
 import { VoiceDiagnosticsSettingsSection } from '@/voice/diagnostics/VoiceDiagnosticsSettingsSection';
 import { VoiceExecutionMachineSection } from '@/voice/settings/panels/VoiceExecutionMachineSection';
@@ -17,7 +19,8 @@ export function VoiceAdvancedSettingsScreen() {
 
   return (
     <View style={{ flex: 1 }} ref={popoverBoundaryRef}>
-      <ItemList style={{ paddingTop: 0 }}>
+      <ItemList presentation="page">
+        <SettingsPageHeader description={t('settingsVoice.intents.advanced.subtitle')} />
         <VoiceUiSection
           voice={voice}
           setVoice={setVoice}

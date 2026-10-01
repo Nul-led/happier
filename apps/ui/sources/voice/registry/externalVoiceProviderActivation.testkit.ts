@@ -11,7 +11,9 @@ import {
 } from './externalVoiceProviderActivation';
 
 type ProductionInput = Parameters<typeof createProductionExternalVoiceProviderActivationScope>[0];
-type TestInput = Omit<ProductionInput, 'registrationScope'>;
+type TestInput = Omit<ProductionInput, 'registrationScope' | 'occurrenceId'> & Readonly<{
+  occurrenceId: string;
+}>;
 
 function testClientPlatform(
   declaration: VoiceConversationProviderContribution,
@@ -39,7 +41,6 @@ export function createExternalVoiceProviderActivationScope(
     contributes: Object.freeze({ voiceProviders: input.declarations }),
     target: Object.freeze({
       artifactId: declaration.client.artifactId,
-      modulePath: declaration.client.modulePath,
       exportName: declaration.client.exportName,
       platform: testClientPlatform(declaration),
     }),
@@ -51,7 +52,7 @@ export function createExternalVoiceProviderActivationScope(
         pluginId: input.pluginId,
       }),
     }),
-    projectionGeneration: 1,
+    occurrenceId: input.occurrenceId,
     lifecycle: Object.freeze({
       signal: controller.signal,
       isCurrent: () => !controller.signal.aborted,

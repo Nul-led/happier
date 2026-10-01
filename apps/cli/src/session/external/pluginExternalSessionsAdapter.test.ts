@@ -102,6 +102,8 @@ describe('createPluginExternalSessionsAdapter', () => {
       .toEqualTypeOf<{
         cursor?: string;
         initialReplay?: boolean;
+        projection?: 'terminal';
+        replay?: 'fresh';
         admissionDeadlineAtMs?: number;
         signal?: AbortSignal;
       }>();

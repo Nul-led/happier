@@ -221,4 +221,33 @@ describe('collectVoiceSessionRows', () => {
     expect(rows.map((row) => row.id)).toEqual(['s3', 's2', 's1']);
     expect(rows.find((row) => row.id === 'stale_only')).toBeUndefined();
   });
+
+  it('enumerates an explicitly admitted row-only address that has no ordinary membership', async () => {
+    const { resolveVoiceSessionReference } = await import('./sessionReference');
+    // A row-only acquisition hydrated this Home's row without publishing ordinary membership.
+    const state = {
+      sessionListRowsByServerId: {
+        'home-a': {
+          'deploy-session': {
+            id: 'deploy-session',
+            updatedAt: 20,
+            active: true,
+            presence: 'online',
+            metadata: { summaryText: 'Deploy' },
+          },
+        },
+      },
+      ordinarySessionListMembershipByServerId: {},
+    };
+    const options = {
+      knownServerIds: ['home-a'],
+      coverage: 'complete' as const,
+      addresses: [{ serverId: 'home-a', sessionId: 'deploy-session' }],
+    };
+
+    expect(resolveVoiceSessionReference({ sessionTitle: 'Deploy' }, state, options)).toMatchObject({
+      kind: 'unique',
+      address: { serverId: 'home-a', sessionId: 'deploy-session' },
+    });
+  });
 });

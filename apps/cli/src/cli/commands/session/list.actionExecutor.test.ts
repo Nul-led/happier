@@ -8,6 +8,7 @@ import {
   type ActionCliExecutionDeps,
 } from '@/cli/actions/executeCommand';
 import { handleSessionCommand } from './handleSessionCommand';
+import { SESSION_LIST_PRESENTATION } from './sessionListPresentation';
 
 const execute = vi.fn();
 const resolveSessionTarget = vi.fn();
@@ -22,6 +23,40 @@ describe('happier session list (action executor)', () => {
     execute.mockReset();
     resolveSessionTarget.mockReset();
     createCliActionExecutorFromCredentials.mockClear();
+  });
+
+  it.each(['summary', 'awareness'] as const)('preserves metadata omissions in %s JSON and human presentation', async (view) => {
+    const command = findCompiledActionCliCommand(['session', 'list']);
+    if (!command || !SESSION_LIST_PRESENTATION.presentSuccess) throw new Error('Session list presentation unavailable');
+    const payload = {
+      ...(view === 'awareness' ? { view, projectionVersion: 1 } : {}),
+      sessions: [], nextCursor: null, hasNext: false, metadataUpgradeRequiredCount: 2,
+    };
+    const output = captureConsoleJsonOutput();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      // Exercise the real presenter directly; the Action executor substitution above is unused.
+      await SESSION_LIST_PRESENTATION.presentSuccess(payload, {
+        command, json: true, input: { view }, callerInput: {},
+      });
+      expect(output.json()).toMatchObject({
+        ok: true, kind: 'session_list', data: {
+          sessions: [], hasNext: false, metadataUpgradeRequiredCount: 2,
+        },
+      });
+      expect(warn).not.toHaveBeenCalled();
+
+      for (const plain of [false, true]) {
+        warn.mockClear();
+        await SESSION_LIST_PRESENTATION.presentSuccess(payload, {
+          command, json: false, input: { view }, callerInput: { plain },
+        });
+        expect(warn).toHaveBeenCalledWith(expect.stringMatching(/incomplete.*owner.*upgrade/i));
+      }
+    } finally {
+      warn.mockRestore();
+      output.restore();
+    }
   });
 
   it('routes through ActionExecutor with the expected action id and args', async () => {
@@ -54,7 +89,6 @@ describe('happier session list (action executor)', () => {
         },
         expect.objectContaining({
           surface: 'cli',
-          authority: 'present_user',
           defaultSessionId: null,
           actionRequestId: expect.stringMatching(/^[0-9a-f-]{36}$/u),
           // A finite list request must give PAT-backed public Action transport
@@ -136,7 +170,6 @@ describe('happier session list (action executor)', () => {
         },
         expect.objectContaining({
           surface: 'cli',
-          authority: 'present_user',
           defaultSessionId: null,
           actionRequestId: expect.stringMatching(/^[0-9a-f-]{36}$/u),
           signal: expect.objectContaining({
@@ -252,7 +285,7 @@ describe('happier session list (action executor)', () => {
       provenance: 'authenticated' as const,
       features: FeaturesResponseSchema.parse({
         features: {
-          sessions: { enabled: true, collaboration: { enabled: true } },
+          sessions: { enabled: true },
           sharing: { session: { enabled: true } },
         },
         capabilities: {},
@@ -304,7 +337,6 @@ describe('happier session list (action executor)', () => {
       expect(await resolveServerFeaturesSnapshot?.()).toEqual(serverFeaturesSnapshot);
       expect(refresh).toHaveBeenCalledOnce();
       expect(execute).toHaveBeenCalledWith('session.list', {}, expect.objectContaining({
-        authority: 'present_user',
       }));
     } finally {
       output.restore();
@@ -367,7 +399,6 @@ describe('happier session list (action executor)', () => {
         { limit: 200 },
         expect.objectContaining({
           surface: 'cli',
-          authority: 'present_user',
           defaultSessionId: null,
           actionRequestId: expect.stringMatching(/^[0-9a-f-]{36}$/u),
           signal: expect.objectContaining({
@@ -454,7 +485,6 @@ describe('happier session list (action executor)', () => {
         { includeRows: true },
         expect.objectContaining({
           surface: 'cli',
-          authority: 'present_user',
           defaultSessionId: null,
           actionRequestId: expect.stringMatching(/^[0-9a-f-]{36}$/u),
           signal: expect.objectContaining({

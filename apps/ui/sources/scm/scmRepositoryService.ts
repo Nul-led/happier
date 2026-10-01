@@ -1,21 +1,24 @@
 import type {
-    ScmStatusSnapshotResponse,
-    ScmWorkingSnapshot as ProtocolScmWorkingSnapshot,
     ScmWorktreeEnrichmentEntry,
     ScmWorktreesEnrichmentRequest,
     ScmWorktreesEnrichmentResponse,
 } from '@happier-dev/protocol';
+import type {
+    ScmStatusSnapshotTransportResponse as ScmStatusSnapshotResponse,
+    ScmWorkingSnapshotInput as ProtocolScmWorkingSnapshot,
+} from '@happier-dev/protocol/scm';
 import { SCM_WORKTREES_ENRICHMENT_MAX_PATHS } from '@happier-dev/protocol';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 
 import type { ScmCapabilities, ScmStatus, ScmWorkingSnapshot as UiScmWorkingSnapshot } from '@/sync/domains/state/storageTypes';
-import { sessionScmStatusSnapshot } from '@/sync/ops';
+import { sessionScmStatusSnapshot } from '@/sync/ops/sessionScm';
 import { machineScmStatusSnapshot, runMachineScmRpc } from '@/sync/ops/scm/machineScm';
 import { normalizeFileSystemPath } from '@/sync/domains/fileSystem/normalizeFileSystemPath';
 import { syncPerformanceTelemetry } from '@/sync/runtime/syncPerformanceTelemetry';
 import { resolveRepoScmMachinePathRequest } from '@/scm/repository/resolveRepoScmMachinePathRequest';
 import { resolveRepoScmSessionRequest } from '@/scm/repository/resolveRepoScmSessionRequest';
 import { LruMap } from '@/utils/cache/lruMap';
+import { selectScmChangedFiles } from '@/scm/scmStatusFiles';
 import {
     EMPTY_SCM_CAPABILITIES,
     mapProtocolSnapshotToUiSnapshot,
@@ -168,8 +171,7 @@ function normalizeScmSnapshotResponseOrThrow(input: {
 }
 
 export function snapshotToScmStatus(snapshot: UiScmWorkingSnapshot): ScmStatus {
-    const modifiedCount = snapshot.entries.filter((entry) => entry.kind !== 'untracked').length;
-    const untrackedCount = snapshot.entries.filter((entry) => entry.kind === 'untracked').length;
+    const changedFileCount = selectScmChangedFiles(snapshot).length;
     const includedCount = snapshot.totals.includedFiles;
     const includedLinesAdded = snapshot.totals.includedAdded;
     const includedLinesRemoved = snapshot.totals.includedRemoved;
@@ -180,9 +182,8 @@ export function snapshotToScmStatus(snapshot: UiScmWorkingSnapshot): ScmStatus {
 
     return {
         branch: snapshot.branch.head,
-        isDirty: snapshot.entries.length > 0,
-        modifiedCount,
-        untrackedCount,
+        isDirty: changedFileCount > 0,
+        changedFileCount,
         includedCount,
         lastUpdatedAt: snapshot.fetchedAt,
         includedLinesAdded,

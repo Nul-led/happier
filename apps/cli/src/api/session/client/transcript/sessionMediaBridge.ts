@@ -279,7 +279,7 @@ function buildSessionMediaMeta(
     };
 }
 
-function attachSessionMediaMeta(
+export function attachSessionMediaMeta(
     meta: Record<string, unknown>,
     items: readonly SessionMediaItemV1[],
     failures: readonly SessionMediaFailureV1[],

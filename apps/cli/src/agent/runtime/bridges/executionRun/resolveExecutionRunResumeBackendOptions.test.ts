@@ -23,7 +23,7 @@ const OVERRIDES = {
 };
 
 const MODEL_SELECTION = ProviderBoundModelRefSchema.parse({
-  agentTargetKey: 'backend:codex',
+  agentTargetKey: 'agent:happier.agent.codex/codex',
   providerConnectionId: 'pc_openai',
   modelId: 'gpt-5.5',
 });
@@ -50,6 +50,12 @@ function baseRun(launch: ExecutionRunState['launch']): ExecutionRunState {
 }
 
 describe('resolveExecutionRunResumeBackendOptions', () => {
+  it('retains the admitted hands-off ceiling when the backend is recreated', () => {
+    expect(resolveExecutionRunResumeBackendOptions({
+      run: { ...baseRun(undefined), workspaceWrites: 'deny', permissionMode: 'yolo' },
+    })).toMatchObject({ workspaceWrites: 'deny' });
+  });
+
   it('rehydrates the exact Team credential model selection for re-authorization on resume', () => {
     const teamCredentialModel = {
       kind: 'team_credential_provider_model' as const,
@@ -130,6 +136,7 @@ describe('resolveExecutionRunResumeBackendOptions', () => {
       run: {
         ...baseRun({ modelId: 'gpt-5.5' }),
         profileId: 'review_profile',
+        profileSourceCustody: { kind: 'development', registeredRootId: '/plugins/review' },
         intentInput: { commitModelSelection: MODEL_SELECTION },
       },
     });
@@ -139,6 +146,7 @@ describe('resolveExecutionRunResumeBackendOptions', () => {
       runClass: 'long_lived',
       ioMode: 'request_response',
       profileId: 'review_profile',
+      profileSourceCustody: { kind: 'development', registeredRootId: '/plugins/review' },
       intentInput: { commitModelSelection: MODEL_SELECTION },
     });
   });

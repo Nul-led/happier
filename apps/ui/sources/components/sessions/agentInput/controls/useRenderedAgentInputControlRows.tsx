@@ -5,6 +5,7 @@ import type { AgentInputExtraActionChip } from '../agentInputContracts';
 import type { AgentInputControlId } from './agentInputControlTypes';
 import type { SessionModeChipPresentation } from './resolveSessionModeChipPresentation';
 import { buildCoreAgentInputControlNodes } from './buildCoreAgentInputControlNodes';
+import type { AgentInputFolderChipState } from '../definitions/AgentInputFolderChip';
 import { resolveRenderedAgentInputControls } from './resolveRenderedAgentInputControls';
 import { resolveRenderedExtraActionChipNodes } from './resolveRenderedExtraActionChipNodes';
 import type { PermissionMode } from '@/sync/domains/permissions/permissionTypes';
@@ -21,6 +22,8 @@ type SessionModeChipControlLike = Readonly<{
 
 export function useRenderedAgentInputControlRows(params: Readonly<{
     layout: 'scroll' | 'wrap' | 'collapsed';
+    /** Collapsed layout: the controls the host keeps on its bar (see `resolveRenderedAgentInputControls`). */
+    barControlIds?: readonly AgentInputControlId[];
     chips: ReadonlyArray<AgentInputExtraActionChip> | undefined;
     overlayAnchorRef: React.RefObject<View | null>;
     onToggleExtraChipCollapsedPopover: (chipKey: string) => void;
@@ -61,15 +64,14 @@ export function useRenderedAgentInputControlRows(params: Readonly<{
     agentIdentityIcon?: React.ReactNode;
     agentLabel: string;
     engineLabel: string;
-    /** Hover/focus/press-in on the Agent chip, before the picker opens. */
-    onAgentIntent?: () => void;
     onAgentPress: () => void;
     machineChipAnchorRef: React.RefObject<View | null>;
     onMachinePress?: () => void;
     machineName?: string | null;
     pathChipAnchorRef: React.RefObject<View | null>;
     onPathPress?: () => void;
-    currentPath?: string | null;
+    folderChipState: AgentInputFolderChipState;
+    onRemoveFolder?: () => void;
     resumeChipAnchorRef: React.RefObject<View | null>;
     onResumePress?: () => void;
     blurInput: () => void;
@@ -144,14 +146,14 @@ export function useRenderedAgentInputControlRows(params: Readonly<{
             agentIdentityIcon: params.agentIdentityIcon,
             agentLabel: params.agentLabel,
             engineLabel: params.engineLabel,
-            onAgentIntent: params.onAgentIntent,
             onAgentPress: params.onAgentPress,
             machineChipAnchorRef: params.machineChipAnchorRef,
             onMachinePress: params.onMachinePress,
             machineName: params.machineName,
             pathChipAnchorRef: params.pathChipAnchorRef,
             onPathPress: params.onPathPress,
-            currentPath: params.currentPath,
+            folderChipState: params.folderChipState,
+            onRemoveFolder: params.onRemoveFolder,
             resumeChipAnchorRef: params.resumeChipAnchorRef,
             onResumePress: params.onResumePress,
             blurInput: params.blurInput,
@@ -181,6 +183,7 @@ export function useRenderedAgentInputControlRows(params: Readonly<{
             coreControlNodesById,
             extraControlNodesById: extraControlNodesById.extraControlNodesById,
             extraChips: extraControlNodesById.extraChips,
+            ...(params.barControlIds ? { barControlIds: params.barControlIds } : {}),
         });
 
         return {
@@ -190,6 +193,7 @@ export function useRenderedAgentInputControlRows(params: Readonly<{
         };
     }, [
         params.actionBarIsCollapsed,
+        params.barControlIds,
         params.actionButtonPressedStyle,
         params.actionButtonStyle,
         params.actionMenuAnchorRef,
@@ -198,12 +202,12 @@ export function useRenderedAgentInputControlRows(params: Readonly<{
         params.agentIdentityIcon,
         params.agentLabel,
         params.engineLabel,
-        params.onAgentIntent,
         params.chipStyle,
         params.chipStyleAutoHide,
         params.chips,
         params.countTextStyle,
-        params.currentPath,
+        params.folderChipState,
+        params.onRemoveFolder,
         params.envVarsChipAnchorRef,
         params.envVarsCount,
         params.hasActionMenuPopoverSections,

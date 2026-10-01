@@ -12,12 +12,15 @@ const PLUGIN_UI_FEATURE_IDS = [
     'plugins.ui',
     'plugins.ui.hostedWeb',
     'plugins.ui.reactNativeBundles',
-    'plugins.ui.reactNativeBundles.devHotReload',
 ] as const;
 
 describe('UI plugin feature registry', () => {
     it('does not advertise the retired structured-message feature', () => {
         expect(getUiFeatureDefinition('plugins.ui.structuredMessages' as never)).toBeUndefined();
+    });
+
+    it('does not advertise the retired dev-server hot-reload tier', () => {
+        expect(getUiFeatureDefinition('plugins.ui.reactNativeBundles.devHotReload' as never)).toBeUndefined();
     });
 
     it('projects plugin webhooks as a server-owned runtime feature', () => {

@@ -4,6 +4,7 @@ import {
   PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2,
   PEER_TCP_TUNNEL_STREAM_PATH,
   PEER_APPLICATION_ENCRYPTION_INSTALL_CONFIRMATION_V1,
+  DirectRouteGrantRequestV2Schema,
   createPeerApplicationAuthorityDigestV1,
   createSpeechTranscriptionApplicationAuthorityDigestV1,
   createPeerApplicationEncryptionAadV1,
@@ -15,8 +16,6 @@ import {
   encodePeerApplicationEncryptedFrameV1,
   openEncryptedDataKeyEnvelopeV1,
   type PeerTcpTunnelRelayAuthorizationV2,
-  type PeerRouteNonceProofV1,
-  type SignedDirectRouteGrantV1,
 } from '@happier-dev/protocol';
 import type { PeerTcpTunnelFrame } from '@happier-dev/peer-transport/duplexFrames';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -26,15 +25,14 @@ import { openAes256GcmBytes, sealAes256GcmBytes } from '@/encryption/aes256GcmBy
 import type { DaemonSpeechStreamTransport } from './DaemonSpeechStreamSender';
 
 const getReadyServerFeaturesMock = vi.hoisted(() => vi.fn());
+const ACCOUNT_TOKEN = 'header.eyJzdWIiOiJhY2NvdW50LTEifQ.signature';
 const resolveRuntimeFeatureDecisionMock = vi.hoisted(() => vi.fn());
-const resolvePeerLoopbackRouteAvailabilityMock = vi.hoisted(() => vi.fn());
 const openPeerTcpTunnelMock = vi.hoisted(() => vi.fn());
 const resolveTargetServerMock = vi.hoisted(() => vi.fn());
 const readEndpointFromMachineStateMock = vi.hoisted(() => vi.fn());
 const getCredentialsForServerUrlMock = vi.hoisted(() => vi.fn());
 const storageGetStateMock = vi.hoisted(() => vi.fn());
 const createServerScopedRelaySocketMock = vi.hoisted(() => vi.fn());
-const isLegacyAuthCredentialsMock = vi.hoisted(() => vi.fn());
 
 vi.mock('@/sync/api/capabilities/getReadyServerFeatures', () => ({
   getReadyServerFeatures: (...args: any[]) => getReadyServerFeaturesMock(...args),
@@ -52,9 +50,6 @@ vi.mock('@/sync/domains/features/featureDecisionInputs', () => ({
   resolveRuntimeFeatureDecision: (...args: any[]) => resolveRuntimeFeatureDecisionMock(...args),
 }));
 
-vi.mock('@/sync/domains/machines/peer/mediation/loopback/resolvePeerLoopbackRouteAvailability', () => ({
-  resolvePeerLoopbackRouteAvailability: (...args: any[]) => resolvePeerLoopbackRouteAvailabilityMock(...args),
-}));
 
 vi.mock('@/sync/domains/machines/peer/mediation/tunnel/client', () => ({
   openPeerTcpTunnel: (...args: any[]) => openPeerTcpTunnelMock(...args),
@@ -73,7 +68,6 @@ vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
       ...actual.TokenStorage,
       getCredentialsForServerUrl: (...args: any[]) => getCredentialsForServerUrlMock(...args),
     },
-    isLegacyAuthCredentials: (...args: unknown[]) => isLegacyAuthCredentialsMock(...args),
   };
 });
 
@@ -88,42 +82,18 @@ vi.mock('@/sync/runtime/orchestration/serverScopedRpc/serverScopedRelaySocket', 
 }));
 
 describe('DaemonSpeechStreamProductionTunnelTransport', () => {
-  const grant = {
-    payload: {
-      grantId: 'grant-1',
-      flowKind: 'voice_media',
-      scope: {
-        kind: 'voice_media',
-        tunnelId: 'voice-media:machine-1:request-1',
-        applicationKind: 'speech_transcription',
-        applicationAttemptId: 'request-1',
-        applicationAuthorityDigest:
-          createSpeechTranscriptionApplicationAuthorityDigestV1('request-1'),
-      },
-    },
-  } as unknown as SignedDirectRouteGrantV1;
-  const nonceProof = {
-    v: 1,
-    grantId: 'grant-1',
-    routeKind: 'loopback_direct',
-    flowKind: 'voice_media',
-    endpointFingerprint: 'fingerprint-1',
-    nonceBase64Url: 'nonce',
-    signatureBase64Url: 'signature',
-  } satisfies PeerRouteNonceProofV1;
 
   beforeEach(() => {
     vi.resetModules();
     getReadyServerFeaturesMock.mockReset();
     resolveRuntimeFeatureDecisionMock.mockReset();
-    resolvePeerLoopbackRouteAvailabilityMock.mockReset();
     openPeerTcpTunnelMock.mockReset();
     resolveTargetServerMock.mockReset();
     readEndpointFromMachineStateMock.mockReset();
     getCredentialsForServerUrlMock.mockReset();
     storageGetStateMock.mockReset();
     createServerScopedRelaySocketMock.mockReset();
-    isLegacyAuthCredentialsMock.mockReset();
+    createServerScopedRelaySocketMock.mockResolvedValue(null);
     vi.unstubAllGlobals();
     vi.unstubAllEnvs();
 
@@ -132,10 +102,12 @@ describe('DaemonSpeechStreamProductionTunnelTransport', () => {
       serverUrl: 'https://relay.test',
     });
     readEndpointFromMachineStateMock.mockReturnValue({
-      url: 'http://127.0.0.1:39001/peer-mediation/v1/probe',
+      url: 'http://127.0.0.1:39001',
       endpointFingerprint: 'fingerprint-1',
     });
     storageGetStateMock.mockReturnValue({
+      settingsScope: { serverId: 'server-1', accountId: 'account-1' },
+      settings: { peerMediationPreferencesV1: { v: 1, flows: {}, byMachineId: {} } },
       profile: { id: 'user-1' },
       machineListByServerId: {
         'server-1': [{
@@ -148,10 +120,9 @@ describe('DaemonSpeechStreamProductionTunnelTransport', () => {
       machines: {},
     });
     getCredentialsForServerUrlMock.mockResolvedValue({
-      token: 'token-1',
+      token: ACCOUNT_TOKEN,
       secret: 'seed',
     });
-    isLegacyAuthCredentialsMock.mockReturnValue(true);
     getReadyServerFeaturesMock.mockResolvedValue({
       features: {
             machines: {
@@ -170,7 +141,6 @@ describe('DaemonSpeechStreamProductionTunnelTransport', () => {
           capabilities: {
             machines: {
               peerMediation: {
-                directRouteGrantProofMintVersions: [],
                 tcpTunnelRelayAuthorizationMintVersions: [2],
               },
               tunnel: {
@@ -208,15 +178,23 @@ describe('DaemonSpeechStreamProductionTunnelTransport', () => {
       evaluatedAt: 1,
       scope: { scopeKind: 'runtime', serverId: 'server-1' },
     });
-    resolvePeerLoopbackRouteAvailabilityMock.mockResolvedValue({
-      kind: 'selected',
-      receipt: PEER_MEDIATION_RECEIPTS.routeSelected,
-      routeKind: 'loopback_direct',
-      flowKind: 'voice_media',
-      endpointFingerprint: 'fingerprint-1',
-      grant,
-      nonceProof,
-    });
+    // Grant minting is the network boundary; exercise the current proof signer underneath it.
+    vi.stubGlobal('fetch', vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      const request = DirectRouteGrantRequestV2Schema.parse(JSON.parse(String(init?.body)));
+      return {
+        ok: true, status: 200,
+        json: async () => ({ ok: true, grant: {
+          payload: {
+            v: 2, grantId: 'grant-v2', accountId: 'account-1', machineId: request.machineId,
+            flowKind: request.flowKind, routeKind: request.routeKind, scope: request.scope,
+            iat: 1_000, exp: 601_000, aud: 'happier-daemon-route-grant',
+            endpointFingerprint: request.endpointFingerprint,
+            proofKind: request.kind, ephemeralPublicKeyBase64Url: request.ephemeralPublicKeyBase64Url,
+          },
+          signature: { keyId: 'key-1', alg: 'Ed25519', valueBase64Url: Buffer.from(new Uint8Array(64).fill(2)).toString('base64url') },
+        } }),
+      } as Response;
+    }));
   });
 
   it('skips direct and fails closed when a QA attempt requires an unavailable server relay', async () => {
@@ -273,7 +251,6 @@ describe('DaemonSpeechStreamProductionTunnelTransport', () => {
     })).rejects.toThrow('voice_qa_required_server_relay_unavailable');
     release();
 
-    expect(resolvePeerLoopbackRouteAvailabilityMock).not.toHaveBeenCalled();
     expect(openPeerTcpTunnelMock).not.toHaveBeenCalled();
     expect(createServerScopedRelaySocketMock).not.toHaveBeenCalled();
   });
@@ -550,8 +527,8 @@ describe('DaemonSpeechStreamProductionTunnelTransport', () => {
         destination: { host: '127.0.0.1', port: 3005 },
         selectedEncoding: PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2,
         supportedEncodings: [PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2],
-        grant,
-        nonceProof,
+        grant: expect.objectContaining({ payload: expect.objectContaining({ v: 2, flowKind: 'voice_media' }) }),
+        proof: expect.objectContaining({ v: 2, kind: 'ephemeral_ed25519' }),
       }),
     }));
 
@@ -678,10 +655,30 @@ describe('DaemonSpeechStreamProductionTunnelTransport', () => {
     });
   });
 
-  it('opens the same Voice tunnel with ephemeral V2 proof for data-key credentials', async () => {
-    isLegacyAuthCredentialsMock.mockReturnValue(false);
-    getCredentialsForServerUrlMock.mockResolvedValue({
-      token: 'data-key-token',
+  it('uses the TCP per-Machine preference without minting a direct Voice grant', async () => {
+    storageGetStateMock.mockReturnValue({
+      ...storageGetStateMock(),
+      settings: { peerMediationPreferencesV1: {
+        v: 1, flows: { tcp_tunnel: { direct: 'enabled' } },
+        byMachineId: { 'machine-1': { flows: { tcp_tunnel: { direct: 'disabled' } } } },
+      } },
+    });
+    const features = await getReadyServerFeaturesMock();
+    features.features.machines.liveStream.serverRouted.enabled = false;
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+    const { createProductionDaemonSpeechStreamingSttTransport } = await import('./DaemonSpeechStreamProductionTunnelTransport');
+    await expect(createProductionDaemonSpeechStreamingSttTransport({
+      machineTarget: { machineId: 'machine-1' }, requestId: 'request-1', signal: null,
+      compatibilityTransport: { start: vi.fn(), chunk: vi.fn(), finish: vi.fn(), cancel: vi.fn() },
+    })).resolves.toBeNull();
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(openPeerTcpTunnelMock).not.toHaveBeenCalled();
+  });
+
+  it.each(['secret', 'data-key'] as const)('opens the current Voice tunnel for %s credentials without proof-version probes', async (credentialKind) => {
+    if (credentialKind === 'data-key') getCredentialsForServerUrlMock.mockResolvedValue({
+      token: ACCOUNT_TOKEN,
       encryption: { publicKey: 'public-key', machineKey: 'machine-key' },
     });
     getReadyServerFeaturesMock.mockResolvedValue({
@@ -694,7 +691,6 @@ describe('DaemonSpeechStreamProductionTunnelTransport', () => {
       capabilities: {
         machines: {
           peerMediation: {
-            directRouteGrantProofMintVersions: [2],
             tcpTunnelRelayAuthorizationMintVersions: [2],
           },
           tunnel: {
@@ -708,10 +704,9 @@ describe('DaemonSpeechStreamProductionTunnelTransport', () => {
     readEndpointFromMachineStateMock.mockReturnValue({
       v: 1,
       routeKind: 'loopback_direct',
-      url: 'http://127.0.0.1:39001/peer-mediation/v1/probe',
+      url: 'http://127.0.0.1:39001',
       endpointFingerprint: 'fingerprint-1',
       expiresAt: Date.now() + 60_000,
-      directRouteGrantProofVerifierVersions: [2],
     });
     const signature64 = Buffer.from(new Uint8Array(64).fill(2)).toString('base64url');
     const fetchMock = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
@@ -784,7 +779,6 @@ describe('DaemonSpeechStreamProductionTunnelTransport', () => {
       '/v1/machines/peer/mediation/route-grants',
       '/peer-mediation/v2/tunnel/open',
     ]);
-    expect(resolvePeerLoopbackRouteAvailabilityMock).not.toHaveBeenCalled();
   });
 
   it('returns null without opening a tunnel when the target server cannot be resolved', async () => {
@@ -809,97 +803,6 @@ describe('DaemonSpeechStreamProductionTunnelTransport', () => {
     expect(openPeerTcpTunnelMock).not.toHaveBeenCalled();
   });
 
-  it('reports typed data-key signing unavailability before endpoint lookup, grant, nonce, probe, or tunnel', async () => {
-    isLegacyAuthCredentialsMock.mockReturnValue(false);
-    getCredentialsForServerUrlMock.mockResolvedValue({
-      token: 'data-key-token',
-      encryption: { publicKey: 'public-key', machineKey: 'machine-key' },
-    });
-    readEndpointFromMachineStateMock.mockReturnValue(null);
-    getReadyServerFeaturesMock.mockResolvedValue({
-      features: {
-        machines: {
-          tunnel: { enabled: true, directPeer: { enabled: true }, serverRouted: { enabled: true } },
-          liveStream: { enabled: true, directPeer: { enabled: true }, serverRouted: { enabled: false } },
-        },
-      },
-      capabilities: {
-        machines: {
-          peerMediation: {
-            directRouteGrantProofMintVersions: [],
-            tcpTunnelRelayAuthorizationMintVersions: [2],
-          },
-          tunnel: {
-            directPeer: { allowedPorts: [3005], maxIdleMs: 30_000, maxDurationMs: 300_000 },
-            serverRouted: { supportedEncodings: [PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2] },
-          },
-          liveStream: { serverRouted: { caps: null, disabledReason: 'relay_not_enabled' } },
-        },
-      },
-    });
-    resolveRuntimeFeatureDecisionMock.mockImplementation(async ({ featureId }: { featureId: string }) => ({
-      featureId,
-      state: featureId === 'machines.liveStream.serverRouted' ? 'disabled' : 'enabled',
-      diagnostics: [],
-      evaluatedAt: 1,
-      scope: { scopeKind: 'runtime', serverId: 'server-1' },
-    }));
-    const fetchSpy = vi.fn();
-    vi.stubGlobal('fetch', fetchSpy);
-
-    const { createProductionDaemonSpeechStreamingSttTransport } = await import('./DaemonSpeechStreamProductionTunnelTransport');
-    await expect(createProductionDaemonSpeechStreamingSttTransport({
-      machineTarget: { machineId: 'machine-1' },
-      requestId: 'request-1',
-      signal: null,
-      compatibilityTransport: { start: vi.fn(), chunk: vi.fn(), finish: vi.fn(), cancel: vi.fn() },
-    })).rejects.toMatchObject({
-      code: 'peer_route_signing_identity_unavailable',
-      reasonCode: 'peer_route_signing_identity_unavailable',
-      requiredCapability: 'peer_route_signing_identity_v1',
-    });
-
-    expect(readEndpointFromMachineStateMock).not.toHaveBeenCalled();
-    expect(resolvePeerLoopbackRouteAvailabilityMock).not.toHaveBeenCalled();
-    expect(fetchSpy).not.toHaveBeenCalled();
-    expect(openPeerTcpTunnelMock).not.toHaveBeenCalled();
-  });
-
-  it('does not let a missing daemon HTTP port mask typed data-key signing unavailability', async () => {
-    isLegacyAuthCredentialsMock.mockReturnValue(false);
-    getCredentialsForServerUrlMock.mockResolvedValue({
-      token: 'data-key-token',
-      encryption: { publicKey: 'public-key', machineKey: 'machine-key' },
-    });
-    storageGetStateMock.mockReturnValue({
-      machines: { 'machine-1': { id: 'machine-1', daemonState: {} } },
-      machineListByServerId: {},
-    });
-    getReadyServerFeaturesMock.mockResolvedValue({
-      features: {
-        machines: {
-          tunnel: { enabled: true, directPeer: { enabled: true }, serverRouted: { enabled: true } },
-          liveStream: { enabled: true, directPeer: { enabled: true }, serverRouted: { enabled: false } },
-        },
-      },
-      capabilities: { machines: { tunnel: {}, liveStream: {} } },
-    });
-
-    const { createProductionDaemonSpeechStreamingSttTransport } = await import('./DaemonSpeechStreamProductionTunnelTransport');
-    await expect(createProductionDaemonSpeechStreamingSttTransport({
-      machineTarget: { machineId: 'machine-1' },
-      requestId: 'request-1',
-      signal: null,
-      compatibilityTransport: { start: vi.fn(), chunk: vi.fn(), finish: vi.fn(), cancel: vi.fn() },
-    })).rejects.toMatchObject({
-      reasonCode: 'peer_route_signing_identity_unavailable',
-      requiredCapability: 'peer_route_signing_identity_v1',
-    });
-
-    expect(readEndpointFromMachineStateMock).not.toHaveBeenCalled();
-    expect(resolvePeerLoopbackRouteAvailabilityMock).not.toHaveBeenCalled();
-    expect(openPeerTcpTunnelMock).not.toHaveBeenCalled();
-  });
 
   it('uses the actual server relay on direct fallback and closes failed encryption confirmation before retry', async () => {
     getReadyServerFeaturesMock.mockResolvedValue({
@@ -912,7 +815,6 @@ describe('DaemonSpeechStreamProductionTunnelTransport', () => {
       capabilities: {
         machines: {
           peerMediation: {
-            directRouteGrantProofMintVersions: [],
             tcpTunnelRelayAuthorizationMintVersions: [2],
           },
           tunnel: {
@@ -937,11 +839,7 @@ describe('DaemonSpeechStreamProductionTunnelTransport', () => {
         },
       },
     });
-    resolvePeerLoopbackRouteAvailabilityMock.mockResolvedValue({
-      kind: 'fallback',
-      receipt: PEER_MEDIATION_RECEIPTS.routeFallback,
-      reasonCode: 'topology_unavailable',
-    });
+    readEndpointFromMachineStateMock.mockReturnValue(null);
     resolveRuntimeFeatureDecisionMock.mockImplementation(async ({ featureId }: { featureId: string }) => ({
       featureId,
       state: 'enabled',
@@ -1188,8 +1086,6 @@ describe('DaemonSpeechStreamProductionTunnelTransport', () => {
       operation: null,
     });
     expect(readEndpointFromMachineStateMock).toHaveBeenCalled();
-    expect(resolvePeerLoopbackRouteAvailabilityMock).toHaveBeenCalled();
-    expect(isLegacyAuthCredentialsMock).toHaveBeenCalled();
     expect(openPeerTcpTunnelMock).toHaveBeenCalledTimes(1);
     expect(openPeerTcpTunnelMock).toHaveBeenCalledWith(expect.objectContaining({
       open: expect.objectContaining({
@@ -1338,11 +1234,7 @@ describe('DaemonSpeechStreamProductionTunnelTransport', () => {
   });
 
   it('fails closed when the server does not advertise socket-bound relay authorization minting', async () => {
-    resolvePeerLoopbackRouteAvailabilityMock.mockResolvedValue({
-      kind: 'fallback',
-      receipt: PEER_MEDIATION_RECEIPTS.routeFallback,
-      reasonCode: 'topology_unavailable',
-    });
+    readEndpointFromMachineStateMock.mockReturnValue(null);
     getReadyServerFeaturesMock.mockResolvedValue({
       features: {
         machines: {
@@ -1414,11 +1306,7 @@ describe('DaemonSpeechStreamProductionTunnelTransport', () => {
   });
 
   it('returns null for compatibility fallback when the server-relay socket cannot be created', async () => {
-    resolvePeerLoopbackRouteAvailabilityMock.mockResolvedValue({
-      kind: 'fallback',
-      receipt: PEER_MEDIATION_RECEIPTS.routeFallback,
-      reasonCode: 'topology_unavailable',
-    });
+    readEndpointFromMachineStateMock.mockReturnValue(null);
     resolveRuntimeFeatureDecisionMock.mockImplementation(async ({ featureId }: { featureId: string }) => ({
       featureId,
       state: 'enabled',

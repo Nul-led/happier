@@ -1,6 +1,6 @@
 import {
-    openAccountScopedBlobCiphertext,
-    sealAccountScopedBlobCiphertext,
+    openSessionOrganizationDisplayEnvelopeV1,
+    prepareSessionOrganizationDisplayEnvelopeForAccountModeV1,
     SessionOrganizationContentEnvelopeSchema,
     type AccountEncryptionMigrateSessionOrganizationDirective,
     type SessionOrganizationAccountEncryptionMigrationInventory,
@@ -30,18 +30,18 @@ import type {
 type PlainSessionOrganizationDisplayEnvelope = Extract<SessionOrganizationContentEnvelope, { t: 'plain' }>;
 type EncryptedSessionOrganizationDisplayEnvelope = Extract<SessionOrganizationContentEnvelope, { t: 'encrypted' }>;
 
-const SESSION_ORGANIZATION_DISPLAY_KIND = 'session_organization_display';
-
 function sealDisplayPayload(params: Readonly<{
     machineKey: Uint8Array;
     payload: unknown;
 }>): string {
-    return sealAccountScopedBlobCiphertext({
-        kind: SESSION_ORGANIZATION_DISPLAY_KIND,
+    const envelope = prepareSessionOrganizationDisplayEnvelopeForAccountModeV1({
+        accountMode: 'e2ee',
         material: { type: 'dataKey', machineKey: params.machineKey },
-        payload: params.payload,
+        envelope: plainEnvelope(params.payload),
         randomBytes: getRandomBytes,
     });
+    if (envelope?.t !== 'encrypted') throw new Error('Session organization display was not sealed');
+    return envelope.c;
 }
 
 function openDisplayPayload(params: Readonly<{
@@ -51,12 +51,11 @@ function openDisplayPayload(params: Readonly<{
     | { status: 'opened'; value: unknown }
     | { status: 'unreadable' }
 > {
-    const opened = openAccountScopedBlobCiphertext({
-        kind: SESSION_ORGANIZATION_DISPLAY_KIND,
+    const opened = openSessionOrganizationDisplayEnvelopeV1({
         material: { type: 'dataKey', machineKey: params.machineKey },
-        ciphertext: params.ciphertext,
+        envelope: { t: 'encrypted', c: params.ciphertext },
     });
-    return opened
+    return opened.status === 'available'
         ? { status: 'opened', value: opened.value }
         : { status: 'unreadable' };
 }
@@ -103,14 +102,14 @@ export async function prepareSessionOrganizationDisplayEnvelope(params: Readonly
 }>): Promise<SessionOrganizationContentEnvelope> {
     const accountMode = params.accountMode
         ?? (await fetchAccountEncryptionMode(params.credentials, { request: params.request })).mode;
-    if (accountMode === 'plain') {
-        return plainEnvelope(params.value);
-    }
-    const machineKey = await getAccountMachineKey(params.credentials);
-    return {
-        t: 'encrypted',
-        c: sealDisplayPayload({ machineKey, payload: params.value }),
-    };
+    const envelope = prepareSessionOrganizationDisplayEnvelopeForAccountModeV1({
+        envelope: plainEnvelope(params.value), accountMode,
+        material: accountMode === 'plain' ? null
+            : { type: 'dataKey', machineKey: await getAccountMachineKey(params.credentials) },
+        randomBytes: getRandomBytes,
+    });
+    if (!envelope) throw new Error('Session organization display is unavailable');
+    return envelope;
 }
 
 export async function prepareSessionOrganizationDisplayEnvelopeForWrite(params: Readonly<{

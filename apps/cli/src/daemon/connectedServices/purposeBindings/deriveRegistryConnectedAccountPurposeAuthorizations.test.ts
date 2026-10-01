@@ -67,6 +67,15 @@ function actionAndHookManifest(options: Readonly<{ omitConnectedAccountOptionsFi
         },
       }],
       actions: [{
+        id: 'setup-source',
+        title: 'Set up source',
+        scopes: ['global'],
+        surfaces: ['plugin'],
+        dangerLevel: 'writesLocal',
+        execution: { target: 'daemon' },
+        inputSchema: { type: 'object', additionalProperties: false },
+        resultSchema: { type: 'object', additionalProperties: false },
+      }, {
         id: 'run',
         title: 'Run',
         scopes: ['global'],
@@ -139,6 +148,7 @@ function backgroundServiceManifest() {
         scope: {
           serviceRefs: ['account'],
           operations: ['use'],
+          materializationKinds: ['httpHeaders'],
         },
       }],
       optional: [{
@@ -300,8 +310,26 @@ const qualifiedConnectedAccountRefSchema = {
 
 function historyGapSourceManifest() {
   const id = 'acme.history-gap';
+  const sourceCredentialRefSchema = {
+    type: 'object',
+    properties: {
+      service: {
+        type: 'object',
+        properties: {
+          pluginId: { type: 'string' },
+          localId: { type: 'string' },
+        },
+        required: ['pluginId', 'localId'],
+        additionalProperties: false,
+      },
+      accountId: { type: 'string' },
+    },
+    required: ['service', 'accountId'],
+    additionalProperties: false,
+  } as const;
   const parsed = readCanonicalPluginManifest(createPluginManifestV2Fixture({
     id,
+    version: '1.2.3',
     hostAccess: {
       required: [{
         id: 'source-account',
@@ -310,6 +338,7 @@ function historyGapSourceManifest() {
         scope: {
           serviceRefs: ['account'],
           operations: ['use'],
+          materializationKinds: ['httpHeaders'],
         },
       }],
       optional: [],
@@ -350,9 +379,10 @@ function historyGapSourceManifest() {
           source: {
             sourceContractVersion: 1,
             supportedObservationTransports: ['checkpointedPull'],
+            setupActionRef: { pluginId: id, localId: 'setup-source' },
             sourceConfigSchema: {
               type: 'object',
-              properties: { credentialRef: qualifiedConnectedAccountRefSchema },
+              properties: { credentialRef: sourceCredentialRefSchema },
               required: ['credentialRef'],
               additionalProperties: false,
             },
@@ -640,19 +670,23 @@ describe('registry Connected Accounts purpose authorization projection', () => {
       sourceConfig: { credentialRef: sourceAccount },
     }));
 
-    await expect(resolveRegistryConnectedAccountActionPurposeBindingSnapshot({
+    const result = await resolveRegistryConnectedAccountActionPurposeBindingSnapshot({
       registry: projection({ activationTargets: [{ pluginId: manifest.id, manifest }] }),
       qualifiedActionId: `${manifest.id}/reset-history`,
       value: {
         automationId: 'automation-1',
-        templateVersion: 3,
+        triggerId: 'trigger-1',
+        triggerRevision: 3,
         sourceSelectorId: '9d5af559-2c82-4c22-b6a0-ecabce38a631',
       },
       actionFormConnectedAccounts: { resolveBindingIntent },
       resolveAutomationEventHistoryGapSource: resolveSource,
       signal: new AbortController().signal,
       isCurrent: () => true,
-    })).resolves.toEqual({
+    });
+    expect(resolveSource).toHaveBeenCalledOnce();
+    expect(resolveBindingIntent).toHaveBeenCalledOnce();
+    expect(result).toEqual({
       purposes: [{
         consumer: { pluginId: manifest.id, localId: 'reset-history' },
         purpose: 'source-account',
@@ -670,7 +704,8 @@ describe('registry Connected Accounts purpose authorization projection', () => {
       eventLocalIds: ['repository-updated'],
       reset: {
         automationId: 'automation-1',
-        templateVersion: 3,
+        triggerId: 'trigger-1',
+        triggerRevision: 3,
         sourceSelectorId: '9d5af559-2c82-4c22-b6a0-ecabce38a631',
       },
     }));
@@ -694,7 +729,8 @@ describe('registry Connected Accounts purpose authorization projection', () => {
       qualifiedActionId: `${manifest.id}/reset-history`,
       value: {
         automationId: 'automation-1',
-        templateVersion: 3,
+        triggerId: 'trigger-1',
+        triggerRevision: 3,
         sourceSelectorId: '9d5af559-2c82-4c22-b6a0-ecabce38a631',
       },
       actionFormConnectedAccounts: { resolveBindingIntent },
@@ -761,8 +797,12 @@ describe('registry Connected Accounts purpose authorization projection', () => {
         runtime: {
           start: () => Promise.reject(new Error('Managed runtime must not start during projection')),
         },
-        activationGeneration: '7',
-        immutableGenerationId: 'immutable:acme-provider-gateway',
+        activationOccurrenceId: '7',
+        sourceCustody: {
+          kind: 'managed',
+          immutableGenerationId: 'immutable:acme-provider-gateway',
+          installSource: 'npm',
+        },
         isCurrent: () => true,
       },
     } satisfies ResolvedProviderContribution;

@@ -8,7 +8,6 @@ import { buildSessionOrganizationListViewState } from '@/sync/domains/session/or
 import { buildSessionOrganizationTagLabelById } from '@/sync/domains/session/organization/tagLabels';
 import {
     buildSessionFolderWorkspaceTargets,
-    normalizeSessionFolderWorkspaceRef,
     selectAvailableSessionFolders,
 } from '@/sync/domains/session/folders';
 import {
@@ -24,12 +23,15 @@ import {
     isNewSessionOrganizationPlacementAvailable,
     normalizeNewSessionOrganizationPlacement,
     reconcileNewSessionOrganizationPlacementForWorkspace,
+    resolveNewSessionFolderWorkspace,
 } from './newSessionOrganizationPlacementState';
 import { createNewSessionOrganizationPlacementActionChips } from './newSessionOrganizationPlacementActionChips';
 
 export function useNewSessionOrganizationPlacement(params: Readonly<{
     executionTarget: SessionExecutionTargetV1 | null;
     directory: string;
+    /** `managed`: a no-folder draft, placed in its machine's Chats scope. */
+    directoryKind?: 'path' | 'managed';
     initialPlacement?: SessionOrganizationPlacementV1 | null;
 }>): Readonly<{
     enabled: boolean;
@@ -51,14 +53,11 @@ export function useNewSessionOrganizationPlacement(params: Readonly<{
         () => selectAvailableSessionFolders(viewState.sessionFoldersV1),
         [viewState.sessionFoldersV1],
     );
-    const workspace = React.useMemo(() => params.executionTarget
-        ? normalizeSessionFolderWorkspaceRef({
-            t: 'workspaceScope',
-            serverId: params.executionTarget.serverId,
-            machineId: params.executionTarget.machineId,
-            rootPath: params.directory,
-        })
-        : null, [params.directory, params.executionTarget]);
+    const workspace = React.useMemo(() => resolveNewSessionFolderWorkspace({
+        executionTarget: params.executionTarget,
+        directory: params.directory,
+        directoryKind: params.directoryKind,
+    }), [params.directory, params.directoryKind, params.executionTarget]);
     const folderTargets = React.useMemo(
         () => workspace
             ? buildSessionFolderWorkspaceTargets({ folders: availableFolders, workspace })
@@ -78,16 +77,17 @@ export function useNewSessionOrganizationPlacement(params: Readonly<{
                 placement: current,
                 executionTarget: params.executionTarget,
                 directory: params.directory,
+                directoryKind: params.directoryKind,
                 folders: folders.map((folder) => ({ folderId: folder.id, workspace: folder.workspace })),
             });
         });
-    }, [enabled, folders, params.directory, params.executionTarget]);
+    }, [enabled, folders, params.directory, params.directoryKind, params.executionTarget]);
 
     const setFolderId = React.useCallback((folderId: string | null) => {
         setPlacement((current) => normalizeNewSessionOrganizationPlacement({ ...current, folderId }));
     }, []);
     const setTagIds = React.useCallback((tagIds: readonly string[]) => {
-        setPlacement((current) => normalizeNewSessionOrganizationPlacement({ ...current, tagIds }));
+        setPlacement((current) => normalizeNewSessionOrganizationPlacement({ ...current, tagIds: [...tagIds] }));
     }, []);
     const toggleTagId = React.useCallback((tagId: string) => {
         setPlacement((current) => normalizeNewSessionOrganizationPlacement({

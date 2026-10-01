@@ -10,6 +10,7 @@ import {
 } from '@/agent/permissions/permissionTaxonomy';
 import { resolveCausalPermissionMode } from '@/agent/permissions/causalPermissionMode';
 import { extractShellCommand } from '@happier-dev/protocol';
+import { isWorkspaceWriteDeniedByRole } from '@/agent/permissions/workspaceWritePolicy';
 
 import { permissionMode } from '@/agent/executionRuns/policy/permissionMode';
 
@@ -39,12 +40,14 @@ export function shouldAlwaysApproveExecutionRunTool(toolName: string): boolean {
 
 function resolveExecutionRunImmediateDecision(args: Readonly<{
   permissionMode: string;
+  workspaceWrites?: 'allow' | 'deny';
   backendId: string;
   toolName: string;
   input?: unknown;
   causalPermissionAuthority?: AcpPermissionCausalAuthority;
   context?: AcpPermissionCallContext;
 }>): { decision: 'approved' | 'approved_for_session' | 'denied' } | null {
+  if (isWorkspaceWriteDeniedByRole({ workspaceWrites: args.workspaceWrites, toolName: args.toolName, toolInput: args.input })) return { decision: 'denied' };
   const rawLower = String(args.permissionMode ?? '').trim().toLowerCase();
   const normalizedMode = permissionMode(args.permissionMode);
   const hasContextCausalAuthority = Boolean(
@@ -109,6 +112,7 @@ function resolveExecutionRunImmediateDecision(args: Readonly<{
  */
 export function resolveExecutionRunPermissionDecision(args: Readonly<{
   permissionMode: string;
+  workspaceWrites?: 'allow' | 'deny';
   backendId: string;
   toolName: string;
   input?: unknown;
@@ -121,6 +125,7 @@ export function resolveExecutionRunPermissionDecision(args: Readonly<{
 
 export function createExecutionRunPermissionHandler(args: Readonly<{
   permissionMode: string;
+  workspaceWrites?: 'allow' | 'deny';
   backendId: string;
   causalPermissionAuthority?: AcpPermissionCausalAuthority;
   publishPendingRequest?: (request: Readonly<{
@@ -148,6 +153,7 @@ export function createExecutionRunPermissionHandler(args: Readonly<{
   ) {
     const immediate = resolveExecutionRunImmediateDecision({
       permissionMode: args.permissionMode,
+      workspaceWrites: args.workspaceWrites,
       backendId: args.backendId,
       toolName,
       input,

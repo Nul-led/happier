@@ -3,8 +3,8 @@ import { join } from 'node:path';
 
 import { resolveHappyHomeDirFromEnvironment } from '../agents/resolveHappyHomeDir.js';
 
-import { getRelayAccessProvider } from './registry.js';
-import type { RelayAccessConfig, RelayAccessStatus } from './types.js';
+import { getRelayAccessProvider, getRelayAccessProviderDescriptor } from './registry.js';
+import type { RelayAccessConfig, RelayAccessProviderExposure, RelayAccessStatus } from './types.js';
 
 type RelayAccessConfigEnv = Readonly<Record<string, string | undefined>>;
 type ResolveRelayAccessConfiguredCanonicalPublicServerUrlOptions = Readonly<{
@@ -93,20 +93,39 @@ async function readPersistedRelayAccessConfigFromEnv(
     }
 }
 
-export async function resolveRelayAccessConfiguredCanonicalPublicServerUrl(
+/**
+ * What the relay-access configuration persisted on this computer says about how it exposes the
+ * local server: the configured method, whether that method reaches the public internet, and the
+ * address it shares (when the provider can report one). `null` when no usable configuration exists.
+ */
+export type RelayAccessConfiguredPublicAccess = Readonly<{
+    providerId: RelayAccessConfig['providerId'];
+    exposure: RelayAccessProviderExposure;
+    shareUrl: string | null;
+}>;
+
+export async function resolveRelayAccessConfiguredPublicAccess(
     env: RelayAccessConfigEnv = defaultRelayAccessConfigEnv,
     options: ResolveRelayAccessConfiguredCanonicalPublicServerUrlOptions = defaultResolveRelayAccessConfiguredCanonicalPublicServerUrlOptions,
-): Promise<string | null> {
+): Promise<RelayAccessConfiguredPublicAccess | null> {
     const config = await readPersistedRelayAccessConfigFromEnv(env);
     if (!config) return null;
+    const exposure = getRelayAccessProviderDescriptor(config.providerId).exposure;
 
     const upstreamUrl = String(options.upstreamUrl ?? '').trim() || null;
     const allowTailscaleProviders = options.allowTailscaleProviders ?? true;
     if (config.providerId === 'tailscaleServe' || config.providerId === 'tailscaleFunnel') {
-        if (!allowTailscaleProviders) return null;
-        if (!upstreamUrl) return null;
+        if (!allowTailscaleProviders || !upstreamUrl) return { providerId: config.providerId, exposure, shareUrl: null };
     }
-    return await resolveRelayAccessStatusShareUrlWithEnv(config, env as NodeJS.ProcessEnv, upstreamUrl);
+    const shareUrl = await resolveRelayAccessStatusShareUrlWithEnv(config, env as NodeJS.ProcessEnv, upstreamUrl);
+    return { providerId: config.providerId, exposure, shareUrl };
+}
+
+export async function resolveRelayAccessConfiguredCanonicalPublicServerUrl(
+    env: RelayAccessConfigEnv = defaultRelayAccessConfigEnv,
+    options: ResolveRelayAccessConfiguredCanonicalPublicServerUrlOptions = defaultResolveRelayAccessConfiguredCanonicalPublicServerUrlOptions,
+): Promise<string | null> {
+    return (await resolveRelayAccessConfiguredPublicAccess(env, options))?.shareUrl ?? null;
 }
 
 export function normalizeRelayAccessCanonicalPublicServerUrl(raw: unknown): string | null {

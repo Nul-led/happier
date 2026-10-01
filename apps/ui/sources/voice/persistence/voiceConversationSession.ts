@@ -34,7 +34,7 @@ import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
 import { normalizeSessionAddress, type SessionAddress } from '@/sync/domains/session/sessionAddress';
 import { storage } from '@/sync/domains/state/storage';
-import type { Metadata } from '@/sync/domains/state/storageTypes';
+import type { Metadata } from '@happier-dev/session-core/state';
 import {
     completePendingMachineSpawnAttemptCustodyForSession,
 } from '@/sync/ops/machines';
@@ -223,7 +223,7 @@ function resolveVoiceHomeDirectory(state: any, machineId: string): string | null
         });
     }
 
-    for (const recent of state?.settings?.recentMachinePaths ?? []) {
+    for (const recent of state?.authoringMemory?.recentMachinePaths ?? []) {
         if (normalizeNonEmptyString(recent?.machineId) !== machineId) continue;
         const recentDirectory = normalizeNonEmptyString(recent?.path);
         if (recentDirectory) return recentDirectory;
@@ -242,7 +242,7 @@ function resolveVoiceHomeDirectory(state: any, machineId: string): string | null
 function resolveRecentVoiceDirectoryForMachine(state: any, machineId: string | null | undefined): string | null {
     const normalizedMachineId = normalizeNonEmptyString(machineId);
     if (!normalizedMachineId) return null;
-    for (const recent of state?.settings?.recentMachinePaths ?? []) {
+    for (const recent of state?.authoringMemory?.recentMachinePaths ?? []) {
         if (normalizeNonEmptyString(recent?.machineId) !== normalizedMachineId) continue;
         const recentDirectory = normalizeNonEmptyString(recent?.path);
         if (recentDirectory) return recentDirectory;
@@ -253,7 +253,7 @@ function resolveRecentVoiceDirectoryForMachine(state: any, machineId: string | n
 function resolveRecentVoiceDirectoryForRouteMachine(state: any, routeMachineId: string | null | undefined): string | null {
     const normalizedRouteMachineId = normalizeNonEmptyString(routeMachineId);
     if (!normalizedRouteMachineId) return null;
-    for (const recent of state?.settings?.recentMachinePaths ?? []) {
+    for (const recent of state?.authoringMemory?.recentMachinePaths ?? []) {
         const recentMachineId = normalizeNonEmptyString(recent?.machineId);
         if (resolveVoiceExecutionMachineIdFromState(state, { machineId: recentMachineId ?? '' }) !== normalizedRouteMachineId) continue;
         const recentDirectory = normalizeNonEmptyString(recent?.path);
@@ -490,11 +490,14 @@ function toVoiceConversationSpawnError(spawned: unknown): Error {
         uxDiagnostic?.code === CONNECTED_SERVICE_UX_DIAGNOSTIC_CODES.connectedServiceCredentialRefreshUnavailable
         && uxDiagnostic.retryable === true
         && uxDiagnostic.suggestedActions.includes(CONNECTED_SERVICE_UX_DIAGNOSTIC_ACTIONS.retry);
-    const safeMessage = uxDiagnostic?.code ?? errorMessage ?? 'voice_conversation_spawn_failed';
+    const isRetryableProviderFailure = spawnRecord.retryableProviderFailure === true;
+    const safeMessage = isRetryableProviderFailure
+        ? 'service_temporarily_unavailable'
+        : uxDiagnostic?.code ?? errorMessage ?? 'voice_conversation_spawn_failed';
     return Object.assign(
         new Error(safeMessage),
         {
-            code: isRetryableCredentialRefresh
+            code: isRetryableCredentialRefresh || isRetryableProviderFailure
                 ? 'service_temporarily_unavailable'
                 : errorCode ?? 'VOICE_CONVERSATION_SPAWN_FAILED',
             ...(errorDetail ? { errorDetail } : {}),
@@ -525,7 +528,7 @@ async function spawnVoiceConversationSession(params: Readonly<{
             serverId: params.serverId,
             machineId: params.machineId,
         },
-        directory: params.directory,
+        directory: { kind: 'path', path: params.directory },
         agentTarget,
         permissionMode: params.permissionMode,
         transcriptStorage: 'persisted',
@@ -550,6 +553,10 @@ async function spawnVoiceConversationSession(params: Readonly<{
             ? {
                 errorCode: action.result.code,
                 errorMessage: action.result.code,
+                retryableProviderFailure:
+                    'providerError' in action.result
+                    && action.result.providerError?.retryable === true
+                    && action.result.providerError.action === 'retry',
             }
             : {
                 errorCode: 'VOICE_CONVERSATION_SPAWN_PENDING',
@@ -655,11 +662,14 @@ function resolveConversationRetentionLimit(state: any): number {
 }
 
 async function retireVoiceConversationSession(sessionId: string): Promise<void> {
-    await sync.patchSessionMetadataWithRetry(sessionId, (metadata: any) => ({
-        ...metadata,
-        ...buildSystemSessionMetadataV1({ key: VOICE_CONVERSATION_RETIRED_SYSTEM_SESSION_KEY, hidden: true }),
-        voiceAgentRunV1: null,
-    }));
+    await sync.patchSessionMetadataWithRetry(sessionId, (metadata) => {
+        const nextMetadata = {
+            ...metadata,
+            ...buildSystemSessionMetadataV1({ key: VOICE_CONVERSATION_RETIRED_SYSTEM_SESSION_KEY, hidden: true }),
+        };
+        Reflect.deleteProperty(nextMetadata, 'voiceAgentRunV1');
+        return nextMetadata;
+    });
 }
 
 async function failVoiceConversationCustodyCompletion(params: Readonly<{
@@ -852,9 +862,7 @@ function projectionSupportsStartupInstructionsV1(params: Readonly<{
 }>): boolean {
     const projection = params.projectionInputs?.pluginProjectionV2;
     if (!projection) return false;
-    const backendId = params.backendTarget.backendId;
-    const agentId = projection.backendsById[backendId]?.agentId ?? backendId;
-    const versions = projection.agentsById[agentId]?.capabilities
+    const versions = projection.agentsById[params.backendTarget.backendId]?.capabilities
         ?.sessions?.startupInstructions?.versions;
     return versions?.length === 1 && versions[0] === 1;
 }

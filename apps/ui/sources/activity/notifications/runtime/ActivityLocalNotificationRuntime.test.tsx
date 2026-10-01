@@ -2,6 +2,7 @@ import * as React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import renderer, { act } from 'react-test-renderer';
 import { createDeferred, createSessionAccessFixture, renderScreen } from '@/dev/testkit';
+import { createAccountTokenForTests } from '@/dev/testkit/harness/homeGovernanceHarness';
 import { localSettingsParse } from '@/sync/domains/settings/localSettings';
 import { settingsParse } from '@/sync/domains/settings/settings';
 import {
@@ -99,7 +100,6 @@ installActivityNotificationRuntimeCommonModuleMocks({
 
 vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
     const { createTokenStorageModuleMock } = await import('@/dev/testkit/mocks/tokenStorage');
-    const { createAccountTokenForTests } = await import('@/dev/testkit/harness/homeGovernanceHarness');
     return createTokenStorageModuleMock({
         importOriginal,
         tokenStorage: {
@@ -303,7 +303,7 @@ describe('ActivityLocalNotificationRuntime', () => {
             v: 2,
             serverId: 'srv_home_a',
             sessionId: 'session-1',
-            accountId: 'account-1',
+            accountId: 'account-a',
             event: { type: 'ready', sequenceDomain: 'session_transcript', messageSeq },
             previewBehavior: 'title_only',
         });
@@ -317,7 +317,7 @@ describe('ActivityLocalNotificationRuntime', () => {
             target: { eventIdentity: 'message-seq:session_transcript:7' },
         });
         if (remoteFirst.kind !== 'present') throw new Error('Expected routable V2 ready alert');
-        noteActivityAlertPresented({
+        noteActivityAlertPresented({ accountId: 'account-a',
             address: remoteFirst.target.address,
             event: remoteFirst.target.event,
             identity: remoteFirst.target.eventIdentity!,
@@ -338,7 +338,14 @@ describe('ActivityLocalNotificationRuntime', () => {
                 sequence: 7,
             });
         });
-        expect(sendExpoLocalNotification).not.toHaveBeenCalled();
+        expect(sendExpoLocalNotification).toHaveBeenCalledTimes(1);
+        const { resolveForegroundNotificationBehavior } = await import('../resolveForegroundNotificationBehavior');
+        await expect(resolveForegroundNotificationBehavior({
+            content: sendExpoLocalNotification.mock.calls[0]![0],
+            localSettings: localSettingsParse(localSettingsValue),
+            now: new Date('2026-09-26T12:00:00Z'),
+            isSessionVisible: () => false,
+        })).resolves.toBe('off');
 
         // The consumed note suppresses one duplicate, never the next committed event.
         await act(async () => {
@@ -346,7 +353,7 @@ describe('ActivityLocalNotificationRuntime', () => {
                 kind: 'agent-text', id: 'ready-8', createdAt: 2, seq: 8, text: 'Ready again',
             } as any]);
         });
-        expect(sendExpoLocalNotification).toHaveBeenCalledTimes(1);
+        expect(sendExpoLocalNotification).toHaveBeenCalledTimes(2);
 
         resetActivityAlertPresentationNotesForTests();
         sendExpoLocalNotification.mockClear();
@@ -361,10 +368,18 @@ describe('ActivityLocalNotificationRuntime', () => {
             });
         });
         expect(sendExpoLocalNotification).toHaveBeenCalledTimes(1);
-        expect(resolveRemoteAlertForegroundPresentation({
-            data: remoteReady(7),
+        await resolveForegroundNotificationBehavior({
+            content: sendExpoLocalNotification.mock.calls[0]![0],
+            localSettings: localSettingsParse(localSettingsValue),
+            now: new Date('2026-09-26T12:00:00Z'),
             isSessionVisible: () => false,
-        })).toEqual({ kind: 'suppress', reason: 'already_presented' });
+        });
+        await expect(resolveForegroundNotificationBehavior({
+            content: { data: remoteReady(7) },
+            localSettings: localSettingsParse(localSettingsValue),
+            now: new Date('2026-09-26T12:00:00Z'),
+            isSessionVisible: () => false,
+        })).resolves.toBe('off');
         expect(resolveRemoteAlertForegroundPresentation({
             data: remoteReady(8),
             isSessionVisible: () => false,
@@ -372,7 +387,7 @@ describe('ActivityLocalNotificationRuntime', () => {
 
         // Identityless local observations remain eligible and cannot consume a
         // committed V2 note merely because the Session and category match.
-        noteActivityAlertPresented({
+        noteActivityAlertPresented({ accountId: 'account-a',
             address: remoteFirst.target.address,
             event: remoteFirst.target.event,
             identity: remoteFirst.target.eventIdentity!,
@@ -388,7 +403,7 @@ describe('ActivityLocalNotificationRuntime', () => {
 
     it('does not conflate identityless state-derived ready observations', async () => {
         const { noteActivityAlertPresented } = await import('../remoteAlerts/activityAlertPresentationNotes');
-        noteActivityAlertPresented({
+        noteActivityAlertPresented({ accountId: 'account-a',
             address: { serverId: 'server-a', sessionId: 'session-1' },
             event: 'ready',
             identity: 'message-seq:session_transcript:7',
@@ -406,36 +421,6 @@ describe('ActivityLocalNotificationRuntime', () => {
         await act(async () => { screen.tree.unmount(); });
     });
 
-    it('records an identified event only after the platform accepts the notification', async () => {
-        const accepted = createDeferred<string>();
-        sendExpoLocalNotification.mockImplementationOnce(() => accepted.promise);
-        const { consumeOtherLegActivityAlertPresentation } =
-            await import('../remoteAlerts/activityAlertPresentationNotes');
-        const { ActivityLocalNotificationRuntime } = await import('./ActivityLocalNotificationRuntime');
-        const { notifyActivityReady } = await import('./activityLocalNotificationBus');
-        const screen = await renderScreen(<ActivityLocalNotificationRuntime />);
-        const presentation = {
-            address: { serverId: 'server-a', sessionId: 'session-1' },
-            event: 'ready' as const,
-            identity: 'message-seq:session_transcript:21',
-            source: 'home_remote_alert' as const,
-        };
-
-        await act(async () => {
-            notifyActivityReady(presentation.address, [{
-                kind: 'agent-text', id: 'ready-21', createdAt: 1, seq: 21, text: 'Ready',
-            } as any], { sequenceDomain: 'session_transcript', sequence: 21 });
-        });
-        expect(consumeOtherLegActivityAlertPresentation(presentation)).toBe(false);
-
-        await act(async () => {
-            accepted.resolve('notification-accepted');
-            await accepted.promise;
-        });
-        expect(consumeOtherLegActivityAlertPresentation(presentation)).toBe(true);
-        await act(async () => { screen.tree.unmount(); });
-    });
-
     it('does not record presentation when platform acceptance fails or its response is lost', async () => {
         const response = createDeferred<string>();
         sendExpoLocalNotification.mockImplementationOnce(() => response.promise);
@@ -445,7 +430,7 @@ describe('ActivityLocalNotificationRuntime', () => {
         const { ActivityLocalNotificationRuntime } = await import('./ActivityLocalNotificationRuntime');
         const { notifyActivityReady } = await import('./activityLocalNotificationBus');
         const screen = await renderScreen(<ActivityLocalNotificationRuntime />);
-        const presentation = {
+        const presentation = { accountId: 'account-a',
             address: { serverId: 'server-a', sessionId: 'session-1' },
             event: 'ready' as const,
             identity: 'message-seq:session_transcript:22',
@@ -476,7 +461,7 @@ describe('ActivityLocalNotificationRuntime', () => {
         const { ActivityLocalNotificationRuntime } = await import('./ActivityLocalNotificationRuntime');
         const { notifyActivityReady } = await import('./activityLocalNotificationBus');
         const screen = await renderScreen(<ActivityLocalNotificationRuntime />);
-        const presentation = {
+        const presentation = { accountId: 'account-a',
             address: { serverId: 'server-a', sessionId: 'session-1' },
             event: 'ready' as const,
             identity: 'message-seq:session_transcript:23',

@@ -1,9 +1,8 @@
-import { spawnSync } from 'node:child_process';
-
 import type { InstallAgentCliResult, AgentCliInstallPlan } from '../install.js';
 import { type AgentCliRuntimeDescriptor } from '../resolution.js';
 import type { ManagedInstallDeps } from './managedInstall.js';
 import type { RuntimeInstallLifecycleContext } from './runtimeInstallLifecycleContext.js';
+import type { AgentInstallProgressCallback } from '../installProgress.js';
 import { runtimeInstallModeHandlerTable } from './runtimeInstallModeHandlerTable.js';
 import {
     buildRuntimeInstallModeErrorResult,
@@ -15,10 +14,10 @@ export async function runRuntimeInstallModeDispatch(params: Readonly<{
     env: NodeJS.ProcessEnv;
     lifecycleContext: RuntimeInstallLifecycleContext;
     signal?: AbortSignal;
+    onProgress?: AgentInstallProgressCallback;
     deps: ManagedInstallDeps;
 }>): Promise<InstallAgentCliResult> {
     const { runtimeSpec, plan, env, lifecycleContext } = params;
-    const spawn = params.deps.spawnSync ?? spawnSync;
     const modeHandler = runtimeInstallModeHandlerTable[plan.installMode];
     const modeResult = modeHandler.matchesPlan(plan)
         ? await modeHandler.run({
@@ -28,7 +27,7 @@ export async function runRuntimeInstallModeDispatch(params: Readonly<{
             lifecycleContext,
             deps: params.deps,
             signal: params.signal,
-            spawn,
+            onProgress: params.onProgress,
         })
         : null;
     if (modeResult) {

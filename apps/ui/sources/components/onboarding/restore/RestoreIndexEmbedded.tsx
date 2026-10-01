@@ -7,18 +7,40 @@ import { canUseCurrentDeviceQrScanner } from '@/utils/platform/qrScannerSupport'
 import { isWebMobileLikeQrScannerHost } from '@/utils/platform/webMobileHeuristics';
 
 import { RestoreQrView } from '@/components/account/restore/RestoreQrView';
-import { RestoreScanComputerQrView } from '@/components/account/restore/RestoreScanComputerQrView';
+import {
+    RestoreScanComputerQrView,
+    type RestoreScanComputerQrViewProps,
+} from '@/components/account/restore/RestoreScanComputerQrView';
 import type { HomeQrEntryIntent } from '@/auth/pairing/homeQrEntryIntent';
 import { PairingLinkEntryForm } from '@/components/account/restore/PairingLinkEntryForm';
-import { useScannedAuthUrlProcessor } from '@/hooks/auth/useScannedAuthUrlProcessor';
+import { buildHomeConnectionDescriptorForProfile, listServerProfiles } from '@/sync/domains/server/serverProfiles';
+
+/**
+ * The requester-displayed direction needs one unambiguous saved Home to display a
+ * QR for. Resolve it from the saved profiles this device already knows, and only
+ * when exactly one of them can produce an established connection descriptor;
+ * ambiguity stays on the scanner rather than guessing an enrollment target.
+ */
+export function resolveReverseQrTargetProfileId(): string | null {
+    let resolved: string | null = null;
+    for (const profile of listServerProfiles()) {
+        const descriptor = buildHomeConnectionDescriptorForProfile(profile);
+        if (!descriptor || profile.serverIdentityId !== descriptor.homeServerIdentityId) continue;
+        if (resolved) return null;
+        resolved = profile.id;
+    }
+    return resolved;
+}
 
 export type RestoreIndexEmbeddedProps = Readonly<{
     entryIntent: HomeQrEntryIntent;
+    initialView?: 'qr' | 'scanner';
     reverseTargetProfileId?: string | null;
     onBack: () => void;
     onOpenSecretKeyLogin?: () => void;
     initialPairingLink?: string | null;
     onNavigationLockChange?: (locked: boolean) => void;
+    onInviteDirectionChange?: RestoreScanComputerQrViewProps['onInviteDirectionChange'];
 }>;
 
 export const RestoreIndexEmbedded = React.memo(function RestoreIndexEmbedded(props: RestoreIndexEmbeddedProps) {
@@ -49,24 +71,41 @@ export const RestoreIndexEmbedded = React.memo(function RestoreIndexEmbedded(pro
     }, [height, isDesktopShell, width]);
     const isWebPhoneWithCamera =
         Platform.OS === 'web' && canUseScanner && isWebMobileLikeQrScannerHost(heuristicViewport);
+    // Production entry point for the requester-displayed direction: an explicit
+    // caller target wins, otherwise this device's own unambiguous saved Home.
+    const reverseTargetProfileId = React.useMemo(
+        () => props.reverseTargetProfileId ?? resolveReverseQrTargetProfileId(),
+        [props.reverseTargetProfileId],
+    );
+    // A pasted link is handed to the embedded scanner, the one owner that
+    // classifies and enrolls scanned and pasted links alike.
+    const [pastedPairingLink, setPastedPairingLink] = React.useState<string | null>(null);
     const showScannerFirst =
         Boolean(props.initialPairingLink)
         || props.entryIntent === 'add_home'
-        || !props.reverseTargetProfileId
+        || !reverseTargetProfileId
         || isNativePhone
         || isWebPhoneWithCamera;
-    const { processAuthUrl } = useScannedAuthUrlProcessor({
-        allowedUrlKind: 'account',
-        homeQrEntryIntent: props.entryIntent,
-    });
     const [currentView, setCurrentView] = React.useState<'qr' | 'scanner' | 'paste' | null>(null);
-    const activeView = currentView ?? (showScannerFirst ? 'scanner' : 'qr');
+    const defaultView = props.initialView ?? (showScannerFirst ? 'scanner' : 'qr');
+    const activeView = currentView ?? defaultView;
+    const pasteReturnViewRef = React.useRef<'qr' | 'scanner'>(defaultView);
+    const openPasteEntry = React.useCallback((returnView: 'qr' | 'scanner') => {
+        pasteReturnViewRef.current = returnView;
+        setCurrentView('paste');
+    }, []);
+
+    const submitPastedPairingLink = React.useCallback(async (link: string) => {
+        setPastedPairingLink(link);
+        setCurrentView('scanner');
+        return true;
+    }, []);
 
     if (activeView === 'paste') {
         return (
             <PairingLinkEntryForm
-                onBack={() => setCurrentView('scanner')}
-                onSubmit={processAuthUrl}
+                onBack={() => setCurrentView(pasteReturnViewRef.current)}
+                onSubmit={submitPastedPairingLink}
             />
         );
     }
@@ -75,21 +114,23 @@ export const RestoreIndexEmbedded = React.memo(function RestoreIndexEmbedded(pro
         <RestoreScanComputerQrView
             entryIntent={props.entryIntent}
             embedded
-            initialPairingLink={props.initialPairingLink}
+            initialPairingLink={pastedPairingLink ?? props.initialPairingLink}
             onBack={props.onBack}
             onOpenSecretKeyLogin={props.onOpenSecretKeyLogin}
-            onOpenPairingLinkEntry={() => setCurrentView('paste')}
-            onShowQrInstead={props.reverseTargetProfileId ? () => setCurrentView('qr') : undefined}
+            onOpenPairingLinkEntry={() => openPasteEntry('scanner')}
+            onShowQrInstead={reverseTargetProfileId ? () => setCurrentView('qr') : undefined}
             onNavigationLockChange={props.onNavigationLockChange}
+            onInviteDirectionChange={props.onInviteDirectionChange}
         />
     ) : (
         <RestoreQrView
             entryIntent={props.entryIntent}
-            targetProfileId={props.reverseTargetProfileId ?? null}
+            targetProfileId={reverseTargetProfileId}
             embedded
             onBack={props.onBack}
             onOpenSecretKeyLogin={props.onOpenSecretKeyLogin}
             onOpenScanQr={canUseScanner ? () => setCurrentView('scanner') : undefined}
+            onOpenPairingLinkEntry={() => openPasteEntry('qr')}
             onNavigationLockChange={props.onNavigationLockChange}
         />
     );

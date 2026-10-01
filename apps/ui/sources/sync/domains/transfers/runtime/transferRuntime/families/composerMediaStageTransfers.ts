@@ -173,7 +173,7 @@ export async function uploadComposerMediaStageFromReader(params: Readonly<{
 export async function inspectComposerContent(
     rawHandle: ComposerContentHandleV1,
     rawRequest: ComposerContentInspectRequestV1,
-    options?: Readonly<{ signal?: AbortSignal | null }>,
+    options?: Readonly<{ signal?: AbortSignal | null; sessionId?: string }>,
 ): Promise<ComposerContentTransferResult<ComposerContentInspectWireResultV1>> {
     const handle = ComposerContentHandleV1Schema.safeParse(rawHandle);
     const request = ComposerContentInspectRequestV1Schema.safeParse(rawRequest);
@@ -183,6 +183,7 @@ export async function inspectComposerContent(
     const buffered = createBufferedTransferDestination(request.data.maxBytes);
     const directExportRequest = {
         t: 'composer_media_stage_inspect_v1',
+        ...(options?.sessionId === undefined ? {} : { sessionId: options.sessionId }),
         handle: handle.data,
         offset: request.data.offset,
         maxBytes: request.data.maxBytes,

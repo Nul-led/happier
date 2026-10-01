@@ -10,6 +10,7 @@ import { desktopActivityOverlayChromeMetrics } from './DesktopActivityOverlayChr
 import { DesktopActivityOverlayLeadingIndicator } from './DesktopActivityOverlayLeadingIndicator';
 import type { DesktopActivityOverlayPressableInteractionState } from './DesktopActivityOverlayPressableInteractionState';
 import type { DesktopActivityOverlayVisualMode } from './DesktopActivityOverlayVisualMode';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 export function DesktopActivityOverlaySessionRow(props: Readonly<{
     testID?: string;
@@ -45,7 +46,7 @@ export function DesktopActivityOverlaySessionRow(props: Readonly<{
                 return [
                     styles.container,
                     hovered ? [styles.hoveredSurface, { backgroundColor: theme.colors.overlay.scrimStrong }] : null,
-                    pressed ? { opacity: 0.9 } : null,
+                    pressed ? { opacity: motionTokens.press.opacitySubtle } : null,
                     interaction.focused === true ? createDesktopActivityOverlayFocusRingStyle(theme) : null,
                 ];
             }}

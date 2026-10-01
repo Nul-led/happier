@@ -26,13 +26,6 @@ type ProjectionRequestAuthority = Readonly<{
     release?: () => Promise<void>;
 }>;
 
-type IntentListReadResult =
-    | Readonly<{
-        kind: 'available';
-        response: ReturnType<typeof PluginAvailabilityIntentsListActionOutputV1Schema.parse>;
-    }>
-    | Readonly<{ kind: 'routeNotSupported' }>;
-
 export type ActivePluginAccountAvailabilityProjectionHydratorDependencies = Readonly<{
     captureLifetime: () => ActiveServerAccountScopeLifetime | null;
     getServerSnapshot: () => ProjectionServerSnapshot;
@@ -42,14 +35,15 @@ export type ActivePluginAccountAvailabilityProjectionHydratorDependencies = Read
 }>;
 
 export type ActivePluginAccountAvailabilityProjectionHydrator = Readonly<{
-    /** Records a closed Availability hint and retires an in-flight stale read. */
-    invalidate: (changes: readonly unknown[]) => boolean;
+    /** Records closed Availability hints, retires stale reads, and names only affected plugins. */
+    invalidate: (changes: readonly unknown[]) => readonly string[];
     /** Clears remembered plugin ids when the Account lifetime/reset owner retires. */
     reset: () => void;
     /** Reads one complete current projection, or null after a lifetime/generation change. */
     refresh: () => Promise<Readonly<{
         scope: ServerAccountScope;
         snapshot: PluginAccountAvailabilitySnapshot;
+        failedPluginIds: readonly string[];
     }> | null>;
 }>;
 
@@ -82,7 +76,11 @@ function assertIntentResponseIdentity(input: Readonly<{
 
 function defaultDependencies(): ActivePluginAccountAvailabilityProjectionHydratorDependencies {
     return {
-        captureLifetime: captureActiveServerAccountScopeLifetime,
+        // Keep the active-scope import behind the invocation boundary. Sync
+        // constructs this hydrator while the sync/store module graph is still
+        // initializing, so eagerly reading the imported binding creates a TDZ
+        // cycle even though no Availability read has started yet.
+        captureLifetime: () => captureActiveServerAccountScopeLifetime(),
         getServerSnapshot: () => {
             const snapshot = getActiveServerSnapshot();
             return { serverId: snapshot.serverId, generation: snapshot.generation };
@@ -115,24 +113,10 @@ async function postJson(
     return await response.json();
 }
 
-function isExactFastifyRouteNotFoundResponse(input: unknown, path: string): boolean {
-    if (!input || typeof input !== 'object' || Array.isArray(input)) return false;
-    const body = input as Readonly<Record<string, unknown>>;
-    return Object.keys(body).length === 3
-        && body.error === 'Not found'
-        && body.path === path
-        && body.method === 'POST';
-}
-
-/**
- * Older supported servers do not have this additive bootstrap route. Only the
- * incumbent Fastify missing-route envelope may retain materialization/hint
- * discovery; every current-server failure stays fail-closed.
- */
 async function postIntentList(
     authority: ProjectionRequestAuthority,
     signal: AbortSignal,
-): Promise<IntentListReadResult> {
+): Promise<ReturnType<typeof PluginAvailabilityIntentsListActionOutputV1Schema.parse>> {
     const path = PluginAvailabilityActionHttpPathsV1[
         'account.plugins.availability.intents.list'
     ];
@@ -142,27 +126,17 @@ async function postIntentList(
         body: JSON.stringify({}),
         signal,
     });
-    if (response.status === 404) {
-        const body = await response.json();
-        if (isExactFastifyRouteNotFoundResponse(body, path)) {
-            return Object.freeze({ kind: 'routeNotSupported' });
-        }
-        throw new Error(`Plugin Availability projection request failed with status ${response.status}.`);
-    }
     if (!response.ok) {
         throw new Error(`Plugin Availability projection request failed with status ${response.status}.`);
     }
-    return Object.freeze({
-        kind: 'available',
-        response: PluginAvailabilityIntentsListActionOutputV1Schema.parse(await response.json()),
-    });
+    return PluginAvailabilityIntentsListActionOutputV1Schema.parse(await response.json());
 }
 
 /**
  * One active-Account reader for the closed Availability HTTP family. It owns
- * neither the projection nor a second cache/currentness record: callers make
- * the one atomic replacement only after this helper has fenced Account scope,
- * server generation, request supersession, and a coherent cursor.
+ * neither the projection nor a second cache/currentness record: callers apply
+ * its per-plugin results only after Account scope, server generation, and
+ * request supersession have been fenced.
  */
 export function createActivePluginAccountAvailabilityProjectionHydrator(
     overrides: Partial<ActivePluginAccountAvailabilityProjectionHydratorDependencies> = {},
@@ -199,27 +173,28 @@ export function createActivePluginAccountAvailabilityProjectionHydrator(
             && sameServerSnapshot(dependencies.getServerSnapshot(), serverSnapshot);
     };
 
-    const invalidate = (changes: readonly unknown[]): boolean => {
+    const invalidate = (changes: readonly unknown[]): readonly string[] => {
         const lifetime = dependencies.captureLifetime();
         if (!lifetime) {
             reset();
-            return false;
+            return [];
         }
         ensureScope(lifetime.scope);
-        let affected = false;
+        const affectedPluginIds = new Set<string>();
         for (const change of changes) {
             const parsed = PluginDomainChangeEntrySchema.safeParse(change);
             if (!parsed.success || parsed.data.hint.pluginDomain !== 'availability') continue;
             knownPluginIds.add(parsed.data.hint.pluginId);
-            affected = true;
+            affectedPluginIds.add(parsed.data.hint.pluginId);
         }
-        if (affected) requestEpoch += 1;
-        return affected;
+        if (affectedPluginIds.size > 0) requestEpoch += 1;
+        return Object.freeze([...affectedPluginIds]);
     };
 
     const refresh = async (): Promise<Readonly<{
         scope: ServerAccountScope;
         snapshot: PluginAccountAvailabilitySnapshot;
+        failedPluginIds: readonly string[];
     }> | null> => {
         const lifetime = dependencies.captureLifetime();
         if (!lifetime || !lifetime.isCurrent()) return null;
@@ -235,74 +210,62 @@ export function createActivePluginAccountAvailabilityProjectionHydrator(
             const capturedAuthority = authority;
             if (!isCurrent(lifetime, serverSnapshot, epoch)) return null;
 
-            // A concurrent Account mutation can straddle the two operation
-            // reads. One bounded retry avoids projecting a mixed cursor; a
-            // continuing mutation fails closed and the caller's InvalidateSync
-            // owns the next retry rather than retaining a partial snapshot.
-            for (let attempt = 0; attempt < 2; attempt += 1) {
-                const materializations = PluginAvailabilityMaterializationsReadActionOutputV1Schema.parse(
+            const [materializations, intentList] = await Promise.all([
+                postJson(
+                    capturedAuthority,
+                    PluginAvailabilityActionHttpPathsV1['account.plugins.availability.materializations.read'],
+                    {},
+                    controller.signal,
+                ).then((response) => PluginAvailabilityMaterializationsReadActionOutputV1Schema.parse(response)),
+                postIntentList(capturedAuthority, controller.signal),
+            ]);
+            if (!isCurrent(lifetime, serverSnapshot, epoch)) return null;
+
+            const pluginIds = new Set(knownPluginIds);
+            for (const pluginId of intentList.pluginIds) {
+                pluginIds.add(pluginId);
+            }
+            for (const snapshot of materializations.snapshots) {
+                for (const materialization of snapshot.materializations) {
+                    pluginIds.add(materialization.pluginId);
+                }
+            }
+            const sortedPluginIds = [...pluginIds].sort((left, right) => left.localeCompare(right));
+            const intentReadResults = await Promise.allSettled(sortedPluginIds.map(async (pluginId) => {
+                const response = PluginAvailabilityIntentReadActionOutputV1Schema.parse(
                     await postJson(
                         capturedAuthority,
-                        PluginAvailabilityActionHttpPathsV1['account.plugins.availability.materializations.read'],
-                        {},
+                        PluginAvailabilityActionHttpPathsV1['account.plugins.availability.intent.read'],
+                        { pluginId },
                         controller.signal,
                     ),
                 );
-                if (!isCurrent(lifetime, serverSnapshot, epoch)) return null;
-
-                const intentList = await postIntentList(capturedAuthority, controller.signal);
-                if (!isCurrent(lifetime, serverSnapshot, epoch)) return null;
-
-                const pluginIds = new Set(knownPluginIds);
-                if (intentList.kind === 'available') {
-                    for (const pluginId of intentList.response.pluginIds) {
-                        pluginIds.add(pluginId);
-                    }
-                }
-                for (const snapshot of materializations.snapshots) {
-                    for (const materialization of snapshot.materializations) {
-                        pluginIds.add(materialization.pluginId);
-                    }
-                }
-                const sortedPluginIds = [...pluginIds].sort((left, right) => left.localeCompare(right));
-                const intentReads = await Promise.all(sortedPluginIds.map(async (pluginId) => {
-                    const response = PluginAvailabilityIntentReadActionOutputV1Schema.parse(
-                        await postJson(
-                            capturedAuthority,
-                            PluginAvailabilityActionHttpPathsV1['account.plugins.availability.intent.read'],
-                            { pluginId },
-                            controller.signal,
-                        ),
-                    );
-                    assertIntentResponseIdentity({ pluginId, response });
-                    return Object.freeze({ pluginId, response });
-                }));
-                if (!isCurrent(lifetime, serverSnapshot, epoch)) return null;
-                const cursor = materializations.availabilityCursor;
-                if (
-                    (intentList.kind === 'routeNotSupported'
-                        || intentList.response.availabilityCursor === cursor)
-                    && intentReads.every((projection) => projection.response.availabilityCursor === cursor)
-                ) {
-                    knownPluginIds = pluginIds;
-                    return Object.freeze({
-                        scope: lifetime.scope,
-                        snapshot: Object.freeze({
-                            availabilityCursor: cursor,
-                            intentReads: Object.freeze(intentReads),
-                            materializations: Object.freeze(materializations.snapshots.flatMap(
-                                (snapshot) => snapshot.materializations,
-                            )),
-                            snapshots: Object.freeze(materializations.snapshots.map((snapshot) => Object.freeze({
-                                ...snapshot,
-                                materializations: Object.freeze([...snapshot.materializations]),
-                            }))),
-                        }),
-                    });
-                }
-                if (!isCurrent(lifetime, serverSnapshot, epoch)) return null;
-            }
-            throw new Error('Plugin Availability changed while its projection was hydrating.');
+                assertIntentResponseIdentity({ pluginId, response });
+                return Object.freeze({ pluginId, response });
+            }));
+            if (!isCurrent(lifetime, serverSnapshot, epoch)) return null;
+            const intentReads = intentReadResults.flatMap((result) => (
+                result.status === 'fulfilled' ? [result.value] : []
+            ));
+            const failedPluginIds = intentReadResults.flatMap((result, index) => (
+                result.status === 'rejected' ? [sortedPluginIds[index]!] : []
+            ));
+            knownPluginIds = pluginIds;
+            return Object.freeze({
+                scope: lifetime.scope,
+                failedPluginIds: Object.freeze(failedPluginIds),
+                snapshot: Object.freeze({
+                    availabilityCursor: materializations.availabilityCursor,
+                    intentReads: Object.freeze(intentReads),
+                    materializations: Object.freeze(materializations.snapshots.flatMap(
+                        (snapshot) => snapshot.materializations,
+                    )),
+                    snapshots: Object.freeze(materializations.snapshots.map((snapshot) => Object.freeze({
+                        ...snapshot,
+                        materializations: Object.freeze([...snapshot.materializations]),
+                    }))),
+                }),
+            });
         } catch (error) {
             if (!isCurrent(lifetime, serverSnapshot, epoch)) return null;
             throw error;

@@ -54,6 +54,8 @@ import { writeConsoleLogBestEffort } from '@/utils/writeConsoleBestEffort';
 import { exponentialBackoffDelay } from '@/utils/time';
 import { logger } from '@/ui/logger';
 import { isAuthenticationError } from '@/api/client/httpStatusError';
+import { isNetworkConnectionErrorCode } from '@/api/client/classifyServerEndpointError';
+export { NETWORK_ERROR_CODES, readNormalizedConnectionErrorCode as readNormalizedErrorCode } from '@/api/client/classifyServerEndpointError';
 
 /**
  * Configuration for offline reconnection behavior.
@@ -245,32 +247,9 @@ export function startOfflineReconnection<TSession>(
 // ============================================================================
 
 /** All network error codes that trigger offline mode */
-export const NETWORK_ERROR_CODES = [
-    'ECONNREFUSED', 'ENOTFOUND', 'ETIMEDOUT', 'ECONNABORTED',
-    'ECONNRESET', 'EHOSTUNREACH', 'ENETUNREACH'
-] as const;
-
 /** Check if error code indicates server unreachable */
 export function isNetworkError(code: string | undefined): boolean {
-    return code !== undefined && (NETWORK_ERROR_CODES as readonly string[]).includes(code);
-}
-
-function readNormalizedErrorCodeAtDepth(error: unknown, depth: number): string | null {
-    if (!error || typeof error !== 'object') {
-        return null;
-    }
-
-    const raw = (error as { code?: unknown }).code;
-    if (typeof raw === 'string') {
-        const normalized = raw.trim().toUpperCase();
-        if (normalized.length > 0) return normalized;
-    }
-    if (depth >= 4) return null;
-    return readNormalizedErrorCodeAtDepth((error as { cause?: unknown }).cause, depth + 1);
-}
-
-export function readNormalizedErrorCode(error: unknown): string | null {
-    return readNormalizedErrorCodeAtDepth(error, 0);
+    return isNetworkConnectionErrorCode(code);
 }
 
 /** Maps error codes to human-readable descriptions - exported for discoverability */

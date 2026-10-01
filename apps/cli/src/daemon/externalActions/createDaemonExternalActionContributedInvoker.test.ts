@@ -16,6 +16,8 @@ vi.mock('@/api/machine/fetchAccountMachineReplacements', () => ({
 }));
 
 import {
+  API_TOKEN_FULL_GRANT_V1,
+  ApiTokenGrantV1Schema,
   buildQualifiedPluginContributionKey,
   createPluginContributionIdentity,
   StrictJsonValueSchema,
@@ -47,6 +49,7 @@ import {
 import type { ResolvedActionContribution } from '@/plugins/projection/registry/types';
 import type { ResolvedExecutablePluginRuntimeRegistry } from '@/plugins/runtime/resolveExecutablePluginRuntimeRegistry';
 import type { PluginRuntimeRegistryLease } from '@/plugins/runtime/reload/controller';
+import { createPluginRuntimeOccurrenceId } from '@/plugins/runtime/runtimeSlots';
 import {
   createTargetActionHostBindingResolver,
   createTargetActionHostPolicyResolver,
@@ -65,6 +68,7 @@ import {
 import { encryptSessionPayload } from '@/session/transport/encryption/sessionEncryptionContext';
 import { encodeBase64 } from '@/api/encryption';
 import type { PluginActionsServiceSeed } from '@/plugins/runtime/invocation/services/actions';
+import { createCliActionExecutor } from '@/session/actions/createCliActionExecutor';
 
 import {
   createDaemonExternalActionContributedApprovalReplay,
@@ -178,11 +182,20 @@ function createExternalActionRuntime(
   if (!actionsById) throw new Error('Expected indexed external Action contributions');
   const registeredAction = actionsById.get(actionRegistryKey);
   if (!registeredAction) throw new Error('Expected parsed external Action contribution');
+  const sourceCustody = pluginId === 'happier.channels'
+    ? {
+      kind: 'bundled_first_party',
+      packagedRuntime: { kind: 'cli_version_root', versionRootId: 'fixture-cli-root' },
+    } as const
+    : pluginId === 'acme.managed'
+      ? { kind: 'managed', immutableGenerationId: 'fixture-immutable-generation', installSource: 'localPath' } as const
+    : { kind: 'development', registeredRootId: `fixture-root:${pluginId}` } as const;
+  const fixtureOccurrenceId = createPluginRuntimeOccurrenceId(pluginId);
   const targetActionInvocations = buildTargetActionInvocationRegistry({
     contributes,
     targetRegistrations: [{
       pluginId,
-      generation: 'fixture-generation',
+      occurrenceId: fixtureOccurrenceId,
       registration: {
         family: 'actions',
         localId: registeredAction.definition.id,
@@ -196,11 +209,17 @@ function createExternalActionRuntime(
         },
       },
     }],
+    readCurrentPluginOccurrenceId: (currentPluginId) => (
+      currentPluginId === pluginId ? fixtureOccurrenceId : null
+    ),
+    readCurrentPluginSourceCustody: (currentPluginId) => (
+      currentPluginId === pluginId ? sourceCustody : null
+    ),
     readTargetActivationFacts: () => [{
       pluginId,
       pluginVersion: '1.0.0',
       source: 'localPath',
-      generation: 'fixture-generation',
+      occurrenceId: fixtureOccurrenceId,
       host: 'daemon',
       platform: 'darwin',
       occurredAtMs: 1,
@@ -211,9 +230,9 @@ function createExternalActionRuntime(
     }],
     resolveAuthorizationFacts: (resolvedAction) => ({
       generation: {
-        targetGeneration: resolvedAction.generation,
-        desiredGeneration: resolvedAction.generation,
-        appliedGeneration: resolvedAction.generation,
+        targetGeneration: resolvedAction.occurrenceId,
+        desiredGeneration: resolvedAction.occurrenceId,
+        appliedGeneration: resolvedAction.occurrenceId,
       },
       resourceSelections: [],
       scopedGrants: [],
@@ -252,7 +271,7 @@ function createExternalActionRuntime(
     createAgentInvocationServices: async () => createUnavailablePluginServices(),
     resolvePromptAssetBlocks: async () => [],
     retireConsumers: () => {},
-    retainActivationRegistryComponentsExcluding: () => [],
+    retainPluginActivationComponent: () => null,
     retainPreparedActivationRegistryComponents: () => [],
     dispose: async () => {},
   } satisfies ResolvedExecutablePluginRuntimeRegistry;
@@ -344,7 +363,11 @@ function createExternalActionIngressExecutor(scope: 'global' | 'session' = 'sess
 describe('createDaemonExternalActionContributedInvoker', () => {
   it('feeds current committed plugin definitions to API Action discovery without retaining the runtime lease', async () => {
     const runtime = createExternalActionRuntime('global');
-    const release = vi.fn(async () => {});
+    let runtimeAvailable = true;
+    let retireAfterCatalogRead = false;
+    const release = vi.fn(async () => {
+      if (retireAfterCatalogRead) runtimeAvailable = false;
+    });
     const lease: PluginRuntimeRegistryLease = {
       registry: runtime,
       source: 'active',
@@ -352,7 +375,7 @@ describe('createDaemonExternalActionContributedInvoker', () => {
       release,
     };
     const listContributedActionDefinitions = createDaemonExternalActionContributedDefinitionLister({
-      tryAcquireRuntimeRegistryLease: () => lease,
+      tryAcquireRuntimeRegistryLease: () => runtimeAvailable ? lease : null,
     });
     const definitions = listContributedActionDefinitions();
     expect(definitions).toEqual([
@@ -368,19 +391,77 @@ describe('createDaemonExternalActionContributedInvoker', () => {
     expect(definition).not.toHaveProperty('priority');
     expect(definition).not.toHaveProperty('dangerLevel');
     expect(StrictJsonValueSchema.safeParse(definition).success).toBe(true);
-    const executor = createExternalActionExecutor(
-      createDaemonExternalActionContributedInvoker({
+    const executor = createCliActionExecutor({
+      token: 'discovery-token',
+      sessionId: 'session-discovery',
+      mode: 'plain',
+      ctx: null,
+      pluginActionExecutionOwner: 'current_process',
+      invokeContributedAction: createDaemonExternalActionContributedInvoker({
         acquireRuntimeRegistryLease: async () => lease,
       }),
       listContributedActionDefinitions,
+    });
+    const context = {
+      surface: 'api' as const,
+      externalActionCredential: {
+        accountId: 'account-1',
+        principalId: 'principal-1',
+        credentialId: '11111111-1111-4111-8111-111111111111',
+        grant: ApiTokenGrantV1Schema.parse({
+          v: 1,
+          actions: { families: [], ids: ['acme.external/actions/inspect'] },
+          targets: null,
+          approve: false,
+          origins: [],
+          models: null,
+          permissionModes: null,
+          create: null,
+        }),
+      },
+    };
+    const declaredAction = runtime.contributes.actions[0];
+    if (!declaredAction) throw new Error('Expected current contributed Action declaration');
+
+    // Exercise the real CLI composition before search: a host schema-export
+    // failure must not obscure the missing on-demand contributed schema owner.
+    const get = await executor.execute(
+      'action.spec.get',
+      { id: 'acme.external/actions/inspect' },
+      context,
     );
+    expect(get).toMatchObject({
+      ok: true,
+      result: {
+        actionSpec: expect.objectContaining({
+          id: 'acme.external/actions/inspect',
+          inputSchema: declaredAction.definition.inputSchema,
+          ...(declaredAction.definition.outputSchema === undefined
+            ? {}
+            : { outputSchema: declaredAction.definition.outputSchema }),
+        }),
+      },
+    });
+    if (!get.ok) throw new Error('Expected contributed Action lookup to succeed');
+    expect(StrictJsonValueSchema.safeParse(get.result).success).toBe(true);
+
+    // Retiring the runtime after the summary read must prevent the subsequent
+    // schema read from disclosing a declaration retained from that old lease.
+    retireAfterCatalogRead = true;
+    await expect(executor.execute(
+      'action.spec.get',
+      { id: 'acme.external/actions/inspect' },
+      context,
+    )).resolves.toMatchObject({ ok: false, errorCode: 'unavailable' });
+    retireAfterCatalogRead = false;
+    runtimeAvailable = true;
 
     const search = await executor.execute(
       'action.spec.search',
       { query: 'inspect', limit: 5 },
-      { surface: 'api' },
+      context,
     );
-    expect(search).toMatchObject({
+    expect(search, JSON.stringify(search)).toMatchObject({
       ok: true,
       result: {
         actionSpecs: expect.arrayContaining([
@@ -391,19 +472,6 @@ describe('createDaemonExternalActionContributedInvoker', () => {
     if (!search.ok) throw new Error('Expected contributed Action search to succeed');
     expect(StrictJsonValueSchema.safeParse(search.result).success).toBe(true);
 
-    const get = await executor.execute(
-      'action.spec.get',
-      { id: 'acme.external/actions/inspect' },
-      { surface: 'api' },
-    );
-    expect(get).toMatchObject({
-      ok: true,
-      result: {
-        actionSpec: expect.objectContaining({ id: 'acme.external/actions/inspect' }),
-      },
-    });
-    if (!get.ok) throw new Error('Expected contributed Action lookup to succeed');
-    expect(StrictJsonValueSchema.safeParse(get.result).success).toBe(true);
     expect(release).toHaveBeenCalled();
   });
 
@@ -1046,6 +1114,10 @@ describe('createDaemonExternalActionContributedInvoker', () => {
         },
       });
       expect(persisted).toMatchObject({
+        sourceCustody: {
+          kind: 'bundled_first_party',
+          packagedRuntime: { kind: 'cli_version_root', versionRootId: 'fixture-cli-root' },
+        },
         replayPlacement: {
           serverId: 'server-bundled',
           machineId: 'machine-local',
@@ -1086,19 +1158,19 @@ describe('createDaemonExternalActionContributedInvoker', () => {
     }
   });
 
-  it('replays an approved API target-action artifact exactly once at its stamped daemon', async () => {
+  it('replays a managed API target-action artifact exactly once at its stamped daemon', async () => {
     const previousSettings = process.env.HAPPIER_ACTIONS_SETTINGS_V1;
     process.env.HAPPIER_ACTIONS_SETTINGS_V1 = JSON.stringify({
       v: 1,
       actions: {
-        'acme.external/actions/inspect': {
+        'acme.managed/actions/inspect': {
           approvalRequiredSurfaces: ['api'],
         },
       },
     });
     try {
       let actionInvocations = 0;
-      const runtime = createExternalActionRuntime('global', 'acme.external', () => {
+      const runtime = createExternalActionRuntime('global', 'acme.managed', () => {
         actionInvocations += 1;
       });
       const lease: PluginRuntimeRegistryLease = {
@@ -1137,7 +1209,7 @@ describe('createDaemonExternalActionContributedInvoker', () => {
       });
 
       await expect(deferred({
-        action: { pluginId: 'acme.external', localId: 'inspect' },
+        action: { pluginId: 'acme.managed', localId: 'inspect' },
         input: {},
         approvalExecutionOrigin: createApiActionApprovalOrigin('session-1'),
         context: {
@@ -1158,6 +1230,11 @@ describe('createDaemonExternalActionContributedInvoker', () => {
       expect(actionInvocations).toBe(0);
       expect(persisted).toMatchObject({
         status: 'open',
+        sourceCustody: {
+          kind: 'managed',
+          immutableGenerationId: 'fixture-immutable-generation',
+          installSource: 'localPath',
+        },
         replayPlacement: {
           serverId: 'server-external',
           machineId: 'machine-local',
@@ -1228,6 +1305,10 @@ describe('createDaemonExternalActionContributedInvoker', () => {
       input: {},
     } as const;
     const target = { kind: 'machine' as const, machineId: 'machine-local' };
+    const approvedGrant = {
+      ...API_TOKEN_FULL_GRANT_V1,
+      actions: { families: [], ids: ['acme.external/actions/inspect'] },
+    };
     const authorization = {
       v: 1 as const,
       token: 'home-signed-external-invocation',
@@ -1240,6 +1321,7 @@ describe('createDaemonExternalActionContributedInvoker', () => {
         actionId: 'action.invoke',
         requestId: 'request-1',
         requestEnvelopeDigest: 'A'.repeat(43),
+        grant: approvedGrant,
         target,
       },
     };
@@ -1308,6 +1390,7 @@ describe('createDaemonExternalActionContributedInvoker', () => {
           accountId: 'account-1',
           principalId: 'principal-1',
           credentialId: '11111111-1111-4111-8111-111111111111',
+          grant: approvedGrant,
         },
         externalActionExecutionAuthorization: authorization,
         externalActionTarget: target,
@@ -1339,6 +1422,8 @@ describe('createDaemonExternalActionContributedInvoker', () => {
 
     expect(replaySeed).not.toBeNull();
     const context = replaySeed!.externalActionContext!;
+    expect(context.externalActionCredential.grant).toEqual(authorization.binding.grant);
+    expect(context.externalActionCredential.grant.approve).toBe(false);
     expect(Object.isFrozen(context)).toBe(true);
     expect(Object.isFrozen(context.externalActionCredential)).toBe(true);
     expect(Object.isFrozen(context.externalActionExecutionAuthorization)).toBe(true);
@@ -1651,6 +1736,12 @@ describe('createDaemonExternalActionContributedInvoker', () => {
         },
         signal: new AbortController().signal,
       });
+      expect(persisted).toMatchObject({
+        sourceCustody: {
+          kind: 'development',
+          registeredRootId: 'fixture-root:acme.external',
+        },
+      });
 
       // The persisted Ask-first subject must not become silently executable
       // when the current policy flips to Allowed before the user decides.
@@ -1698,7 +1789,7 @@ describe('createDaemonExternalActionContributedInvoker', () => {
       requestedSurface: 'api',
       qualifiedActionId: 'acme.external/actions/inspect',
       input: {},
-      generation: 'fixture-generation',
+      sourceCustody: { kind: 'development', registeredRootId: 'fixture-root' },
       policyFingerprint: 'a'.repeat(64),
       subjectFingerprint: 'b'.repeat(64),
       replayPlacement: {
@@ -1726,6 +1817,14 @@ describe('createDaemonExternalActionContributedInvoker', () => {
       },
       now: () => 2,
     });
+
+    await expect(replay({
+      artifactId: 'approval-api-reject-1',
+      decision: 'reject',
+      callerGrant: { ...API_TOKEN_FULL_GRANT_V1, approve: true, targets: { sessions: ['other-session'], machines: [] } },
+    })).resolves.toMatchObject({ ok: false, errorCode: 'credential_scope_denied' });
+    expect(targetActionApprovalsUpdate).not.toHaveBeenCalled();
+    expect(acquireRuntimeRegistryLease).not.toHaveBeenCalled();
 
     await expect(replay({
       artifactId: 'approval-api-reject-1',

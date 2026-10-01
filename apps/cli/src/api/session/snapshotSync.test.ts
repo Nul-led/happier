@@ -60,6 +60,23 @@ function fetchSessionSnapshotUpdateFromServer(
 }
 
 describe('snapshotSync.fetchSessionSnapshotUpdateFromServer', () => {
+    it('projects current server-owned worker relation and origin even when metadata versions are unchanged', async () => {
+        const getSpy = vi.spyOn(axios, 'get');
+        const row = createSessionRecordFixture({ id: 's1' });
+        getSpy.mockResolvedValueOnce({ status: 200, data: { session: {
+            ...row, reportsTo: { sessionId: 'lead' }, origin: { kind: 'run_step' },
+        } } });
+        const input: SnapshotUpdateTestParams<SnapshotUpdateParams> = {
+            token: 't', sessionId: 's1', mode: 'e2ee',
+            ctx: { encryptionKey: new Uint8Array(32), encryptionVariant: 'legacy' },
+            currentMetadataVersion: row.metadataVersion, currentAgentStateVersion: row.agentStateVersion ?? 0,
+        };
+        await expect(fetchSessionSnapshotUpdateFromServer(input)).resolves.toMatchObject({
+            organization: { reportsTo: { sessionId: 'lead' }, origin: { kind: 'run_step' } },
+        });
+        getSpy.mockResolvedValueOnce({ status: 200, data: { session: row } });
+        await expect(fetchSessionSnapshotUpdateFromServer(input)).resolves.toMatchObject({ organization: {} });
+    });
     it('projects exact queued Execution Run target ids from the current Session snapshot', async () => {
         const getSpy = vi.spyOn(axios, 'get');
         getSpy.mockResolvedValueOnce({

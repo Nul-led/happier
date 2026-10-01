@@ -243,6 +243,11 @@ describe('ExecutionRunManager execution-run registry integration', () => {
     const { ExecutionRunHostBridge: ExecutionRunManager } = await import('@/agent/runtime/bridges/executionRun/ExecutionRunHostBridge');
     const prompts: string[] = [];
     let profilePresent = true;
+    let profileSourceCustody: import('@happier-dev/protocol').PluginSourceCustodyV1 = {
+      kind: 'managed' as const,
+      immutableGenerationId: 'immutable-memory-1',
+      installSource: 'archive' as const,
+    };
     let catalogReads = 0;
     const manager = createExecutionRunManager(ExecutionRunManager, {
       parentProvider: TEST_PRIMARY_BACKEND_ID,
@@ -267,7 +272,7 @@ describe('ExecutionRunManager execution-run registry integration', () => {
         catalogReads += 1;
         const profileCatalog = buildExecutionRunProfileCatalog(profilePresent ? [{
           pluginId: 'acme.memory',
-          immutableGenerationId: 'immutable-memory-1',
+          sourceCustody: profileSourceCustody,
           definition: {
             id: 'memory', intent: 'memory_hints', title: 'Acme memory hints', promptAsset: 'memory-prompt',
             compatibleAgents: [TEST_PRIMARY_BACKEND_ID],
@@ -296,7 +301,7 @@ describe('ExecutionRunManager execution-run registry integration', () => {
 
     const started = await manager.start({
       sessionId: 'parent_session_1', intent: 'memory_hints', profileId: 'acme.memory/memory',
-      profileGenerationId: 'immutable-memory-1',
+      profileSourceCustody: { kind: 'managed', immutableGenerationId: 'immutable-memory-1', installSource: 'archive' },
       backendTarget: { kind: 'builtInAgent', agentId: TEST_PRIMARY_BACKEND_ID },
       instructions: 'Recall this repository.', permissionMode: 'read_only',
       retentionPolicy: 'resumable', runClass: 'long_lived', ioMode: 'request_response',
@@ -306,6 +311,9 @@ describe('ExecutionRunManager execution-run registry integration', () => {
     expect(prompts[0]).toContain('Contributed memory policy\n\nRecall this repository.');
     expect(manager.get(started.runId)).toMatchObject({
       retentionPolicy: 'ephemeral', runClass: 'bounded', ioMode: 'streaming',
+      profileSourceCustody: {
+        kind: 'managed', immutableGenerationId: 'immutable-memory-1', installSource: 'archive',
+      },
     });
     expect(createExecutionRunRuntimeMock).toHaveBeenCalledWith(expect.objectContaining({
       engineRegistry: expect.objectContaining({
@@ -315,15 +323,26 @@ describe('ExecutionRunManager execution-run registry integration', () => {
       }),
     }));
 
+    profileSourceCustody = {
+      kind: 'managed', immutableGenerationId: 'immutable-memory-2', installSource: 'archive',
+    };
+    await expect(manager.start({
+      sessionId: 'parent_session_1', intent: 'memory_hints', profileId: 'acme.memory/memory',
+      profileSourceCustody: { kind: 'managed', immutableGenerationId: 'immutable-memory-1', installSource: 'archive' },
+      backendTarget: { kind: 'builtInAgent', agentId: TEST_PRIMARY_BACKEND_ID },
+      instructions: 'Recall stale.', permissionMode: 'read_only',
+      retentionPolicy: 'ephemeral', runClass: 'bounded', ioMode: 'streaming',
+    })).rejects.toMatchObject({ code: 'execution_run_profile_stale' });
+
     profilePresent = false;
     await expect(manager.start({
       sessionId: 'parent_session_1', intent: 'memory_hints', profileId: 'acme.memory/memory',
-      profileGenerationId: 'immutable-memory-1',
+      profileSourceCustody: { kind: 'managed', immutableGenerationId: 'immutable-memory-1', installSource: 'archive' },
       backendTarget: { kind: 'builtInAgent', agentId: TEST_PRIMARY_BACKEND_ID },
       instructions: 'Recall again.', permissionMode: 'read_only',
       retentionPolicy: 'ephemeral', runClass: 'bounded', ioMode: 'streaming',
     })).rejects.toMatchObject({ code: 'execution_run_profile_stale' });
-    expect(catalogReads).toBe(2);
+    expect(catalogReads).toBe(3);
   });
 
   it('fails closed when a custom profile resolver omits the matching contribution snapshot', async () => {

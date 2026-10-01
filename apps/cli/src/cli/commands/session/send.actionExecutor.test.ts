@@ -49,7 +49,7 @@ describe('happier session send (action executor)', () => {
           wait: true,
           timeoutSeconds: 30,
         }),
-        expect.objectContaining({ surface: 'cli', authority: 'present_user', defaultSessionId: 'sess-1' }),
+        expect.objectContaining({ surface: 'cli', defaultSessionId: 'sess-1' }),
       );
 
       const parsed = output.json();
@@ -113,7 +113,7 @@ describe('happier session send (action executor)', () => {
           modelOverride: 'gpt-x',
           wait: true,
         }),
-        expect.objectContaining({ surface: 'cli', authority: 'present_user', defaultSessionId: 'sess-1' }),
+        expect.objectContaining({ surface: 'cli', defaultSessionId: 'sess-1' }),
       );
       expect(output.json()).toEqual(expect.objectContaining({
         ok: true,
@@ -149,7 +149,7 @@ describe('happier session send (action executor)', () => {
           sessionId: 'sess-1',
           message: 'Hello from prompt',
         }),
-        expect.objectContaining({ surface: 'cli', authority: 'present_user', defaultSessionId: 'sess-1' }),
+        expect.objectContaining({ surface: 'cli', defaultSessionId: 'sess-1' }),
       );
     } finally {
       output.restore();
@@ -291,7 +291,7 @@ describe('happier session send (action executor)', () => {
       expect(execute).toHaveBeenLastCalledWith(
         'session.message.send',
         expect.objectContaining({ timeoutSeconds: expectedTimeoutSeconds }),
-        expect.objectContaining({ surface: 'cli', authority: 'present_user', defaultSessionId: 'sess-1' }),
+        expect.objectContaining({ surface: 'cli', defaultSessionId: 'sess-1' }),
       );
     } finally {
       output.restore();
@@ -354,7 +354,7 @@ describe('happier session send (action executor)', () => {
         providerConnectionId: 'pc_work',
         localId: 'local-42',
       }),
-      expect.objectContaining({ surface: 'cli', authority: 'present_user', defaultSessionId: 'sess-1' }),
+      expect.objectContaining({ surface: 'cli', defaultSessionId: 'sess-1' }),
     );
 
     execute.mockResolvedValueOnce(success);
@@ -370,7 +370,7 @@ describe('happier session send (action executor)', () => {
     expect(execute).toHaveBeenLastCalledWith(
       'session.message.send',
       expect.objectContaining({ modelOverride: 'sonnet', providerConnectionId: null }),
-      expect.objectContaining({ surface: 'cli', authority: 'present_user', defaultSessionId: 'sess-1' }),
+      expect.objectContaining({ surface: 'cli', defaultSessionId: 'sess-1' }),
     );
 
     // An exact connection is only meaningful with a concrete model id.
@@ -415,7 +415,7 @@ describe('happier session send (action executor)', () => {
     expect(execute).toHaveBeenLastCalledWith(
       'session.message.send',
       expect.objectContaining({ modelOverride: null, providerConnectionId: null }),
-      expect.objectContaining({ surface: 'cli', authority: 'present_user', defaultSessionId: 'sess-1' }),
+      expect.objectContaining({ surface: 'cli', defaultSessionId: 'sess-1' }),
     );
   });
 

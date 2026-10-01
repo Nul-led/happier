@@ -38,37 +38,37 @@ const release = Object.freeze({
 
 const slot = Object.freeze({
     contributionId: 'hosted',
+    artifactId: 'hosted',
     tier: 'hostedWeb' as const,
     platform: 'web' as const,
 });
 
-const artifactId = '00000000-0000-4000-8000-000000000001';
+const accountArtifactId = '00000000-0000-4000-8000-000000000001';
 const entryBytes = new TextEncoder().encode('hosted entry');
 const entryDigest = computePluginUiArtifactSha256DigestV1(entryBytes);
+const entryPath = `hosted-web/${slot.artifactId}/index.html`;
 const artifactDigest = computePluginUiArtifactFileSetSha256DigestV1([
-    { relativePath: 'entry.js', bytes: entryBytes },
+    { relativePath: entryPath, bytes: entryBytes },
 ]);
 const artifactGraph = Object.freeze({
-    contributionId: slot.contributionId,
+    artifactId: slot.artifactId,
     tier: slot.tier,
-    platform: slot.platform,
-    entry: 'entry.js',
+    entry: entryPath,
     files: Object.freeze([{
-        relativePath: 'entry.js',
+        relativePath: entryPath,
         digest: entryDigest,
         byteSize: entryBytes.byteLength,
     }]),
     digest: artifactDigest,
-    builtWith: Object.freeze({ bundler: 'vite' as const, version: '5.0.0' }),
-    hostUiApiVersion: '1.0.0',
-    compat: Object.freeze({}),
+    builtWith: Object.freeze({ staging: 'staticDirectory' as const }),
+    hostUiApiRange: '^1.0.0',
 });
 
 async function createResponse() {
     const archive = createPluginUiArtifactArchiveV1({
         pluginId: release.pluginId,
         artifactGraph,
-        files: [{ relativePath: 'entry.js', bytes: entryBytes }],
+        files: [{ relativePath: artifactGraph.entry, bytes: entryBytes }],
     });
     if (!archive) throw new Error('Expected test archive');
     const envelope = await createAccountArtifactStoredEnvelope({
@@ -81,16 +81,9 @@ async function createResponse() {
         link: {
             release,
             ...slot,
-            artifactId,
+            accountArtifactId,
             artifactDigest,
-            compatibility: {
-                hostAppVersion: '1.0.0',
-                hostUiApiVersion: '1.0.0',
-                reactVersion: '19.2.0',
-                platform: 'web',
-                channel: 'store',
-                nativeCapabilities: [],
-            },
+            hostUiApiRange: artifactGraph.hostUiApiRange,
         },
         artifact: {
             header: envelope.header,
@@ -175,7 +168,7 @@ function input(lifetime: ActiveServerAccountScopeLifetime) {
         accountLifetime: lifetime,
         release,
         slot,
-        expectedArtifactId: artifactId,
+        expectedAccountArtifactId: accountArtifactId,
         expectedArtifactDigest: artifactDigest,
     });
 }
@@ -202,7 +195,7 @@ describe('active Account-hosted plugin Artifact reader', () => {
 
         expect(result).toMatchObject({
             kind: 'available',
-            value: { link: { artifactId, artifactDigest } },
+            value: { link: { accountArtifactId, artifactDigest } },
         });
         expect(JSON.parse(String(request.mock.calls[0]?.[1]?.body))).toEqual({
             release,
@@ -226,7 +219,7 @@ describe('active Account-hosted plugin Artifact reader', () => {
         if (result.kind !== 'available') throw new Error('Expected archive');
         expect(result.value.link).toEqual(response.link);
         expect(result.value.archive.artifactGraph).toEqual(artifactGraph);
-        expect(result.value.archive.files.get('entry.js')).toEqual(entryBytes);
+        expect(result.value.archive.files.get(artifactGraph.entry)).toEqual(entryBytes);
 
         expect(current.captureRequestAuthority).toHaveBeenCalledWith({
             scope,
@@ -246,7 +239,7 @@ describe('active Account-hosted plugin Artifact reader', () => {
         )).toBe('3');
     });
 
-    it('exports one bounded Account-hosted file candidate rather than raw stored bytes', async () => {
+    it('exports one Account-hosted byte source that returns the selected digest file set', async () => {
         const { lifetime } = createLifetime();
         const response = await createResponse();
         const current = createReader({
@@ -261,19 +254,19 @@ describe('active Account-hosted plugin Artifact reader', () => {
             reader: current.reader,
         });
 
-        await expect(candidate.readFile({
+        await expect(candidate.fetch({
             artifact: {
                 pluginId: release.pluginId,
                 contributionId: slot.contributionId,
+                artifactId: slot.artifactId,
                 tier: slot.tier,
                 platform: slot.platform,
                 digest: artifactDigest,
+                hostUiApiRange: artifactGraph.hostUiApiRange,
                 releaseVersion: release.version,
-                availabilityCursor: 1,
             },
-            relativePath: 'entry.js',
-            accountHostedArtifactId: artifactId,
-        })).resolves.toEqual(entryBytes);
+            accountHostedArtifactId: accountArtifactId,
+        }).then((files) => files?.get(artifactGraph.entry))).resolves.toEqual(entryBytes);
     });
 
     it('exports a prospective-slot source that reads exact target coordinates without an incumbent Artifact id', async () => {
@@ -291,18 +284,18 @@ describe('active Account-hosted plugin Artifact reader', () => {
             reader: current.reader,
         });
 
-        await expect(candidate.readFile({
+        await expect(candidate.fetch({
             artifact: {
                 pluginId: release.pluginId,
                 contributionId: slot.contributionId,
+                artifactId: slot.artifactId,
                 tier: slot.tier,
                 platform: slot.platform,
                 digest: artifactDigest,
+                hostUiApiRange: artifactGraph.hostUiApiRange,
                 releaseVersion: release.version,
-                availabilityCursor: 1,
             },
-            relativePath: 'entry.js',
-        })).resolves.toEqual(entryBytes);
+        }).then((files) => files?.get(artifactGraph.entry))).resolves.toEqual(entryBytes);
     });
 
     it('drops a response that arrives after the captured Account lifetime retires', async () => {
@@ -328,7 +321,7 @@ describe('active Account-hosted plugin Artifact reader', () => {
         const response = await createResponse();
         const request = vi.fn(async (_path: string, _init?: RequestInit) => new Response(JSON.stringify({
             ...response,
-            link: { ...response.link, artifactId: '00000000-0000-4000-8000-000000000099' },
+            link: { ...response.link, accountArtifactId: '00000000-0000-4000-8000-000000000099' },
         }), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },

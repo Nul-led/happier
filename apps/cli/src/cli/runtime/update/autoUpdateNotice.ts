@@ -1,11 +1,17 @@
 import { join } from 'node:path';
 import { existsSync } from 'node:fs';
+import { parseRuntimeContextPrefixArgs } from '@/utils/env/runtimeContextArgv';
 
 import {
   acquireSingleFlightLock,
+  CLI_UPDATE_CHECK_INTERVAL_MS,
+  CLI_UPDATE_CHECK_LOCK_TTL_MS,
   compareVersions,
+  doesVersionMatchReleaseRing,
   formatUpdateNotice,
   readUpdateCache,
+  resolveCliUpdateCachePath,
+  resolveCliUpdateCheckLockPath,
   shouldNotifyUpdate,
   spawnDetachedNode,
   writeUpdateCache,
@@ -15,10 +21,9 @@ import {
   resolvePublicReleaseRingLabelForId,
   type PublicReleaseRingId,
 } from '@happier-dev/release-runtime/releaseRings';
-import { doesVersionMatchChannel } from './doesVersionMatchChannel';
 
-const DEFAULT_INTERVAL_MS = 24 * 60 * 60 * 1000;
-const DEFAULT_CHECK_LOCK_TTL_MS = 2 * 60 * 1000;
+const DEFAULT_INTERVAL_MS = CLI_UPDATE_CHECK_INTERVAL_MS;
+const DEFAULT_CHECK_LOCK_TTL_MS = CLI_UPDATE_CHECK_LOCK_TTL_MS;
 
 function envNumber(env: NodeJS.ProcessEnv, key: string): number | null {
   const raw = String(env[key] ?? '').trim();
@@ -29,16 +34,6 @@ function envNumber(env: NodeJS.ProcessEnv, key: string): number | null {
 
 function updateChecksEnabled(env: NodeJS.ProcessEnv): boolean {
   return String(env.HAPPIER_CLI_UPDATE_CHECK ?? '1').trim() !== '0';
-}
-
-function resolveUpdateCacheFileName(ring: PublicReleaseRingId): string {
-  const suffix = resolvePublicReleaseRingLabelForId(ring);
-  return suffix === 'stable' ? 'update.json' : `update.${suffix}.json`;
-}
-
-function resolveUpdateCheckLockFileName(ring: PublicReleaseRingId): string {
-  const suffix = resolvePublicReleaseRingLabelForId(ring);
-  return suffix === 'stable' ? 'update.check.lock.json' : `update.check.${suffix}.lock.json`;
 }
 
 function resolveSelfChannelArgs(ring: PublicReleaseRingId): string[] {
@@ -60,6 +55,7 @@ const LONG_FLAGS_WITH_VALUE = new Set([
 ]);
 
 function getCmdFromArgv(argv: string[]): string {
+  argv = parseRuntimeContextPrefixArgs(argv).args;
   // Heuristic: treat leading "--flag value" pairs as global options so we can
   // reliably identify the command for update-notice suppression (e.g. `self`).
   let skipNext = false;
@@ -114,7 +110,7 @@ export function maybeAutoUpdateNotice(params: Readonly<{
   nowMs?: number;
   notifyIntervalMs?: number;
   checkIntervalMs?: number;
-  spawnDetached?: (args: { script: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv }) => void;
+  spawnDetached?: (args: { script: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv }) => unknown;
 }>): void {
   const env = params.env;
   if (!updateChecksEnabled(env)) return;
@@ -126,7 +122,10 @@ export function maybeAutoUpdateNotice(params: Readonly<{
   const now = params.nowMs ?? Date.now();
   const publicReleaseRing = params.publicReleaseRing ?? 'stable';
 
-  const cachePath = join(params.homeDir, 'cache', resolveUpdateCacheFileName(publicReleaseRing));
+  const cachePath = resolveCliUpdateCachePath({
+    happierHomeDir: params.homeDir,
+    channelLabel: resolvePublicReleaseRingLabelForId(publicReleaseRing),
+  });
   const cached = readUpdateCache(cachePath);
   const checkedAt = typeof cached?.checkedAt === 'number' ? cached.checkedAt : 0;
 
@@ -149,7 +148,7 @@ export function maybeAutoUpdateNotice(params: Readonly<{
   const candidateIsNewer = !latest || !effectiveCurrent || compareVersions(latest, effectiveCurrent) > 0;
   const updateAvailable = Boolean(cached?.updateAvailable) && candidateIsNewer;
   const notifiedAt = typeof cached?.notifiedAt === 'number' ? cached.notifiedAt : null;
-  const candidateMatchesChannel = !latest || doesVersionMatchChannel(latest, publicReleaseRing);
+  const candidateMatchesChannel = !latest || doesVersionMatchReleaseRing(latest, publicReleaseRing);
 
   const shouldNotify = shouldNotifyUpdate({
     isTTY: params.isTTY,
@@ -174,16 +173,54 @@ export function maybeAutoUpdateNotice(params: Readonly<{
   }
 
   if (!shouldCheck) return;
+  maybeRefreshCliUpdateCacheInBackground({
+    homeDir: params.homeDir,
+    cliRootDir: params.cliRootDir,
+    env,
+    publicReleaseRing,
+    nowMs: now,
+    checkIntervalMs: checkInterval,
+    ...(params.spawnDetached ? { spawnDetached: params.spawnDetached } : {}),
+  });
+}
+
+/**
+ * Starts the one background `self check --quiet` for the ring when its cached check is stale, under
+ * the per-ring single-flight lock (plan R13 S-1). Used by the terminal notice and by doctor repair;
+ * never writes the cache itself (`self check` is its only writer) and never throws.
+ */
+export function maybeRefreshCliUpdateCacheInBackground(params: Readonly<{
+  homeDir: string;
+  cliRootDir: string;
+  env: NodeJS.ProcessEnv;
+  publicReleaseRing: PublicReleaseRingId;
+  nowMs?: number;
+  checkIntervalMs?: number;
+  spawnDetached?: (args: { script: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv }) => unknown;
+}>): void {
+  const env = params.env;
+  if (!updateChecksEnabled(env)) return;
+  if (String(env.HAPPIER_CLI_UPDATE_CHECK_SPAWNED ?? '').trim() === '1') return;
+  const now = params.nowMs ?? Date.now();
+  const channelLabel = resolvePublicReleaseRingLabelForId(params.publicReleaseRing);
+  const cached = readUpdateCache(resolveCliUpdateCachePath({ happierHomeDir: params.homeDir, channelLabel }));
+  const checkedAt = typeof cached?.checkedAt === 'number' ? cached.checkedAt : 0;
+  const checkInterval =
+    params.checkIntervalMs ??
+    envNumber(env, 'HAPPIER_CLI_UPDATE_CHECK_INTERVAL_MS') ??
+    DEFAULT_INTERVAL_MS;
+  const shouldCheck = !checkedAt || (Number.isFinite(checkInterval) && now - checkedAt > checkInterval);
+  if (!shouldCheck) return;
 
   const entry = resolveUpdateCheckEntrypoint(params.cliRootDir);
   const spawnImpl = params.spawnDetached ?? spawnDetachedNode;
   const lockTtlMs = envNumber(env, 'HAPPIER_CLI_UPDATE_CHECK_LOCK_TTL_MS') ?? DEFAULT_CHECK_LOCK_TTL_MS;
-  const lockPath = join(params.homeDir, 'cache', resolveUpdateCheckLockFileName(publicReleaseRing));
+  const lockPath = resolveCliUpdateCheckLockPath({ happierHomeDir: params.homeDir, channelLabel });
   if (!acquireSingleFlightLock({ lockPath, nowMs: now, ttlMs: lockTtlMs, pid: process.pid })) return;
   try {
     spawnImpl({
       script: entry,
-      args: ['self', 'check', '--quiet', ...resolveSelfChannelArgs(publicReleaseRing)],
+      args: ['self', 'check', '--quiet', ...resolveSelfChannelArgs(params.publicReleaseRing)],
       cwd: params.cliRootDir,
       env: { ...env, HAPPIER_CLI_UPDATE_CHECK_SPAWNED: '1' },
     });

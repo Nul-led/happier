@@ -1,12 +1,12 @@
+import { useSessionTranscriptSource } from '@/components/sessions/transcript/source/SessionTranscriptSourceContext';
 import * as React from 'react';
 import { View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
-import type { Message, ToolCallMessage } from '@/sync/domains/messages/messageTypes';
-import type { PersistedSessionMessagePinV1 } from '@/sync/domains/messages/pins/sessionMessagePins';
-import type { Metadata } from '@/sync/domains/state/storageTypes';
+import type { Message, ToolCallMessage } from "@happier-dev/session-core/messages";
+import type { PersistedSessionMessagePinV1 } from "@happier-dev/session-core/pins";
+import type { Metadata } from '@happier-dev/session-core/state';
 import type { OpenApprovalArtifactForSession } from '@/sync/domains/artifacts/approvalArtifacts';
-import { useMessagesByIds } from '@/sync/domains/state/storage';
 
 import { TranscriptEnterWrapper } from '@/components/sessions/transcript/motion/TranscriptEnterWrapper';
 import { ToolCallsGroupViewWithSessionCommon } from '@/components/sessions/transcript/turns/toolCalls/ToolCallsGroupView';
@@ -36,7 +36,7 @@ type ToolCallsGroupRowProps = Readonly<{
 }>;
 
 export const ToolCallsGroupRow = React.memo(function ToolCallsGroupRow(props: ToolCallsGroupRowProps) {
-    const transcriptSessionCommon = useTranscriptSessionCommon(props.sessionId);
+    const transcriptSessionCommon = useTranscriptSessionCommon();
 
     return (
         <ToolCallsGroupRowWithSessionCommon
@@ -52,11 +52,12 @@ export const ToolCallsGroupRow = React.memo(function ToolCallsGroupRow(props: To
 export const ToolCallsGroupRowWithSessionCommon = React.memo(function ToolCallsGroupRowWithSessionCommon(
     props: ToolCallsGroupRowProps & TranscriptSessionCommonProps,
 ) {
-    const toolMessagesRaw = useMessagesByIds(props.sessionId, props.toolMessageIds);
+    const transcriptSource = useSessionTranscriptSource();
+    const toolMessagesRaw = transcriptSource.useMessagesByIds(props.toolMessageIds);
     const toolMessages = React.useMemo(() => {
         const byId = new Map<string, ToolCallMessage>();
         for (const message of toolMessagesRaw) {
-            if (message.kind !== 'tool-call') continue;
+            if (message?.kind !== 'tool-call') continue;
             byId.set(message.id, message);
         }
         if (typeof props.getMessageById === 'function') {

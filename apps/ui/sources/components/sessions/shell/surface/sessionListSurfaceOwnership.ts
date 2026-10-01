@@ -51,8 +51,17 @@ export function normalizeSessionListSurfaceOwnership(
     if (ownerKey === SESSION_LIST_SURFACE_OWNER_DEFAULT && !visible && !interactive && !dataActive) {
         return INACTIVE_SESSION_LIST_SURFACE_OWNERSHIP;
     }
-    return { ownerKey, visible, interactive, dataActive };
+    // One object per ownership: a surface that re-renders with the same ownership hands the same value
+    // to its children, so they keep their memoized work. Owner keys are a small fixed set of surfaces.
+    const internKey = `${ownerKey}\u0000${visible ? 1 : 0}${dataActive ? 1 : 0}${interactive ? 1 : 0}`;
+    const interned = internedSessionListSurfaceOwnerships.get(internKey);
+    if (interned) return interned;
+    const ownershipValue: SessionListSurfaceOwnership = Object.freeze({ ownerKey, visible, interactive, dataActive });
+    internedSessionListSurfaceOwnerships.set(internKey, ownershipValue);
+    return ownershipValue;
 }
+
+const internedSessionListSurfaceOwnerships = new Map<string, SessionListSurfaceOwnership>();
 
 export function resolveSessionListSurfaceOwnership(input: Readonly<{
     ownerKey: string;

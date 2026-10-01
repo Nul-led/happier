@@ -1,14 +1,18 @@
+import { createTestWorkflowCoordinator as createWorkflowCoordinator } from './workflowCoordinator.testkit';
 import { describe, expect, it, vi } from 'vitest';
+import { buildBackendTargetKeyV2, createActionExecutor, type ActionExecutorDeps } from '@happier-dev/protocol';
 
 import {
   projectWorkflowRetainedRuntimeSelectionV1,
   type WorkflowStepExecutionSelection,
-} from '@happier-dev/protocol';
+  type WorkflowDefinitionV1,
+} from '@happier-dev/protocol/workflows';
 import type { RpcActionExecutorContext } from '@/rpc/handlers/_actionDispatchAdapter';
 
-import { WORKFLOW_CANCEL_REQUESTED_ABORT_REASON, WorkflowRuntimeInterruption } from './coordinator';
+import {  workflowInvocationKey, WORKFLOW_CANCEL_REQUESTED_ABORT_REASON, WorkflowRuntimeInterruption, type WorkflowStepExecutor } from './coordinator';
+import { createInMemoryWorkflowCoordinatorStore } from './workflowCoordinator.testkit';
+import { createWorkflowProducerBinding } from './workflowScopeBinding';
 import {
-  createWorkflowAttachedExecutionRunStepExecutor,
   createWorkflowDetachedExecutionRunStepExecutor,
   createWorkflowStepExecutorDispatcher,
   prepareWorkflowDetachedExecutionRunStep,
@@ -104,7 +108,7 @@ function baseParams(overrides: Record<string, unknown> = {}) {
         v: 1,
         updatedAt: 1,
         ref: {
-          agentTargetKey: 'agent:happier.agent.claude:claude',
+          agentTargetKey: buildBackendTargetKeyV2(CLAUDE_TARGET),
           providerConnectionId: null,
           modelId: 'sonnet',
         },
@@ -131,17 +135,252 @@ function baseParams(overrides: Record<string, unknown> = {}) {
     } satisfies WorkflowStepExecutionSelection,
     workspace: { machineId: 'machine-1', directory: '/repo', checkoutRootPath: '/repo' },
     authorization: { admittedPermissionCeiling: 'safe-yolo', principal: { kind: 'host' } },
+    beforeInputAdmission: async () => {},
+    producerBinding: createWorkflowProducerBinding({ runId: 'workflow-1', store: createInMemoryWorkflowCoordinatorStore(), frame: { blocks: [], scope: [] } }),
     onInputAccepted: vi.fn(async () => {}),
     ...overrides,
-  };
+  } satisfies Parameters<WorkflowStepExecutor>[0];
 }
 
 describe('workflow detached Execution Run step executor', () => {
+  it('gives slow preparation the full observation budget after late native acceptance', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    try {
+      const store = createInMemoryWorkflowCoordinatorStore();
+      let sink: RpcActionExecutorContext['executionRunWorkflowObservationSink'];
+      let localInputId = '';
+      let enteredObservation!: () => void;
+      const observing = new Promise<void>((resolve) => { enteredObservation = resolve; });
+      const params = baseParams();
+      const authored: WorkflowDefinitionV1 = { version: 1, inputs: [], defaults: params.execution,
+        blocks: [{ ...params.step, timeoutMs: 500, result: { kind: 'text' } }] };
+      const executeStep = createWorkflowDetachedExecutionRunStepExecutor({ workDepth: 0, buildActionContext,
+        resolveSharedRunConversation: async () => null, resolveProducerConversation: async () => null,
+        actionExecutor: { execute: async (actionId, value, context) => {
+          if (actionId === 'execution.run.start') {
+            localInputId = String(requireActionInput(value).localInputId);
+            sink = context?.executionRunWorkflowObservationSink;
+            return { ok: true, result: { runId: 'native', callId: 'call', sidechainId: 'side' } };
+          }
+          if (actionId === 'execution.run.get') {
+            enteredObservation();
+            return await new Promise<{ ok: false; errorCode: 'cancelled'; error: string }>((resolve) => {
+              const settle = () => resolve({ ok: false, errorCode: 'cancelled', error: 'observation ended' });
+              if (context?.signal?.aborted) settle();
+              else context?.signal?.addEventListener('abort', settle, { once: true });
+            });
+          }
+          throw new Error(`unexpected ${actionId}`);
+        } },
+      });
+      const coordinator = createWorkflowCoordinator({ store, executeStep,
+        resolveWorkspace: async () => ({ ok: true, workspace: params.workspace }),
+        isAcceptedAuthorizationCurrent: async () => true,
+        prepareStep: async () => { await vi.advanceTimersByTimeAsync(8_000); return {}; },
+      });
+      let settled = false;
+      const running = coordinator.run({ runId: params.runId, definition: authored, inputs: {},
+        executionTarget: params.executionTarget, authorization: params.authorization });
+      void running.then(() => { settled = true; });
+      await observing;
+      expect(store.list().find((row) => row.blockId === params.step.id)?.observationDeadline).toBeUndefined();
+      await sink!.commit({ kind: 'input_accepted', runId: 'native', localInputId, acceptedAtMs: 9_000 });
+      expect(store.list().find((row) => row.blockId === params.step.id)?.observationDeadline)
+        .toEqual({ kind: 'at', expiresAt: new Date(9_500).toISOString() });
+      await vi.advanceTimersByTimeAsync(499);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect((await running).state).toBe('interrupted');
+      expect(store.list().find((row) => row.blockId === params.step.id)?.reason).toBe('workflow_step_timeout');
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('persists detached Generate acceptance and expires the same deadline across rejoin', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(9_000);
+    try {
+      const store = createInMemoryWorkflowCoordinatorStore();
+      const params = baseParams();
+      const key = workflowInvocationKey({ runId: params.runId, blockId: params.step.id, scope: [], attempt: 0 });
+      await store.ensureIntent({ key, recordId: 'held-row', runId: params.runId, blockKind: 'step', blockId: params.step.id,
+        memberOrdinal: '0', path: { blockId: params.step.id, scope: [] }, attempt: 0, acceptedAtMs: 1, lifecycle: 'pending' });
+      await store.commitFact({ key, lifecycle: 'waiting_for_review', result: 'prior',
+        observationDeadline: { kind: 'at', expiresAt: new Date(500).toISOString() },
+        execution: { kind: 'detached_run', runId: 'native', localInputId: 'prior-input',
+          runtimeSelection: projectWorkflowRetainedRuntimeSelectionV1(params.execution) },
+        workspace: { descriptor: params.workspace },
+        review: { decision: { kind: 'generate', requestedFromContentRevision: '0' } } });
+      const actions: string[] = [];
+      const executeStep = createWorkflowDetachedExecutionRunStepExecutor({ workDepth: 0, buildActionContext,
+        resolveSharedRunConversation: async () => null, resolveProducerConversation: async () => null,
+        actionExecutor: { execute: async (actionId, value, context) => {
+          actions.push(actionId);
+          if (actionId === 'execution.run.send') {
+            await context!.executionRunWorkflowObservationSink!.commit({ kind: 'input_accepted', runId: 'native',
+              localInputId: String(requireActionInput(value).localInputId), acceptedAtMs: 9_000 });
+            return { ok: true, result: {} };
+          }
+          if (actionId === 'execution.run.get') throw new WorkflowRuntimeInterruption();
+          throw new Error(`unexpected ${actionId}`);
+        } },
+      });
+      const deps = { store, executeStep, resolveWorkspace: async () => ({ ok: true as const, workspace: params.workspace }),
+        isAcceptedAuthorizationCurrent: async () => true };
+      const run = { runId: params.runId, definition: { version: 1 as const, inputs: [], defaults: params.execution,
+        blocks: [{ ...params.step, timeoutMs: 500, pauseForReview: true, result: { kind: 'text' as const } }] },
+        inputs: {}, executionTarget: params.executionTarget, authorization: params.authorization };
+      await expect(createWorkflowCoordinator(deps).run(run)).rejects.toBeInstanceOf(WorkflowRuntimeInterruption);
+      const generation = store.list().find((row) => row.blockId === params.step.id && row.attempt === 1)!;
+      expect(generation.observationDeadline).toEqual({ kind: 'at', expiresAt: new Date(9_500).toISOString() });
+      vi.setSystemTime(9_501);
+      await createWorkflowCoordinator(deps).run(run);
+      expect(actions).toEqual(['execution.run.send', 'execution.run.get']);
+      expect(store.read(generation.key)).toMatchObject({ reason: 'workflow_step_timeout',
+        observationDeadline: { kind: 'at', expiresAt: new Date(9_500).toISOString() } });
+      expect(store.read(key)?.result).toBe('prior');
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('stops a late accepted native identity without the aborted signal even when reporting fails', async () => {
+    const controller = new AbortController();
+    const reportFailed = new Error('report_failed');
+    const stops: string[] = [];
+    let localInputId = '';
+    const execute = createWorkflowDetachedExecutionRunStepExecutor({
+      workDepth: 0, buildActionContext, resolveSharedRunConversation: async () => null, resolveProducerConversation: async () => null,
+      actionExecutor: { execute: async (actionId, value, context) => {
+        const input = requireActionInput(value);
+        if (actionId === 'execution.run.start') {
+          localInputId = String(input.localInputId);
+          controller.abort(WORKFLOW_CANCEL_REQUESTED_ABORT_REASON);
+          return { ok: true, result: { runId: 'late-native', callId: 'call', sidechainId: 'side' } };
+        }
+        expect(context?.signal).toBeUndefined();
+        if (actionId === 'execution.run.get') return { ok: true, result: stops.length === 0
+          ? activeRun('late-native', localInputId) : completedRun('late-native', localInputId, 'done') };
+        if (actionId === 'execution.run.stop') { stops.push(String(input.runId)); return { ok: true, result: {} }; }
+        throw new Error(`unexpected ${actionId}`);
+      } },
+    });
+    await expect(execute(baseParams({ signal: controller.signal, onInputAccepted: async () => { throw reportFailed; } })))
+      .rejects.toBe(reportFailed);
+    expect(stops).toEqual(['late-native']);
+  });
+
+  it('rechecks native resume-start admission after the send reports a missing retained run', async () => {
+    let closed = false;
+    const effects: string[] = [];
+    const pauseWon = new Error('pause_won');
+    const params = baseParams({
+      execution: { ...baseParams().execution, profileId: 'profile' },
+      beforeInputAdmission: async () => { if (closed) throw pauseWon; },
+    });
+    const execute = createWorkflowDetachedExecutionRunStepExecutor({
+      actionExecutor: { execute: async (actionId) => {
+        effects.push(actionId);
+        if (actionId === 'execution.run.send') {
+          closed = true;
+          return { ok: false, errorCode: 'execution_run_not_found', error: 'gone' };
+        }
+        throw new Error('fallback must not start');
+      } },
+      workDepth: 0, buildActionContext,
+      resolveSharedRunConversation: async () => ({ runId: 'gone', machineId: 'machine-1', directory: '/repo',
+        runtimeSelection: projectWorkflowRetainedRuntimeSelectionV1(params.execution),
+        providerResumeIdentity: { kind: 'provider_session.v1', backendTarget: { kind: 'backend', backendId: 'claude' }, providerSessionId: 'resume' },
+      }),
+      resolveProducerConversation: async () => null,
+    });
+    await expect(execute(params)).rejects.toBe(pauseWon);
+    expect(effects).toEqual(['execution.run.send']);
+  });
+
+  it('fences native start after asynchronous conversation preparation', async () => {
+    let closed = false;
+    const effects: string[] = [];
+    const pauseWon = new Error('pause_won');
+    const params = baseParams({
+      execution: { ...baseParams().execution, profileId: 'profile' },
+      beforeInputAdmission: async () => { if (closed) throw pauseWon; },
+    });
+    const prepared = await prepareWorkflowDetachedExecutionRunStep({
+      actionExecutor: { execute: vi.fn() }, workDepth: 0, buildActionContext,
+      resolveSharedRunConversation: async () => null, resolveProducerConversation: async () => null,
+    }, params);
+    closed = true;
+    const gate = createWorkflowDetachedExecutionRunStepExecutor({
+      actionExecutor: { execute: async (actionId) => { effects.push(actionId); throw new Error('input must not start'); } },
+      workDepth: 0, buildActionContext, resolveSharedRunConversation: async () => null, resolveProducerConversation: async () => null,
+    });
+    await expect(gate({ ...params, preparedStep: prepared })).rejects.toBe(pauseWon);
+    expect(effects).toEqual([]);
+  });
+  it('same-conversation recovery preserves the previous native run and provider witness ahead of a shared decoy', async () => {
+    const base = baseParams();
+    const runtimeSelection = projectWorkflowRetainedRuntimeSelectionV1(base.execution);
+    const providerResumeIdentity = {
+      kind: 'provider_session.v1' as const,
+      backendTarget: { kind: 'builtInAgent' as const, agentId: 'claude' as const },
+      providerSessionId: 'provider-original',
+    };
+    const prepared = await prepareWorkflowDetachedExecutionRunStep({
+      actionExecutor: { execute: vi.fn() }, workDepth: 0, buildActionContext,
+      resolveSharedRunConversation: async () => ({ runId: 'decoy', machineId: 'machine-1', directory: '/repo', runtimeSelection }),
+      resolveProducerConversation: async () => null,
+    }, {
+      ...base,
+      invocation: { ...base.invocation, recovery: { conversation: 'same_conversation', input: { kind: 'original' } } },
+      recoveryPreviousExecution: { kind: 'detached_run', runId: 'original', localInputId: 'old-input', runtimeSelection, providerResumeIdentity },
+      recoveryPreviousWorkspace: base.workspace,
+    } as never);
+    expect(prepared.retainedConversation).toMatchObject({ runId: 'original', providerResumeIdentity, directory: '/repo' });
+  });
+
+  it('observes a current admitted input before consulting fresh selection or unsupported launch configuration', async () => {
+    const actions: string[] = [];
+    const deps = {
+      actionExecutor: { execute: async (actionId) => {
+        actions.push(actionId);
+        return { ok: true, result: completedRun('exact-native', 'exact-input', 'original-result') };
+      } },
+      workDepth: 0, buildActionContext,
+      resolveSharedRunConversation: async () => null,
+      resolveProducerConversation: async () => null,
+    } satisfies Parameters<typeof createWorkflowDetachedExecutionRunStepExecutor>[0];
+    const execute = createWorkflowDetachedExecutionRunStepExecutor(deps);
+    const params = baseParams({
+      invocation: { ...baseParams().invocation, execution: { kind: 'detached_run', runId: 'exact-native', localInputId: 'exact-input' } },
+      execution: { ...baseParams().execution, conversation: { kind: 'fresh' }, terminal: { mode: 'integrated' } },
+    });
+    // Coordinator preparation is also on the rejoin path, before execution.
+    await expect(prepareWorkflowDetachedExecutionRunStep(deps, params)).resolves.toMatchObject({ kind: 'workflow_detached_execution_run' });
+    await expect(execute(params)).resolves.toMatchObject({ kind: 'completed', result: 'original-result' });
+    expect(actions).toEqual(['execution.run.get']);
+  });
+
+  it('fresh-agent recovery ignores a prior native target and a shared pointer while preserving its workspace', async () => {
+    const base = baseParams();
+    const runtimeSelection = projectWorkflowRetainedRuntimeSelectionV1(base.execution);
+    const resolveSharedRunConversation = vi.fn(async () => ({ runId: 'decoy', machineId: 'machine-1', directory: '/repo', runtimeSelection }));
+    const prepared = await prepareWorkflowDetachedExecutionRunStep({
+      actionExecutor: { execute: vi.fn() }, workDepth: 0, buildActionContext,
+      resolveSharedRunConversation, resolveProducerConversation: async () => null,
+    }, {
+      ...base,
+      invocation: { ...base.invocation, recovery: { conversation: 'fresh_agent', input: { kind: 'original' } } },
+      recoveryPreviousExecution: { kind: 'detached_run', runId: 'original', localInputId: 'old-input', runtimeSelection },
+      recoveryPreviousWorkspace: base.workspace,
+    } as never);
+    expect(prepared.retainedConversation).toBeNull();
+    expect(resolveSharedRunConversation).not.toHaveBeenCalled();
+  });
+
   it('rejects a broader step permission than the immutable Run ceiling before any native mutation', async () => {
     const actionExecutor = { execute: vi.fn() };
     const execute = createWorkflowDetachedExecutionRunStepExecutor({
       actionExecutor,
-      buildActionContext,
+      workDepth: 0, buildActionContext,
       resolveSharedRunConversation: vi.fn(),
       resolveProducerConversation: vi.fn(),
     });
@@ -172,7 +411,7 @@ describe('workflow detached Execution Run step executor', () => {
     };
     const execute = createWorkflowDetachedExecutionRunStepExecutor({
       actionExecutor,
-      buildActionContext,
+      workDepth: 0, buildActionContext,
       resolveSharedRunConversation: async () => null,
       resolveProducerConversation: async () => null,
     });
@@ -184,9 +423,10 @@ describe('workflow detached Execution Run step executor', () => {
     expect(actionExecutor.execute.mock.calls[0]?.[1]).toMatchObject({ permissionMode: 'default' });
   });
 
-  it('starts a general native Agent Run with exact selections and commits correspondence before observation', async () => {
+  it.each(['shared_run', 'fresh'] as const)('starts a resumable %s native Agent Run with exact selections and commits correspondence before observation', async (conversation) => {
     const events: string[] = [];
     let localInputId = '';
+    let accepted: Parameters<WorkflowStepExecutor>[0]['invocation']['execution'];
     const actionExecutor = {
       execute: vi.fn(async (actionId: string, value: unknown) => {
         const input = requireActionInput(value);
@@ -198,12 +438,18 @@ describe('workflow detached Execution Run step executor', () => {
           events.push('observe');
           return { ok: true as const, result: completedRun('run-native-1', localInputId, { changed: true }) };
         }
+        if (actionId === 'execution.run.send') {
+          expect(input.runId).toBe('run-native-1');
+          expect(input.localInputId).not.toBe(localInputId);
+          localInputId = String(input.localInputId);
+          return { ok: true as const, result: { ok: true } };
+        }
         throw new Error(`unexpected action ${actionId}`);
       }),
     };
     const execute = createWorkflowDetachedExecutionRunStepExecutor({
       actionExecutor,
-      buildActionContext: () => ({
+      workDepth: 0, buildActionContext: () => ({
         ...buildActionContext(),
         surface: 'ui',
         authority: 'present_user',
@@ -213,12 +459,14 @@ describe('workflow detached Execution Run step executor', () => {
       resolveProducerConversation: async () => null,
     });
     const params = baseParams({
-      onInputAccepted: async (correspondence: unknown) => {
+      execution: { ...baseParams().execution, conversation: { kind: conversation } },
+      onInputAccepted: async (correspondence: NonNullable<Parameters<WorkflowStepExecutor>[0]['invocation']['execution']>) => {
+        accepted = correspondence;
         events.push('commit');
         localInputId = String((correspondence as { localInputId?: unknown }).localInputId);
         expect(correspondence).toEqual({
           kind: 'detached_run', runId: 'run-native-1', localInputId,
-          runtimeSelection: projectWorkflowRetainedRuntimeSelectionV1(baseParams().execution),
+          runtimeSelection: projectWorkflowRetainedRuntimeSelectionV1(params.execution),
         });
       },
     });
@@ -255,7 +503,8 @@ describe('workflow detached Execution Run step executor', () => {
         agent: { backendMode: 'acp' },
       },
     }), expect.objectContaining({
-      surface: 'ui',
+      surface: 'rpc',
+      agentStartWorkDepth: 1,
       authority: 'present_user',
       actionCaller: {
         kind: 'workflowRun',
@@ -264,6 +513,60 @@ describe('workflow detached Execution Run step executor', () => {
       },
       executionRunTargetMachineId: 'machine-1',
     }));
+    if (conversation === 'fresh') {
+      await expect(execute(baseParams({
+        execution: params.execution,
+        invocation: { ...params.invocation, logicalInvocationRecordId: 'generation-1',
+          recovery: { conversation: 'same_conversation', input: { kind: 'original' } } },
+        recoveryPreviousExecution: accepted,
+        recoveryPreviousWorkspace: params.workspace,
+        onInputAccepted: params.onInputAccepted,
+      }) as never)).resolves.toMatchObject({ kind: 'completed' });
+      expect(actionExecutor.execute.mock.calls.filter(([id]) => id === 'execution.run.start')).toHaveLength(1);
+      expect(actionExecutor.execute.mock.calls.filter(([id]) => id === 'execution.run.send')).toHaveLength(1);
+    }
+  });
+
+  it('uses the portable Launch Profile selection and frozen role without execution-profile custody', async () => {
+    let localInputId = '';
+    // Native daemon transport is the boundary; the Action executor remains real.
+    const executionRunStart = vi.fn<ActionExecutorDeps['executionRunStart']>(async (_sessionId, value: unknown) => {
+      localInputId = String(requireActionInput(value).localInputId);
+      return { runId: 'run-profile', callId: 'call-profile', sidechainId: 'sidechain-profile' };
+    });
+    const actionExecutor = createActionExecutor({ executionRunStart,
+      executionRunGet: async () => completedRun('run-profile', localInputId, 'done'),
+      executionRunCheckProtocolV2: async () => ({ ok: true, exactMachineId: 'machine-1' }),
+      // A second per-step admission would refuse: the accepted leaf does not ask
+      // mutable caller policy to approve the same model again.
+      resolveAgentStartContext: async () => null,
+    } as unknown as ActionExecutorDeps);
+    const execute = createWorkflowDetachedExecutionRunStepExecutor({
+      actionExecutor,
+      buildActionContext: () => ({ ...buildActionContext(), sessionAgentSpawnPolicyV1: { v: 1, allowModelOverride: false },
+        agentStartWorkspaceWrites: 'deny' }),
+      workDepth: 2,
+      resolveRoleInstructions: () => 'Frozen reviewer instructions',
+      resolveSharedRunConversation: async () => null,
+      resolveProducerConversation: async () => null,
+    });
+
+    const result = await execute(baseParams({
+      execution: { ...baseParams().execution, profileId: 'launch-profile-1' },
+    }));
+    expect(result, JSON.stringify(result)).toMatchObject({ kind: 'completed' });
+    expect(executionRunStart).toHaveBeenCalledWith(null, expect.objectContaining({
+      instructions: expect.stringContaining('Frozen reviewer instructions'),
+      modelSelection: baseParams().execution.modelSelection.ref,
+    }), expect.objectContaining({ workDepth: 3, workspaceWrites: 'deny', exactMachineId: 'machine-1',
+      actionCaller: { kind: 'workflowRun', runId: 'workflow-1', authorization: baseParams().authorization },
+    }));
+    const start = requireActionInput(executionRunStart.mock.calls[0]![1]);
+    expect(start).not.toHaveProperty('profileId');
+    expect(start).not.toHaveProperty('profileSourceCustody');
+    await expect(execute(baseParams({ authorization: { admittedPermissionCeiling: 'read-only', principal: { kind: 'host' } } })))
+      .resolves.toMatchObject({ kind: 'failed', code: 'workflow_permission_escalation_denied' });
+    expect(executionRunStart).toHaveBeenCalledOnce();
   });
 
   it('keeps omitted, explicit-null, and equal-default Run selections distinct at Action admission', async () => {
@@ -281,7 +584,7 @@ describe('workflow detached Execution Run step executor', () => {
     }) };
     const execute = createWorkflowDetachedExecutionRunStepExecutor({
       actionExecutor,
-      buildActionContext,
+      workDepth: 0, buildActionContext,
       resolveSharedRunConversation: async () => null,
       resolveProducerConversation: async () => null,
     });
@@ -301,7 +604,7 @@ describe('workflow detached Execution Run step executor', () => {
     const actionExecutor = { execute: vi.fn() };
     const execute = createWorkflowDetachedExecutionRunStepExecutor({
       actionExecutor,
-      buildActionContext,
+      workDepth: 0, buildActionContext,
       resolveSharedRunConversation: async () => null,
       resolveProducerConversation: async () => null,
     });
@@ -318,6 +621,9 @@ describe('workflow detached Execution Run step executor', () => {
         kind: 'needs_attention', code: 'target_unavailable',
       });
     }
+    await expect(execute(baseParams({ execution: { ...baseParams().execution,
+      conversation: { kind: 'origin_session' },
+    } }))).resolves.toEqual({ kind: 'needs_attention', code: 'workflow_conversation_unavailable' });
     expect(actionExecutor.execute).not.toHaveBeenCalled();
   });
 
@@ -349,7 +655,7 @@ describe('workflow detached Execution Run step executor', () => {
     };
     const execute = createWorkflowDetachedExecutionRunStepExecutor({
       actionExecutor,
-      buildActionContext,
+      workDepth: 0, buildActionContext,
       resolveSharedRunConversation: async () => null,
       resolveProducerConversation: async () => null,
     });
@@ -377,6 +683,7 @@ describe('workflow detached Execution Run step executor', () => {
     };
     const execute = createWorkflowDetachedExecutionRunStepExecutor({
       actionExecutor,
+      workDepth: 0,
       buildActionContext,
       resolveSharedRunConversation: vi.fn(),
       resolveProducerConversation: vi.fn(),
@@ -414,7 +721,7 @@ describe('workflow detached Execution Run step executor', () => {
       };
       const execute = createWorkflowDetachedExecutionRunStepExecutor({
         actionExecutor,
-        buildActionContext,
+        workDepth: 0, buildActionContext,
         resolveSharedRunConversation: vi.fn(),
         resolveProducerConversation: vi.fn(),
       });
@@ -460,7 +767,7 @@ describe('workflow detached Execution Run step executor', () => {
     };
     const execute = createWorkflowDetachedExecutionRunStepExecutor({
       actionExecutor,
-      buildActionContext,
+      workDepth: 0, buildActionContext,
       resolveSharedRunConversation: async () => ({
         runId: 'run-shared',
         machineId: 'machine-1',
@@ -535,7 +842,7 @@ describe('workflow detached Execution Run step executor', () => {
     };
     const execute = createWorkflowDetachedExecutionRunStepExecutor({
       actionExecutor,
-      buildActionContext,
+      workDepth: 0, buildActionContext,
       resolveSharedRunConversation: async () => ({
         runId: 'run-old',
         machineId: 'machine-1',
@@ -587,7 +894,7 @@ describe('workflow detached Execution Run step executor', () => {
     ]) {
       const execute = createWorkflowDetachedExecutionRunStepExecutor({
         actionExecutor,
-        buildActionContext,
+        workDepth: 0, buildActionContext,
         resolveSharedRunConversation: async () => ({
           runId: 'run-old', machineId: 'machine-1', directory: '/repo',
           runtimeSelection: projectWorkflowRetainedRuntimeSelectionV1(baseParams().execution),
@@ -603,14 +910,16 @@ describe('workflow detached Execution Run step executor', () => {
     expect(actionExecutor.execute).toHaveBeenCalledTimes(2);
   });
 
-  it('reuses the coordinator-prepared retained Run instead of resolving it after workspace selection', async () => {
+  it('retains the coordinator-prepared exact Run without redirecting after workspace selection', async () => {
     let localInputId = '';
-    const resolveSharedRunConversation = vi.fn(async () => ({
-      runId: 'run-shared', machineId: 'machine-1', directory: '/repo',
+    let currentSharedRunId = 'run-before-gate';
+    let dispatchedRunId = '';
+    const resolveSharedRunConversation = async () => ({
+      runId: currentSharedRunId, machineId: 'machine-1', directory: '/repo',
       runtimeSelection: projectWorkflowRetainedRuntimeSelectionV1(baseParams().execution),
-    }));
+    });
     const deps = {
-      buildActionContext,
+      workDepth: 0, buildActionContext,
       resolveSharedRunConversation,
       resolveProducerConversation: vi.fn(async () => null),
       actionExecutor: {
@@ -618,10 +927,11 @@ describe('workflow detached Execution Run step executor', () => {
           const input = requireActionInput(value);
           if (actionId === 'execution.run.send') {
             localInputId = String(input.localInputId);
+            dispatchedRunId = String(input.runId);
             return { ok: true as const, result: { ok: true } };
           }
           if (actionId === 'execution.run.get') {
-            return { ok: true as const, result: completedRun('run-shared', localInputId, 'done') };
+            return { ok: true as const, result: completedRun(dispatchedRunId, localInputId, 'done') };
           }
           throw new Error(`unexpected action ${actionId}`);
         }),
@@ -629,12 +939,15 @@ describe('workflow detached Execution Run step executor', () => {
     };
     const params = baseParams();
     const preparedStep = await prepareWorkflowDetachedExecutionRunStep(deps, params as never);
+    // The coordinator already holds the owner gate while preparing. A later
+    // callback answer cannot redirect this prepared input to another target.
+    currentSharedRunId = 'run-after-gate';
     const execute = createWorkflowDetachedExecutionRunStepExecutor(deps);
 
     await expect(execute({ ...params, preparedStep } as never)).resolves.toMatchObject({
       kind: 'completed', result: 'done',
     });
-    expect(resolveSharedRunConversation).toHaveBeenCalledOnce();
+    expect(dispatchedRunId).toBe('run-before-gate');
   });
 
   it('fails closed before retained Run reuse when its effective runtime witness is absent or changed', async () => {
@@ -646,7 +959,7 @@ describe('workflow detached Execution Run step executor', () => {
     ]) {
       const execute = createWorkflowDetachedExecutionRunStepExecutor({
         actionExecutor,
-        buildActionContext,
+        workDepth: 0, buildActionContext,
         resolveSharedRunConversation: async () => ({
           runId: 'run-shared', machineId: 'machine-1', directory: '/repo',
           ...(runtimeSelection ? { runtimeSelection } : {}),
@@ -664,7 +977,7 @@ describe('workflow detached Execution Run step executor', () => {
   it('does not equate a Windows home sibling prefix when retaining a detached conversation', async () => {
     const actionExecutor = { execute: vi.fn() };
     const execute = createWorkflowDetachedExecutionRunStepExecutor({
-      actionExecutor, buildActionContext,
+      actionExecutor, workDepth: 0, buildActionContext,
       resolveSharedRunConversation: async () => ({
         runId: 'run-shared', machineId: 'machine-1', directory: 'C:\\Users\\Alice2\\repo',
       }),
@@ -701,7 +1014,7 @@ describe('workflow detached Execution Run step executor', () => {
     };
     const execute = createWorkflowDetachedExecutionRunStepExecutor({
       actionExecutor,
-      buildActionContext,
+      workDepth: 0, buildActionContext,
       resolveSharedRunConversation: vi.fn(),
       resolveProducerConversation: vi.fn(),
     });
@@ -741,7 +1054,7 @@ describe('workflow detached Execution Run step executor', () => {
     };
     const execute = createWorkflowDetachedExecutionRunStepExecutor({
       actionExecutor,
-      buildActionContext,
+      workDepth: 0, buildActionContext,
       resolveSharedRunConversation: vi.fn(),
       resolveProducerConversation: vi.fn(),
     });
@@ -790,7 +1103,7 @@ describe('workflow detached Execution Run step executor', () => {
     };
     const execute = createWorkflowDetachedExecutionRunStepExecutor({
       actionExecutor,
-      buildActionContext,
+      workDepth: 0, buildActionContext,
       resolveSharedRunConversation: vi.fn(),
       resolveProducerConversation: vi.fn(),
     });
@@ -825,7 +1138,7 @@ describe('workflow detached Execution Run step executor', () => {
     };
     const execute = createWorkflowDetachedExecutionRunStepExecutor({
       actionExecutor,
-      buildActionContext,
+      workDepth: 0, buildActionContext,
       resolveSharedRunConversation: vi.fn(),
       resolveProducerConversation: vi.fn(),
     });
@@ -854,7 +1167,7 @@ describe('workflow detached Execution Run step executor', () => {
     };
     const execute = createWorkflowDetachedExecutionRunStepExecutor({
       actionExecutor,
-      buildActionContext,
+      workDepth: 0, buildActionContext,
       resolveSharedRunConversation: vi.fn(),
       resolveProducerConversation: vi.fn(),
     });
@@ -883,7 +1196,7 @@ describe('workflow detached Execution Run step executor', () => {
     };
     const execute = createWorkflowDetachedExecutionRunStepExecutor({
       actionExecutor,
-      buildActionContext,
+      workDepth: 0, buildActionContext,
       resolveSharedRunConversation: vi.fn(),
       resolveProducerConversation: vi.fn(),
     });
@@ -903,304 +1216,18 @@ describe('workflow detached Execution Run step executor', () => {
   });
 });
 
-describe('workflow attached Execution Run step executor', () => {
-  it('starts in the owning Session and persists discriminated Run correspondence before observation', async () => {
-    let localInputId = '';
-    const events: string[] = [];
-    const actionExecutor = {
-      execute: vi.fn(async (actionId: string, value: unknown) => {
-        const input = requireActionInput(value);
-        if (actionId === 'execution.run.start') {
-          return { ok: true as const, result: { runId: 'run-attached', callId: 'call-1', sidechainId: 'side-1' } };
-        }
-        if (actionId === 'execution.run.get') {
-          events.push('observe');
-          return { ok: true as const, result: completedRun('run-attached', localInputId, 'attached') };
-        }
-        throw new Error(`unexpected action ${actionId}`);
-      }),
-    };
-    const sendInput = vi.fn(async (input: {
-      localInputId: string;
-      resultContract: unknown;
-    }) => {
-      localInputId = input.localInputId;
-      events.push('admit');
-      return { kind: 'accepted' as const };
-    });
-    const execute = createWorkflowAttachedExecutionRunStepExecutor({
-      actionExecutor,
-      buildActionContext,
-      materializeConversation: async () => ({ sessionId: 'session-1', machineId: 'machine-1', directory: '/repo' }),
-      resolveRunSession: async () => null,
-      sendInput,
-    });
-    const params = baseParams({
-      executionTarget: { kind: 'attached_run' },
-      input: {
-        text: 'Implement it',
-        references: [{ kind: 'file', path: 'src/index.ts' }],
-        attachments: [{
-          v: 1,
-          instanceId: 'review-1',
-          attachment: { pluginId: 'acme.review', localId: 'comment' },
-          key: 'comment-1', value: { reviewId: 'r1' },
-          presentation: { label: 'Review', typeLabel: 'Comment' },
-        }],
-        values: [],
-      },
-      authorization: {
-        admittedPermissionCeiling: 'safe-yolo',
-        principal: { kind: 'host' },
-        sourceAuthority: {
-          mediatorPluginId: 'happier.channels',
-          sourceRef: 'channels:binding:binding-1',
-          sourceRevisionOrEpoch: '4:7',
-          remoteApprovalMaxScope: 'session',
-        },
-      },
-      onInputAccepted: async (correspondence: unknown) => {
-        events.push('commit');
-        expect(correspondence).toMatchObject({
-          kind: 'attached_run',
-          sessionId: 'session-1',
-          runId: 'run-attached',
-          localInputId: expect.stringMatching(/^workflow-input-v2:/),
-        });
-        localInputId = (correspondence as { localInputId: string }).localInputId;
-      },
-    });
-
-    await expect(execute(params as never)).resolves.toEqual({ kind: 'completed', result: 'attached', resultEncoding: 'typed' });
-    expect(events).toEqual(['commit', 'admit', 'observe']);
-    expect(actionExecutor.execute).toHaveBeenNthCalledWith(1, 'execution.run.start', expect.objectContaining({
-      sessionId: 'session-1', intent: 'agent', cwd: '/repo',
-      initialInput: { kind: 'deferred_session_pending' },
-    }), expect.objectContaining({
-      actionRequestId: expect.stringMatching(/:execution-run-start$/),
-    }));
-    expect(actionExecutor.execute.mock.calls[0]?.[1]).not.toHaveProperty('instructions');
-    expect(actionExecutor.execute.mock.calls[0]?.[1]).not.toHaveProperty('localInputId');
-    expect(actionExecutor.execute.mock.calls[0]?.[1]).not.toHaveProperty('resultContract');
-    expect(sendInput).toHaveBeenCalledExactlyOnceWith({
-      sessionId: 'session-1',
-      runId: 'run-attached',
-      workflowRunId: 'workflow-1',
-      invocationRecordId: 'invocation-1',
-      text: 'Implement it',
-      references: [{ kind: 'file', path: 'src/index.ts' }],
-      attachments: [{
-        v: 1,
-        instanceId: 'review-1',
-        attachment: { pluginId: 'acme.review', localId: 'comment' },
-        key: 'comment-1', value: { reviewId: 'r1' },
-        presentation: { label: 'Review', typeLabel: 'Comment' },
-      }],
-      localInputId,
-      resultContract: { kind: 'json', schema: { type: 'object' } },
-      permissionMode: 'safe-yolo',
-      sourceAuthority: {
-        mediatorPluginId: 'happier.channels',
-        sourceRef: 'channels:binding:binding-1',
-        sourceRevisionOrEpoch: '4:7',
-        remoteApprovalMaxScope: 'session',
-      },
-      modelSelectionInput: baseParams().execution.modelSelection,
-    });
-    expect(actionExecutor.execute).toHaveBeenNthCalledWith(2, 'execution.run.get', {
-      sessionId: 'session-1', runId: 'run-attached', includeStructured: false, waitForInputId: localInputId,
-    }, expect.anything());
-  });
-
-  it('reclaims one attached Run and never admits input before durable correspondence', async () => {
-    const startedRunIds = new Map<string, string>();
-    const actionExecutor = {
-      execute: vi.fn(async (actionId: string, _value: unknown, context?: RpcActionExecutorContext) => {
-        if (actionId === 'execution.run.start') {
-          const requestId = context?.actionRequestId;
-          if (!requestId) throw new Error('missing stable Workflow start request id');
-          let runId = startedRunIds.get(requestId);
-          if (!runId) {
-            runId = `run-${startedRunIds.size + 1}`;
-            startedRunIds.set(requestId, runId);
-          }
-          return { ok: true as const, result: { runId, callId: 'call-1', sidechainId: 'side-1' } };
-        }
-        if (actionId === 'execution.run.get') {
-          return { ok: true as const, result: activeRun('run-1', 'unused') };
-        }
-        throw new Error(`unexpected action ${actionId}`);
-      }),
-    };
-    const sendInput = vi.fn(async () => ({ kind: 'accepted' as const }));
-    let commitAttempts = 0;
-    const accepted: unknown[] = [];
-    const execute = createWorkflowAttachedExecutionRunStepExecutor({
-      actionExecutor,
-      buildActionContext,
-      materializeConversation: async () => ({ sessionId: 'session-1', machineId: 'machine-1', directory: '/repo' }),
-      resolveRunSession: async () => null,
-      sendInput,
-    });
-    const invocation = baseParams({
-      executionTarget: { kind: 'attached_run' },
-      onInputAccepted: async (correspondence: unknown) => {
-        commitAttempts += 1;
-        if (commitAttempts === 1) throw new Error('durable correspondence write failed');
-        accepted.push(correspondence);
-      },
-    });
-
-    await expect(execute(invocation as never)).rejects.toThrow('durable correspondence write failed');
-    expect(sendInput).not.toHaveBeenCalled();
-    await expect(execute(invocation as never)).resolves.toEqual({
-      kind: 'outcome_uncertain',
-      code: 'execution_run_input_result_unavailable',
-    });
-
-    expect(startedRunIds.size).toBe(1);
-    expect(sendInput).toHaveBeenCalledTimes(1);
-    expect(accepted).toEqual([expect.objectContaining({ runId: 'run-1' })]);
-    const starts = actionExecutor.execute.mock.calls.filter(([actionId]) => actionId === 'execution.run.start');
-    expect(starts).toHaveLength(2);
-    expect(starts[0]?.[2]).toMatchObject({ actionRequestId: expect.any(String) });
-    expect(starts[1]?.[2]).toMatchObject({ actionRequestId: starts[0]?.[2]?.actionRequestId });
-  });
-
-  it('retries detached post-start persistence with one stable Run start identity', async () => {
-    const startRequestIds: string[] = [];
-    let localInputId = '';
-    const actionExecutor = {
-      execute: vi.fn(async (actionId: string, value: unknown, context?: RpcActionExecutorContext) => {
-        if (actionId === 'execution.run.start') {
-          const input = requireActionInput(value);
-          localInputId = String(input.localInputId);
-          startRequestIds.push(String(context?.actionRequestId));
-          return { ok: true as const, result: { runId: 'run-stable', callId: 'call-1', sidechainId: 'side-1' } };
-        }
-        if (actionId === 'execution.run.get') {
-          return { ok: true as const, result: activeRun('run-stable', localInputId) };
-        }
-        throw new Error(`unexpected action ${actionId}`);
-      }),
-    };
-    let commitAttempts = 0;
-    const execute = createWorkflowDetachedExecutionRunStepExecutor({
-      actionExecutor,
-      buildActionContext,
-      resolveSharedRunConversation: async () => null,
-      resolveProducerConversation: async () => null,
-    });
-    const invocation = baseParams({
-      onInputAccepted: async () => {
-        commitAttempts += 1;
-        if (commitAttempts === 1) throw new Error('durable correspondence write failed');
-      },
-    });
-
-    await expect(execute(invocation as never)).rejects.toThrow('durable correspondence write failed');
-    await expect(execute(invocation as never)).resolves.toEqual({
-      kind: 'outcome_uncertain',
-      code: 'execution_run_input_result_unavailable',
-    });
-    expect(startRequestIds).toHaveLength(2);
-    expect(startRequestIds[0]).toMatch(/:execution-run-start$/);
-    expect(startRequestIds[1]).toBe(startRequestIds[0]);
-  });
-
-  it('persists the known attached Run/input correspondence when Session Pending admission is outcome-unknown', async () => {
-    const actionExecutor = {
-      execute: vi.fn(async (actionId: string) => {
-        if (actionId === 'execution.run.start') {
-          return { ok: true as const, result: { runId: 'run-attached', callId: 'call-1', sidechainId: 'side-1' } };
-        }
-        throw new Error(`unexpected action ${actionId}`);
-      }),
-    };
-    const sendInput = vi.fn(async () => ({
-      kind: 'outcome_uncertain' as const,
-      code: 'session_input_admission_outcome_unknown',
-    }));
-    const onInputAccepted = vi.fn(async () => undefined);
-    const execute = createWorkflowAttachedExecutionRunStepExecutor({
-      actionExecutor,
-      buildActionContext,
-      materializeConversation: async () => ({ sessionId: 'session-1', machineId: 'machine-1', directory: '/repo' }),
-      resolveRunSession: async () => null,
-      sendInput,
-    });
-
-    await expect(execute(baseParams({
-      executionTarget: { kind: 'attached_run' },
-      onInputAccepted,
-    }) as never)).resolves.toEqual({
-      kind: 'outcome_uncertain',
-      code: 'session_input_admission_outcome_unknown',
-    });
-    expect(onInputAccepted).toHaveBeenCalledWith({
-      kind: 'attached_run',
-      sessionId: 'session-1',
-      runId: 'run-attached',
-      localInputId: expect.any(String),
-    });
-  });
-
-  it('does not persist attached input correspondence when claim interruption caused uncertain admission', async () => {
-    const controller = new AbortController();
-    const actionExecutor = {
-      execute: vi.fn(async (actionId: string) => {
-        if (actionId === 'execution.run.start') {
-          return { ok: true as const, result: { runId: 'run-attached', callId: 'call-1', sidechainId: 'side-1' } };
-        }
-        throw new Error(`unexpected action ${actionId}`);
-      }),
-    };
-    const sendInput = vi.fn(async () => {
-      controller.abort(new Error('claim lost'));
-      return {
-        kind: 'outcome_uncertain' as const,
-        code: 'session_input_admission_outcome_unknown',
-      };
-    });
-    const onInputAccepted = vi.fn(async () => undefined);
-    const execute = createWorkflowAttachedExecutionRunStepExecutor({
-      actionExecutor,
-      buildActionContext,
-      materializeConversation: async () => ({ sessionId: 'session-1', machineId: 'machine-1', directory: '/repo' }),
-      resolveRunSession: async () => null,
-      sendInput,
-    });
-
-    await expect(execute(baseParams({
-      executionTarget: { kind: 'attached_run' },
-      onInputAccepted,
-      signal: controller.signal,
-    }) as never)).rejects.toBeInstanceOf(WorkflowRuntimeInterruption);
-    expect(onInputAccepted).toHaveBeenCalledWith({
-      kind: 'attached_run',
-      sessionId: 'session-1',
-      runId: 'run-attached',
-      localInputId: expect.any(String),
-    });
-  });
-});
-
 describe('workflow step executor target dispatch', () => {
   it('selects one leaf only from the immutable Run execution target', async () => {
     const session = vi.fn(async () => ({ kind: 'completed' as const, result: 'session' }));
-    const attachedRun = vi.fn(async () => ({ kind: 'completed' as const, result: 'attached' }));
     const detachedRun = vi.fn(async () => ({ kind: 'completed' as const, result: 'detached' }));
-    const execute = createWorkflowStepExecutorDispatcher({ session, attachedRun, detachedRun });
+    const execute = createWorkflowStepExecutorDispatcher({ session, detachedRun });
     const base = baseParams();
 
     await expect(execute({ ...base, executionTarget: { kind: 'session' }, execution: { agentTarget: CLAUDE_TARGET } } as never))
       .resolves.toMatchObject({ result: 'session' });
-    await expect(execute({ ...base, executionTarget: { kind: 'attached_run' }, execution: { agentTarget: CLAUDE_TARGET } } as never))
-      .resolves.toMatchObject({ result: 'attached' });
     await expect(execute({ ...base, executionTarget: { kind: 'detached_run' }, execution: { agentTarget: CLAUDE_TARGET } } as never))
       .resolves.toMatchObject({ result: 'detached' });
     expect(session).toHaveBeenCalledTimes(1);
-    expect(attachedRun).toHaveBeenCalledTimes(1);
     expect(detachedRun).toHaveBeenCalledTimes(1);
   });
 });

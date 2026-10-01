@@ -2,7 +2,7 @@ import React from 'react';
 import { View } from 'react-native';
 import { useSessionProjectScmSnapshot } from '@/sync/domains/state/storage';
 import { useUnistyles } from 'react-native-unistyles';
-import { buildScmStatusSummaryFromSnapshot } from './statusSummary';
+import { buildSessionScmSummary } from './statusSummary';
 import { Text } from '@/components/ui/text/Text';
 import { t } from '@/text';
 import { Icon } from '@/components/ui/icons/Icon';
@@ -15,7 +15,7 @@ const LINE_REMOVED_PREFIX = '-';
 // Custom hook to check if a source-control status badge should be shown.
 export function useHasMeaningfulScmStatus(sessionId: string): boolean {
     const snapshot = useSessionProjectScmSnapshot(sessionId);
-    return buildScmStatusSummaryFromSnapshot(snapshot) !== null;
+    return buildSessionScmSummary(snapshot) !== null;
 }
 
 interface SourceControlStatusBadgeProps {
@@ -24,7 +24,7 @@ interface SourceControlStatusBadgeProps {
 
 export function SourceControlStatusBadge({ sessionId }: SourceControlStatusBadgeProps) {
     const snapshot = useSessionProjectScmSnapshot(sessionId);
-    const scmStatusSummary = buildScmStatusSummaryFromSnapshot(snapshot);
+    const scmStatusSummary = buildSessionScmSummary(snapshot);
     const { theme } = useUnistyles();
 
     if (!scmStatusSummary) {

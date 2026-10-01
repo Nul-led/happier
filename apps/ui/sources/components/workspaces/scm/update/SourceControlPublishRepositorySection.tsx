@@ -8,7 +8,7 @@ import type {
     ScmHostingRepositoryRemoteUrlKind,
     ScmHostingRepositoryVisibility,
 } from '@happier-dev/protocol';
-import { SCM_OPERATION_ERROR_CODES } from '@happier-dev/protocol';
+import { SCM_OPERATION_ERROR_CODES } from '@happier-dev/protocol/scm';
 
 import { Text } from '@/components/ui/text/Text';
 import { Typography } from '@/constants/Typography';
@@ -166,6 +166,7 @@ export function SourceControlPublishRepositorySection(props: Readonly<{
         targetsResponse: activeResolvedTargets,
         selectedTarget,
         publishFailure,
+        canRetryTargets: props.publishTargets === null,
         disabled: remediationDisabled,
     });
     const publishAuth = selectedTarget?.auth ?? successTargets?.auth ?? null;
@@ -366,13 +367,6 @@ export function SourceControlPublishRepositorySection(props: Readonly<{
                     >
                         {t('files.sourceControlOperations.update.publishRepository.targetsUnavailable')}
                     </Text>
-                    <SourceControlUpdateButton
-                        theme={props.theme}
-                        testID="scm-publish-repository-retry"
-                        label={t('common.retry')}
-                        disabled={remediationDisabled}
-                        onPress={retryDescribePublishTargets}
-                    />
                     <PublishRemediationAction
                         theme={props.theme}
                         action={remediationAction}
@@ -391,6 +385,15 @@ export function SourceControlPublishRepositorySection(props: Readonly<{
                     />
                 </View>
             )}
+            {remediation.retryTargets ? (
+                <SourceControlUpdateButton
+                    theme={props.theme}
+                    testID="scm-publish-repository-retry"
+                    label={t('common.retry')}
+                    disabled={remediation.retryTargets.disabled}
+                    onPress={retryDescribePublishTargets}
+                />
+            ) : null}
         </SourceControlUpdateSection>
     );
 }
@@ -423,9 +426,7 @@ function PublishAuthState(props: Readonly<{
     const testID = props.authState === 'provider-cli-ready'
         ? 'scm-publish-auth-provider-cli-ready'
         : 'scm-publish-auth-connected-account-ready';
-    const label = props.authState === 'provider-cli-ready'
-        ? t('files.sourceControlOperations.update.publishRepository.auth.providerCliReady')
-        : t('files.sourceControlOperations.update.publishRepository.auth.connectedAccountReady');
+    const label = t('connectionStatus.labels.authenticated');
     return (
         <Text
             testID={testID}

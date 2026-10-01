@@ -1,4 +1,9 @@
+import { access, mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
+
+import { createManagedSessionDirectories } from '@/session/creation/managedSessionDirectories';
 
 import {
   SPAWN_SESSION_ERROR_CODES,
@@ -458,5 +463,42 @@ describe('createSpawnNewSessionLifecycleActionHandler', () => {
       existingSessionId: 'session-voice',
       agentSessionStartupInstructionsV1,
     }));
+  });
+
+  it('recreates a missing managed resume folder only with explicit request consent', async () => {
+    const activeServerDir = await mkdtemp(join(tmpdir(), 'happier-resume-consent-'));
+    try {
+      const directories = createManagedSessionDirectories({ activeServerDir });
+      const allocation = await directories.materializeForFreshSpawn({ sessionCreationTag: 'creation:resume-consent' });
+      await directories.bind({ allocationId: allocation.allocationId, sessionId: 'managed-session' });
+      await rm(allocation.directory, { recursive: true });
+      // The process boundary consumes the real directory owner's preparation.
+      const handler = createSpawnNewSessionLifecycleActionHandler({
+        spawnSession: async (options) => {
+          const prepared = await directories.prepareForSpawn(options);
+          return prepared.ok
+            ? { type: 'success', sessionId: 'managed-session' }
+            : { type: 'error', errorCode: prepared.errorCode, errorMessage: 'Managed folder missing' };
+        },
+      });
+      for (const approvedNewDirectoryCreation of [undefined, false]) {
+        await expect(handler({
+          type: 'resume-session',
+          sessionId: 'managed-session',
+          directory: allocation.directory,
+          ...(approvedNewDirectoryCreation === undefined ? {} : { approvedNewDirectoryCreation }),
+        })).resolves.toMatchObject({ type: 'error', errorCode: SPAWN_SESSION_ERROR_CODES.SESSION_DIRECTORY_MISSING });
+        await expect(access(allocation.directory)).rejects.toMatchObject({ code: 'ENOENT' });
+      }
+      await expect(handler({
+        type: 'resume-session',
+        sessionId: 'managed-session',
+        directory: allocation.directory,
+        approvedNewDirectoryCreation: true,
+      })).resolves.toEqual({ type: 'success' });
+      await expect(access(allocation.directory)).resolves.toBeUndefined();
+    } finally {
+      await rm(activeServerDir, { recursive: true, force: true });
+    }
   });
 });

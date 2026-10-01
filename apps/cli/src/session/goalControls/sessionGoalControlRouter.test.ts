@@ -82,17 +82,18 @@ describe('routeSessionGoalControl', () => {
     ]);
   });
 
-  it('delegates inactive local set mutations to the provider adapter and persists returned metadata', async () => {
+  it('delegates inactive local set mutations and durably stages the work-state field', async () => {
     const rawSession = createRawSession({ path: '/home/coder/project' });
     const nextMetadata = {
       machineId: 'machine-local',
-      sessionWorkStateV1: { v: 1, items: [], primaryItemId: null, updatedAt: 1 },
+      sessionWorkStateV1: { v: 1, backendId: 'codex', items: [], primaryItemId: null, updatedAt: 1 },
     };
     const setGoal = vi.fn(async () => ({
       metadata: nextMetadata,
       workState: nextMetadata.sessionWorkStateV1,
     }));
     const resolveAdapter = vi.fn(async () => ({ setGoal }));
+    const stageWorkStateMutation = vi.fn(async () => {});
 
     await expect(routeSessionGoalControl({
       token: 'token',
@@ -115,9 +116,9 @@ describe('routeSessionGoalControl', () => {
       request: { status: 'paused' },
       callLiveSessionRpc: vi.fn(),
       resolveAdapter,
+      stageWorkStateMutation,
     })).resolves.toMatchObject({
       metadata: expect.objectContaining({
-        concurrent: 'preserved',
         sessionWorkStateV1: nextMetadata.sessionWorkStateV1,
       }),
       workState: nextMetadata.sessionWorkStateV1,
@@ -132,13 +133,35 @@ describe('routeSessionGoalControl', () => {
       ctx: null,
       mode: 'plain',
     }));
-    expect(mocks.updateSessionMetadataWithRetry).toHaveBeenCalledWith(expect.objectContaining({
-      token: 'token',
-      credentials: expect.any(Object),
+    expect(stageWorkStateMutation).toHaveBeenCalledWith(expect.objectContaining({
       sessionId: 'sess_1',
-      rawSession,
-      updater: expect.any(Function),
+      fieldId: 'runtime.workState',
+      source: 'daemon',
+      op: { kind: 'set', value: nextMetadata.sessionWorkStateV1 },
     }));
+    expect(mocks.updateSessionMetadataWithRetry).not.toHaveBeenCalled();
+  });
+
+  it('refuses an invalid inactive work-state projection before reporting goal success', async () => {
+    const stageWorkStateMutation = vi.fn(async () => {});
+    await expect(routeSessionGoalControl({
+      token: 'token',
+      credentials: createTokenOnlyCredentials(),
+      sessionId: 'sess_1',
+      rawSession: createRawSession(),
+      metadata: createMetadata(),
+      currentMachineId: 'machine-local',
+      ctx: null,
+      mode: 'plain',
+      operation: 'set',
+      request: { status: 'paused' },
+      callLiveSessionRpc: vi.fn(),
+      resolveAdapter: vi.fn(async () => ({ setGoal: vi.fn(async () => ({
+        metadata: { sessionWorkStateV1: { v: 1, items: [], updatedAt: 1 } },
+      })) })),
+      stageWorkStateMutation,
+    })).rejects.toThrow('invalid_daemon_work_state_mutation');
+    expect(stageWorkStateMutation).not.toHaveBeenCalled();
   });
 
   // G-4: a transient live-RPC TRANSPORT failure on an ACTIVE session must NOT fall back to the
@@ -175,7 +198,7 @@ describe('routeSessionGoalControl', () => {
   it('still falls back to the adapter on an active session when the runtime cannot serve the method', async () => {
     const nextMetadata = {
       machineId: 'machine-local',
-      sessionWorkStateV1: { v: 1, items: [], primaryItemId: null, updatedAt: 1 },
+      sessionWorkStateV1: { v: 1, backendId: 'codex', items: [], primaryItemId: null, updatedAt: 1 },
     };
     const setGoal = vi.fn(async () => ({
       metadata: nextMetadata,
@@ -200,6 +223,7 @@ describe('routeSessionGoalControl', () => {
         error: 'unsupported_session_runtime_method',
       })),
       resolveAdapter,
+      stageWorkStateMutation: vi.fn(async () => {}),
     })).resolves.toMatchObject({
       metadata: expect.objectContaining({
         sessionWorkStateV1: nextMetadata.sessionWorkStateV1,
@@ -239,7 +263,7 @@ describe('routeSessionGoalControl', () => {
   });
 
   it('delegates inactive goal controls from a stale machine id when the current daemon proves same host and home', async () => {
-    const nextWorkState = { v: 1, items: [], primaryItemId: null, updatedAt: 11 };
+    const nextWorkState = { v: 1, backendId: 'codex', items: [], primaryItemId: null, updatedAt: 11 };
     const setGoal = vi.fn(async () => ({
       metadata: createMetadata({
         machineId: 'machine-before-restart',
@@ -271,6 +295,7 @@ describe('routeSessionGoalControl', () => {
       request: { status: 'paused' },
       callLiveSessionRpc: vi.fn(),
       resolveAdapter,
+      stageWorkStateMutation: vi.fn(async () => {}),
     })).resolves.toMatchObject({
       metadata: expect.objectContaining({
         sessionWorkStateV1: nextWorkState,
@@ -297,7 +322,7 @@ describe('routeSessionGoalControl', () => {
       { id: 'machine-old', replacedByMachineId: 'machine-new' },
       { id: 'machine-new' },
     ]);
-    const nextWorkState = { v: 1, items: [], primaryItemId: null, updatedAt: 12 };
+    const nextWorkState = { v: 1, backendId: 'codex', items: [], primaryItemId: null, updatedAt: 12 };
     const setGoal = vi.fn(async () => ({
       metadata: createMetadata({ machineId: 'machine-old', sessionWorkStateV1: nextWorkState }),
       workState: nextWorkState,
@@ -319,6 +344,7 @@ describe('routeSessionGoalControl', () => {
       request: { status: 'paused' },
       callLiveSessionRpc: vi.fn(),
       resolveAdapter,
+      stageWorkStateMutation: vi.fn(async () => {}),
     })).resolves.toMatchObject({ workState: nextWorkState });
 
     expect(setGoal).toHaveBeenCalledWith(expect.objectContaining({

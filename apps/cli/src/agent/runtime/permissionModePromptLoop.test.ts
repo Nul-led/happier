@@ -66,7 +66,7 @@ function createRuntime() {
     steerInFlightTurn: vi.fn(async () => {}),
     waitForTurnCompletion: vi.fn(async () => {}),
     subscribeRuntimeEvents: vi.fn(() => () => {}),
-    respondToPermission: vi.fn(async () => {}),
+    respondToPermission: vi.fn<NonNullable<RuntimeTurnOperations['respondToPermission']>>(async () => ({ delivered: true })),
     cancelTurn: vi.fn(async () => {}),
     readSessionIdentity: vi.fn(() => ({ sessionId: 'resume-from-runtime' })),
     updateSessionRuntimeConfig: vi.fn<RuntimeTurnOperations['updateSessionRuntimeConfig']>(async () => {}),
@@ -95,6 +95,49 @@ function createProviderAcceptanceHarness() {
 }
 
 describe('runPermissionModePromptLoop', () => {
+  it.each(['native automatic', 'current model B', 'override model B', 'permission bypass'])('rejects restricted %s input but admits an unrestricted input in the same session', async (scenario) => {
+    const session = createPromptLoopSession();
+    session.__setMetadata(createPromptLoopMetadata({ permissionMode: 'default', permissionModeUpdatedAt: 0 }));
+    const queue = createModeQueue();
+    const runtime = createRuntime();
+    const modelA = { agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: null, modelId: 'A' };
+    const modelB = { ...modelA, modelId: 'B' };
+    const active = scenario === 'native automatic' ? undefined : scenario === 'current model B' ? modelB : modelA;
+    queue.pushIsolate({ text: 'restricted', localId: 'restricted' }, {
+      permissionMode: scenario === 'permission bypass' ? 'bypassPermissions' : 'default',
+      ...(scenario === 'override model B' ? { modelSelection: modelB } : {}),
+      callerInputConstraints: { models: [modelA], permissionModes: ['default'] },
+    });
+    queue.pushIsolate({ text: 'unrestricted', localId: 'unrestricted' }, { permissionMode: 'default' });
+    let ready = 0;
+    const observed = vi.spyOn(session, 'observeProviderInputSettlement');
+    const providerAcceptance = createProviderAcceptanceHarness();
+    await runPermissionModePromptLoop({
+      providerName: 'Test', agentMessageType: 'codex', explicitPermissionMode: undefined,
+      session, messageQueue: queue,
+      permissionHandler: { setPermissionMode: vi.fn(), reset: vi.fn() } as never,
+      runtime: runtime as Parameters<typeof runPermissionModePromptLoop>[0]['runtime'],
+      ...(active ? { readActiveModelSelection: () => active } : {}),
+      createOverrideSynchronizer: (isStarted) => createRuntimeOverrideSynchronizers({
+        agentTargetKey: modelA.agentTargetKey, session, isStarted,
+        // These setters are the provider/process boundary; synchronizer logic stays real.
+        runtime: { setSessionMode: async () => {}, setSessionModelSelection: async () => {}, setSessionConfigOption: async () => {} },
+      }),
+      messageBuffer: new MessageBuffer(), shouldExit: () => ready === 2,
+      getAbortSignal: () => new AbortController().signal, keepAlive: () => {}, setThinking: () => {},
+      sendReady: () => { ready += 1; }, currentPermissionModeUpdatedAt: 0,
+      setCurrentPermissionMode: () => {}, setCurrentPermissionModeUpdatedAt: () => {},
+      registerProviderAcceptedEffect: providerAcceptance.registerProviderAcceptedEffect,
+      formatPromptErrorMessage: String,
+    });
+    expect(runtime.sendTurnPrompt.mock.calls.map(([prompt]) => prompt)).toEqual(['unrestricted']);
+    expect(observed).toHaveBeenCalledWith(expect.objectContaining({
+      localId: 'restricted', kind: 'rejected_before_effect',
+      diagnostic: expect.objectContaining({ code: scenario === 'permission bypass' ? 'permission_mode_not_granted' : 'model_not_granted' }),
+    }));
+    expect(runtime.updateSessionRuntimeConfig).not.toHaveBeenCalledWith(expect.objectContaining({ permissionMode: 'bypassPermissions' }));
+  });
+
   it('applies replay seed exactly once to the first real user prompt', async () => {
     const session = createPromptLoopSession();
     session.__setMetadata({
@@ -2208,7 +2251,7 @@ describe('runPermissionModePromptLoop', () => {
       expect(input).toEqual({
         localIds: ['local-model-1'],
         selection: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: 'pc_openrouter',
           modelId: 'openrouter/model',
         },
@@ -2233,7 +2276,7 @@ describe('runPermissionModePromptLoop', () => {
       {
         permissionMode: 'default',
         modelSelection: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: ProviderConnectionIdSchema.parse('pc_openrouter'),
           modelId: 'openrouter/model',
         },
@@ -2255,7 +2298,7 @@ describe('runPermissionModePromptLoop', () => {
       runtime: runtime as unknown as Parameters<typeof runPermissionModePromptLoop>[0]['runtime'],
       createOverrideSynchronizer: (isStarted) =>
         createRuntimeOverrideSynchronizers({
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           session,
           runtime: {
             setSessionMode: async () => {},
@@ -2279,7 +2322,7 @@ describe('runPermissionModePromptLoop', () => {
       ) => {
         events.push('model-transition');
         expect(selection).toEqual({
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: 'pc_openrouter',
           modelId: 'openrouter/model',
         });
@@ -2295,7 +2338,7 @@ describe('runPermissionModePromptLoop', () => {
         };
       },
       readActiveModelSelection: () => ({
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         providerConnectionId: ProviderConnectionIdSchema.parse('pc_openrouter'),
         modelId: 'openrouter/model',
       }),
@@ -2340,7 +2383,7 @@ describe('runPermissionModePromptLoop', () => {
     const queue = createModeQueue();
     const runtime = createRuntime();
     const requestedSelection = {
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       providerConnectionId: ProviderConnectionIdSchema.parse('pc_other'),
       modelId: 'other/model',
     } as const;
@@ -2392,7 +2435,7 @@ describe('runPermissionModePromptLoop', () => {
               ok: false,
               status: transitionStatus,
               activeSelection: {
-                agentTargetKey: 'backend:codex',
+                agentTargetKey: 'agent:happier.agent.codex/codex',
                 providerConnectionId:
                   ProviderConnectionIdSchema.parse('pc_work'),
                 modelId: 'current/model',
@@ -2656,7 +2699,7 @@ describe('runPermissionModePromptLoop', () => {
       runtime: runtime as unknown as Parameters<typeof runPermissionModePromptLoop>[0]['runtime'],
       createOverrideSynchronizer: (isStarted) =>
         createRuntimeOverrideSynchronizers({
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           session,
           runtime: {
             setSessionMode: async () => {},
@@ -2898,7 +2941,7 @@ describe('runPermissionModePromptLoop', () => {
       runtime: runtime as unknown as Parameters<typeof runPermissionModePromptLoop>[0]['runtime'],
       createOverrideSynchronizer: (isStarted) =>
         createRuntimeOverrideSynchronizers({
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           session,
           runtime: {
             setSessionMode: async (modeId: string) => {
@@ -2974,7 +3017,7 @@ describe('runPermissionModePromptLoop', () => {
       runtime: runtime as unknown as Parameters<typeof runPermissionModePromptLoop>[0]['runtime'],
       createOverrideSynchronizer: (isStarted) =>
         createRuntimeOverrideSynchronizers({
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           session,
           runtime: {
             setSessionMode: async () => {},
@@ -3040,7 +3083,7 @@ describe('runPermissionModePromptLoop', () => {
       runtime: runtime as unknown as Parameters<typeof runPermissionModePromptLoop>[0]['runtime'],
       createOverrideSynchronizer: (isStarted) =>
         createRuntimeOverrideSynchronizers({
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           session,
           runtime: {
             setSessionMode: async () => {},
@@ -3141,7 +3184,7 @@ describe('runPermissionModePromptLoop', () => {
         runtime: runtime as unknown as Parameters<typeof runPermissionModePromptLoop>[0]['runtime'],
         createOverrideSynchronizer: (isStarted) =>
           createRuntimeOverrideSynchronizers({
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             session,
             runtime: {
               setSessionMode: async (modeId: string) => {
@@ -3212,7 +3255,7 @@ describe('runPermissionModePromptLoop', () => {
       permissionHandler: { setPermissionMode: vi.fn(), reset: vi.fn() } as any,
       runtime: runtime as unknown as Parameters<typeof runPermissionModePromptLoop>[0]['runtime'],
       createOverrideSynchronizer: (isStarted) => createRuntimeOverrideSynchronizers({
-        agentTargetKey: 'backend:grok',
+        agentTargetKey: 'agent:happier.agent.grok/grok',
         session,
         runtime: {
           setSessionMode: async () => {},
@@ -3328,7 +3371,7 @@ describe('runPermissionModePromptLoop', () => {
       runtime: runtime as unknown as Parameters<typeof runPermissionModePromptLoop>[0]['runtime'],
       createOverrideSynchronizer: (isStarted) =>
         createRuntimeOverrideSynchronizers({
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           session,
           runtime: {
             setSessionMode: async (modeId: string) => {

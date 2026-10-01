@@ -1,6 +1,6 @@
-import type { Message, ToolCallMessage } from '@/sync/domains/messages/messageTypes';
+import type { Message, ToolCallMessage } from "@happier-dev/session-core/messages";
 import { resolveToolTranscriptSidechainId } from '@/components/tools/shell/views/resolveToolTranscriptSidechainId';
-import { buildToolCallMessageRouteId } from '@/sync/domains/messages/messageRouteIds';
+import { buildToolCallMessageRouteId } from "@happier-dev/session-core/messages";
 
 import type { SessionSubagent } from '../types';
 import { resolveSubAgentSidechainProviderLabel } from './resolveSubAgentSidechainProviderLabel';

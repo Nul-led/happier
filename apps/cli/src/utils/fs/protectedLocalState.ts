@@ -293,10 +293,13 @@ function pathExistsSync(path: string): boolean {
 
 export async function ensureProtectedLocalStateDirectory(
   path: string,
-  options: ProtectedLocalStateOptions = {},
+  options: ProtectedLocalStateOptions & Readonly<{ createIfMissing?: boolean }> = {},
 ): Promise<void> {
   const existed = await pathExists(path);
   if (!existed) {
+    if (options.createIfMissing === false) {
+      throw Object.assign(new Error('Protected local state directory does not exist'), { code: 'ENOENT' });
+    }
     await mkdir(path, { recursive: true, mode: 0o700 });
     await applyProtection(path, 'directory', options);
   } else if (resolveAuthority(options) === 'owned') {

@@ -1,37 +1,33 @@
 import * as React from 'react';
 import { createSessionPaneScopeId, parseSessionPaneScopeId } from '@/components/sessions/panes/sessionPaneScopeId';
+import type { SessionTerminalMemberV1, SessionTerminalTargetV1 } from '@happier-dev/protocol';
+import { getActiveSessionTerminal, readSessionTerminalWorkspace } from './sessionTerminalWorkspace';
+import { dispatchSessionTerminalWorkspaceCommand, readSessionTerminalWorkspaceForScope, subscribeSessionTerminalWorkspace } from './sessionTerminalWorkspaceRuntime';
 
 export type SessionTerminalMode = 'workspace_shell' | 'session_attach';
 
-const modeByScopeId = new Map<string, SessionTerminalMode>();
-const listenersByScopeId = new Map<string, Set<() => void>>();
-
 export function readSessionTerminalMode(sessionId: string, serverId?: string | null): SessionTerminalMode {
-    return modeByScopeId.get(createSessionPaneScopeId(sessionId, serverId)) ?? 'workspace_shell';
+    return readModeForScope(createSessionPaneScopeId(sessionId, serverId));
 }
 
-export function setSessionTerminalMode(sessionId: string, mode: SessionTerminalMode, serverId?: string | null): void {
-    if (readSessionTerminalMode(sessionId, serverId) === mode) return;
-    const scopeId = createSessionPaneScopeId(sessionId, serverId);
-    modeByScopeId.set(scopeId, mode);
-    for (const listener of listenersByScopeId.get(scopeId) ?? []) listener();
+function readModeForScope(scopeId: string): SessionTerminalMode {
+    const workspace = readSessionTerminalWorkspaceForScope(scopeId);
+    return workspace && getActiveSessionTerminal(workspace)?.target.kind === 'session_attach' ? 'session_attach' : 'workspace_shell';
 }
 
-function subscribeSessionTerminalMode(scopeId: string, listener: () => void): () => void {
-    const listeners = listenersByScopeId.get(scopeId) ?? new Set<() => void>();
-    listeners.add(listener);
-    listenersByScopeId.set(scopeId, listeners);
-    return () => {
-        listeners.delete(listener);
-        if (listeners.size === 0) listenersByScopeId.delete(scopeId);
-    };
+export function setSessionTerminalMode(sessionId: string, mode: SessionTerminalMode, serverId?: string | null, scopeId = createSessionPaneScopeId(sessionId, serverId)): void {
+    const workspace = readSessionTerminalWorkspaceForScope(scopeId) ?? readSessionTerminalWorkspace(undefined);
+    const existing = workspace.tabs.flatMap((tab) => tab.terminals).find((terminal) => terminal.target.kind === mode);
+    dispatchSessionTerminalWorkspaceCommand(scopeId, existing
+        ? { type: 'focus', terminalId: existing.id }
+        : { type: 'open', terminal: { id: mode === 'session_attach' ? 'session-attach' : 'embedded', target: { kind: mode } } });
 }
 
-export function useSessionTerminalMode(sessionId: string, serverId?: string | null): SessionTerminalMode {
+export function useSessionTerminalMode(sessionId: string, serverId?: string | null, scopeId = createSessionPaneScopeId(sessionId, serverId)): SessionTerminalMode {
     return React.useSyncExternalStore(
-        React.useCallback((listener) => subscribeSessionTerminalMode(createSessionPaneScopeId(sessionId, serverId), listener), [sessionId, serverId]),
-        React.useCallback(() => readSessionTerminalMode(sessionId, serverId), [sessionId, serverId]),
-        React.useCallback(() => readSessionTerminalMode(sessionId, serverId), [sessionId, serverId]),
+        subscribeSessionTerminalWorkspace,
+        React.useCallback(() => readModeForScope(scopeId), [scopeId]),
+        React.useCallback(() => readModeForScope(scopeId), [scopeId]),
     );
 }
 
@@ -39,24 +35,40 @@ export type SessionTerminalIdentity = Readonly<{
     serverId: string | null;
     terminalMode: SessionTerminalMode;
     terminalKey: string;
+    terminalTarget?: SessionTerminalTargetV1;
 }>;
+
+export function resolveSessionTerminalIdentity(params: Readonly<{
+    sessionId: string; scopeId: string; terminal?: SessionTerminalMemberV1 | null;
+    terminalMode?: SessionTerminalMode; terminalInstanceId?: string;
+}>): SessionTerminalIdentity {
+    const serverId = parseSessionPaneScopeId(params.scopeId)?.address?.serverId ?? null;
+    const scopeId = parseSessionPaneScopeId(params.scopeId) ? params.scopeId : createSessionPaneScopeId(params.sessionId, serverId);
+    const terminalMode = params.terminal ? params.terminal.target.kind === 'session_attach' ? 'session_attach' : 'workspace_shell' : params.terminalMode ?? 'workspace_shell';
+    const instanceId = params.terminal?.id ?? params.terminalInstanceId;
+    const terminalKey = terminalMode === 'session_attach'
+        ? params.terminal && params.terminal.id !== 'session-attach'
+            ? `${scopeId}:attach:${params.terminal.id}`
+            : serverId ? `${scopeId}:attach` : `session-attach:${params.sessionId}`
+        : instanceId && instanceId !== 'embedded' ? `${scopeId}:terminal:${instanceId}` : `${scopeId}:terminal`;
+    return { serverId, terminalMode, terminalKey, terminalTarget: params.terminal?.target };
+}
 
 export function useSessionTerminalIdentity(params: Readonly<{
     sessionId: string;
     scopeId: string;
     terminalMode?: SessionTerminalMode;
     terminalInstanceId?: string;
+    terminal?: SessionTerminalMemberV1;
 }>): SessionTerminalIdentity {
     const serverId = parseSessionPaneScopeId(params.scopeId)?.address?.serverId ?? null;
-    const storedMode = useSessionTerminalMode(params.sessionId, serverId);
-    const terminalMode = params.terminalMode ?? storedMode;
-    return React.useMemo(() => {
-        const scopeId = createSessionPaneScopeId(params.sessionId, serverId);
-        const terminalKey = terminalMode === 'session_attach'
-            ? serverId ? `${scopeId}:attach` : `session-attach:${params.sessionId}`
-            : params.terminalInstanceId
-                ? `${scopeId}:terminal:${params.terminalInstanceId}`
-                : `${scopeId}:terminal`;
-        return { serverId, terminalMode, terminalKey };
-    }, [params.sessionId, params.terminalInstanceId, serverId, terminalMode]);
+    const storedWorkspace = React.useSyncExternalStore(
+        subscribeSessionTerminalWorkspace,
+        React.useCallback(() => readSessionTerminalWorkspaceForScope(params.scopeId), [params.scopeId]),
+        React.useCallback(() => readSessionTerminalWorkspaceForScope(params.scopeId), [params.scopeId]),
+    );
+    const selectedTerminal = params.terminal ?? (params.terminalMode ? null : params.terminalInstanceId
+        ? storedWorkspace?.tabs.flatMap((tab) => tab.terminals).find((terminal) => terminal.id === params.terminalInstanceId)
+        : storedWorkspace ? getActiveSessionTerminal(storedWorkspace) : null);
+    return React.useMemo(() => resolveSessionTerminalIdentity({ ...params, terminal: selectedTerminal }), [params.sessionId, params.scopeId, selectedTerminal, params.terminalInstanceId, params.terminalMode]);
 }

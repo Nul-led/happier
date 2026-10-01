@@ -31,6 +31,7 @@ describe('createServerBackedSessionTranscriptStore', () => {
     const store = createServerBackedSessionTranscriptStore({
       token: 'token',
       sessionId: 'session-1',
+      mode: 'e2ee',
       ctx: { encryptionKey: new Uint8Array(32), encryptionVariant: 'legacy' },
     });
 
@@ -69,6 +70,7 @@ describe('createServerBackedSessionTranscriptStore', () => {
     const store = createServerBackedSessionTranscriptStore({
       token: 'token',
       sessionId: 'session-1',
+      mode: 'e2ee',
       ctx: { encryptionKey: new Uint8Array(32), encryptionVariant: 'legacy' },
     });
 
@@ -116,6 +118,7 @@ describe('createServerBackedSessionTranscriptStore', () => {
     const store = createServerBackedSessionTranscriptStore({
       token: 'token',
       sessionId: 'session-1',
+      mode: 'e2ee',
       ctx: { encryptionKey: new Uint8Array(32), encryptionVariant: 'legacy' },
     });
 
@@ -184,6 +187,7 @@ describe('createServerBackedSessionTranscriptStore', () => {
     const store = createServerBackedSessionTranscriptStore({
       token: 'token',
       sessionId: 'session-1',
+      mode: 'e2ee',
       ctx: { encryptionKey: new Uint8Array(32), encryptionVariant: 'legacy' },
     });
 
@@ -254,6 +258,7 @@ describe('createServerBackedSessionTranscriptStore', () => {
     const store = createServerBackedSessionTranscriptStore({
       token: 'token',
       sessionId: 'session-1',
+      mode: 'e2ee',
       ctx: { encryptionKey: new Uint8Array(32), encryptionVariant: 'legacy' },
     });
 
@@ -368,6 +373,7 @@ describe('createServerBackedSessionTranscriptStore', () => {
     const store = createServerBackedSessionTranscriptStore({
       token: 'token',
       sessionId: 'session-1',
+      mode: 'e2ee',
       ctx: { encryptionKey: new Uint8Array(32), encryptionVariant: 'legacy' },
     });
 

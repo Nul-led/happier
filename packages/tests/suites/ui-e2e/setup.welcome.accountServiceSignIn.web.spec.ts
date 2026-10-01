@@ -277,8 +277,15 @@ test.describe('ui e2e: welcome Account Service sign-in journey', () => {
       await expect(lateTour).toBeHidden({ timeout: 30_000 });
       await chooseService.click();
     }
+    // A remembered (unavailable) default endpoint is offered first; entering a
+    // different address is the explicit "another" choice that reveals the input.
+    const anotherChoice = page.getByTestId('account-service-another-choice');
+    await expect(anotherChoice).toBeVisible({ timeout: 30_000 });
+    await anotherChoice.click();
     const input = page.getByTestId('account-service-url-input');
     await expect(input).toHaveCount(1, { timeout: 30_000 });
+    // The service-selection step is routine UI too.
+    await expect(page.getByText(ROUTINE_TERMINOLOGY_FORBIDDEN_RE)).toHaveCount(0);
     await input.fill(serviceOrigin);
     await page.getByTestId('account-service-url-submit').click();
 
@@ -318,6 +325,13 @@ test.describe('ui e2e: welcome Account Service sign-in journey', () => {
     await expect(secretInput).toHaveCount(1, { timeout: 30_000 });
     await secretInput.fill(secretKeyBase64Url);
     await page.getByTestId('restore-manual-submit').click();
+
+    // The post-sign-in continuation (finding Homes, enrollment, any result card)
+    // must speak the same routine vocabulary before the shell takes over.
+    await expect(page.getByText(ROUTINE_TERMINOLOGY_FORBIDDEN_RE)).toHaveCount(0);
+    for (const text of await page.locator('[data-testid^="account-service-continuation-"]').allTextContents()) {
+      expect(text).not.toMatch(ROUTINE_TERMINOLOGY_FORBIDDEN_RE);
+    }
 
     await waitForAuthenticatedHomeUi({ page, timeoutMs: 300_000 });
 

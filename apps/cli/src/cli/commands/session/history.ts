@@ -136,7 +136,7 @@ async function followSessionHistory(params: Readonly<{
       const normalized = normalizeActionExecuteResult(await params.executor.execute(
         'transcript.follow',
         { sessionId: params.sessionId, cursor, leaseId: activeLeaseId },
-        { surface: 'cli', authority: 'present_user', defaultSessionId: null },
+        { surface: 'cli', defaultSessionId: null },
       ));
       if (!normalized.ok) {
         throwNormalizedActionError(normalized);
@@ -147,7 +147,7 @@ async function followSessionHistory(params: Readonly<{
       const normalized = normalizeActionExecuteResult(await params.releaseExecutor.execute(
         'transcript.unfollow',
         { sessionId: params.sessionId, leaseId: activeLeaseId },
-        { surface: 'cli', authority: 'present_user', defaultSessionId: null },
+        { surface: 'cli', defaultSessionId: null },
       ));
       if (!normalized.ok) {
         throwNormalizedActionError(normalized);
@@ -157,7 +157,7 @@ async function followSessionHistory(params: Readonly<{
       const normalized = normalizeActionExecuteResult(await params.executor.execute(
         'session.status.get',
         { sessionId: params.sessionId },
-        { surface: 'cli', authority: 'present_user', defaultSessionId: null },
+        { surface: 'cli', defaultSessionId: null },
       ));
       if (!normalized.ok) {
         throwNormalizedActionError(normalized);
@@ -296,7 +296,7 @@ export async function cmdSessionHistory(
       ...(includeMeta ? { includeMeta: true } : {}),
       ...(includeStructuredPayload ? { includeStructuredPayload: true } : {}),
     },
-    { surface: 'cli', authority: 'present_user', defaultSessionId: null },
+    { surface: 'cli', defaultSessionId: null },
   );
   const normalized = normalizeActionExecuteResult(actionRes);
   if (!normalized.ok) {

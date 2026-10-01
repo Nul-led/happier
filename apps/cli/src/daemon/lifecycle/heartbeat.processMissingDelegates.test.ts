@@ -103,7 +103,7 @@ describe('startDaemonHeartbeatLoop process-missing delegation', () => {
     expect(pidToTrackedSession.has(pid)).toBe(false);
   });
 
-  it('keeps an exact copied-source runner but prunes a reused PID through the existing exit cleanup exactly once', async () => {
+  it('keeps a held child even when liveness probing fails, but prunes a reused PID exactly once', async () => {
     vi.mocked(readDaemonState).mockResolvedValue({
       pid: process.pid,
       httpPort: 4001,
@@ -119,6 +119,7 @@ describe('startDaemonHeartbeatLoop process-missing delegation', () => {
 
     const samePid = 111112;
     const reusedPid = 111113;
+    const heldPid = 111115;
     const sameCommand = [
       '/usr/local/bin/node',
       '--preserve-symlinks',
@@ -150,6 +151,14 @@ describe('startDaemonHeartbeatLoop process-missing delegation', () => {
         processStartTimeMs: 2_000,
         processCommandHash: hashProcessCommand(oldCommand),
       }],
+      [heldPid, {
+        pid: heldPid,
+        happySessionId: 'sess-held',
+        startedBy: 'daemon',
+        childProcess: { pid: heldPid, exitCode: null, signalCode: null },
+        processStartTimeMs: 2_000,
+        processCommandHash: hashProcessCommand(oldCommand),
+      }],
     ]);
 
     const killSpy = vi.spyOn(process, 'kill').mockImplementation(((
@@ -158,6 +167,9 @@ describe('startDaemonHeartbeatLoop process-missing delegation', () => {
     ) => {
       if ((targetPid === samePid || targetPid === reusedPid) && signal === 0) {
         return true;
+      }
+      if (targetPid === heldPid && signal === 0) {
+        throw Object.assign(new Error('no such process'), { code: 'ESRCH' });
       }
       throw new Error(`unexpected process signal ${String(signal)} for ${targetPid}`);
     }) as typeof process.kill);
@@ -208,6 +220,7 @@ describe('startDaemonHeartbeatLoop process-missing delegation', () => {
     );
     expect(pidToTrackedSession.has(samePid)).toBe(true);
     expect(pidToTrackedSession.has(reusedPid)).toBe(false);
+    expect(pidToTrackedSession.has(heldPid)).toBe(true);
     expect(cleanupReusedPid).toHaveBeenCalledOnce();
     expect(readProcessIdentityByPidFn).toHaveBeenCalledWith(samePid);
     expect(readProcessIdentityByPidFn).toHaveBeenCalledWith(reusedPid);

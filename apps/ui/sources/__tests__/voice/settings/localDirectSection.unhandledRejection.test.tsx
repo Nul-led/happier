@@ -1,4 +1,5 @@
 import React from 'react';
+import { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderSettingsView } from '@/dev/testkit';
 import { installVoiceSettingsPanelCommonModuleMocks } from '@/voice/settings/panels/voiceSettingsPanelTestHelpers';
@@ -81,7 +82,7 @@ vi.mock('@/voice/settings/panels/localTts/LocalVoiceTtsGroup', () => ({
   },
 }));
 
-import { voiceSettingsParse } from '@/sync/domains/settings/voiceSettings';
+import { readLocalDirectVoiceSettings, voiceSettingsParse } from '@/sync/domains/settings/voiceSettings';
 
 describe('LocalDirectSection', () => {
   beforeEach(() => {
@@ -89,28 +90,39 @@ describe('LocalDirectSection', () => {
     localDirectPanelState.ttsGroupProps = [];
   });
 
-  it('does not produce an unhandledRejection when a prompt rejects', async () => {
-    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+  // The network timeout used to be edited through an async `Modal.prompt`, whose rejection leaked as an
+  // unhandledRejection. It is now an inline field: typing and leaving it commits a clamped value, with no
+  // prompt and nothing left pending.
+  it('commits the network timeout inline, clamped, without a prompt or an unhandledRejection', async () => {
     const unhandledSpy = vi.fn();
     process.on('unhandledRejection', unhandledSpy);
-
-    modalPrompt.mockRejectedValueOnce(new Error('boom'));
+    const setVoice = vi.fn();
     const { LocalDirectSection } = await import('@/voice/settings/panels/LocalDirectSection');
 
     try {
       const voice = voiceSettingsParse({ providerId: 'local_direct' });
-      const screen = await renderSettingsView(React.createElement(LocalDirectSection, { voice, setVoice: vi.fn() }));
+      const screen = await renderSettingsView(React.createElement(LocalDirectSection, { voice, setVoice }));
 
       expect(screen.findRowByTitle('settingsVoice.local.conversation.network.timeoutTitle')).toBeTruthy();
+      // `Item` is a host element here, so the row's field is its `rightElement`.
+      const field = () => screen.findAll((node) => (
+        (node.type as unknown) === 'Item' && node.props?.title === 'settingsVoice.local.conversation.network.timeoutTitle'
+      ))[0]!.props.rightElement.props;
 
-      screen.pressRowByTitle('settingsVoice.local.conversation.network.timeoutTitle');
-
+      await act(async () => {
+        field().onChangeText('999999');
+      });
+      await act(async () => {
+        field().onBlur();
+      });
       await new Promise((resolve) => setTimeout(resolve, 0));
     } finally {
       process.removeListener('unhandledRejection', unhandledSpy);
-      consoleError.mockRestore();
     }
 
+    expect(modalPrompt).not.toHaveBeenCalled();
+    expect(setVoice).toHaveBeenCalledTimes(1);
+    expect(readLocalDirectVoiceSettings(setVoice.mock.calls[0]![0]).networkTimeoutMs).toBe(60000);
     expect(unhandledSpy).not.toHaveBeenCalled();
   });
 

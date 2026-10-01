@@ -3,6 +3,7 @@ import { mkdir, readFile, rename, rm, watch, writeFile } from 'node:fs/promises'
 import { join } from 'node:path';
 
 import { readProcessIdentityByPid } from '@/daemon/processIdentity';
+import { processGenerationMatches } from '@happier-dev/cli-common/processInstance';
 import { readProcessRunState } from '@/daemon/processRunState';
 import { withJsonOwnerFileLock } from '@/utils/fs/jsonOwnerFileLock';
 
@@ -42,7 +43,7 @@ export type ExternalSessionOperationOwnerProcessLiveness =
     | 'unknown';
 
 type ExternalSessionOperationClaimRecord = Readonly<{
-    schemaVersion: 1;
+    schemaVersion: 2;
     claimId: string;
     ownerId: string;
     ownerProcess?: ExternalSessionOperationOwnerProcess;
@@ -283,14 +284,14 @@ function normalizeOwnerProcess(value: unknown): ExternalSessionOperationOwnerPro
     if (
         !Number.isSafeInteger(record.pid)
         || (record.pid as number) <= 0
-        || !Number.isFinite(record.processStartTimeMs)
+        || !Number.isSafeInteger(record.processStartTimeMs)
         || (record.processStartTimeMs as number) < 0
     ) {
         return null;
     }
     return Object.freeze({
         pid: record.pid as number,
-        processStartTimeMs: Math.trunc(record.processStartTimeMs as number),
+        processStartTimeMs: record.processStartTimeMs as number,
     });
 }
 
@@ -298,7 +299,7 @@ function parseClaimRecord(value: unknown): ExternalSessionOperationClaimRecord |
     if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
     const record = value as Record<string, unknown>;
     if (
-        record.schemaVersion !== 1
+        record.schemaVersion !== 2
         || typeof record.claimId !== 'string'
         || !record.claimId.trim()
         || typeof record.ownerId !== 'string'
@@ -325,7 +326,7 @@ function parseClaimRecord(value: unknown): ExternalSessionOperationClaimRecord |
     try {
         const request = normalizeRequest(record.request as ExternalSessionOperationRequest);
         return Object.freeze({
-            schemaVersion: 1,
+            schemaVersion: 2,
             claimId: record.claimId,
             ownerId: record.ownerId,
             ...(ownerProcess ? { ownerProcess } : {}),
@@ -583,19 +584,12 @@ function conflictReason(
     return 'active_operation';
 }
 
-const currentProcessStartTimeMs = Math.max(
-    0,
-    Math.trunc(Date.now() - process.uptime() * 1_000),
-);
-const PROCESS_START_TIME_MATCH_TOLERANCE_MS = 2_000;
-
 function sameOwnerProcess(
     left: ExternalSessionOperationOwnerProcess,
     right: ExternalSessionOperationOwnerProcess,
 ): boolean {
     return left.pid === right.pid
-        && Math.abs(left.processStartTimeMs - right.processStartTimeMs)
-            <= PROCESS_START_TIME_MATCH_TOLERANCE_MS;
+        && processGenerationMatches(left.processStartTimeMs, right.processStartTimeMs);
 }
 
 export async function inspectExternalSessionOperationOwnerProcess(
@@ -642,13 +636,19 @@ export function createExternalSessionOperationExclusion(input: Readonly<{
 }>): ExternalSessionOperationExclusionOwner {
     const activeServerDir = readRequiredString(input.activeServerDir, 'activeServerDir');
     const ownerId = readRequiredString(input.ownerId, 'ownerId');
-    const ownerProcess = normalizeOwnerProcess(input.ownerProcess ?? {
-        pid: process.pid,
-        processStartTimeMs: currentProcessStartTimeMs,
-    });
-    if (!ownerProcess) {
+    const providedOwnerProcess = input.ownerProcess === undefined
+        ? undefined
+        : normalizeOwnerProcess(input.ownerProcess);
+    if (input.ownerProcess !== undefined && !providedOwnerProcess) {
         throw new Error('External session operation ownerProcess is invalid');
     }
+    const readOwnerProcess = async (): Promise<ExternalSessionOperationOwnerProcess> => {
+        if (providedOwnerProcess) return providedOwnerProcess;
+        const identity = await readProcessIdentityByPid(process.pid);
+        const ownerProcess = normalizeOwnerProcess(identity);
+        if (!ownerProcess) throw new Error('Current external operation process generation is unavailable');
+        return ownerProcess;
+    };
     const inspectOwnerProcess =
         input.inspectOwnerProcess ?? inspectExternalSessionOperationOwnerProcess;
     const nowMs = input.nowMs ?? Date.now;
@@ -673,7 +673,7 @@ export function createExternalSessionOperationExclusion(input: Readonly<{
         claim: ExternalSessionOperationClaimRecord,
     ): Promise<ExternalSessionOperationOwnerProcessLiveness> => {
         if (!claim.ownerProcess) return 'unknown';
-        return sameOwnerProcess(claim.ownerProcess, ownerProcess)
+        return sameOwnerProcess(claim.ownerProcess, await readOwnerProcess())
             ? 'verified_running'
             : await inspectOwnerProcess(claim.ownerProcess);
     };
@@ -871,9 +871,10 @@ export function createExternalSessionOperationExclusion(input: Readonly<{
                         }
                     }
 
+                    const ownerProcess = await readOwnerProcess();
                     const acquiredAtMs = nowMs();
                     const record: ExternalSessionOperationClaimRecord = Object.freeze({
-                        schemaVersion: 1,
+                        schemaVersion: 2,
                         claimId: randomUUID(),
                         ownerId,
                         ownerProcess,

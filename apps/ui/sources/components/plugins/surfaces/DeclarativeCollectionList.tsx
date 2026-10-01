@@ -28,6 +28,7 @@ import type {
 import { Text } from '@/components/ui/text/Text';
 import { DropdownMenu } from '@/components/ui/forms/dropdown/DropdownMenu';
 import { t } from '@/text';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 type RecordValue = Readonly<Record<string, unknown>>;
 type AccountLifetime = Readonly<{
@@ -288,7 +289,7 @@ const DeclarativeCollectionListRow = React.memo(function DeclarativeCollectionLi
                                 alignItems: 'center',
                                 paddingHorizontal: props.presentationTheme.spacing.small,
                                 borderRadius: props.presentationTheme.radii.control,
-                                opacity: state.disabled ? 0.5 : state.pressed ? 0.8 : 1,
+                                opacity: state.disabled ? 0.5 : state.pressed ? motionTokens.press.opacitySubtle : 1,
                             })}
                         >
                             <HappierText accessible={false} testID={input.testID}>
@@ -367,7 +368,7 @@ function renderNotice(input: Readonly<{
                         paddingHorizontal: input.presentationTheme.spacing.medium,
                         borderRadius: input.presentationTheme.radii.control,
                         backgroundColor: input.presentationTheme.colors.accent,
-                        opacity: state.disabled ? 0.5 : state.pressed ? 0.8 : 1,
+                        opacity: state.disabled ? 0.5 : state.pressed ? motionTokens.press.opacitySubtle : 1,
                     })}
                 >
                     <Text style={{ color: input.presentationTheme.colors.onAccent }}>{t('common.retry')}</Text>
@@ -603,7 +604,7 @@ export function DeclarativeCollectionList(props: Readonly<{
                             paddingHorizontal: props.presentationTheme.spacing.medium,
                             borderRadius: props.presentationTheme.radii.control,
                             backgroundColor: props.presentationTheme.colors.accent,
-                            opacity: state.disabled ? 0.5 : state.pressed ? 0.8 : 1,
+                            opacity: state.disabled ? 0.5 : state.pressed ? motionTokens.press.opacitySubtle : 1,
                         })}
                     >
                         <Text style={{ color: props.presentationTheme.colors.onAccent }}>{t('common.more')}</Text>

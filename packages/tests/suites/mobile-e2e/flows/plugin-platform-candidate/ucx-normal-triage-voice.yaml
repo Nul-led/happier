@@ -47,14 +47,12 @@ appId: ${HAPPIER_E2E_MOBILE_APP_ID}
     visible:
       id: settings.voice.privacy.currentUiContextMode
     timeout: 120000
-- tapOn:
-    id: settings.voice.privacy.currentUiContextMode
 - extendedWaitUntil:
     visible:
-      id: dropdown-option-off
+      id: "settings.voice.privacy.currentUiContextMode:off"
     timeout: 120000
 - tapOn:
-    id: dropdown-option-off
+    id: "settings.voice.privacy.currentUiContextMode:off"
 
 # The exact labels select the published Triage list options and prove their
 # screen-reader names. A real native Back returns from each selected detail to
@@ -80,14 +78,12 @@ appId: ${HAPPIER_E2E_MOBILE_APP_ID}
     timeout: 120000
 
 - openLink: ${HAPPIER_E2E_MOBILE_APP_SCHEME}:///settings/voice/privacy
-- tapOn:
-    id: settings.voice.privacy.currentUiContextMode
 - extendedWaitUntil:
     visible:
-      id: dropdown-option-on_demand
+      id: "settings.voice.privacy.currentUiContextMode:on_demand"
     timeout: 120000
 - tapOn:
-    id: dropdown-option-on_demand
+    id: "settings.voice.privacy.currentUiContextMode:on_demand"
 - openLink: ${HAPPIER_E2E_MOBILE_APP_SCHEME}:///plugins/happier.triage/triage
 - extendedWaitUntil:
     visible: ${HAPPIER_E2E_TRIAGE_GITHUB_VOICE_QA_ISSUE_A_TITLE}
@@ -103,14 +99,12 @@ appId: ${HAPPIER_E2E_MOBILE_APP_ID}
     timeout: 120000
 
 - openLink: ${HAPPIER_E2E_MOBILE_APP_SCHEME}:///settings/voice/privacy
-- tapOn:
-    id: settings.voice.privacy.currentUiContextMode
 - extendedWaitUntil:
     visible:
-      id: dropdown-option-automatic
+      id: "settings.voice.privacy.currentUiContextMode:automatic"
     timeout: 120000
 - tapOn:
-    id: dropdown-option-automatic
+    id: "settings.voice.privacy.currentUiContextMode:automatic"
 - openLink: ${HAPPIER_E2E_MOBILE_APP_SCHEME}:///settings/voice
 - extendedWaitUntil:
     visible:
@@ -121,23 +115,13 @@ appId: ${HAPPIER_E2E_MOBILE_APP_ID}
 - extendedWaitUntil:
     visible: Conversation mode
     timeout: 120000
-- tapOn: Conversation mode
-- extendedWaitUntil:
-    visible:
-      id: dropdown-option-${HAPPIER_E2E_TRIAGE_GITHUB_VOICE_QA_VOICE_CONVERSATION_MODE}
-    timeout: 120000
 - tapOn:
-    id: dropdown-option-${HAPPIER_E2E_TRIAGE_GITHUB_VOICE_QA_VOICE_CONVERSATION_MODE}
+    id: "settings.voice.local.conversationMode:${HAPPIER_E2E_TRIAGE_GITHUB_VOICE_QA_VOICE_CONVERSATION_MODE}"
 - extendedWaitUntil:
     visible: Voice agent source
     timeout: 120000
-- tapOn: Voice agent source
-- extendedWaitUntil:
-    visible:
-      id: dropdown-option-agent
-    timeout: 120000
 - tapOn:
-    id: dropdown-option-agent
+    id: "settings.voice.local.mediatorAgentSource:agent"
 - extendedWaitUntil:
     visible: Voice agent backend
     timeout: 120000

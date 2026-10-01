@@ -164,7 +164,7 @@ export function VoiceDiagnosticsSettingsSection(props: Readonly<{
   return (
     <ItemGroup
       title={tLoose('settingsVoice.diagnostics.title')}
-      footer={tLoose('settingsVoice.diagnostics.footer')}
+      description={tLoose('settingsVoice.diagnostics.footer')}
     >
       <Item
         testID="settings-voice-diagnostics-enabled"

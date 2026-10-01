@@ -25,20 +25,6 @@ const transcriptModuleState = vi.hoisted(() => ({
     },
 }));
 
-function withTranscriptCommonStorageDefaults(moduleExports: unknown): unknown {
-    const exportsRecord = moduleExports != null && typeof moduleExports === 'object'
-        ? { ...(moduleExports as Record<string, unknown>) }
-        : {};
-
-    return {
-        ...exportsRecord,
-        useSessionForkSupportSource: exportsRecord.useSessionForkSupportSource ?? (() => null),
-        useSessionMessagesById: exportsRecord.useSessionMessagesById ?? (() => ({})),
-        useSessionMessagesReducerState: exportsRecord.useSessionMessagesReducerState ?? (() => null),
-        useSessionWorkspacePath: exportsRecord.useSessionWorkspacePath ?? (() => null),
-    };
-}
-
 export function getTranscriptModalMockRef() {
     return transcriptModuleState.modalMockRef as { current: any };
 }
@@ -103,10 +89,10 @@ export function installTranscriptCommonModuleMocks(
     vi.mock('@/sync/domains/state/storage', async (importOriginal) => {
         const activeOptions = transcriptModuleState.options;
         if (activeOptions.storage) {
-            return withTranscriptCommonStorageDefaults(await activeOptions.storage(importOriginal));
+            return await activeOptions.storage(importOriginal);
         }
 
         const { createPartialStorageModuleMock } = await import('@/dev/testkit/mocks/storage');
-        return withTranscriptCommonStorageDefaults(createPartialStorageModuleMock(importOriginal, {}));
+        return createPartialStorageModuleMock(importOriginal, {});
     });
 }

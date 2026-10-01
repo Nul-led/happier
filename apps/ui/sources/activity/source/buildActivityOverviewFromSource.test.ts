@@ -2,6 +2,8 @@ import { buildStableActivityOverviewFingerprint } from '@/activity/attention/bui
 import { describe, expect, it } from 'vitest';
 
 import { createSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
+import { resolveActivitySurfacePolicy } from '@/activity/attention/resolveActivitySurfacePolicy';
+import { buildLiveActivitySnapshots } from '@/activity/adapters/ios/liveActivities/buildLiveActivitySnapshots';
 import { buildSessionListRenderableFromSession } from '@/sync/domains/session/listing/sessionListRenderable';
 import type { SessionListQueryHomeState } from '@/sync/domains/session/listing/sessionListQueryController';
 import { buildSessionListQueryKey } from '@/sync/domains/session/listing/sessionListQueryKey';
@@ -10,6 +12,7 @@ import { activityInstanceKey } from '@/sync/domains/session/sessionAddress';
 import { ACTIVITY_PERSONAL_SESSION_QUERY } from './activityPersonalSessionMembership';
 
 import {
+    buildActivityOverviewSummaryFromSource,
     buildActivityOverviewFromSource,
     readActivitySourceAttentionMessages,
 } from './buildActivityOverviewFromSource';
@@ -125,6 +128,120 @@ function personalQueryState(
 }
 
 describe('buildActivityOverviewFromSource', () => {
+    it.each([
+        { privacyMode: 'status_only', candidatePrivacyMode: undefined, showsWorkspace: false },
+        { privacyMode: 'title_only', candidatePrivacyMode: undefined, showsWorkspace: false },
+        { privacyMode: 'include_preview', candidatePrivacyMode: undefined, showsWorkspace: true },
+        { privacyMode: 'include_preview', candidatePrivacyMode: 'title_only', showsWorkspace: false },
+    ] as const)('applies $privacyMode / $candidatePrivacyMode workspace privacy to native payloads from real source context', ({
+        privacyMode, candidatePrivacyMode, showsWorkspace,
+    }) => {
+        const session = createSessionFixture({
+            id: 'workspace-privacy',
+            serverId: 'server-a',
+            active: true,
+            presence: 'online',
+            pendingPermissionRequestCount: 1,
+            agentState: pendingAgentState('permission'),
+            metadata: {
+                path: '/Users/tester/PRIVATE-WORKSPACE-SENTINEL',
+                host: 'tester.local',
+                homeDir: '/Users/tester',
+                summary: { text: 'Permission work', updatedAt: 3 },
+            },
+        });
+        const overview = buildActivityOverviewFromSource({
+            source: createSource({ sessions: [session] }),
+            nowMs: 1_000,
+        });
+        const candidate = overview.candidates[0]!;
+        expect(candidate.context?.workspace?.label).toContain('PRIVATE-WORKSPACE-SENTINEL');
+        const homeLabel = candidate.context?.segments.find((segment) => segment.kind === 'home')?.label;
+        expect(homeLabel).toBeTruthy();
+
+        const snapshots = buildLiveActivitySnapshots({
+            sessions: [session],
+            overview,
+            policy: resolveActivitySurfacePolicy({ activitySurfacePrivacyMode: privacyMode }),
+            resolveCandidatePrivacyMode: () => candidatePrivacyMode,
+            nowMs: 1_000,
+        });
+
+        expect(snapshots).toHaveLength(1);
+        expect(snapshots[0]!.subtitle).toContain(homeLabel);
+        expect(JSON.stringify(snapshots).includes('PRIVATE-WORKSPACE-SENTINEL')).toBe(showsWorkspace);
+    });
+
+    it('builds the mounted summary from an equal-version list projection without reading hydrated messages', () => {
+        const session = createSessionFixture({
+            id: 'summary-list-projection',
+            serverId: 'server-a',
+            seq: 4,
+            agentStateVersion: 7,
+            latestReadyEventSeq: 4,
+            lastViewedSessionSeq: 1,
+        });
+        const renderable = buildSessionListRenderableFromSession(session);
+        const source = createSource({ sessions: [session] });
+        const guardedMessages = new Proxy({}, {
+            get() {
+                throw new Error('summary read hydrated message detail for a projected list member');
+            },
+        });
+
+        expect(buildActivityOverviewSummaryFromSource({
+            source: {
+                ...source,
+                sessionListRowsByServerId: {
+                    'server-a': { [session.id]: renderable },
+                },
+                sessionMessagesById: guardedMessages,
+            },
+            nowMs: 1_000,
+        })).toEqual({
+            totalAttentionCount: 1,
+            inboxContentCount: 1,
+            nextAttentionBoundaryMs: null,
+            workingCount: 0,
+            needsYouCount: 0,
+        });
+    });
+
+    it('keeps equal-version unread-only summary state out of Inbox when no ready evidence exists', () => {
+        const session = createSessionFixture({
+            id: 'summary-unread-without-ready',
+            serverId: 'server-a',
+            seq: 4,
+            agentStateVersion: 7,
+            latestReadyEventSeq: null,
+            latestTurnStatus: null,
+            lastViewedSessionSeq: 1,
+            active: false,
+            thinking: false,
+        });
+        const source = createSource({ sessions: [session] });
+        const unreadRenderable = {
+            ...source.sessionListRowsByServerId?.['server-a']?.[session.id]!,
+            hasUnreadMessages: true,
+        };
+
+        expect(buildActivityOverviewSummaryFromSource({
+            source: {
+                ...source,
+                sessionListRowsByServerId: {
+                    'server-a': { [session.id]: unreadRenderable },
+                },
+            },
+            nowMs: 1_000,
+        })).toEqual({
+            totalAttentionCount: 0,
+            inboxContentCount: 0,
+            nextAttentionBoundaryMs: null,
+            workingCount: 0,
+            needsYouCount: 0,
+        });
+    });
+
     it('enumerates only canonical ordinary membership and excludes query-only rows', () => {
         const ordinary = buildSessionListRenderableFromSession(createSessionFixture({
             id: 'ordinary',
@@ -644,6 +761,29 @@ describe('buildActivityOverviewFromSource', () => {
             'thinking',
             'unread',
         ]);
+    });
+
+    it('counts the working sessions and the ones that need the person in the mounted summary (Home status line)', () => {
+        const permission = createSessionFixture({
+            id: 'permission', active: true, presence: 'online', seq: 1, lastViewedSessionSeq: 1,
+            pendingPermissionRequestCount: 1, pendingRequestObservedAt: 950,
+            agentState: pendingAgentState('permission'), updatedAt: 20,
+        });
+        const thinking = createSessionFixture({
+            id: 'thinking', seq: 2, lastViewedSessionSeq: 2, active: true, presence: 'online',
+            thinking: true, thinkingAt: 950, updatedAt: 30,
+        });
+        const unread = createSessionFixture({
+            id: 'unread', seq: 12, latestReadyEventSeq: 12, lastViewedSessionSeq: 1, updatedAt: 40,
+        });
+        const source = createSource({ sessions: [unread, thinking, permission] });
+        // The same classification as the full overview: an unread reply neither works nor needs the person.
+        const overview = buildActivityOverviewFromSource({ source, nowMs: 1_000 });
+        expect(buildActivityOverviewSummaryFromSource({ source, nowMs: 1_000 })).toMatchObject({
+            workingCount: overview.counts.thinking,
+            needsYouCount: overview.counts.permissionRequired + overview.counts.actionRequired,
+        });
+        expect(buildActivityOverviewSummaryFromSource({ source, nowMs: 1_000 })).toMatchObject({ workingCount: 1, needsYouCount: 1 });
     });
 
     it('carries target, server profile, direct-action, stale, dwell, and stable fingerprint facts on source candidates', () => {

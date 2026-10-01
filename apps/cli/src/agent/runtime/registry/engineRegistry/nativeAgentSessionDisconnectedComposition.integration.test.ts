@@ -332,6 +332,7 @@ describe('hosted native Agent disconnected transcript composition', () => {
                 session: transcriptSession,
                 publications: {
                     models: { bind: () => ({ dispose() {} }) },
+                    modes: { bind: () => ({ dispose() {} }) },
                     activeInput: { bind: () => ({ dispose() {} }), publishStatus: vi.fn() },
                 },
                 readToolExecutionCapability: () => null,

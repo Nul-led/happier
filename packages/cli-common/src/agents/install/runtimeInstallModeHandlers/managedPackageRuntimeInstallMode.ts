@@ -17,6 +17,7 @@ export const managedPackageRuntimeInstallModeHandler: RuntimeInstallModeHandlerE
             logPath: lifecycleContext.logPath,
             deps,
             signal: params.signal,
+            onProgress: params.onProgress,
             appendCommandLog: lifecycleContext.appendCommandLog,
             appendLogLine: lifecycleContext.appendLogLine,
         });

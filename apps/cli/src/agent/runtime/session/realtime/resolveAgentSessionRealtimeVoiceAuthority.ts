@@ -1,5 +1,6 @@
 import type {
   PluginContributionIdentityV1,
+  PluginSourceCustodyV1,
   VoiceProviderContribution,
 } from '@happier-dev/protocol';
 import {
@@ -13,12 +14,12 @@ import {
 } from '@/plugins/runtime/runner/agentSessionRunnerFactoryBinding';
 import type { AgentSessionRealtimeVoiceAuthority } from './registerAgentSessionRealtimeVoiceRpc';
 
-type AgentRuntimeGenerationIdentity = Readonly<{
+type AgentRuntimeIdentity = Readonly<{
   pluginId: string;
   agentId: string;
   localAgentId?: string;
-  generation: string;
-  immutableGenerationId?: string | null;
+  occurrenceId: string;
+  sourceCustody: PluginSourceCustodyV1;
   isCurrent(): boolean;
 }>;
 
@@ -42,7 +43,7 @@ type ConversationDeclaration = Extract<
 type AgentSessionRealtimeVoicePolicyProvider = Readonly<{
   provider: PluginContributionIdentityV1;
   declaration: ConversationDeclaration;
-  generation: string;
+  occurrenceId: string;
   isCurrent(): boolean;
   retirementSignal: AbortSignal;
 }>;
@@ -103,7 +104,7 @@ export function snapshotAgentSessionRealtimeVoiceProviders(input: Readonly<{
 }
 
 export function createAgentSessionRealtimeVoiceAuthority(input: Readonly<{
-  generation: string;
+  occurrenceId: string;
   policyAgentRef: PluginContributionIdentityV1;
   isAgentRuntimeCurrent(): boolean;
   providers: readonly AgentSessionRealtimeVoicePolicyProvider[];
@@ -121,7 +122,7 @@ export function createAgentSessionRealtimeVoiceAuthority(input: Readonly<{
   }
 
   return Object.freeze({
-    generation: input.generation,
+    occurrenceId: input.occurrenceId,
     policyAgentRef: input.policyAgentRef,
     isCurrent(provider) {
       const entry = declarations.get(authorityKey(provider));
@@ -135,8 +136,8 @@ export function createAgentSessionRealtimeVoiceAuthority(input: Readonly<{
     resolveDeclaration(provider) {
       return declarations.get(authorityKey(provider))?.declaration ?? null;
     },
-    resolveProviderGeneration(provider) {
-      return declarations.get(authorityKey(provider))?.generation ?? null;
+    resolveProviderOccurrenceId(provider) {
+      return declarations.get(authorityKey(provider))?.occurrenceId ?? null;
     },
     resolveRetirementSignal(provider) {
       return declarations.get(authorityKey(provider))?.retirementSignal ?? null;
@@ -197,8 +198,8 @@ export function resolveRetainedAgentSessionRealtimeVoiceAuthority(input: Readonl
       pluginId: retainedAgent.pluginId,
       agentId: retainedAgent.agentId,
       localAgentId: retainedAgent.localAgentId,
-      generation: retainedAgent.immutableGenerationId,
-      immutableGenerationId: retainedAgent.immutableGenerationId,
+      occurrenceId: JSON.stringify(retainedAgent.sourceCustody),
+      sourceCustody: retainedAgent.sourceCustody,
       isCurrent: () => true,
     },
   });
@@ -207,7 +208,7 @@ export function resolveRetainedAgentSessionRealtimeVoiceAuthority(input: Readonl
 export function resolveAgentSessionRealtimeVoiceAuthority(input: Readonly<{
   runtimeRegistry: VoiceAuthorityRuntimeRegistry | null;
   policyAgentRef: PluginContributionIdentityV1 | null;
-  agentRuntimeIdentity: AgentRuntimeGenerationIdentity;
+  agentRuntimeIdentity: AgentRuntimeIdentity;
   agentRetirementSignal?: AbortSignal;
 }>): AgentSessionRealtimeVoiceAuthority | null {
   const registry = input.runtimeRegistry;
@@ -225,9 +226,7 @@ export function resolveAgentSessionRealtimeVoiceAuthority(input: Readonly<{
   }
 
   return createAgentSessionRealtimeVoiceAuthority({
-    generation:
-      input.agentRuntimeIdentity.immutableGenerationId
-      ?? input.agentRuntimeIdentity.generation,
+    occurrenceId: input.agentRuntimeIdentity.occurrenceId,
     policyAgentRef,
     isAgentRuntimeCurrent: input.agentRuntimeIdentity.isCurrent,
     providers: snapshotAgentSessionRealtimeVoiceProviders({
@@ -243,7 +242,7 @@ export function resolveAgentSessionRealtimeVoiceAuthority(input: Readonly<{
       return Object.freeze({
         provider: provider.identity,
         declaration: provider.definition,
-        generation: lifecycle.generation,
+        occurrenceId: lifecycle.occurrenceId,
         isCurrent: lifecycle.isCurrent,
         retirementSignal,
       });

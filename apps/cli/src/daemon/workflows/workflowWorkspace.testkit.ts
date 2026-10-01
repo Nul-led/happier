@@ -31,6 +31,7 @@ export function createGitWorkflowWorkspaceTestDependencies() {
   );
 
   return {
+    inspectLocation,
     inspectCommittedRevision: async (directory: string) => (
       (await inspectLocation({ candidatePath: directory }))?.inspection.committedRevision ?? null
     ),

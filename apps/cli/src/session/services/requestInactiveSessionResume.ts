@@ -27,7 +27,7 @@ export type InactiveSessionResumeResult =
   | Readonly<{ ok: true }>
   | Readonly<{
       ok: false;
-      code: 'session_archived' | 'takeover_required' | 'unsupported' | 'resume_failed' | 'timeout';
+      code: 'session_archived' | 'takeover_required' | 'unsupported' | 'resume_failed' | 'timeout' | 'SESSION_DIRECTORY_MISSING';
       message: string;
     }>;
 
@@ -94,6 +94,8 @@ export function buildMachineResumeRequest(
       ? { initialTranscriptAfterSeq: options.initialTranscriptAfterSeq }
       : {}),
     ...(options.executionAuthorization ? { executionAuthorization: options.executionAuthorization } : {}),
+    ...(typeof options.approvedNewDirectoryCreation === 'boolean'
+      ? { approvedNewDirectoryCreation: options.approvedNewDirectoryCreation } : {}),
   };
 }
 
@@ -121,6 +123,7 @@ export async function requestInactiveSessionResume(params: Readonly<{
   timeoutMs?: number;
   signal?: AbortSignal;
   waitForReady?: boolean;
+  approvedNewDirectoryCreation?: boolean;
   machineRpcTransport?: (
     method: string,
     request: unknown,
@@ -177,6 +180,9 @@ export async function requestInactiveSessionResume(params: Readonly<{
   if (!options || options.machineId !== machineId || (!options.agentTarget && !options.backendTarget)) {
     return { ok: false, code: 'unsupported', message: 'Inactive session resume identity is incomplete; pending custody was retained' };
   }
+  if (params.approvedNewDirectoryCreation === true) {
+    options.approvedNewDirectoryCreation = true;
+  }
 
   const startedAtMs = Date.now();
   const readinessSpawnNonce = params.waitForReady === true
@@ -227,7 +233,10 @@ export async function requestInactiveSessionResume(params: Readonly<{
       const message = response && typeof response === 'object' && typeof (response as { errorMessage?: unknown }).errorMessage === 'string'
         ? (response as { errorMessage: string }).errorMessage
         : 'Inactive session resume was rejected; pending custody was retained';
-      return { ok: false, code: 'resume_failed', message };
+      const code = response && typeof response === 'object'
+        && (response as { errorCode?: unknown }).errorCode === SPAWN_SESSION_ERROR_CODES.SESSION_DIRECTORY_MISSING
+        ? SPAWN_SESSION_ERROR_CODES.SESSION_DIRECTORY_MISSING : 'resume_failed';
+      return { ok: false, code, message };
     }
     if (!readinessSpawnNonce) {
       return { ok: true };

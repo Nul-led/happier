@@ -13,9 +13,8 @@ export type BundledPluginUiAppArtifactFile = Readonly<{
 
 export type BundledPluginUiAppArtifact = Readonly<{
     pluginId: string;
-    contributionId: string;
+    artifactId: string;
     tier: 'hostedWeb' | 'reactNative';
-    platform: 'web' | 'ios' | 'android';
     digest: PluginUiArtifactDigestV1;
     releaseVersion: string;
     files: readonly BundledPluginUiAppArtifactFile[];

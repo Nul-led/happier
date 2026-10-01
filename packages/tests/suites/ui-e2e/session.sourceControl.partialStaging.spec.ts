@@ -12,7 +12,7 @@ import { ensureAccountReadyForConnect } from '../../src/testkit/uiE2e/ensureAcco
 import { approveTerminalConnect } from '../../src/testkit/uiE2e/approveTerminalConnect';
 import {
   createAccountAndReachConnectMachineState,
-  dismissSetupWizardIfVisible,
+  discardMachineAddDraftIfVisible,
   gotoDomContentLoadedWithPathFallback,
   gotoDomContentLoadedWithRetries,
   normalizeLoopbackBaseUrl,
@@ -56,8 +56,8 @@ async function enableScmWriteOperationsInSettings(page: Page, baseUrl: string) {
         return;
       }
 
-      if ((await page.getByTestId('setupWizard.surface').count()) > 0) {
-        await dismissSetupWizardIfVisible({ page });
+      if ((await page.getByTestId('settings.machines.draft.form').count()) > 0) {
+        await discardMachineAddDraftIfVisible({ page });
         break;
       }
 
@@ -90,8 +90,8 @@ async function openSessionRouteAndWaitForComposer(params: Readonly<{
       if ((await params.page.getByTestId('session-composer-input').count()) > 0) {
         return;
       }
-      if ((await params.page.getByTestId('setupWizard.surface').count()) > 0) {
-        await dismissSetupWizardIfVisible({ page: params.page });
+      if ((await params.page.getByTestId('settings.machines.draft.form').count()) > 0) {
+        await discardMachineAddDraftIfVisible({ page: params.page });
         break;
       }
       if ((await params.page.getByTestId('welcome-create-account').count()) > 0) {
@@ -138,9 +138,6 @@ test.describe('ui e2e: SCM partial staging + commit + discard', () => {
       extraEnv: {
         HAPPIER_BUILD_FEATURES_DENY: 'sharing.contentKeys',
         HAPPIER_FEATURE_AUTH_LOGIN__KEY_CHALLENGE_ENABLED: '1',
-        HAPPIER_PRESENCE_SESSION_TIMEOUT_MS: '60000',
-        HAPPIER_PRESENCE_MACHINE_TIMEOUT_MS: '60000',
-        HAPPIER_PRESENCE_TIMEOUT_TICK_MS: '1000',
       },
     });
 

@@ -7,10 +7,12 @@ import type { ConnectedAccountRuntime as PluginConnectedAccountRuntime } from '@
 import type { PluginContributionRef } from '@happier-dev/plugin-sdk';
 
 import type { ResolvedConnectedAccountDescriptorContribution } from '@/plugins/projection/registry/types';
+import type { PluginRuntimeOccurrenceId } from '../runtimeSlots';
+import type { PluginSourceCustody } from '../sourceAuthority';
 
 export type ConnectedAccountRuntimeRegistration = Readonly<{
     pluginId: string;
-    generation: string;
+    occurrenceId: string;
     localId: string;
     runtime: PluginConnectedAccountRuntime;
 }>;
@@ -18,21 +20,20 @@ export type ConnectedAccountRuntimeRegistration = Readonly<{
 /**
  * The cold projection of one admitted connected-account contribution: everything a
  * descriptor, configuration, or currentness read needs, and nothing that requires the
- * plugin's executable code. `isCurrent` is the host's own generation closure, so a cold
- * reader fences on exactly the identity an executable lease would.
+ * plugin's executable code. `isCurrent` fences the exact process-local occurrence.
  */
 export type ConnectedAccountContributionRegistryEntry = Readonly<{
     ref: PluginContributionRef;
     descriptor: ResolvedConnectedAccountDescriptorContribution['definition'];
-    generation: string;
-    immutableGenerationId: string;
+    occurrenceId: PluginRuntimeOccurrenceId;
+    sourceCustody: PluginSourceCustody;
     isCurrent(): boolean;
 }>;
 
 export type ConnectedAccountRuntimeLease = Readonly<{
     ref: PluginContributionRef;
-    generation: string;
-    immutableGenerationId: string;
+    occurrenceId: PluginRuntimeOccurrenceId;
+    sourceCustody: PluginSourceCustody;
     descriptor: ResolvedConnectedAccountDescriptorContribution['definition'];
     runtime: PluginConnectedAccountRuntime;
     isCurrent(): boolean;
@@ -43,7 +44,7 @@ export class ConnectedAccountRuntimeInvocationNotStartedError extends Error {
 
     constructor() {
         super(
-            'Connected-account runtime generation is no longer current before provider entry',
+            'Connected-account runtime occurrence is no longer current before provider entry',
         );
         this.name = 'ConnectedAccountRuntimeInvocationNotStartedError';
     }
@@ -74,12 +75,12 @@ function snapshotDescriptor(
 }
 
 export function createConnectedAccountContributionRegistry(params: Readonly<{
-    generation: string;
-    immutableGenerationIdsByPluginId: ReadonlyMap<string, string>;
     descriptors: readonly ResolvedConnectedAccountDescriptorContribution[];
     activateOnDemand(ref: PluginContributionRef): Promise<void>;
     readRegistrations(): readonly ConnectedAccountRuntimeRegistration[];
-    isGenerationCurrent(pluginId: string): boolean;
+    readPluginOccurrenceId(pluginId: string): PluginRuntimeOccurrenceId | null;
+    readPluginSourceCustody(pluginId: string): PluginSourceCustody | null;
+    isPluginOccurrenceCurrent(pluginId: string, occurrenceId: PluginRuntimeOccurrenceId): boolean;
     /**
      * Reports a descriptor this generation could not admit, so the host can tell
      * the operator which plugin lost its Connected Accounts. The registry itself
@@ -89,7 +90,7 @@ export function createConnectedAccountContributionRegistry(params: Readonly<{
 }>): Readonly<{
     list(): readonly ConnectedAccountContributionRegistryEntry[];
     /**
-     * Cold lookup of one declared contribution. Answers descriptor, generation identity
+     * Cold lookup of one declared contribution. Answers descriptor, runtime identity
      * and currentness without activating the owning plugin, so Settings, discovery and
      * offline inspection do not boot executable plugin code. Returns `null` for a service
      * this generation does not declare or could not admit — the same caller-visible fact
@@ -101,12 +102,12 @@ export function createConnectedAccountContributionRegistry(params: Readonly<{
      *
      * Returns `null` when the service is not resolvable here — no declared
      * descriptor, a descriptor quarantined because its plugin has no admitted
-     * generation identity, or an owning plugin that did not publish its runtime
+     * runtime identity, or an owning plugin that did not publish its runtime
      * after on-demand activation. All are the same caller-visible fact: this
      * generation has no usable runtime for the service.
      *
      * Throws `ConnectedAccountRuntimeInvocationNotStartedError` when the
-     * generation is retired or disposed. That is a currentness fact, not
+     * occurrence is retired or disposed. That is a currentness fact, not
      * unavailability: the caller must reload rather than conclude the service
      * does not exist. Genuine faults (activation failure, duplicate
      * registration, descriptor/runtime mismatch) keep throwing as themselves.
@@ -117,7 +118,8 @@ export function createConnectedAccountContributionRegistry(params: Readonly<{
     const descriptorsByKey = new Map<string, Readonly<{
         ref: PluginContributionRef;
         descriptor: ResolvedConnectedAccountDescriptorContribution['definition'];
-        immutableGenerationId: string;
+        occurrenceId: PluginRuntimeOccurrenceId;
+        sourceCustody: PluginSourceCustody;
     }>>();
     const duplicateKeys = new Set<string>();
     for (const contribution of params.descriptors) {
@@ -125,9 +127,10 @@ export function createConnectedAccountContributionRegistry(params: Readonly<{
         if (!pluginId) throw new TypeError('Connected-account descriptors require a plugin-qualified owner');
         const descriptor = snapshotDescriptor(contribution);
         const ref = Object.freeze({ pluginId, localId: descriptor.id });
-        const immutableGenerationId = params.immutableGenerationIdsByPluginId.get(pluginId)?.trim();
-        if (!immutableGenerationId) {
-            // One plugin whose generation the host could not admit must not deny
+        const occurrenceId = params.readPluginOccurrenceId(pluginId);
+        const sourceCustody = params.readPluginSourceCustody(pluginId);
+        if (!occurrenceId || !sourceCustody) {
+            // One plugin whose runtime identity the host could not admit must not deny
             // every other plugin its Connected Accounts. Omitting the descriptor
             // is strictly more closed than admitting it without a verified
             // identity: `resolve` reports this service as unresolvable and the
@@ -150,12 +153,17 @@ export function createConnectedAccountContributionRegistry(params: Readonly<{
             );
             continue;
         }
-        descriptorsByKey.set(key, Object.freeze({ ref, descriptor, immutableGenerationId }));
+        descriptorsByKey.set(key, Object.freeze({
+            ref,
+            descriptor,
+            occurrenceId,
+            sourceCustody,
+        }));
     }
     let disposed = false;
 
-    function isCurrentGeneration(pluginId: string): boolean {
-        return !disposed && params.isGenerationCurrent(pluginId);
+    function isCurrentOccurrence(pluginId: string, occurrenceId: PluginRuntimeOccurrenceId): boolean {
+        return !disposed && params.isPluginOccurrenceCurrent(pluginId, occurrenceId);
     }
 
     function readRegistration(ref: PluginContributionRef): ConnectedAccountRuntimeRegistration | null {
@@ -164,7 +172,7 @@ export function createConnectedAccountContributionRegistry(params: Readonly<{
         const matches = params.readRegistrations().filter((registration) => (
             registration.pluginId === ref.pluginId
             && registration.localId === ref.localId
-            && registration.generation === params.generation
+            && registration.occurrenceId === params.readPluginOccurrenceId(ref.pluginId)
         ));
         if (matches.length > 1) {
             throw new Error(`Duplicate current-generation registration '${qualifiedKey(ref)}'`);
@@ -175,14 +183,15 @@ export function createConnectedAccountContributionRegistry(params: Readonly<{
     function coldEntry(declared: Readonly<{
         ref: PluginContributionRef;
         descriptor: ResolvedConnectedAccountDescriptorContribution['definition'];
-        immutableGenerationId: string;
+        occurrenceId: PluginRuntimeOccurrenceId;
+        sourceCustody: PluginSourceCustody;
     }>): ConnectedAccountContributionRegistryEntry {
         return Object.freeze({
             ref: declared.ref,
             descriptor: declared.descriptor,
-            generation: params.generation,
-            immutableGenerationId: declared.immutableGenerationId,
-            isCurrent: () => isCurrentGeneration(declared.ref.pluginId),
+            occurrenceId: declared.occurrenceId,
+            sourceCustody: declared.sourceCustody,
+            isCurrent: () => isCurrentOccurrence(declared.ref.pluginId, declared.occurrenceId),
         });
     }
 
@@ -196,15 +205,15 @@ export function createConnectedAccountContributionRegistry(params: Readonly<{
         },
         async resolve(ref) {
             const qualifiedRef = snapshotQualifiedRef(ref);
-            if (!isCurrentGeneration(qualifiedRef.pluginId)) {
-                throw new ConnectedAccountRuntimeInvocationNotStartedError();
-            }
             const declared = descriptorsByKey.get(qualifiedKey(qualifiedRef));
             if (!declared) return null;
+            if (!isCurrentOccurrence(qualifiedRef.pluginId, declared.occurrenceId)) {
+                throw new ConnectedAccountRuntimeInvocationNotStartedError();
+            }
             let registration = readRegistration(qualifiedRef);
             if (!registration) {
                 await params.activateOnDemand(qualifiedRef);
-                if (!isCurrentGeneration(qualifiedRef.pluginId)) {
+                if (!isCurrentOccurrence(qualifiedRef.pluginId, declared.occurrenceId)) {
                     throw new ConnectedAccountRuntimeInvocationNotStartedError();
                 }
                 registration = readRegistration(qualifiedRef);
@@ -212,11 +221,11 @@ export function createConnectedAccountContributionRegistry(params: Readonly<{
             if (!registration) return null;
             return Object.freeze({
                 ref: declared.ref,
-                generation: registration.generation,
-                immutableGenerationId: declared.immutableGenerationId,
+                occurrenceId: declared.occurrenceId,
+                sourceCustody: declared.sourceCustody,
                 descriptor: declared.descriptor,
                 runtime: registration.runtime,
-                isCurrent: () => isCurrentGeneration(qualifiedRef.pluginId),
+                isCurrent: () => isCurrentOccurrence(qualifiedRef.pluginId, declared.occurrenceId),
             });
         },
         dispose() { disposed = true; },

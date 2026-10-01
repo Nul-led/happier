@@ -47,8 +47,8 @@ function genericSession(overrides: Record<string, unknown> = {}) {
     identifier: 'mutagen-session-1',
     name: 'r1',
     labels: labelsFor('r1'),
-    alpha: { protocol: 'external', host: deriveWorkspaceSyncEndpointId('r1', 'alpha'), path: '', connected: true, scanned: true },
-    beta: { protocol: 'external', host: deriveWorkspaceSyncEndpointId('r1', 'beta'), path: '', connected: true, scanned: true },
+    alpha: { protocol: 'external', host: deriveWorkspaceSyncEndpointId('r1', 'alpha'), path: '', state: { connected: true, scanned: true, scanProblemCount: 0, transitionProblemCount: 0 } },
+    beta: { protocol: 'external', host: deriveWorkspaceSyncEndpointId('r1', 'beta'), path: '', state: { connected: true, scanned: true, scanProblemCount: 0, transitionProblemCount: 0 } },
     mode: 'one-way-safe', paused: false, status: 'watching', successfulCycles: 1, conflictCount: 0,
     ...overrides,
   };
@@ -63,13 +63,34 @@ function genericSessionFor(id: string, overrides: Record<string, unknown> = {}) 
     identifier: `mutagen-${id}`,
     name: id,
     labels: labelsFor(id),
-    alpha: { protocol: 'external', host: deriveWorkspaceSyncEndpointId(id, 'alpha'), path: '', connected: true, scanned: true },
-    beta: { protocol: 'external', host: deriveWorkspaceSyncEndpointId(id, 'beta'), path: '', connected: true, scanned: true },
+    alpha: { protocol: 'external', host: deriveWorkspaceSyncEndpointId(id, 'alpha'), path: '', state: { connected: true, scanned: true, scanProblemCount: 0, transitionProblemCount: 0 } },
+    beta: { protocol: 'external', host: deriveWorkspaceSyncEndpointId(id, 'beta'), path: '', state: { connected: true, scanned: true, scanProblemCount: 0, transitionProblemCount: 0 } },
     ...overrides,
   });
 }
 
 describe('WorkspaceSyncMutagenAdapterClient', () => {
+  it('keeps a recovery-held session paused while reconciling an unrelated running link', async () => {
+    const unaffected = { ...relationship, relationshipId: 'r2' };
+    const send = vi.fn(async (command: Readonly<{ t: string }>) => {
+      if (command.t === 'list') return listPage([
+        genericSessionFor('r1', { paused: true, status: 'watching' }),
+        genericSessionFor('r2'),
+      ]);
+      throw new Error(`unexpected ${command.t} command`);
+    });
+    const adapter = createWorkspaceSyncMutagenAdapter({
+      send,
+      createRequestId: () => 'request-1',
+      resolveWorkspaceRef: async (id) => ({ machineId: 'm1', rootPath: `/${id}` }),
+    });
+
+    await expect(adapter.rehydrate([relationship, unaffected], undefined, new Set(['r1']))).resolves.toEqual([
+      expect.objectContaining({ relationshipId: 'r1', state: 'paused' }),
+      expect.objectContaining({ relationshipId: 'r2', state: 'watching' }),
+    ]);
+    expect(send).not.toHaveBeenCalledWith(expect.objectContaining({ t: 'resume' }), expect.anything());
+  });
   it('projects the broker typed mid-scan Git selector failure without parsing lastError prose', async () => {
     const adapter = createWorkspaceSyncMutagenAdapter({
       send: vi.fn(async () => listPage([genericSession({
@@ -84,6 +105,43 @@ describe('WorkspaceSyncMutagenAdapterClient', () => {
       state: 'error',
       errorCode: 'git_selection_unavailable',
     })]);
+  });
+
+  it('projects retained and excluded endpoint problems and preserves an absent endpoint as unknown', async () => {
+    const adapter = createWorkspaceSyncMutagenAdapter({
+      send: vi.fn(async () => listPage([genericSession({
+        alpha: {
+          protocol: 'external', host: deriveWorkspaceSyncEndpointId('r1', 'alpha'), path: '',
+          state: { connected: true, scanned: true, scanProblemCount: 3, transitionProblemCount: 7 },
+        },
+        beta: { protocol: 'external', host: deriveWorkspaceSyncEndpointId('r1', 'beta'), path: '', state: null },
+      })])),
+      createRequestId: () => 'request-1',
+      resolveWorkspaceRef: async (id) => ({ machineId: 'm1', rootPath: `/${id}` }),
+    });
+
+    await expect(adapter.rehydrate([relationship])).resolves.toEqual([expect.objectContaining({
+      state: 'error',
+      endpointStates: {
+        alpha: { connected: true, scanned: true, scanProblemCount: 3, transitionProblemCount: 7 },
+        beta: null,
+      },
+    })]);
+  });
+
+  it('rejects endpoint observations that omit required problem totals', async () => {
+    const adapter = createWorkspaceSyncMutagenAdapter({
+      send: vi.fn(async () => listPage([genericSession({
+        alpha: {
+          protocol: 'external', host: deriveWorkspaceSyncEndpointId('r1', 'alpha'), path: '',
+          state: { connected: true, scanned: true, scanProblemCount: 0 },
+        },
+      })])),
+      createRequestId: () => 'request-1',
+      resolveWorkspaceRef: async (id) => ({ machineId: 'm1', rootPath: `/${id}` }),
+    });
+
+    await expect(adapter.rehydrate([relationship])).rejects.toThrow(/transitionProblemCount/);
   });
 
   it('rehydrates and lists more than 32 valid claimed sessions', async () => {
@@ -177,11 +235,11 @@ describe('WorkspaceSyncMutagenAdapterClient', () => {
     const send = vi.fn(async (command: { t: string }) => command.t === 'list' ? listPage([]) : genericSession({
       alpha: {
         protocol: 'external', host: deriveWorkspaceSyncEndpointId('r1', 'alpha'), path: '',
-        connected: true, scanned: true,
+        state: { connected: true, scanned: true, scanProblemCount: 0, transitionProblemCount: 0 },
       },
       beta: {
         protocol: 'external', host: deriveWorkspaceSyncEndpointId('r1', 'beta'), path: '',
-        connected: true, scanned: true,
+        state: { connected: true, scanned: true, scanProblemCount: 0, transitionProblemCount: 0 },
       },
     }));
     const adapter = createWorkspaceSyncMutagenAdapter({
@@ -209,7 +267,10 @@ describe('WorkspaceSyncMutagenAdapterClient', () => {
 
     await expect(adapter.ensure(relationship)).resolves.toEqual({
       relationshipId: 'r1', controllerMachineId: 'm1', state: 'watching', alphaPath: '/a', betaPath: '/b',
-      mode: 'keep_synced', changedFiles: 0, conflictCount: 0, lastSuccessfulSyncAtMs: 1234,
+      mode: 'keep_synced', endpointStates: {
+        alpha: { connected: true, scanned: true, scanProblemCount: 0, transitionProblemCount: 0 },
+        beta: { connected: true, scanned: true, scanProblemCount: 0, transitionProblemCount: 0 },
+      }, conflictCount: 0, lastCycleObservedAtMs: 1234,
     });
     expect(commands).toEqual([
       { t: 'list', requestId: 'request-1', limit: 100 },
@@ -333,7 +394,7 @@ describe('WorkspaceSyncMutagenAdapterClient', () => {
 
     await expect(adapter.copyOnce(copyOnceOperation)).resolves.toMatchObject({
       relationshipId: 'copy-1',
-      lastSuccessfulSyncAtMs: 1234,
+      lastCycleObservedAtMs: 1234,
     });
     expect(commands.map(({ t, sessionIdentifier }) => [t, sessionIdentifier])).toEqual([
       ['list', undefined],
@@ -355,7 +416,7 @@ describe('WorkspaceSyncMutagenAdapterClient', () => {
     });
     const send = vi.fn(async (command: { t: string }) => command.t === 'list'
       ? listPage([persisted])
-      : command.t === 'get_policy' ? { selection: 'all_files', patterns: ['.git/'], nextCursor: null } : null);
+      : command.t === 'get_policy' ? { selection: 'all_files', patterns: ['.git'], nextCursor: null } : null);
     const adapter = createWorkspaceSyncMutagenAdapter({
       send,
       createRequestId: () => 'request-1',
@@ -382,7 +443,7 @@ describe('WorkspaceSyncMutagenAdapterClient', () => {
     const send = vi.fn(async (command: { t: string }) => command.t === 'list'
       ? listPage([persisted])
       : command.t === 'get_policy'
-        ? { selection: 'git_worktree', patterns: ['build/', '!build/keep.txt', '.git/'], nextCursor: null }
+        ? { selection: 'git_worktree', patterns: ['build/', '!build/keep.txt', '.git'], nextCursor: null }
         : null);
     const adapter = createWorkspaceSyncMutagenAdapter({
       send,
@@ -410,7 +471,7 @@ describe('WorkspaceSyncMutagenAdapterClient', () => {
     const send = vi.fn(async (command: { t: string; sessionIdentifier?: string }) => {
       commands.push(command);
       return command.t === 'list' ? listPage([persisted])
-        : command.t === 'get_policy' ? { selection: 'all_files', patterns: ['.git/'], nextCursor: null } : null;
+        : command.t === 'get_policy' ? { selection: 'all_files', patterns: ['.git'], nextCursor: null } : null;
     });
     const adapter = createWorkspaceSyncMutagenAdapter({
       send,
@@ -623,6 +684,30 @@ describe('WorkspaceSyncMutagenAdapterClient', () => {
     expect(commands.at(-1)).toEqual({
       t: 'list_conflicts', requestId: 'request-1', sessionIdentifier: 'mutagen-session-1', limit: 1,
     });
+  });
+
+  it('queries selection through the current broker session and validates its bounded verdict', async () => {
+    const commands: unknown[] = [];
+    const send = vi.fn(async (command: { t: string }) => {
+      commands.push(command);
+      if (command.t === 'list') return listPage([]);
+      if (command.t === 'diagnose_selection') return { status: 'excluded', reason: 'git_ignore' };
+      return genericSession();
+    });
+    const adapter = createWorkspaceSyncMutagenAdapter({
+      send, createRequestId: () => 'request-1',
+      resolveWorkspaceRef: async (id) => ({ machineId: 'm1', rootPath: `/${id}` }),
+    });
+    await adapter.ensure(relationship);
+    await expect(adapter.diagnoseSelection({ relationshipId: 'r1', side: 'beta', path: 'src/file.ts' }))
+      .resolves.toEqual({ status: 'excluded', reason: 'git_ignore' });
+    expect(commands.at(-1)).toEqual({
+      t: 'diagnose_selection', requestId: 'request-1', sessionIdentifier: 'mutagen-session-1', side: 'beta', path: 'src/file.ts',
+    });
+    send.mockImplementation(async (command: { t: string }) => command.t === 'diagnose_selection'
+      ? { status: 'excluded', reason: 'unverified' }
+      : genericSession());
+    await expect(adapter.diagnoseSelection({ relationshipId: 'r1', side: 'alpha', path: 'src/file.ts' })).rejects.toThrow();
   });
 
   it('preserves an all-whitespace POSIX conflict filename as exact path data', async () => {

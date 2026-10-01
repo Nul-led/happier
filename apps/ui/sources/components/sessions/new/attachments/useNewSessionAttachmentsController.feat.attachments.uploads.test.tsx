@@ -231,6 +231,10 @@ function createComposerDocument(input: Readonly<{
             onComposerFocusChange: () => {},
             onComposerFocusRequestChange: () => {},
             onComposerActionBarLayoutChange: () => {},
+            inputPersistence: {
+                restoreToken: 'new-session-composer-scope',
+                onSelectionChangePersist: () => {},
+            },
             composerDecorations: [],
             composerInputLock: null,
             attachmentRowItems: [],
@@ -240,6 +244,7 @@ function createComposerDocument(input: Readonly<{
             afterComposer: null,
             captureSubmissionSnapshot,
             clearAcceptedSnapshot,
+            readCurrentDocumentSnapshot: () => input.snapshot,
         },
         captureSubmissionSnapshot,
         clearAcceptedSnapshot,
@@ -254,6 +259,7 @@ function createLaunchAttempt(): NewSessionLaunchAttempt {
         createdSessionId: null,
         firstTurnLocalId: 'new-session-first-turn-1',
         attachmentMessageLocalId: 'new-session-attachment-local-1',
+        configurationUpdatedAtMs: 0,
         status: 'created',
         prompt: {
             prompt: '',
@@ -363,6 +369,7 @@ describe('useNewSessionAttachmentsController (attachments.uploads)', () => {
                 handleCreateSession,
                 selectedProfileId: null,
                 targetServerId: 'server-a',
+                selectedMachineId: 'machine-a',
                 baseActionChips: [],
                 composerDocument: mountedComposerDocument.current,
             });
@@ -375,26 +382,21 @@ describe('useNewSessionAttachmentsController (attachments.uploads)', () => {
 
         expect(handleCreateSession).toHaveBeenCalledTimes(1);
         expect(handleCreateSession).toHaveBeenCalledWith(expect.objectContaining({
-            initialMessage: 'skip',
-            afterCreated: expect.any(Function),
+            inputTextOverride: 'Original text-only first turn',
             onAfterCreatedSettled: expect.any(Function),
             deferAcceptedDraftClearToDocument: true,
         }));
 
         const createOptions = handleCreateSession.mock.calls[0]?.[0] as HandleCreateSessionOptions | undefined;
-        const afterCreated = createOptions?.afterCreated;
         const onAfterCreatedSettled = createOptions?.onAfterCreatedSettled;
         const composerDocument = mountedComposerDocument.current;
-        if (!afterCreated || !onAfterCreatedSettled || !composerDocument) {
+        if (!onAfterCreatedSettled || !composerDocument) {
             throw new Error('expected coordinator-owned New Session admission callbacks');
         }
+        expect(createOptions?.afterCreated).toBeUndefined();
+        expect(createOptions?.temporaryComputerSubmission).toBeUndefined();
 
         await act(async () => {
-            await afterCreated({
-                sessionId: 'session-text-only',
-                effectiveSpawnServerId: 'server-a',
-                launchAttempt: createLaunchAttempt(),
-            });
             promptStore.setPrompt('Newer text typed before acceptance');
             await flushHookEffects({ cycles: 1, turns: 1 });
             onAfterCreatedSettled({ status: 'accepted', sessionId: 'session-text-only' });
@@ -402,18 +404,50 @@ describe('useNewSessionAttachmentsController (attachments.uploads)', () => {
             await flushHookEffects({ cycles: 1, turns: 1 });
         });
 
-        expect(followUpSpawnedSessionWithServerScopeSpy).toHaveBeenCalledTimes(1);
-        expect(followUpSpawnedSessionWithServerScopeSpy).toHaveBeenCalledWith({
-            sessionId: 'session-text-only',
-            targetServerId: 'server-a',
-            initialMessageText: 'Original text-only first turn',
-            displayText: 'Original text-only first turn',
-            messageLocalId: 'new-session-first-turn-1',
-            profileId: null,
-            metaOverrides: undefined,
-        });
+        expect(followUpSpawnedSessionWithServerScopeSpy).not.toHaveBeenCalled();
         expect(promptStore.getPrompt()).toBe('Newer text typed before acceptance');
         expect(composerDocument.captureSubmissionSnapshot()?.text).toBe('Newer text typed before acceptance');
+        await hook.unmount();
+    });
+
+    it('retains Temporary Computer settlement when a stale Machine selection remains', async () => {
+        const { useNewSessionAttachmentsController } = await import('./useNewSessionAttachmentsController');
+        const handleCreateSession = vi.fn();
+        const { composerDocument } = createComposerDocument({
+            attachments: [],
+            snapshot: createComposerSnapshot({ text: 'Temporary first turn', attachments: [] }),
+        });
+        const hook = await renderHook(() => useNewSessionAttachmentsController({
+            isCreating: false,
+            promptStore: createNewSessionPromptStore('Temporary first turn'),
+            handleCreateSession,
+            selectedProfileId: null,
+            selectedMachineId: 'stale-machine',
+            isTemporaryComputer: true,
+            composerDocument,
+        }));
+        await act(async () => {
+            hook.getCurrent().handleSend();
+            await flushHookEffects({ cycles: 1, turns: 1 });
+        });
+        expect(handleCreateSession).toHaveBeenCalledWith(expect.objectContaining({
+            initialMessage: 'skip',
+            temporaryComputerSubmission: expect.any(Object),
+            afterCreated: expect.any(Function),
+        }));
+        const afterCreated = (handleCreateSession.mock.calls[0]?.[0] as HandleCreateSessionOptions).afterCreated;
+        await act(async () => {
+            await afterCreated?.({
+                sessionId: 'temporary-session',
+                effectiveSpawnServerId: 'server-a',
+                launchAttempt: createLaunchAttempt(),
+                preuploadedAttachments: [],
+            });
+        });
+        expect(followUpSpawnedSessionWithServerScopeSpy).toHaveBeenCalledWith(expect.objectContaining({
+            sessionId: 'temporary-session',
+            messageLocalId: 'new-session-first-turn-1',
+        }));
         await hook.unmount();
     });
 
@@ -458,6 +492,7 @@ describe('useNewSessionAttachmentsController (attachments.uploads)', () => {
             handleCreateSession,
             selectedProfileId: 'profile-work',
             targetServerId: 'server-a',
+            selectedMachineId: 'machine-a',
             baseActionChips: [],
             composerDocument,
         }));
@@ -484,52 +519,30 @@ describe('useNewSessionAttachmentsController (attachments.uploads)', () => {
 
         expect(captureSubmissionSnapshot).toHaveBeenCalledWith(undefined);
         expect(handleCreateSession).toHaveBeenCalledWith(expect.objectContaining({
-            initialMessage: 'skip',
-            afterCreated: expect.any(Function),
+            inputTextOverride: 'Check @issue',
+            initialInputStructuredInput: {
+                v: 1,
+                mentions: [{ kind: 'partner.reference', ref: 'partner:issue-42', token: '@issue', label: 'Issue #42' }],
+                composerAttachments: [composerAttachment],
+            },
             onAfterCreatedSettled: expect.any(Function),
             deferAcceptedDraftClearToDocument: true,
-            hasComposerAttachments: true,
         }));
 
         const createOptions = handleCreateSession.mock.calls[0]?.[0] as HandleCreateSessionOptions | undefined;
-        const afterCreated = createOptions?.afterCreated;
         const onAfterCreatedSettled = createOptions?.onAfterCreatedSettled;
-        if (!afterCreated || !onAfterCreatedSettled) {
+        if (!onAfterCreatedSettled) {
             throw new Error('expected canonical New Session admission callbacks');
         }
+        expect(createOptions?.afterCreated).toBeUndefined();
         await act(async () => {
-            await afterCreated({
-                sessionId: 'session-1',
-                effectiveSpawnServerId: 'server-a',
-                launchAttempt: createLaunchAttempt(),
-            });
             expect(clearAcceptedSnapshot).not.toHaveBeenCalled();
             onAfterCreatedSettled({ status: 'accepted', sessionId: 'session-1' });
             await Promise.resolve();
             await flushHookEffects({ cycles: 1, turns: 1 });
         });
 
-        expect(followUpSpawnedSessionWithServerScopeSpy).toHaveBeenCalledWith({
-            sessionId: 'session-1',
-            targetServerId: 'server-a',
-            initialMessageText: 'Check @issue',
-            displayText: 'Check @issue',
-            messageLocalId: 'new-session-first-turn-1',
-            profileId: 'profile-work',
-            metaOverrides: {
-                legacyOptionContext: { preserve: true },
-                happierStructuredInputV1: {
-                    v: 1,
-                    mentions: [{
-                        kind: 'partner.reference',
-                        ref: 'partner:issue-42',
-                        token: '@issue',
-                        label: 'Issue #42',
-                    }],
-                    composerAttachments: [composerAttachment],
-                },
-            },
-        });
+        expect(followUpSpawnedSessionWithServerScopeSpy).not.toHaveBeenCalled();
         expect(clearAcceptedSnapshot).toHaveBeenCalledWith(expect.objectContaining({
             ref: { kind: 'newSession', instanceId: 'new-session-composer-scope' },
             revision: 7,
@@ -652,13 +665,12 @@ describe('useNewSessionAttachmentsController (attachments.uploads)', () => {
             await flushHookEffects({ cycles: 1, turns: 1 });
         });
 
-        const rejectedAutomationOptions = handleCreateSession.mock.calls[0]?.[0] as HandleCreateSessionOptions | undefined;
-        expect(rejectedAutomationOptions).toEqual(expect.objectContaining({
+        const rejectedOptions = handleCreateSession.mock.calls[0]?.[0] as HandleCreateSessionOptions | undefined;
+        expect(rejectedOptions).toEqual(expect.objectContaining({
             initialMessage: 'skip',
-            hasComposerAttachments: true,
             onAfterCreatedSettled: expect.any(Function),
         }));
-        rejectedAutomationOptions?.onAfterCreatedSettled?.({ status: 'rejected' });
+        rejectedOptions?.onAfterCreatedSettled?.({ status: 'rejected' });
         await act(async () => {
             await Promise.resolve();
             await flushHookEffects({ cycles: 1, turns: 1 });
@@ -1124,7 +1136,7 @@ describe('useNewSessionAttachmentsController (attachments.uploads)', () => {
         expect(remounted.getCurrent().drafts).toHaveLength(0);
     });
 
-    it('consumes Runner-verified attachments without opening the mutable drafts a second time', async () => {
+    it('uses the persisted Temporary Computer first-turn id with Runner-verified attachments', async () => {
         const { useNewSessionAttachmentsController } = await import('./useNewSessionAttachmentsController');
         const handleCreateSession = vi.fn();
         const hook = await renderHook(() => useNewSessionAttachmentsController({
@@ -1134,6 +1146,7 @@ describe('useNewSessionAttachmentsController (attachments.uploads)', () => {
             handleCreateSession,
             selectedProfileId: 'profile-work',
             targetServerId: 'server-b',
+            isTemporaryComputer: true,
             baseActionChips: [],
         }));
 
@@ -1177,7 +1190,7 @@ describe('useNewSessionAttachmentsController (attachments.uploads)', () => {
         expect(followUpSpawnedSessionWithServerScopeSpy).toHaveBeenCalledWith(expect.objectContaining({
             sessionId: 'runner-session-1',
             targetServerId: 'server-a',
-            messageLocalId: 'runner-attachment-local-1',
+            messageLocalId: 'runner-first-turn-local-1',
             metaOverrides: {
                 happier: {
                     kind: 'attachments.v1',
@@ -1189,9 +1202,13 @@ describe('useNewSessionAttachmentsController (attachments.uploads)', () => {
         await hook.unmount();
     });
 
-    it('automatically includes matching workspace review comments in the new-session follow-up flow and removes only sent workspace drafts after success', async () => {
+    it('carries review-comment-only first turns in spawn initialInput and clears only accepted drafts', async () => {
         const { useNewSessionAttachmentsController } = await import('./useNewSessionAttachmentsController');
         const handleCreateSession = vi.fn();
+        const { composerDocument } = createComposerDocument({
+            attachments: [],
+            snapshot: createComposerSnapshot({ text: 'Focus on correctness', attachments: [] }),
+        });
         featureEnabledSpy.mockImplementation((featureId: string) => featureId === 'files.reviewComments');
         workspaceReviewDraftsState.draftsByRootPath.set('/repo/worktree-a', [{
             id: 'draft-1',
@@ -1242,6 +1259,7 @@ describe('useNewSessionAttachmentsController (attachments.uploads)', () => {
             selectedPath: '/repo/worktree-a',
             targetServerId: 'server-b',
             baseActionChips: [],
+            composerDocument,
         }));
 
         const reviewCommentsChip = hook.getCurrent().actionChips.find((chip) => chip.key === 'review-comments');
@@ -1268,47 +1286,15 @@ describe('useNewSessionAttachmentsController (attachments.uploads)', () => {
         });
 
         expect(handleCreateSession).toHaveBeenCalledWith(expect.objectContaining({
-            initialMessage: 'skip',
-            afterCreated: expect.any(Function),
-        }));
-
-        const afterCreated = handleCreateSession.mock.calls[0]?.[0]?.afterCreated;
-        expect(typeof afterCreated).toBe('function');
-
-        await act(async () => {
-            await afterCreated({
-                sessionId: 'session-1',
-                effectiveSpawnServerId: 'server-b',
-                launchAttempt: {
-                    attachmentMessageLocalId: 'new-session-attachment-local-1',
-                },
-            });
-        });
-
-        expect(followUpSpawnedSessionWithServerScopeSpy).toHaveBeenCalledWith(expect.objectContaining({
-            sessionId: 'session-1',
-            targetServerId: 'server-b',
-            displayText: 'Review comments (1)',
-            profileId: 'profile-work',
-            metaOverrides: {
-                happier: {
-                    kind: 'review_comments.v1',
-                    payload: {
-                        sessionId: 'session-1',
-                        comments: [
-                            expect.objectContaining({
-                                id: 'draft-1',
-                                filePath: 'src/a.ts',
-                                body: 'Please verify this project change.',
-                            }),
-                        ],
-                    },
-                },
+            inputTextOverride: expect.stringContaining('Review comments:'),
+            initialInputReviewComments: {
+                displayText: 'Review comments (1)',
+                comments: [expect.objectContaining({ id: 'draft-1', filePath: 'src/a.ts' })],
             },
         }));
-        const followUpCall = followUpSpawnedSessionWithServerScopeSpy.mock.calls.at(0);
-        expect(followUpCall).toBeDefined();
-        const followUpPayload = followUpCall?.[0] as { initialMessageText: string } | undefined;
+        const createOptions = handleCreateSession.mock.calls[0]?.[0];
+        expect(createOptions.afterCreated).toBeUndefined();
+        expect(followUpSpawnedSessionWithServerScopeSpy).not.toHaveBeenCalled();
         expect(resolveReviewCommentDraftAnchorsForPromptSpy).toHaveBeenCalledWith(expect.objectContaining({
             reviewScope: {
                 serverId: 'server-b',
@@ -1316,9 +1302,12 @@ describe('useNewSessionAttachmentsController (attachments.uploads)', () => {
                 rootPath: '/repo/worktree-a',
             },
         }));
-        expect(followUpPayload?.initialMessageText).toContain('Review comments:');
-        expect(followUpPayload?.initialMessageText).toContain('src/a.ts');
-        expect(followUpPayload?.initialMessageText).not.toContain('src/b.ts');
+        expect(createOptions.inputTextOverride).toContain('src/a.ts');
+        expect(createOptions.inputTextOverride).not.toContain('src/b.ts');
+        expect(deleteWorkspaceReviewCommentDraftSpy).not.toHaveBeenCalled();
+        await act(async () => {
+            createOptions.onAfterCreatedSettled({ status: 'accepted', sessionId: 'session-1' });
+        });
         expect(deleteWorkspaceReviewCommentDraftSpy).toHaveBeenCalledWith('draft-1');
         expect(deleteWorkspaceReviewCommentDraftSpy).not.toHaveBeenCalledWith('draft-2');
         expect(clearWorkspaceReviewCommentDraftsSpy).not.toHaveBeenCalled();
@@ -1377,6 +1366,7 @@ describe('useNewSessionAttachmentsController (attachments.uploads)', () => {
             handleCreateSession,
             selectedProfileId: null,
             selectedMachineId: 'machine-1',
+            isTemporaryComputer: true,
             selectedPath: '/repo/worktree-a',
             targetServerId: 'server-b',
             baseActionChips: [],
@@ -1605,7 +1595,7 @@ describe('useNewSessionAttachmentsController (attachments.uploads)', () => {
             await flushHookEffects({ cycles: 1, turns: 1 });
         });
 
-        expect(handleCreateSession).toHaveBeenCalledWith(undefined);
+        expect(handleCreateSession).toHaveBeenCalledWith({ inputTextOverride: 'Focus on correctness' });
         expect(clearWorkspaceReviewCommentDraftsSpy).not.toHaveBeenCalled();
     });
 

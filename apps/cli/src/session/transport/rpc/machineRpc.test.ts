@@ -1,19 +1,50 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import tweetnacl from 'tweetnacl';
+import { API_TOKEN_FULL_GRANT_V1 } from '@happier-dev/protocol';
 import { decodeBase64, decrypt, encodeBase64, encrypt, getRandomBytes } from '@/api/encryption';
+import { createSocketIoManagerStub } from '@/testkit/backends/apiSessionSocketHarness';
 
 const socketHandlers = new Map<string, () => void>();
+const socketListeners = new Map<string, Set<() => void>>();
+const pendingAcks = new Set<(error: Error) => void>();
+function rejectPendingAcks() {
+  for (const reject of pendingAcks) reject(new Error('Machine RPC socket disconnected before acknowledgement'));
+  pendingAcks.clear();
+}
 const socket = {
+  io: createSocketIoManagerStub(),
+  connected: false,
   connect: vi.fn(() => socketHandlers.get('connect')?.()),
-  on: vi.fn((event: string, handler: () => void) => { socketHandlers.set(event, handler); }),
-  off: vi.fn((event: string) => { socketHandlers.delete(event); }),
-  disconnect: vi.fn(),
+  on: vi.fn((event: string, handler: () => void) => {
+    const listeners = socketListeners.get(event) ?? new Set<() => void>();
+    listeners.add(handler);
+    socketListeners.set(event, listeners);
+    socketHandlers.set(event, () => {
+      if (event === 'connect') socket.connected = true;
+      if (event === 'disconnect') { socket.connected = false; rejectPendingAcks(); }
+      for (const listener of listeners) listener();
+    });
+  }),
+  off: vi.fn((event: string, handler?: () => void) => {
+    const listeners = socketListeners.get(event);
+    if (handler) listeners?.delete(handler); else listeners?.clear();
+    if (!listeners?.size) { socketListeners.delete(event); socketHandlers.delete(event); }
+  }),
+  removeAllListeners: vi.fn(() => { socketListeners.clear(); socketHandlers.clear(); }),
+  disconnect: vi.fn(() => { socket.connected = false; rejectPendingAcks(); }),
   close: vi.fn(),
   emit: vi.fn(),
+  // Mirror Socket.IO's promise acknowledgement and its disconnect rejection.
+  emitWithAck: vi.fn((event: string, payload: unknown) => new Promise<unknown>((resolve, reject) => {
+    pendingAcks.add(reject);
+    try {
+      socket.emit(event, payload, (value: unknown) => { pendingAcks.delete(reject); resolve(value); });
+    } catch (error) { pendingAcks.delete(reject); reject(error); }
+  })),
 };
 const axiosGet = vi.hoisted(() => vi.fn());
 
-vi.mock('@/api/session/sockets', () => ({ createUserScopedSocket: vi.fn(() => socket) }));
+vi.mock('socket.io-client', () => ({ io: vi.fn(() => socket) }));
 vi.mock('axios', () => ({
   default: {
     get: (...args: unknown[]) => axiosGet(...args),
@@ -50,7 +81,7 @@ import { SOCKET_RPC_EVENTS } from '@happier-dev/protocol/socketRpc';
 
 import { callExactMachineRpc, callMachineRpc, readMachineRpcRequestDisposition } from './machineRpc';
 import { RpcHandlerManager } from '@/api/rpc/RpcHandlerManager';
-import { createUserScopedSocket } from '@/api/session/sockets';
+import { io } from 'socket.io-client';
 
 /** Account content material exactly as the CLI persists it: a box seed plus its own public key. */
 function accountDataKeyCredentials(seedByte: number) {
@@ -95,6 +126,10 @@ function openedWith(key: Uint8Array, encoded: unknown): unknown {
 describe('callMachineRpc', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    socket.connected = false;
+    socketListeners.clear();
+    socketHandlers.clear();
+    pendingAcks.clear();
     axiosGet.mockResolvedValue({
       data: {
         machine: {
@@ -115,7 +150,9 @@ describe('callMachineRpc', () => {
       request: { machineId: 'machine-session' },
     })).resolves.toEqual({ generation: 1 });
     expect(axiosGet).toHaveBeenCalledWith('https://captured.example.test/v1/machines/machine-session', expect.any(Object));
-    expect(createUserScopedSocket).toHaveBeenCalledWith({ token: 'account-token', serverUrl: 'https://captured.example.test' });
+    expect(io).toHaveBeenCalledWith('https://captured.example.test', expect.objectContaining({
+      auth: expect.objectContaining({ token: 'account-token', clientType: 'user-scoped' }),
+    }));
   });
 
   it.each([
@@ -130,6 +167,7 @@ describe('callMachineRpc', () => {
       binding: {
         serverIdentityId: 'home-one', accountId: 'account-one', principalId: 'account-one',
         credentialId: '11111111-1111-4111-8111-111111111111', machineId: 'machine-caller',
+        grant: API_TOKEN_FULL_GRANT_V1,
         actionId: effectActionId, requestId: 'outer-request',
         requestEnvelopeDigest: 'A'.repeat(43), target,
       },

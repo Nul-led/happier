@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import * as firstPartyRuntime from '../src/firstPartyRuntime/relayRuntime.ts';
+import * as firstPartyRuntime from '../dist/firstPartyRuntime/relayRuntime.js';
 
 test('relay runtime status normalization understands systemd active+enabled states', () => {
   assert.equal(typeof firstPartyRuntime.normalizeRelayRuntimeStatus, 'function');

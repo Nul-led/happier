@@ -12,6 +12,7 @@ import {
     PluginCollectionCandidatePreparationStageRequestV1Schema,
     PluginCollectionCandidatePreparationStageResultV1Schema,
     compilePluginJsonSchema,
+    resolvePluginCollectionMigrationChainV1,
     splitPluginCollectionCandidatePreparationStageRequestsForKnownLimitsV1,
     type NormalizedPluginAccountCollectionContractV1,
     type PluginCollectionCandidatePreparationBindingV1,
@@ -24,7 +25,6 @@ import type {
     JsonValue,
     PluginAccountCollectionMigrationRuntimeProjection,
 } from '@happier-dev/plugin-sdk';
-import type { PluginAccountCollectionMigration } from '@happier-dev/plugin-sdk/collections';
 
 import type { ActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
 import { getCachedServerFeaturesSnapshot } from '@/sync/api/capabilities/serverFeaturesClient';
@@ -140,39 +140,6 @@ function rejected(
         code,
         ...(error ? { error } : {}),
     };
-}
-
-function sameMigrationIdentity(
-    left: Pick<PluginAccountCollectionMigration, 'id' | 'fromSchemaVersion' | 'toSchemaVersion'>,
-    right: Pick<PluginAccountCollectionMigration, 'id' | 'fromSchemaVersion' | 'toSchemaVersion'>,
-): boolean {
-    return left.id === right.id
-        && left.fromSchemaVersion === right.fromSchemaVersion
-        && left.toSchemaVersion === right.toSchemaVersion;
-}
-
-function resolveMigrationChain(input: Readonly<{
-    source: NormalizedPluginAccountCollectionContractV1;
-    target: NormalizedPluginAccountCollectionContractV1;
-    candidate: CollectionMigrationCandidateHandle;
-}>): readonly PluginAccountCollectionMigration[] | null {
-    const runtimeMigrations = input.candidate.collectionMigrations[input.target.collectionId] ?? [];
-    if (runtimeMigrations.length !== input.target.migrations.length
-        || runtimeMigrations.some((migration, index) => (
-            !sameMigrationIdentity(migration, input.target.migrations[index]!)
-        ))) {
-        return null;
-    }
-
-    const sourcePosition = input.target.readableSchemaVersions.indexOf(input.source.schemaVersion);
-    if (sourcePosition < 0) return null;
-    const chain = runtimeMigrations.slice(sourcePosition);
-    let currentVersion = input.source.schemaVersion;
-    for (const migration of chain) {
-        if (migration.fromSchemaVersion !== currentVersion) return null;
-        currentVersion = migration.toSchemaVersion;
-    }
-    return currentVersion === input.target.schemaVersion ? chain : null;
 }
 
 function mapCandidatePreparationError(value: unknown): CandidatePreparationFailure {
@@ -359,12 +326,19 @@ export function createActivePluginCollectionCandidatePreparation(input: Readonly
                 || !contractMatchesRef(input.candidate.targetContract, binding.data.target)) {
                 return rejected('collection_candidate_preparation_contract_mismatch');
             }
-            const migrations = resolveMigrationChain({
-                source: input.candidate.sourceContract,
-                target: input.candidate.targetContract,
-                candidate: input.candidate,
+            const declarations = resolvePluginCollectionMigrationChainV1({
+                sourceSchemaVersion: input.candidate.sourceContract.schemaVersion,
+                targetSchemaVersion: input.candidate.targetContract.schemaVersion,
+                readableSchemaVersions: input.candidate.targetContract.readableSchemaVersions,
+                migrations: input.candidate.targetContract.migrations,
             });
-            if (!migrations) return rejected('collection_candidate_preparation_contract_mismatch');
+            const runtimeMigrations = input.candidate.collectionMigrations[
+                input.candidate.targetContract.collectionId
+            ] ?? [];
+            if (declarations === null || runtimeMigrations.length !== input.candidate.targetContract.migrations.length) {
+                return rejected('collection_candidate_preparation_contract_mismatch');
+            }
+            const migrations = runtimeMigrations.slice(runtimeMigrations.length - declarations.length);
             const sourceValidate = compilePluginJsonSchema(input.candidate.sourceContract.schema);
             const targetValidate = compilePluginJsonSchema(input.candidate.targetContract.schema);
 

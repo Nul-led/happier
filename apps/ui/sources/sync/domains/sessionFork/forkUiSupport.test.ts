@@ -206,7 +206,7 @@ describe('resolveSessionForkStrategyAvailability', () => {
         v: 1,
         updatedAt: 1,
         selection: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: 'pc_work',
           modelId: 'provider-model',
         },
@@ -236,7 +236,7 @@ describe('resolveSessionForkStrategyAvailability', () => {
         v: 1,
         updatedAt: 1,
         selection: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: null,
           modelId: 'gpt-5',
         },

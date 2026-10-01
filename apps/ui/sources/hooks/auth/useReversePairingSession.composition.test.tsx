@@ -207,6 +207,7 @@ describe('requester-displayed Home QR role composition', () => {
             },
         });
 
+        if (!('requesterPublicKeyBase64Url' in ready.invite)) throw new Error('Expected requester-displayed invite');
         const requesterPublicKey = decodeBase64(ready.invite.requesterPublicKeyBase64Url, 'base64url');
         const token = materialKind === 'tokenOnly' ? 'home-b-token' : 'home-b-data-key-token';
         const dataKey = new Uint8Array(Array.from({ length: 32 }, (_, index) => index + 1));

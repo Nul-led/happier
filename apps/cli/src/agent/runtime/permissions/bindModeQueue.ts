@@ -5,10 +5,13 @@ import {
   normalizePendingRequestedActionV1,
   readHappierStructuredInputV1FromMeta,
   readSessionInputCausalPermissionAuthorityV1,
+  readSessionMessageProvenance,
   resolveSessionInputPromptProvenanceV1,
   readSessionMessageModelSelectionV1,
   renderSessionInputContextBlockV1,
   renderSessionInputContextPromptV1,
+  isModelRefGrantedV1,
+  isPermissionModeGrantedV1,
   type ProviderBoundModelRef,
   type SessionInputCausalPermissionAuthorityV1,
 } from '@happier-dev/protocol';
@@ -25,14 +28,14 @@ import type {
 import { isNonSteerablePromptPayload } from '@/cli/parsers/specialCommands';
 import { readAdmittedSessionMediaInputForDispatchV1 } from '@/session/services/admitSessionStructuredInputV1';
 
-import { resolvePermissionModeUpdatedAtFromMessage } from './modeCanonical';
+import { normalizePermissionModeToIntent, resolvePermissionModeUpdatedAtFromMessage } from './modeCanonical';
 import { resolvePermissionModeForQueueingUserMessage } from './modeFromUserMessage';
 import { updateMetadataBestEffort } from '@/api/session/sessionWritesBestEffort';
 import type {
   PermissionModeQueuedPrompt,
   PermissionModeQueuedPromptMode,
 } from '@/agent/runtime/permissions/queuedPrompt';
-import type { SessionFollowPreparedContext } from '@/agent/runtime/session/follow/sessionFollowContextReconciler';
+import type { HostPreparedContext } from '@/agent/runtime/session/contextOnly/hostContextOnlyInput';
 
 /**
  * Config change carried by a steered message that the backend must own BEFORE the text joins the
@@ -116,11 +119,12 @@ export type InFlightSteerController = Readonly<{
     onAccepted: (() => void) | null,
   ) => void;
   /** Collect destination-owned Follow context at the steer provider-effect boundary. */
-  prepareSessionFollowContext?: (input: Readonly<{
+  prepareHostContext?: (input: Readonly<{
     signal: AbortSignal;
     /** Final required steer prompt before optional Follow blocks are admitted. */
     requiredPrompt: string;
-  }>) => Promise<SessionFollowPreparedContext | null>;
+    contextOnlyWorkerUpdate?: import('@happier-dev/protocol').WorkerUpdateV1;
+  }>) => Promise<HostPreparedContext | null>;
   /**
    * Send additional user text to the in-flight turn.
    *
@@ -144,7 +148,7 @@ export type InFlightSteerController = Readonly<{
     localIds?: readonly string[];
     userMessageSeq: number | null;
     userMessageSeqs?: readonly number[];
-    reason?: 'unsupported_action' | 'steering_unavailable' | 'conditional_steer_unavailable';
+    reason?: 'unsupported_action' | 'steering_unavailable' | 'conditional_steer_unavailable' | 'model_not_granted' | 'permission_mode_not_granted';
   }>) => void;
   /**
    * Publish conservative effect-possible evidence after a provider steer invocation throws.
@@ -220,6 +224,20 @@ export function registerPermissionModeMessageQueueBinding(opts: {
     }
     markHandledUserPromptIdentity(localId, userMessageSeq);
 
+    const rejectCallerInput = (reason: 'model_not_granted' | 'permission_mode_not_granted'): void => {
+      opts.inFlightSteer?.rejectPromptBeforeProvider?.({
+        localIds, userMessageSeq,
+        ...(userMessageSeq === null ? {} : { userMessageSeqs: [userMessageSeq] }),
+        reason,
+      });
+    };
+    const requestedPermissionMode = normalizePermissionModeToIntent(message.meta?.permissionMode)
+      ?? opts.getCurrentPermissionMode() ?? 'default';
+    if (message.callerInputConstraints && !isPermissionModeGrantedV1(message.callerInputConstraints, requestedPermissionMode)) {
+      rejectCallerInput('permission_mode_not_granted');
+      return true;
+    }
+
     const resolvedMode = resolvePermissionModeForQueueingUserMessage({
       currentPermissionMode: opts.getCurrentPermissionMode(),
       messagePermissionModeRaw: message.meta?.permissionMode,
@@ -236,6 +254,7 @@ export function registerPermissionModeMessageQueueBinding(opts: {
     // the sole path that still reaches the compatibility reader below.
     const admittedStructuredInput = readAdmittedHappierStructuredInputV1FromMeta(message.meta);
     const causalPermissionAuthority = readSessionInputCausalPermissionAuthorityV1(message.meta);
+    const inputProvenance = readSessionMessageProvenance(message.meta) ?? undefined;
     const inputContextBlock = renderSessionInputContextBlockV1({
       provenance: resolveSessionInputPromptProvenanceV1(message.meta),
     });
@@ -326,6 +345,7 @@ export function registerPermissionModeMessageQueueBinding(opts: {
       ? 'conditional_steer_unavailable' as const
       : 'steering_unavailable' as const;
     const queueMode: PermissionModeQueuedPromptMode = {
+      ...(message.callerInputConstraints ? { callerInputConstraints: message.callerInputConstraints } : {}),
       permissionMode: resolvedMode.queuePermissionMode,
       ...resolveAppendSystemPromptModeOverride(message.meta),
       ...(modelSelection
@@ -333,6 +353,7 @@ export function registerPermissionModeMessageQueueBinding(opts: {
         : {}),
       ...(causalPermissionAuthority ? { causalPermissionAuthority } : {}),
       ...(inputContextBlock ? { inputContextBlock } : {}),
+      ...(inputProvenance ? { inputProvenance } : {}),
     };
     const queuedPrompt: PermissionModeQueuedPrompt = {
       text,
@@ -344,6 +365,7 @@ export function registerPermissionModeMessageQueueBinding(opts: {
         : {}),
       ...(causalPermissionAuthority ? { causalPermissionAuthority } : {}),
       ...(inputContextBlock ? { inputContextBlock } : {}),
+      ...(inputProvenance ? { inputProvenance } : {}),
     };
 
     if (pendingProviderAction === 'send' || pendingProviderAction === 'interrupt_and_send') {
@@ -517,6 +539,15 @@ export function registerPermissionModeMessageQueueBinding(opts: {
           return;
         }
         const dispatchSteer = async (): Promise<void> => {
+          const constraints = message.callerInputConstraints;
+          if (constraints && !isModelRefGrantedV1(constraints, steer.readActiveModelSelection?.() ?? 'automatic')) {
+            rejectCallerInput('model_not_granted');
+            return;
+          }
+          if (constraints && !isPermissionModeGrantedV1(constraints, resolvedMode.queuePermissionMode)) {
+            rejectCallerInput('permission_mode_not_granted');
+            return;
+          }
           if (applyConfigDelta) {
             let configOutcome: InFlightConfigApplyOutcome;
             try {
@@ -594,13 +625,13 @@ export function registerPermissionModeMessageQueueBinding(opts: {
               }
             }
 
-            if (stopForLostBinding()) return;
-            const canStillSteerCurrentProviderTurn = Boolean(
-              steer.supportsInFlightSteer()
-              && (steer.canSteerPrompt?.() ?? steer.isTurnInFlight())
-              && (steer.isProviderInputAdmitted?.() ?? true)
-            );
-            if (!canStillSteerCurrentProviderTurn) {
+            const stopForUnavailableSteer = (): boolean => {
+              if (stopForLostBinding()) return true;
+              if (
+                steer.supportsInFlightSteer()
+                && (steer.canSteerPrompt?.() ?? steer.isTurnInFlight())
+                && (steer.isProviderInputAdmitted?.() ?? true)
+              ) return false;
               if (isExactClaimedSteer) {
                 rejectExactSteerBeforeProvider();
               } else {
@@ -609,22 +640,31 @@ export function registerPermissionModeMessageQueueBinding(opts: {
                 // Queueing the seeded text here would prefix the seed twice.
                 queueBlockedSteer();
               }
-              return;
-            }
+              return true;
+            };
+            if (stopForUnavailableSteer()) return;
             const requiredDispatchText = renderSessionInputContextPromptV1({
               provenanceBlock: inputContextBlock,
               transformedUserText: providerText,
             });
-            const preparedSessionFollowContext = localId
-              ? await opts.inFlightSteer?.prepareSessionFollowContext?.({
+            let preparedSessionFollowContext = localId
+              ? await opts.inFlightSteer?.prepareHostContext?.({
                   signal: messageBindingAbortSignal,
                   requiredPrompt: requiredDispatchText,
                 }) ?? null
               : null;
+            // Follow reads may outlive the current turn or Session binding. Reuse the same
+            // admission decision before associating acceptance effects or touching the provider.
+            if (stopForUnavailableSteer()) return;
+            if (preparedSessionFollowContext?.recheckAdmission
+              && !await preparedSessionFollowContext.recheckAdmission(messageBindingAbortSignal)) {
+              preparedSessionFollowContext = null;
+            }
+            if (stopForUnavailableSteer()) return;
             const dispatchText = renderSessionInputContextPromptV1({
               provenanceBlock: inputContextBlock,
               ...(preparedSessionFollowContext
-                ? { sessionFollowUpdates: preparedSessionFollowContext.updates }
+                ? { sessionFollowUpdates: preparedSessionFollowContext.updates, workerUpdates: preparedSessionFollowContext.workerUpdates }
                 : {}),
               transformedUserText: providerText,
             });

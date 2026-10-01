@@ -6,6 +6,7 @@ import { scmStatusSync } from '@/scm/scmStatusSync';
 import { runScmOperationWithGitIndexLockRecovery } from '@/scm/operations/gitIndexLockRecovery';
 import {
     sessionScmRepositoryRemoveIndexLock,
+    sessionScmStashApply,
     sessionScmStashDrop,
     sessionScmStashList,
     sessionScmStashPop,
@@ -26,6 +27,7 @@ export const SessionScmStashDetailsView = React.memo((props: SessionScmStashDeta
         ? { sessionId: props.sessionId, serverId: props.serverId }
         : props.sessionId);
     const repoPath = machineTarget?.basePath ?? null;
+    const folderLabel = repoPath ? repoPath.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? null : null;
     const runStashMutation = React.useCallback(async <
         TResponse extends { success: boolean; error?: string; stderr?: string; errorCode?: string },
     >(operation: () => Promise<TResponse>): Promise<TResponse> => {
@@ -44,6 +46,7 @@ export const SessionScmStashDetailsView = React.memo((props: SessionScmStashDeta
         show: (stashRef) => sessionScmStashShow(props.sessionId, { stashRef }, props.serverId),
         pop: (stashRef) => runStashMutation(() => sessionScmStashPop(props.sessionId, { stashRef }, props.serverId)),
         drop: (stashRef) => runStashMutation(() => sessionScmStashDrop(props.sessionId, { stashRef }, props.serverId)),
+        apply: (stashRef) => runStashMutation(() => sessionScmStashApply(props.sessionId, { stashRef }, props.serverId)),
     }), [props.serverId, props.sessionId, runStashMutation]);
 
     const handleAfterMutation = React.useCallback(async () => {
@@ -57,6 +60,8 @@ export const SessionScmStashDetailsView = React.memo((props: SessionScmStashDeta
             onAfterMutation={handleAfterMutation}
             restoreButtonTestId="scm-stash-restore-button"
             discardButtonTestId="scm-stash-discard-button"
+            applyButtonTestId="scm-stash-apply-button"
+            folderLabel={folderLabel}
             rootTestId="scm-stash-details-root"
             onOpenFile={props.onOpenFile}
             onOpenFilePinned={props.onOpenFilePinned}

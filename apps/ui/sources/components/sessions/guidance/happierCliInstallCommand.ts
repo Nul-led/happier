@@ -1,5 +1,5 @@
 import type { AppVariant } from '@/sync/runtime/appVariant';
-import { resolvePublicReleaseRingLabelForId, type PublicReleaseRingId } from '@happier-dev/release-runtime/releaseRings';
+import { resolveCliInvokerNameForPublicRing, resolvePublicReleaseRingIdForLabel, resolvePublicReleaseRingLabelForId, type PublicReleaseRingId } from '@happier-dev/release-runtime/releaseRings';
 
 function toOptionalNonEmptyString(value: unknown): string | null {
     if (typeof value !== 'string') return null;
@@ -39,6 +39,7 @@ export function buildHappierCliInstallCommand(input: Readonly<{
 export type HappierInstallerRunAction =
     | 'home-create'
     | 'setup'
+    | 'machine-setup'
     | 'auth-login'
     | 'daemon-install'
     | 'providers-setup';
@@ -52,12 +53,6 @@ function buildPowershellInstallerInvocation(input: Readonly<{
     return base;
 }
 
-function resolveCliInvokerNameForChannel(channel: 'stable' | 'preview' | 'dev'): 'happier' | 'hprev' | 'hdev' {
-    if (channel === 'preview') return 'hprev';
-    if (channel === 'dev') return 'hdev';
-    return 'happier';
-}
-
 function buildCliRunCommandForChannel(
     channel: 'stable' | 'preview' | 'dev',
     run: Readonly<{
@@ -65,12 +60,14 @@ function buildCliRunCommandForChannel(
         args?: readonly string[];
     }>,
 ): string {
-    const invoker = resolveCliInvokerNameForChannel(channel);
+    const invoker = resolveCliInvokerNameForPublicRing(resolvePublicReleaseRingIdForLabel(channel));
     const args = Array.isArray(run.args) && run.args.length > 0 ? ` ${run.args.join(' ')}` : '';
 
     switch (run.action) {
         case 'setup':
             return `${invoker} setup${args}`;
+        case 'machine-setup':
+            return `${invoker} machine setup${args}`;
         case 'home-create':
             return `${invoker} home create${args}`;
         case 'auth-login':

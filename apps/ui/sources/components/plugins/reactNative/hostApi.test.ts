@@ -57,6 +57,27 @@ function readProductionSource(relativePath: string): string {
 }
 
 describe('canonical React Native plugin Host API adapter', () => {
+    it('omits an absent optional Action input from the strict mounted request', async () => {
+        const requests: PluginUiHostApiRequestEnvelopeV1[] = [];
+        const adapter = createCanonicalPluginReactNativeHostApiAdapter({
+            surface: createPluginSurfaceContextFixture({
+                mount: canonicalRightPaneMount,
+                target: { kind: 'session', sessionId: 'session-1' },
+            }),
+            requestSurface: surface,
+            requestIdPrefix: 'rn-action-without-input',
+            handleRequest: async (request) => {
+                requests.push(request);
+                return { ok: true };
+            },
+            installedMethods: ['executeAction'],
+        });
+
+        await expect(adapter.api.executeAction('self-check')).resolves.toEqual({ ok: true });
+        expect(requests).toHaveLength(1);
+        expect(requests[0]?.payload).toEqual({ action: 'self-check' });
+    });
+
     it('applies the same strict Resource and clipboard result contract as hosted clients', async () => {
         const canonicalSurface = createPluginSurfaceContextFixture({
             mount: canonicalRightPaneMount,
@@ -825,7 +846,8 @@ describe('canonical React Native Host API advertised methods (UI-D02)', () => {
         targetedContributions: {
             target: {
                 pluginId: 'acme.preview',
-                immutableGenerationId: 'target-generation-a',
+                occurrenceId: 'target-occurrence-a',
+                sourceCustody: { kind: 'development', registeredRootId: 'preview-root-a' },
             },
             points: [],
         },
@@ -1203,7 +1225,8 @@ describe('canonical React Native Host API advertised methods (UI-D02)', () => {
                 contributor: {
                     pluginId: 'acme.provider',
                     contributionId: 'provider',
-                    immutableGenerationId: 'provider-generation-a',
+                    occurrenceId: 'provider-occurrence-a',
+                    sourceCustody: { kind: 'development', registeredRootId: 'provider-root-a' },
                 },
                 role: 'setup',
                 action: { pluginId: 'acme.provider', localId: 'connection/prepare-v1' },
@@ -1240,7 +1263,8 @@ describe('canonical React Native Host API advertised methods (UI-D02)', () => {
             contributor: {
                 pluginId: 'acme.scm',
                 contributionId: 'github',
-                immutableGenerationId: 'scm-generation-a',
+                occurrenceId: 'scm-occurrence-a',
+                sourceCustody: { kind: 'development', registeredRootId: 'scm-root-a' },
             },
             role: 'prepareReviewWorkspace',
             action: { pluginId: 'acme.scm', localId: 'prepare-review-workspace' },
@@ -1251,9 +1275,16 @@ describe('canonical React Native Host API advertised methods (UI-D02)', () => {
             action: operation.action,
             input: { repository: 'happier-dev/happier', pullRequestNumber: 42 },
             selection: {
-                target: targetedSurface.targetedContributions!.target,
+                target: {
+                    pluginId: targetedSurface.targetedContributions!.target.pluginId,
+                    sourceCustody: targetedSurface.targetedContributions!.target.sourceCustody,
+                },
                 point: operation.point,
-                contributor: operation.contributor,
+                contributor: {
+                    pluginId: operation.contributor.pluginId,
+                    contributionId: operation.contributor.contributionId,
+                    sourceCustody: operation.contributor.sourceCustody,
+                },
             },
             connectedAccount: { kind: 'none' as const },
             presentation: { connectedAccountLabel: null, machineDisplayName: null },
@@ -1290,7 +1321,8 @@ describe('canonical React Native Host API advertised methods (UI-D02)', () => {
             contributor: {
                 pluginId: 'acme.provider',
                 contributionId: 'provider',
-                immutableGenerationId: 'provider-generation-a',
+                occurrenceId: 'provider-occurrence-a',
+                sourceCustody: { kind: 'development', registeredRootId: 'provider-root-a' },
             },
             role: 'setup',
             action: { pluginId: 'acme.provider', localId: 'connection/prepare-v1' },
@@ -1306,9 +1338,16 @@ describe('canonical React Native Host API advertised methods (UI-D02)', () => {
                 action: operation.action,
                 input: { repository: 'happier-dev/happier' },
                 selection: {
-                    target: targetedSurface.targetedContributions!.target,
+                    target: {
+                        pluginId: targetedSurface.targetedContributions!.target.pluginId,
+                        sourceCustody: targetedSurface.targetedContributions!.target.sourceCustody,
+                    },
                     point: operation.point,
-                    contributor: operation.contributor,
+                    contributor: {
+                        pluginId: operation.contributor.pluginId,
+                        contributionId: operation.contributor.contributionId,
+                        sourceCustody: operation.contributor.sourceCustody,
+                    },
                 },
                 connectedAccount: { kind: 'none' },
                 presentation: { connectedAccountLabel: null, machineDisplayName: null },
@@ -1352,7 +1391,8 @@ describe('canonical React Native Host API advertised methods (UI-D02)', () => {
             contributor: {
                 pluginId: 'acme.provider',
                 contributionId: 'provider',
-                immutableGenerationId: 'provider-generation-a',
+                occurrenceId: 'provider-occurrence-a',
+                sourceCustody: { kind: 'development', registeredRootId: 'provider-root-a' },
             },
             role: 'setup',
             action: { pluginId: 'acme.provider', localId: 'connection/prepare-v1' },
@@ -1376,9 +1416,16 @@ describe('canonical React Native Host API advertised methods (UI-D02)', () => {
                     action: retainedOperation.action,
                     input: { repository: 'happier-dev/happier' },
                     selection: {
-                        target: targetedSurface.targetedContributions!.target,
+                        target: {
+                            pluginId: targetedSurface.targetedContributions!.target.pluginId,
+                            sourceCustody: targetedSurface.targetedContributions!.target.sourceCustody,
+                        },
                         point: retainedOperation.point,
-                        contributor: retainedOperation.contributor,
+                        contributor: {
+                            pluginId: retainedOperation.contributor.pluginId,
+                            contributionId: retainedOperation.contributor.contributionId,
+                            sourceCustody: retainedOperation.contributor.sourceCustody,
+                        },
                     },
                     connectedAccount: { kind: 'none' },
                     presentation: { connectedAccountLabel: null, machineDisplayName: null },
@@ -1415,12 +1462,12 @@ describe('canonical React Native Host API advertised methods (UI-D02)', () => {
         // execution.
         const guestSelected = structuredClone(selected);
         const preservedInput: PluginUiJsonValueV1 = { ...guestSelected.input };
-        const mutableSelectedInput = guestSelected.input as { repository: string };
-        mutableSelectedInput.repository = 'mutated-after-selection';
-        const mutableRequestedContributor = requestedOperation.contributor as {
-            immutableGenerationId: string;
-        };
-        mutableRequestedContributor.immutableGenerationId = 'mutated-after-selection';
+        Object.defineProperty(guestSelected.input, 'repository', {
+            value: 'mutated-after-selection',
+        });
+        Object.defineProperty(requestedOperation.contributor, 'occurrenceId', {
+            value: 'mutated-after-selection',
+        });
         await adapter.api.executeAction(selected.action, preservedInput);
         expect(seenTargetedOperation).toEqual(retainedOperation);
         expect(seenSelectedActionInput).toMatchObject({
@@ -1437,7 +1484,8 @@ describe('canonical React Native Host API advertised methods (UI-D02)', () => {
             contributor: {
                 pluginId: 'acme.provider',
                 contributionId: 'provider',
-                immutableGenerationId: 'provider-generation-a',
+                occurrenceId: 'provider-occurrence-a',
+                sourceCustody: { kind: 'development', registeredRootId: 'provider-root-a' },
             },
             role: 'setup',
             action: { pluginId: 'acme.provider', localId: 'connection/prepare-v1' },
@@ -1451,9 +1499,16 @@ describe('canonical React Native Host API advertised methods (UI-D02)', () => {
                     action: { ...operation.action },
                     input: { repository: 'happier-dev/happier' },
                     selection: {
-                        target: targetedSurface.targetedContributions!.target,
+                        target: {
+                            pluginId: targetedSurface.targetedContributions!.target.pluginId,
+                            sourceCustody: targetedSurface.targetedContributions!.target.sourceCustody,
+                        },
                         point: operation.point,
-                        contributor: operation.contributor,
+                        contributor: {
+                            pluginId: operation.contributor.pluginId,
+                            contributionId: operation.contributor.contributionId,
+                            sourceCustody: operation.contributor.sourceCustody,
+                        },
                     },
                     connectedAccount: { kind: 'none' },
                     presentation: { connectedAccountLabel: null, machineDisplayName: null },
@@ -1492,7 +1547,8 @@ describe('canonical React Native Host API advertised methods (UI-D02)', () => {
             contributor: {
                 pluginId: 'acme.provider',
                 contributionId: 'provider',
-                immutableGenerationId: 'provider-generation-a',
+                occurrenceId: 'provider-occurrence-a',
+                sourceCustody: { kind: 'development', registeredRootId: 'provider-root-a' },
             },
             role: 'setup',
             action: { pluginId: 'acme.provider', localId: 'connection/prepare-v1' },
@@ -1511,9 +1567,16 @@ describe('canonical React Native Host API advertised methods (UI-D02)', () => {
                     action: operation.action,
                     input: { repository: `happier-${selectionOrdinal}` },
                     selection: {
-                        target: targetedSurface.targetedContributions!.target,
+                        target: {
+                            pluginId: targetedSurface.targetedContributions!.target.pluginId,
+                            sourceCustody: targetedSurface.targetedContributions!.target.sourceCustody,
+                        },
                         point: operation.point,
-                        contributor: operation.contributor,
+                        contributor: {
+                            pluginId: operation.contributor.pluginId,
+                            contributionId: operation.contributor.contributionId,
+                            sourceCustody: operation.contributor.sourceCustody,
+                        },
                     },
                     connectedAccount: { kind: 'none' },
                     presentation: { connectedAccountLabel: null, machineDisplayName: null },
@@ -1880,6 +1943,53 @@ describe('canonical React Native Host API advertised methods (UI-D02)', () => {
                 payload: { enrichment: null },
             },
         ]);
+    });
+
+    it('drops fire-and-forget publications from a retired mount instead of throwing into the author', async () => {
+        // A daemon restart retires the mount while its React tree is still
+        // committed; the author's layout effects then publish or clear their
+        // current-UI context, and a TargetedSurface may report a diagnostic.
+        // These calls acknowledge nothing and the host already retired the
+        // slot synchronously, so a synchronous `stale_surface` throw only
+        // crashed the app through the author's effect.
+        const seen: PluginUiHostApiRequestEnvelopeV1[] = [];
+        let current = true;
+        const host = createPluginSurfaceHostApi({
+            surfaceContext: surface,
+            handlers: {
+                publishCurrentUiContext: async (request) => {
+                    seen.push(request);
+                    return null;
+                },
+            },
+        });
+        const adapter = createCanonicalPluginReactNativeHostApiAdapter({
+            surface: canonicalSurface,
+            requestSurface: surface,
+            requestIdPrefix: 'rn-retired-publication',
+            handleRequest: host.handleRequest,
+            installedMethods: host.installedMethods,
+            isCurrent: () => current,
+        });
+        const enrichment = { entity: { kind: 'review', label: 'Current review' } };
+
+        current = false;
+        expect(() => adapter.api.publishCurrentUiContext(enrichment)).not.toThrow();
+        adapter.dispose();
+        expect(() => adapter.api.publishCurrentUiContext(null)).not.toThrow();
+        expect(() => adapter.api.diagnostic({
+            code: 'plugin_renderable_image_decode_failed',
+            severity: 'warning',
+            message: 'late decode',
+        })).not.toThrow();
+
+        await Promise.resolve();
+        expect(seen).toEqual([]);
+        // An author mistake is still loud: the payload grammar is not a
+        // currentness question.
+        expect(() => adapter.api.publishCurrentUiContext({ entity: 42 } as never)).toThrow(
+            expect.objectContaining({ code: 'invalid_payload' }),
+        );
     });
 
     it('preserves an Action result whose domain payload happens to carry a host error code', async () => {

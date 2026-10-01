@@ -38,7 +38,7 @@ describe('happier session run stop (action executor)', () => {
       expect(execute).toHaveBeenCalledWith(
         'execution.run.stop',
         { sessionId: 'sess-1', runId: 'run-1' },
-        expect.objectContaining({ surface: 'cli', authority: 'present_user', defaultSessionId: 'sess-1' }),
+        expect.objectContaining({ surface: 'cli', defaultSessionId: 'sess-1' }),
       );
 
       expect(output.json()).toEqual(expect.objectContaining({

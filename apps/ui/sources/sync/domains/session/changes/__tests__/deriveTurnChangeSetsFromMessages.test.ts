@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type { Message } from '@/sync/domains/messages/messageTypes';
+import type { Message } from "@happier-dev/session-core/messages";
 import { mergeTurnChangeSets } from '@happier-dev/protocol';
 
 import { buildTurnChangeSetDiffInput } from '../../../../../../../cli/src/agent/tools/diff/buildTurnChangeSetDiffInput';
@@ -122,7 +122,20 @@ describe('deriveTurnChangeSetsFromMessages', () => {
             },
             checkpointDiff: {
                 success: true,
-                kind: 'diff',
+                baseRef: {
+                    scopeId: 'session-composed:/repo',
+                    encodedScope: 'session-composed-repo',
+                    phase: 'turn-start',
+                    checkpointId: 'turn-composed',
+                    ref: 'refs/happier/checkpoints/start',
+                },
+                finalRef: {
+                    scopeId: 'session-composed:/repo',
+                    encodedScope: 'session-composed-repo',
+                    phase: 'turn-final',
+                    checkpointId: 'turn-composed',
+                    ref: 'refs/happier/checkpoints/final',
+                },
                 baseRefSource: 'turn_start',
                 contentConfidence: 'exact',
                 attributionScope: 'shared_worktree',

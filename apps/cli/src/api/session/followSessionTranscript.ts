@@ -1,4 +1,5 @@
 import type { FileBackedTranscriptSessionStore } from './fileBackedTranscripts/store';
+import type { TranscriptOpenedAgentStateV1, TranscriptOpenedSharedMetadataV1 } from '@happier-dev/protocol';
 import {
     normalizeBoundedInt,
     readOptionalString,
@@ -148,6 +149,9 @@ export async function followSessionTranscript<TItem>(
     items: readonly TItem[];
     nextCursor: string | null;
     truncated: boolean;
+    projection?: 'openedMessagesV1';
+    agentState?: TranscriptOpenedAgentStateV1 | null;
+    sharedMetadata?: TranscriptOpenedSharedMetadataV1 | null;
 }>> {
     const input = readRecord(params.input);
     const cursor = readOptionalString(input, 'cursor');
@@ -217,6 +221,11 @@ export async function followSessionTranscript<TItem>(
             cursor,
             maxBytes: normalizeBoundedInt(input.maxBytes, 64 * 1024, 1024 * 1024),
             maxItems: normalizeBoundedInt(input.maxItems, 100, 500),
+            ...(input.projection === 'openedMessagesV1' ? {
+                projection: input.projection,
+                agentStateVersion: input.agentStateVersion,
+                sharedMetadataVersion: input.sharedMetadataVersion,
+            } : {}),
         });
     } catch (readError) {
         try {
@@ -231,5 +240,6 @@ export async function followSessionTranscript<TItem>(
         items: read.items,
         nextCursor: read.nextCursor,
         truncated: read.truncated,
+        ...(read.projection === 'openedMessagesV1' ? { projection: read.projection, agentState: read.agentState ?? null, sharedMetadata: read.sharedMetadata ?? null } : {}),
     };
 }

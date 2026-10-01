@@ -4,10 +4,11 @@ import renderer, { act } from 'react-test-renderer';
 import { storage } from '@/sync/domains/state/storageStore';
 import { useInboxHasContent } from './useInboxHasContent';
 import { renderScreen as renderScreenBase } from '@/dev/testkit';
-import type { Message } from '@/sync/domains/messages/messageTypes';
-import { createReducer } from '@/sync/reducer/reducer';
+import type { Message } from "@happier-dev/session-core/messages";
+import { createReducer } from "@happier-dev/session-core/reducer";
 import type { SessionMessages } from '@/sync/store/domains/messages';
-import { InboxModelProvider } from './useInboxModel';
+import { InboxSummaryProvider } from './useInboxSummary';
+import { ApprovalRequestV1Schema, buildApprovalRequestArtifactHeaderV1 } from '@happier-dev/protocol';
 
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -45,7 +46,7 @@ vi.mock('@/hooks/server/useFriendsIdentityReadiness', () => ({
 const originalDevFlag = (globalThis as any).__DEV__;
 
 function renderScreen(node: React.ReactNode) {
-    return renderScreenBase(React.createElement(InboxModelProvider, null, node));
+    return renderScreenBase(React.createElement(InboxSummaryProvider, null, node));
 }
 
 function createPermissionMessage(createdAt: number): Message {
@@ -263,15 +264,25 @@ describe('useInboxHasContent', () => {
     });
 
     it('returns true when there are open approval requests', async () => {
+        const request = ApprovalRequestV1Schema.parse({
+            v: 1,
+            status: 'open',
+            createdAtMs: 1,
+            updatedAtMs: 1,
+            createdBy: { surface: 'system' },
+            actionId: 'session.list',
+            actionArgs: {},
+            summary: 'Approve',
+        });
         storage.setState({
             friends: {},
             feedItems: [],
             artifacts: {
                 a1: {
                     id: 'a1',
-                    header: { v: 1, kind: 'approval_request.v1', title: 'Approve', approvalStatus: 'open' },
+                    header: buildApprovalRequestArtifactHeaderV1(request),
                     title: 'Approve',
-                    body: undefined,
+                    body: JSON.stringify(request),
                     headerVersion: 1,
                     bodyVersion: 1,
                     seq: 1,

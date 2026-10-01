@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { MachineDisplayCacheEntryV1 } from '@/sync/domains/state/warmCachePersistence';
 import type { Machine } from '@/sync/domains/state/storageTypes';
 
-import { resolveAllProfileMachineInventorySnapshots } from './machineInventorySnapshots';
+import { isMachineInventorySettled, resolveAllProfileMachineInventorySnapshots } from './machineInventorySnapshots';
 
 function machine(input: Readonly<{
     id: string;
@@ -52,6 +52,41 @@ const profiles = [
 ] as const;
 
 describe('resolveAllProfileMachineInventorySnapshots', () => {
+    it('does not settle a Home whose machine list has not been read, so an absent machine is not called removed', () => {
+        const base = {
+            profiles,
+            activeServerId: 'local-a',
+            // Sessions arrived (the app is "data ready") before this Home's machine list did.
+            activeInventoryLoaded: true,
+            activeMachines: [],
+            machineListByServerId: {},
+            accountId: 'account-1',
+            loadWarmEntries: () => ({}),
+        };
+        const loading = resolveAllProfileMachineInventorySnapshots({ ...base, machineListStatusByServerId: {} });
+        expect(isMachineInventorySettled(loading, 'srv_server_a')).toBe(false);
+
+        const read = resolveAllProfileMachineInventorySnapshots({ ...base, machineListStatusByServerId: { 'local-a': 'idle' } });
+        expect(isMachineInventorySettled(read, 'srv_server_a')).toBe(true);
+
+        const failed = resolveAllProfileMachineInventorySnapshots({ ...base, machineListStatusByServerId: { 'local-a': 'error' } });
+        expect(isMachineInventorySettled(failed, 'srv_server_a')).toBe(false);
+    });
+
+    it('never settles a Home from its warm cache alone', () => {
+        const snapshots = resolveAllProfileMachineInventorySnapshots({
+            profiles,
+            activeServerId: 'local-a',
+            activeInventoryLoaded: false,
+            activeMachines: [],
+            machineListByServerId: { 'local-b': [machine({ id: 'machine-b' })] },
+            machineListStatusByServerId: { 'local-b': 'error' },
+            accountId: 'account-1',
+            loadWarmEntries: () => ({}),
+        });
+        expect(isMachineInventorySettled(snapshots, 'srv_server_b')).toBe(false);
+    });
+
     it('projects active and non-active raw lists under canonical portable server identity', () => {
         const snapshots = resolveAllProfileMachineInventorySnapshots({
             profiles,
@@ -61,7 +96,7 @@ describe('resolveAllProfileMachineInventorySnapshots', () => {
             machineListByServerId: {
                 'legacy-b': [machine({ id: 'machine-b', revokedAt: 30 })],
             },
-            machineListStatusByServerId: { 'legacy-b': 'idle' },
+            machineListStatusByServerId: { 'local-a': 'idle', 'legacy-b': 'idle' },
             accountId: 'account-1',
             loadWarmEntries: () => ({}),
         });

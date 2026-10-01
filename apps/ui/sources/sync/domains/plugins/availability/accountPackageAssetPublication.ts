@@ -33,10 +33,10 @@ function readPublicationSource(input: PluginAccountPackageAssetPublicationInput)
     const admitted = input.reader.readCurrentHostedPackageAssetPublicationTarget({ pluginId: input.pluginId });
     if (admitted.kind !== 'available') return null;
     const installed = input.projection.installedPackagesById[input.pluginId];
-    if (!installed?.enabled || installed.id !== input.pluginId || !installed.immutableGenerationId || installed.source.kind === 'path'
+    if (!installed?.enabled || installed.id !== input.pluginId || !installed.immutableGenerationId || !installed.occurrenceId || installed.source.kind === 'path'
         || installed.version !== admitted.target.release.version) return null;
     const inventory = input.reader.readMaterializations();
-    if (inventory.kind !== 'available' || inventory.availabilityCursor !== admitted.availabilityCursor) return null;
+    if (inventory.kind !== 'available') return null;
     // Filter only by the supplied origin, never by whichever candidate is
     // newest, trusted or content-matched. Ambiguous origin stays unavailable.
     const exact = inventory.materializations.filter((materialization) => (
@@ -55,6 +55,7 @@ function readPublicationSource(input: PluginAccountPackageAssetPublicationInput)
         materializationId: materialization.materializationId,
         generation: input.projection.generation,
         installedGeneration: installed.immutableGenerationId,
+        occurrenceId: installed.occurrenceId,
     };
 }
 
@@ -97,7 +98,7 @@ export async function acquireAndPublishPluginAccountPackageAssets(
             resource: {
                 machineId: input.daemon.machineId,
                 serverId: input.daemon.serverId,
-                expectedGeneration: String(source.generation),
+                expectedCallerOccurrenceId: source.occurrenceId,
                 ...(dependencies.resourceRead ? { read: dependencies.resourceRead } : {}),
             },
             isCurrent,

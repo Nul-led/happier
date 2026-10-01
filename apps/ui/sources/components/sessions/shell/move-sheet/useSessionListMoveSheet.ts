@@ -1,6 +1,7 @@
 import * as React from 'react';
 
 import { Modal } from '@/modal';
+import { t } from '@/text';
 
 import type { SessionListMoveSheetTarget } from './buildSessionListMoveSheetTargets';
 
@@ -31,7 +32,7 @@ export function useSessionListMoveSheet(): UseSessionListMoveSheetResult {
 
             modalId = Modal.show({
                 component: SessionListMoveSheet,
-                chrome: { kind: 'card' },
+                chrome: { kind: 'card', title: t('sessionsList.moveSheetTitle', { item: params.sourceLabel }) },
                 closeOnBackdrop: true,
                 onRequestClose: () => settle(null),
                 props: {

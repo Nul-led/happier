@@ -7,11 +7,15 @@ import type { PublicReleaseRingId } from '@happier-dev/release-runtime/releaseRi
 import { listInstalledVersionIdsNewestFirst } from './listInstalledVersionIdsNewestFirst.js';
 import { promoteVersionedPayloadWithoutLock, type FirstPartyPayloadPromotionResult } from './promoteVersionedPayload.js';
 import { pruneRetainedVersions } from './pruneRetainedVersions.js';
-import { shouldPersistDefaultManagedReleaseChannel, writeDefaultManagedReleaseChannel } from './defaultReleaseChannelState.js';
+import {
+  resolveDefaultReleaseChannelAfterInstall,
+  shouldPersistDefaultManagedReleaseChannel,
+  writeDefaultManagedReleaseChannel,
+} from './defaultReleaseChannelState.js';
 import { syncInstalledFirstPartyShims } from './syncInstalledFirstPartyShims.js';
 import { joinPathForPathShape } from '../path/pathShape.js';
-import { resolveFirstPartyInstallLayout, resolveFirstPartyVersionInstallPath, type FirstPartyInstallLayout } from './installLayout.js';
-import { withFirstPartyPayloadMutationLock } from './withFirstPartyPayloadMutationLock.js';
+import { resolveFirstPartyActivationLockTarget, resolveFirstPartyInstallLayout, resolveFirstPartyVersionInstallPath, type FirstPartyInstallLayout } from './installLayout.js';
+import { withFirstPartyActivationLock, withFirstPartyPayloadMutationLock } from './withFirstPartyPayloadMutationLock.js';
 
 function readErrorCode(error: unknown): string | null {
   if (typeof error !== 'object' || error === null || !('code' in error)) {
@@ -120,6 +124,12 @@ async function resolveWindowsRetryPayloadRoot(params: Readonly<{
   versionId: string;
   payloadRoot: string;
   payloadRootAlreadyFiltered?: boolean;
+  /**
+   * The user explicitly chose this channel as the default `happier` command (the official
+   * installer's `--channel`). Without it an install never takes the default away from another
+   * channel that is already installed — see `resolveDefaultReleaseChannelAfterInstall`.
+   */
+  selectAsDefaultReleaseChannel?: boolean;
   channel?: PublicReleaseRingId;
   releaseRing?: PublicReleaseRingId;
   processEnv?: NodeJS.ProcessEnv;
@@ -169,6 +179,12 @@ export async function installVersionedPayload(params: FirstPartyAcquisitionOptio
   versionId: string;
   payloadRoot: string;
   payloadRootAlreadyFiltered?: boolean;
+  /**
+   * The user explicitly chose this channel as the default `happier` command (the official
+   * installer's `--channel`). Without it an install never takes the default away from another
+   * channel that is already installed — see `resolveDefaultReleaseChannelAfterInstall`.
+   */
+  selectAsDefaultReleaseChannel?: boolean;
   channel?: PublicReleaseRingId;
   releaseRing?: PublicReleaseRingId;
   processEnv?: NodeJS.ProcessEnv;
@@ -180,9 +196,18 @@ export async function installVersionedPayload(params: FirstPartyAcquisitionOptio
     releaseRing: params.releaseRing,
     processEnv: params.processEnv,
   });
+  // Components with command shims or the default-channel record also write the home-wide
+  // activation domain (`<home>/bin`, the default-channel record), so they hold its lock too.
+  const writesSharedActivationState = layout.installShims.length > 0 || shouldPersistDefaultManagedReleaseChannel(params.componentId);
   return await withFirstPartyPayloadMutationLock({
     layout,
-    operation: async () => await installVersionedPayloadWithLockHeld(params, layout),
+    operation: async () => writesSharedActivationState
+      ? await withFirstPartyActivationLock({
+        activationLockTarget: resolveFirstPartyActivationLockTarget(layout),
+        happyHomeDir: layout.happyHomeDir,
+        operation: async () => await installVersionedPayloadWithLockHeld(params, layout),
+      })
+      : await installVersionedPayloadWithLockHeld(params, layout),
   });
 }
 
@@ -192,6 +217,12 @@ async function installVersionedPayloadWithLockHeld(
     versionId: string;
     payloadRoot: string;
     payloadRootAlreadyFiltered?: boolean;
+    /**
+     * The user explicitly chose this channel as the default `happier` command (the official
+     * installer's `--channel`). Without it an install never takes the default away from another
+     * channel that is already installed — see `resolveDefaultReleaseChannelAfterInstall`.
+     */
+    selectAsDefaultReleaseChannel?: boolean;
     channel?: PublicReleaseRingId;
     releaseRing?: PublicReleaseRingId;
     processEnv?: NodeJS.ProcessEnv;
@@ -220,15 +251,44 @@ async function installVersionedPayloadWithLockHeld(
   }
 }
 
-async function installVersionedPayloadOnce(params: FirstPartyAcquisitionOptions & Readonly<{
+type VersionedPayloadActivationParams = FirstPartyAcquisitionOptions & Readonly<{
   componentId: FirstPartyComponentId;
   versionId: string;
   payloadRoot: string;
   payloadRootAlreadyFiltered?: boolean;
+  /**
+   * The user explicitly chose this channel as the default `happier` command (the official
+   * installer's `--channel`). Without it an install never takes the default away from another
+   * channel that is already installed — see `resolveDefaultReleaseChannelAfterInstall`.
+   */
+  selectAsDefaultReleaseChannel?: boolean;
   channel?: PublicReleaseRingId;
   releaseRing?: PublicReleaseRingId;
   processEnv?: NodeJS.ProcessEnv;
-}>): Promise<FirstPartyPayloadPromotionResult> {
+}>;
+
+async function installVersionedPayloadOnce(params: VersionedPayloadActivationParams): Promise<FirstPartyPayloadPromotionResult> {
+  const promotion = await activateVersionedPayload(params);
+  await pruneInstalledVersionsAfterActivation({
+    componentId: params.componentId,
+    channel: params.channel,
+    releaseRing: params.releaseRing,
+    processEnv: params.processEnv,
+    currentVersionId: promotion.currentVersionId,
+    previousVersionId: promotion.previousVersionId,
+  });
+  return promotion;
+}
+
+/**
+ * Everything an install changes to make a version the running one — the versioned payload, the
+ * `current`/`previous` pointers and markers, the command shims and the default-channel record —
+ * without pruning. The caller holds the install root's lock and, for a component with shims or the
+ * default-channel record, the home-wide activation lock. `runManagedCliUpdate` activates through
+ * this and prunes only after the new version proved itself, so the version it would restore is
+ * still on disk while the service restarts (plan R13 f).
+ */
+export async function activateVersionedPayload(params: VersionedPayloadActivationParams): Promise<FirstPartyPayloadPromotionResult> {
   // Once promotion starts, finish its shims and markers as one locked operation.
   params.onProgress?.({ phase: 'installing' });
   const promotion = await promoteVersionedPayloadWithoutLock({
@@ -242,7 +302,12 @@ async function installVersionedPayloadOnce(params: FirstPartyAcquisitionOptions 
   });
 
   params.onProgress?.({ phase: 'finalizing' });
-  const releaseChannel = params.channel ?? params.releaseRing ?? 'stable';
+  const releaseChannel = await resolveDefaultReleaseChannelAfterInstall({
+    componentId: params.componentId,
+    installedChannel: params.channel ?? params.releaseRing ?? 'stable',
+    selectAsDefault: params.selectAsDefaultReleaseChannel === true,
+    processEnv: params.processEnv,
+  });
 
   await syncInstalledFirstPartyShims({
     componentId: params.componentId,
@@ -259,6 +324,18 @@ async function installVersionedPayloadOnce(params: FirstPartyAcquisitionOptions 
     });
   }
 
+  return promotion;
+}
+
+/** Retention after an activation is committed: keep current + previous, prune the rest best-effort. */
+export async function pruneInstalledVersionsAfterActivation(params: Readonly<{
+  componentId: FirstPartyComponentId;
+  channel?: PublicReleaseRingId;
+  releaseRing?: PublicReleaseRingId;
+  processEnv?: NodeJS.ProcessEnv;
+  currentVersionId: string;
+  previousVersionId: string | null;
+}>): Promise<void> {
   const orderedVersionIdsNewestFirst = await listInstalledVersionIdsNewestFirst({
     componentId: params.componentId,
     channel: params.channel,
@@ -272,9 +349,7 @@ async function installVersionedPayloadOnce(params: FirstPartyAcquisitionOptions 
     channel: params.channel,
     releaseRing: params.releaseRing,
     orderedVersionIdsNewestFirst,
-    currentVersionId: promotion.currentVersionId,
-    previousVersionId: promotion.previousVersionId,
+    currentVersionId: params.currentVersionId,
+    previousVersionId: params.previousVersionId,
   });
-
-  return promotion;
 }

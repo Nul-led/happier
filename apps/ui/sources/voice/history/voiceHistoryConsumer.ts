@@ -3,10 +3,10 @@ import {
   type ConversationTurnOriginV1,
 } from '@happier-dev/protocol';
 
-import type { Message } from '@/sync/domains/messages/messageTypes';
+import type { Message } from "@happier-dev/session-core/messages";
 import type { SessionDeleteResult } from '@/sync/ops/sessions';
-import { compareTranscriptMessagesOldestFirst } from '@/sync/domains/messages/transcriptOrdering';
-import type { TranscriptOlderPageLoadResult } from '@/sync/domains/messages/transcriptOlderPageLoad';
+import { compareTranscriptMessagesOldestFirst } from "@happier-dev/session-core/messages";
+import type { TranscriptOlderPageLoadResult } from "@happier-dev/session-core/messages";
 
 export type VoiceHistoryProviderSource = NonNullable<ConversationTurnOriginV1['source']>;
 

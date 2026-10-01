@@ -20,6 +20,7 @@ function createStableMembers() {
     return {
         cancelScheduledViewportAnchorCapture: vi.fn(),
         currentSessionIdRef: createRef('s1'),
+        rendererDataKey: '["home-a","s1"]',
         emitViewportChange: vi.fn(),
         isEntryViewportCommandActive: vi.fn(() => false),
         listDataRef: createRef([]),

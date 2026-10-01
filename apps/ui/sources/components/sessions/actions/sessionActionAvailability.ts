@@ -3,9 +3,11 @@ import {
     SESSION_ACTION_CLEAR_ATTENTION_STANDING_ID,
     SESSION_ACTION_DELETE_ID,
     SESSION_ACTION_FOLLOW_ID,
+    SESSION_ACTION_MAKE_ORCHESTRATOR_ID,
     SESSION_ACTION_MARK_READ_ID,
     SESSION_ACTION_MARK_UNREAD_ID,
     SESSION_ACTION_MOVE_TO_FOLDER_ID,
+    SESSION_ACTION_PUT_UNDER_ID,
     SESSION_ACTION_RENAME_ID,
     SESSION_ACTION_RESUME_ID,
     SESSION_ACTION_SET_ATTENTION_STANDING_ID,
@@ -52,8 +54,23 @@ export function listVisibleSessionActionIds(params: Readonly<{
         ids.push(SESSION_ACTION_RENAME_ID);
     }
 
+    // "Make this an orchestrator" lives in the Session's own ⋯ (ORC §3.8); choosing a Session's role
+    // needs the same authority as naming it.
+    if (surface === 'sessionHeader' && target.canRename && !target.isArchived) {
+        ids.push(SESSION_ACTION_MAKE_ORCHESTRATOR_ID);
+    }
+
     if (surface === 'sessionHeader' && target.canResume) {
         ids.push(SESSION_ACTION_RESUME_ID);
+    }
+
+    // Reporting to a lead needs input rights on this Session (the server also checks the lead).
+    if (
+        (surface === 'rowMenu' || surface === 'nativeContextMenu' || surface === 'sessionHeader')
+        && !target.isArchived
+        && target.session.access?.capabilities.submitAgentInput === true
+    ) {
+        ids.push(SESSION_ACTION_PUT_UNDER_ID);
     }
 
     if (target.canStop && (target.isActive || target.hasRecoverableTerminalHost)) {
@@ -75,6 +92,7 @@ export function listVisibleSessionActionIds(params: Readonly<{
     if (surface === 'rowMenu' || surface === 'nativeContextMenu') {
         ids.push(SESSION_ACTION_MOVE_TO_FOLDER_ID);
     }
+
 
     return ids;
 }

@@ -1,4 +1,4 @@
-import { SessionMediaFailureV1Schema, SessionMediaItemV1Schema } from '@happier-dev/protocol';
+import { SessionMediaFailureV1Schema, SessionMediaItemV1Schema, type SessionAttachmentHandleV1 } from '@happier-dev/protocol';
 
 export type SessionMediaInlineImageAvailableSummary = Readonly<{
     id: string;
@@ -8,6 +8,7 @@ export type SessionMediaInlineImageAvailableSummary = Readonly<{
     mimeType: string;
     sizeBytes: number;
     sha256?: string;
+    attachmentHandle?: SessionAttachmentHandleV1;
     width?: number;
     height?: number;
     category: 'attachment' | 'generated' | 'tool-artifact';
@@ -33,6 +34,7 @@ export type SessionMediaInlineVideoAvailableSummary = Readonly<{
     mimeType: 'video/webm';
     sizeBytes: number;
     sha256?: string;
+    attachmentHandle?: SessionAttachmentHandleV1;
     category: 'attachment' | 'generated' | 'tool-artifact';
     role: 'input' | 'output';
 }>;

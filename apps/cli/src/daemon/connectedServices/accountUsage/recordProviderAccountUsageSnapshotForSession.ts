@@ -1,4 +1,5 @@
 import {
+    mergeProviderAccountSubscription,
     ProviderAccountUsageSnapshotV1Schema,
     type ConnectedServiceUsageSourceV1,
     type ProviderAccountUsageSnapshotV1,
@@ -137,24 +138,31 @@ export async function recordProviderAccountUsageSnapshotForSession(input: Readon
     const observation: ProviderAccountUsageObservation = {
         ...(qualifiedSources ? { sources: qualifiedSources } : {}),
     };
+    const subscription = mergeProviderAccountSubscription(
+        input.store.resolveRecordId(snapshot.recordId)?.subscription,
+        snapshot.subscription,
+    );
+    const currentSnapshot = subscription
+        ? { ...snapshot, subscription }
+        : snapshot;
 
     let persisted = false;
     if (input.persistence) {
         const targets = input.resolvePersistenceTargets
             ? await input.resolvePersistenceTargets({
                 sessionId: input.sessionId,
-                snapshot,
+                snapshot: currentSnapshot,
                 sources: qualifiedSources ?? [],
             })
             : [];
         const persistence = await input.persistence.recordInBandSnapshot(
-            snapshot,
+            currentSnapshot,
             { targets },
         );
         persisted = persistence.status !== 'not_persisted';
     }
 
-    const recorded = input.store.recordSnapshot(snapshot, observation);
+    const recorded = input.store.recordSnapshot(currentSnapshot, observation);
 
     if (persisted) {
         void Promise.resolve().then(async () => {

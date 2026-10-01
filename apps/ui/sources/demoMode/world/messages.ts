@@ -1,6 +1,6 @@
 import type { ReviewCommentDraft } from '@/sync/domains/input/reviewComments/reviewCommentTypes';
 import type { PendingMessage } from '@/sync/domains/state/storageTypes';
-import type { NormalizedMessage } from '@/sync/typesRaw';
+import type { NormalizedMessage } from "@happier-dev/session-core/raw";
 
 import { DEMO_NOW_MS, DEMO_REVIEW_SESSION_ID, DEMO_RICH_SESSION_ID } from './constants';
 

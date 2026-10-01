@@ -12,16 +12,16 @@ import { SessionReminderPresetManagerModal } from './SessionReminderPresetManage
 export async function showSessionReminderDateTimeModal(
     nowMs: number,
     onSubmit: (value: SessionReminderDateTimeResult) => Promise<SessionReminderDateTimeSubmitResult>,
+    onSavePreset: (preset: SessionReminderPresetV1) => Promise<void>,
 ): Promise<SessionReminderDateTimeResult | null> {
     return await new Promise((resolve) => {
         Modal.show({
             component: SessionReminderDateTimeModal,
-            props: { nowMs, onSubmit, onResolve: resolve },
+            props: { nowMs, onSubmit, onSavePreset, onResolve: resolve },
             onRequestClose: () => resolve(null),
             chrome: {
                 kind: 'card',
                 title: t('sessionsList.reminders.customTitle'),
-                subtitle: t('sessionsList.reminders.customMessage'),
                 testID: 'session-reminder-date-time-modal',
                 dimensions: { width: 480, maxHeightRatio: 0.86, size: 'md' },
             },
@@ -32,11 +32,12 @@ export async function showSessionReminderDateTimeModal(
 
 export async function showSessionReminderPresetManagerModal(
     presets: readonly SessionReminderPresetV1[],
+    onSubmit: (value: SessionReminderPresetV1[]) => Promise<void>,
 ): Promise<SessionReminderPresetV1[] | null> {
     return await new Promise((resolve) => {
         Modal.show({
             component: SessionReminderPresetManagerModal,
-            props: { presets, onResolve: resolve },
+            props: { presets, onSubmit, onResolve: resolve },
             onRequestClose: () => resolve(null),
             chrome: {
                 kind: 'card',

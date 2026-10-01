@@ -8,6 +8,8 @@ import { getSyncSingleton } from '@/sync/runtime/getSyncSingleton';
 import { createRpcCallError, isRpcMethodNotAvailableError, readRpcErrorCode as readSessionRpcErrorCode } from '../runtime/rpcErrors';
 import { assertRpcResponseWithSuccess } from '../runtime/assertRpcResponseWithSuccess';
 import { buildResumeHappySessionRpcParams, type ResumeHappySessionRpcParams } from '../domains/session/resume/resumeSessionPayload';
+import { resolveTerminalSpawnOptions } from '../domains/settings/terminalSettings';
+import { readAccountSettingsForScope } from '../domains/state/accountSettingsPersistence';
 import { readSpawnSessionRpcTimeoutMsFromEnv } from '../domains/session/spawn/spawnSessionRpcTimeout';
 import { storage } from '../domains/state/storage';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
@@ -38,6 +40,7 @@ import type {
     SessionAuthoringValueV1,
     SessionInitialGoalRequestV1,
     SessionModelSelectionV1,
+    SessionPermissionRespondRpcParamsV1,
     SessionForkPoint,
     SessionForkRpcResult,
     SessionForkStrategy,
@@ -57,7 +60,7 @@ import type { StructuredQuestionAnswersV1 } from '@happier-dev/protocol';
 import { RPC_ERROR_CODES, RPC_METHODS, SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc';
 import { normalizeSpawnSessionResult } from './_shared';
 import { isAccountSettingsScopeChangedDuringSpawnPreparationError } from '@/sync/engine/settings/accountSettingsSpawnPreparationError';
-import { isSocketIoAckTimeoutError } from '@/sync/runtime/socketIoAckTimeout';
+import { isSocketIoAckTimeoutError } from '@happier-dev/sync-client';
 import { readMachineControlTargetForSession } from './sessionMachineTarget';
 import { stopSessionUsingCanonicalStrategy } from './sessionStopStrategy';
 import {
@@ -79,6 +82,9 @@ export {
     sessionScmBranchMerge,
     sessionScmBranchOperationAbort,
     sessionScmBranchOperationContinue,
+    sessionScmBranchOperationSkip,
+    sessionScmConflictAcceptSide,
+    sessionScmConflictMarkResolved,
     sessionScmBranchRebase,
     sessionScmBranchList,
     sessionScmChangeDiscard,
@@ -106,33 +112,10 @@ export {
     sessionScmStashApply,
     sessionScmStashDrop,
     sessionScmStashList,
+    sessionScmStashCreate,
     sessionScmStashPop,
     sessionScmStashShow,
 } from './sessionScm';
-
-// Permission operation types
-interface SessionPermissionRequest {
-    id: string;
-    turnId?: string;
-    approved: boolean;
-    reason?: string;
-    mode?: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan';
-    allowedTools?: string[];
-    decision?: 'approved' | 'approved_for_session' | 'approved_execpolicy_amendment' | 'denied' | 'abort';
-    execPolicyAmendment?: {
-        command: string[];
-    };
-    /**
-     * Optional permission updates to apply inside the agent runtime (provider-specific).
-     * This is used to accept provider-suggested permission changes (e.g. Claude Agent SDK `permission_suggestions`).
-     */
-    updatedPermissions?: unknown;
-    /**
-     * AskUserQuestion: structured answers keyed by question text.
-     * When present, the agent can complete the tool call without requiring a follow-up user message.
-     */
-    answers?: StructuredQuestionAnswersV1;
-}
 
 function resolveSessionPermissionTurnId(
     sessionId: string,
@@ -140,9 +123,13 @@ function resolveSessionPermissionTurnId(
     explicitTurnId?: string,
     serverId?: string,
 ): string | undefined {
+    const session = storage.getState().sessions[sessionId];
+    const owningServerId = typeof session?.serverId === 'string' && session.serverId.trim().length > 0
+        ? session.serverId
+        : getActiveServerSnapshot().serverId;
     const candidate = explicitTurnId
-        ?? (serverId === undefined || areServerProfileIdentifiersEquivalent(serverId, getActiveServerSnapshot().serverId)
-            ? storage.getState().sessions[sessionId]
+        ?? (serverId === undefined || areServerProfileIdentifiersEquivalent(serverId, owningServerId)
+            ? session
             : undefined)?.agentState?.requests?.[requestId]?.turnId;
     return typeof candidate === 'string' && candidate.trim().length > 0
         ? candidate.trim()
@@ -243,6 +230,8 @@ export interface ResumeSessionOptions {
      */
     initialTranscriptAfterSeq?: number;
     executionAuthorization?: SpawnSessionExecutionAuthorization;
+    /** Explicit consent from private-folder recovery; never inferred by automatic wake. */
+    approvedNewDirectoryCreation?: boolean;
     initialGoal?: SessionInitialGoalRequestV1;
     /**
      * Internal daemon freshness barrier. Resume callers should normally omit this and let
@@ -333,6 +322,7 @@ async function runResumeSession(
             accountSettingsVersionHint,
             initialTranscriptAfterSeq,
             executionAuthorization,
+            approvedNewDirectoryCreation,
             initialGoal,
             preferRequestedMachineTarget,
             preferScopedMachineRpc,
@@ -376,10 +366,16 @@ async function runResumeSession(
                 ? undefined
                 : (SessionAuthoringValueV1Schema.shape.connectedServices.parse(connectedServices) as SessionAuthoringValueV1['connectedServices']);
         const parsedConnectedServices = parsedConnectedServicesRaw == null ? undefined : parsedConnectedServicesRaw;
+        const state = storage.getState();
+        const terminalSettings = exactAccountLifetime
+            ? readAccountSettingsForScope({ scope: exactAccountLifetime.scope, focusedScope: state.settingsScope, focusedSettings: state.settings })
+            : state.settings;
+        const terminal = resolveTerminalSpawnOptions({ settings: terminalSettings, machineId });
         const params: ResumeHappySessionRpcParams = buildResumeHappySessionRpcParams({
             sessionId,
             machineId,
             directory,
+            ...(terminal ? { terminal } : {}),
             ...(agentTarget ? { agentTarget } : {}),
             backendTarget,
             ...(resume ? { resume } : {}),
@@ -396,6 +392,7 @@ async function runResumeSession(
             ...(typeof accountSettingsVersionHint === 'number' ? { accountSettingsVersionHint } : {}),
             ...(typeof initialTranscriptAfterSeq === 'number' ? { initialTranscriptAfterSeq } : {}),
             ...(executionAuthorization ? { executionAuthorization } : {}),
+            ...(approvedNewDirectoryCreation !== undefined ? { approvedNewDirectoryCreation } : {}),
             ...(initialGoal ? { initialGoal } : {}),
             ...(spawnNonce ? { spawnNonce } : {}),
             ...preparation,
@@ -902,8 +899,44 @@ export async function sessionAbort(sessionId: string, options?: Readonly<{ serve
 }
 
 /**
- * Allow a permission request
+ * Respond to one Session permission request, including the composed Stop action.
  */
+export async function sessionRespondToPermission(
+    sessionId: string,
+    params: Omit<SessionPermissionRespondRpcParamsV1, 'answers'>,
+    options?: Readonly<{ serverId?: string }>,
+): Promise<void> {
+    await sendSessionPermissionResponse(sessionId, params, options);
+    // Stop is a composed Session action; callers deliver one decision rather
+    // than separately reimplementing its abort/recovery sequence.
+    if (params.decision === 'abort') await sessionAbort(sessionId, options);
+}
+
+async function sendSessionPermissionResponse(
+    sessionId: string,
+    params: Omit<SessionPermissionRespondRpcParamsV1, 'answers'>,
+    options?: Readonly<{ serverId?: string }>,
+): Promise<void> {
+    const request: SessionPermissionRespondRpcParamsV1 = {
+        ...params,
+        turnId: resolveSessionPermissionTurnId(sessionId, params.id, params.turnId, options?.serverId),
+    };
+    await sessionRpcWithPreferredSessionScope<void, SessionPermissionRespondRpcParamsV1>({
+        sessionId,
+        ...(options?.serverId !== undefined ? { serverId: options.serverId } : {}),
+        method: RPC_METHODS.SESSION_PERMISSION_RESPOND,
+        payload: request,
+    });
+    if (params.approved) return;
+    // Keep deny's existing best-effort thinking recovery on the applied Home.
+    if (options?.serverId !== undefined && !areServerProfileIdentifiersEquivalent(options.serverId, getActiveServerSnapshot().serverId)) return;
+    const session = storage.getState().sessions[sessionId];
+    storage.getState().clearSessionOptimisticThinking(sessionId);
+    storage.getState().clearSessionThinkingGrace(sessionId);
+    if (!session || session.thinking !== true) return;
+    storage.getState().applySessions([{ ...session, thinking: false, updatedAt: nowServerMs() }]);
+}
+
 export async function sessionAllow(
     sessionId: string,
     id: string,
@@ -914,21 +947,16 @@ export async function sessionAllow(
     turnId?: string,
     options?: Readonly<{ serverId?: string }>,
 ): Promise<void> {
-    const request: SessionPermissionRequest = {
+    const request: SessionPermissionRespondRpcParamsV1 = {
         id,
-        turnId: resolveSessionPermissionTurnId(sessionId, id, turnId, options?.serverId),
+        turnId,
         approved: true,
         mode,
         allowedTools,
         decision,
         execPolicyAmendment
     };
-    await sessionRpcWithPreferredSessionScope<void, SessionPermissionRequest>({
-        sessionId,
-        ...(options?.serverId !== undefined ? { serverId: options.serverId } : {}),
-        method: RPC_METHODS.SESSION_PERMISSION_RESPOND,
-        payload: request,
-    });
+    await sessionRespondToPermission(sessionId, request, options);
 }
 
 /**
@@ -949,21 +977,16 @@ export async function sessionAllowWithPermissionUpdates(
         serverId?: string;
     }>,
 ): Promise<void> {
-    const request: SessionPermissionRequest = {
+    const request: SessionPermissionRespondRpcParamsV1 = {
         id,
-        turnId: resolveSessionPermissionTurnId(sessionId, id, params.turnId, params.serverId),
+        turnId: params.turnId,
         approved: true,
         mode: params.mode,
         allowedTools: params.allowedTools,
         decision: params.decision,
         updatedPermissions: params.updatedPermissions,
     };
-    await sessionRpcWithPreferredSessionScope<void, SessionPermissionRequest>({
-        sessionId,
-        ...(params.serverId !== undefined ? { serverId: params.serverId } : {}),
-        method: RPC_METHODS.SESSION_PERMISSION_RESPOND,
-        payload: request,
-    });
+    await sessionRespondToPermission(sessionId, request, params.serverId === undefined ? undefined : { serverId: params.serverId });
 }
 
 /**
@@ -977,12 +1000,12 @@ export async function sessionAllowWithAnswers(
     answers: StructuredQuestionAnswersV1,
     options?: Readonly<{ serverId?: string }>,
 ): Promise<void> {
-    const request: SessionPermissionRequest = {
+    const request: SessionPermissionRespondRpcParamsV1 = {
         id,
         approved: true,
         answers,
     };
-    await sessionRpcWithPreferredSessionScope<void, SessionPermissionRequest>({
+    await sessionRpcWithPreferredSessionScope<void, SessionPermissionRespondRpcParamsV1>({
         sessionId,
         ...(options?.serverId !== undefined ? { serverId: options.serverId } : {}),
         method: RPC_METHODS.SESSION_USER_ACTION_ANSWER,
@@ -1003,39 +1026,18 @@ export async function sessionDeny(
     turnId?: string,
     options?: Readonly<{ serverId?: string }>,
 ): Promise<void> {
-    const request: SessionPermissionRequest = {
+    const request: SessionPermissionRespondRpcParamsV1 = {
         id,
-        turnId: resolveSessionPermissionTurnId(sessionId, id, turnId, options?.serverId),
+        turnId,
         approved: false,
         mode,
         allowedTools,
         decision,
         reason,
     };
-    await sessionRpcWithPreferredSessionScope<void, SessionPermissionRequest>({
-        sessionId,
-        ...(options?.serverId !== undefined ? { serverId: options.serverId } : {}),
-        method: RPC_METHODS.SESSION_PERMISSION_RESPOND,
-        payload: request,
-    });
-
-    // Best-effort local UX recovery: deny/abort decisions should immediately return
-    // the session to non-thinking state even if lifecycle events arrive out of order.
-    if (options?.serverId !== undefined && !areServerProfileIdentifiersEquivalent(options.serverId, getActiveServerSnapshot().serverId)) return;
-    const session = storage.getState().sessions[sessionId];
-    storage.getState().clearSessionOptimisticThinking(sessionId);
-    storage.getState().clearSessionThinkingGrace(sessionId);
-    if (!session || session.thinking !== true) {
-        return;
-    }
-
-    storage.getState().applySessions([
-        {
-            ...session,
-            thinking: false,
-            updatedAt: nowServerMs(),
-        },
-    ]);
+    // Legacy callers compose their own abort after deny; preserve that API
+    // while sharing the single response transport and recovery owner.
+    await sendSessionPermissionResponse(sessionId, request, options);
 }
 
 /**

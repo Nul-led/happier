@@ -5,6 +5,7 @@ import {
     type ServerAccountScope,
 } from '@/sync/domains/scope/serverAccountScope';
 import { createServerFetchAtEndpoint } from '@/sync/http/client';
+import { resolvePortableServerIdentityForRoutingId } from '@/sync/domains/server/resolvePortableServerIdentityForRoutingId';
 import type { HomeCarrier } from '@/sync/runtime/homeCarrier';
 
 import { resolveServerAccountRequestContext } from './resolveServerAccountRequestContext';
@@ -25,6 +26,7 @@ export type ServerAccountRequestOptions = Readonly<{
 
 export function createServerRequestForExplicitServerScope(params: Readonly<{
     serverUrl: string;
+    homeIdentityId?: string;
     runtimeOrigin?: string;
     token: string;
     timeoutMs?: number;
@@ -54,6 +56,7 @@ export function createServerRequestForExplicitServerScope(params: Readonly<{
         }
         return await runtimeFetchWithServerReachability({
             serverUrl: params.serverUrl,
+            ...(params.homeIdentityId ? { homeIdentityId: params.homeIdentityId } : {}),
             token: params.token,
             url: `${params.runtimeOrigin ?? params.serverUrl}${path}`,
             ...(params.runtimeOrigin ? { runtimeOrigin: params.runtimeOrigin } : {}),
@@ -73,6 +76,12 @@ export type ServerAccountRequestAuthority = Readonly<{
     context: ScopedServerAccountRequestContext;
     request: (path: string, init?: RequestInit, options?: ServerAccountRequestOptions) => Promise<Response>;
     release: () => Promise<void>;
+    /**
+     * Moves this authority's physical carrier release to a pooled socket
+     * acquisition. After this succeeds, `release` no longer owns a carrier and
+     * cannot tear it down while a pooled logical socket still uses it.
+     */
+    transferCarrierCustody?: () => () => Promise<void>;
 }>;
 
 export function createServerRequestForResolvedServerScope(params: Readonly<{
@@ -84,8 +93,10 @@ export function createServerRequestForResolvedServerScope(params: Readonly<{
             return await params.activeRequest(path, init, options);
         }
 
+        const homeIdentityId = resolvePortableServerIdentityForRoutingId(params.context.targetServerId);
         return await createServerRequestForExplicitServerScope({
             serverUrl: params.context.targetServerUrl,
+            ...(homeIdentityId ? { homeIdentityId } : {}),
             ...(params.context.runtimeOrigin ? { runtimeOrigin: params.context.runtimeOrigin } : {}),
             token: params.context.token,
             timeoutMs: params.context.timeoutMs,
@@ -157,9 +168,32 @@ export async function captureServerRequestAuthorityForServerAccountScope(params:
     // Release ownership must survive a rejection: coalesce concurrent callers,
     // propagate the first rejection, and retry the underlying release on the
     // next explicit call instead of losing custody before the await resolves.
-    const release = onceAsync(async () => {
+    let carrierRelease: (() => Promise<void>) | null = onceAsync(async () => {
         await context.release?.();
     });
+    let authorityReleaseInFlight: Promise<void> | null = null;
+    const release = async (): Promise<void> => {
+        if (!carrierRelease) return;
+        authorityReleaseInFlight ??= carrierRelease().then(
+            () => {
+                carrierRelease = null;
+                authorityReleaseInFlight = null;
+            },
+            (error: unknown) => {
+                authorityReleaseInFlight = null;
+                throw error;
+            },
+        );
+        await authorityReleaseInFlight;
+    };
+    const transferCarrierCustody = (): (() => Promise<void>) => {
+        if (!carrierRelease || authorityReleaseInFlight) {
+            throw new Error('Server Account request authority carrier custody is no longer available');
+        }
+        const transferredRelease = carrierRelease;
+        carrierRelease = null;
+        return transferredRelease;
+    };
     return {
         scope: resolvedScope,
         context,
@@ -168,6 +202,7 @@ export async function captureServerRequestAuthorityForServerAccountScope(params:
             activeRequest: params.activeRequest,
         }),
         release,
+        transferCarrierCustody,
     };
 }
 

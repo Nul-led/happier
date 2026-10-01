@@ -121,7 +121,7 @@ export function VoiceExecutionMachineSection(props: Readonly<{
   return (
     <ItemGroup
       title={t('settingsVoice.local.executionMachine.groupTitle')}
-      footer={t('settingsVoice.local.executionMachine.groupFooter')}
+      description={t('settingsVoice.local.executionMachine.groupFooter')}
     >
       <DropdownMenu
         open={open}

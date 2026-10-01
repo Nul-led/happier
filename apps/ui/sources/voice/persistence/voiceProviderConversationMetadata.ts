@@ -87,7 +87,11 @@ export function writeVoiceProviderConversationMetadata(
   if (input.state === null) {
     delete providers[providerId];
   } else {
-    const state = readState({ conversationId: input.state.conversationId, updatedAt: input.updatedAt });
+    const previous = providers[providerId];
+    const updatedAt = previous?.conversationId === input.state.conversationId
+      ? previous.updatedAt
+      : input.updatedAt;
+    const state = readState({ conversationId: input.state.conversationId, updatedAt });
     if (!state) throw new TypeError('invalid_voice_provider_conversation_state');
     providers[providerId] = state;
   }

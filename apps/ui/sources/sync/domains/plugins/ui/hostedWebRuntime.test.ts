@@ -7,6 +7,7 @@ import {
 const hostedWeb = {
     id: 'hostedWeb:acme.preview:preview-web',
     pluginId: 'acme.preview',
+    occurrenceId: 'preview-occurrence-1',
     contributionKind: 'hostedWeb',
     contributionId: 'preview-web',
     service: { kind: 'staticAssets', assetRootId: 'hosted-web/preview-web' },

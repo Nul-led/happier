@@ -4,7 +4,7 @@
  *
  * This file is the UI-side generated bundled entry map for first-party bundled plugins.
  * This file is emitted by:
- * - `scripts/migrations/extensions/generateBundledPluginEntries.ts`
+ * - `apps/cli/scripts/build-owned/generateBundledPluginEntries.ts`
  *
  * UI facts here are descriptor-derived and no-execute; this file must not import plugin UI runtime exports.
  */

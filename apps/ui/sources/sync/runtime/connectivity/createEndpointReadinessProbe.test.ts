@@ -263,7 +263,7 @@ describe('createEndpointReadinessProbe', () => {
             await expect(probe()).resolves.toEqual(
                 expect.objectContaining({
                     status: 'retry_later',
-                    errorMessage: expect.stringContaining('mixed content'),
+                    blockedBy: 'mixed_content',
                 }),
             );
             expect(runtimeFetchMock).toHaveBeenCalledTimes(0);

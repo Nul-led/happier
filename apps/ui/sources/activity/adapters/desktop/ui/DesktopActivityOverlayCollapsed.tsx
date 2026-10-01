@@ -41,6 +41,7 @@ import {
     DESKTOP_ACTIVITY_OVERLAY_CRITICAL_UNATTENDED_MS,
     DESKTOP_ACTIVITY_OVERLAY_NEEDS_YOU_UNATTENDED_MS,
 } from '../desktopActivityOverlayTiming';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 export const DESKTOP_ACTIVITY_OVERLAY_CAMERA_SPACER_NOTCH_WIDTH_RATIO = 0.35;
 export const DESKTOP_ACTIVITY_OVERLAY_DEFAULT_CAMERA_SPACER_WIDTH = 90;
@@ -331,7 +332,7 @@ export function DesktopActivityOverlayCollapsed(props: Readonly<{
                 return [
                     containerStyle,
                     hovered ? { opacity: 0.985 } : null,
-                    pressed ? { opacity: 0.92 } : null,
+                    pressed ? { opacity: motionTokens.press.opacitySubtle } : null,
                     interaction.focused === true ? createDesktopActivityOverlayFocusRingStyle(theme) : null,
                 ];
             }}

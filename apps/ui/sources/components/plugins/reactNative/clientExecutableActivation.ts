@@ -77,22 +77,27 @@ async function createProjectedClientExecutableActivation(input: Readonly<{
     const serverId = target.authority.serverId;
     if (!reader || !accountLifetime || !serverId || !isCurrent(input)) return null;
 
-    const artifactOwner = target.artifactAnchor.artifactOwnerKind === 'clientContribution'
-        ? Object.freeze({
-            artifactOwnerKind: 'clientContribution' as const,
-            clientContribution: target.artifactAnchor.clientContribution,
-        })
-        : Object.freeze({ artifactOwnerKind: 'voiceProvider' as const });
     const acquired = await acquirePluginReactNativeArtifactAvailability({
         reader,
         artifactGraph: target.artifactGraph,
         cacheIdentity: target.cacheIdentity,
         accountLifetime,
-        ...artifactOwner,
+        // The projecting daemon is the byte route for every selection,
+        // including an originless bundled/development one.
         daemon: {
-            origin: target.executionOrigin,
+            machineId: target.authority.machineId,
             serverId,
         },
+        ...(target.artifactSelectionOwner === 'daemonProjection' && target.pluginVersion
+            ? {
+                daemonProjectionSelection: {
+                    occurrenceId: target.occurrenceId,
+                    contributionId: target.cacheIdentity.contributionId,
+                    releaseVersion: target.pluginVersion,
+                    isCurrent: () => isCurrent(input),
+                },
+            }
+            : {}),
         isCurrent: () => isCurrent(input),
     });
     if (acquired.kind !== 'available') return null;
@@ -125,12 +130,12 @@ async function createProjectedClientExecutableActivation(input: Readonly<{
     const activation: PluginUiClientExecutableActivation = Object.freeze({
         pluginId: target.pluginId,
         ...(target.pluginVersion === undefined ? {} : { pluginVersion: target.pluginVersion }),
-        ...(target.immutableGenerationId === undefined ? {} : { immutableGenerationId: target.immutableGenerationId }),
         accountLifetime,
         contributes: target.contributes,
         target: target.target,
         executionOrigin: target.executionOrigin,
-        projectionGeneration: target.projectionGeneration,
+        occurrenceId: target.occurrenceId,
+        hostUiApiRange: target.artifactGraph.hostUiApiRange,
         cache: input.cache,
         identity: target.cacheIdentity,
         moduleReference: target.moduleReference,

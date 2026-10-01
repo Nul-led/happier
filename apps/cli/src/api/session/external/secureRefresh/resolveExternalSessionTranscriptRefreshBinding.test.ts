@@ -55,7 +55,7 @@ const authority = {
         },
         generation: 'source-generation-1',
     },
-    contributionGeneration: 'contribution-generation-1',
+    sourceCustody: { kind: 'development' as const, registeredRootId: 'source-root-1' },
 };
 
 describe('secure refresh cursor binding identity', () => {
@@ -134,8 +134,9 @@ describe('secure refresh cursor binding identity', () => {
             },
             resource: {
                 resourceKey: authority.source.generation,
-                pluginGeneration: authority.contributionGeneration,
+                occurrenceId: 'occurrence-1',
             },
+            sourceCustody: authority.sourceCustody,
         });
 
         await expect(resolveExternalSessionTranscriptRefreshBinding({

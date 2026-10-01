@@ -1,12 +1,11 @@
 import * as React from 'react';
-import { Platform, Pressable, View } from 'react-native';
+import { Platform, View } from 'react-native';
 import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ItemList, ItemListStatic } from '@/components/ui/lists/ItemList';
-import { Text } from '@/components/ui/text/Text';
 import { t } from '@/text';
 import { useHomeViewSelectionSettings } from '@/hooks/server/useHomeViewSelectionSettings';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
@@ -16,9 +15,11 @@ import {
     listServerProfileScopeIds,
     normalizeServerSelectionSettingsForProfileScopeIds,
 } from '@/sync/domains/server/selection/serverSelectionProfileScopeIds';
-import { TokenStorage } from '@/auth/storage/tokenStorage';
 import { useAuth } from '@/auth/context/AuthContext';
-import { useServerAuthStatusByServerId } from '@/components/settings/server/hooks/useServerAuthStatusByServerId';
+import {
+    readServerAuthStatus,
+    useServerAuthStatusByServerId,
+} from '@/components/settings/server/hooks/useServerAuthStatusByServerId';
 import { setActiveServerAndSwitch } from '@/sync/domains/server/activeServerSwitch';
 import { fireAndForget } from '@/utils/system/fireAndForget';
 import { safeRouterBack } from '@/utils/navigation/safeRouterBack';
@@ -52,30 +53,6 @@ const stylesheet = StyleSheet.create((theme) => ({
     standaloneContainer: {
         flex: 1,
         minHeight: 0,
-    },
-    header: {
-        flexDirection: 'row',
-        alignItems: 'flex-start',
-        justifyContent: 'space-between',
-        paddingHorizontal: Platform.select({ ios: 20, default: 16 }),
-        paddingTop: Platform.select({ ios: 18, default: 16 }),
-        paddingBottom: 12,
-    },
-    headerTextBlock: {
-        flex: 1,
-        paddingRight: 12,
-    },
-    headerTitle: {
-        color: theme.colors.text.primary,
-        fontSize: 18,
-        lineHeight: 24,
-        fontWeight: Platform.select({ ios: '600', default: '700' }),
-    },
-    closeButton: {
-        alignItems: 'center',
-        justifyContent: 'center',
-        borderRadius: 999,
-        padding: 4,
     },
     list: {
         width: '100%',
@@ -174,23 +151,6 @@ export function NewSessionServerSelectionContent(props: NewSessionServerSelectio
         return allowedServerIds[0] ?? activeServer.serverId;
     }, [activeServer.serverId, allowedServerIds, params.selectedId, props.selectedServerId]);
 
-    const resolveTargetAuthState = React.useCallback(async (serverId: string): Promise<'signedIn' | 'signedOut' | 'unavailable'> => {
-        const nextServerId = String(serverId ?? '').trim();
-        if (!nextServerId) return 'unavailable';
-
-        const profile = serverProfiles.find((srv) => (
-            resolveServerProfileScopeId(srv) === nextServerId || srv.id === nextServerId
-        )) ?? null;
-        if (!profile) return 'unavailable';
-
-        try {
-            const creds = await TokenStorage.getCredentialsForServerUrl(profile.serverUrl, { serverId: nextServerId });
-            return creds ? 'signedIn' : 'signedOut';
-        } catch {
-            return 'unavailable';
-        }
-    }, [serverProfiles]);
-
     const commitSelectedServer = React.useCallback((serverId: string) => {
         const dataId = typeof params.dataId === 'string' ? params.dataId : undefined;
         const returnMode = setNewSessionPickerReturnParams({
@@ -215,8 +175,10 @@ export function NewSessionServerSelectionContent(props: NewSessionServerSelectio
 
     const handleServerPress = React.useCallback((serverId: string) => {
         fireAndForget((async () => {
-            const authState = await resolveTargetAuthState(serverId);
-            if (authState === 'unavailable') return;
+            // An unreadable credential store or an unknown Home is neither
+            // signed in nor signed out: stay put rather than route to sign-in.
+            const authState = await readServerAuthStatus(serverId);
+            if (authState === 'unknown') return;
             if (authState === 'signedOut') {
                 const switchResult = await setActiveServerAndSwitch({
                     serverId,
@@ -235,33 +197,16 @@ export function NewSessionServerSelectionContent(props: NewSessionServerSelectio
             }
             commitSelectedServer(serverId);
         })(), { tag: 'NewSessionServerSelectionContent.selectServer' });
-    }, [authContext.refreshFromActiveServer, commitSelectedServer, currentRouteParams, dismissOnSelection, onClose, resolveTargetAuthState, router]);
+    }, [authContext.refreshFromActiveServer, commitSelectedServer, currentRouteParams, dismissOnSelection, onClose, router]);
 
-    const handleClose = React.useCallback(() => {
-        onClose();
-    }, [onClose]);
     const SelectionList = ownsScrollViewport ? ItemList : ItemListStatic;
 
     return (
         <View style={[styles.container, ownsScrollViewport ? styles.standaloneContainer : null, { maxHeight }]}>
-            <View style={styles.header}>
-                <View style={styles.headerTextBlock}>
-                    <Text style={styles.headerTitle}>{t('server.switchToServer')}</Text>
-                </View>
-                <Pressable
-                    onPress={handleClose}
-                    hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                    style={({ pressed }) => [
-                        styles.closeButton,
-                        { opacity: pressed ? 0.7 : 1 },
-                    ]}
-                    accessibilityRole="button"
-                    accessibilityLabel={t('common.back')}
-                >
-                    {<Icon name="x" size={20} color={theme.colors.text.secondary} />}
-                </Pressable>
-            </View>
-
+            {/*
+              * K1/K2 picker anatomy: no title band inside the content. The chip names the choice in
+              * the popover; the route shows the native title with Cancel.
+              */}
             <SelectionList
                 style={styles.list}
                 containerStyle={styles.listContent}

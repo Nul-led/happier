@@ -1,12 +1,12 @@
 import { resolveAgentIdFromSessionMetadata } from '@happier-dev/agents';
 import * as React from 'react';
 
-import type { ToolCall } from '@/sync/domains/messages/messageTypes';
-import type { Metadata } from '@/sync/domains/state/storageTypes';
+import type { ToolCall } from "@happier-dev/session-core/messages";
+import type { Metadata } from '@happier-dev/session-core/state';
 
 import { knownTools } from '@/components/tools/catalog';
 import { getToolViewComponent } from '@/components/tools/renderers/core/_registry';
-import { normalizeToolCallForRendering } from '@/components/tools/normalization/core/normalizeToolCallForRendering';
+import { normalizeToolCallForRendering } from "@happier-dev/session-core/tools";
 import { resolveToolHeaderTextPresentation } from '@/components/tools/shell/presentation/resolveToolHeaderTextPresentation';
 import { Icon } from '@/components/ui/icons/Icon';
 import {

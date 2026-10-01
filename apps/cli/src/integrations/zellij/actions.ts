@@ -69,7 +69,13 @@ export type ZellijActions = Readonly<{
   killSession(params: ZellijActionParams & Readonly<{ sessionName: string }> & ZellijTimeoutParams): Promise<ZellijCommandResult>;
 }>;
 
+export type ZellijAttachActions = Readonly<{
+  attachForeground(params: ZellijActionParams & Readonly<{ sessionName: string }>): Promise<ZellijCommandResult>;
+  focusPane(params: ZellijPaneActionParams & ZellijTimeoutParams): Promise<void>;
+}>;
+
 export const DEFAULT_ZELLIJ_WRITE_BYTES_CHUNK_SIZE = 4096;
+export const DEFAULT_ZELLIJ_ACTION_TIMEOUT_MS = 5_000;
 export const ZELLIJ_ACTION_PASTE_SAFE_BYTES = {
   darwin: 300_000,
   linux: 65_536,
@@ -191,6 +197,28 @@ function runZellijUnbounded(
   });
 }
 
+function runZellijForeground(
+  params: ZellijActionParams,
+  args: readonly string[],
+): Promise<ZellijCommandResult> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(params.zellijBinary, [...args], {
+      env: buildZellijEnv(params),
+      shell: false,
+      stdio: 'inherit',
+      windowsHide: false,
+    });
+    let settled = false;
+    const finish = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      callback();
+    };
+    child.on('error', (error) => finish(() => reject(error)));
+    child.on('close', (code) => finish(() => resolve({ exitCode: code ?? 1, stdout: '', stderr: '' })));
+  });
+}
+
 function terminateZellijChild(child: ReturnType<typeof spawn>): void {
   if (process.platform !== 'win32' && child.pid) {
     try {
@@ -236,6 +264,12 @@ export async function attachCreateBackground(
     if (params.defaultShell) args.push('--default-shell', params.defaultShell);
   }
   return runZellij(params, args, { cwd: params.cwd, timeoutMs: params.timeoutMs, action: 'attach' });
+}
+
+export async function attachForeground(
+  params: ZellijActionParams & Readonly<{ sessionName: string }>,
+): Promise<ZellijCommandResult> {
+  return await runZellijForeground(params, ['attach', params.sessionName]);
 }
 
 export async function runCommand(
@@ -297,6 +331,19 @@ export async function sendEscape(params: ZellijPaneActionParams & ZellijTimeoutP
   }), 'send-keys');
 }
 
+export async function focusPane(params: ZellijPaneActionParams & ZellijTimeoutParams): Promise<void> {
+  await requireSuccess(
+    await runZellij(
+      params,
+      ['action', 'focus-pane-id', params.paneId],
+      params.timeoutMs !== undefined
+        ? { timeoutMs: params.timeoutMs, action: 'focus-pane-id' }
+        : { action: 'focus-pane-id' },
+    ),
+    'focus-pane-id',
+  );
+}
+
 export async function closePane(params: ZellijPaneActionParams & ZellijTimeoutParams): Promise<void> {
   await requireSuccess(await runZellij(params, ['action', 'close-pane', '--pane-id', params.paneId], {
     timeoutMs: params.timeoutMs,
@@ -354,4 +401,9 @@ export const defaultZellijActions: ZellijActions = {
   listPanes,
   dumpScreen,
   killSession,
+};
+
+export const defaultZellijAttachActions: ZellijAttachActions = {
+  attachForeground,
+  focusPane,
 };

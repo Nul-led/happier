@@ -25,7 +25,7 @@ import {
     type SessionReminderPresentation,
 } from '@/sync/domains/session/organization/attentionStanding';
 import type { WorkspaceDisplayEllipsizeMode } from '@/sync/domains/workspaces/workspaceDisplayPresentation';
-import { getSessionName, getSessionStatus, type SessionStatus, type SessionWorkingTextMode } from '@/utils/sessions/sessionUtils';
+import { getSessionName, getSessionStatus, isUntitledSessionName, type SessionStatus, type SessionWorkingTextMode } from '@/utils/sessions/sessionUtils';
 import { formatShortRelativeTimeAt } from '@/utils/time/formatShortRelativeTime';
 import { LruMap } from '@/utils/cache/lruMap';
 import { t } from '@/text';
@@ -135,6 +135,12 @@ export type SessionListRowViewModel = Readonly<{
     draft: ExistingSessionDraftProjection | null;
 }>;
 
+export type SessionListRowViewModelAdjacency = Readonly<{
+    isFirst: boolean;
+    isLast: boolean;
+    isSingle: boolean;
+}>;
+
 const EMPTY_SESSION_LIST_ROW_VIEW_MODELS: ReadonlyArray<SessionListRowViewModel | null> = [];
 
 type RowViewModelCacheEntry = Readonly<{
@@ -149,8 +155,8 @@ const SESSION_LIST_ROW_VIEW_MODEL_CACHE = new LruMap<string, RowViewModelCacheEn
 
 export type BuildSessionListRowViewModelInput = Readonly<{
     item: Extract<SessionListIndexItem, { type: 'session' }>;
-    index: number;
-    listItems: ReadonlyArray<SessionListIndexItem>;
+    adjacency: SessionListRowViewModelAdjacency;
+    unscopedSelectionIsUnique: boolean;
     reachableSessionDisplayById: ReadonlyMap<string, SessionReachableDisplay>;
     reachableSessionDisplayByKey?: ReadonlyMap<string, SessionReachableDisplay>;
     rowRenderableByKey?: ReadonlyMap<string, SessionListRenderableSession>;
@@ -180,12 +186,6 @@ export type BuildSessionListRowViewModelInput = Readonly<{
 export function buildSessionListRowViewModel(input: BuildSessionListRowViewModelInput): SessionListRowViewModel {
     const item = input.item;
     const groupKey = String(item.groupKey ?? '').trim();
-    const prev = input.index > 0 ? input.listItems[input.index - 1] : null;
-    const next = input.index < input.listItems.length - 1 ? input.listItems[input.index + 1] : null;
-    const prevGroupKey = prev && prev.type === 'session' ? String(prev.groupKey ?? '').trim() : '';
-    const nextGroupKey = next && next.type === 'session' ? String(next.groupKey ?? '').trim() : '';
-    const isFirst = !groupKey || prevGroupKey !== groupKey;
-    const isLast = !groupKey || nextGroupKey !== groupKey;
     const sessionId = String(item.sessionId ?? '').trim();
     const serverId = typeof item.serverId === 'string' ? item.serverId.trim() : '';
     const sessionKey = serverId && sessionId ? sessionTagKey(serverId, sessionId) : null;
@@ -229,14 +229,9 @@ export function buildSessionListRowViewModel(input: BuildSessionListRowViewModel
             nowMs: runtimeNowMs,
         })
         : null;
-    const sessionName = session ? getSessionName(session) : '';
+    const sessionName = session ? getSessionName(session, serverId) : '';
     const contextualSearchSubtitle = resolveContextualSearchSubtitle({ item, session });
     const selectedSessionServerId = String(input.selectedSessionServerId ?? '').trim();
-    const unscopedSelectionIsUnique = !selectedSessionServerId
-        && input.selectedSessionId === sessionId
-        && input.listItems.filter((candidate) => (
-            candidate.type === 'session' && candidate.sessionId === sessionId
-        )).length === 1;
     // One quiet secondary line, composed by the shared context owner rather than here: it decides
     // whether this viewer may see the workspace at all and adds the single responsibility marker.
     // The Home stays with the incumbent server badge, so it is deliberately not a segment here.
@@ -284,9 +279,9 @@ export function buildSessionListRowViewModel(input: BuildSessionListRowViewModel
         identityDisplay: input.identityDisplay === 'agentLogo' || input.identityDisplay === 'none' ? input.identityDisplay : 'avatar',
         activeColorMode: normalizeActiveColorMode(input.activeColorMode),
         hideInactiveSessions: input.hideInactiveSessions === true,
-        isFirst,
-        isLast,
-        isSingle: isFirst && isLast,
+        isFirst: input.adjacency.isFirst,
+        isLast: input.adjacency.isLast,
+        isSingle: input.adjacency.isSingle,
         subtitleOverride: contextualSearchSubtitle
             ?? (item.groupKind === 'project' && item.variant === 'no-path' ? null : (subtitle || null)),
         subtitleEllipsizeMode,
@@ -297,7 +292,7 @@ export function buildSessionListRowViewModel(input: BuildSessionListRowViewModel
             && (
                 selectedSessionServerId
                     ? selectedSessionServerId === serverId
-                    : unscopedSelectionIsUnique
+                    : input.unscopedSelectionIsUnique
             ),
         tags: getTagsForSession(input.sessionTags, sessionKey ?? ''),
         secondaryLineMode: resolveSessionListSecondaryLineMode({ groupKind: item.groupKind }),
@@ -329,6 +324,47 @@ export function buildSessionListRowViewModel(input: BuildSessionListRowViewModel
         value: rowViewModel,
     });
     return rowViewModel;
+}
+
+export function resolveSessionListRowViewModelAdjacency(
+    listItems: ReadonlyArray<SessionListIndexItem>,
+    index: number,
+): SessionListRowViewModelAdjacency {
+    const item = listItems[index];
+    if (!item || item.type !== 'session') return { isFirst: true, isLast: true, isSingle: true };
+    // A group sheet runs from one heading to the next: consecutive rows share it even when their
+    // placement groups differ (a working band flowing into its section), and a header that draws no
+    // heading (no title, `resolveSessionListHeaderViewState`) does not cut it, so no sheet is unlabeled.
+    const isFirst = neighbourOf(listItems, index, -1)?.type !== 'session';
+    const isLast = neighbourOf(listItems, index, 1)?.type !== 'session';
+    return { isFirst, isLast, isSingle: isFirst && isLast };
+}
+
+function neighbourOf(
+    listItems: ReadonlyArray<SessionListIndexItem>,
+    index: number,
+    step: -1 | 1,
+): SessionListIndexItem | null {
+    for (let cursor = index + step; cursor >= 0 && cursor < listItems.length; cursor += step) {
+        const item = listItems[cursor]!;
+        if (item.type === 'header' && !item.title) continue;
+        return item;
+    }
+    return null;
+}
+
+export function resolveSessionListUnscopedSelectionIsUnique(
+    listItems: ReadonlyArray<SessionListIndexItem>,
+    selectedSessionId: string | null,
+): boolean {
+    if (!selectedSessionId) return false;
+    let matches = 0;
+    for (const candidate of listItems) {
+        if (candidate.type !== 'session' || candidate.sessionId !== selectedSessionId) continue;
+        matches += 1;
+        if (matches > 1) return false;
+    }
+    return matches === 1;
 }
 
 export function buildSessionListRowViewModels(input: Readonly<{
@@ -369,8 +405,10 @@ export function buildSessionListRowViewModels(input: Readonly<{
         return buildSessionListRowViewModel({
             ...input,
             item,
-            index,
-            listItems: input.listItems,
+            adjacency: resolveSessionListRowViewModelAdjacency(input.listItems, index),
+            unscopedSelectionIsUnique: !String(input.selectedSessionServerId ?? '').trim()
+                && input.selectedSessionId === item.sessionId
+                && resolveSessionListUnscopedSelectionIsUnique(input.listItems, input.selectedSessionId),
         });
     });
     return next;
@@ -454,7 +492,7 @@ function resolveRowIdentityLoading(input: Readonly<{
     const metadataUnavailable = input.session.metadataUnavailable === true;
     return !metadataUnavailable
         && input.session.metadata == null
-        && input.title === t('status.unknown');
+        && isUntitledSessionName(input.title);
 }
 
 function resolveNextRuntimeFreshnessAtMs(session: SessionListRenderableSession, nowMs: number): number | null {

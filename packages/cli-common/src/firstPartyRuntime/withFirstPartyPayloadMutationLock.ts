@@ -42,17 +42,69 @@ export class FirstPartyPayloadMutationLockError extends Error {
 
 export async function withFirstPartyPayloadMutationLock<T>(params: Readonly<{
   operation: () => Promise<T>;
+  /** A release that failed after the mutation completed; the default reports it on stderr. */
+  onReleaseFailure?: (error: unknown) => void;
 }> & (
   | Readonly<{ layout: FirstPartyInstallLayout }>
   | Readonly<{ installRoot: string; lockParentDir: string }>
 )): Promise<T> {
   // `proper-lockfile` is CommonJS and ships no declarations. Load it only for the
   // mutation path so unrelated consumers of the first-party-runtime barrel stay side-effect-free.
-  const properLockfile = createRequire(import.meta.url)('proper-lockfile') as ProperLockfileApi;
   const installRoot = 'layout' in params ? params.layout.installRoot : params.installRoot;
   const lockParentDir = 'layout' in params ? params.layout.happyHomeDir : params.lockParentDir;
-  await mkdir(lockParentDir, { recursive: true });
-  const lockfilePath = `${installRoot}.mutation.lock`;
+  return await withProperLockfile({
+    target: installRoot,
+    lockfilePath: `${installRoot}.mutation.lock`,
+    lockParentDir,
+    operation: params.operation,
+    onReleaseFailure: params.onReleaseFailure,
+  });
+}
+
+/**
+ * The home-wide activation owner (plan R13 d/f): the command shims in `<home>/bin`, the
+ * default-channel record and an update transaction's set-aside launchers are shared by every
+ * channel's install, so every activation that writes them — and an update transaction from capture
+ * to commit or restore — holds this one lock (`<home>/first-party-activation.lock`), always inside
+ * its install root's own lock (root → activation, never the reverse).
+ */
+export async function withFirstPartyActivationLock<T>(params: Readonly<{
+  /** `resolveFirstPartyActivationLockTarget(layout)`: `<home>/first-party-activation`. */
+  activationLockTarget: string;
+  happyHomeDir: string;
+  operation: () => Promise<T>;
+  onReleaseFailure?: (error: unknown) => void;
+}>): Promise<T> {
+  return await withProperLockfile({
+    target: params.activationLockTarget,
+    lockfilePath: `${params.activationLockTarget}.lock`,
+    lockParentDir: params.happyHomeDir,
+    operation: params.operation,
+    onReleaseFailure: params.onReleaseFailure,
+  });
+}
+
+/** Whether a lock attempt gave up because another process holds it (proper-lockfile `ELOCKED`). */
+export function isFirstPartyLockHeldError(error: unknown): boolean {
+  return Boolean(error && typeof error === 'object' && (error as { code?: unknown }).code === 'ELOCKED');
+}
+
+function reportReleaseFailure(error: unknown): void {
+  const cause = error instanceof Error && error.cause instanceof Error ? ` (${error.cause.message})` : '';
+  process.stderr.write(`[happier] ${error instanceof Error ? error.message : String(error)}${cause}\n`);
+}
+
+async function withProperLockfile<T>(params: Readonly<{
+  target: string;
+  lockfilePath: string;
+  lockParentDir: string;
+  operation: () => Promise<T>;
+  onReleaseFailure?: (error: unknown) => void;
+}>): Promise<T> {
+  const properLockfile = createRequire(import.meta.url)('proper-lockfile') as ProperLockfileApi;
+  const installRoot = params.target;
+  const lockfilePath = params.lockfilePath;
+  await mkdir(params.lockParentDir, { recursive: true });
   let compromisedError: Error | null = null;
   const release = await properLockfile.lock(installRoot, {
     lockfilePath,
@@ -102,7 +154,10 @@ export async function withFirstPartyPayloadMutationLock<T>(params: Readonly<{
         'First-party payload mutation and lock release both failed.',
       );
     }
-    throw wrappedReleaseError;
+    // The mutation completed (and was not compromised): releasing is cleanup. It never replaces
+    // that outcome; it is reported as the diagnostic it is, and proper-lockfile reclaims the stale
+    // lock after its staleness window.
+    (params.onReleaseFailure ?? reportReleaseFailure)(wrappedReleaseError);
   }
 
   if (!outcome) {

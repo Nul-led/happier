@@ -1,14 +1,9 @@
-import type { RelayAccessTaskTarget } from '@happier-dev/cli-common/systemTasks';
-
 import type {
     WizardRelaySelection,
     WizardState,
     WizardStepDefinition,
     WizardStepId,
 } from './wizardTypes';
-
-export type WizardRemoteSetupIntent = 'remoteMachine' | 'remoteRelayHost';
-export type WizardRelaySwitchDecision = 'keep' | 'switch';
 
 export type WizardCloudRelay = Readonly<{
     serverId: string;
@@ -21,15 +16,9 @@ export type WizardAdvanceEvent =
     | Readonly<{
         type: 'primary';
         isDesktopShell?: boolean;
-        allowProviderSetup?: boolean;
-        activeServerUrl?: string | null;
         activeServerMatchesSelectedRelay?: boolean;
         cloudRelay?: WizardCloudRelay | null;
         relayUrlForIntent?: string | null;
-        relaySwitchDecision?: WizardRelaySwitchDecision;
-        effectiveRelayCandidateUrl?: string | null;
-        pendingRelayMachineId?: string | null;
-        remoteSetupIntent?: WizardRemoteSetupIntent;
     }>
     | Readonly<{
         type: 'saveCustomRelayUrl';
@@ -57,31 +46,7 @@ export type WizardAdvanceEffect =
         type: 'persistOnboardingIntent';
         relayUrl: string | null;
     }>
-    | Readonly<{ type: 'clearRelayAccessDraft' }>
-    | Readonly<{
-        type: 'setRelayRuntimeCandidate';
-        relayUrl: string;
-        machineId: string | null;
-        relayAccessTarget: RelayAccessTaskTarget | null;
-    }>
-    | Readonly<{
-        type: 'setPendingSetupIntent';
-        intent:
-            | Readonly<{
-                branch: 'thisComputer';
-                phase: 'awaiting_auth';
-                relayUrl: string;
-            }>
-            | Readonly<{
-                branch: 'remoteMachine';
-                phase: 'awaiting_auth';
-                relayUrl: string;
-                machineId: string | null;
-                remoteSetupIntent: WizardRemoteSetupIntent;
-            }>;
-    }>
-    | Readonly<{ type: 'exitSetup' }>
-    | Readonly<{ type: 'navigate'; route: '/' }>;
+    | Readonly<{ type: 'clearRelayAccessDraft' }>;
 
 export type WizardAdvanceResolution = Readonly<{
     nextStepId: WizardStepId | null;
@@ -94,10 +59,6 @@ function trimmed(value: string | null | undefined): string {
 
 function authStepFor(state: WizardState): WizardStepId {
     return state.context.authIntent === 'restore' ? 'auth_restore' : 'auth';
-}
-
-function afterProvidersStepId(event: WizardAdvanceEvent): WizardStepId {
-    return event.type === 'primary' && event.allowProviderSetup === false ? 'done' : 'providers_optional';
 }
 
 function getNextVisibleStepId(
@@ -230,114 +191,6 @@ function resolveSaveCustomRelayUrl(
     };
 }
 
-function resolveSetupAdvance(
-    state: WizardState,
-    event: Extract<WizardAdvanceEvent, { type: 'primary' }>,
-    registry: WizardAdvanceRegistry,
-): WizardAdvanceResolution {
-    const setupAction = state.context.setupAction;
-    const nextAfterProviders = afterProvidersStepId(event);
-    const relayCandidateUrl = trimmed(state.context.relaySelection.serverUrl);
-
-    if (state.currentStepId === 'setup_chooser') {
-        if (setupAction === 'local') {
-            return { nextStepId: 'setup_this_computer', effects: [] };
-        }
-        if (setupAction === 'relayLocal') {
-            return { nextStepId: 'host_relay_local', effects: [] };
-        }
-        if (setupAction === 'remote') {
-            return { nextStepId: 'remote_ssh_setup', effects: [] };
-        }
-        return { nextStepId: null, effects: [] };
-    }
-
-    if (state.currentStepId === 'setup_this_computer') {
-        return { nextStepId: nextAfterProviders, effects: [] };
-    }
-
-    if (state.currentStepId === 'host_relay_local') {
-        const nextRelayUrl = relayCandidateUrl || trimmed(event.activeServerUrl);
-        if (nextRelayUrl) {
-            return {
-                nextStepId: 'relay_access',
-                effects: [
-                    {
-                        type: 'setRelayRuntimeCandidate',
-                        relayUrl: nextRelayUrl,
-                        machineId: null,
-                        relayAccessTarget: { kind: 'local' },
-                    },
-                ],
-            };
-        }
-        return { nextStepId: nextAfterProviders, effects: [] };
-    }
-
-    if (state.currentStepId === 'relay_access' || state.currentStepId === 'relay_access_prereqs') {
-        return {
-            nextStepId: relayCandidateUrl ? 'confirm_switch_relay' : nextAfterProviders,
-            effects: [],
-        };
-    }
-
-    if (state.currentStepId === 'remote_ssh_setup') {
-        return {
-            nextStepId: relayCandidateUrl ? 'relay_access' : nextAfterProviders,
-            effects: [],
-        };
-    }
-
-    if (state.currentStepId === 'confirm_switch_relay') {
-        const nextRelayUrl = trimmed(event.effectiveRelayCandidateUrl);
-        if (!nextRelayUrl || event.relaySwitchDecision === 'keep') {
-            return { nextStepId: nextAfterProviders, effects: [] };
-        }
-
-        const pendingIntent = setupAction === 'remote'
-            ? {
-                branch: 'remoteMachine' as const,
-                phase: 'awaiting_auth' as const,
-                relayUrl: nextRelayUrl,
-                machineId: event.pendingRelayMachineId ?? null,
-                remoteSetupIntent: event.remoteSetupIntent ?? 'remoteMachine',
-            }
-            : {
-                branch: 'thisComputer' as const,
-                phase: 'awaiting_auth' as const,
-                relayUrl: nextRelayUrl,
-            };
-
-        return {
-            nextStepId: null,
-            effects: [
-                {
-                    type: 'activateServerUrl',
-                    serverUrl: nextRelayUrl,
-                    source: 'url',
-                    scope: 'device',
-                },
-                { type: 'setPendingSetupIntent', intent: pendingIntent },
-                { type: 'exitSetup' },
-                { type: 'navigate', route: '/' },
-            ],
-        };
-    }
-
-    if (state.currentStepId === 'providers_optional') {
-        return { nextStepId: 'done', effects: [] };
-    }
-
-    if (state.currentStepId === 'done') {
-        return { nextStepId: null, effects: [{ type: 'exitSetup' }] };
-    }
-
-    return {
-        nextStepId: getNextVisibleStepId(state, registry),
-        effects: [],
-    };
-}
-
 export function resolveWizardAdvance(
     state: WizardState,
     registry: WizardAdvanceRegistry,
@@ -345,10 +198,6 @@ export function resolveWizardAdvance(
 ): WizardAdvanceResolution {
     if (event.type === 'saveCustomRelayUrl') {
         return resolveSaveCustomRelayUrl(state, event);
-    }
-
-    if (state.context.mode === 'setup') {
-        return resolveSetupAdvance(state, event, registry);
     }
 
     if (state.currentStepId === 'relay_select') {

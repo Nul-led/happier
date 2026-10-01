@@ -10,6 +10,8 @@ import type { SessionWorkStateSnapshot } from '@/sync/domains/session/workState/
 
 import type { GoalActionCapabilities } from './goalActionVisibility';
 import { SessionGoalControlContent } from './SessionGoalControlContent';
+import type { SessionGoalContinuationContext } from './sessionGoalContinuation';
+import { useSessionKeepGoingTrigger } from './useSessionKeepGoingTrigger';
 import {
     GOAL_CONFIRMATION_TIMEOUT_MS,
     IDLE_GOAL_CONFIRMATION,
@@ -64,6 +66,11 @@ export function useSessionWorkStateGoalController(params: Readonly<{
      * should only show goal controls once there is an actual goal to inspect/edit.
      */
     showEmptyGoalControls?: boolean;
+    /**
+     * The Goal control's continuation owner (FIN 04 §5.5): the session and its opened runtime's native
+     * goal signal. Only the composer's Goal control passes it; the trigger list is read while open.
+     */
+    continuation?: SessionGoalContinuationContext | null;
     onRequestClose: () => void;
     onSetGoal?: (request: SessionWorkStateGoalSetRequest) => Promise<SessionWorkStateGoalOperationResult>;
     onClearGoal?: () => Promise<SessionWorkStateGoalOperationResult>;
@@ -75,6 +82,12 @@ export function useSessionWorkStateGoalController(params: Readonly<{
         ? resolveGoalCreationControlsVisible({ editableGoal: params.editableGoal })
         : resolveGoalManagementControlsVisible({ editableGoal: params.editableGoal, snapshot: params.snapshot });
     const taskListSnapshot = renderGoalControls ? omitGoalItemFromSnapshot(params.snapshot, goal?.id ?? null) : params.snapshot;
+    const continuation = params.continuation ?? null;
+    const keepGoing = useSessionKeepGoingTrigger({
+        target: continuation ? { sessionId: continuation.sessionId, machineId: continuation.machineId } : null,
+        enabled: params.open && continuation !== null && renderGoalControls && goal !== null,
+    });
+    const detachKeepGoing = keepGoing.detach;
     const [draftObjective, setDraftObjective] = React.useState(goal?.title ?? '');
     const [busy, setBusy] = React.useState(false);
     // After an acknowledged set, hold a "setting goal…" pending confirmation keyed by the goal
@@ -177,11 +190,14 @@ export function useSessionWorkStateGoalController(params: Readonly<{
             if (!result.ok) {
                 const presentation = resolveSessionGoalFailurePresentation(result);
                 Modal.alert(presentation.title, presentation.message);
+                return;
             }
+            // Clearing the goal turns Keep going off in the same action (R-M9).
+            await detachKeepGoing();
         } finally {
             setBusy(false);
         }
-    }, [onClearGoal, onRequestClose]);
+    }, [detachKeepGoing, onClearGoal, onRequestClose]);
 
     const resumeGoal = React.useCallback(async () => {
         if (goal?.statusReason !== 'budgetLimited') {
@@ -243,6 +259,11 @@ export function useSessionWorkStateGoalController(params: Readonly<{
                     onClear={clearGoal}
                     onCancel={() => { void guardedRequestClose(); }}
                     busy={mutating}
+                    continuation={continuation ? {
+                        nativeGoalOwner: continuation.nativeGoalOwner,
+                        agentLabel: continuation.agentLabel,
+                        keepGoing,
+                    } : null}
                 />
             ),
         });

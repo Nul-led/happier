@@ -3,7 +3,7 @@ import { readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { createServerUrlComparableKey } from '@happier-dev/protocol';
-import { decodeJwtPayload } from '@/cloud/decodeJwtPayload';
+import { readAccountIdFromToken } from '@/cloud/decodeJwtPayload';
 import {
   resolveActiveServerAuthReadiness,
   type CredentialReadinessState,
@@ -19,6 +19,7 @@ import { resolveDaemonStateCandidatePaths } from '@/daemon/ownership/daemonOwner
 import { buildDaemonControlHttpHeaders } from '@/daemon/controlHttp';
 import { DaemonStopIncompleteError } from '@/daemon/controlClient';
 import { isLoopbackHttpServerUrl } from '@/server/serverUrlClassification';
+import { sanitizeServerIdForFilesystem } from '@/server/serverId';
 import { isPidPresent } from '@happier-dev/cli-common/process';
 import type { DaemonStartupSource } from '@/daemon/ownership/daemonOwnershipMetadata';
 type NormalizedDaemonState = Readonly<{
@@ -109,6 +110,15 @@ async function resolveDaemonStateForServer(serverId: string): Promise<Readonly<{
     daemonStatePath: candidatePaths[0]!,
     state: null,
   };
+}
+
+/** The daemon state in `serverId`'s lifecycle directory and whether its process is alive; `null` when none. */
+export async function readDaemonStateForServerId(serverId: string): Promise<Readonly<{
+  running: boolean;
+  state: NormalizedDaemonState;
+}> | null> {
+  const { state } = await resolveDaemonStateForServer(serverId);
+  return state ? { running: isPidPresent(state.pid), state } : null;
 }
 
 /**
@@ -263,31 +273,39 @@ async function readAuthTokenForServerId(serverId: string): Promise<string | null
   }
 }
 
-function resolveAccountIdFromToken(token: string | null): string | null {
-  const value = typeof token === 'string' ? token.trim() : '';
-  if (!value) return null;
-  try {
-    const payload = decodeJwtPayload(value);
-    return typeof payload?.sub === 'string' && payload.sub.trim() ? payload.sub.trim() : null;
-  } catch {
-    return null;
-  }
-}
+type ServerServiceInstallation = Readonly<{ installed: boolean; platform?: string; installedPath?: string }>;
 
-async function resolveServiceInstallationForServer(serverId: string, serverUrl: string): Promise<Readonly<{ installed: boolean }>> {
+function resolveServiceInstallationSnapshot(
+  params: Readonly<{ serverId: string; serverUrl: string; targetMode: 'pinned' | 'default-following' }>,
+): ServerServiceInstallation {
   try {
-    const snapshot = await resolveDaemonServiceInstallationSnapshotFromEnv({
+    const snapshot = resolveDaemonServiceInstallationSnapshotFromEnv({
       processEnv: {
         ...process.env,
-        HAPPIER_DAEMON_SERVICE_INSTANCE_ID: serverId,
-        HAPPIER_DAEMON_SERVICE_SERVER_URL: serverUrl,
-        HAPPIER_DAEMON_SERVICE_TARGET_MODE: 'pinned',
+        HAPPIER_DAEMON_SERVICE_INSTANCE_ID: params.serverId,
+        HAPPIER_DAEMON_SERVICE_SERVER_URL: params.serverUrl,
+        HAPPIER_DAEMON_SERVICE_TARGET_MODE: params.targetMode,
       },
     });
-    return { installed: snapshot.installed };
+    return { installed: snapshot.installed, platform: snapshot.platform, installedPath: snapshot.installedPath };
   } catch {
     return { installed: false };
   }
+}
+
+/**
+ * The background service that serves `serverId` on this computer: its own pinned service, else —
+ * for the server this home's persisted selection names — the default-following service, which
+ * follows that selection. Any other server has no service unless it has a pinned one.
+ */
+function resolveServiceInstallationForServer(
+  params: Readonly<{ serverId: string; serverUrl: string; persistedActiveServerId: string }>,
+): ServerServiceInstallation {
+  const pinned = resolveServiceInstallationSnapshot({ ...params, targetMode: 'pinned' });
+  if (pinned.installed || params.serverId !== params.persistedActiveServerId) {
+    return pinned;
+  }
+  return resolveServiceInstallationSnapshot({ ...params, targetMode: 'default-following' });
 }
 
 export async function listDaemonStatusesForAllKnownServers(): Promise<DaemonStatusEntry[]> {
@@ -304,6 +322,8 @@ export async function listDaemonStatusesForAllKnownServers(): Promise<DaemonStat
   const serverIds = Object.keys(servers);
   const results: DaemonStatusEntry[] = [];
   const activeComparableKey = resolveComparableKey(configuration.publicServerUrl || configuration.serverUrl);
+  // The default-following service follows the persisted selection, never this invocation's `--server`.
+  const persistedActiveServerId = sanitizeServerIdForFilesystem(settings.activeServerId ?? 'cloud', 'cloud');
   const activeReadiness = activeServerId
     ? await resolveActiveServerAuthReadiness().catch(() => null)
     : null;
@@ -320,9 +340,9 @@ export async function listDaemonStatusesForAllKnownServers(): Promise<DaemonStat
       && resolveDaemonStartupSourceServiceManagedState(state?.startupSource) === true;
     const staleStateFile = Boolean(state && !running);
     const comparableKey = resolveComparableKey(serverUrl);
-    const serviceInstallation = await resolveServiceInstallationForServer(serverId, serverUrl);
+    const serviceInstallation = resolveServiceInstallationForServer({ serverId, serverUrl, persistedActiveServerId });
     const token = await readAuthTokenForServerId(serverId);
-    const accountId = resolveAccountIdFromToken(token);
+    const accountId = token ? readAccountIdFromToken(token) : null;
     const machineId = resolveMachineIdForServerFromSettings(settings, serverId, accountId);
     const credentialState: CredentialReadinessState = token == null
       ? 'missing'

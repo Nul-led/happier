@@ -96,7 +96,7 @@ function observationResourceIdentityKey(
     return JSON.stringify([
         identity.pluginId,
         identity.agentLocalId,
-        identity.pluginGeneration,
+        identity.occurrenceId,
         identity.resourceKey,
     ]);
 }

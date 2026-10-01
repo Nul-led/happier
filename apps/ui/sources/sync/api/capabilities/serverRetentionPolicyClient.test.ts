@@ -35,9 +35,12 @@ describe('serverRetentionPolicyClient', () => {
 
         const { getServerRetentionPolicy } = await import('./serverRetentionPolicyClient');
         await expect(getServerRetentionPolicy({ serverId: 'server-a' })).resolves.toEqual({
-            enabled: true,
-            completeness: 'complete',
-            domains: [{ id: 'futureDomain', policy: { mode: 'delete_older_than', days: 9 } }],
+            status: 'ready',
+            policy: {
+                enabled: true,
+                completeness: 'complete',
+                domains: [{ id: 'futureDomain', policy: { mode: 'delete_older_than', days: 9 } }],
+            },
         });
     });
 
@@ -60,9 +63,46 @@ describe('serverRetentionPolicyClient', () => {
 
         const { getServerRetentionPolicy } = await import('./serverRetentionPolicyClient');
         await expect(getServerRetentionPolicy({ serverId: 'server-a' })).resolves.toMatchObject({
-            enabled: true,
-            completeness: 'legacy_partial',
-            domains: [{ id: 'sessions', policy: { mode: 'delete_inactive', inactivityDays: 30 } }],
+            status: 'ready',
+            policy: {
+                enabled: true,
+                completeness: 'legacy_partial',
+                domains: [{ id: 'sessions', policy: { mode: 'delete_inactive', inactivityDays: 30 } }],
+            },
+        });
+    });
+
+    it('reports a failed read, never the features snapshot, when the full policy cannot be read', async () => {
+        getServerFeaturesSnapshot.mockResolvedValue({
+            status: 'ready',
+            features: { capabilities: { server: { retention: { policyVersion: 1, enabled: true } } } },
+        });
+        const { getServerRetentionPolicy } = await import('./serverRetentionPolicyClient');
+
+        serverFetch.mockResolvedValueOnce(new Response(null, { status: 503 }));
+        await expect(getServerRetentionPolicy({ serverId: 'server-a' })).resolves.toEqual({ status: 'failed' });
+
+        serverFetch.mockRejectedValueOnce(new TypeError('network down'));
+        await expect(getServerRetentionPolicy({ serverId: 'server-a', force: true })).resolves.toEqual({ status: 'failed' });
+    });
+
+    it('waits for a slow Home instead of cutting the read short', async () => {
+        getServerFeaturesSnapshot.mockResolvedValue({ status: 'unsupported', reason: 'endpoint_missing' });
+        // Like a real fetch, the boundary rejects when its request is aborted.
+        serverFetch.mockImplementation((_path: string, init?: RequestInit) => new Promise<Response>((resolve, reject) => {
+            init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+            setTimeout(() => resolve(new Response(JSON.stringify({
+                version: 2,
+                enabled: true,
+                complete: true,
+                domains: [{ id: 'sessionSidechainMessages', policy: { mode: 'delete_older_than', days: 7 } }],
+            }), { status: 200, headers: { 'content-type': 'application/json' } })), 2_000);
+        }));
+
+        const { getServerRetentionPolicy } = await import('./serverRetentionPolicyClient');
+        await expect(getServerRetentionPolicy({ serverId: 'server-a' })).resolves.toMatchObject({
+            status: 'ready',
+            policy: { completeness: 'complete' },
         });
     });
 });

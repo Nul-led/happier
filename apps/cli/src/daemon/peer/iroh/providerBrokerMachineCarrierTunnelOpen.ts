@@ -2,7 +2,6 @@ import { isDeepStrictEqual } from 'node:util';
 
 import {
   encodeProviderBrokerAuthorityV1,
-  IrohEndpointDescriptorV1Schema,
   IrohProviderBrokerHandshakeV1Schema,
   PROVIDER_ENDPOINT_SAFETY_LIMITS,
   ProviderBrokerOpenResponseV1Schema,
@@ -104,7 +103,7 @@ export function createProviderBrokerMachineCarrierTunnelOpen(input: Readonly<{
     if (!currentAuthority.valid) {
       throw new MachineCarrierError(currentAuthority.reasonCode, 'Provider broker authority is no longer current.');
     }
-    const endpoint = IrohEndpointDescriptorV1Schema.parse({ endpointId: brokerOpen.target.endpointId });
+    const endpoint = brokerOpen.target.endpoint;
     /** True once this tunnel is only being used to release its own claim. */
     let releasing = false;
 

@@ -11,7 +11,6 @@ vi.mock('./launchPluginSurfaceAction', () => ({ launchPluginSurfaceAction: launc
 const SCOPED = Object.freeze({
     serverId: 'server-1',
     machineId: 'machine-1',
-    generation: 4,
     interactionEnabled: true,
 });
 
@@ -23,24 +22,28 @@ function projection(): PluginUiProjectionModel {
             'acme.demo/read': Object.freeze({
                 id: 'read',
                 pluginId: 'acme.demo',
+                occurrenceId: 'demo-action-occurrence-a',
                 title: 'Read',
-                scopes: ['global'],
-                surfaces: ['ui'],
-                execution: { target: 'daemon' },
+                scopes: ['global' as const],
+                surfaces: ['ui' as const],
+                execution: { target: 'daemon' as const },
                 dangerLevel: 'safe',
                 available: true,
             }),
         }),
-    }) as PluginUiProjectionModel;
+    });
 }
 
 function unionProjectionWithActionOrigin(): PluginUiProjectionModel {
+    const baseProjection = projection();
+    const action = baseProjection.actionsById['acme.demo/read'];
+    if (!action) throw new Error('Expected fixture Action projection');
     return Object.freeze({
-        ...projection(),
+        ...baseProjection,
         generation: 999,
         actionsById: Object.freeze({
             'acme.demo/read': Object.freeze({
-                ...projection().actionsById['acme.demo/read'],
+                ...action,
                 hostOrigin: Object.freeze({
                     machineId: 'machine-action',
                     serverId: 'server-action',
@@ -58,7 +61,30 @@ function unionProjectionWithActionOrigin(): PluginUiProjectionModel {
                 }),
             }),
         }),
-    }) as PluginUiProjectionModel;
+    });
+}
+
+function unionProjectionWithOriginlessAction(): PluginUiProjectionModel {
+    const projection = unionProjectionWithActionOrigin();
+    const action = projection.actionsById['acme.demo/read'];
+    if (!action) throw new Error('Expected fixture Action projection');
+    return Object.freeze({
+        ...projection,
+        actionsById: Object.freeze({
+            'acme.demo/read': Object.freeze({
+                ...action,
+                occurrenceId: 'demo-originless-action-occurrence-b',
+                hostOrigin: Object.freeze({
+                    machineId: 'machine-action',
+                    serverId: 'server-action',
+                    generation: 41,
+                    interactionEnabled: true,
+                    phase: 'current' as const,
+                    executionOrigin: null,
+                }),
+            }),
+        }),
+    });
 }
 
 beforeEach(() => {
@@ -67,6 +93,19 @@ beforeEach(() => {
 });
 
 describe('dispatchPluginResolvedSemanticCommand', () => {
+    it('keeps an unchanged plugin Action usable when only a peer advances the aggregate projection', async () => {
+        const aggregateAdvanced = Object.freeze({ ...projection(), generation: 5 });
+        const outcome = await dispatchPluginResolvedSemanticCommand({
+            projection: aggregateAdvanced,
+            callerPluginId: 'acme.demo',
+            command: { kind: 'executeAction', action: { pluginId: 'acme.demo', localId: 'read' } },
+            scopedLaunchFacts: SCOPED,
+        });
+
+        expect(outcome).toEqual({ ok: true, result: null });
+        expect(launch).toHaveBeenCalledOnce();
+    });
+
     it('carries the caller AbortSignal into the canonical dispatcher', async () => {
         const controller = new AbortController();
         await dispatchPluginResolvedSemanticCommand({
@@ -82,11 +121,10 @@ describe('dispatchPluginResolvedSemanticCommand', () => {
         expect(launch.mock.calls[0]![0].action).toEqual({ pluginId: 'acme.demo', localId: 'read' });
         expect(launch.mock.calls[0]![0].contributedAction).toMatchObject({
             machineId: 'machine-1',
-            expectedGeneration: '4',
         });
     });
 
-    it('uses the resolved Action origin for execution while retaining union generation as the currentness fence', async () => {
+    it('uses the resolved Action origin while retaining the exact Action occurrence', async () => {
         await dispatchPluginResolvedSemanticCommand({
             projection: unionProjectionWithActionOrigin(),
             callerPluginId: 'acme.demo',
@@ -94,7 +132,6 @@ describe('dispatchPluginResolvedSemanticCommand', () => {
             scopedLaunchFacts: {
                 serverId: null,
                 machineId: null,
-                generation: 999,
                 interactionEnabled: true,
             },
         });
@@ -102,8 +139,31 @@ describe('dispatchPluginResolvedSemanticCommand', () => {
         expect(launch.mock.calls[0]![0].contributedAction).toMatchObject({
             machineId: 'machine-action',
             serverId: 'server-action',
-            expectedGeneration: '41',
         });
+    });
+
+    it('dispatches an originless Action through its selected machine and exact occurrence', async () => {
+        const projection = unionProjectionWithOriginlessAction();
+        await dispatchPluginResolvedSemanticCommand({
+            projection,
+            callerPluginId: 'acme.demo',
+            command: { kind: 'executeAction', action: { pluginId: 'acme.demo', localId: 'read' } },
+            scopedLaunchFacts: {
+                serverId: null,
+                machineId: null,
+                interactionEnabled: true,
+            },
+        });
+
+        expect(launch).toHaveBeenCalledOnce();
+        expect(launch.mock.calls[0]![0].contributedAction).toMatchObject({
+            machineId: 'machine-action',
+            serverId: 'server-action',
+        });
+        expect(launch.mock.calls[0]![0].resolveContributedAction({
+            pluginId: 'acme.demo',
+            localId: 'read',
+        })?.occurrenceId).toBe('demo-originless-action-occurrence-b');
     });
 
     it('routes openSurface to the destination owner rather than the Action dispatcher', async () => {
@@ -135,13 +195,13 @@ describe('dispatchPluginResolvedSemanticCommand', () => {
      * effect on the reader's shell; a row whose admitting projection is already
      * retired must not perform it.
      */
-    it('refuses an openSurface command once the admitting generation is retired', async () => {
+    it('refuses an openSurface command once its registered scope retires', async () => {
         const openSurface = vi.fn().mockResolvedValue({ ok: true });
         const outcome = await dispatchPluginResolvedSemanticCommand({
             projection: projection(),
             callerPluginId: 'acme.demo',
             command: { kind: 'openSurface', destination: { pluginId: 'acme.demo', localId: 'page' } },
-            scopedLaunchFacts: { ...SCOPED, generation: 3 },
+            scopedLaunchFacts: { ...SCOPED, interactionEnabled: false },
             openSurface,
         });
         expect(outcome).toEqual({
@@ -193,12 +253,12 @@ describe('dispatchPluginResolvedSemanticCommand', () => {
         expect(outcome).toEqual({ ok: true });
     });
 
-    it('refuses a daemon Action once the admitting generation is retired', async () => {
+    it('refuses a daemon Action once its registered scope retires', async () => {
         const outcome = await dispatchPluginResolvedSemanticCommand({
             projection: projection(),
             callerPluginId: 'acme.demo',
             command: { kind: 'executeAction', action: { pluginId: 'acme.demo', localId: 'read' } },
-            scopedLaunchFacts: { ...SCOPED, generation: 3 },
+            scopedLaunchFacts: { ...SCOPED, interactionEnabled: false },
         });
         expect(outcome).toEqual({
             ok: false,

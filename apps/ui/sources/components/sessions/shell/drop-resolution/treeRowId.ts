@@ -31,6 +31,11 @@ export function isFolderTreeRowId(rowId: string): boolean {
         && typeof tuple[2] === 'string';
 }
 
+export function isSessionTreeRowId(rowId: string): boolean {
+    const tuple = readTreeRowTuple(rowId);
+    return tuple?.length === 2 && tuple[0] === 'session' && typeof tuple[1] === 'string';
+}
+
 export function isWorkspaceRootTreeRowId(rowId: string): boolean {
     const tuple = readTreeRowTuple(rowId);
     return tuple?.length === 2 && tuple[0] === 'workspace-root' && typeof tuple[1] === 'string';

@@ -6,23 +6,18 @@ import { t } from '@/text';
 import type { WorkspaceSyncRelationshipSummary } from '@/sync/domains/sessionHandoff/workspaceSyncRelationshipModel';
 
 import {
-    readWorkspaceSyncConflictDetailsResource,
     WorkspaceSyncConflictDetailsView,
+    type WorkspaceSyncConflictDetailsResource,
 } from './WorkspaceSyncConflictDetailsView';
-import { createWorkspaceSyncRelationshipDetailsTab } from './workspaceSyncRelationshipDetailsTab';
+import { createWorkspaceSyncConflictDetailsResource } from './workspaceSyncConflictDetailsTab';
 import { formatWorkspaceSyncRelationshipTitle } from '@/sync/domains/sessionHandoff/workspaceSyncPresentation';
 
 type WorkspaceSyncRelationshipDetailsModalProps = CustomModalInjectedProps & Readonly<{
-    summary: WorkspaceSyncRelationshipSummary;
-    localWorkspaceRefId?: string | null;
+    resource: WorkspaceSyncConflictDetailsResource;
 }>;
 
 function WorkspaceSyncRelationshipDetailsModal(props: WorkspaceSyncRelationshipDetailsModalProps) {
-    const resource = React.useMemo(() => readWorkspaceSyncConflictDetailsResource(
-        createWorkspaceSyncRelationshipDetailsTab(props.summary, props.localWorkspaceRefId).resource,
-    ), [props.localWorkspaceRefId, props.summary]);
-
-    return resource ? <WorkspaceSyncConflictDetailsView resource={resource} /> : null;
+    return <WorkspaceSyncConflictDetailsView resource={props.resource} />;
 }
 
 /**
@@ -30,22 +25,15 @@ function WorkspaceSyncRelationshipDetailsModal(props: WorkspaceSyncRelationshipD
  * workspace-sync resource builder, renderer, stores, and operations remain the
  * single relationship detail owner.
  */
-export function openWorkspaceSyncRelationshipDetails(
-    summary: WorkspaceSyncRelationshipSummary,
-    localWorkspaceRefId?: string | null,
-): void {
+export function openWorkspaceSyncConflictDetails(resource: WorkspaceSyncConflictDetailsResource, title?: string): void {
     Modal.show({
         component: WorkspaceSyncRelationshipDetailsModal,
-        props: { summary, localWorkspaceRefId },
+        props: { resource },
         accessibilityLabel: t('workspaceSync.title'),
         closeOnBackdrop: true,
         chrome: {
             kind: 'card',
-            title: formatWorkspaceSyncRelationshipTitle({
-                alphaLabel: summary.alpha.label,
-                betaLabel: summary.beta.label,
-                mode: summary.relationship.mode,
-            }),
+            title: title ?? t('workspaceSync.conflictsTitle'),
             subtitle: t('workspaceSync.title'),
             // The details view owns its responsive scroll surface. A second modal
             // scroller traps narrow/large-text content and can strand actions.
@@ -54,4 +42,16 @@ export function openWorkspaceSyncRelationshipDetails(
             dimensions: { size: 'md', width: 640, maxHeightRatio: 0.92 },
         },
     });
+}
+
+export function openWorkspaceSyncRelationshipDetails(
+    summary: WorkspaceSyncRelationshipSummary,
+    localWorkspaceRefId?: string | null,
+): void {
+    const resource = createWorkspaceSyncConflictDetailsResource(summary, localWorkspaceRefId);
+    openWorkspaceSyncConflictDetails(resource, formatWorkspaceSyncRelationshipTitle({
+        alphaLabel: summary.alpha.label,
+        betaLabel: summary.beta.label,
+        mode: summary.relationship.mode,
+    }));
 }

@@ -63,7 +63,7 @@ function fixture() {
     });
     const snapshot = {
         availabilityCursor: 7, intentReads: [{ pluginId, response }], materializations: [materialization],
-        snapshots: [{ serverIdentityId: materialization.serverIdentityId, machineId: materialization.machineId, revision: 1, materializations: [materialization] }],
+        snapshots: [{ serverIdentityId: materialization.serverIdentityId, machineId: materialization.machineId, materializations: [materialization] }],
     };
     const store = createPluginAccountAvailabilityReaderStore();
     store.replace({ scope, snapshot });
@@ -71,7 +71,7 @@ function fixture() {
     const projection = PluginProjectionV2Schema.parse({
         v: 2, generation: 19, familiesById: {},
         installedPackagesById: { [pluginId]: { id: pluginId, displayName: 'Assets', version: '1.0.0', enabled: true,
-            source: { kind: 'archive', locator: 'package.tgz' }, immutableGenerationId: 'generation-a' } },
+            source: { kind: 'archive', locator: 'package.tgz' }, immutableGenerationId: 'generation-a', occurrenceId: 'assets-occurrence-a' } },
     });
     const { lifetime, retire } = createLifetime(scope);
     const request = vi.fn(async (_path: string, init?: RequestInit) => {
@@ -97,7 +97,7 @@ describe('exact daemon package-asset publication', () => {
         await expect(acquireAndPublishPluginAccountPackageAssets(current.input, current)).resolves.toMatchObject({ kind: 'published' });
         expect(current.request).toHaveBeenCalledOnce();
         expect(current.resourceRead.mock.calls[0]).toMatchObject(['machine-a', {
-            serverId: 'server-a', expectedGeneration: '19', callerPluginId: 'acme.assets',
+            serverId: 'server-a', expectedCallerOccurrenceId: 'assets-occurrence-a', callerPluginId: 'acme.assets',
             resource: { pluginId: 'acme.assets', localId: 'image' },
         }]);
         const payload = JSON.parse(String(current.request.mock.calls[0]![1]?.body));

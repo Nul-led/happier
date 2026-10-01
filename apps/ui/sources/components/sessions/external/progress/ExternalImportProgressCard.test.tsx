@@ -226,10 +226,8 @@ describe('ExternalImportProgressCard', () => {
         }));
 
         expect(screen.findByTestId('external-session-operation-a11y-status')).toBeNull();
-        expect(announceForAccessibilityMock).toHaveBeenCalledTimes(1);
-        expect(announceForAccessibilityMock).toHaveBeenLastCalledWith(
-            expect.stringContaining('externalSessions.operationPhaseImporting'),
-        );
+        // The shared announcer never speaks the state a card mounts with.
+        expect(announceForAccessibilityMock).not.toHaveBeenCalled();
 
         await screen.update(React.createElement(ExternalImportProgressCard, {
             ...commonProps,
@@ -249,7 +247,7 @@ describe('ExternalImportProgressCard', () => {
                 },
             }),
         }));
-        expect(announceForAccessibilityMock).toHaveBeenCalledTimes(1);
+        expect(announceForAccessibilityMock).not.toHaveBeenCalled();
 
         await screen.update(React.createElement(ExternalImportProgressCard, {
             ...commonProps,
@@ -259,7 +257,7 @@ describe('ExternalImportProgressCard', () => {
                 retryTargetPhase: 'importing',
             }),
         }));
-        expect(announceForAccessibilityMock).toHaveBeenCalledTimes(2);
+        expect(announceForAccessibilityMock).toHaveBeenCalledTimes(1);
         expect(announceForAccessibilityMock).toHaveBeenLastCalledWith(
             expect.stringContaining('externalSessions.operationStatusNeedsResume'),
         );
@@ -271,7 +269,7 @@ describe('ExternalImportProgressCard', () => {
                 phase: 'publishing',
             }),
         }));
-        expect(announceForAccessibilityMock).toHaveBeenCalledTimes(3);
+        expect(announceForAccessibilityMock).toHaveBeenCalledTimes(2);
         expect(announceForAccessibilityMock).toHaveBeenLastCalledWith(
             expect.stringContaining('externalSessions.operationPhasePublishing'),
         );
@@ -303,7 +301,7 @@ describe('ExternalImportProgressCard', () => {
                 },
             }),
         }));
-        expect(announceForAccessibilityMock).toHaveBeenCalledTimes(4);
+        expect(announceForAccessibilityMock).toHaveBeenCalledTimes(3);
         expect(announceForAccessibilityMock).toHaveBeenLastCalledWith(
             expect.stringContaining('externalSessions.operationStatusCompleted'),
         );
@@ -348,17 +346,15 @@ describe('ExternalImportProgressCard', () => {
             originAvailability: 'online',
         }));
 
-        expect(announceForAccessibilityMock).toHaveBeenCalledTimes(1);
-        expect(announceForAccessibilityMock).toHaveBeenLastCalledWith(
-            expect.stringContaining('externalSessions.operationStatusFailed'),
-        );
+        // The shared announcer never speaks the state a card mounts with.
+        expect(announceForAccessibilityMock).not.toHaveBeenCalled();
 
         await screen.update(React.createElement(ExternalImportProgressCard, {
             ...commonProps,
             originAvailability: 'offline',
         }));
 
-        expect(announceForAccessibilityMock).toHaveBeenCalledTimes(2);
+        expect(announceForAccessibilityMock).toHaveBeenCalledTimes(1);
         expect(announceForAccessibilityMock).toHaveBeenLastCalledWith(
             expect.stringContaining('externalSessions.operationStatusOriginOffline'),
         );

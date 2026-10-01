@@ -228,19 +228,15 @@ describe('ExternalSessionOperationSharedCard accessibility', () => {
             />,
         );
 
-        expect(announceForAccessibilityMock).toHaveBeenCalledTimes(1);
-        expect(announceForAccessibilityMock).toHaveBeenLastCalledWith(
-            expect.stringContaining(
-                'externalSessions.operationPhaseImporting',
-            ),
-        );
+        // The shared announcer never speaks the state a card mounts with.
+        expect(announceForAccessibilityMock).not.toHaveBeenCalled();
 
         await screen.update(
             <ExternalSessionOperationSharedCard
                 presentation={createPresentation({ revision: 42 })}
             />,
         );
-        expect(announceForAccessibilityMock).toHaveBeenCalledTimes(1);
+        expect(announceForAccessibilityMock).not.toHaveBeenCalled();
 
         await screen.update(
             <ExternalSessionOperationSharedCard
@@ -251,7 +247,7 @@ describe('ExternalSessionOperationSharedCard accessibility', () => {
                 })}
             />,
         );
-        expect(announceForAccessibilityMock).toHaveBeenCalledTimes(2);
+        expect(announceForAccessibilityMock).toHaveBeenCalledTimes(1);
         const finalAnnouncement = String(
             announceForAccessibilityMock.mock.lastCall?.[0],
         );

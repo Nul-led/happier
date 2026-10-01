@@ -1,3 +1,4 @@
+import { renderWithSessionTranscriptSource } from '@/dev/testkit';
 import React from 'react';
 import {
     afterEach,
@@ -7,7 +8,6 @@ import {
     vi,
 } from 'vitest';
 import {
-    renderScreen,
     standardCleanup,
 } from '@/dev/testkit';
 import { installToolShellCommonModuleMocks, makeToolCall } from './ToolView.testHelpers';
@@ -126,7 +126,7 @@ describe('ToolView (ACP kind fallback)', () => {
             description: 'Run echo hello',
         });
 
-        const screen = await renderScreen(
+        const screen = await renderWithSessionTranscriptSource(
             React.createElement(ToolView, { tool, metadata: null, messages: [], sessionId: 's1', messageId: 'm1' }),
         );
 

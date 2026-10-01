@@ -7,6 +7,11 @@ import { createAccountEncryptionModeModuleMock } from './accountEncryptionMode';
 import { createRegistryUiBehaviorModuleMock } from './registryUiBehavior';
 import { createTokenStorageModuleMock } from './tokenStorage';
 
+vi.mock('@/sync/domains/plugins/availability/generatedBundledPluginUiArtifacts', async () => {
+    const { emptyBundledPluginUiAssetsModule } = await import('./bundledPluginUiAssets');
+    return emptyBundledPluginUiAssetsModule;
+});
+
 describe('UI testkit mock factories', () => {
     it('preserves account-encryption-mode exports while allowing a focused reader override', async () => {
         const fetchAccountEncryptionMode = vi.fn(async () => ({ mode: 'plain' as const, updatedAt: 0 }));
@@ -655,6 +660,25 @@ describe('UI testkit mock factories', () => {
         expect(listeners.size).toBe(0);
     });
 
+    it('keeps the original storage store readable when the original module finishes loading after the mock is built', async () => {
+        const { createStorageModuleMock, createUseSettingMock } = await import('./storage');
+        const store = { getState: () => ({ marker: 'actual-storage' }) };
+        // An import cycle hands `importOriginal()` a namespace whose bindings are still
+        // uninitialized; the live getter only answers once the original module has run.
+        let initialized = false;
+        const namespace = {};
+        Object.defineProperty(namespace, 'storage', { enumerable: true, get: () => (initialized ? store : undefined) });
+
+        const mock = await createStorageModuleMock({
+            importOriginal: async () => namespace as any,
+            overrides: { useSetting: createUseSettingMock({ values: {} }) },
+        });
+        initialized = true;
+
+        expect(mock.getStorage()).toBe(store);
+        expect(mock.storage).toBe(store);
+    });
+
     it('preserves explicit getStorage overrides in storage module mocks', async () => {
         const { createStorageModuleMock } = await import('./storage');
         const storageOverride = {
@@ -698,6 +722,9 @@ describe('UI testkit mock factories', () => {
         expect(reducerState.messages).toBeInstanceOf(Map);
         expect(mock.useSessionMessagesReducerState('session-a')).toBe(reducerState);
         expect(mock.useMachineListByServerId()).toEqual({});
+        // The single-Home readers agree with the empty map: no list loaded, status idle.
+        expect(mock.useMachineListForServer('home-a')).toBeNull();
+        expect(mock.useMachineListStatusForServer('home-a')).toBe('idle');
         expect(mock.useMachine('machine-a')).toBeNull();
         expect(mock.useSocketStatus()).toEqual({
             status: 'connected',
@@ -735,7 +762,7 @@ describe('UI testkit mock factories', () => {
 
         expect(mockStore((state) => state.sessionMessages['session-1']?.messagesById ?? null)).toEqual({});
         expect(mockStore.getState().sessionMessages['session-1']?.messagesMap).toEqual({});
-        expect(mockStore.getState().sessionTailContiguousFloorSeq).toEqual({});
+        expect(mockStore.getState().sessionTailContiguousBoundary).toEqual({});
         expect(mockStore.getState().settings.mobileWorkspaceExperienceV1).toBeDefined();
     });
 

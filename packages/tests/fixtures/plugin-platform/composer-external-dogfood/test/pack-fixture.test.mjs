@@ -39,18 +39,10 @@ test('packed Composer dogfood declares the canonical React Native authoring tool
   assert.equal(packageJson.peerDependencies, undefined);
 });
 
-test('Composer dogfood build config emits the manifest-selected native renderer on every live platform', async () => {
-  const { pluginUiBuildConfig } = await import('../happier-plugin-ui.config.mjs');
-
-  assert.deepEqual(pluginUiBuildConfig.targets, [{
-    rendererId: 'issue-surface-native',
-    entry: 'src/issueSurface.mjs',
-    kind: 'reactNative',
-    platforms: ['web', 'ios', 'android'],
-    module: {
-      containerName: 'acme_composer_issue_dogfood_issue_surface_native',
-      modulePath: './renderComposerIssueSurface',
-      exportName: 'renderComposerIssueSurface',
-    },
-  }]);
+test('Composer dogfood exposes the manifest-selected universal UI artifact', async () => {
+  const packageJson = JSON.parse(await readFile(join(fixtureRoot, 'package.json'), 'utf8'));
+  assert.equal(
+    packageJson.exports['./happier-plugin-ui/issue-surface-native'],
+    './src/issueSurface.mjs',
+  );
 });

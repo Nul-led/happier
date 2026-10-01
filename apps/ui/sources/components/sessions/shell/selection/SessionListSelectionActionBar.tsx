@@ -1,6 +1,7 @@
 import * as React from 'react';
-import { Platform, Pressable, View, useWindowDimensions } from 'react-native';
-import { StyleSheet, useUnistyles } from 'react-native-unistyles';
+import type { HappierSelectionActionBarAction } from '@happier-dev/plugin-ui/presentation';
+import { Platform, View } from 'react-native';
+import { StyleSheet } from 'react-native-unistyles';
 
 import {
     executeSessionBulkAction,
@@ -17,17 +18,9 @@ import {
     type SessionBulkActionDescriptor,
 } from '@/components/sessions/actions/sessionBulkActionPresentation';
 import { buildSessionBulkActionResultSummary } from '@/components/sessions/actions/sessionActionResultMessages';
-import {
-    OverlayMotionFrame,
-    resolveOverlayMotionPreset,
-    useOverlayPresence,
-} from '@/components/ui/overlays/motion/overlayMotion';
-import { GlassPanel } from '@/components/ui/glass/GlassPanel';
-import { HorizontalScrollableRow } from '@/components/ui/scroll/HorizontalScrollableRow';
-import { Text } from '@/components/ui/text/Text';
+import { SelectionActionBar } from '@/components/ui/selection/SelectionActionBar';
 import { useSessionCockpitBottomChromeHeight } from '@/components/workspaceCockpit/session/SessionCockpitChromeRegistry';
 import { useOptionalSafeAreaInsets } from '@/hooks/ui/useOptionalSafeAreaInsets';
-import { useReducedMotionPreference } from '@/hooks/ui/useReducedMotionPreference';
 import { Modal } from '@/modal';
 import { t } from '@/text';
 import type { SessionFolderWorkspaceRefV1 } from '@/sync/domains/session/folders';
@@ -62,8 +55,6 @@ type ConfirmActionState = Readonly<{
 }>;
 
 const EMPTY_TARGETS: readonly SessionBulkActionTarget[] = Object.freeze([]);
-const ACTION_BAR_COMPACT_HEIGHT_THRESHOLD = 760;
-const SELECTION_ACTION_BAR_RADIUS = 16;
 
 function safeActionTestId(actionId: string): string {
     const stableActionId = actionId.startsWith('ui.') ? actionId.slice(3) : actionId;
@@ -164,7 +155,9 @@ function simpleBulkActionRequest(actionId: SessionBulkActionId): SessionBulkActi
     }
 }
 
-const stylesheet = StyleSheet.create((theme) => ({
+const stylesheet = StyleSheet.create(() => ({
+    // Placement only: the bar floats over the list above the bottom chrome. Its anatomy is the shared
+    // selection bar's.
     host: {
         position: 'absolute',
         left: 12,
@@ -174,129 +167,24 @@ const stylesheet = StyleSheet.create((theme) => ({
         alignItems: 'center',
         pointerEvents: 'box-none',
     },
-    hostCompact: {
-        alignItems: 'stretch',
-    },
-    // Inner content layout. The glass surface (grey-ish fill + rim + inner shadow +
-    // soft cast shadow) is provided by the wrapping `GlassPanel`.
-    bar: {
-        minHeight: 44,
-        minWidth: 180,
-        maxWidth: '100%',
-        paddingHorizontal: 12,
-        paddingVertical: 8,
-        alignItems: 'stretch',
-        justifyContent: 'center',
-        gap: 8,
-    },
-    barCompact: {
-        width: '100%',
-        paddingVertical: 6,
-        gap: 6,
-    },
-    headerRow: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        gap: 12,
-    },
-    headerActions: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 4,
-    },
-    countText: {
-        color: theme.colors.text.primary,
-    },
-    actionRow: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        flexWrap: 'wrap',
-        gap: 6,
-    },
-    actionScroll: {
-        width: '100%',
-        maxWidth: '100%',
-    },
-    actionScrollContent: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 6,
-        paddingRight: 4,
-    },
-    actionButton: {
-        minHeight: 32,
-        borderRadius: 8,
-        borderWidth: StyleSheet.hairlineWidth,
-        borderColor: theme.colors.border.default,
-        backgroundColor: theme.colors.surface.base,
-        paddingHorizontal: 10,
-        paddingVertical: 6,
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 6,
-    },
-    destructiveActionButton: {
-        borderColor: theme.colors.state.danger.border,
-        backgroundColor: theme.colors.state.danger.background,
-    },
-    actionButtonDisabled: {
-        opacity: 0.5,
-    },
-    actionText: {
-        color: theme.colors.text.primary,
-        fontSize: 12,
-    },
-    destructiveActionText: {
-        color: theme.colors.state.danger.foreground,
-    },
-    quietButton: {
-        minHeight: 30,
-        borderRadius: 8,
-        paddingHorizontal: 8,
-        paddingVertical: 5,
-        justifyContent: 'center',
-        alignItems: 'center',
-    },
-    quietButtonText: {
-        color: theme.colors.text.secondary,
-        fontSize: 12,
-    },
-    statusBox: {
-        borderRadius: 8,
-        backgroundColor: theme.colors.surface.base,
-        paddingHorizontal: 10,
-        paddingVertical: 8,
-        gap: 6,
-    },
-    statusText: {
-        color: theme.colors.text.secondary,
-        fontSize: 12,
-    },
-    statusActions: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 8,
+    stateMarker: {
+        position: 'absolute',
+        width: 0,
+        height: 0,
+        overflow: 'hidden',
     },
 }));
 
 export function SessionListSelectionActionBarHost(props: SessionListSelectionActionBarHostProps = {}): React.ReactElement | null {
     const styles = stylesheet;
-    const { theme } = useUnistyles();
     const safeAreaInsets = useOptionalSafeAreaInsets();
-    const windowDimensions = useWindowDimensions();
     const bottomChromeHeight = useSessionCockpitBottomChromeHeight();
     const selection = useOptionalSessionListSelectionState();
     const selectionActions = useOptionalSessionListSelectionActions();
-    const reducedMotion = useReducedMotionPreference();
     const [confirmAction, setConfirmAction] = React.useState<ConfirmActionState | null>(null);
     const [runningAction, setRunningAction] = React.useState<RunningActionState | null>(null);
     const [result, setResult] = React.useState<SessionBulkActionExecutionResult | null>(null);
     const cancelStateRef = React.useRef<{ cancelled: boolean } | null>(null);
-    const motionPreset = React.useMemo(
-        () => resolveOverlayMotionPreset({ kind: 'popover', direction: 'bottom' }),
-        [],
-    );
     const selectedTargets = React.useMemo(() => {
         const targetsByKey = props.targetsByKey;
         if (!targetsByKey || selection.selectedKeys.size === 0) return EMPTY_TARGETS;
@@ -313,16 +201,11 @@ export function SessionListSelectionActionBarHost(props: SessionListSelectionAct
         moveEnabled: typeof props.onRequestMoveToFolder === 'function',
     }), [props.onRequestMoveToFolder, props.tagsEnabled, selectedTargets]);
     const visible = selection.isSelectionMode || runningAction !== null || result !== null || confirmAction !== null;
-    const presence = useOverlayPresence(
-        visible,
-        reducedMotion ? 0 : motionPreset.exitMs,
-    );
     const presentedCountRef = React.useRef(selection.count);
     if (selection.isSelectionMode) {
         presentedCountRef.current = selection.count;
     }
     const presentedCount = selection.isSelectionMode ? selection.count : presentedCountRef.current;
-    const compactActionLayout = windowDimensions.height < ACTION_BAR_COMPACT_HEIGHT_THRESHOLD;
     const actionBarBottomInset = resolveSelectionActionBarBottomInset({
         bottomChromeHeight,
         safeAreaBottom: safeAreaInsets.bottom,
@@ -459,238 +342,158 @@ export function SessionListSelectionActionBarHost(props: SessionListSelectionAct
         setConfirmAction(null);
     }, [selection.count, selection.isSelectionMode]);
 
-    if (!presence.present) return null;
-
     const resultSummary = result ? buildSessionBulkActionResultSummary(result) : null;
     const confirmDescriptor = confirmAction?.descriptor ?? null;
-    const actionButtons = actionDescriptors.map((descriptor) => {
-        const iconColor = descriptor.destructive
-            ? theme.colors.state.danger.foreground
-            : theme.colors.text.primary;
-        return (
-            <Pressable
-                key={descriptor.id}
-                testID={`session-list-selection-action-${safeActionTestId(descriptor.id)}`}
-                accessibilityRole="button"
-                accessibilityLabel={descriptor.title}
-                disabled={selectedTargets.length === 0}
-                onPress={() => {
-                    void handleActionPress(descriptor);
-                }}
-                style={[
-                    styles.actionButton,
-                    descriptor.destructive ? styles.destructiveActionButton : null,
-                    selectedTargets.length === 0 ? styles.actionButtonDisabled : null,
-                ]}
-                {...({
-                    'data-action-id': descriptor.id,
-                    dataSet: { actionId: descriptor.id },
-                } as Record<string, unknown>)}
-            >
-                <Icon
-                    name={descriptor.icon}
-                    size={14}
-                    color={iconColor}
-                />
-                <Text
-                    style={[
-                        styles.actionText,
-                        descriptor.destructive ? styles.destructiveActionText : null,
-                    ]}
-                >
-                    {descriptor.title}
-                </Text>
-            </Pressable>
-        );
-    });
+    // One bar, four states (ui-primitives-audit §4): this host keeps the execution state and hands the
+    // shared bar the label, actions and dismiss for the state it is in.
+    const barState: Readonly<{
+        label: string;
+        labelAccessibilityLabel?: string;
+        labelTestID?: string;
+        actions: readonly HappierSelectionActionBarAction[];
+        dismiss: React.ComponentProps<typeof SelectionActionBar>['dismiss'];
+    }> = runningAction
+        ? {
+            label: t('sessionsList.selectionProgress', {
+                completed: runningAction.progress.completed,
+                total: runningAction.progress.total,
+            }),
+            actions: [],
+            dismiss: {
+                testID: 'session-list-selection-cancel-running',
+                label: t('common.cancel'),
+                presentation: 'label',
+                onPress: handleCancelRunningAction,
+            },
+        }
+        : result && resultSummary
+            ? {
+                label: t('sessionsList.selectionResult', {
+                    succeeded: resultSummary.succeededCount,
+                    failed: resultSummary.failedCount,
+                    skipped: resultSummary.skippedCount,
+                }),
+                actions: [],
+                dismiss: {
+                    testID: 'session-list-selection-result-dismiss',
+                    label: t('common.done'),
+                    presentation: 'label',
+                    onPress: handleDismissResult,
+                },
+            }
+            : confirmAction && confirmDescriptor
+                ? {
+                    label: t('sessionsList.selectionConfirm', {
+                        action: confirmDescriptor.title,
+                        count: confirmAction.targets.length,
+                    }),
+                    actions: [{
+                        id: confirmAction.request.id,
+                        testID: `session-list-selection-confirm-${safeActionTestId(confirmAction.request.id)}`,
+                        label: confirmDescriptor.title,
+                        accessibilityLabel: t('sessionsList.selectionConfirmA11yLabel', { action: confirmDescriptor.title }),
+                        emphasis: confirmDescriptor.destructive ? 'destructive' : 'primary',
+                        onPress: () => executeAction(confirmAction.request, confirmAction.targets),
+                    }],
+                    dismiss: {
+                        label: t('common.cancel'),
+                        presentation: 'label',
+                        onPress: () => setConfirmAction(null),
+                    },
+                }
+                : {
+                    label: t('sessionsList.selectionSelectedCount', { count: presentedCount }),
+                    labelAccessibilityLabel: t('sessionsList.selectionA11ySelectedCount', { count: presentedCount }),
+                    labelTestID: 'session-list-selection-count-label',
+                    actions: [
+                        ...actionDescriptors.map((descriptor): HappierSelectionActionBarAction => ({
+                            id: descriptor.id,
+                            testID: `session-list-selection-action-${safeActionTestId(descriptor.id)}`,
+                            label: descriptor.title,
+                            emphasis: descriptor.destructive ? 'destructive' : 'secondary',
+                            disabled: selectedTargets.length === 0,
+                            renderIcon: (color) => <Icon name={descriptor.icon} size={14} color={color} />,
+                            onPress: () => handleActionPress(descriptor),
+                        })),
+                        ...(hasUnselectedVisibleTargets ? [{
+                            id: 'select-all-visible',
+                            testID: 'session-list-selection-select-all-visible',
+                            label: t('sessionsList.selectionSelectAllVisible'),
+                            accessibilityLabel: t('sessionsList.selectionSelectAllVisibleA11yLabel'),
+                            onPress: () => selectionActions?.selectAllVisible(),
+                        }] : []),
+                    ],
+                    dismiss: {
+                        testID: 'session-list-selection-cancel',
+                        label: t('sessionsList.selectionCancelA11yLabel'),
+                        onPress: handleCancelSelection,
+                    },
+                };
 
     return (
         <View
             testID="session-list-selection-action-bar-host"
-            pointerEvents={presence.exiting ? 'none' : 'box-none'}
-            style={[styles.host, compactActionLayout ? styles.hostCompact : null, { bottom: actionBarBottomInset }]}
+            pointerEvents="box-none"
+            style={[styles.host, { bottom: actionBarBottomInset }]}
         >
-            <OverlayMotionFrame visible={visible} kind="popover" direction="bottom" disableTransformOnWeb>
-                <GlassPanel
-                    testID={visible ? 'session-list-selection-action-bar' : undefined}
-                    radius={SELECTION_ACTION_BAR_RADIUS}
-                    surfaceColor={theme.colors.glass.panelSurface}
-                    shadowLevel={3}
-                    style={[styles.bar, compactActionLayout ? styles.barCompact : null]}
-                >
-                    <View style={styles.headerRow}>
-                        <Text
-                            testID="session-list-selection-count"
-                            style={styles.countText}
-                            accessibilityLabel={t('sessionsList.selectionA11ySelectedCount', { count: presentedCount })}
-                            {...({
-                                'data-selected-count': presentedCount,
-                                dataSet: { selectedCount: String(presentedCount) },
-                            } as Record<string, unknown>)}
-                        >
-                            {t('sessionsList.selectionSelectedCount', { count: presentedCount })}
-                        </Text>
-                        <View style={styles.headerActions}>
-                            {hasUnselectedVisibleTargets ? (
-                                <Pressable
-                                    testID="session-list-selection-select-all-visible"
-                                    accessibilityRole="button"
-                                    accessibilityLabel={t('sessionsList.selectionSelectAllVisibleA11yLabel')}
-                                    onPress={() => selectionActions?.selectAllVisible()}
-                                    style={styles.quietButton}
-                                >
-                                    <Text style={styles.quietButtonText}>{t('sessionsList.selectionSelectAllVisible')}</Text>
-                                </Pressable>
-                            ) : null}
-                            <Pressable
-                                testID="session-list-selection-cancel"
-                                accessibilityRole="button"
-                                accessibilityLabel={t('sessionsList.selectionCancelA11yLabel')}
-                                onPress={handleCancelSelection}
-                                style={styles.quietButton}
-                            >
-                                <Text style={styles.quietButtonText}>{t('common.cancel')}</Text>
-                            </Pressable>
-                        </View>
-                    </View>
-
-                    {runningAction ? (
-                        <View
-                            testID="session-list-selection-progress"
-                            style={styles.statusBox}
-                            {...({
-                                'data-action-id': runningAction.actionId,
-                                'data-total-count': runningAction.progress.total,
-                                'data-completed-count': runningAction.progress.completed,
-                                dataSet: {
-                                    actionId: runningAction.actionId,
-                                    totalCount: String(runningAction.progress.total),
-                                    completedCount: String(runningAction.progress.completed),
-                                },
-                            } as Record<string, unknown>)}
-                        >
-                            <Text style={styles.statusText}>
-                                {t('sessionsList.selectionProgress', {
-                                    completed: runningAction.progress.completed,
-                                    total: runningAction.progress.total,
-                                })}
-                            </Text>
-                            <View style={styles.statusActions}>
-                                <Pressable
-                                    testID="session-list-selection-cancel-running"
-                                    accessibilityRole="button"
-                                    accessibilityLabel={t('sessionsList.selectionCancelRunningA11yLabel')}
-                                    onPress={handleCancelRunningAction}
-                                    style={styles.quietButton}
-                                >
-                                    <Text style={styles.quietButtonText}>{t('common.cancel')}</Text>
-                                </Pressable>
-                            </View>
-                        </View>
-                    ) : null}
-
-                    {result && resultSummary ? (
-                        <View
-                            testID="session-list-selection-result"
-                            style={styles.statusBox}
-                            {...({
-                                'data-action-id': result.actionId,
-                                'data-succeeded-count': resultSummary.succeededCount,
-                                'data-failed-count': resultSummary.failedCount,
-                                'data-skipped-count': resultSummary.skippedCount,
-                                'data-cancelled-count': resultSummary.cancelledCount,
-                                dataSet: {
-                                    actionId: result.actionId,
-                                    succeededCount: String(resultSummary.succeededCount),
-                                    failedCount: String(resultSummary.failedCount),
-                                    skippedCount: String(resultSummary.skippedCount),
-                                    cancelledCount: String(resultSummary.cancelledCount),
-                                },
-                            } as Record<string, unknown>)}
-                        >
-                            <Text style={styles.statusText}>
-                                {t('sessionsList.selectionResult', {
-                                    succeeded: resultSummary.succeededCount,
-                                    failed: resultSummary.failedCount,
-                                    skipped: resultSummary.skippedCount,
-                                })}
-                            </Text>
-                            <View style={styles.statusActions}>
-                                <Pressable
-                                    testID="session-list-selection-result-dismiss"
-                                    accessibilityRole="button"
-                                    accessibilityLabel={t('sessionsList.selectionDismissResultA11yLabel')}
-                                    onPress={handleDismissResult}
-                                    style={styles.quietButton}
-                                >
-                                    <Text style={styles.quietButtonText}>{t('common.done')}</Text>
-                                </Pressable>
-                            </View>
-                        </View>
-                    ) : null}
-
-                    {!runningAction && !result && !confirmAction ? (
-                        compactActionLayout ? (
-                            <HorizontalScrollableRow
-                                testID="session-list-selection-actions-scroll"
-                                contentTestID="session-list-selection-actions-scroll-content"
-                                fadeColor={theme.colors.surface.elevated}
-                                indicatorColor={theme.colors.text.secondary}
-                                containerStyle={styles.actionScroll}
-                                contentStyle={styles.actionScrollContent}
-                            >
-                                {actionButtons}
-                            </HorizontalScrollableRow>
-                        ) : (
-                            <View style={styles.actionRow}>
-                                {actionButtons}
-                            </View>
-                        )
-                    ) : null}
-
-                    {confirmAction && confirmDescriptor && !runningAction ? (
-                        <View style={styles.statusBox}>
-                            <Text style={styles.statusText}>
-                                {t('sessionsList.selectionConfirm', {
-                                    action: confirmDescriptor.title,
-                                    count: confirmAction.targets.length,
-                                })}
-                            </Text>
-                            <View style={styles.statusActions}>
-                                <Pressable
-                                    testID={`session-list-selection-confirm-${safeActionTestId(confirmAction.request.id)}`}
-                                    accessibilityRole="button"
-                                    accessibilityLabel={t('sessionsList.selectionConfirmA11yLabel', { action: confirmDescriptor.title })}
-                                    onPress={() => {
-                                        void executeAction(confirmAction.request, confirmAction.targets);
-                                    }}
-                                    style={[
-                                        styles.actionButton,
-                                        confirmDescriptor.destructive ? styles.destructiveActionButton : null,
-                                    ]}
-                                >
-                                    <Text
-                                        style={[
-                                            styles.actionText,
-                                            confirmDescriptor.destructive ? styles.destructiveActionText : null,
-                                        ]}
-                                    >
-                                        {confirmDescriptor.title}
-                                    </Text>
-                                </Pressable>
-                                <Pressable
-                                    accessibilityRole="button"
-                                    accessibilityLabel={t('common.cancel')}
-                                    onPress={() => setConfirmAction(null)}
-                                    style={styles.quietButton}
-                                >
-                                    <Text style={styles.quietButtonText}>{t('common.cancel')}</Text>
-                                </Pressable>
-                            </View>
-                        </View>
-                    ) : null}
-                </GlassPanel>
-            </OverlayMotionFrame>
+            <SelectionActionBar
+                visible={visible}
+                testID={visible ? 'session-list-selection-action-bar' : undefined}
+                accessibilityLabel={t('sessionsList.selectionA11ySelectedCount', { count: presentedCount })}
+                label={barState.label}
+                labelAccessibilityLabel={barState.labelAccessibilityLabel}
+                labelTestID={barState.labelTestID}
+                actions={barState.actions}
+                dismiss={barState.dismiss}
+            />
+            {/* Machine-readable state for the e2e contract (sessionList.multiSelectActions.spec): state
+                markers only, no chrome — the bar above is the one visible surface. */}
+            {visible ? (
+                <View
+                    testID="session-list-selection-count"
+                    style={styles.stateMarker}
+                    {...({
+                        'data-selected-count': presentedCount,
+                        dataSet: { selectedCount: String(presentedCount) },
+                    } as Record<string, unknown>)}
+                />
+            ) : null}
+            {runningAction ? (
+                <View
+                    testID="session-list-selection-progress"
+                    style={styles.stateMarker}
+                    {...({
+                        'data-action-id': runningAction.actionId,
+                        'data-total-count': runningAction.progress.total,
+                        'data-completed-count': runningAction.progress.completed,
+                        dataSet: {
+                            actionId: runningAction.actionId,
+                            totalCount: String(runningAction.progress.total),
+                            completedCount: String(runningAction.progress.completed),
+                        },
+                    } as Record<string, unknown>)}
+                />
+            ) : null}
+            {result && resultSummary ? (
+                <View
+                    testID="session-list-selection-result"
+                    style={styles.stateMarker}
+                    {...({
+                        'data-action-id': result.actionId,
+                        'data-succeeded-count': resultSummary.succeededCount,
+                        'data-failed-count': resultSummary.failedCount,
+                        'data-skipped-count': resultSummary.skippedCount,
+                        'data-cancelled-count': resultSummary.cancelledCount,
+                        dataSet: {
+                            actionId: result.actionId,
+                            succeededCount: String(resultSummary.succeededCount),
+                            failedCount: String(resultSummary.failedCount),
+                            skippedCount: String(resultSummary.skippedCount),
+                            cancelledCount: String(resultSummary.cancelledCount),
+                        },
+                    } as Record<string, unknown>)}
+                />
+            ) : null}
         </View>
     );
 }

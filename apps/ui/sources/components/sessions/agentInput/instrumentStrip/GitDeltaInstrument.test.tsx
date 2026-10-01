@@ -2,7 +2,7 @@ import * as React from 'react';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { ScmStatusSummary } from '@/components/sessions/sourceControl/status/statusSummary';
+import type { SessionScmSummary } from '@/components/sessions/sourceControl/status/statusSummary';
 
 vi.mock('@expo/vector-icons', () => ({
     Octicons: (props: Record<string, unknown>) => React.createElement('Octicons', props, null),
@@ -46,7 +46,7 @@ import { Icon } from '@/components/ui/icons/Icon';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-function git(overrides: Partial<ScmStatusSummary>): ScmStatusSummary {
+function git(overrides: Partial<SessionScmSummary>): SessionScmSummary {
     return {
         branch: 'main', upstream: null, ahead: 0, behind: 0,
         changedFiles: 2, linesAdded: 12, linesRemoved: 3,

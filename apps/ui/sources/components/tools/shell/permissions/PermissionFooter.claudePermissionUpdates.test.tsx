@@ -1,18 +1,20 @@
 import React from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { findTestInstanceByTypeContainingText, pressTestInstanceAsync, renderScreen } from '@/dev/testkit';
+import { findTestInstanceByTypeContainingText, pressTestInstanceAsync } from '@/dev/testkit';
 import { lightTheme } from '@/theme';
-import { installPermissionShellCommonModuleMocks } from './permissionShellTestHelpers';
+import { installPermissionShellCommonModuleMocks, createPermissionShellRenderer } from './permissionShellTestHelpers';
 
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 const ops = vi.hoisted(() => ({
-    sessionAllow: vi.fn(async () => {}),
-    sessionAllowWithPermissionUpdates: vi.fn(async () => {}),
-    sessionDeny: vi.fn(async () => {}),
-    sessionAbort: vi.fn(async () => {}),
+    approve: vi.fn(async () => {}),
+    approveWithUpdates: vi.fn(async () => {}),
+    deny: vi.fn(async () => {}),
+    abort: vi.fn(async () => {}),
 }));
+const renderScreen = createPermissionShellRenderer(ops);
+
 
 const sessionStore = vi.hoisted(() => ({
     updateSessionPermissionMode: vi.fn((..._args: unknown[]) => {}),
@@ -22,12 +24,7 @@ vi.mock('@expo/vector-icons', () => ({
     Ionicons: 'Ionicons',
 }));
 
-vi.mock('@/sync/ops', () => ({
-    sessionAllow: ops.sessionAllow,
-    sessionAllowWithPermissionUpdates: ops.sessionAllowWithPermissionUpdates,
-    sessionDeny: ops.sessionDeny,
-    sessionAbort: ops.sessionAbort,
-}));
+
 
 vi.mock('@/sync/sync', () => ({
     sync: {
@@ -82,16 +79,23 @@ function findPermissionFooterButton(
 
 function getTextStyleFragments(button: ReturnType<typeof findPermissionFooterButton>) {
     const textNode = button.findByType('Text' as any);
-    const style = textNode.props.style;
-    return (Array.isArray(style) ? style : [style]).filter(Boolean) as Array<Record<string, unknown>>;
+    return flattenStyleFragments(textNode.props.style);
+}
+
+// The app Text adapter composes [defaultTypography, scaledCallerStyle] arrays; resolve
+// nested arrays the way React Native flattens composed styles.
+function flattenStyleFragments(style: unknown): Array<Record<string, unknown>> {
+    if (!style) return [];
+    if (Array.isArray(style)) return style.flatMap(flattenStyleFragments);
+    return [style as Record<string, unknown>];
 }
 
 describe('PermissionFooter (Claude permission updates)', () => {
     beforeEach(() => {
-        ops.sessionAllow.mockClear();
-        ops.sessionAllowWithPermissionUpdates.mockClear();
-        ops.sessionDeny.mockClear();
-        ops.sessionAbort.mockClear();
+        ops.approve.mockClear();
+        ops.approveWithUpdates.mockClear();
+        ops.deny.mockClear();
+        ops.abort.mockClear();
         sessionStore.updateSessionPermissionMode.mockClear();
     });
 
@@ -107,15 +111,11 @@ describe('PermissionFooter (Claude permission updates)', () => {
         const allowAllEditsButton = findPermissionFooterButton(screen, 'claude.permissions.yesAllowAllEdits');
         await pressTestInstanceAsync(allowAllEditsButton, 'allow-all-edits button');
 
-        expect(ops.sessionAllowWithPermissionUpdates).toHaveBeenCalledTimes(1);
-        expect(ops.sessionAllowWithPermissionUpdates).toHaveBeenCalledWith(
-            's1',
-            'p1',
-            expect.objectContaining({
+        expect(ops.approveWithUpdates).toHaveBeenCalledTimes(1);
+        expect(ops.approveWithUpdates).toHaveBeenCalledWith(expect.objectContaining({ id: 'p1', approved: true,
                 mode: 'acceptEdits',
                 updatedPermissions: [{ type: 'setMode', mode: 'acceptEdits', destination: 'session' }],
-            }),
-        );
+            }));
     });
 
     it('approves allow-for-session using a tool-wide allowlist update for shell tools', async () => {
@@ -130,11 +130,8 @@ describe('PermissionFooter (Claude permission updates)', () => {
         const allowForToolButton = findPermissionFooterButton(screen, 'claude.permissions.yesForTool');
         await pressTestInstanceAsync(allowForToolButton, 'allow-for-session button');
 
-        expect(ops.sessionAllowWithPermissionUpdates).toHaveBeenCalledTimes(1);
-        expect(ops.sessionAllowWithPermissionUpdates).toHaveBeenCalledWith(
-            's1',
-            'p1',
-            expect.objectContaining({
+        expect(ops.approveWithUpdates).toHaveBeenCalledTimes(1);
+        expect(ops.approveWithUpdates).toHaveBeenCalledWith(expect.objectContaining({ id: 'p1', approved: true,
                 allowedTools: ['Bash'],
                 updatedPermissions: [
                     {
@@ -144,8 +141,7 @@ describe('PermissionFooter (Claude permission updates)', () => {
                         rules: [{ toolName: 'Bash' }],
                     },
                 ],
-            }),
-        );
+            }));
     });
 
     it('treats tool-wide shell allowlists as approved-for-session state', async () => {
@@ -191,7 +187,7 @@ describe('PermissionFooter (Claude permission updates)', () => {
                 'claude.permissions.yesForCommandName',
             ),
         ).toBeUndefined();
-        expect(ops.sessionAllowWithPermissionUpdates).not.toHaveBeenCalled();
+        expect(ops.approveWithUpdates).not.toHaveBeenCalled();
     });
 
     it('uses permission foreground tokens for pending action labels', async () => {

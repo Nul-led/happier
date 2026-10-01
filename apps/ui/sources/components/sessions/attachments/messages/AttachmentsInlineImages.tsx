@@ -1,4 +1,5 @@
 import * as React from 'react';
+import type { SessionAttachmentHandleV1 } from '@happier-dev/protocol';
 
 import { SessionMediaInlineImages } from '@/components/sessions/media/SessionMediaInlineImages';
 import { resolveSessionMediaInlineRenderableImageMimeType } from '@/components/sessions/media/presentation';
@@ -10,6 +11,7 @@ export type InlineImageAttachmentSummary = Readonly<{
     mimeType?: string;
     sizeBytes: number;
     sha256?: string;
+    attachmentHandle?: SessionAttachmentHandleV1;
 }>;
 
 export const AttachmentsInlineImages = React.memo(function AttachmentsInlineImages(props: Readonly<{
@@ -32,6 +34,7 @@ export const AttachmentsInlineImages = React.memo(function AttachmentsInlineImag
                 mimeType,
                 sizeBytes: attachment.sizeBytes,
                 ...(attachment.sha256 ? { sha256: attachment.sha256 } : {}),
+                ...(attachment.attachmentHandle ? { attachmentHandle: attachment.attachmentHandle } : {}),
                 category: 'attachment',
                 role: 'input',
             });

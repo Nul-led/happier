@@ -1,75 +1,25 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { act } from 'react-test-renderer';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
     CLAUDE_LOCAL_PERMISSION_BRIDGE_REQUEST_SOURCE,
     CLAUDE_LOCAL_PERMISSION_BRIDGE_STOPPED_REASON,
 } from '@happier-dev/plugins-claude/agent/permissions/requestSource';
 import { flushHookEffects, renderHook, standardCleanup } from '@/dev/testkit';
-import { installSessionUtilsCommonModuleMocks } from './sessionUtilsTestHelpers';
+import { storage } from '@/sync/domains/state/storage';
+import { createMachineFixture } from '@/dev/testkit/fixtures/machineFixtures';
+import { createSessionAccessFixture, createSessionListRenderableSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
+import { createSessionMessagesFixture, createToolCallMessageFixture } from '@/dev/testkit/fixtures/transcriptFixtures';
+import { getServerUrl, setServerUrl } from '@/sync/domains/server/serverConfig';
+import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
+import { projectManager } from '@/sync/runtime/orchestration/projectManager';
+import type { ToolCall, ToolCallMessage } from "@happier-dev/session-core/messages";
+import type { SessionMessages } from '@/sync/store/domains/messages';
 import type { PendingMessage, Session } from '@/sync/domains/state/storageTypes';
-import type { Settings } from '@/sync/domains/settings/settings';
-import type { StorageState } from '@/sync/store/types';
 
-type StorageModule = typeof import('@/sync/domains/state/storage');
-type MockStorageState = {
-    sessionMessages: Record<string, { messages: unknown[]; messagesVersion?: number }>;
-    sessionPending: Record<string, { messages: PendingMessage[]; discarded: []; isLoaded: boolean }>;
-    sessions?: Record<string, unknown>;
-    machines?: Record<string, unknown>;
-    getProjectForSession?: (sessionId: string) => { key?: { machineId?: string; path?: string } } | null;
-};
-
-const mockStorageState: MockStorageState = {
-    sessionMessages: {},
-    sessionPending: {},
-    sessions: {},
-    machines: {},
-    getProjectForSession: () => null,
-};
-const readMockStorageState = () => mockStorageState as unknown as StorageState;
-let storageGetStateShouldThrow = false;
-let sessionListWorkingStatusAnimatedTextEnabled: boolean | undefined;
-const useSessionSpy = vi.hoisted(() => vi.fn((id: string) => (mockStorageState.sessions?.[id] as Session | null | undefined) ?? null));
-const useSessionMessagesVersionSpy = vi.hoisted(() => vi.fn((id: string) => mockStorageState.sessionMessages[id]?.messagesVersion ?? 0));
-const useSessionPendingMessagesSpy = vi.hoisted(() => vi.fn((id: string) => mockStorageState.sessionPending[id] ?? {
-    messages: [],
-    discarded: [],
-    isLoaded: false,
-}));
-
-installSessionUtilsCommonModuleMocks({
-    text: async () => {
-        const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
-        return createTextModuleMock({
-            translate: (key: string) => key,
-        });
-    },
-    storage: async () => {
-        const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
-        return createStorageModuleStub({
-            storage: {
-                getState: () => {
-                    if (storageGetStateShouldThrow) {
-                        throw new Error('storage.getState should not be used in this test');
-                    }
-                    return mockStorageState;
-                },
-                setState: (updater: ((state: typeof mockStorageState) => typeof mockStorageState) | typeof mockStorageState) => {
-                    const next = typeof updater === 'function' ? updater(mockStorageState) : updater;
-                    mockStorageState.sessionMessages = next.sessionMessages;
-                },
-            },
-            useSession: useSessionSpy,
-            useSessionMessagesVersion: useSessionMessagesVersionSpy,
-            useSessionPendingMessages: useSessionPendingMessagesSpy,
-            useSetting: ((key: keyof Settings) => {
-                if (key === 'sessionListWorkingStatusAnimatedTextEnabled') {
-                    return sessionListWorkingStatusAnimatedTextEnabled;
-                }
-                return undefined;
-            }) as StorageModule['useSetting'],
-        });
-    },
+vi.mock('@/text', async () => {
+    const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
+    return createTextModuleMock({ translate: (key: string) => key });
 });
 
 vi.mock('react-native-unistyles', async () => {
@@ -90,25 +40,62 @@ vi.mock('react-native-unistyles', async () => {
     });
 });
 
-afterEach(() => {
-    standardCleanup();
+let previousState: ReturnType<typeof storage.getState>;
+let previousServerUrl: string;
+
+beforeAll(async () => {
+    previousServerUrl = getServerUrl();
+    await setServerUrl('https://session-utils.example.test');
+});
+afterAll(async () => { await setServerUrl(previousServerUrl || null); });
+beforeEach(() => {
+    previousState = storage.getState();
+    storage.setState({
+        sessions: {}, machines: {}, machineListByServerId: {}, sessionListRowsByServerId: {},
+        sessionMessages: {}, sessionPending: {},
+    });
+    projectManager.clear();
+});
+afterEach(async () => {
+    await standardCleanup();
+    storage.setState(previousState, true);
+    projectManager.clear();
 });
 
-beforeEach(async () => {
-    vi.resetModules();
-    mockStorageState.sessionMessages = {};
-    mockStorageState.sessionPending = {};
-    mockStorageState.sessions = {};
-    mockStorageState.machines = {};
-    mockStorageState.getProjectForSession = () => null;
-    storageGetStateShouldThrow = false;
-    sessionListWorkingStatusAnimatedTextEnabled = undefined;
-    useSessionSpy.mockClear();
-    useSessionMessagesVersionSpy.mockClear();
-    useSessionPendingMessagesSpy.mockClear();
-    const { registerStorageStateReader } = await import('@/sync/domains/state/storageStateReaderBridge');
-    registerStorageStateReader(readMockStorageState);
-});
+function seedTranscriptFixtures(fixtures: Record<string, Partial<SessionMessages> & {
+    messages?: Array<Omit<ToolCallMessage, 'tool'> & { tool: Partial<ToolCall> }>;
+}>) {
+    storage.setState({ sessionMessages: Object.fromEntries(Object.entries(fixtures).map(([id, fixture]) => {
+        const { messages, ...state } = fixture;
+        if (!messages) return [id, createSessionMessagesFixture(state)];
+        const normalized = messages.map((message) => createToolCallMessageFixture({
+            ...message,
+            tool: { name: 'tool', state: 'running', input: {}, createdAt: message.createdAt,
+                startedAt: null, completedAt: null, description: null, ...message.tool },
+        }));
+        return [id, createSessionMessagesFixture({
+            ...state,
+            messageIdsOldestFirst: normalized.map((message) => message.id),
+            messagesById: Object.fromEntries(normalized.map((message) => [message.id, message])),
+        })];
+    })) });
+}
+
+function setWorkingTextAnimation(enabled: boolean) {
+    storage.setState((state) => ({
+        settings: { ...state.settings, sessionListWorkingStatusAnimatedTextEnabled: enabled },
+    }));
+}
+
+function seedDisplayTargetSession(session: Session, path: string) {
+    const serverId = getActiveServerSnapshot().serverId;
+    storage.setState({
+        sessions: { [session.id]: { ...session, serverId, metadata: {
+            ...session.metadata!, machineId: 'machine-target', path,
+        } } },
+        machines: { 'machine-target': createMachineFixture({ id: 'machine-target' }) },
+    });
+}
 
 function createBaseSession(overrides: Partial<Session> = {}): Session {
     return {
@@ -245,13 +232,9 @@ describe('getSessionStatus', () => {
     });
 
     it('returns permission_required when pending transcript requests only exist in the registered storage state', async () => {
-        storageGetStateShouldThrow = true;
-
-        const { registerStorageStateReader } = await import('@/sync/domains/state/storageStateReaderBridge');
         const { getSessionStatus } = await import('./sessionUtils');
-        registerStorageStateReader(readMockStorageState);
 
-        mockStorageState.sessionMessages = {
+        seedTranscriptFixtures({
             s1: {
                 messages: [
                     {
@@ -276,7 +259,7 @@ describe('getSessionStatus', () => {
                 ],
                 messagesVersion: 1,
             },
-        };
+        });
         const session = createBaseSession({
             agentState: {
                 controlledByUser: null,
@@ -335,7 +318,7 @@ describe('getSessionStatus', () => {
     });
 
     it('uses static working text in the status hook when animated working text is disabled', async () => {
-        sessionListWorkingStatusAnimatedTextEnabled = false;
+        setWorkingTextAnimation(false);
         const { useSessionStatus } = await import('./sessionUtils');
         const hook = await renderHook(() => useSessionStatus(createBaseSession({
             thinking: true,
@@ -451,7 +434,7 @@ describe('getSessionStatus', () => {
             },
         });
 
-        mockStorageState.sessionMessages = {
+        seedTranscriptFixtures({
             's-transcript-canceled': {
                 messages: [
                     {
@@ -477,7 +460,7 @@ describe('getSessionStatus', () => {
                 ],
                 messagesVersion: 1,
             },
-        };
+        });
 
         const status = getSessionStatus(session, 1_000, 0);
         expect(status.state).toBe('waiting');
@@ -913,7 +896,7 @@ describe('getSessionStatus', () => {
             agentState: {
                 controlledByUser: false,
                 requests: {
-                    req1: { tool: 'tool', arguments: {}, createdAt: null },
+                    req1: { tool: 'tool', arguments: {}, createdAt: 900 },
                 },
                 completedRequests: null,
             },
@@ -1086,8 +1069,8 @@ describe('listPendingPermissionRequests', () => {
             },
         } as any;
 
-        mockStorageState.sessionMessages = {
-            ...mockStorageState.sessionMessages,
+        seedTranscriptFixtures({
+            ...storage.getState().sessionMessages,
             's-transcript-perm-normalized': {
                 messageIdsOldestFirst: ['m-tool-1'],
                 messagesById: {
@@ -1097,7 +1080,7 @@ describe('listPendingPermissionRequests', () => {
                     'm-tool-1': transcriptMessage,
                 },
             } as any,
-        };
+        });
 
         expect(listPendingPermissionRequests(session)).toEqual([
             {
@@ -1141,8 +1124,8 @@ describe('listPendingPermissionRequests', () => {
             },
         } as any;
 
-        mockStorageState.sessionMessages = {
-            ...mockStorageState.sessionMessages,
+        seedTranscriptFixtures({
+            ...storage.getState().sessionMessages,
             's-zero-projected-pending-counts': {
                 messageIdsOldestFirst: ['m-tool-1'],
                 messagesById: {
@@ -1152,7 +1135,7 @@ describe('listPendingPermissionRequests', () => {
                     'm-tool-1': transcriptMessage,
                 },
             } as any,
-        };
+        });
 
         expect(listPendingPermissionRequests(session)).toEqual([]);
     });
@@ -1481,14 +1464,14 @@ describe('useSessionStatus', () => {
         vi.useFakeTimers();
         vi.setSystemTime(1_000_000);
         try {
-            sessionListWorkingStatusAnimatedTextEnabled = false;
-            mockStorageState.sessions = {
+            setWorkingTextAnimation(false);
+            storage.setState({ sessions: {
                 's-first-turn-late-hydration': createBaseSession({
                     id: 's-first-turn-late-hydration',
                     optimisticThinkingAt: null,
                 }),
-            };
-            mockStorageState.sessionPending = {
+            } });
+            storage.setState({ sessionPending: {
                 's-first-turn-late-hydration': {
                     messages: [
                         createPendingUserMessage({
@@ -1503,7 +1486,7 @@ describe('useSessionStatus', () => {
                     discarded: [],
                     isLoaded: false,
                 },
-            };
+            } });
 
             const { useSessionStatus } = await import('./sessionUtils');
             const hook = await renderHook(() => useSessionStatus(createBaseSession({
@@ -1526,13 +1509,13 @@ describe('useSessionStatus', () => {
         vi.useFakeTimers();
         vi.setSystemTime(1_000_000);
         try {
-            mockStorageState.sessions = {
+            storage.setState({ sessions: {
                 's-server-pending': createBaseSession({
                     id: 's-server-pending',
                     optimisticThinkingAt: null,
                 }),
-            };
-            mockStorageState.sessionPending = {
+            } });
+            storage.setState({ sessionPending: {
                 's-server-pending': {
                     messages: [
                         createPendingUserMessage({
@@ -1547,7 +1530,7 @@ describe('useSessionStatus', () => {
                     discarded: [],
                     isLoaded: true,
                 },
-            };
+            } });
 
             const { useSessionStatus } = await import('./sessionUtils');
             const hook = await renderHook(() => useSessionStatus(createBaseSession({
@@ -1565,14 +1548,14 @@ describe('useSessionStatus', () => {
         vi.useFakeTimers();
         vi.setSystemTime(1_000_000);
         try {
-            sessionListWorkingStatusAnimatedTextEnabled = false;
-            mockStorageState.sessions = {
+            setWorkingTextAnimation(false);
+            storage.setState({ sessions: {
                 's-first-turn': createBaseSession({
                     id: 's-first-turn',
                     optimisticThinkingAt: Date.now() - 1_000,
                 }),
-            };
-            mockStorageState.sessionPending = {
+            } });
+            storage.setState({ sessionPending: {
                 's-first-turn': {
                     messages: [
                         createPendingUserMessage({
@@ -1585,7 +1568,7 @@ describe('useSessionStatus', () => {
                     discarded: [],
                     isLoaded: false,
                 },
-            };
+            } });
 
             const { useSessionStatus } = await import('./sessionUtils');
             const hook = await renderHook(() => useSessionStatus(createBaseSession({
@@ -1599,7 +1582,6 @@ describe('useSessionStatus', () => {
                 shouldShowStatus: true,
                 isPulsing: true,
             });
-            expect(useSessionPendingMessagesSpy).toHaveBeenCalledWith('s-first-turn');
         } finally {
             vi.useRealTimers();
         }
@@ -1609,7 +1591,7 @@ describe('useSessionStatus', () => {
         vi.useFakeTimers();
         vi.setSystemTime(1_000_000);
         try {
-            sessionListWorkingStatusAnimatedTextEnabled = false;
+            setWorkingTextAnimation(false);
             const { useSessionStatus } = await import('./sessionUtils');
             const hook = await renderHook(() => useSessionStatus({
                 ...createBaseSession({
@@ -1628,7 +1610,6 @@ describe('useSessionStatus', () => {
                 shouldShowStatus: true,
                 isPulsing: true,
             });
-            expect(useSessionPendingMessagesSpy).toHaveBeenCalledWith('');
         } finally {
             vi.useRealTimers();
         }
@@ -1742,13 +1723,13 @@ describe('useSessionStatus', () => {
         }
     });
 
-    it('does not expire an unresolved permission without a storage update', async () => {
+    it('expires stale permission presentation without erasing the unresolved request', async () => {
         vi.useFakeTimers();
         vi.setSystemTime(1_000_000);
         try {
-            const { useSessionStatus, SESSION_RUNTIME_STATUS_STALE_SIGNAL_MS } = await import('./sessionUtils');
+            const { useSessionStatus, listPendingPermissionRequests, SESSION_RUNTIME_STATUS_STALE_SIGNAL_MS } = await import('./sessionUtils');
             const createdAt = Date.now() - SESSION_RUNTIME_STATUS_STALE_SIGNAL_MS + 5;
-            const hook = await renderHook(() => useSessionStatus(createBaseSession({
+            const session = createBaseSession({
                 agentState: {
                     controlledByUser: null,
                     requests: {
@@ -1756,13 +1737,17 @@ describe('useSessionStatus', () => {
                     },
                     completedRequests: null,
                 },
-            })));
+            });
+            const hook = await renderHook(() => useSessionStatus(session));
 
             expect(hook.getCurrent().state).toBe('permission_required');
 
             await flushHookEffects({ cycles: 1, turns: 0, advanceTimersMs: 5 });
 
-            expect(hook.getCurrent().state).toBe('permission_required');
+            expect(hook.getCurrent().state).toBe('waiting');
+            expect(listPendingPermissionRequests(session)).toEqual([
+                expect.objectContaining({ id: 'req1', tool: 'Bash', createdAt }),
+            ]);
         } finally {
             vi.useRealTimers();
         }
@@ -1775,13 +1760,13 @@ describe('useSessionStatus', () => {
             const { useSessionStatus, OPTIMISTIC_SESSION_THINKING_TIMEOUT_MS } = await import('./sessionUtils');
             const initialCreatedAt = Date.now() - OPTIMISTIC_SESSION_THINKING_TIMEOUT_MS + 100;
             const refreshedCreatedAt = Date.now() - OPTIMISTIC_SESSION_THINKING_TIMEOUT_MS + 500;
-            mockStorageState.sessions = {
+            storage.setState({ sessions: {
                 's-replaced-local-pending': createBaseSession({
                     id: 's-replaced-local-pending',
                     optimisticThinkingAt: null,
                 }),
-            };
-            mockStorageState.sessionPending = {
+            } });
+            storage.setState({ sessionPending: {
                 's-replaced-local-pending': {
                     messages: [
                         createPendingUserMessage({
@@ -1795,7 +1780,7 @@ describe('useSessionStatus', () => {
                     discarded: [],
                     isLoaded: false,
                 },
-            };
+            } });
 
             const hook = await renderHook(() => useSessionStatus(createBaseSession({
                 id: 's-replaced-local-pending',
@@ -1803,7 +1788,7 @@ describe('useSessionStatus', () => {
             })));
             expect(hook.getCurrent().state).toBe('thinking');
 
-            mockStorageState.sessionPending = {
+            await act(async () => { storage.setState({ sessionPending: {
                 's-replaced-local-pending': {
                     messages: [
                         createPendingUserMessage({
@@ -1817,7 +1802,7 @@ describe('useSessionStatus', () => {
                     discarded: [],
                     isLoaded: false,
                 },
-            };
+            } }); });
             await hook.rerender();
 
             await flushHookEffects({ cycles: 1, turns: 0, advanceTimersMs: 100 });
@@ -1833,7 +1818,7 @@ describe('useSessionStatus', () => {
     it('uses the raw session state when a renderable session still has stale pending flags', async () => {
         const { useSessionStatus } = await import('./sessionUtils');
 
-        mockStorageState.sessions = {
+        storage.setState({ sessions: {
             's-renderable-stale': createBaseSession({
                 id: 's-renderable-stale',
                 agentState: {
@@ -1849,8 +1834,8 @@ describe('useSessionStatus', () => {
                     completedRequests: null,
                 },
             }),
-        };
-        mockStorageState.sessionMessages = {
+        } });
+        seedTranscriptFixtures({
             's-renderable-stale': {
                 messages: [
                     {
@@ -1876,7 +1861,7 @@ describe('useSessionStatus', () => {
                 ],
                 messagesVersion: 1,
             },
-        };
+        });
 
         const hook = await renderHook(() => useSessionStatus({
             id: 's-renderable-stale',
@@ -1905,23 +1890,31 @@ describe('useSessionStatus', () => {
 
     it('can skip transcript-version subscriptions for session-list rows', async () => {
         const { useSessionStatus } = await import('./sessionUtils');
-
-        const hook = await renderHook(() => useSessionStatus(createBaseSession({
+        const session = createBaseSession({
             id: 's-list-row',
             active: true,
             thinking: true,
             thinkingAt: Date.now(),
             presence: 'online',
-        }), { subscribeToTranscript: false }));
+        });
+        let renders = 0;
+        const hook = await renderHook(() => {
+            renders += 1;
+            return useSessionStatus(session, { subscribeToTranscript: false });
+        });
 
         expect(hook.getCurrent().state).toBe('thinking');
-        expect(useSessionMessagesVersionSpy).toHaveBeenCalledWith('s-list-row', false);
+        const initialRenders = renders;
+        await act(async () => {
+            seedTranscriptFixtures({ 's-list-row': { messagesVersion: 1 } });
+        });
+        expect(renders).toBe(initialRenders);
     });
 
     it('can skip full-session subscriptions for session-list rows', async () => {
         const { useSessionStatus } = await import('./sessionUtils');
 
-        mockStorageState.sessions = {
+        storage.setState({ sessions: {
             's-list-row': createBaseSession({
                 id: 's-list-row',
                 active: true,
@@ -1930,23 +1923,32 @@ describe('useSessionStatus', () => {
                 updatedAt: 1_000,
                 presence: 'online',
             }),
-        };
+        } });
 
-        const hook = await renderHook(() => useSessionStatus(createBaseSession({
+        const session = createBaseSession({
             id: 's-list-row',
             active: true,
             thinking: false,
             thinkingAt: 0,
             updatedAt: 0,
             presence: 'online',
-        }), {
-            subscribeToSession: false,
-            subscribeToTranscript: false,
-        }));
+        });
+        let renders = 0;
+        const hook = await renderHook(() => {
+            renders += 1;
+            return useSessionStatus(session, {
+                subscribeToSession: false,
+                subscribeToTranscript: false,
+            });
+        });
 
         expect(hook.getCurrent().state).toBe('waiting');
-        expect(useSessionSpy).toHaveBeenCalledWith('');
-        expect(useSessionMessagesVersionSpy).toHaveBeenCalledWith('s-list-row', false);
+        const initialRenders = renders;
+        await act(async () => {
+            storage.setState({ sessions: { 's-list-row': { ...session, thinking: true, thinkingAt: Date.now() } } });
+        });
+        expect(hook.getCurrent().state).toBe('waiting');
+        expect(renders).toBe(initialRenders);
     });
 });
 
@@ -1988,6 +1990,14 @@ describe('shouldShowAbortButtonForSessionState', () => {
 });
 
 describe('getSessionName', () => {
+    it('reads the owner name from a narrow layout-1 display projection', async () => {
+        const { getSessionName } = await import('./sessionUtils');
+        expect(getSessionName({
+            id: 'source-session', metadata: null, metadataLayoutVersion: 1,
+            ownerMetadataView: { name: 'Lead A', path: '/tmp/worktree', host: 'mac' },
+        })).toBe('Lead A');
+    });
+
     it('prefers metadata summary text over other fallbacks', async () => {
         const { getSessionName } = await import('./sessionUtils');
         const session = createBaseSession({
@@ -2002,6 +2012,19 @@ describe('getSessionName', () => {
             },
         });
         expect(getSessionName(session)).toBe('Summary Title');
+    });
+
+    // An imported or not-yet-summarized session with no name and no project path has no title. It
+    // reads as untitled, not as "unknown" (which claimed Happier did not know something it had never
+    // been told), and the untitled marker is recognised where a missing title matters.
+    it('names a session with no title, name or path as untitled', async () => {
+        const { getSessionName, isUntitledSessionName, resolveLockedSessionTitle } = await import('./sessionUtils');
+        const session = createBaseSession({ metadata: { host: 'mac' } as never });
+        const name = getSessionName(session);
+        expect(name).toBe('session.untitled');
+        expect(isUntitledSessionName(name)).toBe(true);
+        expect(isUntitledSessionName('Linked Direct Session')).toBe(false);
+        expect(resolveLockedSessionTitle(name)).toBe('session.access.lockedTitleFallback');
     });
 
     it('falls back to metadata name before path segments', async () => {
@@ -2028,32 +2051,72 @@ describe('getSessionName', () => {
             } as never,
         });
 
-        mockStorageState.sessions = {
-            'session-1': {
-                active: true,
-                updatedAt: 10,
-                metadata: session.metadata,
-            },
-        };
-        mockStorageState.machines = {
-            'machine-target': {
-                id: 'machine-target',
-                active: true,
-                activeAt: 20,
-                metadata: { host: 'target.local' },
-            },
-        };
-        mockStorageState.getProjectForSession = (sessionId: string) =>
-            sessionId === 'session-1'
-                ? {
-                    key: {
-                        machineId: 'machine-target',
-                        rootPath: '/Users/test/workspace/live-name',
-                    },
-                }
-                : null;
+        seedDisplayTargetSession(session, '/Users/test/workspace/live-name');
 
         expect(getSessionName(session)).toBe('live-name');
+    });
+});
+
+describe('a no-folder session', () => {
+    const privatePath = '/Users/test/.happier/servers/s/session-directories/3f9a0c21';
+    const managedMetadata = {
+        machineId: 'machine-a',
+        path: privatePath,
+        homeDir: '/Users/test',
+        host: 'mbp.local',
+        sessionDirectoryV1: { v: 1, kind: 'managed' },
+    } as never;
+
+    it('is named “New chat” until it has a summary, never after its private folder', async () => {
+        const { getSessionName } = await import('./sessionUtils');
+        expect(getSessionName(createBaseSession({ metadata: managedMetadata }))).toBe('session.folderless.untitledChat');
+        expect(getSessionName(createBaseSession({
+            metadata: { ...(managedMetadata as object), summary: { text: 'Haiku in notes.md', updatedAt: 1 } } as never,
+        }))).toBe('Haiku in notes.md');
+    });
+
+    it('takes its avatar from the machine and the session, and its subtitle from the machine', async () => {
+        const { getSessionAvatarId, getSessionSubtitle } = await import('./sessionUtils');
+        storage.setState({
+            machines: { 'machine-a': createMachineFixture({ id: 'machine-a', metadata: { displayName: 'MacBook Pro' } as never }) },
+        });
+        const first = createBaseSession({ id: 'chat-1', metadata: managedMetadata });
+        const second = createBaseSession({ id: 'chat-2', metadata: managedMetadata });
+        expect(getSessionAvatarId(first)).not.toBe(getSessionAvatarId(second));
+        expect(getSessionAvatarId(first)).not.toContain('session-directories');
+        expect(getSessionSubtitle(first)).toBe('MacBook Pro');
+    });
+});
+
+describe('getSessionName for a list row', () => {
+    // A list row has no separate owner view: its composed `metadata` is this viewer's projection.
+    // The row and the detail header must call an owner's untitled Session the same thing.
+    it('names a layout-1 owner row exactly as its Session is named', async () => {
+        const { getSessionName, getSessionSubtitle } = await import('./sessionUtils');
+        const { buildSessionFromListRenderable } = await import('@/sync/domains/session/listing/sessionListRenderableSessionProjection');
+        const row = createSessionListRenderableSessionFixture({
+            id: 'owner-row',
+            encryptionMode: 'e2ee',
+            metadataLayoutVersion: 1,
+            metadata: { path: '/Users/u/workspace/project', homeDir: '/Users/u', summaryText: null },
+        });
+
+        expect(getSessionName(row)).toBe('project');
+        expect(getSessionName(row)).toBe(getSessionName(buildSessionFromListRenderable(row)));
+        expect(getSessionSubtitle(row)).toBe(getSessionSubtitle(buildSessionFromListRenderable(row)));
+    });
+
+    it('never reads private workspace facts from a layout-1 recipient row', async () => {
+        const { getSessionName } = await import('./sessionUtils');
+        const row = createSessionListRenderableSessionFixture({
+            id: 'recipient-row',
+            encryptionMode: 'e2ee',
+            access: createSessionAccessFixture('view'),
+            metadataLayoutVersion: 1,
+            metadata: { path: '/injected/private/path', summaryText: null },
+        });
+
+        expect(getSessionName(row)).toBe('session.untitled');
     });
 });
 
@@ -2121,30 +2184,7 @@ describe('reachable target session display helpers', () => {
             } as Session['metadata'],
         });
 
-        mockStorageState.sessions = {
-            'session-1': {
-                active: true,
-                updatedAt: 10,
-                metadata: session.metadata,
-            },
-        };
-        mockStorageState.machines = {
-            'machine-target': {
-                id: 'machine-target',
-                active: true,
-                activeAt: 20,
-                metadata: { host: 'target.local' },
-            },
-        };
-        mockStorageState.getProjectForSession = (sessionId: string) =>
-            sessionId === 'session-1'
-                ? {
-                    key: {
-                        machineId: 'machine-target',
-                        rootPath: '/Users/test/workspace/live',
-                    },
-                }
-                : null;
+        seedDisplayTargetSession(session, '/Users/test/workspace/live');
 
         expect(getSessionSubtitle(session)).toBe('~/workspace/live');
     });
@@ -2162,30 +2202,7 @@ describe('reachable target session display helpers', () => {
             } as Session['metadata'],
         });
 
-        mockStorageState.sessions = {
-            'session-1': {
-                active: true,
-                updatedAt: 10,
-                metadata: session.metadata,
-            },
-        };
-        mockStorageState.machines = {
-            'machine-target': {
-                id: 'machine-target',
-                active: true,
-                activeAt: 20,
-                metadata: { host: 'target.local' },
-            },
-        };
-        mockStorageState.getProjectForSession = (sessionId: string) =>
-            sessionId === 'session-1'
-                ? {
-                    key: {
-                        machineId: 'machine-target',
-                        rootPath: '/Users/test/workspace/live',
-                    },
-                }
-                : null;
+        seedDisplayTargetSession(session, '/Users/test/workspace/live');
 
         expect(getSessionAvatarId(session)).toBe('machine-target:/Users/test/workspace/live');
     });

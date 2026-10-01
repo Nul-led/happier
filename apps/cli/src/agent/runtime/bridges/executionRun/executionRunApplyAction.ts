@@ -5,6 +5,7 @@ import {
   ReviewFindingsV1Schema,
   ReviewFindingsV2Schema,
   ReviewFollowUpInputSchema,
+  ReviewTriageOverlaySchema,
   type SessionInputCausalPermissionAuthorityV1,
 } from '@happier-dev/protocol';
 
@@ -17,6 +18,7 @@ import {
 import { buildReviewFindingsV2Payload } from '@/agent/reviews/normalize/buildReviewFindingsV2Payload';
 import { VoiceAgentError, type VoiceAgentManager } from '@/agent/voice/agent/VoiceAgentManager';
 import { buildExecutionRunProfileStartParams } from './profileStart';
+import { resolveExecutionRunLifecycle } from './resolveExecutionRunLifecycle';
 import type {
   ExecutionRunActionParams,
   ExecutionRunActionResult,
@@ -29,6 +31,7 @@ import type {
   ReviewCommentHostActionCandidate,
   ReviewCommentHostActionMaterializationResult,
 } from '@/agent/executionRuns/profiles/review/hostActionMaterializer';
+import type { ReviewRunCommentService } from '@/agent/executionRuns/profiles/review/reviewComments';
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
@@ -67,22 +70,37 @@ export async function applyExecutionRunAction(args: Readonly<{
   ) => Promise<ReviewCommentHostActionMaterializationResult>;
   causalPermissionAuthority?: SessionInputCausalPermissionAuthorityV1;
   effectiveCallerPermissionMode?: string;
+  reviewComments?: ReviewRunCommentService;
 }>): Promise<ExecutionRunActionResult> {
   const run = args.runs.get(args.runId);
+  if (args.params.actionId === 'review.triage') {
+    // A finding's decision lives only in its ReviewComment; the run's result is not rewritten.
+    if (!ReviewTriageOverlaySchema.safeParse(args.params.input ?? {}).success) {
+      return { ok: false, errorCode: 'execution_run_invalid_action_input', error: 'Invalid triage overlay' };
+    }
+    if (!args.reviewComments) return { ok: false, errorCode: 'review_comment_persistence_unavailable', error: 'ReviewComment persistence is unavailable' };
+    const retainedPayload = run?.structuredMeta?.kind === 'review_findings.v2'
+      ? ReviewFindingsV2Schema.safeParse(run.structuredMeta.payload)
+      : ReviewFindingsV1Schema.safeParse(run?.structuredMeta?.payload);
+    return await args.reviewComments.triage(args.runId, args.params.input, retainedPayload.success ? retainedPayload.data.findings : undefined);
+  }
   if (!run) return { ok: false, errorCode: 'execution_run_not_found', error: 'Not found' };
 
   if (run.intent === 'review' && String(args.params.actionId ?? '').trim() === 'review.follow_up') {
     // This stays runtime-owned because follow-up orchestration needs the live run and
     // startRun/retention plumbing, not just a pure profile transform.
-    const canResume = run.retentionPolicy === 'resumable' && Boolean(run.resumeHandle);
-    const canFallback = (() => {
-      const target = run.backendTarget;
-      if (!target) return false;
-      if (target.kind !== 'builtInAgent') return false;
-      return true;
-    })();
-    if (!canResume && !canFallback) {
-      return { ok: false, errorCode: 'execution_run_action_not_supported', error: 'Follow-up is not supported for this run' };
+    const lifecycle = resolveExecutionRunLifecycle(run, args.controllers.get(args.runId) ?? null);
+    if (run.status === 'running' || lifecycle.projection.state === 'current' || lifecycle.projection.state === 'recovering') {
+      return { ok: false, errorCode: 'execution_run_busy', error: 'The review is still running or retiring' };
+    }
+    if (run.status === 'cancelled' || run.status === 'failed' || run.status === 'timeout') {
+      return { ok: false, errorCode: 'review_follow_up_ended', error: 'The review ended without a resumable result' };
+    }
+    if (lifecycle.unavailableReason === 'not_resumable') {
+      return { ok: false, errorCode: 'review_follow_up_not_resumable', error: 'The review was not retained for follow-up' };
+    }
+    if (lifecycle.projection.state !== 'recoverable' && lifecycle.projection.state !== 'recoverable_with_input') {
+      return { ok: false, errorCode: 'review_follow_up_resume_unavailable', error: 'The retained reviewer session is unavailable' };
     }
 
     const parsed = ReviewFollowUpInputSchema.safeParse(args.params.input ?? {});
@@ -138,10 +156,10 @@ export async function applyExecutionRunAction(args: Readonly<{
       ...(args.causalPermissionAuthority
         ? { causalPermissionAuthority: args.causalPermissionAuthority }
         : {}),
-      retentionPolicy: run.resumeHandle ? 'resumable' : 'ephemeral',
+      retentionPolicy: 'resumable',
       runClass: 'bounded',
       ioMode: 'streaming',
-      ...(run.resumeHandle ? { resumeHandle: run.resumeHandle } : {}),
+      resumeHandle: run.resumeHandle,
       ...(run.profileId ? { profileId: run.profileId } : {}),
       parentRunId: run.runId,
     });
@@ -221,7 +239,12 @@ export async function applyExecutionRunAction(args: Readonly<{
   }
 
   const profile = args.profileCatalog
-    ? resolveExecutionRunIntentProfileFromCatalog(args.profileCatalog, run.intent, run.profileId)
+    ? resolveExecutionRunIntentProfileFromCatalog(
+        args.profileCatalog,
+        run.intent,
+        run.profileId,
+        run.profileSourceCustody,
+      )
     : resolveExecutionRunIntentProfile(run.intent);
   const availableActionIds = profile.listAvailableActionIds?.({
     start: buildExecutionRunProfileStartParams(run),

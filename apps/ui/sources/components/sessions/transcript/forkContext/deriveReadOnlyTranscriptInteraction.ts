@@ -11,6 +11,5 @@ export function deriveReadOnlyTranscriptInteraction(
         canApprovePermissions: false,
         canFork: false,
         permissionDisabledReason: 'readOnly',
-        disableToolNavigation: true,
     };
 }

@@ -7,6 +7,9 @@ import {
   SESSION_USAGE_LIMIT_RECOVERY_METADATA_KEY,
   SessionUsageLimitRecoveryV1Schema,
   SessionUserMessageSendRequestSchema,
+  isModelRefGrantedV1,
+  isPermissionModeGrantedV1,
+  readSessionMessageModelSelectionV1,
 } from '@happier-dev/protocol';
 import { isPluginError } from '@happier-dev/plugin-sdk';
 import { SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc';
@@ -21,6 +24,7 @@ import {
   type SessionStructuredInputAdmissionPolicyV1,
 } from '@/session/services/admitSessionStructuredInputV1';
 import type { SessionRuntimeControls } from './sessionControls';
+import { normalizePermissionModeToIntent } from '@/agent/runtime/permissions/modeCanonical';
 import {
   resolveExplicitUserPromptRecoveryDecision,
   type ExplicitUserPromptRecoveryDecision,
@@ -68,6 +72,7 @@ export function registerSessionUserMessageSendHandler(
     sessionId?: string | null;
     getSessionMetadata?: (() => unknown) | null;
     enqueueSessionUserMessage?: ((request: {
+      callerInputAuthorization?: import('@happier-dev/protocol').ExternalActionExecutionAuthorizationV1;
       text: string;
       localId: string;
       meta: Record<string, unknown>;
@@ -117,7 +122,11 @@ export function registerSessionUserMessageSendHandler(
     }
   };
 
-  rpc.registerHandler(SESSION_RPC_METHODS.SESSION_USER_MESSAGE_SEND, async (raw: unknown) => {
+  rpc.registerHandler(SESSION_RPC_METHODS.SESSION_USER_MESSAGE_SEND, async (raw: unknown, context) => {
+    const callerInputConstraints = context?.callerInputAuthorization
+      ? { models: context.callerInputAuthorization.binding.grant.models,
+          permissionModes: context.callerInputAuthorization.binding.grant.permissionModes }
+      : context?.callerInputConstraints;
     const rawMeta = raw && typeof raw === 'object' && !Array.isArray(raw)
       ? (raw as { meta?: unknown }).meta
       : undefined;
@@ -172,10 +181,14 @@ export function registerSessionUserMessageSendHandler(
     };
     const enqueueRequest = {
       ...request,
+      ...(context?.callerInputAuthorization ? { callerInputAuthorization: context.callerInputAuthorization } : {}),
       ...(structuredInputAdmissionPolicy ? { structuredInputAdmissionPolicy } : {}),
     };
 
-    const payloadFingerprint = deterministicStringify(request);
+    const payloadFingerprint = deterministicStringify({
+      ...request,
+      ...(callerInputConstraints ? { callerInputConstraints } : {}),
+    });
     const existing = exactOutcomesByLocalId.get(localId);
     if (existing) {
       if (existing.payloadFingerprint !== payloadFingerprint) {
@@ -189,6 +202,29 @@ export function registerSessionUserMessageSendHandler(
     }
 
     const deliver = async (): Promise<unknown> => {
+      const readCallerInputFailure = (): string | null => {
+        const constraints = callerInputConstraints;
+        if (!constraints) return null;
+        const effective = opts.sessionRuntimeControls?.readEffectiveInputConfiguration?.();
+        const explicit = readSessionMessageModelSelectionV1(meta);
+        const legacyModel = typeof meta.model === 'string' ? meta.model.trim() : '';
+        const model = explicit.status === 'valid'
+          ? explicit.selection.ref
+          : explicit.status !== 'absent'
+            ? 'automatic'
+            : legacyModel
+              ? effective?.modelSelection?.providerConnectionId === null
+                ? { ...effective.modelSelection, modelId: legacyModel }
+                : 'automatic'
+              : effective?.modelSelection ?? 'automatic';
+        if (!isModelRefGrantedV1(constraints, model)) return 'model_not_granted';
+        const mode = normalizePermissionModeToIntent(meta.permissionMode) ?? effective?.permissionMode ?? 'default';
+        if (!isPermissionModeGrantedV1(constraints, mode)) return 'permission_mode_not_granted';
+        return null;
+      };
+      const rejected = (errorCode: string) => ({ ok: false, error: errorCode, errorCode });
+      const initialFailure = readCallerInputFailure();
+      if (initialFailure) return rejected(initialFailure);
       const recoveryDecision = await revalidateExplicitUserRecovery(localId);
       if (recoveryDecision.status !== 'ready') {
         return {
@@ -199,9 +235,23 @@ export function registerSessionUserMessageSendHandler(
         };
       }
 
+      // Recovery can yield; use the host's current configuration at the native effect boundary.
+      const currentFailure = readCallerInputFailure();
+      if (currentFailure) return rejected(currentFailure);
+
       // Attachment-bearing input must pass through the shared pre-persistence transformer.
       // A runtime-local handler has no prepared attachment result and would be a bypass.
+      // Restricted configuration overrides likewise belong to the host's queued transition
+      // owner; native text handling cannot prove it applied a different model or mode.
+      const hasRestrictedConfigurationOverride = callerInputConstraints && (
+        (callerInputConstraints.models !== null && (
+          readSessionMessageModelSelectionV1(meta).status !== 'absent'
+          || (typeof meta.model === 'string' && meta.model.trim().length > 0)
+        ))
+        || (callerInputConstraints.permissionModes !== null && normalizePermissionModeToIntent(meta.permissionMode) !== null)
+      );
       const runtimeResult = !selectedComposerAttachment
+        && !hasRestrictedConfigurationOverride
         && typeof opts.sessionRuntimeControls?.handleUserMessage === 'function'
         ? await opts.sessionRuntimeControls.handleUserMessage({
           ...request,

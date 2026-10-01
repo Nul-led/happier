@@ -1,5 +1,5 @@
 import { AgentNativeResumeIdentityV1Schema } from '@happier-dev/protocol';
-import type { Metadata } from '@/sync/domains/state/storageTypes';
+import type { Metadata } from '@happier-dev/session-core/state';
 import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
 
 type SessionDebugMetadata = unknown;

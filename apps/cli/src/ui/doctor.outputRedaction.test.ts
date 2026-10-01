@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { consoleLogMock } = vi.hoisted(() => ({
+const { consoleLogMock, daemonInspectionMock } = vi.hoisted(() => ({
   consoleLogMock: vi.fn(),
+  // The daemon-control adapter crosses process and authenticated HTTP boundaries.
+  daemonInspectionMock: vi.fn(async () => ({ status: 'starting', pid: 4242 })),
 }));
 
 vi.mock('@/configuration', () => ({
@@ -71,7 +73,7 @@ vi.mock('@/persistence', () => ({
 }));
 
 vi.mock('@/daemon/controlClient', () => ({
-  checkIfDaemonRunningAndCleanupStaleState: async () => false,
+  inspectDaemonRunningStateAndCleanupStaleState: daemonInspectionMock,
 }));
 
 vi.mock('@/daemon/doctor', () => ({
@@ -162,6 +164,9 @@ describe('doctor output redaction', () => {
     expect(output).toContain('useful-model');
     expect(output).toMatch(/redacted/i);
     expect(output).toContain('Authenticated (credentials found)');
+    expect(output).toMatch(/starting|unknown/i);
+    expect(output).not.toContain('Daemon state exists but process not running');
+    expect(output).not.toContain('Daemon is not running');
 
     expect(output).not.toContain('doctor-settings-token-123456');
     expect(output).not.toContain('doctor-settings-authorization-123456');

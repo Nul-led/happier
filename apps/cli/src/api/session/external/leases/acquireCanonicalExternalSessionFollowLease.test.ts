@@ -83,13 +83,13 @@ const metadata = {
 };
 const resource = {
     linkGeneration: '1',
-    pluginGeneration: 'plugin-generation',
+    occurrenceId: 'plugin-generation',
 };
 const observation = {
     resource: {
         pluginId: 'happier.agent.claude',
         agentLocalId: 'claude',
-        pluginGeneration: resource.pluginGeneration,
+        occurrenceId: resource.occurrenceId,
         resourceKey: 'resource-follow-recovery',
     },
     link: {
@@ -310,7 +310,7 @@ describe('acquireCanonicalExternalSessionFollowLease background recovery', () =>
 
         const hostedResource = {
             linkGeneration: loaded.session.linkGeneration,
-            pluginGeneration: 'plugin-generation-hosted',
+            occurrenceId: 'plugin-generation-hosted',
         };
         const hostedObservation: ExternalSessionObservationLinkInput = {
             ...observation,
@@ -318,7 +318,7 @@ describe('acquireCanonicalExternalSessionFollowLease background recovery', () =>
                 ...observation.resource,
                 pluginId: 'happier.agent.codex',
                 agentLocalId: 'codex',
-                pluginGeneration: hostedResource.pluginGeneration,
+                occurrenceId: hostedResource.occurrenceId,
             },
             link: {
                 ...observation.link,

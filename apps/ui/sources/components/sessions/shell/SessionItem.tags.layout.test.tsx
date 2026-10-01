@@ -3,7 +3,7 @@ import { act } from 'react-test-renderer';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { SESSION_ACTION_EDIT_TAGS_ID } from '@/components/sessions/actions/sessionActionIds';
-import { renderScreen, standardCleanup } from '@/dev/testkit';
+import { createSessionFixture, renderScreen, standardCleanup } from '@/dev/testkit';
 import { installSessionShellCommonModuleMocks } from './sessionShellTestHelpers';
 import { createModelBackedSessionItemTestComponent } from './sessionItemRowViewModelTestFixture';
 import { createUseSettingMock } from '@/dev/testkit/mocks/storage';
@@ -76,12 +76,6 @@ installSessionShellCommonModuleMocks({
     },
 });
 
-vi.mock('@/constants/Typography', () => ({
-    Typography: {
-        default: () => ({}),
-    },
-}));
-
 vi.mock('@/components/ui/text/Text', () => ({
     Text: 'Text',
     TextInput: 'TextInput',
@@ -91,37 +85,12 @@ vi.mock('@/components/ui/forms/dropdown/DropdownMenu', () => ({
     DropdownMenu: (props: any) => React.createElement('DropdownMenu', props),
 }));
 
-vi.mock('@/utils/sessions/sessionUtils', () => ({
-    getSessionName: () => 'Session',
-    getSessionSubtitle: () => 'Subtitle',
-    getSessionAvatarId: () => 'avatar',
-    getSessionStatus: () => ({
-        isConnected: true,
-        statusText: 'Connected',
-        statusColor: '#000',
-        statusDotColor: '#0f0',
-        isPulsing: false,
-    }),
-    useSessionStatus: () => ({
-        isConnected: true,
-        statusText: 'Connected',
-        statusColor: '#000',
-        statusDotColor: '#0f0',
-        isPulsing: false,
-    }),
-}));
-
 vi.mock('@/components/ui/avatar/Avatar', () => ({
     Avatar: 'Avatar',
 }));
 
 vi.mock('@/agents/registry/AgentIcon', () => ({
     AgentIcon: 'AgentIcon',
-}));
-
-vi.mock('@/agents/catalog/catalog', () => ({
-    DEFAULT_AGENT_ID: 'codex',
-    resolveAgentIdFromFlavor: () => null,
 }));
 
 vi.mock('@/components/ui/status/StatusDot', () => ({
@@ -167,22 +136,22 @@ vi.mock('./sessionTagIcons', () => ({
     TagIcon: (props: Record<string, unknown>) => React.createElement('TagIcon', props),
 }));
 
-function createSession(): any {
-    return {
+function createSession() {
+    return createSessionFixture({
         id: 'sess_1',
         seq: 1,
         createdAt: 1,
         updatedAt: 1,
         active: true,
         activeAt: 1,
-        metadata: null,
+        metadata: { name: 'Session', path: '/project', homeDir: '/', host: 'test-machine' },
         metadataVersion: 1,
         agentState: null,
         agentStateVersion: 1,
         thinking: false,
         thinkingAt: 0,
         presence: 'online',
-    };
+    });
 }
 
 async function importSessionItem() {

@@ -84,14 +84,14 @@ vi.mock('@/text', () => ({
 vi.mock('@/hooks/server/useFeatureEnabled', () => ({ useFeatureEnabled: () => true }));
 vi.mock('@/components/sessions/plugins/useSessionPluginRuntime', async () => {
     const { normalizePluginUiInlineSurfaceBindingV1 } = await import('@happier-dev/protocol/plugins/ui');
-    // A REAL admitted `sessionWidget` projection: otherwise the installed arm
+    // A REAL admitted `widget` projection: otherwise the installed arm
     // would read "plugin unavailable" and the preview assertions below would pass
     // for the wrong reason.
     const binding = normalizePluginUiInlineSurfaceBindingV1({
         pluginId: INSTALLED_SURFACE.pluginId,
         surfaceId: INSTALLED_SURFACE.localId,
         rendererId: 'status-native',
-        role: 'sessionWidget',
+        role: 'widget',
         target: { kind: 'session' },
     });
     const entry = {
@@ -138,8 +138,8 @@ vi.mock('@/components/sessions/plugins/useSessionPluginRuntime', async () => {
 vi.mock('@/components/ui/surfaces/hostedHtml/useSessionCallerHostedHtmlRuntime', () => ({
     useSessionCallerHostedHtmlRuntime: () => null,
 }));
-vi.mock('@/components/sessions/widgets/sessionWidgetCatalog', () => ({
-    selectSessionWidgetCandidates: () => [],
+vi.mock('@/components/widgets/widgetCatalog', () => ({
+    selectWidgetCandidates: () => [],
     selectCurrentSessionWidgetCandidates: () => [],
 }));
 vi.mock('@/components/sessions/companion/state/useSessionCompanionController', () => ({
@@ -168,17 +168,17 @@ vi.mock('@/components/sessions/companion/state/useSessionCompanionController', (
 }));
 // The installed-surface arm's real frame is a plugin process boundary; a preview
 // must never reach it, which is exactly what one of these tests asserts.
-vi.mock('@/components/sessions/widgets/InstalledSessionWidgetSurface', async () => {
+vi.mock('@/components/widgets/InstalledWidgetSurface', async () => {
     const ReactModule = await import('react');
     return {
-        InstalledSessionWidgetSurface: (props: Record<string, unknown>) => {
+        InstalledWidgetSurface: (props: Record<string, unknown>) => {
             // Count a physical mount, not React render passes caused by the
             // surrounding controller settling. Re-renders are not duplicate
             // executable placements.
             ReactModule.useEffect(() => {
                 harness.pluginMounts.push(props);
             }, []);
-            return ReactModule.createElement('InstalledSessionWidgetSurface');
+            return ReactModule.createElement('InstalledWidgetSurface');
         },
     };
 });

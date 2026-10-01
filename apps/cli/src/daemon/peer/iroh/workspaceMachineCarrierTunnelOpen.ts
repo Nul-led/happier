@@ -8,6 +8,7 @@ import {
   IrohMachineHandshakeV1Schema,
   SignedDirectRouteGrantV2Schema,
   createEphemeralPeerRouteProofHandleV2,
+  readMachineIrohEndpointAuthorityV1,
 } from '@happier-dev/protocol';
 
 import type {
@@ -24,12 +25,12 @@ import {
   verifyMachineCarrierHandshakeV1,
 } from './machineCarrier';
 import type { DaemonMachineIrohRuntime } from './daemonMachineIrohRuntime';
-import type { DirectRouteGrantTrustRoot } from '../mediation/verifyDirectRouteGrantV1';
+import type { DirectRouteGrantTrustRoot } from '../mediation/verifyDirectRouteGrant';
 
 type TargetMachineCarrierSnapshot = Readonly<{
   id: string;
-  daemonState: unknown;
-  daemonStateVersion: number;
+  operationProtocolCapabilities?: unknown;
+  operationProtocolCapabilitiesRevision?: unknown;
 }>;
 
 async function requireExpectedRemoteEndpoint<T extends Readonly<{
@@ -76,9 +77,11 @@ export function createWorkspaceMachineCarrierTunnelOpen(input: Readonly<{
       ? input.readTargetMachine(request.targetMachineId, request.signal)
       : input.readTargetMachine(request.targetMachineId);
     const target = await awaitMachineCarrierControlPlane(targetRead, request.signal);
-    const daemonState = target?.daemonState as { peerMediation?: { iroh?: { endpoint?: unknown } } } | null;
-    const parsedEndpoint = IrohEndpointDescriptorV1Schema.safeParse(daemonState?.peerMediation?.iroh?.endpoint);
-    if (!target || target.id !== request.targetMachineId || !parsedEndpoint.success) {
+    const targetEndpoint = readMachineIrohEndpointAuthorityV1({
+      capabilities: target?.operationProtocolCapabilities,
+      revision: target?.operationProtocolCapabilitiesRevision,
+    });
+    if (!target || target.id !== request.targetMachineId || !targetEndpoint) {
       throw machineCarrierUnavailableError();
     }
 
@@ -93,7 +96,7 @@ export function createWorkspaceMachineCarrierTunnelOpen(input: Readonly<{
         machineId: request.targetMachineId,
         flowKind: request.flow === 'file_transfer' ? 'bounded_transfer' : 'machine_rpc',
         routeKind: 'iroh_peer',
-        endpointFingerprint: parsedEndpoint.data.endpointId,
+        endpointFingerprint: targetEndpoint.endpointId,
         ttlMs: request.flow === 'file_transfer'
           ? DIRECT_ROUTE_GRANT_TTL_MS.finiteTransferCarrier
           : DIRECT_ROUTE_GRANT_TTL_MS.loopbackMachineRpcDefault,
@@ -115,7 +118,7 @@ export function createWorkspaceMachineCarrierTunnelOpen(input: Readonly<{
           },
           target: {
             machineId: request.targetMachineId,
-            endpointId: parsedEndpoint.data.endpointId,
+            endpointId: targetEndpoint.endpointId,
           },
           operationKind: request.flow === 'file_transfer' ? 'finite_transfer' : 'workspace_sync',
         },
@@ -134,17 +137,19 @@ export function createWorkspaceMachineCarrierTunnelOpen(input: Readonly<{
         ? input.readTargetMachine(request.targetMachineId, request.signal)
         : input.readTargetMachine(request.targetMachineId);
       const current = await awaitMachineCarrierControlPlane(currentRead, request.signal);
-      const currentEndpoint = IrohEndpointDescriptorV1Schema.safeParse(
-        (current?.daemonState as { peerMediation?: { iroh?: { endpoint?: unknown } } } | null)
-          ?.peerMediation?.iroh?.endpoint,
-      );
+      const currentEndpoint = readMachineIrohEndpointAuthorityV1({
+        capabilities: current?.operationProtocolCapabilities,
+        revision: current?.operationProtocolCapabilitiesRevision,
+      });
       if (
         !current || current.id !== request.targetMachineId
-        || !currentEndpoint.success
-        || currentEndpoint.data.endpointId !== grant.payload.iroh?.target.endpointId
+        || !currentEndpoint
+        || currentEndpoint.endpointId !== grant.payload.iroh?.target.endpointId
       ) {
         throw machineCarrierUnavailableError();
       }
+      const { revision: _revision, ...currentDescriptor } = currentEndpoint;
+      const endpoint = IrohEndpointDescriptorV1Schema.parse(currentDescriptor);
 
       const handshake = IrohMachineHandshakeV1Schema.parse({
         v: 1,
@@ -173,7 +178,7 @@ export function createWorkspaceMachineCarrierTunnelOpen(input: Readonly<{
             remoteEndpointId: verified.remoteEndpointId,
             flow: 'finite_transfer',
             handshake,
-          }, currentEndpoint.data), request.signal), verified.remoteEndpointId);
+          }, endpoint), request.signal), verified.remoteEndpointId);
         return {
           localPort: tunnel.localPort,
           observedPath: tunnel.observedPath,
@@ -186,7 +191,7 @@ export function createWorkspaceMachineCarrierTunnelOpen(input: Readonly<{
             flow: 'workspace_sync',
             operationId: request.operationId,
             handshake,
-          }, currentEndpoint.data), request.signal), verified.remoteEndpointId);
+          }, endpoint), request.signal), verified.remoteEndpointId);
       return {
         localPort: tunnel.localPort,
         localCapability: tunnel.localCapability,

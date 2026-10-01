@@ -1,10 +1,11 @@
 import * as React from 'react';
+import { act } from 'react';
 import { View } from 'react-native';
 import { describe, expect, it, vi } from 'vitest';
 
 import { flushHookEffects, renderScreen } from '@/dev/testkit';
 
-import { PersonalHomeBootstrapGate } from './PersonalHomeBootstrapGate';
+import { PersonalHomeBootstrapGate, usePersonalHomeBootReadiness } from './PersonalHomeBootstrapGate';
 import type { PersonalHomeFacts } from './personalHomeBootstrapTypes';
 
 const reducedMotionSpy = vi.hoisted(() => vi.fn(() => false));
@@ -56,7 +57,12 @@ const homeReadyFacts: PersonalHomeFacts = {
     daemon: { serviceInstalled: true, daemonRunning: true, needsAuth: false, machineId: 'machine_1' },
 };
 
-/** Runs the real first-run path: gated on `ensure-home-ready`, then released by its completion. */
+function ReadinessProbe() {
+    const readiness = usePersonalHomeBootReadiness();
+    return <View testID={`boot-${readiness.kind}`} />;
+}
+
+/** Runs the real first-run path while `ensure-home-ready` completes. */
 async function renderBootstrapThroughHomeReady() {
     let homeReady = false;
     let releaseHome!: () => void;
@@ -74,34 +80,64 @@ async function renderBootstrapThroughHomeReady() {
             operations={{ 'ensure-home-ready': ensureHomeReady }}
         >
             <View testID="normal-shell" />
+            <ReadinessProbe />
         </PersonalHomeBootstrapGate>,
     );
 
     await flushHookEffects({ cycles: 4, turns: 2 });
-    // The user is reading the setup frame while `ensure-home-ready` runs; nothing is released yet.
+    // Automatic startup belongs inside the normal shell; no full-frame setup covers it.
     expect(ensureHomeReady).toHaveBeenCalled();
-    expect(screen.findByTestId('personal-home-setup-surface')).not.toBeNull();
-    expect(screen.findByTestId('normal-shell')).toBeNull();
+    expect(screen.findByTestId('personal-home-setup-surface')).toBeNull();
+    expect(screen.findByTestId('normal-shell')).not.toBeNull();
+    expect(screen.findByTestId('boot-starting')).not.toBeNull();
 
     releaseHome();
     await flushHookEffects({ cycles: 6, turns: 3 });
+    expect(screen.findByTestId('boot-ready')).not.toBeNull();
     return screen;
 }
 
 describe('Personal Home shell reveal', () => {
-    it('settles the departing setup frame over the released shell instead of cutting to it', async () => {
+    it('does not report local-Home startup on a non-desktop host', async () => {
+        const screen = await renderScreen(
+            <PersonalHomeBootstrapGate isDesktopHost={false} isDesktopMainWindow={false}>
+                <ReadinessProbe />
+            </PersonalHomeBootstrapGate>,
+        );
+        expect(screen.findByTestId('boot-ready')).not.toBeNull();
+    });
+
+    it('shows the shell while the automatic local Home is starting', async () => {
+        let releaseHome!: () => void;
+        const ensureHomeReady = vi.fn(() => new Promise<void>((resolve) => { releaseHome = resolve; }));
+        const screen = await renderScreen(
+            <PersonalHomeBootstrapGate
+                isDesktopHost
+                isDesktopMainWindow
+                readFacts={async () => pendingFacts}
+                operations={{ 'ensure-home-ready': ensureHomeReady }}
+            >
+                <View testID="normal-shell" />
+                <ReadinessProbe />
+            </PersonalHomeBootstrapGate>,
+        );
+        await flushHookEffects({ cycles: 4, turns: 2 });
+        expect(ensureHomeReady).toHaveBeenCalled();
+        expect(screen.findByTestId('normal-shell')).not.toBeNull();
+        expect(screen.findByTestId('boot-starting')).not.toBeNull();
+        await act(async () => { releaseHome(); });
+    });
+
+    it('keeps the shell mounted when automatic startup completes', async () => {
         reducedMotionSpy.mockReturnValue(false);
         const screen = await renderBootstrapThroughHomeReady();
 
-        // The shell is live underneath while the setup frame is still on screen: a crossfade, not a cut.
         expect(screen.findByTestId('normal-shell')).not.toBeNull();
-        const reveal = screen.findAllHostsByTestId('personal-home-setup-reveal');
-        expect(reveal).toHaveLength(1);
-        expect(reveal[0]?.props.pointerEvents).toBe('none');
-        expect(screen.findByTestId('personal-home-setup-surface')).not.toBeNull();
+        expect(screen.findByTestId('personal-home-setup-reveal')).toBeNull();
+        expect(screen.findByTestId('personal-home-setup-surface')).toBeNull();
     });
 
-    it('swaps immediately under reduced motion, with the shell as the only frame', async () => {
+    it('also keeps the shell as the only frame under reduced motion', async () => {
         reducedMotionSpy.mockReturnValue(true);
         const screen = await renderBootstrapThroughHomeReady();
 

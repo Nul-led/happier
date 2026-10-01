@@ -30,6 +30,16 @@ import { resolveInlineDiffVirtualizedMaxHeight } from '@/components/ui/code/diff
 import { resolveInlineDiffVirtualizedViewportStyle } from '@/components/ui/code/diff/resolveInlineDiffVirtualizedViewportStyle';
 import { useInlineDiffVirtualizationThresholds } from '@/components/ui/code/diff/useInlineDiffVirtualizationThresholds';
 import { Icon } from '@/components/ui/icons/Icon';
+import { Avatar } from '@/components/ui/avatar/Avatar';
+import type {
+    HappierAgentCursorMotionDriver,
+    HappierCapsuleHost,
+    HappierDisclosureMotionDriver,
+} from '@happier-dev/plugin-ui/presentation';
+import { reanimatedAgentCursorMotion } from '@/components/ui/motion/reanimatedAgentCursorMotion';
+import { CORE_CAPSULE_HOST } from '@/components/ui/status/capsuleHost';
+import { reanimatedDisclosureMotion } from '@/components/ui/lists/ExpandableItem';
+import { reanimatedCollectionMotion } from '@/components/ui/motion/reanimatedCollectionMotion';
 import { Popover } from '@/components/ui/popover/Popover';
 import { MODAL_AWARE_FLOATING_POPOVER_PORTAL_OPTIONS } from '@/components/ui/popover/modalAwareFloatingPopoverPortalOptions';
 import { Text } from '@/components/ui/text/Text';
@@ -38,6 +48,12 @@ import {
     type PluginUiIconDirection,
 } from '@/components/plugins/surfaces/iconToken/resolvePluginUiIconToken';
 import { InstalledPluginBrandMark } from '@/components/plugins/shared/InstalledPluginBrandMark';
+import type { HappierUiPalette } from '@happier-dev/plugin-ui/environment';
+import type { PluginUiSessionPartPresentation } from '@happier-dev/plugin-ui/advanced';
+import type { HappierPageChrome, HappierStateSize } from '@happier-dev/plugin-ui/presentation';
+import type { DetailsPaneSlotBinding } from '@/components/appShell/panes/details/DetailsPaneSlot';
+import type { usePaneHeaderSlotBinding } from '@/components/appShell/panes/paneHeaderSlot';
+import { readPluginUiHostTypography } from '@/components/plugins/surfaces/pluginUiThemeProjection';
 import { useSetting } from '@/sync/domains/state/storage';
 import {
     useInstalledPluginBrandPresentation,
@@ -78,6 +94,7 @@ function resolvePluginUiPopoverPresentation(input: Readonly<{
 
 export type PluginUiPresentationBrand = Readonly<{
     displayName: string;
+    monochrome?: boolean;
     resource?: Readonly<{ pluginId: string; localId: string }>;
 }>;
 
@@ -115,10 +132,25 @@ export type PluginUiPrivatePresentationHostOptions = Readonly<{
     /** A targeted child falls back locally rather than becoming another parent bridge. */
     targetedSurfaceUnavailableReason?: 'unsupported_nested_targeted_surface';
     /**
+     * Renders plugin session parts through the app's one Session implementation. Installed only
+     * for same-realm RN/RNW mounts; hosted-web and declarative adapters never receive it.
+     */
+    renderSessionPart?: (input: PluginUiSessionPartPresentation) => React.ReactNode;
+    /**
      * The containing layout/route's current presentation fact. The physical
      * mount and availability are necessary but insufficient for focus.
      */
     isFocusEligible?: () => boolean;
+    /** The host's configuration-page colour roles for the current theme (`projectPluginUiHostPalette`). */
+    palette?: HappierUiPalette;
+    /** The navigation chrome the mount sits in (title shown, back control, content column). */
+    pageChrome?: HappierPageChrome;
+    /** The container's state size (`SurfaceStateSizeProvider`): a plugin's unsized states take it. */
+    stateSize?: HappierStateSize;
+    /** The page's app details pane, when the mount sits in a page that has one (`DetailsPaneSlotHost`). */
+    detailsPane?: DetailsPaneSlotBinding;
+    /** The pane header of the tab the mount fills (the session sidebar, a phone surface), when it has one. */
+    paneHeader?: NonNullable<ReturnType<typeof usePaneHeaderSlotBinding>>;
 }>;
 
 type PluginUiPrivateTargetBrandMarkInput = Readonly<{
@@ -320,6 +352,10 @@ function createPluginUiPrivatePresentationRenderers(direction?: PluginUiIconDire
     renderQRCode(input: Readonly<{ data: string; size: number; testID?: string }>) {
         return <PluginUiPrivateQRCode data={input.data} size={input.size} testID={input.testID} />;
     },
+    /** A person's mark through the one avatar owner: the generated mark with its monogram, by name. */
+    renderAvatar(input: Readonly<{ name: string; size: number; testID?: string }>) {
+        return <Avatar id={input.name} title size={input.size} accessibilityLabel={input.name} testID={input.testID} />;
+    },
     });
 }
 
@@ -327,6 +363,20 @@ const PLUGIN_UI_PRIVATE_PRESENTATION_RENDERERS = createPluginUiPrivatePresentati
 
 export type PluginUiPrivatePresentationHost = Readonly<
     typeof PLUGIN_UI_PRIVATE_PRESENTATION_RENDERERS & {
+        /** The host's real type-role styles for same-realm plugin text. */
+        typography: ReturnType<typeof readPluginUiHostTypography>;
+        /** The host's configuration-page colour roles, when the mount supplies its theme. */
+        palette?: HappierUiPalette;
+        pageChrome?: HappierPageChrome;
+        stateSize?: HappierStateSize;
+        detailsPane?: DetailsPaneSlotBinding;
+        paneHeader?: NonNullable<ReturnType<typeof usePaneHeaderSlotBinding>>;
+        /** The Collection transition and peek motion, from the app's motion tokens. */
+        collectionMotion: typeof reanimatedCollectionMotion;
+        disclosureMotion: HappierDisclosureMotionDriver;
+        /** The floating capsules' leaves and the agent cursor's motion: a plugin's capsule is the app's. */
+        capsuleHost: HappierCapsuleHost;
+        agentCursorMotion: HappierAgentCursorMotionDriver;
         brand?: PluginUiPresentationBrand;
         /** Private exact target lookup; intentionally not part of RenderContext or HostApi. */
         resolveBrandDisplayName?(pluginId: string): string | undefined;
@@ -342,6 +392,8 @@ export type PluginUiPrivatePresentationHost = Readonly<
         renderTargetedSurface?(input: PluginUiPrivateTargetedSurfacePresentation): React.ReactNode;
         /** Private reason for a deliberate local targeted-surface fallback. */
         targetedSurfaceUnavailableReason?: 'unsupported_nested_targeted_surface';
+        /** Private Session part renderer; the app's one Session implementation draws every part. */
+        renderSessionPart?(input: PluginUiSessionPartPresentation): React.ReactNode;
         /** Private physical focus transfer; never part of RenderContext or Host API. */
         focusTarget?(target: unknown): boolean;
     }
@@ -465,6 +517,21 @@ export function createPluginUiPrivatePresentationHost(
         : undefined;
     return Object.freeze({
         ...presentationRenderers,
+        typography: readPluginUiHostTypography(),
+        ...(options?.palette === undefined ? {} : { palette: options.palette }),
+        ...(options?.pageChrome === undefined ? {} : { pageChrome: options.pageChrome }),
+        ...(options?.stateSize === undefined ? {} : { stateSize: options.stateSize }),
+        ...(options?.detailsPane === undefined ? {} : { detailsPane: options.detailsPane }),
+        ...(options?.paneHeader === undefined ? {} : { paneHeader: options.paneHeader }),
+        // The same-realm motion drivers for the Collection's transition and its peek disclosure.
+        collectionMotion: reanimatedCollectionMotion,
+        // Widened to the contract's driver type: the Disclosure hands `Body` only the motion its own
+        // `useMotion` created, so the Reanimated pair stays consistent.
+        disclosureMotion: reanimatedDisclosureMotion as unknown as HappierDisclosureMotionDriver,
+        capsuleHost: CORE_CAPSULE_HOST,
+        // Widened like the disclosure: the cursor hands `Pointer`/`Ring` only the motion its own
+        // `useMotion` created.
+        agentCursorMotion: reanimatedAgentCursorMotion as unknown as HappierAgentCursorMotionDriver,
         ...(brand ? { brand } : {}),
         ...(targetBrandPresentation ?? {}),
         ...(focusPresentation ?? {}),
@@ -474,5 +541,8 @@ export function createPluginUiPrivatePresentationHost(
         ...(options?.targetedSurfaceUnavailableReason === undefined
             ? {}
             : { targetedSurfaceUnavailableReason: options.targetedSurfaceUnavailableReason }),
+        ...(options?.renderSessionPart === undefined
+            ? {}
+            : { renderSessionPart: options.renderSessionPart }),
     });
 }

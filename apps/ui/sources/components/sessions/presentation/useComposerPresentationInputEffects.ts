@@ -47,7 +47,7 @@ function effectIdentity(input: Readonly<{
     return JSON.stringify([
         input.owner.identity.pluginId,
         input.owner.identity.localId,
-        input.owner.immutableGenerationId,
+        input.owner.occurrenceId,
         input.owner.surfaceInstanceKey,
         input.key,
     ]);

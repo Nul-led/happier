@@ -11,7 +11,12 @@ import {
   isAutomationConversationResultDeliveryOwnedByCallerV1,
   sealAutomationConversationReplyContextStoredEnvelopeV1,
   sealAutomationRunResultStoredEnvelopeV1,
+  createAccountScopedCryptoMaterialSnapshotV1,
+  convertContentPublicKeyFingerprintToAccountEncryptionMigrateKeyFingerprintV1,
+  prepareWorkflowRunDataKeyV1,
+  sealWorkflowFinalResultStoredEnvelopeV1,
   type AccountEncryptionCurrentnessResponse,
+  type WorkflowRunRecipientCensusResponseV1,
 } from '@happier-dev/protocol';
 
 import type { RpcHandler, RpcHandlerRegistrar } from '@/api/rpc/types';
@@ -21,6 +26,7 @@ import { executeContributedAction } from '@/plugins/runtime/invocation/actions/e
 import { createAccountEncryptionCurrentnessFixture } from '@/testkit/backends/sessionFixtures';
 
 import { registerAutomationReplyHandoffRpcHandler } from './automationReplyHandoff';
+import { createWorkflowRunStorageClient } from '@/daemon/workflows/workflowRunStorageClient';
 
 const transportMocks = vi.hoisted(() => ({
   post: vi.fn(),
@@ -48,7 +54,12 @@ const accountId = 'account-1';
 const machineId = 'machine-1';
 const machineInstallationId = 'installation-1';
 const materializationId = 'materialization-slack-1';
-const immutableGenerationId = 'generation-slack-1';
+const runtimeOccurrenceId = 'occurrence-slack-1';
+const sourceCustody = {
+  kind: 'managed',
+  immutableGenerationId: 'generation-slack-1',
+  installSource: 'archive',
+} as const;
 
 const correspondence = {
   accountId,
@@ -139,6 +150,68 @@ describe('Conversation Automation participation for a non-Channels plugin', () =
     vi.clearAllMocks();
   });
 
+  it('delivers a Workflow result through its fresh owner Run-key census instead of the Account content key', async () => {
+    const runId = '11111111-1111-4111-8111-111111111111';
+    const material = createAccountScopedCryptoMaterialSnapshotV1({ accountEncryptionMode: 'e2ee',
+      material: { type: 'legacy', secret: new Uint8Array(32).fill(7) } });
+    const currentness = createAccountEncryptionCurrentnessFixture({ mode: 'e2ee', version: 8, updatedAt: 8,
+      contentKeyFingerprint: convertContentPublicKeyFingerprintToAccountEncryptionMigrateKeyFingerprintV1(material.contentPublicKeyFingerprint) });
+    const witness = { mode: 'e2ee' as const, version: currentness.version, contentKeyFingerprint: currentness.contentKeyFingerprint! };
+    const randomBytes = (length: number) => new Uint8Array(length).fill(19);
+    const prepared = prepareWorkflowRunDataKeyV1({ accountId, encryption: { kind: 'available', witness, material }, randomBytes });
+    const runCrypto = prepared.runCrypto;
+    if (runCrypto.mode !== 'e2ee') throw new Error('E2EE fixture requires an encrypted Run data key');
+    const ownerKey = prepared.recipientKeyEnvelopes[0].encryptedDataKey;
+    const keyCensus = { runId, ownerAccountId: accountId, access: 'owner', encryptionMode: 'e2ee',
+      visibleTeamId: null, ownerAccountCurrentness: witness, dataEncryptionKey: ownerKey, callerDataEncryptionKey: ownerKey,
+      recipients: [] } satisfies WorkflowRunRecipientCensusResponseV1;
+    transportMocks.post.mockResolvedValue({ data: keyCensus });
+    const dispatch = AutomationReplyHandoffDispatchRequestV1Schema.parse({ v: 1, kind: 'automation.replyHandoff.dispatch',
+      target: { accountId, machineId, machineInstallationId, materializationId,
+        actionRef: { pluginId: BRIDGE_PLUGIN_ID, localId: BRIDGE_REPLY_DELIVERY_LOCAL_ID } },
+      handoff: { handoffId: `automation-reply-handoff:${runId}`, runId, automationId: correspondence.automationId,
+        occurrenceKey: replyContextCorrespondence.occurrenceKey, cause: { kind: 'conversation', occurredAt: 1,
+          occurrenceKey: replyContextCorrespondence.occurrenceKey }, accountCurrentness: witness, recipeKind: 'workflow-v2',
+        resultEnvelope: sealWorkflowFinalResultStoredEnvelopeV1({ ...runCrypto, randomBytes,
+          binding: { v: 1, purpose: 'final_result', accountId, runId },
+          finalResult: { kind: 'happier.workflow-final-result.v1', result: { kind: 'text', value: result.text },
+            producerInvocation: { recordId: '22222222-2222-4222-8222-222222222222' } } }),
+        replyContextEnvelope: sealAutomationConversationReplyContextStoredEnvelopeV1({ mode: 'e2ee', material: material.material,
+          randomBytes, correspondence: replyContextCorrespondence, opaqueContext }),
+      },
+    });
+    const delivered: unknown[] = [];
+    // This is the third-party plugin boundary; the real contributed Action dispatcher runs below it.
+    const registry = createBridgeRuntimeRegistry(call => { delivered.push(call.input); return { kind: 'accepted', custodyId: 'custody' }; });
+    const { handlers, registrar } = createRegistrar();
+    const options = { machineId, resolveAccountId: async () => accountId, resolveInstallationId: () => machineInstallationId,
+      resolveAccountEncryptionCurrentness: async () => currentness, resolveAccountEncryptionMaterial: async () => material,
+      resolveCurrentTargetMaterializationId: async () => materializationId,
+      acquireRuntimeLease: async () => ({ registry, source: 'active' as const, durableRevision: -1, release: async () => {} }),
+      workflowRunStorage: createWorkflowRunStorageClient({ token: 'test-token', serverHttpBaseUrl: 'https://example.test' }),
+      executeContributedAction };
+    registerAutomationReplyHandoffRpcHandler(registrar, options);
+    const handler = handlers.get(AUTOMATION_REPLY_HANDOFF_DAEMON_RPC_METHOD_V1);
+    if (!handler) throw new Error('Missing reply handler');
+    await expect(handler(dispatch)).resolves.toEqual({ kind: 'settled', settlement: { kind: 'accepted' }, accountCurrentness: witness });
+    expect(delivered).toEqual([expect.objectContaining({ result, opaqueContext })]);
+
+    // Rejoin must fetch the current envelope, never reuse the key from an earlier delivery.
+    transportMocks.post.mockResolvedValueOnce({ data: { ...keyCensus, callerDataEncryptionKey: null } });
+    await expect(handler(dispatch)).resolves.toEqual({ kind: 'settled', settlement: { kind: 'blocked' }, accountCurrentness: witness });
+    for (const changedIdentity of [
+      { runId: '33333333-3333-4333-8333-333333333333' },
+      { ownerAccountId: 'another-account' },
+    ]) {
+      transportMocks.post.mockResolvedValueOnce({ data: { ...keyCensus, ...changedIdentity } });
+      await expect(handler(dispatch)).resolves.toEqual({ kind: 'unavailable', code: 'targetMismatch' });
+    }
+    transportMocks.post.mockResolvedValueOnce({ data: { ...keyCensus,
+      ownerAccountCurrentness: { ...witness, version: witness.version + 1 } } });
+    await expect(handler(dispatch)).resolves.toEqual({ kind: 'settled', settlement: { kind: 'retry', retryAfterMs: 0 }, accountCurrentness: witness });
+    expect(delivered).toEqual([expect.objectContaining({ result, opaqueContext })]);
+  });
+
   it('binds an existing Account Automation, admits into it, and receives the delivered result', async () => {
     const execute = createAutomationConversationActionExecutor({
       credentials: {
@@ -154,7 +227,7 @@ describe('Conversation Automation participation for a non-Channels plugin', () =
       }),
       resolveAccountEncryptionMaterial: async () => null,
       revalidateCallerMaterialization: async () => true,
-      revalidateCallerImmutableGeneration: async () => true,
+      revalidateCallerOccurrence: async () => true,
     });
 
     // 0. The bridge selects the Account Automation the user bound it to. Any
@@ -177,7 +250,8 @@ describe('Conversation Automation participation for a non-Channels plugin', () =
         kind: 'plugin',
         pluginId: BRIDGE_PLUGIN_ID,
         contributionLocalId: BRIDGE_INGRESS_LOCAL_ID,
-        immutableGenerationId,
+        occurrenceId: runtimeOccurrenceId,
+        sourceCustody,
         materialization: { pluginId: BRIDGE_PLUGIN_ID, machineId, materializationId },
       },
     })).resolves.toEqual({
@@ -196,7 +270,8 @@ describe('Conversation Automation participation for a non-Channels plugin', () =
       'automation.conversation.targets.list'
     ].parse(listBody);
     expect(listRequest.caller.pluginId).toBe(BRIDGE_PLUGIN_ID);
-    expect(listRequest.caller.immutableGenerationId).toBe(immutableGenerationId);
+    expect(listRequest.caller.occurrenceId).toBe(runtimeOccurrenceId);
+    expect(listRequest.caller.sourceCustody).toEqual(sourceCustody);
     // The payload carries no owner or machine: the host stamps both.
     expect(listRequest.caller.materialization.machineId).toBe(machineId);
 
@@ -216,7 +291,8 @@ describe('Conversation Automation participation for a non-Channels plugin', () =
         kind: 'plugin',
         pluginId: BRIDGE_PLUGIN_ID,
         contributionLocalId: BRIDGE_INGRESS_LOCAL_ID,
-        immutableGenerationId,
+        occurrenceId: runtimeOccurrenceId,
+        sourceCustody,
         materialization: { pluginId: BRIDGE_PLUGIN_ID, machineId, materializationId },
       },
     })).resolves.toEqual({ kind: 'admitted', runId: correspondence.runId, checkpointSafe: true });
@@ -291,6 +367,7 @@ describe('Conversation Automation participation for a non-Channels plugin', () =
     const { handlers, registrar } = createRegistrar();
     registerAutomationReplyHandoffRpcHandler(registrar, {
       machineId,
+      workflowRunStorage: { execute: async () => { throw new Error('Ordinary Automation handoffs must not read Workflow storage'); } },
       resolveAccountId: async () => accountId,
       resolveInstallationId: () => machineInstallationId,
       resolveAccountEncryptionCurrentness: async () => plainCurrentness,
@@ -334,6 +411,7 @@ describe('Conversation Automation participation for a non-Channels plugin', () =
     const { handlers, registrar } = createRegistrar();
     registerAutomationReplyHandoffRpcHandler(registrar, {
       machineId,
+      workflowRunStorage: { execute: async () => { throw new Error('Ordinary Automation handoffs must not read Workflow storage'); } },
       resolveAccountId: async () => accountId,
       resolveInstallationId: () => machineInstallationId,
       resolveAccountEncryptionCurrentness: async () => plainCurrentness,

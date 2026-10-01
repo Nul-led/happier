@@ -1,7 +1,11 @@
 import {
   BrowserCommandDispatchResultV1Schema,
   BrowserCommandV1Schema,
+  BrowserDaemonViewV1Schema,
   type BrowserCommandDispatchResultV1,
+  type BrowserDaemonViewV1,
+  type BrowserEventV1,
+  type ActionExecutorContext,
 } from '@happier-dev/protocol';
 
 import {
@@ -9,9 +13,12 @@ import {
   type BrowserDaemonControlBroker,
   isBrowserDaemonControlAdapterKind,
 } from './types';
+import type { MachineLiveStreamCaptureRegistry } from '../../peer/mediation/stream/captureRegistry';
+import type { BrowserAutomationDaemonService } from '../automation/service';
 
 export type BrowserDaemonControlRoutes = Readonly<{
-  dispatchCommand(command: unknown): Promise<BrowserCommandDispatchResultV1>;
+  dispatchCommand(command: unknown, context?: Pick<ActionExecutorContext, 'authority' | 'bypassApprovals'>): Promise<BrowserCommandDispatchResultV1>;
+  listViews(browserSessionId: string): readonly BrowserDaemonViewV1[];
 }>;
 
 function readCommandId(input: unknown): string {
@@ -30,10 +37,18 @@ function invalidBrokerResult(commandId: string): BrowserCommandDispatchResultV1 
 }
 
 export function createBrowserDaemonControlRoutes(input: Readonly<{
-  broker: Pick<BrowserDaemonControlBroker, 'dispatchCommand'>;
+  broker: Pick<BrowserDaemonControlBroker, 'dispatchCommand'> & Partial<Pick<BrowserDaemonControlBroker, 'listViews'>>;
+  captureRegistry?: Pick<MachineLiveStreamCaptureRegistry, 'resolve'>;
+  automation?: () => BrowserAutomationDaemonService | null;
 }>): BrowserDaemonControlRoutes {
   return {
-    async dispatchCommand(rawCommand) {
+    listViews(browserSessionId) {
+      return (input.broker.listViews?.(browserSessionId) ?? []).map(view => {
+        const source = input.captureRegistry?.resolve({ sourceId: view.sourceId, streamFamily: 'browser.streamed' });
+        return BrowserDaemonViewV1Schema.parse({ ...view, ...(source?.ok ? { captureSource: source.source.capabilities } : {}) });
+      });
+    },
+    async dispatchCommand(rawCommand, context) {
       const command = BrowserCommandV1Schema.safeParse(rawCommand);
       if (!command.success) {
         return browserCommandDispatchFailure({
@@ -41,6 +56,32 @@ export function createBrowserDaemonControlRoutes(input: Readonly<{
           code: 'command_malformed',
           message: 'Browser command payload failed protocol validation.',
         });
+      }
+
+      if (command.data.kind === 'takeControl' || command.data.kind === 'handBack') {
+        const fail = (code: 'permission_denied' | 'adapter_unavailable' | 'view_not_found', message: string) =>
+          browserCommandDispatchFailure({ commandId: command.data.commandId, code, message });
+        if (context?.authority !== 'present_user'
+          && !(context?.authority === 'account_automation' && context.bypassApprovals === true)) {
+          return fail('permission_denied', 'Controller commands require human authority or host policy admission.');
+        }
+        const view = input.broker.listViews?.(command.data.browserSessionId).find(candidate => candidate.viewId === command.data.viewId);
+        if (!view) return fail('view_not_found', 'No registered Browser daemon adapter owns this view.');
+        const automation = input.automation?.();
+        if (!automation) return fail('adapter_unavailable', 'Browser automation runtime is unavailable.');
+        const events: BrowserEventV1[] = [];
+        const unsubscribe = automation.subscribeBrowserEvents(event => {
+          if (event.browserSessionId === view.browserSessionId && 'viewId' in event && event.viewId === view.viewId) events.push(event);
+        });
+        try {
+          const authority = { browserSessionId: view.browserSessionId, viewId: view.viewId,
+            ...(context.authority === 'present_user' ? { authority: 'present_user' as const }
+              : { authority: 'account_automation' as const, bypassApprovals: true as const }) };
+          if (command.data.kind === 'takeControl') await automation.recordHumanInput(authority);
+          else if (!automation.handBack(authority).ok) return fail('adapter_unavailable', 'The interrupted browser action is still settling.');
+          return BrowserCommandDispatchResultV1Schema.parse({ v: 1, commandId: command.data.commandId,
+            status: 'dispatched', adapterKind: view.adapterKind, events });
+        } finally { unsubscribe(); }
       }
 
       const result = await input.broker.dispatchCommand(command.data);

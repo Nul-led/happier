@@ -17,22 +17,24 @@ import {
     type ServerMachineInventorySnapshotV1,
 } from './machineInventorySnapshots';
 
+const EMPTY_MACHINE_INVENTORY_SNAPSHOTS: readonly ServerMachineInventorySnapshotV1[] = Object.freeze([]);
+
 /**
  * The one React projection over the all-profile raw inventory and its
  * presentation-only warm fallback. Administration consumers share this hook
  * instead of independently interpreting active/concurrent machine stores.
  */
-export function useAllProfileMachineInventorySnapshots(): readonly ServerMachineInventorySnapshotV1[] {
+export function useAllProfileMachineInventorySnapshots(enabled = true): readonly ServerMachineInventorySnapshotV1[] {
     const activeServer = useActiveServerSnapshot();
     const serverProfilesGeneration = useServerProfilesGeneration();
     const profiles = React.useMemo(() => listServerProfiles(), [serverProfilesGeneration]);
-    const activeMachines = useMachineRecordValues();
-    const machineListByServerId = useMachineRecordListsByServerId();
-    const machineListStatusByServerId = useMachineListStatusByServerId();
+    const activeMachines = useMachineRecordValues(enabled);
+    const machineListByServerId = useMachineRecordListsByServerId(enabled);
+    const machineListStatusByServerId = useMachineListStatusByServerId(enabled);
     const activeInventoryLoaded = useIsDataReady();
     const profile = useProfile();
 
-    return React.useMemo(() => resolveAllProfileMachineInventorySnapshots({
+    return React.useMemo(() => enabled ? resolveAllProfileMachineInventorySnapshots({
         profiles,
         activeServerId: activeServer.serverId,
         activeInventoryLoaded,
@@ -41,7 +43,8 @@ export function useAllProfileMachineInventorySnapshots(): readonly ServerMachine
         machineListStatusByServerId,
         accountId: profile.id,
         loadWarmEntries: loadMachineDisplayWarmCacheEntries,
-    }), [
+    }) : EMPTY_MACHINE_INVENTORY_SNAPSHOTS, [
+        enabled,
         activeInventoryLoaded,
         activeMachines,
         activeServer.serverId,

@@ -16,14 +16,24 @@ import {
 const viewportState = vi.hoisted(() => ({
     width: 900,
 }));
+const platformState = vi.hoisted(() => ({
+    os: 'web' as 'web' | 'android',
+}));
+const safeAreaState = vi.hoisted(() => ({
+    bottom: 11,
+}));
 
 vi.mock('react-native', async () => {
     const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
     return createReactNativeWebMock({
         Platform: {
-            OS: 'web',
+            get OS() {
+                return platformState.os;
+            },
             select: (spec: Record<string, unknown>) =>
-                Object.prototype.hasOwnProperty.call(spec, 'web') ? spec.web : spec.default,
+                Object.prototype.hasOwnProperty.call(spec, platformState.os)
+                    ? spec[platformState.os]
+                    : spec.default,
         },
         View: 'View',
         Pressable: 'Pressable',
@@ -42,7 +52,7 @@ vi.mock('@/text', async () => {
 });
 
 vi.mock('@/components/ui/layout/useChromeSafeAreaInsets', () => ({
-    useChromeSafeAreaInsets: () => ({ top: 0, bottom: 11, left: 0, right: 0 }),
+    useChromeSafeAreaInsets: () => ({ top: 0, bottom: safeAreaState.bottom, left: 0, right: 0 }),
 }));
 
 vi.mock('@/components/sessions/transcript/AgentContentView', () => ({
@@ -83,6 +93,8 @@ function findContentWrapper(screen: Awaited<ReturnType<typeof renderScreen>>) {
 describe('SessionViewLayout', () => {
     beforeEach(() => {
         viewportState.width = 900;
+        platformState.os = 'web';
+        safeAreaState.bottom = 11;
     });
 
     it('can remove the chat bottom spacing when embedded in cockpit chrome', async () => {
@@ -120,6 +132,27 @@ describe('SessionViewLayout', () => {
         );
 
         expect(findContentWrapperPaddingBottom(screen)).toBe(43);
+    });
+
+    it('lets the keyboard scaffold own the Android safe-area inset in classic sessions', async () => {
+        platformState.os = 'android';
+        safeAreaState.bottom = 34;
+        const { SessionViewLayout } = await import('./SessionViewLayout');
+
+        const screen = await renderScreen(
+            <SessionViewLayout
+                content={null}
+                input={null}
+                placeholder={null}
+                shouldShowCliWarning={false}
+                onDismissCliWarning={() => {}}
+                isLandscape={false}
+                deviceType="phone"
+                onBackPress={() => {}}
+            />,
+        );
+
+        expect(findContentWrapperPaddingBottom(screen)).toBe(0);
     });
 
     it('reduces bottom spacing when the chat content fills the main surface width', async () => {

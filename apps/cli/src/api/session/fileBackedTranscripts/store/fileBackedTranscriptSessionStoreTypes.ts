@@ -1,3 +1,5 @@
+import type { TranscriptOpenedAgentStateV1, TranscriptOpenedSharedMetadataV1 } from '@happier-dev/protocol';
+
 export type FileBackedTranscriptSessionStoreLifecycleState =
     | 'hot_attached'
     | 'warm_detached'
@@ -16,6 +18,9 @@ export type FileBackedTranscriptReadAfterResult<TItem = unknown> = Readonly<{
     items: readonly TItem[];
     nextCursor: string | null;
     truncated: boolean;
+    projection?: 'openedMessagesV1';
+    agentState?: TranscriptOpenedAgentStateV1 | null;
+    sharedMetadata?: TranscriptOpenedSharedMetadataV1 | null;
 }>;
 
 export type FileBackedTranscriptSubscriptionListener<TItem = unknown> = (event: Readonly<{

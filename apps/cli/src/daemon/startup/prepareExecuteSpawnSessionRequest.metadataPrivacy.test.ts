@@ -4,6 +4,7 @@ import {
   createAccountScopedCryptoMaterialSnapshotV1,
   sealSessionOwnerMetadataEnvelopeV1,
   SessionOwnerMetadataV1Schema,
+  SessionCreationTagV1Schema,
   type AccountEncryptionCurrentnessResponse,
   type SessionOwnerMetadataEnvelopeV1,
 } from '@happier-dev/protocol';
@@ -116,6 +117,44 @@ function buildSplitSession(
 }
 
 describe('prepareExecuteSpawnSessionRequest metadata privacy authority', () => {
+  it('retains trusted managed creation routing before the new child has published its directory marker', async () => {
+    const sessionCreationTag = SessionCreationTagV1Schema.parse(`create:v1:${'a'.repeat(43)}`);
+    const ownerMetadata = SessionOwnerMetadataV1Schema.parse({
+      v: 1, workspace: { path: '/private/chat', machineId: 'machine-1' },
+      runtime: { acpConfiguredBackendV1: { v: 1, updatedAt: 1, backendId: 'my-acp', title: 'My ACP' } },
+    });
+    mocks.fetchSessionByIdCompat.mockResolvedValueOnce(buildSplitSession(sealSessionOwnerMetadataEnvelopeV1({
+      material: credentials.encryption, ownerMetadata, randomBytes: (length) => new Uint8Array(length).fill(7),
+    })));
+    const result = await prepareExecuteSpawnSessionRequest({
+      request: {
+        options: {
+          existingSessionId: 'session-private-resume', directory: '/private/chat',
+          directoryKind: 'managed', freshSessionCreation: true, sessionCreationTag,
+        },
+        credentials,
+      },
+      validateEnvVarRecordStrict: () => ({ ok: true, env: {} }),
+    });
+    expect(result).toMatchObject({ directory: '/private/chat', directoryKind: 'managed', sessionCreationTag });
+  });
+
+  it('routes a managed existing session from owner metadata rather than a caller path classification', async () => {
+    const ownerMetadata = SessionOwnerMetadataV1Schema.parse({
+      v: 1,
+      workspace: { path: '/private/chat', machineId: 'machine-1', sessionDirectoryV1: { v: 1, kind: 'managed' } },
+      runtime: { acpConfiguredBackendV1: { v: 1, updatedAt: 1, backendId: 'my-acp', title: 'My ACP' } },
+    });
+    mocks.fetchSessionByIdCompat.mockResolvedValueOnce(buildSplitSession(sealSessionOwnerMetadataEnvelopeV1({
+      material: credentials.encryption, ownerMetadata, randomBytes: (length) => new Uint8Array(length).fill(7),
+    })));
+    const result = await prepareExecuteSpawnSessionRequest({
+      request: { options: { existingSessionId: 'session-private-resume', directory: '/untrusted', directoryKind: 'path' }, credentials },
+      validateEnvVarRecordStrict: () => ({ ok: true, env: {} }),
+    });
+    expect(result).toMatchObject({ directory: '/private/chat', directoryKind: 'managed' });
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.fetchAccountEncryptionCurrentness.mockResolvedValue(
@@ -161,6 +200,7 @@ describe('prepareExecuteSpawnSessionRequest metadata privacy authority', () => {
       workspace: {
         path: '/private/worktree',
         machineId: 'private-machine',
+        sessionDirectoryV1: { v: 1, kind: 'managed' },
       },
       nativeSession: {
         codexSessionId: 'private-vendor-resume',
@@ -210,6 +250,7 @@ describe('prepareExecuteSpawnSessionRequest metadata privacy authority', () => {
 
     expect(result).toMatchObject({
       directory: '/private/worktree',
+      directoryKind: 'managed',
       normalizedExistingSessionId: 'session-private-resume',
       effectiveResume: 'private-vendor-resume',
       effectiveBackendTargetV2: {

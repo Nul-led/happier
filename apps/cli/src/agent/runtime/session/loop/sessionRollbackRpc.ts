@@ -54,7 +54,7 @@ export function registerSessionRollbackRpcHandler(
   rpcHandlerManager: RpcHandlerRegistrar,
   resolveRuntimeFacet: () => SessionRollbackRuntimeFacet | null,
 ): void {
-  rpcHandlerManager.registerHandler(SESSION_RPC_METHODS.SESSION_ROLLBACK, async (raw: unknown) => {
+  rpcHandlerManager.registerHandler(SESSION_RPC_METHODS.SESSION_ROLLBACK, async (raw: unknown, context) => {
     const parsed = SessionRollbackRpcParamsSchema.safeParse(raw);
     if (!parsed.success) {
       return { ok: false, errorCode: 'invalid_request', errorMessage: 'Invalid params' } satisfies SessionRollbackRpcResult;
@@ -62,7 +62,8 @@ export function registerSessionRollbackRpcHandler(
     const dispatched = await dispatchActionFromRpc({
       actionId: 'session.rollback',
       input: parsed.data,
-      localActionContext: { authority: 'present_user' },
+      callerAuthority: context?.callerAuthority ?? 'account_automation',
+      ...(context?.localActionContext ? { localActionContext: context.localActionContext } : {}),
       executor: createSessionLifecycleRpcActionExecutor({
         'session.rollback': async (request: unknown) => {
           const runtimeFacet = resolveRuntimeFacet();
@@ -87,7 +88,7 @@ export function registerSessionRollbackRpcHandler(
     return dispatched.result as SessionRollbackRpcResult;
   });
 
-  rpcHandlerManager.registerHandler(SESSION_RPC_METHODS.SESSION_CHECKPOINT, async (raw: unknown) => {
+  rpcHandlerManager.registerHandler(SESSION_RPC_METHODS.SESSION_CHECKPOINT, async (raw: unknown, context) => {
     const parsed = SessionCheckpointRequestV1Schema.safeParse(raw);
     if (!parsed.success) {
       return {
@@ -99,7 +100,8 @@ export function registerSessionRollbackRpcHandler(
     const dispatched = await dispatchActionFromRpc({
       actionId: 'session.checkpoint',
       input: parsed.data,
-      localActionContext: { authority: 'present_user' },
+      callerAuthority: context?.callerAuthority ?? 'account_automation',
+      ...(context?.localActionContext ? { localActionContext: context.localActionContext } : {}),
       executor: createSessionLifecycleRpcActionExecutor({
         'session.checkpoint': async (request: unknown) => {
           const runtimeFacet = resolveRuntimeFacet();
@@ -124,7 +126,7 @@ export function registerSessionRollbackRpcHandler(
     return dispatched.result as SessionCheckpointResultV1;
   });
 
-  rpcHandlerManager.registerHandler(SESSION_RPC_METHODS.SESSION_RESTORE, async (raw: unknown) => {
+  rpcHandlerManager.registerHandler(SESSION_RPC_METHODS.SESSION_RESTORE, async (raw: unknown, context) => {
     const parsed = SessionRestoreRequestV1Schema.safeParse(raw);
     if (!parsed.success) {
       return {
@@ -136,7 +138,8 @@ export function registerSessionRollbackRpcHandler(
     const dispatched = await dispatchActionFromRpc({
       actionId: 'session.restore',
       input: parsed.data,
-      localActionContext: { authority: 'present_user' },
+      callerAuthority: context?.callerAuthority ?? 'account_automation',
+      ...(context?.localActionContext ? { localActionContext: context.localActionContext } : {}),
       executor: createSessionLifecycleRpcActionExecutor({
         'session.restore': async (request: unknown) => {
           const runtimeFacet = resolveRuntimeFacet();
@@ -161,7 +164,7 @@ export function registerSessionRollbackRpcHandler(
     return dispatched.result as SessionRestoreResultV1;
   });
 
-  rpcHandlerManager.registerHandler(SESSION_RPC_METHODS.SESSION_CHECKPOINT_CODE_ROLLBACK, async (raw: unknown) => {
+  rpcHandlerManager.registerHandler(SESSION_RPC_METHODS.SESSION_CHECKPOINT_CODE_ROLLBACK, async (raw: unknown, context) => {
     const parsed = CheckpointCodeRollbackActionRequestSchema.safeParse(raw);
     if (!parsed.success) {
       return {
@@ -175,7 +178,8 @@ export function registerSessionRollbackRpcHandler(
     const dispatched = await dispatchActionFromRpc({
       actionId: 'session.checkpoint_code_rollback',
       input: parsed.data,
-      localActionContext: { authority: 'present_user' },
+      callerAuthority: context?.callerAuthority ?? 'account_automation',
+      ...(context?.localActionContext ? { localActionContext: context.localActionContext } : {}),
       executor: createSessionLifecycleRpcActionExecutor({
         'session.checkpoint_code_rollback': async (request: unknown) => {
           const runtimeFacet = resolveRuntimeFacet();

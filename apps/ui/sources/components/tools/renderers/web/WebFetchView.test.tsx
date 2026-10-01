@@ -1,7 +1,7 @@
 import React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { renderScreen } from '@/dev/testkit';
-import type { ToolCall } from '@/sync/domains/messages/messageTypes';
+import type { ToolCall } from "@happier-dev/session-core/messages";
 import { makeToolViewProps } from '@/dev/testkit';
 import { makeCompletedTool, normalizedHostText } from '../core/truncationView.testHelpers';
 

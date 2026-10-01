@@ -1,4 +1,4 @@
-import type { Message, ToolCall } from '@/sync/domains/messages/messageTypes';
+import type { Message, ToolCall } from "@happier-dev/session-core/messages";
 import type { Session } from '@/sync/domains/state/storageTypes';
 
 import type { SessionSubagent, SessionSubagentActiveExecutionRunState } from '../types';

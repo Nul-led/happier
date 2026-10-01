@@ -162,7 +162,11 @@ function authority() {
             pluginVersion: '1.0.0',
             agentId: 'codex',
             localAgentId: 'codex',
-            immutableGenerationId: 'immutable-generation-1',
+            sourceCustody: {
+                kind: 'managed' as const,
+                immutableGenerationId: 'immutable-generation-1',
+                installSource: 'localPath' as const,
+            },
             locator: {
                 module: './agent/runtime.js',
                 export: 'createRuntime',
@@ -181,7 +185,7 @@ function managedProviderRuntimeBindingBasis(
 ): ProviderRuntimeBindingBasisV1 {
     return {
         v: 1,
-        agentTargetKey: 'backend:claude',
+        agentTargetKey: 'agent:happier.agent.claude/claude',
         connectionId: ProviderConnectionIdSchema.parse(connectionId),
         contributionKey: 'acme.providers/gateway',
         runtimeCredentialTransport: null,
@@ -242,12 +246,25 @@ function managedProviderScope(
             ),
         pluginId: 'acme.providers',
         providerLocalId: 'gateway',
-        activationGeneration: immutableGenerationId,
-        immutableGenerationId,
+        occurrenceId: `occurrence-${immutableGenerationId}`,
+        sourceCustody: {
+            kind: 'managed' as const,
+            immutableGenerationId,
+            installSource: 'npm' as const,
+        },
         manifestAuthority,
         operationClaimId:
             `session-demand:session-1:${immutableGenerationId}`,
     });
+}
+
+function managedCustodyGeneration(
+    scope: RunnerManagedProviderCustodyScopeV1,
+): string {
+    if (scope.sourceCustody.kind !== 'managed') {
+        throw new Error('Expected managed provider custody');
+    }
+    return scope.sourceCustody.immutableGenerationId;
 }
 
 function managedProviderSnapshot(): ManagedServiceSnapshot {
@@ -291,8 +308,12 @@ describe('runner Agent session runtime source', () => {
                 pluginVersion: '1.0.0',
                 agentId: 'codex',
                 backendId: 'codex',
-                generation: 'activation-generation-1',
-                immutableGenerationId: 'immutable-generation-1',
+                occurrenceId: 'occurrence:happier.agent.codex:1',
+                sourceCustody: {
+                    kind: 'managed',
+                    immutableGenerationId: 'immutable-generation-1',
+                    installSource: 'localPath',
+                },
                 agentDeclaration:
                     exactAgentDescriptorDeclaration(),
                 runtimeAuthority: {
@@ -364,7 +385,7 @@ describe('runner Agent session runtime source', () => {
                     {
                         generation:
                             input.retainedAgent
-                                .immutableGenerationId,
+                                .sourceCustody.immutableGenerationId,
                         policyAgentRef: {
                             pluginId:
                                 input.retainedAgent.pluginId,
@@ -374,7 +395,7 @@ describe('runner Agent session runtime source', () => {
                         resolveDeclaration:
                             mocks.facetVoiceResolveDeclaration,
                         isCurrent: vi.fn(() => true),
-                        resolveProviderGeneration:
+                        resolveProviderOccurrenceId:
                             vi.fn(() => 'voice-generation-1'),
                         resolveRetirementSignal:
                             vi.fn(() => null),
@@ -459,7 +480,7 @@ describe('runner Agent session runtime source', () => {
             pluginId: 'happier.agent.codex',
             pluginVersion: '1.0.0',
             agentId: 'codex',
-            generation: 'immutable-generation-1',
+            occurrenceId: 'immutable-generation-1',
             correlationId: 'session-1',
             cwd: '/repo',
             environment: { LATE: 'yes' },
@@ -470,7 +491,7 @@ describe('runner Agent session runtime source', () => {
                 current: {} as never,
             },
             readActiveTurnAdmissionWitness: () => witness,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
         expect(
             mocks.prepareRunnerDaemonPluginServices,
@@ -517,6 +538,72 @@ describe('runner Agent session runtime source', () => {
         }));
     });
 
+    it('passes the daemon-attested occurrence to development leaf opening and reports missing current source as typed unavailable', async () => {
+        const developmentAuthority = {
+            ...authority(),
+            retainedAgent: {
+                ...authority().retainedAgent,
+                pluginId: 'acme.development-agent',
+                agentId: 'acme.development-agent/codex',
+                sourceCustody: {
+                    kind: 'development' as const,
+                    registeredRootId: '/trusted/development/acme-agent',
+                },
+                loadMode: 'source-ts' as const,
+            },
+        };
+        mocks.readAuthority.mockResolvedValue(developmentAuthority);
+        mocks.loadFactory.mockRejectedValue(
+            new Error('current development root is missing'),
+        );
+
+        const source = await createRunnerAgentSessionRuntimeSource({
+            happyHomeDir: '/tmp/happier-runner-source',
+            publicReleaseRing: 'stable',
+            authorityFilePath: '/tmp/happier-runner-source/authority.json',
+            occurrenceId: 'occurrence:development-agent:current',
+        });
+        expect(source).not.toBeNull();
+        expect(mocks.createRunnerManagedServiceInvocationOwner)
+            .toHaveBeenCalledWith(expect.objectContaining({
+                retainedAgent: developmentAuthority.retainedAgent,
+                developmentOccurrenceId:
+                    'occurrence:development-agent:current',
+            }));
+
+        await expect(source!.createRuntime({
+            signal: new AbortController().signal,
+        })).rejects.toMatchObject({
+            code: 'RUNNER_AGENT_SESSION_RUNTIME_SOURCE_MISSING',
+            message: 'current development root is missing',
+        });
+        expect(mocks.loadFactory).toHaveBeenCalledWith(expect.objectContaining({
+            binding: developmentAuthority.retainedAgent,
+            developmentOccurrenceId: 'occurrence:development-agent:current',
+        }));
+    });
+
+    it('does not mint runner-local currentness for a development authority without a daemon occurrence', async () => {
+        mocks.readAuthority.mockResolvedValue({
+            ...authority(),
+            retainedAgent: {
+                ...authority().retainedAgent,
+                sourceCustody: {
+                    kind: 'development' as const,
+                    registeredRootId: '/trusted/development/acme-agent',
+                },
+                loadMode: 'source-ts' as const,
+            },
+        });
+
+        await expect(createRunnerAgentSessionRuntimeSource({
+            happyHomeDir: '/tmp/happier-runner-source',
+            publicReleaseRing: 'stable',
+            authorityFilePath: '/tmp/happier-runner-source/authority.json',
+        })).resolves.toBeNull();
+        expect(mocks.loadFactory).not.toHaveBeenCalled();
+    });
+
     it('keeps installed Agents with one local id distinct through runner construction', async () => {
         mocks.verifiedAgentProvenance = 'external';
         const localAgentId = 'assistant';
@@ -547,7 +634,11 @@ describe('runner Agent session runtime source', () => {
                         pluginId: entry.pluginId,
                         agentId: entry.routingId,
                         localAgentId,
-                        immutableGenerationId: entry.generation,
+                        sourceCustody: {
+                            kind: 'managed' as const,
+                            immutableGenerationId: entry.generation,
+                            installSource: 'localPath' as const,
+                        },
                     },
                 }];
             }),
@@ -601,7 +692,7 @@ describe('runner Agent session runtime source', () => {
                 pluginId: entry.pluginId,
                 pluginVersion: '1.0.0',
                 agentId: entry.qualifiedAgentId,
-                generation: entry.generation,
+                occurrenceId: entry.generation,
                 correlationId: `${entry.pluginId}-session`,
                 cwd: '/repo',
                 environment: {},
@@ -611,7 +702,7 @@ describe('runner Agent session runtime source', () => {
                     id: `${entry.pluginId}-session`,
                     current: {} as never,
                 },
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             });
         }
 
@@ -731,13 +822,16 @@ describe('runner Agent session runtime source', () => {
             identity: {
                 pluginId: 'happier.agent.codex',
                 agentId: 'codex',
-                generation: 'immutable-generation-1',
+                occurrenceId: expect.any(String),
                 contributionQualifiedId:
                     'happier.agent.codex/agents/codex',
-                immutableGenerationId:
-                    'immutable-generation-1',
+                sourceCustody: {
+                    kind: 'managed',
+                    immutableGenerationId: 'immutable-generation-1',
+                    installSource: 'localPath',
+                },
             },
-            signal: expect.any(AbortSignal),
+            signal: expect.anything(),
         });
         expect(mocks.managedEndpointRead).toHaveBeenCalledWith({
             pathAndQuery: '/session/remote-g/message',
@@ -963,7 +1057,7 @@ describe('runner Agent session runtime source', () => {
             pluginId: 'happier.agent.codex',
             pluginVersion: '1.0.0',
             agentId: 'codex',
-            generation: 'immutable-generation-1',
+            occurrenceId: 'immutable-generation-1',
             correlationId: 'session-1',
             cwd: '/repo',
             environment: {},
@@ -973,13 +1067,18 @@ describe('runner Agent session runtime source', () => {
                 id: 'session-1',
                 current: {} as never,
             },
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
 
         expect(mocks.bindManagedServices).toHaveBeenCalledOnce();
         expect(mocks.bindManagedServices).toHaveBeenCalledWith({
             seed: expect.objectContaining({
-                generation: 'immutable-generation-1',
+                occurrenceId: expect.any(String),
+                sourceCustody: {
+                    kind: 'managed',
+                    immutableGenerationId: 'immutable-generation-1',
+                    installSource: 'localPath',
+                },
                 contribution: expect.objectContaining({
                     qualifiedId:
                         'happier.agent.codex/agents/codex',
@@ -1057,9 +1156,7 @@ describe('runner Agent session runtime source', () => {
         const custody = source?.managedServicesCustodyPort;
         expect(custody).toBeDefined();
         mocks.readCurrentPluginImmutableGenerationIntegrityCurrentness
-            .mockImplementation(async (input) =>
-                input.retainedManifestAuthority
-                    === 'bundled_first_party');
+            .mockResolvedValue(true);
         const scopeP = managedProviderScope(
             'provider-p',
             'bundled_first_party',
@@ -1107,8 +1204,7 @@ describe('runner Agent session runtime source', () => {
             processStartTimeMs: 1,
             authority: {
                 pluginId: scopeP.pluginId,
-                immutableGenerationId:
-                    scopeP.immutableGenerationId,
+                sourceCustody: scopeP.sourceCustody,
                 manifestAuthority: scopeP.manifestAuthority,
                 hardRevocationRevisionAtAdmission: 4,
             },
@@ -1165,9 +1261,7 @@ describe('runner Agent session runtime source', () => {
         ).toHaveBeenCalledWith({
             paths: expect.any(Object),
             pluginId: scopeP.pluginId,
-            immutableGenerationId: scopeP.immutableGenerationId,
-            bundledArtifacts: expect.any(Array),
-            retainedManifestAuthority: scopeP.manifestAuthority,
+            immutableGenerationId: managedCustodyGeneration(scopeP),
         });
         expect(
             mocks.projectManagedProviderEndpointAccess,
@@ -1188,8 +1282,7 @@ describe('runner Agent session runtime source', () => {
             authority: null,
             expectedAuthority: {
                 pluginId: scopeP.pluginId,
-                immutableGenerationId:
-                    scopeP.immutableGenerationId,
+                sourceCustody: scopeP.sourceCustody,
                 manifestAuthority: scopeP.manifestAuthority,
                 hardRevocationRevisionAtAdmission: 4,
             },
@@ -1278,13 +1371,14 @@ describe('runner Agent session runtime source', () => {
             });
         expect(source).not.toBeNull();
         expect(source!.identity.isCurrent()).toBe(false);
-        expect(source!.identity.generation)
-            .toBe('immutable-generation-1');
+        expect(() => source!.identity.occurrenceId)
+            .toThrow('canonical session authority has not been claimed');
+        expect(() => source!.identity.sourceCustody)
+            .toThrow('canonical session authority has not been claimed');
         expect(source!.externalSessionHostOperations)
             .toBeDefined();
         expect(source!.agentSessionRealtimeVoiceAuthority)
             .toMatchObject({
-                generation: 'immutable-generation-1',
                 policyAgentRef: {
                     pluginId: 'happier.agent.codex',
                     localId: 'codex',
@@ -1317,8 +1411,13 @@ describe('runner Agent session runtime source', () => {
             }),
         );
         expect(source!.identity.isCurrent()).toBe(true);
-        expect(source!.identity.generation)
-            .toBe('immutable-generation-1');
+        expect(source!.identity.occurrenceId)
+            .toEqual(expect.any(String));
+        expect(source!.identity.sourceCustody).toEqual({
+            kind: 'managed',
+            immutableGenerationId: 'immutable-generation-1',
+            installSource: 'localPath',
+        });
         expect(
             source!.agentSessionRealtimeVoiceAuthority!
                 .isCurrent({
@@ -1341,6 +1440,58 @@ describe('runner Agent session runtime source', () => {
             expect(mocks.disposeInvocationServices)
                 .toHaveBeenCalledOnce();
         });
+    });
+
+    it('claims an attested runner snapshot after the daemon bootstrap used another snapshot', async () => {
+        const runner = authority();
+        const runnerCustody = {
+            kind: 'bundled_first_party' as const,
+            packagedRuntime: {
+                kind: 'pinned_runner_snapshot' as const,
+                snapshotId: 'runner-a',
+            },
+        };
+        mocks.readAuthority.mockResolvedValue({
+            ...runner,
+            runner: { ...runner.runner, snapshotIdentity: 'snapshot:runner-a' },
+            retainedAgent: {
+                ...runner.retainedAgent,
+                pluginVersion: '0.0.0',
+                sourceCustody: runnerCustody,
+            },
+        });
+        mocks.readPrivateBearerFile.mockResolvedValue(JSON.stringify({
+            v: 1,
+            descriptor: {
+                v: 1,
+                pluginId: 'happier.agent.codex',
+                pluginVersion: '1.0.0',
+                agentId: 'codex',
+                backendId: 'codex',
+                occurrenceId: 'occurrence:happier.agent.codex:1',
+                sourceCustody: {
+                    kind: 'bundled_first_party',
+                    packagedRuntime: {
+                        kind: 'pinned_runner_snapshot',
+                        snapshotId: 'daemon-b',
+                    },
+                },
+                agentDeclaration: exactAgentDescriptorDeclaration(),
+                runtimeAuthority: { runtimeCapabilities: ['sessionHooks'] },
+            },
+        }));
+        const source = await createRunnerAgentSessionRuntimeBootstrap({
+            happyHomeDir: '/tmp/happier-runner-source',
+            publicReleaseRing: 'stable',
+            bootstrapFilePath: '/tmp/happier-runner-source/bootstrap.json',
+            authorityFilePath: '/tmp/happier-runner-source/authority.json',
+        });
+        await expect(source!.prepareForSession?.({
+            sessionId: 'session-1',
+            signal: new AbortController().signal,
+        })).resolves.toBeUndefined();
+        expect(source!.identity.pluginVersion).toBe('0.0.0');
+        expect(source!.identity.sourceCustody).toEqual(runnerCustody);
     });
 
     it('forwards Composer reference resolution through the claimed runner authority', async () => {
@@ -1705,8 +1856,12 @@ describe('runner Agent session runtime source', () => {
                 pluginVersion: '1.0.0',
                 agentId: 'ohMyPi',
                 backendId: 'ohMyPi',
-                generation: 'activation-generation-1',
-                immutableGenerationId: 'immutable-generation-1',
+                occurrenceId: 'occurrence:happier.agent.ohmypi:1',
+                sourceCustody: {
+                    kind: 'managed',
+                    immutableGenerationId: 'immutable-generation-1',
+                    installSource: 'localPath',
+                },
                 agentDeclaration:
                     exactAgentDescriptorDeclaration('ohmypi'),
                 runtimeAuthority: {
@@ -1767,9 +1922,13 @@ describe('runner Agent session runtime source', () => {
                     pluginVersion: '1.0.0',
                     agentId: 'ohMyPi',
                     backendId: 'ohMyPi',
-                    generation: 'activation-generation-1',
-                    immutableGenerationId:
-                        'immutable-generation-1',
+                    occurrenceId: 'occurrence:happier.agent.ohmypi:1',
+                    sourceCustody: {
+                        kind: 'managed',
+                        immutableGenerationId:
+                            'immutable-generation-1',
+                        installSource: 'localPath',
+                    },
                     ...descriptorIdentity,
                     agentDeclaration:
                         exactAgentDescriptorDeclaration('ohmypi'),
@@ -1801,10 +1960,9 @@ describe('runner Agent session runtime source', () => {
 
     it.each([
         {
-            identityField: 'immutable generation',
+            identityField: 'plugin version',
             descriptorIdentity: {
-                immutableGenerationId:
-                    'immutable-generation-other',
+                pluginVersion: '2.0.0',
             },
         },
         {
@@ -1831,9 +1989,13 @@ describe('runner Agent session runtime source', () => {
                         pluginVersion: '1.0.0',
                         agentId: 'codex',
                         backendId: 'codex',
-                        generation: 'activation-generation-1',
-                        immutableGenerationId:
-                            'immutable-generation-1',
+                        occurrenceId: 'occurrence:happier.agent.codex:1',
+                        sourceCustody: {
+                            kind: 'managed',
+                            immutableGenerationId:
+                                'immutable-generation-1',
+                            installSource: 'localPath',
+                        },
                         ...descriptorIdentity,
                         agentDeclaration:
                             exactAgentDescriptorDeclaration(),
@@ -1879,10 +2041,14 @@ describe('runner Agent session runtime source', () => {
                     pluginVersion: '1.0.0',
                     agentId: 'codex',
                     backendId: 'codex',
-                    generation:
-                        'activation-generation-1',
-                    immutableGenerationId:
-                        'immutable-generation-1',
+                    occurrenceId:
+                        'occurrence:happier.agent.codex:1',
+                    sourceCustody: {
+                        kind: 'managed',
+                        immutableGenerationId:
+                            'immutable-generation-1',
+                        installSource: 'localPath',
+                    },
                     agentDeclaration: {
                         ...exactAgentDescriptorDeclaration(),
                         definition: {
@@ -1961,7 +2127,11 @@ describe('runner Agent session runtime source', () => {
                         retainedAgent: {
                             ...base.retainedAgent,
                             pluginVersion: input.pluginVersion,
-                            immutableGenerationId: input.generation,
+                            sourceCustody: {
+                                kind: 'managed' as const,
+                                immutableGenerationId: input.generation,
+                                installSource: 'localPath' as const,
+                            },
                         },
                     },
                 ] as const;
@@ -1995,13 +2165,17 @@ describe('runner Agent session runtime source', () => {
             );
         }
         mocks.loadFactory.mockImplementation(async (input) => {
-            const generation = (
+            const sourceCustody = (
                 input as Readonly<{
                     binding: Readonly<{
-                        immutableGenerationId: string;
+                        sourceCustody: Readonly<{
+                            kind: 'managed';
+                            immutableGenerationId: string;
+                        }>;
                     }>;
                 }>
-            ).binding.immutableGenerationId;
+            ).binding.sourceCustody;
+            const generation = sourceCustody.immutableGenerationId;
             const factory = factories.get(generation);
             if (!factory) {
                 throw new Error(`Missing factory for ${generation}`);
@@ -2025,14 +2199,17 @@ describe('runner Agent session runtime source', () => {
                     input as Readonly<{
                         authority: Readonly<{
                             retainedAgent: Readonly<{
-                                immutableGenerationId: string;
+                                sourceCustody: Readonly<{
+                                    kind: 'managed';
+                                    immutableGenerationId: string;
+                                }>;
                                 pluginId: string;
                                 localAgentId: string;
                             }>;
                         }>;
                     }>
                 ).authority.retainedAgent
-                    .immutableGenerationId;
+                    .sourceCustody.immutableGenerationId;
                 const bindSession = vi.fn();
                 const resolveDeclaration = vi.fn();
                 const dispose = vi.fn(async () => undefined);
@@ -2046,7 +2223,7 @@ describe('runner Agent session runtime source', () => {
                     }),
                     resolveDeclaration,
                     isCurrent: vi.fn(() => true),
-                    resolveProviderGeneration: vi.fn(() => null),
+                    resolveProviderOccurrenceId: vi.fn(() => null),
                     resolveRetirementSignal: vi.fn(() => null),
                     resolveConversation: vi.fn(() => null),
                 });
@@ -2109,7 +2286,7 @@ describe('runner Agent session runtime source', () => {
             pluginId: 'happier.agent.codex',
             pluginVersion: input.pluginVersion,
             agentId: 'codex',
-            generation: input.generation,
+            occurrenceId: input.generation,
             correlationId: `invocation-${input.generation}`,
             cwd: '/repo',
             environment: {},
@@ -2120,7 +2297,7 @@ describe('runner Agent session runtime source', () => {
                 current: {} as never,
             },
             readActiveTurnAdmissionWitness: () => witness,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
 
         const signal = new AbortController().signal;
@@ -2149,12 +2326,26 @@ describe('runner Agent session runtime source', () => {
             signal,
         );
 
-        expect(g1.identity.generation)
-            .toBe('immutable-generation-g1');
-        expect(g2.identity.generation)
-            .toBe('immutable-generation-g2');
-        expect(h.identity.generation)
-            .toBe('immutable-generation-h');
+        expect(new Set([
+            g1.identity.occurrenceId,
+            g2.identity.occurrenceId,
+            h.identity.occurrenceId,
+        ]).size).toBe(3);
+        expect(g1.identity.sourceCustody).toEqual({
+            kind: 'managed',
+            immutableGenerationId: 'immutable-generation-g1',
+            installSource: 'localPath',
+        });
+        expect(g2.identity.sourceCustody).toEqual({
+            kind: 'managed',
+            immutableGenerationId: 'immutable-generation-g2',
+            installSource: 'localPath',
+        });
+        expect(h.identity.sourceCustody).toEqual({
+            kind: 'managed',
+            immutableGenerationId: 'immutable-generation-h',
+            installSource: 'localPath',
+        });
         expect([g1Runtime, g2Runtime, hRuntime])
             .toEqual([
                 runtimes.get('immutable-generation-g1'),
@@ -2266,8 +2457,11 @@ describe('runner Agent session runtime source', () => {
         );
         expect(factoryG).toHaveBeenCalledTimes(1);
         expect(source!.identity.pluginVersion).toBe('1.0.0');
-        expect(source!.identity.generation)
-            .toBe('immutable-generation-1');
+        expect(source!.identity.sourceCustody).toEqual({
+            kind: 'managed',
+            immutableGenerationId: 'immutable-generation-1',
+            installSource: 'localPath',
+        });
         await expect(source!.createRuntime({ signal }))
             .resolves.toBe(runtimeG);
         expect(factoryG).toHaveBeenCalledTimes(1);

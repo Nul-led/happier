@@ -1,3 +1,4 @@
+import { readSessionDirectoryKind } from '@happier-dev/protocol';
 import type { Session } from '@/sync/domains/state/storageTypes';
 import type { SessionListRenderableSession } from '@/sync/domains/session/listing/sessionListRenderable';
 import { resolveCanonicalMachineId } from '@/sync/domains/machines/identity/resolveCanonicalMachineId';
@@ -8,14 +9,14 @@ import {
 } from '@/sync/ops/sessionMachineTarget';
 import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
 
-type RecentPathSessionSource = Pick<
+type RecentPathSessionSource = (Pick<
     Session,
     'id' | 'createdAt' | 'updatedAt' | 'metadata' | 'metadataLayoutVersion' | 'ownerMetadataView'
 >
     | Pick<
         SessionListRenderableSession,
         'id' | 'createdAt' | 'updatedAt' | 'metadata' | 'metadataLayoutVersion'
-    >;
+    >) & Readonly<{ serverId?: string }>;
 
 export function getRecentPathsForMachine(params: {
     machineId: string;
@@ -52,7 +53,8 @@ export function getRecentPathsForMachine(params: {
                 metadata: session.metadata ?? null,
                 ownerMetadataView: 'ownerMetadataView' in session ? session.ownerMetadataView : undefined,
             });
-            if (!metadata) return;
+            // A private folder is never a recent folder (it is Happier's, not one the person chose).
+            if (!metadata || readSessionDirectoryKind(metadata) === 'managed') return;
             const reachableTarget = params.preferProvidedSessionMetadata
                 ? null
                 : readMachineTargetForSession(session.id);
@@ -62,6 +64,7 @@ export function getRecentPathsForMachine(params: {
                 ? null
                 : readDisplayIdentityForSession({
                     sessionId: params.preferProvidedSessionMetadata ? session.id : null,
+                    serverId: session.serverId,
                     metadata,
                     preferProvidedMetadata: params.preferProvidedSessionMetadata === true,
                 });

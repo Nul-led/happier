@@ -189,12 +189,6 @@ export function registerDaemonExternalActionRoute(
     throw new Error('Daemon external Action route requires a current server ID');
   }
 
-  // The daemon control listener does not register a global CORS hook. This
-  // explicit shadow keeps public Action preflight fail-closed without adding a
-  // route-local config field that this Fastify context does not support.
-  app.options(`${EXTERNAL_ACTION_HTTP_PATH_PREFIX_V1}:actionId`, async (_request, reply) => reply.header('cache-control', 'no-store').code(404).send());
-
-  app.options(ACCOUNT_API_TOKEN_ENCRYPTION_ACCESS_HTTP_PATH_V1, async (_request, reply) => reply.header('cache-control', 'no-store').code(404).send());
   app.post(ACCOUNT_API_TOKEN_ENCRYPTION_ACCESS_HTTP_PATH_V1, async (request, reply) => {
     if (!AccountApiTokenEncryptionAccessRequestV1Schema.safeParse(request.body).success) {
       return sendExternalActionJson(reply, 400, { error: 'invalid_request' });

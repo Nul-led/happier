@@ -93,7 +93,7 @@ const COEXISTING_ROW = { localId: LOCAL_ID, deliveryStatus: 'blocked' } as const
 describe('pendingQueueV2 durable pending/committed coexistence', () => {
     beforeEach(async () => await resetPendingQueueState());
 
-    function armSession(params?: { sessionSeq?: number }) {
+    async function armSession(params?: { sessionSeq?: number }) {
         const server = await upsertServerProfile({ serverUrl: 'https://durable.example.test', name: 'Durable' });
         await resetPendingQueueState({ serverId: server.id, accountId: 'account' });
         storage.getState().applySessions([{
@@ -124,7 +124,7 @@ describe('pendingQueueV2 durable pending/committed coexistence', () => {
      * news, not a settlement.
      */
     it('publishes a blocked coexisting row when the transcript first loads during the pending GET', async () => {
-        const scope = armSession();
+        const scope = await armSession();
         let releaseResponse!: () => void;
         const responseGate = new Promise<void>((resolve) => { releaseResponse = resolve; });
 
@@ -159,7 +159,7 @@ describe('pendingQueueV2 durable pending/committed coexistence', () => {
      * had not loaded this commit yet", so the answer for that state is to assert nothing.
      */
     it('publishes a blocked coexisting row when the transcript is marked loaded but empty', async () => {
-        const scope = armSession({ sessionSeq: 0 });
+        const scope = await armSession({ sessionSeq: 0 });
         storage.getState().applyMessagesLoaded(SESSION_ID);
         let releaseResponse!: () => void;
         const responseGate = new Promise<void>((resolve) => { releaseResponse = resolve; });
@@ -184,7 +184,7 @@ describe('pendingQueueV2 durable pending/committed coexistence', () => {
      * capture point. Inheriting must not turn "old news I had not loaded yet" into a withhold.
      */
     it('publishes a blocked coexisting row for a refresh that inherits an in-flight capture', async () => {
-        const scope = armSession();
+        const scope = await armSession();
         const sharedEncryption = await encryption();
         let releaseResponse!: () => void;
         const responseGate = new Promise<void>((resolve) => { releaseResponse = resolve; });
@@ -218,7 +218,7 @@ describe('pendingQueueV2 durable pending/committed coexistence', () => {
      * is newer than the read.
      */
     it('publishes a blocked coexisting row when an older transcript page lands during the pending GET', async () => {
-        const scope = armSession();
+        const scope = await armSession();
         loadTranscript([LOADED_HEAD_SEQ]);
         let releaseResponse!: () => void;
         const responseGate = new Promise<void>((resolve) => { releaseResponse = resolve; });
@@ -243,7 +243,7 @@ describe('pendingQueueV2 durable pending/committed coexistence', () => {
      * durable blocked row for an older utterance coexists.
      */
     it('withholds only the freshly settled row and keeps the durable one in the same snapshot', async () => {
-        const scope = armSession();
+        const scope = await armSession();
         loadTranscript([LOADED_HEAD_SEQ]);
         const settledLocalId = 'durable-coexistence-settled';
         let releaseResponse!: () => void;

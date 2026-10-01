@@ -131,6 +131,38 @@ describe('buildTranscriptNavigationLoadedMessages', () => {
         ]);
     });
 
+    it('carries what each loaded tool did into its turn: state and the person\'s answer, not a cancel', () => {
+        const tool = (id: string, seq: number, state: string, permission: object | undefined, completedAt: number | null) => ({
+            id,
+            kind: 'tool-call',
+            seq,
+            createdAt: seq * 100,
+            transcriptBlockIndex: 2,
+            tool: { name: 'shell', description: `run ${id}`, state, permission, createdAt: seq * 100, startedAt: null, completedAt },
+            children: [],
+        }) as unknown as TestMessage;
+        const entries = deriveEntries({
+            cache: createTranscriptNavigationLoadedMessagesCache(),
+            messageIdsOldestFirst: ['u1', 't2', 't3', 't4', 't5'],
+            messagesById: {
+                u1: userMessage('u1', 1, 'Ship it'),
+                t2: tool('t2', 2, 'completed', { id: 'p2', status: 'approved' }, 250),
+                t3: tool('t3', 3, 'completed', { id: 'p3', status: 'denied' }, null),
+                t4: tool('t4', 4, 'completed', { id: 'p4', status: 'canceled' }, null),
+                t5: tool('t5', 5, 'error', undefined, 900),
+            },
+        });
+
+        expect(entries[0]?.facts).toEqual({
+            toolCount: 4,
+            failedCount: 1,
+            approvals: [{ outcome: 'allowed', label: 'run t2' }, { outcome: 'denied', label: 'run t3' }],
+            running: false,
+            lastToolFailed: true,
+            endedAtMs: 900,
+        });
+    });
+
     it('does not offer agent thinking as a reply preview', () => {
         const entries = deriveEntries({
             cache: createTranscriptNavigationLoadedMessagesCache(),

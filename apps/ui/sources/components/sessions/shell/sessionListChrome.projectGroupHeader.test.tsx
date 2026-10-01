@@ -1,9 +1,7 @@
 import React from 'react';
 import { act } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { HappierPressable } from '@happier-dev/plugin-ui/presentation';
 
-import { renderScreen, standardCleanup } from '@/dev/testkit';
 import { installSessionShellCommonModuleMocks } from './sessionShellTestHelpers';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -16,6 +14,17 @@ let platformOs: 'ios' | 'web' = 'ios';
 let sessionFolderViewMode: 'off' | 'tree' = 'off';
 let sessionFoldersFeatureEnabled = true;
 const featureDecisionScopes = vi.hoisted(() => [] as unknown[]);
+
+// Real storage imports shared UI with direct Expo random consumers. Keep the
+// native SDK boundary Node-safe using the repository's real OS-crypto adapters.
+vi.mock('expo-crypto', async () => {
+    const [randomBytes, uuid] = await Promise.all([
+        import('@/platform/cryptoRandom.node'),
+        import('@/platform/randomUUID.node'),
+    ]);
+    return { ...randomBytes, ...uuid };
+});
+
 type DropdownTriggerParams = {
     open: boolean;
     toggle: ReturnType<typeof vi.fn>;
@@ -111,6 +120,12 @@ installSessionShellCommonModuleMocks({
     },
 });
 
+// The real presentation layer reads the platform mocks while its module graph
+// loads. Configure those first and finish loading before any renderer/test starts.
+const { renderScreen, standardCleanup } = await import('@/dev/testkit');
+const { HappierPressable } = await import('@happier-dev/plugin-ui/presentation');
+await import('./sessionListChrome');
+
 function flattenStyle(style: unknown): Record<string, unknown> {
     if (Array.isArray(style)) {
         return style.reduce<Record<string, unknown>>((acc, entry) => ({
@@ -160,6 +175,30 @@ describe('ProjectGroupHeader menu items', () => {
         sessionFolderViewMode = 'off';
         sessionFoldersFeatureEnabled = true;
         featureDecisionScopes.length = 0;
+    });
+
+    it('offers New session and Add folder for Chats without workspace rename or project actions', async () => {
+        const { ProjectGroupHeader } = await import('./sessionListChrome');
+        const onCreateSession = vi.fn();
+        const onAddFolder = vi.fn();
+        const screen = await renderScreen(<ProjectGroupHeader
+            item={{
+                type: 'header', title: 'Chats', headerKind: 'project', groupKey: 'chats-menu',
+                workspace: { t: 'managedSessions', serverId: 'server-a', machineId: 'machine-a' },
+            }}
+            hasMultipleMachines={false} displayTitle="Chats" hasCustomLabel={false} canOpenProject={false}
+            onCreateSession={onCreateSession} onAddFolder={onAddFolder}
+            onOpenProject={vi.fn()} onRename={vi.fn()} onReset={vi.fn()}
+            collapsed={false} onToggleCollapse={vi.fn()}
+        />);
+        const menu = dropdownMenuSpy.mock.calls.at(-1)?.[0];
+        expect(menu?.items.map((item: { id: string }) => item.id)).toEqual(['addFolder']);
+        await act(async () => { menu.onSelect('addFolder'); });
+        expect(onAddFolder).toHaveBeenCalledOnce();
+        const create = screen.tree.root.findAll((node) => node.props.accessibilityLabel === 'newSession.title');
+        expect(create).not.toHaveLength(0);
+        await act(async () => { create[0].props.onPress({ stopPropagation() {} }); });
+        expect(onCreateSession).toHaveBeenCalledOnce();
     });
 
     it('reuses the same menu item array when rerendered with identical scope values', async () => {
@@ -328,23 +367,16 @@ describe('ProjectGroupHeader menu items', () => {
         let latestMenuProps = dropdownMenuSpy.mock.calls.at(-1)?.[0] as any;
         expect(latestMenuProps?.placement).toBe('bottom');
         expect(latestMenuProps?.popoverAnchorAlign).toBe('end');
-        expect(latestMenuProps?.items).toEqual(expect.arrayContaining([
-            expect.objectContaining({ id: 'layout:projects', checked: false }),
-            expect.objectContaining({ id: 'layout:recent_activity', checked: false }),
-            expect.objectContaining({ id: 'layout:active_inactive', checked: true }),
-        ]));
-
-        expect(screen.findByProps({ accessibilityLabel: 'sessionsList.viewOptions' }).props.accessibilityState).toEqual({
-            expanded: false,
-        });
+        // The trigger is the shared IconButton: it announces a menu and whether it is open.
+        const trigger = () => screen.root.findAllByProps({ accessibilityLabel: 'sessionsList.viewOptions' })[0];
+        expect(trigger()?.props.expanded).toBe(false);
+        expect(trigger()?.props.hasPopup).toBe('menu');
         await act(async () => {
             latestMenuProps.onOpenChange(true);
         });
         latestMenuProps = dropdownMenuSpy.mock.calls.at(-1)?.[0] as any;
         expect(latestMenuProps.open).toBe(true);
-        expect(screen.findByProps({ accessibilityLabel: 'sessionsList.viewOptions' }).props.accessibilityState).toEqual({
-            expanded: true,
-        });
+        expect(trigger()?.props.expanded).toBe(true);
     });
 
     it('keeps the real collapsible header root mounted when measurement activates', async () => {

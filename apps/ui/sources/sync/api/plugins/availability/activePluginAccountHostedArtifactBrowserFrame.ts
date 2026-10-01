@@ -27,6 +27,7 @@ export type ActivePluginAccountHostedArtifactBrowserFrameIssueInput = Readonly<{
     release: PluginAvailabilityUiArtifactBrowserFrameIssueActionInputV1['release'];
     slot: Readonly<{
         contributionId: PluginAvailabilityUiArtifactBrowserFrameIssueActionInputV1['contributionId'];
+        artifactId: PluginAvailabilityUiArtifactBrowserFrameIssueActionInputV1['artifactId'];
         tier: PluginAvailabilityUiArtifactBrowserFrameIssueActionInputV1['tier'];
         platform: PluginAvailabilityUiArtifactBrowserFrameIssueActionInputV1['platform'];
     }>;

@@ -288,9 +288,14 @@ function createFocusRecorder() {
     const focusedTestIds: string[] = [];
     return {
         focusedTestIds,
-        createNodeMock: (element: { type: unknown; props: Record<string, unknown> }) => ({
+        createNodeMock: (element: React.ReactElement) => ({
             focus: () => {
-                focusedTestIds.push(String(element.props.testID ?? element.type));
+                const testID = typeof element.props === 'object'
+                    && element.props !== null
+                    && 'testID' in element.props
+                    ? element.props.testID
+                    : undefined;
+                focusedTestIds.push(String(testID ?? element.type));
             },
         }),
     };

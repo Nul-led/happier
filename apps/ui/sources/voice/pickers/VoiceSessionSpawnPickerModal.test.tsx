@@ -140,6 +140,27 @@ describe('VoiceSessionSpawnPickerModal', () => {
     });
   });
 
+    it('names the current step in the title band and goes back from its leading control', async () => {
+        const { VoiceSessionSpawnPickerModal } = await import('./VoiceSessionSpawnPickerModal');
+        let chrome: { subtitle?: unknown; leading?: React.ReactNode } | null = null;
+        const screen = await renderScreen(<VoiceSessionSpawnPickerModal
+            onClose={() => {}}
+            onResolve={() => {}}
+            setChrome={(next) => { chrome = next; }}
+        />);
+
+        expect(chrome).toEqual(expect.objectContaining({ subtitle: 'newSession.selectMachineTitle' }));
+        expect(chrome!.leading ?? null).toBeNull();
+        await act(async () => { screen.findByType('MachineSelector').props.onSelect(machinesState[0]); });
+        expect(chrome).toEqual(expect.objectContaining({ subtitle: 'newSession.selectWorkingDirectoryTitle' }));
+        // The step is named once, by the title band, not again inside the body.
+        expect(screen.getTextContent()).not.toContain('newSession.selectWorkingDirectoryTitle');
+
+        const leading = await renderScreen(<>{chrome!.leading}</>);
+        await act(async () => { await leading.pressByTestIdAsync('voice-session-spawn-back'); });
+        expect(screen.findByType('MachineSelector')).toBeTruthy();
+    });
+
     it('returns keyboard close requests from the directory picker to machine selection', async () => {
         const { VoiceSessionSpawnPickerModal } = await import('./VoiceSessionSpawnPickerModal');
         const screen = await renderScreen(<VoiceSessionSpawnPickerModal onClose={() => {}} onResolve={() => {}} />);
@@ -203,11 +224,13 @@ describe('VoiceSessionSpawnPickerModal', () => {
             { machineId: 'machine-2', path: '/srv/test/new-repo' },
         ];
         const { VoiceSessionSpawnPickerModal } = await import('./VoiceSessionSpawnPickerModal');
+        let chrome: { leading?: React.ReactNode } | null = null;
 
         const screen = await renderScreen(
             <VoiceSessionSpawnPickerModal
                 onClose={() => {}}
                 onResolve={() => {}}
+                setChrome={(next) => { chrome = next; }}
             />,
         );
 
@@ -219,10 +242,9 @@ describe('VoiceSessionSpawnPickerModal', () => {
             pathSelectionListPropsRef.current?.onCommit('/Users/test/old-repo');
         });
 
-        const backButton = screen.findByType('Pressable');
-        await act(async () => {
-            backButton.props.onPress();
-        });
+        // Back to machines lives in the title band's leading slot.
+        const leading = await renderScreen(<>{chrome!.leading}</>);
+        await act(async () => { await leading.pressByTestIdAsync('voice-session-spawn-back'); });
         const nextMachineSelector = screen.findByType('MachineSelector');
         await act(async () => {
             nextMachineSelector.props.onSelect(machinesState[1]);

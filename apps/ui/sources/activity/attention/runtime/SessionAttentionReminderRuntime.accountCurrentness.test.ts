@@ -102,7 +102,7 @@ describe('refreshSessionAttentionReminderInventory Account currentness', () => {
         await waitForPendingRequest(2);
         expect(network.pending[1]!.token).toBe(accountToken('account-b'));
         network.pending[1]!.resolve(snapshotResponse({ version: 1, sessionId: 'account-b-session', remindAt: 6_000 }));
-        await expect(accountBRefresh).resolves.toBeUndefined();
+        await expect(accountBRefresh).resolves.toEqual({ kind: 'loaded' });
         const afterB = getStorage().getState();
         expect(afterB.sessionOrganizationSnapshotVersionByServerId[serverId]).toBe(1);
         expect(JSON.stringify(afterB.sessionOrganizationAttentionStandingsBySessionKey)).toContain('account-b-session');

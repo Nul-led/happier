@@ -39,7 +39,7 @@ export type SessionRowAccessibilityStatusTextKey =
     | 'status.unread'
     | 'status.mentioned'
     | 'status.queuedInput'
-    | 'sessionsList.attentionSectionTitle';
+    | 'workStatus.buckets.needs_you';
 
 export type SessionRowPresentation = Readonly<{
     attentionIndicator: SessionRowAttentionIndicator;
@@ -156,7 +156,7 @@ function resolveAccessibilityStatusTextKey(input: Readonly<{
         case 'pending':
             return 'status.queuedInput';
         case 'attention':
-            return 'sessionsList.attentionSectionTitle';
+            return 'workStatus.buckets.needs_you';
         case 'working':
         case 'permission_required':
         case 'action_required':

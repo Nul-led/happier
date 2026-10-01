@@ -46,6 +46,18 @@ function createRegistrar(): { handlers: Map<string, RpcHandler>; registrar: RpcH
 }
 
 describe('registerSessionHandlers session controls', () => {
+  it('reads opened native goal ownership without invoking provider goal refresh', async () => {
+    const { registerSessionControlHandlers } = await import('./sessionControls');
+    for (const native of [true, false]) {
+      const { handlers, registrar } = createRegistrar();
+      const refreshGoal = vi.fn(async () => undefined);
+      registerSessionControlHandlers(registrar, { sessionRuntimeControls: native
+        ? { refreshGoal, setGoal: async () => undefined, clearGoal: async () => undefined } : {} });
+      await expect(handlers.get(SESSION_RPC_METHODS.SESSION_GOAL_GET)?.({ capabilitiesOnly: true }))
+        .resolves.toMatchObject({ nativeGoalOwner: native });
+      expect(refreshGoal).not.toHaveBeenCalled();
+    }
+  });
   it('prepares whole Pending input and settles only an explicitly accepted payload', async () => {
     const registerSessionHandlers = await loadRegisterSessionHandlers();
     const { handlers, registrar } = createRegistrar();

@@ -13,6 +13,25 @@ installActivityNotificationRuntimeCommonModuleMocks({
 });
 
 describe('buildActivityLocalNotificationContent', () => {
+    it('keeps Follow classification and exact message identity while applying preview privacy', async () => {
+        const { buildActivityLocalNotificationContent } = await import('./buildActivityLocalNotificationContent');
+        const event = {
+            kind: 'session-update' as const, event: 'message' as const,
+            address: { serverId: 'server-a', sessionId: 'session-1' },
+            committedSequence: { sequenceDomain: 'session_transcript' as const, sequence: 7 },
+            messages: [{ kind: 'agent-text' as const, id: 'message-7', localId: null, seq: 7, createdAt: 7, text: 'Private result' }],
+        };
+        const rich = buildActivityLocalNotificationContent({ event, session: null,
+            serverUrl: 'https://stack.example.test', previewBehavior: 'include_preview' });
+        expect(rich.body).toBe('Private result');
+        expect(rich.data.activityEvent).toEqual({ type: 'message', sequenceDomain: 'session_transcript', messageSeq: 7 });
+        const privateNotification = buildActivityLocalNotificationContent({ event, session: null,
+            serverUrl: 'https://stack.example.test', previewBehavior: 'status_only' });
+        expect(privateNotification.body).not.toContain('Private result');
+        expect(privateNotification.data.activityEvent).toEqual(rich.data.activityEvent);
+        expect(privateNotification.expo.categoryIdentifier).toBeUndefined();
+    });
+
     it('preserves the exact Home through notification content and interaction parsing', async () => {
         const { buildActivityLocalNotificationContent } = await import('./buildActivityLocalNotificationContent');
         const { parseNotificationTap } = await import('./notificationRouting');

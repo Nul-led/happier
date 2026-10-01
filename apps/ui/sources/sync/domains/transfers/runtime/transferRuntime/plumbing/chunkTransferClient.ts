@@ -33,6 +33,7 @@ export async function uploadInChunks<
     }>, signal?: AbortSignal | null) => Promise<TChunk>;
     finalize: (request: Readonly<{ uploadId: string }>, signal?: AbortSignal | null) => Promise<TFinalize>;
     abort?: ((request: Readonly<{ uploadId: string }>) => Promise<unknown>) | null;
+    retainUploadAfterFinalize?: (response: TFinalize) => boolean;
     onProgress?: ((progress: ChunkUploadProgress) => void) | null;
     signal?: AbortSignal | null;
 }>): Promise<TFinalize | { success: false; error: string; errorCode?: string }> {
@@ -127,6 +128,11 @@ export async function uploadInChunks<
         const finalized = params.signal
             ? await params.finalize({ uploadId }, params.signal)
             : await params.finalize({ uploadId });
+        if (params.retainUploadAfterFinalize?.(finalized)) {
+            // The finalize owner retained staged custody and supplied recovery.
+            uploadId = null;
+            return finalized;
+        }
         if (!finalized || typeof finalized !== 'object' || (finalized as any).success !== true) {
             const error = typeof (finalized as any)?.error === 'string' ? (finalized as any).error : 'Upload finalize failed';
             const errorCode = typeof (finalized as any)?.errorCode === 'string' ? (finalized as any).errorCode : undefined;

@@ -1,9 +1,16 @@
 import {
     MACHINE_LIVE_STREAM_SOCKET_EVENT,
     type MachineLiveStreamRelayEnvelopeV1,
+    type MachineLiveStreamContentV1,
+    MachineLiveStreamPayloadErrorV1,
 } from '@happier-dev/protocol';
 
 import { apiSocket } from '@/sync/api/session/apiSocket';
+import { createMachineLiveStreamSocketTransport } from '@/sync/domains/machines/peer/mediation/stream/socketTransport';
+import { fetchAccountEncryptionCurrentness } from '@/sync/api/account/apiAccountEncryptionMode';
+import { createServerRequestForExplicitServerScope } from './createServerRequestWithServerScope';
+import { resolveScopedMachineTransport } from './serverScopedRpcPool';
+import { resolveRunnerMachineContentKeyTrustV1 } from '@/sync/domains/machines/runnerMachineContentKeyTrust';
 
 import { createServerScopedRelaySocket, type ServerScopedRelaySocket } from './serverScopedRelaySocket';
 
@@ -50,17 +57,59 @@ export async function resolveServerScopedMachineLiveStreamRelaySocket(params: Re
             },
             on: (listener) => apiSocket.onMachineLiveStreamRelayEnvelope(listener),
         },
-        createScopedTransport: (scopedSocket) => ({
-            send: (payload) => {
-                scopedSocket.emit(MACHINE_LIVE_STREAM_SOCKET_EVENT, payload);
-            },
-            on: (listener) => {
-                scopedSocket.on(MACHINE_LIVE_STREAM_SOCKET_EVENT, listener);
-                return () => {
-                    scopedSocket.off(MACHINE_LIVE_STREAM_SOCKET_EVENT, listener);
-                };
-            },
-        }),
+        createScopedTransport: (scopedSocket, context) => {
+            const listeners = new Set<(envelope: MachineLiveStreamRelayEnvelopeV1) => void>();
+            let current = true;
+            let contentRead: Promise<MachineLiveStreamContentV1> | null = null;
+            const transport = createMachineLiveStreamSocketTransport({
+                emit: (wire) => scopedSocket.emit(MACHINE_LIVE_STREAM_SOCKET_EVENT, wire),
+                deliver: (decoded) => { for (const listener of listeners) listener(decoded); },
+                isCurrent: () => current,
+                // Failure is delivered as a typed terminal stop by the shared framing owner.
+                onError: (error) => console.warn('[Live stream] Scoped payload rejected', { code: error.code }),
+                resolveContent: async (machineId) => {
+                    if (machineId !== context.machineId) throw new MachineLiveStreamPayloadErrorV1('stream_payload_binding_mismatch');
+                    contentRead ??= (async (): Promise<MachineLiveStreamContentV1> => {
+                        const credentials = context.credentials ?? { token: context.token };
+                        const request = createServerRequestForExplicitServerScope({
+                            serverUrl: context.targetServerUrl, token: context.token,
+                            runtimeOrigin: context.runtimeOrigin, homeCarrier: context.homeCarrier,
+                            timeoutMs: context.timeoutMs,
+                        });
+                        const { mode } = await fetchAccountEncryptionCurrentness(credentials, { request });
+                        const trust = mode === 'e2ee' ? await resolveRunnerMachineContentKeyTrustV1({
+                            credentials, homeServerIdentityId: context.targetServerId, machineId,
+                        }) : null;
+                        if (mode === 'e2ee' && !trust) throw new MachineLiveStreamPayloadErrorV1('stream_encryption_material_unavailable');
+                        const machine = await resolveScopedMachineTransport({
+                            serverId: context.targetServerId, serverUrl: context.targetServerUrl,
+                            runtimeOrigin: context.runtimeOrigin, homeCarrier: context.homeCarrier,
+                            token: context.token, machineId, accountId: context.targetAccountId,
+                            expectedAccountMode: mode, expectedRunnerBinding: trust?.expectedRunnerBinding,
+                            trustedMachineKind: trust?.trustedMachineKind, timeoutMs: context.timeoutMs,
+                            ...(context.encryption ? { decryptEncryptionKey: (value: string) => context.encryption!.decryptEncryptionKey(value) } : {}),
+                        });
+                        if (!machine || machine.mode !== mode) throw new MachineLiveStreamPayloadErrorV1('stream_payload_mode_mismatch');
+                        if (machine.mode === 'plain') return { mode: 'plain' };
+                        if (!context.encryption) throw new MachineLiveStreamPayloadErrorV1('stream_encryption_material_unavailable');
+                        await context.encryption.initializeMachines(new Map([[machineId, machine.dataKey]]));
+                        const cipher = context.encryption.getMachineEncryption(machineId);
+                        if (!cipher) throw new MachineLiveStreamPayloadErrorV1('stream_encryption_material_unavailable');
+                        return { mode: 'e2ee', cipher };
+                    })();
+                    return await contentRead;
+                },
+            });
+            scopedSocket.on(MACHINE_LIVE_STREAM_SOCKET_EVENT, transport.receive);
+            return {
+                send: transport.send,
+                on: (listener) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
+                dispose: () => {
+                    current = false; listeners.clear();
+                    scopedSocket.off(MACHINE_LIVE_STREAM_SOCKET_EVENT, transport.receive);
+                },
+            };
+        },
     }) as ServerScopedRelaySocket<MachineLiveStreamRelayEnvelopeV1>;
 
     return {

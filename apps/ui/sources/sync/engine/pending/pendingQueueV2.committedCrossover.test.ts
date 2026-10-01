@@ -71,7 +71,7 @@ function publishedPendingLocalIds(): string[] {
 describe('pendingQueueV2 snapshot vs committed crossover', () => {
     beforeEach(async () => await resetPendingQueueState());
 
-    function armSession() {
+    async function armSession() {
         const server = await upsertServerProfile({ serverUrl: 'https://crossover.example.test', name: 'Crossover' });
         await resetPendingQueueState({ serverId: server.id, accountId: 'account' });
         storage.getState().applySessions([{
@@ -87,7 +87,7 @@ describe('pendingQueueV2 snapshot vs committed crossover', () => {
     }
 
     it('does not republish a pending row for an utterance committed after the snapshot was captured', async () => {
-        const scope = armSession();
+        const scope = await armSession();
         const encryption = await Encryption.create(new Uint8Array(32).fill(6));
         let releaseResponse!: () => void;
         const responseGate = new Promise<void>((resolve) => { releaseResponse = resolve; });
@@ -112,7 +112,7 @@ describe('pendingQueueV2 snapshot vs committed crossover', () => {
     });
 
     it('publishes a server row whose utterance was already committed when the snapshot was captured', async () => {
-        const scope = armSession();
+        const scope = await armSession();
         const encryption = await Encryption.create(new Uint8Array(32).fill(6));
         storage.getState().applyMessages(SESSION_ID, [committedTwin(LOCAL_ID)]);
 
@@ -128,7 +128,7 @@ describe('pendingQueueV2 snapshot vs committed crossover', () => {
     });
 
     it('publishes a server row for an utterance that has no committed twin', async () => {
-        const scope = armSession();
+        const scope = await armSession();
         const encryption = await Encryption.create(new Uint8Array(32).fill(6));
         storage.getState().applyMessages(SESSION_ID, [committedTwin('unrelated-local')]);
 

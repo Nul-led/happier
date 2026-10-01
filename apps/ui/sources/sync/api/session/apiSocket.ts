@@ -1,32 +1,51 @@
 import { attachManagedSessionHumanPresenceSocket } from '@/sync/domains/session/humanPresence/attachManagedSessionHumanPresenceSocket';
-import { Socket } from 'socket.io-client';
+import type { Socket } from 'socket.io-client';
+import {
+    callSocketRpc,
+    createHappierSocket,
+    createSocketRpcAbortError,
+    emitWithAckCancellable,
+    isSocketIoAckTimeoutError,
+    markRpcRequestDisposition,
+    readRpcRequestDisposition,
+    socketRpcCodec,
+    type HappierSocketRole,
+    type SocketRpcContent,
+} from '@happier-dev/sync-client';
 import { TokenStorage } from '@/auth/storage/tokenStorage';
 import { Encryption } from '@/sync/encryption/encryption';
 import { observeServerTimestamp } from '@/sync/runtime/time';
-import { createRpcCallError } from '@/sync/runtime/rpcErrors';
 import {
     MACHINE_LIVE_STREAM_SOCKET_EVENT,
     TRANSFER_RELAY_V2_SOCKET_EVENT,
+    CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION,
+    buildAccountStoredContentCompatibilitySocketAuthV1,
     type MachineLiveStreamRelayEnvelopeV1,
     type TransferRelayV2SendEnvelope,
+    uiBrowserAutomationDispatchMethod,
 } from '@happier-dev/protocol';
-import { SOCKET_RPC_EVENTS } from '@happier-dev/protocol/socketRpc';
+import { SOCKET_RPC_EVENTS, type SessionTransferRoutingV1 } from '@happier-dev/protocol/socketRpc';
 import {
     RPC_ERROR_CODES,
     RPC_ERROR_MESSAGES,
     RPC_METHODS,
-    SOCKET_RPC_AUTHORIZATION_CONTEXT_KINDS,
-    resolveSocketRpcSessionAuthorization,
     type SocketRpcAuthorizationContext,
 } from '@happier-dev/protocol/rpc';
+import { readRpcErrorCode } from '@happier-dev/protocol/rpcErrors';
 import { handleUiBrowserRecordingCaptureFrameRequest } from '@/sync/domains/browser/recording/reverseCaptureHandler';
-import { serverFetch, StaleServerGenerationError, type ServerFetchOptions } from '@/sync/http/client';
+import {
+    createServerFetchAtEndpoint,
+    serverFetch,
+    type ServerFetch,
+    StaleServerGenerationError,
+    type ServerFetchOptions,
+} from '@/sync/http/client';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import {
     getServerProfileById,
     subscribeActiveServerRuntimeOrigin,
 } from '@/sync/domains/server/serverProfiles';
-import { resolveSocketIoTransports } from '@/sync/runtime/socketIoTransports';
+import { resolveSocketIoTransportsForCarrier } from '@/sync/runtime/socketIoTransports';
 import { syncPerformanceTelemetry } from '@/sync/runtime/syncPerformanceTelemetry';
 import { storage } from '@/sync/domains/state/storage';
 import {
@@ -34,10 +53,12 @@ import {
 } from '@/sync/domains/server/url/serverUrlCanonical';
 import {
     type ManagedConnectionState,
+    createManagedConnectionSupervisor,
+    DEFAULT_MANAGED_CONNECTION_POLICY,
+    type ManagedConnectionSupervisor,
     type ManagedConnectionTransport,
     type TransportDisconnectEvent,
 } from '@happier-dev/connection-supervisor';
-import { createSyncSocketTransport } from '@/sync/api/session/connection/createSyncSocketTransport';
 import {
     invalidateServerReachabilitySupervisor,
     reportServerUnreachable,
@@ -48,19 +69,16 @@ import {
 } from '@/sync/runtime/connectivity/serverReachabilitySupervisorPool';
 import { createServerUrlComparableKey } from '@/sync/domains/server/url/serverUrlCanonical';
 import { createNotAuthenticatedError } from '@/sync/runtime/connectivity/authErrors';
-import { isSocketIoAckTimeoutError, raceSocketIoAckTimeout } from '@/sync/runtime/socketIoAckTimeout';
 import { registerExternalSessionStatusDemandTransport } from '@/sync/runtime/orchestration/externalSessions/externalSessionStatusDemandCoordinator';
-import {
-    createSocketRpcAbortError,
-    createSocketRpcRequestId,
-    issueSocketRpcCallWithCancellation,
-} from '@/sync/runtime/socketRpcCallCancellation';
 import {
     requireCurrentAccountStoredContentServerCompatibility,
 } from '@/sync/api/capabilities/accountStoredContentCompatibility';
 import { isServerRuntimeTransportPublished, resolveActiveServerRuntimeOrigin } from '@/sync/runtime/nativeLoopbackTunnels/runtimeOrigin';
 import { getActiveServerHomeCarrier } from '@/sync/domains/server/serverRuntime';
 import { ServerScopedTransportUnavailableError } from '@/sync/runtime/homeCarrier';
+import { fetchAccountEncryptionCurrentness, getAccountEncryptionModeCacheRevision } from '@/sync/api/account/apiAccountEncryptionMode';
+import { MachineLiveStreamPayloadErrorV1, type MachineLiveStreamContentV1 } from '@happier-dev/protocol';
+import { createMachineLiveStreamSocketTransport } from '@/sync/domains/machines/peer/mediation/stream/socketTransport';
 
 const STATIC_EXPO_PUBLIC_HAPPIER_SOCKET_ACK_AUTH_SETTLE_TIMEOUT_MS =
     process.env.EXPO_PUBLIC_HAPPIER_SOCKET_ACK_AUTH_SETTLE_TIMEOUT_MS;
@@ -85,8 +103,7 @@ function readSessionEncryptionModeFromLocalState(sessionId: string): 'plain' | '
     const sid = String(sessionId ?? '').trim();
     if (!sid) return null;
     try {
-        const state: any = storage.getState();
-        const row = state?.sessions?.[sid] ?? null;
+        const row = storage.getState().sessions[sid] ?? null;
         if (!row || typeof row !== 'object') return null;
         if (row.encryptionMode === 'plain') return 'plain';
         if (row.encryptionMode === 'e2ee') return 'e2ee';
@@ -112,6 +129,17 @@ function readMachineStorageModeFromLocalState(machineId: string): 'plain' | 'e2e
 const GLOBAL_IN_FLIGHT_HTTP_REQUESTS_KEY = '__HAPPIER_GLOBAL_IN_FLIGHT_HTTP_REQUESTS_BY_KEY__';
 const GLOBAL_TOKEN_CACHE_KEY_BY_TOKEN_KEY = '__HAPPIER_GLOBAL_TOKEN_CACHE_KEY_BY_TOKEN__';
 const GLOBAL_TOKEN_CACHE_KEY_MAX_ENTRIES = 512;
+
+type RecoveredHttpRequestConfiguration = Readonly<{
+    rejectedToken: string;
+    recoveredToken: string;
+    isCurrent: () => boolean;
+}>;
+
+type InFlightHttpRequestResult = Readonly<{
+    response: Response;
+    recovery?: RecoveredHttpRequestConfiguration;
+}>;
 
 function getInFlightHttpRequestsHost(): Record<string, unknown> {
     // Vitest module isolation can evaluate the same module graph under separate `globalThis` realms.
@@ -168,46 +196,16 @@ function getOrCreateTokenCacheKey(token: string): string {
     return key;
 }
 
-function getGlobalInFlightHttpRequestsByKey(): Map<string, Promise<Response>> {
+function getGlobalInFlightHttpRequestsByKey(): Map<string, Promise<InFlightHttpRequestResult>> {
     const host = getInFlightHttpRequestsHost();
     const existing = host[GLOBAL_IN_FLIGHT_HTTP_REQUESTS_KEY];
     // Cross-realm: `instanceof Map` can fail when the Map was created in a different JS realm.
     if (existing && Object.prototype.toString.call(existing) === '[object Map]') {
-        return existing as Map<string, Promise<Response>>;
+        return existing as Map<string, Promise<InFlightHttpRequestResult>>;
     }
-    const created = new Map<string, Promise<Response>>();
+    const created = new Map<string, Promise<InFlightHttpRequestResult>>();
     host[GLOBAL_IN_FLIGHT_HTTP_REQUESTS_KEY] = created;
     return created;
-}
-
-function buildSocketRpcCallPayload(params: Readonly<{
-    method: string;
-    payload: unknown;
-    timeoutMs?: number | null;
-    requestId?: string;
-    authorization?: SocketRpcAuthorizationContext;
-}>): Readonly<{
-    method: string;
-    params: unknown;
-    timeoutMs?: number;
-    requestId?: string;
-    authorization?: SocketRpcAuthorizationContext;
-}> {
-    if (typeof params.timeoutMs === 'number' && params.timeoutMs > 0) {
-        return {
-            method: params.method,
-            params: params.payload,
-            timeoutMs: params.timeoutMs,
-            ...(params.requestId ? { requestId: params.requestId } : {}),
-            ...(params.authorization ? { authorization: params.authorization } : {}),
-        };
-    }
-    return {
-        method: params.method,
-        params: params.payload,
-        ...(params.requestId ? { requestId: params.requestId } : {}),
-        ...(params.authorization ? { authorization: params.authorization } : {}),
-    };
 }
 
 //
@@ -217,12 +215,27 @@ function buildSocketRpcCallPayload(params: Readonly<{
 export interface SyncSocketConfig {
     endpoint: string;
     token: string;
+    socketRole?: HappierSocketRole;
+    /** An admitted frame authority has no stored credential or endpoint supervisor. */
+    request?: ServerFetch;
+    isCurrent?: () => boolean;
+    onCredentialRejected?: () => void;
     serverId?: string;
     generation?: number;
     runtimeOrigin?: string;
     carrier?: 'https' | 'iroh';
     homeCarrier?: import('@/sync/runtime/homeCarrier').HomeCarrier | null;
 }
+
+/**
+ * A direct HTTP consumer may retain this identity across an asynchronous
+ * capability decision. It can issue only while the singleton still has the
+ * same immutable prepared socket configuration.
+ */
+type PreparedSocketRequestTarget = Readonly<
+    Pick<SyncSocketConfig, 'endpoint' | 'runtimeOrigin' | 'carrier' | 'homeCarrier'>
+    & { serverId: string; generation: number }
+>;
 
 export interface SyncSocketState {
     isConnected: boolean;
@@ -253,9 +266,12 @@ class ApiSocket {
 
     // State
     private socket: Socket | null = null;
+    private socketClientType: HappierSocketRole['clientType'] | null = null;
     private socketTransportKey: string | null = null;
     private config: SyncSocketConfig | null = null;
+    private requestConfigurationAbortController = new AbortController();
     private encryption: Encryption | null = null;
+    private liveStreamTransport: ReturnType<typeof createMachineLiveStreamSocketTransport> | null = null;
     private messageHandlers: Map<string, Set<SyncSocketMessageHandler>> = new Map();
     private reconnectedListeners: Set<() => void> = new Set();
     private statusListeners: Set<(status: 'disconnected' | 'connecting' | 'connected' | 'error') => void> = new Set();
@@ -271,7 +287,7 @@ class ApiSocket {
         lastDisconnectedAt: null,
         lastErrorMessage: null,
     };
-    private inFlightHttpRequestsByKey: Map<string, Promise<Response>> = getGlobalInFlightHttpRequestsByKey();
+    private inFlightHttpRequestsByKey: Map<string, Promise<InFlightHttpRequestResult>> = getGlobalInFlightHttpRequestsByKey();
     private hasConnectedOnce = false;
     private pendingReconnectNotification = false;
     private reachabilityUnsubscribe: (() => void) | null = null;
@@ -279,6 +295,7 @@ class ApiSocket {
     private reachabilityToken: string | null = null;
     private runtimeOriginUnsubscribe: (() => void) | null = null;
     private socketTransport: ManagedConnectionTransport | null = null;
+    private scopedConnectionSupervisor: ManagedConnectionSupervisor | null = null;
     private detachSocketTransportListeners: Array<() => void> = [];
     // Inbound machine-scoped reverse-RPC handlers, keyed by the FULL prefixed method
     // (`<machineId>:<method>`). The daemon for `<machineId>` calls this method over its machine
@@ -291,6 +308,9 @@ class ApiSocket {
     //
 
     initialize(config: SyncSocketConfig, encryption: Encryption | null) {
+        if (this.config?.request || config.request) this.disconnect();
+        this.requestConfigurationAbortController.abort('socket-reconfigured');
+        this.requestConfigurationAbortController = new AbortController();
         this.config = config;
         this.encryption = encryption;
         this.connect();
@@ -302,6 +322,41 @@ class ApiSocket {
 
     connect() {
         if (!this.config) {
+            return;
+        }
+        if (this.config.request) {
+            const config = this.config;
+            if (config.isCurrent?.() === false) return;
+            if (!this.scopedConnectionSupervisor) {
+                this.scopedConnectionSupervisor = createManagedConnectionSupervisor({
+                    ...DEFAULT_MANAGED_CONNECTION_POLICY,
+                    createTransport: () => { this.ensureSocketTransport(); return this.socketTransport!; },
+                    probeReadiness: async () => {
+                        if (this.config !== config || config.isCurrent?.() === false) return { status: 'auth_failed' };
+                        try {
+                            const response = await config.request!('/v2/cursor');
+                            if (response.status === 401) return { status: 'auth_failed', statusCode: 401 };
+                            return response.ok ? { status: 'ready' } : { status: 'server_unreachable' };
+                        } catch (error) {
+                            return { status: 'server_unreachable', errorMessage: error instanceof Error ? error.message : String(error) };
+                        }
+                    },
+                    classifyTransportErrorToProbeResult: (error) => {
+                        // The canonical server Socket.IO rejection carries this structured data.
+                        if (!error || typeof error !== 'object' || !('data' in error)) return null;
+                        const data = error.data;
+                        if (!data || typeof data !== 'object' || !('statusCode' in data) || data.statusCode !== 401) return null;
+                        return { status: 'auth_failed', statusCode: 401 };
+                    },
+                    onAuthFailed: () => { if (this.config === config && config.isCurrent?.() !== false) config.onCredentialRejected?.(); },
+                    onStateChange: (state) => { if (this.config === config) this.applyManagedConnectionState(state); },
+                });
+            }
+            void this.scopedConnectionSupervisor.start().catch((error: unknown) => {
+                if (this.config !== config || config.isCurrent?.() === false) return;
+                this.setError(error instanceof Error ? error : new Error(String(error)));
+                this.updateStatus('error');
+            });
             return;
         }
         const endpoint = this.config.endpoint;
@@ -405,6 +460,10 @@ class ApiSocket {
     }
 
     disconnect() {
+        const scopedSupervisor = this.scopedConnectionSupervisor;
+        this.scopedConnectionSupervisor = null;
+        void scopedSupervisor?.stop();
+        this.requestConfigurationAbortController.abort('socket-disconnected');
         const previousServerUrl = this.reachabilityServerUrl;
         const previousToken = this.reachabilityToken;
         this.reachabilityUnsubscribe?.();
@@ -429,6 +488,7 @@ class ApiSocket {
         void transport?.disconnect({ intentional: true });
         void transport?.destroy();
         this.socket = null;
+        this.socketClientType = null;
         // Unsubscribing above means the supervisor's own teardown state can no longer reach our listeners, so the
         // last state we published would stay `online` for the whole background window. Consumers would then read
         // "endpoint online, socket down" on resume and surface it as a server outage. A diagnosed problem
@@ -441,6 +501,24 @@ class ApiSocket {
             });
         }
         this.updateStatus('disconnected');
+    }
+
+    /** Cancel direct HTTP that belongs to a retired socket configuration. */
+    invalidateRequests(reason: string = 'server-switch'): void {
+        this.requestConfigurationAbortController.abort(reason);
+    }
+
+    /** Release the frame bearer and cipher; ordinary Account disconnects retain their configuration. */
+    disposeScopedAuthority(): void {
+        if (!this.config?.request) return;
+        this.disconnect();
+        this.config = null;
+        this.encryption = null;
+    }
+
+    getSessionScopedTarget(): string | null {
+        return this.config?.request && this.config.socketRole?.clientType === 'session-scoped'
+            ? this.config.socketRole.sessionId : null;
     }
 
     //
@@ -505,7 +583,9 @@ class ApiSocket {
     }
 
     sendMachineLiveStreamRelayEnvelope(payload: MachineLiveStreamRelayEnvelopeV1) {
-        this.send(MACHINE_LIVE_STREAM_SOCKET_EVENT, payload);
+        if (this.config?.isCurrent?.() === false) throw new StaleServerGenerationError();
+        if (!this.liveStreamTransport) throw new MachineLiveStreamPayloadErrorV1('stream_transport_unavailable');
+        this.liveStreamTransport.send(payload);
     }
 
     /**
@@ -515,87 +595,29 @@ class ApiSocket {
         sessionId: string,
         method: string,
         params: A,
-        options?: { timeoutMs?: number | null; onIssued?: () => void; signal?: AbortSignal },
+        options?: { timeoutMs?: number | null; onIssued?: () => void; signal?: AbortSignal; transferRouting?: SessionTransferRoutingV1 },
     ): Promise<R> {
-        if (options?.signal?.aborted) throw createSocketRpcAbortError();
-        const sessionEncryptionMode = readSessionEncryptionModeFromLocalState(sessionId);
-        const usePlaintextParams = sessionEncryptionMode === 'plain';
-        const sessionEncryption = usePlaintextParams ? null : this.encryption?.getSessionEncryption(sessionId);
-        if (!usePlaintextParams && !sessionEncryption) throw new Error(`Session encryption not found for ${sessionId}`);
-        const scmDebug =
-            __DEV__
-            && process.env.EXPO_PUBLIC_HAPPIER_DEBUG_SCM_RPC === 'true'
-            && method.startsWith('scm.');
-        if (scmDebug) {
-            // eslint-disable-next-line no-console
-            console.log('[SCM_RPC][call]', { sessionId, method });
-        }
-
-        let encryptedParams: unknown = params;
-        if (!usePlaintextParams) {
-            if (!sessionEncryption) throw new Error(`Session encryption not found for ${sessionId}`);
-            encryptedParams = await sessionEncryption.encryptRaw(params);
-        }
-        const requestId = options?.signal ? createSocketRpcRequestId() : undefined;
-        const result: any = await this.emitWithAck(
-            SOCKET_RPC_EVENTS.CALL,
-            buildSocketRpcCallPayload({
-                method: `${sessionId}:${method}`,
-                payload: encryptedParams,
-                timeoutMs: options?.timeoutMs,
-                requestId,
-                ...(resolveSocketRpcSessionAuthorization(method)
-                    ? {
-                        authorization: {
-                            kind: SOCKET_RPC_AUTHORIZATION_CONTEXT_KINDS.SESSION_WRITE,
-                            sessionId,
-                        },
-                    }
-                    : {}),
-            }),
-            {
-                ...options,
-                ...(requestId ? { cancelRequestId: requestId } : {}),
-            },
-        );
-        if (scmDebug) {
-            const rawResult = result?.result;
-            // eslint-disable-next-line no-console
-            console.log('[SCM_RPC][ack]', {
+        try {
+            if (options?.signal?.aborted) throw createSocketRpcAbortError();
+            const scopedTarget = this.getSessionScopedTarget();
+            if (scopedTarget && sessionId !== scopedTarget) throw new StaleServerGenerationError();
+            const sessionEncryptionMode = readSessionEncryptionModeFromLocalState(sessionId);
+            const usePlaintextParams = sessionEncryptionMode === 'plain';
+            const sessionEncryption = usePlaintextParams ? null : this.encryption?.getSessionEncryption(sessionId);
+            if (!usePlaintextParams && !sessionEncryption) throw new Error(`Session encryption not found for ${sessionId}`);
+            return await callSocketRpc<R>({
+                socket: this.requireRpcSocket(),
+                target: { kind: 'session', id: sessionId },
                 method,
-                ok: Boolean(result?.ok),
-                error: typeof result?.error === 'string' ? result.error : null,
-                errorCode: typeof result?.errorCode === 'string' ? result.errorCode : null,
-                resultType: typeof rawResult,
-                resultIsArray: Array.isArray(rawResult),
-                resultLength: typeof rawResult === 'string' ? rawResult.length : null,
+                params,
+                content: usePlaintextParams
+                    ? { mode: 'plain' }
+                    : { mode: 'e2ee', cipher: sessionEncryption! },
+                ...options,
             });
+        } catch (error) {
+            throw await this.coerceAckTimeoutAuthError(error);
         }
-
-        if (result.ok) {
-            if (usePlaintextParams) return result.result as R;
-            if (!sessionEncryption) throw new Error(`Session encryption not found for ${sessionId}`);
-            const decrypted = await sessionEncryption.decryptRaw(result.result);
-            if (scmDebug) {
-                // eslint-disable-next-line no-console
-                console.log('[SCM_RPC][decrypt]', {
-                    method,
-                    decryptedType: decrypted === null ? 'null' : typeof decrypted,
-                    hasSuccessField: Boolean(decrypted && typeof decrypted === 'object' && 'success' in decrypted),
-                    success: Boolean(
-                        decrypted
-                        && typeof decrypted === 'object'
-                        && typeof (decrypted as { success?: unknown }).success === 'boolean'
-                        && (decrypted as { success: boolean }).success
-                    ),
-                });
-            }
-            return decrypted as R;
-        }
-        throw createRpcCallError({
-            error: typeof result.error === 'string' ? result.error : 'RPC call failed',
-            errorCode: typeof result.errorCode === 'string' ? result.errorCode : undefined,
-        });
     }
 
     /**
@@ -612,50 +634,41 @@ class ApiSocket {
             signal?: AbortSignal;
         },
     ): Promise<R> {
-        if (options?.signal?.aborted) throw createSocketRpcAbortError();
-        const usePlaintextParams =
-            readMachineStorageModeFromLocalState(machineId) === 'plain';
-        if (usePlaintextParams) {
-            await requireCurrentAccountStoredContentServerCompatibility();
-        }
-        const machineEncryption = usePlaintextParams
-            ? null
-            : this.encryption?.getMachineEncryption(machineId) ?? null;
-        if (!usePlaintextParams && !machineEncryption) {
-            throw new Error(`Machine encryption not found for ${machineId}`);
-        }
-
-        const encodedParams = usePlaintextParams
-            ? params
-            : await machineEncryption!.encryptRaw(params);
-        const requestId = options?.signal ? createSocketRpcRequestId() : undefined;
-        const result: any = await this.emitWithAck(
-            SOCKET_RPC_EVENTS.CALL,
-            buildSocketRpcCallPayload({
-                method: `${machineId}:${method}`,
-                payload: encodedParams,
-                timeoutMs: options?.timeoutMs,
-                requestId,
-                authorization: options?.authorization,
-            }),
-            {
+        try {
+            if (options?.signal?.aborted) throw createSocketRpcAbortError();
+            if (this.getSessionScopedTarget()) throw new Error('Machine RPC is unavailable to a Session-scoped viewer');
+            const usePlaintextParams =
+                readMachineStorageModeFromLocalState(machineId) === 'plain';
+            if (usePlaintextParams) {
+                await requireCurrentAccountStoredContentServerCompatibility();
+            }
+            const machineEncryption = usePlaintextParams
+                ? null
+                : this.encryption?.getMachineEncryption(machineId) ?? null;
+            if (!usePlaintextParams && !machineEncryption) {
+                throw new Error(`Machine encryption not found for ${machineId}`);
+            }
+            return await callSocketRpc<R>({
+                socket: this.requireRpcSocket(),
+                target: { kind: 'machine', id: machineId },
+                method,
+                params,
+                content: usePlaintextParams
+                    ? { mode: 'plain' }
+                    : { mode: 'e2ee', cipher: machineEncryption! },
                 ...options,
-                ...(requestId ? { cancelRequestId: requestId } : {}),
-            },
-        );
-
-        if (result.ok) {
-            return usePlaintextParams
-                ? result.result as R
-                : await machineEncryption!.decryptRaw(result.result) as R;
+            });
+        } catch (error) {
+            throw await this.coerceAckTimeoutAuthError(error);
         }
-        throw createRpcCallError({
-            error: typeof result.error === 'string' ? result.error : 'RPC call failed',
-            errorCode: typeof result.errorCode === 'string' ? result.errorCode : undefined,
-        });
     }
 
     send(event: string, data: any) {
+        if (event === MACHINE_LIVE_STREAM_SOCKET_EVENT) {
+            this.sendMachineLiveStreamRelayEnvelope(data);
+            return true;
+        }
+        if (this.config?.isCurrent?.() === false) throw new StaleServerGenerationError();
         this.socket!.emit(event, data);
         return true;
     }
@@ -691,11 +704,15 @@ class ApiSocket {
     ): () => void {
         const prefixedMethod = `${machineId}:${method}`;
         this.inboundMachineRpcHandlers.set(prefixedMethod, handler);
-        this.socket?.emit(SOCKET_RPC_EVENTS.REGISTER, { method: prefixedMethod });
+        if (this.socketClientType === 'user-scoped') {
+            this.socket?.emit(SOCKET_RPC_EVENTS.REGISTER, { method: prefixedMethod });
+        }
         return () => {
             if (this.inboundMachineRpcHandlers.get(prefixedMethod) === handler) {
                 this.inboundMachineRpcHandlers.delete(prefixedMethod);
-                this.socket?.emit(SOCKET_RPC_EVENTS.UNREGISTER, { method: prefixedMethod });
+                if (this.socketClientType === 'user-scoped') {
+                    this.socket?.emit(SOCKET_RPC_EVENTS.UNREGISTER, { method: prefixedMethod });
+                }
             }
         };
     }
@@ -719,6 +736,16 @@ class ApiSocket {
         );
     }
 
+    installBrowserAutomationReverseDispatch(
+        machineId: string,
+        view: Readonly<{ browserSessionId: string; viewId: string }>,
+    ): () => void {
+        return this.registerMachineScopedRpcHandler(machineId, uiBrowserAutomationDispatchMethod(view), async (params) => {
+            const { handleUiBrowserAutomationDispatchRequest } = await import('@/sync/domains/browser/automation/reverseDispatchHandler');
+            return handleUiBrowserAutomationDispatchRequest(params, view);
+        });
+    }
+
     async emitWithAck<T = any>(
         event: string,
         data: any,
@@ -729,85 +756,236 @@ class ApiSocket {
             cancelRequestId?: string;
         },
     ): Promise<T> {
-        if (this.currentConnectionState.phase === 'auth_failed') {
-            throw createNotAuthenticatedError();
-        }
-        const socket = this.socket;
-        if (!socket) {
-            throw new Error('Socket not connected');
-        }
-        if (socket.connected === false) {
-            throw new Error('Socket not connected');
-        }
-        const timeoutMs = opts?.timeoutMs;
         try {
-            const socketEmission = typeof timeoutMs === 'number' && timeoutMs > 0
-                ? socket.timeout(timeoutMs)
-                : socket;
-            return await issueSocketRpcCallWithCancellation({
+            return await emitWithAckCancellable<T>({
+                socket: this.requireRpcSocket(),
+                event,
+                payload: data,
+                timeoutMs: opts?.timeoutMs,
+                onIssued: opts?.onIssued,
                 signal: opts?.signal,
                 requestId: opts?.cancelRequestId,
-                onIssued: opts?.onIssued,
-                issue: async () => await raceSocketIoAckTimeout(
-                    socketEmission.emitWithAck(event, data) as Promise<T>,
-                    timeoutMs ?? undefined,
-                ),
-                emitCancel: (requestId) => {
-                    socket.emit(SOCKET_RPC_EVENTS.CANCEL, { requestId });
-                },
             });
         } catch (error) {
             throw await this.coerceAckTimeoutAuthError(error);
         }
     }
 
+    private requireRpcSocket(): Socket {
+        if (this.config?.isCurrent?.() === false) throw new StaleServerGenerationError();
+        if (this.currentConnectionState.phase === 'auth_failed') {
+            throw createNotAuthenticatedError();
+        }
+        const socket = this.socket;
+        if (!socket || socket.connected === false) {
+            throw new Error('Socket not connected');
+        }
+        return socket;
+    }
+
     //
     // HTTP Requests
     //
 
-    async request(path: string, options?: RequestInit, requestOptions?: Pick<ServerFetchOptions, 'onIssued'>): Promise<Response> {
+    /**
+     * Bind a direct request to one prepared socket configuration. This is the
+     * sole direct-HTTP owner: callers may retain the returned request while
+     * awaiting feature decisions, but cannot re-target it to a later socket
+     * configuration.
+     */
+    createRequestForPreparedTarget(target: PreparedSocketRequestTarget): ServerFetch {
+        return async (path, options, requestOptions) => {
+            if (!this.isPreparedRequestTargetCurrent(target)) {
+                throw new StaleServerGenerationError();
+            }
+            return await this.request(path, options, requestOptions);
+        };
+    }
+
+    private isPreparedRequestTargetCurrent(target: PreparedSocketRequestTarget): boolean {
+        const config = this.config;
+        return Boolean(
+            config
+            && config.endpoint === target.endpoint
+            && config.serverId === target.serverId
+            && config.generation === target.generation
+            && config.runtimeOrigin === target.runtimeOrigin
+            && config.carrier === target.carrier
+            && (config.homeCarrier ?? null) === (target.homeCarrier ?? null),
+        );
+    }
+
+    async request(path: string, options?: RequestInit, requestOptions: ServerFetchOptions = {}): Promise<Response> {
         if (!this.config) {
             throw new Error('SyncSocket not initialized');
         }
+        const config = this.config;
+        if (config.request) {
+            if (config.isCurrent?.() === false) throw new StaleServerGenerationError();
+            const response = await config.request(path, options, requestOptions);
+            if (this.config !== config || config.isCurrent?.() === false) throw new StaleServerGenerationError();
+            return response;
+        }
         const snapshot = getActiveServerSnapshot();
-        // Socket reconfiguration during credential loading must not retarget this request.
-        const endpoint = this.config.endpoint;
-        const serverId = this.config.serverId ?? snapshot.serverId;
-        const generation = this.config.generation ?? snapshot.generation;
-        if (
-            serverId !== snapshot.serverId
-            || generation !== snapshot.generation
-        ) {
-            throw new StaleServerGenerationError();
-        }
-        const endpointComparableKey = createServerUrlComparableKey(endpoint);
-        const activeServerComparableKey = createServerUrlComparableKey(snapshot.serverUrl);
-        const serverLookupOptions =
-            endpointComparableKey
-            && activeServerComparableKey
-            && endpointComparableKey === activeServerComparableKey
-            && serverId
-                ? { serverId }
-                : undefined;
-
-        const credentials = await TokenStorage.getCredentialsForServerUrl(endpoint, serverLookupOptions);
-        if (!credentials) {
-            throw new Error('No authentication credentials');
-        }
-        const afterCredentialRead = getActiveServerSnapshot();
-        if (
-            afterCredentialRead.serverId !== serverId
-            || afterCredentialRead.generation !== generation
-        ) {
-            throw new StaleServerGenerationError();
-        }
-
+        const hasPreparedTarget = Boolean(
+            config.serverId
+            && config.generation !== undefined,
+        );
+        const endpoint = config.endpoint;
+        const serverId = config.serverId ?? snapshot.serverId;
+        const generation = config.generation ?? snapshot.generation;
         const url = `${endpoint}${path}`;
+        let credentialsToken: string;
+        let issueRequest: () => Promise<InFlightHttpRequestResult>;
+        let isCurrent: () => boolean;
+        let acceptsRecoveredConfiguration: ((recovery: RecoveredHttpRequestConfiguration) => boolean) | null = null;
+
+        if (hasPreparedTarget) {
+            const capturedServerId = config.serverId!;
+            const capturedGeneration = config.generation!;
+            const capturedToken = config.token;
+            const capturedRuntimeOrigin = config.runtimeOrigin;
+            const capturedCarrier = config.carrier;
+            const capturedHomeCarrier = config.homeCarrier ?? null;
+            const requestConfigurationAbortController = this.requestConfigurationAbortController;
+            let recoveredToken: string | null = null;
+            const isPreparedConfigCurrent = () => (
+                this.config === config
+                && this.config.endpoint === endpoint
+                && this.config.serverId === capturedServerId
+                && this.config.generation === capturedGeneration
+                && this.config.token === capturedToken
+                && this.config.runtimeOrigin === capturedRuntimeOrigin
+                && this.config.carrier === capturedCarrier
+                && (this.config.homeCarrier ?? null) === capturedHomeCarrier
+                && this.requestConfigurationAbortController === requestConfigurationAbortController
+                && !requestConfigurationAbortController.signal.aborted
+            );
+            acceptsRecoveredConfiguration = (recovery) => (
+                recovery.rejectedToken === capturedToken
+                && this.config === config
+                && this.config.endpoint === endpoint
+                && this.config.serverId === capturedServerId
+                && this.config.generation === capturedGeneration
+                && this.config.runtimeOrigin === capturedRuntimeOrigin
+                && this.config.carrier === capturedCarrier
+                && (this.config.homeCarrier ?? null) === capturedHomeCarrier
+                && this.config.token === recovery.recoveredToken
+                && recovery.isCurrent()
+            );
+            if (capturedCarrier === 'iroh' && !capturedRuntimeOrigin && !capturedHomeCarrier) {
+                throw new ServerScopedTransportUnavailableError();
+            }
+            // The socket configuration remains the bearer authority, but a
+            // target-scoped credential lookup is still an asynchronous
+            // lifecycle boundary. A credential change may synchronously
+            // reconfigure the socket while that lookup is in progress; fence
+            // before any request can issue with the captured configuration.
+            await TokenStorage.getCredentialsForServerUrl(endpoint, {
+                serverId: capturedServerId,
+            });
+            if (!isPreparedConfigCurrent()) {
+                throw new StaleServerGenerationError();
+            }
+            const requestAtPreparedTarget = createServerFetchAtEndpoint({
+                endpointUrl: endpoint,
+                ...(capturedRuntimeOrigin ? { runtimeOrigin: capturedRuntimeOrigin } : {}),
+                ...(capturedHomeCarrier ? { homeCarrier: capturedHomeCarrier } : {}),
+                credentials: { token: capturedToken },
+                serverId: capturedServerId,
+                signal: requestConfigurationAbortController.signal,
+                superviseReachability: true,
+                recoverStoredCredentials: true,
+                isCurrent: isPreparedConfigCurrent,
+                onRecoveredCredentials: (credentials) => {
+                    if (!isPreparedConfigCurrent()) return false;
+                    recoveredToken = credentials.token;
+                    return true;
+                },
+            });
+            isCurrent = isPreparedConfigCurrent;
+            if (!isCurrent()) {
+                throw new StaleServerGenerationError();
+            }
+            credentialsToken = capturedToken;
+            issueRequest = async () => {
+                try {
+                    const response = await requestAtPreparedTarget(path, options, requestOptions);
+                    let recovery: RecoveredHttpRequestConfiguration | undefined;
+                    if (recoveredToken && recoveredToken !== capturedToken) {
+                        if (!isPreparedConfigCurrent()) throw new StaleServerGenerationError();
+                        const isRecoveredConfigurationCurrent = this.adoptRecoveredHttpToken({
+                            config,
+                            rejectedToken: capturedToken,
+                            recoveredToken,
+                        });
+                        if (!isRecoveredConfigurationCurrent) throw new StaleServerGenerationError();
+                        recovery = {
+                            rejectedToken: capturedToken,
+                            recoveredToken,
+                            isCurrent: isRecoveredConfigurationCurrent,
+                        };
+                    }
+                    return { response, ...(recovery ? { recovery } : {}) };
+                } catch (error) {
+                    if (!isCurrent()) throw new StaleServerGenerationError();
+                    throw error;
+                }
+            };
+        } else {
+            // Legacy configuration without an immutable prepared target retains
+            // its historical active-Home lookup behavior. Production Sync
+            // initialization always supplies the prepared branch above.
+            if (
+                serverId !== snapshot.serverId
+                || generation !== snapshot.generation
+            ) {
+                throw new StaleServerGenerationError();
+            }
+            const endpointComparableKey = createServerUrlComparableKey(endpoint);
+            const activeServerComparableKey = createServerUrlComparableKey(snapshot.serverUrl);
+            const serverLookupOptions =
+                endpointComparableKey
+                && activeServerComparableKey
+                && endpointComparableKey === activeServerComparableKey
+                && serverId
+                    ? { serverId }
+                    : undefined;
+            const credentials = await TokenStorage.getCredentialsForServerUrl(endpoint, serverLookupOptions);
+            if (!credentials) {
+                throw new Error('No authentication credentials');
+            }
+            const afterCredentialRead = getActiveServerSnapshot();
+            if (
+                afterCredentialRead.serverId !== serverId
+                || afterCredentialRead.generation !== generation
+            ) {
+                throw new StaleServerGenerationError();
+            }
+            credentialsToken = credentials.token;
+            isCurrent = () => {
+                const current = getActiveServerSnapshot();
+                return current.generation === generation && current.serverId === serverId;
+            };
+            issueRequest = async () => ({
+                response: await serverFetch(
+                    url,
+                    {
+                        ...options,
+                        headers: (() => {
+                            const headers = new Headers(options?.headers);
+                            headers.set('Authorization', `Bearer ${credentials.token}`);
+                            return headers;
+                        })(),
+                    },
+                    { includeAuth: false, ...requestOptions },
+                ),
+            });
+        }
+
         const method = String(options?.method ?? 'GET').toUpperCase();
         const hasBody = options?.body != null;
         const hasSignal = Boolean(options?.signal);
-        const headers = new Headers(options?.headers);
-        headers.set('Authorization', `Bearer ${credentials.token}`);
 
         const canDedupe =
             (method === 'GET' || method === 'HEAD')
@@ -817,50 +995,34 @@ class ApiSocket {
         const requestKey = canDedupe
             // Intentionally exclude `snapshot.generation` from the de-dupe key so concurrent callers still share
             // a single in-flight fetch even if the active server generation changes while bootstrapping.
-            ? `${serverId ?? ''}:${method}:${url}:tk:${getOrCreateTokenCacheKey(credentials.token)}`
+            ? `${serverId ?? ''}:${method}:${url}:tk:${getOrCreateTokenCacheKey(credentialsToken)}`
             : null;
 
-        let response: Response;
+        let result: InFlightHttpRequestResult;
         if (requestKey) {
             const existing = this.inFlightHttpRequestsByKey.get(requestKey);
             if (existing) {
-                response = await existing;
+                result = await existing;
             } else {
-                const promise = serverFetch(
-                    url,
-                    {
-                        ...options,
-                        headers,
-                    },
-                    { includeAuth: false, ...requestOptions },
-                ) as Promise<Response>;
+                const promise = issueRequest();
                 this.inFlightHttpRequestsByKey.set(requestKey, promise);
                 try {
-                    response = await promise;
+                    result = await promise;
                 } finally {
                     this.inFlightHttpRequestsByKey.delete(requestKey);
                 }
             }
             // Always return a clone when de-duping to keep bodies readable per caller.
-            response = response.clone();
+            result = { ...result, response: result.response.clone() };
         } else {
-            response = await serverFetch(
-                url,
-                {
-                    ...options,
-                    headers,
-                },
-                { includeAuth: false, ...requestOptions },
-            );
+            result = await issueRequest();
         }
 
-        const current = getActiveServerSnapshot();
-        if (
-            current.generation !== generation
-            || current.serverId !== serverId
-        ) {
+        if (!isCurrent() && !(result.recovery && acceptsRecoveredConfiguration?.(result.recovery))) {
             throw new StaleServerGenerationError();
         }
+
+        const response = result.response;
 
         // Best-effort server time calibration using the HTTP Date header ("server now").
         // This avoids deriving "now" from potentially stale resource timestamps (e.g. session.updatedAt).
@@ -885,13 +1047,54 @@ class ApiSocket {
 
     updateToken(newToken: string) {
         if (this.config && this.config.token !== newToken) {
+            this.requestConfigurationAbortController.abort('credentials-changed');
             this.config.token = newToken;
 
             if (this.socket) {
                 this.disconnect();
             }
+            this.requestConfigurationAbortController = new AbortController();
             this.connect();
         }
+    }
+
+    /**
+     * A config-bound request recovered this exact Home credential. Keep future
+     * HTTP on the recovered bearer and reconnect the owned socket when one is
+     * live; an unrelated staged Home never participates in this decision.
+     */
+    private adoptRecoveredHttpToken(params: Readonly<{
+        config: SyncSocketConfig;
+        rejectedToken: string;
+        recoveredToken: string;
+    }>): (() => boolean) | null {
+        if (
+            this.config !== params.config
+            || this.config.token !== params.rejectedToken
+            || !params.recoveredToken
+        ) {
+            return null;
+        }
+        const previousRequestConfigurationAbortController = this.requestConfigurationAbortController;
+        this.config.token = params.recoveredToken;
+        if (this.socket || this.socketTransport) {
+            this.disconnect();
+            const recoveredRequestConfigurationAbortController = new AbortController();
+            this.requestConfigurationAbortController = recoveredRequestConfigurationAbortController;
+            this.connect();
+            return () => (
+                this.config === params.config
+                && this.config.token === params.recoveredToken
+                && this.requestConfigurationAbortController === recoveredRequestConfigurationAbortController
+                && !recoveredRequestConfigurationAbortController.signal.aborted
+            );
+        }
+        return () => (
+            this.config === params.config
+            && this.config.token === params.recoveredToken
+            && this.requestConfigurationAbortController === previousRequestConfigurationAbortController
+            && !previousRequestConfigurationAbortController.signal.aborted
+        );
     }
 
     //
@@ -908,6 +1111,7 @@ class ApiSocket {
     private invalidateReachabilityAfterSocketTransportFailure(error: unknown): void {
         const config = this.config;
         if (!config) return;
+        if (config.request) return;
         void invalidateServerReachabilitySupervisor({ serverUrl: config.endpoint, token: config.token }).catch(() => {
             reportServerUnreachable(config.endpoint, error, config.token);
         });
@@ -947,11 +1151,13 @@ class ApiSocket {
 
     private ensureSocketTransport(): void {
         if (!this.config) return;
-        const snapshot = getActiveServerSnapshot();
+        const snapshot = this.config.request ? { serverId: this.config.serverId ?? this.config.endpoint,
+            serverUrl: this.config.endpoint, generation: this.config.generation ?? 0,
+            carrier: 'https' as const, runtimeOrigin: this.config.endpoint } : getActiveServerSnapshot();
         const hasCapturedServerTarget = Boolean(
             this.config.serverId && this.config.generation !== undefined,
         );
-        if (!isServerRuntimeTransportPublished({
+        if (!this.config.request && !isServerRuntimeTransportPublished({
             serverId: this.config.serverId ?? snapshot.serverId,
             carrier: this.config.carrier ?? (hasCapturedServerTarget ? undefined : snapshot.carrier),
         })) throw new ServerScopedTransportUnavailableError();
@@ -963,8 +1169,14 @@ class ApiSocket {
         // always the canonical Home URL — so it belongs in the identity key.
         const homeCarrier = 'homeCarrier' in this.config
             ? this.config.homeCarrier ?? null
-            : getActiveServerHomeCarrier();
-        const key = `${transportEndpoint}|${this.config.token}|${homeCarrier?.endpointId ?? ''}`;
+            : this.config.request ? null : getActiveServerHomeCarrier();
+        const socketRole: HappierSocketRole = this.config.socketRole ?? { clientType: 'user-scoped' };
+        const roleKey = socketRole.clientType === 'user-scoped'
+            ? socketRole.clientType
+            : socketRole.clientType === 'session-scoped'
+                ? JSON.stringify([socketRole.clientType, socketRole.sessionId, socketRole.machineId ?? null])
+                : JSON.stringify([socketRole.clientType, socketRole.machineId]);
+        const key = `${transportEndpoint}|${this.config.token}|${homeCarrier?.endpointId ?? ''}|${roleKey}`;
         if (this.socketTransport && this.socketTransportKey === key && this.socket) {
             return;
         }
@@ -976,44 +1188,57 @@ class ApiSocket {
         void this.socketTransport?.destroy();
         this.socketTransport = null;
         this.socket = null;
+        this.socketClientType = null;
 
-        const { socket, transport } = createSyncSocketTransport({
+        const { socket, transport } = createHappierSocket({
             endpoint: transportEndpoint,
             token: this.config.token,
-            transports: resolveSocketIoTransports(),
-            carrier: this.config.carrier ?? (hasCapturedServerTarget ? undefined : snapshot.carrier),
+            ...socketRole,
+            clientPurpose: 'sync',
+            authExtras: buildAccountStoredContentCompatibilitySocketAuthV1(
+                CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION,
+            ),
+            transports: resolveSocketIoTransportsForCarrier(
+                this.config.carrier ?? (hasCapturedServerTarget ? undefined : snapshot.carrier),
+            ),
             ...(homeCarrier ? { websocketFactory: homeCarrier.createWebSocket } : {}),
         });
         this.socket = socket;
+        this.socketClientType = socketRole.clientType;
         this.socketTransport = transport;
         this.socketTransportKey = key;
-        const statusDemandTransport = registerExternalSessionStatusDemandTransport(
+        const accountScoped = socketRole.clientType === 'user-scoped';
+        const statusDemandTransport = accountScoped ? registerExternalSessionStatusDemandTransport(
             this.config.serverId ?? getActiveServerSnapshot().serverId,
             (event, payload) => {
                 if (socket.connected) {
                     socket.emit(event, payload);
                 }
             },
-        );
+        ) : null;
         const messageContext: SyncSocketMessageContext = Object.freeze({
             serverId: String(this.config.serverId ?? '').trim() || null,
         });
-        this.installSocketEventHandlers(socket, statusDemandTransport.observeEphemeral, messageContext);
+        this.installSocketEventHandlers(socket, statusDemandTransport?.observeEphemeral ?? (() => {}), messageContext, socketRole);
+        const transportConfig = this.config;
 
         this.detachSocketTransportListeners = [
-            attachManagedSessionHumanPresenceSocket({
+            ...(accountScoped ? [attachManagedSessionHumanPresenceSocket({
                 serverId: this.config.serverId ?? getActiveServerSnapshot().serverId,
                 token: this.config.token, socket, transport,
-            }),
+            })] : []),
             transport.onConnected(() => {
+                if (this.config !== transportConfig || transportConfig?.isCurrent?.() === false) return;
                 this.clearError();
                 this.updateStatus('connected');
                 // Reconnect-safe: re-join every inbound reverse-RPC room on each (re)connect so a
                 // dropped socket does not silently stop answering daemon reverse calls.
-                for (const prefixedMethod of this.inboundMachineRpcHandlers.keys()) {
-                    socket.emit(SOCKET_RPC_EVENTS.REGISTER, { method: prefixedMethod });
+                if (accountScoped) {
+                    for (const prefixedMethod of this.inboundMachineRpcHandlers.keys()) {
+                        socket.emit(SOCKET_RPC_EVENTS.REGISTER, { method: prefixedMethod });
+                    }
                 }
-                statusDemandTransport.resend();
+                statusDemandTransport?.resend();
                 if (this.hasConnectedOnce && this.pendingReconnectNotification) {
                     this.reconnectedListeners.forEach((listener) => listener());
                 }
@@ -1021,6 +1246,16 @@ class ApiSocket {
                 this.pendingReconnectNotification = false;
             }),
             transport.onDisconnected((event: TransportDisconnectEvent) => {
+                if (this.config !== transportConfig || transportConfig?.isCurrent?.() === false) return;
+                if (!event.intentional && event.reason === 'io server disconnect' && transportConfig?.request) {
+                    // Revocation and expiry are server-forced disconnects, not transient transport loss.
+                    if (this.scopedConnectionSupervisor?.reportProbeResult) {
+                        this.scopedConnectionSupervisor.reportProbeResult({ status: 'auth_failed', statusCode: 401 });
+                    } else {
+                        transportConfig.onCredentialRejected?.();
+                    }
+                    return;
+                }
                 this.updateStatus('disconnected');
                 if (event.intentional) {
                     return;
@@ -1029,10 +1264,11 @@ class ApiSocket {
                 this.invalidateReachabilityAfterSocketTransportFailure(event.error ?? new Error(event.reason ?? 'socket disconnect'));
             }),
             transport.onError((error: unknown) => {
+                if (this.config !== transportConfig || transportConfig?.isCurrent?.() === false) return;
                 this.setError(error instanceof Error ? error : new Error(String(error)));
                 this.invalidateReachabilityAfterSocketTransportFailure(error);
             }),
-            () => statusDemandTransport.dispose(),
+            () => statusDemandTransport?.dispose(),
         ];
     }
 
@@ -1040,22 +1276,68 @@ class ApiSocket {
         socket: Socket,
         observeStatusDemandEphemeral: (update: unknown) => void,
         messageContext: SyncSocketMessageContext,
+        socketRole: HappierSocketRole,
     ) {
+        const installedConfig = this.config;
+        let modeRead: { revision: number; promise: Promise<'plain' | 'e2ee'> } | null = null;
+        const liveStreamTransport = createMachineLiveStreamSocketTransport({
+            emit: (wire) => socket.emit(MACHINE_LIVE_STREAM_SOCKET_EVENT, wire),
+            deliver: (decoded) => {
+                for (const handler of Array.from(this.messageHandlers.get(MACHINE_LIVE_STREAM_SOCKET_EVENT) ?? [])) {
+                    handler(decoded, messageContext);
+                }
+            },
+            isCurrent: () => this.socket === socket && this.config === installedConfig && installedConfig?.isCurrent?.() !== false,
+            onError: (error) => this.setError(error),
+            resolveContent: async (machineId): Promise<MachineLiveStreamContentV1> => {
+                if (!installedConfig) throw new MachineLiveStreamPayloadErrorV1('stream_transport_unavailable');
+                const revision = getAccountEncryptionModeCacheRevision();
+                if (!modeRead || modeRead.revision !== revision) {
+                    modeRead = { revision, promise: fetchAccountEncryptionCurrentness({ token: installedConfig.token }, {
+                        request: (path, init) => this.request(path, init),
+                    }).then((currentness) => currentness.mode) };
+                }
+                let mode: 'plain' | 'e2ee';
+                try { mode = await modeRead.promise; }
+                catch (error) { modeRead = null; throw error; }
+                if (this.socket !== socket || this.config !== installedConfig) throw new MachineLiveStreamPayloadErrorV1('stream_transport_unavailable');
+                if (getAccountEncryptionModeCacheRevision() !== revision) throw new MachineLiveStreamPayloadErrorV1('stream_encryption_mode_unavailable');
+                if (readMachineStorageModeFromLocalState(machineId) !== mode) throw new MachineLiveStreamPayloadErrorV1('stream_payload_mode_mismatch');
+                if (mode === 'plain') return { mode };
+                const cipher = this.encryption?.getMachineEncryption(machineId);
+                if (!cipher) throw new MachineLiveStreamPayloadErrorV1('stream_encryption_material_unavailable');
+                return { mode, cipher };
+            },
+        });
+        this.liveStreamTransport = liveStreamTransport;
         socket.on?.('server:restarting', (payload: unknown) => {
             const config = this.config;
             if (!config) return;
+            if (config.request) {
+                const retryAfterMs = readPlannedRestartRetryAfterMs(payload);
+                this.scopedConnectionSupervisor?.reportProbeResult?.({ status: 'retry_later', reason: 'server_restarting',
+                    ...(retryAfterMs ? { retryAfterMs } : {}) });
+                return;
+            }
             reportServerRestarting(config.endpoint, readPlannedRestartRetryAfterMs(payload), config.token);
         });
-        socket.on(
-            SOCKET_RPC_EVENTS.REQUEST,
-            async (
-                data: Readonly<{ method?: unknown; params?: unknown }>,
-                callback: (response: unknown) => void,
-            ) => {
-                callback(await this.handleInboundMachineRpcRequest(data));
-            },
-        );
+        if (socketRole.clientType === 'user-scoped') {
+            socket.on(
+                SOCKET_RPC_EVENTS.REQUEST,
+                async (
+                    data: Readonly<{ method?: unknown; params?: unknown }>,
+                    callback: (response: unknown) => void,
+                ) => {
+                    callback(await this.handleInboundMachineRpcRequest(data));
+                },
+            );
+        }
         socket.onAny((event, data) => {
+            if (this.config !== installedConfig || installedConfig?.isCurrent?.() === false) return;
+            if (event === MACHINE_LIVE_STREAM_SOCKET_EVENT) {
+                liveStreamTransport.receive(data);
+                return;
+            }
             if (event === 'ephemeral') {
                 observeStatusDemandEphemeral(data);
             }
@@ -1119,40 +1401,38 @@ class ApiSocket {
             return { error: 'Machine encryption not found', errorCode: RPC_ERROR_CODES.METHOD_NOT_FOUND };
         }
 
+        const content: SocketRpcContent = usePlaintextParams
+            ? { mode: 'plain' }
+            : { mode: 'e2ee', cipher: machineEncryption! };
+
         const handler = this.inboundMachineRpcHandlers.get(method);
         if (!handler) {
             const response = {
                 error: RPC_ERROR_MESSAGES.METHOD_NOT_FOUND,
                 errorCode: RPC_ERROR_CODES.METHOD_NOT_FOUND,
             };
-            return usePlaintextParams
-                ? response
-                : await machineEncryption!.encryptRaw(response);
+            return await socketRpcCodec.encodeResponse(content, response);
         }
 
         try {
-            const decryptedParams = usePlaintextParams
-                ? request.params
-                : typeof request.params === 'string'
-                    ? await machineEncryption!.decryptRaw(request.params)
-                    : null;
+            let decryptedParams: unknown;
+            try {
+                decryptedParams = await socketRpcCodec.decodeRequestParams(content, request.params);
+            } catch (error) {
+                if (readRpcErrorCode(error) !== 'RPC_CONTENT_UNAVAILABLE') throw error;
+                decryptedParams = null;
+            }
             if (decryptedParams === null) {
                 const response = { error: 'Invalid RPC params' };
-                return usePlaintextParams
-                    ? response
-                    : await machineEncryption!.encryptRaw(response);
+                return await socketRpcCodec.encodeResponse(content, response);
             }
             const result = await handler(decryptedParams);
-            return usePlaintextParams
-                ? result
-                : await machineEncryption!.encryptRaw(result);
+            return await socketRpcCodec.encodeResponse(content, result);
         } catch (error) {
             const response = {
                 error: error instanceof Error ? error.message : 'Unknown error',
             };
-            return usePlaintextParams
-                ? response
-                : await machineEncryption!.encryptRaw(response);
+            return await socketRpcCodec.encodeResponse(content, response);
         }
     }
 
@@ -1194,20 +1474,27 @@ class ApiSocket {
     }
 
     private async coerceAckTimeoutAuthError(error: unknown): Promise<unknown> {
+        const existingDisposition = readRpcRequestDisposition(error);
+        const disposition = existingDisposition ?? 'notSent';
+        const classifiedError = existingDisposition === null
+            ? markRpcRequestDisposition(error, disposition)
+            : error;
         if (!isSocketIoAckTimeoutError(error)) {
-            return error;
+            return classifiedError;
         }
         if (this.currentConnectionState.phase === 'auth_failed') {
-            return createNotAuthenticatedError();
+            return markRpcRequestDisposition(createNotAuthenticatedError(), disposition);
         }
 
         const timeoutMs = readSocketAckAuthSettleTimeoutMs();
         if (timeoutMs <= 0) {
-            return error;
+            return classifiedError;
         }
 
         const authFailed = await this.waitForConnectionAuthFailure(timeoutMs);
-        return authFailed ? createNotAuthenticatedError() : error;
+        return authFailed
+            ? markRpcRequestDisposition(createNotAuthenticatedError(), disposition)
+            : classifiedError;
     }
 
     private async waitForConnectionAuthFailure(timeoutMs: number): Promise<boolean> {

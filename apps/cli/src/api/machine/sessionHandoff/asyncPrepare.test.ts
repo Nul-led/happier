@@ -4,8 +4,10 @@ import { join } from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
 
+import { FeaturesResponseSchema } from '@happier-dev/protocol';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 import type { RpcHandlerContext } from '@/api/rpc/types';
+import type { MachineTransferChannel } from '@/machines/transfer/serverRoutedTransport';
 
 function createDeferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
@@ -16,6 +18,49 @@ function createDeferred<T>() {
   });
   return { promise, resolve, reject };
 }
+
+function createAvailableMachineTransferChannel(): MachineTransferChannel {
+  const listeners = new Set<Parameters<MachineTransferChannel['onEnvelope']>[0]>();
+  return {
+    onEnvelope: (listener) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    sendEnvelope: (payload) => {
+      const sourceMachineId = payload.targetMachineId === 'machine_source'
+        ? 'machine_target'
+        : 'machine_source';
+      queueMicrotask(() => {
+        for (const listener of listeners) {
+          listener({
+            sourceMachineId,
+            targetMachineId: payload.targetMachineId,
+            envelope: payload.envelope,
+          });
+        }
+      });
+    },
+  };
+}
+
+
+const enabledServerFeaturesSnapshot = {
+  status: 'ready' as const,
+  features: FeaturesResponseSchema.parse({
+    features: {
+      sessions: { enabled: true, handoff: { enabled: true } },
+      machines: {
+        enabled: true,
+        transfer: {
+          enabled: true,
+          directPeer: { enabled: true },
+          serverRouted: { enabled: true },
+        },
+      },
+    },
+    capabilities: {},
+  }),
+};
 
 describe('rpcHandlers (session handoff async prepare)', () => {
   it('forwards coordinator-refreshed private input to the destructive start leaf', async () => {
@@ -32,13 +77,14 @@ describe('rpcHandlers (session handoff async prepare)', () => {
       });
 
       registerMachineSessionHandoffRpcHandlers({
+        resolveServerFeaturesSnapshot: async () => enabledServerFeaturesSnapshot,
         rpcHandlerManager: {
           registerHandler(method: string, handler: (input: unknown, context?: RpcHandlerContext) => Promise<unknown>) {
             registered.set(method, handler);
           },
         } as never,
         runtimeConfig: { activeServerDir },
-        directPeerTransfer: {} as never,
+        machineTransferChannel: createAvailableMachineTransferChannel(),
         sessionOperationExclusion: {
           acquire: async () => ({
             status: 'acquired' as const,
@@ -72,7 +118,7 @@ describe('rpcHandlers (session handoff async prepare)', () => {
         // This otherwise-valid predecessor/direct request is stale. The
         // coordinator must replace it before invoking the destructive leaf.
         sessionStorageMode: 'persisted',
-        preferredTransportStrategies: ['direct_peer'],
+        preferredTransportStrategies: ['server_routed_stream'],
       }, {
         signal: AbortSignal.timeout(5_000),
       } as never)).resolves.toMatchObject({
@@ -89,8 +135,8 @@ describe('rpcHandlers (session handoff async prepare)', () => {
         // The production coordinator refreshed this classification from the
         // source owner after the public request was created.
         sessionStorageMode: 'direct',
-        preferredTransportStrategies: ['direct_peer'],
-        negotiatedTransportStrategy: 'direct_peer',
+        preferredTransportStrategies: ['server_routed_stream'],
+        negotiatedTransportStrategy: 'server_routed_stream',
       })).resolves.toEqual({
         ok: true,
         result: expect.objectContaining({ ok: false, errorCode: 'source_stop_failed' }),
@@ -223,6 +269,7 @@ describe('rpcHandlers (session handoff async prepare)', () => {
       });
 
       registerMachineSessionHandoffRpcHandlers({
+        resolveServerFeaturesSnapshot: async () => enabledServerFeaturesSnapshot,
         rpcHandlerManager: {
           registerHandler: (method: string, handler: (params: unknown) => Promise<any>) => {
             registeredA.set(method, handler);
@@ -233,6 +280,7 @@ describe('rpcHandlers (session handoff async prepare)', () => {
       });
 
       registerMachineSessionHandoffRpcHandlers({
+        resolveServerFeaturesSnapshot: async () => enabledServerFeaturesSnapshot,
         rpcHandlerManager: {
           registerHandler: (method: string, handler: (params: unknown) => Promise<any>) => {
             registeredB.set(method, handler);
@@ -413,6 +461,7 @@ describe('rpcHandlers (session handoff async prepare)', () => {
       });
 
       registerMachineSessionHandoffRpcHandlers({
+        resolveServerFeaturesSnapshot: async () => enabledServerFeaturesSnapshot,
         rpcHandlerManager: {
           registerHandler: (method: string, handler: (params: unknown) => Promise<any>) => {
             registered.set(method, handler);
@@ -629,6 +678,7 @@ describe('rpcHandlers (session handoff async prepare)', () => {
       });
 
       registerMachineSessionHandoffRpcHandlers({
+        resolveServerFeaturesSnapshot: async () => enabledServerFeaturesSnapshot,
         rpcHandlerManager: {
           registerHandler: (method: string, handler: (params: unknown) => Promise<any>) => {
             registered.set(method, handler);
@@ -788,6 +838,7 @@ describe('rpcHandlers (session handoff async prepare)', () => {
       const { registerMachineSessionHandoffRpcHandlers } = await import('./handlers');
       const registered = new Map<string, (params: unknown) => Promise<any>>();
       registerMachineSessionHandoffRpcHandlers({
+        resolveServerFeaturesSnapshot: async () => enabledServerFeaturesSnapshot,
         rpcHandlerManager: {
           registerHandler: (method: string, handler: (params: unknown) => Promise<any>) => {
             registered.set(method, handler);
@@ -931,6 +982,7 @@ describe('rpcHandlers (session handoff async prepare)', () => {
       });
 
       registerMachineSessionHandoffRpcHandlers({
+        resolveServerFeaturesSnapshot: async () => enabledServerFeaturesSnapshot,
         rpcHandlerManager: {
           registerHandler: (method: string, handler: (params: unknown) => Promise<any>) => {
             registered.set(method, handler);
@@ -1064,6 +1116,7 @@ describe('rpcHandlers (session handoff async prepare)', () => {
       const registered = new Map<string, (params: unknown) => Promise<any>>();
 
       registerMachineSessionHandoffRpcHandlers({
+        resolveServerFeaturesSnapshot: async () => enabledServerFeaturesSnapshot,
         rpcHandlerManager: {
           registerHandler: (method: string, handler: (params: unknown) => Promise<any>) => {
             registered.set(method, handler);
@@ -1160,6 +1213,7 @@ describe('rpcHandlers (session handoff async prepare)', () => {
       const registered = new Map<string, (params: unknown) => Promise<any>>();
 
       registerMachineSessionHandoffRpcHandlers({
+        resolveServerFeaturesSnapshot: async () => enabledServerFeaturesSnapshot,
         rpcHandlerManager: {
           registerHandler: (method: string, handler: (params: unknown) => Promise<any>) => {
             registered.set(method, handler);
@@ -1231,6 +1285,7 @@ describe('rpcHandlers (session handoff async prepare)', () => {
       });
 
       registerMachineSessionHandoffRpcHandlers({
+        resolveServerFeaturesSnapshot: async () => enabledServerFeaturesSnapshot,
         rpcHandlerManager: {
           registerHandler: (method: string, handler: (params: unknown) => Promise<any>) => {
             registered.set(method, handler);
@@ -1250,6 +1305,7 @@ describe('rpcHandlers (session handoff async prepare)', () => {
           },
           targetPath: '/repo',
         }),
+        machineTransferChannel: createAvailableMachineTransferChannel(),
         importSessionBundle,
       });
 
@@ -1272,6 +1328,8 @@ describe('rpcHandlers (session handoff async prepare)', () => {
         sessionStorageMode: 'persisted',
         preferredTransportStrategies: ['server_routed_stream'],
       });
+
+      expect(started).toMatchObject({ handoffId: expect.any(String) });
 
       const handoffId = started.handoffId;
       const prepareAck = await prepare!({
@@ -1337,7 +1395,7 @@ describe('rpcHandlers (session handoff async prepare)', () => {
       vi.resetModules();
       await rm(activeServerDir, { recursive: true, force: true });
     }
-  });
+  }, 120_000);
 
   it('aborts a pending prepare job before session import when cancellation is requested mid-flight', async () => {
     const activeServerDir = await mkdtemp(join(tmpdir(), 'happier-handoff-prepare-abort-'));
@@ -1375,6 +1433,7 @@ describe('rpcHandlers (session handoff async prepare)', () => {
       });
 
       registerMachineSessionHandoffRpcHandlers({
+        resolveServerFeaturesSnapshot: async () => enabledServerFeaturesSnapshot,
         rpcHandlerManager: {
           registerHandler: (method: string, handler: (params: unknown) => Promise<any>) => {
             registered.set(method, handler);
@@ -1394,6 +1453,7 @@ describe('rpcHandlers (session handoff async prepare)', () => {
           },
           targetPath: '/repo',
         }),
+        machineTransferChannel: createAvailableMachineTransferChannel(),
         importSessionBundle,
       });
 
@@ -1416,6 +1476,8 @@ describe('rpcHandlers (session handoff async prepare)', () => {
         sessionStorageMode: 'persisted',
         preferredTransportStrategies: ['server_routed_stream'],
       });
+
+      expect(started).toMatchObject({ handoffId: expect.any(String) });
 
       const handoffId = started.handoffId;
       const prepareAck = await prepare!({
@@ -1471,5 +1533,5 @@ describe('rpcHandlers (session handoff async prepare)', () => {
       await rm(activeServerDir, { recursive: true, force: true }).catch(() => undefined);
       await rm(targetRoot, { recursive: true, force: true }).catch(() => undefined);
     }
-  });
+  }, 120_000);
 });

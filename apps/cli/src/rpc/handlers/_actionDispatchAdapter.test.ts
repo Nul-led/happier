@@ -7,6 +7,14 @@ import {
 } from './_actionDispatchAdapter';
 
 describe('RPC action dispatch adapter', () => {
+    it('uses verified forwarded authority and refuses an unstamped forwarded caller', () => {
+        expect(buildActionExecutorContextForRpc({ callerAuthority: 'present_user' }))
+            .toMatchObject({ authority: 'present_user' });
+        expect(buildActionExecutorContextForRpc({ callerAuthority: 'account_automation' }))
+            .toMatchObject({ authority: 'account_automation' });
+        expect(buildActionExecutorContextForRpc({}))
+            .toMatchObject({ authority: 'account_automation' });
+    });
     it('maps RPC invocation context to the accepted action executor surface', async () => {
         const calls: unknown[] = [];
         const executor: RpcActionExecutor = {

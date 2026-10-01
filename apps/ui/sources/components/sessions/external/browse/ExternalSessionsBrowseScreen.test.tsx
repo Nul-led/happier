@@ -296,6 +296,9 @@ vi.mock('@/sync/store/hooks', () => ({
     useProfile: () => profileMock,
     useSettingsVersion: () => 1,
     useLocalSetting: (key: string) => key === 'uiItemDensity' ? 'comfortable' : undefined,
+    // The Agent filter chip draws the selected Agent's brand mark, whose plugin-availability reader
+    // asks for the active Account scope; this screen test has none.
+    useActiveServerAccountScope: () => null,
 }));
 vi.mock('@/agents/backendCatalog/useDaemonMergedProjectionInputs', () => ({
     useDaemonMergedProjectionInputs: (params: unknown) => {
@@ -324,7 +327,12 @@ vi.mock('@/components/ui/lists/Item', () => ({
 vi.mock('@/components/ui/lists/ItemRowActions', () => createPassThroughModule(['ItemRowActions']));
 vi.mock('@/components/ui/forms/dropdown/DropdownMenu', () => createPassThroughModule(['DropdownMenu']));
 vi.mock('@/components/ui/forms/Switch', () => createPassThroughModule(['Switch']));
-vi.mock('@/components/ui/popover', () => createPassThroughModule(['PopoverScope']));
+vi.mock('@/components/ui/popover', () => ({
+    ...createPassThroughModule(['PopoverScope']),
+    // Filter chips anchor a popover; its content is exercised by the SelectionList filter owner's tests.
+    Popover: () => null,
+    MODAL_AWARE_FLOATING_POPOVER_PORTAL_OPTIONS: {},
+}));
 vi.mock('@/components/ui/text/Text', () => createPassThroughModule(['Text', 'TextInput']));
 vi.mock('@/components/ui/status/StatusPill', () => ({
     StatusPill: (props: Record<string, unknown>) => React.createElement('StatusPill', props),
@@ -367,6 +375,7 @@ type DropdownTriggerPresentation = Readonly<{
 
 type DropdownMenuTestNode = Readonly<{
     props?: {
+        testID?: string;
         items?: ReadonlyArray<Readonly<{
             id: string;
             icon?: React.ReactElement;
@@ -388,11 +397,34 @@ type DropdownMenuTestNode = Readonly<{
     };
 }>;
 
+type BrowseFilterTestNode = Readonly<{
+    id: string;
+    selectedId?: string | null;
+    options?: ReadonlyArray<Readonly<{ id: string; icon?: any }>>;
+    onChange?: (id: string) => void;
+    valueLabel?: string;
+    testID?: string;
+    ownerProps?: any;
+}>;
+
+/** The browse scope's SelectionList filter with this chip testID (machine, Agent, source). */
+function findBrowseFilter(
+    screen: { findAll: (predicate: (node: any) => boolean) => any[] },
+    testID: string,
+): BrowseFilterTestNode | undefined {
+    const list = screen.findAll((node) => Array.isArray(node.props?.filters))[0];
+    return (list?.props.filters as BrowseFilterTestNode[] | undefined)?.find((filter) => filter.testID === testID);
+}
+
+const MACHINE_FILTER_TEST_ID = 'external-sessions.browse.administration.target.chip';
+
 function findDropdownMenuByTriggerTestId(
     screen: { findAllByType: (type: unknown) => DropdownMenuTestNode[] },
     testID: string,
 ): DropdownMenuTestNode | undefined {
-    return screen.findAllByType('DropdownMenu').find((node) => node.props?.itemTrigger?.itemProps?.testID === testID);
+    return screen.findAllByType('DropdownMenu').find((node) => (
+        node.props?.testID === testID || node.props?.itemTrigger?.itemProps?.testID === testID
+    ));
 }
 
 describe('ExternalSessionsBrowseScreen', () => {
@@ -520,14 +552,15 @@ describe('ExternalSessionsBrowseScreen', () => {
         const screen = await renderScreen(<ExternalSessionsBrowseScreen />);
         await flushHookEffects();
 
-        const row = screen.findByTestId('external-sessions-browse-auto-link');
-        expect(row).toBeTruthy();
-        expect(row?.props.title).toBe('externalSessions.browseAutoLinkTitle');
-        const toggle = row?.props.rightElement;
-        expect(toggle.props.value).toBe(false);
+        // Auto-link is a policy, so it lives in the ⋯ menu as a checked item rather than a switch
+        // pushing the results down.
+        const menu = findDropdownMenuByTriggerTestId(screen, 'external-sessions-browse-menu') as any;
+        const autoLink = menu?.props?.items?.find((item: { id: string }) => item.id === 'auto-link');
+        expect(autoLink?.title).toBe('externalSessions.browseAutoLinkTitle');
+        expect(autoLink?.checked).toBe(false);
 
         await act(async () => {
-            await toggle.props.onValueChange(true);
+            await menu.props.onSelect('auto-link');
         });
         expect(mutateAccountSettingsSpy).toHaveBeenCalledTimes(1);
         expect(linkEnsureSpy).not.toHaveBeenCalled();
@@ -551,7 +584,8 @@ describe('ExternalSessionsBrowseScreen', () => {
         const screen = await renderScreen(<ExternalSessionsBrowseScreen />);
         await flushHookEffects();
 
-        expect(screen.findByTestId('external-sessions-browse-auto-link')).toBeNull();
+        const menu = findDropdownMenuByTriggerTestId(screen, 'external-sessions-browse-menu') as any;
+        expect(menu?.props?.items?.some((item: { id: string }) => item.id === 'auto-link')).toBe(false);
         expect(mutateAccountSettingsSpy).not.toHaveBeenCalled();
         expect(linkEnsureSpy).not.toHaveBeenCalled();
     });
@@ -924,42 +958,24 @@ describe('ExternalSessionsBrowseScreen', () => {
             limit: 50,
         }, expect.objectContaining({ signal: expect.any(AbortSignal) }));
 
-        const providerDropdown = findDropdownMenuByTriggerTestId(screen, 'direct-session-provider-picker-trigger');
-        const sourceDropdown = findDropdownMenuByTriggerTestId(screen, 'direct-session-source-picker-trigger');
-        const targetSelector = screen.findByType('MachineAdministrationTargetSelector' as never);
+        const providerFilter = findBrowseFilter(screen, 'direct-session-provider-picker');
+        const sourceFilter = findBrowseFilter(screen, 'direct-session-source-picker');
+        const machineFilter = findBrowseFilter(screen, MACHINE_FILTER_TEST_ID);
         const popoverScopes = screen.findAllByType('PopoverScope' as any);
-        const popoverBoundaryRef = popoverScopes[0]?.props?.boundaryRef;
 
-        expect(targetSelector?.props.selection.selectedTarget).toEqual({
+        expect(machineFilter?.ownerProps.selection.selectedTarget).toEqual({
             serverIdentityId: 'server-identity-a',
             machineId: 'machine-1',
         });
-        expect(providerDropdown).toBeTruthy();
-        expect(sourceDropdown).toBeTruthy();
+        // The scope is SelectionList filters beside the search band — the machine (through its
+        // canonical owner), the Agent and the source — and the popover scope still bounds the screen.
         expect(popoverScopes).toHaveLength(1);
-        expect(popoverBoundaryRef).toBeTruthy();
-        expect(providerDropdown?.props?.popoverBoundaryRef).toBe(popoverBoundaryRef);
-        expect(sourceDropdown?.props?.popoverBoundaryRef).toBe(popoverBoundaryRef);
-        const itemGroups = screen.findAllByType('ItemGroup' as any);
-        expect(itemGroups[0]?.props.title).toBe('externalSessions.browseFiltersTitle');
-        expect(providerDropdown?.props?.itemTrigger?.itemProps?.density).toBeUndefined();
-        expect(sourceDropdown?.props?.itemTrigger?.itemProps?.density).toBeUndefined();
-        expect(providerDropdown?.props?.itemTrigger?.showSelectedDetail).toBe(false);
-        expect(sourceDropdown?.props?.itemTrigger?.showSelectedDetail).toBe(false);
-        expect(providerDropdown?.props?.items?.length).toBeGreaterThan(0);
-        expect(providerDropdown?.props?.items?.every((item) => item.icon?.type === AgentCatalogIdentityIcon)).toBe(true);
-        expect(providerDropdown?.props?.itemRowProps?.density).toBeUndefined();
-        expect(sourceDropdown?.props?.itemRowProps?.density).toBeUndefined();
-        expect(typeof providerDropdown?.props?.itemTrigger?.subtitleFormatter).toBe('function');
-        expect(typeof sourceDropdown?.props?.itemTrigger?.subtitleFormatter).toBe('function');
-        expect(providerDropdown!.props?.itemTrigger?.subtitleFormatter?.({
-            title: 'Codex',
-            subtitle: undefined,
-        })).toBe('Codex');
-        expect(sourceDropdown!.props?.itemTrigger?.subtitleFormatter?.({
-            title: 'My Codex home',
-            subtitle: undefined,
-        })).toBe('My Codex home');
+        expect(providerFilter).toBeTruthy();
+        expect(sourceFilter).toBeTruthy();
+        expect(providerFilter?.selectedId).toBe('codex');
+        expect(providerFilter?.options?.length).toBeGreaterThan(0);
+        expect(providerFilter?.options?.every((option) => option.icon?.type === AgentCatalogIdentityIcon)).toBe(true);
+        expect(screen.findAllByType('ItemGroup' as any)).toHaveLength(0);
 
         const candidateItem = screen.findByTestId('direct-session-candidate:codex-session-1');
         expect(candidateItem).toBeTruthy();
@@ -980,6 +996,55 @@ describe('ExternalSessionsBrowseScreen', () => {
         const statusPill = badgeChildren.find((child: any) => child?.type?.name === 'StatusPill');
         expect((statusPill as any)?.props?.label).toBe('status.workingExternally');
         expect((statusPill as any)?.props?.isPulsing).toBe(true);
+    });
+
+    it('hides internal threads by default and reveals them, labelled with their parent, from the Sub-agent threads filter', async () => {
+        const { ExternalSessionsBrowseScreen } = await externalSessionsBrowseScreenModulePromise;
+        const screen = await renderScreen(<ExternalSessionsBrowseScreen />);
+        await flushHookEffects();
+
+        const threadsFilter = findBrowseFilter(screen, 'external-sessions.browse.threads');
+        expect(threadsFilter?.selectedId).toBe('hidden');
+        expect(candidatesListSpy).toHaveBeenLastCalledWith(
+            expect.not.objectContaining({ includeThreads: expect.anything() }),
+            expect.anything(),
+        );
+
+        candidatesListSpy.mockResolvedValueOnce({
+            ok: true,
+            candidates: [
+                {
+                    remoteSessionId: 'codex-session-1',
+                    title: 'Existing Codex Session',
+                    updatedAtMs: 1_700_000_000_000,
+                    details: { path: '/tmp/worktree' },
+                },
+                {
+                    remoteSessionId: 'codex-reviewer-1',
+                    title: 'Approve the migration',
+                    updatedAtMs: 1_699_999_000_000,
+                    thread: { kind: 'reviewer', parentRemoteSessionId: 'codex-session-1' },
+                    details: { path: '/tmp/worktree' },
+                },
+            ] as ExternalSessionCandidateV1[],
+            nextCursor: null,
+        });
+        await act(async () => {
+            threadsFilter!.onChange?.('shown');
+        });
+        await flushHookEffects();
+
+        expect(candidatesListSpy).toHaveBeenLastCalledWith(
+            expect.objectContaining({ includeThreads: true }),
+            expect.anything(),
+        );
+        expect(findBrowseFilter(screen, 'external-sessions.browse.threads')?.selectedId).toBe('shown');
+        const reviewerSubtitle = screen.findByTestId('direct-session-candidate:codex-reviewer-1')?.props.subtitle;
+        const reviewerSubtitleText = (React.Children.toArray((reviewerSubtitle as any).props.children) as any[])
+            .map((line) => String(line?.props?.children ?? ''))
+            .join('');
+        // The parent is resolved from the listing itself when the Agent did not name it.
+        expect(reviewerSubtitleText).toMatch(/Reviewer of Existing Codex Session|browseThreadReviewerOf/);
     });
 
     it('uses the selected machine home directory for candidate project presentation', async () => {
@@ -1011,7 +1076,7 @@ describe('ExternalSessionsBrowseScreen', () => {
         const screen = await renderScreen(<ExternalSessionsBrowseScreen />);
         await flushHookEffects();
 
-        expect(screen.getTextContent()).toContain('~/PROJECTS/HAPPIER');
+        expect(screen.getTextContent()).toContain('~/projects/happier');
         expect(screen.getTextContent()).not.toContain('C:\\Users');
     });
 
@@ -1097,7 +1162,7 @@ describe('ExternalSessionsBrowseScreen', () => {
 
         await flushHookEffects();
 
-        expect(screen.findByType('MachineAdministrationTargetSelector' as never)).toBeTruthy();
+        expect(findBrowseFilter(screen, MACHINE_FILTER_TEST_ID)).toBeTruthy();
         expect(candidatesListSpy).not.toHaveBeenCalled();
         expect(linkEnsureSpy).not.toHaveBeenCalled();
         expect(mutateAccountSettingsSpy).not.toHaveBeenCalled();
@@ -1110,7 +1175,7 @@ describe('ExternalSessionsBrowseScreen', () => {
         const screen = await renderScreen(<ExternalSessionsBrowseScreen />);
         await flushHookEffects();
 
-        expect(screen.findByType('MachineAdministrationTargetSelector' as never)).toBeTruthy();
+        expect(findBrowseFilter(screen, MACHINE_FILTER_TEST_ID)).toBeTruthy();
         expect(daemonProjectionHookSpy).toHaveBeenLastCalledWith(expect.objectContaining({
             machineId: 'machine-2',
             serverId: 'server-b',
@@ -1264,7 +1329,8 @@ describe('ExternalSessionsBrowseScreen', () => {
 
         const searchInput = screen.findByTestId('direct-session-candidates-search-input');
         expect(searchInput).toBeTruthy();
-        expect(searchInput!.props.placeholder).toBe('externalSessions.browseSearchPlaceholder');
+        // The band names what it searches: the selected Agent's sessions ("Search Codex sessions…").
+        expect(searchInput!.props.placeholder).toBe('externalSessions.browseSearchAgentPlaceholder');
 
         await act(async () => {
             searchInput!.props.onChangeText('codex-hidden-session-9');
@@ -1390,7 +1456,7 @@ describe('ExternalSessionsBrowseScreen', () => {
         const paginated = screen
             .findAllByProps({ testID: 'direct-session-candidates' })
             .find((node) => node.props?.pagination !== undefined);
-        expect(paginated?.props.pagination.error).toBe('newSession.machineOfflineInlineBody');
+        expect(paginated?.props.pagination.error).toBe('externalSessions.browseMachineOfflineBody');
     });
 
     it('links the selected provider session and navigates to the Happier session', async () => {
@@ -1565,14 +1631,8 @@ describe('ExternalSessionsBrowseScreen', () => {
         );
         await flushHookEffects();
 
-        expect(findDropdownMenuByTriggerTestId(
-            screen,
-            'direct-session-provider-picker-trigger',
-        )?.props?.selectedId).toBe('codex');
-        expect(findDropdownMenuByTriggerTestId(
-            screen,
-            'direct-session-source-picker-trigger',
-        )?.props?.selectedId).toBe('codex:user');
+        expect(findBrowseFilter(screen, 'direct-session-provider-picker')?.selectedId).toBe('codex');
+        expect(findBrowseFilter(screen, 'direct-session-source-picker')?.selectedId).toBe('codex:user');
         const retainedCandidate = screen.findByTestId('direct-session-candidate:codex-session-1');
         expect(retainedCandidate).not.toBeNull();
         expect(retainedCandidate?.props.disabled).toBe(true);
@@ -1895,11 +1955,11 @@ describe('ExternalSessionsBrowseScreen', () => {
         await flushHookEffects();
         candidatesListSpy.mockClear();
 
-        const sourceDropdown = findDropdownMenuByTriggerTestId(screen, 'direct-session-source-picker-trigger');
-        expect(sourceDropdown).toBeTruthy();
+        const sourceFilter = findBrowseFilter(screen, 'direct-session-source-picker');
+        expect(sourceFilter).toBeTruthy();
 
         await act(async () => {
-            await sourceDropdown!.props?.onSelect?.('codex:connected-service:openai-codex:work');
+            sourceFilter!.onChange?.('codex:connected-service:openai-codex:work');
         });
 
         candidatesListSpy.mockResolvedValueOnce({
@@ -1977,8 +2037,8 @@ describe('ExternalSessionsBrowseScreen', () => {
 
         await flushHookEffects();
 
-        const providerDropdown = findDropdownMenuByTriggerTestId(screen, 'direct-session-provider-picker-trigger');
-        expect(providerDropdown).toBeTruthy();
+        const providerFilter = findBrowseFilter(screen, 'direct-session-provider-picker');
+        expect(providerFilter).toBeTruthy();
 
         candidatesListSpy.mockResolvedValueOnce({
             ok: true,
@@ -2001,7 +2061,7 @@ describe('ExternalSessionsBrowseScreen', () => {
         });
 
         await act(async () => {
-            await providerDropdown!.props?.onSelect?.('ohMyPi');
+            providerFilter!.onChange?.('ohMyPi');
         });
 
         await act(async () => {
@@ -2060,12 +2120,18 @@ describe('ExternalSessionsBrowseScreen', () => {
         });
         await flushHookEffects();
 
-        const targetSelector = screen.findByType('MachineAdministrationTargetSelector' as never);
-        expect(targetSelector?.props.selection.selectedTarget).toEqual({
+        const targetSelection = findBrowseFilter(screen, MACHINE_FILTER_TEST_ID)?.ownerProps.selection;
+        expect(targetSelection.selectedTarget).toEqual({
             serverIdentityId: 'server-identity-b',
             machineId: 'machine-2',
         });
-        expect(targetSelector?.props.selection.state.kind).toBe('missing');
+        expect(targetSelection.state.kind).toBe('missing');
+        // The missing machine speaks first; it never reads as "no agent can browse".
+        expect(screen.findByTestId('direct-session-candidates:machine-gone')).not.toBeNull();
+        expect(screen.findByTestId('direct-session-candidates:no-agents')).toBeNull();
+        const text = screen.getTextContent();
+        expect(text).not.toContain('machine-2');
+        expect(text).not.toContain('server-identity-b');
         expect(candidatesListSpy).not.toHaveBeenCalled();
         expect(linkEnsureSpy).not.toHaveBeenCalled();
     });
@@ -2192,16 +2258,16 @@ describe('ExternalSessionsBrowseScreen', () => {
             signal: expect.any(AbortSignal),
         }));
 
-        expect(findDropdownMenuByTriggerTestId(screen, 'direct-session-machine-picker-trigger')).toBeUndefined();
-        expect(findDropdownMenuByTriggerTestId(screen, 'direct-session-provider-picker-trigger')).toBeUndefined();
-        expect(findDropdownMenuByTriggerTestId(screen, 'direct-session-source-picker-trigger')).toBeUndefined();
-        expect(screen.findAllByType('MachineAdministrationTargetSelector' as never)).toHaveLength(0);
-        const lockedScopeSummary = screen.findByTestId('direct-session-locked-scope-summary');
-        expect(lockedScopeSummary?.props.title).toBeUndefined();
-        expect(lockedScopeSummary?.props.subtitle).toBeUndefined();
-        expect(lockedScopeSummary?.findAllByProps({ children: 'Linux Box' }).length).toBeGreaterThan(0);
-        expect(lockedScopeSummary?.findAllByProps({ children: 'Codex · My Codex home' }).length)
-            .toBeGreaterThan(0);
+        // A locked scope shows its machine and Agent as fixed filter chips: nothing to change.
+        expect(findBrowseFilter(screen, 'direct-session-provider-picker')).toBeUndefined();
+        expect(findBrowseFilter(screen, 'direct-session-source-picker')).toBeUndefined();
+        expect(findBrowseFilter(screen, MACHINE_FILTER_TEST_ID)).toBeUndefined();
+        const lockedMachine = findBrowseFilter(screen, 'external-sessions.browse.locked.machine');
+        const lockedAgent = findBrowseFilter(screen, 'external-sessions.browse.locked.agent');
+        expect(lockedMachine?.valueLabel).toBe('Linux Box');
+        expect(lockedAgent?.valueLabel).toBe('Codex · My Codex home');
+        expect(lockedMachine?.options).toBeUndefined();
+        expect(lockedAgent?.onChange).toBeUndefined();
 
         const candidateItem = screen.findByTestId('direct-session-candidate:codex-session-1');
         expect(candidateItem).toBeTruthy();

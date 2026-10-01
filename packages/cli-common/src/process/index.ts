@@ -1,8 +1,10 @@
 export type { CommandInvocation } from './windows/resolveWindowsCommandInvocation.js';
 export { closeStdioWhenCommandExits } from './closeStdioWhenCommandExits.js';
+export { readLocalHostIdentity, readPreferredHostName, readHomeHostFact } from './homeHostFact.js';
 export { commandExistsOnPath } from './commandExists.js';
 export {
   execFileWithDeadline,
+  ExecFileTerminationError,
   type ExecFileWithDeadlineOptions,
   type ExecFileWithDeadlineResult,
 } from './execFileWithDeadline.js';

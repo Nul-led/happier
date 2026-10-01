@@ -1,4 +1,5 @@
 type GenerationLease = Readonly<{
+  runtimeLeaseId: string;
   runIfCurrent<T>(callback: () => T): T | undefined;
   isCurrent(): boolean;
   canCleanup(): boolean;
@@ -31,6 +32,7 @@ export function acquireBundledConversationRuntimeGeneration(): GenerationLease {
   activeGeneration = generation;
   publishGenerationChange();
   return Object.freeze({
+    runtimeLeaseId: String(generation),
     runIfCurrent<T>(callback: () => T): T | undefined {
       return !revoked && activeGeneration === generation ? callback() : undefined;
     },

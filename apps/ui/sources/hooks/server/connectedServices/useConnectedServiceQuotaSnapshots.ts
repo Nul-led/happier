@@ -26,6 +26,7 @@ import { useProfile } from '@/sync/store/hooks';
 import type {
     BuiltInLegacyConnectedAccountOperation,
     ConnectedServiceQuotaSnapshotV1,
+    ProviderAccountUsageRecordId,
     QualifiedConnectedAccountQuotaSnapshotV4,
 } from '@happier-dev/protocol';
 import {
@@ -36,6 +37,7 @@ import { useCredentialScopedAccountModeResolver } from './useCredentialScopedAcc
 import {
     buildQuotaSnapshotScopeKey,
     getQuotaSnapshotEntry,
+    retainQuotaSnapshotOnce,
     retainQuotaSnapshotPolling,
     subscribeQuotaSnapshotEntry,
     type QuotaSnapshotLoadContext,
@@ -43,6 +45,7 @@ import {
 import {
     buildQualifiedQuotaSnapshotScopeKey,
     getQualifiedQuotaSnapshotEntry,
+    loadQualifiedQuotaSnapshotOnce,
     retainQualifiedQuotaSnapshotPolling,
     subscribeQualifiedQuotaSnapshotEntry,
     type QualifiedQuotaSnapshotStoreContext,
@@ -88,16 +91,27 @@ export type ConnectedServiceQuotaSnapshotsResult = Readonly<{
      */
     profiles: ReadonlyArray<NormalizedConnectedServiceQuotaProfileRef>;
     snapshotsByKey: Readonly<Record<string, ConnectedServiceQuotaSnapshotForUi | null>>;
+    /** Canonical PAU record ids from opened V4 responses; absent for legacy quota transport. */
+    usageRecordIdsByKey: Readonly<Record<string, ProviderAccountUsageRecordId | null>>;
     loadingByKey: Readonly<Record<string, boolean>>;
+    /** A read of this account completed (with or without a snapshot). */
+    readByKey: Readonly<Record<string, boolean>>;
 }>;
 
 type LegacyConnectedServiceQuotaSnapshotsResult = Readonly<{
     profiles: ReadonlyArray<NormalizedLegacyConnectedServiceQuotaProfileRef>;
     snapshotsByKey: Readonly<Record<string, ConnectedServiceQuotaSnapshotV1 | null>>;
+    usageRecordIdsByKey: Readonly<Record<string, ProviderAccountUsageRecordId | null>>;
     loadingByKey: Readonly<Record<string, boolean>>;
+    readByKey: Readonly<Record<string, boolean>>;
 }>;
 
-export type ConnectedServiceQuotaSnapshotsFetchPolicy = 'poll' | 'cache_only';
+/**
+ * `poll`: read and keep polling while mounted (a page about the accounts). `once`: read once per
+ * launch if nothing was read yet, never poll (a summary that should not keep asking).
+ * `cache_only`: never read; show what this launch already has.
+ */
+export type ConnectedServiceQuotaSnapshotsFetchPolicy = 'poll' | 'once' | 'cache_only';
 
 function buildProfilesSignature(
     profiles: ReadonlyArray<NormalizedConnectedServiceQuotaProfileRef>,
@@ -297,7 +311,18 @@ export function useConnectedServiceQuotaSnapshots(
     }, [loadContexts]);
 
     React.useEffect(() => {
-        if (fetchPolicy === 'cache_only') return;
+        if (fetchPolicy !== 'once') return;
+        const releases = loadContexts.map((registration) =>
+            registration.kind === 'v4'
+                ? loadQualifiedQuotaSnapshotOnce(registration.key, registration.loadContext)
+                : retainQuotaSnapshotOnce(registration.key, registration.loadContext));
+        return () => {
+            for (const release of releases) release();
+        };
+    }, [fetchPolicy, loadContexts]);
+
+    React.useEffect(() => {
+        if (fetchPolicy !== 'poll') return;
         const releases = loadContexts.map((registration) =>
             registration.kind === 'v4'
                 ? retainQualifiedQuotaSnapshotPolling(
@@ -315,12 +340,16 @@ export function useConnectedServiceQuotaSnapshots(
 
     return React.useMemo(() => {
         const snapshotsByKey: Record<string, ConnectedServiceQuotaSnapshotForUi | null> = {};
+        const usageRecordIdsByKey: Record<string, ProviderAccountUsageRecordId | null> = {};
         const loadingByKey: Record<string, boolean> = {};
+        const readByKey: Record<string, boolean> = {};
         if (!quotasEnabled) {
             return {
                 profiles: normalizedProfiles,
                 snapshotsByKey,
+                usageRecordIdsByKey,
                 loadingByKey,
+                readByKey,
             } satisfies ConnectedServiceQuotaSnapshotsResult;
         }
 
@@ -339,17 +368,23 @@ export function useConnectedServiceQuotaSnapshots(
                         : entry.snapshot
                     : null;
                 loadingByKey[registration.profileKey] = entry.loading;
+                usageRecordIdsByKey[registration.profileKey] = entry.usageRecordId;
+                readByKey[registration.profileKey] = entry.read;
                 continue;
             }
             const entry = getQuotaSnapshotEntry(registration.key);
             snapshotsByKey[registration.profileKey] = entry.snapshot;
+            usageRecordIdsByKey[registration.profileKey] = null;
             loadingByKey[registration.profileKey] = entry.loading;
+            readByKey[registration.profileKey] = entry.read;
         }
 
         return {
             profiles: normalizedProfiles,
             snapshotsByKey,
+            usageRecordIdsByKey,
             loadingByKey,
+            readByKey,
         } satisfies ConnectedServiceQuotaSnapshotsResult;
     }, [loadContexts, normalizedProfiles, quotasEnabled, version]);
 }

@@ -7,7 +7,7 @@ import {
     type LaunchProfileListProjectionV1,
 } from '@happier-dev/protocol';
 
-import { readUiAiLaunchProfileSnapshot } from '@/sync/domains/profiles/aiLaunchProfileCollection';
+import { readUiAiLaunchProfileSnapshot, type UiAiLaunchProfileSnapshot } from '@/sync/domains/profiles/aiLaunchProfileCollection';
 import { storage } from '@/sync/domains/state/storage';
 
 /**
@@ -29,9 +29,10 @@ export type SpawnProfilesListResult = LaunchProfileListProjectionV1;
 
 export function listSpawnProfilesForActions(
     args: Readonly<{ agentId?: string; backendTargetKey?: string; limit?: number }>,
+    capturedSnapshot?: UiAiLaunchProfileSnapshot,
 ): SpawnProfilesListResult {
     const state = storage.getState();
-    const snapshot = readUiAiLaunchProfileSnapshot(state.settings.profiles);
+    const snapshot = capturedSnapshot ?? readUiAiLaunchProfileSnapshot(state.settings.profiles, state.artifacts);
     const agentIds = new Set<string>(AGENT_IDS);
     for (const profile of snapshot.profiles) {
         // Only the historical V1 profile shape carries `compatibilityByTargetKey`; a V2
@@ -52,6 +53,6 @@ export function listSpawnProfilesForActions(
         ...(args.agentId === undefined ? {} : { agentId: args.agentId }),
         ...(args.limit === undefined ? {} : { limit: args.limit }),
         unreadableCount: snapshot.unreadableCount,
-        available: state.settingsVersion !== null,
+        available: capturedSnapshot !== undefined || state.settingsVersion !== null,
     });
 }

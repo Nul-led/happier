@@ -1,6 +1,6 @@
 import type { AgentType } from '@/sync/domains/models/modelOptions';
 import type { PermissionMode } from '@/sync/domains/permissions/permissionTypes';
-import type { Metadata } from '@/sync/domains/state/storageTypes';
+import type { Metadata } from '@happier-dev/session-core/state';
 import { getAgentCore, resolveAgentIdFromFlavor } from '@/agents/catalog/catalog';
 import { normalizePermissionModeForAgentType } from '@/sync/domains/permissions/permissionModeOptions';
 import {

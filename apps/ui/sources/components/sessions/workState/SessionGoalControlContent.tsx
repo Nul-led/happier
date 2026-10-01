@@ -2,15 +2,23 @@ import * as React from 'react';
 import { Pressable, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
+import { Item } from '@/components/ui/lists/Item';
 import { Text, TextInput } from '@/components/ui/text/Text';
 import { t } from '@/text';
+import { readSessionWorkStateFromMetadata } from '@/sync/domains/session/workState/readSessionWorkState';
 import type { SessionWorkStateItem } from '@/sync/domains/session/workState/sessionWorkStateTypes';
+import { useSessionMetadata } from '@/sync/domains/state/storage';
 
 import { GoalBudgetDisclosure } from './GoalBudgetDisclosure';
+import { SessionGoalContinuationSection } from './SessionGoalContinuationSection';
+import type { SessionKeepGoingTrigger } from './useSessionKeepGoingTrigger';
 import { SessionGoalActionsMenu, type SessionGoalMenuAction } from './SessionGoalActionsMenu';
 import { GoalUsageMetadata } from './GoalUsageMetadata';
 import { resolveGoalActionCapabilities, resolveGoalPauseResumeAction, resolveGoalStatusLabelKey, type GoalActionCapabilities } from './goalActionVisibility';
 import { ICON_SIZE, Icon } from '@/components/ui/icons/Icon';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
+import type { SessionGoalControlEntry } from './openSessionGoalControl';
+import { resolveEditableGoalItem } from './sessionGoalSelectors';
 
 type GoalSaveBudgetDraft = Readonly<{
     tokenBudgetChanged: boolean;
@@ -33,6 +41,12 @@ export function SessionGoalControlContent(props: Readonly<{
     // "Set goal" form). Lets a provider (e.g. Claude) hide the Codex-only budget/lifecycle controls
     // before any native goal exists. Absent → full legacy surface.
     goalActionCapabilityProfile?: GoalActionCapabilities | null;
+    /** The continuation owner row (07 S16c); absent on surfaces that only show the goal. */
+    continuation?: Readonly<{
+        nativeGoalOwner: boolean;
+        agentLabel: string;
+        keepGoing: SessionKeepGoingTrigger;
+    }> | null;
 }>) {
     const { theme } = useUnistyles();
     // Capability-driven action visibility (provider-agnostic). Goal-item capabilities win; otherwise
@@ -117,7 +131,7 @@ export function SessionGoalControlContent(props: Readonly<{
                 styles.primaryButton,
                 {
                     backgroundColor: theme.colors.button.primary.background,
-                    opacity: !canSave ? 0.42 : (pressed ? 0.88 : 1),
+                    opacity: !canSave ? 0.42 : (pressed ? motionTokens.press.opacitySubtle : 1),
                 },
             ]}
         >
@@ -262,6 +276,19 @@ export function SessionGoalControlContent(props: Readonly<{
                 </View>
             ) : null}
             {props.goal && !editing ? <GoalUsageMetadata goal={props.goal} /> : null}
+            {props.goal && !editing && props.continuation ? (
+                <View style={[styles.continuation, { borderTopColor: theme.colors.border.default }]}>
+                    <SessionGoalContinuationSection
+                        nativeGoalOwner={props.continuation.nativeGoalOwner}
+                        agentLabel={props.continuation.agentLabel}
+                        keepGoing={props.continuation.keepGoing}
+                        tokenBudget={typeof props.goal.tokenBudget === 'number' ? props.goal.tokenBudget : null}
+                        nativeActive={props.goal.status === 'active'}
+                        onNativeChange={showPauseResume ? (on) => (on ? props.onResume() : props.onPause()) : null}
+                        busy={props.busy}
+                    />
+                </View>
+            ) : null}
             {editing ? budgetDisclosure : null}
             {!props.goal && editing ? (
                 <View style={styles.footerActions}>
@@ -347,6 +374,10 @@ const styles = StyleSheet.create(() => ({
         fontSize: 14,
         backgroundColor: 'transparent',
     },
+    continuation: {
+        borderTopWidth: StyleSheet.hairlineWidth,
+        paddingTop: 12,
+    },
     headerActions: {
         flexDirection: 'row',
         alignItems: 'center',
@@ -383,3 +414,32 @@ const styles = StyleSheet.create(() => ({
         fontWeight: '700',
     },
 }));
+
+/**
+ * The session's Goal as a value row in the Work tab's Goal slot ("Goal · Not set ›"; lab
+ * `convo-W8full`, ORC §3.8). It opens the one Goal control — the composer's — through its entry, and
+ * is absent where the session cannot hold a goal.
+ */
+export const SessionGoalValueRow = React.memo(function SessionGoalValueRow(props: Readonly<{
+    sessionId: string;
+    entry: SessionGoalControlEntry;
+    testID?: string;
+}>) {
+    const metadata = useSessionMetadata(props.sessionId);
+    const goal = React.useMemo(
+        () => resolveEditableGoalItem(readSessionWorkStateFromMetadata(metadata)),
+        [metadata],
+    );
+    if (!props.entry.available) return null;
+    const value = goal ? t(resolveGoalStatusLabelKey(goal)) : t('goalControl.row.notSet');
+    return (
+        <Item
+            testID={props.testID ?? 'session-goal.value'}
+            title={t('session.workState.goal.title')}
+            detail={value}
+            density="compact"
+            accessibilityLabel={`${t('session.workState.goal.title')}, ${value}`}
+            onPress={props.entry.open}
+        />
+    );
+});

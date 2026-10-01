@@ -1,11 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
+import * as tmp from 'tmp';
+import { configuration } from '@/configuration';
+import { readTerminalHostAttachmentState } from '@/terminal/attachment/terminalAttachmentInfo';
 
 import {
   admitPersistedTakeoverBeforeRuntime,
-  primeAgentStateForUi,
   reportPersistedTakeoverRuntimeBound,
   reportSessionToDaemonIfRunning,
   resolveTerminalAttachmentPersistenceBinding,
+  persistTerminalAttachmentInfoIfNeeded,
   sendTerminalFallbackMessageIfNeeded,
 } from '@/agent/runtime/startupSideEffects';
 import type { Metadata } from '@/api/types';
@@ -17,6 +20,38 @@ const publisherPrecondition = {
 } as const;
 
 describe('startup side effects: daemon session reporting retry', () => {
+  it.each([
+    ['herdr', 'terminal', 3],
+    ['herdr', 'daemon', 2],
+    ['tmux', 'terminal', 2],
+  ] as const)('persists %s with %s launch ownership', async (mode, startedBy, version) => {
+    const dir = tmp.dirSync({ unsafeCleanup: true });
+    const home = Object.getOwnPropertyDescriptor(configuration, 'happyHomeDir')!;
+    Object.defineProperty(configuration, 'happyHomeDir', { ...home, value: dir.name });
+    const terminal: NonNullable<Metadata['terminal']> = {
+      mode,
+      ...(mode === 'herdr'
+        ? { herdr: { sessionName: 'work', socketPath: '/tmp/work.sock', terminalId: 'term_42', paneId: 'w1:p2' } }
+        : { tmux: { target: 'work:w1' } }),
+      controlServiceabilityV1: { v: 1, attachmentId: 'attachment-current', state: 'servable', observedAt: 1 },
+    };
+    try {
+      await persistTerminalAttachmentInfoIfNeeded({ sessionId: 'current-terminal', terminal, startedBy });
+      expect(await readTerminalHostAttachmentState({ happyHomeDir: dir.name, sessionId: 'current-terminal' })).toMatchObject({
+        status: 'present',
+        info: {
+          version,
+          ...(version === 3 ? { lifecycle: 'borrowed' } : {}),
+          attachmentId: 'attachment-current',
+          handle: mode === 'herdr' ? { kind: 'herdr', terminalId: 'term_42' } : { kind: 'tmux', paneId: 'w1' },
+        },
+      });
+    } finally {
+      Object.defineProperty(configuration, 'happyHomeDir', home);
+      dir.removeCallback();
+    }
+  });
+
   it('resolves the existing bound tmux identity for local host persistence', () => {
     expect(resolveTerminalAttachmentPersistenceBinding({
       mode: 'tmux',
@@ -305,26 +340,6 @@ describe('startup side effects: daemon session reporting retry', () => {
     })).rejects.toMatchObject({
       code: 'persisted_takeover_admission_failed',
     });
-  });
-
-  it('does not emit unhandledRejection when priming agent state fails', async () => {
-    const onUnhandled = vi.fn();
-    process.on('unhandledRejection', onUnhandled);
-    try {
-      const session = {
-        updateAgentState: async () => {
-          throw new Error('updateAgentState failed');
-        },
-      };
-
-      primeAgentStateForUi(session as any, '[Test]');
-
-      // Give Node a chance to surface an unhandled rejection if one was created.
-      await new Promise<void>((resolve) => setTimeout(resolve, 0));
-      expect(onUnhandled).not.toHaveBeenCalled();
-    } finally {
-      process.off('unhandledRejection', onUnhandled);
-    }
   });
 
   it('retries transient daemon-unavailable errors and succeeds', async () => {

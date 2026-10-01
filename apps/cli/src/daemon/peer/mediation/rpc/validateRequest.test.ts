@@ -65,7 +65,46 @@ function createRequest(endpointFingerprint: string): PeerMachineRpcDirectRequest
     };
 }
 
+function createCurrentRequest(endpointFingerprint: string): PeerMachineRpcDirectRequestV2 {
+    const handle = createEphemeralPeerRouteProofHandleV2({
+        randomBytes: (length) => new Uint8Array(length).fill(8),
+    });
+    const grant = {
+        payload: {
+            ...grantPayload, v: 2 as const, proofKind: 'ephemeral_ed25519' as const,
+            ephemeralPublicKeyBase64Url: handle.publicKeyBase64Url,
+        },
+        signature: { keyId: 'key_1', alg: 'Ed25519' as const, valueBase64Url: Buffer.alloc(64).toString('base64url') },
+    };
+    try {
+        return {
+            v: 2, requestId: `request_${endpointFingerprint}`, method: RPC_METHODS.DAEMON_MEMORY_STATUS,
+            params: {}, routeKind: 'loopback_direct', flowKind: 'machine_rpc', endpointFingerprint,
+            grant, proof: handle.sign(grant),
+        };
+    } finally {
+        handle.dispose();
+    }
+}
+
 describe('validatePeerMachineRpcDirectRequest', () => {
+    it('rejects the retired account-signed direct request before grant admission', () => {
+        const nowMs = 2_000;
+        const result = validatePeerMachineRpcDirectRequest({
+            body: createRequest('endpoint_1'),
+            expected: {
+                accountId: 'account_1', machineId: 'machine_1', flowKind: 'machine_rpc',
+                routeKind: 'loopback_direct', endpointFingerprint: 'endpoint_1',
+            },
+            trustRoots: [{ keyId: 'key_1', publicKey: Buffer.alloc(32, 4).toString('base64url') }],
+            nowMs,
+            callLimiter: createPeerMachineRpcCallLimiter({ nowMs: () => nowMs }),
+            quarantine: createPeerMachineRpcVerificationQuarantine({ nowMs: () => nowMs }),
+            replayKeyCache: createPeerMachineRpcReplayKeyCache({ nowMs: () => nowMs }),
+        });
+        expect(result).toMatchObject({ ok: false, response: { v: 2, reasonCode: 'invalid_request' } });
+    });
+
     it('admits a valid V2 ephemeral proof through the same method/scope owner', () => {
         const serverKeyPair = tweetnacl.sign.keyPair.fromSeed(new Uint8Array(32).fill(7));
         const handle = createEphemeralPeerRouteProofHandleV2({
@@ -139,7 +178,6 @@ describe('validatePeerMachineRpcDirectRequest', () => {
                 flowKind: 'machine_rpc' as const,
                 routeKind: 'loopback_direct' as const,
                 endpointFingerprint: 'endpoint_1',
-                accountPublicKey: Buffer.alloc(32, 3).toString('base64url'),
             },
             trustRoots: [{ keyId: 'key_1', publicKey: Buffer.alloc(32, 4).toString('base64url') }],
             callLimiter,
@@ -150,7 +188,7 @@ describe('validatePeerMachineRpcDirectRequest', () => {
         for (let index = 0; index < 5; index += 1) {
             const result = validatePeerMachineRpcDirectRequest({
                 ...baseOptions,
-                body: createRequest(`attacker_endpoint_${index}`),
+                body: createCurrentRequest(`attacker_endpoint_${index}`),
                 nowMs: nowMs + index,
             });
             expect(result.ok).toBe(false);
@@ -162,7 +200,7 @@ describe('validatePeerMachineRpcDirectRequest', () => {
         nowMs = 2_010;
         const quarantined = validatePeerMachineRpcDirectRequest({
             ...baseOptions,
-            body: createRequest('another_attacker_endpoint'),
+            body: createCurrentRequest('another_attacker_endpoint'),
             nowMs,
         });
 

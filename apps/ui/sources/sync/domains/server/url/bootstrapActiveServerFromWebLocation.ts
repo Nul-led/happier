@@ -1,6 +1,6 @@
 import { canonicalizeServerUrl, createServerUrlComparableKey } from './serverUrlCanonical';
-import { getActiveServerUrl } from '../serverProfiles';
-import { upsertAndActivateServer } from '../serverRuntime';
+import { getActiveServerUrl, resolveUniqueServerProfileByUrl } from '../serverProfiles';
+import { setActiveServer, upsertAndActivateServer } from '../serverRuntime';
 
 export type WebServerUrlOverride = Readonly<{ serverUrl: string; cleanedRelativeUrl: string }>;
 
@@ -122,16 +122,24 @@ export async function bootstrapActiveServerFromWebLocation(
         && currentKey === desiredKey
         && shouldReplaceEquivalentStoredUrl(current, desired),
     );
-    if (!currentKey || !desiredKey || currentKey !== desiredKey || replaceEquivalentStoredUrl) {
+    if (replaceEquivalentStoredUrl) {
         try {
             await upsertAndActivateServer({
                 serverUrl: desired,
-                ...(replaceEquivalentStoredUrl ? {} : { source: 'url' }),
                 scope: opts.scope ?? 'device',
-                replaceEquivalentStoredUrl,
+                replaceEquivalentStoredUrl: true,
             });
         } catch {
             // ignore
+        }
+    } else if (desiredKey && currentKey !== desiredKey) {
+        const saved = resolveUniqueServerProfileByUrl(desired);
+        if (saved) {
+            try {
+                await setActiveServer({ serverId: saved.id, scope: opts.scope ?? 'device' });
+            } catch {
+                // The URL intent remains for the mounted flow to handle.
+            }
         }
     }
 

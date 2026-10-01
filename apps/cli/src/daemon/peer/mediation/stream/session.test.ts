@@ -68,7 +68,7 @@ describe('createMachineLiveStreamSession', () => {
     });
 
     it.each(['loopback_direct', 'server_relay'] as const)(
-        'uses the admitted %s resource lifetime instead of clamping it to grant expiry',
+        'enforces the current %s grant expiry before the explicit resource lifetime',
         (routeKind) => {
             const admittedAtMs = 1_000;
             const grantExpiresAtMs = admittedAtMs + 10;
@@ -124,7 +124,7 @@ describe('createMachineLiveStreamSession', () => {
             expect(result).toMatchObject({
                 ok: true,
                 session: {
-                    expiresAtMs: admittedAtMs + startRequest.maxDurationMs,
+                    expiresAtMs: grantExpiresAtMs,
                 },
             });
         },

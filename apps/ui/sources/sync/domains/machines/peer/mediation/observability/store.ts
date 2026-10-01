@@ -180,6 +180,13 @@ export function applyPeerMediationObservabilitySnapshot(
     };
 }
 
+export function isPeerMediationObservabilityDeltaSequenceContiguous(
+    lastApplied: number | undefined,
+    sequence: number,
+): boolean {
+    return lastApplied !== undefined && sequence === lastApplied + 1;
+}
+
 /**
  * The event -> flow-snapshot fold is owned by protocol
  * (`applyPeerMediationObservabilityEventToFlowSnapshot`). It used to be re-implemented here with a
@@ -209,7 +216,7 @@ export function applyPeerMediationObservabilityDelta(
         stale: true,
     };
     const lastApplied = previousScope.lastAppliedSequenceBySource[input.source];
-    if (lastApplied === undefined || input.delta.sequence !== lastApplied + 1) {
+    if (!isPeerMediationObservabilityDeltaSequenceContiguous(lastApplied, input.delta.sequence)) {
         return markSourceStale(state, previousScope, input.source);
     }
     if (input.delta.events.some((event) => !peerMediationObservabilityScopesEqual(input.delta.scope, event.scope))) {

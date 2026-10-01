@@ -17,6 +17,8 @@ export type ProgressChecklistStep<StepId extends string = string> = Readonly<{
     title: string;
     message?: string | null;
     status: ProgressChecklistStepStatus;
+    /** A short fact at the row's end (how long the step took). */
+    detail?: string | null;
 }>;
 
 export function encodeProgressChecklistStepIdForTestId(stepId: string): string {
@@ -68,6 +70,7 @@ export const ProgressChecklist = React.memo(function ProgressChecklist(props: Re
                 subtitle={subtitle}
                 icon={<Icon name={iconName} size={16} color={iconColor} weight={iconWeight} />}
                 loading={step.status === 'active'}
+                detail={step.detail ?? undefined}
                 showChevron={false}
                 mode="info"
                 accessibilityLabel={subtitle ? `${step.title}. ${subtitle}` : step.title}

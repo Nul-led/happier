@@ -1,5 +1,10 @@
 import { SystemTaskExecutionError } from '../runSystemTask.js';
 import type { HappierJsonExecutor } from './happierJsonExecutor.js';
+import {
+  scopeHappierJsonExecutor,
+  type HappierServerScope,
+  type LocalServerProfileScope,
+} from './serverScope.js';
 
 import type {
   SetupMachineAuthStatus,
@@ -15,7 +20,67 @@ export type SetupMachineRecipeExecutorOptions = Readonly<{
   includeRelayArgsInAuthCommands?: boolean;
   persistAuthCommands?: boolean;
   takeOverManualRelayRuntime?: boolean;
+  /**
+   * Explicit-Home setup (R10 D3): `configureRelay` saves a Home that has no profile yet without
+   * selecting it (`server set --no-use`), and every later command is scoped to the Home's profile
+   * (`--server <id>`) and its own service shape, so the terminal's active server and the user's
+   * default-following service are never repointed.
+   */
+  scopeToConfiguredServer?: boolean;
+  /**
+   * The explicit Home's scope as resolved read-only before any write (`readLocalServerProfileScope`):
+   * the exact profile setup addresses, and the one decision of which service serves it.
+   * `null`/absent or no `serverId`: the Home had no saved profile yet.
+   */
+  knownServerScope?: LocalServerProfileScope | null;
 }>;
+
+function cliCapabilityMissing(): SystemTaskExecutionError {
+  return new SystemTaskExecutionError(
+    'cli_capability_missing',
+    'The installed Happier CLI is too old to set up this Home without changing your terminal\'s server.',
+  );
+}
+
+/**
+ * Explicit-Home setup must never switch the terminal (R10 D3), but a released 0.2 CLI ignores
+ * unknown `server set` flags: `--no-use` would still select the Home. The capability is therefore
+ * proven read-only before the first write, from the CLI's own `server help` usage line for
+ * `server set`. Anything else — a CLI without that flag, or without that help — is a missing
+ * capability, so the caller's replace-and-retry runs and the terminal is never touched.
+ */
+async function assertServerSetKeepsTerminalSelection(executor: HappierJsonExecutor): Promise<void> {
+  const help = await executor.runHappierText(['server', 'help']);
+  if (!serverHelpSupportsExplicitHomeSetup(help)) {
+    throw cliCapabilityMissing();
+  }
+}
+
+/**
+ * Whether a CLI's `server help` proves it can set up an explicit Home without switching the
+ * terminal (`server set … --no-use`). The one capability test for desktop setup: the probe above
+ * and the one-CLI question's "can this kept CLI serve setup" (R12) both read it.
+ */
+export function serverHelpSupportsExplicitHomeSetup(help: Readonly<{ status: number; stdout: string }>): boolean {
+  const setUsage = help.status === 0
+    ? help.stdout.split(/\r?\n/u).find((line) => /^\s*happier server set\b/u.test(line))
+    : undefined;
+  return Boolean(setUsage && /(?:^|[\s[])--no-use(?=[\s\]]|$)/u.test(setUsage));
+}
+
+function readConfiguredServerScope(parsed: unknown): HappierServerScope {
+  const data = parsed && typeof parsed === 'object'
+    ? (parsed as { data?: { profile?: { id?: unknown }; used?: unknown } }).data
+    : undefined;
+  const serverId = typeof data?.profile?.id === 'string' ? data.profile.id.trim() : '';
+  // A reply without a saved, unselected profile is a CLI that did not honour `--no-use`.
+  if (!serverId || data?.used !== false) {
+    throw cliCapabilityMissing();
+  }
+  // A profile `server set` just created was never selected and has no service of its own, so it
+  // gets its own pinned one — which this desktop setup creates, so it is the desktop's (R15).
+  return { serverId, targetMode: 'pinned', managedBy: 'desktop' };
+}
 
 export function createSetupMachineRecipeExecutorFromHappierJsonExecutor(params: Readonly<{
   executor: HappierJsonExecutor;
@@ -24,8 +89,13 @@ export function createSetupMachineRecipeExecutorFromHappierJsonExecutor(params: 
   const includeRelayArgsInAuthCommands = params.options?.includeRelayArgsInAuthCommands === true;
   const persistAuthCommands = params.options?.persistAuthCommands === true;
   const takeOverManualRelayRuntime = params.options?.takeOverManualRelayRuntime === true;
+  const scopeToConfiguredServer = params.options?.scopeToConfiguredServer === true;
+  const knownServerScope = params.options?.knownServerScope ?? null;
 
   let lastRelayProfile: SetupMachineRelayProfile | null = null;
+  // Every command after `configureRelay` runs through this executor; with explicit-Home scoping it
+  // becomes the profile-scoped one once the profile id is known.
+  let executor: HappierJsonExecutor = params.executor;
 
   const buildRelayArgs = (): string[] => {
     if (!includeRelayArgsInAuthCommands || !lastRelayProfile) return [];
@@ -39,10 +109,12 @@ export function createSetupMachineRecipeExecutorFromHappierJsonExecutor(params: 
   };
 
   const buildPersistArgs = (): string[] => (persistAuthCommands ? ['--persist'] : []);
-  const buildServiceTakeoverArgs = (): string[] => (takeOverManualRelayRuntime ? ['--takeover'] : []);
+  const buildServiceTakeoverArgs = (takeover?: boolean): string[] => (
+    (takeover ?? takeOverManualRelayRuntime) ? ['--takeover'] : []
+  );
 
   const readDaemonStatus = async (): Promise<SetupMachineDaemonStatus> => {
-    const parsed = await params.executor.runHappierJson(['daemon', 'status', '--json']);
+    const parsed = await executor.runHappierJson(['daemon', 'status', '--json']);
     if (!parsed || typeof parsed !== 'object') {
       throw new SystemTaskExecutionError('invalid_cli_response', 'Received an invalid daemon status response.');
     }
@@ -96,7 +168,22 @@ export function createSetupMachineRecipeExecutorFromHappierJsonExecutor(params: 
   return {
     async configureRelay(profile: SetupMachineRelayProfile) {
       lastRelayProfile = profile;
-      await params.executor.runHappierJson([
+      if (scopeToConfiguredServer) {
+        await assertServerSetKeepsTerminalSelection(params.executor);
+      }
+      // A Home whose profile was resolved before the write is used as saved (RV3-C2): the CLI's URL
+      // upsert never adopts an identity-bearing profile (it would save a second one beside it), and
+      // an endpoint write would replace the Home's recorded canonical URL with the loopback URL the
+      // app reaches it on. Setup owns no field of an existing profile; it only saves a new Home.
+      if (scopeToConfiguredServer && knownServerScope?.serverId) {
+        executor = scopeHappierJsonExecutor(params.executor, {
+          serverId: knownServerScope.serverId,
+          targetMode: knownServerScope.targetMode,
+          managedBy: knownServerScope.managedBy ?? null,
+        });
+        return;
+      }
+      const configured = await params.executor.runHappierJson([
         'server',
         'set',
         '--server-url',
@@ -104,12 +191,16 @@ export function createSetupMachineRecipeExecutorFromHappierJsonExecutor(params: 
         ...(profile.localServerUrl ? ['--local-server-url', profile.localServerUrl] : []),
         '--webapp-url',
         profile.webappUrl,
+        ...(scopeToConfiguredServer ? ['--no-use'] : []),
         '--json',
       ]);
+      if (scopeToConfiguredServer) {
+        executor = scopeHappierJsonExecutor(params.executor, readConfiguredServerScope(configured));
+      }
     },
 
     async readAuthStatus(): Promise<SetupMachineAuthStatus> {
-      const parsed = await params.executor.runHappierJson(['auth', 'status', '--json'], { allowJsonFailure: true });
+      const parsed = await executor.runHappierJson(['auth', 'status', '--json'], { allowJsonFailure: true });
       if (!parsed || typeof parsed !== 'object') {
         throw new SystemTaskExecutionError('invalid_cli_response', 'Received an invalid auth status response.');
       }
@@ -119,6 +210,7 @@ export function createSetupMachineRecipeExecutorFromHappierJsonExecutor(params: 
         error?: { code?: unknown };
         data?: {
           authenticated?: unknown;
+          accountId?: unknown;
           credentialState?: unknown;
           machineRegistered?: unknown;
           machineRegistrationState?: unknown;
@@ -139,6 +231,9 @@ export function createSetupMachineRecipeExecutorFromHappierJsonExecutor(params: 
 
       return {
         authenticated: record.data?.authenticated === true,
+        accountId: typeof record.data?.accountId === 'string' && record.data.accountId.trim()
+          ? record.data.accountId.trim()
+          : null,
         credentialState: readCredentialState(record.data),
         machineRegistered: record.data?.machineRegistered === true,
         machineRegistrationState: readMachineRegistrationState(record.data),
@@ -149,7 +244,7 @@ export function createSetupMachineRecipeExecutorFromHappierJsonExecutor(params: 
     },
 
     async requestAuthPairing() {
-      const parsed = await params.executor.runHappierJson([
+      const parsed = await executor.runHappierJson([
         'auth',
         'request',
         '--json',
@@ -169,7 +264,7 @@ export function createSetupMachineRecipeExecutorFromHappierJsonExecutor(params: 
     },
 
     async waitForAuthPairing(publicKey: string) {
-      const parsed = await params.executor.runHappierJson([
+      const parsed = await executor.runHappierJson([
         'auth',
         'wait',
         '--public-key',
@@ -188,15 +283,26 @@ export function createSetupMachineRecipeExecutorFromHappierJsonExecutor(params: 
     },
 
     async approveAuthPairing(publicKey: string) {
-      await params.executor.runHappierJson(['auth', 'approve', '--public-key', publicKey, '--json']);
+      await executor.runHappierJson(['auth', 'approve', '--public-key', publicKey, '--json']);
     },
 
-    async installDaemonService() {
-      await params.executor.runHappierJson(['service', 'install', ...buildServiceTakeoverArgs(), '--json']);
+    async installDaemonService(opts) {
+      await executor.runHappierJson([
+        'service',
+        'install',
+        ...buildServiceTakeoverArgs(opts?.takeover),
+        // The CLI removes exactly its conflict plan's services for this target (R3-7).
+        ...(opts?.replaceExisting ? ['--replace-existing=all', '--yes'] : []),
+        '--json',
+      ]);
     },
 
-    async startDaemonService() {
-      await params.executor.runHappierJson(['service', 'start', ...buildServiceTakeoverArgs(), '--json']);
+    async startDaemonService(opts) {
+      await executor.runHappierJson(['service', 'start', ...buildServiceTakeoverArgs(opts?.takeover), '--json']);
+    },
+
+    async restartDaemonService() {
+      await executor.runHappierJson(['service', 'restart', '--json']);
     },
 
     waitForReadyDaemon,

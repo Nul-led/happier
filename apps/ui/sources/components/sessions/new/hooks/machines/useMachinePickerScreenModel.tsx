@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Pressable } from 'react-native';
+import { AppHeaderCloseButton } from '@/components/navigation/AppHeaderCloseButton';
 import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 
 import { useAllMachines, useAllSessionListRenderables, useSetting, useSettingMutable, useSettings } from '@/sync/domains/state/storage';
@@ -20,7 +20,6 @@ import type { Machine } from '@/sync/domains/state/storageTypes';
 import { useNewSessionServerTargetState } from '@/components/sessions/new/hooks/serverTarget/useNewSessionServerTargetState';
 import { useNewSessionActiveServerSource } from '@/components/sessions/new/hooks/serverTarget/useNewSessionActiveServerSource';
 import { useNewSessionPickerRoutePresentation } from '@/components/sessions/new/navigation/newSessionContainedModalScreen';
-import { Icon } from '@/components/ui/icons/Icon';
 import { invalidateMachinePoolProjection } from '@/sync/engine/machines/machinePoolProjection';
 import { useHomeViewSelectionSettings } from '@/hooks/server/useHomeViewSelectionSettings';
 import { useMachinePoolSelection } from '@/components/sessions/new/hooks/machines/useMachinePoolSelection';
@@ -46,7 +45,6 @@ import { useHomeTeamCredentialModelCatalog } from '@/hooks/teams/useHomeTeamCred
 import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
 import { peekTempData, type NewSessionData } from '@/utils/sessions/tempDataStore';
 import { useServerCredentialAccountScopeResolution } from '@/sync/domains/scope/useServerCredentialAccountScopes';
-import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 function useMachinePickerScreenOptions(params: Readonly<{
     title: string;
@@ -55,17 +53,14 @@ function useMachinePickerScreenOptions(params: Readonly<{
     isRefreshing: boolean;
     theme: { colors: { chrome: { header: { foreground: string } }; text: { secondary: string } } };
 }>) {
+    // K2 picker route chrome: the native title plus Cancel, nothing else above the list.
     const headerLeft = React.useCallback(() => (
-        <Pressable
+        <AppHeaderCloseButton
+            testID="new-session-machine-picker-cancel"
+            appearance="text"
             onPress={params.onBack}
-            hitSlop={10}
-            style={({ pressed }) => ({ padding: 2, opacity: pressed ? motionTokens.press.opacity : 1 })}
-            accessibilityRole="button"
-            accessibilityLabel={t('common.back')}
-        >
-            <Icon name="caret-left" size={20} color={params.theme.colors.chrome.header.foreground} />
-        </Pressable>
-    ), [params.onBack, params.theme.colors.chrome.header.foreground]);
+        />
+    ), [params.onBack]);
 
     const headerTitle = React.useCallback(({ tintColor }: { children: string; tintColor?: string }) => (
         <HeaderTitleWithAction

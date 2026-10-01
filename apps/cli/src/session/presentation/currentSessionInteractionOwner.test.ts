@@ -15,7 +15,7 @@ import {
 const requester = Object.freeze({
   pluginId: 'acme.widgets',
   contributionId: 'run',
-  generationId: 'generation-1',
+  occurrenceId: 'occurrence-1',
   invocationId: 'invocation-1',
 });
 
@@ -44,7 +44,7 @@ describe('current Session transient interaction owner', () => {
     const owner = createCurrentExecutionRunInteractionOwner({
       executionRunId: 'run-1',
       executionRunSignal: executionRun.signal,
-      isGenerationCurrent: () => true,
+      isOccurrenceCurrent: () => true,
       deadlineMs: 1_000,
       now: () => 10,
       createRequestId: () => 'request-run-1',
@@ -68,7 +68,7 @@ describe('current Session transient interaction owner', () => {
     const owner = createCurrentExecutionRunInteractionOwner({
       executionRunId: 'run-1',
       executionRunSignal: executionRun.signal,
-      isGenerationCurrent: () => true,
+      isOccurrenceCurrent: () => true,
       deadlineMs: null,
       createRequestId: () => 'request-run-ended',
       present: async (_request, options) => await new Promise((_, reject) => {
@@ -92,7 +92,7 @@ describe('current Session transient interaction owner', () => {
     const owner = createCurrentSessionInteractionOwner({
       sessionId: 'session-1',
       sessionSignal: new AbortController().signal,
-      isGenerationCurrent: () => true,
+      isOccurrenceCurrent: () => true,
       deadlineMs: 1_000,
       now: () => 10,
       createRequestId: () => 'request-1',
@@ -121,7 +121,7 @@ describe('current Session transient interaction owner', () => {
     });
   });
 
-  it('distinguishes requester abort, Session end, and generation retirement', async () => {
+  it('distinguishes requester abort, Session end, and occurrence retirement', async () => {
     const cases: ReadonlyArray<Readonly<{
       expected: InteractionTransientResultV1['status'];
       run(requesterAbort: AbortController, sessionAbort: AbortController): void;
@@ -138,7 +138,7 @@ describe('current Session transient interaction owner', () => {
         isCurrent: () => true,
       },
       {
-        expected: 'generationRetired',
+        expected: 'occurrenceRetired',
         run: (_requesterAbort: AbortController, sessionAbort: AbortController) => sessionAbort.abort(),
         isCurrent: () => false,
       },
@@ -150,7 +150,7 @@ describe('current Session transient interaction owner', () => {
       const owner = createCurrentSessionInteractionOwner({
         sessionId: 'session-1',
         sessionSignal: sessionAbort.signal,
-        isGenerationCurrent: testCase.isCurrent,
+        isOccurrenceCurrent: testCase.isCurrent,
         deadlineMs: 1_000,
         createRequestId: () => `request-${index}`,
         present: async (_request, options) => await new Promise((_, reject) => {
@@ -177,7 +177,7 @@ describe('current Session transient interaction owner', () => {
     const owner = createCurrentSessionInteractionOwner({
       sessionId: 'session-1',
       sessionSignal: new AbortController().signal,
-      isGenerationCurrent: () => true,
+      isOccurrenceCurrent: () => true,
       deadlineMs: 1_000,
       createRequestId: () => 'request-late',
       present: async (nextRequest) => {
@@ -215,7 +215,7 @@ describe('current Session transient interaction owner', () => {
     const owner = createCurrentSessionInteractionOwner({
       sessionId: 'session-1',
       sessionSignal: new AbortController().signal,
-      isGenerationCurrent: () => current,
+      isOccurrenceCurrent: () => current,
       deadlineMs: 1_000,
       createRequestId: () => 'request-retired-race',
       present: async (_request) => await new Promise<InteractionTransientResultV1>((resolve) => {
@@ -241,7 +241,7 @@ describe('current Session transient interaction owner', () => {
     await expect(pending).resolves.toEqual({
       requestId: 'request-retired-race',
       kind: 'confirmation',
-      status: 'generationRetired',
+      status: 'occurrenceRetired',
     });
     expect(owner.current()).toEqual([]);
   });
@@ -250,7 +250,7 @@ describe('current Session transient interaction owner', () => {
     const owner = createCurrentSessionInteractionOwner({
       sessionId: 'session-1',
       sessionSignal: new AbortController().signal,
-      isGenerationCurrent: () => true,
+      isOccurrenceCurrent: () => true,
       deadlineMs: 1_000,
       createRequestId: () => 'request-restart',
       present: async (_request, options) => await new Promise((_, reject) => {
@@ -271,7 +271,7 @@ describe('current Session transient interaction owner', () => {
     const owner = createCurrentSessionInteractionOwner({
       sessionId: 'session-1',
       sessionSignal: new AbortController().signal,
-      isGenerationCurrent: () => true,
+      isOccurrenceCurrent: () => true,
       deadlineMs: 1_000,
       createRequestId: () => 'request-unavailable',
       present: () => {
@@ -337,7 +337,7 @@ describe('current Session transient interaction owner', () => {
       const owner = createCurrentSessionInteractionOwner({
         sessionId: 'session-1',
         sessionSignal: new AbortController().signal,
-        isGenerationCurrent: () => true,
+        isOccurrenceCurrent: () => true,
         deadlineMs: 1_000,
         createRequestId: () => `request-presenter-${index}`,
         present: async (request) => testCase.result(request),
@@ -354,7 +354,7 @@ describe('current Session transient interaction owner', () => {
     const owner = createCurrentSessionInteractionOwner({
       sessionId: 'session-1',
       sessionSignal: new AbortController().signal,
-      isGenerationCurrent: () => true,
+      isOccurrenceCurrent: () => true,
       deadlineMs: 1_000,
       createRequestId: () => 'request-malformed',
       present: async () => await new Promise<InteractionTransientResultV1>(() => {}),
@@ -385,7 +385,7 @@ describe('current Session transient interaction owner', () => {
       const owner = createCurrentSessionInteractionOwner({
         sessionId: 'session-1',
         sessionSignal: new AbortController().signal,
-        isGenerationCurrent: () => true,
+        isOccurrenceCurrent: () => true,
         deadlineMs: 10,
         createRequestId: () => 'request-timeout',
         present: async (nextRequest, options) => {
@@ -432,7 +432,7 @@ describe('current Session transient interaction owner', () => {
       { expected: 'requesterAborted', isCurrent: () => true, run: ({ requesterAbort }) => requesterAbort.abort() },
       { expected: 'sessionEnded', isCurrent: () => true, run: ({ sessionAbort }) => sessionAbort.abort() },
       {
-        expected: 'generationRetired',
+        expected: 'occurrenceRetired',
         isCurrent: () => true,
         run: ({ retire, answer }) => {
           retire();
@@ -452,7 +452,7 @@ describe('current Session transient interaction owner', () => {
         const owner = createCurrentSessionInteractionOwner({
           sessionId: 'session-1',
           sessionSignal: sessionAbort.signal,
-          isGenerationCurrent: () => current && testCase.isCurrent(),
+          isOccurrenceCurrent: () => current && testCase.isCurrent(),
           deadlineMs: CURRENT_SESSION_INTERACTION_DEADLINE_MS,
           createRequestId: () => `request-no-deadline-${index}`,
           present: async (request) => {
@@ -500,7 +500,7 @@ describe('current Session transient interaction owner', () => {
     const create = (deadlineMs: number) => () => createCurrentSessionInteractionOwner({
       sessionId: 'session-1',
       sessionSignal: new AbortController().signal,
-      isGenerationCurrent: () => true,
+      isOccurrenceCurrent: () => true,
       deadlineMs,
       present: async (request) => approvalResult(request),
     });

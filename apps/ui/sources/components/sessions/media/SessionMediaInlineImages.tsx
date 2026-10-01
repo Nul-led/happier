@@ -18,6 +18,7 @@ import {
     type SessionMediaInlineImageDimensions,
 } from '@/components/sessions/media/resolveSessionMediaInlineImageLayout';
 import { SessionMediaVideoPreview } from '@/components/sessions/media/SessionMediaVideoPreview';
+import type { WorkspaceScopeBase } from '@/sync/domains/workspaces/workspaceScope';
 import type {
     SessionMediaInlineImageAvailableSummary,
     SessionMediaInlineMediaSummary,
@@ -118,6 +119,7 @@ function SessionMediaInlineVideoTile(props: Readonly<{
         filePath: props.media.path,
         enabled: true,
         cacheKey: props.media.sha256 ?? null,
+        attachmentHandle: props.media.attachmentHandle,
         mimeType: props.media.mimeType,
         sizeBytes: props.media.sizeBytes,
     });
@@ -157,6 +159,7 @@ function SessionMediaInlineVideoTile(props: Readonly<{
 
 function SessionMediaInlineImageTile(props: Readonly<{
     sessionId: string;
+    workspaceScope?: WorkspaceScopeBase | null;
     media: SessionMediaInlineImageAvailableSummary;
     imageIndex: number;
     testIdPrefix: string;
@@ -188,9 +191,11 @@ function SessionMediaInlineImageTile(props: Readonly<{
 
     const preview = useSessionImagePreview({
         sessionId: props.sessionId,
+        workspaceScope: props.workspaceScope ?? null,
         filePath: props.media.path,
         enabled: true,
         cacheKey: props.media.sha256 ?? null,
+        attachmentHandle: props.media.attachmentHandle,
         mimeType: props.media.mimeType,
         sizeBytes: props.media.sizeBytes,
     });
@@ -302,6 +307,11 @@ function SessionMediaUnavailableInlineImageTile(props: Readonly<{
 
 export const SessionMediaInlineImages = React.memo(function SessionMediaInlineImages(props: Readonly<{
     sessionId: string;
+    /**
+     * Where the files live when it is not the Session's working directory (media the daemon stored
+     * under its own home for this Session). Omitted, the Session's workspace is the root.
+     */
+    workspaceScope?: WorkspaceScopeBase | null;
     media: readonly SessionMediaInlineRenderableSummary[];
     onOpenPath: (path: string) => void;
     fileOpenEnabled: boolean;
@@ -338,11 +348,13 @@ export const SessionMediaInlineImages = React.memo(function SessionMediaInlineIm
                     mimeType: media.mimeType,
                     sizeBytes: media.sizeBytes,
                     cacheKey: media.sha256 ?? null,
+                    attachmentHandle: media.attachmentHandle,
+                    workspaceScope: props.workspaceScope ?? null,
                 },
                 modalIndex,
             };
         });
-    }, [props.media, props.sessionId]);
+    }, [props.media, props.sessionId, props.workspaceScope]);
 
     if (images.length === 0) return null;
 
@@ -372,6 +384,7 @@ export const SessionMediaInlineImages = React.memo(function SessionMediaInlineIm
                     />
                 ) : (
                     <SessionMediaInlineImageTile
+                        workspaceScope={props.workspaceScope}
                         key={`${entry.media.id}:${entry.media.path}`}
                         sessionId={props.sessionId}
                         media={entry.media}

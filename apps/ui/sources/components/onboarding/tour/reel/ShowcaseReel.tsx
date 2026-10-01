@@ -2,6 +2,7 @@ import * as React from 'react';
 import { Pressable, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 import { SlideTransitionSwitch } from '@/components/ui/motion/SlideTransitionSwitch';
 import { Text } from '@/components/ui/text/Text';
 import { Typography } from '@/constants/Typography';
@@ -89,7 +90,7 @@ const stylesheet = StyleSheet.create((theme) => ({
         paddingVertical: 10,
     },
     setupButtonPressed: {
-        opacity: 0.86,
+        opacity: motionTokens.press.opacitySubtle,
     },
     setupButtonText: {
         ...Typography.default('semiBold'),
@@ -147,7 +148,7 @@ export function ShowcaseReel(props: ShowcaseReelProps): React.ReactElement {
                     <SlideTransitionSwitch
                         contentKey={activeItem.id}
                         direction="replace"
-                        preset="soft"
+                        preset="signature"
                         blur
                         testID={`${testID}-active-transition`}
                     >

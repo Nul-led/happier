@@ -28,7 +28,7 @@ describe('deriveTranscriptInteraction', () => {
     });
 
     it('derives fork access from the transcript surface grant and fails closed for public/view surfaces', () => {
-        expect(deriveTranscriptInteraction({ kind: 'public', disableToolNavigation: true }).canFork).toBe(false);
+        expect(deriveTranscriptInteraction({ kind: 'public' }).canFork).toBe(false);
         expect(deriveTranscriptInteraction({ kind: 'session', access: access('view', false) }).canFork).toBe(false);
         expect(deriveTranscriptInteraction({ kind: 'session', access: access('edit', false) }).canFork).toBe(true);
         expect(deriveTranscriptInteraction({ kind: 'session', access: access('owner') }).canFork).toBe(true);
@@ -42,7 +42,6 @@ describe('deriveTranscriptInteraction', () => {
             canOpenFiles: true,
             canPreviewMedia: true,
             permissionDisabledReason: undefined,
-            disableToolNavigation: undefined,
         });
     });
 
@@ -60,7 +59,6 @@ describe('deriveTranscriptInteraction', () => {
             canOpenFiles: true,
             canPreviewMedia: true,
             permissionDisabledReason: 'inactive',
-            disableToolNavigation: undefined,
         });
     });
 
@@ -72,7 +70,6 @@ describe('deriveTranscriptInteraction', () => {
             canOpenFiles: true,
             canPreviewMedia: true,
             permissionDisabledReason: 'readOnly',
-            disableToolNavigation: undefined,
         });
     });
 
@@ -90,7 +87,6 @@ describe('deriveTranscriptInteraction', () => {
             canOpenFiles: true,
             canPreviewMedia: true,
             permissionDisabledReason: 'inactive',
-            disableToolNavigation: undefined,
         });
     });
 
@@ -102,7 +98,6 @@ describe('deriveTranscriptInteraction', () => {
             canOpenFiles: true,
             canPreviewMedia: true,
             permissionDisabledReason: 'notGranted',
-            disableToolNavigation: undefined,
         });
     });
 
@@ -114,7 +109,6 @@ describe('deriveTranscriptInteraction', () => {
             canOpenFiles: true,
             canPreviewMedia: true,
             permissionDisabledReason: undefined,
-            disableToolNavigation: undefined,
         });
     });
 
@@ -132,19 +126,17 @@ describe('deriveTranscriptInteraction', () => {
             canOpenFiles: true,
             canPreviewMedia: true,
             permissionDisabledReason: 'inactive',
-            disableToolNavigation: undefined,
         });
     });
 
     it('supports public read-only transcripts', () => {
-        expect(deriveTranscriptInteraction({ kind: 'public', disableToolNavigation: true })).toEqual({
+        expect(deriveTranscriptInteraction({ kind: 'public' })).toEqual({
             canSendMessages: false,
             canApprovePermissions: false,
             canFork: false,
             canOpenFiles: false,
             canPreviewMedia: false,
             permissionDisabledReason: 'public',
-            disableToolNavigation: true,
         });
     });
 });
@@ -164,7 +156,6 @@ describe('deriveTranscriptInteractionFromSession', () => {
             canOpenFiles: true,
             canPreviewMedia: true,
             permissionDisabledReason: 'inactive',
-            disableToolNavigation: undefined,
         });
     });
 
@@ -182,7 +173,6 @@ describe('deriveTranscriptInteractionFromSession', () => {
             canOpenFiles: true,
             canPreviewMedia: true,
             permissionDisabledReason: 'inactive',
-            disableToolNavigation: undefined,
         });
     });
 });

@@ -1,4 +1,6 @@
 import {
+  isApiTokenGrantTargetMemberV1,
+  type ApiTokenGrantV1,
   buildQualifiedPluginContributionKey,
   type ApprovalRequestV2,
   type TargetActionApprovalRequestV1,
@@ -109,10 +111,12 @@ export function createDaemonExternalActionContributedApprovalReplay(input: Reado
     artifactId,
     decision,
     signal,
+    callerGrant,
   }: Readonly<{
     artifactId: string;
     decision: 'approve' | 'reject';
     signal?: AbortSignal;
+    callerGrant?: ApiTokenGrantV1;
   }>): Promise<ActionExecuteResult | null> => {
     let existing: TargetActionApprovalRequestV1 | null;
     try {
@@ -125,6 +129,13 @@ export function createDaemonExternalActionContributedApprovalReplay(input: Reado
     if (!existing) return null;
     if (existing.requestedSurface !== 'api' || existing.replayPlacement === undefined) {
       return targetActionReplayFailure('approval_invalid');
+    }
+    const decisionOrigin = existing.executionOriginV1;
+    const target = decisionOrigin?.target
+      ?? (decisionOrigin?.sessionId ? { kind: 'session' as const, sessionId: decisionOrigin.sessionId } : null)
+      ?? (decisionOrigin?.machineId ? { kind: 'machine' as const, machineId: decisionOrigin.machineId } : null);
+    if (callerGrant && !isApiTokenGrantTargetMemberV1(callerGrant, target, decisionOrigin?.machineId)) {
+      return targetActionReplayFailure('credential_scope_denied');
     }
 
     const nextTimestamp = (request: TargetActionApprovalRequestV1): number => (
@@ -250,7 +261,6 @@ export function createDaemonExternalActionContributedApprovalReplay(input: Reado
         action: {
           pluginId: action.pluginId,
           localId: action.localId,
-          immutableGenerationId: approved.generation,
         },
         input: approved.input,
       },
@@ -286,6 +296,7 @@ export function createDaemonExternalActionContributedApprovalReplay(input: Reado
           accountId: origin.accountId,
           principalId: origin.principalId,
           credentialId: origin.credentialId,
+          grant: authorization.binding.grant,
         });
         const authorizedTarget = Object.freeze({ ...authorization.binding.target });
         const externalActionExecutionAuthorization = Object.freeze({
@@ -296,7 +307,7 @@ export function createDaemonExternalActionContributedApprovalReplay(input: Reado
           }),
         });
         const externalActionTarget = Object.freeze({ ...origin.target });
-        externalActionContext = Object.freeze({
+        externalActionContext = Object.freeze<PluginExternalActionContext>({
           authority: 'account_automation',
           serverId: origin.serverId,
           serverIdentityId: origin.serverIdentityId,
@@ -390,11 +401,11 @@ export function createDaemonExternalActionContributedApprovalReplay(input: Reado
       : executionResult;
   };
 
-  return async ({ artifactId: rawArtifactId, decision, signal }) => {
+  return async ({ artifactId: rawArtifactId, decision, signal, callerGrant }) => {
     const artifactId = rawArtifactId.trim();
     if (!artifactId) return null;
     signal?.throwIfAborted();
-    return await replayArtifact({ artifactId, decision, ...(signal ? { signal } : {}) });
+    return await replayArtifact({ artifactId, decision, ...(signal ? { signal } : {}), ...(callerGrant ? { callerGrant } : {}) });
   };
 }
 

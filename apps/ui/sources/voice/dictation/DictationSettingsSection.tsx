@@ -11,6 +11,8 @@ import { LANGUAGES } from '@/constants/Languages';
 import { DropdownMenu } from '@/components/ui/forms/dropdown/DropdownMenu';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
+import { SettingAnchor } from '@/components/settings/shell/SettingRow';
+import { VOICE_DICTATION_SETTINGS } from '@/voice/settings/voiceSettingsDeclarations';
 import { restoreFocusToBestTarget } from '@/keyboard/focusReturn';
 import {
   writeLocalDirectVoiceSettings,
@@ -264,118 +266,122 @@ export function DictationSettingsSection(props: Readonly<{
     <View testID="settings.voice.section.dictation">
       <ItemGroup
         title={t('settingsVoice.dictation.title')}
-        footer={t('settingsVoice.dictation.footer')}
+        description={t('settingsVoice.dictation.footer')}
       >
-        <DropdownMenu
-          open={openMenu === 'provider'}
-          onOpenChange={(next) => setOpenMenu(next ? 'provider' : null)}
-          variant="selectable"
-          search={false}
-          selectedId={selectedId}
-          showCategoryTitles={false}
-          matchTriggerWidth={true}
-          connectToTrigger={true}
-          rowKind="item"
-          popoverBoundaryRef={props.popoverBoundaryRef}
-          itemTrigger={{
-            title: t('settingsVoice.dictation.provider'),
-            subtitle: t('settingsVoice.dictation.providerSubtitle'),
-            showSelectedSubtitle: false,
-            itemProps: {
-              testID: 'settings.voice.dictation.provider',
-              pressableRef: providerControlRef,
-            },
-          }}
-          items={[
-            {
-              id: 'same_as_local',
-              title: t('settingsVoice.dictation.sameAsLocal'),
-              subtitle: t('settingsVoice.dictation.sameAsLocalSubtitle'),
-              icon: (
-                <Icon name="link" size={20} color={theme.colors.text.secondary} />
-              ),
-            },
-            ...providerSpecs.map((spec) => ({
-              id: spec.id,
-              title: spec.title,
-              subtitle: spec.subtitle,
-              icon: (
-                <Icon
-                  name={spec.iconName as any}
-                  size={20}
-                  color={theme.colors.text.secondary}
-                />
-              ),
-            })),
-          ]}
-          onSelect={(id) => {
-            if (id === 'same_as_local') {
-              setDictation({ ...dictation, sttBinding: 'same_as_local' });
-            } else {
-              const voice = selectVoiceSpeechProvider(
-                props.voice,
-                voiceProviderRegistry,
-                id,
-                'dictation_stt',
-              );
-              if (voice) {
-                setReadinessCheck((current) => current?.status === 'checking' ? current : null);
-                props.setVoice({
-                  ...voice,
-                  dictation: {
-                    ...dictation,
-                    sttBinding: 'explicit',
-                    stt: { ...dictation.stt, provider: id as typeof dictation.stt.provider },
-                  },
-                });
+        <SettingAnchor setting={VOICE_DICTATION_SETTINGS.settings.provider}>
+          <DropdownMenu
+            open={openMenu === 'provider'}
+            onOpenChange={(next) => setOpenMenu(next ? 'provider' : null)}
+            variant="selectable"
+            search={false}
+            selectedId={selectedId}
+            showCategoryTitles={false}
+            matchTriggerWidth={true}
+            connectToTrigger={true}
+            rowKind="item"
+            popoverBoundaryRef={props.popoverBoundaryRef}
+            itemTrigger={{
+              title: t('settingsVoice.dictation.provider'),
+              subtitle: t('settingsVoice.dictation.providerSubtitle'),
+              showSelectedSubtitle: false,
+              itemProps: {
+                testID: 'settings.voice.dictation.provider',
+                pressableRef: providerControlRef,
+              },
+            }}
+            items={[
+              {
+                id: 'same_as_local',
+                title: t('settingsVoice.dictation.sameAsLocal'),
+                subtitle: t('settingsVoice.dictation.sameAsLocalSubtitle'),
+                icon: (
+                  <Icon name="link" size={20} color={theme.colors.text.secondary} />
+                ),
+              },
+              ...providerSpecs.map((spec) => ({
+                id: spec.id,
+                title: spec.title,
+                subtitle: spec.subtitle,
+                icon: (
+                  <Icon
+                    name={spec.iconName as any}
+                    size={20}
+                    color={theme.colors.text.secondary}
+                  />
+                ),
+              })),
+            ]}
+            onSelect={(id) => {
+              if (id === 'same_as_local') {
+                setDictation({ ...dictation, sttBinding: 'same_as_local' });
+              } else {
+                const voice = selectVoiceSpeechProvider(
+                  props.voice,
+                  voiceProviderRegistry,
+                  id,
+                  'dictation_stt',
+                );
+                if (voice) {
+                  setReadinessCheck((current) => current?.status === 'checking' ? current : null);
+                  props.setVoice({
+                    ...voice,
+                    dictation: {
+                      ...dictation,
+                      sttBinding: 'explicit',
+                      stt: { ...dictation.stt, provider: id as typeof dictation.stt.provider },
+                    },
+                  });
+                }
               }
-            }
-            setOpenMenu(null);
-          }}
-        />
+              setOpenMenu(null);
+            }}
+          />
+        </SettingAnchor>
 
-        <DropdownMenu
-          open={openMenu === 'language'}
-          onOpenChange={(next) => setOpenMenu(next ? 'language' : null)}
-          variant="selectable"
-          search={true}
-          searchPlaceholder={t('settingsVoice.preferredLanguage')}
-          selectedId={dictation.language ?? ''}
-          showCategoryTitles={false}
-          matchTriggerWidth={true}
-          connectToTrigger={true}
-          rowKind="item"
-          popoverBoundaryRef={props.popoverBoundaryRef}
-          itemTrigger={{
-            title: t('settingsVoice.dictation.language'),
-            subtitle: t('settingsVoice.dictation.languageSubtitle'),
-            showSelectedSubtitle: false,
-          }}
-          items={[
-            {
-              id: '',
-              title: t('settingsVoice.language.autoDetect'),
-              subtitle: t('settingsVoice.language.autoDetectSubtitle'),
-              icon: (
-                <Icon name="sparkle" size={20} color={theme.colors.text.secondary} />
-              ),
-            },
-            ...LANGUAGES.flatMap((language) => typeof language.code === 'string' && language.code
-              ? [{
-                  id: language.code,
-                  title: language.name,
-                  subtitle: language.code,
-                  icon: (
-                    <Icon name="translate" size={20} color={theme.colors.text.secondary} />
-                  ),
-                }]
-              : []),
-          ]}
-          onSelect={(id) => {
-            setDictation({ ...dictation, language: id || null });
-            setOpenMenu(null);
-          }}
-        />
+        <SettingAnchor setting={VOICE_DICTATION_SETTINGS.settings.language}>
+          <DropdownMenu
+            open={openMenu === 'language'}
+            onOpenChange={(next) => setOpenMenu(next ? 'language' : null)}
+            variant="selectable"
+            search={true}
+            searchPlaceholder={t('settingsVoice.preferredLanguage')}
+            selectedId={dictation.language ?? ''}
+            showCategoryTitles={false}
+            matchTriggerWidth={true}
+            connectToTrigger={true}
+            rowKind="item"
+            popoverBoundaryRef={props.popoverBoundaryRef}
+            itemTrigger={{
+              title: t('settingsVoice.dictation.language'),
+              subtitle: t('settingsVoice.dictation.languageSubtitle'),
+              showSelectedSubtitle: false,
+            }}
+            items={[
+              {
+                id: '',
+                title: t('settingsVoice.language.autoDetect'),
+                subtitle: t('settingsVoice.language.autoDetectSubtitle'),
+                icon: (
+                  <Icon name="sparkle" size={20} color={theme.colors.text.secondary} />
+                ),
+              },
+              ...LANGUAGES.flatMap((language) => typeof language.code === 'string' && language.code
+                ? [{
+                    id: language.code,
+                    title: language.name,
+                    subtitle: language.code,
+                    icon: (
+                      <Icon name="translate" size={20} color={theme.colors.text.secondary} />
+                    ),
+                  }]
+                : []),
+            ]}
+            onSelect={(id) => {
+              setDictation({ ...dictation, language: id || null });
+              setOpenMenu(null);
+            }}
+          />
+        </SettingAnchor>
 
         {providerSpec ? (
           <providerSpec.Settings
@@ -404,7 +410,7 @@ export function DictationSettingsSection(props: Readonly<{
 
       <ItemGroup
         title={t('settingsVoice.dictation.readiness.title')}
-        footer={t('settingsVoice.dictation.readiness.footer')}
+        description={t('settingsVoice.dictation.readiness.footer')}
       >
         <Item
           testID="settings.voice.dictation.checkSetup"

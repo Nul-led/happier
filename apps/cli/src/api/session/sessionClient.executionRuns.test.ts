@@ -18,6 +18,7 @@ import { createExecutionRunRpcActionExecutor } from '@/rpc/handlers/executionRun
 import { resolveExecutionRunPolicy } from '@/agent/executionRuns/policy/executionRunPolicy';
 import { resolveServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
 import { normalizeActionsSettingsV1 } from '@happier-dev/protocol';
+import { randomUUID } from 'node:crypto';
 
 // One runtime, one lifetime: the signal must stay stable across calls so
 // subscribers do not accumulate against a fresh controller each read.
@@ -152,6 +153,45 @@ vi.mock('@/settings/accountSettings/activeAccountSettingsSnapshot', () => ({
 }));
 
 describe('ApiSessionClient execution-run backend wiring', () => {
+  it('keeps an idle worker waiter attached when its real retained source is installed later', async () => {
+    const [{ ExecutionRunHostBridge }, registry] = await Promise.all([
+      import('@/agent/runtime/bridges/executionRun/ExecutionRunHostBridge'), import('@/daemon/executionRunRegistry'),
+    ]);
+    const client = createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1', metadata: createTestMetadata({ path: '/tmp/project' }) }));
+    const runId = randomUUID();
+    const abort = new AbortController();
+    let settled = false;
+    const waiting = client.waitForExecutionRunWorkerUpdateChange(abort.signal).then((changed) => {
+      settled = true;
+      return changed;
+    });
+    const retained = {
+      sessionId: 's1', localId: `worker-update:${runId}`, update: {
+        v: 1 as const, workerKind: 'execution_run' as const, workerId: runId, ownerState: 'succeeded' as const,
+        wake: 'finished' as const, headline: 'Worker finished', result: 'Actual retained result', canInspect: true,
+      },
+    };
+    try {
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      await registry.retainExecutionRunWorkerUpdate(retained);
+      await registry.writeExecutionRunMarker({
+        pid: process.pid, happySessionId: 's1', runId, callId: 'call-1', sidechainId: 'side-1',
+        intent: 'agent', backendTarget: { kind: 'backend', backendId: 'codex' }, retentionPolicy: 'resumable',
+        runClass: 'bounded', ioMode: 'request_response', status: 'succeeded', startedAtMs: 1, updatedAtMs: 2, finishedAtMs: 2,
+      });
+      const bridge = new ExecutionRunHostBridge({ parentProvider: 'codex', cwd: '/tmp/project', sendAcp: async () => {} });
+      client.setExecutionRunWorkerUpdateSource(bridge);
+      expect(await waiting).toBe(true);
+      expect((await client.takeExecutionRunWorkerUpdate(abort.signal))?.update.result).toBe('Actual retained result');
+    } finally {
+      abort.abort();
+      await registry.acknowledgeExecutionRunWorkerUpdate(retained);
+      await registry.removeExecutionRunMarker(runId);
+      await client.close();
+    }
+  });
+
   function createJwtWithSub(sub: string): string {
     return `${Buffer.from(JSON.stringify({ alg: 'none' })).toString('base64url')}.${Buffer.from(JSON.stringify({ sub })).toString('base64url')}.`;
   }
@@ -217,7 +257,7 @@ describe('ApiSessionClient execution-run backend wiring', () => {
       v: 2, updatedAt: 7,
       ref: {
         source: 'team_resource', resourceId: 'resource-1', teamId: 'team-1',
-        expectedResourceRevision: 3, agentTargetKey: 'backend:codex', modelId: 'model-1',
+        expectedResourceRevision: 3, agentTargetKey: 'agent:happier.agent.codex/codex', modelId: 'model-1',
       },
     };
     const session = {
@@ -253,7 +293,7 @@ describe('ApiSessionClient execution-run backend wiring', () => {
     metadata.modelSelectionIntentV2 = {
       v: 2, updatedAt: 8,
       ref: {
-        source: 'account_provider_connection', agentTargetKey: 'backend:codex',
+        source: 'account_provider_connection', agentTargetKey: 'agent:happier.agent.codex/codex',
         providerConnectionId: 'pc-1', modelId: 'model-1',
       },
     };
@@ -404,7 +444,6 @@ describe('ApiSessionClient execution-run backend wiring', () => {
           boundedTimeoutMs: null,
           reviewBoundedTimeoutMs: null,
           maxTurns: null,
-          maxDepth: 3,
         },
       }),
       isExecutionRunsEnabled: () => true,
@@ -501,7 +540,7 @@ describe('ApiSessionClient execution-run backend wiring', () => {
       context: { ...sessionSocketStubState.executionRunHandlerContext, sessionId: null },
       policy: resolveExecutionRunPolicy({ defaults: {
         maxConcurrentRuns: null, boundedTimeoutMs: null, reviewBoundedTimeoutMs: null,
-        maxTurns: null, maxDepth: 3,
+        maxTurns: null,
       } }),
       isExecutionRunsEnabled: () => true,
     });
@@ -588,7 +627,7 @@ describe('ApiSessionClient execution-run backend wiring', () => {
       context: sessionSocketStubState.executionRunHandlerContext,
       policy: resolveExecutionRunPolicy({ defaults: {
         maxConcurrentRuns: null, boundedTimeoutMs: null, reviewBoundedTimeoutMs: null,
-        maxTurns: null, maxDepth: 3,
+        maxTurns: null,
       } }),
       isExecutionRunsEnabled: () => true,
     });
@@ -742,7 +781,7 @@ describe('ApiSessionClient execution-run backend wiring', () => {
       context: sessionSocketStubState.executionRunHandlerContext,
       policy: resolveExecutionRunPolicy({ defaults: {
         maxConcurrentRuns: null, boundedTimeoutMs: null, reviewBoundedTimeoutMs: null,
-        maxTurns: null, maxDepth: 3,
+        maxTurns: null,
       } }),
       isExecutionRunsEnabled: () => true,
     });
@@ -1104,20 +1143,6 @@ describe('ApiSessionClient execution-run backend wiring', () => {
 
     expect(sessionSocketStubState.executionRunHandlerContext?.parentProvider).toBe('acme.plugin-backed-acp.backend');
 
-    await client.close();
-  });
-
-  it('routes execution-run completion through the canonical Session user-message ingress', async () => {
-    const client = createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1', metadata: createTestMetadata({ path: '/tmp/project' }) }));
-    const enqueue = vi.spyOn(client, 'enqueueSessionUserMessage').mockResolvedValue(undefined);
-    const input = { text: 'run finished', meta: { source: 'execution_run' } };
-
-    await sessionSocketStubState.executionRunHandlerContext.enqueueParentSessionInput(input);
-
-    expect(enqueue).toHaveBeenCalledWith({
-      ...input,
-      requestedAction: { v: 1, kind: 'steer_if_active' },
-    });
     await client.close();
   });
 

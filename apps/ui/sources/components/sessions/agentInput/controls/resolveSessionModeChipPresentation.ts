@@ -6,7 +6,7 @@ type SessionModeOptionLike = Readonly<{
 
 type SessionModeChipControlLike = Readonly<{
     options: ReadonlyArray<SessionModeOptionLike>;
-    selectedId: string;
+    selectedId: string | null;
     label: string;
 }>;
 

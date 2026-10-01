@@ -34,6 +34,16 @@ installSourceControlStatusCommonModuleMocks({
     },
 });
 
+
+/** A real changed-file entry: the count reads the canonical changed-file list, so fixtures carry real rows. */
+function changedEntry(path: string, kind: 'modified' | 'untracked' = 'untracked') {
+    return {
+        path, previousPath: null, kind, includeStatus: '.', pendingStatus: kind === 'untracked' ? '?' : 'M',
+        hasIncludedDelta: false, hasPendingDelta: true,
+        stats: { includedAdded: 0, includedRemoved: 0, pendingAdded: 0, pendingRemoved: 0, isBinary: false },
+    };
+}
+
 describe('SourceControlStatusBadge', () => {
     beforeEach(() => {
         snapshotMock = null;
@@ -49,6 +59,7 @@ describe('SourceControlStatusBadge', () => {
         snapshotMock = {
             repo: { isRepo: true, rootPath: '/repo' },
             branch: { head: 'main', upstream: 'origin/main', ahead: 0, behind: 0, detached: false },
+            entries: [changedEntry('a.txt', 'modified'), changedEntry('b.txt', 'modified')],
             totals: {
                 includedFiles: 1,
                 pendingFiles: 1,
@@ -71,7 +82,7 @@ describe('SourceControlStatusBadge', () => {
         snapshotMock = {
             repo: { isRepo: true, rootPath: '/repo' },
             branch: { head: 'main', upstream: 'origin/main', ahead: 0, behind: 0, detached: false },
-            entries: [{}, {}],
+            entries: [changedEntry('a.txt'), changedEntry('b.txt')],
             totals: {
                 includedFiles: 0,
                 pendingFiles: 0,

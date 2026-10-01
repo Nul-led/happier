@@ -6,6 +6,7 @@ import {
     useSessionProjectScmCommitSelectionPatches,
     useSessionProjectScmCommitSelectionPaths,
     useSetting,
+    storage,
 } from '@/sync/domains/state/storage';
 import { executeScmCommit } from './executeScmCommit';
 import { Modal } from '@/modal';
@@ -57,7 +58,14 @@ export function useFilesScmOperations(input: {
     const setScmOperationStatusSafe = React.useCallback((value: string | null) => {
         if (!mountedRef.current) return;
         setScmOperationStatus(value);
-    }, [mountedRef]);
+        if (value) {
+            const state = storage.getState();
+            const operation = state.getSessionProjectScmInFlightOperation(sessionId, serverId);
+            if (operation?.operation === 'commit' || operation?.operation === 'refresh') {
+                state.updateSessionProjectScmOperationProgress(sessionId, operation.id, value, serverId);
+            }
+        }
+    }, [mountedRef, sessionId, serverId]);
     const commitSelectionPaths = useSessionProjectScmCommitSelectionPaths(sessionId, serverId);
     const commitSelectionPatches = useSessionProjectScmCommitSelectionPatches(sessionId, serverId);
     const scmCommitMessageGeneratorEnabled = useSetting('scmCommitMessageGeneratorEnabled');
@@ -208,7 +216,6 @@ export function useFilesScmOperations(input: {
         if (!sessionPath) return;
 
         const rawMessage = await showScmCommitMessageEditorModal({
-            title: 'Create commit',
             canGenerate: scmCommitMessageGeneratorEnabled === true,
             onGenerate: async () => {
                 const res = await generateCommitMessageSuggestion();

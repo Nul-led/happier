@@ -100,6 +100,12 @@ describe('resolveOrdinarySessionListCoverage', () => {
         expect(resolveOrdinarySessionListCoverage({ ...completeInput, attentionHasNext: true })).toBe('incomplete');
     });
 
+    it('keeps exhausted historical metadata omissions incomplete', () => {
+        const observed = { ...completeInput, metadataUpgradeRequiredCount: 1 };
+        expect(resolveOrdinarySessionListCoverage(observed)).toBe('incomplete');
+        expect(resolveOrdinarySessionListCoverage({ ...observed, metadataUpgradeRequiredCount: 0 })).toBe('complete');
+    });
+
     it('does not promote a stale, refreshing, or never-fetched membership to complete', () => {
         expect(resolveOrdinarySessionListCoverage({ ...completeInput, phase: 'error' })).toBe('incomplete');
         expect(resolveOrdinarySessionListCoverage({ ...completeInput, fetchInFlight: true })).toBe('incomplete');
@@ -108,6 +114,14 @@ describe('resolveOrdinarySessionListCoverage', () => {
 });
 
 describe('isSessionListQueryHomeCoverageComplete', () => {
+    it('keeps exhausted historical metadata omissions incomplete until a clean refresh', () => {
+        const state = { ...queryState('ready', 1_000), metadataUpgradeRequiredCount: 1 };
+        expect(isSessionListQueryHomeCoverageComplete({ state, requestedQueryKey: 'query' })).toBe(false);
+        expect(isSessionListQueryHomeCoverageComplete({
+            state: { ...state, metadataUpgradeRequiredCount: 0 }, requestedQueryKey: 'query',
+        })).toBe(true);
+    });
+
     it('requires the applied membership to come from the strict query', () => {
         const state = queryState('ready', 1_000);
         expect(isSessionListQueryHomeCoverageComplete({ state, requestedQueryKey: 'query' })).toBe(true);

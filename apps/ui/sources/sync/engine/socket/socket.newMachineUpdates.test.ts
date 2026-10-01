@@ -11,11 +11,54 @@ import {
     resetSessionSurfaceVisibilityForTests,
 } from '@/sync/domains/session/sessionSurfaceVisibility';
 import * as executionRunActivityBus from '@/sync/runtime/executionRuns/executionRunActivityBus';
-import { resetTranscriptStreamSegmentAssemblyForTests } from '@/sync/engine/sessions/transcriptStreamSegmentAssembly';
-import type { NormalizedMessage } from '@/sync/typesRaw';
+
+import type { NormalizedMessage } from "@happier-dev/session-core/raw";
 import { flushMachineActivityUpdates, handleEphemeralSocketUpdate, handleUpdateContainer } from './socket';
+import { readPresentationNotice, retirePresentationNotice } from '@/components/sessions/presentation/presentationNotices';
+import { subscribeActivityLocalNotifications } from '@/activity/notifications/runtime/activityLocalNotificationBus';
 
 const initialStorageState = storage.getState();
+
+describe('committed personal in-app facts', () => {
+    afterEach(() => retirePresentationNotice());
+
+    it('shows an untracked recipient a qualified transient fact without scheduling an OS notification', async () => {
+        const osEvents: unknown[] = [];
+        const unsubscribe = subscribeActivityLocalNotifications(event => osEvents.push(event));
+        try {
+            for (const event of ['directly_shared', 'assigned'] as const) {
+                await handleEphemeralSocketUpdate(buildEphemeralParams({
+                    sourceServerId: 'home-b',
+                    update: { type: 'session-personal-event', sessionId: 'same-id', event, eventId: `committed-${event}` },
+                }));
+                expect(readPresentationNotice()).toMatchObject({
+                    key: JSON.stringify(['home-b', 'same-id', `committed-${event}`]),
+                    severity: 'info',
+                    message: expect.any(String),
+                });
+            }
+            expect(osEvents).toEqual([]);
+        } finally {
+            unsubscribe();
+        }
+    });
+
+    it('does not show a retired Home receipt or reinterpret an unrelated snapshot as an event', async () => {
+        await handleEphemeralSocketUpdate(buildEphemeralParams({
+            sourceServerId: 'home-a', shouldContinue: () => false,
+            update: { type: 'session-personal-event', sessionId: 'same-id', event: 'assigned', eventId: 'retired' },
+        }));
+        await handleEphemeralSocketUpdate(buildEphemeralParams({
+            sourceServerId: 'home-b',
+            update: { type: 'activity', id: 'same-id', active: true, activeAt: 1 },
+        }));
+        await handleEphemeralSocketUpdate(buildEphemeralParams({
+            sourceServerId: 'home-b',
+            update: { type: 'session-personal-event', sessionId: 'same-id', event: 'assigned', eventId: 'invalid', content: 'not a content channel' },
+        }));
+        expect(readPresentationNotice()).toBeNull();
+    });
+});
 
 function buildBaseParams(overrides: Partial<Omit<Parameters<typeof handleUpdateContainer>[0], 'updateData'>> = {}) {
     const decryptEncryptionKey = vi.fn(async () => null as Uint8Array | null);
@@ -576,7 +619,7 @@ describe('socket update handling: transcript-stream-segment ephemerals', () => {
     });
 
     it('applies transcript stream segment deltas by reconstructing text for live-consumed sessions', async () => {
-        resetTranscriptStreamSegmentAssemblyForTests();
+
         const sessionId = 's-dispatch-delta';
         const applyMessages = vi.fn();
         markSessionSurfaceVisible(sessionId);
@@ -624,11 +667,11 @@ describe('socket update handling: transcript-stream-segment ephemerals', () => {
                 content: [expect.objectContaining({ type: 'text', text: 'Hello world' })],
             }),
         ]);
-        resetTranscriptStreamSegmentAssemblyForTests();
+
     });
 
     it('drops transcript stream segment deltas for sessions without a live transcript consumer', async () => {
-        resetTranscriptStreamSegmentAssemblyForTests();
+
         vi.useFakeTimers();
         const sessionId = 's-dispatch-delta-hidden';
         const applyMessages = vi.fn();
@@ -657,7 +700,7 @@ describe('socket update handling: transcript-stream-segment ephemerals', () => {
         await vi.runAllTimersAsync();
 
         expect(applyMessages).not.toHaveBeenCalled();
-        resetTranscriptStreamSegmentAssemblyForTests();
+
     });
 
     it('shares empty canonical turn diff suppression across transcript stream segment updates', async () => {

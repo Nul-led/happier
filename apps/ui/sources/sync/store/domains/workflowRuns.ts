@@ -1,7 +1,11 @@
-import type {
-    WorkflowRunInvocationIndexV1,
-    WorkflowRunSummaryV1,
-    WorkflowRunPrivateMetadataV1,
+import {
+    WORKFLOW_ATTENTION_INVOCATION_LIFECYCLES_V1,
+    type WorkflowRunInvocationIndexV1,
+    type WorkflowRunSummaryV1,
+    type WorkflowRunPrivateMetadataV1,
+    type WorkflowRunGetResultV1,
+    type WorkflowInvocationGetResultV1,
+    sameStrictJsonValue,
 } from '@happier-dev/protocol';
 
 import type { AutomationDefinitionRun } from '@/sync/domains/automations/automationTypes';
@@ -38,6 +42,8 @@ export type WorkflowRunRow = Readonly<{
     /** Account-private accepted display metadata, never sourced from the public summary. */
     metadata: WorkflowRunPrivateMetadataV1 | null;
     automation: AutomationDefinitionRun | null;
+    /** Opened exact content; list/control projections never erase this observation. */
+    detail?: WorkflowRunGetResultV1;
 }>;
 
 export type WorkflowRunsById = Record<string, WorkflowRunRow>;
@@ -50,7 +56,8 @@ export type WorkflowRunsById = Record<string, WorkflowRunRow>;
 export type WorkflowRunsDomain = {
     workflowRunsById: WorkflowRunsById;
     workflowRunListWindows: Partial<Record<WorkflowRunListWindowId, WorkflowRunListWindow>>;
-    workflowRunInvocationsByRunId: Record<string, WorkflowRunInvocationWindow>;
+    /** Per Run: the one invocation fact map plus the windows and evidence that reference it. */
+    workflowRunInvocationsByRunId: Record<string, WorkflowRunInvocations>;
     /**
      * Merge exact Run bodies by `runId`. This is the entry point an exact read,
      * a list page or an invalidation uses; it joins no window, because a Run is
@@ -61,58 +68,348 @@ export type WorkflowRunsDomain = {
     applyWorkflowRunListPage: (input: Readonly<{
         windowId: WorkflowRunListWindowId;
         runs: readonly WorkflowRunSummaryV1[];
-        metadataByRunId?: Readonly<Record<string, WorkflowRunPrivateMetadataV1>>;
+        metadataByRunId?: Readonly<Record<string, WorkflowRunPrivateMetadataV1 | null>>;
         nextCursor: string | null;
-        mode: 'replace' | 'append';
+        mode: WorkflowLoadedSpanMode;
     }>) => void;
+    /**
+     * Merge a page into the Run's fact map and restate one window's membership.
+     * `history` (the default) is the unfiltered traversal; `attention` is the
+     * filter-bound actionable window, whose `refresh` restates the complete
+     * loaded span (`refreshLoadedAttentionSpan`) so its cursor is authoritative.
+     */
     applyWorkflowRunInvocationPage: (input: Readonly<{
         runId: string;
+        window?: WorkflowRunInvocationWindowId;
         invocations: readonly WorkflowRunInvocationIndexV1[];
         nextCursor: string | null;
         parentRevision: number;
-        mode: 'replace' | 'append';
+        mode: WorkflowLoadedSpanMode;
     }>) => void;
-    /** Merge one exact historical row without disturbing the currently loaded page. */
+    /**
+     * Merge one exact row without disturbing the currently loaded page. Its
+     * fresh lifecycle decides its attention membership: a settled row leaves
+     * the actionable window while history keeps it.
+     */
     upsertWorkflowRunInvocation: (input: Readonly<{
         runId: string;
-        invocation: WorkflowRunInvocationIndexV1;
+        invocation: WorkflowRunInvocationFact;
         parentRevision: number;
+    }>) => void;
+    /** Record the exact first-failure evidence (`null`: the Run has none). */
+    setWorkflowRunFirstFailedInvocation: (input: Readonly<{
+        runId: string;
+        invocation: WorkflowRunInvocationIndexV1 | null;
     }>) => void;
 };
 
-export type WorkflowRunListWindowId = 'all' | 'active' | 'attention';
+/**
+ * How a page lands in a window that may already hold a loaded traversal.
+ *
+ * - `replace` seeds a window from its first page: a new Account, a new filter
+ *   or an explicit reload, where nothing earlier is worth keeping.
+ * - `append` extends the traversal with the continuation the window's cursor
+ *   asked for.
+ * - `refresh` restates the leading page of an existing traversal. It is what a
+ *   background invalidation uses, and it is the one mode that must never shrink
+ *   what the reader already paged to: replacing the window with page one
+ *   discarded every later page, the off-page row the reader had selected and
+ *   the position they were reading at.
+ */
+export type WorkflowLoadedSpanMode = 'replace' | 'append' | 'refresh';
+
+export type WorkflowRunListWindowId = 'all' | 'active' | 'attention' | 'triggered';
 export type WorkflowRunListWindow = Readonly<{
     runIds: readonly string[];
     nextCursor: string | null;
     loaded: boolean;
 }>;
 
+export type WorkflowRunInvocationWindowId = 'history' | 'attention';
+
+export type WorkflowRunInvocationFact = WorkflowRunInvocationIndexV1 & Readonly<{
+    /** The private observation retains its own index token; a newer index cannot arm it. */
+    opened?: WorkflowInvocationGetResultV1['invocation'];
+}>;
+
+/** A window owns filter-bound ordered ids and its cursor; the facts live in the Run's one map. */
 export type WorkflowRunInvocationWindow = Readonly<{
-    invocations: readonly WorkflowRunInvocationIndexV1[];
+    invocationIds: readonly string[];
     nextCursor: string | null;
     /** The parent revision the page was read at, so a stale control can be refused. */
     parentRevision: number | null;
     loaded: boolean;
 }>;
 
-function appendInvocations(
+export type WorkflowRunInvocations = Readonly<{
+    /**
+     * The one row map (03 §6.2). History pages, attention pages, exact reads and
+     * first-failure evidence all merge here; the row's `contentRevision` owns
+     * freshness, so no window can hold a second, diverging copy.
+     */
+    factsById: Readonly<Record<string, WorkflowRunInvocationFact>>;
+    history: WorkflowRunInvocationWindow;
+    attention: WorkflowRunInvocationWindow;
+    /** Exact first-failure evidence; `null` when none is known. */
+    firstFailedId: string | null;
+}>;
+
+const EMPTY_INVOCATION_WINDOW: WorkflowRunInvocationWindow = { invocationIds: [], nextCursor: null, parentRevision: null, loaded: false };
+const EMPTY_RUN_INVOCATIONS: WorkflowRunInvocations = {
+    factsById: {}, history: EMPTY_INVOCATION_WINDOW, attention: EMPTY_INVOCATION_WINDOW, firstFailedId: null,
+};
+const EMPTY_INVOCATION_LIST: readonly WorkflowRunInvocationIndexV1[] = [];
+
+/** Merge facts by row token; an older response never replaces a newer fact. Returns the same map when nothing changed. */
+function mergeInvocationFacts(
+    factsById: WorkflowRunInvocations['factsById'],
+    incoming: readonly WorkflowRunInvocationFact[],
+): WorkflowRunInvocations['factsById'] {
+    let next: Record<string, WorkflowRunInvocationFact> | null = null;
+    for (const invocation of incoming) {
+        const known = (next ?? factsById)[invocation.id];
+        if (known === invocation || (known && isWorkflowInvocationFactOlder(invocation, known))) continue;
+        const candidate = known?.opened && !invocation.opened
+            ? { ...invocation, opened: known.opened }
+            : invocation;
+        if (known && sameStrictJsonValue(known, candidate)) continue;
+        next ??= { ...factsById };
+        next[invocation.id] = candidate;
+    }
+    return next ?? factsById;
+}
+
+function appendUniqueInvocationIds(existing: readonly string[], incoming: readonly string[]): readonly string[] {
+    const known = new Set(existing);
+    const added = incoming.filter((id) => {
+        if (known.has(id)) return false;
+        known.add(id);
+        return true;
+    });
+    return added.length === 0 ? existing : [...existing, ...added];
+}
+
+function factsFor(factsById: WorkflowRunInvocations['factsById'], ids: readonly string[]): WorkflowRunInvocationIndexV1[] {
+    return ids.flatMap((id) => {
+        const fact = factsById[id];
+        return fact === undefined ? [] : [fact];
+    });
+}
+
+const windowProjectionCache = new WeakMap<WorkflowRunInvocationWindow, Readonly<{
+    factsById: WorkflowRunInvocations['factsById'];
+    invocations: readonly WorkflowRunInvocationIndexV1[];
+}>>();
+
+/** One window's rows as current facts; the same array until its ids or the fact map change. */
+export function selectWorkflowRunWindowInvocations(
+    invocations: WorkflowRunInvocations | null | undefined,
+    windowId: WorkflowRunInvocationWindowId,
+): readonly WorkflowRunInvocationIndexV1[] {
+    if (!invocations) return EMPTY_INVOCATION_LIST;
+    const window = invocations[windowId];
+    if (window.invocationIds.length === 0) return EMPTY_INVOCATION_LIST;
+    const cached = windowProjectionCache.get(window);
+    if (cached?.factsById === invocations.factsById) return cached.invocations;
+    const projected = factsFor(invocations.factsById, window.invocationIds);
+    windowProjectionCache.set(window, { factsById: invocations.factsById, invocations: projected });
+    return projected;
+}
+
+export function selectWorkflowRunFirstFailedInvocation(
+    invocations: WorkflowRunInvocations | null | undefined,
+): WorkflowRunInvocationIndexV1 | null {
+    if (!invocations || invocations.firstFailedId === null) return null;
+    return invocations.factsById[invocations.firstFailedId] ?? null;
+}
+
+function compareDecimalStrings(left: string, right: string): number {
+    // Both are canonical nonnegative decimals, so length orders magnitude and
+    // a lexicographic compare orders equal magnitudes. This avoids `BigInt` on
+    // a hot merge path while staying exact for the server's real values.
+    if (left.length !== right.length) return left.length - right.length;
+    return left < right ? -1 : left > right ? 1 : 0;
+}
+
+/** Compare row facts independently of the parent Run's control revision. */
+export function isWorkflowInvocationFactOlder(
+    candidate: Pick<WorkflowRunInvocationIndexV1, 'id' | 'contentRevision'>,
+    known: Pick<WorkflowRunInvocationIndexV1, 'id' | 'contentRevision'>,
+): boolean {
+    return candidate.id !== known.id || compareDecimalStrings(candidate.contentRevision, known.contentRevision) < 0;
+}
+
+function retainNewerInvocationFacts(
     existing: readonly WorkflowRunInvocationIndexV1[],
     incoming: readonly WorkflowRunInvocationIndexV1[],
 ): WorkflowRunInvocationIndexV1[] {
-    const indexById = new Map(existing.map((entry, index) => [entry.id, index]));
-    const next = [...existing];
-    for (const invocation of incoming) {
-        const index = indexById.get(invocation.id);
-        if (index === undefined) {
-            indexById.set(invocation.id, next.length);
-            next.push(invocation);
-            continue;
-        }
-        // A refreshed row replaces its own entry in place, so an update never
-        // moves a row the reader has open to the end of the page.
-        next[index] = invocation;
+    const byId = new Map(existing.map(entry => [entry.id, entry]));
+    return incoming.map(entry => {
+        const known = byId.get(entry.id);
+        return known && isWorkflowInvocationFactOlder(entry, known) ? known : entry;
+    });
+}
+
+/**
+ * The server's total invocation order: `sequence` then `id`, both ascending.
+ * The window is a projection of that order, so a refreshed page merged into a
+ * longer traversal is re-sorted by the same key rather than appended at the end
+ * — otherwise a newly reported attempt would read as the newest work when it
+ * belongs beside the step it retried.
+ */
+function compareInvocationOrder(
+    left: WorkflowRunInvocationIndexV1,
+    right: WorkflowRunInvocationIndexV1,
+): number {
+    const bySequence = compareDecimalStrings(left.sequence, right.sequence);
+    if (bySequence !== 0) return bySequence;
+    return left.id < right.id ? -1 : left.id > right.id ? 1 : 0;
+}
+
+/**
+ * Restate the leading page of a **lifecycle-filtered** invocation window.
+ *
+ * Unlike the unfiltered history, membership here is a live predicate: an
+ * approval the person answered stops needing them. The refreshed page is
+ * therefore authoritative for the span it covers — every row up to and
+ * including its last — so a retained row inside that span which the page did
+ * not return has left the filter and is dropped, while rows beyond it keep the
+ * traversal the reader paged to.
+ *
+ * The store's attention window applies it to ids over the one fact map; this is
+ * the one merge rule, not a second one.
+ */
+export function mergeRefreshedInvocationFilterSpan(
+    existing: readonly WorkflowRunInvocationIndexV1[],
+    incoming: readonly WorkflowRunInvocationIndexV1[],
+    nextCursor?: string | null,
+): WorkflowRunInvocationIndexV1[] {
+    const boundary = incoming[incoming.length - 1];
+    if (boundary === undefined) return [...incoming];
+    // A refreshed span that exhausted the filter is the complete truth: every
+    // loaded row the fresh pages did not return has left the filter, including
+    // a settled tail beyond the refreshed boundary. Retaining beyond would keep
+    // offering a row nobody can act on and keep a stale continuation.
+    const refreshed = retainNewerInvocationFacts(existing, incoming);
+    if (nextCursor === null) return refreshed.sort(compareInvocationOrder);
+    const incomingIds = new Set(incoming.map((entry) => entry.id));
+    const retained = existing.filter((entry) => (
+        !incomingIds.has(entry.id) && compareInvocationOrder(entry, boundary) > 0
+    ));
+    return [...refreshed, ...retained].sort(compareInvocationOrder);
+}
+
+/**
+ * Refetch the complete currently loaded lifecycle-filtered span through the
+ * existing invocation pagination API.
+ *
+ * A background refresh must not restate only the first page: a settled tail
+ * beyond it would survive the merge and keep a stale continuation. This
+ * replays the traversal the reader already paid for — the same number of
+ * pages that produced the loaded span, bounded by that frontier — so rows
+ * that left the filter are removed across the span, additions inside it merge,
+ * and the returned cursor is the current truth for its end. It keeps no cache:
+ * the caller merges the returned pages with the one span rule above.
+ */
+export async function refreshLoadedAttentionSpan(params: Readonly<{
+    listPage: (input: Readonly<{ cursor?: string; signal?: AbortSignal }>) => Promise<Readonly<{
+        invocations: readonly WorkflowRunInvocationIndexV1[];
+        nextCursor?: string | null;
+        parentRevision: number;
+    }>>;
+    previousPageCount: number;
+    signal?: AbortSignal;
+}>): Promise<Readonly<{
+    invocations: readonly WorkflowRunInvocationIndexV1[];
+    nextCursor: string | null;
+    parentRevision: number | null;
+}>> {
+    const targetPages = Math.max(1, Math.floor(params.previousPageCount) || 1);
+    const accumulated: WorkflowRunInvocationIndexV1[] = [];
+    let cursor: string | undefined;
+    let nextCursor: string | null = null;
+    let parentRevision: number | null = null;
+    for (let page = 0; page < targetPages; page += 1) {
+        const result = await params.listPage({
+            ...(cursor === undefined ? {} : { cursor }),
+            ...(params.signal === undefined ? {} : { signal: params.signal }),
+        });
+        for (const entry of result.invocations) accumulated.push(entry);
+        parentRevision = parentRevision === null ? result.parentRevision : Math.max(parentRevision, result.parentRevision);
+        const pageCursor = result.nextCursor ?? null;
+        nextCursor = pageCursor;
+        if (pageCursor === null) break;
+        cursor = pageCursor;
     }
-    return next;
+    return { invocations: accumulated, nextCursor, parentRevision };
+}
+
+const visibleProjectionCache = new WeakMap<WorkflowRunInvocations, readonly WorkflowRunInvocationIndexV1[]>();
+
+/**
+ * The visible union for detail: attention rows history has not paged to yet,
+ * the history traversal, and the exact first-failure row when it lies beyond
+ * both. Every id reads the one fact map, so no window takes precedence and a
+ * settled selection stays visible through history once it leaves attention.
+ */
+export function resolveVisibleWorkflowInvocations(
+    invocations: WorkflowRunInvocations | null | undefined,
+): readonly WorkflowRunInvocationIndexV1[] {
+    if (!invocations) return EMPTY_INVOCATION_LIST;
+    const cached = visibleProjectionCache.get(invocations);
+    if (cached) return cached;
+    const ids = appendUniqueInvocationIds(
+        appendUniqueInvocationIds(invocations.attention.invocationIds, invocations.history.invocationIds),
+        invocations.firstFailedId === null ? [] : [invocations.firstFailedId],
+    );
+    const visible = ids.length === 0 ? EMPTY_INVOCATION_LIST : factsFor(invocations.factsById, ids);
+    visibleProjectionCache.set(invocations, visible);
+    return visible;
+}
+
+/**
+ * Whether `candidate` sorts strictly after `boundary` in the Run list's
+ * newest-first `(createdAt desc, id desc)` order.
+ */
+function isBeyondListSpan(candidate: WorkflowRunRow | undefined, boundary: WorkflowRunRow): boolean {
+    if (candidate?.summary === undefined || candidate.summary === null || boundary.summary === null) return false;
+    const candidateCreatedAt = toEpochMilliseconds(candidate.summary.createdAt);
+    const boundaryCreatedAt = toEpochMilliseconds(boundary.summary.createdAt);
+    if (candidateCreatedAt !== boundaryCreatedAt) return candidateCreatedAt < boundaryCreatedAt;
+    return candidate.id < boundary.id;
+}
+
+/**
+ * Restate the leading page of a loaded Run window without shrinking it.
+ *
+ * The refreshed page is authoritative for exactly the span it covers — every
+ * Run at least as new as its oldest row — so a previously loaded id inside that
+ * span that the page did not return has left this filter and is dropped.
+ * Everything strictly older is the traversal the reader paid for page by page;
+ * it is preserved, and so is the cursor for the END of that traversal, because
+ * the page's own cursor would rewind them to page two.
+ */
+function refreshWorkflowRunListWindow(params: Readonly<{
+    runsById: WorkflowRunsById;
+    previous: WorkflowRunListWindow | undefined;
+    pageRunIds: readonly string[];
+    nextCursor: string | null;
+}>): WorkflowRunListWindow {
+    const { runsById, previous, pageRunIds, nextCursor } = params;
+    // A page that exhausted the filter is the complete list, and a traversal no
+    // longer than the page just restated is exactly what reopening the screen
+    // would show. Both are fully superseded.
+    if (previous === undefined || nextCursor === null || previous.runIds.length <= pageRunIds.length) {
+        return { runIds: [...pageRunIds], nextCursor, loaded: true };
+    }
+    const boundaryId = pageRunIds[pageRunIds.length - 1];
+    const boundary = boundaryId === undefined ? undefined : runsById[boundaryId];
+    if (boundary === undefined) return { runIds: [...pageRunIds], nextCursor, loaded: true };
+    const pageIds = new Set(pageRunIds);
+    const retained = previous.runIds.filter((runId) => (
+        !pageIds.has(runId) && isBeyondListSpan(runsById[runId], boundary)
+    ));
+    return { runIds: [...pageRunIds, ...retained], nextCursor: previous.nextCursor, loaded: true };
 }
 
 function appendUniqueIds(existing: readonly string[], incoming: readonly string[]): string[] {
@@ -194,9 +491,16 @@ function selectCurrentSummaryProjection(
             : stored;
     }
 
-    const summary = toEpochMilliseconds(incoming.summary.updatedAt) > toEpochMilliseconds(stored.summary.updatedAt)
+    let summary = toEpochMilliseconds(incoming.summary.updatedAt) > toEpochMilliseconds(stored.summary.updatedAt)
         ? incoming.summary
         : stored.summary;
+    // Attention is an indexed child-row fact. A demanded server read can
+    // refresh it without moving the parent's control revision or timestamp.
+    // Projections that did not read membership cannot clear known attention.
+    const attentionRequired = incoming.summary.attentionRequired ?? stored.summary.attentionRequired;
+    if (attentionRequired !== undefined && summary.attentionRequired !== attentionRequired) {
+        summary = { ...summary, attentionRequired };
+    }
     // Opening private content can recover without advancing the server-owned
     // Run revision. At the same accepted revision an available projection is
     // strictly more informative than unavailable, regardless of read order.
@@ -218,7 +522,10 @@ function mergeRow(stored: WorkflowRunRow, incoming: WorkflowRunRow): WorkflowRun
         incoming.automation,
         (value) => value.updatedAt,
     );
-    if (summary === stored.summary && automation === stored.automation && metadata === stored.metadata) return stored;
+    const detail = incoming.detail && (!stored.detail || incoming.detail.run.revision >= stored.detail.run.revision)
+        ? (stored.detail && sameStrictJsonValue(stored.detail, incoming.detail) ? stored.detail : incoming.detail)
+        : stored.detail;
+    if (summary === stored.summary && automation === stored.automation && metadata === stored.metadata && detail === stored.detail) return stored;
     const revision = Math.max(summary?.revision ?? 0, automation?.revision ?? 0);
     // `updatedAt` follows whichever projection carries the newest revision, so
     // list ordering never regresses when only the other transport refreshes.
@@ -227,7 +534,7 @@ function mergeRow(stored: WorkflowRunRow, incoming: WorkflowRunRow): WorkflowRun
         : automation && automation.revision === revision
             ? automation.updatedAt
             : stored.updatedAt;
-    return { id: stored.id, revision, updatedAt, summary, metadata, automation };
+    return { id: stored.id, revision, updatedAt, summary, metadata, automation, ...(detail ? { detail } : {}) };
 }
 
 /**
@@ -271,7 +578,7 @@ export function releaseWorkflowRunBodies(params: Readonly<{
         if (!row?.automation) continue;
         next = next ?? { ...runsById };
         if (row.summary) {
-            next[runId] = workflowRunRowFromSummary(row.summary, row.metadata);
+            next[runId] = { ...row, automation: null };
         } else {
             delete next[runId];
         }
@@ -347,48 +654,107 @@ export function createWorkflowRunsDomain<S extends WorkflowRunsDomain>({
         applyWorkflowRunListPage: ({ windowId, runs, metadataByRunId, nextCursor, mode }) =>
             set((state) => {
                 const previous = state.workflowRunListWindows[windowId];
-                const runIds = mode === 'append' && previous
-                    ? appendUniqueIds(previous.runIds, runs.map((run) => run.id))
-                    : runs.map((run) => run.id);
+                // Bodies merge first so the refreshed span can be measured
+                // against the rows the page just restated.
+                const workflowRunsById = mergeWorkflowRunBodies(
+                    state.workflowRunsById,
+                    runs.map((run) => workflowRunRowFromSummary(run, metadataByRunId?.[run.id] ?? null)),
+                );
+                const pageRunIds = runs.map((run) => run.id);
+                const window: WorkflowRunListWindow = mode === 'append' && previous
+                    ? { runIds: appendUniqueIds(previous.runIds, pageRunIds), nextCursor, loaded: true }
+                    : mode === 'refresh'
+                        ? refreshWorkflowRunListWindow({ runsById: workflowRunsById, previous, pageRunIds, nextCursor })
+                        : { runIds: pageRunIds, nextCursor, loaded: true };
                 return {
                     ...state,
-                    workflowRunsById: mergeWorkflowRunBodies(
-                        state.workflowRunsById,
-                        runs.map((run) => workflowRunRowFromSummary(run, metadataByRunId?.[run.id] ?? null)),
-                    ),
-                    workflowRunListWindows: {
-                        ...state.workflowRunListWindows,
-                        [windowId]: { runIds, nextCursor, loaded: true },
-                    },
+                    workflowRunsById,
+                    workflowRunListWindows: { ...state.workflowRunListWindows, [windowId]: window },
                 };
             }),
-        applyWorkflowRunInvocationPage: ({ runId, invocations, nextCursor, parentRevision, mode }) =>
+        applyWorkflowRunInvocationPage: ({ runId, window: windowId = 'history', invocations, nextCursor, parentRevision, mode }) =>
             set((state) => {
-                const previous = state.workflowRunInvocationsByRunId[runId];
-                const merged = mode === 'replace' || !previous
-                    ? [...invocations]
-                    : appendInvocations(previous.invocations, invocations);
+                const previous = state.workflowRunInvocationsByRunId[runId] ?? EMPTY_RUN_INVOCATIONS;
+                const factsById = mergeInvocationFacts(previous.factsById, invocations);
+                const previousWindow = previous[windowId];
+                const pageIds = invocations.map((entry) => entry.id);
+                const byOrder = (ids: Iterable<string>) => [...ids].flatMap((id) => {
+                    const fact = factsById[id];
+                    return fact === undefined ? [] : [fact];
+                }).sort(compareInvocationOrder).map((entry) => entry.id);
+                let invocationIds: readonly string[];
+                let cursor = nextCursor;
+                if (mode === 'append') {
+                    invocationIds = appendUniqueInvocationIds(previousWindow.invocationIds, pageIds);
+                } else if (mode === 'refresh' && windowId === 'history') {
+                    // History rows are append-only for the life of a Run: a
+                    // restated leading page can reveal rows but never proves a
+                    // loaded one gone, and it does not know where the traversal
+                    // ends, so a loaded traversal keeps its continuation.
+                    invocationIds = byOrder(new Set([...previousWindow.invocationIds, ...pageIds]));
+                    if (previousWindow.loaded) cursor = previousWindow.nextCursor;
+                } else if (mode === 'refresh' && previousWindow.loaded) {
+                    invocationIds = mergeRefreshedInvocationFilterSpan(
+                        factsFor(factsById, previousWindow.invocationIds),
+                        factsFor(factsById, pageIds),
+                        nextCursor,
+                    ).map((entry) => entry.id);
+                } else {
+                    invocationIds = pageIds;
+                }
+                const nextWindow: WorkflowRunInvocationWindow = {
+                    invocationIds, nextCursor: cursor, loaded: true,
+                    parentRevision: Math.max(previousWindow.parentRevision ?? 0, parentRevision),
+                };
                 return {
                     ...state,
                     workflowRunInvocationsByRunId: {
                         ...state.workflowRunInvocationsByRunId,
-                        [runId]: { invocations: merged, nextCursor, parentRevision, loaded: true },
+                        [runId]: windowId === 'history'
+                            ? { ...previous, factsById, history: nextWindow }
+                            : { ...previous, factsById, attention: nextWindow },
                     },
                 };
             }),
         upsertWorkflowRunInvocation: ({ runId, invocation, parentRevision }) =>
             set((state) => {
-                const previous = state.workflowRunInvocationsByRunId[runId];
+                const previous = state.workflowRunInvocationsByRunId[runId] ?? EMPTY_RUN_INVOCATIONS;
+                const factsById = mergeInvocationFacts(previous.factsById, [invocation]);
+                const history: WorkflowRunInvocationWindow = {
+                    ...previous.history,
+                    invocationIds: appendUniqueInvocationIds(previous.history.invocationIds, [invocation.id]),
+                    parentRevision: Math.max(previous.history.parentRevision ?? 0, parentRevision),
+                };
+                // Only an accepted (not older) fact may change actionable membership.
+                const accepted = !isWorkflowInvocationFactOlder(invocation, factsById[invocation.id]!);
+                const needsYou = WORKFLOW_ATTENTION_INVOCATION_LIFECYCLES_V1.some((lifecycle) => lifecycle === invocation.lifecycle);
+                const attentionIds = previous.attention.invocationIds;
+                const attention: WorkflowRunInvocationWindow = !accepted || !previous.attention.loaded
+                    ? previous.attention
+                    : needsYou
+                        ? { ...previous.attention, invocationIds: appendUniqueInvocationIds(attentionIds, [invocation.id]) }
+                        : attentionIds.includes(invocation.id)
+                            ? { ...previous.attention, invocationIds: attentionIds.filter((id) => id !== invocation.id) }
+                            : previous.attention;
                 return {
                     ...state,
                     workflowRunInvocationsByRunId: {
                         ...state.workflowRunInvocationsByRunId,
-                        [runId]: {
-                            invocations: appendInvocations(previous?.invocations ?? [], [invocation]),
-                            nextCursor: previous?.nextCursor ?? null,
-                            parentRevision: Math.max(previous?.parentRevision ?? 0, parentRevision),
-                            loaded: previous?.loaded ?? false,
-                        },
+                        [runId]: { ...previous, factsById, history, attention },
+                    },
+                };
+            }),
+        setWorkflowRunFirstFailedInvocation: ({ runId, invocation }) =>
+            set((state) => {
+                const previous = state.workflowRunInvocationsByRunId[runId] ?? EMPTY_RUN_INVOCATIONS;
+                const factsById = invocation === null ? previous.factsById : mergeInvocationFacts(previous.factsById, [invocation]);
+                const firstFailedId = invocation?.id ?? null;
+                if (factsById === previous.factsById && firstFailedId === previous.firstFailedId) return state;
+                return {
+                    ...state,
+                    workflowRunInvocationsByRunId: {
+                        ...state.workflowRunInvocationsByRunId,
+                        [runId]: { ...previous, factsById, firstFailedId },
                     },
                 };
             }),

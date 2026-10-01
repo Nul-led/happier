@@ -1,4 +1,4 @@
-import type { ToolCall } from '@/sync/domains/messages/messageTypes';
+import type { ToolCall } from "@happier-dev/session-core/messages";
 
 export function resolvePermissionRequestId(tool: Readonly<ToolCall>): string | null {
     const permissionId = typeof tool.permission?.id === 'string' ? tool.permission.id.trim() : '';

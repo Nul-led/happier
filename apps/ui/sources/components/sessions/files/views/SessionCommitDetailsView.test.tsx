@@ -12,7 +12,11 @@ const commitSessionId = 's1';
 const commitSha = 'abc';
 const diffFilesListSpy = vi.fn();
 
-const sessionScmDiffCommitSpy = vi.fn(async (_sessionId: string, _request: { commit: string }) => ({
+const sessionScmDiffCommitSpy = vi.fn(async (_sessionId: string, _request: { commit: string }): Promise<{
+    success: boolean;
+    diff: string;
+    error: string | null;
+}> => ({
     success: true,
     diff: [
         'diff --git a/src/a.ts b/src/a.ts',
@@ -189,6 +193,24 @@ vi.mock('@/sync/ops', () => ({
     sessionScmCommitBackout: (...args: Parameters<typeof sessionScmCommitBackoutSpy>) => sessionScmCommitBackoutSpy(...args),
 }));
 
+const machineScmLogListSpy = vi.fn(async (_machineId: string, _request: { cwd: string; query?: string; limit?: number }) => ({
+    success: true,
+    queryApplied: true,
+    entries: [{
+        sha: 'abc1234def5678',
+        shortSha: 'abc1234',
+        authorName: 'Leeroy Brun',
+        authorEmail: 'leeroy@example.test',
+        timestamp: 1_790_000_000,
+        subject: 'Key the settings modal by route, not window width',
+        body: 'Resizing the window remounted SettingsModal because its key included the width.',
+    }],
+}));
+
+vi.mock('@/sync/ops/scm/machineScm', () => ({
+    machineScmLogList: (...args: Parameters<typeof machineScmLogListSpy>) => machineScmLogListSpy(...args),
+}));
+
 vi.mock('@/hooks/server/useFeatureEnabled', () => ({
     useFeatureEnabled: (featureId: string) => (featureId === 'files.reviewComments' ? reviewCommentsEnabled : false),
 }));
@@ -272,6 +294,44 @@ describe('SessionCommitDetailsView', () => {
         sessionScmCommitBackoutSpy.mockClear();
         diffFilesListSpy.mockClear();
         resetCommitDetailsStorageState();
+    });
+
+    it('retries a failed commit diff without leaving the details pane', async () => {
+        sessionScmDiffCommitSpy.mockResolvedValueOnce({ success: false, diff: '', error: 'Temporary failure' });
+        const tree = await renderCommitDetailsView();
+        const visibleText = () => tree.root
+            .findAll((node) => String(node.type) === 'Text')
+            .flatMap((node) => node.children)
+            .filter((child): child is string => typeof child === 'string')
+            .join(' ');
+        // Pane-states lab 0 "X": what failed in words and one recovery; the transport message is a
+        // diagnostic behind the collapsed Details, never the headline.
+        expect(tree.root.findAllByProps({ testID: 'scm-commit-details-error' }).length).toBeGreaterThan(0);
+        expect(visibleText()).not.toContain('Temporary failure');
+        const details = tree.root.findAllByProps({ testID: 'scm-commit-details-error-details-toggle' })[0];
+        await act(async () => { details.props.onPress(); });
+        expect(visibleText()).toContain('Temporary failure');
+        const retry = tree.root.findAll((node) => node.props?.testID === 'scm-commit-details-error-action' && typeof node.props?.action === 'function')[0];
+        expect(retry).toBeTruthy();
+        await act(async () => { await retry.props.action(); });
+        await settleCommitDetailsView();
+        expect(sessionScmDiffCommitSpy).toHaveBeenCalledTimes(2);
+        expect(tree.root.findAllByProps({ testID: 'scm-commit-details-error' })).toHaveLength(0);
+    });
+
+    it('reads as the commit itself: its subject, author, short SHA and message', async () => {
+        const tree = await renderCommitDetailsView();
+        await settleCommitDetailsView();
+        const texts = tree.root
+            .findAll((node) => (node.type as unknown) === 'Text')
+            .flatMap((node) => node.children)
+            .filter((child): child is string => typeof child === 'string');
+        const title = tree.root.findAll((node) => node.props?.testID === 'scm-commit-details-header.title' && typeof node.type === 'string')[0];
+        expect(title?.children.join('')).toBe('Key the settings modal by route, not window width');
+        expect(texts).toContain('Leeroy Brun');
+        expect(texts).toContain('abc1234');
+        expect(texts.join(' ')).toContain('remounted SettingsModal');
+        expect(machineScmLogListSpy).toHaveBeenCalledWith('machine-1', expect.objectContaining({ cwd: '/repo', query: 'abc' }), expect.anything());
     });
 
     it('renders the diff file list using virtualization', async () => {

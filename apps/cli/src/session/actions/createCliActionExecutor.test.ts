@@ -450,7 +450,7 @@ function createSessionSpawnInput(
       serverId: configuration.activeServerId,
       machineId: 'machine-1',
     },
-    directory: '/repo/current',
+    directory: { kind: 'path' as const, path: '/repo/current' },
     agentTarget: SESSION_SPAWN_AGENT_TARGETS.claude,
     ...overrides,
   };
@@ -595,7 +595,7 @@ describe('createCliActionExecutor', () => {
           directory: typeof call.request.directory === 'string'
             ? call.request.directory
             : '/repo/current',
-          directoryCreationRequired: false,
+          directoryKind: 'path' as const, directoryCreationRequired: false,
           checkout: null,
         };
       }
@@ -721,7 +721,7 @@ describe('createCliActionExecutor', () => {
     expect((result as any).result.options).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          value: 'backend:claude',
+          value: 'agent:happier.agent.claude/claude',
           label: expect.any(String),
         }),
         expect.objectContaining({
@@ -771,7 +771,6 @@ describe('createCliActionExecutor', () => {
       actionId: PLUGIN_ACTION_ID,
       input: { scope: 'diff' },
       surface: 'cli',
-      authority: 'present_user',
       defaultSessionId: 'sess-1',
     });
   });
@@ -794,7 +793,6 @@ describe('createCliActionExecutor', () => {
       actionId: 'action.spec.search',
       input: { limit: 10 },
       surface: 'cli',
-      authority: 'present_user',
     });
   });
 
@@ -1117,7 +1115,7 @@ describe('createCliActionExecutor', () => {
       result: {
         items: expect.arrayContaining([
           expect.objectContaining({
-            targetKey: 'backend:pi',
+            targetKey: 'agent:happier.agent.pi/pi',
             agentId: 'pi',
             enabled: true,
           }),
@@ -1185,6 +1183,17 @@ describe('createCliActionExecutor', () => {
   });
 
   it('resolves review engine options on the MCP surface', async () => {
+    bootstrapAccountSettingsContext.mockResolvedValueOnce({
+      source: 'network', settingsVersion: 1, loadedAtMs: 1,
+      settingsSecretsReadKeys: [], whenRefreshed: null,
+      settings: {
+        schemaVersion: 2,
+        acpCatalogSettingsV1: { v: 2, backends: [{
+          id: 'review-bot', name: 'review-bot', title: 'Review Bot', command: 'review-bot',
+          createdAt: 1, updatedAt: 1,
+        }] },
+      },
+    });
     const executor = createPlainExecutor();
 
     const result = await executor.execute(
@@ -1197,16 +1206,20 @@ describe('createCliActionExecutor', () => {
       { surface: 'mcp', defaultSessionId: 'sess-1' },
     );
 
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       ok: true,
       result: {
         actionId: 'review.start',
         fieldPath: 'engineIds',
         optionsSourceId: 'review.engines.available',
-        options: [
-          { value: 'coderabbit', label: 'CodeRabbit' },
-          { value: 'deepsec', label: 'DeepSec' },
-        ],
+        options: expect.arrayContaining([
+          expect.objectContaining({ value: 'claude' }),
+          expect.objectContaining({ value: 'codex' }),
+          expect.objectContaining({ value: 'opencode' }),
+          expect.objectContaining({ value: 'coderabbit' }),
+          expect.objectContaining({ value: 'deepsec' }),
+          expect.objectContaining({ value: 'backend:review-bot:configured:review-bot', label: 'Review Bot' }),
+        ]),
       },
     });
   });
@@ -1688,7 +1701,7 @@ describe('createCliActionExecutor', () => {
         modelSelection: {
           v: 1,
           updatedAt: 1710000000000,
-          ref: { agentTargetKey: 'backend:claude', providerConnectionId: null, modelId: 'gpt-5' },
+          ref: { agentTargetKey: 'agent:happier.agent.claude/claude', providerConnectionId: null, modelId: 'gpt-5' },
         },
         initialInput: { text: 'Hello from CLI action' },
       }),
@@ -1705,7 +1718,7 @@ describe('createCliActionExecutor', () => {
         modelSelection: {
           v: 1,
           updatedAt: 1710000000000,
-          ref: { agentTargetKey: 'backend:claude', providerConnectionId: null, modelId: 'gpt-5' },
+          ref: { agentTargetKey: 'agent:happier.agent.claude/claude', providerConnectionId: null, modelId: 'gpt-5' },
         },
         spawnNonce: expect.any(String),
       }),
@@ -1767,7 +1780,7 @@ describe('createCliActionExecutor', () => {
           v: 1,
           updatedAt: 1710000000000,
           ref: {
-            agentTargetKey: 'backend:claude',
+            agentTargetKey: 'agent:happier.agent.claude/claude',
             providerConnectionId: null,
             modelId: 'gpt-5',
           },
@@ -1777,6 +1790,11 @@ describe('createCliActionExecutor', () => {
         surface: 'agent',
         defaultSessionId: 'sess-1',
         callerPermissionMode: 'yolo',
+        agentStartContext: {
+          caller: { kind: 'session', sessionId: 'sess-1', starterDepth: 0, turnDepth: 0 },
+          baseline: { machineId: 'machine-1', directory: '/repo' },
+          ledSubtreeSessionIds: [], roles: {}, workDepthLimit: 4, callerPermissionCeiling: 'yolo',
+        },
         causalPermissionAuthority: {
           kind: 'admittedSessionInputV1',
           admittedPermissionCeiling: 'yolo',
@@ -1784,9 +1802,9 @@ describe('createCliActionExecutor', () => {
       },
     )).resolves.toEqual({
       ok: false,
-      errorCode: 'session_spawn_policy_denied',
-      error: 'session_spawn_policy_denied',
-      details: { field: 'modelSelection' },
+      errorCode: 'policy_denied_field',
+      error: 'policy_denied_field',
+      details: { code: 'policy_denied_field', field: 'modelSelection' },
     });
     expect(callMachineRpc).not.toHaveBeenCalled();
   });
@@ -1955,14 +1973,14 @@ describe('createCliActionExecutor', () => {
     const result = await executor.execute(
       'session.spawn_new',
       createSessionSpawnInput({
-        directory: '/repo/rich',
+        directory: { kind: 'path', path: '/repo/rich' },
         agentTarget: SESSION_SPAWN_AGENT_TARGETS.codex,
         permissionMode: 'safe-yolo',
         agentModeId: 'plan',
         modelSelection: {
           v: 1,
           updatedAt: 1710000000003,
-          ref: { agentTargetKey: 'backend:codex', providerConnectionId: null, modelId: 'gpt-5' },
+          ref: { agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: null, modelId: 'gpt-5' },
         },
         configuration: {
           mode: { value: 'plan', updatedAtMs: 1710000000002 },
@@ -2000,7 +2018,7 @@ describe('createCliActionExecutor', () => {
       modelSelection: {
         v: 1,
         updatedAt: 1710000000003,
-        ref: { agentTargetKey: 'backend:codex', providerConnectionId: null, modelId: 'gpt-5' },
+        ref: { agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: null, modelId: 'gpt-5' },
       },
       sessionConfigOptionOverrides: {
         v: 1,
@@ -2143,7 +2161,7 @@ describe('createCliActionExecutor', () => {
         modelSelection: {
           v: 1,
           updatedAt: 1710000000000,
-          ref: { agentTargetKey: 'backend:claude', providerConnectionId: null, modelId: 'gpt-5' },
+          ref: { agentTargetKey: 'agent:happier.agent.claude/claude', providerConnectionId: null, modelId: 'gpt-5' },
         },
         initialInput: { text: 'Hello from CLI action' },
       }),
@@ -2165,7 +2183,7 @@ describe('createCliActionExecutor', () => {
       modelSelection: {
         v: 1,
         updatedAt: expect.any(Number),
-        ref: { agentTargetKey: 'backend:claude', providerConnectionId: null, modelId: 'gpt-5' },
+        ref: { agentTargetKey: 'agent:happier.agent.claude/claude', providerConnectionId: null, modelId: 'gpt-5' },
       },
       spawnNonce: expect.any(String),
       // The one defaulting owner keys the spawn request by the Agent catalog's

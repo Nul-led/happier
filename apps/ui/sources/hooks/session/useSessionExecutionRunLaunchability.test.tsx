@@ -125,6 +125,38 @@ describe('useSessionExecutionRunLaunchability', () => {
         } as any;
     });
 
+    it('says why agents cannot start here instead of only hiding the launcher', async () => {
+        const { useSessionExecutionRunLaunchability } = await import('./useSessionExecutionRunLaunchability');
+
+        const live = await renderHook(() => useSessionExecutionRunLaunchability('session-1', sessionState.value));
+        expect(live.getCurrent().launchUnavailableReason).toBeNull();
+        await live.unmount();
+
+        // An inactive Session whose Machine is unreachable cannot resume, so it cannot start agents.
+        machineReachabilitySpy.mockImplementation(() => ({ machineReachable: false }));
+        sessionState.value = { id: 'session-1', active: false, serverId: 'server-explicit', metadata: { flavor: 'claude' } } as any;
+        const offline = await renderHook(() => useSessionExecutionRunLaunchability('session-1', sessionState.value));
+        expect(offline.getCurrent()).toMatchObject({ canShowExecutionRunLauncher: false, launchUnavailableReason: 'machineOffline' });
+        await offline.unmount();
+
+        // Reachable but not resumable: the Session itself is what stops it.
+        machineReachabilitySpy.mockImplementation(() => ({ machineReachable: true }));
+        const stopped = await renderHook(() => useSessionExecutionRunLaunchability('session-1', sessionState.value));
+        expect(stopped.getCurrent()).toMatchObject({ canShowExecutionRunLauncher: false, launchUnavailableReason: 'sessionInactive' });
+        await stopped.unmount();
+
+        // A Session started outside Happier can start agents only while Happier's runner is attached.
+        sessionState.value = { id: 'session-1', active: true, serverId: 'server-explicit', metadata: { flavor: 'claude' } } as any;
+        externalSessionRuntimeSpy.mockImplementation(() => ({
+            externalSessionLink: { v: 1 } as any,
+            status: { runnerActive: false },
+        }));
+        const external = await renderHook(() => useSessionExecutionRunLaunchability('session-1', sessionState.value));
+        expect(external.getCurrent()).toMatchObject({ canShowExecutionRunLauncher: false, launchUnavailableReason: 'externalRunnerInactive' });
+        await external.unmount();
+        externalSessionRuntimeSpy.mockImplementation(() => ({ externalSessionLink: null, status: { runnerActive: true } }));
+    });
+
     it('exposes the canonical session server id for consumers and backend lookup', async () => {
         const { useSessionExecutionRunLaunchability } = await import('./useSessionExecutionRunLaunchability');
         const hook = await renderHook(() => useSessionExecutionRunLaunchability('session-1', sessionState.value));

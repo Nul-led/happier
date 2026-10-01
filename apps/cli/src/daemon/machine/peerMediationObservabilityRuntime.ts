@@ -7,12 +7,8 @@ import type { DaemonPeerMediationObservabilityEmitter } from '../peer/mediation/
 /**
  * Bootstrap-owned peer-mediation observability runtime (PMS-9, FINALIZATION-PLAN finding #49).
  *
- * The store + emitter interface already exist under `peer/mediation/observability/**`, and both the
- * stream and TCP-tunnel relay terminators accept an optional `observability` emitter — but no
- * production caller ever constructs the store or supplies the emitter, so the daemon counters stay
- * dark. This factory is the single bootstrap seam that wires them: it owns the store instance and
- * exposes a store-backed emitter to hand to each relay terminator. It deliberately lives at the
- * bootstrap layer (not inside the mediation internals) so the wiring is supplied, not restructured.
+ * One shared store backs collection and reads. The live Home setting is consulted at publication,
+ * so disabling collection stops retaining events without replacing subscribed store instances.
  */
 export type DaemonPeerMediationObservabilityRuntime = Readonly<{
     store: DaemonPeerMediationObservabilityStore;
@@ -20,7 +16,7 @@ export type DaemonPeerMediationObservabilityRuntime = Readonly<{
 }>;
 
 export function createDaemonPeerMediationObservabilityRuntime(
-    input: Readonly<{ nowMs?: () => number }> = {},
+    input: Readonly<{ nowMs?: () => number; isEnabled?: () => boolean }> = {},
 ): DaemonPeerMediationObservabilityRuntime {
     const store = createDaemonPeerMediationObservabilityStore({
         ...(input.nowMs ? { nowMs: input.nowMs } : {}),
@@ -29,7 +25,7 @@ export function createDaemonPeerMediationObservabilityRuntime(
         store,
         emitter: {
             emit: (event) => {
-                store.publish(event);
+                if (input.isEnabled?.() === true) store.publish(event);
             },
         },
     };

@@ -1,4 +1,7 @@
-import type { Session, AgentState } from '@/sync/domains/state/storageTypes';
+import type { Session } from '@/sync/domains/state/storageTypes';
+import type { AgentState } from '@happier-dev/session-core/state';
+import { isSessionTerminalPermanentlyAbsent, readSessionTerminalControlServiceabilityStateV1 } from '@happier-dev/protocol';
+import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
 
 export type SessionLocalControlTopology = 'exclusive' | 'shared';
 
@@ -35,8 +38,14 @@ function readAgentStateLocalControl(agentState: AgentState | null | undefined): 
 }
 
 export function getSessionLocalControlState(session: Session | null): SessionLocalControlState | null {
-    const state = readAgentStateLocalControl(session?.agentState ?? null);
-    if (session?.metadata != null && session?.active !== true) return null;
+    // Agent state survives shutdown. Live controls require the current runner;
+    // preserved terminal-host recovery remains owned by terminal serviceability.
+    if (session?.active !== true) return null;
+    const serviceability = readSessionOwnerMetadataView(session)?.terminal?.controlServiceabilityV1;
+    if (isSessionTerminalPermanentlyAbsent(serviceability)
+        || readSessionTerminalControlServiceabilityStateV1(serviceability) === 'recoverable_unservable') return null;
+
+    const state = readAgentStateLocalControl(session.agentState);
     if (state) return state;
 
     if (session?.agentState?.controlledByUser === true) {

@@ -1,26 +1,91 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
     buildSessionListReachabilitySummary,
     createSessionListReachabilitySummaryCache,
 } from './buildSessionListReachabilitySummary';
 import { sessionAddressKey } from '@/sync/domains/session/sessionAddress';
-
-const getStateSpy = vi.fn();
-
-vi.mock('@/sync/domains/state/storage', async () => {
-    const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
-    return createStorageModuleStub({
-        storage: {
-            getState: () => getStateSpy(),
-        },
-    });
-});
+import { storage } from '@/sync/domains/state/storage';
+import { createSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
+import { createMachineFixture } from '@/dev/testkit/fixtures/machineFixtures';
+import { buildSessionListRenderableFromSession } from '@/sync/domains/session/listing/sessionListRenderable';
+import { setActiveServerId, upsertServerProfile } from '@/sync/domains/server/serverProfiles';
+import { projectManager } from '@/sync/runtime/orchestration/projectManager';
+import { getSessionAvatarId, getSessionName, getSessionSubtitle } from '@/utils/sessions/sessionUtils';
+import { buildSessionListViewData } from '@/sync/domains/session/listing/sessionListViewData';
+import { buildSessionListIndexWithServerScope } from '@/sync/store/sessionListIndex/buildSessionListIndexWithServerScope';
+import { t } from '@/text';
 
 describe('buildSessionListReachabilitySummary', () => {
+    let previousState: ReturnType<typeof storage.getState>;
     beforeEach(() => {
-        getStateSpy.mockReset();
-        getStateSpy.mockReturnValue({});
+        previousState = storage.getState();
+        storage.setState({ sessions: {}, machines: {}, machineListByServerId: {}, sessionListRowsByServerId: {}, ordinarySessionListMembershipByServerId: {} });
+        projectManager.clear();
+    });
+    afterEach(() => {
+        storage.setState(previousState, true);
+        projectManager.clear();
+    });
+
+    it('keeps a foreign Home workspace instead of the hydrated same-ID Session project', async () => {
+        const homeA = await upsertServerProfile({ serverUrl: 'https://workspace-a.example.test', name: 'A' });
+        const homeB = await upsertServerProfile({ serverUrl: 'https://workspace-b.example.test', name: 'B' });
+        await setActiveServerId(homeA.id, { scope: 'device' });
+        const sessionA = createSessionFixture({ id: 'same-session', serverId: homeA.id,
+            metadata: { machineId: 'machine-a', path: '/repo-a', host: 'a.local' } });
+        const sessionB = createSessionFixture({ id: 'same-session', serverId: homeB.id,
+            metadata: { machineId: 'machine-b', path: '/repo-b', host: 'b.local' } });
+        const rowA = buildSessionListRenderableFromSession(sessionA);
+        const rowB = buildSessionListRenderableFromSession(sessionB);
+        const machineA = createMachineFixture({ id: 'machine-a', active: true });
+        const machineB = createMachineFixture({ id: 'machine-b' });
+        storage.setState({
+            sessions: { [sessionA.id]: sessionA },
+            machines: { [machineA.id]: machineA },
+            machineListByServerId: { [homeB.id]: [machineB] },
+            sessionListRowsByServerId: { [homeA.id]: { [sessionA.id]: rowA }, [homeB.id]: { [sessionB.id]: rowB } },
+            ordinarySessionListMembershipByServerId: { [homeA.id]: [sessionA.id], [homeB.id]: [sessionB.id] },
+        });
+        // Real store/project ownership: the bare accessor materializes A's project.
+        expect(storage.getState().getProjectForSession(sessionA.id)?.key.rootPath).toBe('/repo-a');
+        const address = { serverId: homeB.id, sessionId: sessionB.id };
+        const summary = buildSessionListReachabilitySummary({
+            listItems: [{ type: 'session', ...address }],
+            machinesById: new Map([[machineB.id, machineB]]),
+            workspaceRefs: [],
+            resolveSessionRenderable: () => rowB,
+        });
+        expect(summary.displayByKey.get(sessionAddressKey(address))).toMatchObject({
+            machineId: 'machine-b', workspaceSubtitle: 'repo-b',
+        });
+        expect.soft(getSessionSubtitle(sessionB)).toBe('/repo-b');
+        expect.soft(getSessionName(rowB, homeB.id)).toBe('repo-b');
+        expect.soft(getSessionAvatarId(rowB, homeB.id)).toBe('machine-b:/repo-b');
+        expect.soft(getSessionSubtitle(rowB, homeB.id)).toBe('/repo-b');
+        expect.soft(getSessionSubtitle(createSessionFixture({
+            ...sessionB,
+            metadataLayoutVersion: 1,
+            metadata: { machineId: 'machine-b', path: '/shared-b', host: 'b.local' },
+            ownerMetadataView: { ...sessionB.metadata!, path: '/private-b' },
+        }))).toBe('/private-b');
+        expect.soft(getSessionSubtitle(createSessionFixture({
+            ...sessionB, metadataLayoutVersion: 1, ownerMetadataView: null,
+        }))).toBe(t('status.unknown'));
+        const groupedRows = buildSessionListViewData({ [sessionB.id]: rowB }, { [machineB.id]: machineB }, {
+            activeGroupingV1: 'project', inactiveGroupingV1: 'project',
+            serverScope: { serverId: homeB.id }, sessionTargetState: storage.getState(),
+        });
+        expect.soft(groupedRows.find((item) => item.type === 'header' && item.headerKind === 'project'))
+            .toMatchObject({ title: '/repo-b' });
+        const index = buildSessionListIndexWithServerScope({
+            sessions: { [sessionB.id]: rowB }, sessionRecords: storage.getState().sessions,
+            machines: { [machineB.id]: machineB }, machineRecords: { [machineB.id]: machineB },
+            getProjectForSession: storage.getState().getProjectForSession,
+            activeGroupingV1: 'project', inactiveGroupingV1: 'project', serverScope: { serverId: homeB.id },
+        });
+        expect.soft(index.find((item) => item.type === 'header' && item.headerKind === 'project'))
+            .toMatchObject({ title: '/repo-b' });
     });
 
     it('reuses a shared empty summary when there are no session rows', () => {
@@ -264,9 +329,11 @@ describe('buildSessionListReachabilitySummary', () => {
     });
 
     it('uses stable display attribution instead of live RPC reachability for row summaries', () => {
-        getStateSpy.mockReturnValue({
+        storage.setState({
             sessions: {
-                'sess-replaced': {
+                'sess-replaced': createSessionFixture({
+                    id: 'sess-replaced',
+                    serverId: 'server-a',
                     active: false,
                     metadata: {
                         machineId: 'machine-old',
@@ -274,26 +341,26 @@ describe('buildSessionListReachabilitySummary', () => {
                         path: '/home/user/repo',
                         homeDir: '/home/user',
                     },
-                },
+                }),
             },
             machines: {
-                'machine-old': {
+                'machine-old': createMachineFixture({
                     id: 'machine-old',
                     active: false,
                     activeAt: 1,
                     replacedByMachineId: 'machine-current',
                     replacedAt: 2,
-                    metadata: { host: 'old.local', homeDir: '/home/user' },
-                },
-                'machine-current': {
+                    metadata: { host: 'old.local', homeDir: '/home/user', platform: 'linux', happyCliVersion: 'test', happyHomeDir: '/home/user/.happier' },
+                }),
+                'machine-current': createMachineFixture({
                     id: 'machine-current',
                     active: false,
                     activeAt: 3,
-                    metadata: { displayName: 'Current machine', host: 'current.local', homeDir: '/home/user' },
-                },
+                    metadata: { displayName: 'Current machine', host: 'current.local', homeDir: '/home/user', platform: 'linux', happyCliVersion: 'test', happyHomeDir: '/home/user/.happier' },
+                }),
             },
-            getProjectForSession: () => null,
         });
+        storage.setState({ machineListByServerId: { 'server-a': Object.values(storage.getState().machines) } });
 
         const summary = buildSessionListReachabilitySummary({
             listItems: [

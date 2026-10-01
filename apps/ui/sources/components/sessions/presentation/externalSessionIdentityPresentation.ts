@@ -1,3 +1,5 @@
+import type { ExternalSessionCandidateThreadV1 } from '@happier-dev/protocol';
+
 import { resolveAgentCatalogProjection } from '@/agents/backendCatalog/agentCatalogProjection';
 import { readExternalSessionLink } from '@/sync/domains/session/external/readExternalSessionLink';
 import { t } from '@/text';
@@ -20,6 +22,8 @@ export type ExternalSessionBrowseCandidateIdentityPresentation = Readonly<{
     title: string;
     pathLabel: string | null;
     identityLabel: string | null;
+    /** What an internal thread is ("Reviewer", "Sub-agent of <parent>"); null for a top-level session. */
+    threadLabel: string | null;
     secondaryLabel: string | null;
 }>;
 
@@ -37,6 +41,41 @@ function joinIdentityLabels(labels: readonly (string | null | undefined)[]): str
         .join(' · ') || null;
 }
 
+/** A UUID-shaped string: an Agent's session or thread id, never a name a person gave. */
+const SESSION_ID_SHAPED = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** A title a person could recognize: never empty, never the session's own id, never id-shaped. */
+function readMeaningfulTitle(title: string | undefined, remoteSessionId: string | null): string | null {
+    const trimmed = typeof title === 'string' ? title.trim() : '';
+    return trimmed && trimmed !== remoteSessionId && !SESSION_ID_SHAPED.test(trimmed) ? trimmed : null;
+}
+
+function resolveThreadLabel(thread: ExternalSessionCandidateThreadV1 | undefined): string | null {
+    if (!thread) return null;
+    const parent = readMeaningfulTitle(thread.parentTitle, thread.parentRemoteSessionId);
+    if (thread.kind === 'reviewer') {
+        return parent
+            ? t('externalSessions.browseThreadReviewerOf', { parent })
+            : t('externalSessions.browseThreadReviewer');
+    }
+    return parent
+        ? t('externalSessions.browseThreadSubagentOf', { parent })
+        : t('externalSessions.browseThreadSubagent');
+}
+
+/** The last six characters of an id, as a short hint that tells untitled sessions apart. */
+function readShortIdHint(remoteSessionId: string): string | null {
+    const compact = remoteSessionId.replace(/[^0-9a-z]/gi, '');
+    return compact.length > 0 ? `…${compact.slice(-6)}` : null;
+}
+
+/**
+ * How a Browse candidate is named. Its title is the Agent's title (the first meaningful user message
+ * when the index has one); a candidate without one is an "Untitled session", like any other session
+ * without a name, and its secondary line carries the hint that tells it apart: its project folder,
+ * else a short id suffix. A raw session id is never the title. An internal thread leads that line with
+ * what it is and, when its parent's title is known, whose thread it is.
+ */
 export function resolveExternalSessionBrowseCandidateIdentityPresentation(
     input: Readonly<{
         remoteSessionId: string;
@@ -45,23 +84,24 @@ export function resolveExternalSessionBrowseCandidateIdentityPresentation(
         homeDir?: string | null;
         agentLabel?: string | null;
         machineLabel?: string | null;
+        thread?: ExternalSessionCandidateThreadV1;
     }>,
 ): ExternalSessionBrowseCandidateIdentityPresentation {
-    const candidateTitle = typeof input.title === 'string' ? input.title.trim() : '';
-    const meaningfulTitle = candidateTitle && candidateTitle !== input.remoteSessionId
-        ? candidateTitle
-        : null;
+    const meaningfulTitle = readMeaningfulTitle(input.title, input.remoteSessionId);
+    const threadLabel = resolveThreadLabel(input.thread);
     const pathLabel = input.path
         ? formatPathRelativeToHome(input.path, input.homeDir ?? undefined).trim() || null
         : null;
     const identityLabel = joinDistinctIdentityLabels([input.agentLabel, input.machineLabel]);
     return {
-        title: meaningfulTitle ?? pathLabel ?? input.remoteSessionId,
+        title: meaningfulTitle ?? t('session.untitled'),
         pathLabel,
         identityLabel,
+        threadLabel,
         secondaryLabel: joinDistinctIdentityLabels([
+            threadLabel,
             identityLabel,
-            meaningfulTitle ? pathLabel : null,
+            meaningfulTitle ? pathLabel : pathLabel ?? readShortIdHint(input.remoteSessionId),
         ]),
     };
 }

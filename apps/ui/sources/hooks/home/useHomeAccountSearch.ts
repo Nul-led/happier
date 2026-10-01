@@ -1,7 +1,7 @@
 import * as React from 'react';
 import type { HomeAccountPickerRowV1 } from '@happier-dev/protocol/home/governance';
 
-import { useSearch } from '@/hooks/search/useSearch';
+import { useSearch, type SearchRequestContext } from '@/hooks/search/useSearch';
 import type { HomeDomainFailure } from '@/sync/api/home/homeServerActionTransport';
 import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
 import { searchHomeAccounts } from '@/sync/ops/home/homeGovernanceOperations';
@@ -11,6 +11,7 @@ export type HomeAccountSearchState = Readonly<{
     searching: boolean;
     /** The Home's own answer when the lookup failed; never inferred. */
     failure: HomeDomainFailure | null;
+    retry: () => void;
 }>;
 
 const NO_ROWS: readonly HomeAccountPickerRowV1[] = Object.freeze([]);
@@ -37,13 +38,14 @@ export function useHomeAccountSearch(
     const serverId = scope?.serverId ?? '';
     const accountId = scope?.accountId ?? '';
 
-    const search = React.useCallback(async (raw: string): Promise<HomeAccountPickerRowV1[]> => {
+    const search = React.useCallback(async (raw: string, request: SearchRequestContext): Promise<HomeAccountPickerRowV1[]> => {
         const trimmed = raw.trim();
         if (!enabled || !serverId || !accountId || trimmed.length === 0) {
             setFailure(null);
             return [];
         }
         const outcome = await searchHomeAccounts({ scope: { serverId, accountId }, query: trimmed });
+        if (!request.isCurrent()) return [];
         if (outcome.kind === 'failed') {
             setFailure(outcome.failure);
             // A Home that could not be reached is worth asking again, so the
@@ -57,11 +59,12 @@ export function useHomeAccountSearch(
         return [...outcome.value.accounts];
     }, [enabled, serverId, accountId]);
 
-    const { results, isSearching } = useSearch(query, search);
+    const { results, isSearching, retry } = useSearch(query, search);
 
     return React.useMemo(() => Object.freeze({
         rows: results.length > 0 ? results : NO_ROWS,
         searching: isSearching,
         failure,
-    }), [results, isSearching, failure]);
+        retry,
+    }), [results, isSearching, failure, retry]);
 }

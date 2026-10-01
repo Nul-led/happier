@@ -53,7 +53,6 @@ describe('initializeBackendRunSession pending first input', () => {
         },
       },
       {
-        primeAgentStateForUiFn: () => {},
         reportSessionToDaemonIfRunningFn: async () => {
           events.push('daemon-report');
         },
@@ -66,6 +65,7 @@ describe('initializeBackendRunSession pending first input', () => {
       text: 'Commit me through Pending.',
       localId: 'spawn-first-turn:stable-nonce',
       meta: { source: 'ui', sentFrom: 'cli' },
+      requestedAction: { v: 1, kind: 'send_now' },
       inputAdmission: {
         provenance: { v: 1, kind: 'host', producer: 'agentRuntimeFirstInput' },
         request: {
@@ -117,9 +117,6 @@ describe('initializeBackendRunSession pending first input', () => {
         },
       },
       {
-        primeAgentStateForUiFn: () => {
-          events.push('ui-ready');
-        },
         reportSessionToDaemonIfRunningFn,
         persistTerminalAttachmentInfoIfNeededFn: async () => {},
         sendTerminalFallbackMessageIfNeededFn: () => {},
@@ -131,7 +128,7 @@ describe('initializeBackendRunSession pending first input', () => {
       metadata,
       requireDaemonAck: true,
     });
-    expect(events).toEqual(['ui-ready', 'pending-committed', 'daemon-ack']);
+    expect(events).toEqual(['pending-committed', 'daemon-ack']);
     expect(process.env.HAPPIER_DAEMON_PENDING_FIRST_INPUT).toBeUndefined();
   });
 
@@ -174,7 +171,6 @@ describe('initializeBackendRunSession pending first input', () => {
         },
       },
       {
-        primeAgentStateForUiFn: () => {},
         reportSessionToDaemonIfRunningFn,
         persistTerminalAttachmentInfoIfNeededFn: async () => {},
         sendTerminalFallbackMessageIfNeededFn: () => {},
@@ -225,7 +221,6 @@ describe('initializeBackendRunSession pending first input', () => {
         },
       },
       {
-        primeAgentStateForUiFn: () => {},
         reportSessionToDaemonIfRunningFn,
         persistTerminalAttachmentInfoIfNeededFn: async () => {},
         sendTerminalFallbackMessageIfNeededFn: () => {},
@@ -241,6 +236,7 @@ describe('initializeBackendRunSession pending first input', () => {
       text: 'Commit once after runtime readiness.',
       localId: 'spawn-first-turn:daemon-runtime-ready-once',
       meta: { source: 'ui', sentFrom: 'cli' },
+      requestedAction: { v: 1, kind: 'send_now' },
       inputAdmission: {
         provenance: { v: 1, kind: 'host', producer: 'agentRuntimeFirstInput' },
         request: {
@@ -262,7 +258,6 @@ describe('initializeBackendRunSession pending first input', () => {
     }));
     const metadata = { startedBy: 'daemon' } as Metadata;
     const state = { controlledByUser: false } as AgentState;
-    const primeAgentStateForUiFn = vi.fn();
     const session = {
       sessionId: 'canonical-session',
       enqueueSessionUserMessage: vi.fn(),
@@ -288,7 +283,6 @@ describe('initializeBackendRunSession pending first input', () => {
         },
       },
       {
-        primeAgentStateForUiFn,
         reportSessionToDaemonIfRunningFn: async () => {
           throw new Error('daemon readiness failed');
         },
@@ -297,7 +291,6 @@ describe('initializeBackendRunSession pending first input', () => {
       },
     )).rejects.toThrow('daemon readiness failed');
 
-    expect(primeAgentStateForUiFn).toHaveBeenCalledOnce();
     expect(session.enqueueSessionUserMessage).toHaveBeenCalledOnce();
     expect(process.env.HAPPIER_DAEMON_PENDING_FIRST_INPUT).toBeUndefined();
   });
@@ -333,7 +326,6 @@ describe('initializeBackendRunSession pending first input', () => {
         },
       },
       {
-        primeAgentStateForUiFn: () => {},
         reportSessionToDaemonIfRunningFn,
         persistTerminalAttachmentInfoIfNeededFn: async () => {},
         sendTerminalFallbackMessageIfNeededFn: () => {},

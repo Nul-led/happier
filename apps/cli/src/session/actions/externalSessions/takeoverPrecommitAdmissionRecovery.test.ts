@@ -1,3 +1,4 @@
+import { createStoppedTakeoverQuiescenceFixture } from '@/testkit/backends/externalSessionFixtures';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -39,6 +40,7 @@ import {
 import type {
   PreparedExternalSessionPersistedTakeoverSource,
 } from './takeoverPhaseRunner';
+import { createPluginRuntimeOccurrenceId } from '@/plugins/runtime/runtimeSlots';
 
 const ATTEMPT_ID = 'attempt-1';
 const CLAIM_ID = 'released-start-claim';
@@ -48,7 +50,7 @@ const publisherPrecondition = Object.freeze({
 });
 
 function precommitAdmittingRecord(): ExternalSessionOperationRecordV1 {
-  const request = {
+  const request: ExternalSessionOperationRecordV1['request'] = {
     v: 1 as const,
     idempotencyKey: 'takeover-request-1',
     sessionId: 'session-1',
@@ -62,7 +64,7 @@ function precommitAdmittingRecord(): ExternalSessionOperationRecordV1 {
       },
       linkGeneration: 'link-1',
       sourceGeneration: 'source-1',
-      contributionGeneration: 'contribution-1',
+      sourceCustody: { kind: 'development', registeredRootId: 'contribution-1' },
     },
     plan: 'takeover' as const,
     targetStorageMode: 'persisted' as const,
@@ -156,8 +158,9 @@ function admissionReadyRecord(): ExternalSessionOperationRecordV1 {
 
 function persistedCurrentSource(): PreparedExternalSessionPersistedTakeoverSource {
   return {
-    pluginGeneration: 'contribution-1',
+    occurrenceId: createPluginRuntimeOccurrenceId('com.example.agent'),
     quiescenceIdentity: 'stopped-source-1',
+    quiescence: createStoppedTakeoverQuiescenceFixture(admissionReadyRecord()),
     linked: {
       rawSession: {
         id: 'session-1',
@@ -213,7 +216,7 @@ function resolvedSpawn(
     origin: {
       agentId: 'claude',
       pluginId: 'claude',
-      generation: 'contribution-1',
+      occurrenceId: createPluginRuntimeOccurrenceId('claude'),
     },
   };
 }
@@ -331,9 +334,7 @@ describe('external-session takeover precommit admission recovery', () => {
 
   it('keeps a double-lost-ack predecessor child from binding its replacement', async () => {
     await withActiveServerDir(async (activeServerDir) => {
-      const waiter = createPersistedTakeoverAdmissionWaiter({
-        timeoutMs: 5_000,
-      });
+      const waiter = createPersistedTakeoverAdmissionWaiter();
       const predecessorAttemptId = 'attempt-predecessor';
       const replacementAttemptId = 'attempt-replacement';
       const predecessorClaimId = 'claim-predecessor';
@@ -456,7 +457,7 @@ describe('external-session takeover precommit admission recovery', () => {
               status: 'acquired',
               claim: {
                 record: {
-                  schemaVersion: 1,
+                  schemaVersion: 2,
                   claimId,
                   ownerId: 'takeover-composition-test',
                   request,

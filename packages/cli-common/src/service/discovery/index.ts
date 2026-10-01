@@ -26,6 +26,9 @@ export {
   readLaunchdLoadedStatus,
 } from './readLaunchdLoadedStatus.js';
 export {
+  readLaunchdServiceEnabled,
+} from './readLaunchdDisabledServices.js';
+export {
   readScheduledTaskStatus,
 } from './readScheduledTaskStatus.js';
 export {

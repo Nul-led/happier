@@ -96,6 +96,17 @@ function openTwoLocalPreviewEvents(): readonly BrowserEventV1[] {
 }
 
 describe('browser control reducer', () => {
+    it('uses authoritative generations without double-counting redirects or regressing stale events', async () => {
+        const { applyBrowserControlEvent, createBrowserControlState } = await import('./reducer');
+        let state = openLocalPreviewEvents().reduce(applyBrowserControlEvent, createBrowserControlState());
+        const event = { kind: 'navigationStateChanged' as const, eventId: 'redirect', browserSessionId: 'browser_session_1', viewId: 'view_1', occurredAt: 10,
+            currentUrl: 'https://redirect.test/', title: 'Redirected', navigationGeneration: 4, loadingState: 'ready' as const, canGoBack: true, canGoForward: false };
+        state = applyBrowserControlEvent(state, event);
+        expect(state.viewsById.view_1).toMatchObject({ currentUrl: 'https://redirect.test/', navigationGeneration: 4, title: 'Redirected', loadingState: 'ready' });
+        state = applyBrowserControlEvent(state, { kind: 'navigationCommitted', eventId: 'same', browserSessionId: 'browser_session_1', viewId: 'view_1', occurredAt: 11, currentUrl: 'https://redirect.test/', navigationGeneration: 4 });
+        expect(state.viewsById.view_1?.navigationGeneration).toBe(4);
+        expect(applyBrowserControlEvent(state, { ...event, eventId: 'old', currentUrl: 'https://old.test/', navigationGeneration: 3 })).toBe(state);
+    });
     it('projects browser sessions, views, focus, and current target from events', async () => {
         const mod = await import('./reducer').catch(() => null);
 

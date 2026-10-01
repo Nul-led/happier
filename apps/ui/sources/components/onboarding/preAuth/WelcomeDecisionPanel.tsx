@@ -6,12 +6,16 @@ import type { AccountServiceEntryOptions } from '@/components/account/auth/useAc
 import type { AuthEntryOptions } from '@/components/account/auth/useAuthEntryOptions';
 import { getAuthProvider } from '@/auth/providers/registry';
 import { describeHomeAuthenticationAction } from '@/components/account/auth/homeAuthenticationActionPresentation';
+import { readAccountServiceDisplayName } from '@/components/account/auth/accountServiceDisplayName';
 import { createVerifiedAccountServiceAuthority } from '@/auth/accountDirectory/accountDirectoryAuthClient';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { Text } from '@/components/ui/text/Text';
 import { Typography } from '@/constants/Typography';
 import { useLocalSetting } from '@/sync/store/hooks';
+import { formatAccountServiceHost } from '@/sync/domains/accountDirectory/accountDirectoryEndpoint';
 import { t } from '@/text';
+import { PhoneWelcomeDoorway } from '@/components/homes/journeys/phone/PhoneWelcomeDoorway';
+import { useViewportClass } from '@/utils/platform/useViewportClass';
 import { useReturningGreeting } from './useReturningGreeting';
 import { WelcomeActionCard } from './WelcomeActionCard';
 import { WelcomeActionList, type WelcomeActionAdmission } from './WelcomeActionList';
@@ -59,6 +63,9 @@ export const WelcomeDecisionPanel = React.memo(function WelcomeDecisionPanel(pro
     // seen flag.
     const isReturningUser = useLocalSetting('hasCompletedAuthOnce');
     const returningGreeting = useReturningGreeting();
+    // A phone's first run is the Homes doorway (lab K1p): a phone never hosts a Home, so it asks how
+    // to reach one. A chosen Home, or a returning person, keeps the Home's own sign-in below.
+    const viewportClass = useViewportClass();
     const activeActionIdRef = React.useRef<string | null>(null);
     const [pendingActionId, setPendingActionId] = React.useState<string | null>(null);
     const runAction = React.useCallback(async (actionId: string, action: () => Promise<void> | void) => {
@@ -79,57 +86,69 @@ export const WelcomeDecisionPanel = React.memo(function WelcomeDecisionPanel(pro
         run: runAction,
     }), [pendingActionId, runAction]);
     const accountServiceEntry = props.accountServiceEntry;
-    const renderActions = () => {
-        const requestedHomeTarget = options.requestedHomeTarget;
-        const homeTarget = options.homeTarget;
-        const homeMethods: WelcomeAuthenticationMethod[] = homeTarget
-            && options.showAuthActions
-            && props.onContinueWithHomeAuthentication
-            && (options.serverAvailability === 'ready' || options.serverAvailability === 'legacy')
-            ? (options.authenticationActions ?? []).map(({ method, action, execution }) => ({
-                    method, action, execution,
-                    authority: { purpose: 'home' as const, target: homeTarget },
-                    intendedHome: homeTarget,
-                })) : [];
-        const discovery = accountServiceEntry?.status === 'ready' ? accountServiceEntry.discovery : null;
-        const serviceAuthority = discovery ? createVerifiedAccountServiceAuthority(discovery) : null;
-        const serviceMethods: WelcomeAuthenticationMethod[] = discovery && serviceAuthority
-            ? discovery.authenticationActions.filter(({ execution }) => (
-                execution.kind === 'oauth'
-                    ? props.onContinueWithAccountServiceProvider != null
-                    : props.onContinueWithAccountServiceKey != null
-            )).map(({ method, action, execution }) => ({ method, action, execution, authority: { purpose: 'account_service' as const, service: serviceAuthority }, intendedHome: requestedHomeTarget ?? null }))
-            : [];
-        const serviceName = discovery?.accountServiceDisplayName ?? accountServiceEntry?.endpoint?.displayName ?? null;
-        const serviceCatalogState = accountServiceEntry?.status === 'ready'
-            ? serviceMethods.length > 0 && serviceAuthority
-                ? { kind: 'ready' as const, authority: serviceAuthority, name: serviceName ?? accountServiceEntry.endpoint?.url ?? '', methods: serviceMethods }
-                : { kind: 'methodless' as const, hintName: serviceName ?? undefined }
-            : accountServiceEntry?.status === 'loading'
-                ? { kind: 'loading' as const, hintName: accountServiceEntry.endpoint?.displayName }
-                : accountServiceEntry?.status === 'unavailable'
-                    ? { kind: 'unavailable' as const, hintName: accountServiceEntry.endpoint?.displayName }
-                    : accountServiceEntry?.status === 'unsupported'
-                        ? { kind: 'unsupported' as const, hintName: accountServiceEntry.endpoint?.displayName }
-                        : { kind: 'not_offered' as const };
-        const model = composeWelcomeEntryModel({
-            target: requestedHomeTarget
-                ? { kind: 'selected_home', home: requestedHomeTarget, label: options.homeLabel ?? options.serverUrlForCopy }
+    const requestedHomeTarget = options.requestedHomeTarget;
+    const homeTarget = options.homeTarget;
+    const homeMethods: WelcomeAuthenticationMethod[] = homeTarget
+        && options.showAuthActions
+        && props.onContinueWithHomeAuthentication
+        && (options.serverAvailability === 'ready' || options.serverAvailability === 'legacy')
+        ? (options.authenticationActions ?? []).map(({ method, action, execution }) => ({
+            method, action, execution,
+            authority: { purpose: 'home' as const, target: homeTarget },
+            intendedHome: homeTarget,
+        })) : [];
+    const discovery = accountServiceEntry?.status === 'ready' ? accountServiceEntry.discovery : null;
+    const serviceAuthority = discovery ? createVerifiedAccountServiceAuthority(discovery) : null;
+    const serviceMethods: WelcomeAuthenticationMethod[] = discovery && serviceAuthority
+        ? discovery.authenticationActions.filter(({ execution }) => (
+            execution.kind === 'oauth'
+                ? props.onContinueWithAccountServiceProvider != null
+                : props.onContinueWithAccountServiceKey != null
+        )).map(({ method, action, execution }) => ({ method, action, execution, authority: { purpose: 'account_service' as const, service: serviceAuthority }, intendedHome: requestedHomeTarget ?? null }))
+        : [];
+    const serviceName = accountServiceEntry?.endpoint ? readAccountServiceDisplayName({
+        url: discovery?.endpointUrl ?? accountServiceEntry.endpoint.url,
+        serverIdentityId: discovery?.serverIdentityId ?? accountServiceEntry.endpoint.serverIdentityId,
+        savedName: accountServiceEntry.endpoint.displayName,
+        advertisedName: discovery?.accountServiceDisplayName,
+    }) ?? formatAccountServiceHost(discovery?.endpointUrl ?? accountServiceEntry.endpoint.url) : null;
+    const serviceCatalogState = accountServiceEntry?.status === 'ready'
+        ? serviceMethods.length > 0 && serviceAuthority
+            ? { kind: 'ready' as const, authority: serviceAuthority, name: serviceName ?? t('welcome.yourSignInService'), methods: serviceMethods }
+            : { kind: 'methodless' as const, hintName: serviceName ?? undefined }
+        : accountServiceEntry?.status === 'loading'
+            ? { kind: 'loading' as const, hintName: serviceName ?? undefined }
+            : accountServiceEntry?.status === 'unavailable'
+                ? { kind: 'unavailable' as const, hintName: serviceName ?? undefined }
+                : accountServiceEntry?.status === 'unsupported'
+                    ? { kind: 'unsupported' as const, hintName: serviceName ?? undefined }
+                    : { kind: 'not_offered' as const };
+    const model = composeWelcomeEntryModel({
+        target: requestedHomeTarget
+            ? { kind: 'selected_home', home: requestedHomeTarget, label: options.homeLabel ?? options.serverUrlForCopy }
+            : accountServiceEntry?.endpoint.source === 'user'
+                ? { kind: 'selected_service', label: serviceName ?? formatAccountServiceHost(accountServiceEntry.endpoint.url) }
                 : { kind: 'none' },
-            homeMethods,
-            ...(options.observedHomeServerIdentityId ? { observedHomeServerIdentityId: options.observedHomeServerIdentityId } : {}),
-            context: { kind: 'home' },
-            allowedNavigation: {
-                changeHome: props.canChangeHome !== false,
-                selectService: props.onChooseAccountService != null,
-                // Camera support controls how the restore surface starts, not
-                // whether it exists: every client can paste a Home link.
-                scanOrPasteHome: true,
-                createPersonalHome: props.canCreatePersonalHome === true && props.onCreatePersonalHome != null,
-            },
-            serviceCatalogState,
-            userHistory: isReturningUser ? 'returning' : 'first_time',
-        });
+        homeMethods,
+        ...(options.observedHomeServerIdentityId ? { observedHomeServerIdentityId: options.observedHomeServerIdentityId } : {}),
+        context: { kind: 'home' },
+        allowedNavigation: {
+            changeHome: props.canChangeHome !== false,
+            selectService: props.onChooseAccountService != null,
+            // Camera support controls how the restore surface starts, not
+            // whether it exists: every client can paste a Home link.
+            scanOrPasteHome: true,
+            createPersonalHome: props.canCreatePersonalHome === true && props.onCreatePersonalHome != null,
+        },
+        serviceCatalogState,
+        userHistory: isReturningUser ? 'returning' : 'first_time',
+    });
+    const phoneDoorway = viewportClass === 'compact'
+        && !isReturningUser
+        && !options.requestedHomeTarget
+        && accountServiceEntry?.endpoint.source !== 'user'
+        && props.canCreatePersonalHome !== true;
+    const renderActions = () => {
         const renderAction = (row: WelcomeEntryModelAction, index: number) => {
             const action = row.action;
             if (action.kind === 'scan_or_paste_home') {
@@ -176,10 +195,10 @@ export const WelcomeDecisionPanel = React.memo(function WelcomeDecisionPanel(pro
                 : presentation.title;
             const subtitle = isNewHere
                 ? isService
-                    ? t('welcome.newHereServiceSubtitle', { service: serviceName ?? request.authority.service.endpointUrl })
+                    ? t('welcome.newHereServiceSubtitle', { service: serviceName ?? t('welcome.yourSignInService') })
                     : t('welcome.newHereHomeSubtitle', { home: options.homeLabel ?? options.serverUrlForCopy })
                 : isService
-                    ? serviceName ?? request.authority.service.endpointUrl
+                    ? serviceName ?? t('welcome.yourSignInService')
                     : options.homeLabel ?? options.serverUrlForCopy;
             const invoke = () => {
                 if (request.authority.purpose === 'account_service') {
@@ -193,13 +212,13 @@ export const WelcomeDecisionPanel = React.memo(function WelcomeDecisionPanel(pro
         };
         return (
             <View style={styles.actionStack}>
-                {options.serverAvailability === 'loading' ? (
+                {model.showHomeStatus && options.serverAvailability === 'loading' ? (
                     <View testID="welcome-auth-loading" style={styles.statusBlock}>
                         <ActivitySpinner color={theme.colors.text.primary} />
                         <Text style={styles.statusText}>{t('common.loading')}</Text>
                     </View>
                 ) : null}
-                {showBlocked ? (
+                {model.showHomeStatus && showBlocked ? (
                     <View testID="welcome-auth-blocked" style={styles.statusBlock}>
                         <Text style={styles.statusTitle}>{options.serverAvailability === 'incompatible' ? t('welcome.serverIncompatibleTitle') : t('welcome.serverUnavailableTitle')}</Text>
                         <Text style={styles.statusText}>{options.serverAvailability === 'incompatible'
@@ -215,7 +234,7 @@ export const WelcomeDecisionPanel = React.memo(function WelcomeDecisionPanel(pro
                   * later is its own announced block, named for the service the
                   * user chose and explaining what they can do about it.
                   */}
-                {model.notice && !(model.notice.kind === 'service_loading' && options.serverAvailability === 'loading') ? (
+                {model.notice && !(model.showHomeStatus && model.notice.kind === 'service_loading' && options.serverAvailability === 'loading') ? (
                     <View testID={model.notice.kind === 'service_loading' ? 'welcome-account-service-loading' : 'welcome-account-service-recovery'}
                         style={styles.statusBlock}
                         accessibilityLiveRegion="polite"
@@ -247,7 +266,7 @@ export const WelcomeDecisionPanel = React.memo(function WelcomeDecisionPanel(pro
                     </View>
                 ) : null}
                 {model.actions.map(renderAction)}
-                {options.authEntryUnavailable ? (
+                {model.showHomeStatus && options.authEntryUnavailable ? (
                     <View testID="welcome-auth-entry-degraded" style={styles.statusBlock}>
                         <Text style={styles.statusText}>{t('welcome.signInOptionsPartialTitle')}</Text>
                         <WelcomeActionCard testID="welcome-auth-entry-degraded-retry" title={t('common.retry')} onPress={options.retryServerCheck} />
@@ -274,7 +293,10 @@ export const WelcomeDecisionPanel = React.memo(function WelcomeDecisionPanel(pro
                     {isReturningUser ? returningGreeting.subtitle : t('welcome.welcomeQuestionSubtitle')}
                 </Text>
             </View>
-            {options.showAuthActions && options.primaryAction === null ? (
+            {model.showHomeStatus && options.showAuthActions
+                && (options.serverAvailability === 'ready' || options.serverAvailability === 'legacy')
+                && options.authenticationActions !== undefined
+                && !options.authenticationActions.some(({ action }) => action.id === 'provision') ? (
                 <Text testID="welcome-signup-disabled" style={[styles.statusText, styles.signupDisabledNotice]}>
                     {options.isPersonalHome === true
                         ? t('personalHome.auth.signupClosed')
@@ -282,7 +304,9 @@ export const WelcomeDecisionPanel = React.memo(function WelcomeDecisionPanel(pro
                 </Text>
             ) : null}
             <WelcomeActionList admission={actionAdmission}>
-                {renderActions()}
+                {phoneDoorway
+                    ? <PhoneWelcomeDoorway canScanQr={props.canScanQr === true} onScan={handleLogin} />
+                    : renderActions()}
             </WelcomeActionList>
         </View>
     );

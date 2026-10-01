@@ -14,6 +14,7 @@ export function buildRemoteSshManageHostSystemTaskSpec(params: Readonly<{
         | 'relayRuntime.start'
         | 'relayRuntime.stop'
         | 'relayRuntime.restart'
+        | 'personalHome.create'
         | 'personalHome.relocate'
         | 'personalHome.erase';
     sshTarget?: string;
@@ -32,6 +33,8 @@ export function buildRemoteSshManageHostSystemTaskSpec(params: Readonly<{
         channel?: 'stable' | 'preview' | 'dev';
         mode?: 'user' | 'system';
     }>;
+    pairDevice?: boolean;
+    enrollInvokingClient?: boolean;
     personalHomeRelocation?: Readonly<{
         operationId: string;
         destinationMachineId: string;
@@ -85,6 +88,10 @@ export function buildRemoteSshManageHostSystemTaskSpec(params: Readonly<{
                         mode: params.relayRuntime.mode === 'system' ? 'system' : 'user',
                     },
                 }
+                : {}),
+            ...(params.pairDevice !== undefined ? { pairDevice: params.pairDevice } : {}),
+            ...(params.enrollInvokingClient !== undefined
+                ? { enrollInvokingClient: params.enrollInvokingClient }
                 : {}),
             ...(params.personalHomeRelocation
                 ? {

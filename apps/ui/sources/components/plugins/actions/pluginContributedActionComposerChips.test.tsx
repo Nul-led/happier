@@ -79,7 +79,7 @@ function composerControl(input: Readonly<{
         id: `acme.channels/${input.localId}`,
         pluginId: 'acme.channels',
         identity: { pluginId: 'acme.channels', localId: input.localId },
-        immutableGenerationId: 'channels-generation-7',
+        occurrenceId: 'channels-generation-7',
         definition: {
             id: input.localId,
             label: input.localId,
@@ -1152,6 +1152,62 @@ describe('plugin contributed composer Action chips', () => {
         });
         expect(logSpy).toHaveBeenCalledTimes(1);
         expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('composer_control_unknown_choice_ids'));
+        await act(async () => { tree?.unmount(); });
+    });
+
+    it('falls back to its own icon and label inside the chip when its compact renderer cannot mount', async () => {
+        // The host renders a caller fallback in place of its unavailable card; the chip must supply one,
+        // or the host's card (with its own Details button) lands inside the chip's button.
+        const compactControl = composerControl({
+            localId: 'compact-fallback',
+            definition: {
+                label: 'Triage',
+                icon: 'settings',
+                compactRenderer: { renderer: 'triage-compact' },
+                interaction: { kind: 'action', action: 'refresh' },
+            },
+        });
+        const renderSurfaceContent = vi.fn<PluginComposerControlHost['renderSurfaceContent']>(
+            // Like the real host: always an element; its own unavailable card unless a fallback is given.
+            (presentation) => (
+                <React.Fragment>
+                    {presentation.role === 'compact' && 'fallback' in presentation && presentation.fallback !== undefined
+                        ? presentation.fallback
+                        : 'host-unavailable-card'}
+                </React.Fragment>
+            ),
+        );
+        const chip = createPluginContributedActionComposerChips({
+            controller: {
+                list: vi.fn(() => []),
+                listSlashCommands: () => [],
+                open: vi.fn(),
+                isReferenceAvailable: () => false,
+                isSessionReferenceAvailable: () => false,
+                invokeReference: async () => ({ kind: 'stale' as const, reason: 'action_retired' as const }),
+                openSessionReference: async () => ({ kind: 'stale' as const, reason: 'action_retired' as const }),
+            } satisfies PluginContributedActionController,
+            openAction: vi.fn(),
+            composerControls: [compactControl],
+            composerControlHost: createComposerControlHost({ renderSurfaceContent }),
+        })[0];
+        const rendered = chip?.render({
+            chipStyle: () => ({}),
+            showLabel: true,
+            iconColor: '#fff',
+            textStyle: {},
+            countTextStyle: {},
+            chipAnchorRef: React.createRef(),
+            popoverAnchorRef: React.createRef(),
+        });
+
+        let tree: ReturnType<typeof create> | null = null;
+        await act(async () => {
+            tree = create(<>{rendered}</>);
+        });
+        const text = JSON.stringify(tree!.toJSON());
+        expect(text).toContain('Triage');
+        expect(text).not.toContain('host-unavailable-card');
         await act(async () => { tree?.unmount(); });
     });
 

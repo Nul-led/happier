@@ -292,10 +292,10 @@ export function useSessionResponsibilityController(
 
     // One typed-failure reaction for a direct refusal and an approved execution's
     // recorded failure.
-    const handleMutationFailure = React.useCallback(async (
+    const handleMutationFailure = React.useCallback(async function handleMutationFailure(
         failureKind: SessionResponsibilityMutationFailure,
         isOutcomeCurrent: () => boolean,
-    ): Promise<void> => {
+    ): Promise<void> {
         if (provesSessionResponsibilityAuthorityLoss(failureKind)) {
             // The Home refused in the deciding transaction, so the cached
             // capability is stale and the disclosed candidate identities lose
@@ -332,10 +332,19 @@ export function useSessionResponsibilityController(
                         reconciled.responsibleAccount,
                     );
                 }
-            } catch {
-                // Preserve the last accepted projection and the original
-                // unknown outcome. A later reconnect/change refresh can
-                // reconcile it; never replay a mutation from this branch.
+            } catch (error) {
+                // A reconciliation read has its own typed terminal outcomes.
+                // Feed those through the same classifier as the direct
+                // mutation so a definitive denial purges disclosed candidates
+                // and withdraws editing, while authentication-required remains
+                // recoverable. Transport/read failures stay outcome-unknown.
+                if (isOutcomeCurrent() && error instanceof SessionResponsibilityError) {
+                    const reconciliationFailure = error.failure;
+                    setFailure(reconciliationFailure);
+                    if (reconciliationFailure !== 'unknown') {
+                        await handleMutationFailure(reconciliationFailure, isOutcomeCurrent);
+                    }
+                }
             }
         }
     }, [loadCandidates, sessionId, scope.serverId, scope.accountId]);

@@ -22,6 +22,11 @@ import {
 import { DaemonPluginChangePreparationError } from '@/plugins/daemon/changeService';
 import { resolveInstalledPluginUpdate } from '@/plugins/daemon/resolveInstalledUpdate';
 import type { PluginCatalogEntry } from '@/plugins/projection/catalog/installed';
+import { projectBundledPluginCatalogEntries } from '@/plugins/projection/catalog/installed';
+import { loadBundledPluginLocators } from '@/plugins/projection/registry/builtIn/locators';
+import { BUNDLED_FIRST_PARTY_PLUGIN_LOCATORS } from '@/plugins/projection/registry/sources/generatedBundledPluginManifests';
+import { readCanonicalPluginManifest } from '@/plugins/manifest/normalize';
+import { createPluginManifestV2Fixture } from '@/plugins/testkit/manifestV2Fixture';
 
 import { createCliCapabilitiesService } from './capabilities';
 
@@ -366,7 +371,7 @@ describe('createCliCapabilitiesService tool.plugins', () => {
             install: { mode: 'link', manifestVersion: '2.0.0' },
             compatibility: { status: 'compatible', diagnostics: [] },
             manifestPath: '/plugins/acme.current/.happier-plugin/plugin.json',
-            manifest: null,
+            manifest: readCanonicalPluginManifest(createPluginManifestV2Fixture({ id: 'acme.current' })),
             contributionIntrospection: {
                 version: 1,
                 generation: 2,
@@ -379,9 +384,10 @@ describe('createCliCapabilitiesService tool.plugins', () => {
             readPluginCatalog: async () => Object.freeze([currentEntry]),
         });
 
-        await expect(service.detect({
+        const response = await service.detect({
             requests: [{ id: 'tool.plugins' }],
-        })).resolves.toMatchObject({
+        });
+        expect(response).toMatchObject({
             results: {
                 'tool.plugins': {
                     ok: true,
@@ -395,6 +401,25 @@ describe('createCliCapabilitiesService tool.plugins', () => {
                 },
             },
         });
+        const installed = (response.results['tool.plugins'] as { data?: { installedPlugins?: unknown[] } })
+            .data?.installedPlugins?.[0];
+        expect(Object.hasOwn(installed as object, 'manifest')).toBe(false);
+        expect(Object.hasOwn(installed as object, 'manifestPath')).toBe(false);
+        expect(Object.hasOwn(installed as object, 'contributionIntrospection')).toBe(false);
+    });
+
+    it('keeps bundled manifest detail out of the marketplace capability response', async () => {
+        const catalog = projectBundledPluginCatalogEntries({
+            loadedPlugins: loadBundledPluginLocators(BUNDLED_FIRST_PARTY_PLUGIN_LOCATORS),
+        });
+        const service = await createCliCapabilitiesService({ readPluginCatalog: async () => catalog });
+        const response = await service.detect({ requests: [{ id: 'tool.plugins' }] });
+        const entries = (response.results['tool.plugins'] as { data?: { installedPlugins?: unknown[] } })
+            .data?.installedPlugins ?? [];
+        const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
+        expect(entries).toHaveLength(catalog.length);
+        expect(entries.every((entry) => !Object.hasOwn(entry as object, 'manifest'))).toBe(true);
+        expect(bytes(response)).toBeLessThan(bytes(catalog));
     });
 
     it('passes the current CLI invoker into capability-created scaffold scripts and generated skill guidance', async () => {

@@ -12,6 +12,8 @@ import type { ResumeSessionOptions, ResumeSessionResult } from '@/sync/ops/sessi
 import type {
     PendingRequestedActionV1,
     ParticipantRecipientV1,
+    ProviderBoundModelRef,
+    SessionPermissionMode,
     SessionInactiveResumePolicy,
     SessionInputAdmissionRejectionCodeV1,
 } from '@happier-dev/protocol';
@@ -69,7 +71,9 @@ export type SessionMessageCallerSurface =
     | 'session_attachment_review_comment_composer'
     | 'session_review_comment_composer'
     | 'plan_output_adopt'
+    | 'scm_conflict_resolution'
     | 'review_findings_apply'
+    | 'review_comments_delegate'
     | 'participant_composer'
     | 'message_option'
     | 'voice_turn'
@@ -112,6 +116,12 @@ export type SubmitSessionUserMessageOptions = Readonly<{
     onOutboundHandoff?: (handoff: SubmitSessionOutboundHandoff) => void;
     callerSurface?: SessionMessageCallerSurface | null;
     hostAdmissionOrigin?: SessionMessageHostAdmissionOrigin;
+    /**
+     * The models this sender may run (an embed's grant, a narrowing presentation): a message on
+     * Automatic or a refused model runs on the first allowed one. `null`/absent: any model.
+     */
+    allowedModels?: readonly ProviderBoundModelRef[] | null;
+    allowedPermissionModes?: readonly SessionPermissionMode[] | null;
     nowMs?: number;
     agentTargetKey?: string | null;
     currentRunnerProcessIdentity?: CurrentSessionRunnerProcessIdentity | null;
@@ -169,6 +179,8 @@ export interface SessionSubmitPort {
             onLocalPendingProjectionCreated?: (event: DirectMessageLocalPendingProjection) => void;
             requestedAction: PendingRequestedActionV1;
             resumeWhenAvailable?: true;
+            allowedModels?: readonly ProviderBoundModelRef[] | null;
+            allowedPermissionModes?: readonly SessionPermissionMode[] | null;
         }>,
     ): Promise<PendingMessageSubmitResult>;
     sendMessage(
@@ -185,6 +197,8 @@ export interface SessionSubmitPort {
             hostAdmissionOrigin?: SessionMessageHostAdmissionOrigin;
             bypassPendingQueueReason?: DirectMessageBypassReason;
             onLocalPendingProjectionCreated?: (event: DirectMessageLocalPendingProjection) => void;
+            allowedModels?: readonly ProviderBoundModelRef[] | null;
+            allowedPermissionModes?: readonly SessionPermissionMode[] | null;
         }>,
     ): Promise<DirectMessageSubmitResult>;
     ensureSessionRuntimeForPendingInput(options: ResumeSessionOptions): Promise<ResumeSessionResult>;

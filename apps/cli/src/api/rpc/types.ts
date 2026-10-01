@@ -4,6 +4,8 @@
 
 import type { SocketRpcAuthorizationContext } from '@happier-dev/protocol/rpc';
 import type { ActionExecutorContext } from '@happier-dev/protocol';
+import type { CallerInputConstraintsV1 } from '@happier-dev/protocol/auth/apiTokenGrant';
+import type { ExternalActionExecutionAuthorizationV1 } from '@happier-dev/protocol/actions';
 import type {
     SocketRpcRequestPayload,
     SocketRpcTransportAcknowledgementV1,
@@ -19,13 +21,16 @@ import type {
  * on a transported RPC request, so callers cannot supply causal authority in
  * the public request payload.
  */
-export type RpcLocalActionContext = Readonly<Pick<
+export type RpcLocalActionContext = Readonly<Partial<Pick<
     ActionExecutorContext,
     'surface' | 'authority' | 'callerPermissionMode' | 'causalPermissionAuthority' | 'actionRequestId'
-> & {
+    | 'agentStartContext' | 'agentStartWorkDepth' | 'agentStartWorkspaceWrites' | 'sessionAgentSpawnPolicyV1'
+>> & {
     /** Exact Workflow invocation store, admitted only by an in-process host. */
     executionRunPermissionRequestStore?: unknown;
     executionRunWorkflowObservationSink?: unknown;
+    /** Identity from the admitted in-process Workflow caller; never transported in RPC input. */
+    executionRunWorkflowRunId?: string;
     operationProgress?: Readonly<{
         update(progress: Readonly<{
             label?: string;
@@ -44,6 +49,12 @@ export type RpcLocalActionContext = Readonly<Pick<
 
 export type RpcHandlerContext = Readonly<{
     signal: AbortSignal;
+    /** Verified server ingress authority; never read from decrypted caller input. */
+    callerAuthority?: ActionExecutorContext['authority'];
+    /** Validated server ingress constraints, never decrypted caller input. */
+    callerInputConstraints?: CallerInputConstraintsV1;
+    /** Home transport proof bound before decryption; signed token is verified by downstream admission. */
+    callerInputAuthorization?: ExternalActionExecutionAuthorizationV1;
     /** Validated transport correlation; authenticated relays replace caller values before dispatch. */
     transportRequestId?: string;
     /**
@@ -101,6 +112,8 @@ export type RpcResponseCallback = (response: unknown) => void;
  */
 type RpcHandlerCommonConfig = {
     scopePrefix: string;
+    /** Actual local runtime Machine, independently of Session metadata. */
+    localMachineId?: string | null;
     authorizeRequest?: (request: Readonly<{
         method: string;
         params: unknown;

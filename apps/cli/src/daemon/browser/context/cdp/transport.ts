@@ -6,13 +6,15 @@
  * The shape intentionally mirrors `BrowserSidecarCdpControlTransport.dispatchPageCommand` so a
  * single live transport satisfies both the control adapter and the context producer.
  */
+import type { BrowserSidecarCdpCommandScope } from '../../sidecar/controlAdapter';
+
 export type BrowserContextCdpPageHandle = Readonly<{
     targetId: string;
     sessionId?: string;
 }>;
 
 export type BrowserContextCdpTransport = Readonly<{
-    dispatchPageCommand(input: BrowserContextCdpPageHandle & Readonly<{
+    dispatchPageCommand(input: BrowserSidecarCdpCommandScope & BrowserContextCdpPageHandle & Readonly<{
         method: string;
         params?: Record<string, unknown>;
     }>): Promise<unknown>;

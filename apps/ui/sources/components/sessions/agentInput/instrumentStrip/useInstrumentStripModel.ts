@@ -1,10 +1,10 @@
 import * as React from 'react';
 
 import {
-    buildScmStatusSummaryFromSnapshot,
-    type ScmStatusSummary,
+    buildSessionScmSummary,
+    type SessionScmSummary,
 } from '@/components/sessions/sourceControl/status/statusSummary';
-import type { Metadata } from '@/sync/domains/state/storageTypes';
+import type { Metadata } from '@happier-dev/session-core/state';
 import type { CurrentSessionRunnerProcessIdentity } from '@/sync/domains/models/resolveSessionModelSelectionDisposition';
 import { useSessionProjectScmSnapshot, useSessionUsage } from '@/sync/domains/state/storage';
 import { sync } from '@/sync/sync';
@@ -38,7 +38,7 @@ export type InstrumentStripContextModel = Readonly<{
 
 export type InstrumentStripModel = Readonly<{
     context: InstrumentStripContextModel | null;
-    git: ScmStatusSummary | null;
+    git: SessionScmSummary | null;
     /** Triggers a between-turn provider context refresh (Claude); no-op otherwise. */
     refreshContextUsage: () => void;
 }>;
@@ -158,7 +158,7 @@ export function useInstrumentStripModel(params: Readonly<{
     }, [resolvedWindowTokens, snapshot, usageContextSize, contextSnapshotStale]);
 
     const git = React.useMemo(
-        () => buildScmStatusSummaryFromSnapshot(scmSnapshot),
+        () => buildSessionScmSummary(scmSnapshot),
         [scmSnapshot],
     );
 

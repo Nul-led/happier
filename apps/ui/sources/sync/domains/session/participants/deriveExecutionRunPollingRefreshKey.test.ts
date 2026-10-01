@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { Message, ToolCallMessage } from '@/sync/domains/messages/messageTypes';
+import type { Message, ToolCallMessage } from "@happier-dev/session-core/messages";
 
 import { deriveExecutionRunPollingRefreshKey } from './deriveExecutionRunPollingRefreshKey';
 

@@ -2,6 +2,7 @@ import * as React from 'react';
 import { Platform, useWindowDimensions } from 'react-native';
 
 import type { FloatingOverlayEdgeFades } from '@/components/ui/overlays/FloatingOverlay';
+import type { HoverPreviewHandlers } from '@/components/ui/popover/useHoverPreviewPopover';
 import type { ScrollEdgeVisibility } from '@/components/ui/scroll/useScrollEdgeFades';
 import { AgentInputSelectionPopover } from '@/components/sessions/agentInput/selection/AgentInputSelectionPopover';
 import { isMobileLayoutWidth } from '@/components/sessions/layout/isMobileLayoutWidth';
@@ -35,6 +36,10 @@ export type AgentInputContentPopoverConfig = Readonly<{
 
 export type AgentInputContentPopoverProps = Readonly<{
     open: boolean;
+    /** False for a hover preview, which must not take focus from where the pointer came. */
+    autoFocusOnOpen?: boolean;
+    /** A hover preview's panel handlers (`useHoverPreviewPopover`), spread on the whole surface. */
+    hoverProps?: HoverPreviewHandlers | null;
     anchorRef: React.RefObject<any>;
     boundaryRef?: React.RefObject<any> | null;
     content: AgentInputPopoverContent;
@@ -74,6 +79,7 @@ export function AgentInputContentPopover(props: AgentInputContentPopoverProps) {
     return (
         <AgentInputSelectionPopover
             open={props.open}
+            autoFocusOnOpen={props.autoFocusOnOpen}
             anchorRef={props.anchorRef}
             boundaryRef={props.boundaryRef}
             maxHeightCap={props.maxHeightCap ?? 420}
@@ -90,6 +96,7 @@ export function AgentInputContentPopover(props: AgentInputContentPopoverProps) {
                     edgeFades={props.edgeFades}
                     edgeIndicators={props.edgeIndicators}
                     initialVisibility={props.initialVisibility}
+                    hoverProps={props.hoverProps}
                 >
                     {renderPopoverContent(props.content, {
                         requestClose: props.onRequestClose,

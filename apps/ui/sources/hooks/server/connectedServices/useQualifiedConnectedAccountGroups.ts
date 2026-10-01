@@ -1,6 +1,8 @@
 import * as React from 'react';
 
 import { useAuth } from '@/auth/context/AuthContext';
+import { useApplySettings } from '@/sync/store/settingsWriters';
+import { getStorage } from '@/sync/domains/state/storageStore';
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
 import {
     readConnectedServiceSettingsErrorCode,
@@ -18,6 +20,7 @@ import {
 } from '@/sync/domains/connectedServices/connectedServiceGroupsRefreshSignal';
 import {
     sameQualifiedConnectedAccountGroupRef,
+    removeAgentConnectedAccountDefaultsForDeletedTarget,
     type ConnectedServiceAuthGroupPolicyV1,
     type PluginContributionIdentityV1,
     type QualifiedConnectedAccountRef,
@@ -159,6 +162,7 @@ export function useQualifiedConnectedAccountGroups(params: Readonly<{
     peer: QualifiedConnectedAccountPeerTransportState;
 }>): UseQualifiedConnectedAccountGroupsResult {
     const credentials = useAuth().credentials;
+    const applySettings = useApplySettings();
     const refreshSignal = useConnectedServiceGroupsRefreshSignal();
     const [state, setState] = React.useState<State>(EMPTY_STATE);
     const [mutating, setMutating] = React.useState(false);
@@ -397,6 +401,11 @@ export function useQualifiedConnectedAccountGroups(params: Readonly<{
                         group,
                     })
                 ) return false;
+                const defaults = removeAgentConnectedAccountDefaultsForDeletedTarget({
+                    settings: getStorage().getState().settings,
+                    target: { kind: 'group', ...group.ref },
+                });
+                if (defaults) applySettings(defaults);
                 groupsEpochRef.current += 1;
                 setState((previous) => ({
                     ...previous,
@@ -422,7 +431,7 @@ export function useQualifiedConnectedAccountGroups(params: Readonly<{
             } finally {
                 setMutating(false);
             }
-        }, [basis, client, load]),
+        }, [applySettings, basis, client, load]),
         addMember: React.useCallback(
             (input) => mutate((activeClient) => activeClient.addMember(input), input.group),
             [mutate],

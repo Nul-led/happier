@@ -1,10 +1,15 @@
 import { describe, expect, it, vi, beforeAll, beforeEach, afterEach } from 'vitest';
 import type { FeatureDecision } from '@happier-dev/protocol';
+import { SessionCurrentProjectionRecordV1Schema } from '@happier-dev/protocol';
 import { createDeferred, flushHookEffects } from '@/dev/testkit';
 import { VOICE_AGENT_GLOBAL_SESSION_ID } from '@/voice/agent/voiceAgentGlobalSessionId';
 import { installVoiceAgentCommonModuleMocks } from '@/voice/agent/voiceAgentTestHelpers';
 import { useVoiceTargetStore } from '@/voice/runtime/voiceTargetStore';
 import { voiceSessionBindingStore } from '@/voice/binding/voiceConversationBindingStore';
+import { storage } from '@/sync/domains/state/storage';
+import { createSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
+import { createPlainAccountEncryptionCurrentnessFixture } from '@/dev/testkit/fixtures/accountEncryptionCurrentness';
+import { installDisconnectedServerSocketBoundary, restoreServerAccountForTest } from '@/dev/testkit/harness/serverAccountConnectionHarness';
 import { getRetainedLocalVoiceEffectOutcomes } from '@/voice/tools/localVoiceEffectOutcomeCustody';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -30,10 +35,7 @@ const resolveRuntimeFeatureDecision = vi.fn<(args: any) => Promise<FeatureDecisi
     ...(args?.serverId ? { serverId: String(args.serverId) } : {}),
   },
 }));
-const ensureSessionVisibleForMessageRoute = vi.fn(async (_sessionId: string, _options?: { forceRefresh?: boolean }) => {});
-const refreshSessionMessages = vi.fn(async (_sessionId: string) => {});
 const ensureVoiceAgentInstallablesBackground = vi.fn(async (_args: unknown) => {});
-const patchSessionMetadataWithRetry = vi.fn(async (_sessionId: string, _updater: (metadata: any) => any) => {});
 const sessionExecutionRunGet = vi.fn(async (..._args: any[]): Promise<any> => ({
   ok: false,
   error: 'Execution run not found',
@@ -41,8 +43,8 @@ const sessionExecutionRunGet = vi.fn(async (..._args: any[]): Promise<any> => ({
 }));
 const sessionExecutionRunList = vi.fn(async (..._args: any[]): Promise<any> => ({ runs: [] }));
 const sessionExecutionRunStop = vi.fn(async (..._args: any[]): Promise<any> => ({ ok: true }));
-const buildVoiceInitialContext = vi.fn((sessionId: string, options?: { targetSessionId?: string | null }) => {
-  const targetSessionId = typeof options?.targetSessionId === 'string' ? options.targetSessionId.trim() : '';
+const buildVoiceInitialContext = vi.fn((sessionId: string, options?: { targetSessionId?: string | null; targetSessionAddress?: { serverId: string; sessionId: string } | null }) => {
+  const targetSessionId = options?.targetSessionAddress?.sessionId ?? (typeof options?.targetSessionId === 'string' ? options.targetSessionId.trim() : '');
   if (targetSessionId) return `TARGET_CONTEXT:${sessionId}->${targetSessionId}`;
   return `ACTIVE_CONTEXT:${sessionId}`;
 });
@@ -173,7 +175,7 @@ function createVoiceControllerState(options: Readonly<{
 }
 
 function setVoiceControllerState(options?: Parameters<typeof createVoiceControllerState>[0]): void {
-  getState.mockImplementation(() => createVoiceControllerState(options));
+  setControllerState(() => createVoiceControllerState(options));
 }
 
 vi.mock('@/voice/agent/daemonVoiceAgentClient', () => ({
@@ -190,24 +192,14 @@ vi.mock('@/voice/agent/daemonVoiceAgentClient', () => ({
 }));
 
 vi.mock('@/voice/context/buildVoiceInitialContext', () => ({
-  buildVoiceInitialContext: (sessionId: string, options?: { targetSessionId?: string | null }) =>
+  buildVoiceInitialContext: (sessionId: string, options?: Parameters<typeof buildVoiceInitialContext>[1]) =>
     buildVoiceInitialContext(sessionId, options),
 }));
 
-vi.mock('@/sync/sync', () => ({
-  sync: {
-    patchSessionMetadataWithRetry: (sessionId: string, updater: (metadata: any) => any) =>
-      patchSessionMetadataWithRetry(sessionId, updater),
-    ensureSessionVisibleForMessageRoute: (sessionId: string, options?: { forceRefresh?: boolean }) =>
-      ensureSessionVisibleForMessageRoute(sessionId, options),
-    refreshSessionMessages: (sessionId: string) => refreshSessionMessages(sessionId),
-  },
-}));
-
 vi.mock('@/sync/ops/sessionExecutionRuns', () => ({
-  sessionExecutionRunGet,
-  sessionExecutionRunList,
-  sessionExecutionRunStop,
+  sessionExecutionRunGet: (...args: unknown[]) => sessionExecutionRunGet(...args),
+  sessionExecutionRunList: (...args: unknown[]) => sessionExecutionRunList(...args),
+  sessionExecutionRunStop: (...args: unknown[]) => sessionExecutionRunStop(...args),
 }));
 
 vi.mock('@/voice/agent/ensureVoiceAgentInstallablesBackground', () => ({
@@ -218,47 +210,26 @@ vi.mock('@/voice/agent/resolveDaemonVoiceAgentModels', () => ({
   resolveDaemonVoiceAgentModelIds: () => ({ chatModelId: 'chat', commitModelId: 'commit' }),
 }));
 
-const getState = vi.fn((): any => ({
-  settings: {
-    voice: {
-      providerId: 'local_conversation',
-      providers: {
-        local_conversation: { schemaVersion: 1, config: {
-          streaming: {
-            enabled: true,
-            // new config knobs (expected to be respected by VoiceExecutionTransport)
-            turnReadPollIntervalMs: 50,
-            turnReadMaxEvents: 7,
-            turnStreamTimeoutMs: 1200,
-          },
-          agent: { backend: 'daemon', transcript: { persistenceMode: 'ephemeral', epoch: 0 } },
-          networkTimeoutMs: 15_000,
-        } },
-      },
-    },
-  },
-  sessions: {
-    sys_voice: { id: 'sys_voice', active: true, modelMode: 'default', metadata: { flavor: 'claude', systemSessionV1: { v: 1, key: 'voice_conversation', hidden: true } } },
-    s1: { id: 's1', active: true, presence: 'online', modelMode: 'default', metadata: createLocallyControllableSessionMetadata() },
-  },
-  sessionMessages: {},
-}));
+let connection: Awaited<ReturnType<typeof restoreServerAccountForTest>>;
+const requestedPaths: string[] = [];
+let hydratedTargetActive = true;
 
-const storageListeners = new Set<() => void>();
+function setControllerState(read: () => any): void {
+  const fixture = read();
+  const sessions = Object.fromEntries(Object.entries(fixture.sessions ?? {}).map(([id, value]) => [
+    id, createSessionFixture({ ...value as Parameters<typeof createSessionFixture>[0], id, serverId: connection.home.id }),
+  ]));
+  storage.setState({ ...fixture, sessions });
+}
 
-installVoiceAgentCommonModuleMocks({
-  storage: async () => {
-    const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
-    return createStorageModuleStub({
-      storage: {
-        getState: () => getState(),
-        subscribe: (listener: () => void) => {
-          storageListeners.add(listener);
-          return () => storageListeners.delete(listener);
-        },
-      },
-    });
-  },
+installVoiceAgentCommonModuleMocks();
+installDisconnectedServerSocketBoundary((socket) => {
+  socket.connected = true;
+  vi.spyOn(socket, 'emitWithAck').mockImplementation(async (event: string, ...args: unknown[]) => {
+    if (event !== 'update-metadata') throw new Error(`Unexpected socket event: ${event}`);
+    const payload = args[0] as { metadata: string; expectedVersion: number };
+    return { result: 'success', metadata: payload.metadata, version: payload.expectedVersion + 1 };
+  });
 });
 
 vi.mock('@/sync/domains/features/featureDecisionInputs', () => ({
@@ -273,17 +244,41 @@ describe('VoiceExecutionTransport (streaming)', () => {
     ({ createVoiceExecutionTransport } = await import('@/voice/runtime/execution/VoiceExecutionTransport'));
   }, 60_000);
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    requestedPaths.length = 0;
+    hydratedTargetActive = true;
+    connection = await restoreServerAccountForTest({
+      serverUrl: 'https://voice-streaming.example.test',
+      request: async (url) => {
+        const path = new URL(String(url)).pathname;
+        requestedPaths.push(path);
+        const json = (value: unknown) => new Response(JSON.stringify(value), { status: 200 });
+        if (path.endsWith('/messages')) return json({ messages: [], hasMore: false });
+        if (path === '/v1/account/encryption/currentness') return json(createPlainAccountEncryptionCurrentnessFixture());
+        const sessionId = path.startsWith('/v2/sessions/') ? decodeURIComponent(path.slice('/v2/sessions/'.length)) : null;
+        const session = sessionId ? storage.getState().sessions[sessionId] : null;
+        if (session) return json({ session: SessionCurrentProjectionRecordV1Schema.parse({
+          ...session, encryptionMode: 'plain', metadataLayoutVersion: 0,
+          effectiveAccess: { v: 1, level: session.access!.level, sources: [{ kind: 'owner' }], capabilities: session.access!.capabilities },
+          responsibleAccountId: session.responsibleAccountId ?? null,
+          responsibleAccount: session.responsibleAccount ?? null,
+          metadata: JSON.stringify({ path: '/test', host: 'test', ...session.metadata }),
+          active: session.id === 's1' ? session.active && hydratedTargetActive : session.active,
+          updatedAt: session.updatedAt + 1,
+          activeAt: session.activeAt + 1,
+          seq: session.seq + 1,
+          archivedAt: null, agentState: null, dataEncryptionKey: null,
+          pendingCount: 0, pendingVersion: 0,
+        }) });
+        return new Response('{}', { status: 404 });
+      },
+    });
     vi.useFakeTimers();
-    getState.mockReset();
     setVoiceControllerState();
     useVoiceTargetStore.setState({ scope: 'global', primaryActionSessionAddress: null, voiceLiveContextSessionAddresses: [], lastFocusedSessionAddress: null } as any);
     isRuntimeFeatureEnabled.mockReset();
     isRuntimeFeatureEnabled.mockResolvedValue(true);
-    ensureSessionVisibleForMessageRoute.mockReset();
-    refreshSessionMessages.mockReset();
     ensureVoiceAgentInstallablesBackground.mockReset();
-    patchSessionMetadataWithRetry.mockReset();
     sessionExecutionRunGet.mockReset();
     sessionExecutionRunGet.mockResolvedValue({ run: null });
     sessionExecutionRunList.mockReset();
@@ -313,9 +308,10 @@ describe('VoiceExecutionTransport (streaming)', () => {
     stop.mockClear();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     vi.useRealTimers();
-    storageListeners.clear();
+    await connection?.dispose();
+    vi.restoreAllMocks();
   });
 
   it('uses configured maxEvents when reading the streamed turn', async () => {
@@ -339,14 +335,14 @@ describe('VoiceExecutionTransport (streaming)', () => {
       modelMode: 'default',
       metadata: { flavor: 'claude', systemSessionV1: { v: 1, key: 'voice_conversation', hidden: true } },
     };
-    getState.mockImplementation(() => state);
+    setControllerState(() => state);
     voiceSessionBindingStore.getState().bind({
       adapterId: 'local_conversation',
       controlSessionId: VOICE_AGENT_GLOBAL_SESSION_ID,
       conversationSessionId: 'voice-hidden-s1',
-      conversationSessionAddress: { serverId: 'server-a', sessionId: 'voice-hidden-s1' },
+      conversationSessionAddress: { serverId: connection.home.id, sessionId: 'voice-hidden-s1' },
       transcriptMode: 'native_session',
-      targetSessionAddress: { serverId: 'server-a', sessionId: 's1' },
+      targetSessionAddress: { serverId: connection.home.id, sessionId: 's1' },
       updatedAt: 1,
     });
 
@@ -354,10 +350,8 @@ describe('VoiceExecutionTransport (streaming)', () => {
 
     await controller.sendTurn(VOICE_AGENT_GLOBAL_SESSION_ID, 'hello');
 
-    expect(ensureSessionVisibleForMessageRoute).toHaveBeenCalledWith('s1', { forceRefresh: true });
-    expect(ensureSessionVisibleForMessageRoute).toHaveBeenCalledWith('voice-hidden-s1', { forceRefresh: true });
-    expect(refreshSessionMessages).toHaveBeenCalledWith('s1');
-    expect(refreshSessionMessages).toHaveBeenCalledWith('voice-hidden-s1');
+    expect(requestedPaths).toContain('/v1/sessions/s1/messages');
+    expect(requestedPaths).toContain('/v1/sessions/voice-hidden-s1/messages');
   });
 
   it('refreshes stale bound target state before starting global local voice', async () => {
@@ -397,34 +391,29 @@ describe('VoiceExecutionTransport (streaming)', () => {
       },
       sessionMessages: {},
     };
-    getState.mockImplementation(() => state);
-    ensureSessionVisibleForMessageRoute.mockImplementationOnce(async (_sessionId: string, options?: { forceRefresh?: boolean }) => {
-      if (options?.forceRefresh === true) {
-        state.sessions.s1 = {
-          ...state.sessions.s1,
-          active: false,
-          presence: 'offline',
-        };
-      }
-    });
+    setControllerState(() => state);
+    hydratedTargetActive = false;
     voiceSessionBindingStore.getState().bind({
       adapterId: 'local_conversation',
       controlSessionId: VOICE_AGENT_GLOBAL_SESSION_ID,
       conversationSessionId: 'voice-hidden-s1',
-      conversationSessionAddress: { serverId: 'server-a', sessionId: 'voice-hidden-s1' },
+      conversationSessionAddress: { serverId: connection.home.id, sessionId: 'voice-hidden-s1' },
       transcriptMode: 'native_session',
-      targetSessionAddress: { serverId: 'server-a', sessionId: 's1' },
+      targetSessionAddress: { serverId: connection.home.id, sessionId: 's1' },
       updatedAt: 1,
     });
 
     const controller = createVoiceExecutionTransport();
 
-    await expect(controller.sendTurn(VOICE_AGENT_GLOBAL_SESSION_ID, 'hello')).rejects.toMatchObject({
+    const turn = controller.sendTurn(VOICE_AGENT_GLOBAL_SESSION_ID, 'hello');
+    await turn.catch(() => {});
+    expect(storage.getState().sessions.s1.active).toBe(false);
+    await expect(turn).rejects.toMatchObject({
       message: 'Target session is inactive. Resume it before starting local voice.',
       code: 'VOICE_AGENT_TARGET_SESSION_INACTIVE',
     });
 
-    expect(ensureSessionVisibleForMessageRoute).toHaveBeenCalledWith('s1', { forceRefresh: true });
+    expect(requestedPaths).toContain('/v2/sessions/s1');
     expect(start).not.toHaveBeenCalled();
   });
 
@@ -630,7 +619,7 @@ describe('VoiceExecutionTransport (streaming)', () => {
   });
 
   it('does not inject a local greeting prompt into the first user turn when welcome mode is on_first_turn', async () => {
-    getState.mockImplementation(() => ({
+    setControllerState(() => ({
       settings: {
         voice: {
           providerId: 'local_conversation',
@@ -724,7 +713,7 @@ describe('VoiceExecutionTransport (streaming)', () => {
   });
 
   it('can emit an immediate welcome via ensureRunningAndMaybeWelcome, and does not inject a greeting into the next user turn', async () => {
-    getState.mockImplementation(() => ({
+    setControllerState(() => ({
       settings: {
         voice: {
           providerId: 'local_conversation',
@@ -769,7 +758,7 @@ describe('VoiceExecutionTransport (streaming)', () => {
   });
 
   it('emits an immediate welcome for migrated Provider-backed Chat through the daemon', async () => {
-    getState.mockImplementation(() => ({
+    setControllerState(() => ({
       settings: {
         voice: {
           providerId: 'local_conversation',
@@ -816,7 +805,7 @@ describe('VoiceExecutionTransport (streaming)', () => {
   });
 
   it('does not use ready_handshake bootstrap when immediate welcome is enabled (welcome acts as the bootstrap prompt)', async () => {
-    getState.mockImplementation(() => ({
+    setControllerState(() => ({
       settings: {
         voice: {
           providerId: 'local_conversation',
@@ -860,7 +849,7 @@ describe('VoiceExecutionTransport (streaming)', () => {
   });
 
   it('uses ready_handshake bootstrap when prewarm is enabled but auto-speak is disabled (even if welcome immediate is enabled)', async () => {
-    getState.mockImplementation(() => ({
+    setControllerState(() => ({
       settings: {
         voice: {
           providerId: 'local_conversation',
@@ -902,7 +891,7 @@ describe('VoiceExecutionTransport (streaming)', () => {
   });
 
   it('prefetches relevant agent installables before starting a daemon voice agent session', async () => {
-    getState.mockImplementation(() => ({
+    setControllerState(() => ({
       settings: {
         codexBackendMode: 'acp',
         voice: {
@@ -954,7 +943,7 @@ describe('VoiceExecutionTransport (streaming)', () => {
   });
 
   it('passes the effective disabled voice action ids into daemon starts', async () => {
-    getState.mockImplementation(() => ({
+    setControllerState(() => ({
       settings: {
         actionsSettingsV1: {
           v: 1,
@@ -1049,7 +1038,7 @@ describe('VoiceExecutionTransport (streaming)', () => {
         done: false,
       };
     });
-    getState.mockImplementation(() =>
+    setControllerState(() =>
       createVoiceControllerState({
         voice: {
           streaming: {
@@ -1090,7 +1079,7 @@ describe('VoiceExecutionTransport (streaming)', () => {
       done: false,
     }));
 
-    getState.mockImplementation(() =>
+    setControllerState(() =>
       createVoiceControllerState({
         voice: {
           streaming: {
@@ -1166,7 +1155,7 @@ describe('VoiceExecutionTransport (streaming)', () => {
       done: false,
     }));
 
-    getState.mockImplementation(() =>
+    setControllerState(() =>
       createVoiceControllerState({
         voice: {
           streaming: {
@@ -1208,7 +1197,7 @@ describe('VoiceExecutionTransport (streaming)', () => {
     } = await import('@/sync/domains/settings/voiceSettings');
     const localConversationDefaults = readLocalConversationVoiceSettings(voiceSettingsDefaults);
 
-    getState.mockImplementation(() =>
+    setControllerState(() =>
       createVoiceControllerState({
         voice: {
           streaming: {
@@ -1240,7 +1229,7 @@ describe('VoiceExecutionTransport (streaming)', () => {
   });
 
   it('uses the hidden voice conversation session id when starting the daemon agent for the global agent session', async () => {
-    useVoiceTargetStore.getState().setPrimaryActionSessionAddress({ serverId: 'server-a', sessionId: 's1' });
+    useVoiceTargetStore.getState().setPrimaryActionSessionAddress({ serverId: connection.home.id, sessionId: 's1' });
 
     const controller = createVoiceExecutionTransport();
 
@@ -1256,9 +1245,9 @@ describe('VoiceExecutionTransport (streaming)', () => {
       adapterId: 'local_conversation',
       controlSessionId: VOICE_AGENT_GLOBAL_SESSION_ID,
       conversationSessionId: 'sys_voice',
-      conversationSessionAddress: { serverId: 'server-a', sessionId: 'sys_voice' },
+      conversationSessionAddress: { serverId: connection.home.id, sessionId: 'sys_voice' },
       transcriptMode: 'native_session',
-      targetSessionAddress: { serverId: 'server-a', sessionId: 's1' },
+      targetSessionAddress: { serverId: connection.home.id, sessionId: 's1' },
       updatedAt: 1,
     });
 
@@ -1286,9 +1275,9 @@ describe('VoiceExecutionTransport (streaming)', () => {
       adapterId: 'local_conversation',
       controlSessionId: VOICE_AGENT_GLOBAL_SESSION_ID,
       conversationSessionId: 'sys_voice',
-      conversationSessionAddress: { serverId: 'server-a', sessionId: 'sys_voice' },
+      conversationSessionAddress: { serverId: connection.home.id, sessionId: 'sys_voice' },
       transcriptMode: 'native_session',
-      targetSessionAddress: { serverId: 'server-a', sessionId: 's1' },
+      targetSessionAddress: { serverId: connection.home.id, sessionId: 's1' },
       updatedAt: 1,
     });
     commit.mockRejectedValueOnce(
@@ -1314,9 +1303,9 @@ describe('VoiceExecutionTransport (streaming)', () => {
       adapterId: 'local_conversation',
       controlSessionId: VOICE_AGENT_GLOBAL_SESSION_ID,
       conversationSessionId: 'sys_voice',
-      conversationSessionAddress: { serverId: 'server-a', sessionId: 'sys_voice' },
+      conversationSessionAddress: { serverId: connection.home.id, sessionId: 'sys_voice' },
       transcriptMode: 'native_session',
-      targetSessionAddress: { serverId: 'server-a', sessionId: 's1' },
+      targetSessionAddress: { serverId: connection.home.id, sessionId: 's1' },
       updatedAt: 1,
     });
     startTurnStream.mockRejectedValueOnce(
@@ -1341,9 +1330,9 @@ describe('VoiceExecutionTransport (streaming)', () => {
       adapterId: 'local_conversation',
       controlSessionId: VOICE_AGENT_GLOBAL_SESSION_ID,
       conversationSessionId: 'sys_voice',
-      conversationSessionAddress: { serverId: 'server-a', sessionId: 'sys_voice' },
+      conversationSessionAddress: { serverId: connection.home.id, sessionId: 'sys_voice' },
       transcriptMode: 'native_session',
-      targetSessionAddress: { serverId: 'server-a', sessionId: 's1' },
+      targetSessionAddress: { serverId: connection.home.id, sessionId: 's1' },
       updatedAt: 1,
     });
 
@@ -1367,7 +1356,7 @@ describe('VoiceExecutionTransport (streaming)', () => {
   });
 
   it('passes the clean user turn separately from wrapped context updates when streaming a daemon voice turn', async () => {
-    useVoiceTargetStore.getState().setPrimaryActionSessionAddress({ serverId: 'server-a', sessionId: 's1' });
+    useVoiceTargetStore.getState().setPrimaryActionSessionAddress({ serverId: connection.home.id, sessionId: 's1' });
 
     const controller = createVoiceExecutionTransport();
     controller.appendAttemptContextUpdate(VOICE_AGENT_GLOBAL_SESSION_ID, 'Session asks what should be handled in this workspace.');
@@ -1418,7 +1407,7 @@ describe('VoiceExecutionTransport (streaming)', () => {
         },
       },
     };
-    getState.mockImplementation(() => sessionState);
+    setControllerState(() => sessionState);
     readTurnStream.mockImplementation(async () => {
       sessionState.sessionMessages.sys_voice.messages = [
         {
@@ -1429,7 +1418,7 @@ describe('VoiceExecutionTransport (streaming)', () => {
           text: 'LOCAL_HELLO',
         },
       ];
-      storageListeners.forEach((listener) => listener());
+      storage.setState({ sessionMessages: sessionState.sessionMessages });
       return {
         streamId: 'stream-1',
         events: [{ t: 'done', assistantText: '', actions: [] }],
@@ -1447,8 +1436,8 @@ describe('VoiceExecutionTransport (streaming)', () => {
   });
 
   it('keeps the hidden voice conversation session as the global daemon anchor even when another target session is active', async () => {
-    useVoiceTargetStore.getState().setPrimaryActionSessionAddress({ serverId: 'server-a', sessionId: 's1' });
-    getState.mockImplementation(() => ({
+    useVoiceTargetStore.getState().setPrimaryActionSessionAddress({ serverId: connection.home.id, sessionId: 's1' });
+    setControllerState(() => ({
       settings: {
         voice: {
           providerId: 'local_conversation',
@@ -1505,7 +1494,7 @@ describe('VoiceExecutionTransport (streaming)', () => {
   });
 
   it('does not retry global daemon start on another session when the hidden voice conversation session rejects the payload', async () => {
-    getState.mockImplementation(() => ({
+    setControllerState(() => ({
       settings: {
         voice: {
           providerId: 'local_conversation',
@@ -1558,9 +1547,9 @@ describe('VoiceExecutionTransport (streaming)', () => {
 
   it('seeds initialContext with persisted agent transcript turns when persistence is enabled', async () => {
     // Carrier session transcript should be used to seed voice agent context across restarts.
-    useVoiceTargetStore.getState().setPrimaryActionSessionAddress({ serverId: 'server-a', sessionId: 's1' });
+    useVoiceTargetStore.getState().setPrimaryActionSessionAddress({ serverId: connection.home.id, sessionId: 's1' });
 
-    getState.mockImplementation(() => ({
+    setControllerState(() => ({
       settings: {
         voice: {
           providerId: 'local_conversation',
@@ -1668,9 +1657,9 @@ describe('VoiceExecutionTransport (streaming)', () => {
   });
 
   it('passes resume=true to stream_start when provider-resume is enabled for a persistent global agent', async () => {
-    useVoiceTargetStore.getState().setPrimaryActionSessionAddress({ serverId: 'server-a', sessionId: 's1' });
+    useVoiceTargetStore.getState().setPrimaryActionSessionAddress({ serverId: connection.home.id, sessionId: 's1' });
 
-    getState.mockImplementation(() => ({
+    setControllerState(() => ({
       settings: {
         voice: {
           providerId: 'local_conversation',
@@ -1723,9 +1712,9 @@ describe('VoiceExecutionTransport (streaming)', () => {
   });
 
   it('fails closed and does not pass resume=true to stream_start when runtime publication does not expose transcriptSource', async () => {
-    useVoiceTargetStore.getState().setPrimaryActionSessionAddress({ serverId: 'server-a', sessionId: 's1' });
+    useVoiceTargetStore.getState().setPrimaryActionSessionAddress({ serverId: connection.home.id, sessionId: 's1' });
 
-    getState.mockImplementation(() => ({
+    setControllerState(() => ({
       settings: {
         voice: {
           providerId: 'local_conversation',
@@ -1763,8 +1752,8 @@ describe('VoiceExecutionTransport (streaming)', () => {
   });
 
   it('fails closed to a fresh daemon start when provider-resume is configured but runtime publication does not expose transcriptSource for a reconciled run', async () => {
-    useVoiceTargetStore.getState().setPrimaryActionSessionAddress({ serverId: 'server-a', sessionId: 's1' });
-    getState.mockImplementation(() => ({
+    useVoiceTargetStore.getState().setPrimaryActionSessionAddress({ serverId: connection.home.id, sessionId: 's1' });
+    setControllerState(() => ({
       settings: {
         voice: {
           providerId: 'local_conversation',

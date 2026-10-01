@@ -1,5 +1,3 @@
-import type { PluginMachineExecutionOriginV1 } from '@happier-dev/protocol';
-
 import {
     createPluginReactNativeArtifactLeaseCacheSink,
     createPluginReactNativeArtifactLeasePersistentScope,
@@ -12,38 +10,30 @@ import type {
     PluginSelectedArtifactLeaseAcquireResult,
 } from './artifactLease';
 import {
+    fetchPluginArtifactBytesViaMachineRpc,
+    type PluginArtifactDaemonByteFetcher,
+} from './artifactDaemonSource';
+import {
     createBundledPluginUiAppExactArtifactSource,
 } from './bundledAppExactArtifactSource';
 import {
     acquirePluginReactNativeArtifactLease,
     materializePluginReactNativeArtifactLeaseInCache,
     type PluginReactNativeArtifactLeaseCacheMaterializationResult,
-    type PluginReactNativeArtifactLeaseCommonInput,
-    type PluginReactNativeArtifactOwner,
-    type PluginReactNativeExactArtifactByteFetcher,
+    type PluginReactNativeArtifactLeaseInput,
 } from './reactNativeArtifactLease';
-import {
-    fetchReactNativeExactArtifactBytesViaMachineRpc,
-} from './reactNativeArtifactDaemonTransport';
 
 /**
  * Consumer-facing input deliberately excludes source candidates, persistent
  * custody, and daemon transport. Availability owns their composition.
  */
-type PluginReactNativeArtifactAvailabilityCommonInput = Omit<
-    PluginReactNativeArtifactLeaseCommonInput,
-    'persistent' | 'daemon' | 'appExact'
+export type PluginReactNativeArtifactAvailabilityInput = Omit<
+    PluginReactNativeArtifactLeaseInput,
+    'persistent' | 'appExact' | 'fetchDaemonArtifactBytes'
 > & Readonly<{
-    daemon?: Readonly<{
-        origin: PluginMachineExecutionOriginV1;
-        serverId: string;
-    }>;
     /** Consumer currentness gates adoption only; it never selects a source. */
     isCurrent: () => boolean;
 }>;
-
-export type PluginReactNativeArtifactAvailabilityInput =
-    PluginReactNativeArtifactAvailabilityCommonInput & PluginReactNativeArtifactOwner;
 
 /** An opaque capability for an already-selected, verified React Native Artifact. */
 export type PluginReactNativeArtifactAvailabilityHandle = Readonly<{
@@ -70,7 +60,7 @@ export type PluginReactNativeArtifactAvailabilityProducerDependencies = Readonly
     /** Immutable packaged app bytes; Availability decides when this exact candidate may be used. */
     appExact: PluginArtifactSourceCandidate & Readonly<{ kind: 'appExact' }>;
     /** Exact daemon boundary; production uses the canonical machine-RPC transport. */
-    fetchDaemonArtifactBytes: PluginReactNativeExactArtifactByteFetcher;
+    fetchDaemonArtifactBytes: PluginArtifactDaemonByteFetcher;
 }>;
 
 function isCurrent(input: PluginReactNativeArtifactAvailabilityInput): boolean {
@@ -113,30 +103,13 @@ export function createPluginReactNativeArtifactAvailabilityProducer(
                     artifactGraph: input.artifactGraph,
                     cacheIdentity: input.cacheIdentity,
                     accountLifetime: input.accountLifetime,
-                    ...(input.artifactOwnerKind === 'renderer'
-                        ? {
-                            artifactOwnerKind: 'renderer' as const,
-                            crashStateToken: input.crashStateToken,
-                        }
-                        : input.artifactOwnerKind === 'voiceProvider'
-                            ? {
-                                artifactOwnerKind: 'voiceProvider' as const,
-                            }
-                            : {
-                                artifactOwnerKind: 'clientContribution' as const,
-                                clientContribution: input.clientContribution,
-                            }),
                     appExact: dependencies.appExact,
                     persistent,
-                    ...(input.daemon
-                        ? {
-                            daemon: {
-                                origin: input.daemon.origin,
-                                serverId: input.daemon.serverId,
-                                fetchArtifactBytes: dependencies.fetchDaemonArtifactBytes,
-                            },
-                        }
+                    fetchDaemonArtifactBytes: dependencies.fetchDaemonArtifactBytes,
+                    ...(input.daemonProjectionSelection
+                        ? { daemonProjectionSelection: input.daemonProjectionSelection }
                         : {}),
+                    ...(input.daemon ? { daemon: input.daemon } : {}),
                 });
                 if (selected.kind !== 'available') return selected;
                 if (!isCurrent(input)) {
@@ -172,7 +145,7 @@ export function createPluginReactNativeArtifactAvailabilityProducer(
 const installedReactNativeArtifactAvailabilityProducer = createPluginReactNativeArtifactAvailabilityProducer({
     getCache: getInstalledPluginReactNativeBundleCache,
     appExact: createBundledPluginUiAppExactArtifactSource(),
-    fetchDaemonArtifactBytes: fetchReactNativeExactArtifactBytesViaMachineRpc,
+    fetchDaemonArtifactBytes: fetchPluginArtifactBytesViaMachineRpc,
 });
 
 /** Production renderer entry point; hosts receive only an opaque cache capability. */

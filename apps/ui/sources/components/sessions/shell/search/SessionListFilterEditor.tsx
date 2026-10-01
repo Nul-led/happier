@@ -1,14 +1,13 @@
 import * as React from 'react';
-import { Platform, View } from 'react-native';
+import { View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
-import { ToolbarButton } from '@/components/ui/buttons/ToolbarButton';
-import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
 import {
     SelectionList,
     type SelectionListPagination,
     type SelectionListStep,
 } from '@/components/ui/selectionList';
+import { SelectionListBackChip } from '@/components/ui/selectionList/SelectionListBackChip';
 import { useTeamGroups } from '@/hooks/teams/useTeamGroups';
 import { useTeamsDirectory } from '@/hooks/teams/useTeamsDirectory';
 import type { TeamAddress } from '@/sync/domains/teams/teamAddress';
@@ -18,7 +17,9 @@ import { teamGroupsQueryKeyV1 } from '@happier-dev/protocol/teams';
 import {
     buildSessionListFilterEditorModel,
     readSessionListAudienceTeamStepAddress,
+    SESSION_LIST_FILTER_ARCHIVED_DESTINATION_OPTION_ID,
     resolveSessionListFilterEditorSelectionChange,
+    resolveSessionListFilterScopeAvailability,
     type SessionListFilterAudienceOption,
     type SessionListFilterEditorLabels,
     type SessionListFilterHomeOption,
@@ -30,6 +31,11 @@ import {
     type SessionListViewContext,
     type SessionListViewFilters,
 } from './sessionListViewFilters';
+import {
+    SessionListFilterPanel,
+    type SessionListFilterDrillSection,
+    type SessionListFilterPanelCopy,
+} from './SessionListFilterPanel';
 /*
  * Audience identity belongs to the filter state owner. This component consumes its
  * qualified JSON key rather than maintaining a parallel Team-only syntax.
@@ -38,10 +44,10 @@ function teamAudienceIdentity(serverId: string, teamId: string): string {
     return buildQualifiedAudienceSelectionKey({ serverId, kind: 'team', teamId });
 }
 
-export type SessionListFilterEditorCopy = SessionListFilterEditorLabels & Readonly<{
+export type SessionListFilterEditorCopy = SessionListFilterEditorLabels & Omit<SessionListFilterPanelCopy, keyof SessionListFilterEditorLabels> & Readonly<{
     title: string;
-    clear: string;
-    done: string;
+    /** The Archived destination's label; shown only when the host passes `onOpenArchived`. */
+    archived?: string;
     catalogLoading?: string;
     catalogMore?: string;
     catalogRetry?: string;
@@ -71,34 +77,30 @@ export type SessionListFilterEditorProps = Readonly<{
     /** Source is a persisted device preference, so it is written through its own owner. */
     setSource(source: SessionListViewFilters['source']): void;
     resetFilters(): void;
+    /** Opens the archived list from the scope menu. Omitted on the archived corpus itself. */
+    onOpenArchived?: () => void;
+    /** Sessions the list currently shows for these choices, from the list's own derivation. */
+    resultCount?: number;
     onDone?: () => void;
     maxHeight?: number;
     disableTransitions?: boolean;
 }>;
 
-const MINIMUM_INTERACTIVE_TARGET_SIZE = resolveMinimumInteractiveTargetSize(Platform.OS);
+/** Everything the drill view needs above its list: the way back to the panel. */
+const DRILL_HEADER_HEIGHT = 44;
 
-const stylesheet = StyleSheet.create((theme) => ({
+const stylesheet = StyleSheet.create({
     root: {
         minWidth: 280,
-        maxWidth: 420,
         flexShrink: 1,
     },
-    footer: {
-        minHeight: 52,
-        paddingHorizontal: 10,
-        paddingVertical: 8,
-        borderTopWidth: StyleSheet.hairlineWidth,
-        borderTopColor: theme.colors.border.subtle,
+    drillHeader: {
+        minHeight: DRILL_HEADER_HEIGHT,
         flexDirection: 'row',
         alignItems: 'center',
-        justifyContent: 'flex-end',
-        gap: 8,
+        paddingHorizontal: 12,
     },
-    footerButton: {
-        minHeight: MINIMUM_INTERACTIVE_TARGET_SIZE,
-    },
-}));
+});
 
 export const SessionListFilterEditor = React.memo(function SessionListFilterEditor(
     props: SessionListFilterEditorProps,
@@ -313,13 +315,7 @@ export const SessionListFilterEditor = React.memo(function SessionListFilterEdit
         inactiveVisibilityAvailable: props.inactiveVisibilityAvailable,
         attentionAvailable: props.queryEnabled,
         labels: props.labels,
-        scopesAvailable: {
-            my_work: props.queryEnabled,
-            assigned_to_me: props.queryEnabled,
-            following: props.queryEnabled && props.followingAvailable,
-            involving_me: props.queryEnabled,
-            all_accessible: props.queryEnabled,
-        },
+        scopesAvailable: resolveSessionListFilterScopeAvailability(props),
         homes: props.homes,
         audiences,
         audiencePresentation: props.teamAudienceContext?.kind === 'global' ? 'team_drilldown' : 'flat',
@@ -327,6 +323,7 @@ export const SessionListFilterEditor = React.memo(function SessionListFilterEdit
         sourceAvailable: props.sourceAvailable,
         fixedHomeServerIds: props.fixedHomeServerIds,
         fixedAudienceKeys: props.fixedAudienceKeys,
+        archivedLabel: props.onOpenArchived ? props.labels.archived : undefined,
     }), [
         audiences,
         props.filters,
@@ -341,6 +338,7 @@ export const SessionListFilterEditor = React.memo(function SessionListFilterEdit
         props.sourceAvailable,
         props.tags,
         props.teamAudienceContext,
+        props.onOpenArchived,
     ]);
     const handleActiveStepChange = React.useCallback((step: SelectionListStep) => {
         if (props.teamAudienceContext?.kind !== 'global') return;
@@ -366,6 +364,10 @@ export const SessionListFilterEditor = React.memo(function SessionListFilterEdit
         return null;
     }, [drilledTeam, model.rootStep.sections, props.teamAudienceContext]);
     const handleSelect = React.useCallback((optionId: string) => {
+        if (optionId === SESSION_LIST_FILTER_ARCHIVED_DESTINATION_OPTION_ID) {
+            props.onOpenArchived?.();
+            return;
+        }
         if (props.inactiveVisibilityAvailable === false && optionId.startsWith('inactive:')) return;
         if (!props.queryEnabled && optionId.startsWith('attention:')) return;
         const next = resolveSessionListFilterEditorSelectionChange(
@@ -452,42 +454,69 @@ export const SessionListFilterEditor = React.memo(function SessionListFilterEdit
         teamAudienceEnabled,
     ]);
 
+    const [drill, setDrill] = React.useState<SessionListFilterDrillSection | null>(null);
+    const closeDrill = React.useCallback(() => setDrill(null), []);
+    // The drill view lists one facet of the SAME model step (same step id, same option ids), so the
+    // SelectionList's search, pagination and Team drill-down behave exactly as they always have.
+    const drillStep = React.useMemo<SelectionListStep | null>(() => {
+        if (!drill) return null;
+        const section = model.rootStep.sections.find((candidate) => candidate.id === drill)
+            // While the Teams directory is still answering there are no audience rows yet; the list
+            // opens empty and its pagination footer says it is loading.
+            ?? (drill === 'audiences' && teamAudienceEnabled
+                ? { kind: 'static' as const, id: 'audiences', title: props.labels.sharedWith, options: [] }
+                : null);
+        if (!section) return null;
+        return { ...model.rootStep, sections: [section] };
+    }, [drill, model.rootStep, props.labels.sharedWith, teamAudienceEnabled]);
+
     return (
         <View testID="session-list-filter-editor-surface" style={styles.root}>
-            <SelectionList
-                rootStep={model.rootStep}
-                selection={model.selection}
-                syncActiveStep={props.teamAudienceContext?.kind === 'global' ? syncedAudienceStep : undefined}
-                onActiveStepChange={handleActiveStepChange}
-                listAccessibilityLabel={props.labels.title}
-                onSelect={handleSelect}
-                pagination={pagination}
-                onRequestClose={props.onDone ?? (() => undefined)}
-                autoFocusInputOnWeb
-                autoFocusInputOnNative={false}
-                maxHeight={props.maxHeight}
-                heightBehavior={props.maxHeight === undefined ? 'content' : 'fixedToMaxHeight'}
-                showsVerticalScrollIndicator
-                disableTransitions={props.disableTransitions}
-                testID="session-list-filter-editor"
-            />
-            <View style={styles.footer}>
-                <ToolbarButton
-                    label={props.labels.clear}
-                    onPress={props.resetFilters}
-                    testID="session-list-filter-clear"
-                    style={styles.footerButton}
-                />
-                {props.onDone ? (
-                    <ToolbarButton
-                        label={props.labels.done}
-                        tone="primary"
-                        onPress={props.onDone}
-                        testID="session-list-filter-done"
-                        style={styles.footerButton}
+            {drillStep ? (
+                <>
+                    <View style={styles.drillHeader}>
+                        <SelectionListBackChip
+                            testID="session-list-filter-drill-back"
+                            label={props.labels.title}
+                            onPress={closeDrill}
+                        />
+                    </View>
+                    <SelectionList
+                        rootStep={drillStep}
+                        selection={model.selection}
+                        syncActiveStep={drill === 'audiences' && props.teamAudienceContext?.kind === 'global'
+                            ? syncedAudienceStep
+                            : undefined}
+                        onActiveStepChange={handleActiveStepChange}
+                        listAccessibilityLabel={drill === 'tags' ? props.labels.tags : props.labels.sharedWith}
+                        onSelect={handleSelect}
+                        pagination={drill === 'audiences' ? pagination : undefined}
+                        onRequestClose={closeDrill}
+                        autoFocusInputOnWeb
+                        autoFocusInputOnNative={false}
+                        maxHeight={props.maxHeight === undefined
+                            ? undefined
+                            : Math.max(0, props.maxHeight - DRILL_HEADER_HEIGHT)}
+                        heightBehavior="content"
+                        showsVerticalScrollIndicator
+                        disableTransitions={props.disableTransitions}
+                        testID="session-list-filter-editor"
                     />
-                ) : null}
-            </View>
+                </>
+            ) : (
+                <SessionListFilterPanel
+                    rootStep={model.rootStep}
+                    selectedIds={model.selection.selectedIds}
+                    labels={props.labels}
+                    resultCount={props.resultCount}
+                    maxHeight={props.maxHeight}
+                    onSelect={handleSelect}
+                    onOpenDrill={setDrill}
+                    audiencesAvailable={teamAudienceEnabled}
+                    onReset={props.resetFilters}
+                    onDone={props.onDone}
+                />
+            )}
         </View>
     );
 });

@@ -15,6 +15,7 @@ import { createMutableApiSessionClientFixture } from '@/testkit/backends/session
 import { createTestMetadata } from '@/testkit/backends/sessionMetadata';
 import { MessageBuffer } from '@/ui/ink/messageBuffer';
 import { createProviderEnforcedPermissionHandler } from '@/agent/permissions/providerEnforced/createHandler';
+import { createBundledFirstPartyPluginSourceCustody } from '@/plugins/runtime/lifecycle/contributions/runtimeIdentity.testkit';
 
 describe('createNativeAgentSessionHostServiceOwners', () => {
     it('dispatches Agent tool interception and host-stamped observation through the exact retained runtime registry', async () => {
@@ -101,7 +102,8 @@ describe('createNativeAgentSessionHostServiceOwners', () => {
                 pluginId: 'happier.agent.acme',
                 pluginVersion: '1.0.0',
                 agentId: 'acme',
-                generation: 'generation-1',
+                occurrenceId: 'occurrence-1',
+                sourceCustody: createBundledFirstPartyPluginSourceCustody('test-cli-version'),
                 isCurrent: () => true,
             },
             backend: {
@@ -165,7 +167,8 @@ describe('createNativeAgentSessionHostServiceOwners', () => {
                 pluginId: 'happier.agent.acme',
                 pluginVersion: '1.0.0',
                 agentId: 'acme',
-                generation: 'generation-1',
+                occurrenceId: 'occurrence-1',
+                sourceCustody: createBundledFirstPartyPluginSourceCustody('test-cli-version'),
                 isCurrent: () => true,
             },
             backend: {
@@ -224,7 +227,8 @@ describe('createNativeAgentSessionHostServiceOwners', () => {
                 pluginId: 'happier.agent.acme',
                 pluginVersion: '1.0.0',
                 agentId: 'acme',
-                generation: 'generation-1',
+                occurrenceId: 'occurrence-1',
+                sourceCustody: createBundledFirstPartyPluginSourceCustody('test-cli-version'),
                 isCurrent: () => true,
             },
             backend: {
@@ -372,7 +376,8 @@ describe('createNativeAgentSessionHostServiceOwners', () => {
                 pluginId: 'happier.agent.acme',
                 pluginVersion: '1.0.0',
                 agentId: 'claude',
-                generation: 'generation-1',
+                occurrenceId: 'occurrence-1',
+                sourceCustody: createBundledFirstPartyPluginSourceCustody('test-cli-version'),
                 runtimeAuthority: {
                     runtimeCapabilities: ['sessionHooks'],
                 },
@@ -399,7 +404,7 @@ describe('createNativeAgentSessionHostServiceOwners', () => {
                 directory: happyHomeDir,
                 metadata: createTestMetadata({ path: happyHomeDir }),
                 machineId: 'machine-1',
-                agentTargetKey: 'backend:claude',
+                agentTargetKey: 'agent:happier.agent.claude/claude',
                 session,
                 transcriptSession: session,
                 messageBuffer: new MessageBuffer(),
@@ -438,7 +443,8 @@ describe('createNativeAgentSessionHostServiceOwners', () => {
                 pluginId: 'happier.agent.acme',
                 pluginVersion: '1.0.0',
                 agentId: 'acme',
-                generation: 'generation-1',
+                occurrenceId: 'occurrence-1',
+                sourceCustody: createBundledFirstPartyPluginSourceCustody('test-cli-version'),
                 isCurrent: () => true,
             },
             backend: {
@@ -502,7 +508,8 @@ describe('createNativeAgentSessionHostServiceOwners', () => {
                 pluginId: 'happier.agent.acme',
                 pluginVersion: '1.0.0',
                 agentId: 'acme',
-                generation: 'generation-1',
+                occurrenceId: 'occurrence-1',
+                sourceCustody: createBundledFirstPartyPluginSourceCustody('test-cli-version'),
                 isCurrent: () => true,
             },
             backend: {

@@ -14,13 +14,14 @@ import {
 } from '@/components/sessions/terminalComposer/terminalComposerDraftBlockedEvent';
 import { useTerminalComposerClearAction } from '@/components/sessions/terminalComposer/useTerminalComposerClearAction';
 import { useSettings } from '@/sync/store/hooks';
-import type { AgentEvent } from '@/sync/typesRaw';
+import type { AgentEvent } from "@happier-dev/session-core/raw";
 import { t } from '@/text';
 import { formatWithCachedDateTimeFormatter } from '@/utils/datetime/cachedIntlFormatters';
 import type { TranscriptEventEmphasis } from './transcriptEventEmphasis';
 
 import { buildConnectedServiceAccountSwitchMessage } from './connectedServiceAccountSwitchMessage';
 import { Icon, type IconName } from '@/components/ui/icons/Icon';
+import { WorkerUpdateCard } from '@/components/sessions/work/WorkerUpdateCard';
 
 const EVENT_ICON_SIZE = 18;
 // Derived, not chosen: the spinner replaces the glyph in the same slot, so it must paint the same
@@ -285,6 +286,10 @@ export const TranscriptEventRow = React.memo(function TranscriptEventRow(props: 
     sessionId?: string | null;
     serverId?: string | null;
     emphasis?: TranscriptEventEmphasis;
+    navigationEnabled?: boolean;
+    /** On the worker update that opens a context-only wake: how many updates woke the session. */
+    hostWakeCount?: number;
+    createdAt?: number;
 }) {
     const { theme } = useUnistyles();
     const settings = useSettings();
@@ -311,12 +316,35 @@ export const TranscriptEventRow = React.memo(function TranscriptEventRow(props: 
     if (agentTransitionDivider) {
         return <AgentTransitionDividerRow divider={agentTransitionDivider} sessionId={props.sessionId ?? null} />;
     }
+    if (props.event.type === 'worker-update') {
+        // A wake is the host's doing, never the user's: its first update says so in a host row
+        // (ORC R-01, lab D1), and every update keeps its own card.
+        return (
+            <View style={styles.container}>
+                {props.hostWakeCount ? (
+                    <View testID="transcript-event-host-wake" style={[styles.row, styles.hostWake]}>
+                        <View style={styles.iconContainer}>
+                            <Icon name="arrow-elbow-down-right" size={EVENT_ICON_SIZE} color={theme.colors.text.tertiary} />
+                        </View>
+                        <Text style={[styles.text, styles.textColumn]}>
+                            {t('sessionWork.workerUpdate.wokenBy', { count: props.hostWakeCount })}
+                            <Text style={styles.hostWakeQuiet}>{` · ${t('sessionWork.workerUpdate.notFromYou')}`}</Text>
+                        </Text>
+                    </View>
+                ) : null}
+                <WorkerUpdateCard update={props.event.update} serverId={props.serverId} navigationEnabled={props.navigationEnabled} at={props.createdAt} />
+            </View>
+        );
+    }
 
     if (terminalComposerDraftBlocked && readEventRecord(props.event).type === 'terminal-composer-draft-blocked') {
         testID = 'transcript-event-terminal-composer-draft-blocked';
         iconName = 'pause-circle';
         text = readTerminalComposerDraftBlockedMessage(props.event)
             ?? t('session.pendingMessages.steerBlockedTerminalDraftNotice');
+    } else if (props.event.type === 'worker-report') {
+        testID = 'transcript-event-worker-report';
+        text = props.event.summary;
     } else if (props.event.type === 'switch') {
         iconName = 'arrows-left-right';
         text = t('message.switchedToMode', { mode: props.event.mode });
@@ -510,6 +538,14 @@ const styles = StyleSheet.create((theme) => ({
         lineHeight: 20,
         fontWeight: '500',
         flexShrink: 1,
+    },
+    hostWake: {
+        alignItems: 'center',
+        marginBottom: 10,
+    },
+    hostWakeQuiet: {
+        color: theme.colors.text.tertiary,
+        fontWeight: '400',
     },
     deemphasizedText: {
         color: theme.colors.text.tertiary,

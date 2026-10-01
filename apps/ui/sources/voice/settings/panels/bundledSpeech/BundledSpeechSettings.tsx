@@ -6,6 +6,7 @@ import { resolveVoiceSpeechSettingsCorrespondence } from '@happier-dev/protocol'
 
 import { RoundButton } from '@/components/ui/buttons/RoundButton';
 import { DropdownMenu } from '@/components/ui/forms/dropdown/DropdownMenu';
+import { FieldValueItem } from '@/components/ui/forms/FieldValueItem';
 import { Switch } from '@/components/ui/forms/Switch';
 import { Item } from '@/components/ui/lists/Item';
 import { Text, TextInput } from '@/components/ui/text/Text';
@@ -188,6 +189,8 @@ function BundledSpeechSettings(props: Readonly<{
   const { theme } = useUnistyles();
   const machine = useVoiceExecutionMachinePresentation();
   const [openKey, setOpenKey] = React.useState<string | null>(null);
+  /** The remote select whose own value is being typed inline beneath its menu. */
+  const [customKey, setCustomKey] = React.useState<string | null>(null);
   const [catalogRefreshRevision, setCatalogRefreshRevision] = React.useState(0);
   const catalogTargetKey = `${machine.machineId ?? ''}:${catalogRefreshRevision}`;
   const [catalogState, setCatalogState] = React.useState<Readonly<{
@@ -334,54 +337,52 @@ function BundledSpeechSettings(props: Readonly<{
       {props.descriptor.fields.map((field) => {
         const value = config[field.key];
         if (field.kind === 'text') {
+          const saved = typeof value === 'string' ? value : '';
           return (
             <React.Fragment key={field.key}>
-              <Item
+              <FieldValueItem
+                testID={`voice-speech-setting:${field.key}`}
+                fieldTestID={`voice-speech-setting:${field.key}.field`}
                 title={translateDescriptorKey(field.titleKey)}
                 subtitle={translateDescriptorKey(field.subtitleKey)}
-                detail={typeof value === 'string' && value.length > 0 ? value : t('common.none')}
-                onPress={() => fireAndForget((async () => {
-                if (props.descriptor.endpointConsent?.baseUrlFieldId === field.key) {
+                placeholder={t('common.none')}
+                autoCapitalize="none"
+                value={saved}
+                onCommit={(draft) => {
                   const consent = props.descriptor.endpointConsent;
-                  const patch = await promptSpeechEndpointChange({
-                    currentBaseUrl: typeof value === 'string' ? value : '',
-                    currentConsent: typeof config[consent.originConsentFieldId] === 'string'
-                      ? config[consent.originConsentFieldId] as string : '',
-                    currentConsentMachineId: typeof config[consent.machineConsentFieldId] === 'string'
-                      ? config[consent.machineConsentFieldId] as string : '',
-                    machineId: machine.machineId,
-                    machineLabel: machine.machineLabel,
-                    promptBaseUrl: async () => await Modal.prompt(
-                      translateDescriptorKey(field.promptTitleKey ?? field.titleKey),
-                      translateDescriptorKey(field.promptBodyKey ?? field.subtitleKey),
-                      { placeholder: typeof value === 'string' ? value : '' },
-                    ),
-                    confirmInsecureOrigin: async ({ origin, machineLabel }) => await Modal.confirm(
-                      t('settingsVoice.local.openAiCompatEndpoint.insecureTitle'),
-                      t('settingsVoice.local.openAiCompatEndpoint.insecureBody', { origin, machine: machineLabel }),
-                      { confirmText: t('settingsVoice.local.openAiCompatEndpoint.allowAction') },
-                    ),
-                    showInvalidEndpoint: async () => await Modal.alert(
-                      t('common.error'),
-                      t('settingsVoice.local.openAiCompatEndpoint.invalidBody'),
-                    ),
-                  });
-                  if (patch) writeConfig({ ...config, ...patch });
-                  return;
-                }
-                const raw = await Modal.prompt(
-                  translateDescriptorKey(field.promptTitleKey ?? field.titleKey),
-                  translateDescriptorKey(field.promptBodyKey ?? field.subtitleKey),
-                  { placeholder: typeof value === 'string' ? value : '' },
-                );
-                if (raw === null) return;
-                const next = String(raw).trim();
-                if (next.length < field.minLength || next.length > field.maxLength) {
-                  await Modal.alert(t('common.error'));
-                  return;
-                }
-                setValue(field.key, next);
-                })(), { tag: `BundledSpeechSettings.text.${field.key}` })}
+                  if (consent?.baseUrlFieldId === field.key) {
+                    // The endpoint owner validates the URL and asks before an insecure origin; the field
+                    // shows the saved endpoint until its patch lands.
+                    fireAndForget((async () => {
+                      const patch = await promptSpeechEndpointChange({
+                        currentBaseUrl: saved,
+                        currentConsent: typeof config[consent.originConsentFieldId] === 'string'
+                          ? config[consent.originConsentFieldId] as string : '',
+                        currentConsentMachineId: typeof config[consent.machineConsentFieldId] === 'string'
+                          ? config[consent.machineConsentFieldId] as string : '',
+                        machineId: machine.machineId,
+                        machineLabel: machine.machineLabel,
+                        promptBaseUrl: async () => draft,
+                        confirmInsecureOrigin: async ({ origin, machineLabel }) => await Modal.confirm(
+                          t('settingsVoice.local.openAiCompatEndpoint.insecureTitle'),
+                          t('settingsVoice.local.openAiCompatEndpoint.insecureBody', { origin, machine: machineLabel }),
+                          { confirmText: t('settingsVoice.local.openAiCompatEndpoint.allowAction') },
+                        ),
+                        showInvalidEndpoint: async () => await Modal.alert(
+                          t('common.error'),
+                          t('settingsVoice.local.openAiCompatEndpoint.invalidBody'),
+                        ),
+                      });
+                      if (patch) writeConfig({ ...config, ...patch });
+                    })(), { tag: `BundledSpeechSettings.endpoint.${field.key}` });
+                    return saved;
+                  }
+                  if (draft.length < field.minLength || draft.length > field.maxLength) {
+                    Modal.alert(t('common.error'));
+                    return saved;
+                  }
+                  setValue(field.key, draft);
+                }}
               />
               <VoiceProviderSettingsActions
                 providerId={props.descriptor.providerId}
@@ -394,27 +395,32 @@ function BundledSpeechSettings(props: Readonly<{
           );
         }
         if (field.kind === 'number') {
+          const saved = typeof value === 'number' ? String(value) : '';
           return (
             <React.Fragment key={field.key}>
-              <Item
+              <FieldValueItem
+                testID={`voice-speech-setting:${field.key}`}
+                fieldTestID={`voice-speech-setting:${field.key}.field`}
                 title={translateDescriptorKey(field.titleKey)}
                 subtitle={translateDescriptorKey(field.subtitleKey)}
-                detail={typeof value === 'number' ? String(value) : t('common.none')}
-                onPress={() => fireAndForget((async () => {
-                const raw = await Modal.prompt(translateDescriptorKey(field.promptTitleKey!), translateDescriptorKey(field.promptBodyKey!), {
-                  inputType: 'numeric',
-                  placeholder: typeof value === 'number' ? String(value) : '',
-                });
-                if (raw === null) return;
-                const trimmed = String(raw).trim();
-                if (!trimmed && field.nullable) return setValue(field.key, null);
-                const next = Number(trimmed);
-                if (!Number.isFinite(next) || next < (field.min ?? -Infinity) || next > (field.max ?? Infinity)) {
-                  await Modal.alert(t('common.error'), `${field.min}–${field.max}`);
-                  return;
-                }
-                setValue(field.key, next);
-                })(), { tag: `BundledSpeechSettings.number.${field.key}` })}
+                placeholder={t('common.none')}
+                kind="decimal"
+                signed={!(typeof field.min === 'number' && field.min >= 0)}
+                allowEmpty={field.nullable}
+                value={saved}
+                onCommit={(draft) => {
+                  if (!draft) {
+                    setValue(field.key, null);
+                    return '';
+                  }
+                  const next = Number(draft);
+                  if (!Number.isFinite(next) || next < (field.min ?? -Infinity) || next > (field.max ?? Infinity)) {
+                    Modal.alert(t('common.error'), `${field.min}–${field.max}`);
+                    return saved;
+                  }
+                  setValue(field.key, next);
+                  return String(next);
+                }}
               />
               <VoiceProviderSettingsActions
                 providerId={props.descriptor.providerId}
@@ -549,16 +555,30 @@ function BundledSpeechSettings(props: Readonly<{
               if (id === '__retry__') {
                 setCatalogRefreshRevision((current) => current + 1);
               } else if (id === '__custom__') {
-                fireAndForget((async () => {
-                  const raw = await Modal.prompt(translateDescriptorKey(field.titleKey), translateDescriptorKey(field.subtitleKey), { placeholder: typeof value === 'string' ? value : '' });
-                  if (raw !== null) setValue(field.key, String(raw).trim() || (field.nullable ? null : value));
-                })(), { tag: `BundledSpeechSettings.custom.${field.key}` });
+                setCustomKey(field.key);
               } else {
                 setValue(field.key, id || null);
               }
               setOpenKey(null);
             }}
             />
+            {customKey !== field.key ? null : (
+              <FieldValueItem
+                testID={`voice-speech-setting:${field.key}.custom`}
+                fieldTestID={`voice-speech-setting:${field.key}.custom.field`}
+                title={translateDescriptorKey(field.titleKey)}
+                subtitle={translateDescriptorKey(field.subtitleKey)}
+                autoCapitalize="none"
+                autoFocus
+                value={typeof value === 'string' ? value : ''}
+                onCommit={(draft) => {
+                  setCustomKey(null);
+                  if (draft) setValue(field.key, draft);
+                  else if (field.nullable) setValue(field.key, null);
+                  else return typeof value === 'string' ? value : '';
+                }}
+              />
+            )}
             <VoiceProviderSettingsActions
               providerId={props.descriptor.providerId}
               owner={props.descriptor}

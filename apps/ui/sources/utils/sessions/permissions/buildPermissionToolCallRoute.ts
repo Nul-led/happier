@@ -1,5 +1,5 @@
 import type { PermissionToolCallMessageLocation } from './permissionToolCallLocationTypes';
-import { isStableSessionMessageRouteId } from '@/sync/domains/messages/messageRouteIds';
+import { isStableSessionMessageRouteId } from "@happier-dev/session-core/messages";
 
 function encodeRouteSegment(value: string): string {
     return encodeURIComponent(value);

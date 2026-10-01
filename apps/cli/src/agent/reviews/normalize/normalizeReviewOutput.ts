@@ -2,7 +2,6 @@ import type { BackendTargetRefV1, ExecutionRunRetentionPolicy } from '@happier-d
 
 import type { ExecutionRunProfileBoundedCompleteResult } from '../../executionRuns/profiles/ExecutionRunIntentProfile';
 import { normalizeStrictJsonReviewOutput } from './normalizeStrictJsonReviewOutput';
-import { resolveReviewOutputNormalizer } from '../registry/reviewEngineRegistry';
 
 export function normalizeReviewOutput(params: Readonly<{
   runId: string;
@@ -16,7 +15,5 @@ export function normalizeReviewOutput(params: Readonly<{
   intentInput?: unknown;
   retentionPolicy?: ExecutionRunRetentionPolicy;
 }>): ExecutionRunProfileBoundedCompleteResult {
-  const normalize = resolveReviewOutputNormalizer(params.backendId);
-  if (normalize) return normalize(params);
   return normalizeStrictJsonReviewOutput(params);
 }

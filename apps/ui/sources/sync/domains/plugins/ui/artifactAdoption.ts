@@ -1,15 +1,11 @@
 import {
-    DaemonPluginHostedWebArtifactCacheIdentityV1Schema,
-    DaemonPluginReactNativeBundleCacheIdentityV1Schema,
-    type DaemonPluginReactNativeCrashBindingTokenV1,
-    type DaemonPluginHostedWebArtifactCacheIdentityV1,
-    type PluginMachineExecutionOriginV1,
+    DaemonPluginUiArtifactByteIdentityV1Schema,
 } from '@happier-dev/protocol';
 import {
     deriveGeneratedHostedWebAssetPolicyV1,
-    PluginUiArtifactsManifestEntryV1Schema,
+    PluginUiArtifactsManifestEntryV2Schema,
     type HostedWebAssetPolicyInput,
-    type PluginUiArtifactsManifestEntryV1,
+    type PluginUiArtifactsManifestEntryV2,
     type PluginUiChannelV1,
     type PluginUiHostMethodV1,
 } from '@happier-dev/protocol/plugins/ui';
@@ -20,11 +16,12 @@ import {
 import {
     loadPluginReactNativeBundleModule,
     type PluginReactNativeLoaderBackend,
-    type RepackInstalledArtifactModuleReference,
+    type PluginReactNativeExecutableModuleReference,
 } from '@/components/plugins/reactNative/loader';
 import type { PluginReactNativeSurfaceModule } from '@/components/plugins/reactNative/PluginReactNativeSurface';
 import {
     acquirePluginHostedWebArtifactAvailability,
+    type PluginHostedWebArtifactIdentity,
     type PluginHostedWebArtifactAvailabilityInput,
 } from '@/sync/domains/plugins/availability/hostedWebArtifactLease';
 import {
@@ -33,6 +30,11 @@ import {
 } from '@/sync/domains/plugins/availability/reactNativeArtifactAvailability';
 import type { ActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
 import type { PluginAccountAvailabilityReader } from '@/sync/domains/plugins/availability/reader';
+import type {
+    PluginArtifactDaemonProjectionSelectionInput,
+    PluginArtifactDaemonTransport,
+} from '@/sync/domains/plugins/availability/artifactLease';
+import { readPluginUiContributionOrigin } from './projectionUnion';
 import type { PluginReactNativeBundleCacheIdentity } from './reactNativeRuntime';
 
 type PluginUiArtifactDisposableHandle = Readonly<{
@@ -45,6 +47,22 @@ type PluginUiArtifactAvailabilityResult<Handle extends PluginUiArtifactDisposabl
     | Readonly<{ kind: 'unavailable'; code: string }>;
 
 export type PluginUiArtifactAdoptionKind = 'hostedWebNative' | 'reactNative';
+
+export type PluginUiArtifactRetirementReason = 'disabled' | 'revoked' | 'uninstalled' | 'withdrawn' | 'accountRetired' | 'ownerDisposed';
+
+export type PluginUiArtifactAdoptionDisposition =
+    | Readonly<{ kind: 'empty' }>
+    | Readonly<{ kind: 'preparing'; desiredArtifactKey: string }>
+    | Readonly<{ kind: 'applied'; appliedArtifactKey: string }>
+    | Readonly<{ kind: 'updating'; appliedArtifactKey: string; desiredArtifactKey: string }>
+    | Readonly<{
+        kind: 'retainedLastKnownGood';
+        appliedArtifactKey: string;
+        desiredArtifactKey: string;
+        failureCode: string;
+    }>
+    | Readonly<{ kind: 'failed'; desiredArtifactKey: string; failureCode: string }>
+    | Readonly<{ kind: 'retired'; reason: PluginUiArtifactRetirementReason }>;
 
 /**
  * A renderer-facing, revocable view of an Artifact-owned handle. The view
@@ -61,6 +79,10 @@ export type PluginUiArtifactAdoption<
     isCurrent: () => boolean;
     /** Idempotently retires this renderer consumer. */
     dispose: () => void;
+    /** Atomically promotes this prepared candidate and retires its incumbent. */
+    commit: () => boolean;
+    /** Retires only this candidate and records the retained/initial failure. */
+    fail: (failureCode: string) => void;
 }>;
 
 export type PluginUiArtifactAdoptionResult<
@@ -70,31 +92,28 @@ export type PluginUiArtifactAdoptionResult<
     | Readonly<{ kind: 'available'; adoption: PluginUiArtifactAdoption<Kind, Handle> }>
     | Readonly<{ kind: 'unavailable'; code: string }>;
 
-export type PluginUiArtifactDaemonOrigin = Readonly<{
-    executionOrigin: PluginMachineExecutionOriginV1;
-    serverId: string;
-}>;
+export type PluginUiArtifactDaemonSource = PluginArtifactDaemonTransport;
 
 export type PluginUiHostedWebArtifactTechnicalAdmission = Readonly<{
-    artifactGraph: PluginUiArtifactsManifestEntryV1;
-    cacheIdentity: DaemonPluginHostedWebArtifactCacheIdentityV1;
+    artifactGraph: PluginUiArtifactsManifestEntryV2;
+    cacheIdentity: PluginHostedWebArtifactIdentity;
     hostedWebPolicy: HostedWebAssetPolicyInput;
+    daemonProjectionSelection?: PluginUiDaemonProjectionSelection;
 }>;
 
 export type PluginUiHostedWebNativeArtifactAdoptionInput = Omit<
     PluginHostedWebArtifactAvailabilityInput,
     'daemon' | 'isCurrent'
 > & Readonly<{
-    daemon?: PluginUiArtifactDaemonOrigin;
+    daemon?: PluginUiArtifactDaemonSource;
+    daemonProjectionSelection?: PluginArtifactDaemonProjectionSelectionInput;
 }>;
 
 export type PluginUiReactNativeArtifactAdoptionInput = Omit<
     PluginReactNativeArtifactAvailabilityInput,
     'daemon' | 'isCurrent'
 > & Readonly<{
-    artifactOwnerKind: 'renderer';
-    crashStateToken: DaemonPluginReactNativeCrashBindingTokenV1;
-    daemon?: PluginUiArtifactDaemonOrigin;
+    daemon?: PluginUiArtifactDaemonSource;
 }>;
 
 function unavailableBecauseRetired(): Readonly<{
@@ -122,17 +141,31 @@ function handleIsCurrent(handle: PluginUiArtifactDisposableHandle): boolean {
 export class PluginUiArtifactAdoptionOwner {
     private disposed = false;
     private readonly disposeConsumers = new Set<() => void>();
+    private currentConsumer: Readonly<{ artifactKey: string; dispose: () => void }> | null = null;
+    private disposition: PluginUiArtifactAdoptionDisposition = Object.freeze({ kind: 'empty' });
+    private pendingAdoption: { desiredArtifactKey: string; dispose?: () => void } | null = null;
 
     public constructor(private readonly input: Readonly<{
         isCurrent: () => boolean;
     }>) {}
 
     public dispose(): void {
+        this.retire('ownerDisposed');
+    }
+
+    public retire(reason: PluginUiArtifactRetirementReason): void {
         if (this.disposed) return;
         this.disposed = true;
+        this.pendingAdoption = null;
         for (const disposeConsumer of [...this.disposeConsumers]) {
             disposeConsumer();
         }
+        this.currentConsumer = null;
+        this.disposition = Object.freeze({ kind: 'retired', reason });
+    }
+
+    public readDisposition(): PluginUiArtifactAdoptionDisposition {
+        return this.disposition;
     }
 
     public async adopt<
@@ -140,23 +173,62 @@ export class PluginUiArtifactAdoptionOwner {
         Handle extends PluginUiArtifactDisposableHandle,
     >(input: Readonly<{
         kind: Kind;
+        desiredArtifactKey?: string;
         acquire: () => Promise<PluginUiArtifactAvailabilityResult<Handle>>;
     }>): Promise<PluginUiArtifactAdoptionResult<Kind, Handle>> {
         if (!this.isActive()) return unavailableBecauseRetired();
 
+        const desiredArtifactKey = input.desiredArtifactKey ?? input.kind;
+        this.pendingAdoption?.dispose?.();
+        const pendingAdoption: { desiredArtifactKey: string; dispose?: () => void } = { desiredArtifactKey };
+        this.pendingAdoption = pendingAdoption;
+        const incumbent = this.currentConsumer;
+        this.disposition = incumbent
+            ? Object.freeze({
+                kind: 'updating',
+                appliedArtifactKey: incumbent.artifactKey,
+                desiredArtifactKey,
+            })
+            : Object.freeze({ kind: 'preparing', desiredArtifactKey });
+
         const acquired = await input.acquire();
+        if (pendingAdoption !== this.pendingAdoption) {
+            if (acquired.kind === 'available') acquired.handle.dispose();
+            return unavailableBecauseRetired();
+        }
         if (acquired.kind !== 'available') {
-            return this.isActive() ? acquired : unavailableBecauseRetired();
+            if (!this.isActive()) return unavailableBecauseRetired();
+            this.pendingAdoption = null;
+            this.disposition = incumbent
+                ? Object.freeze({
+                    kind: 'retainedLastKnownGood',
+                    appliedArtifactKey: incumbent.artifactKey,
+                    desiredArtifactKey,
+                    failureCode: acquired.code,
+                })
+                : Object.freeze({
+                    kind: 'failed',
+                    desiredArtifactKey,
+                    failureCode: acquired.code,
+                });
+            return acquired;
         }
 
         const handle = acquired.handle;
         let consumerDisposed = false;
+        let committed = false;
         const disposeConsumer = () => {
             if (consumerDisposed) return;
             consumerDisposed = true;
             this.disposeConsumers.delete(disposeConsumer);
+            if (this.currentConsumer?.dispose === disposeConsumer) {
+                this.currentConsumer = null;
+                if (!this.disposed) this.disposition = Object.freeze({ kind: 'empty' });
+            }
+            if (this.pendingAdoption === pendingAdoption) this.pendingAdoption = null;
             handle.dispose();
         };
+        pendingAdoption.dispose = disposeConsumer;
 
         if (!this.isActive() || !handleIsCurrent(handle)) {
             disposeConsumer();
@@ -168,11 +240,41 @@ export class PluginUiArtifactAdoptionOwner {
         // The source disposer remains in this closure; consumers receive only
         // the revocable adoption method below.
         void sourceDispose;
+        const commit = (): boolean => {
+            if (consumerDisposed || committed || this.pendingAdoption !== pendingAdoption
+                || !this.isActive() || !handleIsCurrent(handle)) return false;
+            committed = true;
+            const previous = this.currentConsumer;
+            this.pendingAdoption = null;
+            this.currentConsumer = Object.freeze({ artifactKey: desiredArtifactKey, dispose: disposeConsumer });
+            this.disposition = Object.freeze({ kind: 'applied', appliedArtifactKey: desiredArtifactKey });
+            if (previous?.dispose !== disposeConsumer) previous?.dispose();
+            return true;
+        };
+        const fail = (failureCode: string): void => {
+            if (consumerDisposed || committed || this.pendingAdoption !== pendingAdoption) return;
+            this.pendingAdoption = null;
+            this.disposition = incumbent
+                ? Object.freeze({
+                    kind: 'retainedLastKnownGood',
+                    appliedArtifactKey: incumbent.artifactKey,
+                    desiredArtifactKey,
+                    failureCode,
+                })
+                : Object.freeze({ kind: 'failed', desiredArtifactKey, failureCode });
+            disposeConsumer();
+        };
         const adoption = Object.freeze({
             kind: input.kind,
             handle: Object.freeze(readonlyHandle),
-            isCurrent: () => this.isActive() && handleIsCurrent(handle),
+            isCurrent: () => this.isActive()
+                && handleIsCurrent(handle)
+                && (committed
+                    ? this.currentConsumer?.dispose === disposeConsumer
+                    : this.pendingAdoption === pendingAdoption),
             dispose: disposeConsumer,
+            commit,
+            fail,
         });
         return Object.freeze({ kind: 'available', adoption });
     }
@@ -183,14 +285,12 @@ export class PluginUiArtifactAdoptionOwner {
         const { daemon, ...availabilityInput } = input;
         return await this.adopt({
             kind: 'hostedWebNative' as const,
+            desiredArtifactKey: input.cacheIdentity.artifactDigest,
             acquire: () => acquirePluginHostedWebArtifactAvailability({
                 ...availabilityInput,
                 ...(daemon
                     ? {
-                        daemon: {
-                            origin: daemon.executionOrigin,
-                            serverId: daemon.serverId,
-                        },
+                        daemon,
                     }
                     : {}),
                 isCurrent: () => this.isActive(),
@@ -204,15 +304,13 @@ export class PluginUiArtifactAdoptionOwner {
         const { daemon, ...availabilityInput } = input;
         return await this.adopt({
             kind: 'reactNative' as const,
+            desiredArtifactKey: input.cacheIdentity.artifactDigest,
             acquire: async () => {
                 const acquired = await acquirePluginReactNativeArtifactAvailability({
                     ...availabilityInput,
                     ...(daemon
                         ? {
-                            daemon: {
-                                origin: daemon.executionOrigin,
-                                serverId: daemon.serverId,
-                            },
+                            daemon,
                         }
                         : {}),
                     isCurrent: () => this.isActive(),
@@ -245,7 +343,7 @@ function readOptionalString(value: unknown): string | undefined {
 
 function readHostedWebAssetPolicy(input: Readonly<{
     contribution: Readonly<Record<string, unknown>> | null;
-    graph: PluginUiArtifactsManifestEntryV1;
+    graph: PluginUiArtifactsManifestEntryV2;
     channel: PluginUiChannelV1;
 }>): HostedWebAssetPolicyInput | null {
     if (input.contribution?.generatedV2 !== true) return null;
@@ -271,25 +369,28 @@ function readHostedWebAssetPolicy(input: Readonly<{
 export function resolvePluginUiHostedWebArtifactTechnicalAdmission(input: Readonly<{
     contribution: Readonly<Record<string, unknown>> | null;
     pluginId: string;
-    projectionGeneration: number | null | undefined;
     channel: PluginUiChannelV1;
 }>): PluginUiHostedWebArtifactTechnicalAdmission | null {
-    if (input.contribution?.generatedV2 !== true || input.projectionGeneration === null || input.projectionGeneration === undefined) {
+    if (input.contribution?.generatedV2 !== true) {
         return null;
     }
     const graph = readPluginUiGeneratedArtifactGraph(input.contribution);
-    const cacheIdentity = readPluginUiHostedWebArtifactReadIdentity(input.contribution);
     const contributionId = readOptionalString(input.contribution.contributionId);
+    const cacheIdentity = graph && contributionId
+        ? readPluginUiHostedWebArtifactReadIdentity(input.contribution, {
+            pluginId: input.pluginId,
+            contributionId,
+            artifactId: graph.artifactId,
+        })
+        : null;
     if (
         !graph
         || !cacheIdentity
         || !contributionId
         || cacheIdentity.pluginId !== input.pluginId
-        || graph.contributionId !== contributionId
         || cacheIdentity.contributionId !== contributionId
         || cacheIdentity.artifactDigest !== graph.digest
-        || cacheIdentity.platform !== graph.platform
-        || cacheIdentity.projectionGeneration !== input.projectionGeneration
+        || graph.tier !== 'hostedWeb'
     ) {
         return null;
     }
@@ -299,30 +400,56 @@ export function resolvePluginUiHostedWebArtifactTechnicalAdmission(input: Readon
         channel: input.channel,
     });
     if (!hostedWebPolicy) return null;
-    return Object.freeze({ artifactGraph: graph, cacheIdentity, hostedWebPolicy });
+    const daemonProjectionSelection = readPluginUiDaemonProjectionSelection(input.contribution);
+    return Object.freeze({
+        artifactGraph: graph,
+        cacheIdentity,
+        hostedWebPolicy,
+        ...(daemonProjectionSelection ? { daemonProjectionSelection } : {}),
+    });
+}
+
+export type PluginUiDaemonProjectionSelection = Omit<PluginArtifactDaemonProjectionSelectionInput, 'isCurrent'>;
+
+/**
+ * Reads the daemon projection's semantic-selection stamp, carrying the
+ * projecting daemon (the app-union origin stamp) as its byte route. A direct
+ * single-machine projection has no stamp; its mount machine is that daemon.
+ * Account-selected artifacts return null and continue through Availability.
+ */
+export function readPluginUiDaemonProjectionSelection(
+    contribution: Readonly<Record<string, unknown>> | null,
+): PluginUiDaemonProjectionSelection | null {
+    if (contribution?.artifactSelectionOwner !== 'daemonProjection') return null;
+    const occurrenceId = readOptionalString(contribution.occurrenceId);
+    const contributionId = readOptionalString(contribution.contributionId);
+    const releaseVersion = readOptionalString(contribution.pluginVersion);
+    if (!occurrenceId || !contributionId || !releaseVersion) return null;
+    const origin = readPluginUiContributionOrigin(contribution);
+    return Object.freeze({
+        occurrenceId,
+        contributionId,
+        releaseVersion,
+        ...(origin?.serverId
+            ? { transport: Object.freeze({ machineId: origin.machineId, serverId: origin.serverId }) }
+            : {}),
+    });
 }
 
 /** React dependency facts only; never a cache or persistence identity. */
 export function createPluginUiHostedWebArtifactRequestFactsKey(input: Readonly<{
     platform: string | undefined;
-    origin: PluginUiArtifactDaemonOrigin | null;
+    source: PluginUiArtifactDaemonSource | null;
     admission: PluginUiHostedWebArtifactTechnicalAdmission | null;
 }>): string {
     const sourceMaps = input.admission?.hostedWebPolicy.sourceMaps;
     return JSON.stringify({
         platform: input.platform ?? null,
-        origin: input.origin
-            ? {
-                serverId: input.origin.serverId,
-                serverIdentityId: input.origin.executionOrigin.serverIdentityId,
-                materialization: input.origin.executionOrigin.materializationRef,
-            }
-            : null,
+        source: input.source ?? null,
         graph: input.admission
             ? {
-                contributionId: input.admission.artifactGraph.contributionId,
+                artifactId: input.admission.artifactGraph.artifactId,
                 tier: input.admission.artifactGraph.tier,
-                platform: input.admission.artifactGraph.platform,
                 entry: input.admission.artifactGraph.entry,
                 digest: input.admission.artifactGraph.digest,
                 files: input.admission.artifactGraph.files.map((file) => ({
@@ -355,19 +482,26 @@ export function createPluginUiHostedWebArtifactRequestFactsKey(input: Readonly<{
 
 export function readPluginUiGeneratedArtifactGraph(
     contribution: Readonly<Record<string, unknown>> | null,
-): PluginUiArtifactsManifestEntryV1 | null {
+): PluginUiArtifactsManifestEntryV2 | null {
     if (contribution?.generatedV2 !== true) return null;
-    const parsed = PluginUiArtifactsManifestEntryV1Schema.safeParse(contribution.artifactGraph);
+    const parsed = PluginUiArtifactsManifestEntryV2Schema.safeParse(contribution.artifactGraph);
     return parsed.success ? parsed.data : null;
 }
 
 export function readPluginUiHostedWebArtifactReadIdentity(
     contribution: Readonly<Record<string, unknown>> | null,
-): DaemonPluginHostedWebArtifactCacheIdentityV1 | null {
-    const parsed = DaemonPluginHostedWebArtifactCacheIdentityV1Schema.safeParse(
+    context: Readonly<{
+        pluginId: string;
+        contributionId: string;
+        artifactId: string;
+    }>,
+): PluginHostedWebArtifactIdentity | null {
+    const parsed = DaemonPluginUiArtifactByteIdentityV1Schema.safeParse(
         readRecord(contribution?.runtime)?.artifactReadIdentity,
     );
-    return parsed.success ? parsed.data : null;
+    return parsed.success
+        ? Object.freeze({ ...context, artifactDigest: parsed.data.artifactDigest, platform: 'web' })
+        : null;
 }
 
 /**
@@ -378,36 +512,36 @@ export function readPluginUiHostedWebArtifactReadIdentity(
  */
 export function readPluginUiReactNativeBundleCacheIdentity(
     value: unknown,
+    context: Readonly<{
+        pluginId: string;
+        contributionId: string;
+        artifactId: string;
+        platform: 'web' | 'ios' | 'android';
+    }>,
 ): PluginReactNativeBundleCacheIdentity | null {
-    const parsed = DaemonPluginReactNativeBundleCacheIdentityV1Schema.safeParse(value);
-    return parsed.success ? Object.freeze(parsed.data) : null;
+    const parsed = DaemonPluginUiArtifactByteIdentityV1Schema.safeParse(value);
+    return parsed.success ? Object.freeze({ ...context, artifactDigest: parsed.data.artifactDigest }) : null;
 }
 
 export function readPluginUiGeneratedReactNativeModuleReference(
-    graph: PluginUiArtifactsManifestEntryV1 | null,
-): RepackInstalledArtifactModuleReference | undefined {
-    if (!graph || graph.platform === 'web' || !graph.repack) return undefined;
-    return Object.freeze({
-        containerName: graph.repack.containerName,
-        modulePath: graph.repack.modulePath,
-        exportName: graph.repack.exportName,
-    });
+    graph: PluginUiArtifactsManifestEntryV2 | null,
+    exportName = 'renderSurface',
+): PluginReactNativeExecutableModuleReference | undefined {
+    if (!graph || graph.tier !== 'reactNative' || !graph.executable.exports.includes(exportName)) return undefined;
+    return Object.freeze({ exportName });
 }
 
 export function isPluginUiReactNativeArtifactTechnicallyAdmitted(input: Readonly<{
-    artifactGraph: PluginUiArtifactsManifestEntryV1 | null;
+    artifactGraph: PluginUiArtifactsManifestEntryV2 | null;
     cacheIdentity: PluginReactNativeBundleCacheIdentity | null;
-    projectionGeneration: number | null | undefined;
-    moduleReference: RepackInstalledArtifactModuleReference | undefined;
+    moduleReference: PluginReactNativeExecutableModuleReference | undefined;
 }>): boolean {
     return input.artifactGraph !== null
         && input.cacheIdentity !== null
-        && input.projectionGeneration !== null
-        && input.projectionGeneration !== undefined
-        && input.cacheIdentity.projectionGeneration === input.projectionGeneration
         && input.cacheIdentity.artifactDigest === input.artifactGraph.digest
-        && input.cacheIdentity.platform === input.artifactGraph.platform
-        && (input.artifactGraph.platform === 'web' || input.moduleReference !== undefined);
+        && input.cacheIdentity.artifactId === input.artifactGraph.artifactId
+        && input.artifactGraph.tier === 'reactNative'
+        && input.moduleReference !== undefined;
 }
 
 export type PluginUiRendererTechnicalAdmission<SourceAdmission> =
@@ -445,13 +579,12 @@ export function resolvePluginUiRendererTechnicalAdmission<SourceAdmission>(input
 
 export type PluginUiReactNativeInstalledArtifactLoadInput = Readonly<{
     identity: PluginReactNativeBundleCacheIdentity;
-    artifactGraph: PluginUiArtifactsManifestEntryV1;
+    artifactGraph: PluginUiArtifactsManifestEntryV2;
     reader: PluginAccountAvailabilityReader;
     accountLifetime: ActiveServerAccountScopeLifetime;
-    /** Exact daemon-issued renderer crash binding; Artifact rejects every other token. */
-    crashStateToken: DaemonPluginReactNativeCrashBindingTokenV1;
-    daemon?: PluginUiArtifactDaemonOrigin;
-    moduleReference: RepackInstalledArtifactModuleReference | undefined;
+    daemon?: PluginUiArtifactDaemonSource;
+    daemonProjectionSelection?: PluginArtifactDaemonProjectionSelectionInput;
+    moduleReference: PluginReactNativeExecutableModuleReference | undefined;
     hostPlatform: string;
     backend?: PluginReactNativeLoaderBackend;
     /** The one mount/controller lifetime, never a renderer-local epoch. */
@@ -480,9 +613,10 @@ export function createPluginUiReactNativeInstalledArtifactLoad(
             artifactGraph: input.artifactGraph,
             cacheIdentity: input.identity,
             accountLifetime: input.accountLifetime,
-            artifactOwnerKind: 'renderer',
-            crashStateToken: input.crashStateToken,
             ...(input.daemon ? { daemon: input.daemon } : {}),
+            ...(input.daemonProjectionSelection
+                ? { daemonProjectionSelection: input.daemonProjectionSelection }
+                : {}),
         });
         if (acquired.kind !== 'available') {
             return throwReactNativeArtifactLoadFailure(acquired.code);
@@ -503,7 +637,13 @@ export function createPluginUiReactNativeInstalledArtifactLoad(
             if (!acquired.adoption.isCurrent()) {
                 return throwReactNativeArtifactLoadFailure('artifact_lease_revoked');
             }
-            if (result.ok) return result.module;
+            if (result.ok) {
+                if (!acquired.adoption.commit()) {
+                    return throwReactNativeArtifactLoadFailure('artifact_lease_revoked');
+                }
+                return result.module;
+            }
+            acquired.adoption.fail(result.code);
             return throwReactNativeArtifactLoadFailure(result.code, result.diagnostics);
         } finally {
             owner.dispose();

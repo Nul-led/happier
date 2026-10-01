@@ -6,9 +6,11 @@ import { executionRunsCapability } from './toolExecutionRuns';
 import type { DetectCliSnapshot } from '../snapshots/cliSnapshot';
 import { createEnvKeyScope } from '../../testkit/env/envScope';
 import { withTempDir } from '../../testkit/fs/tempDir';
-import { ExecutionRunIntentSchema } from '@happier-dev/protocol';
+import { AccountSettingsSchema, ExecutionRunIntentSchema } from '@happier-dev/protocol';
 import * as engineRegistry from '../../agent/runtime/registry/engineRegistry';
 import type { ResolvedAgentContribution } from '../../plugins/projection/registry/types';
+import { buildExecutionRunProfileCatalog, type ExecutionRunProfileContributionCatalogInput } from '../../agent/executionRuns/profiles/intentRegistry';
+import { resetActiveAccountSettingsSnapshotForTests, setActiveAccountSettingsSnapshot } from '../../settings/accountSettings/activeAccountSettingsSnapshot';
 
 function makeCliSnapshot(overrides: Partial<DetectCliSnapshot['clis']>, path = ''): DetectCliSnapshot {
   return {
@@ -23,10 +25,11 @@ function makeCliSnapshot(overrides: Partial<DetectCliSnapshot['clis']>, path = '
 
 function makeCliEngineRegistryMock(
   contributions: Partial<Awaited<ReturnType<typeof engineRegistry.resolveCliEngineRegistry>>['contributions']>,
-  options?: Readonly<{ currentPluginGenerationById?: ReadonlyMap<string, string> }>,
+  options?: Readonly<{
+    currentPluginSourceCustodyById?: ReadonlyMap<string, import('@happier-dev/protocol').PluginSourceCustodyV1>;
+  }>,
 ): Awaited<ReturnType<typeof engineRegistry.resolveCliEngineRegistry>> {
-  return {
-    contributions: {
+  const resolvedContributions = {
       agents: Object.freeze([]),
             actions: Object.freeze([]),
       resources: Object.freeze([]),
@@ -37,9 +40,16 @@ function makeCliEngineRegistryMock(
             executionRunProfilesById: new Map(),
       pluginDiagnosticsByPluginId: {},
       ...contributions,
-    },
-    resolveCurrentPluginGeneration: async (pluginId) => (
-      options?.currentPluginGenerationById?.get(pluginId) ?? null
+    } as Awaited<ReturnType<typeof engineRegistry.resolveCliEngineRegistry>>['contributions'];
+  return {
+    contributions: resolvedContributions,
+    resolveExecutionRunProfileCatalog: async (catalogOptions) => buildExecutionRunProfileCatalog(
+      (resolvedContributions.executionRunProfiles ?? []).flatMap<ExecutionRunProfileContributionCatalogInput>((profile) => {
+        if (!profile.pluginId) return [profile.definition];
+        const sourceCustody = options?.currentPluginSourceCustodyById?.get(profile.pluginId) ?? null;
+        return sourceCustody ? [{ pluginId: profile.pluginId, sourceCustody, definition: profile.definition }] : [];
+      }),
+      catalogOptions,
     ),
     resolveForBackendId: async () => null,
     resolveExecutionSurfaces: async () => ({
@@ -63,6 +73,7 @@ describe('executionRunsCapability', () => {
   ]);
 
   beforeEach(() => {
+    resetActiveAccountSettingsSnapshotForTests();
     envScope.restore();
     envScope.patch({
       HAPPIER_CODEX_BACKEND_MODE: undefined,
@@ -108,9 +119,48 @@ describe('executionRunsCapability', () => {
     const result = await executionRunsCapability.detect({
       context: { cliSnapshot: makeCliSnapshot({}) },
       request: { id: 'tool.executionRuns' },
-    }) as { backends: Record<string, { available?: boolean }> };
+    }) as { backends: Record<string, { available?: boolean; intents?: readonly string[] }> };
 
     expect(result.backends['plugin.review']).toMatchObject({ available: true });
+    expect(result.backends['plugin.review']?.intents).toContain('review');
+  });
+
+  it('projects a configured ACP review target from active Account settings', async () => {
+    setActiveAccountSettingsSnapshot({
+      source: 'cache', settingsVersion: 1, loadedAtMs: 1, settingsSecretsReadKeys: [],
+      settings: AccountSettingsSchema.parse({
+        acpCatalogSettingsV1: { v: 2, backends: [{
+          id: 'review-bot', name: 'review-bot', title: 'Review Bot', command: 'review-bot',
+          createdAt: 1, updatedAt: 1,
+        }] },
+      }),
+    });
+
+    const result = await executionRunsCapability.detect({
+      context: { cliSnapshot: makeCliSnapshot({}) },
+      request: { id: 'tool.executionRuns' },
+    }) as { backends: Record<string, { available?: boolean; intents?: readonly string[]; reviewScopes?: readonly string[] }> };
+
+    expect(result.backends['backend:review-bot:configured:review-bot']).toMatchObject({
+      available: true, intents: expect.arrayContaining(['review']), reviewScopes: ['worktree', 'paths'],
+    });
+
+    setActiveAccountSettingsSnapshot({
+      source: 'cache', settingsVersion: 2, loadedAtMs: 2, settingsSecretsReadKeys: [],
+      settings: AccountSettingsSchema.parse({
+        acpCatalogSettingsV1: { v: 2, backends: [{
+          id: 'review-bot', name: 'review-bot', title: 'Review Bot', command: 'review-bot',
+          createdAt: 1, updatedAt: 2,
+        }] },
+        backendEnabledByTargetKey: { 'backend:review-bot:configured:review-bot': false },
+      }),
+    });
+    const disabledResult = await executionRunsCapability.detect({
+      context: { cliSnapshot: makeCliSnapshot({}) },
+      request: { id: 'tool.executionRuns' },
+    }) as { backends: Record<string, { available?: boolean; intents?: readonly string[] }> };
+    expect(disabledResult.backends['backend:review-bot:configured:review-bot']).toMatchObject({ available: false });
+    expect(disabledResult.backends['backend:review-bot:configured:review-bot']?.intents).not.toContain('review');
   });
 
   it('advertises the exact V2 facts required before detached or start-and-wait dispatch', async () => {
@@ -123,11 +173,18 @@ describe('executionRunsCapability', () => {
     };
 
     expect(result.protocolVersion).toBe(2);
-    expect(result.features).toEqual({ detachedScope: true, startAndWait: true });
+    expect(result.features).toEqual({
+      detachedScope: true,
+      startAndWait: true,
+      exactInputResults: true,
+      runScopedAgentBindings: true,
+      secretReferenceOverlay: true,
+    });
     expect((result as { intents?: readonly string[] }).intents).toContain('agent');
   });
 
   afterEach(() => {
+    resetActiveAccountSettingsSnapshotForTests();
     envScope.restore();
     vi.restoreAllMocks();
   });
@@ -147,7 +204,7 @@ describe('executionRunsCapability', () => {
     expect(res?.backends?.claude).toBeTruthy();
     expect(typeof res.backends.claude.supportsVendorResume).toBe('boolean');
     expect(res.backends.codex).toMatchObject({
-      available: true,
+      available: false,
       // Codex is experimental: without a concrete Session runtime selection,
       // this UI capability must not manufacture a second decision path.
       supportsVendorResume: false,
@@ -229,12 +286,12 @@ describe('executionRunsCapability', () => {
 
     expect(res?.available).toBe(true);
     expect(res.backends.codex).toMatchObject({
-      available: true,
+      available: false,
       supportsVendorResume: false,
     });
   });
 
-  it('reuses the common intent list for catalog-backed execution runs', async () => {
+  it('projects review intent only for agents selected by the review engine inventory', async () => {
     const res = await executionRunsCapability.detect({
       context: {
         cliSnapshot: makeCliSnapshot({ claude: { available: true }, codex: { available: true } }),
@@ -252,7 +309,8 @@ describe('executionRunsCapability', () => {
     expect(res.backends.ohMyPi).toBeTruthy();
     expect(res.intents).toContain('memory_hints');
     for (const backendId of ['claude', 'codex', 'customAcp', 'ohMyPi', 'coderabbit']) {
-      expect(res.backends[backendId]?.intents).toBe(res.intents);
+      expect(res.backends[backendId]?.intents).not.toContain('review');
+      expect(res.backends[backendId]?.intents).toContain('plan');
     }
   });
 
@@ -318,7 +376,6 @@ describe('executionRunsCapability', () => {
         title: 'Acme review',
         promptAsset: 'review-prompt',
         compatibleAgents: ['acme-review'],
-        generationId: null,
         available: true,
         defaults: {
           retention: 'ephemeral' as const,
@@ -333,7 +390,10 @@ describe('executionRunsCapability', () => {
         ['acme.execution-runs/review-profile', profile],
       ]),
     }, {
-      currentPluginGenerationById: new Map([['acme.execution-runs', 'immutable-profile-1']]),
+      currentPluginSourceCustodyById: new Map([[
+        'acme.execution-runs',
+        { kind: 'managed', immutableGenerationId: 'immutable-profile-1', installSource: 'archive' },
+      ]]),
     }));
 
     const res = await executionRunsCapability.detect({
@@ -349,7 +409,7 @@ describe('executionRunsCapability', () => {
         promptAsset: string;
         compatibleAgents: readonly string[];
         defaults: Readonly<{ retention: string; runClass: string; io: string }>;
-        generationId: string | null;
+        sourceCustody: import('@happier-dev/protocol').PluginSourceCustodyV1 | null;
         available: boolean;
       }[];
     };
@@ -361,7 +421,9 @@ describe('executionRunsCapability', () => {
         title: 'Acme review',
         promptAsset: 'review-prompt',
         compatibleAgents: ['acme-review'],
-        generationId: 'immutable-profile-1',
+        sourceCustody: {
+          kind: 'managed', immutableGenerationId: 'immutable-profile-1', installSource: 'archive',
+        },
         available: true,
         defaults: {
           retention: 'ephemeral',

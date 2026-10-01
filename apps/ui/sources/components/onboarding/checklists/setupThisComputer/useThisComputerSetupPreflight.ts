@@ -5,15 +5,18 @@ import { storage as syncStorage } from '@/sync/domains/state/storageStore';
 import { resolveWebappUrlFromServerUrl } from '@/sync/domains/server/url/resolveWebappUrlFromServerUrl';
 import { useLocalDaemonControl } from '@/components/settings/machines/localControl/useLocalDaemonControl';
 import { useRelayDriftBanner } from '@/components/settings/server/useRelayDriftBanner';
+import { useThisComputerConnection } from '@/components/settings/machines/localControl/useThisComputerConnection';
 
 import { computeThisComputerMismatches } from './computeThisComputerMismatches';
 import type { ThisComputerSetupPreflight } from './types';
+import type { SystemTaskRunner } from '@/components/systemTasks/types';
 
-export function useThisComputerSetupPreflight(): ThisComputerSetupPreflight {
+export function useThisComputerSetupPreflight(options: Readonly<{ runner?: SystemTaskRunner }> = {}): ThisComputerSetupPreflight {
     const uiAccountId = syncStorage((state) => state.profile?.id ?? null);
-    const daemon = useLocalDaemonControl();
+    const daemon = useLocalDaemonControl(options);
     const relayDriftBanner = useRelayDriftBanner();
     const activeServerSnapshot = useActiveServerSnapshot();
+    const thisComputerConnection = useThisComputerConnection(daemon.status);
 
     return React.useMemo(() => ({
         activeRelayUrl: typeof activeServerSnapshot.serverUrl === 'string' && activeServerSnapshot.serverUrl.trim().length > 0
@@ -29,6 +32,8 @@ export function useThisComputerSetupPreflight(): ThisComputerSetupPreflight {
             ? activeServerSnapshot.serverId.trim()
             : null,
         localCliReady: daemon.status != null,
+        checking: daemon.status == null && !daemon.isUnavailable && !daemon.lastErrorMessage
+            && !daemon.statusTaskSnapshot?.result,
         serviceInstalled: daemon.status?.serviceInstalled === true,
         daemonRunning: daemon.status?.daemonRunning === true,
         machineId: daemon.status?.machineId ?? null,
@@ -67,11 +72,15 @@ export function useThisComputerSetupPreflight(): ThisComputerSetupPreflight {
                 : null,
         }),
         relayDriftBanner,
+        thisComputerConnection,
     }), [
         activeServerSnapshot.serverUrl,
         activeServerSnapshot.serverId,
         activeServerSnapshot.activeLocalRelayUrl,
         daemon.status,
+        daemon.isUnavailable,
+        daemon.lastErrorMessage,
+        daemon.statusTaskSnapshot,
         daemon.status?.daemonRunning,
         daemon.status?.daemonServerUrl,
         daemon.status?.daemonComparableKey,
@@ -81,6 +90,7 @@ export function useThisComputerSetupPreflight(): ThisComputerSetupPreflight {
         daemon.status?.needsAuth,
         daemon.status?.serviceInstalled,
         relayDriftBanner,
+        thisComputerConnection,
         uiAccountId,
     ]);
 }

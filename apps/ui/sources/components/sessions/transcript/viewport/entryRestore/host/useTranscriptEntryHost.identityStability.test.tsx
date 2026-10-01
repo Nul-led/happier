@@ -1,3 +1,15 @@
+import * as TranscriptTestReact from 'react';
+import { createTestSessionTranscriptSource as createHostTestSource, wrapWithSessionTranscriptSource as wrapHostTestSource } from '@/dev/testkit';
+import { sync as transcriptHistorySync } from '@/sync/sync';
+
+const transcriptHostTestSource = createHostTestSource({ sessionId: 's1', history: {
+    loadOlder: (options) => transcriptHistorySync.loadOlderMessages('s1', options),
+    loadTargetWindow: (target, options) => transcriptHistorySync.loadTargetWindowMessages('s1', target, options),
+} });
+function TranscriptHostTestProvider(props: TranscriptTestReact.PropsWithChildren) {
+    return wrapHostTestSource(props.children as TranscriptTestReact.ReactElement, transcriptHostTestSource);
+}
+
 /**
  * Identity-stability contract for the extracted entry host (M4 extraction regression guard).
  *
@@ -142,7 +154,7 @@ describe('useTranscriptEntryHost identity stability', () => {
         const members = createStableMembers();
         const hook = await renderHook(
             (deps: EntryHostDeps) => useTranscriptEntryHost(deps),
-            { initialProps: buildDeps(members) },
+            { wrapper: TranscriptHostTestProvider, initialProps: buildDeps(members) },
         );
 
         const first = hook.getCurrent();

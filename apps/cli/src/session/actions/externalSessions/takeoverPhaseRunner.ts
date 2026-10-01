@@ -6,9 +6,11 @@ import {
   resolveExternalHistoryImportV1FromMetadata,
   readNonAuthoritativeLinkedExternalSessionV1FromMetadata,
   resolveLinkedExternalSessionMetadataV1,
+  pluginSourceCustodyV1Equal,
   type PluginAgentExternalLinkedTakeoverWriterSafetyV1,
   type ExternalSessionOperationActionResponseV1,
   type ExternalSessionOperationRecordV1,
+  type ExternalSessionDestructiveQuiescenceResultV1,
   type ExternalSessionsAgentId,
 } from '@happier-dev/protocol';
 import { randomUUID } from 'node:crypto';
@@ -60,7 +62,7 @@ import {
   ExternalSessionPersistedTakeoverPreflightError,
 } from './materializeAction';
 import {
-  resolveGenerationBoundExternalSessionFollowSurface,
+  resolveOccurrenceBoundExternalSessionFollowSurface,
 } from './providerOpsResolution';
 import {
   assertExternalSessionExternalLinkedTakeoverSourceContinuity,
@@ -144,7 +146,7 @@ export function createExternalSessionPersistedTakeoverPhaseRunner(input: Readonl
 
 export type PreparedExternalSessionExternalLinkedTakeoverSource = Readonly<{
   linked: LoadedLinkedExternalSession;
-  pluginGeneration: string;
+  occurrenceId: string;
   quiescenceIdentity: string;
   permitsAdmission: boolean;
   hostedOwnerSessionId: string | null;
@@ -166,6 +168,8 @@ type ExternalLinkedTakeoverPhaseRunnerDependencies = Readonly<{
     linked: LoadedLinkedExternalSession;
     sessionId: string;
     targetDirectory: string;
+    transcriptStorage?: 'direct' | 'persisted';
+    terminal?: SpawnSessionOptions['terminal'];
     signal?: AbortSignal;
   }>): Promise<ExternalTakeoverSpawnResolution>;
   spawnResolvedTakeoverSession(input: Readonly<{
@@ -225,13 +229,15 @@ export async function loadCurrentExternalSessionExternalLinkedTakeoverSource(
   record: ExternalLinkedTakeoverRecord,
 ): Promise<PreparedExternalSessionExternalLinkedTakeoverSource> {
   const linked = await loadCurrentExternalSessionTakeoverTarget(record);
-  const resolved = await resolveGenerationBoundExternalSessionFollowSurface(
+  const resolved = await resolveOccurrenceBoundExternalSessionFollowSurface(
     linked.agentId,
     record.request.source.linkGeneration,
   );
   if (
-    resolved.resource.pluginGeneration
-      !== record.request.source.contributionGeneration
+    !pluginSourceCustodyV1Equal(
+      resolved.sourceCustody,
+      record.request.source.sourceCustody,
+    )
     || resolved.resource.retirementSignal?.aborted
   ) {
     throw new ExternalSessionPersistedTakeoverPreflightError(
@@ -287,7 +293,7 @@ export async function loadCurrentExternalSessionExternalLinkedTakeoverSource(
   }
   return {
     linked,
-    pluginGeneration: resolved.resource.pluginGeneration,
+    occurrenceId: resolved.occurrenceId,
     quiescenceIdentity: JSON.stringify({
       status: quiescence.status,
       sourceIdentity,
@@ -721,7 +727,7 @@ export function createExternalSessionExternalLinkedTakeoverPhaseRunner(
         !afterSuspension.permitsAdmission
         || afterSuspension.externalLinkedTakeoverWriterSafety
           !== 'native_prevention'
-        || afterSuspension.pluginGeneration !== prepared.pluginGeneration
+        || afterSuspension.occurrenceId !== prepared.occurrenceId
         || afterSuspension.quiescenceIdentity !== prepared.quiescenceIdentity
       ) {
         return await failPreSpawn(
@@ -735,6 +741,8 @@ export function createExternalSessionExternalLinkedTakeoverPhaseRunner(
           linked: afterSuspension.linked,
           sessionId: active.request.sessionId,
           targetDirectory: active.request.targetDirectory,
+          transcriptStorage: 'direct',
+          ...(active.request.terminal ? { terminal: active.request.terminal } : {}),
           signal: maintenance.signal,
         }),
       );
@@ -747,10 +755,8 @@ export function createExternalSessionExternalLinkedTakeoverPhaseRunner(
         );
       }
       if (
-        resolved.value.origin.generation
-          !== record.request.source.contributionGeneration
-        || resolved.value.origin.generation
-          !== afterSuspension.pluginGeneration
+        resolved.value.origin.occurrenceId
+          !== afterSuspension.occurrenceId
       ) {
         return await failPreSpawn(
           active,
@@ -784,12 +790,10 @@ export function createExternalSessionExternalLinkedTakeoverPhaseRunner(
         !beforeSpawn.permitsAdmission
         || beforeSpawn.externalLinkedTakeoverWriterSafety
           !== 'native_prevention'
-        || beforeSpawn.pluginGeneration
-          !== record.request.source.contributionGeneration
-        || beforeSpawn.pluginGeneration !== afterSuspension.pluginGeneration
+        || beforeSpawn.occurrenceId !== afterSuspension.occurrenceId
         || beforeSpawn.quiescenceIdentity
           !== afterSuspension.quiescenceIdentity
-        || resolved.value.origin.generation !== beforeSpawn.pluginGeneration
+        || resolved.value.origin.occurrenceId !== beforeSpawn.occurrenceId
       ) {
         return await failPreSpawn(
           active,
@@ -831,7 +835,7 @@ export function createExternalSessionExternalLinkedTakeoverPhaseRunner(
         mode: 'external_linked',
         operationId: active.operationId,
         attemptId,
-      });
+      }, { signal: maintenance.signal });
       admissionSpawnStarted = true;
       const spawned = await maintenance.race(() =>
         dependencies.spawnResolvedTakeoverSession({
@@ -1159,8 +1163,9 @@ export function createExternalSessionExternalLinkedTakeoverPhaseRunner(
 
 export type PreparedExternalSessionPersistedTakeoverSource = Readonly<{
   linked: LoadedLinkedExternalSession;
-  pluginGeneration: string;
+  occurrenceId: string;
   quiescenceIdentity: string;
+  quiescence: ExternalSessionDestructiveQuiescenceResultV1;
 }>;
 
 function sameQualifiedIdentity(
@@ -1241,8 +1246,9 @@ async function loadCurrentExternalSessionTakeoverTarget(
     admitPersistedSourceBeforeCanonicalization: async (input) => {
       const lease = await acquireAuthoritativePluginRuntimeRegistryLease();
       try {
-        const service = lease.registry.currentGlobalExternalSessionsTarget
-          ?.resolveCurrent();
+        const target = lease.registry.currentGlobalExternalSessionsTarget;
+        await target?.activateConfiguredSources(input.agentId);
+        const service = target?.resolveCurrent();
         const sourceKeyOwner = createExternalSessionSourceKeyOwnerFromAgentProjection(
           lease.registry.contributes,
           input.agentId,
@@ -1392,13 +1398,15 @@ export async function loadCurrentExternalSessionPersistedTakeoverSource(
 ): Promise<PreparedExternalSessionPersistedTakeoverSource> {
   const request = record.request;
   const linked = await loadCurrentExternalSessionTakeoverTarget(record);
-  const resolved = await resolveGenerationBoundExternalSessionFollowSurface(
+  const resolved = await resolveOccurrenceBoundExternalSessionFollowSurface(
     linked.agentId,
     request.source.linkGeneration,
   );
   if (
-    resolved.resource.pluginGeneration
-      !== request.source.contributionGeneration
+    !pluginSourceCustodyV1Equal(
+      resolved.sourceCustody,
+      request.source.sourceCustody,
+    )
     || resolved.resource.retirementSignal?.aborted
   ) {
     throw new ExternalSessionPersistedTakeoverPreflightError(
@@ -1422,6 +1430,7 @@ export async function loadCurrentExternalSessionPersistedTakeoverSource(
     linked,
     linkedSessionId: request.sessionId,
     machineId: request.source.machineId,
+    retainedQuiescence: record.canonicalOwnerEvidence.destructiveQuiescence,
   });
   if (!quiescence.permitsAdmission || !quiescence.protocolResult) {
     throw new ExternalSessionPersistedTakeoverPreflightError(
@@ -1460,7 +1469,8 @@ export async function loadCurrentExternalSessionPersistedTakeoverSource(
   }
   return {
     linked,
-    pluginGeneration: resolved.resource.pluginGeneration,
+    occurrenceId: resolved.occurrenceId,
+    quiescence: quiescence.protocolResult,
     quiescenceIdentity: JSON.stringify({
       sourceIdentity,
       processIdentity: quiescence.protocolResult.processIdentity,
@@ -1480,6 +1490,8 @@ export function createExternalSessionPersistedTakeoverPreparation(input: Readonl
     linked: LoadedLinkedExternalSession;
     sessionId: string;
     targetDirectory: string;
+    transcriptStorage?: 'direct' | 'persisted';
+    terminal?: SpawnSessionOptions['terminal'];
   }>) => Promise<ExternalTakeoverSpawnResolution>;
 }>): ExternalSessionPersistedTakeoverPreparation {
   const loadCurrent = input.loadCurrent
@@ -1499,7 +1511,7 @@ export function createExternalSessionPersistedTakeoverPreparation(input: Readonl
       suspended = true;
       const afterSuspension = await loadCurrent(record);
       if (
-        beforeSuspension.pluginGeneration !== afterSuspension.pluginGeneration
+        beforeSuspension.occurrenceId !== afterSuspension.occurrenceId
         || beforeSuspension.quiescenceIdentity
           !== afterSuspension.quiescenceIdentity
         || !currentSourceMatchesRequest(afterSuspension.linked, request)
@@ -1513,6 +1525,8 @@ export function createExternalSessionPersistedTakeoverPreparation(input: Readonl
         linked: afterSuspension.linked,
         sessionId: request.sessionId,
         targetDirectory: request.targetDirectory,
+        transcriptStorage: 'persisted',
+        ...(request.terminal ? { terminal: request.terminal } : {}),
       });
       if (!spawn.ok) {
         throw new ExternalSessionPersistedTakeoverPreflightError(
@@ -1524,6 +1538,7 @@ export function createExternalSessionPersistedTakeoverPreparation(input: Readonl
       }
       return {
         workingDirectory: spawn.value.options.directory,
+        destructiveQuiescence: afterSuspension.quiescence,
         resumeFollowOnFailure: async () => {
           if (!suspended) return;
           suspended = false;

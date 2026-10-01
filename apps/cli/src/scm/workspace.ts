@@ -25,9 +25,6 @@ export {
     reconcilePostMaterializationWithScmWorkspace,
 } from './workspace/workspacePostMaterialization';
 export {
-    applyWorkspaceSyncArtifacts,
-} from './workspace/applyWorkspaceSyncArtifacts';
-export {
     createWorkspaceSyncArtifacts,
     createWorkspaceSyncArtifactsFromManifest,
     type WorkspaceSyncArtifacts,

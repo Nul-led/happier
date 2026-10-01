@@ -18,9 +18,21 @@ import { useSettings } from '@/sync/domains/state/storage';
 import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
 import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
 
+/**
+ * Why the launcher is hidden, in the same order the launcher decision checks it. Surfaces say this
+ * instead of silently hiding the way to start an agent (agents lab ST "Can't start here").
+ */
+export type SessionExecutionRunLaunchUnavailableReason =
+    | 'notEnabled'
+    | 'machineOffline'
+    | 'sessionInactive'
+    | 'externalRunnerInactive';
+
 export type UseSessionExecutionRunLaunchabilityResult = Readonly<{
     canLaunchExecutionRuns: boolean;
     canShowExecutionRunLauncher: boolean;
+    /** `null` exactly when `canShowExecutionRunLauncher` is true. */
+    launchUnavailableReason: SessionExecutionRunLaunchUnavailableReason | null;
     executionRunsBackends: ExecutionRunBackendCapabilityMap;
     executionRunsSupported: boolean;
     sessionServerId: string | null;
@@ -78,24 +90,27 @@ export function useSessionExecutionRunLaunchability(
         return canResumeSessionWithOptions(ownerMetadata, resumeCapabilityOptions);
     }, [machineReachable, ownerMetadata, resumeCapabilityOptions, scopedSession?.active]);
 
-    const canShowExecutionRunLauncher = React.useMemo(() => {
+    const launchUnavailableReason = React.useMemo((): SessionExecutionRunLaunchUnavailableReason | null => {
         if (executionRunsEnabled !== true) {
-            return false;
+            return 'notEnabled';
         }
         if (scopedSession?.active === false && allowWhileInactive !== true) {
-            return false;
+            // An inactive Session starts agents by resuming, which needs its Machine.
+            return machineReachable ? 'sessionInactive' : 'machineOffline';
         }
         if (externalSessionRuntime.externalSessionLink !== null && externalSessionRuntime.status?.runnerActive !== true) {
-            return false;
+            return 'externalRunnerInactive';
         }
-        return true;
+        return null;
     }, [
         allowWhileInactive,
         externalSessionRuntime.externalSessionLink,
         externalSessionRuntime.status?.runnerActive,
         executionRunsEnabled,
+        machineReachable,
         scopedSession?.active,
     ]);
+    const canShowExecutionRunLauncher = launchUnavailableReason === null;
 
     const canLaunchExecutionRuns = React.useMemo(() => canLaunchExecutionRunsForSession({
         session: scopedSession,
@@ -116,6 +131,7 @@ export function useSessionExecutionRunLaunchability(
     return {
         canLaunchExecutionRuns,
         canShowExecutionRunLauncher,
+        launchUnavailableReason,
         executionRunsBackends,
         executionRunsSupported,
         sessionServerId: sessionTargetServerId,

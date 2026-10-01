@@ -2,7 +2,8 @@ import * as React from 'react';
 import { View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
-import { MeterBar, resolveUsageMeterTone } from '@/components/ui/lists/MeterBar';
+import { resolveUsageTone } from '@/components/instrument/gauge/gaugeMath';
+import { MeterBar, type MeterTone } from '@/components/ui/lists/MeterBar';
 import { Text } from '@/components/ui/text/Text';
 import { resolveTokenUsageProgressRatio } from '@/components/sessions/usage';
 import { t } from '@/text';
@@ -16,6 +17,14 @@ import type { SessionWorkStateItem } from '@/sync/domains/session/workState/sess
  * shows no usage. Time/tokens are inline metadata (no cards, no elevated surfaces); a thin budget
  * meter appears only when the goal carries a finite token budget. Ported from remote-dev by intent.
  */
+/** A goal budget's tone by how much of it is consumed (progress, not a quota). */
+function resolveUsageMeterTone(usedPct: number): MeterTone {
+    const tone = resolveUsageTone(usedPct);
+    if (tone === 'danger') return 'danger';
+    if (tone === 'warn') return 'warning';
+    return 'neutral';
+}
+
 export function GoalUsageMetadata(props: Readonly<{ goal: SessionWorkStateItem }>) {
     const { theme } = useUnistyles();
     const usedTokens = props.goal.tokensUsed ?? 0;

@@ -1,0 +1,265 @@
+import * as React from 'react';
+import { useDestinationParams, useDestinationFocus, useDestinationVisibility, useDestinationInstanceKey } from '@/components/appShell/workspace/DestinationInstanceHost';
+import { SessionView } from './SessionView';
+import { useAppPaneScope } from '@/components/appShell/panes/hooks/useAppPaneScope';
+import { SessionSplitCanvasScreen } from '@/components/sessions/canvas/SessionSplitCanvasScreen';
+import { SessionInvalidLinkFallback } from '@/components/sessions/shell/SessionInvalidLinkFallback';
+import { TranscriptSameSessionHandoffProvider } from '@/components/sessions/transcript/viewport/lifecycle/transcriptSameSessionHandoff';
+import type { AttachmentDraft } from '@/components/sessions/attachments/attachmentDraftModel';
+import { parseSessionPaneUrlState } from '@/components/sessions/panes/url/sessionPaneUrlState';
+import { SessionCockpitShell } from '@/components/workspaceCockpit/session/SessionCockpitShell';
+import {
+    resolveSessionMobileSurfaceIntent,
+    shouldUseSessionCockpitExperience,
+} from '@/components/workspaceCockpit/session/sessionCockpitState';
+import { useMobileWorkspaceExperienceState } from '@/components/workspaceCockpit/useMobileWorkspaceExperienceState';
+import { getTempData } from '@/utils/sessions/tempDataStore';
+import { createSessionRouteServerScope } from '@/hooks/session/sessionRouteServerScope';
+import { resolveSessionRouteAuthRecoveryState } from '@/hooks/session/sessionRouteAuthRecovery';
+import { useHydrateSessionForRoute } from '@/hooks/session/useHydrateSessionForRoute';
+import { useActiveServerSnapshot } from '@/hooks/server/useActiveServerSnapshot';
+import { normalizeSessionId } from '@/sync/domains/session/normalizeSessionId';
+import { normalizeSessionAddress, sessionAddressKey } from '@/sync/domains/session/sessionAddress';
+import {
+    useActiveServerAccountScope,
+    useEndpointConnectivity,
+    useSessionLastMobileSurface,
+    useSyncError,
+} from '@/sync/domains/state/storage';
+import { markSessionRouteEnteredForSessionUiTelemetry } from '@/sync/runtime/performance/sessionUiTelemetry';
+import { storage } from '@/sync/domains/state/storageStore';
+import { useSessionTerminalAvailability } from '@/components/sessions/terminal/useSessionTerminalAvailability';
+import { PaneLoadingFallback } from '@/components/ui/panels/PaneLoadingFallback';
+import {
+    serverAccountScopeKeySuffix,
+    type ServerAccountScope,
+} from '@/sync/domains/scope/serverAccountScope';
+import { selectSessionViewShellSessionForRouteState } from '@/components/sessions/shell/sessionViewStableSession';
+import { createSessionPaneScopeId } from '@/components/sessions/panes/sessionPaneScopeId';
+
+type InitialMobileSurfaceHintCache = Readonly<{
+    sessionId: string;
+    routeServerId: string | null;
+    activeServerId: string | null;
+    activeScopeKey: string | null;
+    explicitMobileSurfaceHint: string | null;
+    persistedSurface: string | null;
+}>;
+
+function useInitialMobileSurfaceHint(
+    sessionId: string,
+    routeServerId: string | null,
+    explicitMobileSurfaceHint: string | null,
+    activeServerId: string | null,
+    activeScope: ServerAccountScope | null,
+    persistedMobileSurface: string | null,
+): string | null {
+    const cacheRef = React.useRef<InitialMobileSurfaceHintCache | null>(null);
+    const cached = cacheRef.current;
+    const activeScopeKey = activeScope ? serverAccountScopeKeySuffix(activeScope) : null;
+    if (
+        !cached
+        || cached.sessionId !== sessionId
+        || cached.routeServerId !== routeServerId
+        || cached.activeServerId !== activeServerId
+        || cached.activeScopeKey !== activeScopeKey
+        || cached.explicitMobileSurfaceHint !== explicitMobileSurfaceHint
+    ) {
+        cacheRef.current = {
+            sessionId,
+            routeServerId,
+            activeServerId,
+            activeScopeKey,
+            explicitMobileSurfaceHint,
+            // The storage hook is the only session-selection reader/migrator.
+            // Keep this route cache's incumbent snapshot behavior so a live
+            // setting write cannot remount the currently focused cockpit tab.
+            persistedSurface: explicitMobileSurfaceHint ?? persistedMobileSurface,
+        };
+    }
+    return cacheRef.current?.persistedSurface ?? null;
+}
+
+export function SessionDestinationBody() {
+    const instanceKey = useDestinationInstanceKey();
+    const focused = useDestinationFocus();
+    const visible = useDestinationVisibility();
+    const params = useDestinationParams<{
+        id?: string | string[];
+        serverId?: string | string[];
+        mobileSurface?: string | string[];
+        jumpSeq?: string | string[];
+        right?: string | string[];
+        bottom?: string | string[];
+        details?: string | string[];
+        path?: string | string[];
+        sha?: string | string[];
+        recoveryDataId?: string | string[];
+    }>();
+    const routeScope = React.useMemo(() => createSessionRouteServerScope(params as Record<string, unknown>), [params]);
+    const {
+        id: sessionIdParam,
+        serverId: serverIdParam,
+        mobileSurface: mobileSurfaceParam,
+        jumpSeq: jumpSeqParam,
+        recoveryDataId: recoveryDataIdParam,
+    } = params;
+    const sessionId = normalizeSessionId(sessionIdParam);
+    const explicitMobileSurfaceHint = typeof mobileSurfaceParam === 'string'
+        ? mobileSurfaceParam
+        : Array.isArray(mobileSurfaceParam)
+            ? (mobileSurfaceParam[0] ?? null)
+            : null;
+    const jumpSeqRaw = typeof jumpSeqParam === 'string'
+        ? jumpSeqParam
+        : Array.isArray(jumpSeqParam)
+            ? (jumpSeqParam[0] ?? null)
+            : null;
+    const jumpSeqTrimmed = typeof jumpSeqRaw === 'string' ? jumpSeqRaw.trim() : '';
+    const jumpSeqNum = jumpSeqTrimmed.length > 0 ? Number(jumpSeqTrimmed) : NaN;
+    const jumpToSeq = Number.isFinite(jumpSeqNum) && jumpSeqNum >= 0 ? Math.trunc(jumpSeqNum) : null;
+    const routeServerId = typeof serverIdParam === 'string'
+        ? serverIdParam
+        : Array.isArray(serverIdParam)
+            ? (serverIdParam[0] ?? '')
+            : '';
+    const recoveryDataId = typeof recoveryDataIdParam === 'string'
+        ? recoveryDataIdParam
+        : Array.isArray(recoveryDataIdParam)
+            ? (recoveryDataIdParam[0] ?? '')
+            : '';
+    const recoverableAttachmentDrafts = React.useMemo(() => {
+        const trimmedRecoveryDataId = recoveryDataId.trim();
+        if (!trimmedRecoveryDataId) {
+            return null;
+        }
+
+        const data = getTempData<{ attachmentDrafts?: readonly AttachmentDraft[] | null }>(trimmedRecoveryDataId);
+        return Array.isArray(data?.attachmentDrafts) ? data.attachmentDrafts : null;
+    }, [recoveryDataId]);
+    const paneUrlState = React.useMemo(() => parseSessionPaneUrlState(params), [params]);
+    const scopeId = createSessionPaneScopeId(sessionId, routeScope.serverId, instanceKey);
+    const pane = useAppPaneScope(scopeId);
+    const { cockpitEnabled } = useMobileWorkspaceExperienceState();
+    const activeServerAccountScope = useActiveServerAccountScope();
+    const activeServerSnapshot = useActiveServerSnapshot();
+    const persistedMobileSurface = useSessionLastMobileSurface(
+        sessionId || null,
+        routeServerId.trim() || null,
+    );
+    const initialMobileSurfaceHint = useInitialMobileSurfaceHint(
+        sessionId,
+        routeServerId.trim() || null,
+        explicitMobileSurfaceHint,
+        activeServerSnapshot.serverId,
+        activeServerAccountScope,
+        persistedMobileSurface,
+    );
+    const { sidebarTabAvailable: terminalTabAvailable } = useSessionTerminalAvailability(routeScope.serverId);
+    const endpointConnectivity = useEndpointConnectivity();
+    const syncError = useSyncError();
+
+    const activeServerGeneration = activeServerSnapshot.generation;
+
+    React.useLayoutEffect(() => {
+        markSessionRouteEnteredForSessionUiTelemetry({ sessionId });
+    }, [sessionId]);
+
+    const routeHydrationState = useHydrateSessionForRoute(
+        sessionId,
+        `SessionRoute.ensureSessionVisible gen=${activeServerGeneration}`,
+        routeScope.hydrationOptions,
+    );
+    const expectedSessionServerId = routeHydrationState.serverId ?? routeScope.serverId;
+    const routeSessionAddress = normalizeSessionAddress(
+        expectedSessionServerId ?? activeServerSnapshot.serverId,
+        sessionId,
+    );
+    const sessionSurfaceKey = routeSessionAddress ? sessionAddressKey(routeSessionAddress) : null;
+    // Companion has no feature of its own, so a Companion route hint claims the
+    // Cockpit experience as soon as the route resolves to an exact Session
+    // address; the Board content it presents stays behind `sessions.board`.
+    const useCockpitExperience = shouldUseSessionCockpitExperience({
+        cockpitEnabled,
+        explicitSurface: explicitMobileSurfaceHint,
+        companionAddressQualified: routeSessionAddress !== null,
+    });
+    const sessionCached = storage((state) => Boolean(selectSessionViewShellSessionForRouteState(
+        {
+            sessions: state.sessions,
+            sessionListIndexByServerId: state.sessionListIndexByServerId,
+            sessionListRowsByServerId: state.sessionListRowsByServerId,
+        },
+        sessionId,
+        expectedSessionServerId,
+    )));
+    const authRecoveryState = React.useMemo(() => {
+        return resolveSessionRouteAuthRecoveryState({
+            routeParams: params as Record<string, string | string[] | undefined>,
+            activeServerId: activeServerSnapshot.serverId,
+            endpointStatus: endpointConnectivity.status,
+            syncError,
+        });
+    }, [activeServerSnapshot.serverId, endpointConnectivity.status, params, syncError]);
+    const authRecoveryActive = Boolean(authRecoveryState.authSurfaceState);
+
+    if (!sessionId) {
+        return <SessionInvalidLinkFallback />;
+    }
+
+    if (sessionSurfaceKey === null) {
+        return <SessionInvalidLinkFallback />;
+    }
+
+    if (routeHydrationState.kind === 'loading' && !sessionCached && !authRecoveryActive) {
+        return <PaneLoadingFallback />;
+    }
+
+    return (
+        <TranscriptSameSessionHandoffProvider
+            desiredExperience={useCockpitExperience ? 'cockpit' : 'classic'}
+            sessionAddressKey={sessionSurfaceKey}
+        >
+            {(experience) => experience === 'cockpit'
+                ? (
+                    <SessionCockpitShell
+                        sessionId={sessionId}
+                        scopeId={scopeId}
+                        surface={resolveSessionMobileSurfaceIntent({
+                            routeKind: 'index',
+                            activeRightTabId: pane.scopeState?.right?.activeTabId,
+                            detailsTargetPresent: (pane.scopeState?.details?.tabs?.length ?? 0) > 0,
+                            persistedSurface: initialMobileSurfaceHint,
+                            terminalTabAvailable,
+                        })}
+                        jumpToSeq={jumpToSeq}
+                        paneUrlState={paneUrlState ?? undefined}
+                        initialAttachmentDrafts={recoverableAttachmentDrafts}
+                        terminalTabAvailable={terminalTabAvailable}
+                        routeServerId={routeServerId.trim() || undefined}
+                        routeHydrationState={routeHydrationState}
+                    />
+                )
+                : (
+                    instanceKey ? <SessionView
+                        id={sessionId}
+                        routeServerId={routeServerId.trim() || undefined}
+                        jumpToSeq={jumpToSeq}
+                        paneUrlState={paneUrlState ?? undefined}
+                        initialAttachmentDrafts={recoverableAttachmentDrafts}
+                        routeHydrationState={routeHydrationState}
+                        surfaceFocusedOverride={focused}
+                        surfaceVisibleOverride={visible}
+                        routeAnchorOverride={true}
+                    /> : <SessionSplitCanvasScreen
+                        sessionId={sessionId}
+                        routeServerId={routeServerId.trim() || undefined}
+                        jumpToSeq={jumpToSeq}
+                        paneUrlState={paneUrlState ?? undefined}
+                        initialAttachmentDrafts={recoverableAttachmentDrafts}
+                        routeHydrationState={routeHydrationState}
+                    />
+                )}
+        </TranscriptSameSessionHandoffProvider>
+    );
+}

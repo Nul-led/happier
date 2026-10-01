@@ -148,7 +148,7 @@ function agentRealtimeRegistry(): VoiceProviderRegistry {
       agent: 'fixture-agent',
       supportedRuntimeVersions: ['1.2.3'],
     },
-    client: { artifactId: 'voice-runtime-web', modulePath: './voice', exportName: 'activate' },
+    client: { artifactId: 'voice-runtime-web', exportName: 'activate' },
   });
   return createVoiceProviderRegistry({
     bundledContributions: [{

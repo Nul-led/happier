@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { SessionTurnProviderCheckpointV1Schema } from '@happier-dev/protocol';
+import { deriveSessionCreationTagV1, SessionCreationCorrespondenceV1Schema, SessionTurnProviderCheckpointV1Schema } from '@happier-dev/protocol';
 
 const mocks = vi.hoisted(() => ({
     fetchSessionTurnsProjection: vi.fn(),
@@ -22,6 +22,7 @@ vi.mock('@/session/metadata/updateSessionMetadataWithRetry', () => ({
 }));
 
 import { attemptNativeForkOpen } from './attemptNativeForkOpen';
+import type { ForkSpawnSession } from './forkLifecycleTypes';
 
 const credentials = {
     token: 'token',
@@ -53,6 +54,32 @@ describe('attemptNativeForkOpen', () => {
         vi.clearAllMocks();
         mocks.fetchForkChildSessionOrThrow.mockResolvedValue({ id: 'host-child', metadata: '{}' });
         mocks.updateSessionMetadataWithRetry.mockResolvedValue(undefined);
+    });
+
+    it('gives a managed fork its own creation identity and directory before daemon admission', async () => {
+        const sourceTag = deriveSessionCreationTagV1({ callerCreationNamespace: 'user', creationKey: 'managed-parent' });
+        const correspondence = SessionCreationCorrespondenceV1Schema.parse({ v: 1, sessionCreationTag: sourceTag, recipe: {
+            execution: { machineId: 'a', directory: { kind: 'managed' } }, organization: { folderId: null, tagIds: [] },
+            agentTarget: { kind: 'agent', identity: { pluginId: 'happier.agent.grok', localId: 'grok' } },
+            modelSelection: null, profileId: null, requestedPermissionMode: null, agentModeId: null,
+            configuration: null, connectedServices: null, mcpSelection: null, transcriptStorage: null,
+            terminal: null, agentSessionStartupInstructionsMarkerV1: null, checkout: null,
+        } });
+        const spawnSession = vi.fn<ForkSpawnSession>(async () => ({ type: 'error', errorCode: 'INVALID_REQUEST', errorMessage: 'Boundary rejection' }));
+        await attemptNativeForkOpen({
+            credentials, parentSessionId: 'host-parent',
+            parentMetadata: { ...parentMetadata, nativeResumeIdentityV1: { v: 1, vendorResumeId: 'provider-parent' }, sessionDirectoryV1: { v: 1, kind: 'managed' }, sessionCreationCorrespondenceV1: correspondence },
+            directory: '/source-managed-allocation', forkPoint: { type: 'latest' },
+            targetSeqInclusive: 9, effectiveCutoffSeqInclusive: 9, spawnNonce: 'fork:managed-native',
+            forkBackendResolution, inheritedForkOverrides: { spawn: {}, metadata: {} },
+            spawnSession, stopSession: vi.fn(),
+        });
+        const request = spawnSession.mock.calls[0]?.[0];
+        expect(request).toMatchObject({
+            directoryKind: 'managed', sessionCreationTag: expect.stringMatching(/^create:v1:/),
+            managedDirectorySeed: { sourceSessionId: 'host-parent', sourcePath: '/source-managed-allocation', sourceSessionCreationTag: sourceTag },
+        });
+        expect(request?.directory).not.toBe('/source-managed-allocation');
     });
 
     it('hydrates one exact point checkpoint and passes it to the child spawn without pre-forking', async () => {

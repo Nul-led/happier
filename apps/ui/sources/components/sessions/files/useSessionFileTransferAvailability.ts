@@ -2,8 +2,7 @@ import * as React from 'react';
 
 import { useSessionMachineReachability } from '@/components/sessions/model/useSessionMachineReachability';
 import { useServerFeaturesSnapshotForServerId } from '@/sync/domains/features/featureDecisionRuntime';
-import { useMachine, useServerScopedMachine, useSessionRpcAvailabilityState } from '@/sync/domains/state/storage';
-import { useMachineRpcDirectRouteAvailability } from '@/sync/domains/transfers/runtime/useMachineRpcDirectRouteAvailability';
+import { useLocalSetting, useMachine, useServerScopedMachine, useSessionRpcAvailabilityState } from '@/sync/domains/state/storage';
 import {
     resolveSessionFileTransferAvailability,
     type ResolveSessionFileTransferAvailabilityResult,
@@ -20,16 +19,20 @@ import { isBrowserIrohHost } from '@/sync/runtime/browserIroh/hostEligibility';
 export function useSessionFileTransferAvailabilityState(
     sessionId: string,
     sessionServerId?: string | null,
+    enabled = true,
 ): ResolveSessionFileTransferAvailabilityResult {
-    const { sessionExists } = useSessionRpcAvailabilityState(sessionId);
-    const { machineRpcTargetAvailable } = useSessionMachineReachability(sessionId, sessionServerId);
-    const serverId = usePreferredServerIdForSession({ serverId: sessionServerId, sessionId });
+    const availableSessionId = enabled ? sessionId : '';
+    const { sessionExists } = useSessionRpcAvailabilityState(availableSessionId);
+    const applicationCarrierEligibility = useLocalSetting('homeApplicationCarrierEligibility');
+    const { machineRpcTargetAvailable } = useSessionMachineReachability(availableSessionId, enabled ? sessionServerId : null);
+    const preferredServerId = usePreferredServerIdForSession({ serverId: enabled ? sessionServerId : null, sessionId: availableSessionId }, enabled);
+    const serverId = enabled ? preferredServerId : null;
     const serverSnapshot = useServerFeaturesSnapshotForServerId(serverId, {
         enabled: Boolean(serverId) && machineRpcTargetAvailable,
     });
-    const machineTarget = readMachineTargetForSession(serverId
+    const machineTarget = enabled ? readMachineTargetForSession(serverId
         ? { serverId, sessionId }
-        : sessionId);
+        : sessionId) : null;
     const globalMachine = useMachine(machineTarget?.machineId ?? '');
     const serverScopedMachine = useServerScopedMachine(serverId, machineTarget?.machineId ?? '');
     const machine = serverScopedMachine ?? globalMachine;
@@ -39,21 +42,13 @@ export function useSessionFileTransferAvailabilityState(
         isIrohMachineTransferLifecycleAvailable,
     );
     React.useEffect(() => {
-        void probeIrohMachineTransferLifecycleAvailability();
-    }, []);
-    const machineRpcRouteInput = machineTarget && serverId
-        ? {
-            serverId,
-            remoteMachineId: machineTarget.machineId,
+        if (enabled && applicationCarrierEligibility !== 'standard_only') {
+            void probeIrohMachineTransferLifecycleAvailability();
         }
-        : null;
-    const machineRpcRouteAvailability = useMachineRpcDirectRouteAvailability({
-        serverId: machineRpcRouteInput?.serverId,
-        remoteMachineId: machineRpcRouteInput?.remoteMachineId,
-    });
-
+    }, [applicationCarrierEligibility, enabled]);
     return resolveSessionFileTransferAvailability({
-        sessionAvailable: sessionExists,
+        applicationCarrierEligibility,
+        sessionAvailable: enabled && sessionExists,
         machineTargetAvailable: machineRpcTargetAvailable,
         serverFeatures: serverSnapshot.status === 'ready' ? serverSnapshot.features : null,
         machineDaemonState: machine?.daemonState ?? null,
@@ -65,19 +60,15 @@ export function useSessionFileTransferAvailabilityState(
         machineCarrierHost: isBrowserIrohHost()
             ? { kind: 'browser' }
             : { kind: 'native', lifecycleAvailable: nativeMachineCarrierAvailable },
-        machineRpcDirectRoute: machineRpcRouteAvailability === 'viable'
-            ? { status: 'viable', checkedAt: 0, expiresAt: Number.MAX_SAFE_INTEGER }
-            : machineRpcRouteAvailability === 'unavailable'
-                ? { status: 'unavailable', checkedAt: 0, expiresAt: 0, failureReason: 'machine_rpc_direct_unavailable' }
-                : { status: 'unknown' },
     });
 }
 
 export function useSessionFileTransferAvailabilityResolver(
     sessionId: string,
     sessionServerId?: string | null,
+    enabled = true,
 ): (transferSizeBytes?: number | null) => boolean {
-    const availability = useSessionFileTransferAvailabilityState(sessionId, sessionServerId);
+    const availability = useSessionFileTransferAvailabilityState(sessionId, sessionServerId, enabled);
 
     return React.useCallback((transferSizeBytes?: number | null) => {
         void transferSizeBytes;
@@ -85,7 +76,7 @@ export function useSessionFileTransferAvailabilityResolver(
     }, [availability.available]);
 }
 
-export function useSessionFileTransferAvailability(sessionId: string, sessionServerId?: string | null): boolean {
-    const canTransfer = useSessionFileTransferAvailabilityResolver(sessionId, sessionServerId);
+export function useSessionFileTransferAvailability(sessionId: string, sessionServerId?: string | null, enabled = true): boolean {
+    const canTransfer = useSessionFileTransferAvailabilityResolver(sessionId, sessionServerId, enabled);
     return canTransfer(null);
 }

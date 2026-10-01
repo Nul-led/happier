@@ -7,6 +7,7 @@ import type {
 } from '@happier-dev/protocol';
 import {
     DEFAULT_BROWSER_CAPABILITIES,
+    browserViewKey,
     simulatorCaptureStreamFamilyV1,
 } from '@happier-dev/protocol';
 import * as React from 'react';
@@ -30,6 +31,8 @@ import {
     stopBrowserRecordingViaMachineRpc,
 } from '@/sync/domains/browser/recording/machineRpc';
 import { useServerFeaturesSnapshotForServerId } from '@/sync/domains/features/featureDecisionRuntime';
+import { Modal } from '@/modal';
+import { t } from '@/text';
 
 const DEFAULT_RECORDING_CAPABILITIES = DEFAULT_BROWSER_CAPABILITIES.recording;
 
@@ -73,7 +76,7 @@ function resolveCaptureSource(
         return {
             kind: 'machineLiveStream',
             streamFamily: 'browser.streamed',
-            sourceId: request.target.streamId,
+            sourceId: browserViewKey(request),
             targetMachineId: machineId,
         };
     }
@@ -158,6 +161,20 @@ function mapDaemonUnavailableReasonToUi(
         policyState: 'captureUnavailable',
         message: reason.message,
     };
+}
+
+/**
+ * One visible outcome for a stop or discard that did not happen (H-UX F-4, plan §437). A transport
+ * failure, a daemon refusal and a finalization that failed are the same product event: the clip is
+ * not where the user asked it to be. Success says nothing here (the recording state changing is the
+ * evidence), and the daemon's technical reason message is never shown raw.
+ */
+function presentBrowserRecordingActionFailure(action: 'stop' | 'discard'): void {
+    if (action === 'stop') {
+        Modal.alert(t('browserRecording.failure.stopTitle'), t('browserRecording.failure.stopBody'));
+        return;
+    }
+    Modal.alert(t('browserRecording.failure.discardTitle'), t('browserRecording.failure.discardBody'));
 }
 
 export function useSessionBrowserRecordingRuntime(
@@ -313,6 +330,9 @@ export function useSessionBrowserRecordingRuntime(
         if (updated) {
             setState((current) => applyBrowserRecordingSessionSnapshot(current, updated));
         }
+        if (!result.ok || result.result.status === 'unavailable' || result.result.status === 'failed') {
+            presentBrowserRecordingActionFailure('stop');
+        }
     }, [enabled, machineId, nowMs, serverId]);
 
     const onCancelRecording = React.useCallback(async (recording: BrowserRecordingSessionV1) => {
@@ -327,6 +347,9 @@ export function useSessionBrowserRecordingRuntime(
         const updated = result.ok ? readRecordingFromDaemonResult(result.result) : null;
         if (updated) {
             setState((current) => applyBrowserRecordingSessionSnapshot(current, updated));
+        }
+        if (!result.ok || result.result.status === 'unavailable' || result.result.status === 'failed') {
+            presentBrowserRecordingActionFailure('discard');
         }
     }, [enabled, machineId, nowMs, serverId]);
 

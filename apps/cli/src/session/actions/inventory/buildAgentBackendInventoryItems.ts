@@ -40,7 +40,7 @@ function buildCatalogBackendInventoryItems(
     })
 }
 
-async function buildConfiguredAcpBackendInventoryItems(
+export async function buildConfiguredAcpBackendInventoryItems(
   accountSettings: AccountSettings | null,
 ): Promise<AgentBackendInventoryItem[]> {
   const configuredBackends = await listConfiguredAcpBackendsFromAccountSettings({

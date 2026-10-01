@@ -5,7 +5,7 @@ import {
     PluginPortableReleaseManifestV1Schema,
 } from '@happier-dev/protocol';
 import { PluginReleaseFactsV1Schema } from '@happier-dev/protocol/plugins/availability';
-import { PluginUiArtifactsManifestEntryV1Schema } from '@happier-dev/protocol/plugins/ui';
+import { PluginUiArtifactsManifestEntryV2Schema } from '@happier-dev/protocol/plugins/ui';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 
 const callGuardedMachineRpcWithPolicyMock = vi.hoisted(() => vi.fn());
@@ -100,30 +100,19 @@ const targetRefs = targetContracts.map((contract) => ({
     schemaVersion: contract.schemaVersion,
     contractDigest: contract.contractDigest,
 }));
-const artifactGraph = PluginUiArtifactsManifestEntryV1Schema.parse({
-    contributionId: 'tasks-migrations',
+const artifactGraph = PluginUiArtifactsManifestEntryV2Schema.parse({
+    artifactId: 'tasks-migrations',
     tier: 'reactNative',
-    platform,
-    entry: 'react-native/tasks/ios.bundle',
+    entry: 'react-native/tasks-migrations/entry.cjs.bundle',
     files: [{
-        relativePath: 'react-native/tasks/ios.bundle',
+        relativePath: 'react-native/tasks-migrations/entry.cjs.bundle',
         digest: `sha256:${'a'.repeat(64)}`,
         byteSize: 1,
     }],
     digest: `sha256:${'b'.repeat(64)}`,
-    builtWith: { bundler: 'repack', version: '5.2.5' },
-    repack: {
-        containerName: 'tasks_migrations',
-        modulePath: './renderSurface',
-        exportName: 'renderSurface',
-    },
-    collectionMigrations: {
-        containerName: 'tasks_migrations',
-        modulePath: './renderSurface',
-        exportName: 'collectionMigrations',
-    },
-    hostUiApiVersion,
-    compat: { react: reactVersion, reactNative: reactNativeVersion },
+    builtWith: { bundler: 'esbuild', version: '0.27.2' },
+    executable: { exports: ['collectionMigrations', 'renderSurface'] },
+    hostUiApiRange: `^${hostUiApiVersion}`,
 });
 const facts = PluginReleaseFactsV1Schema.parse({
     ref: { pluginId, version: targetVersion },
@@ -131,15 +120,12 @@ const facts = PluginReleaseFactsV1Schema.parse({
     normalizedManifest: targetManifest,
     collectionContracts: targetRefs,
     uiSlots: [{
-        contributionId: artifactGraph.contributionId,
+        contributionId: artifactGraph.artifactId,
+        artifactId: artifactGraph.artifactId,
         tier: artifactGraph.tier,
         platform,
         artifactDigest: artifactGraph.digest,
-        compatibility: {
-            hostUiApiVersion,
-            reactVersion,
-            reactNativeVersion,
-        },
+        hostUiApiRange: artifactGraph.hostUiApiRange,
     }],
     packageAssetArchive: {
         archiveDigestSha256: `sha256:${'c'.repeat(64)}`,
@@ -161,7 +147,8 @@ const execution = Object.freeze({
     artifactGraph,
     cacheIdentity: Object.freeze({
         pluginId,
-        contributionId: artifactGraph.contributionId,
+        contributionId: artifactGraph.artifactId,
+        artifactId: artifactGraph.artifactId,
         artifactDigest: artifactGraph.digest,
         hostAppVersion: '1.0.0',
         hostUiApiVersion,

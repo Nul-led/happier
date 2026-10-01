@@ -1,8 +1,8 @@
+import { renderWithSessionTranscriptSource, createTestSessionTranscriptSource } from '@/dev/testkit';
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
-    renderScreen,
     standardCleanup,
 } from '@/dev/testkit';
 import { installToolShellCommonModuleMocks } from './ToolView.testHelpers';
@@ -61,10 +61,6 @@ vi.mock('@/components/tools/catalog', () => ({
     knownTools: {
         Bash: { title: 'Bash' },
     },
-}));
-
-vi.mock('@/components/tools/normalization/core/normalizeToolCallForRendering', () => ({
-    normalizeToolCallForRendering: (tool: any) => tool,
 }));
 
 vi.mock('@/components/tools/normalization/policy/toolNameInference', () => ({
@@ -173,15 +169,14 @@ describe('ToolTimelineRow (permission pending)', () => {
             permission: { id: 'perm1', kind: 'command', status: 'pending' },
         };
 
-        const screen = await renderScreen(
+        const screen = await renderWithSessionTranscriptSource(
             <ToolTimelineRow
                 tool={tool}
                 metadata={null}
                 sessionId="s1"
                 messageId="m1"
                 interaction={{ canSendMessages: true, canApprovePermissions: true }}
-            />,
-        );
+            />, createTestSessionTranscriptSource({ loadSidechain: (sidechainId) => ensureSidechainMessagesLoadedMock('s1', sidechainId) }),);
 
         expect(screen.findAllByType('PermissionFooter' as any)).toHaveLength(1);
     });
@@ -200,7 +195,7 @@ describe('ToolTimelineRow (permission pending)', () => {
             result: null,
         };
 
-        const screen = await renderScreen(
+        const screen = await renderWithSessionTranscriptSource(
             <ToolTimelineRow
                 tool={tool}
                 metadata={null}
@@ -230,8 +225,7 @@ describe('ToolTimelineRow (permission pending)', () => {
                         },
                     },
                 ]}
-            />,
-        );
+            />, createTestSessionTranscriptSource({ loadSidechain: (sidechainId) => ensureSidechainMessagesLoadedMock('s1', sidechainId) }),);
 
         expect(screen.findAllByType('ApprovalPromptCard' as any)).toHaveLength(1);
     });
@@ -250,7 +244,7 @@ describe('ToolTimelineRow (permission pending)', () => {
             result: null,
         };
 
-        const screen = await renderScreen(
+        const screen = await renderWithSessionTranscriptSource(
             <ToolTimelineRow
                 tool={tool}
                 metadata={null}
@@ -279,8 +273,7 @@ describe('ToolTimelineRow (permission pending)', () => {
                         },
                     },
                 ]}
-            />,
-        );
+            />, createTestSessionTranscriptSource({ loadSidechain: (sidechainId) => ensureSidechainMessagesLoadedMock('s1', sidechainId) }),);
 
         expect(screen.findAllByType('ApprovalPromptCard' as any)).toHaveLength(0);
     });
@@ -299,7 +292,7 @@ describe('ToolTimelineRow (permission pending)', () => {
             result: null,
         };
 
-        const screen = await renderScreen(
+        const screen = await renderWithSessionTranscriptSource(
             <ToolTimelineRow
                 tool={tool}
                 metadata={null}
@@ -328,8 +321,7 @@ describe('ToolTimelineRow (permission pending)', () => {
                         },
                     },
                 ]}
-            />,
-        );
+            />, createTestSessionTranscriptSource({ loadSidechain: (sidechainId) => ensureSidechainMessagesLoadedMock('s1', sidechainId) }),);
 
         expect(screen.findAllByType('ApprovalPromptCard' as any)).toHaveLength(0);
     });
@@ -351,7 +343,7 @@ describe('ToolTimelineRow (permission pending)', () => {
             permission: { id: 'perm2', kind: 'command', status: 'pending' },
         };
 
-        const screen = await renderScreen(
+        const screen = await renderWithSessionTranscriptSource(
             <ToolTimelineRow
                 tool={tool}
                 metadata={null}
@@ -359,8 +351,7 @@ describe('ToolTimelineRow (permission pending)', () => {
                 messageId="m2"
                 interaction={{ canSendMessages: true, canApprovePermissions: true }}
                 forcePermissionPromptsInTranscript={true}
-            />,
-        );
+            />, createTestSessionTranscriptSource({ loadSidechain: (sidechainId) => ensureSidechainMessagesLoadedMock('s1', sidechainId) }),);
 
         expect(screen.findAllByType('PermissionFooter' as any)).toHaveLength(1);
     });
@@ -380,15 +371,14 @@ describe('ToolTimelineRow (permission pending)', () => {
             permission: { id: 'perm-inactive', kind: 'command', status: 'pending' },
         };
 
-        const screen = await renderScreen(
+        const screen = await renderWithSessionTranscriptSource(
             <ToolTimelineRow
                 tool={tool}
                 metadata={null}
                 sessionId="s1"
                 messageId="m1"
                 interaction={{ canSendMessages: false, canApprovePermissions: false, permissionDisabledReason: 'inactive' }}
-            />,
-        );
+            />, createTestSessionTranscriptSource({ loadSidechain: (sidechainId) => ensureSidechainMessagesLoadedMock('s1', sidechainId) }),);
 
         expect(screen.findAllByTestId('tool-timeline-row').length).toBeGreaterThan(0);
         expect(screen.findAllByType('PermissionFooter' as any)).toHaveLength(0);
@@ -409,15 +399,14 @@ describe('ToolTimelineRow (permission pending)', () => {
             permission: { id: 'perm-denied', kind: 'filesystem', status: 'denied' },
         };
 
-        const screen = await renderScreen(
+        const screen = await renderWithSessionTranscriptSource(
             <ToolTimelineRow
                 tool={tool}
                 metadata={null}
                 sessionId="s1"
                 messageId="m-denied"
                 interaction={{ canSendMessages: true, canApprovePermissions: true }}
-            />,
-        );
+            />, createTestSessionTranscriptSource({ loadSidechain: (sidechainId) => ensureSidechainMessagesLoadedMock('s1', sidechainId) }),);
 
         expect(screen.getTextContent()).toContain('errors.permissionDenied');
         expect(screen.findByTestId('tool-timeline-row-permission-blocked')).toMatchObject({
@@ -442,15 +431,14 @@ describe('ToolTimelineRow (permission pending)', () => {
             result: { error: 'Filesystem unavailable' },
         };
 
-        const screen = await renderScreen(
+        const screen = await renderWithSessionTranscriptSource(
             <ToolTimelineRow
                 tool={tool}
                 metadata={null}
                 sessionId="s1"
                 messageId="m-failed"
                 interaction={{ canSendMessages: true, canApprovePermissions: true }}
-            />,
-        );
+            />, createTestSessionTranscriptSource({ loadSidechain: (sidechainId) => ensureSidechainMessagesLoadedMock('s1', sidechainId) }),);
 
         expect(screen.getTextContent()).toContain('Filesystem unavailable');
         const errorStatus = screen.findByTestId('tool-timeline-row-error');

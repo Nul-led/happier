@@ -3,7 +3,14 @@ import { encodeBase64, decodeBase64 } from "@/encryption/base64";
 import sodium from '@/encryption/libsodium.lib';
 import { decodeUTF8, encodeUTF8 } from "@/encryption/text";
 import { decryptAESGCMString, encryptAESGCMString } from "@/encryption/aes";
-import { parseSerializedJsonValue, stringifySerializedJsonValue } from '@happier-dev/protocol';
+import {
+    frameSessionDataKeyBundleV0,
+    parseSessionDataKeyValue,
+    parseSerializedJsonValue,
+    readSessionDataKeyBundleV0,
+    serializeSessionDataKeyValue,
+    stringifySerializedJsonValue,
+} from '@happier-dev/protocol';
 import { syncPerformanceTelemetry } from '../runtime/syncPerformanceTelemetry';
 import { yieldToEventLoop } from './cryptoBatchYield';
 import {
@@ -320,12 +327,9 @@ export class AES256Encryption implements Encryptor, Decryptor {
                 return await mapWithConcurrency(data, this.batchConcurrencyLimit, async (item) => {
                     // Serialize to JSON string first
                     const encrypted = decodeBase64(
-                        await this.encryptString(stringifySerializedJsonValue(item), this.secretKeyB64)
+                        await this.encryptString(serializeSessionDataKeyValue(item), this.secretKeyB64)
                     );
-                    let output = new Uint8Array(encrypted.length + 1);
-                    output[0] = 0;
-                    output.set(encrypted, 1);
-                    return output;
+                    return frameSessionDataKeyBundleV0(encrypted);
                 });
             },
         );
@@ -356,11 +360,12 @@ export class AES256Encryption implements Encryptor, Decryptor {
         return await mapWithConcurrency(data, this.batchConcurrencyLimit, async (item, index) => {
             let decryptedString: string | null;
             try {
-                if (item[0] !== 0) {
+                const parts = readSessionDataKeyBundleV0(item);
+                if (parts.status !== 'ready') {
                     options.onAuthenticationFailure?.(index);
                     return null;
                 }
-                decryptedString = await this.decryptString(encodeBase64(item.slice(1)), this.secretKeyB64);
+                decryptedString = await this.decryptString(encodeBase64(parts.payload), this.secretKeyB64);
             } catch (error) {
                 options.onAuthenticationFailure?.(index);
                 return null;
@@ -369,11 +374,8 @@ export class AES256Encryption implements Encryptor, Decryptor {
                 options.onAuthenticationFailure?.(index);
                 return null;
             }
-            try {
-                return parseSerializedJsonValue(decryptedString);
-            } catch {
-                return null;
-            }
+            const result = parseSessionDataKeyValue(decryptedString);
+            return result.status === 'authenticated' ? result.value : null;
         });
     }
 

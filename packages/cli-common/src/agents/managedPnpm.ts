@@ -8,12 +8,14 @@ import { fetchGitHubLatestRelease } from '@happier-dev/release-runtime';
 import { extractArchivePayloadToDirectory } from '@happier-dev/release-runtime/archiveExtraction';
 
 import { isPidPresent } from '../process/processLiveness.js';
-import { resolveWindowsCommandOnPath } from '../process/index.js';
+import { execFileWithDeadline, resolveWindowsCommandOnPath } from '../process/index.js';
 import { createManagedToolScratchDir } from './createManagedToolScratchDir.js';
+import { resolveVendorInstallTimeoutMs } from './install/vendorRecipeInstall.js';
 import { downloadGitHubReleaseAsset } from './downloadGitHubReleaseAsset.js';
 import { promoteManagedCurrentInstall } from './promoteManagedCurrentInstall.js';
 import { resolvePnpmReleaseAsset, PNPM_GITHUB_REPO } from './pnpmRelease.js';
 import { resolveHappyHomeDirFromEnvironment } from './resolveHappyHomeDir.js';
+import type { AgentInstallProgressCallback } from './installProgress.js';
 
 type EnsureManagedPnpmDeps = Readonly<{
   fetchGitHubLatestRelease?: typeof fetchGitHubLatestRelease;
@@ -172,12 +174,17 @@ async function extractManagedPnpmArchive(params: Readonly<{
 }>): Promise<void> {
   const binDir = dirname(params.outputPath);
   await mkdir(binDir, { recursive: true });
-  await extractArchivePayloadToDirectory({
-    archiveName: params.archiveName,
-    archivePath: params.archivePath,
-    extractDir: binDir,
-    signal: params.signal,
-  });
+    await extractArchivePayloadToDirectory({
+      archiveName: params.archiveName,
+      archivePath: params.archivePath,
+      extractDir: binDir,
+      // Current pnpm release archives use hard links for duplicate package
+      // metadata. The managed executable and its support files are regular
+      // entries; ignore link entries rather than weakening the shared archive
+      // extractor's fail-closed default.
+      tarLinkPolicy: 'skip',
+      signal: params.signal,
+    });
 
   const outputStat = await lstat(params.outputPath).catch(() => null);
   if (!outputStat?.isFile()) {
@@ -192,6 +199,7 @@ async function installManagedPnpm(
   processEnv: NodeJS.ProcessEnv,
   deps: EnsureManagedPnpmDeps,
   signal?: AbortSignal,
+  onProgress?: AgentInstallProgressCallback,
 ): Promise<string> {
   // Acquire exclusive lock to prevent concurrent bootstrap races
   const lockHandle = await acquirePnpmBootstrapLock(processEnv, signal);
@@ -223,6 +231,7 @@ async function installManagedPnpm(
 
       await downloadAsset({
         signal,
+        onProgress,
         url: asset.url,
         destinationPath: downloadPath,
         digest: asset.digest,
@@ -274,29 +283,35 @@ async function installManagedPnpm(
   }
 }
 
+/**
+ * The pnpm the managed installer uses, without bootstrapping: an override, the existing
+ * managed pnpm. `bootstrap` means the next install
+ * would first download a managed pnpm.
+ */
+function selectManagedPnpmCommand(
+  processEnv: NodeJS.ProcessEnv,
+): Readonly<{ kind: 'command'; command: string | null }> | Readonly<{ kind: 'bootstrap' }> {
+  if (readRawPnpmOverride(processEnv)) return { kind: 'command', command: readPnpmOverride(processEnv) };
+  const existing = resolveExistingManagedOrOverridePnpmCommand(processEnv);
+  if (existing) return { kind: 'command', command: existing };
+  if (!shouldBootstrapManagedPnpm(processEnv)) return { kind: 'command', command: null };
+  return { kind: 'bootstrap' };
+}
+
 export async function ensureManagedPnpmCommand(
   processEnv: NodeJS.ProcessEnv = process.env,
   deps: EnsureManagedPnpmDeps = {},
-  options: Readonly<{ signal?: AbortSignal }> = {},
+  options: Readonly<{ signal?: AbortSignal; onProgress?: AgentInstallProgressCallback }> = {},
 ): Promise<string | null> {
   options.signal?.throwIfAborted();
-  const rawOverride = readRawPnpmOverride(processEnv);
-  if (rawOverride) {
-    return readPnpmOverride(processEnv);
-  }
-
-  const existing = resolveExistingManagedOrOverridePnpmCommand(processEnv);
-  if (existing) return existing;
-
-  if (!shouldBootstrapManagedPnpm(processEnv)) {
-    return resolveCommandOnPath('pnpm', processEnv);
-  }
+  const selected = selectManagedPnpmCommand(processEnv);
+  if (selected.kind === 'command') return selected.command;
 
   try {
-    return await installManagedPnpm(processEnv, deps, options.signal);
+    return await installManagedPnpm(processEnv, deps, options.signal, options.onProgress);
   } catch {
     options.signal?.throwIfAborted();
-    return resolveCommandOnPath('pnpm', processEnv);
+    return null;
   }
 }
 
@@ -305,7 +320,52 @@ export function buildManagedPnpmEnvironment(processEnv: NodeJS.ProcessEnv = proc
   return {
     ...processEnv,
     PNPM_HOME: join(homeDir, 'tools', 'pnpm', 'home'),
-    PNPM_STORE_DIR: join(homeDir, 'tools', 'pnpm', 'store'),
+    // pnpm reads CLI configuration from npm_config_* environment variables;
+    // PNPM_STORE_DIR is not a recognized store-dir setting and silently lets
+    // the SQLite-backed store fall through to the process user's home.
+    npm_config_store_dir: join(homeDir, 'tools', 'pnpm', 'store'),
     XDG_CACHE_HOME: processEnv.XDG_CACHE_HOME || join(homeDir, 'cache'),
   };
+}
+
+/** pnpm's built-in `minimumReleaseAge` default (minutes) from pnpm 11 on; earlier majors default to 0. */
+const PNPM_11_DEFAULT_MINIMUM_RELEASE_AGE_MINUTES = 24 * 60;
+
+/**
+ * The release-age rule the managed installer applies to `pnpm add`, in ms: the value the
+ * managed pnpm is configured with (`pnpm config get minimumReleaseAge`, which reports rc/env
+ * settings), else that pnpm version's built-in default. `null` when there is no existing pnpm
+ * to ask (a latest-version check never bootstraps one).
+ */
+export async function readManagedPnpmMinimumReleaseAgeMs(
+  processEnv: NodeJS.ProcessEnv = process.env,
+  deps: Readonly<{ execFile?: typeof execFileWithDeadline }> = {},
+): Promise<number | null> {
+  const selected = selectManagedPnpmCommand(processEnv);
+  const pnpm = selected.kind === 'command' ? selected.command : null;
+  if (!pnpm) return null;
+  const execFile = deps.execFile ?? execFileWithDeadline;
+  const env = buildManagedPnpmEnvironment(processEnv);
+  const timeout = resolveVendorInstallTimeoutMs(processEnv);
+  const ask = async (args: ReadonlyArray<string>): Promise<string | null> => {
+    try {
+      const { stdout } = await execFile(pnpm, args, {
+        env,
+        cwd: managedPnpmInstallDir(processEnv),
+        encoding: 'utf8',
+        windowsHide: true,
+        ...(timeout > 0 ? { timeout } : {}),
+      });
+      return String(stdout).trim();
+    } catch {
+      return null;
+    }
+  };
+
+  const configured = Number(await ask(['config', 'get', 'minimumReleaseAge']));
+  if (Number.isFinite(configured) && configured >= 0) return configured * 60_000;
+
+  const major = Number.parseInt(String(await ask(['--version']) ?? ''), 10);
+  if (!Number.isFinite(major)) return null;
+  return major >= 11 ? PNPM_11_DEFAULT_MINIMUM_RELEASE_AGE_MINUTES * 60_000 : 0;
 }

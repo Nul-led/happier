@@ -69,6 +69,11 @@ export async function applyBackgroundServiceRepairPlan(
         channel: action.releaseChannel,
         targetMode: 'default-following',
         strategy: 'replace-ring',
+        irohRelayConfig: action.irohRelayConfig,
+        homeCarrierEligibility: action.homeCarrierEligibility,
+        autostart: action.autostart,
+        bundleId: action.bundleId ?? undefined,
+        managedBy: action.managedBy ?? undefined,
         runCommands: true,
       });
       if (hadPreexistingExactDefaultTarget) {
@@ -117,6 +122,11 @@ export async function applyBackgroundServiceRepairPlan(
           targetMode: service.targetMode,
           instanceId: service.instanceId,
           strategy: 'add',
+          irohRelayConfig: service.irohRelayConfig,
+          homeCarrierEligibility: service.homeCarrierEligibility,
+          autostart: service.autostart,
+          bundleId: service.bundleId ?? undefined,
+          managedBy: service.managedBy ?? undefined,
           runCommands: true,
         });
       } catch (rollbackError) {

@@ -38,7 +38,7 @@ export function SlimProfilePromptBehaviorFields(props: Readonly<{
 
     return <ItemGroup
         title={t('settingsSession.promptPersonalization.title')}
-        footer={t('settingsSession.promptPersonalization.footer')}
+        description={t('settingsSession.promptPersonalization.footer')}
     >
         <DropdownMenu
             open={openMenu === 'title'}

@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { act } from 'react-test-renderer';
+import { renderHook, standardCleanup } from '@/dev/testkit';
+import { createMachineFixture } from '@/dev/testkit/fixtures/machineFixtures';
 import { IDBFactory } from 'fake-indexeddb';
 import type { ManagedEndpointSupervisor } from '@happier-dev/connection-supervisor';
-import { createSocketIoAckTimeoutError } from '@/sync/runtime/socketIoAckTimeout';
+import { createSocketIoAckTimeoutError } from '@happier-dev/sync-client';
 import type { ResumeSessionOptions } from '@/sync/ops/sessions';
 
 // Sync imports persistence, which instantiates MMKV. Mock it for deterministic tests.
@@ -30,6 +33,7 @@ vi.mock('react-native-mmkv', () => {
 
 const appStateAddListener = vi.hoisted(() => vi.fn(() => ({ remove: vi.fn() })));
 const runtimeFetchWithServerReachabilityMock = vi.hoisted(() => vi.fn());
+const appliedRuntime = vi.hoisted(() => ({ available: true }));
 vi.mock('react-native', async () => {
     const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
     return createReactNativeWebMock(
@@ -49,6 +53,17 @@ vi.mock('react-native', async () => {
 vi.mock('@/sync/runtime/connectivity/serverReachabilityRuntimeFetch', () => ({
     runtimeFetchWithServerReachability: runtimeFetchWithServerReachabilityMock,
 }));
+
+// This direct-Sync fixture does not run connectionManager's restore lifecycle.
+// Its staged runtime snapshot is therefore also the applied, available Home
+// unless a test explicitly models a switch.
+vi.mock('@/sync/runtime/orchestration/connectionManager', async () => {
+    const { getActiveServerSnapshot } = await import('@/sync/domains/server/serverRuntime');
+    return {
+        getAppliedActiveServerSnapshot: () => getActiveServerSnapshot(),
+        isAppliedActiveServerRuntimeAvailable: () => appliedRuntime.available,
+    };
+});
 
 const ensureSessionRuntimeForPendingInputMock = vi.hoisted(() => vi.fn(async (_options?: ResumeSessionOptions) => ({ type: 'success' as const })));
 vi.mock('@/sync/ops', () => ({
@@ -96,6 +111,7 @@ vi.mock('@/voice/context/voiceHooks', () => ({
 
 import { Encryption } from '@/sync/encryption/encryption';
 import { storage } from './domains/state/storage';
+import { useSessionPendingMessages } from './domains/state/storage';
 import type { Session } from './domains/state/storageTypes';
 import type { SyncMessageTransport } from './sync';
 import { apiSocket } from '@/sync/api/session/apiSocket';
@@ -108,11 +124,11 @@ import {
     savePendingOutboxMessage,
 } from '@/sync/domains/state/pendingOutboxPersistence';
 import { scopedSessionLocalStateKey } from '@/sync/domains/state/sessionLocalStateKeys';
+import { clearBrowserRecords, readBrowserRecord, writeBrowserRecord } from '@/sync/domains/state/browserRecordStorage';
 import {
     fetchAndApplyPendingMessagesV2,
     replayPersistedPendingOutboxForSession,
 } from '@/sync/engine/pending/pendingQueueV2';
-import { resolveServerRequestForServerAccountScope } from '@/sync/runtime/orchestration/serverScopedRpc/createServerRequestWithServerScope';
 import { setActiveServerId, upsertServerProfile } from '@/sync/domains/server/serverProfiles';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import {
@@ -383,9 +399,10 @@ function createTransientProbeFailureEndpointSupervisor(): ManagedEndpointSupervi
     };
 }
 
+// Control retry clocks while leaving IndexedDB's setImmediate transaction scheduler real.
 describe('sync.sendMessage optimistic thinking', () => {
     it('releases the pending retry slot when the storage boundary stays unavailable', async () => {
-        vi.useFakeTimers();
+        vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
         try {
             const sessionId = 'pending-storage-failure';
             const localId = 'pending-storage-failure-local';
@@ -424,7 +441,9 @@ describe('sync.sendMessage optimistic thinking', () => {
             vi.useRealTimers();
         }
     });
-    beforeEach(() => {
+    beforeEach(async () => {
+        vi.stubGlobal('indexedDB', new IDBFactory());
+        await clearBrowserRecords();
         storage.setState(initialStorageState, true);
         kvStore.clear();
         const activeScope = {
@@ -432,13 +451,22 @@ describe('sync.sendMessage optimistic thinking', () => {
             accountId: 'sync-test-account',
         } as const;
         storage.getState().activateProfileScope(activeScope);
+        // Direct Sync tests bypass restore; bind the same applied transport and Account it owns.
+        const { sync } = await import('./sync');
+        Reflect.set(sync, 'appliedServerTarget', getActiveServerSnapshot());
+        Reflect.set(sync, 'serverID', activeScope.accountId);
+        appliedRuntime.available = true;
         appStateAddListener.mockClear();
         runtimeFetchWithServerReachabilityMock.mockReset();
         runtimeFetchWithServerReachabilityMock.mockResolvedValue(new Response(null, { status: 200 }));
         ensureSessionRuntimeForPendingInputMock.mockClear();
     });
 
-    afterEach(() => {
+    afterEach(async () => {
+        standardCleanup();
+        // Retire scheduled retries through Sync's real lifecycle before the next fixture starts.
+        const { sync } = await import('./sync');
+        sync.disconnectServer();
         vi.restoreAllMocks();
     });
 
@@ -897,10 +925,10 @@ describe('sync.sendMessage optimistic thinking', () => {
 
         await sync.fetchPendingMessages(sessionId);
 
-        expect(requestSpy).toHaveBeenCalledWith(
+        expect(requestSpy.mock.calls.map(([path, init]) => [path, init])).toContainEqual([
             `/v2/sessions/${sessionId}/pending?includeDiscarded=1`,
             { method: 'GET' },
-        );
+        ]);
         expect(storage.getState().sessionPending[sessionId]?.messages).toEqual([
             expect.objectContaining({
                 id: 'first-turn-local',
@@ -940,6 +968,11 @@ describe('sync.sendMessage optimistic thinking', () => {
             Response.json({ pending: [] }),
         );
         const { sync } = await import('./sync');
+        // Direct-Sync tests bypass restore, which normally binds the applied Account transport.
+        const previousAppliedTarget = Reflect.get(sync, 'appliedServerTarget');
+        const previousServerId = Reflect.get(sync, 'serverID');
+        Reflect.set(sync, 'appliedServerTarget', getActiveServerSnapshot());
+        Reflect.set(sync, 'serverID', 'sync-test-account');
         vi.stubGlobal('indexedDB', new IDBFactory());
         try {
             (sync as any).applyMessages(sessionId, [{
@@ -953,14 +986,101 @@ describe('sync.sendMessage optimistic thinking', () => {
             }]);
 
             await vi.waitFor(() => {
-                expect(requestSpy).toHaveBeenCalledWith(
+                expect(requestSpy.mock.calls.map(([path, init]) => [path, init?.method])).toContainEqual([
                     `/v2/sessions/${sessionId}/pending?includeDiscarded=1`,
-                    { method: 'GET' },
-                );
+                    'GET',
+                ]);
                 expect(storage.getState().sessionPending[sessionId]?.messages).toEqual([]);
             });
         } finally {
+            Reflect.set(sync, 'appliedServerTarget', previousAppliedTarget);
+            Reflect.set(sync, 'serverID', previousServerId);
             vi.unstubAllGlobals();
+        }
+    });
+
+    it('reconciles mounted server-delivering main and Run rows when settlement repeats unchanged committed twins', async () => {
+        const sessionId = 's_server_pending_repeated_commit_without_receipt';
+        const runA = { kind: 'execution_run', runId: 'run-a' } as const;
+        const runB = { kind: 'execution_run', runId: 'run-b' } as const;
+        const otherRun = { kind: 'execution_run', runId: 'other-run' } as const;
+        const rows = [
+            { localId: 'delivered-main', recipient: undefined },
+            { localId: 'delivered-run-a-1', recipient: runA },
+            { localId: 'delivered-run-a-2', recipient: runA },
+            { localId: 'delivered-run-b', recipient: runB },
+        ];
+        const committed = rows.map(({ localId }, index) => ({
+            id: `committed-${localId}`,
+            seq: index + 1,
+            localId,
+            createdAt: 1_200 + index,
+            isSidechain: false,
+            role: 'user' as const,
+            content: { type: 'text' as const, text: 'already delivered' },
+        }));
+        storage.getState().applySessions([{
+            ...createSession({ sessionId }),
+            encryptionMode: 'plain',
+        }]);
+        storage.getState().applyMessages(sessionId, committed);
+        for (const [index, row] of [...rows, { localId: 'unmatched-run', recipient: otherRun }].entries()) {
+            storage.getState().upsertPendingMessage(sessionId, {
+                id: row.localId,
+                ...row,
+                createdAt: 1_000 + index,
+                updatedAt: 1_100 + index,
+                source: 'server_pending',
+                deliveryStatus: 'accepted',
+                pendingDeliveryStatus: 'server_delivering',
+                text: 'already delivered',
+                rawRecord: {
+                    role: 'user',
+                    content: { type: 'text', text: 'already delivered' },
+                    meta: {},
+                },
+            });
+        }
+        const mounted = await renderHook(() => [
+            useSessionPendingMessages(sessionId).messages,
+            useSessionPendingMessages(sessionId, runA).messages,
+            useSessionPendingMessages(sessionId, runB).messages,
+            useSessionPendingMessages(sessionId, otherRun).messages,
+        ]);
+        expect(mounted.getCurrent().map((messages) => messages.map((message) => message.localId))).toEqual([
+            ['delivered-main'], ['delivered-run-a-1', 'delivered-run-a-2'], ['delivered-run-b'], ['unmatched-run'],
+        ]);
+
+        const requestSpy = vi.spyOn(apiSocket, 'request').mockImplementation(async () => (
+            Response.json({ pending: [] })
+        ));
+        const { sync } = await import('./sync');
+        // Direct-Sync tests bypass restore, which normally binds the applied Account transport.
+        const previousAppliedTarget = Reflect.get(sync, 'appliedServerTarget');
+        const previousServerId = Reflect.get(sync, 'serverID');
+        Reflect.set(sync, 'appliedServerTarget', getActiveServerSnapshot());
+        Reflect.set(sync, 'serverID', 'sync-test-account');
+
+        try {
+            await act(async () => {
+                (sync as any).applyMessages(sessionId, committed);
+                await vi.waitFor(() => {
+                    expect(requestSpy.mock.calls.map(([path, init]) => [path, init?.method]).sort()).toEqual([
+                        [`/v2/sessions/${sessionId}/pending?includeDiscarded=1`, 'GET'],
+                        [`/v2/sessions/${sessionId}/execution-runs/run-a/pending?includeDiscarded=1`, 'GET'],
+                        [`/v2/sessions/${sessionId}/execution-runs/run-b/pending?includeDiscarded=1`, 'GET'],
+                    ].sort());
+                    expect(storage.getState().sessionPending[sessionId]?.messages.map((message) => message.localId))
+                        .toEqual(['unmatched-run']);
+                });
+            });
+
+            expect(mounted.getCurrent().map((messages) => messages.map((message) => message.localId)))
+                .toEqual([[], [], [], ['unmatched-run']]);
+        } finally {
+            Reflect.set(sync, 'appliedServerTarget', previousAppliedTarget);
+            Reflect.set(sync, 'serverID', previousServerId);
+            await mounted.unmount();
         }
     });
 
@@ -1013,14 +1133,14 @@ describe('sync.sendMessage optimistic thinking', () => {
 
         await sync.reorderPendingMessages(sessionId, [firstProjectionId, secondProjectionId]);
 
-        expect(requestSpy).toHaveBeenCalledWith(
+        expect(requestSpy.mock.calls.map(([path, init]) => [path, init])).toContainEqual([
             `/v2/sessions/${sessionId}/pending/reorder`,
             expect.objectContaining({ method: 'POST' }),
-        );
+        ]);
     });
 
     it('replays identical scoped enqueue identities independently through the real Sync scheduler', async () => {
-        vi.useFakeTimers();
+        vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
         try {
             const sessionId = 'same-session';
             const localId = 'same-local';
@@ -1048,10 +1168,6 @@ describe('sync.sendMessage optimistic thinking', () => {
                     }));
 
             const { sync } = await import('./sync');
-            await expect(resolveServerRequestForServerAccountScope({ scope: scopeA, activeRequest: apiSocket.request }))
-                .resolves.toEqual(expect.any(Function));
-            await expect(resolveServerRequestForServerAccountScope({ scope: scopeB, activeRequest: apiSocket.request }))
-                .resolves.toEqual(expect.any(Function));
             // Replay A, then B, matching the order produced by a reload followed by a server switch.
             for (const replayLocalId of (await replayPersistedPendingOutboxForSession(sessionId, scopeA))) {
                 (sync as any).schedulePendingOutboxOperationRetry({ sessionId, localId: replayLocalId, outboxScope: scopeA });
@@ -1061,19 +1177,19 @@ describe('sync.sendMessage optimistic thinking', () => {
             }
 
             await vi.advanceTimersByTimeAsync(1_000);
-            await flushPendingOutboxRetryMicrotasks();
-
-            const posts = runtimeFetchWithServerReachabilityMock.mock.calls
-                .map(([request]) => request as { serverUrl: string; init?: RequestInit })
-                .filter((request) => request.init?.method === 'POST');
-            expect(posts).toHaveLength(2);
-            expect(posts.map((request) => request.serverUrl).sort()).toEqual([serverAUrl, serverBUrl].sort());
-            expect(posts.map((request) => String(request.init?.body)).sort()).toEqual([
-                pendingOutboxFixture({ sessionId, localId, text: 'scope A' }).request.body,
-                pendingOutboxFixture({ sessionId, localId, text: 'scope B' }).request.body,
-            ].sort());
-            expect((await loadPendingOutboxForSession(sessionId, scopeA))).toEqual([]);
-            expect((await loadPendingOutboxForSession(sessionId, scopeB))).toEqual([]);
+            await vi.waitFor(async () => {
+                const posts = runtimeFetchWithServerReachabilityMock.mock.calls
+                    .map(([request]) => request as { serverUrl: string; init?: RequestInit })
+                    .filter((request) => request.init?.method === 'POST');
+                expect(posts).toHaveLength(2);
+                expect(posts.map((request) => request.serverUrl).sort()).toEqual([serverAUrl, serverBUrl].sort());
+                expect(posts.map((request) => String(request.init?.body)).sort()).toEqual([
+                    pendingOutboxFixture({ sessionId, localId, text: 'scope A' }).request.body,
+                    pendingOutboxFixture({ sessionId, localId, text: 'scope B' }).request.body,
+                ].sort());
+                expect((await loadPendingOutboxForSession(sessionId, scopeA))).toEqual([]);
+                expect((await loadPendingOutboxForSession(sessionId, scopeB))).toEqual([]);
+            });
         } finally {
             vi.useRealTimers();
         }
@@ -1081,7 +1197,7 @@ describe('sync.sendMessage optimistic thinking', () => {
 
 
     it('replays identical scoped cancellations independently through the real Sync scheduler', async () => {
-        vi.useFakeTimers();
+        vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
         try {
             const sessionId = 'same-cancel-session';
             const localId = 'same-cancel-local';
@@ -1101,10 +1217,6 @@ describe('sync.sendMessage optimistic thinking', () => {
             }));
 
             const { sync } = await import('./sync');
-            await expect(resolveServerRequestForServerAccountScope({ scope: scopeA, activeRequest: apiSocket.request }))
-                .resolves.toEqual(expect.any(Function));
-            await expect(resolveServerRequestForServerAccountScope({ scope: scopeB, activeRequest: apiSocket.request }))
-                .resolves.toEqual(expect.any(Function));
             // Replay A, then B, matching the order produced by a reload followed by a server switch.
             for (const replayLocalId of (await replayPersistedPendingOutboxForSession(sessionId, scopeA))) {
                 (sync as any).schedulePendingOutboxOperationRetry({ sessionId, localId: replayLocalId, outboxScope: scopeA });
@@ -1114,16 +1226,16 @@ describe('sync.sendMessage optimistic thinking', () => {
             }
 
             await vi.advanceTimersByTimeAsync(1_000);
-            await flushPendingOutboxRetryMicrotasks();
-
-            const deletes = runtimeFetchWithServerReachabilityMock.mock.calls
-                .map(([request]) => request as { serverUrl: string; url: string; init?: RequestInit })
-                .filter((request) => request.init?.method === 'DELETE');
-            expect(deletes).toHaveLength(2);
-            expect(deletes.map((request) => request.serverUrl).sort()).toEqual([serverAUrl, serverBUrl].sort());
-            expect(deletes.every((request) => request.url.endsWith(`/v2/sessions/${sessionId}/pending/${localId}`))).toBe(true);
-            expect((await loadPendingOutboxForSession(sessionId, scopeA))).toEqual([]);
-            expect((await loadPendingOutboxForSession(sessionId, scopeB))).toEqual([]);
+            await vi.waitFor(async () => {
+                const deletes = runtimeFetchWithServerReachabilityMock.mock.calls
+                    .map(([request]) => request as { serverUrl: string; url: string; init?: RequestInit })
+                    .filter((request) => request.init?.method === 'DELETE');
+                expect(deletes).toHaveLength(2);
+                expect(deletes.map((request) => request.serverUrl).sort()).toEqual([serverAUrl, serverBUrl].sort());
+                expect(deletes.every((request) => request.url.endsWith(`/v2/sessions/${sessionId}/pending/${localId}`))).toBe(true);
+                expect((await loadPendingOutboxForSession(sessionId, scopeA))).toEqual([]);
+                expect((await loadPendingOutboxForSession(sessionId, scopeB))).toEqual([]);
+            });
         } finally {
             vi.useRealTimers();
         }
@@ -1229,9 +1341,9 @@ describe('sync.sendMessage optimistic thinking', () => {
             sessionId, localId, text: 'other scope quarantined', operation: 'enqueue',
         }), otherScope));
         const persistenceKey = scopedSessionLocalStateKey('session-pending-outbox-v1', otherScope);
-        const persisted = JSON.parse(kvStore.get(persistenceKey)!) as Record<string, Array<Record<string, unknown>>>;
+        const persisted = JSON.parse((await readBrowserRecord(persistenceKey))!) as Record<string, Array<Record<string, unknown>>>;
         persisted[sessionId]![0]!.operation = 'future-operation';
-        kvStore.set(persistenceKey, JSON.stringify(persisted));
+        await writeBrowserRecord(persistenceKey, JSON.stringify(persisted));
         (await replayPersistedPendingOutboxForSession(sessionId, otherScope));
         storage.getState().upsertPendingMessage(sessionId, {
             id: localId, localId, createdAt: 2, updatedAt: 2,
@@ -1436,6 +1548,54 @@ describe('sync.sendMessage optimistic thinking', () => {
         sessionRpcSpy.mockRestore();
     });
 
+    it('attributes a direct Sync terminal-auth error to its applied Home while another Home is staged', async () => {
+        const sessionId = 's_applied_home_auth_attribution';
+        const { upsertAndActivateServer, setActiveServer } = await import('@/sync/domains/server/serverRuntime');
+        const previousSnapshot = getActiveServerSnapshot();
+        const appliedProfile = await upsertAndActivateServer({
+            serverUrl: 'https://applied-auth-home.example.test',
+            scope: 'tab',
+        });
+        const appliedSnapshot = getActiveServerSnapshot();
+        await upsertAndActivateServer({
+            serverUrl: 'https://staged-auth-home.example.test',
+            scope: 'tab',
+        });
+        storage.getState().applySessions([createSession({ sessionId })]);
+
+        const encryption = await Encryption.create(new Uint8Array(32).fill(9));
+        await encryption.initializeSessions(new Map([[sessionId, null]]));
+        const { sync } = await import('./sync');
+        Reflect.set(sync, 'appliedServerTarget', {
+            serverId: appliedProfile.id,
+            serverUrl: appliedSnapshot.serverUrl,
+            generation: appliedSnapshot.generation,
+        });
+        sync.encryption = encryption;
+        const sessionRpcSpy = vi.spyOn(apiSocket, 'sessionRPC').mockRejectedValue(
+            new HappyError('Authentication required', false, {
+                kind: 'auth',
+                code: 'not_authenticated',
+                status: 401,
+            }),
+        );
+
+        try {
+            await expect(sync.sendMessage(sessionId, 'attribute this auth error')).rejects.toMatchObject({
+                kind: 'auth',
+                code: 'not_authenticated',
+            });
+            expect(storage.getState().syncError).toMatchObject({
+                kind: 'auth',
+                serverId: appliedProfile.id,
+            });
+        } finally {
+            sessionRpcSpy.mockRestore();
+            Reflect.set(sync, 'appliedServerTarget', null);
+            setActiveServer({ serverId: previousSnapshot.serverId, scope: 'tab' });
+        }
+    });
+
     it.each(createFallbackSafeSessionRpcErrors())(
         'falls back to the socket commit path when active-session runtime RPC fails with %s',
         async (sessionRpcError) => {
@@ -1513,10 +1673,10 @@ describe('sync.sendMessage optimistic thinking', () => {
                 { localId: 'selected-direct-local', bypassPendingQueueReason: 'selected_direct' },
             )).resolves.toEqual({ localId: 'selected-direct-local', persistence: 'pending' });
             expect(emitWithAck).not.toHaveBeenCalled();
-            expect(requestSpy).toHaveBeenCalledWith(
+            expect(requestSpy.mock.calls.map(([path, init]) => [path, init])).toContainEqual([
                 `/v2/sessions/${sessionId}/pending`,
                 expect.objectContaining({ method: 'POST', body: expect.stringContaining('selected-direct-local') }),
-            );
+            ]);
         },
     );
 
@@ -1718,7 +1878,7 @@ describe('sync.sendMessage optimistic thinking', () => {
         const { upsertAndActivateServer, getActiveServerSnapshot, setActiveServer } = await import('@/sync/domains/server/serverRuntime');
         const { acquireEndpointSupervisorForServer, resetEndpointSupervisorPoolForTests } = await import('@/sync/runtime/connectivity/endpointSupervisorPool');
         const previousSnapshot = getActiveServerSnapshot();
-        upsertAndActivateServer({ serverUrl: 'https://pooled-auth.test', scope: 'tab' });
+        await upsertAndActivateServer({ serverUrl: 'https://pooled-auth.test', scope: 'tab' });
         const snapshot = getActiveServerSnapshot();
 
         const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
@@ -1752,6 +1912,7 @@ describe('sync.sendMessage optimistic thinking', () => {
             expect(lease.supervisor.getState().phase).toBe('auth_failed');
 
             const { sync } = await import('./sync');
+            Reflect.set(sync, 'appliedServerTarget', getActiveServerSnapshot());
             sync.encryption = encryption;
             vi.spyOn(apiSocket, 'sessionRPC').mockRejectedValue(createRpcMethodNotAvailableError());
 
@@ -1797,7 +1958,7 @@ describe('sync.sendMessage optimistic thinking', () => {
         const { upsertAndActivateServer, getActiveServerSnapshot, setActiveServer } = await import('@/sync/domains/server/serverRuntime');
         const { resetEndpointSupervisorPoolForTests } = await import('@/sync/runtime/connectivity/endpointSupervisorPool');
         const previousSnapshot = getActiveServerSnapshot();
-        upsertAndActivateServer({ serverUrl: 'https://acquired-auth.test', scope: 'device' });
+        await upsertAndActivateServer({ serverUrl: 'https://acquired-auth.test', scope: 'device' });
         await TokenStorage.setCredentials({ token: 'stale-token', secret: 'secret' });
 
         const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
@@ -1823,6 +1984,7 @@ describe('sync.sendMessage optimistic thinking', () => {
 
         try {
             const { sync } = await import('./sync');
+            Reflect.set(sync, 'appliedServerTarget', getActiveServerSnapshot());
             sync.encryption = encryption;
             vi.spyOn(apiSocket, 'sessionRPC').mockRejectedValue(createRpcMethodNotAvailableError());
 
@@ -1883,7 +2045,7 @@ describe('sync.sendMessage optimistic thinking', () => {
         } = await import('@/sync/runtime/connectivity/serverReachabilitySupervisorPool');
 
         const previousSnapshot = getActiveServerSnapshot();
-        upsertAndActivateServer({ serverUrl: 'https://reachability-auth.test', scope: 'device' });
+        await upsertAndActivateServer({ serverUrl: 'https://reachability-auth.test', scope: 'device' });
         await TokenStorage.setCredentials({ token: 'stale-token', secret: 'secret' });
 
         const runtimeFetchMock = vi.fn(async (input: RequestInfo | URL) => {
@@ -1916,6 +2078,7 @@ describe('sync.sendMessage optimistic thinking', () => {
             expect(peekServerReachabilityState('https://reachability-auth.test')?.phase).toBe('auth_failed');
 
             const { sync } = await import('./sync');
+            Reflect.set(sync, 'appliedServerTarget', getActiveServerSnapshot());
             Object.assign(sync, {
                 credentials: { token: 'stale-token', secret: 'secret' },
                 encryption,
@@ -1977,7 +2140,7 @@ describe('sync.sendMessage optimistic thinking', () => {
         } = await import('@/sync/runtime/connectivity/serverReachabilitySupervisorPool');
 
         const previousSnapshot = getActiveServerSnapshot();
-        upsertAndActivateServer({ serverUrl: 'https://shared-auth-scope.test', scope: 'device' });
+        await upsertAndActivateServer({ serverUrl: 'https://shared-auth-scope.test', scope: 'device' });
         setRuntimeFetch(async (input: RequestInfo | URL) => {
             const url = String(input);
             if (url.endsWith('/health') || url.endsWith('/v1/auth/ping')) {
@@ -1998,6 +2161,7 @@ describe('sync.sendMessage optimistic thinking', () => {
             });
 
             const { sync } = await import('./sync');
+            Reflect.set(sync, 'appliedServerTarget', getActiveServerSnapshot());
             Object.assign(sync, {
                 credentials: { token: 'active-home-token', secret: 'active-home-secret' },
                 encryption,
@@ -2015,7 +2179,7 @@ describe('sync.sendMessage optimistic thinking', () => {
             });
 
             await expect(sync.sendMessage(sessionId, 'active scope still works')).resolves.toMatchObject({
-                persistence: 'committed',
+                persistence: 'transcript_committed',
             });
         } finally {
             const { sync } = await import('./sync');
@@ -2114,186 +2278,43 @@ describe('sync.sendMessage optimistic thinking', () => {
         expect(storage.getState().sessionPending[sessionId]?.messages ?? []).toEqual([]);
     });
 
-
-    it('sendPendingMessageNow preserves the pending localId in the outbound payload and does not remove the queued row', async () => {
-        const sessionId = 's_pending_send_now';
-        storage.getState().applySessions([createSession({ sessionId })]);
-
-        const encryption = await Encryption.create(new Uint8Array(32).fill(9));
-        await encryption.initializeSessions(new Map([[sessionId, null]]));
-
-        const rawRecord = {
-            role: 'user',
-            content: { type: 'text', text: 'hello' },
-            meta: {},
-        } as any;
-
+    it.each(['999.0.0', '0.0.9'])('keeps durable Composer attachment custody when requesting send-now with CLI %s', async (version) => {
+        const sessionId = 's_pending_composer_action';
+        const localId = 'pending-composer-action';
+        storage.getState().applySessions([createSession({ sessionId, metadata: { version } as Session['metadata'] })]);
+        const rawRecord = composerAttachmentRawRecord({ text: 'Use the selected Composer attachment.', instanceId: 'composer-action' });
         storage.getState().upsertPendingMessage(sessionId, {
-            id: 'p1',
-            localId: 'p1',
-            createdAt: 111,
-            updatedAt: 111,
-            text: 'hello',
-            rawRecord,
+            id: localId, localId, createdAt: 111, updatedAt: 111,
+            source: 'server_pending', deliveryStatus: 'queued',
+            text: rawRecord.content.text, rawRecord,
         });
-
-        const emitWithAck = vi.fn(async () => ({
-            ok: true,
-            id: 'm1',
-            seq: 1,
-            localId: null,
-            didWrite: true,
-        })) as any;
-
         const { sync } = await import('./sync');
-        sync.encryption = encryption;
-        sync.setMessageTransport({
-            emitWithAck,
-            send: vi.fn(),
-        });
-
-        const pendingBefore = (storage.getState().sessionPending[sessionId]?.messages ?? []).map((m) => m.id);
-        expect(pendingBefore).toContain('p1');
-
-        const result = await sync.sendPendingMessageNow(sessionId, {
-            localId: 'p1',
-            createdAt: 111,
-            rawRecord,
-            text: 'hello',
-        });
-
-        expect(result).toEqual({ type: 'committed', persistence: 'transcript_committed' });
-
-        expect(emitWithAck).toHaveBeenCalledWith(
-            'message',
-            expect.objectContaining({
-                sid: sessionId,
-                localId: 'p1',
-                messageRole: 'user',
-            }),
-            expect.anything(),
-        );
-
-        // No duplicate pending row should be created (localId is preserved).
-        const pendingAfter = (storage.getState().sessionPending[sessionId]?.messages ?? []).map((m) => m.id);
-        expect(pendingAfter.every((id) => id === 'p1')).toBe(true);
-
-        expect(storage.getState().sessions[sessionId].optimisticThinkingAt ?? null).not.toBeNull();
-
-        await (sync as any).applySessionThinkingFromTaskLifecycle(sessionId, {
-            type: 'task_complete',
-            id: 'task-1',
-            createdAt: Date.now(),
-        });
-        expect(storage.getState().sessions[sessionId].optimisticThinkingAt ?? null).toBeNull();
-    });
-
-    it('replays a selected Composer attachment pending row through the canonical runtime RPC', async () => {
-        const sessionId = 's_pending_composer_attachment_runtime_rpc';
-        const localId = 'pending-composer-runtime-rpc';
-        storage.getState().applySessions([createSession({ sessionId })]);
-
-        const encryption = await Encryption.create(new Uint8Array(32).fill(9));
-        await encryption.initializeSessions(new Map([[sessionId, null]]));
-        const rawRecord = composerAttachmentRawRecord({
-            text: 'Use the selected Composer attachment.',
-            instanceId: 'pending-composer-runtime-rpc-1',
-        });
-        storage.getState().upsertPendingMessage(sessionId, {
-            id: localId,
-            localId,
-            createdAt: 111,
-            updatedAt: 111,
-            text: rawRecord.content.text,
-            rawRecord,
-        });
-
-        const sessionRpcSpy = vi.spyOn(apiSocket, 'sessionRPC').mockResolvedValue({ ok: true } as any);
-        const emitWithAck = vi.fn();
-        const { sync } = await import('./sync');
-        sync.encryption = encryption;
-        sync.setMessageTransport({ emitWithAck, send: vi.fn() });
-
-        await expect(sync.sendPendingMessageNow(sessionId, {
-            localId,
-            createdAt: 111,
-            rawRecord,
-            text: rawRecord.content.text,
-        })).resolves.toEqual({
-            type: 'committed',
-            persistence: 'provider_direct',
-            providerAcceptancePending: true,
-        });
-
-        expect(sessionRpcSpy).toHaveBeenCalledWith(
-            sessionId,
-            SESSION_RPC_METHODS.SESSION_USER_MESSAGE_SEND,
-            expect.objectContaining({
-                localId,
-                meta: expect.objectContaining(rawRecord.meta),
-            }),
-            { timeoutMs: 7_500 },
-        );
-        expect(emitWithAck).not.toHaveBeenCalled();
-        expect(storage.getState().sessionPending[sessionId]?.messages).toEqual([
-            expect.objectContaining({
-                localId,
-                createdAt: 111,
-                rawRecord,
-                deliveryStatus: 'accepted',
-            }),
-        ]);
-    });
-
-    it('keeps a selected Composer attachment pending when its runtime RPC is unavailable', async () => {
-        const sessionId = 's_pending_composer_attachment_runtime_unavailable';
-        const localId = 'pending-composer-runtime-unavailable';
-        storage.getState().applySessions([createSession({
-            sessionId,
-            metadata: { version: '0.0.9' } as any,
-        })]);
-
-        const encryption = await Encryption.create(new Uint8Array(32).fill(9));
-        await encryption.initializeSessions(new Map([[sessionId, null]]));
-        const rawRecord = composerAttachmentRawRecord({
-            text: 'Keep this selected Composer attachment.',
-            instanceId: 'pending-composer-runtime-unavailable-1',
-        });
-        storage.getState().upsertPendingMessage(sessionId, {
-            id: localId,
-            localId,
-            createdAt: 111,
-            updatedAt: 111,
-            text: rawRecord.content.text,
-            rawRecord,
-        });
-
+        sync.encryption = await Encryption.create(new Uint8Array(32).fill(9));
+        const requestSpy = vi.spyOn(apiSocket, 'request').mockResolvedValue(Response.json({ didUpdate: true }));
         const sessionRpcSpy = vi.spyOn(apiSocket, 'sessionRPC');
         const emitWithAck = vi.fn();
-        const { sync } = await import('./sync');
-        sync.encryption = encryption;
         sync.setMessageTransport({ emitWithAck, send: vi.fn() });
 
         await expect(sync.sendPendingMessageNow(sessionId, {
-            localId,
-            createdAt: 111,
-            rawRecord,
-            text: rawRecord.content.text,
-        })).rejects.toMatchObject({
-            name: 'HappyError',
-            code: 'session_user_message_composer_attachments_runtime_required',
-        });
+            localId, createdAt: 111, rawRecord, text: rawRecord.content.text,
+        })).resolves.toEqual({ type: 'retry_scheduled' });
 
+        expect(requestSpy.mock.calls.map(([path, init]) => [path, init?.method, JSON.parse(String(init?.body))])).toEqual([
+            [`/v2/sessions/${sessionId}/pending/${localId}/action`, 'PATCH', { requestedAction: { v: 1, kind: 'send_now' } }],
+        ]);
         expect(sessionRpcSpy).not.toHaveBeenCalled();
         expect(emitWithAck).not.toHaveBeenCalled();
         expect(storage.getState().sessionPending[sessionId]?.messages).toEqual([
-            expect.objectContaining({ localId, createdAt: 111, rawRecord }),
+            expect.objectContaining({
+                localId, createdAt: 111, rawRecord, source: 'server_pending', deliveryStatus: 'accepted',
+                pendingRequestedAction: { v: 1, kind: 'send_now' },
+            }),
         ]);
     });
 
-    it('sendPendingMessageNow removes the pending row when the server rejects the message', async () => {
+    it('removes the direct-send local pending row when the server rejects the message', async () => {
         const sessionId = 's_pending_rejected';
-        storage.getState().applySessions([createSession({ sessionId })]);
+        storage.getState().applySessions([createSession({ sessionId, metadata: { version: '0.0.9' } as Session['metadata'] })]);
 
         const encryption = await Encryption.create(new Uint8Array(32).fill(9));
         await encryption.initializeSessions(new Map([[sessionId, null]]));
@@ -2304,14 +2325,6 @@ describe('sync.sendMessage optimistic thinking', () => {
             meta: {},
         } as const;
 
-        storage.getState().upsertPendingMessage(sessionId, {
-            id: 'p-reject',
-            localId: 'p-reject',
-            createdAt: 111,
-            updatedAt: 111,
-            text: 'hello',
-            rawRecord,
-        });
 
         const emitWithAck = vi.fn(async () => ({
             ok: false,
@@ -2325,79 +2338,17 @@ describe('sync.sendMessage optimistic thinking', () => {
             send: vi.fn(),
         });
 
-        await expect(sync.sendPendingMessageNow(sessionId, {
-            localId: 'p-reject',
-            createdAt: 111,
-            rawRecord,
-            text: 'hello',
-        })).rejects.toThrow('rejected');
+        await expect(sync.sendMessage(sessionId, 'hello', undefined, rawRecord.meta, { localId: 'p-reject' })).rejects.toThrow('rejected');
 
+        expect(emitWithAck).toHaveBeenCalledWith('message', expect.objectContaining({ localId: 'p-reject', messageRole: 'user' }), expect.anything());
         expect(storage.getState().sessionPending[sessionId]?.messages ?? []).toEqual([]);
         expect(storage.getState().sessions[sessionId].optimisticThinkingAt ?? null).toBeNull();
     });
 
-    it('sendPendingMessageNow removes the pending row when the active endpoint is auth-failed', async () => {
-        const sessionId = 's_pending_send_now_auth_failed';
-        storage.getState().applySessions([createSession({ sessionId })]);
-
-        const encryption = await Encryption.create(new Uint8Array(32).fill(9));
-        await encryption.initializeSessions(new Map([[sessionId, null]]));
-
-        const rawRecord = {
-            role: 'user',
-            content: { type: 'text', text: 'hello' },
-            meta: {},
-        } as const;
-
-        storage.getState().upsertPendingMessage(sessionId, {
-            id: 'p-auth-failed',
-            localId: 'p-auth-failed',
-            createdAt: 111,
-            updatedAt: 111,
-            text: 'hello',
-            rawRecord,
-        });
-
-        const { sync } = await import('./sync');
-        sync.encryption = encryption;
-        sync.setActiveEndpointSupervisor(createAuthFailedEndpointSupervisor());
-
-        const send = vi.fn();
-        sync.setMessageTransport({
-            emitWithAck: vi.fn(async () => {
-                throw new Error('operation has timed out');
-            }),
-            send,
-        });
-
-        try {
-            await expect(sync.sendPendingMessageNow(sessionId, {
-                localId: 'p-auth-failed',
-                createdAt: 111,
-                rawRecord,
-                text: 'hello',
-            })).rejects.toMatchObject({
-                name: 'HappyError',
-                canTryAgain: false,
-                kind: 'auth',
-                code: 'not_authenticated',
-            });
-
-            expect(send).not.toHaveBeenCalled();
-            expect(storage.getState().sessionPending[sessionId]?.messages ?? []).toEqual([]);
-            expect(storage.getState().sessions[sessionId].optimisticThinkingAt ?? null).toBeNull();
-            expect(storage.getState().syncError).toMatchObject({
-                kind: 'auth',
-                retryable: false,
-                message: 'Authentication required',
-            });
-        } finally {
-            sync.setActiveEndpointSupervisor(null);
-        }
-    });
-
     it('keeps and retries a server-pending enqueue when the pending POST fails from transient connectivity', async () => {
-        vi.useFakeTimers();
+        const { deleteServerFeaturesSnapshot } = await import('@/sync/api/capabilities/serverFeaturesClient');
+        const featureServerId = getActiveServerSnapshot().serverId;
+        vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
         try {
             const sessionId = 's_server_pending_enqueue_transient_retry';
             storage.getState().applySettingsLocal({ sessionMessageSendMode: 'server_pending' as any });
@@ -2416,15 +2367,23 @@ describe('sync.sendMessage optimistic thinking', () => {
             await encryption.initializeSessions(new Map([[sessionId, null]]));
 
             const requestSpy = vi.spyOn(apiSocket, 'request')
-                .mockRejectedValueOnce(new TypeError('Failed to fetch'))
-                .mockResolvedValueOnce(new Response(null, { status: 200 }));
+                .mockRejectedValueOnce(new TypeError('Failed to fetch'));
+            // Active-Home capability discovery uses the platform HTTP boundary;
+            // retries use the separately scoped HTTP transport below.
+            const featureFetch = vi.fn(async () => currentPendingInputFeaturesResponse());
+            vi.stubGlobal('fetch', featureFetch);
+            deleteServerFeaturesSnapshot({ serverId: featureServerId });
             vi.spyOn(TokenStorage, 'getCredentialsForServerUrl').mockResolvedValue({
                 token: tokenForSub('sync-test-account'),
                 secret: Buffer.from(new Uint8Array(32).fill(6)).toString('base64url'),
             });
             runtimeFetchWithServerReachabilityMock.mockImplementation(async ({ url, init }: { url: string; init: RequestInit }) => {
                 if (url.endsWith('/v1/features')) return currentPendingInputFeaturesResponse();
-                return releasedServerV021PendingEnqueueResponse(init.body);
+                const body = JSON.parse(String(init.body));
+                return Response.json({
+                    pending: { localId: body.localId },
+                    requestedAction: body.requestedAction,
+                });
             });
 
             const { sync } = await import('./sync');
@@ -2433,10 +2392,10 @@ describe('sync.sendMessage optimistic thinking', () => {
             await expect(sync.submitMessage(sessionId, 'queue through server pending')).resolves.toBeUndefined();
 
             expect(requestSpy).toHaveBeenCalledTimes(1);
-            expect(requestSpy).toHaveBeenCalledWith(
+            expect(requestSpy.mock.calls.map(([path, init]) => [path, init])).toContainEqual([
                 `/v2/sessions/${sessionId}/pending`,
                 expect.objectContaining({ method: 'POST' }),
-            );
+            ]);
 
             const pendingBeforeRetry = storage.getState().sessionPending[sessionId]?.messages ?? [];
             expect(pendingBeforeRetry).toEqual([
@@ -2448,35 +2407,49 @@ describe('sync.sendMessage optimistic thinking', () => {
             ]);
             const localId = pendingBeforeRetry[0]?.localId ?? pendingBeforeRetry[0]?.id;
             expect(typeof localId).toBe('string');
+            const outboxScope = storage.getState().profileScope!;
+            expect(await loadPendingOutboxForSession(sessionId, outboxScope)).toEqual([
+                expect.objectContaining({ localId }),
+            ]);
+            expect(featureFetch).toHaveBeenCalledWith(
+                expect.stringContaining('/v1/features'),
+                expect.objectContaining({ method: 'GET' }),
+            );
             expect((sync as any).pendingOutboxOperationRetryTimers.size).toBe(1);
             expect(storage.getState().sessions[sessionId].optimisticThinkingAt ?? null).toBeNull();
 
             await vi.advanceTimersByTimeAsync(1_000);
-            await Promise.resolve();
-
-            expect(requestSpy).toHaveBeenCalledTimes(1);
-            expect(runtimeFetchWithServerReachabilityMock).toHaveBeenCalledWith(expect.objectContaining({
-                url: expect.stringContaining(`/v2/sessions/${sessionId}/pending`),
-                init: expect.objectContaining({ method: 'POST' }),
-            }));
-            expect(storage.getState().sessionPending[sessionId]?.messages).toEqual([
-                expect.objectContaining({
-                    source: 'local_outbound',
-                    deliveryStatus: 'accepted',
-                    text: 'queue through server pending',
-                }),
-            ]);
-            expect((sync as any).pendingOutboxOperationRetryTimers.size).toBe(0);
+            await vi.waitFor(async () => {
+                expect(requestSpy).toHaveBeenCalledTimes(1);
+                expect(runtimeFetchWithServerReachabilityMock).toHaveBeenCalledWith(expect.objectContaining({
+                    url: expect.stringContaining(`/v2/sessions/${sessionId}/pending`),
+                    init: expect.objectContaining({
+                        method: 'POST',
+                        body: requestSpy.mock.calls[0][1]?.body,
+                    }),
+                }));
+                expect(storage.getState().sessionPending[sessionId]?.messages).toEqual([
+                    expect.objectContaining({
+                        source: 'local_outbound',
+                        deliveryStatus: 'accepted',
+                        text: 'queue through server pending',
+                    }),
+                ]);
+                expect(await loadPendingOutboxForSession(sessionId, outboxScope)).toEqual([]);
+                expect((sync as any).pendingOutboxOperationRetryTimers.size).toBe(0);
+            });
         } finally {
+            deleteServerFeaturesSnapshot({ serverId: featureServerId });
+            vi.unstubAllGlobals();
             vi.useRealTimers();
         }
     });
 
     it('removes only the retried local pending row when retry discovers terminal auth', async () => {
-        vi.useFakeTimers();
+        vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
         try {
             const sessionId = 's_pending_retry_auth';
-            storage.getState().applySessions([createSession({ sessionId })]);
+            storage.getState().applySessions([createSession({ sessionId, metadata: { version: '0.0.9' } as Session['metadata'] })]);
 
             const encryption = await Encryption.create(new Uint8Array(32).fill(9));
             await encryption.initializeSessions(new Map([[sessionId, null]]));
@@ -2492,14 +2465,6 @@ describe('sync.sendMessage optimistic thinking', () => {
                 meta: {},
             } as const;
 
-            storage.getState().upsertPendingMessage(sessionId, {
-                id: 'p-retry-auth',
-                localId: 'p-retry-auth',
-                createdAt: 111,
-                updatedAt: 111,
-                text: 'retry me',
-                rawRecord: retryRawRecord,
-            });
             storage.getState().upsertPendingMessage(sessionId, {
                 id: 'p-persisted',
                 localId: 'p-persisted',
@@ -2524,12 +2489,7 @@ describe('sync.sendMessage optimistic thinking', () => {
                 send: vi.fn(),
             });
 
-            await sync.sendPendingMessageNow(sessionId, {
-                localId: 'p-retry-auth',
-                createdAt: 111,
-                rawRecord: retryRawRecord,
-                text: 'retry me',
-            });
+            await sync.sendMessage(sessionId, 'retry me', undefined, retryRawRecord.meta, { localId: 'p-retry-auth' });
             storage.getState().markSessionOptimisticThinking(sessionId);
 
             await vi.advanceTimersByTimeAsync(1_000);
@@ -2554,10 +2514,10 @@ describe('sync.sendMessage optimistic thinking', () => {
     });
 
     it('forces endpoint auth convergence before retrying a pending local row again', async () => {
-        vi.useFakeTimers();
+        vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
         try {
             const sessionId = 's_pending_retry_auth_probe';
-            storage.getState().applySessions([createSession({ sessionId })]);
+            storage.getState().applySessions([createSession({ sessionId, metadata: { version: '0.0.9' } as Session['metadata'] })]);
 
             const encryption = await Encryption.create(new Uint8Array(32).fill(9));
             await encryption.initializeSessions(new Map([[sessionId, null]]));
@@ -2573,14 +2533,6 @@ describe('sync.sendMessage optimistic thinking', () => {
                 meta: {},
             } as const;
 
-            storage.getState().upsertPendingMessage(sessionId, {
-                id: 'p-retry-auth-probe',
-                localId: 'p-retry-auth-probe',
-                createdAt: 111,
-                updatedAt: 111,
-                text: 'retry me',
-                rawRecord: retryRawRecord,
-            });
             storage.getState().upsertPendingMessage(sessionId, {
                 id: 'p-persisted',
                 localId: 'p-persisted',
@@ -2609,12 +2561,7 @@ describe('sync.sendMessage optimistic thinking', () => {
                 send: vi.fn(),
             });
 
-            await sync.sendPendingMessageNow(sessionId, {
-                localId: 'p-retry-auth-probe',
-                createdAt: 111,
-                rawRecord: retryRawRecord,
-                text: 'retry me',
-            });
+            await sync.sendMessage(sessionId, 'retry me', undefined, retryRawRecord.meta, { localId: 'p-retry-auth-probe' });
             storage.getState().markSessionOptimisticThinking(sessionId);
 
             await vi.advanceTimersByTimeAsync(1_000);
@@ -2635,9 +2582,9 @@ describe('sync.sendMessage optimistic thinking', () => {
         }
     });
 
-    it('sendPendingMessageNow schedules a retry when the transport produces no ack', async () => {
+    it('schedules a direct-send retry with the same local id when the transport produces no ack', async () => {
         const sessionId = 's_pending_retry';
-        storage.getState().applySessions([createSession({ sessionId })]);
+        storage.getState().applySessions([createSession({ sessionId, metadata: { version: '0.0.9' } as Session['metadata'] })]);
 
         const encryption = await Encryption.create(new Uint8Array(32).fill(9));
         await encryption.initializeSessions(new Map([[sessionId, null]]));
@@ -2648,14 +2595,6 @@ describe('sync.sendMessage optimistic thinking', () => {
             meta: {},
         } as const;
 
-        storage.getState().upsertPendingMessage(sessionId, {
-            id: 'p-retry',
-            localId: 'p-retry',
-            createdAt: 111,
-            updatedAt: 111,
-            text: 'hello',
-            rawRecord,
-        });
 
         const { sync } = await import('./sync');
         sync.encryption = encryption;
@@ -2664,74 +2603,19 @@ describe('sync.sendMessage optimistic thinking', () => {
             send: vi.fn(),
         });
 
-        const result = await sync.sendPendingMessageNow(sessionId, {
-            localId: 'p-retry',
-            createdAt: 111,
-            rawRecord,
-            text: 'hello',
-        });
+        const result = await sync.sendMessage(sessionId, 'hello', undefined, rawRecord.meta, { localId: 'p-retry' });
 
-        expect(result).toEqual({ type: 'retry_scheduled' });
+        expect(result).toEqual({ localId: 'p-retry', persistence: 'pending' });
+        expect(storage.getState().sessionPending[sessionId]?.messages).toEqual([
+            expect.objectContaining({ localId: 'p-retry', source: 'local_outbound', deliveryStatus: 'queued', text: 'hello' }),
+        ]);
         expect((sync as any).pendingMessageCommitRetryTimers.has(`${sessionId}:p-retry`)).toBe(true);
         expect(storage.getState().sessions[sessionId].optimisticThinkingAt ?? null).toBeNull();
     });
 
-    it('sendPendingMessageNow keeps the row and schedules retry when fallback auth probe fails transiently', async () => {
-        const sessionId = 's_pending_retry_transient_probe_failure';
-        storage.getState().applySessions([createSession({ sessionId })]);
-
-        const encryption = await Encryption.create(new Uint8Array(32).fill(9));
-        await encryption.initializeSessions(new Map([[sessionId, null]]));
-
-        const rawRecord = {
-            role: 'user',
-            content: { type: 'text', text: 'retry after transient offline' },
-            meta: {},
-        } as const;
-
-        storage.getState().upsertPendingMessage(sessionId, {
-            id: 'p-transient',
-            localId: 'p-transient',
-            createdAt: 111,
-            updatedAt: 111,
-            text: 'retry after transient offline',
-            rawRecord,
-        });
-
-        const { sync } = await import('./sync');
-        sync.encryption = encryption;
-        sync.setActiveEndpointSupervisor(createTransientProbeFailureEndpointSupervisor());
-        sync.setMessageTransport({
-            emitWithAck: vi.fn(async () => {
-                throw new Error('operation has timed out');
-            }),
-            send: vi.fn(),
-        });
-
-        try {
-            await expect(sync.sendPendingMessageNow(sessionId, {
-                localId: 'p-transient',
-                createdAt: 111,
-                rawRecord,
-                text: 'retry after transient offline',
-            })).resolves.toEqual({ type: 'retry_scheduled' });
-
-            expect(storage.getState().sessionPending[sessionId]?.messages).toEqual([
-                expect.objectContaining({
-                    id: 'p-transient',
-                    localId: 'p-transient',
-                    text: 'retry after transient offline',
-                }),
-            ]);
-            expect((sync as any).pendingMessageCommitRetryTimers.has(`${sessionId}:p-transient`)).toBe(true);
-            expect(storage.getState().syncError).toBeNull();
-        } finally {
-            sync.setActiveEndpointSupervisor(null);
-        }
-    });
-
-    it('sendPendingMessageNow wakes inactive sessions from the committed pending row cursor', async () => {
+    it('wakes inactive durable pending actions with the exact request identity and retains custody', async () => {
         const sessionId = 's_pending_send_now_inactive_wake';
+        storage.getState().applyMachines([createMachineFixture({ id: 'm1', storageMode: 'plain' })]);
         storage.getState().applySessions([{
             ...createSession({
                 sessionId,
@@ -2739,6 +2623,7 @@ describe('sync.sendMessage optimistic thinking', () => {
                     machineId: 'm1',
                     path: '/repo',
                     flavor: 'codex',
+                    codexSessionId: 'codex-1',
                 } as any,
             }),
             active: false,
@@ -2756,6 +2641,8 @@ describe('sync.sendMessage optimistic thinking', () => {
 
         storage.getState().upsertPendingMessage(sessionId, {
             id: 'p-wake',
+            source: 'server_pending',
+            deliveryStatus: 'queued',
             localId: 'p-wake',
             createdAt: 111,
             updatedAt: 111,
@@ -2771,6 +2658,7 @@ describe('sync.sendMessage optimistic thinking', () => {
             didWrite: true,
         })) as any;
 
+        const requestSpy = vi.spyOn(apiSocket, 'request').mockResolvedValue(Response.json({ didUpdate: true }));
         const { sync } = await import('./sync');
         sync.encryption = encryption;
         sync.setMessageTransport({
@@ -2790,9 +2678,14 @@ describe('sync.sendMessage optimistic thinking', () => {
             sessionId,
             machineId: 'm1',
             directory: '/repo',
-            backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
-            initialTranscriptAfterSeq: 41,
+            initialTranscriptAfterSeq: 0,
+            executionAuthorization: { provenance: 'user_request', requestId: 'p-wake' },
         }));
+        expect(requestSpy.mock.calls.map(([path, init]) => [path, init?.method])).toEqual([
+            [`/v2/sessions/${sessionId}/pending/p-wake/action`, 'PATCH'],
+        ]);
+        expect(emitWithAck).not.toHaveBeenCalled();
+        expect(storage.getState().sessionPending[sessionId]?.messages).toEqual([expect.objectContaining({ localId: 'p-wake', rawRecord })]);
     });
 
     it.each([
@@ -2902,10 +2795,10 @@ describe('sync.sendMessage optimistic thinking', () => {
         expect(deletePendingMessageSpy).not.toHaveBeenCalled();
         expect(discardPendingMessageSpy).not.toHaveBeenCalled();
         expect(reorderPendingMessagesSpy).not.toHaveBeenCalled();
-        expect(requestSpy).toHaveBeenCalledWith(
+        expect(requestSpy.mock.calls.map(([path, init]) => [path, init])).toContainEqual([
             `/v2/sessions/${sessionId}/pending/target/action`,
             expect.objectContaining({ method: 'PATCH' }),
-        );
+        ]);
         expect(sessionRpcSpy).not.toHaveBeenCalled();
         expect(ensureSessionRuntimeForPendingInputMock).not.toHaveBeenCalled();
         expect(emitWithAck).not.toHaveBeenCalled();
@@ -2956,20 +2849,21 @@ describe('sync.sendMessage optimistic thinking', () => {
     it('normalizes an omitted pending delivery intent onto the canonical durable action path', async () => {
         const sessionId = 's_pending_default_action';
         const localId = 'pending-default-action-local';
-        const outboxScope = storage.getState().profileScope!;
         const pending = pendingOutboxFixture({ sessionId, localId, text: 'send this now' });
         storage.getState().applySessions([{
             ...createSession({ sessionId }),
             encryptionMode: 'plain',
         }]);
-        (await savePendingOutboxMessage(pending, outboxScope));
-        (await replayPersistedPendingOutboxForSession(sessionId, outboxScope));
+        storage.getState().upsertPendingMessage(sessionId, {
+            id: localId, localId, createdAt: pending.createdAt, updatedAt: pending.createdAt,
+            source: 'server_pending', deliveryStatus: 'queued', text: pending.text, rawRecord: pending.rawRecord,
+        });
 
         const { sync } = await import('./sync');
         sync.encryption = await Encryption.create(new Uint8Array(32).fill(7));
-        const requests: Array<{ path: string; method: string }> = [];
+        const requests: Array<{ path: string; method: string; body: unknown }> = [];
         vi.spyOn(apiSocket, 'request').mockImplementation(async (path, init) => {
-            requests.push({ path, method: init?.method ?? 'GET' });
+            requests.push({ path, method: init?.method ?? 'GET', body: JSON.parse(String(init?.body)) });
             return Response.json({ didUpdate: true });
         });
 
@@ -2980,14 +2874,18 @@ describe('sync.sendMessage optimistic thinking', () => {
             text: pending.text,
         })).resolves.toMatchObject({ type: 'retry_scheduled' });
 
-        expect(requests).toContainEqual({
+        expect(requests).toEqual([{
             path: `/v2/sessions/${sessionId}/pending/${localId}/action`,
             method: 'PATCH',
-        });
+            body: { requestedAction: { v: 1, kind: 'send_now' } },
+        }]);
+        expect(storage.getState().sessionPending[sessionId]?.messages).toEqual([
+            expect.objectContaining({ id: localId, localId, rawRecord: pending.rawRecord, source: 'server_pending' }),
+        ]);
     });
 
     it('commits pending retry messages for plaintext sessions without requiring session encryption', async () => {
-        vi.useFakeTimers();
+        vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
         const sessionId = 's_plain_pending_retry';
         storage.getState().applySessions([{ ...createSession({ sessionId }), encryptionMode: 'plain' }]);
 
@@ -3045,7 +2943,7 @@ describe('sync.sendMessage optimistic thinking', () => {
     });
 
     it('replays a selected Composer attachment retry through the canonical runtime RPC', async () => {
-        vi.useFakeTimers();
+        vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
         try {
             const sessionId = 's_pending_composer_attachment_retry_runtime_rpc';
             const localId = 'pending-composer-retry-runtime-rpc';
@@ -3100,7 +2998,7 @@ describe('sync.sendMessage optimistic thinking', () => {
     });
 
     it('keeps a selected Composer attachment retry pending when the runtime RPC is unavailable', async () => {
-        vi.useFakeTimers();
+        vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
         try {
             const sessionId = 's_pending_composer_attachment_retry_runtime_unavailable';
             const localId = 'pending-composer-retry-runtime-unavailable';
@@ -3145,7 +3043,7 @@ describe('sync.sendMessage optimistic thinking', () => {
     });
 
     it('drops pending retry for inactive replay forks that cannot resume before socket emit', async () => {
-        vi.useFakeTimers();
+        vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
         const sessionId = 's_plain_pending_retry_consumed_replay';
         storage.getState().applySessions([{
             ...createSession({
@@ -3672,9 +3570,9 @@ describe('sync.sendMessage optimistic thinking', () => {
                 text: 'quarantined',
             }), outboxScope));
             const persistenceKey = scopedSessionLocalStateKey('session-pending-outbox-v1', outboxScope);
-            const persisted = JSON.parse(kvStore.get(persistenceKey)!) as Record<string, Array<Record<string, unknown>>>;
+            const persisted = JSON.parse((await readBrowserRecord(persistenceKey))!) as Record<string, Array<Record<string, unknown>>>;
             persisted[sessionId]![0]!.operation = 'future-operation';
-            kvStore.set(persistenceKey, JSON.stringify(persisted));
+            await writeBrowserRecord(persistenceKey, JSON.stringify(persisted));
             expect((await replayPersistedPendingOutboxForSession(sessionId, outboxScope))).toEqual([]);
             const projection = storage.getState().sessionPending[sessionId]?.messages[0]!;
             const addressedId = identifierKind === 'real local id' ? localId : projection.id;
@@ -3716,9 +3614,9 @@ describe('sync.sendMessage optimistic thinking', () => {
                 text: 'quarantined action',
             }), outboxScope));
             const persistenceKey = scopedSessionLocalStateKey('session-pending-outbox-v1', outboxScope);
-            const persisted = JSON.parse(kvStore.get(persistenceKey)!) as Record<string, Array<Record<string, unknown>>>;
+            const persisted = JSON.parse((await readBrowserRecord(persistenceKey))!) as Record<string, Array<Record<string, unknown>>>;
             persisted[sessionId]![0]!.operation = 'future-operation';
-            kvStore.set(persistenceKey, JSON.stringify(persisted));
+            await writeBrowserRecord(persistenceKey, JSON.stringify(persisted));
             (await replayPersistedPendingOutboxForSession(sessionId, outboxScope));
             const request = vi.spyOn(apiSocket, 'request').mockResolvedValue(new Response(null, { status: 204 }));
             const { sync } = await import('./sync');

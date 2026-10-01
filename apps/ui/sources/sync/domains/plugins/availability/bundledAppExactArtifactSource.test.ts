@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { PluginSelectedArtifactIdentity } from './artifactLease';
 import {
+    createBundledPluginUiAppExactArtifactSource,
     createBundledPluginUiAppExactArtifactSourceFromInventory,
     type BundledPluginUiAppArtifactInventory,
 } from './bundledAppExactArtifactSource';
@@ -12,11 +13,12 @@ const INSPECTOR_PLATFORM = 'web' as const;
 const INSPECTOR_ARTIFACT: PluginSelectedArtifactIdentity = Object.freeze({
     pluginId: 'happier.inspector',
     contributionId: 'inspector-app-native',
+    artifactId: 'inspector-app-native',
     tier: INSPECTOR_TIER,
     platform: INSPECTOR_PLATFORM,
     digest: 'sha256:0d237046c8ce1b23a69c539ee9823e07bdbc015a32b4bd909628a595bf1a2c29',
+    hostUiApiRange: '^1.0.0',
     releaseVersion: '0.0.0',
-    availabilityCursor: 7,
 });
 
 const INSPECTOR_ENTRY_PATH = 'react-native-web/inspector-app-native/entry.mjs.bundle';
@@ -24,9 +26,8 @@ const INSPECTOR_ENTRY_PATH = 'react-native-web/inspector-app-native/entry.mjs.bu
 function createInventory(): BundledPluginUiAppArtifactInventory {
     return Object.freeze([Object.freeze({
         pluginId: INSPECTOR_ARTIFACT.pluginId,
-        contributionId: INSPECTOR_ARTIFACT.contributionId,
+        artifactId: INSPECTOR_ARTIFACT.artifactId,
         tier: INSPECTOR_TIER,
-        platform: INSPECTOR_PLATFORM,
         digest: INSPECTOR_ARTIFACT.digest,
         releaseVersion: INSPECTOR_ARTIFACT.releaseVersion,
         files: Object.freeze([Object.freeze({
@@ -37,7 +38,14 @@ function createInventory(): BundledPluginUiAppArtifactInventory {
 }
 
 describe('bundled app-exact Plugin UI artifact source', () => {
-    it('serves only the declared immutable Inspector byte for its exact selected Artifact', async () => {
+    it('returns unavailable for app bytes absent from the source-test inventory', async () => {
+        const source = createBundledPluginUiAppExactArtifactSource();
+
+        expect(source.kind).toBe('appExact');
+        await expect(source.fetch({ artifact: INSPECTOR_ARTIFACT })).resolves.toBeNull();
+    });
+
+    it('returns the declared immutable file set for its exact selected digest', async () => {
         const readBundledAssetBytes = vi.fn(async (asset: unknown) => {
             expect(asset).toBe('inspector-web-entry');
             return new Uint8Array([1, 2, 3]);
@@ -47,33 +55,24 @@ describe('bundled app-exact Plugin UI artifact source', () => {
             readBundledAssetBytes,
         });
 
-        await expect(source.readFile({
-            artifact: INSPECTOR_ARTIFACT,
-            relativePath: INSPECTOR_ENTRY_PATH,
-        })).resolves.toEqual(new Uint8Array([1, 2, 3]));
+        await expect(source.fetch({ artifact: INSPECTOR_ARTIFACT }))
+            .resolves.toEqual(new Map([[INSPECTOR_ENTRY_PATH, new Uint8Array([1, 2, 3])]]));
         expect(source.kind).toBe('appExact');
         expect(readBundledAssetBytes).toHaveBeenCalledTimes(1);
     });
 
-    it('returns no bytes for a different immutable Artifact or undeclared path, but ignores Account-hosted source provenance', async () => {
+    it('matches immutable bytes by digest rather than release occurrence', async () => {
         const readBundledAssetBytes = vi.fn(async () => new Uint8Array([1, 2, 3]));
         const source = createBundledPluginUiAppExactArtifactSourceFromInventory({
             inventory: createInventory(),
             readBundledAssetBytes,
         });
 
-        await expect(source.readFile({
+        await expect(source.fetch({
             artifact: Object.freeze({ ...INSPECTOR_ARTIFACT, releaseVersion: '0.0.1' }),
-            relativePath: INSPECTOR_ENTRY_PATH,
-        })).resolves.toBeNull();
-        await expect(source.readFile({
-            artifact: INSPECTOR_ARTIFACT,
-            relativePath: INSPECTOR_ENTRY_PATH,
-            accountHostedArtifactId: 'account-hosted-artifact',
-        })).resolves.toEqual(new Uint8Array([1, 2, 3]));
-        await expect(source.readFile({
-            artifact: INSPECTOR_ARTIFACT,
-            relativePath: '../undeclared.mjs',
+        })).resolves.toEqual(new Map([[INSPECTOR_ENTRY_PATH, new Uint8Array([1, 2, 3])]]));
+        await expect(source.fetch({
+            artifact: Object.freeze({ ...INSPECTOR_ARTIFACT, digest: `sha256:${'f'.repeat(64)}` as const }),
         })).resolves.toBeNull();
         expect(readBundledAssetBytes).toHaveBeenCalledTimes(1);
     });

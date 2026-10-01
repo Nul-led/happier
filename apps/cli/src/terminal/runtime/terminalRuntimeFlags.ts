@@ -6,6 +6,13 @@ export type TerminalRuntimeFlags = {
   fallbackReason?: string;
   tmuxTarget?: string;
   tmuxTmpDir?: string;
+  herdrSessionName?: string;
+  herdrSocketPath?: string;
+  herdrTerminalId?: string;
+  herdrPaneId?: string;
+  zellijSessionName?: string;
+  zellijPaneId?: string;
+  zellijSocketDir?: string;
   attachmentId?: string;
   windowId?: string;
   title?: string;
@@ -16,6 +23,7 @@ function parseTerminalMode(value: string | undefined): TerminalMode | undefined 
     value === 'plain'
     || value === 'tmux'
     || value === 'zellij'
+    || value === 'herdr'
     || value === 'windows_terminal'
     || value === 'windows_console'
   ) return value;
@@ -84,6 +92,15 @@ export function parseAndStripTerminalRuntimeFlags(argv: string[]): {
       }
       continue;
     }
+    if (arg === '--happy-herdr-session-name') {
+      const consumed = consumeFlagValue(argv, i);
+      i = consumed.nextIndex;
+      const value = consumed.value;
+      if (typeof value === 'string' && value.trim().length > 0) {
+        terminal.herdrSessionName = value.trim();
+      }
+      continue;
+    }
     if (arg === '--happy-terminal-attachment-id') {
       const consumed = consumeFlagValue(argv, i);
       i = consumed.nextIndex;
@@ -126,6 +143,7 @@ export function parseAndStripTerminalRuntimeFlags(argv: string[]): {
     terminal.fallbackReason !== undefined ||
     terminal.tmuxTarget !== undefined ||
     terminal.tmuxTmpDir !== undefined ||
+    terminal.herdrSessionName !== undefined ||
     terminal.attachmentId !== undefined ||
     terminal.windowId !== undefined ||
     terminal.title !== undefined;

@@ -6,6 +6,15 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
+    "./localServices/preview/httpAdapter": { "types": "./dist/localServices/preview/httpAdapter.d.ts", "default": "./dist/localServices/preview/httpAdapter.js" },
+    "./localServices/preview/websocketAdapter": { "types": "./dist/localServices/preview/websocketAdapter.d.ts", "default": "./dist/localServices/preview/websocketAdapter.js" },
+    "./localServices/preview/headers": { "types": "./dist/localServices/preview/headers.d.ts", "default": "./dist/localServices/preview/headers.js" },
+    "./localServices/preview/rewrites": { "types": "./dist/localServices/preview/rewrites.d.ts", "default": "./dist/localServices/preview/rewrites.js" },
+    "./localServices/preview/requestTarget": { "types": "./dist/localServices/preview/requestTarget.d.ts", "default": "./dist/localServices/preview/requestTarget.js" },
+    "./localServices/preview/upstreamSocket": { "types": "./dist/localServices/preview/upstreamSocket.d.ts", "default": "./dist/localServices/preview/upstreamSocket.js" },
+    "./localServices/preview/limits": { "types": "./dist/localServices/preview/limits.d.ts", "default": "./dist/localServices/preview/limits.js" },
+    "./localServices/preview/downstream": { "types": "./dist/localServices/preview/downstream.d.ts", "default": "./dist/localServices/preview/downstream.js" },
+    "./localServices/preview/upgradeClient": { "types": "./dist/localServices/preview/upgradeClient.d.ts", "default": "./dist/localServices/preview/upgradeClient.js" },
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"

@@ -391,7 +391,7 @@ vi.mock('@/sync/domains/state/pushTokenRegistration', () => ({
 }));
 
 vi.mock('@/sync/domains/state/storage', async () => {
-    const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
+    const { createStorageModuleStub, createUseSettingMock } = await import('@/dev/testkit/mocks/storage');
     const createActivitySourceStorageState = () => {
         const sessionListRowsByServerId: Record<string, Record<string, ReturnType<typeof buildSessionListRenderableFromSession>>> = {};
         const ordinarySessionListMembershipByServerId: Record<string, string[]> = {};
@@ -448,7 +448,7 @@ vi.mock('@/sync/domains/state/storage', async () => {
         useAllSessions: () => {
             throw new Error('ActivitySurfacesRuntime should use the shared activity source');
         },
-        useSettings: () => settingsState.value,
+        useSetting: createUseSettingMock({ fallback: (key) => settingsParse(settingsState.value)[key] }),
         useLocalSettings: () => localSettingsState.value,
         useIsDataReady: () => dataReadyState.value,
     });

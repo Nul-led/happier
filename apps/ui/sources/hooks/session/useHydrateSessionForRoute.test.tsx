@@ -256,6 +256,23 @@ describe('useHydrateSessionForRoute', () => {
         });
     });
 
+    it('does not rehydrate a settled owner-metadata-unavailable shell', async () => {
+        await storeSession({
+            id: 'session-1',
+            metadataLayoutVersion: 1,
+            metadata: null,
+            ownerMetadataView: null,
+            agentState: null,
+            encryptionMode: 'plain',
+            encryptedContentAvailability: 'encrypted_content_unavailable',
+        });
+
+        const hook = await renderHook(() => useHydrateSessionForRoute('session-1', 'route.hydrate'));
+
+        expect(hook.getCurrent()).toMatchObject({ kind: 'available', sessionId: 'session-1' });
+        expect(ensureSessionVisibleForMessageRouteSpy).not.toHaveBeenCalled();
+    });
+
     it('keeps cached available route hydration state referentially stable across parent rerenders', async () => {
         await storeSession({
             id: 'session-1',
@@ -342,7 +359,10 @@ describe('useHydrateSessionForRoute', () => {
         expect(ensureSessionVisibleForMessageRouteSpy).toHaveBeenCalledTimes(1);
     });
 
-    it('keeps an already hydrated active-server session available for an unknown route server alias', async () => {
+    it('does not replace an unknown route Home with an already hydrated active-Home Session', async () => {
+        ensureSessionVisibleForMessageRouteSpy.mockResolvedValue({
+            kind: 'missing', sessionId: 'session-1', serverId: 'stale-route-server', cause: 'not_found',
+        });
         activeServerSnapshotMock.current = {
             serverId: 'server-actual',
             serverUrl: 'http://localhost',
@@ -362,14 +382,13 @@ describe('useHydrateSessionForRoute', () => {
         );
 
         expect(hook.getCurrent()).toMatchObject({
-            kind: 'available',
+            kind: 'missing',
             sessionId: 'session-1',
-            serverId: 'server-actual',
+            serverId: 'stale-route-server',
         });
-        expect(ensureSessionVisibleForMessageRouteSpy).not.toHaveBeenCalled();
     });
 
-    it('accepts the hydrated server id when an unknown route server alias falls back to the active server', async () => {
+    it('keeps the requested Home while an unrelated hydration completes', async () => {
         const deferred = createDeferred<unknown>();
         ensureSessionVisibleForMessageRouteSpy.mockReturnValueOnce(deferred.promise);
 
@@ -387,9 +406,9 @@ describe('useHydrateSessionForRoute', () => {
         await flushHookEffects({ cycles: 1, turns: 1 });
 
         expect(hook.getCurrent()).toMatchObject({
-            kind: 'available',
+            kind: 'retrying',
             sessionId: 'session-1',
-            serverId: 'server-actual',
+            serverId: 'stale-route-server',
         });
     });
 

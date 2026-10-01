@@ -138,7 +138,7 @@ const reviewedReadiness: NonNullable<RunnerActivationProjectionV1['readiness']> 
         launchManifestCommitment: LAUNCH_MANIFEST_COMMITMENT,
         installation: {
             agentTarget: { kind: 'agent', identity: { pluginId: 'happier.agent.codex', localId: 'codex' } },
-            managedInstallationId: 'managed-installation-1',
+            agentRuntimeId: 'codex',
             executablePath: '/runner/bin/codex',
             authoritativeVersion: null,
         },

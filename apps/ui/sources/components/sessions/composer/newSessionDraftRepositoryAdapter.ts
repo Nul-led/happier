@@ -102,6 +102,7 @@ export function readNewSessionDraftProjectionFromRepository(input: Readonly<{
             : {}),
         selectedMachineId: executionTarget?.kind === 'machine' ? executionTarget.target.machineId : null,
         selectedPath: authoring.directory ?? null,
+        ...(authoring.directoryKind === 'managed' ? { directoryKind: 'managed' as const } : {}),
         targetServerId: executionTarget?.kind === 'machine' ? executionTarget.target.serverId : executionTarget?.serverId ?? null,
         executionTarget,
         ...(authoring.temporaryComputerActivationRef !== undefined
@@ -121,6 +122,9 @@ export function readNewSessionDraftProjectionFromRepository(input: Readonly<{
             : {}),
         ...(authoring.access !== undefined ? { access: authoring.access } : {}),
         ...(authoring.primaryTeamId !== undefined ? { primaryTeamId: authoring.primaryTeamId } : {}),
+        ...(authoring.organizationPlacement !== undefined
+            ? { organizationPlacement: authoring.organizationPlacement }
+            : {}),
         ...(localState?.teamCredentialBindings !== undefined
             ? { teamCredentialBindings: localState.teamCredentialBindings }
             : {}),
@@ -140,6 +144,9 @@ export function readNewSessionDraftProjectionFromRepository(input: Readonly<{
         permissionMode: isPermissionMode(authoring.permissionMode) ? authoring.permissionMode : 'default',
         ...(modelSelection !== undefined ? { modelSelection } : {}),
         ...(authoring.mcpSelection !== undefined ? { mcpSelection: authoring.mcpSelection } : {}),
+        ...(authoring.runtimeDescriptorV1 !== undefined
+            ? { runtimeDescriptorV1: authoring.runtimeDescriptorV1 }
+            : {}),
         acpSessionModeId: authoring.acpSessionModeId ?? null,
         sessionConfigOptionOverrides: localState?.sessionConfigOptionOverrides ?? null,
         backendNewSessionOptionStateByTargetKey: localState?.backendNewSessionOptionStateByTargetKey ?? null,

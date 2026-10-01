@@ -605,6 +605,7 @@ async function publishNativeAgentTerminalControlPresentation(params: Readonly<{
 export function resolveBackendExecutionSurfacesFromNativeAgentRuntime(params: Readonly<{
     backend: ResolvedAgentRuntimeContribution;
     runtime: AgentRuntime;
+    hostExecutionSurfaces?: Partial<Pick<BackendExecutionSurfaces, 'attach'>>;
     agentId: string;
     isCurrent: () => boolean;
     declaredAgentSurfaceFamilies: ReadonlySet<'terminalRuntime'>;
@@ -630,7 +631,17 @@ export function resolveBackendExecutionSurfacesFromNativeAgentRuntime(params: Re
         isCurrent: params.isCurrent,
     });
     const terminal = runtimeSurfaces?.terminal;
+    const terminalSurfaceAvailable = Boolean(
+        attach || params.hostExecutionSurfaces?.attach
+            || (terminal && params.declaredAgentSurfaceFamilies.has('terminalRuntime')),
+    );
+    const resolveTerminalPresentation: NonNullable<BackendExecutionSurfaces['resolveTerminalPresentation']> = (selection) => {
+        assertCurrentNativeAgentTerminalGeneration(params);
+        return terminalSurfaceAvailable
+            && (params.runtime.sessions?.supportsTerminalPresentation?.(selection) ?? true);
+    };
     if (!terminal) return {
+        resolveTerminalPresentation,
         terminalRuntime: null,
         externalSession: null,
         attach,
@@ -647,6 +658,7 @@ export function resolveBackendExecutionSurfacesFromNativeAgentRuntime(params: Re
             pluginId: params.backend.pluginId,
         });
         return {
+            resolveTerminalPresentation,
             terminalRuntime: null,
             externalSession: null,
             attach,
@@ -813,6 +825,7 @@ export function resolveBackendExecutionSurfacesFromNativeAgentRuntime(params: Re
     }) satisfies TerminalRuntimeLaunch;
 
     return {
+        resolveTerminalPresentation,
         terminalRuntime: Object.freeze({ launch }),
         externalSession: null,
         attach,

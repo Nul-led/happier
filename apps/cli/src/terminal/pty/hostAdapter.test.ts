@@ -576,7 +576,7 @@ describe('createPtyTerminalHostAdapter', () => {
       paneAlive: true,
       paneDead: false,
     });
-    expect(fake.processes[0]?.writes).toEqual([prompt, '\r', '\r']);
+    expect(fake.processes[0]?.writes).toEqual([prompt, '\r']);
   });
 
   it('does not report a prompt as injected when the PTY closes immediately after the write', async () => {

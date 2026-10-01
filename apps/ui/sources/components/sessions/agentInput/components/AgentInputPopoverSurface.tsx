@@ -5,6 +5,7 @@ import {
   type FloatingOverlayArrow,
   type FloatingOverlayEdgeFades,
 } from "@/components/ui/overlays/FloatingOverlay";
+import type { HoverPreviewHandlers } from "@/components/ui/popover/useHoverPreviewPopover";
 import type { ScrollEdgeVisibility } from "@/components/ui/scroll/useScrollEdgeFades";
 
 export type AgentInputPopoverSurfaceProps = Readonly<{
@@ -23,6 +24,8 @@ export type AgentInputPopoverSurfaceProps = Readonly<{
   edgeIndicators?: boolean | Readonly<{ size?: number; opacity?: number }>;
   arrow?: FloatingOverlayArrow;
   initialVisibility?: Partial<ScrollEdgeVisibility>;
+  /** A hover preview's panel handlers: the pointer resting anywhere on the surface keeps it open. */
+  hoverProps?: HoverPreviewHandlers | null;
 }>;
 
 export const AgentInputPopoverSurface = React.memo(
@@ -38,10 +41,11 @@ export const AgentInputPopoverSurface = React.memo(
       edgeIndicators = true,
       arrow = false,
       initialVisibility,
+      hoverProps,
     } = props;
 
     return (
-      <View testID={testID} collapsable={false}>
+      <View testID={testID} collapsable={false} {...hoverProps}>
         <FloatingOverlay
           maxHeight={maxHeight}
           scrollEnabled={scrollEnabled}

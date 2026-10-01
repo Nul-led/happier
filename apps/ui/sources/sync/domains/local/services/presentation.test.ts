@@ -65,6 +65,10 @@ describe('selectLocalServiceServiceCounts', () => {
 
 
 describe('resolveLocalServiceOpenableTarget', () => {
+    it('offers Open for a detected service that can register its private preview', () => {
+        const target = buildLaunchTarget({ source: 'inventory_entry', id: 'inventory:entry-a', actions: ['register_preview'] });
+        expect(resolveLocalServiceOpenableTarget(target)).toBe(target);
+    });
     it('returns the launch target itself when it carries a browser target and is not unavailable', () => {
         const target = buildLaunchTarget({
             state: 'available',
@@ -114,4 +118,3 @@ describe('isLocalServiceRowAttributedToSession', () => {
         expect(isLocalServiceRowAttributedToSession(buildLocalServiceInventoryRow({}), 'session-a')).toBe(false);
     });
 });
-

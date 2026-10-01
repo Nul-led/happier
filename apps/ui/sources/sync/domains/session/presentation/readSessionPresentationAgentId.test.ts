@@ -55,6 +55,8 @@ describe('readSessionPresentationAgentId', () => {
     });
 
     it('retains layout-0 legacy Agent identity resolution', () => {
+        expect(readSessionPresentationAgentId({ metadataLayoutVersion: 0, metadata: { flavor: 'codex' }, ownerMetadataView: null }))
+            .toBe('codex');
         expect(readSessionPresentationAgentId({
             metadataLayoutVersion: 0,
             metadata: {

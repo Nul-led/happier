@@ -4,6 +4,11 @@ import { describe, expect, it, vi } from 'vitest';
 import { executePluginSessionMessageAction } from './executePluginSessionMessageAction';
 import { createCliActionExecutorHarness } from '../actions/createCliActionExecutorHarness';
 
+const DEVELOPMENT_SOURCE_CUSTODY = Object.freeze({
+  kind: 'development' as const,
+  registeredRootId: 'registered-root-current',
+});
+
 describe('executePluginSessionMessageAction', () => {
   it('forwards the semantic subagent launch without accepting private transport fields', async () => {
     const execute = vi.fn(async () => ({
@@ -16,7 +21,8 @@ describe('executePluginSessionMessageAction', () => {
       execute,
       pluginId: 'acme.agent',
       contributionLocalId: 'launch-teammate',
-      immutableGenerationId: 'generation-current',
+      occurrenceId: 'occurrence-current',
+      sourceCustody: DEVELOPMENT_SOURCE_CUSTODY,
       resolveCallerMaterialization: () => ({
         pluginId: 'acme.agent',
         machineId: 'machine-1',
@@ -62,7 +68,8 @@ describe('executePluginSessionMessageAction', () => {
       execute,
       pluginId: 'acme.channels',
       contributionLocalId: 'inbound',
-      immutableGenerationId: 'generation-current',
+      occurrenceId: 'occurrence-current',
+      sourceCustody: DEVELOPMENT_SOURCE_CUSTODY,
       resolveCallerMaterialization: () => ({
         pluginId: 'acme.channels',
         machineId: 'machine-1',
@@ -73,6 +80,7 @@ describe('executePluginSessionMessageAction', () => {
         kind: 'userText',
         text: 'Forward this',
         idempotencyKey: 'message-42',
+        toolAnswerDelivery: { toolCallId: 'question-1' },
       },
       signal,
     })).resolves.toEqual({
@@ -85,6 +93,7 @@ describe('executePluginSessionMessageAction', () => {
         sessionId: 'session-1',
         message: 'Forward this',
         idempotencyKey: 'message-42',
+        toolAnswerDelivery: { toolCallId: 'question-1' },
       },
       {
         surface: 'plugin',
@@ -93,7 +102,8 @@ describe('executePluginSessionMessageAction', () => {
           kind: 'plugin',
           pluginId: 'acme.channels',
           contributionLocalId: 'inbound',
-          immutableGenerationId: 'generation-current',
+          occurrenceId: 'occurrence-current',
+          sourceCustody: DEVELOPMENT_SOURCE_CUSTODY,
           materialization: {
             pluginId: 'acme.channels',
             machineId: 'machine-1',
@@ -116,7 +126,8 @@ describe('executePluginSessionMessageAction', () => {
       execute,
       pluginId: 'acme.channels',
       contributionLocalId: 'inbound',
-      immutableGenerationId: 'generation-current',
+      occurrenceId: 'occurrence-current',
+      sourceCustody: DEVELOPMENT_SOURCE_CUSTODY,
       resolveCallerMaterialization: () => ({
         pluginId: 'acme.channels',
         machineId: 'machine-1',
@@ -186,7 +197,8 @@ describe('executePluginSessionMessageAction', () => {
       execute,
       pluginId: 'acme.channels',
       contributionLocalId: 'inbound',
-      immutableGenerationId: 'generation-current',
+      occurrenceId: 'occurrence-current',
+      sourceCustody: DEVELOPMENT_SOURCE_CUSTODY,
       resolveCallerMaterialization: () => materialization,
       sessionId: 'session-1',
       request: {
@@ -225,7 +237,8 @@ describe('executePluginSessionMessageAction', () => {
       execute,
       pluginId: 'acme.channels',
       contributionLocalId: 'inbound',
-      immutableGenerationId: 'generation-current',
+      occurrenceId: 'occurrence-current',
+      sourceCustody: DEVELOPMENT_SOURCE_CUSTODY,
       resolveCallerMaterialization: () => materialization,
       sessionId: 'session-1',
       request: {
@@ -263,7 +276,8 @@ describe('executePluginSessionMessageAction', () => {
       execute,
       pluginId: 'acme.channels',
       contributionLocalId: 'inbound',
-      immutableGenerationId: 'generation-current',
+      occurrenceId: 'occurrence-current',
+      sourceCustody: DEVELOPMENT_SOURCE_CUSTODY,
       resolveCallerMaterialization: () => materialization,
       sessionId: 'session-1',
       request: {
@@ -309,7 +323,8 @@ describe('executePluginSessionMessageAction', () => {
       execute: executor.execute,
       pluginId: 'acme.channels',
       contributionLocalId: 'inbound',
-      immutableGenerationId: 'generation-current',
+      occurrenceId: 'occurrence-current',
+      sourceCustody: DEVELOPMENT_SOURCE_CUSTODY,
       resolveCallerMaterialization: () => materialization,
       sessionId: 'session-1',
       request: {
@@ -325,7 +340,7 @@ describe('executePluginSessionMessageAction', () => {
     });
   });
 
-  it('fails closed rather than reconstructing a caller materialization from the plugin id', async () => {
+  it('uses host-stamped occurrence and source custody when machine materialization is unavailable', async () => {
     const execute = vi.fn(async () => ({
       ok: true as const,
       result: { status: 'accepted' as const, localId: 'plugin-input-v1:accepted' },
@@ -335,7 +350,8 @@ describe('executePluginSessionMessageAction', () => {
       execute,
       pluginId: 'acme.channels',
       contributionLocalId: 'inbound',
-      immutableGenerationId: 'generation-current',
+      occurrenceId: 'occurrence-current',
+      sourceCustody: DEVELOPMENT_SOURCE_CUSTODY,
       sessionId: 'session-1',
       request: {
         kind: 'userText',
@@ -344,10 +360,28 @@ describe('executePluginSessionMessageAction', () => {
       },
       signal: new AbortController().signal,
     })).resolves.toEqual({
-      status: 'rejected',
-      code: 'session_input_untrusted_assertion',
+      status: 'accepted',
+      localId: 'plugin-input-v1:accepted',
     });
 
-    expect(execute).not.toHaveBeenCalled();
+    expect(execute).toHaveBeenCalledWith(
+      'session.message.send',
+      {
+        sessionId: 'session-1',
+        message: 'Forward this',
+        idempotencyKey: 'message-42',
+      },
+      expect.objectContaining({
+        surface: 'plugin',
+        authority: 'account_automation',
+        actionCaller: {
+          kind: 'plugin',
+          pluginId: 'acme.channels',
+          contributionLocalId: 'inbound',
+          occurrenceId: 'occurrence-current',
+          sourceCustody: DEVELOPMENT_SOURCE_CUSTODY,
+        },
+      }),
+    );
   });
 });

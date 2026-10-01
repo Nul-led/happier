@@ -16,7 +16,7 @@ import { createMachineFixture } from '@/dev/testkit/fixtures/machineFixtures';
 import { resolveBuiltInPetPackage } from '@/components/pets/builtIns/builtInPetRegistry';
 import type { StorageState } from '@/sync/store/types';
 import type { LocalPetSourceMetadata } from '@/sync/domains/pets/localPetSourceTypes';
-import { createReducer } from '@/sync/reducer/reducer';
+import { createReducer } from "@happier-dev/session-core/reducer";
 import { buildSessionListRenderableFromSession } from '@/sync/domains/session/listing/sessionListRenderable';
 import type { AccountPetLibraryEntryV1 } from '@happier-dev/protocol';
 import { PET_DAEMON_RPC_METHODS } from '@happier-dev/protocol';

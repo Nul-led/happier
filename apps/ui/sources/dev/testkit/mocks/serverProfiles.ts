@@ -1,13 +1,14 @@
+type ServerProfilesModule = typeof import('@/sync/domains/server/serverProfiles');
+type ServerProfile = ReturnType<ServerProfilesModule['listServerProfiles']>[number];
+
 export type ServerProfileMockProfile = Readonly<{
     id: string;
     name?: string;
     serverUrl: string;
     serverIdentityId?: string | null;
     legacyServerIds?: readonly string[];
+    homeConnectionDescriptor?: ServerProfile['homeConnectionDescriptor'];
 }>;
-
-type ServerProfilesModule = typeof import('@/sync/domains/server/serverProfiles');
-type ServerProfile = ReturnType<ServerProfilesModule['listServerProfiles']>[number];
 
 export type ServerProfilesModuleMockOptions = Readonly<{
     listServerProfiles?: () => unknown;
@@ -26,6 +27,7 @@ function toServerProfile(profile: ServerProfileMockProfile): ServerProfile {
         serverUrl: profile.serverUrl,
         serverIdentityId: profile.serverIdentityId,
         legacyServerIds: profile.legacyServerIds,
+        homeConnectionDescriptor: profile.homeConnectionDescriptor,
         createdAt: 0,
         updatedAt: 0,
         lastUsedAt: 0,

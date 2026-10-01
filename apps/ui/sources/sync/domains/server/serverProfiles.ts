@@ -1,4 +1,6 @@
 import { MMKV } from 'react-native-mmkv';
+import { isEmbedWindowContext } from '@/embed/isEmbedWindowContext';
+import { isDesktopHost } from '@/utils/platform/desktopHost';
 import {
     HomeConnectionDescriptorV1Schema,
     normalizeServerIdentityIdCapability,
@@ -14,6 +16,7 @@ import { sanitizeServerUrlForShareableLink } from './url/shareableServerUrl';
 import { readConfiguredServerUrlEnv, readConfiguredServerUrlEnvRaw } from './readConfiguredServerUrlEnv';
 import { resolveSetupSurfacePolicy } from './setup/setupSurfacePolicy';
 import { retireIrohHomeTransportDiagnostics } from '@/sync/runtime/irohHomeTransportDiagnostics';
+import { ALL_HOMES_MINIMUM_HOME_COUNT, isAllHomesSelectionTargetId } from './selection/allHomesSelectionTarget';
 import { normalizeStoredServerSelectionGroups } from './selection/serverSelectionMutations';
 import type { ServerSelectionGroup } from './selection/serverSelectionTypes';
 import { withHomeMutationAuthority, type HomeMutationAuthority } from './homeMutationLock';
@@ -192,6 +195,7 @@ function emitHomeViewStateChanged(): void {
 }
 
 function ensureWebPersistedStateObserver(): void {
+    if (isEmbedWindowContext()) return;
     if (webPersistedStateObserverInstalled || !isWebRuntime()) return;
     const eventTarget = globalThis.window;
     if (!eventTarget || typeof eventTarget.addEventListener !== 'function') return;
@@ -279,7 +283,7 @@ function deriveServerIdFromUrl(serverUrl: string): string {
     }
 }
 
-function defaultServerNameFromUrl(serverUrl: string): string {
+export function defaultHomeNameForAddress(serverUrl: string): string {
     const normalized = normalizeUrl(serverUrl);
     try {
         const parsed = new URL(normalized);
@@ -292,16 +296,39 @@ function defaultServerNameFromUrl(serverUrl: string): string {
 }
 
 /**
- * The name a person or Home gave this profile, or null when the stored name is only the address it
- * was defaulted from (a profile named after its own URL has no name of its own).
+ * Whether a stored name is only an address (a URL, IP, `host:port`, `localhost`, or a dotted host
+ * name) and so not a name at all. Names are defaulted to addresses, and the place may since have
+ * moved, so the address need not match its current URL. Single words ("devbox") and phrases stay
+ * names. The one rule for every surface that names a Home or a sign-in service.
+ */
+export function isAddressOnlyName(nameRaw: string): boolean {
+    const name = nameRaw.trim();
+    if (!name) return false;
+    if (/\s/.test(name)) return false;
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(name)) return true;
+    if (/^\[[0-9a-f:.]+\](?::\d{1,5})?$/i.test(name)) return true;
+    if (/^[0-9a-f]*:[0-9a-f]*:[0-9a-f:.]*$/i.test(name)) return true;
+    const withoutPort = name.replace(/:\d{1,5}$/, '');
+    const hasPort = withoutPort !== name;
+    if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(withoutPort)) return true;
+    if (withoutPort.toLowerCase() === 'localhost') return true;
+    const labels = withoutPort.split('.');
+    if (!labels.every((label) => /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/i.test(label))) return false;
+    return hasPort || (labels.length > 1 && /^[a-z]{2,}$/i.test(labels[labels.length - 1]!));
+}
+
+/**
+ * The name a person or Home gave this profile, or null when the stored name is only an address
+ * (the one it was defaulted from, or any other: see `isAddressOnlyName`).
  */
 export function readServerProfileHomeName(profile: Pick<ServerProfile, 'name' | 'serverUrl' | 'canonicalServerUrl' | 'publicServerUrl'>): string | null {
     const name = profile.name.trim();
     if (!name) return null;
+    if (isAddressOnlyName(name)) return null;
     const comparable = name.toLocaleLowerCase();
     for (const url of [profile.serverUrl, profile.canonicalServerUrl, profile.publicServerUrl]) {
         if (!url) continue;
-        if (comparable === defaultServerNameFromUrl(url).toLocaleLowerCase()) return null;
+        if (comparable === defaultHomeNameForAddress(url).toLocaleLowerCase()) return null;
         if (comparable === normalizeUrl(url).toLocaleLowerCase()) return null;
     }
     return name;
@@ -396,6 +423,10 @@ function createNativePersistedStateStorage(): PersistedStateStorage {
 
 function getPersistedStateStorage(): PersistedStateStorage {
     if (persistedStateStorage) return persistedStateStorage;
+    if (isEmbedWindowContext()) {
+        persistedStateStorage = createInMemoryPersistedStateStorage(undefined);
+        return persistedStateStorage;
+    }
     persistedStateStorage = isWebRuntime() ? createWebPersistedStateStorage() : createNativePersistedStateStorage();
     return persistedStateStorage;
 }
@@ -592,7 +623,7 @@ function applyRuntimeSeedPolicy(servers: Record<string, ServerProfile>): Record<
         const now = nowMs();
         next[id] = {
             id,
-            name: configured.name || defaultServerNameFromUrl(configured.url) || id,
+            name: configured.name || defaultHomeNameForAddress(configured.url) || id,
             serverUrl: configured.url,
             createdAt: now,
             updatedAt: now,
@@ -1131,6 +1162,9 @@ function normalizeHomeViewStateAgainstProfiles(
         // target until an authoritative removal says otherwise.
         targetIsValid = true;
         activeTargetId = mapped;
+    } else if (activeTargetKind === 'group' && isAllHomesSelectionTargetId(activeTargetId)) {
+        // "All Homes" is virtual: it stands while there are Homes enough to gather.
+        targetIsValid = new Set(scopeIdByAlias.values()).size >= ALL_HOMES_MINIMUM_HOME_COUNT;
     } else if (activeTargetKind === 'group' && activeTargetId) {
         targetIsValid = groups.some((group) => group.id === activeTargetId && group.serverIds.length > 0);
     }
@@ -1454,6 +1488,7 @@ export function migrateHomeViewStateFromSettings(settings: Readonly<Record<strin
 }
 
 function readTabActiveServerId(): string | null {
+    if (isEmbedWindowContext()) return null;
     if (!isWebRuntime()) return null;
     try {
         const value = (globalThis as any).sessionStorage?.getItem?.(SESSION_STORAGE_ACTIVE_ID_KEY);
@@ -1465,6 +1500,7 @@ function readTabActiveServerId(): string | null {
 }
 
 function writeTabActiveServerId(id: string | null): void {
+    if (isEmbedWindowContext()) return;
     if (!isWebRuntime()) return;
     try {
         const sessionStorage = (globalThis as any).sessionStorage;
@@ -1477,7 +1513,9 @@ function writeTabActiveServerId(id: string | null): void {
 }
 
 function getWebSameOriginServerUrl(): string | null {
-    if (!isWebRuntime()) return null;
+    // The desktop app's page is its own bundle (http://tauri.localhost on Windows, the devUrl in
+    // `tauri dev`), never a relay, so its origin is neither a profile nor this computer's local relay.
+    if (!isWebRuntime() || isDesktopHost()) return null;
     const origin = (globalThis as any).window?.location?.origin;
     if (!origin || origin === 'null') return null;
     try {
@@ -1705,6 +1743,25 @@ function emitActiveServerChanged(
 
 export function listServerProfiles(): ServerProfile[] {
     return Object.values(readPersistedState().servers);
+}
+
+export type SavedServerProfileUrlResolution =
+    | Readonly<{ kind: 'resolved'; profile: ServerProfile }>
+    | Readonly<{ kind: 'missing' | 'ambiguous' }>;
+
+/** URL-only intents may select a saved Home only when that address names exactly one profile. */
+export function resolveSavedServerProfileByUrl(serverUrl: string): SavedServerProfileUrlResolution {
+    const targetKey = comparableUrlKey(serverUrl);
+    if (!targetKey) return { kind: 'missing' };
+    const matches = listServerProfiles().filter((profile) => comparableUrlKey(profile.serverUrl) === targetKey);
+    if (matches.length === 0) return { kind: 'missing' };
+    if (matches.length > 1) return { kind: 'ambiguous' };
+    return { kind: 'resolved', profile: matches[0]! };
+}
+
+export function resolveUniqueServerProfileByUrl(serverUrl: string): ServerProfile | null {
+    const resolution = resolveSavedServerProfileByUrl(serverUrl);
+    return resolution.kind === 'resolved' ? resolution.profile : null;
 }
 
 export function getServerProfilesGeneration(): number {
@@ -2264,7 +2321,7 @@ function buildUpsertedServerProfile(
             existingEquivalent?.name
             ?? params.name
             ?? existing?.name
-            ?? defaultServerNameFromUrl(url)
+            ?? defaultHomeNameForAddress(url)
             ?? id,
         ).trim() || id,
         serverUrl:
@@ -2384,7 +2441,7 @@ function setServerProfileIdentityForUrlUnlocked(serverUrlRaw: string, identityRa
     const profile: ServerProfile = {
         ...(existing ?? {}),
         id,
-        name: existing?.name ?? defaultServerNameFromUrl(url) ?? id,
+        name: existing?.name ?? defaultHomeNameForAddress(url) ?? id,
         serverUrl: existing?.serverUrl ?? url,
         ...(existing?.shareableServerUrl ? { shareableServerUrl: existing.shareableServerUrl } : {}),
         ...(existing?.shareableServerUrlValidatedAgainstServerUrl
@@ -2640,20 +2697,18 @@ export function removeServerProfile(idRaw: string): Promise<void> {
         const removedWasActiveTarget = state.homeViewState?.activeTargetKind === 'server'
             && state.homeViewState.activeTargetId !== null
             && removedIds.has(state.homeViewState.activeTargetId);
-        const activeGroupStillExists = state.homeViewState?.activeTargetKind !== 'group'
-            || groups.some((group) => group.id === state.homeViewState?.activeTargetId);
         const fallbackTargetId = nextActive ? resolveServerProfileScopeId(rest[nextActive]!) : null;
         const nextHomeViewState = state.homeViewState
-            ? {
+            ? normalizeHomeViewStateAgainstProfiles({
                 ...state.homeViewState,
                 groups,
-                ...((removedWasActiveTarget || !activeGroupStillExists)
+                ...(removedWasActiveTarget
                     ? {
                         activeTargetKind: fallbackTargetId ? 'server' as const : null,
                         activeTargetId: fallbackTargetId,
                     }
                     : {}),
-            }
+            }, rest, nextActive)
             : null;
 
         writePersistedState({
@@ -2665,36 +2720,6 @@ export function removeServerProfile(idRaw: string): Promise<void> {
         });
         for (const removedId of removedIds) retireIrohHomeTransportDiagnostics(removedId);
         if (nextHomeViewState !== state.homeViewState) emitHomeViewStateChanged();
-        emitServerProfilesChanged();
-        emitActiveServerChanged(previousSnapshot);
-    });
-}
-
-export function renameServerProfile(idRaw: string, nameRaw: string): Promise<void> {
-    const id = normalizeServerId(idRaw);
-    const name = String(nameRaw ?? '').trim();
-    if (!id) throw new Error('server id is required');
-    if (!name) throw new Error('server name is required');
-
-    return withPersistedStateMutation(() => {
-        const state = readPersistedState();
-        const existing = state.servers[id];
-        if (!existing) throw new Error(`Server profile not found: ${id}`);
-
-        const previousSnapshot = getActiveServerSnapshot();
-        const now = nowMs();
-        const updated: ServerProfile = {
-            ...existing,
-            name,
-            updatedAt: now,
-        };
-        writePersistedState({
-            ...state,
-            servers: {
-                ...state.servers,
-                [id]: updated,
-            },
-        });
         emitServerProfilesChanged();
         emitActiveServerChanged(previousSnapshot);
     });

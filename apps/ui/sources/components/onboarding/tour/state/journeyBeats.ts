@@ -60,7 +60,7 @@ export type JourneyFeatureId =
     | 'providers'
     | 'alive';
 
-export type JourneyConfigStepId = WizardStepId | 'attention_micro_choice';
+export type JourneyConfigStepId = WizardStepId | 'setup_this_computer' | 'providers_optional' | 'attention_micro_choice';
 
 export type JourneyNarrationKeys = Readonly<{
     eyebrow: TranslationKey;

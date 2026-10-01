@@ -38,16 +38,19 @@ describe('verifyProcessLiveness', () => {
     });
   });
 
-  it.each(['mismatch', 'unknown'] as const)(
-    'reports a servable PID with %s identity as unknown',
-    async (identity) => {
+  it.each([
+    { identity: 'proven_reused', status: 'verified_stopped' },
+    { identity: 'unknown', status: 'unknown' },
+  ] as const)(
+    'reports a servable PID with $identity identity as $status',
+    async ({ identity, status }) => {
       await expect(verifyProcessLiveness({
         pid: 4_242,
         processStartTimeMs: 1_717_171_717_000,
         readRunState: async () => 'servable',
         verifyIdentity: async () => identity,
       })).resolves.toEqual({
-        status: 'unknown',
+        status,
         pid: 4_242,
         processStartTimeMs: 1_717_171_717_000,
       });
@@ -167,7 +170,7 @@ describe('verifySessionMarkerProcessLiveness', () => {
     });
   });
 
-  it('does not trust a reused marker PID whose captured identity no longer matches', async () => {
+  it('reports a reused marker PID as stopped only when the fresh witness proves reuse', async () => {
     await expect(verifySessionMarkerProcessLiveness({
       pid: 4_242,
       processCommandHash: 'a'.repeat(64),
@@ -175,8 +178,9 @@ describe('verifySessionMarkerProcessLiveness', () => {
     }, {
       readRunState: async () => 'servable',
       verifyHappyProcessIdentity: async () => false,
+      readProcessIdentityByPidFn: async (pid) => ({ pid, processStartTimeMs: 1_717_171_718_000, command: 'unrelated' }),
     })).resolves.toEqual({
-      status: 'unknown',
+      status: 'verified_stopped',
       pid: 4_242,
       processStartTimeMs: 1_717_171_717_000,
     });

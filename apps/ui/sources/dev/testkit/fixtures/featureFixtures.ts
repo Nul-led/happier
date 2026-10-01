@@ -749,6 +749,28 @@ export function createRootLayoutFeaturesResponse(overrides?: RootLayoutFeaturesO
     });
 }
 
+/** A Directory-capable Home that delegates no sign-in requests. */
+export function createSignInServiceFeaturesResponse(endpointUrl: string): RootLayoutFeatures {
+    return {
+        ...createRootLayoutFeaturesResponse({
+            capabilities: {
+                server: { canonicalServerUrl: endpointUrl },
+                serverIdentity: { serverIdentityId: 'srv_accounts_entry' },
+                accountDirectory: {
+                    version: 1, homeDirectory: true, homeEnrollment: true,
+                    homeLoginAssertion: { keyId: 'a'.repeat(64), publicKeyBase64Url: 'A'.repeat(43) },
+                },
+                auth: {
+                    methods: [{ id: 'key_challenge', actions: [{ id: 'login', enabled: true, mode: 'keyed' }] }],
+                    keyChallenge: { v2: true },
+                },
+            },
+        }),
+        signInService: { v: 1, mode: 'disabled' },
+        accountServicePresentation: { v: 1, displayName: 'Example Accounts' },
+    };
+}
+
 export function createOkFetchResponse<T>(payload: T): Promise<Response> {
     const response = {
         ok: true,

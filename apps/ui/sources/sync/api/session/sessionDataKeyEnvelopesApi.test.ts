@@ -93,6 +93,25 @@ describe('Session envelope exact Account transport', () => {
         expect(env.request.mock.calls.every(([url]) => !url.includes('/data-key/envelopes'))).toBe(true);
     });
 
+    it.each([
+        ['session_access_authentication_required', 403],
+        ['session_access_authentication_unavailable', 503],
+    ] as const)('preserves %s through the envelope transport and existing recovery presenter', async (code, status) => {
+        const env = await setup();
+        const { createSessionDataKeyEnvelopeClient } = await import('./sessionDataKeyEnvelopesApi');
+        const { presentSessionAccessFailure, presentSessionAccessReason } = await import('@/components/sessions/access/presentSessionAccessFailure');
+        env.request.mockImplementation(async () => new Response(JSON.stringify({ error: code }), { status }));
+        const client = createSessionDataKeyEnvelopeClient({
+            scope: { serverId: env.target.id, accountId: 'target-account' },
+            sessionId: 'same', availability: 'available', isCurrent: () => true,
+        });
+        const failure = await client.fetchPage(null).catch((error: unknown) => error);
+        expect(failure).toMatchObject({ code, status });
+        expect(presentSessionAccessFailure(failure)).toEqual({ ...presentSessionAccessReason(code), retryable: false });
+        // A sign-in requirement is surfaced once; the client cannot replay a mutation.
+        expect(env.request.mock.calls).toHaveLength(1);
+    });
+
     it.each(['missing', 'prepared'] as const)('prepares a real E2EE Session for a %s recipient so it opens the exact Session DEK', async (envelopeState) => {
         const env = await setup({ accountEncryption: 'e2ee' });
         const { encodeBase64, decodeBase64 } = await import('@/encryption/base64');

@@ -17,6 +17,7 @@ import {
 import { notRepositoryResponse, runScmRoute } from '@/scm/rpc/dispatch';
 import { realizeWorkspaceCheckoutWithScmWorkspaceSource } from '@/scm/workspace';
 import { ensureSessionDirectory } from '@/daemon/startup/ensureSessionDirectory';
+import { createManagedSessionDirectories } from './managedSessionDirectories';
 import {
   isCanonicalAbsolutePathInsideRoot,
   resolveCanonicalAbsolutePath,
@@ -44,20 +45,21 @@ async function createSessionCheckoutWithScm(input: Parameters<CreateSessionCheck
       branchMode: input.branchMode,
     },
   });
-  return resolved
+  const result = resolved
     ? {
-        success: true,
+        success: true as const,
         worktreePath: resolved.realization.targetPath,
         branchName: resolved.realization.branchName,
         sourceRootPath: resolved.sourceRootPath,
         created: resolved.realization.created,
       }
     : {
-        success: false,
+        success: false as const,
         worktreePath: '',
         branchName: '',
         errorCode: SCM_OPERATION_ERROR_CODES.FEATURE_UNSUPPORTED,
       };
+  return result;
 }
 
 function isCheckoutUnavailable(errorCode: string | undefined): boolean {
@@ -161,12 +163,23 @@ export async function prepareSessionCreationTarget(input: Readonly<{
   request: SessionCreationTargetPreparationRequestV1;
   env?: NodeJS.ProcessEnv;
   platform?: NodeJS.Platform;
+  /** Target-daemon configuration boundary; absent uses the active server namespace. */
+  activeServerDir?: string;
   signal?: AbortSignal;
   /** Test seam; production always delegates through the canonical SCM owner. */
   createCheckout?: CreateSessionCheckout;
 }>): Promise<SessionCreationTargetPreparationResultV1> {
   const request = SessionCreationTargetPreparationRequestV1Schema.parse(input.request);
-  const canonicalSource = resolveCanonicalAbsolutePath(request.directory, {
+  if (request.directory.kind === 'managed') {
+    if (!request.sessionCreationTag) return { ok: false, code: 'invalid_directory' };
+    const target = createManagedSessionDirectories({ activeServerDir: input.activeServerDir, platform: input.platform }).prepareForCreation({
+      sessionCreationTag: request.sessionCreationTag,
+    });
+    return SessionCreationTargetPreparationResultV1Schema.parse({
+      ok: true, directory: target.directory, directoryKind: 'managed', directoryCreationRequired: false, checkout: null,
+    });
+  }
+  const canonicalSource = resolveCanonicalAbsolutePath(request.directory.path, {
     env: input.env,
     platform: input.platform,
   });
@@ -185,6 +198,7 @@ export async function prepareSessionCreationTarget(input: Readonly<{
     return SessionCreationTargetPreparationResultV1Schema.parse({
       ok: true,
       directory: canonicalSource.path,
+      directoryKind: 'path',
       directoryCreationRequired: !directoryReadiness.ok,
       checkout: null,
     });
@@ -222,6 +236,7 @@ export async function prepareSessionCreationTarget(input: Readonly<{
   }
   return SessionCreationTargetPreparationResultV1Schema.parse({
     ok: true,
+    directoryKind: 'path',
     directory: await resolveSessionDirectoryInCheckout({
       sourceDirectory: canonicalSource.path,
       sourceRootPath: checkoutResult.sourceRootPath,

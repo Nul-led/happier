@@ -5,14 +5,14 @@ import {
   AgentModelOptionOverrideRuleReadSchema,
   ConnectedServiceBindingsV2IngressSchema,
   SessionModelSelectionResolutionError,
+  readSessionModesMetadata,
+  projectSessionModesV1Compatibility,
   buildBackendTargetKeyV2,
-  readSessionMcpSelectionV1FromMetadata,
   sessionModelSelectionIntentRequiresAgentTargetV1,
   type AcpConfigOptionOverridesV1,
   type BackendTargetRefV2,
   type ConnectedServiceBindingsV2,
   type ConnectedServiceMaterializationIdentityV1,
-  type SessionMcpSelectionV1,
   type SessionModelSelectionV1,
   type SessionProviderBindingMetadataV1,
 } from '@happier-dev/protocol';
@@ -44,16 +44,12 @@ type ForkInheritedSpawnOverrides = {
   connectedServiceMaterializationIdentityV1?: ConnectedServiceMaterializationIdentityV1;
 };
 
-type SessionAgentSpawnInheritedSpawnOverrides = ForkInheritedSpawnOverrides & {
-  mcpSelection?: SessionMcpSelectionV1;
-  profileId?: string;
-};
-
 type ForkInheritedMetadataOverrides = Pick<
   Metadata,
   | 'permissionMode'
   | 'permissionModeUpdatedAt'
   | 'sessionModesV1'
+  | 'sessionModesV2'
   | 'sessionModelsV1'
   | 'sessionConfigOptionsV1'
   | 'sessionModeOverrideV1'
@@ -69,44 +65,6 @@ type ForkInheritedMetadataOverrides = Pick<
 > & {
   modelSelectionIntentV1?: unknown;
   connectedServiceMaterializationIdentityV1?: ConnectedServiceMaterializationIdentityV1;
-};
-
-type InheritedSessionMetadataFieldSet = Readonly<{
-  displayTitleMetadata: 'fork' | 'inherit' | false;
-  permissionIntent: boolean;
-  modelIntent: boolean;
-  sessionModeCatalogMetadata: boolean;
-  sessionModelCatalogMetadata: boolean;
-  sessionConfigCatalogMetadata: boolean;
-  agentModeIntent: boolean;
-  configOptionIntentMetadata: boolean;
-  configOptionIntentSpawn: boolean;
-  connectedServices: boolean;
-  mcpSelectionSpawn: boolean;
-  profileIdSpawn: boolean;
-}>;
-
-const FORK_INHERITED_METADATA_FIELDS: InheritedSessionMetadataFieldSet = {
-  displayTitleMetadata: 'fork',
-  permissionIntent: true,
-  modelIntent: true,
-  sessionModeCatalogMetadata: true,
-  sessionModelCatalogMetadata: true,
-  sessionConfigCatalogMetadata: true,
-  agentModeIntent: true,
-  configOptionIntentMetadata: true,
-  configOptionIntentSpawn: true,
-  connectedServices: true,
-  mcpSelectionSpawn: false,
-  profileIdSpawn: false,
-};
-
-const SESSION_AGENT_SPAWN_INHERITED_METADATA_FIELDS: InheritedSessionMetadataFieldSet = {
-  ...FORK_INHERITED_METADATA_FIELDS,
-  displayTitleMetadata: 'inherit',
-  configOptionIntentSpawn: true,
-  mcpSelectionSpawn: true,
-  profileIdSpawn: true,
 };
 
 function isFiniteNumber(value: unknown): value is number {
@@ -125,7 +83,6 @@ const FORK_TITLE_SUFFIX_PATTERN = /^(.*) \(fork ([1-9]\d*)\)$/i;
 
 function resolveInheritedDisplayTitle(
   metadata: Record<string, unknown> | null | undefined,
-  mode: 'fork' | 'inherit',
 ): {
   value: string;
   updatedAt?: number;
@@ -136,17 +93,9 @@ function resolveInheritedDisplayTitle(
     : null;
   const summaryValue = typeof record?.text === 'string' ? record.text.trim() : '';
   // Read compatibility for children created by the earlier name-only fork implementation.
-  const legacyName = mode === 'fork' && typeof metadata?.name === 'string' ? metadata.name.trim() : '';
+  const legacyName = typeof metadata?.name === 'string' ? metadata.name.trim() : '';
   const value = summaryValue || legacyName;
   if (!value) return null;
-  if (mode === 'inherit') {
-    return {
-      value,
-      ...(typeof record?.updatedAt === 'number' && Number.isFinite(record.updatedAt)
-        ? { updatedAt: record.updatedAt }
-        : {}),
-    };
-  }
   const suffix = value.match(FORK_TITLE_SUFFIX_PATTERN);
   const previousForkNumber = suffix ? Number(suffix[2]) : 0;
   const canIncrementSuffix = suffix !== null && Number.isSafeInteger(previousForkNumber);
@@ -156,37 +105,6 @@ function resolveInheritedDisplayTitle(
     ...(typeof record?.updatedAt === 'number' && Number.isFinite(record.updatedAt)
       ? { updatedAt: record.updatedAt }
       : {}),
-  };
-}
-
-function cloneSessionModesState(
-  value: unknown,
-): Metadata['sessionModesV1'] | undefined {
-  if (!value || typeof value !== 'object') return undefined;
-  const state = value as Metadata['sessionModesV1'] & Readonly<{ provider?: string }>;
-  // legacy `provider` state-record read-compat (pre-rename persisted metadata)
-  const stateAgentId = state?.agentId ?? state?.provider;
-  if (
-    state?.v !== 1 ||
-    !isNonEmptyString(stateAgentId) ||
-    !isFiniteNumber(state.updatedAt) ||
-    !isNonEmptyString(state.currentModeId) ||
-    !Array.isArray(state.availableModes)
-  ) {
-    return undefined;
-  }
-  return {
-    v: 1,
-    agentId: stateAgentId,
-    updatedAt: state.updatedAt,
-    currentModeId: state.currentModeId,
-    availableModes: state.availableModes
-      .filter((mode) => mode && isNonEmptyString(mode.id) && isNonEmptyString(mode.name))
-      .map((mode) => ({
-        id: mode.id,
-        name: mode.name,
-        ...(isNonEmptyString(mode.description) ? { description: mode.description } : {}),
-      })),
   };
 }
 
@@ -383,21 +301,18 @@ function resolveInheritedConnectedServices(
   return derived.success ? derived.data : null;
 }
 
-function resolveInheritedOverridesFromMetadata(
+export function resolveForkInheritedOverridesFromMetadata(
   metadata: Record<string, unknown> | null | undefined,
   agentTarget: BackendTargetRefV2 | null,
-  fields: InheritedSessionMetadataFieldSet,
 ): {
-  spawn: SessionAgentSpawnInheritedSpawnOverrides;
+  spawn: ForkInheritedSpawnOverrides;
   metadata: ForkInheritedMetadataOverrides;
 } {
-  const spawn: SessionAgentSpawnInheritedSpawnOverrides = {};
+  const spawn: ForkInheritedSpawnOverrides = {};
   const metadataOverrides: ForkInheritedMetadataOverrides = {};
 
-  const displayTitle = fields.displayTitleMetadata
-    ? resolveInheritedDisplayTitle(metadata, fields.displayTitleMetadata)
-    : null;
-  if (fields.displayTitleMetadata && displayTitle?.value) {
+  const displayTitle = resolveInheritedDisplayTitle(metadata);
+  if (displayTitle?.value) {
     Object.assign(
       metadataOverrides,
       applyDisplayTitleSessionMetadata(metadataOverrides, {
@@ -407,8 +322,8 @@ function resolveInheritedOverridesFromMetadata(
     );
   }
 
-  const permission = fields.permissionIntent ? resolvePermissionIntentFromSessionMetadata(metadata) : null;
-  if (fields.permissionIntent && permission && isPermissionMode(permission.intent)) {
+  const permission = resolvePermissionIntentFromSessionMetadata(metadata);
+  if (permission && isPermissionMode(permission.intent)) {
     spawn.permissionMode = permission.intent;
     spawn.permissionModeUpdatedAt = permission.updatedAt;
     Object.assign(
@@ -421,21 +336,19 @@ function resolveInheritedOverridesFromMetadata(
     );
   }
 
-  if (fields.modelIntent && agentTarget === null && sessionModelSelectionIntentRequiresAgentTargetV1({
+  if (agentTarget === null && sessionModelSelectionIntentRequiresAgentTargetV1({
     canonical: metadata?.modelSelectionIntentV1,
     legacy: metadata?.modelOverrideV1,
   })) {
     throw new SessionModelSelectionResolutionError('model_selection_agent_target_unknown');
   }
-  const model = fields.modelIntent && agentTarget
+  const model = agentTarget
     ? resolveModelSelectionIntentFromSessionMetadata(metadata, buildBackendTargetKeyV2(agentTarget))
     : null;
   if (model?.selection) {
     spawn.modelSelection = { v: 1, ref: model.selection, updatedAt: model.updatedAt };
   }
-  const persistedProviderResumeState = fields.modelIntent
-    ? readPersistedProviderResumeState(metadata ?? null)
-    : { selection: null, binding: null };
+  const persistedProviderResumeState = readPersistedProviderResumeState(metadata ?? null);
   if (persistedProviderResumeState.binding) {
     spawn.providerBindingMetadataV1 = persistedProviderResumeState.binding;
   }
@@ -450,29 +363,25 @@ function resolveInheritedOverridesFromMetadata(
     );
   }
 
-  const sessionModes = fields.sessionModeCatalogMetadata
-    ? cloneSessionModesState(metadata?.sessionModesV1 ?? metadata?.acpSessionModesV1)
-    : undefined;
-  if (fields.sessionModeCatalogMetadata && sessionModes) {
+  const canonicalModes = readSessionModesMetadata(metadata);
+  if (canonicalModes) metadataOverrides.sessionModesV2 = canonicalModes;
+  const sessionModes = canonicalModes ? projectSessionModesV1Compatibility(canonicalModes) : undefined;
+  if (sessionModes) {
     metadataOverrides.sessionModesV1 = sessionModes;
   }
 
-  const sessionModels = fields.sessionModelCatalogMetadata
-    ? cloneSessionModelsState(metadata?.sessionModelsV1 ?? metadata?.acpSessionModelsV1)
-    : undefined;
-  if (fields.sessionModelCatalogMetadata && sessionModels) {
+  const sessionModels = cloneSessionModelsState(metadata?.sessionModelsV1 ?? metadata?.acpSessionModelsV1);
+  if (sessionModels) {
     metadataOverrides.sessionModelsV1 = sessionModels;
   }
 
-  const configOptions = fields.sessionConfigCatalogMetadata
-    ? cloneSessionConfigOptionsState(metadata?.sessionConfigOptionsV1 ?? metadata?.acpConfigOptionsV1)
-    : undefined;
-  if (fields.sessionConfigCatalogMetadata && configOptions) {
+  const configOptions = cloneSessionConfigOptionsState(metadata?.sessionConfigOptionsV1 ?? metadata?.acpConfigOptionsV1);
+  if (configOptions) {
     metadataOverrides.sessionConfigOptionsV1 = configOptions;
   }
 
-  const sessionModeOverride = fields.agentModeIntent ? readAcpSessionModeIntentFromMetadata((metadata ?? {}) as Metadata) : null;
-  if (fields.agentModeIntent && sessionModeOverride) {
+  const sessionModeOverride = readAcpSessionModeIntentFromMetadata((metadata ?? {}) as Metadata);
+  if (sessionModeOverride) {
     Object.assign(
       metadataOverrides,
       applyAcpSessionModeIntentSessionMetadata(metadataOverrides, {
@@ -487,31 +396,25 @@ function resolveInheritedOverridesFromMetadata(
     }
   }
 
-  const configOptionOverrides = (fields.configOptionIntentMetadata || fields.configOptionIntentSpawn)
-    ? readAcpConfigOptionOverrides(metadata)
-    : [];
-  if (fields.configOptionIntentSpawn) {
-    const spawnConfigOptionOverrides = buildAcpConfigOptionOverrides(configOptionOverrides);
-    if (spawnConfigOptionOverrides) {
-      spawn.sessionConfigOptionOverrides = spawnConfigOptionOverrides;
-    }
+  const configOptionOverrides = readAcpConfigOptionOverrides(metadata);
+  const spawnConfigOptionOverrides = buildAcpConfigOptionOverrides(configOptionOverrides);
+  if (spawnConfigOptionOverrides) {
+    spawn.sessionConfigOptionOverrides = spawnConfigOptionOverrides;
   }
-  if (fields.configOptionIntentMetadata) {
-    for (const entry of configOptionOverrides) {
-      Object.assign(
-        metadataOverrides,
-        applyAcpConfigOptionIntentSessionMetadata(metadataOverrides, {
-          v: 1,
-          configId: entry.configId,
-          value: entry.value,
-          updatedAt: entry.updatedAt,
-        }),
-      );
-    }
+  for (const entry of configOptionOverrides) {
+    Object.assign(
+      metadataOverrides,
+      applyAcpConfigOptionIntentSessionMetadata(metadataOverrides, {
+        v: 1,
+        configId: entry.configId,
+        value: entry.value,
+        updatedAt: entry.updatedAt,
+      }),
+    );
   }
 
-  const connectedServices = fields.connectedServices ? resolveInheritedConnectedServices(metadata, agentTarget) : null;
-  if (fields.connectedServices && connectedServices) {
+  const connectedServices = resolveInheritedConnectedServices(metadata, agentTarget);
+  if (connectedServices) {
     spawn.connectedServices = connectedServices;
     metadataOverrides.connectedServices = connectedServices;
 
@@ -521,37 +424,5 @@ function resolveInheritedOverridesFromMetadata(
     }
   }
 
-  if (fields.mcpSelectionSpawn) {
-    const mcpSelection = readSessionMcpSelectionV1FromMetadata(metadata);
-    if (mcpSelection) {
-      spawn.mcpSelection = mcpSelection;
-    }
-  }
-
-  const profileId = metadata?.profileId;
-  if (fields.profileIdSpawn && isNonEmptyString(profileId)) {
-    spawn.profileId = profileId.trim();
-  }
-
   return { spawn, metadata: metadataOverrides };
-}
-
-export function resolveForkInheritedOverridesFromMetadata(
-  metadata: Record<string, unknown> | null | undefined,
-  agentTarget: BackendTargetRefV2 | null,
-): {
-  spawn: ForkInheritedSpawnOverrides;
-  metadata: ForkInheritedMetadataOverrides;
-} {
-  return resolveInheritedOverridesFromMetadata(metadata, agentTarget, FORK_INHERITED_METADATA_FIELDS);
-}
-
-export function resolveSessionAgentSpawnInheritedOverridesFromMetadata(
-  metadata: Record<string, unknown> | null | undefined,
-  agentTarget: BackendTargetRefV2 | null,
-): {
-  spawn: SessionAgentSpawnInheritedSpawnOverrides;
-  metadata: ForkInheritedMetadataOverrides;
-} {
-  return resolveInheritedOverridesFromMetadata(metadata, agentTarget, SESSION_AGENT_SPAWN_INHERITED_METADATA_FIELDS);
 }

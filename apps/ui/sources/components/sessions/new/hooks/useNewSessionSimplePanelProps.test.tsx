@@ -51,6 +51,18 @@ function createPanelProps(
 }
 
 describe('useNewSessionSimplePanelProps', () => {
+    it('preserves the Temporary Computer target across the memoized panel model', async () => {
+        const hook = await renderHook((props: NewSessionSimplePanelProps) => useNewSessionSimplePanelProps(props), {
+            initialProps: createPanelProps({ selectedMachineId: 'stale-machine', isTemporaryComputer: true }),
+        });
+
+        expect(hook.getCurrent().isTemporaryComputer).toBe(true);
+
+        await hook.rerender(createPanelProps({ selectedMachineId: 'stale-machine', isTemporaryComputer: false }));
+        expect(hook.getCurrent().isTemporaryComputer).toBe(false);
+        await hook.unmount();
+    });
+
     it('qualifies a restored exact destination with its Home and independently readable Pool', async () => {
         const panel = createPanelProps({ selectedMachineId: 'machine-1' });
         const poolId = '00000000-0000-4000-8000-000000000001';

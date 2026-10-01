@@ -91,6 +91,46 @@ describe('classifyRelayDrift', () => {
             },
         });
     });
+
+    it('flags a daemon paired to a different account than the app on the same relay', () => {
+        // Same relay, healthy service, valid credentials — for someone else's account. The app
+        // cannot see that machine, so "aligned" here made every surface describe it as the
+        // user's own computer while their machine list stayed empty.
+        expect(classifyRelayDrift({
+            activeRelayUrl: 'https://relay.example.test',
+            daemonRelayUrl: 'https://relay.example.test',
+            daemonAccountId: 'acct_daemon',
+            appAccountId: 'acct_app',
+            daemonNeedsAuth: false,
+            daemonServiceInstalled: true,
+            daemonRunning: true,
+        })).toMatchObject({
+            status: 'daemon_account_mismatch',
+            repairAction: { kind: 'connectBackgroundServiceToActiveRelay' },
+        });
+    });
+
+    it('stays aligned when the app and the daemon share the account, or the app has none to compare', () => {
+        expect(classifyRelayDrift({
+            activeRelayUrl: 'https://relay.example.test',
+            daemonRelayUrl: 'https://relay.example.test',
+            daemonAccountId: 'acct_app',
+            appAccountId: 'acct_app',
+            daemonNeedsAuth: false,
+            daemonServiceInstalled: true,
+            daemonRunning: true,
+        })).toMatchObject({ status: 'aligned' });
+
+        expect(classifyRelayDrift({
+            activeRelayUrl: 'https://relay.example.test',
+            daemonRelayUrl: 'https://relay.example.test',
+            daemonAccountId: 'acct_daemon',
+            appAccountId: null,
+            daemonNeedsAuth: false,
+            daemonServiceInstalled: true,
+            daemonRunning: true,
+        })).toMatchObject({ status: 'aligned' });
+    });
 });
 
 describe('resolveKnownRelayEquivalentUrl', () => {

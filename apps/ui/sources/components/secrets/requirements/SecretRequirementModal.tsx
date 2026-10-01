@@ -18,6 +18,7 @@ import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { Item } from '@/components/ui/lists/Item';
 import { useMachine } from '@/sync/domains/state/storage';
 import { isMachineOnline } from '@/utils/sessions/machineUtils';
+import { getMachineDisplayName } from '@/utils/sessions/machineDisplayNames';
 import { DropdownMenu } from '@/components/ui/forms/dropdown/DropdownMenu';
 import { useScrollEdgeFades } from '@/components/ui/scroll/useScrollEdgeFades';
 import { ScrollEdgeFades } from '@/components/ui/scroll/ScrollEdgeFades';
@@ -194,7 +195,7 @@ export function SecretRequirementModal(props: SecretRequirementModalProps) {
     const machineName = React.useMemo(() => {
         if (!props.machineId) return null;
         if (!machine) return props.machineId;
-        return machine.metadata?.displayName || machine.metadata?.host || machine.id;
+        return getMachineDisplayName(machine);
     }, [machine, props.machineId]);
 
     const machineNameColor = React.useMemo(() => {

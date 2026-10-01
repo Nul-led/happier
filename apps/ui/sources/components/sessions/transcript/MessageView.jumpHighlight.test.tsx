@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { renderScreen, standardCleanup } from '@/dev/testkit';
 import { installMessageViewCommonModuleMocks } from './messageViewTestHelpers';
-import type { AgentTextMessage, UserTextMessage } from '@/sync/domains/messages/messageTypes';
+import type { AgentTextMessage, UserTextMessage } from "@happier-dev/session-core/messages";
 import { createUseSettingMock } from '@/dev/testkit/mocks/storage';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -19,7 +19,7 @@ installMessageViewCommonModuleMocks({
     },
     storage: async (importOriginal) => {
         const { createStorageModuleMock } = await import('@/dev/testkit/mocks/storage');
-        const { createReducer } = await import('@/sync/reducer/reducer');
+        const { createReducer } = await import("@happier-dev/session-core/reducer");
         return createStorageModuleMock({
             importOriginal,
             overrides: {

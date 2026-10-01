@@ -16,6 +16,7 @@ const repoRoot = resolve(packageRoot, '../..');
 const uiRoot = resolve(repoRoot, 'apps/ui');
 const uiSourcesRoot = resolve(uiRoot, 'sources');
 const cliSourcesRoot = resolve(repoRoot, 'apps/cli/src');
+const serverSourcesRoot = resolve(repoRoot, 'apps/server/sources');
 
 function uiSource(path: string): string {
   return resolve(uiSourcesRoot, path);
@@ -55,6 +56,9 @@ function resolveAppSourceRoot(importer?: string): string {
   const cleanImporter = importer ? stripQueryAndHash(importer) : '';
   if (cleanImporter && isPathInsideDirectory(cleanImporter, cliSourcesRoot)) {
     return cliSourcesRoot;
+  }
+  if (cleanImporter && isPathInsideDirectory(cleanImporter, serverSourcesRoot)) {
+    return serverSourcesRoot;
   }
   return uiSourcesRoot;
 }
@@ -113,6 +117,22 @@ const workspacePackages: readonly WorkspacePackageSpec[] = [
     packageName: '@happier-dev/connection-supervisor',
     packageSourceRoot: resolve(repoRoot, 'packages/connection-supervisor/src'),
   },
+  {
+    packageName: '@happier-dev/peer-mediation',
+    packageSourceRoot: resolve(repoRoot, 'packages/peer-mediation/src'),
+  },
+  {
+    packageName: '@happier-dev/iroh-native',
+    packageSourceRoot: resolve(repoRoot, 'packages/iroh-native/src'),
+  },
+  {
+    packageName: '@happier-dev/session-core',
+    packageSourceRoot: resolve(repoRoot, 'packages/session-core/src'),
+  },
+  {
+    packageName: '@happier-dev/sync-client',
+    packageSourceRoot: resolve(repoRoot, 'packages/sync-client/src'),
+  },
   ...readBundledPluginWorkspacePackageSpecs(repoRoot),
 ] as const;
 
@@ -125,6 +145,16 @@ const appSourceAliasesPlugin: Plugin = {
   name: 'happier-tests-app-source-aliases',
   enforce: 'pre',
   resolveId(id, importer) {
+    // SDK source consumers use the same Node exchange as its package import map.
+    if (id === '#http' && importer && isPathInsideDirectory(importer, resolve(repoRoot, 'packages/sdk/src'))) {
+      return resolve(repoRoot, 'packages/sdk/src/http/undiciHttp.ts');
+    }
+    if (id === '@happier-tests/ui-machine-carrier') {
+      return uiSource('dev/testkit/machineCarrierHttpIntegrationTestkit.ts');
+    }
+    if (id === '@happier-tests/server-machine-carrier-grant') {
+      return resolve(serverSourcesRoot, 'app/api/testkit/machineCarrierGrantIntegrationTestkit.ts');
+    }
     if (id === '@/platform/cryptoRandom') return uiSource('platform/cryptoRandom.node.ts');
     if (id === '@/platform/hmacSha512') return uiSource('platform/hmacSha512.node.ts');
     if (id === '@/platform/randomUUID') return uiSource('platform/randomUUID.node.ts');
@@ -154,6 +184,13 @@ export function createUiProductionHooksVitestConfig(): UserConfig {
     },
     test: {
       setupFiles: [uiDev('vitestSetup.ts')],
+      server: {
+        deps: {
+          // Production UI modules can reach React Navigation and Legend's React Native
+          // entrypoints. Inline them so the node-safe aliases above see their Flow sources.
+          inline: [/@react-navigation\/native/, /@react-navigation\/elements/, /@legendapp\/list/],
+        },
+      },
       env: {
         HAPPIER_FEATURE_POLICY_ENV: '',
         NODE_ENV: 'test',

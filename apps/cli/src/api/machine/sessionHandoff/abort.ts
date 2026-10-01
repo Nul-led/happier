@@ -6,7 +6,10 @@ import {
   type SessionHandoffPrepareTargetJobRecordInput,
 } from '../../../session/handoff/prepare/sessionHandoffPrepareTargetJobStore';
 import { createSessionHandoffSourceExportStore } from '../../../session/handoff/state/sessionHandoffSourceExportStore';
-import { buildSessionHandoffAgentBundleTransferId } from '../../../session/handoff/agentBundle/transferPublication';
+import { buildSessionHandoffAgentBundleTransferId, buildSessionHandoffWorkspaceSeedTransferId } from '../../../session/handoff/agentBundle/transferPublication';
+import { createManagedSessionDirectories } from '../../../session/creation/managedSessionDirectories';
+import { tryAcquireSessionHandoffPrepareTargetJobLease, releaseSessionHandoffPrepareTargetJobLease } from '../../../session/handoff/prepare/sessionHandoffPrepareTargetJobLease';
+import { configuration } from '@/configuration';
 
 import type { SessionHandoffDirectPeerTransferHandle } from './prepareTransport';
 
@@ -14,6 +17,7 @@ type SessionHandoffPrepareTargetJobStore = ReturnType<typeof createSessionHandof
 type SessionHandoffSourceExportStore = ReturnType<typeof createSessionHandoffSourceExportStore>;
 
 export type RegisterSessionHandoffAbortRpcHandlerInput = Readonly<{
+  activeServerDir?: string;
   prepareJobStore: SessionHandoffPrepareTargetJobStore;
   sourceExportStore: SessionHandoffSourceExportStore;
   directPeerTransfer: SessionHandoffDirectPeerTransferHandle | undefined;
@@ -89,6 +93,7 @@ export function createSessionHandoffAbortActionHandler(
         ...(persistedJob.lastErrorMessage ? { lastErrorMessage: persistedJob.lastErrorMessage } : {}),
         ...(persistedJob.lastErrorCode ? { lastErrorCode: persistedJob.lastErrorCode } : {}),
         status,
+        ...(persistedJob.prepareTargetRequest ? { prepareTargetRequest: persistedJob.prepareTargetRequest } : {}),
         ...(persistedJob.prepareTargetResult ? {
           prepareTargetResult: {
             ...persistedJob.prepareTargetResult,
@@ -96,6 +101,25 @@ export function createSessionHandoffAbortActionHandler(
           },
         } : {}),
       }));
+      const targetRequest = persistedJob.prepareTargetRequest;
+      if (targetRequest?.targetDirectory?.kind === 'managed' && targetRequest.operationId && targetRequest.sessionId) {
+        const activeServerDir = params.activeServerDir ?? configuration.activeServerDir;
+        const ownerId = `cli-daemon:${process.pid}:handoff-abort`;
+        // Reuse the prepare writer's existing lease. Active writers clean up in
+        // their cancellation finally; crashed pending jobs have no writer left.
+        const lease = await tryAcquireSessionHandoffPrepareTargetJobLease({ activeServerDir,
+          jobId: persistedJob.jobId, ownerId, nowMs: Date.now(),
+        });
+        if (lease.acquired) {
+          try {
+            await createManagedSessionDirectories({ activeServerDir }).abortHandoff({
+              operationId: targetRequest.operationId, sessionId: targetRequest.sessionId,
+            });
+          } finally {
+            await releaseSessionHandoffPrepareTargetJobLease({ activeServerDir, jobId: persistedJob.jobId, ownerId });
+          }
+        }
+      }
     }
 
     const baseStatus =
@@ -127,6 +151,7 @@ export function createSessionHandoffAbortActionHandler(
       persistedSourceExport?.targetMachineId,
     ]);
     directPeerTransfer?.clearPublishedTransfer(buildSessionHandoffAgentBundleTransferId(parsed.data.handoffId));
+    directPeerTransfer?.clearPublishedTransfer(buildSessionHandoffWorkspaceSeedTransferId(parsed.data.handoffId));
     await sourceExportStore.releaseTransferFiles(parsed.data.handoffId);
     return { handoffId: parsed.data.handoffId, status };
   };

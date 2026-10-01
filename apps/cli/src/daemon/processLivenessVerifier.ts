@@ -3,9 +3,11 @@ import {
   type ProcessRunState,
 } from './processRunState';
 import { isPidSafeHappySessionProcess } from './pidSafety';
+import { processGenerationProvesReuse, readProcessIdentityByPid } from './processIdentity';
 import type { DaemonSessionMarker } from './sessionRegistry';
 
-export type ProcessIdentityVerification = 'verified' | 'mismatch' | 'unknown';
+/** Only a fresh, different process-start witness may report proven_reused. */
+export type ProcessIdentityVerification = 'verified' | 'proven_reused' | 'unknown';
 
 export type VerifiedProcessLiveness = Readonly<{
   status: 'verified_running' | 'verified_stopped' | 'unknown';
@@ -51,9 +53,15 @@ export async function verifyProcessLiveness(params: Readonly<{
   }
 
   try {
-    return await params.verifyIdentity(params.pid) === 'verified'
-      ? { status: 'verified_running', ...processIdentity }
-      : { status: 'unknown', ...processIdentity };
+    const verification = await params.verifyIdentity(params.pid);
+    return {
+      status: verification === 'verified'
+        ? 'verified_running'
+        : verification === 'proven_reused'
+          ? 'verified_stopped'
+          : 'unknown',
+      ...processIdentity,
+    };
   } catch {
     return { status: 'unknown', ...processIdentity };
   }
@@ -66,6 +74,7 @@ export async function verifySessionMarkerProcessLiveness(
   deps: Readonly<{
     readRunState?: ReadProcessRunState;
     verifyHappyProcessIdentity?: VerifyHappyProcessIdentity;
+    readProcessIdentityByPidFn?: typeof readProcessIdentityByPid;
   }> = {},
 ): Promise<VerifiedProcessLiveness> {
   const processCommandHash = marker.processCommandHash;
@@ -78,13 +87,16 @@ export async function verifySessionMarkerProcessLiveness(
       if (!processCommandHash && processStartTimeMs === undefined) return 'unknown';
       const verifyHappyProcessIdentity =
         deps.verifyHappyProcessIdentity ?? isPidSafeHappySessionProcess;
-      return await verifyHappyProcessIdentity({
+      if (await verifyHappyProcessIdentity({
         pid,
         expectedProcessCommandHash: processCommandHash,
         expectedProcessStartTimeMs: processStartTimeMs,
-      })
-        ? 'verified'
-        : 'mismatch';
+      })) return 'verified';
+      const observed = await (deps.readProcessIdentityByPidFn ?? readProcessIdentityByPid)(pid).catch(() => null);
+      return observed?.pid === pid
+        && processGenerationProvesReuse(processStartTimeMs, observed.processStartTimeMs)
+        ? 'proven_reused'
+        : 'unknown';
     },
   });
 }

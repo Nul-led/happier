@@ -200,7 +200,6 @@ describe('web scroll-observation generic lifecycle effects', () => {
                                 isPinned: true,
                                 offsetY: 0,
                                 shouldRestoreViewport: false,
-                                shouldPersistViewport: false,
                             },
                         },
                         drain: {

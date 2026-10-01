@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { WorkspaceSyncController } from './workspaceSyncController';
 import { AccountSettingsSchema } from '@happier-dev/protocol';
+import { deriveWorkspaceSyncConflictAsidePaths } from '@happier-dev/protocol';
 import { computeWorkspaceSyncPolicyDigest, type WorkspaceSyncRelationshipV1, type WorkspaceSyncStatusV1 } from './workspaceSyncTypes';
 import { deriveWorkspaceSyncEndpointId } from './transport/workspaceSyncBrokerProtocol';
 import { access, mkdir, mkdtemp, realpath, rename, rm, writeFile } from 'node:fs/promises';
@@ -19,13 +20,635 @@ const policy = { v: 1 as const, selection: 'all_files' as const, extraIgnorePatt
 const definition = { v: 1 as const, relationshipId: 'r1', controllerMachineId: 'm1', alphaWorkspaceRefId: 'a', betaWorkspaceRefId: 'b', mode: 'keep_synced' as const, contentPolicy: { ...policy, policyDigest: computeWorkspaceSyncPolicyDigest(policy) }, enabled: true, createdAtMs: 1, updatedAtMs: 1 };
 const gitWorktreePolicy = { v: 1 as const, selection: 'git_worktree' as const, extraIgnorePatterns: [], extraIncludePatterns: [] };
 const gitWorktreeDefinition = { ...definition, contentPolicy: { ...gitWorktreePolicy, policyDigest: computeWorkspaceSyncPolicyDigest(gitWorktreePolicy) } };
-const status: WorkspaceSyncStatusV1 = { relationshipId: 'r1', controllerMachineId: 'm1', state: 'watching', alphaPath: '/a', betaPath: '/b', mode: 'keep_synced', changedFiles: 0, conflictCount: 0, lastSuccessfulSyncAtMs: null };
+const status: WorkspaceSyncStatusV1 = {
+  relationshipId: 'r1', controllerMachineId: 'm1', state: 'watching', alphaPath: '/a', betaPath: '/b', mode: 'keep_synced',
+  endpointStates: {
+    alpha: { connected: true, scanned: true, scanProblemCount: 0, transitionProblemCount: 0 },
+    beta: { connected: true, scanned: true, scanProblemCount: 0, transitionProblemCount: 0 },
+  },
+  conflictCount: 0, lastCycleObservedAtMs: null,
+};
 
 function ownedLocalAgent(stream = new PassThrough(), stop = vi.fn(async () => undefined)) {
   return { stream, stop };
 }
 
+function fixtureWorkspaceRef(id: string) {
+  return {
+    machineId: id === 'b' || /^b\d+$/u.test(id) || id.endsWith('-b') ? 'm2' : 'm1',
+    rootPath: `/${id}`,
+  };
+}
+
 describe('WorkspaceSyncController', () => {
+  it('preserves the reviewed hub alternative before installing a selected spoke file', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-resolution-keep-both-'));
+    const hubRoot = join(fixture, 'hub');
+    await mkdir(hubRoot);
+    await writeFile(join(hubRoot, 'value.bin'), 'original');
+    const original = { kind: 'file' as const, digest: createHash('sha1').update('original').digest('hex'), executable: false, size: 8 };
+    const chosen = { kind: 'file' as const, digest: createHash('sha1').update('selected').digest('hex'), executable: false, size: 8 };
+    const asidePath = deriveWorkspaceSyncConflictAsidePaths('value.bin', original)[0];
+    const events: string[] = [];
+    const controller = new WorkspaceSyncController({
+      adapter: completeAdapter({
+        ensure: vi.fn(async () => status), get: vi.fn(async () => status),
+        pause: vi.fn(async () => { events.push('pause'); return { ...status, state: 'paused' as const }; }),
+        resume: vi.fn(async () => status), flush: vi.fn(async () => status),
+        diagnoseSelection: vi.fn(async () => ({ status: 'included' as const })),
+      }),
+      lifecycle: lifecycle(),
+      rootOwnershipManager: createWorkspaceRootOwnershipManager({ lockDirectory: join(fixture, 'locks') }),
+      localMachineId: 'm1',
+      resolveWorkspaceRef: (id) => id === 'a'
+        ? { machineId: 'm1', rootPath: hubRoot }
+        : { machineId: 'm2', rootPath: '/remote/b' },
+      prepareRelationshipTarget: async () => undefined,
+      assertConflictResolutionAuthorized: async () => undefined,
+      observeEntryAtTarget: async () => chosen,
+      stageConflictResolutionAtTarget: async ({ alternativeIndex }) => { events.push(`stage:${alternativeIndex ?? 'selected'}`); },
+      applyStagedConflictResolutionAtTarget: async ({ alternativeIndex }) => {
+        events.push(`apply:${alternativeIndex ?? 'selected'}`);
+        return { status: 'installed' };
+      },
+    });
+    try {
+      await controller.ensure(definition);
+      const result = await controller.resolveConflict({
+        controllerMachineId: 'm1', hubWorkspaceRefId: 'a', path: 'value.bin',
+        source: { workspaceRefId: 'b', expected: chosen },
+        targets: [{ workspaceRefId: 'a', expected: original }],
+        relationshipIds: ['r1'], strategy: 'keep_both',
+        alternatives: [{
+          source: { workspaceRefId: 'a', expected: original },
+          destination: { workspaceRefId: 'a', path: asidePath, expected: { kind: 'missing' } },
+          consequence: { propagatingToWorkspaceRefIds: ['b'] },
+        }],
+      }, undefined, 'approval-keep-both');
+      expect(result).toEqual({
+        endpoints: [{ workspaceRefId: 'a', status: 'applied' }],
+        preserved: [{
+          alternativeIndex: 0, sourceWorkspaceRefId: 'a', destinationWorkspaceRefId: 'a',
+          path: asidePath, propagatingToWorkspaceRefIds: ['b'], outcome: { status: 'preserved' },
+        }],
+      });
+      expect(events).toEqual(['stage:0', 'stage:selected', 'pause', 'apply:0', 'apply:selected']);
+    } finally {
+      await controller.shutdown();
+      await rm(fixture, { recursive: true, force: true });
+    }
+  });
+  it('does not install the selected entry when its approved upstream preservation cannot stage', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-resolution-unavailable-aside-'));
+    const hubRoot = join(fixture, 'hub');
+    await mkdir(hubRoot);
+    await writeFile(join(hubRoot, 'value.bin'), 'original');
+    const original = { kind: 'file' as const, digest: createHash('sha1').update('original').digest('hex'), executable: false, size: 8 };
+    const chosen = { kind: 'file' as const, digest: createHash('sha1').update('selected').digest('hex'), executable: false, size: 8 };
+    const asidePath = deriveWorkspaceSyncConflictAsidePaths('value.bin', original)[0];
+    const stage = vi.fn(async ({ alternativeIndex }: Readonly<{ alternativeIndex: number | null }>) => {
+      if (alternativeIndex === 0) throw Object.assign(new Error('upstream unavailable'), { code: 'peer_unavailable' });
+    });
+    const apply = vi.fn(async () => ({ status: 'installed' as const }));
+    const pause = vi.fn(async () => ({ ...status, state: 'paused' as const }));
+    const controller = new WorkspaceSyncController({
+      adapter: completeAdapter({
+        ensure: vi.fn(async () => status), get: vi.fn(async () => status), pause,
+        diagnoseSelection: vi.fn(async () => ({ status: 'included' as const })),
+      }),
+      lifecycle: lifecycle(),
+      rootOwnershipManager: createWorkspaceRootOwnershipManager({ lockDirectory: join(fixture, 'locks') }),
+      localMachineId: 'm1',
+      resolveWorkspaceRef: (id) => id === 'a'
+        ? { machineId: 'm1', rootPath: hubRoot }
+        : { machineId: 'm2', rootPath: '/remote/b' },
+      prepareRelationshipTarget: async () => undefined,
+      assertConflictResolutionAuthorized: async () => undefined,
+      observeEntryAtTarget: async () => chosen,
+      stageConflictResolutionAtTarget: stage,
+      applyStagedConflictResolutionAtTarget: apply,
+    });
+    try {
+      await controller.ensure(definition);
+      const result = await controller.resolveConflict({
+        controllerMachineId: 'm1', hubWorkspaceRefId: 'a', path: 'value.bin',
+        source: { workspaceRefId: 'b', expected: chosen },
+        targets: [{ workspaceRefId: 'a', expected: original }],
+        relationshipIds: ['r1'], strategy: 'keep_both',
+        alternatives: [{
+          source: { workspaceRefId: 'a', expected: original },
+          destination: { workspaceRefId: 'a', path: asidePath, expected: { kind: 'missing' } },
+          consequence: { propagatingToWorkspaceRefIds: ['b'] },
+        }],
+      }, undefined, 'approval-unavailable-aside');
+      expect(result).toMatchObject({
+        endpoints: [{ workspaceRefId: 'a', status: 'failed', errorCode: 'preservation_unavailable' }],
+        preserved: [{ outcome: { status: 'offline' } }],
+      });
+      expect(apply).not.toHaveBeenCalled();
+      expect(pause).not.toHaveBeenCalled();
+    } finally {
+      await controller.shutdown();
+      await rm(fixture, { recursive: true, force: true });
+    }
+  });
+  it('preserves on the hub when reviewed propagation becomes unverified after a touching engine pauses', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-resolution-paused-aside-'));
+    const hubRoot = join(fixture, 'hub');
+    await mkdir(hubRoot);
+    await writeFile(join(hubRoot, 'value.bin'), 'original');
+    const original = { kind: 'file' as const, digest: createHash('sha1').update('original').digest('hex'), executable: false, size: 8 };
+    const chosen = { kind: 'file' as const, digest: createHash('sha1').update('selected').digest('hex'), executable: false, size: 8 };
+    const asidePath = deriveWorkspaceSyncConflictAsidePaths('value.bin', original)[0];
+    const paused = { ...status, state: 'paused' as const };
+    const pause = vi.fn(async () => paused);
+    const resume = vi.fn(async () => status);
+    const controller = new WorkspaceSyncController({
+      adapter: completeAdapter({
+        ensure: vi.fn(async () => paused), get: vi.fn(async () => paused), pause, resume,
+        diagnoseSelection: vi.fn(async () => ({ status: 'unknown' as const, reason: 'endpoint_unavailable' as const })),
+      }),
+      lifecycle: lifecycle(),
+      rootOwnershipManager: createWorkspaceRootOwnershipManager({ lockDirectory: join(fixture, 'locks') }),
+      localMachineId: 'm1',
+      resolveWorkspaceRef: (id) => id === 'a'
+        ? { machineId: 'm1', rootPath: hubRoot }
+        : { machineId: 'm2', rootPath: '/remote/b' },
+      prepareRelationshipTarget: async () => undefined,
+      assertConflictResolutionAuthorized: async () => undefined,
+      observeEntryAtTarget: async () => chosen,
+      stageConflictResolutionAtTarget: async () => undefined,
+      applyStagedConflictResolutionAtTarget: async () => ({ status: 'installed' }),
+    });
+    try {
+      await controller.ensure(definition);
+      const result = await controller.resolveConflict({
+        controllerMachineId: 'm1', hubWorkspaceRefId: 'a', path: 'value.bin',
+        source: { workspaceRefId: 'b', expected: chosen },
+        targets: [{ workspaceRefId: 'a', expected: original }],
+        relationshipIds: ['r1'], strategy: 'keep_both',
+        alternatives: [{
+          source: { workspaceRefId: 'a', expected: original },
+          destination: { workspaceRefId: 'a', path: asidePath, expected: { kind: 'missing' } },
+          consequence: { propagatingToWorkspaceRefIds: ['b'] },
+        }],
+      }, undefined, 'approval-paused-aside');
+      expect(result).toEqual({
+        endpoints: [{ workspaceRefId: 'a', status: 'applied_paused' }],
+        preserved: [{
+          alternativeIndex: 0, sourceWorkspaceRefId: 'a', destinationWorkspaceRefId: 'a', path: asidePath,
+          propagatingToWorkspaceRefIds: [], unverifiedPropagationToWorkspaceRefIds: ['b'],
+          outcome: { status: 'preserved' },
+        }],
+      });
+      expect(pause).not.toHaveBeenCalled();
+      expect(resume).not.toHaveBeenCalled();
+    } finally {
+      await controller.shutdown();
+      await rm(fixture, { recursive: true, force: true });
+    }
+  });
+  it('stages a reviewed spoke source through its own link for hub and sibling destinations', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-resolution-spoke-'));
+    const hubRoot = join(fixture, 'hub');
+    await mkdir(hubRoot);
+    const second = { ...definition, relationshipId: 'r2', betaWorkspaceRefId: 'c' };
+    const chosen = { kind: 'file' as const, digest: createHash('sha1').update('from-c').digest('hex'), executable: false, size: 6 };
+    const stages: Array<{ sourceRelationshipId: string; relationshipId: string; targetWorkspaceRefId: string }> = [];
+    const controller = new WorkspaceSyncController({
+      adapter: completeAdapter({
+        ensure: vi.fn(async (item) => ({ ...status, relationshipId: item.relationshipId })),
+        get: vi.fn(async (id) => ({ ...status, relationshipId: id })),
+        pause: vi.fn(async (id) => ({ ...status, relationshipId: id, state: 'paused' as const })),
+        resume: vi.fn(async (id) => ({ ...status, relationshipId: id })),
+        flush: vi.fn(async (id) => ({ ...status, relationshipId: id })),
+      }),
+      lifecycle: lifecycle(),
+      rootOwnershipManager: createWorkspaceRootOwnershipManager({ lockDirectory: join(fixture, 'locks') }),
+      localMachineId: 'm1',
+      resolveWorkspaceRef: (id) => id === 'a'
+        ? { machineId: 'm1', rootPath: hubRoot }
+        : { machineId: id === 'c' ? 'm3' : 'm2', rootPath: `/remote/${id}` },
+      prepareRelationshipTarget: async () => undefined,
+      assertConflictResolutionAuthorized: async () => undefined,
+      observeEntryAtTarget: async () => chosen,
+      stageConflictResolutionAtTarget: async ({ sourceRelationshipId, relationshipId, targetWorkspaceRefId }) => {
+        stages.push({ sourceRelationshipId, relationshipId, targetWorkspaceRefId });
+      },
+      applyStagedConflictResolutionAtTarget: async () => ({ status: 'installed' }),
+    });
+    try {
+      await controller.ensure(definition);
+      await controller.ensure(second);
+      const result = await controller.resolveConflict({
+        controllerMachineId: 'm1', hubWorkspaceRefId: 'a', path: 'value.bin',
+        source: { workspaceRefId: 'c', expected: chosen },
+        targets: [{ workspaceRefId: 'a', expected: { kind: 'missing' } }, { workspaceRefId: 'b', expected: { kind: 'missing' } }],
+        relationshipIds: ['r1', 'r2'], strategy: 'use_source',
+      }, undefined, 'approval-spoke');
+      expect(stages).toEqual([
+        { sourceRelationshipId: 'r2', relationshipId: 'r1', targetWorkspaceRefId: 'a' },
+        { sourceRelationshipId: 'r2', relationshipId: 'r1', targetWorkspaceRefId: 'b' },
+      ]);
+      expect(result).toEqual({ endpoints: [
+        { workspaceRefId: 'a', status: 'applied' },
+        { workspaceRefId: 'b', status: 'applied' },
+      ] });
+    } finally {
+      await controller.shutdown();
+      await rm(fixture, { recursive: true, force: true });
+    }
+  });
+  it('stages every reviewed linked target before pausing all touching relationships', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-resolution-linked-'));
+    const sourceRoot = join(fixture, 'source');
+    await mkdir(sourceRoot);
+    await writeFile(join(sourceRoot, 'value.bin'), 'chosen');
+    const second = { ...definition, relationshipId: 'r2', betaWorkspaceRefId: 'c' };
+    const events: string[] = [];
+    const nativeOperationIds: string[] = [];
+    const adapter = completeAdapter({
+      ensure: vi.fn(async (item) => ({ ...status, relationshipId: item.relationshipId })),
+      get: vi.fn(async (id) => ({ ...status, relationshipId: id })),
+      pause: vi.fn(async (id) => { events.push(`pause:${id}`); return { ...status, relationshipId: id, state: 'paused' as const }; }),
+      resume: vi.fn(async (id) => { events.push(`resume:${id}`); return { ...status, relationshipId: id }; }),
+      flush: vi.fn(async (id) => { events.push(`flush:${id}`); return { ...status, relationshipId: id }; }),
+    });
+    const controller = new WorkspaceSyncController({
+      adapter, lifecycle: lifecycle(),
+      rootOwnershipManager: createWorkspaceRootOwnershipManager({ lockDirectory: join(fixture, 'locks') }),
+      localMachineId: 'm1',
+      resolveWorkspaceRef: (id) => id === 'a'
+        ? { machineId: 'm1', rootPath: sourceRoot }
+        : { machineId: 'm2', rootPath: `/remote/${id}` },
+      prepareRelationshipTarget: async () => undefined,
+      assertConflictResolutionAuthorized: async () => undefined,
+      stageConflictResolutionAtTarget: async ({ targetWorkspaceRefId, operationId }) => {
+        events.push(`stage:${targetWorkspaceRefId}`);
+        nativeOperationIds.push(operationId);
+      },
+      applyStagedConflictResolutionAtTarget: async ({ targetWorkspaceRefId }) => {
+        events.push(`apply:${targetWorkspaceRefId}`);
+        return { status: 'installed' };
+      },
+    });
+    try {
+      await controller.ensure(definition);
+      await controller.ensure(second);
+      const source = { kind: 'file' as const, digest: createHash('sha1').update('chosen').digest('hex'), executable: false, size: 6 };
+      const result = await controller.resolveConflict({
+        controllerMachineId: 'm1', hubWorkspaceRefId: 'a', path: 'value.bin',
+        source: { workspaceRefId: 'a', expected: source },
+        targets: [
+          { workspaceRefId: 'b', expected: { kind: 'missing' } },
+          { workspaceRefId: 'c', expected: { kind: 'missing' } },
+        ],
+        relationshipIds: ['r1', 'r2'], strategy: 'use_source',
+      }, undefined, 'approval-resolution-linked');
+      expect(result).toEqual({ endpoints: [
+        { workspaceRefId: 'b', status: 'applied' },
+        { workspaceRefId: 'c', status: 'applied' },
+      ] });
+      expect(events.slice(0, 2)).toEqual(['stage:b', 'stage:c']);
+      expect(nativeOperationIds).toHaveLength(2);
+      expect(nativeOperationIds[0]).not.toBe(nativeOperationIds[1]);
+      expect(nativeOperationIds.every((id) => /^[a-f0-9]{64}$/u.test(id))).toBe(true);
+      expect(events.indexOf('apply:b')).toBeGreaterThan(events.indexOf('pause:r2'));
+      expect(events.indexOf('apply:c')).toBeGreaterThan(events.indexOf('pause:r2'));
+    } finally {
+      await controller.shutdown();
+      await rm(fixture, { recursive: true, force: true });
+    }
+  });
+  it('does not resume a clean sibling after an ambiguous hub install failure', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-resolution-hub-failure-'));
+    const hubRoot = join(fixture, 'hub');
+    await mkdir(hubRoot);
+    const second = { ...definition, relationshipId: 'r2', betaWorkspaceRefId: 'c' };
+    const chosen = { kind: 'file' as const, digest: createHash('sha1').update('from-b').digest('hex'), executable: false, size: 6 };
+    const resume = vi.fn(async (id: string) => ({ ...status, relationshipId: id }));
+    const controller = new WorkspaceSyncController({
+      adapter: completeAdapter({
+        ensure: vi.fn(async (item) => ({ ...status, relationshipId: item.relationshipId })),
+        get: vi.fn(async (id) => ({ ...status, relationshipId: id })),
+        pause: vi.fn(async (id) => ({ ...status, relationshipId: id, state: 'paused' as const })),
+        resume,
+      }),
+      lifecycle: lifecycle(),
+      rootOwnershipManager: createWorkspaceRootOwnershipManager({ lockDirectory: join(fixture, 'locks') }),
+      localMachineId: 'm1',
+      resolveWorkspaceRef: (id) => id === 'a'
+        ? { machineId: 'm1', rootPath: hubRoot }
+        : { machineId: 'm2', rootPath: `/remote/${id}` },
+      prepareRelationshipTarget: async () => undefined,
+      assertConflictResolutionAuthorized: async () => undefined,
+      observeEntryAtTarget: async () => chosen,
+      stageConflictResolutionAtTarget: async () => undefined,
+      applyStagedConflictResolutionAtTarget: async ({ targetWorkspaceRefId }) => {
+        if (targetWorkspaceRefId === 'a') throw Object.assign(new Error('install outcome unknown'), { code: 'indeterminate' });
+        return { status: 'installed' };
+      },
+    });
+    try {
+      await controller.ensure(definition);
+      await controller.ensure(second);
+      const result = await controller.resolveConflict({
+        controllerMachineId: 'm1', hubWorkspaceRefId: 'a', path: 'value.bin',
+        source: { workspaceRefId: 'b', expected: chosen },
+        targets: [{ workspaceRefId: 'a', expected: { kind: 'missing' } }],
+        relationshipIds: ['r1', 'r2'], strategy: 'use_source',
+      }, undefined, 'approval-hub-unknown');
+      expect(result).toEqual({ endpoints: [{ workspaceRefId: 'a', status: 'failed', errorCode: 'indeterminate' }] });
+      expect(resume).not.toHaveBeenCalled();
+    } finally {
+      await controller.shutdown();
+      await rm(fixture, { recursive: true, force: true });
+    }
+  });
+  it('stages reviewed bytes before pausing and resumes only after a settled install', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-resolution-controller-'));
+    const sourceRoot = join(fixture, 'source');
+    await mkdir(sourceRoot);
+    await writeFile(join(sourceRoot, 'value.bin'), 'source');
+    const events: string[] = [];
+    const adapter = completeAdapter({
+      ensure: vi.fn(async () => status),
+      get: vi.fn(async () => status),
+      pause: vi.fn(async () => { events.push('pause'); return { ...status, state: 'paused' as const }; }),
+      resume: vi.fn(async () => { events.push('resume'); return status; }),
+      flush: vi.fn(async () => { events.push('flush'); return status; }),
+    });
+    const controller = new WorkspaceSyncController({
+      adapter,
+      lifecycle: lifecycle(),
+      rootOwnershipManager: createWorkspaceRootOwnershipManager({ lockDirectory: join(fixture, 'locks') }),
+      localMachineId: 'm1',
+      resolveWorkspaceRef: (id) => id === 'a'
+        ? { machineId: 'm1', rootPath: sourceRoot }
+        : { machineId: 'm2', rootPath: '/remote/b' },
+      prepareRelationshipTarget: async () => undefined,
+      assertConflictResolutionAuthorized: async () => undefined,
+      stageConflictResolutionAtTarget: async () => { events.push('stage'); },
+      applyStagedConflictResolutionAtTarget: async () => { events.push('apply'); return { status: 'installed' }; },
+    });
+    try {
+      await controller.ensure(definition);
+      const source = { kind: 'file' as const, digest: createHash('sha1').update('source').digest('hex'), executable: false, size: 6 };
+      const target = { kind: 'file' as const, digest: 'b'.repeat(40), executable: false, size: 3 };
+      await expect(controller.resolveConflict({
+        controllerMachineId: 'm1', hubWorkspaceRefId: 'a', path: 'value.bin',
+        source: { workspaceRefId: 'a', expected: source },
+        targets: [{ workspaceRefId: 'b', expected: target }],
+        relationshipIds: ['r1'], strategy: 'use_source',
+      }, undefined, 'approval-resolution-1')).resolves.toEqual({
+        endpoints: [{ workspaceRefId: 'b', status: 'applied' }],
+      });
+      expect(events).toEqual(['stage', 'pause', 'apply', 'resume', 'flush']);
+    } finally {
+      await controller.shutdown();
+      await rm(fixture, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects source drift after staging before any target effect', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-resolution-drift-'));
+    const sourceRoot = join(fixture, 'source');
+    await mkdir(sourceRoot);
+    await writeFile(join(sourceRoot, 'value.bin'), 'source');
+    const adapter = completeAdapter({ ensure: vi.fn(async () => status), pause: vi.fn(async () => status) });
+    const apply = vi.fn(async () => ({ status: 'installed' as const }));
+    const discard = vi.fn(async () => undefined);
+    const releaseCapture = vi.fn(async () => undefined);
+    const controller = new WorkspaceSyncController({
+      adapter, lifecycle: lifecycle(),
+      rootOwnershipManager: createWorkspaceRootOwnershipManager({ lockDirectory: join(fixture, 'locks') }),
+      localMachineId: 'm1',
+      resolveWorkspaceRef: (id) => id === 'a'
+        ? { machineId: 'm1', rootPath: sourceRoot }
+        : { machineId: 'm2', rootPath: '/remote/b' },
+      prepareRelationshipTarget: async () => undefined,
+      assertConflictResolutionAuthorized: async () => undefined,
+      stageConflictResolutionAtTarget: async () => { await writeFile(join(sourceRoot, 'value.bin'), 'new source'); },
+      applyStagedConflictResolutionAtTarget: apply,
+      discardStagedConflictResolutionAtTarget: discard,
+      releaseConflictResolutionCaptureAtSource: releaseCapture,
+    });
+    try {
+      await controller.ensure(definition);
+      await expect(controller.resolveConflict({
+        controllerMachineId: 'm1', hubWorkspaceRefId: 'a', path: 'value.bin',
+        source: { workspaceRefId: 'a', expected: {
+          kind: 'file', digest: createHash('sha1').update('source').digest('hex'), executable: false, size: 6,
+        } },
+        targets: [{ workspaceRefId: 'b', expected: { kind: 'missing' } }],
+        relationshipIds: ['r1'], strategy: 'use_source',
+      }, undefined, 'approval-resolution-drift')).resolves.toEqual({
+        endpoints: [{ workspaceRefId: 'b', status: 'changed' }],
+      });
+      expect(adapter.pause).not.toHaveBeenCalled();
+      expect(apply).not.toHaveBeenCalled();
+      expect(discard).toHaveBeenCalledWith(expect.objectContaining({ actionReceiptId: 'approval-resolution-drift', targetWorkspaceRefId: 'b' }));
+      expect(releaseCapture).toHaveBeenCalledWith(expect.objectContaining({
+        operationId: 'approval-resolution-drift', sourceWorkspaceRefId: 'a', sourceMachineId: 'm1',
+      }));
+    } finally {
+      await controller.shutdown();
+      await rm(fixture, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps touching synchronization paused when replacement recovery remains', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-resolution-recovery-'));
+    const sourceRoot = join(fixture, 'source');
+    await mkdir(sourceRoot);
+    await writeFile(join(sourceRoot, 'value.bin'), 'source');
+    const adapter = completeAdapter({
+      ensure: vi.fn(async () => status), get: vi.fn(async () => status),
+      pause: vi.fn(async () => ({ ...status, state: 'paused' as const })),
+      resume: vi.fn(async () => status),
+    });
+    const controller = new WorkspaceSyncController({
+      adapter, lifecycle: lifecycle(),
+      rootOwnershipManager: createWorkspaceRootOwnershipManager({ lockDirectory: join(fixture, 'locks') }),
+      localMachineId: 'm1',
+      resolveWorkspaceRef: (id) => id === 'a' ? { machineId: 'm1', rootPath: sourceRoot } : { machineId: 'm2', rootPath: '/remote/b' },
+      prepareRelationshipTarget: async () => undefined,
+      assertConflictResolutionAuthorized: async () => undefined,
+      stageConflictResolutionAtTarget: async () => undefined,
+      applyStagedConflictResolutionAtTarget: async () => ({ status: 'recovery_needed', recoveryPath: '/safe/recovery/value.bin' }),
+    });
+    try {
+      await controller.ensure(definition);
+      const source = { kind: 'file' as const, digest: createHash('sha1').update('source').digest('hex'), executable: false, size: 6 };
+      await expect(controller.resolveConflict({
+        controllerMachineId: 'm1', hubWorkspaceRefId: 'a', path: 'value.bin',
+        source: { workspaceRefId: 'a', expected: source },
+        targets: [{ workspaceRefId: 'b', expected: { ...source, digest: 'b'.repeat(40) } }],
+        relationshipIds: ['r1'], strategy: 'use_source',
+      }, undefined, 'approval-resolution-2')).resolves.toEqual({
+        endpoints: [{ workspaceRefId: 'b', status: 'recovery_needed', recoveryPath: '/safe/recovery/value.bin' }],
+      });
+      expect(adapter.resume).not.toHaveBeenCalled();
+    } finally {
+      await controller.shutdown();
+      await rm(fixture, { recursive: true, force: true });
+    }
+  });
+  it('does not report a restored destination as applied reviewed content', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-resolution-restored-'));
+    const sourceRoot = join(fixture, 'source');
+    await mkdir(sourceRoot);
+    await writeFile(join(sourceRoot, 'value.bin'), 'source');
+    const adapter = completeAdapter({
+      ensure: vi.fn(async () => status), get: vi.fn(async () => status),
+      pause: vi.fn(async () => ({ ...status, state: 'paused' as const })),
+      resume: vi.fn(async () => status), flush: vi.fn(async () => status),
+    });
+    const controller = new WorkspaceSyncController({
+      adapter, lifecycle: lifecycle(),
+      rootOwnershipManager: createWorkspaceRootOwnershipManager({ lockDirectory: join(fixture, 'locks') }),
+      localMachineId: 'm1',
+      resolveWorkspaceRef: (id) => id === 'a' ? { machineId: 'm1', rootPath: sourceRoot } : { machineId: 'm2', rootPath: '/remote/b' },
+      prepareRelationshipTarget: async () => undefined,
+      assertConflictResolutionAuthorized: async () => undefined,
+      stageConflictResolutionAtTarget: async () => undefined,
+      applyStagedConflictResolutionAtTarget: async () => ({ status: 'restored' }),
+    });
+    try {
+      await controller.ensure(definition);
+      const source = { kind: 'file' as const, digest: createHash('sha1').update('source').digest('hex'), executable: false, size: 6 };
+      await expect(controller.resolveConflict({
+        controllerMachineId: 'm1', hubWorkspaceRefId: 'a', path: 'value.bin',
+        source: { workspaceRefId: 'a', expected: source },
+        targets: [{ workspaceRefId: 'b', expected: { ...source, digest: 'b'.repeat(40) } }],
+        relationshipIds: ['r1'], strategy: 'use_source',
+      }, undefined, 'approval-resolution-restored')).resolves.toEqual({
+        endpoints: [{ workspaceRefId: 'b', status: 'changed' }],
+      });
+      expect(adapter.resume).toHaveBeenCalledOnce();
+      expect(adapter.flush).not.toHaveBeenCalled();
+    } finally {
+      await controller.shutdown();
+      await rm(fixture, { recursive: true, force: true });
+    }
+  });
+  it('does not resume when a changed apply result retains displaced recovery bytes', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-resolution-recovery-error-'));
+    const sourceRoot = join(fixture, 'source');
+    await mkdir(sourceRoot);
+    await writeFile(join(sourceRoot, 'value.bin'), 'source');
+    const adapter = completeAdapter({
+      ensure: vi.fn(async () => status), get: vi.fn(async () => status),
+      pause: vi.fn(async () => ({ ...status, state: 'paused' as const })),
+      resume: vi.fn(async () => status),
+    });
+    const controller = new WorkspaceSyncController({
+      adapter, lifecycle: lifecycle(),
+      rootOwnershipManager: createWorkspaceRootOwnershipManager({ lockDirectory: join(fixture, 'locks') }),
+      localMachineId: 'm1',
+      resolveWorkspaceRef: (id) => id === 'a'
+        ? { machineId: 'm1', rootPath: sourceRoot }
+        : { machineId: 'm2', rootPath: '/remote/b' },
+      prepareRelationshipTarget: async () => undefined,
+      assertConflictResolutionAuthorized: async () => undefined,
+      stageConflictResolutionAtTarget: async () => undefined,
+      applyStagedConflictResolutionAtTarget: async () => {
+        throw Object.assign(new Error('displaced entry needs recovery'), {
+          code: 'conflict_changed', recoveryPath: '/safe/recovery/value.bin',
+        });
+      },
+    });
+    try {
+      await controller.ensure(definition);
+      const source = { kind: 'file' as const, digest: createHash('sha1').update('source').digest('hex'), executable: false, size: 6 };
+      await expect(controller.resolveConflict({
+        controllerMachineId: 'm1', hubWorkspaceRefId: 'a', path: 'value.bin',
+        source: { workspaceRefId: 'a', expected: source },
+        targets: [{ workspaceRefId: 'b', expected: { ...source, digest: 'b'.repeat(40) } }],
+        relationshipIds: ['r1'], strategy: 'use_source',
+      }, undefined, 'approval-resolution-3')).resolves.toEqual({
+        endpoints: [{ workspaceRefId: 'b', status: 'recovery_needed', recoveryPath: '/safe/recovery/value.bin' }],
+      });
+      expect(adapter.resume).not.toHaveBeenCalled();
+    } finally {
+      await controller.shutdown();
+      await rm(fixture, { recursive: true, force: true });
+    }
+  });
+  it('blocks explicit resume while a target still has native replacement recovery', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-resolution-resume-'));
+    const sourceRoot = join(fixture, 'source');
+    await mkdir(sourceRoot);
+    let recoveryNeeded = false;
+    const adapter = completeAdapter({
+      ensure: vi.fn(async () => status), get: vi.fn(async () => ({ ...status, state: 'paused' as const })),
+      resume: vi.fn(async () => status),
+    });
+    const controller = new WorkspaceSyncController({
+      adapter, lifecycle: lifecycle(),
+      rootOwnershipManager: createWorkspaceRootOwnershipManager({ lockDirectory: join(fixture, 'locks') }),
+      localMachineId: 'm1',
+      resolveWorkspaceRef: (id) => id === 'a'
+        ? { machineId: 'm1', rootPath: sourceRoot }
+        : { machineId: 'm2', rootPath: '/remote/b' },
+      prepareRelationshipTarget: async () => undefined,
+      recoverConflictResolutionAtTarget: async () => recoveryNeeded
+        ? { status: 'recovery_needed', recoveryPath: '/safe/recovery/value.bin' }
+        : { status: 'settled' },
+    });
+    try {
+      await controller.ensure(definition);
+      recoveryNeeded = true;
+      await expect(controller.resume(definition.relationshipId)).rejects.toMatchObject({ code: 'workspace_sync_recovery_needed' });
+      expect(adapter.resume).not.toHaveBeenCalled();
+      recoveryNeeded = false;
+      await expect(controller.resume(definition.relationshipId)).resolves.toMatchObject({ state: 'watching' });
+      expect(adapter.resume).toHaveBeenCalledOnce();
+    } finally {
+      await controller.shutdown();
+      await rm(fixture, { recursive: true, force: true });
+    }
+  });
+  it('rehydrates an unrelated link while holding a recovery-affected link paused', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-resolution-restart-'));
+    const alphaRoot = join(fixture, 'alpha');
+    const otherRoot = join(fixture, 'other');
+    await Promise.all([mkdir(alphaRoot), mkdir(otherRoot)]);
+    const other = { ...definition, relationshipId: 'r2', alphaWorkspaceRefId: 'c', betaWorkspaceRefId: 'd' };
+    const paused = { ...status, state: 'paused' as const };
+    const watching = { ...status, relationshipId: 'r2' };
+    const adapter = completeAdapter({
+      rehydrate: vi.fn(async (_definitions: readonly WorkspaceSyncRelationshipV1[], _signal?: AbortSignal, held?: ReadonlySet<string>) => {
+        expect(held).toEqual(new Set(['r1']));
+        return [paused, watching];
+      }),
+      ensure: vi.fn(async () => { throw new Error('rehydrate must not resume a recovery-held link'); }),
+    });
+    const controller = new WorkspaceSyncController({
+      adapter, lifecycle: lifecycle(),
+      rootOwnershipManager: createWorkspaceRootOwnershipManager({ lockDirectory: join(fixture, 'locks') }),
+      localMachineId: 'm1',
+      resolveWorkspaceRef: (id) => id === 'a'
+        ? { machineId: 'm1', rootPath: alphaRoot }
+        : id === 'c'
+          ? { machineId: 'm1', rootPath: otherRoot }
+          : { machineId: 'm2', rootPath: `/remote/${id}` },
+      prepareRelationshipTarget: async () => undefined,
+      recoverConflictResolutionAtTarget: async ({ relationshipId }) => relationshipId === 'r1'
+        ? { status: 'recovery_needed', recoveryPath: '/safe/displaced' }
+        : { status: 'settled' },
+    });
+    try {
+      await expect(controller.rehydrateFromSettings([definition, other])).resolves.toEqual(expect.arrayContaining([
+        expect.objectContaining({ relationshipId: 'r1', state: 'paused', errorCode: 'workspace_sync_recovery_needed' }),
+        expect.objectContaining({ relationshipId: 'r2', state: 'watching' }),
+      ]));
+      expect(adapter.ensure).not.toHaveBeenCalled();
+    } finally {
+      await controller.shutdown();
+      await rm(fixture, { recursive: true, force: true });
+    }
+  });
   it('publishes pause, resume, and terminate status transitions through its canonical status callback', async () => {
     const published: WorkspaceSyncStatusV1[] = [];
     const adapter = completeAdapter({
@@ -38,7 +661,7 @@ describe('WorkspaceSyncController', () => {
       lifecycle: lifecycle(),
       rootOwnershipManager: rootOwnership(),
       localMachineId: 'm1',
-      resolveWorkspaceRef: (id) => ({ machineId: 'other', rootPath: `/${id}` }),
+      resolveWorkspaceRef: fixtureWorkspaceRef,
       onStatusPublished: (next) => published.push(next),
     });
 
@@ -54,7 +677,7 @@ describe('WorkspaceSyncController', () => {
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });
     const ensure = vi.fn(async () => { await gate; return status; });
-    const controller = new WorkspaceSyncController({ adapter: completeAdapter({ ensure }), lifecycle: lifecycle(), rootOwnershipManager: rootOwnership(), localMachineId: 'm1', resolveWorkspaceRef: (id) => ({ machineId: 'other', rootPath: `/${id}` }) });
+    const controller = new WorkspaceSyncController({ adapter: completeAdapter({ ensure }), lifecycle: lifecycle(), rootOwnershipManager: rootOwnership(), localMachineId: 'm1', resolveWorkspaceRef: fixtureWorkspaceRef });
     const first = controller.ensure(definition);
     const second = controller.ensure({ ...definition, createdAtMs: 2, updatedAtMs: 3 });
     release();
@@ -173,14 +796,43 @@ describe('WorkspaceSyncController', () => {
       transient: true,
       targetBootstrap: 'use_existing',
     });
-    await expect(controller.rehydrateFromSettings([])).resolves.toEqual([]);
+    await expect(controller.rehydrateFromSettings([])).resolves.toMatchObject([{ relationshipId: 'r1' }]);
 
-    expect(rehydrate).toHaveBeenLastCalledWith([definition]);
+    expect(rehydrate).toHaveBeenLastCalledWith([definition], undefined, new Set());
     expect(adapter.terminate).not.toHaveBeenCalled();
     expect(prepareRelationshipTarget).toHaveBeenCalledTimes(1);
 
     await controller.rehydrateFromSettings([definition]);
     expect(prepareRelationshipTarget).toHaveBeenCalledTimes(1);
+    await controller.shutdown();
+  });
+
+  it('keeps same-id live preparation authoritative over its persisted disabled intent', async () => {
+    const disabled = { ...definition, enabled: false };
+    const rehydrate = vi.fn(async (definitions: readonly WorkspaceSyncRelationshipV1[]) => (
+      definitions.map((item) => ({ ...status, relationshipId: item.relationshipId }))
+    ));
+    const adapter = completeAdapter({ rehydrate });
+    const controller = new WorkspaceSyncController({
+      adapter,
+      lifecycle: lifecycle(),
+      rootOwnershipManager: rootOwnership(),
+      localMachineId: 'm1',
+      resolveWorkspaceRef: (id) => id === 'a'
+        ? { machineId: 'm1', rootPath: '/a' }
+        : { machineId: 'm2', rootPath: '/b' },
+      prepareRelationshipTarget: vi.fn(async () => undefined),
+    });
+
+    await controller.ensure(definition, undefined, {
+      transient: true,
+      targetBootstrap: 'use_existing',
+    });
+    await controller.rehydrateFromSettings([disabled]);
+
+    expect(rehydrate).toHaveBeenLastCalledWith([definition], undefined, new Set());
+    expect(adapter.terminate).not.toHaveBeenCalled();
+    await expect(controller.flush(definition.relationshipId)).resolves.toMatchObject({ relationshipId: 'r1' });
     await controller.shutdown();
   });
 
@@ -292,6 +944,226 @@ describe('WorkspaceSyncController', () => {
     }
   });
 
+  it('shares one physical hub fence across valid links and releases it only after the last member', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-controller-shared-hub-'));
+    const roots = {
+      hub: join(fixture, 'hub'),
+      b: join(fixture, 'b'),
+      c: join(fixture, 'c'),
+    };
+    await Promise.all(Object.values(roots).map(async (root) => await mkdir(root)));
+    const rootOwnershipManager = createWorkspaceRootOwnershipManager({ lockDirectory: join(fixture, 'locks') });
+    const second = {
+      ...definition,
+      relationshipId: 'r2',
+      betaWorkspaceRefId: 'c',
+    };
+    const controller = new WorkspaceSyncController({
+      adapter: completeAdapter({
+        ensure: vi.fn(async (next) => ({ ...status, relationshipId: next.relationshipId })),
+        flush: vi.fn(async (id) => ({ ...status, relationshipId: id })),
+      }),
+      lifecycle: lifecycle(),
+      rootOwnershipManager,
+      localMachineId: 'm1',
+      resolveWorkspaceRef: (id) => id === 'a'
+        ? { machineId: 'm1', rootPath: roots.hub }
+        : { machineId: id === 'b' ? 'm2' : 'm3', rootPath: roots[id as 'b' | 'c'] },
+      prepareRelationshipTarget: vi.fn(async () => undefined),
+    });
+
+    try {
+      await Promise.all([controller.ensure(definition), controller.ensure(second)]);
+      await controller.terminate(definition.relationshipId);
+
+      const whileSecondActive = await rootOwnershipManager.tryAcquire({
+        ownerId: 'probe-active',
+        canonicalRoot: roots.hub,
+        operation: 'handoff',
+      });
+      expect(whileSecondActive).toMatchObject({ kind: 'overlap' });
+      await expect(controller.flush(second.relationshipId)).resolves.toMatchObject({ relationshipId: 'r2' });
+
+      await controller.terminate(second.relationshipId);
+      const afterLastMember = await rootOwnershipManager.tryAcquire({
+        ownerId: 'probe-released',
+        canonicalRoot: roots.hub,
+        operation: 'handoff',
+      });
+      expect(afterLastMember).not.toHaveProperty('kind');
+      if (!('kind' in afterLastMember)) await afterLastMember.release();
+    } finally {
+      await controller.shutdown();
+      await rm(fixture, { recursive: true, force: true });
+    }
+  });
+
+  it('releases a newly acquired hub fence when the root changes before identity binding', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-controller-admission-loss-'));
+    const hub = join(fixture, 'hub');
+    const displaced = join(fixture, 'displaced');
+    await mkdir(hub);
+    const rootOwnershipManager = createWorkspaceRootOwnershipManager({ lockDirectory: join(fixture, 'locks') });
+    let replaceAfterAcquisition = true;
+    const controller = new WorkspaceSyncController({
+      adapter: completeAdapter(),
+      lifecycle: lifecycle(),
+      rootOwnershipManager: {
+        tryAcquire: async (request) => {
+          const result = await rootOwnershipManager.tryAcquire(request);
+          if (replaceAfterAcquisition && !('kind' in result) && request.canonicalRoot === hub) {
+            replaceAfterAcquisition = false;
+            await rename(hub, displaced);
+            await mkdir(hub);
+          }
+          return result;
+        },
+      },
+      localMachineId: 'm1',
+      resolveWorkspaceRef: (id) => id === 'a'
+        ? { machineId: 'm1', rootPath: hub }
+        : { machineId: 'm2', rootPath: '/remote/b' },
+    });
+    try {
+      await expect(controller.ensure(definition)).rejects.toMatchObject({ code: 'workspace_root_ownership_lost' });
+      const afterFailedAdmission = await rootOwnershipManager.tryAcquire({
+        ownerId: 'probe-after-failed-admission',
+        canonicalRoot: hub,
+        operation: 'handoff',
+      });
+      expect(afterFailedAdmission).not.toHaveProperty('kind');
+      if (!('kind' in afterFailedAdmission)) await afterFailedAdmission.release();
+    } finally {
+      await controller.shutdown();
+      await rm(fixture, { recursive: true, force: true });
+    }
+  });
+
+  it('stops every shared-hub session when the one physical hub root is replaced', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-controller-shared-loss-'));
+    const hub = join(fixture, 'hub');
+    const displaced = join(fixture, 'displaced');
+    await mkdir(hub);
+    const second = { ...definition, relationshipId: 'r2', betaWorkspaceRefId: 'c' };
+    const pause = vi.fn(async (id: string) => ({ ...status, relationshipId: id, state: 'paused' as const }));
+    const flush = vi.fn(async (id: string) => ({ ...status, relationshipId: id }));
+    const published: WorkspaceSyncStatusV1[] = [];
+    const controller = new WorkspaceSyncController({
+      adapter: completeAdapter({
+        ensure: vi.fn(async (next) => ({ ...status, relationshipId: next.relationshipId })),
+        pause,
+        flush,
+      }),
+      lifecycle: lifecycle(),
+      rootOwnershipManager: createWorkspaceRootOwnershipManager({ lockDirectory: join(fixture, 'locks') }),
+      localMachineId: 'm1',
+      resolveWorkspaceRef: (id) => id === 'a'
+        ? { machineId: 'm1', rootPath: hub }
+        : { machineId: id === 'b' ? 'm2' : 'm3', rootPath: `/remote/${id}` },
+      prepareRelationshipTarget: async () => undefined,
+      onStatusPublished: (next) => published.push(next),
+    });
+    try {
+      await controller.ensure(definition);
+      await controller.ensure(second);
+      await rename(hub, displaced);
+      await mkdir(hub);
+
+      await expect(controller.flush('r1')).rejects.toMatchObject({ code: 'workspace_root_ownership_lost' });
+      expect(published).toEqual(expect.arrayContaining([
+        expect.objectContaining({ relationshipId: 'r1', state: 'paused', errorCode: 'workspace_root_ownership_lost' }),
+        expect.objectContaining({ relationshipId: 'r2', state: 'paused', errorCode: 'workspace_root_ownership_lost' }),
+      ]));
+      expect(pause).toHaveBeenCalledWith('r1');
+      expect(pause).toHaveBeenCalledWith('r2');
+      await expect(controller.flush('r2')).rejects.toMatchObject({ code: 'workspace_root_ownership_lost' });
+      expect(flush).not.toHaveBeenCalled();
+    } finally {
+      await controller.shutdown();
+      await rm(fixture, { recursive: true, force: true });
+    }
+  });
+
+  it('borrows a retained spoke as a copy source without releasing its relationship fence', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-controller-spoke-copy-'));
+    const root = join(fixture, 'spoke');
+    await mkdir(root);
+    const rootOwnershipManager = createWorkspaceRootOwnershipManager({ lockDirectory: join(fixture, 'locks') });
+    const retained = await rootOwnershipManager.tryAcquire({ ownerId: 'linked-spoke', canonicalRoot: root, operation: 'bootstrap' });
+    if ('kind' in retained) throw new Error('Expected linked spoke custody');
+    const releaseLoan = vi.fn(async () => undefined);
+    const controller = new WorkspaceSyncController({
+      adapter: completeAdapter({ copyOnce: vi.fn(async (operation) => ({ ...status, relationshipId: operation.operationId, mode: 'copy_once' })) }),
+      lifecycle: lifecycle(),
+      rootOwnershipManager,
+      localMachineId: 'm1',
+      resolveWorkspaceRef: (id) => id === 'spoke'
+        ? { machineId: 'm1', rootPath: root }
+        : { machineId: 'm2', rootPath: '/remote/target' },
+      borrowLinkedSourceRoot: async () => ({ handle: retained, release: releaseLoan }),
+    });
+    try {
+      await expect(controller.copyOnce({
+        v: 1, operationId: 'copy-from-spoke', controllerMachineId: 'm1',
+        alphaWorkspaceRefId: 'spoke', betaWorkspaceRefId: 'remote', contentPolicy: definition.contentPolicy,
+      })).resolves.toMatchObject({ relationshipId: 'copy-from-spoke' });
+      expect(releaseLoan).toHaveBeenCalledOnce();
+      const overlap = await rootOwnershipManager.tryAcquire({ ownerId: 'other', canonicalRoot: root, operation: 'handoff' });
+      expect(overlap).toMatchObject({ kind: 'overlap' });
+    } finally {
+      await controller.shutdown();
+      await retained.release();
+      await rm(fixture, { recursive: true, force: true });
+    }
+  });
+
+  it('drops borrowed hub participation when copy admission fails on its exclusive target', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-controller-copy-admission-'));
+    const roots = { hub: join(fixture, 'hub'), relationshipTarget: join(fixture, 'b'), copyTarget: join(fixture, 'c') };
+    await Promise.all(Object.values(roots).map(async (root) => await mkdir(root)));
+    const rootOwnershipManager = createWorkspaceRootOwnershipManager({ lockDirectory: join(fixture, 'locks') });
+    const controller = new WorkspaceSyncController({
+      adapter: completeAdapter(),
+      lifecycle: lifecycle(),
+      rootOwnershipManager,
+      localMachineId: 'm1',
+      resolveWorkspaceRef: (id) => id === 'a'
+        ? { machineId: 'm1', rootPath: roots.hub }
+        : { machineId: 'm1', rootPath: id === 'b' ? roots.relationshipTarget : roots.copyTarget },
+      prepareRelationshipTarget: vi.fn(async () => undefined),
+    });
+    const heldTarget = await rootOwnershipManager.tryAcquire({
+      ownerId: 'held-copy-target',
+      canonicalRoot: roots.copyTarget,
+      operation: 'handoff',
+    });
+    if ('kind' in heldTarget) throw new Error('copy target fixture unexpectedly overlapped');
+    try {
+      await controller.ensure(definition);
+      await expect(controller.copyOnce({
+        v: 1,
+        operationId: 'copy-failed-admission',
+        controllerMachineId: 'm1',
+        alphaWorkspaceRefId: 'a',
+        betaWorkspaceRefId: 'c',
+        contentPolicy: definition.contentPolicy,
+      })).rejects.toMatchObject({ code: 'workspace_root_in_use' });
+      await controller.terminate(definition.relationshipId);
+
+      const hubProbe = await rootOwnershipManager.tryAcquire({
+        ownerId: 'hub-probe',
+        canonicalRoot: roots.hub,
+        operation: 'handoff',
+      });
+      expect(hubProbe).not.toHaveProperty('kind');
+      if (!('kind' in hubProbe)) await hubProbe.release();
+    } finally {
+      await heldTarget.release();
+      await controller.shutdown();
+      await rm(fixture, { recursive: true, force: true });
+    }
+  });
+
   it('exports a seed only for the exact active operation, source, policy, destination, and retained source fence', async () => {
     const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-controller-seed-export-'));
     const sourceRoot = join(fixture, 'source');
@@ -378,34 +1250,52 @@ describe('WorkspaceSyncController', () => {
   });
 
   it('settles every shutdown custody entry and retries only failed releases', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-controller-shutdown-custody-'));
+    const hub = join(fixture, 'hub');
+    const target = join(fixture, 'target');
+    await Promise.all([mkdir(hub), mkdir(target)]);
+    const rootOwnershipManager = createWorkspaceRootOwnershipManager({ lockDirectory: join(fixture, 'locks') });
     const firstFailure = new Error('first root release failed');
-    const firstRelease = vi.fn()
-      .mockRejectedValueOnce(firstFailure)
-      .mockResolvedValueOnce(undefined);
-    const secondRelease = vi.fn(async () => undefined);
-    let acquisition = 0;
+    let rejectHubRelease = true;
     const controller = new WorkspaceSyncController({
       adapter: completeAdapter(),
       lifecycle: lifecycle(),
       rootOwnershipManager: {
-        tryAcquire: vi.fn(async (owner) => ({
-          owner: { ...owner, rootFingerprint: null },
-          bindCurrentRootIdentity: vi.fn(async () => undefined),
-          release: acquisition++ === 0 ? firstRelease : secondRelease,
-        })),
+        tryAcquire: vi.fn(async (owner) => {
+          const acquired = await rootOwnershipManager.tryAcquire(owner);
+          if ('kind' in acquired || owner.canonicalRoot !== hub) return acquired;
+          return {
+            ...acquired,
+            release: async () => {
+              if (rejectHubRelease) {
+                rejectHubRelease = false;
+                throw firstFailure;
+              }
+              await acquired.release();
+            },
+          };
+        }),
       },
       localMachineId: 'm1',
-      resolveWorkspaceRef: (id) => ({ machineId: 'm1', rootPath: `/${id}` }),
+      resolveWorkspaceRef: (id) => ({ machineId: 'm1', rootPath: id === 'a' ? hub : target }),
     });
-    await controller.ensure(definition);
+    try {
+      await controller.ensure(definition);
+      await expect(controller.shutdown()).rejects.toMatchObject({ errors: [firstFailure] });
+      const targetAfterFailure = await rootOwnershipManager.tryAcquire({ ownerId: 'target-probe', canonicalRoot: target, operation: 'handoff' });
+      expect(targetAfterFailure).not.toHaveProperty('kind');
+      if (!('kind' in targetAfterFailure)) await targetAfterFailure.release();
+      const hubBeforeRetry = await rootOwnershipManager.tryAcquire({ ownerId: 'hub-before-retry', canonicalRoot: hub, operation: 'handoff' });
+      expect(hubBeforeRetry).toMatchObject({ kind: 'overlap' });
 
-    await expect(controller.shutdown()).rejects.toMatchObject({ errors: [firstFailure] });
-    expect(firstRelease).toHaveBeenCalledOnce();
-    expect(secondRelease).toHaveBeenCalledOnce();
-
-    await expect(controller.shutdown()).resolves.toBeUndefined();
-    expect(firstRelease).toHaveBeenCalledTimes(2);
-    expect(secondRelease).toHaveBeenCalledOnce();
+      await expect(controller.shutdown()).resolves.toBeUndefined();
+      const hubAfterRetry = await rootOwnershipManager.tryAcquire({ ownerId: 'hub-after-retry', canonicalRoot: hub, operation: 'handoff' });
+      expect(hubAfterRetry).not.toHaveProperty('kind');
+      if (!('kind' in hubAfterRetry)) await hubAfterRetry.release();
+    } finally {
+      await controller.shutdown().catch(() => undefined);
+      await rm(fixture, { recursive: true, force: true });
+    }
   });
 
   it('retains relationship root custody when terminate cleanup fails and retries it on the next terminate', async () => {
@@ -438,42 +1328,58 @@ describe('WorkspaceSyncController', () => {
   });
 
   it('retains partially acquired root custody when a later root acquisition fails', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-controller-partial-root-'));
+    const hub = join(fixture, 'hub');
+    const target = join(fixture, 'target');
+    await Promise.all([mkdir(hub), mkdir(target)]);
+    const rootOwnershipManager = createWorkspaceRootOwnershipManager({ lockDirectory: join(fixture, 'locks') });
     const cleanupFailure = new Error('partial root release failed');
-    const release = vi.fn()
-      .mockRejectedValueOnce(cleanupFailure)
-      .mockResolvedValueOnce(undefined);
-    let acquisition = 0;
+    let rejectHubRelease = true;
     const controller = new WorkspaceSyncController({
       adapter: completeAdapter(),
       lifecycle: lifecycle(),
       rootOwnershipManager: {
         tryAcquire: vi.fn(async (owner) => {
-          acquisition += 1;
-          if (acquisition === 2) {
+          if (owner.canonicalRoot === target) {
             return {
               kind: 'overlap' as const,
               existing: {
                 ownerId: 'other',
-                canonicalRoot: '/other',
+                canonicalRoot: target,
                 operation: 'sync' as const,
-                rootFingerprint: 'other-fingerprint',
+                rootFingerprint: null,
               },
             };
           }
+          const result = await rootOwnershipManager.tryAcquire(owner);
+          if ('kind' in result) return result;
           return {
-            owner: { ...owner, rootFingerprint: null },
-            bindCurrentRootIdentity: vi.fn(async () => undefined),
-            release,
+            ...result,
+            release: async () => {
+              if (rejectHubRelease) {
+                rejectHubRelease = false;
+                throw cleanupFailure;
+              }
+              await result.release();
+            },
           };
         }),
       },
       localMachineId: 'm1',
-      resolveWorkspaceRef: (id) => ({ machineId: 'm1', rootPath: `/${id}` }),
+      resolveWorkspaceRef: (id) => ({ machineId: 'm1', rootPath: id === 'a' ? hub : target }),
     });
-
-    await expect(controller.ensure(definition)).rejects.toBe(cleanupFailure);
-    await expect(controller.shutdown()).resolves.toBeUndefined();
-    expect(release).toHaveBeenCalledTimes(2);
+    try {
+      await expect(controller.ensure(definition)).rejects.toBe(cleanupFailure);
+      const beforeRetry = await rootOwnershipManager.tryAcquire({ ownerId: 'probe-before-retry', canonicalRoot: hub, operation: 'handoff' });
+      expect(beforeRetry).toMatchObject({ kind: 'overlap' });
+      await expect(controller.shutdown()).resolves.toBeUndefined();
+      const afterRetry = await rootOwnershipManager.tryAcquire({ ownerId: 'probe-after-retry', canonicalRoot: hub, operation: 'handoff' });
+      expect(afterRetry).not.toHaveProperty('kind');
+      if (!('kind' in afterRetry)) await afterRetry.release();
+    } finally {
+      await controller.shutdown().catch(() => undefined);
+      await rm(fixture, { recursive: true, force: true });
+    }
   });
 
   it('rejects a git_worktree relationship with the canonical typed outcome when Git is unavailable', async () => {
@@ -483,7 +1389,7 @@ describe('WorkspaceSyncController', () => {
     const probeGitRuntimeDependency = vi.fn(async () => false);
     const controller = new WorkspaceSyncController({
       adapter: completeAdapter({ ensure }), lifecycle: managerLifecycle, rootOwnershipManager: rootOwnership(),
-      localMachineId: 'm1', resolveWorkspaceRef: (id) => ({ machineId: 'other', rootPath: `/${id}` }),
+      localMachineId: 'm1', resolveWorkspaceRef: fixtureWorkspaceRef,
       prepareRelationshipTarget, probeGitRuntimeDependency,
     });
 
@@ -517,7 +1423,7 @@ describe('WorkspaceSyncController', () => {
     expect(prepareRelationshipTarget).not.toHaveBeenCalled();
     expect(ownership.tryAcquire).not.toHaveBeenCalled();
     expect(managerLifecycle.start).toHaveBeenCalledOnce();
-    expect(adapter.rehydrate).toHaveBeenCalledWith([]);
+    expect(adapter.rehydrate).toHaveBeenCalledWith([], undefined, new Set());
     expect(adapter.ensure).not.toHaveBeenCalled();
   });
 
@@ -549,8 +1455,8 @@ describe('WorkspaceSyncController', () => {
         'external.operation_kind': 'relationship',
         'external.policy_selection': 'all_files',
       },
-      alpha: { protocol: 'external', host: deriveWorkspaceSyncEndpointId(disabled.relationshipId, 'alpha'), path: '', connected: true, scanned: true },
-      beta: { protocol: 'external', host: deriveWorkspaceSyncEndpointId(disabled.relationshipId, 'beta'), path: '', connected: true, scanned: true },
+      alpha: { protocol: 'external', host: deriveWorkspaceSyncEndpointId(disabled.relationshipId, 'alpha'), path: '', state: { connected: true, scanned: true, scanProblemCount: 0, transitionProblemCount: 0 } },
+      beta: { protocol: 'external', host: deriveWorkspaceSyncEndpointId(disabled.relationshipId, 'beta'), path: '', state: { connected: true, scanned: true, scanProblemCount: 0, transitionProblemCount: 0 } },
       mode: 'one-way-safe',
       paused,
       status: 'watching',
@@ -566,7 +1472,7 @@ describe('WorkspaceSyncController', () => {
     const adapter = createWorkspaceSyncMutagenAdapter({
       send,
       createRequestId: () => 'request-1',
-      resolveWorkspaceRef: async (id) => ({ machineId: 'other', rootPath: `/${id}` }),
+      resolveWorkspaceRef: async (id) => fixtureWorkspaceRef(id),
     });
     const ownership = rootOwnership();
     const prepareRelationshipTarget = vi.fn(async () => undefined);
@@ -575,7 +1481,7 @@ describe('WorkspaceSyncController', () => {
       lifecycle: lifecycle(),
       rootOwnershipManager: ownership,
       localMachineId: 'm1',
-      resolveWorkspaceRef: (id) => ({ machineId: 'other', rootPath: `/${id}` }),
+      resolveWorkspaceRef: fixtureWorkspaceRef,
       prepareRelationshipTarget,
       probeGitRuntimeDependency: vi.fn(async () => false),
     });
@@ -589,7 +1495,6 @@ describe('WorkspaceSyncController', () => {
       }),
     ]);
     expect(commands).toEqual(['list', 'list', 'terminate']);
-    expect(ownership.tryAcquire).not.toHaveBeenCalled();
     expect(prepareRelationshipTarget).not.toHaveBeenCalled();
   });
 
@@ -641,8 +1546,8 @@ describe('WorkspaceSyncController', () => {
         'external.operation_kind': 'relationship',
         'external.policy_selection': 'all_files',
       },
-      alpha: { protocol: 'external', host: deriveWorkspaceSyncEndpointId('removed', 'alpha'), path: '', connected: true, scanned: true },
-      beta: { protocol: 'external', host: deriveWorkspaceSyncEndpointId('removed', 'beta'), path: '', connected: true, scanned: true },
+      alpha: { protocol: 'external', host: deriveWorkspaceSyncEndpointId('removed', 'alpha'), path: '', state: { connected: true, scanned: true, scanProblemCount: 0, transitionProblemCount: 0 } },
+      beta: { protocol: 'external', host: deriveWorkspaceSyncEndpointId('removed', 'beta'), path: '', state: { connected: true, scanned: true, scanProblemCount: 0, transitionProblemCount: 0 } },
       mode: 'one-way-safe',
       paused: false,
       status: 'watching',
@@ -658,7 +1563,7 @@ describe('WorkspaceSyncController', () => {
     const adapter = createWorkspaceSyncMutagenAdapter({
       send,
       createRequestId: () => 'request-1',
-      resolveWorkspaceRef: async (id) => ({ machineId: 'other', rootPath: `/${id}` }),
+      resolveWorkspaceRef: async (id) => fixtureWorkspaceRef(id),
     });
     const ownership = rootOwnership();
     const prepareRelationshipTarget = vi.fn(async () => undefined);
@@ -667,7 +1572,7 @@ describe('WorkspaceSyncController', () => {
       lifecycle: lifecycle(),
       rootOwnershipManager: ownership,
       localMachineId: 'm1',
-      resolveWorkspaceRef: (id) => ({ machineId: 'other', rootPath: `/${id}` }),
+      resolveWorkspaceRef: fixtureWorkspaceRef,
       prepareRelationshipTarget,
       probeGitRuntimeDependency: vi.fn(async () => false),
     });
@@ -716,7 +1621,7 @@ describe('WorkspaceSyncController', () => {
     const probeGitRuntimeDependency = vi.fn(async () => false);
     const controller = new WorkspaceSyncController({
       adapter: completeAdapter({ ensure }), lifecycle: lifecycle(), rootOwnershipManager: rootOwnership(),
-      localMachineId: 'm1', resolveWorkspaceRef: (id) => ({ machineId: 'other', rootPath: `/${id}` }),
+      localMachineId: 'm1', resolveWorkspaceRef: fixtureWorkspaceRef,
       probeGitRuntimeDependency,
     });
 
@@ -753,7 +1658,7 @@ describe('WorkspaceSyncController', () => {
     })));
     const controller = new WorkspaceSyncController({
       adapter: completeAdapter({ rehydrate }), lifecycle: lifecycle(), rootOwnershipManager: rootOwnership(),
-      localMachineId: 'm1', resolveWorkspaceRef: (id) => ({ machineId: 'other', rootPath: `/${id}` }),
+      localMachineId: 'm1', resolveWorkspaceRef: fixtureWorkspaceRef,
       probeGitRuntimeDependency: vi.fn(async () => false),
     });
 
@@ -765,14 +1670,14 @@ describe('WorkspaceSyncController', () => {
         errorCode: 'git_selection_unavailable',
       }),
     ]);
-    expect(rehydrate).toHaveBeenCalledWith([allFilesDefinition]);
+    expect(rehydrate).toHaveBeenCalledWith([allFilesDefinition], undefined, new Set());
   });
 
   it('resolves the Git runtime dependency through the canonical SCM command owner by default', async () => {
     const ensure = vi.fn(async () => status);
     const controller = new WorkspaceSyncController({
       adapter: completeAdapter({ ensure }), lifecycle: lifecycle(), rootOwnershipManager: rootOwnership(),
-      localMachineId: 'm1', resolveWorkspaceRef: (id) => ({ machineId: 'other', rootPath: `/${id}` }),
+      localMachineId: 'm1', resolveWorkspaceRef: fixtureWorkspaceRef,
     });
     const originalPath = process.env.PATH;
     process.env.PATH = '';
@@ -789,7 +1694,7 @@ describe('WorkspaceSyncController', () => {
     const ensure = vi.fn(async (next: typeof definition) => ({ ...status, relationshipId: next.relationshipId }));
     const controller = new WorkspaceSyncController({
       adapter: completeAdapter({ ensure }), lifecycle: lifecycle(), rootOwnershipManager: rootOwnership(),
-      localMachineId: 'm1', resolveWorkspaceRef: (id) => ({ machineId: 'other', rootPath: `/${id}` }),
+      localMachineId: 'm1', resolveWorkspaceRef: fixtureWorkspaceRef,
     });
     const relationships = Array.from({ length: 33 }, (_, index) => ({
       ...definition,
@@ -810,46 +1715,54 @@ describe('WorkspaceSyncController', () => {
   });
 
   it('pauses Mutagen and releases custody when a mutation detects lost root identity', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-controller-flush-loss-'));
+    const rootPath = join(fixture, 'root');
+    await mkdir(rootPath);
+    const rootOwnershipManager = createWorkspaceRootOwnershipManager({ lockDirectory: join(fixture, 'locks') });
     const pause = vi.fn(async () => ({ ...status, state: 'paused' as const }));
-    const release = vi.fn(async () => undefined);
-    const bindCurrentRootIdentity = vi.fn()
-      .mockResolvedValueOnce(undefined)
-      .mockRejectedValueOnce(Object.assign(new Error('lost'), { code: 'workspace_root_ownership_lost' }));
     const controller = new WorkspaceSyncController({
       adapter: completeAdapter({ pause }), lifecycle: lifecycle(), localMachineId: 'm1',
-      rootOwnershipManager: { tryAcquire: vi.fn(async (owner) => ({
-        owner: { ...owner, rootFingerprint: null },
-        bindCurrentRootIdentity,
-        release,
-      })) },
+      rootOwnershipManager,
       resolveWorkspaceRef: (id) => id === 'a'
-        ? { machineId: 'm1', rootPath: `/tmp/controller-bind-${id}-${process.pid}` }
+        ? { machineId: 'm1', rootPath }
         : { machineId: 'm2', rootPath: '/remote/b' },
     });
-    await controller.ensure(definition);
-    await expect(controller.flush('r1')).rejects.toMatchObject({ code: 'workspace_root_ownership_lost' });
-    expect(pause).toHaveBeenCalledWith('r1');
-    expect(release).toHaveBeenCalledOnce();
-    await controller.terminate('r1');
+    try {
+      await controller.ensure(definition);
+      await rename(rootPath, join(fixture, 'old-root'));
+      await mkdir(rootPath);
+      await expect(controller.flush('r1')).rejects.toMatchObject({ code: 'workspace_root_ownership_lost' });
+      expect(pause).toHaveBeenCalledWith('r1');
+      const replacement = await rootOwnershipManager.tryAcquire({ ownerId: 'replacement-probe', canonicalRoot: rootPath, operation: 'handoff' });
+      expect(replacement).not.toHaveProperty('kind');
+      if (!('kind' in replacement)) await replacement.release();
+      await controller.terminate('r1');
+    } finally {
+      await controller.shutdown().catch(() => undefined);
+      await rm(fixture, { recursive: true, force: true });
+    }
   });
 
   it('serializes bind-detected loss behind an in-flight mutation, then reacquires through canonical ensure before resume', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-controller-queued-loss-'));
+    const rootPath = join(fixture, 'root');
+    await mkdir(rootPath);
+    const rootOwnershipManager = createWorkspaceRootOwnershipManager({ lockDirectory: join(fixture, 'locks') });
     const order: string[] = [];
     let finishFlush!: () => void;
     const flushGate = new Promise<void>((resolve) => { finishFlush = resolve; });
-    const oldRelease = vi.fn(async () => { order.push('release-old'); });
-    const freshRelease = vi.fn(async () => { order.push('release-fresh'); });
     let acquisition = 0;
     const tryAcquire = vi.fn(async (owner) => {
       acquisition += 1;
-      const isOld = acquisition === 1;
+      const currentAcquisition = acquisition;
+      const acquired = await rootOwnershipManager.tryAcquire(owner);
+      if ('kind' in acquired) return acquired;
       return {
-        owner: { ...owner, rootFingerprint: null },
-        bindCurrentRootIdentity: isOld
-          ? vi.fn().mockResolvedValueOnce(undefined).mockResolvedValueOnce(undefined)
-            .mockRejectedValueOnce(Object.assign(new Error('lost'), { code: 'workspace_root_ownership_lost' }))
-          : vi.fn(async () => undefined),
-        release: isOld ? oldRelease : freshRelease,
+        ...acquired,
+        release: async () => {
+          order.push(currentAcquisition === 1 ? 'release-old' : 'release-fresh');
+          await acquired.release();
+        },
       };
     });
     const pause = vi.fn(async () => { order.push('pause'); return { ...status, state: 'paused' as const }; });
@@ -868,7 +1781,7 @@ describe('WorkspaceSyncController', () => {
       rootOwnershipManager: { tryAcquire },
       localMachineId: 'm1',
       resolveWorkspaceRef: (id) => id === 'a'
-        ? { machineId: 'm1', rootPath: `/tmp/controller-loss-${process.pid}` }
+        ? { machineId: 'm1', rootPath }
         : { machineId: 'm2', rootPath: '/remote/b' },
       prepareRelationshipTarget,
     });
@@ -879,13 +1792,16 @@ describe('WorkspaceSyncController', () => {
       await vi.waitFor(() => expect(order).toEqual(['flush-start']));
       expect(order).toEqual(['flush-start']);
       expect(pause).not.toHaveBeenCalled();
-      expect(oldRelease).not.toHaveBeenCalled();
+
+      await rename(rootPath, join(fixture, 'old-root'));
+      await mkdir(rootPath);
 
       const losingFlush = controller.flush('r1');
+      const losingFlushResult = expect(losingFlush).rejects.toMatchObject({ code: 'workspace_root_ownership_lost' });
 
       finishFlush();
       await flushing;
-      await expect(losingFlush).rejects.toMatchObject({ code: 'workspace_root_ownership_lost' });
+      await losingFlushResult;
       expect(order).toEqual(['flush-start', 'flush-end', 'pause', 'release-old']);
 
       await controller.resume('r1');
@@ -896,6 +1812,7 @@ describe('WorkspaceSyncController', () => {
       expect(order.slice(-2)).toEqual(['prepare-target', 'ensure']);
     } finally {
       await controller.shutdown();
+      await rm(fixture, { recursive: true, force: true });
     }
   });
 
@@ -959,8 +1876,8 @@ describe('WorkspaceSyncController', () => {
         'external.operation_kind': 'copy_once',
         'external.policy_selection': 'all_files',
       },
-      alpha: { protocol: 'external', host: deriveWorkspaceSyncEndpointId(operationId, 'alpha'), path: '', connected: true, scanned: true },
-      beta: { protocol: 'external', host: deriveWorkspaceSyncEndpointId(operationId, 'beta'), path: '', connected: true, scanned: true },
+      alpha: { protocol: 'external', host: deriveWorkspaceSyncEndpointId(operationId, 'alpha'), path: '', state: { connected: true, scanned: true, scanProblemCount: 0, transitionProblemCount: 0 } },
+      beta: { protocol: 'external', host: deriveWorkspaceSyncEndpointId(operationId, 'beta'), path: '', state: { connected: true, scanned: true, scanProblemCount: 0, transitionProblemCount: 0 } },
       mode: 'one-way-safe',
       paused: false,
       status: 'watching',
@@ -1067,32 +1984,29 @@ describe('WorkspaceSyncController', () => {
     const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-controller-ingress-'));
     const rootPath = join(fixture, 'root');
     await mkdir(rootPath);
-    const canonicalRootPath = await realpath(rootPath);
+    const rootOwnershipManager = createWorkspaceRootOwnershipManager({ lockDirectory: join(fixture, 'locks') });
     const agentStream = new PassThrough();
-    const release = vi.fn(async () => undefined);
     const controller = new WorkspaceSyncController({
       adapter: completeAdapter({ pause: vi.fn(async () => ({ ...status, state: 'paused' as const })) }),
       lifecycle: lifecycle(),
-      rootOwnershipManager: { tryAcquire: vi.fn(async (owner) => ({
-        owner: { ...owner, canonicalRoot: canonicalRootPath, rootFingerprint: null },
-        bindCurrentRootIdentity: vi.fn()
-          .mockResolvedValueOnce(undefined)
-          .mockRejectedValueOnce(Object.assign(new Error('lost'), { code: 'workspace_root_ownership_lost' })),
-        release,
-      })) },
+      rootOwnershipManager,
       localMachineId: 'm1',
       resolveWorkspaceRef: (id) => id === 'a'
-        ? { machineId: 'm1', rootPath: canonicalRootPath }
+        ? { machineId: 'm1', rootPath }
         : { machineId: 'm2', rootPath: '/remote/b' },
       openLocalWorkspaceAgentStream: vi.fn(async () => ownedLocalAgent(agentStream)),
     });
     try {
       await controller.ensure(definition);
+      await rename(rootPath, join(fixture, 'old-root'));
+      await mkdir(rootPath);
       await expect(controller.openExternalStream({
         endpointId: deriveWorkspaceSyncEndpointId('r1', 'alpha'),
       })).rejects.toMatchObject({ code: 'workspace_root_ownership_lost' });
       expect(agentStream.destroyed).toBe(false);
-      expect(release).toHaveBeenCalledOnce();
+      const replacement = await rootOwnershipManager.tryAcquire({ ownerId: 'replacement-probe', canonicalRoot: rootPath, operation: 'handoff' });
+      expect(replacement).not.toHaveProperty('kind');
+      if (!('kind' in replacement)) await replacement.release();
       await expect(controller.openExternalStream({
         endpointId: deriveWorkspaceSyncEndpointId('r1', 'alpha'),
       })).rejects.toMatchObject({ code: 'workspace_root_ownership_lost' });
@@ -1125,7 +2039,7 @@ describe('WorkspaceSyncController', () => {
     });
     await controller.rehydrateFromSettings([definition]);
     expect(events.slice(0, 5)).toEqual(['fence', 'target', 'fence', 'start', 'rehydrate']);
-    expect(rehydrate).toHaveBeenCalledWith([definition]);
+    expect(rehydrate).toHaveBeenCalledWith([definition], undefined, new Set());
     expect(ensure).toHaveBeenCalledTimes(1);
     expect(ensure).toHaveBeenCalledWith(definition, undefined);
     await controller.shutdown();
@@ -1298,7 +2212,7 @@ describe('WorkspaceSyncController', () => {
       expect(prepareRelationshipTarget).toHaveBeenCalledTimes(1);
       expect(prepareRelationshipTarget).toHaveBeenCalledWith(enabled, undefined);
       expect(probeGitRuntimeDependency).not.toHaveBeenCalled();
-      expect(tryAcquire).toHaveBeenCalledWith(expect.objectContaining({ ownerId: 'disabled-restart' }));
+      expect(tryAcquire).toHaveBeenCalledWith(expect.objectContaining({ ownerId: disabled.alphaWorkspaceRefId }));
       await expect(access(roots.disabledBeta)).resolves.toBeUndefined();
 
       disabledEnabled = true;
@@ -1310,13 +2224,56 @@ describe('WorkspaceSyncController', () => {
       ]));
       expect(prepareRelationshipTarget).toHaveBeenCalledWith(resumed, undefined);
       expect(probeGitRuntimeDependency).toHaveBeenCalledOnce();
-      expect(tryAcquire).toHaveBeenCalledWith(expect.objectContaining({ ownerId: 'disabled-restart' }));
+      expect(tryAcquire).toHaveBeenCalledWith(expect.objectContaining({ ownerId: disabled.alphaWorkspaceRefId }));
       await expect(access(roots.disabledBeta)).resolves.toBeUndefined();
     } finally {
       await controller.shutdown().catch(() => undefined);
       await authority.releaseAllRetainedBootstraps().catch(() => undefined);
       await rm(fixture, { recursive: true, force: true });
     }
+  });
+
+  it('rehydrates valid saved components while leaving an invalid saved component cold', async () => {
+    const invalidSecond = {
+      ...definition,
+      relationshipId: 'invalid-second',
+      betaWorkspaceRefId: 'c',
+    };
+    const invalidCycle = {
+      ...definition,
+      relationshipId: 'invalid-cycle',
+      controllerMachineId: 'm2',
+      alphaWorkspaceRefId: 'b',
+      betaWorkspaceRefId: 'c',
+    };
+    const valid = {
+      ...definition,
+      relationshipId: 'valid-unrelated',
+      alphaWorkspaceRefId: 'd',
+      betaWorkspaceRefId: 'e',
+    };
+    const rehydrate = vi.fn(async (relationships: readonly WorkspaceSyncRelationshipV1[]) => (
+      relationships.map((relationship) => ({ ...status, relationshipId: relationship.relationshipId }))
+    ));
+    const adapter = completeAdapter({ rehydrate });
+    const controller = new WorkspaceSyncController({
+      adapter,
+      lifecycle: lifecycle(),
+      rootOwnershipManager: rootOwnership(),
+      localMachineId: 'm1',
+      resolveWorkspaceRef: (id) => ({
+        machineId: id === 'a' || id === 'd' ? 'm1' : id === 'b' ? 'm2' : id === 'c' ? 'm3' : 'm4',
+        rootPath: `/${id}`,
+      }),
+      prepareRelationshipTarget: vi.fn(async () => undefined),
+    });
+
+    await controller.rehydrateFromSettings([definition, invalidSecond, invalidCycle, valid]);
+
+    expect(rehydrate).toHaveBeenCalledWith([valid], undefined, new Set());
+    expect(adapter.ensure).not.toHaveBeenCalled();
+    expect(adapter.terminate).not.toHaveBeenCalled();
+    await controller.shutdown();
   });
 
   it('uses the canonical queued ensure before a handoff flush can start a newly-written relationship', async () => {
@@ -1391,9 +2348,9 @@ describe('WorkspaceSyncController', () => {
     failStop = false;
     await expect(controller.rehydrateFromSettings([])).resolves.toEqual([]);
 
-    expect(rehydrate).toHaveBeenNthCalledWith(1, [definition]);
-    expect(rehydrate).toHaveBeenNthCalledWith(2, []);
-    expect(rehydrate).toHaveBeenNthCalledWith(3, []);
+    expect(rehydrate).toHaveBeenNthCalledWith(1, [definition], undefined, new Set());
+    expect(rehydrate).toHaveBeenNthCalledWith(2, [], undefined, new Set());
+    expect(rehydrate).toHaveBeenNthCalledWith(3, [], undefined, new Set());
     expect(releases).toHaveLength(2);
     expect(releases.every((release) => release.mock.calls.length === 1)).toBe(true);
     expect(stop).toHaveBeenCalledTimes(2);
@@ -1855,7 +2812,7 @@ describe('WorkspaceSyncController', () => {
       lifecycle: lifecycle(),
       rootOwnershipManager: rootOwnership(),
       localMachineId: 'm1',
-      resolveWorkspaceRef: (id) => ({ machineId: 'other', rootPath: `/${id}` }),
+      resolveWorkspaceRef: fixtureWorkspaceRef,
     });
     await controller.ensure(definition);
 
@@ -1889,7 +2846,7 @@ describe('WorkspaceSyncController', () => {
       lifecycle: lifecycle(),
       rootOwnershipManager: rootOwnership(),
       localMachineId: 'm1',
-      resolveWorkspaceRef: (id) => ({ machineId: 'other', rootPath: `/${id}` }),
+      resolveWorkspaceRef: fixtureWorkspaceRef,
       onStatusPublished: (next) => published.push(next),
     });
     await controller.ensure(definition);
@@ -1915,7 +2872,7 @@ describe('WorkspaceSyncController', () => {
       lifecycle: lifecycle(),
       rootOwnershipManager: rootOwnership(),
       localMachineId: 'm1',
-      resolveWorkspaceRef: (id) => ({ machineId: 'other', rootPath: `/${id}` }),
+      resolveWorkspaceRef: fixtureWorkspaceRef,
     });
     await controller.ensure(definition);
 
@@ -1945,7 +2902,7 @@ describe('WorkspaceSyncController', () => {
       lifecycle: lifecycle(),
       rootOwnershipManager: rootOwnership(),
       localMachineId: 'm1',
-      resolveWorkspaceRef: (id) => ({ machineId: 'other', rootPath: `/${id}` }),
+      resolveWorkspaceRef: fixtureWorkspaceRef,
     });
     await controller.ensure(definition);
 
@@ -1972,50 +2929,6 @@ describe('WorkspaceSyncController', () => {
     await controller.shutdown();
   });
 
-  it('deletes the losing target with digest/type preconditions and flushes Mutagen', async () => {
-    const deleteConflictLoserAtTarget = vi.fn(async () => undefined);
-    const flush = vi.fn(async () => status);
-    const controller = new WorkspaceSyncController({
-      adapter: completeAdapter({ flush }), lifecycle: lifecycle(), rootOwnershipManager: rootOwnership(),
-      localMachineId: 'm1', deleteConflictLoserAtTarget,
-      resolveWorkspaceRef: (id) => ({ machineId: id === 'a' ? 'm1' : 'm2', rootPath: `/${id}` }),
-    });
-    await controller.ensure(definition);
-
-    await controller.deleteConflictLoser({
-      relationshipId: 'r1', path: 'src/file.ts', keep: 'alpha', expectedKind: 'file', expectedDigest: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-    }, undefined, 'approval-1');
-
-    expect(deleteConflictLoserAtTarget).toHaveBeenCalledWith({
-      actionReceiptId: 'approval-1',
-      actionInput: {
-        controllerMachineId: 'm1',
-        request: { relationshipId: 'r1', path: 'src/file.ts', keep: 'alpha', expectedKind: 'file', expectedDigest: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' },
-      },
-      relationshipId: 'r1', targetMachineId: 'm2', targetWorkspaceRefId: 'b',
-      path: 'src/file.ts', expectedKind: 'file', expectedDigest: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', signal: undefined,
-    });
-    expect(flush).toHaveBeenCalledWith('r1', undefined);
-    await controller.terminate('r1');
-  });
-
-  it('preserves conflict_changed from the authenticated target and does not flush', async () => {
-    const changed = Object.assign(new Error('target changed'), { code: 'conflict_changed' });
-    const deleteConflictLoserAtTarget = vi.fn(async () => { throw changed; });
-    const flush = vi.fn(async () => status);
-    const controller = new WorkspaceSyncController({
-      adapter: completeAdapter({ flush }), lifecycle: lifecycle(), rootOwnershipManager: rootOwnership(),
-      localMachineId: 'm1', deleteConflictLoserAtTarget,
-      resolveWorkspaceRef: (id) => ({ machineId: id === 'a' ? 'm1' : 'm2', rootPath: `/${id}` }),
-    });
-    await controller.ensure(definition);
-
-    await expect(controller.deleteConflictLoser({
-      relationshipId: 'r1', path: 'src/file.ts', keep: 'alpha', expectedKind: 'file', expectedDigest: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
-    }, undefined, 'approval-1')).rejects.toBe(changed);
-    expect(flush).not.toHaveBeenCalled();
-    await controller.terminate('r1');
-  });
 
   it('routes bounded file reads to the selected authenticated WorkspaceRef without sending a root path', async () => {
     const readFileAtTarget = vi.fn(async () => ({
@@ -2111,114 +3024,6 @@ describe('WorkspaceSyncController', () => {
     }
   });
 
-  it('deletes a fenced local source loser only after exact Action receipt revalidation', async () => {
-    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-controller-source-delete-'));
-    const sourceRoot = join(fixture, 'source');
-    const loserPath = join(sourceRoot, 'loser.txt');
-    const loserBytes = 'local loser';
-    const expectedDigest = createHash('sha1').update(loserBytes).digest('hex');
-    await mkdir(sourceRoot);
-    await writeFile(loserPath, loserBytes);
-    const finalAuthorityOrder: string[] = [];
-    const persistedRootOwnership = createWorkspaceRootOwnershipManager({ lockDirectory: join(fixture, 'locks') });
-    const rootOwnershipManager = {
-      tryAcquire: vi.fn(async (input: Parameters<typeof persistedRootOwnership.tryAcquire>[0]) => {
-        const result = await persistedRootOwnership.tryAcquire(input);
-        if ('kind' in result) return result;
-        return {
-          ...result,
-          bindCurrentRootIdentity: async () => {
-            finalAuthorityOrder.push('root');
-            await result.bindCurrentRootIdentity();
-          },
-        };
-      }),
-    };
-    const assertConflictResolutionAuthorized = vi.fn(async () => {
-      finalAuthorityOrder.push('action');
-    });
-    const deleteConflictLoserAtTarget = vi.fn(async () => undefined);
-    const flush = vi.fn(async () => status);
-    const controller = new WorkspaceSyncController({
-      adapter: completeAdapter({ flush }),
-      lifecycle: lifecycle(),
-      rootOwnershipManager,
-      localMachineId: 'm1',
-      assertConflictResolutionAuthorized,
-      deleteConflictLoserAtTarget,
-      resolveWorkspaceRef: (id) => id === 'a'
-        ? { machineId: 'm1', rootPath: sourceRoot }
-        : { machineId: 'm2', rootPath: '/remote/b' },
-    });
-    const request = {
-      relationshipId: 'r1' as const,
-      path: 'loser.txt',
-      keep: 'beta' as const,
-      expectedKind: 'file' as const,
-      expectedDigest,
-    };
-    try {
-      await controller.ensure(definition);
-      await controller.deleteConflictLoser(request, undefined, 'approval-local-source');
-
-      expect(assertConflictResolutionAuthorized).toHaveBeenCalledWith('approval-local-source', {
-        controllerMachineId: 'm1',
-        request,
-      });
-      expect(deleteConflictLoserAtTarget).not.toHaveBeenCalled();
-      expect(finalAuthorityOrder.slice(-2)).toEqual(['action', 'root']);
-      await expect(access(loserPath)).rejects.toMatchObject({ code: 'ENOENT' });
-      expect(flush).toHaveBeenCalledWith('r1', undefined);
-    } finally {
-      await controller.shutdown();
-      await rm(fixture, { recursive: true, force: true });
-    }
-  });
-
-  it('leaves a local source loser intact when its Action receipt is missing or stale', async () => {
-    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-controller-source-approval-'));
-    const sourceRoot = join(fixture, 'source');
-    const loserPath = join(sourceRoot, 'loser.txt');
-    const loserBytes = 'local loser';
-    const expectedDigest = createHash('sha1').update(loserBytes).digest('hex');
-    await mkdir(sourceRoot);
-    await writeFile(loserPath, loserBytes);
-    const stale = Object.assign(new Error('stale approval'), { code: 'approval_stale' });
-    const assertConflictResolutionAuthorized = vi.fn(async () => { throw stale; });
-    const deleteConflictLoserAtTarget = vi.fn(async () => undefined);
-    const flush = vi.fn(async () => status);
-    const controller = new WorkspaceSyncController({
-      adapter: completeAdapter({ flush }),
-      lifecycle: lifecycle(),
-      rootOwnershipManager: createWorkspaceRootOwnershipManager({ lockDirectory: join(fixture, 'locks') }),
-      localMachineId: 'm1',
-      assertConflictResolutionAuthorized,
-      deleteConflictLoserAtTarget,
-      resolveWorkspaceRef: (id) => id === 'a'
-        ? { machineId: 'm1', rootPath: sourceRoot }
-        : { machineId: 'm2', rootPath: '/remote/b' },
-    });
-    const request = {
-      relationshipId: 'r1' as const,
-      path: 'loser.txt',
-      keep: 'beta' as const,
-      expectedKind: 'file' as const,
-      expectedDigest,
-    };
-    try {
-      await controller.ensure(definition);
-      await expect(controller.deleteConflictLoser(request)).rejects.toMatchObject({ code: 'approval_required' });
-      expect(assertConflictResolutionAuthorized).not.toHaveBeenCalled();
-
-      await expect(controller.deleteConflictLoser(request, undefined, 'stale-approval')).rejects.toBe(stale);
-      await expect(access(loserPath)).resolves.toBeUndefined();
-      expect(deleteConflictLoserAtTarget).not.toHaveBeenCalled();
-      expect(flush).not.toHaveBeenCalled();
-    } finally {
-      await controller.shutdown();
-      await rm(fixture, { recursive: true, force: true });
-    }
-  });
 
   it('fail-closes every state-touching entry point with the exact typed legacy-state code', async () => {
     for (const code of ['legacy_workspace_sync_state_unsupported', 'legacy_workspace_sync_state_unknown'] as const) {
@@ -2242,7 +3047,6 @@ describe('WorkspaceSyncController', () => {
       await expectTyped(controller.resume('r1'));
       await expectTyped(controller.terminate('r1'));
       await expectTyped(controller.listConflicts({ relationshipId: 'r1', limit: 100 }));
-      await expectTyped(controller.deleteConflictLoser({ relationshipId: 'r1', path: 'src/x.ts', keep: 'alpha', expectedKind: 'file' }));
       await expectTyped(controller.readFile({ relationshipId: 'r1', side: 'beta', path: 'src/x.ts', maxBytes: 64 }));
       await expectTyped(controller.rehydrateFromSettings([definition]));
       await expectTyped(controller.openExternalStream({ endpointId: deriveWorkspaceSyncEndpointId('r1', 'beta') }));
@@ -2268,6 +3072,41 @@ describe('WorkspaceSyncController', () => {
 });
 
 describe('WorkspaceSyncController copy_once restart recovery', () => {
+  it('does not commit recovered target custody from historical cycles when the finite result has problems', async () => {
+    const operation = {
+      v: 1 as const, operationId: 'copy-restart-problem', controllerMachineId: 'm1',
+      alphaWorkspaceRefId: 'a', betaWorkspaceRefId: 'b',
+      contentPolicy: { ...policy, policyDigest: computeWorkspaceSyncPolicyDigest(policy) },
+    };
+    let discoveryCount = 0;
+    const adapter = completeAdapter({
+      discoverCopyOnceRecoveries: vi.fn(async () => (++discoveryCount === 1 ? [operation] : [])),
+      copyOnce: vi.fn(async () => ({
+        ...status,
+        relationshipId: operation.operationId,
+        mode: 'copy_once' as const,
+        state: 'error' as const,
+        endpointStates: {
+          ...status.endpointStates,
+          beta: { connected: true, scanned: true, scanProblemCount: 0, transitionProblemCount: 1 },
+        },
+      })),
+      rehydrate: vi.fn(async () => []),
+    });
+    const releaseTarget = vi.fn(async () => undefined);
+    const controller = new WorkspaceSyncController({
+      adapter, lifecycle: lifecycle(), localMachineId: 'm1', rootOwnershipManager: rootOwnership(),
+      resolveWorkspaceRef: (id) => id === 'a'
+        ? { machineId: 'm1', rootPath: '/a' }
+        : { machineId: 'm2', rootPath: '/b' },
+      recoverCopyOnceTarget: vi.fn(async () => ({ release: releaseTarget })),
+    });
+
+    await expect(controller.rehydrateFromSettings([])).rejects.toMatchObject({ code: 'workspace_sync_not_clean' });
+    expect(releaseTarget).toHaveBeenCalledWith('abort');
+    expect(releaseTarget).not.toHaveBeenCalledWith('commit');
+  });
+
   it('reacquires exact roots and target authority before settling the same persisted operation', async () => {
     const policy = { v: 1 as const, selection: 'all_files' as const, extraIgnorePatterns: [], extraIncludePatterns: [] };
     const operation = {
@@ -2317,7 +3156,7 @@ describe('WorkspaceSyncController copy_once restart recovery', () => {
     expect(copyOnce).toHaveBeenCalledWith(operation);
     expect(releaseTarget).toHaveBeenCalledWith('commit');
     expect(adapter.terminate).not.toHaveBeenCalled();
-    expect(adapter.rehydrate).toHaveBeenCalledWith([]);
+    expect(adapter.rehydrate).toHaveBeenCalledWith([], undefined, new Set());
   });
 
   it('retains recovered root and target fences until terminal cleanup succeeds', async () => {
@@ -2416,7 +3255,7 @@ function completeAdapter(overrides: Record<string, unknown> = {}) {
     list: vi.fn(async () => [status]), flush: vi.fn(async () => status), pause: vi.fn(async () => status),
     resume: vi.fn(async () => status), terminate: vi.fn(async () => undefined),
     listConflicts: vi.fn(async () => ({ status: 'page' as const, relationshipId: 'r1', totalCount: 0, nextCursor: null, conflicts: [] })),
-    deleteConflictLoser: vi.fn(async () => status),
+    diagnoseSelection: vi.fn(async () => ({ status: 'unknown' as const, reason: 'selection_unavailable' as const })),
     ...overrides,
   };
 }

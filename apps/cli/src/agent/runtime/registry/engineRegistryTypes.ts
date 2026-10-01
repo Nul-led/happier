@@ -10,6 +10,7 @@ import type {
     AgentSessionConfigurationSnapshot,
     AgentSessionOpenRequest,
     AgentSessionProviderBinding,
+    AgentSessionRuntimeFactory,
 } from '@happier-dev/plugin-sdk/agents/runtime';
 import type { AgentInvocationTurnAdmissionWitness } from '@/plugins/runtime/invocation/services/types';
 import type { ExecutionRunOccurrenceWitnessV1 } from '@/agent/runtime/bridges/executionRun/runOccurrenceWitness';
@@ -43,6 +44,8 @@ import type { StructuredInputComposerReferenceResolver } from '@/agent/runtime/t
  */
 export type NativeAgentSessionRunToolBindingRequest = Readonly<{
     runId: string;
+    /** Absolute depth frozen by the Run manager's host admission. */
+    workDepth: number;
     cwd: string;
     /** This Run's runtime lifetime, not the parent Session's. */
     signal: AbortSignal;
@@ -75,6 +78,7 @@ export type NativeAgentSessionRunTranscriptTarget = Pick<ApiSessionClient,
  */
 export type ExecutionRunHostRunScopeBinding = Readonly<{
     runId: string;
+    workDepth: number;
     sidechainId: string;
     readCurrentRunOccurrence: (runId: string) => ExecutionRunOccurrenceWitnessV1 | null;
     /** Publishes the materialized profile onto this exact controller occurrence. */
@@ -144,6 +148,7 @@ export type NativeAgentSessionInteractionHostBinding = Readonly<{
 }>;
 
 export type BackendExecutionSurfaces = Readonly<{
+    resolveTerminalPresentation?: NonNullable<AgentSessionRuntimeFactory['supportsTerminalPresentation']>;
     terminalRuntime: AnyTerminalRuntimeOps | null;
     externalSession: ExternalSessionExecutionSurface | null;
     attach: AttachSurfaceV1 | null;
@@ -175,6 +180,7 @@ export type CreateCliExecutionRunBackendParams = Readonly<{
     >>;
     sanitizeProviderDiagnosticText?: (value: string) => string;
     permissionMode: string;
+    workspaceWrites?: 'allow' | 'deny';
     /** Host-only active-turn authority; never a public backend request field. */
     causalPermissionAuthority?: SessionInputCausalPermissionAuthorityV1;
     accountSettings?: AccountSettings | null;

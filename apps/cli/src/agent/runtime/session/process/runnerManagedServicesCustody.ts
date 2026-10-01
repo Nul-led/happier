@@ -8,10 +8,14 @@ import {
     ManagedServiceLocalIdSchema,
     PluginDiagnosticDataV1Schema,
     PluginIdSchema,
+    PluginSourceCustodyV1Schema,
+    normalizePluginSourceCustodyV1,
+    pluginSourceCustodyV1Equal,
     PROVIDER_WIRE_PROTOCOL_LIMITS_V1,
     ProviderRuntimeBindingBasisV1Schema,
     type AgentProviderBindingMaterializationV1,
     type ProviderRuntimeBindingBasisV1,
+    type PluginSourceCustodyV1,
 } from '@happier-dev/protocol';
 import type {
     ManagedDependenciesService,
@@ -56,8 +60,8 @@ export type RunnerManagedProviderCustodyIdentityV1 = Readonly<{
     runtimeBindingBasis: ProviderRuntimeBindingBasisV1;
     pluginId: string;
     providerLocalId: string;
-    activationGeneration: string;
-    immutableGenerationId: string;
+    occurrenceId: string;
+    sourceCustody: PluginSourceCustodyV1;
     manifestAuthority: 'external' | 'bundled_first_party';
     operationClaimId: string;
 }>;
@@ -187,7 +191,7 @@ export type RunnerManagedServicesCustodyRequestV1 =
         v: 1;
         kind: 'fenceHardRevocation';
         pluginId: string;
-        immutableGenerationId?: string;
+        sourceCustody?: PluginSourceCustodyV1;
     }>
     | Readonly<{
         v: 1;
@@ -362,6 +366,9 @@ const HostManagedServiceLocalIdSchema = asHostProtocolZod(
     ManagedServiceLocalIdSchema,
 );
 const HostPluginIdSchema = asHostProtocolZod(PluginIdSchema);
+const HostPluginSourceCustodyV1Schema = asHostProtocolZod(
+    PluginSourceCustodyV1Schema,
+);
 const CustodyIdentityPartSchema = z.string().min(1).max(1_024)
     .refine((value) => value === value.trim());
 const ObservationIdSchema = z.string().uuid();
@@ -387,8 +394,8 @@ const CustodyIdentitySchema = z.object({
     runtimeBindingBasis: ProviderRuntimeBindingBasisV1Schema,
     pluginId: CustodyIdentityPartSchema,
     providerLocalId: CustodyIdentityPartSchema,
-    activationGeneration: CustodyIdentityPartSchema,
-    immutableGenerationId: CustodyIdentityPartSchema,
+    occurrenceId: CustodyIdentityPartSchema,
+    sourceCustody: HostPluginSourceCustodyV1Schema,
     manifestAuthority: z.enum(['external', 'bundled_first_party']),
     operationClaimId: CustodyIdentityPartSchema,
 }).strict();
@@ -587,8 +594,7 @@ export const RunnerManagedServicesCustodyRequestV1Schema =
             v: z.literal(1),
             kind: z.literal('fenceHardRevocation'),
             pluginId: HostPluginIdSchema,
-            immutableGenerationId:
-                CustodyIdentityPartSchema.optional(),
+            sourceCustody: HostPluginSourceCustodyV1Schema.optional(),
         }).strict(),
         z.object({
             v: z.literal(1),
@@ -877,14 +883,11 @@ function normalizeCustodyIdentity(
             value.providerLocalId,
             'Provider identity',
         ),
-        activationGeneration: normalizedIdentityPart(
-            value.activationGeneration,
-            'activation generation',
+        occurrenceId: normalizedIdentityPart(
+            value.occurrenceId,
+            'runtime occurrence',
         ),
-        immutableGenerationId: normalizedIdentityPart(
-            value.immutableGenerationId,
-            'immutable generation',
-        ),
+        sourceCustody: normalizePluginSourceCustodyV1(value.sourceCustody),
         manifestAuthority: value.manifestAuthority === 'external'
             || value.manifestAuthority === 'bundled_first_party'
             ? value.manifestAuthority
@@ -1144,10 +1147,10 @@ export function createRunnerManagedServicesCustodyPort(input: Readonly<{
     readCurrentProviderPluginHardRevocationRevision(
         pluginId: string,
     ): number | Promise<number>;
-    readCurrentProviderImmutableGenerationIntegrityCurrentness(
+    readCurrentProviderSourceCustodyIntegrityCurrentness(
         authority: Readonly<{
             pluginId: string;
-            immutableGenerationId: string;
+            sourceCustody: PluginSourceCustodyV1;
             manifestAuthority: 'external' | 'bundled_first_party';
         }>,
     ): boolean | Promise<boolean>;
@@ -1240,11 +1243,10 @@ export function createRunnerManagedServicesCustodyPort(input: Readonly<{
         }
         if (
             await input
-                .readCurrentProviderImmutableGenerationIntegrityCurrentness(
+                .readCurrentProviderSourceCustodyIntegrityCurrentness(
                     {
                         pluginId: scope.pluginId,
-                        immutableGenerationId:
-                            scope.immutableGenerationId,
+                        sourceCustody: scope.sourceCustody,
                         manifestAuthority: scope.manifestAuthority,
                     },
                 ) !== true
@@ -1283,7 +1285,7 @@ export function createRunnerManagedServicesCustodyPort(input: Readonly<{
         entry: CustodyEntry,
     ): RunnerManagedProviderRetainedAuthorityV1 => Object.freeze({
         pluginId: entry.scope.pluginId,
-        immutableGenerationId: entry.scope.immutableGenerationId,
+        sourceCustody: entry.scope.sourceCustody,
         manifestAuthority: entry.scope.manifestAuthority,
         hardRevocationRevisionAtAdmission:
             entry.providerPluginHardRevocationRevisionAtAdmission,
@@ -1548,18 +1550,22 @@ export function createRunnerManagedServicesCustodyPort(input: Readonly<{
             const fencedEstablishments = [...establishments.entries()]
                 .filter(([, establishment]) => (
                     establishment.scope.pluginId === request.pluginId
-                    && (request.immutableGenerationId
-                        ? establishment.scope.immutableGenerationId
-                            === request.immutableGenerationId
+                    && (request.sourceCustody
+                        ? pluginSourceCustodyV1Equal(
+                            establishment.scope.sourceCustody,
+                            request.sourceCustody,
+                        )
                         : establishment.revisionAtAdmission
                             !== currentRevision)
                 ));
             const fencedEntries = [...entries.entries()].filter(
                 ([, entry]) => (
                     entry.scope.pluginId === request.pluginId
-                    && (request.immutableGenerationId
-                        ? entry.scope.immutableGenerationId
-                            === request.immutableGenerationId
+                    && (request.sourceCustody
+                        ? pluginSourceCustodyV1Equal(
+                            entry.scope.sourceCustody,
+                            request.sourceCustody,
+                        )
                         : entry
                             .providerPluginHardRevocationRevisionAtAdmission
                             !== currentRevision)

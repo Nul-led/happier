@@ -44,7 +44,7 @@ export function decryptSecretBox(data: Uint8Array, secret: Uint8Array, onAuthent
     const nonce = data.slice(0, sodium.crypto_secretbox_NONCEBYTES);
     const encrypted = data.slice(sodium.crypto_secretbox_NONCEBYTES);
 
-    let decrypted: Uint8Array;
+    let decrypted: Uint8Array | null;
     try {
         decrypted = sodium.crypto_secretbox_open_easy(encrypted, nonce, secret);
         if (!decrypted) {

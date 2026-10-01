@@ -1,3 +1,4 @@
+import { archiveSessionReports, confirmSessionArchive } from '@/components/sessions/actions/confirmSessionArchive';
 import * as React from 'react';
 
 import type { DropdownMenuItem } from '@/components/ui/forms/dropdown/DropdownMenu';
@@ -6,6 +7,7 @@ import {
     SESSION_ACTION_ARCHIVE_ID,
     SESSION_ACTION_CLEAR_ATTENTION_STANDING_ID,
     SESSION_ACTION_EDIT_TAGS_ID,
+    SESSION_ACTION_PUT_UNDER_ID,
     SESSION_ACTION_MARK_READ_ID,
     SESSION_ACTION_MARK_UNREAD_ID,
     SESSION_ACTION_MOVE_TO_FOLDER_ID,
@@ -34,14 +36,9 @@ import {
     SESSION_ROW_ACTION_SELECT_ID,
     type SessionRowActionMenuState,
 } from './sessionRowActionMenuTypes';
-import {
-    resolveSessionAttentionReminderSelection,
-    SESSION_ATTENTION_REMINDER_MENU_ID,
-} from './sessionAttentionReminderAction';
+import { handleSessionReminderMenuSelection, isSessionReminderMenuItemId } from './handleSessionReminderMenuSelection';
 import { useSettingMutable } from '@/sync/domains/state/storage';
-import { resolveSessionReminderPresetRule, sessionReminderPresetRuleKey } from '@/sync/domains/session/organization/sessionReminderPreset';
 import { useApplySessionReminderPresetIntent } from '@/sync/store/settingsWriters';
-import { showSessionReminderDateTimeModal, showSessionReminderPresetManagerModal } from './sessionReminderModals';
 
 function showActionError(error: unknown): void {
     if (error instanceof HappyError) {
@@ -60,6 +57,7 @@ function resolveActionIdFromMenuItemId(itemId: string): SessionActionId | null {
         case SESSION_ACTION_PIN_ID:
         case SESSION_ACTION_UNPIN_ID:
         case SESSION_ACTION_EDIT_TAGS_ID:
+        case SESSION_ACTION_PUT_UNDER_ID:
             return itemId;
         default:
             return null;
@@ -156,7 +154,7 @@ export function useSessionRowActionMenu(params: Readonly<{
         onToggle: applyTagToggle,
         onCreate: applyTagCreate,
     }), [applyTagCreate, applyTagToggle, params.activeTags, params.iconColor, params.knownTags]);
-    const tagMenuItems = React.useMemo(() => [...tagMenuContent.dropdownItems], [tagMenuContent.dropdownItems]);
+    const tagMenuItems = tagMenuContent.dropdownItems;
     const handleTagMenuSelect = tagMenuContent.dropdownOnSelect;
     const handleTagMenuCreate = tagMenuContent.dropdownOnCreate ?? (() => {});
 
@@ -168,12 +166,18 @@ export function useSessionRowActionMenu(params: Readonly<{
         });
     });
 
+    const alsoArchiveReportsRef = React.useRef(false);
     const [archivingSession, performArchiveMutation] = useHappyAction(async () => {
+        const context = { hideInactiveSessions: params.hideInactiveSessions };
         await executeSessionAction({
             actionId: SESSION_ACTION_ARCHIVE_ID,
             target,
-            context: { hideInactiveSessions: params.hideInactiveSessions },
+            context,
         });
+        if (alsoArchiveReportsRef.current) {
+            alsoArchiveReportsRef.current = false;
+            await archiveSessionReports({ leadSessionId: target.sessionId, serverId: target.serverId, context });
+        }
     });
 
     const confirmStopSession = React.useCallback(async () => {
@@ -190,19 +194,13 @@ export function useSessionRowActionMenu(params: Readonly<{
         performStopMutation();
     }, [performStopMutation]);
 
+    const reportCount = target.session.reports?.total ?? 0;
     const confirmArchiveSession = React.useCallback(async () => {
-        const confirmed = await Modal.confirm(
-            t('sessionInfo.archiveSession'),
-            t('sessionInfo.archiveSessionConfirm'),
-            {
-                cancelText: t('common.cancel'),
-                confirmText: t('sessionInfo.archiveSession'),
-                destructive: true,
-            },
-        );
-        if (!confirmed) return;
+        const confirmation = await confirmSessionArchive({ reportCount });
+        if (!confirmation.confirmed) return;
+        alsoArchiveReportsRef.current = confirmation.alsoArchiveReports;
         performArchiveMutation();
-    }, [performArchiveMutation]);
+    }, [performArchiveMutation, reportCount]);
 
     const handleRenameSession = React.useCallback(async () => {
         const newName = await Modal.prompt(
@@ -303,43 +301,20 @@ export function useSessionRowActionMenu(params: Readonly<{
     ]);
 
     const handleMoreMenuSelect = React.useCallback(async (itemId: string) => {
-        if (itemId.startsWith(`${SESSION_ATTENTION_REMINDER_MENU_ID}:`)) {
-            const nowMs = Date.now();
-            const selection = resolveSessionAttentionReminderSelection(itemId, nowMs);
-            if (selection?.kind === 'current') return;
-            if (selection?.kind === 'remove') {
-                if (!target.reminderAction.canClear) return;
-                const result = await sessionClearAttentionReminderWithServerScope(target.sessionId, { serverId: target.serverId });
-                if (!result.success) Modal.alert(t('common.error'), result.message ?? t('errors.unknownError'));
-                return;
-            }
-            if (!target.reminderAction.canSchedule) return;
-            const schedule = async (remindAt: number) => await sessionSetAttentionReminderWithServerScope(
-                target.sessionId,
-                remindAt,
-                { serverId: target.serverId },
-            );
-            if (selection?.kind === 'custom') {
-                // The modal owns the draft until the one canonical save succeeds, so a failed save
-                // keeps the chosen instant and the Add-to-presets switch for a retry.
-                const saved = await showSessionReminderDateTimeModal(nowMs, async (value) => await schedule(value.remindAt));
-                if (saved?.preset) await applyReminderPresetIntent({ kind: 'upsert', preset: saved.preset });
-                return;
-            }
-            if (selection?.kind === 'manage_presets') {
-                const managed = await showSessionReminderPresetManagerModal(reminderPresets);
-                if (managed) await applyReminderPresetIntent({ kind: 'replace', presets: managed });
-                return;
-            }
-            let remindAt = selection?.kind === 'timestamp' ? selection.remindAt : null;
-            if (selection?.kind === 'preset') {
-                const preset = reminderPresets.find((candidate) => sessionReminderPresetRuleKey(candidate.rule) === selection.ruleKey);
-                remindAt = preset ? resolveSessionReminderPresetRule(preset.rule, nowMs) : null;
-            }
-            if (remindAt !== null) {
-                const result = await schedule(remindAt);
-                if (!result.success) Modal.alert(t('common.error'), result.message ?? t('errors.unknownError'));
-            }
+        if (isSessionReminderMenuItemId(itemId)) {
+            await handleSessionReminderMenuSelection({
+                itemId,
+                canSchedule: target.reminderAction.canSchedule,
+                canClear: target.reminderAction.canClear,
+                presets: reminderPresets ?? [],
+                applyPresetIntent: applyReminderPresetIntent,
+                schedule: async (remindAt) => await sessionSetAttentionReminderWithServerScope(
+                    target.sessionId,
+                    remindAt,
+                    { serverId: target.serverId },
+                ),
+                clear: async () => await sessionClearAttentionReminderWithServerScope(target.sessionId, { serverId: target.serverId }),
+            });
             return;
         }
         if (itemId === 'ui.session.follow') {
@@ -395,6 +370,9 @@ export function useSessionRowActionMenu(params: Readonly<{
                 return;
             case SESSION_ACTION_UNARCHIVE_ID:
                 await handleUnarchiveSession();
+                return;
+            case SESSION_ACTION_PUT_UNDER_ID:
+                await executeSessionAction({ actionId: SESSION_ACTION_PUT_UNDER_ID, target });
                 return;
             default:
                 return;

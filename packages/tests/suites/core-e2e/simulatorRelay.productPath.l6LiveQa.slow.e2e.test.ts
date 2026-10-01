@@ -8,6 +8,7 @@ import { Platform } from 'react-native';
 
 import {
   MACHINE_LIVE_STREAM_SOCKET_EVENT,
+  MachineLiveStreamRelayEnvelopeV1Schema,
   type MachineLiveStreamCapsV1,
   type MachineLiveStreamFrameV1,
   type MachineLiveStreamRelayEnvelopeV1,
@@ -40,6 +41,10 @@ import type {
 import { createMachineLiveStreamRelayTerminator } from '../../../../apps/cli/src/daemon/peer/mediation/stream/relay';
 
 const run = createRunDirs({ runLabel: 'core' });
+
+// A complete 2×2 RGB JPEG encoded and decoded with the existing sharp dependency; decoded RGB is
+// [37, 103, 181]. This is a codec fixture at the injected capture/OS boundary.
+const JPEG_FRAME_BASE64 = '/9j/2wBDAAYEBQYFBAYGBQYHBwYIChAKCgkJChQODwwQFxQYGBcUFhYaHSUfGhsjHBYWICwgIyYnKSopGR8tMC0oMCUoKSj/2wBDAQcHBwoIChMKChMoGhYaKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCj/wAARCAACAAIDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAb/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFAEBAAAAAAAAAAAAAAAAAAAABv/EABQRAQAAAAAAAAAAAAAAAAAAAAD/2gAMAwEAAhEDEQA/AI8A5En/2Q==';
 
 const STREAM_CAPS: MachineLiveStreamCapsV1 = {
   maxBitrateBps: 64_000,
@@ -83,13 +88,13 @@ function toBase64(bytes: Uint8Array | string): string {
 }
 
 function makeFrame(streamId: string, sequence: number): MachineLiveStreamFrameV1 {
-  const payload = Buffer.from(`ru2-simulator-relay-frame-${sequence}`, 'utf8');
+  const payload = Buffer.from(JPEG_FRAME_BASE64, 'base64');
   return {
     v: 1,
     streamId,
     sequence,
     timestampMs: Date.now() + sequence,
-    payloadKind: sequence === 1 ? 'image_keyframe' : 'image_delta',
+    payloadKind: 'image_keyframe',
     payloadEncoding: 'binary_base64',
     payloadBase64: payload.toString('base64'),
     payloadSizeBytes: payload.byteLength,
@@ -262,12 +267,19 @@ function buildHookInput(params: Readonly<{
   viewerSocketId: string;
   simulatorId: string;
   streamId: string;
+  receivedFrames: MachineLiveStreamFrameV1[];
 }>): UseSimulatorRelayIngestionInput {
   return {
     enabled: true,
     transport: {
       send: (event, envelope) => apiSocket.send(event, envelope),
-      onEnvelope: (listener) => apiSocket.onMachineLiveStreamRelayEnvelope(listener),
+      onEnvelope: (listener) => apiSocket.onMachineLiveStreamRelayEnvelope((envelope) => {
+        const parsed = MachineLiveStreamRelayEnvelopeV1Schema.safeParse(envelope);
+        if (parsed.success && parsed.data.message.kind === 'frame') {
+          params.receivedFrames.push(parsed.data.message.frame);
+        }
+        listener(envelope);
+      }),
     },
     sourceMachineId: params.sourceMachineId,
     targetMachineId: params.targetMachineId,
@@ -281,7 +293,10 @@ function buildHookInput(params: Readonly<{
   };
 }
 
-describe('core e2e: simulator relay production UI hook path (L6 Live QA)', () => {
+// Exercises real RPC/server/relay/UI ingestion with an in-process daemon handler
+// and an injected capture boundary. Device capture, daemon bootstrap and rendered
+// pixels require the separate managed-stack/device journey.
+describe('core e2e: simulator relay RPC and production UI ingestion (L6 transport proof)', () => {
   let server: StartedServer | null = null;
   const sockets: SocketIoClient[] = [];
   const originalPlatformOs = Platform.OS;
@@ -295,7 +310,7 @@ describe('core e2e: simulator relay production UI hook path (L6 Live QA)', () =>
     server = null;
   });
 
-  it('delivers multiple frames, resets stale device state, stops capture on unmount, and isolates viewer tabs', async () => {
+  it('delivers JPEG bytes, resets stale device state, stops capture on unmount, and isolates viewer tabs', async () => {
     const testDir = run.testDir(`simulator-relay-product-path-${randomUUID()}`);
     const grantSigningKeyPair = tweetnacl.sign.keyPair();
     server = await startServerLight({
@@ -417,6 +432,7 @@ describe('core e2e: simulator relay production UI hook path (L6 Live QA)', () =>
     const simulatorB = `sim_${randomUUID()}`;
     const streamA = `stream_${randomUUID()}`;
     const streamB = `stream_${randomUUID()}`;
+    const receivedFrames: MachineLiveStreamFrameV1[] = [];
     const hook = await renderHook(
       (props: UseSimulatorRelayIngestionInput) => useSimulatorRelayIngestion(props),
       {
@@ -426,6 +442,7 @@ describe('core e2e: simulator relay production UI hook path (L6 Live QA)', () =>
           viewerSocketId,
           simulatorId: simulatorA,
           streamId: streamA,
+          receivedFrames,
         }),
       },
     );
@@ -438,11 +455,19 @@ describe('core e2e: simulator relay production UI hook path (L6 Live QA)', () =>
     expect(firstCaptureSession).toBeDefined();
     await act(async () => {
       firstCaptureSession?.offerFrames(2);
-      await waitFor(() => (hook.getCurrent().playerStatesBySimulatorId[simulatorA]?.decodedFrames ?? 0) >= 2, {
+      await waitFor(() => receivedFrames.some((frame) => frame.streamId === streamA && frame.sequence === 2)
+        && hook.getCurrent().playerStatesBySimulatorId[simulatorA]?.lastFrameUrl === `data:image/jpeg;base64,${JPEG_FRAME_BASE64}`, {
         timeoutMs: 15_000,
-        context: 'production UI hook observed at least two frames',
+        context: 'production UI hook staged JPEG bytes from first device',
       });
     });
+    expect(hook.getCurrent().playerStatesBySimulatorId[simulatorA]?.lastFrameUrl)
+      .toBe(`data:image/jpeg;base64,${JPEG_FRAME_BASE64}`);
+    expect(receivedFrames.filter((frame) => frame.streamId === streamA))
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ sequence: 1, payloadBase64: JPEG_FRAME_BASE64 }),
+        expect.objectContaining({ sequence: 2, payloadBase64: JPEG_FRAME_BASE64 }),
+      ]));
     expect(otherViewerFrames).toHaveLength(0);
 
     await hook.rerender(buildHookInput({
@@ -451,6 +476,7 @@ describe('core e2e: simulator relay production UI hook path (L6 Live QA)', () =>
       viewerSocketId,
       simulatorId: simulatorB,
       streamId: streamB,
+      receivedFrames,
     }));
     await waitFor(() => capture.sessions.some((session) => session.streamId === streamB), {
       timeoutMs: 20_000,
@@ -458,17 +484,25 @@ describe('core e2e: simulator relay production UI hook path (L6 Live QA)', () =>
     });
     const afterSwitch = hook.getCurrent().playerStatesBySimulatorId;
     expect(afterSwitch[simulatorA]).toBeUndefined();
-    expect(afterSwitch[simulatorB]?.decodedFrames ?? 0).toBe(0);
+    expect(afterSwitch[simulatorB]?.lastFrameUrl).toBeUndefined();
 
     const secondCaptureSession = capture.sessions.find((session) => session.streamId === streamB);
     expect(secondCaptureSession).toBeDefined();
     await act(async () => {
       secondCaptureSession?.offerFrames(2);
-      await waitFor(() => (hook.getCurrent().playerStatesBySimulatorId[simulatorB]?.decodedFrames ?? 0) >= 2, {
+      await waitFor(() => receivedFrames.some((frame) => frame.streamId === streamB && frame.sequence === 2)
+        && hook.getCurrent().playerStatesBySimulatorId[simulatorB]?.lastFrameUrl === `data:image/jpeg;base64,${JPEG_FRAME_BASE64}`, {
         timeoutMs: 15_000,
-        context: 'production UI hook observed second device frames',
+        context: 'production UI hook staged JPEG bytes from second device',
       });
     });
+    expect(hook.getCurrent().playerStatesBySimulatorId[simulatorB]?.lastFrameUrl)
+      .toBe(`data:image/jpeg;base64,${JPEG_FRAME_BASE64}`);
+    expect(receivedFrames.filter((frame) => frame.streamId === streamB))
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ sequence: 1, payloadBase64: JPEG_FRAME_BASE64 }),
+        expect.objectContaining({ sequence: 2, payloadBase64: JPEG_FRAME_BASE64 }),
+      ]));
 
     await hook.unmount();
     await waitFor(() => capture.sessions.every((session) => session.isStopped()), {

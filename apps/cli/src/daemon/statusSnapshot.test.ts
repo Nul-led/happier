@@ -48,6 +48,7 @@ const {
         credentialState: 'missing' as const,
         authenticated: false,
         unusableReason: 'no-credentials' as const,
+        accountLabel: null,
         machineId: null,
         machineRegistrationState: 'no-local-id' as const,
         machineRegistered: false,
@@ -92,6 +93,7 @@ describe('readDaemonStatusSnapshot', () => {
             credentialState: 'missing',
             authenticated: false,
             unusableReason: 'no-credentials',
+            accountLabel: null,
             machineId: null,
             machineRegistrationState: 'no-local-id',
             machineRegistered: false,
@@ -113,6 +115,7 @@ describe('readDaemonStatusSnapshot', () => {
             credentialState: 'valid',
             authenticated: true,
             unusableReason: null,
+            accountLabel: 'alice',
             machineId: 'machine-confirmed',
             machineRegistrationState: 'server-confirmed',
             machineRegistered: true,
@@ -123,6 +126,7 @@ describe('readDaemonStatusSnapshot', () => {
         const snapshot = await readDaemonStatusSnapshot();
 
         expect(snapshot.auth).toMatchObject({
+            accountLabel: 'alice',
             authenticated: true,
             credentialState: 'valid',
             machineRegistrationState: 'server-confirmed',
@@ -143,6 +147,7 @@ describe('readDaemonStatusSnapshot', () => {
             credentialState: 'unknown',
             authenticated: false,
             unusableReason: null,
+            accountLabel: null,
             machineId: 'machine-local',
             machineRegistrationState: 'local-only',
             machineRegistered: false,

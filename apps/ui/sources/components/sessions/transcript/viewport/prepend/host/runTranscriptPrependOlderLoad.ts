@@ -8,7 +8,7 @@ export type TranscriptPrependOlderLoadOptions = Readonly<{
     showLoadingIndicator?: boolean;
 }>;
 
-import type { TranscriptOlderPageLoadResult } from '@/sync/domains/messages/transcriptOlderPageLoad';
+import type { TranscriptOlderPageLoadResult } from "@happier-dev/session-core/messages";
 
 export type TranscriptPrependOlderLoadResult = TranscriptOlderPageLoadResult;
 
@@ -18,8 +18,6 @@ export type TranscriptPrependOlderLoadSyncOptions = Readonly<{
 
 export async function runTranscriptPrependOlderLoad(params: Readonly<{
     clearOlderLoadSpinnerDelay: () => void;
-    hasMoreOlder: boolean | null;
-    hasMoreOlderRef: MutableRef<boolean | null>;
     hideOlderLoadSpinner: () => void;
     isReady: boolean;
     loadOlderInFlight: MutableRef<boolean>;
@@ -28,7 +26,6 @@ export async function runTranscriptPrependOlderLoad(params: Readonly<{
     options?: TranscriptPrependOlderLoadOptions;
     prependHost: TranscriptPrependHost;
     resolveSyncLoadOlderOptions: () => TranscriptPrependOlderLoadSyncOptions | null;
-    setHasMoreOlder: (value: boolean) => void;
     setIsLoadingOlder: (value: boolean) => void;
     showOlderLoadSpinner: () => void;
 }>): Promise<TranscriptPrependOlderLoadResult | null> {
@@ -36,11 +33,7 @@ export async function runTranscriptPrependOlderLoad(params: Readonly<{
     if (!params.isReady) return null;
     const showLoadingIndicator = options.showLoadingIndicator !== false;
     const preservePrependViewport = options.preservePrependViewport !== false;
-    if (
-        params.loadOlderInFlight.current ||
-        params.hasMoreOlderRef.current === false ||
-        params.hasMoreOlder === false
-    ) {
+    if (params.loadOlderInFlight.current) {
         if (params.loadOlderInFlight.current && showLoadingIndicator && options.loadingIndicatorDelayMs === 0) {
             params.showOlderLoadSpinner();
         }
@@ -64,13 +57,6 @@ export async function runTranscriptPrependOlderLoad(params: Readonly<{
     try {
         const result = await params.loadOlderMessages(params.resolveSyncLoadOlderOptions());
         loadCompleted = true;
-        if (result.status === 'no_more') {
-            params.hasMoreOlderRef.current = false;
-            params.setHasMoreOlder(false);
-        } else if (result.status === 'loaded' || result.status === 'not_ready' || result.status === 'in_flight') {
-            params.hasMoreOlderRef.current = result.hasMore;
-            params.setHasMoreOlder(result.hasMore);
-        }
         return result;
     } finally {
         if (!loadCompleted && params.prependHost.hasOpenNativeTransaction()) {

@@ -630,7 +630,7 @@ describe('materializeConnectedServicesForSpawn', () => {
     expect(result!.env).not.toHaveProperty('PI_CODING_AGENT_SESSION_DIR');
   });
 
-  it('materializes Claude subscription setup tokens into the isolated native Claude home', async () => {
+  it('keeps Claude credentials isolated while reconciling configuration sharing independently of unchanged credentials', async () => {
     const baseDir = await mkdtemp(join(tmpdir(), 'happier-connected-services-test-'));
     const activeServerDir = await mkdtemp(join(tmpdir(), 'happier-connected-services-server-test-'));
     const sourceClaudeConfigDir = await mkdtemp(join(tmpdir(), 'happier-source-claude-config-test-'));
@@ -643,7 +643,7 @@ describe('materializeConnectedServicesForSpawn', () => {
     });
     await writeFile(join(sourceClaudeConfigDir, 'settings.json'), '{"permissions":{"allow":["Bash(*)"]}}\n');
 
-    const result = await materializeConnectedServicesForSpawn({
+    const params = {
       agentId: 'claude',
       materializationKey: 'session-6a',
       activeServerDir,
@@ -654,7 +654,8 @@ describe('materializeConnectedServicesForSpawn', () => {
         ...process.env,
         CLAUDE_CONFIG_DIR: sourceClaudeConfigDir,
       },
-    });
+    } satisfies MaterializeParams;
+    const result = await materializeConnectedServicesForSpawn(params);
     expect(result).not.toBeNull();
     expect(JSON.parse(await readFile(join(result!.env.CLAUDE_CONFIG_DIR, '.credentials.json'), 'utf8'))).toEqual({
       claudeAiOauth: {
@@ -664,5 +665,32 @@ describe('materializeConnectedServicesForSpawn', () => {
     });
     expect(result!.env).not.toHaveProperty('CLAUDE_CODE_OAUTH_TOKEN');
     expect(result!.env).not.toHaveProperty('CLAUDE_CODE_SETUP_TOKEN');
+    const target = result!.env.CLAUDE_CONFIG_DIR;
+    expect((await lstat(join(target, 'settings.json'))).isSymbolicLink()).toBe(true);
+    expect((await lstat(join(target, '.credentials.json'))).isSymbolicLink()).toBe(false);
+    await writeFile(join(sourceClaudeConfigDir, 'settings.json'), '{"theme":"updated"}\n');
+    expect(JSON.parse(await readFile(join(target, 'settings.json'), 'utf8'))).toEqual({ theme: 'updated' });
+
+    const copiedParams = {
+      ...params,
+      accountSettings: { connectedServicesProviderStateSharingSettingsV1: {
+        v: 1, defaults: { configMode: 'copied', stateMode: 'isolated' },
+      } },
+    } satisfies MaterializeParams;
+    await materializeConnectedServicesForSpawn(copiedParams);
+    expect((await lstat(join(target, 'settings.json'))).isSymbolicLink()).toBe(false);
+    await writeFile(join(sourceClaudeConfigDir, 'settings.json'), '{"theme":"refreshed"}\n');
+    await materializeConnectedServicesForSpawn(copiedParams);
+    expect(JSON.parse(await readFile(join(target, 'settings.json'), 'utf8'))).toEqual({ theme: 'refreshed' });
+
+    await materializeConnectedServicesForSpawn({
+      ...params,
+      accountSettings: { connectedServicesProviderStateSharingSettingsV1: {
+        v: 1, defaults: { configMode: 'isolated', stateMode: 'isolated' },
+      } },
+    });
+    await expect(lstat(join(target, 'settings.json'))).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(JSON.parse(await readFile(join(target, '.credentials.json'), 'utf8')).claudeAiOauth.accessToken)
+      .toBe('sk-ant-oat01-123');
   });
 });

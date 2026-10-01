@@ -177,7 +177,7 @@ describe('createDefaultActionExecutor (prompt library routing)', () => {
     it('routes exact existing-session model selections to the session-host private transition owner', async () => {
         const { createDefaultActionExecutor } = await import('./defaultActionExecutor');
         const selection = {
-            agentTargetKey: 'backend:claude',
+            agentTargetKey: 'agent:happier.agent.claude/claude',
             providerConnectionId: 'pc_work',
             modelId: 'provider-model',
         };
@@ -185,7 +185,7 @@ describe('createDefaultActionExecutor (prompt library routing)', () => {
             ok: false,
             status: 'owner_unavailable',
             activeSelection: {
-                agentTargetKey: 'backend:claude',
+                agentTargetKey: 'agent:happier.agent.claude/claude',
                 providerConnectionId: null,
                 modelId: 'native-model',
             },
@@ -204,7 +204,7 @@ describe('createDefaultActionExecutor (prompt library routing)', () => {
             },
         };
         const nativeDefaultSelection = {
-            agentTargetKey: 'backend:claude',
+            agentTargetKey: 'agent:happier.agent.claude/claude',
             providerConnectionId: null,
             modelId: 'default',
         };
@@ -214,7 +214,7 @@ describe('createDefaultActionExecutor (prompt library routing)', () => {
             activeSelection: nativeDefaultSelection,
         };
         const inheritedProviderSelection = {
-            agentTargetKey: 'backend:claude',
+            agentTargetKey: 'agent:happier.agent.claude/claude',
             providerConnectionId: 'pc_active',
             modelId: 'provider-next',
         };
@@ -283,7 +283,7 @@ describe('createDefaultActionExecutor (prompt library routing)', () => {
             v: 1,
             updatedAt: 10,
             selection: {
-                agentTargetKey: 'backend:claude',
+                agentTargetKey: 'agent:happier.agent.claude/claude',
                 providerConnectionId: 'pc_pending',
                 modelId: 'pending-restart-model',
             },
@@ -367,7 +367,7 @@ describe('createDefaultActionExecutor (prompt library routing)', () => {
                 status: 'owner_unavailable',
                 activeSelection: null,
                 requestedSelection: {
-                    agentTargetKey: 'backend:claude',
+                    agentTargetKey: 'agent:happier.agent.claude/claude',
                     providerConnectionId: 'pc_work',
                     modelId: 'provider-model',
                 },
@@ -423,7 +423,7 @@ describe('createDefaultActionExecutor (prompt library routing)', () => {
             v: 1,
             updatedAt: expect.any(Number),
             selection: {
-                agentTargetKey: 'backend:claude',
+                agentTargetKey: 'agent:happier.agent.claude/claude',
                 providerConnectionId: 'pc_work',
                 modelId: 'provider-model',
             },
@@ -444,7 +444,7 @@ describe('createDefaultActionExecutor (prompt library routing)', () => {
             v: 1,
             updatedAt: expect.any(Number),
             selection: {
-                agentTargetKey: 'backend:claude',
+                agentTargetKey: 'agent:happier.agent.claude/claude',
                 providerConnectionId: null,
                 modelId: 'default',
             },
@@ -520,7 +520,7 @@ describe('createDefaultActionExecutor (prompt library routing)', () => {
                             v: 1,
                             updatedAt: 10,
                             selection: {
-                                agentTargetKey: 'backend:claude',
+                                agentTargetKey: 'agent:happier.agent.claude/claude',
                                 providerConnectionId: 'pc_pending',
                                 modelId: 'pending-model',
                             },
@@ -565,7 +565,7 @@ describe('createDefaultActionExecutor (prompt library routing)', () => {
             ok: true as const,
             status: 'applied' as const,
             activeSelection: {
-                agentTargetKey: 'backend:claude',
+                agentTargetKey: 'agent:happier.agent.claude/claude',
                 providerConnectionId: 'pc_active',
                 modelId: 'provider-next',
             },
@@ -642,7 +642,7 @@ describe('createDefaultActionExecutor (prompt library routing)', () => {
                 status: 'owner_unavailable',
                 activeSelection: null,
                 requestedSelection: {
-                    agentTargetKey: 'backend:claude',
+                    agentTargetKey: 'agent:happier.agent.claude/claude',
                     providerConnectionId: null,
                     modelId: 'provider-next',
                 },
@@ -678,7 +678,7 @@ describe('createDefaultActionExecutor (prompt library routing)', () => {
                         v: 1,
                         updatedAt: Number.MAX_SAFE_INTEGER,
                         selection: {
-                            agentTargetKey: 'backend:claude',
+                            agentTargetKey: 'agent:happier.agent.claude/claude',
                             providerConnectionId: null,
                             modelId: 'newer-model',
                         },
@@ -701,12 +701,12 @@ describe('createDefaultActionExecutor (prompt library routing)', () => {
             details: {
                 status: 'superseded',
                 activeSelection: {
-                    agentTargetKey: 'backend:claude',
+                    agentTargetKey: 'agent:happier.agent.claude/claude',
                     providerConnectionId: null,
                     modelId: 'default',
                 },
                 requestedSelection: {
-                    agentTargetKey: 'backend:claude',
+                    agentTargetKey: 'agent:happier.agent.claude/claude',
                     providerConnectionId: 'pc_work',
                     modelId: 'provider-model',
                 },

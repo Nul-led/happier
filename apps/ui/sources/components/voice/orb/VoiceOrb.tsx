@@ -11,6 +11,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 
 import { Text } from '@/components/ui/text/Text';
 import { Typography } from '@/constants/Typography';
+import { usePressFeedback } from '@/components/ui/interactions/usePressFeedback';
 import { resolveOverlayPointerEvents } from '@/components/ui/overlays/resolveOverlayPointerEvents';
 import type { CompanionPoint } from '@/components/companion/interaction/useCompanionNativePanGesture';
 import { useCompanionNoDragRegions } from '@/components/companion/interaction/CompanionNoDragRegion';
@@ -235,9 +236,13 @@ export function VoiceOrb(props: Readonly<{
     /*
      * Press feedback lives on the orb's own transform rather than in a second pressable primitive:
      * the orb is one animated object that is already interpolating position, dock and drag lift, and
-     * wrapping it in another animated pressable would give the same body two competing scales.
+     * wrapping it in another animated pressable would give the same body two competing scales. The
+     * values and the reduced-motion rule still come from the shared press owner.
      */
-    const pressed = useSharedValue(0);
+    const pressFeedback = usePressFeedback({ reduced: energy.reduced });
+    const pressed = pressFeedback.progress;
+    const pressScaleDelta = pressFeedback.scaleDelta;
+    const pressOpacityDelta = pressFeedback.opacityDelta;
     const orbStyle = useAnimatedStyle(() => {
         'worklet';
         const p = open.get();
@@ -250,9 +255,11 @@ export function VoiceOrb(props: Readonly<{
                 {
                     scale: (1 + (VOICE_ORB_EXPANDED_SCALE - 1) * p)
                         * (1 + dragProgress.get() * VOICE_ORB_DRAG_LIFT_SCALE)
-                        * (1 - pressed.get() * 0.04),
+                        * (1 - pressed.get() * pressScaleDelta),
                 },
             ],
+            // Reduced motion acknowledges with opacity instead of scale (shared press owner rule).
+            opacity: 1 - pressed.get() * pressOpacityDelta,
         };
     });
 
@@ -465,16 +472,8 @@ export function VoiceOrb(props: Readonly<{
                         onAccessibilityAction={onAccessibilityAction}
                         onFocus={() => setOrbFocused(true)}
                         onBlur={() => setOrbFocused(false)}
-                        onPressIn={() => pressed.set(
-                            energy.reduced
-                                ? 1
-                                : withTiming(1, { duration: VOICE_MOTION.feedback.durationMs }),
-                        )}
-                        onPressOut={() => pressed.set(
-                            energy.reduced
-                                ? 0
-                                : withTiming(0, { duration: VOICE_MOTION.local.durationMs }),
-                        )}
+                        onPressIn={pressFeedback.onPressIn}
+                        onPressOut={pressFeedback.onPressOut}
                         onPress={handlePress}
                         // Long-press opens; it must not fire Start or End on the way, which RN
                         // guarantees by not calling `onPress` once `onLongPress` has fired.

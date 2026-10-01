@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { renderScreen, standardCleanup } from '@/dev/testkit';
 import { Text } from '@/components/ui/text/Text';
+import { SoftSlideTransitionFrame } from '@/components/ui/motion/SoftSlideTransitionFrame';
 import { ModalBoundaryProvider } from '@/modal/context/ModalBoundaryContext';
 
 vi.mock('react-native', async () => {
@@ -29,6 +30,23 @@ vi.mock('react-native-safe-area-context', () => ({
 describe('WizardModalShell', () => {
     afterEach(() => {
         standardCleanup();
+    });
+
+    it('uses the routine motion preset for ordinary wizard steps', async () => {
+        const { WizardModalShell } = await import('./WizardModalShell');
+        const screen = await renderScreen(
+            <WizardModalShell
+                testID="wizard-shell"
+                stepIndex={0}
+                stepCount={2}
+                title="Title"
+                contentTransitionKey="step-one"
+            >
+                <Text>Body</Text>
+            </WizardModalShell>,
+        );
+
+        expect(screen.findByType(SoftSlideTransitionFrame as never).props.preset).toBe('routine');
     });
 
     it('renders the body without an internal scroll view (the wizard layout owns scrolling)', async () => {

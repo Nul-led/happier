@@ -63,6 +63,43 @@ describe('runtime session client durable mutation outbox', () => {
         await rm(configurationMock.activeServerDir, { recursive: true, force: true });
     });
 
+    it.each(['exact', 'mismatched', 'offline'] as const)('reports only the exact transcript ACK sequence (%s)', async (ackMode) => {
+        const sessionId = `transcript-receipt-${ackMode}`;
+        const socket = {
+            connected: ackMode !== 'offline',
+            emit: vi.fn(),
+            emitWithAck: vi.fn(async (_event: string, payload: unknown) => ({
+                ok: true,
+                status: 'observed',
+                id: 'server-message',
+                seq: 47,
+                localId: ackMode === 'mismatched' ? 'another-message' : (payload as { localId: string }).localId,
+                didWrite: true,
+                ingestedAt: 200,
+            })),
+        };
+        const outbox = createRuntimeSessionClientDurableMutationOutbox({
+            token: 'token',
+            sessionId,
+            getSocket: () => socket,
+            requestReconnect: () => undefined,
+        });
+        await outbox.setSessionSyncPendingInputServerContract(serverContract('session_sync_v2_pending_input_v1'));
+
+        const result = await outbox.enqueueTranscriptMessage(createTranscriptMessageAppendMutation({
+            sessionId,
+            localId: 'ready-event',
+            content: 'ready',
+            createdAt: 102,
+            provenance: { kind: 'non_dependent', source: 'external' },
+        }));
+
+        expect(result).toEqual(ackMode === 'exact'
+            ? { persisted: true, delivered: true, localId: 'ready-event', committedSequence: 47 }
+            : { persisted: true, delivered: false, localId: 'ready-event' });
+        await outbox.close();
+    });
+
     it('publishes the exact current-state Activity tail only after durable admission and dequeue', async () => {
         const sessionId = 'runtime-activity-tail';
         const outbox = createRuntimeSessionClientDurableMutationOutbox({
@@ -300,11 +337,11 @@ describe('runtime session client durable mutation outbox', () => {
         releaseDelivery.resolve();
 
         await expect(draining).resolves.toMatchObject({ materialized: 1 });
-        expect(materializeNextPendingMessageSafely).toHaveBeenNthCalledWith(2, {
+        expect(materializeNextPendingMessageSafely).toHaveBeenNthCalledWith(2, expect.objectContaining({
             reconcileWhenEmpty: 'force',
             deliveryTiming: 'after_runtime_idle',
             expectedRuntimeActivityRevision: 9,
-        });
+        }));
         await outbox.close();
     });
 
@@ -418,7 +455,12 @@ describe('runtime session client durable mutation outbox', () => {
             provenance: { kind: 'non_dependent', source: 'external' },
         }));
 
-        expect(transcript).toEqual({ persisted: true, delivered: true });
+        expect(transcript).toEqual({
+            persisted: true,
+            delivered: true,
+            localId: 'released-server-transcript',
+            committedSequence: 1,
+        });
         expect(deliveredEvents).toEqual(['message']);
         expect(requestReconnect).not.toHaveBeenCalled();
         const paths = resolveSessionClientDurableMutationJournalPaths({

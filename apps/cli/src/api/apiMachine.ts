@@ -4,10 +4,25 @@
  */
 
 import axios from 'axios';
+import {
+    TEAM_CREDENTIAL_EXTERNAL_PROVIDER_OPERATION_RETIRE_EVENT_V1,
+    TeamCredentialExternalProviderOperationRetireV1Schema,
+    TeamCredentialExternalProviderOperationRetireResponseV1Schema,
+} from '@happier-dev/protocol/teams';
 import { randomBytes } from 'node:crypto';
+import {
+    MachineLiveStreamDecodedEnvelopeV1Schema,
+    MachineLiveStreamRelayEnvelopeV1Schema,
+    hasMachineLiveStreamSensitiveContentV1,
+    sealMachineLiveStreamEnvelopeV1,
+    openMachineLiveStreamEnvelopeV1,
+    type MachineLiveStreamPayloadErrorCodeV1,
+    type MachineLiveStreamWireEnvelopeV1,
+} from '@happier-dev/protocol';
 import { isDeepStrictEqual } from 'node:util';
 import { buildCurrentAccountStoredContentCompatibilityHttpHeaders } from '@/api/clientCompatibility/cliClientCompatibility';
-import { readStoredCredentials } from '@/persistence';
+import { readStoredCredentials, readStoredCredentialsForServerId } from '@/persistence';
+import { createExecutionRunRpcApprovalDeps } from '@/rpc/handlers/executionRuns/createExecutionRunRpcApprovalDeps';
 import {
     readCurrentMessageActionReferenceRowV1,
     resolveMessageActionReferenceSnapshotV1,
@@ -23,6 +38,7 @@ import {
     type ActionOperationRevisionEphemeralV1,
     type ConnectedServiceExecutionAuthorityV1,
     type ExternalSessionSourceUnavailableOccurrenceV1,
+    signExternalActionMachineRpcRequestV1,
 } from '@happier-dev/protocol';
 import { fetchAccountProfile } from './accountProfile';
 import { fetchAccountEncryptionCurrentness } from './client/connectedServiceCredentialApi';
@@ -35,9 +51,11 @@ import { createCurrentMachineExecutionOriginContextResolver } from './machine/re
 import { readAccountIdFromToken } from '@/cloud/decodeJwtPayload';
 
 import { MachineMetadata, DaemonState, Machine, Update, UpdateMachineBody } from './types';
-import type { SocketRpcCallResponse } from './types';
+import { callSocketRpc, isSocketIoAckTimeoutError, type SocketRpcContent } from '@happier-dev/sync-client';
+import { readRpcErrorCode } from '@happier-dev/protocol/rpcErrors';
 import { registerSessionHandlers } from '@/rpc/handlers/registerSessionHandlers';
 import { registerAutomationReplyHandoffRpcHandler } from '@/rpc/handlers/automationReplyHandoff';
+import { createWorkflowRunStorageClient } from '@/daemon/workflows/workflowRunStorageClient';
 import { createCliActionExecutorFromCredentials } from '@/session/actions/createCliActionExecutorFromCredentials';
 import {
     resolveExternalSessionOperationAccountScope,
@@ -60,6 +78,8 @@ import {
 import {
     registerDaemonBrowserControlHandler,
 } from '@/rpc/handlers/daemonBrowserControl';
+import { registerDaemonComputerHandler } from '@/rpc/handlers/daemonComputer';
+import type { ComputerRoutes } from '@/daemon/computer/routes';
 import {
     registerDaemonBrowserContextHandler,
 } from '@/rpc/handlers/daemonBrowserContext';
@@ -88,7 +108,7 @@ import {
     RpcHandlerManager,
     type RpcHandlerRegistrationReadiness,
 } from './rpc/RpcHandlerManager';
-import type { RpcHandlerActiveExecution, RpcHandlerInvoker } from './rpc/types';
+import type { RpcHandlerActiveExecution, RpcHandlerInvoker, RpcLocalActionContext } from './rpc/types';
 import { SOCKET_RPC_EVENTS } from '@happier-dev/protocol/socketRpc';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 import {
@@ -339,6 +359,7 @@ export type ConnectedServicesProjectionNotification = Readonly<{
 }>;
 
 export type ApiMachineClientLifecycleDependencies = Readonly<{
+    resolveHostedSessionWorkingDirectory?: (sessionId: string) => Promise<string | null>;
     isDaemonQuiescing?: () => boolean;
     requireCurrentAccountStoredContentCompatibility?: () => Promise<void>;
     resolveServerFeaturesSnapshot?: () => Promise<Awaited<ReturnType<typeof fetchServerFeaturesSnapshot>> | undefined>;
@@ -446,6 +467,7 @@ export class ApiMachineClient {
     private sessionSpawnV1OutcomeRequired = false;
     private externalActionExecutionAuthorizationV1OutcomeRequired = false;
     private currentIrohMachineEndpoint: IrohEndpointDescriptorV1 | null = null;
+    private localServicePreviewNativeAccessLive = false;
     private pendingPersistedIrohEndpointWithdrawal = false;
     /** Reflects only an installed provider-broker application handler; the
      * composition root owns the fact, this client only publishes it. */
@@ -843,6 +865,7 @@ export class ApiMachineClient {
         });
         registerAutomationReplyHandoffRpcHandler(this.rpcHandlerManager, {
             machineId: this.machine.id,
+            workflowRunStorage: createWorkflowRunStorageClient({ token: this.token, machineId: this.machine.id }),
             resolveAccountId: async (signal) => await this.getAccountId(signal),
             resolveInstallationId: () =>
                 readInstallationIdentityIfExistsSync()?.installationId ?? null,
@@ -883,6 +906,7 @@ export class ApiMachineClient {
             machineId: this.machine.id,
         });
         const fileSystemHandlers = registerFileSystemHandlers(this.rpcHandlerManager, this.machineRpcWorkingDirectory, {
+            resolveSessionWorkingDirectory: this.lifecycleDependencies.resolveHostedSessionWorkingDirectory,
             accessPolicy: this.filesystemAccessPolicy,
             getAdditionalAllowedReadDirs: () => this.additionalAllowedReadDirs,
             getAdditionalAllowedReadFiles: () => this.transientSessionMediaReadAllowance.readAllowedReadFiles(),
@@ -947,6 +971,11 @@ export class ApiMachineClient {
         externalActionIngressOwner?: ExternalActionIngressOwner;
     }>): MachineRpcLifecycleRegistration {
         const executionRunRuntimeAccountId = readAccountIdFromToken(this.token) ?? undefined;
+        const executionRunServerId = configuration.activeServerId;
+        const executionRunApprovalDeps = createExecutionRunRpcApprovalDeps({ readCredentials: async () => {
+            const credentials = await readStoredCredentialsForServerId(executionRunServerId).catch(() => null);
+            return credentials?.token === this.token ? credentials : null;
+        } });
         const actionsSettingsProvider = deps?.actionsSettingsProvider ?? createActionSettingsProvider({
             scopeKey: resolveAccountSettingsScopeKeyForToken(this.token),
         });
@@ -978,7 +1007,9 @@ export class ApiMachineClient {
             deps: {
                 ...deps,
                 actionsSettingsProvider,
+                currentMachineId: this.machine.id,
                 ...(executionRunRuntimeAccountId ? { executionRunRuntimeAccountId } : {}),
+                executionRunApprovalDeps,
                 ...(deps?.externalActionIngressOwner
                     ? {
                         externalAction: {
@@ -994,6 +1025,9 @@ export class ApiMachineClient {
                 },
                 ...(this.lifecycleDependencies.workspaceSync
                     ? { workspaceSync: this.lifecycleDependencies.workspaceSync }
+                    : {}),
+                ...(this.lifecycleDependencies.resolveServerFeaturesSnapshot
+                    ? { resolveServerFeaturesSnapshot: this.lifecycleDependencies.resolveServerFeaturesSnapshot }
                     : {}),
                 ...(this.lifecycleDependencies.workspaceSyncHandoffAdapter
                     ? {
@@ -1058,7 +1092,7 @@ export class ApiMachineClient {
             invokeLocal: async (method, params, options) => await this.rpcHandlerManager.invokeLocal(
                 method,
                 params,
-                options?.signal ? { signal: options.signal } : undefined,
+                options,
             ),
         };
     }
@@ -1071,15 +1105,21 @@ export class ApiMachineClient {
             signal?: AbortSignal;
             executionRunPermissionRequestStore?: unknown;
             executionRunWorkflowObservationSink?: unknown;
+            executionRunWorkflowRunId?: string;
+            localActionContext?: RpcLocalActionContext;
         }>,
     ): Promise<unknown> {
         return await this.rpcHandlerManager.invokeLocal(method, request, {
             ...(options?.signal ? { signal: options.signal } : {}),
             ...(options?.executionRunPermissionRequestStore === undefined
                 && options?.executionRunWorkflowObservationSink === undefined
+                && options?.executionRunWorkflowRunId === undefined
+                && options?.localActionContext === undefined
                 ? {}
                 : {
                     localActionContext: {
+                        ...options?.localActionContext,
+                        ...(options?.executionRunWorkflowRunId ? { executionRunWorkflowRunId: options.executionRunWorkflowRunId } : {}),
                         ...(options?.executionRunPermissionRequestStore === undefined
                             ? {}
                             : { executionRunPermissionRequestStore: options.executionRunPermissionRequestStore }),
@@ -1110,6 +1150,10 @@ export class ApiMachineClient {
         'activatePurposeBindings' | 'listActionFormConnectedAccountOptions'
     >): void {
         this.connectedAccountPurposeBindingRuntime = runtime;
+    }
+
+    registerComputerRoutes(resolveComputer: () => ComputerRoutes | null): void {
+        registerDaemonComputerHandler(this.rpcHandlerManager, { resolveComputer });
     }
 
     registerBrowserControlRoutes(browserControl: BrowserDaemonControlRoutes): void {
@@ -1441,9 +1485,48 @@ export class ApiMachineClient {
         this.socket.emit(PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT, payload);
     }
 
-    sendMachineLiveStreamRelayEnvelope(payload: MachineLiveStreamRelayEnvelopeV1): void {
-        if (!this.socket) return;
-        this.socket.emit(MACHINE_LIVE_STREAM_SOCKET_EVENT, payload);
+    async sendMachineLiveStreamRelayEnvelope(payload: MachineLiveStreamRelayEnvelopeV1): Promise<
+        Readonly<{ ok: true } | { ok: false; code: MachineLiveStreamPayloadErrorCodeV1 }>
+    > {
+        const socket = this.socket;
+        if (!socket) return { ok: false, code: 'stream_transport_unavailable' };
+        const parsed = MachineLiveStreamDecodedEnvelopeV1Schema.safeParse(payload);
+        if (!parsed.success) return { ok: false, code: 'stream_payload_invalid' };
+        if (!hasMachineLiveStreamSensitiveContentV1(parsed.data)) {
+            socket.emit(MACHINE_LIVE_STREAM_SOCKET_EVENT, MachineLiveStreamRelayEnvelopeV1Schema.parse(parsed.data));
+            return { ok: true };
+        }
+        const codec = this.machineContentCodec;
+        const sealed = await sealMachineLiveStreamEnvelopeV1(parsed.data, {
+            mode: codec.mode,
+            ...(codec.mode === 'e2ee' ? { cipher: {
+                encryptRaw: (value: unknown) => codec.encodeRpc(value),
+                decryptRaw: (value: string) => codec.decodeRpc(value),
+            } } : {}),
+        });
+        if (!sealed.ok) {
+            this.failMachineLiveStreamPayload(parsed.data, sealed.code);
+            return sealed;
+        }
+        if (this.socket !== socket) return { ok: false, code: 'stream_transport_unavailable' };
+        socket.emit(MACHINE_LIVE_STREAM_SOCKET_EVENT, sealed.value);
+        return { ok: true };
+    }
+
+    private failMachineLiveStreamPayload(envelope: MachineLiveStreamRelayEnvelopeV1 | MachineLiveStreamWireEnvelopeV1, code: MachineLiveStreamPayloadErrorCodeV1): void {
+        logger.warn('[API MACHINE] Live-stream payload rejected', { code });
+        const message = envelope.message;
+        if (message.kind !== 'frame' && message.kind !== 'sideband_control') return;
+        const stopped = { ...envelope, message: {
+            kind: 'control' as const, control: { v: 1 as const,
+                streamId: message.kind === 'frame' ? message.frame.streamId : message.control.streamId,
+                kind: 'stop' as const, reasonCode: code,
+            },
+        } } satisfies MachineLiveStreamRelayEnvelopeV1;
+        this.socket?.emit(MACHINE_LIVE_STREAM_SOCKET_EVENT, stopped);
+        for (const listener of this.machineLiveStreamRelayListeners) {
+            try { listener(stopped); } catch { logger.warn('[API MACHINE] Live-stream stop listener threw'); }
+        }
     }
 
     emitExternalSessionTranscriptUpdate(payload: ExternalSessionTranscriptInvalidationV1): void {
@@ -1456,6 +1539,18 @@ export class ApiMachineClient {
     ): void {
         if (!this.socket) return;
         this.socket.emit(EXTERNAL_SESSION_SOURCE_UNAVAILABLE_OCCURRENCE_EVENT_V1, payload);
+    }
+
+    async retireTeamCredentialExternalProviderOperation(input: Readonly<{
+        externalApiKeyId: string;
+        operationId: string;
+    }>): Promise<void> {
+        if (!this.socket?.connected) throw new Error('Machine socket is unavailable for broker retirement.');
+        const request = TeamCredentialExternalProviderOperationRetireV1Schema.parse({ v: 1, ...input });
+        const response = await this.socket.timeout(resolveSessionControlSocketAckTimeoutMs())
+            .emitWithAck(TEAM_CREDENTIAL_EXTERNAL_PROVIDER_OPERATION_RETIRE_EVENT_V1, request);
+        const result = TeamCredentialExternalProviderOperationRetireResponseV1Schema.parse(response);
+        if (!result.ok) throw new Error('Broker operation retirement was not authorized.');
     }
 
     async executeExternalSessionHistoricalImportCommand(
@@ -1504,45 +1599,37 @@ export class ApiMachineClient {
         }
         await this.requirePlainMachineCompatibility();
         const timeoutMs = options?.timeoutMs && options.timeoutMs > 0 ? options.timeoutMs : 20_000;
-        const encodedParams = this.machineContentCodec.encodeRpc(params);
-        const response = await new Promise<SocketRpcCallResponse>((resolve) => {
-            let settled = false;
-            const settle = (value: SocketRpcCallResponse) => {
-                if (settled) return;
-                settled = true;
-                clearTimeout(timer);
-                resolve(value);
-            };
-            const timer = setTimeout(() => settle({ ok: false, error: 'RPC call timeout' }), timeoutMs);
-            try {
-                socket.emit(
-                    SOCKET_RPC_EVENTS.CALL,
-                    { method: `${this.machine.id}:${method}`, params: encodedParams, timeoutMs },
-                    (value: SocketRpcCallResponse) => settle(value),
-                );
-            } catch (error) {
-                settle({ ok: false, error: error instanceof Error ? error.message : 'RPC call failed' });
-            }
-        });
-
-        if (!response.ok) {
+        const codec = this.machineContentCodec;
+        let resultDecodeFailed = false;
+        const content: SocketRpcContent = codec.mode === 'plain' ? { mode: 'plain' } : {
+            mode: 'e2ee',
+            cipher: {
+                encryptRaw: async (value) => codec.encodeRpc(value),
+                decryptRaw: async (ciphertext) => {
+                    try { return codec.decodeRpc(ciphertext); }
+                    catch (error) { resultDecodeFailed = true; throw error; }
+                },
+            },
+        };
+        try {
+            const result = await callSocketRpc<TResult>({
+                socket,
+                target: { kind: 'machine', id: this.machine.id },
+                method,
+                params,
+                content,
+                timeoutMs,
+            });
+            if (socket.connected === false) return { ok: false, errorCode: 'machine_socket_unavailable' };
+            return { ok: true, result };
+        } catch (error) {
+            if (resultDecodeFailed) return { ok: false, errorCode: 'machine_rpc_result_decrypt_failed' };
+            const errorCode = readRpcErrorCode(error);
             return {
                 ok: false,
-                ...(response.error !== undefined ? { error: response.error } : {}),
-                ...(response.errorCode !== undefined ? { errorCode: response.errorCode } : {}),
+                error: isSocketIoAckTimeoutError(error) ? 'RPC call timeout' : error instanceof Error ? error.message : 'RPC call failed',
+                ...(errorCode ? { errorCode } : {}),
             };
-        }
-        if (socket.connected === false) {
-            return { ok: false, errorCode: 'machine_socket_unavailable' };
-        }
-
-        try {
-            return {
-                ok: true,
-                result: this.machineContentCodec.decodeRpc(response.result) as TResult,
-            };
-        } catch {
-            return { ok: false, errorCode: 'machine_rpc_result_decrypt_failed' };
         }
     }
 
@@ -1623,7 +1710,10 @@ export class ApiMachineClient {
 
     async enqueueSessionPendingByMachine(
         request: SessionPendingEnqueueByMachineRequestV1 | SessionPendingExecutionRunEnqueueByMachineRequestV2,
-        options?: Readonly<{ signal?: AbortSignal }>,
+        options?: Readonly<{
+            signal?: AbortSignal;
+            callerInputAuthorization?: import('@happier-dev/protocol').ExternalActionExecutionAuthorizationV1;
+        }>,
     ): Promise<SessionInputAdmissionResultV1> {
         if (options?.signal?.aborted) {
             return { status: 'rejected', code: 'session_input_cancelled' };
@@ -1635,9 +1725,34 @@ export class ApiMachineClient {
                 code: 'session_input_target_unavailable',
             };
         }
-        const payload = request.v === 2
+        const parsed = request.v === 2
             ? SessionPendingExecutionRunEnqueueByMachineRequestV2Schema.parse(request)
             : SessionPendingEnqueueByMachineRequestV1Schema.parse(request);
+        // Caller-authored network proof is never the producer's signing input.
+        const { externalAction: _incomingProof, ...unsignedPayload } = parsed;
+        const event = unsignedPayload.v === 2
+            ? SESSION_PENDING_EXECUTION_RUN_ENQUEUE_BY_MACHINE_EVENT_V2
+            : SESSION_PENDING_ENQUEUE_BY_MACHINE_EVENT_V1;
+        const authorization = options?.callerInputAuthorization;
+        const installation = authorization ? readInstallationIdentityIfExistsSync() : null;
+        if (authorization && (!installation || authorization.binding.machineId !== this.machine.id)) {
+            return { status: 'rejected', code: 'session_input_unauthorized' };
+        }
+        const target = { kind: 'session' as const, sessionId: unsignedPayload.sessionId };
+        const externalAction = authorization && installation ? {
+            v: 1 as const,
+            authorization,
+            effectActionId: 'session.message.send',
+            target,
+            installationId: installation.installationId,
+            machineSignature: signExternalActionMachineRpcRequestV1({
+                authorizationToken: authorization.token, effectActionId: 'session.message.send',
+                target, installationId: installation.installationId, event, method: event,
+                requestId: authorization.binding.requestId, params: unsignedPayload,
+                privateKey: installation.privateKey,
+            }),
+        } : undefined;
+        const payload = { ...unsignedPayload, ...(externalAction ? { externalAction } : {}) };
         try {
             // Keep the Socket.IO event and payload correlated for each protocol
             // version. Passing their unions through the generic ACK helper loses
@@ -1775,6 +1890,9 @@ export class ApiMachineClient {
                     },
                 }
                 : {}),
+            ...(this.localServicePreviewNativeAccessLive
+                ? { localServicePreviewNativeAccess: { protocolVersions: [1] } }
+                : {}),
             ...(this.providerBrokerIngressAdvertised
                 ? { providerBrokerIngress: { protocolVersions: [1] } }
                 : {}),
@@ -1893,10 +2011,22 @@ export class ApiMachineClient {
 
     /** Re-evaluates Home support after the canonical feature snapshot changes. */
     async refreshProviderBrokerIngressAdvertisement(currentServerFeatures?: FeaturesResponse): Promise<void> {
+        await this.refreshOperationProtocolCapabilitiesAdvertisement(currentServerFeatures);
+    }
+
+    /** Composition supplies the live native acceptor plus preview application fact. */
+    async setLocalServicePreviewNativeAccessLive(live: boolean): Promise<void> {
+        // Local adapter availability remains truthful even if Home acknowledgement
+        // fails; reconnect publishes this same complete projection again.
+        this.localServicePreviewNativeAccessLive = live;
+        await this.refreshOperationProtocolCapabilitiesAdvertisement();
+    }
+
+    private async refreshOperationProtocolCapabilitiesAdvertisement(currentServerFeatures?: FeaturesResponse): Promise<void> {
         const socket = this.socket;
         if (!socket || socket.connected !== true) return;
         // Replace-all projection: republish the complete capability set so the
-        // broker leaf change never withdraws session or endpoint capabilities.
+        // readiness changes never withdraw unrelated session or endpoint capabilities.
         const capabilities = await this.resolveCurrentMachineOperationProtocolCapabilitiesForPublication(
             true,
             currentServerFeatures,
@@ -2427,7 +2557,28 @@ export class ApiMachineClient {
             }
         });
 
-        socket.on(MACHINE_LIVE_STREAM_SOCKET_EVENT, (data: MachineLiveStreamRelayEnvelopeV1) => {
+        socket.on(MACHINE_LIVE_STREAM_SOCKET_EVENT, async (raw: unknown) => {
+            const parsed = MachineLiveStreamRelayEnvelopeV1Schema.safeParse(raw);
+            if (!parsed.success) {
+                logger.warn('[API MACHINE] Live-stream payload rejected', { code: 'stream_payload_invalid' });
+                return;
+            }
+            const codec = this.machineContentCodec;
+            const opened = hasMachineLiveStreamSensitiveContentV1(parsed.data)
+                ? await openMachineLiveStreamEnvelopeV1(parsed.data, {
+                    mode: codec.mode,
+                    ...(codec.mode === 'e2ee' ? { cipher: {
+                        encryptRaw: (value: unknown) => codec.encodeRpc(value),
+                        decryptRaw: (value: string) => codec.decodeRpc(value),
+                    } } : {}),
+                })
+                : { ok: true as const, value: MachineLiveStreamDecodedEnvelopeV1Schema.parse(parsed.data) };
+            if (!this.isActiveTransportGeneration(transportGeneration) || socket !== this.socket) return;
+            if (!opened.ok) {
+                this.failMachineLiveStreamPayload(parsed.data, opened.code);
+                return;
+            }
+            const data = opened.value;
             for (const listener of this.machineLiveStreamRelayListeners) {
                 try {
                     listener(data);

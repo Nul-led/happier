@@ -47,7 +47,7 @@ export const SessionListIdentity = React.memo(function SessionListIdentity(props
     if (props.display === 'avatar') {
         return (
             <Avatar
-                id={getSessionAvatarId(props.session)}
+                id={getSessionAvatarId(props.session, props.serverId)}
                 size={props.avatarSize}
                 monochrome={props.session.active !== true || !props.connected}
                 flavor={agentId}

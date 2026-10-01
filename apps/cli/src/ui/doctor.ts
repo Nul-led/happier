@@ -8,7 +8,7 @@
 import chalk from 'chalk'
 import { configuration } from '@/configuration'
 import { readSettings, readStoredCredentials } from '@/persistence'
-import { checkIfDaemonRunningAndCleanupStaleState } from '@/daemon/controlClient'
+import { inspectDaemonRunningStateAndCleanupStaleState } from '@/daemon/controlClient'
 import { findRunawayHappyProcesses, findAllHappyProcesses } from '@/daemon/doctor'
 import { readDaemonState } from '@/persistence'
 import { existsSync, readdirSync, statSync } from 'node:fs'
@@ -17,6 +17,9 @@ import { join } from 'node:path'
 import packageJson from '../../package.json'
 import { buildDoctorSnapshot, type DoctorSnapshot } from '@/ui/doctorSnapshot'
 import { redactCliApiTokenArgv } from '@/auth/cliApiToken'
+import { formatRelayAccountIdentity } from '@/auth/formatRelayAccountIdentity'
+import { resolveActiveServerAuthReadiness } from '@/auth/resolveActiveServerAuthReadiness'
+import { readAccountIdFromToken } from '@/cloud/decodeJwtPayload'
 import {
     buildDoctorRuntimeDiagnostics,
     formatDoctorRuntimeLabel,
@@ -139,8 +142,8 @@ export async function runDoctorCommand(filter?: 'all' | 'daemon'): Promise<void>
         }
         console.log('');
 
-        // Daemon spawn diagnostics
-        console.log(chalk.bold('🔧 Daemon Spawn Diagnostics'));
+        // Actual executing runtime, not a guessed daemon-spawn tree.
+        console.log(chalk.bold('🔧 CLI Runtime Diagnostics'));
         console.log(`Project Root: ${chalk.blue(runtimeDiagnostics.projectRoot)}`);
         console.log(`Wrapper Script: ${chalk.blue(formatDoctorSpawnPathLabel(runtimeDiagnostics.wrapperPath))}`);
         console.log(`CLI Entrypoint: ${chalk.blue(formatDoctorSpawnPathLabel(runtimeDiagnostics.cliEntrypointPath))}`);
@@ -234,11 +237,20 @@ export async function runDoctorCommand(filter?: 'all' | 'daemon'): Promise<void>
     // Daemon status - shown for both 'all' and 'daemon' filters
     console.log(chalk.bold('\n🤖 Daemon Status'));
     try {
-        const isRunning = await checkIfDaemonRunningAndCleanupStaleState();
-        const state = await readDaemonState();
+        const inspection = await inspectDaemonRunningStateAndCleanupStaleState();
+        const state = 'state' in inspection ? inspection.state : await readDaemonState();
 
-        if (isRunning && state) {
+        if (inspection.status === 'running') {
+            const state = inspection.state;
             console.log(chalk.green('✓ Daemon is running'));
+            // Name which relay and account this daemon serves, so a "connected but no machine"
+            // state on another Home or account is explained by this one line.
+            const readiness = await resolveActiveServerAuthReadiness().catch(() => null)
+            console.log(`  Connected to ${formatRelayAccountIdentity({
+                serverUrl: configuration.publicServerUrl || configuration.serverUrl,
+                accountLabel: readiness?.accountLabel ?? null,
+                accountId: readiness?.credentials?.token ? readAccountIdFromToken(readiness.credentials.token) : null,
+            })}`);
             console.log(`  PID: ${state.pid}`);
             console.log(`  Started: ${new Date(state.startedAt).toLocaleString()}`);
             console.log(`  CLI Version: ${state.startedWithCliVersion}`);
@@ -249,7 +261,7 @@ export async function runDoctorCommand(filter?: 'all' | 'daemon'): Promise<void>
             if (state.httpPort) {
                 console.log(`  HTTP Port: ${state.httpPort}`);
             }
-            // "Running" above is a PID probe and says nothing about whether the daemon can
+            // "Running" above says nothing about whether the daemon can
             // serve anything. This line is the daemon's own last word on that, so a live
             // process with an incomplete machine-control registration stops reading as healthy.
             console.log(`  Machine RPCs: ${state.machineControlReady === true
@@ -257,7 +269,10 @@ export async function runDoctorCommand(filter?: 'all' | 'daemon'): Promise<void>
                 : state.machineControlReady === false
                     ? chalk.red('not registered — this daemon cannot serve machine RPCs')
                     : chalk.gray('(unknown — daemon reported no readiness)')}`);
-        } else if (state && !isRunning) {
+        } else if (inspection.status === 'starting') {
+            console.log(chalk.yellow('⚠️  Daemon is starting or control status is unknown'));
+            console.log(`  PID: ${'pid' in inspection ? inspection.pid : inspection.state.pid}`);
+        } else if (state) {
             console.log(chalk.yellow('⚠️  Daemon state exists but process not running (stale)'));
         } else {
             console.log(chalk.red('❌ Daemon is not running'));
@@ -367,7 +382,7 @@ export async function runDoctorCommand(filter?: 'all' | 'daemon'): Promise<void>
         // Support and bug reports
         console.log(chalk.bold('\n🐛 Support & Bug Reports'));
         console.log(`Report issues: ${chalk.blue('https://github.com/happier-dev/happier/issues')}`);
-        console.log(`Documentation: ${chalk.blue('https://app.happier.dev')}`);
+        console.log(`Documentation: ${chalk.blue('https://cloud.happier.dev')}`);
     }
 
     console.log(chalk.green('\n✅ Doctor diagnosis complete!\n'));

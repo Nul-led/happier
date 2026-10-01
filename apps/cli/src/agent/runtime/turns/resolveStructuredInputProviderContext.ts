@@ -24,6 +24,7 @@ import {
   type ComposerReferenceContextBlockEntryV1,
   type ComposerReferenceResolutionV1,
   type HappierStructuredInputV1,
+  type BrowserScreenshotMediaReferenceV1,
   type MentionRefV1,
   type PluginContributionIdentityV1,
   type PluginExecutionScopeV1,
@@ -34,6 +35,7 @@ import {
 import {
   buildSessionReferenceContextBlockForDispatch,
 } from '../prompt/sessionReferenceBlock';
+import { browserMediaToStructuredImageInput } from '@/session/attachments/resolveTrustedSessionAttachmentLocalImagePaths';
 
 /**
  * The send-time provider resolver (D-3, INV-9, R-10).
@@ -849,11 +851,14 @@ export async function resolveStructuredInputProviderDispatchContext(params: Read
     buildSessionReferenceContextBlockForDispatch(sources.mentions);
   const promptContext = Object.freeze({
     sessionReferenceBlock: sessionReferenceContextBlock,
+    ...(envelope.browserContext ? { browserContext: envelope.browserContext } : {}),
     composerReferences: Object.freeze([...composerContextEntries]),
     composerAttachments: Object.freeze([...attachmentProjection.contextEntries]),
   });
   const contextBlock = renderSessionInputContextPromptV1({
     ...promptContext,
+    // The mention resolver's budget is not an additional browser-context cutoff.
+    browserContext: undefined,
     transformedUserText: '',
   });
   const resolvedContextChars = contextCharacterLength(contextBlock)
@@ -891,15 +896,21 @@ export async function resolveStructuredInputProviderDispatchContext(params: Read
   if (attachmentProjection.attachments.length > 0) {
     resolvedEnvelope.resolvedComposerAttachments = attachmentProjection.attachments;
   }
-  if (sessionMediaImageInputs.length > 0) {
+  const browserMedia = new Map<string, BrowserScreenshotMediaReferenceV1>();
+  for (const item of envelope.browserContext?.contexts ?? []) {
+    if (item.kind === 'browserScreenshot' || item.kind === 'browserAnnotation') browserMedia.set(item.media.mediaId, item.media);
+  }
+  const browserImageInputs = [...browserMedia.values()].map(browserMediaToStructuredImageInput);
+  const projectedImages = [...sessionMediaImageInputs, ...browserImageInputs];
+  if (projectedImages.length > 0) {
     const existingImageIds = new Set((envelope.imageInputs ?? []).map((image) => image.id));
-    if (sessionMediaImageInputs.some((image) => existingImageIds.has(image.id as string))) {
+    if (projectedImages.some((image) => existingImageIds.has(image.id as string))) {
       throw sessionMediaProjectionError(
         'session_media_reference_invalid',
         'Composer SessionMedia image projection conflicts with an existing image input',
       );
     }
-    resolvedEnvelope.imageInputs = [...(envelope.imageInputs ?? []), ...sessionMediaImageInputs];
+    resolvedEnvelope.imageInputs = [...(envelope.imageInputs ?? []), ...projectedImages];
   }
   return Object.freeze({
     structuredInput: AgentDispatchStructuredInputV1Schema.parse(resolvedEnvelope),

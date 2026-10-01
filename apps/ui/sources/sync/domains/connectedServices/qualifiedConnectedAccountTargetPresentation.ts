@@ -9,6 +9,7 @@ import type { TeamCredentialResourceCatalogEntryV1 } from '@happier-dev/protocol
 
 import { t } from '@/text';
 import type { ConnectedAccountUiNegotiation } from './resolveConnectedAccountUiNegotiation';
+import type { ConnectedAccountIdentityLabelKind, ConnectedAccountIdentityPresenter } from './maskAccountEmail';
 
 import {
   resolveQualifiedConnectedAccountLabel,
@@ -36,6 +37,8 @@ export type QualifiedConnectedAccountPresentationGroup = Readonly<{
 export type QualifiedConnectedAccountTargetPresentation = Readonly<{
   /** The human-facing name; never a canonical account or pool id. */
   primaryLabel: string;
+  /** Identity fallback provenance for privacy; absent for names and service/state labels. */
+  primaryLabelKind?: ConnectedAccountIdentityLabelKind;
   /** Supplemental, non-secret facts that distinguish targets with the same name. */
   secondaryLabel?: string;
   /**
@@ -70,6 +73,7 @@ function sameService(
 function createPresentation(input: Readonly<{
   serviceTitle: string;
   primaryLabel: string;
+  primaryLabelKind?: ConnectedAccountIdentityLabelKind;
   secondaryParts: ReadonlyArray<string | null>;
 }>): QualifiedConnectedAccountTargetPresentation {
   const secondaryParts = uniqueNonEmpty(input.secondaryParts)
@@ -82,6 +86,7 @@ function createPresentation(input: Readonly<{
   const secondaryLabel = secondaryParts.join(' · ');
   return {
     primaryLabel: input.primaryLabel,
+    ...(input.primaryLabelKind ? { primaryLabelKind: input.primaryLabelKind } : {}),
     ...(secondaryLabel ? { secondaryLabel } : {}),
     accessibilityLabel: accessibilityParts.join(' · '),
   };
@@ -111,6 +116,8 @@ export function presentQualifiedConnectedAccountTarget(input: Readonly<{
   serviceTitle: string | null | undefined;
   /** Negotiated source state used only when the exact structured target is absent. */
   sourceNegotiation?: ConnectedAccountUiNegotiation;
+  /** The consuming device's identity privacy policy, applied before visible and assistive text. */
+  presentIdentity?: ConnectedAccountIdentityPresenter;
 }>): QualifiedConnectedAccountTargetPresentation {
   const serviceTitle = nonEmptyText(input.serviceTitle)
     ?? t('connectedServices.fallbackName');
@@ -144,13 +151,18 @@ export function presentQualifiedConnectedAccountTarget(input: Readonly<{
     const providerAccountId = nonEmptyText(account.providerIdentity?.accountId);
     const displayName = nonEmptyText(account.displayName);
     const primaryLabel = userLabel ?? email ?? displayName ?? providerAccountId ?? serviceTitle;
+    const primaryLabelKind = userLabel ? undefined : email ? 'email' : displayName ? undefined : providerAccountId ? 'accountId' : undefined;
+    const shown = input.presentIdentity?.({ label: primaryLabel, labelKind: primaryLabelKind, email, accountId: providerAccountId })
+      ?? { label: primaryLabel, email, accountId: providerAccountId };
+    const shownPrimaryLabel = shown.label ?? serviceTitle;
     return createPresentation({
       serviceTitle,
-      primaryLabel,
+      primaryLabel: shownPrimaryLabel,
+      primaryLabelKind,
       secondaryParts: [
-        primaryLabel === serviceTitle ? null : serviceTitle,
-        email,
-        providerAccountId,
+        shownPrimaryLabel === serviceTitle ? null : serviceTitle,
+        shown.email,
+        shown.accountId,
       ],
     });
   }

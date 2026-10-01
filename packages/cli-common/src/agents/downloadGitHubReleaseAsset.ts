@@ -6,8 +6,19 @@ import { request as httpsRequest } from 'node:https';
 import { dirname } from 'node:path';
 import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
+import type { AgentInstallProgressCallback } from './installProgress.js';
 
 const MAX_REDIRECTS = 5;
+
+export class AgentCliDownloadError extends Error {
+  readonly errorCode: 'download-failed' | 'verification-failed';
+
+  constructor(errorCode: AgentCliDownloadError['errorCode'], message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = 'AgentCliDownloadError';
+    this.errorCode = errorCode;
+  }
+}
 
 function normalizeExpectedSha256(digest: string | null | undefined): string | null {
   const raw = typeof digest === 'string' ? digest.trim() : '';
@@ -27,7 +38,7 @@ async function openGitHubReleaseAssetResponse(
   signal?: AbortSignal,
 ): Promise<IncomingMessage> {
   if (redirectCount > MAX_REDIRECTS) {
-    throw new Error('[github-release] too many redirects while downloading asset');
+    throw new AgentCliDownloadError('download-failed', '[github-release] too many redirects while downloading asset');
   }
 
   const target = new URL(url);
@@ -45,7 +56,7 @@ async function openGitHubReleaseAssetResponse(
       }
       if (statusCode < 200 || statusCode >= 300) {
         response.resume();
-        reject(new Error(`[github-release] failed to download asset (${statusCode || 'unknown'})`));
+        reject(new AgentCliDownloadError('download-failed', `[github-release] failed to download asset (${statusCode || 'unknown'})`));
         return;
       }
       resolve(response);
@@ -61,6 +72,7 @@ export async function downloadGitHubReleaseAsset(params: Readonly<{
   digest?: string | null;
   userAgent?: string;
   signal?: AbortSignal;
+  onProgress?: AgentInstallProgressCallback;
 }>): Promise<void> {
   params.signal?.throwIfAborted();
   const url = String(params.url ?? '').trim();
@@ -81,9 +93,16 @@ export async function downloadGitHubReleaseAsset(params: Readonly<{
   try {
     const response = await openGitHubReleaseAssetResponse(url, headers, 0, params.signal);
     const hash = createHash('sha256');
+    const rawTotal = response.headers['content-length'];
+    const parsedTotal = rawTotal === undefined ? NaN : Number(rawTotal);
+    const bytesTotal = Number.isSafeInteger(parsedTotal) && parsedTotal >= 0 ? parsedTotal : null;
+    let bytesDone = 0;
+    params.onProgress?.({ t: 'progress', bytesDone, bytesTotal });
     const hashTap = new Transform({
       transform(chunk, _encoding, callback) {
         hash.update(chunk);
+        bytesDone += chunk.length;
+        params.onProgress?.({ t: 'progress', bytesDone, bytesTotal });
         callback(null, chunk);
       },
     });
@@ -91,14 +110,15 @@ export async function downloadGitHubReleaseAsset(params: Readonly<{
     if (expectedSha256) {
       const actualSha256 = hash.digest('hex');
       if (actualSha256 !== expectedSha256) {
-        throw new Error('[github-release] checksum verification failed');
+        throw new AgentCliDownloadError('verification-failed', '[github-release] checksum verification failed');
       }
     }
     params.signal?.throwIfAborted();
     await rename(tempPath, destinationPath);
   } catch (error) {
     await rm(tempPath, { force: true }).catch(() => undefined);
-    if (error instanceof Error) throw error;
-    throw new Error(String(error));
+    params.signal?.throwIfAborted();
+    if (error instanceof AgentCliDownloadError) throw error;
+    throw new AgentCliDownloadError('download-failed', error instanceof Error ? error.message : String(error), { cause: error });
   }
 }

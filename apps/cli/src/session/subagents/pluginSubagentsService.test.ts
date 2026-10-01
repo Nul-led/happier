@@ -6,7 +6,9 @@ import type { PluginSubagentDurableCustody, PluginSubagentDurableSummary } from 
 import { PluginError } from '@happier-dev/plugin-sdk';
 
 const identity = {
-  pluginId: 'acme.agent', contributionId: 'assistant', immutableGenerationId: 'gen-1', parentSessionId: 'session-1',
+  pluginId: 'acme.agent', contributionId: 'assistant',
+  sourceCustody: { kind: 'managed', immutableGenerationId: 'gen-1', installSource: 'npm' },
+  parentSessionId: 'session-1',
 } as const;
 
 function createDurableCustody(): PluginSubagentDurableCustody {

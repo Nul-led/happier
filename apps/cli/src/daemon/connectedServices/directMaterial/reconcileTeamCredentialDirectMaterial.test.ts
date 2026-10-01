@@ -40,6 +40,34 @@ const sourceSnapshot: TeamCredentialSourceSnapshot = Object.freeze({
 const sourceMemberKey = computeTeamCredentialSourceMemberKeyV1(sourceMember);
 
 describe('reconcileTeamCredentialDirectMaterial', () => {
+  it.each(['missing', 'unavailable', 'changed', 'replacement_rejected'] as const)('withdraws the captured publication when source configuration is %s', async (failure) => {
+    let published: string | null = 'source-v1';
+    const page = TeamCredentialDirectMaterialPreparationResponseV1Schema.parse({
+      homeServerIdentityId: 'home', teamId: 'team', resourceId: 'resource', resourceRevision: 4,
+      source: { v: 1, kind: 'provider_connection', connectionId: sourceMember.connectionId, connectionSecurityFingerprint: ProviderConnectionSecurityFingerprintV1Schema.parse('connection-security:v1:test'), credentialSlotId: 'apiKey' },
+      sourceMember, sourceCredentialIncarnation: null, publishedSourceVersion: published,
+      recipients: [{ recipientAccountId: 'a', recipientMode: 'plain', recipientContentPublicKeyFingerprint: null, recipientContentPublicKey: null, expectedStoredSourceVersion: published, storedTupleCurrent: true }],
+      nextCursor: null,
+    });
+    const result = await reconcileTeamCredentialDirectMaterial({
+      teamId: 'team', resourceId: 'resource', sourceMemberKey,
+      fetchPreparation: async () => page,
+      resolveSourceSnapshot: async () => {
+        if (failure === 'unavailable') throw new Error('Saved Secret access removed');
+        if (failure === 'missing') return null;
+        return { ...sourceSnapshot, currentness: { ...sourceSnapshot.currentness, isCurrent: async () => failure !== 'changed' } };
+      },
+      upsert: async () => ({ ok: false as const, reason: 'recipient_unavailable' }),
+      withdrawPublication: async (expected: Readonly<{ expectedResourceRevision: number; expectedPublishedSourceVersion: string }>) => {
+        if (expected.expectedResourceRevision !== 4 || expected.expectedPublishedSourceVersion !== published) return { ok: false as const };
+        published = null;
+        return { ok: true as const };
+      },
+    });
+    expect(result.ok).toBe(false);
+    expect(published).toBeNull();
+  });
+
   it('consumes paginated current preparation and publishes each recipient through the canonical producer', async () => {
     const firstPage = TeamCredentialDirectMaterialPreparationResponseV1Schema.parse({
         homeServerIdentityId: 'home', teamId: 'team', resourceId: 'resource', resourceRevision: 4,
@@ -71,6 +99,7 @@ describe('reconcileTeamCredentialDirectMaterial', () => {
       fetchPreparation,
       resolveSourceSnapshot: vi.fn(async () => sourceSnapshot),
       upsert,
+      withdrawPublication: async () => ({ ok: true }),
     })).resolves.toEqual({ ok: true, prepared: 2 });
 
     expect(fetchPreparation).toHaveBeenNthCalledWith(1, expect.objectContaining({ cursor: undefined }));
@@ -106,6 +135,7 @@ describe('reconcileTeamCredentialDirectMaterial', () => {
       fetchPreparation: vi.fn(async () => page()),
       resolveSourceSnapshot: vi.fn(async () => sourceSnapshot),
       upsert,
+      withdrawPublication: async () => ({ ok: true }),
     })).resolves.toEqual({ ok: true, prepared: 2 });
     expect(upsert).toHaveBeenNthCalledWith(1, expect.objectContaining({ expectedPublishedSourceVersion: null }));
     expect(upsert).toHaveBeenNthCalledWith(2, expect.objectContaining({ expectedPublishedSourceVersion: 'source-v2' }));
@@ -133,6 +163,7 @@ describe('reconcileTeamCredentialDirectMaterial', () => {
       fetchPreparation: vi.fn(async () => page),
       resolveSourceSnapshot: vi.fn(async () => sourceSnapshot),
       upsert,
+      withdrawPublication: async () => ({ ok: true }),
     })).resolves.toEqual({ ok: true, prepared: 2 });
     expect(upsert.mock.calls.map(([item]) => item.recipientAccountId)).toEqual(['rekeyed', 'missing']);
 
@@ -152,6 +183,7 @@ describe('reconcileTeamCredentialDirectMaterial', () => {
         currentness: { ...sourceSnapshot.currentness, sourceVersion: 'source-v3' },
       })),
       upsert: rotatedUpsert,
+      withdrawPublication: async () => ({ ok: true }),
     })).resolves.toEqual({ ok: true, prepared: 3 });
     expect(rotatedUpsert.mock.calls.map(([item]) => item.recipientAccountId)).toEqual(['current', 'rekeyed', 'missing']);
   });
@@ -168,6 +200,7 @@ describe('reconcileTeamCredentialDirectMaterial', () => {
       })),
       resolveSourceSnapshot: vi.fn(async () => sourceSnapshot),
       upsert,
+      withdrawPublication: async () => ({ ok: true }),
     })).resolves.toEqual({ ok: false, reason: 'source_changed', prepared: 0 });
     expect(upsert).not.toHaveBeenCalled();
   });

@@ -67,7 +67,7 @@ type HookWithBrowserContext = (params: Readonly<{
     reviewCommentDrafts: readonly [];
     defaultBackendTarget?: null;
     defaultBackendId: null;
-    instructionsText: string;
+    readInstructionsText: () => string;
     browserContext?: Readonly<{
         state: BrowserContextState;
         onAttachPageReference?: () => void;
@@ -177,7 +177,7 @@ describe('useSessionAgentInputExtraActionChips browser context integration', () 
                 reviewCommentDrafts: [],
                 defaultBackendTarget: null,
                 defaultBackendId: null,
-                instructionsText: '',
+                readInstructionsText: () => '',
                 browserContext: {
                     state: createBrowserContextState(),
                     onAttachPageReference: vi.fn(),
@@ -211,7 +211,7 @@ describe('useSessionAgentInputExtraActionChips browser context integration', () 
                 reviewCommentDrafts: [],
                 defaultBackendTarget: null,
                 defaultBackendId: null,
-                instructionsText: '',
+                readInstructionsText: () => '',
                 browserContext: {
                     state: createAttachedBrowserContextState(),
                     onAttachPageReference: vi.fn(),

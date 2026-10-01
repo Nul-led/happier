@@ -13,6 +13,7 @@ import {
 import { getOrCreateScopedCacheTokenKey, resetScopedCacheTokenKeysForTests } from './scopedCacheTokenKey';
 import { createScopedResolutionSingleFlight } from './scopedResolutionSingleFlight';
 import { createServerRequestForExplicitServerScope } from './createServerRequestWithServerScope';
+import { DEFAULT_SERVER_SCOPED_RPC_TIMEOUT_MS } from './serverScopedRpcTypes';
 
 export type ScopedMachineTransport =
     | Readonly<{ mode: 'plain' }>
@@ -27,8 +28,13 @@ function toMachineTransportCacheKey(serverId: string, machineId: string, token: 
     return `${serverId}::${machineId}::${tokenKey}`;
 }
 
-const machineTransportCache = new Map<string, ScopedMachineTransport>();
-const machineTransportResolutions = createScopedResolutionSingleFlight<ScopedMachineTransport | null>();
+type MachineTransportEvidence = Readonly<{
+    machine: Parameters<typeof resolvePublishedMachineDataEncryptionKeyV1>[0]['machine'];
+    openedDataEncryptionKey: Uint8Array | null;
+}>;
+
+const machineTransportCache = new Map<string, MachineTransportEvidence>();
+const machineTransportResolutions = createScopedResolutionSingleFlight<MachineTransportEvidence | null>();
 
 function readMaxMachineKeyCacheEntriesFromEnv(): number {
     const raw = String(process.env.EXPO_PUBLIC_HAPPIER_SCOPED_RPC_MACHINE_KEY_CACHE_MAX ?? '').trim();
@@ -38,7 +44,7 @@ function readMaxMachineKeyCacheEntriesFromEnv(): number {
     return Math.max(1, Math.min(10_000, parsed));
 }
 
-function getMachineTransportFromCache(cacheKey: string): ScopedMachineTransport | undefined {
+function getMachineTransportFromCache(cacheKey: string): MachineTransportEvidence | undefined {
     const existing = machineTransportCache.get(cacheKey);
     if (existing === undefined) return undefined;
     // Refresh LRU ordering.
@@ -47,7 +53,7 @@ function getMachineTransportFromCache(cacheKey: string): ScopedMachineTransport 
     return existing;
 }
 
-function setMachineTransportCache(cacheKey: string, value: ScopedMachineTransport): void {
+function setMachineTransportCache(cacheKey: string, value: MachineTransportEvidence): void {
     machineTransportCache.set(cacheKey, value);
 
     const max = readMaxMachineKeyCacheEntriesFromEnv();
@@ -66,17 +72,9 @@ async function fetchMachineTransport(params: Readonly<{
     machineId: string;
     serverId: string;
     accountId?: string;
-    expectedAccountMode?: 'plain' | 'e2ee';
-    expectedRunnerBinding?: ExpectedRunnerMachineContentKeyBindingV1;
-    /**
-     * Classification the caller established without this Home's help. The
-     * response `kind` is only ever a hint, so it is never the fact that decides
-     * whether the released persistent-Machine key fallback applies.
-     */
-    trustedMachineKind?: 'ephemeral_session_runner';
     decryptEncryptionKey?: (value: string) => Promise<Uint8Array | null>;
     timeoutMs: number;
-}>): Promise<ScopedMachineTransport | null> {
+}>): Promise<MachineTransportEvidence | null> {
     const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
     const timeoutId = controller
         ? setTimeout(() => controller.abort(), Math.max(1, params.timeoutMs))
@@ -121,7 +119,7 @@ async function fetchMachineTransport(params: Readonly<{
             && params.decryptEncryptionKey
             ? await params.decryptEncryptionKey(published)
             : null;
-        const resolution = resolvePublishedMachineDataEncryptionKeyV1({
+        return {
             machine: {
                 id: params.machineId,
                 kind: machine?.kind,
@@ -130,21 +128,7 @@ async function fetchMachineTransport(params: Readonly<{
                 runnerContentKeyBinding: machine?.runnerContentKeyBinding,
             },
             openedDataEncryptionKey: dataKey,
-            ...(params.expectedAccountMode
-                ? { expectedAccountMode: params.expectedAccountMode }
-                : {}),
-            ...(params.expectedRunnerBinding
-                ? { expectedRunnerBinding: params.expectedRunnerBinding }
-                : {}),
-            ...(params.trustedMachineKind
-                ? { trustedMachineKind: params.trustedMachineKind }
-                : {}),
-        });
-        if (resolution.status === 'plain') return { mode: 'plain' };
-        if (resolution.status === 'legacy') return { mode: 'e2ee', dataKey: null };
-        return resolution.status === 'e2ee'
-            ? { mode: 'e2ee', dataKey: resolution.dataKey }
-            : null;
+        };
     } catch (error) {
         if (isTerminalAuthError(error)) {
             throw error;
@@ -172,23 +156,16 @@ export async function resolveScopedMachineTransport(params: Readonly<{
     const machineId = normalizeId(params.machineId);
     const serverId = normalizeId(params.serverId);
     const token = String(params.token ?? '');
-    const timeoutMs = typeof params.timeoutMs === 'number' && params.timeoutMs > 0 ? params.timeoutMs : 30_000;
+    const timeoutMs = typeof params.timeoutMs === 'number' && params.timeoutMs > 0 ? params.timeoutMs : DEFAULT_SERVER_SCOPED_RPC_TIMEOUT_MS;
     const keyCacheKey = toMachineTransportCacheKey(serverId, machineId, token);
+    // A cold lookup is bounded by its caller's remaining RPC budget. Calls
+    // with different budgets cannot share the first caller's timeout result.
+    const flightKey = `${keyCacheKey}::${timeoutMs}`;
 
-    const cached = getMachineTransportFromCache(keyCacheKey);
-    if (cached !== undefined) {
-        return cached;
-    }
-
-    // Coalesce the burst. The cache is read-await-write, so without this every concurrent
-    // caller misses and repeats the whole machine lookup plus its asymmetric envelope
-    // open; the new-session screen's capability preflights fan out ~8-10 of those against
-    // one machine at once. `keyCacheKey` covers the target server, the machine and the
-    // bearer token, and the token determines the credentials the caller's
-    // `decryptEncryptionKey` was built from — so a joiner can only ever adopt a result
-    // computed from its own inputs.
-    const transport = await machineTransportResolutions.run(keyCacheKey, async () => {
-        const resolved = await fetchMachineTransport({
+    // Share only the published row and envelope open. Trust is caller-owned and
+    // must be rechecked even on cache hits and joins of an earlier cold read.
+    const evidence = getMachineTransportFromCache(keyCacheKey)
+        ?? await machineTransportResolutions.run(flightKey, async () => await fetchMachineTransport({
             serverId,
             serverUrl: params.serverUrl,
             ...(params.runtimeOrigin ? { runtimeOrigin: params.runtimeOrigin } : {}),
@@ -196,24 +173,25 @@ export async function resolveScopedMachineTransport(params: Readonly<{
             token,
             machineId,
             ...(params.accountId ? { accountId: params.accountId } : {}),
-            ...(params.expectedAccountMode
-                ? { expectedAccountMode: params.expectedAccountMode }
-                : {}),
-            ...(params.expectedRunnerBinding
-                ? { expectedRunnerBinding: params.expectedRunnerBinding }
-                : {}),
-            ...(params.trustedMachineKind
-                ? { trustedMachineKind: params.trustedMachineKind }
-                : {}),
             decryptEncryptionKey: params.decryptEncryptionKey,
             timeoutMs,
-        });
-        if (resolved && (resolved.mode === 'plain' || resolved.dataKey)) {
-            setMachineTransportCache(keyCacheKey, resolved);
-        }
-        return resolved;
+        }));
+    if (!evidence) return null;
+    const resolution = resolvePublishedMachineDataEncryptionKeyV1({
+        ...evidence,
+        ...(params.expectedAccountMode ? { expectedAccountMode: params.expectedAccountMode } : {}),
+        ...(params.expectedRunnerBinding ? { expectedRunnerBinding: params.expectedRunnerBinding } : {}),
+        ...(params.trustedMachineKind ? { trustedMachineKind: params.trustedMachineKind } : {}),
     });
-    return transport ?? null;
+    if (resolution.status === 'unavailable') {
+        machineTransportCache.delete(keyCacheKey);
+        return null;
+    }
+    if (resolution.status === 'legacy') return { mode: 'e2ee', dataKey: null };
+    setMachineTransportCache(keyCacheKey, evidence);
+    return resolution.status === 'plain'
+        ? { mode: 'plain' }
+        : { mode: 'e2ee', dataKey: resolution.dataKey };
 }
 
 export function resetScopedMachineTransportCacheForTests(): void {

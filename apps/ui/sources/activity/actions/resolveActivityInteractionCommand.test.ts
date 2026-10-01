@@ -114,6 +114,48 @@ describe('resolveActivityInteractionCommand', () => {
         });
     });
 
+    it('keeps an agent request on the exact Home when the Session id exists on another Home', async () => {
+        const resolver = await loadResolverModule();
+        expect(resolver).not.toBeNull();
+        if (!resolver) return;
+
+        const command = resolver.resolveActivityInteractionCommand({
+            actionIdentifier: PUSH_NOTIFICATION_ACTION_IDS.permissionAllowV1,
+            defaultActionIdentifier: 'open-session:same-id',
+            data: {
+                serverId: 'server-b',
+                sessionId: 'same-id',
+                requestId: 'request-home-b',
+            },
+            knownIdentities: [
+                {
+                    serverId: 'server-a',
+                    sessionId: 'same-id',
+                    activityName: HAPPIER_FOCUS_LIVE_ACTIVITY_NAME,
+                },
+                {
+                    serverId: 'server-b',
+                    sessionId: 'same-id',
+                    activityName: HAPPIER_FOCUS_LIVE_ACTIVITY_NAME,
+                },
+            ],
+        });
+
+        expect(command).toMatchObject({
+            kind: 'executeAction',
+            defaultSessionId: 'same-id',
+            identity: {
+                serverId: 'server-b',
+                sessionId: 'same-id',
+                activityName: HAPPIER_FOCUS_LIVE_ACTIVITY_NAME,
+            },
+            payload: {
+                sessionId: 'same-id',
+                requestId: 'request-home-b',
+            },
+        });
+    });
+
     it('falls back to opening the session when direct actions are disabled for a verified target', async () => {
         const resolver = await loadResolverModule();
         expect(resolver).not.toBeNull();

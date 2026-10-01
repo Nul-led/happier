@@ -9,7 +9,6 @@ import { useScannedAuthUrlProcessor } from './useScannedAuthUrlProcessor';
 
 const processorTestState = vi.hoisted(() => ({
     routerPush: vi.fn(),
-    accountProcess: vi.fn(async () => true),
     terminalProcess: vi.fn(async () => true),
     alertAsync: vi.fn(async () => undefined),
 }));
@@ -17,13 +16,6 @@ const processorTestState = vi.hoisted(() => ({
 vi.mock('expo-router', () => createExpoRouterMock({
     router: { push: processorTestState.routerPush },
 }).module);
-
-vi.mock('@/hooks/auth/useConnectAccount', () => ({
-    useConnectAccount: () => ({
-        processAuthUrl: processorTestState.accountProcess,
-        isLoading: false,
-    }),
-}));
 
 vi.mock('@/hooks/session/useConnectTerminal', () => ({
     useConnectTerminal: () => ({
@@ -61,7 +53,6 @@ function buildHomeInviteLink(pairId: string): string {
 describe('useScannedAuthUrlProcessor', () => {
     it('routes V2 Home input to the restore owner carrying the scanner-owned add-home intent', async () => {
         processorTestState.routerPush.mockClear();
-        processorTestState.accountProcess.mockClear();
         processorTestState.terminalProcess.mockClear();
         const rawLink = buildHomeInviteLink('pair-generic-account-scan');
         const hook = await renderHook(() => useScannedAuthUrlProcessor({
@@ -79,8 +70,31 @@ describe('useScannedAuthUrlProcessor', () => {
         expect(routed).toMatch(/^\/restore\?pairingHandoff=[A-Za-z0-9_-]+&entryIntent=add_home$/u);
         expect(routed).not.toContain(encodeURIComponent(rawLink));
         expect(routed).not.toContain('pairingLink=');
-        expect(processorTestState.accountProcess).not.toHaveBeenCalled();
         expect(processorTestState.terminalProcess).not.toHaveBeenCalled();
+    });
+
+    it('routes a pasted Team join link to its join destination and refuses it where only terminals are admitted', async () => {
+        processorTestState.routerPush.mockClear();
+        processorTestState.alertAsync.mockClear();
+        const link = 'https://app.example.test/join/tj_abc123?target=hx1.carrier&targetBinding=bind-1';
+        const account = await renderHook(() => useScannedAuthUrlProcessor({
+            allowedUrlKind: 'account',
+            homeQrEntryIntent: 'add_home',
+        }));
+        let result = false;
+        await act(async () => {
+            result = await account.getCurrent().processAuthUrl(link);
+        });
+        expect(result).toBe(true);
+        expect(processorTestState.routerPush).toHaveBeenCalledWith('/join/tj_abc123?target=hx1.carrier&targetBinding=bind-1');
+
+        processorTestState.routerPush.mockClear();
+        const terminal = await renderHook(() => useScannedAuthUrlProcessor({ allowedUrlKind: 'terminal' }));
+        await act(async () => {
+            result = await terminal.getCurrent().processAuthUrl(link);
+        });
+        expect(result).toBe(false);
+        expect(processorTestState.routerPush).not.toHaveBeenCalled();
     });
 
     it('routes the same V2 Home input with enter_home when the entry point owns that intent', async () => {
@@ -102,7 +116,6 @@ describe('useScannedAuthUrlProcessor', () => {
 
     it('leaves a terminal-only scanner unable to route a Home invite', async () => {
         processorTestState.routerPush.mockClear();
-        processorTestState.accountProcess.mockClear();
         processorTestState.terminalProcess.mockClear();
         processorTestState.alertAsync.mockClear();
         const rawLink = buildHomeInviteLink('pair-terminal-scan');
@@ -115,7 +128,6 @@ describe('useScannedAuthUrlProcessor', () => {
 
         expect(result).toBe(false);
         expect(processorTestState.routerPush).not.toHaveBeenCalled();
-        expect(processorTestState.accountProcess).not.toHaveBeenCalled();
         expect(processorTestState.terminalProcess).not.toHaveBeenCalled();
         expect(processorTestState.alertAsync).toHaveBeenCalledWith(
             'Error',
@@ -129,7 +141,6 @@ describe('useScannedAuthUrlProcessor', () => {
         const releasedV1Link =
             'happier-dev:///pair?v=1&pairId=pid123&secret=sec_abc&server=https%3A%2F%2Fstack.example.test%2Fpath%3Fx%3D1';
         processorTestState.routerPush.mockClear();
-        processorTestState.accountProcess.mockClear();
         processorTestState.terminalProcess.mockClear();
         processorTestState.alertAsync.mockClear();
         const hook = await renderHook(() => useScannedAuthUrlProcessor({
@@ -144,7 +155,7 @@ describe('useScannedAuthUrlProcessor', () => {
 
         expect(result).toBe(true);
         expect(processorTestState.alertAsync).toHaveBeenCalledWith(
-            'Update Required',
+            'Update required',
             'This QR was created by an older version of Happier. Update Happier on the other device and create a new QR.',
             [
                 expect.objectContaining({ text: 'Scan a new QR' }),
@@ -152,8 +163,31 @@ describe('useScannedAuthUrlProcessor', () => {
             ],
         );
         expect(processorTestState.routerPush).not.toHaveBeenCalled();
-        expect(processorTestState.accountProcess).not.toHaveBeenCalled();
         expect(processorTestState.terminalProcess).not.toHaveBeenCalled();
         expect(JSON.stringify(processorTestState.alertAsync.mock.calls)).not.toContain('sec_abc');
+    });
+
+    it('recognizes a legacy account QR only to show Home QR guidance, without routing or connecting', async () => {
+        processorTestState.routerPush.mockClear();
+        processorTestState.terminalProcess.mockClear();
+        processorTestState.alertAsync.mockClear();
+        const hook = await renderHook(() => useScannedAuthUrlProcessor({
+            allowedUrlKind: 'account',
+            homeQrEntryIntent: 'add_home',
+        }));
+
+        let result = true;
+        await act(async () => {
+            result = await hook.getCurrent().processAuthUrl('happier-dev:///account?abc123');
+        });
+
+        expect(result).toBe(false);
+        expect(processorTestState.alertAsync).toHaveBeenCalledWith(
+            'Restore account',
+            expect.stringContaining('older account QR'),
+            [expect.objectContaining({ text: 'OK' })],
+        );
+        expect(processorTestState.routerPush).not.toHaveBeenCalled();
+        expect(processorTestState.terminalProcess).not.toHaveBeenCalled();
     });
 });

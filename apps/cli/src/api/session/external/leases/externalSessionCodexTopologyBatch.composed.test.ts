@@ -303,7 +303,7 @@ describe('composed Codex topology descriptor batching', () => {
         const resource = {
             pluginId: 'happier.codex',
             agentLocalId: 'codex',
-            pluginGeneration: 'one-home-plugin-generation',
+            occurrenceId: 'one-home-plugin-generation',
             resourceKey: grouping[0]!.grouping.resourceKey,
         } satisfies ExternalSessionObservationResourceIdentity;
         const reconciler = createExternalSessionObservationReconciler({
@@ -448,7 +448,7 @@ describe('composed Codex topology descriptor batching', () => {
                 resource: {
                     pluginId: 'happier.agent.codex',
                     agentLocalId: 'codex',
-                    pluginGeneration: 'grouping-transcript-demand-plugin',
+                    occurrenceId: 'grouping-transcript-demand-plugin',
                     resourceKey: grouping.resourceKey,
                 },
                 link: {
@@ -508,7 +508,7 @@ describe('composed Codex topology descriptor batching', () => {
             sessionId,
             resource: {
                 linkGeneration,
-                pluginGeneration: 'grouping-transcript-demand-plugin',
+                occurrenceId: 'grouping-transcript-demand-plugin',
             },
         }));
 
@@ -668,7 +668,7 @@ describe('composed Codex topology descriptor batching', () => {
         const resourceByHome = homes.map((_, homeIndex) => ({
             pluginId: 'happier.codex',
             agentLocalId: 'codex',
-            pluginGeneration: `codex-generation-${homeIndex}`,
+            occurrenceId: `codex-generation-${homeIndex}`,
             resourceKey: described[homeIndex]![0]!.descriptor.resourceKey,
             retirementSignal: retirementControllers[homeIndex]!.signal,
         } satisfies ExternalSessionObservationResourceIdentity));
@@ -1030,7 +1030,7 @@ describe('composed Codex topology descriptor batching', () => {
         await lateReconciler.reconcileLink({
             resource: {
                 ...lateCurrent.resource,
-                pluginGeneration: 'late-plugin-generation',
+                occurrenceId: 'late-plugin-generation',
                 retirementSignal: lateRetirement.signal,
             },
             link: {
@@ -1138,7 +1138,7 @@ describe('composed Codex topology descriptor batching', () => {
             resource: {
                 pluginId: 'happier.codex',
                 agentLocalId: 'codex',
-                pluginGeneration: 'grant-plugin-generation',
+                occurrenceId: 'grant-plugin-generation',
                 resourceKey: grouping.resourceKey,
             },
             link: {

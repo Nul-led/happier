@@ -20,6 +20,7 @@ import { createServerPluginSubagentDurableCustody } from '@/session/subagents/se
 import { createPluginSessionSystemRecordsService } from '@/session/systemRecords/pluginSessionSystemRecordsService';
 import { setSessionTitle } from './setSessionTitle';
 import type { PluginSessionHandleCapabilities } from './pluginSessionsInventory';
+import type { PluginSourceCustodyV1 } from '@happier-dev/protocol';
 
 export type PluginSessionLiveCapabilities = Readonly<{
   scopeId: symbol;
@@ -34,7 +35,7 @@ export type PluginSessionLiveCapabilities = Readonly<{
 export type PluginSessionCapabilityCaller = Readonly<{
   pluginId: string;
   contributionId: string;
-  immutableGenerationId: string;
+  sourceCustody: PluginSourceCustodyV1;
   runtimeId?: string;
 }>;
 
@@ -308,7 +309,7 @@ export function createPluginSessionHandleCapabilitiesFactory(
       identity: {
         pluginId: params.caller.pluginId,
         contributionId: params.caller.contributionId,
-        immutableGenerationId: params.caller.immutableGenerationId,
+        sourceCustody: params.caller.sourceCustody,
         parentSessionId: sessionId,
       },
       isCurrent: isCallerCurrent,
@@ -318,7 +319,7 @@ export function createPluginSessionHandleCapabilitiesFactory(
         identity: {
           pluginId: params.caller.pluginId,
           contributionId: params.caller.contributionId,
-          immutableGenerationId: params.caller.immutableGenerationId,
+          sourceCustody: params.caller.sourceCustody,
           parentSessionId: sessionId,
         },
       }),

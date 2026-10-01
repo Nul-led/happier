@@ -8,6 +8,35 @@ import { SCM_COMMIT_MESSAGE_MAX_LENGTH, SCM_OPERATION_ERROR_CODES } from '@happi
 import { createTestRpcManager, runGit as git } from './testRpcHarness';
 
 describe('git RPC handlers', () => {
+    it('lists incoming commits from the configured upstream without treating them as current-branch history', async () => {
+        const workspace = mkdtempSync(join(tmpdir(), 'happier-git-incoming-rpc-'));
+        git(workspace, ['init']);
+        git(workspace, ['config', 'user.email', 'test@example.com']);
+        git(workspace, ['config', 'user.name', 'Test User']);
+        writeFileSync(join(workspace, 'a.txt'), 'base\n');
+        git(workspace, ['add', 'a.txt']);
+        git(workspace, ['commit', '-m', 'base']);
+        const baseSha = git(workspace, ['rev-parse', 'HEAD']);
+        git(workspace, ['checkout', '-b', 'incoming-source']);
+        writeFileSync(join(workspace, 'a.txt'), 'incoming\n');
+        git(workspace, ['add', 'a.txt']);
+        git(workspace, ['commit', '-m', 'incoming']);
+        const incomingSha = git(workspace, ['rev-parse', 'HEAD']);
+        git(workspace, ['update-ref', 'refs/remotes/origin/feature', incomingSha]);
+        git(workspace, ['checkout', '-b', 'feature', baseSha]);
+        git(workspace, ['config', 'branch.feature.remote', 'origin']);
+        git(workspace, ['config', 'branch.feature.merge', 'refs/heads/feature']);
+        git(workspace, ['config', 'remote.origin.fetch', '+refs/heads/*:refs/remotes/origin/*']);
+
+        const { call } = createTestRpcManager({ workingDirectory: workspace });
+        const response = await call<any, { cwd: string; range: 'incoming' }>(RPC_METHODS.SCM_LOG_LIST, {
+            cwd: '.', range: 'incoming',
+        });
+        expect(response.success, JSON.stringify(response)).toBe(true);
+        expect(response.rangeApplied).toBe(true);
+        expect(response.entries?.map((entry: { sha: string }) => entry.sha)).toEqual([incomingSha]);
+    });
+
     it('preserves commits with empty bodies when listing history', async () => {
         const workspace = mkdtempSync(join(tmpdir(), 'happier-git-rpc-'));
         git(workspace, ['init']);

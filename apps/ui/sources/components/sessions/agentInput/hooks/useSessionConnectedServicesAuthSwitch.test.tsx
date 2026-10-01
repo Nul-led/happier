@@ -2149,6 +2149,7 @@ describe('useSessionConnectedServicesAuthSwitch', () => {
                 inferenceRequests: 'available' as const,
                 totalTokens: 'unavailable' as const,
                 costUsd: 'unavailable' as const,
+                limitCoverage: 'unavailable' as const,
             },
             providerModels: [],
             connectedServiceSelections: [selection],

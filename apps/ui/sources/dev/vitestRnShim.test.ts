@@ -7,6 +7,13 @@ describe('vitestRnShim', () => {
         expect(asset).toContain('logo-black.png');
     });
 
+    it('treats generated bundled Plugin UI CJS paths as Metro assets instead of executing them', () => {
+        const request = '@happier-dev/plugins-channels/happier-plugin-ui/react-native/channels-app-native/entry.cjs.bundle';
+        const asset = (globalThis as any).require(request);
+
+        expect(asset).toBe(request);
+    });
+
     it('fails loudly for non-asset aliased requires outside the allowlist', () => {
         expect(() => (globalThis as any).require('@/sync/storageStore')).toThrow(
             /Unsupported alias require/i,

@@ -9,9 +9,12 @@ import {
     qualifySessionListFilterOptionLabel,
 } from './sessionListFilterTagOptions';
 import { SessionListFilterEditorControl } from './SessionListFilterEditorControl';
+import type { SessionListFilterEditorProps } from './SessionListFilterEditor';
 import type { SessionListViewFilterController } from './useSessionListViewFilterController';
+import { registerSessionListScopeActionOwner } from '@/sync/ops/actions/scopeActionFamily';
 
-function readScopeLabel(scope: SessionListScopeV1): string {
+/** The collapsed control's name for a scope ("My work"). Shared with any surface that edits a Sessions filter. */
+export function readSessionListScopeLabel(scope: SessionListScopeV1): string {
     switch (scope) {
         case 'my_work': return t('sessionsList.filtersMyWork');
         case 'assigned_to_me': return t('sessionsList.filtersAssignedToMe');
@@ -21,41 +24,23 @@ function readScopeLabel(scope: SessionListScopeV1): string {
     }
 }
 
-export const SessionListFilterControl = React.memo(function SessionListFilterControl(props: Readonly<{
-    controller: SessionListViewFilterController;
-    organizationProjectionsByServerId: Readonly<Record<string, SessionOrganizationProjection>>;
-}>) {
-    const { controller } = props;
-    const qualifyLabel = React.useCallback((label: string, serverId: string) => (
-        qualifySessionListFilterOptionLabel({ label, serverId, homeOptions: controller.homeOptions })
-    ), [controller.homeOptions]);
+/** Outside-Teams audience options, one per Home, for a global (not Team) view. */
+export function buildSessionListFilterAudienceOptions(
+    homeOptions: SessionListViewFilterController['homeOptions'],
+    viewContext: SessionListViewFilterController['viewContext'],
+): SessionListFilterEditorProps['audiences'] {
+    if (viewContext.kind !== 'global') return [];
     const outsideTeamsLabel = t('sessionsList.filtersOutsideTeams');
-    const audienceOptions = React.useMemo(() => {
-        return controller.viewContext.kind === 'global'
-            ? controller.homeOptions.map((home) => ({
-            serverId: home.serverId,
-            kind: 'outside_teams' as const,
-            label: qualifyLabel(outsideTeamsLabel, home.serverId),
-        }))
-            : [];
-    }, [controller.homeOptions, controller.viewContext, outsideTeamsLabel, qualifyLabel]);
-    const tagOptions = React.useMemo(() => buildSessionListFilterTagOptions({
-        homeOptions: controller.homeOptions,
-        organizationProjectionsByServerId: props.organizationProjectionsByServerId,
-    }), [controller.homeOptions, props.organizationProjectionsByServerId]);
-    const allMountedHomesSelected = React.useMemo(() => {
-        const selected = new Set(controller.filters.homeServerIds);
-        return selected.size === controller.homeOptions.length
-            && controller.homeOptions.every((home) => selected.has(home.serverId));
-    }, [controller.filters.homeServerIds, controller.homeOptions]);
-    const active = controller.filters.scope !== 'my_work'
-        || controller.filters.attention !== 'any'
-        || !controller.includeInactive
-        || !allMountedHomesSelected
-        || controller.filters.audiences.length > 0
-        || controller.filters.tagIds.length > 0
-        || controller.filters.source !== 'all';
-    const labels = {
+    return homeOptions.map((home) => ({
+        serverId: home.serverId,
+        kind: 'outside_teams' as const,
+        label: qualifySessionListFilterOptionLabel({ label: outsideTeamsLabel, serverId: home.serverId, homeOptions }),
+    }));
+}
+
+/** The editor's copy: one set for every surface that edits a Sessions filter. */
+export function buildSessionListFilterEditorLabels(): SessionListFilterEditorProps['labels'] {
+    return {
         title: t('sessionsList.filtersTitle'),
         search: t('sessionsList.filtersSearch'),
         show: t('sessionsList.filtersShow'),
@@ -67,19 +52,21 @@ export const SessionListFilterControl = React.memo(function SessionListFilterCon
         attention: t('sessionsList.filtersAttention'),
         anyAttention: t('sessionsList.filtersAttentionAny'),
         needsMyAttention: t('sessionsList.filtersAttentionNeedsMe'),
+        needsMeOnly: t('sessionsList.filtersNeedsMeOnly'),
+        needsMeOnlyDescription: t('sessionsList.filtersNeedsMeOnlyDescription'),
         inactiveSessions: t('sessionsList.filtersInactive'),
         showInactive: t('sessionsList.filtersInactiveShow'),
         hideInactive: t('sessionsList.filtersInactiveHide'),
         homes: t('sessionsList.filtersHomes'),
         sharedWith: t('sessionsList.filtersSharedWith'),
-        outsideTeams: outsideTeamsLabel,
+        outsideTeams: t('sessionsList.filtersOutsideTeams'),
         tags: t('sessionsList.filtersTags'),
         source: t('sessionsList.filtersSource'),
         allSources: t('sessionsList.filtersSourceAll'),
-        persistedSource: t('sessionsList.filtersSourcePersisted'),
+        persistedSource: t('sessionsList.filtersSourceHappier'),
         directSource: t('sessionsList.filtersSourceDirect'),
         noOptions: t('sessionsList.filtersNoOptions'),
-        clear: t('sessionsList.filtersClear'),
+        clear: t('common.reset'),
         done: t('sessionsList.filtersDone'),
         catalogLoading: t('common.loading'),
         catalogMore: t('common.more'),
@@ -87,11 +74,50 @@ export const SessionListFilterControl = React.memo(function SessionListFilterCon
         catalogError: t('common.error'),
         catalogPartial: t('common.unavailable'),
         catalogEnd: t('session.access.allLoaded'),
+        archived: t('sessionsList.filtersArchived'),
+        moreTags: (count: number) => t('sessionsList.filtersMoreTags', { count }),
+        resultCount: (count: number) => t('sessionsList.filtersResultCount', { count }),
     };
+}
+
+export const SessionListFilterControl = React.memo(function SessionListFilterControl(props: Readonly<{
+    controller: SessionListViewFilterController;
+    organizationProjectionsByServerId: Readonly<Record<string, SessionOrganizationProjection>>;
+    /** Opens the archived list; the active corpus passes it so Archived sits in the scope menu. */
+    onOpenArchived?: () => void;
+    /** Sessions the list shows for the current choices, counted from the list's own rows. */
+    resultCount?: number;
+}>) {
+    const { controller } = props;
+    const controllerRef = React.useRef(controller);
+    React.useLayoutEffect(() => { controllerRef.current = controller; });
+    React.useEffect(() => registerSessionListScopeActionOwner(() => controllerRef.current),
+        [controller.corpusStorage, controller.viewContextKey, controller.retentionScopeKey]);
+    const audienceOptions = React.useMemo(
+        () => buildSessionListFilterAudienceOptions(controller.homeOptions, controller.viewContext),
+        [controller.homeOptions, controller.viewContext],
+    );
+    const tagOptions = React.useMemo(() => buildSessionListFilterTagOptions({
+        homeOptions: controller.homeOptions,
+        organizationProjectionsByServerId: props.organizationProjectionsByServerId,
+    }), [controller.homeOptions, props.organizationProjectionsByServerId]);
+    const allMountedHomesSelected = React.useMemo(() => {
+        const selected = new Set(controller.filters.homeServerIds);
+        return selected.size === controller.homeOptions.length
+            && controller.homeOptions.every((home) => selected.has(home.serverId));
+    }, [controller.filters.homeServerIds, controller.homeOptions]);
+    // The trigger's label already names the scope, so "narrowed" means a facet beyond it.
+    const active = controller.filters.attention !== 'any'
+        || !controller.includeInactive
+        || !allMountedHomesSelected
+        || controller.filters.audiences.length > 0
+        || controller.filters.tagIds.length > 0
+        || controller.filters.source !== 'all';
+    const labels = buildSessionListFilterEditorLabels();
 
     // A Team is named for people, not addressed by them. The immutable id shows
     // only while the Home has not answered with the Team's real name yet.
-    const semanticScopeLabel = readScopeLabel(controller.filters.scope);
+    const semanticScopeLabel = readSessionListScopeLabel(controller.filters.scope);
     const corpusLabel = controller.corpusPresentation === 'legacy_owner_or_direct'
         ? t('sessionsList.filtersLegacyOwnerDirect')
         : semanticScopeLabel;
@@ -130,6 +156,8 @@ export const SessionListFilterControl = React.memo(function SessionListFilterCon
                 setIncludeInactive: controller.setIncludeInactive,
                 setSource: controller.setSource,
                 resetFilters: controller.resetFilters,
+                onOpenArchived: props.onOpenArchived,
+                resultCount: props.resultCount,
             }}
         />
     );

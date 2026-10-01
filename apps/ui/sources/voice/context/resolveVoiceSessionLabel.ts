@@ -1,3 +1,4 @@
+import { readSessionDirectoryKind } from '@happier-dev/protocol';
 import { storage } from '@/sync/domains/state/storage';
 import {
   resolveSessionListPreferredSessionMetadataFromState,
@@ -47,6 +48,8 @@ function ownerLabelFromMetadata(
   }
 
   if (prefs?.voiceShareFilePaths !== true) return null;
+  // A no-folder session's private folder is not a name; its label falls back like any unnamed session.
+  if (readSessionDirectoryKind(metadata) === 'managed') return null;
   const path = normalizeNonEmptyString(metadata?.path);
   if (!path) return null;
   const lastSegment = path.split('/').filter(Boolean).at(-1);

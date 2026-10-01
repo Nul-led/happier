@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { readdir, readFile, stat } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 export type LocalServicePackageManager = 'npm' | 'pnpm' | 'yarn' | 'bun';
 
@@ -98,6 +98,45 @@ async function resolvePackageManager(root: string): Promise<LocalServicePackageM
     return 'npm';
 }
 
+async function resolvePackageManagerForPackage(cwd: string): Promise<LocalServicePackageManager> {
+    let directory = cwd;
+    while (true) {
+        if (await pathExists(join(directory, 'pnpm-lock.yaml'))
+            || await pathExists(join(directory, 'yarn.lock'))
+            || await pathExists(join(directory, 'bun.lock'))
+            || await pathExists(join(directory, 'bun.lockb'))
+            || await pathExists(join(directory, 'package-lock.json'))
+            || await pathExists(join(directory, 'npm-shrinkwrap.json'))) {
+            return resolvePackageManager(directory);
+        }
+        const parent = dirname(directory);
+        if (parent === directory) return 'npm';
+        directory = parent;
+    }
+}
+
+/** Resolve a launcher selection from the actual package, not its presentation preview.
+ * Only the canonical finite script vocabulary is admitted, so the resulting
+ * command contains no user-authored shell syntax on POSIX, cmd or PowerShell.
+ */
+export async function resolveLocalServiceRunTargetCommand(input: Readonly<{
+    cwd: string;
+    runTargetId: string;
+}>): Promise<string | null> {
+    const packageJson = await readPackageJson(input.cwd);
+    if (!packageJson) return null;
+    const scriptName = SERVER_SCRIPT_PRIORITY.find((name) => {
+        const baseId = `${packageJson.name}:${name}`;
+        return packageJson.scripts[name]
+            && (input.runTargetId === baseId || input.runTargetId === disambiguatedRunTargetId(baseId, input.cwd));
+    });
+    if (!scriptName) return null;
+    // Workspace packages inherit the root's lockfile selection. Read ancestors
+    // without discovering or executing other packages.
+    const packageManager = await resolvePackageManagerForPackage(input.cwd);
+    return `${packageManager} run ${scriptName}`;
+}
+
 async function readPackageJson(cwd: string): Promise<Readonly<{
     name: string;
     scripts: Readonly<Record<string, string>>;
@@ -163,7 +202,6 @@ export async function discoverLocalServiceRunTargets(input: Readonly<{
     };
 
     for (const root of input.roots) {
-        const packageManager = await resolvePackageManager(root);
         const directories = await collectPackageDirectories(root, traversalBudget);
         for (const cwd of directories) {
             if (seenDirectories.has(cwd)) {
@@ -174,6 +212,7 @@ export async function discoverLocalServiceRunTargets(input: Readonly<{
             if (!packageJson) {
                 continue;
             }
+            const packageManager = await resolvePackageManagerForPackage(cwd);
             for (const scriptName of SERVER_SCRIPT_PRIORITY) {
                 const command = packageJson.scripts[scriptName];
                 if (!command) {

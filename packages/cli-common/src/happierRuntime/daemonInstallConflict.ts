@@ -17,6 +17,12 @@ export type DaemonServiceInstallTarget = Readonly<{
     instanceId: string | null;
     serverUrl: string | null;
     happierHomeDir?: string | null;
+    /**
+     * The server a default-following target currently follows. Daemons are per-server, so a
+     * pinned service competes with a default-following one only when both serve this server;
+     * `null`/absent keeps the conservative reading that every pinned service may compete.
+     */
+    followedServerId?: string | null;
 }>;
 
 export type DaemonServiceInstallConflictPlan = Readonly<{
@@ -28,7 +34,7 @@ export type DaemonServiceInstallConflictPlan = Readonly<{
     servicesToRemove: readonly HappierService[];
 }>;
 
-function normalizeHomeDir(
+export function normalizeHomeDir(
     value: string | null | undefined,
     platform: HappierServicePlatform,
 ): string | null {
@@ -119,7 +125,10 @@ function isCompetingService(service: HappierService, target: DaemonServiceInstal
         return false;
     }
     if (target.targetMode === 'default-following') {
-        return service.platform === target.platform;
+        if (service.platform !== target.platform) return false;
+        const followedServerId = String(target.followedServerId ?? '').trim();
+        if ((service.targetMode ?? 'pinned') === 'default-following' || !followedServerId) return true;
+        return service.instanceId === followedServerId;
     }
     if (service.instanceId && service.instanceId === target.instanceId) {
         return true;

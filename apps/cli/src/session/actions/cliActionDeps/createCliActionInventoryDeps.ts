@@ -11,6 +11,8 @@ import {
   type BackendTargetRefV2,
 } from '@happier-dev/protocol';
 import axios from 'axios';
+import { DaemonProviderModelProjectionResponseV1Schema, RPC_METHODS } from '@happier-dev/protocol/rpc';
+import type { DaemonProviderModelProjectionResponseV1 } from '@happier-dev/protocol/rpc';
 import { connectedServiceProfileKey, legacyCustomAcpCompat } from '@happier-dev/agents';
 
 import { resolveAccountSettingsHttpBaseUrl } from '@/settings/accountSettings/resolveAccountSettingsHttpBaseUrl';
@@ -23,7 +25,7 @@ import { fetchSessionById } from '@/session/transport/http/sessionsHttp';
 import { listCurrentAccountMachines } from '@/api/machine/resolveCurrentAccountMachineTarget';
 import { listServerProfiles } from '@/server/serverProfiles';
 import { projectProfilesListForActions } from '@/settings/profiles/profileListProjection';
-import { readProfilesFromAccountSettings } from '@/settings/profiles/readProfilesFromAccountSettings';
+import { readAccountLaunchProfiles, readProfilesFromAccountSettings } from '@/settings/profiles/readProfilesFromAccountSettings';
 import { resolveSpawnConnectedServicesDefaults } from '@/session/services/spawnConnectedServicesDefaults';
 import { resolveCatalogAgentConnectedAccountServiceIds } from '@/agent/catalog/registry';
 import { readMcpServersSettingsFromAccountSettings } from '@/mcp/servers/readMcpServersSettingsFromAccountSettings';
@@ -418,6 +420,14 @@ export function createCliActionInventoryDeps(params: Readonly<{
   accountProfile?: AccountProfile | null;
   probeDeps?: AgentProbeInventoryDeps;
   mcpPreviewDeps?: SpawnMcpPreviewInventoryDeps;
+  /** Existing exact-Machine transport, backed by the daemon's retained Provider services. */
+  callMachineAction?: (input: Readonly<{
+    machineId: string;
+    serverId?: string;
+    method: string;
+    request: unknown;
+    signal?: AbortSignal;
+  }>) => Promise<unknown>;
 }> & SessionStoredContentCryptoContext): Pick<
   ActionExecutorDeps,
   | 'pathsListRecent'
@@ -573,10 +583,11 @@ export function createCliActionInventoryDeps(params: Readonly<{
         items: limitItems(items, (args as { limit?: unknown }).limit),
       };
     },
-    reviewEnginesList: async ({ sessionId, includeDisabled }) => ({
+    reviewEnginesList: async ({ sessionId, includeDisabled, scope }) => ({
       sessionId,
       items: await (await import('./buildReviewEngineInventoryItemsLazy')).buildReviewEngineInventoryItemsLazy({
         includeDisabled,
+        scope,
         accountSettings: await readAccountSettings(),
       }),
     }),
@@ -641,6 +652,22 @@ export function createCliActionInventoryDeps(params: Readonly<{
       const dedupedItems = resolvedItems.filter((entry): entry is NonNullable<typeof entry> => Boolean(entry))
         .filter((entry, index, all) => all.findIndex((candidate) => candidate.id === entry.id) === index);
       const bounded = normalizeLimit(limit);
+      let providerProjection: Extract<DaemonProviderModelProjectionResponseV1, { status: 'success' }> | null = null;
+      if (args.includeProviderProjection && args.machineId && backendTargetKey && params.callMachineAction) {
+        try {
+          const projection = DaemonProviderModelProjectionResponseV1Schema.safeParse(await params.callMachineAction({
+            machineId: args.machineId,
+            ...(args.serverId ? { serverId: args.serverId } : {}),
+            method: RPC_METHODS.DAEMON_PROVIDERS_MODEL_PROJECTION,
+            request: { machineId: args.machineId, agentTargetKey: backendTargetKey, mode: 'picker' },
+            ...(args.signal ? { signal: args.signal } : {}),
+          }));
+          if (projection.success && projection.data.status === 'success'
+            && projection.data.agentTargetKey === backendTargetKey) providerProjection = projection.data;
+        } catch {
+          // Native choices remain usable when the exact Provider producer is unavailable.
+        }
+      }
       return {
         ...(normalizedAgentId ? { agentId: normalizedAgentId } : {}),
         items: bounded ? dedupedItems.slice(0, bounded) : dedupedItems,
@@ -648,6 +675,7 @@ export function createCliActionInventoryDeps(params: Readonly<{
         source: shouldUseProbeResult && probeResult
           ? probeResult.source
           : shouldUseSessionMetadataModels ? 'session_metadata' : 'static',
+        ...(args.includeProviderProjection ? { providerProjection } : {}),
       };
     },
     agentsSessionModesList: async (args) => {
@@ -692,8 +720,9 @@ export function createCliActionInventoryDeps(params: Readonly<{
     },
     spawnProfilesList: async (args) => {
       const accountSettings = await readAccountSettings();
-      const profileSnapshot = accountSettings
-        ? readProfilesFromAccountSettings(accountSettings as any)
+      const profileSnapshot = accountSettings && params.credentials
+        ? await readAccountLaunchProfiles(accountSettings, params.credentials)
+        : accountSettings ? readProfilesFromAccountSettings(accountSettings)
         : readProfilesFromAccountSettings({});
       // Filter, order, bound and completeness all come from the Protocol-owned
       // projection, so which host answered cannot change what a caller reads —

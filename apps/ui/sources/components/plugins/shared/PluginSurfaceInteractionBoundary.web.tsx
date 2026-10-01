@@ -1,6 +1,7 @@
 import * as React from 'react';
 
 import { t } from '@/text';
+import { visuallyHiddenDomStyle } from '@/components/ui/accessibility/visuallyHiddenStyle';
 
 type PluginSurfaceInteractionBoundaryProps = Readonly<{
     children: React.ReactNode;
@@ -15,7 +16,7 @@ type PluginSurfaceInteractionBoundaryProps = Readonly<{
     /** Host-stamped, non-authoritative loaded-runtime evidence for diagnostics/QA. */
     loadedRuntimeIdentity?: Readonly<{
         pluginId: string;
-        generation: string;
+        occurrenceId: string;
         artifactDigest: string;
         machineId?: string | null;
         serverId?: string | null;
@@ -94,7 +95,7 @@ export function PluginSurfaceInteractionBoundary(
                 data-testid={`plugin-surface-interaction-boundary:${props.surfaceId}`}
                 data-plugin-interaction-state={props.enabled ? 'enabled' : 'offline-snapshot'}
                 data-plugin-id={props.loadedRuntimeIdentity?.pluginId}
-                data-plugin-generation={props.loadedRuntimeIdentity?.generation}
+                data-plugin-occurrence-id={props.loadedRuntimeIdentity?.occurrenceId}
                 data-plugin-artifact-digest={props.loadedRuntimeIdentity?.artifactDigest}
                 data-plugin-machine-id={props.loadedRuntimeIdentity?.machineId ?? undefined}
                 data-plugin-server-id={props.loadedRuntimeIdentity?.serverId ?? undefined}
@@ -118,7 +119,7 @@ export function PluginSurfaceInteractionBoundary(
                     data-testid={`plugin-surface-offline-summary:${props.surfaceId}`}
                     role="status"
                     aria-live="polite"
-                    style={visuallyHiddenStyle}
+                    style={visuallyHiddenDomStyle}
                 >
                     {t('pluginSurfaces.offlineSnapshot.accessibilityLabel', {
                         title: props.snapshotTitle,
@@ -128,15 +129,3 @@ export function PluginSurfaceInteractionBoundary(
         </>
     );
 }
-
-const visuallyHiddenStyle: React.CSSProperties = {
-    position: 'absolute',
-    width: 1,
-    height: 1,
-    padding: 0,
-    margin: -1,
-    overflow: 'hidden',
-    clip: 'rect(0, 0, 0, 0)',
-    whiteSpace: 'nowrap',
-    border: 0,
-};

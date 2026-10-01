@@ -117,9 +117,11 @@ export function useScmDiffExpandedKeys(input: Readonly<{
 
     React.useEffect(() => {
         if (!input.tooLarge) {
-            setAutoExpandedKeys(new Set());
-            setManualExpandedKeys(new Set());
-            setCollapsedKeys(new Set(initialCollapsedKeySet));
+            setAutoExpandedKeys((prev) => (prev.size === 0 ? prev : new Set()));
+            setManualExpandedKeys((prev) => (prev.size === 0 ? prev : new Set()));
+            setCollapsedKeys((prev) => (
+                areStringSetsEqual(prev, initialCollapsedKeySet) ? prev : new Set(initialCollapsedKeySet)
+            ));
             return;
         }
         setAutoExpandedKeys((prev) => (

@@ -2,7 +2,10 @@ import * as React from 'react';
 
 import type { PersistedBackendTargetRefV2, SessionModelSelectionV1 } from '@happier-dev/protocol';
 
-import { NewSessionEngineOptionDetail } from '@/components/sessions/new/components/NewSessionEngineOptionDetail';
+import {
+    NewSessionEngineOptionDetail,
+    type NewSessionEngineOptionDetailProps,
+} from '@/components/sessions/new/components/NewSessionEngineOptionDetail';
 import { resolveNewSessionCapabilityProbeContext } from '@/components/sessions/new/modules/newSessionCapabilityProbeContext';
 import type { OptionPickerProbeState } from '@/components/sessions/pickers/OptionPickerOverlay';
 import type { FavoriteModelSelectionV1 } from '@/sync/domains/models/favoriteModelSelections';
@@ -50,6 +53,7 @@ export function buildSessionAgentPickerDetailContent(params: Readonly<{
         favorite: boolean;
         onToggle: () => void;
     }>;
+    providerProjection?: NewSessionEngineOptionDetailProps['providerProjection'];
     experimentalConfirmation?: SessionModelPickerExperimentalConfirmationController;
     onSelectionChange: (selection: SessionAgentPickerSelection) => void;
 }>): React.ReactElement {
@@ -76,6 +80,7 @@ export function buildSessionAgentPickerDetailContent(params: Readonly<{
             favoriteModelSelections={params.favoriteModelSelections ?? []}
             onToggleFavoriteModel={params.onToggleFavoriteModel}
             favoriteEngine={params.favoriteEngine}
+            {...(params.providerProjection ? { providerProjection: params.providerProjection } : {})}
             experimentalConfirmation={params.experimentalConfirmation}
             onSelectionChange={(next) => params.onSelectionChange(next)}
         />

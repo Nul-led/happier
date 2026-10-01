@@ -1,7 +1,6 @@
-import type { BrowserCommandV1 } from '@happier-dev/protocol';
 import * as React from 'react';
 
-import { createBrowserDaemonControlCommandSender } from './machineRpc';
+import { createBrowserDaemonControlCommandSender, type BrowserDaemonControlCommandSender } from './machineRpc';
 
 /**
  * Resolve a stable `sendDaemonCommand` transport for a browser surface (W2-A-1 / A3).
@@ -17,7 +16,7 @@ export function useBrowserDaemonControlTransport(
         machineId?: string | null;
         serverId?: string | null;
     }>,
-): ((command: BrowserCommandV1) => void) | undefined {
+): BrowserDaemonControlCommandSender | undefined {
     const machineId = input.machineId?.trim() ?? '';
     const serverId = input.serverId?.trim() ?? '';
     return React.useMemo(() => {

@@ -37,6 +37,7 @@ import {
   prepareCurrentManagedStackDeclarativeLifecycleFixture,
   prepareCurrentManagedStackNativePublicFixture,
   resolveCurrentManagedStackPluginUiContext,
+  shouldStageCurrentSourceNativePublicFixturePath,
   stageCurrentSourceNativePublicFixtureSource,
 } from './currentManagedStackPluginUiQa';
 
@@ -72,6 +73,20 @@ const repoFixtureModule: CurrentSourceQaFixtureModule = {
   resolveCurrentSourceQaAttachmentsForDispatch,
   resolveCurrentSourceQaReferenceCandidate,
 };
+
+describe('current-source fixture staging', () => {
+  it('excludes canonical staging while retaining retired build-prefix directories', () => {
+    expect(shouldStageCurrentSourceNativePublicFixturePath(
+      '/fixture/.happier-plugin-ui-staging/operation-fixture/package.json',
+    )).toBe(false);
+    expect(shouldStageCurrentSourceNativePublicFixturePath(
+      '/fixture/.happier-plugin-ui-build-retired/package.json',
+    )).toBe(true);
+    expect(shouldStageCurrentSourceNativePublicFixturePath(
+      '/fixture/.happier-plugin-ui-staging-retired/package.json',
+    )).toBe(true);
+  });
+});
 
 /**
  * Imports one staged fixture copy's deterministic Agent and refuses a copy
@@ -250,7 +265,7 @@ async function resolveCanonicalQaDispatch(params: Readonly<{
       signal: new AbortController().signal,
     },
     composerAttachments: {
-      sessionId: 'qa-session',
+      scope: { kind: 'session', sessionId: 'qa-session' },
       localId: 'qa-input-1',
       resolve: async ({ request }) => fixture.resolveCurrentSourceQaAttachmentsForDispatch({
         // The canonical Protocol resolver has already parsed/frozen this

@@ -1,3 +1,5 @@
+import { shouldRetryError } from '@/sync/runtime/connectivity/transientConnectivityErrors';
+
 export async function delay(ms: number) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -77,23 +79,7 @@ export function createBackoff(
         const maxFailureCount = opts && opts.maxFailureCount !== undefined ? opts.maxFailureCount : 8;
         const shouldRetry = opts && opts.shouldRetry
             ? opts.shouldRetry
-            : (e: any) => {
-                // Default: do not retry explicitly non-retryable errors.
-                // Duck-typed to avoid coupling this util to higher-level error classes.
-                if (e && typeof e === 'object') {
-                    const obj = e as Record<string, unknown>;
-                    if (obj.name === 'HappyError' && obj.code === 'endpoint_offline') {
-                        return false;
-                    }
-                    if (obj.retryable === false) {
-                        return false;
-                    }
-                    if (typeof obj.canTryAgain === 'boolean' && obj.canTryAgain === false) {
-                        return false;
-                    }
-                }
-                return true;
-            };
+            : shouldRetryError;
         while (true) {
             try {
                 return await callback();

@@ -72,12 +72,15 @@ vi.mock('@/components/ui/lists/Item', () => createPassThroughModule(['Item']));
 vi.mock('@/components/ui/lists/ItemGroup', () => createPassThroughModule(['ItemGroup']));
 vi.mock('@/components/ui/lists/ItemList', () => createPassThroughModule(['ItemList']));
 vi.mock('@/components/ui/forms/Switch', () => createPassThroughModule(['Switch']));
-vi.mock('@/components/ui/feedback/ActivitySpinner', () => ({
-    ActivitySpinner: createPassThroughComponent('ActivitySpinner'),
-}));
 vi.mock('@/components/ui/surfaces/SurfaceStateCard', () => ({
     SurfaceStateCard: createPassThroughComponent('SurfaceStateCard'),
 }));
+
+/** The limit's field: the `rightElement` the `FieldValueItem` row hands to `Item` (a pass-through here). */
+function maxActiveRunsField(screen: { root: { findAll: (predicate: (node: any) => boolean) => any[] } }): React.ReactElement<Record<string, any>> {
+    const row = screen.root.findAll((node) => node.props?.testID === 'automation-settings-max-active-runs' && node.props?.rightElement)[0];
+    return row.props.rightElement as React.ReactElement<Record<string, any>>;
+}
 
 describe('AutomationSettingsScreen', () => {
     beforeEach(() => {
@@ -101,25 +104,26 @@ describe('AutomationSettingsScreen', () => {
         await flushHookEffects();
 
         expect(syncSpies.getAutomationSettings).toHaveBeenCalledOnce();
-        const maxActiveRuns = screen.findByProps({ testID: 'automation-settings-max-active-runs' });
-        expect(maxActiveRuns.props.detail).toBe('4');
+        // The limit is typed in place (no prompt) and commits on blur through the same writer.
+        const field = () => maxActiveRunsField(screen);
+        expect(field().props.value).toBe('4');
 
         await act(async () => {
-            maxActiveRuns.props.onPress();
+            field().props.onChangeText('2');
+        });
+        await act(async () => {
+            field().props.onBlur();
             await Promise.resolve();
         });
 
-        expect(modalPromptSpy).toHaveBeenCalledWith(
-            'automations.settings.maxActiveRunsPerMachine',
-            'automations.settings.maxActiveRunsPerMachinePrompt',
-            expect.objectContaining({ defaultValue: '4', inputType: 'numeric' }),
-        );
+        expect(modalPromptSpy).not.toHaveBeenCalled();
         expect(syncSpies.updateAutomationSettings).toHaveBeenCalledWith({
             maxActiveRunsPerMachine: 2,
             runRetention: 'thirtyDays',
         });
 
-        const retentionItem = screen.findByProps({ testID: 'automation-settings-run-retention' });
+        // The row renders through its search declaration (`SettingRow`), which hands its props to `Item`.
+        const retentionItem = screen.root.findAll((node) => node.props?.testID === 'automation-settings-run-retention' && node.props?.rightElement)[0]!;
         const retentionSwitch = retentionItem.props.rightElement as React.ReactElement<{ onValueChange: (value: boolean) => void }>;
         await act(async () => {
             retentionSwitch.props.onValueChange(true);
@@ -132,28 +136,30 @@ describe('AutomationSettingsScreen', () => {
         });
     });
 
-    it('does not commit a prompt result after the route has retired', async () => {
-        const prompt = createDeferred<string | null>();
-        modalPromptSpy.mockReturnValueOnce(prompt.promise);
+    it('refuses a limit the settings contract rejects, says why in place, and keeps the saved value', async () => {
         const { AutomationSettingsScreen } = await import('./AutomationSettingsScreen');
 
         const screen = await renderScreen(<AutomationSettingsScreen />);
         await flushHookEffects();
-        const maxActiveRuns = screen.findByProps({ testID: 'automation-settings-max-active-runs' });
+        const field = () => maxActiveRunsField(screen);
 
         await act(async () => {
-            maxActiveRuns.props.onPress();
-            await Promise.resolve();
+            field().props.onChangeText('0');
         });
-        await screen.unmount();
-
-        prompt.resolve('2');
         await act(async () => {
-            await prompt.promise;
+            field().props.onSubmitEditing();
             await Promise.resolve();
         });
 
         expect(syncSpies.updateAutomationSettings).not.toHaveBeenCalled();
+        expect(field().props.error).toBe('automations.settings.maxActiveRunsPerMachineInvalid');
+        expect(field().props.value).toBe('0');
+
+        // Correcting the draft clears the refusal before anything is written.
+        await act(async () => {
+            field().props.onChangeText('3');
+        });
+        expect(field().props.error).toBeNull();
     });
 
     it('retires stale Account work and reloads settings for the newly active Account', async () => {
@@ -176,13 +182,13 @@ describe('AutomationSettingsScreen', () => {
         await flushHookEffects();
 
         expect(syncSpies.getAutomationSettings).toHaveBeenCalledTimes(2);
-        expect(screen.findByProps({ testID: 'automation-settings-max-active-runs' }).props.detail).toBe('2');
+        expect(maxActiveRunsField(screen).props.value).toBe('2');
 
         accountASettings.resolve({ maxActiveRunsPerMachine: 9, runRetention: 'thirtyDays' });
         await act(async () => {
             await accountASettings.promise;
             await Promise.resolve();
         });
-        expect(screen.findByProps({ testID: 'automation-settings-max-active-runs' }).props.detail).toBe('2');
+        expect(maxActiveRunsField(screen).props.value).toBe('2');
     });
 });

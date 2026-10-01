@@ -1,10 +1,10 @@
-import type { Metadata } from '@/sync/domains/state/storageTypes';
+import type { Metadata } from '@happier-dev/session-core/state';
 import { readSessionModelsState } from '@/sync/domains/sessionControl/readSessionControlMetadata';
 import {
     readActiveSessionModelSelectionFromMetadata,
-    resolveModelSelectionIntentFromSessionMetadata,
     readSessionModelSelectionV2FromMetadata,
 } from '@happier-dev/agents';
+import { readSessionModelSelectionIntentFromMetadata } from '@/sync/domains/models/readSessionModelSelectionIntent';
 import {
     readSessionProviderBindingMetadataStateV1,
     sessionProviderBindingMetadataMatchesRuntimeBasisV1,
@@ -48,7 +48,7 @@ export function resolveSessionModelSelectionDisposition(params: Readonly<{
     let proposedIntent: SessionModelSelectionIntentV1 | null = null;
     const proposedSelectionV2 = readSessionModelSelectionV2FromMetadata(params.metadata);
     try {
-        proposedIntent = resolveModelSelectionIntentFromSessionMetadata(
+        proposedIntent = readSessionModelSelectionIntentFromMetadata(
             params.metadata,
             params.agentTargetKey,
         );

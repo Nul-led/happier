@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { connect } from 'node:net';
 import { join } from 'node:path';
@@ -10,6 +10,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   AccountSettingsSchema,
   computeWorkspaceSyncPolicyDigest,
+  deriveWorkspaceSyncConflictOperationId,
   type WorkspaceSyncTargetBootstrapPrepareV1,
 } from '@happier-dev/protocol';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
@@ -19,8 +20,15 @@ import { createScmBackendRegistry } from '@/scm/registry';
 import { deriveWorkspaceSyncRelationshipId } from './workspaceSyncRelationshipIdentity';
 import { createWorkspaceRootOwnershipManager, type WorkspaceRootOwnershipManager } from './workspaceSyncRootOwnership';
 import { createWorkspaceSyncTargetAuthority } from './workspaceSyncTargetAuthority';
-import { workspaceSyncTargetBootstrap } from './workspaceSyncTargetBootstrap';
+import {
+  discoverNativeConfinedWorkspaceSyncRecovery,
+  runNativeConfinedWorkspaceSyncApply,
+  runNativeConfinedWorkspaceSyncRecover,
+} from './workspaceSyncNativeConfinedFileSystem';
+import { recoverWorkspaceSyncEntryReplacementAtRoot } from './workspaceSyncConflicts';
+import { computeWorkspaceSyncRootFingerprint, workspaceSyncTargetBootstrap } from './workspaceSyncTargetBootstrap';
 import { materializeLocalWorkspaceSyncSeed } from './workspaceSyncSeedTransfer';
+import { deriveWorkspaceSyncConflictAsidePaths } from '@happier-dev/protocol';
 import {
   beginWorkspaceTargetMaterialization,
   rehydrateWorkspaceTargetMaterializationFromReceiptPath,
@@ -45,6 +53,14 @@ const contentPolicy = {
   ...contentPolicyInput,
   policyDigest: computeWorkspaceSyncPolicyDigest(contentPolicyInput),
 };
+const gitContentPolicyInput = {
+  ...contentPolicyInput,
+  selection: 'git_worktree' as const,
+};
+const gitContentPolicy = {
+  ...gitContentPolicyInput,
+  policyDigest: computeWorkspaceSyncPolicyDigest(gitContentPolicyInput),
+};
 
 function snapshot(
   alphaRoot: string,
@@ -54,7 +70,9 @@ function snapshot(
     includeRelationship?: boolean;
     mode?: 'keep_synced' | 'mirror_exactly' | 'keep_both_in_sync';
     betaServerId?: string;
+    betaMachineId?: string;
     extraRefs?: ReadonlyArray<{ id: string; machineId: string; rootPath: string }>;
+    contentPolicy?: typeof contentPolicy | typeof gitContentPolicy;
   }> = {},
 ): ActiveAccountSettingsSnapshot {
   const relationshipEnabled = options.relationshipEnabled ?? true;
@@ -64,7 +82,7 @@ function snapshot(
     settings: AccountSettingsSchema.parse({
       workspaceRefsV1: [
         { id: 'workspace-alpha', serverId: 'server-1', machineId: 'machine-a', rootPath: alphaRoot, createdAtMs: 1 },
-        { id: 'workspace-beta', serverId: options.betaServerId ?? 'server-1', machineId: 'machine-b', rootPath: betaRoot, createdAtMs: 1 },
+        { id: 'workspace-beta', serverId: options.betaServerId ?? 'server-1', machineId: options.betaMachineId ?? 'machine-b', rootPath: betaRoot, createdAtMs: 1 },
         ...(options.extraRefs ?? []).map((ref) => ({ serverId: 'server-1', createdAtMs: 1, ...ref })),
       ],
       workspaceSyncRelationshipsV1: includeRelationship ? [{
@@ -74,7 +92,7 @@ function snapshot(
         alphaWorkspaceRefId: 'workspace-alpha',
         betaWorkspaceRefId: 'workspace-beta',
         mode: options.mode ?? 'keep_both_in_sync',
-        contentPolicy,
+        contentPolicy: options.contentPolicy ?? contentPolicy,
         enabled: relationshipEnabled,
         createdAtMs: 1,
         updatedAtMs: 1,
@@ -90,6 +108,7 @@ type AuthorityHarness = Readonly<{
   authority: ReturnType<typeof createWorkspaceSyncTargetAuthority>;
   rootOwnershipManager: WorkspaceRootOwnershipManager;
   materializationDirectory: string;
+  resolutionDirectory: string;
   lockDirectory: string;
   cleanup(): Promise<void>;
 }>;
@@ -112,11 +131,17 @@ function createAuthorityHarness(options: Readonly<{
   materializeLocalSeed?: NonNullable<NonNullable<Parameters<typeof createWorkspaceSyncTargetAuthority>[0]['bootstrap']>['materializeLocalSeed']>;
   writeReadyFact?: NonNullable<NonNullable<Parameters<typeof createWorkspaceSyncTargetAuthority>[0]['bootstrap']>['writeReadyFact']>;
   rehydrateMaterializationFromReceiptPath?: NonNullable<NonNullable<Parameters<typeof createWorkspaceSyncTargetAuthority>[0]['bootstrap']>['rehydrateMaterializationFromReceiptPath']>;
+  prepareGitTarget?: NonNullable<NonNullable<Parameters<typeof createWorkspaceSyncTargetAuthority>[0]['bootstrap']>['prepareGitTarget']>;
   assertConflictResolutionAuthorized?: NonNullable<Parameters<typeof createWorkspaceSyncTargetAuthority>[0]['assertConflictResolutionAuthorized']>;
   assertTargetReplacementAuthorized?: NonNullable<Parameters<typeof createWorkspaceSyncTargetAuthority>[0]['assertTargetReplacementAuthorized']>;
+  discoverConflictRecovery?: NonNullable<Parameters<typeof createWorkspaceSyncTargetAuthority>[0]['discoverConflictRecovery']>;
+  recoverConflictEntry?: NonNullable<Parameters<typeof createWorkspaceSyncTargetAuthority>[0]['recoverConflictEntry']>;
+  resolveLocalResolutionEndpoint?: NonNullable<Parameters<typeof createWorkspaceSyncTargetAuthority>[0]['resolveLocalResolutionEndpoint']>;
+  requestResolutionExport?: NonNullable<Parameters<typeof createWorkspaceSyncTargetAuthority>[0]['requestResolutionExport']>;
 }>): AuthorityHarness {
   const suffix = `${process.pid}-${++harnessCounter}-${Math.random().toString(36).slice(2)}`;
   const materializationDirectory = join(tmpdir(), `workspace-sync-authority-staging-${suffix}`);
+  const resolutionDirectory = join(tmpdir(), `workspace-sync-authority-resolution-${suffix}`);
   const lockDirectory = join(tmpdir(), `workspace-sync-authority-locks-${suffix}`);
   const rootOwnershipManager = createWorkspaceRootOwnershipManager({ lockDirectory });
   const authority = createWorkspaceSyncTargetAuthority({
@@ -126,6 +151,11 @@ function createAuthorityHarness(options: Readonly<{
     callMachineRpc: options.callMachineRpc ?? (async () => { throw new Error('unexpected machine RPC'); }),
     assertConflictResolutionAuthorized: options.assertConflictResolutionAuthorized ?? (async () => undefined),
     assertTargetReplacementAuthorized: options.assertTargetReplacementAuthorized ?? (async () => undefined),
+    resolutionMaterialDirectory: resolutionDirectory,
+    ...(options.discoverConflictRecovery ? { discoverConflictRecovery: options.discoverConflictRecovery } : {}),
+    ...(options.recoverConflictEntry ? { recoverConflictEntry: options.recoverConflictEntry } : {}),
+    ...(options.resolveLocalResolutionEndpoint ? { resolveLocalResolutionEndpoint: options.resolveLocalResolutionEndpoint } : {}),
+    ...(options.requestResolutionExport ? { requestResolutionExport: options.requestResolutionExport } : {}),
     ...(options.openRootedAgent ? { openRootedAgent: options.openRootedAgent } : {}),
     bootstrap: {
       materializationDirectory,
@@ -145,15 +175,18 @@ function createAuthorityHarness(options: Readonly<{
       ...(options.rehydrateMaterializationFromReceiptPath
         ? { rehydrateMaterializationFromReceiptPath: options.rehydrateMaterializationFromReceiptPath }
         : {}),
+      ...(options.prepareGitTarget ? { prepareGitTarget: options.prepareGitTarget } : {}),
     },
   });
   return {
     authority,
     rootOwnershipManager,
     materializationDirectory,
+    resolutionDirectory,
     lockDirectory,
     cleanup: async () => {
       await rm(materializationDirectory, { recursive: true, force: true });
+      await rm(resolutionDirectory, { recursive: true, force: true });
       await rm(lockDirectory, { recursive: true, force: true });
     },
   };
@@ -208,25 +241,6 @@ function existingRelationshipPrepareRequest(overrides: Record<string, unknown> =
   });
 }
 
-function conflictDeleteRequest(path: string, expectedDigest?: string) {
-  const request = {
-    relationshipId,
-    path,
-    keep: 'alpha' as const,
-    expectedKind: 'file' as const,
-    ...(expectedDigest === undefined ? {} : { expectedDigest }),
-  };
-  return {
-    actionReceiptId: 'approval-1',
-    actionInput: { controllerMachineId: 'machine-a', request },
-    relationshipId,
-    workspaceRefId: 'workspace-beta',
-    path,
-    expectedKind: 'file' as const,
-    ...(expectedDigest === undefined ? {} : { expectedDigest }),
-  };
-}
-
 async function approvedPrepareRequest(
   harness: AuthorityHarness,
   targetPath: string,
@@ -267,6 +281,332 @@ async function waitForCondition(predicate: () => boolean | Promise<boolean>, tim
 }
 
 describe('workspace sync target authority', () => {
+  it('stages an approved alternative from its original path and discards the exact aside effect', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-authority-aside-'));
+    const alphaRoot = join(fixture, 'alpha');
+    const betaRoot = join(fixture, 'beta');
+    await Promise.all([mkdir(alphaRoot), mkdir(betaRoot)]);
+    await writeFile(join(alphaRoot, 'reviewed.txt'), 'old-hub');
+    await writeFile(join(betaRoot, 'reviewed.txt'), 'new-beta');
+    const original = { kind: 'file' as const, digest: createHash('sha1').update('old-hub').digest('hex'), executable: false, size: 7 };
+    const selected = { kind: 'file' as const, digest: createHash('sha1').update('new-beta').digest('hex'), executable: false, size: 8 };
+    const asidePath = deriveWorkspaceSyncConflictAsidePaths('reviewed.txt', original)[0];
+    let authority: ReturnType<typeof createWorkspaceSyncTargetAuthority>;
+    const harness = createAuthorityHarness({
+      localMachineId: 'machine-a',
+      getSettingsSnapshot: () => snapshot(alphaRoot, betaRoot, { betaMachineId: 'machine-a' }),
+      resolveLocalResolutionEndpoint: async (_relationshipId, workspaceRefId) => ({
+        canonicalRoot: workspaceRefId === 'workspace-alpha' ? alphaRoot : betaRoot,
+        assertCurrentAuthority: async () => undefined,
+      }),
+      requestResolutionExport: async (request) => {
+        const exported = await authority.prepareConflictResolutionExport(request);
+        return {
+          requestPayload: async ({ transferId, destinationPath }) => {
+            const payload = transferId === request.operationId
+              ? exported.payloadSource
+              : await exported.onDemandScope.resolvePayloadSourceOnOpen({ transferId, requestBody: {} });
+            if (payload.kind === 'buffer') await writeFile(destinationPath, payload.payload);
+            else await copyFile(payload.filePath, destinationPath);
+          },
+          release: async () => await exported.payloadSource.dispose?.(),
+        };
+      },
+    });
+    authority = harness.authority;
+    const actionInput = {
+      controllerMachineId: 'machine-a', hubWorkspaceRefId: 'workspace-alpha', path: 'reviewed.txt',
+      source: { workspaceRefId: 'workspace-beta', expected: selected },
+      targets: [{ workspaceRefId: 'workspace-alpha', expected: original }],
+      relationshipIds: [relationshipId], strategy: 'keep_both' as const,
+      alternatives: [{
+        source: { workspaceRefId: 'workspace-alpha', expected: original },
+        destination: { workspaceRefId: 'workspace-alpha', path: asidePath, expected: { kind: 'missing' as const } },
+        consequence: { propagatingToWorkspaceRefIds: ['workspace-beta'] },
+      }],
+    };
+    const request = {
+      actionReceiptId: 'approved-aside', actionInput,
+      operationId: deriveWorkspaceSyncConflictOperationId({
+        actionReceiptId: 'approved-aside', kind: 'alternative', workspaceRefId: 'workspace-alpha',
+        path: asidePath, alternativeIndex: 0,
+      }),
+      alternativeIndex: 0, relationshipId, sourceRelationshipId: relationshipId,
+      sourceMachineId: 'machine-a', sourceWorkspaceRefId: 'workspace-alpha', sourceExpected: original,
+      targetMachineId: 'machine-a', targetWorkspaceRefId: 'workspace-alpha', targetExpected: { kind: 'missing' as const },
+      path: asidePath,
+    };
+    try {
+      await authority.stageConflictResolutionHere(request);
+      const [stagingName] = (await readdir(harness.resolutionDirectory)).filter((name) => name.startsWith('stage-'));
+      expect(stagingName).toBeDefined();
+      await expect(readFile(join(harness.resolutionDirectory, stagingName!, 'entry'), 'utf8')).resolves.toBe('old-hub');
+      const applyRequest = {
+        actionReceiptId: request.actionReceiptId, actionInput: request.actionInput,
+        operationId: request.operationId, alternativeIndex: request.alternativeIndex,
+        relationshipId: request.relationshipId, targetMachineId: request.targetMachineId,
+        targetWorkspaceRefId: request.targetWorkspaceRefId, path: request.path,
+      };
+      await authority.discardStagedConflictResolutionHere(applyRequest);
+      expect((await readdir(harness.resolutionDirectory)).filter((name) => name.startsWith('stage-'))).toEqual([]);
+      await expect(readFile(join(alphaRoot, 'reviewed.txt'), 'utf8')).resolves.toBe('old-hub');
+      await authority.releaseConflictResolutionCaptureHere({
+        actionReceiptId: request.actionReceiptId, actionInput,
+        operationId: request.actionReceiptId, sourceMachineId: 'machine-a', sourceWorkspaceRefId: 'workspace-alpha',
+      });
+    } finally {
+      await harness.authority.releaseAllRetainedBootstraps();
+      await harness.cleanup();
+      await rm(fixture, { recursive: true, force: true });
+    }
+  });
+  it('removes an orphaned successful stage on fresh authority initialization without touching roots or native recovery material', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-authority-stage-restart-'));
+    const alphaRoot = join(fixture, 'alpha');
+    const betaRoot = join(fixture, 'beta');
+    await Promise.all([mkdir(alphaRoot), mkdir(betaRoot)]);
+    await writeFile(join(alphaRoot, 'reviewed.bin'), 'chosen');
+    await writeFile(join(betaRoot, 'reviewed.bin'), 'original');
+    const selected = { kind: 'file' as const, digest: createHash('sha1').update('chosen').digest('hex'), executable: false, size: 6 };
+    const original = { kind: 'file' as const, digest: createHash('sha1').update('original').digest('hex'), executable: false, size: 8 };
+    let authority: ReturnType<typeof createWorkspaceSyncTargetAuthority>;
+    const getSettingsSnapshot = () => snapshot(alphaRoot, betaRoot, { betaMachineId: 'machine-a' });
+    const harness = createAuthorityHarness({
+      localMachineId: 'machine-a', getSettingsSnapshot,
+      resolveLocalResolutionEndpoint: async (_relationshipId, workspaceRefId) => ({
+        canonicalRoot: workspaceRefId === 'workspace-alpha' ? alphaRoot : betaRoot,
+        assertCurrentAuthority: async () => undefined,
+      }),
+      requestResolutionExport: async (request) => {
+        const exported = await authority.prepareConflictResolutionExport(request);
+        return {
+          requestPayload: async ({ transferId, destinationPath }) => {
+            const payload = transferId === request.operationId
+              ? exported.payloadSource
+              : await exported.onDemandScope.resolvePayloadSourceOnOpen({ transferId, requestBody: {} });
+            if (payload.kind === 'buffer') await writeFile(destinationPath, payload.payload);
+            else await copyFile(payload.filePath, destinationPath);
+          },
+          release: async () => await exported.payloadSource.dispose?.(),
+        };
+      },
+    });
+    authority = harness.authority;
+    const actionInput = {
+      controllerMachineId: 'machine-a', hubWorkspaceRefId: 'workspace-alpha', path: 'reviewed.bin',
+      source: { workspaceRefId: 'workspace-alpha', expected: selected },
+      targets: [{ workspaceRefId: 'workspace-beta', expected: original }],
+      relationshipIds: [relationshipId], strategy: 'use_source' as const,
+    };
+    const actionReceiptId = 'approved-stage-restart';
+    const request = {
+      actionReceiptId, actionInput,
+      operationId: deriveWorkspaceSyncConflictOperationId({ actionReceiptId, kind: 'selected', workspaceRefId: 'workspace-beta', path: 'reviewed.bin' }),
+      alternativeIndex: null, relationshipId, sourceRelationshipId: relationshipId,
+      sourceMachineId: 'machine-a', sourceWorkspaceRefId: 'workspace-alpha', sourceExpected: selected,
+      targetMachineId: 'machine-a', targetWorkspaceRefId: 'workspace-beta', targetExpected: original,
+      path: 'reviewed.bin',
+    };
+    try {
+      await authority.stageConflictResolutionHere(request);
+      const stagedBefore = (await readdir(harness.resolutionDirectory)).filter((name) => name.startsWith('stage-'));
+      expect(stagedBefore).toHaveLength(1);
+      await expect(readFile(join(harness.resolutionDirectory, stagedBefore[0]!, 'entry'), 'utf8')).resolves.toBe('chosen');
+      await writeFile(join(harness.resolutionDirectory, 'workspace-recovery-sentinel.json'), 'record');
+      await writeFile(join(harness.resolutionDirectory, 'stage-regular-file'), 'unowned file');
+      await mkdir(join(harness.resolutionDirectory, 'native-candidate-sentinel'));
+      await writeFile(join(harness.resolutionDirectory, 'native-candidate-sentinel', 'entry'), 'candidate');
+      // The old daemon has ended; its process-local staged map cannot be adopted.
+      await authority.releaseAllRetainedBootstraps();
+      const fresh = createWorkspaceSyncTargetAuthority({
+        localServerId: 'server-1', localMachineId: 'machine-a', getSettingsSnapshot,
+        callMachineRpc: async () => { throw new Error('unexpected machine RPC'); },
+        resolutionMaterialDirectory: harness.resolutionDirectory,
+        discoverConflictRecovery: async () => [],
+      });
+      await expect(fresh.recoverConflictResolutionHere({
+        relationshipId, targetMachineId: 'machine-a', targetWorkspaceRefId: 'workspace-beta',
+      })).resolves.toEqual({ status: 'settled' });
+      const remaining = await readdir(harness.resolutionDirectory);
+      expect(remaining.some((name) => name.startsWith('stage-') && name !== 'stage-regular-file')).toBe(false);
+      expect(remaining.some((name) => name.startsWith('capture-'))).toBe(false);
+      await expect(readFile(join(harness.resolutionDirectory, 'workspace-recovery-sentinel.json'), 'utf8')).resolves.toBe('record');
+      await expect(readFile(join(harness.resolutionDirectory, 'stage-regular-file'), 'utf8')).resolves.toBe('unowned file');
+      await expect(readFile(join(harness.resolutionDirectory, 'native-candidate-sentinel', 'entry'), 'utf8')).resolves.toBe('candidate');
+      await expect(readFile(join(alphaRoot, 'reviewed.bin'), 'utf8')).resolves.toBe('chosen');
+      await expect(readFile(join(betaRoot, 'reviewed.bin'), 'utf8')).resolves.toBe('original');
+      await fresh.releaseAllRetainedBootstraps();
+    } finally {
+      await harness.cleanup();
+      await rm(fixture, { recursive: true, force: true });
+    }
+  });
+  it.runIf(process.platform === 'linux' && Boolean(process.env.HAPPIER_PROCESS_CUSTODY_LIVE_BIN))(
+    'retains native recovery across orphan-stage cleanup and settles the public entry after restart',
+    async () => {
+      const executable = process.env.HAPPIER_PROCESS_CUSTODY_LIVE_BIN!;
+      const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-authority-native-restart-'));
+      const alphaRoot = join(fixture, 'alpha');
+      const betaRoot = join(fixture, 'beta');
+      const recoveryDirectory = await mkdtemp(join(fixture, 'resolution-'));
+      await Promise.all([mkdir(alphaRoot), mkdir(betaRoot)]);
+      await writeFile(join(betaRoot, 'reviewed.bin'), 'original');
+      const stagedDirectory = await mkdtemp(join(recoveryDirectory, 'stage-'));
+      const materialPath = join(stagedDirectory, 'entry');
+      await writeFile(materialPath, 'selected');
+      const expectedDestination = { kind: 'file' as const, digest: createHash('sha1').update('original').digest('hex'), executable: false, size: 8 };
+      const selectedExpectation = { kind: 'file' as const, digest: createHash('sha1').update('selected').digest('hex'), executable: false, size: 8 };
+      const operationId = deriveWorkspaceSyncConflictOperationId({
+        actionReceiptId: 'native-stage-restart', kind: 'selected', workspaceRefId: 'workspace-beta', path: 'reviewed.bin',
+      });
+      try {
+        const outcome = await runNativeConfinedWorkspaceSyncApply({
+          rootPath: betaRoot, relativePath: 'reviewed.bin', expectedDestination,
+          selectedExpectation, materialPath, recoveryDirectory, operationId,
+          // Prepared native handles remain valid, but candidate creation fails
+          // after its recovery record is durable while this root is read-only.
+          assertCurrentAuthority: async () => await chmod(betaRoot, 0o500),
+        }, { resolveExecutable: () => executable });
+        await chmod(betaRoot, 0o700);
+        expect(outcome.status).toBe('recovery_needed');
+        await expect(readFile(join(betaRoot, 'reviewed.bin'), 'utf8')).resolves.toBe('original');
+        expect(await readdir(recoveryDirectory)).toContain(`workspace-recovery-${operationId}.json`);
+
+        const fresh = createWorkspaceSyncTargetAuthority({
+          localServerId: 'server-1', localMachineId: 'machine-a',
+          getSettingsSnapshot: () => snapshot(alphaRoot, betaRoot, { betaMachineId: 'machine-a' }),
+          callMachineRpc: async () => { throw new Error('unexpected machine RPC'); },
+          resolutionMaterialDirectory: recoveryDirectory,
+          resolveLocalResolutionEndpoint: async () => ({ canonicalRoot: betaRoot, assertCurrentAuthority: async () => undefined }),
+          discoverConflictRecovery: async (input) => await discoverNativeConfinedWorkspaceSyncRecovery(input, { resolveExecutable: () => executable }),
+          recoverConflictEntry: async (input) => await recoverWorkspaceSyncEntryReplacementAtRoot(input, {
+            runNativeConfinedRecover: async (nativeInput) => await runNativeConfinedWorkspaceSyncRecover(nativeInput, { resolveExecutable: () => executable }),
+          }),
+        });
+        await expect(fresh.recoverConflictResolutionHere({
+          relationshipId, targetMachineId: 'machine-a', targetWorkspaceRefId: 'workspace-beta',
+        })).resolves.toEqual({ status: 'settled' });
+        await expect(fresh.recoverConflictResolutionHere({
+          relationshipId, targetMachineId: 'machine-a', targetWorkspaceRefId: 'workspace-beta',
+        })).resolves.toEqual({ status: 'settled' });
+        expect((await readdir(recoveryDirectory)).some((name) => name.startsWith('stage-') || name.startsWith('workspace-recovery-'))).toBe(false);
+        await expect(readFile(join(betaRoot, 'reviewed.bin'), 'utf8')).resolves.toBe('original');
+        await fresh.releaseAllRetainedBootstraps();
+      } finally {
+        await chmod(betaRoot, 0o700).catch(() => undefined);
+        await rm(fixture, { recursive: true, force: true });
+      }
+    },
+  );
+  it('exports one captured source for two reviewed linked destinations even after a source edit', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-authority-capture-once-'));
+    const alphaRoot = join(fixture, 'alpha');
+    const betaRoot = join(fixture, 'beta');
+    const gammaRoot = join(fixture, 'gamma');
+    await Promise.all([mkdir(alphaRoot), mkdir(betaRoot), mkdir(gammaRoot)]);
+    await writeFile(join(alphaRoot, 'selected.bin'), 'chosen');
+    const secondRelationshipId = 'linked-gamma';
+    const getSettingsSnapshot = () => {
+      const original = snapshot(alphaRoot, betaRoot, {
+        extraRefs: [{ id: 'workspace-gamma', machineId: 'machine-c', rootPath: gammaRoot }],
+      });
+      return {
+        ...original,
+        settings: AccountSettingsSchema.parse({
+          ...original.settings,
+          workspaceSyncRelationshipsV1: [
+            ...original.settings.workspaceSyncRelationshipsV1,
+            { ...original.settings.workspaceSyncRelationshipsV1[0], relationshipId: secondRelationshipId,
+              betaWorkspaceRefId: 'workspace-gamma' },
+          ],
+        }),
+      };
+    };
+    const harness = createAuthorityHarness({
+      localMachineId: 'machine-a', getSettingsSnapshot,
+      resolveLocalResolutionEndpoint: async () => ({ canonicalRoot: alphaRoot, assertCurrentAuthority: async () => undefined }),
+    });
+    const selected = { kind: 'file' as const, digest: createHash('sha1').update('chosen').digest('hex'), executable: false, size: 6 };
+    const actionInput = {
+      controllerMachineId: 'machine-a', hubWorkspaceRefId: 'workspace-alpha', path: 'selected.bin',
+      source: { workspaceRefId: 'workspace-alpha', expected: selected },
+      targets: [{ workspaceRefId: 'workspace-beta', expected: { kind: 'missing' as const } },
+        { workspaceRefId: 'workspace-gamma', expected: { kind: 'missing' as const } }],
+      relationshipIds: [relationshipId, secondRelationshipId], strategy: 'use_source' as const,
+    };
+    const base = {
+      actionReceiptId: 'approved-capture-once', actionInput,
+      alternativeIndex: null,
+      sourceRelationshipId: relationshipId, sourceMachineId: 'machine-a', sourceWorkspaceRefId: 'workspace-alpha',
+      sourceExpected: selected, targetExpected: { kind: 'missing' as const }, path: 'selected.bin',
+    };
+    try {
+      const first = await harness.authority.prepareConflictResolutionExport({
+        ...base,
+        operationId: deriveWorkspaceSyncConflictOperationId({ actionReceiptId: base.actionReceiptId, kind: 'selected', workspaceRefId: 'workspace-beta', path: base.path }),
+        relationshipId, targetMachineId: 'machine-b', targetWorkspaceRefId: 'workspace-beta',
+      });
+      await first.payloadSource.dispose?.();
+      await writeFile(join(alphaRoot, 'selected.bin'), 'edited');
+      const second = await harness.authority.prepareConflictResolutionExport({
+        ...base,
+        operationId: deriveWorkspaceSyncConflictOperationId({ actionReceiptId: base.actionReceiptId, kind: 'selected', workspaceRefId: 'workspace-gamma', path: base.path }),
+        relationshipId: secondRelationshipId, targetMachineId: 'machine-c', targetWorkspaceRefId: 'workspace-gamma',
+      });
+      expect(second.payloadSource).toMatchObject({ kind: 'buffer' });
+      const transferId = `${deriveWorkspaceSyncConflictOperationId({ actionReceiptId: base.actionReceiptId, kind: 'selected', workspaceRefId: 'workspace-gamma', path: base.path })}:entry-blob:${createHash('sha256').update(selected.digest).digest('hex')}`;
+      const blob = await second.onDemandScope.resolvePayloadSourceOnOpen({ transferId, requestBody: {} });
+      if (!blob || blob.kind !== 'file') throw new Error('expected captured file transfer');
+      await expect(readFile(blob.filePath, 'utf8')).resolves.toBe('chosen');
+      await second.payloadSource.dispose?.();
+      await harness.authority.releaseConflictResolutionCaptureHere({
+        actionReceiptId: base.actionReceiptId,
+        actionInput,
+        operationId: base.actionReceiptId,
+        sourceMachineId: base.sourceMachineId,
+        sourceWorkspaceRefId: base.sourceWorkspaceRefId,
+      });
+      await expect(readFile(blob.filePath)).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      await harness.authority.releaseAllRetainedBootstraps();
+      await harness.cleanup();
+      await rm(fixture, { recursive: true, force: true });
+    }
+  });
+  it('keeps a reviewed target blocked until its confined replacement record settles', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-authority-recovery-'));
+    const alphaRoot = join(fixture, 'alpha');
+    const betaRoot = join(fixture, 'beta');
+    await Promise.all([mkdir(alphaRoot), mkdir(betaRoot)]);
+    let pending = true;
+    const recoverConflictEntry = vi.fn(async () => pending
+      ? { status: 'recovery_needed' as const, recoveryPath: join(fixture, 'displaced') }
+      : { status: 'settled' as const });
+    const harness = createAuthorityHarness({
+      getSettingsSnapshot: () => snapshot(alphaRoot, betaRoot),
+      discoverConflictRecovery: async () => pending ? [{
+        operationId: 'reviewed', rootPath: betaRoot, recoveryPath: join(fixture, 'record.json'),
+      }] : [],
+      recoverConflictEntry,
+    });
+    const request = {
+      relationshipId, targetMachineId: 'machine-b', targetWorkspaceRefId: 'workspace-beta',
+    };
+    try {
+      await expect(harness.authority.recoverConflictResolutionHere(request)).resolves.toEqual({
+        status: 'recovery_needed', recoveryPath: join(fixture, 'displaced'),
+      });
+      expect(recoverConflictEntry).toHaveBeenCalledWith(expect.objectContaining({
+        rootPath: betaRoot, operationId: 'reviewed', recoveryDirectory: harness.resolutionDirectory,
+      }));
+      pending = false;
+      await expect(harness.authority.recoverConflictResolutionHere(request)).resolves.toEqual({ status: 'settled' });
+    } finally {
+      await harness.authority.releaseAllRetainedBootstraps();
+      await harness.cleanup();
+      await rm(fixture, { recursive: true, force: true });
+    }
+  });
   it('settles every retained bootstrap during shutdown and preserves failed custody for retry', async () => {
     const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-authority-sweep-'));
     const alphaRoot = join(fixture, 'alpha');
@@ -486,6 +826,93 @@ describe('workspace sync target authority', () => {
     }
   });
 
+  it('does not call attaching an existing folder a replacement, and still asks before exact mirroring it', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-target-attach-'));
+    const alphaRoot = join(fixture, 'alpha');
+    const filledRoot = join(fixture, 'filled');
+    await Promise.all([mkdir(alphaRoot), mkdir(filledRoot)]);
+    await writeFile(join(filledRoot, 'existing.txt'), 'preserve');
+    const harness = createAuthorityHarness({
+      getSettingsSnapshot: () => snapshot(alphaRoot, filledRoot),
+    });
+    const preflight = async (overrides: Record<string, unknown>) => (
+      await harness.authority.preflightHandoffTargetReplacementHere({
+        v: 1,
+        serverId: 'server-1',
+        machineId: 'machine-b',
+        operationId: 'handoff-action-1',
+        targetPath: filledRoot,
+        ...overrides,
+      })
+    );
+    try {
+      // `use_existing` preserves what is already there, so a non-empty
+      // destination is not a replacement and needs no destructive approval.
+      expect(await preflight({ destinationIntent: 'use_existing' })).toEqual({ type: 'not_required' });
+
+      // The same folder with the materializing intent still does replace it.
+      expect(await preflight({ destinationIntent: 'materialize_from_source_workspace' })).toMatchObject({
+        type: 'approval_required',
+        approval: { consequences: ['replace_nonempty_workspace_target'] },
+      });
+
+      // Attaching is non-destructive today, but exact mirroring will delete the
+      // folder's target-only files on the next reconciliation.
+      expect(await preflight({ destinationIntent: 'use_existing', activatesExactMirror: true })).toMatchObject({
+        type: 'approval_required',
+        approval: { consequences: ['delete_target_only_files_during_exact_mirror'] },
+      });
+      await expect(readFile(join(filledRoot, 'existing.txt'), 'utf8')).resolves.toBe('preserve');
+    } finally {
+      await harness.cleanup();
+      await rm(fixture, { recursive: true, force: true });
+    }
+  });
+
+  it('requires the exact-mirror consequence when an existing folder is attached as an exact replica', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-attach-mirror-'));
+    const alphaRoot = join(fixture, 'alpha');
+    const betaRoot = join(fixture, 'beta');
+    await Promise.all([mkdir(alphaRoot), mkdir(betaRoot)]);
+    await writeFile(join(betaRoot, 'existing.txt'), 'preserve');
+    const harness = createAuthorityHarness({
+      getSettingsSnapshot: () => snapshot(alphaRoot, betaRoot, { mode: 'mirror_exactly' }),
+      materializeRemoteSeed: async () => { throw new Error('must not materialize an attached folder'); },
+    });
+    const mirrorRelationship = {
+      v: 1 as const, relationshipId, controllerMachineId: 'machine-a',
+      alphaWorkspaceRefId: 'workspace-alpha', betaWorkspaceRefId: 'workspace-beta',
+      mode: 'mirror_exactly' as const, contentPolicy, enabled: true,
+      createdAtMs: 1, updatedAtMs: 1,
+    };
+    try {
+      // Attaching alone cannot activate an unapproved exact replica.
+      await expect(harness.authority.prepareBootstrapHere(prepareRequest({
+        transientRelationship: mirrorRelationship,
+        targetBootstrap: 'use_existing' as const,
+      }))).rejects.toMatchObject({ code: 'approval_stale' });
+
+      const preflight = await harness.authority.preflightHandoffTargetReplacementHere({
+        v: 1, serverId: 'server-1', machineId: 'machine-b', operationId: handoffOperationId,
+        targetPath: betaRoot, activatesExactMirror: true, destinationIntent: 'use_existing',
+      });
+      if (preflight.type !== 'approval_required') throw new Error('expected mirror approval');
+      expect(preflight.approval.consequences).toEqual(['delete_target_only_files_during_exact_mirror']);
+
+      await expect(harness.authority.prepareBootstrapHere(prepareRequest({
+        transientRelationship: mirrorRelationship,
+        targetBootstrap: 'use_existing' as const,
+        ...approvalBinding(preflight.approval),
+      }))).resolves.toMatchObject({ state: 'ready' });
+      // The approved consequence is future deletion, not deletion now.
+      await expect(readFile(join(betaRoot, 'existing.txt'), 'utf8')).resolves.toBe('preserve');
+    } finally {
+      await harness.authority.releaseAllRetainedBootstraps();
+      await harness.cleanup();
+      await rm(fixture, { recursive: true, force: true });
+    }
+  });
+
   it('keeps destructive materialization custody until the release outcome is known', async () => {
     const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-authority-custody-'));
     const alphaRoot = join(fixture, 'alpha');
@@ -676,107 +1103,6 @@ describe('workspace sync target authority', () => {
   });
 
 
-  it('does not infer restart custody from settings and a matching root without final READY', async () => {
-    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-authority-delete-unready-'));
-    const alphaRoot = join(fixture, 'alpha');
-    const betaRoot = join(fixture, 'beta');
-    await Promise.all([mkdir(alphaRoot, { recursive: true }), mkdir(betaRoot, { recursive: true })]);
-    const loserPath = join(betaRoot, 'loser.txt');
-    await writeFile(loserPath, 'loser');
-    const harness = createAuthorityHarness({ getSettingsSnapshot: () => snapshot(alphaRoot, betaRoot) });
-    try {
-      await expect(harness.authority.deleteConflictLoserHere({
-        ...conflictDeleteRequest('loser.txt', createHash('sha1').update('loser').digest('hex')),
-      })).rejects.toMatchObject({ code: 'relationship_not_ready' });
-      await expect(readFile(loserPath, 'utf8')).resolves.toBe('loser');
-    } finally {
-      await harness.authority.releaseAllRetainedBootstraps();
-      await harness.cleanup();
-      await rm(fixture, { recursive: true, force: true });
-    }
-  });
-
-  it('permits a digest-guarded delete only while the exact retained root authority remains current', async () => {
-    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-authority-delete-'));
-    const alphaRoot = join(fixture, 'alpha');
-    const betaRoot = join(fixture, 'beta');
-    await mkdir(alphaRoot, { recursive: true });
-    await Promise.all([mkdir(alphaRoot, { recursive: true }), mkdir(betaRoot, { recursive: true })]);
-    const loserPath = join(betaRoot, 'loser.txt');
-    await writeFile(loserPath, 'loser');
-    const harness = createAuthorityHarness({ getSettingsSnapshot: () => snapshot(alphaRoot, betaRoot) });
-    try {
-      await harness.authority.prepareBootstrapHere(prepareRequest({
-        createIfMissing: false,
-        targetBootstrap: 'use_existing',
-      }));
-      await harness.authority.deleteConflictLoserHere({
-        ...conflictDeleteRequest('loser.txt', createHash('sha1').update('loser').digest('hex')),
-      });
-      await expect(readFile(loserPath)).rejects.toMatchObject({ code: 'ENOENT' });
-    } finally {
-      await harness.authority.releaseAllRetainedBootstraps();
-      await harness.cleanup();
-      await rm(fixture, { recursive: true, force: true });
-    }
-  });
-
-  it('leaves the loser untouched when target-side Action receipt authority is stale', async () => {
-    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-authority-delete-stale-'));
-    const alphaRoot = join(fixture, 'alpha');
-    const betaRoot = join(fixture, 'beta');
-    await Promise.all([mkdir(alphaRoot, { recursive: true }), mkdir(betaRoot, { recursive: true })]);
-    const loserPath = join(betaRoot, 'loser.txt');
-    await writeFile(loserPath, 'loser');
-    const harness = createAuthorityHarness({
-      getSettingsSnapshot: () => snapshot(alphaRoot, betaRoot),
-      assertConflictResolutionAuthorized: async () => {
-        throw Object.assign(new Error('stale'), { code: 'approval_stale' });
-      },
-    });
-    try {
-      await harness.authority.prepareBootstrapHere(prepareRequest({
-        createIfMissing: false,
-        targetBootstrap: 'use_existing',
-      }));
-      await expect(harness.authority.deleteConflictLoserHere({
-        ...conflictDeleteRequest('loser.txt', createHash('sha1').update('loser').digest('hex')),
-      })).rejects.toMatchObject({ code: 'approval_stale' });
-      await expect(readFile(loserPath, 'utf8')).resolves.toBe('loser');
-    } finally {
-      await harness.authority.releaseAllRetainedBootstraps();
-      await harness.cleanup();
-      await rm(fixture, { recursive: true, force: true });
-    }
-  });
-
-  it('rejects conflict deletion when the retained target root object changed', async () => {
-    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-authority-delete-root-'));
-    const alphaRoot = join(fixture, 'alpha');
-    const betaRoot = join(fixture, 'beta');
-    await mkdir(alphaRoot, { recursive: true });
-    await mkdir(betaRoot, { recursive: true });
-    const harness = createAuthorityHarness({ getSettingsSnapshot: () => snapshot(alphaRoot, betaRoot) });
-    try {
-      await harness.authority.prepareBootstrapHere(prepareRequest({
-        createIfMissing: false,
-        targetBootstrap: 'use_existing',
-      }));
-      await rm(betaRoot, { recursive: true, force: true });
-      await mkdir(betaRoot, { recursive: true });
-      const replacementLoser = join(betaRoot, 'loser.txt');
-      await writeFile(replacementLoser, 'replacement');
-
-      await expect(harness.authority.deleteConflictLoserHere({
-        ...conflictDeleteRequest('loser.txt', createHash('sha1').update('replacement').digest('hex')),
-      })).rejects.toMatchObject({ code: 'root_changed' });
-      await expect(readFile(replacementLoser, 'utf8')).resolves.toBe('replacement');
-    } finally {
-      await harness.authority.releaseAllRetainedBootstraps();
-      await harness.cleanup();
-      await rm(fixture, { recursive: true, force: true });
-    }
-  });
 
   it('rejects a conflict preview when the retained target root object changed', async () => {
     const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-authority-preview-root-'));
@@ -807,6 +1133,50 @@ describe('workspace sync target authority', () => {
       await harness.cleanup();
       await rm(fixture, { recursive: true, force: true });
     }
+  });
+
+  it('observes one target entry under current retained relationship custody', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-authority-observe-'));
+    const alphaRoot = join(fixture, 'alpha');
+    const betaRoot = join(fixture, 'beta');
+    await mkdir(alphaRoot, { recursive: true });
+    await mkdir(betaRoot, { recursive: true });
+    await writeFile(join(betaRoot, 'file.txt'), 'target bytes');
+    const harness = createAuthorityHarness({ getSettingsSnapshot: () => snapshot(alphaRoot, betaRoot) });
+    try {
+      await harness.authority.prepareBootstrapHere(prepareRequest({
+        createIfMissing: false,
+        targetBootstrap: 'use_existing',
+      }));
+      await expect(harness.authority.observeEntryHere({
+        relationshipId, workspaceRefId: 'workspace-beta', path: 'file.txt',
+      })).resolves.toEqual({
+        kind: 'file', digest: createHash('sha1').update('target bytes').digest('hex'),
+        executable: false, size: 12,
+      });
+      await expect(harness.authority.observeEntryHere({
+        relationshipId, workspaceRefId: 'workspace-other', path: 'file.txt',
+      })).rejects.toMatchObject({ code: 'relationship_not_ready' });
+    } finally {
+      await harness.authority.releaseAllRetainedBootstraps();
+      await harness.cleanup();
+      await rm(fixture, { recursive: true, force: true });
+    }
+  });
+
+  it('routes target entry observation by current WorkspaceRef placement without accepting roots', async () => {
+    const callMachineRpc = vi.fn(async () => ({ kind: 'missing' as const }));
+    const authority = createWorkspaceSyncTargetAuthority({
+      localServerId: 'server-1', localMachineId: 'machine-a',
+      getSettingsSnapshot: () => snapshot('/alpha', '/beta'), callMachineRpc,
+    });
+    await expect(authority.observeEntryAtTarget({
+      relationshipId, targetMachineId: 'machine-b', targetWorkspaceRefId: 'workspace-beta', path: 'src/index.ts',
+    })).resolves.toEqual({ kind: 'missing' });
+    expect(callMachineRpc).toHaveBeenCalledWith({
+      machineId: 'machine-b', method: RPC_METHODS.DAEMON_WORKSPACE_SYNC_TARGET_ENTRY_OBSERVE,
+      request: { relationshipId, workspaceRefId: 'workspace-beta', path: 'src/index.ts' },
+    });
   });
 
   it('forwards a bounded preview to the selected machine without a caller root', async () => {
@@ -864,9 +1234,6 @@ describe('workspace sync target authority', () => {
         assertLegacyStateAvailable: () => { throw Object.assign(new Error('legacy workspace sync state'), { code }); },
       });
       const expectTyped = (run: Promise<unknown>) => expect(run).rejects.toMatchObject({ code });
-      await expectTyped(authority.deleteConflictLoserHere({
-        ...conflictDeleteRequest('src/x.ts'),
-      }));
       await expectTyped(authority.readFileHere({
         relationshipId, workspaceRefId: 'workspace-beta', path: 'src/x.ts', maxBytes: 64,
       }));
@@ -875,12 +1242,6 @@ describe('workspace sync target authority', () => {
         owner: { kind: 'relationship', relationshipId },
         targetWorkspaceRefId: 'workspace-beta', endpointRole: 'beta',
         policyDigest: contentPolicy.policyDigest, createIfMissing: true,
-      }));
-      await expectTyped(authority.deleteConflictLoserAtTarget({
-        actionReceiptId: 'approval-1',
-        actionInput: { controllerMachineId: 'machine-a', request: conflictDeleteRequest('src/x.ts').actionInput.request },
-        relationshipId, targetMachineId: 'machine-c', targetWorkspaceRefId: 'workspace-beta',
-        path: 'src/x.ts', expectedKind: 'file',
       }));
       await expectTyped(authority.readFileAtTarget({
         relationshipId, targetMachineId: 'machine-c', targetWorkspaceRefId: 'workspace-beta',
@@ -905,6 +1266,47 @@ describe('workspace sync target authority', () => {
 });
 
 describe('workspace sync target bootstrap authority', () => {
+  it('keeps a linked spoke fence alive for a source-only copy loan after its relationship stops', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-spoke-source-loan-'));
+    const alphaRoot = join(fixture, 'alpha');
+    const betaRoot = join(fixture, 'beta');
+    await Promise.all([mkdir(alphaRoot), mkdir(betaRoot)]);
+    let current = snapshot(alphaRoot, betaRoot);
+    const harness = createAuthorityHarness({ getSettingsSnapshot: () => current });
+    try {
+      await harness.authority.prepareBootstrapHere(prepareRequest({ targetBootstrap: 'use_existing' }));
+      await harness.authority.releaseBootstrapHere({
+        v: 1,
+        bootstrapOperationId: relationshipId,
+        targetWorkspaceRefId: 'workspace-beta',
+        reason: 'relationship_committed',
+      });
+      const loan = await harness.authority.borrowSourceRootForCopy({
+        operationId: 'copy-from-spoke',
+        workspaceRefId: 'workspace-beta',
+      });
+      expect(loan).not.toBeNull();
+      expect(loan?.handle.owner.canonicalRoot).toBe(await realpath(betaRoot));
+
+      current = snapshot(alphaRoot, betaRoot, { includeRelationship: false });
+      await harness.authority.reconcileRetainedBootstraps();
+      const held = await harness.rootOwnershipManager.tryAcquire({
+        ownerId: 'unrelated-target', canonicalRoot: betaRoot, operation: 'handoff',
+      });
+      expect(held).toMatchObject({ kind: 'overlap' });
+
+      await loan?.release();
+      const available = await harness.rootOwnershipManager.tryAcquire({
+        ownerId: 'unrelated-target', canonicalRoot: betaRoot, operation: 'handoff',
+      });
+      expect(available).not.toHaveProperty('kind');
+      if (!('kind' in available)) await available.release();
+    } finally {
+      await harness.authority.releaseAllRetainedBootstraps();
+      await harness.cleanup();
+      await rm(fixture, { recursive: true, force: true });
+    }
+  });
   it('rejects target preparation when the selected workspace belongs to another Home', async () => {
     const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-authority-home-placement-'));
     const alphaRoot = join(fixture, 'alpha');
@@ -1272,6 +1674,39 @@ describe('workspace sync target bootstrap authority', () => {
       }
     } finally {
       await harness.cleanup();
+      await rm(fixture, { recursive: true, force: true });
+    }
+  });
+
+  it('admits an established two-way reverse direction before recovery but rejects the same one-way direction', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-authority-reverse-direction-'));
+    const alphaRoot = join(fixture, 'alpha');
+    const betaRoot = join(fixture, 'beta');
+    await mkdir(betaRoot, { recursive: true });
+    const reverseRequest = existingRelationshipPrepareRequest({
+      targetWorkspaceRefId: 'workspace-alpha',
+      endpointRole: 'alpha',
+    });
+    const twoWay = createAuthorityHarness({
+      localMachineId: 'machine-a',
+      getSettingsSnapshot: () => snapshot(alphaRoot, betaRoot),
+    });
+    try {
+      await expect(twoWay.authority.prepareBootstrapHere(reverseRequest))
+        .rejects.toMatchObject({ code: 'root_changed' });
+    } finally {
+      await twoWay.cleanup();
+    }
+
+    const oneWay = createAuthorityHarness({
+      localMachineId: 'machine-a',
+      getSettingsSnapshot: () => snapshot(alphaRoot, betaRoot, { mode: 'keep_synced' }),
+    });
+    try {
+      await expect(oneWay.authority.prepareBootstrapHere(reverseRequest))
+        .rejects.toMatchObject({ code: 'bootstrap_definition_conflict' });
+    } finally {
+      await oneWay.cleanup();
       await rm(fixture, { recursive: true, force: true });
     }
   });
@@ -2046,11 +2481,12 @@ describe('workspace sync target bootstrap authority', () => {
     const alphaRoot = join(fixture, 'alpha');
     const betaRoot = join(fixture, 'beta');
     await Promise.all([mkdir(alphaRoot, { recursive: true }), mkdir(betaRoot, { recursive: true })]);
-    const agent = ownedRootedAgent();
-    let resolveAgent!: (value: ReturnType<typeof ownedRootedAgent>) => void;
-    const openRootedAgent = vi.fn(async () => await new Promise<ReturnType<typeof ownedRootedAgent>>((resolve) => {
-      resolveAgent = resolve;
-    }));
+    const openRootedAgent = vi.fn(async (input: Readonly<{ signal?: AbortSignal }>) => (
+      await new Promise<ReturnType<typeof ownedRootedAgent>>((_resolve, reject) => {
+        const signal = input.signal;
+        signal?.addEventListener('abort', () => reject(signal.reason), { once: true });
+      })
+    ));
     const harness = createAuthorityHarness({
       getSettingsSnapshot: () => snapshot(alphaRoot, betaRoot),
       openRootedAgent,
@@ -2064,10 +2500,8 @@ describe('workspace sync target bootstrap authority', () => {
       });
       await vi.waitFor(() => expect(openRootedAgent).toHaveBeenCalledOnce());
       const release = harness.authority.releaseAllRetainedBootstraps();
-      resolveAgent(agent);
-      await expect(acquisition).rejects.toMatchObject({ code: 'peer_unavailable' });
+      await expect(acquisition).rejects.toBeDefined();
       await expect(release).resolves.toBeUndefined();
-      expect(agent.stop).toHaveBeenCalledOnce();
       await expect(harness.authority.acquireWorkspaceSyncMachineIngress({
         operationId: relationshipId,
         sourceMachineId: 'machine-a',
@@ -2075,6 +2509,137 @@ describe('workspace sync target bootstrap authority', () => {
       })).rejects.toMatchObject({ code: 'peer_unavailable' });
       expect(openRootedAgent).toHaveBeenCalledOnce();
     } finally {
+      await harness.authority.releaseAllRetainedBootstraps().catch(() => undefined);
+      await harness.cleanup();
+      await rm(fixture, { recursive: true, force: true });
+    }
+  });
+
+  it('does not launch retained relationship ingress after the relationship is disabled', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-authority-ingress-disabled-before-launch-'));
+    const alphaRoot = join(fixture, 'alpha');
+    const betaRoot = join(fixture, 'beta');
+    await Promise.all([mkdir(alphaRoot, { recursive: true }), mkdir(betaRoot, { recursive: true })]);
+    let current = snapshot(alphaRoot, betaRoot);
+    const openRootedAgent = vi.fn(async () => ownedRootedAgent());
+    const harness = createAuthorityHarness({
+      getSettingsSnapshot: () => current,
+      openRootedAgent,
+    });
+    try {
+      await harness.authority.prepareBootstrapHere(prepareRequest());
+      current = snapshot(alphaRoot, betaRoot, { relationshipEnabled: false });
+
+      await expect(harness.authority.acquireWorkspaceSyncMachineIngress({
+        operationId: relationshipId,
+        sourceMachineId: 'machine-a',
+        targetMachineId: 'machine-b',
+      })).rejects.toMatchObject({ code: 'relationship_not_ready' });
+      expect(openRootedAgent).not.toHaveBeenCalled();
+    } finally {
+      await harness.authority.releaseAllRetainedBootstraps().catch(() => undefined);
+      await harness.cleanup();
+      await rm(fixture, { recursive: true, force: true });
+    }
+  });
+
+  it('closes a late rooted agent instead of publishing ingress after the relationship is disabled', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-authority-ingress-disabled-after-agent-'));
+    const alphaRoot = join(fixture, 'alpha');
+    const betaRoot = join(fixture, 'beta');
+    await Promise.all([mkdir(alphaRoot, { recursive: true }), mkdir(betaRoot, { recursive: true })]);
+    let current = snapshot(alphaRoot, betaRoot);
+    const lateAgent = ownedRootedAgent();
+    let resolveAgent!: (value: ReturnType<typeof ownedRootedAgent>) => void;
+    const openRootedAgent = vi.fn(async () => await new Promise<ReturnType<typeof ownedRootedAgent>>((resolve) => {
+      resolveAgent = resolve;
+    }));
+    const harness = createAuthorityHarness({
+      getSettingsSnapshot: () => current,
+      openRootedAgent,
+    });
+    try {
+      await harness.authority.prepareBootstrapHere(prepareRequest());
+      const acquisition = harness.authority.acquireWorkspaceSyncMachineIngress({
+        operationId: relationshipId,
+        sourceMachineId: 'machine-a',
+        targetMachineId: 'machine-b',
+      });
+      await vi.waitFor(() => expect(openRootedAgent).toHaveBeenCalledOnce());
+      current = snapshot(alphaRoot, betaRoot, { relationshipEnabled: false });
+      resolveAgent(lateAgent);
+
+      await expect(acquisition).rejects.toMatchObject({ code: 'relationship_not_ready' });
+      expect(lateAgent.stop).toHaveBeenCalledOnce();
+      expect(lateAgent.stream.destroyed).toBe(true);
+    } finally {
+      await harness.authority.releaseAllRetainedBootstraps().catch(() => undefined);
+      await harness.cleanup();
+      await rm(fixture, { recursive: true, force: true });
+    }
+  });
+
+  it('retains root custody while reconciliation waits for an aborted opener and closes its late agent', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-authority-ingress-reconcile-pending-'));
+    const alphaRoot = join(fixture, 'alpha');
+    const betaRoot = join(fixture, 'beta');
+    await Promise.all([mkdir(alphaRoot, { recursive: true }), mkdir(betaRoot, { recursive: true })]);
+    let current = snapshot(alphaRoot, betaRoot);
+    const lateAgent = ownedRootedAgent();
+    let openerSignal: AbortSignal | undefined;
+    let resolveAgent!: (value: ReturnType<typeof ownedRootedAgent>) => void;
+    const openRootedAgent = vi.fn(async (input: Readonly<{ signal?: AbortSignal }>) => {
+      openerSignal = input.signal;
+      return await new Promise<ReturnType<typeof ownedRootedAgent>>((resolve) => {
+        resolveAgent = resolve;
+      });
+    });
+    const harness = createAuthorityHarness({
+      getSettingsSnapshot: () => current,
+      openRootedAgent,
+    });
+    let acquisition: ReturnType<typeof harness.authority.acquireWorkspaceSyncMachineIngress> | null = null;
+    const canAcquireTargetRoot = async (): Promise<boolean> => {
+      const probe = await harness.rootOwnershipManager.tryAcquire({
+        ownerId: 'reconciliation-fence-probe',
+        canonicalRoot: betaRoot,
+        operation: 'handoff',
+      });
+      if ('kind' in probe) return false;
+      await probe.release();
+      return true;
+    };
+    try {
+      await harness.authority.prepareBootstrapHere(prepareRequest());
+      acquisition = harness.authority.acquireWorkspaceSyncMachineIngress({
+        operationId: relationshipId,
+        sourceMachineId: 'machine-a',
+        targetMachineId: 'machine-b',
+      });
+      await vi.waitFor(() => expect(openRootedAgent).toHaveBeenCalledOnce());
+      current = snapshot(alphaRoot, betaRoot, { relationshipEnabled: false });
+      let reconciliationSettled = false;
+      const reconciliation = harness.authority.reconcileRetainedBootstraps()
+        .finally(() => { reconciliationSettled = true; });
+
+      await vi.waitFor(() => expect(openerSignal?.aborted).toBe(true));
+      const earlyReconciliationOutcome = await Promise.race([
+        reconciliation.then(() => 'settled' as const),
+        new Promise<'pending'>((resolve) => setTimeout(() => resolve('pending'), 250)),
+      ]);
+      expect(earlyReconciliationOutcome).toBe('pending');
+      expect(reconciliationSettled).toBe(false);
+      await expect(canAcquireTargetRoot()).resolves.toBe(false);
+
+      resolveAgent(lateAgent);
+      await expect(acquisition).rejects.toMatchObject({ code: 'peer_unavailable' });
+      await expect(reconciliation).resolves.toBeUndefined();
+      expect(lateAgent.stream.destroyed).toBe(true);
+      expect(lateAgent.stop).toHaveBeenCalledOnce();
+      await expect(canAcquireTargetRoot()).resolves.toBe(true);
+    } finally {
+      if (typeof resolveAgent === 'function') resolveAgent(lateAgent);
+      await acquisition?.catch(() => undefined);
       await harness.authority.releaseAllRetainedBootstraps().catch(() => undefined);
       await harness.cleanup();
       await rm(fixture, { recursive: true, force: true });
@@ -2173,12 +2738,6 @@ describe('workspace sync target bootstrap authority', () => {
         signal: expect.any(AbortSignal),
       });
       await ingress.close();
-      const loserPath = join(betaRoot, 'loser-after-restart.txt');
-      await writeFile(loserPath, 'loser');
-      await restarted.deleteConflictLoserHere({
-        ...conflictDeleteRequest('loser-after-restart.txt', createHash('sha1').update('loser').digest('hex')),
-      });
-      await expect(readFile(loserPath)).rejects.toMatchObject({ code: 'ENOENT' });
       await restarted.releaseAllRetainedBootstraps();
     } finally {
       await first.releaseAllRetainedBootstraps();
@@ -2264,6 +2823,98 @@ describe('workspace sync target bootstrap authority', () => {
       expect(abort).not.toHaveBeenCalled();
     } finally {
       await restarted.releaseAllRetainedBootstraps().catch(() => undefined);
+      await rm(fixture, { recursive: true, force: true });
+    }
+  });
+
+  it('uses nested use_existing for an exact READY Git retry instead of rematerializing from an unavailable source', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-authority-ready-git-retry-'));
+    const alphaRoot = join(fixture, 'alpha');
+    const betaRoot = join(fixture, 'beta');
+    await Promise.all([mkdir(alphaRoot, { recursive: true }), mkdir(betaRoot, { recursive: true })]);
+    await writeFile(join(betaRoot, 'existing.txt'), 'existing');
+    const prepareGitTarget = vi.fn(async ({ targetBootstrap }: { targetBootstrap: 'use_existing' | 'materialize_from_source_workspace' }) => {
+      expect(targetBootstrap).toBe('use_existing');
+    });
+    const materializeRemoteSeed = vi.fn(async () => {
+      throw Object.assign(new Error('source is unavailable'), { code: 'target_bootstrap_offline' });
+    });
+    const harness = createAuthorityHarness({
+      getSettingsSnapshot: () => snapshot(alphaRoot, betaRoot, { contentPolicy: gitContentPolicy }),
+      prepareGitTarget,
+      materializeRemoteSeed,
+    });
+    try {
+      const prepared = await workspaceSyncTargetBootstrap({
+        rootPath: betaRoot,
+        relationshipId,
+        endpointRole: 'beta',
+        targetWorkspaceRefId: 'workspace-beta',
+        policyDigest: gitContentPolicy.policyDigest,
+        contentSelection: 'all_files',
+        materializationDirectory: harness.materializationDirectory,
+        rootOwnershipManager: harness.rootOwnershipManager,
+        targetBootstrap: 'materialize_from_source_workspace',
+        targetReplacementApproval: {
+          v: 1,
+          consequences: ['replace_nonempty_workspace_target'],
+          serverId: 'server-1',
+          machineId: 'machine-b',
+          canonicalRoot: await realpath(betaRoot),
+          rootFingerprint: await computeWorkspaceSyncRootFingerprint(await realpath(betaRoot)),
+          operationId: handoffOperationId,
+        },
+        materializeSeed: async ({ canonicalRoot, materializationReceiptPath, originalTargetExists }) => {
+          const materialization = await beginWorkspaceTargetMaterialization({
+            targetPath: canonicalRoot,
+            backupDirectoryPrefix: '.happier-sync-backup',
+            receiptPath: materializationReceiptPath,
+            originalTargetExists,
+          });
+          await mkdir(canonicalRoot);
+          await writeFile(join(canonicalRoot, 'ready.txt'), 'committed');
+          await materialization.custody.bindPromotedTarget();
+          return materialization.custody;
+        },
+      });
+      await prepared.publishReady();
+      await prepared.release();
+
+      const preflight = await harness.authority.preflightHandoffTargetReplacementHere({
+        v: 1,
+        serverId: 'server-1',
+        machineId: 'machine-b',
+        operationId: handoffOperationId,
+        targetPath: betaRoot,
+      });
+      if (preflight.type !== 'approval_required') throw new Error('expected target replacement approval');
+      await expect(harness.authority.prepareBootstrapHere(prepareRequest({
+        transientRelationship: {
+          v: 1,
+          relationshipId,
+          controllerMachineId: 'machine-a',
+          alphaWorkspaceRefId: 'workspace-alpha',
+          betaWorkspaceRefId: 'workspace-beta',
+          mode: 'keep_both_in_sync',
+          contentPolicy: gitContentPolicy,
+          enabled: true,
+          createdAtMs: 1,
+          updatedAtMs: 1,
+        },
+        policyDigest: gitContentPolicy.policyDigest,
+        ...approvalBinding(preflight.approval),
+      }))).resolves.toMatchObject({ state: 'ready' });
+
+      expect(prepareGitTarget).toHaveBeenCalledOnce();
+      expect(materializeRemoteSeed).not.toHaveBeenCalled();
+      await expect(readFile(join(betaRoot, 'ready.txt'), 'utf8')).resolves.toBe('committed');
+      await expect(readFile(join(betaRoot, 'existing.txt'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(readdir(harness.materializationDirectory)).resolves.toEqual([
+        expect.stringMatching(/\.ready\.json$/u),
+      ]);
+    } finally {
+      await harness.authority.releaseAllRetainedBootstraps().catch(() => undefined);
+      await harness.cleanup();
       await rm(fixture, { recursive: true, force: true });
     }
   });
@@ -2489,29 +3140,29 @@ describe('workspace sync target bootstrap authority', () => {
     });
     const harness = createAuthorityHarness({
       localMachineId: 'machine-a',
-      getSettingsSnapshot: () => snapshot(alphaRoot, betaRoot),
+      getSettingsSnapshot: () => snapshot(alphaRoot, betaRoot, { betaMachineId: 'machine-a' }),
       callMachineRpc,
     });
     try {
       const prepared = await harness.authority.prepareBootstrapAtTarget({
-        ...prepareRequest({ targetWorkspaceRefId: 'workspace-alpha', endpointRole: 'alpha', targetBootstrap: 'use_existing' }),
+        ...prepareRequest({ targetWorkspaceRefId: 'workspace-beta', endpointRole: 'beta', targetBootstrap: 'use_existing' }),
         targetMachineId: 'machine-a',
       });
       expect(prepared).toMatchObject({
         state: 'ready',
-        targetWorkspaceRefId: 'workspace-alpha',
+        targetWorkspaceRefId: 'workspace-beta',
         ownershipHandles: [expect.objectContaining({
           owner: expect.objectContaining({ ownerId: relationshipId, operation: 'bootstrap' }),
         })],
       });
       await expect(harness.rootOwnershipManager.tryAcquire({
-        ownerId: relationshipId, canonicalRoot: alphaRoot, operation: 'sync',
+        ownerId: relationshipId, canonicalRoot: betaRoot, operation: 'sync',
       })).resolves.toMatchObject({ kind: 'overlap', existing: { ownerId: relationshipId } });
-      await expect(stat(alphaRoot)).resolves.toMatchObject({ isDirectory: expect.any(Function) });
+      await expect(stat(betaRoot)).resolves.toMatchObject({ isDirectory: expect.any(Function) });
       expect(callMachineRpc).not.toHaveBeenCalled();
       await harness.authority.releaseAllRetainedBootstraps();
       const replacement = await harness.rootOwnershipManager.tryAcquire({
-        ownerId: 'replacement', canonicalRoot: alphaRoot, operation: 'sync',
+        ownerId: 'replacement', canonicalRoot: betaRoot, operation: 'sync',
       });
       expect('kind' in replacement).toBe(false);
       if (!('kind' in replacement)) await replacement.release();

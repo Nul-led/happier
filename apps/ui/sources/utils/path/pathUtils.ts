@@ -1,4 +1,4 @@
-import { Metadata } from '@/sync/domains/state/storageTypes';
+import { Metadata } from '@happier-dev/session-core/state';
 
 /**
  * Resolves a path relative to the root path from metadata.

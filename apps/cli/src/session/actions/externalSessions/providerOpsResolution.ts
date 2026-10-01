@@ -1,6 +1,7 @@
 import type {
     ExternalSessionsAgentId,
     ExternalSessionsSource,
+    PluginSourceCustodyV1,
 } from '@happier-dev/protocol';
 import { activateAgentRuntimeContributionOnDemand } from '@/agent/runtime/registry/activationDemand';
 import { createAgentExternalSessionsExecutionSurface } from '@/agent/runtime/registry/agentExternalSessionsExecutionSurface';
@@ -8,7 +9,7 @@ import { readCurrentExternalSessionAgentIdentity } from '@/api/session/external/
 import type { ExternalSessionFollowResource } from '@/api/session/external/leases/createExternalSessionFollowLeaseManager';
 import { acquireAuthoritativePluginRuntimeRegistryLease } from '@/plugins/runtime/reload/runtimeLease';
 import type {
-    GenerationBoundExternalSessionCandidateLifecycle,
+    OccurrenceBoundExternalSessionCandidateLifecycle,
 } from '@/plugins/runtime/lifecycle/contributions/targetAgents';
 import {
     createExternalSessionSourceKeyOwnerFromAgentProjection,
@@ -21,6 +22,7 @@ import {
 } from '@/session/external/externalSessionFollowFailure';
 import type { ExternalSessionExecutionSurface } from '@/session/external/providerOps';
 import type { ResolvedExecutablePluginRuntimeRegistry } from '@/plugins/runtime/resolveExecutablePluginRuntimeRegistry';
+import type { PluginRuntimeOccurrenceId } from '@/plugins/runtime/runtimeSlots';
 export {
     resolveExternalSessionSourceKeyOwner,
 } from '@/session/external/resolveExternalSessionSourceKeyOwner';
@@ -69,19 +71,15 @@ export async function resolveExternalSessionSourceSurface(
         declaration: Extract<ResolvedExternalSessionSourceProjection, { ok: true }>['declaration'];
         providerOps: ExternalSessionExecutionSurface;
         currentAgent: NonNullable<ReturnType<typeof readCurrentExternalSessionAgentIdentity>>;
-        /**
-         * Immutable generation of the Agent plugin that will serve this request,
-         * so persisted per-Agent host state can be qualified by the code behind
-         * the contribution rather than only by the contribution's identity.
-         */
-        agentRuntimeGeneration: string | null;
+        /** Durable authority for persisted per-Agent host state. */
+        agentSourceCustody: PluginSourceCustodyV1;
         /**
          * Host-synthesized Agent session-lifecycle controls for a resume-only
          * ACP source, absent for every plugin-contributed source. Deliberately
          * not part of `providerOps`: the External Sessions contribution owns
          * discovery and transcripts, never Agent session lifecycle.
          */
-        candidateLifecycle: GenerationBoundExternalSessionCandidateLifecycle | null;
+        candidateLifecycle: OccurrenceBoundExternalSessionCandidateLifecycle | null;
         sourceKeyOwner: NonNullable<ReturnType<typeof createExternalSessionSourceKeyOwnerFromAgentProjection>>;
     }>
     | Extract<ResolvedExternalSessionSourceProjection, { ok: false }>
@@ -126,18 +124,19 @@ export async function resolveExternalSessionSourceSurface(
         } catch {
             return { ok: false, code: 'agent_unavailable' };
         }
+        const runtimeLease = runtimeRegistryLease.registry.agentRuntimesByAgentId.get(agentId);
+        if (!runtimeLease?.sourceCustody || !runtimeLease.isCurrent()) {
+            return { ok: false, code: 'agent_unavailable' };
+        }
         return Object.freeze({
             ok: true,
             source: materialized.source,
             declaration: materialized.declaration,
             providerOps,
             currentAgent,
-            agentRuntimeGeneration:
-                runtimeRegistryLease.registry.agentRuntimesByAgentId
-                    .get(agentId)?.immutableGenerationId ?? null,
+            agentSourceCustody: runtimeLease.sourceCustody,
             candidateLifecycle:
-                runtimeRegistryLease.registry.agentRuntimesByAgentId
-                    .get(agentId)?.externalSessionCandidateLifecycle ?? null,
+                runtimeLease.externalSessionCandidateLifecycle ?? null,
             sourceKeyOwner,
         });
     } finally {
@@ -145,13 +144,14 @@ export async function resolveExternalSessionSourceSurface(
     }
 }
 
-export async function resolveGenerationBoundExternalSessionFollowSurface(
+export async function resolveOccurrenceBoundExternalSessionFollowSurface(
     agentId: ExternalSessionsAgentId,
     linkGeneration: string,
 ): Promise<Readonly<{
     providerOps: ExternalSessionExecutionSurface;
     resource: ExternalSessionFollowResource;
-    immutablePluginGenerationId: string | null;
+    sourceCustody: PluginSourceCustodyV1;
+    occurrenceId: PluginRuntimeOccurrenceId;
 }>> {
     const runtimeRegistryLease = await acquireAuthoritativePluginRuntimeRegistryLease();
     try {
@@ -161,7 +161,22 @@ export async function resolveGenerationBoundExternalSessionFollowSurface(
         if (!runtimeLease || !retirementSignal || !runtimeLease.isCurrent() || retirementSignal.aborted) {
             throw new ExternalSessionFollowFailureError(
                 'agent_unavailable',
-                `Missing current external-session Agent generation for ${agentId}`,
+                `Missing current external-session Agent occurrence for ${agentId}`,
+            );
+        }
+        const agentIdentity = readCurrentExternalSessionAgentIdentity(
+            runtimeRegistryLease.registry.contributes.agentDefinitionsById.get(agentId),
+        );
+        const sourceCustody = agentIdentity
+            ? runtimeRegistryLease.registry.readPluginSourceCustody?.(agentIdentity.identity.pluginId) ?? null
+            : null;
+        const occurrenceId = agentIdentity
+            ? runtimeRegistryLease.registry.readPluginOccurrenceId?.(agentIdentity.identity.pluginId) ?? null
+            : null;
+        if (!sourceCustody || !occurrenceId) {
+            throw new ExternalSessionFollowFailureError(
+                'agent_unavailable',
+                `Missing current external-session Agent source custody for ${agentId}`,
             );
         }
         const providerOps = await resolveExternalSessionSurfaceOpsAfterDemand(
@@ -171,16 +186,16 @@ export async function resolveGenerationBoundExternalSessionFollowSurface(
         if (!runtimeLease.isCurrent() || retirementSignal.aborted) {
             throw new ExternalSessionFollowFailureError(
                 'source_changed',
-                `External-session Agent generation retired while resolving ${agentId}`,
+                `External-session Agent occurrence retired while resolving ${agentId}`,
             );
         }
         return {
             providerOps,
-            immutablePluginGenerationId:
-                runtimeLease.immutableGenerationId ?? null,
+            sourceCustody,
+            occurrenceId,
             resource: {
                 linkGeneration,
-                pluginGeneration: runtimeLease.generation,
+                occurrenceId,
                 retirementSignal,
             },
         };

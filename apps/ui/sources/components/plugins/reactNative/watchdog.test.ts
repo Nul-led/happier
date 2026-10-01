@@ -1,223 +1,41 @@
 import { describe, expect, it } from 'vitest';
 
-import {
-    createPluginReactNativeWatchdog,
-    type PluginReactNativeWatchdogPersistence,
-    type PluginReactNativeWatchdogSnapshot,
-} from './watchdog';
+import { createPluginReactNativeWatchdog } from './watchdog';
 
-/** A durable store that answers, exactly as the real storage adapter does. */
-function createMemoryWatchdogPersistence(): PluginReactNativeWatchdogPersistence {
-    let persisted: PluginReactNativeWatchdogSnapshot | null = null;
-    return {
-        readSnapshot: () => persisted === null ? null : { snapshot: persisted },
-        writeSnapshot: (snapshot) => {
-            persisted = snapshot;
-        },
-    };
-}
+const digestA = `sha256:${'a'.repeat(64)}` as const;
+const digestB = `sha256:${'b'.repeat(64)}` as const;
 
-const token = {
-    mount: {
-        kind: 'destination',
-        destination: { pluginId: 'acme.preview', localId: 'preview-destination' },
-    },
-    renderer: { pluginId: 'acme.preview', localId: 'native-preview' },
-    artifactDigest: 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
-    crashStateEpoch: 4,
-} as const;
+describe('plugin React Native local watchdog', () => {
+    it('deduplicates repeated failures into one containment fact per digest', () => {
+        const watchdog = createPluginReactNativeWatchdog();
 
-const composerToken = {
-    mount: {
-        kind: 'composer',
-        contribution: { pluginId: 'acme.composer', localId: 'review' },
-        immutableGenerationId: 'composer-generation',
-        role: 'attachmentPreview',
-    },
-    renderer: { pluginId: 'acme.composer', localId: 'review-native-preview' },
-    artifactDigest: 'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
-    crashStateEpoch: 4,
-} as const;
+        watchdog.recordFailure({ artifactDigest: digestA });
+        watchdog.recordFailure({ artifactDigest: digestA });
 
-const automationToken = {
-    mount: {
-        kind: 'automationEventSetupSurface',
-        contribution: { pluginId: 'acme.automation', localId: 'repository-updated' },
-        immutableGenerationId: 'automation-generation',
-    },
-    renderer: { pluginId: 'acme.automation', localId: 'setup-native' },
-    artifactDigest: 'sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
-    crashStateEpoch: 2,
-} as const;
-
-const scopeKey = 'server-a\u0000machine-a\u0000account-a';
-
-describe('Plugin React Native watchdog', () => {
-    it('persists Automation setup crash identity without collapsing immutable generations', () => {
-        const persistence = createMemoryWatchdogPersistence();
-        const watchdog = createPluginReactNativeWatchdog({
-            persistence,
-            createFailureOccurrenceId: () => '0d904e7f-5ccb-45ff-a2a5-90409ac69a32',
-        });
-        const pending = watchdog.recordFailure({
-            token: automationToken,
-            scopeKey,
-            failure: 'render_error',
-        });
-        const recovered = createPluginReactNativeWatchdog({ persistence });
-
-        expect(recovered.readPending({ token: automationToken, scopeKey })).toEqual([pending]);
-        expect(recovered.readPending({
-            token: {
-                ...automationToken,
-                mount: { ...automationToken.mount, immutableGenerationId: 'automation-generation-next' },
-            },
-            scopeKey,
-        })).toEqual([]);
+        expect(watchdog.isContained({ artifactDigest: digestA })).toBe(true);
     });
 
-    it('durably keeps one pending occurrence when daemon receipt is lost', () => {
-        const persistence = createMemoryWatchdogPersistence();
-        const watchdog = createPluginReactNativeWatchdog({
-            persistence,
-            createFailureOccurrenceId: () => '6f46e1ba-4e7e-4e7e-8de8-6e8bc4ceac12',
-        });
+    it('Retry clears only the requested digest and a new digest starts uncontained', () => {
+        const watchdog = createPluginReactNativeWatchdog();
+        watchdog.recordFailure({ artifactDigest: digestA });
+        watchdog.recordFailure({ artifactDigest: digestB });
 
-        const pending = watchdog.recordFailure({ token, scopeKey, failure: 'render_error' });
-        expect(pending).toEqual({
-            token,
-            failureOccurrenceId: '6f46e1ba-4e7e-4e7e-8de8-6e8bc4ceac12',
-            failure: 'render_error',
-        });
+        watchdog.clear({ artifactDigest: digestA });
 
-        const recovered = createPluginReactNativeWatchdog({
-            persistence,
-            createFailureOccurrenceId: () => '4bbbf897-0fec-4d4a-8bdf-011a7e2c2a91',
-        });
-        expect(recovered.readPending({ token, scopeKey })).toEqual([pending]);
+        expect(watchdog.isContained({ artifactDigest: digestA })).toBe(false);
+        expect(watchdog.isContained({ artifactDigest: digestB })).toBe(true);
+        expect(watchdog.isContained({
+            artifactDigest: `sha256:${'c'.repeat(64)}`,
+        })).toBe(false);
     });
 
-    it('keeps concurrent current render failures distinct', () => {
-        const occurrenceIds = [
-            '6f46e1ba-4e7e-4e7e-8de8-6e8bc4ceac12',
-            '4bbbf897-0fec-4d4a-8bdf-011a7e2c2a91',
-        ];
-        const watchdog = createPluginReactNativeWatchdog({
-            createFailureOccurrenceId: () => occurrenceIds.shift()!,
-        });
+    it('does not restore crash authority into a fresh watchdog instance', () => {
+        const first = createPluginReactNativeWatchdog();
+        first.recordFailure({ artifactDigest: digestA });
 
-        const first = watchdog.recordFailure({ token, scopeKey, failure: 'render_error' });
-        const second = watchdog.recordFailure({ token, scopeKey, failure: 'render_error' });
+        const fresh = createPluginReactNativeWatchdog();
 
-        expect(watchdog.readPending({ token, scopeKey })).toEqual([first, second]);
-    });
-
-    it('does not let a prior artifact epoch quarantine the current token', () => {
-        const watchdog = createPluginReactNativeWatchdog({
-            createFailureOccurrenceId: () => '6f46e1ba-4e7e-4e7e-8de8-6e8bc4ceac12',
-        });
-        watchdog.recordFailure({ token, scopeKey, failure: 'render_error' });
-
-        expect(watchdog.readPending({ token: { ...token, crashStateEpoch: 5 }, scopeKey })).toEqual([]);
-    });
-
-    it('preserves Composer crash bindings until a current real failure replaces them', () => {
-        const occurrenceIds = [
-            '6f46e1ba-4e7e-4e7e-8de8-6e8bc4ceac12',
-            '4bbbf897-0fec-4d4a-8bdf-011a7e2c2a91',
-        ];
-        const watchdog = createPluginReactNativeWatchdog({
-            createFailureOccurrenceId: () => occurrenceIds.shift()!,
-        });
-        const pending = watchdog.recordFailure({ token: composerToken, scopeKey, failure: 'render_error' });
-
-        watchdog.acknowledgeReportedFailure({
-            token: {
-                ...composerToken,
-                mount: { ...composerToken.mount, immutableGenerationId: 'new-composer-generation' },
-            },
-            scopeKey,
-            failureOccurrenceId: pending.failureOccurrenceId,
-        });
-        expect(watchdog.readPending({ token: composerToken, scopeKey })).toEqual([pending]);
-
-        const replacementToken = {
-            ...composerToken,
-            artifactDigest: 'sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
-            crashStateEpoch: 5,
-        } as const;
-        const replacement = watchdog.recordFailure({
-            token: replacementToken,
-            scopeKey,
-            failure: 'render_error',
-        });
-
-        expect(watchdog.readPending({ token: composerToken, scopeKey })).toEqual([]);
-        expect(watchdog.readPending({ token: replacementToken, scopeKey })).toEqual([replacement]);
-    });
-
-    it('still contains the running mount when the durable outbox refuses the write', () => {
-        const watchdog = createPluginReactNativeWatchdog({
-            persistence: {
-                readSnapshot: () => null,
-                writeSnapshot: () => { throw new Error('platform storage unavailable'); },
-            },
-            createFailureOccurrenceId: () => '6f46e1ba-4e7e-4e7e-8de8-6e8bc4ceac12',
-        });
-
-        const pending = watchdog.recordFailure({ token, scopeKey, failure: 'render_error' });
-
-        // Losing the durable report does not lose the recorded failure that
-        // holds this mount for the rest of the process.
-        expect(watchdog.readPending({ token, scopeKey })).toEqual([pending]);
-    });
-
-    it('restores no occurrence — and therefore no containment — from a store it cannot interpret', () => {
-        const unreadable = createPluginReactNativeWatchdog({
-            persistence: {
-                readSnapshot: () => { throw new Error('platform storage unavailable'); },
-                writeSnapshot: () => {},
-            },
-        });
-        expect(unreadable.readPending({ token, scopeKey })).toEqual([]);
-
-        // A snapshot from another shape carries nothing this version can report.
-        const foreignShape = createPluginReactNativeWatchdog({
-            persistence: {
-                readSnapshot: () => ({ snapshot: { v: 2, pending: [] } }),
-                writeSnapshot: () => {},
-            },
-        });
-        expect(foreignShape.readPending({ token, scopeKey })).toEqual([]);
-
-        // One unusable row is dropped; its readable siblings still restore.
-        const restorable = {
-            scopeKey,
-            token,
-            failureOccurrenceId: '6f46e1ba-4e7e-4e7e-8de8-6e8bc4ceac12',
-            failure: 'render_error',
-        };
-        const partialRows = createPluginReactNativeWatchdog({
-            persistence: {
-                readSnapshot: () => ({
-                    snapshot: {
-                        v: 3,
-                        pending: [
-                            { scopeKey, token, failureOccurrenceId: 'not-a-uuid', failure: 'render_error' },
-                            restorable,
-                        ],
-                    },
-                }),
-                writeSnapshot: () => {},
-            },
-        });
-        expect(partialRows.readPending({ token, scopeKey })).toEqual([{
-            token,
-            failureOccurrenceId: restorable.failureOccurrenceId,
-            failure: 'render_error',
-        }]);
-
-        // A build with no local store carries nothing forward and blocks nothing.
-        expect(createPluginReactNativeWatchdog({}).readPending({ token, scopeKey })).toEqual([]);
+        expect(first.isContained({ artifactDigest: digestA })).toBe(true);
+        expect(fresh.isContained({ artifactDigest: digestA })).toBe(false);
     });
 });

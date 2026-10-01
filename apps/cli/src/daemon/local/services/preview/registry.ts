@@ -1,11 +1,16 @@
 import {
     LocalServicePreviewResourceV1Schema,
-    type BrowserLocalServicePreviewTargetV1,
     type LocalServicePreviewResourceV1,
-} from "@happier-dev/protocol";
+    type LocalServicePreviewSnapshotRowV1,
+} from "@happier-dev/protocol/local/services/preview/v1";
+import type { BrowserLocalServicePreviewTargetV1 } from '@happier-dev/protocol';
+import {
+    isLiteralLoopbackHostname,
+    normalizeHostnameForLoopbackCheck,
+} from "@happier-dev/protocol/server/urls";
 
 export type LocalServicePreviewRegistry = Readonly<{
-    resourcesById: Map<string, LocalServicePreviewResourceV1>;
+    previewsById: Map<string, LocalServicePreviewSnapshotRowV1>;
 }>;
 
 export type RegisterLocalServicePreviewInput = Omit<LocalServicePreviewResourceV1, "browserTarget">;
@@ -17,11 +22,6 @@ export type RegisterLocalServicePreviewResult =
 export type UnregisterLocalServicePreviewResult =
     | Readonly<{ ok: true }>
     | Readonly<{ ok: false; reasonCode: "not_found" }>;
-
-function isLoopbackHost(host: string): boolean {
-    const normalized = host.trim().toLowerCase();
-    return normalized === "localhost" || normalized === "::1" || normalized === "[::1]" || /^127(?:\.|$)/u.test(normalized);
-}
 
 function toBrowserTarget(resource: RegisterLocalServicePreviewInput): BrowserLocalServicePreviewTargetV1 {
     return {
@@ -41,7 +41,7 @@ function toBrowserTarget(resource: RegisterLocalServicePreviewInput): BrowserLoc
 
 export function createLocalServicePreviewRegistry(): LocalServicePreviewRegistry {
     return {
-        resourcesById: new Map(),
+        previewsById: new Map(),
     };
 }
 
@@ -49,19 +49,30 @@ export function registerLocalServicePreview(
     registry: LocalServicePreviewRegistry,
     input: RegisterLocalServicePreviewInput,
 ): RegisterLocalServicePreviewResult {
-    if (!isLoopbackHost(input.target.host)) {
+    const normalizedHost = normalizeHostnameForLoopbackCheck(input.target.host);
+    if (!isLiteralLoopbackHostname(normalizedHost)) {
         return { ok: false, reasonCode: "non_loopback_target" };
     }
 
     const parsed = LocalServicePreviewResourceV1Schema.safeParse({
         ...input,
+        target: {
+            ...input.target,
+            host: normalizedHost,
+        },
         browserTarget: toBrowserTarget(input),
     });
     if (!parsed.success) {
         return { ok: false, reasonCode: "invalid_resource" };
     }
 
-    registry.resourcesById.set(parsed.data.previewId, parsed.data);
+    registry.previewsById.set(parsed.data.previewId, {
+        previewId: parsed.data.previewId,
+        resource: parsed.data,
+        accessUrl: null,
+        expiresAt: null,
+        diagnostics: [],
+    });
     return { ok: true, resource: parsed.data };
 }
 
@@ -69,7 +80,7 @@ export function unregisterLocalServicePreview(
     registry: LocalServicePreviewRegistry,
     previewId: string,
 ): UnregisterLocalServicePreviewResult {
-    if (!registry.resourcesById.delete(previewId)) {
+    if (!registry.previewsById.delete(previewId)) {
         return { ok: false, reasonCode: "not_found" };
     }
     return { ok: true };
@@ -78,5 +89,5 @@ export function unregisterLocalServicePreview(
 export function listLocalServicePreviewResources(
     registry: LocalServicePreviewRegistry,
 ): readonly LocalServicePreviewResourceV1[] {
-    return Array.from(registry.resourcesById.values());
+    return Array.from(registry.previewsById.values(), (preview) => preview.resource);
 }

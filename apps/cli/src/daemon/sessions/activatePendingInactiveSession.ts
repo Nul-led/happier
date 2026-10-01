@@ -17,6 +17,7 @@ type PendingInactiveSessionActivationResult =
         | 'authorization-stale'
         | 'target-mismatch'
         | 'snapshot-stale'
+        | 'session-directory-missing'
         | 'spawn-ambiguous';
     }>
   | Readonly<{
@@ -172,6 +173,9 @@ export async function activatePendingInactiveSession(params: Readonly<{
     || (result.type === 'success' && result.sessionId !== params.sessionId)
   ) {
     return { status: 'not-needed', reason: 'spawn-ambiguous' };
+  }
+  if (result.type === 'error' && result.errorCode === SPAWN_SESSION_ERROR_CODES.SESSION_DIRECTORY_MISSING) {
+    return { status: 'not-needed', reason: 'session-directory-missing' };
   }
   if (result.type !== 'success') return await rejectTerminal('spawn-rejected');
   return { status: 'activated' };

@@ -6,10 +6,11 @@ import { act } from 'react-test-renderer';
 
 import { renderScreen, standardCleanup } from '@/dev/testkit';
 import { AGENT_IDS, type AgentId } from '@/agents/catalog/catalog';
-import type { CLIAvailability } from '@/hooks/auth/useCLIDetection';
+import type { CLIAvailability } from '@/agents/machineAgents/machineAgentCliAvailability';
 import type { Machine } from '@/sync/domains/state/storageTypes';
 
 import { installNewSessionComponentsCommonModuleMocks } from './newSessionComponentsTestHelpers';
+import { NewSessionWizard } from './NewSessionWizard';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -73,15 +74,6 @@ vi.mock('color', () => ({
     default: () => ({
         alpha: () => ({ rgb: () => ({ string: () => 'rgba(0,0,0,0.08)' }) }),
     }),
-}));
-
-vi.mock('@/components/ui/lists/Item', () => ({
-    Item: () => null,
-}));
-
-vi.mock('@/components/ui/lists/ItemGroup', () => ({
-    ItemGroup: (props: Record<string, unknown> & { children?: React.ReactNode }) =>
-        React.createElement('ItemGroup', props, props.children),
 }));
 
 vi.mock('@/components/sessions/keyboardAvoidance', () => ({
@@ -173,7 +165,6 @@ describe('NewSessionWizard keyboard scaffold integration', () => {
     });
 
     it('renders the wizard composer through the shared scaffold and caps its panel height for AgentInput', async () => {
-        const { NewSessionWizard } = await import('./NewSessionWizard');
         let screen: Awaited<ReturnType<typeof renderScreen>> | undefined;
         const popoverBoundaryRef = React.createRef<View>() as unknown as React.RefObject<View>;
 
@@ -198,6 +189,15 @@ describe('NewSessionWizard keyboard scaffold integration', () => {
                 screen?.tree.unmount();
             });
         }
+    });
+
+    it('shows only the selected-agent setup blocker supplied by the canonical composer', async () => {
+        const props = buildWizardProps();
+        props.agent.cliAvailability = { ...props.agent.cliAvailability, available: { codex: false } };
+        props.footer.composerTopContent = React.createElement('Text', { testID: 'selected-agent-blocker' }, 'Set up Codex');
+        const screen = await renderScreen(<NewSessionWizard {...props} popoverBoundaryRef={React.createRef<View>() as React.RefObject<View>} />);
+        expect(screen.findByTestId('selected-agent-blocker')).toBeTruthy();
+        expect(screen.getTextContent()).not.toContain('newSession.cliBanners.');
     });
 });
 
@@ -285,8 +285,6 @@ function buildWizardProps(): NewSessionWizardTestProps {
             tmuxRequested: false,
             enabledAgentIds: ['codex'],
             isAgentSelectable: () => true,
-            isCliBannerDismissed: () => false,
-            dismissCliBanner: () => {},
             agentType: 'codex',
             setAgentType: () => {},
             selectedIndicatorColor: '#000',

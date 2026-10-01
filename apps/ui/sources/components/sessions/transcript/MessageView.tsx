@@ -1,25 +1,25 @@
+import { useSessionTranscriptSource } from '@/components/sessions/transcript/source/SessionTranscriptSourceContext';
 import * as React from "react";
 import { View, Pressable, Platform } from 'react-native';
 import { Modal } from '@/modal';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { MarkdownView } from '@/components/markdown/MarkdownView';
 import { t } from '@/text';
-import { Message, UserTextMessage, AgentTextMessage, ToolCallMessage } from "@/sync/domains/messages/messageTypes";
-import { Metadata } from "@/sync/domains/state/storageTypes";
+import { Message, UserTextMessage, AgentTextMessage, ToolCallMessage } from "@happier-dev/session-core/messages";
+import { Metadata } from '@happier-dev/session-core/state';
 import type { OpenApprovalArtifactForSession } from '@/sync/domains/artifacts/approvalArtifacts';
 import { useLayoutMaxWidthStyle } from "@/components/ui/layout/layout";
 import { ToolView } from '@/components/tools/shell/views/ToolView';
 import { ToolTimelineRow } from '@/components/tools/shell/views/ToolTimelineRow';
 import { resolveToolStatusIndicatorKind } from '@/components/tools/shell/presentation/resolveToolStatusIndicatorKind';
 import { resolveInactiveSessionToolCallFailure } from '@/components/tools/shell/permissions/resolveInactiveSessionToolCallFailure';
-import { buildMessageRouteId, resolveMessageRouteIdForDisplay } from '@/sync/domains/messages/messageRouteIds';
-import { readUnsupportedContentMeta, type UnsupportedContentKind } from '@/sync/domains/messages/unsupportedContentMeta';
+import { buildMessageRouteId, resolveMessageRouteIdForDisplay } from "@happier-dev/session-core/messages";
+import { readUnsupportedContentMeta, type UnsupportedContentKind } from "@happier-dev/session-core/messages";
 import { resolveUnsupportedContentLabel } from '@/sync/domains/messages/resolveUnsupportedContentLabel';
 import {
   resolveUnsupportedContentPresentation,
   type UnsupportedContentPresentation,
-} from '@/sync/domains/messages/unsupportedContentPresentation';
-import { sync } from '@/sync/sync';
+} from "@happier-dev/session-core/messages";
 import type { Option, OptionLongPressHandler } from '@/components/markdown/MarkdownView';
 import { isCommittedMessageDiscarded } from "@/utils/sessions/discardedCommittedMessages";
 import { shouldShowTranscriptRowActions, shouldShowTranscriptRowPinAction } from '@/components/sessions/transcript/transcriptRowActionVisibility';
@@ -33,7 +33,6 @@ import {
 } from '@/components/sessions/transcript/messageSelection/resolveSelectableMessageText';
 import { renderStructuredMessage } from '@/components/sessions/transcript/structured/StructuredMessageBlock';
 import type { StructuredMessageRendererParams } from '@/components/sessions/transcript/structured/structuredMessageRegistry';
-import { useRouter } from 'expo-router';
 import { buildSessionFileDeepLink } from '@/utils/url/sessionFileDeepLink';
 import { fireAndForget } from '@/utils/system/fireAndForget';
 import { Text } from '@/components/ui/text/Text';
@@ -57,7 +56,7 @@ import { canForkFromMessage } from '@/sync/domains/sessionFork/forkUiSupport';
 import { resolveForkFromMessageSemantics } from '@/sync/domains/sessionFork/forkFromMessageSemantics';
 import { readMachineTargetForSession } from '@/sync/ops/sessionMachineTarget';
 import { normalizeVoiceAgentTurnTranscriptText } from '@happier-dev/agents';
-import { readSessionMessageProvenanceV1 } from '@happier-dev/protocol';
+import { readSessionMessageProvenance } from '@happier-dev/protocol';
 import { TranscriptRollbackActionButton } from '@/components/sessions/transcript/TranscriptRollbackActionButton';
 import type { TranscriptRollbackAction } from '@/sync/domains/sessionRollback/rollbackUiSupport';
 import { MessageActionRow } from '@/components/sessions/transcript/messageActions/MessageActionRow';
@@ -66,12 +65,12 @@ import { MessagePinButton } from '@/components/sessions/transcript/messageAction
 import { RowActionRevealSlot } from '@/components/sessions/transcript/messageActions/RowActionRevealSlot';
 import { readCoarsePrimaryPointer, useRowActionHoverHost } from '@/components/sessions/transcript/messageActions/rowActionRevealHost';
 import { resolveMessagePinAvailability } from '@/components/sessions/transcript/messageActions/resolveMessagePinAvailability';
-import type { PersistedSessionMessagePinV1 } from '@/sync/domains/messages/pins/sessionMessagePins';
+import type { PersistedSessionMessagePinV1 } from "@happier-dev/session-core/pins";
 import { resolveToolRowPinAction } from '@/components/sessions/transcript/toolCalls/ToolCallPinAction';
 import { setClipboardStringSafe } from '@/utils/ui/clipboard';
 import { settingsDefaults } from '@/sync/domains/settings/settings';
 import { useStreamingTextSmoothing } from '@/components/sessions/transcript/streaming/useStreamingTextSmoothing';
-import { readStreamSegmentMetaV1 } from '@/sync/reducer/helpers/streamSegmentMeta';
+import { readStreamSegmentMetaV1 } from "@happier-dev/session-core/reducer";
 import { normalizeSessionId } from '@/sync/domains/session/normalizeSessionId';
 import { resolvePreferredServerIdForSessionId } from '@/sync/runtime/orchestration/serverScopedRpc/resolvePreferredServerIdForSessionId';
 import { buildScopedSessionRouteHref } from '@/hooks/session/sessionRouteServerScope';
@@ -88,22 +87,20 @@ import {
   type TranscriptToolRouteCommon,
   useTranscriptSessionCommon,
 } from '@/components/sessions/transcript/transcriptSessionCommon';
-import {
-  deriveTranscriptInteraction,
-  deriveTranscriptInteractionFromSession,
-  type TranscriptInteraction,
-} from '@/utils/sessions/deriveTranscriptInteraction';
-import { useSessionInteractionSource } from '@/sync/domains/state/storage';
+import type { TranscriptInteraction } from '@/utils/sessions/deriveTranscriptInteraction';
+import { useSessionDisplayNameSource } from '@/sync/domains/state/storage';
+import { getSessionName } from '@/utils/sessions/sessionUtils';
 import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
 import { TranscriptJumpAttention } from '@/components/sessions/transcript/navigation/TranscriptJumpHighlightOverlay';
+import { UserMessageBubble } from './UserMessageBubble';
 import { formatWithCachedDateTimeFormatter } from '@/utils/datetime/cachedIntlFormatters';
-import { isRecoveredHistoryTranscriptObservation } from '@/sync/domains/messages/transcriptObservationProvenance';
+import { isRecoveredHistoryTranscriptObservation } from "@happier-dev/session-core/messages";
 import type { TranscriptEventEmphasis } from '@/components/sessions/transcript/events/transcriptEventEmphasis';
 import { Icon } from '@/components/ui/icons/Icon';
 import { Typography } from '@/constants/Typography';
 import { SessionMessageAccountByline } from './SessionMessageAccountByline';
+import type { ToolViewDisplaySettings } from '@/components/tools/shell/views/toolViewDisplaySettings';
 
-const FAIL_CLOSED_TRANSCRIPT_INTERACTION = deriveTranscriptInteraction({ kind: 'public' });
 const TRANSCRIPT_SELECTION_CHECKBOX_ANCHOR_TOP = 0;
 // The jump-landing ring inherits the radius of the element it paints, so each
 // archetype hands its own corner radius to the shared attention surface.
@@ -148,9 +145,16 @@ function shouldHideVoiceAgentTurnMessage(message: Message): boolean {
     return normalizedText == null || normalizedText.trim().length === 0;
 }
 
-function resolveMessageServerId(sessionId: string, fallbackServerId?: string | null): string | null {
+function resolveMessageServerId(
+  sessionId: string,
+  exactServerId?: string | null,
+  fallbackServerId?: string | null,
+): string | null {
   const normalizedSessionId = normalizeSessionId(sessionId);
-  const resolvedServerId = resolvePreferredServerIdForSessionId(normalizedSessionId) ?? fallbackServerId ?? '';
+  const resolvedServerId = exactServerId
+    ?? resolvePreferredServerIdForSessionId(normalizedSessionId)
+    ?? fallbackServerId
+    ?? '';
   const normalizedServerId = String(resolvedServerId).trim();
   return normalizedServerId || null;
 }
@@ -215,30 +219,66 @@ function readPluginMessageAttributionLabel(
     : t('message.pluginAttributionExternal', { sender, pluginId: provenance.pluginId });
 }
 
-function PluginMessageAttribution(props: Readonly<{ message: Message }>) {
-  const pluginProvenance = React.useMemo(() => {
-    if (props.message.kind !== 'user-text') return null;
-    const provenance = readSessionMessageProvenanceV1(props.message.meta);
-    return provenance?.kind === 'pluginSession' ? provenance : null;
-  }, [props.message]);
-  // Trusted Account actor and descriptive producer provenance are independent
-  // siblings (Lane 04.4 §7.7): an authenticated runtime Account author plus the
-  // mediating plugin's external-source line are both true together, so the
-  // presence of one never suppresses the other.
-  if (!pluginProvenance) return null;
-
-  const label = readPluginMessageAttributionLabel(pluginProvenance);
+function MessageProvenanceAttributionLabel(props: Readonly<{ testID: string; label: string }>) {
   return (
     <Text
-      testID={`transcript-plugin-attribution:${props.message.id}`}
+      testID={props.testID}
       accessibilityRole="text"
-      accessibilityLabel={label}
+      accessibilityLabel={props.label}
       numberOfLines={1}
       ellipsizeMode="tail"
-      style={styles.pluginMessageAttribution}
+      style={styles.messageProvenanceAttribution}
     >
-      {label}
+      {props.label}
     </Text>
+  );
+}
+
+function SessionMessageProvenanceAttribution(props: Readonly<{
+  messageId: string;
+  sourceSessionId: string;
+  serverId?: string | null;
+}>) {
+  // Only Session-produced messages subscribe, and only to the fields that can
+  // change the source title. The transcript Home qualifies the source identity.
+  const source = useSessionDisplayNameSource(props.sourceSessionId, props.serverId);
+  const sourceName = source ? getSessionName(source, props.serverId) : t('message.provenanceSession');
+  return (
+    <MessageProvenanceAttributionLabel
+      testID={`transcript-provenance-attribution:${props.messageId}`}
+      label={t('message.provenanceFrom', { source: sourceName })}
+    />
+  );
+}
+
+function MessageProvenanceAttribution(props: Readonly<{ message: Message; serverId?: string | null }>) {
+  const provenance = React.useMemo(() => props.message.kind === 'user-text'
+    ? readSessionMessageProvenance(props.message.meta)
+    : null, [props.message]);
+  // Authenticated Account actors and descriptive producer provenance are
+  // independent: producer metadata never invents or suppresses a human actor.
+  if (!provenance || provenance.kind === 'host') return null;
+  if (provenance.kind === 'happierSession') {
+    return (
+      <SessionMessageProvenanceAttribution
+        messageId={props.message.id}
+        sourceSessionId={provenance.sourceSessionId}
+        serverId={props.serverId}
+      />
+    );
+  }
+  const label = provenance.kind === 'pluginSession'
+    ? readPluginMessageAttributionLabel(provenance)
+    : t('message.provenanceFrom', {
+      source: provenance.kind === 'automation' ? t('message.provenanceAutomation') : t('message.provenanceWorkflow'),
+    });
+  return (
+    <MessageProvenanceAttributionLabel
+      testID={provenance.kind === 'pluginSession'
+        ? `transcript-plugin-attribution:${props.message.id}`
+        : `transcript-provenance-attribution:${props.message.id}`}
+      label={label}
+    />
   );
 }
 
@@ -283,14 +323,14 @@ function resolveMessageTimestampPresentation(input: {
 }
 
 type SessionFileDeepLinkParams = Parameters<typeof buildSessionFileDeepLink>[0];
-type SessionFileDeepLinkRouter = Pick<ReturnType<typeof useRouter>, 'push'>;
+type SessionFileDeepLinkNavigate = ((href: string) => void) | null;
 
 function pushSessionFileDeepLink(
-  router: SessionFileDeepLinkRouter,
+  navigate: SessionFileDeepLinkNavigate,
   params: SessionFileDeepLinkParams,
 ): void {
   const href = buildSessionFileDeepLink(params);
-  router.push(href as never);
+  navigate?.(href);
 }
 
 function useStructuredMessageJumpHandler(
@@ -298,14 +338,14 @@ function useStructuredMessageJumpHandler(
   serverId: string | null | undefined,
   enabled: boolean,
 ): StructuredMessageRendererParams['onJumpToAnchor'] {
-  const router = useRouter();
-  const routerRef = React.useRef<SessionFileDeepLinkRouter>(router);
+  const transcriptSource = useSessionTranscriptSource();
+  const navigateRef = React.useRef(transcriptSource.navigate);
   React.useLayoutEffect(() => {
-    routerRef.current = router;
-  }, [router]);
+    navigateRef.current = transcriptSource.navigate;
+  }, [transcriptSource.navigate]);
 
   const handler = React.useCallback((target: Parameters<NonNullable<StructuredMessageRendererParams['onJumpToAnchor']>>[0]) => {
-    pushSessionFileDeepLink(routerRef.current, {
+    pushSessionFileDeepLink(navigateRef.current, {
       sessionId,
       ...(serverId ? { serverId } : {}),
       filePath: target.filePath,
@@ -313,7 +353,7 @@ function useStructuredMessageJumpHandler(
       anchor: target.anchor,
     });
   }, [serverId, sessionId]);
-  return enabled ? handler : undefined;
+  return enabled && transcriptSource.navigate !== null ? handler : undefined;
 }
 
 type MessageViewProps = {
@@ -335,18 +375,18 @@ type MessageViewProps = {
   onToggleToolPin?: SessionMessagePinToggleHandler;
   historical?: boolean;
   eventEmphasis?: TranscriptEventEmphasis;
+  /** On the worker update that opens a context-only wake: how many updates woke the session. */
+  hostWakeCount?: number;
   interaction?: TranscriptInteraction;
 };
 
 export const MessageView = React.memo(function MessageView(props: MessageViewProps) {
-  const transcriptSessionCommon = useTranscriptSessionCommon(props.sessionId, props.serverId);
+  const transcriptSessionCommon = useTranscriptSessionCommon();
   // Subscription width: this is a per-row hook, so a whole-record subscription made every
   // mounted row re-render on turn-lifecycle churn. `presence` was passed but
   // `deriveTranscriptInteractionFromSession` never reads it, so the narrow source drops it.
-  const interactionSource = useSessionInteractionSource(props.sessionId, props.serverId);
-  const sessionInteraction = React.useMemo(() => interactionSource
-    ? deriveTranscriptInteractionFromSession(interactionSource)
-    : undefined, [interactionSource]);
+  const transcriptSource = useSessionTranscriptSource();
+  const sessionInteraction = transcriptSource.useInteraction();
   return (
     <MessageViewWithSessionCommon
       {...props}
@@ -365,7 +405,9 @@ export const MessageViewWithSessionCommon = React.memo(function MessageViewWithS
   toolChromeCommon: TranscriptToolChromeCommon;
   toolRouteCommon: TranscriptToolRouteCommon;
 }) {
-  const interaction = props.interaction ?? FAIL_CLOSED_TRANSCRIPT_INTERACTION;
+  const transcriptSource = useSessionTranscriptSource();
+  const sourceInteraction = transcriptSource.useInteraction();
+  const interaction = props.interaction ?? sourceInteraction;
   const canFork = interaction.canFork === true;
   const committedCanForkRef = React.useRef(canFork);
   React.useLayoutEffect(() => {
@@ -403,7 +445,10 @@ export const MessageViewWithSessionCommon = React.memo(function MessageViewWithS
             hasOtherNamedCollaborator={props.messageDisplayCommon.hasOtherNamedCollaborator === true}
           />
         )}
-        <PluginMessageAttribution message={props.message} />
+        <MessageProvenanceAttribution
+          message={props.message}
+          serverId={resolveMessageServerId(props.sessionId, props.serverId, props.forkCommon.sessionForkSupportSource?.serverId)}
+        />
         <RenderBlock
           message={props.message}
           metadata={props.metadata}
@@ -422,6 +467,7 @@ export const MessageViewWithSessionCommon = React.memo(function MessageViewWithS
           onToggleToolPin={props.onToggleToolPin}
           historical={props.historical}
           eventEmphasis={props.eventEmphasis}
+          hostWakeCount={props.hostWakeCount}
           interaction={interaction}
           canFork={canFork}
           forkCommon={forkCommon}
@@ -457,12 +503,14 @@ function RenderBlock(props: {
   onToggleToolPin?: SessionMessagePinToggleHandler;
   historical?: boolean;
   eventEmphasis?: TranscriptEventEmphasis;
+  hostWakeCount?: number;
   forkCommon: TranscriptForkCommon;
   isForkAllowed: () => boolean;
   messageDisplayCommon: TranscriptMessageDisplayCommon;
   toolChromeCommon: TranscriptToolChromeCommon;
   toolRouteCommon: TranscriptToolRouteCommon;
 }): React.ReactElement | null {
+  const transcriptSource = useSessionTranscriptSource();
   switch (props.message.kind) {
     case 'user-text':
       return (
@@ -510,6 +558,7 @@ function RenderBlock(props: {
           forkCommon={props.forkCommon}
           isForkAllowed={props.isForkAllowed}
           messageDisplayCommon={props.messageDisplayCommon}
+          toolDisplaySettings={props.toolChromeCommon.toolDisplaySettings}
         />
       );
 
@@ -548,6 +597,9 @@ function RenderBlock(props: {
             sessionId={props.sessionId}
             serverId={props.serverId}
             emphasis={props.eventEmphasis}
+            hostWakeCount={props.hostWakeCount}
+            createdAt={props.message.createdAt}
+            navigationEnabled={props.interaction.permissionDisabledReason !== 'public' && transcriptSource.navigate !== null}
           />
         </TranscriptJumpAttention>
       );
@@ -585,7 +637,8 @@ function UserTextBlock(props: {
   const handleActionsFocus = React.useCallback(() => setIsActionRowFocused(true), []);
   const handleActionsBlur = React.useCallback(() => setIsActionRowFocused(false), []);
   const isWeb = Platform.OS === 'web';
-	  const router = useRouter();
+	  const transcriptSource = useSessionTranscriptSource();
+  const sourceCanSendMessages = transcriptSource.useInteraction().canSendMessages;
 	  const isDiscarded = isCommittedMessageDiscarded(props.metadata, props.message.localId);
   const handleJumpToAnchor = useStructuredMessageJumpHandler(props.sessionId, props.serverId, props.canOpenFiles);
 
@@ -597,6 +650,7 @@ function UserTextBlock(props: {
   const structuredNode = renderStructuredMessage({
 	    message: props.message,
 	    sessionId: props.sessionId,
+        serverId: props.serverId,
         interaction: props.interaction,
 	    onJumpToAnchor: handleJumpToAnchor,
 	    debugInformationEnabled: props.messageDisplayCommon.debugInformationEnabled,
@@ -629,8 +683,8 @@ function UserTextBlock(props: {
     });
   }, [attachmentsMeta]);
 	  const handleOpenAttachmentPath = React.useCallback((filePath: string) => {
-	    pushSessionFileDeepLink(router, { sessionId: props.sessionId, serverId: props.serverId, filePath });
-	  }, [props.serverId, props.sessionId, router]);
+	    pushSessionFileDeepLink(transcriptSource.navigate, { sessionId: props.sessionId, serverId: props.serverId, filePath });
+	  }, [props.serverId, props.sessionId, transcriptSource]);
 
   const unsupportedContentMeta = React.useMemo(
     () => readUnsupportedContentMeta(props.message.meta),
@@ -669,18 +723,18 @@ function UserTextBlock(props: {
   const handleOptionPress = React.useCallback((option: Option) => {
     fireAndForget((async () => {
       try {
-        if (!props.canSendMessages) {
+        if (!props.canSendMessages || !sourceCanSendMessages || transcriptSource.actions === null) {
           Modal.alert(t('session.sharing.viewOnly'), t('session.sharing.noEditPermission'));
           return;
         }
-        await sync.submitMessage(props.sessionId, option.title, undefined, undefined, {
+        await transcriptSource.actions.submitMessage(option.title, {
           callerSurface: 'message_option',
         });
       } catch (e) {
         Modal.alert(t('common.error'), e instanceof Error ? e.message : t('errors.failedToSendMessage'));
       }
     })(), { tag: 'MessageView.handleOptionPress.userMessage' });
-  }, [props.canSendMessages, props.sessionId]);
+  }, [props.canSendMessages, props.sessionId, sourceCanSendMessages, transcriptSource.actions]);
   const handleOptionLongPress = React.useCallback<OptionLongPressHandler>(async (option) => {
     const ok = await setClipboardStringSafe(option.title);
     if (!ok) {
@@ -745,14 +799,14 @@ function UserTextBlock(props: {
 	    const resolved = resolveTranscriptMarkdownFileLink({ url, workspacePath });
 	    if (!resolved) return false;
 	    const anchor = resolved.anchor ?? null;
-	    pushSessionFileDeepLink(router, {
+	    pushSessionFileDeepLink(transcriptSource.navigate, {
 	      sessionId: props.sessionId,
 	      serverId: props.serverId,
 	      filePath: resolved.filePath,
 	      ...(anchor ? { source: 'file' as const, anchor } : {}),
 	    });
 	    return true;
-	  }, [props.canOpenFiles, props.serverId, props.sessionId, router, workspacePath]);
+	  }, [props.canOpenFiles, props.serverId, props.sessionId, transcriptSource, workspacePath]);
   const seq =
     typeof (props.message as any).seq === 'number' && Number.isFinite((props.message as any).seq)
       ? Math.trunc((props.message as any).seq)
@@ -890,6 +944,7 @@ function UserTextBlock(props: {
             {showForkButton ? (
               <ForkMessageButton
                 sessionId={props.sessionId}
+                serverId={props.serverId}
                 upToSeqInclusive={(forkSemantics?.upToSeqInclusive ?? seq!)}
                 restoredDraftText={forkSemantics?.restoredDraftText ?? null}
                 messageId={props.message.id}
@@ -958,12 +1013,9 @@ function UserTextBlock(props: {
           {...(isWeb ? {} : { pointerEvents: 'box-none' as const })}
         >
           <View style={styles.userMessageBubbleAligner}>
-          <TranscriptJumpAttention
-            sessionId={props.sessionId}
-            routeMessageId={buildMessageRouteId(props.message)}
-            seq={resolveTranscriptMessageSeq(props.message)}
-            radius={TRANSCRIPT_MESSAGE_HIGHLIGHT_RADIUS}
-            style={[styles.userMessageBubble, isDiscarded ? styles.userMessageBubbleDiscarded : null]}
+          <UserMessageBubble
+            discarded={isDiscarded}
+            attention={{ sessionId: props.sessionId, routeMessageId: buildMessageRouteId(props.message), seq: resolveTranscriptMessageSeq(props.message), radius: TRANSCRIPT_MESSAGE_HIGHLIGHT_RADIUS }}
           >
             <MarkdownView markdown={renderedMarkdownText} renderCacheKey={buildMessageMarkdownRenderCacheKey(props.message.id, props.messageRevision)} onOptionPress={handleOptionPress} onOptionLongPress={handleOptionLongPress} onLinkPress={handleMarkdownLinkPress} selectable={true} profile="transcript" textStyle={styles.transcriptMarkdownText} />
             {attachmentsMeta ? (
@@ -1005,7 +1057,7 @@ function UserTextBlock(props: {
             {isDiscarded && (
               <Text selectable style={styles.discardedCommittedMessageLabel}>{t('message.discarded')}</Text>
             )}
-          </TranscriptJumpAttention>
+          </UserMessageBubble>
           </View>
           <MessageActionRow
             isWeb={isWeb}
@@ -1050,6 +1102,7 @@ function UserTextBlock(props: {
             {showForkButton ? (
               <ForkMessageButton
                 sessionId={props.sessionId}
+                serverId={props.serverId}
                 upToSeqInclusive={(forkSemantics?.upToSeqInclusive ?? seq!)}
                 restoredDraftText={forkSemantics?.restoredDraftText ?? null}
                 messageId={props.message.id}
@@ -1112,6 +1165,7 @@ function AgentTextBlock(props: {
   forkCommon: TranscriptForkCommon;
   isForkAllowed: () => boolean;
   messageDisplayCommon: TranscriptMessageDisplayCommon;
+  toolDisplaySettings?: ToolViewDisplaySettings;
 }) {
   const [isMessageHovered, setIsMessageHovered] = React.useState(false);
   const [isCopyButtonHovered, setIsCopyButtonHovered] = React.useState(false);
@@ -1123,7 +1177,8 @@ function AgentTextBlock(props: {
   const contextMenuAnchorRef = React.useRef<View>(null);
   const [contextMenuOpen, setContextMenuOpen] = React.useState(false);
   const fallbackTextSelectable = shouldEnableFallbackTextNativeSelection(Platform.OS);
-	  const router = useRouter();
+	  const transcriptSource = useSessionTranscriptSource();
+  const sourceCanSendMessages = transcriptSource.useInteraction().canSendMessages;
   const handleJumpToAnchor = useStructuredMessageJumpHandler(props.sessionId, props.serverId, props.canOpenFiles);
 	  const isVoiceAgentTurn = React.useMemo(() => {
     const envelope = parseHappierMetaEnvelope(props.message.meta);
@@ -1148,6 +1203,7 @@ function AgentTextBlock(props: {
   const structuredNode = renderStructuredMessage({
 	    message: props.message,
 	    sessionId: props.sessionId,
+        serverId: props.serverId,
         interaction: props.interaction,
 	    onJumpToAnchor: handleJumpToAnchor,
 	    debugInformationEnabled: props.messageDisplayCommon.debugInformationEnabled,
@@ -1202,18 +1258,18 @@ function AgentTextBlock(props: {
   const handleOptionPress = React.useCallback((option: Option) => {
     fireAndForget((async () => {
       try {
-        if (!props.canSendMessages) {
+        if (!props.canSendMessages || !sourceCanSendMessages || transcriptSource.actions === null) {
           Modal.alert(t('session.sharing.viewOnly'), t('session.sharing.noEditPermission'));
           return;
         }
-        await sync.submitMessage(props.sessionId, option.title, undefined, undefined, {
+        await transcriptSource.actions.submitMessage(option.title, {
           callerSurface: 'message_option',
         });
       } catch (e) {
         Modal.alert(t('common.error'), e instanceof Error ? e.message : t('errors.failedToSendMessage'));
       }
     })(), { tag: 'MessageView.handleOptionPress.agentMessage' });
-  }, [props.canSendMessages, props.sessionId]);
+  }, [props.canSendMessages, props.sessionId, sourceCanSendMessages, transcriptSource.actions]);
   const handleOptionLongPress = React.useCallback<OptionLongPressHandler>(async (option) => {
     const ok = await setClipboardStringSafe(option.title);
     if (!ok) {
@@ -1273,14 +1329,14 @@ function AgentTextBlock(props: {
 	    const resolved = resolveTranscriptMarkdownFileLink({ url, workspacePath });
 	    if (!resolved) return false;
 	    const anchor = resolved.anchor ?? null;
-	    pushSessionFileDeepLink(router, {
+	    pushSessionFileDeepLink(transcriptSource.navigate, {
 	      sessionId: props.sessionId,
 	      serverId: props.serverId,
 	      filePath: resolved.filePath,
 	      ...(anchor ? { source: 'file' as const, anchor } : {}),
 	    });
 	    return true;
-	  }, [props.canOpenFiles, props.serverId, props.sessionId, router, workspacePath]);
+	  }, [props.canOpenFiles, props.serverId, props.sessionId, transcriptSource, workspacePath]);
   const seq =
     typeof (props.message as any).seq === 'number' && Number.isFinite((props.message as any).seq)
       ? Math.trunc((props.message as any).seq)
@@ -1300,7 +1356,7 @@ function AgentTextBlock(props: {
     () => usesLongPressRollbackContextMenu
       ? createDefaultActionExecutor({
           resolveServerIdForSessionId: (sessionId) =>
-            resolveMessageServerId(sessionId, sessionForkSupportSource?.serverId),
+            resolveMessageServerId(sessionId, props.serverId, sessionForkSupportSource?.serverId),
           currentAgentCapabilities: props.rollbackAction?.currentAgentCapabilities,
         })
       : null,
@@ -1431,8 +1487,8 @@ function AgentTextBlock(props: {
     enabled: !shouldRenderStreamingPlain,
   });
   const handleOpenAgentSessionMediaPath = React.useCallback((filePath: string) => {
-    pushSessionFileDeepLink(router, { sessionId: props.sessionId, serverId: props.serverId, filePath });
-  }, [props.serverId, props.sessionId, router]);
+    pushSessionFileDeepLink(transcriptSource.navigate, { sessionId: props.sessionId, serverId: props.serverId, filePath });
+  }, [props.serverId, props.sessionId, transcriptSource]);
   const agentSessionMediaMeta = React.useMemo(() => {
     const primaryEnvelope = parseHappierMetaEnvelope(props.message.meta);
     const envelope = primaryEnvelope?.kind === 'session_media.v1'
@@ -1495,6 +1551,7 @@ function AgentTextBlock(props: {
                 result: { content: thinkingRenderMarkdown },
               }}
               messages={[]}
+              displaySettings={props.toolDisplaySettings}
             />
           ) : (
               renderThinkingInline ? (
@@ -1630,6 +1687,7 @@ function AgentTextBlock(props: {
             {showForkButton ? (
             <ForkMessageButton
               sessionId={props.sessionId}
+              serverId={props.serverId}
               upToSeqInclusive={(forkSemantics?.upToSeqInclusive ?? seq!)}
               restoredDraftText={forkSemantics?.restoredDraftText ?? null}
               messageId={props.message.id}
@@ -1685,6 +1743,7 @@ function AgentTextBlock(props: {
 
 function ForkMessageButton(props: {
   sessionId: string;
+  serverId?: string | null;
   upToSeqInclusive: number;
   restoredDraftText?: string | null;
   messageId: string;
@@ -1696,7 +1755,7 @@ function ForkMessageButton(props: {
 }) {
   const { theme } = useUnistyles();
   const minimumInteractiveTargetSize = resolveMinimumInteractiveTargetSize(Platform.OS);
-  const router = useRouter();
+  const transcriptSource = useSessionTranscriptSource();
   const sessionForkSupportSource = props.forkCommon.sessionForkSupportSource;
   const sessionForkOwnerMetadata = sessionForkSupportSource
     ? readSessionOwnerMetadataView(sessionForkSupportSource)
@@ -1712,11 +1771,14 @@ function ForkMessageButton(props: {
   // fork effect is issued, and the modal — not this button — owns the progress
   // of the operation it starts.
   const handlePress = React.useCallback(() => {
-    if (!props.isForkAllowed()) return;
-    const reachableMachineTarget = readMachineTargetForSession(props.sessionId);
-    const serverId = resolveMessageServerId(props.sessionId, sessionForkSupportSource?.serverId) ?? null;
+    if (!props.isForkAllowed() || transcriptSource.navigate === null) return;
+    const reachableMachineTarget = readMachineTargetForSession(props.serverId
+      ? { serverId: props.serverId, sessionId: props.sessionId }
+      : props.sessionId);
+    const serverId = resolveMessageServerId(props.sessionId, props.serverId, sessionForkSupportSource?.serverId) ?? null;
     const restored = typeof props.restoredDraftText === 'string' ? props.restoredDraftText : null;
     openSessionForkStrategyFlow({
+      navigation: { push: (href) => transcriptSource.navigate?.(String(href)) },
       sessionId: props.sessionId,
       forkSupportSource: sessionForkSupportSource,
       serverId,
@@ -1737,13 +1799,14 @@ function ForkMessageButton(props: {
       sourcePreview: restored,
       writeForkInitialPrompt: true,
       navigateToSession: (childSessionId, options) => {
-        router.push(buildScopedSessionRouteHref({
+        transcriptSource.navigate?.(buildScopedSessionRouteHref({
           sessionId: childSessionId,
           serverId: options?.serverId ?? serverId,
-        }) as any);
+        }));
       },
       navigateToNewSession: (route) => {
-        router.push(route as any);
+        const query = new URLSearchParams(route.params).toString();
+        transcriptSource.navigate?.(query ? `${route.pathname}?${query}` : route.pathname);
       },
     });
   }, [
@@ -1755,7 +1818,7 @@ function ForkMessageButton(props: {
     props.sessionId,
     props.upToSeqInclusive,
     props.forkCommon.currentAgentCapabilities,
-    router,
+    transcriptSource,
     sessionForkOwnerMetadata?.machineId,
     sessionForkSupportSource,
     sessionReplayEnabled,
@@ -1888,7 +1951,7 @@ function ToolCallBlock(props: {
   toolChromeCommon: TranscriptToolChromeCommon;
   toolRouteCommon: TranscriptToolRouteCommon;
 }) {
-	  const router = useRouter();
+	  const transcriptSource = useSessionTranscriptSource();
   const structuredPinHost = useRowActionHoverHost();
   const handleJumpToAnchor = useStructuredMessageJumpHandler(
     props.sessionId,
@@ -1904,6 +1967,7 @@ function ToolCallBlock(props: {
   const structuredNode = renderStructuredMessage({
 	    message: props.message,
 	    sessionId: props.sessionId,
+        serverId: props.toolChromeCommon.serverId,
         interaction: props.interaction,
 	    onJumpToAnchor: handleJumpToAnchor,
 	    debugInformationEnabled: props.messageDisplayCommon.debugInformationEnabled,
@@ -1919,9 +1983,7 @@ function ToolCallBlock(props: {
     structuredNode != null &&
     !shouldForceToolChromeForStatus
   );
-  const toolRouteMessageId = props.interaction.disableToolNavigation
-    ? undefined
-    : resolveMessageRouteIdForDisplay({
+  const toolRouteMessageId = resolveMessageRouteIdForDisplay({
         message: props.message,
         messagesById,
         reducerState,
@@ -1938,12 +2000,12 @@ function ToolCallBlock(props: {
     testID: `transcript-tool-call-pin:${props.message.id}`,
   });
   const handleOpenToolSessionMediaPath = React.useCallback((filePath: string) => {
-    pushSessionFileDeepLink(router, {
+    pushSessionFileDeepLink(transcriptSource.navigate, {
       sessionId: props.sessionId,
       serverId: props.toolChromeCommon.serverId,
       filePath,
     });
-  }, [props.sessionId, props.toolChromeCommon.serverId, router]);
+  }, [props.sessionId, props.toolChromeCommon.serverId, transcriptSource]);
   const toolSessionMediaMeta = React.useMemo(() => {
     const primaryEnvelope = parseHappierMetaEnvelope(props.message.meta);
     const envelope = primaryEnvelope?.kind === 'session_media.v1'
@@ -1989,6 +2051,7 @@ function ToolCallBlock(props: {
           approvalRequests={props.approvalRequests}
           forcePermissionPromptsInTranscript={props.forcePermissionPromptsInTranscript}
           interaction={props.interaction}
+          displaySettings={props.toolChromeCommon.toolDisplaySettings}
         />
       ) : (
         <ToolView
@@ -2003,6 +2066,7 @@ function ToolCallBlock(props: {
           approvalRequests={props.approvalRequests}
           forcePermissionPromptsInTranscript={props.forcePermissionPromptsInTranscript}
           interaction={props.interaction}
+          displaySettings={props.toolChromeCommon.toolDisplaySettings}
         />
       )) : null}
       {toolSessionMediaMeta ? (
@@ -2058,7 +2122,7 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: 12,
     color: theme.colors.message.event.foreground,
   },
-  pluginMessageAttribution: {
+    messageProvenanceAttribution: {
     ...Typography.rowMeta(),
     alignSelf: 'stretch',
     marginHorizontal: 16,
@@ -2078,7 +2142,7 @@ const styles = StyleSheet.create((theme) => ({
     flexDirection: 'column',
     alignSelf: 'stretch',
     paddingHorizontal: 16,
-    paddingBottom: 22,
+    paddingBottom: theme.transcript.messageGap,
     position: 'relative',
   },
   structuredUserMessageContent: {
@@ -2092,7 +2156,7 @@ const styles = StyleSheet.create((theme) => ({
       // and hugged by userMessageBubbleAligner below.
       alignSelf: 'stretch',
       position: 'relative',
-      paddingBottom: 22,
+      paddingBottom: theme.transcript.messageGap,
     },
     userMessageBubbleAligner: {
       // Hug + right-align the bubble within the full-width wrapper. The bubble itself stays
@@ -2102,18 +2166,8 @@ const styles = StyleSheet.create((theme) => ({
       alignSelf: 'flex-end',
       maxWidth: '100%',
     },
-    userMessageBubble: {
-      backgroundColor: theme.colors.message.user.background,
-      paddingHorizontal: 14,
-      paddingVertical: 8,
-      borderRadius: theme.borderRadius.xl,
-      maxWidth: '100%',
-    },
   userStructuredMessageWrapper: {
     maxWidth: '100%',
-  },
-  userMessageBubbleDiscarded: {
-    opacity: 0.65,
   },
   historicalMessageContainer: {
     opacity: 0.55,
@@ -2125,7 +2179,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   agentMessageContainer: {
     marginHorizontal: 16,
-    paddingBottom: 22,
+    paddingBottom: theme.transcript.messageGap,
     alignSelf: 'stretch',
     position: 'relative',
     maxWidth: '100%',
@@ -2150,7 +2204,7 @@ const styles = StyleSheet.create((theme) => ({
     paddingBottom: 0,
   },
   toolContainerFeed: {
-    paddingBottom: 22,
+    paddingBottom: theme.transcript.messageGap,
   },
   toolContainerFeedEmbedded: {
     paddingBottom: 0,

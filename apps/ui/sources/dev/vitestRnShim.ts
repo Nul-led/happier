@@ -1,8 +1,3 @@
-import { writeFileSync } from 'node:fs';
-import { createRequire } from 'node:module';
-import { dirname, isAbsolute, relative, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
-
 import expoConstantsStub from './expoConstantsStub';
 import expoModulesCoreStub from './expoModulesCoreStub';
 import * as expoNotificationsStub from './expoNotificationsStub';
@@ -11,11 +6,33 @@ import * as posthogReactNativeStub from './posthogReactNativeStub';
 import * as reactNativeRootStub from './reactNativeStub';
 import reactNativeInternalProxy from './reactNativeInternalStub';
 import reactNativeVirtualizedListsStub from './reactNativeVirtualizedListsStub';
+import { getVitestNodeBuiltin } from './vitestNodeBuiltins';
 
 type NodeModuleWithLoader = {
     _load?: (...args: unknown[]) => unknown;
     _extensions?: Record<string, (mod: { exports: unknown }, filename: string) => void>;
 };
+
+type NodeBuiltinModule = Readonly<{
+    createRequire: (filename: string | URL) => (id: string) => unknown;
+}>;
+
+type NodeBuiltinPath = Readonly<{
+    dirname: (path: string) => string;
+    isAbsolute: (path: string) => boolean;
+    relative: (from: string, to: string) => string;
+    resolve: (...paths: string[]) => string;
+}>;
+
+type NodeBuiltinUrl = Readonly<{
+    fileURLToPath: (url: string | URL) => string;
+}>;
+
+type NodeBuiltinFs = Readonly<{
+    writeFileSync: (path: string, data: string) => void;
+}>;
+
+const { dirname, isAbsolute, relative, resolve } = getVitestNodeBuiltin<NodeBuiltinPath>('node:path');
 
 export type VitestRnShimOptions = Readonly<{
     traceFile?: string | null;
@@ -23,6 +40,7 @@ export type VitestRnShimOptions = Readonly<{
 
 const SHIM_INSTALLED_KEY = '__HAPPIER_VITEST_RN_SHIM_INSTALLED__';
 const ASSET_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.ttf', '.otf']);
+const BUNDLED_PLUGIN_UI_CJS_ASSET = /^@happier-dev\/plugins-[^/]+\/happier-plugin-ui\/react-native\/[^/]+\/entry\.cjs\.bundle$/;
 const ALIAS_REQUIRE_ALLOWLIST: readonly string[] = [];
 
 function hasAssetExtension(path: string): boolean {
@@ -53,7 +71,12 @@ export function installVitestRnShim(options: VitestRnShimOptions = {}): void {
     globalState[SHIM_INSTALLED_KEY] = true;
 
     const traceFile = options.traceFile ?? process.env.VITEST_TRACE_LOAD ?? null;
-    const nodeRequire = createRequire(import.meta.url);
+    // Vitest transforms setup files in jsdom's client mode. Static `node:*` imports are replaced
+    // with browser-external shims there even though the test still runs inside Node. Resolve the
+    // genuine builtins from the host process so this shared setup works in both node and jsdom.
+    const { createRequire } = getVitestNodeBuiltin<NodeBuiltinModule>('node:module');
+    const { fileURLToPath } = getVitestNodeBuiltin<NodeBuiltinUrl>('node:url');
+    const { writeFileSync } = getVitestNodeBuiltin<NodeBuiltinFs>('node:fs');
     const sourcesDir = (() => {
         try {
             const url = new URL('..', import.meta.url);
@@ -65,6 +88,16 @@ export function installVitestRnShim(options: VitestRnShimOptions = {}): void {
         // Fall back to the UI workspace root.
         return resolve(process.cwd(), 'sources');
     })();
+    const requireBase = (() => {
+        try {
+            const url = new URL(import.meta.url);
+            if (url.protocol === 'file:') return url;
+        } catch {
+            // ignore
+        }
+        return resolve(sourcesDir, 'dev', 'vitestRnShim.ts');
+    })();
+    const nodeRequire = createRequire(requireBase);
     const Module = nodeRequire('node:module') as NodeModuleWithLoader;
     const recentLoads: string[] = [];
 
@@ -111,6 +144,11 @@ export function installVitestRnShim(options: VitestRnShimOptions = {}): void {
                     if (recentLoads.length > 250) recentLoads.shift();
                 }
 
+                // The generated app preseed uses `require()` so Metro records
+                // immutable CJS bundles as assets. Node must return the same
+                // opaque asset reference instead of executing plugin code
+                // during test-module collection.
+                if (BUNDLED_PLUGIN_UI_CJS_ASSET.test(request)) return request;
                 if (request === 'react-native') return reactNativeRootStub;
                 if (request.startsWith('react-native/')) return reactNativeInternalProxy;
                 if (request === 'expo-constants' || request.startsWith('expo-constants/')) return expoConstantsStub;

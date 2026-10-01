@@ -24,10 +24,7 @@ import {
   type ReviewCommentHostPluginAuthority,
 } from '../../../../../apps/cli/src/agent/executionRuns/profiles/review/hostActionMaterializer';
 import { createCliReviewCommentActionExecutorFromCredentials } from '../../../../../apps/cli/src/agent/reviews/comments/executor';
-import { BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS } from '../../../../../apps/cli/src/plugins/projection/registry/sources/generatedBundledPluginArtifacts';
 import { signPluginInstallationPublisherHeader } from '../../../../../apps/cli/src/plugins/installations/publisherProof';
-import { readCurrentCommittedPluginGenerations } from '../../../../../apps/cli/src/plugins/store/registry/generationStore';
-import { resolvePluginStorePaths } from '../../../../../apps/cli/src/plugins/store/paths';
 import { getSharedBlockingApprovalCoordinator } from '../../../../../apps/cli/src/session/actions/approvals/blockingApprovalCoordinator';
 import { createExecutionRunHostActionCurrentIntentAdapter } from '../../../../../apps/cli/src/session/actions/approvals/executionRunHostActionCurrentIntent';
 import { createTestAuth } from '../auth';
@@ -245,7 +242,6 @@ describe('authenticated execution-run review host action', () => {
   it('reaches the real server effect with current authority and fails closed across grant, scope, revocation, and encryption boundaries', async () => {
     const testDir = await mkdtemp(join(tmpdir(), 'happier-review-host-action-'));
     const cwd = join(testDir, 'workspace');
-    const happyHomeDir = join(testDir, 'home');
     await mkdir(join(cwd, 'src'), { recursive: true });
     await writeFile(join(cwd, 'src/example.ts'), 'export const value = 1;\n', 'utf8');
 
@@ -266,22 +262,18 @@ describe('authenticated execution-run review host action', () => {
     process.env.HAPPIER_WEBAPP_URL = server.baseUrl;
 
     try {
-      const bundledArtifact = BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS.find(
-        (artifact) => artifact.record.pluginId === PLUGIN_ID,
-      );
-      expect(bundledArtifact).toBeDefined();
+      const sourceCustody = {
+        kind: 'bundled_first_party' as const,
+        packagedRuntime: {
+          kind: 'cli_version_root' as const,
+          versionRootId: 'test-cli-version-root',
+        },
+      };
       const readCurrentPluginAuthority = async (): Promise<ReviewCommentHostPluginAuthority | null> => {
-        const current = await readCurrentCommittedPluginGenerations(resolvePluginStorePaths({ happyHomeDir }), {
-          bundledArtifacts: bundledArtifact ? [bundledArtifact] : [],
-        });
-        const generation = current?.generations.get(PLUGIN_ID);
-        if (!current || !generation || !(await current.isCurrent())) return null;
-        return {
-          immutableGenerationId: generation.immutableGenerationId,
-        };
+        return { sourceCustody };
       };
       expect(await readCurrentPluginAuthority()).toEqual({
-        immutableGenerationId: bundledArtifact?.record.immutableGenerationId,
+        sourceCustody,
       });
 
       const createMaterializer = (params: Readonly<{

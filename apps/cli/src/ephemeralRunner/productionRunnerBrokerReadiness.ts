@@ -139,7 +139,7 @@ export async function checkProductionRunnerBrokerReadiness(input: Readonly<{
         launchManifestCommitment: input.launchManifestCommitment,
         installation: {
           agentTarget: target,
-          managedInstallationId: input.preparation.pluginRuntime.selected.runtimeSpec.id,
+          agentRuntimeId: input.preparation.pluginRuntime.selected.runtimeSpec.id,
           executablePath: input.preparation.managed.resolution.command,
           authoritativeVersion: null,
         },

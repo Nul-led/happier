@@ -2,6 +2,7 @@ import { createSessionFollowActionDeps, createSessionTrackedTargetCompatibilityD
 import { createSessionReadStateActionDeps } from '@/api/sessionReadStateActionDeps';
 import { importHistoricalSessionTranscript } from '@/session/transport/http/sessionsHttp';
 import { createServerBackedSessionTranscriptStore } from '@/api/session/createServerBackedSessionTranscriptStore';
+import { fetchOpenedSessionStateFromServer } from '@/api/session/snapshotSync';
 import {
   DEFAULT_SESSION_TRANSCRIPT_FOLLOW_LEASE_IDLE_TTL_MS,
   createSessionTranscriptFollowLeaseRegistry,
@@ -11,6 +12,7 @@ import type { SessionTranscriptActionItem } from '@/api/session/sessionTranscrip
 import { createAccountServerActionDeps } from '@/api/accountServerActionDeps';
 import { resolveCurrentAccountMachineTarget } from '@/api/machine/resolveCurrentAccountMachineTarget';
 import { configuration } from '@/configuration';
+import { getDaemonMachineAdmissionTransport, MachineAdmissionTransportUnavailableError } from '@/daemon/machineAdmissionTransport';
 import { resolveCliApiTokenForSdk } from '@/auth/cliApiToken';
 import {
   normalizeServerHttpBaseUrl,
@@ -488,6 +490,8 @@ export type CliActionMachineAdmissionTransport = NonNullable<
 
 export function createCliActionExecutorFromCredentials(params: Readonly<{
   credentials: StoredCredentials;
+  /** Receives the exact dispatch boundary for Home-owned HTTP Actions. */
+  onAccountServerRequestIssued?: () => void;
   /**
    * Stored-content material this composition already holds for one exact
    * Session, for a host whose credentials carry no Account encryption material.
@@ -495,6 +499,7 @@ export function createCliActionExecutorFromCredentials(params: Readonly<{
   resolveExactSessionEncryptionMaterial?: (sessionId: string) => SessionTransportEncryptionMaterial | null;
   /** Credential-scoped canonical policy shared with pre-execution discovery. */
   actionsSettingsProvider?: RuntimeActionSettingsProvider;
+  resolvePluginNotifications?: Parameters<typeof createCliActionExecutor>[0]['resolvePluginNotifications'];
   /** Explicit CLI machine selector for public Action transport. */
   machineId?: string;
   readCredentials?: () => Promise<StoredCredentials | null>;
@@ -578,6 +583,11 @@ export function createCliActionExecutorFromCredentials(params: Readonly<{
   const fixedServerId = fixedHome.serverId ?? null;
   const fixedServerApiUrl = fixedHome.serverHttpBaseUrl ?? null;
   const approvalServerId = fixedServerId ?? configuration.activeServerId;
+  const daemonMachineAdmissionTransport = getDaemonMachineAdmissionTransport(approvalServerId);
+  if (configuration.isDaemonProcess && !daemonMachineAdmissionTransport) {
+    throw new MachineAdmissionTransportUnavailableError();
+  }
+  const machineAdmissionTransport = daemonMachineAdmissionTransport ?? params.machineAdmissionTransport;
   const approvalServerApiUrl = fixedServerApiUrl ?? configuration.apiServerUrl;
   const resolveActionServerApiUrl = (): string => fixedServerApiUrl ?? configuration.apiServerUrl;
   const runWithActionServer = <T>(run: () => T): T => fixedServerApiUrl
@@ -731,6 +741,9 @@ export function createCliActionExecutorFromCredentials(params: Readonly<{
       }),
       accountServerActionDeps: createAccountServerActionDeps({
         token: credentials.token,
+        ...(params.onAccountServerRequestIssued
+          ? { onRequestIssued: params.onAccountServerRequestIssued }
+          : {}),
         credentials,
         ...(params.readCredentials
           ? {
@@ -753,6 +766,7 @@ export function createCliActionExecutorFromCredentials(params: Readonly<{
       token: credentials.token,
       credentials,
       resolveServerFeaturesSnapshot,
+      ...(params.resolvePluginNotifications ? { resolvePluginNotifications: params.resolvePluginNotifications } : {}),
       ...(params.pluginActionExecutionOwner
         ? { pluginActionExecutionOwner: params.pluginActionExecutionOwner }
         : {}),
@@ -802,8 +816,8 @@ export function createCliActionExecutorFromCredentials(params: Readonly<{
               params.externalSessionPluginAdmissionOwner,
           }
         : {}),
-      ...(params.machineAdmissionTransport
-        ? { machineAdmissionTransport: params.machineAdmissionTransport }
+      ...(machineAdmissionTransport
+        ? { machineAdmissionTransport }
         : {}),
       ...(params.resolveComposerAttachmentSendPreparation
         ? {
@@ -812,7 +826,7 @@ export function createCliActionExecutorFromCredentials(params: Readonly<{
           }
         : {}),
       resolveTranscriptStore: async (sessionId) => {
-        const serverFeaturesSnapshot = await params.resolveServerFeaturesSnapshot?.();
+        const serverFeaturesSnapshot = await resolveServerFeaturesSnapshotForCredentials(credentials);
         const transport = await resolveSessionTransportContext({
           credentials,
           idOrPrefix: sessionId,
@@ -824,7 +838,17 @@ export function createCliActionExecutorFromCredentials(params: Readonly<{
         return createServerBackedSessionTranscriptStore({
           token: credentials.token,
           sessionId: transport.sessionId,
-          ctx: transport.ctx,
+          ...(transport.mode === 'plain' ? { mode: transport.mode, ctx: null } : { mode: transport.mode, ctx: transport.ctx }),
+          readOpenedSessionState: (versions) => fetchOpenedSessionStateFromServer({
+            token: credentials.token,
+            sessionId: transport.sessionId,
+            credentials,
+            accountEncryptionCurrentness: transport.accountEncryptionCurrentness,
+            currentMetadataLayoutVersion: transport.rawSession.metadataLayoutVersion ?? 0,
+            currentMetadataVersion: versions.sharedMetadataVersion,
+            currentAgentStateVersion: versions.agentStateVersion,
+            ...(transport.mode === 'plain' ? { mode: transport.mode, ctx: null } : { mode: transport.mode, ctx: transport.ctx }),
+          }),
         });
       },
       transcriptFollowLeaseRegistry,
@@ -897,7 +921,7 @@ export function createCliActionExecutorFromCredentials(params: Readonly<{
           !params.actionsSettingsProvider
           && !context?.externalActionExecutionAuthorization
         ) {
-          await ensureCliActionPolicySettings(credentials);
+          await ensureCliActionPolicySettings(credentials, resolveActionServerApiUrl());
         }
         return await executor.prepare(actionId, input, context);
       },
@@ -949,7 +973,7 @@ export function createCliActionExecutorFromCredentials(params: Readonly<{
           !params.actionsSettingsProvider
           && !context?.externalActionExecutionAuthorization
         ) {
-          await ensureCliActionPolicySettings(credentials);
+          await ensureCliActionPolicySettings(credentials, resolveActionServerApiUrl());
         }
         return await executor.execute(actionId, input, context);
       },
@@ -986,7 +1010,7 @@ export function createCliActionExecutorFromCredentials(params: Readonly<{
           allowConfiguredMachineTarget: fixedServerId === null,
         });
       }
-      const serverFeaturesSnapshot = await params.resolveServerFeaturesSnapshot?.();
+      const serverFeaturesSnapshot = await resolveServerFeaturesSnapshotForCredentials(credentials);
       const resolved = await resolveSessionTransportContext({
         credentials,
         idOrPrefix,

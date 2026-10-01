@@ -80,7 +80,7 @@ describe('serverReachabilitySupervisorPool (invalidate)', () => {
 
             unsubscribeB();
             await stopServerReachabilitySupervisor(serverUrl);
-            expect(peekServerReachabilityState(serverUrl)?.phase).toBe('shutting_down');
+            expect(peekServerReachabilityState(serverUrl)).toBeNull();
         } finally {
             unsubscribeA();
             unsubscribeB();

@@ -17,7 +17,7 @@ import { usePetCompanionActivityState } from '@/components/pets/state/usePetComp
 import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
 import { createDefaultActionExecutor } from '@/sync/ops/actions/defaultActionExecutor';
 import { resolveServerIdForSessionIdFromLocalCache } from '@/sync/runtime/orchestration/serverScopedRpc/resolveServerIdForSessionIdFromLocalCache';
-import { useLocalSettings, useSettings } from '@/sync/domains/state/storage';
+import { useLocalSetting, useSetting } from '@/sync/domains/state/storage';
 import { fireAndForget } from '@/utils/system/fireAndForget';
 import { isDesktopHost } from '@/utils/platform/desktopHost';
 
@@ -88,14 +88,37 @@ export function DesktopPetOverlayRuntimeMount(): React.ReactElement | null {
 }
 
 function TauriDesktopPetOverlayRuntimeMount(): React.ReactElement | null {
-    const settings = useSettings();
-    const localSettings = useLocalSettings();
+    const petsEnabled = useSetting('petsEnabled');
+    const petsDesktopOverlayDefaultEnabled = useSetting('petsDesktopOverlayDefaultEnabled');
+    const petsDesktopOverlayDefaultVisibilityMode = useSetting('petsDesktopOverlayDefaultVisibilityMode');
+    const petsEnabledOverride = useLocalSetting('petsEnabledOverride');
+    const desktopPetOverlayEnabledOverride = useLocalSetting('desktopPetOverlayEnabledOverride');
+    const desktopPetOverlayVisibilityModeOverride = useLocalSetting('desktopPetOverlayVisibilityModeOverride');
+    const desktopPetOverlayAnchor = useLocalSetting('desktopPetOverlayAnchor');
+    const desktopPetOverlayLocked = useLocalSetting('desktopPetOverlayLocked');
+    const petsCompanionSizeScale = useLocalSetting('petsCompanionSizeScale');
     const companionEnabled = useFeatureEnabled('pets.companion');
     const policy = React.useMemo(() => resolveDesktopPetOverlayPolicy({
         companionFeatureState: companionEnabled ? 'enabled' : 'disabled',
-        accountSettings: settings,
-        localSettings,
-    }), [companionEnabled, localSettings, settings]);
+        accountSettings: { petsEnabled, petsDesktopOverlayDefaultEnabled, petsDesktopOverlayDefaultVisibilityMode },
+        localSettings: {
+            petsEnabledOverride,
+            desktopPetOverlayEnabledOverride,
+            desktopPetOverlayVisibilityModeOverride,
+            desktopPetOverlayAnchor,
+            desktopPetOverlayLocked,
+        },
+    }), [
+        companionEnabled,
+        petsEnabled,
+        petsDesktopOverlayDefaultEnabled,
+        petsDesktopOverlayDefaultVisibilityMode,
+        petsEnabledOverride,
+        desktopPetOverlayEnabledOverride,
+        desktopPetOverlayVisibilityModeOverride,
+        desktopPetOverlayAnchor,
+        desktopPetOverlayLocked,
+    ]);
     if (!policy.enabled) {
         return null;
     }
@@ -103,17 +126,17 @@ function TauriDesktopPetOverlayRuntimeMount(): React.ReactElement | null {
     return (
         <TauriDesktopPetOverlayRuntime
             policy={policy}
-            localSettings={localSettings}
+            companionSizeScale={petsCompanionSizeScale}
         />
     );
 }
 
 function TauriDesktopPetOverlayRuntime({
     policy,
-    localSettings,
+    companionSizeScale,
 }: Readonly<{
     policy: ReturnType<typeof resolveDesktopPetOverlayPolicy>;
-    localSettings: ReturnType<typeof useLocalSettings>;
+    companionSizeScale: number;
 }>): React.ReactElement {
     const activity = usePetCompanionActivityState();
     useDesktopPetOverlayMainWindowRequests();
@@ -125,8 +148,8 @@ function TauriDesktopPetOverlayRuntime({
         && !policy.inputLocked
         && activity.trayItems.length > 0;
     const geometry = React.useMemo(
-        () => resolveDesktopPetOverlayGeometry(localSettings.petsCompanionSizeScale),
-        [localSettings.petsCompanionSizeScale],
+        () => resolveDesktopPetOverlayGeometry(companionSizeScale),
+        [companionSizeScale],
     );
     const window = expanded
         ? {

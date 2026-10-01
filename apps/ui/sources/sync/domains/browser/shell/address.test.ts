@@ -27,15 +27,12 @@ describe('browser address normalization', () => {
         });
     });
 
-    it('fails closed for search terms when no search template is configured', async () => {
-        const mod = await import('./address').catch(() => null);
-
-        expect(mod).not.toBeNull();
-        if (!mod) return;
+    it('searches with the default engine when the host configures none, so a typed query never dead-ends (H-UX F-16)', async () => {
+        const mod = await import('./address');
 
         expect(mod.normalizeBrowserAddressInput('find happier docs')).toEqual({
-            ok: false,
-            reasonCode: 'search_unconfigured',
+            ok: true,
+            url: 'https://duckduckgo.com/?q=find%20happier%20docs',
         });
     });
 });

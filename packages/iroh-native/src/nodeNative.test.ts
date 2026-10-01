@@ -326,6 +326,22 @@ describe('typed operations over the C ABI JSON envelope', () => {
     await expect(module.getEndpointStatus('missing')).resolves.toBeNull();
   });
 
+  it('rejects a guest HTTP lease that discloses the native capability', async () => {
+    const addon = createFakeAddon((operation) => operation === 'startMachineTunnel'
+      ? JSON.stringify({ ok: true, result: {
+          machineTunnelId: 'guest-1', endpointHandle: 'e-1', localPort: 45123,
+          localCapability: 'a'.repeat(64), connectionActive: true,
+          remoteEndpointId: 'peer', observedPath: 'direct', startedAtMs: 99, lastErrorCode: null,
+        } })
+      : okNull);
+    const request = {
+      endpointHandle: 'e-1', endpointId: 'peer', handshakeJson: '{}',
+      nativeHttpLease: { openJson: '{}' },
+    };
+    await expect(createIrohNodeNativeModule(addon).startMachineTunnel(request))
+      .rejects.toThrowError(/capability/i);
+  });
+
   it('validates the machine tunnel started result including the normalized remote endpoint', async () => {
     const addon = createFakeAddon((operation, request) => {
       if (operation !== 'startMachineTunnel') return okNull;

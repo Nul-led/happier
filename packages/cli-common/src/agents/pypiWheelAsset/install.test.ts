@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
-import { access, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -99,6 +99,80 @@ describe('installPypiWheelAsset', () => {
     vi.restoreAllMocks();
     await Promise.all([...tempDirs].map((dir) => rm(dir, { recursive: true, force: true })));
     tempDirs.clear();
+  });
+
+  it('reports actual wheel bytes and cancels before extraction without keeping a candidate', async () => {
+    const wheelBytes = createZip([{ name: 'google/antigravity/bin/localharness', data: 'candidate' }]);
+    const installRoot = await createInstallRoot();
+    const controller = new AbortController();
+    const reason = new Error('cancelled');
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(wheelBytes, {
+      headers: { 'content-length': String(wheelBytes.length) },
+    }));
+    const progress: Array<{ t: string; bytesDone?: number; bytesTotal?: number | null }> = [];
+
+    await expect(installPypiWheelAsset({
+      installRoot,
+      distribution: 'google-antigravity',
+      versionSpecifier: '>=0.1.3,<0.2.0',
+      assetPathByPlatform,
+      executable: true,
+      platform: 'darwin-arm64',
+      index: indexFor(wheelBytes),
+      signal: controller.signal,
+      onProgress: (event) => {
+        progress.push(event);
+        if (event.t === 'progress' && event.bytesDone > 0) controller.abort(reason);
+      },
+    })).rejects.toBe(reason);
+
+    expect(progress).toContainEqual({ t: 'progress', bytesDone: wheelBytes.length, bytesTotal: wheelBytes.length });
+    expect(await readdir(installRoot)).toEqual([]);
+  });
+
+  it('preserves the wheel size failure when cancellation arrives during transport cleanup', async () => {
+    const wheelBytes = createZip([{ name: 'google/antigravity/bin/localharness', data: 'candidate' }]);
+    const installRoot = await createInstallRoot();
+    const controller = new AbortController();
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(new ReadableStream<Uint8Array>({
+      start(stream) { stream.enqueue(wheelBytes); },
+      cancel() { controller.abort(new Error('cancelled concurrently')); },
+    })));
+    await expect(installPypiWheelAsset({
+      installRoot, distribution: 'google-antigravity', versionSpecifier: '>=0.1.3,<0.2.0', assetPathByPlatform,
+      executable: true, platform: 'darwin-arm64', index: indexFor(wheelBytes, sha256(wheelBytes), null),
+      signal: controller.signal, maxWheelSizeBytes: wheelBytes.length - 1,
+    })).rejects.toMatchObject({ code: 'wheel_size_exceeded' });
+    expect(controller.signal.aborted).toBe(true);
+    expect(await readdir(installRoot)).toEqual([]);
+  });
+
+  it('keeps the previous current pointer when cancelled during the compatibility probe', async () => {
+    const wheelBytes = createZip([{ name: 'google/antigravity/bin/localharness', data: 'candidate' }]);
+    const installRoot = await createInstallRoot();
+    const controller = new AbortController();
+    const reason = new Error('cancelled');
+    await mkdir(installRoot, { recursive: true });
+    await writeFile(join(installRoot, 'current.json'), 'previous pointer');
+
+    await expect(installPypiWheelAsset({
+      installRoot,
+      distribution: 'google-antigravity',
+      versionSpecifier: '>=0.1.3,<0.2.0',
+      assetPathByPlatform,
+      executable: true,
+      platform: 'darwin-arm64',
+      compatibilityProbe: 'antigravity-localharness-v1',
+      index: indexFor(wheelBytes),
+      fetchWheel: async () => wheelBytes,
+      signal: controller.signal,
+      probeExecutable: async () => {
+        controller.abort(reason);
+        return { ok: true };
+      },
+    })).rejects.toBe(reason);
+    await expect(readFile(join(installRoot, 'current.json'), 'utf8')).resolves.toBe('previous pointer');
+    expect((await readdir(installRoot)).filter((name) => name.startsWith('.'))).toEqual([]);
   });
 
   it('verifies the PyPI sha256 digest before extraction and fails without promotion on mismatch', async () => {

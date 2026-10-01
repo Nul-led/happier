@@ -141,9 +141,8 @@ describe('SessionFollowSourcesEditor', () => {
             expect(findSourceRow(screen, 'source-a')?.props.subtitle)
                 .toBe('session.follow.sources.waitingRuntime');
         });
-        const row = findSourceRow(screen, 'source-a');
         expect(screen.getTextContent()).toContain('common.retry');
-        await act(async () => { row?.props.onPress?.(); await Promise.resolve(); });
+        await act(async () => { screen.findByTestId('session-follow-source-source-a-retry')?.props.onPress?.(); await Promise.resolve(); });
         expect(preparation.run).toHaveBeenCalledTimes(2);
 
         api.remove.mockResolvedValueOnce({ kind: 'ok', value: { changed: true } });
@@ -492,10 +491,19 @@ describe('SessionFollowSourcesEditor', () => {
             serverId="home-a"
             destinationMachineId="runner-a"
         />);
-        await vi.waitFor(() => expect(findSourceRow(screen, 'source-a')?.props.detail)
-            .toBe('session.follow.sources.wakeOnHumanChange'));
+        await vi.waitFor(() => expect(findSourceRow(screen, 'source-a')).not.toBeNull());
         await act(async () => {
             findSourceRow(screen, 'source-a')?.props.onPress?.();
+            await Promise.resolve();
+        });
+        expect(api.set).not.toHaveBeenCalled();
+        expect(screen.findByTestId('session-follow-source-source-a')?.props.accessibilityState).toMatchObject({ expanded: true });
+        expect(screen.findByTestId('session-follow-source-source-a-mode-next_turn')?.props['aria-checked']).toBe(true);
+        expect(screen.findByTestId('session-follow-source-source-a-mode-wake_on_human_change')?.props['aria-checked']).toBe(false);
+        expect(screen.findByTestId('session-follow-source-source-a-mode-next_turn')?.props.accessibilityState).toMatchObject({ checked: true });
+        expect(screen.findByTestId('session-follow-source-source-a-mode-wake_on_human_change')?.props.accessibilityState).toMatchObject({ checked: false });
+        await act(async () => {
+            screen.findByTestId('session-follow-source-source-a-mode-wake_on_human_change')?.props.onPress?.();
             await Promise.resolve();
         });
         expect(api.set).toHaveBeenCalledWith({
@@ -671,6 +679,10 @@ describe('SessionFollowSourcesEditor', () => {
             findSourceRow(screen, 'source-b')?.props.onPress?.();
             await Promise.resolve();
         });
+        await act(async () => {
+            screen.findByTestId('session-follow-source-source-b-mode-wake_on_human_change')?.props.onPress?.();
+            await Promise.resolve();
+        });
         expect(api.set).toHaveBeenCalledWith({
             serverId: 'home-b',
             destinationSessionId: 'destination-b',
@@ -742,10 +754,13 @@ describe('SessionFollowSourcesEditor', () => {
             serverId="home-a"
             destinationMachineId="runner-a"
         />);
-        await vi.waitFor(() => expect(findSourceRow(screen, 'source-a')?.props.detail)
-            .toBe('session.follow.sources.wakeOnHumanChange'));
+        await vi.waitFor(() => expect(findSourceRow(screen, 'source-a')).not.toBeNull());
         await act(async () => {
             findSourceRow(screen, 'source-a')?.props.onPress?.();
+            await Promise.resolve();
+        });
+        await act(async () => {
+            screen.findByTestId('session-follow-source-source-a-mode-wake_on_human_change')?.props.onPress?.();
             await Promise.resolve();
         });
 

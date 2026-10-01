@@ -122,6 +122,25 @@ function isRetryableCopyError(err: unknown): boolean {
   );
 }
 
+/**
+ * Public SDK API-governance records that are generated on demand and never
+ * committed (W3 ruling c, 2026-09-24). The npm tarball receives them from the
+ * package's `prepack`; runtime bundles neither copy nor declare them, and the
+ * binary artifact finalizer strips them. This is the one list both consult.
+ * `capability-matrix.json` and `API.md` are committed runtime/author assets and
+ * are deliberately absent.
+ */
+export const PUBLIC_SDK_GENERATED_GOVERNANCE_RECORDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
+  '@happier-dev/plugin-sdk': Object.freeze(['api-declarations.md', 'api-surface.json']),
+  '@happier-dev/plugin-ui': Object.freeze(['api-declarations.md', 'api-surface.json']),
+  '@happier-dev/sdk': Object.freeze(['api-declarations.md', 'api-surface.json']),
+});
+
+export function isPublicSdkGeneratedGovernanceRecord(packageName: unknown, relativePath: string): boolean {
+  if (typeof packageName !== 'string') return false;
+  return PUBLIC_SDK_GENERATED_GOVERNANCE_RECORDS[packageName]?.includes(relativePath) === true;
+}
+
 export function sanitizeBundledPackageJson(raw: any): any {
   const {
     name,
@@ -621,7 +640,10 @@ function collectWorkspacePackageDeclaredFileEntries(rawPackageJson: any): string
     ) {
       throw new Error(`Bundled workspace package file must be an exact relative path: '${entry}'`);
     }
-    return entry !== 'package.json' && entry !== 'dist' && !entry.startsWith('dist/');
+    return entry !== 'package.json'
+      && entry !== 'dist'
+      && !entry.startsWith('dist/')
+      && !isPublicSdkGeneratedGovernanceRecord(rawPackageJson.name, entry);
   });
 }
 
@@ -633,7 +655,9 @@ function collectPrepublicationAuthoringFileEntries(rawPackageJson: any): string[
   // than its copy-only subset) because npm still needs dist/package.json entries
   // when this flattened package is later materialized for external authors.
   collectWorkspacePackageDeclaredFileEntries(rawPackageJson);
-  return [...new Set(rawPackageJson.files as string[])];
+  return [...new Set(rawPackageJson.files as string[])].filter((entry) => (
+    !isPublicSdkGeneratedGovernanceRecord(rawPackageJson.name, entry)
+  ));
 }
 
 function copyBundledWorkspacePackageContents(params: Readonly<{
@@ -775,6 +799,10 @@ export function bundleWorkspacePackagesWithRuntimeDependencies(params: Readonly<
     includeFiles?: string[];
     resolveFromPackageJsonPath?: string;
     dereferenceRootDir?: string;
+    validatePreparedPackage?: (context: Readonly<{
+      packageName: string;
+      packageDir: string;
+    }>) => void;
   }>;
 }>): void {
   const publicationMode = params.publicationMode ?? 'live';

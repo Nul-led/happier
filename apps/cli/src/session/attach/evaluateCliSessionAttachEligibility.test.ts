@@ -729,6 +729,29 @@ describe('evaluateCliSessionAttachEligibility', () => {
     });
   });
 
+  it('attaches an owned local terminal without requiring the plugin runtime catalog', async () => {
+    const rawSession = createSessionRecordFixture({
+      id: 'sid_local_herdr_1', active: true, encryptionMode: 'plain',
+      metadata: JSON.stringify({ machineId: 'machine-local', flavor: 'claude', path: '/tmp/project' }),
+    });
+    const terminal = {
+      mode: 'herdr' as const, requested: 'herdr' as const,
+      herdr: { sessionName: 'main', socketPath: '/tmp/herdr.sock', terminalId: 'term-1' },
+    };
+    const resolveExecutionSurfaces = vi.fn(async () => { throw new Error('plugin runtime unavailable'); });
+
+    await expect(evaluateCliSessionAttachEligibility({
+      credentials,
+      rawSession,
+      accountEncryptionMode: 'plain',
+      currentMachineId: 'machine-local',
+      localAttachmentInfo: { version: 1, sessionId: rawSession.id, terminal, updatedAt: Date.now() },
+      insideTmux: false,
+      resolveExecutionSurfaces,
+    })).resolves.toMatchObject({ eligible: true, attachStrategy: 'terminal_host', terminal });
+    expect(resolveExecutionSurfaces).not.toHaveBeenCalled();
+  });
+
   it('accepts same-machine OpenCode sessions when the managed server state provides the local server URL', async () => {
     const stateDir = await mkdtemp(join(tmpdir(), 'happier-opencode-attach-'));
     process.env.HAPPIER_OPENCODE_SERVER_STATE_PATH = join(stateDir, 'managed-server.json');
@@ -766,7 +789,7 @@ describe('evaluateCliSessionAttachEligibility', () => {
     });
   });
 
-  it('treats a local attachment marker as authoritative local ownership for OpenCode provider attach', async () => {
+  it('attaches the existing local terminal for an OpenCode session instead of starting another provider TUI', async () => {
     const stateDir = await mkdtemp(join(tmpdir(), 'happier-opencode-attach-local-marker-'));
     process.env.HAPPIER_OPENCODE_SERVER_STATE_PATH = join(stateDir, 'managed-server.json');
     await writeFile(process.env.HAPPIER_OPENCODE_SERVER_STATE_PATH, JSON.stringify({
@@ -806,7 +829,7 @@ describe('evaluateCliSessionAttachEligibility', () => {
       insideTmux: false,
     })).resolves.toMatchObject({
       eligible: true,
-      attachStrategy: 'provider_attach',
+      attachStrategy: 'terminal_host',
       agentId: 'opencode',
       attachScope: 'local',
     });

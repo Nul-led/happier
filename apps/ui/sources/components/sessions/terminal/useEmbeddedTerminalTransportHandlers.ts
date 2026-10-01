@@ -19,17 +19,20 @@ function normalizeTerminalSize(cols: number, rows: number): TerminalSize | null 
 
 export function useEmbeddedTerminalTransportHandlers(params: Readonly<{
     machineId: string | null;
+    readOnly?: boolean;
     terminalIdRef: React.MutableRefObject<string | null>;
     terminalStreamCarrierRef: React.MutableRefObject<TerminalStreamCarrier | null>;
     onInputError?: (error: unknown) => void;
 }>) {
+    const readOnlyRef = React.useRef(params.readOnly === true);
+    readOnlyRef.current = params.readOnly === true;
     const [initialTerminalSize, setInitialTerminalSize] = React.useState<TerminalSize | null>(null);
     const latestTerminalSizeRef = React.useRef<TerminalSize | null>(null);
 
     const pendingInputRef = React.useRef('');
     const inputFlushTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
     const sendInputEvent = React.useCallback((event: TerminalInputEvent) => {
-        if (!params.machineId) {
+        if (readOnlyRef.current || !params.machineId) {
             return;
         }
 
@@ -48,6 +51,10 @@ export function useEmbeddedTerminalTransportHandlers(params: Readonly<{
     }, [params.machineId, params.onInputError, params.terminalIdRef, params.terminalStreamCarrierRef]);
 
     const flushPendingInput = React.useCallback(() => {
+        if (readOnlyRef.current) {
+            pendingInputRef.current = '';
+            return;
+        }
         if (!params.machineId || !params.terminalIdRef.current || !params.terminalStreamCarrierRef.current) {
             return;
         }
@@ -67,7 +74,7 @@ export function useEmbeddedTerminalTransportHandlers(params: Readonly<{
     }, [flushPendingInput]);
 
     const onInput = React.useCallback((data: string) => {
-        if (!data) return;
+        if (readOnlyRef.current || !data) return;
         pendingInputRef.current += data;
 
         if (inputFlushTimeoutRef.current !== null) {
@@ -81,6 +88,7 @@ export function useEmbeddedTerminalTransportHandlers(params: Readonly<{
     }, [flushPendingInput]);
 
     const onPaste = React.useCallback(async (text: string): Promise<TerminalPasteAction> => {
+        if (readOnlyRef.current) return { kind: 'ignore', reason: 'read_only' };
         const action = resolveTerminalPasteAction(text);
         if (action.kind === 'send') {
             sendInputEvent({ t: 'paste', text: action.input, bracketed: action.bracketed });
@@ -121,6 +129,7 @@ export function useEmbeddedTerminalTransportHandlers(params: Readonly<{
         if (!nextSize) return;
         latestTerminalSizeRef.current = nextSize;
         setInitialTerminalSize((current) => current ?? nextSize);
+        if (readOnlyRef.current) return;
         pendingResizeRef.current = nextSize;
 
         if (!params.machineId) {
@@ -135,6 +144,7 @@ export function useEmbeddedTerminalTransportHandlers(params: Readonly<{
         safeTimeoutClear(resizeDebounceTimeoutRef.current);
         resizeDebounceTimeoutRef.current = safeTimeoutSet(() => {
             resizeDebounceTimeoutRef.current = null;
+            if (readOnlyRef.current) return;
             const pending = pendingResizeRef.current;
             if (!pending) return;
             const carrier = params.terminalStreamCarrierRef.current;

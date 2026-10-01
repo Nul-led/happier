@@ -25,13 +25,17 @@
  * `@happier-dev/iroh-native` Node addon through its production loader; no
  * native, server, or daemon internal is injected or mocked. The parent test
  * process alone loads the stable `test-relay-fixture` addon through the
- * canonical Iroh test controller and starts one stock plain-HTTP test relay
- * for the whole journey. That relay's ordinary URL is the only relay fact the
+ * canonical Iroh test controller and selects one test relay for the journey:
+ * an in-process fixture in the native lane, or the external stock Docker
+ * relay in the Docker lane. That relay's ordinary URL is the only relay fact the
  * production children receive — through the real `HAPPIER_IROH_RELAY_POLICY=automatic`
  * + `HAPPIER_IROH_RELAY_URLS` configuration — so the restarted Home publishes
- * a fresh descriptor with a stable relay set and the still-running daemon
- * reacquires it over a transport path that survives the Home process restart
- * even though its persisted direct-address hints went stale. The fixture
+ * a fresh descriptor with a stable relay set, allowing the still-running
+ * daemon to reacquire Iroh after the Home process restart even when its
+ * persisted direct-address hints are stale. The daemon uses automatic policy;
+ * this test does not assert whether its final path is direct or relayed. The
+ * separate finite-transfer assertions below force and observe stock-relay
+ * carriage. The fixture
  * addon path never reaches a production child, and forced-direct coverage
  * stays owned by the lower-level fixture.
  *
@@ -45,29 +49,48 @@
  * The suite is inert unless the canonical Iroh real-integration runner
  * (`packages/iroh-native` `test:home-iroh:real`) selects it.
  */
-import { randomUUID } from 'node:crypto';
-import { mkdir, readFile } from 'node:fs/promises';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
+import { mkdir, mkdtemp, readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
 
+import tweetnacl from 'tweetnacl';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
+  createDirectRouteGrantSigningInputV2,
+  createEphemeralPeerRouteProofHandleV2,
+  DIRECT_ROUTE_GRANT_TTL_MS,
+  FeaturesResponseSchema,
+  IrohMachineHandshakeV1Schema,
   readMachineIrohEndpointAuthorityV1,
+  SignedDirectRouteGrantV2Schema,
   type HomeConnectionDescriptorV1,
 } from '@happier-dev/protocol';
 import {
   createIrohTestControllerFromNativeAddon,
   type IrohTestController,
 } from '@happier-dev/iroh-native/test-controller';
+import { loadIrohNodeNativeAddon } from '@happier-dev/iroh-native/node';
+import { createIrohNodeNativeModule } from '@happier-dev/iroh-native/node';
+
+import {
+  TokenStorage,
+  uploadBulkPayloadFromFileViaDirectImport,
+  upsertAndActivateServer,
+} from '@happier-tests/ui-machine-carrier';
 
 import { createTestAuth, type TestAuth } from '../../src/testkit/auth';
-import { seedCliAuthForTestAccount } from '../../src/testkit/cliAuth';
+import { buildTestAccountCliAuthCredentials, seedCliAuthForTestAccount } from '../../src/testkit/cliAuth';
 import { startTestDaemon, type StartedDaemon } from '../../src/testkit/daemon/daemon';
 import { fetchJson } from '../../src/testkit/http';
-import { ensureProductionIrohNodeAddon } from '../../src/testkit/iroh/productionIrohNodeAddon';
+import {
+  ensureProductionIrohNodeAddon,
+  stageProductionIrohNodeAddonForConsumer,
+} from '../../src/testkit/iroh/productionIrohNodeAddon';
 import {
   fetchMachineIdentities,
   type MachineIdentityRow,
@@ -78,6 +101,7 @@ import { isProcessAlive } from '../../src/testkit/process/processTree';
 import { createRunDirs } from '../../src/testkit/runDir';
 import { repoRootDir } from '../../src/testkit/paths';
 import { createUserScopedSocketCollector, type SocketCollector } from '../../src/testkit/socketClient';
+import { waitFor } from '../../src/testkit/timing';
 import { waitForRegexInFile } from '../../src/testkit/waitForRegexInFile';
 
 const run = createRunDirs({ runLabel: 'core' });
@@ -141,6 +165,25 @@ function readIrohEndpoint(descriptor: HomeConnectionDescriptorV1 | undefined): I
   return (entry as IrohEndpointEntry | undefined) ?? null;
 }
 
+function assertFreshProductionIrohAddonLoad(cwd: string, expectedAddonPath: string): void {
+  const probe = spawnSync(process.execPath, [
+    '--input-type=module',
+    '--eval',
+    `import { loadIrohNodeNative } from '@happier-dev/iroh-native/node';
+     const loaded = loadIrohNodeNative();
+     if (!loaded.available) {
+       console.error(JSON.stringify({ reason: loaded.reason, addonPath: loaded.addonPath, message: loaded.message }));
+       process.exitCode = 1;
+     } else {
+       console.log(loaded.addonPath);
+     }`,
+  ], { cwd, encoding: 'utf8' });
+  if (probe.status !== 0 || probe.stdout.trim() !== expectedAddonPath) {
+    throw new Error(`Fresh production Iroh loader failed before child spawn (expected=${expectedAddonPath}; status=${probe.status}; stdout=${probe.stdout.trim()}; stderr=${probe.stderr.trim()}; error=${probe.error?.message ?? 'none'})`);
+  }
+  process.stdout.write(`Composed production child pre-spawn Iroh addon loaded: ${probe.stdout.trim()}\n`);
+}
+
 /**
  * Starts the real `startServer('light')` process as a managed Personal Home
  * and returns only after that process has passed its own Iroh composition
@@ -158,19 +201,35 @@ async function startPersonalHome(params: Readonly<{
   reuseExistingDataDir: boolean;
   relayUrl: string;
 }>): Promise<StartedServer> {
-  // Executor mirrors drop the ignored ordinary addon at arbitrary points, so
-  // custody is re-established at the narrowest possible point: immediately
-  // before this production child spawns.
-  await ensureProductionIrohNodeAddon({ testDir: params.testDir });
   const started = await startServerLight({
     testDir: params.testDir,
     dbProvider: 'sqlite',
     port: params.port,
     ...(params.reuseExistingDataDir ? { dataDirMode: 'reuse-existing' as const } : {}),
+    // Server setup creates providers, migrates, and prepares a data directory.
+    // The remote mirror can remove ignored native output during that work, so
+    // rebuild at the testkit's actual production-child spawn boundary.
+    __beforeSpawnAttempt: async () => {
+      const { addonPath } = await ensureProductionIrohNodeAddon({ testDir: params.testDir });
+      loadIrohNodeNativeAddon(addonPath);
+      const serverDir = resolve(repoRootDir(), 'apps/server');
+      const stagedAddonPath = stageProductionIrohNodeAddonForConsumer({
+        sourceAddonPath: addonPath,
+        consumerDir: serverDir,
+      });
+      assertFreshProductionIrohAddonLoad(serverDir, stagedAddonPath);
+    },
     extraEnv: {
       // The managed Personal Home runtime spec: loopback-only, canonical
       // audience equal to the bound loopback origin, no public ingress.
       HAPPIER_MANAGED_RELAY_PURPOSE: 'personal-home',
+      HANDY_MASTER_SECRET: undefined,
+      // Exercise the signer derived by the fresh Home from its persisted
+      // master secret, even if the parent has operator keys.
+      HAPPIER_PEER_MEDIATION_ROUTE_GRANT_SIGNING_KEY_ID: undefined,
+      HAPPIER_PEER_MEDIATION_ROUTE_GRANT_SIGNING_PRIVATE_KEY: undefined,
+      HAPPIER_PEER_MEDIATION_ROUTE_GRANT_SIGNING_PUBLIC_KEY: undefined,
+      HAPPIER_PEER_MEDIATION_ROUTE_GRANT_SIGNING_EXPIRES_AT: undefined,
       HAPPIER_CANONICAL_SERVER_URL: params.canonicalServerUrl,
       AUTH_ANONYMOUS_SIGNUP_ENABLED: params.anonymousSignupEnabled ? 'true' : '0',
       // Ordinary automatic relay configuration pointing at the one stock
@@ -207,10 +266,21 @@ async function startComposedDaemon(params: Readonly<{
   happyHomeDir: string;
   env: NodeJS.ProcessEnv;
 }>): Promise<StartedDaemon> {
-  await ensureProductionIrohNodeAddon({ testDir: params.testDir });
   const rootDir = repoRootDir();
   return await startTestDaemon({
     ...params,
+    // Daemon launch setup can outlive an ignored native artifact in the
+    // synchronized mirror; establish custody at the actual child spawn.
+    __beforeSpawn: async () => {
+      const { addonPath } = await ensureProductionIrohNodeAddon({ testDir: params.testDir });
+      loadIrohNodeNativeAddon(addonPath);
+      const cliDir = resolve(repoRootDir(), 'apps/cli');
+      const stagedAddonPath = stageProductionIrohNodeAddonForConsumer({
+        sourceAddonPath: addonPath,
+        consumerDir: cliDir,
+      });
+      assertFreshProductionIrohAddonLoad(cliDir, stagedAddonPath);
+    },
     // This is a moving-source integration journey, not a packaged-CLI or
     // source-snapshot certification lane. Launch the real CLI command surface
     // directly from the synchronized workspace so this moving-source journey
@@ -239,7 +309,6 @@ async function waitForMachineActive(params: Readonly<{
   baseUrl: string;
   token: string;
   timeoutMs: number;
-  minimumIrohAuthorityRevisionExclusive?: number;
 }>): Promise<MachineIdentityRow> {
   const deadline = Date.now() + params.timeoutMs;
   let lastSeen = 'none';
@@ -251,14 +320,7 @@ async function waitForMachineActive(params: Readonly<{
       capabilities: active?.operationProtocolCapabilities,
       revision: active?.operationProtocolCapabilitiesRevision,
     });
-    if (
-      active
-      && activeIrohAuthority
-      && (
-        params.minimumIrohAuthorityRevisionExclusive === undefined
-        || activeIrohAuthority.revision > params.minimumIrohAuthorityRevisionExclusive
-      )
-    ) return active;
+    if (active && activeIrohAuthority) return active;
     lastSeen = machines.length === 0
       ? 'no machines registered'
       : machines.map((machine) => {
@@ -319,11 +381,12 @@ async function waitForPersistedProfileHomeConnectionDescriptor(params: Readonly<
  * account-scoped socket collector. Counting events instead of comparing
  * timestamps keeps the post-restart oracle independent of wall-clock jumps.
  */
-function countMachineActivityEvents(collector: SocketCollector, machineId: string): number {
+function countMachineOnlineEvents(collector: SocketCollector, machineId: string): number {
   return collector.getEvents().filter((event) =>
     event.kind === 'ephemeral'
     && event.payload.type === 'machine-activity'
-    && event.payload.id === machineId).length;
+    && event.payload.id === machineId
+    && event.payload.active === true).length;
 }
 
 async function readDaemonLog(daemon: StartedDaemon, testDir: string): Promise<string> {
@@ -341,9 +404,31 @@ describe.skipIf(!shouldRunComposedHomeIrohJourney)('core e2e: composed Personal 
   let daemon: StartedDaemon | null = null;
   let accountSocket: SocketCollector | null = null;
   let relayController: IrohTestController | null = null;
+  let transferUiProfile: Readonly<{ serverId: string; serverUrl: string }> | null = null;
+  let transferEndpoint: Readonly<{
+    native: ReturnType<typeof createIrohNodeNativeModule>;
+    endpointHandle: string;
+    tunnelId: string | null;
+  }> | null = null;
 
   afterEach(async () => {
     try {
+      if (transferUiProfile) {
+        await TokenStorage.removeCredentialsForServerUrl(transferUiProfile.serverUrl, {
+          serverId: transferUiProfile.serverId,
+        }).catch(() => undefined);
+      }
+      transferUiProfile = null;
+      if (transferEndpoint) {
+        if (transferEndpoint.tunnelId) {
+          await transferEndpoint.native.stopMachineTunnel(transferEndpoint.tunnelId)
+            .catch(() => undefined);
+        }
+        await transferEndpoint.native.shutdownEndpoint({
+          endpointHandle: transferEndpoint.endpointHandle,
+        }).catch(() => undefined);
+        transferEndpoint = null;
+      }
       accountSocket?.close();
       accountSocket = null;
       await daemon?.stop().catch(() => {});
@@ -364,12 +449,12 @@ describe.skipIf(!shouldRunComposedHomeIrohJourney)('core e2e: composed Personal 
     const port = await reserveAvailablePort();
     const canonicalServerUrl = `http://127.0.0.1:${port}`;
 
-    // One stable stock test relay for the whole journey, started once in this
+    // One stable test relay for the whole journey, selected once in this
     // parent process through the canonical Iroh test controller. Both the
-    // first Home process and its restart publish against it, and the daemon
-    // reacquires the Home through it after its direct hints went stale.
+    // first Home process and its restart publish its URL, so the daemon has
+    // relay reachability when it reacquires Iroh under automatic policy.
     relayController = requireIrohTestRelayController();
-    await relayController.forceRelayOnly();
+    await relayController.forceRelayOnly(process.env.HAPPIER_TEST_IROH_EXTERNAL_RELAY_URL);
     const testRelayUrl = relayController.getTestRelayUrl();
     if (!testRelayUrl) {
       throw new Error('Forced-relay native fixture did not publish its test relay URL');
@@ -405,10 +490,9 @@ describe.skipIf(!shouldRunComposedHomeIrohJourney)('core e2e: composed Personal 
       relayUrl: testRelayUrl,
     });
 
-    // The authenticated feature route is the sole first-publication owner for
-    // descriptor continuity. Public discovery is deliberately read-only and
-    // may project only an already committed descriptor; asking it first would
-    // turn this fixture into a competing publication owner.
+    // Startup commits the first descriptor before public discovery. Read its
+    // authenticated projection here, then confirm public discovery projects
+    // the same endpoint without private direct-address hints.
     const authenticatedDescriptor =
       (await fetchAuthenticatedFeatures(server.baseUrl, auth.token)).homeConnectionDescriptor;
     const authenticatedIroh = readIrohEndpoint(authenticatedDescriptor);
@@ -459,6 +543,10 @@ describe.skipIf(!shouldRunComposedHomeIrohJourney)('core e2e: composed Personal 
     // reaches that listener through its selected Iroh runtime origin.
     accountSocket = createUserScopedSocketCollector(server.baseUrl, auth.token);
     accountSocket.connect();
+    await waitFor(() => accountSocket?.isConnected() === true, {
+      timeoutMs: 20_000,
+      context: 'account activity observer connected before daemon startup',
+    });
 
     const daemonEnv: NodeJS.ProcessEnv = {
       ...process.env,
@@ -493,9 +581,180 @@ describe.skipIf(!shouldRunComposedHomeIrohJourney)('core e2e: composed Personal 
       throw new Error('Registered Machine did not publish its current Iroh EndpointId authority');
     }
 
-    // The daemon's own composition root reports which carrier moved those
-    // authenticated bytes. A standard-carrier daemon would still register, so
-    // this is the assertion that separates the Iroh journey from HTTPS.
+    // Mint against the spawned Home and the endpoint authority published by
+    // the spawned daemon. The Home's advertised key must verify the signature.
+    const homeFeatures = FeaturesResponseSchema.parse(
+      await fetchAuthenticatedFeatures(server.baseUrl, auth.token),
+    );
+    const signingKeys = homeFeatures.capabilities.machines.peerMediation.grantSigningKeys;
+    expect(signingKeys).toHaveLength(1);
+    if (!fixtureIrohAddonPath) throw new Error('Missing parent-process Iroh fixture addon');
+    const transferNative = createIrohNodeNativeModule(loadIrohNodeNativeAddon(fixtureIrohAddonPath));
+    // Native identity files require a private parent directory. The run's
+    // shared log directory is deliberately not private, so keep this key in
+    // its own mkdtemp-created 0700 directory like the native fixtures do.
+    const transferIdentityDir = await mkdtemp(join(testDir, 'transfer-client-iroh-'));
+    const transferKeyPath = join(transferIdentityDir, 'endpoint.key');
+    const clientEndpoint = await transferNative.createEndpoint({
+      keyPath: transferKeyPath,
+      relayPolicy: 'automatic',
+      relayUrls: [testRelayUrl],
+      capProfile: 'machineBulk',
+    }).catch(async (error: unknown) => {
+      // Native admission can reserve a handle before key provisioning fails.
+      // Release it so the controller can restore topology in afterEach while
+      // the original create error remains the reported failure.
+      await transferNative.shutdownEndpoint({ endpointHandle: transferKeyPath }).catch(() => undefined);
+      throw error;
+    });
+    transferEndpoint = {
+      native: transferNative,
+      endpointHandle: clientEndpoint.endpointHandle,
+      tunnelId: null,
+    };
+    const proofHandle = createEphemeralPeerRouteProofHandleV2({ randomBytes });
+    const grantResponse = await fetchJson<{ ok?: boolean; grant?: unknown; reasonCode?: string }>(
+      server.baseUrl + '/v1/machines/peer/mediation/route-grants',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer ' + auth.token,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          v: 2,
+          kind: 'ephemeral_ed25519',
+          ephemeralPublicKeyBase64Url: proofHandle.publicKeyBase64Url,
+          machineId: registeredMachine.id,
+          flowKind: 'bounded_transfer',
+          routeKind: 'iroh_peer',
+          endpointFingerprint: initialMachineIrohAuthority.endpointId,
+          ttlMs: DIRECT_ROUTE_GRANT_TTL_MS.finiteTransferCarrier,
+          scope: { kind: 'bounded_transfer', mode: 'carrier' },
+          iroh: {
+            initiator: { kind: 'account_client', endpointId: clientEndpoint.endpointId },
+            target: { machineId: registeredMachine.id, endpointId: initialMachineIrohAuthority.endpointId },
+            operationKind: 'finite_transfer',
+          },
+        }),
+      },
+    );
+    expect(grantResponse.status, JSON.stringify(grantResponse.data)).toBe(200);
+    expect(grantResponse.data.ok, JSON.stringify(grantResponse.data)).toBe(true);
+    const grant = SignedDirectRouteGrantV2Schema.parse(grantResponse.data.grant);
+    expect(grant.payload.iroh?.initiator.endpointId).toBe(clientEndpoint.endpointId);
+    expect(grant.payload.iroh?.target.endpointId).toBe(initialMachineIrohAuthority.endpointId);
+    const signingKey = signingKeys.find((key) => key.keyId === grant.signature.keyId);
+    expect(signingKey).toBeDefined();
+    if (!signingKey) throw new Error('Fresh Home grant was not signed by its advertised key');
+    expect(tweetnacl.sign.detached.verify(
+      new TextEncoder().encode(createDirectRouteGrantSigningInputV2(grant.payload)),
+      Buffer.from(grant.signature.valueBase64Url, 'base64url'),
+      Buffer.from(signingKey.publicKey, 'base64url'),
+    )).toBe(true);
+
+    // Give the direct-import uploader scoped Home credentials. This journey
+    // supplies its grant, handshake, and native tunnel explicitly, then checks
+    // the transferred bytes and relay path. The separate machine-carrier HTTP
+    // integration test exercises production UI route selection.
+    const transferProfile = await upsertAndActivateServer({
+      serverUrl: canonicalServerUrl,
+      scope: 'device',
+    });
+    transferUiProfile = { serverId: transferProfile.id, serverUrl: canonicalServerUrl };
+    expect(await TokenStorage.setCredentialsForServerUrl(
+      canonicalServerUrl,
+      { serverId: transferProfile.id },
+      buildTestAccountCliAuthCredentials({ auth, mode: 'legacy' }),
+    )).toBe(true);
+
+    const handshake = IrohMachineHandshakeV1Schema.parse({
+      v: 1,
+      accountId: grant.payload.accountId,
+      initiator: grant.payload.iroh?.initiator,
+      target: grant.payload.iroh?.target,
+      flow: 'finite_transfer',
+      grant,
+      proof: proofHandle.sign(grant),
+    });
+    const transferWorkspace = join(testDir, 'transfer-workspace');
+    await mkdir(transferWorkspace, { recursive: true });
+    const transferBytes = randomBytes((256 * 1024) + 1);
+    const transferSha256 = createHash('sha256').update(transferBytes).digest('hex');
+    let observedTransferPath: string | null = null;
+    const transferResult = await uploadBulkPayloadFromFileViaDirectImport<Readonly<{
+      success: true;
+      path: string;
+      sizeBytes: number;
+      sha256: string;
+    }>>({
+      machineId: registeredMachine.id,
+      serverId: transferProfile.id,
+      fileReader: {
+        sizeBytes: transferBytes.byteLength,
+        readBytes: async (offset, length) => transferBytes.subarray(offset, offset + length),
+        close: async () => undefined,
+      },
+      request: {
+        t: 'session_file_upload_v1',
+        workingDirectory: transferWorkspace,
+        path: 'iroh-composed-payload.bin',
+        sizeBytes: transferBytes.byteLength,
+        sha256: transferSha256,
+        overwrite: true,
+      },
+      acquirePreparedCarrier: async () => {
+        const started = await transferNative.startMachineTunnel({
+          endpointHandle: clientEndpoint.endpointHandle,
+          endpointId: initialMachineIrohAuthority.endpointId,
+          directAddresses: [],
+          relayUrls: [testRelayUrl],
+          handshakeJson: JSON.stringify(handshake),
+          capProfile: 'machineBulk',
+        });
+        transferEndpoint = {
+          native: transferNative,
+          endpointHandle: clientEndpoint.endpointHandle,
+          tunnelId: started.machineTunnelId,
+        };
+        return {
+          kind: 'native_http' as const,
+          localOrigin: `http://127.0.0.1:${started.localPort}`,
+          release: async () => {
+            try {
+              const status = await transferNative.getMachineTunnelStatus(started.machineTunnelId);
+              observedTransferPath = status?.observedPath ?? started.observedPath;
+            } finally {
+              await transferNative.stopMachineTunnel(started.machineTunnelId);
+              transferEndpoint = {
+                native: transferNative,
+                endpointHandle: clientEndpoint.endpointHandle,
+                tunnelId: null,
+              };
+            }
+          },
+        };
+      },
+    });
+    if (transferResult.success === false) {
+      throw new Error(`Composed direct import failed: ${JSON.stringify({
+        error: transferResult.error,
+        errorCode: transferResult.errorCode ?? null,
+      })}`);
+    }
+    expect(transferResult).toMatchObject({
+      success: true,
+      path: 'iroh-composed-payload.bin',
+      sizeBytes: transferBytes.byteLength,
+      sha256: transferSha256,
+    });
+    expect(observedTransferPath).toBe('relay');
+    expect(transferEndpoint?.tunnelId).toBeNull();
+    await expect(readFile(join(transferWorkspace, 'iroh-composed-payload.bin')))
+      .resolves.toEqual(transferBytes);
+
+    // Independently, the daemon's composition root reports the carrier for
+    // its Home connection. A standard-carrier daemon would still register.
     const daemonLog = await readDaemonLog(daemon, testDir);
     expect(daemonLog).toMatch(/Home transport prepared/);
     expect(daemonLog).toMatch(/"carrier":\s*"iroh"|carrier: 'iroh'|carrier=iroh/);
@@ -506,7 +765,7 @@ describe.skipIf(!shouldRunComposedHomeIrohJourney)('core e2e: composed Personal 
     // while this first daemon process is the only possible publisher, every
     // matching event it produced is counted before the Home restart begins.
     const machineActivityBeforeRestart =
-      countMachineActivityEvents(accountSocket, registeredMachine.id);
+      countMachineOnlineEvents(accountSocket, registeredMachine.id);
     expect(machineActivityBeforeRestart).toBeGreaterThan(0);
 
     // --- Phase 4: Home-only restart. The daemon process deliberately remains
@@ -531,8 +790,8 @@ describe.skipIf(!shouldRunComposedHomeIrohJourney)('core e2e: composed Personal 
     const restartedIroh = readIrohEndpoint(restartedDescriptor);
     // The persistent endpoint key and continuity record survive the process
     // restart, so the EndpointId is stable and no new transport identity is
-    // created. The restarted Home publishes the same stable relay set — that
-    // is what lets the still-running daemon reacquire it remotely — while the
+    // created. The restarted Home publishes the same stable relay set, keeping
+    // relay reachability available to the still-running daemon, while the
     // descriptor revision only ever moves forward: a restart rebinds an
     // ephemeral UDP port, so its direct-address hints legitimately change.
     expect(restartedIroh?.endpointId).toBe(publicIroh?.endpointId);
@@ -553,6 +812,10 @@ describe.skipIf(!shouldRunComposedHomeIrohJourney)('core e2e: composed Personal 
     // projection below is only the adoption oracle; nothing is written back.
     const restartedAuthenticatedDescriptor =
       (await fetchAuthenticatedFeatures(server.baseUrl, auth.token)).homeConnectionDescriptor;
+    const restartedFeatures = FeaturesResponseSchema.parse(
+      await fetchAuthenticatedFeatures(server.baseUrl, auth.token),
+    );
+    expect(restartedFeatures.capabilities.machines.peerMediation.grantSigningKeys).toEqual(signingKeys);
     const restartedAuthenticatedIroh = readIrohEndpoint(restartedAuthenticatedDescriptor);
     if (!restartedAuthenticatedDescriptor || !restartedAuthenticatedIroh) {
       throw new Error('Restarted Home did not republish its authenticated descriptor');
@@ -564,7 +827,6 @@ describe.skipIf(!shouldRunComposedHomeIrohJourney)('core e2e: composed Personal 
       baseUrl: server.baseUrl,
       token: auth.token,
       timeoutMs: 90_000,
-      minimumIrohAuthorityRevisionExclusive: initialMachineIrohAuthority.revision,
     });
     expect(reconnectedMachine.id).toBe(registeredMachine.id);
     expect(isProcessAlive(daemonPidBeforeHomeRestart)).toBe(true);
@@ -576,19 +838,19 @@ describe.skipIf(!shouldRunComposedHomeIrohJourney)('core e2e: composed Personal 
       throw new Error('Reconnected Machine did not republish its current Iroh EndpointId authority');
     }
     expect(reconnectedMachineIrohAuthority.endpointId).toBe(initialMachineIrohAuthority.endpointId);
-    expect(reconnectedMachineIrohAuthority.revision).toBeGreaterThan(initialMachineIrohAuthority.revision);
 
-    // The advanced endpoint-authority revision above proves fresh control
-    // publication from this daemon connection. The account socket survives
-    // the Home restart (socket.io reconnection), so machine-activity events
-    // beyond the pre-restart baseline prove the still-running daemon process
-    // itself published live state through a freshly acquired Home transport.
+    // Endpoint authority is stable across a Home-only restart; a persisted
+    // active Machine row and its unchanged revision do not prove reconnection.
+    // The account socket survives the Home restart (socket.io reconnection),
+    // so machine-activity events beyond the pre-restart baseline prove the
+    // still-running daemon process published live state through a freshly
+    // acquired Home transport.
     // In this loopback-only composition that transport can only be the verified Iroh
     // lease — no standard carrier is ever published, so an authenticated
     // Machine cannot publish through anything else.
     const freshActivityDeadline = Date.now() + 90_000;
     while (
-      countMachineActivityEvents(accountSocket, registeredMachine.id)
+      countMachineOnlineEvents(accountSocket, registeredMachine.id)
         <= machineActivityBeforeRestart
     ) {
       if (Date.now() > freshActivityDeadline) {

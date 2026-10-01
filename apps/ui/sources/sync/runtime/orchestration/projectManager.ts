@@ -27,7 +27,8 @@ import {
 } from './projectScmSelectionState';
 import type { WorkspaceScopeBase } from '@/sync/domains/workspaces/workspaceScope';
 import { normalizeWorkspaceScopeBase, tryBuildWorkspaceCacheKey } from '@/sync/domains/workspaces/workspaceScope';
-import { normalizeMachineHost } from '@happier-dev/protocol';
+import { normalizeMachineHost, type ScmOperationErrorCode } from '@happier-dev/protocol';
+import type { ScmOperationOutcome } from '@happier-dev/protocol/scm';
 import { resolveSessionMachineId } from '@/sync/domains/session/external/resolveSessionMachineId';
 import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
 
@@ -71,7 +72,13 @@ export type ScmProjectOperationKind =
     | 'branch_merge'
     | 'branch_rebase'
     | 'branch_operation_continue'
-    | 'branch_operation_abort';
+    | 'branch_operation_abort'
+    | 'branch_operation_skip'
+    | 'branch_switch'
+    | 'branch_create'
+    | 'stash_create'
+    | 'stash_restore'
+    | 'create_pr';
 
 export type ScmProjectOperationStatus = 'success' | 'failed';
 
@@ -83,6 +90,8 @@ export interface ScmProjectOperationLogEntry {
     status: ScmProjectOperationStatus;
     path?: string;
     detail?: string;
+    errorCode?: ScmOperationErrorCode;
+    outcome?: ScmOperationOutcome;
 }
 
 export interface ScmProjectInFlightOperation {
@@ -90,6 +99,8 @@ export interface ScmProjectInFlightOperation {
     startedAt: number;
     sessionId: string;
     operation: ScmProjectOperationKind;
+    phase: 'queued' | 'running';
+    progressText?: string;
 }
 
 export type BeginScmProjectOperationResult =
@@ -567,6 +578,8 @@ class ProjectManager {
             timestamp: entry.timestamp,
             ...(entry.path ? { path: entry.path } : {}),
             ...(entry.detail ? { detail: entry.detail } : {}),
+            ...(entry.errorCode ? { errorCode: entry.errorCode } : {}),
+            ...(entry.outcome ? { outcome: entry.outcome } : {}),
         };
 
         project.scmOperationLog.push(next);
@@ -583,7 +596,8 @@ class ProjectManager {
     getWorkspaceScmOperationLog(scope: WorkspaceScopeBase): ScmProjectOperationLogEntry[] {
         const project = this.getProjectForWorkspace(scope);
         if (!project?.scmOperationLog) return [];
-        return [...project.scmOperationLog].sort((a, b) => b.timestamp - a.timestamp);
+        // Preserve newest append order when a write and its refresh finish in the same millisecond.
+        return [...project.scmOperationLog].reverse().sort((a, b) => b.timestamp - a.timestamp);
     }
 
     beginWorkspaceScmOperation(
@@ -605,6 +619,7 @@ class ProjectManager {
             startedAt,
             sessionId: 'workspace',
             operation,
+            phase: 'queued',
         };
         project.scmOperationInFlight = inFlight;
         project.updatedAt = startedAt;
@@ -616,6 +631,15 @@ class ProjectManager {
         if (!project?.scmOperationInFlight) return false;
         if (project.scmOperationInFlight.id !== operationId) return false;
         project.scmOperationInFlight = null;
+        project.updatedAt = Date.now();
+        return true;
+    }
+
+    updateWorkspaceScmOperationProgress(scope: WorkspaceScopeBase, operationId: string, progressText?: string): boolean {
+        const project = this.getProjectForWorkspace(scope);
+        const current = project?.scmOperationInFlight;
+        if (!project || !current || current.id !== operationId) return false;
+        project.scmOperationInFlight = { ...current, phase: 'running', progressText };
         project.updatedAt = Date.now();
         return true;
     }
@@ -886,6 +910,8 @@ class ProjectManager {
             timestamp: entry.timestamp,
             ...(entry.path ? { path: entry.path } : {}),
             ...(entry.detail ? { detail: entry.detail } : {}),
+            ...(entry.errorCode ? { errorCode: entry.errorCode } : {}),
+            ...(entry.outcome ? { outcome: entry.outcome } : {}),
         };
 
         project.scmOperationLog.push(next);
@@ -926,6 +952,7 @@ class ProjectManager {
             startedAt,
             sessionId,
             operation,
+            phase: 'queued',
         };
         project.scmOperationInFlight = inFlight;
         project.updatedAt = startedAt;
@@ -944,6 +971,15 @@ class ProjectManager {
         return true;
     }
 
+    updateSessionProjectScmOperationProgress(sessionId: string, operationId: string, progressText?: string): boolean {
+        const project = this.getProjectForSession(sessionId);
+        const current = project?.scmOperationInFlight;
+        if (!project || !current || current.id !== operationId) return false;
+        project.scmOperationInFlight = { ...current, phase: 'running', progressText };
+        project.updatedAt = Date.now();
+        return true;
+    }
+
     getSessionProjectScmInFlightOperation(sessionId: string): ScmProjectInFlightOperation | null {
         const project = this.getProjectForSession(sessionId);
         return project?.scmOperationInFlight ?? null;
@@ -952,7 +988,7 @@ class ProjectManager {
     getSessionProjectScmOperationLog(sessionId: string): ScmProjectOperationLogEntry[] {
         const project = this.getProjectForSession(sessionId);
         if (!project?.scmOperationLog) return [];
-        return [...project.scmOperationLog].sort((a, b) => b.timestamp - a.timestamp);
+        return [...project.scmOperationLog].reverse().sort((a, b) => b.timestamp - a.timestamp);
     }
 
     /**
@@ -1009,12 +1045,4 @@ export function getProjectDisplayName(project: Project): string {
 
     // Fallback to path
     return project.key.rootPath || 'Unknown Project';
-}
-
-/**
- * Helper function to get project full path display
- */
-export function getProjectFullPath(project: Project): string {
-    const machineName = project.machineMetadata?.displayName || project.machineMetadata?.host || project.key.machineId;
-    return `${machineName}: ${project.key.rootPath}`;
 }

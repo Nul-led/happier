@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { useRouter } from 'expo-router';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 import { View } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
@@ -11,7 +11,7 @@ import { useActiveServerSnapshot } from '@/hooks/server/useActiveServerSnapshot'
 import { useAllMachines } from '@/sync/domains/state/storage';
 import { t } from '@/text';
 import { getMachineDisplayName } from '@/utils/sessions/machineUtils';
-import { buildMachineSetupWizardHref } from '@/utils/routes/setupWizardHref';
+import { buildMachineAddHref } from '@/components/settings/machines/collection/machineCollectionModel';
 import { resolveMachineActionCandidates } from '@/utils/sessions/resolveMachineActionCandidates';
 
 import type { SessionGettingStartedDecisionKind } from '@/components/sessions/guidance/gettingStartedModel';
@@ -51,10 +51,7 @@ export function SessionsListEmptyState(props: SessionsListEmptyStateProps) {
     }, [activeServer.serverId, router]);
 
     const handleOpenSetup = React.useCallback(() => {
-        router.push(buildMachineSetupWizardHref({
-            action: 'local',
-            step: 'setup_this_computer',
-        }) as never);
+        router.push(buildMachineAddHref({ path: 'thisComputer' }) as never);
     }, [router]);
     const setupSubtitle = props.kind === 'connect_machine'
         ? t('sessionsList.emptyState.connectMachineActionSubtitle')

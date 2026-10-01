@@ -12,14 +12,18 @@ function base64url(bytes: Uint8Array): string {
 }
 
 describe('createWorkspaceMachineCarrierTunnelOpen', () => {
-  it('binds one exact target descriptor revision and returns only the native tunnel lifecycle', async () => {
+  it('uses current capability authority despite stale diagnostic state and returns only the native tunnel lifecycle', async () => {
     const signingKeyPair = tweetnacl.sign.keyPair();
     const localEndpointId = 'a'.repeat(64);
     const targetEndpointId = 'b'.repeat(64);
     const target = {
       id: 'machine-target',
+      operationProtocolCapabilitiesRevision: 7,
+      operationProtocolCapabilities: { irohMachineEndpoint: {
+        protocolVersions: [1], endpointId: targetEndpointId, directAddresses: ['10.0.0.2:7777'],
+      } },
       daemonStateVersion: 7,
-      daemonState: { peerMediation: { iroh: { endpoint: { endpointId: targetEndpointId, directAddresses: ['10.0.0.2:7777'] } } } },
+      daemonState: { peerMediation: { iroh: { endpoint: { endpointId: 'c'.repeat(64), directAddresses: ['10.0.0.9:9999'] } } } },
     };
     const readTargetMachine = vi.fn(async () => target);
     const mintGrant = vi.fn(async (request: DirectRouteGrantRequestV2) => {
@@ -96,7 +100,7 @@ describe('createWorkspaceMachineCarrierTunnelOpen', () => {
           proof: expect.any(Object),
         }),
       }),
-      target.daemonState.peerMediation.iroh.endpoint,
+      { endpointId: targetEndpointId, directAddresses: ['10.0.0.2:7777'] },
     );
     expect(tunnel).toEqual({
       localPort: 48123,
@@ -113,7 +117,7 @@ describe('createWorkspaceMachineCarrierTunnelOpen', () => {
         flow: 'finite_transfer',
         handshake: expect.objectContaining({ flow: 'finite_transfer' }),
       }),
-      target.daemonState.peerMediation.iroh.endpoint,
+      { endpointId: targetEndpointId, directAddresses: ['10.0.0.2:7777'] },
     );
     expect(openHttpTunnel).not.toHaveBeenCalled();
     expect(openTunnel).toHaveBeenCalledTimes(2);
@@ -130,6 +134,10 @@ describe('createWorkspaceMachineCarrierTunnelOpen', () => {
     const targetEndpointId = 'b'.repeat(64);
     const target = {
       id: 'machine-target',
+      operationProtocolCapabilitiesRevision: 7,
+      operationProtocolCapabilities: { irohMachineEndpoint: {
+        protocolVersions: [1], endpointId: targetEndpointId, relayUrls: ['https://relay.example.test'],
+      } },
       daemonStateVersion: 7,
       daemonState: { peerMediation: { iroh: { endpoint: { endpointId: targetEndpointId, relayUrls: ['https://relay.example.test'] } } } },
     };
@@ -231,17 +239,39 @@ describe('createWorkspaceMachineCarrierTunnelOpen', () => {
     expect(openTunnel).not.toHaveBeenCalled();
   });
 
-  it('uses current signing roots and current hints while fencing only the signed target EndpointId', async () => {
+  it('refuses withdrawn capability authority even when diagnostic state advertises an endpoint', async () => {
+    const openTunnel = vi.fn();
+    const mintGrant = vi.fn();
+    const open = createWorkspaceMachineCarrierTunnelOpen({
+      accountId: 'account-1', localMachineId: 'machine-source',
+      runtime: { available: true, endpoint: { endpointId: 'a'.repeat(64) }, openTunnel } as never,
+      resolveTrustRoots: () => [],
+      readTargetMachine: async () => ({
+        id: 'machine-target', operationProtocolCapabilities: {}, operationProtocolCapabilitiesRevision: 8,
+        daemonState: { peerMediation: { iroh: { endpoint: { endpointId: 'b'.repeat(64) } } } },
+        daemonStateVersion: 7,
+      }),
+      mintGrant,
+    });
+    await expect(open({
+      operationId: 'operation-1', sourceMachineId: 'machine-source', targetMachineId: 'machine-target', flow: 'workspace_sync',
+    })).rejects.toMatchObject({ code: 'machine_carrier_unavailable' });
+    expect(mintGrant).not.toHaveBeenCalled();
+    expect(openTunnel).not.toHaveBeenCalled();
+  });
+
+  it.each(['current', 'withdrawn', 'replaced'] as const)('rechecks capability authority after minting and fences the signed target EndpointId (%s)', async (currentness) => {
     const signingKeyPair = tweetnacl.sign.keyPair();
     const targetEndpointId = 'b'.repeat(64);
     let readCount = 0;
     const readTargetMachine = vi.fn(async () => ({
       id: 'machine-target',
-      daemonStateVersion: ++readCount,
-      daemonState: { peerMediation: { iroh: { endpoint: {
-        endpointId: targetEndpointId,
+      operationProtocolCapabilitiesRevision: ++readCount,
+      operationProtocolCapabilities: currentness === 'withdrawn' && readCount > 1 ? {} : { irohMachineEndpoint: {
+        protocolVersions: [1],
+        endpointId: currentness === 'replaced' && readCount > 1 ? 'c'.repeat(64) : targetEndpointId,
         directAddresses: [readCount === 1 ? '10.0.0.2:7777' : '10.0.0.3:8888'],
-      } } } },
+      } },
     }));
     const mintGrant = vi.fn(async (request: DirectRouteGrantRequestV2) => {
       const { kind, ttlMs: _ttlMs, ...binding } = request;
@@ -272,13 +302,19 @@ describe('createWorkspaceMachineCarrierTunnelOpen', () => {
       readTargetMachine, mintGrant, nowMs: () => 2_000,
     });
 
-    await expect(open({
+    const opening = open({
       operationId: 'operation-1', sourceMachineId: 'machine-source',
       targetMachineId: 'machine-target', flow: 'workspace_sync',
-    })).resolves.toMatchObject({ localPort: 48123 });
-    expect(openTunnel).toHaveBeenCalledWith(expect.any(Object), {
-      endpointId: targetEndpointId,
-      directAddresses: ['10.0.0.3:8888'],
     });
+    if (currentness === 'current') {
+      await expect(opening).resolves.toMatchObject({ localPort: 48123 });
+      expect(openTunnel).toHaveBeenCalledWith(expect.any(Object), {
+        endpointId: targetEndpointId,
+        directAddresses: ['10.0.0.3:8888'],
+      });
+    } else {
+      await expect(opening).rejects.toMatchObject({ code: 'machine_carrier_unavailable' });
+      expect(openTunnel).not.toHaveBeenCalled();
+    }
   });
 });

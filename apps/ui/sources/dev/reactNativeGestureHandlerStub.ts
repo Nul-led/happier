@@ -58,7 +58,11 @@ function createGestureChain(): any {
         chain.__config.activeOffsetY = value;
         return chain;
     };
-    for (const handlerName of ['onBegin', 'onStart', 'onUpdate', 'onChange', 'onEnd', 'onFinalize', 'onTouchesDown', 'onTouchesUp'] as const) {
+    chain.cancelsTouchesInView = (value: boolean) => {
+        chain.__config.cancelsTouchesInView = value;
+        return chain;
+    };
+    for (const handlerName of ['onBegin', 'onStart', 'onUpdate', 'onChange', 'onEnd', 'onFinalize', 'onTouchesDown', 'onTouchesUp', 'onTouchesCancelled'] as const) {
         chain[handlerName] = (handler: (...args: unknown[]) => void) => {
             chain.__handlers[handlerName] = handler;
             return chain;

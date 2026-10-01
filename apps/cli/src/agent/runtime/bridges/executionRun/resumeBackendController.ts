@@ -115,7 +115,12 @@ export async function resumeBackendControllerForResumableRun(args: Readonly<{
     sidechainStreamKey: '',
     streamWriter: (() => {
       const profile = args.profileCatalog
-        ? resolveExecutionRunIntentProfileFromCatalog(args.profileCatalog, args.run.intent, args.run.profileId)
+        ? resolveExecutionRunIntentProfileFromCatalog(
+            args.profileCatalog,
+            args.run.intent,
+            args.run.profileId,
+            args.run.profileSourceCustody,
+          )
         : resolveExecutionRunIntentProfile(args.run.intent);
       const shouldMaterializeInTranscript = args.run.sessionId !== null
         && profile.transcriptMaterialization !== 'none';
@@ -192,7 +197,12 @@ export async function resumeBackendControllerForResumableRun(args: Readonly<{
     resumeCtrl.backendSupportsResume = true;
 
     const profile = args.profileCatalog
-      ? resolveExecutionRunIntentProfileFromCatalog(args.profileCatalog, args.run.intent, args.run.profileId)
+      ? resolveExecutionRunIntentProfileFromCatalog(
+          args.profileCatalog,
+          args.run.intent,
+          args.run.profileId,
+          args.run.profileSourceCustody,
+        )
       : resolveExecutionRunIntentProfile(args.run.intent);
     const shouldMaterializeInTranscript = args.run.sessionId !== null
       && profile.transcriptMaterialization !== 'none';

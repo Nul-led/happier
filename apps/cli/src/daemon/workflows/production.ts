@@ -1,6 +1,9 @@
 import { randomUUID } from 'node:crypto';
 
 import {
+  applyWorkflowInvocationFactV1,
+  sameStrictJsonValue,
+  classifyWorkflowHoldV1,
   EXTERNAL_ACTION_RESPONSE_MAX_SERIALIZED_BYTES,
   MAX_AUTOMATION_STORED_ENVELOPE_UTF8_BYTES,
   StrictJsonValueSchema,
@@ -10,10 +13,17 @@ import {
   WorkflowAuthoredInputV1Schema,
   WorkflowCheckpointEnvelopeV1Schema,
   WorkflowProgressEnvelopeV1Schema,
+  WorkflowInvocationFactV1Schema,
+  WorkflowInvocationFactResultV1Schema,
   WorkflowRunInvocationIndexV1Schema,
   WorkflowRunSummaryV1Schema,
+  WorkflowOperationErrorCodeV1Schema,
   WorkflowResolvedInputsV1Schema,
-  createAutomationWorkflowAcceptedSnapshotV1,
+  materializeWorkflowAcceptedSnapshotV1,
+  renderSessionRoleBlockV1,
+  resolveWorkflowDefinitionRefV1,
+  readTriggerTargetV1,
+  ReviewStartTerminalValueV1Schema,
   openAccountScopedBlobCiphertext,
   openWorkflowAcceptedSnapshotStoredEnvelopeV1,
   openWorkflowCheckpointStoredEnvelopeV1,
@@ -25,19 +35,35 @@ import {
   sealWorkflowProgressStoredEnvelopeV1,
   serializeWorkflowStoredContentEnvelopeV1,
   sameAutomationAccountCurrentnessWitnessV1,
-  type WorkflowBlock,
+  sameAutomationAccountContentIdentityV1,
+  WorkflowRunRecipientCensusResponseV1Schema,
+  WorkflowRunRecipientKeyEnvelopeCommitResponseV1Schema,
+  prepareWorkflowRunDataKeyV1,
+  resolveWorkflowRunDataKeyV1,
+  runWorkflowRecipientKeyPreparationV1,
+  type WorkflowRunEncryptionV1,
+  type WorkflowRunRecipientCensusResponseV1,
   type WorkflowCheckpointEnvelopeV1,
   type WorkflowProgressEnvelopeV1,
   type WorkflowRunInvocationIndexV1,
   type WorkflowRunSummaryV1,
-  type AccountScopedCryptoMaterial,
+  type TriggerTargetV1,
+  type WorkflowDefinitionV1,
+  type MaterializeWorkflowAcceptedSnapshotV1Input,
 } from '@happier-dev/protocol';
+import { assertControllerDominates, type ActionExecutorContext } from '@happier-dev/protocol/actions';
+import { resolveCanonicalAbsolutePath } from '@/utils/path/expandHomeDirPath';
 import { createWorkflowInteractionCapacityError } from '@/agent/permissions/interactionPersistenceError';
+import { readWorktreeChangeFingerprint } from '@/scm/readWorktreeChangeFingerprint';
 
 import { getRandomBytes } from '@/api/encryption';
+import { resolveServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
+import { createAccountArtifactStore } from '@/api/artifacts/accountArtifactStore';
+import { requireCurrentAccountStoredContentServerCompatibility } from '@/api/clientCompatibility/accountStoredContentActivation';
+import { createWorkflowDefinitionActions } from '@/session/actions/workflowDefinitions';
 import { PushNotificationClient } from '@/api/pushNotifications';
 import { resolveWorkspaceRefById } from '@/settings/accountSettings/workspaceRefsV1';
-import { createWorkflowRunCommittedNotificationHandler } from '@/notifications/activity/dispatchWorkflowRunUpdateNotification';
+import { createWorkflowRunCommittedNotificationHandler, createWorkflowRunReviewEntryNotificationHandler } from '@/notifications/activity/dispatchWorkflowRunUpdateNotification';
 import {
   isAvailableE2eeAutomationAccountEncryptionV1,
   type AvailableAutomationAccountEncryptionV1,
@@ -55,11 +81,15 @@ import {
 import { createWorkflowRunStorageClient } from './workflowRunStorageClient';
 import { createCoordinatorWorkspaceResolver } from './resolveWorkflowWorkspace';
 import { prepareWorkflowAcceptedWorkspaceTarget } from './resolveWorkflowWorkspace';
-import { bindAutomationWorkflowInputs, resolveAutomationWorkflowOccurrenceSeed } from './input';
+import { bindAutomationWorkflowInputs, resolveAutomationWorkflowOccurrenceSeed, WorkflowInputResolutionError } from './input';
+import { shouldPublishWorkflowSharedConversation, type WorkflowConversationBinding } from './workflowConversation';
+import type { WorkflowProducerBinding, WorkflowInvocationBindingRow } from './workflowScopeBinding';
+import { materializeWorkflowContainerResult } from './workflowContainerResult';
 import type { WorkflowClaimForCoordination } from './worker';
-import { deliverWorkflowResultToOriginatingSession } from './stepExecution';
+import type { sendSessionMessage } from '@/session/services/sendSessionMessage';
 import type { StoredCredentials } from '@/persistence';
 import type { AgentState } from '@/api/types';
+import { createProductionWorkflowSessionContextReader } from './workflowSessionContext';
 import {
   AgentStateRequestStore,
   type AgentStateRequestPersistenceTarget,
@@ -69,29 +99,27 @@ import {
   createProductionFreshWorkflowSessionConversation,
   createProductionWorkflowSessionStepExecutor,
   createWorkflowSessionStepExecutor,
-  isPreparedWorkflowSessionConversation,
   WorkflowSessionCompositionError,
 } from './sessionStepExecutor';
 import {
-  createWorkflowAttachedExecutionRunStepExecutor,
   createWorkflowDetachedExecutionRunStepExecutor,
   createWorkflowStepExecutorDispatcher,
   prepareWorkflowDetachedExecutionRunStep,
   WorkflowExecutionRunCompositionError,
-  type WorkflowAttachedExecutionRunStepExecutorDeps,
   type WorkflowDetachedExecutionRunStepExecutorDeps,
 } from './executionRunStepExecutor';
 
 type StorageClient = ReturnType<typeof createWorkflowRunStorageClient>;
 type SealMode =
   | Readonly<{ mode: 'plain' }>
-  | Readonly<{ mode: 'e2ee'; material: AccountScopedCryptoMaterial; randomBytes: typeof getRandomBytes }>;
+  | Readonly<{ mode: 'e2ee'; runDataKey: Uint8Array; randomBytes: typeof getRandomBytes }>;
 
 type RunStorageSnapshot = Readonly<{
   run: WorkflowRunSummaryV1;
   acceptedEnvelope: string;
   checkpointEnvelope: string | null;
   resultEnvelope: string | null;
+  keyCensus: WorkflowRunRecipientCensusResponseV1;
 }>;
 
 export function projectWorkflowRootSettlementLifecycle(
@@ -105,19 +133,10 @@ export function projectWorkflowRootSettlementLifecycle(
   return currentLifecycle;
 }
 
-export function projectWorkflowResultDeliverySettlement(
-  status: 'accepted' | 'alreadyAccepted' | 'rejected' | 'update_required' | 'outcomeUnknown',
-): 'accepted' | 'unavailable' | null {
-  if (status === 'accepted' || status === 'alreadyAccepted') return 'accepted';
-  if (status === 'outcomeUnknown') return null;
-  return 'unavailable';
-}
-
 export function projectWorkflowTerminalCustodySettlement(
   resultState: WorkflowCoordinatorResult['state'],
-  pendingResultDelivery: boolean,
 ): 'settled' | undefined {
-  if (pendingResultDelivery || resultState === 'paused' || resultState === 'interrupted') return undefined;
+  if (resultState === 'paused' || resultState === 'interrupted' || resultState === 'waiting_for_review') return undefined;
   return 'settled';
 }
 
@@ -157,10 +176,6 @@ function asRecord(value: unknown): Readonly<Record<string, unknown>> {
   return value as Readonly<Record<string, unknown>>;
 }
 
-function sameStoredValue(left: unknown, right: unknown): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
-}
-
 function parseRunSnapshot(value: unknown): RunStorageSnapshot {
   const record = asRecord(value);
   const run = WorkflowRunSummaryV1Schema.parse(record.run);
@@ -174,33 +189,16 @@ function parseRunSnapshot(value: unknown): RunStorageSnapshot {
     acceptedEnvelope: record.acceptedEnvelope,
     checkpointEnvelope: record.checkpointEnvelope,
     resultEnvelope: record.resultEnvelope,
+    keyCensus: WorkflowRunRecipientCensusResponseV1Schema.parse(record.keyCensus),
   };
 }
 
-function sealMode(encryption: AvailableAutomationAccountEncryptionV1): SealMode {
-  if (!isAvailableE2eeAutomationAccountEncryptionV1(encryption)) return { mode: 'plain' };
-  return { mode: 'e2ee', material: encryption.material.material, randomBytes: getRandomBytes };
+function sealMode(encryption: WorkflowRunEncryptionV1): SealMode {
+  return encryption.runCrypto.mode === 'plain' ? encryption.runCrypto : { ...encryption.runCrypto, randomBytes: getRandomBytes };
 }
 
-function openMode(encryption: AvailableAutomationAccountEncryptionV1) {
-  if (!isAvailableE2eeAutomationAccountEncryptionV1(encryption)) return { mode: 'plain' as const };
-  return { mode: 'e2ee' as const, material: encryption.material.material };
-}
-
-function blockKinds(blocks: readonly WorkflowBlock[], target = new Map<string, WorkflowBlock['kind']>()): ReadonlyMap<string, WorkflowBlock['kind']> {
-  for (const block of blocks) {
-    target.set(block.id, block.kind);
-    if (block.kind === 'parallel') for (const branch of block.branches) blockKinds(branch.blocks, target);
-    if (block.kind === 'if') {
-      blockKinds(block.then, target);
-      blockKinds(block.otherwise, target);
-    }
-    if (block.kind === 'loop') {
-      blockKinds(block.body, target);
-      if (block.repetition.kind === 'evaluate') target.set(block.repetition.evaluator.id, 'step');
-    }
-  }
-  return target;
+function openMode(encryption: WorkflowRunEncryptionV1) {
+  return encryption.runCrypto;
 }
 
 type PersistedInvocation = Readonly<{
@@ -211,8 +209,11 @@ type PersistedInvocation = Readonly<{
 /** Internal durable row owner, exported only so its persistence concurrency contract can be tested at the real boundary. */
 export class DurableWorkflowCoordinatorStore implements WorkflowCoordinatorStore {
   private readonly records = new Map<string, WorkflowCoordinatorInvocation>();
+  private readonly recordsById = new Map<string, WorkflowCoordinatorInvocation>();
+  private readonly currentSlots = new Map<string, WorkflowCoordinatorInvocation>();
   private readonly persisted = new Map<string, PersistedInvocation>();
   private readonly materializedContainers = new Map<string, import('./input').WorkflowJsonValue>();
+  private readonly loadedParentSlots = new Set<string>();
   private mutationTail: Promise<void> = Promise.resolve();
   private readonly invocationMutationTails = new Map<string, Promise<void>>();
 
@@ -222,11 +223,10 @@ export class DurableWorkflowCoordinatorStore implements WorkflowCoordinatorStore
       runId: string;
       parentAttempt: number;
       storage: StorageClient;
-      encryption: AvailableAutomationAccountEncryptionV1;
+      encryption: WorkflowRunEncryptionV1;
       rootRecordId: string;
       checkpoint: WorkflowCheckpointEnvelopeV1;
       revision: number;
-      kinds: ReadonlyMap<string, WorkflowBlock['kind']>;
     },
   ) {}
 
@@ -253,39 +253,69 @@ export class DurableWorkflowCoordinatorStore implements WorkflowCoordinatorStore
       envelope: parseWorkflowStoredContentEnvelopeV1(contentEnvelope),
     });
     if (opened.kind !== 'available') throw new Error('workflow_invocation_content_unavailable');
+    if (index.parentRecordId && !this.recordsById.has(index.parentRecordId)) {
+      await this.loadInvocation(index.parentRecordId);
+    }
     this.remember(index, WorkflowProgressEnvelopeV1Schema.parse(opened.content));
+    if (invocation.parentRevision !== undefined) {
+      this.params.revision = Math.max(this.params.revision, WorkflowRunSummaryV1Schema.shape.revision.parse(invocation.parentRevision));
+    }
   }
 
   private async loadParentSlot(parentRecordId: string, memberOrdinal: string): Promise<void> {
-    let cursor: string | undefined;
-    do {
-      const page = asRecord(await this.params.storage.execute({
-        operation: 'invocations.list', runId: this.params.runId, parentRecordId,
-        ...(cursor ? { cursor } : {}), pageByteLimit: EXTERNAL_ACTION_RESPONSE_MAX_SERIALIZED_BYTES,
-      }));
-      const indices = Array.isArray(page.invocations)
-        ? page.invocations.map((value) => WorkflowRunInvocationIndexV1Schema.parse(value)) : [];
-      const selected = indices.find((index) => index.memberOrdinal === memberOrdinal);
-      if (selected) {
-        await this.loadInvocation(selected.id);
-        return;
+    const slotKey = `${parentRecordId}:${memberOrdinal}`;
+    if (this.loadedParentSlots.has(slotKey)) return;
+    const response = asRecord(await this.params.storage.execute({
+      operation: 'invocations.current', runId: this.params.runId, parentRecordId, memberOrdinal,
+    }));
+    if (response.invocation !== null && response.invocation !== undefined) {
+      const invocation = asRecord(response.invocation);
+      const index = WorkflowRunInvocationIndexV1Schema.parse(asRecord(invocation.index));
+      if (index.runId !== this.params.runId
+        || index.parentRecordId !== parentRecordId
+        || index.memberOrdinal !== memberOrdinal) {
+        throw new Error('workflow_storage_response_invalid');
       }
-      if (indices.some((index) => BigInt(index.memberOrdinal) > BigInt(memberOrdinal))) return;
-      cursor = typeof page.nextCursor === 'string' ? page.nextCursor : undefined;
-    } while (cursor);
+      const contentEnvelope = invocation.contentEnvelope;
+      if (typeof contentEnvelope !== 'string') throw new Error('workflow_storage_response_invalid');
+      const opened = openWorkflowProgressStoredEnvelopeV1({
+        ...openMode(this.params.encryption),
+        binding: {
+          v: 1, purpose: 'invocation_progress', accountId: this.params.accountId, runId: this.params.runId,
+          recordId: index.id, sequence: index.sequence, parentRecordId: index.parentRecordId,
+          memberOrdinal: index.memberOrdinal, attempt: index.attempt,
+        },
+        envelope: parseWorkflowStoredContentEnvelopeV1(contentEnvelope),
+      });
+      if (opened.kind !== 'available') throw new Error('workflow_invocation_content_unavailable');
+      this.remember(index, WorkflowProgressEnvelopeV1Schema.parse(opened.content));
+    }
+    // An exact empty read is reusable for the lifetime of this claimed store:
+    // admission remains CAS-owned by the server and this process records every
+    // successful admission below before another local read can observe it.
+    this.loadedParentSlots.add(slotKey);
   }
 
   private remember(index: WorkflowRunInvocationIndexV1, progress: WorkflowProgressEnvelopeV1): WorkflowCoordinatorInvocation {
+    const cached = this.recordsById.get(index.id);
+    if (cached?.contentRevision !== undefined && BigInt(cached.contentRevision) > BigInt(index.contentRevision)) return cached;
     const attempt = Number(index.attempt);
     const key = workflowInvocationKey({ runId: this.params.runId, blockId: progress.invocationPath.blockId, scope: progress.invocationPath.scope, attempt });
     const record: WorkflowCoordinatorInvocation = {
-      key, recordId: index.id, logicalInvocationRecordId: progress.logicalInvocationRecordId,
+      key, recordId: index.id, sequence: index.sequence, contentRevision: index.contentRevision, blockKind: progress.blockKind,
+      ...(progress.review ? { review: progress.review } : {}), logicalInvocationRecordId: progress.logicalInvocationRecordId,
       runId: index.runId, blockId: progress.invocationPath.blockId,
+      memberOrdinal: index.memberOrdinal,
+      ...(index.parentRecordId ? { parentKey: this.recordsById.get(index.parentRecordId)?.key } : {}),
       path: progress.invocationPath, attempt, acceptedAtMs: Date.parse(index.createdAt), lifecycle: index.lifecycle,
       ...(progress.result === undefined ? {} : { result: progress.result }),
+      ...(progress.resultContract === undefined ? {} : { resultContract: progress.resultContract }),
       ...(progress.usage === undefined ? {} : { usage: progress.usage }),
       ...(progress.reason ? { reason: progress.reason.code } : {}),
+      ...(progress.reason?.message !== undefined ? { reasonMessage: progress.reason.message } : {}),
+      ...(progress.validationIssues ? { validationIssues: progress.validationIssues } : {}),
       ...(progress.execution ? { execution: progress.execution } : {}),
+      ...(progress.sharedConversationInvocationRecordId ? { sharedConversationInvocationRecordId: progress.sharedConversationInvocationRecordId } : {}),
       ...(progress.observationDeadline ? { observationDeadline: progress.observationDeadline } : {}),
       ...(progress.input === undefined ? {} : { input: WorkflowAuthoredInputV1Schema.parse(progress.input) }),
       ...(progress.previousAttemptRecordId ? { previousAttemptRecordId: progress.previousAttemptRecordId } : {}),
@@ -296,22 +326,60 @@ export class DurableWorkflowCoordinatorStore implements WorkflowCoordinatorStore
       ...(progress.containerResult ? { containerResult: progress.containerResult } : {}),
     };
     this.records.set(key, record);
+    this.recordsById.set(index.id, record);
+    const slot = `${index.parentRecordId}:${index.memberOrdinal}`;
+    const current = this.currentSlots.get(slot);
+    if (!current || current.recordId === record.recordId || record.attempt > current.attempt) this.currentSlots.set(slot, record);
     this.persisted.set(key, { index, progress });
     return record;
   }
 
   read = (key: string) => this.records.get(key);
   readByLogicalInvocation = async (id: string) => {
-    const cached = [...this.records.values()].find((record) => record.recordId === id);
+    const cached = this.recordsById.get(id);
     if (cached) return cached;
     await this.loadInvocation(id);
-    return [...this.records.values()].find((record) => record.recordId === id);
+    return this.recordsById.get(id);
   };
-  readCurrent = async ({ runId, blockId, scope, parentKey, memberOrdinal }: Readonly<{ runId: string; blockId: string; scope: WorkflowProgressEnvelopeV1['invocationPath']['scope']; parentKey?: string; memberOrdinal?: string }>) => {
-    const parentRecordId = parentKey ? this.records.get(parentKey)?.recordId : this.params.rootRecordId;
-    if (parentRecordId && memberOrdinal !== undefined) await this.loadParentSlot(parentRecordId, memberOrdinal);
-    return [...this.records.values()].filter((record) => record.runId === runId && record.blockId === blockId
-      && JSON.stringify(record.path.scope) === JSON.stringify(scope)).sort((left, right) => right.attempt - left.attempt)[0];
+  readInvocationBindingRow = async (id: string): Promise<WorkflowInvocationBindingRow | undefined> => {
+    const record = await this.readByLogicalInvocation(id);
+    return record ? this.persisted.get(record.key) : undefined;
+  };
+  readCurrent = async ({ runId, blockId, parentKey, memberOrdinal }: Parameters<WorkflowCoordinatorStore['readCurrent']>[0]) => {
+    let parent = parentKey ? this.records.get(parentKey) : undefined;
+    if (parentKey && !parent) return undefined;
+    for (;;) {
+      const parentRecordId = parent?.recordId ?? this.params.rootRecordId;
+      if (memberOrdinal !== undefined) await this.loadParentSlot(parentRecordId, memberOrdinal);
+      const selected = this.currentSlots.get(`${parentRecordId}:${memberOrdinal}`);
+      if (selected?.runId === runId && selected.blockId === blockId) return selected;
+      // Like current-member enumeration, exact lookup inherits the nearest
+      // unreplaced slot across every recorded structural recovery.
+      if (!parent?.previousAttemptRecordId) return undefined;
+      parent = await this.readByLogicalInvocation(parent.previousAttemptRecordId);
+      if (!parent) return undefined;
+    }
+  };
+
+  listCurrentMembers = async (parentKey: string): Promise<readonly WorkflowRunInvocationIndexV1[]> => {
+    let parent = this.records.get(parentKey);
+    if (!parent) throw new Error('workflow_parent_invocation_missing');
+    const members = new Map<string, WorkflowRunInvocationIndexV1>();
+    // A recovered structural frame inherits only slots not replaced under its
+    // new parent identity. Enumerating indices does not open their content.
+    while (parent) {
+      let cursor: string | undefined;
+      do {
+        const page = asRecord(await this.params.storage.execute({ operation: 'invocations.list', runId: this.params.runId,
+          parentRecordId: parent.recordId, ...(cursor ? { cursor } : {}), pageByteLimit: EXTERNAL_ACTION_RESPONSE_MAX_SERIALIZED_BYTES }));
+        const indices = Array.isArray(page.invocations) ? page.invocations.map((value) => WorkflowRunInvocationIndexV1Schema.parse(value)) : [];
+        for (const index of indices) if (!members.has(index.memberOrdinal)) members.set(index.memberOrdinal, index);
+        cursor = typeof page.nextCursor === 'string' ? page.nextCursor : undefined;
+      } while (cursor);
+      parent = parent.previousAttemptRecordId ? await this.readByLogicalInvocation(parent.previousAttemptRecordId) : undefined;
+    }
+    return [...members.values()].sort((left, right) => BigInt(left.memberOrdinal) < BigInt(right.memberOrdinal) ? -1
+      : BigInt(left.memberOrdinal) > BigInt(right.memberOrdinal) ? 1 : 0);
   };
 
   private serializeProgress(binding: Parameters<typeof sealWorkflowProgressStoredEnvelopeV1>[0]['binding'], progress: WorkflowProgressEnvelopeV1): string {
@@ -345,7 +413,7 @@ export class DurableWorkflowCoordinatorStore implements WorkflowCoordinatorStore
     return result;
   }
 
-  ensureIntent = async (invocation: WorkflowCoordinatorInvocation): Promise<WorkflowCoordinatorInvocation> => await this.serialized(async () => {
+  ensureIntent = async (invocation: WorkflowCoordinatorInvocation & Readonly<{ blockKind: WorkflowProgressEnvelopeV1['blockKind'] }>): Promise<WorkflowCoordinatorInvocation> => await this.serialized(async () => {
     const parentRecordId = invocation.parentKey
       ? this.records.get(invocation.parentKey)?.recordId
       : this.params.rootRecordId;
@@ -358,11 +426,12 @@ export class DurableWorkflowCoordinatorStore implements WorkflowCoordinatorStore
     const memberOrdinal = invocation.memberOrdinal;
     const progress: WorkflowProgressEnvelopeV1 = {
       kind: 'happier.workflow-progress.v1', invocationPath: invocation.path,
-      blockKind: this.params.kinds.get(invocation.blockId) ?? 'step', attempt: '0',
+      blockKind: invocation.blockKind, attempt: '0',
       logicalInvocationRecordId: invocation.logicalInvocationRecordId ?? invocation.recordId,
       ...(invocation.execution ? { execution: invocation.execution } : {}),
       ...(invocation.observationDeadline ? { observationDeadline: invocation.observationDeadline } : {}),
       ...(invocation.input ? { input: StrictJsonValueSchema.parse(invocation.input) } : {}),
+      ...(invocation.resultContract === undefined ? {} : { resultContract: invocation.resultContract }),
       ...(invocation.workspace ? { workspace: invocation.workspace } : {}),
       ...(invocation.frame ? { frame: invocation.frame } : {}),
       ...(invocation.container ? { container: invocation.container } : {}),
@@ -376,18 +445,37 @@ export class DurableWorkflowCoordinatorStore implements WorkflowCoordinatorStore
       ...this.params.checkpoint,
       nextSequence: (BigInt(sequence) + 1n).toString(),
     });
-    const response = asRecord(await this.params.storage.execute({
+    const admission = {
       operation: 'invocations.admit', runId: this.params.runId, parentAttempt: this.params.parentAttempt,
       accountCurrentness: this.params.encryption.witness,
-      expectedRevision: this.params.revision,
       checkpointEnvelope: this.serializeCheckpoint(checkpoint),
       invocations: [{ id: invocation.recordId, sequence, parentRecordId, memberOrdinal, contentEnvelope: this.serializeProgress(binding, progress) }],
-    }));
+    } as const;
+    let response: Readonly<Record<string, unknown>>;
+    for (;;) {
+      const expectedRevision = this.params.revision;
+      try {
+        response = asRecord(await this.params.storage.execute({ ...admission, expectedRevision }));
+        break;
+      } catch (error) {
+        const failure = error !== null && typeof error === 'object' && 'response' in error ? error.response : undefined;
+        const data = failure !== null && typeof failure === 'object' && 'data' in failure ? failure.data : undefined;
+        if (data === null || typeof data !== 'object' || !('error' in data) || data.error !== 'currentness_conflict') throw error;
+        const snapshot = parseRunSnapshot(await this.params.storage.execute({ operation: 'get', runId: this.params.runId }));
+        if (snapshot.run.state === 'cancelled') throw new WorkflowControlBoundary('cancelled');
+        if (snapshot.run.state === 'pause_requested' || snapshot.run.state === 'paused') throw new WorkflowControlBoundary('paused');
+        if ((snapshot.run.state !== 'running' && snapshot.run.state !== 'claimed') || snapshot.run.revision <= expectedRevision) throw error;
+        // An independently committed sibling hold may precede its HTTP acknowledgement.
+        // Retry only an observed advancing parent token, retaining the exact row and sealed bytes.
+        this.params.revision = Math.max(this.params.revision, snapshot.run.revision);
+      }
+    }
     const admitted = Array.isArray(response.invocations) ? WorkflowRunInvocationIndexV1Schema.parse(response.invocations[0]) : null;
     if (!admitted || typeof response.parentRevision !== 'number') throw new Error('workflow_storage_response_invalid');
-    this.params.revision = response.parentRevision;
+    this.params.revision = Math.max(this.params.revision, response.parentRevision);
     this.params.checkpoint = checkpoint;
     const pending = this.remember(admitted, progress);
+    this.loadedParentSlots.add(`${parentRecordId}:${memberOrdinal}`);
     if (invocation.lifecycle === 'pending') return pending;
     return await this.commitFact({ key: pending.key, lifecycle: invocation.lifecycle });
   });
@@ -398,19 +486,14 @@ export class DurableWorkflowCoordinatorStore implements WorkflowCoordinatorStore
     const current = this.records.get(fact.key);
     const persisted = this.persisted.get(fact.key);
     if (!current || !persisted) throw new Error('workflow_invocation_intent_missing');
-    const progress = WorkflowProgressEnvelopeV1Schema.parse({
-      ...persisted.progress,
-      ...(fact.result === undefined ? {} : { result: fact.result }),
-      ...(fact.usage === undefined ? {} : { usage: fact.usage }),
-      ...(fact.interaction === undefined ? {} : { interaction: fact.interaction }),
-      ...(fact.reason ? { reason: { code: fact.reason } } : {}),
-      ...(fact.execution ? { execution: fact.execution } : {}),
-      ...(fact.observationDeadline ? { observationDeadline: fact.observationDeadline } : {}),
-      ...(fact.input ? { input: fact.input } : {}),
-      ...(fact.workspace ? { workspace: { ...persisted.progress.workspace, ...fact.workspace } } : {}),
-      ...(fact.container ? { container: fact.container } : {}),
-      ...(fact.containerResult ? { containerResult: fact.containerResult } : {}),
-    });
+    if (current.lifecycle === 'waiting_for_review' && fact.interaction !== undefined) return current;
+    const { key: _key, lifecycle: _lifecycle, review, ...ownedFact } = fact;
+    const { reason: _reason, reasonMessage: _reasonMessage, ...withoutInvalidResultReason } = ownedFact;
+    const publishedResultWins = fact.lifecycle === 'waiting_for_review' && fact.reason === 'invalid_result_contract'
+      && persisted.progress.review?.resultSource?.kind === 'published' && persisted.progress.result !== undefined;
+    const progress = WorkflowProgressEnvelopeV1Schema.parse({ ...applyWorkflowInvocationFactV1(persisted.progress,
+      WorkflowInvocationFactV1Schema.parse(publishedResultWins ? withoutInvalidResultReason : ownedFact)),
+      ...(review ? { review: { ...review, ...(persisted.progress.review?.resultSource ? { resultSource: persisted.progress.review.resultSource } : {}) } } : {}) });
     const index = persisted.index;
     const binding = {
       v: 1 as const, purpose: 'invocation_progress' as const, accountId: this.params.accountId, runId: this.params.runId,
@@ -419,36 +502,73 @@ export class DurableWorkflowCoordinatorStore implements WorkflowCoordinatorStore
     };
     let updatedIndex: WorkflowRunInvocationIndexV1;
     try {
-      updatedIndex = WorkflowRunInvocationIndexV1Schema.parse(await this.params.storage.execute({
+      const { parentRevision, ...updated } = WorkflowInvocationFactResultV1Schema.parse(await this.params.storage.execute({
         operation: 'invocations.fact', runId: this.params.runId, parentAttempt: this.params.parentAttempt,
         accountCurrentness: this.params.encryption.witness,
-        invocationId: index.id, invocationAttempt: index.attempt, expectedLifecycle: index.lifecycle,
+        invocationId: index.id, invocationAttempt: index.attempt, expectedLifecycle: index.lifecycle, expectedContentRevision: index.contentRevision,
         lifecycle: fact.lifecycle, contentEnvelope: this.serializeProgress(binding, progress),
       }));
+      this.params.revision = Math.max(this.params.revision, parentRevision);
+      updatedIndex = updated;
     } catch (error) {
       // Cancellation changes the exact row lifecycle at the server. Reload the
       // row once so that this CAS loser cannot overwrite or hide that control.
       await this.loadInvocation(index.id);
       const refreshed = this.records.get(fact.key);
+      if (fact.lifecycle === 'admitting') {
+        // A lost admission acknowledgement is ambiguous, and a repeated
+        // admitting fact may have lost its exact parent/control predicate.
+        // Reloading the same row cannot authorize either input release.
+        throw error;
+      }
       const workspaceMatches = fact.workspace === undefined
         || ((fact.workspace.creationIntent === undefined
-          || sameStoredValue(refreshed?.workspace?.creationIntent, fact.workspace.creationIntent))
+          || sameStrictJsonValue(refreshed?.workspace?.creationIntent, fact.workspace.creationIntent))
           && (fact.workspace.descriptor === undefined
-            || sameStoredValue(refreshed?.workspace?.descriptor, fact.workspace.descriptor)));
+            || sameStrictJsonValue(refreshed?.workspace?.descriptor, fact.workspace.descriptor)));
+      const sharedConversation = fact.sharedConversationInvocationRecordId;
+      const sharedConversationMatches = sharedConversation === undefined
+        || (['session', 'detached_run'] as const).every((targetClass) => (
+          sharedConversation[targetClass] === undefined
+          || refreshed?.sharedConversationInvocationRecordId?.[targetClass] === sharedConversation[targetClass]
+        ));
       if (refreshed?.lifecycle === fact.lifecycle
-        && (fact.result === undefined || sameStoredValue(refreshed.result, fact.result))
-        && (fact.usage === undefined || sameStoredValue(refreshed.usage, fact.usage))
+        && (fact.result === undefined || sameStrictJsonValue(refreshed.result, fact.result))
+        && (fact.resultContract === undefined || sameStrictJsonValue(refreshed.resultContract, fact.resultContract))
+        && (fact.usage === undefined || sameStrictJsonValue(refreshed.usage, fact.usage))
         && (fact.reason === undefined || refreshed.reason === fact.reason)
-        && (fact.execution === undefined || sameStoredValue(refreshed.execution, fact.execution))
-        && (fact.observationDeadline === undefined || sameStoredValue(refreshed.observationDeadline, fact.observationDeadline))
-        && (fact.input === undefined || sameStoredValue(refreshed.input, fact.input))
-        && (fact.container === undefined || sameStoredValue(refreshed.container, fact.container))
-        && (fact.containerResult === undefined || sameStoredValue(refreshed.containerResult, fact.containerResult))
-        && workspaceMatches) {
+        && (fact.reasonMessage === undefined || refreshed.reasonMessage === fact.reasonMessage)
+        && (fact.execution === undefined || sameStrictJsonValue(refreshed.execution, fact.execution))
+        && (fact.observationDeadline === undefined || sameStrictJsonValue(refreshed.observationDeadline, fact.observationDeadline))
+        && (fact.input === undefined || sameStrictJsonValue(refreshed.input, fact.input))
+        && (fact.container === undefined || sameStrictJsonValue(refreshed.container, fact.container))
+        && (fact.containerResult === undefined || sameStrictJsonValue(refreshed.containerResult, fact.containerResult))
+        && workspaceMatches
+        && sharedConversationMatches) {
         return refreshed;
+      }
+      const actionLaunch = fact.execution?.kind === 'action' ? fact.execution : undefined;
+      const matchesActionRequest = (execution: WorkflowCoordinatorInvocation['execution']) => actionLaunch
+        && execution?.kind === 'action' && execution.actionId === actionLaunch.actionId
+        && execution.actionRequestId === actionLaunch.actionRequestId && execution.localInputId === actionLaunch.localInputId
+        && sameStrictJsonValue(execution.input, actionLaunch.input);
+      const exactAcceptance = fact.execution?.kind === 'session'
+        ? sameStrictJsonValue(current.execution, fact.execution) && sameStrictJsonValue(refreshed?.execution, fact.execution)
+        : actionLaunch?.output !== undefined && actionLaunch.awaitedRuns !== undefined
+          && matchesActionRequest(current.execution) && matchesActionRequest(refreshed?.execution);
+      if (current.lifecycle === 'admitting' && fact.lifecycle === 'running'
+        && refreshed?.lifecycle === 'cancel_requested' && exactAcceptance) {
+        // A positive host acceptance or exact Action launch response arrived
+        // while Cancel swept the row. Preserve it in the refreshed content,
+        // without releasing input or reopening cancellation custody.
+        return await this.commitFactNow({ ...fact, lifecycle: 'cancel_requested' });
       }
       if (refreshed?.lifecycle === 'cancel_requested' || refreshed?.lifecycle === 'cancelled') {
         throw new WorkflowControlBoundary('cancelled');
+      }
+      if (refreshed?.lifecycle === 'superseded') throw error;
+      if (refreshed?.contentRevision !== current.contentRevision && refreshed?.lifecycle === current.lifecycle) {
+        return await this.commitFactNow(fact);
       }
       throw error;
     }
@@ -536,15 +656,17 @@ export class DurableWorkflowCoordinatorStore implements WorkflowCoordinatorStore
     });
   }
 
-  readContainerResult = (record: WorkflowCoordinatorInvocation) => this.materializedContainers.get(record.key);
-  rememberContainerResult = ({ key, result }: Readonly<{ key: string; result: import('./input').WorkflowJsonValue }>) => {
-    this.materializedContainers.set(key, result);
+  readContainerResult: WorkflowCoordinatorStore['readContainerResult'] = async (record, resolveWorkflowOutput) => {
+    const cached = this.materializedContainers.get(record.key);
+    if (cached !== undefined) return cached;
+    const result = await materializeWorkflowContainerResult(record, this, resolveWorkflowOutput);
+    if (result !== undefined) this.materializedContainers.set(record.key, result);
+    return result;
   };
 
-  commitContainerResult = async ({ key, result }: Readonly<{ key: string; result: import('./input').WorkflowJsonValue }>) => {
+  commitContainerResult = async ({ key }: Readonly<{ key: string }>) => {
     const current = this.records.get(key);
     if (!current) throw new Error('workflow_invocation_intent_missing');
-    this.materializedContainers.set(key, result);
     return await this.commitFact({
       key,
       lifecycle: 'completed',
@@ -552,18 +674,23 @@ export class DurableWorkflowCoordinatorStore implements WorkflowCoordinatorStore
     });
   };
 
-  commitSharedConversation = async ({ execution, workspace }: Readonly<{
-    execution: NonNullable<WorkflowProgressEnvelopeV1['execution']>;
-    workspace: import('@happier-dev/protocol').WorkflowWorkspaceDescriptorV1;
-  }>): Promise<void> => {
-    const root = [...this.records.values()].find((record) => record.recordId === this.params.rootRecordId);
-    if (!root) throw new Error('workflow_root_invocation_missing');
-    if (root.execution) return;
-    await this.commitFact({
-      key: root.key,
-      lifecycle: root.lifecycle,
-      execution,
-      workspace: { descriptor: workspace },
+  commitSharedConversation = async (params: Parameters<NonNullable<WorkflowCoordinatorStore['commitSharedConversation']>>[0]): Promise<void> => {
+    const scopeOwner = await this.readByLogicalInvocation(params.scopeOwnerKey);
+    if (!scopeOwner) throw new Error('workflow_conversation_scope_missing');
+    await this.serializedInvocation(scopeOwner.key, async () => {
+      const owner = this.records.get(scopeOwner.key);
+      if (!owner) throw new Error('workflow_conversation_scope_missing');
+      const leaf = await this.readByLogicalInvocation(params.invocationRecordId);
+      if (!leaf?.execution || leaf.execution.kind !== params.targetClass) throw new Error('workflow_conversation_unavailable');
+      const previousId = owner.sharedConversationInvocationRecordId?.[params.targetClass];
+      const previous = previousId ? await this.readByLogicalInvocation(previousId) : undefined;
+      if (previousId && !previous?.execution) throw new Error('workflow_conversation_unavailable');
+      if (!shouldPublishWorkflowSharedConversation({ current: previous?.execution, next: leaf.execution,
+        replacesExecution: params.replacesExecution, currentSequence: previous?.sequence, nextSequence: leaf.sequence })) return;
+      await this.commitFactNow({
+        key: owner.key, lifecycle: owner.lifecycle,
+        sharedConversationInvocationRecordId: { [params.targetClass]: params.invocationRecordId },
+      });
     });
   };
 
@@ -582,14 +709,51 @@ export class DurableWorkflowCoordinatorStore implements WorkflowCoordinatorStore
       const indices = Array.isArray(page.invocations)
         ? page.invocations.map((value) => WorkflowRunInvocationIndexV1Schema.parse(value)) : [];
       for (const index of indices) {
-        await this.loadInvocation(index.id);
-        const record = [...this.records.values()].find((candidate) => candidate.recordId === index.id);
+        const cached = this.recordsById.get(index.id);
+        if (!cached || cached.contentRevision !== index.contentRevision || cached.lifecycle !== index.lifecycle) await this.loadInvocation(index.id);
+        const record = this.recordsById.get(index.id);
         if (record) selected.push(record);
       }
       cursor = typeof page.nextCursor === 'string' ? page.nextCursor : undefined;
     } while (cursor);
     return selected;
   };
+
+  async readFinalReviewFingerprint(reviewBlockIds: ReadonlySet<string>): Promise<string | undefined> {
+    const records = await this.listByLifecycle({ runId: this.params.runId,
+      lifecycles: ['completed', 'failed', 'cancelled', 'skipped', 'outcome_uncertain', 'needs_attention'] });
+    const reviews = records.filter((record) => record.execution?.kind === 'action'
+      ? record.execution.actionId === 'review.start'
+      : record.blockKind === 'action' && reviewBlockIds.has(record.blockId));
+    const latest = reviews.reduce<WorkflowCoordinatorInvocation | undefined>((current, record) =>
+      !current || BigInt(record.sequence!) > BigInt(current.sequence!) ? record : current, undefined);
+    if (!latest) return undefined;
+    // Each engine is an item body under the same persisted panel container.
+    // A standalone fan-out Action is already one typed panel value.
+    const panelOf = (record: WorkflowCoordinatorInvocation): string => {
+      let parent = record.parentKey ? this.read(record.parentKey) : undefined;
+      while (parent) {
+        if (parent.frame?.source.kind === 'item') return parent.parentKey ?? parent.key;
+        parent = parent.parentKey ? this.read(parent.parentKey) : undefined;
+      }
+      return record.key;
+    };
+    const panel = panelOf(latest);
+    let fingerprint: string | undefined;
+    for (const record of reviews) {
+      if (record.blockId !== latest.blockId || panelOf(record) !== panel) continue;
+      if (record.lifecycle !== 'completed') return undefined;
+      const result = ReviewStartTerminalValueV1Schema.safeParse(record.result);
+      if (!result.success || !result.data.reviewedFingerprint || result.data.perEngineOutcome.length === 0
+        || result.data.perEngineOutcome.some((engine) => engine.outcome !== 'completed'
+          || engine.materialization?.kind !== 'complete')) return undefined;
+      if (fingerprint !== undefined && fingerprint !== result.data.reviewedFingerprint) return undefined;
+      fingerprint = result.data.reviewedFingerprint;
+    }
+    return fingerprint;
+  }
+
+  readFrontier = () => this.params.checkpoint.frontier;
 
   commitFrontier = async ({ nextBlockOrdinal }: Readonly<{ nextBlockOrdinal: number }>): Promise<void> => {
     if (this.params.checkpoint.frontier.nextBlockOrdinal >= nextBlockOrdinal) return;
@@ -607,7 +771,7 @@ export class DurableWorkflowCoordinatorStore implements WorkflowCoordinatorStore
           expectedRevision: this.params.revision,
           state: 'running', checkpointEnvelope,
         }));
-        this.params.revision = run.revision;
+        this.params.revision = Math.max(this.params.revision, run.revision);
         this.params.checkpoint = checkpoint;
       } catch (error) {
         const snapshot = parseRunSnapshot(await this.params.storage.execute({ operation: 'get', runId: this.params.runId }));
@@ -620,7 +784,7 @@ export class DurableWorkflowCoordinatorStore implements WorkflowCoordinatorStore
         });
         if (opened.kind !== 'available') throw error;
         const current = WorkflowCheckpointEnvelopeV1Schema.parse(opened.content);
-        this.params.revision = snapshot.run.revision;
+        this.params.revision = Math.max(this.params.revision, snapshot.run.revision);
         this.params.checkpoint = current;
         if (current.frontier.nextBlockOrdinal >= nextBlockOrdinal) return;
         if (snapshot.run.state === 'cancelled') throw new WorkflowControlBoundary('cancelled');
@@ -635,7 +799,7 @@ export class DurableWorkflowCoordinatorStore implements WorkflowCoordinatorStore
           expectedRevision: snapshot.run.revision,
           state: 'pause_requested', checkpointEnvelope: this.serializeCheckpoint(pausedCheckpoint),
         }));
-        this.params.revision = run.revision;
+        this.params.revision = Math.max(this.params.revision, run.revision);
         this.params.checkpoint = pausedCheckpoint;
       }
     });
@@ -643,90 +807,180 @@ export class DurableWorkflowCoordinatorStore implements WorkflowCoordinatorStore
 
   readControl = async () => {
     const snapshot = parseRunSnapshot(await this.params.storage.execute({ operation: 'get', runId: this.params.runId }));
-    this.params.revision = snapshot.run.revision;
-    if (snapshot.run.state === 'pause_requested') return 'pause_requested' as const;
-    const cancelled = asRecord(await this.params.storage.execute({
-      operation: 'invocations.list', runId: this.params.runId,
-      lifecycles: ['cancel_requested'], limit: 1,
-      pageByteLimit: EXTERNAL_ACTION_RESPONSE_MAX_SERIALIZED_BYTES,
-    }));
-    if (Array.isArray(cancelled.invocations) && cancelled.invocations.length > 0) {
-      for (const value of cancelled.invocations) {
-        const index = WorkflowRunInvocationIndexV1Schema.parse(value);
-        const persisted = [...this.persisted.entries()].find(([, item]) => item.index.id === index.id);
-        if (persisted) {
-          const [key, item] = persisted;
-          this.persisted.set(key, { ...item, index });
-          const record = this.records.get(key);
-          if (record) this.records.set(key, { ...record, lifecycle: index.lifecycle });
-        }
-      }
+    this.params.revision = Math.max(this.params.revision, snapshot.run.revision);
+    const root = await this.refreshRootIndex();
+    if (root?.lifecycle === 'cancel_requested' || root?.lifecycle === 'cancelled') {
       return 'cancel_requested' as const;
     }
     if (snapshot.run.state === 'cancelled') return 'cancel_requested' as const;
+    if (snapshot.run.state === 'pause_requested' || snapshot.run.state === 'paused') return 'pause_requested' as const;
     return 'running' as const;
   };
+
+  confirmReviewHolds: WorkflowCoordinatorStore['confirmReviewHolds'] = async ({ recordIds }) => {
+    // The parent token precedes every exact row read. Never replace this token
+    // with the mutable store revision after confirming the holds.
+    const snapshot = parseRunSnapshot(await this.params.storage.execute({ operation: 'get', runId: this.params.runId }));
+    const revision = snapshot.run.revision;
+    this.params.revision = Math.max(this.params.revision, revision);
+    const selected: WorkflowCoordinatorInvocation[] = [];
+    for (const id of recordIds) {
+      await this.loadInvocation(id);
+      const record = this.recordsById.get(id);
+      if (!record) throw new Error('workflow_invocation_intent_missing');
+      selected.push(record);
+    }
+    const control = snapshot.run.state === 'cancelled' ? 'cancel_requested'
+      : snapshot.run.state === 'pause_requested' || snapshot.run.state === 'paused' ? 'pause_requested' : 'running';
+    return { revision, control, rows: selected };
+  };
+
+  admitReviewReplacement: WorkflowCoordinatorStore['admitReviewReplacement'] = async ({ prior, recordId, input }) => await this.serialized(async () => {
+    for (;;) {
+    await this.loadInvocation(prior.recordId);
+    const current = this.recordsById.get(prior.recordId);
+    if (!current) throw new Error('workflow_invocation_intent_missing');
+    const persisted = this.persisted.get(current.key)!;
+    if (current.lifecycle === 'completed') return current;
+    if (current.lifecycle === 'superseded') {
+      const index = persisted.index;
+      this.loadedParentSlots.delete(`${index.parentRecordId}:${index.memberOrdinal}`);
+      if (!index.parentRecordId) throw new Error('workflow_parent_invocation_missing');
+      await this.loadParentSlot(index.parentRecordId, index.memberOrdinal);
+      const replacement = this.recordsById.get(recordId);
+      if (!replacement || replacement.previousAttemptRecordId !== prior.recordId) throw new Error('workflow_review_intent_conflict');
+      return replacement;
+    }
+    if (classifyWorkflowHoldV1({ isCurrent: true, lifecycle: current.lifecycle,
+      progress: persisted.progress }) !== 'generate') throw new Error('workflow_review_intent_conflict');
+    if (current.review?.decision?.requestedFromContentRevision !== prior.review?.decision?.requestedFromContentRevision) return current;
+    const index = persisted.index;
+    const sequence = this.params.checkpoint.nextSequence;
+    const attempt = (BigInt(index.attempt) + 1n).toString();
+    const { review: _review, result: _result, reason: _reason, execution: _execution,
+      observationDeadline: _deadline, usage: _usage, interaction: _interaction, ...retained } = persisted.progress;
+    const progress = WorkflowProgressEnvelopeV1Schema.parse({ ...retained, attempt,
+      input: StrictJsonValueSchema.parse(input), previousAttemptRecordId: index.id,
+      recovery: { conversation: 'same_conversation', input: { kind: 'replacement', value: input } } });
+    const binding = { v: 1 as const, purpose: 'invocation_progress' as const,
+      accountId: this.params.accountId, runId: this.params.runId, recordId, sequence,
+      parentRecordId: index.parentRecordId, memberOrdinal: index.memberOrdinal, attempt };
+    const checkpoint = WorkflowCheckpointEnvelopeV1Schema.parse({ ...this.params.checkpoint,
+      nextSequence: (BigInt(sequence) + 1n).toString() });
+    let response: Readonly<Record<string, unknown>>;
+    try { response = asRecord(await this.params.storage.execute({ operation: 'invocations.admit',
+      runId: this.params.runId, parentAttempt: this.params.parentAttempt, accountCurrentness: this.params.encryption.witness,
+      expectedRevision: this.params.revision, checkpointEnvelope: this.serializeCheckpoint(checkpoint),
+      invocations: [{ id: recordId, sequence, parentRecordId: index.parentRecordId, memberOrdinal: index.memberOrdinal,
+        replaces: { id: index.id, attempt: index.attempt, contentRevision: index.contentRevision },
+        contentEnvelope: this.serializeProgress(binding, progress) }] })); }
+    catch (error) {
+      const before = this.params.revision;
+      const control = await this.readControl();
+      if (control !== 'running') throw new WorkflowControlBoundary(control === 'cancel_requested' ? 'cancelled' : 'paused');
+      await this.loadInvocation(index.id);
+      const refreshed = this.persisted.get(current.key)!;
+      if (refreshed.index.contentRevision !== index.contentRevision || this.params.revision !== before) continue;
+      throw error;
+    }
+    const admitted = Array.isArray(response.invocations) ? WorkflowRunInvocationIndexV1Schema.parse(response.invocations[0]) : null;
+    if (!admitted || typeof response.parentRevision !== 'number') throw new Error('workflow_storage_response_invalid');
+    this.params.revision = Math.max(this.params.revision, response.parentRevision);
+    this.params.checkpoint = checkpoint;
+    await this.loadInvocation(index.id);
+    return this.remember(admitted, progress);
+    }
+  });
 
   get checkpoint() { return this.params.checkpoint; }
   get revision() { return this.params.revision; }
   get rootIndex() {
-    return [...this.persisted.values()].find((item) => item.index.id === this.params.rootRecordId)?.index;
+    const root = this.recordsById.get(this.params.rootRecordId);
+    return root ? this.persisted.get(root.key)?.index : undefined;
   }
   refreshRootIndex = async (): Promise<WorkflowRunInvocationIndexV1 | undefined> => {
     await this.loadInvocation(this.params.rootRecordId);
     return this.rootIndex;
   };
   applyParentTransition(run: WorkflowRunSummaryV1, rootLifecycle: WorkflowRunInvocationIndexV1['lifecycle']): void {
-    this.params.revision = run.revision;
-    const root = [...this.persisted.entries()].find(([, item]) => item.index.id === this.params.rootRecordId);
-    if (!root) throw new Error('workflow_root_invocation_missing');
-    const [key, item] = root;
-    const index = { ...item.index, lifecycle: rootLifecycle };
-    this.persisted.set(key, { ...item, index });
-    const current = this.records.get(key);
-    if (current) this.records.set(key, { ...current, lifecycle: rootLifecycle });
+    this.params.revision = Math.max(this.params.revision, run.revision);
+    const root = this.recordsById.get(this.params.rootRecordId);
+    const item = root ? this.persisted.get(root.key) : undefined;
+    if (!root || !item) throw new Error('workflow_root_invocation_missing');
+    const key = root.key;
+    const contentRevision = item.index.lifecycle === rootLifecycle ? item.index.contentRevision
+      : (BigInt(item.index.contentRevision) + 1n).toString();
+    const index = { ...item.index, lifecycle: rootLifecycle, contentRevision };
+    this.remember(index, item.progress);
   }
 
-  resolveSharedInvocation(): WorkflowCoordinatorInvocation | null {
-    return [...this.records.values()].find((record) => record.recordId === this.params.rootRecordId) ?? null;
-  }
-
-  resolveProducerInvocation(
-    producer: import('@happier-dev/protocol').WorkflowAuthoredProducerRef,
-    consumer: WorkflowProgressEnvelopeV1,
-  ): WorkflowCoordinatorInvocation | null {
-    let scope = consumer.invocationPath.scope;
-    if (producer.scope.kind === 'outer') scope = scope.slice(0, Math.max(0, scope.length - producer.scope.levels));
-    if (producer.scope.kind === 'previous_iteration') {
-      const loopBlockId = producer.scope.loopBlockId;
-      const owner = [...scope].map((part, index) => ({ part, index })).reverse().find(
-        ({ part }) => part.kind === 'iteration' && part.blockId === loopBlockId,
-      );
-      if (!owner || owner.part.kind !== 'iteration' || owner.part.index === 0) return null;
-      const ownerPart = owner.part;
-      scope = scope.map((part, index) => index === owner.index
-        ? { ...ownerPart, index: ownerPart.index - 1 }
-        : part);
-    }
-    return [...this.records.values()]
-      .filter((record) => record.blockId === producer.blockId
-        && JSON.stringify(record.path.scope) === JSON.stringify(scope))
-      .sort((left, right) => right.attempt - left.attempt)[0] ?? null;
+  async resolveSharedInvocation(binding: WorkflowConversationBinding | undefined): Promise<WorkflowCoordinatorInvocation | null> {
+    if (binding?.kind !== 'shared') throw new Error('workflow_conversation_binding_missing');
+    const owner = await this.readByLogicalInvocation(binding.scopeOwnerKey);
+    const pointer = owner?.sharedConversationInvocationRecordId?.[binding.targetClass];
+    if (!pointer) return null;
+    const leaf = await this.readByLogicalInvocation(pointer);
+    if (!leaf?.execution || leaf.execution.kind !== binding.targetClass) throw new Error('workflow_conversation_unavailable');
+    return leaf;
   }
 }
 
 export type WorkflowProductionExecutionDeps = Readonly<{
   credentials: StoredCredentials;
   serverId: string;
-  resolveMachineOperationProtocolCapabilities: (signal?: AbortSignal) => Promise<unknown>;
-  machineAdmissionTransport: NonNullable<Parameters<typeof deliverWorkflowResultToOriginatingSession>[0]['machineAdmissionTransport']>;
+  machineAdmissionTransport: NonNullable<Parameters<typeof sendSessionMessage>[0]['machineAdmissionTransport']>;
   resolveTeamCredentialResourceCatalog?: Parameters<typeof createProductionFreshWorkflowSessionConversation>[0]['resolveTeamCredentialResourceCatalog'];
   resolveExistingSessionConversation: Parameters<typeof createProductionWorkflowSessionStepExecutor>[0]['resolveExistingSessionConversation'];
   /** Canonical Session I/O boundary adapter; production uses the incumbent default owner. */
   sessionInput?: Parameters<typeof createProductionWorkflowSessionStepExecutor>[0]['sessionInput'];
-  detachedRun: Omit<WorkflowDetachedExecutionRunStepExecutorDeps, 'resolveSharedRunConversation' | 'resolveProducerConversation'>;
-  attachedRun: Omit<WorkflowAttachedExecutionRunStepExecutorDeps, 'materializeConversation' | 'resolveRunSession'>;
+  originSessionInput?: Parameters<typeof createWorkflowSessionStepExecutor>[0]['originSessionInput'];
+  detachedRun: Omit<WorkflowDetachedExecutionRunStepExecutorDeps, 'resolveSharedRunConversation' | 'resolveProducerConversation' | 'workDepth' | 'resolveRoleInstructions'>;
+  action?: import('./coordinator').WorkflowActionExecutor;
 }>;
+
+export function createWorkflowRunPushNotificationClient(token: string): PushNotificationClient {
+  return new PushNotificationClient(token, resolveServerHttpBaseUrl());
+}
+
+export type WorkflowTriggerClaimSource =
+  | Readonly<{ kind: 'inline'; definition: WorkflowDefinitionV1 }>
+  | Readonly<{ kind: 'catalog'; definition: WorkflowDefinitionV1; ref: string; version: number }>
+  | Readonly<{ kind: 'saved' } & Awaited<ReturnType<ReturnType<typeof createWorkflowDefinitionActions>['get']>>>;
+
+export type WorkflowTriggerAdmissionRefusal = Readonly<{
+  state: 'failed' | 'skipped';
+  reason: string;
+  blockId?: string;
+  /** No accepted snapshot or coordinator effects were committed by this claim. */
+  admission: 'refused';
+}>;
+export type WorkflowClaimCoordinationResult = WorkflowCoordinatorResult | WorkflowTriggerAdmissionRefusal;
+
+function refuseWorkflowTriggerAdmission(reason: string, blockId?: string): WorkflowTriggerAdmissionRefusal {
+  return { state: 'failed', reason, ...(blockId === undefined ? {} : { blockId }), admission: 'refused' };
+}
+
+/** Resolves current source bytes through the existing Artifact/definition owner; E7 owns materialization. */
+export async function resolveWorkflowTriggerClaimSource(params: Readonly<{
+  target: TriggerTargetV1;
+  credentials: StoredCredentials;
+  encryption: AvailableAutomationAccountEncryptionV1;
+  signal?: AbortSignal;
+}>): Promise<WorkflowTriggerClaimSource | null> {
+  params.signal?.throwIfAborted();
+  if (params.target.kind === 'inline') return { kind: 'inline', definition: params.target.definition };
+  return resolveWorkflowDefinitionRefV1(params.target.ref, {
+    readArtifact: (definitionId, signal) => {
+      const artifactStore = createAccountArtifactStore({
+        credentials: params.credentials,
+        getAccountEncryptionMode: async () => params.encryption.witness.mode,
+        requirePlainWriteCompatibility: requireCurrentAccountStoredContentServerCompatibility,
+      });
+      return createWorkflowDefinitionActions({ artifactStore }).get({ definitionId, ...(signal ? { signal } : {}) });
+    },
+    ...(params.signal ? { signal: params.signal } : {}),
+  });
+}
 
 /**
  * Production Automation-claim composition. The server remains ciphertext-blind;
@@ -739,7 +993,16 @@ export function createProductionWorkflowRunCoordinator(params: Readonly<{
   machineId: string;
   resolveAccountEncryption: (signal?: AbortSignal) => Promise<AvailableAutomationAccountEncryptionV1>;
   isAcceptedAuthorizationCurrent: WorkflowAcceptedAuthorizationCurrentness;
+  /** Fresh host/controller facts; claim-time D3 stays at the shared Action owner. */
+  resolveControllerContext: (input: Readonly<{
+    runId: string; accepted: ReturnType<typeof WorkflowAcceptedSnapshotV1Schema.parse>; signal?: AbortSignal;
+  }>) => Promise<ActionExecutorContext>;
   execution: WorkflowProductionExecutionDeps;
+  resolveMaterializationHost?: (input: Readonly<{
+    runId: string; workDepth: number; directory: string; originSessionId?: string; signal?: AbortSignal;
+  }>) => Promise<Pick<MaterializeWorkflowAcceptedSnapshotV1Input, 'roleSelection' | 'effects'> & Readonly<{
+    admitLeaf: Extract<MaterializeWorkflowAcceptedSnapshotV1Input['admission'], { kind: 'trigger' }>['admitLeaf'];
+  }>>;
   prepareAcceptedWorkspaceTarget?: typeof prepareWorkflowAcceptedWorkspaceTarget;
   /**
    * The SCM/worktree boundary reached through the daemon-applied plugin
@@ -750,34 +1013,42 @@ export function createProductionWorkflowRunCoordinator(params: Readonly<{
   workspaceScm?: Parameters<typeof createCoordinatorWorkspaceResolver>[0]['scm'];
   resolveCurrentWorkspaceRefs?: (signal?: AbortSignal) => Promise<readonly import('@happier-dev/protocol').WorkspaceRefV1[]>;
   onCommittedTransition?: (transition: Readonly<{ run: WorkflowRunSummaryV1; result: WorkflowCoordinatorResult }>) => Promise<void> | void;
-  resultDelivery?: Readonly<{
-    credentials: StoredCredentials;
-    resolveMachineOperationProtocolCapabilities: (signal?: AbortSignal) => Promise<unknown>;
-    machineAdmissionTransport: NonNullable<Parameters<typeof deliverWorkflowResultToOriginatingSession>[0]['machineAdmissionTransport']>;
-  }>;
+  onReviewEntered?: (entry: Readonly<{ runId: string }>) => Promise<void> | void;
   storage?: StorageClient;
-}>): (claim: WorkflowClaimForCoordination) => Promise<WorkflowCoordinatorResult> {
+}>): (claim: WorkflowClaimForCoordination) => Promise<WorkflowClaimCoordinationResult> {
   const storage = params.storage ?? createWorkflowRunStorageClient({ token: params.token, machineId: params.machineId });
   const onCommittedTransition = params.onCommittedTransition
     ?? createWorkflowRunCommittedNotificationHandler({
-      expoPushSender: new PushNotificationClient(params.token),
+      expoPushSender: createWorkflowRunPushNotificationClient(params.token),
     });
+  const onReviewEntered = params.onReviewEntered ?? createWorkflowRunReviewEntryNotificationHandler({
+    expoPushSender: createWorkflowRunPushNotificationClient(params.token),
+  });
   return async (claim) => {
-    const encryption = await params.resolveAccountEncryption(claim.signal);
-    if (!sameAutomationAccountCurrentnessWitnessV1(encryption.witness, claim.accountCurrentness)) {
-      return { state: 'failed', reason: 'content_unavailable' };
+    const accountEncryption = await params.resolveAccountEncryption(claim.signal);
+    if (!sameAutomationAccountCurrentnessWitnessV1(accountEncryption.witness, claim.accountCurrentness)) {
+      return claim.definitionEnvelope === undefined
+        ? { state: 'failed', reason: 'content_unavailable' }
+        : refuseWorkflowTriggerAdmission('content_unavailable');
     }
     let resolvedAcceptedEnvelope = claim.acceptedEnvelope;
     if (claim.definitionEnvelope !== undefined) {
-      if (!claim.automationId || !claim.automationCause) return { state: 'failed', reason: 'content_unavailable' };
+      if (!claim.automationId || !claim.automationCause) return refuseWorkflowTriggerAdmission('content_unavailable');
       const definitionContent = openAutomationStoredContent({
         serialized: claim.definitionEnvelope,
         kind: 'automation_template_payload',
-        encryption,
+        encryption: accountEncryption,
       });
       const storedDefinition = AutomationStoredWorkflowDefinitionV2Schema.safeParse(definitionContent);
-      if (!storedDefinition.success || storedDefinition.data.project.machineId !== params.machineId) {
-        return { state: 'failed', reason: 'workspace_conflict' };
+      const target = readTriggerTargetV1(claim, definitionContent);
+      if (!storedDefinition.success || target.kind !== 'available') return refuseWorkflowTriggerAdmission('source_unavailable');
+      const source = await resolveWorkflowTriggerClaimSource({
+        target: target.target, credentials: params.execution.credentials, encryption: accountEncryption,
+        ...(claim.signal ? { signal: claim.signal } : {}),
+      });
+      if (!source || claim.causeWorkDepth === undefined
+        || !Number.isSafeInteger(claim.causeWorkDepth) || claim.causeWorkDepth < 0) {
+        return refuseWorkflowTriggerAdmission('source_unavailable');
       }
       const evidenceContent = claim.automationEvidenceEnvelope === null
         ? null
@@ -786,65 +1057,156 @@ export function createProductionWorkflowRunCoordinator(params: Readonly<{
           : openAutomationStoredContent({
             serialized: claim.automationEvidenceEnvelope,
             kind: 'automation_trigger_evidence',
-            encryption,
+            encryption: accountEncryption,
           });
+      const prepareClaimWorkspace = async () => {
+        let workspaceRefs: readonly import('@happier-dev/protocol').WorkspaceRefV1[] = [];
+        if (storedDefinition.data.workspace.workspaceRefId) {
+          try {
+            workspaceRefs = await params.resolveCurrentWorkspaceRefs?.(claim.signal) ?? [];
+          } catch {
+            claim.signal?.throwIfAborted();
+            return { ok: false, code: 'workspace_unavailable' } as const;
+          }
+        }
+        return (params.prepareAcceptedWorkspaceTarget ?? prepareWorkflowAcceptedWorkspaceTarget)({
+          projectTarget: { machineId: params.machineId, ...storedDefinition.data.workspace },
+          definition: source.definition,
+          currentServerId: params.execution.serverId,
+          resolveWorkspaceRef: (workspaceRefId) => resolveWorkspaceRefById(workspaceRefs, workspaceRefId),
+        });
+      };
+      // The signed project may use a home alias. Fingerprint the same canonical
+      // project that execution receives, without creating any Run-owned worktree.
+      const fingerprintWorkspace = claim.scopeSessionId && source.definition.inputs.some((input) => input.name === 'diffFingerprint')
+        ? await prepareClaimWorkspace() : undefined;
+      if (fingerprintWorkspace?.ok === false) return refuseWorkflowTriggerAdmission(fingerprintWorkspace.code);
+      const fingerprint = fingerprintWorkspace?.ok
+        ? await readWorktreeChangeFingerprint(fingerprintWorkspace.workspaceTarget.project.directory)
+        : undefined;
+      claim.signal?.throwIfAborted();
+      const diffFingerprint = fingerprint?.kind === 'available' ? fingerprint.fingerprint : undefined;
       let inputs: ReturnType<typeof bindAutomationWorkflowInputs>;
       try {
         const occurrenceSeed = WorkflowResolvedInputsV1Schema.parse(resolveAutomationWorkflowOccurrenceSeed({
-          cause: claim.automationCause,
-          openedEvidence: evidenceContent,
+          cause: claim.automationCause, openedEvidence: evidenceContent,
+          ...(diffFingerprint === undefined ? {} : { diffFingerprint }),
         }));
-        inputs = bindAutomationWorkflowInputs({
-          definition: storedDefinition.data.definition,
-          evidence: occurrenceSeed,
+        inputs = bindAutomationWorkflowInputs({ definition: source.definition, evidence: occurrenceSeed,
+          constants: storedDefinition.data.inputs });
+      } catch (error) {
+        return refuseWorkflowTriggerAdmission(error instanceof WorkflowInputResolutionError ? error.code : 'content_unavailable');
+      }
+      const workspace = fingerprintWorkspace ?? await prepareClaimWorkspace();
+      if (!workspace.ok) return refuseWorkflowTriggerAdmission(workspace.code);
+      if (!params.resolveMaterializationHost) return refuseWorkflowTriggerAdmission('target_unavailable');
+      const originSessionId = claim.scopeSessionId ?? undefined;
+      let host: Awaited<ReturnType<NonNullable<typeof params.resolveMaterializationHost>>>;
+      try {
+        host = await params.resolveMaterializationHost({
+          runId: claim.runId, workDepth: claim.causeWorkDepth,
+          directory: workspace.workspaceTarget.project.directory,
+          ...(originSessionId ? { originSessionId } : {}),
+          ...(claim.signal ? { signal: claim.signal } : {}),
         });
-      } catch {
-        return { state: 'failed', reason: 'content_unavailable' };
-      }
-      let workspaceRefs: readonly import('@happier-dev/protocol').WorkspaceRefV1[] = [];
-      if (storedDefinition.data.project.workspaceRefId) {
-        try {
-          workspaceRefs = await params.resolveCurrentWorkspaceRefs?.(claim.signal) ?? [];
-        } catch {
-          return { state: 'failed', reason: 'workspace_unavailable' };
+      } catch (error) {
+        claim.signal?.throwIfAborted();
+        const code = error !== null && typeof error === 'object' && 'code' in error ? error.code : undefined;
+        if (code === 'source_unavailable' || code === 'content_unavailable' || code === 'target_unavailable') {
+          return refuseWorkflowTriggerAdmission(code);
         }
+        throw error;
       }
-      const workspace = await (params.prepareAcceptedWorkspaceTarget ?? prepareWorkflowAcceptedWorkspaceTarget)({
-        projectTarget: storedDefinition.data.project,
-        definition: storedDefinition.data.definition,
-        currentServerId: params.execution.serverId,
-        resolveWorkspaceRef: (workspaceRefId) => resolveWorkspaceRefById(workspaceRefs, workspaceRefId),
+      const created = await materializeWorkflowAcceptedSnapshotV1({
+        definition: source.definition,
+        ...host,
+        roleOverrides: storedDefinition.data.roleOverrides,
+        admission: { kind: 'trigger', workDepth: claim.causeWorkDepth, admitLeaf: host.admitLeaf },
+        context: {
+          inputs, machineId: params.machineId,
+          executionTarget: storedDefinition.data.executionTarget,
+          workspaceTarget: workspace.workspaceTarget,
+          authorization: { principal: { kind: 'host' } },
+          source: source.kind === 'catalog' ? { kind: 'catalog', ref: source.ref, version: source.version }
+            : { kind: 'automation', automationId: claim.automationId,
+              ...(source.kind === 'saved' ? { definitionId: source.definitionId, revision: source.revision,
+                savedBy: source.savedBy ?? null } : {}) },
+          ...(source.kind === 'saved' ? { metadata: source.metadata } : {}),
+          ...(originSessionId ? { origin: { kind: 'direct', originSessionId } } : {}),
+          ...(storedDefinition.data.onComplete?.kind === 'originating_session' && originSessionId ? {
+            resultDelivery: { kind: 'originating_session', originSessionId },
+          } : {}),
+        },
       });
-      if (!workspace.ok) return { state: 'failed', reason: workspace.code };
-      const created = createAutomationWorkflowAcceptedSnapshotV1({
-        automationId: claim.automationId,
-        definition: storedDefinition.data.definition,
-        ...(storedDefinition.data.metadata ? { metadata: storedDefinition.data.metadata } : {}),
-        inputs,
-        machineId: params.machineId,
-        workspaceTarget: workspace.workspaceTarget,
-        ...(storedDefinition.data.source ? { source: storedDefinition.data.source } : {}),
-      });
-      if (created.kind !== 'available') return { state: 'failed', reason: 'content_unavailable' };
+      if (!created.ok) return refuseWorkflowTriggerAdmission(created.error.code, created.error.blockId);
+      const sourceSessionId = claim.automationCause.kind === 'trigger' && claim.automationCause.triggerKind === 'sessionLifecycle'
+        ? claim.automationCause.evidence.sourceSessionId : originSessionId;
+      const selfTarget = sourceSessionId ? created.snapshot.materializedLeaves.find((leaf) =>
+        leaf.selection.conversation?.kind === 'existing_session' && leaf.selection.conversation.sessionId === sourceSessionId) : undefined;
+      if (selfTarget) return refuseWorkflowTriggerAdmission('self_target', selfTarget.blockId);
+      if (diffFingerprint !== undefined && claim.lastSucceededRun) {
+        // Use the previous Run's canonical key census. Checkpoints are bound to
+        // their Run and cannot be opened with the new occurrence's key.
+        let endFingerprint: string | undefined;
+        try {
+          const previous = claim.lastSucceededRun;
+          const census = WorkflowRunRecipientCensusResponseV1Schema.parse(await storage.execute({
+            operation: 'run-key.census', runId: previous.runId,
+          }, claim.signal ? { signal: claim.signal } : {}));
+          const key = resolveWorkflowRunDataKeyV1({ encryption: accountEncryption, census });
+          if (key.kind === 'available' && census.runId === previous.runId && census.ownerAccountId === params.accountId) {
+            const opened = openWorkflowCheckpointStoredEnvelopeV1({ ...openMode(key.encryption),
+              binding: { v: 1, purpose: 'checkpoint', accountId: params.accountId, runId: previous.runId },
+              envelope: parseWorkflowStoredContentEnvelopeV1(previous.checkpointEnvelope) });
+            if (opened.kind === 'available') endFingerprint = opened.content.endFingerprint;
+          }
+        } catch {
+          claim.signal?.throwIfAborted();
+          // Unreadable historical evidence never suppresses a fresh review.
+        }
+        if (endFingerprint === diffFingerprint) return { state: 'skipped', reason: 'diff_unchanged', admission: 'refused' };
+      }
+      const sourceArtifactId = 'definitionId' in created.snapshot.source ? created.snapshot.source.definitionId ?? null : null;
+      const visibility = storedDefinition.data.visibleTeamId === undefined ? {} : { visibleTeamId: storedDefinition.data.visibleTeamId };
+      const census = accountEncryption.witness.mode === 'e2ee'
+        ? WorkflowRunRecipientCensusResponseV1Schema.parse(await storage.execute({ operation: 'run-key.census', runId: claim.runId, sourceArtifactId, ...visibility }, claim.signal ? { signal: claim.signal } : {}))
+        : undefined;
+      const prepared = prepareWorkflowRunDataKeyV1({ accountId: params.accountId, encryption: accountEncryption,
+        ...(census ? { census } : {}), randomBytes: getRandomBytes });
       const candidate = serializeWorkflowStoredContentEnvelopeV1(sealWorkflowAcceptedSnapshotStoredEnvelopeV1({
-        ...sealMode(encryption),
+        ...sealMode({ witness: accountEncryption.witness, runCrypto: prepared.runCrypto }),
         binding: { v: 1, purpose: 'accepted_snapshot', accountId: params.accountId, runId: claim.runId },
         acceptedSnapshot: created.snapshot,
       }));
       const resolution = asRecord(await storage.execute({
         operation: 'accepted-snapshot.resolve',
-        accountCurrentness: encryption.witness,
+        accountCurrentness: accountEncryption.witness,
         runId: claim.runId,
         automationId: claim.automationId,
         expectedAttempt: claim.attempt,
         expectedRevision: claim.expectedRevision,
         definitionEnvelope: claim.definitionEnvelope,
         acceptedEnvelope: candidate,
+        sourceArtifactId,
+        ...(created.snapshot.origin?.originSessionId ? { originSessionId: created.snapshot.origin.originSessionId } : {}),
+        ...(created.snapshot.resultDelivery ? { resultDelivery: { kind: created.snapshot.resultDelivery.kind } } : {}),
+        recipientKeyEnvelopes: prepared.recipientKeyEnvelopes,
+        ...(census ? { visibleTeamId: census.visibleTeamId } : visibility),
       }, { ...(claim.signal ? { signal: claim.signal } : {}) }));
       if (typeof resolution.acceptedEnvelope !== 'string') throw new Error('workflow_storage_response_invalid');
       resolvedAcceptedEnvelope = resolution.acceptedEnvelope;
     }
     const initial = parseRunSnapshot(await storage.execute({ operation: 'get', runId: claim.runId }, { ...(claim.signal ? { signal: claim.signal } : {}) }));
+    const resolved = resolveWorkflowRunDataKeyV1({ encryption: accountEncryption, census: initial.keyCensus });
+    if (resolved.kind !== 'available' || initial.keyCensus.ownerAccountId !== params.accountId) return { state: 'failed', reason: 'content_unavailable' };
+    const encryption = resolved.encryption;
+    const prepareRecipients = async (signal?: AbortSignal) => await runWorkflowRecipientKeyPreparationV1({
+      runId: claim.runId, runCrypto: encryption.runCrypto, openedDataEncryptionKey: initial.keyCensus.callerDataEncryptionKey,
+      randomBytes: getRandomBytes,
+      readCensus: async () => WorkflowRunRecipientCensusResponseV1Schema.parse(await storage.execute({ operation: 'run-key.census', runId: claim.runId }, signal ? { signal } : {})),
+      commit: async input => WorkflowRunRecipientKeyEnvelopeCommitResponseV1Schema.parse(await storage.execute({ operation: 'run-key.commit', ...input }, signal ? { signal } : {})),
+      ...(signal ? { signal } : {}),
+    });
     if (resolvedAcceptedEnvelope !== undefined && initial.acceptedEnvelope !== resolvedAcceptedEnvelope) {
       return { state: 'failed', reason: 'content_unavailable' };
     }
@@ -864,18 +1226,35 @@ export function createProductionWorkflowRunCoordinator(params: Readonly<{
       return { state: 'failed', reason: 'workspace_conflict' };
     }
     const isOpenedAuthorizationCurrent = async (signal?: AbortSignal): Promise<boolean> => {
-      try {
-        const current = await params.resolveAccountEncryption(signal);
-        return sameAutomationAccountCurrentnessWitnessV1(current.witness, claim.accountCurrentness)
-          && await params.isAcceptedAuthorizationCurrent({
-            authorization: accepted.authorization,
-            ...(signal ? { signal } : {}),
-          });
-      } catch {
-        return false;
-      }
+      const current = await params.resolveAccountEncryption(signal);
+      return sameAutomationAccountContentIdentityV1(current.witness, accountEncryption.witness)
+        && await params.isAcceptedAuthorizationCurrent({
+          authorization: accepted.authorization,
+          ...(signal ? { signal } : {}),
+        });
     };
     claim.registerAuthorizationCurrentnessCheck?.(isOpenedAuthorizationCurrent);
+
+    const checkControllerDominance = async (signal?: AbortSignal) => {
+      try {
+        const context = await params.resolveControllerContext({ runId: claim.runId, accepted,
+          ...(signal ? { signal } : {}) });
+        await assertControllerDominates({ actionId: 'workflow.run.resume',
+          input: { mode: 'boundary', runId: claim.runId, expectedRevision: initial.run.revision },
+          context: { ...context, ...(signal ? { signal } : {}) } },
+          accepted, undefined, input => isOpenedAuthorizationCurrent(input.signal),
+          { normalizeAbsolutePath: directory => resolveCanonicalAbsolutePath(directory)?.path ?? null });
+        return undefined;
+      } catch (error) {
+        signal?.throwIfAborted();
+        const code = WorkflowOperationErrorCodeV1Schema.safeParse(error !== null && typeof error === 'object' && 'code' in error ? error.code : undefined);
+        if (!code.success) throw error;
+        return code.data;
+      }
+    };
+    const controllerFailure = claim.workflowResumeRequestedRevision === undefined
+      ? undefined
+      : await checkControllerDominance(claim.signal);
 
     let checkpoint: WorkflowCheckpointEnvelopeV1;
     let rootRecordId: string;
@@ -915,13 +1294,39 @@ export function createProductionWorkflowRunCoordinator(params: Readonly<{
       rootRecordId = checkpoint.rootRecordId;
     }
 
+    if (!controllerFailure && checkpoint.frontier.paused) {
+      checkpoint = { ...checkpoint, frontier: { ...checkpoint.frontier, paused: false } };
+    }
     const durableStore = await DurableWorkflowCoordinatorStore.load({
       accountId: params.accountId, runId: claim.runId, parentAttempt: claim.attempt,
-      storage, encryption, rootRecordId, checkpoint, revision, kinds: blockKinds(accepted.definition.blocks),
+      storage, encryption, rootRecordId, checkpoint, revision,
     });
     claim.registerControlCheck?.(async () => await durableStore.readControl());
     const rootAtStart = durableStore.rootIndex;
     if (!rootAtStart) throw new Error('workflow_root_invocation_missing');
+    if (controllerFailure) {
+      const root = await durableStore.readByLogicalInvocation(rootRecordId);
+      if (!root) throw new Error('workflow_root_invocation_missing');
+      await durableStore.commitFact({ key: root.key, lifecycle: root.lifecycle,
+        reason: controllerFailure, reasonMessage: `Couldn't resume: ${controllerFailure}` });
+      const active = await durableStore.listByLifecycle({ runId: claim.runId,
+        lifecycles: ['admitting', 'running', 'waiting_for_approval', 'needs_attention', 'cancel_requested', 'outcome_uncertain'] });
+      const hasInputCustody = active.some(row => (row.blockKind === 'step' || row.blockKind === 'action')
+        && (row.execution !== undefined || row.lifecycle === 'admitting' || row.lifecycle === 'cancel_requested' || row.lifecycle === 'outcome_uncertain'));
+      const control = await durableStore.readControl();
+      const state = control === 'cancel_requested' ? 'cancelled' : hasInputCustody ? 'interrupted' : 'paused';
+      // A denied resumed boundary owns no input. Reclaimed active custody must
+      // remain recoverable rather than being mislabeled a quiescent pause.
+      if (state === 'cancelled' && hasInputCustody) return { state: 'interrupted', reason: controllerFailure };
+      const checkpointEnvelope = serializeWorkflowStoredContentEnvelopeV1(sealWorkflowCheckpointStoredEnvelopeV1({
+        ...sealMode(encryption), binding: { v: 1, purpose: 'checkpoint', accountId: params.accountId, runId: claim.runId },
+        checkpoint: { ...durableStore.checkpoint, frontier: { ...durableStore.checkpoint.frontier, paused: state === 'paused' } },
+      }));
+      await storage.execute({ operation: 'transition', runId: claim.runId, parentAttempt: claim.attempt,
+        accountCurrentness: encryption.witness, expectedRevision: durableStore.revision, state, checkpointEnvelope });
+      return { state, reason: controllerFailure };
+    }
+    await prepareRecipients(claim.signal);
     if (rootAtStart.lifecycle === 'pending') {
       const checkpointEnvelope = serializeWorkflowStoredContentEnvelopeV1(sealWorkflowCheckpointStoredEnvelopeV1({
         ...sealMode(encryption), binding: { v: 1, purpose: 'checkpoint', accountId: params.accountId, runId: claim.runId },
@@ -932,122 +1337,123 @@ export function createProductionWorkflowRunCoordinator(params: Readonly<{
         accountCurrentness: encryption.witness,
         expectedRevision: durableStore.revision,
         state: 'running', checkpointEnvelope,
-        invocationTransitions: [{ id: rootAtStart.id, expectedLifecycle: 'pending', lifecycle: 'running' }],
+        invocationTransitions: [{ id: rootAtStart.id, expectedLifecycle: 'pending', expectedContentRevision: rootAtStart.contentRevision, lifecycle: 'running' }],
       }));
       durableStore.applyParentTransition(started, 'running');
     }
-    const resolveSharedSessionConversation = async () => {
-      const record = durableStore.resolveSharedInvocation();
+    const resolveSharedSessionConversation = async ({ conversationBinding }: Readonly<{ conversationBinding?: WorkflowConversationBinding }>) => {
+      const record = await durableStore.resolveSharedInvocation(conversationBinding);
       return record?.execution?.kind === 'session' && record.workspace?.descriptor
         ? { sessionId: record.execution.sessionId, machineId: record.workspace.descriptor.machineId,
             directory: record.workspace.descriptor.directory }
-        : record?.execution?.kind === 'attached_run' && record.workspace?.descriptor
-          ? { sessionId: record.execution.sessionId, machineId: record.workspace.descriptor.machineId,
-              directory: record.workspace.descriptor.directory }
-          : null;
+        : null;
     };
-    const resolveProducerSessionConversation = async ({ producer, invocation }: Readonly<{
+    const resolveProducerSessionConversation = async ({ producer, producerBinding }: Readonly<{
       producer: import('@happier-dev/protocol').WorkflowAuthoredProducerRef;
-      invocation: WorkflowProgressEnvelopeV1;
+      producerBinding?: WorkflowProducerBinding;
     }>) => {
-      const record = durableStore.resolveProducerInvocation(producer, invocation);
+      if (!producerBinding) throw new Error('workflow_producer_binding_missing');
+      const record = await producerBinding.resolve(producer);
       return record?.execution?.kind === 'session' && record.workspace?.descriptor
         ? { sessionId: record.execution.sessionId, machineId: record.workspace.descriptor.machineId,
             directory: record.workspace.descriptor.directory }
-        : record?.execution?.kind === 'attached_run' && record.workspace?.descriptor
-          ? { sessionId: record.execution.sessionId, machineId: record.workspace.descriptor.machineId,
-              directory: record.workspace.descriptor.directory }
-          : null;
+        : null;
     };
     const freshConversation = createProductionFreshWorkflowSessionConversation({
       credentials: params.execution.credentials,
       serverId: params.execution.serverId,
       machineId: params.machineId,
+      workDepth: accepted.workDepth,
+      originRunId: claim.runId,
       machineAdmissionTransport: params.execution.machineAdmissionTransport,
       ...(params.execution.resolveTeamCredentialResourceCatalog
         ? { resolveTeamCredentialResourceCatalog: params.execution.resolveTeamCredentialResourceCatalog }
         : {}),
     });
+    const resolveFrozenRole = (executionParams: Pick<Parameters<WorkflowStepExecutor>[0], 'role'>) => executionParams.role;
     const conversations = createProductionWorkflowConversationOwner({
       machineId: params.machineId,
       createFreshConversation: freshConversation,
       resolveSharedRunConversation: resolveSharedSessionConversation,
-      resolveProducerConversation: async ({ producer, invocation }) =>
-        await resolveProducerSessionConversation({ producer, invocation }),
+      resolveProducerConversation: resolveProducerSessionConversation,
       resolveExistingSessionConversation: params.execution.resolveExistingSessionConversation,
+      resolveFrozenRole,
     });
+    const resolveRoleInstructions = (executionParams: Parameters<WorkflowStepExecutor>[0]) => {
+      const role = resolveFrozenRole(executionParams);
+      return role ? renderSessionRoleBlockV1({ role, source: 'workflow_step', originKind: 'run_step' }) : undefined;
+    };
     const detachedRunDeps: WorkflowDetachedExecutionRunStepExecutorDeps = {
       ...params.execution.detachedRun,
-      buildActionContext: (executionParams) => ({
-        ...params.execution.detachedRun.buildActionContext(executionParams),
-        executionRunPermissionRequestStore: new AgentStateRequestStore({
-          target: durableStore.createInteractionPersistenceTarget(workflowInvocationKey({
-            runId: executionParams.runId,
-            blockId: executionParams.invocation.invocationPath.blockId,
-            scope: executionParams.invocation.invocationPath.scope,
-            attempt: Number(executionParams.invocation.attempt),
-          })),
-          logPrefix: `[WORKFLOW ${executionParams.runId}]`,
-        }),
-      }),
-      resolveSharedRunConversation: async () => {
-        const record = durableStore.resolveSharedInvocation();
-        return record?.execution?.kind === 'detached_run' && record.workspace?.descriptor
-          ? {
-              runId: record.execution.runId,
-              machineId: record.workspace.descriptor.machineId,
-              directory: record.workspace.descriptor.directory,
-              ...(record.execution.runtimeSelection
-                ? { runtimeSelection: record.execution.runtimeSelection }
-                : {}),
-              ...(record.execution.providerResumeIdentity
-                ? { providerResumeIdentity: record.execution.providerResumeIdentity }
-                : {}),
-            }
-          : null;
-      },
-      resolveProducerConversation: async ({ producer, invocation }) => {
-        const record = durableStore.resolveProducerInvocation(producer, invocation);
-        return record?.execution?.kind === 'detached_run' && record.workspace?.descriptor
-          ? {
-              runId: record.execution.runId,
-              machineId: record.workspace.descriptor.machineId,
-              directory: record.workspace.descriptor.directory,
-              ...(record.execution.runtimeSelection
-                ? { runtimeSelection: record.execution.runtimeSelection }
-                : {}),
-              ...(record.execution.providerResumeIdentity
-                ? { providerResumeIdentity: record.execution.providerResumeIdentity }
-                : {}),
-            }
-          : null;
-      },
-    };
-    const attachedRunDeps: WorkflowAttachedExecutionRunStepExecutorDeps = {
-      ...params.execution.attachedRun,
-      materializeConversation: async (executionParams) => {
-        const prepared = executionParams.preparedStep;
-        const sessionPreparation = isPreparedWorkflowSessionConversation(prepared)
-          ? prepared
-          : await conversations.prepare(executionParams);
-        const conversation = await conversations.materialize(sessionPreparation, executionParams);
-        return { ...conversation };
-      },
-      resolveRunSession: async ({ invocation }) => {
-        const execution = invocation.execution;
-        if (execution?.kind !== 'attached_run' || !invocation.workspace?.descriptor) return null;
+      workDepth: accepted.workDepth,
+      resolveRoleInstructions,
+      buildActionContext: (executionParams) => {
+        const role = resolveFrozenRole(executionParams);
+        const context = params.execution.detachedRun.buildActionContext(executionParams);
         return {
-          sessionId: execution.sessionId,
-          runId: execution.runId,
-          machineId: invocation.workspace.descriptor.machineId,
-          directory: invocation.workspace.descriptor.directory,
+          ...context,
+          ...(role ? { agentStartWorkspaceWrites: context.agentStartWorkspaceWrites === 'deny' ? 'deny' : role.workspaceWrites } : {}),
+          executionRunPermissionRequestStore: new AgentStateRequestStore({
+            target: durableStore.createInteractionPersistenceTarget(workflowInvocationKey({
+              runId: executionParams.runId,
+              blockId: executionParams.invocation.invocationPath.blockId,
+              scope: executionParams.invocation.invocationPath.scope,
+              attempt: Number(executionParams.invocation.attempt),
+            })),
+            logPrefix: `[WORKFLOW ${executionParams.runId}]`,
+          }),
         };
       },
+      resolveSharedRunConversation: async ({ conversationBinding }) => {
+        const record = await durableStore.resolveSharedInvocation(conversationBinding);
+        return record?.execution?.kind === 'detached_run' && record.workspace?.descriptor
+          ? {
+              runId: record.execution.runId,
+              machineId: record.workspace.descriptor.machineId,
+              directory: record.workspace.descriptor.directory,
+              ...(record.execution.runtimeSelection
+                ? { runtimeSelection: record.execution.runtimeSelection }
+                : {}),
+              ...(record.execution.providerResumeIdentity
+                ? { providerResumeIdentity: record.execution.providerResumeIdentity }
+                : {}),
+            }
+          : null;
+      },
+      resolveProducerConversation: async ({ producer, producerBinding }) => {
+        if (!producerBinding) throw new Error('workflow_producer_binding_missing');
+        const record = await producerBinding.resolve(producer);
+        return record?.execution?.kind === 'detached_run' && record.workspace?.descriptor
+          ? {
+              runId: record.execution.runId,
+              machineId: record.workspace.descriptor.machineId,
+              directory: record.workspace.descriptor.directory,
+              ...(record.execution.runtimeSelection
+                ? { runtimeSelection: record.execution.runtimeSelection }
+                : {}),
+              ...(record.execution.providerResumeIdentity
+                ? { providerResumeIdentity: record.execution.providerResumeIdentity }
+                : {}),
+            }
+          : null;
+      },
     };
+    const rootInvocation = await durableStore.readByLogicalInvocation(rootRecordId);
+    if (!rootInvocation) throw new Error('workflow_root_invocation_missing');
     const coordinator = createWorkflowCoordinator({
       store: durableStore,
+      ...(params.execution.action ? { action: params.execution.action } : {}),
+      onReviewEntered: async ({ runId }) => await onReviewEntered({ runId }),
+      sessionContext: createProductionWorkflowSessionContextReader({
+        credentials: params.execution.credentials,
+        machineId: params.machineId,
+        originSessionId: accepted.origin?.originSessionId,
+        ...(claim.signal ? { signal: claim.signal } : {}),
+      }),
+      rootInvocationRecordId: rootInvocation.recordId,
       isAcceptedAuthorizationCurrent: async (currentness) =>
         await isOpenedAuthorizationCurrent(currentness.signal),
+      checkReviewGenerationAuthority: async ({ signal }) => await checkControllerDominance(signal),
       prepareStep: async (executionParams) => {
         try {
           if (executionParams.executionTarget.kind === 'detached_run') {
@@ -1059,9 +1465,6 @@ export function createProductionWorkflowRunCoordinator(params: Readonly<{
             const directory = retainedConversation?.directory;
             return {
               preparedStep,
-              ...(retainedConversation
-                ? { conversationAdmissionKey: retainedConversation.runId }
-                : {}),
               ...(directory
                 ? {
                     conversationWorkspace: {
@@ -1102,11 +1505,13 @@ export function createProductionWorkflowRunCoordinator(params: Readonly<{
       executeStep: createWorkflowStepExecutorDispatcher({
         session: createWorkflowSessionStepExecutor({
           credentials: params.execution.credentials,
-          resolveMachineOperationProtocolCapabilities:
-            params.execution.resolveMachineOperationProtocolCapabilities,
+          workDepth: accepted.workDepth,
+          resolveRoleInstructions,
           ...(params.execution.sessionInput ? { sessionInput: params.execution.sessionInput } : {}),
+          ...(params.execution.originSessionInput ? { originSessionInput: params.execution.originSessionInput } : {}),
           prepareConversation: async (executionParams) => await conversations.prepare(executionParams),
           materializeConversation: async (prepared, executionParams) => {
+            await prepareRecipients(claim.signal);
             const conversation = await conversations.materialize(prepared, executionParams);
             return {
               sessionId: conversation.sessionId,
@@ -1115,7 +1520,6 @@ export function createProductionWorkflowRunCoordinator(params: Readonly<{
           },
         }),
         detachedRun: createWorkflowDetachedExecutionRunStepExecutor(detachedRunDeps),
-        attachedRun: createWorkflowAttachedExecutionRunStepExecutor(attachedRunDeps),
       }),
       resolveWorkspace: createCoordinatorWorkspaceResolver({
         store: durableStore,
@@ -1126,10 +1530,41 @@ export function createProductionWorkflowRunCoordinator(params: Readonly<{
         ...(params.workspaceScm ? { scm: params.workspaceScm } : {}),
       }),
     });
-    let result = await coordinator.run({ runId: claim.runId, definition: accepted.definition, inputs,
+    claim.registerReviewHoldRefresh?.(coordinator.refreshReviewHolds);
+    const runCoordinator = () => coordinator.run({ runId: claim.runId, definition: accepted.definition, inputs,
+      authoredDefinition: accepted.authoredDefinition,
       executionTarget: accepted.executionTarget,
+      materializedLeaves: accepted.materializedLeaves,
+      frozenChildren: accepted.frozenChildren,
+      workDepth: accepted.workDepth,
       authorization: accepted.authorization,
+      ...(accepted.origin?.originSessionId ? { originSessionId: accepted.origin.originSessionId } : {}),
       ...(claim.signal ? { signal: claim.signal } : {}) });
+    let result = await runCoordinator();
+    while (result.state === 'waiting_for_review') {
+      if (result.parkRevision === undefined) throw new Error('workflow_review_park_token_missing');
+      try {
+        const parked = WorkflowRunSummaryV1Schema.parse(await storage.execute({ operation: 'transition',
+          runId: claim.runId, parentAttempt: claim.attempt, accountCurrentness: encryption.witness,
+          expectedRevision: result.parkRevision, state: 'waiting_for_review',
+          checkpointEnvelope: serializeWorkflowStoredContentEnvelopeV1(sealWorkflowCheckpointStoredEnvelopeV1({
+            ...sealMode(encryption), binding: { v: 1, purpose: 'checkpoint', accountId: params.accountId, runId: claim.runId },
+            checkpoint: durableStore.checkpoint })) }));
+        durableStore.applyParentTransition(parked, durableStore.rootIndex!.lifecycle);
+        return result;
+      } catch (error) {
+        const snapshot = parseRunSnapshot(await storage.execute({ operation: 'get', runId: claim.runId }));
+        if (snapshot.run.state === 'waiting_for_review') return result;
+        if (snapshot.run.revision === result.parkRevision) throw error;
+        const control = await durableStore.readControl();
+        if (control === 'cancel_requested') { result = { state: 'cancelled' }; break; }
+        if (control === 'pause_requested') { result = { state: 'paused' }; break; }
+        if (snapshot.run.state !== 'running' && snapshot.run.state !== 'claimed') throw error;
+        // Human resolution invalidated R. Re-enter the same claim and exact
+        // held pipelines; refreshing the store cannot authorize parking.
+        result = await runCoordinator();
+      }
+    }
     // Cancellation is the terminal authority even when it races the last
     // admitted leaf. A pause that arrives after all authored work completed is
     // intentionally allowed to settle that completed work normally.
@@ -1156,9 +1591,14 @@ export function createProductionWorkflowRunCoordinator(params: Readonly<{
     const rootBeforeSettlement = durableStore.rootIndex;
     if (!rootBeforeSettlement) throw new Error('workflow_root_invocation_missing');
     let rootTerminal = projectWorkflowRootSettlementLifecycle(result.state, rootBeforeSettlement.lifecycle);
+    const endFingerprint = result.state === 'succeeded' && accepted.definition.inputs.some((input) => input.name === 'diffFingerprint')
+      ? await durableStore.readFinalReviewFingerprint(new Set(accepted.materializedLeaves
+        ?.filter((leaf) => leaf.kind === 'action' && leaf.actionId === 'review.start').map((leaf) => leaf.blockId)))
+      : undefined;
+    const { endFingerprint: _priorFingerprint, ...closingCheckpoint } = durableStore.checkpoint;
     const checkpointEnvelope = serializeWorkflowStoredContentEnvelopeV1(sealWorkflowCheckpointStoredEnvelopeV1({
       ...sealMode(encryption), binding: { v: 1, purpose: 'checkpoint', accountId: params.accountId, runId: claim.runId },
-      checkpoint: durableStore.checkpoint,
+      checkpoint: { ...closingCheckpoint, ...(endFingerprint === undefined ? {} : { endFingerprint }) },
     }));
     const resultEnvelope = result.finalResult
       ? serializeWorkflowStoredContentEnvelopeV1(sealWorkflowFinalResultStoredEnvelopeV1({
@@ -1167,9 +1607,7 @@ export function createProductionWorkflowRunCoordinator(params: Readonly<{
         finalResult: result.finalResult,
       }))
       : undefined;
-    const resultDelivery = 'resultDelivery' in accepted ? accepted.resultDelivery : undefined;
-    const pendingResultDelivery = resultDelivery !== undefined;
-    const custodyState = projectWorkflowTerminalCustodySettlement(result.state, pendingResultDelivery);
+    const custodyState = projectWorkflowTerminalCustodySettlement(result.state);
     const transition = {
       operation: 'transition', runId: claim.runId, parentAttempt: claim.attempt,
       accountCurrentness: encryption.witness,
@@ -1178,7 +1616,7 @@ export function createProductionWorkflowRunCoordinator(params: Readonly<{
       ...(resultEnvelope ? { resultEnvelope } : {}),
       ...(custodyState ? { custodyState } : {}),
       ...(rootTerminal === rootBeforeSettlement.lifecycle ? {} : {
-        invocationTransitions: [{ id: rootBeforeSettlement.id, expectedLifecycle: rootBeforeSettlement.lifecycle, lifecycle: rootTerminal }],
+        invocationTransitions: [{ id: rootBeforeSettlement.id, expectedLifecycle: rootBeforeSettlement.lifecycle, expectedContentRevision: rootBeforeSettlement.contentRevision, lifecycle: rootTerminal }],
       }),
     } as const;
     let committed: WorkflowRunSummaryV1;
@@ -1193,8 +1631,7 @@ export function createProductionWorkflowRunCoordinator(params: Readonly<{
         committed = snapshot.run;
       } else {
         const persistedRoot = await durableStore.refreshRootIndex();
-        const custodyMatches = snapshot.run.workflowCustodyState === (custodyState ?? 'pending')
-          && snapshot.run.workflowResultDeliveryState === (pendingResultDelivery ? 'pending' : null);
+        const custodyMatches = snapshot.run.workflowCustodyState === (custodyState ?? 'pending');
         const exactCommittedSettlement = snapshot.run.state === terminalState
           && snapshot.checkpointEnvelope === checkpointEnvelope
           && snapshot.resultEnvelope === (resultEnvelope ?? null)
@@ -1219,39 +1656,6 @@ export function createProductionWorkflowRunCoordinator(params: Readonly<{
     }
     durableStore.applyParentTransition(committed, rootTerminal);
     await onCommittedTransition({ run: committed, result });
-    const committedParentIsTerminal = committed.state === 'succeeded'
-      || committed.state === 'failed'
-      || committed.state === 'cancelled'
-      || committed.state === 'expired'
-      || committed.state === 'dispatch_failed'
-      || committed.state === 'skipped'
-      || committed.state === 'missed'
-      || committed.state === 'outcome_uncertain';
-    if (resultDelivery && committedParentIsTerminal) {
-      let deliveryState: 'accepted' | 'unavailable' | null = 'unavailable';
-      let deliveryReason: 'workflow_outcome_unresolved' | undefined = typeof result.finalOutput === 'string'
-        ? undefined
-        : 'workflow_outcome_unresolved';
-      if (params.resultDelivery && typeof result.finalOutput === 'string') {
-        const machineOperationProtocolCapabilities =
-          await params.resultDelivery.resolveMachineOperationProtocolCapabilities(claim.signal);
-        const delivered = await deliverWorkflowResultToOriginatingSession({
-          credentials: params.resultDelivery.credentials,
-          sessionId: resultDelivery.originSessionId,
-          machineOperationProtocolCapabilities,
-          runId: claim.runId,
-          text: result.finalOutput,
-          machineAdmissionTransport: params.resultDelivery.machineAdmissionTransport,
-          ...(claim.signal ? { signal: claim.signal } : {}),
-        });
-        deliveryState = projectWorkflowResultDeliverySettlement(delivered.status);
-      }
-      if (deliveryState !== null) {
-        await storage.execute({ operation: 'result-delivery.settle', runId: claim.runId,
-          parentAttempt: claim.attempt, expectedRevision: committed.revision, state: deliveryState,
-          ...(deliveryReason ? { reason: deliveryReason } : {}) });
-      }
-    }
     return result;
   };
 }

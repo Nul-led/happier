@@ -77,6 +77,47 @@ describe('updateEffectiveHomeViewState', () => {
         expect(profiles.loadHomeViewState()?.groups).toEqual([latestGroup, appendedGroup]);
     });
 
+    it('keeps an explicit All Homes target for the device and for a tab', async () => {
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
+        stubWebRuntime('https://origin.example.test');
+        const profiles = await import('../serverProfiles');
+        const selection = await import('./homeViewSelectionState');
+        const { ALL_HOMES_SELECTION_TARGET_ID } = await import('./allHomesSelectionTarget');
+        const homeA = await profiles.upsertServerProfile({ serverUrl: 'https://a.example.test', name: 'A' });
+        await profiles.upsertServerProfile({ serverUrl: 'https://b.example.test', name: 'B' });
+        await profiles.saveHomeViewState({
+            version: 1,
+            groups: [],
+            activeTargetKind: 'server',
+            activeTargetId: homeA.id,
+        });
+
+        await selection.updateEffectiveHomeViewState((current) => ({
+            ...current,
+            activeTargetKind: 'group',
+            activeTargetId: ALL_HOMES_SELECTION_TARGET_ID,
+        }), { scope: 'device' });
+        expect(profiles.loadHomeViewState()).toMatchObject({
+            activeTargetKind: 'group',
+            activeTargetId: ALL_HOMES_SELECTION_TARGET_ID,
+        });
+
+        await selection.updateEffectiveHomeViewState((current) => ({
+            ...current,
+            activeTargetKind: 'server',
+            activeTargetId: homeA.id,
+        }), { scope: 'device' });
+        await selection.updateEffectiveHomeViewState((current) => ({
+            ...current,
+            activeTargetKind: 'group',
+            activeTargetId: ALL_HOMES_SELECTION_TARGET_ID,
+        }), { scope: 'tab' });
+        expect(selection.loadEffectiveHomeViewState()).toMatchObject({
+            activeTargetKind: 'group',
+            activeTargetId: ALL_HOMES_SELECTION_TARGET_ID,
+        });
+    });
+
     it('keeps the latest device groups while a tab updater changes only its session target', async () => {
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
         stubWebRuntime('https://origin.example.test');
@@ -94,9 +135,9 @@ describe('updateEffectiveHomeViewState', () => {
         });
 
         const deviceMutation = profiles.updateHomeViewState((current) => ({ ...current, groups: [latestGroup] }));
+        // A routine selection: it carries the groups it was handed and changes only the target.
         const tabMutation = selection.updateEffectiveHomeViewState((current) => ({
             ...current,
-            groups: [],
             activeTargetKind: 'server',
             activeTargetId: homeB.id,
         }), { scope: 'tab' });
@@ -112,6 +153,68 @@ describe('updateEffectiveHomeViewState', () => {
             groups: [latestGroup],
             activeTargetKind: 'server',
             activeTargetId: homeB.id,
+        });
+    });
+
+    it('persists a browser tab\'s group edit device-wide while activating it only in that tab', async () => {
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
+        stubWebRuntime('https://origin.example.test');
+        const profiles = await import('../serverProfiles');
+        const selection = await import('./homeViewSelectionState');
+        const homeA = await profiles.upsertServerProfile({ serverUrl: 'https://a.example.test', name: 'A' });
+        const homeB = await profiles.upsertServerProfile({ serverUrl: 'https://b.example.test', name: 'B' });
+        const existingGroup = { id: 'existing', name: 'Existing', serverIds: [homeA.id], presentation: 'grouped' as const };
+        const concurrentGroup = { id: 'concurrent', name: 'Concurrent', serverIds: [homeB.id], presentation: 'grouped' as const };
+        const createdGroup = { id: 'created', name: 'Created', serverIds: [homeA.id, homeB.id], presentation: 'grouped' as const };
+        await profiles.saveHomeViewState({
+            version: 1,
+            groups: [existingGroup],
+            activeTargetKind: 'server',
+            activeTargetId: homeA.id,
+        });
+
+        // Another surface adds a group while this tab's create is being committed.
+        const concurrentMutation = profiles.updateHomeViewState((current) => ({
+            ...current,
+            groups: [...current.groups, concurrentGroup],
+        }));
+        // The create updater the Settings group action submits in tab scope.
+        const createMutation = selection.updateEffectiveHomeViewState((current) => ({
+            ...current,
+            groups: [...current.groups, createdGroup],
+            activeTargetKind: 'group',
+            activeTargetId: createdGroup.id,
+        }), { scope: 'tab' });
+        await Promise.all([concurrentMutation, createMutation]);
+
+        // Group definitions are device-global: the create persisted beside the concurrent edit.
+        expect(profiles.loadHomeViewState()).toMatchObject({
+            groups: [existingGroup, concurrentGroup, createdGroup],
+            // The device default is not a routine browser selection's to change.
+            activeTargetKind: 'server',
+            activeTargetId: homeA.id,
+        });
+        expect(selection.loadEffectiveHomeViewState()).toMatchObject({
+            activeTargetKind: 'group',
+            activeTargetId: createdGroup.id,
+        });
+
+        // Rename and remove from the tab persist too.
+        await selection.updateEffectiveHomeViewState((current) => ({
+            ...current,
+            groups: current.groups.map((group) => group.id === existingGroup.id ? { ...group, name: 'Renamed' } : group),
+        }), { scope: 'tab' });
+        await selection.updateEffectiveHomeViewState((current) => ({
+            ...current,
+            groups: current.groups.filter((group) => group.id !== concurrentGroup.id),
+        }), { scope: 'tab' });
+        expect(profiles.loadHomeViewState()?.groups).toEqual([
+            { ...existingGroup, name: 'Renamed' },
+            createdGroup,
+        ]);
+        expect(selection.loadEffectiveHomeViewState()).toMatchObject({
+            activeTargetKind: 'group',
+            activeTargetId: createdGroup.id,
         });
     });
 });

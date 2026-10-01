@@ -4,6 +4,7 @@ import {
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { reattachTrackedSessionsFromMarkers } from './reattachFromMarkers';
+import { configuration } from '@/configuration';
 import { findAllHappyProcesses, findHappyProcessByPid } from '../doctor';
 import { adoptSessionsFromMarkers } from '../reattach';
 import {
@@ -1158,9 +1159,10 @@ describe('reattachTrackedSessionsFromMarkers', () => {
       {
         pid: 54321,
         type: 'daemon-spawned-session',
-        cwd: '/tmp/project',
-        environmentVariables: {
-          CLAUDE_CONFIG_DIR: '/tmp/claude-config',
+        daemonOwnershipEnvironmentVariables: {
+          HAPPIER_HOME_DIR: configuration.happyHomeDir,
+          HAPPIER_ACTIVE_SERVER_ID: process.env.HAPPIER_DAEMON_LIFECYCLE_SCOPE_ID || configuration.activeServerId,
+          HAPPIER_SERVER_URL: configuration.serverUrl,
         },
         command:
           '/home/guest/.happier/cli-preview/current/happier opencode --happy-starting-mode remote --started-by daemon --resume vendor-1 --existing-session session-123',
@@ -1180,14 +1182,6 @@ describe('reattachTrackedSessionsFromMarkers', () => {
       startedBy: 'daemon',
       happySessionId: 'session-123',
       vendorResumeId: 'vendor-1',
-      spawnOptions: {
-        directory: '/tmp/project',
-        backendTarget: { kind: 'backend', backendId: 'opencode', sourceKind: 'built_in' },
-        resume: 'vendor-1',
-        environmentVariables: {
-          CLAUDE_CONFIG_DIR: '/tmp/claude-config',
-        },
-      },
       processCommandHash:
         'hash:/home/guest/.happier/cli-preview/current/happier opencode --happy-starting-mode remote --started-by daemon --resume vendor-1 --existing-session session-123',
     });
@@ -1196,21 +1190,10 @@ describe('reattachTrackedSessionsFromMarkers', () => {
         pid: 54321,
         happySessionId: 'session-123',
         startedBy: 'daemon',
-        cwd: '/tmp/project',
         processCommandHash:
           'hash:/home/guest/.happier/cli-preview/current/happier opencode --happy-starting-mode remote --started-by daemon --resume vendor-1 --existing-session session-123',
         processCommand:
           '/home/guest/.happier/cli-preview/current/happier opencode --happy-starting-mode remote --started-by daemon --resume vendor-1 --existing-session session-123',
-        respawn: {
-          version: 1,
-          directory: '/tmp/project',
-          backendTarget: { kind: 'builtInAgent', agentId: 'opencode' },
-          resume: 'vendor-1',
-          vendorResumeId: 'vendor-1',
-          environmentVariables: {
-            CLAUDE_CONFIG_DIR: '/tmp/claude-config',
-          },
-        },
       },
     );
   });
@@ -1373,8 +1356,18 @@ describe('reattachTrackedSessionsFromMarkers', () => {
     const markerlessProcess = {
       pid: 99991,
       type: 'daemon-spawned-session',
+      daemonOwnershipEnvironmentVariables: {
+        HAPPIER_HOME_DIR: configuration.happyHomeDir,
+        HAPPIER_ACTIVE_SERVER_ID: process.env.HAPPIER_DAEMON_LIFECYCLE_SCOPE_ID || configuration.activeServerId,
+        HAPPIER_SERVER_URL: configuration.serverUrl,
+      },
       cwd: '/tmp/other',
       command: 'happier codex --started-by daemon --existing-session session-markerless',
+    };
+    const duplicateProcess = {
+      ...markerlessProcess,
+      pid: 99992,
+      command: 'happier codex --started-by daemon --existing-session session-marker-default',
     };
     const marker = {
       pid: markedProcess.pid,
@@ -1394,6 +1387,7 @@ describe('reattachTrackedSessionsFromMarkers', () => {
     mockHappyProcessesForDiscovery([
       markedProcess,
       markerlessProcess,
+      duplicateProcess,
     ]);
     vi.mocked(adoptSessionsFromMarkers).mockImplementationOnce(({ pidToTrackedSession }) => {
       pidToTrackedSession.set(markedProcess.pid, {
@@ -1422,6 +1416,7 @@ describe('reattachTrackedSessionsFromMarkers', () => {
       pid: markerlessProcess.pid,
       reattachedFromDiskMarker: true,
     }));
+    expect(pidToTrackedSession.has(duplicateProcess.pid)).toBe(false);
     expect(writeSessionMarker).toHaveBeenCalledOnce();
     expect(writeSessionMarker).toHaveBeenCalledWith(expect.objectContaining({
       pid: markerlessProcess.pid,
@@ -1462,7 +1457,11 @@ describe('reattachTrackedSessionsFromMarkers', () => {
         agentRuntimeDaemonServiceAuthorityFilePath:
           '/tmp/happier/runner-authority.json',
         agentRuntimeDaemonServiceActiveAdmission: activeAdmission,
-        runnerAgentImmutableGenerationId: 'agent-generation-1',
+        runnerAgentSourceCustodyV1: {
+          kind: 'managed',
+          immutableGenerationId: 'agent-generation-1',
+          installSource: 'localPath',
+        },
         runnerManagedDependencyRetentionV1: retainedProviderCustody,
         respawn: {
           version: 1,
@@ -1500,7 +1499,11 @@ describe('reattachTrackedSessionsFromMarkers', () => {
           activeAdmission.userMessageSeq,
         agentRuntimeDaemonServiceAdmittedUserMessageSeqs:
           activeAdmission.userMessageSeqs,
-        runnerAgentImmutableGenerationId: 'agent-generation-1',
+        runnerAgentSourceCustodyV1: {
+          kind: 'managed',
+          immutableGenerationId: 'agent-generation-1',
+          installSource: 'localPath',
+        },
         runnerManagedDependencyRetentionV1: retainedProviderCustody,
       }),
     );
@@ -1513,7 +1516,11 @@ describe('reattachTrackedSessionsFromMarkers', () => {
         agentRuntimeDaemonServiceAuthorityFilePath:
           '/tmp/happier/runner-authority.json',
         agentRuntimeDaemonServiceActiveAdmission: activeAdmission,
-        runnerAgentImmutableGenerationId: 'agent-generation-1',
+        runnerAgentSourceCustodyV1: {
+          kind: 'managed',
+          immutableGenerationId: 'agent-generation-1',
+          installSource: 'localPath',
+        },
         runnerManagedDependencyRetentionV1: retainedProviderCustody,
       }),
     );
@@ -1707,7 +1714,7 @@ describe('reattachTrackedSessionsFromMarkers', () => {
     }));
   });
 
-  it('refuses marker recovery when newer metadata would downgrade Provider V2 continuity to native', async () => {
+  it('refuses recovery from a malformed Provider V2 marker instead of inferring a native runner', async () => {
     const providerBindingMetadataV1 = {
       v: 1,
       connectionId: 'pc_gateway',
@@ -1738,7 +1745,7 @@ describe('reattachTrackedSessionsFromMarkers', () => {
           v: 1,
           updatedAt: 10,
           selection: {
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             providerConnectionId: null,
             modelId: 'native-newer',
           },
@@ -1752,7 +1759,7 @@ describe('reattachTrackedSessionsFromMarkers', () => {
           v: 1,
           updatedAt: 9,
           ref: {
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             providerConnectionId: 'pc_gateway',
             modelId: 'provider-model',
           },
@@ -1807,7 +1814,7 @@ describe('reattachTrackedSessionsFromMarkers', () => {
           v: 1,
           updatedAt: 10,
           selection: {
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             providerConnectionId: 'pc_gateway',
             modelId: 'provider-model',
           },
@@ -2209,7 +2216,12 @@ describe('reattachTrackedSessionsFromMarkers', () => {
     } as any]);
     mockHappyProcessesForDiscovery([{
       pid: 12346,
-      type: 'user-session',
+      type: 'daemon-spawned-session',
+      daemonOwnershipEnvironmentVariables: {
+        HAPPIER_HOME_DIR: configuration.happyHomeDir,
+        HAPPIER_ACTIVE_SERVER_ID: process.env.HAPPIER_DAEMON_LIFECYCLE_SCOPE_ID || configuration.activeServerId,
+        HAPPIER_SERVER_URL: configuration.serverUrl,
+      },
       cwd: '/tmp/project',
       command,
     }]);

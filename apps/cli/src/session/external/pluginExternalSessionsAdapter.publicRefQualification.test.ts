@@ -66,9 +66,12 @@ function providerOpsFromRealLeaf(params: Readonly<{
       identity: {
         pluginId: params.pluginId,
         agentId: params.agentId,
-        generation: 'test-generation',
+        occurrenceId: 'test-occurrence',
         contributionQualifiedId: `${params.pluginId}/agents/${params.agentId}`,
-        immutableGenerationId: null,
+        sourceCustody: {
+          kind: 'development',
+          registeredRootId: 'test-source-root',
+        },
       },
       isCurrent: () => true,
       retirementSignal: retirement.signal,
@@ -116,6 +119,7 @@ function createRealLeafAdapter(params: Readonly<{
     queryCandidates: async ({ entry, ops: candidateOps, source, cursor, limit, maxBytes, signal }) => (
       await executeExternalSessionCandidateQuery({
         activeServerDir: params.activeServerDir,
+        agentSourceCustody: { kind: 'development', registeredRootId: 'fixture-source-root' },
         agentIdentity: { pluginId: params.pluginId, localId: entry.agentId },
         source,
         ...(cursor ? { cursor } : {}),

@@ -1,7 +1,7 @@
-import type { Message } from '@/sync/domains/messages/messageTypes';
+import type { Message } from "@happier-dev/session-core/messages";
 import type { Settings } from '@/sync/domains/settings/settings';
-import { readUnsupportedContentMeta } from '@/sync/domains/messages/unsupportedContentMeta';
-import { resolveUnsupportedContentPresentation } from '@/sync/domains/messages/unsupportedContentPresentation';
+import { readUnsupportedContentMeta } from "@happier-dev/session-core/messages";
+import { resolveUnsupportedContentPresentation } from "@happier-dev/session-core/messages";
 
 export type TranscriptSelectionThinkingDisplayMode = Settings['sessionThinkingDisplayMode'];
 

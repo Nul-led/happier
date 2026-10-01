@@ -25,6 +25,8 @@ export type SessionProviderInputConsumerSession = Readonly<{
   /** Compatibility-only surface; the session-input owner never invokes it. */
   popPendingMessage?: () => Promise<boolean>;
   shouldAttemptPendingMaterialization?: () => boolean | Promise<boolean>;
+  /** Synchronous observed Pending state at the context-only dispatch ordering point. */
+  hasPendingProviderInput?: () => boolean;
   reconcilePendingProviderInputCustodyBeforeMaterialization?: () => Promise<boolean>;
   reconcilePendingQueueState?: (opts: { force: boolean }) => unknown | Promise<unknown>;
 }>;
@@ -66,6 +68,13 @@ export type WaitForNextProviderInputOptions = Readonly<{
 
 export type SessionProviderInputConsumer<Mode, Message> = Readonly<{
   waitForNextInput: (opts: WaitForNextProviderInputOptions) => Promise<MessageBatch<Mode, Message> | null>;
+  finalizeContextOnlyInput: (opts: Readonly<{
+    batch: MessageBatch<Mode, Message>;
+    abortSignal: AbortSignal;
+    recheck: () => Promise<boolean>;
+    /** Invoked synchronously after the queue's positive check; false means withdrawn. */
+    commit: () => Promise<boolean>;
+  }>) => Promise<'committed' | 'deferred' | 'withdrawn'>;
   waitUntilProviderInputAdmitted: (opts: { abortSignal: AbortSignal }) => Promise<boolean>;
   runProviderInputDispatch: <Value>(opts: Readonly<{
     abortSignal: AbortSignal;

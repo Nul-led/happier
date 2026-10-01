@@ -61,6 +61,41 @@ const stagedVideoAttachment = {
 };
 
 describe('session user message send', () => {
+  it('rejects restricted effective native inputs but allows unrestricted inputs in the same session', async () => {
+    const { handlers, registrar } = createHarness();
+    // Native input is a provider/process boundary; the host admission remains real.
+    const handleUserMessage = vi.fn(async () => ({ handled: true as const, result: { ok: true } }));
+    const effectiveConfiguration = {
+      modelSelection: { agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: null, modelId: 'native-b' },
+      permissionMode: 'yolo' as const,
+    };
+    registerSessionUserMessageSendHandler(registrar, {
+      workingDirectory: process.cwd(),
+      sessionRuntimeControls: {
+        handleUserMessage,
+        readEffectiveInputConfiguration: () => effectiveConfiguration,
+      },
+    });
+    const handler = handlers.get(SESSION_RPC_METHODS.SESSION_USER_MESSAGE_SEND)!;
+    const signal = new AbortController().signal;
+    await expect(handler({ text: 'restricted model', localId: 'restricted-model', meta: {} }, {
+      signal,
+      callerInputConstraints: {
+        models: [{ agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: null, modelId: 'native-a' }],
+        permissionModes: null,
+      },
+    })).resolves.toMatchObject({ ok: false, errorCode: 'model_not_granted' });
+    await expect(handler({ text: 'restricted mode', localId: 'restricted-mode', meta: {} }, {
+      signal, callerInputConstraints: { models: null, permissionModes: ['default'] },
+    })).resolves.toMatchObject({ ok: false, errorCode: 'permission_mode_not_granted' });
+    expect(handleUserMessage).not.toHaveBeenCalled();
+    // A body claim is not authority, and restriction never becomes Session state.
+    await expect(handler({ text: 'unrestricted', localId: 'unrestricted', meta: {},
+      callerInputConstraints: { models: [], permissionModes: [] },
+    }, { signal })).resolves.toEqual({ ok: true });
+    expect(handleUserMessage).toHaveBeenCalledOnce();
+  });
+
   it('forwards a selected r1.0 composer attachment to the shared pre-persistence admission path', async () => {
     const { handlers, registrar } = createHarness();
     const enqueueSessionUserMessage = vi.fn();

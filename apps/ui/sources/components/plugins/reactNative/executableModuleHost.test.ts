@@ -9,27 +9,18 @@ import { log } from '@/log';
 const identity: PluginReactNativeBundleCacheIdentity = Object.freeze({
     pluginId: 'acme.preview',
     contributionId: 'client-runtime',
+    artifactId: 'client-runtime',
     artifactDigest: 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
-    hostAppVersion: '2.0.0',
-    hostUiApiVersion: '1.0.0',
-    reactVersion: '19.0.0',
-    reactNativeVersion: '0.83.4',
     platform: 'web',
-    channel: 'internal',
-    nativeCapabilitiesDigest: 'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
-    projectionGeneration: 12,
 });
 
 const moduleReference = Object.freeze({
-    containerName: 'acme_preview_client_runtime',
-    modulePath: './clientRuntime',
     exportName: 'activateClientRuntime',
 });
 
 const authority = Object.freeze({
     serverId: 'server-1',
     machineId: 'machine-1',
-    projectionGeneration: 12,
 });
 
 function cacheWithIdentity(inputIdentity = identity) {
@@ -44,7 +35,7 @@ function cacheWithIdentity(inputIdentity = identity) {
 
 function backend(exported: PluginReactNativeExecutableExport): PluginReactNativeLoaderBackend {
     return Object.freeze({
-        backendId: 'reactNativeWebModule',
+        backendId: 'commonJs',
         available: true,
         loadInstalledBundle: vi.fn(async () => exported),
     });
@@ -65,8 +56,8 @@ describe('PluginUiExecutableModuleHost', () => {
             createScope,
         })).resolves.toEqual({
             ok: false,
-            code: 'stale_projection_generation',
-            diagnostics: ['projection_authority_not_initialized'],
+            code: 'artifact_replaced',
+            diagnostics: ['artifact_authority_not_initialized'],
         });
         expect(createScope).not.toHaveBeenCalled();
     });
@@ -177,7 +168,7 @@ describe('PluginUiExecutableModuleHost', () => {
             identity,
             moduleReference,
             backend: {
-                backendId: 'reactNativeWebModule',
+                backendId: 'commonJs',
                 available: true,
                 loadInstalledBundle: vi.fn(async () => 42 as never),
             },
@@ -209,7 +200,7 @@ describe('PluginUiExecutableModuleHost', () => {
             identity,
             moduleReference,
             backend: {
-                backendId: 'reactNativeWebModule',
+                backendId: 'commonJs',
                 available: true,
                 loadInstalledBundle: vi.fn(async () => { throw new Error('module instantiation failed'); }),
             },
@@ -224,7 +215,7 @@ describe('PluginUiExecutableModuleHost', () => {
         expect(createScope).not.toHaveBeenCalled();
     });
 
-    it('retires active authority on projection-generation replacement and rejects a late stale activation', async () => {
+    it('retires active authority on origin replacement and rejects a late stale activation', async () => {
         const cleanup = vi.fn();
         const unwind = vi.fn();
         const host = createPluginUiExecutableModuleHost();
@@ -239,7 +230,7 @@ describe('PluginUiExecutableModuleHost', () => {
             createScope: () => ({ api: Object.freeze({}), commit: vi.fn(), unwind }),
         })).resolves.toEqual({ ok: true });
 
-        await host.replaceAuthority({ ...authority, projectionGeneration: 13 });
+        await host.replaceAuthority({ ...authority, machineId: 'machine-2' });
         expect(cleanup).toHaveBeenCalledTimes(1);
         expect(unwind).toHaveBeenCalledTimes(1);
 
@@ -253,12 +244,12 @@ describe('PluginUiExecutableModuleHost', () => {
             createScope: vi.fn(() => ({ api: Object.freeze({}), commit: vi.fn(), unwind: vi.fn() })),
         })).resolves.toEqual({
             ok: false,
-            code: 'stale_projection_generation',
-            diagnostics: ['stale_projection_generation'],
+            code: 'artifact_replaced',
+            diagnostics: ['artifact_replaced'],
         });
     });
 
-    it('unwinds an activation whose commit completes after its projection generation was replaced', async () => {
+    it('unwinds an activation whose commit completes after its origin was replaced', async () => {
         let resolveCommit: (() => void) | undefined;
         let markCommitStarted: (() => void) | undefined;
         const commitStarted = new Promise<void>((resolve) => {
@@ -285,22 +276,22 @@ describe('PluginUiExecutableModuleHost', () => {
             createScope: () => ({ api: Object.freeze({}), commit, unwind }),
         });
         await commitStarted;
-        const replacement = host.replaceAuthority({ ...authority, projectionGeneration: 13 });
+        const replacement = host.replaceAuthority({ ...authority, machineId: 'machine-2' });
         resolveCommit?.();
 
         await expect(activation).resolves.toEqual({
             ok: false,
-            code: 'stale_projection_generation',
-            diagnostics: ['stale_projection_generation'],
+            code: 'artifact_replaced',
+            diagnostics: ['artifact_replaced'],
         });
         await replacement;
         expect(cleanup).toHaveBeenCalledTimes(1);
         expect(unwind).toHaveBeenCalledTimes(1);
     });
 
-    it('replaces settled executable authority when the target changes at the same projection generation', async () => {
-        const authorityA = Object.freeze({ serverId: 'server-a', machineId: 'machine-a', projectionGeneration: 12 });
-        const authorityB = Object.freeze({ serverId: 'server-b', machineId: 'machine-b', projectionGeneration: 12 });
+    it('replaces settled executable authority when the target changes', async () => {
+        const authorityA = Object.freeze({ serverId: 'server-a', machineId: 'machine-a' });
+        const authorityB = Object.freeze({ serverId: 'server-b', machineId: 'machine-b' });
         const cleanupA = vi.fn();
         const unwindA = vi.fn();
         const activateA = vi.fn(async () => cleanupA);
@@ -335,9 +326,9 @@ describe('PluginUiExecutableModuleHost', () => {
         expect(activateB).toHaveBeenCalledTimes(1);
     });
 
-    it('prevents an in-flight prior target from publishing after a same-generation authority change', async () => {
-        const authorityA = Object.freeze({ serverId: 'server-a', machineId: 'machine-a', projectionGeneration: 12 });
-        const authorityB = Object.freeze({ serverId: 'server-b', machineId: 'machine-b', projectionGeneration: 12 });
+    it('prevents an in-flight prior target from publishing after an authority change', async () => {
+        const authorityA = Object.freeze({ serverId: 'server-a', machineId: 'machine-a' });
+        const authorityB = Object.freeze({ serverId: 'server-b', machineId: 'machine-b' });
         let releaseA: (() => void) | undefined;
         let markAStarted: (() => void) | undefined;
         const aStarted = new Promise<void>((resolve) => {
@@ -379,8 +370,8 @@ describe('PluginUiExecutableModuleHost', () => {
 
         await expect(activationA).resolves.toEqual({
             ok: false,
-            code: 'stale_projection_generation',
-            diagnostics: ['stale_projection_generation'],
+            code: 'artifact_replaced',
+            diagnostics: ['artifact_replaced'],
         });
         await expect(activationB).resolves.toEqual({ ok: true });
         expect(unwindA).toHaveBeenCalledTimes(1);
@@ -390,7 +381,7 @@ describe('PluginUiExecutableModuleHost', () => {
 
     it('withdraws host registration authority before awaiting plugin cleanup', async () => {
         const authorityB = Object.freeze({
-            serverId: 'server-b', machineId: 'machine-b', projectionGeneration: 12,
+            serverId: 'server-b', machineId: 'machine-b',
         });
         let releaseCleanup: (() => void) | undefined;
         let markCleanupStarted: (() => void) | undefined;
@@ -425,7 +416,7 @@ describe('PluginUiExecutableModuleHost', () => {
 
     it('finishes host scope disposal before starting returned plugin cleanup', async () => {
         const authorityB = Object.freeze({
-            serverId: 'server-b', machineId: 'machine-b', projectionGeneration: 12,
+            serverId: 'server-b', machineId: 'machine-b',
         });
         let releaseUnwind: (() => void) | undefined;
         let markUnwindStarted: (() => void) | undefined;
@@ -463,7 +454,7 @@ describe('PluginUiExecutableModuleHost', () => {
         vi.useFakeTimers();
         const logDiagnostic = vi.spyOn(log, 'log').mockImplementation(() => {});
         const authorityB = Object.freeze({
-            serverId: 'server-b', machineId: 'machine-b', projectionGeneration: 12,
+            serverId: 'server-b', machineId: 'machine-b',
         });
         const unwind = vi.fn();
         const host = createPluginUiExecutableModuleHost();

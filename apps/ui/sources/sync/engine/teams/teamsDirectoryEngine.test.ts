@@ -1,3 +1,4 @@
+import { TEAMS_ACCOUNT_CHANGE_ENTITY_ID_V1 } from '@happier-dev/protocol';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
     NO_TEAM_CAPABILITIES_V1,
@@ -241,6 +242,25 @@ describe('teamsDirectoryEngine', () => {
             expect(getTeamsDirectorySnapshot(scope, queryKey)?.data?.[0]?.name).toBe('After rename');
         });
         expect(getTeamsDirectorySnapshot(scope, queryKey)?.stale).toBe(false);
+        release();
+    });
+
+    it('refreshes the Teams directory for a Teams change page and not for an unrelated one', async () => {
+        const home = await addHome('Home A', 'https://home-a.example');
+        await setActiveServerId(home, { scope: 'device' });
+        runtimeFetchMock.mockImplementation(async () => page([team('t1')], null));
+        const scope = createServerAccountScope(home, 'account')!;
+
+        const release = observeTeamsDirectory(scope, listInput);
+        await vi.waitFor(() => expect(getTeamsDirectorySnapshot(scope, queryKey)?.status).toBe('ready'));
+        const reads = runtimeFetchMock.mock.calls.length;
+
+        publishHomeAccountChange(home, ['session-1', 'self']);
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(runtimeFetchMock.mock.calls.length).toBe(reads);
+
+        publishHomeAccountChange(home, [TEAMS_ACCOUNT_CHANGE_ENTITY_ID_V1]);
+        await vi.waitFor(() => expect(runtimeFetchMock.mock.calls.length).toBe(reads + 1));
         release();
     });
 

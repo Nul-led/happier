@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createRootLayoutFeaturesResponse } from '@/dev/testkit/fixtures/featureFixtures';
 import { tryWriteServerEnabledBitInPlace } from '@happier-dev/protocol';
 
-import { createSessionListRenderableSessionFixture, pressTestInstance, renderScreen, standardCleanup } from '@/dev/testkit';
+import { createSessionListRenderableSessionFixture, renderScreen, standardCleanup } from '@/dev/testkit';
 import { primeServerFeaturesSnapshot, resetServerFeaturesClientForTests } from '@/sync/api/capabilities/serverFeaturesClient';
 import { upsertServerProfile } from '@/sync/domains/server/serverProfiles';
 import type { SessionListIndexItem } from '@/sync/domains/sessionList/sessionListIndex';
@@ -15,6 +15,17 @@ import { resetRuntimeFetch, setRuntimeFetch } from '@/utils/system/runtimeFetch'
 import { SessionCollaborationSurface } from './SessionCollaborationSurface';
 import { AppPaneProvider } from '@/components/appShell/panes/AppPaneProvider';
 import { publishSessionCollaborationIntent, resetSessionCollaborationIntentsForTests } from './sessionCollaborationIntent';
+import { t } from '@/text';
+import { SessionSnapshotReadError } from '@/sync/runtime/orchestration/serverScopedRpc/readSessionSnapshotForAuthority';
+
+const publicationModal = vi.hoisted(() => ({
+    confirm: vi.fn(async () => true),
+    show: vi.fn(), update: vi.fn(), hide: vi.fn(),
+}));
+vi.mock('@/modal', async () => {
+    const { createModalModuleMock } = await import('@/dev/testkit/mocks/modal');
+    return createModalModuleMock({ confirmResult: true, spies: publicationModal }).module;
+});
 
 const credentials = vi.hoisted(() => ({ serverId: '', accountId: 'collaboration-account', unreadable: false }));
 const exactSessionSnapshot = vi.hoisted(() => ({ read: vi.fn() }));
@@ -159,6 +170,10 @@ afterEach(() => {
 });
 
 beforeEach(() => {
+    publicationModal.show.mockReset().mockReturnValue('public-link-dialog');
+    publicationModal.confirm.mockReset().mockResolvedValue(true);
+    publicationModal.update.mockReset();
+    publicationModal.hide.mockReset();
     transport.requests.length = 0;
     transport.publicationReachable = true;
     credentials.unreadable = false;
@@ -217,6 +232,115 @@ function primeCollaboration(serverId: string): void {
 }
 
 describe('SessionCollaborationSurface', () => {
+    it('retains an issued public link across transient snapshot failure without allowing stale mutations', async () => {
+        const profile = await upsertServerProfile({ name: 'Snapshot recovery Home', serverUrl: 'https://snapshot-recovery.example.test' });
+        credentials.serverId = profile.id;
+        primeFeatures(profile.id, ['sharing.public'], ['sharing.session', 'sessions.conversations']);
+        const snapshot = {
+            session: { id: 'same-id', metadata: null, metadataLayoutVersion: 1,
+                encryptionMode: 'plain', currentStorageState: 'hosted', transcriptShareable: true,
+                access: { capabilities: { managePublicLink: true } } } as unknown as Session,
+            callerDataKeyEnvelope: null,
+        };
+        exactSessionSnapshot.read.mockResolvedValue(snapshot);
+        let publicShare: Record<string, unknown> | null = null;
+        const writes: string[] = [];
+        setRuntimeFetch(async (url, init) => {
+            const path = new URL(String(url)).pathname;
+            if (path === '/v1/auth/ping') return new Response('{}');
+            if (path === '/v2/account/settings') return new Response(JSON.stringify({ content: null, version: 0 }));
+            if (path === '/v1/account/encryption') return new Response(JSON.stringify({ mode: 'plain', updatedAt: 1 }));
+            if (path.endsWith('/public-share')) {
+                if (init?.method === 'POST') {
+                    writes.push('create');
+                    publicShare = { id: 'publication', expiresAt: null, maxUses: null, useCount: 0, isConsentRequired: true, updatedAt: 1 };
+                }
+                if (init?.method === 'DELETE') writes.push('delete');
+                return new Response(JSON.stringify({ publicShare }));
+            }
+            return new Response('{}', { status: 404 });
+        });
+        const invalidate = async (seq: number) => act(async () => {
+            storage.setState((state) => ({ sessionListRowsByServerId: {
+                ...state.sessionListRowsByServerId,
+                [profile.id]: { 'same-id': createSessionListRenderableSessionFixture({ id: 'same-id', seq, updatedAt: seq }) },
+            } }));
+        });
+        publishSessionCollaborationIntent({ serverId: profile.id, sessionId: 'same-id' }, 'publicLink');
+        const screen = await renderScreen(<AppPaneProvider>
+            <SessionCollaborationSurface target={{ serverId: profile.id, sessionId: 'same-id' }} />
+        </AppPaneProvider>);
+        await vi.waitFor(() => expect(exactSessionSnapshot.read).toHaveBeenCalled());
+        // The link itself lives in the Share panel; there is no separate publication dialog.
+        await vi.waitFor(() => expect(screen.findByTestId('session-public-link-create')).not.toBeNull());
+        await screen.pressByTestIdAsync('session-public-link-create');
+        await vi.waitFor(() => expect(screen.findByTestId('session-public-link-options')).not.toBeNull());
+        await screen.pressByTestIdAsync('session-public-link-options-create');
+        await vi.waitFor(() => expect(screen.findByTestId('session-public-link-url')).not.toBeNull());
+        const shownUrl = () => String(screen.findByTestId('session-public-link-url')?.props.children);
+        const issuedUrl = shownUrl();
+        expect(issuedUrl).toContain('/share/');
+        expect(writes).toEqual(['create']);
+        expect(publicationModal.show).not.toHaveBeenCalled();
+
+        exactSessionSnapshot.read.mockRejectedValue(new Error('offline'));
+        await invalidate(2);
+        await vi.waitFor(() => expect(screen.findByTestId('session-external-sharing-retry')).not.toBeNull());
+        // Continuity: the issued link stays readable, but nothing can change it on stale authority.
+        expect(shownUrl()).toBe(issuedUrl);
+        expect(screen.findHostByTestId('session-public-link-turn-off')?.props.accessibilityState).toMatchObject({ disabled: true });
+        expect(screen.findHostByTestId('session-public-link-new')?.props.accessibilityState).toMatchObject({ disabled: true });
+        await screen.pressByTestIdAsync('session-public-link-turn-off');
+        expect(writes).toEqual(['create']);
+
+        exactSessionSnapshot.read.mockResolvedValue(snapshot);
+        await screen.pressByTestIdAsync('session-external-sharing-retry');
+        await vi.waitFor(() => expect(screen.findByTestId('session-external-sharing-retry')).toBeNull());
+        await vi.waitFor(() => expect(screen.findHostByTestId('session-public-link-turn-off')?.props.accessibilityState).toMatchObject({ disabled: false }));
+        expect(shownUrl()).toBe(issuedUrl);
+
+        exactSessionSnapshot.read.mockRejectedValue(new SessionSnapshotReadError('forbidden', 403));
+        await invalidate(3);
+        await vi.waitFor(() => expect(screen.findByTestId('session-public-link-url')).toBeNull());
+        expect(writes).toEqual(['create']);
+    });
+
+    it('asks before turning the public link off and removes it through the publication owner', async () => {
+        const profile = await upsertServerProfile({ name: 'Turn off Home', serverUrl: 'https://collaboration-turn-off.example.test' });
+        credentials.serverId = profile.id;
+        primeFeatures(profile.id, ['sharing.public'], ['sharing.session', 'sessions.conversations']);
+        exactSessionSnapshot.read.mockResolvedValue({
+            session: { id: 'same-id', metadata: null, metadataLayoutVersion: 1, encryptionMode: 'plain', currentStorageState: 'hosted',
+                transcriptShareable: true, access: { capabilities: { managePublicLink: true } } } as unknown as Session,
+            callerDataKeyEnvelope: null,
+        });
+        let publicShare: Record<string, unknown> | null = { id: 'publication', expiresAt: null, maxUses: 10, useCount: 3, isConsentRequired: true, updatedAt: 1 };
+        const writes: string[] = [];
+        setRuntimeFetch(async (url, init) => {
+            const path = new URL(String(url)).pathname;
+            if (path === '/v1/auth/ping') return new Response('{}');
+            if (path === '/v2/account/settings') return new Response(JSON.stringify({ content: null, version: 0 }));
+            if (path === '/v1/account/encryption') return new Response(JSON.stringify({ mode: 'plain', updatedAt: 1 }));
+            if (path.endsWith('/public-share')) {
+                if (init?.method === 'DELETE') { writes.push('delete'); publicShare = null; }
+                return new Response(JSON.stringify({ publicShare }));
+            }
+            return new Response('{}', { status: 404 });
+        });
+        publishSessionCollaborationIntent({ serverId: profile.id, sessionId: 'same-id' }, 'publicLink');
+        const screen = await renderScreen(<AppPaneProvider>
+            <SessionCollaborationSurface target={{ serverId: profile.id, sessionId: 'same-id' }} />
+        </AppPaneProvider>);
+        // A link made earlier cannot be shown again; the card says so and still offers its controls.
+        await vi.waitFor(() => expect(screen.findByTestId('session-public-link-hidden')).not.toBeNull());
+        expect(screen.getTextContent()).toContain(t('session.collaboration.pane.linkGrants'));
+
+        await screen.pressByTestIdAsync('session-public-link-turn-off');
+        await vi.waitFor(() => expect(publicationModal.confirm).toHaveBeenCalled());
+        await vi.waitFor(() => expect(writes).toEqual(['delete']));
+        await vi.waitFor(() => expect(screen.findByTestId('session-public-link-create')).not.toBeNull());
+    });
+
     it('presents an unreadable device credential store as unavailable, never as signed out', async () => {
         const profile = await upsertServerProfile({ name: 'Unreadable Home', serverUrl: 'https://collaboration-unreadable.example.test' });
         primeCollaboration(profile.id);
@@ -272,7 +396,7 @@ describe('SessionCollaborationSurface', () => {
         expect(storage.getState().sessionListRowsByServerId[profile.id]).toBe(rows);
         expect(storage.getState().sessionListIndexByServerId[profile.id]).toBe(index);
         await vi.waitFor(() => expect(exactSessionSnapshot.read).toHaveBeenCalled());
-        await vi.waitFor(() => expect(screen.findByTestId('session-public-link-row')).not.toBeNull());
+        await vi.waitFor(() => expect(screen.findByTestId('session-public-link-card')).not.toBeNull());
         expect(exactSessionSnapshot.read).toHaveBeenCalledWith(expect.objectContaining({
             sessionId: 'same-id',
             authority: expect.objectContaining({
@@ -295,8 +419,8 @@ describe('SessionCollaborationSurface', () => {
     it('composes publication as an independently failing sibling of the one flexing access body', async () => {
         const active = await upsertServerProfile({ name: 'Collaboration active Home', serverUrl: 'https://collaboration-active.example.test' });
         credentials.serverId = active.id;
-        // Named access plus publication with Conversations off: Access is the
-        // single mode and Public link is still its own sibling.
+        // Named access plus publication with Conversations off: Public link is
+        // still its own sibling inside the Share panel.
         primeFeatures(active.id, ['sharing.session', 'sharing.public'], ['sessions.conversations']);
         storage.setState((state) => ({
             profileScope: { serverId: active.id, accountId: credentials.accountId },
@@ -319,7 +443,10 @@ describe('SessionCollaborationSurface', () => {
                 <SessionCollaborationSurface target={{ serverId: active.id, sessionId: 'same-id' }} />
             </AppPaneProvider>,
         );
-        // One access editor, mounted as the surface's only vertical scroll owner.
+        // The access card at the pane's foot grows into the Share panel.
+        await vi.waitFor(() => expect(screen.findByTestId('session-collaboration-access-card')).not.toBeNull());
+        await screen.pressByTestIdAsync('session-collaboration-access-card');
+        // One access editor, mounted as the panel's only vertical scroll owner.
         await vi.waitFor(() => expect(screen.findByTestId('session-access-editor:collaboration')).not.toBeNull());
         // Publication is a sibling section with its own failure boundary: an
         // unreachable publication read shows a section-local retry and leaves the
@@ -327,6 +454,89 @@ describe('SessionCollaborationSurface', () => {
         await vi.waitFor(() => expect(screen.findByTestId('session-public-link-retry')).not.toBeNull());
         expect(screen.findByTestId('session-access-editor:collaboration')).not.toBeNull();
         expect(screen.findByTestId('session-collaboration-access-body')?.props.style).toMatchObject({ flex: 1, minHeight: 0 });
+    });
+
+    it('opens conversations-first: the present line, one Responsible row, the conversations, and the access card at the foot', async () => {
+        const active = await upsertServerProfile({ name: 'Conversations first Home', serverUrl: 'https://collaboration-conversations-first.example.test' });
+        credentials.serverId = active.id;
+        primeCollaboration(active.id);
+        const session = {
+            id: 'same-id', metadata: null, currentStorageState: 'hosted', transcriptShareable: true,
+            responsibleAccountId: null, responsibleAccount: null,
+            access: { capabilities: { managePublicLink: false, assignResponsibility: true } },
+        } as unknown as Session;
+        storage.setState((state) => ({
+            profileScope: { serverId: active.id, accountId: credentials.accountId },
+            sessions: { ...state.sessions, 'same-id': session },
+            sessionListRowsByServerId: {
+                ...state.sessionListRowsByServerId,
+                [active.id]: { 'same-id': session } as unknown as Record<string, SessionListRenderableSession>,
+            },
+        }));
+        exactSessionSnapshot.read.mockResolvedValue({ session, callerDataKeyEnvelope: null });
+
+        const screen = await renderScreen(
+            <AppPaneProvider>
+                <SessionCollaborationSurface target={{ serverId: active.id, sessionId: 'same-id' }} />
+            </AppPaneProvider>,
+        );
+        await vi.waitFor(() => expect(screen.findByTestId('session-discussion-activity-list')).not.toBeNull());
+        expect(screen.findByTestId('session-presence-section')).not.toBeNull();
+        await vi.waitFor(() => expect(screen.findByTestId('session-responsibility-row')).not.toBeNull());
+        // User ruling 2026-09-29: who has access and Responsible are ONE block at the pane's foot;
+        // the top holds only the present line and the conversations.
+        const foot = screen.findByTestId('session-collaboration-foot');
+        expect(foot?.findAll((node) => node.props.testID === 'session-collaboration-access-card').length).toBeGreaterThan(0);
+        expect(foot?.findAll((node) => node.props.testID === 'session-responsibility-row').length).toBeGreaterThan(0);
+        const column = screen.findByTestId('session-collaboration-main-column');
+        const order = column?.findAll((node) => typeof node.props.testID === 'string'
+            && ['session-presence-section', 'session-discussion-activity-list', 'session-collaboration-foot'].includes(node.props.testID as string)
+            && typeof node.type === 'string').map((node) => node.props.testID);
+        expect([...new Set(order)]).toEqual(['session-presence-section', 'session-discussion-activity-list', 'session-collaboration-foot']);
+        // Access is set up once and conversations are used all day: no mode switch between them.
+        expect(screen.findByTestId('session-collaboration-modes')).toBeNull();
+        expect(screen.findByTestId('session-collaboration-mode:access')).toBeNull();
+        // The access editor is not built until the card is pressed.
+        expect(screen.findByTestId('session-access-editor:collaboration')).toBeNull();
+    });
+
+    it('lands a Responsible focus request on the Responsible row in the foot block', async () => {
+        const active = await upsertServerProfile({ name: 'Responsible focus Home', serverUrl: 'https://collaboration-responsible-focus.example.test' });
+        credentials.serverId = active.id;
+        primeCollaboration(active.id);
+        const session = {
+            id: 'same-id', metadata: null, currentStorageState: 'hosted', transcriptShareable: true,
+            responsibleAccountId: null, responsibleAccount: null,
+            access: { capabilities: { managePublicLink: false, assignResponsibility: true } },
+        } as unknown as Session;
+        storage.setState((state) => ({
+            profileScope: { serverId: active.id, accountId: credentials.accountId },
+            sessions: { ...state.sessions, 'same-id': session },
+            sessionListRowsByServerId: {
+                ...state.sessionListRowsByServerId,
+                [active.id]: { 'same-id': session } as unknown as Record<string, SessionListRenderableSession>,
+            },
+        }));
+        exactSessionSnapshot.read.mockResolvedValue({ session, callerDataKeyEnvelope: null });
+        const focused = vi.fn();
+        const screen = await renderScreen(
+            <AppPaneProvider>
+                <SessionCollaborationSurface target={{ serverId: active.id, sessionId: 'same-id' }} />
+            </AppPaneProvider>,
+            {
+                createNodeMock: (element) => {
+                    const testID = (element as { props?: { testID?: string } }).props?.testID;
+                    return { focus: () => focused(testID) };
+                },
+            },
+        );
+        await vi.waitFor(() => expect(screen.findByTestId('session-responsibility-row')).not.toBeNull());
+        await act(async () => {
+            publishSessionCollaborationIntent({ serverId: active.id, sessionId: 'same-id' }, 'responsible');
+        });
+        await vi.waitFor(() => expect(focused).toHaveBeenCalledWith('session-collaboration-responsible-anchor'));
+        const foot = screen.findByTestId('session-collaboration-foot');
+        expect(foot?.findAll((node) => node.props.testID === 'session-collaboration-responsible-anchor').length).toBeGreaterThan(0);
     });
 
     it('pushes the compact Responsibility step in place of the retained Collaboration body', async () => {
@@ -356,10 +566,6 @@ describe('SessionCollaborationSurface', () => {
             session: responsibilitySession,
             callerDataKeyEnvelope: null,
         });
-        // Enter through an Access-labelled affordance, so the body that has to
-        // survive the pushed step is the Access editor asserted below rather
-        // than the default Conversations mode.
-        publishSessionCollaborationIntent({ serverId: active.id, sessionId: 'same-id' }, 'access');
 
         const screen = await renderScreen(
             <AppPaneProvider>
@@ -382,9 +588,9 @@ describe('SessionCollaborationSurface', () => {
         expect(duringStep?.props.pointerEvents).toBe('none');
         expect(duringStep?.props.importantForAccessibility).toBe('no-hide-descendants');
         expect(duringStep?.props.accessibilityElementsHidden).toBe(true);
-        // Retained rather than unmounted, so Access scroll, drafts and focus
+        // Retained rather than unmounted, so the conversations' scroll and focus
         // survive the round trip instead of reloading behind the step.
-        expect(screen.findByTestId('session-access-editor:collaboration')).not.toBeNull();
+        expect(screen.findByTestId('session-discussion-activity-list')).not.toBeNull();
 
         await screen.pressByTestIdAsync('session-responsibility-step-back');
 
@@ -423,9 +629,13 @@ describe('SessionCollaborationSurface', () => {
                 <SessionCollaborationSurface target={{ serverId: active.id, sessionId: 'same-id' }} />
             </AppPaneProvider>,
         );
-        await vi.waitFor(() => expect(screen.findByTestId('session-collaboration-named-access-unavailable')).not.toBeNull());
+        // Sharing with people is not on this Home: the pane keeps explaining what it is for and
+        // offers what still works, a public link.
+        await vi.waitFor(() => expect(screen.findByTestId('session-collaboration-sharing-off')).not.toBeNull());
+        await vi.waitFor(() => expect(screen.findByTestId('session-collaboration-sharing-off-action')).not.toBeNull());
+        await screen.pressByTestIdAsync('session-collaboration-sharing-off-action');
+        await vi.waitFor(() => expect(screen.findByTestId('session-public-link-card')).not.toBeNull());
         expect(screen.findByTestId('session-access-editor:collaboration')).toBeNull();
-        await vi.waitFor(() => expect(screen.findByTestId('session-public-link-row')).not.toBeNull());
     });
 
     it('drops a visited Conversations body once the exact Home withdraws that feature', async () => {
@@ -452,13 +662,11 @@ describe('SessionCollaborationSurface', () => {
                 <SessionCollaborationSurface target={{ serverId: active.id, sessionId: 'same-id' }} />
             </AppPaneProvider>,
         );
-        await vi.waitFor(() => expect(screen.findByTestId('session-collaboration-conversations-panel')).not.toBeNull());
+        await vi.waitFor(() => expect(screen.findByTestId('session-discussion-activity-list')).not.toBeNull());
 
         // The Home stops advertising the dependent feature while this surface
-        // stays mounted. Retention is for a supported mode the user may return
-        // to; an unsupported one must fail closed rather than stay mounted,
-        // subscribed and reachable to assistive technology behind a mode
-        // selector that no longer offers it.
+        // stays mounted. An unsupported body must fail closed rather than stay
+        // mounted, subscribed and reachable to assistive technology.
         await act(async () => {
             primeFeatures(
                 active.id,
@@ -467,12 +675,12 @@ describe('SessionCollaborationSurface', () => {
             );
         });
 
-        await vi.waitFor(() => expect(screen.findByTestId('session-collaboration-conversations-panel')).toBeNull());
+        await vi.waitFor(() => expect(screen.findByTestId('session-discussion-activity-list')).toBeNull());
         expect(screen.findByTestId('session-collaboration-modes')).toBeNull();
-        await vi.waitFor(() => expect(screen.findByTestId('session-access-editor:collaboration')).not.toBeNull());
+        expect(screen.findByTestId('session-collaboration-access-card')).not.toBeNull();
     });
 
-    it('applies explicit Access intent on the first mount and retains both visited mode bodies inertly', async () => {
+    it('grows the Share panel for an explicit Access intent on first mount and folds it back into the card', async () => {
         const active = await upsertServerProfile({ name: 'Collaboration modes Home', serverUrl: 'https://collaboration-modes.example.test' });
         credentials.serverId = active.id;
         primeCollaboration(active.id);
@@ -498,34 +706,25 @@ describe('SessionCollaborationSurface', () => {
             </AppPaneProvider>,
         );
         await vi.waitFor(() => expect(screen.findByTestId('session-access-editor:collaboration')).not.toBeNull());
-        expect(screen.findByTestId('session-collaboration-mode:access')?.props.accessibilityState).toMatchObject({ selected: true });
-        expect(screen.findByTestId('session-collaboration-conversations-panel')).toBeNull();
-
-        await act(async () => {
-            pressTestInstance(screen.findByTestId('session-collaboration-mode:conversations'));
-        });
-        await vi.waitFor(() => expect(screen.findByTestId('session-collaboration-mode:conversations')?.props.accessibilityState).toMatchObject({ selected: true }));
-        await vi.waitFor(() => expect(screen.findByTestId('session-collaboration-conversations-panel')).not.toBeNull());
-        await vi.waitFor(() => expect(screen.findByTestId('session-discussion-activity-list')).not.toBeNull());
-
-        await act(async () => {
-            pressTestInstance(screen.findByTestId('session-collaboration-mode:access'));
-        });
-        await vi.waitFor(() => expect(screen.findByTestId('session-collaboration-conversations-panel')?.props).toMatchObject({
+        // The panel covers the pane; the conversations beneath keep their place but are inert.
+        await vi.waitFor(() => expect(screen.findByTestId('session-collaboration-share-panel')?.props.pointerEvents).toBe('auto'));
+        expect(screen.findByTestId('session-collaboration-main-column')?.props).toMatchObject({
             pointerEvents: 'none',
             accessibilityElementsHidden: true,
             importantForAccessibility: 'no-hide-descendants',
-        }));
-
-        await act(async () => {
-            pressTestInstance(screen.findByTestId('session-collaboration-mode:conversations'));
         });
+        expect(screen.findByTestId('session-collaboration-modes')).toBeNull();
+
+        // ⌄ folds it back into the card; the panel is retained (its search and scroll survive) but inert.
+        await screen.pressByTestIdAsync('session-collaboration-share-collapse');
+        await vi.waitFor(() => expect(screen.findByTestId('session-collaboration-main-column')?.props.pointerEvents).toBe('auto'));
+        await vi.waitFor(() => expect(screen.findByTestId('session-collaboration-share-panel')?.props.pointerEvents).toBe('none'));
+        expect(screen.findByTestId('session-access-editor:collaboration')).not.toBeNull();
         await vi.waitFor(() => expect(screen.findByTestId('session-discussion-activity-list')).not.toBeNull());
-        await vi.waitFor(() => expect(screen.findByTestId('session-collaboration-access-panel')?.props).toMatchObject({
-            pointerEvents: 'none',
-            accessibilityElementsHidden: true,
-            importantForAccessibility: 'no-hide-descendants',
-        }));
+
+        // Pressing the card grows it again.
+        await screen.pressByTestIdAsync('session-collaboration-access-card');
+        await vi.waitFor(() => expect(screen.findByTestId('session-collaboration-share-panel')?.props.pointerEvents).toBe('auto'));
     });
 
     it('focuses the requested anchor when an already-mounted surface consumes a new intent', async () => {
@@ -565,14 +764,13 @@ describe('SessionCollaborationSurface', () => {
                 },
             },
         );
-        await vi.waitFor(() => expect(screen.findByTestId('session-collaboration-conversations-panel')).not.toBeNull());
         await vi.waitFor(() => expect(screen.findByTestId('session-discussion-activity-list')).not.toBeNull());
 
         await act(async () => {
             publishSessionCollaborationIntent({ serverId: active.id, sessionId: 'same-id' }, 'access');
         });
 
-        await vi.waitFor(() => expect(screen.findByTestId('session-collaboration-mode:access')?.props.accessibilityState).toMatchObject({ selected: true }));
+        await vi.waitFor(() => expect(screen.findByTestId('session-collaboration-share-panel')?.props.pointerEvents).toBe('auto'));
         await vi.waitFor(() => expect(focused).toHaveBeenCalledWith('session-collaboration-access-body'));
         await vi.waitFor(() => expect(nativeFocus.setAccessibilityFocus).toHaveBeenCalledWith(
             nativeNodes.get('session-collaboration-access-body')?.id,
@@ -604,7 +802,7 @@ describe('SessionCollaborationSurface', () => {
         expect(nativeFocus.setAccessibilityFocus).not.toHaveBeenCalled();
     });
 
-    it('consumes the Access focus query once so a later visit keeps the mode the user chose', async () => {
+    it('consumes the Access focus query once so a later visit does not force Share open again', async () => {
         const active = await upsertServerProfile({ name: 'Collaboration query Home', serverUrl: 'https://collaboration-query.example.test' });
         credentials.serverId = active.id;
         primeCollaboration(active.id);
@@ -632,8 +830,7 @@ describe('SessionCollaborationSurface', () => {
                 <SessionCollaborationSurface target={target} />
             </AppPaneProvider>,
         );
-        await vi.waitFor(() => expect(screen.findByTestId('session-collaboration-mode:access')?.props.accessibilityState)
-            .toMatchObject({ selected: true }));
+        await vi.waitFor(() => expect(screen.findByTestId('session-collaboration-share-panel')?.props.pointerEvents).toBe('auto'));
 
         // Applied once, then consumed at the navigation owner: only this key is
         // rewritten, the Session's own route scope survives, and nothing navigates.
@@ -643,23 +840,19 @@ describe('SessionCollaborationSurface', () => {
         expect(route.replace).not.toHaveBeenCalled();
         expect(route.push).not.toHaveBeenCalled();
 
-        await act(async () => {
-            pressTestInstance(screen.findByTestId('session-collaboration-mode:conversations'));
-        });
-        await vi.waitFor(() => expect(screen.findByTestId('session-collaboration-mode:conversations')?.props.accessibilityState)
-            .toMatchObject({ selected: true }));
+        await screen.pressByTestIdAsync('session-collaboration-share-collapse');
+        await vi.waitFor(() => expect(screen.findByTestId('session-collaboration-main-column')?.props.pointerEvents).toBe('auto'));
 
-        // Leaving and returning to the same Session must not force Access again.
+        // Leaving and returning to the same Session must not force Share open again.
         await screen.unmount();
         const revisited = await renderScreen(
             <AppPaneProvider>
                 <SessionCollaborationSurface target={target} />
             </AppPaneProvider>,
         );
-        await vi.waitFor(() => expect(revisited.findByTestId('session-collaboration-mode:conversations')?.props.accessibilityState)
-            .toMatchObject({ selected: true }));
-        expect(revisited.findByTestId('session-collaboration-mode:access')?.props.accessibilityState)
-            .toMatchObject({ selected: false });
+        await vi.waitFor(() => expect(revisited.findByTestId('session-collaboration-access-card')).not.toBeNull());
+        expect(revisited.findByTestId('session-collaboration-share-panel')).toBeNull();
+        expect(revisited.findByTestId('session-collaboration-main-column')?.props.pointerEvents).toBe('auto');
     });
 
     it('handles the same route focus again after the canonical intent was absent without remounting', async () => {
@@ -699,15 +892,11 @@ describe('SessionCollaborationSurface', () => {
                 return { focus: () => focused(testID) };
             },
         });
-        await vi.waitFor(() => expect(screen.findByTestId('session-collaboration-mode:access')?.props.accessibilityState)
-            .toMatchObject({ selected: true }));
+        await vi.waitFor(() => expect(screen.findByTestId('session-collaboration-share-panel')?.props.pointerEvents).toBe('auto'));
         await vi.waitFor(() => expect(route.readParams().collaborationFocus).toBeUndefined());
 
-        await act(async () => {
-            pressTestInstance(screen.findByTestId('session-collaboration-mode:conversations'));
-        });
-        await vi.waitFor(() => expect(screen.findByTestId('session-collaboration-mode:conversations')?.props.accessibilityState)
-            .toMatchObject({ selected: true }));
+        await screen.pressByTestIdAsync('session-collaboration-share-collapse');
+        await vi.waitFor(() => expect(screen.findByTestId('session-collaboration-share-panel')?.props.pointerEvents).toBe('none'));
 
         // The route mailbox observed the consumed/absent state before a later
         // caller issued the same exact request again on this retained surface.
@@ -716,8 +905,7 @@ describe('SessionCollaborationSurface', () => {
         await act(async () => { route.applyParams({ collaborationFocus: 'access' }); });
         await screen.update(element());
 
-        await vi.waitFor(() => expect(screen.findByTestId('session-collaboration-mode:access')?.props.accessibilityState)
-            .toMatchObject({ selected: true }));
+        await vi.waitFor(() => expect(screen.findByTestId('session-collaboration-share-panel')?.props.pointerEvents).toBe('auto'));
         await vi.waitFor(() => expect(focused).toHaveBeenCalledWith('session-collaboration-access-body'));
         await vi.waitFor(() => expect(route.readParams().collaborationFocus).toBeUndefined());
     });

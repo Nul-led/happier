@@ -19,6 +19,7 @@ function selectedSurface(
     return {
         id: 'surfacePlacement:acme.preview:summary',
         pluginId: 'acme.preview',
+        occurrenceId: 'preview-summary-occurrence-a',
         contributionKind: 'surfacePlacement',
         descriptorId: 'summary',
         binding,

@@ -45,12 +45,13 @@ type SurfaceFacts = Readonly<{ title: string | null; status: string | null; fill
 async function readSurfaceFacts(): Promise<SurfaceFacts> {
     const screen = await renderScreen(<PersonalHomeSetupSurface snapshot={working} />);
     const arc = screen.root.findByProps({ testID: 'personal-home-bootstrap-progress-arc' });
-    const circumference = Number(String(arc.props.strokeDasharray).split(' ')[0]);
+    const circumference = Number(arc.props.circumference ?? String(arc.props.strokeDasharray).split(' ')[0]);
+    const dashOffset = Number(arc.props.animatedProps?.strokeDashoffset ?? arc.props.strokeDashoffset ?? arc.props.dashOffset);
     const header = screen.root.findAll((node) => typeof node.type === 'string' && node.props.accessibilityRole === 'header')[0];
     return {
         title: typeof header?.props.children === 'string' ? header.props.children : null,
         status: String(screen.findAllHostsByTestId('personal-home-bootstrap-phase')[0]?.props.children ?? ''),
-        filled: 1 - Number(arc.props.strokeDashoffset) / circumference,
+        filled: 1 - dashOffset / circumference,
         activityPresent: screen.findAllHostsByTestId('personal-home-bootstrap-activity').length === 1,
     };
 }

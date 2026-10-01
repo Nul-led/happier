@@ -81,12 +81,27 @@ export function upsertSessionReminderPreset(
  */
 export type SessionReminderPresetIntent =
     | Readonly<{ kind: 'upsert'; preset: SessionReminderPresetV1 }>
-    | Readonly<{ kind: 'replace'; presets: readonly SessionReminderPresetV1[] }>;
+    | Readonly<{ kind: 'replace'; presets: readonly SessionReminderPresetV1[]; expectedPresets: readonly SessionReminderPresetV1[] }>;
+
+export class SessionReminderPresetConflictError extends Error {
+    constructor() {
+        super('Reminder presets changed while editing');
+        this.name = 'SessionReminderPresetConflictError';
+    }
+}
 
 export function applySessionReminderPresetIntent(
     presets: readonly SessionReminderPresetV1[],
     intent: SessionReminderPresetIntent,
 ): SessionReminderPresetV1[] {
+    if (intent.kind === 'replace' && (presets.length !== intent.expectedPresets.length
+        || presets.some((preset, index) => {
+            const expected = intent.expectedPresets[index];
+            return !expected || preset.label !== expected.label
+                || sessionReminderPresetRuleKey(preset.rule) !== sessionReminderPresetRuleKey(expected.rule);
+        }))) {
+        throw new SessionReminderPresetConflictError();
+    }
     return intent.kind === 'upsert'
         ? upsertSessionReminderPreset(presets, intent.preset)
         : [...intent.presets];

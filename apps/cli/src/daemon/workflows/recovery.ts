@@ -1,28 +1,39 @@
 import {
   EXTERNAL_ACTION_RESPONSE_MAX_SERIALIZED_BYTES,
-  WorkflowProgressEnvelopeV1Schema,
-  isWorkflowResultDeliveryUnavailableV1,
+  decodeExecutionRunResultObservation,
+  validateExecutionRunProfileResult,
+  classifyWorkflowReviewEntryV1,
+  resolveWorkflowInvocationStructureV1,
+  applyWorkflowInvocationFactV1,
   WorkflowRunInvocationIndexV1Schema,
   WorkflowRunSummaryV1Schema,
   openWorkflowAcceptedSnapshotStoredEnvelopeV1,
-  openWorkflowFinalResultStoredEnvelopeV1,
   openWorkflowProgressStoredEnvelopeV1,
   parseWorkflowStoredContentEnvelopeV1,
   sealWorkflowProgressStoredEnvelopeV1,
   serializeWorkflowStoredContentEnvelopeV1,
+  WorkflowRunRecipientCensusResponseV1Schema,
+  WorkflowRunRecipientKeyEnvelopeCommitResponseV1Schema,
+  resolveWorkflowRunDataKeyV1,
+  runWorkflowRecipientKeyPreparationV1,
+  type WorkflowRunEncryptionV1,
   type JsonValue,
+  type WorkflowAcceptedSnapshotV1,
   type WorkflowInvocationLifecycleV1,
   type WorkflowProgressEnvelopeV1,
   type WorkflowRunInvocationIndexV1,
   type WorkflowRunSummaryV1,
+  type WorkflowUsageV1,
+  type WorkflowMaterializedLeafV1,
 } from '@happier-dev/protocol';
 
 import { getRandomBytes } from '@/api/encryption';
 import {
-  isAvailableE2eeAutomationAccountEncryptionV1,
   type AvailableAutomationAccountEncryptionV1,
 } from '@/plugins/runtime/automations/automationAccountCurrentness';
 import type { WorkflowRunStorageOperation } from './workflowRunStorageClient';
+import { isWorkflowJsonObject } from './input';
+import { createWorkflowRunReviewEntryNotificationHandler } from '@/notifications/activity/dispatchWorkflowRunUpdateNotification';
 
 const RECOVERABLE_INVOCATION_LIFECYCLES = [
   'pending',
@@ -50,24 +61,24 @@ function record(value: unknown): Readonly<Record<string, unknown>> | null {
     : null;
 }
 
-function openMode(encryption: AvailableAutomationAccountEncryptionV1) {
-  if (!isAvailableE2eeAutomationAccountEncryptionV1(encryption)) return { mode: 'plain' as const };
-  return { mode: 'e2ee' as const, material: encryption.material.material };
+function openMode(encryption: WorkflowRunEncryptionV1) {
+  return encryption.runCrypto;
 }
 
 type RecoveryCandidate = Readonly<{ run: WorkflowRunSummaryV1; parentAttempt: number }>;
 
 export type WorkflowInvocationRecoveryObservation =
   | Readonly<{ kind: 'unresolved'; code?: string }>
-  | Readonly<{ kind: 'completed'; result: JsonValue }>
-  | Readonly<{ kind: 'failed'; code: string }>
-  | Readonly<{ kind: 'cancelled'; code?: string }>
-  | Readonly<{ kind: 'outcome_uncertain'; code: string }>;
+  | Readonly<{ kind: 'completed'; result: JsonValue; usage?: WorkflowUsageV1 }>
+  | Readonly<{ kind: 'failed'; code: string; message?: string; usage?: WorkflowUsageV1 }>
+  | Readonly<{ kind: 'cancelled'; code?: string; usage?: WorkflowUsageV1 }>
+  | Readonly<{ kind: 'outcome_uncertain'; code: string; usage?: WorkflowUsageV1 }>;
 
 type ReconciledInvocationTransition = Readonly<{
   id: string;
   expectedLifecycle: WorkflowInvocationLifecycleV1;
   lifecycle: WorkflowInvocationLifecycleV1;
+  expectedContentRevision?: string;
 }>;
 
 type ReconciledInvocationCustody = Readonly<{
@@ -88,123 +99,98 @@ function parseRunPage(value: unknown): Readonly<{ candidates: readonly RecoveryC
   return { candidates, ...(typeof body.nextCursor === 'string' ? { nextCursor: body.nextCursor } : {}) };
 }
 
-async function recoverDirectResultDelivery(params: Readonly<{
+export function createWorkflowInvocationRecoveryFactWriter(params: Readonly<{
   accountId: string;
   run: WorkflowRunSummaryV1;
-  parentAttempt: number;
-  encryption: AvailableAutomationAccountEncryptionV1;
+  encryption: WorkflowRunEncryptionV1;
   storage: Storage;
-  deliverResult: (input: Readonly<{ runId: string; sessionId: string; text: string; signal?: AbortSignal }>) => Promise<Readonly<{
-    status: 'accepted' | 'unavailable' | 'unresolved';
-  }>>;
   signal?: AbortSignal;
-}>): Promise<void> {
-  if (params.run.workflowResultDeliveryState !== 'pending') return;
-  const response = record(await params.storage.execute(
-    { operation: 'get', runId: params.run.id },
-    params.signal ? { signal: params.signal } : {},
-  ));
-  const current = response ? WorkflowRunSummaryV1Schema.safeParse(response.run) : null;
-  if (!response || !current?.success || current.data.workflowResultDeliveryState !== 'pending') return;
-
-  const acceptedEnvelope = parseWorkflowStoredContentEnvelopeV1(response.acceptedEnvelope);
-  const resultEnvelope = parseWorkflowStoredContentEnvelopeV1(response.resultEnvelope);
-  const accepted = acceptedEnvelope
-    ? openWorkflowAcceptedSnapshotStoredEnvelopeV1({
+  onReviewEntered?: (entry: Readonly<{ runId: string }>) => Promise<void>;
+} & (
+  | Readonly<{ parentAttempt: number; expectedRevision?: never }>
+  | Readonly<{ expectedRevision: number; parentAttempt?: never }>
+)>) {
+  const readInvocation = async (recordId: string) => {
+    const detailBody = record(await params.storage.execute({
+      operation: 'invocations.get', runId: params.run.id, invocationId: recordId,
+    }, params.signal ? { signal: params.signal } : {}));
+    const invocation = record(detailBody?.invocation);
+    const index = WorkflowRunInvocationIndexV1Schema.safeParse(invocation?.index);
+    const contentEnvelope = invocation?.contentEnvelope;
+    const envelope = parseWorkflowStoredContentEnvelopeV1(contentEnvelope);
+    if (!index.success || index.data.id !== recordId || index.data.runId !== params.run.id
+      || typeof contentEnvelope !== 'string' || !envelope) return undefined;
+    const opened = openWorkflowProgressStoredEnvelopeV1({
       ...openMode(params.encryption),
-      binding: { v: 1, purpose: 'accepted_snapshot', accountId: params.accountId, runId: params.run.id },
-      envelope: acceptedEnvelope,
-    })
-    : null;
-  const result = resultEnvelope
-    ? openWorkflowFinalResultStoredEnvelopeV1({
-      ...openMode(params.encryption),
-      binding: { v: 1, purpose: 'final_result', accountId: params.accountId, runId: params.run.id },
-      envelope: resultEnvelope,
-    })
-    : null;
-
-  // A mode/binding/decryption failure is not proof that delivery is
-  // unavailable. Retain custody so a later current-material pass can rejoin.
-  if (accepted?.kind !== 'available' || (resultEnvelope && result?.kind !== 'available')) return;
-
-  let settlement: Readonly<{
-    state: 'accepted' | 'unavailable';
-    reason?: 'workflow_outcome_unresolved';
-  }>;
-  const resultDelivery = 'resultDelivery' in accepted.content
-    ? accepted.content.resultDelivery
-    : undefined;
-  if (!resultDelivery) {
-    settlement = { state: 'unavailable' };
-  } else if (!resultEnvelope
-    || result?.kind !== 'available'
-    || result.content.result.kind !== 'text'
-    || typeof result.content.result.value !== 'string') {
-    settlement = { state: 'unavailable', reason: 'workflow_outcome_unresolved' };
-  } else {
-    let delivered: Readonly<{ status: 'accepted' | 'unavailable' | 'unresolved' }>;
+      binding: { v: 1, purpose: 'invocation_progress', accountId: params.accountId, runId: params.run.id,
+        recordId, sequence: index.data.sequence, parentRecordId: index.data.parentRecordId,
+        memberOrdinal: index.data.memberOrdinal, attempt: index.data.attempt },
+      envelope,
+    });
+    return opened.kind === 'available' ? { index: index.data, progress: opened.content, contentEnvelope } : undefined;
+  };
+  let acceptedSnapshot: Promise<WorkflowAcceptedSnapshotV1 | undefined> | undefined;
+  const readAcceptedSnapshot = async () => {
+    acceptedSnapshot ??= (async () => {
+      const body = record(await params.storage.execute({ operation: 'get', runId: params.run.id }, params.signal ? { signal: params.signal } : {}));
+      const envelope = parseWorkflowStoredContentEnvelopeV1(body?.acceptedEnvelope);
+      if (!envelope) return undefined;
+      const opened = openWorkflowAcceptedSnapshotStoredEnvelopeV1({ ...openMode(params.encryption),
+        binding: { v: 1, purpose: 'accepted_snapshot', accountId: params.accountId, runId: params.run.id }, envelope });
+      return opened.kind === 'available' ? opened.content : undefined;
+    })();
+    return await acceptedSnapshot;
+  };
+  const resolveFrozenLeaf = async (invocation: NonNullable<Awaited<ReturnType<typeof readInvocation>>>) => {
+    const accepted = await readAcceptedSnapshot();
+    return accepted ? await resolveWorkflowInvocationStructureV1({ definition: accepted.definition,
+      frozenChildren: accepted.frozenChildren, invocation, readInvocation,
+      keyOfInvocation: (row) => row.index.id }) : undefined;
+  };
+  const resolveFrozenActionContract = async (invocation: NonNullable<Awaited<ReturnType<typeof readInvocation>>>) => {
+    const resolved = await resolveFrozenLeaf(invocation);
+    const accepted = await readAcceptedSnapshot();
+    if (resolved?.leaf.kind !== 'action' || invocation.progress.execution?.kind !== 'action'
+      || resolved.leaf.actionId !== invocation.progress.execution.actionId) return undefined;
+    const actionLeaf = resolved.leaf;
+    return accepted?.materializedLeaves.find((leaf) => leaf.sourceKey === resolved.sourceKey
+      && leaf.blockId === actionLeaf.id && leaf.kind === 'action' && leaf.actionId === actionLeaf.actionId)?.actionContract;
+  };
+  const adaptCompletion = async (
+    invocation: NonNullable<Awaited<ReturnType<typeof readInvocation>>>,
+    observation: Extract<WorkflowInvocationRecoveryObservation, { kind: 'completed' }>,
+  ): Promise<WorkflowInvocationRecoveryObservation> => {
+    let resolved: Awaited<ReturnType<typeof resolveFrozenLeaf>>;
     try {
-      delivered = await params.deliverResult({
-        runId: params.run.id,
-        sessionId: resultDelivery.originSessionId,
-        text: result.content.result.value,
-        ...(params.signal ? { signal: params.signal } : {}),
-      });
+      resolved = await resolveFrozenLeaf(invocation);
     } catch {
-      // A transport failure may happen after the stable input was accepted.
-      // Keep pending custody and rejoin on the next lifecycle trigger.
-      return;
+      return { kind: 'unresolved', code: 'workflow_invocation_binding_unavailable' };
     }
-    if (delivered.status === 'unresolved') return;
-    settlement = { state: delivered.status };
-  }
-  try {
-    await params.storage.execute({
-      operation: 'result-delivery.settle',
-      runId: params.run.id,
-      parentAttempt: params.parentAttempt,
-      expectedRevision: current.data.revision,
-      ...settlement,
-    }, params.signal ? { signal: params.signal } : {});
-  } catch {
-    // A concurrent pass or a response-loss retry may already have committed
-    // this stable delivery. Re-read the exact Run and accept only its durable
-    // settled fact; pending custody remains eligible for a later rejoin.
-    const rejoinBody = record(await params.storage.execute(
-      { operation: 'get', runId: params.run.id },
-      params.signal ? { signal: params.signal } : {},
-    ));
-    const rejoined = rejoinBody ? WorkflowRunSummaryV1Schema.safeParse(rejoinBody.run) : null;
-    if (rejoined?.success
-      && rejoined.data.workflowCustodyState === 'settled'
-      && (rejoined.data.workflowResultDeliveryState === 'accepted'
-        || isWorkflowResultDeliveryUnavailableV1(rejoined.data.workflowResultDeliveryState))) return;
-  }
-}
-
-async function recoverInvocationCustody(params: Readonly<{
-  accountId: string;
-  run: WorkflowRunSummaryV1;
-  trigger: WorkflowRecoveryTrigger;
-  encryption: AvailableAutomationAccountEncryptionV1;
-  storage: Storage;
-  reconcileInvocation: (input: Readonly<{
-    run: WorkflowRunSummaryV1;
-    index: WorkflowRunInvocationIndexV1;
-    progress: WorkflowProgressEnvelopeV1;
-    terminalParent: boolean;
-    cancellationRequested: boolean;
-    parentAttempt: number;
-    trigger: WorkflowRecoveryTrigger;
-    signal?: AbortSignal;
-  }>) => Promise<WorkflowInvocationRecoveryObservation>;
-  signal?: AbortSignal;
-  parentAttempt: number;
-}>): Promise<ReconciledInvocationCustody | null> {
-  const reconciled: ReconciledInvocationTransition[] = [];
-  let allResolved = true;
-  let cancellationRequested = false;
+    const step = resolved?.leaf;
+    if (!step || (step.kind !== 'step' && step.kind !== 'action')) return { kind: 'unresolved', code: 'workflow_invocation_binding_unavailable' };
+    const execution = invocation.progress.execution;
+    if (step.kind === 'action') {
+      const contract = await resolveFrozenActionContract(invocation);
+      const schema = contract?.outputSchema;
+      if (!isWorkflowJsonObject(schema)) {
+        return { kind: 'unresolved', code: 'workflow_invocation_binding_unavailable' };
+      }
+      const value = step.pauseForReview && invocation.progress.review?.resultSource?.kind === 'published'
+        && invocation.progress.result !== undefined ? invocation.progress.result : observation.result;
+      const validated = validateExecutionRunProfileResult(value, { kind: 'json', schema });
+      return validated.ok ? { ...observation, result: validated.value } : { kind: 'failed', code: 'schema_mismatch' };
+    }
+    const value = step.pauseForReview && invocation.progress.review?.resultSource?.kind === 'published'
+      && invocation.progress.result !== undefined
+      ? { encoding: 'typed' as const, value: invocation.progress.result }
+      : execution?.kind === 'session'
+      ? typeof observation.result === 'string' ? { encoding: 'raw_text' as const, value: observation.result } : null
+      : execution?.kind === 'detached_run' ? { encoding: 'typed' as const, value: observation.result } : null;
+    const decoded = value ? decodeExecutionRunResultObservation(value, step.result) : null;
+    return decoded?.ok ? { ...observation, result: decoded.value }
+      : { kind: 'failed', code: 'invalid_result_contract', ...(decoded && !decoded.ok ? { message: decoded.reason } : {}),
+        ...(observation.usage ? { usage: observation.usage } : {}) };
+  };
   const commitFact = async (
     index: WorkflowRunInvocationIndexV1,
     lifecycle: WorkflowInvocationLifecycleV1,
@@ -215,11 +201,14 @@ async function recoverInvocationCustody(params: Readonly<{
       await params.storage.execute({
         operation: 'invocations.fact',
         runId: params.run.id,
-        parentAttempt: params.parentAttempt,
+        ...(params.expectedRevision !== undefined
+          ? { expectedRevision: params.expectedRevision, resolution: 'observed_terminal_execution' as const }
+          : { parentAttempt: params.parentAttempt }),
         accountCurrentness: params.encryption.witness,
         invocationId: index.id,
         invocationAttempt: index.attempt,
         expectedLifecycle: index.lifecycle,
+        expectedContentRevision: index.contentRevision,
         lifecycle,
         contentEnvelope,
         ...(resolution ? { resolution } : {}),
@@ -239,6 +228,113 @@ async function recoverInvocationCustody(params: Readonly<{
         && rejoinInvocation?.contentEnvelope === contentEnvelope;
     }
   };
+  const commitObservation = async (
+    invocation: NonNullable<Awaited<ReturnType<typeof readInvocation>>>,
+    observed: WorkflowInvocationRecoveryObservation,
+  ): Promise<ReconciledInvocationTransition | null> => {
+    const { index: exactIndex, progress } = invocation;
+    const currentLifecycle = exactIndex.lifecycle;
+    if (params.expectedRevision !== undefined
+      && (currentLifecycle === 'completed' || currentLifecycle === 'failed'
+        || currentLifecycle === 'cancelled' || currentLifecycle === 'skipped')) return null;
+    if (currentLifecycle === 'waiting_for_review' || currentLifecycle === 'superseded') return null;
+    const prior = progress.previousAttemptRecordId ? await readInvocation(progress.previousAttemptRecordId) : undefined;
+    const generation = prior?.progress.review?.decision?.kind === 'generate';
+    const step = observed.kind === 'completed' || generation ? (await resolveFrozenLeaf(invocation).catch(() => undefined))?.leaf : undefined;
+    const observation = observed.kind === 'completed' ? await adaptCompletion(invocation, observed) : observed;
+    if (params.expectedRevision !== undefined && observed.kind === 'completed' && observation.kind === 'unresolved') {
+      throw Object.assign(new Error('workflow_outcome_unresolved'), { code: 'workflow_outcome_unresolved' });
+    }
+    if (observation.kind === 'unresolved'
+      || (params.expectedRevision !== undefined && observation.kind === 'outcome_uncertain')
+      || (currentLifecycle === 'outcome_uncertain' && observation.kind === 'outcome_uncertain')) return null;
+    const resolvingUncertain = currentLifecycle === 'outcome_uncertain';
+    const stopStillPending = observation.kind === 'cancelled' && observation.code === 'session_input_turn_cancel_requested';
+    const stoppedWithUncertainEffects = resolvingUncertain && !stopStillPending
+      && (observation.kind === 'failed' || observation.kind === 'cancelled');
+    const reviewRequired = classifyWorkflowReviewEntryV1({
+      mayEnterReview: !TERMINAL_RUN_STATES.has(params.run.state) && currentLifecycle !== 'cancel_requested',
+      pauseForReview: Boolean(step && 'pauseForReview' in step && step.pauseForReview),
+      isGeneration: generation,
+      inputCompleted: observed.kind === 'completed',
+      observation,
+    }) === 'waiting_for_review';
+    const lifecycle: WorkflowInvocationLifecycleV1 = stopStillPending ? 'cancel_requested' : reviewRequired ? 'waiting_for_review' : stoppedWithUncertainEffects
+      ? 'needs_attention'
+      : observation.kind;
+    const nextProgress: WorkflowProgressEnvelopeV1 = {
+      ...applyWorkflowInvocationFactV1(progress, {
+        ...(observation.kind === 'completed' ? { result: observation.result } : {}),
+        ...(observation.usage ? { usage: observation.usage } : {}),
+        ...(observation.kind !== 'completed' && observation.code ? { reason: observation.code,
+          ...(observation.kind === 'failed' && observation.message !== undefined ? { reasonMessage: observation.message } : {}) } : {}),
+      }),
+      ...(observation.kind === 'completed' && (reviewRequired || generation) && !progress.review?.resultSource
+        ? { review: { ...progress.review, resultSource: { kind: 'execution_input' as const } } } : {}),
+      ...(stoppedWithUncertainEffects ? { uncertainPriorEffects: { activity: 'stopped' as const } } : {}),
+    };
+    const binding = {
+      v: 1 as const, purpose: 'invocation_progress' as const, accountId: params.accountId, runId: params.run.id,
+      recordId: exactIndex.id, sequence: exactIndex.sequence,
+      parentRecordId: exactIndex.parentRecordId, memberOrdinal: exactIndex.memberOrdinal,
+      attempt: exactIndex.attempt,
+    };
+    const sealMode = params.encryption.runCrypto.mode === 'e2ee'
+      ? { ...params.encryption.runCrypto, randomBytes: getRandomBytes }
+      : params.encryption.runCrypto;
+    const contentEnvelope = serializeWorkflowStoredContentEnvelopeV1(sealWorkflowProgressStoredEnvelopeV1({
+      ...sealMode,
+      binding,
+      progress: nextProgress,
+    }));
+    const committed = await commitFact(exactIndex, lifecycle, contentEnvelope,
+      resolvingUncertain ? 'observed_terminal_execution' : undefined).catch((error: unknown) => {
+      params.signal?.throwIfAborted();
+      if (params.expectedRevision === undefined) throw error;
+      throw Object.assign(new Error('workflow_outcome_unresolved'), { code: 'workflow_outcome_unresolved' });
+    });
+    if (!committed) {
+      const fresh = await readInvocation(exactIndex.id);
+      if (fresh && fresh.index.attempt === exactIndex.attempt && fresh.index.lifecycle === currentLifecycle
+        && fresh.index.contentRevision !== exactIndex.contentRevision) return await commitObservation(fresh, observed);
+      if (params.expectedRevision !== undefined) {
+        throw Object.assign(new Error('workflow_outcome_unresolved'), { code: 'workflow_outcome_unresolved' });
+      }
+      return null;
+    }
+    if (reviewRequired) await params.onReviewEntered?.({ runId: params.run.id });
+    const fresh = await readInvocation(exactIndex.id);
+    return { id: exactIndex.id, expectedLifecycle: lifecycle, lifecycle,
+      ...(fresh?.index.lifecycle === lifecycle ? { expectedContentRevision: fresh.index.contentRevision } : {}) };
+  };
+  return { readInvocation, commitFact, commitObservation, resolveFrozenActionContract };
+}
+
+async function recoverInvocationCustody(params: Readonly<{
+  accountId: string;
+  run: WorkflowRunSummaryV1;
+  trigger: WorkflowRecoveryTrigger;
+  encryption: WorkflowRunEncryptionV1;
+  storage: Storage;
+  reconcileInvocation: (input: Readonly<{
+    run: WorkflowRunSummaryV1;
+    index: WorkflowRunInvocationIndexV1;
+    progress: WorkflowProgressEnvelopeV1;
+    frozenActionContract?: WorkflowMaterializedLeafV1['actionContract'];
+    terminalParent: boolean;
+    cancellationRequested: boolean;
+    parentAttempt: number;
+    trigger: WorkflowRecoveryTrigger;
+    signal?: AbortSignal;
+  }>) => Promise<WorkflowInvocationRecoveryObservation>;
+  signal?: AbortSignal;
+  parentAttempt: number;
+  onReviewEntered?: (entry: Readonly<{ runId: string }>) => Promise<void>;
+}>): Promise<ReconciledInvocationCustody | null> {
+  const reconciled: ReconciledInvocationTransition[] = [];
+  let allResolved = true;
+  let cancellationRequested = false;
+  const { readInvocation, commitObservation, commitFact, resolveFrozenActionContract } = createWorkflowInvocationRecoveryFactWriter(params);
   let cursor: string | undefined;
   do {
     const pageBody = record(await params.storage.execute({
@@ -250,130 +346,70 @@ async function recoverInvocationCustody(params: Readonly<{
     if (!pageBody || !Array.isArray(pageBody.invocations)) throw new Error('workflow_recovery_response_invalid');
     for (const rawIndex of pageBody.invocations) {
       const index = WorkflowRunInvocationIndexV1Schema.parse(rawIndex);
-      const detailBody = record(await params.storage.execute({
-        operation: 'invocations.get', runId: params.run.id, invocationId: index.id,
-      }, params.signal ? { signal: params.signal } : {}));
-      const invocation = record(detailBody?.invocation);
-      const exactIndex = invocation ? WorkflowRunInvocationIndexV1Schema.safeParse(invocation.index) : null;
-      const storedContentEnvelope = typeof invocation?.contentEnvelope === 'string'
-        ? invocation.contentEnvelope
-        : null;
-      const envelope = parseWorkflowStoredContentEnvelopeV1(storedContentEnvelope);
-      if (!exactIndex?.success || !envelope || exactIndex.data.lifecycle !== index.lifecycle) {
+      const invocation = await readInvocation(index.id);
+      if (!invocation || invocation.index.lifecycle !== index.lifecycle) {
         allResolved = false;
         continue;
       }
-      const opened = openWorkflowProgressStoredEnvelopeV1({
-        ...openMode(params.encryption),
-        binding: {
-          v: 1, purpose: 'invocation_progress', accountId: params.accountId, runId: params.run.id,
-          recordId: exactIndex.data.id, sequence: exactIndex.data.sequence,
-          parentRecordId: exactIndex.data.parentRecordId, memberOrdinal: exactIndex.data.memberOrdinal,
-          attempt: exactIndex.data.attempt,
-        },
-        envelope,
-      });
-      if (opened.kind !== 'available') {
-        allResolved = false;
-        continue;
+      const exactIndex = invocation.index;
+      const storedContentEnvelope = invocation.contentEnvelope;
+      const progress = invocation.progress;
+      const currentLifecycle = exactIndex.lifecycle;
+      if (currentLifecycle === 'cancel_requested' && exactIndex.parentRecordId === null) {
+        cancellationRequested = true;
       }
-      const progress = WorkflowProgressEnvelopeV1Schema.parse(opened.content);
-      const currentLifecycle = exactIndex.data.lifecycle;
-      if (currentLifecycle === 'cancel_requested') cancellationRequested = true;
       if (currentLifecycle === 'pending' || currentLifecycle === 'waiting_for_capacity') {
         if (!TERMINAL_RUN_STATES.has(params.run.state)) {
           allResolved = false;
           continue;
         }
         const lifecycle = params.run.state === 'cancelled' ? 'cancelled' : 'skipped';
-        if (!storedContentEnvelope || !await commitFact(exactIndex.data, lifecycle, storedContentEnvelope)) {
+        if (!await commitFact(exactIndex, lifecycle, storedContentEnvelope)) {
           allResolved = false;
           continue;
         }
         reconciled.push({
-          id: exactIndex.data.id,
+          id: exactIndex.id,
           expectedLifecycle: lifecycle,
           lifecycle,
         });
         continue;
       }
-      if (progress.blockKind !== 'step') {
+      if (progress.blockKind !== 'step' && progress.blockKind !== 'action') {
         if (currentLifecycle === 'cancel_requested') {
-          if (!storedContentEnvelope || !await commitFact(exactIndex.data, 'cancelled', storedContentEnvelope)) {
+          if (!await commitFact(exactIndex, 'cancelled', storedContentEnvelope)) {
             allResolved = false;
             continue;
           }
-          reconciled.push({ id: exactIndex.data.id, expectedLifecycle: 'cancelled', lifecycle: 'cancelled' });
+          reconciled.push({ id: exactIndex.id, expectedLifecycle: 'cancelled', lifecycle: 'cancelled' });
           continue;
         }
         if (currentLifecycle === 'outcome_uncertain') {
-          if (!storedContentEnvelope
-            || !await commitFact(exactIndex.data, currentLifecycle, storedContentEnvelope)) {
+          if (!await commitFact(exactIndex, currentLifecycle, storedContentEnvelope)) {
             allResolved = false;
             continue;
           }
-          reconciled.push({ id: exactIndex.data.id, expectedLifecycle: currentLifecycle, lifecycle: currentLifecycle });
+          reconciled.push({ id: exactIndex.id, expectedLifecycle: currentLifecycle, lifecycle: currentLifecycle });
           continue;
         }
         allResolved = false;
         continue;
       }
-      const observation = await params.reconcileInvocation({
-        run: params.run, index: exactIndex.data,
+      const observed = await params.reconcileInvocation({
+        run: params.run, index: exactIndex,
         progress,
+        ...(progress.blockKind === 'action' ? { frozenActionContract: await resolveFrozenActionContract(invocation) } : {}),
         terminalParent: TERMINAL_RUN_STATES.has(params.run.state),
         cancellationRequested: currentLifecycle === 'cancel_requested',
         parentAttempt: params.parentAttempt, trigger: params.trigger,
         ...(params.signal ? { signal: params.signal } : {}),
       });
-      if (observation.kind === 'unresolved') {
+      const transition = await commitObservation(invocation, observed);
+      if (!transition) {
         allResolved = false;
         continue;
       }
-      if (currentLifecycle === 'outcome_uncertain' && observation.kind === 'outcome_uncertain') {
-        allResolved = false;
-        continue;
-      }
-      const resolvingUncertain = currentLifecycle === 'outcome_uncertain';
-      const stoppedWithUncertainEffects = resolvingUncertain
-        && (observation.kind === 'failed' || observation.kind === 'cancelled');
-      const lifecycle: WorkflowInvocationLifecycleV1 = stoppedWithUncertainEffects
-        ? 'needs_attention'
-        : observation.kind;
-      const nextProgress: WorkflowProgressEnvelopeV1 = {
-        ...progress,
-        ...(progress.result !== undefined || observation.kind !== 'completed'
-          ? {}
-          : { result: observation.result }),
-        ...(progress.reason || observation.kind === 'completed' || !observation.code
-          ? {}
-          : { reason: { code: observation.code } }),
-        ...(stoppedWithUncertainEffects ? { uncertainPriorEffects: { activity: 'stopped' as const } } : {}),
-      };
-      const binding = {
-        v: 1 as const, purpose: 'invocation_progress' as const, accountId: params.accountId, runId: params.run.id,
-        recordId: exactIndex.data.id, sequence: exactIndex.data.sequence,
-        parentRecordId: exactIndex.data.parentRecordId, memberOrdinal: exactIndex.data.memberOrdinal,
-        attempt: exactIndex.data.attempt,
-      };
-      const sealMode = isAvailableE2eeAutomationAccountEncryptionV1(params.encryption)
-        ? { mode: 'e2ee' as const, material: params.encryption.material.material, randomBytes: getRandomBytes }
-        : { mode: 'plain' as const };
-      const contentEnvelope = serializeWorkflowStoredContentEnvelopeV1(sealWorkflowProgressStoredEnvelopeV1({
-        ...sealMode,
-        binding,
-        progress: nextProgress,
-      }));
-      if (!await commitFact(
-        exactIndex.data,
-        lifecycle,
-        contentEnvelope,
-        resolvingUncertain ? 'observed_terminal_execution' : undefined,
-      )) {
-        allResolved = false;
-        continue;
-      }
-      reconciled.push({ id: exactIndex.data.id, expectedLifecycle: lifecycle, lifecycle });
+      reconciled.push(transition);
     }
     cursor = typeof pageBody.nextCursor === 'string' ? pageBody.nextCursor : undefined;
   } while (cursor && !params.signal?.aborted);
@@ -385,12 +421,23 @@ async function recoverInvocationCustody(params: Readonly<{
 async function settleRecoveredRun(params: Readonly<{
   runId: string;
   parentAttempt: number;
-  encryption: AvailableAutomationAccountEncryptionV1;
+  encryption: WorkflowRunEncryptionV1;
   storage: Storage;
   invocationTransitions: readonly ReconciledInvocationTransition[];
   cancellationRequested: boolean;
   signal?: AbortSignal;
 }>): Promise<void> {
+  const readTransitions = async () => {
+    const transitions: (ReconciledInvocationTransition & Readonly<{ expectedContentRevision: string }>)[] = [];
+    for (const transition of params.invocationTransitions) {
+      const body = record(await params.storage.execute({ operation: 'invocations.get', runId: params.runId,
+        invocationId: transition.id }, params.signal ? { signal: params.signal } : {}));
+      const index = WorkflowRunInvocationIndexV1Schema.safeParse(record(body?.invocation)?.index);
+      if (!index.success || index.data.lifecycle !== transition.expectedLifecycle) return null;
+      transitions.push({ ...transition, expectedContentRevision: index.data.contentRevision });
+    }
+    return transitions;
+  };
   const body = record(await params.storage.execute(
     { operation: 'get', runId: params.runId },
     params.signal ? { signal: params.signal } : {},
@@ -398,10 +445,11 @@ async function settleRecoveredRun(params: Readonly<{
   const current = body ? WorkflowRunSummaryV1Schema.safeParse(body.run) : null;
   if (!current?.success || current.data.workflowCustodyState === 'settled') return;
   if ((!TERMINAL_RUN_STATES.has(current.data.state) && !params.cancellationRequested)
-    || current.data.workflowResultDeliveryState === 'pending'
     || typeof body?.checkpointEnvelope !== 'string'
     || !parseWorkflowStoredContentEnvelopeV1(body.checkpointEnvelope)) return;
   try {
+    const invocationTransitions = await readTransitions();
+    if (!invocationTransitions) return;
     await params.storage.execute({
       operation: 'transition',
       runId: params.runId,
@@ -411,7 +459,7 @@ async function settleRecoveredRun(params: Readonly<{
       state: params.cancellationRequested ? 'cancelled' : current.data.state,
       checkpointEnvelope: body.checkpointEnvelope,
       custodyState: 'settled',
-      invocationTransitions: params.invocationTransitions,
+      invocationTransitions,
     }, params.signal ? { signal: params.signal } : {});
   } catch {
     const rejoinBody = record(await params.storage.execute(
@@ -421,10 +469,11 @@ async function settleRecoveredRun(params: Readonly<{
     const rejoined = rejoinBody ? WorkflowRunSummaryV1Schema.safeParse(rejoinBody.run) : null;
     if (rejoined?.success && rejoined.data.workflowCustodyState === 'settled') return;
     if (!rejoined?.success
-      || rejoined.data.workflowResultDeliveryState === 'pending'
       || typeof rejoinBody?.checkpointEnvelope !== 'string'
       || !parseWorkflowStoredContentEnvelopeV1(rejoinBody.checkpointEnvelope)) return;
     try {
+      const invocationTransitions = await readTransitions();
+      if (!invocationTransitions) return;
       await params.storage.execute({
         operation: 'transition',
         runId: params.runId,
@@ -434,7 +483,7 @@ async function settleRecoveredRun(params: Readonly<{
         state: params.cancellationRequested ? 'cancelled' : rejoined.data.state,
         checkpointEnvelope: rejoinBody.checkpointEnvelope,
         custodyState: 'settled',
-        invocationTransitions: params.invocationTransitions,
+        invocationTransitions,
       }, params.signal ? { signal: params.signal } : {});
     } catch {
       // Exact row facts remain durable and server custody remains pending.
@@ -454,14 +503,15 @@ export function createWorkflowRunRecoveryReader(params: Readonly<{
   machineId: string;
   storage: Storage;
   resolveAccountEncryption: (signal?: AbortSignal) => Promise<AvailableAutomationAccountEncryptionV1>;
-  deliverResult: Parameters<typeof recoverDirectResultDelivery>[0]['deliverResult'];
   reconcileInvocation: Parameters<typeof recoverInvocationCustody>[0]['reconcileInvocation'];
+  onReviewEntered?: (entry: Readonly<{ runId: string }>) => Promise<void>;
 }>): (trigger: WorkflowRecoveryTrigger, signal?: AbortSignal) => Promise<void> {
   let inFlight: Promise<void> | null = null;
+  const onReviewEntered = params.onReviewEntered ?? createWorkflowRunReviewEntryNotificationHandler();
   return async (trigger, signal) => {
     if (inFlight) return await inFlight;
     const operation = (async () => {
-      const encryption = await params.resolveAccountEncryption(signal);
+      const accountEncryption = await params.resolveAccountEncryption(signal);
       let cursor: string | undefined;
       do {
         const page = parseRunPage(await params.storage.execute({
@@ -472,19 +522,23 @@ export function createWorkflowRunRecoveryReader(params: Readonly<{
         for (const candidate of page.candidates) {
           const { run } = candidate;
           if (signal?.aborted) return;
+          const census = WorkflowRunRecipientCensusResponseV1Schema.parse(await params.storage.execute({
+            operation: 'run-key.census', runId: run.id,
+          }, signal ? { signal } : {}));
+          const resolved = resolveWorkflowRunDataKeyV1({ encryption: accountEncryption, census });
+          if (resolved.kind !== 'available' || census.ownerAccountId !== params.accountId) continue;
+          const encryption = resolved.encryption;
+          await runWorkflowRecipientKeyPreparationV1({ runId: run.id, runCrypto: encryption.runCrypto,
+            openedDataEncryptionKey: census.callerDataEncryptionKey, randomBytes: getRandomBytes,
+            readCensus: async () => WorkflowRunRecipientCensusResponseV1Schema.parse(await params.storage.execute({ operation: 'run-key.census', runId: run.id }, signal ? { signal } : {})),
+            commit: async input => WorkflowRunRecipientKeyEnvelopeCommitResponseV1Schema.parse(await params.storage.execute({ operation: 'run-key.commit', ...input }, signal ? { signal } : {})),
+            ...(signal ? { signal } : {}),
+          });
           const reconciledCustody = await recoverInvocationCustody({
             accountId: params.accountId, run, parentAttempt: candidate.parentAttempt, trigger, encryption, storage: params.storage,
             reconcileInvocation: params.reconcileInvocation, ...(signal ? { signal } : {}),
+            onReviewEntered,
           });
-          if (reconciledCustody
-            && TERMINAL_RUN_STATES.has(run.state)
-            && run.workflowResultDeliveryState === 'pending') {
-            await recoverDirectResultDelivery({
-              accountId: params.accountId, run, parentAttempt: candidate.parentAttempt,
-              encryption, storage: params.storage,
-              deliverResult: params.deliverResult, ...(signal ? { signal } : {}),
-            });
-          }
           if (reconciledCustody
             && (TERMINAL_RUN_STATES.has(run.state) || reconciledCustody.cancellationRequested)) {
             await settleRecoveredRun({

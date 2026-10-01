@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { renderScreen } from '@/dev/testkit';
+import { renderScreen as renderBaseScreen, createTestSessionTranscriptSource, wrapWithSessionTranscriptSource } from '@/dev/testkit';
 import {
     installTranscriptCommonModuleMocks,
     resetTranscriptCommonModuleMockState,
@@ -22,6 +22,15 @@ let messageById: Record<string, any> = {};
 let renderedToolCallsGroupRowProps: any[] = [];
 let renderedToolCallsGroupRowWithCommonProps: any[] = [];
 let renderedRollbackButtonProps: any[] = [];
+
+function wrapTurn(element: React.ReactElement) {
+  return wrapWithSessionTranscriptSource(element, createTestSessionTranscriptSource({ messages: Object.values(messageById) }));
+}
+
+async function renderScreen(element: React.ReactElement) {
+  const screen = await renderBaseScreen(wrapTurn(element));
+  return { ...screen, update: (next: React.ReactElement) => screen.update(wrapTurn(next)) };
+}
 
 installTranscriptCommonModuleMocks({
     reactNative: async () => {
@@ -468,7 +477,6 @@ describe('TurnView (thinking expansion controlled)', () => {
             canSendMessages: false,
             canApprovePermissions: false,
             permissionDisabledReason: 'readOnly',
-            disableToolNavigation: true,
           }),
         }),
       ]),

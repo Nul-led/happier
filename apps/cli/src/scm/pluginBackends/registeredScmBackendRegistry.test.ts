@@ -7,8 +7,8 @@ import { mkdtempSync } from 'node:fs';
 import type {
     ScmBackendCapabilities,
     ScmWorktreesEnrichmentRequest,
-} from '@happier-dev/protocol';
-import { createScmCapabilitiesFromBackendCapabilities } from '@happier-dev/protocol';
+} from '@happier-dev/protocol/scm';
+import { createScmCapabilitiesFromBackendCapabilities } from '@happier-dev/protocol/scm';
 import type {
     BackendRuntimeHandlerInput as ScmBackendRuntimeHandlerInput,
     BackendRuntimeRegistration as ScmBackendRuntimeRegistration,
@@ -164,6 +164,65 @@ function createDefinition(input?: Readonly<{
 }
 
 describe('registered SCM backend registry', () => {
+    it.each(['amend', 'signOff'] as const)('rejects advertised commit %s without its handler producer', (leaf) => {
+        const capabilities = createCapabilities();
+        capabilities.commit[leaf] = { support: 'supported' };
+        const registration: ScmBackendRuntimeRegistration = {
+            id: 'acme-vcs',
+            handlers: {
+                detection: { detectRepo: async () => ({ isRepo: true, rootPath: '/repo', mode: '.git' }) },
+                read: {
+                    statusSnapshot: async () => ({ success: true }),
+                    diffFile: async () => ({ success: true, diff: '' }),
+                },
+            },
+        };
+        const resolved = createRegisteredScmBackendRegistry({
+            definitions: [{
+                pluginId: 'acme.scm.backend', contributionId: 'acme-vcs',
+                definition: createDefinition({ capabilities }),
+            }],
+            registrations: [{ pluginId: 'acme.scm.backend', registration }],
+        });
+        expect(resolved.backends).toEqual([]);
+        expect(resolved.diagnostics).toEqual([
+            expect.objectContaining({ code: 'plugin_scm_backend_activation_drift' }),
+        ]);
+        expect(resolved.diagnostics[0]?.message).toContain(`commit.${leaf}`);
+    });
+
+    it.each(['operationSkip', 'conflictResolution'] as const)('rejects advertised branch %s without its complete handler producer', (leaf) => {
+        const capabilities = createCapabilities();
+        capabilities.branch[leaf] = { support: 'supported' };
+        const registration: ScmBackendRuntimeRegistration = {
+            id: 'acme-vcs',
+            handlers: {
+                detection: { detectRepo: async () => ({ isRepo: true, rootPath: '/repo', mode: '.git' }) },
+                read: {
+                    statusSnapshot: async () => ({ success: true }),
+                    diffFile: async () => ({ success: true, diff: '' }),
+                },
+                branch: {
+                    // One conflict producer is insufficient: mark-resolved is
+                    // independently reachable through the same advertised facet.
+                    conflictAcceptSide: async () => ({ success: true }),
+                },
+            },
+        };
+        const resolved = createRegisteredScmBackendRegistry({
+            definitions: [{
+                pluginId: 'acme.scm.backend', contributionId: 'acme-vcs',
+                definition: createDefinition({ capabilities }),
+            }],
+            registrations: [{ pluginId: 'acme.scm.backend', registration }],
+        });
+        expect(resolved.backends).toEqual([]);
+        expect(resolved.diagnostics).toEqual([
+            expect.objectContaining({ code: 'plugin_scm_backend_activation_drift' }),
+        ]);
+        expect(resolved.diagnostics[0]?.message).toContain(`branch.${leaf}`);
+    });
+
     it.each(['.git', '.sl', null] as const)('keeps registered Git inspection and describe policy aligned for %s', async (mode) => {
         const registration = createGitScmBackendRuntimeRegistration();
         const adapter = createRegisteredScmBackendAdapter({

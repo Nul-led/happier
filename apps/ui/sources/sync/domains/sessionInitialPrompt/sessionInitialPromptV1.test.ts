@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { MetadataSchema } from '@/sync/domains/state/storageTypes';
+import { MetadataSchema } from '@happier-dev/session-core/state';
 
 import {
     clearSessionInitialPromptV1,

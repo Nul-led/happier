@@ -4,9 +4,10 @@ import { dirname, join, relative } from 'node:path';
 
 import { findUnservableBundledPluginPackageResources } from './bundledPluginResources.mjs';
 import { CLI_RUNTIME_SIDECAR_ENTRIES } from './cliRuntimeSidecars.mjs';
+import { assertHostCanExcludeBundledPlugin, BUNDLED_PLUGIN_PUBLICATION_FAILURES_RELATIVE_PATH, parseBundledPluginPublicationFailures } from './bundledPluginPublicationPolicy.mjs';
 import cliDistBuildManifest from './cliDistBuildManifest.cjs';
 
-export const PINNED_RUNNER_LAYOUT_VERSION = 'package-dist-v6';
+export const PINNED_RUNNER_LAYOUT_VERSION = 'package-dist-v7';
 export const PINNED_RUNNER_MANAGED_PROVIDER_RUNTIME_RELATIVE_PATH = Object.freeze([
   'tools',
   'unpacked',
@@ -17,14 +18,31 @@ export const PINNED_RUNNER_NO_MANAGED_PROVIDER_RUNTIME_SHA256 = createHash('sha2
   .digest('hex');
 
 const SNAPSHOT_IDENTITY_PATTERN = new RegExp(
-  `^([a-f0-9]{16})-([a-f0-9]{64})-([a-f0-9]{64})-${PINNED_RUNNER_LAYOUT_VERSION}$`,
+  `^([a-f0-9]{16})-([a-f0-9]{64})-([a-f0-9]{64})-([a-f0-9]{64})-${PINNED_RUNNER_LAYOUT_VERSION}$`,
   'u',
 );
 const PINNED_RUNNER_REQUIRED_ASSET_RELATIVE_PATHS = [
   ['package.json'],
   ...CLI_RUNTIME_SIDECAR_ENTRIES.map((relativePath) => ['scripts', ...relativePath]),
   ['tools', 'unpacked'],
+  [BUNDLED_PLUGIN_PUBLICATION_FAILURES_RELATIVE_PATH],
 ];
+
+function readPinnedRunnerSnapshotPublicationState(runtimeRoot) {
+  try {
+    const bytes = readFileSync(join(runtimeRoot, BUNDLED_PLUGIN_PUBLICATION_FAILURES_RELATIVE_PATH));
+    const failures = parseBundledPluginPublicationFailures(bytes.toString('utf8'));
+    for (const failure of failures) assertHostCanExcludeBundledPlugin('', failure.packageName, new Error(failure.diagnostic.message));
+    return { identity: createHash('sha256').update(bytes).digest('hex'), failures };
+  } catch {
+    // Absent or invalid publication state supplies no healthy-plugin claim.
+    return null;
+  }
+}
+
+export function readPinnedRunnerSnapshotPublicationIdentity(runtimeRoot) {
+  return readPinnedRunnerSnapshotPublicationState(runtimeRoot)?.identity ?? null;
+}
 
 function isRelativePathInsideRoot(relativePath) {
   return Boolean(
@@ -83,7 +101,8 @@ function findPinnedRunnerSnapshotMissingRuntimeAssets(snapshotRoot) {
     .map((relativePath) => relativePath.join('/'));
 }
 
-function findPinnedRunnerSnapshotPluginResourceProblems(snapshotRoot) {
+function findPinnedRunnerSnapshotPluginResourceProblems(snapshotRoot, failures) {
+  const failedPackageNames = new Set(failures.map((failure) => failure.packageName));
   const packageScopeRoot = join(snapshotRoot, 'node_modules', '@happier-dev');
   let packageEntries;
   try {
@@ -96,6 +115,7 @@ function findPinnedRunnerSnapshotPluginResourceProblems(snapshotRoot) {
   const problems = [];
   for (const packageEntry of packageEntries) {
     if (!packageEntry.isDirectory() || !packageEntry.name.startsWith('plugins-')) continue;
+    if (failedPackageNames.has(`@happier-dev/${packageEntry.name}`)) continue;
     const packageRoot = join(packageScopeRoot, packageEntry.name);
     for (const problem of findUnservableBundledPluginPackageResources(packageRoot)) {
       problems.push(`@happier-dev/${packageEntry.name}/${problem}`);
@@ -140,8 +160,15 @@ export function explainPinnedRunnerSnapshotUnreadiness(location) {
     return `it is missing required runtime assets: ${missingRuntimeAssets.join(', ')}`;
   }
 
+  const publicationIdentity = SNAPSHOT_IDENTITY_PATTERN.exec(location.snapshotIdentity)?.[4];
+  const publication = readPinnedRunnerSnapshotPublicationState(location.snapshotRoot);
+  if (!publicationIdentity || publication?.identity !== publicationIdentity) {
+    return 'its bundled plugin publication state is unknown or differs from its pinned identity';
+  }
+
   const pluginResourceProblems = findPinnedRunnerSnapshotPluginResourceProblems(
     location.snapshotRoot,
+    publication.failures,
   );
   if (pluginResourceProblems.length > 0) {
     return [
@@ -189,31 +216,50 @@ export function listReadyPinnedRunnerSnapshots(
   return entries
     .filter((entry) => entry.isDirectory())
     .map((entry) => {
-      const match = SNAPSHOT_IDENTITY_PATTERN.exec(entry.name);
-      if (!match) return null;
-      const [, candidateFingerprint, runtimeAssetIdentity, workspaceRuntimeIdentity] = match;
-      if (requiredFingerprint && candidateFingerprint !== requiredFingerprint) return null;
-      const snapshotRoot = join(snapshotsDir, entry.name);
-      const location = {
-        snapshotsDir,
-        snapshotIdentity: entry.name,
-        snapshotRoot,
-        snapshotEntrypoint: join(snapshotRoot, 'package-dist', entrypointRelativePath),
-        fingerprint: candidateFingerprint,
-        runtimeAssetIdentity,
-        workspaceRuntimeIdentity,
-      };
+      const location = resolvePublishedPinnedRunnerSnapshotById(entrypoint, entry.name, { snapshotsDir });
+      if (!location || (requiredFingerprint && location.fingerprint !== requiredFingerprint)) return null;
       if (!isPinnedRunnerSnapshotReady(location)) return null;
       if (typeof validateSnapshot === 'function' && validateSnapshot(location) !== true) return null;
       let mtimeMs = 0;
       try {
-        mtimeMs = Number(statSync(snapshotRoot).mtimeMs) || 0;
+        mtimeMs = Number(statSync(location.snapshotRoot).mtimeMs) || 0;
       } catch {
         mtimeMs = 0;
       }
       return { location, mtimeMs };
     })
     .filter((candidate) => candidate !== null);
+}
+
+/** Resolve an exact atomically published snapshot without rehashing its full closure. */
+export function resolvePublishedPinnedRunnerSnapshotById(
+  entrypoint,
+  snapshotId,
+  { snapshotsDir: snapshotsDirOverride = null } = {},
+) {
+  const distRoot = dirname(entrypoint);
+  const entrypointRelativePath = relative(distRoot, entrypoint);
+  if (!isRelativePathInsideRoot(entrypointRelativePath)) return null;
+  const snapshotsDir = typeof snapshotsDirOverride === 'string' && snapshotsDirOverride.trim()
+    ? snapshotsDirOverride.trim()
+    : join(dirname(distRoot), '.runner-snapshots');
+  const match = SNAPSHOT_IDENTITY_PATTERN.exec(snapshotId);
+  if (!match) return null;
+  const [, fingerprint, runtimeAssetIdentity, workspaceRuntimeIdentity] = match;
+  const snapshotRoot = join(snapshotsDir, snapshotId);
+  const location = {
+    snapshotsDir,
+    snapshotIdentity: snapshotId,
+    snapshotRoot,
+    snapshotEntrypoint: join(snapshotRoot, 'package-dist', entrypointRelativePath),
+    fingerprint,
+    runtimeAssetIdentity,
+    workspaceRuntimeIdentity,
+  };
+  return readReadyMarker(snapshotRoot, fingerprint, workspaceRuntimeIdentity)
+    && existsSync(location.snapshotEntrypoint)
+    ? location
+    : null;
 }
 
 export function resolveNewestReadyPinnedRunnerSnapshot(entrypoint, options = {}) {

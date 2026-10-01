@@ -1,4 +1,3 @@
-import type { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { delimiter, dirname, join } from 'node:path';
 import { chmod, copyFile, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
@@ -10,7 +9,7 @@ import { fetchGitHubLatestRelease } from '@happier-dev/release-runtime';
 import { execFileWithDeadline, resolveWindowsCommandInvocation } from '../../process/index.js';
 
 import { createManagedToolScratchDir } from '../createManagedToolScratchDir.js';
-import { downloadGitHubReleaseAsset } from '../downloadGitHubReleaseAsset.js';
+import { AgentCliDownloadError, downloadGitHubReleaseAsset } from '../downloadGitHubReleaseAsset.js';
 import { extractGitHubReleaseAsset } from '../extractGitHubReleaseAsset.js';
 import {
   ensureManagedJavaScriptRuntimeCommand,
@@ -20,6 +19,7 @@ import {
 import { buildManagedPnpmEnvironment, ensureManagedPnpmCommand, readRawPnpmOverride } from '../managedPnpm.js';
 import { promoteManagedCurrentInstall } from '../promoteManagedCurrentInstall.js';
 import { resolveHappyHomeDirFromEnvironment } from '../resolveHappyHomeDir.js';
+import type { AgentInstallProgressCallback } from '../installProgress.js';
 import {
   resolveAgentCliManagedCommandRelativePathForRuntime,
   type AgentCliRuntimeDescriptor,
@@ -31,7 +31,6 @@ export type ManagedInstallDeps = Readonly<{
   extractGitHubReleaseAsset?: typeof extractGitHubReleaseAsset;
   ensureManagedPnpmCommand?: typeof ensureManagedPnpmCommand;
   ensureManagedJavaScriptRuntimeCommand?: typeof ensureManagedJavaScriptRuntimeCommand;
-  spawnSync?: typeof spawnSync;
   execFileWithDeadline?: typeof execFileWithDeadline;
 }>;
 
@@ -335,10 +334,11 @@ export async function installManagedPackageAgentCli(params: Readonly<{
   deps: ManagedInstallDeps;
   signal?: AbortSignal;
   appendCommandLog: AppendCommandLogFn;
+  onProgress?: AgentInstallProgressCallback;
   appendLogLine: AppendLogLineFn;
 }>): Promise<void> {
   params.signal?.throwIfAborted();
-  const pnpmCommand = await (params.deps.ensureManagedPnpmCommand ?? ensureManagedPnpmCommand)(params.env, {}, { signal: params.signal });
+  const pnpmCommand = await (params.deps.ensureManagedPnpmCommand ?? ensureManagedPnpmCommand)(params.env, {}, { signal: params.signal, onProgress: params.onProgress });
   if (!pnpmCommand) {
     const rawPnpmOverride = readRawPnpmOverride(params.env);
     if (rawPnpmOverride) {
@@ -349,7 +349,7 @@ export async function installManagedPackageAgentCli(params: Readonly<{
     throw new Error('Managed pnpm is unavailable');
   }
   const jsRuntimeCommand =
-    await (params.deps.ensureManagedJavaScriptRuntimeCommand ?? ensureManagedJavaScriptRuntimeCommand)(params.env, {}, { signal: params.signal });
+    await (params.deps.ensureManagedJavaScriptRuntimeCommand ?? ensureManagedJavaScriptRuntimeCommand)(params.env, {}, { signal: params.signal, onProgress: params.onProgress });
   if (!jsRuntimeCommand) {
     const rawRuntimeOverride = readExplicitJavaScriptRuntimeCommand(params.env);
     if (rawRuntimeOverride) {
@@ -391,6 +391,7 @@ export async function installManagedPackageAgentCli(params: Readonly<{
         .join(delimiter);
     }
     const addArgs = ['--dir', workspaceDir, 'add', params.managedInstall.packageName, '--ignore-scripts'];
+    params.onProgress?.({ t: 'log', line: `Installing ${params.managedInstall.packageName}` });
     params.signal?.throwIfAborted();
     const invocation = resolveWindowsCommandInvocation({ command: pnpmCommand, args: addArgs, env: childEnv });
     try {
@@ -449,12 +450,18 @@ async function resolveManagedBinaryAsset(params: Readonly<{
   signal?: AbortSignal;
   env: NodeJS.ProcessEnv;
 }>): Promise<Readonly<{ name: string; url: string; digest: string | null }>> {
-  const release = await (params.deps.fetchGitHubLatestRelease ?? fetchGitHubLatestRelease)({
-    githubRepo: params.managedInstall.githubRepo,
-    userAgent: 'happier-cli',
-    githubToken: params.env.GITHUB_TOKEN,
-    signal: params.signal,
-  });
+  let release: unknown;
+  try {
+    release = await (params.deps.fetchGitHubLatestRelease ?? fetchGitHubLatestRelease)({
+      githubRepo: params.managedInstall.githubRepo,
+      userAgent: 'happier-cli',
+      githubToken: params.env.GITHUB_TOKEN,
+      signal: params.signal,
+    });
+  } catch (error) {
+    params.signal?.throwIfAborted();
+    throw new AgentCliDownloadError('download-failed', error instanceof Error ? error.message : String(error), { cause: error });
+  }
 
   const assets = normalizeGitHubReleaseAssets(release);
   const declaredAssetName = params.managedInstall.assetNameByPlatform
@@ -578,6 +585,7 @@ export async function installManagedBinaryAgentCli(params: Readonly<{
   deps: ManagedInstallDeps;
   signal?: AbortSignal;
   appendLogLine: AppendLogLineFn;
+  onProgress?: AgentInstallProgressCallback;
 }>): Promise<void> {
   params.signal?.throwIfAborted();
   const installRoot = resolveManagedAgentInstallDir(params.runtimeSpec.id, params.env);
@@ -609,6 +617,7 @@ export async function installManagedBinaryAgentCli(params: Readonly<{
       digest: asset.digest,
       userAgent: 'happier-cli',
       signal: params.signal,
+      onProgress: params.onProgress,
     });
 
     await mkdir(dirname(candidateBinPath), { recursive: true });

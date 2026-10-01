@@ -68,13 +68,8 @@ import {
 } from './runnerActivationKeyCustody';
 import { retainRunnerCreatorMachineContentKeyTrust } from './runnerCreatorMachineContentKeyTrust';
 import type { Encryption } from '@/sync/encryption/encryption';
-import {
-    MetadataSchema,
-    MachineMetadataSchema,
-    type Metadata,
-    type MachineMetadata,
-    type AgentState,
-} from '@/sync/domains/state/storageTypes';
+import { MachineMetadataSchema, type MachineMetadata } from '@/sync/domains/state/storageTypes';
+import { MetadataSchema, type Metadata, type AgentState } from '@happier-dev/session-core/state';
 import type { RunnerActivationClient } from '@/sync/api/ephemeralRunner/runnerActivationClient';
 import { createCanonicalJsonSigningInput } from '@happier-dev/protocol/crypto/canonicalJson';
 import { verifyRecipientContentPublicKeyBinding } from '@/sync/encryption/directShareEncryption';

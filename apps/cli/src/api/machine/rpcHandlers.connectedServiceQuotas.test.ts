@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 import type { RpcHandler, RpcHandlerRegistrar } from '../rpc/types';
+import { registerMachineConnectedServiceQuotaRpcHandlers } from './rpcHandlers.connectedServiceQuotas';
 
 const notifyDaemonConnectedServiceQuotaRecoveryCreditConsume = vi.hoisted(() => vi.fn());
 
@@ -18,7 +19,6 @@ describe('registerMachineConnectedServiceQuotaRpcHandlers', () => {
   });
 
   async function registerHandlers() {
-    const { registerMachineConnectedServiceQuotaRpcHandlers } = await import('./rpcHandlers.connectedServiceQuotas');
     registerMachineConnectedServiceQuotaRpcHandlers({
       rpcHandlerManager: {
         registerHandler: <TRequest, TResponse>(method: string, handler: RpcHandler<TRequest, TResponse>) => {
@@ -28,7 +28,7 @@ describe('registerMachineConnectedServiceQuotaRpcHandlers', () => {
     });
   }
 
-  it('dispatches recovery-credit consume requests to the daemon control path', async () => {
+  it.each(['openai-codex', 'happier.agent.codex/openai-codex'])('dispatches %s recovery-credit consume requests through the qualified daemon control path', async (serviceId) => {
     await registerHandlers();
     notifyDaemonConnectedServiceQuotaRecoveryCreditConsume.mockResolvedValueOnce({
       ok: true,
@@ -54,7 +54,7 @@ describe('registerMachineConnectedServiceQuotaRpcHandlers', () => {
 
     const handler = handlers.get(RPC_METHODS.DAEMON_CONNECTED_SERVICE_QUOTA_RECOVERY_CREDIT_CONSUME);
     await expect(handler?.({
-      serviceId: 'openai-codex',
+      serviceId,
       profileId: 'work',
       idempotencyKey: 'consume:session-1:credit-1',
       providerCreditId: 'credit-1',
@@ -72,7 +72,7 @@ describe('registerMachineConnectedServiceQuotaRpcHandlers', () => {
     });
 
     expect(notifyDaemonConnectedServiceQuotaRecoveryCreditConsume).toHaveBeenCalledWith({
-      serviceId: 'openai-codex',
+      serviceId: 'happier.agent.codex/openai-codex',
       profileId: 'work',
       idempotencyKey: 'consume:session-1:credit-1',
       providerCreditId: 'credit-1',

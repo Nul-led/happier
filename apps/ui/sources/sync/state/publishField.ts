@@ -3,7 +3,7 @@ import {
 } from '@happier-dev/agents';
 import type { SessionStateFieldId } from '@happier-dev/protocol';
 
-import type { Metadata } from '@/sync/domains/state/storageTypes';
+import type { Metadata } from '@happier-dev/session-core/state';
 import { writeUiSessionStateField } from './engine';
 
 export async function publishUiSessionStateFieldToMetadata<F extends SessionStateFieldId>(params: Readonly<{

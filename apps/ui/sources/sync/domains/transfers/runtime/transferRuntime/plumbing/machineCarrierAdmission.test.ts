@@ -74,6 +74,20 @@ describe('mandatory finite machine carrier admission', () => {
         },
     );
 
+    it('refuses a running daemon without a current transfer declaration before network work', async () => {
+        const machine = createMachineFixture({
+            id: 'machine-admission',
+            daemonState: { status: 'running' },
+        });
+        storage.setState({ machines: { [machine.id]: machine }, machineListByServerId: { [serverId]: [machine] } });
+
+        await expect(resolveMachineCarrierRoute(machine.id, serverId)).resolves.toMatchObject({
+            kind: 'unavailable', errorCode: 'machine_carrier_unavailable',
+        });
+        expect(networkRequests).toEqual([]);
+        expect(socketMachineRpc).not.toHaveBeenCalled();
+    });
+
     it('refuses a workspace download before prepare without touching legacy bulk transports', async () => {
         const cleanup = vi.fn(async () => {});
         const { downloadDaemonWorkspaceFileToDestination } = await import('../families/workspaceFileTransfers');
@@ -110,6 +124,7 @@ describe('mandatory finite machine carrier admission', () => {
             },
             request: {
                 t: 'session_attachment_upload_v1',
+                sessionId: 'session-a',
                 workingDirectory: '/repo',
                 messageLocalId: 'message-local-1',
                 fileName: 'note.txt',

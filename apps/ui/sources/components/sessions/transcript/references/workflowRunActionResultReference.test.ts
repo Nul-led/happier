@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { createWorkflowRunSummaryFixture } from '@/dev/testkit/fixtures/workflowRunFixtures';
 
-import { resolveTranscriptWorkflowRunReference } from './workflowRunActionResultReference';
+import { resolveTranscriptWorkflowRunReference } from './transcriptWorkflowRunReference';
 
 /**
  * The discriminating step of the agent-origin managed workflow journey.

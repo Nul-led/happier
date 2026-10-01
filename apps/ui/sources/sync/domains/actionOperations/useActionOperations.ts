@@ -68,6 +68,18 @@ export function useActionOperationsHaveAttention(): boolean {
     ));
 }
 
+export function useActionOperationActivitySummary() {
+    return useActionOperationSelector(() => (
+        actionOperationSelectors.selectActivitySummary(actionOperationStore.getSnapshot())
+    ));
+}
+
+export function useInboxActionOperationSummary() {
+    return useActionOperationSelector(() => (
+        actionOperationSelectors.selectInboxSummary(actionOperationStore.getSnapshot())
+    ));
+}
+
 export function useActionOperationsHaveUnseenTerminal(): boolean {
     return useActionOperationSelector(() => (
         actionOperationSelectors.selectHasUnseenTerminal(actionOperationStore.getSnapshot())

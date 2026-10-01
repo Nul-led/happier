@@ -36,7 +36,7 @@ import { createDefaultPluginInstallationPublisherHeader } from '@/plugins/instal
 import {
   createPluginActionCallerCurrentnessCheck,
   type RevalidatePluginActionCallerMaterialization,
-  type RevalidatePluginActionCallerImmutableGeneration,
+  type RevalidatePluginActionCallerOccurrence,
 } from '@/plugins/runtime/invocation/services/actionCaller';
 import {
   admissionKey as automationEventAdmissionSelectorKey,
@@ -66,7 +66,7 @@ const INSTALLED_AUTOMATION_EVENT_ACTION_PRODUCERS_V1: ReadonlySet<AutomationEven
  */
 export type ResolveAutomationEventAdoptedDefinitionSetV1 = (
   caller: PluginMachineMaterializationRefV1,
-  immutableGenerationId: string,
+  occurrenceId: string,
   transport: AutomationEventSourcesListTransportV1,
 ) => AutomationEventAdoptedDefinitionSetV1 | null;
 
@@ -107,7 +107,7 @@ function isSameAutomationEventAdmissionCaller(
 ): boolean {
   return left.pluginId === right.pluginId
     && left.contributionLocalId === right.contributionLocalId
-    && left.immutableGenerationId === right.immutableGenerationId
+    && left.occurrenceId === right.occurrenceId
     && left.materialization.pluginId === right.materialization.pluginId
     && left.materialization.machineId === right.materialization.machineId
     && left.materialization.materializationId === right.materialization.materializationId;
@@ -187,14 +187,14 @@ export function createAutomationEventActionExecutor(params: Readonly<{
   transport?: AutomationEventActionTransport;
   revalidateCallerMaterialization?: RevalidatePluginActionCallerMaterialization;
   /** Rechecks the exact host-stamped admitted bytes; it never substitutes one. */
-  revalidateCallerImmutableGeneration?: RevalidatePluginActionCallerImmutableGeneration;
+  revalidateCallerOccurrence?: RevalidatePluginActionCallerOccurrence;
   resolveAccountId?: (signal?: AbortSignal) => Promise<string>;
   resolveAdoptedDefinitionSet?: ResolveAutomationEventAdoptedDefinitionSetV1;
   randomBytes?: (length: number) => Uint8Array;
 }>): ExecuteAutomationEventAction {
   const transport = params.transport ?? createDefaultTransport(params.credentials);
   const revalidateCallerMaterialization = params.revalidateCallerMaterialization;
-  const revalidateCallerImmutableGeneration = params.revalidateCallerImmutableGeneration;
+  const revalidateCallerOccurrence = params.revalidateCallerOccurrence;
   const resolveAccountId = params.resolveAccountId
     ?? (async (signal?: AbortSignal) => await fetchChangesAccountId({
       token: params.credentials.token,
@@ -224,32 +224,31 @@ export function createAutomationEventActionExecutor(params: Readonly<{
     if (!revalidateCallerMaterialization) {
       return admissionFailure('automation_event_caller_materialization_unavailable');
     }
-    const immutableGenerationId = args.caller.immutableGenerationId;
-    // Every current Event operation is bound to the exact admitted immutable
-    // generation. There is no released unstamped Event SDK contract to retain.
-    if (immutableGenerationId === undefined) {
-      return admissionFailure('automation_event_caller_generation_unavailable');
+    const occurrenceId = args.caller.occurrenceId;
+    const sourceCustody = args.caller.sourceCustody;
+    if (occurrenceId === undefined || sourceCustody === undefined) {
+      return admissionFailure('automation_event_caller_occurrence_unavailable');
     }
-    if (!revalidateCallerImmutableGeneration) {
-      return admissionFailure('automation_event_caller_generation_unavailable');
+    if (!revalidateCallerOccurrence) {
+      return admissionFailure('automation_event_caller_occurrence_unavailable');
     }
     const revalidateCaller = createPluginActionCallerCurrentnessCheck({
       caller: {
         pluginId: args.caller.pluginId,
-        immutableGenerationId,
+        occurrenceId,
         materialization: materialization.data,
       },
       revalidateMaterialization: revalidateCallerMaterialization,
-      ...(revalidateCallerImmutableGeneration
-        ? { revalidateImmutableGeneration: revalidateCallerImmutableGeneration }
+      ...(revalidateCallerOccurrence
+        ? { revalidateOccurrence: revalidateCallerOccurrence }
         : {}),
     });
     const initialCallerCurrentness = await revalidateCaller();
     if (initialCallerCurrentness.kind === 'materializationUnavailable') {
       return admissionFailure('automation_event_caller_materialization_unavailable');
     }
-    if (initialCallerCurrentness.kind === 'generationUnavailable') {
-      return admissionFailure('automation_event_caller_generation_unavailable');
+    if (initialCallerCurrentness.kind === 'occurrenceUnavailable') {
+      return admissionFailure('automation_event_caller_occurrence_unavailable');
     }
     const webhookInvocationSignal = args.actionId === 'automation.event.admit'
       ? readCurrentPluginWebhookInvocationSignalV1()
@@ -300,7 +299,7 @@ export function createAutomationEventActionExecutor(params: Readonly<{
       try {
         adoptedDefinitionSet = params.resolveAdoptedDefinitionSet?.(
           materialization.data,
-          immutableGenerationId,
+          occurrenceId,
           adoptedTransport,
         ) ?? null;
       } catch {
@@ -357,7 +356,8 @@ export function createAutomationEventActionExecutor(params: Readonly<{
       ...(args.caller.contributionLocalId
         ? { contributionLocalId: args.caller.contributionLocalId }
         : {}),
-      immutableGenerationId,
+      occurrenceId,
+      sourceCustody,
       materialization: materialization.data,
     };
     let admissionInput: ReturnType<typeof AutomationEventAdmitInputV1Schema.safeParse> | null = null;
@@ -381,7 +381,7 @@ export function createAutomationEventActionExecutor(params: Readonly<{
         ]) {
           const candidate = params.resolveAdoptedDefinitionSet?.(
             materialization.data,
-            immutableGenerationId,
+            occurrenceId,
             watcherTransport,
           ) ?? null;
           if (!candidate) continue;
@@ -574,8 +574,8 @@ export function createAutomationEventActionExecutor(params: Readonly<{
       if (finalCallerCurrentness.kind === 'materializationUnavailable') {
         return admissionFailure('automation_event_caller_materialization_unavailable');
       }
-      if (finalCallerCurrentness.kind === 'generationUnavailable') {
-        return admissionFailure('automation_event_caller_generation_unavailable');
+      if (finalCallerCurrentness.kind === 'occurrenceUnavailable') {
+        return admissionFailure('automation_event_caller_occurrence_unavailable');
       }
       const request = AutomationEventActionHttpRequestSchemasV1[
         'automation.event.source.status.report'

@@ -8,7 +8,8 @@ import {
     type ProviderBoundModelRef,
 } from '@happier-dev/protocol';
 
-import { createResolvedAgentCatalogEntryFixture, renderScreen } from '@/dev/testkit';
+import { createResolvedAgentCatalogEntryFixture } from '@/dev/testkit/fixtures/agentCatalogFixtures';
+import { renderScreen } from '@/dev/testkit';
 import type { ResolvedBackendCatalogEntry } from '@/agents/backendCatalog/getResolvedBackendCatalogEntries';
 import type { SessionModelProjectionGroup } from '@/components/sessions/modelPicker/buildSessionModelPickerSections';
 import { sessionModelSelectionKey } from '@/components/sessions/modelPicker/sessionModelSelectionKey';
@@ -71,7 +72,7 @@ const { NewSessionModelSelectionContent } = await import('./NewSessionModelSelec
 const CODEX_BACKEND_ENTRY: ResolvedBackendCatalogEntry = {
     agentCatalogEntry: createResolvedAgentCatalogEntryFixture({ agentId: 'codex' }),
     backendTarget: { kind: 'backend', backendId: 'codex', sourceKind: 'built_in' },
-    backendTargetKey: 'backend:codex',
+    backendTargetKey: 'agent:happier.agent.codex/codex',
     kind: 'builtInAgent',
     backendId: 'codex',
     agentId: 'codex',
@@ -107,7 +108,7 @@ function sameModelProviderGroup(input: Readonly<{
         modelLoadAction: 'descriptor_absent',
         rows: [{
             ref: {
-                agentTargetKey: 'backend:codex',
+                agentTargetKey: 'agent:happier.agent.codex/codex',
                 providerConnectionId: connectionId,
                 modelId: 'shared-provider-model',
             },
@@ -236,7 +237,7 @@ describe('NewSessionModelSelectionContent', () => {
     it('keeps a missing exact Provider selection truthful in the closed compact summary', async () => {
         captured.pickerProps = null;
         const selected = {
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             providerConnectionId: ProviderConnectionIdSchema.parse('pc_deleted'),
             modelId: 'missing-model',
         };
@@ -284,7 +285,7 @@ describe('NewSessionModelSelectionContent', () => {
         const onSelectSelection = vi.fn();
         const connectionId = ProviderConnectionIdSchema.parse('pc_work');
         const ref = {
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             providerConnectionId: connectionId,
             modelId: 'shared-id',
         };
@@ -334,19 +335,19 @@ describe('NewSessionModelSelectionContent', () => {
         );
 
         expect(requirePickerProps().selected).toEqual({
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             providerConnectionId: null,
             modelId: 'openai-codex/gpt-5.6-luna',
         });
 
         act(() => requirePickerProps().onSelect({
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             providerConnectionId: null,
             modelId: 'gpt-5.6-luna',
         }));
 
         expect(onSelectSelection).toHaveBeenCalledWith({
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             providerConnectionId: null,
             modelId: 'openai-codex/gpt-5.6-luna',
         });
@@ -360,7 +361,7 @@ describe('NewSessionModelSelectionContent', () => {
                 v: 1,
                 updatedAt: 123,
                 ref: {
-                    agentTargetKey: 'backend:codex',
+                    agentTargetKey: 'agent:happier.agent.codex/codex',
                     providerConnectionId: 'pc_work',
                     modelId: 'shared-id',
                 },

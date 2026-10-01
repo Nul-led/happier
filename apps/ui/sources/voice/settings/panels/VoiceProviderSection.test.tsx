@@ -311,6 +311,8 @@ describe('VoiceProviderSection', () => {
             executionMachineId: 'machine-1',
         }));
 
+        // The empty live region has to exist before the first synchronous result.
+        expect(screen.findHostByTestId('settings.voice.provider.readiness-status')).not.toBeNull();
         await screen.pressByTestIdAsync('settings.voice.provider.checkSetup');
 
         expect(passiveSetupBoundary.refresh).toHaveBeenCalledWith(expect.objectContaining({
@@ -1287,8 +1289,8 @@ describe('VoiceProviderSection', () => {
         const row = findTestInstanceByTypeWithProps(tree, 'Item' as any, {
             testID: `settings.voice.provider.${encodeURIComponent(OPENAI_PROVIDER_ID)}.byo`,
         });
-        expect(row?.props.detail).toContain('voice.readiness.credential_unknown');
-        expect(row?.props.detail).not.toContain('voice.readiness.credential_missing');
+        expect(row?.props.subtitle).toContain('voice.readiness.credential_unknown');
+        expect(row?.props.subtitle).not.toContain('voice.readiness.credential_missing');
         expect(row?.props.disabled).not.toBe(true);
 
         await act(async () => {
@@ -1373,7 +1375,7 @@ describe('VoiceProviderSection', () => {
             testID: `settings.voice.provider.${encodeURIComponent(OPENAI_PROVIDER_ID)}.byo`,
         });
 
-        expect(row?.props.detail).toContain('voice.readiness.credential_unknown');
+        expect(row?.props.subtitle).toContain('voice.readiness.credential_unknown');
         expect(row?.props.disabled).not.toBe(true);
         expect(row?.props.onPress).toBeTypeOf('function');
         await act(async () => {
@@ -1475,7 +1477,7 @@ describe('VoiceProviderSection', () => {
 
             expect(row?.props?.disabled).not.toBe(true);
             expect(row?.props?.onPress).toBeTypeOf('function');
-            expect(row?.props?.detail).toContain(
+            expect(row?.props?.subtitle).toContain(
                 providerId === ELEVENLABS_PROVIDER_ID
                     ? 'voice.readiness.settings_missing_required_setting'
                     : 'voice.readiness.credential_missing',
@@ -1659,7 +1661,7 @@ describe('VoiceProviderSection', () => {
         const providerGroup = tree.findAllByType('ItemGroup' as any)
             .find((group: any) => group.props.accessibilityRole === 'radiogroup');
         const rows = providerGroup?.findAllByType('Item' as any) ?? [];
-        expect(providerGroup?.props.accessibilityLabel).toBe('settingsVoice.modeTitle');
+        expect(providerGroup?.props.accessibilityLabel).toBe('settingsVoice.providerSectionTitle');
         expect(rows.length).toBeGreaterThan(1);
         expect(rows.every((row: any) => row.props.accessibilityRole === 'radio' && row.props.webRole === 'radio')).toBe(true);
         expect(rows.every((row: any) => typeof row.props.testID === 'string')).toBe(true);
@@ -1730,8 +1732,8 @@ describe('VoiceProviderSection', () => {
             expect(unavailableRow?.props.disabled).toBe(true);
             expect(unavailableRow?.props.title).toEqual(expect.any(String));
             expect(unavailableRow?.props.title.length).toBeGreaterThan(0);
-            expect(unavailableRow?.props.detail).toContain(expectedReason);
-            expect(unavailableRow?.props.detail).toContain(expectedAction);
+            expect(unavailableRow?.props.subtitle).toContain(expectedReason);
+            expect(unavailableRow?.props.subtitle).toContain(expectedAction);
             expect(selectedRows).toEqual([unavailableRow]);
             expect(ordinaryRowsForSelectedProvider).toHaveLength(0);
             expect(otherProviderRow).toBeTruthy();
@@ -1798,8 +1800,8 @@ describe('VoiceProviderSection', () => {
 
         expect(hostedRow?.props?.disabled).toBe(true);
         expect(hostedRow?.props?.onPress).toBeUndefined();
-        expect(hostedRow?.props?.detail).toContain('voice.readiness.server_feature_disabled');
-        expect(hostedRow?.props?.detail).toContain('voice.readiness.actions.switch_provider');
+        expect(hostedRow?.props?.subtitle).toContain('voice.readiness.server_feature_disabled');
+        expect(hostedRow?.props?.subtitle).toContain('voice.readiness.actions.switch_provider');
         expect(
             findTestInstanceByTypeWithProps(tree, 'Item' as any, { title: 'settingsVoice.mode.local' }),
         ).toBeTruthy();
@@ -2140,9 +2142,9 @@ describe('VoiceProviderSection', () => {
                 title: 'settingsVoice.mode.local',
             });
             if (expectedCode === null) {
-                expect(localRow?.props?.detail).toBeUndefined();
+                expect(localRow?.props?.subtitle).not.toContain('voice.readiness');
             } else {
-                expect(localRow?.props?.detail).toContain(expectedCode);
+                expect(localRow?.props?.subtitle).toContain(expectedCode);
             }
         },
         120_000,
@@ -2511,11 +2513,14 @@ describe('VoiceProviderSection', () => {
             roles: ['realtime_conversation'],
             platforms: ['web'],
             capabilities: { turn: { cancelResponse: true, bargeIn: false } },
-            client: { artifactId: 'voice-runtime-web', modulePath: './voiceRuntime', exportName: 'activate' },
+            client: { artifactId: 'voice-runtime-web', exportName: 'activate' },
         }] }).voiceProviders[0]!;
         if (declaration.kind !== 'conversation') throw new Error('expected conversation declaration');
         const scope = createExternalVoiceProviderActivationScope({
-            pluginId: 'acme.synthetic-live', declarations: [declaration], hostPlatform: 'web',
+            pluginId: 'acme.synthetic-live',
+            occurrenceId: 'acme.synthetic-live-occurrence-1',
+            declarations: [declaration],
+            hostPlatform: 'web',
         });
         const hostLease = createBundledConversationRuntimeHostLease();
         onTestFinished(async () => {
@@ -2598,11 +2603,12 @@ describe('VoiceProviderSection', () => {
                     },
                 }],
             },
-            client: { artifactId: 'voice-runtime-web', modulePath: './voiceRuntime', exportName: 'activate' },
+            client: { artifactId: 'voice-runtime-web', exportName: 'activate' },
         }] }).voiceProviders[0]!;
         if (declaration.kind !== 'conversation') throw new Error('expected conversation declaration');
         const scope = createExternalVoiceProviderActivationScope({
             pluginId: 'acme.synthetic-configurable',
+            occurrenceId: 'acme.synthetic-configurable-occurrence-1',
             declarations: [declaration],
             hostPlatform: 'web',
         });
@@ -2729,13 +2735,16 @@ describe('VoiceProviderSection', () => {
                     presentation: { control: 'text' },
                 }],
             },
-            client: { artifactId: 'voice-runtime-web', modulePath: './voiceRuntime', exportName: 'activate' },
+            client: { artifactId: 'voice-runtime-web', exportName: 'activate' },
         }] }).voiceProviders[0]!;
         if (declaration.kind !== 'conversation' || !declaration.credentials) {
             throw new Error('expected credential conversation declaration');
         }
         const scope = createExternalVoiceProviderActivationScope({
-            pluginId: 'acme.selectable-voice', declarations: [declaration], hostPlatform: 'web',
+            pluginId: 'acme.selectable-voice',
+            occurrenceId: 'acme.selectable-voice-occurrence-1',
+            declarations: [declaration],
+            hostPlatform: 'web',
         });
         const hostLease = createBundledConversationRuntimeHostLease();
         const account = {
@@ -2837,7 +2846,7 @@ describe('VoiceProviderSection', () => {
         ))[0];
 
         expect(row).toBeTruthy();
-        expect(row.props.detail).toContain('voice.readiness.credential_unknown');
+        expect(row.props.subtitle).toContain('voice.readiness.credential_unknown');
         // The declaration names savedSecret and connectedAccount sources, so
         // the credential is configurable once the row can be selected. A
         // bundled row in this exact state stays selectable; provenance is not
@@ -2898,13 +2907,16 @@ describe('VoiceProviderSection', () => {
                     presentation: { control: 'text' },
                 }],
             },
-            client: { artifactId: 'voice-runtime-web', modulePath: './voiceRuntime', exportName: 'activate' },
+            client: { artifactId: 'voice-runtime-web', exportName: 'activate' },
         }] }).voiceProviders[0]!;
         if (declaration.kind !== 'conversation' || !declaration.credentials) {
             throw new Error('expected credential conversation declaration');
         }
         const scope = createExternalVoiceProviderActivationScope({
-            pluginId: 'acme.external-credential', declarations: [declaration], hostPlatform: 'web',
+            pluginId: 'acme.external-credential',
+            occurrenceId: 'acme.external-credential-occurrence-1',
+            declarations: [declaration],
+            hostPlatform: 'web',
         });
         const hostLease = createBundledConversationRuntimeHostLease();
         const account = {
@@ -3022,11 +3034,12 @@ describe('VoiceProviderSection', () => {
                     serviceIds: ['anthropic', 'openai-codex'],
                 },
             },
-            client: { artifactId: 'voice-runtime-web', modulePath: './voiceRuntime', exportName: 'activate' },
+            client: { artifactId: 'voice-runtime-web', exportName: 'activate' },
         }] }).voiceProviders[0]!;
         if (declaration.kind !== 'conversation') throw new Error('expected conversation declaration');
         const scope = createExternalVoiceProviderActivationScope({
             pluginId: 'acme.voice',
+            occurrenceId: 'acme.voice-occurrence-1',
             declarations: [declaration],
             hostPlatform: 'web',
         });

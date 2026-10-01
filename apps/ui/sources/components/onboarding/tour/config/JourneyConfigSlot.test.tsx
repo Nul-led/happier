@@ -1,12 +1,14 @@
 import * as React from 'react';
+import { act } from 'react-test-renderer';
 import { StyleSheet } from 'react-native';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { Text } from '@/components/ui/text/Text';
 import { renderScreen, standardCleanup } from '@/dev/testkit';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 import { stageVisualTokens } from '../stage/stageVisualTokens';
 import type { OnboardingWizardController } from '../../surfaces/useOnboardingWizardController';
-import type { SetupWizardController } from '../../surfaces/useSetupWizardController';
+import type { JourneyConfigControllerSurface } from './JourneyConfigSlot';
 
 import { JourneyConfigSlot } from './JourneyConfigSlot';
 
@@ -18,8 +20,11 @@ function flattenStyle(style: unknown): Record<string, unknown> {
     return StyleSheet.flatten(style) as Record<string, unknown>;
 }
 
-function resolvePressableStyle(node: { props: { style?: unknown } }, state: Record<string, boolean>) {
-    return typeof node.props.style === 'function' ? node.props.style(state) : node.props.style;
+/** The action chrome is the animated frame inside the pressable hit area. */
+function actionChromeStyle(node: { findAll: (predicate: (candidate: { type: unknown }) => boolean) => Array<{ props: { style?: unknown } }> }) {
+    const frames = node.findAll((candidate) => candidate.type === 'Animated.View');
+    expect(frames).toHaveLength(1);
+    return flattenStyle(frames[0]!.props.style);
 }
 
 describe('JourneyConfigSlot', () => {
@@ -71,7 +76,7 @@ describe('JourneyConfigSlot', () => {
     });
 
     it('uses the fixed action baseline visual treatment', async () => {
-        const screen = await renderScreen(
+        const scene = () => (
             <JourneyConfigSlot
                 controller={{
                     body: <Text>Configuration body</Text>,
@@ -84,8 +89,9 @@ describe('JourneyConfigSlot', () => {
                     showSkip: true,
                 }}
                 testID="journey-config"
-            />,
+            />
         );
+        const screen = await renderScreen(scene());
 
         const primary = screen.findByTestId('journey-config-primary');
         const back = screen.findByTestId('journey-config-back');
@@ -93,17 +99,21 @@ describe('JourneyConfigSlot', () => {
         expect(back).not.toBeNull();
         expect(screen.findByTestId('journey-config-skip-row')).not.toBeNull();
 
-        expect(flattenStyle(resolvePressableStyle(primary!, { pressed: false, hovered: false, focused: false }))).toMatchObject({
+        expect(actionChromeStyle(primary!)).toMatchObject({
             height: stageVisualTokens.narration.primaryHeight,
             borderRadius: stageVisualTokens.narration.primaryRadius,
             paddingHorizontal: stageVisualTokens.narration.primaryPaddingHorizontal,
         });
-        expect(flattenStyle(resolvePressableStyle(primary!, { pressed: true, hovered: false, focused: false }))).toMatchObject({
-            transform: [{ scale: stageVisualTokens.motion.pressScale }],
-        });
-        expect(flattenStyle(resolvePressableStyle(back!, { pressed: false, hovered: false, focused: false }))).toMatchObject({
+        expect(actionChromeStyle(back!)).toMatchObject({
             backgroundColor: 'transparent',
             borderColor: 'transparent',
+        });
+        await act(async () => {
+            primary!.props.onPressIn();
+        });
+        await screen.update(scene());
+        expect(actionChromeStyle(screen.findByTestId('journey-config-primary')!)).toMatchObject({
+            transform: [{ scale: motionTokens.press.scale }],
         });
         expect(flattenStyle(screen.findByTestId('journey-config-skip-row')?.props.style)).toMatchObject({
             alignItems: 'center',
@@ -167,7 +177,7 @@ describe('JourneyConfigSlot', () => {
             showSkip: false,
             footerHint: 'Setup footer',
         } satisfies Pick<
-            SetupWizardController,
+            JourneyConfigControllerSurface,
             | 'body'
             | 'onPrimary'
             | 'primaryLabel'
@@ -193,5 +203,7 @@ describe('JourneyConfigSlot', () => {
         expect(screen.findByTestId('journey-config-primary')?.props.accessibilityState).toMatchObject({
             disabled: true,
         });
+        // Parent opacity must survive the press hook's idle opacity under reduced motion.
+        expect(flattenStyle(screen.findByTestId('journey-config-primary')?.props.style)?.opacity).toBe(0.35);
     });
 });

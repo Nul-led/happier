@@ -2,10 +2,10 @@ import * as React from 'react';
 import { View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
-import type { Message } from '@/sync/domains/messages/messageTypes';
-import type { Metadata } from '@/sync/domains/state/storageTypes';
+import type { Message } from "@happier-dev/session-core/messages";
+import type { Metadata } from '@happier-dev/session-core/state';
 import type { OpenApprovalArtifactForSession } from '@/sync/domains/artifacts/approvalArtifacts';
-import { useMessage } from '@/sync/domains/state/storage';
+import { TranscriptOriginSourceProvider, useTranscriptMessage } from '@/components/sessions/transcript/source/appSessionTranscriptSource';
 
 import { MessageView, MessageViewWithSessionCommon } from '@/components/sessions/transcript/MessageView';
 import type { TranscriptTurn } from '@/components/sessions/transcript/turnGrouping/buildTranscriptTurns';
@@ -13,7 +13,7 @@ import { TranscriptEnterWrapper } from '@/components/sessions/transcript/motion/
 import { ToolCallsGroupRow, ToolCallsGroupRowWithSessionCommon } from '@/components/sessions/transcript/toolCalls/ToolCallsGroupRow';
 import { TRANSCRIPT_WEB_MESSAGE_PREPEND_ANCHOR_TEST_ID_PREFIX } from '@/components/sessions/transcript/webTranscriptPrependAnchor';
 import { isMessageRolledBack, type SessionRollbackRangeV1, type TranscriptRollbackAction } from '@/sync/domains/sessionRollback/rollbackUiSupport';
-import type { PersistedSessionMessagePinV1 } from '@/sync/domains/messages/pins/sessionMessagePins';
+import type { PersistedSessionMessagePinV1 } from "@happier-dev/session-core/pins";
 import type { TranscriptInteraction } from '@/utils/sessions/deriveTranscriptInteraction';
 import { deriveReadOnlyTranscriptInteraction } from '@/components/sessions/transcript/forkContext/deriveReadOnlyTranscriptInteraction';
 import {
@@ -48,7 +48,7 @@ const TurnMessageRow = React.memo(function TurnMessageRow(props: {
     const origin = props.getMessageOrigin?.(props.messageId) ?? null;
     const effectiveSessionId = origin?.sessionId ?? props.sessionId;
     const effectiveInteraction = deriveReadOnlyTranscriptInteraction(props.interaction, origin?.isReadOnlyContext === true);
-    const sessionMessage = useMessage(effectiveSessionId, props.messageId);
+    const sessionMessage = useTranscriptMessage(props.messageId, effectiveSessionId);
     const providedMessage = typeof props.getMessageById === 'function' ? props.getMessageById(props.messageId) : null;
     const message = providedMessage ?? sessionMessage;
     if (!message) return null;
@@ -113,7 +113,9 @@ const TurnMessageRow = React.memo(function TurnMessageRow(props: {
         <View testID={`${TRANSCRIPT_WEB_MESSAGE_PREPEND_ANCHOR_TEST_ID_PREFIX}${message.id}`}>
             <View testID={`transcript-message-${message.id}`}>
                 <TranscriptEnterWrapper id={message.id} createdAt={message.createdAt}>
-                    {messageView}
+                    <TranscriptOriginSourceProvider originSessionId={effectiveSessionId} readOnly={origin?.isReadOnlyContext === true}>
+                        {messageView}
+                    </TranscriptOriginSourceProvider>
                 </TranscriptEnterWrapper>
             </View>
         </View>
@@ -128,6 +130,7 @@ type TurnViewProps = Readonly<{
     turn: TranscriptTurn;
     metadata: Metadata | null;
     sessionId: string;
+    serverId?: string | null;
     forcePermissionPromptsInTranscript?: boolean;
     activeThinkingMessageId: string | null;
     getMessageById?: (messageId: string) => Message | null;
@@ -146,7 +149,7 @@ type TurnViewProps = Readonly<{
 }>;
 
 export const TurnView = React.memo((props: TurnViewProps) => {
-    const transcriptSessionCommon = useTranscriptSessionCommon(props.sessionId);
+    const transcriptSessionCommon = useTranscriptSessionCommon();
 
     return (
         <TurnViewWithSessionCommon
@@ -217,8 +220,8 @@ export const TurnViewWithSessionCommon = React.memo((props: TurnViewProps & Tran
                 const origin = props.getMessageOrigin?.(c.toolMessageIds[0] ?? '') ?? null;
                 const interaction = deriveReadOnlyTranscriptInteraction(props.interaction, origin?.isReadOnlyContext === true);
                 return (
+                    <TranscriptOriginSourceProvider key={c.id} originSessionId={origin?.sessionId} readOnly={origin?.isReadOnlyContext === true}>
                     <ToolCallsGroupRowWithSessionCommon
-                        key={c.id}
                         sessionId={props.sessionId}
                         toolCallsGroupId={c.id}
                         toolMessageIds={c.toolMessageIds}
@@ -236,6 +239,7 @@ export const TurnViewWithSessionCommon = React.memo((props: TurnViewProps & Tran
                         toolChromeCommon={props.toolChromeCommon}
                         toolRouteCommon={props.toolRouteCommon}
                     />
+                    </TranscriptOriginSourceProvider>
                 );
             })}
         </View>

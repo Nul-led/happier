@@ -1,3 +1,15 @@
+import * as TranscriptTestReact from 'react';
+import { createTestSessionTranscriptSource as createHostTestSource, wrapWithSessionTranscriptSource as wrapHostTestSource } from '@/dev/testkit';
+import { sync as transcriptHistorySync } from '@/sync/sync';
+
+const transcriptHostTestSource = createHostTestSource({ sessionId: 's1', history: {
+    loadOlder: (options) => transcriptHistorySync.loadOlderMessages('s1', options),
+    loadTargetWindow: (target, options) => transcriptHistorySync.loadTargetWindowMessages('s1', target, options),
+} });
+function TranscriptHostTestProvider(props: TranscriptTestReact.PropsWithChildren) {
+    return wrapHostTestSource(props.children as TranscriptTestReact.ReactElement, transcriptHostTestSource);
+}
+
 /**
  * Session-open initial fill: ONE fill-sufficiency contract, displayable-content based (S-L/S-M,
  * 2026-07-11).
@@ -222,7 +234,7 @@ describe('useTranscriptEntryHost initial fill sufficiency (S-L/S-M)', () => {
 
         await renderHook(
             (deps: EntryHostDeps) => useTranscriptEntryHost(deps),
-            { initialProps: harness.deps },
+            { wrapper: TranscriptHostTestProvider, initialProps: harness.deps },
         );
         await vi.waitFor(() => {
             expect(harness.sessionOpenLatch.initialFillStatus()).toBe('done');
@@ -244,7 +256,7 @@ describe('useTranscriptEntryHost initial fill sufficiency (S-L/S-M)', () => {
 
         await renderHook(
             (deps: EntryHostDeps) => useTranscriptEntryHost(deps),
-            { initialProps: harness.deps },
+            { wrapper: TranscriptHostTestProvider, initialProps: harness.deps },
         );
         await vi.waitFor(() => {
             expect(harness.sessionOpenLatch.initialFillStatus()).toBe('done');
@@ -266,7 +278,7 @@ describe('useTranscriptEntryHost initial fill sufficiency (S-L/S-M)', () => {
 
         await renderHook(
             (deps: EntryHostDeps) => useTranscriptEntryHost(deps),
-            { initialProps: harness.deps },
+            { wrapper: TranscriptHostTestProvider, initialProps: harness.deps },
         );
         await vi.waitFor(() => {
             expect(harness.sessionOpenLatch.initialFillStatus()).toBe('done');
@@ -303,7 +315,7 @@ describe('useTranscriptEntryHost initial fill sufficiency (S-L/S-M)', () => {
 
         await renderHook(
             (deps: EntryHostDeps) => useTranscriptEntryHost(deps),
-            { initialProps: harness.deps },
+            { wrapper: TranscriptHostTestProvider, initialProps: harness.deps },
         );
         await vi.waitFor(() => {
             expect(harness.isScrollable()).toBe(true);
@@ -323,7 +335,7 @@ describe('useTranscriptEntryHost initial fill sufficiency (S-L/S-M)', () => {
 
         await renderHook(
             (deps: EntryHostDeps) => useTranscriptEntryHost(deps),
-            { initialProps: harness.deps },
+            { wrapper: TranscriptHostTestProvider, initialProps: harness.deps },
         );
         await vi.waitFor(() => {
             expect(harness.isScrollable()).toBe(true);
@@ -341,7 +353,7 @@ describe('useTranscriptEntryHost initial fill sufficiency (S-L/S-M)', () => {
 
         await renderHook(
             (deps: EntryHostDeps) => useTranscriptEntryHost(deps),
-            { initialProps: harness.deps },
+            { wrapper: TranscriptHostTestProvider, initialProps: harness.deps },
         );
         await vi.waitFor(() => {
             expect(harness.sessionOpenLatch.initialFillStatus()).toBe('done');
@@ -366,7 +378,7 @@ describe('useTranscriptEntryHost initial fill sufficiency (S-L/S-M)', () => {
 
         await renderHook(
             (deps: EntryHostDeps) => useTranscriptEntryHost(deps),
-            { initialProps: harness.deps },
+            { wrapper: TranscriptHostTestProvider, initialProps: harness.deps },
         );
         await vi.waitFor(() => {
             expect(harness.sessionOpenLatch.initialFillStatus()).toBe('done');
@@ -392,7 +404,7 @@ describe('useTranscriptEntryHost initial fill sufficiency (S-L/S-M)', () => {
 
         await renderHook(
             (deps: EntryHostDeps) => useTranscriptEntryHost(deps),
-            { initialProps: harness.deps },
+            { wrapper: TranscriptHostTestProvider, initialProps: harness.deps },
         );
         await vi.waitFor(() => {
             expect(harness.isScrollable()).toBe(true);
@@ -415,7 +427,7 @@ describe('useTranscriptEntryHost initial fill sufficiency (S-L/S-M)', () => {
 
         await renderHook(
             (deps: EntryHostDeps) => useTranscriptEntryHost(deps),
-            { initialProps: harness.deps },
+            { wrapper: TranscriptHostTestProvider, initialProps: harness.deps },
         );
         await vi.waitFor(() => {
             expect(harness.sessionOpenLatch.initialFillStatus()).toBe('done');
@@ -436,7 +448,7 @@ describe('useTranscriptEntryHost initial fill sufficiency (S-L/S-M)', () => {
 
         await renderHook(
             (deps: EntryHostDeps) => useTranscriptEntryHost(deps),
-            { initialProps: harness.deps },
+            { wrapper: TranscriptHostTestProvider, initialProps: harness.deps },
         );
         await vi.waitFor(() => {
             expect(harness.sessionOpenLatch.initialFillStatus()).toBe('done');
@@ -458,7 +470,7 @@ describe('useTranscriptEntryHost initial fill sufficiency (S-L/S-M)', () => {
 
         await renderHook(
             (deps: EntryHostDeps) => useTranscriptEntryHost(deps),
-            { initialProps: harness.deps },
+            { wrapper: TranscriptHostTestProvider, initialProps: harness.deps },
         );
         await vi.waitFor(() => {
             expect(harness.sessionOpenLatch.initialFillStatus()).toBe('done');

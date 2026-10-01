@@ -1,0 +1,101 @@
+import * as React from 'react';
+import { View } from 'react-native';
+import { StyleSheet } from 'react-native-unistyles';
+
+import { BrowserPresenceCapsule } from '@/components/browser/copresence/BrowserPresenceCapsule';
+import { useBrowserSessionAgentIdentity } from '@/components/browser/copresence/BrowserShellPresence';
+import { COMPOSER_CONTENT_HORIZONTAL_INSET } from '@/components/sessions/agentInput/composerContentInset';
+import { layout } from '@/components/ui/layout/layout';
+import { useSessionMachineTarget } from '@/components/sessions/model/useSessionMachineTarget';
+import { useSessionComputerMachine } from '@/sync/domains/computer/sessionComputerMachines';
+import { t } from '@/text';
+import { useDeviceType } from '@/utils/platform/responsive';
+
+import { useComputerSessionControl } from './useComputerSessionControl';
+import { useOpenSessionComputerScreen } from './useOpenSessionComputerScreen';
+
+function MountedSessionComputerPresenceLine(props: Readonly<{
+    sessionId: string;
+    serverId: string | null;
+    machineId: string;
+    testID: string;
+}>): React.ReactElement | null {
+    const identity = useBrowserSessionAgentIdentity({ sessionId: props.sessionId, serverId: props.serverId });
+    const scope = React.useMemo(
+        () => ({ sessionId: props.sessionId, machineId: props.machineId, serverId: props.serverId }),
+        [props.machineId, props.serverId, props.sessionId],
+    );
+    // The owner's status is pull-only (W7): it is re-read whenever the Session's turn starts or ends
+    // (its canonical activity), after each press, and on mount — never on a timer.
+    const control = useComputerSessionControl({ scope, refreshKey: identity.turnActive });
+    const open = useOpenSessionComputerScreen({ sessionId: props.sessionId, serverId: props.serverId, machineId: props.machineId });
+    const agent = React.useMemo(() => ({ agentId: identity.agentId, name: identity.name }), [identity.agentId, identity.name]);
+    const compact = useDeviceType() === 'phone';
+    if (!control.selection?.sourceId) return null;
+    const target = control.appName ?? control.targetTitle ?? t('computerUse.viewer.tabFallback');
+    const machine = control.machineName;
+    return (
+        <View style={styles.frame}>
+            {/* The content width is read at render: the layout owner reads the person's width setting. */}
+            <View style={[styles.column, { maxWidth: layout.maxWidth }]}>
+                <BrowserPresenceCapsule
+                    testID={props.testID}
+                    placement="strip"
+                    compact={compact}
+                    presence={control.presence}
+                    agent={agent}
+                    agentTitle={control.presence.kind === 'agent' && control.agentActing ? t('computerUse.strip.using', { target }) : undefined}
+                    agentDetail={machine ? t('computerUse.strip.on', { machine }) : undefined}
+                    humanTitle={t('computerUse.strip.paused', { agent: agent.name })}
+                    humanDetail={t('computerUse.strip.pausedDetail', { target })}
+                    takeControlLabel={t('computerUse.strip.stop')}
+                    checking={control.busy === 'check'}
+                    onTakeControl={control.takeControl}
+                    onHandBack={control.handBack}
+                    onCheckAgain={control.checkAgain}
+                    onWatch={open ?? undefined}
+                />
+            </View>
+        </View>
+    );
+}
+
+const styles = StyleSheet.create(() => ({
+    // Under the session header, at the top of the transcript, in the transcript's own width.
+    frame: {
+        width: '100%',
+        alignItems: 'center',
+        paddingHorizontal: COMPOSER_CONTENT_HORIZONTAL_INSET,
+        paddingTop: 8,
+        paddingBottom: 4,
+    },
+    column: {
+        width: '100%',
+    },
+}));
+
+/**
+ * Who is using the Session's shared window, wherever the person is in the Session (lab `computer` HC):
+ * the one co-presence capsule as a compact strip at the top of the transcript on every device, with Watch (the viewer) and
+ * Take control / Hand back / Check again against the computer owner. It mounts its owner reads only for
+ * a Session this device has seen use a computer (an approval, a transcript row, the picker, the viewer),
+ * so an ordinary Session issues no machine RPC; it renders only while a window is shared.
+ */
+export function SessionComputerPresenceLine(props: Readonly<{
+    sessionId: string;
+    serverId?: string | null;
+    testID?: string;
+}>): React.ReactElement | null {
+    const seenComputerUse = useSessionComputerMachine(props.sessionId);
+    // The share lives on the Session's own machine (computer use never targets another one).
+    const sessionMachineId = useSessionMachineTarget(seenComputerUse ? props.sessionId : null, props.serverId ?? null)?.machineId ?? null;
+    if (!seenComputerUse || !sessionMachineId || seenComputerUse.machineId !== sessionMachineId) return null;
+    return (
+        <MountedSessionComputerPresenceLine
+            sessionId={props.sessionId}
+            serverId={props.serverId ?? null}
+            machineId={sessionMachineId}
+            testID={props.testID ?? 'session-computer-presence'}
+        />
+    );
+}

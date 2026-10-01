@@ -36,7 +36,9 @@ installVoiceAgentCommonModuleMocks({
     storage: async () => {
         const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
         return createStorageModuleStub({
-            storage: { getState: () => state },
+            // Return a fresh snapshot so the storage testkit's completed-state
+            // adapter cannot retain a previous test's top-level fixture object.
+            storage: { getState: () => ({ ...state }) },
         });
     },
 });
@@ -69,7 +71,6 @@ function buildProjection(agents: Readonly<Record<string, unknown>>) {
             generation: 3,
             installedPackagesById: {},
             agentsById: agents,
-            backendsById: {},
             actionsById: {},
             toolsById: {},
             commandsById: {},
@@ -128,6 +129,11 @@ function seedTargetSession(overrides: Readonly<Record<string, unknown>> = {}) {
 async function assertTarget(target: unknown) {
     const { assertActiveDaemonTargetSession } = await import('./voiceAgentRunState');
     return await assertActiveDaemonTargetSession(target as never);
+}
+
+async function resolveVoiceSession(target: unknown) {
+    const { resolveVoiceAgentSessionFromState } = await import('./voiceAgentRunState');
+    return resolveVoiceAgentSessionFromState(target as never);
 }
 
 describe('assertActiveDaemonTargetSession', () => {
@@ -191,5 +197,22 @@ describe('assertActiveDaemonTargetSession', () => {
         await expect(assertTarget({ serverId: TARGET_HOME, sessionId: 'target-1' })).rejects.toMatchObject({
             code: 'VOICE_AGENT_TARGET_SESSION_OFFLINE',
         });
+    });
+
+    it('does not use a direct Session row from another Home for an explicit target', async () => {
+        seedTargetSession({ serverId: 'home-other' });
+        state.sessionListIndexByServerId = {};
+
+        await expect(resolveVoiceSession({ serverId: TARGET_HOME, sessionId: 'target-1' })).resolves.toBeNull();
+    });
+
+    it('fails closed when a bare Session ID is present on more than one Home', async () => {
+        seedTargetSession();
+        state.ordinarySessionListMembershipByServerId = {
+            [TARGET_HOME]: ['target-1'],
+            'home-other': ['target-1'],
+        };
+
+        await expect(resolveVoiceSession('target-1')).resolves.toBeNull();
     });
 });

@@ -2,6 +2,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import { chmod, mkdir, readFile, readdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { normalizeSessionHandoffWorkspaceRootPath } from '@happier-dev/protocol';
+import { processGenerationProvesReuse } from '@happier-dev/cli-common/processInstance';
+import { probeProcessLiveness } from '@happier-dev/cli-common/process';
 
 import { readProcessIdentityByPid } from '@/daemon/processIdentity';
 import { getPathRemainderWithinBase } from '@/session/handoff/paths/sessionHandoffPathNormalization';
@@ -120,11 +122,9 @@ function recordPath(lockDirectory: string, canonicalRoot: string): string {
 }
 
 async function inspectProcessOwner(pid: number): Promise<ProcessOwnerObservation> {
-  try {
-    process.kill(pid, 0);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'EPERM') return { kind: 'dead' };
-  }
+  const liveness = probeProcessLiveness(pid);
+  if (liveness === 'absent') return { kind: 'dead' };
+  if (liveness === 'access_denied') return { kind: 'alive', processStartedAtMs: null };
   const identity = await readProcessIdentityByPid(pid);
   return {
     kind: 'alive',
@@ -282,7 +282,7 @@ export function createWorkspaceRootOwnershipManager(options: Readonly<{
           const provenReused = observation.kind === 'alive'
             && persistedProcess.processStartedAtMs !== null
             && observation.processStartedAtMs !== null
-            && persistedProcess.processStartedAtMs !== observation.processStartedAtMs;
+            && processGenerationProvesReuse(persistedProcess.processStartedAtMs, observation.processStartedAtMs);
           if ((provenDead || provenReused) && await removeExactRecord(path, snapshot.raw)) continue;
 
           if (overlaps(snapshot.record.canonicalRoot, canonicalRoot)) {

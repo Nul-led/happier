@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import type { ToolCallMessage } from '@/sync/domains/messages/messageTypes';
-import { buildMessageRouteId } from '@/sync/domains/messages/messageRouteIds';
+import type { ToolCallMessage } from "@happier-dev/session-core/messages";
+import { buildMessageRouteId } from "@happier-dev/session-core/messages";
 
 import { resolvePermissionToolCallLocations } from './resolvePermissionToolCallLocations';
 

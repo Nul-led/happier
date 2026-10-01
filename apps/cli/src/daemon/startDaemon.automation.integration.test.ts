@@ -1,3 +1,4 @@
+import type { ManagedEndpointSupervisorState } from '@happier-dev/connection-supervisor';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DaemonState } from '@/api/types';
 
@@ -127,6 +128,20 @@ const harness = vi.hoisted(() => {
     };
   });
 
+  const createDaemonAuthResult = () => ({
+    credentials: {
+      token: 'token-automation',
+      encryption: {
+        type: 'dataKey' as const,
+        publicKey: new Uint8Array(32).fill(1),
+        machineKey: new Uint8Array(32).fill(2),
+      },
+    },
+    machineId: 'machine-automation',
+  });
+  const authAndSetupMachineIfNeeded = vi.fn(async () => createDaemonAuthResult());
+  const authAndPrepareDaemonMachineIfNeeded = vi.fn(async () => createDaemonAuthResult());
+
   return {
     providerAccountUsagePersistenceFlush,
     createProviderAccountUsagePersistenceScheduler,
@@ -145,6 +160,8 @@ const harness = vi.hoisted(() => {
     connectedServiceQuotasResume,
     connectedServiceQuotasStop,
     createDaemonShutdownController,
+    authAndSetupMachineIfNeeded,
+    authAndPrepareDaemonMachineIfNeeded,
     emitMachineConnectionState: (state: any) => machineConnectionStateListener?.(state),
     setAutoShutdownAfterAutomationStart: (value: boolean) => {
       autoShutdownAfterAutomationStart = value;
@@ -238,17 +255,8 @@ vi.mock('@/ui/logger', () => ({
 }));
 
 vi.mock('@/ui/auth', () => ({
-  authAndSetupMachineIfNeeded: vi.fn(async () => ({
-    credentials: {
-      token: 'token-automation',
-      encryption: {
-        type: 'dataKey',
-        publicKey: new Uint8Array(32).fill(1),
-        machineKey: new Uint8Array(32).fill(2),
-      },
-    },
-    machineId: 'machine-automation',
-  })),
+  authAndSetupMachineIfNeeded: harness.authAndSetupMachineIfNeeded,
+  authAndPrepareDaemonMachineIfNeeded: harness.authAndPrepareDaemonMachineIfNeeded,
 }));
 
 vi.mock('@/configuration', () => ({
@@ -573,19 +581,166 @@ describe('startDaemon automation wiring (integration)', () => {
     const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
 
     try {
-      const { authAndSetupMachineIfNeeded } = await import('@/ui/auth');
       const { isDaemonRunningCurrentlyInstalledHappyVersion } = await import('./controlClient');
       (isDaemonRunningCurrentlyInstalledHappyVersion as unknown as { mockResolvedValueOnce: (value: unknown) => void }).mockResolvedValueOnce(true);
 
       const { startDaemon } = await import('./startDaemon');
       await startDaemon();
 
-      expect(authAndSetupMachineIfNeeded).toHaveBeenCalledTimes(1);
+      expect(harness.authAndPrepareDaemonMachineIfNeeded).toHaveBeenCalledTimes(1);
+      expect(harness.authAndSetupMachineIfNeeded).not.toHaveBeenCalled();
       expect(isDaemonRunningCurrentlyInstalledHappyVersion).toHaveBeenCalledWith({
         expectedMachineId: 'machine-automation',
       });
       expect(exitSpy).toHaveBeenCalledWith(0);
     } finally {
+      exitSpy.mockRestore();
+    }
+  });
+
+  it('defers an existing-credential ECONNREFUSED registration outage to the daemon registration runtime', async () => {
+    vi.useRealTimers();
+    harness.setAutoShutdownAfterAutomationStart(false);
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+    const readinessListeners = new Set<(state: ManagedEndpointSupervisorState) => void>();
+    const endpointSupervisor = {
+      start: vi.fn(async () => {}),
+      stop: vi.fn(async () => {}),
+      reportFailure: vi.fn(),
+      invalidate: vi.fn(),
+      subscribe: vi.fn((listener: (state: ManagedEndpointSupervisorState) => void) => {
+        readinessListeners.add(listener);
+        return () => {
+          readinessListeners.delete(listener);
+        };
+      }),
+    };
+    const publishReadiness = (state: ManagedEndpointSupervisorState) => {
+      for (const listener of [...readinessListeners]) {
+        listener(state);
+      }
+    };
+    vi.doMock('@happier-dev/connection-supervisor', async (importOriginal) => ({
+      ...await importOriginal<typeof import('@happier-dev/connection-supervisor')>(),
+      createManagedEndpointSupervisor: vi.fn(() => endpointSupervisor),
+    }));
+    vi.doMock('./peer/iroh/daemonMachineIrohRuntime', () => ({
+      createDaemonMachineIrohRuntime: vi.fn(async () => ({
+        available: false,
+        reason: 'native_unavailable',
+        message: 'not needed by machine-registration retry coverage',
+        shutdown: async () => undefined,
+      })),
+    }));
+    vi.doMock('./peer/iroh/daemonHomeIrohTransport', () => ({
+      prepareDaemonHomeIrohTransport: vi.fn(async () => ({
+        carrier: 'standard',
+        observedPath: 'direct',
+        release: async () => undefined,
+        reacquire: async () => ({ status: 'ready' }),
+        verifyAuthenticated: async () => ({ status: 'ready' }),
+      })),
+      applyDaemonHomeDescriptorRefresh: vi.fn(async () => 'ignored'),
+    }));
+    vi.doMock('@/server/serverProfiles', () => ({
+      getActiveServerProfile: vi.fn(async () => ({})),
+    }));
+    const pluginChangeService = {
+      requestPluginChange: vi.fn(),
+      decidePluginChange: vi.fn(),
+      shutdown: vi.fn(async () => {}),
+      quiesceForHandoff: vi.fn(async () => ({ resume: vi.fn() })),
+      isQuiescing: () => false,
+      runHardRevocationCurrentnessChange: vi.fn(),
+    };
+    vi.doMock('@/plugins/daemon/runtimeOwner', () => ({
+      createDaemonPluginRuntimeOwner: vi.fn((params: Readonly<Record<string, unknown>>) => ({
+        changeService: pluginChangeService,
+        initialize: vi.fn(async () => {
+          const onInitialRegistryPublished = params.onInitialRegistryPublished as (() => void) | undefined;
+          const awaitInitialRuntimeActivation = params.awaitInitialRuntimeActivation as (() => Promise<void>) | undefined;
+          const onDurableRegistryApplied = params.onDurableRegistryApplied as (() => void) | undefined;
+          onInitialRegistryPublished?.();
+          await awaitInitialRuntimeActivation?.();
+          onDurableRegistryApplied?.();
+        }),
+        reportCurrentAvailability: vi.fn(),
+        readCatalog: vi.fn(async () => []),
+      })),
+    }));
+
+    let run: Promise<void> | null = null;
+    try {
+      const registrationOutage = Object.assign(
+        new Error('connect ECONNREFUSED 127.0.0.1:443'),
+        { code: 'ECONNREFUSED' },
+      );
+      harness.authAndSetupMachineIfNeeded.mockRejectedValueOnce(registrationOutage);
+
+      const { ensureMachineRegistered } = await import('@/api/machine/ensureMachineRegistered');
+      const ensureMachineRegisteredMock = vi.mocked(ensureMachineRegistered);
+      ensureMachineRegisteredMock
+        .mockRejectedValueOnce(registrationOutage)
+        .mockResolvedValueOnce({
+          machineId: 'machine-automation',
+          didRotateMachineId: false,
+          machine: {
+            id: 'machine-automation',
+            metadata: {
+              host: 'host.local',
+              platform: 'test',
+              happyCliVersion: '0.0.0-test',
+              homeDir: '/tmp/home',
+              happyHomeDir: '/tmp/home',
+              happyLibDir: '/tmp/project',
+            },
+            metadataVersion: 0,
+            daemonState: null,
+            daemonStateVersion: 0,
+            encryptionKey: new Uint8Array(32).fill(1),
+            encryptionVariant: 'dataKey',
+          },
+        });
+
+      const { writeDaemonStateForLockOwner } = await import('@/persistence');
+      const { startDaemon } = await import('./startDaemon');
+      run = startDaemon();
+
+      await vi.waitFor(() => {
+        expect(harness.authAndPrepareDaemonMachineIfNeeded).toHaveBeenCalledOnce();
+        expect(harness.authAndSetupMachineIfNeeded).not.toHaveBeenCalled();
+        expect(writeDaemonStateForLockOwner).toHaveBeenCalledWith(
+          expect.anything(),
+          expect.objectContaining({ machineId: 'machine-automation' }),
+        );
+        expect(ensureMachineRegisteredMock).toHaveBeenCalledTimes(1);
+        expect(endpointSupervisor.reportFailure).toHaveBeenCalledOnce();
+        expect(endpointSupervisor.invalidate).toHaveBeenCalledOnce();
+      });
+
+      publishReadiness({
+        phase: 'online',
+        reason: 'initial_connect',
+        attempt: 0,
+        nextRetryAt: null,
+        lastConnectedAt: Date.now(),
+        lastDisconnectedAt: null,
+        lastErrorMessage: null,
+        lastProbe: { status: 'ready' },
+      });
+
+      await vi.waitFor(() => {
+        expect(ensureMachineRegisteredMock).toHaveBeenCalledTimes(2);
+      });
+      expect(exitSpy).not.toHaveBeenCalled();
+    } finally {
+      harness.requestShutdown('happier-cli');
+      await run?.catch(() => undefined);
+      vi.doUnmock('@happier-dev/connection-supervisor');
+      vi.doUnmock('./peer/iroh/daemonMachineIrohRuntime');
+      vi.doUnmock('./peer/iroh/daemonHomeIrohTransport');
+      vi.doUnmock('@/server/serverProfiles');
+      vi.doUnmock('@/plugins/daemon/runtimeOwner');
       exitSpy.mockRestore();
     }
   });
@@ -1660,8 +1815,7 @@ describe('startDaemon automation wiring (integration)', () => {
 
     let run: Promise<void> | null = null;
     try {
-      const { authAndSetupMachineIfNeeded } = await import('@/ui/auth');
-      vi.mocked(authAndSetupMachineIfNeeded).mockResolvedValueOnce({
+      harness.authAndPrepareDaemonMachineIfNeeded.mockResolvedValueOnce({
         credentials: bootstrapCredentials,
         machineId: 'machine-automation',
       });

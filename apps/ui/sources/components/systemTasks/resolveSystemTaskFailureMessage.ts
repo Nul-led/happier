@@ -9,6 +9,9 @@ import { resolveCliAcquisitionFailureMessage } from './cliAcquisitionPresentatio
 const SYSTEM_TASK_FAILURE_TRANSLATION_KEYS: Readonly<Record<string, TranslationKey>> = {
     service_reconciliation_declined: 'machine.backgroundServicePrompt.replaceDeclined',
     release_channel_switch_declined: 'machine.backgroundServicePrompt.channelSwitchDeclined',
+    // R12: the one-CLI question was dismissed (or Keep was not possible), or the kept CLI is gone.
+    cli_choice_unanswered: 'machine.thisComputer.cliChoice.unanswered',
+    cli_own_missing: 'machine.thisComputer.cliChoice.ownMissing',
 };
 
 /** The message to show for a failed system task: app copy for known codes, else the task's own message. */

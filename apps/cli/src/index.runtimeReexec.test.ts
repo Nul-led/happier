@@ -35,6 +35,7 @@ vi.mock('@/cli/dispatch', () => ({
 
 vi.mock('@/cli/parseArgs', () => ({
   normalizeCliArgv: normalizeCliArgvMock,
+  readCliProcessArgs: () => normalizeCliArgvMock(process.argv.slice(2)),
   parseCliArgs: parseCliArgsMock,
 }));
 
@@ -42,8 +43,11 @@ vi.mock('@/agent/tools/trace/toolTrace', () => ({
   initToolTraceIfEnabled: initToolTraceIfEnabledMock,
 }));
 
-vi.mock('axios', () => ({
-  default: {},
+// No request is sent in this startup test; keep Axios and its interceptor registry real.
+// Stored credentials are the filesystem boundary and must never come from the user's home.
+vi.mock('@/persistence', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@/persistence')>(),
+  readStoredCredentials: vi.fn(async () => null),
 }));
 
 vi.mock('@/configuration', () => ({

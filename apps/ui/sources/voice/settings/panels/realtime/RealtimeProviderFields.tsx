@@ -3,6 +3,7 @@ import { Platform, Pressable } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
 import { DropdownMenu, type DropdownMenuItem } from '@/components/ui/forms/dropdown/DropdownMenu';
+import { FieldValueItem } from '@/components/ui/forms/FieldValueItem';
 import { Switch } from '@/components/ui/forms/Switch';
 import { Item } from '@/components/ui/lists/Item';
 import { getLanguageDisplayNameForCode } from '@/constants/Languages';
@@ -97,6 +98,14 @@ function selectedId(field: RealtimeSettingsFieldDescriptor, value: unknown): str
   return String(value);
 }
 
+function textValue(value: unknown): string {
+  return typeof value === 'string' ? value : '';
+}
+
+function numberValue(value: unknown): string {
+  return typeof value === 'number' && Number.isFinite(value) ? String(value) : '';
+}
+
 function detail(value: unknown): string {
   if (value === null || value === undefined || value === '') return t('common.none');
   if (Array.isArray(value)) return value.length === 0 ? t('common.none') : value.join(', ');
@@ -121,6 +130,8 @@ export function RealtimeProviderFields(props: Readonly<{
 }>) {
   const { theme } = useUnistyles();
   const [openField, setOpenField] = React.useState<string | null>(null);
+  /** The menu whose Custom entry is being typed inline beneath it. */
+  const [customField, setCustomField] = React.useState<string | null>(null);
   const actionBusyRef = React.useRef(false);
   const [actionBusy, setActionBusy] = React.useState(false);
   const [previewingId, setPreviewingId] = React.useState<string | null>(null);
@@ -226,58 +237,66 @@ export function RealtimeProviderFields(props: Readonly<{
     return true;
   }, []);
 
-  const promptText = React.useCallback((field: RealtimeSettingsFieldDescriptor, current: unknown) => {
-    const providerId = props.providerId;
-    fireAndForget((async () => {
-      const raw = await Modal.prompt(
-        translate(field.promptTitleKey, translate(field.titleKey)),
-        translate(field.promptBodyKey, translate(field.subtitleKey)),
-        { placeholder: current === null || current === undefined ? '' : String(current) },
-      );
-      if (raw === null) return;
-      const trimmed = String(raw).trim();
-      write(field, trimmed.length > 0 ? trimmed : null, providerId);
-    })(), { tag: `RealtimeProviderFields.text.${field.kind}` });
+  /** Saves a typed text value; an empty value clears it. Returns the text the field shows afterwards. */
+  const commitText = React.useCallback((field: RealtimeSettingsFieldDescriptor, current: unknown, draft: string) => {
+    if (!write(field, draft.length > 0 ? draft : null, props.providerId)) return textValue(current);
+    return draft;
   }, [props.providerId, write]);
 
-  const promptNumber = React.useCallback((field: RealtimeSettingsFieldDescriptor, current: unknown) => {
+  /**
+   * Saves a typed number within the descriptor's bounds, integer and step rules; an empty value restores the
+   * range reset (or clears it). A number that needs opt-in is saved only after the confirmation.
+   */
+  const commitNumber = React.useCallback((field: RealtimeSettingsFieldDescriptor, current: unknown, draft: string) => {
     const providerId = props.providerId;
-    fireAndForget((async () => {
-      const raw = await Modal.prompt(
-        translate(field.promptTitleKey, translate(field.titleKey)),
-        translate(field.promptBodyKey, translate(field.subtitleKey)),
-        { inputType: 'numeric', placeholder: typeof current === 'number' ? String(current) : '' },
-      );
-      if (raw === null) return;
-      const trimmed = String(raw).trim();
-      const next = trimmed.length === 0
-        ? field.kind === 'range' && typeof field.reset === 'number' ? field.reset : null
-        : Number(trimmed);
-      const step = typeof field.step === 'number' && Number.isFinite(field.step) && field.step > 0
-        ? field.step
-        : null;
-      const stepOrigin = typeof field.min === 'number' && Number.isFinite(field.min) ? field.min : 0;
-      const violatesStep = next !== null && step !== null
-        && Math.abs((next - stepOrigin) / step - Math.round((next - stepOrigin) / step)) > 1e-8;
-      if (next !== null && (!Number.isFinite(next)
-        || (typeof field.min === 'number' && next < field.min)
-        || (typeof field.max === 'number' && next > field.max)
-        || (field.integer === true && !Number.isInteger(next))
-        || violatesStep)) {
-        Modal.alert(t('common.error'), tLoose('settingsVoice.realtimeProviders.invalidValue'));
-        return;
-      }
-      if (next !== null && field.requiresOptIn === true) {
+    const trimmed = draft.trim();
+    const next = trimmed.length === 0
+      ? field.kind === 'range' && typeof field.reset === 'number' ? field.reset : null
+      : Number(trimmed);
+    const step = typeof field.step === 'number' && Number.isFinite(field.step) && field.step > 0
+      ? field.step
+      : null;
+    const stepOrigin = typeof field.min === 'number' && Number.isFinite(field.min) ? field.min : 0;
+    const violatesStep = next !== null && step !== null
+      && Math.abs((next - stepOrigin) / step - Math.round((next - stepOrigin) / step)) > 1e-8;
+    if (next !== null && (!Number.isFinite(next)
+      || (typeof field.min === 'number' && next < field.min)
+      || (typeof field.max === 'number' && next > field.max)
+      || (field.integer === true && !Number.isInteger(next))
+      || violatesStep)) {
+      Modal.alert(t('common.error'), tLoose('settingsVoice.realtimeProviders.invalidValue'));
+      return numberValue(current);
+    }
+    if (next !== null && field.requiresOptIn === true) {
+      fireAndForget((async () => {
         const confirmed = await Modal.confirm(
           translate(field.confirmTitleKey, translate(field.titleKey)),
           translate(field.confirmBodyKey, translate(field.subtitleKey)),
           { confirmText: translate(field.confirmActionKey, tLoose('common.enable')) },
         );
-        if (!confirmed) return;
-      }
-      write(field, next, providerId);
-    })(), { tag: `RealtimeProviderFields.number.${field.kind}` });
+        if (confirmed) write(field, next, providerId);
+      })(), { tag: `RealtimeProviderFields.number.${field.kind}` });
+      return numberValue(current);
+    }
+    if (!write(field, next, providerId)) return numberValue(current);
+    return numberValue(next);
   }, [props.providerId, write]);
+
+  const renderNumberField = (field: RealtimeSettingsFieldDescriptor, current: unknown, key: string, title: unknown, subtitle: unknown) => (
+    <FieldValueItem
+      key={key}
+      testID={fieldTestId(field)}
+      fieldTestID={`${fieldTestId(field)}.field`}
+      title={translate(title)}
+      subtitle={translate(subtitle)}
+      kind={field.integer === true ? 'integer' : 'decimal'}
+      signed={!(typeof field.min === 'number' && field.min >= 0)}
+      allowEmpty
+      placeholder={typeof field.reset === 'number' ? String(field.reset) : t('common.none')}
+      value={numberValue(current)}
+      onCommit={(draft) => commitNumber(field, current, draft)}
+    />
+  );
 
   return <>
     {props.descriptor.fields.map((field) => {
@@ -392,27 +411,25 @@ export function RealtimeProviderFields(props: Readonly<{
       }
 
       if (field.kind === 'number' || field.kind === 'range') {
-        return <Item key={key} testID={fieldTestId(field)} title={translate(field.titleKey)}
-          subtitle={translate(field.subtitleKey)} detail={detail(value)} onPress={() => promptNumber(field, value)} />;
+        return renderNumberField(field, value, key, field.titleKey, field.subtitleKey);
       }
 
       if (field.kind === 'text' || field.kind === 'instructions') {
-        return <Item key={key} testID={fieldTestId(field)} title={translate(field.titleKey)}
-          subtitle={translate(field.subtitleKey)} detail={detail(value)} onPress={() => promptText(field, value)} />;
+        return <FieldValueItem key={key} testID={fieldTestId(field)} fieldTestID={`${fieldTestId(field)}.field`}
+          title={translate(field.titleKey)} subtitle={translate(field.subtitleKey)} placeholder={t('common.none')}
+          value={textValue(value)} onCommit={(draft) => commitText(field, value, draft)} />;
       }
 
       if (field.kind === 'keyterms') {
-        return <Item key={key} testID={fieldTestId(field)} title={translate(field.titleKey)}
-          subtitle={translate(field.subtitleKey)} detail={detail(value)} onPress={() => fireAndForget((async () => {
-            const providerId = props.providerId;
-            const raw = await Modal.prompt(translate(field.promptTitleKey, translate(field.titleKey)),
-              translate(field.promptBodyKey, translate(field.subtitleKey)),
-              { placeholder: stringList(value).join(', ') });
-            if (raw === null) return;
-            const terms = String(raw).split(/[\n,]/u).map((term) => term.trim()).filter(Boolean);
+        return <FieldValueItem key={key} testID={fieldTestId(field)} fieldTestID={`${fieldTestId(field)}.field`}
+          title={translate(field.titleKey)} subtitle={translate(field.subtitleKey)} placeholder={t('common.none')}
+          value={stringList(value).join(', ')}
+          onCommit={(draft) => {
+            const terms = draft.split(/[\n,]/u).map((term) => term.trim()).filter(Boolean);
             const deduped = [...new Map(terms.map((term) => [term.toLocaleLowerCase('en-US'), term])).values()];
-            write(field, deduped, providerId);
-          })(), { tag: 'RealtimeProviderFields.keyterms' })} />;
+            if (!write(field, deduped, props.providerId)) return stringList(value).join(', ');
+            return deduped.join(', ');
+          }} />;
       }
 
       if (field.kind === 'server_vad') {
@@ -425,8 +442,7 @@ export function RealtimeProviderFields(props: Readonly<{
           if (pathSegments.length === 0) return null;
           const synthetic = { ...subfield, kind: 'number', path, pathSegments } as RealtimeSettingsFieldDescriptor;
           const current = readRealtimeProviderConfigPath(props.config, synthetic.pathSegments);
-          return <Item key={path} testID={fieldTestId(synthetic)} title={translate(subfield.titleKey)}
-            subtitle={translate(subfield.subtitleKey)} detail={detail(current)} onPress={() => promptNumber(synthetic, current)} />;
+          return renderNumberField(synthetic, current, path, subfield.titleKey, subfield.subtitleKey);
         });
         if (field.advanced !== true) return <React.Fragment key={key}>{renderedSubfields}</React.Fragment>;
         const expanded = expandedAdvancedPaths.has(field.path);
@@ -496,8 +512,10 @@ export function RealtimeProviderFields(props: Readonly<{
       const customRow = allowCustom && !hasCustomRow
         ? [{ id: '__custom__', title: tLoose('settingsVoice.realtimeProviders.options.custom') }]
         : [];
-      return <DropdownMenu
-        key={key}
+      const selectedRecord = record(value);
+      const customId = typeof selectedRecord?.id === 'string' ? selectedRecord.id : textValue(value);
+      return <React.Fragment key={key}>
+      <DropdownMenu
         testID={fieldTestId(field)}
         open={openField === key}
         onOpenChange={(next) => {
@@ -524,13 +542,7 @@ export function RealtimeProviderFields(props: Readonly<{
           if (id === '__retry__') { props.onRequestCatalog(); return; }
           if (id === '__status__') return;
           if (id === '__custom__') {
-            const providerId = props.providerId;
-            fireAndForget((async () => {
-              const raw = await Modal.prompt(translate(field.titleKey), translate(field.subtitleKey), { placeholder: detail(value) });
-              if (raw === null || !String(raw).trim()) return;
-              const custom = String(raw).trim();
-              write(field, field.kind === 'voice_catalog' ? { kind: 'custom', id: custom } : custom, providerId);
-            })(), { tag: `RealtimeProviderFields.custom.${field.kind}` });
+            setCustomField(key);
             setOpenField(null);
             return;
           }
@@ -556,7 +568,21 @@ export function RealtimeProviderFields(props: Readonly<{
           else write(field, id || null);
           setOpenField(null);
         }}
-      />;
+      />
+      {customField !== key ? null : <FieldValueItem
+        testID={`${fieldTestId(field)}.custom`}
+        fieldTestID={`${fieldTestId(field)}.custom.field`}
+        title={translate(field.titleKey)}
+        subtitle={translate(field.subtitleKey)}
+        autoFocus
+        value={customId}
+        onCommit={(draft) => {
+          setCustomField(null);
+          if (!draft) return customId;
+          if (!write(field, field.kind === 'voice_catalog' ? { kind: 'custom', id: draft } : draft, props.providerId)) return customId;
+        }}
+      />}
+      </React.Fragment>;
       })();
       return <React.Fragment key={`layout:${key}`}>
         {rendered}

@@ -125,7 +125,7 @@ function committedTranscriptLocalIds(): string[] {
 describe('pending snapshot re-addition after a committed twin', () => {
     beforeEach(async () => await resetPendingQueueState());
 
-    function armSession() {
+    async function armSession() {
         const server = await upsertServerProfile({ serverUrl: 'https://readdition.example.test', name: 'Readdition' });
         await resetPendingQueueState({ serverId: server.id, accountId: 'account' });
         storage.getState().applySessions([{
@@ -142,7 +142,7 @@ describe('pending snapshot re-addition after a committed twin', () => {
 
     /** A — twin committed while the GET is outstanding: withheld. */
     it('withholds a row whose twin commits while the request is outstanding', async () => {
-        const scope = armSession();
+        const scope = await armSession();
         const encryption = await Encryption.create(new Uint8Array(32).fill(6));
         let release!: () => void;
         const gate = new Promise<void>((resolve) => { release = resolve; });
@@ -163,7 +163,7 @@ describe('pending snapshot re-addition after a committed twin', () => {
 
     /** B — twin committed after the response, before the publish: withheld. */
     it('withholds a row whose twin commits between the response and the publish', async () => {
-        const scope = armSession();
+        const scope = await armSession();
         const encryption = await Encryption.create(new Uint8Array(32).fill(6));
 
         const refresh = fetchAndApplyPendingMessagesV2({
@@ -188,7 +188,7 @@ describe('pending snapshot re-addition after a committed twin', () => {
      * !committedAtCapture`) because membership alone could not tell it from a settlement.
      */
     it('republishes a row whose twin was already committed at capture', async () => {
-        const scope = armSession();
+        const scope = await armSession();
         const encryption = await Encryption.create(new Uint8Array(32).fill(6));
         storage.getState().applyMessages(SESSION_ID, [committedTwin(LOCAL_ID)]);
 
@@ -212,7 +212,7 @@ describe('pending snapshot re-addition after a committed twin', () => {
      * in-flight refresh's capture point, which is the response's own.
      */
     it('withholds a row when a late refresh adopts an in-flight response captured before the twin', async () => {
-        const scope = armSession();
+        const scope = await armSession();
         const encryption = await Encryption.create(new Uint8Array(32).fill(6));
 
         let release!: () => void;
@@ -280,7 +280,7 @@ describe('pending snapshot re-addition after a committed twin', () => {
      * sequence mark is inherited: the capture point belongs to the RESPONSE.
      */
     it('withholds an adopted pre-ACK response that omits a localId accepted while it was in flight', async () => {
-        const scope = armSession();
+        const scope = await armSession();
         await setActiveServerId(scope.serverId, { scope: 'device' });
         const encryption = await Encryption.create(new Uint8Array(32).fill(6));
 
@@ -345,7 +345,7 @@ describe('pending snapshot re-addition after a committed twin', () => {
      * does not move it. So the invalidation must discard the refresh's AUTHORITY only.
      */
     it('keeps a localId accepted in flight when a requested-action PATCH invalidates the refresh', async () => {
-        const scope = armSession();
+        const scope = await armSession();
         await setActiveServerId(scope.serverId, { scope: 'device' });
         const encryption = await Encryption.create(new Uint8Array(32).fill(6));
 
@@ -406,7 +406,7 @@ describe('pending snapshot re-addition after a committed twin', () => {
      * throughout, so only the mark can decide it.
      */
     it('withholds a settled row for a refresh registered after a requested-action PATCH', async () => {
-        const scope = armSession();
+        const scope = await armSession();
         await setActiveServerId(scope.serverId, { scope: 'device' });
         const encryption = await Encryption.create(new Uint8Array(32).fill(6));
 
@@ -459,7 +459,7 @@ describe('pending snapshot re-addition after a committed twin', () => {
     });
 
     it('republishes a row when a second refresh inherits an in-flight mark and the twin is old news', async () => {
-        const scope = armSession();
+        const scope = await armSession();
         const encryption = await Encryption.create(new Uint8Array(32).fill(6));
         let release!: () => void;
         const gate = new Promise<void>((resolve) => { release = resolve; });

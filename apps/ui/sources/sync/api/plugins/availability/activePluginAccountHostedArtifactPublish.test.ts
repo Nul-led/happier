@@ -44,39 +44,28 @@ const release = Object.freeze({
 const entryBytes = new TextEncoder().encode('hosted entry');
 const entryDigest = computePluginUiArtifactSha256DigestV1(entryBytes);
 const artifactDigest = computePluginUiArtifactFileSetSha256DigestV1([
-    { relativePath: 'entry.js', bytes: entryBytes },
+    { relativePath: 'hosted-web/hosted/index.html', bytes: entryBytes },
 ]);
 const slot = Object.freeze({
     contributionId: 'hosted',
+    artifactId: 'hosted',
     tier: 'hostedWeb' as const,
     platform: 'web' as const,
     artifactDigest,
-    compatibility: Object.freeze({
-        hostUiApiVersion: '1.0.0',
-    }),
-});
-const hostCompatibility = Object.freeze({
-    hostAppVersion: '1.0.0',
-    hostUiApiVersion: '1.0.0',
-    reactVersion: '19.2.0',
-    platform: 'web' as const,
-    channel: 'store' as const,
-    nativeCapabilities: [],
+    hostUiApiRange: '^1.0.0',
 });
 const artifactGraph = Object.freeze({
-    contributionId: slot.contributionId,
+    artifactId: slot.artifactId,
     tier: slot.tier,
-    platform: slot.platform,
-    entry: 'entry.js',
+    entry: `hosted-web/${slot.artifactId}/index.html`,
     files: Object.freeze([{
-        relativePath: 'entry.js',
+        relativePath: `hosted-web/${slot.artifactId}/index.html`,
         digest: entryDigest,
         byteSize: entryBytes.byteLength,
     }]),
     digest: artifactDigest,
-    builtWith: Object.freeze({ bundler: 'vite' as const, version: '5.0.0' }),
-    hostUiApiVersion: '1.0.0',
-    compat: Object.freeze({}),
+    builtWith: Object.freeze({ staging: 'staticDirectory' as const }),
+    hostUiApiRange: slot.hostUiApiRange,
 });
 const e2eeSecret = new Uint8Array(32).fill(7);
 const e2eeCredentials = Object.freeze({
@@ -100,9 +89,8 @@ function input(accountLifetime: ActiveServerAccountScopeLifetime) {
         accountLifetime,
         release,
         slot,
-        hostCompatibility,
         artifactGraph,
-        files: [{ relativePath: 'entry.js', bytes: entryBytes }],
+        files: [{ relativePath: artifactGraph.entry, bytes: entryBytes }],
     });
 }
 
@@ -229,11 +217,12 @@ describe('active Account-hosted plugin Artifact publisher', () => {
                     link: {
                         release,
                         contributionId: slot.contributionId,
+                        artifactId: slot.artifactId,
                         tier: slot.tier,
                         platform: slot.platform,
-                        artifactId: body.artifactId,
+                        accountArtifactId: body.accountArtifactId,
                         artifactDigest,
-                        compatibility: hostCompatibility,
+                        hostUiApiRange: slot.hostUiApiRange,
                     },
                 }),
             ), {
@@ -265,7 +254,6 @@ describe('active Account-hosted plugin Artifact publisher', () => {
         const requestBody = JSON.parse(String(init?.body));
         expect(requestBody.release).toEqual(release);
         expect(requestBody.slot).toEqual(slot);
-        expect(requestBody.hostCompatibility).toEqual(hostCompatibility);
         const openedEnvelope = await openAccountArtifactStoredEnvelope({
             mode: 'plain',
             envelope: requestBody.artifact,
@@ -285,7 +273,7 @@ describe('active Account-hosted plugin Artifact publisher', () => {
                 body: archiveBody,
             })
             : null;
-        expect(openedArchive?.files.get('entry.js')).toEqual(entryBytes);
+        expect(openedArchive?.files.get(artifactGraph.entry)).toEqual(entryBytes);
     });
 
     it.each(['plain', 'e2ee'] as const)('rejoins the canonical Artifact after %s response loss with a fresh publication identity', async (mode) => {
@@ -295,9 +283,9 @@ describe('active Account-hosted plugin Artifact publisher', () => {
         let lostResponseId: string | null = null;
         const request = vi.fn(async (_path: string, init?: RequestInit) => {
             const body = JSON.parse(String(init?.body));
-            proposedArtifactId = body.artifactId;
+            proposedArtifactId = body.accountArtifactId;
             if (lostResponseId === null) {
-                lostResponseId = body.artifactId;
+                lostResponseId = body.accountArtifactId;
                 throw new Error('Response lost after commit');
             }
             return new Response(JSON.stringify(
@@ -306,11 +294,12 @@ describe('active Account-hosted plugin Artifact publisher', () => {
                     link: {
                         release,
                         contributionId: slot.contributionId,
+                        artifactId: slot.artifactId,
                         tier: slot.tier,
                         platform: slot.platform,
-                        artifactId: existingArtifactId,
+                        accountArtifactId: existingArtifactId,
                         artifactDigest,
-                        compatibility: { ...hostCompatibility, hostAppVersion: '2.0.0' },
+                        hostUiApiRange: slot.hostUiApiRange,
                     },
                 }),
             ), {
@@ -333,7 +322,7 @@ describe('active Account-hosted plugin Artifact publisher', () => {
         });
         await expect(current.publisher.publish(input(lifetime))).resolves.toMatchObject({
             kind: 'published',
-            value: { outcome: 'rejoined', link: { artifactId: existingArtifactId } },
+            value: { outcome: 'rejoined', link: { accountArtifactId: existingArtifactId } },
         });
         expect(proposedArtifactId).not.toBe(existingArtifactId);
         expect(proposedArtifactId).not.toBe(lostResponseId);
@@ -343,7 +332,7 @@ describe('active Account-hosted plugin Artifact publisher', () => {
         { name: 'release', patch: { release: { ...release, version: '9.0.0' } } },
         { name: 'slot', patch: { contributionId: 'other' } },
         { name: 'digest', patch: { artifactDigest: `sha256:${'0'.repeat(64)}` } },
-        { name: 'compatibility', patch: { compatibility: { ...hostCompatibility, hostUiApiVersion: '2.0.0' } } },
+        { name: 'host API range', patch: { hostUiApiRange: '^2.0.0' } },
     ])('rejects a canonical rejoin with different $name facts', async ({ patch }) => {
         const { lifetime } = createLifetime();
         const current = createPublisher({
@@ -353,11 +342,12 @@ describe('active Account-hosted plugin Artifact publisher', () => {
                 link: {
                     release,
                     contributionId: slot.contributionId,
+                    artifactId: slot.artifactId,
                     tier: slot.tier,
                     platform: slot.platform,
-                    artifactId: '00000000-0000-4000-8000-000000000099',
+                    accountArtifactId: '00000000-0000-4000-8000-000000000099',
                     artifactDigest,
-                    compatibility: hostCompatibility,
+                    hostUiApiRange: slot.hostUiApiRange,
                     ...patch,
                 },
             }), { status: 200 }),
@@ -396,11 +386,12 @@ describe('active Account-hosted plugin Artifact publisher', () => {
                 link: {
                     release,
                     contributionId: slot.contributionId,
+                    artifactId: slot.artifactId,
                     tier: slot.tier,
                     platform: slot.platform,
-                    artifactId: body.artifactId,
+                    accountArtifactId: body.accountArtifactId,
                     artifactDigest,
-                    compatibility: hostCompatibility,
+                    hostUiApiRange: slot.hostUiApiRange,
                 },
             }), {
                 status: 200,
@@ -442,7 +433,7 @@ describe('active Account-hosted plugin Artifact publisher', () => {
                 body: archiveBody,
             })
             : null;
-        expect(openedArchive?.files.get('entry.js')).toEqual(entryBytes);
+        expect(openedArchive?.files.get(artifactGraph.entry)).toEqual(entryBytes);
     });
 
     it('drops a qualified publish response after its captured Account lifetime retires', async () => {
@@ -455,11 +446,12 @@ describe('active Account-hosted plugin Artifact publisher', () => {
                 link: {
                     release,
                     contributionId: slot.contributionId,
+                    artifactId: slot.artifactId,
                     tier: slot.tier,
                     platform: slot.platform,
-                    artifactId: body.artifactId,
+                    accountArtifactId: body.accountArtifactId,
                     artifactDigest,
-                    compatibility: hostCompatibility,
+                    hostUiApiRange: slot.hostUiApiRange,
                 },
             }), {
                 status: 200,

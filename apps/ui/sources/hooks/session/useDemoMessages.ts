@@ -1,63 +1,33 @@
-import { useEffect } from 'react';
-import { storage } from '@/sync/domains/state/storage';
-import { Message } from '@/sync/domains/messages/messageTypes';
-import { createReducer } from '@/sync/reducer/reducer';
+import { useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { compareTranscriptMessagesOldestFirst, type Message } from "@happier-dev/session-core/messages";
+import { createReadOnlySessionTranscriptSource } from '@/components/sessions/transcript/source/readOnlySessionTranscriptSource';
 
 const DEMO_SESSION_ID = 'demo-messages-session';
 
-export function useDemoMessages(messages: Message[]) {
-    useEffect(() => {
-        const messagesById: Record<string, Message> = {};
-        for (const msg of messages) {
-            messagesById[msg.id] = msg;
-        }
+type DemoMessagesOptions = Pick<Parameters<typeof createReadOnlySessionTranscriptSource>[0], 'interaction' | 'actions'>;
 
-        const messageIdsOldestFirst = [...messages]
-            .sort((a, b) => {
-                if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt;
-                return String(a.id).localeCompare(String(b.id));
-            })
-            .map((m) => m.id);
+export function useDemoMessages(messages: readonly Message[], options?: DemoMessagesOptions) {
+    const orderedMessages = useMemo(() => [...messages].sort(compareTranscriptMessagesOldestFirst), [messages]);
+    const snapshot = useMemo(() => ({
+        messages: orderedMessages,
+        // These rows are already materialized, so no normalization/reducer
+        // provenance exists. Route lookup uses the dataset's message identities.
+        reducerState: null,
+        metadata: null,
+        agentState: null,
+    }), [orderedMessages]);
+    // Demo rows are already materialized, including tool children; keep them intact.
+    const [source] = useState(() => createReadOnlySessionTranscriptSource({
+        sessionId: DEMO_SESSION_ID,
+        ...snapshot,
+        ...options,
+    }));
+    const publishedSnapshot = useRef(snapshot);
+    useLayoutEffect(() => {
+        if (publishedSnapshot.current === snapshot) return;
+        publishedSnapshot.current = snapshot;
+        source.update(snapshot);
+    }, [snapshot, source]);
 
-        let latestThinkingMessageId: string | null = null;
-        for (let i = messageIdsOldestFirst.length - 1; i >= 0; i -= 1) {
-            const id = messageIdsOldestFirst[i]!;
-            const msg = messagesById[id];
-            if (msg?.kind === 'agent-text' && msg.isThinking === true) {
-                latestThinkingMessageId = id;
-                break;
-            }
-        }
-
-        // Write the demo messages to the hardcoded session
-        storage.setState((state) => ({
-            ...state,
-            sessionMessages: {
-                ...state.sessionMessages,
-                [DEMO_SESSION_ID]: {
-                    messageIdsOldestFirst,
-                    messagesById,
-                    messagesMap: messagesById,
-                    reducerState: createReducer(),
-                    latestThinkingMessageId,
-                    latestThinkingMessageActivityAtMs: null,
-                    messagesVersion: 1,
-                    isLoaded: true,
-                },
-            },
-        }));
-
-        // Cleanup function to remove the demo session
-        return () => {
-            storage.setState((state) => {
-                const { [DEMO_SESSION_ID]: _ignored, ...restSessions } = state.sessionMessages;
-                return {
-                    ...state,
-                    sessionMessages: restSessions,
-                };
-            });
-        };
-    }, [messages]);
-
-    return DEMO_SESSION_ID;
+    return source;
 }

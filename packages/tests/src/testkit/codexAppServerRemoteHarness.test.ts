@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { spawn as spawnChild } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface, type Interface } from 'node:readline';
@@ -219,9 +219,12 @@ describe('startCodexAppServerRemoteHarness', () => {
     const { writeFakeCodexAppServerScript } = await import('./codexAppServerRemoteHarness');
     const testDir = await mkdtemp(join(tmpdir(), 'happier-codex-app-server-script-'));
     const requestLogPath = join(testDir, 'requests.jsonl');
+    const modelListStatePath = join(testDir, 'models.json');
+    await writeFile(modelListStatePath, JSON.stringify({ models: [{ id: 'first' }] }));
     const scriptPath = await writeFakeCodexAppServerScript({
       dir: testDir,
       requestLogPath,
+      modelListStatePath,
       initialGoal: {
         threadId: 'thread-started',
         objective: 'Ship the import',
@@ -236,15 +239,12 @@ describe('startCodexAppServerRemoteHarness', () => {
     });
     const lines = createInterface({ input: child.stdout, crlfDelay: Infinity });
 
+    const responseLines = lines[Symbol.asyncIterator]();
     const readResponse = async (id: number): Promise<Record<string, unknown>> => {
       while (true) {
-        const [line] = await Promise.race([
-          once(lines, 'line') as Promise<[string]>,
-          once(child, 'exit').then(() => {
-            throw new Error(`Fake app-server exited before response ${id}`);
-          }),
-        ]);
-        const parsed = JSON.parse(line) as Record<string, unknown>;
+        const next = await responseLines.next();
+        if (next.done) throw new Error(`Fake app-server exited before response ${id}`);
+        const parsed = JSON.parse(next.value) as Record<string, unknown>;
         if (parsed.id === id) return parsed;
       }
     };
@@ -311,6 +311,11 @@ describe('startCodexAppServerRemoteHarness', () => {
           serviceTier: null,
         },
       });
+      expect(await send(7, 'model/list')).toMatchObject({ result: [{ id: 'first' }] });
+      await writeFile(modelListStatePath, JSON.stringify({ models: [{ id: 'second' }] }));
+      expect(await send(8, 'model/list')).toMatchObject({ result: [{ id: 'second' }] });
+      await writeFile(modelListStatePath, JSON.stringify({ error: true }));
+      expect(await send(9, 'model/list')).toMatchObject({ error: { code: -32000 } });
     } finally {
       child.kill();
       lines.close();

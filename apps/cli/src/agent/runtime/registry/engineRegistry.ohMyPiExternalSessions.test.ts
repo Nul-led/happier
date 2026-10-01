@@ -69,6 +69,12 @@ describe('engineRegistry (Oh My Pi External Sessions)', () => {
           contributes: createResolvedContributionRegistry(resolveBuiltInContributions()),
           happyHomeDir: join(directory, 'home'),
           pluginIds: [OH_MY_PI_PLUGIN_ID],
+          resolveDevelopmentSourceAuthority: ({ pluginId, rootPath }) => ({
+            kind: 'development',
+            registeredRootId: `oh-my-pi-external-sessions:${pluginId}`,
+            canonicalRoot: rootPath,
+            observedRevision: 1,
+          }),
         });
 
         expect(runtimeRegistry.targetActivationFacts).toEqual(expect.arrayContaining([
@@ -126,6 +132,10 @@ describe('engineRegistry (Oh My Pi External Sessions)', () => {
           agentIdentity: {
             pluginId: OH_MY_PI_PLUGIN_ID,
             localId: OH_MY_PI_AGENT_LOCAL_ID,
+          },
+          agentSourceCustody: {
+            kind: 'development',
+            registeredRootId: 'oh-my-pi-external-sessions-fixture',
           },
           source,
           limit: 10,

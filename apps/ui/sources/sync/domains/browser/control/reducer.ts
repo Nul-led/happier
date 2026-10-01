@@ -4,6 +4,8 @@ import type {
 } from '@happier-dev/protocol';
 
 import { isClientRenderedBrowserEngine } from './lifecycle';
+import { buildBrowserAdapterCapabilities } from '../adapters/capabilities';
+import type { DesktopWebViewNativeAvailability } from '../adapters/desktopWebView';
 import type {
     BrowserControlState,
     BrowserControlViewState,
@@ -51,6 +53,29 @@ export function beginBrowserAdapterRefresh(state: BrowserControlState, viewId: s
     };
 }
 
+/** Refresh capture readiness without replacing navigation or engine-owned capabilities. */
+export function refreshBrowserNativeViewCaptureCapabilities(state: BrowserControlState, input: Readonly<{
+    desktopWebViewAvailability: DesktopWebViewNativeAvailability | null;
+    nativeViewCaptureHandlerRegistered: boolean;
+}>): BrowserControlState {
+    let viewsById = state.viewsById;
+    for (const view of Object.values(state.viewsById)) {
+        if (view.engineKind !== 'desktopWebView') continue;
+        const automationActions = buildBrowserAdapterCapabilities({
+            adapterKind: view.adapterKind, supportedTargetKinds: [view.target.kind],
+            supportedRenderEngines: [view.engineKind], desktopWebViewSupport: input.desktopWebViewAvailability?.supports,
+            nativeViewCaptureHandlerRegistered: input.nativeViewCaptureHandlerRegistered,
+        }).automationActions;
+        if (!automationActions) continue;
+        const recording = automationActions.recording;
+        if (JSON.stringify(recording) === JSON.stringify(view.adapterCapabilities.automationActions?.recording)) continue;
+        viewsById = { ...viewsById, [view.viewId]: { ...view, adapterCapabilities: {
+            ...view.adapterCapabilities, automationActions: { ...(view.adapterCapabilities.automationActions ?? automationActions), recording },
+        } } };
+    }
+    return viewsById === state.viewsById ? state : { ...state, viewsById };
+}
+
 function createViewFromOpenedEvent(event: Extract<BrowserEventV1, { kind: 'viewOpened' }>): BrowserControlViewState {
     // A URL-bearing open on a CLIENT-RENDERED engine (iframe / RN WebView / Wry-desktop child view)
     // is NOT already-loaded: the engine still has to fetch+paint the page. Seed it as `loading` so
@@ -76,7 +101,7 @@ function createViewFromOpenedEvent(event: Extract<BrowserEventV1, { kind: 'viewO
         faviconUrl: null,
         loadingState: hasUrl ? (clientRendered ? 'loading' : 'ready') : 'idle',
         loadingProgress: hasUrl ? (clientRendered ? 0 : 1) : null,
-        navigationGeneration: 0,
+        navigationGeneration: event.navigationGeneration ?? 0,
         canGoBack: false,
         canGoForward: false,
         securityOrigin: null,
@@ -115,6 +140,11 @@ function removeViewsForSession(
 }
 
 export function applyBrowserControlEvent(state: BrowserControlState, event: BrowserEventV1): BrowserControlState {
+    if ('viewId' in event && event.kind !== 'viewOpened') {
+        const view = state.viewsById[event.viewId];
+        if (view && (view.browserSessionId !== event.browserSessionId
+            || event.navigationGeneration !== undefined && event.navigationGeneration < view.navigationGeneration)) return state;
+    }
     switch (event.kind) {
         case 'sessionCreated':
             return {
@@ -188,7 +218,7 @@ export function applyBrowserControlEvent(state: BrowserControlState, event: Brow
                     currentUrlExpiresAt: event.currentUrl && event.currentUrl !== view.currentUrl
                         ? null
                         : view.currentUrlExpiresAt,
-                    navigationGeneration: resolveNextNavigationGeneration(view, event.currentUrl),
+                    navigationGeneration: event.navigationGeneration ?? resolveNextNavigationGeneration(view, event.currentUrl),
                     pendingUrl: null,
                     title: event.target.display?.title ?? view.title,
                     lastError: null,
@@ -228,7 +258,7 @@ export function applyBrowserControlEvent(state: BrowserControlState, event: Brow
                         ...view,
                         currentUrl: event.currentUrl,
                         currentUrlExpiresAt: event.currentUrl !== view.currentUrl ? null : view.currentUrlExpiresAt,
-                        navigationGeneration: resolveNextNavigationGeneration(view, event.currentUrl, {
+                        navigationGeneration: event.navigationGeneration ?? resolveNextNavigationGeneration(view, event.currentUrl, {
                             documentReplacement: true,
                         }),
                         pendingUrl: null,
@@ -251,7 +281,7 @@ export function applyBrowserControlEvent(state: BrowserControlState, event: Brow
                         currentUrlExpiresAt: event.currentUrl && event.currentUrl !== view.currentUrl
                             ? null
                             : view.currentUrlExpiresAt,
-                        navigationGeneration: resolveNextNavigationGeneration(view, event.currentUrl),
+                        navigationGeneration: event.navigationGeneration ?? resolveNextNavigationGeneration(view, event.currentUrl),
                         pendingUrl: null,
                         loadingState: 'ready',
                         loadingProgress: 1,
@@ -286,7 +316,7 @@ export function applyBrowserControlEvent(state: BrowserControlState, event: Brow
                         ...view,
                         currentUrl: event.currentUrl ?? view.currentUrl,
                         pendingUrl: event.pendingUrl ?? null,
-                        navigationGeneration: resolveNextNavigationGeneration(view, event.currentUrl),
+                        navigationGeneration: event.navigationGeneration ?? resolveNextNavigationGeneration(view, event.currentUrl),
                         title: event.title ?? view.title,
                         faviconUrl: event.faviconUrl ?? view.faviconUrl,
                         loadingState: event.loadingState,
@@ -309,6 +339,11 @@ export function applyBrowserControlEvent(state: BrowserControlState, event: Brow
                     [event.viewId]: { ...view, title: event.title },
                 },
             };
+        }
+        case 'controllerChanged': {
+            const view = state.viewsById[event.viewId];
+            if (!view || view.automationController && event.state.controlEpoch < view.automationController.controlEpoch) return state;
+            return { ...state, viewsById: { ...state.viewsById, [event.viewId]: { ...view, automationController: event.state } } };
         }
         case 'faviconChanged': {
             const view = state.viewsById[event.viewId];

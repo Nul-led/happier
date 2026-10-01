@@ -4,11 +4,15 @@ import axios from 'axios';
 
 import { logger } from '@/ui/logger';
 import { PushNotificationClient } from './pushNotifications';
+import { sendReadyWithPushNotification } from '@/agent/runtime/notifications/sendReadyWithPushNotification';
+import { sendAgentRequestPushNotificationAsync } from '@/settings/notifications/permissionRequestPush';
+import { createSessionNotificationContextFixture } from '@/testkit/backends/sessionFixtures';
 import {
   HAPPIER_FOCUS_LIVE_ACTIVITY_NAME,
   PUSH_NOTIFICATION_ANDROID_CHANNEL_IDS,
   PUSH_NOTIFICATION_CATEGORY_IDS,
   type LiveActivityRemoteUpdateRequestV1,
+  accountSettingsParse,
 } from '@happier-dev/protocol';
 
 type MockExpoPushTicket = Readonly<{
@@ -76,6 +80,53 @@ describe('PushNotificationClient.sendToAllDevicesAsync', () => {
     }
   });
 
+  it.each(['ready', 'ready_without_settings', 'permission', 'user_action'] as const)('honors current owner Follow suppression for rich %s notifications', async (kind) => {
+    let notificationLevel: 'none' | null = 'none';
+    let sessionReadFails = false;
+    vi.mocked(axios.get).mockImplementation(async (url) => {
+      if (String(url).includes('/v2/sessions/') && sessionReadFails) throw new Error('Session Home unavailable');
+      if (String(url).includes('/v2/sessions/')) return { status: 200, data: { session: {
+        ...createSessionNotificationContextFixture('s_1'),
+        viewer: {
+          readState: { state: 'not_started' }, relevance: { relevant: true, reasons: ['owned_by_me'] },
+          attention: { needsAttention: false, reasons: [], primary: null, presentation: 'full' },
+          follow: { follows: false, notificationLevel },
+          notification: { level: notificationLevel ?? 'important', source: notificationLevel ? 'preference' : 'owner' },
+        },
+      } } };
+      return { status: 200, data: { tokens: [{ id: '1', token: 'ExponentPushToken[a]' }] } };
+    });
+    const pushSender = new PushNotificationClient('account-token', 'https://owner-home.example.test');
+    const settings = accountSettingsParse({});
+    const send = async () => {
+      if (kind === 'ready' || kind === 'ready_without_settings') {
+        await sendReadyWithPushNotification({
+          session: { sessionId: 's_1', enqueueSessionEventCommitted: async () => ({ persisted: true, delivered: true, localId: 'ready-1' }) },
+          pushSender, waitingForCommandLabel: 'Agent', logPrefix: '[test]', accountSettings: kind === 'ready' ? settings : null,
+        });
+      } else {
+        await sendAgentRequestPushNotificationAsync({ pushSender, settings, sessionId: 's_1',
+          requestId: 'request-1', toolName: 'Write', kind });
+      }
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    };
+    await send();
+    expect(sendPushNotificationsAsyncSpy).not.toHaveBeenCalled();
+    notificationLevel = null;
+    await send();
+    expect(sendPushNotificationsAsyncSpy).toHaveBeenCalledTimes(1);
+    if (kind === 'ready' || kind === 'ready_without_settings') {
+      expect(sendPushNotificationsAsyncSpy.mock.calls[0][0][0].data.activityEventLocalId).toBe('ready-1');
+    }
+    expect(axios.get).toHaveBeenCalledWith(
+      'https://owner-home.example.test/v2/sessions/s_1?accessProjectionVersion=1',
+      expect.objectContaining({ headers: expect.objectContaining({ Authorization: 'Bearer account-token' }) }),
+    );
+    sessionReadFails = true;
+    await expect(send()).resolves.toBeUndefined();
+    expect(sendPushNotificationsAsyncSpy).toHaveBeenCalledTimes(1);
+  });
+
   it('bounds the serialized outbound message while preserving Unicode and routing data', async () => {
     vi.mocked(axios.get).mockResolvedValue({ data: { tokens: [{ id: '1', token: 'ExponentPushToken[a]' }] } });
     const data = { sessionId: 's_1', requestId: 'p_1', kind: 'permission', tool: 'Bash' };
@@ -126,6 +177,36 @@ describe('PushNotificationClient.sendToAllDevicesAsync', () => {
     await new PushNotificationClient('t').sendPushNotifications([{ to: 'ExponentPushToken[a]', body: 'Body' }]);
     expect(sendPushNotificationsAsyncSpy).toHaveBeenCalledTimes(1);
     expect(logger.infoFile).toHaveBeenCalledWith('[PUSH] Expo rejected oversized notification payload', { count: 1 });
+  });
+
+  it.each(['ticket', 'receipt'])('reports invalid Expo credentials from a %s without retrying a permanent failure', async (source) => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(axios.get).mockResolvedValueOnce({
+        data: { tokens: [{ id: '1', token: 'ExponentPushToken[a]' }] },
+      }).mockResolvedValueOnce({ data: { badgeCount: 0 } });
+      sendPushNotificationsAsyncSpy.mockResolvedValueOnce(source === 'ticket'
+        ? [{ status: 'error', details: { error: 'InvalidCredentials' } }]
+        : [{ status: 'ok', id: 'credential-error' }]);
+      if (source === 'receipt') {
+        getPushNotificationReceiptsAsyncSpy.mockResolvedValueOnce({
+          'credential-error': { status: 'error', details: { error: 'InvalidCredentials' } },
+        });
+      }
+      const result = new PushNotificationClient('t').sendToAllDevicesAsync('Title', 'Body');
+      const rejected = expect(result).rejects.toThrow(/InvalidCredentials/);
+
+      await vi.advanceTimersByTimeAsync(300_000);
+
+      await rejected;
+      expect(sendPushNotificationsAsyncSpy).toHaveBeenCalledTimes(1);
+      expect(logger.infoFile).toHaveBeenCalledWith(
+        '[PUSH] Expo rejected push notification credentials',
+        expect.objectContaining({ error: 'InvalidCredentials' }),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('uses token-specific clientServerUrl when present', async () => {

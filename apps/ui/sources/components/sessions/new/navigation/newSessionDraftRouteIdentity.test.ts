@@ -36,6 +36,12 @@ describe('resolveNewSessionDraftRouteScope', () => {
     const activeScope = { serverId: 'home-a', accountId: 'account-a' } as const;
     const inactiveScope = { serverId: 'home-b', accountId: 'account-b' } as const;
 
+    it('keeps an authenticated creation host draft scoped without Account login or saved Home credentials', () => {
+        expect(resolveNewSessionDraftRouteScope({ activeScope: null, hostScope: inactiveScope,
+            draftServerId: undefined, draftAccountId: undefined,
+            requestedScopeResolution: { kind: 'signed_out' } })).toBe(inactiveScope);
+    });
+
     it('uses the route-qualified Home only when its exact Account is still bound', () => {
         expect(resolveNewSessionDraftRouteScope({
             activeScope,

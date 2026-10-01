@@ -62,31 +62,3 @@ export async function decideMachinePluginInstallReviewAsPresentUser(params) {
         }
         : null);
 }
-
-/**
- * Canonical present-user boundary for authorizing a **local development source
- * root**. It shares this module's authority recheck, schema and transport with
- * the install decision rather than growing a second private decision path, but
- * it is a genuinely different authorization: it grants no optional host access
- * and commits no plugin — it only lets the daemon evaluate executable code from
- * the exact root the user was shown.
- *
- * @template T
- * @param {{
- *   pendingChangeId: string;
- *   confirmPresentUser: () => Promise<boolean>;
- *   isAuthorityCurrent: () => boolean | Promise<boolean>;
- *   callAuthenticatedPrivateRpc: (method: typeof HOST_PRIVATE_PLUGIN_INSTALL_DECISION_RPC_METHOD, payload: import('@happier-dev/protocol/marketplace/internal').HostPrivatePluginInstallDecisionV1) => Promise<T>;
- * }} params
- * @returns {Promise<T>}
- */
-export async function decideMachinePluginDevelopmentSourceRootAsPresentUser(params) {
-    const approved = await params.confirmPresentUser();
-    return await sendPresentUserDecision(params, approved === true
-        ? {
-            v: 1,
-            pendingChangeId: params.pendingChangeId,
-            decision: 'trustSourceRoot',
-        }
-        : null);
-}

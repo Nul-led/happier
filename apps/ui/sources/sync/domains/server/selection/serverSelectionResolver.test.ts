@@ -7,6 +7,7 @@ import {
     resolveActiveServerSelection,
     resolveNewSessionServerTarget,
 } from './serverSelectionResolver';
+import { ALL_HOMES_SELECTION_TARGET_ID } from './allHomesSelectionTarget';
 
 afterEach(() => {
     delete process.env.EXPO_PUBLIC_HAPPY_MULTI_SERVER_CONCURRENT;
@@ -23,18 +24,146 @@ describe('serverSelectionResolver', () => {
         { id: 'grp-dev', name: 'Dev', serverIds: ['server-b', 'server-c'], presentation: 'grouped' as const },
     ];
 
-    it('lists server targets with servers first and then groups', () => {
+    it('lists All Homes first, then every Home, then the person\'s groups', () => {
         const targets = listServerSelectionTargets({
             serverProfiles,
             groupProfiles,
         });
 
         expect(targets.map((target) => `${target.kind}:${target.id}`)).toEqual([
+            `group:${ALL_HOMES_SELECTION_TARGET_ID}`,
             'server:server-a',
             'server:server-b',
             'server:server-c',
             'group:grp-dev',
         ]);
+    });
+
+    it('offers no All Homes target to a device with one Home', () => {
+        const targets = listServerSelectionTargets({
+            serverProfiles: serverProfiles.slice(0, 1),
+            groupProfiles: [],
+        });
+
+        expect(targets.map((target) => `${target.kind}:${target.id}`)).toEqual(['server:server-a']);
+    });
+
+    it('resolves an explicit All Homes selection to every available Home, grouped by Home', () => {
+        const resolved = resolveActiveServerSelection({
+            activeServerId: 'server-b',
+            availableServerIds: serverProfiles.map((profile) => profile.id),
+            settings: {
+                serverSelectionGroups: groupProfiles,
+                serverSelectionActiveTargetKind: 'group',
+                serverSelectionActiveTargetId: ALL_HOMES_SELECTION_TARGET_ID,
+            },
+        });
+
+        expect(resolved).toEqual({
+            activeTarget: {
+                kind: 'group',
+                id: ALL_HOMES_SELECTION_TARGET_ID,
+                groupId: ALL_HOMES_SELECTION_TARGET_ID,
+                serverIds: ['server-a', 'server-b', 'server-c'],
+            },
+            activeServerId: 'server-b',
+            allowedServerIds: ['server-a', 'server-b', 'server-c'],
+            enabled: true,
+            presentation: 'grouped',
+            explicit: true,
+        });
+    });
+
+    it('keeps an explicit All Homes selection following Homes added later', () => {
+        const selection = getEffectiveServerSelection({
+            activeServerId: 'server-a',
+            availableServerIds: ['server-a', 'server-b', 'server-c', 'server-d'],
+            settings: {
+                serverSelectionGroups: [],
+                serverSelectionActiveTargetKind: 'group',
+                serverSelectionActiveTargetId: ALL_HOMES_SELECTION_TARGET_ID,
+            },
+        });
+
+        expect(selection.serverIds).toEqual(['server-a', 'server-b', 'server-c', 'server-d']);
+        expect(selection.enabled).toBe(true);
+    });
+
+    it('falls back to the one Home when All Homes was chosen and only one Home is left', () => {
+        const resolved = resolveActiveServerSelection({
+            activeServerId: 'server-a',
+            availableServerIds: ['server-a'],
+            settings: {
+                serverSelectionGroups: [],
+                serverSelectionActiveTargetKind: 'group',
+                serverSelectionActiveTargetId: ALL_HOMES_SELECTION_TARGET_ID,
+            },
+        });
+
+        expect(resolved.activeTarget).toEqual({ kind: 'server', id: 'server-a', serverId: 'server-a' });
+        expect(resolved.enabled).toBe(false);
+    });
+
+    describe('All Homes by default once this device can use two or more Homes', () => {
+        const available = ['server-a', 'server-b', 'server-c'];
+        const unset = { serverSelectionGroups: groupProfiles, serverSelectionActiveTargetKind: null, serverSelectionActiveTargetId: null };
+
+        it('shows every Home this device can use together until the person picks a scope', () => {
+            const resolved = resolveActiveServerSelection({
+                activeServerId: 'server-a',
+                availableServerIds: available,
+                usableServerIds: ['server-a', 'server-b'],
+                settings: unset,
+            });
+            expect(resolved.activeTarget).toEqual({
+                kind: 'group', id: ALL_HOMES_SELECTION_TARGET_ID, groupId: ALL_HOMES_SELECTION_TARGET_ID, serverIds: ['server-a', 'server-b'],
+            });
+            expect(resolved.allowedServerIds).toEqual(['server-a', 'server-b']);
+            expect(resolved.enabled).toBe(true);
+            expect(resolved.explicit).toBe(false);
+        });
+
+        it('does not count a saved Home this device holds no credential for (a pre-saved Happier Cloud)', () => {
+            const resolved = resolveActiveServerSelection({
+                activeServerId: 'server-a',
+                availableServerIds: ['server-a', 'server-b'],
+                usableServerIds: ['server-a'],
+                settings: unset,
+            });
+            expect(resolved.activeTarget).toEqual({ kind: 'server', id: 'server-a', serverId: 'server-a' });
+            expect(resolved.enabled).toBe(false);
+        });
+
+        it('keeps one Home while it is not yet known which Homes this device can use', () => {
+            const resolved = resolveActiveServerSelection({ activeServerId: 'server-a', availableServerIds: available, settings: unset });
+            expect(resolved.activeTarget).toEqual({ kind: 'server', id: 'server-a', serverId: 'server-a' });
+        });
+
+        it('never overrides a scope the person chose', () => {
+            const single = resolveActiveServerSelection({
+                activeServerId: 'server-a',
+                availableServerIds: available,
+                usableServerIds: available,
+                settings: { ...unset, serverSelectionActiveTargetKind: 'server', serverSelectionActiveTargetId: 'server-c' },
+            });
+            expect(single.activeTarget).toEqual({ kind: 'server', id: 'server-c', serverId: 'server-c' });
+            const group = resolveActiveServerSelection({
+                activeServerId: 'server-b',
+                availableServerIds: available,
+                usableServerIds: available,
+                settings: { ...unset, serverSelectionActiveTargetKind: 'group', serverSelectionActiveTargetId: 'grp-dev' },
+            });
+            expect(group.activeTarget).toMatchObject({ kind: 'group', groupId: 'grp-dev' });
+        });
+
+        it('offers All Homes in the list only over Homes this device can use', () => {
+            const targets = listServerSelectionTargets({
+                serverProfiles: serverProfiles.slice(0, 2),
+                groupProfiles: [],
+                usableServerIds: ['server-a'],
+            });
+            expect(targets.map((target) => `${target.kind}:${target.id}`)).toEqual(['server:server-a', 'server:server-b']);
+        });
     });
 
     it('resolves explicit group target and constrains active server to the group', () => {

@@ -6,7 +6,7 @@ import type { SessionActivityAttention } from '@/activity/attention/activityAtte
 import { buildActivityOverviewFromSource } from '@/activity/source/buildActivityOverviewFromSource';
 import { useActivityAttentionSource } from '@/activity/source/useActivityAttentionSource';
 import { derivePendingRequestFlagsFromSession } from '@/sync/domains/session/pending/listPendingSessionRequests';
-import type { Message } from '@/sync/domains/messages/messageTypes';
+import type { Message } from "@happier-dev/session-core/messages";
 import { deriveSessionListMeaningfulActivityAt } from '@/sync/domains/session/listing/deriveSessionListActivity';
 import type { Session } from '@/sync/domains/state/storageTypes';
 import { sessionAddressKey, type SessionAddress } from '@/sync/domains/session/sessionAddress';
@@ -130,9 +130,9 @@ function buildSessionSignalsByAddressKey(
             hasUnreadMessages: candidate.reasons.hasUnread,
             latestThinkingActivityAtMs: transcript?.latestThinkingMessageActivityAtMs ?? null,
             latestMeaningfulActivityAtMs: deriveSessionListMeaningfulActivityAt({
+                sessionMeaningfulActivityAt: session.meaningfulActivityAt,
                 sessionCreatedAt: session.createdAt,
                 latestCommittedMessageCreatedAt,
-                latestThinkingActivityAt: transcript?.latestThinkingMessageActivityAtMs ?? null,
                 latestPendingMessageCreatedAt,
             }),
             lastMessageSubtitle: resolveLatestCommittedMessageSubtitle(transcript)

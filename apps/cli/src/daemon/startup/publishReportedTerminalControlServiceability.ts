@@ -2,7 +2,10 @@ import type { TerminalHostAttachmentInfo } from '@/terminal/attachment/terminalA
 
 import type { SessionRunnerServiceabilityProbe } from '../sessions/isSessionRunnerActive';
 import type { TrackedSession } from '../types';
-import { shouldPublishReportedTerminalControlServiceability } from './terminalControlServiceabilityProjection';
+import {
+  hasActiveTerminalControlServiceabilityDescriptor,
+  shouldPublishReportedTerminalControlServiceability,
+} from './terminalControlServiceabilityProjection';
 
 export async function publishReportedTerminalControlServiceability(params: Readonly<{
   tracked: TrackedSession;
@@ -20,9 +23,18 @@ export async function publishReportedTerminalControlServiceability(params: Reado
   if (!sessionId || !terminal || terminal.mode === 'plain') return;
 
   const attachment = await params.readTerminalAttachmentInfo(sessionId);
+  if (!attachment || attachment.version === 1) return;
+  const recordPublishedAttachment = () => {
+    params.tracked.publishedTerminalControlServiceabilityAttachmentId = attachment.attachmentId;
+    params.tracked.publishedTerminalControlServiceabilityAttachmentLifecycle =
+      attachment.version === 3 ? 'borrowed' : 'owned';
+  };
+  if (hasActiveTerminalControlServiceabilityDescriptor({ terminal, attachmentId: attachment.attachmentId })) {
+    recordPublishedAttachment();
+    return;
+  }
   if (
-    attachment?.version !== 2
-    || !shouldPublishReportedTerminalControlServiceability({
+    !shouldPublishReportedTerminalControlServiceability({
       terminal,
       attachmentId: attachment.attachmentId,
       publishedAttachmentId: params.tracked.publishedTerminalControlServiceabilityAttachmentId,
@@ -34,6 +46,6 @@ export async function publishReportedTerminalControlServiceability(params: Reado
   const probe = await params.probeSessionRunnerServiceability(sessionId);
   const published = await params.publishSessionRunnerControlServiceability(sessionId, probe);
   if (published && probe.state === 'runner_present' && probe.control.state === 'servable') {
-    params.tracked.publishedTerminalControlServiceabilityAttachmentId = attachment.attachmentId;
+    recordPublishedAttachment();
   }
 }

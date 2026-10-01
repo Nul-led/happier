@@ -17,7 +17,6 @@ describe('deriveReadOnlyTranscriptInteraction', () => {
             canApprovePermissions: false,
             canFork: false,
             permissionDisabledReason: 'readOnly',
-            disableToolNavigation: true,
         });
     });
 });

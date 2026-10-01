@@ -171,6 +171,7 @@ describe('AgentInput status badges', () => {
                 usedLimitSemantics: 'used',
                 usedLimitLabel: '82/100 used',
                 resetLabel: null,
+                resetsAt: null,
                 tone: 'warning',
             }],
         };
@@ -202,6 +203,10 @@ describe('AgentInput status badges', () => {
 
             expect(screen.findByTestId('session-instrument-quota-popover')).toBeTruthy();
             expect(screen.findByTestId('session-instrument-quota-meter:weekly')).toBeTruthy();
+            // A quota bar shows what is left (18%), like every other quota row, never what was used.
+            const fill = screen.findByTestId('session-instrument-quota-meter:weekly:bar:fill');
+            const fillStyles = [fill?.props.style].flat(3) as Array<Record<string, unknown> | null | undefined>;
+            expect(fillStyles.find((style) => style && 'width' in style)?.width).toBe('18%');
             const recoveryCreditAction = screen.findByTestId('session-instrument-quota-recovery-credit-action');
             expect(recoveryCreditAction).toBeTruthy();
             act(() => {

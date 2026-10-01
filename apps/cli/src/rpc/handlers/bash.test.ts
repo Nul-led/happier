@@ -1,32 +1,8 @@
-import { EventEmitter } from 'events';
-import { PassThrough } from 'stream';
+import { tmpdir } from 'node:os';
+import { realpath } from 'node:fs/promises';
 
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-
-const execFileWithDeadlineMock = vi.hoisted(() => vi.fn());
-const spawnMock = vi.hoisted(() => vi.fn());
-
-vi.mock('child_process', async () => {
-    const actual = await vi.importActual<typeof import('child_process')>('child_process');
-    return {
-        ...actual,
-        spawn: spawnMock,
-    };
-});
-
-// The shell path runs through the deadline-owning subprocess boundary rather than
-// `child_process.exec`, whose own `timeout` reports a killed command as a success with empty
-// output. That boundary is the process-spawn seam this test replaces.
-vi.mock('@happier-dev/cli-common/process', async () => {
-    const actual = await vi.importActual<typeof import('@happier-dev/cli-common/process')>(
-        '@happier-dev/cli-common/process',
-    );
-    return {
-        ...actual,
-        execFileWithDeadline: execFileWithDeadlineMock,
-    };
-});
+import { describe, expect, it } from 'vitest';
 
 import { registerBashHandler } from './bash';
 
@@ -40,18 +16,6 @@ function createRegistrar() {
             },
         },
     };
-}
-
-function createSpawnProcess() {
-    const child = new EventEmitter() as EventEmitter & {
-        stdout: PassThrough;
-        stderr: PassThrough;
-        kill: ReturnType<typeof vi.fn>;
-    };
-    child.stdout = new PassThrough();
-    child.stderr = new PassThrough();
-    child.kill = vi.fn(() => true);
-    return child;
 }
 
 /** A marker with no shell metacharacters, so `sh -c` parses the probe commands verbatim. */
@@ -79,58 +43,23 @@ async function settleWithin<T>(
     }
 }
 
-/** Run the handler against the real subprocess boundary instead of the spawn mocks. */
-async function useRealSubprocessBoundary(): Promise<void> {
-    const childProcess = await vi.importActual<typeof import('child_process')>('child_process');
-    const cliCommonProcess = await vi.importActual<typeof import('@happier-dev/cli-common/process')>(
-        '@happier-dev/cli-common/process',
-    );
-    spawnMock.mockImplementation(childProcess.spawn as never);
-    execFileWithDeadlineMock.mockImplementation(cliCommonProcess.execFileWithDeadline as never);
-}
-
 describe('registerBashHandler', () => {
-    beforeEach(() => {
-        execFileWithDeadlineMock.mockReset();
-        spawnMock.mockReset();
-    });
-
     it('runs argv payloads without going through the default shell', async () => {
         const { handlers, registrar } = createRegistrar();
         registerBashHandler(registrar as never, process.cwd());
         const handler = handlers.get(RPC_METHODS.BASH);
         expect(handler).toBeDefined();
 
-        const child = createSpawnProcess();
-        spawnMock.mockReturnValueOnce(child);
-
-        const resultPromise = handler!({
-            argv: ['git', 'worktree', 'remove', '--force', '--', 'C:/repo/.dev/worktree/feature branch'],
+        const argument = 'C:/repo/feature branch; $(shell-input)';
+        await expect(handler!({
+            argv: [process.execPath, '-e', 'process.stdout.write(process.argv[1])', argument],
             cwd: process.cwd(),
-        });
-
-        child.stdout.write('ok');
-        child.stdout.end();
-        child.stderr.end();
-        child.emit('close', 0);
-
-        await expect(resultPromise).resolves.toEqual({
+        })).resolves.toEqual({
             success: true,
-            stdout: 'ok',
+            stdout: argument,
             stderr: '',
             exitCode: 0,
         });
-        expect(spawnMock).toHaveBeenCalledWith(
-            'git',
-            ['worktree', 'remove', '--force', '--', 'C:/repo/.dev/worktree/feature branch'],
-            expect.objectContaining({
-                cwd: process.cwd(),
-                windowsHide: true,
-                shell: false,
-            }),
-        );
-        // The argv path must not reach the shell boundary at all.
-        expect(execFileWithDeadlineMock).not.toHaveBeenCalled();
     });
 
     it('allows cwd outside the default directory under the os-user filesystem policy', async () => {
@@ -139,16 +68,11 @@ describe('registerBashHandler', () => {
         const handler = handlers.get(RPC_METHODS.BASH);
         expect(handler).toBeDefined();
 
-        execFileWithDeadlineMock.mockResolvedValueOnce({ stdout: 'ok', stderr: '' });
-
-        await expect(handler!({ command: 'pwd', cwd: '/outside/project' })).resolves.toMatchObject({
+        const outsideDirectory = await realpath(tmpdir());
+        await expect(handler!({ argv: [process.execPath, '-e', 'process.stdout.write(process.cwd())'], cwd: outsideDirectory })).resolves.toMatchObject({
             success: true,
+            stdout: outsideDirectory,
         });
-        expect(execFileWithDeadlineMock).toHaveBeenCalledWith(
-            'pwd',
-            [],
-            expect.objectContaining({ cwd: '/outside/project', shell: true }),
-        );
     });
     // A shell RPC whose caller backgrounds a process is normal, expected use — and `sh` forks for
     // anything that is not a single exec-replaceable command, so the survivor holding the stdout
@@ -157,7 +81,6 @@ describe('registerBashHandler', () => {
     it.skipIf(process.platform === 'win32')(
         'answers as soon as the command exits, even when the command left a process holding its output pipe',
         async () => {
-            await useRealSubprocessBoundary();
             const { handlers, registrar } = createRegistrar();
             registerBashHandler(registrar as never, process.cwd());
             const handler = handlers.get(RPC_METHODS.BASH)!;
@@ -180,7 +103,6 @@ describe('registerBashHandler', () => {
     it.skipIf(process.platform === 'win32')(
         'reports a genuinely hung command as timed out instead of waiting on the pipe its survivor holds',
         async () => {
-            await useRealSubprocessBoundary();
             const { handlers, registrar } = createRegistrar();
             registerBashHandler(registrar as never, process.cwd());
             const handler = handlers.get(RPC_METHODS.BASH)!;
@@ -203,7 +125,6 @@ describe('registerBashHandler', () => {
     it.skipIf(process.platform === 'win32')(
         'answers an argv payload when the command exits, not when a process it left running releases the pipe',
         async () => {
-            await useRealSubprocessBoundary();
             const { handlers, registrar } = createRegistrar();
             registerBashHandler(registrar as never, process.cwd());
             const handler = handlers.get(RPC_METHODS.BASH)!;
@@ -228,4 +149,51 @@ describe('registerBashHandler', () => {
             expect((outcome as { value: { stdout: string } }).value.stdout).toContain(SHELL_MARKER);
         },
     );
+
+    it.skipIf(process.platform === 'win32')('preserves successful argv output when the host event loop stalls past its deadline', async () => {
+        const { handlers, registrar } = createRegistrar();
+        registerBashHandler(registrar as never, process.cwd());
+        const pending = handlers.get(RPC_METHODS.BASH)!({ argv: ['/bin/echo', SHELL_MARKER], timeout: 200 });
+        const until = Date.now() + 1_500;
+        while (Date.now() < until) { /* Reproduce a stalled daemon timers phase. */ }
+        await expect(pending).resolves.toMatchObject({ success: true, exitCode: 0, stdout: `${SHELL_MARKER}\n` });
+    });
+
+    it('preserves argv output larger than the buffered-execution default', async () => {
+        const { handlers, registrar } = createRegistrar();
+        registerBashHandler(registrar as never, process.cwd());
+        const output = 'x'.repeat(1_200_000);
+        await expect(handlers.get(RPC_METHODS.BASH)!({
+            argv: [process.execPath, '-e', `process.stdout.write('x'.repeat(${output.length}))`],
+        })).resolves.toEqual({ success: true, stdout: output, stderr: '', exitCode: 0 });
+    });
+
+    it.each(['', 'refused'])('preserves a completed argv failure and its partial output (stderr: %s)', async (stderr) => {
+        const { handlers, registrar } = createRegistrar();
+        registerBashHandler(registrar as never, process.cwd());
+        await expect(handlers.get(RPC_METHODS.BASH)!({
+            argv: [process.execPath, '-e', `process.stdout.write('partial'); process.stderr.write(${JSON.stringify(stderr)}); process.exitCode = 7;`],
+        })).resolves.toEqual({ success: false, stdout: 'partial', stderr: stderr || 'Command failed', exitCode: 7, error: stderr || 'Command failed' });
+    });
+
+    it('retains the invalid executable response instead of treating it as a spawn failure', async () => {
+        const { handlers, registrar } = createRegistrar();
+        registerBashHandler(registrar as never, process.cwd());
+        await expect(handlers.get(RPC_METHODS.BASH)!({ argv: [''] })).resolves.toMatchObject({ success: false, exitCode: 1 });
+    });
+
+    it('reports an executable that cannot be spawned as a failure', async () => {
+        const { handlers, registrar } = createRegistrar();
+        registerBashHandler(registrar as never, process.cwd());
+        await expect(handlers.get(RPC_METHODS.BASH)!({ argv: ['happier-missing-executable-fixture'] })).resolves.toMatchObject({ success: false, stdout: '', exitCode: -1 });
+    });
+
+    it.skipIf(process.platform === 'win32')('reports argv deadline interruption even when the command traps SIGTERM and exits zero', async () => {
+        const { handlers, registrar } = createRegistrar();
+        registerBashHandler(registrar as never, process.cwd());
+        await expect(handlers.get(RPC_METHODS.BASH)!({
+            argv: ['/bin/sh', '-c', 'trap "exit 0" TERM; echo started; while :; do sleep 0.1; done'],
+            timeout: 250,
+        })).resolves.toEqual({ success: false, stdout: 'started\n', stderr: '', exitCode: 0, error: 'Command timed out' });
+    });
 });

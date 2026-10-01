@@ -4,7 +4,7 @@ import { StyleSheet } from 'react-native-unistyles';
 
 import type { ToolViewProps } from '@/components/tools/renderers/core/_registry';
 import { StructuredResultView } from '@/components/tools/renderers/system/StructuredResultView';
-import type { Message } from '@/sync/domains/messages/messageTypes';
+import type { Message } from "@happier-dev/session-core/messages";
 import {
     deriveTranscriptExecutionRunStatus,
     valueHasRequestInterruptedSignal,

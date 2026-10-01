@@ -7,7 +7,8 @@ import { arePluginMachineMaterializationRefsEqual } from '@happier-dev/protocol'
 import { InstalledPluginBrandMark } from '@/components/plugins/shared/InstalledPluginBrandMark';
 import { useInstalledPluginBrandPresentation } from '@/components/plugins/shared/installedPluginBrandPresentation';
 import { isPluginMachineExecutionOriginCandidateSelectable } from '@/sync/domains/machines/administration/pluginExecutionOrigin';
-import { Text, TextInput } from '@/components/ui/text/Text';
+import { Text } from '@/components/ui/text/Text';
+import { FieldTextInput } from '@/components/ui/forms/FieldTextInput';
 import { Icon } from '@/components/ui/icons/Icon';
 import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
 import {
@@ -24,6 +25,7 @@ import type {
     PluginEventAutomationComposerModel,
     PluginEventAutomationPluginPresentation,
 } from './usePluginEventAutomationComposer';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 type Props = Readonly<{
     model: PluginEventAutomationComposerModel;
@@ -134,7 +136,7 @@ function EventPluginBrand(props: Readonly<{
         () => new AbortController(),
         [
             props.presentation.eventKey,
-            props.presentation.expectedGeneration,
+            props.presentation.expectedOccurrenceId,
             props.presentation.machineId,
             props.presentation.serverId,
         ],
@@ -144,7 +146,6 @@ function EventPluginBrand(props: Readonly<{
         installedPackage: props.presentation.installedPackage,
         machineId: props.presentation.machineId,
         serverId: props.presentation.serverId,
-        expectedGeneration: props.presentation.expectedGeneration,
         signal: scope.signal,
         accountLifetime: props.presentation.accountLifetime,
         isCurrent: props.presentation.isCurrent,
@@ -799,19 +800,18 @@ export function PluginEventAutomationComposerContent(props: Props) {
                                                         ))}
                                                     </View>
                                                 ) : null}
-                                                <TextInput
+                                                <FieldTextInput
                                                     testID={`automation-event-filter-clause-${clause.id}-value`}
                                                     accessibilityLabel={t('settingsPlugins.eventAutomationComposer.filterValue')}
                                                     accessibilityHint={!props.model.filterValid
                                                         ? t('automations.form.trigger.eventFilterInvalid')
                                                         : undefined}
-                                                    style={[styles.textInput, props.model.filterValid ? null : styles.textInputInvalid]}
+                                                    invalid={!props.model.filterValid}
+                                                    monospace
+                                                    style={styles.fieldInput}
                                                     value={clause.valueText}
                                                     onChangeText={(valueText) => props.model.setFilterClauseValueText(clause.id, valueText)}
                                                     placeholder={t('settingsPlugins.eventAutomationComposer.filterValuePlaceholder')}
-                                                    placeholderTextColor={theme.colors.input.placeholder}
-                                                    autoCapitalize="none"
-                                                    autoCorrect={false}
                                                 />
                                             </View>
                                         ))}
@@ -827,20 +827,19 @@ export function PluginEventAutomationComposerContent(props: Props) {
                                     ) : null}
 
                                     <Text style={styles.fieldLabel}>{t('automations.form.trigger.maximumObservationAge')}</Text>
-                                    <TextInput
+                                    <FieldTextInput
                                         testID="automation-event-maximum-observation-age-input"
                                         accessibilityLabel={t('automations.form.trigger.maximumObservationAge')}
                                         accessibilityHint={!props.model.maximumObservationAgeMsValid
                                             ? t('automations.form.trigger.maximumObservationAgeInvalid')
                                             : undefined}
-                                        style={[styles.textInput, props.model.maximumObservationAgeMsValid ? null : styles.textInputInvalid]}
+                                        invalid={!props.model.maximumObservationAgeMsValid}
+                                        monospace
+                                        style={styles.fieldInput}
                                         value={props.model.maximumObservationAgeMsText}
                                         onChangeText={props.model.setMaximumObservationAgeMsText}
                                         placeholder={t('automations.form.trigger.maximumObservationAgePlaceholder')}
-                                        placeholderTextColor={theme.colors.input.placeholder}
                                         keyboardType="numeric"
-                                        autoCapitalize="none"
-                                        autoCorrect={false}
                                     />
                                     {!props.model.maximumObservationAgeMsValid ? (
                                         <Text
@@ -1089,20 +1088,10 @@ const styles = StyleSheet.create((theme) => ({
         ...Typography.rowMeta(),
         color: theme.colors.text.primary,
     },
-    textInput: {
-        ...Typography.mono(),
-        minHeight: minimumInteractiveTargetSize,
-        minWidth: minimumInteractiveTargetSize,
-        borderWidth: 1,
-        borderColor: theme.colors.border.default,
-        borderRadius: 10,
-        backgroundColor: theme.colors.input.background,
-        color: theme.colors.text.primary,
-        paddingHorizontal: 12,
-        paddingVertical: 9,
-    },
-    textInputInvalid: {
-        borderColor: theme.colors.state.danger.foreground,
+    // The shared page field fills the width it is given; its touch floor is the field owner's.
+    fieldInput: {
+        minWidth: 0,
+        alignSelf: 'stretch',
     },
     unavailableText: {
         ...Typography.rowMeta(),
@@ -1126,6 +1115,6 @@ const styles = StyleSheet.create((theme) => ({
         opacity: 0.56,
     },
     pressed: {
-        opacity: 0.72,
+        opacity: motionTokens.press.opacity,
     },
 }));

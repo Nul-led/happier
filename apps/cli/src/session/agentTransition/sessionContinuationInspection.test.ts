@@ -10,7 +10,10 @@ vi.mock('@/api/machine/fetchAccountMachineReplacements', () => ({
   fetchAccountMachineReplacements: mocks.fetchAccountMachineReplacements,
 }));
 
-const { inspectSessionContinuation } = await import('./sessionContinuationInspection');
+const {
+  inspectSessionContinuation,
+  inspectSessionContinuations,
+} = await import('./sessionContinuationInspection');
 const { buildAgentCatalogContribution } = await import('./sessionAgentTransitionTestkit');
 
 /**
@@ -84,6 +87,33 @@ describe('sessionContinuationInspection', () => {
    * switchable — and the client then arms a submission the mutation can only
    * fail after stopping the source. Both entry points read one answer.
    */
+  it('loads and decrypts the source Session once for every target in a batch', async () => {
+    const deps = inspectionDeps({ sessionMachineId: 'machine-1' });
+
+    await expect(inspectSessionContinuations({
+      credentials,
+      request: {
+        v: 1,
+        sourceSessionId: 'source-session',
+        selections: [
+          { v: 1, agentId: 'claude' },
+          { v: 1, agentId: 'deepsec' },
+          { v: 1, agentId: 'not-an-agent' },
+        ],
+      },
+      deps,
+    })).resolves.toEqual({
+      v: 1,
+      inspections: [
+        { type: 'available', protocolVersion: 1, sameSessionTransition: true },
+        { type: 'unavailable', reason: 'target_unavailable' },
+        { type: 'unavailable', reason: 'target_unavailable' },
+      ],
+    });
+    expect(deps.resolveSessionTransportContext).toHaveBeenCalledTimes(1);
+    expect(deps.decryptOwnerMetadataView).toHaveBeenCalledTimes(1);
+  });
+
   it('rejects an execution-run-only target while retaining a Sessions target', async () => {
     const executionRunOnlyInspection = await inspectSessionContinuation({
       credentials,
@@ -125,7 +155,7 @@ describe('sessionContinuationInspection', () => {
 
     expect(inspection).toEqual({ type: 'unavailable', reason: 'target_unavailable' });
     expect(definitiveRejection).toHaveBeenCalledWith({
-      agentTargetKey: 'backend:claude',
+      agentTargetKey: 'agent:happier.agent.claude/claude',
       agentId: 'claude',
       selection,
     });

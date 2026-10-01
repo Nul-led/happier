@@ -8,7 +8,7 @@ import {
     projectUiSessionRuntimeAwareness,
     readSessionRuntimePresentationFreshnessExpirations,
 } from '@/sync/domains/session/attention/runtimePresentation';
-import { readStoredSessionMessages } from '@/sync/domains/messages/readStoredSessionMessages';
+import { readStoredSessionMessages } from "@happier-dev/session-core/messages";
 import type { Session } from '@/sync/domains/state/storageTypes';
 import type { StorageState } from '@/sync/store/types';
 import { readSessionViewerAttentionSignature, resolveSessionPersonalAttentionForViewer } from '@/sync/domains/session/readState/sessionViewerAttention';

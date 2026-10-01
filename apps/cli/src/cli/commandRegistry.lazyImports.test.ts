@@ -57,6 +57,13 @@ describe('commandRegistry import laziness', () => {
     expect(sessionModuleLoaded).not.toHaveBeenCalled();
   });
 
+  it('exposes Herdr as a first-class terminal host command without eagerly loading it', async () => {
+    const { findCommandDispatchDescriptor } = await import('./commandRegistry');
+    expect(findCommandDispatchDescriptor('herdr')).toMatchObject({
+      id: 'herdr', command: 'herdr', handler: expect.any(Function),
+    });
+  });
+
   it('registers every first-class session command as a lazy nested delegation', async () => {
     const { findCommandDispatchDescriptor } = await import('./commandRegistry');
     const firstClassSessionCommands = [

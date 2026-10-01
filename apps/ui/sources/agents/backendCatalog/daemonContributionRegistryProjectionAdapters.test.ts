@@ -7,7 +7,6 @@ import {
     adaptDaemonContributionRegistryProjectionToMergedProjectionInputs,
     mapV2EditableSettingsGroup,
     resolvePluginProjectionEditableSettingsGroup,
-    type DaemonContributionRegistryProjectionV1Like,
 } from './daemonContributionRegistryProjectionAdapters';
 
 describe('daemon contribution registry projection adapters', () => {
@@ -93,109 +92,6 @@ describe('daemon contribution registry projection adapters', () => {
         ]);
     });
 
-    it('adapts daemon projection v1 into merged backend/provider projection maps', () => {
-        const projection: DaemonContributionRegistryProjectionV1Like = {
-            v: 1,
-            generationId: 'registry:plugin-provider|ui:p1.settings',
-            agentsById: {
-                p1: {
-                    id: 'p1',
-                    title: 'P1',
-                    subtitle: 'sub',
-                    channel: 'plugin',
-                    settingsBackendId: 'b1',
-                    catalogAgentId: 'claude',
-                    iconAgentId: 'codex',
-                },
-            },
-            backendsById: {
-                b1: {
-                    id: 'b1',
-                    agentId: 'p1',
-                    catalogAgentId: 'claude',
-                    iconAgentId: 'codex',
-                    capabilities: {
-                        executionRun: { supported: true },
-                        session: { supported: false },
-                    },
-                },
-            },
-            actionsById: {
-                'p1.refresh': {
-                    id: 'p1.refresh',
-                    pluginId: 'p1',
-                    title: 'Refresh P1',
-                    description: 'Refresh P1 resources',
-                    safety: 'safe',
-                    surfaces: {
-                        settings: true,
-                    },
-                },
-                'p1.write': {
-                    id: 'p1.write',
-                    pluginId: 'p1',
-                    title: 'Write P1',
-                    safety: 'danger',
-                    surfaces: { settings: true },
-                },
-            },
-            resourcesById: {
-                'p1.prompt': {
-                    id: 'p1.prompt',
-                    pluginId: 'p1',
-                    type: 'prompt',
-                    path: 'resources/prompt.md',
-                    digest: 'sha256:prompt',
-                    contentType: 'text/markdown',
-                },
-            },
-        };
-
-        const adapted = adaptDaemonContributionRegistryProjectionToMergedProjectionInputs(projection);
-        expect(adapted.mergedProviderProjectionById?.p1).toEqual(expect.objectContaining({
-            agentId: 'p1',
-            title: 'P1',
-            subtitle: 'sub',
-            channel: 'plugin',
-            settingsBackendId: 'b1',
-            catalogAgentId: 'claude',
-            iconAgentId: 'codex',
-        }));
-        expect(adapted.mergedBackendProjectionById?.b1).toEqual(expect.objectContaining({
-            backendId: 'b1',
-            agentId: 'p1',
-            catalogAgentId: 'claude',
-            iconAgentId: 'codex',
-            capabilities: expect.objectContaining({
-                session: expect.objectContaining({ supported: false }),
-            }),
-        }));
-        expect(adapted.pluginProjectionById?.p1).toEqual(expect.objectContaining({
-            pluginId: 'p1',
-            generation: null,
-            generationLabel: 'registry:plugin-provider|ui:p1.settings',
-            actions: [
-                expect.objectContaining({
-                    id: 'p1.refresh',
-                    title: 'Refresh P1',
-                    surfaces: ['settings'],
-                    dangerLevel: 'safe',
-                }),
-                expect.objectContaining({
-                    id: 'p1.write',
-                    dangerLevel: 'writesLocal',
-                }),
-            ],
-            resources: [
-                expect.objectContaining({
-                    id: 'p1.prompt',
-                    resourceKind: 'prompt',
-                    path: 'resources/prompt.md',
-                }),
-            ],
-        }));
-    });
-
     it('adapts plugin projection v2 registry metadata', () => {
         const authorization: NonNullable<
             PluginProjectionV2['actionsById'][string]['authorization']
@@ -221,6 +117,7 @@ describe('daemon contribution registry projection adapters', () => {
                     version: '1.2.3',
                     enabled: true,
                     immutableGenerationId: 'generation-42',
+                    occurrenceId: 'acme-review-occurrence-42',
                     source: {
                         kind: 'localPath',
                         locator: '/plugins/acme-review',
@@ -241,6 +138,7 @@ describe('daemon contribution registry projection adapters', () => {
                         pluginId: 'acme.review',
                         localId: 'acme-native',
                     },
+                    iconAgentId: 'claude',
                     channel: 'plugin',
                     isBuiltIn: false,
                     connectedAccounts: [{
@@ -262,11 +160,11 @@ describe('daemon contribution registry projection adapters', () => {
                     },
                 },
             },
-            backendsById: {},
             actionsById: {
                 'acme.review.refresh': {
                     id: 'acme.review.refresh',
                     pluginId: 'acme.review',
+                    occurrenceId: 'acme-review-occurrence-42',
                     title: 'Refresh Acme',
                     description: 'Refresh Acme resources',
                     scopes: ['settings'],
@@ -295,15 +193,11 @@ describe('daemon contribution registry projection adapters', () => {
                 'acme.review.refresh-provider-state': {
                     id: 'acme.review.refresh-provider-state',
                     pluginId: 'acme.review',
+                    occurrenceId: 'acme-review-occurrence-42',
                     title: 'Refresh provider state',
                     scopes: ['session'],
                     surfaces: ['plugin'],
                     execution: { target: 'daemon' },
-                    inputSchema: {
-                        type: 'object',
-                        properties: { repository: { type: 'string' } },
-                        additionalProperties: false,
-                    },
                     dangerLevel: 'writesRemote',
                 },
             },
@@ -343,7 +237,7 @@ describe('daemon contribution registry projection adapters', () => {
                     },
                     plugin: { id: 'acme.review', version: '1.2.3', source: 'localPath' },
                     stage: 'normalization',
-                    generation: '42',
+                    occurrenceId: '42',
                     host: 'daemon',
                     platform: 'darwin',
                     occurredAtMs: 1,
@@ -359,7 +253,7 @@ describe('daemon contribution registry projection adapters', () => {
                     },
                     plugin: { id: 'acme.review', version: '1.2.3', source: 'localPath' },
                     stage: 'activation',
-                    generation: '42',
+                    occurrenceId: '42',
                     host: 'daemon',
                     platform: 'darwin',
                     occurredAtMs: 2,
@@ -406,8 +300,11 @@ describe('daemon contribution registry projection adapters', () => {
             initialCommand: "'/opt/runtime/bun' '/opt/acme/acme.js' login --device-code",
         });
 
+        // The plugin shows the mark of the Agent it contributes, rather than a letter.
+        expect(adapted.pluginProjectionById?.['acme.review']?.iconAgentId).toBe('claude');
         expect(adapted.pluginProjectionById?.['acme.review']).toEqual(expect.objectContaining({
             pluginId: 'acme.review',
+            occurrenceId: 'acme-review-occurrence-42',
             title: 'Acme Review',
             version: '1.2.3',
             enabled: true,
@@ -470,6 +367,97 @@ describe('daemon contribution registry projection adapters', () => {
         expect(adapted.registryDiagnostics).toEqual([]);
     });
 
+    it('gives a bundled Agent plugin the mark of the Agent it is, as the Agent picker does', () => {
+        const projection: PluginProjectionV2 = {
+            v: 2,
+            generation: 7,
+            installedPackagesById: {
+                'happier.claude': {
+                    id: 'happier.claude',
+                    displayName: 'Claude',
+                    version: '0.0.0',
+                    enabled: true,
+                    source: { kind: 'bundled', locator: 'happier.claude' },
+                },
+                'acme.fork': {
+                    id: 'acme.fork',
+                    displayName: 'Fork',
+                    version: '1.0.0',
+                    enabled: true,
+                    source: { kind: 'npm', locator: 'acme-fork' },
+                },
+            },
+            agentsById: {
+                // A bundled Agent names no separate icon: it is the Claude Agent.
+                claude: {
+                    id: 'claude',
+                    identity: { pluginId: 'happier.claude', localId: 'claude' },
+                    channel: 'stable',
+                    isBuiltIn: true,
+                    providerOwnedEnvironmentKeys: [],
+                },
+                // An Agent that names its icon wears that icon, ahead of the catalog Agent it runs as.
+                'acme.fork/fork': {
+                    id: 'acme.fork/fork',
+                    identity: { pluginId: 'acme.fork', localId: 'fork' },
+                    channel: 'stable',
+                    isBuiltIn: false,
+                    iconAgentId: 'claude',
+                    catalogAgentId: 'codex',
+                    providerOwnedEnvironmentKeys: [],
+                },
+            } as unknown as PluginProjectionV2['agentsById'],
+            actionsById: {},
+            familiesById: {},
+            toolsById: {},
+            commandsById: {},
+            resourcesById: {},
+            settingsById: {},
+            diagnostics: [],
+        };
+
+        const adapted = adaptDaemonContributionRegistryProjectionToMergedProjectionInputs(projection);
+
+        expect(adapted.pluginProjectionById['happier.claude']?.iconAgentId).toBe('claude');
+        expect(adapted.pluginProjectionById['acme.fork']?.iconAgentId).toBe('claude');
+    });
+
+    it('says what kinds of things each plugin contributes, from its Agents and contribution families', () => {
+        const pkg = (id: string) => ({ id, displayName: id, version: '1.0.0', enabled: true, source: { kind: 'bundled', locator: id } });
+        const projection: PluginProjectionV2 = {
+            v: 2,
+            generation: 1,
+            installedPackagesById: {
+                'happier.claude': pkg('happier.claude'),
+                'happier.github': pkg('happier.github'),
+                'happier.elevenlabs': pkg('happier.elevenlabs'),
+                'happier.empty': pkg('happier.empty'),
+            },
+            agentsById: {
+                claude: { id: 'claude', identity: { pluginId: 'happier.claude', localId: 'claude' }, channel: 'stable', isBuiltIn: true, providerOwnedEnvironmentKeys: [] },
+            } as unknown as PluginProjectionV2['agentsById'],
+            actionsById: {},
+            familiesById: {
+                scmHostingProviders: { family: 'scmHostingProviders', entriesById: { github: { id: 'github', pluginId: 'happier.github' } } },
+                voiceProviders: { family: 'voiceProviders', entriesById: { el: { id: 'el', pluginId: 'happier.elevenlabs' } } },
+                providers: { family: 'providers', entriesById: { claudeModels: { id: 'claudeModels', pluginId: 'happier.claude' } } },
+            } as unknown as PluginProjectionV2['familiesById'],
+            toolsById: {},
+            commandsById: {},
+            resourcesById: {},
+            settingsById: {},
+            diagnostics: [],
+        };
+
+        const adapted = adaptDaemonContributionRegistryProjectionToMergedProjectionInputs(projection);
+
+        // An Agent comes first: it is what the plugin is for.
+        expect(adapted.pluginProjectionById['happier.claude']?.contributionKinds).toEqual(['agent', 'providers']);
+        expect(adapted.pluginProjectionById['happier.github']?.contributionKinds).toEqual(['scmHostingProviders']);
+        expect(adapted.pluginProjectionById['happier.elevenlabs']?.contributionKinds).toEqual(['voiceProviders']);
+        expect(adapted.pluginProjectionById['happier.empty']?.contributionKinds).toEqual([]);
+    });
+
     it('keeps a target semantic diagnostic on the target Settings entry', () => {
         const projection: PluginProjectionV2 = {
             v: 2,
@@ -498,7 +486,6 @@ describe('daemon contribution registry projection adapters', () => {
                 },
             },
             agentsById: {},
-            backendsById: {},
             actionsById: {},
             familiesById: {},
             toolsById: {},
@@ -522,7 +509,7 @@ describe('daemon contribution registry projection adapters', () => {
                 plugin: { id: 'happier.channels', version: '0.0.0', source: 'bundled' },
                 contribution: { pluginId: 'happier.channels', localId: 'providers' },
                 stage: 'runtime',
-                generation: 'channels-generation-a',
+                occurrenceId: 'channels-occurrence-a',
                 host: 'daemon',
                 platform: 'test',
                 occurredAtMs: 1,

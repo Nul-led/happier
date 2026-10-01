@@ -6,6 +6,7 @@ import { flushHookEffects, renderHook, renderScreen, standardCleanup } from '@/d
 import {
     PluginProjectionV2Schema,
     type ComposerAttachmentDraftV1,
+    DaemonPluginUiComposerSurfaceCatalogEntryV1Schema,
     type DaemonPluginUiComposerSurfaceCatalogEntryV1,
     type PluginProjectionV2,
     type PluginProjectedComposerAttachmentEntryV1,
@@ -62,7 +63,7 @@ const issueAttachmentCatalogEntry = {
     id: 'acme.issues/issue',
     pluginId: 'acme.issues',
     identity: issueAttachment.attachment,
-    immutableGenerationId: 'issues-generation-1',
+    occurrenceId: 'issues-generation-1',
     definition: {
         id: 'issue',
         title: 'Issue',
@@ -81,7 +82,7 @@ const noteAttachmentCatalogEntry = {
     id: 'acme.notes/note',
     pluginId: 'acme.notes',
     identity: noteAttachment.attachment,
-    immutableGenerationId: 'notes-generation-1',
+    occurrenceId: 'notes-generation-1',
     definition: {
         id: 'note',
         title: 'Note',
@@ -104,7 +105,6 @@ function entriesById(
         generation: 1,
         installedPackagesById: {},
         agentsById: {},
-        backendsById: {},
         actionsById: {},
         toolsById: {},
         commandsById: {},
@@ -124,7 +124,7 @@ const newSessionRegion = {
     id: 'acme.issues/new-session-region',
     pluginId: 'acme.issues',
     identity: { pluginId: 'acme.issues', localId: 'new-session-region' },
-    immutableGenerationId: 'issues-generation-1',
+    occurrenceId: 'issues-generation-1',
     definition: {
         id: 'new-session-region',
         placement: 'beforeComposer',
@@ -133,9 +133,9 @@ const newSessionRegion = {
 };
 
 function newSessionComposerCatalogEntry(): DaemonPluginUiComposerSurfaceCatalogEntryV1 {
-    return {
+    return DaemonPluginUiComposerSurfaceCatalogEntryV1Schema.parse({
         contribution: newSessionRegion.identity,
-        immutableGenerationId: newSessionRegion.immutableGenerationId,
+        occurrenceId: newSessionRegion.occurrenceId,
         projectionGeneration: 5,
         role: 'region',
         rendererChain: [{ pluginId: 'acme.issues', localId: 'new-session-region-renderer' }],
@@ -144,12 +144,11 @@ function newSessionComposerCatalogEntry(): DaemonPluginUiComposerSurfaceCatalogE
             renderer: {
                 kind: 'declarative',
                 contributionId: 'new-session-region-renderer',
-                model: { visible: true },
             },
             availability: { state: 'available', reason: 'available', diagnostics: [] },
         },
         executionOrigin: {
-            serverIdentityId: 'server-1',
+            serverIdentityId: 'srv_server-1',
             materializationRef: {
                 machineId: 'machine-1',
                 materializationId: 'issues-materialization-1',
@@ -158,10 +157,14 @@ function newSessionComposerCatalogEntry(): DaemonPluginUiComposerSurfaceCatalogE
         },
         resourceCapability: { readable: true, dynamic: true },
         contributorTargetedContributions: {
-            target: { pluginId: 'acme.issues', immutableGenerationId: 'issues-generation-1' },
+            target: {
+                pluginId: 'acme.issues',
+                occurrenceId: 'issues-generation-1',
+                sourceCustody: { kind: 'development', registeredRootId: 'issues-root' },
+            },
             points: [],
         },
-    } as DaemonPluginUiComposerSurfaceCatalogEntryV1;
+    });
 }
 
 afterEach(() => {
@@ -170,6 +173,22 @@ afterEach(() => {
 });
 
 describe('useNewSessionComposerDocument', () => {
+    it('flushes pending mounted-input edits before a handoff and releases the retired input', async () => {
+        const promptStore = createNewSessionPromptStore('Submitted');
+        const hook = await renderHook(() => useNewSessionComposerDocument({
+            draftId: 'flush-handoff', promptStore, persistedAttachments: [],
+            scopeKey: 'flush-handoff', canSubmitRef: { current: true }, isSubmitting: false,
+        }));
+        const flush = () => { promptStore.setPrompt('Typed during creation'); };
+        hook.getCurrent().onComposerInputFlushRequestChange(flush);
+        hook.getCurrent().flushComposerInput();
+        expect(hook.getCurrent().readCurrentDocumentSnapshot()?.text).toBe('Typed during creation');
+        hook.getCurrent().onComposerInputFlushRequestChange(null);
+        promptStore.setPrompt('Next owner');
+        hook.getCurrent().flushComposerInput();
+        expect(promptStore.getPrompt()).toBe('Next owner');
+        await hook.unmount();
+    });
     it('mints every author-shaped seed into the canonical mounted composer snapshot', async () => {
         const draftScope = Object.freeze({
             serverId: 'server-a',
@@ -278,8 +297,8 @@ describe('useNewSessionComposerDocument', () => {
     });
 
     it('replaces pending seed custody atomically when the routed draft owner changes', async () => {
-        const scopeA = Object.freeze({ serverId: 'server-a', accountId: 'account-a' }) satisfies ServerAccountScope;
-        const scopeB = Object.freeze({ serverId: 'server-b', accountId: 'account-b' }) satisfies ServerAccountScope;
+        const scopeA: ServerAccountScope = Object.freeze({ serverId: 'server-a', accountId: 'account-a' });
+        const scopeB: ServerAccountScope = Object.freeze({ serverId: 'server-b', accountId: 'account-b' });
         const seedA: NewSessionComposerAttachmentSeedV1 = {
             instanceId: 'seed-a',
             pluginId: 'acme.a',
@@ -503,7 +522,7 @@ describe('useNewSessionComposerDocument', () => {
         await hook.unmount();
     });
 
-    it('retains a newer reference and its token when accepted text is otherwise unchanged', async () => {
+    it('clears a newer reference atomically when its accepted text is still current', async () => {
         const promptStore = createNewSessionPromptStore('Draft @issue @new');
         const hook = await renderHook(() => useNewSessionComposerDocument({
             promptStore,
@@ -570,14 +589,11 @@ describe('useNewSessionComposerDocument', () => {
         });
         expect(didClear).toBe(true);
         expect(hook.getCurrent().captureSubmissionSnapshot()).toMatchObject({
-            text: 'Draft @issue @new',
-            references: [
-                expect.objectContaining({ ref: 'partner:issue-42' }),
-                expect.objectContaining({ ref: 'partner:issue-99' }),
-            ],
+            text: '',
+            references: [],
             attachments: [],
         });
-        expect(hook.getCurrent().structuredInputMentions).toHaveLength(2);
+        expect(hook.getCurrent().structuredInputMentions).toEqual([]);
 
         await hook.unmount();
     });
@@ -877,7 +893,7 @@ describe('useNewSessionComposerDocument', () => {
             writeNewSessionDraft({
                 scope: draftScope,
                 draftId,
-                patch: { authoring: { machineId: 'machine-b' } },
+                patch: { authoring: { directory: '/workspace/b' } },
                 materializationIntent: 'userEdit',
             });
             await flushHookEffects({ cycles: 1, turns: 1 });
@@ -979,7 +995,7 @@ describe('useNewSessionComposerDocument', () => {
 
         const incompatibleGeneration = {
             ...issueAttachmentCatalogEntry,
-            immutableGenerationId: 'issues-generation-2',
+            occurrenceId: 'issues-generation-2',
             definition: {
                 ...issueAttachmentCatalogEntry.definition,
                 valueSchema: {
@@ -997,7 +1013,7 @@ describe('useNewSessionComposerDocument', () => {
 
         const reinstalled = {
             ...issueAttachmentCatalogEntry,
-            immutableGenerationId: 'issues-generation-3',
+            occurrenceId: 'issues-generation-3',
         } satisfies PluginProjectedComposerAttachmentEntryV1;
         await hook.rerender({ composerAttachmentEntriesById: entriesById(reinstalled) });
         expect(hook.getCurrent().captureSubmissionSnapshot()?.attachments).toEqual([
@@ -1043,7 +1059,7 @@ describe('useNewSessionComposerDocument', () => {
         const handlers = createComposerPresentationHostHandlers({
             owner: {
                 identity: { pluginId: 'acme.fixture', localId: 'composer-tools' },
-                immutableGenerationId: 'generation-1',
+                occurrenceId: 'generation-1',
                 surfaceInstanceKey: 'mounted-1',
             },
         });
@@ -1173,7 +1189,7 @@ describe('useNewSessionComposerDocument', () => {
         const handlers = createComposerPresentationHostHandlers({
             owner: {
                 identity: { pluginId: 'acme.fixture', localId: 'composer-tools' },
-                immutableGenerationId: 'generation-1',
+                occurrenceId: 'generation-1',
                 surfaceInstanceKey: 'mounted-1',
             },
         });
@@ -1274,7 +1290,7 @@ describe('useNewSessionComposerDocument', () => {
         const handlers = createComposerPresentationHostHandlers({
             owner: {
                 identity: { pluginId: 'acme.fixture', localId: 'composer-tools' },
-                immutableGenerationId: 'generation-1',
+                occurrenceId: 'generation-1',
                 surfaceInstanceKey: 'mounted-1',
             },
         });

@@ -6,8 +6,13 @@ import { PassThrough } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  discoverNativeConfinedWorkspaceSyncRecovery,
+  runNativeConfinedWorkspaceSyncApply,
+  runNativeConfinedWorkspaceSyncCapture,
   runNativeConfinedWorkspaceSyncDelete,
+  runNativeConfinedWorkspaceSyncObserve,
   runNativeConfinedWorkspaceSyncRead,
+  runNativeConfinedWorkspaceSyncRecover,
   type WorkspaceSyncNativeConfinedChild,
 } from './workspaceSyncNativeConfinedFileSystem';
 
@@ -52,6 +57,90 @@ function createHarness(result: Readonly<Record<string, unknown>>) {
 }
 
 describe('workspaceSyncNativeConfinedFileSystem', () => {
+  it('allows a native operation to finish preparing beyond fifteen seconds', async () => {
+    vi.useFakeTimers();
+    try {
+      const child = new FakeChild();
+      let writes = 0;
+      child.stdin.on('data', () => {
+        writes += 1;
+        if (writes === 2) {
+          child.stdout.write(`${JSON.stringify({ v: 1, t: 'workspace-confined-result', status: 'observed', expectation: { kind: 'missing' } })}\n`);
+          child.stdout.end();
+          child.stderr.end();
+          queueMicrotask(() => child.emit('close', 0, null));
+        }
+      });
+      const observation = runNativeConfinedWorkspaceSyncObserve({
+        rootPath: 'C:\\work',
+        relativePath: 'entry',
+      }, {
+        platform: 'win32',
+        resolveExecutable: () => 'C:\\happier-process-custody.exe',
+        spawnChild: () => child,
+      });
+      const outcome = observation.then(
+        (value) => ({ status: 'resolved' as const, value }),
+        (error: unknown) => ({ status: 'rejected' as const, error }),
+      );
+      await vi.advanceTimersByTimeAsync(15_001);
+      expect(child.kill).not.toHaveBeenCalled();
+      child.stdout.write(`${JSON.stringify({ v: 1, t: 'workspace-confined-prepared' })}\n`);
+      await expect(outcome).resolves.toEqual({ status: 'resolved', value: { kind: 'missing' } });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('treats an absent recovery directory as having no retained records', async () => {
+    const parentDirectory = await mkdtemp(join(tmpdir(), 'happier-workspace-recovery-parent-'));
+    const recoveryDirectory = join(parentDirectory, 'not-created-yet');
+    try {
+      await expect(discoverNativeConfinedWorkspaceSyncRecovery({ recoveryDirectory })).resolves.toEqual([]);
+    } finally {
+      await rm(parentDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it('discovers recovery identities through the native record parser', async () => {
+    const recoveryDirectory = await mkdtemp(join(tmpdir(), 'happier-workspace-recovery-'));
+    try {
+      await writeFile(join(recoveryDirectory, 'workspace-recovery-reviewed.json'), '{native record payload}');
+      const harness = createHarness({
+        v: 1,
+        t: 'workspace-confined-result',
+        status: 'recovery_record',
+        operationId: 'reviewed',
+        rootPath: 'C:\\work',
+      });
+      await expect(discoverNativeConfinedWorkspaceSyncRecovery({ recoveryDirectory }, harness.dependencies)).resolves.toEqual([{
+        operationId: 'reviewed',
+        rootPath: 'C:\\work',
+        recoveryPath: join(recoveryDirectory, 'workspace-recovery-reviewed.json'),
+      }]);
+      expect(harness.dependencies.spawnChild).toHaveBeenCalledWith(
+        'C:\\happier-process-custody.exe',
+        ['workspace-confined-inspect'],
+        expect.any(Object),
+      );
+      expect(harness.writes[0]).toEqual({ v: 1, recoveryDirectory, operationId: 'reviewed' });
+    } finally {
+      await rm(recoveryDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed on a recovery record with an unrecognized native name', async () => {
+    const recoveryDirectory = await mkdtemp(join(tmpdir(), 'happier-workspace-recovery-'));
+    try {
+      await writeFile(join(recoveryDirectory, 'workspace-recovery-unsafe.json.bak'), 'retained');
+      await expect(discoverNativeConfinedWorkspaceSyncRecovery({ recoveryDirectory })).rejects.toMatchObject({
+        code: 'workspace_root_unsafe',
+      });
+    } finally {
+      await rm(recoveryDirectory, { recursive: true, force: true });
+    }
+  });
+
   it.runIf(process.env.HAPPIER_RUN_NATIVE_CONFINED_WORKSPACE_SYNC_REAL_INTEGRATION === '1')(
     'uses the staged native helper for read, abort preservation, and committed deletion',
     async () => {
@@ -321,5 +410,94 @@ describe('workspaceSyncNativeConfinedFileSystem', () => {
       message: 'native workspace confinement exceeded its output bound',
     });
     expect(child.kill).toHaveBeenCalledTimes(1);
+  });
+
+  it('parses complete observation and file-backed capture results', async () => {
+    const observed = createHarness({
+      v: 1,
+      t: 'workspace-confined-result',
+      status: 'observed',
+      expectation: { kind: 'file', digest: 'a'.repeat(40), executable: true, size: 9 },
+    });
+    await expect(runNativeConfinedWorkspaceSyncObserve({
+      rootPath: 'C:\\work',
+      relativePath: 'tool.exe',
+    }, observed.dependencies)).resolves.toEqual({
+      kind: 'file', digest: 'a'.repeat(40), executable: true, size: 9,
+    });
+
+    const captured = createHarness({
+      v: 1,
+      t: 'workspace-confined-result',
+      status: 'captured',
+      expectation: { kind: 'directory', fingerprint: 'b'.repeat(64) },
+      materialPath: 'C:\\private\\capture\\op-1',
+    });
+    await expect(runNativeConfinedWorkspaceSyncCapture({
+      rootPath: 'C:\\work',
+      relativePath: 'tree',
+      expected: { kind: 'directory', fingerprint: 'b'.repeat(64) },
+      captureDirectory: 'C:\\private\\capture',
+      operationId: 'op-1',
+    }, captured.dependencies)).resolves.toEqual({
+      expectation: { kind: 'directory', fingerprint: 'b'.repeat(64) },
+      materialPath: 'C:\\private\\capture\\op-1',
+    });
+  });
+
+  it('requires missing capture and apply to carry no material', async () => {
+    const captured = createHarness({
+      v: 1,
+      t: 'workspace-confined-result',
+      status: 'captured',
+      expectation: { kind: 'missing' },
+      materialPath: null,
+    });
+    await expect(runNativeConfinedWorkspaceSyncCapture({
+      rootPath: 'C:\\work',
+      relativePath: 'gone',
+      expected: { kind: 'missing' },
+      captureDirectory: 'C:\\private\\capture',
+      operationId: 'op-missing',
+    }, captured.dependencies)).resolves.toEqual({ expectation: { kind: 'missing' }, materialPath: null });
+
+    const applied = createHarness({ v: 1, t: 'workspace-confined-result', status: 'installed' });
+    await expect(runNativeConfinedWorkspaceSyncApply({
+      rootPath: 'C:\\work',
+      relativePath: 'gone',
+      expectedDestination: { kind: 'file', digest: 'c'.repeat(40), executable: false, size: 3 },
+      selectedExpectation: { kind: 'missing' },
+      materialPath: null,
+      recoveryDirectory: 'C:\\private\\recovery',
+      operationId: 'op-missing',
+    }, applied.dependencies)).resolves.toEqual({ status: 'installed' });
+  });
+
+  it('preserves exact recovery dispositions and rejects padded records', async () => {
+    const recoveryNeeded = createHarness({
+      v: 1,
+      t: 'workspace-confined-result',
+      status: 'recovery_needed',
+      recoveryPath: 'C:\\work\\.happier-conflict-resolution-op-prior',
+    });
+    await expect(runNativeConfinedWorkspaceSyncApply({
+      rootPath: 'C:\\work',
+      relativePath: 'entry',
+      expectedDestination: { kind: 'missing' },
+      selectedExpectation: { kind: 'symlink', target: '../selected' },
+      materialPath: 'C:\\private\\capture\\op',
+      recoveryDirectory: 'C:\\private\\recovery',
+      operationId: 'op',
+    }, recoveryNeeded.dependencies)).resolves.toEqual({
+      status: 'recovery_needed',
+      recoveryPath: 'C:\\work\\.happier-conflict-resolution-op-prior',
+    });
+
+    const settled = createHarness({ v: 1, t: 'workspace-confined-result', status: 'settled' });
+    await expect(runNativeConfinedWorkspaceSyncRecover({
+      rootPath: 'C:\\work',
+      recoveryDirectory: 'C:\\private\\recovery',
+      operationId: 'op',
+    }, settled.dependencies)).resolves.toEqual({ status: 'settled' });
   });
 });

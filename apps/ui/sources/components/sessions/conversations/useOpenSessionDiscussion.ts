@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { useRouter, type Href } from 'expo-router';
+import { useRouter, type Href } from '@/components/appShell/workspace/destinationRoute';
 
 import { useAppPaneScope } from '@/components/appShell/panes/hooks/useAppPaneScope';
 import {
@@ -7,6 +7,7 @@ import {
     type SessionDiscussionDetailsTarget,
 } from '@/components/sessions/panes/details/sessionDetailsTabBuilders';
 import { createSessionPaneScopeId } from '@/components/sessions/panes/sessionPaneScopeId';
+import { useDestinationPaneScopeId } from '@/components/appShell/workspace/DestinationInstanceHost';
 import type { SessionMobileSurface } from '@/components/workspaceCockpit/session/sessionCockpitState';
 import { buildScopedSessionRouteHref } from '@/hooks/session/sessionRouteServerScope';
 import { sessionAddressKey, type SessionAddress } from '@/sync/domains/session/sessionAddress';
@@ -65,7 +66,7 @@ export function useOpenSessionDiscussion(input: Readonly<{
 }> {
     const router = useRouter();
     const deviceType = useDeviceType();
-    const pane = useAppPaneScope(createSessionPaneScopeId(input.address.sessionId, input.address.serverId));
+    const pane = useAppPaneScope(useDestinationPaneScopeId(createSessionPaneScopeId(input.address.sessionId, input.address.serverId)));
     const sourceSurface = input.sourceSurface ?? 'collaboration';
 
     const openTarget = React.useCallback((

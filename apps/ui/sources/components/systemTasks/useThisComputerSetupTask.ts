@@ -24,13 +24,21 @@ export function resolveThisComputerSetupFollowUp(result: SystemTaskResult | null
 
 export function useThisComputerSetupTask(options: Readonly<{
     runner?: SystemTaskRunner;
+    /** A presenter-owned retained handle; undefined keeps the legacy local-state behavior. */
+    taskId?: string | null;
+    onTaskIdChange?: (taskId: string | null) => void;
     onNeedsAuth?: () => void;
     onSucceeded?: (snapshot: SystemTaskRunState) => void;
     /** When set, blocking token-only pairing prompts are answered through the explicit endpoint. */
     authRequestApproval?: SystemTaskAuthRequestApproval;
 }> = {}) {
     const runner = options.runner ?? getSystemTasksRunner();
-    const [activeTaskId, setActiveTaskId] = React.useState<string | null>(null);
+    const [localTaskId, setLocalTaskId] = React.useState<string | null>(null);
+    const activeTaskId = options.taskId === undefined ? localTaskId : options.taskId;
+    const setActiveTaskId = React.useCallback((taskId: string | null) => {
+        setLocalTaskId(taskId);
+        options.onTaskIdChange?.(taskId);
+    }, [options.onTaskIdChange]);
     const [isStarting, setIsStarting] = React.useState(false);
     const [startError, setStartError] = React.useState<string | null>(null);
     const activeTaskSnapshot = useSystemTaskSnapshot(runner, activeTaskId);
@@ -50,7 +58,7 @@ export function useThisComputerSetupTask(options: Readonly<{
         } finally {
             setIsStarting(false);
         }
-    }, [runner]);
+    }, [runner, setActiveTaskId]);
 
     const cancel = React.useCallback(() => {
         if (!activeTaskId) {

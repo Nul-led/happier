@@ -1,7 +1,7 @@
 import React from 'react';
 import { describe, expect, it, vi } from 'vitest';
-import { pressTestInstanceAsync, renderScreen } from '@/dev/testkit';
-import { installPermissionShellCommonModuleMocks } from './permissionShellTestHelpers';
+import { pressTestInstanceAsync } from '@/dev/testkit';
+import { installPermissionShellCommonModuleMocks, createPermissionShellRenderer } from './permissionShellTestHelpers';
 
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -16,9 +16,11 @@ const runtime = vi.hoisted(() => ({
 }));
 
 const ops = vi.hoisted(() => ({
-    sessionDeny: vi.fn(async (..._args: unknown[]) => {}),
-    sessionAbort: vi.fn(async (..._args: unknown[]) => {}),
+    deny: vi.fn(async (..._args: unknown[]) => {}),
+    abort: vi.fn(async (..._args: unknown[]) => {}),
 }));
+const renderScreen = createPermissionShellRenderer(ops);
+
 
 const sessionStore = vi.hoisted(() => ({
     updateSessionPermissionMode: vi.fn((..._args: unknown[]) => {}),
@@ -42,12 +44,7 @@ installPermissionShellCommonModuleMocks({
     },
 });
 
-vi.mock('@/sync/ops', () => ({
-    sessionAllow: vi.fn(async () => {}),
-    sessionAllowWithPermissionUpdates: vi.fn(async () => {}),
-    sessionDeny: ops.sessionDeny,
-    sessionAbort: ops.sessionAbort,
-}));
+
 
 vi.mock('@/sync/sync', () => ({
     sync: {
@@ -122,10 +119,10 @@ describe('PermissionFooter stop action', () => {
             shouldSetReadOnlyMode: false,
             expectedDecision: 'abort' as const,
         },
-    ])('Stop denies permission and handles run control for $name', async ({ protocol, flavor, toolName, toolInput, shouldSendFollowupPrompt, shouldAbortRun, shouldSetReadOnlyMode, expectedDecision }) => {
+    ])('Stop delivers the owning Agent decision through the source for $name', async ({ protocol, flavor, toolName, toolInput, expectedDecision }) => {
         runtime.setProtocol(protocol, flavor);
-        ops.sessionDeny.mockClear();
-        ops.sessionAbort.mockClear();
+        ops.deny.mockClear();
+        ops.abort.mockClear();
         syncMock.sendMessage.mockClear();
         sessionStore.updateSessionPermissionMode.mockClear();
 
@@ -144,30 +141,11 @@ describe('PermissionFooter stop action', () => {
 
         await pressTestInstanceAsync(stopButton, 'stop button');
 
-        expect(ops.sessionDeny).toHaveBeenCalledTimes(1);
-        expect(ops.sessionDeny.mock.calls[0]?.[4]).toBe(expectedDecision);
-        if (shouldAbortRun) {
-            expect(ops.sessionAbort).toHaveBeenCalledTimes(1);
-        } else {
-            expect(ops.sessionAbort).not.toHaveBeenCalled();
-        }
-        if (shouldSetReadOnlyMode) {
-            expect(sessionStore.updateSessionPermissionMode).toHaveBeenCalledTimes(1);
-            expect(sessionStore.updateSessionPermissionMode).toHaveBeenCalledWith('s1', 'read-only');
-        } else {
-            expect(sessionStore.updateSessionPermissionMode).not.toHaveBeenCalled();
-        }
-        if (shouldSendFollowupPrompt) {
-            expect(syncMock.sendMessage).toHaveBeenCalledTimes(1);
-            if (shouldSetReadOnlyMode) {
-                expect(sessionStore.updateSessionPermissionMode.mock.invocationCallOrder[0]).toBeLessThan(
-                    syncMock.sendMessage.mock.invocationCallOrder[0],
-                );
-            }
-            expect(syncMock.sendMessage.mock.calls[0]?.[0]).toBe('s1');
-            expect(String(syncMock.sendMessage.mock.calls[0]?.[1] ?? '')).toMatch(/explain/i);
-        } else {
-            expect(syncMock.sendMessage).not.toHaveBeenCalled();
-        }
+        expect(ops.deny).toHaveBeenCalledTimes(1);
+        expect(ops.deny.mock.calls[0]?.[0]).toMatchObject({ decision: expectedDecision });
+        // The app action owner completes stop and local mode recovery atomically.
+        expect(ops.abort).not.toHaveBeenCalled();
+        expect(sessionStore.updateSessionPermissionMode).not.toHaveBeenCalled();
+        expect(syncMock.sendMessage).not.toHaveBeenCalled();
     });
 });

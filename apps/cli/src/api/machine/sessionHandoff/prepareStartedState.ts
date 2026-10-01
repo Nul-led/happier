@@ -1,9 +1,13 @@
-import type {
-  SessionHandoffMetadataV2,
-  SessionHandoffStartRequest,
-  SessionHandoffStatus,
-  TransferEndpointCandidate,
+import { readSessionDirectoryKind, SessionCreationCorrespondenceV1Schema,
+  type SessionHandoffMetadataV2,
+  type SessionHandoffStartRequest,
+  type SessionHandoffStatus,
+  type TransferEndpointCandidate,
 } from '@happier-dev/protocol';
+import { configuration } from '@/configuration';
+import { createManagedSessionDirectories } from '@/session/creation/managedSessionDirectories';
+import { createWorkspaceSyncSeedExport, resolveWorkspaceSyncSeedTransfer } from '@/workspaces/sync/workspaceSyncSeedTransfer';
+import { buildSessionHandoffWorkspaceSeedTransferId } from '@/session/handoff/agentBundle/transferPublication';
 
 import {
   createFileTransferPayloadSource,
@@ -46,6 +50,7 @@ export type PrepareStartedStateResult = Readonly<{
 }>;
 
 export async function prepareStartedState(input: Readonly<{
+  activeServerDir?: string;
   callInput: PrepareStartedStateCallInput;
   exportSessionBundle: (
     metadata: Record<string, unknown>,
@@ -62,8 +67,44 @@ export async function prepareStartedState(input: Readonly<{
     callInput.preExportedAgentBundle?.agentBundlePayloadSource ?? null;
   let agentBundleTransferPublication: SessionHandoffAgentBundleTransferPublication | null =
     callInput.preExportedAgentBundle?.agentBundleTransferPublication ?? null;
+  let workspaceSeed: Awaited<ReturnType<typeof input.sourceExportStore.writeWorkspaceSeedFiles>> | undefined;
+  let managedSeedStarted = false;
 
   try {
+    if (callInput.request.targetDirectory?.kind === 'managed') {
+      const activeServerDir = input.activeServerDir ?? configuration.activeServerDir;
+      const path = typeof callInput.metadata.path === 'string' ? callInput.metadata.path : '';
+      const correspondence = SessionCreationCorrespondenceV1Schema.safeParse(callInput.metadata.sessionCreationCorrespondenceV1);
+      const source = readSessionDirectoryKind(callInput.metadata) === 'managed'
+        ? await createManagedSessionDirectories({ activeServerDir }).resolveForSession({
+            sessionId: callInput.request.sessionId, path,
+            sessionCreationTag: correspondence.success ? correspondence.data.sessionCreationTag : undefined,
+          })
+        : { ok: false as const, errorCode: 'SESSION_DIRECTORY_MISSING' as const };
+      if (!source.ok) throw Object.assign(new Error('Managed handoff source directory is unavailable'), { code: source.errorCode });
+      managedSeedStarted = true;
+      const transferId = buildSessionHandoffWorkspaceSeedTransferId(callInput.handoffId);
+      const seed = await createWorkspaceSyncSeedExport({ operationId: transferId, activeServerDir, sourcePath: source.directory,
+        workspaceTransfer: resolveWorkspaceSyncSeedTransfer({ selection: 'all_files', extraIgnorePatterns: [], extraIncludePatterns: [] }),
+      });
+      workspaceSeed = await input.sourceExportStore.writeWorkspaceSeedFiles({ handoffId: callInput.handoffId, transferId, seed });
+      if (callInput.request.negotiatedTransportStrategy === 'direct_peer' && input.directPeerTransfer) {
+        const manifest = workspaceSeed.files[transferId]!;
+        const files = workspaceSeed.files;
+        const endpointCandidates = await input.directPeerTransfer.publishTransfer({ transferId, payload: {},
+          payloadSource: createFileTransferPayloadSource(manifest),
+          onDemandScope: { allowTransferId: (id) => id !== transferId && Object.hasOwn(files, id),
+            maxResolvedTransfers: Object.keys(files).length - 1,
+            resolvePayloadSourceOnOpen: async ({ transferId: id }) => {
+              const file = Object.hasOwn(files, id) ? files[id] : undefined;
+              if (!file) throw new Error('Managed handoff seed blob is not authorized');
+              return createFileTransferPayloadSource(file);
+            },
+          },
+        });
+        workspaceSeed = { ...workspaceSeed, endpointCandidates };
+      }
+    }
     const exported = callInput.preExportedAgentBundle
       ? {
           agentBundle: callInput.preExportedAgentBundle.agentBundle,
@@ -89,6 +130,7 @@ export async function prepareStartedState(input: Readonly<{
           ? { endpointCandidates: [...callInput.preExportedAgentBundle.agentBundleTransferPublication.endpointCandidates] }
           : {}),
       },
+      ...(workspaceSeed ? { workspaceSeed } : {}),
     });
 
     agentBundlePayloadSource =
@@ -132,12 +174,19 @@ export async function prepareStartedState(input: Readonly<{
           ? { endpointCandidates: [...agentBundleTransferPublication.endpointCandidates] }
           : {}),
       },
+      ...(workspaceSeed ? { workspaceSeed } : {}),
     });
 
     const handoffMetadataV2: SessionHandoffMetadataV2 | undefined =
       agentBundleTransferPublication
         ? {
             ...(agentBundleTransferPublication ? { agentBundleTransferPublication } : {}),
+            ...(workspaceSeed ? { workspaceSeedTransferPublication: {
+              transferId: workspaceSeed.transferId,
+              sizeBytes: workspaceSeed.files[workspaceSeed.transferId]!.sizeBytes,
+              manifestHash: workspaceSeed.files[workspaceSeed.transferId]!.manifestHash,
+              ...(workspaceSeed.endpointCandidates ? { endpointCandidates: workspaceSeed.endpointCandidates } : {}),
+            } } : {}),
           }
         : undefined;
 
@@ -159,6 +208,8 @@ export async function prepareStartedState(input: Readonly<{
       },
     };
   } catch (error) {
+    if (workspaceSeed) input.directPeerTransfer?.clearPublishedTransfer(workspaceSeed.transferId);
+    if (managedSeedStarted) await input.sourceExportStore.releaseTransferFiles(callInput.handoffId);
     if (agentBundleTransferPublication?.endpointCandidates?.length) {
       input.directPeerTransfer?.clearPublishedTransfer(agentBundleTransferPublication.transferId);
     }

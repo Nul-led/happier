@@ -9,11 +9,16 @@ import {
     type PluginContributionIntrospectionPresentationV1,
     type PluginLocalizedStringV2,
     type PluginProjectionV2,
+    type SessionResponsibilityCandidateV1,
 } from '@happier-dev/protocol';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 
 import { FileMentionSuggestion } from '@/components/sessions/agentInput/components/AgentInputSuggestionView';
 import { Icon } from '@/components/ui/icons/Icon';
+import { Avatar } from '@/components/ui/avatar/Avatar';
+import { buildDiscussionAccountMentionPayload } from '@/components/sessions/conversations/discussionComposerDocument';
+import { formatSessionResponsibilityAccessHint } from '@/components/sessions/responsibility/formatSessionResponsibilityAccessHint';
+import { formatSessionResponsibilityName } from '@/components/sessions/responsibility/formatSessionResponsibilityName';
 import { SessionAgentCatalogIdentityIcon } from '@/components/sessions/presentation/SessionAgentCatalogIdentityIcon';
 import { resolvePluginUiIconName } from '@/components/plugins/surfaces/iconToken/resolvePluginUiIconToken';
 import { searchFiles, type FileItem, type FileSuggestionScope } from '@/sync/domains/input/suggestionFile';
@@ -23,7 +28,7 @@ import {
 } from '@/sync/domains/input/suggestionSession';
 import { resolvePromptInvocationAutocompleteSelection } from '@/sync/domains/input/slashCommands/promptInvocationSuggestion';
 import { machineRpcWithServerScope } from '@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc';
-import type { TranslationKeyNoParams } from '@/text';
+import { t, type TranslationKeyNoParams } from '@/text';
 import type {
     PluginContributedActionDescriptor,
     PluginContributedActionOpenOutcome,
@@ -106,6 +111,29 @@ export const NEW_SESSION_COMPOSER_SUGGESTION_KINDS = [
     'slashCommand',
 ] as const satisfies readonly ComposerSuggestionKindId[];
 
+/**
+ * A human discussion's composer (R-9): the people who can read this Session, and nothing an agent
+ * composer offers. No agent composer lists `accountMention`, so the two never share a picker.
+ */
+export const DISCUSSION_COMPOSER_SUGGESTION_KINDS = [
+    'accountMention',
+] as const satisfies readonly ComposerSuggestionKindId[];
+
+/**
+ * The discussion adapter's Account search: the only candidate source of the `accountMention` kind.
+ * The host supplies it because who may be mentioned is the discussion's decision (its Session, its
+ * Home and its availability), not the registry's. `hasMore` says the page is not every match;
+ * `retry` makes the open picker search again (the host changes its suggestion handler).
+ */
+export type ComposerAccountMentionSource = Readonly<{
+    search(params: Readonly<{
+        query: string;
+        limit: number;
+        signal?: AbortSignal;
+    }>): Promise<Readonly<{ candidates: readonly SessionResponsibilityCandidateV1[]; hasMore: boolean }>>;
+    retry(): void;
+}>;
+
 /** Which session catalog snapshot a kind reads, if any. */
 export type ComposerSuggestionCatalogKey = 'vendorPlugins' | 'skills';
 
@@ -168,6 +196,8 @@ export type ComposerSuggestionResolveContext = Readonly<{
     contributedActions?: readonly PluginContributedActionDescriptor[];
     /** Incremental rows from a provider family, still fenced by its host currentness. */
     publish?: (suggestions: readonly AutocompleteSuggestion[]) => void;
+    /** Absent outside a human discussion's composer. */
+    accountMentions?: ComposerAccountMentionSource | null;
 }>;
 
 export type ComposerSuggestionSelectionResult =
@@ -363,13 +393,13 @@ function isComposerReferenceHostCurrent(host: ComposerReferenceSearchHost): bool
  */
 type CurrentComposerReference = Readonly<{
     reference: PluginContributionIdentityV1;
+    occurrenceId: string;
     presentation: PluginContributionIntrospectionPresentationV1;
 }>;
 
 function listCurrentComposerReferences(
     projection: PluginProjectionV2,
 ): readonly CurrentComposerReference[] {
-    const expectedGeneration = String(projection.generation);
     const seen = new Set<string>();
     const references: CurrentComposerReference[] = [];
     for (const record of projection.contributionIntrospection?.contributions ?? []) {
@@ -379,8 +409,9 @@ function listCurrentComposerReferences(
             || record.contribution.family !== 'composerReferences'
             || record.registration.state !== 'bound'
             || record.activation.state !== 'active'
-            || record.registration.generation !== expectedGeneration
-            || record.activation.generation !== expectedGeneration
+            || !record.occurrenceId
+            || record.registration.occurrenceId !== record.occurrenceId
+            || record.activation.occurrenceId !== record.occurrenceId
             || !presentation
             || presentation.kind !== 'composerReference'
         ) {
@@ -393,7 +424,7 @@ function listCurrentComposerReferences(
         const identity = `${reference.pluginId}\u0000${reference.localId}`;
         if (seen.has(identity)) continue;
         seen.add(identity);
-        references.push({ reference, presentation });
+        references.push({ reference, occurrenceId: record.occurrenceId, presentation });
     }
     return references;
 }
@@ -503,7 +534,6 @@ async function resolveComposerReferenceSuggestions(
     ));
     if (references.length === 0) return [];
 
-    const expectedGeneration = String(host.projection.generation);
     const rowsByReference: Array<readonly AutocompleteSuggestion[] | null> = references.map(() => null);
     const providerAbort = new AbortController();
     const onContextAbort = () => providerAbort.abort();
@@ -517,7 +547,7 @@ async function resolveComposerReferenceSuggestions(
         if (context.signal?.aborted || !isComposerReferenceHostCurrent(host)) return null;
         const raw = await machineRpcWithServerScope<unknown, Readonly<{
             machineId: string;
-            expectedGeneration: string;
+            expectedOccurrenceId: string;
             reference: PluginContributionIdentityV1;
             trigger: ComposerSuggestionTrigger;
             query: string;
@@ -527,7 +557,7 @@ async function resolveComposerReferenceSuggestions(
             method: RPC_METHODS.DAEMON_PLUGIN_COMPOSER_REFERENCE_SEARCH,
             payload: {
                 machineId,
-                expectedGeneration,
+                expectedOccurrenceId: contribution.occurrenceId,
                 reference,
                 trigger: context.trigger,
                 query: context.scopedQuery,
@@ -697,6 +727,86 @@ async function applySlashCommandSelection(
 }
 
 /**
+ * People who can read the Session, from the discussion adapter's search. The row carries the
+ * Account as its identity, bound to the name exactly as the author sees it (`@Alice Ng`); the
+ * composer's range-bound mention holds that identity, so the token is never quoted or re-parsed.
+ * The kind keeps its two list states: more matches than fit end in "Type more to narrow" (the
+ * per-kind budget, D-22, leaves no room for paging), and a failed search is a Retry row.
+ */
+async function resolveAccountMentionSuggestions(
+    context: ComposerSuggestionResolveContext,
+): Promise<readonly AutocompleteSuggestion[]> {
+    const source = context.accountMentions;
+    if (!source) return [];
+    const candidateLimit = context.limit - 1;
+    let page: Awaited<ReturnType<ComposerAccountMentionSource['search']>>;
+    try {
+        page = await source.search({
+            query: context.scopedQuery,
+            limit: candidateLimit,
+            ...(context.signal ? { signal: context.signal } : {}),
+        });
+    } catch (error) {
+        // A superseded query is not a failure the author needs to recover from.
+        if (context.signal?.aborted) throw error;
+        return [{
+            kind: 'accountMention',
+            key: 'status:retry',
+            text: '',
+            label: t('session.collaboration.discussion.retry'),
+            icon: React.createElement(Icon, { name: 'arrow-clockwise', size: 16 }),
+            listStatus: { kind: 'retry', retry: source.retry },
+        }];
+    }
+    const seen = new Set<string>();
+    const out: AutocompleteSuggestion[] = [];
+    for (const candidate of page.candidates) {
+        if (out.length >= candidateLimit) break;
+        if (seen.has(candidate.accountId)) continue;
+        seen.add(candidate.accountId);
+        const name = formatSessionResponsibilityName(candidate.profile);
+        const description = [
+            candidate.profile.username ? `@${candidate.profile.username}` : null,
+            formatSessionResponsibilityAccessHint(candidate.accessHint),
+        ].filter((part): part is string => part !== null).join(' · ');
+        out.push({
+            kind: 'accountMention',
+            key: candidate.accountId,
+            // A username-only Account is named "@alice"; its token is still one `@`.
+            text: `@${name.replace(/^@/u, '')}`,
+            label: name,
+            ...(description ? { description } : {}),
+            icon: React.createElement(Avatar, {
+                id: candidate.accountId,
+                size: 20,
+                imageUrl: candidate.profile.avatarUrl,
+            }),
+            structuredInput: buildDiscussionAccountMentionPayload(candidate.accountId, name),
+        });
+    }
+    if (page.hasMore || page.candidates.length > candidateLimit) {
+        out.push({
+            kind: 'accountMention',
+            key: 'status:narrow',
+            text: '',
+            label: t('agentInput.suggestionTypeMoreToNarrow'),
+            listStatus: { kind: 'narrow' },
+        });
+    }
+    return out;
+}
+
+/** A list-state row is never inserted: Retry searches again, "Type more" leaves the text as it is. */
+async function applyAccountMentionSelection(
+    args: ComposerSuggestionApplySelectionArgs,
+): Promise<ComposerSuggestionSelectionResult> {
+    const status = args.suggestion.listStatus;
+    if (!status) return { handled: false };
+    if (status.kind === 'retry') status.retry();
+    return { handled: false, preserveInput: true };
+}
+
+/**
  * Per-trigger row budget (D-22).
  *
  * `CommandMenu` renders its sections with `virtualization: 'never'`, so the sum
@@ -756,6 +866,13 @@ const COMPOSER_SUGGESTION_KIND_DEFINITIONS = {
         sectionTitleKey: 'agentInput.suggestionGroups.commands',
         resolve: resolveSlashCommandSuggestions,
         applySelection: applySlashCommandSelection,
+    },
+    accountMention: {
+        id: 'accountMention',
+        limit: 12,
+        sectionTitleKey: 'agentInput.suggestionGroups.people',
+        resolve: resolveAccountMentionSuggestions,
+        applySelection: applyAccountMentionSelection,
     },
 } as const satisfies Record<ComposerSuggestionKindId, ComposerSuggestionKindDefinition>;
 

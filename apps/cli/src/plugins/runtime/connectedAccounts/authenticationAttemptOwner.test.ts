@@ -13,6 +13,7 @@ import {
     type ConnectedAccountAttemptProviderOperation,
     type ConnectedAccountAttemptProviderInvocation,
     type ConnectedAccountAttemptSettlementRequest,
+    type ConnectedAccountDeviceTransactionSnapshot,
     type ConnectedAccountOAuthCallbackCompletion,
 } from './authenticationAttemptOwner';
 import {
@@ -90,8 +91,12 @@ function manualMode(
                 secret: true,
             }],
         }),
-        generation: 'generation-1',
-        immutableGenerationId: 'artifact-acme-1',
+        occurrenceId: 'generation-1',
+        sourceCustody: {
+            kind: 'managed' as const,
+            immutableGenerationId: 'artifact-acme-1',
+            installSource: 'archive' as const,
+        },
         ...overrides,
     });
 }
@@ -111,8 +116,12 @@ function oauthMode(input: Readonly<{
             ...(input.callbackUrl ? { callbackUrl: input.callbackUrl } : {}),
             ...(input.configuration ? { configuration: input.configuration } : {}),
         }),
-        generation: 'generation-1',
-        immutableGenerationId: 'artifact-acme-1',
+        occurrenceId: 'generation-1',
+        sourceCustody: {
+            kind: 'managed' as const,
+            immutableGenerationId: 'artifact-acme-1',
+            installSource: 'archive' as const,
+        },
     });
 }
 
@@ -130,8 +139,12 @@ function deviceMode(
             outcomeReconciliation,
             ...(configuration ? { configuration } : {}),
         }),
-        generation,
-        immutableGenerationId,
+        occurrenceId: generation,
+        sourceCustody: {
+            kind: 'managed' as const,
+            immutableGenerationId,
+            installSource: 'archive' as const,
+        },
     });
 }
 
@@ -158,6 +171,7 @@ function harness(input: Readonly<{
     }> | null>;
     destroyAttemptConfiguration?: (attemptId: string) => void | Promise<void>;
     now?: () => number;
+    onBackgroundTransition?: Parameters<typeof createConnectedAccountAuthenticationAttemptOwner>[0]['onBackgroundTransition'];
     attemptTtlMs?: number;
     deviceTransactions?: Readonly<{
         acknowledge(input: unknown): void | Promise<void>;
@@ -256,6 +270,7 @@ function harness(input: Readonly<{
             input.createAttemptId ?? (() => `attempt-${++attemptNumber}`),
         createAccountId: input.createAccountId ?? (() => 'host-account-1'),
         now: input.now ?? (() => 1_000),
+        ...(input.onBackgroundTransition ? { onBackgroundTransition: input.onBackgroundTransition } : {}),
         attemptTtlMs: input.attemptTtlMs ?? 60_000,
         accounts: {
             readExact: vi.fn(input.readAccount ?? (async () =>
@@ -341,7 +356,7 @@ async function waitForAttemptStatus(
 type TestOAuthTransactionSnapshot = Readonly<{
     attemptId: string;
     phase: 'starting' | 'awaitingOAuth' | 'outcomeUnknown';
-    immutableGenerationId: string;
+    sourceCustody: ConnectedAccountAttemptModeAdmission['sourceCustody'];
     preparedSettlement?: ConnectedAccountAttemptSettlementRequest;
 }>;
 
@@ -482,7 +497,6 @@ describe('ConnectedAccountAuthenticationAttemptOwner', () => {
             service,
             attemptId: 'attempt-1',
             authenticationModeId: 'manual',
-            directExportContract: CONNECTED_ACCOUNT_DIRECT_EXPORT_CONTRACT_V1,
             configurationState: 'configured',
         });
         expect(h.invoke).not.toHaveBeenCalled();
@@ -1114,7 +1128,11 @@ describe('ConnectedAccountAuthenticationAttemptOwner', () => {
                     intent: 'connect',
                     service,
                     modeId: 'device',
-                    immutableGenerationId: 'artifact-acme-1',
+                    sourceCustody: Object.freeze({
+                        kind: 'managed' as const,
+                        immutableGenerationId: 'artifact-acme-1',
+                        installSource: 'archive' as const,
+                    }),
                     expectedCredentialRevision: null,
                     expectedCredentialConfigurationRevision: null,
                     expectedConfigurationRevision: 'configuration-1',
@@ -1193,7 +1211,11 @@ describe('ConnectedAccountAuthenticationAttemptOwner', () => {
                     intent: 'connect',
                     service,
                     modeId: 'device',
-                    immutableGenerationId: 'artifact-acme-1',
+                    sourceCustody: Object.freeze({
+                        kind: 'managed' as const,
+                        immutableGenerationId: 'artifact-acme-1',
+                        installSource: 'archive' as const,
+                    }),
                     expectedCredentialRevision: null,
                     expectedCredentialConfigurationRevision: null,
                     expectedConfigurationRevision: 'configuration-1',
@@ -1454,7 +1476,10 @@ describe('ConnectedAccountAuthenticationAttemptOwner', () => {
             expectedCredentialRevision: null,
             expectedCredentialConfigurationRevision: null,
             expectedConfigurationRevision: 'configuration-1',
-            generation: 'generation-1',
+            sourceCustody: expect.objectContaining({
+                kind: 'managed',
+                immutableGenerationId: 'artifact-acme-1',
+            }),
             stagedCredentials: { accessToken: 'provider-token' },
             providerIdentity: { accountId: 'provider-user-1', email: 'work@example.test' },
         }));
@@ -2030,8 +2055,11 @@ describe('ConnectedAccountAuthenticationAttemptOwner', () => {
         });
         expect(h.invoke).not.toHaveBeenCalled();
         expect(h.admitConfiguration).toHaveBeenCalledWith(expect.objectContaining({
-            generation: 'generation-1',
-            immutableGenerationId: 'artifact-acme-1',
+            occurrenceId: 'generation-1',
+            sourceCustody: expect.objectContaining({
+                kind: 'managed',
+                immutableGenerationId: 'artifact-acme-1',
+            }),
         }));
         await expect(h.owner.read({ attemptId: 'attempt-1' })).resolves.toMatchObject({
             status: 'unavailable',
@@ -2536,8 +2564,11 @@ describe('ConnectedAccountAuthenticationAttemptOwner', () => {
         })).resolves.toMatchObject({
             target,
             mode: { id: 'oauth' },
-            generation: 'generation-1',
-            immutableGenerationId: 'artifact-acme-1',
+            occurrenceId: 'generation-1',
+            sourceCustody: {
+                kind: 'managed',
+                immutableGenerationId: 'artifact-acme-1',
+            },
         });
         const continuation = h.owner.continueConnect({
             attemptId: 'attempt-1',
@@ -3036,12 +3067,14 @@ describe('ConnectedAccountAuthenticationAttemptOwner', () => {
     });
 
     it('acknowledges an owned OAuth attempt before provider begin completes', async () => {
+        const onBackgroundTransition = vi.fn();
         let finishBegin!: (value: unknown) => void;
         const beginResult = new Promise<unknown>((resolve) => {
             finishBegin = resolve;
         });
         const h = harness({
             admittedMode: oauthMode({ outcomeReconciliation: 'none' }),
+            onBackgroundTransition,
             invoke: async ({ operation }) => {
                 if (operation.kind === 'beginOAuth') return await beginResult;
                 return {
@@ -3076,6 +3109,12 @@ describe('ConnectedAccountAuthenticationAttemptOwner', () => {
             authorizationUrl: 'https://provider.example/authorize?state=opaque',
             expiresAtMs: 61_000,
         });
+        await vi.waitFor(() => expect(onBackgroundTransition).toHaveBeenCalledOnce());
+        expect(onBackgroundTransition).toHaveBeenCalledWith(expect.objectContaining({
+            service,
+            settlementPhase: 'notPrepared',
+            response: expect.objectContaining({ status: 'awaitingOAuth' }),
+        }));
     });
 
     it('does not publish an actionable OAuth phase before its acknowledgement is durable', async () => {
@@ -3183,7 +3222,11 @@ describe('ConnectedAccountAuthenticationAttemptOwner', () => {
         expect(durable.readRecord()?.snapshot).toMatchObject({
             attemptId: 'attempt-1',
             phase: 'awaitingOAuth',
-            immutableGenerationId: 'artifact-acme-1',
+            authorizationUrl: 'https://provider.example/authorize',
+            sourceCustody: {
+                kind: 'managed',
+                immutableGenerationId: 'artifact-acme-1',
+            },
             stagedAccountConfigurationContent: {
                 values: { tenant: 'acme' },
                 secretRefs: {},
@@ -3212,6 +3255,13 @@ describe('ConnectedAccountAuthenticationAttemptOwner', () => {
                     scopes: [],
                 };
             },
+        });
+        await expect(replacement.owner.read({
+            attemptId: 'attempt-1',
+            restoreKind: 'oauth',
+        })).resolves.toMatchObject({
+            status: 'awaitingOAuth',
+            authorizationUrl: 'https://provider.example/authorize',
         });
         await expect(replacement.owner.completeOAuth({
             attemptId: 'attempt-1',
@@ -3337,7 +3387,11 @@ describe('ConnectedAccountAuthenticationAttemptOwner', () => {
 
         const staleAdmission = Object.freeze({
             ...oauthMode({ outcomeReconciliation: 'none' }),
-            immutableGenerationId: 'artifact-acme-2',
+            sourceCustody: {
+                kind: 'managed' as const,
+                immutableGenerationId: 'artifact-acme-2',
+                installSource: 'archive' as const,
+            },
         });
         const replacement = harness({
             admittedMode: staleAdmission,

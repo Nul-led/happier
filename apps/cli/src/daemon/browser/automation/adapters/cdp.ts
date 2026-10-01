@@ -10,10 +10,11 @@ import {
 import type { BrowserAutomationViewRef } from '../owners';
 import type {
   BrowserAutomationAdapter,
+  BrowserAutomationAdapterExecutionContext,
   BrowserAutomationAdapterExecuteResult,
 } from './types';
 
-export type BrowserAutomationCdpPageQueryInput = BrowserAutomationViewRef & Readonly<{
+export type BrowserAutomationCdpPageQueryInput = BrowserAutomationViewRef & BrowserAutomationAdapterExecutionContext & Readonly<{
   actionKind: BrowserAutomationActionKindV1;
   navigationGeneration: number;
   payload: Readonly<Record<string, unknown>>;
@@ -23,7 +24,7 @@ export type BrowserAutomationCdpPageQueryResult =
   | Readonly<{ ok: true; data?: Readonly<Record<string, unknown>> }>
   | Readonly<{ ok: false; errorCode?: BrowserAutomationErrorCodeV1 }>;
 
-export type BrowserAutomationCdpInputInput = BrowserAutomationViewRef & Readonly<{
+export type BrowserAutomationCdpInputInput = BrowserAutomationViewRef & BrowserAutomationAdapterExecutionContext & Readonly<{
   actionKind: BrowserAutomationActionKindV1;
   navigationGeneration: number;
   payload: Readonly<Record<string, unknown>>;
@@ -31,7 +32,7 @@ export type BrowserAutomationCdpInputInput = BrowserAutomationViewRef & Readonly
 
 export type BrowserAutomationCdpInputResult =
   | Readonly<{ ok: true; data?: Readonly<Record<string, unknown>> }>
-  | Readonly<{ ok: false; errorCode?: BrowserAutomationErrorCodeV1 }>;
+  | Readonly<{ ok: false; errorCode?: BrowserAutomationErrorCodeV1; interruptionCompletion?: 'stopped' | 'uncertain' }>;
 
 /**
  * The CDP boundary the automation adapter drives. Navigation maps onto the existing
@@ -41,7 +42,13 @@ export type BrowserAutomationCdpInputResult =
  */
 export type BrowserAutomationCdpTransport = Readonly<{
   ownsView(view: BrowserAutomationViewRef): boolean;
-  dispatchControlCommand(command: BrowserCommandV1): Promise<BrowserCommandDispatchResultV1>;
+  getNavigationGeneration?(view: BrowserAutomationViewRef): number | null;
+  /** Observe and handle page dialogs for the entire action, including navigation and queries. */
+  executePageOperation?(
+    input: BrowserAutomationViewRef & BrowserAutomationAdapterExecutionContext,
+    execute: () => Promise<BrowserAutomationAdapterExecuteResult>,
+  ): Promise<BrowserAutomationAdapterExecuteResult>;
+  dispatchControlCommand(command: BrowserCommandV1, context?: BrowserAutomationAdapterExecutionContext): Promise<BrowserCommandDispatchResultV1>;
   dispatchPageQuery(
     input: BrowserAutomationCdpPageQueryInput,
   ): Promise<BrowserAutomationCdpPageQueryResult>;
@@ -85,6 +92,8 @@ const CDP_INPUT_ACTIONS: readonly BrowserAutomationActionKindV1[] = [
   'focus',
   'select',
   'setValue',
+  'upload',
+  'drag',
 ];
 
 function resolveCdpSupportedOperations(
@@ -147,9 +156,15 @@ export function createBrowserAutomationCdpAdapter(input: Readonly<{
 }>): BrowserAutomationAdapter {
   async function execute(
     request: BrowserAutomationActionRequestV1,
+    context: BrowserAutomationAdapterExecutionContext = {},
   ): Promise<BrowserAutomationAdapterExecuteResult> {
+    const executionContext = { ...context, deadlineMs: context.deadlineMs ?? Date.now() + request.timeoutMs };
     const view = { browserSessionId: request.browserSessionId, viewId: request.viewId };
     const trustedInput = !isBrowserAutomationMutatingActionKind(request.actionKind);
+
+    if (context.signal?.aborted) {
+      return { status: 'canceled', fidelity: 'cdp', trustedInput, errorCode: 'user_canceled', interruptionCompletion: 'stopped' };
+    }
 
     if (!input.transport.ownsView(view)) {
       return { status: 'failed', fidelity: 'unavailable', trustedInput, errorCode: 'view_closed' };
@@ -157,14 +172,15 @@ export function createBrowserAutomationCdpAdapter(input: Readonly<{
 
     if (READ_ONLY_QUERY_ACTIONS.has(request.actionKind)) {
       const query = await input.transport.dispatchPageQuery({
+        ...executionContext,
         ...view,
         actionKind: request.actionKind,
-        navigationGeneration: request.navigationGeneration,
+        navigationGeneration: input.transport.getNavigationGeneration?.(view) ?? request.navigationGeneration,
         payload: request.payload,
       });
       if (!query.ok) {
         return {
-          status: 'failed',
+          status: query.errorCode === 'timed_out' ? 'timed_out' : query.errorCode === 'user_canceled' ? 'canceled' : 'failed',
           fidelity: 'cdp',
           trustedInput,
           errorCode: query.errorCode ?? 'runtime_unavailable',
@@ -184,6 +200,7 @@ export function createBrowserAutomationCdpAdapter(input: Readonly<{
       // ride the CDP Input transport (MCH-4). Absent ⇒ honestly unsupported.
       if (input.transport.dispatchInputCommand) {
         const inputResult = await input.transport.dispatchInputCommand({
+          ...executionContext,
           ...view,
           actionKind: request.actionKind,
           navigationGeneration: request.navigationGeneration,
@@ -191,10 +208,11 @@ export function createBrowserAutomationCdpAdapter(input: Readonly<{
         });
         if (!inputResult.ok) {
           return {
-            status: 'failed',
+            status: inputResult.errorCode === 'user_canceled' ? 'canceled' : inputResult.errorCode === 'timed_out' ? 'timed_out' : 'failed',
             fidelity: 'cdp',
             trustedInput,
             errorCode: inputResult.errorCode ?? 'runtime_unavailable',
+            ...(inputResult.interruptionCompletion ? { interruptionCompletion: inputResult.interruptionCompletion } : {}),
           };
         }
         return {
@@ -212,7 +230,12 @@ export function createBrowserAutomationCdpAdapter(input: Readonly<{
       };
     }
 
-    const dispatch = await input.transport.dispatchControlCommand(command);
+    const dispatch = await input.transport.dispatchControlCommand(command, executionContext);
+    if (executionContext.signal?.aborted || Date.now() >= executionContext.deadlineMs) {
+      // Navigation may already have started in Chromium; canceling its command response cannot
+      // prove that the page effect was retracted.
+      return { status: executionContext.signal?.aborted ? 'canceled' : 'timed_out', fidelity: 'cdp', trustedInput, errorCode: executionContext.signal?.aborted ? 'user_canceled' : 'timed_out', interruptionCompletion: 'uncertain' };
+    }
     if (dispatch.status === 'failed') {
       return {
         status: 'failed',
@@ -227,6 +250,12 @@ export function createBrowserAutomationCdpAdapter(input: Readonly<{
   return {
     adapterKind: 'chromiumSidecar',
     supportedOperations: resolveCdpSupportedOperations(input.transport),
-    execute,
+    getNavigationGeneration: input.transport.getNavigationGeneration,
+    execute: (request, context = {}) => {
+      const executionContext = { ...context, deadlineMs: context.deadlineMs ?? Date.now() + request.timeoutMs };
+      return input.transport.executePageOperation
+        ? input.transport.executePageOperation({ browserSessionId: request.browserSessionId, viewId: request.viewId, ...executionContext }, () => execute(request, executionContext))
+        : execute(request, executionContext);
+    },
   };
 }

@@ -4,11 +4,11 @@ import type { LocalServiceLaunchTargetV1 } from '@happier-dev/protocol';
 
 import { useAppPaneScope } from '@/components/appShell/panes/hooks/useAppPaneScope';
 import {
-    createOpenBrowserTargetInWorkspace,
-    mapLocalServiceLaunchTargetToBrowserTarget,
-    resolveBrowserSurfacePlatform,
+    bindServicesOpenInBrowser,
     type OpenBrowserTargetScope,
-} from '@/components/browser/surfaces';
+    type ServicesOpenInBrowserResult,
+} from '@/components/browser/surfaces/openBrowserTargetInWorkspace';
+import { resolveBrowserSurfacePlatform } from '@/components/browser/surfaces/useBrowserSurfaceHostProps';
 import { useLocalServicePreviewState } from '@/sync/domains/local/services/preview/useLocalServicePreviewState';
 
 export type UseServicesOpenInBrowserInput = Readonly<{
@@ -35,17 +35,16 @@ export type UseServicesOpenInBrowserInput = Readonly<{
  * Single owner of the Services → Browser open binding. Resolves the canonical opener dependencies
  * (the pane's `openDetailsTab`, the browser platform, and the live local-service preview state for
  * access-URL/expiry seeding) once, then returns the `onOpenServiceInBrowser` callback the Services
- * surface host expects: it maps the {@link LocalServiceLaunchTargetV1} to a browser target via the
- * canonical {@link mapLocalServiceLaunchTargetToBrowserTarget} and opens BOTH a browser-view details
- * tab and its live content record through {@link createOpenBrowserTargetInWorkspace}. No-ops (and
- * skips `onAfterOpen`) when the target cannot be mapped.
+ * surface host expects. The existing {@link bindServicesOpenInBrowser} owns mapping and admission
+ * through the canonical workspace opener. Its typed outcome reaches the Services action runner;
+ * an unmappable target is refused and does not invoke `onAfterOpen`.
  *
  * Centralizing this here keeps the four Services mount sites (session/project right panels +
  * session/project mobile cockpits) from each re-deriving the same opener wiring.
  */
 export function useServicesOpenInBrowser(
     input: UseServicesOpenInBrowserInput,
-): (target: LocalServiceLaunchTargetV1) => void {
+): (target: LocalServiceLaunchTargetV1) => Promise<ServicesOpenInBrowserResult> {
     const pane = useAppPaneScope(input.scopeId);
     const openDetailsTab = pane.openDetailsTab;
     const platform = resolveBrowserSurfacePlatform();
@@ -55,18 +54,17 @@ export function useServicesOpenInBrowser(
     });
     const onAfterOpen = input.onAfterOpen;
 
-    return React.useCallback((target: LocalServiceLaunchTargetV1): void => {
-        const browserTarget = mapLocalServiceLaunchTargetToBrowserTarget(target);
-        if (!browserTarget) {
-            return;
-        }
-        const openBrowserViewTarget = createOpenBrowserTargetInWorkspace({
+    return React.useCallback(async (target: LocalServiceLaunchTargetV1): Promise<ServicesOpenInBrowserResult> => {
+        const openService = bindServicesOpenInBrowser({
             openDetailsTab,
             scope: input.scope,
             platform,
             localServicePreviewState,
+            serverId: input.serverId,
+            sessionId: input.sessionId,
         });
-        openBrowserViewTarget(browserTarget);
-        onAfterOpen?.();
-    }, [input.scope, localServicePreviewState, onAfterOpen, openDetailsTab, platform]);
+        const result = await openService(target);
+        if (result.status === 'succeeded') onAfterOpen?.();
+        return result;
+    }, [input.scope, input.serverId, input.sessionId, localServicePreviewState, onAfterOpen, openDetailsTab, platform]);
 }

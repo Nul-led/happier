@@ -18,6 +18,7 @@ export function useNewSessionAgentSelectionModelModeReconciliation(
         const core = isBundledAgentId(params.agentType) ? getAgentCore(params.agentType) : null;
         const next = coerceNewSessionModelMode({
             modelMode: String(params.modelMode),
+            modelSelection: params.modelSelection,
             modelConfig: {
                 defaultMode: core?.model?.defaultMode ?? 'default',
                 allowedModes: core?.model?.allowedModes ?? [],
@@ -41,6 +42,7 @@ export function useNewSessionAgentSelectionModelModeReconciliation(
     }, [
         params.agentType,
         params.modelMode,
+        params.modelSelection,
         params.preflightModels,
         params.preflightModelsTargetKey,
         params.selectedBackendEntry?.backendTargetKey,

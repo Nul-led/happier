@@ -21,15 +21,11 @@ function identity(projectionGeneration: number) {
     return Object.freeze({
         pluginId: 'acme.preview',
         contributionId: 'client-runtime',
-        artifactDigest: 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
-        hostAppVersion: '2.0.0',
-        hostUiApiVersion: '1.0.0',
-        reactVersion: '19.0.0',
-        reactNativeVersion: '0.83.4',
+        artifactId: 'client-runtime',
+        artifactDigest: projectionGeneration === 12
+            ? 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' as const
+            : 'sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd' as const,
         platform: 'web',
-        channel: 'internal',
-        nativeCapabilitiesDigest: 'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
-        projectionGeneration,
     });
 }
 
@@ -39,11 +35,25 @@ function bundle(cacheIdentity: ReturnType<typeof identity>): PluginUiReactNative
         pluginId: cacheIdentity.pluginId,
         contributionKind: 'reactNativeBundle' as const,
         contributionId: cacheIdentity.contributionId,
+        artifactGraph: Object.freeze({
+            artifactId: cacheIdentity.artifactId,
+            tier: 'reactNative' as const,
+            entry: `react-native/${cacheIdentity.artifactId}/entry.cjs.bundle`,
+            files: Object.freeze([Object.freeze({
+                relativePath: `react-native/${cacheIdentity.artifactId}/entry.cjs.bundle`,
+                digest: cacheIdentity.artifactDigest,
+                byteSize: 1,
+            })]),
+            digest: cacheIdentity.artifactDigest,
+            builtWith: Object.freeze({ bundler: 'esbuild' as const, version: '0.27.2' }),
+            executable: Object.freeze({ exports: Object.freeze(['renderSurface']) }),
+            hostUiApiRange: '^1.0.0',
+        }),
         runtime: Object.freeze({
             decision: Object.freeze({ state: 'load', reason: 'compatible', diagnostics: Object.freeze([]) }),
             loadPolicy: Object.freeze({ source: 'installedArtifact' }),
             cacheKey: derivePluginReactNativeBundleCacheKey(cacheIdentity),
-            cacheIdentity,
+            cacheIdentity: Object.freeze({ artifactDigest: cacheIdentity.artifactDigest }),
         }),
     });
 }

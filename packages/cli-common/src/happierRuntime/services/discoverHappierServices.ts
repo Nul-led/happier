@@ -3,15 +3,17 @@ import { readFile } from 'node:fs/promises';
 import { homedir, userInfo } from 'node:os';
 import { basename, join, win32 as win32Path } from 'node:path';
 
-import type { PublicReleaseRingLabel } from '@happier-dev/release-runtime/releaseRings';
+import { resolvePublicReleaseRingLabelForId, type PublicReleaseRingLabel } from '@happier-dev/release-runtime/releaseRings';
 
 import { resolveHappyHomeDirFromEnvironment } from '../../agents/resolveHappyHomeDir.js';
+import { readDefaultManagedReleaseChannelSync } from '../../firstPartyRuntime/defaultReleaseChannelState.js';
 import {
     listKnownServiceDefinitionFiles,
     parseLaunchdPlist,
     parseSystemdUnit,
     parseWindowsScheduledTaskWrapperPs1,
     readLaunchdLoadedStatus,
+    readLaunchdServiceEnabled,
     readScheduledTaskStatus,
     readSystemdUnitStatus,
     type ParsedLaunchdPlist,
@@ -117,6 +119,20 @@ function splitLabelAfterPrefix(label: string, prefix: string): string[] {
     return remainder.split('.').map((value) => value.trim()).filter(Boolean);
 }
 
+/**
+ * The ring a default-following service runs, resolved the way the service itself does: the ring its
+ * definition's env names (the service owner writes `HAPPIER_PUBLIC_RELEASE_CHANNEL`), else the
+ * default release channel of its Happier home (`default-cli-release-channel.json`, `stable` when
+ * none is recorded). Never `null`, so ring-scoped consumers (R12 convergence) see this service.
+ */
+function resolveDefaultFollowingServiceRing(definition: ServiceDefinition): PublicReleaseRingLabel {
+    const envRing = parseReleaseRingLabel(definition.env.HAPPIER_PUBLIC_RELEASE_CHANNEL);
+    if (envRing) return envRing;
+    const happierHomeDir = String(definition.env.HAPPIER_HOME_DIR ?? '').trim();
+    if (!happierHomeDir) return 'stable';
+    return resolvePublicReleaseRingLabelForId(readDefaultManagedReleaseChannelSync({ processEnv: { HAPPIER_HOME_DIR: happierHomeDir } }));
+}
+
 function resolveDaemonIdentity(label: string, definition: ServiceDefinition): DiscoveredServiceIdentity | null {
     const parts = label.startsWith(DAEMON_LAUNCHD_LABEL_PREFIX)
         ? splitLabelAfterPrefix(label, DAEMON_LAUNCHD_LABEL_PREFIX)
@@ -135,7 +151,7 @@ function resolveDaemonIdentity(label: string, definition: ServiceDefinition): Di
         return {
             serviceType: 'daemon',
             targetMode,
-            ring: null,
+            ring: resolveDefaultFollowingServiceRing(definition),
             instanceId: null,
         };
     }
@@ -243,16 +259,21 @@ function resolveInstalledAndRunning(params: Readonly<{
     scope: 'user' | 'system';
     definitionPath: string;
     runner: DiscoverCommandRunner;
-}>): Readonly<{ installed: boolean; running: boolean }> {
+    uid: number | null;
+}>): Readonly<{ installed: boolean; running: boolean; enabled: boolean | null }> {
     const run = params.runner.run;
     if (!run) {
-        return { installed: true, running: false };
+        return { installed: true, running: false, enabled: null };
     }
 
     if (params.platform === 'darwin') {
         const output = run({ cmd: 'launchctl', args: ['list', params.label] });
         const status = readLaunchdLoadedStatus({ output: output ?? '' });
-        return { installed: true, running: status.pid !== null || status.state === 'loaded' };
+        const domain = params.scope === 'system' ? 'system' : params.uid !== null ? `gui/${params.uid}` : null;
+        const enabled = domain
+            ? readLaunchdServiceEnabled({ output: run({ cmd: 'launchctl', args: ['print-disabled', domain] }), label: params.label })
+            : null;
+        return { installed: true, running: status.pid !== null || status.state === 'loaded', enabled };
     }
 
     if (params.platform === 'win32') {
@@ -261,7 +282,7 @@ function resolveInstalledAndRunning(params: Readonly<{
             args: ['/Query', '/TN', `\\${params.label.startsWith('Happier\\') ? params.label : `Happier\\${params.label}`}`, '/V', '/FO', 'LIST'],
         });
         const status = readScheduledTaskStatus({ output: output ?? '' });
-        return { installed: true, running: status.running === true };
+        return { installed: true, running: status.running === true, enabled: status.enabled };
     }
 
     const args = [
@@ -273,7 +294,20 @@ function resolveInstalledAndRunning(params: Readonly<{
     ];
     const output = run({ cmd: 'systemctl', args });
     const status = readSystemdUnitStatus({ output: output ?? '' });
-    return { installed: true, running: status.activeState === 'active' || status.subState === 'running' };
+    return {
+        installed: true,
+        running: status.activeState === 'active' || status.subState === 'running',
+        enabled: readSystemdUnitFileEnabled(status.unitFileState),
+    };
+}
+
+/** `systemctl` unit-file states: disabled or masked units are not started at login/boot. */
+function readSystemdUnitFileEnabled(unitFileState: string | null): boolean | null {
+    const state = String(unitFileState ?? '').trim().toLowerCase();
+    if (!state) return null;
+    if (state === 'disabled' || state.startsWith('masked')) return false;
+    if (state.startsWith('enabled') || state === 'static' || state === 'linked' || state === 'alias' || state === 'indirect' || state === 'generated') return true;
+    return null;
 }
 
 function defaultCommandRunner(input: Readonly<{ cmd: string; args: readonly string[] }>): string | null {
@@ -313,7 +347,10 @@ export async function discoverHappierServices(params: Readonly<{
     fs?: DiscoverFs;
     commands?: DiscoverCommandRunner;
     deep?: boolean;
+    /** The user whose launchd `gui/<uid>` domain holds user agents; defaults to this process's. */
+    uid?: number | null;
 }> = {}): Promise<HappierServiceInventory> {
+    const uid = params.uid !== undefined ? params.uid : typeof process.getuid === 'function' ? process.getuid() : null;
     const processEnv = params.processEnv ?? process.env;
     const platform = normalizePlatform(params.platform);
     const roots = params.roots ?? resolveDefaultRoots({ platform, processEnv });
@@ -337,6 +374,7 @@ export async function discoverHappierServices(params: Readonly<{
             scope: definitionFile.scope,
             definitionPath: definitionFile.path,
             runner,
+            uid,
         });
 
         const service: HappierService = {
@@ -355,8 +393,10 @@ export async function discoverHappierServices(params: Readonly<{
             happierHomeDir: String(definition.env.HAPPIER_HOME_DIR ?? '').trim() || null,
             serverUrl: String(definition.env.HAPPIER_SERVER_URL ?? '').trim() || null,
             publicServerUrl: String(definition.env.HAPPIER_PUBLIC_SERVER_URL ?? '').trim() || null,
+            managedBy: String(definition.env.HAPPIER_DAEMON_SERVICE_MANAGED_BY ?? '').trim() === 'desktop' ? 'desktop' : null,
             installed: status.installed,
             running: status.running,
+            enabled: status.enabled,
         };
         if (service.verification === 'candidate' && params.deep !== true) {
             continue;

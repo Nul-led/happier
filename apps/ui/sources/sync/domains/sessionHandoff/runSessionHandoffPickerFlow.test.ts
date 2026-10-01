@@ -7,11 +7,15 @@ const releaseUserRequestLeaseMock = vi.hoisted(() => vi.fn());
 const acquireUserRequestLeaseMock = vi.hoisted(() => vi.fn(() => releaseUserRequestLeaseMock));
 const presentationRegisterMock = vi.hoisted(() => vi.fn());
 const progressCloseMock = vi.hoisted(() => vi.fn());
+const showRequestFailureMock = vi.hoisted(() => vi.fn());
+const openConflictDetailsMock = vi.hoisted(() => vi.fn());
 const openObservedProgressMock = vi.hoisted(() => vi.fn((_input: unknown) => ({
     close: progressCloseMock,
     isAttached: () => true,
+    showRequestFailure: showRequestFailureMock,
 })));
 const randomUUIDMock = vi.hoisted(() => vi.fn(() => 'new-request-id'));
+const routerPushMock = vi.hoisted(() => vi.fn());
 const getStorageMock = vi.hoisted(() => vi.fn(() => ({
     getState: () => ({ profileScope: { serverId: 'server', accountId: 'account' } }),
 })));
@@ -31,7 +35,11 @@ vi.mock('@/components/inbox/actionOperations/actionOperationPresentationRuntime'
 vi.mock('@/components/sessions/handoff/openSessionHandoffProgressModal', () => ({
     openObservedSessionHandoffProgressModal: (input: unknown) => openObservedProgressMock(input),
 }));
+vi.mock('@/components/workspaces/sync/openWorkspaceSyncRelationshipDetails', () => ({
+    openWorkspaceSyncConflictDetails: (resource: unknown) => openConflictDetailsMock(resource),
+}));
 vi.mock('@/platform/randomUUID', () => ({ randomUUID: randomUUIDMock }));
+vi.mock('expo-router', () => ({ router: { push: routerPushMock } }));
 vi.mock('@/sync/domains/state/storageStore', () => ({ getStorage: getStorageMock }));
 
 const policyFields = {
@@ -63,17 +71,74 @@ describe('runSessionHandoffPickerFlow', () => {
         releaseUserRequestLeaseMock.mockClear();
         presentationRegisterMock.mockReset();
         progressCloseMock.mockReset();
+        showRequestFailureMock.mockReset();
+        openConflictDetailsMock.mockReset();
         openObservedProgressMock.mockClear();
         randomUUIDMock.mockClear();
+        routerPushMock.mockClear();
     });
 
-    it('reuses the existing recoverable handoff request instead of minting a duplicate operation', async () => {
+    it('keeps deferred approval out of operation progress and opens its exact artifact', async () => {
+        openSessionHandoffPickerMock.mockResolvedValueOnce({ targetMachineId: 'target', workspaceAction: { kind: 'none' } });
+        executeSessionHandoffActionMock.mockResolvedValueOnce({ ok: true, kind: 'approval_required', artifactId: 'approval-1' });
+        const { runSessionHandoffPickerFlow } = await import('./runSessionHandoffPickerFlow');
+
+        await expect(runSessionHandoffPickerFlow({
+            execute: vi.fn(), sessionId: 'sess_1', sourceMachineId: 'source', serverId: 'server', placement: 'session_info',
+        })).resolves.toEqual({ ok: true, kind: 'approval_required', artifactId: 'approval-1' });
+        expect(openObservedProgressMock).not.toHaveBeenCalled();
+        expect(routerPushMock).toHaveBeenCalledWith('/inbox/approvals/approval-1?serverId=server');
+    });
+
+    it('shows awaiting admission on the retained picker until the request resolves', async () => {
+        let resolveExecution!: (value: ReturnType<typeof completedResult>) => void;
+        executeSessionHandoffActionMock.mockImplementationOnce(() => new Promise((resolve) => { resolveExecution = resolve; }));
+        const setAwaitingAdmission = vi.fn();
+        openSessionHandoffPickerMock.mockImplementationOnce(async (input) => {
+            input.onRetained(vi.fn(), setAwaitingAdmission, () => true);
+            return { targetMachineId: 'target', workspaceAction: { kind: 'none' } };
+        });
+        const { runSessionHandoffPickerFlow } = await import('./runSessionHandoffPickerFlow');
+
+        const flow = runSessionHandoffPickerFlow({
+            execute: vi.fn(), sessionId: 'sess_1', sourceMachineId: 'source', serverId: 'server', placement: 'session_info',
+        });
+        await vi.waitFor(() => expect(executeSessionHandoffActionMock).toHaveBeenCalledOnce());
+        expect(setAwaitingAdmission).toHaveBeenCalledWith(true);
+        expect(openObservedProgressMock).not.toHaveBeenCalled();
+        resolveExecution(completedResult({ kind: 'relationship', relationshipId: 'relationship-1', created: true }));
+        await flow;
+        expect(setAwaitingAdmission).toHaveBeenCalledWith(false);
+        expect(openObservedProgressMock).toHaveBeenCalledOnce();
+    });
+
+    it('does not reopen progress after the picker is deliberately dismissed before admission', async () => {
+        let resolveExecution!: (value: ReturnType<typeof completedResult>) => void;
+        executeSessionHandoffActionMock.mockImplementationOnce(() => new Promise((resolve) => { resolveExecution = resolve; }));
+        let pickerOpen = true;
+        openSessionHandoffPickerMock.mockImplementationOnce(async (input) => {
+            input.onRetained(() => { pickerOpen = false; }, vi.fn(), () => pickerOpen);
+            return { targetMachineId: 'target', workspaceAction: { kind: 'none' } };
+        });
+        const { runSessionHandoffPickerFlow } = await import('./runSessionHandoffPickerFlow');
+        const flow = runSessionHandoffPickerFlow({
+            execute: vi.fn(), sessionId: 'sess_1', sourceMachineId: 'source', serverId: 'server', placement: 'session_info',
+        });
+        await vi.waitFor(() => expect(executeSessionHandoffActionMock).toHaveBeenCalledOnce());
+        pickerOpen = false;
+        resolveExecution(completedResult({ kind: 'relationship', relationshipId: 'relationship-1', created: true }));
+        await flow;
+        expect(openObservedProgressMock).not.toHaveBeenCalled();
+    });
+
+    it('keeps a newly selected destination separate from an existing recoverable operation', async () => {
         openSessionHandoffPickerMock.mockResolvedValueOnce({
             targetMachineId: 'target', targetPath: '/target/repo',
             workspaceAction: { kind: 'copy_once', contentPolicy },
         });
         executeSessionHandoffActionMock.mockResolvedValueOnce(completedResult());
         const operationStore = {
+            subscribe: () => () => {},
             getSnapshot: () => ({
                 operationsByKey: new Map([['operation', {
                     serverId: 'server',
@@ -94,12 +159,12 @@ describe('runSessionHandoffPickerFlow', () => {
             placement: 'session_info', operationStore: operationStore as never,
         });
 
-        expect(randomUUIDMock).not.toHaveBeenCalled();
+        expect(randomUUIDMock).toHaveBeenCalledOnce();
         expect(executeSessionHandoffActionMock).toHaveBeenCalledWith(expect.objectContaining({
-            context: expect.objectContaining({ actionRequestId: 'retained-request-id' }),
+            context: expect.objectContaining({ actionRequestId: 'new-request-id' }),
         }));
         expect(openObservedProgressMock).toHaveBeenCalledWith(expect.objectContaining({
-            requestId: 'retained-request-id',
+            requestId: 'new-request-id',
         }));
     });
 
@@ -182,7 +247,7 @@ describe('runSessionHandoffPickerFlow', () => {
         const reopen = registration.origin.resolve(running);
         expect(reopen).toEqual(expect.any(Function));
         reopen();
-        expect(openObservedProgressMock).toHaveBeenCalledTimes(2);
+        expect(openObservedProgressMock).toHaveBeenCalledTimes(1);
         expect(registration.origin.resolve(succeeded)).toBeNull();
         expect(progressCloseMock).toHaveBeenCalledTimes(1);
     });
@@ -257,7 +322,7 @@ describe('runSessionHandoffPickerFlow', () => {
         expect(progressCloseMock).toHaveBeenCalledTimes(1);
     });
 
-    it('keeps the canonical progress surface attached when the handoff fails', async () => {
+    it('shows admission failure without claiming an observed operation', async () => {
         openSessionHandoffPickerMock.mockResolvedValueOnce({ targetMachineId: 'target', workspaceAction: { kind: 'none' } });
         executeSessionHandoffActionMock.mockResolvedValueOnce({ ok: false, error: 'target_unavailable' });
         const { runSessionHandoffPickerFlow } = await import('./runSessionHandoffPickerFlow');
@@ -266,6 +331,52 @@ describe('runSessionHandoffPickerFlow', () => {
             execute: vi.fn(), sessionId: 'sess_1', sourceMachineId: 'source', serverId: 'server', placement: 'session_info',
         })).resolves.toEqual({ ok: false, error: 'target_unavailable' });
 
-        expect(progressCloseMock).not.toHaveBeenCalled();
+        expect(openObservedProgressMock).toHaveBeenCalledOnce();
+        expect(showRequestFailureMock).toHaveBeenCalledWith({ ok: false, error: 'target_unavailable' });
+    });
+
+    it('opens the same set from a validated blocked link and returns to the retained picker without dispatch', async () => {
+        const closePicker = vi.fn();
+        const resource = { kind: 'workspaceSyncConflicts', hubWorkspaceRefId: 'workspace-a',
+            workspaceRefId: 'workspace-c', controllerMachineId: 'machine-a', serverId: 'server' };
+        openSessionHandoffPickerMock.mockImplementationOnce(async (params: { onRetained: (close: () => void, setAwaiting: (awaiting: boolean) => void, isOpen: () => boolean) => void }) => {
+            params.onRetained(closePicker, vi.fn(), () => true);
+            return { targetMachineId: 'machine-b', targetPath: '/target', workspaceAction: { kind: 'linked_workspace' },
+                workspaceSyncReviewResource: resource, workspaceSyncReviewRelationshipIds: ['a-c', 'a-b'] };
+        });
+        const failure = { ok: false as const, error: 'blocked', errorCode: 'workspace_sync_partial_route_blocked',
+            workspacePreparation: { ok: false as const, errorCode: 'relationship_conflicted', completed: [], blockedRelationshipId: 'a-b' } };
+        executeSessionHandoffActionMock.mockResolvedValueOnce(failure);
+        const { runSessionHandoffPickerFlow } = await import('./runSessionHandoffPickerFlow');
+        await expect(runSessionHandoffPickerFlow({
+            execute: vi.fn(), sessionId: 'sess_1', sourceMachineId: 'machine-c', serverId: 'server', placement: 'session_info',
+        })).resolves.toEqual(failure);
+        expect(showRequestFailureMock).toHaveBeenCalledWith(failure);
+        const progressArgs = openObservedProgressMock.mock.calls[0]?.[0] as {
+            onOpenConflicts: (id: string) => void; onDismiss: () => void;
+        };
+        progressArgs.onOpenConflicts('a-b');
+        expect(openConflictDetailsMock).toHaveBeenCalledWith({ ...resource, initialRelationshipId: 'a-b' });
+        progressArgs.onDismiss();
+        expect(closePicker).not.toHaveBeenCalled();
+        expect(executeSessionHandoffActionMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('shows an immediate linked-route failure without claiming an unverified blocked link', async () => {
+        const resource = { kind: 'workspaceSyncConflicts', hubWorkspaceRefId: 'workspace-a',
+            workspaceRefId: 'workspace-c', controllerMachineId: 'machine-a', serverId: 'server' };
+        openSessionHandoffPickerMock.mockResolvedValueOnce({ targetMachineId: 'machine-b',
+            workspaceAction: { kind: 'linked_workspace' }, workspaceSyncReviewResource: resource,
+            workspaceSyncReviewRelationshipIds: ['a-c', 'a-b'] });
+        const failure = { ok: false as const, error: 'unavailable', errorCode: 'workspace_sync_unavailable' };
+        executeSessionHandoffActionMock.mockResolvedValueOnce(failure);
+        const { runSessionHandoffPickerFlow } = await import('./runSessionHandoffPickerFlow');
+        await runSessionHandoffPickerFlow({ execute: vi.fn(), sessionId: 'sess_1', sourceMachineId: 'machine-c',
+            serverId: 'server', placement: 'session_info' });
+        expect(showRequestFailureMock).toHaveBeenCalledWith(failure);
+        const progressArgs = openObservedProgressMock.mock.calls[0]?.[0] as { onOpenConflicts: (id: string | null) => void };
+        progressArgs.onOpenConflicts(null);
+        expect(openConflictDetailsMock).toHaveBeenCalledWith(resource);
+        expect(executeSessionHandoffActionMock).toHaveBeenCalledTimes(1);
     });
 });

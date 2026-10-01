@@ -284,4 +284,122 @@ describe('buildBackgroundServiceSetupGuidance', () => {
             ],
         }));
     });
+    it('gives an explicit Home its own pinned target so the user\'s default-following service and other Homes coexist', () => {
+        const userDefaultService: HappierService = {
+            id: 'systemd-user:happier-daemon.default',
+            serviceType: 'daemon',
+            platform: 'linux',
+            backend: 'systemd-user',
+            label: 'happier-daemon.default',
+            targetMode: 'default-following',
+            verification: 'verified',
+            ring: 'stable',
+            instanceId: null,
+            scope: 'user',
+            definitionPath: '/home/tester/.config/systemd/user/happier-daemon.default.service',
+            executablePath: '/home/tester/.happier/bin/happier',
+            happierHomeDir: '/home/tester/.happier',
+            installed: true,
+            running: true,
+        };
+        const otherHomeService: HappierService = {
+            ...userDefaultService,
+            id: 'systemd-user:happier-daemon.company',
+            label: 'happier-daemon.company',
+            targetMode: 'pinned',
+            instanceId: 'company',
+            definitionPath: '/home/tester/.config/systemd/user/happier-daemon.company.service',
+            serverUrl: 'https://company.example.test',
+            publicServerUrl: 'https://company.example.test',
+        };
+        const guidance = buildBackgroundServiceSetupGuidance({
+            services: [userDefaultService, otherHomeService],
+            managedReleaseChannelInventory: {
+                defaultReleaseChannel: 'stable',
+                managedReleaseChannels: [
+                    {
+                        releaseChannel: 'preview',
+                        label: 'preview',
+                        version: '0.3.0-preview.1',
+                        installationId: 'preview-install',
+                        installationPath: '/home/tester/.happier/cli-preview/current',
+                        invokerName: 'hprev',
+                        isDefault: false,
+                        onPath: true,
+                    },
+                ],
+            },
+            currentHappierHomeDir: '/home/tester/.happier',
+            platform: 'linux',
+            mode: 'user',
+            targetReleaseChannel: 'preview',
+            targetServerUrl: 'http://127.0.0.1:43110',
+            serviceTarget: { targetMode: 'pinned', serverId: 'personal-home' },
+        });
+
+        expect(guidance).toEqual(expect.objectContaining({
+            exactDefaultServiceExists: false,
+            conflictingServices: [],
+            foreignHomeConflictingServices: [],
+            shouldOfferDefaultReleaseChannelSwitch: false,
+            shouldPromptForServiceReplacement: false,
+        }));
+    });
+
+    it('replaces only the planned services through the install itself instead of a separate remove-all step', () => {
+        const guidance = buildBackgroundServiceSetupGuidance({
+            services: [],
+            managedReleaseChannelInventory: { defaultReleaseChannel: 'stable', managedReleaseChannels: [] },
+            platform: 'linux',
+            mode: 'user',
+            targetReleaseChannel: 'stable',
+        });
+
+        expect(resolveBackgroundServiceSetupReconciliationDisposition({
+            guidance,
+            targetChanged: false,
+            tookOverManualRelayRuntime: false,
+            replacedExistingServices: true,
+        })).toEqual([
+            { kind: 'install', takeover: false, replaceExisting: true },
+            { kind: 'start', takeover: false },
+        ]);
+    });
+
+    it('rewrites and restarts the existing service when this run changed which CLI runs it (R12/R13 b)', () => {
+        const guidance = buildBackgroundServiceSetupGuidance({
+            services: [{
+                id: 'systemd-user:happier-daemon.default',
+                serviceType: 'daemon',
+                platform: 'linux',
+                backend: 'systemd-user',
+                label: 'happier-daemon.default',
+                targetMode: 'default-following',
+                verification: 'verified',
+                ring: 'stable',
+                instanceId: null,
+                scope: 'user',
+                definitionPath: '/home/tester/.config/systemd/user/happier-daemon.default.service',
+                executablePath: '/home/tester/npm-global/bin/happier',
+                happierHomeDir: '/home/tester/.happier',
+                installed: true,
+                running: true,
+            }],
+            managedReleaseChannelInventory: { defaultReleaseChannel: 'stable', managedReleaseChannels: [] },
+            currentHappierHomeDir: '/home/tester/.happier',
+            platform: 'linux',
+            mode: 'user',
+            targetReleaseChannel: 'stable',
+        });
+        const base = { guidance, targetChanged: false, tookOverManualRelayRuntime: false, replacedExistingServices: false };
+
+        // A running exact service with nothing changed is left alone...
+        expect(resolveBackgroundServiceSetupReconciliationDisposition(base)).toEqual([]);
+        // ...but the R12 answer switches its runtime: only the strict install rewrites the launcher
+        // (its failure fails setup), and a restart makes the new CLI the one running.
+        expect(resolveBackgroundServiceSetupReconciliationDisposition({ ...base, runtimeChanged: true })).toEqual([
+            { kind: 'install', takeover: false },
+            { kind: 'restart' },
+        ]);
+    });
 });

@@ -28,7 +28,7 @@ export type PeerTcpTunnelWebSocketLike = {
     close: () => void;
 };
 
-export type PeerTcpTunnelWebSocketCtor = new (url: string) => PeerTcpTunnelWebSocketLike;
+export type PeerTcpTunnelWebSocketCtor = new (url: string, protocols?: string | string[]) => PeerTcpTunnelWebSocketLike;
 
 function resolveLoopbackStreamUrl(endpointUrl: string, streamPath: string): string {
     const url = new URL(streamPath || PEER_TCP_TUNNEL_STREAM_PATH, endpointUrl);
@@ -57,13 +57,19 @@ export async function openPeerTcpTunnelLoopbackStream(input: Readonly<{
     open: PeerTcpTunnelOpenV1 | PeerTcpTunnelOpenV2;
     response: PeerTcpTunnelOpenResponseV1;
     WebSocketCtor?: PeerTcpTunnelWebSocketCtor;
+    webSocketProtocols?: readonly string[];
+    /** Returns the carrier lease to its existing lifecycle owner on every retirement path. */
+    onRetired?: () => void;
     openTimeoutMs?: number;
     signal?: AbortSignal | null;
 }>): Promise<PeerTcpTunnelClientStream> {
     const WebSocketCtor = resolveWebSocketCtor(input.WebSocketCtor);
     if (!WebSocketCtor) throw new Error('Peer TCP tunnel loopback websocket is unavailable');
 
-    const socket = new WebSocketCtor(resolveLoopbackStreamUrl(input.endpointUrl, input.response.streamPath));
+    const url = resolveLoopbackStreamUrl(input.endpointUrl, input.response.streamPath);
+    const socket = input.webSocketProtocols
+        ? new WebSocketCtor(url, [...input.webSocketProtocols])
+        : new WebSocketCtor(url);
     socket.binaryType = 'arraybuffer';
 
     const handlers = new Set<(frame: PeerTcpTunnelFrame) => void>();
@@ -104,6 +110,7 @@ export async function openPeerTcpTunnelLoopbackStream(input: Readonly<{
                 // The stream is already retired. A transport-specific close failure cannot restore it.
             }
         }
+        input.onRetired?.();
     };
     const close = (): void => retire(true);
     const failOpen = (error: Error): void => {

@@ -3,10 +3,10 @@ import renderer, { act } from 'react-test-renderer';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { renderScreen, standardCleanup } from '@/dev/testkit';
 import { AppPaneProvider } from '@/components/appShell/panes/AppPaneProvider';
-import { createReducer } from '@/sync/reducer/reducer';
+import { createReducer } from "@happier-dev/session-core/reducer";
 import { deriveTranscriptInteraction } from '@/utils/sessions/deriveTranscriptInteraction';
 import { installMessageViewCommonModuleMocks } from './messageViewTestHelpers';
-import type { UserTextMessage } from '@/sync/domains/messages/messageTypes';
+import type { UserTextMessage } from "@happier-dev/session-core/messages";
 import {
     formatVoiceToolResultsFollowUp,
     VOICE_TOOL_RESULT_INSTRUCTIONS_PREFIX,
@@ -1733,16 +1733,9 @@ describe('MessageView (structured meta)', { timeout: 60_000 }, () => {
         expect(submitMessageSpy).toHaveBeenCalledTimes(1);
         const [sessionId, text, _displayText, metaOverrides] = submitMessageSpy.mock.calls[0] as any[];
         expect(sessionId).toBe('s1');
-        expect(String(text)).toContain('Please implement the accepted review findings below.');
-        expect(metaOverrides).toEqual({
-            happier: {
-                kind: 'review_publish_request.v1',
-                payload: expect.objectContaining({
-                    sourceRunRef: { runId: 'run_1', callId: 'call_1', backendId: 'b1' },
-                    findingIds: ['f1'],
-                }),
-            },
-        });
+        expect(String(text)).toContain('reviews.comments.transition');
+        expect(String(text)).toContain('reviews.comments.setDisposition');
+        expect(metaOverrides).toBeUndefined();
     });
 
     it.each([

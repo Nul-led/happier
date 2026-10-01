@@ -67,7 +67,7 @@ import { buildSessionListGroupOrderAfterTreeDrop } from '../commit/applyGroupOrd
 import { buildSessionWorkspaceOrderAfterTreeDrop } from '../commit/applyWorkspaceOrderUpdate';
 import { buildSessionListDragSource } from '../drop-resolution/buildSessionListDragSource';
 import { buildSessionListTreeRows } from '../drop-resolution/buildSessionListTreeRows';
-import { isWorkspaceRootTreeRowId } from '../drop-resolution/treeRowId';
+import { isSessionTreeRowId, isWorkspaceRootTreeRowId } from '../drop-resolution/treeRowId';
 import type {
     SessionListTreeContainerMetadata,
     SessionListTreeDragSource,
@@ -112,6 +112,16 @@ export type CommitSessionListDragIntentContext = Readonly<{
         sessionId: string;
         folderId: string | null;
     }>) => Promise<void>;
+    /**
+     * Puts the dragged Session under the target Session (`reportsTo`, R-03). The owner re-checks the
+     * drop against the latest Sessions, asks the server, and says a refusal itself. Omitted, a drop
+     * on a Session row never commits.
+     */
+    putSessionUnder?: (input: Readonly<{
+        serverId: string;
+        sessionId: string;
+        leadSessionId: string;
+    }>) => Promise<'applied' | 'not-eligible' | 'refused'>;
 }>;
 
 function noOp(reason: SessionListDragCommitNoOpReason): SessionListDragCommitResult {
@@ -384,6 +394,12 @@ export async function commitSessionListDragIntent(params: Readonly<{
         return noOp('source-missing');
     }
 
+    // A drop on a Session row puts the source under that Session: a `reportsTo` change, not a
+    // folder or order change, so none of the container rebase below applies.
+    if (intent.instructionKind === 'nest-into' && intent.targetRowId && isSessionTreeRowId(intent.targetRowId)) {
+        return commitPutSessionUnder({ source: sourceMetadata, targetRowId: intent.targetRowId, tree, context });
+    }
+
     // Resolve the destination container by stable id in the latest tree.
     if (!intent.containerId) return noOp('container-missing');
     const container = tree.containerMetadataById.get(intent.containerId);
@@ -448,6 +464,27 @@ export async function commitSessionListDragIntent(params: Readonly<{
     if (applied.ok) return { ok: true };
     if (applied.reason === 'date-ordering-mode') return noOp('date-ordering-mode');
     return noOp('no-change');
+}
+
+async function commitPutSessionUnder(params: Readonly<{
+    source: SessionListTreeRowMetadata;
+    targetRowId: string;
+    tree: SessionListTreeModel;
+    context: CommitSessionListDragIntentContext;
+}>): Promise<SessionListDragCommitResult> {
+    const { source, context } = params;
+    const lead = params.tree.rowMetadataById.get(params.targetRowId);
+    if (!lead || lead.kind !== 'session' || !lead.sessionId) return noOp('target-missing');
+    if (source.kind !== 'session' || !source.sessionId || !source.serverId) return noOp('blocked-intent');
+    if (lead.serverId !== source.serverId) return noOp('scope-mismatch');
+    if (!context.putSessionUnder) return noOp('blocked-intent');
+    const outcome = await context.putSessionUnder({
+        serverId: source.serverId,
+        sessionId: source.sessionId,
+        leadSessionId: lead.sessionId,
+    });
+    if (outcome === 'applied') return { ok: true };
+    return noOp(outcome === 'refused' ? 'refused' : 'blocked-intent');
 }
 
 function intentSourceKindToTreeKind(intent: SessionListDragIntent): SessionListTreeRowMetadata['kind'] {

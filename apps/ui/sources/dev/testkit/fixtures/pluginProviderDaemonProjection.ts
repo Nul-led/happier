@@ -1,4 +1,4 @@
-import { normalizePluginBackendCapabilitiesV1, type PluginProjectionV2 } from '@happier-dev/protocol';
+import type { PluginProjectionV2 } from '@happier-dev/protocol';
 
 export const PLUGIN_PROVIDER_DAEMON_PROJECTION_FIXTURE = {
     v: 2,
@@ -31,19 +31,6 @@ export const PLUGIN_PROVIDER_DAEMON_PROJECTION_FIXTURE = {
             providerOwnedEnvironmentKeys: [],
         },
     },
-    backendsById: {
-        'acme.review.backend': {
-            id: 'acme.review.backend',
-            agentId: 'acme.review.provider',
-            title: 'Acme Review Backend',
-            subtitle: 'Plugin-backed review engine',
-            catalogAgentId: 'claude',
-            iconAgentId: 'codex',
-            capabilities: normalizePluginBackendCapabilitiesV1({
-                executionRun: { supported: true },
-            }),
-        },
-    },
     actionsById: {},
     familiesById: {},
     toolsById: {},
@@ -61,7 +48,7 @@ export const PLUGIN_PROVIDER_DAEMON_PROJECTION_FIXTURE = {
             },
             plugin: { id: 'acme.review', version: '1.0.0', source: 'localPath' },
             stage: 'normalization',
-            generation: '7',
+            occurrenceId: '7',
             host: 'daemon',
             platform: 'darwin',
             occurredAtMs: 1,

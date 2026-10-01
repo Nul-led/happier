@@ -8,11 +8,13 @@ import {
     DYNAMIC_MODEL_PROBE_STATIC_FALLBACK_RETRY_MS,
     DYNAMIC_MODEL_PROBE_SUCCESS_TTL_MS,
 } from '@/sync/domains/models/dynamicModelProbeCache';
-import { installCapabilitiesOpsModuleMock } from '@/dev/testkit/mocks/capabilities';
+import { useNewSessionPreflightModelsState } from './useNewSessionPreflightModelsState';
 
-const machineCapabilitiesInvokeMock = vi.fn();
+const { machineCapabilitiesInvokeMock } = vi.hoisted(() => ({ machineCapabilitiesInvokeMock: vi.fn() }));
+vi.mock('@/sync/ops/capabilities', () => ({ machineCapabilitiesInvoke: machineCapabilitiesInvokeMock }));
 
 vi.mock('@/agents/catalog/catalog', () => ({
+    AGENT_IDS: ['claude', 'codex', 'gemini', 'customAcp'],
     getAgentCore: (agentId: string | null) => ({
         model: {
             supportsSelection: true,
@@ -35,16 +37,11 @@ type DeferredModelProbeResult = {
 
 describe('useNewSessionPreflightModelsState (refresh)', () => {
     it('does not probe models for static-only providers (uses catalog list only)', async () => {
-        vi.resetModules();
         machineCapabilitiesInvokeMock.mockReset();
         resetDynamicModelProbeCacheForTests();
-        vi.doMock('@/sync/ops/capabilities', installCapabilitiesOpsModuleMock({
-            machineCapabilitiesInvoke: machineCapabilitiesInvokeMock,
-        }));
 
         machineCapabilitiesInvokeMock.mockRejectedValue(new Error('unexpected probe call'));
 
-        const { useNewSessionPreflightModelsState } = await import('./useNewSessionPreflightModelsState');
         const hook = await renderHook(
             () => useNewSessionPreflightModelsState({
                 backendTarget: { kind: 'backend', backendId: 'claude' },
@@ -63,12 +60,8 @@ describe('useNewSessionPreflightModelsState (refresh)', () => {
     });
 
     it('forces a refresh probe without clearing existing options', async () => {
-        vi.resetModules();
         machineCapabilitiesInvokeMock.mockReset();
         resetDynamicModelProbeCacheForTests();
-        vi.doMock('@/sync/ops/capabilities', installCapabilitiesOpsModuleMock({
-            machineCapabilitiesInvoke: machineCapabilitiesInvokeMock,
-        }));
 
         let call = 0;
         machineCapabilitiesInvokeMock.mockImplementation(async () => {
@@ -82,7 +75,6 @@ describe('useNewSessionPreflightModelsState (refresh)', () => {
             };
         });
 
-        const { useNewSessionPreflightModelsState } = await import('./useNewSessionPreflightModelsState');
         const hook = await renderHook(
             (props: { cwd: string }) => useNewSessionPreflightModelsState({
                 backendTarget: { kind: 'backend', backendId: 'codex' },
@@ -108,13 +100,9 @@ describe('useNewSessionPreflightModelsState (refresh)', () => {
         await hook.unmount();
     });
 
-    it('keeps the previous model list visible while probing a different cwd', async () => {
-        vi.resetModules();
+    it('clears the previous model list while probing a different cwd', async () => {
         machineCapabilitiesInvokeMock.mockReset();
         resetDynamicModelProbeCacheForTests();
-        vi.doMock('@/sync/ops/capabilities', installCapabilitiesOpsModuleMock({
-            machineCapabilitiesInvoke: machineCapabilitiesInvokeMock,
-        }));
 
         let resolveSecondProbe: ((value: DeferredModelProbeResult) => void) | null = null;
         machineCapabilitiesInvokeMock
@@ -129,7 +117,6 @@ describe('useNewSessionPreflightModelsState (refresh)', () => {
                 resolveSecondProbe = resolve;
             }));
 
-        const { useNewSessionPreflightModelsState } = await import('./useNewSessionPreflightModelsState');
         const hook = await renderHook(
             (props: { cwd: string }) => useNewSessionPreflightModelsState({
                 backendTarget: { kind: 'backend', backendId: 'codex' },
@@ -145,7 +132,7 @@ describe('useNewSessionPreflightModelsState (refresh)', () => {
 
         await hook.rerender({ cwd: '/repo-b' });
         expect(machineCapabilitiesInvokeMock).toHaveBeenCalledTimes(2);
-        expect(hook.getCurrent().modelOptions.some((o) => o.value === 'm1')).toBe(true);
+        expect(hook.getCurrent().preflightModels).toBeNull();
 
         if (!resolveSecondProbe) {
             throw new Error('expected deferred second probe resolver');
@@ -170,12 +157,8 @@ describe('useNewSessionPreflightModelsState (refresh)', () => {
     it('uses an expired cached model list as refreshing state while the background probe is pending', async () => {
         vi.useFakeTimers();
         vi.setSystemTime(5_000_000);
-        vi.resetModules();
         machineCapabilitiesInvokeMock.mockReset();
         resetDynamicModelProbeCacheForTests();
-        vi.doMock('@/sync/ops/capabilities', installCapabilitiesOpsModuleMock({
-            machineCapabilitiesInvoke: machineCapabilitiesInvokeMock,
-        }));
 
         let resolveProbe: ((value: DeferredModelProbeResult) => void) | null = null;
         machineCapabilitiesInvokeMock.mockImplementationOnce(() => new Promise<DeferredModelProbeResult>((resolve) => {
@@ -188,7 +171,7 @@ describe('useNewSessionPreflightModelsState (refresh)', () => {
         const { buildDynamicModelProbeCacheKey } = await import('@/sync/domains/models/dynamicModelProbeCacheKey');
         const cacheKey = buildDynamicModelProbeCacheKey({
             machineId: 'machine-1',
-            targetKey: 'backend:codex',
+            targetKey: 'agent:happier.agent.codex/codex',
             providerConnectionId: null,
             serverId: 'server-1',
             cwd: '/repo',
@@ -205,7 +188,6 @@ describe('useNewSessionPreflightModelsState (refresh)', () => {
             Date.now() - DYNAMIC_MODEL_PROBE_SUCCESS_TTL_MS - 1,
         );
 
-        const { useNewSessionPreflightModelsState } = await import('./useNewSessionPreflightModelsState');
         const hook = await renderHook(
             () => useNewSessionPreflightModelsState({
                 backendTarget: { kind: 'backend', backendId: 'codex' },
@@ -242,12 +224,8 @@ describe('useNewSessionPreflightModelsState (refresh)', () => {
     });
 
     it('does not expose a previous backend model list after the backend target changes', async () => {
-        vi.resetModules();
         machineCapabilitiesInvokeMock.mockReset();
         resetDynamicModelProbeCacheForTests();
-        vi.doMock('@/sync/ops/capabilities', installCapabilitiesOpsModuleMock({
-            machineCapabilitiesInvoke: machineCapabilitiesInvokeMock,
-        }));
 
         machineCapabilitiesInvokeMock.mockImplementationOnce(async () => ({
             supported: true as const,
@@ -257,7 +235,6 @@ describe('useNewSessionPreflightModelsState (refresh)', () => {
             },
         }));
 
-        const { useNewSessionPreflightModelsState } = await import('./useNewSessionPreflightModelsState');
         const hook = await renderHook(
             (props: { backendTarget: { kind: 'backend'; backendId: 'codex' | 'claude' } }) =>
                 useNewSessionPreflightModelsState({
@@ -270,7 +247,7 @@ describe('useNewSessionPreflightModelsState (refresh)', () => {
         );
 
         expect(hook.getCurrent().preflightModels?.availableModels.map((model) => model.id)).toEqual(['gpt-5.5']);
-        expect(hook.getCurrent().preflightModelsTargetKey).toBe('backend:codex');
+        expect(hook.getCurrent().preflightModelsTargetKey).toBe('agent:happier.agent.codex/codex');
         expect(hook.getCurrent().modelOptions.some((option) => option.value === 'gpt-5.5')).toBe(true);
 
         await hook.rerender({ backendTarget: { kind: 'backend', backendId: 'claude' } });
@@ -285,12 +262,8 @@ describe('useNewSessionPreflightModelsState (refresh)', () => {
     });
 
     it('does not expose a previous dynamic backend model list after switching to another dynamic backend', async () => {
-        vi.resetModules();
         machineCapabilitiesInvokeMock.mockReset();
         resetDynamicModelProbeCacheForTests();
-        vi.doMock('@/sync/ops/capabilities', installCapabilitiesOpsModuleMock({
-            machineCapabilitiesInvoke: machineCapabilitiesInvokeMock,
-        }));
 
         machineCapabilitiesInvokeMock.mockImplementationOnce(async () => ({
             supported: true as const,
@@ -317,7 +290,6 @@ describe('useNewSessionPreflightModelsState (refresh)', () => {
             },
         }));
 
-        const { useNewSessionPreflightModelsState } = await import('./useNewSessionPreflightModelsState');
         const hook = await renderHook(
             (props: { backendTarget: { kind: 'backend'; backendId: 'codex' | 'gemini' } }) =>
                 useNewSessionPreflightModelsState({
@@ -329,7 +301,7 @@ describe('useNewSessionPreflightModelsState (refresh)', () => {
             { initialProps: { backendTarget: { kind: 'backend', backendId: 'codex' } } },
         );
 
-        expect(hook.getCurrent().preflightModelsTargetKey).toBe('backend:codex');
+        expect(hook.getCurrent().preflightModelsTargetKey).toBe('agent:happier.agent.codex/codex');
         expect(hook.getCurrent().modelOptions.some((option) => option.value === 'gpt-5.5')).toBe(true);
         expect(hook.getCurrent().modelOptions.some((option) => option.value === 'opencode/big-pickle')).toBe(true);
 
@@ -341,15 +313,11 @@ describe('useNewSessionPreflightModelsState (refresh)', () => {
         expect(machineCapabilitiesInvokeMock).toHaveBeenCalledTimes(2);
     });
 
-    it('retries after an error cooldown elapses so transient capability errors do not permanently hide model options', async () => {
+    it('keeps trusted static models selectable when capability discovery returns a generic error', async () => {
         vi.useFakeTimers();
         vi.setSystemTime(1_000_000);
-        vi.resetModules();
         machineCapabilitiesInvokeMock.mockReset();
         resetDynamicModelProbeCacheForTests();
-        vi.doMock('@/sync/ops/capabilities', installCapabilitiesOpsModuleMock({
-            machineCapabilitiesInvoke: machineCapabilitiesInvokeMock,
-        }));
 
         machineCapabilitiesInvokeMock
             .mockImplementationOnce(async () => ({
@@ -364,7 +332,6 @@ describe('useNewSessionPreflightModelsState (refresh)', () => {
                 },
             }));
 
-        const { useNewSessionPreflightModelsState } = await import('./useNewSessionPreflightModelsState');
         const hook = await renderHook(
             () => useNewSessionPreflightModelsState({
                 backendTarget: { kind: 'backend', backendId: 'codex' },
@@ -375,12 +342,9 @@ describe('useNewSessionPreflightModelsState (refresh)', () => {
         );
 
         expect(machineCapabilitiesInvokeMock).toHaveBeenCalledTimes(1);
-        expect(hook.getCurrent().preflightModels).toEqual({
-            availableModels: [],
-            supportsFreeform: false,
-            unavailable: true,
-        });
-        expect(hook.getCurrent().modelOptions).toEqual([]);
+        expect(hook.getCurrent().preflightModels).toBeNull();
+        expect(hook.getCurrent().probe.failed).toBe(true);
+        expect(hook.getCurrent().modelOptions.some((option) => option.value === 'default')).toBe(true);
         expect(hook.getCurrent().modelOptions.some((o) => o.value === 'm1')).toBe(false);
 
         await act(async () => {
@@ -389,18 +353,15 @@ describe('useNewSessionPreflightModelsState (refresh)', () => {
 
         expect(machineCapabilitiesInvokeMock).toHaveBeenCalledTimes(2);
         expect(hook.getCurrent().modelOptions.some((o) => o.value === 'm1')).toBe(true);
+        expect(hook.getCurrent().probe.failed).toBe(false);
 
         await hook.unmount();
         vi.useRealTimers();
     });
 
     it('keeps a static fallback model list available across detail remounts in the same runtime', async () => {
-        vi.resetModules();
         machineCapabilitiesInvokeMock.mockReset();
         resetDynamicModelProbeCacheForTests();
-        vi.doMock('@/sync/ops/capabilities', installCapabilitiesOpsModuleMock({
-            machineCapabilitiesInvoke: machineCapabilitiesInvokeMock,
-        }));
 
         machineCapabilitiesInvokeMock.mockImplementationOnce(async () => ({
             supported: true as const,
@@ -415,7 +376,6 @@ describe('useNewSessionPreflightModelsState (refresh)', () => {
             },
         }));
 
-        const { useNewSessionPreflightModelsState } = await import('./useNewSessionPreflightModelsState');
         const hook = await renderHook(
             () => useNewSessionPreflightModelsState({
                 backendTarget: { kind: 'backend', backendId: 'codex' },
@@ -446,12 +406,8 @@ describe('useNewSessionPreflightModelsState (refresh)', () => {
     it('keeps a transient fallback list when a retry returns a less complete static fallback', async () => {
         vi.useFakeTimers();
         vi.setSystemTime(3_000_000);
-        vi.resetModules();
         machineCapabilitiesInvokeMock.mockReset();
         resetDynamicModelProbeCacheForTests();
-        vi.doMock('@/sync/ops/capabilities', installCapabilitiesOpsModuleMock({
-            machineCapabilitiesInvoke: machineCapabilitiesInvokeMock,
-        }));
 
         machineCapabilitiesInvokeMock
             .mockImplementationOnce(async () => ({
@@ -479,7 +435,6 @@ describe('useNewSessionPreflightModelsState (refresh)', () => {
                 },
             }));
 
-        const { useNewSessionPreflightModelsState } = await import('./useNewSessionPreflightModelsState');
         const hook = await renderHook(
             () => useNewSessionPreflightModelsState({
                 backendTarget: { kind: 'backend', backendId: 'codex' },
@@ -515,12 +470,8 @@ describe('useNewSessionPreflightModelsState (refresh)', () => {
     it('auto-retries quickly after a static fallback result so model options appear without manual refresh', async () => {
         vi.useFakeTimers();
         vi.setSystemTime(2_000_000);
-        vi.resetModules();
         machineCapabilitiesInvokeMock.mockReset();
         resetDynamicModelProbeCacheForTests();
-        vi.doMock('@/sync/ops/capabilities', installCapabilitiesOpsModuleMock({
-            machineCapabilitiesInvoke: machineCapabilitiesInvokeMock,
-        }));
 
         machineCapabilitiesInvokeMock
             .mockImplementationOnce(async () => ({
@@ -561,7 +512,6 @@ describe('useNewSessionPreflightModelsState (refresh)', () => {
                 },
             }));
 
-        const { useNewSessionPreflightModelsState } = await import('./useNewSessionPreflightModelsState');
         const hook = await renderHook(
             () => useNewSessionPreflightModelsState({
                 backendTarget: { kind: 'backend', backendId: 'codex' },
@@ -590,13 +540,9 @@ describe('useNewSessionPreflightModelsState (refresh)', () => {
         vi.useRealTimers();
     });
 
-    it('does not expose static Default options when the model probe reports unavailable', async () => {
-        vi.resetModules();
+    it('keeps static Default options when the model probe reports unavailable', async () => {
         machineCapabilitiesInvokeMock.mockReset();
         resetDynamicModelProbeCacheForTests();
-        vi.doMock('@/sync/ops/capabilities', installCapabilitiesOpsModuleMock({
-            machineCapabilitiesInvoke: machineCapabilitiesInvokeMock,
-        }));
 
         machineCapabilitiesInvokeMock.mockImplementationOnce(async () => ({
             supported: true as const,
@@ -611,7 +557,6 @@ describe('useNewSessionPreflightModelsState (refresh)', () => {
             },
         }));
 
-        const { useNewSessionPreflightModelsState } = await import('./useNewSessionPreflightModelsState');
         const hook = await renderHook(
             () => useNewSessionPreflightModelsState({
                 backendTarget: { kind: 'backend', backendId: 'codex' },
@@ -627,18 +572,14 @@ describe('useNewSessionPreflightModelsState (refresh)', () => {
             supportsFreeform: false,
             unavailable: true,
         });
-        expect(hook.getCurrent().modelOptions).toEqual([]);
+        expect(hook.getCurrent().modelOptions.some((option) => option.value === 'default')).toBe(true);
 
         await hook.unmount();
     });
 
-    it('replaces a previous successful model list when a forced refresh reports unavailable', async () => {
-        vi.resetModules();
+    it('retains the last successful model list and timestamp when a forced refresh reports unavailable', async () => {
         machineCapabilitiesInvokeMock.mockReset();
         resetDynamicModelProbeCacheForTests();
-        vi.doMock('@/sync/ops/capabilities', installCapabilitiesOpsModuleMock({
-            machineCapabilitiesInvoke: machineCapabilitiesInvokeMock,
-        }));
 
         machineCapabilitiesInvokeMock
             .mockImplementationOnce(async () => ({
@@ -666,7 +607,6 @@ describe('useNewSessionPreflightModelsState (refresh)', () => {
                 },
             }));
 
-        const { useNewSessionPreflightModelsState } = await import('./useNewSessionPreflightModelsState');
         const hook = await renderHook(
             () => useNewSessionPreflightModelsState({
                 backendTarget: { kind: 'backend', backendId: 'codex' },
@@ -679,6 +619,7 @@ describe('useNewSessionPreflightModelsState (refresh)', () => {
         expect(machineCapabilitiesInvokeMock).toHaveBeenCalledTimes(1);
         expect(hook.getCurrent().modelOptions.some((option) => option.value === 'gpt-5.5')).toBe(true);
 
+        const observedAt = hook.getCurrent().probe.refreshedAt;
         await act(async () => {
             hook.getCurrent().probe.onRefresh?.();
         });
@@ -686,48 +627,35 @@ describe('useNewSessionPreflightModelsState (refresh)', () => {
 
         expect(machineCapabilitiesInvokeMock).toHaveBeenCalledTimes(2);
         expect(hook.getCurrent().preflightModels).toEqual({
-            availableModels: [],
+            availableModels: [{ id: 'gpt-5.5', name: 'GPT 5.5' }],
             supportsFreeform: false,
-            unavailable: true,
         });
-        expect(hook.getCurrent().modelOptions).toEqual([]);
+        expect(hook.getCurrent().modelOptions.some((option) => option.value === 'default')).toBe(true);
+        expect(hook.getCurrent().modelOptions.some((option) => option.value === 'gpt-5.5')).toBe(true);
 
+        expect(hook.getCurrent().probe.refreshedAt).toBe(observedAt);
+        expect(hook.getCurrent().probe.failed).toBe(true);
         await hook.unmount();
     });
 
     it('does not enter a render loop when probeContext identity churns but cached values are stable by content', async () => {
-        vi.resetModules();
         machineCapabilitiesInvokeMock.mockReset();
 
-        vi.doMock('@/sync/ops/capabilities', installCapabilitiesOpsModuleMock({
-            machineCapabilitiesInvoke: machineCapabilitiesInvokeMock,
-        }));
         machineCapabilitiesInvokeMock.mockRejectedValue(new Error('unexpected probe call'));
 
-        let readCall = 0;
+        const cache = await import('@/sync/domains/models/dynamicModelProbeCache');
+        const { buildDynamicModelProbeCacheKey } = await import('@/sync/domains/models/dynamicModelProbeCacheKey');
+        const { resolveBackendTargetKeyV2 } = await import('@/agents/backendCatalog/backendTargetKeyV2');
+        cache.resetDynamicModelProbeCacheForTests();
         const cachedValue = {
             availableModels: [{ id: 'm1', name: 'Model 1' }],
             supportsFreeform: false,
         };
-        vi.doMock('@/sync/domains/models/dynamicModelProbeCache', async () => {
-            const actual = await vi.importActual<typeof import('@/sync/domains/models/dynamicModelProbeCache')>(
-                '@/sync/domains/models/dynamicModelProbeCache',
-            );
-            return {
-                ...actual,
-                readDynamicModelProbeCache: (_key: string) => {
-                    readCall++;
-                    return {
-                        kind: 'success' as const,
-                        updatedAt: 123,
-                        expiresAt: Date.now() + 60_000,
-                        value: cachedValue,
-                    };
-                },
-            };
-        });
+        cache.writeDynamicModelProbeCacheSuccess(buildDynamicModelProbeCacheKey({
+            machineId: 'machine-1', targetKey: resolveBackendTargetKeyV2({ kind: 'backend', backendId: 'codex' }),
+            providerConnectionId: null, serverId: 'server-1', cwd: '/repo', extraKeySuffixParts: ['appServer'],
+        })!, cachedValue);
 
-        const { useNewSessionPreflightModelsState } = await import('./useNewSessionPreflightModelsState');
 
         const hook = await renderHook(() => useNewSessionPreflightModelsState({
             backendTarget: { kind: 'backend', backendId: 'codex' },
@@ -741,10 +669,10 @@ describe('useNewSessionPreflightModelsState (refresh)', () => {
         }));
 
         expect(hook.getCurrent().modelOptions.some((o) => o.value === 'm1')).toBe(true);
-        expect(readCall).toBe(1);
+        expect(machineCapabilitiesInvokeMock).not.toHaveBeenCalled();
 
         await hook.rerender();
-        expect(readCall).toBe(1);
+        expect(machineCapabilitiesInvokeMock).not.toHaveBeenCalled();
         await hook.unmount();
     });
 });

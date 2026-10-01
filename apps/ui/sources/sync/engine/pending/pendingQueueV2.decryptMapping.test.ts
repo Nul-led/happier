@@ -6,7 +6,7 @@ import {
     savePendingOutboxMessage,
 } from '@/sync/domains/state/pendingOutboxPersistence';
 import { Encryption } from '@/sync/encryption/encryption';
-import type { RawRecord } from '@/sync/typesRaw';
+import type { RawRecord } from "@happier-dev/session-core/raw";
 
 import {
     fetchAndApplyPendingMessagesV2 as fetchAndApplyPendingMessagesV2Impl,
@@ -29,7 +29,7 @@ const fetchAndApplyPendingMessagesV2 = (
 });
 
 describe('pendingQueueV2 decrypt mapping', () => {
-    beforeEach(() => {
+    beforeEach(async () => {
         await resetPendingQueueState();
     });
 

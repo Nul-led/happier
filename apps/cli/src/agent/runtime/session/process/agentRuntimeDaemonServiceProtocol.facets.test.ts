@@ -286,7 +286,11 @@ describe('Agent runtime daemon-owned session facets protocol', () => {
         ok: true,
         result: {
           kind: 'voice.authority.snapshot',
-          agentGeneration: 'agent-generation-1',
+          agentSourceCustody: {
+            kind: 'managed',
+            immutableGenerationId: 'agent-generation-1',
+            installSource: 'npm',
+          },
           providers: [],
         },
       }).success,
@@ -360,7 +364,11 @@ describe('Agent runtime daemon-owned session facets protocol', () => {
         ok: true,
         result: {
           kind: 'voice.authority.snapshot',
-          agentGeneration: 'agent-generation-1',
+          agentSourceCustody: {
+            kind: 'managed',
+            immutableGenerationId: 'agent-generation-1',
+            installSource: 'npm',
+          },
           providers: [],
           invoke: 'arbitrary',
         },

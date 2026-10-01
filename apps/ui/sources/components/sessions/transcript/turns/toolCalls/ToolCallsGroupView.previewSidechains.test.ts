@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { ToolCallMessage } from '@/sync/domains/messages/messageTypes';
+import type { ToolCallMessage } from "@happier-dev/session-core/messages";
 
 import { resolveGroupedPreviewSidechainIds } from '@/components/sessions/transcript/toolCalls/units/groupedToolCallRowRenderDecision';
 

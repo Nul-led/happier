@@ -75,8 +75,12 @@ function buildConnectedAccountDescription(
         }],
       },
     },
-    generation: 'generation-1',
-    immutableGenerationId: 'immutable-generation-1',
+    occurrenceId: 'connected-account-fixture-occurrence',
+    sourceCustody: {
+      kind: 'managed',
+      immutableGenerationId: 'connected-account-fixture-generation',
+      installSource: 'npm',
+    },
     accounts: [],
     operationTransport: {
       kind: 'legacy',

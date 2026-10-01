@@ -26,14 +26,24 @@ export type SessionFollowApiResult<T> =
 
 const UNAVAILABLE = Object.freeze({ kind: 'failed', error: 'unavailable' } as const);
 
-/** One family adapter for human controls and the shared Action executor. */
-export async function executeSessionFollowAction<TActionId extends SessionFollowActionIdV1>(
-    actionId: TActionId,
-    input: unknown,
-    serverId: string,
-    signal?: AbortSignal,
-): Promise<SessionFollowApiResult<SessionFollowActionOutputV1[TActionId]>> {
-    if (!serverId.trim() || signal?.aborted) return UNAVAILABLE;
+type ResolvedFollowRequestContext = Awaited<ReturnType<typeof resolveServerAccountRequestContext>>;
+type ScopedFollowRequestContext = Extract<ResolvedFollowRequestContext, { scope: 'scoped' }>;
+
+/**
+ * One currentness/credential guard for every exact-Home Follow request. Human
+ * controls, Actions, and the Voice inclusion replacement all use this seam so
+ * a credential rotation cannot be handled by one path and missed by another.
+ */
+async function withCurrentFollowRequest<T>(params: Readonly<{
+    serverId: string;
+    signal?: AbortSignal;
+    operation: (request: Readonly<{
+        context: ScopedFollowRequestContext;
+        signal: AbortSignal;
+        isCurrent: () => boolean;
+    }>) => Promise<T>;
+}>): Promise<T | typeof UNAVAILABLE> {
+    if (!params.serverId.trim() || params.signal?.aborted) return UNAVAILABLE;
     const lifetime = captureActiveServerAccountScopeLifetime();
     if (!lifetime?.isCurrent()) return UNAVAILABLE;
 
@@ -42,50 +52,65 @@ export async function executeSessionFollowAction<TActionId extends SessionFollow
     const retirement = lifetime.onRetire(abort);
     // An inactive Home can change credentials without retiring the focused Home.
     const unsubscribeCredentials = subscribeHomeCredentialMutations((event) => {
-        if (areServerProfileIdentifiersEquivalent(event.serverId, serverId)) abort();
+        if (areServerProfileIdentifiersEquivalent(event.serverId, params.serverId)) abort();
     });
-    signal?.addEventListener('abort', abort, { once: true });
-    if (signal?.aborted) abort();
+    params.signal?.addEventListener('abort', abort, { once: true });
+    if (params.signal?.aborted) abort();
     const isCurrent = () => lifetime.isCurrent() && !controller.signal.aborted;
-    let context: Awaited<ReturnType<typeof resolveServerAccountRequestContext>> | undefined;
+    let context: ResolvedFollowRequestContext | undefined;
 
     try {
-        const request = resolveSessionFollowActionRequest(actionId, input);
-        context = await resolveServerAccountRequestContext({ serverId, preferScoped: true });
+        context = await resolveServerAccountRequestContext({ serverId: params.serverId, preferScoped: true });
         if (!isCurrent() || context.scope !== 'scoped') return UNAVAILABLE;
         if (areServerProfileIdentifiersEquivalent(context.targetServerId, lifetime.scope.serverId)
             && context.targetAccountId !== lifetime.scope.accountId) return UNAVAILABLE;
-
-        const send = createServerRequestForResolvedServerScope({
-            context,
-            // preferScoped must never fall back to the focused Home transport.
-            activeRequest: async () => { throw new Error('Follow requires an explicit Home'); },
-        });
-        const response = await send(request.path, {
-            method: request.method,
-            ...(request.body === undefined ? {} : {
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(request.body),
-            }),
-            signal: controller.signal,
-        });
-        if (!isCurrent()) return UNAVAILABLE;
-        const payload: unknown = await response.json();
-        if (!isCurrent()) return UNAVAILABLE;
-        if (!response.ok) {
-            const record = typeof payload === 'object' && payload !== null ? payload as Record<string, unknown> : {};
-            const error = SessionFollowSourcesErrorCodeV1Schema.safeParse(record.error);
-            return error.success ? { kind: 'failed', error: error.data } : UNAVAILABLE;
-        }
-        return { kind: 'ok', value: parseSessionFollowActionResponse(actionId, input, payload) };
+        return await params.operation({ context, signal: controller.signal, isCurrent });
     } catch {
         return UNAVAILABLE;
     } finally {
         retirement.dispose();
         unsubscribeCredentials();
-        signal?.removeEventListener('abort', abort);
+        params.signal?.removeEventListener('abort', abort);
         if (context?.scope === 'scoped') await context.release?.();
     }
+}
+
+/** One family adapter for human controls and the shared Action executor. */
+export async function executeSessionFollowAction<TActionId extends SessionFollowActionIdV1>(
+    actionId: TActionId,
+    input: unknown,
+    serverId: string,
+    signal?: AbortSignal,
+): Promise<SessionFollowApiResult<SessionFollowActionOutputV1[TActionId]>> {
+    return await withCurrentFollowRequest({
+        serverId,
+        signal,
+        operation: async ({ context, signal: requestSignal, isCurrent }) => {
+            const request = resolveSessionFollowActionRequest(actionId, input);
+            const send = createServerRequestForResolvedServerScope({
+                context,
+                // preferScoped must never fall back to the focused Home transport.
+                activeRequest: async () => { throw new Error('Follow requires an explicit Home'); },
+            });
+            const response = await send(request.path, {
+                method: request.method,
+                ...(request.body === undefined ? {} : {
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(request.body),
+                }),
+                signal: requestSignal,
+            });
+            if (!isCurrent()) return UNAVAILABLE;
+            const payload: unknown = await response.json();
+            if (!isCurrent()) return UNAVAILABLE;
+            if (!response.ok) {
+                const record = typeof payload === 'object' && payload !== null ? payload as Record<string, unknown> : {};
+                const error = SessionFollowSourcesErrorCodeV1Schema.safeParse(record.error);
+                return error.success ? { kind: 'failed', error: error.data } : UNAVAILABLE;
+            }
+            return { kind: 'ok', value: parseSessionFollowActionResponse(actionId, input, payload) };
+        },
+    });
 }
 
 export const sessionFollowAction: NonNullable<ActionExecutorDeps['sessionFollowAction']> = async (args) => {
@@ -124,35 +149,30 @@ export async function replaceSessionVoiceInclusions(
     serverId: string,
     sessionIds: readonly string[],
 ): Promise<SessionFollowApiResult<Readonly<{ changed: boolean; sessionIds: string[] }>>> {
-    if (!serverId.trim()) return UNAVAILABLE;
-    const lifetime = captureActiveServerAccountScopeLifetime();
-    if (!lifetime?.isCurrent()) return UNAVAILABLE;
-    let context: Awaited<ReturnType<typeof resolveServerAccountRequestContext>> | undefined;
-    try {
-        context = await resolveServerAccountRequestContext({ serverId, preferScoped: true });
-        if (!lifetime.isCurrent() || context.scope !== 'scoped') return UNAVAILABLE;
-        const send = createServerRequestForResolvedServerScope({
-            context,
-            activeRequest: async () => { throw new Error('Follow requires an explicit Home'); },
-        });
-        const response = await send(SESSION_FOLLOW_HTTP_PATHS_V1.voiceInclusions, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ sessionIds: [...sessionIds] }),
-        });
-        const payload: unknown = await response.json();
-        if (!lifetime.isCurrent()) return UNAVAILABLE;
-        if (!response.ok) {
-            const record = typeof payload === 'object' && payload !== null ? payload as Record<string, unknown> : {};
-            const error = SessionFollowErrorCodeV1Schema.safeParse(record.error);
-            return error.success ? { kind: 'failed', error: error.data } : UNAVAILABLE;
-        }
-        return { kind: 'ok', value: ReplaceSessionVoiceInclusionsResponseSchema.parse(payload) };
-    } catch {
-        return UNAVAILABLE;
-    } finally {
-        if (context?.scope === 'scoped') await context.release?.();
-    }
+    return await withCurrentFollowRequest({
+        serverId,
+        operation: async ({ context, signal, isCurrent }) => {
+            const send = createServerRequestForResolvedServerScope({
+                context,
+                activeRequest: async () => { throw new Error('Follow requires an explicit Home'); },
+            });
+            const response = await send(SESSION_FOLLOW_HTTP_PATHS_V1.voiceInclusions, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sessionIds: [...sessionIds] }),
+                signal,
+            });
+            if (!isCurrent()) return UNAVAILABLE;
+            const payload: unknown = await response.json();
+            if (!isCurrent()) return UNAVAILABLE;
+            if (!response.ok) {
+                const record = typeof payload === 'object' && payload !== null ? payload as Record<string, unknown> : {};
+                const error = SessionFollowErrorCodeV1Schema.safeParse(record.error);
+                return error.success ? { kind: 'failed', error: error.data } : UNAVAILABLE;
+            }
+            return { kind: 'ok', value: ReplaceSessionVoiceInclusionsResponseSchema.parse(payload) };
+        },
+    });
 }
 
 export function sessionAutoFollowPreferencesGet(serverId: string) {

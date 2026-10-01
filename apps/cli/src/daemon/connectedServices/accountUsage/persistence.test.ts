@@ -1,6 +1,7 @@
 import {
     buildProviderAccountUsageRecordId,
     openProviderAccountUsageSnapshotCiphertext,
+    openSealedProviderAccountUsageSnapshot,
     type ProviderAccountUsageRecordKeyV1,
     type ProviderAccountUsageSnapshotV1,
 } from '@happier-dev/protocol';
@@ -181,6 +182,10 @@ describe('provider account usage persistence scheduler', () => {
             source: { status: 'linked' as const },
         }));
         const snapshot = createSnapshot({
+            subscription: {
+                status: 'subscribed', renewal: 'off', observedAtMs: 900,
+                staleAfterMs: 60_000, currentPeriodEndAtMs: 1_800_000_000_000,
+            },
             recoveryCredits: {
                 availableCount: 1,
                 credits: [{
@@ -226,6 +231,10 @@ describe('provider account usage persistence scheduler', () => {
                     sealedPayload: {
                         format: 'account_scoped_v1',
                         ciphertext: expect.any(String),
+                        subscription: {
+                            observedAtMs: 900,
+                            ciphertext: expect.any(String),
+                        },
                     },
                 }),
             });
@@ -251,6 +260,10 @@ describe('provider account usage persistence scheduler', () => {
             })?.value).toMatchObject({
                 recoveryCredits: { availableCount: 1 },
             });
+            expect(openSealedProviderAccountUsageSnapshot({
+                material: encryption,
+                sealed: sealedPayload,
+            })?.subscription).toEqual(snapshot.subscription);
         } finally {
             scheduler.dispose();
         }

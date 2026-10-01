@@ -34,39 +34,46 @@ export function readMachineControlTargetForSession(
 }
 
 export function readDisplayMachineIdForSession(input: Readonly<{
+    serverId?: string | null;
     sessionId?: string | null;
     metadata?: SessionTargetMetadataLike;
 }>): string {
     return resolveDisplayMachineIdForSessionFromState({
         state: storage.getState() as SessionMachineTargetState,
         sessionId: input.sessionId,
+        serverId: input.serverId,
         metadata: input.metadata,
     });
 }
 
 export function readDisplayMachineTargetForSession(input: Readonly<{
+    serverId?: string | null;
     sessionId?: string | null;
     metadata?: SessionTargetMetadataLike;
 }>): { machineId: string; basePath: string } | null {
     return resolveDisplayMachineTargetForSessionFromState({
         state: storage.getState() as SessionMachineTargetState,
         sessionId: input.sessionId,
+        serverId: input.serverId,
         metadata: input.metadata,
     });
 }
 
 export function readDisplayPathForSession(input: Readonly<{
+    serverId?: string | null;
     sessionId?: string | null;
     metadata?: SessionTargetMetadataLike;
 }>): string {
     return resolveDisplayPathForSessionFromState({
         state: storage.getState() as SessionMachineTargetState,
         sessionId: input.sessionId,
+        serverId: input.serverId,
         metadata: input.metadata,
     });
 }
 
 export function readDisplayIdentityForSession(input: Readonly<{
+    serverId?: string | null;
     sessionId?: string | null;
     metadata?: SessionTargetMetadataLike;
     preferProvidedMetadata?: boolean;
@@ -74,6 +81,7 @@ export function readDisplayIdentityForSession(input: Readonly<{
     return resolveDisplayIdentityForSessionFromState({
         state: storage.getState() as SessionMachineTargetState,
         sessionId: input.sessionId,
+        serverId: input.serverId,
         metadata: input.metadata,
         ...(input.preferProvidedMetadata === true ? { preferProvidedMetadata: true } : {}),
     });

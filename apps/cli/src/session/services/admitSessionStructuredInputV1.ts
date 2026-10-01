@@ -1,5 +1,7 @@
 import {
   buildComposerAttachmentDedupeKeyV1,
+  BrowserContextMessageMetaV1Schema,
+  BrowserContextMessagePayloadV1Schema,
   ComposerAttachmentDraftV1Schema,
   ComposerAttachmentInputV1Schema,
   HAPPIER_STRUCTURED_INPUT_METADATA_KEY_V1,
@@ -22,6 +24,7 @@ export type SessionStructuredInputAdmissionErrorCode =
   | 'session_structured_input_attachment_preparation_incomplete'
   | 'session_structured_input_attachment_preparation_unexpected'
   | 'session_structured_input_session_media_invalid'
+  | 'session_structured_input_browser_context_invalid'
   | 'session_structured_input_dispatch_resolution_forbidden';
 
 /**
@@ -57,6 +60,11 @@ function throwAdmissionFailure(code: SessionStructuredInputAdmissionErrorCode): 
 }
 
 function readSelectedRawAttachments(meta: MetadataRecord): readonly ComposerAttachmentDraftV1[] {
+  const browserContext = asRecord(meta[HAPPIER_STRUCTURED_INPUT_METADATA_KEY_V1])?.browserContext;
+  if ((meta.happierBrowserContext !== undefined && !BrowserContextMessageMetaV1Schema.safeParse(meta.happierBrowserContext).success)
+    || (browserContext !== undefined && !BrowserContextMessagePayloadV1Schema.safeParse(browserContext).success)) {
+    throwAdmissionFailure('session_structured_input_browser_context_invalid');
+  }
   if (
     Object.prototype.hasOwnProperty.call(meta, HAPPIER_STRUCTURED_INPUT_METADATA_KEY_V1)
     && !RawIngressStructuredInputV1Schema.safeParse(meta[HAPPIER_STRUCTURED_INPUT_METADATA_KEY_V1]).success

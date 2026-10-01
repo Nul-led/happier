@@ -11,7 +11,8 @@ import {
   type SessionHandoffPrepareTargetJobRecordInput,
 } from '../../../session/handoff/prepare/sessionHandoffPrepareTargetJobStore';
 import { createSessionHandoffSourceExportStore } from '../../../session/handoff/state/sessionHandoffSourceExportStore';
-import { buildSessionHandoffAgentBundleTransferId } from '../../../session/handoff/agentBundle/transferPublication';
+import { buildSessionHandoffAgentBundleTransferId, buildSessionHandoffWorkspaceSeedTransferId } from '../../../session/handoff/agentBundle/transferPublication';
+import { createManagedSessionDirectories } from '../../../session/creation/managedSessionDirectories';
 
 import type { SessionHandoffDirectPeerTransferHandle } from './prepareTransport';
 import { hasUnsupportedWorkspaceAction, workspaceSyncUpdateRequired } from './workspaceSyncGuard';
@@ -20,6 +21,7 @@ type SessionHandoffPrepareTargetJobStore = ReturnType<typeof createSessionHandof
 type SessionHandoffSourceExportStore = ReturnType<typeof createSessionHandoffSourceExportStore>;
 
 export type RegisterSessionHandoffCommitRpcHandlerInput = Readonly<{
+  activeServerDir?: string;
   prepareJobStore: SessionHandoffPrepareTargetJobStore;
   sourceExportStore: SessionHandoffSourceExportStore;
   directPeerTransfer: SessionHandoffDirectPeerTransferHandle | undefined;
@@ -134,6 +136,13 @@ export function createSessionHandoffCommitActionHandler(
       status: 'completed',
       phase: 'finalizing',
     };
+    const targetRequest = persistedJob?.prepareTargetRequest;
+    if (mode === 'target' && targetRequest?.targetDirectory?.kind === 'managed'
+      && targetRequest.operationId && targetRequest.sessionId) {
+      await createManagedSessionDirectories({ activeServerDir: params.activeServerDir }).commitHandoff({
+        operationId: targetRequest.operationId, sessionId: targetRequest.sessionId,
+      });
+    }
     if (persistedJob) {
       await prepareJobStore.write(buildPrepareJobRecord({
         jobId: persistedJob.jobId,
@@ -142,6 +151,7 @@ export function createSessionHandoffCommitActionHandler(
         updatedAtMs: Date.now(),
         completedAtMs: Date.now(),
         status,
+        ...(persistedJob.prepareTargetRequest ? { prepareTargetRequest: persistedJob.prepareTargetRequest } : {}),
         ...(persistedJob.prepareTargetResult ? {
           prepareTargetResult: {
             ...persistedJob.prepareTargetResult,
@@ -170,6 +180,7 @@ export function createSessionHandoffCommitActionHandler(
       persistedSourceExport?.targetMachineId,
     ]);
     directPeerTransfer?.clearPublishedTransfer(buildSessionHandoffAgentBundleTransferId(parsed.data.handoffId));
+    directPeerTransfer?.clearPublishedTransfer(buildSessionHandoffWorkspaceSeedTransferId(parsed.data.handoffId));
     await sourceExportStore.releaseTransferFiles(parsed.data.handoffId);
     return { handoffId: parsed.data.handoffId, status };
   };

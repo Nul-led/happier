@@ -12,13 +12,25 @@ const choice = {
 };
 
 describe('resolveRowlessExecutionRunStartOptions', () => {
+    it.each([true, false])('preserves the report chip value %s on first Send', (notifyParentOnCompletion) => {
+        expect(resolveRowlessExecutionRunStartOptions({
+            choice, input: { permissionMode: 'read_only', notifyParentOnCompletion },
+        })).toMatchObject({ ok: true, options: { notifyParentOnCompletion } });
+    });
+
+    it('refuses a malformed report chip instead of silently dropping it', () => {
+        expect(resolveRowlessExecutionRunStartOptions({
+            choice, input: { permissionMode: 'read_only', notifyParentOnCompletion: 'false' },
+        })).toEqual({ ok: false });
+    });
+
     it('projects the selected target and canonical launcher options onto the direct first-Send start', () => {
         const result = resolveRowlessExecutionRunStartOptions({
             choice,
             input: {
                 permissionMode: 'workspace_write',
                 profileId: 'profile_work',
-                profileGenerationId: 'generation_2',
+                profileSourceCustody: { kind: 'managed', immutableGenerationId: 'generation_2', installSource: 'archive' },
                 modelId: 'gpt-5.6',
                 configOptions: { reasoning_effort: 'high' },
                 connectedServices: 'anthropic:team',
@@ -57,7 +69,7 @@ describe('resolveRowlessExecutionRunStartOptions', () => {
                 backendTarget: { kind: 'backend', backendId: 'codex' },
                 permissionMode: 'workspace_write',
                 profileId: 'profile_work',
-                profileGenerationId: 'generation_2',
+                profileSourceCustody: { kind: 'managed', immutableGenerationId: 'generation_2', installSource: 'archive' },
                 modelId: 'gpt-5.6',
                 sessionConfigOptionOverrides: expect.objectContaining({
                     v: 1,
@@ -120,6 +132,13 @@ describe('resolveRowlessExecutionRunStartOptions', () => {
         expect(resolveRowlessExecutionRunStartOptions({
             choice,
             input: { permissionMode: 'workspace_write', profileId: 'profile_work' },
+        })).toEqual({ ok: false });
+        expect(resolveRowlessExecutionRunStartOptions({
+            choice,
+            input: {
+                permissionMode: 'workspace_write',
+                profileSourceCustody: { kind: 'managed', immutableGenerationId: 'generation_2', installSource: 'archive' },
+            },
         })).toEqual({ ok: false });
     });
 

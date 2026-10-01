@@ -22,9 +22,16 @@ describe('resolveRepoScmSessionRequest', () => {
             id: 'same-session', serverId: 'home-b', active: true,
             metadata: { machineId: 'same-machine', path: '~/repo', homeDir: '/home/b', host: 'b' },
         });
+        const homeAMachineMetadata = {
+            host: 'tester.local',
+            platform: 'darwin',
+            happyCliVersion: '0.0.0-test',
+            happyHomeDir: '/Users/tester/.happy-dev',
+            homeDir: '/home/a',
+        };
         storageGetStateMock.mockReturnValue({
             sessions: { 'same-session': createSessionFixture({ id: 'same-session', serverId: 'home-a' }) },
-            machines: { 'same-machine': createMachineFixture({ id: 'same-machine', active: true, metadata: { homeDir: '/home/a' } }) },
+            machines: { 'same-machine': createMachineFixture({ id: 'same-machine', active: true, metadata: homeAMachineMetadata }) },
             sessionListRowsByServerId: { 'home-b': { 'same-session': buildSessionListRenderableFromSession(session) } },
             machineListByServerId: { 'home-b': [createMachineFixture({ id: 'same-machine', active: true })] },
         });

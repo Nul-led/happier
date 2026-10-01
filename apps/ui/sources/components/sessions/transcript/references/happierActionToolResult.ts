@@ -45,12 +45,33 @@ export function readHappierActionId<TActionId extends string>(
     if (!name) return null;
     const direct = index.get(name);
     if (direct) return direct;
+    const firstParty = readFirstPartyHappierToolName(name);
+    return firstParty ? index.get(firstParty) ?? null : null;
+}
+
+/** The first-party tool name without its Happier server prefix, or null for any other server. */
+function readFirstPartyHappierToolName(toolName: string): string | null {
     for (const prefix of HAPPIER_TOOL_NAME_PREFIXES) {
-        if (name.startsWith(prefix)) {
-            return index.get(name.slice(prefix.length)) ?? null;
-        }
+        if (toolName.startsWith(prefix)) return toolName.slice(prefix.length);
     }
     return null;
+}
+
+/**
+ * The Action a call of the generic first-party `action_execute` tool ran: its `input.actionId`, when
+ * that names a member of the caller's family. A same-named tool from another MCP server is not the
+ * Happier tool and names nothing.
+ */
+export function readHappierActionExecuteActionId<TActionId extends string>(
+    toolName: string,
+    input: unknown,
+    isFamilyActionId: (actionId: string) => actionId is TActionId,
+): TActionId | null {
+    if (readFirstPartyHappierToolName(toolName.trim()) !== 'action_execute') return null;
+    const parsed = maybeParseJson(input);
+    if (!isRecord(parsed) || typeof parsed.actionId !== 'string') return null;
+    const actionId = parsed.actionId.trim();
+    return isFamilyActionId(actionId) ? actionId : null;
 }
 
 export function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {

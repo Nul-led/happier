@@ -48,6 +48,7 @@ const viewState = vi.hoisted(() => ({
         active: false,
         statesByServerId: {} as Record<string, { appliedSourceKind: 'query' | 'ordinary' | null } | undefined>,
     },
+    visibleIndexComputeCount: 0,
 }));
 
 function makeSessionRow(id: string, partial?: Partial<SessionListRenderableSession>): SessionListRenderableSession {
@@ -222,6 +223,17 @@ vi.mock('./useVisibleSessionListSourceState', () => ({
     },
 }));
 
+vi.mock('@/sync/domains/session/listing/computeVisibleSessionListIndex', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/sync/domains/session/listing/computeVisibleSessionListIndex')>();
+    return {
+        ...actual,
+        computeVisibleSessionListIndex: (...args: Parameters<typeof actual.computeVisibleSessionListIndex>) => {
+            viewState.visibleIndexComputeCount += 1;
+            return actual.computeVisibleSessionListIndex(...args);
+        },
+    };
+});
+
 describe('useVisibleSessionListViewState (index pipeline)', () => {
     afterEach(() => {
         standardCleanup();
@@ -259,6 +271,7 @@ describe('useVisibleSessionListViewState (index pipeline)', () => {
         viewState.focusedSessionId = null;
         viewState.sourceStateOptions = [];
         viewState.query = { active: false, statesByServerId: {} };
+        viewState.visibleIndexComputeCount = 0;
     });
 
     it('forwards authoritative empty-query completeness to the source owner', async () => {
@@ -974,6 +987,36 @@ describe('useVisibleSessionListViewState (index pipeline)', () => {
             expect.objectContaining({ type: 'header', headerKind: 'active' }),
             expect.objectContaining({ type: 'session', sessionId: 'other', groupKind: 'active' }),
         ]);
+    });
+
+    it('reuses an unchanged retained visible projection after the pane-state hook remounts', async () => {
+        viewState.source = makeSourceIndex();
+        viewState.rowsByServerId = {
+            s1: {
+                a: makeSessionRow('a', { createdAt: 20, updatedAt: 200 }),
+                b: makeSessionRow('b', { createdAt: 10, updatedAt: 100 }),
+            },
+        };
+
+        const { useVisibleSessionListViewState } = await import('./useVisibleSessionListViewState');
+        const firstHook = await renderHook(() => useVisibleSessionListViewState('all'));
+        await flushHookEffects();
+        const retainedVisibleSessionListIndex = firstHook.getCurrent()?.visibleSessionListIndex;
+        expect(retainedVisibleSessionListIndex).not.toBeNull();
+        const computeCountBeforeRemount = viewState.visibleIndexComputeCount;
+        await firstHook.unmount();
+
+        viewState.source = viewState.source?.map((item) => ({ ...item })) ?? null;
+        viewState.rowsByServerId = Object.fromEntries(
+            Object.entries(viewState.rowsByServerId).map(([serverId, rows]) => [serverId, { ...rows }]),
+        );
+        const remountedHook = await renderHook(() => useVisibleSessionListViewState('all', {
+            retainedVisibleSessionListIndex,
+        }));
+        await flushHookEffects();
+
+        expect(remountedHook.getCurrent()?.visibleSessionListIndex).toBe(retainedVisibleSessionListIndex);
+        expect(viewState.visibleIndexComputeCount).toBe(computeCountBeforeRemount);
     });
 
     it('demotes pending-permission attention rows after the permission closes', async () => {

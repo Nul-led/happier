@@ -50,11 +50,11 @@ type PendingAttempt = {
 };
 
 export type AgentSessionRealtimeVoiceAuthority = Readonly<{
-  generation: string;
+  occurrenceId: string;
   policyAgentRef: PluginContributionIdentityV1;
   resolveDeclaration: ResolveDeclaration;
   isCurrent(provider: PluginContributionIdentityV1): boolean;
-  resolveProviderGeneration(
+  resolveProviderOccurrenceId(
     provider: PluginContributionIdentityV1,
   ): string | null;
   resolveRetirementSignal(
@@ -228,8 +228,8 @@ export function registerAgentSessionRealtimeVoiceRpc(input: Readonly<{
   getHappierSessionId: () => string;
   ownerId: string;
   agentGeneration: string;
-  isGenerationCurrent: (provider: PluginContributionIdentityV1) => boolean;
-  resolveProviderGeneration: (
+  isOccurrenceCurrent: (provider: PluginContributionIdentityV1) => boolean;
+  resolveProviderOccurrenceId: (
     provider: PluginContributionIdentityV1,
   ) => string | null;
   resolveRetirementSignal: (
@@ -256,17 +256,17 @@ export function registerAgentSessionRealtimeVoiceRpc(input: Readonly<{
     happierSessionId,
     input.ownerId,
     input.agentGeneration,
-    input.resolveProviderGeneration(provider) ?? 'provider-generation-unavailable',
+    input.resolveProviderOccurrenceId(provider) ?? 'provider-generation-unavailable',
     provider.pluginId,
     provider.localId,
     applicationAttemptId,
   ]);
   const resolveRuntime = (provider: PluginContributionIdentityV1) => {
     if (disposed) return null;
-    if (!input.isGenerationCurrent(provider)) {
+    if (!input.isOccurrenceCurrent(provider)) {
       return null;
     }
-    if (!input.resolveProviderGeneration(provider)) return null;
+    if (!input.resolveProviderOccurrenceId(provider)) return null;
     return input.resolveConversation({
       provider,
       runtime: input.runtime,
@@ -499,7 +499,7 @@ export function registerAgentSessionRealtimeVoiceRpc(input: Readonly<{
         }
         if (
           input.getHappierSessionId() !== happierSessionId
-          || !input.isGenerationCurrent(parsed.data.provider)
+          || !input.isOccurrenceCurrent(parsed.data.provider)
           || resolved.retirementSignal?.aborted
         ) {
           await retireHandleBestEffort(started.handle);

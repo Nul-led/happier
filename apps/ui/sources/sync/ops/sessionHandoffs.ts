@@ -37,12 +37,16 @@ export type StartSessionHandoffOptions = Readonly<{
 }>;
 export type StartSessionHandoffResult = Readonly<{ ok: true; result: SessionHandoffActionResultV1 }> | HandoffErrorResult;
 
-export type PreflightSessionHandoffTargetReplacementOptions = Readonly<{
+export type PreflightWorkspaceDestinationReplacementOptions = Readonly<{
     targetMachineId: string;
     targetPath: string;
     serverId: string;
     operationId: string;
     workspaceAction: HandoffWorkspaceActionV1;
+    /** Explicit for callers whose mode is not expressed as a handoff workspace action. */
+    activatesExactMirror?: boolean;
+    /** Present for direct Project linking, which has no Session and no handoff workspace action. */
+    destinationIntent?: 'use_existing' | 'materialize_from_source_workspace';
     signal?: AbortSignal;
 }>;
 
@@ -116,11 +120,18 @@ async function requestCoordinator(options: StartSessionHandoffOptions): Promise<
 export function normalizeSessionHandoffStartResponse(raw: unknown): unknown { return unwrap(raw); }
 export function normalizePrepareTargetResponseCandidate(raw: unknown): Record<string, unknown> | null { return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : null; }
 
-/** Target-daemon inspection used by the Action approval corridor before the handoff starts. */
-export async function preflightSessionHandoffTargetReplacement(
-    options: PreflightSessionHandoffTargetReplacementOptions,
+/**
+ * Target-daemon inspection used by the Action approval corridor before a
+ * destination-choosing operation starts. Handoff expresses its destination
+ * through a workspace action; direct Project linking has no Session and states
+ * its destination intent and mode explicitly.
+ */
+export async function preflightWorkspaceDestinationReplacement(
+    options: PreflightWorkspaceDestinationReplacementOptions,
 ): Promise<SessionHandoffTargetReplacementApprovalPreflightResult> {
-    if (options.workspaceAction.kind !== 'copy_once' && options.workspaceAction.kind !== 'create_relationship') {
+    const handoffChoosesDestination = options.workspaceAction.kind === 'copy_once'
+        || options.workspaceAction.kind === 'create_relationship';
+    if (!handoffChoosesDestination && options.destinationIntent === undefined) {
         return { type: 'not_required' };
     }
     const machineId = normalizeId(options.targetMachineId);
@@ -141,10 +152,12 @@ export async function preflightSessionHandoffTargetReplacement(
                 machineId,
                 operationId,
                 targetPath,
-                ...(options.workspaceAction.kind === 'create_relationship'
-                    && options.workspaceAction.mode === 'mirror_exactly'
+                ...((options.activatesExactMirror
+                    ?? (options.workspaceAction.kind === 'create_relationship'
+                        && options.workspaceAction.mode === 'mirror_exactly'))
                     ? { activatesExactMirror: true }
                     : {}),
+                ...(options.destinationIntent ? { destinationIntent: options.destinationIntent } : {}),
             },
             ...(options.signal ? { signal: options.signal } : {}),
         }));

@@ -132,10 +132,8 @@ async function resolveRunnerAgentSessionDescriptorForLease(
       provenance: agent.provenance,
     }),
     backendId: backend.id,
-    generation: registration.generation,
-    ...(registration.immutableGenerationId
-      ? { immutableGenerationId: registration.immutableGenerationId }
-      : {}),
+    occurrenceId: registration.occurrenceId,
+    sourceCustody: registration.sourceCustody,
     agentDeclaration: {
       provenance: agent.provenance,
       source: agent.source,

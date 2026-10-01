@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { AgentTextMessage, Message, ToolCallMessage, UserTextMessage } from '@/sync/domains/messages/messageTypes';
+import type { AgentTextMessage, Message, ToolCallMessage, UserTextMessage } from "@happier-dev/session-core/messages";
 import type { ChatListItem } from '@/components/sessions/chatListItems';
 
 import { buildTranscriptTurnsCached } from './buildTranscriptTurns';

@@ -1,5 +1,6 @@
 import {
     arePluginMachineMaterializationRefsEqual,
+    pluginSourceCustodyV1Equal,
     type AutomationEventSourceStatusV1,
     type AutomationDefinitionListItem,
     type AutomationTriggerListItem,
@@ -44,7 +45,7 @@ function sameCurrentSourceStatus(
             left.reporterMaterializationRef,
             right.reporterMaterializationRef,
         )
-        && left.reporterImmutableGenerationId === right.reporterImmutableGenerationId
+        && pluginSourceCustodyV1Equal(left.reporterSourceCustody, right.reporterSourceCustody)
         && left.state === right.state
         && left.code === right.code
         && left.revision === right.revision;
@@ -123,11 +124,13 @@ export function readAutomationHistoryGapRecoveryEligibleEvent(params: Readonly<{
         return action !== undefined
             && declaredAction !== undefined
             && candidate.event.automation.source.supportedObservationTransports.includes('checkpointedPull')
-            && status.reporterImmutableGenerationId !== undefined
-            && status.reporterImmutableGenerationId === candidate.event.immutableGenerationId
+            && pluginSourceCustodyV1Equal(
+                status.reporterSourceCustody,
+                candidate.event.sourceCustody,
+            )
             && arePluginContributionIdentitiesEqual(candidate.event.identity, trigger.eventRef)
             && candidate.event.identity.pluginId === action.identity.pluginId
-            && candidate.event.immutableGenerationId === action.immutableGenerationId
+            && candidate.event.occurrenceId === action.occurrenceId
             && arePluginContributionIdentitiesEqual(action.identity, declaredAction)
             && declaredAction.pluginId === candidate.event.identity.pluginId;
     });
@@ -143,9 +146,9 @@ function sameRecoveryEligibleEvent(
     return leftAction !== undefined
         && rightAction !== undefined
         && arePluginContributionIdentitiesEqual(left.event.identity, right.event.identity)
-        && left.event.immutableGenerationId === right.event.immutableGenerationId
+        && left.event.occurrenceId === right.event.occurrenceId
         && arePluginContributionIdentitiesEqual(leftAction.identity, rightAction.identity)
-        && leftAction.immutableGenerationId === rightAction.immutableGenerationId;
+        && leftAction.occurrenceId === rightAction.occurrenceId;
 }
 
 type CurrentRecoverySnapshot = Readonly<{
@@ -154,7 +157,6 @@ type CurrentRecoverySnapshot = Readonly<{
     inputs: DaemonMergedProjectionInputs;
     event: DaemonContributionRegistryProjectionAutomationEligibleEventV1;
     origin: FreshPluginMachineExecutionOriginV1;
-    expectedGeneration: string;
     actionSnapshot: PluginContributedActionCurrentSnapshot;
 }>;
 
@@ -192,8 +194,6 @@ function resolveCurrentRecoverySnapshot(params: Readonly<{
         !plugin
         || plugin.pluginId !== action.identity.pluginId
         || plugin.enabled !== true
-        || plugin.generation === null
-        || plugin.immutableGenerationId !== action.immutableGenerationId
     ) {
         return { kind: 'stale' };
     }
@@ -208,7 +208,6 @@ function resolveCurrentRecoverySnapshot(params: Readonly<{
         host: {
             machineId: origin.machineTarget.target.machineId,
             serverId: origin.machineTarget.serverId,
-            expectedGeneration: String(plugin.generation),
             signal: params.signal,
             accountLifetime: params.accountLifetime,
             isCurrent: () => {
@@ -242,7 +241,6 @@ function resolveCurrentRecoverySnapshot(params: Readonly<{
         inputs: params.inputs!,
         event,
         origin,
-        expectedGeneration: String(plugin.generation),
         actionSnapshot,
     };
 }
@@ -327,7 +325,7 @@ export async function recoverAutomationHistoryGap(params: Readonly<{
             resolveCurrent: () => actionSnapshotRef.current,
         }).selectExactBoundActionInput({
             action: action.identity,
-            expectedImmutableGenerationId: action.immutableGenerationId,
+            expectedOccurrenceId: action.occurrenceId,
             draft: {
                 automationId: initial.automation.id,
                 triggerId: initialTrigger.id,
@@ -359,8 +357,6 @@ export async function recoverAutomationHistoryGap(params: Readonly<{
             contributedAction: {
                 machineId: current.origin.machineTarget.target.machineId,
                 serverId: current.origin.machineTarget.serverId,
-                expectedGeneration: current.expectedGeneration,
-                expectedImmutableGenerationId: action.immutableGenerationId,
             },
             signal: operationScope.signal,
             isCurrent: current.actionSnapshot.host.isCurrent,

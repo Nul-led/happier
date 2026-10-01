@@ -72,13 +72,13 @@ describe('dispatchCli compiled Action entrypoint', () => {
       1,
       'action.spec.get',
       { id: 'acme.notes/actions/create' },
-      expect.objectContaining({ surface: 'cli', authority: 'present_user' }),
+      expect.objectContaining({ surface: 'cli' }),
     );
     expect(execute).toHaveBeenNthCalledWith(
       2,
       'action.invoke',
       { action: { pluginId: 'acme.notes', localId: 'create' }, input: { title: 'From CLI' } },
-      expect.objectContaining({ surface: 'cli', authority: 'present_user' }),
+      expect.objectContaining({ surface: 'cli' }),
     );
   });
 
@@ -107,7 +107,6 @@ describe('dispatchCli compiled Action entrypoint', () => {
         expect.objectContaining({
           surface: 'cli',
           defaultSessionId: 'session_exact',
-          authority: 'present_user',
         }),
       );
       expect(output.json()).toMatchObject({
@@ -137,7 +136,7 @@ describe('dispatchCli compiled Action entrypoint', () => {
         expect(execute).toHaveBeenCalledWith(
           'session.message.send',
           expect.objectContaining({ sessionId: 'session_exact', message: literal }),
-          expect.objectContaining({ surface: 'cli', authority: 'present_user' }),
+          expect.objectContaining({ surface: 'cli' }),
         );
         expect(stdout.text()).toBe('');
         expect(consoleLog).toHaveBeenCalledWith(expect.stringContaining('Message sent'));
@@ -321,7 +320,7 @@ describe('dispatchCli compiled Action entrypoint', () => {
       expect(execute).toHaveBeenCalledWith(
         'session.list',
         { activeOnly: true, limit: 5 },
-        expect.objectContaining({ surface: 'cli', authority: 'present_user', defaultSessionId: null }),
+        expect.objectContaining({ surface: 'cli', defaultSessionId: null }),
       );
       expect(output.json()).toMatchObject({
         ok: true,

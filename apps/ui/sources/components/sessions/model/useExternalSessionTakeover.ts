@@ -10,6 +10,7 @@ import {
 import { randomUUID } from '@/platform/randomUUID';
 import { normalizeSessionId } from '@/sync/domains/session/normalizeSessionId';
 import { captureActiveServerAccountScopeCurrentness } from '@/sync/domains/scope/activeServerAccountScope';
+import type { ServerAccountScopeLifetime } from '@/sync/domains/scope/serverAccountScope';
 import { isTerminalAuthError } from '@/sync/runtime/connectivity/authErrors';
 import { sync } from '@/sync/sync';
 import { t } from '@/text';
@@ -26,6 +27,7 @@ type TakeoverIdempotencyEntry = Readonly<{
 
 type UseExternalSessionTakeoverParams = Readonly<{
     sessionId: string;
+    accountLifetime?: ServerAccountScopeLifetime | null;
     hasWriteAccess: boolean;
     externalSessionRuntime:
         Pick<UseExternalSessionRuntimeResult, 'externalSessionLink' | 'sessionServerId' | 'status' | 'refreshNow'>;
@@ -120,12 +122,14 @@ export function useExternalSessionTakeover(params: UseExternalSessionTakeoverPar
         // that owns this machine and session. If the UI switches Account while a
         // status read, confirmation dialog or projection refresh is in flight,
         // Account A's intent must not emit against Account B.
-        const accountCurrentness = captureActiveServerAccountScopeCurrentness();
+        const accountCurrentness = params.accountLifetime === undefined
+            ? captureActiveServerAccountScopeCurrentness()
+            : params.accountLifetime;
         const isRequestCurrent = () => (
             mountedRef.current
             && preflightGenerationRef.current === requestGeneration
             && currentTakeoverScopeKeyRef.current === requestScopeKey
-            && accountCurrentness.isCurrent()
+            && accountCurrentness?.isCurrent() === true
         );
         if (!isRequestCurrent()) {
             return false;
@@ -230,10 +234,10 @@ export function useExternalSessionTakeover(params: UseExternalSessionTakeoverPar
                 ? await machineExternalSessionTakeoverPersist({
                     machineId: externalSessionLink.machineId,
                     request: takeoverInput.request,
-                }, { serverId })
+                }, { serverId, ...(params.accountLifetime ? { accountLifetime: params.accountLifetime } : {}) })
                 : await machineExternalSessionTakeoverStart(
                     takeoverInput,
-                    { serverId },
+                    { serverId, ...(params.accountLifetime ? { accountLifetime: params.accountLifetime } : {}) },
                 );
             if (
                 takeoverIdempotencyKeysRef.current[mode]?.idempotencyKey
@@ -273,7 +277,7 @@ export function useExternalSessionTakeover(params: UseExternalSessionTakeoverPar
                 setTakeoverInFlight(null);
             }
         }
-    }, [normalizedSessionId, params.externalSessionRuntime, params.hasWriteAccess, params.targetMachineHomeDir, readLatestStatus, takeoverScopeKey]);
+    }, [normalizedSessionId, params.accountLifetime, params.externalSessionRuntime, params.hasWriteAccess, params.targetMachineHomeDir, readLatestStatus, takeoverScopeKey]);
 
     const ensureReadyForSend = React.useCallback(async (): Promise<boolean> => {
         const requestGeneration = preflightGenerationRef.current;

@@ -242,7 +242,9 @@ export type SessionListDragCommitNoOpReason =
     | 'scope-mismatch'
     | 'descendant-cycle'
     | 'date-ordering-mode'
-    | 'no-change';
+    | 'no-change'
+    /** The owner of the relationship (the server, for `reportsTo`) refused the move. */
+    | 'refused';
 
 /**
  * Result of committing a `SessionListDragIntent` against latest live state.

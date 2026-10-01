@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { RpcHandlerManager } from './RpcHandlerManager';
 import {
   RPC_ERROR_CODES,
+  RPC_METHODS,
+  SESSION_RPC_METHODS,
   RPC_ERROR_MESSAGES,
   SOCKET_RPC_AUTHORIZATION_CONTEXT_KINDS,
 } from '@happier-dev/protocol/rpc';
@@ -11,6 +13,64 @@ import { RpcError } from '@happier-dev/protocol/rpcErrors';
 import { SOCKET_RPC_EVENTS } from '@happier-dev/protocol/socketRpc';
 import { decodeBase64, encodeBase64, encrypt, decrypt } from '@/api/encryption';
 import type { Socket } from 'socket.io-client';
+import type { RpcHandlerContext } from './types';
+import { computeExternalActionSocketRpcRequestDigestV1, type ExternalActionExecutionAuthorizationV1 } from '@happier-dev/protocol/actions';
+import { API_TOKEN_FULL_GRANT_V1 } from '@happier-dev/protocol/auth/apiTokenGrant';
+
+it('binds the Home-issued input proof to the exact opaque RPC before opening it', async () => {
+  const encryptionKey = new Uint8Array(32).fill(17);
+  const rpc = new RpcHandlerManager({ scopePrefix: 'session-a', localMachineId: 'machine-a',
+    encryptionKey, encryptionVariant: 'dataKey', logger: () => {} });
+  const effect = vi.fn(async (_input: unknown, context?: RpcHandlerContext) => ({
+    proof: context?.callerInputAuthorization, constraints: context?.callerInputConstraints,
+  }));
+  rpc.registerHandler(SESSION_RPC_METHODS.SESSION_USER_MESSAGE_SEND, effect);
+  const target = { kind: 'session' as const, sessionId: 'session-a' };
+  const request = { method: `session-a:${SESSION_RPC_METHODS.SESSION_USER_MESSAGE_SEND}`,
+    requestId: 'rpc-input-1', params: encodeBase64(encrypt(encryptionKey, 'dataKey', { text: 'hello' })) };
+  // The authenticated Home transport is the boundary here; downstream HTTP validates its signed token.
+  const proof: ExternalActionExecutionAuthorizationV1 = { v: 1, token: 'home-issued-token', binding: {
+    accountId: 'account-a', principalId: 'principal-a', credentialId: 'credential-a',
+    serverIdentityId: 'server-a', machineId: 'machine-a', actionId: 'session.message.send',
+    requestId: request.requestId, target,
+    grant: { ...API_TOKEN_FULL_GRANT_V1, permissionModes: ['read-only'] },
+    requestEnvelopeDigest: computeExternalActionSocketRpcRequestDigestV1({ ...request, target }),
+  } };
+  const admitted = { ...request, callerInputAuthorization: proof,
+    callerInputConstraints: { models: null, permissionModes: null } };
+  expect(decrypt(encryptionKey, 'dataKey', decodeBase64(await rpc.handleRequest(admitted)))).toEqual({
+    proof, constraints: { models: null, permissionModes: ['read-only'] },
+  });
+  for (const refused of [
+    { ...admitted, params: 'not-valid-ciphertext' },
+    { ...admitted, requestId: 'rpc-input-2' },
+    { ...admitted, callerInputAuthorization: { ...proof, binding: { ...proof.binding, target: { kind: 'session' as const, sessionId: 'session-b' } } } },
+    { ...admitted, callerInputAuthorization: { ...proof, binding: { ...proof.binding, machineId: 'machine-b' } } },
+    { ...admitted, callerInputAuthorization: { ...proof, binding: { ...proof.binding, actionId: 'session.goal.set' } } },
+  ]) {
+    expect(decrypt(encryptionKey, 'dataKey', decodeBase64(await rpc.handleRequest(refused))))
+      .toMatchObject({ errorCode: RPC_ERROR_CODES.FORBIDDEN });
+  }
+  expect(effect).toHaveBeenCalledOnce();
+});
+
+it('rechecks Session transfer routing against the hosted namespace and decrypted init', async () => {
+  const rpc = new RpcHandlerManager({ scopePrefix: 'session-a', encryptionMode: 'plain', logger: () => {} });
+  const effect = vi.fn(async () => ({ success: true }));
+  rpc.registerHandler(RPC_METHODS.DAEMON_TRANSFER_UPLOAD_INIT, effect);
+  const transferRouting = { method: RPC_METHODS.DAEMON_TRANSFER_UPLOAD_INIT, t: 'session_attachment_upload_v1' as const, sessionId: 'session-a' };
+  const request = { method: `session-a:${transferRouting.method}`, transferRouting,
+    params: { t: transferRouting.t, sessionId: 'session-a', fileName: 'notes.txt' } };
+  expect(await rpc.handleRequest(request)).toEqual({ success: true });
+  for (const refused of [
+    { ...request, transferRouting: { ...transferRouting, sessionId: 'session-b' } },
+    { ...request, params: { ...request.params, sessionId: 'session-b' } },
+    { ...request, params: { ...request.params, t: 'session_file_upload_v1' } },
+  ]) {
+    expect(await rpc.handleRequest(refused)).toMatchObject({ errorCode: RPC_ERROR_CODES.FORBIDDEN });
+  }
+  expect(effect).toHaveBeenCalledOnce();
+});
 
 function createDeferredVoid(): { promise: Promise<void>; resolve: () => void } {
   let resolve!: () => void;
@@ -352,6 +412,45 @@ describe('RpcHandlerManager.handleRequest (plaintext)', () => {
 });
 
 describe('RpcHandlerManager.handleRequest (encrypted)', () => {
+  it('projects only validated server input constraints and refuses malformed constraints before dispatch', async () => {
+    const encryptionKey = new Uint8Array(32).fill(26);
+    const rpc = new RpcHandlerManager({ scopePrefix: 'sess_1', encryptionKey, encryptionVariant: 'dataKey', logger: () => {} });
+    let executed = false;
+    rpc.registerHandler('demo.constraints', async (_params, context) => {
+      executed = true;
+      return { constraints: context && 'callerInputConstraints' in context ? context.callerInputConstraints : null };
+    });
+    const params = encodeBase64(encrypt(encryptionKey, 'dataKey', { callerInputConstraints: { models: null, permissionModes: null } }));
+    const decode = (result: unknown) => decrypt(encryptionKey, 'dataKey', decodeBase64(result as string));
+    const constraints = { models: null, permissionModes: ['read-only'] } as const;
+    expect(decode(await rpc.handleRequest({ method: 'sess_1:demo.constraints', params,
+      callerInputConstraints: { ...constraints, permissionModes: [...constraints.permissionModes] },
+    }))).toEqual({ constraints });
+    expect(decode(await rpc.handleRequest({ method: 'sess_1:demo.constraints', params }))).toEqual({ constraints: null });
+    executed = false;
+    expect(decode(await rpc.handleRequest({ method: 'sess_1:demo.constraints', params,
+      callerInputConstraints: { models: null, permissionModes: ['invalid'] },
+    } as unknown as Parameters<typeof rpc.handleRequest>[0]))).toMatchObject({ errorCode: RPC_ERROR_CODES.FORBIDDEN });
+    expect(executed).toBe(false);
+  });
+
+  it('uses only the server authority stamp and defaults unstamped requests to automation', async () => {
+    const encryptionKey = new Uint8Array(32).fill(27);
+    const rpc = new RpcHandlerManager({
+      scopePrefix: 'sess_1', encryptionKey, encryptionVariant: 'dataKey', logger: () => {},
+    });
+    rpc.registerHandler('demo.authority', async (_params, context) => ({ authority: context?.callerAuthority }));
+    const params = encodeBase64(encrypt(encryptionKey, 'dataKey', { callerAuthority: 'present_user' }));
+    for (const callerAuthority of [undefined, 'account_automation', 'present_user'] as const) {
+      const result = await rpc.handleRequest({ method: 'sess_1:demo.authority', params,
+        ...(callerAuthority ? { callerAuthority } : {}),
+      });
+      expect(decrypt(encryptionKey, 'dataKey', decodeBase64(result as string))).toEqual({
+        authority: callerAuthority ?? 'account_automation',
+      });
+    }
+  });
+
   it('passes the reserved Session server-start envelope through raw only for its stamped server origin', async () => {
     const encryptionKey = new Uint8Array(32).fill(29);
     const rpc = new RpcHandlerManager({
@@ -896,14 +995,18 @@ describe('RpcHandlerManager request lifetime', () => {
       scopePrefix: 'sess_1', encryptionKey: new Uint8Array(32), encryptionVariant: 'dataKey',
       encryptionMode: 'plain', logger: () => {},
     });
+    let handlerStarted: () => void = () => {};
+    const started = new Promise<void>((resolve) => { handlerStarted = resolve; });
     rpc.registerHandler('demo.abort', (async (_request: unknown, context?: { signal: AbortSignal }) => {
       if (!context) return { aborted: false };
-      await new Promise<void>((resolve) => context.signal.addEventListener('abort', () => resolve(), { once: true }));
+      const aborted = new Promise<void>((resolve) => context.signal.addEventListener('abort', () => resolve(), { once: true }));
+      handlerStarted();
+      await aborted;
       return { aborted: context.signal.aborted };
     }) as Parameters<typeof rpc.registerHandler>[1]);
 
     const pending = rpc.handleRequest({ method: 'sess_1:demo.abort', params: {} });
-    await Promise.resolve();
+    await started;
     rpc.onSocketDisconnect();
 
     await expect(pending).resolves.toEqual({ aborted: true });

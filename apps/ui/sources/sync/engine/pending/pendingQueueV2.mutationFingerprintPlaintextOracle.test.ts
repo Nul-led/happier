@@ -48,7 +48,7 @@ describe('pendingQueueV2 Pending mutation equality tag on an E2EE session', () =
         params: Omit<Parameters<typeof updatePendingMessageV2Impl>[0], 'outboxScope'>,
     ) => updatePendingMessageV2Impl({ ...params, outboxScope });
 
-    beforeEach(() => {
+    beforeEach(async () => {
         await resetPendingQueueState(outboxScope);
     });
 

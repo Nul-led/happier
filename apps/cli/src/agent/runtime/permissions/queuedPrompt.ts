@@ -1,13 +1,36 @@
 import type { PermissionMode } from '@/api/types';
 import type {
   ProviderBoundModelRef,
+  CallerInputConstraintsV1,
   SessionInputCausalPermissionAuthorityV1,
   SessionMediaItemV1,
+  WorkerUpdateV1,
+  SessionMessageProvenance,
 } from '@happier-dev/protocol';
 import type { HappierStructuredInputV1 } from '@happier-dev/protocol/runtime';
 import type { SessionFollowReconciledContext } from '@/agent/runtime/session/follow/sessionFollowContextReconciler';
+import type { WorkflowInvocationIdentity } from '@/agent/runtime/session/contextOnly/hostContextOnlyInput';
+import type { WorkflowStepWithdrawal } from '@/agent/runtime/session/contextOnly/workflowStepWithdrawal';
+
+export type HostContextOnlyInput = (
+  | Readonly<{ kind: 'session_follow'; prepared: SessionFollowReconciledContext }>
+  | Readonly<{
+      kind: 'worker_update'; update: WorkerUpdateV1;
+      recheckAdmission: (signal: AbortSignal) => Promise<boolean>;
+      acknowledgeAccepted: () => void;
+    }>
+  | Readonly<{
+      kind: 'workflow_step'; localInputId: string; text: string;
+      workflowInvocation: WorkflowInvocationIdentity;
+      workDepth: number;
+      isWorkflowStepDeliverable: (input: Readonly<{ localInputId: string }>) => Promise<boolean>;
+      withdrawal: WorkflowStepWithdrawal;
+      acknowledgeAccepted: () => void;
+    }>
+) & Readonly<{ commitHostEvent: (workerEvents?: readonly Readonly<{ localId: string; update: WorkerUpdateV1 }>[]) => Promise<void> }>;
 
 export type PermissionModeQueuedPromptMode = Readonly<{
+  callerInputConstraints?: CallerInputConstraintsV1;
   permissionMode: PermissionMode;
   appendSystemPrompt?: string | null;
   modelSelection?: ProviderBoundModelRef;
@@ -17,6 +40,8 @@ export type PermissionModeQueuedPromptMode = Readonly<{
   causalPermissionAuthority?: SessionInputCausalPermissionAuthorityV1;
   /** Host-rendered descriptive block; exact bytes are part of batching identity. */
   inputContextBlock?: string;
+  /** Protected admission provenance retained as data for host turn stamping. */
+  inputProvenance?: SessionMessageProvenance;
 }>;
 
 export type PermissionModeQueuedPrompt = Readonly<{
@@ -33,12 +58,9 @@ export type PermissionModeQueuedPrompt = Readonly<{
   causalPermissionAuthority?: SessionInputCausalPermissionAuthorityV1;
   /** Host-rendered descriptive block applied only at the provider boundary. */
   inputContextBlock?: string;
+  inputProvenance?: SessionMessageProvenance;
   /** Trusted host-only turn input. It is never inserted into MessageQueue/Pending/transcript. */
-  hostContextOnly?: Readonly<{
-    kind: 'session_follow';
-    /** Re-enters Follow admission at the final dispatch boundary before any source text is sent. */
-    prepared: SessionFollowReconciledContext;
-  }>;
+  hostContextOnly?: HostContextOnlyInput;
 }>;
 
 function appendUniqueString(target: string[], value: unknown): void {
@@ -119,5 +141,6 @@ export function combinePermissionModeQueuedPrompts(
     ...(first?.inputContextBlock
       ? { inputContextBlock: first.inputContextBlock }
       : {}),
+    ...(first?.inputProvenance ? { inputProvenance: first.inputProvenance } : {}),
   };
 }

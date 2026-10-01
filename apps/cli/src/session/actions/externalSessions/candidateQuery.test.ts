@@ -20,7 +20,7 @@ import {
 import { createUnavailablePluginServices } from '@/plugins/runtime/invocation/services/unavailable';
 
 import {
-    executeExternalSessionCandidateQuery,
+    executeExternalSessionCandidateQuery as executeExternalSessionCandidateQueryOwner,
     ExternalSessionCandidateIndexCursorResetError,
     hydrateExternalSessionCandidateThroughAgentSource,
     isExternalSessionCandidateIndexContinuationStepCountWithinCapacity,
@@ -28,6 +28,21 @@ import {
     isExternalSessionCandidateIndexStateWithinByteCapacity,
     resolveExternalSessionCandidateIdentityKey,
 } from './candidateQuery';
+
+const TEST_SOURCE_CUSTODY = Object.freeze({
+    kind: 'development' as const,
+    registeredRootId: 'candidate-query-test-root',
+});
+
+function executeExternalSessionCandidateQuery(
+    params: Omit<Parameters<typeof executeExternalSessionCandidateQueryOwner>[0], 'agentSourceCustody'>
+        & Partial<Pick<Parameters<typeof executeExternalSessionCandidateQueryOwner>[0], 'agentSourceCustody'>>,
+) {
+    return executeExternalSessionCandidateQueryOwner({
+        ...params,
+        agentSourceCustody: params.agentSourceCustody ?? TEST_SOURCE_CUSTODY,
+    });
+}
 
 /** The exact request the candidate-query owner sends to an Agent leaf. */
 type ExternalSessionCandidateListRequest = Parameters<
@@ -243,6 +258,8 @@ describe('External Sessions candidate query owner', () => {
                 configDir: '/private/source',
                 canonicalConfigFile: '/private/source/config.json',
             },
+            // An admitted row may be an internal thread; its exact lookup must still find it.
+            includeThreads: true,
         }));
     });
 
@@ -286,6 +303,7 @@ describe('External Sessions candidate query owner', () => {
             limit: 1,
             searchTerm: 'session-1',
             searchMode: 'fast',
+            includeThreads: true,
             maxBytes: 4_096,
             signal: caller.signal,
         });
@@ -295,6 +313,7 @@ describe('External Sessions candidate query owner', () => {
             limit: 1,
             searchTerm: 'session-1',
             searchMode: 'fast',
+            includeThreads: true,
             maxBytes: 4_096,
             signal: caller.signal,
         });
@@ -461,7 +480,7 @@ describe('External Sessions candidate query owner', () => {
         expect(await countCandidateIndexFiles(activeServerDir)).toBe(0);
     });
 
-    it('refuses to serve one Agent runtime generation an index another one built', async () => {
+    it('refuses to serve one Agent source custody an index another one built', async () => {
         const activeServerDir = await mkdtemp(join(
             tmpdir(),
             'happier-candidate-index-runtime-generation-',
@@ -474,12 +493,16 @@ describe('External Sessions candidate query owner', () => {
         }));
         const listCandidates = createBoundedCandidateSource(corpus);
         const query = (
-            agentRuntimeGeneration: string | null,
+            immutableGenerationId: string,
             cursor?: string,
         ) => executeExternalSessionCandidateQuery({
             activeServerDir,
             agentIdentity: { pluginId: 'happier.claude', localId: 'claude' },
-            agentRuntimeGeneration,
+            agentSourceCustody: {
+                kind: 'managed',
+                immutableGenerationId,
+                installSource: 'localPath',
+            },
             source: { kind: 'claudeConfig', configDir: '/private/source' },
             ...(cursor ? { cursor } : {}),
             limit: 2,
@@ -491,10 +514,19 @@ describe('External Sessions candidate query owner', () => {
         const cursor = published.result.nextCursor;
         expect(cursor).toEqual(expect.any(String));
         expect(published.result.candidates).toHaveLength(2);
+        const persisted = JSON.parse(
+            await readFile(await findCandidateIndexPath(activeServerDir), 'utf8'),
+        ) as Record<string, unknown>;
+        expect(persisted.sourceCustody).toEqual({
+            kind: 'managed',
+            immutableGenerationId: 'generation-a',
+            installSource: 'localPath',
+        });
+        expect(JSON.stringify(persisted)).not.toContain('occurrence');
 
-        // The successor generation cannot address the predecessor's pages: the
-        // continuation resets instead of mixing one generation's stored rows with
-        // the other's hydration.
+        // Different source custody cannot address the prior source's pages: the
+        // continuation resets instead of mixing one source's stored rows with
+        // another source's hydration.
         await expect(query('generation-b', cursor!)).rejects.toBeInstanceOf(
             ExternalSessionCandidateIndexCursorResetError,
         );
@@ -509,7 +541,7 @@ describe('External Sessions candidate query owner', () => {
 
         // Once the successor has rebuilt in place, the two generations hold the
         // same corpus and therefore the same `indexGeneration`, so nothing but the
-        // runtime generation tells their pages apart. The predecessor's cursor must
+        // source custody tells their pages apart. The predecessor's cursor must
         // still be refused rather than addressed against the successor's index.
         const rebuilt = await readUntilPublished(() => query('generation-b'));
         expect(rebuilt.result.candidates).toHaveLength(2);
@@ -1313,6 +1345,53 @@ describe('External Sessions candidate query owner', () => {
         }
         expect(await readFile(await findCandidateIndexPath(activeServerDir), 'utf8'))
             .toContain('First message 1');
+    });
+
+    it('keeps the top-level and internal-thread listings in separate indexes and carries the thread marker', async () => {
+        const activeServerDir = await mkdtemp(join(tmpdir(), 'happier-candidate-threads-'));
+        roots.push(activeServerDir);
+        const thread = { kind: 'subagent', parentRemoteSessionId: 'session-2' } as const;
+        const corpus = [
+            { remoteSessionId: 'session-2', updatedAtMs: 20, linkData: { projectId: 'project-a' } },
+            { remoteSessionId: 'thread-1', updatedAtMs: 15, linkData: { projectId: 'project-a' }, thread },
+            { remoteSessionId: 'session-1', updatedAtMs: 10, linkData: { projectId: 'project-a' } },
+        ];
+        const requests: ExternalSessionCandidateListRequest[] = [];
+        // The Agent leaf owns the listing: it lists threads only on request.
+        const listCandidates = async (request: ExternalSessionCandidateListRequest) => {
+            requests.push(request);
+            const candidates = corpus.filter((candidate) => request.includeThreads || !('thread' in candidate));
+            return {
+                candidates: candidates.map((candidate) => ({ ...candidate })),
+                nextCursor: null,
+                preparation: { kind: 'building_candidate_index' as const, scanned: candidates.length },
+            };
+        };
+        const query = (includeThreads?: boolean) => readUntilPublished(() => executeExternalSessionCandidateQuery({
+            activeServerDir,
+            agentIdentity: { pluginId: 'happier.codex', localId: 'codex' },
+            source: { kind: 'codexHome', home: 'user' },
+            limit: 10,
+            ...(includeThreads === undefined ? {} : { includeThreads }),
+            listCandidates,
+        }));
+
+        const topLevel = await query();
+        expect(topLevel.result.candidates.map((candidate) => candidate.remoteSessionId)).toEqual(['session-2', 'session-1']);
+        expect(requests.every((request) => request.includeThreads === undefined)).toBe(true);
+
+        const withThreads = await query(true);
+        expect(withThreads.result.candidates.map((candidate) => [candidate.remoteSessionId, candidate.thread])).toEqual([
+            ['session-2', undefined],
+            ['thread-1', thread],
+            ['session-1', undefined],
+        ]);
+        expect(requests.some((request) => request.includeThreads === true)).toBe(true);
+
+        // The top-level index is not replaced by the thread listing.
+        expect((await query()).result.candidates.map((candidate) => candidate.remoteSessionId))
+            .toEqual(['session-2', 'session-1']);
+        expect(await countCandidateIndexFiles(activeServerDir)).toBe(2);
     });
 
     it('serves the fully crawled page while the validation pass is still running', async () => {

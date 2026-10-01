@@ -244,7 +244,7 @@ describe('buildSpawnHappySessionRpcParams', () => {
                 v: 1,
                 updatedAt: 456,
                 ref: {
-                    agentTargetKey: 'backend:codex',
+                    agentTargetKey: 'agent:happier.agent.codex/codex',
                     providerConnectionId: 'pc_work',
                     modelId: 'openai/gpt-5.5',
                 },

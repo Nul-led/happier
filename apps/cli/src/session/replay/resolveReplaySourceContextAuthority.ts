@@ -1,7 +1,9 @@
 import type { StoredCredentials } from '@/persistence';
 import { tryDecryptSessionMetadata } from '@/session/transport/encryption/sessionEncryptionContext';
 import { fetchSessionByIdCompat } from '@/session/transport/http/sessionsHttp';
-import { readSessionAccessProjectionRoleV1 } from '@happier-dev/protocol';
+import { readSessionAccessProjectionRoleV1, SessionCreationCorrespondenceV1Schema } from '@happier-dev/protocol';
+import { readSessionDirectoryKind } from '@happier-dev/protocol/sessions/metadata/directory';
+import type { SpawnSessionOptions } from '@/session/shared/spawnSessionContract';
 
 /**
  * The source-context creation flow is Account-owned, unlike ordinary Replay
@@ -11,7 +13,7 @@ import { readSessionAccessProjectionRoleV1 } from '@happier-dev/protocol';
  * interpretation when that current projection is absent.
  */
 export type ReplaySourceContextAuthority =
-  | Readonly<{ status: 'owned'; sourceMachineId: string | null }>
+  | Readonly<{ status: 'owned'; sourceMachineId: string | null; managedSource?: true; managedDirectorySeed?: SpawnSessionOptions['managedDirectorySeed'] }>
   | Readonly<{ status: 'not_owned' }>
   | Readonly<{ status: 'unavailable' }>;
 
@@ -52,5 +54,19 @@ export async function resolveReplaySourceContextAuthority(params: Readonly<{
     ? null
     : rawMachineId ?? metadataMachineId;
 
-  return { status: 'owned', sourceMachineId };
+  const sourcePath = readNonBlankString(metadata?.path);
+  const correspondence = SessionCreationCorrespondenceV1Schema.safeParse(metadata?.sessionCreationCorrespondenceV1);
+  const sourceSessionCreationTag = correspondence.success ? correspondence.data.sessionCreationTag : undefined;
+  const managedSource = readSessionDirectoryKind(metadata) === 'managed';
+  return {
+    status: 'owned', sourceMachineId,
+    ...(managedSource ? { managedSource: true as const } : {}),
+    ...(sourceMachineId && sourcePath && managedSource ? {
+      managedDirectorySeed: {
+        sourceSessionId: params.sourceSessionId,
+        sourcePath,
+        ...(sourceSessionCreationTag ? { sourceSessionCreationTag } : {}),
+      },
+    } : {}),
+  };
 }

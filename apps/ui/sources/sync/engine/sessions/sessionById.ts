@@ -1,4 +1,5 @@
-import { normalizeSessionAccessProjection } from './normalizeSessionAccessProjection';
+import { isSessionAccessOwner, normalizeSessionAccessProjection } from './normalizeSessionAccessProjection';
+import { projectComposerOptionsInputV1 } from '@happier-dev/protocol/embed';
 import {
   SessionSharedMetadataV1Schema,
   SessionCurrentProjectionRecordV1Schema,
@@ -13,19 +14,18 @@ import type {
   SessionMetadataTupleMutationSnapshotV1,
 } from '@happier-dev/cli-common/sessionMetadata';
 
-import type {
-  AgentState,
-  Metadata,
-  Session,
-} from '@/sync/domains/state/storageTypes';
+import type { Session } from '@/sync/domains/state/storageTypes';
+import type { AgentState, Metadata } from '@happier-dev/session-core/state';
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
 import { syncPerformanceTelemetry } from '@/sync/runtime/syncPerformanceTelemetry';
+import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
 import { reportNewAgentRequestsFromSessionTransition } from '@/voice/context/reportNewAgentRequestsFromSessionTransition';
 import {
   createNotAuthenticatedError,
   isAuthenticationResponseStatus,
   isTerminalAuthError,
 } from '@/sync/runtime/connectivity/authErrors';
+import { isTransientConnectivityError } from '@/sync/runtime/connectivity/transientConnectivityErrors';
 
 import {
   parseDecryptedSessionMetadata,
@@ -34,9 +34,7 @@ import {
   readSessionMetadataLayoutVersion,
   tryParsePlainSessionAgentState,
 } from './parsePlainSessionPayload';
-import {
-  classifySessionTupleApplyCurrentness,
-} from '@/sync/store/domains/sessionTupleApplyCurrentness';
+import { classifySessionTupleApplyCurrentness } from '@/sync/store/domains/sessionTupleApplyCurrentness';
 import {
   hasExplicitCurrentOrResponsibilitySessionProjection,
   looksLikeCurrentV2SessionNotFound404,
@@ -45,6 +43,7 @@ import {
   scanSessionByIdFromCompatList,
 } from './sessionHttpCompat';
 import {
+  buildSessionOwnerMetadataUnavailableShell,
   projectSessionLayout1LockedOwnerVisibility,
   projectSessionLayout1OwnerMetadata,
   readSessionLayout1OwnerMetadata,
@@ -99,8 +98,11 @@ type HydratedSessionById = Omit<
   'metadata' | 'ownerMetadata'
 > & {
   metadata: Session['metadata'];
+  metadataProjection?: Session['metadataProjection'];
   ownerMetadataView?: Session['ownerMetadataView'];
+  composerOptionsInput?: Session['composerOptionsInput'];
 };
+
 export type HydratedSessionMetadataTupleMutationSnapshot =
   SessionMetadataTupleMutationSnapshotV1<Metadata, AgentState>;
 
@@ -198,6 +200,16 @@ function listRollbackEligibleTurnStarts(projection: SessionTurnsProjectionV1): n
   return starts;
 }
 
+function isStoredSessionInResponseScope(previous: Session | null | undefined, incoming: Pick<Session, 'serverId' | 'encryptionMode'>): boolean {
+  if (!previous) return true;
+  const previousServerId = previous.serverId ?? null;
+  const incomingServerId = incoming.serverId ?? null;
+  return previous.encryptionMode === incoming.encryptionMode
+    && (previousServerId === incomingServerId
+      || (previousServerId !== null && incomingServerId !== null
+        && areServerProfileIdentifiersEquivalent(previousServerId, incomingServerId)));
+}
+
 async function fetchSessionTurnsProjection(params: Readonly<{
   sessionId: string;
   credentials: AuthCredentials;
@@ -257,11 +269,15 @@ function applyLockedSessionShell(params: Readonly<{
   getExistingSession?: (sessionId: string) => Session | null | undefined;
   includeMetadataTupleMutationSnapshot: boolean;
   ownerMetadataView?: Session['ownerMetadataView'];
+  // The owner's metadata could not be opened: install the same locked shell the
+  // list path installs (one executor for this outcome, see cp-c2).
+  ownerMetadataUnavailable?: boolean;
 }>): {
   ok: boolean;
-  session: HydratedSessionById | null;
+  session: HydratedSessionById | Session | null;
   sessionDataKeyHydration?: SessionDataKeyHydrationResult;
   metadataTupleMutationSnapshot?: HydratedSessionMetadataTupleMutationSnapshot | null;
+  errorCode?: string;
 } {
   const {
     ownerMetadata: _ownerMetadataEnvelope,
@@ -279,6 +295,7 @@ function applyLockedSessionShell(params: Readonly<{
     thinkingAt: 0,
     metadata: null,
     ownerMetadataView: params.ownerMetadataView ?? null,
+    composerOptionsInput: null,
     agentState: null,
     agentStateVersion: params.row.agentStateVersion ?? 0,
     access,
@@ -287,19 +304,16 @@ function applyLockedSessionShell(params: Readonly<{
     encryptedContentAvailability: params.contentAvailability,
   };
   const previousSession = params.getExistingSession?.(params.sessionId);
-  if (
-    !classifySessionTupleApplyCurrentness(previousSession, lockedSession).fullyCurrent
-  ) {
-    return {
-      ok: false,
-      session: null,
-      ...(params.includeMetadataTupleMutationSnapshot ? { metadataTupleMutationSnapshot: null } : {}),
-    };
+  if (!isStoredSessionInResponseScope(previousSession, lockedSession)) {
+    return { ok: false, session: null, errorCode: 'stale_response' };
   }
-  params.applySessions([lockedSession as unknown as Omit<Session, 'presence'> & { presence?: 'online' | number }]);
+  const sessionToApply = params.ownerMetadataUnavailable
+    ? buildSessionOwnerMetadataUnavailableShell(lockedSession)
+    : lockedSession;
+  params.applySessions([sessionToApply as unknown as Omit<Session, 'presence'> & { presence?: 'online' | number }]);
   return {
     ok: true,
-    session: lockedSession as unknown as HydratedSessionById,
+    session: (params.getExistingSession?.(params.sessionId) ?? sessionToApply) as HydratedSessionById,
     sessionDataKeyHydration: params.sessionDataKeyHydration,
     ...(params.includeMetadataTupleMutationSnapshot ? { metadataTupleMutationSnapshot: null } : {}),
   };
@@ -309,7 +323,11 @@ export async function fetchAndApplySessionById(params: Readonly<{
   sessionId: string;
   serverId?: string | null;
   credentials: AuthCredentials;
+  /** Explicit bridge envelope: presence binds this read to a Session recipient. */
+  sessionKey?: string | null;
   accountCurrentness?: AccountEncryptionCurrentnessResponse;
+  accountMode?: AccountEncryptionCurrentnessResponse['mode'];
+  composerOptionsInput?: import('@happier-dev/protocol/embed').ComposerOptionsInputV1 | null;
   fetchAccountCurrentness?: () => Promise<AccountEncryptionCurrentnessResponse>;
   encryption: SessionByIdEncryption;
   sessionDataKeys: Map<string, Uint8Array>;
@@ -327,7 +345,7 @@ export async function fetchAndApplySessionById(params: Readonly<{
   clientEncryptionRequirement?: ClientEncryptionRequirement;
 }>): Promise<{
   ok: boolean;
-  session: HydratedSessionById | null;
+  session: HydratedSessionById | Session | null;
   sessionDataKeyHydration?: SessionDataKeyHydrationResult;
   metadataTupleMutationSnapshot?:
     | HydratedSessionMetadataTupleMutationSnapshot
@@ -369,11 +387,16 @@ export async function fetchAndApplySessionById(params: Readonly<{
       throw err;
     }
     params.log.log(`[sessionById] Failed to fetch session ${sessionId}: ${err instanceof Error ? err.message : 'unknown error'}`);
-    return { ok: false, session: null, errorCode: 'network_error' };
+    return { ok: false, session: null, errorCode: isTransientConnectivityError(err) ? 'network_error' : 'request_failed' };
   }
   if (!isCurrent()) return staleResult();
 
   if (!responseOk) {
+    // An explicit frame envelope denotes a restricted Session credential, not
+    // an Account login. A denied Session must not trigger Account auth recovery.
+    if (params.sessionKey !== undefined && responseStatus === 403) {
+      return { ok: false, session: null, errorCode: 'forbidden', httpStatus: 403 };
+    }
     if (isAuthenticationResponseStatus(responseStatus)) {
       throw createNotAuthenticatedError(responseStatus);
     }
@@ -382,7 +405,7 @@ export async function fetchAndApplySessionById(params: Readonly<{
         return { ok: false, session: null, errorCode: 'not_found', httpStatus: 404 };
       }
       if (looksLikeMissingV2SessionRoute404(body, sessionId)) {
-        if (params.accessProjectionVersion === 1) {
+        if (params.accessProjectionVersion === 1 || params.sessionKey !== undefined) {
           return { ok: false, session: null, errorCode: 'invalid_response', httpStatus: 404 };
         }
         const fallbackRow = await scanSessionByIdFromCompatList({
@@ -416,6 +439,7 @@ export async function fetchAndApplySessionById(params: Readonly<{
 
   const parsed = parseCompatSessionByIdResponse(body);
   if (!parsed?.session) {
+    if (params.sessionKey !== undefined) return { ok: false, session: null, errorCode: 'invalid_response' };
     if (hasExplicitCurrentOrResponsibilitySessionProjection(body)) {
       return { ok: false, session: null, errorCode: 'invalid_response' };
     }
@@ -464,12 +488,13 @@ export async function fetchAndApplySessionById(params: Readonly<{
   // Lane 04's strict admission above is the role authority. An unavailable projection fails
   // closed to `recipient`: owner-only Account material is never reached without a proven owner
   // role, and this block never re-infers ownership from `share`.
-  const viewerRole: SessionDataKeyViewerRole = access?.role === 'owner' ? 'owner' : 'recipient';
+  const viewerRole: SessionDataKeyViewerRole = params.sessionKey !== undefined
+    ? 'recipient' : access?.role === 'owner' ? 'owner' : 'recipient';
   const hydrationPlan = createSessionDataKeyHydrationPlan({
     sessions: [{
       id: sessionId,
       encryptionMode,
-      dataEncryptionKey: row.dataEncryptionKey,
+      dataEncryptionKey: params.sessionKey !== undefined ? params.sessionKey : row.dataEncryptionKey,
       viewerRole,
     }],
     credentialKind: readSessionDataKeyCredentialKind(params.credentials),
@@ -555,7 +580,7 @@ export async function fetchAndApplySessionById(params: Readonly<{
   const hydrationState = hydration.states.get(sessionId) ?? 'missing_envelope';
   let accountCurrentness = params.accountCurrentness;
   let recipientReadiness = accountCurrentness?.recipientEnvelopeReadiness;
-  if (hydrationState === 'missing_envelope' && !recipientReadiness) {
+  if (params.sessionKey === undefined && hydrationState === 'missing_envelope' && !recipientReadiness) {
     try {
       accountCurrentness = params.fetchAccountCurrentness
         ? await params.fetchAccountCurrentness()
@@ -578,24 +603,26 @@ export async function fetchAndApplySessionById(params: Readonly<{
 
   const metadataLayoutVersion = readSessionMetadataLayoutVersion(row.metadataLayoutVersion);
   const recipientAuthority = metadataLayoutVersion === 1
-    && access?.role !== 'owner';
+    && !isSessionAccessOwner(access, undefined);
   if (
     metadataLayoutVersion === 1
     && !recipientAuthority
     && row.ownerMetadata != null
     && !accountCurrentness
+    && params.composerOptionsInput === undefined
     && params.fetchAccountCurrentness
   ) {
     accountCurrentness = await params.fetchAccountCurrentness();
     if (!isHydrationCurrent()) return staleResult();
   }
-  const accountMode = accountCurrentness?.mode;
+  const accountMode = params.accountMode ?? accountCurrentness?.mode;
   const ownerMetadataRead = metadataLayoutVersion === 1
     ? readSessionLayout1OwnerMetadata({
         access,
         accountMode,
         ownerMetadataEnvelope: row.ownerMetadata,
         credentials: params.credentials,
+        composerOptionsInput: params.composerOptionsInput,
       })
     : null;
   const lockedOwnerVisibility = projectSessionLayout1LockedOwnerVisibility(
@@ -604,6 +631,14 @@ export async function fetchAndApplySessionById(params: Readonly<{
 
   const sessionEncryption = encryptionMode === 'plain' ? null : params.encryption.getSessionEncryption(sessionId);
   if (!isSessionContentReadable(contentAvailability)) {
+    // A frame's explicitly supplied key cannot be repaired with Account material.
+    // Keep the shared hydration decision, but return its typed admission failure
+    // instead of publishing the main app's Account-repair shell in the frame.
+    if (params.sessionKey !== undefined) {
+      return { ok: false, session: null,
+        errorCode: hydrationState === 'missing_envelope' ? 'session_key_unavailable' : 'session_key_invalid',
+        sessionDataKeyHydration: hydration };
+    }
     // Settled: no reader exists and retrying cannot change that. Apply a safe Session shell so
     // the route shows a truthful locked state instead of spinning on a retryable-looking error.
     if (!isHydrationCurrent()) return staleResult();
@@ -627,11 +662,19 @@ export async function fetchAndApplySessionById(params: Readonly<{
   // ── end Lane 06 canonical Session data-key hydration block ────────────────────
 
   const agentStateVersion = row.agentStateVersion ?? 0;
+  const applyUnavailableOwnerShell = () => applyLockedSessionShell({
+    row, sessionId, serverId: params.serverId, encryptionMode, contentAvailability,
+    sessionDataKeyHydration: hydration, applySessions: params.applySessions,
+    getExistingSession: params.getExistingSession,
+    includeMetadataTupleMutationSnapshot: params.includeMetadataTupleMutationSnapshot === true,
+    ownerMetadataUnavailable: true,
+  });
   if (
     metadataLayoutVersion === 1
     && !recipientAuthority
     && row.ownerMetadata != null
     && !accountMode
+    && params.composerOptionsInput === undefined
   ) {
     params.log.log(`[sessionById] Account currentness unavailable for ${sessionId}`);
     return {
@@ -642,7 +685,8 @@ export async function fetchAndApplySessionById(params: Readonly<{
   }
   if (ownerMetadataRead?.kind === 'unavailable') {
     params.log.log(`[sessionById] Owner metadata unavailable for ${sessionId}`);
-    return { ok: false, session: null, errorCode: 'owner_metadata_unavailable' };
+    if (!isHydrationCurrent()) return staleResult();
+    return applyUnavailableOwnerShell();
   }
   let metadataAuthenticationFailed = false;
   const metadataDecryptOptions = { onAuthenticationFailure: () => { metadataAuthenticationFailed = true; } };
@@ -709,16 +753,24 @@ export async function fetchAndApplySessionById(params: Readonly<{
     : null;
   if (ownerProjection?.kind === 'unavailable') {
     params.log.log(`[sessionById] Owner metadata unavailable for ${sessionId}`);
-    return { ok: false, session: null, errorCode: 'owner_metadata_unavailable' };
+    if (!isHydrationCurrent()) return staleResult();
+    return applyUnavailableOwnerShell();
   }
   const ownerMetadata = ownerProjection?.kind === 'owner'
     ? ownerProjection.ownerMetadata
     : null;
-  const ownerMetadataView = metadataLayoutVersion === 0
+  const ownerMetadataView = params.composerOptionsInput !== undefined ? null : metadataLayoutVersion === 0
     ? metadata
     : ownerProjection?.kind === 'owner'
       ? ownerProjection.ownerMetadataView
       : null;
+  const composerOptionsInput = ownerProjection?.kind === 'owner' || ownerProjection?.kind === 'composer'
+    ? ownerProjection.composerOptionsInput
+    : params.composerOptionsInput !== undefined && params.composerOptionsInput !== null
+      ? params.composerOptionsInput
+      : metadataLayoutVersion === 0 && (params.composerOptionsInput === undefined || accountMode === 'plain')
+        ? projectComposerOptionsInputV1(metadata)
+        : null;
   if (!isHydrationCurrent()) return staleResult();
 
   const accessLevel = access?.level;
@@ -843,6 +895,7 @@ export async function fetchAndApplySessionById(params: Readonly<{
     ...rowWithoutOwnerMetadata
   } = row;
 
+  const previousSession = params.getExistingSession?.(sessionId);
   const nextSession = {
     ...rowWithoutOwnerMetadata,
     serverId: typeof params.serverId === 'string' && params.serverId.trim().length > 0 ? params.serverId.trim() : undefined,
@@ -851,6 +904,8 @@ export async function fetchAndApplySessionById(params: Readonly<{
     thinkingAt: 0,
     metadata,
     ownerMetadataView,
+    composerOptionsInput,
+    metadataProjection: params.composerOptionsInput !== undefined ? 'sessionOnly' as const : undefined,
     agentState,
     agentStateVersion,
     access,
@@ -862,41 +917,27 @@ export async function fetchAndApplySessionById(params: Readonly<{
         sessionTurns,
         rollbackEligibleTurnStarts,
       }
-      : {}),
+      : params.includeTurnsProjection === false && previousSession?.encryptionMode === encryptionMode
+        ? {
+          sessionTurns: previousSession.sessionTurns,
+          rollbackEligibleTurnStarts: previousSession.rollbackEligibleTurnStarts,
+        }
+        : {}),
   };
 
-  const previousSession = params.getExistingSession?.(sessionId);
-  if (
-    !classifySessionTupleApplyCurrentness(
-      previousSession,
-      nextSession,
-    ).fullyCurrent
-  ) {
-    return staleResult();
-  }
+  if (!isStoredSessionInResponseScope(previousSession, nextSession)) return staleResult();
   if (!isHydrationCurrent()) return staleResult();
   params.applySessions([nextSession]);
-  reportNewAgentRequestsFromSessionTransition(previousSession, nextSession);
+  const appliedSession = params.getExistingSession?.(sessionId) ?? nextSession;
+  reportNewAgentRequestsFromSessionTransition(previousSession, appliedSession);
 
   return {
     ok: true,
     sessionDataKeyHydration: hydration,
-    session: {
-      ...rowWithoutOwnerMetadata,
-      serverId: typeof params.serverId === 'string' && params.serverId.trim().length > 0 ? params.serverId.trim() : undefined,
-      metadata,
-      ownerMetadataView,
-      agentState,
-      agentStateVersion,
-      ...(sessionTurns
-        ? {
-          sessionTurns,
-          rollbackEligibleTurnStarts,
-        }
-        : {}),
-    },
+    session: appliedSession,
     ...(params.includeMetadataTupleMutationSnapshot === true
-      ? { metadataTupleMutationSnapshot }
+      ? { metadataTupleMutationSnapshot: classifySessionTupleApplyCurrentness(previousSession, nextSession).fullyCurrent
+          ? metadataTupleMutationSnapshot : null }
       : {}),
   };
 }

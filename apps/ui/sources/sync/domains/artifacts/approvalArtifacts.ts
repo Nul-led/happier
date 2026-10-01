@@ -50,6 +50,11 @@ function parseApprovalRequestArtifact(artifact: DecryptedArtifact): ApprovalRequ
     return parsed?.family === 'built_in' ? parsed.request : null;
 }
 
+export function isOpenApprovalInboxArtifact(artifact: DecryptedArtifact): boolean {
+    const parsed = approvalArtifactBodyMatchesHeaderV1(artifact.header ?? {}, artifact.body);
+    return parsed?.request.status === 'open';
+}
+
 function collectApprovalLinkedSessionReferences(
     artifact: DecryptedArtifact,
     approval?: ApprovalRequest | null,

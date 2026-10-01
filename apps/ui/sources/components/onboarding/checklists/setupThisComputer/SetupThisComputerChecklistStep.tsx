@@ -23,6 +23,8 @@ import type { SystemTaskRunState } from '@/components/systemTasks/types';
 
 import { buildThisComputerChecklistDiagnosticsPayload } from './buildThisComputerChecklistDiagnosticsPayload';
 import { useThisComputerSetupPreflight } from './useThisComputerSetupPreflight';
+import { confirmThisComputerAccountMove } from '@/components/settings/machines/localControl/thisComputerConnectionPresentation';
+import { useAppAccountIdentity } from '@/components/settings/machines/localControl/useThisComputerConnection';
 
 const stylesheet = StyleSheet.create((theme) => ({
     container: {
@@ -137,6 +139,8 @@ export const SetupThisComputerChecklistStep = React.memo(function SetupThisCompu
         const activeWebappUrl = preflight.activeWebappUrl;
         return activeRelayUrl && activeWebappUrl ? { activeRelayUrl, activeWebappUrl } : null;
     }, [preflight.activeRelayUrl, preflight.activeWebappUrl]);
+    // A11-06: set up this computer for the app's own account on that Home.
+    const { accountId: appAccountId } = useAppAccountIdentity();
     const buildExecutionPlan = React.useCallback((selectedIds: readonly string[]) => {
         if (!explicitSetupTarget) {
             throw new Error('This computer cannot be set up until a Home is selected.');
@@ -146,11 +150,12 @@ export const SetupThisComputerChecklistStep = React.memo(function SetupThisCompu
         return buildLocalMachineSetupSystemTaskSpec({
             ...explicitSetupTarget,
             activeLocalRelayUrl: preflight.activeLocalRelayUrl,
+            activeAccountId: appAccountId,
             installService,
             startService: installService && selected.has('setup.thisComputer.startService'),
             verifyService: installService && selected.has('setup.thisComputer.verifyService'),
         });
-    }, [explicitSetupTarget, preflight.activeLocalRelayUrl]);
+    }, [appAccountId, explicitSetupTarget, preflight.activeLocalRelayUrl]);
     const runExecutionPlan = React.useCallback(async (spec: ReturnType<typeof buildLocalMachineSetupSystemTaskSpec>) => {
         await start(spec);
     }, [start]);
@@ -185,6 +190,8 @@ export const SetupThisComputerChecklistStep = React.memo(function SetupThisCompu
     const needsAuthRef = React.useRef(props.onNeedsAuth);
     const continueRef = React.useRef(controller.continue);
     const retryRef = React.useRef(controller.retry);
+    const connectionRef = React.useRef(preflight.thisComputerConnection);
+    connectionRef.current = preflight.thisComputerConnection;
 
     React.useEffect(() => {
         requestAdvanceRef.current = props.onRequestAdvance;
@@ -223,6 +230,8 @@ export const SetupThisComputerChecklistStep = React.memo(function SetupThisCompu
                 onPress: isReady && props.onRequestAdvance
                     ? (requestAdvanceRef.current ?? (() => undefined))
                     : async () => {
+                        // R10 D1: moving this computer off another account asks first, naming both.
+                        if (!(await confirmThisComputerAccountMove(connectionRef.current))) return;
                         await continueRef.current();
                     },
             });

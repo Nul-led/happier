@@ -84,7 +84,7 @@ describe('remote-dev Session-spawn approval replay normalizer', () => {
           v: 1,
           updatedAt: 42,
           ref: {
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             providerConnectionId: null,
             modelId: 'gpt-5',
           },

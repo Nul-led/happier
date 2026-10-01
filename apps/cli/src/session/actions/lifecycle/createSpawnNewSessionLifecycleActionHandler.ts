@@ -43,7 +43,7 @@ export function createSpawnNewSessionLifecycleActionHandler(params: Readonly<{
             errorCode: 'cancelled',
             errorMessage: 'cancelled',
         });
-        if (context?.signal.aborted) return cancelled();
+        if (context?.signal?.aborted) return cancelled();
         const {
             directory,
             spawnNonce,
@@ -470,11 +470,15 @@ export function createSpawnNewSessionLifecycleActionHandler(params: Readonly<{
             }
 
             const baseSpawnOptions = buildBaseSpawnOptions(directory);
-            if (context?.signal.aborted) return cancelled();
+            if (context?.signal?.aborted) return cancelled();
             const result = await params.spawnSession({
+                ...(context?.creationAuthorization ? { creationAuthorization: context.creationAuthorization } : {}),
+                ...(context?.callerInputConstraints ? { callerInputConstraints: context.callerInputConstraints } : {}),
                 ...baseSpawnOptions,
                 existingSessionId,
-                approvedNewDirectoryCreation: true,
+                approvedNewDirectoryCreation: typeof approvedNewDirectoryCreation === 'boolean'
+                    ? approvedNewDirectoryCreation
+                    : undefined,
             });
 
             if (result.type === 'error') {
@@ -495,8 +499,10 @@ export function createSpawnNewSessionLifecycleActionHandler(params: Readonly<{
             };
         }
         const baseSpawnOptions = buildBaseSpawnOptions(directory);
-        if (context?.signal.aborted) return cancelled();
+        if (context?.signal?.aborted) return cancelled();
         const result = await params.spawnSession({
+            ...(context?.creationAuthorization ? { creationAuthorization: context.creationAuthorization } : {}),
+            ...(context?.callerInputConstraints ? { callerInputConstraints: context.callerInputConstraints } : {}),
             ...baseSpawnOptions,
             sessionId: normalizedSessionId,
             approvedNewDirectoryCreation: approvedNewDirectoryCreation as SpawnSessionOptions['approvedNewDirectoryCreation'],

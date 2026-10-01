@@ -1,5 +1,4 @@
-import { getServerProfileById, listServerProfiles } from '@/sync/domains/server/serverProfiles';
-import { createServerUrlComparableKey } from '@/sync/domains/server/url/serverUrlCanonical';
+import { getServerProfileById, resolveUniqueServerProfileByUrl } from '@/sync/domains/server/serverProfiles';
 
 /**
  * The one rule for naming the saved Home a notification belongs to.
@@ -20,12 +19,6 @@ export function resolveNotificationSavedHome(params: Readonly<{
         return { id: profile.id, serverUrl: profile.serverUrl };
     }
 
-    const targetKey = createServerUrlComparableKey(params.serverUrl);
-    if (!targetKey) return null;
-    const matches = listServerProfiles().filter(
-        (profile) => createServerUrlComparableKey(profile.serverUrl) === targetKey,
-    );
-    return matches.length === 1
-        ? { id: matches[0]!.id, serverUrl: matches[0]!.serverUrl }
-        : null;
+    const profile = resolveUniqueServerProfileByUrl(params.serverUrl);
+    return profile ? { id: profile.id, serverUrl: profile.serverUrl } : null;
 }

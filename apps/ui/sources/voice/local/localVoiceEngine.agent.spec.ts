@@ -1015,7 +1015,7 @@ describe('local voice engine agent behavior', () => {
 
         await resetLocalVoiceAgentPersistence();
 
-        expect((storage.getState() as any).sessions.sys_voice.metadata.voiceAgentRunV1).toBeNull();
+        expect(storage.getState().sessions.sys_voice.metadata).not.toHaveProperty('voiceAgentRunV1');
     });
 
     it('surfaces send_failed when daemon streaming start is unavailable', async () => {

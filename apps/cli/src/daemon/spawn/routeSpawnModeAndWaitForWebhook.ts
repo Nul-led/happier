@@ -1,3 +1,4 @@
+import type { PersistedTakeoverAdmissionWaitRegistration } from './persistedTakeoverAdmission';
 import type { BackendTargetRefV2, SessionModelSelectionV1 } from '@happier-dev/protocol';
 
 import { SPAWN_SESSION_ERROR_CODES, type SpawnSessionOptions, type SpawnSessionResult } from '@/session/shared/spawnSessionContract';
@@ -18,12 +19,13 @@ import type {
 import type { SpawnLifecycleCallbacks } from './createSpawnLifecycleCallbacks';
 import { spawnRegularProcessAndWaitForWebhook } from './spawnRegularProcessAndWaitForWebhook';
 import { spawnTmuxHostedSessionAndWaitForWebhook } from './spawnTmuxHostedSessionAndWaitForWebhook';
+import { spawnAdapterHostedSessionAndWaitForWebhook } from './spawnAdapterHostedSessionAndWaitForWebhook';
 import { spawnWindowsHostedSessionAndWaitForWebhook } from './spawnWindowsHostedSessionAndWaitForWebhook';
 import {
   normalizeBundledWorkspaceNameFromPackageName,
   prepareSourceDevSharedDepsForHappyCliSpawn,
 } from '@/subprocess/sourceDevSharedDepsPreflight';
-import type { SpawnCommitRevalidation } from './spawnCommitRevalidation';
+import { withTakeoverAdmissionCommitRevalidation, type SpawnCommitRevalidation } from './spawnCommitRevalidation';
 import type { ProviderStreamingSanitizer } from '@/providers/spawn/redaction';
 import {
   isRuntimeBackedHappyCliSubprocess,
@@ -33,6 +35,7 @@ import {
 import { ensureJavaScriptRuntimeExecutable } from '@/packagedRuntime/js/ensureJavaScriptRuntimeExecutable';
 import { isBun } from '@/utils/runtime';
 import { resolveLiveRunnerSnapshotFingerprints } from '../sessionRunnerRuntime/resolveLiveRunnerSnapshotFingerprints';
+import { resolveBackendExecutionSurfaces } from '@/agent/runtime/registry/engineRegistry';
 
 function resolveSourceDevWorkspaceNamesForBackendTarget(
   target: BackendTargetRefV2 | undefined,
@@ -72,6 +75,7 @@ export async function routeSpawnModeAndWaitForWebhook(params: Readonly<{
   pidToAwaiter: Map<number, (session: TrackedSession) => void>;
   pidToSpawnResultResolver: Map<number, (result: SpawnSessionResult) => void>;
   pidToSpawnWebhookTimeout: Map<number, NodeJS.Timeout>;
+  takeoverAdmission?: PersistedTakeoverAdmissionWaitRegistration;
   resolveCanonicalTrackedSessionId: (pid: number) => string;
   onChildExited: (pid: number, exit: ChildExit) => void | Promise<void>;
   spawnLifecycleCallbacks: SpawnLifecycleCallbacks;
@@ -83,6 +87,10 @@ export async function routeSpawnModeAndWaitForWebhook(params: Readonly<{
   revalidateBeforeCommit?: SpawnCommitRevalidation;
   onUntrackedTmuxChild: () => void;
 }>): Promise<SpawnSessionResult> {
+  const revalidateBeforeCommit = withTakeoverAdmissionCommitRevalidation(
+    params.takeoverAdmission,
+    params.revalidateBeforeCommit,
+  );
   const sessionControlArgs = buildHappySessionControlArgs({
     resume: params.effectiveResume,
     nativeForkSource: params.options.nativeForkSource,
@@ -101,6 +109,23 @@ export async function routeSpawnModeAndWaitForWebhook(params: Readonly<{
     agentModeUpdatedAt: params.agentModeUpdatedAt,
     modelSelection: params.modelSelection,
   });
+  const executionSurfaces = await resolveBackendExecutionSurfaces(params.effectiveBackendTargetV2);
+  const launchEnvironmentValues = Object.fromEntries(Object.entries({
+    ...params.processEnv,
+    ...params.extraEnvForChildWithMessage,
+  }).filter((entry): entry is [string, string] => typeof entry[1] === 'string'));
+  for (const key of params.unsetEnvKeys ?? []) delete launchEnvironmentValues[key];
+  const terminalPresentationEnabled = executionSurfaces.resolveTerminalPresentation?.({
+    runtimeDescriptorV1: params.options.runtimeDescriptorV1,
+    launchEnvironment: { values: launchEnvironmentValues, unset: params.unsetEnvKeys ?? [] },
+    configuration: {
+      options: Object.fromEntries(Object.entries(params.options.sessionConfigOptionOverrides?.overrides ?? {})
+        .map(([id, option]) => [id, { value: option.value, updatedAtMs: option.updatedAt }])),
+    },
+  }) ?? false;
+  const effectiveTerminalRequest = terminalPresentationEnabled
+    ? params.terminalRequest
+    : { requested: 'plain' as const };
 
   const agentCommand = resolveDaemonCliSubcommandFromBackendTarget(params.effectiveBackendTargetV2);
   if (!agentCommand) {
@@ -156,7 +181,7 @@ export async function routeSpawnModeAndWaitForWebhook(params: Readonly<{
   };
 
   const tmuxSpawnResult = await spawnTmuxHostedSessionAndWaitForWebhook({
-    terminalRequest: params.terminalRequest,
+    terminalRequest: effectiveTerminalRequest,
     directory: params.directory,
     options: params.options,
     trackedSpawnOptions: params.trackedSpawnOptions,
@@ -173,6 +198,7 @@ export async function routeSpawnModeAndWaitForWebhook(params: Readonly<{
     runnerAgentInvocationContext: params.runnerAgentInvocationContext,
     pidToTrackedSession: params.pidToTrackedSession,
     pidToAwaiter: params.pidToAwaiter,
+    takeoverAdmission: params.takeoverAdmission,
     pidToSpawnResultResolver: params.pidToSpawnResultResolver,
     pidToSpawnWebhookTimeout: params.pidToSpawnWebhookTimeout,
     resolveCanonicalTrackedSessionId: params.resolveCanonicalTrackedSessionId,
@@ -182,7 +208,7 @@ export async function routeSpawnModeAndWaitForWebhook(params: Readonly<{
     logDebug: params.logDebug,
     warn: params.warn,
     sanitizeDiagnosticText: params.sanitizeDiagnosticText,
-    revalidateBeforeCommit: params.revalidateBeforeCommit,
+    revalidateBeforeCommit,
     runnerLaunchOptions,
   });
   if (tmuxSpawnResult.spawnResult) {
@@ -207,6 +233,38 @@ export async function routeSpawnModeAndWaitForWebhook(params: Readonly<{
       errorMessage: tmuxFallbackReason ?? 'Tmux window creation committed but exact absence was verified',
     };
   }
+
+  const adapterHostedResult = await spawnAdapterHostedSessionAndWaitForWebhook({
+    terminalRequest: effectiveTerminalRequest,
+    directory: params.directory,
+    trackedSpawnOptions: params.trackedSpawnOptions,
+    normalizedExistingSessionId: params.normalizedExistingSessionId,
+    ...(params.sessionCreationOutcome ? { sessionCreationOutcome: params.sessionCreationOutcome } : {}),
+    effectiveResume: params.effectiveResume,
+    effectiveBackendTargetV2: params.effectiveBackendTargetV2,
+    sessionControlArgs,
+    directoryCreated: params.directoryCreated,
+    extraEnvForChildWithMessage: params.extraEnvForChildWithMessage,
+    unsetEnvKeys: params.unsetEnvKeys,
+    runnerAgentSessionBootstrapAuthorization: params.runnerAgentSessionBootstrapAuthorization,
+    runnerAgentInvocationContext: params.runnerAgentInvocationContext,
+    processEnv: params.processEnv,
+    happyHomeDir: params.happyHomeDir,
+    pidToTrackedSession: params.pidToTrackedSession,
+    pidToAwaiter: params.pidToAwaiter,
+    pidToSpawnResultResolver: params.pidToSpawnResultResolver,
+    pidToSpawnWebhookTimeout: params.pidToSpawnWebhookTimeout,
+    takeoverAdmission: params.takeoverAdmission,
+    onChildExited: params.onChildExited,
+    spawnLifecycleCallbacks: params.spawnLifecycleCallbacks,
+    cleanupSpawnResources: params.cleanupSpawnResources,
+    logDebug: params.logDebug,
+    warn: params.warn,
+    sanitizeDiagnosticText: params.sanitizeDiagnosticText,
+    revalidateBeforeCommit,
+    runnerLaunchOptions,
+  });
+  if (adapterHostedResult) return adapterHostedResult;
 
   params.logDebug('[DAEMON RUN] Using regular process spawning');
 
@@ -251,6 +309,7 @@ export async function routeSpawnModeAndWaitForWebhook(params: Readonly<{
       happyHomeDir: params.happyHomeDir,
       pidToTrackedSession: params.pidToTrackedSession,
       pidToAwaiter: params.pidToAwaiter,
+      takeoverAdmission: params.takeoverAdmission,
       pidToSpawnResultResolver: params.pidToSpawnResultResolver,
       pidToSpawnWebhookTimeout: params.pidToSpawnWebhookTimeout,
       resolveCanonicalTrackedSessionId: params.resolveCanonicalTrackedSessionId,
@@ -260,7 +319,7 @@ export async function routeSpawnModeAndWaitForWebhook(params: Readonly<{
       logDebug: params.logDebug,
       warn: params.warn,
       sanitizeDiagnosticText: params.sanitizeDiagnosticText,
-      revalidateBeforeCommit: params.revalidateBeforeCommit,
+      revalidateBeforeCommit,
       runnerLaunchOptions,
     });
   }
@@ -269,7 +328,9 @@ export async function routeSpawnModeAndWaitForWebhook(params: Readonly<{
     args,
     directory: params.directory,
     options: params.options,
-    trackedSpawnOptions: params.trackedSpawnOptions,
+    trackedSpawnOptions: terminalPresentationEnabled
+      ? params.trackedSpawnOptions
+      : { ...params.trackedSpawnOptions, terminal: { mode: 'plain' } },
     normalizedExistingSessionId: params.normalizedExistingSessionId,
     ...(params.sessionCreationOutcome ? { sessionCreationOutcome: params.sessionCreationOutcome } : {}),
     effectiveResume: params.effectiveResume,
@@ -282,6 +343,7 @@ export async function routeSpawnModeAndWaitForWebhook(params: Readonly<{
     processEnv: params.processEnv,
     pidToTrackedSession: params.pidToTrackedSession,
     pidToAwaiter: params.pidToAwaiter,
+    takeoverAdmission: params.takeoverAdmission,
     pidToSpawnResultResolver: params.pidToSpawnResultResolver,
     pidToSpawnWebhookTimeout: params.pidToSpawnWebhookTimeout,
     resolveCanonicalTrackedSessionId: params.resolveCanonicalTrackedSessionId,
@@ -292,7 +354,7 @@ export async function routeSpawnModeAndWaitForWebhook(params: Readonly<{
     warn: params.warn,
     sanitizeDiagnosticText: params.sanitizeDiagnosticText,
     createStreamingSanitizer: params.createStreamingSanitizer,
-    revalidateBeforeCommit: params.revalidateBeforeCommit,
+    revalidateBeforeCommit,
     runnerLaunchOptions,
   });
 }

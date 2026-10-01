@@ -22,7 +22,6 @@ describe('reviewCommentPrompt', () => {
         ];
 
         const prompt = buildReviewCommentsPromptText({
-            sessionId: 's1',
             drafts,
             additionalMessage: '',
         });
@@ -34,6 +33,8 @@ describe('reviewCommentPrompt', () => {
         expect(prompt).toContain('lh1:1234567890abcdef');
         expect(prompt).toContain('Please rename x to count');
         expect(prompt).toContain('const x = 1;');
+        expect(prompt).toContain('reviews.comments.transition');
+        expect(prompt).toContain('reviews.comments.setDisposition');
     });
 
     it('builds a compact display text summary', () => {

@@ -8,13 +8,13 @@ import { ItemList } from '@/components/ui/lists/ItemList';
 import { ItemRowActions } from '@/components/ui/lists/ItemRowActions';
 import { InlineAddExpander } from '@/components/ui/forms/InlineAddExpander';
 import type { SavedSecret } from '@/sync/domains/settings/savedSecretTypes';
-import { formatAccountDisplayName } from '@/sync/domains/account/formatAccountDisplayName';
 import { Typography } from '@/constants/Typography';
 import { t } from '@/text';
 import { Text, TextInput } from '@/components/ui/text/Text';
 import { Icon } from '@/components/ui/icons/Icon';
-import type { SavedSecretCatalogCorruptEntryV1, SavedSecretCatalogEntryV1 } from '@happier-dev/protocol';
+import type { SavedSecretCatalogEntryV1 } from '@happier-dev/protocol';
 import type { SavedSecretReferenceResolution } from '@/sync/store/settings/savedSecretCatalogSnapshot';
+import { sharedSecretProvenanceSegments, sharedSecretStatusLabel } from './savedSecretRowCopy';
 
 
 export interface SecretsListProps {
@@ -39,67 +39,14 @@ export interface SecretsListProps {
     allowAdd?: boolean;
     allowEdit?: boolean;
     onAfterAddSelectId?: (id: string) => void;
-    onSharePersonal?: (secret: SavedSecret) => void;
-    sharingPersonalId?: string | null;
-    onCreateShared?: () => void;
 
-    /** Shared-resource rows from the canonical Account-scoped catalog. */
+    /** Shared-resource rows from the canonical Account-scoped catalog; pickers choose among them. */
     sharedEntries?: readonly SavedSecretCatalogEntryV1[];
-    /** Settings-only repair projection. Picker callers deliberately omit it. */
-    corruptEntries?: readonly SavedSecretCatalogCorruptEntryV1[];
-    onDeleteCorruptShared?: (entry: Extract<SavedSecretCatalogCorruptEntryV1, { relationship: 'owner' }>) => void;
     resolveSharedReference?: (ref: string) => SavedSecretReferenceResolution;
-    onRenameShared?: (entry: SavedSecretCatalogEntryV1) => void;
-    onRotateShared?: (entry: SavedSecretCatalogEntryV1) => void;
-    /** Converts an owned end-to-end encrypted resource to Home-managed storage; absent where not allowed. */
-    onMakeSharedHomeManaged?: (entry: SavedSecretCatalogEntryV1) => void;
-    /** Converts an owned Home-managed resource to end-to-end encrypted storage; absent where not allowed. */
-    onEncryptShared?: (entry: SavedSecretCatalogEntryV1) => void;
-    onManageAccessShared?: (entry: SavedSecretCatalogEntryV1) => void;
-    onDeleteShared?: (entry: SavedSecretCatalogEntryV1) => void;
-    sharedMutationsDisabled?: boolean;
-    sharedApprovalId?: string | null;
-    onOpenSharedApproval?: () => void;
     sharedCatalogStale?: boolean;
     onRetrySharedCatalog?: () => void;
 
     wrapInItemList?: boolean;
-}
-
-function sharedSecretStatusLabel(status: SavedSecretCatalogEntryV1['materialStatus']): string {
-    switch (status) {
-        case 'ready': return t('secrets.catalog.status.ready');
-        case 'preparing_encrypted_access': return t('secrets.catalog.status.preparing_encrypted_access');
-        case 'recipient_mode_unsupported': return t('secrets.catalog.status.recipient_mode_unsupported');
-        case 'temporarily_unavailable': return t('secrets.catalog.status.temporarily_unavailable');
-        case 'access_removed': return t('secrets.catalog.status.access_removed');
-        case 'deleted': return t('secrets.catalog.status.deleted');
-        case 'update_required': return t('secrets.catalog.status.update_required');
-    }
-}
-
-/**
- * Where a shared secret came from, in the words the Home already projected.
- *
- * Picking a shared secret decides whose credential a Session spends, so the row
- * states the recipient-safe owner and the access that carries it. Both facts are
- * read straight from the catalog projection — nothing is inferred from the
- * focused Home, the Team the surface happens to sit in, or the secret's name —
- * and an owner row states neither, because it is the person's own secret.
- */
-function sharedSecretProvenanceSegments(entry: SavedSecretCatalogEntryV1): readonly string[] {
-    const ownerName = entry.owner ? formatAccountDisplayName(entry.owner) : null;
-    return [
-        ...(entry.relationship === 'recipient' && ownerName
-            ? [t('secrets.catalog.provenance.sharedBy', { owner: ownerName })]
-            : []),
-        ...entry.accessSources.map((source) => {
-            if (source.kind === 'account') return t('secrets.catalog.provenance.direct');
-            return t('secrets.catalog.provenance.via', {
-                source: source.kind === 'group' ? `${source.teamName} · ${source.name}` : source.name,
-            });
-        }),
-    ];
 }
 
 export function SecretsList(props: SecretsListProps) {
@@ -159,16 +106,12 @@ export function SecretsList(props: SecretsListProps) {
         }
     }, [defaultId, onDeletePersonal, onSelectId, onSetDefaultId, selectedId]);
 
-    const groupTitle = props.title ?? ((props.sharedEntries?.length ?? 0) + (props.corruptEntries?.length ?? 0) > 0
+    const groupTitle = props.title ?? ((props.sharedEntries?.length ?? 0) > 0
         ? t('secrets.catalog.relationship.owner')
         : t('settings.secrets'));
     const groupFooter = props.footer === undefined ? t('settings.secretsSubtitle') : (props.footer ?? undefined);
     const ownerSharedEntries = (props.sharedEntries ?? []).filter((entry) => entry.relationship === 'owner');
     const recipientSharedEntries = (props.sharedEntries ?? []).filter((entry) => entry.relationship === 'recipient');
-    const ownerCorruptEntries = (props.corruptEntries ?? []).filter(
-        (entry): entry is Extract<SavedSecretCatalogCorruptEntryV1, { relationship: 'owner' }> => entry.relationship === 'owner',
-    );
-    const recipientCorruptEntries = (props.corruptEntries ?? []).filter((entry) => entry.relationship === 'recipient');
     // A configured shared ref the Home no longer authorizes (revoked, deleted,
     // or not yet readable) has no catalog row. The binding itself survives, so
     // the picker keeps showing it — selected, with the canonical resolver's
@@ -182,89 +125,11 @@ export function SecretsList(props: SecretsListProps) {
         return resolution.kind === 'shared_resource' ? resolution : null;
     })();
 
-    const renderCorruptEntry = (entry: SavedSecretCatalogCorruptEntryV1, idx: number, total: number) => {
-        const ownerEntry = entry.relationship === 'owner' ? entry : null;
-        const ownerCanDelete = ownerEntry !== null && Boolean(props.onDeleteCorruptShared);
-        return (
-            <Item
-                key={ownerEntry ? `owner:${ownerEntry.repair.resourceId}` : `recipient:${idx}`}
-                testID={`saved-secret-corrupt:${entry.relationship}:${idx}`}
-                title={t('secrets.catalog.unavailableName')}
-                subtitle={t('secrets.catalog.status.resource_corrupt')}
-                accessibilityLabel={[
-                    t('secrets.catalog.unavailableName'),
-                    entry.relationship === 'owner'
-                        ? t('secrets.catalog.relationship.owner')
-                        : t('secrets.catalog.relationship.recipient'),
-                    t('secrets.catalog.status.resource_corrupt'),
-                ].join(', ')}
-                icon={<Icon name="warning-circle" size={29} color={theme.colors.state.warning.foreground} />}
-                showChevron={false}
-                showDivider={idx < total - 1}
-                mode="info"
-                rightElementOutsidePressable={ownerCanDelete}
-                rightElement={ownerCanDelete ? (
-                    <ItemRowActions
-                        title={t('secrets.catalog.unavailableName')}
-                        overflowTriggerTestID={`saved-secret-corrupt:owner:${idx}:more`}
-                        actions={[{
-                            id: 'delete',
-                            inlineTestID: `saved-secret-corrupt:owner:${idx}:delete`,
-                            title: t('common.delete'),
-                            icon: 'trash',
-                            destructive: true,
-                            disabled: props.sharedMutationsDisabled,
-                            onPress: () => { if (ownerEntry) props.onDeleteCorruptShared?.(ownerEntry); },
-                        }]}
-                    />
-                ) : undefined}
-            />
-        );
-    };
-
     const renderSharedEntry = (entry: SavedSecretCatalogEntryV1, idx: number, total: number) => {
         const resolvedStatus = props.resolveSharedReference?.(entry.ref).status ?? entry.materialStatus;
         const provenance = sharedSecretProvenanceSegments(entry);
         const ready = resolvedStatus === 'ready'
             && entry.capabilities.use;
-        const convertShared = entry.encryptionMode === 'e2ee' ? props.onMakeSharedHomeManaged
-            : entry.encryptionMode === 'plain' ? props.onEncryptShared
-                : undefined;
-        const actions = [
-            entry.capabilities.rename && props.onRenameShared ? {
-                id: 'rename', title: t('common.rename'), icon: 'pencil' as const,
-                disabled: props.sharedMutationsDisabled,
-                onPress: () => props.onRenameShared?.(entry),
-            } : null,
-            entry.capabilities.rotate && props.onRotateShared ? {
-                id: 'rotate', title: t('secrets.actions.replaceValue'), icon: 'arrow-clockwise' as const,
-                disabled: props.sharedMutationsDisabled,
-                onPress: () => props.onRotateShared?.(entry),
-            } : null,
-            // Conversion rewrites the resource's content through the same
-            // update Action a rotation uses, so it is offered exactly where a
-            // rotation is, out of the row's known current mode, and only when
-            // the screen allows that direction.
-            entry.capabilities.rotate && convertShared ? {
-                id: 'convertMode',
-                title: entry.encryptionMode === 'e2ee'
-                    ? t('secrets.catalog.actions.convertToPlain')
-                    : t('secrets.catalog.actions.convertToE2ee'),
-                icon: entry.encryptionMode === 'e2ee' ? 'lock-open' as const : 'lock' as const,
-                disabled: props.sharedMutationsDisabled,
-                onPress: () => convertShared(entry),
-            } : null,
-            entry.capabilities.manageAccess && props.onManageAccessShared ? {
-                id: 'manageAccess', title: t('secrets.catalog.actions.manageAccess'), icon: 'users' as const,
-                disabled: props.sharedMutationsDisabled,
-                onPress: () => props.onManageAccessShared?.(entry),
-            } : null,
-            entry.capabilities.delete && props.onDeleteShared ? {
-                id: 'delete', title: t('common.delete'), icon: 'trash' as const, destructive: true,
-                disabled: props.sharedMutationsDisabled,
-                onPress: () => props.onDeleteShared?.(entry),
-            } : null,
-        ].filter((action): action is NonNullable<typeof action> => action !== null);
         return (
             <Item
                 key={entry.ref}
@@ -285,33 +150,12 @@ export function SecretsList(props: SecretsListProps) {
                 selected={Boolean(props.onSelectId) && props.selectedId === entry.ref}
                 showDivider={idx < total - 1}
                 disabled={Boolean(props.onSelectId) && !ready}
-                rightElementOutsidePressable={actions.length > 0}
-                rightElement={actions.length > 0 ? (
-                    <ItemRowActions
-                        title={entry.name ?? t('secrets.catalog.unavailableName')}
-                        overflowTriggerTestID={`saved-secret:${entry.ref}:more`}
-                        compactActionIds={['manageAccess']}
-                        actions={actions}
-                    />
-                ) : undefined}
             />
         );
     };
 
     const group = (
         <>
-            {props.sharedApprovalId && props.onOpenSharedApproval ? (
-                <ItemGroup>
-                    <Item
-                        testID="saved-secret-approval"
-                        title={t('approvals.title')}
-                        subtitle={t('secrets.catalog.approvalPending')}
-                        accessibilityLiveRegion="polite"
-                        onPress={props.onOpenSharedApproval}
-                        showChevron={false}
-                    />
-                </ItemGroup>
-            ) : null}
             <ItemGroup title={groupTitle}>
                 {props.sharedCatalogStale && props.onRetrySharedCatalog ? (
                     <Item
@@ -352,7 +196,7 @@ export function SecretsList(props: SecretsListProps) {
                     />
                 ) : null}
 
-                {!unavailableSelection && props.secrets.length === 0 && (props.sharedEntries?.length ?? 0) === 0 && (props.corruptEntries?.length ?? 0) === 0 ? (
+                {!unavailableSelection && props.secrets.length === 0 && (props.sharedEntries?.length ?? 0) === 0 ? (
                     <Item
                         testID="saved-secret:empty"
                         title={t('secrets.emptyTitle')}
@@ -412,14 +256,6 @@ export function SecretsList(props: SecretsListProps) {
                                                 actions={[
                                                     ...(onRenamePersonal ? [{ id: 'edit', inlineTestID: `saved-secret:${secret.id}:rename`, title: t('common.rename'), icon: 'pencil' as const, onPress: () => { void onRenamePersonal(secret); } }] : []),
                                                     ...(onRotatePersonal ? [{ id: 'replace', inlineTestID: `saved-secret:${secret.id}:replace`, title: t('secrets.actions.replaceValue'), icon: 'arrow-clockwise' as const, onPress: () => { void onRotatePersonal(secret); } }] : []),
-                                                    ...(props.onSharePersonal ? [{
-                                                        id: 'share',
-                                                        inlineTestID: `saved-secret:${secret.id}:share`,
-                                                        title: t('common.share'),
-                                                        icon: 'users' as const,
-                                                        disabled: props.sharingPersonalId !== null && props.sharingPersonalId !== undefined,
-                                                        onPress: () => props.onSharePersonal?.(secret),
-                                                    }] : []),
                                                     ...(onDeletePersonal ? [{ id: 'delete', inlineTestID: `saved-secret:${secret.id}:delete`, title: t('common.delete'), icon: 'trash' as const, destructive: true, onPress: () => { void deleteSecret(secret); } }] : []),
                                                 ]}
                                             />
@@ -441,27 +277,15 @@ export function SecretsList(props: SecretsListProps) {
                         );
                     })}
                     {ownerSharedEntries.map((entry, idx) => renderSharedEntry(entry, idx, ownerSharedEntries.length))}
-                    {ownerCorruptEntries.map((entry, idx) => renderCorruptEntry(entry, idx, ownerCorruptEntries.length))}
                     </>
                 )}
             </ItemGroup>
-            {recipientSharedEntries.length + recipientCorruptEntries.length > 0 ? (
+            {recipientSharedEntries.length > 0 ? (
                 <ItemGroup title={t('secrets.catalog.relationship.recipient')}>
                     {recipientSharedEntries.map((entry, idx) => renderSharedEntry(entry, idx, recipientSharedEntries.length))}
-                    {recipientCorruptEntries.map((entry, idx) => renderCorruptEntry(entry, idx, recipientCorruptEntries.length))}
                 </ItemGroup>
             ) : null}
             <ItemGroup footer={groupFooter}>
-                {props.onCreateShared ? (
-                    <Item
-                        testID="saved-secret-create-shared"
-                        title={t('secrets.catalog.createSharedTitle')}
-                        subtitle={t('secrets.catalog.createSharedSubtitle')}
-                        icon={<Icon name="users" size={29} color={theme.colors.button.secondary.tint} />}
-                        onPress={props.onCreateShared}
-                        showChevron={false}
-                    />
-                ) : null}
                 {props.allowAdd !== false && onCreatePersonal ? (
                     <InlineAddExpander
                         triggerTestID="saved-secret-add"

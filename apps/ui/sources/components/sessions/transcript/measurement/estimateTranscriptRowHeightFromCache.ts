@@ -16,7 +16,7 @@ import { findStructuredMessageRenderer } from '@/components/sessions/transcript/
 import { resolveMessageComposerAttachments } from '@/components/sessions/transcript/composerAttachments/messageComposerAttachments';
 import { parseSessionMediaMessageMeta } from '@/sync/domains/session/media/sessionMediaMessageMeta';
 import { transcriptMarkdownTextStyle } from '@/components/sessions/transcript/transcriptMarkdownTypography';
-import type { Message } from '@/sync/domains/messages/messageTypes';
+import type { Message } from "@happier-dev/session-core/messages";
 import { settingsDefaults } from '@/sync/domains/settings/settings';
 import type { PendingMessage } from '@/sync/domains/state/storageTypes';
 // Type-only: the chrome variant is DECIDED by `resolveToolCallsGroupChromeVariant` in that module

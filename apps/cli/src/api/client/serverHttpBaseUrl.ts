@@ -1,12 +1,21 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { isDeepStrictEqual } from 'node:util';
+import type { HomeConnectionDescriptorV1 } from '@happier-dev/protocol';
+import type { NodeIrohHomeTunnelLease } from '@happier-dev/iroh-native/node';
 
 import { configuration } from '@/configuration';
 
 import { resolveLoopbackHttpUrl } from './loopbackUrl';
 
+type PublishedHomeTunnelOwner = Readonly<{
+  descriptor: HomeConnectionDescriptorV1;
+  acquire(): Promise<NodeIrohHomeTunnelLease>;
+}>;
+
 type ServerHttpRuntimePublication = Readonly<{
   origin: string;
   carrier: 'iroh' | 'https';
+  homeTunnelOwner?: PublishedHomeTunnelOwner;
 }>;
 
 let runtimePublication: ServerHttpRuntimePublication | null = null;
@@ -39,15 +48,43 @@ export function runWithServerHttpBaseUrl<T>(serverUrl: string, run: () => T): T 
 export function publishServerHttpRuntimeOrigin(
   runtimeOrigin: string,
   carrier: 'iroh' | 'https',
+  homeTunnelOwner?: PublishedHomeTunnelOwner,
 ): () => void {
   const publication = {
     origin: normalizeServerHttpBaseUrl(runtimeOrigin),
     carrier,
+    ...(homeTunnelOwner ? {
+      homeTunnelOwner: {
+        descriptor: structuredClone(homeTunnelOwner.descriptor),
+        acquire: homeTunnelOwner.acquire,
+      },
+    } : {}),
   } satisfies ServerHttpRuntimePublication;
   runtimePublication = publication;
   return () => {
     if (runtimePublication === publication) runtimePublication = null;
   };
+}
+
+/** Borrows only a lease from the daemon's exact verified Home publication. */
+export async function borrowServerHttpRuntimeHomeTunnel(
+  descriptor: HomeConnectionDescriptorV1,
+  signal?: AbortSignal,
+): Promise<NodeIrohHomeTunnelLease | null> {
+  const publication = runtimePublication;
+  if (
+    publication?.carrier !== 'iroh'
+    || !publication.homeTunnelOwner
+    || !isDeepStrictEqual(publication.homeTunnelOwner.descriptor, descriptor)
+  ) return null;
+  if (signal?.aborted) throw new DOMException('Iroh Home tunnel acquisition was cancelled', 'AbortError');
+  const lease = await publication.homeTunnelOwner.acquire();
+  if (signal?.aborted) {
+    // Failed cleanup remains in the daemon's existing retryable lease custody.
+    await lease.release().catch(() => undefined);
+    throw new DOMException('Iroh Home tunnel acquisition was cancelled', 'AbortError');
+  }
+  return lease;
 }
 
 export function resolveServerSocketIoTransports(): string[] | undefined {

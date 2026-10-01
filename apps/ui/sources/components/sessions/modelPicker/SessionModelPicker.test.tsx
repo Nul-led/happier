@@ -11,6 +11,7 @@ import {
 } from './SessionModelPicker';
 import { ProviderErrorItems } from '@/components/settings/providers/ProviderErrorItems';
 import { SelectionList } from '@/components/ui/selectionList/SelectionList';
+import { t } from '@/text';
 
 /**
  * Committing a freeform model id is a SUBMIT, not a keystroke: the overlay's custom
@@ -29,20 +30,53 @@ function submitCustomModelValue(screen: Readonly<{
 }
 
 describe('SessionModelPicker', () => {
+    it('labels model groups only when there is more than one to tell apart', async () => {
+        const selected = { agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: null, modelId: 'gpt-5.6-sol' } as const;
+        const render = (favoriteEntries?: React.ComponentProps<typeof SessionModelPicker>['favoriteEntries']) => renderScreen(
+            <SessionModelPicker
+                agentTargetKey="agent:happier.agent.codex/codex"
+                nativeModels={[
+                    { value: 'gpt-5.6-terra', label: '5.6 Terra' },
+                    { value: 'gpt-5.6-sol', label: '5.6 Sol' },
+                ]}
+                providerGroups={[]}
+                providerProjectionAuthoritative
+                selected={selected}
+                effectiveLabel="5.6 Sol"
+                favoriteEntries={favoriteEntries}
+                onSelect={() => {}}
+            />,
+        );
+        const sectionTitles = (screen: Awaited<ReturnType<typeof render>>) => (
+            (screen.findByType(SelectionList).props.rootStep.sections as ReadonlyArray<{ title?: string }>)
+                .map((section) => section.title ?? '')
+        );
+
+        // One group of built-in models: a heading over the only group is noise.
+        const lone = await render();
+        expect(sectionTitles(lone)).toEqual(['']);
+        await lone.unmount();
+
+        // Favorites plus the rest: both groups are named.
+        const grouped = await render([{ ref: selected, label: '5.6 Sol' }]);
+        expect(sectionTitles(grouped).every((title) => title.length > 0)).toBe(true);
+        await grouped.unmount();
+    });
+
     it('keeps selection styling on the requested model and marks the reported runtime model separately', async () => {
         const requested = {
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             providerConnectionId: null,
             modelId: 'gpt-5.6-sol',
         } as const;
         const reported = {
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             providerConnectionId: null,
             modelId: 'gpt-5.6-terra',
         } as const;
         const screen = await renderScreen(
             <SessionModelPicker
-                agentTargetKey="backend:codex"
+                agentTargetKey="agent:happier.agent.codex/codex"
                 nativeModels={[
                     { value: 'gpt-5.6-terra', label: '5.6 Terra' },
                     { value: 'gpt-5.6-sol', label: '5.6 Sol' },
@@ -97,7 +131,7 @@ describe('SessionModelPicker', () => {
         expect(buildSessionModelPickerNotes({
             notes: ['Existing'],
             groups: [{ connectionId, suppressedConnectedServiceIds: ['openai-codex'] }],
-            selected: { agentTargetKey: 'backend:codex', providerConnectionId: connectionId, modelId: 'm' },
+            selected: { agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: connectionId, modelId: 'm' },
             suppressionNote: 'Native sign-in is not used.',
         })).toEqual(['Existing', 'Native sign-in is not used.']);
     });
@@ -105,7 +139,7 @@ describe('SessionModelPicker', () => {
     it('gives experimental confirmation ownership of the exact selection commit', async () => {
         const connectionId = ProviderConnectionIdSchema.parse('pc_experimental');
         const selected = {
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             providerConnectionId: connectionId,
             modelId: 'experimental-model',
         } as const;
@@ -146,7 +180,7 @@ describe('SessionModelPicker', () => {
         const confirm = vi.fn<SessionModelPickerExperimentalConfirmationController['confirm']>(async () => true);
         const screen = await renderScreen(
             <SessionModelPicker
-                agentTargetKey="backend:codex"
+                agentTargetKey="agent:happier.agent.codex/codex"
                 nativeModels={[]}
                 providerGroups={providerGroups}
                 providerProjectionAuthoritative
@@ -180,12 +214,35 @@ describe('SessionModelPicker', () => {
         expect(onSelect).toHaveBeenCalledWith(selected);
     });
 
+    it('shows a discovery failure as one compact line, without a second "discovery unavailable" note', async () => {
+        const retryProjection = vi.fn();
+        const screen = await renderScreen(
+            <SessionModelPicker
+                agentTargetKey="agent:happier.agent.claude/claude"
+                nativeModels={[{ value: 'default', label: 'Automatic' }, { value: 'opus', label: 'Opus' }]}
+                providerGroups={[]}
+                providerProjectionAuthoritative={false}
+                projectionError={createProviderErrorV1('provider_rpc_response_invalid')}
+                retryProjection={retryProjection}
+                probe={{ phase: 'idle', failed: true }}
+                notes={[t('agentInput.model.unavailable')]}
+                selected={null}
+                effectiveLabel="Automatic"
+                onSelect={vi.fn()}
+            />,
+        );
+
+        expect(screen.findByTestId('provider-error:provider_rpc_response_invalid')).toBeTruthy();
+        expect(screen.findByTestId('provider-error-action:provider_rpc_response_invalid')).toBeTruthy();
+        expect(screen.getTextContent()).not.toContain(t('agentInput.model.unavailable'));
+    });
+
     it('emits an exact native structured ref for native freeform entry', async () => {
         const onSelect = vi.fn();
         const clear = vi.fn();
         const screen = await renderScreen(
             <SessionModelPicker
-                agentTargetKey="backend:codex"
+                agentTargetKey="agent:happier.agent.codex/codex"
                 nativeModels={[{ value: 'default', label: 'Automatic' }]}
                 providerGroups={[]}
                 providerProjectionAuthoritative
@@ -206,7 +263,7 @@ describe('SessionModelPicker', () => {
         act(() => screen.changeTextByTestId('model-picker-overlay-custom-input', 'native-unlisted'));
         submitCustomModelValue(screen);
         expect(onSelect).toHaveBeenCalledWith({
-            agentTargetKey: 'backend:codex', providerConnectionId: null, modelId: 'native-unlisted',
+            agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: null, modelId: 'native-unlisted',
         });
         expect(clear).toHaveBeenCalledOnce();
     });
@@ -216,7 +273,7 @@ describe('SessionModelPicker', () => {
         supportsFreeformModelIds: boolean;
     }>) => {
         const connectionId = ProviderConnectionIdSchema.parse('pc_freeform');
-        const selected = { agentTargetKey: 'backend:codex', providerConnectionId: connectionId, modelId: 'listed' } as const;
+        const selected = { agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: connectionId, modelId: 'listed' } as const;
         return {
             connectionId,
             selected,
@@ -247,7 +304,7 @@ describe('SessionModelPicker', () => {
         const onSelect = vi.fn();
         const screen = await renderScreen(
             <SessionModelPicker
-                agentTargetKey="backend:codex"
+                agentTargetKey="agent:happier.agent.codex/codex"
                 nativeModels={[]}
                 providerGroups={[group]}
                 providerProjectionAuthoritative
@@ -260,8 +317,32 @@ describe('SessionModelPicker', () => {
         act(() => screen.changeTextByTestId('model-picker-overlay-custom-input', 'provider/unlisted'));
         submitCustomModelValue(screen);
         expect(onSelect).toHaveBeenCalledWith({
-            agentTargetKey: 'backend:codex', providerConnectionId: connectionId, modelId: 'provider/unlisted',
+            agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: connectionId, modelId: 'provider/unlisted',
         });
+    });
+
+    it('offers no custom model entry when the presentation restricts models to a list', async () => {
+        const { selected, group } = freeformProviderGroup({
+            manualModelPolicy: 'allowed', supportsFreeformModelIds: true,
+        });
+        // The underlying Provider permits custom ids; this presentation admits only listed choices.
+        const restrictedProps = { canEnterCustomValue: false };
+        const screen = await renderScreen(
+            <SessionModelPicker
+                {...restrictedProps}
+                agentTargetKey="agent:happier.agent.codex/codex"
+                nativeModels={[{ value: 'native', label: 'Native' }]}
+                canEnterCustomNativeValue
+                providerGroups={[group]}
+                providerProjectionAuthoritative
+                selected={selected}
+                effectiveLabel="Listed"
+                onSelect={() => {}}
+            />,
+        );
+
+        expect(screen.findAllByProps({ testID: 'model-picker-overlay-custom' })).toHaveLength(0);
+        await screen.unmount();
     });
 
     // Offering the entry is a promise the launch owner has to keep: an id the
@@ -274,7 +355,7 @@ describe('SessionModelPicker', () => {
         const { selected, group } = freeformProviderGroup(freeformPolicy);
         const screen = await renderScreen(
             <SessionModelPicker
-                agentTargetKey="backend:codex"
+                agentTargetKey="agent:happier.agent.codex/codex"
                 nativeModels={[]}
                 providerGroups={[group]}
                 providerProjectionAuthoritative
@@ -298,7 +379,7 @@ describe('SessionModelPicker', () => {
         });
         const screen = await renderScreen(
             <SessionModelPicker
-                agentTargetKey="backend:codex"
+                agentTargetKey="agent:happier.agent.codex/codex"
                 nativeModels={[]}
                 providerGroups={[makeGroup('pc_work'), makeGroup('pc_personal')]}
                 providerProjectionAuthoritative
@@ -317,13 +398,13 @@ describe('SessionModelPicker', () => {
             machineId: 'machine-a',
         });
         const selected = {
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             providerConnectionId: ProviderConnectionIdSchema.parse('pc_unreachable'),
             modelId: 'provider-only-model',
         } as const;
         const screen = await renderScreen(
             <SessionModelPicker
-                agentTargetKey="backend:codex"
+                agentTargetKey="agent:happier.agent.codex/codex"
                 nativeModels={[{ value: 'default', label: 'Automatic' }]}
                 providerGroups={[]}
                 providerProjectionAuthoritative={false}
@@ -360,7 +441,7 @@ describe('SessionModelPicker', () => {
         ] as const;
         const screen = await renderScreen(
             <SessionModelPicker
-                agentTargetKey="backend:codex"
+                agentTargetKey="agent:happier.agent.codex/codex"
                 nativeModels={[]}
                 providerGroups={[]}
                 providerProjectionAuthoritative
@@ -380,19 +461,19 @@ describe('SessionModelPicker', () => {
 
     it('projects exact favorites as the first canonical section and keeps unavailable favorites removable', async () => {
         const available = {
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             providerConnectionId: null,
             modelId: 'available',
         } as const;
         const unavailable = {
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             providerConnectionId: ProviderConnectionIdSchema.parse('pc_removed'),
             modelId: 'unavailable',
         } as const;
         const onToggleFavorite = vi.fn();
         const screen = await renderScreen(
             <SessionModelPicker
-                agentTargetKey="backend:codex"
+                agentTargetKey="agent:happier.agent.codex/codex"
                 nativeModels={[{ value: 'available', label: 'Available model' }]}
                 providerGroups={[]}
                 providerProjectionAuthoritative
@@ -442,7 +523,7 @@ describe('SessionModelPicker', () => {
             const clear = vi.fn();
             const renderPicker = (pending: boolean) => (
                 <SessionModelPicker
-                    agentTargetKey="backend:codex"
+                    agentTargetKey="agent:happier.agent.codex/codex"
                     nativeModels={nativeModels}
                     providerGroups={providerGroups}
                     providerProjectionAuthoritative

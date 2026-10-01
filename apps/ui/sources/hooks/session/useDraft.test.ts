@@ -3,6 +3,7 @@ import renderer, { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { useDraft } from './useDraft';
+import { useComposerTextStore, useComposerTextValue } from '@/components/sessions/agentInput/composerTextStore';
 import { TEXT_INPUT_LARGE_TEXT_VALUE_LENGTH_LIMIT } from '@/components/ui/forms/largeTextInputPolicy';
 import { flushHookEffects, renderScreen } from '@/dev/testkit';
 
@@ -238,7 +239,9 @@ async function renderHarness(params: {
 
   function Harness() {
     const [sessionId, setSessionId] = React.useState(params.initialSessionId);
-    const [value, setValue] = React.useState('');
+    const textStore = useComposerTextStore(() => '');
+    const value = useComposerTextValue(textStore);
+    const setValue = textStore.setPrompt;
     const [, setTick] = React.useState(0);
     const fallbackScope = activeScopeState.value;
     const fallbackAccountLifetime = React.useMemo(() => fallbackScope
@@ -261,7 +264,7 @@ async function renderHarness(params: {
       restoreDraftForSessionIfCurrentValueMatches,
       restoreDraft,
       restoreComposerSnapshot,
-    } = useDraft(sessionId, value, setValue, {
+    } = useDraft(sessionId, textStore, {
       autoSaveInterval: 60_000,
       ...(typeof params.active === 'boolean' ? { active: params.active } : {}),
       accountLifetime: params.accountLifetime === undefined

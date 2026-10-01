@@ -46,7 +46,7 @@ export async function executeExternalSessionCandidatesListAction(
         if (!validatedSource.ok) {
             return externalSessionsError(validatedSource.errorCode ?? 'invalid_request', validatedSource.error) satisfies ExternalSessionsCandidatesListResponse;
         }
-        const { agentId, cursor, searchTerm, searchMode } = parsed.data;
+        const { agentId, cursor, searchTerm, searchMode, includeThreads } = parsed.data;
         const source = validatedSource.source;
         const limit = parsed.data.limit
             ?? EXTERNAL_SESSIONS_INVOCATION_POLICY.listCandidates.maxItems;
@@ -60,12 +60,13 @@ export async function executeExternalSessionCandidatesListAction(
         const runCandidateQuery = () => executeExternalSessionCandidateQuery({
             activeServerDir: configuration.activeServerDir,
             agentIdentity: currentAgent.identity,
-            agentRuntimeGeneration: validatedSource.agentRuntimeGeneration,
+            agentSourceCustody: validatedSource.agentSourceCustody,
             source,
             ...(cursor ? { cursor } : {}),
             limit,
             ...(searchTerm ? { searchTerm } : {}),
             ...(searchMode ? { searchMode } : {}),
+            ...(includeThreads ? { includeThreads } : {}),
             ...(options.signal ? { signal: options.signal } : {}),
             listCandidates: async (request) => await providerOps.listCandidates!({
                 source,

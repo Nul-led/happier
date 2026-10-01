@@ -3,8 +3,8 @@ import type { Session } from '@/sync/domains/state/storageTypes';
 import type { SessionListRenderableSession } from '@/sync/domains/session/listing/sessionListRenderable';
 import { readDisplayMachineIdForSession } from '@/sync/ops/sessionMachineTarget';
 
-type RecentMachineSessionSource = Pick<Session, 'id' | 'createdAt' | 'updatedAt' | 'metadata'>
-    | Pick<SessionListRenderableSession, 'id' | 'createdAt' | 'updatedAt' | 'metadata'>;
+type RecentMachineSessionSource = (Pick<Session, 'id' | 'createdAt' | 'updatedAt' | 'metadata'>
+    | Pick<SessionListRenderableSession, 'id' | 'createdAt' | 'updatedAt' | 'metadata'>) & Readonly<{ serverId?: string }>;
 
 export function getRecentMachinesFromSessions(params: {
     machines: Machine[];
@@ -20,6 +20,7 @@ export function getRecentMachinesFromSessions(params: {
         if (typeof item === 'string') return;
         const machineId = readDisplayMachineIdForSession({
             sessionId: item.id,
+            serverId: item.serverId,
             metadata: item.metadata ?? null,
         });
         if (!machineId || seen.has(machineId)) return;

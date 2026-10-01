@@ -3,6 +3,8 @@ import {
     SessionAgentTransitionBriefPreviewV1Schema,
     SessionAgentTransitionRequestV1Schema,
     SessionAgentTransitionResultV1Schema,
+    SessionContinuationInspectionBatchRequestV1Schema,
+    SessionContinuationInspectionBatchResultV1Schema,
     SessionContinuationInspectionRequestV1Schema,
     SessionContinuationInspectionV1Schema,
     rejectUndispatchedSessionAgentTransition,
@@ -16,7 +18,10 @@ import type { RpcHandlerRegistrar } from '@/api/rpc/types';
 import type { StoredCredentials } from '@/persistence';
 import { runSessionAgentTransition } from '@/session/agentTransition/sessionAgentTransitionCoordinator';
 import { previewSessionAgentTransitionBrief } from '@/session/agentTransition/previewSessionAgentTransitionBrief';
-import { inspectSessionContinuation } from '@/session/agentTransition/sessionContinuationInspection';
+import {
+    inspectSessionContinuation,
+    inspectSessionContinuations,
+} from '@/session/agentTransition/sessionContinuationInspection';
 import type { sendSessionMessage } from '@/session/services/sendSessionMessage';
 
 /**
@@ -101,6 +106,23 @@ export function registerSessionAgentTransitionRpcHandlers(
             request: parsed.data,
         });
         return SessionContinuationInspectionV1Schema.parse(inspection);
+    });
+
+    rpc.registerHandler(RPC_METHODS.SESSION_CONTINUATION_INSPECT_BATCH, async (raw: unknown) => {
+        const parsed = SessionContinuationInspectionBatchRequestV1Schema.safeParse(raw);
+        if (!parsed.success) {
+            return SessionContinuationInspectionBatchResultV1Schema.parse({ v: 1, inspections: [] });
+        }
+        const credentials = await options.readCredentials();
+        if (!credentials) {
+            return SessionContinuationInspectionBatchResultV1Schema.parse({
+                v: 1,
+                inspections: parsed.data.selections.map(() => CREDENTIALS_UNAVAILABLE_INSPECTION),
+            });
+        }
+        return SessionContinuationInspectionBatchResultV1Schema.parse(
+            await inspectSessionContinuations({ credentials, request: parsed.data }),
+        );
     });
 
     rpc.registerHandler(RPC_METHODS.SESSION_AGENT_TRANSITION_BRIEF_PREVIEW, async (raw: unknown) => {

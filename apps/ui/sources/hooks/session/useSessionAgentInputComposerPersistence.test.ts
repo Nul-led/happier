@@ -176,14 +176,29 @@ vi.mock('@/sync/domains/state/storage', async () => {
 
 async function importHook() {
     const module = await import('./useSessionAgentInputComposerPersistence');
+    const { createComposerTextStore } = await import('@/components/sessions/agentInput/composerTextStore');
     return {
         ...module,
+        // Cases describe the composer's text as a controlled value (or only its length); each
+        // value becomes the live text store the composer would hold at that render.
         useSessionAgentInputComposerPersistence: (
-            params: Parameters<typeof module.useSessionAgentInputComposerPersistence>[0],
-        ) => module.useSessionAgentInputComposerPersistence({
-            ...params,
-            accountLifetime: params.accountLifetime ?? getActiveAccountLifetime(),
-        }),
+            params: Omit<Parameters<typeof module.useSessionAgentInputComposerPersistence>[0], 'textStore'> & Readonly<{
+                text?: string;
+                textLength?: number;
+            }>,
+        ) => {
+            const { text, textLength, ...rest } = params;
+            const liveText = text ?? (textLength === undefined ? undefined : 'x'.repeat(textLength));
+            const textStore = React.useMemo(
+                () => (liveText === undefined ? undefined : createComposerTextStore(liveText)),
+                [liveText],
+            );
+            return module.useSessionAgentInputComposerPersistence({
+                ...rest,
+                textStore,
+                accountLifetime: rest.accountLifetime ?? getActiveAccountLifetime(),
+            });
+        },
     };
 }
 

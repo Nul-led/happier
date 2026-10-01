@@ -1,3 +1,5 @@
+import type { BackendTargetRefV2 } from '@happier-dev/protocol';
+
 import { resolveMergedContributionRegistry } from '@/plugins/projection/registry/createResolvedContributionRegistry';
 import { acquireAuthoritativePluginRuntimeRegistryLease } from '@/plugins/runtime/reload/runtimeLease';
 import type { ResolvedExecutablePluginRuntimeRegistry } from '@/plugins/runtime/resolveExecutablePluginRuntimeRegistry';
@@ -18,6 +20,10 @@ import {
 } from './resolution';
 import { resolveAccountConfiguredAcpBackend } from './accountConfiguredAcp';
 import { activateAgentRuntimeContributionOnDemand } from '../activationDemand';
+import {
+    buildExecutionRunProfileCatalog,
+    type ExecutionRunProfileContributionCatalogInput,
+} from '@/agent/executionRuns/profiles/intentRegistry';
 
 export { createPluginExecInstallablesRegistry };
 
@@ -108,15 +114,26 @@ export async function resolveCliEngineRegistry(
 
     const registry = Object.freeze({
         contributions,
-        async resolveCurrentPluginGeneration(pluginId: string): Promise<string | null> {
-            const normalizedPluginId = pluginId.trim();
-            if (!normalizedPluginId) return null;
-            const runtimeRegistryHandle = await resolveRuntimeRegistry(normalizedPluginId);
+        async resolveExecutionRunProfileCatalog(options = {}) {
+            const runtimeRegistryHandle = await resolveRuntimeRegistry();
             try {
-                const current = runtimeRegistryHandle.registry
-                    .pluginFinalPolicyCurrentGenerationsById
-                    ?.get(normalizedPluginId) ?? null;
-                return current?.applied === true ? current.immutableGenerationId : null;
+                return buildExecutionRunProfileCatalog(
+                    (runtimeRegistryHandle.registry.contributes.executionRunProfiles ?? [])
+                        .flatMap<ExecutionRunProfileContributionCatalogInput>((profile) => {
+                            if (!profile.pluginId) return [profile.definition];
+                            const current = runtimeRegistryHandle.registry
+                                .pluginFinalPolicyCurrentRuntimesById
+                                ?.get(profile.pluginId) ?? null;
+                            return current?.applied === true
+                                ? [{
+                                    pluginId: profile.pluginId,
+                                    sourceCustody: current.sourceCustody,
+                                    definition: profile.definition,
+                                }]
+                                : [];
+                        }),
+                    options,
+                );
             } finally {
                 await runtimeRegistryHandle.release();
             }
@@ -267,9 +284,14 @@ export async function resolveBackendEngineAdapterResolution(
 }
 
 export async function resolveBackendExecutionSurfaces(
-    backendId?: string | null,
+    target?: string | BackendTargetRefV2 | null,
     params?: ResolveEngineRegistryParams,
 ): Promise<BackendExecutionSurfaces> {
+    if (typeof target === 'object' && target?.sourceKind === 'configured') {
+        const resolution = await resolveAccountConfiguredAcpBackend(target.configuredBackendId ?? target.backendId);
+        return resolution?.executionSurfaces ?? createEmptyBackendExecutionSurfaces();
+    }
+    const backendId = typeof target === 'string' ? target : target?.backendId;
     const resolution = await resolveBackendEngineAdapterResolution(backendId, params);
     return resolution?.executionSurfaces ?? createEmptyBackendExecutionSurfaces();
 }

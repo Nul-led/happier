@@ -6,12 +6,15 @@ import { AppPaneScopeHost } from '@/components/appShell/panes/AppPaneScopeHost';
 import { AppPaneProvider } from '@/components/appShell/panes/AppPaneProvider';
 import { useAppPaneScope } from '@/components/appShell/panes/hooks/useAppPaneScope';
 import { createSessionPaneScopeId } from '@/components/sessions/panes/sessionPaneScopeId';
-import { pressTestInstanceAsync, renderScreen } from '@/dev/testkit';
+import { pressTestInstanceAsync, renderWithSessionTranscriptSource, createTestSessionTranscriptSource } from '@/dev/testkit';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 (globalThis as any).__DEV__ = false;
 
 const routerPushSpy = vi.hoisted(() => vi.fn());
+function renderScreen(element: React.ReactElement) {
+    return renderWithSessionTranscriptSource(element, createTestSessionTranscriptSource({ sessionId: 's1', navigate: routerPushSpy }));
+}
 vi.mock('@/utils/platform/responsive', () => ({
   useDeviceType: () => 'tablet',
 }));

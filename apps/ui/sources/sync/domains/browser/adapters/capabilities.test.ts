@@ -1,8 +1,68 @@
 import { describe, expect, it } from 'vitest';
 
 import { buildBrowserAdapterCapabilities } from './capabilities';
+import type { DesktopWebViewSupport } from './desktopWebView';
+import { INJECTED_PAGE_AUTOMATION_ACTIONS } from '../automation/injectedPageActions';
+
+const DESKTOP_AUTOMATION_SUPPORT = {
+    navigation: true,
+    goBackForward: true,
+    reload: true,
+    stop: true,
+    pageInfoDiagnostics: true,
+    nativeDevtools: true,
+    capture: true,
+    recording: false,
+    automation: true,
+} satisfies DesktopWebViewSupport;
 
 describe('buildBrowserAdapterCapabilities', () => {
+    it.each(['webIframe', 'nativeWebView', 'desktopWebView'] as const)(
+        'advertises only the executable injected contribution on %s, independently of human navigation and diagnostics',
+        (engine) => {
+            const caps = buildBrowserAdapterCapabilities({
+                adapterKind: 'externalUrl',
+                supportedTargetKinds: ['externalUrl'],
+                supportedRenderEngines: [engine],
+                desktopWebViewSupport: DESKTOP_AUTOMATION_SUPPORT,
+            });
+            const actions = caps.automationActions;
+            if (!actions) throw new Error('Missing automation capability map');
+            for (const entry of INJECTED_PAGE_AUTOMATION_ACTIONS) {
+                expect(actions[entry.capability], entry.action).toMatchObject({
+                    available: true,
+                    fidelity: 'injectedPage',
+                    trustedInput: false,
+                    disabledReasons: [],
+                });
+            }
+            expect(caps.navigation.canNavigate).toBe(true);
+            expect(actions.navigate.available).toBe(false);
+            expect(actions.elementPicker.available).toBe(false);
+            expect(actions.evaluate.available).toBe(false);
+            expect(actions.trustedInput.available).toBe(false);
+            expect(actions.crossOriginFrameAccess.available).toBe(false);
+        },
+    );
+
+    it('requires desktop native automation support without coupling capture or recording to it', () => {
+        const caps = buildBrowserAdapterCapabilities({
+            adapterKind: 'externalUrl',
+            supportedTargetKinds: ['externalUrl'],
+            supportedRenderEngines: ['desktopWebView'],
+            desktopWebViewSupport: { ...DESKTOP_AUTOMATION_SUPPORT, automation: false },
+            nativeViewCaptureHandlerRegistered: true,
+        });
+        const actions = caps.automationActions;
+        if (!actions) throw new Error('Missing automation capability map');
+        for (const entry of INJECTED_PAGE_AUTOMATION_ACTIONS) {
+            expect(actions[entry.capability].available, entry.action).toBe(false);
+        }
+        expect(actions.screenshotReference.available).toBe(true);
+        expect(actions.recording.available).toBe(true);
+        expect(caps.navigation.canNavigate).toBe(true);
+    });
+
     it('makes a web external URL (externalUrl + webIframe) available and navigable so the address bar is enabled', () => {
         // Regression (capability split-brain): the engine selector renders web external URLs in the
         // iframe, so their capabilities MUST agree — `canNavigate: true` — or BrowserShell disables
@@ -41,27 +101,22 @@ describe('buildBrowserAdapterCapabilities', () => {
         expect(caps.navigation.canGoForward).toBe(true);
     });
 
-    it('keeps a streamed browser surface fail-closed (unavailable) without its runtime', () => {
-        // The web-iframe carve-out must NOT over-open: surfaces that genuinely require a runtime
-        // (streamed/sidecar) still resolve unavailable.
+    it.each(['streamedBrowserSurface', 'chromiumSidecar'] as const)('exposes registered streamed display and daemon navigation for %s', (adapterKind) => {
         const caps = buildBrowserAdapterCapabilities({
-            adapterKind: 'streamedBrowserSurface',
+            adapterKind,
             supportedTargetKinds: ['streamedBrowser'],
             supportedRenderEngines: ['streamedSurface'],
         });
 
-        expect(caps.supportedRenderEngines).toEqual(['unavailable']);
-        expect(caps.navigation.canNavigate).toBe(false);
+        expect(caps.supportedRenderEngines).toEqual(['streamedSurface']);
+        expect(caps.supportsStreamingDisplay).toBe(true);
+        expect(caps.navigation.canNavigate).toBe(true);
+        expect(caps.navigation.canReload).toBe(true);
+        expect(caps.inputRouting).toBe('pmsControlSideband');
     });
 
-    // §4.5 / §12.20B support-matrix closure: human-visible navigate/reload on the daemon-driven
-    // engines (chromiumSidecar, streamedBrowserSurface) is consciously OUT of scope. The agent
-    // sidecar drives navigation through the daemon CDP control adapter, NOT a UI `sendDaemonCommand`
-    // round-trip; the human streamed-render path (12.20B) has no producer. This must remain
-    // fail-closed but LABELED — never an unlabeled fail-closed — so the user/agent gets a reason.
     it.each([
         { adapterKind: 'chromiumSidecar', targetKind: 'externalUrl', engine: 'webIframe', reasonCode: 'sidecar_runtime_unavailable' },
-        { adapterKind: 'streamedBrowserSurface', targetKind: 'streamedBrowser', engine: 'streamedSurface', reasonCode: 'streamed_browser_unavailable' },
     ] as const)(
         'labels navigate/reload on the $adapterKind engine as unavailable with an explicit reason (no unlabeled fail-closed)',
         ({ adapterKind, targetKind, engine, reasonCode }) => {

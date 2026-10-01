@@ -70,7 +70,7 @@ const semanticRequest = {
   source: {
     ...request.source,
     sourceGeneration: 'source-1',
-    contributionGeneration: 'contribution-1',
+    sourceCustody: { kind: 'development', registeredRootId: 'contribution-1' },
   },
 } satisfies Extract<
   ExternalSessionOperationSemanticRequestV1,
@@ -585,7 +585,7 @@ describe('external-session durable takeover start', () => {
       status: 'acquired' as const,
       claim: {
         record: {
-          schemaVersion: 1 as const,
+          schemaVersion: 2 as const,
           claimId: 'private-claim-external',
           ownerId: 'takeover-start-test',
           request: operationRequest,
@@ -687,7 +687,7 @@ describe('external-session durable takeover start', () => {
             status: 'acquired' as const,
             claim: {
               record: {
-                schemaVersion: 1 as const,
+                schemaVersion: 2 as const,
                 claimId: 'plugin-private-claim-1',
                 ownerId: 'plugin-takeover-start-test',
                 request: operationRequest,
@@ -830,7 +830,7 @@ describe('external-session durable takeover start', () => {
             status: 'acquired' as const,
             claim: {
               record: {
-                schemaVersion: 1 as const,
+                schemaVersion: 2 as const,
                 claimId: 'private-claim-1',
                 ownerId: 'takeover-start-test',
                 request: operationRequest,
@@ -890,7 +890,7 @@ describe('external-session durable takeover start', () => {
       expect(record?.request.source).toMatchObject({
         linkGeneration: 'link-1',
         sourceGeneration: 'source-1',
-        contributionGeneration: 'contribution-1',
+        sourceCustody: { kind: 'development', registeredRootId: 'contribution-1' },
       });
       expect(record?.canonicalOwnerEvidence.sourceSnapshotEvidenceRef)
         .toBe('source-cursor-1');
@@ -923,7 +923,7 @@ describe('external-session durable takeover start', () => {
             status: 'acquired' as const,
             claim: {
               record: {
-                schemaVersion: 1 as const,
+                schemaVersion: 2 as const,
                 claimId: 'unknown-predecessor-claim',
                 ownerId: 'takeover-unknown-predecessor-test',
                 request: operationRequest,
@@ -1027,7 +1027,7 @@ describe('external-session durable takeover start', () => {
       status: 'acquired' as const,
       claim: {
         record: {
-          schemaVersion: 1 as const,
+          schemaVersion: 2 as const,
           claimId: 'private-claim-1',
           ownerId: 'takeover-start-test',
           request: operationRequest,
@@ -1074,7 +1074,7 @@ describe('external-session durable takeover start', () => {
       status: 'acquired' as const,
       claim: {
         record: {
-          schemaVersion: 1 as const,
+          schemaVersion: 2 as const,
           claimId: 'private-claim-1',
           ownerId: 'takeover-start-test',
           request: operationRequest,
@@ -1145,7 +1145,7 @@ describe('external-session durable takeover start', () => {
       status: 'acquired' as const,
       claim: {
         record: {
-          schemaVersion: 1 as const,
+          schemaVersion: 2 as const,
           claimId: 'private-claim-1',
           ownerId: 'takeover-start-test',
           request: operationRequest,
@@ -1242,7 +1242,7 @@ describe('external-session durable takeover start', () => {
             return {
               status: 'converged' as const,
               active: {
-                schemaVersion: 1 as const,
+                schemaVersion: 2 as const,
                 claimId: 'private-claim-1',
                 ownerId: 'other-start',
                 request: operationRequest,
@@ -1288,7 +1288,7 @@ describe('external-session durable takeover start', () => {
     const acquire = vi.fn(async (operationRequest) => ({
       status: 'converged' as const,
       active: {
-        schemaVersion: 1 as const,
+        schemaVersion: 2 as const,
         claimId: 'private-claim-completed-during-wait',
         ownerId: 'other-start',
         request: operationRequest,
@@ -1352,7 +1352,7 @@ describe('external-session durable takeover start', () => {
     const acquire = vi.fn(async (operationRequest) => ({
       status: 'converged' as const,
       active: {
-        schemaVersion: 1 as const,
+        schemaVersion: 2 as const,
         claimId: 'private-claim-changed-intent-during-wait',
         ownerId: 'other-start',
         request: operationRequest,
@@ -1406,7 +1406,7 @@ describe('external-session durable takeover start', () => {
           acquire: vi.fn(async (operationRequest) => ({
             status: 'converged' as const,
             active: {
-              schemaVersion: 1 as const,
+              schemaVersion: 2 as const,
               claimId: 'private-claim-1',
               ownerId: 'other-start',
               request: operationRequest,

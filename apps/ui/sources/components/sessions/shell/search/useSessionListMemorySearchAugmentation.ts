@@ -94,13 +94,16 @@ export type SessionListMemorySearchContext = Readonly<{
 
 export function useSessionListMemorySearchContext(
     target?: Readonly<{ serverId?: string | null }>,
+    input?: Pick<SessionListMemorySearchAugmentationInput, 'enabled' | 'searchQuery'>,
 ): SessionListMemorySearchContext {
+    const enabled = input?.enabled !== false
+        && (input === undefined || input.searchQuery.trim().length >= SESSION_LIST_MEMORY_SEARCH_MIN_QUERY_LENGTH);
     const requestedServerId = String(target?.serverId ?? '').trim();
     const providerDecision = useMemorySearchProvider(target === undefined
         ? { kind: 'ambient' }
         : requestedServerId
             ? { kind: 'exact', serverId: requestedServerId }
-            : { kind: 'none' });
+            : { kind: 'none' }, { enabled });
     const isHomeProvider = providerDecision.provider === 'home';
     const machineId = providerDecision.daemonTarget?.machineId ?? null;
     const serverId = isHomeProvider
@@ -418,6 +421,6 @@ export function useSessionListMemorySearchAugmentation(
 ): SessionListMemorySearchAugmentationState {
     return useSessionListMemorySearchAugmentationForContext(
         input,
-        useSessionListMemorySearchContext(),
+        useSessionListMemorySearchContext(undefined, input),
     );
 }

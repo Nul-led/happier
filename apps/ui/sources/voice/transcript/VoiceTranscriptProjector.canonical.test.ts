@@ -4,8 +4,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const logSpy = vi.hoisted(() => vi.fn());
 vi.mock('@/log', () => ({ log: { log: logSpy, warn: vi.fn(), error: vi.fn() } }));
 
-import type { PersistSessionTranscriptMessageInput } from '@/sync/domains/messages/persistSessionTranscriptMessage';
-import { normalizeRawMessage, type NormalizedMessage } from '@/sync/typesRaw';
+import type { PersistSessionTranscriptMessageInput } from "@happier-dev/session-core/messages";
+import { normalizeRawMessage, type NormalizedMessage } from "@happier-dev/session-core/raw";
 import { createCanonicalVoiceTranscriptProjector } from './canonicalProjector';
 import {
   createVoiceTranscriptProjector,

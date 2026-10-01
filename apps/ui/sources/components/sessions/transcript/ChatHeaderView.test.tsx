@@ -93,20 +93,20 @@ vi.mock('@/agents/registry/AgentIcon', () => ({
     AgentIcon: (props: any) => React.createElement('AgentIcon', props),
 }));
 
-vi.mock('@/constants/Typography', () => ({
-    Typography: {
-        default: () => ({}),
-    },
+// Every Typography role resolves to no font styling; modules pulled in through the storage and list
+// chain use roles beyond `default` at import time.
+vi.mock('@/constants/Typography', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('@/constants/Typography')>()),
+    Typography: new Proxy({}, { get: () => () => ({}) }),
 }));
 
 vi.mock('@/components/ui/layout/layout', async (importOriginal) => {
     const actual = await importOriginal<typeof import('@/components/ui/layout/layout')>();
     return {
         ...actual,
-        layout: {
-            ...actual.layout,
-            headerMaxWidth: 1024,
-        },
+        // `layout`'s width getters read the stored content-width preference; spreading them would
+        // run those reads while the storage module is still initializing. Inherit them lazily.
+        layout: Object.defineProperty(Object.create(actual.layout), 'headerMaxWidth', { value: 1024 }),
         useLayoutMaxWidth: () => 1024,
     };
 });
@@ -230,6 +230,28 @@ describe('ChatHeaderView', () => {
             .filter((s: any) => s && typeof s === 'object' && 'maxWidth' in s)
             .at(-1)?.maxWidth;
         expect(maxWidth).toBe('100%');
+    });
+
+    it('shares one band with a side pane header: same height, so the two headers line up', async () => {
+        platformState.os = 'web';
+        const { ChatHeaderView } = await import('./ChatHeaderView');
+        const { PaneHeader } = await import('@/components/appShell/panes/PaneHeader');
+
+        const screen = await renderScreen(
+            <>
+                <ChatHeaderView title="Payments v2 rollout" subtitle="~/src/payments" />
+                <PaneHeader title="Workstream" subtitle="4 sessions" />
+            </>,
+        );
+        const heightOf = (testID: string) => {
+            const node = screen.findHostByTestId(testID);
+            const flat = ([] as unknown[]).concat(node?.props.style ?? []).flat(Infinity) as Array<Record<string, unknown> | null>;
+            return flat.reduce<unknown>((height, style) => (style && 'height' in style ? style.height : height), undefined);
+        };
+
+        const bandHeight = heightOf('session-header-band');
+        expect(typeof bandHeight).toBe('number');
+        expect(heightOf('pane-header')).toBe(bandHeight);
     });
 
     it('renders header badges when provided', async () => {

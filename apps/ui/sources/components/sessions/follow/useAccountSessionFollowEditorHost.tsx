@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { Pressable, View } from 'react-native';
-import { useRouter, type Href } from 'expo-router';
+import { useRouter, type Href } from '@/components/appShell/workspace/destinationRoute';
 import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
 
 import { FloatingOverlay } from '@/components/ui/overlays/FloatingOverlay';

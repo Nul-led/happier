@@ -1,19 +1,55 @@
 import { EventEmitter } from 'node:events';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Metadata } from '@/api/types';
 import { SPAWN_SESSION_ERROR_CODES } from '@/rpc/handlers/registerSessionHandlers';
 import type { TrackedSession } from '../types';
+import { createPersistedTakeoverAdmissionWaiter } from './persistedTakeoverAdmission';
+import { withTakeoverAdmissionCommitRevalidation } from './spawnCommitRevalidation';
+import { withTempDir } from '@/testkit/fs/tempDir';
+import { reloadConfiguration } from '@/configuration';
+import { readOrCreateDeviceLocalSecretStorage } from '../deviceLocalSecretStorage';
+import { listSessionMarkers } from '../sessionRegistry';
+import { createOnChildExited } from '../sessions/onChildExited';
+import { createSpawnLifecycleCallbacks } from './createSpawnLifecycleCallbacks';
+import { persistAcceptedSpawnMarker } from './persistAcceptedSpawnMarker';
+import { createSpawnHappyCliEnvScope, withTempHappyCliEntrypoint } from '@/testkit/process/spawnHappyCliHarness';
+import { spawnRegularProcessAndWaitForWebhook } from './spawnRegularProcessAndWaitForWebhook';
+import { routeSpawnModeAndWaitForWebhook } from './routeSpawnModeAndWaitForWebhook';
+import { resolveExecutablePluginRuntimeRegistry } from '@/plugins/runtime/resolveExecutablePluginRuntimeRegistry';
+import { pluginReloadController } from '@/plugins/runtime/reload/singleton';
+import { createDaemonPluginDevelopmentRootsOwner } from '@/plugins/daemon/developmentRoots';
 
 const mocks = vi.hoisted(() => ({
   spawnHappyCLI: vi.fn(),
   writeFile: vi.fn(),
 }));
 
-vi.mock('@/utils/spawnHappyCLI', () => ({
+vi.mock('@/utils/spawnHappyCLI', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@/utils/spawnHappyCLI')>(),
+  // Only child creation is an OS boundary; keep launch-spec selection real.
   spawnHappyCLI: mocks.spawnHappyCLI,
 }));
+
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  return {
+    ...actual,
+    // Linux now uses its real cgroup launch composer even for manual daemons.
+    // Stub only that resulting OS child creation; real fixture children and
+    // process census still execute normally.
+    spawn: (...args: Parameters<typeof actual.spawn>) => {
+      if (args[0] === '/bin/sh' && args[2]?.env?.HAPPIER_DAEMON_SESSION_CGROUP_BASE_DIR) {
+        return mocks.spawnHappyCLI(args[1], args[2]);
+      }
+      return actual.spawn(...args);
+    },
+  };
+});
 
 vi.mock('node:fs/promises', async (importOriginal) => ({
   ...await importOriginal<typeof import('node:fs/promises')>(),
@@ -90,6 +126,95 @@ describe('spawnRegularProcessAndWaitForWebhook', () => {
     });
   });
 
+  it.skipIf(originalPlatform === 'win32')('persists actual headless topology rather than a requested host that was not launched', async () => {
+    await withTempHappyCliEntrypoint(async (entrypoint) => {
+      const envScope = createSpawnHappyCliEnvScope();
+      envScope.patch({ HAPPIER_CLI_SUBPROCESS_RUNTIME: 'node', HAPPIER_CLI_SUBPROCESS_ENTRYPOINT: entrypoint,
+        HAPPIER_MANAGED_NODE_BIN: process.execPath, HAPPIER_CLI_SUBPROCESS_PREFER_TSX: '0' });
+      try {
+        await withTempDir('happier-headless-spawn-custody-', async (homeDir) => {
+          const previousHomeDir = process.env.HAPPIER_HOME_DIR;
+          process.env.HAPPIER_HOME_DIR = homeDir;
+          reloadConfiguration();
+          const fs = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+          mocks.writeFile.mockImplementation(async (...args: Parameters<typeof fs.writeFile>) => {
+            // Keep real fixture persistence; the Linux resource adapter must not write test /proc state.
+            if (typeof args[0] === 'string' && args[0].startsWith('/proc/')) return;
+            return await fs.writeFile(...args);
+          });
+          const deviceLocalSecretStorage = await readOrCreateDeviceLocalSecretStorage({ path: join(homeDir, 'device-local-key.json') });
+          const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore' });
+          await once(child, 'spawn');
+          const exited = once(child, 'exit');
+          const pid = child.pid!;
+          mocks.spawnHappyCLI.mockReturnValueOnce(child);
+          const pidToTrackedSession = new Map<number, TrackedSession>();
+          const spawnResourceCleanupByPid = new Map<number, () => void | Promise<void>>();
+          const sessionAttachCleanupByPid = new Map<number, () => Promise<void>>();
+          const onChildExited = createOnChildExited({
+            pidToTrackedSession, spawnResourceCleanupByPid, sessionAttachCleanupByPid,
+            getApiMachineForSessions: () => null,
+          });
+          const spawnLifecycleCallbacks = createSpawnLifecycleCallbacks({
+            connectedServicesBindingsRaw: null, catalogAgentId: null, materializationKey: '',
+            hasConnectedServiceAuth: () => false,
+            getSpawnResourceCleanupOnExit: () => null, onSpawnResourceCleanupArmed: () => {},
+            spawnResourceCleanupByPid,
+            getSessionAttachCleanup: () => null, setSessionAttachCleanup: () => {},
+            sessionAttachCleanupByPid,
+            persistAcceptedSpawnMarker: (trackedSession) => persistAcceptedSpawnMarker({ trackedSession, deviceLocalSecretStorage }),
+          });
+          const params = {
+            ...createParams(), args: ['codex'], pidToTrackedSession, onChildExited, spawnLifecycleCallbacks,
+            options: { directory: homeDir, runtimeDescriptorV1: { v: 1 as const, agentId: 'codex', agent: { backendMode: 'acp' } } },
+            trackedSpawnOptions: {
+              directory: homeDir,
+              backendTarget: { kind: 'backend' as const, sourceKind: 'built_in' as const, backendId: 'codex' },
+              terminal: { mode: 'herdr' as const },
+            },
+          };
+          const developmentRoots = createDaemonPluginDevelopmentRootsOwner({ happyHomeDir: homeDir,
+            submitObservation: async () => { throw new Error('This fixture does not observe development sources'); } });
+          const registry = await resolveExecutablePluginRuntimeRegistry({ happyHomeDir: homeDir, generation: 1,
+            resolveDevelopmentSourceAuthority: developmentRoots.resolveDevelopmentSourceAuthority });
+          const adoption = await pluginReloadController.adoptPreparedRuntimeRegistry({ registry, changedPluginIds: [],
+            durableRevision: 1, runningSessionDisposition: 'retainRunningSessions' });
+          if (!adoption.ok) throw new Error('Failed to prepare actual daemon runtime');
+          const pending = routeSpawnModeAndWaitForWebhook({ ...params,
+            terminalRequest: { requested: 'herdr', herdr: { sessionName: 'fixture' } },
+            effectiveBackendTargetV2: params.trackedSpawnOptions.backendTarget,
+            happyHomeDir: homeDir, onUntrackedTmuxChild: () => {},
+          });
+          try {
+            await vi.waitFor(() => expect(params.pidToAwaiter.has(pid)).toBe(true)).catch(async () => {
+              expect(await pending).toEqual({ type: 'success', sessionId: 'session-1' });
+            });
+            const tracked = pidToTrackedSession.get(pid)!;
+            // Network webhook boundary: the pre-session PID placeholder is sufficient for this spawn-custody assertion.
+            params.pidToAwaiter.get(pid)?.({ ...tracked });
+            await pending;
+            const marker = (await listSessionMarkers()).find((candidate) => candidate.pid === pid);
+            expect(tracked.spawnOptions?.terminal?.mode).toBe('plain');
+            expect(marker?.respawn?.terminal?.mode).toBe('plain');
+            expect(tracked.hostedTerminal).toBeUndefined();
+            expect(tracked.tmuxSessionId).toBeUndefined();
+          } finally {
+            await pluginReloadController.shutdown();
+            await developmentRoots.stop();
+            if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
+            await exited;
+            await onChildExited(pid, { reason: 'test-cleanup', code: null, signal: 'SIGTERM' });
+            if (previousHomeDir === undefined) delete process.env.HAPPIER_HOME_DIR;
+            else process.env.HAPPIER_HOME_DIR = previousHomeDir;
+            reloadConfiguration();
+          }
+        });
+      } finally {
+        envScope.restore();
+      }
+    });
+  });
+
   it('tracks the stable V2 authority path and exact bootstrap identity for a runner bootstrap', async () => {
     const params = createParams();
     const pending = (await import(
@@ -105,7 +230,12 @@ describe('spawnRegularProcessAndWaitForWebhook', () => {
           pluginVersion: '1.0.0',
           agentId: 'agent',
           backendId: 'agent',
-          generation: 'generation-1',
+          occurrenceId: 'occurrence:plugin.acme:1',
+          sourceCustody: {
+            kind: 'managed',
+            immutableGenerationId: 'generation-1',
+            installSource: 'npm',
+          },
         },
       },
       runnerAgentInvocationContext: Object.freeze({
@@ -148,6 +278,33 @@ describe('spawnRegularProcessAndWaitForWebhook', () => {
       sessionId: 'session-4242',
     });
     expect(JSON.stringify(params.logDebug.mock.calls)).not.toContain('session-4242');
+  });
+
+  it('does not create a child when takeover cancellation arrives during awaited commit revalidation', async () => {
+    const { spawnRegularProcessAndWaitForWebhook } = await import('./spawnRegularProcessAndWaitForWebhook');
+    const waiter = createPersistedTakeoverAdmissionWaiter();
+    const controller = new AbortController();
+    const admission = waiter.register({ mode: 'persisted', operationId: 'operation-1', attemptId: 'attempt-1' }, { signal: controller.signal });
+    let entered!: () => void;
+    let release!: () => void;
+    const checking = new Promise<void>((resolve) => { entered = resolve; });
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const revalidateBeforeCommit = withTakeoverAdmissionCommitRevalidation(admission, async () => {
+      entered();
+      await held;
+      return null;
+    });
+    const pending = spawnRegularProcessAndWaitForWebhook({
+      ...createParams(),
+      takeoverAdmission: admission,
+      revalidateBeforeCommit,
+    });
+    await checking;
+    controller.abort();
+    release();
+    await expect(pending).resolves.toMatchObject({ type: 'error', errorCode: SPAWN_SESSION_ERROR_CODES.SPAWN_FAILED });
+    expect(mocks.spawnHappyCLI).not.toHaveBeenCalled();
+    expect(admission.readOutcome()?.status).toBe('failed');
   });
 
   it('runs the final provider authorization guard immediately before regular child creation', async () => {
@@ -518,9 +675,9 @@ describe('spawnRegularProcessAndWaitForWebhook', () => {
 
     expect(onTrackedSessionReported).not.toHaveBeenCalled();
     expect(writeSessionMarkerFn).not.toHaveBeenCalled();
-    expect(params.spawnLifecycleCallbacks.consumeSessionAttachCleanupForPid).not.toHaveBeenCalled();
+    expect(params.spawnLifecycleCallbacks.consumeSessionAttachCleanupForPid).toHaveBeenCalledWith(4250);
     expect(params.spawnLifecycleCallbacks.registerConnectedServiceSpawnTarget).not.toHaveBeenCalled();
-    expect(params.spawnLifecycleCallbacks.registerSpawnResourceCleanupForPid).not.toHaveBeenCalled();
+    expect(params.spawnLifecycleCallbacks.registerSpawnResourceCleanupForPid).toHaveBeenCalledWith(4250);
     expect(params.onChildExited).not.toHaveBeenCalled();
     expect(child.kill).not.toHaveBeenCalled();
     expect(params.pidToTrackedSession.get(4250)).toBe(replacementTracked);
@@ -558,6 +715,7 @@ describe('spawnRegularProcessAndWaitForWebhook', () => {
       markerPresent = true;
     });
     params.onChildExited.mockImplementationOnce(async () => {
+      await markerPersisted;
       markerPresent = false;
     });
 
@@ -566,7 +724,7 @@ describe('spawnRegularProcessAndWaitForWebhook', () => {
 
     await vi.waitFor(() => expect(params.spawnLifecycleCallbacks.persistAcceptedSpawnMarker).toHaveBeenCalledTimes(1));
     child.emit('exit', 1, null);
-    expect(params.onChildExited).not.toHaveBeenCalled();
+    expect(params.onChildExited).toHaveBeenCalledOnce();
 
     releaseMarker();
 
@@ -704,16 +862,18 @@ describe('spawnRegularProcessAndWaitForWebhook', () => {
     mocks.spawnHappyCLI.mockReturnValueOnce(child);
     const params = createParams();
     let rejectMarker!: (error: Error) => void;
+    let announceMarker!: () => void;
+    const markerStarted = new Promise<void>((resolve) => { announceMarker = resolve; });
     params.spawnLifecycleCallbacks.persistAcceptedSpawnMarker.mockImplementationOnce(
       async () => await new Promise<void>((_resolve, reject) => {
         rejectMarker = reject;
+        announceMarker();
       }),
     );
 
     const { spawnRegularProcessAndWaitForWebhook } = await import('./spawnRegularProcessAndWaitForWebhook');
     const pending = spawnRegularProcessAndWaitForWebhook(params);
-    await Promise.resolve();
-    await Promise.resolve();
+    await markerStarted;
     expect(params.spawnLifecycleCallbacks.persistAcceptedSpawnMarker).toHaveBeenCalledTimes(1);
     expect(params.pidToSpawnWebhookTimeout.has(4247)).toBe(true);
 
@@ -850,9 +1010,9 @@ describe('spawnRegularProcessAndWaitForWebhook', () => {
     expect(params.pidToSpawnResultResolver.get(4248)).toBe(replacementResolver);
     expect(params.pidToSpawnWebhookTimeout.get(4248)).toBe(replacementTimeout);
     expect(sessionAttachCleanupByPid.get(4248)).toBe(replacementAttachCleanup);
-    expect(consumeSessionAttachCleanupForPid).not.toHaveBeenCalled();
+    expect(consumeSessionAttachCleanupForPid).toHaveBeenCalledWith(4248);
     expect(registerConnectedServiceSpawnTarget).not.toHaveBeenCalled();
-    expect(registerSpawnResourceCleanupForPid).not.toHaveBeenCalled();
+    expect(registerSpawnResourceCleanupForPid).toHaveBeenCalledWith(4248);
     expect(oldAttachCleanup).not.toHaveBeenCalled();
     expect(replacementAttachCleanup).not.toHaveBeenCalled();
     clearTimeout(replacementTimeout);
@@ -1109,7 +1269,11 @@ describe('spawnRegularProcessAndWaitForWebhook', () => {
     const activationPaused = new Promise<void>((resolve) => {
       resumeActivation = resolve;
     });
-    const activationStarted = vi.fn();
+    let announceActivation!: () => void;
+    const activationEntered = new Promise<void>((resolve) => { announceActivation = resolve; });
+    const activationStarted = vi.fn(() => announceActivation());
+    let announceMarker!: () => void;
+    const markerStarted = new Promise<void>((resolve) => { announceMarker = resolve; });
     const params = createParams();
     params.onChildExited.mockImplementation(async (pid) => {
       params.pidToTrackedSession.delete(pid);
@@ -1122,6 +1286,7 @@ describe('spawnRegularProcessAndWaitForWebhook', () => {
             await activationPaused;
             return null;
           });
+        announceMarker();
       });
     const onTrackedSessionReady = vi.fn(async () => undefined);
     const { spawnRegularProcessAndWaitForWebhook } =
@@ -1139,7 +1304,7 @@ describe('spawnRegularProcessAndWaitForWebhook', () => {
     const pending = spawnRegularProcessAndWaitForWebhook({
       ...params,
     });
-    await Promise.resolve();
+    await markerStarted;
     expect(params.pidToAwaiter.has(6263)).toBe(true);
     const tracked = params.pidToTrackedSession.get(6263);
     expect(tracked).toBeDefined();
@@ -1151,7 +1316,8 @@ describe('spawnRegularProcessAndWaitForWebhook', () => {
         startedBy: 'daemon',
       } as Metadata,
     );
-    await vi.waitFor(() => expect(activationStarted).toHaveBeenCalledOnce());
+    await activationEntered;
+    expect(activationStarted).toHaveBeenCalledOnce();
 
     await expect(pending).resolves.toEqual({
       type: 'error',

@@ -7,6 +7,8 @@ import { normalizePublicReleaseRingId, type PublicReleaseRingId } from '@happier
 import { joinPathForPathShape } from '../path/pathShape.js';
 import { resolveHappyHomeDirFromEnvironment } from '../agents/resolveHappyHomeDir.js';
 import type { FirstPartyComponentId } from './componentCatalog.js';
+import { resolveFirstPartyInstallLayout } from './installLayout.js';
+import { readInstalledVersionMarkersSync } from './versionMarkers.js';
 
 const DEFAULT_MANAGED_RELEASE_CHANNEL: PublicReleaseRingId = 'stable';
 const DEFAULT_RELEASE_CHANNEL_COMPONENT_IDS = new Set<FirstPartyComponentId>(['happier-cli', 'happier-daemon']);
@@ -59,4 +61,30 @@ export async function writeDefaultManagedReleaseChannel(params: Readonly<{
     await mkdir(dirname(statePath), { recursive: true });
     await writeFile(statePath, `${JSON.stringify({ releaseChannel })}\n`, 'utf8');
     return { releaseChannel, statePath };
+}
+
+/**
+ * One default `happier` command per `~/.happier` (plan R10 D2). Installing a channel makes it the
+ * default when the user chose it explicitly, when nothing else is installed, or when it already is
+ * the default; otherwise the recorded default channel keeps the `happier` shim and the marker, so a
+ * desktop app, a self-update or any other acquisition of a second channel never changes which CLI
+ * the user's terminal and the default-following background service run.
+ */
+export async function resolveDefaultReleaseChannelAfterInstall(params: Readonly<{
+  componentId: FirstPartyComponentId;
+  installedChannel: PublicReleaseRingId;
+  selectAsDefault: boolean;
+  processEnv?: NodeJS.ProcessEnv;
+}>): Promise<PublicReleaseRingId> {
+  if (params.selectAsDefault || !shouldPersistDefaultManagedReleaseChannel(params.componentId)) {
+    return params.installedChannel;
+  }
+  const currentDefault = await readDefaultManagedReleaseChannel({ processEnv: params.processEnv });
+  if (currentDefault === params.installedChannel) return currentDefault;
+  const defaultLayout = resolveFirstPartyInstallLayout({
+    componentId: params.componentId,
+    releaseRing: currentDefault,
+    processEnv: params.processEnv,
+  });
+  return readInstalledVersionMarkersSync(defaultLayout).currentVersionId ? currentDefault : params.installedChannel;
 }

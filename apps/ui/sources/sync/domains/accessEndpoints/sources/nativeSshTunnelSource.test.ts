@@ -77,6 +77,35 @@ describe('native SSH tunnel AccessEndpoint source', () => {
         expect(endpoints).toEqual([]);
     });
 
+    it('projects an IPv6 loopback native tunnel through the same canonical predicate', async () => {
+        const loaded = await import('./nativeSshTunnelSource').catch(() => null);
+        expect(loaded).not.toBeNull();
+
+        const endpoints = loaded!.buildNativeSshTunnelAccessEndpoints({
+            snapshot: {
+                leases: [{
+                    leaseId: 'lease-v6',
+                    key: 'key-v6',
+                    remoteHostId: 'host-v6',
+                    localUrl: 'http://[::1]:49152',
+                    channelMode: 'loopback-port',
+                    purpose: 'server-http',
+                    status: 'ready',
+                    startedAt: '2026-05-06T10:00:00.000Z',
+                }],
+                platformLimitations: [],
+            },
+        });
+
+        expect(endpoints).toEqual([
+            expect.objectContaining({
+                id: 'ssh-tunnel-native:host-v6:key-v6',
+                reachability: 'loopback',
+                httpBaseUrl: 'http://[::1]:49152',
+            }),
+        ]);
+    });
+
     it('does not project non-http native tunnel purposes as server HTTP endpoints', async () => {
         const loaded = await import('./nativeSshTunnelSource').catch(() => null);
         expect(loaded).not.toBeNull();

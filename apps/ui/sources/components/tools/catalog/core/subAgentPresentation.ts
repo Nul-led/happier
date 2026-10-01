@@ -8,9 +8,9 @@ import { formatAgentLikeIdForDisplay } from '@/agents/catalog/formatAgentLikeIdF
 import { resolveExecutionRunBackendLabel } from '@/components/sessions/runs/resolveExecutionRunBackendLabel';
 import { describeEffectiveModelMode } from '@/sync/domains/models/describeEffectiveModelMode';
 import { findModelOptionForEffectiveModelId, getModelOptionsForSession } from '@/sync/domains/models/modelOptions';
-import type { ToolCall } from '@/sync/domains/messages/messageTypes';
+import type { ToolCall } from "@happier-dev/session-core/messages";
 import { readSessionModelsState } from '@/sync/domains/sessionControl/readSessionControlMetadata';
-import type { Metadata } from '@/sync/domains/state/storageTypes';
+import type { Metadata } from '@happier-dev/session-core/state';
 import { t } from '@/text';
 
 type SubagentToolPresentation = Readonly<{

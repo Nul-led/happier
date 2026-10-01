@@ -1,6 +1,6 @@
 import { ExecutionRunStatusSchema, type ExecutionRunStatus } from '@happier-dev/protocol';
 
-import type { ToolCall } from '@/sync/domains/messages/messageTypes';
+import type { ToolCall } from "@happier-dev/session-core/messages";
 
 import type { SessionSubagentStatus } from '../types';
 

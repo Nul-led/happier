@@ -97,7 +97,7 @@ export interface ExecutionRunHostBridgeContract {
   ): Promise<{ ok: true; streamId: string } | { ok: false; errorCode: string; error: string }>;
   readTurnStream(
     runId: string,
-    params: Readonly<{ streamId: string; cursor: number; maxEvents?: number }>,
+    params: Readonly<{ streamId: string; cursor: number; maxEvents?: number; waitForEvents?: boolean; signal?: AbortSignal }>,
   ): Promise<
     | { ok: true; streamId: string; events: any[]; nextCursor: number; done: boolean }
     | { ok: false; errorCode: string; error: string }

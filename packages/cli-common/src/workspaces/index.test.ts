@@ -127,7 +127,7 @@ describe('sanitizeBundledPackageJson', () => {
       'dist',
       'package.json',
       'API.md',
-      'api-surface.json',
+      // Generated governance records are publication-only, never runtime-declared.
       'capability-matrix.json',
       'examples/public-authoring/index.ts',
       'scripts/validate-authoring.mjs',

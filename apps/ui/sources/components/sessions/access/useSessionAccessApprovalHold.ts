@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { router } from 'expo-router';
+import { useDestinationRouter } from '@/components/appShell/workspace/DestinationInstanceHost';
 
 import { createActionApprovalContinuation } from '@/components/approvals/actionApprovalContinuation';
 import { useActionApprovalContinuation } from '@/components/approvals/useActionApprovalContinuation';
@@ -32,6 +32,7 @@ export function useSessionAccessApprovalHold(input: Readonly<{
     scopeKey: string;
     scope: ServerAccountScope;
 }>) {
+    const router = useDestinationRouter();
     const { scopeKey } = input;
     const { serverId, accountId } = input.scope;
     const approval = useActionApprovalContinuation({ scopeKey, serverId, onExecuted: NO_APPROVAL_REFRESH });
@@ -81,7 +82,7 @@ export function useSessionAccessApprovalHold(input: Readonly<{
         const held = currentRef.current;
         if (!held) return;
         router.push(`/inbox/approvals/${encodeURIComponent(held.artifactId)}?serverId=${encodeURIComponent(held.serverId)}`);
-    }, []);
+    }, [router]);
 
     return {
         pendingApproval: current ? { artifactId: current.artifactId, serverId: current.serverId } : null,

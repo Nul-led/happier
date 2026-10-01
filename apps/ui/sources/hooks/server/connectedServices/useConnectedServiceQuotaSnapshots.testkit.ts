@@ -95,7 +95,8 @@ vi.mock('./useConnectedServiceLegacyOperationAdmission', () => ({
     useConnectedAccountOperationAdmission: () => async () => {},
 }));
 
-vi.mock('@/sync/api/account/apiAccountEncryptionMode', () => ({
+vi.mock('@/sync/api/account/apiAccountEncryptionMode', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/sync/api/account/apiAccountEncryptionMode')>(),
     fetchAccountEncryptionMode: fetchAccountEncryptionModeSpy,
 }));
 

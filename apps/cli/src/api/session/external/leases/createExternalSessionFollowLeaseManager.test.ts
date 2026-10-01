@@ -151,7 +151,7 @@ describe('createExternalSessionFollowLeaseManager', () => {
         const manager = createExternalSessionFollowLeaseManager();
         const resource = {
             linkGeneration: 'link-1',
-            pluginGeneration: 'plugin-1',
+            occurrenceId: 'plugin-1',
             retirementSignal: retirement.signal,
         };
 
@@ -277,7 +277,7 @@ describe('createExternalSessionFollowLeaseManager', () => {
             ttlMs: 30_000,
             resource: {
                 linkGeneration: 'link-1',
-                pluginGeneration: 'plugin-1',
+                occurrenceId: 'plugin-1',
                 retirementSignal: firstRetirement.signal,
             },
             acquireFollowLease: async () => ({ release: firstRelease }),
@@ -288,7 +288,7 @@ describe('createExternalSessionFollowLeaseManager', () => {
             ttlMs: 30_000,
             resource: {
                 linkGeneration: 'link-2',
-                pluginGeneration: 'plugin-2',
+                occurrenceId: 'plugin-2',
                 retirementSignal: secondRetirement.signal,
             },
             acquireFollowLease: async () => ({ release: secondRelease }),
@@ -399,7 +399,7 @@ describe('createExternalSessionFollowLeaseManager', () => {
         const manager = createExternalSessionFollowLeaseManager();
         const resource = {
             linkGeneration: 'link-generation',
-            pluginGeneration: 'plugin-generation',
+            occurrenceId: 'plugin-generation',
         };
 
         await manager.attach({
@@ -452,7 +452,7 @@ describe('createExternalSessionFollowLeaseManager', () => {
         const manager = createExternalSessionFollowLeaseManager();
         const resource = {
             linkGeneration: 'link-shared-cursor',
-            pluginGeneration: 'plugin-shared-cursor',
+            occurrenceId: 'plugin-shared-cursor',
         };
         const acquireFollowLease = vi.fn(async () => ({
             release: vi.fn(async () => {}),
@@ -504,7 +504,7 @@ describe('createExternalSessionFollowLeaseManager', () => {
         const manager = createExternalSessionFollowLeaseManager();
         const resource = {
             linkGeneration: 'link-distinct-cursors',
-            pluginGeneration: 'plugin-distinct-cursors',
+            occurrenceId: 'plugin-distinct-cursors',
         };
         const acquireFollowLease = vi.fn(async () => ({
             release: vi.fn(async () => {}),
@@ -570,7 +570,7 @@ describe('createExternalSessionFollowLeaseManager', () => {
         const manager = createExternalSessionFollowLeaseManager();
         const resource = {
             linkGeneration: 'link-viewer-removal',
-            pluginGeneration: 'plugin-viewer-removal',
+            occurrenceId: 'plugin-viewer-removal',
         };
 
         await manager.attach({
@@ -626,7 +626,7 @@ describe('createExternalSessionFollowLeaseManager', () => {
         const manager = createExternalSessionFollowLeaseManager();
         const resource = {
             linkGeneration: 'link-cursor-change',
-            pluginGeneration: 'plugin-cursor-change',
+            occurrenceId: 'plugin-cursor-change',
         };
 
         await manager.attach({
@@ -680,7 +680,7 @@ describe('createExternalSessionFollowLeaseManager', () => {
         const manager = createExternalSessionFollowLeaseManager();
         const resource = {
             linkGeneration: 'link-shared-retry',
-            pluginGeneration: 'plugin-shared-retry',
+            occurrenceId: 'plugin-shared-retry',
         };
 
         for (const leaseId of ['viewer-one', 'viewer-two']) {
@@ -723,7 +723,7 @@ describe('createExternalSessionFollowLeaseManager', () => {
         const manager = createExternalSessionFollowLeaseManager();
         const resource = {
             linkGeneration: 'link-scoped-listeners',
-            pluginGeneration: 'plugin-scoped-listeners',
+            occurrenceId: 'plugin-scoped-listeners',
         };
         const acquireFollowLease = vi.fn(async () => ({
             release: vi.fn(async () => {}),
@@ -765,7 +765,7 @@ describe('createExternalSessionFollowLeaseManager', () => {
             acceptedTailCursor: null,
             resource: {
                 linkGeneration: 'link-scoped-baseline',
-                pluginGeneration: 'plugin-scoped-baseline',
+                occurrenceId: 'plugin-scoped-baseline',
             },
             acquireFollowLease: async () => ({
                 release,
@@ -803,7 +803,7 @@ describe('createExternalSessionFollowLeaseManager', () => {
         const manager = createExternalSessionFollowLeaseManager();
         const resource = {
             linkGeneration: 'link-generation',
-            pluginGeneration: 'plugin-generation',
+            occurrenceId: 'plugin-generation',
         };
 
         await manager.setBackgroundFollowEnabled({
@@ -864,7 +864,7 @@ describe('createExternalSessionFollowLeaseManager', () => {
             enabled: true,
             resource: {
                 linkGeneration: 'link-1',
-                pluginGeneration: 'plugin-1',
+                occurrenceId: 'plugin-1',
                 retirementSignal: firstRetirement.signal,
             },
             acquireFollowLease: firstAcquire,
@@ -878,7 +878,7 @@ describe('createExternalSessionFollowLeaseManager', () => {
             enabled: true,
             resource: {
                 linkGeneration: 'link-2',
-                pluginGeneration: 'plugin-2',
+                occurrenceId: 'plugin-2',
                 retirementSignal: secondRetirement.signal,
             },
             acquireFollowLease: secondAcquire,
@@ -903,7 +903,7 @@ describe('createExternalSessionFollowLeaseManager', () => {
         const manager = createExternalSessionFollowLeaseManager();
         const resource = {
             linkGeneration: 'link-generation',
-            pluginGeneration: 'plugin-generation',
+            occurrenceId: 'plugin-generation',
         };
 
         await manager.attach({
@@ -1194,7 +1194,7 @@ describe('createExternalSessionFollowLeaseManager', () => {
         });
         const resource = {
             linkGeneration: 'link-archive',
-            pluginGeneration: 'plugin-archive',
+            occurrenceId: 'plugin-archive',
         };
 
         await manager.attach({
@@ -1385,7 +1385,7 @@ describe('createExternalSessionFollowLeaseManager', () => {
         });
         const resource = {
             linkGeneration: 'link-status',
-            pluginGeneration: 'plugin-status',
+            occurrenceId: 'plugin-status',
         };
 
         await manager.attach({
@@ -1442,7 +1442,7 @@ describe('createExternalSessionFollowLeaseManager', () => {
         });
         const resource = {
             linkGeneration: 'link-terminal-status-retry',
-            pluginGeneration: 'plugin-terminal-status-retry',
+            occurrenceId: 'plugin-terminal-status-retry',
         };
 
         await manager.attach({
@@ -1484,12 +1484,12 @@ describe('createExternalSessionFollowLeaseManager', () => {
         });
         const firstResource = {
             linkGeneration: 'link-1',
-            pluginGeneration: 'plugin-1',
+            occurrenceId: 'plugin-1',
             retirementSignal: firstRetirement.signal,
         };
         const secondResource = {
             linkGeneration: 'link-2',
-            pluginGeneration: 'plugin-2',
+            occurrenceId: 'plugin-2',
             retirementSignal: secondRetirement.signal,
         };
 
@@ -1609,7 +1609,7 @@ describe('createExternalSessionFollowLeaseManager', () => {
             ttlMs: 30_000,
             resource: {
                 linkGeneration: 'link-1',
-                pluginGeneration: 'plugin-1',
+                occurrenceId: 'plugin-1',
             },
             acquireFollowLease: async () => ({ release: async () => {} }),
         });
@@ -1620,7 +1620,7 @@ describe('createExternalSessionFollowLeaseManager', () => {
             enabled: true,
             resource: {
                 linkGeneration: 'link-2',
-                pluginGeneration: 'plugin-2',
+                occurrenceId: 'plugin-2',
             },
             acquireFollowLease: async () => {
                 throw new Error('secret Agent failure');
@@ -1657,7 +1657,7 @@ describe('createExternalSessionFollowLeaseManager', () => {
         });
         const resource = {
             linkGeneration: 'link-release-error',
-            pluginGeneration: 'plugin-release-error',
+            occurrenceId: 'plugin-release-error',
         };
 
         await manager.attach({
@@ -1724,7 +1724,7 @@ describe('createExternalSessionFollowLeaseManager', () => {
             enabled: true,
             resource: {
                 linkGeneration: 'link-first',
-                pluginGeneration: 'plugin-first',
+                occurrenceId: 'plugin-first',
             },
             acquireFollowLease: async () => ({
                 release: firstRelease,
@@ -1736,7 +1736,7 @@ describe('createExternalSessionFollowLeaseManager', () => {
             enabled: true,
             resource: {
                 linkGeneration: 'link-second',
-                pluginGeneration: 'plugin-second',
+                occurrenceId: 'plugin-second',
             },
             acquireFollowLease: replacementAcquire,
         })).resolves.toMatchObject({
@@ -1752,7 +1752,7 @@ describe('createExternalSessionFollowLeaseManager', () => {
             enabled: true,
             resource: {
                 linkGeneration: 'link-second',
-                pluginGeneration: 'plugin-second',
+                occurrenceId: 'plugin-second',
             },
             acquireFollowLease: replacementAcquire,
         })).resolves.toMatchObject({
@@ -1779,7 +1779,7 @@ describe('createExternalSessionFollowLeaseManager', () => {
             enabled: true,
             resource: {
                 linkGeneration: 'link-retired',
-                pluginGeneration: 'plugin-retired',
+                occurrenceId: 'plugin-retired',
                 retirementSignal: retirement.signal,
             },
             acquireFollowLease: async () => ({
@@ -1795,7 +1795,7 @@ describe('createExternalSessionFollowLeaseManager', () => {
             enabled: true,
             resource: {
                 linkGeneration: 'link-current',
-                pluginGeneration: 'plugin-current',
+                occurrenceId: 'plugin-current',
             },
             acquireFollowLease: replacementAcquire,
         })).resolves.toMatchObject({
@@ -1827,7 +1827,7 @@ describe('createExternalSessionFollowLeaseManager', () => {
             enabled: true,
             resource: {
                 linkGeneration: 'link-late-acquired',
-                pluginGeneration: 'plugin-late-acquired',
+                occurrenceId: 'plugin-late-acquired',
                 retirementSignal: retirement.signal,
             },
             acquireFollowLease,
@@ -1866,7 +1866,7 @@ describe('createExternalSessionFollowLeaseManager', () => {
             enabled: true,
             resource: {
                 linkGeneration: 'link-actual',
-                pluginGeneration: 'plugin-actual',
+                occurrenceId: 'plugin-actual',
             },
             acquireFollowLease: async () => ({
                 release: retainedRelease,
@@ -1877,7 +1877,7 @@ describe('createExternalSessionFollowLeaseManager', () => {
             enabled: true,
             resource: {
                 linkGeneration: 'link-retired-desired',
-                pluginGeneration: 'plugin-retired-desired',
+                occurrenceId: 'plugin-retired-desired',
                 retirementSignal: desiredRetirement.signal,
             },
             acquireFollowLease: retiredDesiredAcquire,
@@ -1893,7 +1893,7 @@ describe('createExternalSessionFollowLeaseManager', () => {
             enabled: true,
             resource: {
                 linkGeneration: 'link-next',
-                pluginGeneration: 'plugin-next',
+                occurrenceId: 'plugin-next',
             },
             acquireFollowLease: nextAcquire,
         })).resolves.toMatchObject({
@@ -1912,7 +1912,7 @@ describe('createExternalSessionFollowLeaseManager', () => {
         });
         const resource = {
             linkGeneration: 'link-current',
-            pluginGeneration: 'plugin-current',
+            occurrenceId: 'plugin-current',
             retirementSignal: retirement.signal,
         };
 
@@ -1935,14 +1935,14 @@ describe('createExternalSessionFollowLeaseManager', () => {
             sessionId: 'session-refresh',
             resource: {
                 linkGeneration: 'link-stale',
-                pluginGeneration: 'plugin-current',
+                occurrenceId: 'plugin-current',
             },
         })).resolves.toEqual({ requested: false, reason: 'stale-source' });
         await expect(manager.requestTranscriptRefresh({
             sessionId: 'session-refresh',
             resource: {
                 linkGeneration: 'link-current',
-                pluginGeneration: 'plugin-stale',
+                occurrenceId: 'plugin-stale',
             },
         })).resolves.toEqual({ requested: false, reason: 'stale-source' });
         await expect(manager.requestTranscriptRefresh({
@@ -1983,7 +1983,7 @@ describe('createExternalSessionFollowLeaseManager', () => {
         });
         const resource = {
             linkGeneration: 'link-opencode',
-            pluginGeneration: 'plugin-opencode',
+            occurrenceId: 'plugin-opencode',
         };
 
         await manager.attach({
@@ -2046,7 +2046,7 @@ describe('createExternalSessionFollowLeaseManager', () => {
         });
         const resource = {
             linkGeneration: 'link-cursorless',
-            pluginGeneration: 'plugin-cursorless',
+            occurrenceId: 'plugin-cursorless',
         };
 
         await manager.attach({
@@ -2075,11 +2075,11 @@ describe('createExternalSessionFollowLeaseManager', () => {
         });
         const firstResource = {
             linkGeneration: 'link-first',
-            pluginGeneration: 'plugin-first',
+            occurrenceId: 'plugin-first',
         };
         const secondResource = {
             linkGeneration: 'link-second',
-            pluginGeneration: 'plugin-second',
+            occurrenceId: 'plugin-second',
         };
 
         await manager.attach({
@@ -2130,7 +2130,7 @@ describe('createExternalSessionFollowLeaseManager', () => {
         });
         const resource = {
             linkGeneration: 'link-current',
-            pluginGeneration: 'plugin-current',
+            occurrenceId: 'plugin-current',
         };
         await manager.attach({
             sessionId: 'session-refresh-coalesced',
@@ -2178,11 +2178,11 @@ describe('createExternalSessionFollowLeaseManager', () => {
         });
         const firstResource = {
             linkGeneration: 'link-first',
-            pluginGeneration: 'plugin-first',
+            occurrenceId: 'plugin-first',
         };
         const secondResource = {
             linkGeneration: 'link-second',
-            pluginGeneration: 'plugin-second',
+            occurrenceId: 'plugin-second',
         };
 
         await manager.attach({
@@ -2237,11 +2237,11 @@ describe('createExternalSessionFollowLeaseManager', () => {
             });
             const staleResource = {
                 linkGeneration: 'link-before-replacement',
-                pluginGeneration: 'plugin-generation',
+                occurrenceId: 'plugin-generation',
             };
             const replacementResource = {
                 linkGeneration: 'link-after-replacement',
-                pluginGeneration: 'plugin-generation',
+                occurrenceId: 'plugin-generation',
             };
 
             await manager.attach({
@@ -2308,7 +2308,7 @@ describe('createExternalSessionFollowLeaseManager', () => {
             });
             const resource = {
                 linkGeneration: 'link-background-error',
-                pluginGeneration: 'plugin-background-error',
+                occurrenceId: 'plugin-background-error',
             };
 
             await manager.setBackgroundFollowEnabled({
@@ -2352,7 +2352,7 @@ describe('createExternalSessionFollowLeaseManager', () => {
         const manager = createExternalSessionFollowLeaseManager();
         const resource = {
             linkGeneration: 'link-refresh-retry',
-            pluginGeneration: 'plugin-refresh-retry',
+            occurrenceId: 'plugin-refresh-retry',
         };
 
         await manager.setBackgroundFollowEnabled({
@@ -2393,7 +2393,7 @@ describe('createExternalSessionFollowLeaseManager', () => {
             writeFollowStatus,
             publishSourceUnavailableOccurrence,
         });
-        const resource = { linkGeneration: 'link-occurrence', pluginGeneration: 'plugin-occurrence' };
+        const resource = { linkGeneration: 'link-occurrence', occurrenceId: 'plugin-occurrence' };
         await manager.setBackgroundFollowEnabled({
             sessionId: 'session-occurrence', enabled: true, resource,
             acquireFollowLease: async () => ({ release: async () => {}, requestTranscriptRefresh: refresh }),
@@ -2428,7 +2428,7 @@ describe('createExternalSessionFollowLeaseManager', () => {
             writeFollowStatus,
             publishSourceUnavailableOccurrence,
         });
-        const resource = { linkGeneration: 'link-no-commit', pluginGeneration: 'plugin-no-commit' };
+        const resource = { linkGeneration: 'link-no-commit', occurrenceId: 'plugin-no-commit' };
         await manager.setBackgroundFollowEnabled({
             sessionId: 'session-no-commit', enabled: true, resource,
             acquireFollowLease: async () => ({
@@ -2452,7 +2452,7 @@ describe('createExternalSessionFollowLeaseManager', () => {
         });
         const resource = {
             linkGeneration: 'link-refresh-retry-release',
-            pluginGeneration: 'plugin-refresh-retry-release',
+            occurrenceId: 'plugin-refresh-retry-release',
         };
 
         await manager.attach({
@@ -2506,12 +2506,12 @@ describe('createExternalSessionFollowLeaseManager', () => {
         });
         const firstResource = {
             linkGeneration: 'link-shared',
-            pluginGeneration: 'plugin-retired',
+            occurrenceId: 'plugin-retired',
             retirementSignal: firstRetirement.signal,
         };
         const replacementResource = {
             linkGeneration: 'link-shared',
-            pluginGeneration: 'plugin-current',
+            occurrenceId: 'plugin-current',
         };
 
         await manager.attach({
@@ -2555,7 +2555,7 @@ describe('createExternalSessionFollowLeaseManager', () => {
         });
         const resource = {
             linkGeneration: 'link-background-gap',
-            pluginGeneration: 'plugin-background-gap',
+            occurrenceId: 'plugin-background-gap',
         };
 
         await manager.setBackgroundFollowEnabled({
@@ -2620,7 +2620,7 @@ describe('createExternalSessionFollowLeaseManager', () => {
         });
         const resource = {
             linkGeneration: 'link-background-rejection',
-            pluginGeneration: 'plugin-background-rejection',
+            occurrenceId: 'plugin-background-rejection',
         };
 
         await manager.setBackgroundFollowEnabled({
@@ -2675,7 +2675,7 @@ describe('createExternalSessionFollowLeaseManager', () => {
             });
             const resource = {
                 linkGeneration: 'link-viewer-error',
-                pluginGeneration: 'plugin-viewer-error',
+                occurrenceId: 'plugin-viewer-error',
             };
 
             await manager.attachScoped({
@@ -2724,7 +2724,7 @@ describe('createExternalSessionFollowLeaseManager', () => {
         });
         const resource = {
             linkGeneration: 'link-scoped-terminal',
-            pluginGeneration: 'plugin-scoped-terminal',
+            occurrenceId: 'plugin-scoped-terminal',
         };
 
         await manager.attachScoped({
@@ -2804,7 +2804,7 @@ describe('createExternalSessionFollowLeaseManager', () => {
         });
         const resource = {
             linkGeneration: 'link-viewer-gap',
-            pluginGeneration: 'plugin-viewer-gap',
+            occurrenceId: 'plugin-viewer-gap',
         };
 
         await manager.attachScoped({
@@ -2871,7 +2871,7 @@ describe('createExternalSessionFollowLeaseManager', () => {
         });
         const resource = {
             linkGeneration: 'link-current',
-            pluginGeneration: 'plugin-current',
+            occurrenceId: 'plugin-current',
             retirementSignal: retirement.signal,
         };
         await manager.attach({

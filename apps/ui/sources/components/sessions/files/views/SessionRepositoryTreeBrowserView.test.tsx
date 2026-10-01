@@ -35,6 +35,7 @@ installSessionFilesViewCommonModuleMocks({
             useMachine: () => ({ id: 'm1' }) as any,
             useSessionRepositoryTreeExpandedPaths: () => stableExpandedPaths,
             useSessionProjectScmSnapshot: () => null,
+            useSessionDirectoryKind: () => sessionDirectoryKind,
         });
     },
 });
@@ -68,10 +69,6 @@ vi.mock('@/hooks/session/files/useWorkspaceFileTransfers', () => ({
     },
 }));
 
-vi.mock('@/components/sessions/files/content/RepositoryTreeList', () => ({
-    RepositoryTreeList: (props: any) => React.createElement('View', { ...props, testID: 'repository-tree-list' }),
-}));
-
 const searchFilesSpy = vi.fn();
 vi.mock('@/sync/domains/input/suggestionFile', () => ({
     searchFiles: (...args: any[]) => searchFilesSpy(...args),
@@ -103,6 +100,7 @@ vi.mock('@/components/workspaces/files/repositoryTree/SearchResultsList', () => 
 }));
 
 let sessionActive = true;
+let sessionDirectoryKind: 'path' | 'managed' | null = 'path';
 let machineReachable = true;
 let sessionPath: string | null = null;
 let projectPath: string | null = '/repo';
@@ -110,6 +108,10 @@ let machineRpcTargetAvailable = true;
 let workspaceTargetAvailable = true;
 let workspaceRootPath = '/repo';
 const invalidateFromUserSpy = vi.fn();
+
+vi.mock('@/components/sessions/agents/presentation/useSessionMachineName', () => ({
+    useSessionMachineName: () => 'MacBook Pro',
+}));
 
 vi.mock('@/components/sessions/model/useSessionMachineReachability', () => ({
     useSessionMachineReachability: () => ({
@@ -217,6 +219,7 @@ describe('SessionRepositoryTreeBrowserView', () => {
         workspaceTransferApi.startDownload.mockClear();
         workspaceTransferApi.cancelDownload.mockClear();
         sessionActive = true;
+        sessionDirectoryKind = 'path';
         machineReachable = true;
         machineRpcTargetAvailable = true;
         workspaceTargetAvailable = true;
@@ -231,7 +234,7 @@ describe('SessionRepositoryTreeBrowserView', () => {
         vi.useRealTimers();
     });
 
-    it('shows RepositoryTreeList when query is empty', async () => {
+    it('shows the repository tree when the query is empty', async () => {
         const { screen } = await renderRepositoryTreeBrowserView();
 
         expect(screen.findAllByTestId('workspace-repository-tree-list')).toHaveLength(1);
@@ -252,6 +255,25 @@ describe('SessionRepositoryTreeBrowserView', () => {
         expect(nextProps.onExpandedPathsChange).toBe(firstProps.onExpandedPathsChange);
         expect(nextProps.renderRowActions).toBe(firstProps.renderRowActions);
         expect(screen.findAllByTestId('workspace-repository-tree-list')).toHaveLength(1);
+    });
+
+    it('titles a no-folder session\'s tree "Session files" and names its root that way', async () => {
+        sessionDirectoryKind = 'managed';
+        const { screen } = await renderRepositoryTreeBrowserView();
+
+        const heading = screen.findByTestId('repository-tree-session-files-root');
+        expect(heading).toBeTruthy();
+        expect(heading?.findAll((node) => node.props.children === 'session.folderless.sessionFiles').length).toBeGreaterThan(0);
+        // The root is named the same way wherever the pane names it (drop destination).
+        expect(screen.findAll((node) => node.props.destinationLabel === 'session.folderless.sessionFiles').length).toBeGreaterThan(0);
+        expect(screen.findAllByTestId('workspace-repository-tree-list')).toHaveLength(1);
+    });
+
+    it('keeps a folder session\'s tree without a root heading', async () => {
+        const { screen } = await renderRepositoryTreeBrowserView();
+
+        expect(screen.findByTestId('repository-tree-session-files-root')).toBeNull();
+        expect(screen.findAll((node) => node.props.destinationLabel === 'files.projectRoot').length).toBeGreaterThan(0);
     });
 
     it('can hide the internal search bar', async () => {

@@ -154,7 +154,7 @@ export function SessionSplitCanvasScreen(props: SessionSplitCanvasScreenProps) {
         return (
             <SessionCanvasLeaf
                 sessionId={leaf.payload.sessionId}
-                routeServerId={isRouteAnchor ? props.routeServerId : undefined}
+                routeServerId={props.routeServerId}
                 jumpToSeq={isRouteAnchor ? (props.jumpToSeq ?? null) : null}
                 paneUrlState={isRouteAnchor ? props.paneUrlState : undefined}
                 initialAttachmentDrafts={isRouteAnchor ? (props.initialAttachmentDrafts ?? null) : null}

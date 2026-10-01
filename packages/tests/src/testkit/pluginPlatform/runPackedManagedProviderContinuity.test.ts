@@ -622,9 +622,9 @@ PackedManagedProviderSafeRestartContractEvidence = {
 const validCandidateHandoffContract:
 PackedManagedProviderCandidateHandoffContractEvidence = {
   authoring: {
-    exactCandidateSdk: true,
-    exactCandidateCli: true,
-    exactCandidateStandaloneCli: true,
+    publicSdkOnly: true,
+    publicCliOnly: true,
+    packagedRuntimeBinary: true,
     externalAgentPublicOnly: true,
     externalProviderPublicOnly: true,
     providerPackageHasNoAgentLocator: true,
@@ -773,10 +773,8 @@ PackedManagedProviderCandidateHandoffContractEvidence = {
       reinstalledHFollowReacquired: true,
     },
     artifacts: {
-      agentGArchiveSha256: `sha256:${'a'.repeat(64)}`,
-      agentHArchiveSha256: `sha256:${'b'.repeat(64)}`,
-      providerPArchiveSha256: `sha256:${'c'.repeat(64)}`,
-      providerQArchiveSha256: `sha256:${'d'.repeat(64)}`,
+      agentGenerationsDistinct: true,
+      providerGenerationsDistinct: true,
       installedArchivesMatchPackedBytes: true,
     },
   },
@@ -1981,9 +1979,7 @@ describe('packed candidate Agent/Provider generation handoff contract', () => {
         ...validCandidateHandoffContract.externalSessions!,
         artifacts: {
           ...validCandidateHandoffContract.externalSessions!.artifacts,
-          providerQArchiveSha256:
-            validCandidateHandoffContract.externalSessions!.artifacts
-              .providerPArchiveSha256,
+          providerGenerationsDistinct: false,
         },
       },
     }],
@@ -1998,7 +1994,7 @@ describe('packed candidate Agent/Provider generation handoff contract', () => {
       ...validCandidateHandoffContract,
       authoring: {
         ...validCandidateHandoffContract.authoring,
-        exactCandidateSdk: false,
+        publicSdkOnly: false,
       },
     }],
     ['duplicate retained-turn output', {

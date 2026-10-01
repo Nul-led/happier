@@ -1,6 +1,5 @@
 import { logger } from '@/ui/logger';
-import { spawn, SpawnOptions } from 'child_process';
-import { closeStdioWhenCommandExits, execFileWithDeadline, type ExecFileWithDeadlineOptions } from '@happier-dev/cli-common/process';
+import { execFileWithDeadline, type ExecFileWithDeadlineOptions } from '@happier-dev/cli-common/process';
 import type { RpcHandlerRegistrar } from '@/api/rpc/types';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 import type { FilesystemAccessPolicy } from './fileSystem/accessPolicy/filesystemAccessPolicy';
@@ -26,88 +25,41 @@ async function executeArgvRequest(
     options: Readonly<{ cwd?: string; timeout: number }>,
 ): Promise<BashResponse> {
     const [file, ...args] = argv;
-    const spawnCwd = typeof options.cwd === 'string' ? options.cwd : undefined;
-    const spawnOptions: SpawnOptions = {
-        cwd: spawnCwd,
-        windowsHide: true,
-        shell: false,
-    };
-
-    return await new Promise<BashResponse>((resolve) => {
-        let stdout = '';
-        let stderr = '';
-        let settled = false;
-        let timedOut = false;
-        const child = spawn(file, args, spawnOptions);
-        // This path answers on 'close', which waits for every stdio stream as well as the process.
-        // A command that leaves a process running — including one we kill, since the signal reaches
-        // only the direct child — keeps the write end of that pipe open, so without this bound the
-        // handler answered when the SURVIVOR exited: measured 5,013 ms with `error: 'Command timed
-        // out'` for a command that exited 0 in ten milliseconds, and never at all for a survivor
-        // that outlived the budget.
-        closeStdioWhenCommandExits(child);
-        const timer = options.timeout > 0
-            ? setTimeout(() => {
-                timedOut = true;
-                child.kill();
-            }, options.timeout)
-            : null;
-
-        const finish = (result: BashResponse) => {
-            if (settled) {
-                return;
-            }
-
-            settled = true;
-            if (timer) {
-                clearTimeout(timer);
-            }
-            resolve(result);
+    try {
+        const { stdout, stderr } = await execFileWithDeadline(file, args, {
+            cwd: options.cwd,
+            ...(options.timeout > 0 ? { timeout: options.timeout } : {}),
+            windowsHide: true,
+            shell: false,
+            // The argv path previously accumulated all output; do not impose execFile's
+            // default buffer ceiling when moving its deadline to the shared owner.
+            maxBuffer: Infinity,
+        });
+        return { success: true, stdout: stdout.toString(), stderr: stderr.toString(), exitCode: 0 };
+    } catch (error) {
+        // Spawn argument validation previously reached the outer request-error mapper.
+        if (error instanceof TypeError) throw error;
+        const execError = error as Error & {
+            stdout?: string | Buffer;
+            stderr?: string | Buffer;
+            code?: number | string;
+            killed?: boolean;
+            signal?: string;
         };
-
-        child.stdout?.on('data', (chunk) => {
-            stdout += chunk.toString();
-        });
-        child.stderr?.on('data', (chunk) => {
-            stderr += chunk.toString();
-        });
-
-        child.on('error', (error) => {
-            finish({
-                success: false,
-                stdout,
-                stderr: stderr || error.message,
-                exitCode: -1,
-                error: error.message,
-            });
-        });
-
-        child.on('close', (code) => {
-            if (timedOut) {
-                finish({
-                    success: false,
-                    stdout,
-                    stderr,
-                    exitCode: typeof code === 'number' ? code : -1,
-                    error: 'Command timed out',
-                });
-                return;
-            }
-
-            if (code === 0) {
-                finish({ success: true, stdout, stderr, exitCode: 0 });
-                return;
-            }
-
-            finish({
-                success: false,
-                stdout,
-                stderr: stderr || 'Command failed',
-                exitCode: typeof code === 'number' ? code : -1,
-                error: stderr || 'Command failed',
-            });
-        });
-    });
+        const stdout = execError.stdout?.toString() ?? '';
+        const stderr = execError.stderr?.toString() ?? '';
+        const timedOut = execError.code === 'ETIMEDOUT' || execError.killed === true;
+        const message = timedOut
+            ? 'Command timed out'
+            : (typeof execError.code === 'number' || execError.signal ? stderr || 'Command failed' : execError.message);
+        return {
+            success: false,
+            stdout,
+            stderr: timedOut ? stderr : stderr || message,
+            exitCode: typeof execError.code === 'number' ? execError.code : -1,
+            error: message,
+        };
+    }
 }
 
 export function registerBashHandler(

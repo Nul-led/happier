@@ -5,6 +5,15 @@ import type { ChildExit } from './onChildExited';
 import type { TrackedSession } from '../types';
 
 import { waitForVisibleConsoleSessionWebhook } from './visibleConsoleSpawnWaiter';
+import { createOnChildExited } from './onChildExited';
+import { createOnHappySessionWebhook } from './onHappySessionWebhook';
+import { spawnInlineNodeParentWithChild } from '@/testkit/process/spawn';
+import { configuration } from '@/configuration';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { once } from 'node:events';
+import { writeSessionMarker } from '../sessionRegistry';
 
 function installProcessKillMock(aliveRef: { alive: boolean }): void {
   vi.spyOn(process, 'kill').mockImplementation(
@@ -34,6 +43,40 @@ function createWaiterState(): {
 }
 
 describe('waitForVisibleConsoleSessionWebhook', () => {
+  it.skipIf(process.platform === 'win32')('keeps the same pending completion when actual wrapper exit promotes its live runner', async () => {
+    const previousHome = configuration.happyHomeDir;
+    const home = await mkdtemp(join(tmpdir(), 'happier-visible-promotion-'));
+    Object.defineProperty(configuration, 'happyHomeDir', { value: home });
+    const { parent, childPid } = await spawnInlineNodeParentWithChild();
+    const pid = parent.pid!;
+    const tracked: TrackedSession = { pid, startedBy: 'daemon', happySessionId: `PID-${pid}`, sessionRunnerPid: childPid, childProcess: parent };
+    const sessions = new Map([[pid, tracked]]);
+    const state = createWaiterState();
+    const exit = createOnChildExited({ pidToTrackedSession: sessions, spawnResourceCleanupByPid: new Map(),
+      sessionAttachCleanupByPid: new Map(), getApiMachineForSessions: () => null });
+    const completion = waitForVisibleConsoleSessionWebhook({ ...state, pid, pollMs: 10, pidToTrackedSession: sessions, onChildExited: exit });
+    try {
+      await writeSessionMarker({ pid, happySessionId: `PID-${pid}`, startedBy: 'daemon' });
+      const exited = once(parent, 'exit');
+      parent.kill('SIGTERM');
+      await exited;
+      await vi.waitFor(() => expect(sessions.get(childPid)).toBe(tracked));
+      expect(state.pidToAwaiter.has(pid)).toBe(true);
+      const report = createOnHappySessionWebhook({ pidToTrackedSession: sessions, pidToAwaiter: state.pidToAwaiter });
+      await report('session-live-promoted-runner', { path: home, host: 'fixture', homeDir: home, happyHomeDir: home,
+        happyLibDir: home, happyToolsDir: home, hostPid: childPid, startedBy: 'daemon', machineId: 'fixture-machine' });
+      await expect(completion).resolves.toMatchObject({ type: 'success', sessionId: 'session-live-promoted-runner' });
+    } finally {
+      state.pidToSpawnResultResolver.get(pid)?.({ type: 'error', errorCode: 'CHILD_EXITED_BEFORE_WEBHOOK', errorMessage: 'Fixture cleanup' });
+      await Promise.allSettled([completion]);
+      for (const timeout of state.pidToSpawnWebhookTimeout.values()) clearTimeout(timeout);
+      try { process.kill(childPid, 'SIGTERM'); } catch {}
+      if (parent.exitCode === null && parent.signalCode === null) parent.kill('SIGTERM');
+      await tracked.reportMarkerCustody?.pending;
+      Object.defineProperty(configuration, 'happyHomeDir', { value: previousHome });
+      await rm(home, { recursive: true, force: true });
+    }
+  });
   afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();

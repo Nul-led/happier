@@ -1,3 +1,7 @@
+import { SESSION_FOLLOW_WAKE_EVENT_MESSAGE } from '@happier-dev/protocol';
+
+export const WORKFLOW_STEP_INPUT_EVENT_MESSAGE = 'Workflow step input';
+
 export type SessionTurnLifecycleEvent =
     | 'task_started'
     | 'task_complete'
@@ -25,6 +29,21 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 function readString(value: unknown): string | null {
     return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
+}
+
+/** Only host input commitments open a new turn; output reports and diagnostics do not. */
+export function isSessionContextOnlyHostInput(value: unknown): boolean {
+    const row = asRecord(value);
+    if (!row || (row.role !== 'agent' && row.role !== 'event')) return false;
+    const content = asRecord(row.content);
+    if (!content) return false;
+    const data = asRecord(content.data);
+    const event = content.type === 'event' ? data
+        : (content.type === 'acp' || content.type === 'codex') && data?.type === 'event' ? asRecord(data.data)
+            : null;
+    return event?.type === 'worker-update'
+        || (event?.type === 'message'
+            && (event.message === SESSION_FOLLOW_WAKE_EVENT_MESSAGE || event.message === WORKFLOW_STEP_INPUT_EVENT_MESSAGE));
 }
 
 function hasTextPart(parts: readonly unknown[]): boolean {

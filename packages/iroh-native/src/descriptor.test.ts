@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { HOME_TUNNEL_ALPN, TUNNEL_PREAMBLE, parseIrohEndpointDescriptor } from './descriptor';
+import { TUNNEL_PREAMBLE, parseIrohEndpointDescriptor } from './descriptor';
 
 describe('Iroh endpoint descriptor (native adapter over the canonical protocol definition)', () => {
   it('accepts the strict transport-only shape', () => {
@@ -35,8 +35,7 @@ describe('Iroh endpoint descriptor (native adapter over the canonical protocol d
     })).toThrow();
   });
 
-  it('publishes the locked ALPN and preamble', () => {
-    expect(HOME_TUNNEL_ALPN).toBe('happier/home-tunnel/1');
+  it('publishes the locked preamble', () => {
     expect(TUNNEL_PREAMBLE).toBe(0x01);
   });
 });

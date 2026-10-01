@@ -2,6 +2,7 @@ import type {
   BrowserCommandDispatchResultV1,
   BrowserCommandErrorCodeV1,
   BrowserCommandV1,
+  BrowserDaemonViewV1,
   BrowserSemanticAdapterKindV1,
 } from '@happier-dev/protocol';
 
@@ -27,14 +28,17 @@ export type BrowserDaemonControlViewIdentity = Readonly<{
 export type BrowserDaemonControlAdapter = Readonly<{
   adapterKind: BrowserDaemonControlAdapterKind;
   ownsView(input: BrowserDaemonControlViewIdentity): boolean;
+  listViews?(browserSessionId: string): readonly BrowserDaemonViewV1[];
   supportsOpenView(command: Extract<BrowserCommandV1, { kind: 'openView' }>): boolean;
-  dispatchCommand(command: BrowserCommandV1): Promise<BrowserCommandDispatchResultV1> | BrowserCommandDispatchResultV1;
+  dispatchCommand(command: BrowserCommandV1, scope?: Readonly<{ signal?: AbortSignal; deadlineMs?: number }>): Promise<BrowserCommandDispatchResultV1> | BrowserCommandDispatchResultV1;
 }>;
 
 export type BrowserDaemonControlBroker = Readonly<{
   registerAdapter(adapter: BrowserDaemonControlAdapter): () => void;
+  ownsView(input: BrowserDaemonControlViewIdentity): boolean;
   dispatchCommand(command: BrowserCommandV1): Promise<BrowserCommandDispatchResultV1>;
   hasExecutableAdapters(): boolean;
+  listViews(browserSessionId: string): readonly BrowserDaemonViewV1[];
 }>;
 
 export function browserCommandDispatchFailure(

@@ -17,7 +17,8 @@ export function buildSessionAgentInputActionChips(params: Readonly<{
     accountScopeIsCurrent?: (() => boolean) | null;
     defaultBackendTarget?: BackendTargetRefV2Input | null;
     defaultBackendId: string | null;
-    instructionsText: string;
+    /** The composer text, read when a chip is pressed: typing never rebuilds the chips. */
+    readInstructionsText: () => string;
 }>): ReadonlyArray<AgentInputExtraActionChip> {
     const stateSnapshot = storage.getState() as any;
     if (
@@ -32,17 +33,8 @@ export function buildSessionAgentInputActionChips(params: Readonly<{
     const backendId = typeof params.defaultBackendId === 'string' && params.defaultBackendId.trim().length > 0
         ? params.defaultBackendId.trim()
         : null;
-    const instructions = String(params.instructionsText ?? '');
-
     return actionIds.map((actionId) => {
         const spec = getActionSpec(actionId as any);
-        const input = buildExecutionRunActionDraftInputForUi({
-            actionId: actionId as any,
-            sessionId: params.address.sessionId,
-            defaultBackendTarget: params.defaultBackendTarget ?? null,
-            defaultBackendId: backendId,
-            instructions,
-        });
 
         return createAgentInputActionShortcutChip({
             key: `session-action:${actionId}`,
@@ -50,6 +42,13 @@ export function buildSessionAgentInputActionChips(params: Readonly<{
             layout: 'row',
             onPress: () => {
                 if (params.accountScopeIsCurrent?.() === false) return;
+                const input = buildExecutionRunActionDraftInputForUi({
+                    actionId: actionId as any,
+                    sessionId: params.address.sessionId,
+                    defaultBackendTarget: params.defaultBackendTarget ?? null,
+                    defaultBackendId: backendId,
+                    instructions: params.readInstructionsText(),
+                });
                 storage.getState().createSessionActionDraft(
                     accountScope,
                     params.address,

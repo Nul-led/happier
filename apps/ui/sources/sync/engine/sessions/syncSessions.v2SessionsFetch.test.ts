@@ -829,6 +829,9 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
                 metadata: null,
                 ownerMetadataView: null,
                 agentState: null,
+                // The locked shell states a settled content fact; an unset one read as locked in
+                // the list and readable in the detail pane.
+                encryptedContentAvailability: expect.any(String),
             }),
         ]);
         expect(encryptionHarness.decryptAgentState).not.toHaveBeenCalled();
@@ -2439,6 +2442,8 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             runtimeActivityRevision: 3_000,
             rollbackEligibleTurnStarts: [4, 9],
         }));
+        // HTTP supplies durable Session facts, not device-observed runtime presence.
+        expectedRenderable.presence = undefined;
 
         await fetchAndApplySessions({
             credentials: { token: 't', secret: 's' },
@@ -4128,7 +4133,7 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
         ]);
     });
 
-    it('does not throw required hydration failure when a newer session fetch supersedes the request', async () => {
+    it('does not throw required hydration failure when the caller supersedes the request', async () => {
         const firstRequest = vi.fn(async () =>
             jsonResponse({
                 sessions: [
@@ -4168,9 +4173,11 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
         });
         const applySessions = vi.fn();
         const applySessionListRenderables = vi.fn();
+        const firstAbort = new AbortController();
 
         const firstFetch = fetchAndApplySessions({
             serverId: 'server-superseded-required',
+            signal: firstAbort.signal,
             credentials: { token: 't', secret: 's' },
             encryption,
             sessionDataKeys: new Map<string, Uint8Array>(),
@@ -4183,27 +4190,35 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             log: { log: () => {} },
         });
 
-        await expect.poll(() => decryptMetadata.mock.calls.map((call) => call[1])).toEqual(['meta-superseded-required']);
+        try {
+            await expect.poll(() => decryptMetadata.mock.calls.map((call) => call[1])).toEqual(['meta-superseded-required']);
 
-        await fetchAndApplySessions({
-            serverId: 'server-superseded-required',
-            credentials: { token: 't', secret: 's' },
-            encryption,
-            sessionDataKeys: new Map<string, Uint8Array>(),
-            request: secondRequest,
-            applySessions,
-            applySessionListRenderables,
-            cachedSessionListEntries: {},
-            log: { log: () => {} },
-        });
+            firstAbort.abort();
+            await fetchAndApplySessions({
+                serverId: 'server-superseded-required',
+                credentials: { token: 't', secret: 's' },
+                encryption,
+                sessionDataKeys: new Map<string, Uint8Array>(),
+                request: secondRequest,
+                applySessions,
+                applySessionListRenderables,
+                cachedSessionListEntries: {},
+                log: { log: () => {} },
+            });
 
-        firstMetadataDecrypt.resolve({ decrypted: 'meta-superseded-required' });
-        await expect(firstFetch).resolves.toEqual(expect.objectContaining({
-            sessionIds: ['s_superseded_required'],
-        }));
+            firstMetadataDecrypt.resolve({ decrypted: 'meta-superseded-required' });
+            await expect(firstFetch).resolves.toEqual(expect.objectContaining({
+                sessionIds: ['s_superseded_required'],
+                current: false,
+            }));
 
-        expect(applySessions.mock.calls.flatMap((call) => call[0].map((session: { id: string }) => session.id)))
-            .not.toContain('s_superseded_required');
+            expect(applySessions.mock.calls.flatMap((call) => call[0].map((session: { id: string }) => session.id)))
+                .not.toContain('s_superseded_required');
+        } finally {
+            firstAbort.abort();
+            firstMetadataDecrypt.resolve({ decrypted: 'meta-superseded-required' });
+            await firstFetch.catch(() => undefined);
+        }
     });
 
     it('applies one hydrated background session at a time by default', async () => {
@@ -5102,7 +5117,7 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
         expect(initializeSessions).not.toHaveBeenCalled();
     });
 
-    it('aborts superseded session-list data-key hydration before queued native work dispatches', async () => {
+    it('aborts caller-superseded session-list data-key hydration before queued native work dispatches', async () => {
         const firstRequest = vi.fn(async () =>
             jsonResponse({
                 sessions: [
@@ -5132,9 +5147,11 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
             return [createSessionDataKeyFixture(2)];
         });
         const sessionDataKeys = new Map<string, Uint8Array>();
+        const firstAbort = new AbortController();
 
         const firstFetch = fetchAndApplySessions({
             serverId: 'server-superseded',
+            signal: firstAbort.signal,
             credentials: { token: 't', secret: 's' },
             encryption,
             sessionDataKeys,
@@ -5147,6 +5164,8 @@ describe('fetchAndApplySessions (/v2/sessions snapshot)', () => {
         expect(signals[0]).toBeInstanceOf(AbortSignal);
         expect(signals[0]?.aborted).toBe(false);
 
+        // Only the owning reader knows that this request is a replacement.
+        firstAbort.abort();
         const secondFetch = fetchAndApplySessions({
             serverId: 'server-superseded',
             credentials: { token: 't', secret: 's' },

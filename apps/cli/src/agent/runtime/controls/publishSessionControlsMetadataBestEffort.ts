@@ -1,4 +1,5 @@
 import type { Metadata } from '@/api/types';
+import { projectSessionModesV1Compatibility, type SessionOwnerModeCatalogV2 } from '@happier-dev/protocol';
 
 type SessionControlMetadataSession = Readonly<{
   ensureMetadataSnapshot?: (opts: Readonly<{ timeoutMs: number }>) => Promise<unknown> | unknown;
@@ -13,11 +14,12 @@ export async function publishSessionControlsMetadataBestEffort(params: Readonly<
   session: SessionControlMetadataSession;
   metadataSnapshot?: Metadata | null;
   sessionModesState?: SessionModesState | null;
+  sessionModesStateV2?: SessionOwnerModeCatalogV2 | null;
   sessionModelsState?: SessionModelsState | null;
   sessionConfigOptionsState?: SessionConfigOptionsState | null;
   timeoutMs?: number;
 }>): Promise<void> {
-  if (!params.sessionModesState && !params.sessionModelsState && !params.sessionConfigOptionsState) {
+  if (!params.sessionModesState && !params.sessionModesStateV2 && !params.sessionModelsState && !params.sessionConfigOptionsState) {
     return;
   }
 
@@ -29,14 +31,15 @@ export async function publishSessionControlsMetadataBestEffort(params: Readonly<
       })).catch(() => null)
       : null);
   if (!snapshot && hasMetadataSnapshotCapability) return;
+  const modes = params.sessionModesStateV2 ?? (params.sessionModesState ? { ...params.sessionModesState, v: 2 as const } : null);
 
   await params.session.updateMetadata((prev) => ({
     ...prev,
-    ...(params.sessionModesState
-      ? {
-          sessionModesV1: params.sessionModesState,
-        }
-      : {}),
+    ...(modes ? {
+      sessionModesV2: modes,
+      sessionModesV1: projectSessionModesV1Compatibility(modes),
+      acpSessionModesV1: undefined,
+    } : {}),
     ...(params.sessionModelsState
       ? {
           sessionModelsV1: params.sessionModelsState,

@@ -87,7 +87,7 @@ function sealPayload(context: StoredContentContext, payload: JsonValue): Session
   });
 }
 
-function openPayload(context: StoredContentContext, content: SessionSystemRecordContent): unknown {
+function openPayload(context: StoredContentContext, content: unknown): unknown {
   try {
     return openSessionStoredContent({
       ...requireCanonicalStoredContentContext(context),

@@ -8,7 +8,8 @@ import {
     ExternalSessionOperationSharedPresentationV1Schema,
 } from '@happier-dev/protocol';
 
-import { renderScreen, standardCleanup } from '@/dev/testkit';
+import { createTestSessionTranscriptSource, renderWithSessionTranscriptSource, standardCleanup } from '@/dev/testkit';
+import type { Message } from '@happier-dev/session-core/messages';
 import type { CapturingLegendListMockState } from '@/dev/testkit/mocks/legendList';
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -61,15 +62,18 @@ describe('public TranscriptList web keyboard ownership', () => {
         });
 
         try {
-            await renderScreen(<TranscriptList
-                sessionId="public-keyboard-session"
+            const messages: Message[] = [
+                { kind: 'agent-text', id: 'answer', localId: null, createdAt: 1, text: 'answer', isThinking: false },
+            ];
+            const source = createTestSessionTranscriptSource({
+                sessionId: 'public-keyboard-session', metadata: null, messages,
+                interaction: { canSendMessages: false, canApprovePermissions: false },
+            });
+            await renderWithSessionTranscriptSource(<TranscriptList
                 datasetKey="public:public-keyboard-session:1"
                 metadata={null}
-                messages={[
-                    { kind: 'agent-text', id: 'answer', localId: null, createdAt: 1, text: 'answer', isThinking: false },
-                ]}
-                interaction={{ canSendMessages: false, canApprovePermissions: false }}
-            />);
+                messages={messages}
+            />, source);
             expect(capture.props.maintainScrollAtEnd).toMatchObject({ animated: false });
 
             act(() => {
@@ -114,17 +118,19 @@ describe('public TranscriptList web keyboard ownership', () => {
         });
 
         try {
-            const screen = await renderScreen(<TranscriptList
-                sessionId="public-focus-session"
+            const metadata = {
+                path: '/repo', host: 'public-host',
+                externalSessionOperationPresentationV1: presentation,
+            };
+            const source = createTestSessionTranscriptSource({
+                sessionId: 'public-focus-session', metadata, messages: [],
+                interaction: { canSendMessages: false, canApprovePermissions: false },
+            });
+            const screen = await renderWithSessionTranscriptSource(<TranscriptList
                 datasetKey="public:public-focus-session:1"
-                metadata={{
-                    path: '/repo',
-                    host: 'public-host',
-                    externalSessionOperationPresentationV1: presentation,
-                }}
+                metadata={metadata}
                 messages={[]}
-                interaction={{ canSendMessages: false, canApprovePermissions: false }}
-            />);
+            />, source);
 
             await screen.pressByTestIdAsync('external-session-operation-action-dismiss');
 

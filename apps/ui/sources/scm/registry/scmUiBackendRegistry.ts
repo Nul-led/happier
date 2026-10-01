@@ -1,3 +1,4 @@
+import { selectScmChangedFiles } from '@/scm/scmStatusFiles';
 import type { ScmWorkingSnapshot } from '@/sync/domains/state/storageTypes';
 import {
     resolveScmCommitSelectionPolicy,
@@ -23,11 +24,6 @@ function createFallbackPlugin(id: string, displayName: string): ScmUiBackendPlug
             return {
                 defaultMode: availableModes.includes('pending') ? 'pending' : (availableModes[0] ?? 'pending'),
                 availableModes: [...availableModes],
-                labels: {
-                    included: 'Included',
-                    pending: 'Pending',
-                    both: 'Combined',
-                },
             };
         },
         commitActionConfig(snapshot) {
@@ -57,7 +53,7 @@ function createFallbackPlugin(id: string, displayName: string): ScmUiBackendPlug
         statusSummaryMapper(snapshot) {
             if (!snapshot) return null;
             return {
-                changedFiles: snapshot.entries.length,
+                changedFiles: selectScmChangedFiles(snapshot).length,
                 includedFiles: snapshot.totals.includedFiles,
                 pendingFiles: snapshot.totals.pendingFiles,
                 untrackedFiles: snapshot.totals.untrackedFiles,

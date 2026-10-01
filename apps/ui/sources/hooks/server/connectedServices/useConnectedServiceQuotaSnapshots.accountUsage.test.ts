@@ -25,12 +25,22 @@ describe('useConnectedServiceQuotaSnapshots source-backed authority', () => {
     });
 
     it('does not project connected-service quota snapshots from cached provider-account usage', async () => {
-        const providerSnapshot = makeProviderAccountUsageSnapshot();
+        const providerSnapshot = {
+            ...makeProviderAccountUsageSnapshot(),
+            subscription: {
+                status: 'subscribed' as const,
+                renewal: 'off' as const,
+                observedAtMs: 1,
+                staleAfterMs: 60_000,
+                currentPeriodEndAtMs: 86_400_000,
+            },
+        };
         getProviderAccountUsageSnapshotPlainSpy.mockResolvedValue(providerSnapshot);
 
         const { useProviderAccountUsageSnapshots } = await import('./useProviderAccountUsageSnapshots');
         const canonicalHook = await renderHook(() => useProviderAccountUsageSnapshots([providerSnapshot.recordId]));
         await flushHookEffects({ cycles: 5, turns: 5 });
+        expect(canonicalHook.getCurrent().snapshotsByRecordId[providerSnapshot.recordId]?.subscription).toEqual(providerSnapshot.subscription);
 
         const { useConnectedServiceQuotaSnapshots } = await import('./useConnectedServiceQuotaSnapshots');
         const hook = await renderHook(() => useConnectedServiceQuotaSnapshots([

@@ -1,7 +1,6 @@
 import {
     DIRECT_ROUTE_GRANT_TTL_MS,
     DirectRouteGrantRequestV2Schema,
-    IrohEndpointDescriptorV1Schema,
     IrohMachineHandshakeV1Schema,
     createEphemeralPeerRouteProofHandleV2,
 } from '@happier-dev/protocol';
@@ -16,11 +15,11 @@ import { storage } from '@/sync/domains/state/storage';
 import { serverFetch } from '@/sync/http/client';
 import { getIrohApplicationEndpoint, probeIrohMachineTransferLifecycleAvailability, startIrohMachineTransferTunnel } from '@/sync/runtime/nativeIrohTunnels/machineTransferLifecycle';
 import { isBrowserIrohHost } from '@/sync/runtime/browserIroh/hostEligibility';
+import { readHomeApplicationCarrierEligibility } from '@/sync/runtime/homeCarrierPolicy';
 import { captureServerRequestAuthorityForServerAccountScope } from '@/sync/runtime/orchestration/serverScopedRpc/createServerRequestWithServerScope';
 import { parseToken } from '@/utils/auth/parseToken';
-import { probeMachineRpcDirectRouteAvailability } from '../../probeMachineRpcDirectRouteAvailability';
-import { isMachineDaemonFiniteTransferApplicationSupported, isMachineDaemonLegacyTransferRpcEligible } from '../availability/machineDaemonTransferState';
-import { isMachineFiniteTransferRpcDeclared, resolveMachineCarrierPreselection } from '../routing/resolveMachineCarrierPreselection';
+import { isMachineDaemonFiniteTransferApplicationSupported } from '../availability/machineDaemonTransferState';
+import { isMachineFiniteTransferRpcDeclared, readCurrentMachineIrohEndpoint, resolveMachineCarrierPreselection } from '../routing/resolveMachineCarrierPreselection';
 
 /** Stable user-facing failure copy for an operation pinned to machine/1. */
 export const MACHINE_CARRIER_REQUIRED_TRANSFER_ERROR = 'A direct machine connection is required for this transfer.';
@@ -70,19 +69,21 @@ export type AcquireMachineCarrierHttpLease = (input: Readonly<{
 
 function readTargetIrohEndpoint(serverId: string, machineId: string) {
     const state = storage.getState();
-    const candidate = readPeerEndpointForServerScope({
+    return readPeerEndpointForServerScope({
         state,
         serverId,
         machineId,
-        select: (machine) => machine.daemonState?.peerMediation?.iroh?.endpoint,
+        select: (machine) => readCurrentMachineIrohEndpoint({
+            capabilities: machine.operationProtocolCapabilities,
+            revision: machine.operationProtocolCapabilitiesRevision,
+            active: machine.active,
+            revokedAt: machine.revokedAt,
+        }),
     });
-    const parsed = IrohEndpointDescriptorV1Schema.safeParse(candidate);
-    return parsed.success ? parsed.data : null;
 }
 
 export type MachineCarrierRoute = Readonly<
     | { kind: 'unavailable'; error: string; errorCode: typeof MACHINE_CARRIER_UNAVAILABLE_ERROR_CODE }
-    | { kind: 'legacy_machine_rpc' }
     | {
         kind: 'iroh_peer';
         carrierKind: 'native_http' | 'browser_stream';
@@ -102,6 +103,7 @@ export function isIrohMachineCarrierRoute(
 
 /** One route decision for the whole transfer. Callers never reselect after prepare. */
 export async function resolveMachineCarrierRoute(machineId: string, serverId?: string | null): Promise<MachineCarrierRoute> {
+    const applicationCarrierEligibility = readHomeApplicationCarrierEligibility();
     const server = resolveTargetServer(serverId);
     if (!server) {
         return { kind: 'unavailable', error: MACHINE_CARRIER_REQUIRED_TRANSFER_ERROR, errorCode: MACHINE_CARRIER_UNAVAILABLE_ERROR_CODE };
@@ -121,10 +123,9 @@ export async function resolveMachineCarrierRoute(machineId: string, serverId?: s
         }),
     });
     const machineDaemonState = machineProjection?.daemonState;
-    const legacyTransferSupported = isMachineDaemonLegacyTransferRpcEligible(machineDaemonState);
     // A Runner publishes no daemon state at all, so its reachability comes from
-    // the strict Machine declaration. The daemon-state read below is retained
-    // only as the 0.2 predecessor compatibility path, not a second current owner.
+    // the strict Machine declaration; persistent daemons declare their current
+    // finite import/export application in daemon state.
     const runnerFiniteTransferRpcDeclared = machineProjection?.kind === 'ephemeral_session_runner' && isMachineFiniteTransferRpcDeclared({
         capabilities: machineProjection?.operationProtocolCapabilities,
         revision: machineProjection?.operationProtocolCapabilitiesRevision,
@@ -134,7 +135,7 @@ export async function resolveMachineCarrierRoute(machineId: string, serverId?: s
     const finiteTransferApplicationSupported = machineProjection?.kind === 'ephemeral_session_runner'
         ? runnerFiniteTransferRpcDeclared
         : isMachineDaemonFiniteTransferApplicationSupported(machineDaemonState);
-    if (!finiteTransferApplicationSupported && !legacyTransferSupported && !runnerFiniteTransferRpcDeclared) {
+    if (!finiteTransferApplicationSupported) {
         return { kind: 'unavailable', error: MACHINE_CARRIER_REQUIRED_TRANSFER_ERROR, errorCode: MACHINE_CARRIER_UNAVAILABLE_ERROR_CODE };
     }
     const browserHost = isBrowserIrohHost();
@@ -143,41 +144,18 @@ export async function resolveMachineCarrierRoute(machineId: string, serverId?: s
         : {
             kind: 'native' as const,
             lifecycleAvailable: targetEndpoint
+                && applicationCarrierEligibility !== 'standard_only'
                 ? await probeIrohMachineTransferLifecycleAvailability()
                 : false,
         };
     const serverFeatures = await getReadyServerFeatures({ serverId: server.serverId });
-    let preselection = resolveMachineCarrierPreselection({
+    const preselection = resolveMachineCarrierPreselection({
+        applicationCarrierEligibility,
         serverFeatures,
         targetEndpoint,
         host,
-        legacyTransferSupported,
         finiteTransferApplicationSupported,
-        runnerFiniteTransferRpcDeclared,
-        machineRpcDirectRoute: { status: 'unknown' },
     });
-    if (preselection.kind === 'unavailable' && legacyTransferSupported) {
-        const machineRpcAvailability = await probeMachineRpcDirectRouteAvailability({
-            serverId: server.serverId,
-            remoteMachineId: machineId,
-        });
-        preselection = resolveMachineCarrierPreselection({
-            serverFeatures,
-            targetEndpoint,
-            host,
-            legacyTransferSupported: true,
-            finiteTransferApplicationSupported,
-            runnerFiniteTransferRpcDeclared,
-            machineRpcDirectRoute: machineRpcAvailability === 'viable'
-                ? { status: 'viable', checkedAt: Date.now(), expiresAt: Number.MAX_SAFE_INTEGER }
-                : machineRpcAvailability === 'unavailable'
-                    ? { status: 'unavailable', checkedAt: Date.now(), expiresAt: Date.now(), failureReason: 'machine_rpc_direct_unavailable' }
-                    : { status: 'unknown' },
-        });
-    }
-    if (preselection.kind === 'legacy_machine_rpc') {
-        return preselection;
-    }
     if (preselection.kind !== 'iroh_peer') {
         return { kind: 'unavailable', error: MACHINE_CARRIER_REQUIRED_TRANSFER_ERROR, errorCode: MACHINE_CARRIER_UNAVAILABLE_ERROR_CODE };
     }
@@ -314,6 +292,9 @@ export async function mintSignedMachineCarrierHandshake(input: Readonly<{
  * transfer carrier and this owner starts one opaque fetch-facing native listener.
  */
 export const acquireMachineCarrierHttpLease: AcquireMachineCarrierHttpLease = async (input) => {
+    if (readHomeApplicationCarrierEligibility() === 'standard_only') {
+        throw new Error(MACHINE_CARRIER_REQUIRED_TRANSFER_ERROR);
+    }
     const minted = await mintSignedMachineCarrierHandshake({
         machineId: input.machineId,
         serverId: input.serverId,
@@ -338,6 +319,9 @@ export const acquireMachineCarrierHttpLease: AcquireMachineCarrierHttpLease = as
  * on the SharedWorker endpoint, without inventing a local origin.
  */
 export const acquireBrowserMachineCarrierHttpLease: AcquireMachineCarrierHttpLease = async (input) => {
+    if (readHomeApplicationCarrierEligibility() === 'standard_only') {
+        throw new Error(MACHINE_CARRIER_REQUIRED_TRANSFER_ERROR);
+    }
     const browserIroh = await import('@/sync/runtime/browserIroh');
     // The tab's one packaged endpoint client, shared with the Home carrier
     // owner (Lane 06). A transfer never closes it: releasing the operation

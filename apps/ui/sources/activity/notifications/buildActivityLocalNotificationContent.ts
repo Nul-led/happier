@@ -2,12 +2,13 @@ import {
     PUSH_NOTIFICATION_ANDROID_CHANNEL_IDS,
     PUSH_NOTIFICATION_CATEGORY_IDS,
     buildReadyNotificationContent,
+    resolveActivityRemoteAlertEventForPersonalEventV2,
     restrictAttentionPreviewBehavior,
     summarizeToolInputForNotification,
     type AgentRequestKind,
 } from '@happier-dev/protocol';
-import { buildActivityPreviewText } from '@/activity/attention/buildActivityPreviewText';
-import type { Message } from '@/sync/domains/messages/messageTypes';
+import { buildActivityPreviewText, normalizeActivityPreviewText } from '@/activity/attention/buildActivityPreviewText';
+import type { Message } from "@happier-dev/session-core/messages";
 import type { Session } from '@/sync/domains/state/storageTypes';
 import { readSessionDisplayTitleField } from '@/sync/state/selectors';
 import { t } from '@/text';
@@ -94,10 +95,49 @@ export function buildActivityLocalNotificationContent(params: Readonly<{
         return {
             title: readyContent.title,
             body: readyContent.body,
-            data: baseData,
+            data: {
+                ...baseData,
+                ...(params.event.committedSequence?.sequenceDomain === 'session_transcript'
+                    ? { activityEvent: resolveActivityRemoteAlertEventForPersonalEventV2('ready', {
+                        domain: 'session_transcript',
+                        seq: params.event.committedSequence.sequence,
+                    }) }
+                    : {}),
+                ...(params.event.committedLocalId ? { activityEventLocalId: params.event.committedLocalId } : {}),
+            },
             expo: {
                 channelId: PUSH_NOTIFICATION_ANDROID_CHANNEL_IDS.defaultV1,
             },
+        };
+    }
+
+    if (params.event.kind === 'session-update') {
+        const event = params.event;
+        const sequence = 'committedSequence' in event ? event.committedSequence : undefined;
+        const activityEvent = resolveActivityRemoteAlertEventForPersonalEventV2(
+            event.event,
+            sequence?.sequenceDomain === 'session_transcript'
+                ? { domain: 'session_transcript', seq: sequence.sequence }
+                : sequence?.sequenceDomain === 'discussion'
+                    ? { domain: 'discussion', discussionId: sequence.discussionId, seq: sequence.sequence }
+                    : undefined,
+            'turnId' in event ? event.turnId : undefined,
+        );
+        const preview = previewBehavior === 'include_preview'
+            ? event.event === 'human_message'
+                ? event.messages?.filter((message) => message.kind === 'user-text')
+                    .map((message) => normalizeActivityPreviewText(message.text)).filter(Boolean).join(' ')
+                : buildActivityPreviewText({ messages: event.messages })
+            : null;
+        const fallback = event.event === 'failed' ? t('session.follow.notificationBody.failed')
+            : event.event === 'cancelled' ? t('session.follow.notificationBody.cancelled')
+                : event.event === 'source_unavailable' ? t('session.follow.notificationBody.sourceUnavailable')
+                    : t('session.follow.notificationBody.message');
+        return {
+            title,
+            body: preview || fallback,
+            data: { ...baseData, activityEvent },
+            expo: { channelId: PUSH_NOTIFICATION_ANDROID_CHANNEL_IDS.defaultV1 },
         };
     }
 

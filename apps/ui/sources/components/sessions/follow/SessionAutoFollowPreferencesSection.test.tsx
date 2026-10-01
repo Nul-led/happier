@@ -1,6 +1,7 @@
 import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { afterEach, expect, it, vi } from 'vitest';
+import { resolveSessionFollowActionRequest } from '@happier-dev/protocol';
 import { renderSettingsView } from '@/dev/testkit/harness/settingsViewHarness';
 import { buildServerFeaturesResponse } from '@/hooks/server/serverFeaturesTestUtils';
 import { getServerFeaturesSnapshot, resetServerFeaturesClientForTests } from '@/sync/api/capabilities/serverFeaturesClient';
@@ -10,12 +11,42 @@ import { TokenStorage } from '@/auth/storage/tokenStorage';
 import { resetRuntimeFetch, setRuntimeFetch } from '@/utils/system/runtimeFetch';
 import { createDeferred } from '@/dev/testkit/hooks/createDeferred';
 import { publishHomeAccountChange } from '@/sync/runtime/orchestration/homeAccountChange';
+import { disconnectActiveServerConnection, restoreConnectionToActiveServer } from '@/sync/runtime/orchestration/connectionManager';
 import { SessionAutoFollowPreferencesSection } from './SessionAutoFollowPreferencesSection';
 vi.mock('react-native', async () => {
     const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
     return createReactNativeWebMock();
 });
-afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); resetRuntimeFetch(); resetServerFeaturesClientForTests(); });
+vi.mock('socket.io-client', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('socket.io-client')>();
+    return {
+        ...actual,
+        io: (...args: Parameters<typeof actual.io>) => {
+            const socket = actual.io(...args);
+            // Keep the real Socket/Sync lifecycle, stopping only the external connection.
+            vi.spyOn(socket, 'connect').mockReturnValue(socket);
+            return socket;
+        },
+    };
+});
+afterEach(async () => {
+    await disconnectActiveServerConnection();
+    vi.restoreAllMocks(); vi.unstubAllGlobals(); resetRuntimeFetch(); resetServerFeaturesClientForTests();
+});
+
+const preferencesPath = resolveSessionFollowActionRequest('session.follow.preferences.get', {}).path;
+
+function setPreferencesFetch(handler: NonNullable<Parameters<typeof setRuntimeFetch>[0]>) {
+    setRuntimeFetch(async (url, init) => {
+        const pathname = new URL(String(url)).pathname;
+        if (pathname === '/v1/auth/ping') return new Response('{}', { status: 200 });
+        if (pathname === '/v1/features') return globalThis.fetch(url, init);
+        // Other background Sync reads are unavailable in this focused Home fixture.
+        // They must not be counted or mistaken for Follow preferences responses.
+        if (pathname !== preferencesPath) return new Response('{}', { status: 404 });
+        return handler(url, init);
+    });
+}
 
 async function flushAsyncWork() {
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
@@ -29,9 +60,12 @@ async function publishFollowFeature(serverId: string, following: boolean) {
 
 async function renderEnabledPreferencesSection(serverUrl: string) {
     const home = await upsertAndActivateServer({ serverUrl, name: 'Home' });
-    getStorage().getState().activateProfileScope({ serverId: home.id, accountId: 'account-a' });
-    vi.spyOn(TokenStorage, 'getCredentialsForServerUrl').mockResolvedValue({ token: `e30.${Buffer.from(JSON.stringify({ sub: 'account-a' })).toString('base64url')}.signature` });
+    const credentials = { token: `e30.${Buffer.from(JSON.stringify({ sub: 'account-a' })).toString('base64url')}.signature` };
+    vi.spyOn(TokenStorage, 'getCredentialsForServerUrl').mockResolvedValue(credentials);
     await publishFollowFeature(home.id, true);
+    setPreferencesFetch(async () => new Response('{}', { status: 404 }));
+    await restoreConnectionToActiveServer(credentials);
+    expect(getStorage().getState().profileScope).toEqual({ serverId: home.id, accountId: 'account-a' });
     return home;
 }
 
@@ -39,7 +73,7 @@ it('loads Account preferences on first render and preserves a failed toggle for 
     const home = await renderEnabledPreferencesSection('https://preferences-follow.example');
     let preferences = { assigned: true, direct: false, team: false, group: false };
     let failWrite = true;
-    setRuntimeFetch(async (url, init) => {
+    setPreferencesFetch(async (url, init) => {
         if (new URL(String(url)).pathname === '/v1/auth/ping') return new Response('{}', { status: 200 });
         if (init?.method === 'PUT') {
             if (failWrite) return new Response('{}', { status: 503 });
@@ -50,6 +84,10 @@ it('loads Account preferences on first render and preserves a failed toggle for 
     const screen = await renderSettingsView(<SessionAutoFollowPreferencesSection serverId={home.id} />);
     await flushAsyncWork();
     expect(screen.findByTestId('session-auto-follow-assigned')?.props.value).toBe(true);
+    for (const field of ['assigned', 'direct', 'team', 'group']) {
+        const anchor = `notifications.autoFollow${field[0]!.toUpperCase()}${field.slice(1)}`;
+        expect(screen.findAll((node) => node.props.nativeID === `setting-${anchor}`).length).toBeGreaterThan(0);
+    }
     await act(async () => { screen.findByTestId('session-auto-follow-direct')?.props.onValueChange(true); });
     expect(screen.findByTestId('session-auto-follow-direct')?.props.value).toBe(true);
     expect(preferences.direct).toBe(false);
@@ -69,7 +107,7 @@ it('coalesces Account-change wakes during a save and reconciles to the Home afte
     const firstWrite = createDeferred<Response>();
     const secondWrite = createDeferred<Response>();
     let writes = 0;
-    setRuntimeFetch(async (url, init) => {
+    setPreferencesFetch(async (url, init) => {
         if (new URL(String(url)).pathname === '/v1/auth/ping') return new Response('{}', { status: 200 });
         if (init?.method === 'PUT') return ++writes === 1 ? firstWrite.promise : secondWrite.promise;
         reads += 1;
@@ -116,7 +154,7 @@ it('coalesces Account-change wakes during a save and reconciles to the Home afte
     // Retry re-executes that exact intent against the current confirmed value, not a stale
     // snapshot: the refreshed `assigned: false` survives and only `group` changes.
     let retried: unknown = null;
-    setRuntimeFetch(async (url, init) => {
+    setPreferencesFetch(async (url, init) => {
         if (new URL(String(url)).pathname === '/v1/auth/ping') return new Response('{}', { status: 200 });
         if (init?.method === 'PUT') {
             retried = JSON.parse(String(init.body));
@@ -138,7 +176,7 @@ it('reloads the Home after the Follow feature decision disappears during an outs
     const write = createDeferred<Response>();
     let reads = 0;
     const DIAG: string[] = [];
-    setRuntimeFetch(async (url, init) => {
+    setPreferencesFetch(async (url, init) => {
         const pathname = new URL(String(url)).pathname;
         if (pathname === '/v1/auth/ping') return new Response('{}', { status: 200 });
         // The Home feature decision is the thing this test flips, and the features
@@ -178,7 +216,7 @@ it('does not start a deferred refresh after the settings lifetime is retired', a
     const home = await renderEnabledPreferencesSection('https://preferences-follow-retire.example');
     const write = createDeferred<Response>();
     let reads = 0;
-    setRuntimeFetch(async (url, init) => {
+    setPreferencesFetch(async (url, init) => {
         if (new URL(String(url)).pathname === '/v1/auth/ping') return new Response('{}', { status: 200 });
         if (init?.method === 'PUT') return write.promise;
         reads += 1;

@@ -11,14 +11,17 @@ import {
   SessionMessageProvenanceV1Schema,
   SessionMessageProvenanceV2Schema,
   readPendingLocalId,
+  requiresAuthenticatedMachineAdmissionForSessionInput,
   type ActionPluginCaller,
   type ActionCaller,
   type ActionSurfaces,
+  type ExternalActionExecutionAuthorizationV1,
   type PluginInvocationSurfaceV1,
   type PluginSessionInputSourceV1,
   type SessionInputCausalPermissionAuthorityV1,
   type SessionInputRequestV1,
   type SessionInputRequestV2,
+  type SessionInputRequest,
   type SessionInputSourceAuthorityV1,
   type SessionInputWorkflowV2,
   type SessionMessageProvenanceV1,
@@ -26,6 +29,19 @@ import {
 } from '@happier-dev/protocol';
 
 export { deriveWorkflowSessionInputLocalIdV2 } from '@happier-dev/protocol';
+
+/** Protected E2EE equality and authenticated caller facts require the Machine seam. */
+export function requiresMachineAdmissionForSessionInput(params: Readonly<{
+  request: SessionInputRequest | null;
+  mode: 'plain' | 'e2ee';
+  callerInputAuthorization?: ExternalActionExecutionAuthorizationV1;
+}>): boolean {
+  return params.request !== null && (
+    requiresAuthenticatedMachineAdmissionForSessionInput(params.request)
+    || params.mode === 'e2ee'
+    || params.callerInputAuthorization !== undefined
+  );
+}
 
 function projectPluginInvocationSurface(
   surface: keyof ActionSurfaces | null | undefined,
@@ -152,7 +168,7 @@ export function buildAutomationSessionInputAdmissionV1(params: Readonly<{
   });
 }
 
-/** Host-only V2 admission for one workflow invocation or final result delivery. */
+/** Host-only V2 admission for one workflow invocation. */
 export function buildWorkflowSessionInputAdmissionV2(
   params: SessionInputWorkflowV2,
   options: Readonly<{
@@ -165,18 +181,13 @@ export function buildWorkflowSessionInputAdmissionV2(
 }> {
   const workflow = SessionInputWorkflowV2Schema.parse(params);
   return Object.freeze({
-    provenance: SessionMessageProvenanceV2Schema.parse(workflow.purpose === 'invocation'
-      ? {
-          v: 2,
-          kind: 'workflow_invocation',
-          runId: workflow.runId,
-          invocationRecordId: workflow.invocationRecordId,
-        }
-      : {
-          v: 2,
-          kind: 'workflow_result_delivery',
-          runId: workflow.runId,
-        }),
+    provenance: SessionMessageProvenanceV2Schema.parse({
+      v: 2,
+      kind: 'workflow_invocation',
+      runId: workflow.runId,
+      invocationRecordId: workflow.invocationRecordId,
+      ...(workflow.workDepth !== undefined ? { workDepth: workflow.workDepth } : {}),
+    }),
     request: SessionInputRequestV2Schema.parse({
       v: 2,
       producer: 'workflow',
@@ -194,6 +205,7 @@ export function buildWorkflowSessionInputAdmissionV2(
 export function buildCausalSessionInputAdmissionV1(params: Readonly<{
   sourceSessionId: string;
   sourceTurnId: string;
+  callerDepth: number;
   via: 'action' | 'mcp';
   causalPermissionAuthority: SessionInputCausalPermissionAuthorityV1;
 }>): Readonly<{
@@ -215,6 +227,7 @@ export function buildCausalSessionInputAdmissionV1(params: Readonly<{
       kind: 'happierSession',
       sourceSessionId: sourceSession.sourceSessionId,
       via: sourceSession.via,
+      callerDepth: params.callerDepth,
     }),
     request: SessionInputRequestV1Schema.parse({
       v: 1,

@@ -17,7 +17,7 @@ import { resolveSessionBoardItemTitle } from '@/components/sessions/board/sessio
 import { SessionWidgetHost } from '@/components/sessions/board/SessionWidgetHost';
 import { RoundButton } from '@/components/ui/buttons/RoundButton';
 import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
-import type { ToolCall } from '@/sync/domains/messages/messageTypes';
+import type { ToolCall } from "@happier-dev/session-core/messages";
 import { resolveSessionBoardReferenceProjection } from '@/sync/domains/session/board';
 import { resolveSessionBoardExecutableCurrentness } from '@/sync/domains/session/board';
 import { normalizeSessionAddress } from '@/sync/domains/session/sessionAddress';
@@ -26,7 +26,7 @@ import { t } from '@/text';
 import {
     resolveTranscriptSessionBoardItemReference,
     type TranscriptSessionBoardItemReference,
-} from './sessionBoardActionResultReference';
+} from './transcriptSessionBoardItemReference';
 
 /**
  * The transcript's inline Board result — the last mile of Composer -> Agent

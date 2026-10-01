@@ -1,7 +1,7 @@
 import type { ExecutionRunPublicState } from '@happier-dev/protocol';
 import * as React from 'react';
 import { Platform, Pressable, View } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 import { useUnistyles } from 'react-native-unistyles';
 
 import {
@@ -37,12 +37,12 @@ import { sync } from '@/sync/sync';
 import { fireAndForget } from '@/utils/system/fireAndForget';
 import { Text } from '@/components/ui/text/Text';
 import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
-import { buildToolCallMessageRouteId } from '@/sync/domains/messages/messageRouteIds';
-import type { Message, ToolCall } from '@/sync/domains/messages/messageTypes';
+import { buildToolCallMessageRouteId } from "@happier-dev/session-core/messages";
+import type { Message, ToolCall } from "@happier-dev/session-core/messages";
 import { navigateWithBlurOnWeb } from '@/utils/platform/navigateWithBlurOnWeb';
 import { findTranscriptExecutionRunState } from '@/sync/domains/session/subagents/executionRuns/deriveTranscriptExecutionRunStateIndex';
 import { buildExecutionRunPublicStateFromTranscriptState } from '@/sync/domains/session/subagents/executionRuns/executionRunPublicStateFromTranscript';
-import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
+import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
 import {
     isSidechainHydrationPendingStatus,
     useEnsureSidechainsLoaded,
@@ -58,16 +58,37 @@ import type { SessionParticipantTarget } from '@/sync/domains/session/participan
 import { useSessionBrowserContextRuntimeContext } from '@/components/sessions/browser/sessionBrowserContextRuntime';
 import { buildScopedSessionRouteHref } from '@/hooks/session/sessionRouteServerScope';
 import { useServerCredentialAccountScopeResolution } from '@/sync/domains/scope/useServerCredentialAccountScopes';
-import {
-    deriveTranscriptInteraction,
-    deriveTranscriptInteractionFromSession,
-} from '@/utils/sessions/deriveTranscriptInteraction';
 import { useSessionViewShellSession } from '@/components/sessions/shell/sessionViewStableSession';
 import { motionTokens } from '@/components/ui/motion/motionTokens';
+import { PoliteAccessibilityStatus } from '@/components/ui/accessibility/PoliteAccessibilityStatus';
+import { useSessionDiscussionTitles } from '@/components/sessions/conversations/useSessionDiscussionTitles';
+import { readRunDiscussionOrigin } from '@/components/sessions/agents/presentation/useSessionAgentRowOriginLabels';
+import { ExecutionRunContextChip } from '@/components/sessions/runs/ExecutionRunContextChip';
+import { useSessionAgentActivityRoster } from '@/hooks/session/useSessionAgentActivity';
+import { resolveSessionAgentActivityPresentation } from '@/components/sessions/agents/presentation/sessionAgentActivityPresentation';
+import { ExecutionRunStopFailedState } from '@/components/sessions/runs/details/ExecutionRunStopFailedState';
+import { useExecutionRunMachineName } from '@/components/sessions/runs/details/useExecutionRunMachineName';
+import { resolveExecutionRunTitle } from '@/components/sessions/runs/resolveExecutionRunTitle';
+import {
+    awaitTranscriptNavigationJumpHandler,
+    readTranscriptNavigationJumpHandler,
+} from '@/components/sessions/transcript/navigation/transcriptNavigationPaneStore';
+import type { TranscriptNavigationEntry } from '@/components/sessions/transcript/navigation/transcriptNavigationTypes';
+import { ExecutionRunStepsRow } from '@/components/sessions/runs/details/ExecutionRunStepsRow';
+import { AppSessionTranscriptSourceProvider, createAppSidechainHistoryLoader } from '@/components/sessions/transcript/source/appSessionTranscriptSource';
+import { useSessionTranscriptSource } from '@/components/sessions/transcript/source/SessionTranscriptSourceContext';
+import { requestRegisteredSessionComposerFocus } from '@/components/sessions/presentation/sessionComposerPresentationTargets';
+import { resolveExecutionRunBackendLabel } from '@/components/sessions/runs/resolveExecutionRunBackendLabel';
+import { writeSessionInitialPromptV1 } from '@/sync/domains/sessionInitialPrompt/sessionInitialPromptV1';
+import { useSetting } from '@/sync/domains/state/storage';
+import { getSessionName } from '@/utils/sessions/sessionUtils';
+import { sendExecutionRunResultToSession } from './sendExecutionRunResultToSession';
 
 type LoadState =
     | { status: 'loading' }
     | { status: 'error'; error: string }
+    /** Neither the Run's host nor the loaded transcript has it (agents lab ST "gone", audit B16). */
+    | { status: 'gone' }
     | {
         status: 'loaded';
         run: ExecutionRunPublicState;
@@ -76,7 +97,7 @@ type LoadState =
         source: 'session_rpc' | 'transcript_fallback' | 'daemon_fallback';
     };
 
-const FAIL_CLOSED_TRANSCRIPT_INTERACTION = deriveTranscriptInteraction({ kind: 'public' });
+const NO_DISCUSSION_IDS: readonly string[] = Object.freeze([]);
 
 /** The Run result projection is read standalone; it carries no transcript around it. */
 const NO_TRANSCRIPT_MESSAGES: Message[] = [];
@@ -109,7 +130,7 @@ export type SessionExecutionRunDetailsViewHandle = Readonly<{
     reload: () => Promise<void>;
 }>;
 
-export const SessionExecutionRunDetailsView = React.memo(React.forwardRef<SessionExecutionRunDetailsViewHandle, Readonly<{
+type SessionExecutionRunDetailsViewProps = Readonly<{
     sessionId: string;
     runId: string;
     serverId?: string | null;
@@ -117,7 +138,25 @@ export const SessionExecutionRunDetailsView = React.memo(React.forwardRef<Sessio
     showInfoCard?: boolean;
     showSendComposer?: boolean;
     retryInputLocalId?: string;
-}>>((props, ref) => {
+    /** The name the opener already knows (the tab's title), so the wait says what is opening. */
+    openingTitle?: string | null;
+    /** Closes the surface hosting this Run (its Details tab), offered when the Run is gone. */
+    onRequestClose?: () => void;
+    /**
+     * Hands the host a better name for this Run once it is known: the title the Run was given, or
+     * its intent where the opener only had its id (a tab restored from before titles existed).
+     */
+    onTitleResolved?: (title: string) => void;
+}>;
+
+export const SessionExecutionRunDetailsView = React.memo(React.forwardRef<SessionExecutionRunDetailsViewHandle, SessionExecutionRunDetailsViewProps>((props, ref) => (
+    <AppSessionTranscriptSourceProvider sessionId={props.sessionId} serverId={props.serverId}>
+        <SessionExecutionRunDetailsContent {...props} ref={ref} />
+    </AppSessionTranscriptSourceProvider>
+)));
+
+const SessionExecutionRunDetailsContent = React.forwardRef<SessionExecutionRunDetailsViewHandle, SessionExecutionRunDetailsViewProps>((props, ref) => {
+    const source = useSessionTranscriptSource();
     const { theme } = useUnistyles();
     const router = useRouter();
     const interactiveTargetSize = resolveMinimumInteractiveTargetSize(Platform.OS);
@@ -132,6 +171,8 @@ export const SessionExecutionRunDetailsView = React.memo(React.forwardRef<Sessio
     const [state, setState] = React.useState<LoadState>({ status: 'loading' });
     const [daemonProcessLine, setDaemonProcessLine] = React.useState<string | null>(null);
     const [stopError, setStopError] = React.useState<string | null>(null);
+    /** The Run's machine did not confirm a stop: the whole-session fallback is on offer. */
+    const [stopUnconfirmed, setStopUnconfirmed] = React.useState(false);
     const [isStopping, setIsStopping] = React.useState(false);
     const [interactionError, setInteractionError] = React.useState<string | null>(null);
     const [pendingInteraction, setPendingInteraction] = React.useState<'cancel_turn' | 'resume' | null>(null);
@@ -199,8 +240,8 @@ export const SessionExecutionRunDetailsView = React.memo(React.forwardRef<Sessio
         if (!isCurrentRequest()) return;
         if (result.ok === false) {
             if (result.errorCode === 'execution_run_not_found' && !sessionMessagesLoaded) {
-                await sync.loadOlderMessages(props.sessionId).catch(() => null);
-                return;
+                await source.history.loadOlder?.().catch(() => null);
+                if (!isCurrentRequest()) return;
             }
             const daemonFallback = await resolveDaemonExecutionRunFallback({
                 sessionId: props.sessionId,
@@ -223,6 +264,13 @@ export const SessionExecutionRunDetailsView = React.memo(React.forwardRef<Sessio
                 return;
             }
             loadedRunAddressRef.current = null;
+            // The host no longer has the Run and the loaded transcript does not hold it either: say
+            // so, instead of a generic failure (or the endless spinner of audit B16). Only a loaded
+            // transcript can vouch for that; an unloaded one is still a failure to read.
+            if (result.errorCode === 'execution_run_not_found' && sessionMessagesLoaded) {
+                setState({ status: 'gone' });
+                return;
+            }
             setState({ status: 'error', error: String(result.error ?? t('runs.runDetails.failedToLoad')) });
             return;
         }
@@ -258,7 +306,7 @@ export const SessionExecutionRunDetailsView = React.memo(React.forwardRef<Sessio
         if (daemonFallback?.daemonProcessLine) {
             setDaemonProcessLine(daemonFallback.daemonProcessLine);
         }
-    }, [explicitServerId, hasQualifiedSession, props.runId, props.sessionId, runAddressKey, sessionMessagesLoaded, transcriptFallback]);
+    }, [explicitServerId, hasQualifiedSession, props.runId, props.sessionId, runAddressKey, sessionMessagesLoaded, source, transcriptFallback]);
 
     React.useEffect(() => {
         void load();
@@ -298,13 +346,7 @@ export const SessionExecutionRunDetailsView = React.memo(React.forwardRef<Sessio
     const pendingOutboxScope = pendingScopeResolution.kind === 'bound'
         ? pendingScopeResolution.scope
         : null;
-    const interaction = React.useMemo(() => session
-        ? deriveTranscriptInteractionFromSession({
-            access: session.access,
-            active: session.active,
-            presence: session.presence,
-        })
-        : FAIL_CLOSED_TRANSCRIPT_INTERACTION, [session]);
+    const interaction = source.useInteraction();
     const resolvedTranscriptMessageId = useResolvedSessionMessageRouteId(props.sessionId, transcriptToolRouteId ?? '');
     const transcriptMessageFromStore = useMessage(props.sessionId, resolvedTranscriptMessageId ?? transcriptToolRouteId ?? '');
     const transcriptMessage = transcriptMessageFromStore ?? transcriptFallback?.message ?? null;
@@ -352,6 +394,15 @@ export const SessionExecutionRunDetailsView = React.memo(React.forwardRef<Sessio
     // pending-to-committed crossover for this exact target.
     const runSidechainMessages = useSessionSidechainMessages(props.sessionId, transcriptToolId);
     const runTranscriptMessages = React.useMemo(() => [...runSidechainMessages], [runSidechainMessages]);
+    // The Run can be admitted before its transcript marker is materialized. Keep
+    // this brief state visible until the canonical sidechain/pending projections
+    // provide content; do not infer a timer, queue, or producer-owned lifecycle.
+    const showPreMarkerState = state.status === 'loaded'
+        && transcriptToolId === null
+        && transcriptMessage === null
+        && runTranscriptMessages.length === 0
+        && targetPending.messages.length === 0
+        && targetPending.discarded.length === 0;
     const runTranscriptDatasetKey = React.useMemo(() => {
         const address = normalizeSessionAddress(pendingScopeServerId ?? null, props.sessionId);
         return JSON.stringify([
@@ -359,10 +410,10 @@ export const SessionExecutionRunDetailsView = React.memo(React.forwardRef<Sessio
             transcriptToolId ?? props.runId,
         ]);
     }, [pendingScopeServerId, props.runId, props.sessionId, transcriptToolId]);
-    const loadOlderRunSidechain = React.useCallback(async () => {
-        if (!transcriptToolId) return { loaded: 0, hasMore: false, status: 'not_ready' as const };
-        return sync.loadOlderSidechainMessages(props.sessionId, transcriptToolId);
-    }, [props.sessionId, transcriptToolId]);
+    const loadOlderRunSidechain = React.useMemo(
+        () => createAppSidechainHistoryLoader(props.sessionId, transcriptToolId),
+        [props.sessionId, transcriptToolId],
+    );
     const isRunSidechainHydrating = runTranscriptMessages.length === 0
         && isSidechainHydrationPendingStatus(
             transcriptToolId ? sidechainHydration.bySidechainId[transcriptToolId]?.status : undefined,
@@ -396,18 +447,45 @@ export const SessionExecutionRunDetailsView = React.memo(React.forwardRef<Sessio
         };
     }, [state]);
 
-    const structuredCard = React.useMemo(() => {
+    // Result first (agents lab RP1): a Run with a structured result shows that result as the page,
+    // and how it got there — its transcript — waits behind one disclosure row. A Run without one
+    // (a conversation, a Run still working) keeps its transcript as the body.
+    const [showSteps, setShowSteps] = React.useState(false);
+    const stepCount = runTranscriptMessages.length;
+    const toggleSteps = React.useCallback(() => setShowSteps((current) => !current), []);
+    const stepsRow = <ExecutionRunStepsRow expanded={showSteps} stepCount={stepCount} onToggle={toggleSteps} />;
+    const structuredMeta = React.useMemo(() => {
         if (state.status !== 'loaded') return null;
         const meta = state.structuredMeta;
         if (!meta || typeof meta !== 'object') return null;
         const kind = typeof (meta as { kind?: unknown }).kind === 'string' ? (meta as { kind: string }).kind : '';
         if (!kind) return null;
-        return renderExecutionRunStructuredMeta({
-            meta: { kind, payload: (meta as { payload?: unknown }).payload },
+        return { kind, payload: (meta as { payload?: unknown }).payload };
+    }, [state]);
+    const structuredCard = structuredMeta && !showSteps
+        ? renderExecutionRunStructuredMeta({
+            meta: structuredMeta,
             sessionId: props.sessionId,
             interaction,
-        });
-    }, [interaction, props.sessionId, state]);
+            presentation: 'page',
+            after: stepsRow,
+            serverId: runActivityServerId,
+            groupId: state.status === 'loaded' ? state.run.display?.groupId ?? null : null,
+        })
+        : null;
+    const hasStructuredResult = structuredMeta !== null;
+    /** The result as text for ⋯ → Copy result: the structured summary, else the raw result. */
+    const copyResultText = React.useMemo(() => {
+        const summary = (structuredMeta?.payload as { summary?: unknown } | undefined)?.summary;
+        if (typeof summary === 'string' && summary.trim()) return summary.trim();
+        if (state.status !== 'loaded' || state.latestToolResult === undefined || state.latestToolResult === null) return null;
+        if (typeof state.latestToolResult === 'string') return state.latestToolResult;
+        try {
+            return JSON.stringify(state.latestToolResult, null, 2);
+        } catch {
+            return null;
+        }
+    }, [state, structuredMeta]);
     const canMutateRunViaSessionRpc = state.status === 'loaded' && state.source === 'session_rpc';
     // The run's own interaction projection is the only authority here. A transcript or
     // daemon fallback has no live retained controller behind it, so it stays readable
@@ -424,6 +502,162 @@ export const SessionExecutionRunDetailsView = React.memo(React.forwardRef<Sessio
         }
         : null;
     const canShowSendComposer = props.showSendComposer !== false && interactionAffordances.canSend;
+    // The conversation this Run was started from (Ask Agent), named in the header and shown as the
+    // body's context chip. Only a same-Session Discussion origin has one.
+    const discussionOrigin = state.status === 'loaded' ? readRunDiscussionOrigin(state.run.launchOrigin, props.sessionId) : null;
+    const discussionOriginAddress = React.useMemo(
+        () => normalizeSessionAddress(explicitServerId ?? session?.serverId ?? null, props.sessionId),
+        [explicitServerId, props.sessionId, session?.serverId],
+    );
+    const discussionOriginIds = React.useMemo(
+        () => discussionOrigin ? [discussionOrigin.discussionId] : NO_DISCUSSION_IDS,
+        [discussionOrigin?.discussionId],
+    );
+    const discussionTitles = useSessionDiscussionTitles({
+        address: discussionOrigin ? discussionOriginAddress : null,
+        discussionIds: discussionOriginIds,
+    });
+    const discussionOriginTitle = discussionOrigin ? discussionTitles.get(discussionOrigin.discussionId) ?? null : null;
+    // Whether the Run waits on a person: the roster's canonical attention (the enriched roster is the
+    // only owner that observes pending prompts), read into the same words the roster row uses.
+    const roster = useSessionAgentActivityRoster({
+        sessionId: props.sessionId,
+        serverId: explicitServerId ?? session?.serverId ?? undefined,
+        session,
+    });
+    const rosterRunEntry = roster.readExecutionRunEntry(props.runId);
+    const runAttention = React.useMemo(
+        () => rosterRunEntry ? resolveSessionAgentActivityPresentation({ entry: rosterRunEntry }).attention : null,
+        [rosterRunEntry],
+    );
+    const runStatus = state.status === 'loaded' ? String((state.run as { status?: unknown }).status ?? 'unknown') : null;
+    const runAnnouncement = stopError ?? interactionError ?? (runStatus === null
+        ? ''
+        : t('executionRuns.details.labels.statusValue', { value: runStatus }));
+    const runAnnouncementKey = stopError
+        ? `stop-error:${stopError}`
+        : interactionError
+            ? `interaction-error:${interactionError}`
+            : runStatus === null
+                ? 'run:unavailable'
+                : `run:${props.runId}:${runStatus}`;
+    const fallbackReason = state.status === 'loaded' && state.source !== 'session_rpc'
+        ? state.source === 'transcript_fallback'
+            ? t('sessionPages.newRun.transcriptReadOnly')
+            : t('sessionPages.newRun.daemonReadOnly')
+        : null;
+    const stopRun = React.useCallback(() => {
+        if (isStopping) return;
+        fireAndForget((async () => {
+            setStopError(null);
+            setStopUnconfirmed(false);
+            setIsStopping(true);
+            try {
+                const result = props.serverId
+                    ? await sessionExecutionRunStop(props.sessionId, { runId: props.runId }, { serverId: props.serverId })
+                    : await sessionExecutionRunStop(props.sessionId, { runId: props.runId });
+                if (result.ok === false) {
+                    setStopError(String(result.error ?? t('runs.stop.failedToStopRun')));
+                    if (isExecutionRunNotRunningMutationError(result)) {
+                        await load();
+                    } else {
+                        // The machine did not confirm: offer the existing whole-session fallback.
+                        setStopUnconfirmed(true);
+                    }
+                } else {
+                    await load();
+                }
+            } catch (error) {
+                setStopError(error instanceof Error ? error.message : t('runs.stop.failedToStopRun'));
+                setStopUnconfirmed(true);
+            } finally {
+                setIsStopping(false);
+            }
+        })(), { tag: 'SessionExecutionRunDetailsView.stopRun' });
+    }, [isStopping, load, props.runId, props.serverId, props.sessionId]);
+    const onSessionStopped = React.useCallback(() => {
+        setStopUnconfirmed(false);
+        setStopError(null);
+        void load();
+    }, [load]);
+    const machine = useExecutionRunMachineName(session?.metadata ?? null);
+    // Show in transcript (⋯): the session transcript owns the jump; this surface only names the
+    // Run's row. Offered where the transcript sits beside the Run (the Details tab); the phone
+    // route has no reveal owner for it yet.
+    const transcriptRouteMessageId = resolvedTranscriptMessageId ?? transcriptToolRouteId ?? null;
+    const transcriptMessageSeq = typeof (transcriptMessage as { seq?: unknown } | null)?.seq === 'number'
+        ? (transcriptMessage as { seq: number }).seq
+        : null;
+    const runTitle = state.status === 'loaded' ? resolveExecutionRunTitle(state.run) : null;
+    const givenRunTitle = state.status === 'loaded' ? state.run.display?.title?.trim() || null : null;
+    const onTitleResolved = props.onTitleResolved;
+    React.useEffect(() => {
+        if (!onTitleResolved || !runTitle) return;
+        const current = props.openingTitle?.trim() ?? '';
+        const next = givenRunTitle ?? (current.length === 0 || current.includes(props.runId) ? runTitle : null);
+        if (next && next !== current) onTitleResolved(next);
+    }, [givenRunTitle, onTitleResolved, props.openingTitle, props.runId, runTitle]);
+    const showInTranscript = React.useMemo(() => {
+        if (props.presentation !== 'panel' || !transcriptRouteMessageId || !runTitle) return null;
+        const entry: TranscriptNavigationEntry = {
+            id: `execution-run:${props.runId}`,
+            sessionId: props.sessionId,
+            seq: transcriptMessageSeq,
+            routeMessageId: transcriptRouteMessageId,
+            transcriptBlockIndex: null,
+            kind: 'deep-link-target',
+            role: 'tool',
+            label: runTitle,
+            promptPreview: null,
+            responsePreview: null,
+            createdAtMs: null,
+            pinned: false,
+            pinnedAtMs: null,
+            loaded: true,
+        };
+        return () => {
+            const handler = readTranscriptNavigationJumpHandler(props.sessionId);
+            if (handler) {
+                void handler(entry);
+                return;
+            }
+            void awaitTranscriptNavigationJumpHandler(props.sessionId).then((published) => published?.(entry));
+        };
+    }, [props.presentation, props.runId, props.sessionId, runTitle, transcriptMessageSeq, transcriptRouteMessageId]);
+    // ⋯ → Send to ⟨lead⟩: the finished result into the lead Session's composer (canonical handoff).
+    const sendTemplate = useSetting('transcriptMessageSendToSessionTemplate');
+    const leadServerId = explicitServerId ?? session?.serverId ?? null;
+    const leadTitle = session ? getSessionName(session, leadServerId) : null;
+    const presentation = props.presentation;
+    const sendToSession = React.useMemo(() => (leadTitle && leadServerId ? {
+        sessionTitle: leadTitle,
+        onSend: (resultText: string) => {
+            fireAndForget(sendExecutionRunResultToSession({
+                sessionId: props.sessionId,
+                serverId: leadServerId,
+                resultText,
+                runTitle,
+                template: typeof sendTemplate === 'string' ? sendTemplate : '',
+                nowMs: Date.now,
+                writeInitialPrompt: async ({ destinationSessionId, serverId, prompt }) => {
+                    await sync.patchSessionMetadataWithRetry(destinationSessionId, (metadata) => writeSessionInitialPromptV1({
+                        metadata,
+                        text: prompt.text,
+                        mode: prompt.mode,
+                        createdAtMs: prompt.createdAtMs,
+                        sourceSessionId: prompt.sourceSessionId,
+                    }), { serverId });
+                },
+                // Beside the Session its composer is already on screen; the phone page returns to it.
+                revealPrimaryComposer: presentation === 'panel'
+                    ? () => undefined
+                    : () => router.replace(buildScopedSessionRouteHref({ sessionId: props.sessionId, serverId: leadServerId })),
+                focusPrimaryComposer: () => requestRegisteredSessionComposerFocus({ serverId: leadServerId, sessionId: props.sessionId }),
+            }), { tag: 'SessionExecutionRunDetailsView.sendToSession' });
+        },
+    } : null), [leadServerId, leadTitle, presentation, props.sessionId, router, runTitle, sendTemplate]);
+    // The one composer here answers this agent, and says so (lab `convo-C1`).
+    const replyAgentLabel = state.status === 'loaded' ? resolveExecutionRunBackendLabel(state.run.backendTarget) : null;
     const invokeInteraction = React.useCallback((kind: 'cancel_turn' | 'resume') => {
         if (pendingInteraction !== null) return;
         fireAndForget((async () => {
@@ -454,49 +688,87 @@ export const SessionExecutionRunDetailsView = React.memo(React.forwardRef<Sessio
         })(), { tag: `SessionExecutionRunDetailsView.${kind}` });
     }, [cancellableInputTurn, load, pendingInteraction, props.runId, props.serverId, props.sessionId]);
 
-    const containerStyle = props.presentation === 'panel'
-        ? { flex: 1, paddingHorizontal: 16, paddingVertical: 16, gap: 12 as const }
-        : { flex: 1 };
     const content = state.status === 'loading' ? (
-        <ActivitySpinner size="small" color={theme.colors.text.secondary} />
+        // A named wait (agents lab ST "opening"): what is opening and where it is read from. The
+        // sized loading card narrates "Still waiting · N s" by itself once the wait runs long.
+        <SurfaceStateCard
+            testID="session-run-details-loading"
+            kind="loading"
+            title={t('surfaceState.opening', { name: props.openingTitle?.trim() || t('runPage.untitledRun') })}
+            reason={t('runPage.opening.reading', { machine: machine.name })}
+        />
+    ) : state.status === 'gone' ? (
+        <SurfaceStateCard
+            testID="session-run-details-gone"
+            kind="unavailable"
+            iconName="robot"
+            title={t('runPage.gone.title', { machine: machine.name })}
+            reason={t('runPage.gone.reason')}
+            action={props.onRequestClose
+                ? { label: t('runPage.gone.closeTab'), onPress: props.onRequestClose }
+                : { label: t('surfaceState.checkAgain'), onPress: () => load() }}
+            secondaryAction={props.onRequestClose ? { label: t('surfaceState.checkAgain'), onPress: () => load() } : undefined}
+            diagnosticCode="execution_run_not_found"
+        />
     ) : state.status === 'error' ? (
         // The mobile route carries a header Refresh over this same view's `reload`
         // handle; the desktop workspace and the subagent panel have no header, so
-        // without this the only recovery was leaving and reopening the Run. It calls
-        // the one existing loader, which re-enters the loading state above — no
-        // reconnect subscription, retry timer or second load owner.
-        <View style={{ gap: 8, alignItems: 'flex-start' }}>
-            <Text style={{ color: theme.colors.text.secondary }}>{state.error}</Text>
-            <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={t('common.retry')}
-                testID="session-run-details-retry-load"
-                onPress={() => { void load(); }}
-                style={({ pressed }) => ({
-                    ...interactiveTargetStyle,
-                    alignSelf: 'flex-start',
-                    paddingVertical: 8,
-                    paddingHorizontal: 12,
-                    borderRadius: 10,
-                    backgroundColor: theme.colors.surface.inset,
-                    borderWidth: 1,
-                    borderColor: theme.colors.border.default,
-                    opacity: pressed ? motionTokens.press.opacity : 1,
-                })}
-            >
-                <Text style={{ color: theme.colors.text.primary, fontWeight: '600' }}>{t('common.retry')}</Text>
-            </Pressable>
-        </View>
+        // the card's Try again is the in-place recovery. It calls the one existing
+        // loader, which re-enters the loading state above — no reconnect
+        // subscription, retry timer or second load owner. The failure text may be
+        // transport vocabulary, so it is the diagnostic behind Details.
+        <SurfaceStateCard
+            testID="session-run-details-load-error"
+            kind="error"
+            title={t('runs.runDetails.failedToLoad')}
+            diagnosticCode={state.error === t('runs.runDetails.failedToLoad') ? null : state.error}
+            action={{ label: t('surfaceState.tryAgain'), onPress: () => load() }}
+        />
     ) : (
-        <View style={{ gap: 10 }}>
-            <View style={{ gap: 4 }}>
+        <View style={{ flex: 1, minHeight: 0 }}>
                 {props.showInfoCard === false ? null : (
                     <SessionExecutionRunInfoCard
                         run={state.run}
                         hostSessionId={props.sessionId}
                         daemonProcessLine={daemonProcessLine}
+                        originTitle={discussionOriginTitle}
+                        attention={runAttention}
+                        stopAction={canMutateRunViaSessionRpc && state.run.status === 'running'
+                            ? { stopping: isStopping, onStop: stopRun }
+                            : null}
+                        cancelResponseAction={canMutateRunViaSessionRpc && interactionAffordances.canCancelTurn && cancellableInputTurn
+                            ? { pending: pendingInteraction !== null, onCancel: () => invokeInteraction('cancel_turn') }
+                            : null}
+                        copyResultText={copyResultText}
+                        onShowInTranscript={showInTranscript}
+                        sendToSession={sendToSession}
                     />
                 )}
+            <View style={{ flex: 1, minHeight: 0, paddingHorizontal: 16, paddingVertical: 12, gap: 12 }}>
+            <View style={{ gap: 8 }}>
+                {discussionOrigin ? (
+                    <ExecutionRunContextChip
+                        testID="session-run-details-context"
+                        title={discussionOriginTitle}
+                        messageCount={discussionOrigin.messageCount}
+                    />
+                ) : null}
+                {fallbackReason ? (
+                    <Text testID="session-run-details-read-only-reason" style={{ color: theme.colors.text.secondary }}>
+                        {fallbackReason}
+                    </Text>
+                ) : null}
+                {showPreMarkerState ? (
+                    <View
+                        testID="session-run-details-pre-marker-state"
+                        accessibilityRole="text"
+                        style={{ paddingVertical: 4 }}
+                    >
+                        <Text style={{ color: theme.colors.text.secondary }}>
+                            {t('status.awaitingUpdates')}
+                        </Text>
+                    </View>
+                ) : null}
                 {!transcriptMessage && transcriptToolRouteId ? (
                     <Pressable
                         accessibilityRole="button"
@@ -527,43 +799,29 @@ export const SessionExecutionRunDetailsView = React.memo(React.forwardRef<Sessio
                 ) : null}
             </View>
 
+            {stopUnconfirmed ? (
+                <ExecutionRunStopFailedState
+                    sessionId={props.sessionId}
+                    serverId={explicitServerId ?? session?.serverId ?? null}
+                    intent={state.run.intent}
+                    machineId={machine.machineId}
+                    machineName={machine.name}
+                    diagnostic={stopError}
+                    onRetry={stopRun}
+                    onSessionStopped={onSessionStopped}
+                />
+            ) : null}
+
             {structuredCard ? (
-                <View style={{ gap: 8 }}>
+                <View style={{ flex: 1, minHeight: 0 }}>
                     {structuredCard}
                 </View>
-            ) : null}
+            ) : hasStructuredResult ? stepsRow : null}
 
             {canMutateRunViaSessionRpc && (state.run.status === 'running' || interactionAffordances.canResume) ? (
                 <View style={{ gap: 8 }}>
-                    {stopError ? <Text style={{ color: theme.colors.text.secondary }}>{stopError}</Text> : null}
+                    {stopError && !stopUnconfirmed ? <Text style={{ color: theme.colors.text.secondary }}>{stopError}</Text> : null}
                     {interactionError ? <Text style={{ color: theme.colors.text.secondary }}>{interactionError}</Text> : null}
-                    {interactionAffordances.canCancelTurn && cancellableInputTurn ? (
-                        <Pressable
-                            accessibilityRole="button"
-                            accessibilityLabel={t('runs.runDetails.cancelTurn')}
-                            accessibilityState={{
-                                disabled: pendingInteraction !== null,
-                                busy: pendingInteraction === 'cancel_turn',
-                            }}
-                            testID="session-run-details-cancel-turn"
-                            disabled={pendingInteraction !== null}
-                            onPress={() => invokeInteraction('cancel_turn')}
-                            style={{
-                                ...interactiveTargetStyle,
-                                paddingVertical: 10,
-                                paddingHorizontal: 12,
-                                borderRadius: 10,
-                                backgroundColor: theme.colors.surface.inset,
-                                borderWidth: 1,
-                                borderColor: theme.colors.border.default,
-                                opacity: pendingInteraction !== null ? 0.6 : 1,
-                            }}
-                        >
-                            <Text style={{ color: theme.colors.text.primary, fontWeight: '600' }}>
-                                {t('runs.runDetails.cancelTurn')}
-                            </Text>
-                        </Pressable>
-                    ) : null}
                     {interactionAffordances.canResume ? (
                         <Pressable
                             accessibilityRole="button"
@@ -591,63 +849,21 @@ export const SessionExecutionRunDetailsView = React.memo(React.forwardRef<Sessio
                             </Text>
                         </Pressable>
                     ) : null}
-                    {state.run.status === 'running' ? <Pressable
-                        accessibilityRole="button"
-                        accessibilityLabel={t('runs.stop.stopRunA11y')}
-                        accessibilityState={{ disabled: isStopping, busy: isStopping }}
-                        testID="session-run-details-stop"
-                        onPress={() => {
-                            fireAndForget((async () => {
-                                setStopError(null);
-                                setIsStopping(true);
-                                try {
-                                    const result = props.serverId
-                                        ? await sessionExecutionRunStop(
-                                            props.sessionId,
-                                            { runId: props.runId },
-                                            { serverId: props.serverId },
-                                        )
-                                        : await sessionExecutionRunStop(props.sessionId, { runId: props.runId });
-                                    if (result.ok === false) {
-                                        setStopError(String(result.error ?? t('runs.stop.failedToStopRun')));
-                                        if (isExecutionRunNotRunningMutationError(result)) {
-                                            await load();
-                                        }
-                                    } else {
-                                        await load();
-                                    }
-                                } catch (error) {
-                                    setStopError(error instanceof Error ? error.message : t('runs.stop.failedToStopRun'));
-                                } finally {
-                                    setIsStopping(false);
-                                }
-                            })(), { tag: 'SessionExecutionRunDetailsView.stopRun' });
-                        }}
-                        disabled={isStopping}
-                        style={{
-                            ...interactiveTargetStyle,
-                            paddingVertical: 10,
-                            paddingHorizontal: 12,
-                            borderRadius: 10,
-                            backgroundColor: theme.colors.surface.inset,
-                            borderWidth: 1,
-                            borderColor: theme.colors.border.default,
-                            opacity: isStopping ? 0.6 : 1,
-                        }}
-                    >
-                        <Text style={{ color: theme.colors.text.primary, fontWeight: '600' }}>
-                            {isStopping ? t('runs.stop.stoppingLabel') : t('runs.stop.stopLabel')}
-                        </Text>
-                    </Pressable> : null}
                 </View>
             ) : null}
+
+            <PoliteAccessibilityStatus
+                statusTestID="session-run-details-accessibility-status"
+                transitionKey={runAnnouncementKey}
+                announcement={runAnnouncement}
+            />
 
             {/* Presence, not truthiness: a valid run result may be false, 0,
                 empty string, or null; only absence (undefined) hides the card.
                 The result is presented through the transcript's own structured
                 projection; the exact payload a plugin returned stays reachable
                 under its own disclosure rather than being the primary content. */}
-            {state.latestToolResult !== undefined ? (
+            {state.latestToolResult !== undefined && !hasStructuredResult ? (
                 <View
                     testID="session-run-details-latest-tool-result"
                     style={{
@@ -692,7 +908,7 @@ export const SessionExecutionRunDetailsView = React.memo(React.forwardRef<Sessio
                 Agent composer; this view decides only whether the run's own interaction
                 projection permits one. The plain `TextInput` that used to sit here was a
                 second composer with its own send state and its own direct runtime call. */}
-            {session && transcriptMessage?.kind === 'tool-call' ? (
+            {session && !structuredCard && transcriptMessage?.kind === 'tool-call' ? (
                 <SessionMessageDetailsView
                     sessionId={props.sessionId}
                     session={session}
@@ -703,7 +919,7 @@ export const SessionExecutionRunDetailsView = React.memo(React.forwardRef<Sessio
                     browserContextState={browserContextRuntime?.composerContext.state ?? null}
                 />
             ) : null}
-            {session && transcriptMessage?.kind !== 'tool-call' ? (
+            {session && !structuredCard && transcriptMessage?.kind !== 'tool-call' ? (
                 <View style={{ gap: 10 }}>
                     {transcriptToolId !== null ? (
                         // Same container the marker branch gives its transcript
@@ -753,20 +969,27 @@ export const SessionExecutionRunDetailsView = React.memo(React.forwardRef<Sessio
                             extraActionChips={executionRunRoutingControls.extraActionChips}
                             initialLocalId={props.retryInputLocalId}
                             browserContextState={browserContextRuntime?.composerContext.state ?? null}
+                            {...(replyAgentLabel ? { placeholder: t('agentStart.pane.replyTo', { agent: replyAgentLabel }) } : {})}
                         />
+                    ) : null}
+                    {canShowSendComposer && leadTitle ? (
+                        <Text testID="session-run-details-replies-foot" style={{ color: theme.colors.text.secondary, fontSize: 12 }}>
+                            {t('agentStart.pane.repliesGoTo', { session: leadTitle })}
+                        </Text>
                     ) : null}
                 </View>
             ) : null}
+            </View>
         </View>
     );
 
     if (props.presentation === 'panel') {
-        return <View style={containerStyle}>{content}</View>;
+        return <View style={{ flex: 1 }}>{content}</View>;
     }
 
     return (
-        <ConstrainedScreenContent style={{ flex: 1, paddingHorizontal: 16, paddingVertical: 16, gap: 12 }}>
+        <ConstrainedScreenContent style={{ flex: 1 }}>
             {content}
         </ConstrainedScreenContent>
     );
-}));
+});

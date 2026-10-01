@@ -1,6 +1,6 @@
 import * as React from 'react';
-import { Platform, Pressable, ScrollView, View } from 'react-native';
-import { useRouter } from 'expo-router';
+import { Pressable, ScrollView, View } from 'react-native';
+import type { Router } from 'expo-router';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { Text, TextInput } from '@/components/ui/text/Text';
@@ -37,6 +37,7 @@ function renderSnippetLines(params: {
 
 export function ReviewCommentsDraftsModal(props: CustomModalInjectedProps & Readonly<{
     sessionId?: string;
+    navigation?: Pick<Router, 'push'>;
     reviewScope?: WorkspaceScopeBase | null;
     reviewCommentDrafts: readonly ReviewCommentDraft[];
     onUpdateDraft: (draft: ReviewCommentDraft) => void;
@@ -44,7 +45,6 @@ export function ReviewCommentsDraftsModal(props: CustomModalInjectedProps & Read
 }>) {
     const styles = stylesheet;
     const { theme } = useUnistyles();
-    const router = useRouter();
     const {
         onClose,
         onDeleteDraft,
@@ -93,7 +93,7 @@ export function ReviewCommentsDraftsModal(props: CustomModalInjectedProps & Read
     }, [onDeleteDraft]);
 
     const jumpToDraft = React.useCallback((draft: ReviewCommentDraft) => {
-        if (!sessionId) return;
+        if (!sessionId || !props.navigation) return;
         onClose();
         const href = buildSessionFileDeepLink({
             sessionId,
@@ -102,8 +102,8 @@ export function ReviewCommentsDraftsModal(props: CustomModalInjectedProps & Read
             source: draft.source,
             anchor: draft.anchor,
         });
-        router.push(href as any);
-    }, [onClose, props.reviewScope?.serverId, router, sessionId]);
+        props.navigation.push(href as never);
+    }, [onClose, props.navigation, props.reviewScope?.serverId, sessionId]);
 
     const includedCount = drafts.filter(isReviewCommentDraftIncludedInPrompt).length;
 
@@ -142,7 +142,7 @@ export function ReviewCommentsDraftsModal(props: CustomModalInjectedProps & Read
                                         {formatReviewCommentAnchorLabel(draft)}
                                     </Text>
                                 </View>
-                                {sessionId ? (
+                                {sessionId && props.navigation ? (
                                     <Pressable
                                         accessibilityLabel={t('files.reviewComments.jump')}
                                         accessibilityRole="button"
@@ -300,18 +300,6 @@ const stylesheet = StyleSheet.create((theme) => ({
         backgroundColor: theme.colors.surface.elevated ?? theme.colors.surface.base,
         fontSize: 13,
         ...Typography.default(),
-        ...(Platform.select({
-            web: {
-                outline: 'none',
-                outlineStyle: 'none',
-                outlineWidth: 0,
-                outlineColor: 'transparent',
-                boxShadow: 'none',
-                WebkitBoxShadow: 'none',
-                WebkitAppearance: 'none',
-            },
-            default: {},
-        }) as object),
     },
     jumpButton: {
         paddingHorizontal: 8,

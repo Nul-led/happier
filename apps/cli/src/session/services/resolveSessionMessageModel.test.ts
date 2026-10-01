@@ -16,7 +16,7 @@ describe('resolveSessionMessageModel', () => {
           v: 1,
           updatedAt: 12,
           selection: {
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             providerConnectionId: 'pc_work',
             modelId: 'provider-model',
           },
@@ -33,7 +33,7 @@ describe('resolveSessionMessageModel', () => {
           v: 1,
           updatedAt: 1,
           selection: {
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             providerConnectionId: 'pc_work',
             modelId: 'provider-old',
           },
@@ -62,7 +62,7 @@ describe('resolveSessionMessageModel', () => {
           v: 1,
           updatedAt: 1,
           selection: {
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             providerConnectionId: 'pc_work',
             modelId: 'provider-model',
           },
@@ -79,7 +79,7 @@ describe('resolveSessionMessageModel', () => {
           v: 1,
           updatedAt: 7,
           selection: {
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             providerConnectionId: 'pc_work',
             modelId: 'provider-old',
           },
@@ -97,7 +97,7 @@ describe('resolveSessionMessageModel', () => {
         v: 1,
         updatedAt: 42,
         ref: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: 'pc_work',
           modelId: 'default',
         },
@@ -130,7 +130,7 @@ describe('resolveSessionMessageModel', () => {
           v: 1,
           updatedAt: 8,
           selection: {
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             providerConnectionId: 'pc_pending',
             modelId: 'pending-restart-model',
           },
@@ -140,7 +140,7 @@ describe('resolveSessionMessageModel', () => {
       modelSelectionInput: { modelId: 'per-message-model' },
       nowMs: 42,
     }).selection?.ref).toEqual({
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       providerConnectionId: 'pc_active',
       modelId: 'per-message-model',
     });
@@ -170,7 +170,7 @@ describe('resolveSessionMessageModel', () => {
         v: 1,
         updatedAt: 8,
         selection: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: 'pc_pending',
           modelId: 'pending-restart-model',
         },
@@ -200,7 +200,7 @@ describe('resolveSessionMessageModel', () => {
         v: 1,
         updatedAt: 1,
         selection: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: 'pc_a',
           modelId: 'provider-old',
         },
@@ -241,7 +241,7 @@ describe('resolveSessionMessageModel', () => {
           v: 1,
           updatedAt: 1,
           selection: {
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             providerConnectionId: 'pc_a',
             modelId: 'provider-old',
           },
@@ -343,7 +343,7 @@ describe('resolveSessionMessageModel', () => {
         modelSelectionInput: { providerConnectionId: 'pc_explicit', modelId: 'explicit-model' },
         nowMs: 42,
     }).selection?.ref).toEqual({
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         providerConnectionId: 'pc_explicit',
         modelId: 'explicit-model',
     });

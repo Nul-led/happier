@@ -3,6 +3,17 @@ import { describe, expect, it, vi } from 'vitest';
 import { createWorkflowRunCommittedNotificationHandler } from './dispatchWorkflowRunUpdateNotification';
 
 describe('createWorkflowRunCommittedNotificationHandler', () => {
+  it('emits review required only for a durable held-entry event', async () => {
+    const dispatch = vi.fn(async () => ({ attemptedChannels: 1, deliveredChannels: 1 }));
+    const handler = createWorkflowRunCommittedNotificationHandler({ getSettingsSnapshot: () => ({ settings: null }), dispatch });
+    await handler({ run: { id: 'run-1' }, result: { state: 'waiting_for_review' }, reviewEntry: true });
+    expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ event: {
+      topic: 'workflow_run_update', runId: 'run-1', updateKind: 'review_required',
+    } }));
+    dispatch.mockClear();
+    await handler({ run: { id: 'run-1' }, result: { state: 'waiting_for_review' } });
+    expect(dispatch).not.toHaveBeenCalled();
+  });
   it.each([
     ['succeeded', 'completed'],
     ['failed', 'failed'],
@@ -30,14 +41,14 @@ describe('createWorkflowRunCommittedNotificationHandler', () => {
     }));
   });
 
-  it('does not emit a workflow update for cancellation', async () => {
+  it.each(['cancelled', 'waiting_for_review'] as const)('does not emit a workflow update for %s settlement', async (state) => {
     const dispatch = vi.fn();
     const handler = createWorkflowRunCommittedNotificationHandler({
       getSettingsSnapshot: () => ({ settings: null, settingsSecretsReadKeys: [] }),
       dispatch,
     });
 
-    await handler({ run: { id: 'run-1' }, result: { state: 'cancelled' } });
+    await handler({ run: { id: 'run-1' }, result: { state } });
 
     expect(dispatch).not.toHaveBeenCalled();
   });

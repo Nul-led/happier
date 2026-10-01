@@ -91,7 +91,11 @@ describe('approval execution-origin Account currentness', () => {
                     kind: 'plugin',
                     pluginId: 'acme.reviewer',
                     contributionLocalId: 'review',
-                    immutableGenerationId: 'generation-1',
+                    sourceCustody: {
+                        kind: 'managed',
+                        immutableGenerationId: 'generation-1',
+                        installSource: 'archive',
+                    },
                 },
                 serverId: 'profile-creator-a',
                 serverIdentityId: 'stable-home-h',

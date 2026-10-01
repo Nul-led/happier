@@ -1,5 +1,5 @@
 import type { AcpCatalogSettingsV1, EffectiveActionInputField, PersistedBackendTargetRefV2 } from '@happier-dev/protocol';
-import { getActionSpec, resolveEffectiveActionInputFields } from '@happier-dev/protocol';
+import { getActionSpec, PluginSourceCustodyV1Schema, pluginSourceCustodyV1Equal, resolveEffectiveActionInputFields } from '@happier-dev/protocol';
 import * as React from 'react';
 
 import type { MergedBackendProjectionEntry, MergedProviderProjectionEntry } from '@/agents/backendCatalog/mergedProjectionTypes';
@@ -86,10 +86,12 @@ export function useExecutionRunLauncherOptionsModel(params: Readonly<{
     const selectedBackendChoice = selectedBackendChoices.length === 1 && selectedBackendChoices[0]?.disabled !== true
         ? selectedBackendChoices[0]!
         : null;
-    const selectedProfileId = typeof params.actionInput.profileId === 'string' ? params.actionInput.profileId : '';
-    const selectedProfileGenerationId = typeof params.actionInput.profileGenerationId === 'string' ? params.actionInput.profileGenerationId : '';
-    const selectedProfileChoice = profileChoices.find((choice) => choice.id === selectedProfileId
-        && choice.generationId === selectedProfileGenerationId) ?? null;
+    const requestedProfileId = typeof params.actionInput.profileId === 'string' ? params.actionInput.profileId : '';
+    const requestedProfileSourceCustody = PluginSourceCustodyV1Schema.safeParse(params.actionInput.profileSourceCustody);
+    const selectedProfileChoice = requestedProfileSourceCustody.success
+        ? profileChoices.find((choice) => choice.id === requestedProfileId
+            && pluginSourceCustodyV1Equal(choice.sourceCustody, requestedProfileSourceCustody.data)) ?? null
+        : null;
     const selectedProfileMatchesSelectedBackend = !selectedProfileChoice || doesExecutionRunProfileMatchSelectedBackends(
         selectedProfileChoice,
         selectedBackendChoices.map((choice) => choice.backendId),
@@ -124,15 +126,15 @@ export function useExecutionRunLauncherOptionsModel(params: Readonly<{
     }, [backendChoices, initialBackendTargetKey, params.intent, params.setActionInput, params.singleTarget, selectedValues, targetField?.requireExplicitSelection, targetFieldPath]);
 
     React.useEffect(() => {
-        if (!selectedProfileId) return;
+        if (!requestedProfileId) return;
         if (selectedProfileChoice && !selectedProfileChoice.disabled && selectedProfileMatchesSelectedBackend) return;
         params.setActionInput((previous) => {
             const next = { ...previous };
             delete next.profileId;
-            delete next.profileGenerationId;
+            delete next.profileSourceCustody;
             return next;
         });
-    }, [params.setActionInput, selectedProfileChoice, selectedProfileId, selectedProfileMatchesSelectedBackend]);
+    }, [params.setActionInput, requestedProfileId, selectedProfileChoice, selectedProfileMatchesSelectedBackend]);
 
     const permissionModeOptions = React.useMemo(() => {
         const agentId = resolveExecutionRunPermissionAgentId({ selectedBackendChoices, fallbackAgentId: params.fallbackAgentId });
@@ -143,6 +145,9 @@ export function useExecutionRunLauncherOptionsModel(params: Readonly<{
         }));
     }, [params.fallbackAgentId, selectedBackendChoices]);
     const selectedPermissionMode = typeof params.actionInput.permissionMode === 'string' ? params.actionInput.permissionMode : '';
+    const selectedNotifyParentOnCompletion = typeof params.actionInput.notifyParentOnCompletion === 'boolean'
+        ? params.actionInput.notifyParentOnCompletion
+        : undefined;
     const allowedPermissionModes = React.useMemo(() => resolveExecutionRunActionAllowedPermissionModes(actionId), [actionId]);
     const visiblePermissionModeOptions = React.useMemo(() => !allowedPermissionModes?.length
         ? permissionModeOptions
@@ -182,7 +187,7 @@ export function useExecutionRunLauncherOptionsModel(params: Readonly<{
         params.setActionInput((previous) => ({
             ...previous,
             profileId: choice.id,
-            profileGenerationId: choice.generationId,
+            profileSourceCustody: choice.sourceCustody,
             ...setValueAtTopLevelPatch(previous, targetFieldPath, [value]),
         }));
     }, [backendChoices, params.intent, params.setActionInput, profileChoices, targetFieldPath]);
@@ -199,11 +204,11 @@ export function useExecutionRunLauncherOptionsModel(params: Readonly<{
         selectedBackendChoice,
         selectedBackendTargetKeys: selectedBackendChoices.map((choice) => choice.targetKey),
         profileChoices,
-        selectedProfileId,
-        selectedProfileGenerationId,
+        selectedProfileId: selectedProfileChoice?.id ?? '',
         selectedProfileChoice,
         selectedProfileMatchesSelectedBackend,
         selectedPermissionMode,
+        selectedNotifyParentOnCompletion,
         visiblePermissionModeOptions,
         resolveFieldOptions,
         onSelectBackend,

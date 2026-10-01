@@ -8,48 +8,22 @@ import type { MachineSpawnReadiness } from '@/sync/domains/machines/identity/res
 import type { NewSessionAutomationDraft } from '@/sync/domains/automations/automationDraft';
 import type { Machine } from '@/sync/domains/state/storageTypes';
 
-import type {
-    NewSessionAuthoringContext,
-    NewSessionAuthoringSubmissionMode,
-    NewSessionSubmitAccessibilityLabelKey,
-} from './sessionAuthoringContext';
-
-function resolveSubmissionMode(params: Readonly<{
-    effectiveAutomationDraft: NewSessionAutomationDraft;
-    automationRequestedByRoute?: boolean;
-}>): NewSessionAuthoringSubmissionMode {
-    if (!params.automationRequestedByRoute && !params.effectiveAutomationDraft.enabled) {
-        return 'launch';
-    }
-    return 'createAutomation';
-}
-
-function resolveSubmitAccessibilityLabelKey(
-    submissionMode: NewSessionAuthoringSubmissionMode,
-): NewSessionSubmitAccessibilityLabelKey | undefined {
-    if (submissionMode === 'createAutomation') {
-        return 'automations.create.createButtonTitle';
-    }
-    return undefined;
-}
+import type { NewSessionAuthoringContext } from './sessionAuthoringContext';
 
 export function buildNewSessionAuthoringContext(params: Readonly<{
     automationDraft: NewSessionAutomationDraft;
     automationFeatureEnabled: boolean;
-    automationRequestedByRoute: boolean;
     selectedMachineId: string | null;
     selectedMachine: Machine | null;
+    hostBoundMachineId?: string | null;
     selectedMachineSpawnReadiness?: MachineSpawnReadiness | null;
     selectedPath: string;
+    directoryKind?: 'path' | 'managed';
     buildDraft: (effectiveAutomationDraft: NewSessionAutomationDraft) => SessionAuthoringDraft;
 }>): NewSessionAuthoringContext {
     const effectiveAutomationDraft = resolveEffectiveAutomationDraft({
         draft: params.automationDraft,
         automationsEnabled: params.automationFeatureEnabled,
-    });
-    const submissionMode = resolveSubmissionMode({
-        effectiveAutomationDraft,
-        automationRequestedByRoute: params.automationRequestedByRoute === true,
     });
 
     return {
@@ -59,15 +33,17 @@ export function buildNewSessionAuthoringContext(params: Readonly<{
         showAutomationActionChips: shouldShowAutomationActionChips({
             automationsEnabled: params.automationFeatureEnabled,
         }),
+        // Submit always launches: creating an Automation is the shared
+        // wrapper's journey, and a hydrated pre-change Automation draft is
+        // handed there.
         canSubmit: canCreateNewSession({
             selectedMachineId: params.selectedMachineId,
             selectedMachine: params.selectedMachine,
+            hostBoundMachineId: params.hostBoundMachineId,
             selectedPath: params.selectedPath,
-            allowOfflineMachine: submissionMode === 'createAutomation',
+            directoryKind: params.directoryKind,
             spawnReadiness: params.selectedMachineSpawnReadiness,
             executionTarget: params.buildDraft(effectiveAutomationDraft).executionTarget,
         }),
-        submissionMode,
-        submitAccessibilityLabelKey: resolveSubmitAccessibilityLabelKey(submissionMode),
     };
 }

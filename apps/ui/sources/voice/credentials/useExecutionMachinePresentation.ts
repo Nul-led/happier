@@ -1,6 +1,7 @@
 import { storage } from '@/sync/domains/state/storage';
 import { resolveMachineForActiveServerFromState } from '@/sync/store/domains/machines/resolveMachinesForActiveServerFromState';
 import { resolveVoiceExecutionMachineSelectionFromState } from '@/voice/settings/executionMachine';
+import { getMachineDisplayName } from '@/utils/sessions/machineDisplayNames';
 
 /**
  * The single UI projection of the selected voice execution machine.
@@ -21,7 +22,7 @@ export function useVoiceExecutionMachinePresentation(): Readonly<{
   const machineLabel = storage((state) => {
     if (!selectedMachineId) return null;
     const machine = resolveMachineForActiveServerFromState(state, selectedMachineId);
-    return machine?.metadata?.displayName || machine?.metadata?.host || selectedMachineId;
+    return getMachineDisplayName(machine) ?? selectedMachineId;
   });
   return { selectedMachineId, machineId, machineLabel, selectionKind };
 }

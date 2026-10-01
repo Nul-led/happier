@@ -1,7 +1,15 @@
 import type { PublicReleaseRingId } from '@happier-dev/release-runtime/releaseRings';
+import type { IrohRelayEnvConfig } from '@happier-dev/iroh-native/node';
+import type { HomeApplicationCarrierEligibility } from '@happier-dev/cli-common/homeEnrollment';
 
 import type { DaemonServiceListEntry } from '@/daemon/service/cli';
-import type { DaemonServiceMode, DaemonServiceTargetMode } from '@/daemon/service/plan';
+import type { DaemonServiceAutostartMode, DaemonServiceManagedBy, DaemonServiceMode, DaemonServiceTargetMode } from '@/daemon/service/plan';
+
+type PreservedServiceInstallOptions = Readonly<{
+  autostart?: DaemonServiceAutostartMode;
+  bundleId?: string | null;
+  managedBy?: DaemonServiceManagedBy | null;
+}>;
 
 export type BackgroundServiceRepairPlan = Readonly<{
   currentReleaseChannel: PublicReleaseRingId;
@@ -13,20 +21,24 @@ export type BackgroundServiceRepairPlan = Readonly<{
 export type BackgroundServiceRepairAction =
   | Readonly<{
       kind: 'remove-service';
-      service: Readonly<{
+      service: PreservedServiceInstallOptions & Readonly<{
         label: string;
         installedPath: string;
         mode: DaemonServiceMode;
         releaseChannel: PublicReleaseRingId;
         targetMode: DaemonServiceTargetMode;
         instanceId: string;
+        irohRelayConfig?: IrohRelayEnvConfig;
+        homeCarrierEligibility?: HomeApplicationCarrierEligibility;
       }>;
     }>
-  | Readonly<{
+  | (PreservedServiceInstallOptions & Readonly<{
       kind: 'install-default-following-service';
       releaseChannel: PublicReleaseRingId;
       mode: DaemonServiceMode;
-    }>;
+      irohRelayConfig?: IrohRelayEnvConfig;
+      homeCarrierEligibility?: HomeApplicationCarrierEligibility;
+    }>);
 
 export type BackgroundServiceRepairApplyRuntime = Readonly<{
   platform: 'darwin' | 'linux' | 'win32';

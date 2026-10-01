@@ -1,4 +1,4 @@
-import type { ActionId, RuntimeActionExecute } from '@happier-dev/protocol';
+import type { ActionExecutorContext, ActionId, RuntimeActionExecute } from '@happier-dev/protocol';
 
 import type { createDefaultActionExecutor } from './defaultActionExecutor';
 
@@ -37,6 +37,7 @@ export function createFrontDoorActionExecute(
  */
 export function createFrontDoorUiActionExecutor(
   executor?: ActionExecutorLike,
+  scopeContext?: Pick<ActionExecutorContext, 'serverId' | 'expectedAccountId'>,
 ): (
   actionId: ActionId,
   input: unknown,
@@ -46,6 +47,7 @@ export function createFrontDoorUiActionExecutor(
   return async (actionId, input, options) => {
     const result = await execute(actionId, input, {
       surface: 'ui',
+      ...scopeContext,
       ...(options?.signal === undefined ? {} : { signal: options.signal }),
     });
     if (!result.ok) {

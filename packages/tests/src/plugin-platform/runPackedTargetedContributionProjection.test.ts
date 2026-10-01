@@ -70,15 +70,24 @@ function requireClientActionHandler(value: unknown): PluginClientActionHandler {
 }
 
 function mountedProjectionFixture() {
-  const projectionGeneration = 42;
   const target = {
     pluginId: PACKED_TARGETED_CONTRIBUTION_FIXTURE.targetPluginId,
-    immutableGenerationId: 'target-generation',
+    occurrenceId: 'target-occurrence',
+    sourceCustody: {
+      kind: 'managed',
+      immutableGenerationId: 'target-generation',
+      installSource: 'archive',
+    },
   };
   const contributor = {
     pluginId: PACKED_TARGETED_CONTRIBUTION_FIXTURE.contributorPluginId,
     contributionId: PACKED_TARGETED_CONTRIBUTION_FIXTURE.contributionId,
-    immutableGenerationId: 'contributor-generation',
+    occurrenceId: 'contributor-occurrence',
+    sourceCustody: {
+      kind: 'managed',
+      immutableGenerationId: 'contributor-generation',
+      installSource: 'archive',
+    },
   };
   const point = {
     pointId: PACKED_TARGETED_CONTRIBUTION_FIXTURE.pointId,
@@ -94,8 +103,7 @@ function mountedProjectionFixture() {
     presentation: 'content',
   };
   return {
-    protocolVersion: 1,
-    projection: { v: 2, generation: projectionGeneration, familiesById: {} },
+    status: 'current',
     targetedContributions: {
       target,
       points: [{
@@ -147,6 +155,7 @@ function mountedProjectionFixture() {
         artifactProjection: {
           id: `${PACKED_TARGETED_CONTRIBUTION_FIXTURE.contributorPluginId}:reactNativeBundle:provider-detail`,
           pluginId: PACKED_TARGETED_CONTRIBUTION_FIXTURE.contributorPluginId,
+          occurrenceId: contributor.occurrenceId,
           contributionId: PACKED_TARGETED_CONTRIBUTION_FIXTURE.rendererId,
           contributionKind: 'reactNativeBundle',
         },
@@ -168,7 +177,8 @@ function mountedProjectionFixture() {
       contributorTargetedContributions: {
         target: {
           pluginId: PACKED_TARGETED_CONTRIBUTION_FIXTURE.contributorPluginId,
-          immutableGenerationId: 'contributor-generation',
+          occurrenceId: contributor.occurrenceId,
+          sourceCustody: contributor.sourceCustody,
         },
         points: [],
       },
@@ -181,8 +191,8 @@ test('requires the real mounted projection to preserve every public and private 
 
   const evidence = assertMountedTargetedContributionProjection({
     projection,
-    targetGeneration: 'target-generation',
-    contributorGeneration: 'contributor-generation',
+    targetImmutableGenerationId: 'target-generation',
+    contributorImmutableGenerationId: 'contributor-generation',
     machineId: 'machine-id',
   });
 
@@ -196,6 +206,18 @@ test('requires the real mounted projection to preserve every public and private 
   });
 });
 
+test('refuses an unavailable targeted read with its daemon reason', () => {
+  assert.throws(
+    () => assertMountedTargetedContributionProjection({
+      projection: { status: 'unavailable', code: 'plugin_not_installed' },
+      targetImmutableGenerationId: 'target-generation',
+      contributorImmutableGenerationId: 'contributor-generation',
+      machineId: 'machine-id',
+    }),
+    /targeted_projection_unavailable:plugin_not_installed/u,
+  );
+});
+
 test('requires an externally admitted descriptor to equal the public built-in semantic baseline', () => {
   const projection = mountedProjectionFixture();
   const contribution = projection.targetedContributions.points[0]!
@@ -205,8 +227,8 @@ test('requires an externally admitted descriptor to equal the public built-in se
   contribution.descriptor = builtInSemanticDescriptor;
   const params = {
     projection,
-    targetGeneration: 'target-generation',
-    contributorGeneration: 'contributor-generation',
+    targetImmutableGenerationId: 'target-generation',
+    contributorImmutableGenerationId: 'contributor-generation',
     machineId: 'machine-id',
     builtInSemanticDescriptor,
   };
@@ -646,8 +668,8 @@ test('refuses a plausible projection that loses the target-owned required Surfac
   assert.throws(
     () => assertMountedTargetedContributionProjection({
       projection: invalidProjection,
-      targetGeneration: 'target-generation',
-      contributorGeneration: 'contributor-generation',
+      targetImmutableGenerationId: 'target-generation',
+      contributorImmutableGenerationId: 'contributor-generation',
       machineId: 'machine-id',
     }),
     /targeted_surface_input_schema_invalid/u,
@@ -670,7 +692,7 @@ test('refuses a mountable-looking projection that substitutes a declarative rend
               pluginId: PACKED_TARGETED_CONTRIBUTION_FIXTURE.contributorPluginId,
               localId: PACKED_TARGETED_CONTRIBUTION_FIXTURE.rendererId,
               qualifiedId: `${PACKED_TARGETED_CONTRIBUTION_FIXTURE.contributorPluginId}/${PACKED_TARGETED_CONTRIBUTION_FIXTURE.rendererId}`,
-              generation: 'contributor-generation',
+              occurrenceId: 'contributor-occurrence',
             },
             visible: true,
             requiredHostMethods: [],
@@ -695,8 +717,8 @@ test('refuses a mountable-looking projection that substitutes a declarative rend
   assert.throws(
     () => assertMountedTargetedContributionProjection({
       projection: invalidProjection,
-      targetGeneration: 'target-generation',
-      contributorGeneration: 'contributor-generation',
+      targetImmutableGenerationId: 'target-generation',
+      contributorImmutableGenerationId: 'contributor-generation',
       machineId: 'machine-id',
     }),
     /targeted_surface_selected_react_native_renderer_invalid/u,
@@ -723,8 +745,8 @@ test('refuses a React Native renderer that no longer belongs to the packed contr
   assert.throws(
     () => assertMountedTargetedContributionProjection({
       projection: invalidProjection,
-      targetGeneration: 'target-generation',
-      contributorGeneration: 'contributor-generation',
+      targetImmutableGenerationId: 'target-generation',
+      contributorImmutableGenerationId: 'contributor-generation',
       machineId: 'machine-id',
     }),
     /targeted_projection_response_invalid/u,

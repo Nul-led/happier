@@ -1,9 +1,9 @@
 import React from 'react';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import renderer, { act } from 'react-test-renderer';
-import type { ToolCall } from '@/sync/domains/messages/messageTypes';
+import type { ToolCall } from "@happier-dev/session-core/messages";
 import { collectHostText, makeToolCall, makeToolViewProps } from '@/dev/testkit';
-import { renderScreen } from '@/dev/testkit';
+import { createTestSessionTranscriptSource, renderWithSessionTranscriptSource } from '@/dev/testkit';
 import {
     installWorkflowRendererCommonModuleMocks,
     resetWorkflowRendererCommonModuleMockState,
@@ -44,12 +44,6 @@ vi.mock('../../catalog', () => ({
     },
 }));
 
-vi.mock('@/sync/ops', () => ({
-    sessionAllow: (...args: any[]) => sessionAllow(...args),
-    sessionAllowWithPermissionUpdates: (...args: any[]) => sessionAllowWithPermissionUpdates(...args),
-    sessionDeny: (...args: any[]) => sessionDeny(...args),
-}));
-
 vi.mock('@/sync/sync', () => ({
     sync: {
         sendMessage: (...args: any[]) => sendMessage(...args),
@@ -72,10 +66,19 @@ describe('ExitPlanToolView', () => {
 
     async function renderView(tool: ToolCall, overrides: Record<string, unknown> = {}) {
         let tree: renderer.ReactTestRenderer | undefined;
-        tree = (await renderScreen(React.createElement(
+        tree = (await renderWithSessionTranscriptSource(React.createElement(
                     ExitPlanToolView,
                     makeToolViewProps(tool, { sessionId: 's1', ...overrides }),
-                ))).tree;
+                ), createTestSessionTranscriptSource({
+                    sessionId: 's1', serverId: typeof overrides.serverId === 'string' ? overrides.serverId : null,
+                    interaction: { canSendMessages: true, canApprovePermissions: true },
+                    actions: {
+                        respondToPermission: (params) => params.approved
+                            ? params.updatedPermissions !== undefined ? sessionAllowWithPermissionUpdates(params) : sessionAllow(params)
+                            : sessionDeny(params),
+                        answerUserAction: async () => {}, abort: async () => {}, submitMessage: async () => {},
+                    },
+                }))).tree;
         return tree!;
     }
 
@@ -103,7 +106,7 @@ describe('ExitPlanToolView', () => {
         });
 
         expect(sessionAllow).toHaveBeenCalledTimes(1);
-        expect(sessionAllow).toHaveBeenCalledWith('s1', 'perm1');
+        expect(sessionAllow).toHaveBeenCalledWith({ id: 'perm1', approved: true });
         expect(sendMessage).toHaveBeenCalledTimes(0);
         expect(collectHostText(tree)).toContain('tools.exitPlanMode.responded');
     });
@@ -125,13 +128,10 @@ describe('ExitPlanToolView', () => {
         });
 
         expect(sessionAllowWithPermissionUpdates).toHaveBeenCalledTimes(1);
-        expect(sessionAllowWithPermissionUpdates).toHaveBeenCalledWith(
-            's1',
-            'perm1',
-            expect.objectContaining({
+        expect(sessionAllowWithPermissionUpdates).toHaveBeenCalledWith(expect.objectContaining({ id: 'perm1', approved: true, ...{
                 mode: 'acceptEdits',
                 updatedPermissions: [{ type: 'setMode', mode: 'acceptEdits', destination: 'session' }],
-            }),
+            } })
         );
     });
 
@@ -152,13 +152,10 @@ describe('ExitPlanToolView', () => {
         });
 
         expect(sessionAllowWithPermissionUpdates).toHaveBeenCalledTimes(1);
-        expect(sessionAllowWithPermissionUpdates).toHaveBeenCalledWith(
-            's1',
-            'perm1',
-            expect.objectContaining({
+        expect(sessionAllowWithPermissionUpdates).toHaveBeenCalledWith(expect.objectContaining({ id: 'perm1', approved: true, ...{
                 mode: 'bypassPermissions',
                 updatedPermissions: [{ type: 'setMode', mode: 'bypassPermissions', destination: 'session' }],
-            }),
+            } })
         );
     });
 
@@ -184,12 +181,9 @@ describe('ExitPlanToolView', () => {
         });
 
         expect(sessionAllowWithPermissionUpdates).toHaveBeenCalledTimes(1);
-        expect(sessionAllowWithPermissionUpdates).toHaveBeenCalledWith(
-            's1',
-            'perm1',
-            expect.objectContaining({
+        expect(sessionAllowWithPermissionUpdates).toHaveBeenCalledWith(expect.objectContaining({ id: 'perm1', approved: true, ...{
                 updatedPermissions: [providerSuggestion],
-            }),
+            } })
         );
     });
 
@@ -202,7 +196,7 @@ describe('ExitPlanToolView', () => {
         });
 
         expect(sessionDeny).toHaveBeenCalledTimes(1);
-        expect(sessionDeny).toHaveBeenCalledWith('s1', 'perm1');
+        expect(sessionDeny).toHaveBeenCalledWith({ id: 'perm1', approved: false });
         expect(sendMessage).toHaveBeenCalledTimes(0);
     });
 
@@ -236,7 +230,7 @@ describe('ExitPlanToolView', () => {
         });
 
         expect(sessionAllow).toHaveBeenCalledTimes(1);
-        expect(sessionAllow).toHaveBeenCalledWith('s1', 'toolu_reconnect');
+        expect(sessionAllow).toHaveBeenCalledWith({ id: 'toolu_reconnect', approved: true });
         expect(modalAlert).toHaveBeenCalledTimes(0);
     });
 
@@ -249,7 +243,7 @@ describe('ExitPlanToolView', () => {
         });
 
         expect(sessionDeny).toHaveBeenCalledTimes(1);
-        expect(sessionDeny).toHaveBeenCalledWith('s1', 'toolu_reconnect');
+        expect(sessionDeny).toHaveBeenCalledWith({ id: 'toolu_reconnect', approved: false });
         expect(modalAlert).toHaveBeenCalledTimes(0);
     });
 
@@ -270,7 +264,7 @@ describe('ExitPlanToolView', () => {
         });
 
         expect(sessionDeny).toHaveBeenCalledTimes(1);
-        expect(sessionDeny).toHaveBeenCalledWith('s1', 'toolu_reconnect', undefined, undefined, undefined, 'Please change step 2');
+        expect(sessionDeny).toHaveBeenCalledWith({ id: 'toolu_reconnect', approved: false, reason: 'Please change step 2' });
         expect(modalAlert).toHaveBeenCalledTimes(0);
     });
 
@@ -356,6 +350,17 @@ describe('ExitPlanToolView', () => {
         expect(sessionDeny).toHaveBeenCalledTimes(0);
 
         expect(collectHostText(tree)).toContain('session.sharing.permissionApprovalsDisabledNotGranted');
+    });
+
+    it('withdraws all plan decisions from a read-only source', async () => {
+        const screen = await renderWithSessionTranscriptSource(
+            React.createElement(ExitPlanToolView, makeToolViewProps(makeRunningTool(), { sessionId: 's1' })),
+            createTestSessionTranscriptSource(),
+        );
+        expect(screen.findAllByTestId('exit-plan-approve')).toHaveLength(0);
+        expect(screen.findAllByTestId('exit-plan-reject')).toHaveLength(0);
+        expect(sessionAllow).not.toHaveBeenCalled();
+        expect(sessionDeny).not.toHaveBeenCalled();
     });
 
     it('shows a placeholder when no plan text is provided', async () => {

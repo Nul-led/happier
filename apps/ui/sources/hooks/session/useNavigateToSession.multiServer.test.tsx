@@ -3,6 +3,7 @@ import { act } from 'react-test-renderer';
 import { describe, expect, it, vi } from 'vitest';
 import { renderScreen } from '@/dev/testkit';
 import { installSessionHooksCommonModuleMocks } from './sessionHooksTestHelpers';
+import { DestinationInstanceHost } from '@/components/appShell/workspace/DestinationInstanceHost';
 
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -49,6 +50,19 @@ vi.mock('@/sync/runtime/performance/sessionUiTelemetry', () => ({
 }));
 
 describe('useNavigateToSession (multi-server)', () => {
+    it('navigates from a hosted session through the owning tab and preserves the exact Home', async () => {
+        routerNavigateSpy.mockClear();
+        setActiveServerAndSwitchSpy.mockResolvedValue(false);
+        const push = vi.fn();
+        const { useNavigateToSession } = await import('./useNavigateToSession');
+        let navigateToSession: ReturnType<typeof useNavigateToSession> | null = null;
+        function Probe() { navigateToSession = useNavigateToSession(); return null; }
+        await renderScreen(<DestinationInstanceHost tabId="session-tab" ref={{ kind: 'session', params: { id: 'A', serverId: 'home-a' } }} pathname="/session/A" focused visible navigation={{ push, replace: vi.fn(), back: vi.fn() }}><Probe /></DestinationInstanceHost>);
+        await act(async () => { await navigateToSession!('B', { serverId: 'home-b' }); });
+        expect(push).toHaveBeenCalledWith('/session/B?serverId=home-b', expect.any(Object));
+        expect(routerNavigateSpy).not.toHaveBeenCalled();
+    });
+
     it('navigates immediately while the server switch runs in parallel', async () => {
         routerNavigateSpy.mockClear();
         setActiveServerAndSwitchSpy.mockClear();

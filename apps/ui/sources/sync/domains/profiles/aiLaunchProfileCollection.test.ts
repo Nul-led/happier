@@ -27,6 +27,16 @@ const future = { v: 99, id: 'future', opaque: { untouched: true } };
 const malformed = { v: 2, id: '', malformed: true };
 
 describe('AI launch profile UI collection', () => {
+    it('hydrates Settings references and shared profiles from readable Artifact bodies without disclosing locked rows', () => {
+        const artifact = { id: 'published', isDecrypted: true as const, title: 'Slim',
+            header: { title: 'Slim', kind: 'launch-profile.v1', profileId: 'slim', name: 'Slim' },
+            body: JSON.stringify({ kind: 'launch-profile.v1', profile: { ...slim, envVarRequirements: [{ name: 'TOKEN', required: true }] } }),
+            headerVersion: 1, bodyVersion: 1, seq: 1, createdAt: 1, updatedAt: 1 };
+        const raw = [{ artifactId: 'published' }];
+        expect(readUiAiLaunchProfileSnapshot(raw, { published: artifact }).profiles).toMatchObject([{ id: 'slim', artifactId: 'published' }]);
+        expect(readUiAiLaunchProfilesForLegacyUi(raw, { published: artifact })[0]?.envVarRequirements).toMatchObject([{ name: 'TOKEN', required: true }]);
+        expect(readUiAiLaunchProfileSnapshot(raw, {}).unreadableCount).toBe(1);
+    });
     it('returns only executable legacy and slim rows', () => {
         expect(readUiAiLaunchProfiles([legacy, slim, future, malformed]).map((profile) => profile.id)).toEqual(['legacy', 'slim']);
     });
@@ -92,7 +102,7 @@ describe('AI launch profile UI collection', () => {
         expect(() => appendAiLaunchProfile(raw, { ...slim, id: 'legacy' })).toThrow(/already exists/i);
     });
 
-    it('removes one launch profile and all of its Account Settings residue atomically', () => {
+    it('removes Account-owned profile residue while leaving retained authoring memory for its importer', () => {
         const untouched = { nested: true };
         const retainedOtherBindings = { OTHER_TOKEN: 'secret-other' };
 
@@ -108,7 +118,7 @@ describe('AI launch profile UI collection', () => {
             untouched,
         }, 'legacy')).toEqual({
             profiles: [slim, future],
-            lastUsedProfile: null,
+            lastUsedProfile: 'legacy',
             favoriteProfiles: ['slim'],
             profileEnabledById: { slim: true },
             secretBindingsByProfileId: { slim: retainedOtherBindings },

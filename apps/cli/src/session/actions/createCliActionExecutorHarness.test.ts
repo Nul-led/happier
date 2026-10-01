@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { ActionExecutorDeps, ApprovalRequestV1 } from '@happier-dev/protocol';
+import * as persistence from '@/persistence';
 
 import { createCliActionExecutorHarness } from './createCliActionExecutorHarness';
 
@@ -29,6 +30,31 @@ async function expectPromiseStillPending(promise: Promise<unknown>): Promise<voi
 }
 
 describe('createCliActionExecutorHarness', () => {
+  it('places default browser actions on the authenticated daemon and consumes its result', async () => {
+    // Daemon discovery reads the filesystem, and fetch crosses the local HTTP boundary.
+    const state = vi.spyOn(persistence, 'readDaemonState').mockResolvedValue({
+      pid: 123, httpPort: 12345, controlToken: 'browser-control-token',
+      startedAt: 1, startedWithCliVersion: '0.3.0',
+    });
+    const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      result: { v: 1, machineId: 'machine_browser', generatedAt: 1, refreshState: 'idle', events: [], diagnostics: [] },
+    }), { status: 200 }));
+    const harness = createCliActionExecutorHarness({
+      token: 'token', sessionId: 'session_browser', mode: 'plain', ctx: null,
+    });
+    try {
+      const result = await harness.executor.execute('browser.diagnostics.snapshot', {
+        browserSessionId: 'session_browser', viewId: 'view_browser',
+      }, { surface: 'agent', defaultSessionId: 'session_browser' });
+      expect(result).toEqual({ ok: true, result: {
+        v: 1, machineId: 'machine_browser', generatedAt: 1, refreshState: 'idle', events: [], diagnostics: [],
+      } });
+    } finally {
+      fetch.mockRestore();
+      state.mockRestore();
+    }
+  });
+
   it('lets callers override action approval policy for a specific runtime surface', async () => {
     const approvalsCreate = vi.fn(async () => ({ artifactId: 'approval_1' }));
     const sessionTitleSet = vi.fn(async () => ({ ok: true, sessionId: 'sess_1', title: 'Updated' }));

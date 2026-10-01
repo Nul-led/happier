@@ -1,7 +1,8 @@
+import { renderWithSessionTranscriptSource } from '@/dev/testkit';
 import React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { renderScreen, standardCleanup } from '@/dev/testkit';
+import { standardCleanup } from '@/dev/testkit';
 import { installToolShellCommonModuleMocks, makeToolCall } from './ToolView.testHelpers';
 import { createUseSettingMock } from '@/dev/testkit/mocks/storage';
 
@@ -85,7 +86,7 @@ describe('ToolView (secondary action touch target)', () => {
             result: { ok: true },
         });
 
-        const screen = await renderScreen(
+        const screen = await renderWithSessionTranscriptSource(
             <ToolView tool={tool} metadata={null} messages={[]} sessionId="s1" messageId="m1" />,
         );
 

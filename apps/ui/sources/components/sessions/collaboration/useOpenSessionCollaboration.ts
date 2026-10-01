@@ -1,11 +1,10 @@
 import * as React from 'react';
-import { useRouter, type Href } from 'expo-router';
+import { useRouter, type Href } from '@/components/appShell/workspace/destinationRoute';
 
 import type { AppPaneScopeApi } from '@/components/appShell/panes/hooks/useAppPaneScope';
 import { useSessionCockpitSurfaceNavigation } from '@/components/workspaceCockpit/session/SessionCockpitSurfaceNavigation';
-import { resolveSessionRoutePathForSurface } from '@/components/workspaceCockpit/session/sessionCockpitState';
+import { buildSessionDestinationRouteHref } from '@/components/workspaceCockpit/session/sessionCockpitNavigation';
 import { useMobileWorkspaceExperienceState } from '@/components/workspaceCockpit/useMobileWorkspaceExperienceState';
-import { buildScopedSessionRouteHref } from '@/hooks/session/sessionRouteServerScope';
 import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
 import {
     publishSessionCollaborationIntent,
@@ -31,9 +30,14 @@ export function buildSessionCollaborationRouteHref(input: Readonly<{
     const query = {
         ...(input.focusTarget && input.focusTarget !== 'top' ? { collaborationFocus: input.focusTarget } : {}),
     };
-    return input.cockpitEnabled
-        ? resolveSessionRoutePathForSurface(input.sessionId, 'collaboration', { serverId: input.serverId, query })
-        : buildScopedSessionRouteHref({ sessionId: input.sessionId, serverId: input.serverId, query: { ...query, right: 'collaboration' } });
+    return buildSessionDestinationRouteHref({
+        sessionId: input.sessionId,
+        serverId: input.serverId,
+        cockpitEnabled: input.cockpitEnabled,
+        surface: 'collaboration',
+        rightTabId: 'collaboration',
+        query,
+    });
 }
 
 /**

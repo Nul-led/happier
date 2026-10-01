@@ -8,6 +8,8 @@ import {
     isSessionAwarenessContentReadableV1,
     resolveActivityRequestEventIdentityV1,
     resolveActivitySequenceEventIdentityV1,
+    resolveActivityTranscriptLocalIdEventIdentityV1,
+    resolveActivityTurnEventIdentityV1,
     resolveSessionPersonalEventEligibilityV1,
     resolveExpoNotificationSoundName,
     resolvePushNotificationAndroidChannelId,
@@ -49,14 +51,18 @@ import { subscribeActivityLocalNotifications, type ActivityLocalNotificationEven
 
 function resolveLocalNotificationEventKind(event: ActivityLocalNotificationEvent): ActivityAttentionDeliveryEventKind {
     if (event.kind === 'ready') return 'ready';
+    if (event.kind === 'session-update') return 'follow_update';
     return event.requestKind === 'permission' ? 'permission_request' : 'user_action_request';
 }
 
 function resolveLocalNotificationEventIdentity(event: ActivityLocalNotificationEvent): string | undefined {
     if (event.kind === 'agent-request') return resolveActivityRequestEventIdentityV1(event.requestId);
-    return event.committedSequence
+    if (event.kind === 'session-update' && 'turnId' in event) return resolveActivityTurnEventIdentityV1(event.turnId);
+    return 'committedSequence' in event && event.committedSequence
         ? resolveActivitySequenceEventIdentityV1(event.committedSequence)
-        : undefined;
+        : event.kind === 'ready' && event.committedLocalId
+            ? resolveActivityTranscriptLocalIdEventIdentityV1(event.committedLocalId)
+            : undefined;
 }
 
 function resolveExpoLocalNotificationSound(
@@ -143,6 +149,8 @@ export function ActivityLocalNotificationRuntime(): React.ReactElement | null {
                 ? buildSessionFromListRenderable(scopedRow.session, { serverId: event.address.serverId })
                 : null);
             if (!session) return;
+            if (event.kind === 'session-update' && event.event === 'human_message'
+                && event.sourceAccountId === audienceSource.audienceScopes?.get(event.address.serverId)?.accountId) return;
             const viewer = session.viewer;
             const tracked = isSessionPersonallyTrackedForViewer(session);
             // Pre-viewer Homes carry no Follow facts. Only their identified owner
@@ -188,15 +196,17 @@ export function ActivityLocalNotificationRuntime(): React.ReactElement | null {
             }
 
             const eventIdentity = resolveLocalNotificationEventIdentity(event);
-            // One committed event gets one visible alert on this device: when the
-            // Home leg already presented it here, this device does not schedule a
-            // second independent alert for it (Lane 09C §10.4 C5b step 6).
+            const accountId = audienceSource.audienceScopes?.get(event.address.serverId)?.accountId;
+            // Desktop has no Expo foreground presentation callback. Native
+            // arrivals arbitrate there after current policy, not while scheduling.
             // Identityless state observations always continue through the
             // current eligibility and policy checks above.
-            if (eventIdentity && consumeOtherLegActivityAlertPresentation({
+            if (isDesktopHost() && eventIdentity && accountId && consumeOtherLegActivityAlertPresentation({
                 address: event.address,
+                accountId,
                 event: event.event,
                 identity: eventIdentity,
+                committedLocalId: event.kind === 'ready' ? event.committedLocalId : undefined,
                 source: 'local_notification',
             })) {
                 return;
@@ -213,8 +223,18 @@ export function ActivityLocalNotificationRuntime(): React.ReactElement | null {
             const awareness = projectUiSessionAwareness(session, nowMs);
             const mayShowPrivateContent = viewer?.attention.presentation !== 'status_only'
                 && isSessionAwarenessContentReadableV1(awareness.encryption);
+            // An alert may enrich itself only from the exact committed row
+            // already opened for this Home. It never fetches/decrypts a preview
+            // or borrows another Home's same-id Session transcript.
+            const contentEvent = event.kind === 'session-update' && 'committedSequence' in event
+                ? { ...event, messages: mayShowPrivateContent && directScopedSession
+                    && event.committedSequence.sequenceDomain === 'session_transcript'
+                    ? Object.values(state.sessionMessages[event.address.sessionId]?.messagesMap ?? {})
+                        .filter((message) => message.seq === event.committedSequence.sequence)
+                    : undefined }
+                : event;
             const notification = buildActivityLocalNotificationContent({
-                event,
+                event: contentEvent,
                 session: mayShowPrivateContent ? session : null,
                 serverUrl,
                 contextLine: projectSessionContextPresentation(buildSessionContextFacts({
@@ -242,11 +262,13 @@ export function ActivityLocalNotificationRuntime(): React.ReactElement | null {
                     title: notification.title,
                     body: notification.body,
                 }).then((accepted) => {
-                    if (!accepted || !eventIdentity) return;
+                    if (!accepted || !eventIdentity || !accountId) return;
                     noteActivityAlertPresented({
                         address: event.address,
+                        accountId,
                         event: event.event,
                         identity: eventIdentity,
+                        committedLocalId: event.kind === 'ready' ? event.committedLocalId : undefined,
                         source: 'local_notification',
                     });
                 });
@@ -265,15 +287,9 @@ export function ActivityLocalNotificationRuntime(): React.ReactElement | null {
                 sound: resolvedSound.sound,
                 channelId: resolvedSound.channelId,
             };
-            const submission = sendExpoLocalNotification(expoNotificationParams).then(() => {
-                if (!eventIdentity) return;
-                noteActivityAlertPresented({
-                    address: event.address,
-                    event: event.event,
-                    identity: eventIdentity,
-                    source: 'local_notification',
-                });
-            });
+            // Scheduling acceptance does not mean a banner presented. Only the
+            // Expo foreground handler may consume or write native presentation notes.
+            const submission = sendExpoLocalNotification(expoNotificationParams);
             fireAndForget(submission, {
                 tag: 'ActivityLocalNotificationRuntime.sendExpoLocalNotification',
             });

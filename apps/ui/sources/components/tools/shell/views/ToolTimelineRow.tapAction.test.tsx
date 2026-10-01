@@ -1,15 +1,16 @@
+import { renderWithSessionTranscriptSource, createTestSessionTranscriptSource } from '@/dev/testkit';
 import React from 'react';
 import { act } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { createDeferred, findTestInstanceByTypeWithProps, flushHookEffects, renderScreen, standardCleanup } from '@/dev/testkit';
+import { createDeferred, findTestInstanceByTypeWithProps, flushHookEffects, standardCleanup } from '@/dev/testkit';
 import { installToolShellCommonModuleMocks } from './ToolView.testHelpers';
 import { createUseSettingMock } from '@/dev/testkit/mocks/storage';
 import { settingsDefaults, type Settings } from '@/sync/domains/settings/settings';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
-const ensureSidechainMessagesLoadedMock = vi.fn(async () => 'loaded');
+const ensureSidechainMessagesLoadedMock = vi.fn(async (_sessionId: string, _sidechainId: string): Promise<'loaded' | 'not_ready' | 'in_flight'> => 'loaded');
 const pushSpy = vi.fn();
 const navigateWithBlurOnWebSpy = vi.hoisted(() => vi.fn((action: () => void) => action()));
 
@@ -116,7 +117,7 @@ vi.mock('@/agents/catalog/catalog', () => ({
 
 let settings: Partial<Settings> = {};
 
-async function renderToolTimelineRow(overrides: Record<string, unknown> = {}) {
+async function renderToolTimelineRow(overrides: Record<string, unknown> = {}, readOnly = false) {
     const { ToolTimelineRow } = await import('./ToolTimelineRow');
     const tool = {
         name: 'read',
@@ -130,13 +131,12 @@ async function renderToolTimelineRow(overrides: Record<string, unknown> = {}) {
         ...(overrides.tool as Record<string, unknown> | undefined),
     } as any;
 
-    return renderScreen(
+    return renderWithSessionTranscriptSource(
         <ToolTimelineRow
             tool={tool}
             metadata={null}
             {...Object.fromEntries(Object.entries(overrides).filter(([key]) => key !== 'tool'))}
-        />,
-    );
+        />, createTestSessionTranscriptSource({ navigate: readOnly ? null : pushSpy, loadSidechain: readOnly ? null : (sidechainId) => ensureSidechainMessagesLoadedMock('s1', sidechainId) }));
 }
 
 function findHeaderTitleFontSize(screen: Awaited<ReturnType<typeof renderToolTimelineRow>>) {
@@ -247,8 +247,8 @@ describe('ToolTimelineRow (tap action)', () => {
                 name: 'SubAgentRun',
             },
             sessionId: 's1',
-            interaction: { canSendMessages: true, canApprovePermissions: true, disableToolNavigation: true },
-        });
+            interaction: { canSendMessages: true, canApprovePermissions: true },
+        }, true);
 
         expect(screen.getTextContent()).not.toContain('toolView.open');
 

@@ -1,7 +1,9 @@
 import * as React from 'react';
 import { Platform, Pressable, ScrollView, View } from 'react-native';
+import Animated from 'react-native-reanimated';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
+import { usePressFeedback } from '@/components/ui/interactions/usePressFeedback';
 import { Text } from '@/components/ui/text/Text';
 import { Typography } from '@/constants/Typography';
 import { t } from '@/text';
@@ -102,10 +104,6 @@ const stylesheet = StyleSheet.create((theme) => ({
         height: stageVisualTokens.narration.primaryHeight,
         justifyContent: 'center',
         paddingHorizontal: stageVisualTokens.narration.primaryPaddingHorizontal,
-        transform: [{ scale: 1 }],
-    },
-    actionButtonPressed: {
-        transform: [{ scale: stageVisualTokens.motion.pressScale }],
     },
     actionButtonDisabled: {
         opacity: 0.35,
@@ -168,6 +166,7 @@ function ConfigActionButton(props: Readonly<{
 }>): React.ReactElement {
     const styles = stylesheet;
     const disabled = props.disabled === true;
+    const feedback = usePressFeedback();
     const invokePress = (): void => {
         void props.onPress();
     };
@@ -190,27 +189,32 @@ function ConfigActionButton(props: Readonly<{
             accessibilityRole="button"
             accessibilityState={{ disabled }}
             disabled={disabled}
+            style={disabled ? styles.actionButtonDisabled : null}
             onPress={invokePress}
             // @ts-expect-error React Native's Pressable props omit RNW's keyboard hook.
             onKeyDown={Platform.OS === 'web' ? handleWebEnterKeyDown : undefined}
-            style={({ pressed }) => [
-                styles.actionButton,
-                props.primary ? styles.primaryActionButton : null,
-                props.quiet ? styles.quietActionButton : null,
-                pressed && !disabled ? styles.actionButtonPressed : null,
-                disabled ? styles.actionButtonDisabled : null,
-            ]}
+            onPressIn={feedback.onPressIn}
+            onPressOut={feedback.onPressOut}
         >
-            <Text
-                numberOfLines={1}
+            <Animated.View
                 style={[
-                    styles.actionLabel,
-                    props.primary ? styles.primaryActionLabel : null,
-                    props.quiet ? styles.skipLabel : null,
+                    styles.actionButton,
+                    props.primary ? styles.primaryActionButton : null,
+                    props.quiet ? styles.quietActionButton : null,
+                    feedback.animatedStyle,
                 ]}
             >
-                {props.label}
-            </Text>
+                <Text
+                    numberOfLines={1}
+                    style={[
+                        styles.actionLabel,
+                        props.primary ? styles.primaryActionLabel : null,
+                        props.quiet ? styles.skipLabel : null,
+                    ]}
+                >
+                    {props.label}
+                </Text>
+            </Animated.View>
         </Pressable>
     );
 }

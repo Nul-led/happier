@@ -12,6 +12,12 @@ import {
 } from './intentRegistry';
 import * as intentRegistry from './intentRegistry';
 
+const managedProfileCustody = {
+  kind: 'managed',
+  immutableGenerationId: 'immutable-review',
+  installSource: 'archive',
+} as const;
+
 describe('executionRun intent profile registry', () => {
   it('keeps profile coverage aligned with the protocol intent surface', () => {
     expect(listExecutionRunSupportedIntents().slice().sort()).toEqual(ExecutionRunIntentSchema.options.slice().sort());
@@ -91,12 +97,12 @@ describe('executionRun intent profile registry', () => {
     const catalog = buildExecutionRunProfileCatalog([
       {
         pluginId: 'happier.review.coderabbit',
-        immutableGenerationId: 'immutable-coderabbit',
+        sourceCustody: { kind: 'bundled_first_party', packagedRuntime: { kind: 'cli_version_root', versionRootId: 'cli-coderabbit' } },
         definition,
       },
       {
         pluginId: 'happier.review.deepsec',
-        immutableGenerationId: 'immutable-deepsec',
+        sourceCustody: { kind: 'development', registeredRootId: '/plugins/deepsec' },
         definition: { ...definition, title: 'DeepSec review' },
       },
     ]);
@@ -107,13 +113,14 @@ describe('executionRun intent profile registry', () => {
     ]);
     expect(resolveExecutionRunIntentProfileFromCatalog(
       catalog, 'review', 'happier.review.coderabbit/review',
+      { kind: 'bundled_first_party', packagedRuntime: { kind: 'cli_version_root', versionRootId: 'cli-coderabbit' } },
     ).listAvailableActionIds?.({ start: {} as never })).toContain('happier.review.coderabbit/publish');
   });
 
   it('never cross-resolves a review host action onto a non-review intent', () => {
     const catalog = buildExecutionRunProfileCatalog([{
       pluginId: 'happier.review.coderabbit',
-      immutableGenerationId: 'immutable-coderabbit',
+      sourceCustody: { kind: 'bundled_first_party', packagedRuntime: { kind: 'cli_version_root', versionRootId: 'cli-coderabbit' } },
       definition: {
         id: 'review', intent: 'review', title: 'Review', promptAsset: 'review-prompt',
         compatibleAgents: ['reviewer'],
@@ -129,7 +136,7 @@ describe('executionRun intent profile registry', () => {
   it('uses the contributed intent as the qualified runtime-profile owner and fails stale or mismatched selections closed', () => {
     const catalog = buildExecutionRunProfileCatalog([{
       pluginId: 'acme.review',
-      immutableGenerationId: 'immutable-review',
+      sourceCustody: managedProfileCustody,
       definition: {
         id: 'review', intent: 'review', title: 'Review', promptAsset: 'review-prompt',
         compatibleAgents: ['reviewer'],
@@ -149,7 +156,7 @@ describe('executionRun intent profile registry', () => {
     const requestedAssets: string[] = [];
     const catalog = buildExecutionRunProfileCatalog([{
       pluginId: 'acme.delegate',
-      immutableGenerationId: 'immutable-generation-current',
+      sourceCustody: { ...managedProfileCustody, immutableGenerationId: 'immutable-generation-current' },
       definition: {
         id: 'research', intent: 'delegate', title: 'Research',
         promptAsset: 'research-prompt',
@@ -166,6 +173,7 @@ describe('executionRun intent profile registry', () => {
       catalog,
       'delegate',
       'acme.delegate/research',
+      { ...managedProfileCustody, immutableGenerationId: 'immutable-generation-current' },
     );
     const patch = await profile.prepareStartParams?.({
       cwd: process.cwd(),
@@ -177,7 +185,7 @@ describe('executionRun intent profile registry', () => {
         retentionPolicy: 'resumable',
         runClass: 'long_lived',
         ioMode: 'request_response',
-        profileGenerationId: 'immutable-generation-current',
+        profileSourceCustody: { ...managedProfileCustody, immutableGenerationId: 'immutable-generation-current' },
       },
     });
 
@@ -195,7 +203,8 @@ describe('executionRun intent profile registry', () => {
         intent: 'delegate',
         backendTarget: { kind: 'builtInAgent', agentId: 'researcher' },
         instructions: 'Inspect.', permissionMode: 'read_only', retentionPolicy: 'ephemeral',
-        runClass: 'bounded', ioMode: 'streaming', profileGenerationId: 'immutable-generation-stale',
+        runClass: 'bounded', ioMode: 'streaming',
+        profileSourceCustody: { ...managedProfileCustody, immutableGenerationId: 'immutable-generation-stale' },
       },
     })).rejects.toMatchObject({ code: 'execution_run_profile_stale' });
 
@@ -206,15 +215,48 @@ describe('executionRun intent profile registry', () => {
         backendTarget: { kind: 'builtInAgent', agentId: 'coderabbit' },
         instructions: 'Inspect.', permissionMode: 'read_only', retentionPolicy: 'ephemeral',
         runClass: 'bounded', ioMode: 'streaming',
-        profileGenerationId: 'immutable-generation-current',
+        profileSourceCustody: { ...managedProfileCustody, immutableGenerationId: 'immutable-generation-current' },
       },
     })).rejects.toThrow(/compatible/i);
+  });
+
+  it.each([
+    ['happier.review.coderabbit', { kind: 'bundled_first_party', packagedRuntime: { kind: 'cli_version_root', versionRootId: 'cli-0.3.0' } }],
+    ['happier.review.deepsec', { kind: 'development', registeredRootId: '/plugins/deepsec' }],
+  ] as const)('starts %s only with matching source custody', async (pluginId, sourceCustody) => {
+    const catalog = buildExecutionRunProfileCatalog([{
+      pluginId,
+      sourceCustody,
+      definition: {
+        id: 'profile', intent: 'delegate', title: 'Delegated review', promptAsset: 'review-prompt',
+        compatibleAgents: ['reviewer'],
+        defaults: { retention: 'ephemeral', runClass: 'bounded', io: 'streaming' },
+      },
+    }]);
+    const profileId = `${pluginId}/profile`;
+    const profile = resolveExecutionRunIntentProfileFromCatalog(
+      catalog, 'delegate', profileId, sourceCustody,
+    );
+    await expect(profile.prepareStartParams?.({
+      cwd: process.cwd(),
+      request: {
+        intent: 'delegate', backendTarget: { kind: 'builtInAgent', agentId: 'reviewer' },
+        instructions: 'Review.', permissionMode: 'read_only', retentionPolicy: 'ephemeral',
+        runClass: 'bounded', ioMode: 'streaming', profileSourceCustody: sourceCustody,
+      },
+    })).resolves.toMatchObject({ retentionPolicy: 'ephemeral' });
+    expect(() => resolveExecutionRunIntentProfileFromCatalog(
+      catalog,
+      'delegate',
+      profileId,
+      { kind: 'managed', immutableGenerationId: 'other', installSource: 'archive' },
+    )).toThrow(/current source custody/);
   });
 
   it('matches compatible Agent references by typed plugin identity rather than provider-like local ids', async () => {
     const catalog = buildExecutionRunProfileCatalog([{
       pluginId: 'acme.review',
-      immutableGenerationId: 'immutable-review',
+      sourceCustody: managedProfileCustody,
       definition: {
         id: 'review', intent: 'review', title: 'Review', promptAsset: 'review-prompt',
         compatibleAgents: [{ pluginId: 'acme.review', localId: 'reviewer' }],
@@ -224,14 +266,16 @@ describe('executionRun intent profile registry', () => {
       resolveAgentIdentity: () => ({ pluginId: 'acme.provider-shaped', localId: 'reviewer' }),
       resolvePromptAssetBlocks: async () => [{ id: 'prompt', scope: 'session', text: 'prompt' }],
     });
-    const profile = resolveExecutionRunIntentProfileFromCatalog(catalog, 'review', 'acme.review/review');
+    const profile = resolveExecutionRunIntentProfileFromCatalog(
+      catalog, 'review', 'acme.review/review', managedProfileCustody,
+    );
 
     await expect(profile.prepareStartParams?.({
       cwd: process.cwd(),
       request: {
         intent: 'review', backendTarget: { kind: 'builtInAgent', agentId: 'reviewer' },
         instructions: 'Review.', permissionMode: 'read_only', retentionPolicy: 'ephemeral',
-        runClass: 'bounded', ioMode: 'streaming', profileGenerationId: 'immutable-review',
+        runClass: 'bounded', ioMode: 'streaming', profileSourceCustody: managedProfileCustody,
       },
     })).rejects.toMatchObject({ code: 'execution_run_profile_agent_incompatible' });
   });
@@ -239,7 +283,7 @@ describe('executionRun intent profile registry', () => {
   it('fails a gated contributed profile closed through the shared availability owner', async () => {
     const catalog = buildExecutionRunProfileCatalog([{
       pluginId: 'acme.review',
-      immutableGenerationId: 'immutable-review',
+      sourceCustody: managedProfileCustody,
       definition: {
         id: 'review', intent: 'review', title: 'Review', promptAsset: 'review-prompt',
         compatibleAgents: ['reviewer'],
@@ -250,14 +294,16 @@ describe('executionRun intent profile registry', () => {
       resolvePolicyFacts: () => ({ 'plugin.enabled': false }),
       resolvePromptAssetBlocks: async () => [{ id: 'prompt', scope: 'session', text: 'prompt' }],
     });
-    const profile = resolveExecutionRunIntentProfileFromCatalog(catalog, 'review', 'acme.review/review');
+    const profile = resolveExecutionRunIntentProfileFromCatalog(
+      catalog, 'review', 'acme.review/review', managedProfileCustody,
+    );
 
     await expect(profile.prepareStartParams?.({
       cwd: process.cwd(),
       request: {
         intent: 'review', backendTarget: { kind: 'builtInAgent', agentId: 'reviewer' },
         instructions: 'Review.', permissionMode: 'read_only', retentionPolicy: 'ephemeral',
-        runClass: 'bounded', ioMode: 'streaming', profileGenerationId: 'immutable-review',
+        runClass: 'bounded', ioMode: 'streaming', profileSourceCustody: managedProfileCustody,
       },
     })).rejects.toMatchObject({ code: 'execution_run_profile_unavailable' });
   });

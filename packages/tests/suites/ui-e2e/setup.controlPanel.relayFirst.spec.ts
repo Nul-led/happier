@@ -53,7 +53,7 @@ test.describe('ui e2e: setup control panel flow', () => {
         await server?.stop().catch(() => {});
     });
 
-    test('shows the desktop-only setup notice on web', async ({ page }) => {
+    test('returns the retired setup entry to the public Home on web', async ({ page }) => {
         test.setTimeout(300_000);
         if (!uiBaseUrl) throw new Error('missing ui base url');
 
@@ -61,17 +61,6 @@ test.describe('ui e2e: setup control panel flow', () => {
 
         await gotoDomContentLoadedWithRetries(page, `${uiBaseUrl}/setup?happier_hmr=0`, 180_000);
 
-        await expect(page.getByTestId('setup.desktopOnlyNotice')).toHaveCount(1, { timeout: 120_000 });
-        await expect(page.getByTestId('setup.primaryActions')).toHaveCount(0);
-        await expect(page.getByTestId('setup.changeRelay')).toHaveCount(0);
-        await expect(page.getByTestId('setup.discard')).toHaveCount(0);
-        await expect(page.getByTestId('setup.postAuth')).toHaveCount(0);
-        await expect(page.getByTestId('setup.summary.activeRelay')).toHaveCount(0);
-        await expect(page.getByTestId('setup.summary.thisComputer')).toHaveCount(0);
-        await expect(page.getByTestId('setup.summary.nextAction')).toHaveCount(0);
-        await expect(page.getByTestId('setup.webRelayDriftNotice')).toHaveCount(0);
-        await expect(page.getByTestId('settings.machineSetup.startLocalTask')).toHaveCount(0);
-        await expect(page.getByTestId('settings.localRelayRuntime.status')).toHaveCount(0);
-        await expect(page.getByTestId('settings.localTailscale.status')).toHaveCount(0);
+        await expect.poll(() => new URL(page.url()).pathname, { timeout: 120_000 }).toBe('/');
     });
 });

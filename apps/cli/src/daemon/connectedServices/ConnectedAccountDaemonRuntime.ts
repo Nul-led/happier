@@ -1,6 +1,7 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 import type { PluginContributionRef } from '@happier-dev/plugin-sdk';
+import type { PendingConnectedAccountAttemptTransaction } from '@/api/client/connectedAccountAttemptTransactionApi';
 import {
     PluginJsonValueV2Schema,
     pluginSourceCustodyV1Equal,
@@ -21,6 +22,7 @@ import type {
 } from '@happier-dev/protocol';
 
 import type { PluginReloadController } from '@/plugins/runtime/reload/controller';
+import { logger } from '@/ui/logger';
 import type { PluginSourceCustody } from '@/plugins/runtime/sourceAuthority';
 import {
     createConnectedAccountAuthenticationAttemptOwner,
@@ -63,6 +65,47 @@ function sameService(
     return left.pluginId === right.pluginId && left.localId === right.localId;
 }
 
+function safeLogCode(value: unknown): string | null {
+    return typeof value === 'string' && /^[a-z][a-z0-9_]{0,127}$/u.test(value)
+        ? value
+        : null;
+}
+
+function safeDiagnosticCode(value: unknown): string | null {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const descriptor = Object.getOwnPropertyDescriptor(value, 'code');
+    return descriptor && 'value' in descriptor ? safeLogCode(descriptor.value) : null;
+}
+
+function attemptCorrelationHash(attemptId: string | null): string | null {
+    return attemptId === null ? null : createHash('sha256')
+        .update('happier.connected-account.attempt-log.v1\0')
+        .update(attemptId)
+        .digest('hex')
+        .slice(0, 24);
+}
+
+function logAuthenticationAttempt(input: Readonly<{
+    operation: string;
+    service: PluginContributionRef | null;
+    attemptId: string | null;
+    status: ConnectedAccountAttemptResponse['status'];
+    code: unknown;
+    diagnostic: unknown;
+    settlementPhase: string;
+}>): void {
+    logger.info('[DAEMON RUN] Connected Account authentication attempt', {
+        operation: input.operation,
+        serviceId: input.service
+            ? `${input.service.pluginId}/${input.service.localId}` : null,
+        attemptCorrelationHash: attemptCorrelationHash(input.attemptId),
+        status: input.status,
+        code: safeLogCode(input.code),
+        diagnosticCode: safeDiagnosticCode(input.diagnostic),
+        settlementPhase: input.settlementPhase,
+    });
+}
+
 function assertNotAborted(signal: AbortSignal | undefined): void {
     if (!signal?.aborted) return;
     throw signal.reason instanceof Error
@@ -97,6 +140,7 @@ export type ConnectedAccountDaemonPersistence = Readonly<{
         'accounts' | 'oauth' | 'settlement'
     > & Partial<Pick<AttemptOwnerParams, 'deviceTransactions' | 'lateEvidence'>>
       & Readonly<{
+          listPending?(service: PluginContributionRef): Promise<readonly PendingConnectedAccountAttemptTransaction[]>;
           assertAuthenticationActionAllowed?(input: Readonly<{
               intent: 'connect' | 'reconnect';
               service: PluginContributionRef;
@@ -280,6 +324,17 @@ export function createConnectedAccountDaemonRuntime(params: Readonly<{
         createAttemptId: params.createAttemptId ?? (() => `caa_${randomUUID()}`),
         createAccountId: params.createAccountId ?? (() => `ca_${randomUUID()}`),
         now: params.now ?? Date.now,
+        onBackgroundTransition: ({ response, service, settlementPhase }) => {
+            logAuthenticationAttempt({
+                operation: 'beginProviderFlow',
+                service,
+                attemptId: 'attemptId' in response ? response.attemptId ?? null : null,
+                status: response.status,
+                code: 'code' in response ? response.code : null,
+                diagnostic: 'diagnostic' in response ? response.diagnostic : null,
+                settlementPhase,
+            });
+        },
         accounts: params.persistence.attempts.accounts,
         configuration,
         runtime,
@@ -436,6 +491,16 @@ export function createConnectedAccountDaemonRuntime(params: Readonly<{
         async control(command, options) {
             try {
                 assertNotAborted(options?.signal);
+                if (command.operation === 'listPendingAttempts') {
+                    if (!params.persistence.attempts.listPending) {
+                        throw Object.assign(new Error('Connected-account discovery is unavailable'), {
+                            code: 'connected_account_attempt_discovery_unavailable',
+                        });
+                    }
+                    const attempts = await params.persistence.attempts.listPending(command.service);
+                    assertNotAborted(options?.signal);
+                    return Object.freeze({ status: 'pendingAttempts' as const, attempts });
+                }
                 if (command.operation === 'describeService') {
                     const operationTransport = command.requiredOperation
                         ? params.resolvePeerOperationTransport?.({
@@ -762,6 +827,35 @@ export function createConnectedAccountDaemonRuntime(params: Readonly<{
             }
         },
         async execute(command, options) {
+            const attemptId = 'attemptId' in command ? command.attemptId : null;
+            const before = attemptId ? attempts.inspectObservability(attemptId) : null;
+            const directService = command.operation === 'beginConnect'
+                ? command.service
+                : command.operation === 'beginReconnect'
+                    ? command.account.service
+                    : null;
+            const report = (input: Readonly<{
+                status: ConnectedAccountAttemptResponse['status'];
+                attemptId: string | null;
+                code: unknown;
+                diagnostic: unknown;
+            }>) => {
+                const context = input.attemptId
+                    ? attempts.inspectObservability(input.attemptId) ?? before
+                    : before;
+                const service = context?.service ?? directService;
+                logAuthenticationAttempt({
+                    operation: command.operation,
+                    service,
+                    attemptId: input.attemptId,
+                    status: input.status,
+                    code: safeLogCode(input.code),
+                    diagnostic: input.diagnostic,
+                    settlementPhase: context?.settlementPhase ?? 'notPrepared',
+                });
+            };
+            try {
+            const response: ConnectedAccountAttemptResponse = await (async () => {
             switch (command.operation) {
                 case 'beginConnect':
                     await params.persistence.attempts
@@ -823,7 +917,27 @@ export function createConnectedAccountDaemonRuntime(params: Readonly<{
                 case 'cancel':
                     return await attempts.cancel({ attemptId: command.attemptId });
                 case 'read':
-                    return await attempts.read({ attemptId: command.attemptId });
+                    return await attempts.read({
+                        attemptId: command.attemptId,
+                        ...(command.restoreKind ? { restoreKind: command.restoreKind } : {}),
+                    });
+            }
+            })();
+            report({
+                status: response.status,
+                attemptId: 'attemptId' in response ? response.attemptId ?? attemptId : attemptId,
+                code: 'code' in response ? response.code : null,
+                diagnostic: 'diagnostic' in response ? response.diagnostic : null,
+            });
+            return response;
+            } catch (error) {
+                report({
+                    status: 'unavailable',
+                    attemptId,
+                    code: error && typeof error === 'object' && 'code' in error ? error.code : 'connected_account_attempt_unavailable',
+                    diagnostic: null,
+                });
+                throw error;
             }
         },
     });

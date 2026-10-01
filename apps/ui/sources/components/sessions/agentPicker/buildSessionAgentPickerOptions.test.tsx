@@ -2,7 +2,7 @@ import * as React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { ResolvedBackendCatalogEntry } from '@/agents/backendCatalog/getResolvedBackendCatalogEntries';
-import { createResolvedAgentCatalogEntryFixture } from '@/dev/testkit';
+import { createResolvedAgentCatalogEntryFixture } from '@/dev/testkit/fixtures/agentCatalogFixtures';
 
 import { buildSessionAgentPickerOptions } from './buildSessionAgentPickerOptions';
 
@@ -39,11 +39,36 @@ const availablePresentation = { disabled: false, muted: false } as const;
 const identityScope = { machineId: 'machine-1', serverId: 'server-1', current: true } as const;
 
 describe('buildSessionAgentPickerOptions', () => {
+    it('groups rows the surface places in rail groups after the ungrouped ones, in group order, with their headings and markers', () => {
+        const notHere = { id: 'notOnMachine', label: 'Not on devbox yet', rank: 1 } as const;
+        const cantRun = { id: 'cantRun', label: 'Can’t run on devbox', rank: 2 } as const;
+        const options = buildSessionAgentPickerOptions({
+            entries: [entry('kimi'), entry('antigravity'), entry('claude'), entry('gemini')],
+            identityScope,
+            resolvePresentation: (candidate) => {
+                if (candidate.backendId === 'kimi') return { disabled: false, muted: true, section: cantRun, statusMarker: 'no' };
+                if (candidate.backendId === 'antigravity' || candidate.backendId === 'gemini') {
+                    return { disabled: false, muted: true, section: notHere, statusMarker: 'download' };
+                }
+                return availablePresentation;
+            },
+            resolveBehavior: () => ({}),
+        });
+
+        const key = (id: string) => entry(id).backendTargetKey;
+        expect(options.map((option) => [option.id, option.sectionLabel ?? null, option.statusMarker ?? null])).toEqual([
+            [key('claude'), null, null],
+            [key('antigravity'), 'Not on devbox yet', 'download'],
+            [key('gemini'), 'Not on devbox yet', 'download'],
+            [key('kimi'), 'Can’t run on devbox', 'no'],
+        ]);
+    });
+
     it('leads with favorites, then applicable rows, then blocked rows', () => {
         const options = buildSessionAgentPickerOptions({
             entries: [entry('claude'), entry('codex'), entry('gemini'), entry('kimi')],
             identityScope,
-            favoriteBackendTargetKeys: ['backend:gemini'],
+            favoriteBackendTargetKeys: ['agent:happier.agent.gemini/gemini'],
             leadingOptions: [{ id: 'favorite-models', label: 'Favorites' }],
             resolvePresentation: (candidate) => {
                 if (candidate.backendId === 'kimi') {
@@ -59,10 +84,10 @@ describe('buildSessionAgentPickerOptions', () => {
 
         expect(options.map((option) => option.id)).toEqual([
             'favorite-models',
-            'backend:gemini',
-            'backend:claude',
-            'backend:codex',
-            'backend:kimi',
+            'agent:happier.agent.gemini/gemini',
+            'agent:happier.agent.claude/claude',
+            'agent:happier.agent.codex/codex',
+            'agent:happier.agent.kimi/kimi',
         ]);
     });
 
@@ -81,14 +106,14 @@ describe('buildSessionAgentPickerOptions', () => {
 
         const [codexOption, kimiOption] = options;
         expect(codexOption).toMatchObject({
-            id: 'backend:codex',
+            id: 'agent:happier.agent.codex/codex',
             label: 'codex',
             disabled: false,
             muted: false,
             closeOnSelectImmediate: false,
         });
         expect(kimiOption).toMatchObject({
-            id: 'backend:kimi',
+            id: 'agent:happier.agent.kimi/kimi',
             disabled: true,
             muted: true,
             subtitle: 'Update the CLI',
@@ -105,7 +130,7 @@ describe('buildSessionAgentPickerOptions', () => {
         buildSessionAgentPickerOptions({
             entries: [entry('claude'), entry('codex')],
             identityScope,
-            favoriteBackendTargetKeys: ['backend:codex'],
+            favoriteBackendTargetKeys: ['agent:happier.agent.codex/codex'],
             resolvePresentation: () => availablePresentation,
             resolveRailAction: ({ entry: candidate, favorite }) => {
                 railActionContexts.push({ id: candidate.backendTargetKey, favorite });
@@ -115,8 +140,8 @@ describe('buildSessionAgentPickerOptions', () => {
         });
 
         expect(railActionContexts).toEqual([
-            { id: 'backend:codex', favorite: true },
-            { id: 'backend:claude', favorite: false },
+            { id: 'agent:happier.agent.codex/codex', favorite: true },
+            { id: 'agent:happier.agent.claude/claude', favorite: false },
         ]);
     });
 

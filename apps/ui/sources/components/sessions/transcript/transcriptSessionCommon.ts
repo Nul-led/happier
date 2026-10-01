@@ -5,21 +5,17 @@ import { useCurrentProjectedAgentCapabilities } from '@/agents/hooks/useCurrentP
 import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
 import { usePreferredServerIdForSession } from '@/sync/runtime/orchestration/serverScopedRpc/usePreferredServerIdForSession';
 import { useSessionDebugInformationEnabled } from '@/sync/runtime/useSessionDebugInformationEnabled';
-import type { Message } from '@/sync/domains/messages/messageTypes';
+import type { Message } from "@happier-dev/session-core/messages";
 import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
-import { useSessionMessageAuthorshipScope } from './useSessionMessageAuthorshipScope';
+import { useSessionTranscriptSource } from './source/SessionTranscriptSourceContext';
 import type { Settings } from '@/sync/domains/settings/settings';
 import type { SessionForkSupportSource } from '@/sync/domains/sessionFork/forkUiSupport';
 import type { CurrentProjectedAgentCapabilities } from '@/agents/backendCatalog/currentAgentCapabilities';
 import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
 import type { TranscriptInteraction } from '@/utils/sessions/deriveTranscriptInteraction';
 import type { ToolViewDisplaySettings } from '@/components/tools/shell/views/toolViewDisplaySettings';
-import type { ReducerState } from '@/sync/reducer/reducer';
+import type { ReducerState } from "@happier-dev/session-core/reducer";
 import {
-    useSessionForkSupportSource,
-    useSessionMessagesById,
-    useSessionMessagesReducerState,
-    useSessionWorkspacePath,
     useSetting,
 } from '@/sync/domains/state/storage';
 
@@ -135,10 +131,10 @@ export function hasTranscriptSessionCommonProps(
         && props.toolRouteCommon != null;
 }
 
-export function useTranscriptSessionCommon(
-    sessionId: string,
-    sessionServerId?: string | null,
-): TranscriptSessionCommon {
+export function useTranscriptSessionCommon(): TranscriptSessionCommon {
+    const source = useSessionTranscriptSource();
+    const sessionId = source.sessionId;
+    const sessionServerId = source.serverId;
     // The exact Home identity the mounted transcript host resolved for this
     // Session. It is carried once per host (not re-resolved per row or per
     // callback) so every in-Session jump/link targets the same Home the
@@ -146,19 +142,19 @@ export function useTranscriptSessionCommon(
     // binding (legacy local state); no active-Home fallback is applied here.
     const exactSessionServerId = sessionServerId ?? null;
     // One exact-Home authorship owner, shared with the pending/discarded queue.
-    const authorship = useSessionMessageAuthorshipScope(sessionId, sessionServerId);
+    const authorship = source.useAuthorship();
     const accountActorViewerScope = authorship.viewerScope;
-    const sessionForkSupportSource = useSessionForkSupportSource(sessionId);
-    const workspacePath = useSessionWorkspacePath(sessionId, sessionServerId);
-    const messagesById = useSessionMessagesById(sessionId);
-    const reducerState = useSessionMessagesReducerState(sessionId);
+    const sessionForkSupportSource = source.useForkSupportSource();
+    const workspacePath = source.useWorkspacePath();
+    const messagesById = source.useMessagesById();
+    const reducerState = source.useReducerState();
     // The server the fork launchers spawn the child on, resolved through the one
     // owner they already use, so the decision below is scoped to that exact
     // server rather than to whatever the sidebar happens to have selected.
     const forkSpawnServerId = usePreferredServerIdForSession({
         serverId: sessionForkSupportSource?.serverId ?? sessionServerId,
         sessionId,
-    });
+    }, source.kind === 'app');
     const executionRunsEnabled = useFeatureEnabled('execution.runs', forkSpawnServerId
         ? { scopeKind: 'spawn', serverId: forkSpawnServerId }
         : undefined);

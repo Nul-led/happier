@@ -3,10 +3,12 @@ import {
     ExecutionRunTeamCredentialSessionBindingConsentV1Schema,
     SecretReferenceOverlayV1Schema,
     TeamCredentialProviderModelSelectionV1Schema,
+    PluginSourceCustodyV1Schema,
     findSpawnConfigOptionAliasConflicts,
     mergeSpawnConfigOptionAliases,
     normalizeConnectedServiceSelectionInput,
     type ExecutionRunStartRequest,
+    type PluginSourceCustodyV1,
     type SpawnConfigOptionValue,
 } from '@happier-dev/protocol';
 
@@ -14,9 +16,10 @@ import type { ExecutionRunLauncherBackendChoice } from './resolveExecutionRunLau
 
 type RowlessRunStartOptions = Pick<ExecutionRunStartRequest,
     | 'backendTarget'
+    | 'roleId'
     | 'permissionMode'
+    | 'notifyParentOnCompletion'
     | 'profileId'
-    | 'profileGenerationId'
     | 'modelId'
     | 'sessionConfigOptionOverrides'
     | 'connectedServices'
@@ -24,7 +27,7 @@ type RowlessRunStartOptions = Pick<ExecutionRunStartRequest,
     | 'secretReferenceOverlay'
     | 'teamCredentialModel'
     | 'teamCredentialSessionBindingConsent'
->;
+> & Readonly<{ profileSourceCustody?: PluginSourceCustodyV1 }>;
 
 function readConfigOptions(value: unknown): Record<string, SpawnConfigOptionValue> | undefined {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
@@ -43,11 +46,16 @@ export function resolveRowlessExecutionRunStartOptions(params: Readonly<{
     if (params.choice.disabled) return { ok: false };
     const permissionMode = typeof params.input.permissionMode === 'string' ? params.input.permissionMode : null;
     if (!permissionMode) return { ok: false };
+    const roleId = params.input.roleId;
+    if (roleId !== undefined && (typeof roleId !== 'string' || !roleId.trim())) return { ok: false };
+    const notifyParentOnCompletion = params.input.notifyParentOnCompletion;
+    if (notifyParentOnCompletion !== undefined && typeof notifyParentOnCompletion !== 'boolean') return { ok: false };
     const profileId = typeof params.input.profileId === 'string' && params.input.profileId.trim() ? params.input.profileId : null;
-    const profileGenerationId = typeof params.input.profileGenerationId === 'string' && params.input.profileGenerationId.trim()
-        ? params.input.profileGenerationId
-        : null;
-    if (Boolean(profileId) !== Boolean(profileGenerationId)) return { ok: false };
+    const profileSourceCustody = params.input.profileSourceCustody === undefined
+        ? null
+        : PluginSourceCustodyV1Schema.safeParse(params.input.profileSourceCustody);
+    if (profileSourceCustody && !profileSourceCustody.success) return { ok: false };
+    if (Boolean(profileId) !== Boolean(profileSourceCustody?.success)) return { ok: false };
     const modelId = typeof params.input.modelId === 'string' && params.input.modelId.trim() ? params.input.modelId.trim() : null;
     const parsedCanonical = params.input.sessionConfigOptionOverrides === undefined
         ? null
@@ -108,8 +116,13 @@ export function resolveRowlessExecutionRunStartOptions(params: Readonly<{
         ok: true,
         options: {
             backendTarget: params.choice.backendTarget,
+            // Identity only: the target Session's admission resolves the role and stamps its engine.
+            ...(roleId !== undefined ? { roleId: roleId.trim() } : {}),
             permissionMode,
-            ...(profileId && profileGenerationId ? { profileId, profileGenerationId } : {}),
+            ...(notifyParentOnCompletion !== undefined ? { notifyParentOnCompletion } : {}),
+            ...(profileId && profileSourceCustody?.success
+                ? { profileId, profileSourceCustody: profileSourceCustody.data }
+                : {}),
             ...(modelId ? { modelId } : {}),
             ...(sessionConfigOptionOverrides ? { sessionConfigOptionOverrides } : {}),
             ...(connectedServices?.ok && connectedServices.bindings ? { connectedServices: connectedServices.bindings } : {}),

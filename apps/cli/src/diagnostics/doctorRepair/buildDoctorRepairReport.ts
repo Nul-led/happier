@@ -70,6 +70,7 @@ export async function buildDoctorRepairReport(params: Readonly<{
 }>): Promise<DoctorRepairReport> {
   const cliSelfUpdateFindings = await classifyCurrentCli({
     currentCliReleaseChannel: params.currentCli.releaseChannel,
+    currentCliRingId: params.currentCli.ringId,
     currentCliVersion: params.currentCli.version,
     onMigration: params.onMigration,
     forceRefresh: params.forceRefreshLatestCli,

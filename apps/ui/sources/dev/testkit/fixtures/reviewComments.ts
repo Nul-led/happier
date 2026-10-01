@@ -1,4 +1,4 @@
-import type { ReviewCommentV1 } from '@happier-dev/protocol';
+import { sealReviewCommentSensitiveEnvelopeV1, splitReviewCommentV1, StoredReviewCommentV1Schema, type ReviewCommentV1 } from '@happier-dev/protocol';
 
 import type { ReviewCommentLabels } from '@/components/reviews/labels';
 
@@ -44,6 +44,16 @@ export function buildReviewCommentFixture(overrides: Partial<ReviewCommentV1> = 
         serverRevision: overrides.serverRevision ?? 1,
         metadata: overrides.metadata,
     };
+}
+
+/** The real plain stored-envelope shape returned by the comment list/get transport. */
+export function storePlainReviewCommentFixture(comment: ReviewCommentV1) {
+    const split = splitReviewCommentV1(comment);
+    return StoredReviewCommentV1Schema.parse({
+        v: 1,
+        structural: split.structural,
+        sensitiveEnvelope: sealReviewCommentSensitiveEnvelopeV1({ ...split, mode: 'plain' }),
+    });
 }
 
 export const reviewCommentLabelsFixture = {

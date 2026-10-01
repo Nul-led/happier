@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { createStore } from 'zustand/vanilla';
 import {
     AutomationDefinitionDetailSchema,
     AutomationDefinitionListItemSchema,
@@ -15,12 +16,15 @@ import type {
     AutomationDefinitionRun,
 } from '@/sync/domains/automations/automationTypes';
 import { loadSyncTuning } from '@/sync/runtime/syncTuning';
+import { createWorkflowRunSummaryFixture } from '@/dev/testkit/fixtures/workflowRunFixtures';
 
-import { createAutomationsDomain } from './automations';
+import { createAutomationsDomain, createWorkflowTriggerSetSelector } from './automations';
+import type { WorkflowTriggerSetV1 } from '@happier-dev/protocol';
 import {
     createWorkflowRunsDomain,
     resolveAutomationRunProjections,
     workflowRunRowFromAutomationRun,
+    workflowRunRowFromSummary,
 } from './workflowRuns';
 
 type State = ReturnType<typeof createAutomationsDomain> & ReturnType<typeof createWorkflowRunsDomain>;
@@ -99,6 +103,53 @@ function createHarness(): {
     };
     return { state, get, set };
 }
+
+describe('shared workflow trigger observations', () => {
+    it('keeps a newer write when a delayed list returns and leaves other queries untouched', () => {
+        const h = createHarness();
+        const set: WorkflowTriggerSetV1 = { automationId: '11111111-1111-4111-8111-111111111111', revision: 1, enabled: true, health: 'available', triggers: [] };
+        h.get().applyWorkflowTriggerSetPage({ queryKey: 'session:a', sets: [set] });
+        h.get().applyWorkflowTriggerSetPage({ queryKey: 'session:b', sets: [] });
+        const other = h.get().workflowTriggerSetIdsByQuery['session:b'];
+        const selectOther = createWorkflowTriggerSetSelector('session:b');
+        const otherSelection = selectOther(h.get());
+        const written = { ...set, revision: 2, enabled: false };
+        h.get().upsertWorkflowTriggerSet({ queryKey: 'session:a', set: written });
+        h.get().applyWorkflowTriggerSetPage({ queryKey: 'session:a', sets: [set] });
+        expect(h.get().workflowTriggerSetsById[set.automationId]).toEqual(written);
+        expect(h.get().workflowTriggerSetIdsByQuery['session:b']).toBe(other);
+        expect(selectOther(h.get())).toBe(otherSelection);
+    });
+
+    it('retains manual predecessor sets in the column without restoring deleted current trigger sets', () => {
+        const h = createHarness();
+        const current: WorkflowTriggerSetV1 = { automationId: 'current', revision: 1, enabled: true, health: 'available', triggers: [] };
+        const legacy: WorkflowTriggerSetV1 = { ...current, automationId: 'legacy', legacy: { editable: false, reason: 'created_in_0_2', placements: [] } };
+        h.get().applyWorkflowTriggerSetPage({ queryKey: 'account_inline', sets: [current, legacy] });
+        const select = createWorkflowTriggerSetSelector('account_inline');
+        expect(select(h.get()).map((set) => set.automationId)).toEqual(['legacy']);
+        expect(select(h.get())).toBe(select(h.get()));
+    });
+
+    it('suppresses an unchanged observation in the real store and retires inline membership on retarget', () => {
+        const store = createStore<State>((set, get) => ({
+            ...createWorkflowRunsDomain<State>({ get, set }),
+            ...createAutomationsDomain<State>({ get, set }),
+        }));
+        const written: WorkflowTriggerSetV1 = { automationId: '11111111-1111-4111-8111-111111111111', revision: 1,
+            enabled: true, health: 'available', triggers: [] };
+        store.getState().applyWorkflowTriggerSetPage({ queryKey: 'account_inline', sets: [written] });
+        let notifications = 0;
+        const dispose = store.subscribe(() => { notifications += 1; });
+        store.getState().applyWorkflowTriggerSetPage({ queryKey: 'account_inline', sets: [{ ...written }] });
+        expect(notifications).toBe(0);
+        store.getState().upsertWorkflowTriggerSet({ queryKey: 'workflow:00000000-0000-4000-8000-000000000005',
+            set: { ...written, revision: 2, target: { kind: 'workflow', ref: '00000000-0000-4000-8000-000000000005' } } });
+        expect(store.getState().workflowTriggerSetIdsByQuery.account_inline).toEqual([]);
+        expect(store.getState().workflowTriggerSetIdsByQuery['workflow:00000000-0000-4000-8000-000000000005']).toEqual([written.automationId]);
+        dispose();
+    });
+});
 
 /**
  * What the reader actually sees: an Automation's ordered id window resolved
@@ -492,6 +543,9 @@ describe('createAutomationsDomain', () => {
         const harness = createHarness();
         harness.get().applyAutomations([automation({ id: 'a1' })], null);
         harness.get().setAutomationRuns('a1', [run({ id: 'r1', automationId: 'a1' })], null);
+        harness.get().upsertWorkflowRuns([
+            workflowRunRowFromSummary(createWorkflowRunSummaryFixture({ id: 'r1' })),
+        ]);
         expect(harness.get().workflowRunsById.r1).toBeDefined();
 
         harness.get().removeAutomation('a1');

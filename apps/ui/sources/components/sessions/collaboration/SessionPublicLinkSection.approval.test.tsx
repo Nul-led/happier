@@ -1,5 +1,4 @@
 import * as React from 'react';
-import { act } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
     createPlainSessionOwnerMetadataEnvelopeV1,
@@ -32,9 +31,8 @@ import type { Session } from '@/sync/domains/state/storageTypes';
  * stateful Artifact store; the Inbox decides it through the generic executor,
  * whose replay is the one publication request; and the section settles only
  * through the real approval reader and the authoritative publication read.
- * The network, the credential store, the platform view layer, the modal host and
- * the publication dialog (whose `onCreate` is the user's submit) are the only
- * replaced boundaries.
+ * The network, the credential store, the platform view layer and the modal host
+ * are the only replaced boundaries; the person's submit is the card's own Create.
  */
 
 vi.mock('react-native', async () => {
@@ -42,12 +40,8 @@ vi.mock('react-native', async () => {
     return createReactNativeWebMock();
 });
 
-const publicationDialog = vi.hoisted(() => ({ open: vi.fn() }));
-const modal = vi.hoisted(() => ({ update: vi.fn(), hide: vi.fn() }));
+const modal = vi.hoisted(() => ({ update: vi.fn(), hide: vi.fn(), alert: vi.fn() }));
 
-vi.mock('@/components/sessions/sharing/openPublicLinkDialog', () => ({
-    openPublicLinkDialog: publicationDialog.open,
-}));
 vi.mock('@/modal', async () => {
     const { createModalModuleMock } = await import('@/dev/testkit/mocks/modal');
     return createModalModuleMock({ spies: modal }).module;
@@ -153,32 +147,32 @@ async function addPublishingHome(): Promise<string> {
 describe('SessionPublicLinkSection deferred approval', () => {
     beforeEach(async () => {
         await harness.reset();
-        publicationDialog.open.mockReset();
-        publicationDialog.open.mockResolvedValue('public-link-dialog');
         modal.update.mockReset();
         modal.hide.mockReset();
+        modal.alert.mockReset();
     });
 
     afterEach(() => standardCleanup());
 
     it('renders an approval-routed publication as pending and settles it through the executed approval', async () => {
         const serverId = await addPublishingHome();
-        const { SessionPublicLinkSection } = await import('./SessionPublicLinkSection');
-        const screen = await renderScreen(
-            <SessionPublicLinkSection
-                scope={{ serverId, accountId: ACCOUNT_ID }}
-                sessionId={SESSION_ID}
-                session={session()}
-                availability={hostedAvailability()}
-            />,
-        );
+        const { SessionPublicLinkSection, useSessionCollaborationPublicLink } = await import('./SessionPublicLinkSection');
+        function PublicLink() {
+            const link = useSessionCollaborationPublicLink({
+                scope: { serverId, accountId: ACCOUNT_ID },
+                sessionId: SESSION_ID,
+                session: session(),
+                availability: hostedAvailability(),
+            });
+            return <SessionPublicLinkSection link={link} hasSession shareable />;
+        }
+        const screen = await renderScreen(<PublicLink />);
         await waitForHomeGovernance(() => expect(screen.findByTestId('session-public-link-status')?.props.children).toBe('Off'));
-        await screen.pressByTestIdAsync('session-public-link-row');
-        const dialogInput = publicationDialog.open.mock.calls.at(-1)?.[0];
+        await screen.pressByTestIdAsync('session-public-link-create');
 
         // Not an error and not a committed link: the change waits on its approval.
-        await act(async () => { await expect(dialogInput.onCreate({ isConsentRequired: true })).resolves.toBeNull(); });
-        expect(modal.hide).toHaveBeenCalledWith('public-link-dialog');
+        await screen.pressByTestIdAsync('session-public-link-options-create');
+        expect(modal.alert).not.toHaveBeenCalled();
         await waitForHomeGovernance(() => expect(screen.findByTestId('session-public-link-approval')).not.toBeNull());
         expect(screen.findByTestId('session-public-link-status')?.props.children).toBe('Off');
         const rows = harness.artifacts(serverId).list();
@@ -208,7 +202,7 @@ describe('SessionPublicLinkSection deferred approval', () => {
 
         await waitForHomeGovernance(() => expect(screen.findByTestId('session-public-link-approval')).toBeNull());
         await waitForHomeGovernance(() => expect(screen.findByTestId('session-public-link-status')?.props.children)
-            .toBe('Public link is active'));
+            .toBe('On'));
         // Settlement read the authoritative publication; nothing was submitted twice.
         const publications = harness.requestsFor(PUBLIC_SHARE_PATH).filter((request) => request.input !== null);
         expect(publications).toHaveLength(1);

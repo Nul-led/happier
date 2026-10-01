@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { createServerProfilesModuleMock, createTokenStorageModuleMock } from '@/dev/testkit';
+import { createServerProfilesModuleMock } from '@/dev/testkit/mocks/serverProfiles';
+import { createTokenStorageModuleMock } from '@/dev/testkit/mocks/tokenStorage';
 
 const reportServerUnreachableSpy = vi.fn<(...args: any[]) => void>();
 const releaseServerReachabilitySupervisorSpy = vi.fn(async () => {});
@@ -43,10 +44,11 @@ describe('concurrentSessionCache teardown ordering', () => {
         delete process.env.EXPO_PUBLIC_HAPPIER_CONCURRENT_CACHE_REFRESH_INTERVAL_MS;
     });
 
-    it('transfers secondary ownership only after focused application and tears it down intentionally', async () => {
+    it('transfers the former focused Home after singleton withdrawal and tears it down intentionally', async () => {
         process.env.EXPO_PUBLIC_HAPPY_MULTI_SERVER_CONCURRENT = '1';
         process.env.EXPO_PUBLIC_HAPPIER_CONCURRENT_CACHE_REFRESH_INTERVAL_MS = '600000';
         let appliedActiveServerId = 'server-a';
+        let appliedActiveServerRuntimeAvailable = true;
         let selectedActiveServerId = 'server-a';
         let appliedActiveServerListener: ((serverId: string) => void) | null = null;
         let applyingActiveServerListener: ((serverId: string) => void) | null = null;
@@ -54,6 +56,7 @@ describe('concurrentSessionCache teardown ordering', () => {
 
         vi.doMock('@/sync/runtime/orchestration/connectionManager', () => ({
             getAppliedActiveServerId: () => appliedActiveServerId,
+            isAppliedActiveServerRuntimeAvailable: () => appliedActiveServerRuntimeAvailable,
             subscribeAppliedActiveServer: (listener: (serverId: string) => void) => {
                 appliedActiveServerListener = listener;
                 return () => {
@@ -81,6 +84,7 @@ describe('concurrentSessionCache teardown ordering', () => {
                 return () => {};
             },
             acquireServerReachabilitySupervisor: acquireServerReachabilitySupervisorSpy,
+            invalidateServerReachabilitySupervisor: vi.fn(async () => {}),
             reportServerUnreachable: reportServerUnreachableSpy,
             resetServerReachabilitySupervisors: async () => {},
         }));
@@ -218,7 +222,6 @@ describe('concurrentSessionCache teardown ordering', () => {
                 serverSelectionActiveTargetId: 'group-main',
             },
         }));
-
         const { startConcurrentSessionCacheSync, stopConcurrentSessionCacheSync } = await import('./concurrentSessionCache');
         startConcurrentSessionCacheSync();
         await vi.advanceTimersByTimeAsync(1);
@@ -255,32 +258,47 @@ describe('concurrentSessionCache teardown ordering', () => {
                 'server-b': 'idle',
             },
         }));
+        const serverBCredentialReadsBeforeSwitch = getCredentialsForServerUrlSpy.mock.calls.filter(([serverUrl]) => (
+            serverUrl === 'https://stack-b.example.test'
+        )).length;
+        const reachabilityReleaseCountBeforeSwitch = releaseServerReachabilitySupervisorSpy.mock.calls.length;
 
         // A profile event queues reconciliation while A is still the applied
         // Home. Applying B must invalidate that queued view before releasing
         // B's secondary transport, otherwise the queued pass recreates B.
         (serverProfilesListener as ((generation: number) => void) | null)?.(1);
         selectedActiveServerId = 'server-b';
+        appliedActiveServerRuntimeAvailable = false;
         (applyingActiveServerListener as ((serverId: string) => void) | null)?.('server-b');
+        expect(
+            storage.getState().concurrentSessionListCacheByServerId['server-a']?.listObservation?.phase,
+        ).toBe('loading');
         await vi.advanceTimersByTimeAsync(1);
         expect(getCredentialsForServerUrlSpy.mock.calls.filter(([serverUrl]) => (
             serverUrl === 'https://stack-b.example.test'
-        ))).toHaveLength(1);
+        ))).toHaveLength(serverBCredentialReadsBeforeSwitch);
         expect(storage.getState().sessionListRowsByServerId['server-b']?.['session-b']).toBeDefined();
         expect(storage.getState().machineListByServerId['server-b']?.map((machine) => machine.id)).toEqual(['machine-b']);
-        expect(getCredentialsForServerUrlSpy).not.toHaveBeenCalledWith(
+        expect(getCredentialsForServerUrlSpy).toHaveBeenCalledWith(
             'https://stack-a.example.test',
             { serverId: 'server-a' },
+        );
+        expect(releaseServerReachabilitySupervisorSpy).toHaveBeenCalledTimes(
+            reachabilityReleaseCountBeforeSwitch + 1,
         );
         (appliedActiveServerListener as ((serverId: string) => void) | null)?.('server-a');
         await vi.advanceTimersByTimeAsync(1);
         expect(getCredentialsForServerUrlSpy.mock.calls.filter(([serverUrl]) => (
             serverUrl === 'https://stack-b.example.test'
-        ))).toHaveLength(1);
+        ))).toHaveLength(serverBCredentialReadsBeforeSwitch);
 
+        const releaseCountBeforeDuplicateApplyingEvent = releaseServerReachabilitySupervisorSpy.mock.calls.length;
         (applyingActiveServerListener as ((serverId: string) => void) | null)?.('server-b');
-        expect(releaseServerReachabilitySupervisorSpy).toHaveBeenCalledTimes(1);
+        expect(releaseServerReachabilitySupervisorSpy).toHaveBeenCalledTimes(
+            releaseCountBeforeDuplicateApplyingEvent,
+        );
         appliedActiveServerId = 'server-b';
+        appliedActiveServerRuntimeAvailable = true;
         (appliedActiveServerListener as ((serverId: string) => void) | null)?.('server-b');
         await vi.advanceTimersByTimeAsync(1);
         expect(getCredentialsForServerUrlSpy).toHaveBeenCalledWith(

@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
     createToolCallMessageFixture,
     flushHookEffects,
-    renderScreen,
+    renderScreen as renderBaseScreen,
     standardCleanup,
 } from '@/dev/testkit';
 import type { ChatTranscriptListItem } from '@/components/sessions/transcript/chatListTypes';
@@ -14,6 +14,11 @@ import type { TranscriptItemHeightValiditySignature } from '@/components/session
 import { storage } from '@/sync/domains/state/storageStore';
 
 import { TranscriptLiveMessagesRowShell } from './TranscriptLiveMessagesRowShell';
+import { AppSessionTranscriptSourceProvider } from '@/components/sessions/transcript/source/appSessionTranscriptSource';
+
+function renderScreen(element: React.ReactElement) {
+    return renderBaseScreen(<AppSessionTranscriptSourceProvider sessionId="session-1">{element}</AppSessionTranscriptSourceProvider>);
+}
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 

@@ -27,6 +27,32 @@ function renderPromptContext(
   });
 }
 
+it('dispatches selected browser context once with real-image references, not metadata-only success', async () => {
+  const media = {
+    mediaId: 'shot', mediaKind: 'image', width: 2, height: 2, sizeBytes: 8,
+    file: { sessionId: 'session-1', storage: 'session', path: '.happier/uploads/artifacts/session-1/capture/screen.png',
+      sha256: 'a'.repeat(64), mimeType: 'image/png' },
+  } as const;
+  const structuredInput = HappierStructuredInputV1Schema.parse({
+    v: 1, browserContext: {
+      contexts: [{ v: 1, contextId: 'shot-1', sourceViewId: 'view-1', sourceAdapterKind: 'chromiumSidecar',
+        fidelity: 'cdp', capturedAtMs: 1, navigationGeneration: 2, lifecycleState: 'available',
+        redactionLevel: 'metadataOnly', kind: 'browserScreenshot', media }],
+      attachments: [{ v: 1, attachmentId: 'attachment-1', contextId: 'shot-1', sourceViewId: 'view-1',
+        capturedNavigationGeneration: 2, currentNavigationGeneration: 2, state: 'available' }],
+    },
+  });
+  const result = await resolveStructuredInputProviderDispatchContext({ structuredInput });
+  expect(result.structuredInput?.imageInputs).toMatchObject([{ kind: 'localImage', path: media.file.path,
+    sha256: media.file.sha256, provenance: { kind: 'browserSessionMedia', sessionId: 'session-1' } }]);
+  expect(renderPromptContext(result)).toContain('shot-1');
+  expect(renderPromptContext(result).match(/<happier_browser_context>/g)).toHaveLength(1);
+  const missing = HappierStructuredInputV1Schema.parse({ ...structuredInput, browserContext: {
+    ...structuredInput.browserContext, contexts: structuredInput.browserContext!.contexts.map((item) => ({ ...item, media: { ...media, file: undefined } })),
+  } });
+  await expect(resolveStructuredInputProviderDispatchContext({ structuredInput: missing })).rejects.toMatchObject({ code: 'browser_media_unavailable' });
+});
+
 /** Catalog items in the shape `session.skill_catalog.list` / `session.vendor_plugin_catalog.list` return. */
 const SKILL_ITEM = {
   name: 'review',

@@ -1,10 +1,13 @@
 import * as React from 'react';
 
-import type { ScmBranchListEntry } from '@happier-dev/protocol';
+import type { ScmBranchListEntry, ScmStashEntry } from '@happier-dev/protocol';
 
 import type { SelectableMenuItem } from '@/components/ui/forms/dropdown/selectableMenuTypes';
 import { t } from '@/text';
 import { Icon } from '@/components/ui/icons/Icon';
+import { formatExactCount } from '@/components/ui/navigation/tabBadge/tabBadgeModel';
+import { formatScmTimelineWhen } from '@/scm/history/historyPresentation';
+import { resolveScmStashIconName, resolveScmStashOrigin, resolveScmStashTitle } from '@/scm/stash/stashPresentation';
 
 export type RepoWorktreeRow = Readonly<{
     path: string;
@@ -14,6 +17,19 @@ export type RepoWorktreeRow = Readonly<{
     isPrunable?: boolean;
 }>;
 
+/** Item ids the branch popover's owner handles besides `branch:*`, `worktree:*` and the remotes toggle. */
+export const GIT_BRANCH_MENU_ITEM_IDS = Object.freeze({
+    newBranch: 'git:new-branch',
+    keepAside: 'git:keep-aside',
+    stashPrefix: 'stash:',
+});
+
+/**
+ * The branch popover's rows (Git lab BR), one list read top to bottom: where you are (the current branch, what
+ * it tracks, what is waiting), the other branches, what Happier kept aside, the worktrees, then what you can
+ * start. Rows a surface cannot back are left out (no recency exists, so there is no "Recent" section); an
+ * operation a daemon can't run is not offered, and one that can't run *now* says why.
+ */
 export function buildWorkspaceScmBranchPopoverItems(input: Readonly<{
     branches: ReadonlyArray<ScmBranchListEntry>;
     canCheckout: boolean;
@@ -26,12 +42,24 @@ export function buildWorkspaceScmBranchPopoverItems(input: Readonly<{
     loading: boolean;
     worktreeRows: ReadonlyArray<RepoWorktreeRow>;
     checkIconColor: string;
+    /** The working tree's facts for the current row (session pane); omitted, the row shows only what it tracks. */
+    current?: Readonly<{ changedCount: number; ahead: number }>;
+    /** Stashes to list under "Kept aside" (session pane). */
+    keptAside?: ReadonlyArray<ScmStashEntry>;
+    /** "Keep changes aside": offered only when the daemon can create a stash. */
+    keepAside?: Readonly<{ available: boolean; changedCount: number }>;
+    /** "New branch from <head>…": offered when a branch can be created. */
+    newBranch?: Readonly<{ available: boolean }>;
+    /** A load failure to say in the list instead of a dialog. */
+    loadError?: string | null;
 }>): Readonly<{
     branchItems: ReadonlyArray<SelectableMenuItem>;
     worktreeItems: ReadonlyArray<SelectableMenuItem>;
 }> {
     const branchItems: SelectableMenuItem[] = [];
     const worktreeItems: SelectableMenuItem[] = [];
+    const glyph = (name: React.ComponentProps<typeof Icon>['name']) => <Icon name={name} size={15} color={input.checkIconColor} />;
+    const startCategory = t('sessionGitBranches.category.start');
 
     if (input.canCreateWorktrees) {
         worktreeItems.push({
@@ -40,20 +68,15 @@ export function buildWorkspaceScmBranchPopoverItems(input: Readonly<{
             subtitle: input.currentBranch
                 ? t('files.branchMenu.worktrees.createFromCurrentBranchSubtitle', { branch: input.currentBranch })
                 : t('files.branchMenu.worktrees.createFromCurrentBranchDetachedSubtitle'),
-            category: t('files.branchMenu.category.actions'),
+            category: t('sessionGitBranches.category.worktrees'),
+            left: glyph('git-branch'),
             disabled: !input.hasMachineTarget || !input.currentBranch,
-        });
-        worktreeItems.push({
-            id: 'worktree:create-from-another-branch',
-            title: t('files.branchMenu.worktrees.createFromAnotherBranchTitle'),
-            subtitle: t('files.branchMenu.worktrees.createFromAnotherBranchSubtitle'),
-            category: t('files.branchMenu.category.actions'),
         });
         worktreeItems.push({
             id: 'worktree:prune',
             title: t('files.branchMenu.worktrees.pruneTitle'),
             subtitle: t('files.branchMenu.worktrees.pruneSubtitle'),
-            category: t('files.branchMenu.category.actions'),
+            category: t('sessionGitBranches.category.worktrees'),
             disabled: !input.hasMachineTarget,
         });
     }
@@ -65,11 +88,11 @@ export function buildWorkspaceScmBranchPopoverItems(input: Readonly<{
                 id: `worktree:open:${worktree.path}`,
                 title,
                 subtitle: worktree.path,
-                category: t('files.branchMenu.category.worktrees'),
+                category: t('sessionGitBranches.category.worktrees'),
+                left: glyph('git-branch'),
                 disabled: worktree.isCurrent === true,
-                right: worktree.isCurrent ? (
-                    <Icon name="check" size={14} color={input.checkIconColor} />
-                ) : null,
+                checked: worktree.isCurrent === true,
+                right: worktree.isCurrent ? glyph('check') : null,
             });
 
             if (input.canCreateWorktrees && worktree.isCurrent !== true && worktree.isMain !== true) {
@@ -77,10 +100,20 @@ export function buildWorkspaceScmBranchPopoverItems(input: Readonly<{
                     id: `worktree:remove:${worktree.path}`,
                     title: t('files.branchMenu.worktrees.removeTitle'),
                     subtitle: t('files.branchMenu.worktrees.removeSubtitle', { target: worktree.branch ?? worktree.path }),
-                    category: t('files.branchMenu.category.actions'),
+                    category: t('sessionGitBranches.category.worktrees'),
                 });
             }
         }
+    }
+
+    if (input.canCreateWorktrees) {
+        worktreeItems.push({
+            id: 'worktree:create-from-another-branch',
+            title: t('sessionGitBranches.newWorktree'),
+            subtitle: t('sessionGitBranches.newWorktreeSubtitle'),
+            category: startCategory,
+            left: glyph('git-branch'),
+        });
     }
 
     if (input.loading && input.branches.length === 0) {
@@ -88,44 +121,110 @@ export function buildWorkspaceScmBranchPopoverItems(input: Readonly<{
             id: 'loading',
             title: t('common.loading'),
             disabled: true,
-            category: t('files.branchMenu.category.branches'),
+            category: t('sessionGitBranches.category.branches'),
         });
-        return { branchItems, worktreeItems };
-    }
-
-    if (!input.canReadBranches) {
+    } else if (!input.canReadBranches) {
         branchItems.push({
             id: 'unsupported',
             title: t('files.branchMenu.unavailable'),
             disabled: true,
-            category: t('files.branchMenu.category.branches'),
+            category: t('sessionGitBranches.category.branches'),
         });
-        return { branchItems, worktreeItems };
-    }
-
-    for (const branch of input.branches) {
-        const isCurrent = branch.isCurrent === true || (input.currentBranch ? branch.name === input.currentBranch : false);
+    } else {
+        const current = input.currentBranch;
+        const currentEntry = input.branches.find((branch) => branch.isCurrent === true || (current !== null && branch.name === current));
+        if (currentEntry) {
+            const facts = [
+                currentEntry.upstream ? t('sessionGitBranches.tracks', { upstream: currentEntry.upstream }) : t('sessionGitBranches.onlyHere'),
+                input.current && input.current.changedCount > 0
+                    ? t('sessionGitBranches.changed', { count: formatExactCount(input.current.changedCount) })
+                    : null,
+            ].filter((fact): fact is string => Boolean(fact));
+            branchItems.push({
+                id: `branch:${currentEntry.name}`,
+                title: currentEntry.name,
+                subtitle: facts.join(' · '),
+                category: t('sessionGitBranches.category.current'),
+                left: glyph('git-branch'),
+                checked: true,
+                accessibilityLabel: [currentEntry.name, ...facts].join(', '),
+                right: (
+                    <>
+                        {input.current && input.current.ahead > 0 ? (
+                            <Icon name="arrow-up" size={12} color={input.checkIconColor} accessibilityLabel={t('sessionGitBranches.ahead', { count: formatExactCount(input.current.ahead) })} />
+                        ) : null}
+                        {glyph('check')}
+                    </>
+                ),
+            });
+        }
+        for (const branch of input.branches) {
+            if (branch === currentEntry) continue;
+            branchItems.push({
+                id: `branch:${branch.name}`,
+                title: branch.name,
+                subtitle: branch.upstream
+                    ? t('sessionGitBranches.tracks', { upstream: branch.upstream })
+                    : branch.type === 'remote' ? undefined : t('sessionGitBranches.onlyHere'),
+                category: branch.type === 'remote'
+                    ? t('sessionGitBranches.category.remote')
+                    : t('sessionGitBranches.category.branches'),
+                left: glyph('git-branch'),
+                disabled: !input.canCheckout,
+            });
+        }
+        if (input.loadError) {
+            branchItems.push({
+                id: 'load-error',
+                title: t('sessionGitBranches.loadFailed'),
+                subtitle: input.loadError,
+                disabled: true,
+                category: t('sessionGitBranches.category.branches'),
+            });
+        }
         branchItems.push({
-            id: `branch:${branch.name}`,
-            title: branch.name,
-            subtitle: branch.upstream ? t('files.branchMenu.branch.upstream', { upstream: branch.upstream }) : undefined,
-            category: branch.type === 'remote'
-                ? t('files.branchMenu.category.remote')
-                : t('files.branchMenu.category.local'),
-            disabled: !input.canCheckout || isCurrent,
-            right: isCurrent ? (
-                <Icon name="check" size={14} color={input.checkIconColor} />
-            ) : null,
+            id: input.includeRemotes ? 'remotes_off' : 'remotes_on',
+            title: input.includeRemotes ? t('files.branchMenu.remotes.hide') : t('files.branchMenu.remotes.show'),
+            category: input.includeRemotes ? t('sessionGitBranches.category.remote') : t('sessionGitBranches.category.branches'),
         });
     }
 
-    branchItems.push({
-        id: input.includeRemotes ? 'remotes_off' : 'remotes_on',
-        title: input.includeRemotes ? t('files.branchMenu.remotes.hide') : t('files.branchMenu.remotes.show'),
-        subtitle: t('files.branchMenu.remotes.subtitle'),
-        category: t('files.branchMenu.category.options'),
-        disabled: !input.canReadBranches,
-    });
+    for (const stash of input.keptAside ?? []) {
+        const when = typeof stash.createdAt === 'number' ? formatScmTimelineWhen(stash.createdAt) : '';
+        const origin = resolveScmStashOrigin(stash, 'short');
+        branchItems.push({
+            id: `${GIT_BRANCH_MENU_ITEM_IDS.stashPrefix}${stash.stashRef}`,
+            title: resolveScmStashTitle(stash),
+            subtitle: when ? t('sessionGitBranches.keptAsideWhen', { origin, when }) : origin,
+            category: t('sessionGitBranches.category.keptAside'),
+            left: glyph(resolveScmStashIconName(stash)),
+        });
+    }
+
+    if (input.newBranch?.available) {
+        branchItems.push({
+            id: GIT_BRANCH_MENU_ITEM_IDS.newBranch,
+            title: input.currentBranch
+                ? t('sessionGitBranches.newBranch', { branch: input.currentBranch })
+                : t('sessionGitBranches.newBranchDetached'),
+            subtitle: t('sessionGitBranches.newBranchSubtitle'),
+            category: startCategory,
+            left: glyph('plus'),
+        });
+    }
+    if (input.keepAside?.available) {
+        const nothing = input.keepAside.changedCount === 0;
+        branchItems.push({
+            id: GIT_BRANCH_MENU_ITEM_IDS.keepAside,
+            title: t('sessionGitBranches.keepAside'),
+            subtitle: nothing
+                ? t('sessionGitBranches.keepAsideNothing')
+                : t('sessionGitBranches.keepAsideSubtitle', { count: formatExactCount(input.keepAside.changedCount) }),
+            category: startCategory,
+            left: glyph('archive'),
+            disabled: nothing,
+        });
+    }
 
     return { branchItems, worktreeItems };
 }

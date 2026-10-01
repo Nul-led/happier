@@ -8,6 +8,7 @@ import type { CustomModalInjectedProps } from '@/modal';
 import { t } from '@/text';
 import { Typography } from '@/constants/Typography';
 import { Text } from '@/components/ui/text/Text';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 export type PathConflictResolutionStrategy = 'keep_both' | 'replace' | 'skip' | 'cancel';
 
@@ -69,7 +70,7 @@ function PathConflictOption(props: Readonly<{
             style={({ pressed }) => ([
                 styles.optionButton,
                 props.primary ? styles.optionPrimaryBorder : null,
-                pressed ? { opacity: 0.92 } : null,
+                pressed ? { opacity: motionTokens.press.opacitySubtle } : null,
             ])}
         >
             <Text style={styles.optionTitle}>{props.title}</Text>
@@ -132,7 +133,7 @@ const PathConflictResolutionDialog: React.FC<PathConflictResolutionDialogProps> 
                 }}
                 style={({ pressed }) => [
                     styles.cancelRow,
-                    pressed ? { opacity: 0.85 } : null,
+                    pressed ? { opacity: motionTokens.press.opacitySubtle } : null,
                 ]}
             >
                 <Text style={styles.cancelText}>{t('common.cancel')}</Text>

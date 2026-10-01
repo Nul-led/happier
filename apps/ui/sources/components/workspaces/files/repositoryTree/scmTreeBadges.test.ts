@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { selectScmChangedFiles } from '@/scm/scmStatusFiles';
 import { computeScmDirectoryTreeBadge, computeScmFileTreeBadge, createScmTreeBadgeIndex } from './scmTreeBadges';
 
 function snapshot(entries: any[]) {
@@ -114,6 +115,31 @@ describe('scmTreeBadges', () => {
         expect(computeScmDirectoryTreeBadge(s, 'src')).toEqual({ kindLetter: 'M', added: 6, removed: 1, changedCount: 2 });
         expect(computeScmDirectoryTreeBadge(s, 'src/nested')).toEqual({ kindLetter: 'A', added: 4, removed: 0, changedCount: 1 });
         expect(computeScmDirectoryTreeBadge(s, 'does-not-exist')).toBeNull();
+    });
+
+    it('counts folder changes from the one changed-file list, so a folder total equals the header count', () => {
+        const entry = (path: string, kind: string, pending = true, included = false) => ({
+            path,
+            previousPath: null,
+            kind,
+            includeStatus: '',
+            pendingStatus: '',
+            hasIncludedDelta: included,
+            hasPendingDelta: pending,
+            stats: { includedAdded: included ? 1 : 0, includedRemoved: 0, pendingAdded: pending ? 1 : 0, pendingRemoved: 0, isBinary: false },
+        });
+        const s = snapshot([
+            entry('src/a.ts', 'modified', true, true),
+            entry('src/new.ts', 'untracked'),
+            // A directory the backend collapsed is not a file anyone can open or commit.
+            entry('src/scratch/', 'untracked'),
+            entry('README.md', 'modified'),
+        ]);
+
+        const index = createScmTreeBadgeIndex(s);
+        expect(index.getDirectoryBadge('')?.changedCount).toBe(selectScmChangedFiles(s).length);
+        expect(index.getDirectoryBadge('src')?.changedCount).toBe(2);
+        expect(index.getFileBadge('src/scratch/')).toBeNull();
     });
 
     it('memoizes directory badge index per snapshot instance', () => {

@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { rm } from 'node:fs/promises';
+import { BROWSER_SANDBOX_NEXT_ACTION, isAppArmorUserNamespaceRestriction } from './sandbox';
 
 import type {
     BrowserProfileV1,
@@ -68,12 +69,7 @@ async function cleanupPrivateProfile(
 ): Promise<void> {
     if (!privateLaunch.cleanupOnStop) return;
     const cleanup = input.cleanupProfileDirectory ?? defaultCleanupProfileDirectory;
-    try {
-        await cleanup(privateLaunch.profileDirectory);
-    } catch {
-        // Cleanup is best-effort during daemon shutdown/failure; never convert it into a public
-        // Browser control capability or leak private profile paths through route registration.
-    }
+    await cleanup(privateLaunch.profileDirectory);
 }
 
 function createProcessController(input: BrowserSidecarLaunchOwnerControlAdapterFactoryInput): SidecarProcessController {
@@ -129,8 +125,11 @@ export function createBrowserSidecarLaunchOwnerControlAdapterFactory(
             timeoutMs: input.endpointTimeoutMs,
         });
         if (!endpointSource.ok) {
-            processController.stop();
+            await processController.stopAndWait();
             await cleanupPrivateProfile(input, privateLaunch);
+            if (endpointSource.sandboxUnavailable && await isAppArmorUserNamespaceRestriction()) {
+                return unavailable('sandbox_unavailable', `Managed Chromium sandbox is unavailable. ${BROWSER_SANDBOX_NEXT_ACTION}`);
+            }
             return unavailable('cdp_unavailable', 'Browser sidecar CDP endpoint is unavailable.');
         }
 
@@ -142,25 +141,26 @@ export function createBrowserSidecarLaunchOwnerControlAdapterFactory(
         });
         const adapterResult = await adapterFactory(factoryInput);
         if (!adapterResult.ok) {
-            processController.stop();
+            await processController.stopAndWait();
             await cleanupPrivateProfile(input, privateLaunch);
             return adapterResult;
         }
 
-        let disposed = false;
+        let disposal: Promise<void> | null = null;
         return {
             ok: true,
             adapter: adapterResult.adapter,
             ...(adapterResult.contextCapture ? { contextCapture: adapterResult.contextCapture } : {}),
-            dispose: async () => {
-                if (disposed) return;
-                disposed = true;
-                try {
-                    await adapterResult.dispose?.();
-                } finally {
-                    processController.stop();
-                    await cleanupPrivateProfile(input, privateLaunch);
-                }
+            dispose: () => {
+                disposal ??= (async () => {
+                    try {
+                        await adapterResult.dispose?.();
+                    } finally {
+                        await processController.stopAndWait();
+                        await cleanupPrivateProfile(input, privateLaunch);
+                    }
+                })();
+                return disposal;
             },
         };
     };

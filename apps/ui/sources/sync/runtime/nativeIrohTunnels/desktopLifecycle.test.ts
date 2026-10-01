@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { classifyIrohHomeTunnelSwitchFailure } from './fallback';
+import { classifyIrohHomeCarrierFailure } from '@happier-dev/iroh-native';
 import {
     createDesktopIrohLifecycleModule,
     IROH_DESKTOP_STATUS_COMMAND,
@@ -153,7 +153,21 @@ describe('sync/runtime/nativeIrohTunnels desktop lifecycle bridge', () => {
         });
         const malformedOrigin = await module!.ensureHomeTunnel(makeRequest()).catch((error: unknown) => error);
         expect(malformedOrigin).toMatchObject({ name: 'IrohError', code: 'unknown' });
-        expect(classifyIrohHomeTunnelSwitchFailure(malformedOrigin).fallbackAllowed).toBe(false);
+        expect(classifyIrohHomeCarrierFailure(malformedOrigin).fallbackAllowed).toBe(false);
+    });
+
+    it('accepts any literal IPv4 loopback origin owned by the desktop host', async () => {
+        installDesktopHost(ELECTRON_USER_AGENT);
+        const module = createDesktopIrohLifecycleModule();
+        expect(module).not.toBeNull();
+        hostInvoke.mockResolvedValueOnce({
+            ...desktopLease('desktop-lease-loopback', 45904),
+            runtimeOrigin: 'http://127.0.0.2:45904',
+        });
+
+        await expect(module!.ensureHomeTunnel(makeRequest())).resolves.toMatchObject({
+            runtimeOrigin: 'http://127.0.0.2:45904',
+        });
     });
 
     it('preserves native error codes as IrohError so the shared fallback classifier keeps ownership', async () => {
@@ -165,30 +179,30 @@ describe('sync/runtime/nativeIrohTunnels desktop lifecycle bridge', () => {
         hostInvoke.mockRejectedValueOnce(new Error('iroh_native_error:endpoint-identity-mismatch:wrong home'));
         const identityError = await module!.ensureHomeTunnel(makeRequest()).catch((error: unknown) => error);
         expect(identityError).toMatchObject({ name: 'IrohError', code: 'identity_mismatch' });
-        expect(classifyIrohHomeTunnelSwitchFailure(identityError).fallbackAllowed).toBe(false);
+        expect(classifyIrohHomeCarrierFailure(identityError).fallbackAllowed).toBe(false);
 
         hostInvoke.mockRejectedValueOnce(new Error('iroh_native_error:endpoint-identity-invalid:bad id'));
         const descriptorError = await module!.ensureHomeTunnel(makeRequest()).catch((error: unknown) => error);
-        expect(classifyIrohHomeTunnelSwitchFailure(descriptorError).fallbackAllowed).toBe(false);
+        expect(classifyIrohHomeCarrierFailure(descriptorError).fallbackAllowed).toBe(false);
 
         hostInvoke.mockRejectedValueOnce(new Error('iroh_native_error:endpoint_key_unavailable:key unavailable'));
         const keyError = await module!.ensureHomeTunnel(makeRequest()).catch((error: unknown) => error);
         expect(keyError).toMatchObject({ name: 'IrohError', code: 'endpoint_key_unavailable' });
-        expect(classifyIrohHomeTunnelSwitchFailure(keyError).fallbackAllowed).toBe(false);
+        expect(classifyIrohHomeCarrierFailure(keyError).fallbackAllowed).toBe(false);
 
         // Availability/transport failures keep the honest fallback-allowed class.
         hostInvoke.mockRejectedValueOnce(new Error('iroh_native_error:unavailable:addon missing'));
         const unavailableError = await module!.ensureHomeTunnel(makeRequest()).catch((error: unknown) => error);
-        expect(classifyIrohHomeTunnelSwitchFailure(unavailableError).fallbackAllowed).toBe(true);
+        expect(classifyIrohHomeCarrierFailure(unavailableError).fallbackAllowed).toBe(true);
 
         hostInvoke.mockRejectedValueOnce(new Error('HAPPIER_DESKTOP_NOT_IMPLEMENTED: iroh_ensure_home_tunnel'));
         const notImplementedError = await module!.ensureHomeTunnel(makeRequest()).catch((error: unknown) => error);
-        expect(classifyIrohHomeTunnelSwitchFailure(notImplementedError).fallbackAllowed).toBe(true);
+        expect(classifyIrohHomeCarrierFailure(notImplementedError).fallbackAllowed).toBe(true);
 
         hostInvoke.mockRejectedValueOnce(new Error('iroh_native_error:transport_closed:peer disconnected'));
         const closedError = await module!.ensureHomeTunnel(makeRequest()).catch((error: unknown) => error);
         expect(closedError).toMatchObject({ name: 'IrohError', code: 'transport_closed' });
-        expect(classifyIrohHomeTunnelSwitchFailure(closedError).fallbackAllowed).toBe(true);
+        expect(classifyIrohHomeCarrierFailure(closedError).fallbackAllowed).toBe(false);
     });
 
     it('supervisor default composition selects the desktop bridge without bypassing the shared supervisor', async () => {

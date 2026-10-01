@@ -37,7 +37,7 @@ function request(
     automationRequestId: `req_${Math.random().toString(36).slice(2)}`,
     browserSessionId: 'browser_session_1',
     viewId: 'view_1',
-    navigationGeneration: 1,
+    navigationGeneration: 0,
     requestedBy: 'agent',
     requesterRef: agentRef,
     actionKind: 'snapshot',
@@ -48,6 +48,29 @@ function request(
 }
 
 describe('browser automation daemon service', () => {
+  it('publishes the active target only while its admitted action owns the page', async () => {
+    let release: () => void = () => undefined;
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    const target = { x: 0.5, y: 0.5, width: 0.2, height: 0.1 };
+    const service = createBrowserAutomationDaemonService({ adapter: { adapterKind: 'chromiumSidecar',
+      execute: async (_request, context) => {
+        context?.onActiveTarget?.(target);
+        await pending;
+        context?.onActiveTarget?.(target); // A late native callback after takeover must not revive it.
+        return { status: 'succeeded', fidelity: 'cdp', trustedInput: true };
+      } } });
+    const events: unknown[] = [];
+    service.subscribeBrowserEvents(event => events.push(event));
+    try {
+      const action = service.execute(request({ actionKind: 'click', payload: { selector: '#go' } }));
+      expect(service.getStatus(view)).toMatchObject({ activeActionKind: 'click', activeTarget: target });
+      const takeover = service.recordHumanInput({ ...view, authority: 'present_user' });
+      expect(service.getStatus(view).activeTarget).toBeUndefined();
+      release(); await action; await takeover;
+      expect(service.getStatus(view).activeTarget).toBeUndefined();
+      expect(events).toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'controllerChanged', state: expect.objectContaining({ activeTarget: target }) })]));
+    } finally { release(); service.dispose(); }
+  });
   it('executes a read-only snapshot without a lease and records a timeline entry', async () => {
     const service = createBrowserAutomationDaemonService({ adapter: readOnlyAdapter() });
 
@@ -156,7 +179,9 @@ describe('browser automation daemon service', () => {
     );
 
     const canceled = service.cancelActive({ ...view, authority: 'present_user' });
-    expect(canceled.ok).toBe(true);
+    expect(service.getStatus(view).activeAutomationRequestId).toBeDefined();
+    release();
+    expect(await canceled).toEqual({ ok: true, completion: 'uncertain' });
 
     const result = await pending;
     expect(result.status).toBe('canceled');
@@ -194,7 +219,8 @@ describe('browser automation daemon service', () => {
 
     const canceled = service.cancelActive({ ...view, authority: 'present_user' });
 
-    expect(canceled).toEqual({ ok: true });
+    release();
+    expect(await canceled).toEqual({ ok: true, completion: 'uncertain' });
     expect((await pending).status).toBe('canceled');
     release();
   });
@@ -234,7 +260,7 @@ describe('browser automation daemon service', () => {
             v: 1,
             evalRequestId: 'eval_1',
             viewId: view.viewId,
-            navigationGeneration: 1,
+            navigationGeneration: 0,
             tier: 'cdp',
             expression: 'document.title',
             objectGroupId: 'automation_eval_1',

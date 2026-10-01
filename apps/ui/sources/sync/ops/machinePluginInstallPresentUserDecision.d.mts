@@ -23,9 +23,3 @@ export declare function decideMachinePluginInstallReviewAsPresentUser<T>(
         confirmPresentUser: () => Promise<readonly Readonly<OptionalSelection>[] | null>;
     }>,
 ): Promise<T>;
-
-export declare function decideMachinePluginDevelopmentSourceRootAsPresentUser<T>(
-    params: PresentUserDecisionTransport<T> & Readonly<{
-        confirmPresentUser: () => Promise<boolean>;
-    }>,
-): Promise<T>;

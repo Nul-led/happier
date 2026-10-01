@@ -3,7 +3,7 @@ import type {
     ScmHostingRepositoryDescribePublishTargetsResponse,
     ScmHostingRepositoryPublishResponse,
 } from '@happier-dev/protocol';
-import { SCM_OPERATION_ERROR_CODES } from '@happier-dev/protocol';
+import { SCM_OPERATION_ERROR_CODES } from '@happier-dev/protocol/scm';
 
 import { validateScmFollowupOpenUrl } from './validateScmFollowupOpenUrl';
 
@@ -24,11 +24,13 @@ export type SourceControlPublishRemediationAction =
     | Readonly<{ kind: 'install-gh'; disabled: boolean }>
     | Readonly<{ kind: 'use-managed-gh'; disabled: boolean }>
     | Readonly<{ kind: 'authenticate-gh'; disabled: boolean }>
+    | Readonly<{ kind: 'authenticate-provider-cli'; providerName: string; command: string; disabled: boolean }>
     | Readonly<{ kind: 'open-browser'; followup: Extract<ScmFollowupAction, { kind: 'openUrl' }>; disabled: boolean }>;
 
 export type SourceControlPublishRepositoryRemediationViewModel = Readonly<{
     authState: SourceControlPublishAuthState;
     action: SourceControlPublishRemediationAction | null;
+    retryTargets: Readonly<{ disabled: boolean }> | null;
     authUnavailable: boolean;
     commitRequired: boolean;
     remoteConflict: boolean;
@@ -38,6 +40,7 @@ export function resolveSourceControlPublishRepositoryRemediation(input: Readonly
     targetsResponse: ScmHostingRepositoryDescribePublishTargetsResponse | null;
     selectedTarget: PublishTarget | null;
     publishFailure: PublishFailure | null;
+    canRetryTargets?: boolean;
     disabled?: boolean;
 }>): SourceControlPublishRepositoryRemediationViewModel {
     const disabled = input.disabled === true;
@@ -45,8 +48,12 @@ export function resolveSourceControlPublishRepositoryRemediation(input: Readonly
     const auth = input.selectedTarget?.auth ?? (input.targetsResponse?.success === true ? input.targetsResponse.auth : null);
     return {
         authState: resolveAuthState(auth),
+        retryTargets: input.canRetryTargets === true && (
+            input.targetsResponse?.success === false || (auth != null && auth.state !== 'authenticated')
+        ) ? { disabled } : null,
         action: resolveAction({
             auth,
+            providerName: input.selectedTarget?.provider.displayName ?? null,
             failure,
             disabled,
         }),
@@ -65,6 +72,7 @@ function resolveAuthState(auth: AuthSummary | null | undefined): SourceControlPu
 
 function resolveAction(input: Readonly<{
     auth: AuthSummary | null | undefined;
+    providerName: string | null;
     failure: PublishFailure | PublishTargetsFailure | null;
     disabled: boolean;
 }>): SourceControlPublishRemediationAction | null {
@@ -80,7 +88,6 @@ function resolveAction(input: Readonly<{
     if (
         remediationKind === 'connect_github'
         || remediationAction === 'connect_github'
-        || (input.auth?.profileKind === 'connected_account' && authState === 'authentication_required')
     ) {
         return { kind: 'connect-github', disabled: input.disabled };
     }
@@ -93,16 +100,23 @@ function resolveAction(input: Readonly<{
     if (
         remediationKind === 'authenticate_gh'
         || remediationAction === 'authenticate_gh'
-        || (
-            input.auth?.profileKind === 'provider_cli'
-            && authState === 'authentication_required'
-            && (remediationKind === 'auth_required' || remediationKind === 'authentication_required')
-        )
     ) {
         return { kind: 'authenticate-gh', disabled: input.disabled };
     }
     if (browserFollowup) {
         return { kind: 'open-browser', followup: browserFollowup, disabled: input.disabled };
+    }
+    const command = readString(remediation, 'action')?.trim();
+    if (
+        input.auth?.profileKind === 'provider_cli'
+        && authState === 'authentication_required'
+        && remediationKind === 'auth_required'
+        && input.providerName
+        && command
+    ) {
+        // The plugin owns its CLI sign-in instruction. Profile kind alone cannot
+        // identify a CLI, and the host never executes this provider-authored text.
+        return { kind: 'authenticate-provider-cli', providerName: input.providerName, command, disabled: input.disabled };
     }
     return null;
 }

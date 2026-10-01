@@ -11,8 +11,7 @@ const READY_TEST_IDS = [
   'session-composer-input',
   'new-session-composer-input',
   'settings-button',
-  'setupWizard.surface',
-  'setup.postAuth',
+  'settings.machines.draft.form',
 ] as const;
 
 const READY_PRESENCE_ONLY_TEST_IDS = [

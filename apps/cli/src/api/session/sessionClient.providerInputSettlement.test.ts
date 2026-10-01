@@ -1,7 +1,15 @@
+import { createJiti } from 'jiti';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import type { AgentSessionRuntime, AgentSessionRuntimeContext } from '@happier-dev/plugin-sdk/agents/runtime';
+import { createNativeAgentSessionOperations } from '@/agent/runtime/registry/engineRegistry/nativeAgentSession';
+import { createNativeAgentSessionPublications } from '@/agent/runtime/registry/engineRegistry/nativeAgentSessionPublications';
+
 import { createTestApiSessionClient } from '@/testkit/backends/createTestApiSessionClient';
 import axios from 'axios';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { logger } from '@/ui/logger';
 import { createPlainSessionFixture } from '@/testkit/backends/sessionFixtures';
 import {
   type ApiSessionSocketStub,
@@ -86,7 +94,40 @@ function createTranscriptLookupHttpError(params: {
   });
 }
 
+function markMaterializedProviderInput(client: ApiSessionClient, localId: string): void {
+  const fixture = client as unknown as {
+    materializationRuntime: { markPendingQueueMaterializedLocalId(inputId: string): void };
+  };
+  fixture.materializationRuntime.markPendingQueueMaterializedLocalId(localId);
+}
+
+// Load the real plugin boundary during collection so source transforms do not consume the behavior deadline.
+const loader = createJiti(import.meta.url, { fsCache: false, moduleCache: true, interopDefault: false });
+const pluginRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../../packages/plugins/claude/src/agent/runtime');
+const fixtures = await loader.import(`${pluginRoot}/engine.testkit.ts`) as {
+  createTerminalHostFixture(): { service: { injectUserPrompt: ReturnType<typeof vi.fn> } };
+  createEventsFixture(): { service: unknown };
+  createPluginContextFixture(terminal: unknown, events: unknown): unknown;
+};
+const leaf = await loader.import(`${pluginRoot}/terminal/unified/turnOperations.ts`) as {
+  createClaudeUnifiedTerminalTurnOperations(params: unknown): { observeTerminalLifecycle(event: unknown): Promise<void>; isTurnInFlight(): boolean };
+};
+const native = await loader.import(`${pluginRoot}/nativeRuntime.ts`) as {
+  createClaudeNativeSessionRuntimeFromOperations(operations: unknown, request: unknown, context: unknown): AgentSessionRuntime;
+};
+
 describe('ApiSessionClient provider-input settlement', () => {
+  beforeEach(() => {
+    // HTTP is the real rejoin boundary: these fixtures start with no persisted copy of their input.
+    vi.spyOn(axios, 'get').mockImplementation(async (url) => {
+      const path = new URL(String(url)).pathname;
+      if (path === '/v2/sessions/s1/pending') return { data: { pending: [] } };
+      if (path.startsWith('/v2/sessions/s1/messages/by-local-id/')) {
+        throw createTranscriptLookupHttpError({ message: 'Message not found', status: 404, data: { error: 'Message not found' } });
+      }
+      throw new Error(`Unexpected HTTP GET in provider-input settlement fixture: ${path}`);
+    });
+  });
   afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
@@ -591,6 +632,8 @@ describe('ApiSessionClient provider-input settlement', () => {
       'missing-credentials-token-never-stored',
       createPlainSessionFixture({ id: 's1' }),
       {
+        metadataAuthority: { kind: 'owner', credentials: { token: 'different-account-token', encryption: null },
+          readCurrentCredentials: async () => null },
         transformSessionInputBeforeCommit: async (payload) => ({
           transformed: payload,
           settlement: { onAccepted, onDefinitiveAdmissionFailure },
@@ -618,11 +661,197 @@ describe('ApiSessionClient provider-input settlement', () => {
       { localId: 'later-local', status: 'queued', deliveryStatus: { status: 'queued' } },
     ]);
 
+    const retired: string[] = [];
+    const unsubscribe = client.subscribePendingProviderInputRetirement((localId) => {
+      expect(client.hasPendingProviderInput(localId)).toBe(false);
+      retired.push(localId);
+    });
     await expect(client.reconcilePendingProviderInputCustodyBeforeMaterialization()).resolves.toBe(true);
 
+    expect(retired).toEqual(['manual-handled-local']);
+    unsubscribe?.();
     expect(client.hasPendingProviderInput('manual-handled-local')).toBe(false);
     expect(resolveAcceptedMock).not.toHaveBeenCalled();
     expect(blockDeliveryMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps provider custody when protected admission removed the Pending row before provider acceptance', async () => {
+    sessionSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
+    userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
+    const client = createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1' }));
+    const localId = 'admitted-before-provider';
+    markMaterializedProviderInput(client, localId);
+    listDeliveryStatusesMock.mockResolvedValueOnce([]);
+    vi.spyOn(axios, 'get').mockResolvedValueOnce({
+      status: 200,
+      data: { message: {
+        id: 'admitted-user-message', seq: 42, localId, sidechainId: null,
+        createdAt: 100, updatedAt: 101,
+        content: { t: 'plain', v: { role: 'user', content: { type: 'text', text: 'PONG' } } },
+      } },
+    } as never);
+    const retired: string[] = [];
+    const unsubscribe = client.subscribePendingProviderInputRetirement((id) => retired.push(id));
+
+    await expect(client.reconcilePendingProviderInputCustodyBeforeMaterialization()).resolves.toBe(false);
+
+    expect(client.hasPendingProviderInput(localId)).toBe(true);
+    expect(retired).toEqual([]);
+    unsubscribe();
+    await client.close();
+  });
+
+  it('does not retire provider custody when an absent Pending row cannot be checked against the transcript', async () => {
+    sessionSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
+    userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
+    const client = createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1' }));
+    markMaterializedProviderInput(client, 'lookup-unavailable');
+    listDeliveryStatusesMock.mockResolvedValueOnce([]);
+    vi.spyOn(axios, 'get').mockRejectedValueOnce(createTranscriptLookupHttpError({
+      message: 'connection reset', code: 'ECONNRESET',
+    }));
+
+    await expect(client.reconcilePendingProviderInputCustodyBeforeMaterialization()).resolves.toBe(false);
+    expect(client.hasPendingProviderInput('lookup-unavailable')).toBe(true);
+    await client.close();
+  });
+
+  it('reconciles archived uncertain custody again when its exact server row is later removed', async () => {
+    sessionSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
+    userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
+    const client = createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1' }));
+    markMaterializedProviderInput(client, 'archived-local');
+    const retired: string[] = [];
+    const unsubscribe = client.subscribePendingProviderInputRetirement((localId) => retired.push(localId));
+    listDeliveryStatusesMock.mockResolvedValueOnce([{ localId: 'archived-local', status: 'discarded',
+      deliveryStatus: { status: 'discarded', reason: 'dismissed_uncertain' } }]);
+    await expect(client.reconcilePendingProviderInputCustodyBeforeMaterialization()).resolves.toBe(true);
+    expect(client.hasPendingProviderInput('archived-local')).toBe(true);
+    expect(retired).toEqual([]);
+    listDeliveryStatusesMock.mockResolvedValueOnce([]);
+    await client.reconcilePendingProviderInputCustodyBeforeMaterialization();
+    expect(client.hasPendingProviderInput('archived-local')).toBe(false);
+    expect(retired).toEqual(['archived-local']);
+    expect(resolveAcceptedMock).not.toHaveBeenCalled();
+    unsubscribe();
+    await client.close();
+  });
+
+  it('allows manual retirement after an accepted settlement has failed and stopped', async () => {
+    sessionSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
+    userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
+    const client = createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1' }));
+    markMaterializedProviderInput(client, 'failed-acceptance');
+    resolveAcceptedMock.mockRejectedValueOnce(new Error('settlement failed'));
+    await client.observeProviderInputSettlement({ kind: 'accepted', localId: 'failed-acceptance', userMessageSeq: null });
+    expect(client.hasPendingProviderInput('failed-acceptance')).toBe(true);
+    const retired: string[] = [];
+    const unsubscribe = client.subscribePendingProviderInputRetirement((localId) => retired.push(localId));
+    listDeliveryStatusesMock.mockResolvedValueOnce([]);
+    await client.reconcilePendingProviderInputCustodyBeforeMaterialization();
+    expect(client.hasPendingProviderInput('failed-acceptance')).toBe(false);
+    expect(retired).toEqual(['failed-acceptance']);
+    expect(client.getCommittedUserMessageSeq('failed-acceptance')).toBeNull();
+    unsubscribe();
+    await client.close();
+  });
+
+  it('preserves accepted settlement that starts while server retirement is being read', async () => {
+    sessionSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
+    userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
+    const client = createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1' }));
+    markMaterializedProviderInput(client, 'accepted-race');
+    let finishStatuses!: (statuses: []) => void;
+    listDeliveryStatusesMock.mockImplementationOnce(() => new Promise((resolve) => { finishStatuses = resolve; }));
+    let finishAcceptance!: (result: unknown) => void;
+    resolveAcceptedMock.mockImplementationOnce(() => new Promise((resolve) => { finishAcceptance = resolve; }));
+    const retired: string[] = [];
+    const unsubscribe = client.subscribePendingProviderInputRetirement((localId) => retired.push(localId));
+    const reconciliation = client.reconcilePendingProviderInputCustodyBeforeMaterialization();
+    await vi.waitFor(() => expect(finishStatuses).toBeTypeOf('function'));
+    const acceptance = client.observeProviderInputSettlement({ kind: 'accepted', localId: 'accepted-race', userMessageSeq: 42 });
+    await vi.waitFor(() => expect(finishAcceptance).toBeTypeOf('function'));
+    finishStatuses([]);
+    await reconciliation;
+    expect(retired).toEqual([]);
+    expect(client.hasPendingProviderInput('accepted-race')).toBe(true);
+    finishAcceptance({ didResolve: true, pendingQueueState: { known: true, pendingCount: 0, pendingBlockedCount: 0, pendingVersion: 3 },
+      message: { localId: 'accepted-race', seq: 42 } });
+    await acceptance;
+    expect(client.getCommittedUserMessageSeq('accepted-race')).toBe(42);
+    unsubscribe();
+    await client.close();
+  });
+
+  it('releases the real Claude submission and unstarted host wait after exact server retirement', async () => {
+    sessionSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
+    userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
+    const client = createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1' }));
+    const terminal = fixtures.createTerminalHostFixture();
+    const ctx = fixtures.createPluginContextFixture(terminal.service, fixtures.createEventsFixture().service);
+    const controller = new AbortController();
+    const publications = createNativeAgentSessionPublications({
+      agentId: 'claude', session: client, signal: controller.signal,
+      isCurrent: () => true, supportsInFlightSteer: true,
+    });
+    const context = { session: { id: 's1', services: publications.services } } as unknown as AgentSessionRuntimeContext;
+    const operations = leaf.createClaudeUnifiedTerminalTurnOperations({
+      ctx, directory: '/tmp/claude-project', happierSessionId: 's1',
+      hostPreference: 'zellij', launchEnv: {}, permissionMode: 'default',
+    });
+    const session = native.createClaudeNativeSessionRuntimeFromOperations(operations, {
+      kind: 'create', sessionId: 's1', cwd: '/tmp/claude-project',
+    }, context);
+    const lifecycle = {
+      onTurnTerminal: () => undefined,
+      subscribePendingProviderInputRetirement: (listener: (localId: string) => void) =>
+        client.subscribePendingProviderInputRetirement(listener),
+    };
+    const runtime = createNativeAgentSessionOperations(session, 's1', undefined, undefined, undefined,
+      undefined, undefined, {
+        context, cwd: '/tmp/claude-project', connectedAccounts: [],
+        capabilities: { open: ['create'], delivery: ['newTurn'], cancel: false },
+        cancellation: { declared: false }, configuration: { declared: false }, manualCompaction: { declared: false },
+      }, publications, [], lifecycle);
+    try {
+      // Server materialization is already owned by the real Pending client before dispatch.
+      markMaterializedProviderInput(client, 'retired-input');
+      await runtime.sendTurnPrompt('first prompt', { localId: 'retired-input', turnId: 'first-turn' });
+      let completed = false;
+      const completion = runtime.waitForTurnCompletion().then(() => { completed = true; });
+      void completion.catch(() => undefined); // Disposal rejects this wait when a preceding assertion fails.
+      markMaterializedProviderInput(client, 'unrelated-input');
+      listDeliveryStatusesMock.mockResolvedValueOnce([
+        { localId: 'retired-input', status: 'delivering', deliveryStatus: { status: 'delivering' } },
+      ]);
+      await client.reconcilePendingProviderInputCustodyBeforeMaterialization();
+      expect(completed).toBe(false);
+      listDeliveryStatusesMock.mockResolvedValueOnce([
+        { localId: 'next-input', status: 'queued', deliveryStatus: { status: 'queued' } },
+      ]);
+      userSocketStub.trigger('update', {
+        id: 'retirement-update', seq: 1, createdAt: 100,
+        body: { t: 'pending-changed', sid: 's1', pendingCount: 1, pendingBlockedCount: 0, pendingVersion: 2 },
+      });
+      await vi.waitFor(() => expect(completed).toBe(true));
+      await completion;
+      await runtime.sendTurnPrompt('next prompt', { localId: 'next-input', turnId: 'next-turn' });
+      expect(terminal.service.injectUserPrompt).toHaveBeenCalledTimes(2);
+      expect(resolveAcceptedMock).not.toHaveBeenCalled();
+      expect(blockDeliveryMock).not.toHaveBeenCalled();
+      await operations.observeTerminalLifecycle({ agentId: 'claude', type: 'prompt_submitted',
+        promptText: 'next prompt', observedAtMs: 100, source: 'hook' });
+      markMaterializedProviderInput(client, 'next-input');
+      listDeliveryStatusesMock.mockResolvedValueOnce([]);
+      await client.reconcilePendingProviderInputCustodyBeforeMaterialization();
+      expect(operations.isTurnInFlight()).toBe(true);
+      expect(client.listenerCount('pending-provider-input-retired')).toBe(1);
+    } finally {
+      await runtime.resetOrDisposeRuntime();
+      expect(client.listenerCount('pending-provider-input-retired')).toBe(0);
+      publications.dispose();
+      await client.close();
+    }
   });
 
   it('retires an exact discarded terminal custody claim', async () => {
@@ -1044,12 +1273,12 @@ describe('ApiSessionClient provider-input settlement', () => {
       materializationRuntime.markPendingQueueMaterializedLocalId(localId);
     }
 
-    client.observeProviderInputSettlement({
+    const accepted = client.observeProviderInputSettlement({
       kind: 'accepted',
       localId: 'accepted-local',
       userMessageSeq: 1,
     });
-    client.observeProviderInputSettlement({
+    const rejected = client.observeProviderInputSettlement({
       kind: 'rejected_before_effect',
       localId: 'rejected-local',
       userMessageSeq: 2,
@@ -1057,13 +1286,14 @@ describe('ApiSessionClient provider-input settlement', () => {
       diagnostic: { code: 'provider_rejected', severity: 'error' },
       retryable: false,
     });
-    client.observeProviderInputSettlement({
+    const uncertain = client.observeProviderInputSettlement({
       kind: 'effect_may_have_occurred',
       localId: 'uncertain-local',
       userMessageSeq: 3,
       issue: { code: 'response_lost', severity: 'error' },
     });
 
+    await Promise.all([accepted, rejected, uncertain]);
     await vi.waitFor(() => expect(resolveAcceptedMock).toHaveBeenCalledTimes(1));
     await vi.waitFor(() => expect(blockDeliveryMock).toHaveBeenCalledTimes(2));
     expect(resolveAcceptedMock).toHaveBeenCalledWith({
@@ -1156,7 +1386,7 @@ describe('ApiSessionClient provider-input settlement', () => {
           v: 1,
           updatedAt: 20,
           selection: {
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             providerConnectionId: null,
             modelId: 'gpt-5.6-sol',
           },
@@ -1175,7 +1405,7 @@ describe('ApiSessionClient provider-input settlement', () => {
       appliedModel: {
         provider: 'codex',
         selection: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: null,
           modelId: 'gpt-5.6-terra',
         },
@@ -1187,7 +1417,7 @@ describe('ApiSessionClient provider-input settlement', () => {
       provider: 'codex',
       modelId: 'gpt-5.6-terra',
       selection: {
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         providerConnectionId: null,
         modelId: 'gpt-5.6-terra',
       },
@@ -1310,6 +1540,8 @@ describe('ApiSessionClient provider-input settlement', () => {
   });
 
   it('retries an accepted settlement once at the typed operation-local delay and accepts exact committed replay', async () => {
+    const infoFileSpy = vi.spyOn(logger, 'infoFile').mockImplementation(() => {});
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
     vi.useFakeTimers();
     resolveAcceptedMock
       .mockRejectedValueOnce(new PendingQueueAcceptedSettlementError(
@@ -1344,6 +1576,80 @@ describe('ApiSessionClient provider-input settlement', () => {
     expect(resolveAcceptedMock).toHaveBeenCalledTimes(2);
     expect(client.hasPendingProviderInput('accepted-local')).toBe(false);
     expect(client.getCommittedUserMessageSeq('accepted-local')).toBe(43);
+    expect(infoFileSpy).not.toHaveBeenCalled();
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it('records a final accepted-settlement failure in the default file log without terminal output', async () => {
+    const infoFileSpy = vi.spyOn(logger, 'infoFile').mockImplementation(() => {});
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    resolveAcceptedMock.mockRejectedValueOnce(
+      new PendingQueueAcceptedSettlementError('internal', undefined, 'accepted-settlement-final'),
+    );
+    sessionSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
+    userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
+    const client = createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1' }));
+    const localId = 'accepted-final-failure-local';
+    (client as any).materializationRuntime.markPendingQueueMaterializedLocalId(localId);
+
+    await expect(client.observeProviderInputSettlement({
+      kind: 'accepted',
+      localId,
+      userMessageSeq: null,
+    })).resolves.toBe(false);
+
+    expect(infoFileSpy).toHaveBeenCalledOnce();
+    expect(infoFileSpy).toHaveBeenCalledWith(
+      '[pendingQueue] accepted provider-input settlement remains unresolved',
+      expect.objectContaining({
+        sessionId: 's1',
+        localId,
+        reason: 'settlement_error',
+        attempt: 1,
+        error: expect.objectContaining({
+          code: 'pending_queue_accepted_settlement_failed',
+          settlementError: 'internal',
+          correlationId: 'accepted-settlement-final',
+        }),
+      }),
+    );
+    expect(warnSpy).not.toHaveBeenCalled();
+    expect(client.hasPendingProviderInput(localId)).toBe(true);
+  });
+
+  it('records an unexpected accepted-settlement resolution crash in the default file log without terminal output', async () => {
+    const infoFileSpy = vi.spyOn(logger, 'infoFile').mockImplementation(() => {});
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    resolveAcceptedMock.mockRejectedValueOnce({
+      toString() {
+        throw new Error('settlement diagnostic serialization failed');
+      },
+    });
+    sessionSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
+    userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
+    const client = createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1' }));
+    const localId = 'accepted-crash-local';
+    (client as any).materializationRuntime.markPendingQueueMaterializedLocalId(localId);
+
+    await expect(client.observeProviderInputSettlement({
+      kind: 'accepted',
+      localId,
+      userMessageSeq: null,
+    })).resolves.toBe(false);
+
+    expect(infoFileSpy).toHaveBeenCalledOnce();
+    expect(infoFileSpy).toHaveBeenCalledWith(
+      '[pendingQueue] accepted provider-input settlement resolution crashed',
+      expect.objectContaining({
+        sessionId: 's1',
+        localId,
+        error: expect.objectContaining({
+          message: 'settlement diagnostic serialization failed',
+        }),
+      }),
+    );
+    expect(warnSpy).not.toHaveBeenCalled();
+    expect(client.hasPendingProviderInput(localId)).toBe(true);
   });
 
   it('records the exact committed message returned by a first accepted settlement', async () => {
@@ -1429,6 +1735,8 @@ describe('ApiSessionClient provider-input settlement', () => {
   });
 
   it('keeps an unrelated accepted-settlement no-op visible for exact reconciliation', async () => {
+    const infoFileSpy = vi.spyOn(logger, 'infoFile').mockImplementation(() => {});
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
     resolveAcceptedMock.mockResolvedValueOnce({
       didResolve: false,
       pendingQueueState: { known: true, pendingCount: 1, pendingBlockedCount: 0, pendingVersion: 2 },
@@ -1448,6 +1756,16 @@ describe('ApiSessionClient provider-input settlement', () => {
 
     await vi.waitFor(() => expect(resolveAcceptedMock).toHaveBeenCalledTimes(1));
     expect(client.hasPendingProviderInput('unrelated-noop-local')).toBe(true);
+    expect(infoFileSpy).toHaveBeenCalledOnce();
+    expect(infoFileSpy).toHaveBeenCalledWith(
+      '[pendingQueue] accepted provider-input settlement remains unresolved',
+      expect.objectContaining({
+        sessionId: 's1',
+        localId: 'unrelated-noop-local',
+        reason: 'settlement_noop_without_exact_commit',
+      }),
+    );
+    expect(warnSpy).not.toHaveBeenCalled();
   });
 
   it('re-drives exact provider acceptance after reconnect when acceptance arrived while disconnected', async () => {

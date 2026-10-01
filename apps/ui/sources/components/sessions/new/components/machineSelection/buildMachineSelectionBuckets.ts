@@ -1,4 +1,5 @@
 import type { Machine } from '@/sync/domains/state/storageTypes';
+import type { MachineDisplayRenderable } from '@/sync/domains/machines/machineDisplayRenderable';
 import { isMachineVisibleForLaunchSelection } from '@/sync/domains/machines/identity/filterVisibleMachines';
 
 import { resolveMachinePickerPresence } from '../resolveMachinePickerPresence';
@@ -6,24 +7,24 @@ import { resolveMachinePickerPresence } from '../resolveMachinePickerPresence';
 export type MachineSelectionBucketId = 'recent' | 'favorites' | 'all';
 export type MachineSelectionFavoriteGroupPlacement = 'beforeRecent' | 'afterRecent';
 
-export type MachineSelectionBucket = Readonly<{
+export type MachineSelectionBucket<TMachine extends MachineDisplayRenderable = Machine> = Readonly<{
     id: MachineSelectionBucketId;
-    machines: ReadonlyArray<Machine>;
+    machines: ReadonlyArray<TMachine>;
 }>;
 
-export type MachineSelectionBuckets = Readonly<{
-    buckets: ReadonlyArray<MachineSelectionBucket>;
-    visibleMachines: ReadonlyArray<Machine>;
-    recentMachinesWithoutFavorites: ReadonlyArray<Machine>;
-    favoriteMachines: ReadonlyArray<Machine>;
-    allMachines: ReadonlyArray<Machine>;
+export type MachineSelectionBuckets<TMachine extends MachineDisplayRenderable = Machine> = Readonly<{
+    buckets: ReadonlyArray<MachineSelectionBucket<TMachine>>;
+    visibleMachines: ReadonlyArray<TMachine>;
+    recentMachinesWithoutFavorites: ReadonlyArray<TMachine>;
+    favoriteMachines: ReadonlyArray<TMachine>;
+    allMachines: ReadonlyArray<TMachine>;
     favoriteMachineIdSet: ReadonlySet<string>;
 }>;
 
-export type BuildMachineSelectionBucketsParams = Readonly<{
-    machines: ReadonlyArray<Machine>;
-    recentMachines?: ReadonlyArray<Machine>;
-    favoriteMachines?: ReadonlyArray<Machine>;
+export type BuildMachineSelectionBucketsParams<TMachine extends MachineDisplayRenderable = Machine> = Readonly<{
+    machines: ReadonlyArray<TMachine>;
+    recentMachines?: ReadonlyArray<TMachine>;
+    favoriteMachines?: ReadonlyArray<TMachine>;
     showFavorites?: boolean;
     showRecent?: boolean;
     disableOfflineMachines?: boolean;
@@ -31,11 +32,11 @@ export type BuildMachineSelectionBucketsParams = Readonly<{
     includeSelectedUnavailableMachineId?: string | null;
 }>;
 
-function isMachineSelectableForLaunch(machine: Machine): boolean {
+function isMachineSelectableForLaunch(machine: MachineDisplayRenderable): boolean {
     return resolveMachinePickerPresence(machine).selectable;
 }
 
-function prioritizeSelectableMachines<T extends Machine>(machines: ReadonlyArray<T>): T[] {
+function prioritizeSelectableMachines<T extends MachineDisplayRenderable>(machines: ReadonlyArray<T>): T[] {
     return machines
         .map((machine, index) => ({ machine, index, selectable: isMachineSelectableForLaunch(machine) }))
         .sort((left, right) => {
@@ -45,13 +46,15 @@ function prioritizeSelectableMachines<T extends Machine>(machines: ReadonlyArray
         .map((entry) => entry.machine);
 }
 
-export function buildMachineSelectionBuckets(params: BuildMachineSelectionBucketsParams): MachineSelectionBuckets {
+export function buildMachineSelectionBuckets<TMachine extends MachineDisplayRenderable = Machine>(
+    params: BuildMachineSelectionBucketsParams<TMachine>,
+): MachineSelectionBuckets<TMachine> {
     const showFavorites = params.showFavorites ?? true;
     const showRecent = params.showRecent ?? true;
     const disableOfflineMachines = params.disableOfflineMachines ?? true;
     const favoriteGroupPlacement = params.favoriteGroupPlacement ?? 'afterRecent';
 
-    const isVisible = (machine: Machine) => isMachineVisibleForLaunchSelection(machine)
+    const isVisible = (machine: TMachine) => isMachineVisibleForLaunchSelection(machine)
         || machine.id === params.includeSelectedUnavailableMachineId;
     const visibleMachines = params.machines.filter(isVisible);
     const visibleRecentMachines = (params.recentMachines ?? []).filter(isVisible);
@@ -87,15 +90,15 @@ export function buildMachineSelectionBuckets(params: BuildMachineSelectionBucket
         ? prioritizeSelectableMachines(unpinnedMachines)
         : unpinnedMachines;
 
-    const recentBucket: MachineSelectionBucket = {
+    const recentBucket: MachineSelectionBucket<TMachine> = {
         id: 'recent',
         machines: showRecent ? recentMachinesWithoutFavorites : [],
     };
-    const favoritesBucket: MachineSelectionBucket = {
+    const favoritesBucket: MachineSelectionBucket<TMachine> = {
         id: 'favorites',
         machines: showFavorites ? launchPinnedFavoriteMachines : [],
     };
-    const allBucket: MachineSelectionBucket = {
+    const allBucket: MachineSelectionBucket<TMachine> = {
         id: 'all',
         machines: allMachines,
     };

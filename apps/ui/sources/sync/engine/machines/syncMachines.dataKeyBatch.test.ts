@@ -10,6 +10,11 @@ import {
     signRunnerMachineContentKeyBindingV1,
 } from '@happier-dev/protocol';
 
+const legacyCredentials = {
+    token: `e30.${btoa(JSON.stringify({ sub: 'account-1' }))}.signature`,
+    secret: encodeBase64(new Uint8Array(32).fill(17), 'base64url'),
+} satisfies AuthCredentials;
+
 vi.mock('@/log', () => ({ log: { log: vi.fn() } }));
 
 type RawMachine = {
@@ -251,7 +256,7 @@ describe('fetchAndApplyMachines machine data-key unwrapping', () => {
 
         await fetchAndApplyMachines({
             credentials: {
-                token: 'token',
+                token: legacyCredentials.token,
                 encryption: {
                     publicKey: encodeBase64(new Uint8Array(32).fill(1), 'base64'),
                     machineKey: encodeBase64(new Uint8Array(32).fill(2), 'base64'),
@@ -259,6 +264,7 @@ describe('fetchAndApplyMachines machine data-key unwrapping', () => {
             },
             encryption,
             machineDataKeys: new Map(),
+            sourceServerId: 'home-1',
             request: async () => jsonResponse([substituted]),
             applyMachines: (machines) => { applied.push(machines); },
         });
@@ -284,7 +290,8 @@ describe('fetchAndApplyMachines machine data-key unwrapping', () => {
         const machineDataKeys = new Map<string, MachineDataKeyCacheEntry>();
 
         await fetchAndApplyMachines({
-            credentials: { token: 't', secret: 's' } satisfies AuthCredentials,
+            credentials: legacyCredentials,
+            sourceServerId: 'home-1',
             encryption,
             machineDataKeys,
             request,
@@ -315,7 +322,8 @@ describe('fetchAndApplyMachines machine data-key unwrapping', () => {
         });
 
         const call = async () => fetchAndApplyMachines({
-            credentials: { token: 't', secret: 's' } satisfies AuthCredentials,
+            credentials: legacyCredentials,
+            sourceServerId: 'home-1',
             encryption,
             machineDataKeys,
             request,
@@ -353,7 +361,8 @@ describe('fetchAndApplyMachines machine data-key unwrapping', () => {
         });
 
         const call = async () => fetchAndApplyMachines({
-            credentials: { token: 't', secret: 's' } satisfies AuthCredentials,
+            credentials: legacyCredentials,
+            sourceServerId: 'home-1',
             encryption,
             machineDataKeys,
             request,
@@ -393,7 +402,7 @@ describe('fetchAndApplyMachines real selected-envelope hydration', () => {
         const machineDataKeys = new Map<string, MachineDataKeyCacheEntry>();
         const applied: import('@/sync/domains/state/storageTypes').Machine[][] = [];
         const fetchRow = async () => fetchAndApplyMachines({
-            credentials: { token: 't', secret: 's' }, encryption, machineDataKeys,
+            credentials: legacyCredentials, sourceServerId: 'home-1', encryption, machineDataKeys,
             request: async () => jsonResponse([row]),
             applyMachines: (machines) => { applied.push(machines); },
         });

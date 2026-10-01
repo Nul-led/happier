@@ -100,6 +100,13 @@ function wrapRuntimeTurnOperationsWithPublication(params: Readonly<{
           },
         }
       : {}),
+    ...(typeof params.runtime.prepareProviderCliAttach === 'function'
+      ? {
+          async prepareProviderCliAttach() {
+            return await params.runtime.prepareProviderCliAttach!();
+          },
+        }
+      : {}),
     readSessionIdentity() {
       return params.runtime.readSessionIdentity();
     },

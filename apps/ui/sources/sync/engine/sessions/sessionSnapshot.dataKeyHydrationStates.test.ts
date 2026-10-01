@@ -4,7 +4,7 @@ import type { AuthCredentials } from '@/auth/storage/tokenStorage';
 import type { AccountEncryptionCurrentnessResponse, V2SessionRecord } from '@happier-dev/protocol';
 
 import { fetchAndApplySessions, type SessionListEncryption } from './sessionSnapshot';
-import { fetchAndApplySessionById } from './sessionById';
+import { fetchAndApplySessionById, type SessionByIdEncryption } from './sessionById';
 
 /**
  * Session-list hydration and single-Session hydration must agree about what an absent envelope
@@ -61,7 +61,10 @@ function createEncryptionHarness(
     const initializedSessionIds = new Set<string>();
     const decryptEncryptionKeys = vi.fn(async (values: readonly string[]) => values.map(openEnvelope));
     const decryptEncryptionKey = vi.fn(async (value: string) => openEnvelope(value));
-    const initializeSessions = vi.fn(async (sessionKeys: Map<string, Uint8Array | null>) => {
+    const initializeSessions = vi.fn(async (
+        sessionKeys: Map<string, Uint8Array | null>,
+        _scope?: Parameters<SessionByIdEncryption['initializeSessions']>[1],
+    ) => {
         for (const sessionId of sessionKeys.keys()) initializedSessionIds.add(sessionId);
     });
     const removeSessionEncryption = vi.fn((sessionId: string) => {
@@ -76,13 +79,13 @@ function createEncryptionHarness(
             }
             : null
     ));
-    const encryption = {
+    const encryption: SessionListEncryption & SessionByIdEncryption = {
         decryptEncryptionKey,
         decryptEncryptionKeys,
         initializeSessions,
         removeSessionEncryption,
         getSessionEncryption,
-    } as unknown as SessionListEncryption;
+    };
     return {
         encryption,
         decryptEncryptionKeys,

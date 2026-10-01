@@ -52,7 +52,7 @@ describe('happier session run get (action executor)', () => {
       expect(execute).toHaveBeenCalledWith(
         'execution.run.get',
         { sessionId: 'sess-1', runId: 'run-1', includeStructured: true },
-        expect.objectContaining({ surface: 'cli', authority: 'present_user', defaultSessionId: 'sess-1' }),
+        expect.objectContaining({ surface: 'cli', defaultSessionId: 'sess-1' }),
       );
 
       expect(output.json()).toEqual(expect.objectContaining({

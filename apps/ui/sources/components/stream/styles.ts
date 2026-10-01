@@ -70,45 +70,4 @@ export const streamPlayerStyles = StyleSheet.create((theme) => ({
         color: theme.colors.text.secondary,
         ...Typography.default('semiBold'),
     },
-    controls: {
-        flexDirection: 'row',
-        flexWrap: 'wrap',
-        gap: 8,
-        padding: 10,
-        borderTopWidth: 1,
-        borderTopColor: theme.colors.border.default,
-        backgroundColor: theme.colors.surface.base,
-    },
-    controlButton: {
-        minHeight: 32,
-        justifyContent: 'center',
-        borderWidth: 1,
-        borderColor: theme.colors.border.default,
-        backgroundColor: theme.colors.surface.inset,
-        paddingHorizontal: 10,
-        paddingVertical: 6,
-    },
-    controlButtonDisabled: {
-        backgroundColor: theme.colors.surface.base,
-    },
-    controlButtonText: {
-        color: theme.colors.text.primary,
-        ...Typography.default('semiBold'),
-    },
-    controlButtonTextDisabled: {
-        color: theme.colors.text.disabled,
-    },
-    statusDot: {
-        width: 16,
-        height: 16,
-        alignItems: 'center',
-        justifyContent: 'center',
-    },
-    statusDotHalo: {
-        position: 'absolute',
-        width: 16,
-        height: 16,
-        borderRadius: 8,
-        opacity: 0.28,
-    },
 }));

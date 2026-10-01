@@ -9,7 +9,7 @@ describe('createRuntimeOverrideSynchronizers', () => {
     const setPermissionMode = vi.fn(async (_mode: string) => {});
 
     const sync = createRuntimeOverrideSynchronizers({
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       session: {
         getMetadataSnapshot: () => createTestMetadata({ permissionMode: 'yolo', permissionModeUpdatedAt: 42 }),
       },
@@ -33,7 +33,7 @@ describe('createRuntimeOverrideSynchronizers', () => {
     const calls: string[] = [];
 
     const sync = createRuntimeOverrideSynchronizers({
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       session: {
         getMetadataSnapshot: () =>
           createTestMetadata({
@@ -81,7 +81,7 @@ describe('createRuntimeOverrideSynchronizers', () => {
     });
 
     const sync = createRuntimeOverrideSynchronizers({
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       session: {
         getMetadataSnapshot: () =>
           createTestMetadata({
@@ -144,7 +144,7 @@ describe('createRuntimeOverrideSynchronizers', () => {
     });
 
     const sync = createRuntimeOverrideSynchronizers({
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       session: {
         getMetadataSnapshot: () => metadata,
       },
@@ -184,7 +184,7 @@ describe('createRuntimeOverrideSynchronizers', () => {
     let started = false;
 
     const sync = createRuntimeOverrideSynchronizers({
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       session: {
         getMetadataSnapshot: () =>
           createTestMetadata({

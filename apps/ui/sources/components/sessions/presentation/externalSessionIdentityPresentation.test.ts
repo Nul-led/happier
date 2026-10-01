@@ -18,6 +18,7 @@ describe('resolveExternalSessionIdentityPresentation', () => {
             title: 'Improve browse UX',
             pathLabel: '~/projects/happier',
             identityLabel: 'Codex · MacBook Pro',
+            threadLabel: null,
             secondaryLabel: 'Codex · MacBook Pro · ~/projects/happier',
         });
 
@@ -29,11 +30,62 @@ describe('resolveExternalSessionIdentityPresentation', () => {
             agentLabel: 'Codex',
             machineLabel: 'Windows PC',
         })).toEqual({
-            title: '~/projects/happier',
+            // No title of its own: named like any untitled session, with its project as the hint.
+            title: 'Untitled session',
             pathLabel: '~/projects/happier',
             identityLabel: 'Codex · Windows PC',
-            secondaryLabel: 'Codex · Windows PC',
+            threadLabel: null,
+            secondaryLabel: 'Codex · Windows PC · ~/projects/happier',
         });
+    });
+
+    it('never makes a raw session id the title: an id-shaped title reads as untitled, hinted by a short id suffix', () => {
+        expect(resolveExternalSessionBrowseCandidateIdentityPresentation({
+            remoteSessionId: '01a0e20b-bc71-7101-bf10-b9dc423c85c1',
+            title: '01a0e20b-bc71-7101-bf10-b9dc423c85c1',
+            path: null,
+            agentLabel: 'Codex',
+            machineLabel: 'MacBook Pro',
+        })).toMatchObject({
+            title: 'Untitled session',
+            secondaryLabel: 'Codex · MacBook Pro · …3c85c1',
+        });
+        // Another thread's id as the title (a sub-agent's parent) is still an id, not a name.
+        expect(resolveExternalSessionBrowseCandidateIdentityPresentation({
+            remoteSessionId: 'thread-a',
+            title: '01a0e233-5d3d-7c62-a12f-58b5ed998f96',
+            path: '/Users/alice/work/api',
+            homeDir: '/Users/alice',
+        }).title).toBe('Untitled session');
+    });
+
+    it('labels an internal thread by kind and, when its title is known, by its parent', () => {
+        expect(resolveExternalSessionBrowseCandidateIdentityPresentation({
+            remoteSessionId: 'thread-a',
+            title: 'Review the migration',
+            path: '/Users/alice/work/api',
+            homeDir: '/Users/alice',
+            agentLabel: 'Codex',
+            thread: { kind: 'reviewer', parentRemoteSessionId: 'parent-a', parentTitle: 'Ship the API' },
+        })).toMatchObject({
+            title: 'Review the migration',
+            threadLabel: 'Reviewer of Ship the API',
+            secondaryLabel: 'Reviewer of Ship the API · Codex · ~/work/api',
+        });
+        // An unknown or id-shaped parent title names only the kind.
+        expect(resolveExternalSessionBrowseCandidateIdentityPresentation({
+            remoteSessionId: 'thread-b',
+            path: null,
+            thread: {
+                kind: 'subagent',
+                parentRemoteSessionId: '01a0e233-5d3d-7c62-a12f-58b5ed998f96',
+                parentTitle: '01a0e233-5d3d-7c62-a12f-58b5ed998f96',
+            },
+        }).threadLabel).toBe('Sub-agent');
+        expect(resolveExternalSessionBrowseCandidateIdentityPresentation({
+            remoteSessionId: 'top-level',
+            path: null,
+        }).threadLabel).toBeNull();
     });
 
     it('omits the machine from shared identity only for the exact current machine', () => {

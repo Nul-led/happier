@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { LocalServiceLauncherSnapshotV1Schema } from '@happier-dev/protocol';
 
 import { createLocalServiceInventoryRegistry } from '../inventory/registry';
@@ -134,7 +134,7 @@ describe('createLocalServiceLauncherFeed', () => {
                 source: 'registered_preview',
                 state: 'available',
                 unavailableReason: null,
-                actions: [],
+                actions: ['open_preview'],
                 browserTargetKind: 'localServicePreview',
             },
             {
@@ -142,7 +142,7 @@ describe('createLocalServiceLauncherFeed', () => {
                 source: 'inventory_entry',
                 state: 'available',
                 unavailableReason: null,
-                actions: [],
+                actions: ['open_preview', 'register_preview'],
                 browserTargetKind: 'localServicePreview',
             },
             {
@@ -150,8 +150,8 @@ describe('createLocalServiceLauncherFeed', () => {
                 source: 'inventory_entry',
                 state: 'available',
                 unavailableReason: null,
-                actions: ['open'],
-                browserTargetKind: 'externalUrl',
+                actions: ['register_preview'],
+                browserTargetKind: null,
             },
             {
                 id: 'package:web:dev',
@@ -164,7 +164,7 @@ describe('createLocalServiceLauncherFeed', () => {
         ]);
     });
 
-    it('preserves the open action + externalUrl target for a listening loopback entry (fence carve-out)', async () => {
+    it('preserves private-preview registration for a listening detected entry without a raw loopback target', async () => {
         const inventoryRegistry = createLocalServiceInventoryRegistry();
         const previewRegistry = createLocalServicePreviewRegistry();
         inventoryRegistry.replaceSnapshot({
@@ -185,8 +185,8 @@ describe('createLocalServiceLauncherFeed', () => {
         const snapshot = await feed.getSnapshot();
         const target = snapshot.targets.find((t) => t.id === 'inventory:loopback-open');
         expect(target?.state).toBe('available');
-        expect(target?.actions).toEqual(['open']);
-        expect(target?.browserTarget?.kind).toBe('externalUrl');
+        expect(target?.actions).toEqual(['register_preview']);
+        expect(target?.browserTarget).toBeUndefined();
     });
 
     it('ranks an openable loopback entry above a package_script suggestion', async () => {
@@ -452,47 +452,54 @@ describe('createLocalServiceLauncherFeed', () => {
         expect(inventoryIds).toContain('inventory:entry-foreign');
     });
 
-    it('does not block the launcher snapshot on unresolved run-target discovery', async () => {
-        const inventoryRegistry = createLocalServiceInventoryRegistry();
-        const previewRegistry = createLocalServicePreviewRegistry();
-        inventoryRegistry.replaceSnapshot({
-            v: 1,
-            machineId: 'machine-a',
-            generatedAt: 2_000,
-            refreshState: 'idle',
-            entries: [inventoryEntry({ id: 'loopback-open', port: 5173, presentation: { addressLabel: 'localhost:5173' } })],
-            diagnostics: [],
-        });
-        let releaseRunTargets: (targets: readonly []) => void = () => {};
-        const runTargets = new Promise<readonly []>((resolve) => {
-            releaseRunTargets = resolve;
-        });
-        const feed = createLocalServiceLauncherFeed({
-            machineId: 'machine-a',
-            inventoryRegistry,
-            previewRegistry,
-            now: () => 3_000,
-            runTargetsTimeoutMs: 1,
-            runTargets: () => runTargets,
-        });
+    it('retains valid run-target discovery beyond one second', async () => {
+        vi.useFakeTimers();
+        try {
+            const inventoryRegistry = createLocalServiceInventoryRegistry();
+            const previewRegistry = createLocalServicePreviewRegistry();
+            inventoryRegistry.replaceSnapshot({
+                v: 1,
+                machineId: 'machine-a',
+                generatedAt: 2_000,
+                refreshState: 'idle',
+                entries: [inventoryEntry({ id: 'loopback-open', port: 5173, presentation: { addressLabel: 'localhost:5173' } })],
+                diagnostics: [],
+            });
+            const discoveredTargets = [{
+                id: 'web:dev',
+                cwd: '/repo/web',
+                packageName: 'web',
+                packageManager: 'npm' as const,
+                scriptName: 'dev',
+                command: 'vite',
+                launchIntent: { kind: 'packageScript' as const, packageManager: 'npm' as const, cwd: '/repo/web', scriptName: 'dev' },
+            }];
+            let releaseRunTargets: (targets: typeof discoveredTargets) => void = () => {};
+            const runTargets = new Promise<typeof discoveredTargets>((resolve) => {
+                releaseRunTargets = resolve;
+            });
+            const feed = createLocalServiceLauncherFeed({
+                machineId: 'machine-a',
+                inventoryRegistry,
+                previewRegistry,
+                now: () => 3_000,
+                runTargets: () => runTargets,
+            });
 
-        let timeout: ReturnType<typeof setTimeout> | undefined;
-        const snapshotPromise = feed.getSnapshot()
-            .then((snapshot) => ({ kind: 'snapshot' as const, snapshot }));
-        const result = await Promise.race([
-            snapshotPromise,
-            new Promise<{ kind: 'timeout' }>((resolve) => {
-                timeout = setTimeout(() => resolve({ kind: 'timeout' }), 25);
-            }),
-        ]);
-        if (timeout) clearTimeout(timeout);
-        releaseRunTargets([]);
-        await snapshotPromise.catch(() => undefined);
+            let settled = false;
+            const snapshotPromise = feed.getSnapshot()
+                .then((snapshot) => { settled = true; return snapshot; });
+            await vi.advanceTimersByTimeAsync(1_001);
+            const settledBeforeDiscovery = settled;
+            releaseRunTargets(discoveredTargets);
+            const snapshot = await snapshotPromise;
 
-        expect(result.kind).toBe('snapshot');
-        if (result.kind !== 'snapshot') return;
-        expect(LocalServiceLauncherSnapshotV1Schema.parse(result.snapshot)).toEqual(result.snapshot);
-        expect(result.snapshot.targets.map((target) => target.id)).toEqual(['inventory:loopback-open']);
+            expect(settledBeforeDiscovery).toBe(false);
+            expect(LocalServiceLauncherSnapshotV1Schema.parse(snapshot)).toEqual(snapshot);
+            expect(snapshot.targets.map((target) => target.id)).toEqual(['inventory:loopback-open', 'package:web:dev']);
+        } finally {
+            vi.useRealTimers();
+        }
     });
 
     it('does not fail the launcher snapshot when run-target discovery rejects', async () => {

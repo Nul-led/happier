@@ -1,19 +1,20 @@
-import type { ApiMessage } from '@/sync/api/types/apiTypes';
+import { type SessionMessageV1 } from '@happier-dev/protocol';
+
 import {
     activateSessionMessagesWindow,
     applySessionMessagesWindowPage,
     type SessionMessagesWindowState,
 } from '@/sync/runtime/sessionMessagesWindowState';
-import { buildSessionMessagesPath, type SessionMessagesPageScope } from '@/sync/api/session/sessionMessagesApi';
-import { parseStableSessionMessageRouteId } from '@/sync/domains/messages/messageRouteIds';
-import type { NormalizedMessage } from '@/sync/typesRaw';
+import { buildSessionMessagesPath, type SessionMessagesPageScope } from '@happier-dev/protocol';
+import { parseStableSessionMessageRouteId } from "@happier-dev/session-core/messages";
+import type { NormalizedMessage } from "@happier-dev/session-core/raw";
 
 import {
     runSessionMessagesPagePipeline,
     type SessionMessagesEncryption,
     type SessionMessagesPageOptions,
 } from './sessionMessagesPagePipeline';
-import type { SessionReceivedMessages } from './sessionMessageCurrentness';
+import type { SessionReceivedMessages } from "@happier-dev/session-core/transcript";
 
 type TargetWindowTarget =
     | Readonly<{ kind: 'seq'; seq: number }>
@@ -51,21 +52,21 @@ function targetSeq(target: TargetWindowTarget): number {
     return target.kind === 'seq' ? Math.trunc(target.seq) : Math.trunc(target.seqHint);
 }
 
-function routeTargetMatchesMessage(routeMessageId: string, message: ApiMessage): boolean {
+function routeTargetMatchesMessage(routeMessageId: string, message: SessionMessageV1): boolean {
     const stableRef = parseStableSessionMessageRouteId(routeMessageId);
     if (stableRef?.kind === 'server') return message.id === stableRef.value;
     if (stableRef?.kind === 'local') return message.localId === stableRef.value;
     return false;
 }
 
-function targetMatchesMessage(target: TargetWindowTarget, message: ApiMessage): boolean {
+function targetMatchesMessage(target: TargetWindowTarget, message: SessionMessageV1): boolean {
     if (target.kind === 'seq') {
         return message.seq === target.seq;
     }
     return routeTargetMatchesMessage(target.routeMessageId, message);
 }
 
-function hasTargetMessage(target: TargetWindowTarget, messages: readonly ApiMessage[]): boolean {
+function hasTargetMessage(target: TargetWindowTarget, messages: readonly SessionMessageV1[]): boolean {
     return messages.some((message) => targetMatchesMessage(target, message));
 }
 
@@ -93,7 +94,7 @@ function hasTargetNormalizedMessage(target: TargetWindowTarget, messages: readon
 
 function hasAlreadyReceivedTargetMessage(
     target: TargetWindowTarget,
-    messages: readonly ApiMessage[],
+    messages: readonly SessionMessageV1[],
     receivedMessages: ReadonlyMap<string, number> | undefined,
 ): boolean {
     if (!receivedMessages) return false;
@@ -216,11 +217,13 @@ export async function fetchAndApplyTargetWindowMessages(params: {
             afterSeq: page.afterSeq,
         },
         lifecyclePolicy: 'suppress',
+        isCurrent: params.isCurrent,
         getSessionEncryption: params.getSessionEncryption,
         isSessionKnown: params.isSessionKnown,
         request: params.request,
         sessionReceivedMessages: params.sessionReceivedMessages,
         applyMessages: params.applyMessages,
+        applyMessageMetadata: params.applyMessageMetadata,
         log: params.log,
         sessionEncryptionMode: params.sessionEncryptionMode,
         initialMessageDecryptBatchSize: params.initialMessageDecryptBatchSize,

@@ -8,6 +8,7 @@ import type {
     SessionListTreeDragSource,
     SessionListTreeDropResult,
     SessionListTreeModel,
+    SessionListTreeRowMetadata,
 } from './sessionListTreeTypes';
 
 function blocked(reason: SessionListInstructionBlockReason): SessionListTreeDropResult {
@@ -66,6 +67,19 @@ function isSessionSiblingReorder(params: Readonly<{
     });
 }
 
+/**
+ * The Session row a drop puts the source Session under (R-03 `reportsTo`), when the resolved
+ * instruction nests into a Session row rather than a folder.
+ */
+export function resolveSessionListLeadTarget(
+    tree: SessionListTreeModel,
+    result: TreeDropResult,
+): SessionListTreeRowMetadata | null {
+    if (result.instruction.kind !== 'nest-into') return null;
+    const target = tree.rowMetadataById.get(result.instruction.targetId);
+    return target?.kind === 'session' ? target : null;
+}
+
 export function resolveSessionListInstruction(params: Readonly<{
     tree: SessionListTreeModel;
     source: SessionListTreeDragSource;
@@ -73,6 +87,11 @@ export function resolveSessionListInstruction(params: Readonly<{
     foldersFeatureEnabled: boolean;
     canReorderSessionSiblings?: boolean;
     maxDepth?: number;
+    /**
+     * Whether the dragged Session may be put under the target Session (the `reportsTo` tree).
+     * Omitted, a Session row is never a drop target — as before the tree existed.
+     */
+    canPutSessionUnder?: (sessionId: string, leadSessionId: string) => boolean;
 }>): SessionListTreeDropResult {
     const resolved: TreeDropResult = resolveTreeInstruction({
         rows: params.tree.rows,
@@ -95,6 +114,15 @@ export function resolveSessionListInstruction(params: Readonly<{
                 if (target.kind === 'session') return false;
                 return target.rootId === params.source.metadata.rootId;
             },
+            canAdoptLeaf: (_source, target) => {
+                const canPutSessionUnder = params.canPutSessionUnder;
+                const dragged = params.source.metadata;
+                if (!canPutSessionUnder || dragged.kind !== 'session' || !dragged.sessionId) return false;
+                const lead = params.tree.rowMetadataById.get(target.id);
+                if (lead?.kind !== 'session' || !lead.sessionId) return false;
+                if (!dragged.serverId || lead.serverId !== dragged.serverId) return false;
+                return canPutSessionUnder(dragged.sessionId, lead.sessionId);
+            },
             canReorderAround: (_source, target) => {
                 const targetMetadata = params.tree.rowMetadataById.get(target.id);
                 if (!targetMetadata) return false;
@@ -107,6 +135,10 @@ export function resolveSessionListInstruction(params: Readonly<{
             },
         },
     });
+
+    // Putting a Session under a lead is not folder organization: folder and ordering gates do not
+    // apply to it, and the adopt rule above already decided it.
+    if (resolveSessionListLeadTarget(params.tree, resolved)) return resolved;
 
     const eligibilityBlock = resolveEligibilityBlock({
         source: params.source,

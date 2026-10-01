@@ -87,7 +87,7 @@ describe('createExternalSessionObservationDaemonProjection', () => {
             resource: {
                 pluginId: 'happier.claude',
                 agentLocalId: 'claude',
-                pluginGeneration: 'plugin-generation-1',
+                occurrenceId: 'plugin-generation-1',
                 resourceKey: 'resource-initial',
             },
             link: {
@@ -225,7 +225,7 @@ describe('createExternalSessionObservationDaemonProjection', () => {
                 resource: {
                     pluginId: 'happier.claude',
                     agentLocalId: 'claude',
-                    pluginGeneration: 'plugin-generation-1',
+                    occurrenceId: 'plugin-generation-1',
                     resourceKey: 'resource-one',
                 },
                 link: {
@@ -306,7 +306,7 @@ describe('createExternalSessionObservationDaemonProjection', () => {
             resource: {
                 pluginId: 'happier.oh-my-pi',
                 agentLocalId: 'ohmypi',
-                pluginGeneration: 'plugin-generation-1',
+                occurrenceId: 'plugin-generation-1',
                 resourceKey: 'omp-resource',
             },
             link: {
@@ -399,7 +399,7 @@ describe('createExternalSessionObservationDaemonProjection', () => {
             resource: {
                 pluginId: 'happier.opencode',
                 agentLocalId: 'opencode',
-                pluginGeneration: 'plugin-generation-1',
+                occurrenceId: 'plugin-generation-1',
                 resourceKey: 'endpoint-one',
             },
             link: {
@@ -477,7 +477,7 @@ describe('createExternalSessionObservationDaemonProjection', () => {
             resource: {
                 pluginId: 'happier.opencode',
                 agentLocalId: 'opencode',
-                pluginGeneration: 'plugin-generation-1',
+                occurrenceId: 'plugin-generation-1',
                 resourceKey: 'endpoint-one',
             },
             link: {
@@ -555,7 +555,7 @@ describe('createExternalSessionObservationDaemonProjection', () => {
                     {
                         agentId: 'ohMyPi',
                         pluginId: 'happier.oh-my-pi',
-                        generation: 'plugin-generation-1',
+                        occurrenceId: 'plugin-generation-1',
                         isCurrent: () => true,
                         externalSessionObservation: contribution,
                     },
@@ -569,7 +569,7 @@ describe('createExternalSessionObservationDaemonProjection', () => {
             resource: {
                 pluginId: 'happier.oh-my-pi',
                 agentLocalId: 'ohmypi',
-                pluginGeneration: 'plugin-generation-1',
+                occurrenceId: 'plugin-generation-1',
                 resourceKey: 'endpoint-one',
             },
             link: {
@@ -656,7 +656,7 @@ describe('createExternalSessionObservationDaemonProjection', () => {
             resource: {
                 pluginId: 'happier.opencode',
                 agentLocalId: 'opencode',
-                pluginGeneration: 'plugin-generation-1',
+                occurrenceId: 'plugin-generation-1',
                 resourceKey: 'endpoint-one',
                 retirementSignal: retirement.signal,
             },

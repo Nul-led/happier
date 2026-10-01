@@ -25,20 +25,20 @@ type SummaryOverrides = Partial<Omit<WorkflowRunSummaryV1, 'origin' | 'availabil
 
 export function createWorkflowRunSummaryFixture(overrides: SummaryOverrides = {}): WorkflowRunSummaryV1 {
     const { origin, availability, ...rest } = overrides;
-    return WorkflowRunSummaryV1Schema.parse({
+    return WorkflowRunSummaryV1Schema.parse({ sourceArtifactId: null, ownerAccountId: 'account-1', visibleTeamId: null,
         id: 'run-1',
         origin: origin ?? { kind: 'automation', automationId: 'automation-1' },
         state: 'running',
         revision: 1,
         machineId: 'machine-1',
         workflowCustodyState: 'pending',
-        workflowResultDeliveryState: null,
+        originDeliveryAckRevision: null,
         availability: {
             pause: true,
             resumeBoundary: false,
-            recoverSameConversation: false,
-            recoverFreshAgent: false,
-            retry: false,
+
+
+
             restoreWorkspace: false,
             cancel: true,
             inspectExecution: true,
@@ -61,6 +61,7 @@ export function createWorkflowInvocationIndexFixture(
         parentRecordId: null,
         memberOrdinal: '0',
         attempt: '0',
+        contentRevision: '0',
         lifecycle: 'running' satisfies WorkflowInvocationLifecycleV1,
         createdAt: '2026-09-08T10:00:00.000Z',
         updatedAt: '2026-09-08T10:00:00.000Z',

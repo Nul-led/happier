@@ -94,6 +94,41 @@ describe('active Account Availability intent setter', () => {
         })).resolves.toEqual({ kind: 'conflict', code: 'intent_revision_conflict' });
     });
 
+    it('withdraws only the disabled plugin after the intent CAS succeeds', async () => {
+        const retirePluginAuthority = vi.fn();
+        const setter = createActivePluginAccountAvailabilityIntentSetter({
+            captureLifetime: () => lifetime,
+            getServerSnapshot: () => ({ serverId: 'server-a', generation: 4 }),
+            captureRequestAuthority: async () => ({
+                request: async () => new Response(JSON.stringify({
+                    intent: {
+                        pluginId: 'example.tasks',
+                        desiredVersion: null,
+                        enabled: false,
+                        offlineUiHosting: 'disabled',
+                        writableCollections: [],
+                        revision: 'intent-2',
+                    },
+                }), { status: 200 }),
+            }),
+            retirePluginAuthority,
+        });
+
+        await expect(setter.set({
+            pluginId: 'example.tasks',
+            desiredVersion: null,
+            enabled: false,
+            offlineUiHosting: 'disabled',
+            writableCollections: [],
+            expectedRevision: 'intent-1',
+        })).resolves.toEqual({
+            kind: 'updated',
+            intent: expect.objectContaining({ pluginId: 'example.tasks', enabled: false }),
+        });
+        expect(retirePluginAuthority).toHaveBeenCalledOnce();
+        expect(retirePluginAuthority).toHaveBeenCalledWith('example.tasks');
+    });
+
     it('preserves only the exact writable-collections preparation refusal', async () => {
         const preparationRequired = createActivePluginAccountAvailabilityIntentSetter({
             captureLifetime: () => lifetime,

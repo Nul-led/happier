@@ -14,9 +14,7 @@ export {
 } from './routeDecision';
 export {
     postProductionMachineRpcDirect,
-    resolvePeerRouteSigningReadiness,
     resolveProductionMachineRpcDirectRoute,
-    type PeerRouteSigningReadiness,
 } from './productionRoute';
 export {
     resolveProductionMachineRpcRelayFallback,

@@ -122,7 +122,7 @@ function createRouteCalls(): BrowserRouteCalls {
 
 function createExecutorInput(calls: BrowserRouteCalls): Omit<CreateBrowserDaemonRuntimeActionExecutorInput, 'featureGate'> {
   return {
-    control: { dispatchCommand: calls.control },
+    control: { dispatchCommand: calls.control, listViews: () => [] },
     context: { dispatch: calls.context },
     automation: { dispatch: calls.automation },
     diagnostics: { dispatch: calls.diagnostics },

@@ -1,5 +1,4 @@
 import type { AgentCoreConfig, MachineLoginKey } from '@/agents/registry/registryCore';
-import { BUNDLED_AGENT_CONTRIBUTION_IDENTITIES } from '@happier-dev/agents/agent-ids';
 import {
     AGENT_IDS,
     DEFAULT_AGENT_ID,
@@ -15,7 +14,7 @@ import {
 } from '@/agents/registry/registryCore';
 
 import type { AgentUiConfig } from '@/agents/registry/registryUi';
-import { PluginContributionIdentityV1Schema } from '@happier-dev/protocol';
+export { resolveBundledAgentIdFromContributionIdentity } from './resolveBundledAgentIdFromContributionIdentity';
 type RegistryUiModule = typeof import('@/agents/registry/registryUi');
 type AgentIconTintTheme = Parameters<RegistryUiModule['getAgentIconTintColor']>[1];
 import * as RegistryUi from '@/agents/registry/registryUi';
@@ -58,21 +57,6 @@ export function getAgentCore(id: AgentId): AgentCoreConfig | null {
     return getExpoAgentCore(id);
 }
 
-export function resolveBundledAgentIdFromContributionIdentity(identity: unknown): BundledAgentId | null {
-    const parsed = PluginContributionIdentityV1Schema.safeParse(identity);
-    if (!parsed.success) return null;
-    for (const agentId of AGENT_IDS) {
-        const bundledIdentity = BUNDLED_AGENT_CONTRIBUTION_IDENTITIES[agentId];
-        if (
-            bundledIdentity.pluginId === parsed.data.pluginId
-            && bundledIdentity.localId === parsed.data.localId
-        ) {
-            return agentId;
-        }
-    }
-    return null;
-}
-
 export function getAgentUi(id: AgentId): AgentUiConfig {
     return registryUi().getAgentUiConfig(id);
 }
@@ -86,6 +70,14 @@ export function getAgentIconSvgXml(
     theme: Parameters<RegistryUiModule['getAgentIconSvgXml']>[1],
 ): ReturnType<RegistryUiModule['getAgentIconSvgXml']> {
     return registryUi().getAgentIconSvgXml(agentId, theme);
+}
+
+/** Whether the Agent has a brand mark of its own (SVG or image); marks fall back to a neutral glyph without one. */
+export function hasAgentIconMark(
+    agentId: string,
+    theme: Parameters<RegistryUiModule['getAgentIconSvgXml']>[1],
+): boolean {
+    return getAgentIconSvgXml(agentId, theme) != null || getAgentIconSource(agentId) != null;
 }
 
 export function getAgentIconTintColor(

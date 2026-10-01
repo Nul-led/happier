@@ -2,7 +2,7 @@ import * as React from 'react';
 import { Pressable, View, type StyleProp, type ViewStyle } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
-import type { ToolCallMessage } from '@/sync/domains/messages/messageTypes';
+import type { ToolCallMessage } from "@happier-dev/session-core/messages";
 import type { TranscriptInteraction } from '@/utils/sessions/deriveTranscriptInteraction';
 import type { TranscriptToolChromeCommon } from '@/components/sessions/transcript/transcriptSessionCommon';
 
@@ -16,6 +16,7 @@ import { resolveToolStatusIndicatorKind } from '@/components/tools/shell/present
 
 import type { GroupedToolCallChromeMode } from './groupedToolCallRowRenderDecision';
 import { Icon } from '@/components/ui/icons/Icon';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 export type ToolCallsGroupChromeVariant = 'cards' | 'feed' | 'feed_background';
 export type ToolCallsGroupUnitPosition = 'header' | 'middle' | 'footer';
@@ -253,7 +254,7 @@ const chromeStyles = StyleSheet.create((theme) => ({
         gap: 8,
     },
     headerCardsPressed: {
-        opacity: 0.92,
+        opacity: motionTokens.press.opacitySubtle,
     },
     headerFeedPressed: {
         backgroundColor: theme.colors.surface.pressedOverlay,
@@ -303,7 +304,7 @@ const chromeStyles = StyleSheet.create((theme) => ({
         alignSelf: 'flex-start',
     },
     previewMorePressed: {
-        opacity: 0.9,
+        opacity: motionTokens.press.opacitySubtle,
     },
     previewMoreText: {
         color: theme.colors.text.secondary,

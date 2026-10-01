@@ -33,6 +33,8 @@ export interface NewSessionData {
     machineId?: string;
     directory?: string;
     path?: string;
+    /** `managed`: start without a folder (the machine keeps a private one for the session). */
+    directoryKind?: 'managed';
     executionTarget?: SessionAuthoringExecutionTargetV2 | null;
     temporaryComputerActivationRef?: TemporaryComputerActivationRefV1 | null;
     organizationPlacement?: SessionOrganizationPlacementV1;

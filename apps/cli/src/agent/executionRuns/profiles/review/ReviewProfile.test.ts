@@ -199,52 +199,10 @@ describe('ReviewProfile', () => {
     ]);
   });
 
-  it('keeps host comment materialization out of the pure profile action reducer', () => {
-    const start = {
-      sessionId: 'sess_1', runId: 'run_1', callId: 'call_1', sidechainId: 'call_1',
-      intent: 'review', backendId: 'coderabbit',
-      backendTarget: { kind: 'builtInAgent', agentId: 'coderabbit' },
-      instructions: 'review this', permissionMode: 'read_only', retentionPolicy: 'ephemeral',
-      runClass: 'bounded', ioMode: 'request_response', startedAtMs: 1,
-    } as const;
-    const acted = ReviewProfile.applyAction?.({
-      start,
-      actionId: 'reviews.comments.create',
-      structuredMeta: {
-        kind: 'review_findings.v2',
-        payload: {
-          runRef: { runId: 'run_1', callId: 'call_1', backendId: 'coderabbit' },
-          summary: 'One finding', overviewMarkdown: 'One finding', findings: [], questions: [], assumptions: [],
-          proposedComments: [{ body: 'Finding', anchor: { kind: 'file', filePath: 'src/auth.ts' } }],
-          generatedAtMs: 2,
-        },
-      },
-    });
-
-    expect(acted).toEqual(expect.objectContaining({
-      ok: false,
-      errorCode: 'execution_run_action_not_supported',
-    }));
-  });
-
-  it('rejects stale retained proposals at the pure profile boundary', () => {
-    const start = {
-      sessionId: 'sess_1', runId: 'run_1', callId: 'call_1', sidechainId: 'call_1',
-      intent: 'review', backendId: 'coderabbit', backendTarget: { kind: 'builtInAgent', agentId: 'coderabbit' },
-      instructions: 'review', permissionMode: 'read_only', retentionPolicy: 'ephemeral',
-      runClass: 'bounded', ioMode: 'request_response', startedAtMs: 1,
-    } as const;
-    expect(ReviewProfile.applyAction?.({
-      start, actionId: 'reviews.comments.create', structuredMeta: {
-        kind: 'review_findings.v2', payload: {
-          runRef: { runId: 'other_run', callId: 'call_1', backendId: 'coderabbit' },
-          summary: 'x', overviewMarkdown: 'x', findings: [], questions: [], assumptions: [],
-          proposedComments: [{ body: 'x', anchor: { kind: 'file', filePath: 'src/a.ts' } }], generatedAtMs: 2,
-        },
-      },
-    })).toEqual(expect.objectContaining({
-      ok: false, errorCode: 'execution_run_action_not_supported',
-    }));
+  it('leaves every review action to the runtime, so no action rewrites the review result', () => {
+    // A finding's decision lives in its ReviewComment and host comments are materialized by the
+    // host bridge; the profile has no reducer that could write a second copy into the result.
+    expect(ReviewProfile.applyAction).toBeUndefined();
   });
 
   it('fails deterministically when model output is not strict JSON', () => {
@@ -311,43 +269,6 @@ describe('ReviewProfile', () => {
 
     expect(res.status).toBe('failed');
     expect((res.toolResultOutput as any)?.error?.code).toBe('invalid_output');
-  });
-
-  it('rejects triage actions when start params are missing required policy fields', () => {
-    const start = {
-      sessionId: 'sess_1',
-      runId: 'run_1',
-      callId: 'call_1',
-      sidechainId: 'call_1',
-      intent: 'review',
-      backendId: 'claude',
-      backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
-      instructions: 'review this',
-      permissionMode: 'read_only',
-      retentionPolicy: 'ephemeral',
-      runClass: 'bounded',
-      ioMode: 'request_response',
-      startedAtMs: 1,
-    } as const;
-
-    const completed = ReviewProfile.onBoundedComplete({
-      start,
-      rawText: '{ "summary": "Ok", "overviewMarkdown": "Ok", "findings": [], "questions": [], "assumptions": [] }',
-      finishedAtMs: 2,
-    });
-
-    expect(completed.status).toBe('succeeded');
-    expect(completed.structuredMeta?.kind).toBe('review_findings.v2');
-
-    const acted = ReviewProfile.applyAction?.({
-      actionId: 'review.triage',
-      input: { findings: [] },
-      structuredMeta: completed.structuredMeta!,
-      start: { ...start, permissionMode: '' },
-    });
-
-    expect(acted?.ok).toBe(false);
-    expect((acted as any)?.errorCode).toBe('execution_run_invalid_action_input');
   });
 
   it('exposes review.follow_up alongside review.triage for review findings payloads', () => {

@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { readSessionDirectoryKind } from '@happier-dev/protocol/sessions/metadata/directory';
 
 import type { DropdownMenuItem } from '@/components/ui/forms/dropdown/DropdownMenu';
 import { t } from '@/text';
@@ -14,6 +15,18 @@ import { getSessionActionMetadata } from './sessionActionMetadata';
 import type { SessionActionId } from './sessionActionTypes';
 import { Icon } from '@/components/ui/icons/Icon';
 
+/** Shared delete copy: deleting an offline managed session cannot remove its computer's folder yet. */
+export function resolveSessionDeleteWarning(input: Readonly<{
+    metadata: unknown;
+    machineOnline: boolean;
+    defaultWarning: string;
+    offlineManagedWarning: string;
+}>): string {
+    return !input.machineOnline && readSessionDirectoryKind(input.metadata) === 'managed'
+        ? `${input.defaultWarning}\n\n${input.offlineManagedWarning}`
+        : input.defaultWarning;
+}
+
 export function createSessionActionDropdownItem(params: Readonly<{
     actionId: SessionActionId;
     iconColor: string;
@@ -28,15 +41,13 @@ export function createSessionActionDropdownItem(params: Readonly<{
     };
 }
 
+/** Row props for a session operation on a page. Page rows carry no decorative icon. */
 export function createSessionActionInfoItemProps(params: Readonly<{
     actionId: SessionActionId;
-    iconColor: string;
-    iconSize?: number;
 }>): {
     testID: string;
     title: string;
     subtitle?: string;
-    icon: React.ReactNode;
 } | null {
     const metadata = getSessionActionMetadata(params.actionId);
     if (!metadata) return null;
@@ -56,6 +67,5 @@ export function createSessionActionInfoItemProps(params: Readonly<{
         testID,
         title: t(metadata.titleKey),
         subtitle: metadata.subtitleKey ? t(metadata.subtitleKey) : undefined,
-        icon: <Icon name={metadata.icon} size={params.iconSize ?? 29} color={params.iconColor} />,
     };
 }

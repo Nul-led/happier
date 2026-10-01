@@ -3,6 +3,11 @@ import type {
   SessionHandoffPrepareTargetRequest,
   TransferEndpointCandidate,
 } from '@happier-dev/protocol';
+import { copyFile } from 'node:fs/promises';
+import { materializeWorkspaceSyncSeedExport } from '@/workspaces/sync/workspaceSyncSeedTransfer';
+import { materializeWorkspaceExportArtifactsWithScmWorkspace } from '@/scm/workspace/workspaceExportMaterialization';
+import { ensureProtectedLocalStateDirectory } from '@/utils/fs/protectedLocalState';
+import type { SessionHandoffSourceExportRecord } from '@/session/handoff/state/sessionHandoffSourceExportStore';
 
 import {
   type DirectPeerOnDemandTransferScope,
@@ -14,10 +19,11 @@ import {
   requestServerRoutedTransferToFile,
 } from '../../../machines/transfer/serverRoutedTransport';
 import { createMachineTransferRouteCache } from '../../../machines/transfer/transferRouteCache';
-import type { TransferPayloadSource } from '../../../machines/transfer/transferPayloadSource';
+import { createFileTransferPayloadSource, resolveTransferPayloadSizeBytes, resolveTransferPayloadManifestHash, type TransferPayloadSource } from '../../../machines/transfer/transferPayloadSource';
 import { readSessionHandoffAgentBundleFile } from '../../../session/handoff/agentBundle/file';
 import {
   buildSessionHandoffAgentBundleTransferId,
+  buildSessionHandoffWorkspaceSeedTransferId,
 } from '../../../session/handoff/agentBundle/transferPublication';
 import type { SessionHandoffAgentBundle } from '../../../session/handoff/types';
 
@@ -47,6 +53,77 @@ export function directPeerTransferUnavailable() {
     errorCode: 'direct_peer_transfer_unavailable',
     error: 'Direct peer transfer is unavailable and server-routed fallback is disabled',
   } as const;
+}
+
+/** Shared seed materialization below WorkspaceRef admission, carried by handoff's existing transports. */
+export async function materializePrepareManagedWorkspaceSeed(params: Readonly<{
+  request: SessionHandoffPrepareTargetRequest;
+  targetPath: string;
+  actualTransportStrategy: SessionHandoffPrepareTargetRequest['negotiatedTransportStrategy'];
+  localSourceExport: SessionHandoffSourceExportRecord | null;
+  machineTransferChannel?: MachineTransferChannel;
+  directPeerTransfer?: SessionHandoffDirectPeerTransferHandle;
+  transferTimeoutMs?: number;
+  assertCanContinue(): Promise<void>;
+}>): Promise<void> {
+  const publication = params.request.handoffMetadataV2?.workspaceSeedTransferPublication;
+  const transferId = buildSessionHandoffWorkspaceSeedTransferId(params.request.handoffId);
+  if (!publication || publication.transferId !== transferId) throw new Error('Managed handoff workspace seed publication is unavailable');
+  const custody = await materializeWorkspaceSyncSeedExport({ operationId: transferId, targetPath: params.targetPath,
+    requestPayload: async (request) => {
+      await params.assertCanContinue();
+      const expectedSizeBytes = request.transferId === transferId ? publication.sizeBytes : request.expectedSizeBytes;
+      const expectedManifestHash = request.transferId === transferId ? publication.manifestHash : request.expectedManifestHash;
+      const files = params.localSourceExport?.workspaceSeed?.files;
+      const local = files && Object.hasOwn(files, request.transferId) ? files[request.transferId] : undefined;
+      if (local) {
+        await copyFile(local.filePath, request.destinationPath);
+      } else {
+        let transferred = false;
+        if (params.actualTransportStrategy === 'direct_peer' && params.directPeerTransfer?.requestPayloadFile) {
+          try {
+            await requestDirectPeerTransferToFileWithRetry({
+              requestTransferToFile: params.directPeerTransfer.requestPayloadFile,
+              transferId: request.transferId, destinationPath: request.destinationPath,
+              endpointCandidates: publication.endpointCandidates ?? params.request.endpointCandidates,
+              expectedSizeBytes, expectedManifestHash,
+              ...(params.transferTimeoutMs === undefined ? {} : { timeoutMs: params.transferTimeoutMs }),
+              onRetry: params.assertCanContinue,
+            });
+            transferred = true;
+          } catch (error) {
+            if (isSessionHandoffDirectPeerProtocolError(error)
+              || params.request.allowServerRoutedFallback === false || !params.machineTransferChannel) throw error;
+          }
+        }
+        if (!transferred) {
+          if (!params.machineTransferChannel) throw new Error(directPeerTransferUnavailable().error);
+          await requestServerRoutedTransferToFile({ transferId: request.transferId,
+            sourceMachineId: params.request.sourceMachineId, destinationPath: request.destinationPath,
+            machineTransferChannel: params.machineTransferChannel,
+            ...(params.transferTimeoutMs === undefined ? {} : { timeoutMs: params.transferTimeoutMs,
+              openBody: { t: 'session_handoff_prepare_v1', timeoutMs: params.transferTimeoutMs },
+            }),
+          });
+        }
+      }
+      const received = createFileTransferPayloadSource({ filePath: request.destinationPath });
+      if (expectedSizeBytes !== undefined && await resolveTransferPayloadSizeBytes(received) !== expectedSizeBytes
+        || expectedManifestHash !== undefined && await resolveTransferPayloadManifestHash(received) !== expectedManifestHash) {
+        throw new Error('Managed handoff workspace seed integrity mismatch');
+      }
+      await params.assertCanContinue();
+    },
+    materializeWorkspaceExportArtifacts: async (request) => await materializeWorkspaceExportArtifactsWithScmWorkspace({
+      ...request, assertCanContinue: params.assertCanContinue,
+    }),
+  });
+  try {
+    await params.assertCanContinue();
+    await custody.bindPromotedTarget();
+    await ensureProtectedLocalStateDirectory(params.targetPath, { authority: 'owned' });
+    await custody.commit();
+  } catch (error) { await custody.abort(); throw error; }
 }
 
 export function isSessionHandoffDirectPeerProtocolError(error: unknown): boolean {

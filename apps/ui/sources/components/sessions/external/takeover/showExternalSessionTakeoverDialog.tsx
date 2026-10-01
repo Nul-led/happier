@@ -12,6 +12,7 @@ import type { CustomModalInjectedProps } from '@/modal';
 import { t } from '@/text';
 
 import { resolveExternalSessionTakeoverTargetDirectory } from './resolveExternalSessionTakeoverTargetDirectory';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 export type ExternalSessionTakeoverDialogAction =
     | 'direct'
@@ -220,7 +221,7 @@ export function ExternalSessionTakeoverDialog(props: ExternalSessionTakeoverDial
                     accessibilityState={{ disabled: !normalizedTargetDirectory }}
                     disabled={!normalizedTargetDirectory}
                     onPress={() => resolveTakeover('direct')}
-                    style={({ pressed }) => [styles.optionButton, { opacity: pressed ? 0.85 : 1 }]}
+                    style={({ pressed }) => [styles.optionButton, { opacity: pressed ? motionTokens.press.opacitySubtle : 1 }]}
                 >
                     <Text style={styles.optionTitle}>{t('chatFooter.directTakeoverDialogDirectTitle')}</Text>
                     <Text style={styles.optionSubtitle}>{t('chatFooter.directTakeoverDialogDirectBody')}</Text>
@@ -236,7 +237,7 @@ export function ExternalSessionTakeoverDialog(props: ExternalSessionTakeoverDial
                     accessibilityState={{ disabled: !normalizedTargetDirectory }}
                     disabled={!normalizedTargetDirectory}
                     onPress={() => resolveTakeover('persisted')}
-                    style={({ pressed }) => [styles.optionButton, { opacity: pressed ? 0.85 : 1 }]}
+                    style={({ pressed }) => [styles.optionButton, { opacity: pressed ? motionTokens.press.opacitySubtle : 1 }]}
                 >
                     <Text style={styles.optionTitle}>{t('chatFooter.directTakeoverDialogPersistTitle')}</Text>
                     <Text style={styles.optionSubtitle}>{t('chatFooter.directTakeoverDialogPersistBody')}</Text>
@@ -252,7 +253,7 @@ export function ExternalSessionTakeoverDialog(props: ExternalSessionTakeoverDial
                     onPress={() => resolve({ action: 'recheck' })}
                     style={({ pressed }) => [
                         styles.optionButton,
-                        { opacity: pressed ? 0.85 : 1 },
+                        { opacity: pressed ? motionTokens.press.opacitySubtle : 1 },
                     ]}
                 >
                     <Text style={styles.optionTitle}>
@@ -266,7 +267,7 @@ export function ExternalSessionTakeoverDialog(props: ExternalSessionTakeoverDial
                 accessibilityRole="button"
                 accessibilityLabel={t('common.cancel')}
                 onPress={() => resolve({ action: null })}
-                style={({ pressed }) => [styles.cancelButton, { opacity: pressed ? 0.7 : 1 }]}
+                style={({ pressed }) => [styles.cancelButton, { opacity: pressed ? motionTokens.press.opacity : 1 }]}
             >
                 <Text style={styles.cancelText}>{t('common.cancel')}</Text>
             </Pressable>

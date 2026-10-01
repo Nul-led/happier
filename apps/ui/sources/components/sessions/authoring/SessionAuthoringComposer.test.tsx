@@ -3,7 +3,10 @@ import { act, create } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const dictationControlIds: Array<string | undefined> = [];
-const toggle = vi.hoisted(() => vi.fn(async () => ({ kind: 'completed', text: ' dictated' } as const)));
+type DictationToggleResult = Readonly<{ kind: 'completed'; text: string }>;
+const toggle = vi.hoisted(() => vi.fn<() => Promise<DictationToggleResult>>(
+    async () => ({ kind: 'completed', text: ' dictated' }),
+));
 
 vi.mock('@/voice/dictation/useVoiceDictation', () => ({
     useVoiceDictation: (controlId: string | undefined) => {
@@ -91,7 +94,7 @@ describe('SessionAuthoringComposer', () => {
     it('does not deliver a completed transcription after the composer identity changes', async () => {
         let completeToggle: ((result: { kind: 'completed'; text: string }) => void) | undefined;
         toggle.mockImplementationOnce(() => new Promise((resolve) => {
-            completeToggle = resolve;
+            completeToggle = (result) => resolve(result);
         }));
         const onChangeText = vi.fn();
         const { SessionAuthoringComposer } = await import('./SessionAuthoringComposer');

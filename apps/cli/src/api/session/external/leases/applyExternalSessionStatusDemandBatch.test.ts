@@ -34,7 +34,7 @@ function resolvedInput(
         resource: {
             pluginId: 'happier.opencode',
             agentLocalId: 'opencode',
-            pluginGeneration: 'plugin-generation-1',
+            occurrenceId: 'plugin-generation-1',
             resourceKey: 'shared-endpoint',
         },
         link: {

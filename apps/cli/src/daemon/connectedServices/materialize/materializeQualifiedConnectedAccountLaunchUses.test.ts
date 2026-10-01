@@ -56,7 +56,7 @@ describe('materializeQualifiedConnectedAccountLaunchUses', () => {
       sessionId: 'session-1',
       signal: new AbortController().signal,
       credentialFileScope: {
-        generation: 'generation-1',
+        occurrenceId: 'generation-1',
         pluginId: consumer.pluginId,
         contributionQualifiedId: 'acme.example-agent/agents/example',
         sessionId: 'session-1',

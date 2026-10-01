@@ -188,8 +188,9 @@ describe('useSessionFileTransferAvailabilityResolver', () => {
             },
         } as any;
         state.serverScopedMachine = declareCurrentFiniteTransferMachine(state.serverScopedMachine);
-        state.serverScopedMachine.operationProtocolCapabilities = null;
-        state.serverScopedMachine.operationProtocolCapabilitiesRevision = null;
+        state.serverScopedMachine.operationProtocolCapabilities.irohMachineEndpoint = {
+            protocolVersions: [1], endpointId: 'a'.repeat(64),
+        };
         state.cachedMachineRpcDirectRoute = { status: 'unknown' as const } as any;
         state.serverSnapshot = {
             status: 'ready' as const,
@@ -202,6 +203,7 @@ describe('useSessionFileTransferAvailabilityResolver', () => {
                             directPeer: { enabled: true },
                             serverRouted: { enabled: false },
                         },
+                        peerMediation: { enabled: true },
                     },
                 },
                 capabilities: {},
@@ -219,6 +221,7 @@ describe('useSessionFileTransferAvailabilityResolver', () => {
         expect(hook.getCurrent()(null)).toBe(true);
     });
     it('does not gate bulk file transfers by the total transfer size (chunked transfers)', async () => {
+        nativeLifecycleState.available = true;
         state.session = { active: true } as any;
         state.machineReachability = { machineRpcTargetAvailable: true } as any;
         state.machineTarget = { machineId: 'runner-1', basePath: '/repo' } as any;
@@ -227,7 +230,10 @@ describe('useSessionFileTransferAvailabilityResolver', () => {
             kind: 'ephemeral_session_runner',
             active: true,
             revokedAt: null,
-            operationProtocolCapabilities: { finiteTransferRpc: { protocolVersions: [1] } },
+            operationProtocolCapabilities: {
+                finiteTransferRpc: { protocolVersions: [1] },
+                irohMachineEndpoint: { protocolVersions: [1], endpointId: 'a'.repeat(64) },
+            },
             operationProtocolCapabilitiesRevision: 1,
             daemonState: null,
         } as any;
@@ -241,10 +247,11 @@ describe('useSessionFileTransferAvailabilityResolver', () => {
                         transfer: {
                             enabled: true,
                             directPeer: {
-                                enabled: false,
+                                enabled: true,
                             },
                             serverRouted: { enabled: false },
                         },
+                        peerMediation: { enabled: true },
                     },
                 },
                 capabilities: {
@@ -266,7 +273,7 @@ describe('useSessionFileTransferAvailabilityResolver', () => {
         expect(hook.getCurrent()(512)).toBe(true);
     });
 
-    it('makes a current Runner transfer available from its strict operation capability', async () => {
+    it('keeps a current Runner unavailable without its current Iroh endpoint', async () => {
         state.session = { active: true, serverId: 'server-1' } as any;
         state.machineReachability = { machineRpcTargetAvailable: true } as any;
         state.machineTarget = { machineId: 'runner-1', basePath: '/repo' } as any;
@@ -303,11 +310,8 @@ describe('useSessionFileTransferAvailabilityResolver', () => {
         const { useSessionFileTransferAvailabilityState } = await import('./useSessionFileTransferAvailability');
         const hook = await renderHook(() => useSessionFileTransferAvailabilityState('s1'));
 
-        expect(hook.getCurrent().available).toBe(true);
-        expect(hook.getCurrent().decision).toMatchObject({
-            kind: 'selected',
-            preferredRouteKind: 'machine_rpc_direct',
-        });
+        expect(hook.getCurrent().available).toBe(false);
+        expect(hook.getCurrent().decision).toBeNull();
     });
 
     it('keeps the resolver stable while availability inputs stay unchanged', async () => {

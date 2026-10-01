@@ -17,6 +17,33 @@ type RespawnOptionsResolver = (input: Readonly<{
 }>) => SpawnSessionOptions | Promise<SpawnSessionOptions>;
 
 describe('createSessionRunnerRespawnManager', () => {
+  it('stops automatic managed-folder recovery without carrying forward prior recreation consent', async () => {
+    vi.useFakeTimers();
+    const onRespawnTerminal = vi.fn();
+    const spawnSession = vi.fn(async (_options: SpawnSessionOptions) => ({ type: 'error', errorCode: 'SESSION_DIRECTORY_MISSING' }));
+    const manager = createSessionRunnerRespawnManager({
+      enabled: true, maxRestarts: 2, baseDelayMs: 50, maxDelayMs: 50, jitterMs: 0,
+      isSessionAlreadyRunning: async () => false, spawnSession, onRespawnTerminal,
+      random: () => 0, logDebug: () => {}, logWarn: () => {},
+    });
+    const tracked: TrackedSession = {
+      startedBy: 'daemon', pid: 111, happySessionId: 'managed-session',
+      spawnOptions: {
+        directory: '/private/chat', directoryKind: 'managed', approvedNewDirectoryCreation: true,
+        freshSessionCreation: true, managedDirectorySeed: { sourceSessionId: 'source', sourcePath: '/private/source' },
+        backendTarget: { kind: 'backend', backendId: 'codex', sourceKind: 'built_in' }, resume: 'vendor-1',
+      },
+    };
+    expect(manager.handleUnexpectedExit(tracked, { reason: 'process-missing', code: null, signal: null })).toBe('scheduled');
+    await vi.advanceTimersByTimeAsync(500);
+    expect(spawnSession).toHaveBeenCalledTimes(1);
+    expect(spawnSession.mock.calls[0]?.[0]).toMatchObject({ approvedNewDirectoryCreation: false });
+    expect(spawnSession.mock.calls[0]?.[0]).not.toHaveProperty('freshSessionCreation');
+    expect(spawnSession.mock.calls[0]?.[0]).not.toHaveProperty('managedDirectorySeed');
+    expect(onRespawnTerminal).toHaveBeenCalledWith(expect.objectContaining({ reason: 'session_directory_missing' }));
+    vi.useRealTimers();
+  });
+
   it('spawns a replacement runner after an unexpected termination', async () => {
     vi.useFakeTimers();
     const spawnSession = vi.fn(async (_opts: unknown) => ({ type: 'success' as const, pid: 123 }));

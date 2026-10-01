@@ -64,7 +64,10 @@ vi.mock('@/sync/domains/transfers/runtime/transferRuntime', () => ({
 import {
     applyComposerPresentationTransaction,
     createComposerPresentationTransactionApplier,
+    flushPendingRegisteredSessionComposerActionChip,
     notifyComposerPresentationTargetChanged,
+    readSessionComposerActionChipAvailable,
+    requestRegisteredSessionComposerActionChip,
     readComposerPresentationSnapshot,
     readComposerPresentationTarget,
     readSessionComposerPresentationTargetAtAddress,
@@ -81,7 +84,7 @@ function createAttachmentProjectionEntry(input: Readonly<{
     pluginId: string;
     localId: string;
     typeLabel: string;
-    immutableGenerationId?: string;
+    occurrenceId?: string;
     cardinality?: 'one' | 'many';
     valueValidator?: (value: unknown) => boolean;
 }>): PluginUiComposerAttachmentProjection {
@@ -89,7 +92,7 @@ function createAttachmentProjectionEntry(input: Readonly<{
         id: `${input.pluginId}/${input.localId}`,
         pluginId: input.pluginId,
         identity: { pluginId: input.pluginId, localId: input.localId },
-        immutableGenerationId: input.immutableGenerationId ?? `${input.pluginId}-generation`,
+        occurrenceId: input.occurrenceId ?? `${input.pluginId}-generation`,
         definition: {
             id: input.localId,
             title: input.typeLabel,
@@ -111,11 +114,11 @@ function createAttachmentTransactionApplier(
 
 function admittedContributor(input: Readonly<{
     pluginId: string;
-    immutableGenerationId?: string;
+    occurrenceId?: string;
 }>) {
     return {
         identity: { pluginId: input.pluginId, localId: 'control' },
-        immutableGenerationId: input.immutableGenerationId ?? `${input.pluginId}-generation`,
+        occurrenceId: input.occurrenceId ?? `${input.pluginId}-generation`,
     };
 }
 
@@ -238,6 +241,43 @@ describe('composer presentation targets', () => {
             focusComposer: focus,
         }));
         expect(focus).toHaveBeenCalledTimes(1);
+    });
+
+    it('opens a composer action chip on the exact Session composer, retaining one request until it can', () => {
+        const address = { serverId: 'https://home.example.test', sessionId: 'goal-session' } as const;
+        const otherAddress = { serverId: 'https://other.example.test', sessionId: 'goal-session' } as const;
+        let ready = false;
+        const openActionChip = vi.fn((chipKey: string) => ready && chipKey === 'session-goal');
+        const otherOpen = vi.fn(() => true);
+
+        expect(readSessionComposerActionChipAvailable(address, 'session-goal')).toBe(false);
+        expect(requestRegisteredSessionComposerActionChip(address, 'session-goal')).toBe(false);
+        cleanups.push(registerSessionComposerPresentationTarget(otherAddress, {
+            ...createDocumentTarget(createSnapshot({ ref: { kind: 'session', sessionId: 'goal-session' } })),
+            openActionChip: otherOpen,
+            hasActionChip: () => true,
+        }));
+        expect(otherOpen).not.toHaveBeenCalled();
+
+        cleanups.push(registerSessionComposerPresentationTarget(address, {
+            ...createDocumentTarget(createSnapshot({ ref: { kind: 'session', sessionId: 'goal-session' } })),
+            openActionChip,
+            hasActionChip: (chipKey) => chipKey === 'session-goal',
+        }));
+        // Registered but not on screen yet: the request stays pending.
+        expect(openActionChip).toHaveBeenCalledWith('session-goal');
+        expect(readSessionComposerActionChipAvailable(address, 'session-goal')).toBe(true);
+        expect(readSessionComposerActionChipAvailable(address, 'other-chip')).toBe(false);
+
+        ready = true;
+        expect(flushPendingRegisteredSessionComposerActionChip(address)).toBe(true);
+        // Delivered once: a second flush has nothing to deliver.
+        expect(flushPendingRegisteredSessionComposerActionChip(address)).toBe(false);
+        expect(openActionChip).toHaveBeenCalledTimes(2);
+
+        expect(requestRegisteredSessionComposerActionChip(address, 'session-goal')).toBe(true);
+        expect(openActionChip).toHaveBeenCalledTimes(3);
+        expect(otherOpen).not.toHaveBeenCalled();
     });
 
     it('focuses the requested Home when same-ID Session composers are mounted together', () => {
@@ -471,6 +511,84 @@ describe('composer presentation targets', () => {
             .toMatchObject({ revision: 1, replace: sessionTarget.replace });
         expect(readComposerPresentationTarget({ kind: 'pendingMessage', sessionId: 'session-1', localId: 'pending-1' }))
             .toMatchObject({ revision: 2, replace: pendingTarget.replace });
+    });
+
+    describe('visibility-eligible targeting (plan 05 SC-R7)', () => {
+        const address = { serverId: 'https://home.example.test', sessionId: 'session-7' } as const;
+        const ref = { kind: 'session', sessionId: 'session-7' } as const;
+
+        function presentationTarget(revision: number, presented: { value: boolean }) {
+            return {
+                ...createDocumentTarget(createSnapshot({ ref, revision })),
+                isPresented: () => presented.value,
+                focusComposer: vi.fn(() => true),
+            };
+        }
+
+        it('resolves to the presented target, not a hidden retained one that registered later', () => {
+            const visible = { value: true };
+            const hidden = { value: false };
+            const visibleTarget = presentationTarget(10, visible);
+            const hiddenTarget = presentationTarget(20, hidden);
+            cleanups.push(registerSessionComposerPresentationTarget(address, visibleTarget));
+            cleanups.push(registerSessionComposerPresentationTarget(address, hiddenTarget));
+
+            expect(readSessionComposerPresentationTargetAtAddress(address)?.revision).toBe(10);
+            expect(readComposerPresentationTarget(ref)?.revision).toBe(10);
+            expect(requestRegisteredSessionComposerFocus(address)).toBe(true);
+            expect(visibleTarget.focusComposer).toHaveBeenCalledTimes(1);
+            expect(hiddenTarget.focusComposer).not.toHaveBeenCalled();
+        });
+
+        it('restores the next eligible target when the resolved one unregisters, and notifies', () => {
+            const first = presentationTarget(1, { value: true });
+            const second = presentationTarget(2, { value: true });
+            const listener = vi.fn();
+            cleanups.push(subscribeComposerPresentationTarget(ref, listener));
+            cleanups.push(registerSessionComposerPresentationTarget(address, first));
+            const unregisterSecond = registerSessionComposerPresentationTarget(address, second);
+            expect(readSessionComposerPresentationTargetAtAddress(address)?.revision).toBe(2);
+            listener.mockClear();
+
+            unregisterSecond();
+
+            expect(readSessionComposerPresentationTargetAtAddress(address)?.revision).toBe(1);
+            expect(readComposerPresentationTarget(ref)?.revision).toBe(1);
+            expect(listener).toHaveBeenCalled();
+        });
+
+        it('follows a presentation change after the change notification', () => {
+            const primary = { value: false };
+            const embedded = { value: true };
+            cleanups.push(registerSessionComposerPresentationTarget(address, presentationTarget(1, embedded)));
+            cleanups.push(registerSessionComposerPresentationTarget(address, presentationTarget(2, primary)));
+            expect(readSessionComposerPresentationTargetAtAddress(address)?.revision).toBe(1);
+
+            primary.value = true;
+            embedded.value = false;
+            notifyComposerPresentationTargetChanged(ref);
+
+            expect(readSessionComposerPresentationTargetAtAddress(address)?.revision).toBe(2);
+        });
+
+        it('keeps resolution when a non-resolved target unregisters, with the unqualified mirror equal to it', () => {
+            const resolved = presentationTarget(1, { value: true });
+            const retained = presentationTarget(2, { value: false });
+            cleanups.push(registerSessionComposerPresentationTarget(address, resolved));
+            const unregisterRetained = registerSessionComposerPresentationTarget(address, retained);
+
+            unregisterRetained();
+
+            expect(readSessionComposerPresentationTargetAtAddress(address)?.revision).toBe(1);
+            expect(readComposerPresentationTarget(ref)?.revision).toBe(1);
+        });
+
+        it('falls back to the latest current target when none is presented', () => {
+            cleanups.push(registerSessionComposerPresentationTarget(address, presentationTarget(1, { value: false })));
+            cleanups.push(registerSessionComposerPresentationTarget(address, presentationTarget(2, { value: false })));
+
+            expect(readSessionComposerPresentationTargetAtAddress(address)?.revision).toBe(2);
+        });
     });
 
     it('does not let an obsolete registration cleanup retire the current target', () => {
@@ -1215,7 +1333,7 @@ describe('composer presentation targets', () => {
             ref: { kind: 'session', sessionId: 'session-2' },
             admittedContributor: admittedContributor({
                 pluginId: 'acme.issues',
-                immutableGenerationId: 'retired-generation',
+                occurrenceId: 'retired-generation',
             }),
             transaction: {
                 expectedRevision: 1,
@@ -1298,7 +1416,7 @@ describe('composer presentation targets', () => {
             attachmentLocalId: 'issue',
             admittedContributor: admittedContributor({
                 pluginId: 'acme.issues',
-                immutableGenerationId: 'retired-generation',
+                occurrenceId: 'retired-generation',
             }),
         })).toBeNull();
     });

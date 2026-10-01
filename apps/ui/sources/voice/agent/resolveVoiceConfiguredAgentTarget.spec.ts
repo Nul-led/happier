@@ -200,7 +200,7 @@ describe('resolveVoiceConfiguredAgentTarget', () => {
       machineId: null,
       selection: {
         agentId: 'claude',
-        agentTargetKey: 'backend:claude',
+        agentTargetKey: 'agent:happier.agent.claude/claude',
         agentIdentity: null,
       },
     });
@@ -232,7 +232,6 @@ describe('resolveVoiceConfiguredAgentTarget', () => {
             },
           },
         },
-        backendsById: {},
         familiesById: {},
       }),
     });

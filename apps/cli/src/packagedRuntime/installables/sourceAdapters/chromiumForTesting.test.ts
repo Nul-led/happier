@@ -11,9 +11,8 @@ const { configurationState } = vi.hoisted(() => ({
   },
 }));
 
-const { downloadMock, extractMock, extractRootMock, platformState } = vi.hoisted(() => ({
+const { downloadMock, extractRootMock, platformState } = vi.hoisted(() => ({
   downloadMock: vi.fn(),
-  extractMock: vi.fn(),
   extractRootMock: vi.fn(),
   platformState: {
     platform: 'linux' as NodeJS.Platform,
@@ -82,11 +81,11 @@ vi.mock('@happier-dev/cli-common/agents', async (importOriginal) => {
   };
 });
 
-vi.mock('@happier-dev/cli-common/firstPartyRuntime', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@happier-dev/cli-common/firstPartyRuntime')>();
+vi.mock('@happier-dev/release-runtime/archiveExtraction', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@happier-dev/release-runtime/archiveExtraction')>();
   return {
     ...actual,
-    extractReleasePayloadRootFromArchive: extractRootMock,
+    extractArchivePayloadToDirectory: extractRootMock,
   };
 });
 
@@ -103,7 +102,7 @@ function pinnedAsset(platform: 'linux-x64') {
     'linux-x64': {
       archiveUrl: 'https://storage.googleapis.com/chrome-for-testing-public/127.0.6533.88/linux64/chrome-linux64.zip',
       integrityDigest: `sha256:${'b'.repeat(64)}`,
-      executableSubpath: 'chrome',
+      executableSubpath: 'chrome-linux64/chrome',
     },
   }[platform];
 }
@@ -144,8 +143,8 @@ describe('chromium-for-testing managed source adapter', () => {
 
     const asset = pinnedAsset('linux-x64');
 
-    // Simulate the downloader writing the archive bytes, and the extractor producing a payload root
-    // that contains the chrome executable at the pinned subpath.
+    // Simulate the downloader writing the archive bytes, and the extractor preserving the
+    // archive-root-relative Chrome wrapper directory declared by the pinned descriptor.
     downloadMock.mockImplementation(async (params: { destinationPath: string; digest?: string | null }) => {
       expect(params.digest).toBe(asset.integrityDigest);
       await writeFile(params.destinationPath, 'fake-archive-bytes');
@@ -155,7 +154,6 @@ describe('chromium-for-testing managed source adapter', () => {
       const { mkdir, writeFile: write } = await import('node:fs/promises');
       await mkdir(payloadRoot, { recursive: true });
       await write(join(payloadRoot, 'chrome'), '#!/bin/sh\necho chrome');
-      return payloadRoot;
     });
 
     const result = await mod.installChromiumForTesting({
@@ -185,10 +183,9 @@ describe('chromium-for-testing managed source adapter', () => {
     });
     extractRootMock.mockImplementation(async (params: { extractDir: string }) => {
       extractedRelease += 1;
-      const payloadRoot = join(params.extractDir, `chrome-release-${extractedRelease}`);
+      const payloadRoot = join(params.extractDir, 'chrome-linux64');
       await mkdir(payloadRoot, { recursive: true });
       await writeFile(join(payloadRoot, 'chrome'), `release-${extractedRelease}`, 'utf8');
-      return payloadRoot;
     });
     concurrencyState.pauseFirstPromotion = true;
     concurrencyState.onPromotionPaused = promotionPaused.resolve;
@@ -215,7 +212,7 @@ describe('chromium-for-testing managed source adapter', () => {
       const [first, second] = await Promise.all([firstPromise, secondPromise]);
       expect(first.ok).toBe(true);
       expect(second.ok).toBe(true);
-      await expect(readFile(join(configurationState.happyHomeDir, 'tools', 'browser-chromium', 'current', 'chrome'), 'utf8'))
+      await expect(readFile(join(configurationState.happyHomeDir, 'tools', 'browser-chromium', 'current', 'chrome-linux64', 'chrome'), 'utf8'))
         .resolves.toBe('release-2');
     } finally {
       releasePromotion.resolve();
@@ -235,7 +232,7 @@ describe('chromium-for-testing managed source adapter', () => {
       asset: {
         archiveUrl: 'https://storage.googleapis.com/chrome-for-testing-public/127.0.6533.88/linux64/chrome-linux64.zip',
         integrityDigest: null,
-        executableSubpath: 'chrome',
+        executableSubpath: 'chrome-linux64/chrome',
       },
       pinnedVersion: '127.0.6533.88',
     });
@@ -277,8 +274,8 @@ describe('chromium-for-testing managed source adapter', () => {
 
     const asset = pinnedAsset('linux-x64');
     const currentDir = join(configurationState.happyHomeDir, 'tools', 'browser-chromium', 'current');
-    await mkdir(currentDir, { recursive: true });
-    await writeFile(join(currentDir, 'chrome'), 'old-current', 'utf8');
+    await mkdir(join(currentDir, 'chrome-linux64'), { recursive: true });
+    await writeFile(join(currentDir, 'chrome-linux64', 'chrome'), 'old-current', 'utf8');
     failingRenameTargets.set(currentDir, 1);
     downloadMock.mockImplementation(async (params: { destinationPath: string }) => {
       await writeFile(params.destinationPath, 'fake-archive-bytes');
@@ -287,7 +284,6 @@ describe('chromium-for-testing managed source adapter', () => {
       const payloadRoot = join(params.extractDir, 'chrome-linux64');
       await mkdir(payloadRoot, { recursive: true });
       await writeFile(join(payloadRoot, 'chrome'), '#!/bin/sh\necho chrome');
-      return payloadRoot;
     });
 
     const result = await mod.installChromiumForTesting({
@@ -298,7 +294,7 @@ describe('chromium-for-testing managed source adapter', () => {
     });
 
     expect(result.ok).toBe(false);
-    await expect(readFile(join(currentDir, 'chrome'), 'utf8')).resolves.toBe('old-current');
+    await expect(readFile(join(currentDir, 'chrome-linux64', 'chrome'), 'utf8')).resolves.toBe('old-current');
   });
 
   it('fails closed on an unsupported platform/arch pair', async () => {
@@ -330,7 +326,7 @@ describe('chromium-for-testing managed source adapter', () => {
     await expect(mod.resolveInstalledChromiumForTestingExecutable({
       platform: 'linux',
       arch: 'x64',
-      executableSubpath: 'chrome',
+      executableSubpath: 'chrome-linux64/chrome',
     })).resolves.toBeNull();
   });
 });

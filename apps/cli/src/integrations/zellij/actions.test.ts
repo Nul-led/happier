@@ -123,6 +123,26 @@ describe('zellij actions', () => {
     );
   });
 
+  it('attaches the current terminal to the requested Zellij session without a shell', async () => {
+    const { attachForeground } = await import('./actions');
+
+    await expect(attachForeground({
+      zellijBinary: '/tools/zellij',
+      sessionName: 'happier',
+      env: { ZELLIJ_SOCKET_DIR: '/tmp/zellij sock' },
+    })).resolves.toEqual({ exitCode: 0, stdout: '', stderr: '' });
+
+    expect(spawnMock).toHaveBeenCalledWith(
+      '/tools/zellij',
+      ['attach', 'happier'],
+      expect.objectContaining({
+        shell: false,
+        stdio: 'inherit',
+        env: expect.objectContaining({ ZELLIJ_SOCKET_DIR: '/tmp/zellij sock' }),
+      }),
+    );
+  });
+
   it('pastes prompt text through zellij action paste without shell interpolation', async () => {
     const { pasteText } = await import('./actions');
 

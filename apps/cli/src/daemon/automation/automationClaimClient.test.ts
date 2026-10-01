@@ -1,6 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { DEFAULT_AUTOMATION_V3_MAX_ACTIVE_RUNS_PER_MACHINE } from '@happier-dev/protocol';
-import releasedV2Wire from '../../../../../packages/protocol/src/automations/fixtures/automation-v2.0.2.11-wire.json';
 
 const { axiosGet, axiosPost } = vi.hoisted(() => ({
   axiosGet: vi.fn(),
@@ -18,7 +17,6 @@ import type { CreatePluginInstallationPublisherHeader } from '@/plugins/installa
 
 import {
   createAutomationClaimClient,
-  isMissingAutomationWorkerEndpointError,
 } from './automationClaimClient';
 import { executeClaimedRun } from './automationRunExecutor';
 
@@ -80,22 +78,57 @@ describe('createAutomationClaimClient', () => {
     axiosPost.mockReset();
   });
 
-  it('recognizes a missing worker endpoint beneath the configured API base path only for the exact request URL', () => {
-    const expectedUrl = 'https://selfhost.example.test/api/v3/automations/worker/assignments';
+  it.each(['direct', 'automation'] as const)('retains consumed Resume intent from a %s V3 claim', async origin => {
+    // HTTP is the system boundary; the strict parser and private worker
+    // normalization remain real so neither can silently discard the intent.
+    const common = { id: 'resumed-run', attempt: 2, revision: 3, recipeKind: 'workflow-v2',
+      triggerId: null, triggerRetired: false, workflowResumeRequestedRevision: 2 };
+    axiosGet.mockResolvedValue({ data: { assignments: [], settings: DEFAULT_WORKER_SETTINGS } });
+    axiosPost.mockResolvedValue({ data: {
+      run: origin === 'direct'
+        ? { ...common, automationId: null, origin: { kind: 'direct' }, workflowAcceptedSnapshotEnvelope: 'accepted' }
+        : { ...common, automationId: 'automation-1', executionInputEnvelope: 'definition', automationEvidenceEnvelope: null,
+          cause: { kind: 'manual', invokedAt: 1_723_247_201_000 } },
+      automation: origin === 'direct' ? null : { id: 'automation-1', name: 'Resumed', enabled: true },
+      accountCurrentness: CLAIM_CURRENTNESS,
+    } });
+    const client = createAutomationClaimClient({ token: 'token' });
+    await client.fetchAssignments('machine-1');
+    expect(await client.claimRun({ machineId: 'machine-1', leaseDurationMs: 30_000 }))
+      .toMatchObject({ run: { id: 'resumed-run', workflowResumeRequestedRevision: 2 } });
+  });
 
-    expect(isMissingAutomationWorkerEndpointError(createAxios404(expectedUrl), expectedUrl)).toBe(true);
-    expect(isMissingAutomationWorkerEndpointError(
-      createAxios404('https://selfhost.example.test/api/v3/automations/runs/claim'),
-      expectedUrl,
-    )).toBe(false);
-    expect(isMissingAutomationWorkerEndpointError(
-      createAxios404('https://other.example.test/api/v3/automations/worker/assignments'),
-      expectedUrl,
-    )).toBe(false);
-    expect(isMissingAutomationWorkerEndpointError({
-      response: { status: 500 },
-      config: { url: expectedUrl },
-    }, expectedUrl)).toBe(false);
+  it('claims only session-scoped work and preserves its scope and previous review checkpoint', async () => {
+    axiosGet.mockResolvedValue({ data: { assignments: [], settings: DEFAULT_WORKER_SETTINGS } });
+    axiosPost.mockResolvedValue({ data: {
+      run: {
+        id: 'scoped-run', automationId: 'scoped-automation', attempt: 1, revision: 0,
+        recipeKind: 'legacy', triggerId: null, triggerRetired: false,
+        cause: { kind: 'manual', invokedAt: 1_723_247_201_000 },
+        executionInputEnvelope: 'frozen-input',
+        lastSucceededRun: { runId: 'last-review', checkpointEnvelope: 'final-panel-checkpoint' },
+      },
+      automation: { id: 'scoped-automation', name: 'Review', enabled: true, scopeSessionId: 'origin-session' },
+      accountCurrentness: CLAIM_CURRENTNESS,
+    } });
+    const client = createAutomationClaimClient({ token: 'scoped-token' });
+    await client.fetchAssignments('machine-1');
+    const claimed = await client.claimRun({ machineId: 'machine-1', leaseDurationMs: 30_000, scope: 'session_scoped' });
+    expect(axiosPost).toHaveBeenCalledWith(expect.stringMatching(/\/v3\/automations\/runs\/claim$/), {
+      machineId: 'machine-1', leaseDurationMs: 30_000, scope: 'session_scoped',
+    }, expect.anything());
+    expect(claimed).toMatchObject({
+      automation: { scopeSessionId: 'origin-session' },
+      run: { lastSucceededRun: { runId: 'last-review', checkpointEnvelope: 'final-panel-checkpoint' } },
+    });
+  });
+
+  it('surfaces a missing current assignment endpoint without falling back to V2', async () => {
+    axiosGet.mockImplementationOnce(async (url: string) => { throw createAxios404(url); });
+    const client = createAutomationClaimClient({ token: 'v2-scoped-token' });
+    await expect(client.fetchAssignments('machine-1')).rejects.toMatchObject({ response: { status: 404 } });
+    expect(axiosGet).toHaveBeenCalledTimes(1);
+    expect(axiosPost).not.toHaveBeenCalled();
   });
 
   it('fetches current V3 worker assignments with auth headers and machine query', async () => {
@@ -530,276 +563,7 @@ describe('createAutomationClaimClient', () => {
     ]);
   });
 
-  it('falls back to V2 only when the current assignment endpoint is absent, then normalizes schedule wake data', async () => {
-    axiosGet
-      .mockImplementationOnce((url: unknown) => Promise.reject(createAxios404(String(url))))
-      .mockResolvedValueOnce({
-        data: {
-          assignments: [{
-            machineId: 'machine-1',
-            automation: { id: 'automation-schedule', nextRunAt: 1234 },
-          }],
-        },
-      });
-    axiosPost.mockResolvedValue({ data: { run: null, automation: null } });
-
-    const client = createAutomationClaimClient({ token: 'token-v2' });
-    await expect(client.fetchAssignments('machine-1')).resolves.toEqual({
-      assignments: [{ machineId: 'machine-1', automationId: 'automation-schedule', nextClaimAt: 1234 }],
-      settings: DEFAULT_WORKER_SETTINGS,
-    });
-
-    expect(axiosGet.mock.calls.map((call) => call[0])).toEqual([
-      expect.stringMatching(/\/v3\/automations\/worker\/assignments$/),
-      expect.stringMatching(/\/v2\/automations\/daemon\/assignments$/),
-    ]);
-
-    await client.claimRun({ machineId: 'machine-1', leaseDurationMs: 30_000 });
-    expect(axiosPost).toHaveBeenCalledWith(
-      expect.stringMatching(/\/v2\/automations\/runs\/claim$/),
-      { machineId: 'machine-1', leaseDurationMs: 30_000 },
-      expect.anything(),
-    );
-  });
-
-  it('reads the provenance-pinned v0.2.11 claim response after endpoint negotiation', async () => {
-    axiosGet
-      .mockImplementationOnce((url: unknown) => Promise.reject(createAxios404(String(url))))
-      .mockResolvedValueOnce({ data: releasedV2Wire.assignmentResponse });
-    axiosPost.mockResolvedValue({ data: releasedV2Wire.claimResponse });
-
-    const client = createAutomationClaimClient({ token: 'token-v2-vector' });
-    await client.fetchAssignments(releasedV2Wire.claimRequest.machineId);
-
-    await expect(client.claimRun(releasedV2Wire.claimRequest)).resolves.toEqual({
-      protocol: 'v2',
-      run: { id: 'run-v2', automationId: 'automation-v2', attempt: 1 },
-      automation: releasedV2Wire.claimResponse.automation,
-    });
-  });
-
-  it('keeps the released V2 claim projection cause-free even if an incompatible server injects a V3 key', async () => {
-    axiosGet
-      .mockImplementationOnce((url: unknown) => Promise.reject(createAxios404(String(url))))
-      .mockResolvedValueOnce({
-        data: {
-          assignments: [{
-            machineId: 'machine-v2',
-            automation: { id: 'automation-v2', nextRunAt: 1234 },
-          }],
-        },
-      });
-    axiosPost.mockResolvedValue({
-      data: {
-        run: {
-          id: 'run-v2',
-          automationId: 'automation-v2',
-          attempt: 1,
-          cause: {
-            kind: 'trigger',
-            triggerId: 'must-not-cross-v2',
-            triggerRevision: 1,
-            triggerKind: 'schedule',
-            occurrenceKey: 'v2-rogue-cause',
-            occurredAt: 1_723_247_201_000,
-            evidence: { scheduledFor: 1_723_247_201_000 },
-          },
-        },
-        automation: { id: 'automation-v2', name: 'V2 schedule', enabled: true },
-      },
-    });
-
-    const client = createAutomationClaimClient({ token: 'token-v2-negative-keys' });
-    await client.fetchAssignments('machine-v2');
-
-    await expect(client.claimRun({ machineId: 'machine-v2', leaseDurationMs: 30_000 })).resolves.toEqual({
-      protocol: 'v2',
-      run: { id: 'run-v2', automationId: 'automation-v2', attempt: 1 },
-      automation: { id: 'automation-v2', name: 'V2 schedule', enabled: true },
-    });
-  });
-
-  it('re-probes V3 assignments after a V2 fallback so a server upgrade exposes current work without restarting the daemon', async () => {
-    let v3Available = false;
-    axiosGet.mockImplementation((url: unknown) => {
-      const requestUrl = String(url);
-      if (requestUrl.endsWith('/v3/automations/worker/assignments')) {
-        if (!v3Available) {
-          return Promise.reject(createAxios404(requestUrl));
-        }
-        return Promise.resolve({
-          data: {
-            assignments: [{
-              machineId: 'machine-1',
-              automationId: 'automation-event',
-              nextClaimAt: 5678,
-            }],
-            settings: DEFAULT_WORKER_SETTINGS,
-          },
-        });
-      }
-      return Promise.resolve({
-        data: {
-          assignments: [{
-            machineId: 'machine-1',
-            automation: { id: 'automation-schedule', nextRunAt: 1234 },
-          }],
-        },
-      });
-    });
-
-    const client = createAutomationClaimClient({ token: 'token-upgrade' });
-    await expect(client.fetchAssignments('machine-1')).resolves.toEqual({
-      assignments: [{ machineId: 'machine-1', automationId: 'automation-schedule', nextClaimAt: 1234 }],
-      settings: DEFAULT_WORKER_SETTINGS,
-    });
-
-    v3Available = true;
-    await expect(client.fetchAssignments('machine-1')).resolves.toEqual({
-      assignments: [{ machineId: 'machine-1', automationId: 'automation-event', nextClaimAt: 5678 }],
-      settings: DEFAULT_WORKER_SETTINGS,
-    });
-    expect(axiosGet.mock.calls.map((call) => call[0])).toEqual([
-      expect.stringMatching(/\/v3\/automations\/worker\/assignments$/),
-      expect.stringMatching(/\/v2\/automations\/daemon\/assignments$/),
-      expect.stringMatching(/\/v3\/automations\/worker\/assignments$/),
-    ]);
-  });
-
-  it('keeps the newest overlapping assignment negotiation authoritative when an older V2 fallback finishes late', async () => {
-    let v3RequestCount = 0;
-    let markV2Started!: () => void;
-    let resolveOlderV2!: (response: {
-      data: {
-        assignments: Array<{
-          machineId: string;
-          automation: { id: string; nextRunAt: number };
-        }>;
-      };
-    }) => void;
-    const v2Started = new Promise<void>((resolve) => {
-      markV2Started = resolve;
-    });
-    const olderV2Response = new Promise<{
-      data: {
-        assignments: Array<{
-          machineId: string;
-          automation: { id: string; nextRunAt: number };
-        }>;
-      };
-    }>((resolve) => {
-      resolveOlderV2 = resolve;
-    });
-
-    axiosGet.mockImplementation((url: unknown) => {
-      const requestUrl = String(url);
-      if (requestUrl.endsWith('/v3/automations/worker/assignments')) {
-        v3RequestCount += 1;
-        if (v3RequestCount === 1) {
-          return Promise.reject(createAxios404(requestUrl));
-        }
-        return Promise.resolve({
-          data: {
-            assignments: [{
-              machineId: 'machine-1',
-              automationId: 'automation-event',
-              nextClaimAt: 5678,
-            }],
-            settings: DEFAULT_WORKER_SETTINGS,
-          },
-        });
-      }
-      markV2Started();
-      return olderV2Response;
-    });
-    axiosPost.mockResolvedValue({
-      data: { run: null, automation: null, accountCurrentness: null },
-    });
-
-    const client = createAutomationClaimClient({ token: 'token-overlapping-upgrade' });
-    const olderRead = client.fetchAssignments('machine-1');
-    await v2Started;
-
-    await expect(client.fetchAssignments('machine-1')).resolves.toEqual({
-      assignments: [{ machineId: 'machine-1', automationId: 'automation-event', nextClaimAt: 5678 }],
-      settings: DEFAULT_WORKER_SETTINGS,
-    });
-    resolveOlderV2({
-      data: {
-        assignments: [{
-          machineId: 'machine-1',
-          automation: { id: 'automation-schedule', nextRunAt: 1234 },
-        }],
-      },
-    });
-    await olderRead;
-
-    await expect(client.claimRun({ machineId: 'machine-1', leaseDurationMs: 30_000 })).resolves.toEqual({
-      protocol: 'v3',
-      run: null,
-      automation: null,
-    });
-    expect(axiosPost).toHaveBeenCalledWith(
-      expect.stringMatching(/\/v3\/automations\/runs\/claim$/),
-      expect.anything(),
-      expect.anything(),
-    );
-  });
-
-  it('keeps an active V2 Run on V2 lifecycle endpoints when an overlapping assignment refresh discovers V3', async () => {
-    let v3Available = false;
-    axiosGet.mockImplementation((url: unknown) => {
-      const requestUrl = String(url);
-      if (requestUrl.endsWith('/v3/automations/worker/assignments')) {
-        if (!v3Available) {
-          return Promise.reject(createAxios404(requestUrl));
-        }
-        return Promise.resolve({
-          data: {
-            assignments: [{
-              machineId: 'machine-1',
-              automationId: 'automation-event',
-              nextClaimAt: 5678,
-            }],
-            settings: DEFAULT_WORKER_SETTINGS,
-          },
-        });
-      }
-      return Promise.resolve({
-        data: {
-          assignments: [{
-            machineId: 'machine-1',
-            automation: { id: 'automation-schedule', nextRunAt: 1234 },
-          }],
-        },
-      });
-    });
-    axiosPost
-      .mockResolvedValueOnce({
-        data: {
-          run: { id: 'run-v2', automationId: 'automation-schedule', attempt: 1 },
-          automation: { id: 'automation-schedule', name: 'Schedule', enabled: true },
-        },
-      })
-      .mockResolvedValue({ data: undefined });
-
-    const client = createAutomationClaimClient({ token: 'token-upgrade-active-v2' });
-    await client.fetchAssignments('machine-1');
-    await client.claimRun({ machineId: 'machine-1', leaseDurationMs: 30_000 });
-
-    v3Available = true;
-    await client.fetchAssignments('machine-1');
-    await client.startRun({ protocol: 'v2', runId: 'run-v2', machineId: 'machine-1', attempt: 1 });
-    await client.succeedRun({ protocol: 'v2', runId: 'run-v2', machineId: 'machine-1', attempt: 1 });
-
-    expect(axiosPost.mock.calls.map((call) => call[0])).toEqual([
-      expect.stringMatching(/\/v2\/automations\/runs\/claim$/),
-      expect.stringMatching(/\/v2\/automations\/runs\/run-v2\/start$/),
-      expect.stringMatching(/\/v2\/automations\/runs\/run-v2\/succeed$/),
-    ]);
-  });
-
-  it('keeps V3 sticky after observation and surfaces a later missing assignments endpoint', async () => {
+  it('surfaces a current assignment endpoint becoming unavailable after a successful read', async () => {
     let v3Available = true;
     axiosGet.mockImplementation((url: unknown) => {
       const requestUrl = String(url);
@@ -980,55 +744,5 @@ describe('createAutomationClaimClient', () => {
     ]);
   });
 
-  it('routes lifecycle by the explicit claimed protocol instead of the current assignment protocol', async () => {
-    axiosGet.mockResolvedValue({
-      data: {
-        assignments: [{ machineId: 'machine-1', automationId: 'automation-v3', nextClaimAt: 1 }],
-        settings: DEFAULT_WORKER_SETTINGS,
-      },
-    });
-    axiosPost.mockResolvedValue({ data: undefined });
 
-    const client = createAutomationClaimClient({ token: 'token-explicit-run-protocol' });
-    await client.fetchAssignments('machine-1');
-    await client.succeedRun({
-      protocol: 'v2',
-      runId: 'run-v2',
-      machineId: 'machine-1',
-      attempt: 1,
-    });
-
-    expect(axiosPost.mock.calls.at(-1)?.[0]).toMatch(/\/v2\/automations\/runs\/run-v2\/succeed$/);
-  });
-
-  it('carries an authoritative created Session through a V2 input-failure settlement', async () => {
-    axiosGet
-      .mockImplementationOnce((url: unknown) => Promise.reject(createAxios404(String(url))))
-      .mockResolvedValueOnce({ data: { assignments: [] } });
-    axiosPost.mockResolvedValue({ data: undefined });
-
-    const client = createAutomationClaimClient({ token: 'token-v2-known-session' });
-    await client.fetchAssignments('machine-1');
-    await client.failRun({
-      protocol: 'v2',
-      runId: 'run-1',
-      machineId: 'machine-1',
-      attempt: 1,
-      producedSessionId: 'session-created-before-input-failure',
-      errorCode: 'prompt_delivery_failed',
-      errorMessage: 'Machine admission rejected the initial prompt',
-    });
-
-    expect(axiosPost).toHaveBeenCalledWith(
-      expect.stringMatching(/\/v2\/automations\/runs\/run-1\/fail$/),
-      {
-        machineId: 'machine-1',
-        attempt: 1,
-        producedSessionId: 'session-created-before-input-failure',
-        errorCode: 'prompt_delivery_failed',
-        errorMessage: 'Machine admission rejected the initial prompt',
-      },
-      expect.anything(),
-    );
-  });
 });

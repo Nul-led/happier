@@ -260,6 +260,7 @@ function createRegistration(overrides?: Readonly<{
   );
   registerAutomationReplyHandoffRpcHandler(registrar, {
     machineId: overrides?.machineId ?? 'machine-1',
+    workflowRunStorage: { execute: async () => { throw new Error('Ordinary Automation handoffs must not read Workflow storage'); } },
     resolveAccountId: async () => overrides?.accountId === undefined ? 'account-1' : overrides.accountId,
     resolveInstallationId: () => overrides?.installationId === undefined ? 'installation-1' : overrides.installationId,
     resolveAccountEncryptionCurrentness,
@@ -370,6 +371,7 @@ describe('registerAutomationReplyHandoffRpcHandler', () => {
     }));
     registerAutomationReplyHandoffRpcHandler(registrar, {
       machineId: 'machine-1',
+      workflowRunStorage: { execute: async () => { throw new Error('Ordinary Automation handoffs must not read Workflow storage'); } },
       resolveAccountId: async () => 'account-1',
       resolveInstallationId: () => 'installation-1',
       resolveAccountEncryptionCurrentness: async () => plainCurrentness,
@@ -893,6 +895,7 @@ describe('registerAutomationReplyHandoffRpcHandler', () => {
     });
     registerAutomationReplyHandoffRpcHandler(registrar, {
       machineId: 'machine-1',
+      workflowRunStorage: { execute: async () => { throw new Error('Ordinary Automation handoffs must not read Workflow storage'); } },
       resolveAccountId: async () => 'account-1',
       resolveInstallationId: () => 'installation-1',
       resolveAccountEncryptionCurrentness: async () => plainCurrentness,

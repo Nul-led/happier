@@ -8,7 +8,12 @@ import {
 } from '@/components/workspaces/scm/changes/ChangedFileEvidenceDisclosure';
 import { Text } from '@/components/ui/text/Text';
 import { Typography } from '@/constants/Typography';
-import { filterPresentableSessionAttributedFiles, type SessionAttributedFile, type ChangedFilesViewMode } from '@/scm/scmAttribution';
+import {
+    filterPresentableSessionAttributedFiles,
+    resolveChangedFilesEmptyStateTranslationKey,
+    type SessionAttributedFile,
+    type ChangedFilesViewMode,
+} from '@/scm/scmAttribution';
 import type { ScmFileStatus } from '@/scm/scmStatusFiles';
 import { t } from '@/text';
 import { ChangedFilesSectionHeader } from '@/components/workspaces/scm/review/ChangedFilesSectionHeader';
@@ -157,7 +162,7 @@ export function ChangedFilesList({
                 {filteredTurnAttributedFiles.length === 0 ? (
                     <View style={{ paddingHorizontal: 16, paddingVertical: 12 }}>
                         <Text style={{ color: theme.colors.text.secondary, fontSize: 12, ...Typography.default() }}>
-                            {t('files.noLatestTurnChanges')}
+                            {t(resolveChangedFilesEmptyStateTranslationKey(changedFilesViewMode))}
                         </Text>
                     </View>
                 ) : (
@@ -231,7 +236,7 @@ export function ChangedFilesList({
                 {files.length === 0 && !checkpointUnavailable ? (
                     <View style={{ paddingHorizontal: 16, paddingVertical: 12 }}>
                         <Text style={{ color: theme.colors.text.secondary, fontSize: 12, ...Typography.default() }}>
-                            {isCheckpointMode ? t('files.noCheckpointTurnChanges') : t('files.noAgentReportedTurnChanges')}
+                            {t(resolveChangedFilesEmptyStateTranslationKey(changedFilesViewMode))}
                         </Text>
                     </View>
                 ) : files.length > 0 ? (

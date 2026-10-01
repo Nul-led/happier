@@ -10,7 +10,7 @@ export type UiTextModuleMockOptions = Readonly<{
  * primitives forward refs, and renderer tests that assert programmatic focus need the same contract.
  */
 function createHostComponent(tagName: string) {
-    return React.forwardRef<unknown, { children?: React.ReactNode } & Record<string, unknown>>(
+    return React.forwardRef<unknown, { children?: React.ReactNode }>(
         function UiTextHost({ children, ...props }, ref) {
             return React.createElement(tagName, { ...props, ref }, children ?? null);
         },

@@ -3,6 +3,7 @@ import { act } from 'react-test-renderer';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createUseSettingMock, pressTestInstanceAsync, renderScreen, standardCleanup } from '@/dev/testkit';
+import { createTestSessionTranscriptSource, wrapWithSessionTranscriptSource } from '@/dev/testkit/sessionTranscriptSource';
 import { installTranscriptCommonModuleMocks } from './transcriptTestHelpers';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -182,6 +183,19 @@ function readAnchorViewportTop(positions: readonly number[]): number {
     return positions[2] - Number(hostState.legendGeometry.current.scroll);
 }
 
+
+function createChainTestRoot(Content: typeof import('./ChainTranscriptList')['ChainTranscriptList']) {
+    return function ChainTestRoot(props: React.ComponentProps<typeof Content>) {
+        const [source] = React.useState(() => createTestSessionTranscriptSource({
+            sessionId: props.sessionId, serverId: props.serverId, messages: props.messages,
+            metadata: props.metadata, interaction: props.interaction,
+            loadSidechain: async () => 'not_ready',
+            history: { loadOlder: props.loadOlder ?? (async () => ({ loaded: 0, hasMore: false, status: 'not_ready' })) },
+        }));
+        return wrapWithSessionTranscriptSource(React.createElement(Content, props), source);
+    };
+}
+
 describe('ChainTranscriptList row-layout mutation ownership', () => {
     afterEach(() => {
         hostState.legendList?.reset();
@@ -202,14 +216,15 @@ describe('ChainTranscriptList row-layout mutation ownership', () => {
         const animationFrames = installAnimationFrameQueue();
         let positions = [0, 240, 480, 720, 960];
         setDetachedNativeGeometry(positions, 1_200);
-        const { ChainTranscriptList } = await import('./ChainTranscriptList');
+        const { ChainTranscriptList: ChainContent } = await import('./ChainTranscriptList');
+        const ChainTranscriptList = createChainTestRoot(ChainContent);
         const screen = await renderScreen(
             <ChainTranscriptList
                 sessionId="s1"
                 datasetKey={JSON.stringify(['s1', 'sidechain-a'])}
                 messages={transcriptMessages('workflow-agent')}
                 metadata={null}
-                interaction={{ canSendMessages: true, canApprovePermissions: true, disableToolNavigation: true }}
+                interaction={{ canSendMessages: true, canApprovePermissions: true }}
             />,
         );
         installNativeOffsetCommit();
@@ -249,14 +264,15 @@ describe('ChainTranscriptList row-layout mutation ownership', () => {
         let positions = [0, 240, 480, 720, 960];
         setDetachedNativeGeometry(positions, 1_200);
         hostState.workflowDetail = { state: 'loading', runId: 'workflow-run' };
-        const { ChainTranscriptList } = await import('./ChainTranscriptList');
+        const { ChainTranscriptList: ChainContent } = await import('./ChainTranscriptList');
+        const ChainTranscriptList = createChainTestRoot(ChainContent);
         const renderTranscript = () => (
             <ChainTranscriptList
                 sessionId="s1"
                 datasetKey={JSON.stringify(['s1', 'sidechain-a'])}
                 messages={transcriptMessages('workflow-hydration')}
                 metadata={null}
-                interaction={{ canSendMessages: true, canApprovePermissions: true, disableToolNavigation: true }}
+                interaction={{ canSendMessages: true, canApprovePermissions: true }}
             />
         );
         await renderScreen(renderTranscript());
@@ -310,7 +326,8 @@ describe('ChainTranscriptList row-layout mutation ownership', () => {
     });
 
     it('installs the effective reduced-motion config for the sidechain transcript surface', async () => {
-        const { ChainTranscriptList } = await import('./ChainTranscriptList');
+        const { ChainTranscriptList: ChainContent } = await import('./ChainTranscriptList');
+        const ChainTranscriptList = createChainTestRoot(ChainContent);
         await renderScreen(
             <ChainTranscriptList
                 sessionId="s1"
@@ -323,7 +340,7 @@ describe('ChainTranscriptList row-layout mutation ownership', () => {
                     text: 'Hello',
                 }]}
                 metadata={null}
-                interaction={{ canSendMessages: true, canApprovePermissions: true, disableToolNavigation: true }}
+                interaction={{ canSendMessages: true, canApprovePermissions: true }}
             />,
         );
 

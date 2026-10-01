@@ -17,7 +17,8 @@ type LocalRelayRuntimeTaskKind =
     | 'relay.runtime.personal_home.backup.v1'
     | 'relay.runtime.personal_home.verify_backup.v1'
     | 'relay.runtime.personal_home.restore.v1'
-    | 'relay.runtime.personal_home.erase.v1';
+    | 'relay.runtime.personal_home.erase.v1'
+    | 'relay.runtime.personal_home.claim_owner.v1';
 
 export type LocalRelayRuntimePurpose = Readonly<{
     kind: 'personal-home';
@@ -39,6 +40,8 @@ export type LocalRelayRuntimeTaskOptions = Readonly<{
         archivePath?: string;
         confirmOverwrite?: boolean;
         expectedHomeServerIdentityId?: string;
+        /** The Account the hosting desktop makes owner of its ownerless Personal Home. */
+        accountId?: string;
     }>;
 }>;
 
@@ -94,6 +97,12 @@ export function buildLocalRelayRuntimeSystemTaskSpec(
             case 'relay.runtime.personal_home.erase.v1':
                 operationParams = {};
                 break;
+            case 'relay.runtime.personal_home.claim_owner.v1': {
+                const accountId = operation.accountId?.trim() ?? '';
+                if (!accountId) throw new Error('The Account to make owner is required.');
+                operationParams = { accountId };
+                break;
+            }
         }
         return {
             protocolVersion: SYSTEM_TASK_PROTOCOL_VERSION,

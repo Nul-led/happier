@@ -60,12 +60,7 @@ export const SessionHeaderBrowserButton = React.memo((props: Readonly<{
         <BrowserSurfaceOpenButton
             onPress={onPress}
             testID={testId ?? 'session-header-browser-button'}
-            style={{
-                width: 44,
-                height: 44,
-                alignItems: 'center',
-                justifyContent: 'center',
-            }}
+            size={44}
             iconColor={theme.colors.chrome.header.foreground}
         />
     );

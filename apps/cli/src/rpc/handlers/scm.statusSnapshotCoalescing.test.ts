@@ -2,21 +2,25 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { RpcHandler, RpcHandlerRegistrar } from '@/api/rpc/types';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
+import { createNonRepositorySnapshot } from '@/scm/runtime';
+import { registerScmHandlers } from './scm';
+
+function statusResponse(projectKey: string) {
+  return { success: true, snapshot: createNonRepositorySnapshot({ projectKey, fetchedAt: 1_000 }) };
+}
 
 const { runScmRouteMock } = vi.hoisted(() => ({
   runScmRouteMock: vi.fn(),
 }));
 
-vi.mock('@/scm/rpc/dispatch', () => ({
-  createNonRepositoryScmSnapshotResponse: vi.fn(),
-  notRepositoryResponse: vi.fn(),
+vi.mock('@/scm/rpc/dispatch', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@/scm/rpc/dispatch')>(),
   runScmRoute: (...args: unknown[]) => runScmRouteMock(...args),
 }));
 
 describe('registerScmHandlers status snapshot coalescing', () => {
   afterEach(() => {
     delete process.env.HAPPIER_SCM_STATUS_SNAPSHOT_CACHE_TTL_MS;
-    vi.resetModules();
     runScmRouteMock.mockReset();
     vi.restoreAllMocks();
   });
@@ -29,7 +33,6 @@ describe('registerScmHandlers status snapshot coalescing', () => {
         handlers.set(method, handler);
       },
     };
-    const { registerScmHandlers } = await import('./scm');
     registerScmHandlers(registrar, '/workspace');
     const handler = handlers.get(RPC_METHODS.SCM_STATUS_SNAPSHOT);
     if (!handler) throw new Error('SCM status handler was not registered');
@@ -51,13 +54,12 @@ describe('registerScmHandlers status snapshot coalescing', () => {
         handlers.set(method, handler);
       },
     };
-    const { registerScmHandlers } = await import('./scm');
     registerScmHandlers(registrar, '/workspace');
     const handler = handlers.get(RPC_METHODS.SCM_STATUS_SNAPSHOT);
     expect(handler).toBeTypeOf('function');
     if (!handler) throw new Error('SCM status handler was not registered');
 
-    const firstResponse = { success: true, snapshot: { id: 'first' } };
+    const firstResponse = statusResponse('first');
     const pendingResolvers: Array<(response: unknown) => void> = [];
     runScmRouteMock.mockImplementation(
       () => new Promise((resolve) => {
@@ -76,7 +78,7 @@ describe('registerScmHandlers status snapshot coalescing', () => {
     }
     await expect(Promise.all([first, second])).resolves.toEqual([firstResponse, firstResponse]);
 
-    const secondResponse = { success: true, snapshot: { id: 'second' } };
+    const secondResponse = statusResponse('second');
     runScmRouteMock.mockReset();
     runScmRouteMock.mockResolvedValueOnce(secondResponse);
     await expect(handler({ cwd: '.', includeWorktreeStatus: true })).resolves.toBe(secondResponse);
@@ -92,14 +94,13 @@ describe('registerScmHandlers status snapshot coalescing', () => {
         handlers.set(method, handler);
       },
     };
-    const { registerScmHandlers } = await import('./scm');
     registerScmHandlers(registrar, '/workspace');
     const handler = handlers.get(RPC_METHODS.SCM_STATUS_SNAPSHOT);
     expect(handler).toBeTypeOf('function');
     if (!handler) throw new Error('SCM status handler was not registered');
 
-    const firstResponse = { success: true, snapshot: { id: 'first' } };
-    const secondResponse = { success: true, snapshot: { id: 'second' } };
+    const firstResponse = statusResponse('first');
+    const secondResponse = statusResponse('second');
     runScmRouteMock
       .mockResolvedValueOnce(firstResponse)
       .mockResolvedValueOnce(secondResponse);
@@ -118,7 +119,6 @@ describe('registerScmHandlers status snapshot coalescing', () => {
         handlers.set(method, handler);
       },
     };
-    const { registerScmHandlers } = await import('./scm');
     registerScmHandlers(registrar, '/workspace');
     const statusHandler = handlers.get(RPC_METHODS.SCM_STATUS_SNAPSHOT);
     const discardHandler = handlers.get(RPC_METHODS.SCM_CHANGE_DISCARD);
@@ -128,8 +128,8 @@ describe('registerScmHandlers status snapshot coalescing', () => {
       throw new Error('Expected SCM status and discard handlers to be registered');
     }
 
-    const staleResponse = { success: true, snapshot: { id: 'stale' } };
-    const freshResponse = { success: true, snapshot: { id: 'fresh' } };
+    const staleResponse = statusResponse('stale');
+    const freshResponse = statusResponse('fresh');
     const firstStatusResolvers: Array<(response: unknown) => void> = [];
     let statusCallCount = 0;
     runScmRouteMock.mockImplementation(({ request }: { request?: Record<string, unknown> }) => {
@@ -147,7 +147,7 @@ describe('registerScmHandlers status snapshot coalescing', () => {
 
     const pendingStatus = statusHandler({ cwd: '.', includeWorktreeStatus: true });
     expect(statusCallCount).toBe(1);
-    await expect(discardHandler({ cwd: '.', paths: ['file.txt'] })).resolves.toEqual({ success: true });
+    await expect(discardHandler({ cwd: '.', entries: [{ path: 'file.txt', kind: 'modified' }] })).resolves.toMatchObject({ success: true });
     const resolveFirstStatus = firstStatusResolvers.at(0);
     if (!resolveFirstStatus) {
       throw new Error('Expected first status snapshot to be pending');

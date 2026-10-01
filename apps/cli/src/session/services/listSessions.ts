@@ -56,6 +56,7 @@ type ListSessionsResultBase = Readonly<{
   nextCursor: string | null;
   hasNext: boolean;
   queryVersion?: 1;
+  metadataUpgradeRequiredCount?: number;
 }>;
 
 export type ListSessionsResult = ListSessionsResultBase & (
@@ -103,6 +104,7 @@ export function resolveAdmittedSessionListQueryAdmission(
   row: Readonly<{ active: boolean; archivedAt?: number | null }>,
 ): AdmittedSessionListQueryAdmission {
   const arms: string[] = [];
+  if (query.underSessionId !== undefined) arms.push('underSessionId');
   if (query.scope !== 'all_accessible') arms.push('scope');
   if (query.attention !== 'any') arms.push('attention');
   if (query.audiences.length > 0) arms.push('audiences');
@@ -187,6 +189,7 @@ async function readAdmittedSessionsPage(params: Readonly<{
   // fields as absent keeps it assignable to the continuation reader.
   attentionNextCursor?: never;
   attentionHasNext?: never;
+  metadataUpgradeRequiredCount?: never;
 }>> {
   const rawSessions = await Promise.all(params.sessionIds.map((sessionId) => fetchSessionById({
     token: params.token,
@@ -339,6 +342,9 @@ export async function listSessions(params: ListSessionsParams): Promise<ListSess
     : presentationRows();
 
   let page = initialPage;
+  // Count omitted candidates across consumed pages, not unique missing Sessions.
+  // Pagination still follows the Home's cursors, independently of these omissions.
+  let metadataUpgradeRequiredCount = initialPage.metadataUpgradeRequiredCount ?? 0;
   const shouldFillVisibleLimit = (params.includeSystem === false || params.resumableOnly)
     // The active endpoint intentionally has no cursor contract.
     && params.activeOnly === false
@@ -367,6 +373,7 @@ export async function listSessions(params: ListSessionsParams): Promise<ListSess
       archivedOnly: params.archivedOnly === true,
       ...(params.signal ? { signal: params.signal } : {}),
     });
+    metadataUpgradeRequiredCount += page.metadataUpgradeRequiredCount ?? 0;
     appendPageRows(page.sessions);
   }
 
@@ -396,6 +403,7 @@ export async function listSessions(params: ListSessionsParams): Promise<ListSess
       sessions,
       nextCursor,
       hasNext,
+      ...(metadataUpgradeRequiredCount > 0 ? { metadataUpgradeRequiredCount } : {}),
     };
     return query
       ? buildSessionAwarenessListResultV1({
@@ -442,6 +450,7 @@ export async function listSessions(params: ListSessionsParams): Promise<ListSess
     sessions,
     nextCursor,
     hasNext,
+    ...(metadataUpgradeRequiredCount > 0 ? { metadataUpgradeRequiredCount } : {}),
     ...(params.includeRows === true ? { rows: limitedRows } : {}),
   };
   if (!query) {

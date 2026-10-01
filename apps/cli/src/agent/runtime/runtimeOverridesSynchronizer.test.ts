@@ -11,7 +11,7 @@ describe('initializeRuntimeOverridesSynchronizer', () => {
     const fetchLatestUserPermissionIntentFromTranscript = vi.fn(async () => ({ intent: 'safe-yolo' as any, updatedAt: 20 }));
 
     const sync = await initializeRuntimeOverridesSynchronizer({
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       explicitPermissionMode: undefined,
       sessionKind: 'attach',
       session: {
@@ -37,7 +37,7 @@ describe('initializeRuntimeOverridesSynchronizer', () => {
     const onPermissionModeApplied = vi.fn();
 
     const sync = await initializeRuntimeOverridesSynchronizer({
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       explicitPermissionMode: undefined,
       sessionKind: 'fresh',
       session: {
@@ -61,7 +61,7 @@ describe('initializeRuntimeOverridesSynchronizer', () => {
     const onPermissionModeApplied = vi.fn();
 
     const sync = await initializeRuntimeOverridesSynchronizer({
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       explicitPermissionMode: 'plan' as any,
       sessionKind: 'attach',
       session: {
@@ -73,7 +73,7 @@ describe('initializeRuntimeOverridesSynchronizer', () => {
               v: 1,
               updatedAt: 50,
               selection: {
-                agentTargetKey: 'backend:codex',
+                agentTargetKey: 'agent:happier.agent.codex/codex',
                 providerConnectionId: 'pc_work',
                 modelId: 'gpt-4.1',
               },
@@ -94,7 +94,7 @@ describe('initializeRuntimeOverridesSynchronizer', () => {
     const afterMetadata = sync.getSnapshot().permissionMode;
     expect(afterMetadata.current).toBe('plan');
     expect(sync.getSnapshot().modelOverride.current).toEqual({
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       providerConnectionId: 'pc_work',
       modelId: 'gpt-4.1',
     });
@@ -116,7 +116,7 @@ describe('initializeRuntimeOverridesSynchronizer', () => {
     const onModelOverrideApplied = vi.fn();
 
     const sync = await initializeRuntimeOverridesSynchronizer({
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       explicitPermissionMode: undefined,
       sessionKind: 'attach',
       session,
@@ -131,7 +131,7 @@ describe('initializeRuntimeOverridesSynchronizer', () => {
     expect(sync.getSnapshot().permissionMode.current).toBe('safe-yolo');
     expect(sync.getSnapshot().permissionMode.updatedAt).toBe(20);
     expect(sync.getSnapshot().modelOverride.current).toEqual({
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       providerConnectionId: null,
       modelId: 'gpt-4.1',
     });
@@ -150,7 +150,7 @@ describe('setupRuntimeMetadataDrivenOverridesSync', () => {
     const modelOverride = { current: null as ProviderBoundModelRef | null, updatedAt: 0 };
 
     await setupRuntimeMetadataDrivenOverridesSync({
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       explicitPermissionMode: undefined,
       sessionKind: 'attach',
       session: {
@@ -176,7 +176,7 @@ describe('setupRuntimeMetadataDrivenOverridesSync', () => {
     expect(permissionMode).toEqual({ current: 'safe-yolo', updatedAt: 11 });
     expect(modelOverride).toEqual({
       current: {
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         providerConnectionId: null,
         modelId: 'gpt-4.1',
       },
@@ -203,7 +203,7 @@ describe('setupRuntimeMetadataDrivenOverridesSync', () => {
     const modelOverride = { current: null as ProviderBoundModelRef | null, updatedAt: 0 };
 
     await setupRuntimeMetadataDrivenOverridesSync({
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       explicitPermissionMode: undefined,
       sessionKind: 'fresh',
       session: {
@@ -233,7 +233,7 @@ describe('setupRuntimeMetadataDrivenOverridesSync', () => {
     expect(permissionMode).toEqual({ current: 'plan', updatedAt: 20 });
     expect(modelOverride).toEqual({
       current: {
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         providerConnectionId: null,
         modelId: 'gpt-5',
       },
@@ -248,7 +248,7 @@ describe('setupRuntimeMetadataDrivenOverridesSync', () => {
       let attempts = 0;
 
       await setupRuntimeMetadataDrivenOverridesSync({
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         explicitPermissionMode: undefined,
         sessionKind: 'fresh',
         session: {
@@ -287,7 +287,7 @@ describe('setupRuntimeMetadataDrivenOverridesSync', () => {
       let attempts = 0;
 
       await setupRuntimeMetadataDrivenOverridesSync({
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         explicitPermissionMode: undefined,
         sessionKind: 'fresh',
         session: {
@@ -328,7 +328,7 @@ describe('setupRuntimeMetadataDrivenOverridesSync', () => {
       });
 
       await setupRuntimeMetadataDrivenOverridesSync({
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         explicitPermissionMode: undefined,
         sessionKind: 'fresh',
         session: {

@@ -20,12 +20,18 @@ import {
 } from './daemonInstallConflict';
 import { assertDaemonServiceModeSupported } from './assertDaemonServiceModeSupported';
 import { discoverInstalledDaemonServiceEntries } from './discoverInstalledDaemonServiceEntries';
-import { planDaemonServiceInstall, planDaemonServiceUninstall } from './plan';
-import type { DaemonServiceMode, DaemonServiceTargetMode } from './plan';
+import { planDaemonServiceInstall, planDaemonServiceUninstall, type DaemonServiceManagedBy } from './plan';
+import type { DaemonServiceInstallEnablement, DaemonServiceMode, DaemonServiceTargetMode } from './plan';
 import { resolveDaemonServiceInstallRuntimeTarget } from './resolveDaemonServiceInstallRuntimeTarget';
 import { resolveDaemonServiceDiscoveryTargets } from './resolveDaemonServiceDiscoveryTargets';
 import type { PublicReleaseRingId } from '@happier-dev/release-runtime/releaseRings';
 import { doesInstalledDaemonServiceDefinitionMatchExpected } from './doesInstalledDaemonServiceDefinitionMatchExpected';
+import { resolveDaemonServiceIrohRelayConfig } from './resolveDaemonServiceIrohRelayConfig';
+import { resolveDaemonServiceHomeCarrierPolicy } from './resolveDaemonServiceHomeCarrierPolicy';
+import { readInstalledDaemonServiceInstallOptions, readInstalledDaemonServiceManagedBy } from './discoverInstalledDaemonServiceEntries';
+import type { DaemonServiceAutostartMode } from './plan';
+import type { IrohRelayEnvConfig } from '@happier-dev/iroh-native/node';
+import type { HomeApplicationCarrierEligibility } from '@happier-dev/cli-common/homeEnrollment';
 
 type SupportedPlatform = 'darwin' | 'linux' | 'win32';
 
@@ -122,6 +128,10 @@ export async function previewDaemonServiceInstall(options: Readonly<{
   channel?: PublicReleaseRingId;
   targetMode?: DaemonServiceTargetMode;
   darwinInstallMode?: 'rebootstrap' | 'kickstart';
+  restartRunningDaemon?: boolean;
+  /** `disabled`: keep a service the person turned off at login turned off (R12 convergence). */
+  enablement?: DaemonServiceInstallEnablement;
+  preserveRunningWhenDisabled?: boolean;
   instanceId?: string;
   activeServerId?: string;
   strategy?: DaemonServiceInstallStrategy;
@@ -130,6 +140,12 @@ export async function previewDaemonServiceInstall(options: Readonly<{
   publicServerUrl?: string;
   nodePath?: string;
   entryPath?: string;
+  irohRelayConfig?: IrohRelayEnvConfig;
+  homeCarrierEligibility?: HomeApplicationCarrierEligibility;
+  /** Omit to keep whatever marker the installed service carries (see `DaemonServiceManagedBy`). */
+  managedBy?: DaemonServiceManagedBy;
+  autostart?: DaemonServiceAutostartMode;
+  bundleId?: string;
 }> = {}): Promise<DaemonServiceInstallPreview> {
   const platformInput = options.platform ?? process.platform;
   const platform = resolveSupportedPlatform(platformInput);
@@ -188,19 +204,47 @@ export async function previewDaemonServiceInstall(options: Readonly<{
     ring: channel,
     instanceId: targetMode === 'default-following' ? null : instanceId,
     happierHomeDir,
+    serverUrl: targetMode === 'pinned' ? publicServerUrl : null,
+    followedServerId: targetMode === 'default-following' ? activeServerId : null,
   };
   const conflictPlan = resolveDaemonServiceInstallConflictPlan({
     target,
     strategy,
     services: discoveredServices,
   });
-  const plan = planDaemonServiceInstall({
+  const installedTarget = discoveredServices.find((service) => daemonServiceMatchesInstallTarget(service, target));
+  const requestedIrohRelayConfig = resolveDaemonServiceIrohRelayConfig({ processEnv: process.env });
+  const irohRelayConfig = requestedIrohRelayConfig.explicitlyConfigured
+    ? requestedIrohRelayConfig
+    : options.irohRelayConfig ?? resolveDaemonServiceIrohRelayConfig({
+      processEnv: process.env,
+      ...(installedTarget
+        ? { installedService: { platform, path: installedTarget.path } }
+        : {}),
+    });
+  const homeCarrierEligibility = resolveDaemonServiceHomeCarrierPolicy({ processEnv: process.env })
+    ?? options.homeCarrierEligibility
+    ?? resolveDaemonServiceHomeCarrierPolicy({
+      processEnv: process.env,
+      ...(installedTarget
+        ? { installedService: { platform, path: installedTarget.path } }
+        : {}),
+    });
+  // Only an explicit request marks a service as the desktop's; every rewrite keeps the installed mark.
+  const managedBy = options.managedBy ?? (installedTarget ? readInstalledDaemonServiceManagedBy({ platform, path: installedTarget.path }) : null);
+  const installedOptions = installedTarget ? readInstalledDaemonServiceInstallOptions({ platform, path: installedTarget.path }) : null;
+  const installedAutostart = installedOptions?.autostart;
+  const bundleId = options.bundleId ?? installedOptions?.bundleId;
+  const autostart = options.autostart ?? installedAutostart;
+  const buildPlan = (darwinInstallMode = options.darwinInstallMode, modeOptions: Readonly<{ autostart?: DaemonServiceAutostartMode; triggerOnly?: boolean }> = { autostart }) => planDaemonServiceInstall({
     platform,
     mode: options.mode,
     systemUser: options.systemUser,
     channel,
     targetMode,
-    darwinInstallMode: options.darwinInstallMode,
+    darwinInstallMode,
+    enablement: options.enablement,
+    preserveRunningWhenDisabled: options.preserveRunningWhenDisabled,
     instanceId,
     activeServerId,
     uid,
@@ -211,7 +255,20 @@ export async function previewDaemonServiceInstall(options: Readonly<{
     publicServerUrl,
     nodePath: runtimeTarget.nodePath,
     entryPath: runtimeTarget.entryPath,
+    irohRelayConfig,
+    homeCarrierEligibility,
+    managedBy,
+    bundleId,
+    autostart: modeOptions.autostart,
+    autostartTriggerChangeOnly: modeOptions.triggerOnly,
   });
+  let plan = buildPlan();
+  // Compare the whole prior definition: only a login-trigger change can preserve Linux activity.
+  const priorFile = installedTarget && options.autostart ? buildPlan(options.darwinInstallMode, { autostart: installedAutostart }).files[0] : null;
+  if (installedTarget && priorFile && options.restartRunningDaemon !== true
+    && priorFile.path === installedTarget.path && doesInstalledDaemonServiceDefinitionMatchExpected({ installedPath: installedTarget.path, expectedContents: priorFile.content })) {
+    plan = buildPlan(options.darwinInstallMode, { autostart, triggerOnly: true });
+  }
   const expectedInstalledFile = previewPlanFileForTarget({
     plan,
   });
@@ -224,6 +281,11 @@ export async function previewDaemonServiceInstall(options: Readonly<{
         expectedContents: expectedInstalledFile.content,
       }))
   );
+  // kickstart runs launchd's loaded definition, not a newly written plist.
+  if (platform === 'darwin' && options.darwinInstallMode === 'kickstart'
+    && (!exactTargetMatchesExpectedDefinition || options.restartRunningDaemon === true || options.autostart !== undefined)) {
+    plan = buildPlan('rebootstrap');
+  }
 
   return {
     exactTargetExists: conflictPlan.exactTargetExists,
@@ -256,6 +318,10 @@ export async function installDaemonService(options: Readonly<{
   channel?: PublicReleaseRingId;
   targetMode?: DaemonServiceTargetMode;
   darwinInstallMode?: 'rebootstrap' | 'kickstart';
+  restartRunningDaemon?: boolean;
+  /** `disabled`: keep a service the person turned off at login turned off (R12 convergence). */
+  enablement?: DaemonServiceInstallEnablement;
+  preserveRunningWhenDisabled?: boolean;
   instanceId?: string;
   activeServerId?: string;
   strategy?: DaemonServiceInstallStrategy;
@@ -264,7 +330,15 @@ export async function installDaemonService(options: Readonly<{
   publicServerUrl?: string;
   nodePath?: string;
   entryPath?: string;
+  irohRelayConfig?: IrohRelayEnvConfig;
+  homeCarrierEligibility?: HomeApplicationCarrierEligibility;
+  /** See `previewDaemonServiceInstall`: omitted keeps the installed marker. */
+  managedBy?: DaemonServiceManagedBy;
   runCommands?: boolean;
+  bundleId?: string;
+  autostart?: DaemonServiceAutostartMode;
+  /** Prepare the current owner only when installation will actually change its definition. */
+  beforeApply?: () => Promise<void>;
   commandFailureMode?: DaemonServiceCommandFailureMode;
 }> = {}): Promise<void> {
   const platformInput = options.platform ?? process.platform;
@@ -305,9 +379,11 @@ export async function installDaemonService(options: Readonly<{
     });
   }
 
-  if (preview.exactTargetIsConverged && preview.exactTargetMatchesExpectedDefinition) {
+  if (preview.exactTargetIsConverged && preview.exactTargetMatchesExpectedDefinition
+    && options.restartRunningDaemon !== true && options.autostart === undefined) {
     return;
   }
+  await options.beforeApply?.();
   await applyDaemonServiceInstallPlan(preview.plan, {
     runCommands: options.runCommands,
     commandFailureMode: options.commandFailureMode,

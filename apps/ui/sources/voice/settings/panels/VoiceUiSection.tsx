@@ -2,8 +2,10 @@ import * as React from 'react';
 import { View } from 'react-native';
 
 import { useUnistyles } from 'react-native-unistyles';
-import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
+import { SettingAnchor, SettingRow, SettingSection } from '@/components/settings/shell/SettingRow';
+import { VOICE_ADVANCED_SETTINGS } from '@/voice/settings/voiceSettingsDeclarations';
+import { SegmentedChoiceItem, type SegmentedChoiceOption } from '@/components/ui/lists/SegmentedChoiceItem';
 import { Switch } from '@/components/ui/forms/Switch';
 import { DropdownMenu } from '@/components/ui/forms/dropdown/DropdownMenu';
 import type { VoiceSettings } from '@/sync/domains/settings/voiceSettings';
@@ -27,15 +29,7 @@ export function VoiceUiSection(props: {
 }) {
   const { theme } = useUnistyles();
   const ui = props.voice.ui;
-  const [openMenu, setOpenMenu] = React.useState<
-    | null
-    | 'scopeDefault'
-    | 'surfaceLocation'
-    | 'updatesActiveSession'
-    | 'updatesOtherSessions'
-    | 'snippetsMaxMessages'
-    | 'otherSessionsSnippetsMode'
-  >(null);
+  const [openMenu, setOpenMenu] = React.useState<null | 'snippetsMaxMessages'>(null);
 
   const setUi = (patch: Partial<typeof ui>) => {
     props.setVoice({ ...props.voice, ui: { ...ui, ...patch } });
@@ -48,403 +42,189 @@ export function VoiceUiSection(props: {
   const setUpdatePatch = (patch: Partial<typeof updates>) => {
     setUi({ updates: { ...updates, ...patch } });
   };
+  const updateLevelOptions = [
+    { id: 'none', label: t('settingsVoice.ui.updates.level.noneTitle'), description: t('settingsVoice.ui.updates.level.noneSubtitle') },
+    { id: 'activity', label: t('settingsVoice.ui.updates.level.activityTitle'), description: t('settingsVoice.ui.updates.level.activitySubtitle') },
+    { id: 'summaries', label: t('settingsVoice.ui.updates.level.summariesTitle'), description: t('settingsVoice.ui.updates.level.summariesSubtitle') },
+    { id: 'snippets', label: t('settingsVoice.ui.updates.level.snippetsTitle'), description: t('settingsVoice.ui.updates.level.snippetsSubtitle') },
+  ] as const satisfies ReadonlyArray<SegmentedChoiceOption<typeof updates.activeSession>>;
 
   return (
     <>
-      <ItemGroup title={t('settingsVoice.ui.title')} footer={t('settingsVoice.ui.footer')}>
-        <Item
-          title={t('settingsVoice.ui.activityFeedEnabled')}
-          subtitle={t('settingsVoice.ui.activityFeedEnabledSubtitle')}
-          subtitleLines={0}
-          rightElement={
-            <Switch
-              testID="settings.voice.ui.activityFeedEnabled"
-              accessibilityLabel={t('settingsVoice.ui.activityFeedEnabled')}
-              value={ui.activityFeedEnabled}
-              onValueChange={(v) => setUi({ activityFeedEnabled: v })}
-            />
-          }
-        />
-
-        {ui.activityFeedEnabled ? (
-          <Item
-            title={t('settingsVoice.ui.activityFeedAutoExpandOnStart')}
-            subtitle={t('settingsVoice.ui.activityFeedAutoExpandOnStartSubtitle')}
+      <SettingSection section={VOICE_ADVANCED_SETTINGS.sectionRefs.surface}>
+        <ItemGroup title={t('settingsVoice.ui.title')} description={t('settingsVoice.ui.footer')}>
+          <SettingRow
+            setting={VOICE_ADVANCED_SETTINGS.settings.activityFeedEnabled}
             subtitleLines={0}
             rightElement={
               <Switch
-                accessibilityLabel={t('settingsVoice.ui.activityFeedAutoExpandOnStart')}
-                value={ui.activityFeedAutoExpandOnStart}
-                onValueChange={(v) => setUi({ activityFeedAutoExpandOnStart: v })}
+                testID="settings.voice.ui.activityFeedEnabled"
+                accessibilityLabel={t('settingsVoice.ui.activityFeedEnabled')}
+                value={ui.activityFeedEnabled}
+                onValueChange={(v) => setUi({ activityFeedEnabled: v })}
               />
             }
           />
-        ) : null}
 
-        <Item
-          title={t('settingsVoice.ui.orbEnabled')}
-          subtitle={t('settingsVoice.ui.orbEnabledSubtitle')}
-          subtitleLines={0}
-          rightElement={
-            <Switch
-              testID="settings.voice.ui.orbEnabled"
-              accessibilityLabel={t('settingsVoice.ui.orbEnabled')}
-              value={props.voiceOrbEnabled}
-              onValueChange={props.setVoiceOrbEnabled}
-            />
-          }
-        />
-
-        <DropdownMenu
-          open={openMenu === 'scopeDefault'}
-          onOpenChange={(next) => setOpenMenu(next ? 'scopeDefault' : null)}
-          variant="selectable"
-          search={false}
-          selectedId={ui.scopeDefault}
-          showCategoryTitles={false}
-          matchTriggerWidth={true}
-          connectToTrigger={true}
-          rowKind="item"
-          popoverBoundaryRef={props.popoverBoundaryRef}
-          itemTrigger={{
-            title: t('settingsVoice.ui.scopeTitle'),
-            subtitle: t('settingsVoice.ui.scopeSubtitle'),
-            showSelectedSubtitle: false,
-            itemProps: { subtitleLines: 0 },
-          }}
-          items={[
-            {
-              id: 'global',
-              title: t('settingsVoice.ui.scopeGlobal'),
-              subtitle: t('settingsVoice.ui.scopeGlobalSubtitle'),
-              icon: (
-                <View style={{ width: 32, height: 32, alignItems: 'center', justifyContent: 'center' }}>
-                  <Icon name="globe" size={20} color={theme.colors.text.secondary} />
-                </View>
-              ),
-            },
-            {
-              id: 'session',
-              title: t('settingsVoice.ui.scopeSession'),
-              subtitle: t('settingsVoice.ui.scopeSessionSubtitle'),
-              icon: (
-                <View style={{ width: 32, height: 32, alignItems: 'center', justifyContent: 'center' }}>
-                  <Icon name="file-text" size={20} color={theme.colors.text.secondary} />
-                </View>
-              ),
-            },
-          ]}
-          onSelect={(id) => {
-            setUi({ scopeDefault: id as any });
-            setOpenMenu(null);
-          }}
-        />
-
-        <DropdownMenu
-          testID="settings.voice.ui.surfaceLocation"
-          open={openMenu === 'surfaceLocation'}
-          onOpenChange={(next) => setOpenMenu(next ? 'surfaceLocation' : null)}
-          variant="selectable"
-          search={false}
-          selectedId={ui.surfaceLocation}
-          showCategoryTitles={false}
-          matchTriggerWidth={true}
-          connectToTrigger={true}
-          rowKind="item"
-          popoverBoundaryRef={props.popoverBoundaryRef}
-          itemTrigger={{
-            title: t('settingsVoice.ui.surfaceLocationTitle'),
-            subtitle: t('settingsVoice.ui.surfaceLocationSubtitle'),
-            showSelectedSubtitle: false,
-            itemProps: { subtitleLines: 0 },
-          }}
-          items={[
-            {
-              id: 'auto',
-              testID: 'settings.voice.ui.surfaceLocation.auto',
-              title: t('settingsVoice.ui.surfaceLocation.autoTitle'),
-              subtitle: t('settingsVoice.ui.surfaceLocation.autoSubtitle'),
-              icon: (
-                <View style={{ width: 32, height: 32, alignItems: 'center', justifyContent: 'center' }}>
-                  <Icon name="sparkle" size={20} color={theme.colors.text.secondary} />
-                </View>
-              ),
-            },
-            {
-              id: 'sidebar',
-              testID: 'settings.voice.ui.surfaceLocation.sidebar',
-              title: t('settingsVoice.ui.surfaceLocation.sidebarTitle'),
-              subtitle: t('settingsVoice.ui.surfaceLocation.sidebarSubtitle'),
-              icon: (
-                <View style={{ width: 32, height: 32, alignItems: 'center', justifyContent: 'center' }}>
-                  <Icon name="stack" size={20} color={theme.colors.text.secondary} />
-                </View>
-              ),
-            },
-            {
-              id: 'session',
-              testID: 'settings.voice.ui.surfaceLocation.session',
-              title: t('settingsVoice.ui.surfaceLocation.sessionTitle'),
-              subtitle: t('settingsVoice.ui.surfaceLocation.sessionSubtitle'),
-              icon: (
-                <View style={{ width: 32, height: 32, alignItems: 'center', justifyContent: 'center' }}>
-                  <Icon name="chat-circle-dots" size={20} color={theme.colors.text.secondary} />
-                </View>
-              ),
-            },
-          ]}
-          onSelect={(id) => {
-            setUi({ surfaceLocation: id as any });
-            setOpenMenu(null);
-          }}
-        />
-      </ItemGroup>
-
-      <ItemGroup title={t('settingsVoice.ui.updates.title')} footer={t('settingsVoice.ui.updates.footer')}>
-        <DropdownMenu
-          open={openMenu === 'updatesActiveSession'}
-          onOpenChange={(next) => setOpenMenu(next ? 'updatesActiveSession' : null)}
-          variant="selectable"
-          search={false}
-          selectedId={updates.activeSession}
-          showCategoryTitles={false}
-          matchTriggerWidth={true}
-          connectToTrigger={true}
-          rowKind="item"
-          popoverBoundaryRef={props.popoverBoundaryRef}
-          itemTrigger={{
-            title: t('settingsVoice.ui.updates.activeSessionTitle'),
-            subtitle: t('settingsVoice.ui.updates.activeSessionSubtitle'),
-            showSelectedSubtitle: false,
-            itemProps: { subtitleLines: 0 },
-          }}
-          items={[
-            {
-              id: 'none',
-              title: t('settingsVoice.ui.updates.level.noneTitle'),
-              subtitle: t('settingsVoice.ui.updates.level.noneSubtitle'),
-              icon: (
-                <View style={{ width: 32, height: 32, alignItems: 'center', justifyContent: 'center' }}>
-                  <Icon name="minus" size={20} color={theme.colors.text.secondary} />
-                </View>
-              ),
-            },
-            {
-              id: 'activity',
-              title: t('settingsVoice.ui.updates.level.activityTitle'),
-              subtitle: t('settingsVoice.ui.updates.level.activitySubtitle'),
-              icon: (
-                <View style={{ width: 32, height: 32, alignItems: 'center', justifyContent: 'center' }}>
-                  <Icon name="lightning" size={20} color={theme.colors.text.secondary} />
-                </View>
-              ),
-            },
-            {
-              id: 'summaries',
-              title: t('settingsVoice.ui.updates.level.summariesTitle'),
-              subtitle: t('settingsVoice.ui.updates.level.summariesSubtitle'),
-              icon: (
-                <View style={{ width: 32, height: 32, alignItems: 'center', justifyContent: 'center' }}>
-                  <Icon name="file" size={20} color={theme.colors.text.secondary} />
-                </View>
-              ),
-            },
-            {
-              id: 'snippets',
-              title: t('settingsVoice.ui.updates.level.snippetsTitle'),
-              subtitle: t('settingsVoice.ui.updates.level.snippetsSubtitle'),
-              icon: (
-                <View style={{ width: 32, height: 32, alignItems: 'center', justifyContent: 'center' }}>
-                  <Icon name="code" size={20} color={theme.colors.text.secondary} />
-                </View>
-              ),
-            },
-          ]}
-          onSelect={(id) => {
-            setUpdatePatch({ activeSession: id as any });
-            setOpenMenu(null);
-          }}
-        />
-
-        <DropdownMenu
-          open={openMenu === 'updatesOtherSessions'}
-          onOpenChange={(next) => setOpenMenu(next ? 'updatesOtherSessions' : null)}
-          variant="selectable"
-          search={false}
-          selectedId={updates.otherSessions}
-          showCategoryTitles={false}
-          matchTriggerWidth={true}
-          connectToTrigger={true}
-          rowKind="item"
-          popoverBoundaryRef={props.popoverBoundaryRef}
-          itemTrigger={{
-            title: t('settingsVoice.ui.updates.otherSessionsTitle'),
-            subtitle: t('settingsVoice.ui.updates.otherSessionsSubtitle'),
-            showSelectedSubtitle: false,
-            itemProps: { subtitleLines: 0 },
-          }}
-          items={[
-            {
-              id: 'none',
-              title: t('settingsVoice.ui.updates.level.noneTitle'),
-              subtitle: t('settingsVoice.ui.updates.level.noneSubtitle'),
-              icon: (
-                <View style={{ width: 32, height: 32, alignItems: 'center', justifyContent: 'center' }}>
-                  <Icon name="minus" size={20} color={theme.colors.text.secondary} />
-                </View>
-              ),
-            },
-            {
-              id: 'activity',
-              title: t('settingsVoice.ui.updates.level.activityTitle'),
-              subtitle: t('settingsVoice.ui.updates.level.activitySubtitle'),
-              icon: (
-                <View style={{ width: 32, height: 32, alignItems: 'center', justifyContent: 'center' }}>
-                  <Icon name="lightning" size={20} color={theme.colors.text.secondary} />
-                </View>
-              ),
-            },
-            {
-              id: 'summaries',
-              title: t('settingsVoice.ui.updates.level.summariesTitle'),
-              subtitle: t('settingsVoice.ui.updates.level.summariesSubtitle'),
-              icon: (
-                <View style={{ width: 32, height: 32, alignItems: 'center', justifyContent: 'center' }}>
-                  <Icon name="file" size={20} color={theme.colors.text.secondary} />
-                </View>
-              ),
-            },
-            {
-              id: 'snippets',
-              title: t('settingsVoice.ui.updates.level.snippetsTitle'),
-              subtitle: t('settingsVoice.ui.updates.level.snippetsSubtitle'),
-              icon: (
-                <View style={{ width: 32, height: 32, alignItems: 'center', justifyContent: 'center' }}>
-                  <Icon name="code" size={20} color={theme.colors.text.secondary} />
-                </View>
-              ),
-            },
-          ]}
-          onSelect={(id) => {
-            setUpdatePatch({ otherSessions: id as any });
-            setOpenMenu(null);
-          }}
-        />
-
-        {showSnippetsOptions ? (
-          <>
-            <DropdownMenu
-              open={openMenu === 'snippetsMaxMessages'}
-              onOpenChange={(next) => setOpenMenu(next ? 'snippetsMaxMessages' : null)}
-              variant="selectable"
-              search={false}
-              selectedId={String(updates.snippetsMaxMessages)}
-              showCategoryTitles={false}
-              matchTriggerWidth={true}
-              connectToTrigger={true}
-              rowKind="item"
-              popoverBoundaryRef={props.popoverBoundaryRef}
-              itemTrigger={{
-                title: t('settingsVoice.ui.updates.snippetsMaxMessagesTitle'),
-                subtitle: t('settingsVoice.ui.updates.snippetsMaxMessagesSubtitle'),
-                showSelectedSubtitle: false,
-                itemProps: { subtitleLines: 0 },
-              }}
-              items={Array.from({ length: 10 }, (_, idx) => {
-                const n = idx + 1;
-                return {
-                  id: String(n),
-                  title: String(n),
-                  subtitle: undefined,
-                  icon: (
-                    <View style={{ width: 32, height: 32, alignItems: 'center', justifyContent: 'center' }}>
-                      <Icon name="list" size={20} color={theme.colors.text.secondary} />
-                    </View>
-                  ),
-                };
-              })}
-              onSelect={(id) => {
-                const n = Number(id);
-                if (!Number.isFinite(n)) return;
-                setUpdatePatch({ snippetsMaxMessages: Math.max(1, Math.min(10, Math.floor(n))) });
-                setOpenMenu(null);
-              }}
-            />
-
-            <Item
-              title={t('settingsVoice.ui.updates.includeUserMessagesInSnippetsTitle')}
-              subtitle={t('settingsVoice.ui.updates.includeUserMessagesInSnippetsSubtitle')}
+          {ui.activityFeedEnabled ? (
+            <SettingRow
+              setting={VOICE_ADVANCED_SETTINGS.settings.activityFeedAutoExpandOnStart}
               subtitleLines={0}
               rightElement={
                 <Switch
-                  accessibilityLabel={t('settingsVoice.ui.updates.includeUserMessagesInSnippetsTitle')}
-                  value={updates.includeUserMessagesInSnippets}
-                  onValueChange={(v) => setUpdatePatch({ includeUserMessagesInSnippets: v })}
+                  accessibilityLabel={t('settingsVoice.ui.activityFeedAutoExpandOnStart')}
+                  value={ui.activityFeedAutoExpandOnStart}
+                  onValueChange={(v) => setUi({ activityFeedAutoExpandOnStart: v })}
                 />
               }
             />
-          </>
-        ) : null}
+          ) : null}
 
-        {showOtherSessionsSnippetMode ? (
-          <>
-            <DropdownMenu
-              open={openMenu === 'otherSessionsSnippetsMode'}
-              onOpenChange={(next) => setOpenMenu(next ? 'otherSessionsSnippetsMode' : null)}
-              variant="selectable"
-              search={false}
-              selectedId={updates.otherSessionsSnippetsMode}
-              showCategoryTitles={false}
-              matchTriggerWidth={true}
-              connectToTrigger={true}
-              rowKind="item"
-              popoverBoundaryRef={props.popoverBoundaryRef}
-              itemTrigger={{
-                title: t('settingsVoice.ui.updates.otherSessionsSnippetsModeTitle'),
-                subtitle: t('settingsVoice.ui.updates.otherSessionsSnippetsModeSubtitle'),
-                showSelectedSubtitle: false,
-                itemProps: { subtitleLines: 0 },
-              }}
-              items={[
-                {
-                  id: 'never',
-                  title: t('settingsVoice.ui.updates.otherSessionsSnippetsMode.neverTitle'),
-                  subtitle: t('settingsVoice.ui.updates.otherSessionsSnippetsMode.neverSubtitle'),
-                  icon: (
-                    <View style={{ width: 32, height: 32, alignItems: 'center', justifyContent: 'center' }}>
-                      <Icon name="minus" size={20} color={theme.colors.text.secondary} />
-                    </View>
-                  ),
-                },
-                {
-                  id: 'on_demand_only',
-                  title: t('settingsVoice.ui.updates.otherSessionsSnippetsMode.onDemandTitle'),
-                  subtitle: t('settingsVoice.ui.updates.otherSessionsSnippetsMode.onDemandSubtitle'),
-                  icon: (
-                    <View style={{ width: 32, height: 32, alignItems: 'center', justifyContent: 'center' }}>
-                      <Icon name="hand" size={20} color={theme.colors.text.secondary} />
-                    </View>
-                  ),
-                },
-                {
-                  id: 'auto',
-                  title: t('settingsVoice.ui.updates.otherSessionsSnippetsMode.autoTitle'),
-                  subtitle: t('settingsVoice.ui.updates.otherSessionsSnippetsMode.autoSubtitle'),
-                  icon: (
-                    <View style={{ width: 32, height: 32, alignItems: 'center', justifyContent: 'center' }}>
-                      <Icon name="sparkle" size={20} color={theme.colors.text.secondary} />
-                    </View>
-                  ),
-                },
+          <SettingRow
+            setting={VOICE_ADVANCED_SETTINGS.settings.orbEnabled}
+            subtitleLines={0}
+            rightElement={
+              <Switch
+                testID="settings.voice.ui.orbEnabled"
+                accessibilityLabel={t('settingsVoice.ui.orbEnabled')}
+                value={props.voiceOrbEnabled}
+                onValueChange={props.setVoiceOrbEnabled}
+              />
+            }
+          />
+
+          <SettingAnchor setting={VOICE_ADVANCED_SETTINGS.settings.scopeDefault}>
+            <SegmentedChoiceItem
+              title={t('settingsVoice.ui.scopeTitle')}
+              subtitleLines={0}
+              testIDPrefix="settings.voice.ui.scopeDefault"
+              value={ui.scopeDefault}
+              onChange={(scopeDefault) => setUi({ scopeDefault })}
+              options={[
+                { id: 'global', label: t('settingsVoice.ui.scopeGlobal'), description: t('settingsVoice.ui.scopeGlobalSubtitle') },
+                { id: 'session', label: t('settingsVoice.ui.scopeSession'), description: t('settingsVoice.ui.scopeSessionSubtitle') },
               ]}
-              onSelect={(id) => {
-                setUpdatePatch({ otherSessionsSnippetsMode: id as any });
-                setOpenMenu(null);
-              }}
             />
-          </>
-        ) : null}
-      </ItemGroup>
+          </SettingAnchor>
+
+          <SettingAnchor setting={VOICE_ADVANCED_SETTINGS.settings.surfaceLocation}>
+            <SegmentedChoiceItem
+              testID="settings.voice.ui.surfaceLocation"
+              title={t('settingsVoice.ui.surfaceLocationTitle')}
+              subtitleLines={0}
+              testIDPrefix="settings.voice.ui.surfaceLocation"
+              value={ui.surfaceLocation}
+              onChange={(surfaceLocation) => setUi({ surfaceLocation })}
+              options={[
+                { id: 'auto', label: t('settingsVoice.ui.surfaceLocation.autoTitle'), description: t('settingsVoice.ui.surfaceLocation.autoSubtitle') },
+                { id: 'sidebar', label: t('settingsVoice.ui.surfaceLocation.sidebarTitle'), description: t('settingsVoice.ui.surfaceLocation.sidebarSubtitle') },
+                { id: 'session', label: t('settingsVoice.ui.surfaceLocation.sessionTitle'), description: t('settingsVoice.ui.surfaceLocation.sessionSubtitle') },
+              ]}
+            />
+          </SettingAnchor>
+        </ItemGroup>
+      </SettingSection>
+
+      <SettingSection section={VOICE_ADVANCED_SETTINGS.sectionRefs.updates}>
+        <ItemGroup title={t('settingsVoice.ui.updates.title')} description={t('settingsVoice.ui.updates.footer')}>
+          <SettingAnchor setting={VOICE_ADVANCED_SETTINGS.settings.activeSession}>
+            <SegmentedChoiceItem
+              title={t('settingsVoice.ui.updates.activeSessionTitle')}
+              subtitleLines={0}
+              testIDPrefix="settings.voice.ui.updates.activeSession"
+              value={updates.activeSession}
+              onChange={(activeSession) => setUpdatePatch({ activeSession })}
+              options={updateLevelOptions}
+            />
+          </SettingAnchor>
+
+          <SettingAnchor setting={VOICE_ADVANCED_SETTINGS.settings.otherSessions}>
+            <SegmentedChoiceItem
+              title={t('settingsVoice.ui.updates.otherSessionsTitle')}
+              subtitleLines={0}
+              testIDPrefix="settings.voice.ui.updates.otherSessions"
+              value={updates.otherSessions}
+              onChange={(otherSessions) => setUpdatePatch({ otherSessions })}
+              options={updateLevelOptions}
+            />
+          </SettingAnchor>
+
+          {showSnippetsOptions ? (
+            <>
+              <SettingAnchor setting={VOICE_ADVANCED_SETTINGS.settings.snippetsMaxMessages}>
+                <DropdownMenu
+                  open={openMenu === 'snippetsMaxMessages'}
+                  onOpenChange={(next) => setOpenMenu(next ? 'snippetsMaxMessages' : null)}
+                  variant="selectable"
+                  search={false}
+                  selectedId={String(updates.snippetsMaxMessages)}
+                  showCategoryTitles={false}
+                  matchTriggerWidth={true}
+                  connectToTrigger={true}
+                  rowKind="item"
+                  popoverBoundaryRef={props.popoverBoundaryRef}
+                  itemTrigger={{
+                    title: t(VOICE_ADVANCED_SETTINGS.settings.snippetsMaxMessages.titleKey),
+                    subtitle: t('settingsVoice.ui.updates.snippetsMaxMessagesSubtitle'),
+                    showSelectedSubtitle: false,
+                    itemProps: { subtitleLines: 0 },
+                  }}
+                  items={Array.from({ length: 10 }, (_, idx) => {
+                    const n = idx + 1;
+                    return {
+                      id: String(n),
+                      title: String(n),
+                      subtitle: undefined,
+                      icon: (
+                        <View style={{ width: 32, height: 32, alignItems: 'center', justifyContent: 'center' }}>
+                          <Icon name="list" size={20} color={theme.colors.text.secondary} />
+                        </View>
+                      ),
+                    };
+                  })}
+                  onSelect={(id) => {
+                    const n = Number(id);
+                    if (!Number.isFinite(n)) return;
+                    setUpdatePatch({ snippetsMaxMessages: Math.max(1, Math.min(10, Math.floor(n))) });
+                    setOpenMenu(null);
+                  }}
+                />
+              </SettingAnchor>
+
+              <SettingRow
+                setting={VOICE_ADVANCED_SETTINGS.settings.includeUserMessagesInSnippets}
+                subtitleLines={0}
+                rightElement={
+                  <Switch
+                    accessibilityLabel={t('settingsVoice.ui.updates.includeUserMessagesInSnippetsTitle')}
+                    value={updates.includeUserMessagesInSnippets}
+                    onValueChange={(v) => setUpdatePatch({ includeUserMessagesInSnippets: v })}
+                  />
+                }
+              />
+            </>
+          ) : null}
+
+          {showOtherSessionsSnippetMode ? (
+            <>
+              <SettingAnchor setting={VOICE_ADVANCED_SETTINGS.settings.otherSessionsSnippetsMode}>
+                <SegmentedChoiceItem
+                  title={t(VOICE_ADVANCED_SETTINGS.settings.otherSessionsSnippetsMode.titleKey)}
+                  subtitleLines={0}
+                  testIDPrefix="settings.voice.ui.updates.otherSessionsSnippetsMode"
+                  value={updates.otherSessionsSnippetsMode}
+                  onChange={(otherSessionsSnippetsMode) => setUpdatePatch({ otherSessionsSnippetsMode })}
+                  options={[
+                    { id: 'never', label: t('settingsVoice.ui.updates.otherSessionsSnippetsMode.neverTitle'), description: t('settingsVoice.ui.updates.otherSessionsSnippetsMode.neverSubtitle') },
+                    { id: 'on_demand_only', label: t('settingsVoice.ui.updates.otherSessionsSnippetsMode.onDemandTitle'), description: t('settingsVoice.ui.updates.otherSessionsSnippetsMode.onDemandSubtitle') },
+                    { id: 'auto', label: t('settingsVoice.ui.updates.otherSessionsSnippetsMode.autoTitle'), description: t('settingsVoice.ui.updates.otherSessionsSnippetsMode.autoSubtitle') },
+                  ]}
+                />
+              </SettingAnchor>
+            </>
+          ) : null}
+        </ItemGroup>
+      </SettingSection>
     </>
   );
 }

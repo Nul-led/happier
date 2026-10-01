@@ -176,7 +176,7 @@ test.describe('ui e2e: keyed GitHub OAuth restore + lost access', () => {
 
       await expect(page2.getByTestId('restore-manual-secret-input')).toHaveCount(0, { timeout: 120_000 });
       await expect
-        .poll(async () => await page2.getByTestId('main-header-start-new-session').count(), { timeout: 120_000 })
+        .poll(async () => await page2.getByTestId('tabbar-start-new-session').count(), { timeout: 120_000 })
         .toBeGreaterThan(0);
     } finally {
       await ctx2.close();
@@ -218,7 +218,7 @@ test.describe('ui e2e: keyed GitHub OAuth restore + lost access', () => {
       await p.getByTestId('web-modal-confirm').click({ timeout: 120_000 });
 
       await expect
-        .poll(async () => await p.getByTestId('main-header-start-new-session').count(), { timeout: 120_000 })
+        .poll(async () => await p.getByTestId('tabbar-start-new-session').count(), { timeout: 120_000 })
         .toBeGreaterThan(0);
     } finally {
       await ctx.close();

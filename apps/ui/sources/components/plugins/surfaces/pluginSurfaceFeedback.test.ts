@@ -96,7 +96,7 @@ function createMountedSurface(isCurrent?: () => boolean) {
         interactionRequester: {
             pluginId: 'acme.preview',
             contributionId: 'native-preview',
-            generationId: 'generation-1',
+            occurrenceId: 'occurrence-1',
             invocationId: 'surface_1',
         },
         ...(isCurrent ? { isCurrent } : {}),
@@ -201,7 +201,7 @@ describe('mounted plugin surface feedback and confirmation (§3.4, UI-T21)', () 
             requester: {
                 pluginId: 'acme.preview',
                 contributionId: 'publish',
-                generationId: 'generation-1',
+                occurrenceId: 'occurrence-1',
                 invocationId: 'surface_1',
             },
             isCurrent: () => true,

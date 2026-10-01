@@ -313,7 +313,7 @@ describe('composerSubmissionCoordinator', () => {
 
     it('submits a valid textless attachment snapshot and only asks its document owner to exact-clear after acceptance', async () => {
         const admit = vi.fn(async (_snapshot: ComposerSubmissionSnapshot) => ({ status: 'accepted' as const }));
-        const clearAcceptedSnapshot = vi.fn(() => false);
+        const clearAcceptedSnapshot = vi.fn((_acceptedSnapshot: ComposerSubmissionSnapshot) => false);
         const snapshot = createSnapshot({ text: '', references: [], attachments: [issueAttachment] });
 
         const result = await submitComposerSnapshot({
@@ -337,7 +337,7 @@ describe('composerSubmissionCoordinator', () => {
     });
 
     it('admits a textless snapshot when the same mounted composer owns sendable transfer attachments', async () => {
-        const admit = vi.fn(async () => ({ status: 'accepted' as const }));
+        const admit = vi.fn(async (_snapshot: ComposerSubmissionSnapshot) => ({ status: 'accepted' as const }));
 
         const result = await submitComposerSnapshot({
             snapshot: createSnapshot({ text: '', references: [], attachments: [] }),

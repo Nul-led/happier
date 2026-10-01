@@ -51,6 +51,7 @@ export type SessionRunnerRespawnTerminalReason =
   | 'no_restart'
   | 'not_authenticated'
   | 'resume_not_supported'
+  | 'session_directory_missing'
   | 'startup_instructions_cold_resume_unproven'
   | 'stop_requested';
 
@@ -126,13 +127,13 @@ function buildRespawnOptions(params: Readonly<{
   const resumeFromOptions = readNonBlankOpaqueIdentifier(params.spawnOptions.resume);
   const resumeFromTracked = readNonBlankOpaqueIdentifier(params.vendorResumeId);
   const effectiveResume = resumeFromOptions || resumeFromTracked;
-  const { resume: _resume, ...spawnOptionsWithoutResume } = params.spawnOptions;
+  const { resume: _resume, freshSessionCreation: _freshSessionCreation, managedDirectorySeed: _managedDirectorySeed, ...spawnOptionsWithoutResume } = params.spawnOptions;
   return {
     ...spawnOptionsWithoutResume,
     ...(effectiveResume ? { resume: effectiveResume } : {}),
     existingSessionId: params.sessionId,
     sessionId: undefined,
-    approvedNewDirectoryCreation: true,
+    approvedNewDirectoryCreation: params.spawnOptions.directoryKind !== 'managed',
   };
 }
 
@@ -395,6 +396,14 @@ export function createSessionRunnerRespawnManager(params: Readonly<{
         void params
           .spawnSession(respawnOptions)
           .then((result) => {
+            if (result && typeof result === 'object'
+              && 'errorCode' in result
+              && result.errorCode === SPAWN_SESSION_ERROR_CODES.SESSION_DIRECTORY_MISSING) {
+              params.logWarn(`[DAEMON RUN] Respawn suppressed for session ${sessionId} (private directory missing)`);
+              endRespawnCycle(sessionId);
+              params.onRespawnTerminal?.({ sessionId, previousPid, reason: 'session_directory_missing' });
+              return;
+            }
             if (result && typeof result === 'object' && (result as any).type === 'success') {
               params.onRespawnSuccess?.({ sessionId, previousPid, result });
               observeRespawnSuccess(sessionId);

@@ -356,8 +356,8 @@ async function collectBrowserStateDiagnostics(
     connectMachine: await page.getByTestId('session-getting-started-kind-connect_machine').count().catch(() => 0),
     createSession: await page.getByTestId('session-getting-started-kind-create_session').count().catch(() => 0),
     selectSession: await page.getByTestId('session-getting-started-kind-select_session').count().catch(() => 0),
-    startNewSession: await page.getByTestId('main-header-start-new-session').count().catch(() => 0),
-    setupWizard: await page.getByTestId('setupWizard.surface').count().catch(() => 0),
+    startNewSession: await page.getByTestId('tabbar-start-new-session').count().catch(() => 0),
+    machineDraft: await page.getByTestId('settings.machines.draft.form').count().catch(() => 0),
     sessionsEmptyStateList: await page.getByTestId('sessions-empty-state-list').count().catch(() => 0),
   };
 

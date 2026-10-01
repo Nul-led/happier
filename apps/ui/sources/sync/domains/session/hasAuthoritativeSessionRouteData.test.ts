@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { projectLegacySessionAccessCapabilitiesV1 } from '@happier-dev/protocol';
 
 import { hasAuthoritativeSessionRouteData } from './hasAuthoritativeSessionRouteData';
 import type { NormalizedSessionAccessProjection } from '@/sync/engine/sessions/normalizeSessionAccessProjection';
@@ -22,6 +23,26 @@ describe('hasAuthoritativeSessionRouteData', () => {
             },
             ownerMetadataView: null,
         })).toBe(false);
+    });
+
+    it('settles only producer-authorized session-only owner projections with strict readable shared data', () => {
+        const capabilities = projectLegacySessionAccessCapabilitiesV1({ level: 'owner', canApprovePermissions: true });
+        const scopedOwner = {
+            metadataLayoutVersion: 1,
+            metadataProjection: 'sessionOnly' as const,
+            access: { role: 'owner' as const, level: 'owner' as const, capabilities },
+            metadata: { v: 1, summary: { text: 'Shared title', updatedAt: 1 } },
+            ownerMetadataView: null,
+        };
+        for (const composerOptionsInput of [null, { modelOverrideV1: { v: 1, modelId: 'chosen', updatedAt: 1 } }]) {
+            const projection = { ...scopedOwner, composerOptionsInput };
+            expect(hasAuthoritativeSessionRouteData(projection)).toBe(true);
+        }
+        expect(hasAuthoritativeSessionRouteData({ ...scopedOwner, metadataProjection: undefined })).toBe(false);
+        expect(hasAuthoritativeSessionRouteData({ ...scopedOwner, metadata: { v: 1, path: '/private' } })).toBe(false);
+        expect(hasAuthoritativeSessionRouteData({ ...scopedOwner,
+            access: { ...scopedOwner.access, capabilities: { ...capabilities, readTranscript: false } } })).toBe(false);
+        expect(hasAuthoritativeSessionRouteData({ ...scopedOwner, access: null })).toBe(false);
     });
 
     it('accepts a layout-1 participant from the strict shared projection without owner data', () => {

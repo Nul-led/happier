@@ -1,9 +1,9 @@
 import React from 'react';
 import type { ReactTestInstance } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { findTestInstanceByTypeContainingText, pressTestInstanceAsync, renderScreen } from '@/dev/testkit';
+import { findTestInstanceByTypeContainingText, pressTestInstanceAsync } from '@/dev/testkit';
 import { lightTheme } from '@/theme';
-import { installPermissionShellCommonModuleMocks } from './permissionShellTestHelpers';
+import { installPermissionShellCommonModuleMocks, createPermissionShellRenderer } from './permissionShellTestHelpers';
 
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -13,18 +13,15 @@ vi.mock('@expo/vector-icons', () => ({
 }));
 
 const ops = vi.hoisted(() => ({
-    sessionAllow: vi.fn(async () => {}),
-    sessionAllowWithPermissionUpdates: vi.fn(async () => {}),
-    sessionDeny: vi.fn(async () => {}),
-    sessionAbort: vi.fn(async () => {}),
+    approve: vi.fn(async () => {}),
+    approveWithUpdates: vi.fn(async () => {}),
+    deny: vi.fn(async () => {}),
+    abort: vi.fn(async () => {}),
 }));
+const renderScreen = createPermissionShellRenderer(ops);
 
-vi.mock('@/sync/ops', () => ({
-    sessionAllow: ops.sessionAllow,
-    sessionAllowWithPermissionUpdates: ops.sessionAllowWithPermissionUpdates,
-    sessionDeny: ops.sessionDeny,
-    sessionAbort: ops.sessionAbort,
-}));
+
+
 
 vi.mock('@/sync/sync', () => ({
     sync: {
@@ -55,21 +52,35 @@ vi.mock('@/agents/catalog/permissionUiCopy', () => ({
 }));
 
 describe('PermissionFooter (codexDecision)', () => {
+    it('shows request-only nonhuman approval instead of an always-allow selection', async () => {
+        const { PermissionFooter } = await import('./PermissionFooter');
+        const screen = await renderScreen(<PermissionFooter sessionId="s1" toolName="Read"
+            permission={{ id: 'p1', status: 'approved', decision: 'approved', decisionActor: { kind: 'approvalReviewer' } }} />);
+        expect(screen.findByTestId('permission-footer.approvalReviewer')).toBeTruthy();
+        expect(screen.findAll((node) => node.props.accessibilityRole === 'button')).toHaveLength(0);
+    });
     beforeEach(() => {
-        ops.sessionAllow.mockReset();
-        ops.sessionAllow.mockResolvedValue(undefined);
-        ops.sessionAllowWithPermissionUpdates.mockReset();
-        ops.sessionAllowWithPermissionUpdates.mockResolvedValue(undefined);
-        ops.sessionDeny.mockReset();
-        ops.sessionDeny.mockResolvedValue(undefined);
-        ops.sessionAbort.mockReset();
-        ops.sessionAbort.mockResolvedValue(undefined);
+        ops.approve.mockReset();
+        ops.approve.mockResolvedValue(undefined);
+        ops.approveWithUpdates.mockReset();
+        ops.approveWithUpdates.mockResolvedValue(undefined);
+        ops.deny.mockReset();
+        ops.deny.mockResolvedValue(undefined);
+        ops.abort.mockReset();
+        ops.abort.mockResolvedValue(undefined);
     });
 
     function getTextStyleFragments(button: ReactTestInstance) {
         const textNode = button.findByType('Text' as any);
-        const style = textNode.props.style;
-        return (Array.isArray(style) ? style : [style]).filter(Boolean) as Array<Record<string, unknown>>;
+        return flattenStyleFragments(textNode.props.style);
+    }
+
+    // The app Text adapter composes [defaultTypography, scaledCallerStyle] arrays; resolve
+    // nested arrays the way React Native flattens composed styles.
+    function flattenStyleFragments(style: unknown): Array<Record<string, unknown>> {
+        if (!style) return [];
+        if (Array.isArray(style)) return style.flatMap(flattenStyleFragments);
+        return [style as Record<string, unknown>];
     }
 
     function getStyleFragments(node: ReactTestInstance) {
@@ -126,7 +137,7 @@ describe('PermissionFooter (codexDecision)', () => {
 
     it('approves execpolicy amendment using the latest proposed_execpolicy_amendment payload', async () => {
         const { PermissionFooter } = await import('../permissions/PermissionFooter');
-        const { sessionAllow } = await import('@/sync/ops');
+
 
         const screen = await renderScreen(React.createElement(PermissionFooter, {
             permission: { id: 'p1', status: 'pending' },
@@ -149,18 +160,11 @@ describe('PermissionFooter (codexDecision)', () => {
 
         await pressTestInstanceAsync(execPolicyButton, 'execpolicy approval button');
 
-        expect(sessionAllow).toHaveBeenCalledWith(
-            's1',
-            'p1',
-            undefined,
-            undefined,
-            'approved_execpolicy_amendment',
-            { command: ['allow', 'read'] },
-        );
+        expect(ops.approve).toHaveBeenCalledWith({ id: 'p1', approved: true, decision: 'approved_execpolicy_amendment', execPolicyAmendment: { command: ['allow', 'read'] } });
     });
 
     it('shows retryable inline feedback when a permission action fails', async () => {
-        ops.sessionAllow.mockRejectedValueOnce(new Error('network down'));
+        ops.approve.mockRejectedValueOnce(new Error('network down'));
 
         const { PermissionFooter } = await import('../permissions/PermissionFooter');
         const screen = await renderScreen(React.createElement(PermissionFooter, {
@@ -174,7 +178,7 @@ describe('PermissionFooter (codexDecision)', () => {
         const allow = screen.findByProps({ testID: 'permission-footer.allow' });
         await pressTestInstanceAsync(allow, 'allow button');
 
-        expect(ops.sessionAllow).toHaveBeenCalledTimes(1);
+        expect(ops.approve).toHaveBeenCalledTimes(1);
         expect(findTestInstanceByTypeContainingText(
             screen.tree,
             'Text',

@@ -1,6 +1,7 @@
 import * as React from 'react';
-import { Platform, Pressable, View } from 'react-native';
+import { Platform, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
+import { HappierPressable } from '@happier-dev/plugin-ui/presentation';
 
 import type { WorkflowSessionAuthoringSelection } from '@happier-dev/protocol/workflows/workflowV1';
 
@@ -8,16 +9,21 @@ import { DEFAULT_AGENT_ID } from '@/agents/catalog/catalog';
 import type { AgentInputExtraActionChipRenderContext } from '@/components/sessions/agentInput/agentInputContracts';
 import { AgentInputSelectionListPopover } from '@/components/sessions/agentInput/components/AgentInputSelectionListPopover';
 import { Text, TextInput } from '@/components/ui/text/Text';
+import { resolveFieldBoxColors } from '@/components/ui/forms/fieldBox';
+import { renderDropdownItemTriggerRightElement } from '@/components/ui/forms/dropdown/renderDropdownItemTriggerRightElement';
+import { focusRingStyle } from '@/components/ui/interactions/interactionFeedback';
+import { Item } from '@/components/ui/lists/Item';
 import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
 import type { SelectionListStep } from '@/components/ui/selectionList';
 import { Typography } from '@/constants/Typography';
 import { isPermissionMode } from '@/sync/domains/permissions/permissionTypes';
-import type { Metadata } from '@/sync/domains/state/storageTypes';
+import type { Metadata } from '@happier-dev/session-core/state';
 import { t } from '@/text';
 
 import {
     resolveSessionAuthoringAgentId,
     resolveSessionAuthoringFieldControl,
+    resolveSessionAuthoringFieldTitle,
     resolveSessionAuthoringFieldValue,
     type SessionAuthoringControlFacts,
     type SessionAuthoringFieldControlModel,
@@ -61,6 +67,9 @@ const styles = StyleSheet.create((theme) => ({
         alignItems: 'center',
         gap: theme.margins.sm,
     },
+    fields: {
+        alignSelf: 'stretch',
+    },
     // The composer bar keeps its own denser variant; this is the same chip in
     // the roomier authoring context, from the same theme tokens.
     chip: {
@@ -72,6 +81,16 @@ const styles = StyleSheet.create((theme) => ({
         minHeight: MINIMUM_TARGET_SIZE,
         justifyContent: 'center',
         gap: 6,
+        // Reserved, so the changed state and the focus ring never move a neighbour.
+        borderWidth: 1,
+        borderColor: 'transparent',
+    },
+    /** A value set for this subject (not inherited): the chip carries its border. */
+    chipChanged: {
+        borderColor: theme.colors.border.strong,
+    },
+    fieldTrigger: {
+        alignSelf: 'stretch',
     },
     chipPressed: {
         opacity: motionTokens.press.opacity,
@@ -85,6 +104,14 @@ const styles = StyleSheet.create((theme) => ({
         ...Typography.default('regular'),
         fontSize: 13,
         color: theme.colors.text.tertiary,
+    },
+    preservedChip: {
+        alignSelf: 'flex-start',
+        gap: 2,
+    },
+    fieldAnchor: {
+        alignSelf: 'stretch',
+        minWidth: 0,
     },
     textInput: {
         ...Typography.default('regular'),
@@ -128,13 +155,17 @@ function SessionAuthoringOptionChip(props: Readonly<{
     /** Shown instead of "Default" when the selection names no offered option. */
     unselectedLabel?: string;
     disabled?: boolean;
+    presentation: SessionAuthoringControlsPresentation;
+    /** Set for this subject rather than inherited: the chip is bordered and says so. */
+    changed?: boolean;
+    changedAccessibilityHint?: string;
     onSelect: (optionId: string) => void;
     testID: string;
 }>): React.ReactElement {
+    const { theme } = useUnistyles();
     const [open, setOpen] = React.useState(false);
     const anchorRef = React.useRef<React.ComponentRef<typeof View> | null>(null);
-    const selected = props.options.find((option) => option.id === props.selectedOptionId) ?? null;
-    const currentLabel = selected?.label ?? props.unselectedLabel ?? t('common.default');
+    const currentLabel = resolveSessionAuthoringOptionLabel(props.options, props.selectedOptionId, props.unselectedLabel);
     const rootStep = React.useMemo(() => buildRootStep({
         id: props.controlId,
         title: props.title,
@@ -144,21 +175,49 @@ function SessionAuthoringOptionChip(props: Readonly<{
 
     return (
         <>
-            <View ref={anchorRef} collapsable={false} style={{ alignSelf: 'flex-start' }}>
-                <Pressable
+            <View
+                ref={anchorRef}
+                collapsable={false}
+                style={props.presentation === 'fields' ? styles.fieldAnchor : { alignSelf: 'flex-start' }}
+            >
+                <HappierPressable
                     testID={props.testID}
                     accessibilityRole="button"
                     accessibilityLabel={`${props.title}: ${currentLabel}`}
-                    accessibilityState={{ disabled: props.disabled === true }}
+                    {...(props.changed === true && props.changedAccessibilityHint !== undefined
+                        ? { accessibilityHint: props.changedAccessibilityHint }
+                        : {})}
                     disabled={props.disabled === true}
+                    expanded={open}
+                    hasPopup="menu"
                     onPress={() => setOpen((current) => !current)}
-                    hitSlop={8}
-                    style={({ pressed }) => [styles.chip, pressed ? styles.chipPressed : null]}
+                    style={(state) => props.presentation === 'fields'
+                        ? styles.fieldTrigger
+                        : [
+                            styles.chip,
+                            props.changed === true ? styles.chipChanged : null,
+                            state.pressed ? styles.chipPressed : null,
+                            focusRingStyle({ focused: state.focused, color: theme.colors.border.focus }),
+                        ]}
                 >
-                    <Text numberOfLines={1} style={styles.chipText}>
-                        {currentLabel}
-                    </Text>
-                </Pressable>
+                    {(state) => props.presentation === 'fields'
+                        ? renderDropdownItemTriggerRightElement({
+                            detail: currentLabel,
+                            open,
+                            detailColor: theme.colors.text.primary,
+                            chevronColor: theme.colors.text.secondary,
+                            // The field box's own border carries the keyboard focus ring.
+                            field: {
+                                ...resolveFieldBoxColors(theme),
+                                ...focusRingStyle({ focused: state.focused, color: theme.colors.border.focus }),
+                            },
+                        })
+                        : (
+                            <Text numberOfLines={1} style={styles.chipText}>
+                                {currentLabel}
+                            </Text>
+                        )}
+                </HappierPressable>
             </View>
 
             <AgentInputSelectionListPopover
@@ -187,9 +246,17 @@ function SessionAuthoringFieldControl(props: Readonly<{
         value: WorkflowSessionAuthoringSelection[SessionAuthoringFieldId],
     ) => void;
     chipRenderContext: AgentInputExtraActionChipRenderContext;
+    presentation: SessionAuthoringControlsPresentation;
+    changed: boolean;
+    changedAccessibilityHint?: string;
     testIDPrefix: string;
 }>): React.ReactElement {
     const { control, facts, onChangeField, values } = props;
+    const chipState = {
+        presentation: props.presentation,
+        changed: props.changed,
+        ...(props.changedAccessibilityHint === undefined ? {} : { changedAccessibilityHint: props.changedAccessibilityHint }),
+    };
     const testID = `${props.testIDPrefix}-${control.field}`;
 
     const apply = React.useCallback((optionId: string, groupId?: string) => {
@@ -252,8 +319,8 @@ function SessionAuthoringFieldControl(props: Readonly<{
                 />
             );
 
-        case 'options':
-            return (
+        case 'options': {
+            const chip = (
                 <SessionAuthoringOptionChip
                     controlId={control.field}
                     title={control.title}
@@ -263,10 +330,21 @@ function SessionAuthoringFieldControl(props: Readonly<{
                         ? {}
                         : { unselectedLabel: control.unselectedLabel })}
                     {...(props.disabled === true ? { disabled: true } : {})}
+                    {...chipState}
                     onSelect={(optionId) => apply(optionId)}
                     testID={testID}
                 />
             );
+            // A preserved value states its repair beside the chip; the fields
+            // presentation states it as the row's description instead.
+            if (control.preserved === undefined || props.presentation === 'fields') return chip;
+            return (
+                <View style={styles.preservedChip}>
+                    {chip}
+                    <Text testID={`${testID}-repair`} style={styles.unavailableText}>{control.preserved.repair}</Text>
+                </View>
+            );
+        }
 
         case 'optionGroups':
             return (
@@ -279,6 +357,7 @@ function SessionAuthoringFieldControl(props: Readonly<{
                             options={group.options}
                             selectedOptionId={group.selectedOptionId}
                             {...(props.disabled === true ? { disabled: true } : {})}
+                            {...chipState}
                             onSelect={(optionId) => apply(optionId, group.id)}
                             testID={`${testID}-${group.id}`}
                         />
@@ -288,8 +367,25 @@ function SessionAuthoringFieldControl(props: Readonly<{
     }
 }
 
+/**
+ * `chips` (default): the composer's chips, as the header and a step's composer
+ * show them. `fields`: one labelled row per field whose trigger is a bordered
+ * field select, as a settings pane shows them. Both present the same field
+ * models and open the same pickers.
+ */
+export type SessionAuthoringControlsPresentation = 'chips' | 'fields';
+
 export type SessionAuthoringControlsProps = Readonly<{
     metadata?: Metadata | null;
+    presentation?: SessionAuthoringControlsPresentation;
+    /**
+     * Fields this subject sets itself rather than inherits (own-property
+     * presence, never equality). Their chips are bordered; `'all'` borders every
+     * chip (a subject whose values are always its own, like the workflow defaults).
+     */
+    overriddenFields?: ReadonlySet<SessionAuthoringFieldId> | 'all';
+    /** Announced on a changed chip ("Changed for this step"). */
+    overriddenAccessibilityHint?: string;
     /** Which fields to render, in the caller's order. */
     fields: readonly SessionAuthoringFieldId[];
     values: WorkflowSessionAuthoringSelection;
@@ -303,38 +399,84 @@ export type SessionAuthoringControlsProps = Readonly<{
     testIDPrefix?: string;
 }>;
 
+/**
+ * Which Agent answers a selection's fields, and that Agent's effective policy.
+ *
+ * Decided here, once, from the selected target and the host's catalog facts. A
+ * caller that resolved its own id could only re-derive it — and the workflow
+ * editor's re-derivation was how a plugin Agent ended up displaying and
+ * persisting the bundled default's models, permission modes and configuration.
+ * The controls and the summary below both read it, so a summary can never name
+ * a value the controls would not show.
+ */
+function useResolvedSessionAuthoringControls(
+    values: WorkflowSessionAuthoringSelection,
+    facts: SessionAuthoringControlFacts,
+    metadata: Metadata | null | undefined,
+) {
+    const agentId = resolveSessionAuthoringAgentId({
+        agentTarget: values.agentTarget ?? null,
+        facts,
+    });
+
+    const controls = useSessionAuthoringControls({
+        // The policy hook always answers for some Agent; an unresolved
+        // selection is handled by the field projection, which refuses to
+        // present Agent-owned fields rather than show this one's answers.
+        agentId: agentId ?? DEFAULT_AGENT_ID,
+        metadata: metadata ?? null,
+        permissionMode: isPermissionMode(values.permissionMode) ? values.permissionMode : null,
+        modelMode: values.modelSelection?.ref.modelId ?? null,
+        // Authoring a definition can always change these; whether the *target*
+        // supports a field is answered by that field's own capability facts.
+        canChangeModel: true,
+        canChangeSessionMode: true,
+        canChangeConfigOption: true,
+        acpSessionModeSelectedIdOverride: values.acpSessionModeId ?? null,
+        acpConfigOptionOverridesOverride: values.sessionConfigOptionOverrides ?? null,
+    });
+    return { agentId, controls };
+}
+
+/** What an option chip says for its current selection: the one reading every presentation shares. */
+function resolveSessionAuthoringOptionLabel(
+    options: readonly SessionAuthoringFieldOption[],
+    selectedOptionId: string,
+    unselectedLabel: string | undefined,
+): string {
+    return options.find((option) => option.id === selectedOptionId)?.label ?? unselectedLabel ?? t('common.default');
+}
+
+/**
+ * The effective value of each option field, as its chip reads it — the closed
+ * summary of a settings group ("Opus 5.5 · Accept edits"). Fields without a
+ * single chosen option (text, grouped, MCP, services) are left out rather than
+ * summarized differently from their control.
+ */
+export function useSessionAuthoringFieldSummary(params: Readonly<{
+    fields: readonly SessionAuthoringFieldId[];
+    values: WorkflowSessionAuthoringSelection;
+    facts?: SessionAuthoringControlFacts;
+    metadata?: Metadata | null;
+}>): readonly string[] {
+    const facts = params.facts ?? EMPTY_FACTS;
+    const { agentId, controls } = useResolvedSessionAuthoringControls(params.values, facts, params.metadata);
+    return React.useMemo(() => params.fields.flatMap((field) => {
+        const control = resolveSessionAuthoringFieldControl({ field, values: params.values, controls, facts, agentId });
+        if (control.kind !== 'options') return [];
+        return [resolveSessionAuthoringOptionLabel(control.options, control.selectedOptionId, control.unselectedLabel)];
+    }), [agentId, controls, facts, params.fields, params.values]);
+}
+
+const EMPTY_FACTS: SessionAuthoringControlFacts = {};
+
 export function SessionAuthoringControls(props: SessionAuthoringControlsProps): React.ReactElement {
     const testIDPrefix = props.testIDPrefix ?? 'session-authoring-control';
     const facts = props.facts ?? {};
     const overlayAnchorRef = React.useRef<React.ComponentRef<typeof View> | null>(null);
     const { theme } = useUnistyles();
 
-    // Which Agent answers these fields is decided here, once, from the selected
-    // target and the host's catalog facts. A caller that resolved its own id
-    // could only re-derive it — and the workflow editor's re-derivation was how
-    // a plugin Agent ended up displaying and persisting the bundled default's
-    // models, permission modes and configuration.
-    const agentId = resolveSessionAuthoringAgentId({
-        agentTarget: props.values.agentTarget ?? null,
-        facts,
-    });
-
-    const controls = useSessionAuthoringControls({
-        // The policy hook always answers for some Agent; an unresolved
-        // selection is handled by the field projection below, which refuses to
-        // present Agent-owned fields rather than show this one's answers.
-        agentId: agentId ?? DEFAULT_AGENT_ID,
-        metadata: props.metadata ?? null,
-        permissionMode: isPermissionMode(props.values.permissionMode) ? props.values.permissionMode : null,
-        modelMode: props.values.modelSelection?.ref.modelId ?? null,
-        // Authoring a definition can always change these; whether the *target*
-        // supports a field is answered by that field's own capability facts.
-        canChangeModel: true,
-        canChangeSessionMode: true,
-        canChangeConfigOption: true,
-        acpSessionModeSelectedIdOverride: props.values.acpSessionModeId ?? null,
-        acpConfigOptionOverridesOverride: props.values.sessionConfigOptionOverrides ?? null,
-    });
+    const { agentId, controls } = useResolvedSessionAuthoringControls(props.values, facts, props.metadata);
 
     const chipRenderContext = React.useMemo<AgentInputExtraActionChipRenderContext>(() => ({
         chipStyle: (pressed: boolean) => [styles.chip, pressed ? styles.chipPressed : null],
@@ -345,26 +487,56 @@ export function SessionAuthoringControls(props: SessionAuthoringControlsProps): 
         popoverAnchorRef: overlayAnchorRef,
     }), [theme.colors.composer.chipTint]);
 
+    const presentation = props.presentation ?? 'chips';
+    const isChanged = (field: SessionAuthoringFieldId) => props.overriddenFields === 'all'
+        || (props.overriddenFields?.has(field) ?? false);
+
     return (
-        <View ref={overlayAnchorRef} testID={testIDPrefix} style={styles.root}>
-            {props.fields.map((field) => (
-                <SessionAuthoringFieldControl
-                    key={field}
-                    control={resolveSessionAuthoringFieldControl({
-                        field,
-                        values: props.values,
-                        controls,
-                        facts,
-                        agentId,
-                    })}
-                    values={props.values}
-                    facts={facts}
-                    {...(props.disabled === true ? { disabled: true } : {})}
-                    onChangeField={props.onChangeField}
-                    chipRenderContext={chipRenderContext}
-                    testIDPrefix={testIDPrefix}
-                />
-            ))}
+        <View
+            ref={overlayAnchorRef}
+            testID={testIDPrefix}
+            style={presentation === 'fields' ? styles.fields : styles.root}
+        >
+            {props.fields.map((field) => {
+                const control = resolveSessionAuthoringFieldControl({
+                    field,
+                    values: props.values,
+                    controls,
+                    facts,
+                    agentId,
+                });
+                const rendered = (
+                    <SessionAuthoringFieldControl
+                        key={field}
+                        control={control}
+                        values={props.values}
+                        facts={facts}
+                        {...(props.disabled === true ? { disabled: true } : {})}
+                        onChangeField={props.onChangeField}
+                        chipRenderContext={chipRenderContext}
+                        presentation={presentation}
+                        changed={isChanged(field)}
+                        {...(props.overriddenAccessibilityHint === undefined
+                            ? {}
+                            : { changedAccessibilityHint: props.overriddenAccessibilityHint })}
+                        testIDPrefix={testIDPrefix}
+                    />
+                );
+                if (presentation === 'chips') return rendered;
+                return (
+                    <Item
+                        key={field}
+                        testID={`${testIDPrefix}-${field}-row`}
+                        title={resolveSessionAuthoringFieldTitle(field) ?? field}
+                        {...(control.kind === 'options' && control.preserved !== undefined
+                            ? { subtitle: control.preserved.repair, subtitleTestID: `${testIDPrefix}-${field}-repair` }
+                            : {})}
+                        mode="info"
+                        accessoryLayout="adaptive"
+                        rightElement={rendered}
+                    />
+                );
+            })}
         </View>
     );
 }

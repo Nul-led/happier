@@ -89,7 +89,7 @@ function projectSession(
     const flavor = normalizeTrimmed(metadata?.flavor);
     return {
         id: session.id,
-        title: getSessionName(session),
+        title: getSessionName(session, serverId),
         workspaceLabel: path ? formatPathRelativeToHome(path, metadata?.homeDir ?? undefined) : null,
         agentLabel: flavor,
         // Layout-specific identity interpretation belongs to the shared Session

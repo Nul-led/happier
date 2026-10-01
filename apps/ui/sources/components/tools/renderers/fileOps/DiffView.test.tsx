@@ -1,7 +1,7 @@
 import React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import renderer, { act } from 'react-test-renderer';
-import type { ToolCall } from '@/sync/domains/messages/messageTypes';
+import type { ToolCall } from "@happier-dev/session-core/messages";
 import { collectHostText, findPressableByText, makeToolCall, makeToolViewProps } from '@/dev/testkit';
 import { ToolHeaderActionsContext } from '../../shell/presentation/ToolHeaderActionsContext';
 import { pressTestInstanceAsync, renderScreen } from '@/dev/testkit';

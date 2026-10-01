@@ -8,6 +8,8 @@ import {
   type ProviderBoundModelRef,
   type SessionModelTransitionResultV1,
   type SessionRuntimeIssueV1,
+  type SessionTurnFactsV1,
+  type SessionRolePromptContextV1,
 } from '@happier-dev/protocol';
 import { render } from 'ink';
 import React from 'react';
@@ -22,6 +24,7 @@ import type { Metadata, PermissionMode } from '@/api/types';
 import { cleanupBackendRunResources } from '@/agent/runtime/cleanupBackendRunResources';
 import {
   createRuntimeOverrideSynchronizers,
+  createRuntimeOverrideTarget,
   type RuntimeOverrideSynchronizers,
   type RuntimeOverrideTarget,
 } from '@/agent/runtime/createRuntimeOverrideSynchronizers';
@@ -42,8 +45,8 @@ import { sendReadyWithPushNotification } from '@/agent/runtime/notifications/sen
 import { resetAssistantTextSnapshotTurnScope } from '@/agent/runtime/turns/assistantTextSnapshotTurnScope';
 import {
   resolveAgentCompositionPromptText,
-  resolveEffectiveCodingPromptText,
 } from '@/agent/prompting/coding/resolveEffectiveCodingPrompt';
+import { createSessionPromptPlanResolver, type SessionPromptPlanResolver } from '@/agent/prompting/coding/sessionPromptPlan';
 import type { InFlightSteerController } from '@/agent/runtime/permissions/bindModeQueue';
 import type { UnsettledReplaySeedRetirement } from '@/agent/runtime/replaySeed/unsettledReplaySeedRetirement';
 import { registerKillSessionHandler } from '@/rpc/handlers/killSession';
@@ -55,9 +58,9 @@ import {
 } from '@/ui/remoteControl/remoteModeControl';
 import { logger } from '@/ui/logger';
 import { resolveCliFeatureDecision } from '@/features/featureDecisionService';
-import { resolveAgentToolsDelivery } from '@/agent/tools/happierTools/runtime/resolveAgentToolsDelivery';
+import { readAgentCatalogSnapshot } from '@/agent/catalog/snapshot';
+import { readAgentSessionCapabilities } from '@/plugins/projection/registry/agentContributionDefinition';
 import { NormalizedToolTurnChangeTracker } from '@/agent/tools/diff/normalizedToolTurnChangeTracker';
-import { isSessionAgentChangeTitleToolAvailable } from '@/agent/tools/happierTools/resolveSessionNativeToolBridge';
 import { createRepositoryCheckpointPromptLifecycle } from '@/agent/runtime/checkpoints/repositoryCheckpointPromptLifecycle';
 import { notifyDaemonConnectedServiceTurnLifecycle } from '@/daemon/controlClient';
 import { HAPPIER_CONNECTED_SERVICE_SELECTIONS_ENV_KEY } from '@/daemon/connectedServices/connectedServiceChildEnvironment';
@@ -71,7 +74,6 @@ import {
   resolveSessionPendingQueueMaxPopPerWake,
 } from '@/agent/runtime/session/input/pendingQueueDrainPolicy';
 import { resolvePendingQueueHandoff } from '@/agent/runtime/mode/switching/pendingQueueHandoffOrchestrator';
-import { publishTerminalPendingHandoffState } from '@/agent/runtime/mode/switching/publishTerminalPendingHandoffState';
 import { createTerminalTurnStateMachine } from '@/agent/runtime/terminal/turnStateMachine';
 import { mapRuntimeMessageToTerminalLifecycleObservation } from '@/agent/runtime/terminal/runtimeMessageObservationAdapter';
 import {
@@ -90,8 +92,6 @@ import {
 import {
   observeAgentStreamTokenThroughPluginHooks,
   resolveAgentCompositionThroughPluginHooks,
-  resolvePluginPromptAssetBlocks,
-  resolvePluginToolPromptContributions,
   transformAgentContextThroughPluginHooks,
   type AgentCompositionToolSelection,
 } from '@/plugins/runtime/hooks/execution/dispatchAgentTurnHooks';
@@ -121,6 +121,7 @@ import type {
   HostSessionTerminalRemoteModeLoop,
 } from './terminalRemoteModeRuntime';
 import { configuration } from '@/configuration';
+import { stampTurnFacts } from '@/agent/runtime/session/turn/stampTurnFacts';
 
 export const HOST_SESSION_RUNTIME_PLAN_KIND = 'hostSessionRuntimePlan' as const;
 
@@ -413,6 +414,9 @@ export type SessionLoopLifecycleParams = Readonly<{
     ) => Promise<void>,
   ) => Promise<SessionModelTransitionResultV1>;
   readActiveModelSelection?: () => ProviderBoundModelRef;
+  resolveSessionRolePromptContext?: (signal?: AbortSignal) => Promise<SessionRolePromptContextV1 | null>;
+  resolveFreshSessionSystemPrompt?: SessionPromptPlanResolver;
+  prepareSessionRolePromptPolicy?: () => Promise<void>;
   onProviderPromptDispatchPrepared?: (input: Readonly<{
     localIds: readonly string[];
     selection: ProviderBoundModelRef;
@@ -473,7 +477,6 @@ export async function runSessionLoopLifecycle(params: SessionLoopLifecycleParams
     startedBy: params.opts.startedBy,
     terminalMode: params.opts.terminalRuntime?.mode ?? null,
   });
-  const toolDelivery = resolveAgentToolsDelivery(params.policyAgentId);
   const hookRuntime = params.hookRuntime;
   const hookRuntimeForCallbacks = hookRuntime;
   // The foreground Runner owns current-generation Composer callbacks through its authenticated
@@ -509,7 +512,10 @@ export async function runSessionLoopLifecycle(params: SessionLoopLifecycleParams
   const resolvedStartingMode = resolveStartingMode({
     terminalCapable: terminalRemoteModeLoop !== null,
     userIntent: (params.opts as Readonly<{ startingMode?: unknown }>).startingMode,
-    providerHint: terminalRemoteModeLoop?.startingMode,
+    providerHint:
+      terminalRemoteModeLoop?.ownsCurrentTerminalDisplay === true && !hasTTY
+        ? 'remote'
+        : terminalRemoteModeLoop?.startingMode,
   });
   const terminalTurnStateMachine = createTerminalTurnStateMachine();
   const pendingRuntimeTranscriptProjections = new Set<Promise<void>>();
@@ -671,6 +677,7 @@ export async function runSessionLoopLifecycle(params: SessionLoopLifecycleParams
     trackRuntimeTranscriptProjection(terminalMutation.then(() => undefined));
     return terminalMutation;
   };
+  let preparedTurnFacts: SessionTurnFactsV1 | null = null;
   const sessionTurnLifecycle = createSessionTurnLifecycle({
     session: {
       get sessionId() {
@@ -679,6 +686,13 @@ export async function runSessionLoopLifecycle(params: SessionLoopLifecycleParams
       enqueueSessionTurnMutation,
     },
     agentId: params.policyAgentId,
+    readTurnFacts: () => preparedTurnFacts ?? stampTurnFacts({
+      sessionWorkDepth: params.session.getWorkDepth?.() ?? 0, hostContextOnly: true,
+    }),
+    onTurnFactsChanged: (input) => {
+      params.session.observeHostTurnFacts?.(input);
+      if (input.facts === null) preparedTurnFacts = null;
+    },
     ...(params.opts.startedBy === 'daemon'
       ? {
           onAcceptedTurnLifecycle: async (input) => {
@@ -722,6 +736,7 @@ export async function runSessionLoopLifecycle(params: SessionLoopLifecycleParams
     resolvedStartingMode.kind === 'switching' ? resolvedStartingMode.startingMode : 'remote';
   let terminalHandoffFailureRequiresManualAction = false;
   let runtimeTranscriptProjectionSerial = Promise.resolve();
+  let requestRuntimeEndedTermination = (): void => undefined;
   const observeRuntimeLifecycleMessage = (message: unknown): void => {
     const parsedRuntimeEvent = AgentSessionRuntimeEventSchema.safeParse(message);
     if (parsedRuntimeEvent.success && parsedRuntimeEvent.data.kind === 'turn-start') {
@@ -814,6 +829,9 @@ export async function runSessionLoopLifecycle(params: SessionLoopLifecycleParams
       terminalHandoffFailureRequiresManualAction = false;
       terminalTurnStateMachine.observe(observation);
     }
+    if (parsedRuntimeEvent.success && parsedRuntimeEvent.data.kind === 'runtime-ended') {
+      requestRuntimeEndedTermination();
+    }
   };
   let unsubscribeRuntimeEvents = (): void => undefined;
   const subscribeRuntimeEventsRequired = (): void => {
@@ -836,26 +854,19 @@ export async function runSessionLoopLifecycle(params: SessionLoopLifecycleParams
     runtimeEventsUnsubscribed = true;
     unsubscribeRuntimeEvents();
   };
-  const runtimeOverrideTarget: RuntimeOverrideTarget = {
-    setSessionMode: async (modeId) => {
-      await runtimeForPromptLoop.updateSessionRuntimeConfig({ modeId });
-    },
-    setSessionModelSelection: async (selection) => {
-      const result = await params.transitionModelSelection(selection, 'metadata');
-      if (!result.ok) {
-        throw new Error(result.reason ?? `Session model transition failed: ${result.status}`);
-      }
-    },
-    setPermissionMode: async (permissionMode) => {
-      return await runtimeForPromptLoop.updateSessionRuntimeConfig({ permissionMode });
-    },
-    setSessionConfigOption: async (configId, value) => {
-      return await runtimeForPromptLoop.updateSessionRuntimeConfig({ configOption: { id: configId, value } });
-    },
-  };
-  const resolveToolDeliverySessionId = (): string | null =>
-    toolDelivery === 'shell_bridge' ? params.session.sessionId : runtimeForPromptLoop.readSessionIdentity().sessionId;
-  const promptArtifactBodyCache = new Map<string, string | null>();
+  const runtimeOverrideTarget: RuntimeOverrideTarget = createRuntimeOverrideTarget({
+    runtime: runtimeForPromptLoop,
+    transitionModelSelection: params.transitionModelSelection,
+  });
+  const resolveFreshSessionSystemPrompt = params.resolveFreshSessionSystemPrompt
+    ?? createSessionPromptPlanResolver({
+      opts: params.opts, session: params.session, agentId: params.policyAgentId,
+      machineId: params.machineId, directory: params.runtimeDirectory,
+      memoryRecallGuidanceEnabled: params.memoryRecallGuidanceEnabled,
+      readNativeSessionId: () => runtimeForPromptLoop.readSessionIdentity().sessionId,
+      resolveRoleContext: params.resolveSessionRolePromptContext,
+      daemonBridge: daemonTurnContributionsBridge,
+    });
   const runtimeForInFlightSteer: { current: RuntimeTurnOperations | null } = { current: runtimeForPromptLoop };
   let shouldExit = false;
   let abortController = new AbortController();
@@ -941,7 +952,9 @@ export async function runSessionLoopLifecycle(params: SessionLoopLifecycleParams
     isMounted: () => inkInstance !== null || staticControl !== null,
   });
 
-  const getKeepAliveMode = (): HostSessionKeepAliveMode => params.config.resolveKeepAliveMode?.() ?? 'remote';
+  const getKeepAliveMode = (): HostSessionKeepAliveMode =>
+    params.config.resolveKeepAliveMode?.()
+    ?? (terminalRemoteModeLoop ? activeTerminalRemoteMode : 'remote');
   let lastKeepAliveSentAt = 0;
   let lastKeepAliveSignature: string | null = null;
   const publishKeepAlive = (): void => {
@@ -1026,6 +1039,9 @@ export async function runSessionLoopLifecycle(params: SessionLoopLifecycleParams
       return work;
     },
   });
+  requestRuntimeEndedTermination = () => {
+    terminationHandlers.requestTermination({ kind: 'exit', code: 0 });
+  };
 
   params.session.rpcHandlerManager.registerHandler('abort', handleAbort);
   const requestRuntimeStop = async () => {
@@ -1149,32 +1165,17 @@ export async function runSessionLoopLifecycle(params: SessionLoopLifecycleParams
       };
     }
   };
-  const publishTerminalHandoffFailure = (pendingCount: number, detail?: string): void => {
-    publishTerminalPendingHandoffState({
-      session: params.session,
-      status: {
-        v: 1,
-        status: 'switch_failed',
-        pendingCount,
-        updatedAtMs: Date.now(),
-        ...(detail && detail.trim().length > 0 ? { detail: detail.trim() } : {}),
-      },
-    });
-  };
   const beforePendingMaterialize = async (): Promise<boolean> => {
     const decision = resolvePendingQueueHandoff({
       currentMode: activeTerminalRemoteMode,
       remoteTurnInFlight: sessionTurnLifecycle.hasActiveTurn(),
-      terminalTopology: terminalRemoteModeLoop ? 'exclusive' : null,
+      terminalTopology: terminalRemoteModeLoop?.topology ?? (terminalRemoteModeLoop ? 'exclusive' : null),
+      terminalRemoteWritable: terminalRemoteModeLoop?.remoteWritable === true,
       terminalTurnState: terminalTurnStateMachine.getState(),
       pendingCount: await resolvePendingCountForHandoff(),
       resumeReadiness: resolveResumeReadiness(),
       intent: 'queue',
       nowMs: Date.now(),
-    });
-    publishTerminalPendingHandoffState({
-      session: params.session,
-      status: decision.status,
     });
     if (decision.action.type === 'materialize_remote_pending') {
       terminalHandoffFailureRequiresManualAction = false;
@@ -1182,22 +1183,11 @@ export async function runSessionLoopLifecycle(params: SessionLoopLifecycleParams
     }
     if (decision.action.type === 'request_graceful_remote_handoff') {
       if (terminalHandoffFailureRequiresManualAction) {
-        publishTerminalPendingHandoffState({
-          session: params.session,
-          status: {
-            v: 1,
-            status: 'manual_action_required',
-            pendingCount: decision.status.pendingCount,
-            updatedAtMs: Date.now(),
-            lastTerminalState: decision.status.lastTerminalState,
-          },
-        });
         return false;
       }
       const result = await requestGracefulRemoteHandoff(decision.action.reason);
       if (!result.ok) {
         terminalHandoffFailureRequiresManualAction = true;
-        publishTerminalHandoffFailure(decision.status.pendingCount, result.detail);
       }
       return false;
     }
@@ -1213,16 +1203,11 @@ export async function runSessionLoopLifecycle(params: SessionLoopLifecycleParams
         });
       } catch {
         terminalHandoffFailureRequiresManualAction = true;
-        publishTerminalHandoffFailure(
-          decision.status.pendingCount,
-          'terminal_cancel_failed',
-        );
         return false;
       }
       const result = await requestGracefulRemoteHandoff('switch_now');
       if (!result.ok) {
         terminalHandoffFailureRequiresManualAction = true;
-        publishTerminalHandoffFailure(decision.status.pendingCount, result.detail);
       }
       return false;
     }
@@ -1236,6 +1221,13 @@ export async function runSessionLoopLifecycle(params: SessionLoopLifecycleParams
         startingMode: resolvedStartingMode.startingMode,
         onBeforeIteration: async (mode) => {
           activeTerminalRemoteMode = mode;
+          if (terminalRemoteModeLoop.ownsCurrentTerminalDisplay === true) {
+            if (mode === 'terminal') {
+              await unmountTerminalDisplay();
+            } else {
+              mountTerminalDisplay();
+            }
+          }
           await terminalRemoteModeLoop.onBeforeIteration?.(mode);
         },
         runTerminal: async (loopParams) => {
@@ -1298,6 +1290,18 @@ export async function runSessionLoopLifecycle(params: SessionLoopLifecycleParams
       setCurrentPermissionMode: params.permissionModeState.setCurrentPermissionMode,
       setCurrentPermissionModeUpdatedAt: params.permissionModeState.setCurrentPermissionModeUpdatedAt,
       registerProviderAcceptedEffect: params.registerProviderAcceptedEffect,
+      onBeforeTurnBegin: (input) => {
+        const contextOnly = input.hostContextOnly;
+        preparedTurnFacts = stampTurnFacts({
+          sessionWorkDepth: params.session.getWorkDepth?.() ?? 0,
+          provenance: input.inputProvenance,
+          hostContextOnly: contextOnly !== undefined,
+          ...(contextOnly?.kind === 'workflow_step' ? {
+            workflowInvocation: contextOnly.workflowInvocation,
+            workflowWorkDepth: contextOnly.workDepth,
+          } : {}),
+        });
+      },
       releaseRejectedBeforeProviderPromptIdentity: (session, message) =>
         params.permissionModeState.releaseRejectedBeforeProviderPromptIdentity(session, message),
       initialResumeId: initialResumeId || undefined,
@@ -1330,53 +1334,23 @@ export async function runSessionLoopLifecycle(params: SessionLoopLifecycleParams
               ),
           }
         : {}),
-      resolveFreshSessionSystemPrompt: async ({ baseOverride, excludePluginIds }) => {
-        const executionRunsFeatureEnabled = resolveCliFeatureDecision({
-          featureId: 'execution.runs',
-          env: process.env,
-        }).state === 'enabled';
-        const promptContributions = daemonTurnContributionsBridge
-          ? await daemonTurnContributionsBridge.resolvePrompt({
-              sessionId: params.session.sessionId,
-              machineId: params.machineId,
-              featureIds: executionRunsFeatureEnabled ? ['execution.runs'] : [],
-              ...(excludePluginIds ? { excludePluginIds } : {}),
-              signal: abortController.signal,
-            })
-          : {
-              promptAssetBlocks: await resolvePluginPromptAssetBlocks({
-                agentId: params.policyAgentId,
-                sessionId: params.session.sessionId,
-                machineId: params.machineId,
-                featureIds: executionRunsFeatureEnabled ? ['execution.runs'] : [],
-                ...(excludePluginIds ? { excludePluginIds } : {}),
-                signal: abortController.signal,
-              }),
-              toolPromptContributions:
-                await resolvePluginToolPromptContributions(
-                  excludePluginIds ? { excludePluginIds } : undefined,
-                ),
-            };
-        return await resolveEffectiveCodingPromptText({
-          credentials: params.opts.credentials,
-          settings: params.opts.accountSettingsContext?.settings ?? null,
-          profileId: params.session.getMetadataSnapshot()?.profileId ?? null,
-          baseOverride,
-          executionRunsFeatureEnabled,
-          agentId: params.policyAgentId,
-          toolDelivery,
-          toolDeliverySessionId: resolveToolDeliverySessionId(),
-          toolDeliveryDirectory: params.runtimeDirectory,
-          memoryMachineId: params.machineId,
-          memoryRecallGuidanceEnabled: params.memoryRecallGuidanceEnabled,
-          sessionTitleToolAvailable: isSessionAgentChangeTitleToolAvailable({
-            accountSettings: params.opts.accountSettingsContext?.settings ?? {},
-            profileId: params.session.getMetadataSnapshot()?.profileId ?? null,
-          }),
-          toolPromptContributions: promptContributions.toolPromptContributions,
-          promptAssetBlocks: promptContributions.promptAssetBlocks,
-          cache: promptArtifactBodyCache,
-        });
+      resolveFreshSessionSystemPrompt: async (args) => {
+        const prompt = await resolveFreshSessionSystemPrompt({ ...args, signal: abortController.signal });
+        await params.prepareSessionRolePromptPolicy?.();
+        return prompt;
+      },
+      readSessionPromptPlanDeliveryState: () => {
+        const startup = resolveFreshSessionSystemPrompt.readStartupInstructions?.();
+        const capabilities = readAgentSessionCapabilities(readAgentCatalogSnapshot()
+          .agentDefinitionsById.get(params.policyAgentId)?.richDefinition?.definition);
+        return {
+          ...(startup ? { marker: { v: startup.v, id: startup.id, revision: startup.revision } } : {}),
+          startupInstructionsSupported: capabilities?.startupInstructions?.versions.includes(1) === true,
+          ...(capabilities?.startupInstructions?.revisionChanges
+            ? { revisionChanges: capabilities.startupInstructions.revisionChanges } : {}),
+          // Spawn custody is not proof that the complete plan reached a native channel.
+          // The native delivered marker is supplied only by the accepted full-plan producer.
+        };
       },
       resolveAgentCompositionBeforeDispatch: async ({ signal }) => {
         const executionRunsFeatureEnabled = resolveCliFeatureDecision({

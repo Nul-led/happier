@@ -1,7 +1,8 @@
 import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { createCapturingLegendListMock, renderScreen } from '@/dev/testkit';
+import { createCapturingLegendListMock, createTestSessionTranscriptSource, renderWithSessionTranscriptSource } from '@/dev/testkit';
+import type { Message } from '@happier-dev/session-core/messages';
 import {
     installTranscriptCommonModuleMocks,
     resetTranscriptCommonModuleMockState,
@@ -159,17 +160,20 @@ describe('TranscriptList (thinking expansion controlled)', () => {
     settingValues.sessionThinkingDisplayMode = 'inline';
     settingValues.sessionThinkingInlinePresentation = 'summary';
 
-    const thinkingMessage = { kind: 'agent-text', id: 't1', localId: null, createdAt: 1, text: 'think', isThinking: true };
-    const normalMessage = { kind: 'agent-text', id: 'a1', localId: null, createdAt: 2, text: 'answer', isThinking: false };
+    const thinkingMessage: Message = { kind: 'agent-text', id: 't1', localId: null, createdAt: 1, text: 'think', isThinking: true };
+    const normalMessage: Message = { kind: 'agent-text', id: 'a1', localId: null, createdAt: 2, text: 'answer', isThinking: false };
+    const messages = [thinkingMessage, normalMessage];
+    const source = createTestSessionTranscriptSource({
+      sessionId: 's1', metadata: null, messages,
+      interaction: { canSendMessages: false, canApprovePermissions: false },
+    });
 
     const { TranscriptList } = await import('./TranscriptList');
-    await renderScreen(<TranscriptList
-          sessionId="s1"
+    await renderWithSessionTranscriptSource(<TranscriptList
           datasetKey="public:s1:1"
           metadata={null}
-          messages={[thinkingMessage as any, normalMessage as any]}
-          interaction={{ canSendMessages: false, canApprovePermissions: false }}
-        />);
+          messages={messages}
+        />, source);
 
     const firstThinkingProps = getRenderedMessageProps().find((p) => p?.message?.id === 't1');
     expect(firstThinkingProps?.thinkingExpanded).toBe(false);
@@ -200,16 +204,19 @@ describe('TranscriptList (thinking expansion controlled)', () => {
     settingValues.transcriptToolCallsCollapsedPreviewCount = 1;
     settingValues.transcriptToolCallsGroupShowBackground = false;
 
-    const message = { kind: 'agent-text', id: 'a1', localId: null, createdAt: 2, text: 'answer', isThinking: false };
+    const message: Message = { kind: 'agent-text', id: 'a1', localId: null, createdAt: 2, text: 'answer', isThinking: false };
+    const messages = [message];
+    const source = createTestSessionTranscriptSource({
+      sessionId: 's1', metadata: null, messages,
+      interaction: { canSendMessages: false, canApprovePermissions: false },
+    });
 
     const { TranscriptList } = await import('./TranscriptList');
-    await renderScreen(<TranscriptList
-      sessionId="s1"
+    await renderWithSessionTranscriptSource(<TranscriptList
       datasetKey="public:s1:1"
       metadata={null}
-      messages={[message as any]}
-      interaction={{ canSendMessages: false, canApprovePermissions: false }}
-    />);
+      messages={messages}
+    />, source);
 
     expect(renderedMessageViewProps).toHaveLength(0);
     const renderedRowsForMessage = renderedMessageViewWithCommonProps.filter((p) => p?.message?.id === 'a1');
@@ -242,7 +249,7 @@ describe('TranscriptList (thinking expansion controlled)', () => {
   it('resets public row state when the logical dataset changes for the same session', async () => {
     settingValues.sessionThinkingDisplayMode = 'inline';
     settingValues.sessionThinkingInlinePresentation = 'summary';
-    const thinkingMessage = {
+    const thinkingMessage: Message = {
       kind: 'agent-text',
       id: 't1',
       localId: null,
@@ -250,15 +257,18 @@ describe('TranscriptList (thinking expansion controlled)', () => {
       text: 'think',
       isThinking: true,
     };
+    const messages = [thinkingMessage];
+    const source = createTestSessionTranscriptSource({
+      sessionId: 'same-session', metadata: null, messages,
+      interaction: { canSendMessages: false, canApprovePermissions: false },
+    });
 
     const { TranscriptList } = await import('./TranscriptList');
-    const screen = await renderScreen(<TranscriptList
-      sessionId="same-session"
+    const screen = await renderWithSessionTranscriptSource(<TranscriptList
       datasetKey="public:same-session:1"
       metadata={null}
-      messages={[thinkingMessage as any]}
-      interaction={{ canSendMessages: false, canApprovePermissions: false }}
-    />);
+      messages={messages}
+    />, source);
     const firstThinkingProps = getRenderedMessageProps().find((props) => props?.message?.id === 't1');
     await act(async () => {
       firstThinkingProps.onThinkingExpandedChange(true);
@@ -266,11 +276,9 @@ describe('TranscriptList (thinking expansion controlled)', () => {
     expect([...getRenderedMessageProps()].reverse().find((props) => props?.message?.id === 't1')?.thinkingExpanded).toBe(true);
 
     await screen.update(<TranscriptList
-      sessionId="same-session"
       datasetKey="public:same-session:2"
       metadata={null}
-      messages={[thinkingMessage as any]}
-      interaction={{ canSendMessages: false, canApprovePermissions: false }}
+      messages={messages}
     />);
 
     expect([...getRenderedMessageProps()].reverse().find((props) => props?.message?.id === 't1')?.thinkingExpanded).toBe(false);
@@ -280,7 +288,7 @@ describe('TranscriptList (thinking expansion controlled)', () => {
   it('arms the renderer anchor before public thinking and nested tool rows become visible', async () => {
     settingValues.sessionThinkingDisplayMode = 'inline';
     settingValues.sessionThinkingInlinePresentation = 'summary';
-    const thinkingMessage = {
+    const thinkingMessage: Message = {
       kind: 'agent-text',
       id: 'thinking-message',
       localId: null,
@@ -288,7 +296,7 @@ describe('TranscriptList (thinking expansion controlled)', () => {
       text: 'think',
       isThinking: true,
     };
-    const toolMessage = {
+    const toolMessage: Message = {
       kind: 'tool-call',
       id: 'tool-message',
       localId: null,
@@ -304,16 +312,19 @@ describe('TranscriptList (thinking expansion controlled)', () => {
       },
       children: [],
     };
+    const messages = [thinkingMessage, toolMessage];
+    const source = createTestSessionTranscriptSource({
+      sessionId: 'same-session', metadata: null, messages,
+      interaction: { canSendMessages: false, canApprovePermissions: false },
+    });
     transcriptCollapsibleComponent = (await import('./motion/TranscriptCollapsible')).TranscriptCollapsible;
 
     const { TranscriptList } = await import('./TranscriptList');
-    await renderScreen(<TranscriptList
-      sessionId="same-session"
+    await renderWithSessionTranscriptSource(<TranscriptList
       datasetKey="public:same-session:1"
       metadata={null}
-      messages={[thinkingMessage as any, toolMessage as any]}
-      interaction={{ canSendMessages: false, canApprovePermissions: false }}
-    />);
+      messages={messages}
+    />, source);
 
     const detachFromTail = async () => {
       legendListDetached = true;

@@ -15,6 +15,7 @@ import {
 } from '@/settings/secrets/savedSecretCatalog';
 import {
   SavedSecretOperationAdmissionError,
+  savedSecretOperationAdmissionStatus,
   refreshSavedSecretCatalogForOperation,
 } from '@/settings/secrets/hydrateSavedSecretCatalog';
 
@@ -50,7 +51,11 @@ export type VoiceCredentialResolver = Readonly<{
 }>;
 
 function unavailable(materialStatus: Exclude<VoiceCredentialMaterialStatus, 'ready'> = 'missing'):
-  Error & { code: 'credential_unavailable'; materialStatus: Exclude<VoiceCredentialMaterialStatus, 'ready'> } {
+  Error & {
+    code: 'credential_unavailable';
+    materialStatus: Exclude<VoiceCredentialMaterialStatus, 'ready'>;
+    admissionReason?: SavedSecretOperationAdmissionError['reason'];
+  } {
   return Object.assign(new Error('credential_unavailable'), {
     code: 'credential_unavailable' as const,
     materialStatus,
@@ -158,14 +163,6 @@ function readSelectedSource(params: Readonly<{
  * material statuses; only the translation lives here, never a second decision
  * about whether the reference is current.
  */
-function voiceStatusForAdmissionRefusal(
-  reason: SavedSecretOperationAdmissionError['reason'],
-): Exclude<VoiceCredentialMaterialStatus, 'ready'> {
-  if (reason === 'reference_missing') return 'missing';
-  if (reason === 'reference_unavailable') return 'temporarily_unavailable';
-  return 'repair_required';
-}
-
 export function createVoiceCredentialResolver(params: Readonly<{
   /** Null selects the account-only client realm and deliberately ignores machine overrides. */
   machineId: string | null;
@@ -198,9 +195,13 @@ export function createVoiceCredentialResolver(params: Readonly<{
     try {
       return await refreshForOperation({ expectedScopeKey, references: [{ ref }] });
     } catch (error) {
-      throw unavailable(error instanceof SavedSecretOperationAdmissionError
-        ? voiceStatusForAdmissionRefusal(error.reason)
-        : 'temporarily_unavailable');
+      if (error instanceof SavedSecretOperationAdmissionError) {
+        throw Object.assign(
+          unavailable(savedSecretOperationAdmissionStatus(error.reason)),
+          { admissionReason: error.reason },
+        );
+      }
+      throw unavailable('temporarily_unavailable');
     }
   }
 

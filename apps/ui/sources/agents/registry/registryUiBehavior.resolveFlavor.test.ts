@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import type { Metadata, Session } from '@/sync/domains/state/storageTypes';
+import type { Session } from '@/sync/domains/state/storageTypes';
+import type { Metadata } from '@happier-dev/session-core/state';
 import {
     AGENTS_UI_BEHAVIOR,
     CANONICAL_AGENTS_UI_BEHAVIOR,
@@ -216,6 +217,31 @@ describe('resolveAgentUiBehaviorFromFlavor', () => {
             agentId: 'codex',
             session: makeSession({ ...session, agentState: null }),
         })).toBe(false);
+    });
+
+    it('keeps the goal control on an opened runtime without native goal controls, held by the daemon (F5/X16)', () => {
+        const codexSession = makeSession({
+            active: true,
+            metadata: {
+                ...BASE_METADATA,
+                agentRuntimeDescriptorV1: { v: 1, agentId: 'codex', provider: { backendMode: 'appServer' } },
+            },
+            agentState: null,
+        });
+        expect(supportsEditableSessionGoals({ agentId: 'codex', session: codexSession, daemonGoalControlsSupported: true })).toBe(true);
+        expect(supportsEditableSessionGoals({ agentId: 'codex', session: codexSession })).toBe(false);
+
+        const claudeSession = makeSession({
+            active: true,
+            // A fresh session: no goal yet, and an opener without native goal operations.
+            metadata: { ...BASE_METADATA, flavor: 'claude' },
+            agentState: { capabilities: {} },
+        });
+        expect(supportsEditableSessionGoals({ agentId: 'claude', session: claudeSession, daemonGoalControlsSupported: true })).toBe(true);
+        // The daemon-held goal keeps the provider's restricted surface, not the native one.
+        expect(resolveSessionGoalActionCapabilityProfile({ agentId: 'claude', session: claudeSession, daemonGoalControlsSupported: true }))
+            .toEqual({ canEdit: true, canStop: false, canClear: true, canConfigureBudget: false });
+        expect(supportsEditableSessionGoals({ agentId: 'claude', session: claudeSession })).toBe(false);
     });
 
     it('keeps inactive Codex sessions goal-editable when a persisted goal work-state exists', () => {

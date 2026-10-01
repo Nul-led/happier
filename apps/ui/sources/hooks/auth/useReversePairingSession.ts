@@ -7,20 +7,22 @@ import { buildRenderableHomeQrInviteDeepLink } from '@/auth/pairing/pairingUrl';
 import { decodeBase64, encodeBase64 } from '@/encryption/base64';
 import { pairingRequest } from '@/sync/api/account/apiPairingAuth';
 import { probeServerFeaturesAtUrl } from '@/sync/api/capabilities/serverFeaturesClient';
-import { adoptHomeProfileWithCredentials, HomeProfileAdoptionPartialCommitError } from '@/sync/domains/server/adoptHomeProfile';
+import {
+    adoptHomeProfileWithCredentials,
+    isHomeProfileAdoptionPartialCommitFailure,
+    type HomeProfileAdoptionPartialCommitFailure,
+} from '@/sync/domains/server/adoptHomeProfile';
 import { buildHomeConnectionDescriptorForProfile, getServerProfileById } from '@/sync/domains/server/serverProfiles';
 import {
     computeHomeQrBindingProofV2,
     createHomeQrReverseInviteV2,
     deriveHomeQrBindingKeyV2,
     deriveHomeQrRendezvousSecretV2,
-    readServerEnabledBit,
     type HomeConnectionDescriptorV1,
     type HomeQrInviteV2,
 } from '@happier-dev/protocol';
 import { enrollmentPollingBackoffMs } from '@/auth/enrollment/enrollmentPollingBackoff';
-
-const PAIRING_FEATURE_ID = 'auth.pairing.boundQrV2' as const;
+import { admitDirectHomeQrV2 } from '@happier-dev/cli-common/homeEnrollment';
 
 export type ReversePairingPresentation =
     | Readonly<{ phase: 'generating' }>
@@ -31,7 +33,7 @@ export type ReversePairingPresentation =
     | Readonly<{
         phase: 'retryable_error';
         descriptor?: HomeConnectionDescriptorV1;
-        partialCommit: HomeProfileAdoptionPartialCommitError | null;
+        partialCommit: HomeProfileAdoptionPartialCommitFailure | null;
     }>;
 
 type ReverseAttempt = {
@@ -154,7 +156,7 @@ export function useReversePairingSession(params: Readonly<{ enabled: boolean; ta
                 publish(attempt, { phase: 'invalid', descriptor });
                 return;
             }
-            if (readServerEnabledBit(featureSnapshot.features, PAIRING_FEATURE_ID) !== true) {
+            if (admitDirectHomeQrV2(featureSnapshot.features).kind !== 'admitted') {
                 publish(attempt, { phase: 'update_required', descriptor });
                 return;
             }
@@ -279,7 +281,7 @@ export function useReversePairingSession(params: Readonly<{ enabled: boolean; ta
                 publish(attempt, {
                     phase: 'retryable_error',
                     descriptor,
-                    partialCommit: error instanceof HomeProfileAdoptionPartialCommitError ? error : null,
+                    partialCommit: isHomeProfileAdoptionPartialCommitFailure(error) ? error : null,
                 });
                 return;
             }

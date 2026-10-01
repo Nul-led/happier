@@ -1,5 +1,5 @@
-import type { Message } from '@/sync/domains/messages/messageTypes';
-import { compareTranscriptMessagesOldestFirst, hasTranscriptMessageOrderChanged } from '@/sync/domains/messages/transcriptOrdering';
+import type { Message } from "@happier-dev/session-core/messages";
+import { compareTranscriptMessagesOldestFirst, hasTranscriptMessageOrderChanged } from "@happier-dev/session-core/messages";
 import {
     collectTranscriptRequestStates,
     mergeTranscriptRequestState,

@@ -2,7 +2,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 
 export type HostingProviderExecutionAuthority = Readonly<{
     pluginId: string;
-    generation: string;
+    occurrenceId: string;
     contributionId: string;
 }>;
 

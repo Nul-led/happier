@@ -680,11 +680,10 @@ export async function readRunnerCreatorAttachmentUploadCustody(
     const key = await storageKey(scope, activationId);
     await awaitCustodyMutation(key);
     const stored = parseStored(await readDeviceLocalStorageString(key));
-    const preparedAuthoring = requirePreparedAuthoring(stored);
+    requirePreparedAuthoring(stored);
     const upload = stored.attachmentUpload;
     if (!upload) {
-        if (preparedAuthoring.files.length !== 0) throw new RunnerCreatorLaunchCustodyUnavailableError();
-        return { attachmentMessageLocalId: '', firstTurnLocalId: '', maxFileBytes: 0, stagedFiles: [] };
+        throw new RunnerCreatorLaunchCustodyUnavailableError();
     }
     try {
         // Reopening staged bytes has one owner; this reader never reimplements it.

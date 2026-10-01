@@ -6,6 +6,7 @@ import { GlassPanel } from '@/components/ui/glass/GlassPanel';
 import { Text } from '@/components/ui/text/Text';
 import { t } from '@/text';
 import { Icon } from '@/components/ui/icons/Icon';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 export const JumpToBottomButton = React.memo(function JumpToBottomButton(props: {
     count: number;
@@ -32,7 +33,7 @@ export const JumpToBottomButton = React.memo(function JumpToBottomButton(props: 
                 onPress={props.onPress}
                 accessibilityRole="button"
                 accessibilityLabel={accessibilityLabel}
-                style={({ pressed }) => [styles.row, compact && styles.compactRow, pressed && { opacity: 0.92 }]}
+                style={({ pressed }) => [styles.row, compact && styles.compactRow, pressed && { opacity: motionTokens.press.opacitySubtle }]}
             >
                 {props.count > 0 ? (
                     <View style={styles.badge}>

@@ -11,7 +11,7 @@ const mocks = vi.hoisted(() => ({
     readCredentials: vi.fn(),
     readStoredCredentials: vi.fn(),
     resolveExternalSessionObservationLinkInput: vi.fn(),
-    resolveGenerationBoundExternalSessionFollowSurface: vi.fn(),
+    resolveOccurrenceBoundExternalSessionFollowSurface: vi.fn(),
 }));
 
 vi.mock('@/api/session/external/takeover/loadLinkedExternalSession', () => ({
@@ -26,8 +26,8 @@ vi.mock('@/api/session/external/leases/resolveExternalSessionObservationLinkInpu
         mocks.resolveExternalSessionObservationLinkInput,
 }));
 vi.mock('@/session/actions/externalSessions/providerOpsResolution', () => ({
-    resolveGenerationBoundExternalSessionFollowSurface:
-        mocks.resolveGenerationBoundExternalSessionFollowSurface,
+    resolveOccurrenceBoundExternalSessionFollowSurface:
+        mocks.resolveOccurrenceBoundExternalSessionFollowSurface,
 }));
 
 import { createExternalSessionFollowHostOperation } from './followHostOperation';
@@ -53,7 +53,7 @@ const ref = Object.freeze({
 });
 const resource = Object.freeze({
     linkGeneration: 'link-generation-1',
-    pluginGeneration: 'plugin-generation-1',
+    occurrenceId: 'plugin-generation-1',
 });
 const linkedSession = Object.freeze({
     agentId: 'codex',
@@ -67,7 +67,7 @@ const observation = Object.freeze({
     resource: Object.freeze({
         agentId: 'codex',
         resourceKey: 'codex-home:user',
-        pluginGeneration: resource.pluginGeneration,
+        occurrenceId: resource.occurrenceId,
     }),
     link: Object.freeze({
         sessionId: 'linked-session-1',
@@ -109,8 +109,8 @@ describe('createExternalSessionFollowHostOperation', () => {
             hasMore: false,
             truncated: false,
         }));
-        mocks.resolveGenerationBoundExternalSessionFollowSurface.mockResolvedValue({
-            immutablePluginGenerationId: resource.pluginGeneration,
+        mocks.resolveOccurrenceBoundExternalSessionFollowSurface.mockResolvedValue({
+            occurrenceId: resource.occurrenceId,
             providerOps: {
                 pageTranscript,
                 readAfterTranscript: vi.fn(async () => ({
@@ -135,11 +135,11 @@ describe('createExternalSessionFollowHostOperation', () => {
         const binding = owner.bind({
             pluginId: 'synthetic.non-bundled',
             agentId: 'codex',
-            generationId: resource.pluginGeneration,
+            occurrenceId: resource.occurrenceId,
             sessionId: 'linked-session-1',
             machineId: 'machine-1',
             readAccountRevision: () => 'account-1',
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
         const listener = vi.fn(async (_event: HostExternalTranscriptFollowEvent) => undefined);
         const result = await binding.executeFollow({
@@ -174,8 +174,8 @@ describe('createExternalSessionFollowHostOperation', () => {
             hasMore: false,
             truncated: false,
         }));
-        mocks.resolveGenerationBoundExternalSessionFollowSurface.mockResolvedValue({
-            immutablePluginGenerationId: resource.pluginGeneration,
+        mocks.resolveOccurrenceBoundExternalSessionFollowSurface.mockResolvedValue({
+            occurrenceId: resource.occurrenceId,
             providerOps: {
                 pageTranscript,
                 readAfterTranscript: vi.fn(async () => ({ outcome: 'already_current' as const })),
@@ -199,7 +199,7 @@ describe('createExternalSessionFollowHostOperation', () => {
         const result = await operation.execute({
             pluginId: 'synthetic.non-bundled',
             contributionId: 'codex',
-            generationId: resource.pluginGeneration,
+            occurrenceId: resource.occurrenceId,
             sessionId: 'linked-session-1',
             machineId: 'machine-1',
             ref,
@@ -226,8 +226,8 @@ describe('createExternalSessionFollowHostOperation', () => {
             hasMore: false,
             truncated: false,
         }));
-        mocks.resolveGenerationBoundExternalSessionFollowSurface.mockResolvedValue({
-            immutablePluginGenerationId: resource.pluginGeneration,
+        mocks.resolveOccurrenceBoundExternalSessionFollowSurface.mockResolvedValue({
+            occurrenceId: resource.occurrenceId,
             providerOps: {
                 pageTranscript,
                 readAfterTranscript: vi.fn(async () => ({
@@ -257,7 +257,7 @@ describe('createExternalSessionFollowHostOperation', () => {
             ...observation,
             resource: {
                 ...observation.resource,
-                pluginGeneration: resource.pluginGeneration,
+                occurrenceId: resource.occurrenceId,
             },
             link: {
                 ...observation.link,
@@ -282,7 +282,7 @@ describe('createExternalSessionFollowHostOperation', () => {
         const result = await operation.execute({
             pluginId: 'synthetic.non-bundled',
             contributionId: 'codex',
-            generationId: resource.pluginGeneration,
+            occurrenceId: resource.occurrenceId,
             sessionId: 'hosted-session-1',
             machineId: 'machine-1',
             ref,
@@ -312,21 +312,21 @@ describe('createExternalSessionFollowHostOperation', () => {
         }
     });
 
-    it('binds live observation before initial replay and follows from the admitted cursor', async () => {
+    it('keeps the first replay cutoff when the source appends while older pages are read', async () => {
         const order: string[] = [];
         const release = vi.fn(async () => undefined);
-        const pageTranscript = vi.fn(async () => {
+        const pageTranscript = vi.fn(async (request: Readonly<{ cursor?: string }>) => {
             order.push('replay');
             return {
                 items: [],
-                nextCursor: null,
-                tailCursor: 'captured-tail',
-                hasMore: false,
+                nextCursor: request.cursor ? null : 'older-page',
+                tailCursor: request.cursor ? 'appended-tail' : 'captured-tail',
+                hasMore: !request.cursor,
                 truncated: false,
             };
         });
-        mocks.resolveGenerationBoundExternalSessionFollowSurface.mockResolvedValue({
-            immutablePluginGenerationId: resource.pluginGeneration,
+        mocks.resolveOccurrenceBoundExternalSessionFollowSurface.mockResolvedValue({
+            occurrenceId: resource.occurrenceId,
             providerOps: {
                 pageTranscript,
                 readAfterTranscript: vi.fn(async () => ({ outcome: 'already_current' as const })),
@@ -353,7 +353,7 @@ describe('createExternalSessionFollowHostOperation', () => {
         const result = await operation.execute({
             pluginId: 'synthetic.non-bundled',
             contributionId: 'codex',
-            generationId: resource.pluginGeneration,
+            occurrenceId: resource.occurrenceId,
             sessionId: 'linked-session-1',
             machineId: 'machine-1',
             ref,
@@ -364,7 +364,7 @@ describe('createExternalSessionFollowHostOperation', () => {
         });
 
         expect(result).toMatchObject({ status: 'following', startingCursor: 'captured-tail' });
-        expect(order).toEqual(['attach', 'replay']);
+        expect(order).toEqual(['attach', 'replay', 'replay']);
         if (result.status === 'following') await result.subscription.dispose();
         expect(release).toHaveBeenCalledOnce();
     });
@@ -392,8 +392,8 @@ describe('createExternalSessionFollowHostOperation', () => {
             nextCursor: 'live-tail',
             hasMore: false,
         }));
-        mocks.resolveGenerationBoundExternalSessionFollowSurface.mockResolvedValue({
-            immutablePluginGenerationId: resource.pluginGeneration,
+        mocks.resolveOccurrenceBoundExternalSessionFollowSurface.mockResolvedValue({
+            occurrenceId: resource.occurrenceId,
             providerOps: {
                 pageTranscript: vi.fn(async () => ({
                     items: [],
@@ -433,7 +433,7 @@ describe('createExternalSessionFollowHostOperation', () => {
         const result = await operation.execute({
             pluginId: 'synthetic.non-bundled',
             contributionId: 'codex',
-            generationId: resource.pluginGeneration,
+            occurrenceId: resource.occurrenceId,
             sessionId: 'linked-session-1',
             machineId: 'machine-1',
             ref,
@@ -467,8 +467,8 @@ describe('createExternalSessionFollowHostOperation', () => {
     it('releases the admitted live lease exactly once when initial replay fails', async () => {
         const replayFailure = new Error('replay failed');
         const release = vi.fn(async () => undefined);
-        mocks.resolveGenerationBoundExternalSessionFollowSurface.mockResolvedValue({
-            immutablePluginGenerationId: resource.pluginGeneration,
+        mocks.resolveOccurrenceBoundExternalSessionFollowSurface.mockResolvedValue({
+            occurrenceId: resource.occurrenceId,
             providerOps: {
                 pageTranscript: vi.fn(async () => { throw replayFailure; }),
                 readAfterTranscript: vi.fn(async () => ({ outcome: 'already_current' as const })),
@@ -492,7 +492,7 @@ describe('createExternalSessionFollowHostOperation', () => {
         await expect(operation.execute({
             pluginId: 'synthetic.non-bundled',
             contributionId: 'codex',
-            generationId: resource.pluginGeneration,
+            occurrenceId: resource.occurrenceId,
             sessionId: 'linked-session-1',
             machineId: 'machine-1',
             ref,
@@ -510,8 +510,8 @@ describe('createExternalSessionFollowHostOperation', () => {
     it('releases the admitted live lease exactly once when replay delivery rejects', async () => {
         const listenerFailure = new Error('listener rejected replay');
         const release = vi.fn(async () => undefined);
-        mocks.resolveGenerationBoundExternalSessionFollowSurface.mockResolvedValue({
-            immutablePluginGenerationId: resource.pluginGeneration,
+        mocks.resolveOccurrenceBoundExternalSessionFollowSurface.mockResolvedValue({
+            occurrenceId: resource.occurrenceId,
             providerOps: {
                 pageTranscript: vi.fn(async () => ({
                     items: [{
@@ -552,7 +552,7 @@ describe('createExternalSessionFollowHostOperation', () => {
         await expect(operation.execute({
             pluginId: 'synthetic.non-bundled',
             contributionId: 'codex',
-            generationId: resource.pluginGeneration,
+            occurrenceId: resource.occurrenceId,
             sessionId: 'linked-session-1',
             machineId: 'machine-1',
             ref,
@@ -572,8 +572,8 @@ describe('createExternalSessionFollowHostOperation', () => {
         vi.setSystemTime(1_000);
         const admissionDeadlineAtMs = 2_000;
         const release = vi.fn(async () => undefined);
-        mocks.resolveGenerationBoundExternalSessionFollowSurface.mockResolvedValue({
-            immutablePluginGenerationId: resource.pluginGeneration,
+        mocks.resolveOccurrenceBoundExternalSessionFollowSurface.mockResolvedValue({
+            occurrenceId: resource.occurrenceId,
             providerOps: {
                 pageTranscript: vi.fn(async () => {
                     vi.setSystemTime(admissionDeadlineAtMs);
@@ -606,7 +606,7 @@ describe('createExternalSessionFollowHostOperation', () => {
         await expect(operation.execute({
             pluginId: 'synthetic.non-bundled',
             contributionId: 'codex',
-            generationId: resource.pluginGeneration,
+            occurrenceId: resource.occurrenceId,
             sessionId: 'linked-session-1',
             machineId: 'machine-1',
             ref,
@@ -647,8 +647,8 @@ describe('createExternalSessionFollowHostOperation', () => {
             }
             throw new Error('unexpected page request');
         });
-        mocks.resolveGenerationBoundExternalSessionFollowSurface.mockResolvedValue({
-            immutablePluginGenerationId: resource.pluginGeneration,
+        mocks.resolveOccurrenceBoundExternalSessionFollowSurface.mockResolvedValue({
+            occurrenceId: resource.occurrenceId,
             providerOps: {
                 pageTranscript,
                 readAfterTranscript: vi.fn(async () => ({ outcome: 'already_current' as const })),
@@ -670,7 +670,7 @@ describe('createExternalSessionFollowHostOperation', () => {
         const result = await operation.execute({
             pluginId: 'synthetic.non-bundled',
             contributionId: 'codex',
-            generationId: resource.pluginGeneration,
+            occurrenceId: resource.occurrenceId,
             sessionId: 'linked-session-1',
             machineId: 'machine-1',
             ref,
@@ -736,8 +736,8 @@ describe('createExternalSessionFollowHostOperation', () => {
             }
             throw new Error('unexpected page request');
         });
-        mocks.resolveGenerationBoundExternalSessionFollowSurface.mockResolvedValue({
-            immutablePluginGenerationId: resource.pluginGeneration,
+        mocks.resolveOccurrenceBoundExternalSessionFollowSurface.mockResolvedValue({
+            occurrenceId: resource.occurrenceId,
             providerOps: {
                 pageTranscript,
                 readAfterTranscript: vi.fn(async () => ({ outcome: 'already_current' as const })),
@@ -758,7 +758,7 @@ describe('createExternalSessionFollowHostOperation', () => {
         const result = await operation.execute({
             pluginId: 'synthetic.non-bundled',
             contributionId: 'codex',
-            generationId: resource.pluginGeneration,
+            occurrenceId: resource.occurrenceId,
             sessionId: 'linked-session-1',
             machineId: 'machine-1',
             ref,
@@ -791,8 +791,8 @@ describe('createExternalSessionFollowHostOperation', () => {
                 truncated: false,
             };
         });
-        mocks.resolveGenerationBoundExternalSessionFollowSurface.mockResolvedValue({
-            immutablePluginGenerationId: resource.pluginGeneration,
+        mocks.resolveOccurrenceBoundExternalSessionFollowSurface.mockResolvedValue({
+            occurrenceId: resource.occurrenceId,
             providerOps: {
                 pageTranscript,
                 readAfterTranscript: vi.fn(async () => ({ outcome: 'already_current' as const })),
@@ -814,7 +814,7 @@ describe('createExternalSessionFollowHostOperation', () => {
         await expect(operation.execute({
             pluginId: 'synthetic.non-bundled',
             contributionId: 'codex',
-            generationId: resource.pluginGeneration,
+            occurrenceId: resource.occurrenceId,
             sessionId: 'linked-session-1',
             machineId: 'machine-1',
             ref,
@@ -835,8 +835,8 @@ describe('createExternalSessionFollowHostOperation', () => {
 
     it('fails an expired whole-admission deadline before the first provider page', async () => {
         const pageTranscript = vi.fn();
-        mocks.resolveGenerationBoundExternalSessionFollowSurface.mockResolvedValue({
-            immutablePluginGenerationId: resource.pluginGeneration,
+        mocks.resolveOccurrenceBoundExternalSessionFollowSurface.mockResolvedValue({
+            occurrenceId: resource.occurrenceId,
             providerOps: {
                 pageTranscript,
                 readAfterTranscript: vi.fn(async () => ({ outcome: 'already_current' as const })),
@@ -854,7 +854,7 @@ describe('createExternalSessionFollowHostOperation', () => {
         await expect(operation.execute({
             pluginId: 'synthetic.non-bundled',
             contributionId: 'codex',
-            generationId: resource.pluginGeneration,
+            occurrenceId: resource.occurrenceId,
             sessionId: 'linked-session-1',
             machineId: 'machine-1',
             ref,
@@ -901,8 +901,8 @@ describe('createExternalSessionFollowHostOperation', () => {
                     truncated: false,
                 };
             });
-            mocks.resolveGenerationBoundExternalSessionFollowSurface.mockResolvedValue({
-                immutablePluginGenerationId: resource.pluginGeneration,
+            mocks.resolveOccurrenceBoundExternalSessionFollowSurface.mockResolvedValue({
+                occurrenceId: resource.occurrenceId,
                 providerOps: {
                     pageTranscript,
                     readAfterTranscript: vi.fn(async () => ({ outcome: 'already_current' as const })),
@@ -922,7 +922,7 @@ describe('createExternalSessionFollowHostOperation', () => {
             await expect(operation.execute({
                 pluginId: 'synthetic.non-bundled',
                 contributionId: 'codex',
-                generationId: resource.pluginGeneration,
+                occurrenceId: resource.occurrenceId,
                 sessionId: 'linked-session-1',
                 machineId: 'machine-1',
                 ref,
@@ -981,8 +981,8 @@ describe('createExternalSessionFollowHostOperation', () => {
                 ? bounded.value
                 : { outcome: 'read_failed' as const };
         });
-        mocks.resolveGenerationBoundExternalSessionFollowSurface.mockResolvedValue({
-            immutablePluginGenerationId: resource.pluginGeneration,
+        mocks.resolveOccurrenceBoundExternalSessionFollowSurface.mockResolvedValue({
+            occurrenceId: resource.occurrenceId,
             providerOps: {
                 pageTranscript,
                 readAfterTranscript,
@@ -1008,7 +1008,7 @@ describe('createExternalSessionFollowHostOperation', () => {
         const result = await operation.execute({
             pluginId: 'synthetic.non-bundled',
             contributionId: 'codex',
-            generationId: resource.pluginGeneration,
+            occurrenceId: resource.occurrenceId,
             sessionId: 'linked-session-1',
             machineId: 'machine-1',
             ref,
@@ -1101,8 +1101,8 @@ describe('createExternalSessionFollowHostOperation', () => {
             hasMore: advanced.hasMore,
             ...(advanced.diagnostics ? { diagnostics: advanced.diagnostics } : {}),
         }));
-        mocks.resolveGenerationBoundExternalSessionFollowSurface.mockResolvedValue({
-            immutablePluginGenerationId: resource.pluginGeneration,
+        mocks.resolveOccurrenceBoundExternalSessionFollowSurface.mockResolvedValue({
+            occurrenceId: resource.occurrenceId,
             providerOps: {
                 pageTranscript: async () => ({
                     items: [], nextCursor: null, tailCursor: 'cursor-1', hasMore: false, truncated: false,
@@ -1125,7 +1125,7 @@ describe('createExternalSessionFollowHostOperation', () => {
         const result = await operation.execute({
             pluginId: 'synthetic.non-bundled',
             contributionId: 'codex',
-            generationId: resource.pluginGeneration,
+            occurrenceId: resource.occurrenceId,
             sessionId: 'linked-session-1',
             machineId: 'machine-1',
             ref,
@@ -1160,8 +1160,8 @@ describe('createExternalSessionFollowHostOperation', () => {
                 positions: [17],
             }],
         }));
-        mocks.resolveGenerationBoundExternalSessionFollowSurface.mockResolvedValue({
-            immutablePluginGenerationId: resource.pluginGeneration,
+        mocks.resolveOccurrenceBoundExternalSessionFollowSurface.mockResolvedValue({
+            occurrenceId: resource.occurrenceId,
             providerOps: {
                 pageTranscript: async () => ({
                     items: [], nextCursor: null, tailCursor: 'cursor-1', hasMore: false, truncated: false,
@@ -1183,7 +1183,7 @@ describe('createExternalSessionFollowHostOperation', () => {
         const listener = vi.fn(async () => undefined);
         const result = await operation.execute({
             pluginId: 'synthetic.non-bundled', contributionId: 'codex',
-            generationId: resource.pluginGeneration, sessionId: 'linked-session-1', machineId: 'machine-1',
+            occurrenceId: resource.occurrenceId, sessionId: 'linked-session-1', machineId: 'machine-1',
             ref, source, options: { cursor: 'cursor-1' }, listener, isCurrent: () => true,
         });
 
@@ -1206,8 +1206,8 @@ describe('createExternalSessionFollowHostOperation', () => {
             nextCursor: 'cursor-2',
             boundary: 'boundary-2',
         }));
-        mocks.resolveGenerationBoundExternalSessionFollowSurface.mockResolvedValue({
-            immutablePluginGenerationId: resource.pluginGeneration,
+        mocks.resolveOccurrenceBoundExternalSessionFollowSurface.mockResolvedValue({
+            occurrenceId: resource.occurrenceId,
             providerOps: {
                 pageTranscript: async () => ({
                     items: [],
@@ -1242,7 +1242,7 @@ describe('createExternalSessionFollowHostOperation', () => {
         const result = await operationWithStatus.execute({
             pluginId: 'synthetic.non-bundled',
             contributionId: 'codex',
-            generationId: resource.pluginGeneration,
+            occurrenceId: resource.occurrenceId,
             sessionId: 'linked-session-1',
             machineId: 'machine-1',
             ref,
@@ -1297,8 +1297,8 @@ describe('createExternalSessionFollowHostOperation', () => {
         'applies zero scoped items and publishes the typed %s follow outcome',
         async (outcome) => {
             const readAfterTranscript = vi.fn(async () => ({ outcome }));
-            mocks.resolveGenerationBoundExternalSessionFollowSurface.mockResolvedValue({
-                immutablePluginGenerationId: resource.pluginGeneration,
+            mocks.resolveOccurrenceBoundExternalSessionFollowSurface.mockResolvedValue({
+                occurrenceId: resource.occurrenceId,
                 providerOps: {
                     pageTranscript: async () => ({
                         items: [],
@@ -1331,7 +1331,7 @@ describe('createExternalSessionFollowHostOperation', () => {
             const result = await operation.execute({
                 pluginId: 'synthetic.non-bundled',
                 contributionId: 'codex',
-                generationId: resource.pluginGeneration,
+                occurrenceId: resource.occurrenceId,
                 sessionId: 'linked-session-1',
                 machineId: 'machine-1',
                 ref,
@@ -1386,8 +1386,8 @@ describe('createExternalSessionFollowHostOperation', () => {
             } as never,
         });
         const listener = vi.fn(async (_event: HostExternalTranscriptFollowEvent) => undefined);
-        mocks.resolveGenerationBoundExternalSessionFollowSurface.mockResolvedValue({
-            immutablePluginGenerationId: resource.pluginGeneration,
+        mocks.resolveOccurrenceBoundExternalSessionFollowSurface.mockResolvedValue({
+            occurrenceId: resource.occurrenceId,
             providerOps: {
                 pageTranscript: async () => ({
                     items: [],
@@ -1404,7 +1404,7 @@ describe('createExternalSessionFollowHostOperation', () => {
         const result = await operation.execute({
             pluginId: 'synthetic.non-bundled',
             contributionId: 'codex',
-            generationId: resource.pluginGeneration,
+            occurrenceId: resource.occurrenceId,
             sessionId: 'linked-session-1',
             machineId: 'machine-1',
             ref,
@@ -1436,8 +1436,8 @@ describe('createExternalSessionFollowHostOperation', () => {
         const readAfterTranscript = vi.fn()
             .mockResolvedValueOnce({ outcome: 'gap_or_cursor_expired' });
         const pageTranscript = vi.fn();
-        mocks.resolveGenerationBoundExternalSessionFollowSurface.mockResolvedValue({
-            immutablePluginGenerationId: resource.pluginGeneration,
+        mocks.resolveOccurrenceBoundExternalSessionFollowSurface.mockResolvedValue({
+            occurrenceId: resource.occurrenceId,
             providerOps: {
                 pageTranscript,
                 readAfterTranscript,
@@ -1464,7 +1464,7 @@ describe('createExternalSessionFollowHostOperation', () => {
         const result = await operation.execute({
             pluginId: 'synthetic.non-bundled',
             contributionId: 'codex',
-            generationId: resource.pluginGeneration,
+            occurrenceId: resource.occurrenceId,
             sessionId: 'linked-session-1',
             machineId: 'machine-1',
             ref,
@@ -1527,8 +1527,8 @@ describe('createExternalSessionFollowHostOperation', () => {
                 nextCursor: 'cursor-current',
                 boundary: 'boundary-current',
             });
-        mocks.resolveGenerationBoundExternalSessionFollowSurface.mockResolvedValue({
-            immutablePluginGenerationId: resource.pluginGeneration,
+        mocks.resolveOccurrenceBoundExternalSessionFollowSurface.mockResolvedValue({
+            occurrenceId: resource.occurrenceId,
             providerOps: {
                 pageTranscript: async () => ({
                     items: [],
@@ -1557,7 +1557,7 @@ describe('createExternalSessionFollowHostOperation', () => {
         const result = await operation.execute({
             pluginId: 'synthetic.non-bundled',
             contributionId: 'codex',
-            generationId: resource.pluginGeneration,
+            occurrenceId: resource.occurrenceId,
             sessionId: 'linked-session-1',
             machineId: 'machine-1',
             ref,
@@ -1623,7 +1623,7 @@ describe('createExternalSessionFollowHostOperation', () => {
         await expect(operation.execute({
             pluginId: 'synthetic.non-bundled',
             contributionId: 'codex',
-            generationId: resource.pluginGeneration,
+            occurrenceId: resource.occurrenceId,
             sessionId: 'linked-session-1',
             machineId: 'other-machine',
             ref,
@@ -1638,7 +1638,7 @@ describe('createExternalSessionFollowHostOperation', () => {
         await expect(operation.execute({
             pluginId: 'synthetic.non-bundled',
             contributionId: 'codex',
-            generationId: resource.pluginGeneration,
+            occurrenceId: resource.occurrenceId,
             sessionId: 'linked-session-1',
             machineId: 'machine-1',
             ref,
@@ -1652,7 +1652,7 @@ describe('createExternalSessionFollowHostOperation', () => {
         });
     });
 
-    it('never substitutes current H callbacks for an exact retained-G private follow', async () => {
+    it('rejects callbacks resolved from a retired plugin occurrence', async () => {
         const hPageTranscript = vi.fn(async () => ({
             items: [],
             nextCursor: null,
@@ -1663,8 +1663,8 @@ describe('createExternalSessionFollowHostOperation', () => {
         const hReadAfterTranscript = vi.fn(async () => ({
             outcome: 'already_current' as const,
         }));
-        mocks.resolveGenerationBoundExternalSessionFollowSurface.mockResolvedValue({
-            immutablePluginGenerationId: 'plugin-generation-h',
+        mocks.resolveOccurrenceBoundExternalSessionFollowSurface.mockResolvedValue({
+            occurrenceId: 'retired-occurrence-h',
             providerOps: {
                 pageTranscript: hPageTranscript,
                 readAfterTranscript: hReadAfterTranscript,
@@ -1683,7 +1683,7 @@ describe('createExternalSessionFollowHostOperation', () => {
         await expect(operation.execute({
             pluginId: 'synthetic.non-bundled',
             contributionId: 'codex',
-            generationId: resource.pluginGeneration,
+            occurrenceId: resource.occurrenceId,
             sessionId: 'linked-session-1',
             machineId: 'machine-1',
             ref,
@@ -1720,7 +1720,7 @@ describe('createExternalSessionFollowHostOperation', () => {
         await expect(operation.execute({
             pluginId: 'synthetic.non-bundled',
             contributionId: 'codex',
-            generationId: resource.pluginGeneration,
+            occurrenceId: resource.occurrenceId,
             sessionId: 'linked-session-1',
             machineId: 'machine-1',
             ref,
@@ -1744,7 +1744,7 @@ describe('createExternalSessionFollowHostOperation', () => {
                 source,
             },
         });
-        expect(mocks.resolveGenerationBoundExternalSessionFollowSurface)
+        expect(mocks.resolveOccurrenceBoundExternalSessionFollowSurface)
             .not.toHaveBeenCalled();
         expect(mocks.resolveExternalSessionObservationLinkInput)
             .not.toHaveBeenCalled();
@@ -1753,8 +1753,8 @@ describe('createExternalSessionFollowHostOperation', () => {
     });
 
     it('releases D5 demand and emits one terminal event on caller abort or generation retirement', async () => {
-        mocks.resolveGenerationBoundExternalSessionFollowSurface.mockResolvedValue({
-            immutablePluginGenerationId: resource.pluginGeneration,
+        mocks.resolveOccurrenceBoundExternalSessionFollowSurface.mockResolvedValue({
+            occurrenceId: resource.occurrenceId,
             providerOps: {
                 pageTranscript: async () => ({
                     items: [],
@@ -1788,7 +1788,7 @@ describe('createExternalSessionFollowHostOperation', () => {
         const result = await operation.execute({
             pluginId: 'synthetic.non-bundled',
             contributionId: 'codex',
-            generationId: resource.pluginGeneration,
+            occurrenceId: resource.occurrenceId,
             sessionId: 'linked-session-1',
             machineId: 'machine-1',
             ref,
@@ -1835,8 +1835,8 @@ describe('createExternalSessionFollowHostOperation', () => {
     ] as const)(
         'releases the late-scoped lease exactly once when %s arrives during follow acquisition',
         async ({ expectedCode, expectedReason, abort }) => {
-            mocks.resolveGenerationBoundExternalSessionFollowSurface.mockResolvedValue({
-                immutablePluginGenerationId: resource.pluginGeneration,
+            mocks.resolveOccurrenceBoundExternalSessionFollowSurface.mockResolvedValue({
+                occurrenceId: resource.occurrenceId,
                 providerOps: {
                     pageTranscript: async () => ({
                         items: [],
@@ -1881,7 +1881,7 @@ describe('createExternalSessionFollowHostOperation', () => {
             const pending = operation.execute({
                 pluginId: 'synthetic.non-bundled',
                 contributionId: 'codex',
-                generationId: resource.pluginGeneration,
+                occurrenceId: resource.occurrenceId,
                 sessionId: 'linked-session-1',
                 machineId: 'machine-1',
                 ref,

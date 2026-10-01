@@ -36,7 +36,7 @@ export function createMachineSessionServerStartSpawnLifecycleTransport(
     return {
         spawn: async (request, spawnOptions) => {
             spawnOptions?.signal?.throwIfAborted();
-            const result = await options.spawnLifecycleHandler(request);
+            const result = await options.spawnLifecycleHandler(request, spawnOptions);
             // A nonblank identity from the canonical lifecycle owner is
             // already a committed Session fact. Let the existing Session
             // settlement preserve it and report a cancelled initial input

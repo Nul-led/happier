@@ -120,7 +120,6 @@ describe('fetchSessionByIdWithServerScope', () => {
                 features: {
                     sessions: {
                         enabled: true,
-                        collaboration: { enabled: true },
                     },
                     sharing: {
                         session: { enabled: true },
@@ -248,6 +247,62 @@ describe('fetchSessionByIdWithServerScope', () => {
         expect(isCurrentEncryptionGenerationScope).toHaveBeenCalledWith(
             generationScope,
         );
+    });
+
+    it('hydrates a scoped session over its browser-Iroh carrier when its runtime origin is unreachable', async () => {
+        const requestOverCarrier = vi.fn(async () => new Response(null, { status: 200 }));
+        const releaseCarrier = vi.fn(async () => {});
+        const homeCarrier = {
+            leaseId: 'browser-lease-session-read',
+            homeServerIdentityId: 'server-iroh',
+            endpointId: 'a'.repeat(64),
+            appliedRelayUrls: ['https://relay.example.test'],
+            readObservedPath: () => 'relay' as const,
+            request: requestOverCarrier,
+            createWebSocket: () => {
+                throw new Error('session hydration must not create a WebSocket');
+            },
+            release: releaseCarrier,
+        };
+        resolveContextSpy.mockResolvedValue({
+            scope: 'scoped',
+            targetServerId: 'server-iroh',
+            targetServerUrl: 'https://ingressless.happier.invalid',
+            runtimeOrigin: 'https://ingressless.happier.invalid',
+            token: 'scoped-token',
+            credentials: { token: 'scoped-token', secret: 'scoped-secret' },
+            timeoutMs: 5000,
+            encryption: null,
+            carrier: 'iroh',
+            homeCarrier,
+            release: releaseCarrier,
+        });
+        runtimeFetchSpy.mockRejectedValue(new Error('unreachable Iroh runtime origin'));
+        fetchAndApplySessionByIdSpy.mockImplementationOnce(async (input: {
+            request: (path: string, init?: RequestInit) => Promise<Response>;
+        }) => {
+            await input.request('/v1/sessions/session-iroh', { method: 'GET' });
+            return { ok: true, session: { id: 'session-iroh' } };
+        });
+
+        const { fetchSessionByIdWithServerScope } = await import('./fetchSessionByIdWithServerScope');
+        await expect(fetchSessionByIdWithServerScope({
+            sessionId: 'session-iroh',
+            serverId: 'server-iroh',
+            activeCredentials: { token: 'active-token', secret: 'active-secret' },
+            activeEncryption: {} as any,
+            sessionDataKeys: new Map<string, Uint8Array>(),
+            activeRequest: vi.fn(),
+            applySessions: vi.fn(),
+            log: { log: vi.fn() },
+        })).resolves.toEqual({ ok: true, session: { id: 'session-iroh' } });
+
+        expect(requestOverCarrier).toHaveBeenCalledWith(
+            'https://ingressless.happier.invalid/v1/sessions/session-iroh',
+            expect.objectContaining({ method: 'GET' }),
+        );
+        expect(runtimeFetchSpy).not.toHaveBeenCalled();
+        expect(releaseCarrier).toHaveBeenCalledTimes(1);
     });
 
     it('forwards shell-only hydration options to the session-by-id reader', async () => {

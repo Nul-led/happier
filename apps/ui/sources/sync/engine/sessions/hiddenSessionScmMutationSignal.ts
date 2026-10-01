@@ -1,20 +1,22 @@
-import type { ApiMessage } from '@/sync/api/types/apiTypes';
+import type { SessionEncryptionMode, SessionMessageV1 } from '@happier-dev/protocol';
+
 import type { DecryptedMessage } from '@/sync/domains/state/storageTypes';
-import type { NormalizedMessage } from '@/sync/typesRaw';
-import { normalizeRawMessage } from '@/sync/typesRaw';
+import type { NormalizedMessage } from "@happier-dev/session-core/raw";
+import { normalizeRawMessage } from "@happier-dev/session-core/raw";
 import { ingestWorkspaceMutationMessages } from '@/scm/refresh/workspaceMutationIngestionRuntime';
 import { readStoredSessionMessage } from '@/sync/runtime/readStoredSessionContent';
 import { resolveSessionScmMutationSignal } from '@/sync/runtime/sessionLiveConsumption';
 
 type SessionMessageEncryption = Readonly<{
-    decryptMessage: (message: ApiMessage) => Promise<DecryptedMessage | null>;
+    decryptMessage: (message: SessionMessageV1) => Promise<DecryptedMessage | null>;
 }>;
 
 export type DeliverHiddenSessionScmMutationSignalParams = Readonly<{
     sessionId: string;
     /** Home the realtime update arrived on; the mounted SCM scope must match it. */
     serverId?: string | null;
-    rawMessage: ApiMessage | undefined;
+    rawMessage: SessionMessageV1 | undefined;
+    sessionEncryptionMode: SessionEncryptionMode;
     getSessionEncryption: (sessionId: string) => SessionMessageEncryption | null;
     /** Test seam mirroring the workspace-mutation ingestion; production uses the runtime singleton. */
     ingestMessages?: (sessionId: string, messages: readonly NormalizedMessage[], serverId?: string | null) => void;
@@ -47,6 +49,7 @@ export async function deliverHiddenSessionScmMutationSignal(
     const encryption = params.getSessionEncryption(params.sessionId);
     const decrypted = await readStoredSessionMessage({
         message: rawMessage,
+        sessionEncryptionMode: params.sessionEncryptionMode,
         decryptMessage: encryption ? (message) => encryption.decryptMessage(message) : undefined,
     });
     if (!decrypted) return;

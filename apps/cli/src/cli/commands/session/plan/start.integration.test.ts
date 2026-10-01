@@ -201,8 +201,8 @@ describe('happier session plan start (integration)', () => {
       expect(parsed.kind).toBe('session_plan_start');
       expect(parsed.data?.sessionId).toBe('sess_integration_plan_start_123');
       expect(parsed.data?.results?.length).toBe(2);
-      expect(parsed.data?.results?.[0]?.key).toBe('backend:claude');
-      expect(parsed.data?.results?.[1]?.key).toBe('backend:codex');
+      expect(parsed.data?.results?.[0]?.key).toBe('agent:happier.agent.claude/claude');
+      expect(parsed.data?.results?.[1]?.key).toBe('agent:happier.agent.codex/codex');
       expect(
         parsed.data?.results?.every((result: { ok?: boolean }) => result.ok === true),
         JSON.stringify(parsed),

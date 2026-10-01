@@ -754,7 +754,7 @@ async function planInstallPreview(input: Readonly<{
         }));
         const previewId = digest('hook-install-preview:v1', [
             JSON.stringify({ targets }),
-            input.resolution.current.lease.generation,
+            input.resolution.current.lease.occurrenceId,
             input.resolution.installationIdentity,
             input.resolution.executableIdentity,
             JSON.stringify(config.snapshot.targets.map((target) => [
@@ -1007,8 +1007,8 @@ export function createPluginSessionHookManagementHost(input: Readonly<{
                                                 record.installationIdentity,
                                             variantId: record.variantId,
                                             eventId: event.eventId,
-                                            pluginGeneration:
-                                                current.lease.generation,
+                                            pluginOccurrenceId:
+                                                current.lease.occurrenceId,
                                             retirementSignal:
                                                 current.lease.retirementSignal,
                                         });
@@ -1059,8 +1059,8 @@ export function createPluginSessionHookManagementHost(input: Readonly<{
                                                         record.installationIdentity,
                                                     variantId: record.variantId,
                                                     eventId: event.eventId,
-                                                    pluginGeneration:
-                                                        current.lease.generation,
+                                                    pluginOccurrenceId:
+                                                        current.lease.occurrenceId,
                                                     retirementSignal:
                                                         current.lease
                                                             .retirementSignal,
@@ -1897,7 +1897,7 @@ export function createPluginSessionHookManagementHost(input: Readonly<{
                                 variantId:
                                     resolution.value.selectedVariant.variantId,
                                 eventId: event.eventId,
-                                pluginGeneration: current.lease.generation,
+                                pluginOccurrenceId: current.lease.occurrenceId,
                                 retirementSignal:
                                     current.lease.retirementSignal,
                                 ...(installationPrincipalRef
@@ -1946,8 +1946,8 @@ export function createPluginSessionHookManagementHost(input: Readonly<{
                                     }),
                                 ),
                             generation: {
-                                expected: current.lease.generation,
-                                current: current.lease.generation,
+                                expected: current.lease.occurrenceId,
+                                current: current.lease.occurrenceId,
                             },
                             isCurrent: () => (
                                 operationIsCurrent(current, options?.signal)
@@ -2077,8 +2077,8 @@ export function createPluginSessionHookManagementHost(input: Readonly<{
                             ingressPrincipalRef:
                                 stagedRecord.ingressPrincipalRef,
                             generation: {
-                                expected: current.lease.generation,
-                                current: current.lease.generation,
+                                expected: current.lease.occurrenceId,
+                                current: current.lease.occurrenceId,
                             },
                             isCurrent: () => operationIsCurrent(current, options?.signal),
                         });
@@ -2339,7 +2339,7 @@ export function createPluginSessionHookManagementHost(input: Readonly<{
                                     record.installationIdentity,
                                 variantId: record.variantId,
                                 eventId: event.eventId,
-                                pluginGeneration: current.lease.generation,
+                                pluginOccurrenceId: current.lease.occurrenceId,
                                 retirementSignal:
                                     current.lease.retirementSignal,
                             });
@@ -2362,8 +2362,8 @@ export function createPluginSessionHookManagementHost(input: Readonly<{
                     executableIdentity: record.executableIdentity,
                     ingressPrincipalRef: record.ingressPrincipalRef,
                     generation: {
-                        expected: current.lease.generation,
-                        current: current.lease.generation,
+                        expected: current.lease.occurrenceId,
+                        current: current.lease.occurrenceId,
                     },
                     isCurrent: () => (
                         operationIsCurrent(current, options?.signal)

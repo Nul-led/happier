@@ -324,6 +324,7 @@ describe('direct transfer import session manager', () => {
         ttlMs: 10_000,
         attachmentUpload: {
           pathAllowanceRegistry,
+          resolveSessionWorkingDirectory: async (sessionId: string) => sessionId === 'session-a' ? workingDirectory : null,
         },
       } as unknown as Parameters<typeof createDirectTransferImportSessionManager>[0]);
 
@@ -331,6 +332,7 @@ describe('direct transfer import session manager', () => {
       const open = await manager.openTrustedImportSession({
         workingDirectory,
         t: 'session_attachment_upload_v1',
+        sessionId: 'session-a',
         sizeBytes: payload.length,
         messageLocalId: 'message-1',
         fileName: 'hello.txt',
@@ -405,12 +407,16 @@ describe('direct transfer import session manager', () => {
     try {
       const manager = createDirectTransferImportSessionManager({
         ttlMs: 10_000,
+        attachmentUpload: {
+          resolveSessionWorkingDirectory: async (sessionId) => sessionId === 'session-a' ? workingDirectory : null,
+        },
       });
 
       const payload = Buffer.from('hey', 'utf8');
       const open = await manager.openTrustedImportSession({
         workingDirectory,
         t: 'session_attachment_upload_v1',
+        sessionId: 'session-a',
         sizeBytes: payload.length,
         messageLocalId: 'message-2',
         fileName: 'note.txt',

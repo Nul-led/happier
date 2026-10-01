@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { useUsableHomeServerIds } from '@/sync/domains/scope/usableHomeServerIds';
 
 import {
     listServerProfiles,
@@ -40,6 +41,8 @@ export type NewSessionServerTargetSettings = Pick<
 >;
 
 export function useNewSessionServerTargetState(params: Readonly<{
+    /** Authenticated creation host placement; independent of saved Account Homes. */
+    hostTargetServerId?: string;
     settings: NewSessionServerTargetSettings;
     activeServerId?: string;
     activeServerSnapshot?: ActiveServerSnapshot;
@@ -69,6 +72,7 @@ export function useNewSessionServerTargetState(params: Readonly<{
             : [];
     }, [params.settings.serverSelectionGroups]);
 
+    const usableServerIds = useUsableHomeServerIds();
     const serverTargets = React.useMemo(() => {
         const scopedSettings = normalizeServerSelectionSettingsForProfileScopeIds({
             serverSelectionGroups,
@@ -81,8 +85,9 @@ export function useNewSessionServerTargetState(params: Readonly<{
                 id: resolveServerProfileScopeId(profile),
             })),
             groupProfiles: toServerSelectionSettings(scopedSettings).serverSelectionGroups ?? [],
+            usableServerIds,
         });
-    }, [params.settings.serverSelectionActiveTargetId, params.settings.serverSelectionActiveTargetKind, serverProfiles, serverSelectionGroups]);
+    }, [usableServerIds, params.settings.serverSelectionActiveTargetId, params.settings.serverSelectionActiveTargetKind, serverProfiles, serverSelectionGroups]);
 
     const resolvedSettingsTarget = React.useMemo(() => {
         const settings = normalizeServerSelectionSettingsForProfileScopeIds({
@@ -94,8 +99,10 @@ export function useNewSessionServerTargetState(params: Readonly<{
             activeServerId,
             availableServerIds,
             settings,
+            usableServerIds,
         });
     }, [
+        usableServerIds,
         activeServerId,
         availableServerIds,
         params.settings.serverSelectionActiveTargetId,
@@ -143,6 +150,7 @@ export function useNewSessionServerTargetState(params: Readonly<{
     ]);
 
     const allowedTargetServerIds = React.useMemo(() => {
+        if (params.hostTargetServerId) return [params.hostTargetServerId];
         if (explicitSettingsServerRejected) return [];
         if (!selectedServerTarget) {
             return resolvedSettingsTarget.allowedServerIds;
@@ -151,7 +159,7 @@ export function useNewSessionServerTargetState(params: Readonly<{
             return selectedServerTarget.serverIds;
         }
         return [selectedServerTarget.serverId];
-    }, [explicitSettingsServerRejected, resolvedSettingsTarget.allowedServerIds, selectedServerTarget]);
+    }, [explicitSettingsServerRejected, params.hostTargetServerId, resolvedSettingsTarget.allowedServerIds, selectedServerTarget]);
 
     const routeRequestedServerId = typeof params.request.spawnServerIdParam === 'string'
         ? params.request.spawnServerIdParam.trim() || null
@@ -160,7 +168,7 @@ export function useNewSessionServerTargetState(params: Readonly<{
         ? params.request.persistedTargetServerId.trim() || null
         : null;
     const capturedAuthoringServerIdRef = React.useRef<string | null>(null);
-    const requestedServerId = routeRequestedServerId
+    const requestedServerId = params.hostTargetServerId ?? routeRequestedServerId
         ?? persistedRequestedServerId
         ?? capturedAuthoringServerIdRef.current
         ?? (explicitSettingsServerRejected ? explicitSettingsServerId : null);

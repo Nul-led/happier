@@ -1,16 +1,18 @@
 import {
   PluginContributionLocalIdSchema,
   PluginIdSchema,
-  PluginMachineMaterializationRefV1Schema,
   PluginSessionInputRequestV1Schema,
   SessionInputAdmissionResultV1Schema,
   derivePluginSessionInputLocalIdV1,
   type ActionExecuteResult,
   type ActionExecutorContext,
   type PluginMachineMaterializationRefV1,
+  type PluginSourceCustodyV1,
   type SessionInputAdmissionResultV1,
 } from '@happier-dev/protocol';
-import { PluginUiImmutableGenerationIdV1Schema } from '@happier-dev/protocol/plugins/ui';
+
+import { resolvePluginActionCaller } from '@/plugins/runtime/invocation/services/actionCaller';
+import { PluginError } from '@happier-dev/plugin-sdk';
 
 type SessionMessageActionExecutor = (
   actionId: 'session.message.send',
@@ -23,8 +25,10 @@ export async function executePluginSessionMessageAction(params: Readonly<{
   execute: SessionMessageActionExecutor;
   pluginId: string;
   contributionLocalId: string;
-  /** Host-resolved immutable generation; never accepted from plugin input. */
-  immutableGenerationId: string;
+  /** Exact host-stamped process-local occurrence; never accepted from plugin input. */
+  occurrenceId: string;
+  /** Exact durable source custody; never accepted from plugin input. */
+  sourceCustody: PluginSourceCustodyV1;
   /**
    * The runtime-owned registry callback is read at dispatch time. A plugin
    * session handle must never recreate this authority from its plugin id.
@@ -39,29 +43,21 @@ export async function executePluginSessionMessageAction(params: Readonly<{
   if (!request.success) return { status: 'rejected', code: 'session_input_invalid' };
   const pluginId = PluginIdSchema.safeParse(params.pluginId);
   const contributionLocalId = PluginContributionLocalIdSchema.safeParse(params.contributionLocalId);
-  const immutableGenerationId = PluginUiImmutableGenerationIdV1Schema.safeParse(
-    params.immutableGenerationId,
-  );
-  if (!pluginId.success || !contributionLocalId.success || !immutableGenerationId.success) {
+  if (!pluginId.success || !contributionLocalId.success) {
     return { status: 'rejected', code: 'session_input_untrusted_assertion' };
   }
-  let rawMaterialization: PluginMachineMaterializationRefV1 | null | undefined;
-  try {
-    rawMaterialization = params.resolveCallerMaterialization?.();
-  } catch {
+  const actionCaller = resolvePluginActionCaller({
+    plugin: { id: pluginId.data },
+    contribution: { id: contributionLocalId.data },
+    occurrenceId: params.occurrenceId,
+    sourceCustody: params.sourceCustody,
+    ...(params.resolveCallerMaterialization
+      ? { resolveCurrentPluginMaterializationRef: params.resolveCallerMaterialization }
+      : {}),
+  });
+  if (!actionCaller) {
     return { status: 'rejected', code: 'session_input_untrusted_assertion' };
   }
-  const materialization = PluginMachineMaterializationRefV1Schema.safeParse(rawMaterialization);
-  if (!materialization.success || materialization.data.pluginId !== pluginId.data) {
-    return { status: 'rejected', code: 'session_input_untrusted_assertion' };
-  }
-  const actionCaller = {
-    kind: 'plugin' as const,
-    pluginId: pluginId.data,
-    contributionLocalId: contributionLocalId.data,
-    immutableGenerationId: immutableGenerationId.data,
-    materialization: materialization.data,
-  };
   const localId = derivePluginSessionInputLocalIdV1({
     caller: actionCaller,
     sessionId: params.sessionId,
@@ -85,6 +81,7 @@ export async function executePluginSessionMessageAction(params: Readonly<{
             ...(request.data.recipient ? { recipient: request.data.recipient } : {}),
             ...(request.data.source ? { source: request.data.source } : {}),
             ...(request.data.attachments ? { attachments: request.data.attachments } : {}),
+            ...(request.data.toolAnswerDelivery ? { toolAnswerDelivery: request.data.toolAnswerDelivery } : {}),
           },
       {
         surface: 'plugin',
@@ -101,6 +98,9 @@ export async function executePluginSessionMessageAction(params: Readonly<{
     };
   }
   if (!result.ok) {
+    if (result.errorCode === 'machine_admission_transport_unavailable') {
+      throw new PluginError({ code: result.errorCode, message: result.error, retryable: true });
+    }
     return {
       status: 'outcomeUnknown',
       localId,

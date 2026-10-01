@@ -60,7 +60,6 @@ function buildRuntimeActionExecute(input: Readonly<{
         policy: {
             allowIoModes: new Set(['headless']),
             maxConcurrentRuns: null,
-            maxDepth: 8,
         } as never,
         isExecutionRunsEnabled: () => true,
         context: {
@@ -84,7 +83,7 @@ function buildRuntimeActionExecute(input: Readonly<{
 
 describe('peer-mediation observability dispatch wiring', () => {
     it('routes snapshot through the dispatch chain to the shared store', async () => {
-        const runtime = createDaemonPeerMediationObservabilityRuntime({ nowMs: () => 1_000 });
+        const runtime = createDaemonPeerMediationObservabilityRuntime({ nowMs: () => 1_000, isEnabled: () => true });
         runtime.emitter.emit(createDaemonPeerMediationFlowEvent({
             accountId: ACCOUNT_ID,
             machineId: MACHINE_ID,
@@ -111,7 +110,7 @@ describe('peer-mediation observability dispatch wiring', () => {
     });
 
     it('fails closed at the execution boundary when the server feature gate is disabled', async () => {
-        const runtime = createDaemonPeerMediationObservabilityRuntime({ nowMs: () => 1_000 });
+        const runtime = createDaemonPeerMediationObservabilityRuntime({ nowMs: () => 1_000, isEnabled: () => true });
         runtime.emitter.emit(createDaemonPeerMediationFlowEvent({
             accountId: ACCOUNT_ID,
             machineId: MACHINE_ID,
@@ -135,7 +134,7 @@ describe('peer-mediation observability dispatch wiring', () => {
     });
 
     it('installs the startup provider from the JWT subject and dispatches through that provider context', async () => {
-        const runtime = createDaemonPeerMediationObservabilityRuntime({ nowMs: () => 1_000 });
+        const runtime = createDaemonPeerMediationObservabilityRuntime({ nowMs: () => 1_000, isEnabled: () => true });
         const captured: {
             calls: number;
             provider?: () => DaemonPeerMediationObservabilityRuntimeActionContext | null;
@@ -178,7 +177,6 @@ describe('peer-mediation observability dispatch wiring', () => {
             policy: {
                 allowIoModes: new Set(['headless']),
                 maxConcurrentRuns: null,
-                maxDepth: 8,
             } as never,
             isExecutionRunsEnabled: () => true,
             context: {
@@ -209,7 +207,7 @@ describe('peer-mediation observability dispatch wiring', () => {
     });
 
     it('surfaces a diagnostic when the startup JWT has no subject and leaves the provider unset', () => {
-        const runtime = createDaemonPeerMediationObservabilityRuntime({ nowMs: () => 1_000 });
+        const runtime = createDaemonPeerMediationObservabilityRuntime({ nowMs: () => 1_000, isEnabled: () => true });
         const api = {
             setPeerMediationObservabilityRuntimeActionContextProvider: vi.fn(),
         };

@@ -1,14 +1,12 @@
 import * as React from 'react';
-import { AccessibilityInfo, Platform, StyleSheet, View } from 'react-native';
+import { StyleSheet, View } from 'react-native';
+import Animated, {
+    cancelAnimation,
+    useAnimatedStyle,
+    useSharedValue,
+    withTiming,
+} from 'react-native-reanimated';
 import type { RenderContext } from '@happier-dev/plugin-sdk/ui';
-import {
-    deriveDaemonPluginReactNativeCrashBindingTokenKeyV1,
-    deriveDaemonPluginReactNativeCrashMountKeyV1,
-    isSameDaemonPluginReactNativeCrashBindingV1,
-    type DaemonPluginReactNativeCrashBindingTokenV1,
-    type DaemonPluginReactNativeCrashFailureV1,
-} from '@happier-dev/protocol';
-
 import {
     PLUGIN_UI_HOST_API_VERSION_V1,
     PLUGIN_UI_HOST_API_WIRE_VERSION_V1,
@@ -23,28 +21,36 @@ import {
     resolvePluginReactNativeLoaderPolicy,
     type PluginReactNativeLoaderPolicyInput,
 } from './loaderPolicy';
-import { getInstalledPluginReactNativeModuleRegistry } from './moduleRegistry';
 import {
-    PluginReactNativeUnavailable,
-    type PluginReactNativeUnavailableResetStatus,
-} from './PluginReactNativeUnavailable';
+    getInstalledPluginReactNativeModuleRegistry,
+    type PluginReactNativeModuleRegistryWriteFence,
+} from './moduleRegistry';
+import { PluginReactNativeUnavailable } from './PluginReactNativeUnavailable';
+import type { SurfaceStateAction } from '@/components/ui/surfaces/SurfaceStateCard';
+import {
+    PluginSurfaceFallback,
+    resolvePluginSurfaceStateAction,
+} from '@/components/sessions/panes/PluginSurfaceFallback';
+import { RoundButton } from '@/components/ui/buttons/RoundButton';
+import { Text } from '@/components/ui/text/Text';
+import { Typography } from '@/constants/Typography';
+import { reanimatedMotionTokens } from '@/components/ui/motion/reanimatedMotionTokens';
+import { resolvePluginSurfaceStatePresentation } from '@/sync/domains/surfaces/copy';
 import { PluginUiBoundary } from './PluginUiBoundary';
 import { PluginSurfaceInteractionBoundary } from '@/components/plugins/shared/PluginSurfaceInteractionBoundary';
 import {
     logPluginSurfaceDiagnostic,
     readPluginSurfaceDiagnosticError,
 } from '@/components/plugins/shared/pluginSurfaceDiagnosticLog';
-import { StatusPill } from '@/components/ui/status/StatusPill';
-import { resolvePluginSurfaceStatePresentation } from '@/sync/domains/surfaces/copy';
 import { stableJsonStringify } from '@/utils/json/stableJsonStringify';
+import { DEFAULT_SERVER_SCOPED_RPC_TIMEOUT_MS } from '@/sync/runtime/orchestration/serverScopedRpc/serverScopedRpcTypes';
 import {
     createPluginReactNativeWatchdog,
-    type PluginReactNativePendingFailure,
     type PluginReactNativeWatchdog,
 } from './watchdog';
-import { createDefaultPluginReactNativeWatchdogPersistence } from './watchdogPersistence';
-import type { ReactNativeCrashReportResult } from '@/sync/domains/plugins/ui/reactNativeCrashReports';
 import { PLUGIN_UI_PRIVATE_SURFACE_ENTRY_PROVIDER_KEY } from '@/components/plugins/pluginUiPrivateCarrierKeys';
+
+type PluginReactNativeLocalFailure = 'render_error' | 'invalid_surface_module' | 'load_error';
 
 /**
  * Cooperative host-private carrier bindings for the bundled `defineUiSurface`
@@ -119,8 +125,8 @@ type PluginReactNativeSurfaceProps = Readonly<{
      */
     loadedRuntimeIdentity?: Readonly<{
         pluginId: string;
-        generation: string;
-        artifactDigest: string;
+        occurrenceId: string;
+        artifactDigest: `sha256:${string}`;
         machineId?: string | null;
         serverId?: string | null;
     }>;
@@ -129,162 +135,31 @@ type PluginReactNativeSurfaceProps = Readonly<{
     targetedFallback?: React.ReactNode;
     onCrash?: (surfaceId: string, error: Error) => void;
     watchdog?: PluginReactNativeWatchdog;
-    /** Daemon-issued binding/epoch fact for the current executable artifact. */
-    crashStateToken?: DaemonPluginReactNativeCrashBindingTokenV1;
-    /** Exact current server/machine/Account target for local pending quarantine. */
-    crashReportScopeKey?: string;
-    /** Daemon-owned disabled fact for that exact binding/epoch. */
-    crashStateDisabled?: boolean;
-    /** The surface reports only an occurrence its watchdog actually recorded. */
-    reportFailure?: (failure: PluginReactNativePendingFailure) => Promise<ReactNativeCrashReportResult>;
-    /** Explicit same-digest recovery remains a daemon operation. */
-    resetCrashState?: () => Promise<ReactNativeCrashReportResult>;
+    /** Existing route-owned recovery callback for settings/update/enable actions. */
+    recoveryAction?: SurfaceStateAction;
 }>;
 
 type LoadedPluginReactNativeModuleState = Readonly<{
     cacheKey: string | undefined;
-    loadPolicySource: PluginReactNativeLoaderPolicyInput['source'] | null;
     module: PluginReactNativeSurfaceModule | null;
 }>;
-
-/**
- * Protocol owns the crash-mount serialization; this surface only narrows an
- * absent token. Re-expanding the mount union here would be a second owner that
- * silently ignores a member the daemon token later gains.
- */
-function readCrashStateTokenMountIdentity(
-    token: DaemonPluginReactNativeCrashBindingTokenV1 | undefined,
-): string | undefined {
-    return token ? deriveDaemonPluginReactNativeCrashMountKeyV1(token.mount) : undefined;
-}
-
-/**
- * Diagnostics describe the mount category, not the raw binding identity. The
- * exact target/generation identity remains daemon-owned and is not useful in
- * the concise unavailable-surface card.
- */
-function readCrashStateTokenMountDiagnosticKind(
-    token: DaemonPluginReactNativeCrashBindingTokenV1 | undefined,
-): 'destination' | 'inline' | 'targeted_surface' | 'composer' | 'automation_event_setup_surface' | null {
-    if (!token) return null;
-    switch (token.mount.kind) {
-        case 'destination':
-            return 'destination';
-        case 'inline':
-            return 'inline';
-        case 'targetedSurface':
-            return 'targeted_surface';
-        case 'composer':
-            return 'composer';
-        case 'automationEventSetupSurface':
-            return 'automation_event_setup_surface';
-    }
-}
-
-function readCrashStateTokenLifecycleVersion(
-    token: DaemonPluginReactNativeCrashBindingTokenV1 | undefined,
-    crashReportScopeKey: string | undefined,
-): string {
-    if (!token) return crashReportScopeKey ?? '';
-    return [
-        deriveDaemonPluginReactNativeCrashBindingTokenKeyV1(token),
-        crashReportScopeKey ?? '',
-    ].join('\u0000');
-}
-
-function isExpectedCrashResetProjection(
-    requested: DaemonPluginReactNativeCrashBindingTokenV1,
-    received: DaemonPluginReactNativeCrashBindingTokenV1,
-): boolean {
-    return isSameDaemonPluginReactNativeCrashBindingV1(requested, received)
-        && requested.artifactDigest === received.artifactDigest
-        && received.crashStateEpoch === requested.crashStateEpoch + 1;
-}
-
-type PluginReactNativeCrashResetStatus =
-    | 'idle'
-    | 'reset_requested'
-    | 'reset_failed'
-    | 'awaiting_new_projection'
-    | 'reset_complete';
-
-type PluginReactNativeCrashResetFailure =
-    | Extract<ReactNativeCrashReportResult, { ok: false }>['reason']
-    | 'binding_token_mismatch'
-    /** The daemon accepted reset, but no new current projection arrived in the existing load budget. */
-    | 'projection_timeout';
-
-type PluginReactNativeCrashResetFeedback = Readonly<{
-    status: PluginReactNativeCrashResetStatus;
-    attempts: number;
-    failure: PluginReactNativeCrashResetFailure | null;
-    result: 'not_requested' | 'request_pending' | 'failed' | 'accepted' | 'projection_current';
-    requestedToken: DaemonPluginReactNativeCrashBindingTokenV1 | null;
-    requestedScopeKey: string | null;
+type PendingPluginReactNativeModuleState = LoadedPluginReactNativeModuleState & Readonly<{
+    writeFence: PluginReactNativeModuleRegistryWriteFence | null;
 }>;
 
-type PluginReactNativeCrashResetDiagnosticFacts = Readonly<{
-    status: PluginReactNativeCrashResetStatus;
-    plugin: string | null;
-    renderer: string | null;
-    mount: string | null;
-    contributor: string | null;
-    failure: PluginReactNativeCrashResetFailure | null;
-    disabled: boolean;
-    epoch: number | null;
-    result: PluginReactNativeCrashResetFeedback['result'];
-}>;
-
-const MAX_CRASH_RESET_DIAGNOSTIC_FIELD_CODE_POINTS = 256;
-// Match the existing passive recovery-toast window. This is presentation-only:
-// daemon projection remains the completion authority.
-const RESET_COMPLETE_TOAST_HIDE_DELAY_MS = 4000;
-const INITIAL_CRASH_RESET_FEEDBACK: PluginReactNativeCrashResetFeedback = Object.freeze({
-    status: 'idle',
-    attempts: 0,
-    failure: null,
-    result: 'not_requested',
-    requestedToken: null,
-    requestedScopeKey: null,
-});
-
 /**
- * The reset owner projects only finite identity/state facts into the incumbent
- * diagnostic testID channel. This deliberately excludes Error values, stacks,
- * provider descriptors, raw binding tokens, and arbitrary plugin data from UI
- * diagnostics.
+ * The load deadline is the budget of the slowest bounded phase it contains: a
+ * cold load reads the Artifact's bytes from the daemon over one server-scoped
+ * machine RPC (`fetchPluginArtifactBytesViaMachineRpc`), which inherits the
+ * canonical RPC ceiling. Every other phase is local (digest verification,
+ * cache write, synchronous CommonJS evaluation). A shorter local cutoff
+ * abandoned multi-megabyte transfers that were still within their contract,
+ * so the deadline is derived from that owner rather than restated.
  */
-function projectCrashResetDiagnosticField(value: string | number | boolean | null): string {
-    if (value === null) return 'none';
-    const bounded = Array.from(String(value))
-        .slice(0, MAX_CRASH_RESET_DIAGNOSTIC_FIELD_CODE_POINTS)
-        .join('');
-    return encodeURIComponent(bounded);
-}
-
-function projectCrashResetDiagnostic(
-    facts: PluginReactNativeCrashResetDiagnosticFacts,
-): string | null {
-    if (facts.result === 'not_requested') return null;
-    return `crash_reset_context:${[
-        `status=${projectCrashResetDiagnosticField(facts.status)}`,
-        `plugin=${projectCrashResetDiagnosticField(facts.plugin)}`,
-        `renderer=${projectCrashResetDiagnosticField(facts.renderer)}`,
-        `mount=${projectCrashResetDiagnosticField(facts.mount)}`,
-        `contributor=${projectCrashResetDiagnosticField(facts.contributor)}`,
-        `failure=${projectCrashResetDiagnosticField(facts.failure)}`,
-        `disabled=${projectCrashResetDiagnosticField(facts.disabled)}`,
-        `epoch=${projectCrashResetDiagnosticField(facts.epoch)}`,
-        `result=${projectCrashResetDiagnosticField(facts.result)}`,
-    ].join(';')}`;
-}
-
-const DEFAULT_LOAD_TIMEOUT_MS = 5000;
+const DEFAULT_LOAD_TIMEOUT_MS = DEFAULT_SERVER_SCOPED_RPC_TIMEOUT_MS;
 const loadedModuleRegistry = getInstalledPluginReactNativeModuleRegistry();
 let nextPluginReactNativeMountOwnerId = 0;
-const defaultWatchdog = createPluginReactNativeWatchdog({
-    persistence: createDefaultPluginReactNativeWatchdogPersistence(),
-});
+const defaultWatchdog = createPluginReactNativeWatchdog();
 
 const resetFeedbackStyles = StyleSheet.create({
     surface: {
@@ -293,61 +168,24 @@ const resetFeedbackStyles = StyleSheet.create({
         minHeight: 0,
         position: 'relative',
     },
-    completionToast: {
-        position: 'absolute',
-        top: 12,
-        left: 16,
-        right: 16,
-        alignItems: 'center',
-        zIndex: 1,
+    retainedStatus: {
+        paddingHorizontal: 16,
+        paddingVertical: 12,
+        gap: 8,
+    },
+    retainedStatusTitle: {
+        ...Typography.rowTitle(),
+    },
+    retainedStatusReason: {
+        ...Typography.rowMeta(),
+    },
+    retainedStatusAction: {
+        alignSelf: 'flex-start',
+    },
+    pendingCandidate: {
+        ...StyleSheet.absoluteFillObject,
     },
 });
-
-/**
- * A passive, non-blocking confirmation only after the daemon projects the
- * fresh epoch. It is deliberately not a second overlay, focus, or crash-state
- * owner; the parent controls its bounded lifetime with existing feedback.
- */
-function PluginReactNativeResetCompleteToast(): React.ReactElement {
-    const presentation = resolvePluginSurfaceStatePresentation({
-        state: 'available',
-        copyVariant: 'pluginReactNativeResetComplete',
-    });
-    const notice = presentation.contentNotice;
-    if (!notice) {
-        throw new Error('plugin_react_native_reset_complete_presentation_missing_notice');
-    }
-    const accessibilityLabel = `${notice.title}. ${notice.reason}`;
-
-    React.useEffect(() => {
-        if (Platform.OS !== 'ios') return;
-        try {
-            AccessibilityInfo.announceForAccessibility?.(accessibilityLabel);
-        } catch {
-            // Native announcements are best effort; the live region remains
-            // available to the platform accessibility tree.
-        }
-    }, [accessibilityLabel]);
-
-    return (
-        <View
-            testID="plugin-rn-ui-reset-complete"
-            pointerEvents="none"
-            accessibilityRole="text"
-            accessibilityLabel={accessibilityLabel}
-            accessibilityLiveRegion="polite"
-            {...({ role: 'status', 'aria-live': 'polite' } as Record<string, unknown>)}
-            style={resetFeedbackStyles.completionToast}
-        >
-            <StatusPill
-                variant="success"
-                label={notice.title}
-                labelVariant="phrase"
-                accessibilityLabel={accessibilityLabel}
-            />
-        </View>
-    );
-}
 
 type PluginReactNativeSurfaceRendererProps = Readonly<{
     module: PluginReactNativeSurfaceModule;
@@ -424,6 +262,14 @@ function PluginReactNativeSurfaceRenderer({
     );
 }
 
+function PluginReactNativeCandidateRenderer(props: PluginReactNativeSurfaceRendererProps & Readonly<{
+    onReady: () => void;
+}>): React.ReactElement | null {
+    const element = props.module.renderSurface(props.renderContext);
+    React.useLayoutEffect(props.onReady, [props.onReady]);
+    return installPluginUiPrivateHostBindings(element, props.privateHostBindings);
+}
+
 /**
  * EU-1: a canonical render context is recognised by its host API VERSION
  * discriminant, never by counting installed methods. The installed set is a
@@ -462,32 +308,26 @@ function readCanonicalPluginUiRenderContextDiagnostic(value: unknown): string | 
 }
 
 export function PluginReactNativeSurface(props: PluginReactNativeSurfaceProps): React.ReactElement {
-    // Only immutable installed artifacts participate in the process-global
-    // module registry. Dev hot reload intentionally re-fetches every mount.
-    const loadPolicySource = props.loadPolicy?.source ?? null;
-    const reusesProcessGlobalModule = loadPolicySource === 'installedArtifact';
     const [mountOwnerId] = React.useState(() => {
         nextPluginReactNativeMountOwnerId += 1;
         return nextPluginReactNativeMountOwnerId;
     });
     const [loadedModuleState, setLoadedModuleState] = React.useState<LoadedPluginReactNativeModuleState>(() => ({
         cacheKey: props.cacheKey,
-        loadPolicySource,
-        module: reusesProcessGlobalModule ? loadedModuleRegistry.read(props.cacheKey) : null,
+        module: loadedModuleRegistry.read(props.cacheKey),
     }));
+    const [pendingModuleState, setPendingModuleState] = React.useState<PendingPluginReactNativeModuleState | null>(null);
     const cachedModule = loadedModuleState.cacheKey === props.cacheKey
-        && loadedModuleState.loadPolicySource === loadPolicySource
         ? loadedModuleState.module
-        : reusesProcessGlobalModule
-            ? loadedModuleRegistry.read(props.cacheKey)
-            : null;
+        : loadedModuleRegistry.read(props.cacheKey);
+    const retainedModule = loadedModuleState.cacheKey !== props.cacheKey
+        ? loadedModuleState.module
+        : null;
     const [loadFailed, setLoadFailed] = React.useState(false);
     const [targetedFallbackMountAttemptId, setTargetedFallbackMountAttemptId] = React.useState<string | null>(null);
     const [loadFailureDiagnostics, setLoadFailureDiagnostics] = React.useState<readonly string[]>([]);
     const [retryGeneration, setRetryGeneration] = React.useState(0);
     const [retrying, setRetrying] = React.useState(false);
-    const [watchdogRevision, refreshWatchdogState] = React.useReducer((value: number) => value + 1, 0);
-    const [daemonReportedDisabled, setDaemonReportedDisabled] = React.useState(false);
     const loadPolicy = props.load && !props.loadPolicy
         ? Object.freeze({
             canLoad: false,
@@ -495,22 +335,8 @@ export function PluginReactNativeSurface(props: PluginReactNativeSurfaceProps): 
         })
         : resolvePluginReactNativeLoaderPolicy(props.loadPolicy);
     const watchdog = props.watchdog ?? defaultWatchdog;
-    const crashReportScopeKey = props.crashReportScopeKey;
-    const crashStateTokenMountIdentity = readCrashStateTokenMountIdentity(props.crashStateToken);
-    // This lifecycle consumes the daemon token plus the existing host-selected
-    // target scope. It does not create another crash authority: a new exact
-    // binding, artifact, reset epoch, or Account/machine target must retire the
-    // old boundary before its local quarantine can be consumed.
-    const crashStateTokenLifecycleVersion = readCrashStateTokenLifecycleVersion(
-        props.crashStateToken,
-        crashReportScopeKey,
-    );
-    const [crashResetFeedback, setCrashResetFeedback] = React.useState<PluginReactNativeCrashResetFeedback>(
-        INITIAL_CRASH_RESET_FEEDBACK,
-    );
+    const artifactDigest = props.loadedRuntimeIdentity?.artifactDigest;
     const watchdogCacheKey = props.cacheKey ?? props.surfaceId;
-    // This is process-local attempt bookkeeping only. The UI watchdog owns only
-    // a token-qualified pending quarantine; the daemon owns containment.
     const mountAttemptId = React.useMemo(() => [
         'plugin-rn-mount',
         mountOwnerId,
@@ -518,183 +344,21 @@ export function PluginReactNativeSurface(props: PluginReactNativeSurfaceProps): 
         watchdogCacheKey,
         props.mountInstanceKey ?? '',
         props.boundaryResetKey ?? '',
-        crashStateTokenLifecycleVersion,
-        crashReportScopeKey ?? '',
+        artifactDigest ?? '',
         retryGeneration,
     ].join('\u0000'), [
-        crashStateTokenLifecycleVersion,
+        artifactDigest,
         mountOwnerId,
         props.boundaryResetKey,
         props.mountInstanceKey,
         props.surfaceId,
         retryGeneration,
-        crashReportScopeKey,
         watchdogCacheKey,
     ]);
     const resetMountAttemptIdRef = React.useRef(mountAttemptId);
-    const resetRequestSequenceRef = React.useRef(0);
-    const currentCrashStateTokenLifecycleVersionRef = React.useRef(crashStateTokenLifecycleVersion);
-    currentCrashStateTokenLifecycleVersionRef.current = crashStateTokenLifecycleVersion;
-    const pendingFailures = props.crashStateToken && crashReportScopeKey
-        ? watchdog.readPending({ token: props.crashStateToken, scopeKey: crashReportScopeKey })
-        : Object.freeze([]);
-    // Containment follows a real recorded failure and nothing else. A store
-    // that cannot be read is not evidence of a crash, so it never blanks a
-    // working mount; the daemon remains the only owner of counts, thresholds,
-    // disablement and reset.
-    const pendingQuarantine = pendingFailures.length > 0;
-    const crashDisabled = props.crashStateDisabled === true || daemonReportedDisabled;
-    React.useLayoutEffect(() => {
-        // A daemon-issued replacement/reset token is the only event that can
-        // complete recovery. This effect keeps observer feedback current; it
-        // neither clears durable daemon state nor creates a second reset owner.
-        resetRequestSequenceRef.current += 1;
-        setDaemonReportedDisabled(false);
-        setCrashResetFeedback((previous) => {
-            const currentToken = props.crashStateToken;
-            if (
-                previous.requestedToken
-                && currentToken
-                && previous.requestedScopeKey === (crashReportScopeKey ?? null)
-                && props.crashStateDisabled !== true
-                && isExpectedCrashResetProjection(previous.requestedToken, currentToken)
-            ) {
-                return Object.freeze({
-                    ...previous,
-                    status: 'reset_complete',
-                    failure: null,
-                    result: 'projection_current',
-                });
-            }
-            return previous.status === 'idle'
-                ? previous
-                : INITIAL_CRASH_RESET_FEEDBACK;
-        });
-    }, [
-        props.crashStateToken?.artifactDigest,
-        props.crashStateToken?.crashStateEpoch,
-        crashStateTokenMountIdentity,
-        props.crashStateToken?.renderer.localId,
-        props.crashStateToken?.renderer.pluginId,
-        crashReportScopeKey,
-    ]);
-
-    React.useEffect(() => {
-        // A daemon disable that arrives after a completed reset is a distinct
-        // current incident. The durable owner still decides disabled state;
-        // this only makes the explicit UI reset affordance available again.
-        if (crashDisabled && crashResetFeedback.status === 'reset_complete') {
-            setCrashResetFeedback(INITIAL_CRASH_RESET_FEEDBACK);
-        }
-    }, [crashDisabled, crashResetFeedback.status]);
-
-    React.useEffect(() => {
-        if (crashResetFeedback.status !== 'awaiting_new_projection') {
-            return undefined;
-        }
-        // Reuse the existing mount/load deadline rather than introducing a
-        // second watchdog. The reset response itself is not recovery: only a
-        // fresh daemon projection for the same lifecycle can settle it.
-        const requestSequence = resetRequestSequenceRef.current;
-        const requestLifecycleVersion = crashStateTokenLifecycleVersion;
-        const timeout = setTimeout(() => {
-            if (
-                resetRequestSequenceRef.current !== requestSequence
-                || currentCrashStateTokenLifecycleVersionRef.current !== requestLifecycleVersion
-            ) {
-                return;
-            }
-            setCrashResetFeedback((previous) => {
-                if (previous.status !== 'awaiting_new_projection') {
-                    return previous;
-                }
-                return Object.freeze({
-                    ...previous,
-                    status: 'reset_failed',
-                    failure: 'projection_timeout',
-                    result: 'failed',
-                });
-            });
-        }, props.loadTimeoutMs ?? DEFAULT_LOAD_TIMEOUT_MS);
-        return () => clearTimeout(timeout);
-    }, [
-        crashResetFeedback.status,
-        crashStateTokenLifecycleVersion,
-        props.loadTimeoutMs,
-    ]);
-
-    React.useEffect(() => {
-        if (crashResetFeedback.status !== 'reset_complete') {
-            return undefined;
-        }
-        const completionLifecycleVersion = crashStateTokenLifecycleVersion;
-        const timeout = setTimeout(() => {
-            if (currentCrashStateTokenLifecycleVersionRef.current !== completionLifecycleVersion) {
-                return;
-            }
-            setCrashResetFeedback((previous) => previous.status === 'reset_complete'
-                ? INITIAL_CRASH_RESET_FEEDBACK
-                : previous);
-        }, RESET_COMPLETE_TOAST_HIDE_DELAY_MS);
-        return () => clearTimeout(timeout);
-    }, [crashResetFeedback.status, crashStateTokenLifecycleVersion]);
-
-    React.useEffect(() => {
-        const token = props.crashStateToken;
-        const reportFailure = props.reportFailure;
-        const scopeKey = crashReportScopeKey;
-        if (!token || !reportFailure || !scopeKey) {
-            return undefined;
-        }
-        const pending = watchdog.readPending({ token, scopeKey });
-        if (pending.length === 0) {
-            return undefined;
-        }
-
-        let cancelled = false;
-        void (async () => {
-            for (const failure of pending) {
-                let result: ReactNativeCrashReportResult;
-                try {
-                    result = await reportFailure(failure);
-                } catch {
-                    setRetrying(false);
-                    return;
-                }
-                if (cancelled) {
-                    return;
-                }
-                if (!result.ok) {
-                    setRetrying(false);
-                    return;
-                }
-                watchdog.acknowledgeReportedFailure({
-                    token: failure.token,
-                    scopeKey,
-                    failureOccurrenceId: failure.failureOccurrenceId,
-                });
-                if (result.disabled) {
-                    setDaemonReportedDisabled(true);
-                }
-                setRetrying(false);
-                refreshWatchdogState();
-            }
-        })();
-
-        return () => {
-            cancelled = true;
-        };
-    }, [
-        props.crashStateToken?.artifactDigest,
-        props.crashStateToken?.crashStateEpoch,
-        crashStateTokenMountIdentity,
-        props.crashStateToken?.renderer.localId,
-        props.crashStateToken?.renderer.pluginId,
-        crashReportScopeKey,
-        props.reportFailure,
-        watchdog,
-        watchdogRevision,
-    ]);
+    const pendingQuarantine = artifactDigest
+        ? watchdog.isContained({ artifactDigest })
+        : false;
 
     React.useLayoutEffect(() => {
         const changedMountAttempt = resetMountAttemptIdRef.current !== mountAttemptId;
@@ -710,20 +374,16 @@ export function PluginReactNativeSurface(props: PluginReactNativeSurfaceProps): 
         // An externally supplied mount or artifact replacement is a new
         // lifecycle, not a pending retry from the previous one.
         setRetrying(false);
-    }, [crashStateTokenLifecycleVersion, props.boundaryResetKey, props.mountInstanceKey, props.surfaceId, watchdogCacheKey]);
+    }, [artifactDigest, props.boundaryResetKey, props.mountInstanceKey, props.surfaceId, watchdogCacheKey]);
 
-    const recordDaemonCrashFailure = React.useCallback((
-        failure: DaemonPluginReactNativeCrashFailureV1,
+    const recordLocalFailure = React.useCallback((
+        failure: PluginReactNativeLocalFailure,
         error?: unknown,
     ) => {
-        // Attribution first, and deliberately outside the daemon-token gate
-        // below: a surface that fails before the daemon has issued a crash
-        // binding is exactly the case that used to name nothing anywhere.
         logPluginSurfaceDiagnostic(
             {
-                pluginId: props.crashStateToken?.renderer.pluginId
-                    ?? readRenderContextPluginId(props.renderContext),
-                contributionId: props.crashStateToken?.renderer.localId ?? null,
+                pluginId: readRenderContextPluginId(props.renderContext),
+                contributionId: null,
                 surfaceId: props.surfaceId,
             },
             {
@@ -731,17 +391,11 @@ export function PluginReactNativeSurface(props: PluginReactNativeSurfaceProps): 
                 error: readPluginSurfaceDiagnosticError(error),
             },
         );
-        if (props.crashStateToken && crashReportScopeKey) {
-            watchdog.recordFailure({
-                token: props.crashStateToken,
-                scopeKey: crashReportScopeKey,
-                failure,
-            });
+        if (artifactDigest) {
+            watchdog.recordFailure({ artifactDigest });
         }
-        refreshWatchdogState();
     }, [
-        crashReportScopeKey,
-        props.crashStateToken,
+        artifactDigest,
         props.renderContext,
         props.surfaceId,
         watchdog,
@@ -754,8 +408,9 @@ export function PluginReactNativeSurface(props: PluginReactNativeSurfaceProps): 
             || !props.load
             || !loadPolicy.canLoad
             || cachedModule !== null
+            || pendingModuleState?.cacheKey === props.cacheKey
+            || loadFailed
             || pendingQuarantine
-            || crashDisabled
         ) {
             return undefined;
         }
@@ -764,9 +419,7 @@ export function PluginReactNativeSurface(props: PluginReactNativeSurfaceProps): 
         let timedOut = false;
         // The registry—not this consumer—owns active projection currentness.
         // Capture its key-local admission before the loader can settle.
-        const moduleWriteFence = reusesProcessGlobalModule
-            ? loadedModuleRegistry.captureWriteFence(props.cacheKey)
-            : null;
+        const moduleWriteFence = loadedModuleRegistry.captureWriteFence(props.cacheKey);
         const timeout = setTimeout(() => {
             if (!cancelled) {
                 timedOut = true;
@@ -785,20 +438,17 @@ export function PluginReactNativeSurface(props: PluginReactNativeSurfaceProps): 
             .then((nextModule) => {
                 if (!cancelled && !timedOut && isPluginReactNativeSurfaceModule(nextModule)) {
                     clearTimeout(timeout);
-                    if (moduleWriteFence) {
-                        loadedModuleRegistry.write(props.cacheKey, nextModule, moduleWriteFence);
-                    }
                     setLoadFailureDiagnostics([]);
                     setLoadFailed(false);
-                    setLoadedModuleState({
+                    setPendingModuleState({
                         cacheKey: props.cacheKey,
-                        loadPolicySource,
                         module: nextModule,
+                        writeFence: moduleWriteFence,
                     });
                     setRetrying(false);
                 } else if (!cancelled && !timedOut) {
                     clearTimeout(timeout);
-                    recordDaemonCrashFailure('invalid_surface_module');
+                    recordLocalFailure('invalid_surface_module');
                     setLoadFailureDiagnostics(['invalid_surface_module']);
                     setLoadFailed(true);
                     setRetrying(false);
@@ -807,7 +457,7 @@ export function PluginReactNativeSurface(props: PluginReactNativeSurfaceProps): 
             .catch((error: unknown) => {
                 if (!cancelled && !timedOut) {
                     clearTimeout(timeout);
-                    recordDaemonCrashFailure('load_error', error);
+                    recordLocalFailure('load_error', error);
                     setLoadFailureDiagnostics(readLoaderErrorDiagnostics(error));
                     setLoadFailed(true);
                     setRetrying(false);
@@ -820,156 +470,73 @@ export function PluginReactNativeSurface(props: PluginReactNativeSurfaceProps): 
         };
     }, [
         loadPolicy.canLoad,
+        loadFailed,
         mountAttemptId,
         cachedModule,
-        loadPolicySource,
         props.cacheKey,
         props.decision.state,
         props.load,
         props.loadTimeoutMs,
         props.module,
-        recordDaemonCrashFailure,
-        reusesProcessGlobalModule,
+        recordLocalFailure,
         pendingQuarantine,
-        crashDisabled,
+        pendingModuleState?.cacheKey,
     ]);
 
     const retryCurrentMountLocalFailure = React.useCallback(() => {
-        // Durable crash containment is never cleared by a Retry; a new current
-        // artifact owns restoration.
-        setLoadedModuleState({
-            cacheKey: props.cacheKey,
-            loadPolicySource,
-            module: null,
-        });
+        if (artifactDigest) watchdog.clear({ artifactDigest });
+        setLoadedModuleState((current) => current.cacheKey === props.cacheKey
+            ? { cacheKey: props.cacheKey, module: null }
+            : current);
+        setPendingModuleState(null);
         setLoadFailureDiagnostics([]);
         setLoadFailed(false);
         setRetrying(true);
         setRetryGeneration((generation) => generation + 1);
-        refreshWatchdogState();
     }, [
-        loadPolicySource,
+        artifactDigest,
         props.cacheKey,
+        watchdog,
     ]);
 
     const handleRetry = React.useCallback(() => {
-        if (retrying || crashDisabled) {
-            return;
-        }
-        // Reconcile the exact persisted occurrence in place. This does not
-        // clear containment or execute plugin bytes; the daemon remains the
-        // crash-state owner and the existing effect resubmits the same UUID.
-        if (pendingQuarantine) {
-            setRetrying(true);
-            refreshWatchdogState();
+        if (retrying) {
             return;
         }
         retryCurrentMountLocalFailure();
-    }, [crashDisabled, pendingQuarantine, refreshWatchdogState, retryCurrentMountLocalFailure, retrying]);
+    }, [retryCurrentMountLocalFailure, retrying]);
 
     const handleCrash = React.useCallback((surfaceId: string, error: Error) => {
-        recordDaemonCrashFailure('render_error', error);
+        recordLocalFailure('render_error', error);
         if (props.targetedFallback !== undefined) {
             setTargetedFallbackMountAttemptId(mountAttemptId);
         }
         setLoadFailed(true);
         setRetrying(false);
         props.onCrash?.(surfaceId, error);
-    }, [mountAttemptId, props.onCrash, props.targetedFallback, recordDaemonCrashFailure]);
+    }, [mountAttemptId, props.onCrash, props.targetedFallback, recordLocalFailure]);
 
-    const handleResetCrashState = React.useCallback(() => {
-        const currentToken = props.crashStateToken;
-        const canRequestReset = crashResetFeedback.status === 'idle'
-            || crashResetFeedback.status === 'reset_failed';
-        if (!props.resetCrashState || !currentToken || !canRequestReset) {
-            return;
+    const pendingModuleSnapshot = pendingModuleState;
+    const pendingModule = pendingModuleSnapshot === null || pendingModuleSnapshot.cacheKey !== props.cacheKey
+        ? null
+        : pendingModuleSnapshot.module;
+    const commitPendingModule = React.useCallback(() => {
+        const pending = pendingModuleState;
+        if (!pending || pending.cacheKey !== props.cacheKey || !pending.module) return;
+        if (pending.writeFence) {
+            loadedModuleRegistry.write(props.cacheKey, pending.module, pending.writeFence);
         }
-        const requestSequence = resetRequestSequenceRef.current + 1;
-        const requestLifecycleVersion = crashStateTokenLifecycleVersion;
-        const requestScopeKey = crashReportScopeKey ?? null;
-        const attempts = crashResetFeedback.attempts + 1;
-        resetRequestSequenceRef.current = requestSequence;
-        setCrashResetFeedback(Object.freeze({
-            status: 'reset_requested',
-            attempts,
-            failure: null,
-            result: 'request_pending',
-            requestedToken: currentToken,
-            requestedScopeKey: requestScopeKey,
-        }));
-        const reportResetRequestFailure = () => {
-            if (
-                resetRequestSequenceRef.current !== requestSequence
-                || currentCrashStateTokenLifecycleVersionRef.current !== requestLifecycleVersion
-            ) {
-                return;
-            }
-            setCrashResetFeedback(Object.freeze({
-                status: 'reset_failed',
-                attempts,
-                failure: 'request_failed',
-                result: 'failed',
-                requestedToken: currentToken,
-                requestedScopeKey: requestScopeKey,
-            }));
-        };
-        let resetRequest: Promise<ReactNativeCrashReportResult>;
-        try {
-            resetRequest = props.resetCrashState();
-        } catch {
-            reportResetRequestFailure();
-            return;
-        }
-        void resetRequest
-            .then((result) => {
-                if (
-                    resetRequestSequenceRef.current !== requestSequence
-                    || currentCrashStateTokenLifecycleVersionRef.current !== requestLifecycleVersion
-                ) {
-                    return;
-                }
-                if (!result.ok) {
-                    setCrashResetFeedback(Object.freeze({
-                        status: 'reset_failed',
-                        attempts,
-                        failure: result.reason,
-                        result: 'failed',
-                        requestedToken: currentToken,
-                        requestedScopeKey: requestScopeKey,
-                    }));
-                    return;
-                }
-                if (result.disabled || !isExpectedCrashResetProjection(currentToken, result.token)) {
-                    setCrashResetFeedback(Object.freeze({
-                        status: 'reset_failed',
-                        attempts,
-                        failure: 'binding_token_mismatch',
-                        result: 'failed',
-                        requestedToken: currentToken,
-                        requestedScopeKey: requestScopeKey,
-                    }));
-                    return;
-                }
-                setCrashResetFeedback(Object.freeze({
-                    status: 'awaiting_new_projection',
-                    attempts,
-                    failure: null,
-                    result: 'accepted',
-                    requestedToken: currentToken,
-                    requestedScopeKey: requestScopeKey,
-                }));
-            })
-            .catch(() => {
-                reportResetRequestFailure();
-            });
-    }, [
-        crashResetFeedback.attempts,
-        crashResetFeedback.status,
-        crashStateTokenLifecycleVersion,
-        crashReportScopeKey,
-        props.crashStateToken,
-        props.resetCrashState,
-    ]);
+        setLoadedModuleState({ cacheKey: pending.cacheKey, module: pending.module });
+        setPendingModuleState(null);
+        setLoadFailureDiagnostics([]);
+        setLoadFailed(false);
+        setRetrying(false);
+    }, [pendingModuleState, props.cacheKey]);
+    const failPendingModule = React.useCallback((surfaceId: string, error: Error) => {
+        setPendingModuleState(null);
+        handleCrash(surfaceId, error);
+    }, [handleCrash]);
+
     const canonicalRenderContextDiagnostic = readCanonicalPluginUiRenderContextDiagnostic(props.renderContext);
     const currentRenderContext = props.renderContext;
     const interactionEnabled = props.interactionEnabled ?? true;
@@ -1023,91 +590,112 @@ export function PluginReactNativeSurface(props: PluginReactNativeSurfaceProps): 
         setRetrying(false);
     }, [launchInputResetKey, mountAttemptId, targetedFallbackMountAttemptId]);
 
-    const crashResetFacts = Object.freeze({
-        status: crashResetFeedback.status,
-        plugin: props.crashStateToken?.renderer.pluginId ?? null,
-        renderer: props.crashStateToken?.renderer.localId ?? null,
-        mount: readCrashStateTokenMountDiagnosticKind(props.crashStateToken),
-        contributor: props.crashStateToken?.mount.kind === 'targetedSurface'
-            ? props.crashStateToken.mount.contributor.contributionId
-            : null,
-        failure: crashResetFeedback.failure,
-        disabled: crashDisabled,
-        epoch: props.crashStateToken?.crashStateEpoch ?? null,
-        result: crashResetFeedback.result,
-    });
-    const crashResetDiagnostic = projectCrashResetDiagnostic(crashResetFacts);
     const unavailableDiagnostics = Object.freeze([
-        ...(crashResetFacts.result === 'not_requested' ? [] : [crashResetFeedback.status]),
-        ...(crashResetDiagnostic ? [crashResetDiagnostic] : []),
+        ...loadFailureDiagnostics,
+        ...(pendingQuarantine ? ['local_artifact_failure'] : []),
         ...props.decision.diagnostics,
         ...loadPolicy.diagnostics,
-        ...loadFailureDiagnostics,
-        ...(pendingQuarantine ? ['crash_reconciliation_pending'] : []),
-        ...(crashDisabled ? ['crash_threshold_reached'] : []),
         ...(canonicalRenderContextDiagnostic ? [canonicalRenderContextDiagnostic] : []),
     ]);
     const canRetryCurrentArtifact = props.decision.state === 'load'
         && loadPolicy.canLoad
         && (Boolean(props.load) || isPluginReactNativeSurfaceModule(props.module));
     const shouldOfferRetry = canRetryCurrentArtifact
-        && (loadFailed || pendingQuarantine)
-        && !crashDisabled;
-    const shouldOfferCrashReset = crashDisabled
-        && props.resetCrashState !== undefined
-        && props.crashStateToken !== undefined
-        && (
-            crashResetFeedback.status === 'idle'
-            || crashResetFeedback.status === 'reset_failed'
-        );
-    const unavailableResetStatus: PluginReactNativeUnavailableResetStatus | undefined = (
-        crashResetFeedback.status === 'reset_requested'
-        || crashResetFeedback.status === 'awaiting_new_projection'
-        || crashResetFeedback.status === 'reset_failed'
-    )
-        ? crashResetFeedback.status
-        : undefined;
+        && (loadFailed || pendingQuarantine);
     const animationEnabled = props.renderContext.surface.reducedMotion !== true;
+    // Content settles in with one calm opacity fade the first time this mount
+    // has something to draw, so the loading placeholder never hard-cuts to the
+    // plugin's page. Reduced motion paints it immediately.
+    const hasRenderableModule = isPluginReactNativeSurfaceModule(props.module)
+        || cachedModule !== null
+        || retainedModule !== null;
+    const contentReveal = useSharedValue(animationEnabled ? 0 : 1);
+    React.useEffect(() => {
+        if (!hasRenderableModule) return;
+        if (!animationEnabled) {
+            cancelAnimation(contentReveal);
+            contentReveal.value = 1;
+            return;
+        }
+        contentReveal.value = withTiming(1, {
+            duration: reanimatedMotionTokens.durationMs.base,
+            easing: reanimatedMotionTokens.easing.standard,
+        });
+    }, [animationEnabled, contentReveal, hasRenderableModule]);
+    const contentRevealStyle = useAnimatedStyle(() => ({ opacity: contentReveal.value }));
     const hasCurrentTargetedFallback = props.targetedFallback !== undefined
         && targetedFallbackMountAttemptId === mountAttemptId;
+    const candidateProbe = pendingModule ? (
+        <View style={resetFeedbackStyles.pendingCandidate}>
+            <PluginUiBoundary
+                surfaceId={props.surfaceId}
+                resetKey={`${renderBoundaryResetKey}\u0000candidate`}
+                mountInstanceKey={props.mountInstanceKey}
+                fallback={null}
+                onCrash={failPendingModule}
+            >
+                <PluginReactNativeCandidateRenderer
+                    module={pendingModule}
+                    renderContext={renderContext}
+                    privateHostBindings={privateHostBindings}
+                    onReady={commitPendingModule}
+                />
+            </PluginUiBoundary>
+        </View>
+    ) : null;
 
     if (canonicalRenderContextDiagnostic) {
-        return <PluginReactNativeUnavailable diagnostics={unavailableDiagnostics} />;
+        return <PluginReactNativeUnavailable diagnostics={unavailableDiagnostics} recoveryAction={props.recoveryAction} />;
     }
     if (hasCurrentTargetedFallback) {
         return <>{props.targetedFallback}</>;
     }
     if (
         props.decision.state !== 'load'
-        || loadFailed
+        || (loadFailed && !retainedModule)
         || !loadPolicy.canLoad
         || pendingQuarantine
-        || crashDisabled
     ) {
         return (
+            <>
             <PluginReactNativeUnavailable
                 diagnostics={unavailableDiagnostics}
                 onRetry={shouldOfferRetry ? handleRetry : undefined}
                 retrying={retrying}
-                onReset={shouldOfferCrashReset ? handleResetCrashState : undefined}
-                resetStatus={unavailableResetStatus}
                 animationEnabled={animationEnabled}
+                recoveryAction={props.recoveryAction}
             />
+            {candidateProbe}
+            </>
         );
     }
 
-    const module = isPluginReactNativeSurfaceModule(props.module) ? props.module : cachedModule;
+    const module = isPluginReactNativeSurfaceModule(props.module)
+        ? props.module
+        : cachedModule ?? retainedModule;
     if (!module) {
+        // The first load (or a candidate still proving itself) is not a failure:
+        // show the destination-shaped placeholder, not an "unavailable" card. A
+        // user-pressed retry keeps its acknowledgement on the card it came from.
+        const initialLoadInFlight = !retrying && (Boolean(props.load) || pendingModule !== null);
         return (
-            <PluginReactNativeUnavailable
-                diagnostics={unavailableDiagnostics}
-                retrying={retrying}
-                animationEnabled={animationEnabled}
-            />
+            <>
+            {initialLoadInFlight ? (
+                <PluginSurfaceFallback testID="plugin-rn-ui-loading" state="loading" />
+            ) : (
+                <PluginReactNativeUnavailable
+                    diagnostics={unavailableDiagnostics}
+                    retrying={retrying}
+                    animationEnabled={animationEnabled}
+                    recoveryAction={props.recoveryAction}
+                />
+            )}
+            {candidateProbe}
+            </>
         );
     }
 
-    return (
+    const surface = (
         <PluginUiBoundary
             key={mountAttemptId}
             surfaceId={props.surfaceId}
@@ -1118,9 +706,8 @@ export function PluginReactNativeSurface(props: PluginReactNativeSurfaceProps): 
                     diagnostics={unavailableDiagnostics}
                     onRetry={shouldOfferRetry ? handleRetry : undefined}
                     retrying={retrying}
-                    onReset={shouldOfferCrashReset ? handleResetCrashState : undefined}
-                    resetStatus={unavailableResetStatus}
                     animationEnabled={animationEnabled}
+                    recoveryAction={props.recoveryAction}
                 />
             ) : props.targetedFallback}
             onCrash={handleCrash}
@@ -1132,17 +719,55 @@ export function PluginReactNativeSurface(props: PluginReactNativeSurfaceProps): 
                 focusEligible={props.focusEligible}
                 loadedRuntimeIdentity={props.loadedRuntimeIdentity}
             >
-                <View style={resetFeedbackStyles.surface}>
+                <Animated.View style={[resetFeedbackStyles.surface, contentRevealStyle]}>
                     <PluginReactNativeSurfaceRenderer
                         module={module}
                         renderContext={renderContext}
                         privateHostBindings={privateHostBindings}
                     />
-                    {crashResetFeedback.status === 'reset_complete' ? (
-                        <PluginReactNativeResetCompleteToast />
-                    ) : null}
-                </View>
+                </Animated.View>
             </PluginSurfaceInteractionBoundary>
         </PluginUiBoundary>
+    );
+    if (!loadFailed || !retainedModule) return <>{surface}{candidateProbe}</>;
+
+    const retainedPresentation = resolvePluginSurfaceStatePresentation({
+        state: 'failedRetry',
+        reasonCode: unavailableDiagnostics[0],
+        hasRetainedContent: true,
+    });
+    const retainedNotice = retainedPresentation.contentNotice;
+    if (!retainedNotice) return surface;
+    const retainedAction = resolvePluginSurfaceStateAction({
+        recoveryAction: retainedPresentation.recoveryAction,
+        onRetry: shouldOfferRetry ? handleRetry : undefined,
+        manageAction: props.recoveryAction,
+    });
+    return (
+        <>
+            <View
+                testID="plugin-rn-ui-retained-status"
+                accessibilityRole="text"
+                accessibilityLiveRegion="polite"
+                style={resetFeedbackStyles.retainedStatus}
+                {...({ role: 'status', 'aria-live': 'polite' } as Record<string, unknown>)}
+            >
+                <Text style={resetFeedbackStyles.retainedStatusTitle}>{retainedNotice.title}</Text>
+                <Text style={resetFeedbackStyles.retainedStatusReason}>{retainedNotice.reason}</Text>
+                {retainedAction ? (
+                    <View style={resetFeedbackStyles.retainedStatusAction}>
+                        <RoundButton
+                            testID="plugin-rn-ui-retained-status-action"
+                            size="small"
+                            title={retainedAction.label}
+                            accessibilityLabel={retainedAction.label}
+                            action={() => Promise.resolve(retainedAction.onPress())}
+                        />
+                    </View>
+                ) : null}
+            </View>
+            {surface}
+            {candidateProbe}
+        </>
     );
 }

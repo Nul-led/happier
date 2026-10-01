@@ -10,11 +10,10 @@ import { useChromeSafeAreaInsets } from '@/components/ui/layout/useChromeSafeAre
 import { Typography } from '@/constants/Typography';
 import { t } from '@/text';
 import { useIsInsideModalBoundary } from '@/modal/context/ModalBoundaryContext';
-import { useReducedMotionPreference } from '@/hooks/ui/useReducedMotionPreference';
 import {
+    StepTransitionFrame,
     type StepTransitionDirection,
 } from '@/components/ui/motion/StepTransitionFrame';
-import { SoftSlideTransitionFrame } from '@/components/ui/motion/SoftSlideTransitionFrame';
 
 import { shouldUseWizardFullscreenPresentation } from './wizardPresentation';
 
@@ -27,6 +26,8 @@ export type WizardModalShellProps = Readonly<{
     showScrim?: boolean;
     stepIndex: number;
     stepCount: number;
+    /** Hide the step counter when the surface is not a step of a multi-step setup. */
+    showProgress?: boolean;
     headerHint?: React.ReactNode;
     onSkip?: () => void;
     onBack?: () => void;
@@ -142,7 +143,6 @@ export function WizardModalShell(props: WizardModalShellProps) {
     const { width: windowWidth } = useWindowDimensions();
     const rawInsets = useChromeSafeAreaInsets();
     const isInsideModalBoundary = useIsInsideModalBoundary();
-    const reducedMotion = useReducedMotionPreference();
     const layoutPresentation = props.layoutPresentation ?? 'auto';
     const insets = React.useMemo(() => {
         if (Platform.OS !== 'web' && isInsideModalBoundary) {
@@ -167,15 +167,17 @@ export function WizardModalShell(props: WizardModalShellProps) {
                 <HeaderLogo />
             </View>
             <View style={styles.headerCenter}>
-                <Text
-                    testID={props.testID ? `${props.testID}-progress` : undefined}
-                    style={styles.progressText}
-                >
-                    {t('setupOnboarding.progressQuietLabel', {
-                        current: props.stepIndex + 1,
-                        total: props.stepCount,
-                    })}
-                </Text>
+                {props.showProgress === false ? null : (
+                    <Text
+                        testID={props.testID ? `${props.testID}-progress` : undefined}
+                        style={styles.progressText}
+                    >
+                        {t('setupOnboarding.progressQuietLabel', {
+                            current: props.stepIndex + 1,
+                            total: props.stepCount,
+                        })}
+                    </Text>
+                )}
                 {props.headerHint
                     ? typeof props.headerHint === 'string' || typeof props.headerHint === 'number'
                         ? <Text style={styles.headerHint}>{props.headerHint}</Text>
@@ -254,14 +256,13 @@ export function WizardModalShell(props: WizardModalShellProps) {
 
     const wrappedBody = props.contentTransitionKey != null
         ? (
-            <SoftSlideTransitionFrame
+            <StepTransitionFrame
                 transitionKey={props.contentTransitionKey}
                 direction={props.contentTransitionDirection ?? 'forward'}
-                reducedMotion={reducedMotion}
                 testID={props.testID ? `${props.testID}-body-transition` : undefined}
             >
                 {body}
-            </SoftSlideTransitionFrame>
+            </StepTransitionFrame>
         )
         : body;
 

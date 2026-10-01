@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Platform, View } from 'react-native';
+import { View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
 import { SegmentedTabBar, type SegmentedTab } from '@/components/ui/navigation/SegmentedTabBar';
@@ -7,7 +7,8 @@ import { SegmentedTabBar, type SegmentedTab } from '@/components/ui/navigation/S
 export type GitSubTabId = 'commit' | 'update' | 'history';
 
 export type WorkspaceScmSubTabsBarProps = Readonly<{
-    tabs: ReadonlyArray<{ id: GitSubTabId; label: string }>;
+    /** `count` is the Changes view's formatted change count ("Changes 14"), drawn quieter than its label. */
+    tabs: ReadonlyArray<{ id: GitSubTabId; label: string; count?: string }>;
     activeSubTabId: GitSubTabId;
     onSelectSubTab: (subTabId: GitSubTabId) => void;
     /** Trailing-colon convention, e.g. `project-rightpanel-git-subtab:` — unchanged for callers. */
@@ -34,13 +35,13 @@ export type WorkspaceScmSubTabsBarProps = Readonly<{
 const DEFAULT_TEST_ID_PREFIX = 'session-rightpanel-git-subtab:';
 
 const stylesheet = StyleSheet.create((theme) => ({
+    // Session-tabs lab H1: sub-views are a 32 px segmented row directly under the pane header, on the
+    // pane's own surface — not a second inset band that reads as another header.
     container: {
         paddingHorizontal: 12,
-        paddingTop: 10,
-        paddingBottom: 10,
-        borderBottomWidth: Platform.select({ ios: 0.33, default: 1 }),
-        borderBottomColor: theme.colors.border.default,
-        backgroundColor: theme.colors.surface.inset,
+        paddingTop: 4,
+        paddingBottom: 8,
+        backgroundColor: theme.colors.surface.base,
     },
 }));
 
@@ -54,7 +55,7 @@ export const WorkspaceScmSubTabsBar = React.memo((props: WorkspaceScmSubTabsBarP
 
     const tabs = React.useMemo(
         (): ReadonlyArray<SegmentedTab<GitSubTabId>> =>
-            props.tabs.map((tab) => ({ id: tab.id, label: tab.label })),
+            props.tabs.map((tab) => ({ id: tab.id, label: tab.label, ...(tab.count ? { count: tab.count } : {}) })),
         [props.tabs],
     );
 

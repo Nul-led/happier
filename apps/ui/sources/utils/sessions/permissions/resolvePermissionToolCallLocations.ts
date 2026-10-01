@@ -1,4 +1,4 @@
-import type { Message, ToolCallMessage } from '@/sync/domains/messages/messageTypes';
+import type { Message, ToolCallMessage } from "@happier-dev/session-core/messages";
 import type { PermissionToolCallMessageLocation } from './permissionToolCallLocationTypes';
 
 function normalizeSeq(seq: unknown): number | null {

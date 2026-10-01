@@ -2,7 +2,6 @@ import {
   VOICE_AGENT_RUN_TRANSCRIPT_CONTRACT_VERSION,
   buildVoiceAgentRunMetadataV1,
   parseVoiceAgentRunMetadataV1,
-  voiceAgentRunMetadataV1Equal,
   type ExecutionRunPublicState,
   type VoiceAgentRunMetadataV1,
 } from '@happier-dev/protocol';
@@ -51,13 +50,10 @@ export function mergeVoiceAgentRunMetadataFromExecutionRun(params: Readonly<{
     resumeHandle: params.run.resumeHandle ?? null,
     updatedAtMs: readNonNegativeInt(params.nowMs) ?? Date.now(),
     ...(typeof welcomedEpoch === 'number' ? { welcomedEpoch } : {}),
+    previous: existing,
   });
   if (!next) {
     return params.metadata;
-  }
-
-  if (existing && voiceAgentRunMetadataV1Equal(existing, next)) {
-    return currentMetadata;
   }
 
   return {

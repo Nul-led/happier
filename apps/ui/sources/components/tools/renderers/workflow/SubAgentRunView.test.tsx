@@ -1,7 +1,7 @@
 import * as React from 'react';
 import renderer from 'react-test-renderer';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { renderScreen } from '@/dev/testkit';
+import { renderWithSessionTranscriptSource, createTestSessionTranscriptSource } from '@/dev/testkit';
 import { collectHostText } from '@/dev/testkit';
 import {
     installWorkflowRendererCommonModuleMocks,
@@ -12,6 +12,12 @@ import {
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 const structuredResultViewPropsSpy = vi.fn();
+function renderScreen(element: React.ReactElement<React.ComponentProps<typeof import('./SubAgentRunView')['SubAgentRunView']>>) {
+    return renderWithSessionTranscriptSource(element, createTestSessionTranscriptSource({
+        sessionId: element.props.sessionId ?? 's1', messages: element.props.messages,
+        metadata: element.props.metadata, navigate: null,
+    }));
+}
 
 installWorkflowRendererCommonModuleMocks();
 resetWorkflowRendererCommonModuleMockState();
@@ -53,7 +59,7 @@ describe('SubAgentRunView', () => {
         expect(text).toContain('Working...');
     });
 
-    it('keeps nested +N tool navigation disabled when the canonical interaction denies it', async () => {
+    it('keeps nested +N tool navigation inert when the source withholds navigation', async () => {
         const messages = Array.from({ length: 5 }, (_, index) => ({
             kind: 'tool-call',
             id: `message-${index}`,
@@ -88,7 +94,6 @@ describe('SubAgentRunView', () => {
                 canSendMessages: false,
                 canApprovePermissions: false,
                 permissionDisabledReason: 'public',
-                disableToolNavigation: true,
             }}
         />);
 

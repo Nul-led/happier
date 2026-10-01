@@ -1,6 +1,5 @@
 import { t } from '@/text';
 
-import { buildHappierSetupCommand } from './wizardCliCommands';
 import type { WizardTerminalHandoffStep } from '../ui/WizardTerminalHandoff';
 
 export function buildWebDesktopRelayHostHandoffSteps(input: Readonly<{

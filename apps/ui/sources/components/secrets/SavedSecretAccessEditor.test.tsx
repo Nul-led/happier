@@ -31,7 +31,10 @@ vi.mock('@/components/sessions/access/useSessionAccessDirectory', () => ({
     useSessionAccessDirectory: () => ({
         sections: [
             { kind: 'account', title: 'People', candidates: [], status: 'idle', cursor: null, hasMore: false, loadingMore: false,
-                resolveCandidates: async () => [{ principal: { ref: { kind: 'account', accountId: 'account-new' }, key: 'account:account-new', displayName: 'New Person', accessibilityLabel: 'New Person' }, addition: { kind: 'allowed' }, operation: { kind: 'idle' } }] },
+                resolveCandidates: async () => [
+                    { principal: { ref: { kind: 'account', accountId: 'account-new' }, key: 'account:account-new', displayName: 'New Person', accessibilityLabel: 'New Person' }, addition: { kind: 'allowed' }, operation: { kind: 'idle' } },
+                    { principal: { ref: { kind: 'account', accountId: 'account-old' }, key: 'account:account-old', displayName: 'Old Person', accessibilityLabel: 'Old Person' }, addition: { kind: 'allowed' }, operation: { kind: 'idle' } },
+                ] },
             { kind: 'team', title: 'Teams', candidates: [], status: 'idle', cursor: null, hasMore: false, loadingMore: false,
                 resolveCandidates: async () => [{ principal: { ref: { kind: 'team', teamId: 'team-new' }, key: 'team:team-new', displayName: 'New Team', accessibilityLabel: 'New Team' }, addition: { kind: 'allowed' }, operation: { kind: 'idle' } }] },
             { kind: 'group', title: 'Groups', candidates: [], status: 'idle', cursor: null, hasMore: false, loadingMore: false,
@@ -93,10 +96,12 @@ describe('SavedSecretAccessEditor', () => {
 
         // Opening the picker converts nothing: the secret is still personal
         // until the person has chosen who receives it and confirmed.
-        await vi.waitFor(() => expect(screen.findByTestId('saved-secret-access-account:account-new')).toBeTruthy());
+        await vi.waitFor(() => expect(screen.findByTestId('saved-secret-access-candidate-account:account-new')).toBeTruthy());
         expect(promotePersonal).not.toHaveBeenCalled();
-        await screen.pressByTestIdAsync('saved-secret-access-account:account-new');
-        await screen.pressByTestIdAsync('saved-secret-access-team:team-new');
+        await vi.waitFor(() => expect(screen.findByTestId('saved-secret-access-candidate-account:account-new')).toBeTruthy());
+        await screen.pressByTestIdAsync('saved-secret-access-candidate-account:account-new');
+        await vi.waitFor(() => expect(screen.findByTestId('saved-secret-access-candidate-team:team-new')).toBeTruthy());
+        await screen.pressByTestIdAsync('saved-secret-access-candidate-team:team-new');
         expect(promotePersonal).not.toHaveBeenCalled();
 
         await screen.pressByTestIdAsync('saved-secret-access-save');
@@ -128,8 +133,8 @@ describe('SavedSecretAccessEditor', () => {
             />,
         );
 
-        await vi.waitFor(() => expect(screen.findByTestId('saved-secret-access-account:account-new')).toBeTruthy());
-        await screen.pressByTestIdAsync('saved-secret-access-account:account-new');
+        await vi.waitFor(() => expect(screen.findByTestId('saved-secret-access-candidate-account:account-new')).toBeTruthy());
+        await screen.pressByTestIdAsync('saved-secret-access-candidate-account:account-new');
         await screen.pressByTestIdAsync('saved-secret-access-save');
 
         expect(promotePersonal).not.toHaveBeenCalled();
@@ -149,11 +154,12 @@ describe('SavedSecretAccessEditor', () => {
             />,
         );
 
-        await vi.waitFor(() => expect(screen.findByTestId('saved-secret-access-account:account-new')).toBeTruthy());
-        await screen.pressByTestIdAsync('saved-secret-access-account:account-new');
-        await screen.pressByTestIdAsync('saved-secret-access-team:team-new');
-        await vi.waitFor(() => expect(screen.findByTestId('saved-secret-access-group:team-new:group-new')).toBeTruthy());
-        await screen.pressByTestIdAsync('saved-secret-access-group:team-new:group-new');
+        await vi.waitFor(() => expect(screen.findByTestId('saved-secret-access-candidate-account:account-new')).toBeTruthy());
+        await screen.pressByTestIdAsync('saved-secret-access-candidate-account:account-new');
+        await vi.waitFor(() => expect(screen.findByTestId('saved-secret-access-candidate-team:team-new')).toBeTruthy());
+        await screen.pressByTestIdAsync('saved-secret-access-candidate-team:team-new');
+        await vi.waitFor(() => expect(screen.findByTestId('saved-secret-access-candidate-group:team-new:group-new')).toBeTruthy());
+        await screen.pressByTestIdAsync('saved-secret-access-candidate-group:team-new:group-new');
         await screen.pressByTestIdAsync('saved-secret-access-save');
 
         expect(setGrants).toHaveBeenCalledWith(expect.objectContaining({
@@ -206,8 +212,8 @@ describe('SavedSecretAccessEditor', () => {
             <SavedSecretAccessEditor target={{ kind: 'shared', entry }} scope={scope} onClose={onClose} onSaved={onSaved} />,
         );
 
-        await vi.waitFor(() => expect(screen.findByTestId('saved-secret-access-account:account-new')).toBeTruthy());
-        await screen.pressByTestIdAsync('saved-secret-access-account:account-new');
+        await vi.waitFor(() => expect(screen.findByTestId('saved-secret-access-candidate-account:account-new')).toBeTruthy());
+        await screen.pressByTestIdAsync('saved-secret-access-candidate-account:account-new');
 
         // An ordinary background catalog refresh, not a different secret.
         await screen.update(
@@ -221,12 +227,8 @@ describe('SavedSecretAccessEditor', () => {
 
         // The choice survives, the stale save is fenced, and adopting the
         // Home's current recipients is offered as an explicit action.
-        // The selection the picker publishes to the canonical list, which is
-        // what the person actually sees checked.
-        const selectedIds = screen.findAllByTestId('saved-secret-access-directory')
-            .map((node) => node.props?.selection?.selectedIds)
-            .find((ids): ids is ReadonlySet<string> => ids instanceof Set);
-        expect([...(selectedIds ?? [])]).toContain('account:account-new');
+        // The kept choice is still listed under "Who has access".
+        expect(screen.findByTestId('saved-secret-access-grant-account:account-new')).toBeTruthy();
         expect(screen.findByTestId('saved-secret-access-save')?.props.disabled).toBe(true);
         expect(screen.findByTestId('saved-secret-access-reload')).toBeTruthy();
 
@@ -254,13 +256,58 @@ describe('SavedSecretAccessEditor', () => {
             />,
         );
 
-        await vi.waitFor(() => expect(screen.findByTestId('saved-secret-access-account:account-new')).toBeTruthy());
-        await screen.pressByTestIdAsync('saved-secret-access-account:account-new');
+        await vi.waitFor(() => expect(screen.findByTestId('saved-secret-access-candidate-account:account-new')).toBeTruthy());
+        await screen.pressByTestIdAsync('saved-secret-access-candidate-account:account-new');
         await screen.pressByTestIdAsync('saved-secret-access-save');
 
         expect(confirmDisclosure).toHaveBeenCalledOnce();
         expect(setGrants).not.toHaveBeenCalled();
         expect(screen.findByTestId('saved-secret-access-save')).toBeTruthy();
+    });
+
+    it('lists who has access at the one locked level and removes a grant only when the person saves', async () => {
+        const { SavedSecretAccessEditor } = await import('./SavedSecretAccessEditor');
+        const shared = { ...entry, audience: {
+            accounts: [{ kind: 'account', accountId: 'account-old', firstName: 'Old', lastName: 'Person', username: null, avatarUrl: null }],
+            teams: [{ kind: 'team', teamId: 'team-old', name: 'Old Team' }],
+            groups: [],
+        } } as const satisfies SavedSecretCatalogEntryV1;
+        const screen = await renderScreen(
+            <SavedSecretAccessEditor
+                target={{ kind: 'shared', entry: shared }}
+                scope={{ serverId: 'home-a', accountId: 'account-owner' }}
+                onClose={vi.fn()}
+                onSaved={vi.fn(async () => {})}
+            />,
+        );
+
+        await vi.waitFor(() => expect(screen.findByTestId('saved-secret-access-candidate-account:account-new')).toBeTruthy());
+        expect(screen.findByTestId('saved-secret-access-grant-account:account-old')).toBeTruthy();
+        expect(screen.findByTestId('saved-secret-access-grant-team:team-old')).toBeTruthy();
+        // Someone who already has access is listed once, never offered again as a candidate.
+        expect(screen.findByTestId('saved-secret-access-candidate-account:account-old')).toBeNull();
+
+        // One level, locked: a secret is only ever used by runs, so there is nothing to choose.
+        expect(screen.findByTestId('saved-secret-access-level:team:team-old')).toBeTruthy();
+        expect(screen.getTextContent()).toContain('shareSheet.secrets.levels.canUse');
+        await screen.pressByTestIdAsync('saved-secret-access-level:team:team-old');
+        expect(screen.getTextContent()).toContain('shareSheet.secrets.oneLevel');
+
+        await screen.pressByTestIdAsync('saved-secret-access-grant-team:team-old');
+        expect(screen.findByTestId('saved-secret-access-level:team:team-old:edit')).toBeNull();
+        await screen.pressByTestIdAsync('saved-secret-access-remove:team:team-old');
+        // Removing changes the draft only; nothing is written until Save.
+        expect(setGrants).not.toHaveBeenCalled();
+        expect(screen.findByTestId('saved-secret-access-grant-team:team-old')).toBeNull();
+
+        await screen.pressByTestIdAsync('saved-secret-access-save');
+        expect(setGrants).toHaveBeenCalledWith(expect.objectContaining({
+            resourceId: 'resource-1',
+            expectedRevision: 3,
+            accountGrants: ['account-old'],
+            teamGrants: [],
+            groupGrants: [],
+        }));
     });
 
     it('refreshes authoritative state and stays open when grant outcome is unknown', async () => {
@@ -277,8 +324,8 @@ describe('SavedSecretAccessEditor', () => {
             />,
         );
 
-        await vi.waitFor(() => expect(screen.findByTestId('saved-secret-access-account:account-new')).toBeTruthy());
-        await screen.pressByTestIdAsync('saved-secret-access-account:account-new');
+        await vi.waitFor(() => expect(screen.findByTestId('saved-secret-access-candidate-account:account-new')).toBeTruthy());
+        await screen.pressByTestIdAsync('saved-secret-access-candidate-account:account-new');
         await screen.pressByTestIdAsync('saved-secret-access-save');
 
         expect(onSaved).toHaveBeenCalledOnce();

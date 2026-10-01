@@ -26,7 +26,7 @@ describe('remembered engine selections', () => {
         };
 
         expect(RememberedEngineSelectionsByScopeV1Schema.parse(predecessor)).toEqual({
-            'default:backend:claude': {
+            'default:agent:happier.agent.claude/claude': {
                 v: 1,
                 modelSelection: null,
                 acpSessionModeId: 'plan',
@@ -46,13 +46,13 @@ describe('remembered engine selections', () => {
 
     it('fails closed when a current remembered selection carries an unknown field', () => {
         const raw = {
-            'server-a:backend:codex': {
+            'server-a:agent:happier.agent.codex/codex': {
                 v: 1,
                 modelSelection: {
                     v: 1,
                     updatedAt: 42,
                     ref: {
-                        agentTargetKey: 'backend:codex',
+                        agentTargetKey: 'agent:happier.agent.codex/codex',
                         providerConnectionId: null,
                         modelId: 'gpt-5.5',
                     },
@@ -63,12 +63,12 @@ describe('remembered engine selections', () => {
         };
 
         expect(RememberedEngineSelectionsByScopeV1Schema.parse(raw)).toEqual({});
-        expect(raw['server-a:backend:codex']).toHaveProperty('futureWriterField', true);
+        expect(raw['server-a:agent:happier.agent.codex/codex']).toHaveProperty('futureWriterField', true);
     });
 
     it('normalizes a legacy bare model to a native structured selection using the scoped target', () => {
         const parsed = RememberedEngineSelectionsByScopeV1Schema.parse({
-            'server-a:backend:codex': {
+            'server-a:agent:happier.agent.codex/codex': {
                 v: 1,
                 modelId: 'gpt-5.5',
                 acpSessionModeId: null,
@@ -77,13 +77,13 @@ describe('remembered engine selections', () => {
             },
         });
 
-        expect(parsed['server-a:backend:codex']).toEqual({
+        expect(parsed['server-a:agent:happier.agent.codex/codex']).toEqual({
             v: 1,
             modelSelection: {
                 v: 1,
                 updatedAt: 42,
                 ref: {
-                    agentTargetKey: 'backend:codex',
+                    agentTargetKey: 'agent:happier.agent.codex/codex',
                     providerConnectionId: null,
                     modelId: 'gpt-5.5',
                 },
@@ -96,10 +96,10 @@ describe('remembered engine selections', () => {
 
     it('normalizes the legacy default sentinel to automatic rather than a literal model id', () => {
         const parsed = RememberedEngineSelectionsByScopeV1Schema.parse({
-            'server-a:backend:codex': { v: 1, modelId: 'default', updatedAt: 42 },
+            'server-a:agent:happier.agent.codex/codex': { v: 1, modelId: 'default', updatedAt: 42 },
         });
 
-        expect(parsed['server-a:backend:codex']?.modelSelection).toBeNull();
+        expect(parsed['server-a:agent:happier.agent.codex/codex']?.modelSelection).toBeNull();
     });
 
     it('writes an explicit model as a target-bound selection and automatic as null', () => {
@@ -112,7 +112,7 @@ describe('remembered engine selections', () => {
                     v: 1,
                     updatedAt: 50,
                     ref: {
-                        agentTargetKey: 'backend:codex',
+                        agentTargetKey: 'agent:happier.agent.codex/codex',
                         providerConnectionId: null,
                         modelId: 'gpt-5.5',
                     },
@@ -126,7 +126,7 @@ describe('remembered engine selections', () => {
             serverId: 'server-a',
             backendTarget: codexTarget,
         })?.modelSelection?.ref).toEqual({
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             providerConnectionId: null,
             modelId: 'gpt-5.5',
         });
@@ -151,7 +151,7 @@ describe('remembered engine selections', () => {
             v: 1,
             updatedAt: 50,
             ref: {
-                agentTargetKey: 'backend:codex',
+                agentTargetKey: 'agent:happier.agent.codex/codex',
                 providerConnectionId: 'pc_01J00000000000000000000000',
                 modelId: 'openai/gpt-5.5',
             },
@@ -178,7 +178,7 @@ describe('remembered engine selections', () => {
             selection: {
                 modelSelection: SessionModelSelectionV1Schema.parse({
                     ...modelSelection,
-                    ref: { ...modelSelection.ref, agentTargetKey: 'backend:claude' },
+                    ref: { ...modelSelection.ref, agentTargetKey: 'agent:happier.agent.claude/claude' },
                 }),
             },
             updatedAt: 50,

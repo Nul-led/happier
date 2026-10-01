@@ -1,9 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
 import type { ConnectedServicesProfileOption } from '@happier-dev/agents';
+import type { QualifiedConnectedAccountProfileV4 } from '@happier-dev/protocol';
+import { connectedServiceProfileKey } from './connectedServiceProfilePreferences';
+import { presentConnectedAccountIdentity } from './maskAccountEmail';
 
 import {
     applyProjectedCredentialKindRestrictions,
+    buildQualifiedConnectedAccountProfileOptionsByServiceId,
     resolveProjectedConnectedAccountServiceKeys,
 } from './qualifiedConnectedAccountServiceOptions';
 
@@ -12,6 +16,39 @@ const CLAUDE_SUBSCRIPTION_SERVICE_KEY = 'happier.agent.claude/claude-subscriptio
 // Novel external plugin service: no bundled enum member and no generated
 // legacy mapping — a bundled Agent author fact cannot exist for it.
 const NOVEL_SERVICE_KEY = 'acme.review/reviewer-service';
+
+describe('buildQualifiedConnectedAccountProfileOptionsByServiceId privacy', () => {
+    it('uses the canonical user name before a provider display name and masks derived identities', () => {
+        const service = { pluginId: 'acme.review', localId: 'reviewer-service' };
+        const account = {
+            ref: { service, accountId: 'work' }, status: 'connected', authenticationModeId: 'oauth',
+            revisionSemantics: 'revisioned', credentialRevision: 'revision-1',
+            configurationReady: true, configurationRevision: null, scopes: [],
+            displayName: 'Provider workspace', providerIdentity: { email: 'work@example.com' },
+        } satisfies QualifiedConnectedAccountProfileV4;
+        const params = {
+            accounts: [account, { ...account, ref: { service, accountId: 'backup' }, displayName: undefined, providerIdentity: { accountId: 'provider-account-42' } }],
+            supportedServiceIds: [NOVEL_SERVICE_KEY],
+            labelsByKey: { [connectedServiceProfileKey({ serviceId: NOVEL_SERVICE_KEY, profileId: 'work' })]: 'Work' },
+        } satisfies Parameters<typeof buildQualifiedConnectedAccountProfileOptionsByServiceId>[0];
+        const options = buildQualifiedConnectedAccountProfileOptionsByServiceId({
+            ...params,
+            presentIdentity: (input) => presentConnectedAccountIdentity({
+                ...input, hidden: true, label: input.label ?? null, email: input.email ?? null, accountId: input.accountId ?? null,
+            }),
+        });
+        expect(options[NOVEL_SERVICE_KEY]).toEqual([
+            expect.objectContaining({ profileId: 'work', label: 'Work', providerEmail: 'wo•••@e•••.com' }),
+            expect.objectContaining({ profileId: 'backup', label: 'provi•••42', providerEmail: null }),
+        ]);
+        // Agent actions and passive inventory consume raw structured facts, not device text:
+        // a provider ID must not acquire the meaning of a saved user name there.
+        expect(buildQualifiedConnectedAccountProfileOptionsByServiceId(params)[NOVEL_SERVICE_KEY]).toEqual([
+            expect.objectContaining({ profileId: 'work', label: 'Work', providerEmail: 'work@example.com' }),
+            expect.objectContaining({ profileId: 'backup', label: null, providerEmail: null }),
+        ]);
+    });
+});
 
 const CLAUDE_SUBSCRIPTION_TOKEN_ONLY_PURPOSE = [{
     purpose: 'primary',

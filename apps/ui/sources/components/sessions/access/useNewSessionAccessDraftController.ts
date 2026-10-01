@@ -1,14 +1,16 @@
 import * as React from 'react';
-import type { PrincipalRefV1, SessionInitialAccessDraftV1 } from '@happier-dev/protocol';
+import type { PrincipalRefV1, SessionAccessCreationDecisionV1, SessionInitialAccessDraftV1 } from '@happier-dev/protocol';
 
 import type { SessionCollaborationAvailability } from '@/hooks/session/useSessionCollaborationAvailability';
 import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
 import { t } from '@/text';
 
 import { projectSessionAccessChipSummary } from './projectSessionAccessChipSummary';
+import { projectSessionAccessPrincipal } from './projectSessionAccessEditorSnapshot';
 import { projectSessionAccessContextChange } from './projectSessionAccessContextChange';
 import { sessionAccessGrantMutation } from './sessionAccessGrantMutation';
 import { projectSessionAccessDelegationControl, sessionAccessSubjectKey } from './projectSessionAccessEditorSnapshot';
+import { resolveSessionAccessCreationDecision, resolveSessionAccessPrincipals } from '@/sync/api/session/sessionAccessApi';
 import { useSessionAccessDirectory, type SessionAccessDirectoryTeamContext } from './useSessionAccessDirectory';
 import type {
     SessionAccessEditorActions,
@@ -23,6 +25,21 @@ const ACCESS_LEVEL_OPTIONS: readonly SessionAccessLevel[] = ['view', 'edit', 'ad
 function principalKindLabel(subject: PrincipalRefV1): string {
     return subject.kind === 'account' ? t('session.access.account')
         : subject.kind === 'team' ? t('session.access.team') : t('session.access.group');
+}
+
+function fallbackPrincipal(subject: PrincipalRefV1): SessionAccessPrincipalPresentation {
+    const identifier = subject.kind === 'account' ? subject.accountId : subject.kind === 'team' ? subject.teamId : `${subject.teamId}/${subject.groupId}`;
+    const label = `${principalKindLabel(subject)} · ${identifier}`;
+    return { ref: subject, key: sessionAccessSubjectKey(subject), displayName: label, accessibilityLabel: label };
+}
+
+function projectCreationDecisionPolicy(decision: SessionAccessCreationDecisionV1): SessionAccessDirectoryTeamContext {
+    return {
+        teamId: decision.teamId,
+        name: decision.teamName,
+        sessionCreationPolicy: decision.requiredByPolicy ? 'team_required' : decision.defaultGrant ? 'team_default' : 'private_default',
+        externalSharingPolicy: decision.externalSharingPolicy,
+    };
 }
 
 /**
@@ -58,10 +75,24 @@ export function useNewSessionAccessDraftController(input: Readonly<{
     const [revision, setRevision] = React.useState(0);
     const [pendingContextTeamId, setPendingContextTeamId] = React.useState<string | null | undefined>(undefined);
     const [explainedReason, setExplainedReason] = React.useState<Readonly<{ code: string; message: string }> | null>(null);
+    const [creationDecision, setCreationDecision] = React.useState<SessionAccessCreationDecisionV1 | null | undefined>(undefined);
+    const [pendingContextDecision, setPendingContextDecision] = React.useState<Readonly<{ teamId: string; retry: number }> | null>(null);
+    const [pendingContextTarget, setPendingContextTarget] = React.useState<SessionAccessDirectoryTeamContext | null>(null);
+    const [contextDecisionError, setContextDecisionError] = React.useState(false);
     // Display names come from the candidate row the person actually chose. A
     // restored draft has only Home-local identifiers, so its rows stay labelled
     // by kind rather than inventing a name for an identifier.
-    const [names, setNames] = React.useState<Readonly<Record<string, SessionAccessPrincipalPresentation>>>({});
+    const scopeKey = JSON.stringify([scope.serverId, scope.accountId]);
+    const [resolvedNames, setResolvedNames] = React.useState<Readonly<{
+        scopeKey: string;
+        values: Readonly<Record<string, SessionAccessPrincipalPresentation>>;
+    }>>({ scopeKey, values: {} });
+    const names = resolvedNames.scopeKey === scopeKey ? resolvedNames.values : {};
+    React.useEffect(() => {
+        setPendingContextDecision(null);
+        setPendingContextTarget(null);
+        setContextDecisionError(false);
+    }, [scopeKey]);
     const grants = React.useMemo(() => access?.grants ?? [], [access]);
     const grantsRef = React.useRef(grants);
     grantsRef.current = grants;
@@ -79,39 +110,111 @@ export function useNewSessionAccessDraftController(input: Readonly<{
         .map((grant) => ({ teamId: grant.subject.kind === 'team' ? grant.subject.teamId : '', name: names[sessionAccessSubjectKey(grant.subject)]?.displayName ?? t('session.access.team') })), [grants, names]);
 
     // Candidate discovery is editor detail and waits for an open presentation.
-    // The primary Team's creation policy is not: it decides the required floor
-    // this draft carries into `POST /sessions` whether or not a picker is ever
-    // opened, so a draft that already names a Team keeps resolving it here
-    // rather than through a second reader.
+    // The primary Team's creation decision comes from the server-owned create
+    // contract; it must not cause the detailed directory to mount in the chip.
     const directory = useSessionAccessDirectory({
         scope, availability, contextTeams, operations: {}, revision,
-        enabled: editable && (demanded || primaryTeamId !== null),
+        enabled: editable && demanded,
     });
+    const creationDecisionRevision = React.useRef(0);
+    const creationDecisionCache = React.useRef<Readonly<{
+        key: string;
+        value?: SessionAccessCreationDecisionV1 | null;
+        pending?: Promise<SessionAccessCreationDecisionV1 | null>;
+    }> | null>(null);
+    const [creationDecisionRetryRevision, setCreationDecisionRetryRevision] = React.useState(0);
+    React.useEffect(() => {
+        if (!editable || primaryTeamId === null) {
+            creationDecisionRevision.current += 1;
+            creationDecisionCache.current = null;
+            setCreationDecision(undefined);
+            return;
+        }
+        const requestKey = JSON.stringify([scope.serverId, scope.accountId, primaryTeamId, creationDecisionRetryRevision]);
+        const cached = creationDecisionCache.current;
+        if (cached?.key === requestKey && cached.value !== undefined) {
+            setCreationDecision(cached.value);
+            return;
+        }
+        const revision = ++creationDecisionRevision.current;
+        let active = true;
+        setCreationDecision(undefined);
+        const pending = cached?.key === requestKey && cached.pending
+            ? cached.pending
+            : resolveSessionAccessCreationDecision({
+                scope, availability, teamId: primaryTeamId,
+                // The request is shared across StrictMode replays. Effect
+                // liveness is checked by each consumer below; this predicate
+                // only cancels the shared request when its scope/retry key is
+                // no longer the active cache entry.
+                isCurrent: () => creationDecisionCache.current?.key === requestKey,
+            }).then((decision) => {
+                if (creationDecisionCache.current?.key === requestKey) {
+                    creationDecisionCache.current = { key: requestKey, value: decision };
+                }
+                return decision;
+            }).catch(() => {
+                if (creationDecisionCache.current?.key === requestKey) {
+                    creationDecisionCache.current = { key: requestKey, value: null };
+                }
+                return null;
+            });
+        if (creationDecisionCache.current?.key !== requestKey || creationDecisionCache.current.pending !== pending) {
+            creationDecisionCache.current = { key: requestKey, pending };
+        }
+        void pending.then((decision) => {
+            if (active && creationDecisionRevision.current === revision) setCreationDecision(decision);
+        });
+        return () => { active = false; };
+    }, [availability, editable, primaryTeamId, creationDecisionRetryRevision, scope.accountId, scope.serverId]);
+    const selectedSubjectsKey = React.useMemo(() => JSON.stringify(grants.map((grant) => grant.subject)), [grants]);
+    const resolveRevision = React.useRef(0);
+    React.useEffect(() => {
+        setResolvedNames((current) => current.scopeKey === scopeKey ? current : { scopeKey, values: {} });
+        if (!editable || !demanded || grants.length === 0) return;
+        const requestRevision = ++resolveRevision.current;
+        let active = true;
+        void resolveSessionAccessPrincipals({
+            scope, availability, subjects: grants.map((grant) => grant.subject),
+            isCurrent: () => active && resolveRevision.current === requestRevision,
+        }).then((principals) => {
+            if (!active || resolveRevision.current !== requestRevision) return;
+            setResolvedNames((current) => {
+                const base = current.scopeKey === scopeKey ? current.values : {};
+                const next = { ...base };
+                for (const principal of principals) {
+                    const projected = projectSessionAccessPrincipal(principal);
+                    next[projected.key] = projected;
+                }
+                return { scopeKey, values: next };
+            });
+        }).catch(() => {});
+        return () => { active = false; };
+    }, [availability, demanded, editable, grants, scope.accountId, scope.serverId, scopeKey, selectedSubjectsKey]);
     const directoryTeamsRef = React.useRef(directory.teamContexts);
     directoryTeamsRef.current = directory.teamContexts;
-    const primaryTeamPolicy = primaryTeamId === null
+    const primaryTeamDecisionPolicy = creationDecision === undefined || creationDecision === null
         ? null
-        : directory.teamContexts.find((team) => team.teamId === primaryTeamId) ?? null;
-    const primaryTeamPolicyUnavailable = primaryTeamId !== null && primaryTeamPolicy === null;
+        : projectCreationDecisionPolicy(creationDecision);
+    // Directory rows are presentation and discovery only. Creation policy is
+    // authoritative only when the selected-Home server has returned its typed
+    // decision; a missing decision must never be inferred from a cached row.
+    const primaryTeamPolicy = primaryTeamDecisionPolicy;
+    const primaryTeamPolicyUnavailable = primaryTeamId !== null && creationDecision !== undefined && creationDecision === null && primaryTeamPolicy === null;
+    const primaryTeamDecisionPending = primaryTeamId !== null && creationDecision === undefined;
 
     const rows = React.useMemo<readonly SessionAccessGrantRowModel[]>(() => grants.map((grant) => {
         const key = sessionAccessSubjectKey(grant.subject);
         const requiredByTeamPolicy = grant.subject.kind === 'team'
             && grant.subject.teamId === primaryTeamId
             && primaryTeamPolicy?.sessionCreationPolicy === 'team_required';
-        const principal = names[key] ?? {
-            ref: grant.subject,
-            key,
-            displayName: principalKindLabel(grant.subject),
-            accessibilityLabel: principalKindLabel(grant.subject),
-        };
+        const principal = names[key] ?? fallbackPrincipal(grant.subject);
         return {
             grant: grant.subject,
             principal,
             level: editable
                 ? { kind: 'editable', value: grant.accessLevel, options: ACCESS_LEVEL_OPTIONS
-                    .filter((value) => !requiredByTeamPolicy || value !== 'view')
-                    .map((value) => ({ value, label: t(`session.access.${value}`) })) }
+                    .filter((value) => !requiredByTeamPolicy || value !== 'view') }
                 : { kind: 'locked', value: grant.accessLevel, reason: { code: 'session_access_sharing_unavailable', message: t('session.collaboration.accessUnavailableReason') } },
             permissionDelegation: projectSessionAccessDelegationControl({
                 accessLevel: grant.accessLevel,
@@ -132,7 +235,7 @@ export function useNewSessionAccessDraftController(input: Readonly<{
     const replace = React.useCallback((subject: PrincipalRefV1, next: SessionInitialAccessDraftV1['grants'][number] | null) => {
         if (!editable) return;
         if (subject.kind === 'team' && subject.teamId === primaryTeamId
-            && directoryTeamsRef.current.find((team) => team.teamId === subject.teamId)?.sessionCreationPolicy === 'team_required'
+            && primaryTeamPolicy?.sessionCreationPolicy === 'team_required'
             && (next === null || next.accessLevel === 'view')) return;
         const key = sessionAccessSubjectKey(subject);
         const current = grantsRef.current;
@@ -143,7 +246,7 @@ export function useNewSessionAccessDraftController(input: Readonly<{
             return;
         }
         publish(index < 0 ? [...current, next] : current.map((grant, position) => (position === index ? next : grant)));
-    }, [editable, primaryTeamId, publish]);
+    }, [editable, primaryTeamId, primaryTeamPolicy?.sessionCreationPolicy, publish]);
 
     /**
      * The one place a Team-policy floor is derived, for every route into a Team
@@ -163,42 +266,97 @@ export function useNewSessionAccessDraftController(input: Readonly<{
         const entering = enteredContextTeamId.current !== primaryTeamId;
         if (primaryTeamId === null) enteredContextTeamId.current = null;
         else if (contextCreationPolicy) enteredContextTeamId.current = primaryTeamId;
-        if (!editable || primaryTeamId === null) return;
+        if (!editable || primaryTeamId === null || primaryTeamDecisionPending) return;
         if (contextCreationPolicy !== 'team_required'
             && !(entering && contextCreationPolicy === 'team_default')) return;
         const subject = { kind: 'team' as const, teamId: primaryTeamId };
         const existing = grantsRef.current.find((grant) => sessionAccessSubjectKey(grant.subject) === sessionAccessSubjectKey(subject));
         if (existing && existing.accessLevel !== 'view') return;
         replace(subject, sessionAccessGrantMutation(subject, { accessLevel: 'edit', canApprovePermissions: false }));
-    }, [contextCreationPolicy, editable, primaryTeamId, replace]);
+    }, [contextCreationPolicy, editable, primaryTeamDecisionPending, primaryTeamId, replace]);
 
-    const submitContext = React.useCallback((teamId: string | null) => {
-        const target = teamId === null ? null : directoryTeamsRef.current.find((team) => team.teamId === teamId) ?? null;
+    const submitContext = React.useCallback((teamId: string | null, targetOverride?: SessionAccessDirectoryTeamContext | null) => {
+        const target = teamId === null ? null
+            : targetOverride ?? (teamId === primaryTeamId && primaryTeamPolicy
+                ? primaryTeamPolicy
+                : directoryTeamsRef.current.find((team) => team.teamId === teamId) ?? null);
         if (teamId !== null && (!target?.sessionCreationPolicy || !target.externalSharingPolicy)) return;
         onPrimaryTeamIdChange(teamId);
         setPendingContextTeamId(undefined);
-    }, [onPrimaryTeamIdChange]);
+        setPendingContextTarget(null);
+        setContextDecisionError(false);
+    }, [onPrimaryTeamIdChange, primaryTeamId, primaryTeamPolicy]);
+
+    React.useEffect(() => {
+        const request = pendingContextDecision;
+        if (request === null) return;
+        let active = true;
+        void resolveSessionAccessCreationDecision({
+            scope, availability, teamId: request.teamId,
+            isCurrent: () => active,
+        }).then((decision) => {
+            if (!active) return;
+            if (decision === null) {
+                setContextDecisionError(true);
+                setExplainedReason({ code: 'session_access_context_policy_unavailable', message: t('errors.operationFailed') });
+                return;
+            }
+            const target = projectCreationDecisionPolicy(decision);
+            setPendingContextDecision(null);
+            setContextDecisionError(false);
+            const consequences = projectSessionAccessContextChange({
+                target,
+                current: primaryTeamPolicy,
+                grants: grantsRef.current,
+            });
+            if (consequences.length > 0) {
+                setPendingContextTarget(target);
+                setPendingContextTeamId(request.teamId);
+                return;
+            }
+            submitContext(request.teamId, target);
+        }).catch(() => {
+            if (!active) return;
+            setContextDecisionError(true);
+            setExplainedReason({ code: 'session_access_context_policy_unavailable', message: t('errors.operationFailed') });
+        });
+        return () => { active = false; };
+    }, [availability, pendingContextDecision, primaryTeamPolicy, scope.accountId, scope.serverId, submitContext]);
 
     const setContext = React.useCallback((teamId: string | null) => {
-        if (!editable || primaryTeamId === teamId) return;
-        if (primaryTeamPolicy?.sessionCreationPolicy === 'team_required') return;
-        const target = teamId === null ? null : directoryTeamsRef.current.find((team) => team.teamId === teamId) ?? null;
+        if (!editable || primaryTeamId === teamId || (primaryTeamId !== null && (primaryTeamDecisionPending || primaryTeamPolicyUnavailable))) return;
+        if (creationDecision?.requiredByPolicy === true) return;
+        if (teamId !== null && teamId !== primaryTeamId) {
+            setContextDecisionError(false);
+            setExplainedReason(null);
+            setPendingContextDecision((current) => ({ teamId, retry: (current?.teamId === teamId ? current.retry : 0) + 1 }));
+            return;
+        }
+        const target = teamId === null ? null : primaryTeamPolicy;
         if (teamId !== null && (!target?.sessionCreationPolicy || !target.externalSharingPolicy)) return;
-        const current = primaryTeamId === null ? null : directoryTeamsRef.current.find((team) => team.teamId === primaryTeamId) ?? null;
+        const current = primaryTeamId === null ? null : primaryTeamPolicy;
         if (primaryTeamId !== null && !current) return;
         const consequences = projectSessionAccessContextChange({ target, current, grants: grantsRef.current });
         if (consequences.length > 0) {
+            setPendingContextTarget(target);
             setPendingContextTeamId(teamId);
             return;
         }
-        submitContext(teamId);
-    }, [editable, primaryTeamId, primaryTeamPolicy?.sessionCreationPolicy, submitContext]);
+        submitContext(teamId, target);
+    }, [creationDecision?.requiredByPolicy, editable, primaryTeamDecisionPending, primaryTeamId, primaryTeamPolicy, primaryTeamPolicyUnavailable, submitContext]);
 
     const actions = React.useMemo<SessionAccessEditorActions>(() => ({
         setQuery,
-        retryContent: () => setRevision((value) => value + 1),
+        retryContent: () => {
+            setCreationDecisionRetryRevision((value) => value + 1);
+            if (pendingContextDecision !== null) {
+                setPendingContextDecision((current) => current === null ? current : { ...current, retry: current.retry + 1 });
+            }
+            setRevision((value) => value + 1);
+        },
         retryDirectory: (kind) => { directory.retry(kind); setRevision((value) => value + 1); },
         loadMore: (kind) => directory.loadMore(kind),
+        retryMutation: () => {},
         addPrincipal: (subject) => {
             // Candidate additions use the neutral direct-share default. A
             // primary-Team required floor is composed only by the reviewed
@@ -223,8 +381,8 @@ export function useNewSessionAccessDraftController(input: Readonly<{
         cancelRemove: () => {},
         explain: setExplainedReason,
         setContext,
-        confirmContext: () => { if (pendingContextTeamId !== undefined) submitContext(pendingContextTeamId); },
-        cancelContext: () => setPendingContextTeamId(undefined),
+        confirmContext: () => { if (pendingContextTeamId !== undefined) submitContext(pendingContextTeamId, pendingContextTarget); },
+        cancelContext: () => { setPendingContextTeamId(undefined); setPendingContextTarget(null); },
         clearAccess: () => {
             onChange(null);
             onPrimaryTeamIdChange(null);
@@ -234,7 +392,7 @@ export function useNewSessionAccessDraftController(input: Readonly<{
         prepareAccess: () => {},
         toggleAllRecipients: () => {},
         loadMoreRecipients: () => {},
-    }), [directory, pendingContextTeamId, replace, setContext, submitContext]);
+    }), [directory, pendingContextDecision, pendingContextTarget, pendingContextTeamId, replace, setContext, submitContext]);
 
     // Candidate presentation is captured as it is chosen so the selected row
     // keeps its real name without a second identity lookup.
@@ -243,16 +401,17 @@ export function useNewSessionAccessDraftController(input: Readonly<{
         ...(section.resolveCandidates ? {
             resolveCandidates: async (search: string, signal: AbortSignal) => {
                 const candidates = await section.resolveCandidates!(search, signal);
-                setNames((current) => {
+                setResolvedNames((current) => {
                     // Copy-on-first-change: unchanged names keep their identity so the
                     // rows around them are not rebuilt by a search that found nothing new.
+                    const base = current.scopeKey === scopeKey ? current.values : {};
                     let next: Record<string, SessionAccessPrincipalPresentation> | null = null;
                     for (const candidate of candidates) {
-                        if ((next ?? current)[candidate.principal.key] === candidate.principal) continue;
-                        next ??= { ...current };
+                        if ((next ?? base)[candidate.principal.key] === candidate.principal) continue;
+                        next ??= { ...base };
                         next[candidate.principal.key] = candidate.principal;
                     }
-                    return next ?? current;
+                    return next === null ? current : { scopeKey, values: next };
                 });
                 return candidates;
             },
@@ -272,6 +431,12 @@ export function useNewSessionAccessDraftController(input: Readonly<{
             summary: projectSessionAccessChipSummary({ grants: rows, audienceComplete: true }),
             context: {
                 primaryTeamId,
+                ...(pendingContextDecision || contextDecisionError ? {
+                    operation: contextDecisionError ? 'error' as const : 'saving' as const,
+                    ...(contextDecisionError ? { error: {
+                        code: 'session_access_context_policy_unavailable', message: t('errors.operationFailed'), retryable: true,
+                    } } : {}),
+                } : {}),
                 options: [
                     { teamId: null, label: t('session.access.private'),
                         ...(primaryTeamPolicy?.sessionCreationPolicy === 'team_required' ? { blockedReason: {
@@ -279,20 +444,25 @@ export function useNewSessionAccessDraftController(input: Readonly<{
                         } } : primaryTeamPolicyUnavailable ? { blockedReason: {
                             code: 'session_access_context_policy_unavailable', message: t('errors.operationFailed'),
                         } } : {}) },
-                    ...directory.teamContexts.map((team) => ({ teamId: team.teamId, label: team.name,
-                        ...(primaryTeamPolicy?.sessionCreationPolicy === 'team_required' && team.teamId !== primaryTeamId
+                    ...[
+                        ...(primaryTeamPolicy && !directory.teamContexts.some((team) => team.teamId === primaryTeamPolicy.teamId) ? [primaryTeamPolicy] : []),
+                        ...directory.teamContexts,
+                    ].map((team) => ({ teamId: team.teamId, label: team.name,
+                        ...(primaryTeamDecisionPending || pendingContextDecision?.teamId === team.teamId ? { blockedReason: {
+                            code: 'session_access_context_policy_unavailable', message: t('errors.operationFailed'),
+                        } } : creationDecision?.requiredByPolicy === true && team.teamId !== primaryTeamId
                             ? { blockedReason: { code: 'session_access_team_policy_required', message: t('session.access.required') } }
-                            : !team.sessionCreationPolicy || !team.externalSharingPolicy || primaryTeamPolicyUnavailable ? { blockedReason: {
+                            : team.teamId === primaryTeamId && primaryTeamPolicyUnavailable ? { blockedReason: {
                             code: 'session_access_context_policy_unavailable', message: t('errors.operationFailed'),
                         } } : {}),
                     })),
                 ],
                 ...(pendingContextTeamId !== undefined ? { confirmation: {
                     teamId: pendingContextTeamId,
-                    label: pendingContextTeamId === null ? t('session.access.private')
-                        : directory.teamContexts.find((team) => team.teamId === pendingContextTeamId)?.name ?? t('session.access.team'),
+                        label: pendingContextTeamId === null ? t('session.access.private')
+                        : pendingContextTarget?.name ?? t('session.access.team'),
                     consequences: projectSessionAccessContextChange({
-                        target: pendingContextTeamId === null ? null : directory.teamContexts.find((team) => team.teamId === pendingContextTeamId) ?? null,
+                        target: pendingContextTeamId === null ? null : pendingContextTarget,
                         current: primaryTeamPolicy,
                         grants,
                     }),

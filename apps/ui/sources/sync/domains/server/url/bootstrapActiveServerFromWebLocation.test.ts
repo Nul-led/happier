@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { installLocalStorageMock } from '@/auth/storage/tokenStorage.web.testHelpers';
+import { scopedStorageId } from '@/utils/system/storageScope';
 
 function randomScope(): string {
     return `test_${Date.now()}_${Math.random().toString(16).slice(2)}`;
@@ -37,8 +39,11 @@ describe('bootstrapActiveServerFromWebLocation', () => {
     const previousContext = process.env.EXPO_PUBLIC_HAPPY_SERVER_CONTEXT;
     const previousPreconfigured = process.env.EXPO_PUBLIC_HAPPY_PRECONFIGURED_SERVERS;
     const previousScope = process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE;
+    let seededBrowserStorage: ReturnType<typeof installLocalStorageMock> | null = null;
 
     afterEach(() => {
+        seededBrowserStorage?.restore();
+        seededBrowserStorage = null;
         vi.unstubAllGlobals();
         process.env.EXPO_PUBLIC_HAPPY_SERVER_URL = previousEnv;
         if (previousContext === undefined) delete process.env.EXPO_PUBLIC_HAPPY_SERVER_CONTEXT;
@@ -49,11 +54,14 @@ describe('bootstrapActiveServerFromWebLocation', () => {
         else process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = previousScope;
     });
 
-    it('activates the server from the web query string immediately', async () => {
+    it('activates a saved Home from the web query string immediately', async () => {
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
         process.env.EXPO_PUBLIC_HAPPY_SERVER_URL = 'http://localhost:57012';
 
         stubWebLocation('http://happier-github-auth-e2ee.localhost:19081/?server=http%3A%2F%2Flocalhost%3A57010');
+
+        const { upsertServerProfile } = await importFreshServerProfiles();
+        await upsertServerProfile({ serverUrl: 'http://localhost:57010', source: 'manual' });
 
         const { bootstrapActiveServerFromWebLocation } = await importFreshBootstrap();
         const result = await bootstrapActiveServerFromWebLocation({ scope: 'device' });
@@ -61,6 +69,45 @@ describe('bootstrapActiveServerFromWebLocation', () => {
         const { getActiveServerUrl } = await importFreshServerProfiles();
         expect(getActiveServerUrl()).toBe('http://localhost:57010');
         expect(result?.serverUrl).toBe('http://localhost:57010');
+    });
+
+    it('keeps an unknown Home URL pending until the connect flow admits it', async () => {
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
+        process.env.EXPO_PUBLIC_HAPPY_SERVER_URL = 'https://retained.example.test';
+        stubWebLocation('https://app.example.test/?server=https%3A%2F%2Fnew.example.test');
+
+        const { bootstrapActiveServerFromWebLocation } = await importFreshBootstrap();
+        const result = await bootstrapActiveServerFromWebLocation({ scope: 'device' });
+        const { getActiveServerUrl, listServerProfiles } = await importFreshServerProfiles();
+
+        expect(result?.serverUrl).toBe('https://new.example.test');
+        expect(getActiveServerUrl()).toBe('https://retained.example.test');
+        expect(listServerProfiles().some((profile) => profile.serverUrl === 'https://new.example.test')).toBe(false);
+    });
+
+    it('does not choose one of two saved Homes with the same supplied URL', async () => {
+        const scope = randomScope();
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = scope;
+        process.env.EXPO_PUBLIC_HAPPY_SERVER_URL = 'https://retained.example.test';
+        // Web profiles read browser storage, not native MMKV. Seed the genuine persistence boundary.
+        seededBrowserStorage = installLocalStorageMock();
+        seededBrowserStorage.store.set(`${scopedStorageId('server-profiles', scope)}:server-state-v1`, JSON.stringify({
+            activeServerId: 'retained',
+            activeServerIdIsExplicit: true,
+            servers: {
+                retained: { id: 'retained', name: 'Retained', serverUrl: 'https://retained.example.test', createdAt: 1, updatedAt: 1, lastUsedAt: 1 },
+                first: { id: 'first', name: 'First', serverUrl: 'https://shared.example.test', serverIdentityId: 'srv_first', createdAt: 1, updatedAt: 1, lastUsedAt: 1 },
+                second: { id: 'second', name: 'Second', serverUrl: 'https://shared.example.test', serverIdentityId: 'srv_second', createdAt: 2, updatedAt: 2, lastUsedAt: 2 },
+            },
+        }));
+        stubWebLocation('https://app.example.test/?server=https%3A%2F%2Fshared.example.test');
+
+        const { bootstrapActiveServerFromWebLocation } = await importFreshBootstrap();
+        const { getActiveServerId, resolveSavedServerProfileByUrl, resolveUniqueServerProfileByUrl } = await importFreshServerProfiles();
+        expect(resolveSavedServerProfileByUrl('https://shared.example.test')).toMatchObject({ kind: 'ambiguous' });
+        expect(resolveUniqueServerProfileByUrl('https://shared.example.test')).toBeNull();
+        await bootstrapActiveServerFromWebLocation({ scope: 'device' });
+        expect(getActiveServerId()).toBe('retained');
     });
 
     it('reuses the same equivalent loopback server profile without rewriting its stored url', async () => {

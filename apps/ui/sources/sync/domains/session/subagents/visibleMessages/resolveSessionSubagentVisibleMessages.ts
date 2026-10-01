@@ -1,4 +1,4 @@
-import type { Message, ToolCall } from '@/sync/domains/messages/messageTypes';
+import type { Message, ToolCall } from "@happier-dev/session-core/messages";
 import type { Session } from '@/sync/domains/state/storageTypes';
 import { resolveAgentIdFromSessionMetadata } from '@happier-dev/agents';
 import {

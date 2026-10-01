@@ -27,6 +27,7 @@ import {
 } from '@happier-dev/protocol/actions';
 
 import { reconcileExternalActionTarget } from './reconcileExternalActionTarget';
+import type { ApiTokenGrantV1 } from '@happier-dev/protocol/auth/apiTokenGrant';
 
 type PublicOutputValidationResult =
   | Readonly<{ success: true; data: unknown }>
@@ -48,10 +49,11 @@ export type ExternalActionPrincipal =
       accountId: string;
       principalId: string;
       credentialId: string;
+      grant: ApiTokenGrantV1;
       authority: 'account_automation';
     }>
   | Readonly<{
-      authority: 'present_user';
+      authority: NonNullable<ActionExecutorContext['authority']>;
     }>;
 
 export type ExternalActionExecutor = Readonly<{
@@ -154,7 +156,8 @@ export async function executeExternalAction(input: Readonly<{
     };
   }
 
-  const actionId = input.principal.authority === 'account_automation'
+  const apiTokenPrincipal = 'credentialId' in input.principal ? input.principal : null;
+  const actionId = apiTokenPrincipal
     ? PublicActionIdSchema.safeParse(externalActionId.data)
     : SignedRootActionIdSchema.safeParse(externalActionId.data);
   if (!actionId.success) {
@@ -173,11 +176,11 @@ export async function executeExternalAction(input: Readonly<{
     && (
       !executionAuthorization.success
       || !input.externalActionMachineRequestPrivateKey
-      || input.principal.authority !== 'account_automation'
+      || !apiTokenPrincipal
       || input.currentServerId === undefined
-      || executionAuthorization.data.binding.accountId !== input.principal.accountId
-      || executionAuthorization.data.binding.principalId !== input.principal.principalId
-      || executionAuthorization.data.binding.credentialId !== input.principal.credentialId
+      || executionAuthorization.data.binding.accountId !== apiTokenPrincipal.accountId
+      || executionAuthorization.data.binding.principalId !== apiTokenPrincipal.principalId
+      || executionAuthorization.data.binding.credentialId !== apiTokenPrincipal.credentialId
       || executionAuthorization.data.binding.machineId !== input.currentMachineId
       || executionAuthorization.data.binding.actionId !== actionId.data
       || executionAuthorization.data.binding.requestEnvelopeDigest
@@ -211,12 +214,12 @@ export async function executeExternalAction(input: Readonly<{
     if (!encryption) return {
       kind: 'invalid_request', errorCode: 'encrypted_action_unsupported', requestId: request.requestId,
     };
-    if (input.principal.authority !== 'account_automation') {
+    if (!apiTokenPrincipal) {
       return { kind: 'invalid_request', errorCode: 'invalid_encrypted_envelope', requestId: request.requestId };
     }
     const binding: ExternalActionEncryptionBindingV2 = {
-      serverIdentityId: encryption.serverIdentityId, accountId: input.principal.accountId,
-      credentialId: input.principal.credentialId, actionId: actionId.data,
+      serverIdentityId: encryption.serverIdentityId, accountId: apiTokenPrincipal.accountId,
+      credentialId: apiTokenPrincipal.credentialId, actionId: actionId.data,
       requestId: request.requestId, target: request.target,
     };
     // A target this receiver cannot be is refused before anything is opened.
@@ -288,17 +291,20 @@ export async function executeExternalAction(input: Readonly<{
   }
 
   const context: ActionExecutorContext = {
-    surface: input.principal.authority === 'account_automation'
+    surface: apiTokenPrincipal
       ? 'api'
       : input.surface ?? 'ui',
     authority: input.principal.authority,
     actionCaller: { kind: 'host' },
-    ...(input.principal.authority === 'account_automation'
+    ...(apiTokenPrincipal
       ? {
           externalActionCredential: {
-            accountId: input.principal.accountId,
-            principalId: input.principal.principalId,
-            credentialId: input.principal.credentialId,
+            accountId: apiTokenPrincipal.accountId,
+            principalId: apiTokenPrincipal.principalId,
+            credentialId: apiTokenPrincipal.credentialId,
+            grant: executionAuthorization?.success
+              ? executionAuthorization.data.binding.grant
+              : apiTokenPrincipal.grant,
           },
         }
       : {}),

@@ -70,7 +70,6 @@ export type SessionChangedBackgroundWakeResult =
 export type SessionChangedBackgroundWakeTaskRegistrationResult =
     | Readonly<{ status: 'registered' }>
     | Readonly<{ status: 'already_registered' }>
-    | Readonly<{ status: 'unregistered'; reason: 'platform_unsupported' }>
     | Readonly<{ status: 'already_unregistered'; reason: 'platform_unsupported' }>;
 
 function getNotificationsApi(): NotificationsTaskRegistrationApi & NotificationsDefinitionApi {
@@ -140,15 +139,13 @@ export async function syncSessionChangedBackgroundWakeTaskRegistration(params: R
     taskManager?: TaskManagerRegistrationApi;
 }> = {}): Promise<SessionChangedBackgroundWakeTaskRegistrationResult> {
     const platformOS = params.platformOS ?? Platform.OS;
+    if (platformOS !== 'ios' && platformOS !== 'android') {
+        return { status: 'already_unregistered', reason: 'platform_unsupported' };
+    }
+
     const notifications = params.notifications ?? getNotificationsApi();
     const taskManager = params.taskManager ?? getTaskManagerRegistrationApi();
     const registered = await taskManager.isTaskRegisteredAsync(SESSION_CHANGED_BACKGROUND_WAKE_TASK_NAME);
-
-    if (platformOS !== 'ios' && platformOS !== 'android') {
-        if (!registered) return { status: 'already_unregistered', reason: 'platform_unsupported' };
-        await notifications.unregisterTaskAsync(SESSION_CHANGED_BACKGROUND_WAKE_TASK_NAME);
-        return { status: 'unregistered', reason: 'platform_unsupported' };
-    }
 
     if (registered) return { status: 'already_registered' };
     await notifications.registerTaskAsync(SESSION_CHANGED_BACKGROUND_WAKE_TASK_NAME);

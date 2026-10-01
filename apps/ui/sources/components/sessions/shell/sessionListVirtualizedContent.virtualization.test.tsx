@@ -80,21 +80,27 @@ function buildNodes(count: number) {
     }));
 }
 
-async function renderVirtualizedContent(props: Partial<React.ComponentProps<any>> = {}) {
-    const { SessionListVirtualizedContent } = await import('./sessionListVirtualizedContent');
-    return renderScreen(React.createElement(SessionListVirtualizedContent as any, {
+function buildVirtualizedContentProps(props: Partial<React.ComponentProps<any>> = {}) {
+    return {
         nodes: buildNodes(2),
         rowHeight: 48,
         safeAreaBottom: 0,
         renderItem: ({ item }: any) => React.createElement('Row', { testID: `row:${item.id}` }),
         rowExtraData: null,
         onStopScrollEventPropagationOnWeb: vi.fn(),
-        onPressArchivedSessions: vi.fn(),
         folderFocus: null,
         onClearFolderFocus: vi.fn(),
         onSelectFolderBreadcrumb: vi.fn(),
         ...props,
-    }));
+    };
+}
+
+async function renderVirtualizedContent(props: Partial<React.ComponentProps<any>> = {}) {
+    const { SessionListVirtualizedContent } = await import('./sessionListVirtualizedContent');
+    return renderScreen(React.createElement(
+        SessionListVirtualizedContent as any,
+        buildVirtualizedContentProps(props),
+    ));
 }
 
 describe('SessionListVirtualizedContent virtualization', () => {
@@ -136,6 +142,69 @@ describe('SessionListVirtualizedContent virtualization', () => {
         expect(virtualizationState.flatListProps.scrollEventThrottle).toBe(32);
         expect(typeof virtualizationState.flatListProps.onWheel).toBe('function');
         expect(typeof virtualizationState.flatListProps.onTouchMove).toBe('function');
+    });
+
+    it('preserves the mounted web list when pagination crosses the virtualization threshold', async () => {
+        const { SessionListVirtualizedContent } = await import('./sessionListVirtualizedContent');
+        const screen = await renderVirtualizedContent({ nodes: buildNodes(120) });
+        const firstList = screen.root.findByType('FlatList');
+
+        await screen.update(React.createElement(
+            SessionListVirtualizedContent as any,
+            buildVirtualizedContentProps({ nodes: buildNodes(121) }),
+        ));
+
+        expect(screen.root.findByType('FlatList')).toBe(firstList);
+        expect(virtualizationState.flatListProps.disableVirtualization).toBeUndefined();
+    });
+
+    it('keeps the FlatList viewability callback stable while dispatching to the latest handler', async () => {
+        const firstHandler = vi.fn();
+        const latestHandler = vi.fn();
+        const screen = await renderVirtualizedContent({
+            onViewableItemsChanged: firstHandler,
+        });
+        const initialCallback = virtualizationState.flatListProps.onViewableItemsChanged;
+        const { SessionListVirtualizedContent } = await import('./sessionListVirtualizedContent');
+
+        await screen.update(React.createElement(
+            SessionListVirtualizedContent as any,
+            buildVirtualizedContentProps({ onViewableItemsChanged: latestHandler }),
+        ));
+
+        const currentCallback = virtualizationState.flatListProps.onViewableItemsChanged;
+        expect(currentCallback).toBe(initialCallback);
+
+        const info = { viewableItems: [] };
+        currentCallback(info);
+        expect(firstHandler).not.toHaveBeenCalled();
+        expect(latestHandler).toHaveBeenCalledWith(info);
+    });
+
+    it('hands the same list the same viewability handler and config across row changes, as FlatList requires', async () => {
+        const { SessionListVirtualizedContent } = await import('./sessionListVirtualizedContent');
+        const screen = await renderVirtualizedContent({
+            nodes: buildNodes(4),
+            onViewableItemsChanged: vi.fn(),
+            viewabilityConfig: { itemVisiblePercentThreshold: 1 },
+        });
+        const firstList = screen.root.findByType('FlatList');
+        const firstHandler = virtualizationState.flatListProps.onViewableItemsChanged;
+        const firstConfig = virtualizationState.flatListProps.viewabilityConfig;
+
+        for (const count of [6, 3, 8]) {
+            await screen.update(React.createElement(
+                SessionListVirtualizedContent as any,
+                buildVirtualizedContentProps({
+                    nodes: buildNodes(count),
+                    onViewableItemsChanged: vi.fn(),
+                    viewabilityConfig: { itemVisiblePercentThreshold: 1 },
+                }),
+            ));
+            expect(screen.root.findByType('FlatList')).toBe(firstList);
+            expect(virtualizationState.flatListProps.onViewableItemsChanged).toBe(firstHandler);
+            expect(virtualizationState.flatListProps.viewabilityConfig).toBe(firstConfig);
+        }
     });
 
     it('keeps native lists on the canonical Legend-backed VirtualizedList with native refresh and scroll tuning', async () => {

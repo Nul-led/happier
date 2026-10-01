@@ -22,7 +22,7 @@ import {
 } from '@/sync/domains/session/agentActivity';
 import { deriveSessionSubagentPendingAttentionKinds } from '@/sync/domains/session/subagents/deriveSessionSubagentPendingAttentionKinds';
 import type { SessionSubagent } from '@/sync/domains/session/subagents/types';
-import type { Message } from '@/sync/domains/messages/messageTypes';
+import type { Message } from "@happier-dev/session-core/messages";
 import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
 import type { Session } from '@/sync/domains/state/storageTypes';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';

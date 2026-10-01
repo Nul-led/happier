@@ -205,7 +205,7 @@ function materializedProjection(input: Readonly<{
                 launchManifestCommitment,
                 installation: {
                     agentTarget: { kind: 'agent', identity: { pluginId: 'happier.codex', localId: 'codex' } },
-                    managedInstallationId: 'managed-a',
+                    agentRuntimeId: 'codex',
                     executablePath: '/runner/codex',
                     authoritativeVersion: null,
                 },
@@ -348,6 +348,20 @@ describe('materialized Runner attachment recovery integration', () => {
             sessionId: 'session-a',
             candidates: [{ draftId: 'draft-a', activationId, launchUserAttemptId: null }],
             readActivation: async () => projection,
+            settle: (input) => settlePersistedMaterializedTemporaryComputerSession({
+                ...input,
+                present,
+                uploadFile,
+                beforeCleanup: async () => { throw new Error('cleanup interrupted after admission'); },
+            }),
+        })).rejects.toThrow('cleanup interrupted after admission');
+        expect(boundaries.followUps).toHaveLength(1);
+
+        await expect(recoverMaterializedTemporaryComputerSessionForSession({
+            scope,
+            sessionId: 'session-a',
+            candidates: [{ draftId: 'draft-a', activationId, launchUserAttemptId: null }],
+            readActivation: async () => projection,
             settle: (input) => settlePersistedMaterializedTemporaryComputerSession({ ...input, present, uploadFile }),
         })).resolves.toBe('settled');
 
@@ -359,8 +373,12 @@ describe('materialized Runner attachment recovery integration', () => {
             'present',
             'upload:empty.txt:0',
             'followup',
+            'present',
+            'followup',
         ]);
-        expect(boundaries.followUps).toHaveLength(1);
+        expect(boundaries.followUps).toHaveLength(2);
+        expect(boundaries.followUps.map((followUp) => (followUp as { messageLocalId?: string }).messageLocalId))
+            .toEqual(['first-turn-a', 'first-turn-a']);
         const followUp = boundaries.followUps[0] as Readonly<{
             initialMessageText: string;
             messageLocalId?: string;

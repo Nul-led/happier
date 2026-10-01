@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { createDeferred } from '@/dev/testkit';
+import { createDeferred } from '@/dev/testkit/hooks/createDeferred';
 
 const mocks = vi.hoisted(() => ({
     syncSwitchServer: vi.fn(),
@@ -28,10 +28,6 @@ vi.mock('@/sync/runtime/nativeIrohTunnels/runtime', () => ({
         releaseActiveHomeTunnels: vi.fn(async () => undefined),
         releaseLeasesForStaleTargets: vi.fn(async () => undefined),
     }),
-}));
-
-vi.mock('@/sync/runtime/nativeIrohTunnels/fallback', () => ({
-    classifyIrohHomeTunnelSwitchFailure: () => ({ fallbackAllowed: false }),
 }));
 
 vi.mock('@/sync/ops/account/accountEncryptionFirstKeyExternalAuth', () => ({

@@ -2,8 +2,8 @@ import { resolveCliFeatureDecision, type CliServerFeaturesSnapshot } from '@/fea
 
 /**
  * The privileged browser child gates enforced at the daemon execution boundary. These are the
- * capture/automation-adjacent surfaces that are server-represented + default-off (or
- * client-represented + fail-closed for automation): a route owner must NOT be registered and an
+ * capture/automation-adjacent surfaces represented by canonical feature settings:
+ * a route owner must NOT be registered and an
  * action must NOT dispatch unless the server feature decision says enabled.
  */
 export type BrowserDaemonFeatureGateId =

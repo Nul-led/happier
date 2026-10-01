@@ -11,6 +11,8 @@ export type SetupMachineAuthStatus = Readonly<{
   credentialState?: 'missing' | 'valid' | 'invalid' | 'unknown';
   machineRegistrationState?: 'no-local-id' | 'local-only' | 'server-confirmed';
   authenticated: boolean;
+  /** Identity is separate from credential validation and registration readiness. */
+  accountId?: string | null;
   machineRegistered?: boolean;
   machineId: string | null;
 }>;
@@ -58,6 +60,19 @@ export type SetupMachineRecipeSteps = Readonly<{
   verifyService?: boolean;
 }>;
 
+export type SetupMachineServiceCommandOptions = Readonly<{
+  /** Overrides the executor's construction-time manual-daemon takeover choice for this call. */
+  takeover?: boolean;
+  /** Remove the conflict plan's services for this target as part of the install. */
+  replaceExisting?: boolean;
+}>;
+
+/** One lifecycle action decided by the background-service disposition owner. */
+export type SetupMachineServiceAction =
+  | Readonly<{ kind: 'install'; takeover: boolean; replaceExisting?: boolean }>
+  | Readonly<{ kind: 'start'; takeover: boolean }>
+  | Readonly<{ kind: 'restart' }>;
+
 export type SetupMachineRecipeExecutor = Readonly<{
   configureRelay: (profile: SetupMachineRelayProfile) => Promise<void | string>;
   readAuthStatus: () => Promise<SetupMachineAuthStatus>;
@@ -70,8 +85,9 @@ export type SetupMachineRecipeExecutor = Readonly<{
       requestPayload: Readonly<Record<string, unknown>>;
     }>) => Promise<void>;
   }>) => Promise<Readonly<{ publicKey: string | null; machineId: string | null }>>;
-  installDaemonService?: () => Promise<void>;
-  startDaemonService?: () => Promise<void>;
+  installDaemonService?: (opts?: SetupMachineServiceCommandOptions) => Promise<void>;
+  startDaemonService?: (opts?: Pick<SetupMachineServiceCommandOptions, 'takeover'>) => Promise<void>;
+  restartDaemonService?: () => Promise<void>;
   waitForReadyDaemon?: (params: Readonly<{ signal?: AbortSignal }>) => Promise<SetupMachineDaemonStatus>;
 }>;
 
@@ -81,6 +97,7 @@ export type SetupMachineRecipeStepIds = Readonly<{
   authWait?: string;
   installService?: string;
   startService?: string;
+  restartService?: string;
   verifyService?: string;
 }>;
 
@@ -101,6 +118,8 @@ export async function runSetupMachineRecipe(params: Readonly<{
   relayProfile: SetupMachineRelayProfile;
   executor: SetupMachineRecipeExecutor;
   initialAuthStatus?: SetupMachineAuthStatus;
+  /** App-selected account; omitted for terminal setup with no app identity. */
+  expectedAccountId?: string;
   steps?: SetupMachineRecipeSteps;
   stepIds?: SetupMachineRecipeStepIds;
   signal?: AbortSignal;
@@ -111,6 +130,13 @@ export async function runSetupMachineRecipe(params: Readonly<{
     requestPayload: Readonly<Record<string, unknown>>;
   }>) => Promise<void>;
   daemonReadinessErrorMessage?: string;
+  /**
+   * The service lifecycle as decided by the background-service disposition owner
+   * (`resolveBackgroundServiceSetupReconciliationDisposition`), given whether this run paired. When
+   * present it replaces the fixed `installService`/`startService` steps, so desktop and terminal
+   * setup share one policy (R3-6).
+   */
+  serviceActions?: (facts: Readonly<{ paired: boolean }>) => readonly SetupMachineServiceAction[];
 }>): Promise<SetupMachineRecipeResult> {
   const steps = params.steps ?? {};
   const stepIds = params.stepIds ?? {};
@@ -138,9 +164,11 @@ export async function runSetupMachineRecipe(params: Readonly<{
   } = resolveSetupMachineReadiness(authStatus);
 
   let publicKey: string | null = null;
-  let machineId: string | null = statusMachineId;
+  const expectedAccountId = params.expectedAccountId?.trim() || null;
+  const accountMatches = !expectedAccountId || authStatus.accountId === expectedAccountId;
+  let machineId: string | null = accountMatches ? statusMachineId : null;
 
-  const shouldPair = credentialState !== 'valid' || machineRegistrationState !== 'server-confirmed';
+  const shouldPair = !accountMatches || credentialState !== 'valid' || machineRegistrationState !== 'server-confirmed';
   if (shouldPair) {
     if (params.executor.enrollAuthPairing) {
       emitProgress(stepIds.authRequest, 'Requesting pairing');
@@ -151,7 +179,7 @@ export async function runSetupMachineRecipe(params: Readonly<{
           : {}),
       });
       publicKey = enrolled.publicKey;
-      machineId = enrolled.machineId ?? statusMachineId;
+      machineId = enrolled.machineId ?? machineId;
       if (params.requireMachineIdAfterAuthWait === true && !machineId) {
         throw new SystemTaskExecutionError('machine_id_unavailable', 'Auth pairing did not return a machine id.');
       }
@@ -171,7 +199,7 @@ export async function runSetupMachineRecipe(params: Readonly<{
 
     const payload = requestRaw as Readonly<Record<string, unknown>>;
 
-    if (credentialState === 'valid' && machineRegistrationState !== 'server-confirmed') {
+    if (accountMatches && credentialState === 'valid' && machineRegistrationState !== 'server-confirmed') {
       if (params.executor.approveAuthPairing) {
         await params.executor.approveAuthPairing(publicKey);
       } else if (params.approvePairingRequest) {
@@ -181,6 +209,8 @@ export async function runSetupMachineRecipe(params: Readonly<{
       }
     } else if (params.approvePairingRequest) {
       await params.approvePairingRequest({ publicKey, requestPayload: payload });
+    } else if (!accountMatches) {
+      throw new SystemTaskExecutionError('approval_required', 'The selected account must approve replacement pairing.');
     }
 
     emitProgress(stepIds.authWait, 'Waiting for pairing');
@@ -188,7 +218,7 @@ export async function runSetupMachineRecipe(params: Readonly<{
     const waitedMachineId = typeof waitResult.machineId === 'string' && waitResult.machineId.trim()
       ? waitResult.machineId.trim()
       : null;
-    machineId = waitedMachineId ?? statusMachineId;
+    machineId = waitedMachineId ?? machineId;
     if (!machineId) {
       try {
         const statusAfterWait = await params.executor.readAuthStatus();
@@ -207,14 +237,51 @@ export async function runSetupMachineRecipe(params: Readonly<{
     }
   }
 
-  if (steps.installService !== false) {
-    emitProgress(stepIds.installService, 'Installing background service');
-    await params.executor.installDaemonService?.();
+  if (expectedAccountId && shouldPair) {
+    // The claim result alone cannot establish which account now owns these credentials.
+    const pairedStatus = await params.executor.readAuthStatus();
+    if (pairedStatus.accountId !== expectedAccountId) {
+      throw new SystemTaskExecutionError('account_mismatch', 'Pairing did not establish credentials for the selected account.');
+    }
+    const pairedReadiness = resolveSetupMachineReadiness(pairedStatus);
+    if (pairedReadiness.credentialState !== 'valid') {
+      throw new SystemTaskExecutionError('auth_status_unavailable', 'The selected account credentials could not be validated after pairing.');
+    }
+    machineId = pairedReadiness.machineId;
+    if (params.requireMachineIdAfterAuthWait === true && !machineId) {
+      throw new SystemTaskExecutionError('machine_id_unavailable', 'Auth pairing did not return a machine id.');
+    }
   }
 
-  if (steps.startService !== false) {
-    emitProgress(stepIds.startService, 'Starting background service');
-    await params.executor.startDaemonService?.();
+  const serviceActions: readonly SetupMachineServiceAction[] = params.serviceActions
+    ? params.serviceActions({ paired: shouldPair })
+    : [
+        ...(steps.installService !== false ? [{ kind: 'install' as const, takeover: false }] : []),
+        ...(steps.startService !== false ? [{ kind: 'start' as const, takeover: false }] : []),
+      ];
+  // Without a disposition owner the executor keeps its construction-time takeover choice.
+  const takeoverFor = (action: Readonly<{ takeover: boolean }>): boolean | undefined => (
+    params.serviceActions ? action.takeover : undefined
+  );
+
+  for (const action of serviceActions) {
+    if (action.kind === 'install') {
+      emitProgress(stepIds.installService, 'Installing background service');
+      await params.executor.installDaemonService?.({
+        ...(takeoverFor(action) === undefined ? {} : { takeover: action.takeover }),
+        ...(action.replaceExisting ? { replaceExisting: true } : {}),
+      });
+      continue;
+    }
+    if (action.kind === 'restart') {
+      emitProgress(stepIds.restartService ?? stepIds.startService, 'Restarting background service');
+      await params.executor.restartDaemonService?.();
+    } else {
+      emitProgress(stepIds.startService, 'Starting background service');
+      await params.executor.startDaemonService?.(
+        takeoverFor(action) === undefined ? undefined : { takeover: action.takeover },
+      );
+    }
 
     if (!machineId) {
       try {

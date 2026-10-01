@@ -184,7 +184,8 @@ describe('newSessionDraftRepositoryAdapter', () => {
     it('round-trips and explicitly clears initial access in the canonical synchronized authoring document', () => {
         const access = { grants: [{ subject: { kind: 'account' as const, accountId: 'person-b' }, accessLevel: 'edit' as const, canApprovePermissions: true }] };
         const draftId = 'access-draft';
-        writeNewSessionAuthoringDraftToRepository({ scope, draftId, draft: authoringDraft({ access, primaryTeamId: 'team-a' }) });
+        // A New Session draft exists once it holds content; access then travels with it.
+        writeNewSessionDraftToRepository({ scope, draftId, draft: authoringDraft({ input: 'Share with Person B', access, primaryTeamId: 'team-a' }) });
         const firstSnapshot = getSessionDraftSnapshot(scope, { kind: 'newSession', draftId });
         const projection = readNewSessionDraftProjectionFromRepository({ scope, draftId });
         const recovered = projection?.draft ?? null;
@@ -203,10 +204,34 @@ describe('newSessionDraftRepositoryAdapter', () => {
         expect(readNewSessionDraftFromRepository({ scope, draftId })?.primaryTeamId).toBeNull();
     });
 
+    it('round-trips every synchronized authoring field the writer persists, including organization placement', () => {
+        const draftId = 'organization-placement-draft';
+        const organizationPlacement = { folderId: 'folder-a', tagIds: ['tag-a', 'tag-b'] };
+        const runtimeDescriptorV1 = { v: 1 as const, agentId: 'codex', agent: { backendMode: 'appServer' } };
+        writeNewSessionDraftToRepository({
+            scope,
+            draftId,
+            draft: authoringDraft({ organizationPlacement, runtimeDescriptorV1 }),
+        });
+        const written = cataloguedNewSessionAuthoring(getSessionDraftSnapshot(scope, { kind: 'newSession', draftId }));
+        expect(written).toMatchObject({
+            organizationPlacement: { value: organizationPlacement },
+            runtimeDescriptorV1: { value: runtimeDescriptorV1 },
+        });
+
+        const recovered = readNewSessionDraftFromRepository({ scope, draftId });
+        expect(recovered?.organizationPlacement).toEqual(organizationPlacement);
+        expect(recovered?.runtimeDescriptorV1).toEqual(runtimeDescriptorV1);
+
+        // Reopening and autosaving the recovered draft must not revert the saved choice to defaults.
+        writeNewSessionAuthoringDraftToRepository({ scope, draftId, draft: recovered! });
+        expect(readNewSessionDraftFromRepository({ scope, draftId })?.organizationPlacement).toEqual(organizationPlacement);
+    });
+
     it('projects a clean conflict with per-field access and Team-context presence', () => {
         const draftId = 'conflict-presence';
         const access = { grants: [{ subject: { kind: 'account' as const, accountId: 'person-b' }, accessLevel: 'edit' as const, canApprovePermissions: true }] };
-        writeNewSessionAuthoringDraftToRepository({ scope, draftId, draft: authoringDraft({ access, primaryTeamId: 'team-a' }) });
+        writeNewSessionDraftToRepository({ scope, draftId, draft: authoringDraft({ input: 'Share with Person B', access, primaryTeamId: 'team-a' }) });
         const clean = readNewSessionDraftProjectionFromRepository({ scope, draftId });
         expect(clean?.conflict).toBeNull();
         expect(hasNewSessionDraftAccessConflict(clean?.conflict)).toBe(false);

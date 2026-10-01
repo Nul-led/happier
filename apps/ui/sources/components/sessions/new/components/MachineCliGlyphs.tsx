@@ -1,18 +1,15 @@
 import * as React from 'react';
-import { Pressable, View } from 'react-native';
-import { StyleSheet, useUnistyles } from 'react-native-unistyles';
+import { Pressable } from 'react-native';
+import { StyleSheet } from 'react-native-unistyles';
 import { Typography } from '@/constants/Typography';
-import { Modal } from '@/modal';
-import { useDaemonScopedMachineCapabilitiesCache } from '@/hooks/server/useDaemonScopedMachineCapabilitiesCache';
-import { DetectedClisModal } from '@/components/machines/DetectedClisModal';
-import { CAPABILITIES_REQUEST_NEW_SESSION } from '@/capabilities/requests';
-import { buildProviderCliCapabilityId } from '@/capabilities/cliCapabilityId';
-import type { AgentId } from '@/agents/catalog/catalog';
-import { AgentIcon } from '@/agents/registry/AgentIcon';
-import { getAgentPickerIconScale } from '@/agents/registry/registryUi';
-import { useEnabledAgentIds } from '@/agents/hooks/useEnabledAgentIds';
+import { useMachineAgents } from '@/agents/machineAgents/useMachineAgents';
+import { useActiveServerSnapshot } from '@/hooks/server/useActiveServerSnapshot';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
+import { machineCollectionHref } from '@/components/settings/machines/collection/machineCollectionModel';
 import { Text } from '@/components/ui/text/Text';
-import { resolveMachineCliLogoDisplay } from './machineCliLogoDisplay';
+import { MachineCliLogoRow } from './MachineCliLogoRow';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
+import { t } from '@/text';
 
 
 type Props = {
@@ -20,34 +17,19 @@ type Props = {
     isOnline: boolean;
     serverId?: string | null;
     /**
-     * When true, the component may trigger capabilities detection fetches.
+     * When true, the component may refresh the machine-agent inventory.
      * When false, it will render cached results only (no automatic fetching).
      */
     autoDetect?: boolean;
 };
 
-// Small, monochrome provider marks — recognizable at a glance without widening the row.
-const CLI_LOGO_SIZE = 16;
-
 const stylesheet = StyleSheet.create((theme) => ({
     container: {
         flexDirection: 'row',
         alignItems: 'center',
-        gap: 3,
         paddingHorizontal: 4,
         paddingVertical: 2,
         borderRadius: 6,
-    },
-    logoSlot: {
-        width: CLI_LOGO_SIZE,
-        height: CLI_LOGO_SIZE,
-        alignItems: 'center',
-        justifyContent: 'center',
-    },
-    overflow: {
-        color: theme.colors.text.secondary,
-        fontSize: 11,
-        ...Typography.default('semiBold'),
     },
     placeholder: {
         color: theme.colors.text.secondary,
@@ -56,81 +38,40 @@ const stylesheet = StyleSheet.create((theme) => ({
     },
 }));
 
-function readCliAvailable(data: unknown): boolean {
-    return Boolean(data && typeof data === 'object' && !Array.isArray(data) && (data as { available?: unknown }).available === true);
-}
-
 export const MachineCliGlyphs = React.memo(({ machineId, isOnline, serverId, autoDetect = true }: Props) => {
-    const { theme } = useUnistyles();
     const styles = stylesheet;
-    const enabledAgents = useEnabledAgentIds();
-
-    // The daemon-scoped cache owns the machine subscription (narrow + reference-stable). Reading
-    // the whole machine record here as well would re-render every picker row on every heartbeat.
-    const { state } = useDaemonScopedMachineCapabilitiesCache({
+    const router = useRouter();
+    const activeServer = useActiveServerSnapshot(!serverId);
+    const resolvedServerId = serverId ?? activeServer.serverId;
+    const inventory = useMachineAgents({
         machineId,
-        serverId,
-        enabled: autoDetect && isOnline,
-        request: CAPABILITIES_REQUEST_NEW_SESSION,
+        serverId: resolvedServerId,
+        load: autoDetect && isOnline,
     });
 
     const onPress = React.useCallback(() => {
-        // Cache-first: opening this modal should NOT fetch by default.
-        // Users can explicitly refresh inside the modal if needed.
-        Modal.show({
-            component: DetectedClisModal,
-            props: {
-                machineId,
-                isOnline,
-                serverId,
-            },
-        });
-    }, [isOnline, machineId, serverId]);
+        router.push(machineCollectionHref({ machineId, serverId: resolvedServerId }) as never);
+    }, [machineId, resolvedServerId, router]);
 
-    // Agents whose CLI is detected as available on this machine, in enabled-agent order.
-    const availableAgentIds = React.useMemo<ReadonlyArray<AgentId>>(() => {
-        if (state.status !== 'loaded') return [];
-        const ids: AgentId[] = [];
-        const results = state.snapshot.response.results;
-        for (const agentId of enabledAgents) {
-            const result = results[buildProviderCliCapabilityId(agentId)];
-            if (result?.ok === true && readCliAvailable(result.data)) {
-                ids.push(agentId);
-            }
-        }
-        return ids;
-    }, [enabledAgents, state]);
-
-    const display = React.useMemo(() => resolveMachineCliLogoDisplay(availableAgentIds), [availableAgentIds]);
-    const isLoading = state.status !== 'loaded';
+    const availableAgentIds = React.useMemo(() => inventory.agents
+        .filter((agent) => agent.installed)
+        .map((agent) => agent.agentId), [inventory.agents]);
 
     return (
         <Pressable
+            testID="machine-agent-glyphs"
+            accessibilityRole="button"
+            accessibilityLabel={t('machineAgents.sectionTitle')}
             onPress={onPress}
             style={({ pressed }) => [
                 styles.container,
-                { opacity: !isOnline ? 0.5 : (pressed ? 0.7 : 1) },
+                { opacity: !isOnline ? 0.5 : (pressed ? motionTokens.press.opacity : 1) },
             ]}
         >
-            {isLoading || availableAgentIds.length === 0 ? (
+            {availableAgentIds.length === 0 ? (
                 <Text style={styles.placeholder}>•</Text>
             ) : (
-                <>
-                    {display.visible.map((agentId) => (
-                        <View key={agentId} style={styles.logoSlot}>
-                            <AgentIcon
-                                agentId={agentId}
-                                size={CLI_LOGO_SIZE}
-                                color={theme.colors.text.secondary}
-                                style={{ transform: [{ scale: getAgentPickerIconScale(agentId) }] }}
-                                testID={`machine-cli-logo:${agentId}`}
-                            />
-                        </View>
-                    ))}
-                    {display.overflow > 0 ? (
-                        <Text style={styles.overflow}>{`+${display.overflow}`}</Text>
-                    ) : null}
-                </>
+                <MachineCliLogoRow agentIds={availableAgentIds} />
             )}
         </Pressable>
     );

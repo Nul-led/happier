@@ -1,15 +1,6 @@
-import {
-  REVIEW_SCM_SCOPE_INPUT_KEY,
-  ReviewFindingsV1Schema,
-  ReviewFindingsV2Schema,
-  ReviewTriageOverlaySchema,
-} from '@happier-dev/protocol';
+import { REVIEW_SCM_SCOPE_INPUT_KEY } from '@happier-dev/protocol';
 
-import type {
-  ExecutionRunIntentProfile,
-  ExecutionRunStructuredMeta,
-} from '../ExecutionRunIntentProfile';
-import { buildReviewFindingsV2Payload } from '../../../reviews/normalize/buildReviewFindingsV2Payload';
+import type { ExecutionRunIntentProfile } from '../ExecutionRunIntentProfile';
 import { buildReviewGuidanceBlock, buildStandardReviewPrompt } from '../../../reviews/prompt/buildStandardReviewPrompt';
 import { normalizeReviewOutput } from '../../../reviews/normalize/normalizeReviewOutput';
 import { stripTrailingJsonObjectFromText } from '../shared/stripTrailingJsonObjectFromText';
@@ -23,6 +14,7 @@ function readIntentInputRecord(value: unknown): Record<string, unknown> {
 
 export const ReviewProfile: ExecutionRunIntentProfile = {
   intent: 'review',
+  supportsDetached: true,
   transcriptMaterialization: 'full',
   emitFinalSidechainMessageWhenStreamed: true,
   prepareStartParams: async ({ request, cwd }) => {
@@ -85,61 +77,6 @@ export const ReviewProfile: ExecutionRunIntentProfile = {
       rawText,
       intentInput: start.intentInput,
     }),
-  applyAction: ({ actionId, input, structuredMeta, start }) => {
-    // Policy/model enforcement at action-time: action handlers must be given the real
-    // start params so they can make consistent decisions (and we can avoid per-handler drift).
-    if (!start.permissionMode || start.permissionMode.trim().length === 0) {
-      return { ok: false, errorCode: 'execution_run_invalid_action_input', error: 'Missing permissionMode' };
-    }
-    if (actionId === 'reviews.comments.create') {
-      return { ok: false, errorCode: 'execution_run_action_not_supported', error: 'Host actions are dispatched by the execution-run host' };
-    }
-    if (actionId === 'review.follow_up') {
-      return { ok: false, errorCode: 'execution_run_action_not_supported', error: 'Follow-up orchestration is handled by the execution-run runtime' };
-    }
-    if (actionId !== 'review.triage') {
-      return { ok: false, errorCode: 'execution_run_action_not_supported', error: 'Unsupported action' };
-    }
-    const existing = structuredMeta?.kind === 'review_findings.v1' || structuredMeta?.kind === 'review_findings.v2'
-      ? structuredMeta
-      : null;
-    if (!existing) {
-      return { ok: false, errorCode: 'execution_run_action_not_supported', error: 'Not a review run' };
-    }
-
-    const parsed = ReviewTriageOverlaySchema.safeParse(input ?? {});
-    if (!parsed.success) {
-      return { ok: false, errorCode: 'execution_run_invalid_action_input', error: 'Invalid triage overlay' };
-    }
-
-    const existingPayload = existing.kind === 'review_findings.v2'
-      ? ReviewFindingsV2Schema.parse(existing.payload)
-      : (() => {
-        const legacy = ReviewFindingsV1Schema.parse(existing.payload);
-        return buildReviewFindingsV2Payload({
-          runId: legacy.runRef.runId,
-          callId: legacy.runRef.callId,
-          backendId: legacy.runRef.backendId,
-          backendTarget: legacy.runRef.backendTarget,
-          summary: legacy.summary,
-          findings: legacy.findings,
-          triage: legacy.triage,
-          limits: legacy.limits,
-          generatedAtMs: legacy.generatedAtMs,
-        });
-      })();
-
-    const updatedPayload = {
-      ...existingPayload,
-      triage: parsed.data,
-    };
-
-    const updatedStructured: ExecutionRunStructuredMeta = { kind: 'review_findings.v2', payload: updatedPayload };
-    return {
-      ok: true,
-      updatedToolResultOutput: { ok: true, actionId },
-      updatedToolResultMeta: { happier: updatedStructured } as any,
-      updatedStructuredMeta: updatedStructured,
-    };
-  },
+  // review.triage (a ReviewComment transition) and review.follow_up (a resumed run) are handled by
+  // the execution-run runtime; the review's result is never rewritten by an action.
 };

@@ -26,7 +26,7 @@ describe('parseSessionCreateSpawnOptions', () => {
       '--path',
       '/tmp/project',
       '--backend',
-      'backend:codex',
+      'agent:happier.agent.codex/codex',
       '--title',
       'My title',
       '--prompt',
@@ -67,7 +67,7 @@ describe('parseSessionCreateSpawnOptions', () => {
     expect(parsed.json).toBe(true);
     expect(parsed.spawnRequest).toEqual({
       directory: '/tmp/project',
-      backendTargetKey: 'backend:codex',
+      backendTargetKey: 'agent:happier.agent.codex/codex',
       title: 'My title',
       initialInput: { text: 'Hello' },
       modelId: 'gpt-5',
@@ -97,10 +97,10 @@ describe('parseSessionCreateSpawnOptions', () => {
 
   it('requires --model with --provider-connection and never parses slash-encoded identity', () => {
     expect(() => parseSessionCreateSpawnOptions([
-      'create', '--backend', 'backend:codex', '--provider-connection', 'pc_work',
+      'create', '--backend', 'agent:happier.agent.codex/codex', '--provider-connection', 'pc_work',
     ])).toThrow(/requires --model/i);
     const parsed = parseSessionCreateSpawnOptions([
-      'create', '--backend', 'backend:codex', '--model', 'openrouter/model-a', '--provider-connection', 'pc_work',
+      'create', '--backend', 'agent:happier.agent.codex/codex', '--model', 'openrouter/model-a', '--provider-connection', 'pc_work',
     ]);
     expect(parsed.spawnRequest).toMatchObject({ modelId: 'openrouter/model-a', providerConnectionId: 'pc_work' });
   });
@@ -172,7 +172,7 @@ describe('parseSessionCreateSpawnOptions', () => {
   it('parses concise connected-services auth without adding a second spawn schema', () => {
     const parsed = parseSessionCreateSpawnOptions([
       'create',
-      '--backend', 'backend:codex',
+      '--backend', 'agent:happier.agent.codex/codex',
       '--auth', 'cs:openai-codex:profile:work',
     ]);
 
@@ -201,7 +201,7 @@ describe('parseSessionCreateSpawnOptions', () => {
   it('accepts --launch-profile as the canonical launch-profile spelling', () => {
     expect(parseSessionCreateSpawnOptions([
       'create',
-      '--backend', 'backend:codex',
+      '--backend', 'agent:happier.agent.codex/codex',
       '--launch-profile', 'work',
     ]).spawnRequest).toMatchObject({ profileId: 'work' });
   });

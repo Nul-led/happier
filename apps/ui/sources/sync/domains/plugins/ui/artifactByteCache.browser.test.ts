@@ -155,11 +155,6 @@ describe('browser Plugin UI persistent artifact store', () => {
         const bytes = new TextEncoder().encode('// browser persistent bytes');
         const persistentIdentity = {
             accountScope: { serverId: 'server-a', accountId: 'account-a' },
-            releaseVersion: '2.0.0',
-            pluginId: 'acme.plugin',
-            contributionId: 'surface',
-            tier: 'reactNative' as const,
-            platform: 'web',
             artifactDigest: computePluginUiArtifactSha256DigestV1(bytes),
         };
         await store.write({

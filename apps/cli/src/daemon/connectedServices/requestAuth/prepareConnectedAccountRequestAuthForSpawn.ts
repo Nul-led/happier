@@ -62,17 +62,19 @@ export type AgentSpawnQualifiedEnvironmentUse = Readonly<{
     environmentKey: string;
 }>;
 
+type AgentSpawnPurposeCatalogEntry = Readonly<{
+    connectedAccountRequestAuthUses?: unknown;
+    connectedAccountFileEnvironmentUses?: unknown;
+    connectedAccountEnvironmentUses?: unknown;
+}>;
+
 export type AgentSpawnPurposeContributions = Readonly<{
     agentDefinitionsById: ReadonlyMap<string, Readonly<{
         identity?: unknown;
         richDefinition?: Readonly<{
             definition: Readonly<{ connectedAccounts?: unknown }>;
         }> | null;
-        catalogEntry?: Readonly<{
-            connectedAccountRequestAuthUses?: unknown;
-            connectedAccountFileEnvironmentUses?: unknown;
-            connectedAccountEnvironmentUses?: unknown;
-        }> | null;
+        catalogEntry?: AgentSpawnPurposeCatalogEntry | null;
     }>>;
 }>;
 
@@ -111,19 +113,21 @@ type ResolvedAgentSpawnPurposeDeclarations = Readonly<{
 function resolveAgentContribution(
     contributions: AgentSpawnPurposeContributions,
     agentId: string,
+    acquiredCatalogEntry?: AgentSpawnPurposeCatalogEntry | null,
 ): AgentConnectedAccountPurposeProjection | null {
     const contribution = contributions.agentDefinitionsById.get(agentId);
     if (!contribution?.richDefinition) return null;
+    const catalogEntry = acquiredCatalogEntry === undefined ? contribution.catalogEntry : acquiredCatalogEntry;
     return {
         identity: contribution.identity,
         connectedAccounts:
             contribution.richDefinition.definition.connectedAccounts,
         requestAuthUses:
-            contribution.catalogEntry?.connectedAccountRequestAuthUses,
+            catalogEntry?.connectedAccountRequestAuthUses,
         fileEnvironmentUses:
-            contribution.catalogEntry?.connectedAccountFileEnvironmentUses,
+            catalogEntry?.connectedAccountFileEnvironmentUses,
         environmentUses:
-            contribution.catalogEntry?.connectedAccountEnvironmentUses,
+            catalogEntry?.connectedAccountEnvironmentUses,
     };
 }
 
@@ -176,10 +180,12 @@ function snapshotAgentConnectedAccountEnvironmentUses(
 function resolveAgentSpawnPurposeDeclarations(input: Readonly<{
     agentId: string;
     contributions: AgentSpawnPurposeContributions;
+    catalogEntry?: AgentSpawnPurposeCatalogEntry | null;
 }>): ResolvedAgentSpawnPurposeDeclarations | null {
     const projection = resolveAgentContribution(
         input.contributions,
         input.agentId,
+        input.catalogEntry,
     );
     const identity = PluginContributionIdentityV1Schema.safeParse(
         projection?.identity,
@@ -366,6 +372,7 @@ export function resolveQualifiedPurposeBindingSnapshotForAgentSpawn(input: Reado
     agentId: string;
     bindings: ConnectedServiceBindingsV2;
     contributions: AgentSpawnPurposeContributions;
+    catalogEntry?: AgentSpawnPurposeCatalogEntry | null;
 }>): AgentSpawnQualifiedPurposeBindingSnapshot | null {
     const declarations = resolveAgentSpawnPurposeDeclarations(input);
     if (!declarations) return null;

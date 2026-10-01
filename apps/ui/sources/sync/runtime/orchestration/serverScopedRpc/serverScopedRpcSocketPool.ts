@@ -1,4 +1,4 @@
-import { io } from 'socket.io-client';
+import { createHappierSocket } from '@happier-dev/sync-client';
 import {
     CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION,
     buildAccountStoredContentCompatibilitySocketAuthV1,
@@ -10,7 +10,6 @@ import { drainRetainedHomeCarrierReleases } from '@/sync/runtime/homeCarrierPoli
 import { fireAndForget } from '@/utils/system/fireAndForget';
 import {
     resolveSocketIoTransportsForCarrier,
-    resolveSocketIoTransportsForHomeCarrier,
 } from '@/sync/runtime/socketIoTransports';
 import {
     reportServerUnreachable,
@@ -20,7 +19,11 @@ import {
     waitForServerReachable,
 } from '@/sync/runtime/connectivity/serverReachabilitySupervisorPool';
 
-import type { ScopedSocketClient, ScopedSocketConnectParams } from './serverScopedRpcTypes';
+import {
+    DEFAULT_SERVER_SCOPED_RPC_TIMEOUT_MS,
+    type ScopedSocketClient,
+    type ScopedSocketConnectParams,
+} from './serverScopedRpcTypes';
 
 type SocketLike = Readonly<{
     connected: boolean;
@@ -40,7 +43,7 @@ type SocketLike = Readonly<{
 type ReachabilityDeps = Readonly<{
     acquireReachability?: (params: Readonly<{ serverUrl: string; runtimeOrigin: string; token: string; homeCarrier?: HomeCarrier | null }>) => Promise<Readonly<{ release: () => Promise<void> }>>;
     startReachability: (params: Readonly<{ serverUrl: string; token: string }>) => Promise<void>;
-    waitForReachable: (params: Readonly<{ serverUrl: string; token: string; timeoutMs: number; homeCarrier?: HomeCarrier | null }>) => Promise<void>;
+    waitForReachable: (params: Readonly<{ serverUrl: string; token: string; timeoutMs: number; homeIdentityId?: string; homeCarrier?: HomeCarrier | null }>) => Promise<void>;
     reportUnreachable: (serverUrl: string, error: unknown, token: string) => void;
     subscribeNetworkAllowed: (listener: (allowed: boolean) => void) => () => void;
 }>;
@@ -61,6 +64,7 @@ type PoolEntry = {
     key: string;
     serverUrl: string;
     reachabilityServerUrl: string;
+    homeIdentityId: string | null;
     token: string;
     carrier: 'https' | 'iroh';
     homeCarrier: HomeCarrier | null;
@@ -144,27 +148,17 @@ export function createServerScopedRpcSocketPool(overrides?: Partial<Deps>): Read
 }> {
     const deps: Deps = {
         createSocket: overrides?.createSocket ?? ((params) => {
-            // A carrier that owns its own bytes supplies the socket; Engine.IO
-            // keeps its own transport selection for every URL-addressed Home.
-            const transports = params.homeCarrier
-                ? resolveSocketIoTransportsForHomeCarrier(params.homeCarrier.createWebSocket)
-                : resolveSocketIoTransportsForCarrier(params.carrier);
-            return io(params.serverUrl, {
-                path: '/v1/updates/',
-                auth: {
-                    token: params.token,
-                    clientType: 'user-scoped' as const,
-                    clientPurpose: 'scoped-rpc' as const,
-                    ...buildAccountStoredContentCompatibilitySocketAuthV1(
-                        CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION,
-                    ),
-                },
-                forceNew: true,
-                ...(transports ? { transports } : null),
-                reconnection: false,
-                withCredentials: false,
-                autoConnect: false,
-            }) as unknown as SocketLike;
+            return createHappierSocket({
+                endpoint: params.serverUrl,
+                token: params.token,
+                clientType: 'user-scoped',
+                clientPurpose: 'scoped-rpc',
+                authExtras: buildAccountStoredContentCompatibilitySocketAuthV1(
+                    CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION,
+                ),
+                transports: resolveSocketIoTransportsForCarrier(params.carrier),
+                ...(params.homeCarrier ? { websocketFactory: params.homeCarrier.createWebSocket } : {}),
+            }).socket;
         }),
         reachability: overrides?.reachability ?? {
             acquireReachability: async (params) => await acquireServerReachabilitySupervisor({
@@ -181,6 +175,7 @@ export function createServerScopedRpcSocketPool(overrides?: Partial<Deps>): Read
                     serverUrl: params.serverUrl,
                     token: params.token,
                     timeoutMs: params.timeoutMs,
+                    ...(params.homeIdentityId ? { homeIdentityId: params.homeIdentityId } : {}),
                     homeCarrier: params.homeCarrier ?? null,
                 });
             },
@@ -210,10 +205,11 @@ export function createServerScopedRpcSocketPool(overrides?: Partial<Deps>): Read
     const buildEntryKey = (
         serverUrl: string,
         reachabilityServerUrl: string,
+        homeIdentityId: string | null,
         token: string,
         carrier: 'https' | 'iroh',
         homeCarrier: HomeCarrier | null,
-    ) => `${buildKey(reachabilityServerUrl, token)}::${serverUrl}::${carrier}::${homeCarrier?.endpointId ?? ''}`;
+    ) => `${buildKey(reachabilityServerUrl, token)}::${homeIdentityId ?? ''}::${serverUrl}::${carrier}::${homeCarrier?.endpointId ?? ''}`;
 
     const stopEntrySocket = (entry: PoolEntry, remove: boolean): Promise<void> => {
         entry.teardownRequested ||= remove;
@@ -287,17 +283,19 @@ export function createServerScopedRpcSocketPool(overrides?: Partial<Deps>): Read
     const createEntry = (
         serverUrl: string,
         reachabilityServerUrl: string,
+        homeIdentityId: string | null,
         token: string,
         carrier: 'https' | 'iroh',
         homeCarrier: HomeCarrier | null,
         carrierRelease: (() => Promise<void>) | null,
     ): PoolEntry => {
-        const key = buildEntryKey(serverUrl, reachabilityServerUrl, token, carrier, homeCarrier);
+        const key = buildEntryKey(serverUrl, reachabilityServerUrl, homeIdentityId, token, carrier, homeCarrier);
         const socket = deps.createSocket({ serverUrl, token, carrier, homeCarrier });
         const entry: PoolEntry = {
             key,
             serverUrl,
             reachabilityServerUrl,
+            homeIdentityId,
             token,
             carrier,
             homeCarrier,
@@ -352,6 +350,7 @@ export function createServerScopedRpcSocketPool(overrides?: Partial<Deps>): Read
                 serverUrl: entry.reachabilityServerUrl,
                 token: entry.token,
                 timeoutMs,
+                ...(entry.homeIdentityId ? { homeIdentityId: entry.homeIdentityId } : {}),
                 homeCarrier: entry.homeCarrier,
             });
             await connectSocketWithTimeout(entry.socket, timeoutMs);
@@ -367,18 +366,24 @@ export function createServerScopedRpcSocketPool(overrides?: Partial<Deps>): Read
     };
 
     const acquire = async (params: ScopedSocketConnectParams): Promise<ScopedSocketClient> => {
-        const releaseCarrier = params.releaseCarrier ?? null;
-        let carrierCustodyTransferred = false;
+        let carrierRelease = params.releaseCarrier ?? null;
+        let entryRetainsCarrierRelease = false;
         try {
-            return await acquireWithCarrierCustody(params, () => {
-                carrierCustodyTransferred = true;
-            });
+            return await acquireWithCarrierCustody(
+                params,
+                (takenCarrierRelease) => {
+                    carrierRelease = takenCarrierRelease;
+                },
+                () => {
+                    entryRetainsCarrierRelease = true;
+                },
+            );
         } catch (error) {
             // No entry retains this lease, so settle the canonical owned release
             // here. Its Lane 06 owner retains a rejection for `stopAll` to drain;
             // the acquire failure remains the error the caller observes.
-            if (releaseCarrier && !carrierCustodyTransferred) {
-                await releaseCarrier().catch((releaseError: unknown) => {
+            if (carrierRelease && !entryRetainsCarrierRelease) {
+                await carrierRelease().catch((releaseError: unknown) => {
                     console.error('[scoped-rpc] carrier release failed after acquire failure', releaseError);
                 });
             }
@@ -388,7 +393,8 @@ export function createServerScopedRpcSocketPool(overrides?: Partial<Deps>): Read
 
     const acquireWithCarrierCustody = async (
         params: ScopedSocketConnectParams,
-        onCarrierCustodyTransferred: () => void,
+        onCarrierReleaseTaken: (releaseCarrier: (() => Promise<void>) | null) => void,
+        onEntryRetainsCarrierRelease: () => void,
     ): Promise<ScopedSocketClient> => {
         const serverUrl = normalizeServerUrl(params.serverUrl);
         const reachabilityServerUrl = normalizeServerUrl(params.reachabilityServerUrl ?? params.serverUrl);
@@ -396,7 +402,7 @@ export function createServerScopedRpcSocketPool(overrides?: Partial<Deps>): Read
         const carrier = params.carrier === 'iroh' ? 'iroh' : 'https';
         const homeCarrier = params.homeCarrier ?? null;
         const releaseCarrier = params.releaseCarrier ?? null;
-        const timeoutMs = typeof params.timeoutMs === 'number' && params.timeoutMs > 0 ? params.timeoutMs : 30_000;
+        const timeoutMs = typeof params.timeoutMs === 'number' && params.timeoutMs > 0 ? params.timeoutMs : DEFAULT_SERVER_SCOPED_RPC_TIMEOUT_MS;
         if (!serverUrl) {
             throw new Error('Missing server URL');
         }
@@ -404,7 +410,7 @@ export function createServerScopedRpcSocketPool(overrides?: Partial<Deps>): Read
             throw new Error('Missing token');
         }
 
-        const key = buildEntryKey(serverUrl, reachabilityServerUrl, token, carrier, homeCarrier);
+        const key = buildEntryKey(serverUrl, reachabilityServerUrl, params.homeIdentityId ?? null, token, carrier, homeCarrier);
         let entry = entriesByKey.get(key);
         while (entry?.teardownRequested) {
             // A retiring socket cannot be revived: join (or retry) its canonical teardown,
@@ -418,8 +424,20 @@ export function createServerScopedRpcSocketPool(overrides?: Partial<Deps>): Read
         const redundantCarrierRelease = entry && releaseCarrier && releaseCarrier !== entry.carrierRelease
             ? releaseCarrier
             : null;
-        entry ??= createEntry(serverUrl, reachabilityServerUrl, token, carrier, homeCarrier, releaseCarrier);
-        onCarrierCustodyTransferred();
+        if (!entry) {
+            const takenCarrierRelease = releaseCarrier ?? params.takeCarrierRelease?.() ?? null;
+            onCarrierReleaseTaken(takenCarrierRelease);
+            entry = createEntry(
+                serverUrl,
+                reachabilityServerUrl,
+                params.homeIdentityId ?? null,
+                token,
+                carrier,
+                homeCarrier,
+                takenCarrierRelease,
+            );
+            onEntryRetainsCarrierRelease();
+        }
         // Reserve this entry before anything below can await: an idle teardown that
         // ran in between would otherwise remove the entry this client is acquiring.
         entry.inUseCount += 1;

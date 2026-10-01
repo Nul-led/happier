@@ -24,6 +24,25 @@ function makeSession(overrides: Partial<Session> = {}): Session {
 }
 
 describe('areStoredSessionsEqual', () => {
+    it('treats a reportsTo edge or sub-session count change as a stored session change', () => {
+        expect(areStoredSessionsEqual(
+            makeSession({ reportsTo: { sessionId: 'lead-a' } }),
+            makeSession({ reportsTo: { sessionId: 'lead-b' } }),
+        )).toBe(false);
+        expect(areStoredSessionsEqual(
+            makeSession({ reportsTo: { sessionId: 'lead-a' } }),
+            makeSession({ reportsTo: null }),
+        )).toBe(false);
+        expect(areStoredSessionsEqual(
+            makeSession({ reports: { total: 2, working: 1, needsYou: 0, stalled: 0 } }),
+            makeSession({ reports: { total: 2, working: 1, needsYou: 1, stalled: 0 } }),
+        )).toBe(false);
+        expect(areStoredSessionsEqual(
+            makeSession({ reportsTo: { sessionId: 'lead-a' }, reports: { total: 1, working: 0, needsYou: 0, stalled: 0 } }),
+            makeSession({ reportsTo: { sessionId: 'lead-a' }, reports: { total: 1, working: 0, needsYou: 0, stalled: 0 } }),
+        )).toBe(true);
+    });
+
     it('treats ready metadata changes as stored session changes', () => {
         const previous = makeSession({
             latestReadyEventSeq: 3,

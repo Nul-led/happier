@@ -165,16 +165,6 @@ vi.mock('@/components/ui/text/Text', () => ({
     TextInput: 'TextInput',
 }));
 
-vi.mock('@/constants/Typography', () => ({
-    FontWeights: { regular: '400', semiBold: '500', bold: '600' },
-    Typography: {
-        default: () => ({}),
-        mono: () => ({}),
-        pillLabel: () => ({}),
-        rowMeta: () => ({}),
-    },
-}));
-
 vi.mock('@/agents/catalog/catalog', () => ({
     AGENT_IDS: ['claude', 'codex', 'customAcp'],
     isBundledAgentId: (value: string) => ['claude', 'codex', 'custom-preset'].includes(value),
@@ -259,6 +249,8 @@ vi.mock('@/providers/hooks/useProviderModelProjection', () => ({
     useProviderModelProjection: (input: unknown) => providerProjectionSpy(input),
 }));
 
+const { NewSessionEngineOptionDetail } = await import('./NewSessionEngineOptionDetail');
+
 describe('NewSessionEngineOptionDetail', () => {
     const backendTarget: BackendTargetRefV2 = {
         kind: 'backend',
@@ -306,7 +298,6 @@ describe('NewSessionEngineOptionDetail', () => {
 
     it('keeps provider projection disabled when the root providers feature is disabled', async () => {
         providersFeatureEnabledState.value = false;
-        const { NewSessionEngineOptionDetail } = await import('./NewSessionEngineOptionDetail');
 
         await renderScreen(<NewSessionEngineOptionDetail
             backendTarget={backendTarget}
@@ -351,7 +342,6 @@ describe('NewSessionEngineOptionDetail', () => {
             refreshFailures: [],
         });
         const onSelectionChange = vi.fn();
-        const { NewSessionEngineOptionDetail } = await import('./NewSessionEngineOptionDetail');
 
         await renderScreen(<NewSessionEngineOptionDetail
             backendTarget={backendTarget}
@@ -426,7 +416,6 @@ describe('NewSessionEngineOptionDetail', () => {
         };
         providerProjectionSpy.mockReturnValue(projection);
         const onSelectionChange = vi.fn();
-        const { NewSessionEngineOptionDetail } = await import('./NewSessionEngineOptionDetail');
 
         await renderScreen(<NewSessionEngineOptionDetail
             backendTarget={backendTarget}
@@ -489,7 +478,6 @@ describe('NewSessionEngineOptionDetail', () => {
 
     it('renders an engine favorite action in the model header and toggles it without refreshing models', async () => {
         const onToggleFavoriteEngine = vi.fn();
-        const { NewSessionEngineOptionDetail } = await import('./NewSessionEngineOptionDetail');
         const screen = await renderScreen(<NewSessionEngineOptionDetail
             backendTarget={backendTarget}
             selectedMachineId="machine-1"
@@ -534,7 +522,6 @@ describe('NewSessionEngineOptionDetail', () => {
             configOverrides: Readonly<Record<string, string>>;
         };
         let latestSelection: SelectionChange | null = null;
-        const { NewSessionEngineOptionDetail } = await import('./NewSessionEngineOptionDetail');
         const screen = await renderScreen(<NewSessionEngineOptionDetail
             backendTarget={backendTarget}
             selectedMachineId="machine-1"
@@ -572,7 +559,6 @@ describe('NewSessionEngineOptionDetail', () => {
             supportsFreeform: true,
         };
 
-        const { NewSessionEngineOptionDetail } = await import('./NewSessionEngineOptionDetail');
         await renderScreen(<NewSessionEngineOptionDetail
             backendTarget={backendTarget}
             selectedMachineId="machine-1"
@@ -601,7 +587,6 @@ describe('NewSessionEngineOptionDetail', () => {
         };
         agentCoreState.dynamicProbe = 'dynamic';
 
-        const { NewSessionEngineOptionDetail } = await import('./NewSessionEngineOptionDetail');
         await renderScreen(<NewSessionEngineOptionDetail
             backendTarget={backendTarget}
             selectedMachineId="machine-1"
@@ -644,7 +629,6 @@ describe('NewSessionEngineOptionDetail', () => {
         preflightModelsState.value = null;
         agentCoreState.dynamicProbe = 'static-only';
 
-        const { NewSessionEngineOptionDetail } = await import('./NewSessionEngineOptionDetail');
         await renderScreen(<NewSessionEngineOptionDetail
             backendTarget={staticBackendTarget}
             selectedMachineId="machine-1"
@@ -673,7 +657,6 @@ describe('NewSessionEngineOptionDetail', () => {
         probeEnabledState.models = false;
         probeEnabledState.config = false;
 
-        const { NewSessionEngineOptionDetail } = await import('./NewSessionEngineOptionDetail');
         const screen = await renderScreen(<NewSessionEngineOptionDetail
             backendTarget={backendTarget}
             selectedMachineId="machine-1"
@@ -700,7 +683,6 @@ describe('NewSessionEngineOptionDetail', () => {
             { value: 'model-1', label: 'Model 1', description: 'A described model' },
         ];
 
-        const { NewSessionEngineOptionDetail } = await import('./NewSessionEngineOptionDetail');
         await renderScreen(<NewSessionEngineOptionDetail
             backendTarget={backendTarget}
             selectedMachineId="machine-1"
@@ -724,7 +706,6 @@ describe('NewSessionEngineOptionDetail', () => {
             supportsFreeform: true,
         };
 
-        const { NewSessionEngineOptionDetail } = await import('./NewSessionEngineOptionDetail');
         await renderScreen(<NewSessionEngineOptionDetail
             backendTarget={backendTarget}
             selectedMachineId="machine-1"
@@ -753,7 +734,6 @@ describe('NewSessionEngineOptionDetail', () => {
         };
         agentCoreState.supportsFreeform = true;
 
-        const { NewSessionEngineOptionDetail } = await import('./NewSessionEngineOptionDetail');
         await renderScreen(<NewSessionEngineOptionDetail
             backendTarget={builtInBackendTarget}
             selectedMachineId="machine-1"
@@ -778,7 +758,6 @@ describe('NewSessionEngineOptionDetail', () => {
         preflightModelsState.value = null;
         modelProbeFailedState.value = true;
 
-        const { NewSessionEngineOptionDetail } = await import('./NewSessionEngineOptionDetail');
         await renderScreen(<NewSessionEngineOptionDetail
             backendTarget={builtInBackendTarget}
             selectedMachineId="machine-1"
@@ -790,7 +769,7 @@ describe('NewSessionEngineOptionDetail', () => {
         />);
 
         expect(renderedModelPickerOptions().some((option) => option.value === null)).toBe(true);
-        expect(lastOptionPickerOverlayProps.notes).toContain('agentInput.model.unavailable');
+        expect(lastOptionPickerOverlayProps.probe?.failed).toBe(true);
     });
 
     it('suppresses the unavailable model note while an unavailable probe is retrying', async () => {
@@ -806,7 +785,6 @@ describe('NewSessionEngineOptionDetail', () => {
         };
         probePhaseState.models = 'loading';
 
-        const { NewSessionEngineOptionDetail } = await import('./NewSessionEngineOptionDetail');
         await renderScreen(<NewSessionEngineOptionDetail
             backendTarget={builtInBackendTarget}
             selectedMachineId="machine-1"
@@ -830,7 +808,6 @@ describe('NewSessionEngineOptionDetail', () => {
             supportsFreeform: false,
         };
 
-        const { NewSessionEngineOptionDetail } = await import('./NewSessionEngineOptionDetail');
         await renderScreen(<NewSessionEngineOptionDetail
             backendTarget={backendTarget}
             selectedMachineId="machine-1"
@@ -852,7 +829,6 @@ describe('NewSessionEngineOptionDetail', () => {
         };
         let latestSelection: { modelId: string; sessionModeId: string; configOverrides: Readonly<Record<string, string>> } | null = null;
 
-        const { NewSessionEngineOptionDetail } = await import('./NewSessionEngineOptionDetail');
         await renderScreen(<NewSessionEngineOptionDetail
             backendTarget={backendTarget}
             selectedMachineId="machine-1"
@@ -909,7 +885,6 @@ describe('NewSessionEngineOptionDetail', () => {
             configOverrides: Readonly<Record<string, string>>;
         } | null = null;
 
-        const { NewSessionEngineOptionDetail } = await import('./NewSessionEngineOptionDetail');
         await renderScreen(<NewSessionEngineOptionDetail
             backendTarget={{ kind: 'backend', backendId: 'pi' }}
             selectedMachineId="machine-1"
@@ -954,7 +929,6 @@ describe('NewSessionEngineOptionDetail', () => {
     });
 
     it('does not render a session-mode picker inside the engine popover (mode is configured via the separate chip)', async () => {
-        const { NewSessionEngineOptionDetail } = await import('./NewSessionEngineOptionDetail');
         const screen = await renderScreen(<NewSessionEngineOptionDetail
             backendTarget={backendTarget}
             selectedMachineId="machine-1"
@@ -986,7 +960,6 @@ describe('NewSessionEngineOptionDetail', () => {
         ];
 
         let latestSelection: { modelId: string; sessionModeId: string; configOverrides: Readonly<Record<string, string>> } | null = null;
-        const { NewSessionEngineOptionDetail } = await import('./NewSessionEngineOptionDetail');
         const screen = await renderScreen(<NewSessionEngineOptionDetail
             backendTarget={backendTarget}
             selectedMachineId="machine-1"
@@ -1025,7 +998,6 @@ describe('NewSessionEngineOptionDetail', () => {
         configOptionsState.value = [];
         configOptionsState.unavailable = true;
 
-        const { NewSessionEngineOptionDetail } = await import('./NewSessionEngineOptionDetail');
         const screen = await renderScreen(<NewSessionEngineOptionDetail
             backendTarget={backendTarget}
             selectedMachineId="machine-1"
@@ -1073,7 +1045,6 @@ describe('NewSessionEngineOptionDetail', () => {
         ];
 
         let latestSelection: { modelId: string; sessionModeId: string; configOverrides: Readonly<Record<string, string>> } | null = null;
-        const { NewSessionEngineOptionDetail } = await import('./NewSessionEngineOptionDetail');
 
         await renderScreen(<NewSessionEngineOptionDetail
             backendTarget={backendTarget}
@@ -1148,7 +1119,6 @@ describe('NewSessionEngineOptionDetail', () => {
             },
         ];
 
-        const { NewSessionEngineOptionDetail } = await import('./NewSessionEngineOptionDetail');
         await renderScreen(<NewSessionEngineOptionDetail
             backendTarget={backendTarget}
             selectedMachineId="machine-1"
@@ -1213,7 +1183,6 @@ describe('NewSessionEngineOptionDetail', () => {
         }];
 
         let latestSelection: { modelId: string; sessionModeId: string; configOverrides: Readonly<Record<string, string>> } | null = null;
-        const { NewSessionEngineOptionDetail } = await import('./NewSessionEngineOptionDetail');
         await renderScreen(<NewSessionEngineOptionDetail
             backendTarget={backendTarget}
             selectedMachineId="machine-1"

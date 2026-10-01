@@ -59,6 +59,28 @@ describe('useScmDiffExpandedKeys', () => {
         await hook.unmount();
     });
 
+    it('reconciles changed file keys and initial collapsed paths', async () => {
+        const hook = await renderHook((props: { allKeys: readonly string[]; initialCollapsedKeys: readonly string[] }) => useScmDiffExpandedKeys({
+            allKeys: props.allKeys,
+            viewableIndices: noViewableIndices,
+            tooLarge: false,
+            aheadCount: 1,
+            behindCount: 1,
+            resetKey: 'same-snapshot',
+            initialCollapsedKeys: props.initialCollapsedKeys,
+        }), {
+            initialProps: { allKeys: ['a', 'b'], initialCollapsedKeys: ['b'] },
+        });
+
+        expect(Array.from(hook.getCurrent().expandedKeys)).toEqual(['a']);
+
+        await hook.rerender({ allKeys: ['a', 'c'], initialCollapsedKeys: ['a'] });
+        await flushHookEffects({ cycles: 1, turns: 1 });
+
+        expect(Array.from(hook.getCurrent().expandedKeys)).toEqual(['c']);
+        await hook.unmount();
+    });
+
     it('starts large reviews with the initial bounded prefetch window expanded', async () => {
         const hook = await renderHook(() => useScmDiffExpandedKeys({
             allKeys: largeReviewKeys,

@@ -3,6 +3,10 @@ import {
   WorkspaceSyncConflictPageRequestV1Schema,
   WorkspaceSyncConflictV1Schema,
   WorkspaceSyncCopyOnceV1Schema,
+  WorkspaceSyncPathSelectionV1Schema,
+  WorkspaceSyncSelectionDiagnoseV1Schema,
+  type WorkspaceSyncPathSelectionV1,
+  type WorkspaceSyncSelectionDiagnoseV1,
 } from '@happier-dev/protocol';
 
 import type { WorkspaceSyncMutagenAdapter, WorkspaceSyncResolvedRef } from './workspaceSyncController';
@@ -29,7 +33,13 @@ export type WorkspaceSyncMutagenAdapterOptions = Readonly<{
   nowMs?: () => number;
 }>;
 
-type GenericEndpoint = Readonly<{ protocol: 'external'; endpointId: string; connected: boolean; scanned: boolean }>;
+type GenericEndpointState = Readonly<{
+  connected: boolean;
+  scanned: boolean;
+  scanProblemCount: number;
+  transitionProblemCount: number;
+}>;
+type GenericEndpoint = Readonly<{ protocol: 'external'; endpointId: string; state: GenericEndpointState | null }>;
 type GenericConflict = Readonly<{ root: string; alphaChanges: readonly unknown[]; betaChanges: readonly unknown[] }>;
 type GenericSession = Readonly<{
   identifier: string;
@@ -108,20 +118,30 @@ function boundedExactPath(value: unknown, name: string, max = 4096): string {
   return value;
 }
 function boundedCount(value: unknown, name: string): number {
-  if (value === undefined) return 0;
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0 || value > Number.MAX_SAFE_INTEGER) throw new Error(`Invalid generic Mutagen ${name}`);
   return value;
 }
+function endpointState(value: unknown, name: string): GenericEndpointState | null {
+  if (value === null) return null;
+  const input = record(value, name);
+  strictFields(input, ['connected', 'scanned', 'scanProblemCount', 'transitionProblemCount'], name);
+  if (typeof input.connected !== 'boolean' || typeof input.scanned !== 'boolean') throw new Error(`Invalid generic Mutagen ${name}`);
+  return {
+    connected: input.connected,
+    scanned: input.scanned,
+    scanProblemCount: boundedCount(input.scanProblemCount, `${name}.scanProblemCount`),
+    transitionProblemCount: boundedCount(input.transitionProblemCount, `${name}.transitionProblemCount`),
+  };
+}
 function endpoint(value: unknown, name: string): GenericEndpoint {
   const input = record(value, name);
-  strictFields(input, ['protocol', 'host', 'path', 'connected', 'scanned'], name);
-  if (input.protocol !== 'external' || typeof input.connected !== 'boolean'
-    || typeof input.scanned !== 'boolean' || input.path !== '') {
+  strictFields(input, ['protocol', 'host', 'path', 'state'], name);
+  if (input.protocol !== 'external' || input.path !== '') {
     throw new Error(`Invalid generic Mutagen ${name}`);
   }
   return {
-    protocol: 'external', endpointId: boundedString(input.host, `${name}.host`, 256), connected: input.connected,
-    scanned: input.scanned,
+    protocol: 'external', endpointId: boundedString(input.host, `${name}.host`, 256),
+    state: endpointState(input.state, `${name}.state`),
   };
 }
 function conflict(value: unknown): GenericConflict {
@@ -181,7 +201,7 @@ function recoverCopyOnceDefinition(
   const betaWorkspaceRefId = labels['external.beta_workspace_ref_id'];
   if (!policyDigest || !controllerMachineId || !alphaWorkspaceRefId || !betaWorkspaceRefId
     || alphaWorkspaceRefId === betaWorkspaceRefId) return null;
-  if (policy.patterns.at(-1) !== '.git/') return null;
+  if (policy.patterns.at(-1) !== '.git') return null;
   const body = policy.patterns.slice(0, -1);
   const candidates: WorkspaceSyncCopyOnceV1[] = [];
   for (let split = 0; split <= body.length; split += 1) {
@@ -243,7 +263,7 @@ export class WorkspaceSyncMutagenAdapterClient implements WorkspaceSyncMutagenAd
   /** Runtime-only Mutagen identity, discovered from create/list responses and never persisted. */
   private readonly sessionIdentifiers = new Map<string, string>();
   private readonly successfulCycles = new Map<string, number>();
-  private readonly lastSuccessfulSyncAtMs = new Map<string, number>();
+  private readonly lastCycleObservedAtMs = new Map<string, number>();
   private readonly createRequestId: () => string;
   private readonly nowMs: () => number;
 
@@ -359,24 +379,31 @@ export class WorkspaceSyncMutagenAdapterClient implements WorkspaceSyncMutagenAd
     const previousCycles = this.successfulCycles.get(operationId);
     if (successObservation === 'operation'
       || (successObservation === 'first_cycle' && generic.successfulCycles > 0)
-      || (previousCycles !== undefined && generic.successfulCycles > previousCycles)) this.lastSuccessfulSyncAtMs.set(operationId, this.nowMs());
+      || (previousCycles !== undefined && generic.successfulCycles > previousCycles)) this.lastCycleObservedAtMs.set(operationId, this.nowMs());
     this.successfulCycles.set(operationId, generic.successfulCycles);
     const conflictCount = generic.conflictCount;
+    const endpointStates = { alpha: generic.alpha.state, beta: generic.beta.state };
+    const hasEndpointProblems = [endpointStates.alpha, endpointStates.beta].some((state) => (
+      state !== null && (state.scanProblemCount > 0 || state.transitionProblemCount > 0)
+    ));
+    const endpointUnavailable = endpointStates.alpha === null || endpointStates.beta === null
+      || !endpointStates.alpha.connected || !endpointStates.beta.connected;
     const halted = generic.status.startsWith('halted-');
     const active = ['scanning', 'reconciling', 'staging-alpha', 'staging-beta', 'transitioning', 'saving'].includes(generic.status);
     const state: WorkspaceSyncStatusV1['state'] = generic.paused ? 'paused'
       : conflictCount > 0 ? 'conflicted'
-        : halted || generic.lastError ? 'error'
-          : generic.status === 'watching' ? 'watching'
-            : generic.status === 'disconnected' ? 'disconnected'
+        : halted || generic.lastError || hasEndpointProblems ? 'error'
+          : generic.status === 'disconnected' || endpointUnavailable ? 'disconnected'
+            : generic.status === 'watching' ? 'watching'
               : active && successObservation === 'operation' ? 'flushing' : 'starting';
     return {
       relationshipId: operationId, controllerMachineId: definition.controllerMachineId, state,
       alphaPath: alpha.rootPath, betaPath: beta.rootPath, mode: 'mode' in definition ? definition.mode : 'copy_once',
-      changedFiles: 0, conflictCount, lastSuccessfulSyncAtMs: this.lastSuccessfulSyncAtMs.get(operationId) ?? null,
+      endpointStates, conflictCount, lastCycleObservedAtMs: this.lastCycleObservedAtMs.get(operationId) ?? null,
       ...(generic.lastErrorCode === 'git_selection_unavailable'
         ? { errorCode: 'git_selection_unavailable' as const }
-        : generic.lastError ? { errorCode: 'engine_error' as const } : {}),
+        : generic.lastError ? { errorCode: 'engine_error' as const }
+          : hasEndpointProblems ? { errorCode: 'engine_problems' as const } : {}),
     };
   }
   private async reconcileRelationshipState(
@@ -408,9 +435,9 @@ export class WorkspaceSyncMutagenAdapterClient implements WorkspaceSyncMutagenAd
       alphaPath: alpha?.rootPath ?? relationship.alphaWorkspaceRefId,
       betaPath: beta?.rootPath ?? relationship.betaWorkspaceRefId,
       mode: relationship.mode,
-      changedFiles: 0,
+      endpointStates: { alpha: null, beta: null },
       conflictCount: 0,
-      lastSuccessfulSyncAtMs: null,
+      lastCycleObservedAtMs: null,
     };
   }
   async discoverCopyOnceRecoveries(signal?: AbortSignal): Promise<readonly WorkspaceSyncCopyOnceV1[]> {
@@ -479,6 +506,7 @@ export class WorkspaceSyncMutagenAdapterClient implements WorkspaceSyncMutagenAd
   async rehydrate(
     definitions: readonly WorkspaceSyncRelationshipV1[],
     signal?: AbortSignal,
+    holdPausedRelationshipIds: ReadonlySet<string> = new Set(),
   ): Promise<readonly WorkspaceSyncStatusV1[]> {
     this.replaceDefinitions(definitions);
     const value = await this.listAllSessions(signal);
@@ -508,6 +536,15 @@ export class WorkspaceSyncMutagenAdapterClient implements WorkspaceSyncMutagenAd
       }
       if (!definition.enabled) {
         await this.terminateRuntimeSession(id, generic.identifier, signal);
+        continue;
+      }
+      if (holdPausedRelationshipIds.has(id)) {
+        if (!generic.paused) {
+          throw Object.assign(new Error('Recovery-held workspace sync session was not durably paused'), {
+            code: 'workspace_sync_recovery_needed',
+          });
+        }
+        results.push(await this.project(item.raw, definition, 'none'));
         continue;
       }
       try {
@@ -590,7 +627,7 @@ export class WorkspaceSyncMutagenAdapterClient implements WorkspaceSyncMutagenAd
         this.definitions.delete(operation.operationId);
         this.sessionIdentifiers.delete(operation.operationId);
         this.successfulCycles.delete(operation.operationId);
-        this.lastSuccessfulSyncAtMs.delete(operation.operationId);
+        this.lastCycleObservedAtMs.delete(operation.operationId);
       }
     }
   }
@@ -626,6 +663,17 @@ export class WorkspaceSyncMutagenAdapterClient implements WorkspaceSyncMutagenAd
     }
     return sessionIdentifier;
   }
+  async diagnoseSelection(request: WorkspaceSyncSelectionDiagnoseV1, signal?: AbortSignal): Promise<WorkspaceSyncPathSelectionV1> {
+    const valid = WorkspaceSyncSelectionDiagnoseV1Schema.parse(request);
+    const raw = await this.options.send({
+      t: 'diagnose_selection',
+      requestId: this.requestId(),
+      sessionIdentifier: this.requireSessionIdentifier(valid.relationshipId),
+      side: valid.side,
+      path: valid.path,
+    }, signal);
+    return WorkspaceSyncPathSelectionV1Schema.parse(raw);
+  }
   private async selected(relationshipId: string, command: 'get' | 'flush' | 'pause' | 'resume', signal?: AbortSignal): Promise<WorkspaceSyncStatusV1> {
     const definition = this.definitions.get(relationshipId);
     if (!definition || !('relationshipId' in definition)) throw Object.assign(new Error('Workspace sync relationship is not ready'), { code: 'relationship_not_ready' });
@@ -640,7 +688,7 @@ export class WorkspaceSyncMutagenAdapterClient implements WorkspaceSyncMutagenAd
     await this.options.send({ t: 'terminate', requestId: this.requestId(), sessionIdentifier }, signal);
     this.sessionIdentifiers.delete(relationshipId);
     this.successfulCycles.delete(relationshipId);
-    this.lastSuccessfulSyncAtMs.delete(relationshipId);
+    this.lastCycleObservedAtMs.delete(relationshipId);
   }
   async terminate(relationshipId: string, signal?: AbortSignal): Promise<void> {
     const definition = this.definitions.get(relationshipId);

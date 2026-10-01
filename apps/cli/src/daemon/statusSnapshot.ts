@@ -1,7 +1,7 @@
 import { isPidPresent } from '@happier-dev/cli-common/process';
 import { createServerUrlComparableKey, type DoctorSnapshot } from '@happier-dev/protocol';
 
-import { decodeJwtPayload } from '@/cloud/decodeJwtPayload';
+import { readAccountIdFromToken } from '@/cloud/decodeJwtPayload';
 import { configuration } from '@/configuration';
 import { resolveActiveServerAuthReadiness } from '@/auth/resolveActiveServerAuthReadiness';
 import { readDaemonState, readSettings } from '@/persistence';
@@ -52,14 +52,7 @@ export async function readDaemonStatusSnapshot(): Promise<DaemonStatusSnapshot> 
     if (!token) {
       return null;
     }
-    try {
-      const payload = decodeJwtPayload(token);
-      return typeof payload?.sub === 'string' && payload.sub.trim()
-        ? payload.sub.trim()
-        : null;
-    } catch {
-      return null;
-    }
+    return readAccountIdFromToken(token);
   })();
   const serviceSnapshot = await resolveDaemonServiceInstallationSnapshotFromEnv();
   const daemonServiceLabel = typeof daemonState?.serviceLabel === 'string'
@@ -100,6 +93,7 @@ export async function readDaemonStatusSnapshot(): Promise<DaemonStatusSnapshot> 
     },
     service: {
       installed: serviceInstalled,
+      autostart: serviceSnapshot.autostart ?? null,
       running: serviceInstalled && daemonRunning,
     },
     auth: {
@@ -110,6 +104,7 @@ export async function readDaemonStatusSnapshot(): Promise<DaemonStatusSnapshot> 
       machineId,
       needsAuth: !readiness.authenticated || !readiness.machineRegistered,
       accountId,
+      accountLabel: readiness.accountLabel,
     },
   };
 }

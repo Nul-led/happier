@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { FeaturesResponseSchema } from '@happier-dev/protocol';
 
 import { createSessionHandoffStartActionHandler } from './start';
 
@@ -52,6 +53,25 @@ const UNRESOLVED_OWNER_METADATA = [
   ],
 ] as const;
 
+
+const enabledServerFeaturesSnapshot = {
+  status: 'ready' as const,
+  features: FeaturesResponseSchema.parse({
+    features: {
+      sessions: { enabled: true, handoff: { enabled: true } },
+      machines: {
+        enabled: true,
+        transfer: {
+          enabled: true,
+          directPeer: { enabled: true },
+          serverRouted: { enabled: true },
+        },
+      },
+    },
+    capabilities: {},
+  }),
+};
+
 describe('session handoff start — source-derived transcript-storage authority', () => {
   it('refuses a valid but stale caller storage mode before any source effect', async () => {
     const stopSessionForHandoff = vi.fn(async () => 'already_inactive' as const);
@@ -70,6 +90,7 @@ describe('session handoff start — source-derived transcript-storage authority'
       }),
       machineTransferChannelPresent: true,
       directPeerTransfer: undefined,
+      resolveServerFeaturesSnapshot: async () => enabledServerFeaturesSnapshot,
       stopSessionForHandoff,
       prepareJobStore: { write: vi.fn() } as never,
       sourceExportStore: { save: vi.fn(), writeAgentBundleFile: vi.fn() } as never,
@@ -125,6 +146,7 @@ describe('session handoff start — source-derived transcript-storage authority'
         loadSessionMetadata: async () => ownerMetadata as Record<string, unknown>,
         machineTransferChannelPresent: true,
         directPeerTransfer: undefined,
+        resolveServerFeaturesSnapshot: async () => enabledServerFeaturesSnapshot,
         stopSessionForHandoff,
         prepareJobStore: { write: vi.fn() } as never,
         sourceExportStore: { save: vi.fn(), writeAgentBundleFile: vi.fn() } as never,

@@ -1,15 +1,17 @@
-import type {
-    MachineLiveStreamCodecIdV1,
-    MachineLiveStreamFrameV1,
-    MachineLiveStreamRelayEnvelopeV1,
+import {
+    MachineLiveStreamReceiptV1Schema,
+    isMachineLiveStreamTerminalReceiptV1,
+    type MachineLiveStreamCodecIdV1,
+    type MachineLiveStreamFrameV1,
+    type MachineLiveStreamRelayEnvelopeV1,
 } from '@happier-dev/protocol';
 
 import {
     initialLiveStreamPlayerState,
     reduceLiveStreamPlayerState,
     type LiveStreamPlayerState,
-    type LiveStreamViewerCapabilities,
-} from '@/sync/domains/machines/peer/mediation/stream';
+} from '@/sync/domains/machines/peer/mediation/stream/player';
+import type { LiveStreamViewerCapabilities } from '@/sync/domains/machines/peer/mediation/stream/capabilities';
 
 import { frameToAvccChunks, frameToUrl, resolveFrameCodecId } from '../selectors';
 import type { SimulatorPreviewStreamState } from '../types';
@@ -42,6 +44,7 @@ export type SimulatorRelayIngestionEvent =
         preferredCodec?: MachineLiveStreamCodecIdV1;
     }>
     | Readonly<{ type: 'frame'; frame: MachineLiveStreamFrameV1 }>
+    | Readonly<{ type: 'frame_decoded'; streamId: string }>
     | Readonly<{ type: 'reconnecting'; reasonCode: string }>
     | Readonly<{ type: 'error'; reasonCode: string; message?: string }>
     | Readonly<{ type: 'stopped'; reasonCode?: string }>;
@@ -50,32 +53,6 @@ export function createSimulatorRelayStreamState(streamId?: string): SimulatorRel
     return {
         player: initialLiveStreamPlayerState,
         ...(streamId ? { streamId } : {}),
-    };
-}
-
-function applyDecodedH264Frame(
-    player: LiveStreamPlayerState,
-    frame: MachineLiveStreamFrameV1,
-): LiveStreamPlayerState {
-    // The canonical player `frame` event is MJPEG-oriented (it sets `lastFrameUrl`).
-    // H.264 frames carry no renderable URL — they are decoded from the AVCC chunk by
-    // the WebCodecs renderer — so we advance the same player fields directly while
-    // keeping the negotiated renderer/codec, mirroring the selector's h264 projection.
-    const activeRenderer = player.activeRenderer && player.activeRenderer !== 'fallback'
-        ? player.activeRenderer
-        : 'webcodecs';
-    return {
-        ...player,
-        phase: 'playing',
-        lastFrameUrl: undefined,
-        lastFrameAtMs: frame.timestampMs,
-        decodedFrames: player.decodedFrames + 1,
-        bufferedBytes: 0,
-        diagnostic: undefined,
-        renderEvent: undefined,
-        requiresKeyframe: false,
-        selectedCodec: 'h264.avcc',
-        activeRenderer,
     };
 }
 
@@ -105,9 +82,11 @@ export function reduceSimulatorRelayStreamState(
                 ...(state.streamId ? { streamId: state.streamId } : {}),
             };
         case 'frame': {
+            if (state.player.phase === 'error' || state.player.phase === 'stopped') return state;
             const codecId = resolveFrameCodecId(event.frame) ?? state.player.selectedCodec;
             const streamId = event.frame.streamId;
             if (codecId === 'h264.avcc') {
+                if (state.player.selectedCodec !== codecId || state.player.activeRenderer !== 'webcodecs') return state;
                 const chunks = frameToAvccChunks(event.frame);
                 if (!chunks || chunks.length === 0) {
                     return {
@@ -122,7 +101,8 @@ export function reduceSimulatorRelayStreamState(
                     };
                 }
                 return {
-                    player: applyDecodedH264Frame(state.player, event.frame),
+                    // Bytes are decoder input, not proof that a frame was displayed.
+                    player: { ...state.player, lastFrameAtMs: event.frame.timestampMs },
                     avccChunks: chunks,
                     streamId,
                 };
@@ -153,6 +133,10 @@ export function reduceSimulatorRelayStreamState(
                 streamId,
             };
         }
+        case 'frame_decoded':
+            return state.streamId === event.streamId
+                ? { ...state, player: reduceLiveStreamPlayerState(state.player, { type: 'frame_decoded' }) }
+                : state;
         case 'reconnecting':
             return {
                 ...state,
@@ -234,9 +218,16 @@ export function mapSimulatorRelayEnvelopeToIngestionEvent(input: Readonly<{
             return message.startResponse.accepted
                 ? null
                 : { type: 'error', reasonCode: message.startResponse.disabledReason };
+        case 'receipt': {
+            const parsed = MachineLiveStreamReceiptV1Schema.safeParse(message.receipt);
+            if (!parsed.success || parsed.data.streamId !== input.streamId || !isMachineLiveStreamTerminalReceiptV1(parsed.data)) return null;
+            return parsed.data.terminalOutcome === 'error'
+                ? { type: 'error', reasonCode: parsed.data.reasonCode ?? 'capture_failed' }
+                : { type: 'stopped', ...(parsed.data.reasonCode ? { reasonCode: parsed.data.reasonCode } : {}) };
+        }
         case 'start':
+        case 'renew':
         case 'sideband_control':
-        case 'receipt':
         case 'metering':
             return null;
     }

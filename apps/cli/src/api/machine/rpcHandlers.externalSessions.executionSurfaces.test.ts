@@ -246,7 +246,7 @@ describe('registerMachineExternalSessionsRpcHandlers execution-surface seam', ()
         },
         generation: 'source-1',
       },
-      contributionGeneration: 'plugin-1',
+      sourceCustody: { kind: 'development', registeredRootId: 'plugin-1' },
       cursorIdentity: `external_session_cursor_binding_v1:${'a'.repeat(64)}`,
     };
     const cursor = 'happier_external_cursor_v1:Y3Vyc29yLTE';

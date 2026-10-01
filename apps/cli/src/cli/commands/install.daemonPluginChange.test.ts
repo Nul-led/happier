@@ -31,7 +31,11 @@ import { handlePluginsCommand } from './plugins';
 
 const reviewRequired = {
   kind: 'reviewRequired' as const,
+  reviewKind: 'installation' as const,
   pendingChangeId: 'pending-1',
+  reason: 'firstInstall' as const,
+  currentVersion: null,
+  authorityExpansion: [],
   review: createPluginInstallationReviewFixture({
     pluginId: 'acme.sample',
     displayName: 'Acme Sample',

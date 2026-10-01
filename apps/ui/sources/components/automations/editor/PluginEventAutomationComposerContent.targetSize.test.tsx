@@ -84,7 +84,8 @@ describe('PluginEventAutomationComposerContent interactive targets', () => {
             event: {
                 id: 'acme.github/events/repository',
                 identity: { pluginId: 'acme.github', localId: 'events/repository' },
-                immutableGenerationId: 'event-generation-a',
+                occurrenceId: 'event-occurrence-a',
+                sourceCustody: { kind: 'development', registeredRootId: 'event-root-a' },
                 title: 'Repository changed',
                 description: 'A repository changed',
                 payloadSchema: {
@@ -106,7 +107,7 @@ describe('PluginEventAutomationComposerContent interactive targets', () => {
             setupAction: {
                 id: 'acme.github/setup-source',
                 identity: { pluginId: 'acme.github', localId: 'setup-source' },
-                immutableGenerationId: 'event-generation-a',
+                occurrenceId: 'event-occurrence-a',
                 title: 'Set up source',
                 description: null,
                 inputSchema: { type: 'object', additionalProperties: false },
@@ -140,7 +141,7 @@ describe('PluginEventAutomationComposerContent interactive targets', () => {
                 displayName: 'Acme GitHub',
                 availability: 'unavailable',
                 installedPackage: null,
-                expectedGeneration: null,
+                expectedOccurrenceId: null,
                 machineId: null,
                 serverId: null,
                 accountLifetime: null,
@@ -185,6 +186,7 @@ describe('PluginEventAutomationComposerContent interactive targets', () => {
             invalidateConfiguredSource: vi.fn(),
             revision: 0,
         };
+        const { FieldTextInput } = await import('@/components/ui/forms/FieldTextInput');
         const screen = await renderScreen(<PluginEventAutomationComposerContent model={model} />);
         const controls = [
             'automation-event-picker',
@@ -194,9 +196,12 @@ describe('PluginEventAutomationComposerContent interactive targets', () => {
             'automation-event-filter-clause-filter-0-field-picker',
             'automation-event-filter-clause-filter-0-operator-picker',
             'automation-event-filter-clause-filter-0-remove',
-            'automation-event-filter-clause-filter-0-value',
-            'automation-event-maximum-observation-age-input',
         ];
+        // The filter value and maximum-age fields are `FieldTextInput`s: their touch floor is that
+        // owner's (native 44/48, none on web; `FieldTextInput` owner tests), not a second one here.
+        for (const testID of ['automation-event-filter-clause-filter-0-value', 'automation-event-maximum-observation-age-input']) {
+            expect(screen.findByProps({ testID }).type).toBe(FieldTextInput);
+        }
 
         for (const testID of controls) {
             expectMinimumInteractiveTarget(screen.findByProps({ testID }), minimum);

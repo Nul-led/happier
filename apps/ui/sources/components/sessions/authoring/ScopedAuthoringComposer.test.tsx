@@ -68,12 +68,10 @@ describe('ScopedAuthoringComposer', () => {
         const { ScopedAuthoringComposer } = await import(
             '@/components/sessions/authoring/ScopedAuthoringComposer'
         );
-        const composerRef = {
-            kind: 'workflowAuthoring' as const,
-            draftId: 'workflow-draft-echo',
-            blockId: 'review-step',
-            instanceId: 'workflow-composer-echo',
-        };
+        const custody = (await import(
+            '@/components/sessions/authoring/authoringComposerCustody'
+        )).createWorkflowAuthoringComposerCustody('workflow-draft-echo').entryFor('review-step');
+        const composerRef = custody.ref;
         const stagedAttachment = {
             v: 1 as const,
             instanceId: 'attachment-staged',
@@ -104,7 +102,7 @@ describe('ScopedAuthoringComposer', () => {
                 attachments: [stagedAttachment],
             });
             return <ScopedAuthoringComposer
-                composerRef={composerRef}
+                custody={custody}
                 scope={{ kind: 'session', sessionId: 's1', serverId: 'server-1' }}
                 document={document as never}
                 onChangeDocument={(next) => {
@@ -169,12 +167,10 @@ describe('ScopedAuthoringComposer', () => {
             '@/components/sessions/authoring/ScopedAuthoringComposer'
         );
         const onChangeDocument = vi.fn();
-        const composerRef = {
-            kind: 'workflowAuthoring' as const,
-            draftId: 'workflow-draft-1',
-            blockId: 'review-step',
-            instanceId: 'workflow-composer-1',
-        };
+        const custody = (await import(
+            '@/components/sessions/authoring/authoringComposerCustody'
+        )).createWorkflowAuthoringComposerCustody('workflow-draft-1').entryFor('review-step');
+        const composerRef = custody.ref;
         const reference = {
             kind: 'partner.reference',
             ref: 'partner:issue-42',
@@ -191,7 +187,7 @@ describe('ScopedAuthoringComposer', () => {
         };
 
         await renderScreen(<ScopedAuthoringComposer
-            composerRef={composerRef}
+            custody={custody}
             scope={{ kind: 'session', sessionId: 's1', serverId: 'server-1' }}
             document={{
                 text: 'Review @issue',
@@ -261,17 +257,15 @@ describe('ScopedAuthoringComposer', () => {
         const { ScopedAuthoringComposer } = await import(
             '@/components/sessions/authoring/ScopedAuthoringComposer'
         );
-        const composerRef = {
-            kind: 'workflowAuthoring' as const,
-            draftId: 'workflow-draft-2',
-            blockId: 'neutral-step',
-            instanceId: 'workflow-composer-2',
-        };
+        const custody = (await import(
+            '@/components/sessions/authoring/authoringComposerCustody'
+        )).createWorkflowAuthoringComposerCustody('workflow-draft-2').entryFor('neutral-step');
+        const composerRef = custody.ref;
         agentInputSpy.mockClear();
         getSuggestionsSpy.mockClear();
 
         await renderScreen(<ScopedAuthoringComposer
-            composerRef={composerRef}
+            custody={custody}
             scope={{
                 kind: 'machine',
                 machineId: 'machine-9',
@@ -292,6 +286,9 @@ describe('ScopedAuthoringComposer', () => {
         expect(composerProps?.sessionAddress).toBeNull();
         expect(composerProps?.autocompleteKinds).toContain('file');
         expect(composerProps?.autocompleteKinds).toContain('composerReference');
+        // Without a submit owner the composer is authoring-only: no substitute
+        // no-op submission reaches AgentInput (its absence disables every submit path).
+        expect(composerProps !== undefined && 'onSend' in composerProps && composerProps.onSend !== undefined).toBe(false);
 
         const resolve = composerProps?.autocompleteSuggestions as
             (query: string, signal: AbortSignal) => Promise<unknown>;

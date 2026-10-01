@@ -6,6 +6,7 @@ const readMachineControlTargetForSessionMock = vi.hoisted(() => vi.fn());
 const sessionExecutionRunStartMock = vi.hoisted(() => vi.fn());
 const sessionExecutionRunListMock = vi.hoisted(() => vi.fn());
 const sessionExecutionRunGetMock = vi.hoisted(() => vi.fn());
+const sessionExecutionRunWaitMock = vi.hoisted(() => vi.fn());
 const sessionExecutionRunSendMock = vi.hoisted(() => vi.fn());
 const sessionExecutionRunStopMock = vi.hoisted(() => vi.fn());
 const sessionExecutionRunActionMock = vi.hoisted(() => vi.fn());
@@ -23,6 +24,7 @@ vi.mock('@/sync/ops/sessionExecutionRuns', () => ({
     sessionExecutionRunStart: sessionExecutionRunStartMock,
     sessionExecutionRunList: sessionExecutionRunListMock,
     sessionExecutionRunGet: sessionExecutionRunGetMock,
+    sessionExecutionRunWait: sessionExecutionRunWaitMock,
     sessionExecutionRunSend: sessionExecutionRunSendMock,
     sessionExecutionRunStop: sessionExecutionRunStopMock,
     sessionExecutionRunAction: sessionExecutionRunActionMock,
@@ -59,13 +61,19 @@ describe('UI execution.run Action dependencies', () => {
             .mockResolvedValueOnce({ runId: 'run_1', callId: 'call_1', sidechainId: 'side_1' })
             .mockResolvedValueOnce({ run: { runId: 'run_1', status: 'running' } })
             .mockResolvedValueOnce({ ok: true })
-            .mockResolvedValueOnce({ run: { runId: 'run_1', status: 'succeeded' } });
+            .mockResolvedValueOnce({ ok: true, status: 'succeeded', result: { run: { runId: 'run_1', status: 'succeeded' } } });
         const deps = createUiExecutionRunActionDeps();
         const initialOptions = { serverId: 'server_1', targetMachineId: 'machine_mounted' };
 
         const capability = await deps.executionRunCheckProtocolV2?.(
             null,
-            { detachedScope: true, startAndWait: true },
+            {
+                detachedScope: true,
+                startAndWait: true,
+                exactInputResults: false,
+                runScopedAgentBindings: false,
+                secretReferenceOverlay: false,
+            },
             initialOptions,
         );
         expect(capability).toEqual({ ok: true, exactMachineId: 'machine_mounted' });
@@ -101,10 +109,10 @@ describe('UI execution.run Action dependencies', () => {
             SESSION_RPC_METHODS.EXECUTION_RUN_START,
             SESSION_RPC_METHODS.EXECUTION_RUN_GET,
             SESSION_RPC_METHODS.EXECUTION_RUN_STOP,
-            SESSION_RPC_METHODS.EXECUTION_RUN_GET,
+            SESSION_RPC_METHODS.EXECUTION_RUN_WAIT,
         ]);
         expect(machineRpcWithServerScopeMock.mock.calls[3]?.[0]).toMatchObject({
-            payload: { runId: 'run_1', includeStructured: true },
+            payload: { runId: 'run_1', timeoutSeconds: 10 },
         });
     });
 
@@ -113,7 +121,13 @@ describe('UI execution.run Action dependencies', () => {
 
         await expect(deps.executionRunCheckProtocolV2?.(
             null,
-            { detachedScope: true, startAndWait: false },
+            {
+                detachedScope: true,
+                startAndWait: false,
+                exactInputResults: false,
+                runScopedAgentBindings: false,
+                secretReferenceOverlay: false,
+            },
             { serverId: 'server_1' },
         )).resolves.toEqual({
             ok: false,
@@ -136,7 +150,13 @@ describe('UI execution.run Action dependencies', () => {
 
         await expect(deps.executionRunCheckProtocolV2?.(
             null,
-            { detachedScope: true, startAndWait: false },
+            {
+                detachedScope: true,
+                startAndWait: false,
+                exactInputResults: false,
+                runScopedAgentBindings: false,
+                secretReferenceOverlay: false,
+            },
             { serverId: 'server_1', originSessionId: 'session_context' },
         )).resolves.toEqual({ ok: true, exactMachineId: 'machine_context' });
         expect(readMachineControlTargetForSessionMock).toHaveBeenCalledWith({
@@ -153,9 +173,12 @@ describe('UI execution.run Action dependencies', () => {
     it('retains the incumbent session-scoped transport instead of routing it through a machine', async () => {
         sessionExecutionRunStartMock.mockResolvedValue({ runId: 'run_1' });
         sessionExecutionRunListMock.mockResolvedValue({ runs: [] });
-        sessionExecutionRunGetMock
-            .mockResolvedValueOnce({ run: { runId: 'run_1', status: 'running' } })
-            .mockResolvedValueOnce({ run: { runId: 'run_1', status: 'succeeded' } });
+        sessionExecutionRunGetMock.mockResolvedValueOnce({ run: { runId: 'run_1', status: 'running' } });
+        sessionExecutionRunWaitMock.mockResolvedValueOnce({
+            ok: true,
+            status: 'succeeded',
+            result: { run: { runId: 'run_1', status: 'succeeded' } },
+        });
         sessionExecutionRunSendMock.mockResolvedValue({ ok: true });
         sessionExecutionRunStopMock.mockResolvedValue({ ok: true });
         sessionExecutionRunActionMock.mockResolvedValue({ ok: true });
@@ -179,9 +202,9 @@ describe('UI execution.run Action dependencies', () => {
             { runId: 'run_1', actionId: 'review.apply' },
             { serverId: 'server_1' },
         );
-        expect(sessionExecutionRunGetMock).toHaveBeenLastCalledWith(
+        expect(sessionExecutionRunWaitMock).toHaveBeenLastCalledWith(
             'session_1',
-            { runId: 'run_1', includeStructured: true },
+            { runId: 'run_1' },
             { serverId: 'server_1' },
         );
         expect(machineRpcWithServerScopeMock).not.toHaveBeenCalled();

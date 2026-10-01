@@ -39,25 +39,29 @@ export function createMachineLiveStreamSession(_input: Readonly<{
 
     const authorization = input.routeAuthorization;
     const startRequest = parsedStart.data;
+    const startedAtMs = input.nowMs();
     if (
         !authorization
         || input.routeDecision.routeKind !== startRequest.routeKind
         || authorization.flowKind !== 'live_stream'
         || authorization.streamId !== startRequest.streamId
         || authorization.routeKind !== startRequest.routeKind
-        || authorization.expiresAtMs <= input.nowMs()
+        || authorization.expiresAtMs <= startedAtMs
     ) {
         return { ok: false, reasonCode: 'route_not_authorized' };
     }
 
+    const lifetimeExpiresAtMs = typeof startRequest.maxDurationMs === 'number'
+        ? startedAtMs + startRequest.maxDurationMs
+        : Number.POSITIVE_INFINITY;
     return {
         ok: true,
         session: {
             streamId: startRequest.streamId,
             routeKind: startRequest.routeKind,
             targetMachineId: startRequest.targetMachineId,
-            startedAtMs: input.nowMs(),
-            expiresAtMs: input.nowMs() + startRequest.maxDurationMs,
+            startedAtMs,
+            expiresAtMs: Math.min(authorization.expiresAtMs, lifetimeExpiresAtMs),
             receipt: {
                 v: 1,
                 id: PEER_MEDIATION_RECEIPTS.streamStarted,

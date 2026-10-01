@@ -14,14 +14,14 @@ const profile = {
   id: 'team-focused',
   name: 'Focused',
   extraEnvironmentVariables: [{ name: 'TEAM_FLAG', value: 'profile' }],
-  defaultPermissionModeByTargetKey: { 'backend:codex': 'acceptEdits' as const },
-  defaultPersistenceModeByTargetKey: { 'backend:codex': 'direct' as const },
-  compatibilityByTargetKey: { 'backend:codex': true },
-  preferredAgentTargetKey: 'backend:codex',
+  defaultPermissionModeByTargetKey: { 'agent:happier.agent.codex/codex': 'acceptEdits' as const },
+  defaultPersistenceModeByTargetKey: { 'agent:happier.agent.codex/codex': 'direct' as const },
+  compatibilityByTargetKey: { 'agent:happier.agent.codex/codex': true },
+  preferredAgentTargetKey: 'agent:happier.agent.codex/codex',
   preferredModelSelection: {
     v: 1 as const,
     updatedAt: 17,
-    ref: { agentTargetKey: 'backend:codex', providerConnectionId: null, modelId: 'gpt-profile' },
+    ref: { agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: null, modelId: 'gpt-profile' },
   },
   createdAt: 10,
   updatedAt: 20,
@@ -56,7 +56,7 @@ describe('resolveSpawnLaunchProfileDefaults', () => {
       modelSelection: {
         v: 1,
         updatedAt: 100,
-        ref: { agentTargetKey: 'backend:codex', providerConnectionId: null, modelId: 'gpt-explicit' },
+        ref: { agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: null, modelId: 'gpt-explicit' },
       },
     };
     expect(resolveSpawnLaunchProfileDefaults({
@@ -80,7 +80,7 @@ describe('resolveSpawnLaunchProfileDefaults', () => {
     ['duplicated', [profile, profile]],
     ['opaque future-version', [{ v: 99, id: profile.id, payload: { preserve: true } }]],
     ['malformed', [{ ...profile, compatibilityByTargetKey: 'invalid' }]],
-    ['incompatible', [{ ...profile, compatibilityByTargetKey: { 'backend:codex': false } }]],
+    ['incompatible', [{ ...profile, compatibilityByTargetKey: { 'agent:happier.agent.codex/codex': false } }]],
   ] as const)('fails closed for an %s V2 profile', (_reason, profiles) => {
       expect(resolveSpawnLaunchProfileDefaults({
         options: baseOptions,

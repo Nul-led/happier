@@ -19,7 +19,7 @@ describe('local attention settings persistence mutations', () => {
         const listener = vi.fn();
         const unsubscribe = persistence.subscribeLocalAttentionSettingsMutations(listener);
 
-        persistence.saveLocalSettings({ ...localSettingsDefaults, theme: 'dark' });
+        persistence.saveLocalSettings({ ...localSettingsDefaults, themePreference: 'dark' });
         expect(listener).not.toHaveBeenCalled();
         persistence.saveLocalSettings({
             ...localSettingsDefaults,

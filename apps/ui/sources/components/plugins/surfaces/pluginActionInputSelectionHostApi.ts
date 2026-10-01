@@ -85,7 +85,18 @@ export function projectPluginActionInputSelectionFacts(input: Readonly<{
 export function serializePluginActionInputSelectionFacts(input: Parameters<
     typeof projectPluginActionInputSelectionFacts
 >[0]): string {
-    return stableJsonStringify(projectPluginActionInputSelectionFacts(input));
+    const facts = projectPluginActionInputSelectionFacts(input);
+    const projection = facts.pluginUiProjection;
+    return stableJsonStringify({
+        ...facts,
+        // Aggregate projection generation is a delivery snapshot, not an
+        // occurrence or Action-selection lifetime. Every consumed semantic
+        // entry remains in this key, so a real catalog change still replaces
+        // the controller without remounting it for unrelated projection work.
+        pluginUiProjection: projection === null
+            ? null
+            : { ...projection, generation: 0 },
+    });
 }
 
 function errorPayload(

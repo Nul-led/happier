@@ -283,7 +283,7 @@ describe('mergeSessionMetadataForStartup', () => {
                 v: 1,
                 updatedAt: 1,
                 selection: {
-                    agentTargetKey: 'backend:codex',
+                    agentTargetKey: 'agent:happier.agent.codex/codex',
                     providerConnectionId: 'pc_work',
                     modelId: 'gpt-5-codex-high',
                 },
@@ -294,7 +294,7 @@ describe('mergeSessionMetadataForStartup', () => {
             v: 1,
             updatedAt: 101,
             selection: {
-                agentTargetKey: 'backend:codex',
+                agentTargetKey: 'agent:happier.agent.codex/codex',
                 providerConnectionId: 'pc_work',
                 modelId: 'gpt-5-codex-high',
             },

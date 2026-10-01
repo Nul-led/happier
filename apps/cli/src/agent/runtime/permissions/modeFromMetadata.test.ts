@@ -174,13 +174,13 @@ describe('resolveModelSelectionIntentFromMetadataSnapshot', () => {
     expect(typeof fn).toBe('function');
 
     expect(fn({
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       metadata: {
         modelSelectionIntentV1: {
           v: 1,
           updatedAt: 21,
           selection: {
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             providerConnectionId: 'pc_work',
             modelId: 'gpt-provider',
           },
@@ -190,7 +190,7 @@ describe('resolveModelSelectionIntentFromMetadataSnapshot', () => {
       v: 1,
       updatedAt: 21,
       selection: {
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         providerConnectionId: 'pc_work',
         modelId: 'gpt-provider',
       },
@@ -202,19 +202,19 @@ describe('resolveModelSelectionIntentFromMetadataSnapshot', () => {
     const clear = {
       modelSelectionIntentV1: { v: 1, updatedAt: 22, selection: null },
     };
-    expect(fn({ agentTargetKey: 'backend:codex', metadata: clear })).toEqual({
+    expect(fn({ agentTargetKey: 'agent:happier.agent.codex/codex', metadata: clear })).toEqual({
       v: 1,
       updatedAt: 22,
       selection: null,
     });
     expect(() => fn({
-      agentTargetKey: 'backend:claude',
+      agentTargetKey: 'agent:happier.agent.claude/claude',
       metadata: {
         modelSelectionIntentV1: {
           v: 1,
           updatedAt: 23,
           selection: {
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             providerConnectionId: null,
             modelId: 'gpt-provider',
           },

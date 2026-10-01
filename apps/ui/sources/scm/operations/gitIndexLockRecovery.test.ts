@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { SCM_OPERATION_ERROR_CODES } from '@happier-dev/protocol';
+import { SCM_OPERATION_ERROR_CODES, type ScmOperationOutcome } from '@happier-dev/protocol/scm';
 
 import { installScmOperationsCommonModuleMocks } from './scmOperationsTestHelpers';
 
@@ -24,6 +24,33 @@ const lockFailure = {
 } as const;
 
 describe('runScmOperationWithGitIndexLockRecovery', () => {
+    it('offers recovery for the canonical index-lock code without parsing diagnostics', async () => {
+        modalConfirm.mockReset().mockResolvedValue(false);
+        const { runScmOperationWithGitIndexLockRecovery } = await import('./gitIndexLockRecovery');
+        await runScmOperationWithGitIndexLockRecovery({
+            cwd: '/repo', failedResponse: { success: false, errorCode: 'INDEX_LOCKED' },
+            removeIndexLock: vi.fn(), retryOriginalOperation: vi.fn(),
+        });
+        expect(modalConfirm).toHaveBeenCalled();
+    });
+    it('never replays applied or uncertain mutations even when legacy diagnostics mention an index lock', async () => {
+        modalConfirm.mockReset().mockResolvedValue(true);
+        const removeIndexLock = vi.fn(async () => ({ success: true as const }));
+        const retryOriginalOperation = vi.fn(async () => ({ success: true as const }));
+        const { runScmOperationWithGitIndexLockRecovery } = await import('./gitIndexLockRecovery');
+        const outcomes: ScmOperationOutcome[] = [
+            { v: 1, kind: 'effect_applied_with_warning', errorCode: 'INDEX_RECONCILIATION_FAILED', effect: { kind: 'commit', commitSha: 'abc' }, nextActions: [{ kind: 'refresh' }] },
+            { v: 1, kind: 'outcome_unknown', errorCode: 'COMMAND_OUTCOME_UNKNOWN', reconciliation: { kind: 'stash' }, nextActions: [{ kind: 'refresh' }] },
+        ];
+        for (const outcome of outcomes) {
+            const failedResponse = { ...lockFailure, outcome };
+            expect(await runScmOperationWithGitIndexLockRecovery({ cwd: '/repo', failedResponse, removeIndexLock, retryOriginalOperation })).toBe(failedResponse);
+        }
+        expect(modalConfirm).not.toHaveBeenCalled();
+        expect(removeIndexLock).not.toHaveBeenCalled();
+        expect(retryOriginalOperation).not.toHaveBeenCalled();
+    });
+
     it('prompts for confirmation when an SCM failure is recoverable index-lock contention', async () => {
         modalConfirm.mockResolvedValueOnce(false);
         const removeIndexLock = vi.fn();

@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest';
 
 import { createMachineFixture } from '@/dev/testkit/fixtures/machineFixtures';
 
-import { resolveSessionServerStartCandidateSelection } from './serverStartDraftCandidateSelection';
+import {
+    presentSessionServerStartCandidate,
+    resolveSessionServerStartCandidateSelection,
+} from './serverStartDraftCandidateSelection';
 
 describe('Session server-start candidate selection', () => {
     it('keeps the selected server, machine, path, and readiness on one candidate', () => {
@@ -47,5 +50,39 @@ describe('Session server-start candidate selection', () => {
             directory: '/selected/project',
             machineReady: true,
         });
+    });
+
+    it('presents a placement candidate by its home-relative folder and machine name, never raw ids', () => {
+        const machine = createMachineFixture({
+            id: 'machine-id-1',
+            metadata: {
+                host: 'studio.local',
+                platform: 'darwin',
+                happyCliVersion: '1.0.0',
+                happyHomeDir: '/Users/ada/.happier',
+                homeDir: '/Users/ada',
+                displayName: 'Studio',
+            },
+        });
+        const candidate = {
+            projectKey: { id: 'project-1' },
+            serverId: 'server-1',
+            machineId: 'machine-id-1',
+            rootPath: '/Users/ada/code/app',
+            reachable: true,
+            worktrees: [],
+        };
+        const context = { activeServerId: 'server-1', activeMachines: [machine], machineListByServerId: {} };
+
+        expect(presentSessionServerStartCandidate({ candidate, ...context })).toEqual({
+            title: '~/code/app',
+            subtitle: 'Studio',
+        });
+        expect(presentSessionServerStartCandidate({ candidate: { ...candidate, label: 'App' }, ...context }).title).toBe('App');
+        // A machine this device cannot see is not named by its id.
+        expect(presentSessionServerStartCandidate({
+            candidate: { ...candidate, machineId: 'unknown-machine' },
+            ...context,
+        })).toEqual({ title: '/Users/ada/code/app', subtitle: undefined });
     });
 });

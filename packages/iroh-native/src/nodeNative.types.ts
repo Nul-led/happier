@@ -97,6 +97,8 @@ export type IrohNodeStartMachineTunnelRequest = Readonly<{
   relayUrls?: readonly string[];
   handshakeJson: string;
   capProfile?: Extract<IrohNodeCapProfile, 'machineBulk'>;
+  /** The native core consumes this signed open; guests only receive localPort. */
+  nativeHttpLease?: Readonly<{ openJson: string }>;
 }>;
 
 export type IrohNodeStartMachineHttpTunnelRequest = IrohNodeStartMachineTunnelRequest & Readonly<{

@@ -5,10 +5,7 @@ type ModelOptionsProbe = NonNullable<NewSessionWizardParams['modelOptionsProbe']
 type AcpSessionModeProbe = NonNullable<NewSessionWizardParams['acpSessionModeProbe']>;
 type AcpConfigOptionsProbe = NonNullable<NewSessionWizardParams['acpConfigOptionsProbe']>;
 
-type ModelOptionsProbeState = Readonly<{
-    phase: ModelOptionsProbe['phase'];
-    onRefresh: ModelOptionsProbe['onRefresh'];
-}>;
+type ModelOptionsProbeState = ModelOptionsProbe;
 
 type AcpSessionModeProbeState = Readonly<{
     phase: AcpSessionModeProbe['phase'];
@@ -70,8 +67,6 @@ export function useNewSessionScreenWizardProps(params: Readonly<{
         | 'tmuxRequested'
         | 'enabledAgentIds'
         | 'isAgentSelectable'
-        | 'isCliBannerDismissed'
-        | 'dismissCliBanner'
         | 'agentType'
         | 'agentLabel'
         | 'setAgentType'
@@ -147,6 +142,7 @@ export function useNewSessionScreenWizardProps(params: Readonly<{
         | 'composerDocument'
         | 'setSessionPrompt'
         | 'handleCreateSession'
+        | 'registerTemporaryComputerReplacementLaunch'
         | 'canCreate'
         | 'isCreating'
         | 'pendingLaunchAttempt'
@@ -159,6 +155,8 @@ export function useNewSessionScreenWizardProps(params: Readonly<{
         | 'connectionStatus'
         | 'machinePopover'
         | 'pathPopover'
+        | 'folderChipState'
+        | 'onRemoveFolder'
         | 'resumeSessionId'
         | 'resumePopover'
         | 'isResumeSupportChecking'
@@ -192,10 +190,7 @@ export function useNewSessionScreenWizardProps(params: Readonly<{
         ...params.machine,
         ...params.footer,
         agentPickerSelectedOptionId: agentPickerSelectedOptionId ?? selectedBackendEntryTargetKey ?? selectedBackendTargetKey,
-        modelOptionsProbe: {
-            phase: modelOptionsProbeState.phase,
-            onRefresh: modelOptionsProbeState.onRefresh,
-        },
+        modelOptionsProbe: modelOptionsProbeState,
         acpSessionModeProbe: {
             phase: acpSessionModeProbeState.phase,
             onRefresh: acpSessionModeProbeState.onRefresh,

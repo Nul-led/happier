@@ -1,8 +1,8 @@
 import React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { renderScreen } from '@/dev/testkit';
-import { installPermissionShellCommonModuleMocks } from './permissionShellTestHelpers';
+
+import { installPermissionShellCommonModuleMocks, createPermissionShellRenderer } from './permissionShellTestHelpers';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -11,10 +11,12 @@ const EXTERNAL_AGENT_ID = 'acme.agent';
 const resolvedAgentState = vi.hoisted(() => ({ agentId: 'acme.agent' as string | null }));
 
 const ops = vi.hoisted(() => ({
-    sessionAllow: vi.fn(async (..._args: unknown[]) => {}),
-    sessionDeny: vi.fn(async (..._args: unknown[]) => {}),
-    sessionAbort: vi.fn(async (..._args: unknown[]) => {}),
+    approve: vi.fn(async (..._args: unknown[]) => {}),
+    deny: vi.fn(async (..._args: unknown[]) => {}),
+    abort: vi.fn(async (..._args: unknown[]) => {}),
 }));
+const renderScreen = createPermissionShellRenderer(ops);
+
 
 vi.mock('@expo/vector-icons', () => ({
     Ionicons: 'Ionicons',
@@ -22,12 +24,7 @@ vi.mock('@expo/vector-icons', () => ({
 
 installPermissionShellCommonModuleMocks({});
 
-vi.mock('@/sync/ops', () => ({
-    sessionAllow: ops.sessionAllow,
-    sessionAllowWithPermissionUpdates: vi.fn(async () => {}),
-    sessionDeny: ops.sessionDeny,
-    sessionAbort: ops.sessionAbort,
-}));
+
 
 vi.mock('@/agents/catalog/resolve', () => ({
     resolveAgentIdForPermissionUi: () => resolvedAgentState.agentId,
@@ -69,9 +66,9 @@ describe('PermissionFooter for an external Agent', () => {
         );
         clearProjectedAgentUiBehaviorDescriptors();
         resolvedAgentState.agentId = EXTERNAL_AGENT_ID;
-        ops.sessionAllow.mockClear();
-        ops.sessionDeny.mockClear();
-        ops.sessionAbort.mockClear();
+        ops.approve.mockClear();
+        ops.deny.mockClear();
+        ops.abort.mockClear();
     });
 
     it('renders only denial for an external Agent that ships no descriptor', async () => {
@@ -82,8 +79,8 @@ describe('PermissionFooter for an external Agent', () => {
         expect(screen.findAllByTestId('permission-footer.stop')).toHaveLength(0);
 
         await screen.pressByTestIdAsync('permission-footer.deny');
-        expect(ops.sessionDeny).toHaveBeenCalledWith('s1', 'p1', undefined, undefined, 'denied');
-        expect(ops.sessionAbort).not.toHaveBeenCalled();
+        expect(ops.deny).toHaveBeenCalledWith({ id: 'p1', approved: false, decision: 'denied' });
+        expect(ops.abort).not.toHaveBeenCalled();
     });
 
     it('renders only denial when the prompt has no identifiable Agent', async () => {
@@ -95,8 +92,8 @@ describe('PermissionFooter for an external Agent', () => {
         expect(screen.findAllByTestId('permission-footer.stop')).toHaveLength(0);
 
         await screen.pressByTestIdAsync('permission-footer.deny');
-        expect(ops.sessionDeny).toHaveBeenCalledWith('s1', 'p1', undefined, undefined, 'denied');
-        expect(ops.sessionAbort).not.toHaveBeenCalled();
+        expect(ops.deny).toHaveBeenCalledWith({ id: 'p1', approved: false, decision: 'denied' });
+        expect(ops.abort).not.toHaveBeenCalled();
     });
 
     it('honors the projected descriptor stop handling instead of aborting the run', async () => {
@@ -118,8 +115,8 @@ describe('PermissionFooter for an external Agent', () => {
         const screen = await renderPendingPermissionFooter({ machineId: 'm1' });
         await screen.pressByTestIdAsync('permission-footer.stop');
 
-        expect(ops.sessionDeny).toHaveBeenCalledTimes(1);
-        expect(ops.sessionAbort).not.toHaveBeenCalled();
+        expect(ops.deny).toHaveBeenCalledTimes(1);
+        expect(ops.abort).not.toHaveBeenCalled();
     });
 
     it('does not borrow an external Agent descriptor when the owning machine is unknown', async () => {
@@ -151,9 +148,9 @@ describe('PermissionFooter across two machines holding different descriptors', (
             '@/agents/registry/agentUiBehaviorProjection'
         );
         clearProjectedAgentUiBehaviorDescriptors();
-        ops.sessionAllow.mockClear();
-        ops.sessionDeny.mockClear();
-        ops.sessionAbort.mockClear();
+        ops.approve.mockClear();
+        ops.deny.mockClear();
+        ops.abort.mockClear();
     });
 
     async function publishDisagreeingMachines() {
@@ -179,8 +176,9 @@ describe('PermissionFooter across two machines holding different descriptors', (
         const screen = await renderPendingPermissionFooter({ machineId: 'machine-b' });
         await screen.pressByTestIdAsync('permission-footer.stop');
 
-        expect(ops.sessionDeny).toHaveBeenCalledTimes(1);
-        expect(ops.sessionAbort).toHaveBeenCalledTimes(1);
+        expect(ops.deny).toHaveBeenCalledTimes(1);
+        expect(ops.deny).toHaveBeenCalledWith({ id: 'p1', approved: false, decision: 'abort' });
+        expect(ops.abort).not.toHaveBeenCalled();
     });
 
     it('still honours the other machine’s deny-only handling for a Session that runs there', async () => {
@@ -189,8 +187,8 @@ describe('PermissionFooter across two machines holding different descriptors', (
         const screen = await renderPendingPermissionFooter({ machineId: 'machine-a' });
         await screen.pressByTestIdAsync('permission-footer.stop');
 
-        expect(ops.sessionDeny).toHaveBeenCalledTimes(1);
-        expect(ops.sessionAbort).not.toHaveBeenCalled();
+        expect(ops.deny).toHaveBeenCalledTimes(1);
+        expect(ops.abort).not.toHaveBeenCalled();
     });
 });
 
@@ -205,9 +203,9 @@ describe('PermissionFooter for an external Agent that declares the decision prot
             '@/agents/registry/agentUiBehaviorProjection'
         );
         clearProjectedAgentUiBehaviorDescriptors();
-        ops.sessionAllow.mockClear();
-        ops.sessionDeny.mockClear();
-        ops.sessionAbort.mockClear();
+        ops.approve.mockClear();
+        ops.deny.mockClear();
+        ops.abort.mockClear();
     });
 
     it('renders the decision action set and answers with a decision', async () => {
@@ -228,7 +226,7 @@ describe('PermissionFooter for an external Agent that declares the decision prot
         expect(screen.findAllHostsByTestId('permission-footer.allow-execpolicy').length).toBeGreaterThan(0);
 
         await screen.pressByTestIdAsync('permission-footer.allow');
-        expect(ops.sessionAllow).toHaveBeenCalledWith('s1', 'p1', undefined, undefined, 'approved');
+        expect(ops.approve).toHaveBeenCalledWith({ id: 'p1', approved: true, decision: 'approved' });
     });
 
     it('fails closed when an external Agent declares no protocol', async () => {
@@ -247,8 +245,8 @@ describe('PermissionFooter for an external Agent that declares the decision prot
         expect(screen.findAllByTestId('permission-footer.stop')).toHaveLength(0);
 
         await screen.pressByTestIdAsync('permission-footer.deny');
-        expect(ops.sessionDeny).toHaveBeenCalledWith('s1', 'p1', undefined, undefined, 'denied');
-        expect(ops.sessionAbort).not.toHaveBeenCalled();
+        expect(ops.deny).toHaveBeenCalledWith({ id: 'p1', approved: false, decision: 'denied' });
+        expect(ops.abort).not.toHaveBeenCalled();
     });
 
     it('refuses an unreadable protocol instead of impersonating another Agent family', async () => {

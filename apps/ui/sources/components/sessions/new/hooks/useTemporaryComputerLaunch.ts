@@ -223,6 +223,8 @@ export function useTemporaryComputerLaunch(input: Readonly<{
 }>): TemporaryComputerLaunchController {
     const [status, setStatus] = React.useState<TemporaryComputerLaunchStatus>('idle');
     const [projection, setProjection] = React.useState<RunnerActivationProjectionV1 | null>(null);
+    const latestProjectionRef = React.useRef(projection);
+    latestProjectionRef.current = projection;
     const [error, setError] = React.useState<unknown>(null);
     const inFlightRef = React.useRef(false);
     const preparationAbortControllerRef = React.useRef<AbortController | null>(null);
@@ -395,6 +397,17 @@ export function useTemporaryComputerLaunch(input: Readonly<{
                 setStatus('idle');
                 return;
             }
+            // Without a reference, this read only asks whether an older client
+            // left an activation behind for the draft. A Home that never answered
+            // is not evidence of one, so it must not freeze a draft the user never
+            // sent to a temporary computer. Send repeats the same recovery read
+            // before creating anything and fails there if it still cannot answer.
+            if (
+                !input.existingPublicRef
+                && latestProjectionRef.current === null
+                && caught instanceof RunnerActivationClientError
+                && (caught.code === 'request_failed' || caught.code === 'unavailable')
+            ) return;
             setError(caught);
             setStatus((current) => current === 'canceling' ? 'cancel_failed' : 'failed');
         } finally {

@@ -1,10 +1,27 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { existsSync } from 'node:fs';
-import { chmod, mkdir, readFile, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises';
+import { chmod, link, mkdir, readFile, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import * as tar from 'tar';
-import { ensureManagedPnpmCommand, managedPnpmBinPath, managedPnpmInstallDir } from './managedPnpm.js';
+import {
+  buildManagedPnpmEnvironment,
+  ensureManagedPnpmCommand,
+  managedPnpmBinPath,
+  managedPnpmInstallDir,
+} from './managedPnpm.js';
+
+describe('managed pnpm environment', () => {
+  it('routes pnpm store state into the Happier-owned writable home', () => {
+    const env = buildManagedPnpmEnvironment({ HAPPIER_HOME_DIR: '/fixture/happier' });
+
+    expect(env).toMatchObject({
+      PNPM_HOME: '/fixture/happier/tools/pnpm/home',
+      npm_config_store_dir: '/fixture/happier/tools/pnpm/store',
+      XDG_CACHE_HOME: '/fixture/happier/cache',
+    });
+  });
+});
 
 function crc32(value: Buffer): number {
   let crc = 0xffffffff;
@@ -68,7 +85,11 @@ function currentPnpmReleaseAssetName(): string {
   throw new Error(`Unsupported pnpm platform: ${process.platform}/${process.arch}`);
 }
 
-async function writeCurrentPnpmReleaseAsset(destinationPath: string, binaryName = process.platform === 'win32' ? 'pnpm.exe' : 'pnpm'): Promise<void> {
+async function writeCurrentPnpmReleaseAsset(
+  destinationPath: string,
+  binaryName = process.platform === 'win32' ? 'pnpm.exe' : 'pnpm',
+  options: Readonly<{ includeHardLink?: boolean }> = {},
+): Promise<void> {
   await mkdir(dirname(destinationPath), { recursive: true });
   if (currentPnpmReleaseAssetName().endsWith('.zip')) {
     await writeFile(destinationPath, createStoredZip([
@@ -82,6 +103,12 @@ async function writeCurrentPnpmReleaseAsset(destinationPath: string, binaryName 
   await mkdir(join(payloadDir, 'dist'), { recursive: true });
   await writeFile(join(payloadDir, binaryName), 'managed-pnpm-extracted', 'utf8');
   await writeFile(join(payloadDir, 'dist', 'index.js'), 'managed-pnpm-support', 'utf8');
+  if (options.includeHardLink) {
+    await link(
+      join(payloadDir, 'dist', 'index.js'),
+      join(payloadDir, 'dist', 'linked-package.json'),
+    );
+  }
   try {
     await tar.c(
       { cwd: payloadDir, file: destinationPath, gzip: true, portable: true },
@@ -228,6 +255,24 @@ describe('managedPnpm bootstrap race protection', () => {
     await expect(readFile(join(dirname(managedPnpmBinPath(testEnv)), 'dist', 'index.js'), 'utf8')).resolves.toBe('managed-pnpm-support');
   });
 
+  it('skips vendor hard-link entries while preserving regular pnpm archive files', async () => {
+    if (process.platform === 'win32') return;
+    const deps = createManagedPnpmBoundaryDeps();
+    const command = await ensureManagedPnpmCommand(testEnv, {
+      ...deps,
+      downloadGitHubReleaseAsset: async ({ destinationPath }) => {
+        await writeCurrentPnpmReleaseAsset(destinationPath, 'pnpm', { includeHardLink: true });
+      },
+    });
+
+    expect(command).toBe(managedPnpmBinPath(testEnv));
+    await expect(readFile(managedPnpmBinPath(testEnv), 'utf8')).resolves.toBe('managed-pnpm-extracted');
+    await expect(readFile(join(dirname(managedPnpmBinPath(testEnv)), 'dist', 'index.js'), 'utf8'))
+      .resolves.toBe('managed-pnpm-support');
+    await expect(readFile(join(dirname(managedPnpmBinPath(testEnv)), 'dist', 'linked-package.json'), 'utf8'))
+      .rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
   it('extracts Windows zip assets in-process without requiring tar', async () => {
     if (!originalPlatformDescriptor) {
       throw new Error('Expected process.platform to be configurable for this test');
@@ -326,14 +371,36 @@ describe('managedPnpm bootstrap race protection', () => {
   });
 
   it('does not bootstrap managed pnpm when HAPPIER_MANAGED_PNPM_BOOTSTRAP is disabled', async () => {
+    const pathDir = join(testHomeDir, 'path');
+    await mkdir(pathDir);
+    const pathPnpm = join(pathDir, process.platform === 'win32' ? 'pnpm.exe' : 'pnpm');
+    await writeFile(pathPnpm, 'path pnpm');
+    await chmod(pathPnpm, 0o755);
     testEnv = {
       ...testEnv,
+      PATH: pathDir,
       HAPPIER_MANAGED_PNPM_BOOTSTRAP: '0',
     };
 
     const command = await ensureManagedPnpmCommand(testEnv);
     expect(command).toBeNull();
 
+    expect(existsSync(managedPnpmBinPath(testEnv))).toBe(false);
+  });
+
+  it('reports unavailable after bootstrap failure even when pnpm exists on PATH', async () => {
+    const pathDir = join(testHomeDir, 'path');
+    await mkdir(pathDir);
+    const pathPnpm = join(pathDir, process.platform === 'win32' ? 'pnpm.exe' : 'pnpm');
+    await writeFile(pathPnpm, 'path pnpm');
+    await chmod(pathPnpm, 0o755);
+    testEnv.PATH = pathDir;
+
+    const command = await ensureManagedPnpmCommand(testEnv, {
+      fetchGitHubLatestRelease: async () => { throw new Error('fixture service unavailable'); },
+    });
+
+    expect(command).toBeNull();
     expect(existsSync(managedPnpmBinPath(testEnv))).toBe(false);
   });
 });

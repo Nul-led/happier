@@ -5,7 +5,7 @@ import {
 } from '@happier-dev/agents';
 import type { SessionMetadata, SessionStateCapabilitiesV1, SessionStateFieldId } from '@happier-dev/protocol';
 
-import type { Metadata } from '@/sync/domains/state/storageTypes';
+import type { Metadata } from '@happier-dev/session-core/state';
 import { createUiSessionStateMetadataUpdatePort } from './metadataUpdatePort';
 
 const UI_SESSION_STATE_CAPABILITIES: SessionStateCapabilitiesV1 = {

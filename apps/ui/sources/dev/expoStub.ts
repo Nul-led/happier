@@ -17,7 +17,18 @@ export function requireOptionalNativeModule(_moduleName?: string): null {
     return null;
 }
 
-export function requireNativeModule<T>(_moduleName?: string): T {
+class UnavailableNativeAesObject {
+    constructor() {
+        throw new Error('Native Expo AES is unavailable in Vitest; mock the native crypto boundary when exercising it.');
+    }
+}
+
+export function requireNativeModule<T>(moduleName?: string): T {
+    // expo-crypto 55 extends these native classes at import time. Keep that import usable
+    // without pretending the Node harness implements native AES operations.
+    if (moduleName === 'ExpoCryptoAES') {
+        return { EncryptionKey: UnavailableNativeAesObject, SealedData: UnavailableNativeAesObject } as T;
+    }
     return {} as T;
 }
 

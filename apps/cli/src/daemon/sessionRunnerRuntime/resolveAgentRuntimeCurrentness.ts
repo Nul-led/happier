@@ -1,4 +1,5 @@
 import type { TrackedSession } from '@/daemon/types';
+import { pluginSourceCustodyV1Equal } from '@happier-dev/protocol';
 import { resolveTrackedSessionCatalogAgentId } from '@/daemon/sessions/resolveTrackedSessionCatalogAgentId';
 import type { AgentRuntimeRegistrationLease } from '@/plugins/runtime/lifecycle/contributions/targetAgents';
 import { acquireAuthoritativePluginRuntimeRegistryLease } from '@/plugins/runtime/reload/runtimeLease';
@@ -64,11 +65,10 @@ function isRetainedManagedProviderStale(input: Readonly<{
       isCurrent = false;
     }
     if (!isCurrent) continue;
-    const currentGeneration = readNonEmptyString(
-      managedRuntime.immutableGenerationId,
-    );
-    if (!currentGeneration) continue;
-    if (currentGeneration !== retained.immutableGenerationId) return true;
+    if (!pluginSourceCustodyV1Equal(
+      managedRuntime.sourceCustody,
+      retained.sourceCustody,
+    )) return true;
   }
   return false;
 }
@@ -91,11 +91,9 @@ export function resolveTrackedRunnerAgentRuntimeCurrentness(input: Readonly<{
     };
   }
 
-  const pinnedGeneration = readNonEmptyString(
-    tracked.runnerAgentImmutableGenerationId,
-  );
+  const retainedSourceCustody = tracked.runnerAgentSourceCustodyV1;
   const agentId = resolveTrackedSessionCatalogAgentId(tracked);
-  if (!pinnedGeneration || !agentId) {
+  if (!retainedSourceCustody || !agentId) {
     return UNKNOWN_AGENT_RUNTIME_CURRENTNESS;
   }
 
@@ -115,10 +113,8 @@ export function resolveTrackedRunnerAgentRuntimeCurrentness(input: Readonly<{
   }
   if (!isCurrent) return UNKNOWN_AGENT_RUNTIME_CURRENTNESS;
 
-  const currentGeneration = readNonEmptyString(
-    registration.immutableGenerationId,
-  );
-  if (!currentGeneration) return UNKNOWN_AGENT_RUNTIME_CURRENTNESS;
+  const currentSourceCustody = registration.sourceCustody;
+  if (!currentSourceCustody) return UNKNOWN_AGENT_RUNTIME_CURRENTNESS;
 
   const retainedProviderStale = isRetainedManagedProviderStale({
     tracked,
@@ -126,7 +122,10 @@ export function resolveTrackedRunnerAgentRuntimeCurrentness(input: Readonly<{
   });
   const agentRuntimeCurrentness: SessionRunnerAgentRuntimeCurrentness = {
     versionState:
-      currentGeneration === pinnedGeneration && !retainedProviderStale
+      pluginSourceCustodyV1Equal(
+        currentSourceCustody,
+        retainedSourceCustody,
+      ) && !retainedProviderStale
         ? 'current'
         : 'stale',
     restartUnavailableReason: null,
@@ -192,6 +191,7 @@ export async function resolveAuthoritativeTrackedRunnerAgentRuntimeCurrentness(
         registry: resolveProviderContributionRegistryView(
           lease.registry.contributes,
           lease.registry.generation,
+          lease.registry.readPluginOccurrenceId,
         ),
       },
     });

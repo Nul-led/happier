@@ -65,6 +65,10 @@ vi.mock('@/hooks/ui/useWebFileDropZone', () => ({
     }),
 }));
 
+vi.mock('@/components/sessions/agents/presentation/useSessionMachineName', () => ({
+    useSessionMachineName: () => 'MacBook Pro',
+}));
+
 vi.mock('@/components/sessions/model/useSessionMachineReachability', () => ({
     useSessionMachineReachability: () => ({
         machineReachable: machineRpcTargetAvailable,
@@ -115,10 +119,6 @@ vi.mock('@/components/workspaces/files/repositoryTree/computeExpandedPathsForRev
 
 vi.mock('@/components/projects/files/WorkspaceRepositoryTreeList', () => ({
     WorkspaceRepositoryTreeList: (props: any) => React.createElement('View', { ...props, testID: 'repository-tree-list' }),
-}));
-
-vi.mock('@/components/workspaces/files/repositoryTree/ChangedFilesTreeList', () => ({
-    ChangedFilesTreeList: () => React.createElement('ChangedFilesTreeList'),
 }));
 
 vi.mock('@/components/workspaces/files/repositoryTree/WebDropTargetView', () => ({

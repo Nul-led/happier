@@ -62,6 +62,7 @@ export type SimulatorPreviewStreamState = Pick<
 > & Readonly<{
     streamId?: string;
     avccChunks?: readonly Uint8Array[];
+    onFrameDecoded?: () => void;
 }>;
 
 export type SimulatorPreviewViewModel = Readonly<{

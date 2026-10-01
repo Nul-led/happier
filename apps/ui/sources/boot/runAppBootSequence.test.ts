@@ -30,6 +30,22 @@ async function flushMicrotasks(): Promise<void> {
 }
 
 describe('runAppBootSequence', () => {
+    it('boots an embed without opening credential, cache or draft storage or restoring the account', async () => {
+        const events: string[] = [];
+        const ready: AppBootReadyState[] = [];
+        await runAppBootSequence({
+            context: 'embed',
+            loadFonts: async () => { events.push('fonts'); },
+            sodiumReady: Promise.resolve(),
+            resolveCredentials: async () => { events.push('stored-credentials'); return CREDENTIALS; },
+            prepareWarmCache: async () => { events.push('warm-cache'); },
+            prepareSessionDrafts: async () => { events.push('draft-storage'); },
+            restoreSync: async () => { events.push('account-restore'); },
+            onReady: (state) => ready.push(state),
+        });
+        expect(events).toEqual(['fonts']);
+        expect(ready).toEqual([{ credentials: null, authGeneration: 0 }]);
+    });
     it.each(['authenticated', 'signed-out', 'deferred'] as const)('waits for authoritative drafts before restore or first paint: %s', async (mode) => {
         const drafts = createDeferred<void>();
         const credentials = createDeferred<AuthCredentials | null>();
@@ -165,8 +181,39 @@ describe('runAppBootSequence', () => {
         ]);
     });
 
-    it('restores sync before first paint so the warm cache paints real content', async () => {
+    it('starts restore (its synchronous local phase) before first paint, but never waits for its transport', async () => {
         const events: string[] = [];
+        const transport = createDeferred<void>();
+        const ready: AppBootReadyState[] = [];
+
+        const run = runAppBootSequence({
+            loadFonts: async () => {},
+            sodiumReady: Promise.resolve(),
+            resolveCredentials: async () => CREDENTIALS,
+            prepareWarmCache: async () => {},
+            prepareSessionDrafts: async () => {},
+            restoreSync: () => {
+                // The warm cache reaches the store here, synchronously, before the carrier.
+                events.push('local-restore');
+                return transport.promise;
+            },
+            onReady: (state) => {
+                events.push('ready');
+                ready.push(state);
+            },
+        });
+
+        // An unreachable Home's carrier never settles: the cached rows must still paint.
+        await vi.runAllTimersAsync();
+        await run;
+        expect(events).toEqual(['local-restore', 'ready']);
+        expect(ready).toEqual([{ credentials: CREDENTIALS, authGeneration: 0 }]);
+        transport.resolve();
+    });
+
+    it('keeps a transport restore that rejects after first paint from escaping as an unhandled rejection', async () => {
+        const transport = createDeferred<void>();
+        const ready: AppBootReadyState[] = [];
 
         await runAppBootSequence({
             loadFonts: async () => {},
@@ -174,13 +221,17 @@ describe('runAppBootSequence', () => {
             resolveCredentials: async () => CREDENTIALS,
             prepareWarmCache: async () => {},
             prepareSessionDrafts: async () => {},
-            restoreSync: async () => {
-                events.push('restore');
-            },
-            onReady: () => events.push('ready'),
+            restoreSync: () => transport.promise,
+            onReady: (state) => ready.push(state),
         });
 
-        expect(events).toEqual(['restore', 'ready']);
+        transport.reject(new Error('carrier unreachable'));
+        await flushMicrotasks();
+        expect(ready).toEqual([{ credentials: CREDENTIALS, authGeneration: 0 }]);
+        expect(console.error).toHaveBeenCalledWith(
+            'Failed to restore sync during init, continuing startup:',
+            expect.any(Error),
+        );
     });
 
     it('boots with fallback fonts when font loading rejects', async () => {

@@ -26,10 +26,12 @@ import type { PluginReactNativeBundleCacheIdentity } from '@/sync/domains/plugin
 const pluginId = 'acme.preview';
 const target = Object.freeze({
     artifactId: 'client-runtime',
-    modulePath: './clientRuntime',
     exportName: 'activate',
     platform: 'web' as const,
 });
+const projectionGeneration = 12;
+const occurrenceId = 'preview-occurrence-12';
+const hostUiApiRange = '^1.0.0';
 const executionOrigin: PluginMachineExecutionOriginV1 = Object.freeze({
     serverIdentityId: 'srv_server1',
     materializationRef: Object.freeze({
@@ -41,24 +43,15 @@ const executionOrigin: PluginMachineExecutionOriginV1 = Object.freeze({
 const identity: PluginReactNativeBundleCacheIdentity = Object.freeze({
     pluginId,
     contributionId: target.artifactId,
+    artifactId: target.artifactId,
     artifactDigest: 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
-    hostAppVersion: '2.0.0',
-    hostUiApiVersion: '1.0.0',
-    reactVersion: '19.0.0',
-    reactNativeVersion: '0.83.4',
     platform: 'web',
-    channel: 'internal',
-    nativeCapabilitiesDigest: 'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
-    projectionGeneration: 12,
 });
 const authority = Object.freeze({
     serverId: 'server-1',
     machineId: 'machine-1',
-    projectionGeneration: 12,
 });
 const moduleReference = Object.freeze({
-    containerName: 'acme_preview_client_runtime',
-    modulePath: target.modulePath,
     exportName: target.exportName,
 });
 
@@ -68,7 +61,6 @@ describe('getPluginUiClientExecutableTargetAddressKey', () => {
             pluginId,
             target,
             executionOrigin,
-            projectionGeneration: identity.projectionGeneration,
             authority,
         });
 
@@ -76,7 +68,6 @@ describe('getPluginUiClientExecutableTargetAddressKey', () => {
             address,
             { ...address, pluginId: 'acme.other' },
             { ...address, target: { ...target, artifactId: 'other-runtime' } },
-            { ...address, target: { ...target, modulePath: './otherRuntime' } },
             { ...address, target: { ...target, exportName: 'otherActivate' } },
             { ...address, target: { ...target, platform: 'ios' as const } },
             { ...address, executionOrigin: { ...executionOrigin, serverIdentityId: 'srv_other' } },
@@ -101,10 +92,10 @@ describe('getPluginUiClientExecutableTargetAddressKey', () => {
                     materializationRef: { ...executionOrigin.materializationRef, pluginId: 'acme.other' },
                 },
             },
-            { ...address, projectionGeneration: identity.projectionGeneration + 1 },
             { ...address, authority: { ...authority, serverId: 'server-2' } },
             { ...address, authority: { ...authority, machineId: 'machine-2' } },
-            { ...address, authority: { ...authority, projectionGeneration: authority.projectionGeneration + 1 } },
+            // An originless (bundled/development) target is its own address.
+            { ...address, executionOrigin: null },
         ].map(getPluginUiClientExecutableTargetAddressKey);
 
         expect([...new Set(keys)]).toHaveLength(keys.length);
@@ -123,7 +114,6 @@ const contributes = PluginContributesV2Schema.parse({
             target: 'client',
             client: {
                 artifactId: target.artifactId,
-                modulePath: target.modulePath,
                 exportName: target.exportName,
             },
             platforms: [target.platform],
@@ -148,7 +138,6 @@ const contributes = PluginContributesV2Schema.parse({
         },
         client: {
             artifactId: target.artifactId,
-            modulePath: target.modulePath,
             exportName: target.exportName,
         },
     }],
@@ -158,6 +147,7 @@ function projectedClientAction(): PluginProjectedActionV2 {
     const action = {
         id: 'open-preview',
         pluginId,
+        occurrenceId,
         title: 'Open preview',
         scopes: ['session'],
         surfaces: ['ui'],
@@ -165,7 +155,6 @@ function projectedClientAction(): PluginProjectedActionV2 {
             target: 'client',
             client: {
                 artifactId: target.artifactId,
-                modulePath: target.modulePath,
                 exportName: target.exportName,
             },
             platforms: [target.platform],
@@ -211,7 +200,6 @@ function actionOnlyContributes() {
                 target: 'client',
                 client: {
                     artifactId: target.artifactId,
-                    modulePath: target.modulePath,
                     exportName: target.exportName,
                 },
                 platforms: [target.platform],
@@ -268,7 +256,7 @@ function cacheWithIdentity() {
 
 function backend(exported: PluginReactNativeExecutableExport): PluginReactNativeLoaderBackend {
     return Object.freeze({
-        backendId: 'reactNativeWebModule',
+        backendId: 'commonJs',
         available: true,
         loadInstalledBundle: vi.fn(async () => exported),
     });
@@ -281,7 +269,7 @@ function readRegistrationInput(family: 'actions' | 'voiceProviders', localId: st
         localId,
         target,
         executionOrigin,
-        projectionGeneration: identity.projectionGeneration,
+        occurrenceId,
     });
 }
 
@@ -305,7 +293,7 @@ describe('generic client executable contribution registration', () => {
             contributes: actionOnlyContributes(),
             target,
             executionOrigin,
-            projectionGeneration: identity.projectionGeneration,
+            occurrenceId,
             pluginVersion: '1.0.0',
             lifecycle: createLifecycle(),
         });
@@ -313,7 +301,6 @@ describe('generic client executable contribution registration', () => {
 
         expect(resolvePluginUiClientActionRegistration({
             action,
-            projectionGeneration: identity.projectionGeneration,
             platform: target.platform,
             reader: index,
         })).toBeNull();
@@ -324,7 +311,6 @@ describe('generic client executable contribution registration', () => {
         expect(listener).toHaveBeenCalledTimes(1);
         expect(resolvePluginUiClientActionRegistration({
             action,
-            projectionGeneration: identity.projectionGeneration,
             platform: target.platform,
             reader: index,
         })).toBeNull();
@@ -333,7 +319,6 @@ describe('generic client executable contribution registration', () => {
         });
         const resolvedRegistration = resolvePluginUiClientActionRegistration({
             action: authorizedAction,
-            projectionGeneration: identity.projectionGeneration,
             platform: target.platform,
             reader,
         });
@@ -341,17 +326,14 @@ describe('generic client executable contribution registration', () => {
             pluginVersion: '1.0.0',
             handler: expect.any(Function),
         });
+        expect(index.read({
+            ...readRegistrationInput('actions', 'open-preview'),
+            occurrenceId: 'preview-occurrence-retired',
+        })).toBeNull();
         expect(resolvedRegistration).not.toHaveProperty('address');
         expect(reader.read).toHaveBeenCalledWith(readRegistrationInput('actions', 'open-preview'));
         expect(resolvePluginUiClientActionRegistration({
             action: authorizedAction,
-            projectionGeneration: identity.projectionGeneration + 1,
-            platform: target.platform,
-            reader: index,
-        })).toBeNull();
-        expect(resolvePluginUiClientActionRegistration({
-            action: authorizedAction,
-            projectionGeneration: identity.projectionGeneration,
             platform: 'ios',
             reader: index,
         })).toBeNull();
@@ -359,7 +341,6 @@ describe('generic client executable contribution registration', () => {
         const retirement = scope.unwind();
         expect(resolvePluginUiClientActionRegistration({
             action: authorizedAction,
-            projectionGeneration: identity.projectionGeneration,
             platform: target.platform,
             reader: index,
         })).toBeNull();
@@ -377,7 +358,7 @@ describe('generic client executable contribution registration', () => {
             contributes: actionOnlyContributes(),
             target,
             executionOrigin,
-            projectionGeneration: identity.projectionGeneration,
+            occurrenceId,
             lifecycle: createLifecycle(),
         });
         scope.api.actions.register('open-preview', async () => null);
@@ -385,7 +366,6 @@ describe('generic client executable contribution registration', () => {
 
         expect(resolvePluginUiClientActionRegistration({
             action,
-            projectionGeneration: identity.projectionGeneration,
             platform: target.platform,
             reader: index,
         })).toBeNull();
@@ -399,7 +379,7 @@ describe('generic client executable contribution registration', () => {
             contributes,
             target,
             executionOrigin,
-            projectionGeneration: identity.projectionGeneration,
+            occurrenceId,
             lifecycle: createLifecycle(),
         });
 
@@ -446,7 +426,7 @@ describe('generic client executable contribution registration', () => {
                 contributes,
                 target,
                 executionOrigin,
-                projectionGeneration: identity.projectionGeneration,
+                occurrenceId,
                 lifecycle,
             }),
         });
@@ -461,13 +441,13 @@ describe('generic client executable contribution registration', () => {
             registration: { family: 'actions', localId: 'open-preview' },
             target,
             executionOrigin,
-            projectionGeneration: identity.projectionGeneration,
+            occurrenceId,
         });
         expect(voice).toMatchObject({
             registration: { family: 'voiceProviders', localId: 'conversation' },
             target,
             executionOrigin,
-            projectionGeneration: identity.projectionGeneration,
+            occurrenceId,
         });
         expect(Object.isFrozen(action)).toBe(true);
         expect(Object.isFrozen(voice)).toBe(true);
@@ -500,7 +480,7 @@ describe('generic client executable contribution registration', () => {
                 contributes,
                 target,
                 executionOrigin,
-                projectionGeneration: identity.projectionGeneration,
+                occurrenceId,
                 lifecycle,
             }),
         })).resolves.toEqual({
@@ -515,9 +495,9 @@ describe('generic client executable contribution registration', () => {
 
     it('retries failed plugin A without withdrawing or reactivating successful plugin B', async () => {
         const secondPluginId = 'acme.second-preview';
+        const secondOccurrenceId = 'second-preview-occurrence-12';
         const secondTarget = Object.freeze({
             artifactId: 'second-runtime',
-            modulePath: './secondRuntime',
             exportName: 'activateSecond',
             platform: 'web' as const,
         });
@@ -529,12 +509,13 @@ describe('generic client executable contribution registration', () => {
                 materializationId: 'materialization-second',
             }),
         });
-        const secondIdentityProjectionGeneration = identity.projectionGeneration;
+        const secondIdentityProjectionGeneration = projectionGeneration;
         const secondAuthority = authority;
         const secondIdentity: PluginReactNativeBundleCacheIdentity = Object.freeze({
             ...identity,
             pluginId: secondPluginId,
             contributionId: secondTarget.artifactId,
+            artifactId: secondTarget.artifactId,
             artifactDigest: 'sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
         });
         const actionOnlyContributes = PluginContributesV2Schema.parse({
@@ -549,7 +530,6 @@ describe('generic client executable contribution registration', () => {
                     target: 'client',
                     client: {
                         artifactId: target.artifactId,
-                        modulePath: target.modulePath,
                         exportName: target.exportName,
                     },
                     platforms: [target.platform],
@@ -568,7 +548,6 @@ describe('generic client executable contribution registration', () => {
                     target: 'client',
                     client: {
                         artifactId: secondTarget.artifactId,
-                        modulePath: secondTarget.modulePath,
                         exportName: secondTarget.exportName,
                     },
                     platforms: [secondTarget.platform],
@@ -591,10 +570,12 @@ describe('generic client executable contribution registration', () => {
         const composition = createPluginUiClientExecutableComposition({ createExecutableHost });
         const firstActivation = Object.freeze({
             pluginId,
+            occurrenceId,
+            hostUiApiRange,
             contributes: actionOnlyContributes,
             target,
             executionOrigin,
-            projectionGeneration: identity.projectionGeneration,
+            projectionGeneration: projectionGeneration,
             cache: cacheWithIdentity(),
             identity,
             moduleReference,
@@ -604,10 +585,14 @@ describe('generic client executable contribution registration', () => {
         });
         const secondActivation = Object.freeze({
             pluginId: secondPluginId,
+            occurrenceId: secondOccurrenceId,
+            hostUiApiRange,
+            pluginVersion: '1.0.0',
+            immutableGenerationId: 'managed-second-1',
             contributes: secondActionOnlyContributes,
             target: secondTarget,
             executionOrigin: secondOrigin,
-            projectionGeneration: secondIdentity.projectionGeneration,
+            projectionGeneration: secondIdentityProjectionGeneration,
             cache: (() => {
                 const cache = createPluginReactNativeBundleCache();
                 cache.putInstalledArtifact({
@@ -619,8 +604,6 @@ describe('generic client executable contribution registration', () => {
             })(),
             identity: secondIdentity,
             moduleReference: Object.freeze({
-                containerName: 'acme_second_runtime',
-                modulePath: secondTarget.modulePath,
                 exportName: secondTarget.exportName,
             }),
             backend: backend(secondActivate),
@@ -639,10 +622,10 @@ describe('generic client executable contribution registration', () => {
         expect(composition.read({
             family: 'actions',
             pluginId: secondPluginId,
+            occurrenceId: secondOccurrenceId,
             localId: 'open-second',
             target: secondTarget,
             executionOrigin: secondOrigin,
-            projectionGeneration: secondIdentity.projectionGeneration,
         })).not.toBeNull();
 
         failFirstActivation = false;
@@ -653,22 +636,69 @@ describe('generic client executable contribution registration', () => {
         expect(firstActivate).toHaveBeenCalledTimes(2);
         expect(secondActivate).toHaveBeenCalledTimes(1);
         const firstRegistration = composition.read(readRegistrationInput('actions', 'open-preview'));
-        expect(firstRegistration).not.toBeNull();
-
-        const retiring = composition.reconcile([secondActivation]);
-        expect(firstRegistration?.lifecycle.signal.aborted).toBe(true);
-        expect(firstRegistration?.lifecycle.isCurrent()).toBe(false);
-        expect(composition.read(readRegistrationInput('actions', 'open-preview'))).toBeNull();
-        expect(composition.read({
+        const secondRegistration = composition.read({
             family: 'actions',
             pluginId: secondPluginId,
+            occurrenceId: secondOccurrenceId,
             localId: 'open-second',
             target: secondTarget,
             executionOrigin: secondOrigin,
-            projectionGeneration: secondIdentity.projectionGeneration,
+        });
+        expect(firstRegistration).not.toBeNull();
+        expect(secondRegistration).not.toBeNull();
+
+        const replacementOccurrenceId = 'preview-occurrence-13';
+        const replacementFirstActivation = Object.freeze({
+            ...firstActivation,
+            occurrenceId: replacementOccurrenceId,
+            projectionGeneration: projectionGeneration + 1,
+        });
+        const unchangedSecondAtNewProjection = Object.freeze({
+            ...secondActivation,
+            projectionGeneration: projectionGeneration + 1,
+            immutableGenerationId: 'managed-second-2',
+        });
+        await expect(composition.reconcile([
+            replacementFirstActivation,
+            unchangedSecondAtNewProjection,
+        ])).resolves.toEqual([
+            expect.objectContaining({ result: { ok: true }, reused: false }),
+            expect.objectContaining({ result: { ok: true }, reused: true }),
+        ]);
+        expect(firstRegistration?.lifecycle.signal.aborted).toBe(true);
+        expect(composition.read(readRegistrationInput('actions', 'open-preview'))).toBeNull();
+        expect(composition.read({
+            ...readRegistrationInput('actions', 'open-preview'),
+            occurrenceId: replacementOccurrenceId,
+        })).not.toBeNull();
+        expect(composition.read({
+            family: 'actions',
+            pluginId: secondPluginId,
+            occurrenceId: secondOccurrenceId,
+            localId: 'open-second',
+            target: secondTarget,
+            executionOrigin: secondOrigin,
+        })).toBe(secondRegistration);
+        expect(firstActivate).toHaveBeenCalledTimes(3);
+        expect(secondActivate).toHaveBeenCalledTimes(1);
+
+        const replacementRegistration = composition.read({
+            ...readRegistrationInput('actions', 'open-preview'),
+            occurrenceId: replacementOccurrenceId,
+        });
+        const retiring = composition.reconcile([unchangedSecondAtNewProjection]);
+        expect(replacementRegistration?.lifecycle.signal.aborted).toBe(true);
+        expect(replacementRegistration?.lifecycle.isCurrent()).toBe(false);
+        expect(composition.read({
+            family: 'actions',
+            pluginId: secondPluginId,
+            occurrenceId: secondOccurrenceId,
+            localId: 'open-second',
+            target: secondTarget,
+            executionOrigin: secondOrigin,
         })).not.toBeNull();
         await retiring;
-        expect(firstCleanup).toHaveBeenCalledTimes(1);
+        expect(firstCleanup).toHaveBeenCalledTimes(2);
         expect(secondCleanup).not.toHaveBeenCalled();
     });
 
@@ -685,7 +715,6 @@ describe('generic client executable contribution registration', () => {
                     target: 'client',
                     client: {
                         artifactId: target.artifactId,
-                        modulePath: target.modulePath,
                         exportName: target.exportName,
                     },
                     platforms: [target.platform],
@@ -693,9 +722,9 @@ describe('generic client executable contribution registration', () => {
             }],
         });
         const otherPluginId = 'acme.other-preview';
+        const otherOccurrenceId = 'other-preview-occurrence-12';
         const otherTarget = Object.freeze({
             artifactId: 'other-client-runtime',
-            modulePath: './otherClientRuntime',
             exportName: 'activateOther',
             platform: 'web' as const,
         });
@@ -710,12 +739,12 @@ describe('generic client executable contribution registration', () => {
         const otherAuthority = Object.freeze({
             serverId: 'server-1',
             machineId: 'machine-2',
-            projectionGeneration: 12,
         });
         const otherIdentity: PluginReactNativeBundleCacheIdentity = Object.freeze({
             ...identity,
             pluginId: otherPluginId,
             contributionId: otherTarget.artifactId,
+            artifactId: otherTarget.artifactId,
             artifactDigest: 'sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
         });
         const otherContributes = PluginContributesV2Schema.parse({
@@ -730,7 +759,6 @@ describe('generic client executable contribution registration', () => {
                     target: 'client',
                     client: {
                         artifactId: otherTarget.artifactId,
-                        modulePath: otherTarget.modulePath,
                         exportName: otherTarget.exportName,
                     },
                     platforms: [otherTarget.platform],
@@ -752,10 +780,12 @@ describe('generic client executable contribution registration', () => {
         });
         const firstActivation = Object.freeze({
             pluginId,
+            occurrenceId,
+            hostUiApiRange,
             contributes: firstContributes,
             target,
             executionOrigin,
-            projectionGeneration: identity.projectionGeneration,
+            projectionGeneration: projectionGeneration,
             cache: cacheWithIdentity(),
             identity,
             moduleReference,
@@ -765,10 +795,12 @@ describe('generic client executable contribution registration', () => {
         });
         const otherActivation = Object.freeze({
             pluginId: otherPluginId,
+            occurrenceId: otherOccurrenceId,
+            hostUiApiRange,
             contributes: otherContributes,
             target: otherTarget,
             executionOrigin: otherOrigin,
-            projectionGeneration: otherIdentity.projectionGeneration,
+            projectionGeneration: projectionGeneration,
             cache: (() => {
                 const cache = createPluginReactNativeBundleCache();
                 cache.putInstalledArtifact({
@@ -780,8 +812,6 @@ describe('generic client executable contribution registration', () => {
             })(),
             identity: otherIdentity,
             moduleReference: Object.freeze({
-                containerName: 'acme_other_preview_client_runtime',
-                modulePath: otherTarget.modulePath,
                 exportName: otherTarget.exportName,
             }),
             backend: backend(otherActivate),
@@ -798,10 +828,10 @@ describe('generic client executable contribution registration', () => {
         expect(composition.read({
             family: 'actions',
             pluginId: otherPluginId,
+            occurrenceId: otherOccurrenceId,
             localId: 'open-other-preview',
             target: otherTarget,
             executionOrigin: otherOrigin,
-            projectionGeneration: otherIdentity.projectionGeneration,
         })).not.toBeNull();
 
         const retireFirstOrigin = composition.reconcile([otherActivation]);
@@ -810,10 +840,10 @@ describe('generic client executable contribution registration', () => {
         expect(composition.read({
             family: 'actions',
             pluginId: otherPluginId,
+            occurrenceId: otherOccurrenceId,
             localId: 'open-other-preview',
             target: otherTarget,
             executionOrigin: otherOrigin,
-            projectionGeneration: otherIdentity.projectionGeneration,
         })).not.toBeNull();
         await retireFirstOrigin;
         expect(firstCleanup).toHaveBeenCalledTimes(1);
@@ -837,10 +867,12 @@ describe('generic client executable contribution registration', () => {
         const createExecutableHost = vi.fn(() => flakyHost);
         const activation = Object.freeze({
             pluginId,
+            occurrenceId,
+            hostUiApiRange,
             contributes,
             target,
             executionOrigin,
-            projectionGeneration: identity.projectionGeneration,
+            projectionGeneration: projectionGeneration,
             cache: cacheWithIdentity(),
             identity,
             moduleReference,
@@ -881,10 +913,12 @@ describe('generic client executable contribution registration', () => {
         });
         const activation = Object.freeze({
             pluginId,
+            occurrenceId,
+            hostUiApiRange,
             contributes: actionOnlyContributes(),
             target,
             executionOrigin,
-            projectionGeneration: identity.projectionGeneration,
+            projectionGeneration: projectionGeneration,
             cache: cacheWithIdentity(),
             identity,
             moduleReference,
@@ -940,7 +974,6 @@ describe('generic client executable contribution registration', () => {
                     target: 'client',
                     client: {
                         artifactId: target.artifactId,
-                        modulePath: target.modulePath,
                         exportName: target.exportName,
                     },
                     platforms: [target.platform],
@@ -949,10 +982,12 @@ describe('generic client executable contribution registration', () => {
         });
         const activation = Object.freeze({
             pluginId,
+            occurrenceId,
+            hostUiApiRange,
             contributes: actionOnlyContributes,
             target,
             executionOrigin,
-            projectionGeneration: identity.projectionGeneration,
+            projectionGeneration: projectionGeneration,
             cache: cacheWithIdentity(),
             identity,
             moduleReference,
@@ -986,7 +1021,7 @@ describe('generic client executable contribution registration', () => {
             resolveLoaded = resolve;
         });
         const slowBackend: PluginReactNativeLoaderBackend = Object.freeze({
-            backendId: 'reactNativeWebModule',
+            backendId: 'commonJs',
             available: true,
             loadInstalledBundle: vi.fn(() => loaded),
         });
@@ -1002,7 +1037,6 @@ describe('generic client executable contribution registration', () => {
                     target: 'client',
                     client: {
                         artifactId: target.artifactId,
-                        modulePath: target.modulePath,
                         exportName: target.exportName,
                     },
                     platforms: [target.platform],
@@ -1011,10 +1045,12 @@ describe('generic client executable contribution registration', () => {
         });
         const activation = Object.freeze({
             pluginId,
+            occurrenceId,
+            hostUiApiRange,
             contributes: actionOnlyContributes,
             target,
             executionOrigin,
-            projectionGeneration: identity.projectionGeneration,
+            projectionGeneration: projectionGeneration,
             cache: cacheWithIdentity(),
             identity,
             moduleReference,
@@ -1032,7 +1068,7 @@ describe('generic client executable contribution registration', () => {
             expect.objectContaining({
                 result: expect.objectContaining({
                     ok: false,
-                    code: 'stale_projection_generation',
+                    code: 'artifact_replaced',
                 }),
             }),
         ]);

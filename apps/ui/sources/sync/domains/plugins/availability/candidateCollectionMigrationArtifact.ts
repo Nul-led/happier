@@ -1,15 +1,14 @@
 import {
     PluginPortableReleaseManifestV1Schema,
     normalizePluginAccountCollectionContractsV1,
+    resolvePluginCollectionMigrationArtifactOwnerV1,
     type NormalizedPluginAccountCollectionContractV1,
-    type PluginMachineExecutionOriginV1,
 } from '@happier-dev/protocol';
 import {
-    PluginUiArtifactsManifestEntryV1Schema,
-    derivePluginUiNativeCapabilitiesDigestV1,
+    PluginUiArtifactsManifestEntryV2Schema,
     type PluginUiArtifactDigestV1,
     type PluginUiArtifactFileV1,
-    type PluginUiArtifactsManifestEntryV1,
+    type PluginUiArtifactsManifestEntryV2,
 } from '@happier-dev/protocol/plugins/ui';
 import {
     isPluginUiReleaseSlotCompatibleWithArtifactLinkV1,
@@ -17,9 +16,9 @@ import {
     type PluginReleaseFactsV1,
 } from '@happier-dev/protocol/plugins/availability';
 import {
-    normalizePluginAccountCollectionMigrationRuntimeProjection,
     type PluginAccountCollectionMigrationRuntimeProjection,
 } from '@happier-dev/plugin-sdk';
+import { normalizePluginAccountCollectionMigrationRuntimeProjection } from '@happier-dev/plugin-sdk/host/registration';
 
 import {
     createPluginReactNativeArtifactLeaseCacheSink,
@@ -32,7 +31,6 @@ import {
 } from '@/components/plugins/reactNative/loader';
 import {
     createActivePluginAccountHostedArtifactReader,
-    createActivePluginAccountHostedArtifactSourceCandidate,
     createActivePluginAccountHostedArtifactTargetSourceCandidate,
     type ActivePluginAccountHostedArtifactReader,
 } from '@/sync/api/plugins/availability/activePluginAccountHostedArtifactRead';
@@ -46,10 +44,8 @@ import {
     type PluginSelectedArtifactLease,
 } from './artifactLease';
 import {
-    decodePluginReactNativeExactArtifactFileSet,
     materializePluginReactNativeArtifactLeaseInCache,
     type PluginReactNativeArtifactLeaseCacheSink,
-    type PluginReactNativeExactArtifactByteFetcher,
 } from './reactNativeArtifactLease';
 
 /** Immutable target facts selected before any candidate code is loaded. */
@@ -60,11 +56,11 @@ export type CandidatePluginCollectionMigrationArtifactTarget = Readonly<{
     }>;
     artifact: Readonly<{
         contributionId: string;
+        artifactId: string;
         platform: 'web' | 'ios' | 'android';
         digest: PluginUiArtifactDigestV1;
+        hostUiApiRange: string;
     }>;
-    /** Candidate identity is explicit; it must not be inferred from Account intent. */
-    availabilityCursor: number;
 }>;
 
 export type CandidatePluginCollectionMigrationArtifactLoadInput = Readonly<{
@@ -77,27 +73,13 @@ export type CandidatePluginCollectionMigrationArtifactLoadInput = Readonly<{
     /** Dedicated target-bundle cache identity; it cannot name the incumbent renderer. */
     cacheIdentity: PluginReactNativeBundleCacheIdentity;
     appExact?: PluginArtifactSourceCandidate & Readonly<{ kind: 'appExact' }>;
-    daemon?: Readonly<{
-        origin: PluginMachineExecutionOriginV1;
-        serverId: string;
-        fetchArtifactBytes: PluginReactNativeExactArtifactByteFetcher;
-    }>;
     /**
-     * An explicitly selected prospective Account-hosted Artifact link. This
-     * never falls back to the current intent's artifact link.
+     * The target's exact Account release slot, resolved lazily after the CAS
+     * refusal. It never falls back to the current intent's artifact link.
      */
-    accountHosted?:
-        | Readonly<{
-            /** A previously qualified exact prospective Artifact link. */
-            kind: 'linked';
-            artifactId: string;
-            reader?: ActivePluginAccountHostedArtifactReader;
-        }>
-        | Readonly<{
-            /** Resolve this target's exact release slot lazily after the CAS refusal. */
-            kind: 'target';
-            reader?: ActivePluginAccountHostedArtifactReader;
-        }>;
+    accountHosted?: Readonly<{
+        reader?: ActivePluginAccountHostedArtifactReader;
+    }>;
 }>;
 
 export type CandidatePluginCollectionMigrationArtifactAccountHostedTargetResult =
@@ -140,7 +122,6 @@ export type CandidatePluginCollectionMigrationArtifactLoaderDependencies = Reado
     getCache: () => PluginReactNativeBundleCache;
     createCacheSink: (lifetime: ActiveServerAccountScopeLifetime) => PluginReactNativeArtifactLeaseCacheSink;
     loadBundleExport: typeof loadPluginReactNativeBundleExport;
-    createAccountHostedSource: typeof createActivePluginAccountHostedArtifactSourceCandidate;
     createAccountHostedTargetSource: typeof createActivePluginAccountHostedArtifactTargetSourceCandidate;
     loaderBackend?: PluginReactNativeLoaderBackend;
     hostPlatform?: string;
@@ -154,7 +135,6 @@ function defaultDependencies(): CandidatePluginCollectionMigrationArtifactLoader
             lifetime,
         }),
         loadBundleExport: loadPluginReactNativeBundleExport,
-        createAccountHostedSource: createActivePluginAccountHostedArtifactSourceCandidate,
         createAccountHostedTargetSource: createActivePluginAccountHostedArtifactTargetSourceCandidate,
     };
 }
@@ -173,22 +153,16 @@ function callCurrent(input: CandidatePluginCollectionMigrationArtifactLoadInput)
     }
 }
 
-function isCollectionMigrationArtifactPlatform(
-    value: unknown,
-): value is CandidatePluginCollectionMigrationArtifactTarget['artifact']['platform'] {
-    return value === 'web' || value === 'ios' || value === 'android';
-}
-
 function matchesTargetGraph(input: Readonly<{
-    graph: PluginUiArtifactsManifestEntryV1;
+    graph: PluginUiArtifactsManifestEntryV2;
     target: CandidatePluginCollectionMigrationArtifactTarget;
     cacheIdentity: PluginReactNativeBundleCacheIdentity;
 }>): boolean {
     return input.graph.tier === 'reactNative'
-        && input.graph.contributionId === input.target.artifact.contributionId
-        && input.graph.platform === input.target.artifact.platform
+        && input.graph.artifactId === input.target.artifact.artifactId
         && input.graph.digest === input.target.artifact.digest
-        && input.graph.collectionMigrations !== undefined
+        && input.graph.hostUiApiRange === input.target.artifact.hostUiApiRange
+        && input.graph.executable.exports.includes('collectionMigrations')
         && input.cacheIdentity.pluginId === input.target.release.pluginId
         && input.cacheIdentity.contributionId === input.target.artifact.contributionId
         && input.cacheIdentity.artifactDigest === input.target.artifact.digest
@@ -197,42 +171,41 @@ function matchesTargetGraph(input: Readonly<{
 
 function matchesAccountHostedTargetGraph(input: Readonly<{
     facts: PluginReleaseFactsV1;
-    graph: PluginUiArtifactsManifestEntryV1;
+    graph: PluginUiArtifactsManifestEntryV2;
     link: PluginAccountPluginUiArtifactLinkV1;
 }>): boolean {
     const { graph, link } = input;
+    const owner = resolvePluginCollectionMigrationArtifactOwnerV1(
+        input.facts.normalizedManifest.contributes.accountCollections,
+    );
+    if (!owner) return false;
     const slot = input.facts.uiSlots.find((candidate) => (
-        candidate.contributionId === graph.contributionId
+        candidate.contributionId === owner.contributionId
+        && candidate.artifactId === graph.artifactId
         && candidate.tier === graph.tier
-        && candidate.platform === graph.platform
         && candidate.artifactDigest === graph.digest
+        && candidate.hostUiApiRange === graph.hostUiApiRange
     ));
     return link.release.pluginId === input.facts.ref.pluginId
         && link.release.version === input.facts.ref.version
         && graph.tier === 'reactNative'
-        && graph.collectionMigrations !== undefined
-        && graph.contributionId === link.contributionId
+        && graph.artifactId === owner.reference.artifactId
+        && graph.executable.exports.includes(owner.reference.exportName)
+        && graph.artifactId === link.artifactId
         && graph.tier === link.tier
-        && graph.platform === link.platform
         && graph.digest === link.artifactDigest
-        && graph.hostUiApiVersion === link.compatibility.hostUiApiVersion
-        && graph.compat.react === link.compatibility.reactVersion
-        && graph.compat.reactNative === link.compatibility.reactNativeVersion
-        && (graph.compat.expoRuntime ?? '') === (link.compatibility.expoRuntimeVersion ?? '')
-        && (graph.compat.hermes ?? '') === (link.compatibility.hermesVersion ?? '')
+        && graph.hostUiApiRange === link.hostUiApiRange
         && slot !== undefined
-        && isPluginUiReleaseSlotCompatibleWithArtifactLinkV1(slot, link.compatibility);
+        && isPluginUiReleaseSlotCompatibleWithArtifactLinkV1(slot, link);
 }
 
 /**
  * Resolves one Account-hosted prospective target lazily from exact Availability
- * facts. The Account read supplies the authoritative link and archive graph;
- * its cursor scopes only the UI cache entry, never a daemon generation.
+ * facts. The Account read supplies the authoritative link and archive graph.
  */
 export async function resolveCandidatePluginCollectionMigrationArtifactAccountHostedTarget(input: Readonly<{
     accountLifetime: ActiveServerAccountScopeLifetime;
     isCurrent: () => boolean;
-    availabilityCursor: number;
     facts: PluginReleaseFactsV1;
     reader?: ActivePluginAccountHostedArtifactReader;
 }>): Promise<CandidatePluginCollectionMigrationArtifactAccountHostedTargetResult> {
@@ -244,18 +217,27 @@ export async function resolveCandidatePluginCollectionMigrationArtifactAccountHo
         }
     };
     if (!isCurrent()) return Object.freeze({ kind: 'unavailable' as const });
+    const owner = resolvePluginCollectionMigrationArtifactOwnerV1(
+        input.facts.normalizedManifest.contributes.accountCollections,
+    );
+    if (!owner) return Object.freeze({ kind: 'unavailable' as const });
     const reader = input.reader ?? createActivePluginAccountHostedArtifactReader();
     const candidates: Array<Extract<
         CandidatePluginCollectionMigrationArtifactAccountHostedTargetResult,
         { kind: 'available' }
     >> = [];
     for (const slot of input.facts.uiSlots) {
-        if (slot.tier !== 'reactNative') continue;
+        if (
+            slot.tier !== 'reactNative'
+            || slot.contributionId !== owner.contributionId
+            || slot.artifactId !== owner.reference.artifactId
+        ) continue;
         const result = await reader.readTarget({
             accountLifetime: input.accountLifetime,
             release: input.facts.ref,
             slot: {
                 contributionId: slot.contributionId,
+                artifactId: slot.artifactId,
                 tier: slot.tier,
                 platform: slot.platform,
             },
@@ -263,13 +245,10 @@ export async function resolveCandidatePluginCollectionMigrationArtifactAccountHo
         });
         if (!isCurrent()) return Object.freeze({ kind: 'unavailable' as const });
         if (result.kind !== 'available') continue;
-        const graph = PluginUiArtifactsManifestEntryV1Schema.safeParse(result.value.archive.artifactGraph);
-        const compatibility = result.value.link.compatibility;
+        const graph = PluginUiArtifactsManifestEntryV2Schema.safeParse(result.value.archive.artifactGraph);
         if (
             !graph.success
-            || !isCollectionMigrationArtifactPlatform(graph.data.platform)
-            || !compatibility.reactVersion
-            || !compatibility.reactNativeVersion
+            || graph.data.tier !== 'reactNative'
             || !matchesAccountHostedTargetGraph({
                 facts: input.facts,
                 graph: graph.data,
@@ -283,36 +262,23 @@ export async function resolveCandidatePluginCollectionMigrationArtifactAccountHo
             candidateTarget: Object.freeze({
                 release: input.facts.ref,
                 artifact: Object.freeze({
-                    contributionId: graph.data.contributionId,
-                    platform: graph.data.platform,
+                    contributionId: slot.contributionId,
+                    artifactId: slot.artifactId,
+                    platform: slot.platform,
                     digest: graph.data.digest,
+                    hostUiApiRange: graph.data.hostUiApiRange,
                 }),
-                availabilityCursor: input.availabilityCursor,
             }),
             artifact: Object.freeze({
                 artifactGraph: graph.data,
                 cacheIdentity: Object.freeze({
                     pluginId: input.facts.ref.pluginId,
-                    contributionId: graph.data.contributionId,
+                    contributionId: slot.contributionId,
+                    artifactId: graph.data.artifactId,
                     artifactDigest: graph.data.digest,
-                    hostAppVersion: compatibility.hostAppVersion,
-                    hostUiApiVersion: compatibility.hostUiApiVersion,
-                    reactVersion: compatibility.reactVersion,
-                    reactNativeVersion: compatibility.reactNativeVersion,
-                    ...(compatibility.expoRuntimeVersion
-                        ? { expoRuntimeVersion: compatibility.expoRuntimeVersion }
-                        : {}),
-                    ...(compatibility.hermesVersion
-                        ? { hermesVersion: compatibility.hermesVersion }
-                        : {}),
-                    platform: graph.data.platform,
-                    channel: compatibility.channel,
-                    nativeCapabilitiesDigest: derivePluginUiNativeCapabilitiesDigestV1(
-                        compatibility.nativeCapabilities,
-                    ),
-                    projectionGeneration: input.availabilityCursor,
+                    platform: slot.platform,
                 }),
-                accountHosted: Object.freeze({ kind: 'target' as const, reader }),
+                accountHosted: Object.freeze({ reader }),
             }),
         }));
     }
@@ -325,69 +291,15 @@ function cloneFile(file: PluginUiArtifactFileV1): PluginUiArtifactFileV1 {
     return Object.freeze({ ...file });
 }
 
-function createCandidateDaemonSource(input: Readonly<{
-    candidate: CandidatePluginCollectionMigrationArtifactLoadInput;
-    entryRelativePath: string;
-}>): PluginArtifactSourceCandidate | null {
-    const daemon = input.candidate.daemon;
-    if (!daemon || daemon.origin.materializationRef.pluginId !== input.candidate.target.release.pluginId) {
-        return null;
-    }
-    let pending: Promise<ReadonlyMap<string, Uint8Array> | null> | null = null;
-    return Object.freeze({
-        kind: 'daemon' as const,
-        readFile: async ({ relativePath }) => {
-            if (!callCurrent(input.candidate)) return null;
-            if (!pending) {
-                pending = daemon.fetchArtifactBytes({
-                    origin: daemon.origin,
-                    serverId: daemon.serverId,
-                    identity: input.candidate.cacheIdentity,
-                    artifactOwnerKind: 'collectionMigrations',
-                }).then((response) => decodePluginReactNativeExactArtifactFileSet({
-                    response,
-                    identity: input.candidate.cacheIdentity,
-                    entryRelativePath: input.entryRelativePath,
-                    artifactOwnerKind: 'collectionMigrations',
-                })).catch(() => null);
-            }
-            const files = await pending;
-            if (!files || !callCurrent(input.candidate)) return null;
-            const bytes = files.get(relativePath);
-            return bytes ? new Uint8Array(bytes) : null;
-        },
-    });
-}
-
 function createExactCandidateAccountHostedSource(input: Readonly<{
     candidate: CandidatePluginCollectionMigrationArtifactLoadInput;
-    createSource: typeof createActivePluginAccountHostedArtifactSourceCandidate;
     createTargetSource: typeof createActivePluginAccountHostedArtifactTargetSourceCandidate;
 }>): PluginArtifactSourceCandidate | null {
     const hosted = input.candidate.accountHosted;
     if (!hosted) return null;
-    if (hosted.kind === 'linked' && !hosted.artifactId.trim()) return null;
-    const source = hosted.kind === 'linked'
-        ? input.createSource({
-            accountLifetime: input.candidate.accountLifetime,
-            ...(hosted.reader ? { reader: hosted.reader } : {}),
-        })
-        : input.createTargetSource({
-            accountLifetime: input.candidate.accountLifetime,
-            ...(hosted.reader ? { reader: hosted.reader } : {}),
-        });
-    return Object.freeze({
-        kind: 'accountHosted' as const,
-        readFile: async ({ artifact, relativePath }) => {
-            if (!callCurrent(input.candidate)) return null;
-            return await source.readFile({
-                artifact,
-                relativePath,
-                ...(hosted.kind === 'linked'
-                    ? { accountHostedArtifactId: hosted.artifactId }
-                    : {}),
-            });
-        },
+    return input.createTargetSource({
+        accountLifetime: input.candidate.accountLifetime,
+        ...(hosted.reader ? { reader: hosted.reader } : {}),
     });
 }
 
@@ -399,7 +311,7 @@ type CandidateLease = Readonly<{
 function createCandidateLease(input: Readonly<{
     candidate: CandidatePluginCollectionMigrationArtifactLoadInput;
     artifact: PluginSelectedArtifactIdentity;
-    artifactGraph: PluginUiArtifactsManifestEntryV1;
+    artifactGraph: PluginUiArtifactsManifestEntryV2;
     source: PluginArtifactSourceCandidate;
     files: ReadonlyMap<string, Readonly<{ file: PluginUiArtifactFileV1; bytes: Uint8Array }>>;
 }>): CandidateLease {
@@ -475,7 +387,7 @@ function createCandidateLease(input: Readonly<{
 async function materializeExactCandidateSource(input: Readonly<{
     candidate: CandidatePluginCollectionMigrationArtifactLoadInput;
     artifact: PluginSelectedArtifactIdentity;
-    graph: PluginUiArtifactsManifestEntryV1;
+    graph: PluginUiArtifactsManifestEntryV2;
     sources: readonly PluginArtifactSourceCandidate[];
 }>): Promise<
     | Readonly<{ kind: 'available'; candidateLease: CandidateLease }>
@@ -530,8 +442,9 @@ function readCandidateModulePayload(value: unknown): Readonly<{
 
 /**
  * Loads only an explicit target artifact's signed Collection-migration export.
- * Its source is an exact app Artifact, trusted daemon Artifact, or a qualified
- * target Account-hosted slot; it never uses an incumbent intent Artifact.
+ * Its source is an exact app Artifact or a qualified target Account-hosted
+ * slot; it never uses an incumbent intent Artifact. A daemon-owned candidate
+ * runs its migrations on the daemon instead (`daemonCandidateCollectionPreparation`).
  */
 export function createCandidatePluginCollectionMigrationArtifactLoader(
     overrides: Partial<CandidatePluginCollectionMigrationArtifactLoaderDependencies> = {},
@@ -547,7 +460,7 @@ export function createCandidatePluginCollectionMigrationArtifactLoader(
     return Object.freeze({
         load: async (input) => {
             if (!callCurrent(input)) return unavailable('candidate_currentness_changed');
-            const parsedGraph = PluginUiArtifactsManifestEntryV1Schema.safeParse(input.artifactGraph);
+            const parsedGraph = PluginUiArtifactsManifestEntryV2Schema.safeParse(input.artifactGraph);
             if (!parsedGraph.success || !matchesTargetGraph({
                 graph: parsedGraph.data,
                 target: input.target,
@@ -559,19 +472,17 @@ export function createCandidatePluginCollectionMigrationArtifactLoader(
             const candidateArtifact: PluginSelectedArtifactIdentity = Object.freeze({
                 pluginId: input.target.release.pluginId,
                 contributionId: input.target.artifact.contributionId,
+                artifactId: input.target.artifact.artifactId,
                 tier: 'reactNative',
                 platform: input.target.artifact.platform,
                 digest: input.target.artifact.digest,
+                hostUiApiRange: input.target.artifact.hostUiApiRange,
                 releaseVersion: input.target.release.version,
-                availabilityCursor: input.target.availabilityCursor,
             });
             const sources: PluginArtifactSourceCandidate[] = [];
             if (input.appExact) sources.push(input.appExact);
-            const daemon = createCandidateDaemonSource({ candidate: input, entryRelativePath: graph.entry });
-            if (daemon) sources.push(daemon);
             const accountHosted = createExactCandidateAccountHostedSource({
                 candidate: input,
-                createSource: dependencies.createAccountHostedSource,
                 createTargetSource: dependencies.createAccountHostedTargetSource,
             });
             if (accountHosted) sources.push(accountHosted);
@@ -606,7 +517,7 @@ export function createCandidatePluginCollectionMigrationArtifactLoader(
                 loaded = await dependencies.loadBundleExport({
                     cache,
                     identity: input.cacheIdentity,
-                    moduleReference: graph.collectionMigrations,
+                    moduleReference: Object.freeze({ exportName: 'collectionMigrations' }),
                     ...(dependencies.loaderBackend ? { backend: dependencies.loaderBackend } : {}),
                     ...(dependencies.hostPlatform ? { hostPlatform: dependencies.hostPlatform } : {}),
                 });
@@ -642,6 +553,18 @@ export function createCandidatePluginCollectionMigrationArtifactLoader(
                 || !parsedManifest?.success
                 || parsedManifest.data.id !== input.target.release.pluginId
                 || parsedManifest.data.version !== input.target.release.version
+            ) {
+                candidateLease.dispose();
+                return unavailable('candidate_module_invalid');
+            }
+            const migrationOwner = resolvePluginCollectionMigrationArtifactOwnerV1(
+                parsedManifest.data.contributes.accountCollections,
+            );
+            if (
+                !migrationOwner
+                || migrationOwner.contributionId !== input.target.artifact.contributionId
+                || migrationOwner.reference.artifactId !== input.target.artifact.artifactId
+                || migrationOwner.reference.exportName !== 'collectionMigrations'
             ) {
                 candidateLease.dispose();
                 return unavailable('candidate_module_invalid');

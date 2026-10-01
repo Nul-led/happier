@@ -26,6 +26,10 @@ import {
     serializePendingFirstInputForEnv,
 } from './pendingFirstInput';
 import {
+    HAPPIER_DAEMON_INITIAL_GOAL_ENV_KEY,
+    serializeInitialGoalForEnv,
+} from './initialGoal';
+import {
     HAPPIER_PERSISTED_TAKEOVER_ADMISSION_ENV_KEY,
     serializePersistedTakeoverAdmissionForEnv,
 } from './persistedTakeoverAdmission';
@@ -154,6 +158,7 @@ export async function prepareDaemonSpawnChildEnvironment(input: Readonly<{
                     type: 'error',
                     errorCode: spawnEnvironment.errorCode,
                     errorMessage: spawnEnvironment.errorMessage,
+                    ...(spawnEnvironment.agentId !== undefined ? { agentId: spawnEnvironment.agentId } : {}),
                 },
         };
     }
@@ -171,6 +176,11 @@ export async function prepareDaemonSpawnChildEnvironment(input: Readonly<{
         extraEnvForChild[HAPPIER_DAEMON_PENDING_FIRST_INPUT_ENV_KEY] =
             serializePendingFirstInputForEnv(input.options.pendingFirstInput);
     }
+    delete extraEnvForChild[HAPPIER_DAEMON_INITIAL_GOAL_ENV_KEY];
+    if (input.options.initialGoal) {
+        extraEnvForChild[HAPPIER_DAEMON_INITIAL_GOAL_ENV_KEY] =
+            serializeInitialGoalForEnv(input.options.initialGoal);
+    }
     delete extraEnvForChild[HAPPIER_PERSISTED_TAKEOVER_ADMISSION_ENV_KEY];
     if (input.options.persistedTakeoverAdmission) {
         extraEnvForChild[HAPPIER_PERSISTED_TAKEOVER_ADMISSION_ENV_KEY] =
@@ -184,13 +194,19 @@ export async function prepareDaemonSpawnChildEnvironment(input: Readonly<{
         excludedEnvironmentVariableKeys: [
             ...(spawnEnvironment.providerEnvKeys ?? []),
             HAPPIER_DAEMON_PENDING_FIRST_INPUT_ENV_KEY,
+            HAPPIER_DAEMON_INITIAL_GOAL_ENV_KEY,
             HAPPIER_PERSISTED_TAKEOVER_ADMISSION_ENV_KEY,
         ],
     });
     const {
         initialTranscriptAfterSeq: _initialTranscriptAfterSeq,
         pendingFirstInput: _pendingFirstInput,
+        initialGoal: _initialGoal,
         initialAccess: _initialAccess,
+        reportsTo: _reportsTo,
+        initialSessionRolesV1: _initialSessionRolesV1,
+        freshSessionCreation: _freshSessionCreation,
+        managedDirectorySeed: _managedDirectorySeed,
         primaryTeamId: _primaryTeamId,
         persistedTakeoverAdmission: _persistedTakeoverAdmission,
         modelSelection: _requestedModelSelection,

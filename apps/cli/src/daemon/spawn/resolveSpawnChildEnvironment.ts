@@ -18,6 +18,7 @@ import {
 } from '../spawnHooks';
 import { buildAuthEnvUnexpandedErrorMessage, findUnexpandedAuthEnvironmentReferences } from './authEnvValidation';
 import {
+  SESSION_DIRECTORY_KIND_ENV,
   SESSION_MACHINE_WORKSPACE_PATH_ENV,
   SESSION_REQUESTED_DIRECTORY_ENV,
 } from '@/agent/runtime/resolveRequestedSessionDirectory';
@@ -34,6 +35,7 @@ import { dispatchDaemonSpawnHookEvent } from '@/plugins/runtime/hooks/execution/
 import { HAPPIER_SPAWN_EXPLICIT_ENV_KEYS_JSON_ENV_VAR } from './spawnExplicitEnvKeysMarker';
 import type { ConnectedServicesMaterializationDiagnostic } from '@/daemon/connectedServices/materialization/materializer';
 import { buildMissingAgentCliCommandErrorMessage } from '@/packagedRuntime/managedTools/requireAgentCliCommand';
+import { detectNativeAgentCliAuthStatus } from '@/capabilities/cliAuth/detectNativeAgentCliAuthStatus';
 import {
   resolveAgentCliLaunchSpec,
   type AgentCliLaunchSpec,
@@ -44,6 +46,9 @@ import {
 } from '@/session/runtime/control/sessionControlEnvironment';
 import type { ResolvedExecutablePluginRuntimeRegistry } from '@/plugins/runtime/resolveExecutablePluginRuntimeRegistry';
 import { resolveSpawnHookInstallablesRegistry } from './spawnHookInstallablesRegistry';
+import { HAPPIER_SESSION_CREATE_ORIGIN_ENV_KEY, pickSessionCreateOriginFields } from '@/session/shared/sessionCreateOrigin';
+import { HAPPIER_SESSION_CREATE_REPORTS_TO_ENV_KEY } from '@/session/shared/sessionCreateReportsTo';
+import { HAPPIER_SESSION_CREATE_ROLES_ENV_KEY } from '@/session/shared/sessionCreateRoles';
 
 type ResolveSpawnChildEnvironmentSuccess = {
   ok: true;
@@ -63,6 +68,7 @@ type ResolveSpawnChildEnvironmentFailure = {
   ok: false;
   errorCode: SpawnSessionErrorCode;
   errorMessage: string;
+  agentId?: string;
   providerError?: ProviderErrorV1;
   cleanupOnFailure: (() => void | Promise<void>) | null;
   cleanupOnExit: (() => void | Promise<void>) | null;
@@ -436,50 +442,52 @@ async function resolveSpawnChildEnvironmentImpl(params: {
     `[DAEMON RUN] Final environment variable set prepared (${Object.keys(extraEnv).length} vars)`,
   );
 
-  let agentCliLaunchSpec: AgentCliLaunchSpec | undefined;
-  if (
-    !params.daemonSpawnHooks?.resolveRuntimePrerequisites
-    && resolvedAgentId
-  ) {
-    const providerCliResolutionEnv = {
-      ...params.processEnv,
-      ...extraEnv,
-      ...(params.happyHomeDir ? { HAPPIER_HOME_DIR: params.happyHomeDir } : {}),
-    };
+  function validateAgentCliLaunch(agentId: string, processEnv: NodeJS.ProcessEnv): Readonly<
+    | { ok: true; launchSpec: AgentCliLaunchSpec }
+    | { ok: false; errorMessage: string }
+  > {
     // Every installed Agent is validated here, bundled or externally
     // contributed. An id the catalog no longer carries has no CLI runtime
     // metadata at all, which is the same "CLI unavailable" refusal rather than
     // an exception escaping the spawn path.
-    const agentCliValidation = ((): Readonly<
-      | { ok: true; launchSpec: AgentCliLaunchSpec }
-      | { ok: false; errorMessage: string }
-    > => {
-      try {
-        const launchSpec = resolveAgentCliLaunchSpec(resolvedAgentId, {
-          processEnv: providerCliResolutionEnv,
-        });
-        if (launchSpec !== null) {
-          return { ok: true, launchSpec };
-        }
-        return {
-          ok: false,
-          errorMessage: buildMissingAgentCliCommandErrorMessage(resolvedAgentId, {
-            processEnv: providerCliResolutionEnv,
-          }),
-        };
-      } catch {
-        return {
-          ok: false,
-          errorMessage:
-            `Agent '${resolvedAgentId}' has no CLI runtime metadata in the current Agent catalog.`,
-        };
+    try {
+      const resolutionOptions = {
+        processEnv,
+        ...(params.pluginRuntimeRegistry
+          ? { catalogSnapshot: params.pluginRuntimeRegistry.contributes }
+          : {}),
+      };
+      const launchSpec = resolveAgentCliLaunchSpec(agentId, resolutionOptions);
+      if (launchSpec !== null) {
+        return { ok: true, launchSpec };
       }
-    })();
+      return {
+        ok: false,
+        errorMessage: buildMissingAgentCliCommandErrorMessage(agentId, resolutionOptions),
+      };
+    } catch {
+      return {
+        ok: false,
+        errorMessage: `Agent '${agentId}' has no CLI runtime metadata in the current Agent catalog.`,
+      };
+    }
+  }
+
+  let agentCliLaunchSpec: AgentCliLaunchSpec | undefined;
+  if (resolvedAgentId) {
+    // Admission precedes prerequisite hooks: dependency setup cannot substitute
+    // for the Agent executable or start a download for a missing Agent.
+    const agentCliValidation = validateAgentCliLaunch(resolvedAgentId, {
+      ...params.processEnv,
+      ...extraEnv,
+      ...(params.happyHomeDir ? { HAPPIER_HOME_DIR: params.happyHomeDir } : {}),
+    });
     if (!agentCliValidation.ok) {
       return {
         ok: false,
-        errorCode: SPAWN_SESSION_ERROR_CODES.SPAWN_VALIDATION_FAILED,
+        errorCode: SPAWN_SESSION_ERROR_CODES.AGENT_CLI_MISSING,
         errorMessage: agentCliValidation.errorMessage,
+        agentId: resolvedAgentId,
         cleanupOnFailure,
         cleanupOnExit,
         ...(materializationDiagnostics ? { materializationDiagnostics } : {}),
@@ -650,6 +658,52 @@ async function resolveSpawnChildEnvironmentImpl(params: {
       ...(materializationDiagnostics ? { materializationDiagnostics } : {}),
     };
   }
+  if (resolvedAgentId) {
+    const effectiveAgentEnvironment: NodeJS.ProcessEnv = {
+      ...params.processEnv,
+      ...extraEnvForChild,
+      ...(params.happyHomeDir ? { HAPPIER_HOME_DIR: params.happyHomeDir } : {}),
+    };
+    for (const key of Object.keys(effectiveAgentEnvironment)) {
+      if (providerUnsetIdentities.has(key.toLowerCase())) delete effectiveAgentEnvironment[key];
+    }
+    const validation = validateAgentCliLaunch(resolvedAgentId, effectiveAgentEnvironment);
+    if (!validation.ok) {
+      return {
+        ok: false,
+        errorCode: SPAWN_SESSION_ERROR_CODES.AGENT_CLI_MISSING,
+        errorMessage: validation.errorMessage,
+        agentId: resolvedAgentId,
+        cleanupOnFailure,
+        cleanupOnExit,
+        ...(materializationDiagnostics ? { materializationDiagnostics } : {}),
+      };
+    }
+    agentCliLaunchSpec = validation.launchSpec;
+    // A successfully authorized and materialized Provider binding owns its
+    // credential transport; its adapter can deliberately clear native login.
+    const auth = params.providerBindingContext && lateProviderMaterialization?.ok === true
+      ? null
+      : await detectNativeAgentCliAuthStatus({
+        agentId: resolvedAgentId,
+        resolvedPath: agentCliLaunchSpec.resolvedPath,
+        processEnv: effectiveAgentEnvironment,
+        ...(params.pluginRuntimeRegistry ? {
+          authSpec: await params.pluginRuntimeRegistry.contributes.catalogEntriesById[resolvedAgentId]?.getCliAuthSpec?.() ?? null,
+        } : {}),
+      });
+    if (auth?.state === 'logged_out') {
+      return {
+        ok: false,
+        errorCode: SPAWN_SESSION_ERROR_CODES.AGENT_SIGNED_OUT,
+        errorMessage: `Sign in to Agent '${resolvedAgentId}' before starting a session.`,
+        agentId: resolvedAgentId,
+        cleanupOnFailure,
+        cleanupOnExit,
+        ...(materializationDiagnostics ? { materializationDiagnostics } : {}),
+      };
+    }
+  }
   if (params.options.profileId !== undefined) {
     extraEnvForChild.HAPPIER_SESSION_PROFILE_ID = params.options.profileId;
   }
@@ -678,6 +732,19 @@ async function resolveSpawnChildEnvironmentImpl(params: {
       connectedServiceMaterializationIdentityJson;
   }
   extraEnvForChild[SESSION_REQUESTED_DIRECTORY_ENV] = params.options.directory;
+  if (params.options.directoryKind === 'managed') {
+    extraEnvForChild[SESSION_DIRECTORY_KIND_ENV] = 'managed';
+  }
+  const createOrigin = params.options.existingSessionId ? {} : pickSessionCreateOriginFields(params.options);
+  if (!params.options.existingSessionId && params.options.initialSessionRolesV1 !== undefined) {
+    extraEnvForChild[HAPPIER_SESSION_CREATE_ROLES_ENV_KEY] = JSON.stringify(params.options.initialSessionRolesV1);
+  }
+  if (!params.options.existingSessionId && params.options.reportsTo !== undefined) {
+    extraEnvForChild[HAPPIER_SESSION_CREATE_REPORTS_TO_ENV_KEY] = JSON.stringify(params.options.reportsTo);
+  }
+  if (Object.keys(createOrigin).length > 0) {
+    extraEnvForChild[HAPPIER_SESSION_CREATE_ORIGIN_ENV_KEY] = JSON.stringify(createOrigin);
+  }
   extraEnvForChild[SESSION_MACHINE_WORKSPACE_PATH_ENV] = params.options.directory;
   const uniqueExplicitEnvKeysForChild = Array.from(new Set(explicitEnvKeysForChild));
   if (uniqueExplicitEnvKeysForChild.length > 0) {

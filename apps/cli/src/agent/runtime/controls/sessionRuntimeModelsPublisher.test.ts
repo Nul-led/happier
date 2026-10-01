@@ -101,6 +101,62 @@ function sessionRunnerRuntime(
 }
 
 describe('createSessionRuntimeModelsPublisher', () => {
+  it('replaces historical membership and controls with a full runtime observation including empty', async () => {
+    const source = createSource();
+    const oldState = { v: 1 as const, agentId: 'claude', updatedAt: 1, currentModelId: 'current', availableModels: [
+      { id: 'current', name: 'Current', modelOptions: [{ id: 'removed', name: 'Removed', type: 'boolean', currentValue: 'true' }] },
+      { id: 'removed', name: 'Removed' },
+    ] };
+    const session = createSession({ sessionModelsV1: oldState,
+      acpSessionModelsV1: { ...oldState, availableModels: [{ id: 'legacy', name: 'Legacy' }] } } as Metadata);
+    const publisher = createSessionRuntimeModelsPublisher({ agentId: 'claude', session, source });
+    source.publish({ observedAt: 10, models: [{ id: 'current', name: 'Current' }] });
+    await publisher.flush();
+    expect(session.getMetadataSnapshot().sessionModelsV1).toMatchObject({ updatedAt: 10,
+      availableModels: [{ id: 'current', name: 'Current' }] });
+    expect(session.getMetadataSnapshot().sessionModelsV1?.availableModels[0]).not.toHaveProperty('modelOptions');
+    source.publish({ observedAt: 0, currentModelId: 'current', models: [{ id: 'current', name: 'Current', contextWindowTokens: 200_000 }] });
+    await publisher.flush();
+    expect(session.getMetadataSnapshot().sessionModelsV1).toMatchObject({ updatedAt: 10,
+      availableModels: [{ id: 'current', name: 'Current', contextWindowTokens: 200_000 }] });
+    expect(session.getMetadataSnapshot().sessionModelsV1?.availableModels[0]).not.toHaveProperty('modelOptions');
+    source.publish({ observedAt: 20, models: [] });
+    await publisher.flush();
+    expect(session.getMetadataSnapshot().sessionModelsV1).toMatchObject({ updatedAt: 20, availableModels: [] });
+    publisher.dispose();
+  });
+
+  it('preserves catalog observation time through current facts and same-Agent source unbind', async () => {
+    const source = createSource();
+    const session = createSession({} as Metadata);
+    const publisher = createSessionRuntimeModelsPublisher({ agentId: 'claude', session, source });
+    source.publish({ models: [{ id: 'listed', name: 'Listed' }], currentModelId: 'listed', observedAt: 10 });
+    await publisher.flush();
+    source.publish({ models: [{ id: 'listed', name: 'Listed', contextWindowTokens: 1_000_000 }], currentModelId: 'listed', observedAt: 10 });
+    await publisher.flush();
+    expect(session.getMetadataSnapshot().sessionModelsV1).toMatchObject({ updatedAt: 10,
+      availableModels: [{ id: 'listed', contextWindowTokens: 1_000_000 }] });
+    source.publish({ models: null });
+    await publisher.flush();
+    expect(session.getMetadataSnapshot().sessionModelsV1).toMatchObject({ updatedAt: 10,
+      availableModels: [{ id: 'listed', contextWindowTokens: 1_000_000 }] });
+    publisher.dispose();
+  });
+
+  it('does not let static telemetry claim catalog membership over observed metadata', async () => {
+    const source = createSource();
+    const session = createSession({ sessionModelsV1: { v: 1, agentId: 'claude', updatedAt: 10,
+      currentModelId: 'listed', availableModels: [{ id: 'listed', name: 'Listed' }] } } as Metadata);
+    const publisher = createSessionRuntimeModelsPublisher({ agentId: 'claude', session, source });
+    source.publish({ observedAt: 0, currentModelId: 'listed', models: [
+      { id: 'static-only', name: 'Static only' }, { id: 'listed', name: 'Listed', contextWindowTokens: 1_000_000 },
+    ] });
+    await publisher.flush();
+    expect(session.getMetadataSnapshot().sessionModelsV1).toMatchObject({ updatedAt: 10,
+      availableModels: [{ id: 'listed', contextWindowTokens: 1_000_000 }] });
+    publisher.dispose();
+  });
+
   it('preserves a same-process startup active fact over the first lagging runtime publication', async () => {
     const source = createSource();
     source.publish({
@@ -113,7 +169,7 @@ describe('createSessionRuntimeModelsPublisher', () => {
     const activeSelectionV1 = {
       v: 1 as const,
       selection: {
-        agentTargetKey: 'backend:qwen' as const,
+        agentTargetKey: 'agent:happier.agent.qwen/qwen' as const,
         providerConnectionId: null,
         modelId: 'next-model',
       },
@@ -138,7 +194,7 @@ describe('createSessionRuntimeModelsPublisher', () => {
 
     const publisher = createSessionRuntimeModelsPublisher({
       agentId: 'qwen',
-      agentTargetKey: 'backend:qwen',
+      agentTargetKey: 'agent:happier.agent.qwen/qwen',
       runnerProcessIdentity: activeSelectionV1.runner,
       initialActiveSelection: activeSelectionV1,
       session,
@@ -152,7 +208,7 @@ describe('createSessionRuntimeModelsPublisher', () => {
     publisher.dispose();
   });
 
-  it('preserves a producer-declared option override rule carried by the persisted catalog', async () => {
+  it('preserves producer-declared controls through current-only telemetry', async () => {
     const source = createSource();
     const session = createSession(createTestMetadata({
       sessionModelsV1: {
@@ -183,9 +239,9 @@ describe('createSessionRuntimeModelsPublisher', () => {
         }],
       },
     }));
-    // The runtime republishes the same model without the rule (an ACP snapshot cannot carry
-    // producer-declared facts); the merge must not use that as licence to drop it.
+    // Current-only telemetry carries no new catalog observation or control authority.
     source.publish({
+      observedAt: 0,
       currentModelId: 'claude-opus-5',
       models: [{
         id: 'claude-opus-5',
@@ -201,7 +257,7 @@ describe('createSessionRuntimeModelsPublisher', () => {
     });
     const publisher = createSessionRuntimeModelsPublisher({
       agentId: 'claude',
-      agentTargetKey: 'backend:claude',
+      agentTargetKey: 'agent:happier.agent.claude/claude',
       runnerProcessIdentity: { pid: 123, processStartTimeMs: 1_000 },
       session,
       source,
@@ -240,7 +296,7 @@ describe('createSessionRuntimeModelsPublisher', () => {
     });
     const publisher = createSessionRuntimeModelsPublisher({
       agentId: 'qwen',
-      agentTargetKey: 'backend:qwen',
+      agentTargetKey: 'agent:happier.agent.qwen/qwen',
       runnerProcessIdentity: { pid: 123, processStartTimeMs: 1_000 },
       session,
       source,
@@ -249,14 +305,14 @@ describe('createSessionRuntimeModelsPublisher', () => {
 
     await publisher.publishActiveSelection({
       selection: {
-        agentTargetKey: 'backend:qwen',
+        agentTargetKey: 'agent:happier.agent.qwen/qwen',
         providerConnectionId: null,
         modelId: 'next-model',
       },
       activeSelectionV1: {
         v: 1,
         selection: {
-          agentTargetKey: 'backend:qwen',
+          agentTargetKey: 'agent:happier.agent.qwen/qwen',
           providerConnectionId: null,
           modelId: 'next-model',
         },
@@ -326,7 +382,7 @@ describe('createSessionRuntimeModelsPublisher', () => {
 
     await publisher.releaseActiveSelectionAuthority({
       selection: {
-        agentTargetKey: 'backend:qwen',
+        agentTargetKey: 'agent:happier.agent.qwen/qwen',
         providerConnectionId: null,
         modelId: 'old-model',
       },
@@ -359,7 +415,7 @@ describe('createSessionRuntimeModelsPublisher', () => {
     } as Metadata);
     const publisher = createSessionRuntimeModelsPublisher({
       agentId: 'qwen',
-      agentTargetKey: 'backend:qwen',
+      agentTargetKey: 'agent:happier.agent.qwen/qwen',
       runnerProcessIdentity: {
         pid: 123,
         processStartTimeMs: 1_000,
@@ -383,7 +439,7 @@ describe('createSessionRuntimeModelsPublisher', () => {
     publisher.dispose();
   });
 
-  it('merges one runtime slice with canonical evidence, preserves selection, and restores base on clear', async () => {
+  it('replaces the catalog while preserving selection and retains its observation on binding clear', async () => {
     const source = createSource();
     const session = createSession({
       sessionModelsV1: {
@@ -416,19 +472,13 @@ describe('createSessionRuntimeModelsPublisher', () => {
       currentModelId: 'standard',
       availableModels: [
         { id: 'runtime', name: 'Runtime', contextWindowTokens: 400_000 },
-        { id: 'standard', name: 'Standard' },
       ],
     });
 
+    const lastObservation = session.getMetadataSnapshot().sessionModelsV1;
     source.publish({ models: null });
     await publisher.flush();
-    expect(session.getMetadataSnapshot().sessionModelsV1).toEqual({
-      v: 1,
-      agentId: 'cursor',
-      updatedAt: 1,
-      currentModelId: 'standard',
-      availableModels: [{ id: 'standard', name: 'Standard' }],
-    });
+    expect(session.getMetadataSnapshot().sessionModelsV1).toEqual(lastObservation);
     publisher.dispose();
   });
 
@@ -455,18 +505,12 @@ describe('createSessionRuntimeModelsPublisher', () => {
     await publisher.flush();
     expect(session.getMetadataSnapshot().sessionModelsV1?.availableModels.map((model) => model.id)).toEqual([
       'latest',
-      'standard',
     ]);
 
+    const lastObservation = session.getMetadataSnapshot().sessionModelsV1;
     source.publish({ models: null });
     await publisher.flush();
-    expect(session.getMetadataSnapshot().sessionModelsV1).toEqual({
-      v: 1,
-      agentId: 'cursor',
-      updatedAt: 5,
-      currentModelId: 'standard',
-      availableModels: [{ id: 'standard', name: 'Standard' }],
-    });
+    expect(session.getMetadataSnapshot().sessionModelsV1).toEqual(lastObservation);
     publisher.dispose();
   });
 
@@ -519,13 +563,12 @@ describe('createSessionRuntimeModelsPublisher', () => {
       }),
       expect.objectContaining({
         id: 'stale-base',
-        modelOptions: [expect.objectContaining({ id: 'base-only', currentValue: 'false' })],
       }),
     ]);
     publisher.dispose();
   });
 
-  it('preserves richer authorized facts when the runtime reports the same model shallowly', async () => {
+  it('removes historical optional facts omitted by a full runtime catalog', async () => {
     const source = createSource();
     const session = createSession({
       sessionModelsV1: {
@@ -568,15 +611,7 @@ describe('createSessionRuntimeModelsPublisher', () => {
     ).toEqual([{
       id: 'provider-current',
       name: 'Runtime model',
-      description: 'Authorized Provider descriptor',
-      contextWindowTokens: 200_000,
-      modelOptions: [{
-        id: 'reasoning',
-        name: 'Reasoning',
-        type: 'select',
-        currentValue: 'high',
-        options: [{ value: 'high', name: 'High' }],
-      }],
+
     }]);
     publisher.dispose();
   });
@@ -637,6 +672,7 @@ describe('createSessionRuntimeModelsPublisher', () => {
     );
     const source = createSource();
     source.publish({
+      observedAt: 0,
       currentModelId: 'provider-current',
       models: [{
         id: 'provider-current',
@@ -738,7 +774,6 @@ describe('createSessionRuntimeModelsPublisher', () => {
     await publisher.flush();
     expect(session.getMetadataSnapshot().sessionModelsV1?.availableModels.map((model) => model.id)).toEqual([
       'runtime',
-      'standard',
     ]);
 
     await session.updateMetadata(({ acpSessionModelsV1: _removed, ...current }) => current);
@@ -760,14 +795,14 @@ describe('createSessionRuntimeModelsPublisher', () => {
     publisher.dispose();
     const stoppedPublication = publisher.publishActiveSelection({
       selection: {
-        agentTargetKey: 'backend:cursor',
+        agentTargetKey: 'agent:happier.agent.cursor/cursor',
         providerConnectionId: null,
         modelId: 'runtime',
       },
       activeSelectionV1: {
         v: 1,
         selection: {
-          agentTargetKey: 'backend:cursor',
+          agentTargetKey: 'agent:happier.agent.cursor/cursor',
           providerConnectionId: null,
           modelId: 'runtime',
         },
@@ -929,7 +964,9 @@ describe('createSessionRuntimeModelsPublisher', () => {
 
     source.publish({ models: null });
     await publisher.flush();
-    expect(session.getMetadataSnapshot().sessionModelsV1).toBeUndefined();
+    expect(session.getMetadataSnapshot().sessionModelsV1).toMatchObject({
+      agentId: 'cursor', availableModels: [{ id: 'runtime', name: 'Runtime' }],
+    });
     publisher.dispose();
   });
 });

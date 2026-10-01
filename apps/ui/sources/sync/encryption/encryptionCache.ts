@@ -1,4 +1,5 @@
-import { AgentState, Metadata, MachineMetadata } from '../domains/state/storageTypes';
+import { MachineMetadata } from '../domains/state/storageTypes';
+import { AgentState, Metadata } from '@happier-dev/session-core/state';
 import { DecryptedMessage } from '../domains/state/storageTypes';
 import { loadSyncTuning } from '../runtime/syncTuning';
 

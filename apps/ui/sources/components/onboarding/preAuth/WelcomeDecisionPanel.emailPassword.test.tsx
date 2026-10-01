@@ -51,27 +51,6 @@ const baseOptions: AuthEntryOptions = {
     authEntryUnavailable: false,
     serverUrlForCopy: 'https://relay.example.test',
     showAuthActions: true,
-    showProviderSignup: false,
-    showAnonymousSignup: true,
-    showMtlsLogin: false,
-    showKeylessProviderLogin: false,
-    providerId: null,
-    keylessProviderId: null,
-    providerSignupTitle: '',
-    providerKeylessTitle: '',
-    anonymousSignupTitle: 'Create account',
-    mtlsTitle: 'Sign in with certificate',
-    primaryAction: { kind: 'anonymous', title: 'Create account' },
-    mtlsPrimary: false,
-    keylessPrimary: false,
-    autoRedirect: {
-        enabled: false,
-        providerId: null,
-        toKeyedProvision: false,
-        toKeylessLogin: false,
-        toMtls: false,
-        toLegacySignupProvider: false,
-    },
     retryServerCheck: () => {},
 };
 
@@ -125,5 +104,43 @@ describe('WelcomeDecisionPanel native email/password entry', () => {
 
         expect(screen.findByTestId('welcome-primary-start-title')?.props.children).toBe('New here?');
         expect(screen.findAllByTestId('welcome-email-password-provision')).toHaveLength(0);
+        expect(screen.findAllByTestId('welcome-signup-disabled')).toHaveLength(0);
+    });
+
+    it('keeps native login available while explaining closed signup', async () => {
+        const { screenPromise } = renderPanel({
+            authenticationActions: [{
+                method: EMAIL_PASSWORD_METHOD,
+                action: { id: 'login', mode: 'either' },
+                execution: { kind: 'email_password', action: 'login', mode: 'either' },
+            }],
+        });
+        const screen = await screenPromise;
+
+        expect(screen.findByTestId('welcome-email-password-login')).toBeTruthy();
+        expect(screen.findByTestId('welcome-signup-disabled')).toBeTruthy();
+        expect(screen.findAllByTestId('welcome-primary-start')).toHaveLength(0);
+    });
+
+    it.each(['loading', 'unavailable', 'incompatible'] as const)(
+        'does not infer closed signup while the Home is %s',
+        async (serverAvailability) => {
+            const { screenPromise } = renderPanel({
+                serverAvailability,
+                authenticationActions: [],
+            });
+            const screen = await screenPromise;
+
+            expect(screen.findAllByTestId('welcome-signup-disabled')).toHaveLength(0);
+        },
+    );
+
+    it('does not infer closed signup without an observed action projection', async () => {
+        const { screenPromise } = renderPanel({
+            authenticationActions: undefined,
+        });
+        const screen = await screenPromise;
+
+        expect(screen.findAllByTestId('welcome-signup-disabled')).toHaveLength(0);
     });
 });

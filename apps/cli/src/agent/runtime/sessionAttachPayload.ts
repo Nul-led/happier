@@ -4,11 +4,17 @@ import {
   SESSION_METADATA_LAYOUT_VERSION_V1,
   SessionOwnerMetadataEnvelopeV1Schema,
   SessionOwnerMetadataV1Schema,
+  SessionReportsToV1Schema,
+  SessionAwarenessOriginV1Schema,
+  type SessionReportsToV1,
+  type SessionAwarenessOriginV1,
   type SessionOwnerMetadataEnvelopeV1,
   type SessionOwnerMetadataV1,
 } from '@happier-dev/protocol';
 
 type AttachSnapshotPayload = Readonly<{
+  reportsTo?: SessionReportsToV1;
+  origin?: SessionAwarenessOriginV1;
   metadata: Readonly<Record<string, unknown>>;
   metadataVersion: number;
   agentState: Readonly<Record<string, unknown>> | null;
@@ -52,6 +58,8 @@ export type SessionAttachPayload =
   | LegacyAttachPayload;
 
 const AttachSnapshotSchema = z.object({
+  reportsTo: SessionReportsToV1Schema.optional(),
+  origin: SessionAwarenessOriginV1Schema.optional(),
   metadata: z.record(z.string(), z.unknown()),
   metadataVersion: z.number().int().nonnegative(),
   agentState: z.record(z.string(), z.unknown()).nullable(),

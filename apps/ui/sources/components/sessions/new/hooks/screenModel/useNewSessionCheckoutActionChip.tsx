@@ -1,6 +1,5 @@
 import * as React from 'react';
 import { Pressable } from 'react-native';
-import { useUnistyles } from 'react-native-unistyles';
 
 import type { AgentInputExtraActionChip, AgentInputExtraActionChipRenderContext } from '@/components/sessions/agentInput/agentInputContracts';
 import { normalizeNodeForView } from '@/components/ui/rendering/normalizeNodeForView';
@@ -12,21 +11,15 @@ import {
     buildGitWorktreeCheckoutCreationDraft,
 } from '@/components/sessions/new/modules/buildGitWorktreeCheckoutCreationDraft';
 import { t } from '@/text';
-import { generateWorktreeName } from '@/utils/worktree/generateWorktreeName';
 import type { NewSessionCheckoutCreationDraft } from '@/sync/domains/state/newSessionCheckoutDraft';
 import type { ScmWorkingSnapshot } from '@/sync/domains/state/storageTypes';
-import { isFirstPartyGitScmBackendId } from '@/scm/registry/firstPartyScmBackendIdentity';
 import { Icon } from '@/components/ui/icons/Icon';
 import { AGENT_INPUT_CHIP_ICON_SIZE_PX, AGENT_INPUT_CHIP_ICON_STYLE } from '@/components/sessions/agentInput/definitions/agentInputChipIconMetrics';
 
-import {
-    buildWorktreeSelectionListSteps,
-    PENDING_GIT_WORKTREE_OPTION_ID,
-    type WorktreeCreateSelection,
-} from './buildWorktreeSelectionListSteps';
+import type { WorktreeCreateSelection } from './buildWorktreeSelectionListSteps';
+import { useCheckoutSelectionPicker } from './useCheckoutSelectionPicker';
 
 const CHIP_KEY = 'new-session-checkout';
-const WORKTREE_RELATIVE_TIME_TICK_MS = 60_000;
 
 /**
  * Module scope on purpose. The chip descriptor below is rebuilt whenever any of its inputs move —
@@ -79,17 +72,6 @@ function CheckoutChip(props: Readonly<{
     );
 }
 
-function useWorktreePickerNowMs(): number {
-    const [nowMs, setNowMs] = React.useState(() => Date.now());
-    React.useEffect(() => {
-        const intervalId = setInterval(() => {
-            setNowMs(Date.now());
-        }, WORKTREE_RELATIVE_TIME_TICK_MS);
-        return () => clearInterval(intervalId);
-    }, []);
-    return nowMs;
-}
-
 export function useNewSessionCheckoutActionChip(params: Readonly<{
     repoScmSnapshot: ScmWorkingSnapshot | null;
     checkoutChipModel: NewSessionCheckoutChipModel;
@@ -117,137 +99,102 @@ export function useNewSessionCheckoutActionChip(params: Readonly<{
      */
     machinePlatform?: string | null;
 }>): AgentInputExtraActionChip | null {
-    const nowMs = useWorktreePickerNowMs();
-    const { theme } = useUnistyles();
-    const rowIconColor = theme.colors.text.tertiary;
-    // Stable suggested name for this composer session. Pre-populates the
-    // "name your worktree" step and is the fallback when the user commits an
-    // empty/invalid name. Lazily generated once so the worktree step tree (and
-    // the minute-tick rebuild) keep a stable suggestion rather than reshuffling.
-    const [worktreeNameSuggestion] = React.useState(() => generateWorktreeName());
+    const {
+        checkoutCreationDraft,
+        checkoutPickerOpen,
+        pendingGitWorktreeBaseRefRef,
+        pendingGitWorktreeSourceKindRef,
+        setCheckoutCreationDraft,
+        setCheckoutPickerOpen,
+        setSelectedPath,
+        shouldReconcileInitialHydratedCheckoutCreationDraftRef,
+    } = params;
+
+    const clearPending = React.useCallback(() => {
+        pendingGitWorktreeBaseRefRef.current = null;
+        pendingGitWorktreeSourceKindRef.current = 'current';
+    }, [pendingGitWorktreeBaseRefRef, pendingGitWorktreeSourceKindRef]);
+    const closePopover = React.useCallback(() => {
+        setCheckoutPickerOpen(false);
+    }, [setCheckoutPickerOpen]);
+
+    // Choosing an existing checkout — the folder itself, a listed worktree or
+    // the one a branch already has — is one effect here: it retires any pending
+    // creation and moves the Session's path.
+    const selectCheckoutPath = React.useCallback((path: string | null) => {
+        shouldReconcileInitialHydratedCheckoutCreationDraftRef.current = false;
+        setCheckoutCreationDraft(null);
+        clearPending();
+        if (path !== null) setSelectedPath(path);
+        closePopover();
+    }, [clearPending, closePopover, setCheckoutCreationDraft, setSelectedPath, shouldReconcileInitialHydratedCheckoutCreationDraftRef]);
+
+    const createWorktree = React.useCallback((selection: WorktreeCreateSelection) => {
+        shouldReconcileInitialHydratedCheckoutCreationDraftRef.current = false;
+        pendingGitWorktreeBaseRefRef.current = selection.baseRef;
+        pendingGitWorktreeSourceKindRef.current = selection.sourceKind;
+        setCheckoutCreationDraft((current) => buildGitWorktreeCheckoutCreationDraft({
+            existingDraft: current,
+            // The name is user-chosen (or the accepted suggestion) and already
+            // git-sanitized, so it is authoritative — never silently keep a
+            // previously generated name.
+            displayName: selection.name,
+            fallbackDisplayName: selection.name,
+            baseRef: selection.baseRef,
+            branchMode: 'new',
+        }));
+        clearPending();
+        closePopover();
+    }, [
+        clearPending,
+        closePopover,
+        pendingGitWorktreeBaseRefRef,
+        pendingGitWorktreeSourceKindRef,
+        setCheckoutCreationDraft,
+        shouldReconcileInitialHydratedCheckoutCreationDraftRef,
+    ]);
+
+    // A pending git-worktree creation (chosen but not yet materialized) is
+    // surfaced as a selected "New worktree: <name>" row so the choice is
+    // visible/highlighted on reopen.
+    const pendingWorktreeName = checkoutCreationDraft?.kind === 'git_worktree'
+        ? checkoutCreationDraft.displayName
+        : null;
+    const pendingWorktreeBaseRef = checkoutCreationDraft?.kind === 'git_worktree'
+        ? checkoutCreationDraft.baseRef ?? null
+        : null;
+    const creation = React.useMemo(() => ({
+        pendingWorktree: pendingWorktreeName === null
+            ? null
+            : { name: pendingWorktreeName, baseRef: pendingWorktreeBaseRef },
+        onCreateWorktree: createWorktree,
+        onSelectPendingWorktree: closePopover,
+    }), [closePopover, createWorktree, pendingWorktreeBaseRef, pendingWorktreeName]);
+
+    const picker = useCheckoutSelectionPicker({
+        repoScmSnapshot: params.repoScmSnapshot,
+        checkoutChipModel: params.checkoutChipModel,
+        ...(params.serverId !== undefined ? { serverId: params.serverId } : {}),
+        selectedMachineId: params.selectedMachineId,
+        selectedPath: params.selectedPath,
+        machineHomeDir: params.machineHomeDir ?? null,
+        machinePlatform: params.machinePlatform ?? null,
+        onSelectCheckoutPath: selectCheckoutPath,
+        creation,
+    });
+
     return React.useMemo<AgentInputExtraActionChip | null>(() => {
-        const supportsRepoWorktreeChip = params.repoScmSnapshot?.repo.isRepo === true
-            && isFirstPartyGitScmBackendId(params.repoScmSnapshot.repo.backendId);
-        if (!supportsRepoWorktreeChip) {
-            return null;
-        }
-
-        const optionsById = Object.fromEntries(
-            params.checkoutChipModel.options.map((option) => {
-                if (option.kind === 'current_path') {
-                    return [option.id, { label: t('newSession.checkout.noWorktree') }];
-                }
-                if (option.kind === 'create_git_worktree') {
-                    return [option.id, { label: t('newSession.checkout.newWorktree') }];
-                }
-                return [option.id, { label: option.displayName }];
-            }),
-        ) as Record<string, { label: string }>;
-
-        const clearPending = () => {
-            params.pendingGitWorktreeBaseRefRef.current = null;
-            params.pendingGitWorktreeSourceKindRef.current = 'current';
-        };
-
-        const closePopover = () => {
-            params.setCheckoutPickerOpen(false);
-        };
-
-        const currentPathOption = params.checkoutChipModel.options.find((option) => option.kind === 'current_path');
-
-        const onSelectCurrentDir = () => {
-            params.shouldReconcileInitialHydratedCheckoutCreationDraftRef.current = false;
-            params.setCheckoutCreationDraft(null);
-            clearPending();
-            if (currentPathOption?.kind === 'current_path') {
-                params.setSelectedPath(currentPathOption.path);
-            }
-            closePopover();
-        };
-
-        const onSelectExistingWorktree = (worktreePath: string) => {
-            params.shouldReconcileInitialHydratedCheckoutCreationDraftRef.current = false;
-            params.setCheckoutCreationDraft(null);
-            clearPending();
-            params.setSelectedPath(worktreePath);
-            closePopover();
-        };
-
-        const onCreateWorktreeWithName = (selection: WorktreeCreateSelection) => {
-            params.shouldReconcileInitialHydratedCheckoutCreationDraftRef.current = false;
-            params.pendingGitWorktreeBaseRefRef.current = selection.baseRef;
-            params.pendingGitWorktreeSourceKindRef.current = selection.sourceKind;
-            params.setCheckoutCreationDraft((current) => buildGitWorktreeCheckoutCreationDraft({
-                existingDraft: current,
-                // The name is user-chosen (or the accepted suggestion) and already
-                // git-sanitized, so it is authoritative — never silently keep a
-                // previously generated name.
-                displayName: selection.name,
-                fallbackDisplayName: selection.name,
-                baseRef: selection.baseRef,
-                branchMode: 'new',
-            }));
-            clearPending();
-            closePopover();
-        };
-
-        const onReuseExistingWorktreeForBranch = (info: Readonly<{ worktreePath: string; branch: string }>) => {
-            params.shouldReconcileInitialHydratedCheckoutCreationDraftRef.current = false;
-            params.setCheckoutCreationDraft(null);
-            clearPending();
-            params.setSelectedPath(info.worktreePath);
-            closePopover();
-        };
-
-        // A pending git-worktree creation (chosen but not yet materialized) is
-        // surfaced as a selected "New worktree: <name>" row at the top of the
-        // root step so the choice is visible/highlighted on reopen.
-        const pendingWorktreeName = params.checkoutCreationDraft?.kind === 'git_worktree'
-            ? params.checkoutCreationDraft.displayName
-            : null;
-        const pendingWorktreeBaseRef = params.checkoutCreationDraft?.kind === 'git_worktree'
-            ? params.checkoutCreationDraft.baseRef
-            : null;
-
-        const rootStep = buildWorktreeSelectionListSteps({
-            snapshot: params.repoScmSnapshot,
-            currentDirPath: currentPathOption?.kind === 'current_path' ? currentPathOption.path : params.selectedPath,
-            ...(params.serverId !== undefined ? { serverId: params.serverId } : {}),
-            machineId: params.selectedMachineId,
-            machinePath: params.repoScmSnapshot?.repo.rootPath ?? params.selectedPath,
-            machineHomeDir: params.machineHomeDir ?? null,
-            machinePlatform: params.machinePlatform ?? null,
-            rowIconColor,
-            nowMs,
-            worktreeNameSuggestion,
-            pendingWorktreeName,
-            pendingWorktreeBaseRef,
-            onSelectPendingWorktree: closePopover,
-            onSelectCurrentDir,
-            onSelectExistingWorktree,
-            onCreateWorktreeWithName,
-            onReuseExistingWorktreeForBranch,
-        });
-
-        // Show the chosen name for a pending creation (e.g. "New Worktree: clever-cloud")
-        // on the chip + popover header, rather than the generic "New Worktree".
-        const selectedLabel = pendingWorktreeName
-            ? `${t('newSession.checkout.newWorktree')}: ${pendingWorktreeName}`
-            : optionsById[params.checkoutChipModel.selectedOptionId]?.label
-                ?? t('newSession.checkout.noWorktree');
-
+        if (picker === null) return null;
         return {
             key: CHIP_KEY,
             controlId: 'checkout',
             collapsedOptionsPopover: {
                 presentation: 'list',
                 title: t('newSession.checkout.selectTitle'),
-                label: selectedLabel,
+                label: picker.selectedLabel,
                 icon: (tint: string) => normalizeNodeForView(<Icon name="stack-simple" size={16} color={tint} />),
-                rootStep,
-                selectedOptionId: pendingWorktreeName
-                    ? PENDING_GIT_WORKTREE_OPTION_ID
-                    : params.checkoutChipModel.selectedOptionId,
+                rootStep: picker.rootStep,
+                selectedOptionId: picker.selectedOptionId,
                 onSelect: () => {
                     // Selection actions live on each SelectionList option's `onSelect`; the wrapper
                     // forwards the selected id here only for parity with the chip-picker contract.
@@ -260,30 +207,11 @@ export function useNewSessionCheckoutActionChip(params: Readonly<{
             render: (ctx) => (
                 <CheckoutChip
                     ctx={ctx}
-                    label={selectedLabel}
-                    checkoutPickerOpen={params.checkoutPickerOpen}
-                    setCheckoutPickerOpen={params.setCheckoutPickerOpen}
+                    label={picker.selectedLabel}
+                    checkoutPickerOpen={checkoutPickerOpen}
+                    setCheckoutPickerOpen={setCheckoutPickerOpen}
                 />
             ),
         };
-    }, [
-        params.checkoutChipModel,
-        params.checkoutPickerOpen,
-        params.machineHomeDir,
-        params.machinePlatform,
-        params.pendingGitWorktreeBaseRefRef,
-        params.pendingGitWorktreeSourceKindRef,
-        params.repoScmSnapshot,
-        params.router,
-        params.serverId,
-        params.selectedMachineId,
-        params.selectedPath,
-        params.setCheckoutCreationDraft,
-        params.setCheckoutPickerOpen,
-        params.setSelectedPath,
-        params.shouldReconcileInitialHydratedCheckoutCreationDraftRef,
-        nowMs,
-        rowIconColor,
-        worktreeNameSuggestion,
-    ]);
+    }, [checkoutPickerOpen, picker, setCheckoutPickerOpen]);
 }

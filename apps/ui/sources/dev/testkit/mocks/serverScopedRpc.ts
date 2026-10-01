@@ -15,6 +15,13 @@ type ResolvePreferredServerIdForSessionIdModule = typeof import(
 
 export type CreateServerScopedMachineRpcModuleMockOptions =
     MergeModuleMockOptions<ServerScopedMachineRpcModule>;
+
+/** A complete network-boundary replacement without importing the live sync runtime. */
+export function createServerScopedMachineRpcBoundaryMock(
+    machineRpcWithServerScope: ServerScopedMachineRpcModule['machineRpcWithServerScope'],
+): ServerScopedMachineRpcModule {
+    return { machineRpcWithServerScope };
+}
 export type CreateServerScopedSessionRpcModuleMockOptions =
     MergeModuleMockOptions<ServerScopedSessionRpcModule>;
 export type CreateResolveServerIdForSessionIdFromLocalCacheModuleMockOptions =

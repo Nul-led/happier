@@ -299,4 +299,30 @@ describe('ScmCommitComposerCard', () => {
         expect(screen.findAllByProps({ testID: 'scm-commit-enter-selection' })).toHaveLength(0);
         expect(screen.findAllByProps({ testID: 'scm-commit-selection-summary' })).toHaveLength(0);
     });
+
+    // Session-tabs lab G1: the commit card sums what is checked beside its one primary.
+    it('sums the selected files and lines beside the commit action', async () => {
+        const { ScmCommitComposerCard } = await import('./ScmCommitComposerCard');
+
+        const screen = await renderScreen(
+            <ScmCommitComposerCard
+                theme={theme}
+                commitActionLabel="Commit to v0.3"
+                draftMessage="Key the settings modal by route"
+                onDraftMessageChange={() => {}}
+                busy={false}
+                status={null}
+                commitAllowed
+                commitBlockedMessage={null}
+                onCommitFromMessage={() => {}}
+                selectionSummary={{ fileCount: 3, linesAdded: 63, linesRemoved: 2 }}
+            />,
+        );
+
+        const summary = screen.findByTestId('scm-commit-selection-lines');
+        expect(summary).toBeTruthy();
+        const text = String(summary?.props.children);
+        expect(text).toContain('+63');
+        expect(text).toContain('2');
+    });
 });

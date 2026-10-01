@@ -253,7 +253,8 @@ describe('ConnectedAccountPurposeBindingOwner', () => {
   it('witnesses the exact member selected by a logical group intent and detects canonical reselection', async () => {
     let currentGroupAccountId = 'alpha';
     const { owner, store } = createOwner({ currentGroupAccountId: () => currentGroupAccountId });
-    const signal = new AbortController().signal;
+    const caller = new AbortController();
+    const signal = caller.signal;
     const selection = await owner.resolveBindingIntentSelection({
       purpose,
       target: { kind: 'group', service, groupId: 'fallbacks' },
@@ -271,8 +272,12 @@ describe('ConnectedAccountPurposeBindingOwner', () => {
       },
     });
     await expect(selection.isCurrent()).resolves.toBe(true);
-    currentGroupAccountId = 'beta';
+    caller.abort();
     await expect(selection.isCurrent()).resolves.toBe(false);
+    const retainedRead = new AbortController();
+    await expect(selection.isCurrent(retainedRead.signal)).resolves.toBe(true);
+    currentGroupAccountId = 'beta';
+    await expect(selection.isCurrent(retainedRead.signal)).resolves.toBe(false);
     expect(store.current().bindings).toEqual([]);
   });
 

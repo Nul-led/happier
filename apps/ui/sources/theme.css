@@ -20,6 +20,8 @@
     --happier-safe-area-left: env(safe-area-inset-left, 0px);
     --happier-safe-area-right: env(safe-area-inset-right, 0px);
     --happier-route-modal-box-shadow: 0 14px 40px rgba(0, 0, 0, 0.16), 0 6px 18px rgba(0, 0, 0, 0.12);
+    /* The tallest a desktop web route modal grows; settings uses it as its fixed height. */
+    --happier-route-modal-max-height: min(820px, calc(100vh - 96px));
 }
 
 /*
@@ -33,12 +35,49 @@ html {
     -moz-osx-font-smoothing: grayscale;
 }
 
+/*
+ * Focus rings are for keyboard focus only. The browser's own ring is dropped for the focus a pointer
+ * press leaves (the element does not match :focus-visible, or the last input was a pointer, which
+ * `isHappierFocusVisible` in @happier-dev/plugin-ui records on <html> for engines such as WebKit that
+ * report script focus after a click as visible), and kept for keyboard focus. Rings the app paints
+ * itself decide through the same owner.
+ * No `!important`: an inline keyboard ring always wins.
+ */
+:focus:not(:focus-visible),
+html[data-happier-input-modality="pointer"] :focus {
+    outline: none;
+}
+
+/*
+ * Product inputs intentionally have no normal-mode focus ring, border, glow,
+ * or shadow. In forced-colors mode the browser is communicating an explicit
+ * accessibility need, so restore one system-colored keyboard focus cue. The
+ * `!important` is narrow and intentional: it must override RN Web's inline
+ * outline reset only in this OS/browser-managed mode.
+ */
+@media (forced-colors: active) {
+    [data-happier-text-input="true"]:focus-visible {
+        outline: 2px solid CanvasText !important;
+        outline-offset: 2px !important;
+    }
+}
+
 @keyframes happierStatusDotPulse {
     from {
         opacity: 1;
     }
     to {
         opacity: 0.3;
+    }
+}
+
+/* Loading skeleton pulse: `HappierSkeletonBlock` (@happier-dev/plugin-ui/presentation). */
+@keyframes happierSkeletonPulse {
+    from {
+        opacity: 0.4;
+    }
+    to {
+        opacity: 0.8;
     }
 }
 
@@ -92,11 +131,13 @@ html {
     [data-vaul-drawer][data-vaul-drawer-direction="bottom"] [data-presentation="modal"] {
         /*
         Desktop web "modal" drawers should size to content by default (no giant empty
-        panel), but still be extensible up to a safe viewport cap.
+        panel), but still be extensible up to a safe viewport cap. A route that declares its own
+        `webModalStyle.height` (Expo Router sets `--expo-router-modal-height` inline) keeps that
+        height fixed instead: settings uses the cap itself so its card never resizes.
         */
-        height: auto !important;
-        min-height: 0 !important;
-        max-height: min(820px, calc(100vh - 96px)) !important;
+        height: var(--expo-router-modal-height, auto) !important;
+        min-height: var(--expo-router-modal-height, 0px) !important;
+        max-height: var(--happier-route-modal-max-height) !important;
         filter: none !important;
         box-shadow: var(--happier-route-modal-box-shadow) !important;
         will-change: auto !important;

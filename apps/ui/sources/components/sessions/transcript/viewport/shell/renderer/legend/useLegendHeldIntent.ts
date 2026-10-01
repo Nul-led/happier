@@ -1220,7 +1220,10 @@ export function useLegendHeldIntent<TItem>(params: Readonly<{
     const observeInitialPresentationSettlement = React.useCallback((
         request: TranscriptInitialPresentationSettlementRequest,
     ): (() => void) => {
-        if (!isWebFrame || request.dataKey !== dataKey) return () => {};
+        if (!isWebFrame) return () => {};
+        if (request.dataKey !== dataKey) {
+            throw new Error('Transcript renderer initial presentation data key mismatch');
+        }
         const pending: PendingInitialPresentationSettlement = {
             deadlineAtMs: Date.now() + LEGEND_HELD_INTENT_SETTLE_MS,
             request,

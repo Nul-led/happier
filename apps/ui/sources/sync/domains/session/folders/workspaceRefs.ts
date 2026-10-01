@@ -18,6 +18,12 @@ export function normalizeSessionFolderWorkspaceRef(value: unknown): SessionFolde
         return workspaceRefId ? { t: 'workspaceRef', serverId, workspaceRefId } : null;
     }
 
+    if (record.t === 'managedSessions') {
+        // A machine's no-folder sessions (its Chats): one folder scope, never a per-session path.
+        const machineId = normalizeString(record.machineId);
+        return serverId && machineId ? { t: 'managedSessions', serverId, machineId } : null;
+    }
+
     if (record.t === 'workspaceScope') {
         const rootPath = normalizeWorkspaceRootPath(record.rootPath);
         if (!rootPath) return null;
@@ -36,6 +42,9 @@ export function buildSessionFolderWorkspaceRefKey(workspace: SessionFolderWorksp
     if (workspace.t === 'workspaceRef') {
         return `workspaceRef:${workspace.serverId ?? 'local'}:${workspace.workspaceRefId}`;
     }
+    if (workspace.t === 'managedSessions') {
+        return `managedSessions:${workspace.serverId ?? 'local'}:${workspace.machineId}`;
+    }
     return `workspaceScope:${workspace.serverId ?? 'local'}:${workspace.machineId ?? 'unknown'}:${workspace.rootPath}`;
 }
 
@@ -46,6 +55,8 @@ export function compareSessionFolderWorkspaceRefs(a: SessionFolderWorkspaceRefV1
 export function resolveDurableWorkspaceRefForSessionListHeader(
     header: Extract<SessionListIndexItem, { type: 'header' }>,
 ): SessionFolderWorkspaceRefV1 | null {
+    // The Chats group carries its machine's no-folder scope directly.
+    if (header.workspace?.t === 'managedSessions') return header.workspace;
     const scope = header.workspaceScopeHint;
     if (!scope) return null;
     return normalizeSessionFolderWorkspaceRef({

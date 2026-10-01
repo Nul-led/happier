@@ -23,6 +23,7 @@ const basePreflight = {
     accountMismatch: false,
     pairingRequired: false,
     relayDriftBanner: null,
+    thisComputerConnection: null,
 } satisfies ThisComputerSetupPreflight;
 
 describe('buildThisComputerSetupStageModel', () => {
@@ -243,5 +244,30 @@ describe('buildThisComputerSetupStageModel', () => {
         const installToolsStage = items.find((item) => item.id === 'setup.thisComputer.stage.installTools');
         expect(installToolsStage?.satisfied).toBe(true);
         expect(installToolsStage?.children?.find((item) => item.id === 'setup.thisComputer.ensureCli')?.satisfied).toBe(true);
+    });
+    it('keeps the one-CLI question (R12) out of the background-service decision', () => {
+        const items = buildThisComputerSetupStageModel({
+            preflight: basePreflight,
+            prompt: {
+                kind: 'setup.cliChoice',
+                message: 'Happier CLI 0.2.13 is already installed at /usr/local/bin/happier.',
+                command: '/usr/local/bin/happier',
+                version: '0.2.13',
+                origin: 'npm',
+                removalCommand: null,
+                updateCommand: null,
+                belowSetupFloor: false,
+                missing: false,
+                keepBlockedBy: null,
+            } satisfies ThisComputerSetupPrompt,
+        });
+
+        const backgroundServiceStage = items.find((item) => item.id === 'setup.thisComputer.stage.backgroundService');
+        expect(backgroundServiceStage?.badge).toBeUndefined();
+        expect(backgroundServiceStage?.children?.map((item) => item.id)).toEqual([
+            'setup.thisComputer.installService',
+            'setup.thisComputer.startService',
+            'setup.thisComputer.verifyService',
+        ]);
     });
 });

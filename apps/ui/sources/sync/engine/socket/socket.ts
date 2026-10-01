@@ -1,17 +1,19 @@
+import { type SessionMessageV1 } from '@happier-dev/protocol';
 import { resolveSessionViewerProjectionUpdate } from '@/sync/domains/session/readState/sessionViewer';
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
 import { resolveRunnerMachineContentKeyTrustV1 } from '@/sync/domains/machines/runnerMachineContentKeyTrust';
+import { isTokenOnlyAuthCredentials } from '@/auth/storage/tokenStorage';
 import {
     isSessionAccessOwner,
     normalizeSessionAccessProjection,
 } from '@/sync/engine/sessions/normalizeSessionAccessProjection';
-import type { ApiEphemeralActivityUpdate, ApiMessage, ApiUpdateContainer } from '@/sync/api/types/apiTypes';
+import type { ApiEphemeralActivityUpdate, ApiUpdateContainer } from '@/sync/api/types/apiTypes';
 import type { Encryption } from '@/sync/encryption/encryption';
 import {
     createRawMessageNormalizationSequenceState,
     type NormalizedMessage,
     type RawMessageNormalizationSequenceState,
-} from '@/sync/typesRaw';
+} from "@happier-dev/session-core/raw";
 import type { EphemeralUpdate } from '@happier-dev/protocol/updates';
 import type { ActionOperationSnapshotEphemeralV1 } from '@happier-dev/protocol';
 import {
@@ -37,11 +39,12 @@ import {
 import {
     storedSessionMessageAttentionImpact,
     storedSessionMessageAttentionImpactOrNull,
-} from '@/sync/domains/messages/messageUserAttention';
-import { isRecoveredHistoryTranscriptObservation } from '@/sync/domains/messages/transcriptObservationProvenance';
-import type { MachineActivityUpdate } from '@/sync/reducer/machineActivityAccumulator';
+} from "@happier-dev/session-core/messages";
+import { isRecoveredHistoryTranscriptObservation } from "@happier-dev/session-core/messages";
+import type { MachineActivityUpdate } from "../activity/machineActivityAccumulator.js";
 import { storage } from '@/sync/domains/state/storage';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
+import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
 import {
     normalizeSessionAddress,
     sessionAddressKey,
@@ -59,7 +62,8 @@ import { deliverHiddenSessionScmMutationSignal } from '@/sync/engine/sessions/hi
 import { voiceHooks } from '@/voice/context/voiceHooks';
 import { reportNewAgentRequestsFromSessionTransition } from '@/voice/context/reportNewAgentRequestsFromSessionTransition';
 import { deriveNewAgentRequests } from '@/sync/domains/permissions/deriveNewAgentRequests';
-import { notifyActivityAgentRequest } from '@/activity/notifications/runtime/activityLocalNotificationBus';
+import { notifyActivityAgentRequest, notifyActivitySessionUpdate } from '@/activity/notifications/runtime/activityLocalNotificationBus';
+import { presentSessionPersonalEvent } from '@/activity/notifications/presentSessionPersonalEvent';
 import { didControlReturnToMobile } from '@/sync/domains/session/control/controlledByUserTransitions';
 import { writeSyncDebugLog } from '@/sync/runtime/syncDebugLogging';
 import {
@@ -93,13 +97,14 @@ import {
     handleMessageUpdatedSocketUpdate,
     handleNewMessageSocketUpdate,
 } from '@/sync/engine/sessions/syncSessions';
-import type { SessionReceivedMessages } from '@/sync/engine/sessions/sessionMessageCurrentness';
+import type { SessionReceivedMessages } from "@happier-dev/session-core/transcript";
 import {
     buildSessionRuntimeActivityProjectionPatch,
     hasSessionRuntimeActivityProjectionFields,
     type SessionRuntimeActivityResyncHandler,
 } from '@/sync/engine/sessions/sessionRuntimeActivityProjection';
 import { handleTranscriptStreamSegmentEphemeralUpdate } from '@/sync/engine/sessions/handleTranscriptStreamSegmentEphemeralUpdate';
+import { socketTranscriptStreamSegmentAssembler } from './socketTranscriptStreamSegmentAssembler';
 import {
     createTranscriptStreamSegmentSocketQueueController,
     type TranscriptStreamSegmentSocketQueueEntry,
@@ -118,8 +123,8 @@ import {
 import {
     handleNewFeedPostUpdate,
     handleRelationshipUpdatedSocketUpdate,
-    handleTodoKvBatchUpdate,
 } from '@/sync/engine/social/syncFeed';
+import { dispatchKvBatchUpdate } from './kvUpdateDispatcher';
 import { applyAutomationSocketUpdate } from '@/sync/engine/automations/automationSocketApply';
 import { normalizeRelationshipUpdatedUpdateBody } from '@/sync/engine/social/relationshipUpdate';
 import { notifySessionPublicLinkInvalidated } from '@/sync/domains/social/sessionPublicLinkInvalidation';
@@ -143,7 +148,7 @@ type SocketMessageApplyHandlers = Readonly<{
 
 type DurableMessageProjectionPatchPayload = Readonly<{
     updateData: ApiUpdateContainer;
-    rawMessage: ApiMessage | undefined;
+    rawMessage: SessionMessageV1 | undefined;
     messageSeq: number | null;
 }>;
 
@@ -492,6 +497,7 @@ function isSessionFullContentConsumerActiveForRealtime(sessionId: string, source
 }
 
 const transcriptStreamSegmentSocketQueueController = createTranscriptStreamSegmentSocketQueueController({
+    assembler: socketTranscriptStreamSegmentAssembler,
     getConfig: getSocketMessageApplyConfig,
     isSessionVisible: isSessionFullContentConsumerActiveForRealtime,
     messageCoalescer: socketMessageApplyCoalescer,
@@ -524,6 +530,7 @@ export function dropSocketSessionWork(
     // another Home clears its own addresses below and leaves the carrier alone.
     if (retireActiveCarrier) {
         const sessionIds = [normalizedSessionId];
+        socketTranscriptStreamSegmentAssembler.releaseTranscriptStreamSegmentAssemblyForSession(normalizedSessionId);
         socketSessionApplyCoalescer.dropSessionIds(sessionIds);
         socketMessageApplyCoalescer.dropSessionIds(sessionIds);
     }
@@ -858,7 +865,7 @@ function buildCacheOnlySessionProjectionPatch(params: Readonly<{
 function buildCacheOnlyDurableMessageProjectionPatch(params: Readonly<{
     renderable: SessionListRenderableSession;
     updateData: ApiUpdateContainer;
-    rawMessage: ApiMessage | undefined;
+    rawMessage: SessionMessageV1 | undefined;
     messageSeq: number | null;
 }>): Partial<SessionListRenderableSession> {
     const { renderable, updateData, rawMessage, messageSeq } = params;
@@ -1024,7 +1031,7 @@ function applyCacheOnlySessionUpdateProjectionPatch(params: Readonly<{
 function applyCacheOnlyDurableMessageProjectionPatch(params: Readonly<{
     address: SessionAddress;
     updateData: ApiUpdateContainer;
-    rawMessage: ApiMessage | undefined;
+    rawMessage: SessionMessageV1 | undefined;
     messageSeq: number | null;
     shouldContinue?: () => boolean;
 }>): boolean {
@@ -1121,7 +1128,7 @@ export async function handleSocketUpdate(params: {
     markSessionTranscriptDeferred?: (sessionId: string, marker: DeferredTranscriptMarker) => void;
     markSessionTranscriptStale?: (sessionId: string, marker: DeferredTranscriptMarker) => void;
     markSessionStateHydrationDeferred?: (sessionId: string) => void;
-    onReadyProjectionAdvance?: (sessionId: string, seq: number) => void;
+    onReadyProjectionAdvance?: (sessionId: string, seq: number, localId?: string) => void;
     onMessageGapDetected: (sessionId: string, info: { prevMaterializedMaxSeq: number; messageSeq: number | null }) => void;
     assumeUsers: (userIds: string[]) => Promise<void>;
     applyTodoSocketUpdates: (changes: any[]) => Promise<void>;
@@ -1255,7 +1262,7 @@ export async function handleUpdateContainer(params: {
     markSessionTranscriptDeferred?: (sessionId: string, marker: DeferredTranscriptMarker) => void;
     markSessionTranscriptStale?: (sessionId: string, marker: DeferredTranscriptMarker) => void;
     markSessionStateHydrationDeferred?: (sessionId: string) => void;
-    onReadyProjectionAdvance?: (sessionId: string, seq: number) => void;
+    onReadyProjectionAdvance?: (sessionId: string, seq: number, localId?: string) => void;
     onMessageGapDetected: (sessionId: string, info: { prevMaterializedMaxSeq: number; messageSeq: number | null }) => void;
     assumeUsers: (userIds: string[]) => Promise<void>;
     applyTodoSocketUpdates: (changes: any[]) => Promise<void>;
@@ -1417,6 +1424,7 @@ export async function handleUpdateContainer(params: {
                 if (!shouldContinue()) return;
                 void deliverHiddenSessionScmMutationSignal({
                     sessionId,
+                    sessionEncryptionMode: getSocketSessionApplyBase(sessionId)?.encryptionMode ?? 'e2ee',
                     serverId: sourceServerId,
                     rawMessage,
                     getSessionEncryption: (targetSessionId) => encryption?.getSessionEncryption(targetSessionId) ?? null,
@@ -1510,6 +1518,7 @@ export async function handleUpdateContainer(params: {
                 if (!shouldContinue()) return;
                 void deliverHiddenSessionScmMutationSignal({
                     sessionId,
+                    sessionEncryptionMode: getSocketSessionApplyBase(sessionId)?.encryptionMode ?? 'e2ee',
                     serverId: sourceServerId,
                     rawMessage,
                     getSessionEncryption: (targetSessionId) => encryption?.getSessionEncryption(targetSessionId) ?? null,
@@ -1740,7 +1749,7 @@ export async function handleUpdateContainer(params: {
                 invalidateSessions,
             });
             if (readySeq !== null) {
-                onReadyProjectionAdvance?.(updateData.body.id, readySeq);
+                onReadyProjectionAdvance?.(updateData.body.id, readySeq, updateData.body.latestReadyEventLocalId);
             }
             return;
         }
@@ -1851,7 +1860,7 @@ export async function handleUpdateContainer(params: {
             });
         }
         if (readySeq !== null) {
-            onReadyProjectionAdvance?.(updateData.body.id, readySeq);
+            onReadyProjectionAdvance?.(updateData.body.id, readySeq, updateData.body.latestReadyEventLocalId);
         }
 
         // Agent state updates can be very frequent and are not a reliable proxy for SCM changes.
@@ -1950,13 +1959,15 @@ export async function handleUpdateContainer(params: {
         // the same trusted classification that refresh does: a Home relabelling
         // a Runner `persistent` here must not slip a key it chose into the cache.
         const runnerTrust = params.credentials
-            ? resolveRunnerMachineContentKeyTrustV1({
+            ? await resolveRunnerMachineContentKeyTrustV1({
                 credentials: params.credentials,
                 homeServerIdentityId: params.sourceServerId,
                 machineId,
             })
             : null;
-        const keyResolution = resolvePublishedMachineDataEncryptionKeyV1({
+        const keyResolution = !runnerTrust && params.credentials && !isTokenOnlyAuthCredentials(params.credentials)
+            ? { status: 'unavailable' as const }
+            : resolvePublishedMachineDataEncryptionKeyV1({
             machine: {
                 id: machineId,
                 kind: machineUpdate.kind,
@@ -2113,8 +2124,10 @@ export async function handleUpdateContainer(params: {
         log.log('📝 Received kv-batch-update');
         const kvUpdate = updateData.body;
 
-        await handleTodoKvBatchUpdate({
+        await dispatchKvBatchUpdate({
             kvUpdate,
+            credentials: params.credentials,
+            shouldContinue,
             applyTodoSocketUpdates,
             invalidateTodosSync: invalidateTodos,
             log,
@@ -2232,7 +2245,10 @@ export function flushActivityUpdates(params: {
 
     for (const [sessionId, update] of updates) {
         const session = storage.getState().sessions[sessionId];
-        if (session) {
+        if (session && (
+            !session.serverId || !projectionServerId
+            || areServerProfileIdentifiersEquivalent(session.serverId, projectionServerId)
+        )) {
             const runtimePresence = resolveSessionRuntimePresenceFields({
                 thinking: update.thinking ?? false,
                 thinkingAt: update.activeAt,
@@ -2297,6 +2313,7 @@ export function flushActivityUpdates(params: {
                 activeAt: update.activeAt,
                 thinking: nextThinking,
                 thinkingAt: runtimePresence.thinkingAt,
+                presence: patch.presence,
             });
             continue;
         }
@@ -2438,8 +2455,28 @@ export function handleEphemeralSocketUpdate(params: {
     if (!updateData) return Promise.resolve();
     if (!shouldContinue()) return Promise.resolve();
 
+    // Personal facts arrive only from a committed mutation. Hydration and
+    // reconnect snapshots cannot synthesize them or change Follow/read state.
+    if (updateData.type === 'session-personal-event') {
+        const address = normalizeSessionAddress(sourceServerId, updateData.sessionId);
+        if (address) {
+            if (updateData.event === 'source_unavailable') {
+                notifyActivitySessionUpdate({ address, event: updateData.event });
+            } else if (updateData.event === 'failed' || updateData.event === 'cancelled') {
+                notifyActivitySessionUpdate({ address, event: updateData.event, turnId: updateData.turnId });
+            } else if (updateData.event === 'human_message' || updateData.event === 'message') {
+                const committedSequence = updateData.message.sequenceDomain === 'session_transcript'
+                    ? { sequenceDomain: 'session_transcript' as const, sequence: updateData.message.messageSeq }
+                    : { sequenceDomain: 'discussion' as const, discussionId: updateData.message.discussionId, sequence: updateData.message.messageSeq };
+                notifyActivitySessionUpdate(updateData.event === 'human_message'
+                    ? { address, event: updateData.event, committedSequence, sourceAccountId: updateData.sourceAccountId }
+                    : { address, event: updateData.event, committedSequence });
+            } else {
+                presentSessionPersonalEvent(address, updateData);
+            }
+        }
     // Process activity updates through smart debounce accumulator
-    if (updateData.type === 'activity') {
+    } else if (updateData.type === 'activity') {
         if (!shouldContinue()) return Promise.resolve();
         addActivityUpdate(updateData);
     } else if (updateData.type === 'machine-activity') {

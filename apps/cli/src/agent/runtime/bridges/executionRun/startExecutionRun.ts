@@ -24,7 +24,15 @@ import {
   type SessionInputCausalPermissionAuthorityV1,
   withExecutionRunStartFailureDetails,
   projectExecutionRunRequestedConfiguration,
+  resolveExecutionRunNotifyParentDefaultV1,
+  SECOND_OPINION_RESULT_SCHEMA_V1,
+  buildBackendTargetKeyV2,
+  readSessionRolesV1,
 } from '@happier-dev/protocol';
+import { resolveExecutionRunRoleV1 } from '@/agent/executionRuns/profiles/review/reviewRole';
+import { resolveEffectiveCodingPromptPlan } from '@/agent/prompting/coding/resolveEffectiveCodingPrompt';
+import { readWorktreeChangeFingerprint } from '@/scm/readWorktreeChangeFingerprint';
+import { runScmCommand } from '@/scm/runtime';
 import type { ExecutionRunHostRuntime } from './executionRunHostRuntime';
 import type {
   ExecutionRunManagerStartParams,
@@ -52,7 +60,7 @@ import {
   areExecutionRunBackendTargetsEqual,
   resolveExecutionRunRuntimeBackendId,
 } from './backendTargets';
-import { readBackendTargetRefV2 } from '@happier-dev/protocol';
+import { readBackendTargetRefV2, resolveExecutionRunImplicitRoleIdV1 } from '@happier-dev/protocol';
 import type { ExecutionRunPermissionRequestStoreProvider } from './executionRunPermissionResponseTarget';
 import { resolveExecutionRunRuntimeSettings } from './runtimeSettings';
 import { permissionMode } from '@/agent/executionRuns/policy/permissionMode';
@@ -143,7 +151,7 @@ function executionRunNotAllowed(message: string): Error & { code: string; detail
   }), 'noRunCreated');
 }
 
-function deriveExecutionRunIdFromActionRequestId(actionRequestId: string): string {
+export function deriveExecutionRunIdFromActionRequestId(actionRequestId: string): string {
   return `run_request_${createHash('sha256').update(actionRequestId, 'utf8').digest('hex')}`;
 }
 
@@ -197,6 +205,20 @@ type ExecuteBoundedRun = (args: {
   params: ExecutionRunManagerStartParams;
 }) => Promise<void>;
 
+/** Role resolution and prompt credentials belong to host composition only,
+ * never a profile hook or backend start request. */
+export function omitExecutionRunRoleCompositionContext(
+  params: ExecutionRunManagerStartParams,
+): Omit<ExecutionRunManagerStartParams, 'resolvedRole' | 'roleSessionMetadata' | 'promptCredentials'> {
+  const {
+    resolvedRole: _resolvedRole,
+    roleSessionMetadata: _roleSessionMetadata,
+    promptCredentials: _promptCredentials,
+    ...startParams
+  } = params;
+  return startParams;
+}
+
 async function retireProvisionedRuntimeWithoutDispatch(params: Readonly<{
   runId: string;
   runtimeId: string;
@@ -238,6 +260,7 @@ export async function startExecutionRun(args: Readonly<{
     backendId: string;
     backendTarget?: BackendTargetRefV1;
     permissionMode: string;
+    workspaceWrites?: 'allow' | 'deny';
     causalPermissionAuthority?: SessionInputCausalPermissionAuthorityV1;
     modelId?: string;
     modelSelection?: ProviderBoundModelRef;
@@ -280,7 +303,6 @@ export async function startExecutionRun(args: Readonly<{
     requestedAction: Readonly<{ v: 1; kind: 'enqueue' }>;
   }>) => Promise<SessionInputAdmissionResultV1>;
   voiceAgentManager: VoiceAgentManager;
-  getDepthByCallId: (callId: string) => number | null;
   onPublicStateUpdated?: (runId: string) => void;
   /**
    * Attach this exact retained Run occurrence to canonical target-aware Session
@@ -289,10 +311,72 @@ export async function startExecutionRun(args: Readonly<{
    */
   attachRetainedRunSessionInput?: AttachRetainedRunSessionInput;
 }>): Promise<ExecutionRunStartResult> {
+  // Generated role guidance cannot supply an authored review scope.
   assertPreparedReviewRunStartAllowed(args.params);
-
+  try {
+    const role = resolveExecutionRunRoleV1({
+      roleId: args.params.roleId ?? resolveExecutionRunImplicitRoleIdV1(args.params.intent),
+      resolvedRole: args.params.resolvedRole,
+      accountSettings: args.params.accountSettings,
+      sessionMetadata: args.params.roleSessionMetadata,
+      defaultEngine: { agentTargetKey: buildBackendTargetKeyV2(readBackendTargetRefV2(args.params.backendTarget)) },
+    });
+    if (args.params.roleId && !args.params.resolvedRole) {
+      throw Object.assign(new Error('target_unavailable'), { code: 'target_unavailable' });
+    }
+    if (role) {
+      const plan = await resolveEffectiveCodingPromptPlan({
+        credentials: args.params.promptCredentials,
+        settings: args.params.accountSettings,
+        profileId: args.params.launchProfileId ?? role.profileId,
+        baseOverride: null,
+        memoryRecallGuidanceEnabled: false,
+        roleContext: { role, notes: readSessionRolesV1(args.params.roleSessionMetadata)?.notes },
+      });
+      let secondOpinionInput: Readonly<Record<string, unknown>> | undefined;
+      if (role.roleId === 'second_opinion') {
+        const intentInput = readRecord(args.params.intentInput) ?? {};
+        const fingerprint = await readWorktreeChangeFingerprint(args.params.cwd ?? process.cwd());
+        const supplied = readRecord(intentInput.input) ?? {};
+        const diff = supplied.diff === undefined ? await runScmCommand({
+          bin: 'git',
+          cwd: args.params.cwd ?? process.cwd(),
+          args: ['--no-optional-locks', 'diff', '--no-ext-diff', '--no-textconv', 'HEAD', '--'],
+        }) : null;
+        secondOpinionInput = {
+          ...intentInput,
+          resultSchema: SECOND_OPINION_RESULT_SCHEMA_V1,
+          input: {
+            ...supplied,
+            question: supplied.question ?? args.params.instructions ?? '',
+            goal: supplied.goal ?? null,
+            changeFingerprint: fingerprint.kind === 'available' ? fingerprint.fingerprint : null,
+            diff: supplied.diff ?? (diff?.success ? diff.stdout : null),
+            ...(diff && !diff.success ? { diffUnavailable: diff.outputLimitExceeded ? 'output_limit_exceeded' : 'scm_unavailable' } : {}),
+            transcriptPointer: supplied.transcriptPointer ?? (args.params.sessionId ? { sessionId: args.params.sessionId } : null),
+          },
+        };
+      }
+      args = {
+        ...args,
+        params: {
+          ...args.params,
+          instructions: [plan.text, args.params.instructions ?? ''].filter(Boolean).join('\n\n'),
+          workspaceWrites: args.params.workspaceWrites === 'deny' || role.workspaceWrites === 'deny' ? 'deny' : role.workspaceWrites,
+          ...(secondOpinionInput ? { intentInput: secondOpinionInput } : {}),
+        },
+      };
+    }
+  } catch (error) {
+    throw markExecutionRunStartFailure(error, 'noRunCreated');
+  }
   const profile = args.profileCatalog
-    ? resolveExecutionRunIntentProfileFromCatalog(args.profileCatalog, args.params.intent, args.params.profileId)
+    ? resolveExecutionRunIntentProfileFromCatalog(
+        args.profileCatalog,
+        args.params.intent,
+        args.params.profileId,
+        args.params.profileSourceCustody,
+      )
     : resolveExecutionRunIntentProfile(args.params.intent);
   if (args.params.sessionId === null && profile.supportsDetached !== true) {
     throw executionRunNotAllowed(`Execution-run intent '${args.params.intent}' requires a Session scope`);
@@ -351,23 +435,14 @@ export async function startExecutionRun(args: Readonly<{
     ...(requestedConfiguration ? { requestedConfiguration } : {}),
   };
 
-  const depth = (() => {
-    const parentRunId = typeof args.params.parentRunId === 'string' ? args.params.parentRunId.trim() : '';
-    if (parentRunId) {
-      const parent = args.runs.get(parentRunId);
-      return parent ? parent.depth + 1 : 0;
-    }
-    const parentCallId = typeof args.params.parentCallId === 'string' ? args.params.parentCallId.trim() : '';
-    if (parentCallId) {
-      const parentDepth = args.getDepthByCallId(parentCallId);
-      return typeof parentDepth === 'number' ? parentDepth + 1 : 0;
-    }
-    return 0;
-  })();
+  const depth = args.params.workDepth ?? 0;
 
   const startedAtMs = args.getNowMs();
   const backendId = resolveExecutionRunRuntimeBackendId(args.params.backendTarget);
-  const startParams = args.params;
+  const {
+    profileSourceCustody: startProfileSourceCustody,
+    ...startParams
+  } = omitExecutionRunRoleCompositionContext(args.params);
   const profileId =
     typeof args.params.profileId === 'string' && args.params.profileId.trim().length > 0
       ? args.params.profileId.trim()
@@ -421,6 +496,11 @@ export async function startExecutionRun(args: Readonly<{
   let registeredController: ExecutionRunController | null = null;
   let retainedInitialPendingCustodyAttempted = false;
   let retainedInitialPendingCustodyOutcomeUnknown = false;
+  const notifyParentOnCompletion = args.params.notifyParentOnCompletion
+    ?? resolveExecutionRunNotifyParentDefaultV1({
+      runClass: args.params.runClass,
+      accountDefault: args.params.accountSettings?.executionRunsNotifyParentOnCompletionDefault === true,
+    });
 
   try {
     args.runs.set(runId, {
@@ -430,18 +510,23 @@ export async function startExecutionRun(args: Readonly<{
       sessionId: args.params.sessionId,
       depth,
       intent: args.params.intent,
+      ...(args.params.roleId ? { roleId: args.params.roleId } : {}),
+      ...(args.params.launchProfileId ? { launchProfileId: args.params.launchProfileId } : {}),
       ...(profileId ? { profileId } : {}),
+      ...(args.params.profileSourceCustody
+        ? { profileSourceCustody: args.params.profileSourceCustody }
+        : {}),
       backendTarget: args.params.backendTarget,
       backendId,
       instructions: args.params.instructions ?? '',
       ...(typeof args.params.intentInput !== 'undefined' ? { intentInput: args.params.intentInput } : {}),
       ...(args.params.display ? { display: args.params.display } : {}),
       permissionMode: args.params.permissionMode,
+      workspaceWrites: args.params.workspaceWrites,
       retentionPolicy: args.params.retentionPolicy,
       runClass: args.params.runClass,
       ioMode: args.params.ioMode,
-      notifyParentOnCompletion: args.params.notifyParentOnCompletion
-        ?? (args.params.accountSettings?.executionRunsNotifyParentOnCompletionDefault === true),
+      notifyParentOnCompletion,
       ...(runtimeSettings ? { runtimeSettings } : {}),
       ...(Object.keys(launch).length > 0 ? { launch } : {}),
       status: 'running',
@@ -466,10 +551,7 @@ export async function startExecutionRun(args: Readonly<{
       runClass: args.params.runClass,
       ioMode: args.params.ioMode,
       status: 'running',
-      ...(args.params.notifyParentOnCompletion
-        ?? (args.params.accountSettings?.executionRunsNotifyParentOnCompletionDefault === true)
-        ? { notifyParentOnCompletion: true }
-        : {}),
+      ...(notifyParentOnCompletion ? { notifyParentOnCompletion: true } : {}),
       startedAtMs,
       updatedAtMs: startedAtMs,
     } as const;
@@ -631,12 +713,16 @@ export async function startExecutionRun(args: Readonly<{
                 ? { secretReferenceEnvironment: initialSecretReferenceEnvironment }
                 : {}),
               permissionMode: permissionIntent,
+              workspaceWrites: args.params.workspaceWrites,
               ...(args.params.causalPermissionAuthority
                 ? { causalPermissionAuthority: args.params.causalPermissionAuthority }
                 : {}),
               start: {
                 ...startParams,
                 profileId: profileId ?? undefined,
+                ...(startProfileSourceCustody
+                  ? { profileSourceCustody: startProfileSourceCustody }
+                  : {}),
                 ...(start ?? {}),
               },
               ...(connectedServices !== undefined ? { connectedServices } : {}),
@@ -703,6 +789,7 @@ export async function startExecutionRun(args: Readonly<{
       backendId,
       backendTarget: args.params.backendTarget,
       permissionMode: args.params.permissionMode,
+      workspaceWrites: args.params.workspaceWrites,
       ...(args.params.causalPermissionAuthority
         ? { causalPermissionAuthority: args.params.causalPermissionAuthority }
         : {}),
@@ -734,6 +821,9 @@ export async function startExecutionRun(args: Readonly<{
       start: {
         ...startParams,
         profileId: profileId ?? undefined,
+        ...(startProfileSourceCustody
+          ? { profileSourceCustody: startProfileSourceCustody }
+          : {}),
         observeWorkflowUsage: ({ turnId, observation }) => {
           const current = ctrl;
           const binding = current?.workflowObservation;
@@ -763,6 +853,7 @@ export async function startExecutionRun(args: Readonly<{
     });
     ctrl = {
       kind: 'backend',
+      ...(args.params.workflowRunId ? { workflowRunId: args.params.workflowRunId } : {}),
       controllerOccurrenceId,
       backend,
       backendSupportsResume: false,
@@ -791,6 +882,7 @@ export async function startExecutionRun(args: Readonly<{
       ...(args.params.workflowObservationSink && args.params.localInputId
         ? {
             workflowObservation: {
+              workflowRunId: args.params.workflowObservationSink.workflowRunId,
               localInputId: args.params.localInputId,
               sink: args.params.workflowObservationSink,
               usage: createExactTurnUsageAccumulator(),
@@ -1159,6 +1251,13 @@ export async function startExecutionRun(args: Readonly<{
               : {}),
           });
           if (!result.ok) {
+            if (result.errorCode === 'execution_run_send_outcome_unknown') {
+              // The provider effect may already have happened. The long-lived
+              // turn owner keeps exact custody until completion, liveness, or
+              // explicit stop settles it; terminalizing here would invite a
+              // duplicate replacement input.
+              return;
+            }
             throw Object.assign(new Error(result.error ?? 'Execution Run initial delivery failed'), {
               code: result.errorCode ?? 'execution_run_failed',
             });

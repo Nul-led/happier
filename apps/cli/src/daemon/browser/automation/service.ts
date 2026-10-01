@@ -1,6 +1,9 @@
 import {
   BROWSER_AUTOMATION_NOT_IMPLEMENTED_ACTION_KINDS,
+  BrowserActiveTargetV1Schema,
+  type BrowserActiveTargetV1,
   browserViewKey,
+  type BrowserEventV1,
   BrowserAutomationActionRequestV1Schema,
   BrowserAutomationActionResultV1Schema,
   BrowserAutomationTimelineEntryV1Schema,
@@ -20,6 +23,7 @@ import {
 
 import { executeBrowserAutomationAction } from './actions';
 import type { BrowserAutomationAdapter } from './adapters/types';
+import type { SurfaceInputAdmissionFailure, SurfaceInputControl } from '../../surfaces/inputControl';
 import {
   createBrowserAutomationOwnerRegistry,
   type BrowserAutomationOwnerRegistry,
@@ -27,14 +31,6 @@ import {
 } from './owners';
 
 const TIMELINE_MAX_ENTRIES = 500;
-
-// Mutating action kinds that change the navigation generation when they succeed.
-const NAVIGATION_GENERATION_ACTIONS = new Set([
-  'navigate',
-  'reload',
-  'goBack',
-  'goForward',
-]);
 
 // F3/G19: the one owner of "which verbs are declared but not executed" is the protocol
 // (`browser/automation/notImplemented.ts`). The server publishes `supportedActions` from the same
@@ -59,19 +55,37 @@ function projectAutomationRequesterToController(
   return AUTOMATION_CONTROLLER_BY_REQUESTER[requester];
 }
 
+function browserAdmissionError(errorCode: SurfaceInputAdmissionFailure): BrowserAutomationErrorCodeV1 {
+  switch (errorCode) {
+    case 'busy': return 'automation_busy';
+    case 'closed': return 'view_closed';
+    case 'human_interrupted': return 'human_interrupted';
+    case 'observation_required': return 'stale_navigation';
+    case 'uncertain': return 'runtime_unavailable';
+  }
+}
+
 export type BrowserAutomationCancelResult =
-  | Readonly<{ ok: true }>
+  | Readonly<{ ok: true; completion: 'stopped' | 'uncertain' }>
   | Readonly<{ ok: false; errorCode: 'owner_mismatch' | 'no_active_action' }>;
 
 export type BrowserAutomationViewLifecycleSubscriber = (
   event: Readonly<{ type: 'bound' | 'unbound'; browserSessionId: string; viewId: string }>,
 ) => void;
 
+/** Host policy admission retains the original caller; yielding control is not human input provenance. */
+export type BrowserControllerAuthority = Readonly<
+  | { authority: 'present_user' }
+  | { authority: 'account_automation'; bypassApprovals: true }
+>;
+
 export type BrowserAutomationDaemonService = Readonly<{
-  execute(request: BrowserAutomationActionRequestV1): Promise<BrowserAutomationActionResultV1>;
+  execute(request: BrowserAutomationActionRequestV1, context?: Readonly<{ signal?: AbortSignal }>): Promise<BrowserAutomationActionResultV1>;
   cancelActive(
     input: BrowserAutomationViewRef & Readonly<{ authority: 'present_user' }>,
-  ): BrowserAutomationCancelResult;
+  ): Promise<BrowserAutomationCancelResult>;
+  recordHumanInput(input: BrowserAutomationViewRef & BrowserControllerAuthority): Promise<BrowserAutomationCancelResult>;
+  handBack(input: BrowserAutomationViewRef & BrowserControllerAuthority): Readonly<{ ok: boolean }>;
   getStatus(view: BrowserAutomationViewRef): BrowserAutomationControllerStateV1;
   getTimeline(view: BrowserAutomationViewRef): BrowserAutomationTimelineV1;
   closeView(view: BrowserAutomationViewRef): void;
@@ -83,21 +97,19 @@ export type BrowserAutomationDaemonService = Readonly<{
    * reads this to negotiate before dispatching, avoiding a round-trip for an unsupported verb.
    */
   getSupportedOperations(): ReadonlySet<BrowserAutomationActionKindV1> | null;
+  subscribeBrowserEvents(listener: (event: BrowserEventV1) => void): () => void;
 }>;
 
 type ViewRuntime = {
   navigationGeneration: number;
   timeline: BrowserAutomationTimelineEntryV1[];
-  /**
-   * Single-flight: the one mutating automation action in flight for this view, with the provenance
-   * that admitted it. One object, one owner — a present-user takeover can only interrupt an
-   * accountable active action, and `getStatus` projects the same state, so there is no second
-   * copy of "who is driving this view".
-   */
+  inputControl: SurfaceInputControl;
+  /** Browser-only provenance/projection; inputControl owns admission and effect settlement. */
   activeAutomationRequestId: string | null;
   activeRequesterRef: BrowserAutomationRequesterRefV1 | null;
   activeController: BrowserAutomationControllerKindV1 | null;
-  cancel: ((errorCode: BrowserAutomationErrorCodeV1) => void) | null;
+  activeActionKind: BrowserAutomationActionKindV1 | null;
+  activeTarget: BrowserActiveTargetV1 | null;
 };
 
 export function createBrowserAutomationDaemonService(input: Readonly<{
@@ -113,6 +125,16 @@ export function createBrowserAutomationDaemonService(input: Readonly<{
   const generateTimelineEntryId = input.generateTimelineEntryId
     ?? (() => `timeline_${(timelineCounter += 1)}_${now()}`);
   const runtimes = new Map<string, ViewRuntime>();
+  const eventListeners = new Set<(event: BrowserEventV1) => void>();
+  let eventSequence = 0;
+  function emitController(view: BrowserAutomationViewRef): void {
+    const runtime = runtimeFor(view);
+    const event: BrowserEventV1 = { kind: 'controllerChanged', eventId: `automation:${++eventSequence}`, occurredAt: now(),
+      browserSessionId: view.browserSessionId, viewId: view.viewId,
+      navigationGeneration: input.adapter.getNavigationGeneration?.(view) ?? 0,
+      state: controllerState(view, runtime) };
+    for (const listener of [...eventListeners]) { try { listener(event); } catch { /* Observer cannot break admission. */ } }
+  }
   const unsubscribeViewLifecycle = input.subscribeViewLifecycle?.((event) => {
     if (event.type === 'unbound') {
       closeView({ browserSessionId: event.browserSessionId, viewId: event.viewId });
@@ -126,10 +148,12 @@ export function createBrowserAutomationDaemonService(input: Readonly<{
     const created: ViewRuntime = {
       navigationGeneration: 0,
       timeline: [],
+      inputControl: owners.getInputControl(view),
       activeAutomationRequestId: null,
       activeRequesterRef: null,
       activeController: null,
-      cancel: null,
+      activeActionKind: null,
+      activeTarget: null,
     };
     runtimes.set(key, created);
     return created;
@@ -142,11 +166,18 @@ export function createBrowserAutomationDaemonService(input: Readonly<{
     }
   }
 
+  function controllerState(view: BrowserAutomationViewRef, runtime: ViewRuntime): BrowserAutomationControllerStateV1 {
+    return { ...owners.getControllerState(view, { activeAutomationRequestId: runtime.activeAutomationRequestId,
+      ...(runtime.activeController ? { controller: runtime.activeController } : {}) }),
+      ...(runtime.activeActionKind ? { activeActionKind: runtime.activeActionKind } : {}),
+      ...(runtime.activeTarget ? { activeTarget: runtime.activeTarget } : {}) };
+  }
+
   function closeView(view: BrowserAutomationViewRef): void {
     const key = browserViewKey(view);
     const runtime = runtimes.get(key);
-    runtime?.cancel?.('view_closed');
-    runtimes.delete(key);
+    if (runtime) void runtime.inputControl.close('view_closed');
+    if (!runtime?.activeAutomationRequestId) { runtimes.delete(key); owners.closeView(view); }
   }
 
   function failureResult(
@@ -191,9 +222,12 @@ export function createBrowserAutomationDaemonService(input: Readonly<{
     });
   }
 
-  async function execute(rawRequest: BrowserAutomationActionRequestV1) {
+  async function execute(rawRequest: BrowserAutomationActionRequestV1, context?: Readonly<{ signal?: AbortSignal }>) {
     const parsed = BrowserAutomationActionRequestV1Schema.safeParse(rawRequest);
     const runtime = runtimeFor(rawRequest);
+    const engineGeneration = input.adapter.getNavigationGeneration?.(rawRequest) ?? 0;
+    if (runtime.navigationGeneration !== engineGeneration) runtime.inputControl.invalidateObservation();
+    runtime.navigationGeneration = engineGeneration;
     const controlEpoch = owners.getControlEpoch(rawRequest);
     if (!parsed.success) {
       return failureResult(rawRequest, controlEpoch, runtime.navigationGeneration, 'unsupported_action');
@@ -213,112 +247,143 @@ export function createBrowserAutomationDaemonService(input: Readonly<{
 
     const mutating = isBrowserAutomationMutatingActionKind(request.actionKind);
 
-    // Single-flight is the whole arbitration for a mutating action. Consent is enforced upstream by
-    // the action-approval danger floor, and human takeover cancels the in-flight action; neither is
-    // this check's job. (An action lease used to sit here and no code path could mint one, so every
-    // mutating verb was undispatchable — G3/OE-1.)
-    if (mutating && runtime.activeAutomationRequestId) {
-      return failureResult(request, controlEpoch, runtime.navigationGeneration, 'automation_busy');
+    const requestedBy = request.requestedBy === 'user' ? 'human' : 'agent';
+    const admissionFailure = mutating ? runtime.inputControl.getAdmissionFailure(requestedBy) : undefined;
+    if (admissionFailure) {
+      return failureResult(request, controlEpoch, runtime.navigationGeneration, browserAdmissionError(admissionFailure));
+    }
+    if (runtime.inputControl.isClosed()) return failureResult(request, controlEpoch, runtime.navigationGeneration, 'view_closed');
+    if (mutating && request.navigationGeneration !== runtime.navigationGeneration) {
+      return failureResult(request, controlEpoch, runtime.navigationGeneration, 'stale_navigation');
     }
 
     const navigationGenerationBefore = runtime.navigationGeneration;
-    const navigationGenerationAfter = NAVIGATION_GENERATION_ACTIONS.has(request.actionKind)
-      ? navigationGenerationBefore + 1
-      : navigationGenerationBefore;
+    const navigationGenerationAfter = navigationGenerationBefore;
 
-    if (mutating) {
-      runtime.activeAutomationRequestId = request.automationRequestId;
-      runtime.activeRequesterRef = request.requesterRef;
-      runtime.activeController = projectAutomationRequesterToController(request.requestedBy);
+    const abortController = new AbortController();
+    const cancelFromCaller = () => { abortController.abort('user_canceled'); };
+    if (!mutating) {
+      if (context?.signal?.aborted) cancelFromCaller();
+      else context?.signal?.addEventListener('abort', cancelFromCaller, { once: true });
     }
-
-    const cancellation = new Promise<{ canceled: true; errorCode: BrowserAutomationErrorCodeV1 }>((resolve) => {
+    const effect = async (signal: AbortSignal) => {
       if (mutating) {
-        runtime.cancel = (errorCode) => resolve({ canceled: true, errorCode });
+        runtime.activeAutomationRequestId = request.automationRequestId;
+        runtime.activeRequesterRef = request.requesterRef;
+        runtime.activeController = projectAutomationRequesterToController(request.requestedBy);
+        runtime.activeActionKind = request.actionKind;
+        emitController(request);
       }
-    });
-
-    try {
-      const actionPromise = executeBrowserAutomationAction({
-        request,
-        adapter: input.adapter,
-        controlEpoch,
-        navigationGenerationBefore,
-        navigationGenerationAfter,
-        now,
-        generateTimelineEntryId,
-      });
-
-      const raced = mutating
-        ? await Promise.race([
-            actionPromise.then((outcome) => ({ canceled: false as const, outcome })),
-            cancellation,
-          ])
-        : { canceled: false as const, outcome: await actionPromise };
-
-      if (raced.canceled) {
-        const canceledOutcome = await buildCanceledOutcome({
+      try {
+        return await executeBrowserAutomationAction({
           request,
-          adapterKind: input.adapter.adapterKind,
-          controlEpochBefore: controlEpoch,
-          controlEpochAfter: owners.getControlEpoch(request),
+          adapter: input.adapter,
+          controlEpoch,
           navigationGenerationBefore,
-          errorCode: raced.errorCode,
+          navigationGenerationAfter,
+          getNavigationGenerationAfter: () => input.adapter.getNavigationGeneration?.(request) ?? navigationGenerationBefore,
           now,
           generateTimelineEntryId,
+          executionContext: { signal, deadlineMs: now() + request.timeoutMs,
+            onActiveTarget: target => {
+              if (!mutating || signal.aborted || runtime.activeAutomationRequestId !== request.automationRequestId) return;
+              const parsed = BrowserActiveTargetV1Schema.safeParse(target);
+              if (!parsed.success) return;
+              runtime.activeTarget = parsed.data;
+              emitController(request);
+            } },
         });
-        appendTimeline(runtime, canceledOutcome.timelineEntry);
-        // Drain the underlying action so the adapter promise cannot leak unhandled.
-        void actionPromise.catch(() => undefined);
-        return canceledOutcome.result;
+      } finally {
+        if (mutating) {
+          runtime.activeAutomationRequestId = null;
+          runtime.activeRequesterRef = null;
+          runtime.activeController = null;
+          runtime.activeActionKind = null;
+          runtime.activeTarget = null;
+        }
       }
+    };
 
-      appendTimeline(runtime, raced.outcome.timelineEntry);
-      if (
-        raced.outcome.result.status === 'succeeded'
-        && NAVIGATION_GENERATION_ACTIONS.has(request.actionKind)
-      ) {
-        runtime.navigationGeneration = navigationGenerationAfter;
+    try {
+      const execution = mutating ? await runtime.inputControl.execute({
+        requestedBy,
+        signal: context?.signal,
+        effect,
+        classifyCompletion: (outcome, signal) => outcome.interruptionCompletion === 'stopped' ? 'known'
+          : signal.aborted || outcome.interruptionCompletion === 'uncertain' || outcome.result.status === 'canceled' ? 'unknown' : 'known',
+      }) : { ok: true as const, value: await effect(abortController.signal), interrupted: abortController.signal.aborted,
+        reason: abortController.signal.aborted ? 'user_canceled' : undefined };
+      if (!execution.ok) {
+        return failureResult(request, controlEpoch, runtime.navigationGeneration, browserAdmissionError(execution.errorCode));
       }
-      return raced.outcome.result;
+      const outcome = execution.value;
+      const completion = outcome.interruptionCompletion ?? 'uncertain';
+      if (execution.interrupted) {
+        const cancelReason = execution.reason === 'view_closed' || execution.reason === 'owner_disconnected'
+          ? execution.reason : 'user_canceled';
+        const result = BrowserAutomationActionResultV1Schema.parse({ ...outcome.result,
+          status: 'canceled', errorCode: cancelReason, controlEpochAfter: owners.getControlEpoch(request),
+          resultSummary: { ...outcome.result.resultSummary, completion },
+        });
+        appendTimeline(runtime, BrowserAutomationTimelineEntryV1Schema.parse({ ...outcome.timelineEntry,
+          status: 'canceled', reasonCode: cancelReason, controlEpochAfter: result.controlEpochAfter,
+          resultSummary: { ...outcome.timelineEntry.resultSummary, completion },
+        }));
+        return result;
+      }
+      appendTimeline(runtime, outcome.timelineEntry);
+      if (outcome.result.status === 'succeeded' && (request.actionKind === 'snapshot' || request.actionKind === 'semanticSnapshot')
+        && owners.getControlEpoch(request) === controlEpoch
+        && outcome.result.navigationGenerationBefore === outcome.result.navigationGenerationAfter
+        && (input.adapter.getNavigationGeneration?.(request) ?? 0) === outcome.result.navigationGenerationAfter) {
+        const wasUncertain = runtime.inputControl.getStatus().uncertain;
+        if (runtime.inputControl.observe(controlEpoch) && wasUncertain) emitController(request);
+      }
+      return outcome.result;
     } finally {
+      context?.signal?.removeEventListener('abort', cancelFromCaller);
       if (mutating) {
-        runtime.activeAutomationRequestId = null;
-        runtime.activeRequesterRef = null;
-        runtime.activeController = null;
-        runtime.cancel = null;
+        emitController(request);
+        if (runtime.inputControl.isClosed()) { runtimes.delete(browserViewKey(request)); owners.closeView(request); }
       }
     }
   }
 
+  async function recordHumanInput(cancelInput: BrowserAutomationViewRef & BrowserControllerAuthority): Promise<BrowserAutomationCancelResult> {
+    const runtime = runtimeFor(cancelInput);
+    const activeRequesterRef = runtime.activeRequesterRef;
+    const interruption = runtime.inputControl.takeOver();
+    runtime.activeTarget = null;
+    emitController(cancelInput);
+    // Provenance is stored atomically with admission. The route accepts only host-stamped
+    // present-user authority or policy-admitted automation, never an input-supplied requester
+    // identity. Approval to yield control does not turn an agent into a present user.
+    if (runtime.activeAutomationRequestId && !activeRequesterRef) {
+      return { ok: false, errorCode: 'owner_mismatch' };
+    }
+    const result = await interruption;
+    return result.active ? { ok: true, completion: result.completion === 'known' ? 'stopped' : 'uncertain' }
+      : { ok: false, errorCode: 'no_active_action' };
+  }
   return {
     execute,
-    cancelActive(cancelInput) {
-      const runtime = runtimeFor(cancelInput);
-      if (!runtime.activeAutomationRequestId || !runtime.cancel) {
-        return { ok: false, errorCode: 'no_active_action' };
-      }
-      // Provenance is stored atomically with admission. The route accepts only host-stamped
-      // present-user authority, never an input-supplied requester identity, so a human can take
-      // over any accountable in-flight automation action without an untrusted caller borrowing it.
-      if (!runtime.activeRequesterRef) {
-        return { ok: false, errorCode: 'owner_mismatch' };
-      }
-      owners.takeOver(cancelInput);
-      runtime.activeController = 'human';
-      runtime.cancel('user_canceled');
+    cancelActive: recordHumanInput,
+    recordHumanInput,
+    handBack(view) {
+      const runtime = runtimeFor(view);
+      if (!runtime.inputControl.handBack()) return { ok: false };
+      emitController(view);
       return { ok: true };
     },
     getStatus(view) {
       const runtime = runtimeFor(view);
-      return owners.getControllerState(view, {
-        activeAutomationRequestId: runtime.activeAutomationRequestId,
-        ...(runtime.activeController ? { controller: runtime.activeController } : {}),
-      });
+      return controllerState(view, runtime);
     },
     closeView,
     dispose() {
       unsubscribeViewLifecycle?.();
+      for (const runtime of runtimes.values()) { void runtime.inputControl.close('owner_disconnected'); }
+      eventListeners.clear();
     },
     getRuntimeStats: () => ({ runtimeCount: runtimes.size }),
     getTimeline(view) {
@@ -332,53 +397,6 @@ export function createBrowserAutomationDaemonService(input: Readonly<{
       });
     },
     getSupportedOperations: () => input.adapter.supportedOperations ?? null,
+    subscribeBrowserEvents(listener) { eventListeners.add(listener); return () => { eventListeners.delete(listener); }; },
   };
-}
-
-async function buildCanceledOutcome(input: Readonly<{
-  request: BrowserAutomationActionRequestV1;
-  adapterKind: BrowserAutomationAdapter['adapterKind'];
-  controlEpochBefore: number;
-  controlEpochAfter: number;
-  navigationGenerationBefore: number;
-  errorCode: BrowserAutomationErrorCodeV1;
-  now: () => number;
-  generateTimelineEntryId: () => string;
-}>): Promise<{ result: BrowserAutomationActionResultV1; timelineEntry: BrowserAutomationTimelineEntryV1 }> {
-  const at = input.now();
-  const result = BrowserAutomationActionResultV1Schema.parse({
-    v: 1,
-    automationRequestId: input.request.automationRequestId,
-    status: 'canceled',
-    durationMs: 0,
-    adapterKind: input.adapterKind,
-    fidelity: 'unavailable',
-    trustedInput: false,
-    navigationGenerationBefore: input.navigationGenerationBefore,
-    navigationGenerationAfter: input.navigationGenerationBefore,
-    controlEpochBefore: input.controlEpochBefore,
-    controlEpochAfter: input.controlEpochAfter,
-    errorCode: input.errorCode,
-  });
-  const timelineEntry = BrowserAutomationTimelineEntryV1Schema.parse({
-    v: 1,
-    timelineEntryId: input.generateTimelineEntryId(),
-    automationRequestId: input.request.automationRequestId,
-    browserSessionId: input.request.browserSessionId,
-    viewId: input.request.viewId,
-    actionKind: input.request.actionKind,
-    requesterKind: input.request.requestedBy,
-    status: 'canceled',
-    adapterKind: input.adapterKind,
-    fidelity: 'unavailable',
-    trustedInput: false,
-    queuedAtMs: at,
-    finishedAtMs: at,
-    navigationGenerationBefore: input.navigationGenerationBefore,
-    navigationGenerationAfter: input.navigationGenerationBefore,
-    controlEpochBefore: input.controlEpochBefore,
-    controlEpochAfter: input.controlEpochAfter,
-    reasonCode: input.errorCode,
-  });
-  return { result, timelineEntry };
 }

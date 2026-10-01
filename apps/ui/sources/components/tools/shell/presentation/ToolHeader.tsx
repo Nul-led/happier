@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { View } from 'react-native';
-import { ToolCall } from '@/sync/domains/messages/messageTypes';
+import { ToolCall } from "@happier-dev/session-core/messages";
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { Text } from '@/components/ui/text/Text';
 import { buildToolHeaderModel } from '@/components/tools/shell/presentation/buildToolHeaderModel';

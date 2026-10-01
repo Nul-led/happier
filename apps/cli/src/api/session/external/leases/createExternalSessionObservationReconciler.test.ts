@@ -51,7 +51,7 @@ function resource(
     return {
         pluginId: 'happier-opencode',
         agentLocalId: 'opencode',
-        pluginGeneration: '7',
+        occurrenceId: '7',
         resourceKey: 'https://one.example\u0000auth-generation-a',
         ...overrides,
     };
@@ -258,7 +258,7 @@ describe('createExternalSessionObservationReconciler', () => {
             sessionId: 'session-1',
             resource: {
                 linkGeneration: 'link-1',
-                pluginGeneration: '7',
+                occurrenceId: '7',
             },
         });
 
@@ -402,7 +402,7 @@ describe('createExternalSessionObservationReconciler', () => {
             sessionId: 'session-1',
             resource: {
                 linkGeneration: 'link-1',
-                pluginGeneration: '7',
+                occurrenceId: '7',
             },
         });
     });
@@ -1168,7 +1168,7 @@ describe('createExternalSessionObservationReconciler', () => {
             sessionId: 'session-1',
             resource: {
                 linkGeneration: 'link-1',
-                pluginGeneration: '7',
+                occurrenceId: '7',
             },
         });
         expect(fileCallbacks.has('/tmp/codex/sessions/child-1.jsonl')).toBe(true);
@@ -1461,7 +1461,7 @@ describe('createExternalSessionObservationReconciler', () => {
             sessionId: 'session-1',
             resource: {
                 linkGeneration: 'link-1',
-                pluginGeneration: '7',
+                occurrenceId: '7',
             },
         });
     });
@@ -1519,7 +1519,7 @@ describe('createExternalSessionObservationReconciler', () => {
             sessionId: 'session-1',
             resource: {
                 linkGeneration: 'link-1',
-                pluginGeneration: '7',
+                occurrenceId: '7',
             },
         });
         expect(reconcileResource).toHaveBeenCalledWith(expect.objectContaining({
@@ -1586,7 +1586,7 @@ describe('createExternalSessionObservationReconciler', () => {
             sessionId: 'session-1',
             resource: {
                 linkGeneration: 'link-1',
-                pluginGeneration: '7',
+                occurrenceId: '7',
             },
         });
 
@@ -1724,7 +1724,7 @@ describe('createExternalSessionObservationReconciler', () => {
 
         await reconciler.reconcileLink({
             resource: resource({
-                pluginGeneration: '7',
+                occurrenceId: '7',
                 retirementSignal: retiredGeneration.signal,
             }),
             link: {
@@ -1742,7 +1742,7 @@ describe('createExternalSessionObservationReconciler', () => {
         });
         await reconciler.reconcileLink({
             resource: resource({
-                pluginGeneration: '8',
+                occurrenceId: '8',
                 resourceKey: 'replacement-resource',
                 retirementSignal: replacementGeneration.signal,
             }),
@@ -1766,7 +1766,7 @@ describe('createExternalSessionObservationReconciler', () => {
         expect(reconcileResource).toHaveBeenCalledWith(expect.objectContaining({
             purpose: 'resource_descriptors',
             resource: expect.objectContaining({
-                pluginGeneration: '8',
+                occurrenceId: '8',
                 resourceKey: 'replacement-resource',
             }),
             links: [expect.objectContaining({
@@ -1777,7 +1777,7 @@ describe('createExternalSessionObservationReconciler', () => {
             sessionId: 'session-1',
             resource: {
                 linkGeneration: 'link-1',
-                pluginGeneration: '8',
+                occurrenceId: '8',
             },
         });
         expect(disposersByFile.get(retiredFile)).toHaveBeenCalledTimes(1);
@@ -1849,7 +1849,7 @@ describe('createExternalSessionObservationReconciler', () => {
         const received: TestFact[] = [];
         const reconciler = createExternalSessionObservationReconciler({
             acquireObserver: vi.fn(async (input) => {
-                if (input.resource.pluginGeneration === '7') {
+                if (input.resource.occurrenceId === '7') {
                     retiredSignal = input.signal;
                     retiredEmit = input.emit;
                     retiredRequestReconcile = input.requestReconcile;
@@ -1886,7 +1886,7 @@ describe('createExternalSessionObservationReconciler', () => {
 
         await expect(reconciler.reconcileLink({
             resource: resource({
-                pluginGeneration: '8',
+                occurrenceId: '8',
                 retirementSignal: replacementGeneration.signal,
             }),
             link: link(1, { linkGeneration: 'link-2' }),
@@ -2650,7 +2650,7 @@ describe('createExternalSessionObservationReconciler', () => {
             sessionId: 'session-1',
             resource: {
                 linkGeneration: 'link-1',
-                pluginGeneration: '7',
+                occurrenceId: '7',
             },
         });
         expect(removed).toEqual([]);

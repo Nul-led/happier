@@ -8,6 +8,7 @@ import type { PublicReleaseRingId } from '@happier-dev/release-runtime/releaseRi
 import { resolvePublicReleaseRingLabelForId } from '@happier-dev/release-runtime/releaseRings';
 import { ensureJavaScriptRuntimeExecutable } from '@/packagedRuntime/js/ensureJavaScriptRuntimeExecutable';
 import { isBun } from '../../../utils/runtime';
+import { parseRuntimeContextPrefixArgs } from '@/utils/env/runtimeContextArgv';
 
 function packageJsonPathForNodeModules(params: Readonly<{ rootDir: string; packageName: string }>): string | null {
   const name = String(params.packageName ?? '').trim();
@@ -36,7 +37,7 @@ function shouldSkipRuntimeReexecForDaemonAttach(argv: readonly string[]): boolea
 }
 
 function shouldSkipRuntimeReexecForDaemonServiceInstall(argv: readonly string[]): boolean {
-  const positionals = argv.filter((arg) => arg && !arg.startsWith('-'));
+  const positionals = parseRuntimeContextPrefixArgs(argv).args.filter((arg) => arg && !arg.startsWith('-'));
   return positionals[0] === 'service' && positionals[1] === 'install';
 }
 

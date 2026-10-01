@@ -14,6 +14,7 @@ import {
 } from '@happier-dev/protocol';
 
 import { peerMediationObservabilityScopesEqual } from './keys';
+import { isPeerMediationObservabilityDeltaSequenceContiguous } from './store';
 import type { PeerMediationObservabilitySource } from './types';
 
 export type PeerMediationObservabilitySubscriptionState = Readonly<
@@ -101,11 +102,22 @@ export function createPeerMediationObservabilitySubscription(input: Readonly<{
         };
     }
 
+    let closed = false;
+    let lastSequence: number | undefined;
+    let awaitingSnapshot = true;
+    const requestSnapshot = () => input.transport.emit(
+        PEER_MEDIATION_OBSERVABILITY_SUBSCRIBE_SOCKET_EVENT,
+        subscribePayload({ scope: input.scope }),
+    );
+
     const unsubscribeSnapshot = input.transport.on(
         PEER_MEDIATION_OBSERVABILITY_SNAPSHOT_SOCKET_EVENT,
         (payload) => {
             const parsed = PeerMediationObservabilitySnapshotV1Schema.safeParse(payload);
-            if (parsed.success && shouldAcceptSnapshot(input.scope, parsed.data)) {
+            if (!closed && parsed.success && shouldAcceptSnapshot(input.scope, parsed.data)
+                && (lastSequence === undefined || parsed.data.sequence >= lastSequence)) {
+                lastSequence = parsed.data.sequence;
+                awaitingSnapshot = false;
                 input.onSnapshot(parsed.data);
             }
         },
@@ -114,18 +126,21 @@ export function createPeerMediationObservabilitySubscription(input: Readonly<{
         PEER_MEDIATION_OBSERVABILITY_DELTA_SOCKET_EVENT,
         (payload) => {
             const parsed = PeerMediationObservabilityDeltaV1Schema.safeParse(payload);
-            if (parsed.success && shouldAcceptDelta(input.scope, parsed.data)) {
-                input.onDelta(parsed.data);
+            if (closed || !parsed.success || !shouldAcceptDelta(input.scope, parsed.data)
+                || awaitingSnapshot || lastSequence === undefined || parsed.data.sequence <= lastSequence) return;
+            if (!isPeerMediationObservabilityDeltaSequenceContiguous(lastSequence, parsed.data.sequence)) {
+                awaitingSnapshot = true;
+                input.onDelta(parsed.data); // Preserve the read-side store's explicit stale state.
+                requestSnapshot();
+                return;
             }
+            lastSequence = parsed.data.sequence;
+            input.onDelta(parsed.data);
         },
     );
 
-    input.transport.emit(
-        PEER_MEDIATION_OBSERVABILITY_SUBSCRIBE_SOCKET_EVENT,
-        subscribePayload({ scope: input.scope }),
-    );
+    requestSnapshot();
 
-    let closed = false;
     return {
         state,
         close: () => {

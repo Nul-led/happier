@@ -7,9 +7,13 @@ import {
     ACCOUNT_PASSWORD_REMOVE_PATH_V1,
     ACCOUNT_EMAIL_CHANGE_REQUEST_PATH_V1,
     ACCOUNT_SECURITY_PATH_V1,
+    ACCOUNT_TERMINAL_PRESENT_USER_POLICY_PATH_V1,
     AccountPasswordMutationResponseV1Schema,
     AccountEmailChangeRequestResponseV1Schema,
     AccountSecurityGetResponseV1Schema,
+    AccountTerminalPresentUserPolicySetResponseV1Schema,
+    type AccountTerminalPresentUserPolicySetRequestV1,
+    AccountSecurityRouteErrorV1Schema,
     PasswordMutationPreparationResponseV1Schema,
     createAccountEncryptionMigrateRequestBindingDigestV1,
     buildE2eeAccountPasswordEnrollRequestV1,
@@ -19,6 +23,7 @@ import {
     createPasswordCredentialTargetDigestV1,
     PlainAccountPasswordCredentialV1Schema,
     readE2eePasswordPreparationV1,
+    classifyHomeDomainHttpMutationFailureV1,
     type AccountPasswordChangeRequestV1,
     type AccountPasswordEnrollRequestV1,
     type AccountPasswordRemoveRequestV1,
@@ -34,6 +39,10 @@ import type { ServerFetch } from '@/sync/http/client';
 import { createHomeIdentityMismatchFailure } from '@/auth/flows/authenticationFailure';
 import { HappyError } from '@/utils/errors/errors';
 import { preparePasswordCredentialMaterialV1, type PreparedPasswordCredentialMaterialV1 } from '@/auth/password/preparePasswordCredential';
+import {
+    assertAccountEncryptionMigrationScopeCurrent,
+    type AccountEncryptionMigrationScope,
+} from '@/sync/domains/settings/scope/accountSettingsScope';
 
 export type AccountSecurityProjectionV1 = AccountSecurityGetResponseV1;
 
@@ -58,29 +67,59 @@ async function call(
     path: string,
     body: unknown | null,
     signal?: AbortSignal,
+    mutationOutput?: z.ZodType,
 ): Promise<unknown> {
-    const response = await request(path, body === null
+    signal?.throwIfAborted();
+    let issued = false;
+    let response: Response;
+    try {
+        response = await request(path, body === null
         ? { method: 'GET', ...(signal ? { signal } : {}) }
         : {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body),
             ...(signal ? { signal } : {}),
-        }, { retry: 'none' });
+        }, { retry: 'none', onIssued: () => { issued = true; } });
+    } catch (error) {
+        if (mutationOutput && classifyHomeDomainHttpMutationFailureV1({
+            error, issued, aborted: signal?.aborted === true,
+        }) === 'outcome_unknown') {
+            throw new HappyError('Account security mutation outcome is unknown', false, { code: 'outcome_unknown' });
+        }
+        throw error;
+    }
     const payload: unknown = await response.json().catch(() => null);
     if (!response.ok) {
-        const parsed = z.object({ error: z.string() }).safeParse(payload);
+        const parsed = AccountSecurityRouteErrorV1Schema.safeParse(payload);
+        if (mutationOutput && !parsed.success) {
+            throw new HappyError('Account security mutation outcome is unknown', false, { code: 'outcome_unknown' });
+        }
         throw new HappyError('Account security request failed', response.status >= 500 || response.status === 429, {
             kind: response.status >= 500 ? 'server' : 'auth',
             status: response.status,
             ...(parsed.success ? { code: parsed.data.error } : {}),
         });
     }
+    if (mutationOutput && !mutationOutput.safeParse(payload).success) {
+        throw new HappyError('Account security mutation outcome is unknown', false, { code: 'outcome_unknown' });
+    }
     return payload;
 }
 
 export async function fetchAccountSecurity(request: ServerFetch, signal?: AbortSignal): Promise<AccountSecurityProjectionV1> {
     return AccountSecurityGetResponseV1Schema.parse(await call(request, ACCOUNT_SECURITY_PATH_V1, null, signal));
+}
+
+/** Exact-Home HTTP leaf for the CLI/daemon approvals policy (`account.security.terminalPresentUser.set`). */
+export async function setAccountTerminalPresentUserPolicy(
+    request: ServerFetch,
+    input: AccountTerminalPresentUserPolicySetRequestV1,
+    signal?: AbortSignal,
+) {
+    return AccountTerminalPresentUserPolicySetResponseV1Schema.parse(await call(
+        request, ACCOUNT_TERMINAL_PRESENT_USER_POLICY_PATH_V1, input, signal, AccountTerminalPresentUserPolicySetResponseV1Schema,
+    ));
 }
 
 /** Exact-Home HTTP leaf used by the shared Account Security Action adapter. */
@@ -90,7 +129,7 @@ export async function enrollAccountPassword(
     signal?: AbortSignal,
 ) {
     return AccountPasswordMutationResponseV1Schema.parse(await call(
-        request, ACCOUNT_PASSWORD_ENROLL_PATH_V1, input, signal,
+        request, ACCOUNT_PASSWORD_ENROLL_PATH_V1, input, signal, AccountPasswordMutationResponseV1Schema,
     ));
 }
 
@@ -105,6 +144,7 @@ export async function requestAccountPasswordEnrollmentEmail(
         ACCOUNT_PASSWORD_ENROLL_EMAIL_REQUEST_PATH_V1,
         { v: 1, email: input.email },
         signal,
+        AccountEmailChangeRequestResponseV1Schema,
     ));
 }
 
@@ -123,7 +163,7 @@ export async function changeAccountPassword(request: ServerFetch, input: Readonl
         v: 1,
         kind: 'plain',
         ...input,
-    }, signal));
+    }, signal, AccountPasswordMutationResponseV1Schema));
 }
 
 export async function submitAccountPasswordChange(
@@ -132,7 +172,7 @@ export async function submitAccountPasswordChange(
     signal?: AbortSignal,
 ) {
     return AccountPasswordMutationResponseV1Schema.parse(await call(
-        request, ACCOUNT_PASSWORD_CHANGE_PATH_V1, input, signal,
+        request, ACCOUNT_PASSWORD_CHANGE_PATH_V1, input, signal, AccountPasswordMutationResponseV1Schema,
     ));
 }
 
@@ -141,7 +181,7 @@ export async function submitE2eeAccountPasswordChange(
     request: ServerFetch,
     input: Extract<AccountPasswordChangeRequestV1, { kind: 'e2ee' }>,
 ): Promise<void> {
-    AccountPasswordMutationResponseV1Schema.parse(await call(request, ACCOUNT_PASSWORD_CHANGE_PATH_V1, input));
+    AccountPasswordMutationResponseV1Schema.parse(await call(request, ACCOUNT_PASSWORD_CHANGE_PATH_V1, input, undefined, AccountPasswordMutationResponseV1Schema));
 }
 
 /** Remove the native password credential and its email login locator. */
@@ -153,7 +193,7 @@ export async function removeAccountPassword(request: ServerFetch, input: Readonl
         v: 1,
         kind: 'plain',
         ...input,
-    }, signal));
+    }, signal, AccountPasswordMutationResponseV1Schema));
 }
 
 export async function submitAccountPasswordRemove(
@@ -162,7 +202,7 @@ export async function submitAccountPasswordRemove(
     signal?: AbortSignal,
 ) {
     return AccountPasswordMutationResponseV1Schema.parse(await call(
-        request, ACCOUNT_PASSWORD_REMOVE_PATH_V1, input, signal,
+        request, ACCOUNT_PASSWORD_REMOVE_PATH_V1, input, signal, AccountPasswordMutationResponseV1Schema,
     ));
 }
 
@@ -172,7 +212,7 @@ export async function requestAccountSignInEmailChange(
     signal?: AbortSignal,
 ) {
     return AccountEmailChangeRequestResponseV1Schema.parse(await call(
-        request, ACCOUNT_EMAIL_CHANGE_REQUEST_PATH_V1, input, signal,
+        request, ACCOUNT_EMAIL_CHANGE_REQUEST_PATH_V1, input, signal, AccountEmailChangeRequestResponseV1Schema,
     ));
 }
 
@@ -362,8 +402,10 @@ export async function prepareAccountEncryptionModePasswordCredential(
         signal?: AbortSignal;
         /** Test/continuation seam for already prepared memory-hard work. */
         preparedCredentialMaterial?: PreparedPasswordCredentialMaterialV1;
+        scope: AccountEncryptionMigrationScope;
     }>,
 ): Promise<AccountEncryptionMigrateTransitionPasswordCredential> {
+    assertAccountEncryptionMigrationScopeCurrent(input.scope);
     if (input.fromMode === input.toMode) {
         throw new Error('Password credential transition requires distinct Account modes');
     }
@@ -374,6 +416,7 @@ export async function prepareAccountEncryptionModePasswordCredential(
                 secret: input.secret,
                 ...(input.signal ? { signal: input.signal } : {}),
             });
+        assertAccountEncryptionMigrationScopeCurrent(input.scope);
         const prepared = await call(
             request,
             ACCOUNT_PASSWORD_MUTATION_CHALLENGE_PATH_V1,
@@ -385,6 +428,7 @@ export async function prepareAccountEncryptionModePasswordCredential(
                 newE2eePassword: material,
             },
         );
+        assertAccountEncryptionMigrationScopeCurrent(input.scope);
         const targetCredential = preparedCredentialOrThrow(
             () => readE2eePasswordPreparationV1(prepared, material.envelope).targetCredential,
         );
@@ -408,6 +452,7 @@ export async function prepareAccountEncryptionModePasswordCredential(
             transitionRequestDigest,
         },
     ));
+    assertAccountEncryptionMigrationScopeCurrent(input.scope);
     if (!('targetCredential' in prepared) || prepared.targetCredential.kind !== 'plain_password_hash'
         || !prepared.challenge) {
         throw new HappyError('Account security request failed', false, { kind: 'auth', code: 'credential_inconsistent' });
@@ -442,5 +487,7 @@ export async function prepareAccountEncryptionModePasswordCredential(
 export async function changeAccountSignInEmail(request: ServerFetch, input: Readonly<{
     verificationToken: string;
 }>): Promise<void> {
-    AccountPasswordMutationResponseV1Schema.parse(await call(request, ACCOUNT_EMAIL_CHANGE_PATH_V1, { v: 1, ...input }));
+    AccountPasswordMutationResponseV1Schema.parse(await call(
+        request, ACCOUNT_EMAIL_CHANGE_PATH_V1, { v: 1, ...input }, undefined, AccountPasswordMutationResponseV1Schema,
+    ));
 }

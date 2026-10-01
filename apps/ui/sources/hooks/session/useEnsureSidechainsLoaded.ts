@@ -94,8 +94,9 @@ export function useEnsureSidechainsLoaded(params: Readonly<{
     enabled: boolean;
     sessionId?: string;
     sidechainIds: readonly (string | null | undefined)[];
+    loadSidechain?: ((sidechainId: string) => ReturnType<typeof sync.ensureSidechainMessagesLoaded>) | null;
 }>): SidechainHydrationSnapshot {
-    const { enabled, sessionId, sidechainIds } = params;
+    const { enabled, sessionId, sidechainIds, loadSidechain } = params;
     const normalizedSessionId = React.useMemo(() => normalizeSessionId(sessionId), [sessionId]);
     const requestedKeysRef = React.useRef<Set<string>>(new Set());
     const retryTimeoutsRef = React.useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
@@ -213,7 +214,11 @@ export function useEnsureSidechainsLoaded(params: Readonly<{
 
         const tasks = pendingRequests.map((request) => async (): Promise<EnsureSidechainMessagesLoadedStatus> => {
             try {
-                const status = await sync.ensureSidechainMessagesLoaded(request.sessionId, request.sidechainId);
+                const status = loadSidechain
+                    ? await loadSidechain(request.sidechainId)
+                    : loadSidechain === null
+                        ? 'not_ready' as const
+                        : await sync.ensureSidechainMessagesLoaded(request.sessionId, request.sidechainId);
                 if (status === 'loaded') {
                     resetRetryState(request.key);
                     updateEntryStatus(request, 'loaded');
@@ -242,7 +247,7 @@ export function useEnsureSidechainsLoaded(params: Readonly<{
         fireAndForget(runTasksWithLimit(tasks, readSidechainDemandHydrationConcurrencyLimit()), {
             tag: 'useEnsureSidechainsLoaded',
         });
-    }, [enabled, entryState, requests, resetRetryState, retryTick, scheduleRetry, updateEntryStatus]);
+    }, [enabled, entryState, loadSidechain, requests, resetRetryState, retryTick, scheduleRetry, updateEntryStatus]);
 
     return React.useMemo(() => {
         const entries = requests.map((request): SidechainHydrationEntry => (

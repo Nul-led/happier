@@ -1,9 +1,10 @@
 import * as React from 'react';
-import { Pressable, View } from 'react-native';
+import { View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { Typography } from '@/constants/Typography';
 import { Text, TextInput } from '@/components/ui/text/Text';
+import { RoundButton } from '@/components/ui/buttons/RoundButton';
 import { t } from '@/text';
 import type { CustomModalInjectedProps } from '@/modal';
 import { useModalCardChrome } from '@/modal/components/card/useModalCardChrome';
@@ -38,27 +39,10 @@ const stylesheet = StyleSheet.create((theme) => ({
         justifyContent: 'space-between',
         gap: 8,
     },
-    button: {
-        paddingHorizontal: 12,
-        paddingVertical: 10,
-        borderRadius: 10,
-        borderWidth: 1,
-        borderColor: theme.colors.border.default,
-        backgroundColor: theme.colors.surface.inset ?? theme.colors.input.background,
-        opacity: 1,
-    },
-    buttonDisabled: {
-        opacity: 0.55,
-    },
-    primaryButton: {
-        borderColor: theme.colors.text.link,
-    },
-    buttonText: {
-        fontSize: 13,
-        color: theme.colors.text.primary,
-    },
-    buttonTextPrimary: {
-        color: theme.colors.text.link,
+    footerSecondaryActions: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
     },
 }));
 
@@ -137,51 +121,35 @@ export function ScmCommitMessageEditorModal(props: ScmCommitMessageEditorModalPr
         }
     }, [busy, props.canGenerate, props.onGenerate]);
 
-    const Button = (p: { label: string; onPress: () => void; disabled?: boolean; primary?: boolean }) => (
-        <Pressable
-            accessibilityRole="button"
-            disabled={p.disabled}
-            onPress={p.onPress}
-            style={[
-                styles.button,
-                p.primary ? styles.primaryButton : null,
-                p.disabled ? styles.buttonDisabled : null,
-            ]}
-        >
-            <Text
-                style={[
-                    styles.buttonText,
-                    Typography.default(p.primary ? 'semiBold' : undefined),
-                    p.primary ? styles.buttonTextPrimary : null,
-                ]}
-            >
-                {p.label}
-            </Text>
-        </Pressable>
-    );
-
     const footer = React.useMemo(() => (
         <View style={styles.footer}>
-            <View style={{ flexDirection: 'row', gap: 8 }}>
-                <Button label={t('common.cancel')} onPress={closeCancel} disabled={busy} />
+            <View style={styles.footerSecondaryActions}>
+                <RoundButton display="inverted" title={t('common.cancel')} onPress={closeCancel} disabled={busy} />
                 {props.canGenerate ? (
-                    <Button
-                        label={busy ? t('files.commitMessageEditor.generating') : t('files.commitMessageEditor.generate')}
+                    <RoundButton
+                        display="secondary"
+                        title={busy ? t('files.commitMessageEditor.generating') : t('files.commitMessageEditor.generate')}
                         onPress={generate}
                         disabled={busy}
                     />
                 ) : null}
                 {pendingSuggestion ? (
-                    <Button label={t('files.commitMessageEditor.applySuggestion')} onPress={applySuggestion} disabled={busy} />
+                    <RoundButton
+                        display="secondary"
+                        title={t('files.commitMessageEditor.applySuggestion')}
+                        onPress={applySuggestion}
+                        disabled={busy}
+                    />
                 ) : null}
             </View>
 
-            <Button label={t('files.commitMessageEditor.commit')} primary={true} onPress={commit} disabled={busy} />
+            <RoundButton title={t('files.commitMessageEditor.commit')} onPress={commit} disabled={busy} />
         </View>
-    ), [applySuggestion, busy, closeCancel, commit, generate, pendingSuggestion, props.canGenerate, styles.footer]);
+    ), [applySuggestion, busy, closeCancel, commit, generate, pendingSuggestion, props.canGenerate, styles.footer, styles.footerSecondaryActions]);
 
     const chrome = React.useMemo(() => ({
         kind: 'card' as const,
+        title: t('files.commitMessageEditor.title'),
         footer,
     }), [footer]);
 

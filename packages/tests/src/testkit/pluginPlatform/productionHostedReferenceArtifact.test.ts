@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import {
   computePluginUiArtifactFileSetSha256DigestV1,
   deriveGeneratedHostedWebAssetPolicyV1,
-  PluginUiArtifactsManifestV1Schema,
+  PluginUiArtifactsManifestV2Schema,
   resolveHostedWebAssetPolicy,
 } from '@happier-dev/protocol/plugins/ui';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -58,12 +58,12 @@ describe('production hosted reference Artifact boundary', () => {
     expect(exitCode).toBe(0);
 
     const artifactRoot = join(projectRoot, 'dist', 'happier-plugin-ui');
-    const graph = PluginUiArtifactsManifestV1Schema.parse(JSON.parse(await readFile(
+    const graph = PluginUiArtifactsManifestV2Schema.parse(JSON.parse(await readFile(
       join(artifactRoot, 'ui-artifacts.json'),
       'utf8',
     )));
     const hosted = graph.entries.find((entry) => (
-      entry.contributionId === 'review-hosted' && entry.tier === 'hostedWeb'
+      entry.artifactId === 'review-hosted' && entry.tier === 'hostedWeb'
     ));
     expect(hosted).toBeDefined();
     if (!hosted) throw new Error('production hosted reference graph is missing');
@@ -76,8 +76,7 @@ describe('production hosted reference Artifact boundary', () => {
     expect(hosted.entry).toMatch(/^hosted-web\/review-hosted\/index\.html$/u);
     expect(hosted.files.map(({ relativePath }) => relativePath)).toEqual(expect.arrayContaining([
       hosted.entry,
-      expect.stringMatching(/^hosted-web\/review-hosted\/assets\/.+\.js$/u),
-      expect.stringMatching(/^hosted-web\/review-hosted\/assets\/.+\.css$/u),
+      'hosted-web/review-hosted/assets/app.js',
     ]));
 
     const assetPolicy = deriveGeneratedHostedWebAssetPolicyV1(hosted);
@@ -118,7 +117,6 @@ describe('production hosted reference Artifact boundary', () => {
 
     const adoption = resolveHostedWebAssetRuntime({
       contributionId: 'review-hosted',
-      manifestContributionId: 'review-hosted',
       runtimeMode: {
         kind: 'installedStaticAssets',
         artifactId: 'review-hosted',
@@ -134,12 +132,6 @@ describe('production hosted reference Artifact boundary', () => {
       entryPath: hosted.entry,
       files: hosted.files.map(({ relativePath }) => relativePath),
       digest: hosted.digest,
-      integrity: {
-        pluginId: 'examples.production-hosted-reference',
-        contributionId: 'review-hosted',
-        artifactKind: 'hostedWebAsset',
-        digest: hosted.digest,
-      },
     });
   }, 30_000);
 });

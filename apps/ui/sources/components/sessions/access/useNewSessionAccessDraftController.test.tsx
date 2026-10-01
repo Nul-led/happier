@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act } from 'react-test-renderer';
 import type { SessionInitialAccessDraftV1 } from '@happier-dev/protocol';
 
@@ -11,6 +11,15 @@ import { useNewSessionAccessDraftController } from './useNewSessionAccessDraftCo
 import { useNewSessionAccessDraft, type NewSessionAccessDraftState } from './useNewSessionAccessDraft';
 import type { SessionCollaborationAvailability } from '@/hooks/session/useSessionCollaborationAvailability';
 import type { SessionAccessCandidateRowModel } from './sessionAccessEditorTypes';
+import { TokenStorage } from '@/auth/storage/tokenStorage';
+import { upsertServerProfile } from '@/sync/domains/server/serverProfiles';
+import { resetRuntimeFetch, setRuntimeFetch } from '@/utils/system/runtimeFetch';
+
+afterEach(() => {
+    creationDecisionNetworkMode.enabled = false;
+    resetRuntimeFetch();
+    vi.restoreAllMocks();
+});
 
 vi.mock('@/text', async () => (await import('@/dev/testkit/mocks/text')).createTextModuleMock());
 
@@ -21,6 +30,23 @@ const runTeamActionMock = vi.hoisted(() => vi.fn(
         failure: { kind: 'unreachable' as const, retryable: true, code: null },
     }),
 ));
+const creationDecisionNetworkMode = vi.hoisted(() => ({ enabled: false }));
+vi.mock('@/sync/api/session/sessionAccessApi', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/sync/api/session/sessionAccessApi')>();
+    return {
+        ...actual,
+        resolveSessionAccessCreationDecision: (options: Parameters<typeof actual.resolveSessionAccessCreationDecision>[0]) => creationDecisionNetworkMode.enabled
+            ? actual.resolveSessionAccessCreationDecision(options)
+            : Promise.resolve({
+                v: 1 as const,
+                teamId: options.teamId,
+                teamName: options.teamId,
+                requiredByPolicy: options.teamId === 'team-required',
+                defaultGrant: options.teamId === 'team-default' ? { accessLevel: 'edit' as const, canApprovePermissions: false } : null,
+                externalSharingPolicy: options.teamId === 'team-required' ? 'team_admins_only' as const : 'allowed' as const,
+            }),
+    };
+});
 vi.mock('@/sync/ops/teams/teamActionClient', () => ({
     runTeamAction: runTeamActionMock,
 }));
@@ -64,12 +90,13 @@ function Probe(props: Readonly<{
     availability: SessionCollaborationAvailability;
     /** Mirrors an open editor presentation; the composer's closed chip does not demand candidates. */
     demanded?: boolean;
+    scope?: typeof scope;
     onReady: (controller: Controller, access: SessionInitialAccessDraftV1 | null, primaryTeamId: string | null) => void;
 }>) {
     const [access, setAccess] = React.useState(props.initial);
     const [primaryTeamId, setPrimaryTeamId] = React.useState<string | null>(props.initialPrimaryTeamId ?? null);
     const controller = useNewSessionAccessDraftController({
-        scope, access, primaryTeamId, availability: props.availability,
+        scope: props.scope ?? scope, access, primaryTeamId, availability: props.availability,
         homeReconciled: props.homeReconciled === true,
         demanded: props.demanded !== false,
         onChange: setAccess, onPrimaryTeamIdChange: setPrimaryTeamId,
@@ -79,6 +106,73 @@ function Probe(props: Readonly<{
 }
 
 describe('useNewSessionAccessDraftController', () => {
+    it('resolves restored off-page selected identities only when demanded and rejects late Home results', async () => {
+        const first = await upsertServerProfile({ name: 'Draft first', serverUrl: 'https://draft-first.example.test' });
+        const second = await upsertServerProfile({ name: 'Draft second', serverUrl: 'https://draft-second.example.test' });
+        vi.spyOn(TokenStorage, 'getCredentialsForServerUrl').mockResolvedValue({
+            token: `e30.${Buffer.from(JSON.stringify({ sub: 'creator' })).toString('base64url')}.signature`,
+        });
+        const requested: Array<{ origin: string; body: unknown }> = [];
+        let releaseFirst!: (response: Response) => void;
+        const firstResponse = new Promise<Response>((resolve) => { releaseFirst = resolve; });
+        setRuntimeFetch(async (url, init) => {
+            const parsed = new URL(String(url));
+            if (parsed.pathname === '/v1/auth/ping') return new Response('{}');
+            if (parsed.pathname === '/v1/session-access/principals/resolve') {
+                requested.push({ origin: parsed.origin, body: JSON.parse(String(init?.body)) });
+                if (parsed.origin === 'https://draft-first.example.test') return firstResponse;
+                return new Response(JSON.stringify({ v: 1, principals: [
+                    { kind: 'account', accountId: 'off-page-alice', username: 'second-alice', firstName: 'Alice', lastName: 'Second', avatarUrl: null },
+                    { kind: 'account', accountId: 'off-page-bob', username: 'second-bob', firstName: 'Bob', lastName: 'Second', avatarUrl: null },
+                ] }));
+            }
+            return new Response('{}', { status: 404 });
+        });
+        const initial: SessionInitialAccessDraftV1 = { grants: [
+            { subject: { kind: 'account', accountId: 'off-page-alice' }, accessLevel: 'edit', canApprovePermissions: false },
+            { subject: { kind: 'account', accountId: 'off-page-bob' }, accessLevel: 'admin', canApprovePermissions: true },
+        ] };
+        let latest!: Controller;
+        const element = (serverId: string, demanded: boolean) => <Probe initial={initial}
+            scope={{ serverId, accountId: 'creator' }} demanded={demanded} availability="available"
+            onReady={(controller) => { latest = controller; }} />;
+        const screen = await renderScreen(element(first.id, false));
+        expect(requested).toEqual([]);
+        await screen.update(element(first.id, true));
+        await vi.waitFor(() => expect(requested).toHaveLength(1));
+        await screen.update(element(second.id, true));
+        await vi.waitFor(() => expect(latest.model.grants.map((row) => row.principal.displayName)).toEqual(['Alice Second', 'Bob Second']));
+        expect(latest.model.grants.map((row) => row.principal.accessibilityLabel)).toEqual([
+            'Alice Second, @second-alice', 'Bob Second, @second-bob',
+        ]);
+        expect(latest.model.directory.query).toBe('');
+        expect(requested[1]).toEqual({ origin: 'https://draft-second.example.test', body: {
+            v: 1, subjects: initial.grants.map((grant) => grant.subject),
+        } });
+        await act(async () => { releaseFirst(new Response(JSON.stringify({ v: 1, principals: [
+            { kind: 'account', accountId: 'off-page-alice', username: 'wrong-home', firstName: 'Wrong', lastName: 'Home', avatarUrl: null },
+        ] }))); });
+        expect(latest.model.grants.map((row) => row.principal.displayName)).toEqual(['Alice Second', 'Bob Second']);
+    });
+
+    it('keeps restored selected Accounts distinguishable without a directory search', async () => {
+        let latest: Controller | null = null;
+        await renderScreen(<Probe initial={{ grants: [
+            { subject: { kind: 'account', accountId: 'off-page-alice' }, accessLevel: 'edit', canApprovePermissions: false },
+            { subject: { kind: 'account', accountId: 'off-page-bob' }, accessLevel: 'admin', canApprovePermissions: true },
+        ] }} availability="available" onReady={(controller) => { latest = controller; }} />);
+
+        // Selected recipients must remain identifiable even when they are not in
+        // the currently loaded search page (or the directory is unavailable).
+        expect(new Set(latest!.model.grants.map((row) => row.principal.displayName)).size).toBe(2);
+        expect(new Set(latest!.model.grants.map((row) => row.principal.accessibilityLabel)).size).toBe(2);
+        expect(latest!.model.directory.query).toBe('');
+        expect(latest!.model.grants.map((row) => row.grant)).toEqual([
+            { kind: 'account', accountId: 'off-page-alice' },
+            { kind: 'account', accountId: 'off-page-bob' },
+        ]);
+    });
+
     it('surfaces a Home-change reconciliation instead of silently dropping access choices', async () => {
         let latest: Controller | null = null;
         await renderScreen(<Probe initial={null} availability="available" homeReconciled
@@ -730,11 +824,93 @@ describe('useNewSessionAccessDraft repository currentness', () => {
         // creation whether or not a picker is ever opened, so deferring
         // candidate discovery must not defer the policy that decides it.
         runTeamActionMock.mockClear();
+        const profile = await upsertServerProfile({ name: 'Creation decision Home', serverUrl: 'https://creation-decision.example.test' });
+        vi.spyOn(TokenStorage, 'getCredentialsForServerUrl').mockResolvedValue({
+            token: `e30.${Buffer.from(JSON.stringify({ sub: 'creator' })).toString('base64url')}.signature`,
+        });
+        creationDecisionNetworkMode.enabled = true;
+        const requests: unknown[] = [];
+        setRuntimeFetch(async (url, init) => {
+            const parsed = new URL(String(url));
+            if (parsed.pathname === '/v1/auth/ping') return new Response('{}');
+            if (parsed.pathname === '/v1/session-access/principals/resolve') {
+                requests.push(JSON.parse(String(init?.body)));
+                return new Response(JSON.stringify({ v: 1, principals: [], creationDecision: {
+                    v: 1, teamId: 'team-local', teamName: 'Local Team', requiredByPolicy: true,
+                    defaultGrant: { accessLevel: 'edit', canApprovePermissions: false }, externalSharingPolicy: 'allowed',
+                } }));
+            }
+            return new Response('{}', { status: 404 });
+        });
         let latest: NewSessionAccessDraftState | null = null;
-        await renderScreen(<AccessDraftProbe serverId="home-one" sourceRevision={1} sourceAccess={null}
+        await renderScreen(<AccessDraftProbe serverId={profile.id} sourceRevision={1} sourceAccess={null}
             sourcePrimaryTeamId="team-local" popoverOpen={false}
             onReady={(state) => { latest = state; }} />);
-        await vi.waitFor(() => expect(runTeamActionMock).toHaveBeenCalled());
+        await vi.waitFor(() => expect(requests).toEqual([{ v: 1, subjects: [], creationTeamId: 'team-local' }]));
         expect(latest!.primaryTeamId).toBe('team-local');
+    });
+
+    it('uses the server creation decision instead of a conflicting directory policy', async () => {
+        runTeamActionMock.mockResolvedValue({
+            kind: 'succeeded', value: { items: [{
+                id: 'team-local', name: 'Directory Required',
+                policy: { sessionCreationPolicy: 'team_required', externalSharingPolicy: 'team_admins_only' },
+            }], nextCursor: null },
+        } as never);
+        const profile = await upsertServerProfile({ name: 'Decision authority Home', serverUrl: 'https://decision-authority.example.test' });
+        vi.spyOn(TokenStorage, 'getCredentialsForServerUrl').mockResolvedValue({
+            token: `e30.${Buffer.from(JSON.stringify({ sub: 'creator' })).toString('base64url')}.signature`,
+        });
+        creationDecisionNetworkMode.enabled = true;
+        setRuntimeFetch(async (url, init) => {
+            const parsed = new URL(String(url));
+            if (parsed.pathname === '/v1/auth/ping') return new Response('{}');
+            if (parsed.pathname === '/v1/session-access/principals/resolve') {
+                return new Response(JSON.stringify({ v: 1, principals: [], creationDecision: {
+                    v: 1, teamId: 'team-local', teamName: 'Server Private', requiredByPolicy: false,
+                    defaultGrant: null, externalSharingPolicy: 'allowed',
+                } }));
+            }
+            return new Response('{}', { status: 404 });
+        });
+        let latest: Controller | null = null;
+        await renderScreen(<Probe initial={null} initialPrimaryTeamId="team-local" availability="available" demanded
+            scope={{ serverId: profile.id, accountId: 'creator' }} onReady={(controller) => { latest = controller; }} />);
+
+        await vi.waitFor(() => expect(latest!.model.context?.primaryTeamId).toBe('team-local'));
+        expect(latest!.model.grants).toHaveLength(0);
+        expect(latest!.model.grants[0]?.requiredByTeamPolicy).not.toBe(true);
+        expect(latest!.model.context?.options.find((option) => option.teamId === 'team-local')?.blockedReason).toBeUndefined();
+    });
+
+    it('retries an unavailable creation decision through the existing content retry action', async () => {
+        const profile = await upsertServerProfile({ name: 'Retry decision Home', serverUrl: 'https://retry-decision.example.test' });
+        vi.spyOn(TokenStorage, 'getCredentialsForServerUrl').mockResolvedValue({
+            token: `e30.${Buffer.from(JSON.stringify({ sub: 'creator' })).toString('base64url')}.signature`,
+        });
+        creationDecisionNetworkMode.enabled = true;
+        let attempts = 0;
+        setRuntimeFetch(async (url, init) => {
+            const parsed = new URL(String(url));
+            if (parsed.pathname === '/v1/auth/ping') return new Response('{}');
+            if (parsed.pathname === '/v1/session-access/principals/resolve') {
+                const body = JSON.parse(String(init?.body ?? '{}')) as { creationTeamId?: string };
+                if (!body.creationTeamId) return new Response(JSON.stringify({ v: 1, principals: [] }));
+                attempts += 1;
+                if (attempts === 1) return new Response('{}', { status: 503 });
+                return new Response(JSON.stringify({ v: 1, principals: [], creationDecision: {
+                    v: 1, teamId: 'team-retry', teamName: 'Retry Team', requiredByPolicy: true,
+                    defaultGrant: { accessLevel: 'edit', canApprovePermissions: false }, externalSharingPolicy: 'allowed',
+                } }));
+            }
+            return new Response('{}', { status: 404 });
+        });
+        let latest: Controller | null = null;
+        await renderScreen(<Probe initial={null} initialPrimaryTeamId="team-retry" availability="available"
+            scope={{ serverId: profile.id, accountId: 'creator' }} onReady={(controller) => { latest = controller; }} />);
+        await vi.waitFor(() => expect(attempts).toBe(1));
+        await act(async () => { latest!.actions.retryContent(); });
+        await vi.waitFor(() => expect(attempts).toBe(2));
+        await vi.waitFor(() => expect(latest!.model.grants[0]?.requiredByTeamPolicy).toBe(true));
     });
 });

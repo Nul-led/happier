@@ -215,12 +215,103 @@ describe('useCreateNewSession (daemon unavailable UX)', () => {
     const hook = await renderHook(() => useCreateNewSession(params));
     await act(async () => { await hook.getCurrent().handleCreateSession(); });
     const retry = alertRetry(modalAlertSpy);
+    // The daemon rejects a reused Action request id whose input differs, so a
+    // later retry of the same attempt must replay byte-identical input.
+    vi.setSystemTime(new Date('2026-02-05T00:05:00.000Z'));
     await act(async () => { retry(); });
     await flushHookEffects({ cycles: 8, turns: 4 });
     expect(sessionSpawnNewActionBoundarySpy).toHaveBeenCalledTimes(2);
-    expect(sessionSpawnNewActionBoundarySpy.mock.calls[1]?.[0].creationKey)
-      .toBe(sessionSpawnNewActionBoundarySpy.mock.calls[0]?.[0].creationKey);
+    expect(sessionSpawnNewActionBoundarySpy.mock.calls[1]?.[0])
+      .toEqual(sessionSpawnNewActionBoundarySpy.mock.calls[0]?.[0]);
     await hook.unmount();
+  });
+
+  it('creates a no-folder session: managed directory, no checkout, no recent folder written', async () => {
+    const { useCreateNewSession, sessionSpawnNewActionBoundarySpy, modalAlertSpy, storageState } = await setupHarness();
+    sessionSpawnNewActionBoundarySpy.mockResolvedValue(spawnSuccess('session-managed'));
+    const recentBefore = storageState.authoringMemory.recentMachinePaths;
+    const params = createRetryParams(storageState.settings, {
+      // The remembered folder and its checkout draft stay in the draft; neither reaches the spawn.
+      selectedPath: '/tmp/remembered',
+      directoryKind: 'managed',
+      checkoutCreationDraft: { kind: 'git_worktree', displayName: 'feature-x', baseRef: null },
+      promptStore: createNewSessionPromptStore('Write a haiku'),
+    });
+    const hook = await renderHook(() => useCreateNewSession(params));
+    await act(async () => { await hook.getCurrent().handleCreateSession(); });
+    await flushHookEffects({ cycles: 8, turns: 4 });
+
+    expect(modalAlertSpy.mock.calls.map((call) => call[1])).not.toContain('newSession.noPathSelected');
+    const request = sessionSpawnNewActionBoundarySpy.mock.calls[0]?.[0];
+    expect(request?.directory).toEqual({ kind: 'managed' });
+    expect(request?.checkoutCreationDraft ?? null).toBeNull();
+    const { storage } = await import('@/sync/domains/state/storageStore');
+    expect(storage.getState().authoringMemory.recentMachinePaths).toEqual(recentBefore);
+    await hook.unmount();
+  });
+
+  it('replays the exact persisted attempt input after a reload', async () => {
+    const { useCreateNewSession, sessionSpawnNewActionBoundarySpy, storageState } = await setupHarness();
+    const { getSessionDraftSnapshot, writeNewSessionDraft } = await import('@/sync/ops/sessionDrafts/sessionDraftRepository');
+    const draftScope = { serverId: 'server-a', accountId: 'account-a' } as const;
+    const draftId = 'reload-retry-draft';
+    writeNewSessionDraft({ scope: draftScope, draftId, patch: { text: 'Reload retry' }, materializationIntent: 'userEdit' });
+    sessionSpawnNewActionBoundarySpy.mockResolvedValue({ type: 'pending', retryWithSameCreationKey: true, outcome: 'unknown' });
+    const paramsFor = (launchUserAttemptId: string | null) => createRetryParams(storageState.settings, {
+      draftId,
+      promptStore: createNewSessionPromptStore('Reload retry'),
+      launchUserAttemptId,
+    });
+
+    const firstHook = await renderHook(() => useCreateNewSession(paramsFor(null)));
+    await act(async () => { await firstHook.getCurrent().handleCreateSession(); });
+    await flushHookEffects({ cycles: 8, turns: 4 });
+    await firstHook.unmount();
+
+    vi.setSystemTime(new Date('2026-02-05T00:10:00.000Z'));
+    const persistedAttemptId = getSessionDraftSnapshot(draftScope, { kind: 'newSession', draftId })
+      ?.localSupplement.launchUserAttemptId ?? null;
+    expect(persistedAttemptId).toBeTruthy();
+    const reloadedHook = await renderHook(() => useCreateNewSession(paramsFor(persistedAttemptId)));
+    await act(async () => { await reloadedHook.getCurrent().handleCreateSession(); });
+    await flushHookEffects({ cycles: 8, turns: 4 });
+    await reloadedHook.unmount();
+
+    expect(sessionSpawnNewActionBoundarySpy).toHaveBeenCalledTimes(2);
+    expect(sessionSpawnNewActionBoundarySpy.mock.calls[1]?.[0])
+      .toEqual(sessionSpawnNewActionBoundarySpy.mock.calls[0]?.[0]);
+  });
+
+  it('mints a fresh attempt after a terminal spawn failure, in place and after a reload', async () => {
+    const { useCreateNewSession, sessionSpawnNewActionBoundarySpy, storageState } = await setupHarness();
+    const { getSessionDraftSnapshot, writeNewSessionDraft } = await import('@/sync/ops/sessionDrafts/sessionDraftRepository');
+    const draftScope = { serverId: 'server-a', accountId: 'account-a' } as const;
+    const draftId = 'terminal-failure-draft';
+    writeNewSessionDraft({ scope: draftScope, draftId, patch: { text: 'Terminal failure' }, materializationIntent: 'userEdit' });
+    sessionSpawnNewActionBoundarySpy.mockResolvedValue({ type: 'error', code: 'spawn_failed', retryable: false });
+    let durableUserAttemptId: string | null = null;
+    const createHook = () => useCreateNewSession(createRetryParams(storageState.settings, {
+      draftId,
+      promptStore: createNewSessionPromptStore('Terminal failure'),
+      launchUserAttemptId: durableUserAttemptId,
+      onLaunchUserAttemptIdChange: (next) => { durableUserAttemptId = next; },
+    }));
+    const creationKeyAt = (index: number) => sessionSpawnNewActionBoundarySpy.mock.calls[index]?.[0].creationKey;
+
+    const hook = await renderHook(createHook);
+    await act(async () => { await hook.getCurrent().handleCreateSession(); });
+    await hook.rerender();
+    await act(async () => { await hook.getCurrent().handleCreateSession(); });
+    await hook.unmount();
+
+    durableUserAttemptId = getSessionDraftSnapshot(draftScope, { kind: 'newSession', draftId })
+      ?.localSupplement.launchUserAttemptId ?? null;
+    const reloadedHook = await renderHook(createHook);
+    await act(async () => { await reloadedHook.getCurrent().handleCreateSession(); });
+    await reloadedHook.unmount();
+
+    expect(sessionSpawnNewActionBoundarySpy).toHaveBeenCalledTimes(3);
+    expect(new Set([creationKeyAt(0), creationKeyAt(1), creationKeyAt(2)]).size).toBe(3);
   });
 
   it('invalidates daemon-unavailable Retry after Home, Account, Machine, path, or launch intent changes', async () => {

@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { dirname, join } from 'node:path';
-import { mkdir, unlink, utimes, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, unlink, utimes, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
+import { readProcessInstanceFingerprintSync } from '@happier-dev/cli-common/processInstance';
+import { readProcessIdentityByPid } from '@/daemon/processIdentity';
 import { applyEnvValues, restoreEnvValues, snapshotEnvValues } from '@/testkit/env/envSnapshot';
 import { createTempDir, removeTempDir } from '@/testkit/fs/tempDir';
 
@@ -20,6 +22,29 @@ describe('acquireDaemonLock', () => {
     vi.resetModules();
     vi.unmock('@/daemon/doctor');
     await removeTempDir(homeDir);
+  });
+
+  it('records the same Linux process generation used by the runner lock', async () => {
+    const { configuration } = await import('@/configuration');
+    const { acquireDaemonLock, readDaemonLockOwnerIdentity, releaseDaemonLock } = await import('@/persistence');
+    const fileHandle = await acquireDaemonLock(1, 1);
+    expect(fileHandle).not.toBeNull();
+    try {
+      const expected = readProcessInstanceFingerprintSync(process.pid, { platform: 'linux' });
+      const numericWitness = (await readProcessIdentityByPid(process.pid))?.processStartTimeMs;
+      expect(expected).toMatch(/^linux-proc:\d+$/u);
+      expect(JSON.parse(await readFile(configuration.daemonLockFile, 'utf8'))).toMatchObject({
+        t: 'happier_daemon_lock_v2',
+        processStartedAtMs: numericWitness,
+        processInstanceFingerprint: expected,
+      });
+      expect(readDaemonLockOwnerIdentity()).toMatchObject({
+        processStartedAtMs: numericWitness,
+        processInstanceFingerprint: expected,
+      });
+    } finally {
+      if (fileHandle) await releaseDaemonLock(fileHandle);
+    }
   });
 
   it('does not clear the lock file when daemon doctor import fails', async () => {
@@ -73,6 +98,13 @@ describe('acquireDaemonLock', () => {
   it('opens Windows daemon locks with read/write access before fsync', async () => {
     const observedLockFlags: string[] = [];
     const platformSpy = vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
+    vi.doMock('@/daemon/processIdentity', () => ({
+      readProcessIdentityByPid: async (pid: number) => ({
+        pid,
+        processStartTimeMs: 1_000,
+        command: 'happier daemon',
+      }),
+    }));
     vi.doMock('node:fs/promises', async () => {
       const actual = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
 
@@ -100,6 +132,7 @@ describe('acquireDaemonLock', () => {
       if (fileHandle) await releaseDaemonLock(fileHandle);
     } finally {
       platformSpy.mockRestore();
+      vi.unmock('@/daemon/processIdentity');
     }
   }, 120_000);
 
@@ -112,10 +145,48 @@ describe('acquireDaemonLock', () => {
     await mkdir(dirname(configuration.daemonLockFile), { recursive: true });
     await writeFile(configuration.daemonLockFile, String(process.pid), 'utf8');
 
-    const { acquireDaemonLock } = await import('@/persistence');
+    const { acquireDaemonLock, readDaemonLockOwnerIdentity } = await import('@/persistence');
 
     await expect(acquireDaemonLock(1, 1)).resolves.toBeNull();
+    expect(readDaemonLockOwnerIdentity()).toBeNull();
     expect(existsSync(configuration.daemonLockFile)).toBe(true);
+  });
+
+  it('keeps an in-flight v1 daemon lock opaque while its PID is live', async () => {
+    vi.doMock('@/daemon/doctor', () => ({
+      classifyDaemonLifecycleProcessByPid: async () => ({ kind: 'unknown' as const }),
+    }));
+    const { configuration } = await import('@/configuration');
+    await mkdir(dirname(configuration.daemonLockFile), { recursive: true });
+    await writeFile(configuration.daemonLockFile, JSON.stringify({
+      t: 'happier_daemon_lock_v1',
+      pid: process.pid,
+      ownerToken: '00000000-0000-4000-8000-000000000001',
+      processStartedAtMs: Date.now() - process.uptime() * 1_000,
+      createdAtMs: Date.now(),
+    }));
+    const { acquireDaemonLock, readDaemonLockOwnerIdentity } = await import('@/persistence');
+    expect(readDaemonLockOwnerIdentity()).toBeNull();
+    await expect(acquireDaemonLock(1, 1)).resolves.toBeNull();
+  });
+
+  it('detects PID reuse from a v2 process witness before treating a live PID as owner', async () => {
+    vi.doMock('@/daemon/doctor', () => ({
+      classifyDaemonLifecycleProcessByPid: async () => ({ kind: 'unknown' as const }),
+    }));
+    const { configuration } = await import('@/configuration');
+    await mkdir(dirname(configuration.daemonLockFile), { recursive: true });
+    await writeFile(configuration.daemonLockFile, JSON.stringify({
+      t: 'happier_daemon_lock_v2',
+      pid: process.pid,
+      ownerToken: '00000000-0000-4000-8000-000000000001',
+      processStartedAtMs: 1,
+      createdAtMs: Date.now(),
+    }));
+    const { inspectDaemonLockOwner } = await import('@/persistence');
+    await expect(inspectDaemonLockOwner()).resolves.toEqual({
+      status: 'replaceable', pid: process.pid, reason: 'unrelated',
+    });
   });
 
   it('does not replace an old live unclassified lock holder', async () => {

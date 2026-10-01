@@ -2,10 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { buildTestCodexRuntimeDescriptorV1 as buildCodexAgentRuntimeDescriptor } from '@/testkit/runtimeDescriptorFixtures';
 
-import {
-  resolveForkInheritedOverridesFromMetadata,
-  resolveSessionAgentSpawnInheritedOverridesFromMetadata,
-} from './resolveForkInheritedOverridesFromMetadata';
+import { resolveForkInheritedOverridesFromMetadata } from './resolveForkInheritedOverridesFromMetadata';
 
 const codexTarget = {
   kind: 'backend' as const,
@@ -100,7 +97,7 @@ describe('resolveForkInheritedOverridesFromMetadata', () => {
         v: 1,
         updatedAt: 456,
         selection: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: 'pcn_openrouter_work',
           modelId: 'openai/gpt-test',
         },
@@ -117,7 +114,7 @@ describe('resolveForkInheritedOverridesFromMetadata', () => {
         v: 1,
         updatedAt: 456,
         selection: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: 'pc_gateway',
           modelId: 'vendor/model',
         },
@@ -138,6 +135,14 @@ describe('resolveForkInheritedOverridesFromMetadata', () => {
     }, codexTarget)).toThrow(expect.objectContaining({
       providerError: expect.objectContaining({ code: 'provider_binding_changed', connectionId: 'pc_gateway' }),
     }));
+  });
+
+  it('retains unknown-current native choices across a fork without inventing a mode seed or V1 current', () => {
+    const state = { v: 2 as const, agentId: 'codex', updatedAt: 459, currentModeId: null, availableModes: [{ id: 'plan', name: 'Plan' }] };
+    const result = resolveForkInheritedOverridesFromMetadata({ sessionModesV2: state }, codexTarget);
+    expect(result.metadata.sessionModesV2).toEqual(state);
+    expect(result.metadata.sessionModesV1).toBeUndefined();
+    expect(result.spawn.agentModeId).toBeUndefined();
   });
 
   it('returns spawn seeds plus metadata overrides for valid parent overrides', () => {
@@ -209,7 +214,7 @@ describe('resolveForkInheritedOverridesFromMetadata', () => {
       modelSelection: {
         v: 1,
         updatedAt: 456,
-        ref: { agentTargetKey: 'backend:codex', providerConnectionId: null, modelId: 'gpt-test' },
+        ref: { agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: null, modelId: 'gpt-test' },
       },
       sessionConfigOptionOverrides: {
         v: 1,
@@ -222,12 +227,13 @@ describe('resolveForkInheritedOverridesFromMetadata', () => {
     });
 
     expect(result.metadata).toEqual({
+      sessionModesV2: { v: 2, agentId: 'codex', updatedAt: 459, currentModeId: 'plan', availableModes: [{ id: 'default', name: 'Default' }, { id: 'plan', name: 'Plan' }] },
       permissionMode: 'yolo',
       permissionModeUpdatedAt: 123,
       modelSelectionIntentV1: {
         v: 1,
         updatedAt: 456,
-        selection: { agentTargetKey: 'backend:codex', providerConnectionId: null, modelId: 'gpt-test' },
+        selection: { agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: null, modelId: 'gpt-test' },
       },
       modelOverrideV1: { v: 1, updatedAt: 456, modelId: 'gpt-test' },
       sessionModesV1: {
@@ -566,71 +572,4 @@ describe('resolveForkInheritedOverridesFromMetadata', () => {
     expect(result.metadata).toEqual({});
   });
 
-  it('resolves session-agent spawn inheritance with spawn-only metadata fields', () => {
-    const result = resolveSessionAgentSpawnInheritedOverridesFromMetadata({
-      summary: { text: 'Parent session title', updatedAt: 460 },
-      permissionMode: 'safe-yolo',
-      permissionModeUpdatedAt: 123,
-      modelOverrideV1: { v: 1, updatedAt: 456, modelId: 'gpt-test' },
-      acpSessionModeOverrideV1: { v: 1, updatedAt: 457, modeId: 'plan' },
-      acpConfigOptionOverridesV1: {
-        v: 1,
-        updatedAt: 458,
-        overrides: {
-          effort: { updatedAt: 458, value: 'xhigh' },
-        },
-      },
-      connectedServices: {
-        v: 1,
-        bindingsByServiceId: {
-          'openai-codex': { source: 'connected', selection: 'profile', profileId: 'work' },
-        },
-      },
-      connectedServicesUpdatedAt: 459,
-      profileId: 'profile-parent',
-      mcpSelectionV1: {
-        v: 1,
-        managedServersEnabled: false,
-        forceIncludeServerIds: ['local-search'],
-        forceExcludeServerIds: ['prod-browser'],
-      },
-    } as any, codexTarget);
-
-    expect(result.spawn).toEqual({
-      permissionMode: 'safe-yolo',
-      permissionModeUpdatedAt: 123,
-      agentModeId: 'plan',
-      agentModeUpdatedAt: 457,
-      modelSelection: {
-        v: 1,
-        updatedAt: 456,
-        ref: { agentTargetKey: 'backend:codex', providerConnectionId: null, modelId: 'gpt-test' },
-      },
-      sessionConfigOptionOverrides: {
-        v: 1,
-        updatedAt: 458,
-        overrides: {
-          effort: { updatedAt: 458, value: 'xhigh' },
-        },
-      },
-      connectedServices: {
-        v: 2,
-        bindingsByServiceId: {
-          'happier.agent.codex/openai-codex': { source: 'connected', selection: 'profile', profileId: 'work' },
-        },
-      },
-      connectedServicesUpdatedAt: 459,
-      profileId: 'profile-parent',
-      mcpSelection: {
-        v: 1,
-        managedServersEnabled: false,
-        forceIncludeServerIds: ['local-search'],
-        forceExcludeServerIds: ['prod-browser'],
-      },
-    });
-    expect(result.metadata.summary).toEqual({
-      text: 'Parent session title',
-      updatedAt: 460,
-    });
-  });
 });

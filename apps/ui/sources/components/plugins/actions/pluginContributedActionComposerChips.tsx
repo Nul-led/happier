@@ -134,6 +134,12 @@ export type PluginComposerControlSurfacePresentation =
         role: 'compact';
         control: PluginProjectedComposerControlEntryV1;
         state: ComposerControlStateV1;
+        /**
+         * The chip's own icon and label, drawn in place of the renderer when it cannot mount. The
+         * compact renderer lives inside the chip's button, so the host's unavailable card (with its
+         * own Details button) must never render there.
+         */
+        fallback?: React.ReactNode;
     }>
     | Readonly<{
         kind: 'control';
@@ -538,7 +544,7 @@ type ResolvedComposerControlInteraction = Readonly<{
     contentPopover: ComposerControlSurfacePopover | undefined;
     opensCollapsedPopover: boolean;
     invokeDirectInteraction: (focusReturnRef?: FocusReturnRef) => void;
-    compactPresentation: PluginComposerControlSurfacePresentation | null;
+    compactPresentation: Extract<PluginComposerControlSurfacePresentation, Readonly<{ role: 'compact' }>> | null;
 }>;
 
 type ComposerControlSurfacePopover = Readonly<{
@@ -748,9 +754,27 @@ function renderComposerControlChipNode(params: Readonly<{
     const { control, host, resolved, context, diagnosticRecord } = params;
     if (!host.isCurrent() || !resolved.state.visible) return null;
 
+    const chipContent = (
+        <>
+            <Icon
+                name={resolvePluginUiIconName(resolved.state.icon)}
+                size={AGENT_INPUT_CHIP_ICON_SIZE_PX}
+                color={context.iconColor}
+                style={AGENT_INPUT_CHIP_ICON_STYLE}
+            />
+            {context.showLabel ? (
+                <AgentInputChipLabel
+                    label={resolved.state.label}
+                    count={resolved.state.count}
+                    textStyle={context.textStyle}
+                    countTextStyle={context.countTextStyle}
+                />
+            ) : null}
+        </>
+    );
     let compactContent: React.ReactNode = null;
     if (resolved.compactPresentation) {
-        compactContent = host.renderSurfaceContent(resolved.compactPresentation);
+        compactContent = host.renderSurfaceContent({ ...resolved.compactPresentation, fallback: chipContent });
     }
 
     const controlEnabled = resolved.canInteract();
@@ -794,24 +818,7 @@ function renderComposerControlChipNode(params: Readonly<{
                 }}
                 style={({ pressed }) => [context.chipStyle(pressed), resolveComposerChipPhysicalTargetStyle()]}
             >
-                {compactContent ?? (
-                    <>
-                        <Icon
-                            name={resolvePluginUiIconName(resolved.state.icon)}
-                            size={AGENT_INPUT_CHIP_ICON_SIZE_PX}
-                            color={context.iconColor}
-                            style={AGENT_INPUT_CHIP_ICON_STYLE}
-                        />
-                        {context.showLabel ? (
-                            <AgentInputChipLabel
-                                label={resolved.state.label}
-                                count={resolved.state.count}
-                                textStyle={context.textStyle}
-                                countTextStyle={context.countTextStyle}
-                            />
-                        ) : null}
-                    </>
-                )}
+                {compactContent ?? chipContent}
             </Pressable>
         ),
     });

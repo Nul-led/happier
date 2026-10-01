@@ -4,6 +4,10 @@ import type {
     FileBackedTranscriptSessionStore,
     FileBackedTranscriptSubscriptionListener,
 } from './fileBackedTranscripts/store';
+import { SessionMessageV1Schema } from '@happier-dev/protocol';
+import type { OpenedSessionStateSnapshot, OpenedSessionStateVersions } from './snapshotSync';
+import { createSessionTranscriptStoredContentUnavailableError } from './sessionTranscriptStoredContentUnavailable';
+import { openSessionMessageContent, SessionStoredContentError, type SessionStoredContentCryptoContext } from '@/session/transport/encryption/sessionEncryptionContext';
 import { readRecord, normalizeBoundedInt, type SessionTranscriptActionItem } from './sessionTranscriptActionInput';
 import { fetchEncryptedTranscriptMessagesPage, type RawTranscriptRow } from '@/session/replay/fetchEncryptedTranscriptMessages';
 import {
@@ -18,8 +22,30 @@ import {
 type ServerBackedSessionTranscriptStoreParams = Readonly<{
     token: string;
     sessionId: string;
-    ctx: Readonly<{ encryptionKey: Uint8Array; encryptionVariant: 'legacy' | 'dataKey' }> | null;
-}>;
+    readOpenedSessionState?: (versions: OpenedSessionStateVersions) => Promise<OpenedSessionStateSnapshot>;
+}> & SessionStoredContentCryptoContext;
+
+function rowToOpenedMessage(row: RawTranscriptRow, params: ServerBackedSessionTranscriptStoreParams) {
+    const parsed = SessionMessageV1Schema.safeParse(row);
+    if (!parsed.success) throw createSessionTranscriptStoredContentUnavailableError();
+    let opened: unknown;
+    try {
+        opened = openSessionMessageContent({ ...params, content: parsed.data.content });
+    } catch (error) {
+        if (error instanceof SessionStoredContentError) {
+            // Content failure belongs to this row, not the page or lease. Keep
+            // its cursor witness without forwarding mismatched/plain content
+            // or the unopenable ciphertext through the opened projection.
+            return { ...parsed.data, content: { t: 'plain', v: null },
+                openFailure: error.code === 'session_content_mode_mismatch' ? 'mode_mismatch' : 'corrupt_or_unopenable' };
+        }
+        throw error;
+    }
+    if (!opened || typeof opened !== 'object' || Array.isArray(opened)) {
+        return { ...parsed.data, content: { t: 'plain', v: null }, openFailure: 'corrupt_or_unopenable' };
+    }
+    return { ...parsed.data, content: { t: 'plain', v: opened } };
+}
 
 function parseSeqCursor(value: unknown): number | undefined {
     if (typeof value === 'number' && Number.isFinite(value)) {
@@ -136,6 +162,14 @@ export function createServerBackedSessionTranscriptStore(
         },
         async readAfter(rawParams?: unknown): Promise<FileBackedTranscriptReadAfterResult<SessionTranscriptActionItem>> {
             const input = readRecord(rawParams);
+            const openedProjection = input.projection === 'openedMessagesV1';
+            const readSessionState = async () => {
+                if (!params.readOpenedSessionState) throw createSessionTranscriptStoredContentUnavailableError();
+                return await params.readOpenedSessionState({
+                    agentStateVersion: typeof input.agentStateVersion === 'number' ? input.agentStateVersion : -1,
+                    sharedMetadataVersion: typeof input.sharedMetadataVersion === 'number' ? input.sharedMetadataVersion : -1,
+                });
+            };
             const maxItems = normalizeBoundedInt(input.maxItems, 100, 500);
             const maxBytes = normalizeBoundedInt(input.maxBytes, 64 * 1024, 1_000_000);
             if (isTailCursor(input.cursor)) {
@@ -149,6 +183,7 @@ export function createServerBackedSessionTranscriptStore(
                     items: [],
                     nextCursor: tailCursor,
                     truncated: false,
+                    ...(openedProjection ? { projection: 'openedMessagesV1' as const, ...await readSessionState() } : {}),
                 };
             }
             const afterSeq = parseSeqCursor(input.cursor);
@@ -160,7 +195,7 @@ export function createServerBackedSessionTranscriptStore(
             });
             tailCursor = typeof page.nextAfterSeq === 'number' ? String(page.nextAfterSeq) : tailCursor;
             const limited = limitItemsByEncodedBytes(
-                rowsToTranscriptItems(page.messages),
+                openedProjection ? page.messages.map((row) => rowToOpenedMessage(row, params)) : rowsToTranscriptItems(page.messages),
                 maxBytes,
             );
             const emittedCursor = cursorForLastEmittedItem(limited.items);
@@ -170,6 +205,7 @@ export function createServerBackedSessionTranscriptStore(
                     ? emittedCursor ?? (typeof page.nextAfterSeq === 'number' ? String(page.nextAfterSeq) : null)
                     : typeof page.nextAfterSeq === 'number' ? String(page.nextAfterSeq) : emittedCursor,
                 truncated: page.hasMore || limited.truncated,
+                ...(openedProjection ? { projection: 'openedMessagesV1' as const, ...await readSessionState() } : {}),
             };
         },
         getTailCursor: () => tailCursor,

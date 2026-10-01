@@ -188,6 +188,7 @@ describe('workspaceSyncNativeProcessLaunchers', () => {
     const agent = await launchers.launchLocalAgent({
       executablePath: '/verified/happier-mutagen-agent.exe',
       args: ['--root', 'C:\\workspaces\\owned', '--stdio'],
+      dataDirectory: 'C:\\happier\\workspace-sync\\mutagen\\data',
     });
     const { stream } = agent;
 
@@ -203,12 +204,13 @@ describe('workspaceSyncNativeProcessLaunchers', () => {
         'C:\\workspaces\\owned',
         '--stdio',
       ],
-      options: {
+      options: expect.objectContaining({
         detached: false,
         shell: false,
         stdio: ['pipe', 'pipe', 'pipe'],
         windowsHide: true,
-      },
+        env: expect.objectContaining({ MUTAGEN_DATA_DIRECTORY: 'C:\\happier\\workspace-sync\\mutagen\\data' }),
+      }),
     });
 
     stream.on('error', () => undefined);
@@ -414,6 +416,7 @@ describe('workspaceSyncNativeProcessLaunchers', () => {
     const agent = await launchers.launchLocalAgent({
       executablePath: '/verified/bin/happier-mutagen-agent',
       args: ['--root', '/workspace', '--stdio'],
+      dataDirectory: '/daemon/workspace-sync/mutagen/data',
     });
     const { stream } = agent;
     const childOutput: Buffer[] = [];
@@ -459,6 +462,7 @@ describe('workspaceSyncNativeProcessLaunchers', () => {
     const agent = await launchers.launchLocalAgent({
       executablePath: '/verified/bin/happier-mutagen-agent',
       args: [],
+      dataDirectory: '/daemon/workspace-sync/mutagen/data',
       signal: controller.signal,
     });
     const { stream } = agent;
@@ -489,6 +493,7 @@ describe('workspaceSyncNativeProcessLaunchers', () => {
     const error = await launchers.launchLocalAgent({
       executablePath: '/verified/bin/happier-mutagen-agent',
       args: [],
+      dataDirectory: '/daemon/workspace-sync/mutagen/data',
     }).then(() => null, (caught: unknown) => caught);
     expect(error).toBeInstanceOf(AggregateError);
     expect((error as AggregateError).errors).toEqual([

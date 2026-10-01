@@ -14,6 +14,7 @@ function readInlineDetailsResource(tab: DetailsTab): Readonly<{
     iconName: string | null;
     mode: string | null;
     initialTeamId: string | null;
+    teamIds: readonly string[];
 }> | null {
     const resource = tab.resource;
     if (!resource || typeof resource !== 'object' || Array.isArray(resource)) return null;
@@ -32,42 +33,20 @@ function readInlineDetailsResource(tab: DetailsTab): Readonly<{
         iconName: read(value.iconName),
         mode: read((resource as Record<string, unknown>).mode),
         initialTeamId: read((resource as Record<string, unknown>).initialTeamId),
+        teamIds: readStringList((resource as Record<string, unknown>).teamIds),
     };
 }
 
-function resolveAgentUiBehaviorFromSession(session: Session) {
-    return resolveAgentUiBehaviorFromSessionMetadata(readSessionOwnerMetadataView(session));
+function readStringList(value: unknown): readonly string[] {
+    if (!Array.isArray(value)) return [];
+    return value.flatMap((entry) => (typeof entry === 'string' && entry.trim() ? [entry.trim()] : []));
 }
 
-export function getSessionSubagentLaunchCards(params: Readonly<{
-    sessionId: string;
-    scopeId: string;
-    session: Session | null;
-    subagents: readonly SessionSubagent[];
-}>): readonly React.ReactNode[] {
-    const session = params.session;
-    if (!session) return [];
-    const behavior = resolveAgentUiBehaviorFromSession(session);
-    const renderLaunchCards = behavior?.sessionSubagents?.renderLaunchCards;
-    if (!renderLaunchCards) return [];
-    return renderLaunchCards({
-        sessionId: params.sessionId,
-        scopeId: params.scopeId,
-        session,
-        subagents: params.subagents,
-        renderInlineSurface: (surface) => (
-            <AgentInlineSurface
-                key={surface.slotId}
-                pluginId={surface.pluginId}
-                surfaceId={surface.surfaceId}
-                sessionId={surface.sessionId}
-                serverId={session.serverId}
-                agentId={surface.agentId}
-                inlineMount={{ role: 'sessionSubagentLaunch', presentation: 'content' }}
-                launchInput={surface.launchInput}
-            />
-        ),
-    });
+/** The launch surface a Details tab presents instead of the teammate launcher (`mode: 'launch'`). */
+const LAUNCH_DETAILS_MODE = 'launch';
+
+function resolveAgentUiBehaviorFromSession(session: Session) {
+    return resolveAgentUiBehaviorFromSessionMetadata(readSessionOwnerMetadataView(session));
 }
 
 export function hasSessionSubagentLaunchCards(session: Session | null): boolean {
@@ -90,6 +69,21 @@ export function createSessionTeammateLauncherDetailsTab(params: Readonly<{
     });
 }
 
+/**
+ * The Agent's launch surface as a Details tab, for a host that offers launching from a menu (the
+ * Agents pane's "+") rather than as a card. `null` when the Agent contributes none.
+ */
+export function createSessionSubagentLaunchDetailsTab(params: Readonly<{
+    session: Session | null;
+    subagents: readonly SessionSubagent[];
+}>): DetailsTab | null {
+    if (!params.session) return null;
+    const behavior = resolveAgentUiBehaviorFromSession(params.session);
+    const createTab = behavior?.sessionSubagents?.createLaunchDetailsTab;
+    if (!createTab) return null;
+    return createTab({ session: params.session, subagents: params.subagents });
+}
+
 export function hasSessionTeammateLauncher(session: Session | null): boolean {
     if (!session) return false;
     const behavior = resolveAgentUiBehaviorFromSession(session);
@@ -103,6 +97,19 @@ export function renderProviderSessionDetailsTab(params: Readonly<{
     tab: DetailsTab;
 }>): React.ReactNode | null {
     const inline = readInlineDetailsResource(params.tab);
+    if (inline && inline.mode === LAUNCH_DETAILS_MODE) {
+        return (
+            <AgentInlineSurface
+                pluginId={inline.pluginId}
+                surfaceId={inline.surfaceId}
+                sessionId={params.sessionId}
+                serverId={params.serverId}
+                agentId={inline.agentId}
+                inlineMount={{ role: 'sessionSubagentLaunch', presentation: 'content' }}
+                launchInput={{ teamIds: inline.teamIds }}
+            />
+        );
+    }
     if (inline) {
         return (
             <AgentInlineSurface

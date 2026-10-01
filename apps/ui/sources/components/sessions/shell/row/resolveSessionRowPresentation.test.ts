@@ -31,7 +31,7 @@ type ResolveSessionRowPresentation = (input: Readonly<{
         | 'status.unread'
         | 'status.mentioned'
         | 'status.queuedInput'
-        | 'sessionsList.attentionSectionTitle';
+        | 'workStatus.buckets.needs_you';
 }>;
 
 async function loadRowPresentationResolver(): Promise<ResolveSessionRowPresentation> {

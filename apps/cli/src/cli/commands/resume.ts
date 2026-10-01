@@ -1,12 +1,13 @@
 import chalk from 'chalk';
+import { hostname } from 'node:os';
 import { errorFrame } from '@happier-dev/cli-common/output';
 
-import { readStoredCredentials, type StoredCredentials } from '@/persistence';
+import { readSettings, readStoredCredentials, type StoredCredentials } from '@/persistence';
 import { createSessionAttachFile } from '@/daemon/sessionAttachFile';
 import { requireCatalogEntry } from '@/agent/catalog/registry';
 import type { CatalogAgentId } from '@/agent/catalog/ids';
 import { configuration } from '@/configuration';
-import { fetchSessionById, fetchSessionsPage, type RawSessionListRow, type RawSessionRecord } from '@/session/transport/http/sessionsHttp';
+import { fetchSessionById, fetchSessionsPage, type RawSessionRecord } from '@/session/transport/http/sessionsHttp';
 import { resolveSessionIdOrPrefix } from '@/session/query/resolveSessionId';
 import {
   resolveSessionEncryptionContextFromCredentials,
@@ -37,18 +38,17 @@ import { presentProviderCliRefusal } from '@/providers/lifecycle/presentProvider
 import { canUseInkSelector, runSessionActionSelector } from '@/ui/ink/runSessionActionSelector';
 import { buildCliSessionRowModel } from '@/cli/output/session/buildCliSessionRowModel';
 import { handleConfiguredAcpCatalogCliCommand } from '@/agent/acp/catalog/configured/handleCatalogCliCommand';
-import { buildResumeSelectionModel, formatResumeSelectionFooter } from './resumeInteractiveSelection';
+import { buildContinueSelectionModel } from './resumeInteractiveSelection';
+import { handleAttachCommand } from './attach';
+import { readTerminalAttachmentInfo } from '@/terminal/attachment/terminalAttachmentInfo';
+import { isTmuxAvailable } from '@/integrations/tmux';
 import { promptConfirmYesNo } from '@/terminal/prompts/promptConfirmYesNo';
 import { SESSION_HELP_LINES } from '@/cli/commands/session/shared/sessionCommandUsage';
 
 import type { CommandContext, CommandHandler } from '@/cli/commandRegistry';
 
 type FetchSessionByIdFn = (params: { token: string; sessionId: string }) => Promise<RawSessionRecord | null>;
-type FetchSessionsPageFn = (params: { token: string; cursor?: string; limit?: number; activeOnly?: boolean; archivedOnly?: boolean }) => Promise<{
-  sessions: RawSessionListRow[];
-  nextCursor: string | null;
-  hasNext: boolean;
-}>;
+type FetchSessionsPageFn = typeof fetchSessionsPage;
 
 type ReadAccountSettingsFn = (params: { credentials: StoredCredentials }) => Promise<AccountSettings>;
 type ResumeContributionRegistry = Pick<ResolvedContributionRegistry, 'agentDefinitionsById'>;
@@ -66,9 +66,10 @@ export type ResumeCommandDeps = Readonly<{
   resolveContributionRegistryFn?: ResolveResumeContributionRegistryFn;
   chdirFn?: (nextDir: string) => void;
   canUseInkSelectorFn?: () => boolean;
-  selectResumableSessionIdFn?: typeof selectResumableSessionId;
+  selectContinuableSessionIdFn?: typeof selectContinuableSessionId;
   promptConfirmYesNoFn?: typeof promptConfirmYesNo;
   getAccountEncryptionCurrentnessFn?: () => Promise<AccountEncryptionCurrentnessResponse>;
+  attachDeps?: Parameters<typeof handleAttachCommand>[1];
 }>;
 
 type ResumableSessionSelection =
@@ -115,22 +116,29 @@ function readConnectedServicesFromMetadata(metadata: Record<string, unknown> | n
   return parsed.success ? parsed.data : null;
 }
 
-async function selectResumableSessionId(params: Readonly<{
+async function selectContinuableSessionId(params: Readonly<{
   credentials: StoredCredentials;
   accountSettings: AccountSettings;
   fetchSessionsPageFn: FetchSessionsPageFn;
   contributionRegistry: ResumeContributionRegistry | null;
   accountEncryptionMode: AccountEncryptionCurrentnessResponse['mode'];
 }>): Promise<ResumableSessionSelection> {
-  const model = await buildResumeSelectionModel(params);
-  const footerHint = formatResumeSelectionFooter(model.hint);
-  if (model.rows.length === 0) return { type: 'none', footerHint };
+  const settings = await readSettings();
+  const model = await buildContinueSelectionModel({
+    ...params,
+    currentMachineId: typeof settings.machineId === 'string' && settings.machineId.trim() ? settings.machineId.trim() : null,
+    currentMachineHost: hostname(),
+    readTerminalAttachmentInfoFn: readTerminalAttachmentInfo,
+    isTmuxAvailableFn: isTmuxAvailable,
+  });
+  if (model.rows.length === 0) return { type: 'none', footerHint: model.footerHint };
 
   const selection = await runSessionActionSelector({
-    title: 'Resume a session',
-    actionVerb: 'resume',
+    title: 'Continue a session',
+    actionVerb: 'continue',
     rows: model.rows,
-    footerHint,
+    footerHint: model.footerHint,
+    onProbe: model.probeSessionIdFn,
   });
   return selection.type === 'selected' ? selection : { type: 'cancelled' };
 }
@@ -146,7 +154,7 @@ export async function handleResumeCommand(
   if (hasHelpFlag) {
     console.log(SESSION_HELP_LINES.resume);
     console.log('');
-    console.log('Resumes an inactive session (vendor-resume) from the CLI.');
+    console.log('Attaches to a running session, or resumes a stopped session when supported.');
     return;
   }
 
@@ -159,7 +167,7 @@ export async function handleResumeCommand(
   const resolveContributionRegistryFn = deps?.resolveContributionRegistryFn ?? defaultResolveResumeContributionRegistry;
   const chdirFn = deps?.chdirFn ?? ((nextDir: string) => process.chdir(nextDir));
   const canUseInkSelectorFn = deps?.canUseInkSelectorFn ?? canUseInkSelector;
-  const selectResumableSessionIdFn = deps?.selectResumableSessionIdFn ?? selectResumableSessionId;
+  const selectContinuableSessionIdFn = deps?.selectContinuableSessionIdFn ?? selectContinuableSessionId;
   const promptConfirmYesNoFn = deps?.promptConfirmYesNoFn ?? promptConfirmYesNo;
   const credentials = await readCredentialsFn();
   if (!credentials) {
@@ -180,13 +188,13 @@ export async function handleResumeCommand(
   let sessionIdOrPrefix = rawInput;
   if (isInteractive) {
     if (!canUseInkSelectorFn()) {
-      console.error(chalk.red('Error:'), 'Interactive resume is not available (raw TTY mode not supported).');
+      console.error(chalk.red('Error:'), 'Interactive session selection is not available (raw TTY mode not supported).');
       console.log('');
-      console.log('Hint: run `happier session list --resumable` and then `happier resume <session-id>`.');
+      console.log('Hint: run `happier session list` and then `happier resume <session-id>`.');
       process.exit(1);
     }
 
-    const selected = await selectResumableSessionIdFn({
+    const selected = await selectContinuableSessionIdFn({
       credentials,
       accountSettings,
       fetchSessionsPageFn,
@@ -194,11 +202,11 @@ export async function handleResumeCommand(
       accountEncryptionMode: accountEncryptionCurrentness.mode,
     });
     if (selected.type === 'cancelled') {
-      console.log(chalk.blue('Resume cancelled'));
+      console.log(chalk.blue('Continue cancelled'));
       return;
     }
     if (selected.type === 'none') {
-      console.log('No resumable sessions found.');
+      console.log('No sessions available to continue from here.');
       if (selected.footerHint) {
         console.log(`Hint: ${selected.footerHint}`);
       }
@@ -246,7 +254,13 @@ export async function handleResumeCommand(
     throw new Error('Session is archived and cannot be resumed.');
   }
   if (rowModel.active === true) {
-    throw new Error('Session is already active and cannot be resumed.');
+    await handleAttachCommand([rawSession.id], {
+      ...deps?.attachDeps,
+      readCredentialsFn: async () => credentials,
+      fetchSessionByIdFn: async () => rawSession,
+      getAccountEncryptionCurrentnessFn: async () => accountEncryptionCurrentness,
+    });
+    return;
   }
 
   const directory = rowModel.path;

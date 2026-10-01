@@ -11,6 +11,7 @@ import { extractGitHubReleaseAsset } from './extractGitHubReleaseAsset.js';
 import { fetchNodeRuntimeReleaseAsset } from './nodeRelease.js';
 import { promoteManagedCurrentInstall } from './promoteManagedCurrentInstall.js';
 import { resolveHappyHomeDirFromEnvironment } from './resolveHappyHomeDir.js';
+import type { AgentInstallProgressCallback } from './installProgress.js';
 
 function resolveManagedJavaScriptRuntimeBinaryName(): string {
   return process.platform === 'win32' ? 'happier-js-runtime.cmd' : 'happier-js-runtime';
@@ -253,7 +254,7 @@ function resolveManagedJavaScriptRuntimeBootstrapLockPath(processEnv: NodeJS.Pro
 export async function ensureManagedJavaScriptRuntimeCommand(
   processEnv: NodeJS.ProcessEnv = process.env,
   deps: EnsureManagedJavaScriptRuntimeDeps = {},
-  options: Readonly<{ signal?: AbortSignal }> = {},
+  options: Readonly<{ signal?: AbortSignal; onProgress?: AgentInstallProgressCallback }> = {},
 ): Promise<string | null> {
   const { signal } = options;
   signal?.throwIfAborted();
@@ -294,6 +295,7 @@ export async function ensureManagedJavaScriptRuntimeCommand(
 
         await downloadAsset({
           signal,
+          onProgress: options.onProgress,
           url: release.url,
           destinationPath: archivePath,
           digest: release.digest,

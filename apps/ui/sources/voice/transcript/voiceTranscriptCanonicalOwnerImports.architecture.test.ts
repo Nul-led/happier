@@ -15,7 +15,7 @@ const sourceExpectations: ReadonlyArray<SourceExpectation> = [
             '@/voice/transcript/voiceTranscriptSelectors',
         ],
         forbiddenImports: [
-            '@/sync/domains/messages/readStoredSessionMessages',
+            "@happier-dev/session-core/messages",
             '@/voice/transcript/VoiceTranscriptProjector',
         ],
     },
@@ -25,7 +25,7 @@ const sourceExpectations: ReadonlyArray<SourceExpectation> = [
             '@/voice/transcript/voiceTranscriptSelectors',
         ],
         forbiddenImports: [
-            '@/sync/domains/messages/readStoredSessionMessages',
+            "@happier-dev/session-core/messages",
             '@/voice/transcript/VoiceTranscriptProjector',
         ],
     },

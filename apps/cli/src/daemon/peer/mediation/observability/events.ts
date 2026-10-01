@@ -114,6 +114,8 @@ export type DaemonPeerMediationDirectFlowObserver = Readonly<{
         flowKind: PeerFlowKindV1;
         flowId: string;
         kind: PeerMediationObservabilityEventKindV1;
+        /** Verified route fact from the flow admission owner; root identity stays fixed. */
+        routeKind?: PeerRouteKindV1;
         reasonCode?: string;
         routeGrantId?: string;
         bytesIn?: number;
@@ -142,7 +144,7 @@ export function createDaemonPeerMediationDirectFlowObserver(input: Readonly<{
                 flowId: event.flowId,
                 kind: event.kind,
                 nowMs: input.nowMs(),
-                routeKind: input.routeKind,
+                routeKind: event.routeKind ?? input.routeKind,
                 ...(event.reasonCode ? { reasonCode: event.reasonCode } : {}),
                 ...(event.routeGrantId ? { routeGrantId: event.routeGrantId } : {}),
                 ...(event.bytesIn !== undefined ? { bytesIn: event.bytesIn } : {}),

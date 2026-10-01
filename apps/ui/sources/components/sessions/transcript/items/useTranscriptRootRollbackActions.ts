@@ -3,7 +3,7 @@ import { isBundledAgentId, resolveAgentIdFromSessionMetadata } from '@happier-de
 import { useCurrentProjectedAgentCapabilities } from '@/agents/hooks/useCurrentProjectedAgentCapabilities';
 import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
 import { usePreferredServerIdForSession } from '@/sync/runtime/orchestration/serverScopedRpc/usePreferredServerIdForSession';
-import type { Message } from '@/sync/domains/messages/messageTypes';
+import type { Message } from "@happier-dev/session-core/messages";
 import {
     readSessionRollbackRangesV1,
     resolveTranscriptRollbackActions,

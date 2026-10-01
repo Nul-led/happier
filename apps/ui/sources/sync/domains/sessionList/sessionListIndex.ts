@@ -56,6 +56,11 @@ export type SessionListIndexItem =
         serverName?: string;
         folderId?: string | null;
         folderDepth?: number;
+        /**
+         * Level under a lead in the same list group (the `reportsTo` tree, ORC §3.8): 1 for a direct
+         * report drawn under its lead. Absent for a row drawn at its own level.
+         */
+        reportsDepth?: number;
         workspace?: SessionFolderWorkspaceRefV1;
         /**
          * Host-derived provenance for a contextual session-list search row.
@@ -121,6 +126,9 @@ function areWorkspaceRefsEqual(
     if (previous.t === 'workspaceRef') {
         return next.t === 'workspaceRef' && previous.workspaceRefId === next.workspaceRefId;
     }
+    if (previous.t === 'managedSessions') {
+        return next.t === 'managedSessions' && previous.machineId === next.machineId;
+    }
     return next.t === 'workspaceScope'
         && previous.machineId === next.machineId
         && previous.rootPath === next.rootPath;
@@ -151,6 +159,7 @@ export function areSessionListIndexItemsEqual(
             && previous.serverName === next.serverName
             && (previous.folderId ?? null) === (next.folderId ?? null)
             && (previous.folderDepth ?? null) === (next.folderDepth ?? null)
+            && (previous.reportsDepth ?? 0) === (next.reportsDepth ?? 0)
             && (previous.contextualSearchSourceMachineId ?? null) === (next.contextualSearchSourceMachineId ?? null)
             && (previous.contextualSearchReasons ?? []).join('\u0001') === (next.contextualSearchReasons ?? []).join('\u0001')
             && areWorkspaceRefsEqual(previous.workspace ?? null, next.workspace ?? null);

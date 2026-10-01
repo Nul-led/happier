@@ -112,10 +112,13 @@ describe('AgentInputChipPickerTopSelector', () => {
 
         const codexStyle = flattenStyle(codexButton?.props.style({ pressed: false }));
         const claudeStyle = flattenStyle(claudeButton?.props.style({ pressed: false }));
-        expect(codexStyle.width).toBe(36);
-        expect(codexStyle.height).toBe(36);
         expect(codexStyle.minWidth).toBe(resolveMinimumInteractiveTargetSize('web'));
         expect(codexStyle.minHeight).toBe(resolveMinimumInteractiveTargetSize('web'));
+        // The declared size must match the enforced minimum. When width/height are smaller,
+        // Yoga measures the horizontal ScrollView from the smaller flex bases before the
+        // minimum expands each button, leaving the final options beyond its legal scroll end.
+        expect(codexStyle.width).toBe(codexStyle.minWidth);
+        expect(codexStyle.height).toBe(codexStyle.minHeight);
         expect(codexStyle.backgroundColor).toEqual(expect.any(String));
         expect(Boolean(codexStyle.boxShadow || codexStyle.elevation)).toBe(true);
         expect(claudeStyle.backgroundColor).toBe('transparent');
@@ -128,5 +131,30 @@ describe('AgentInputChipPickerTopSelector', () => {
 
         await screen.pressByTestIdAsync('agent-input-chip-picker.top-selector-option:claude');
         expect(onFocusOption).toHaveBeenCalledWith('claude');
+    });
+
+    it('separates a labelled group with a divider and badges its rows with their state mark unless selected', async () => {
+        const { AgentInputChipPickerTopSelector } = await import('./AgentInputChipPickerTopSelector');
+        const screen = await renderScreen(<AgentInputChipPickerTopSelector
+                    sections={[
+                        { id: '__default__', options: [{ id: 'claude', label: 'Claude' }] },
+                        {
+                            id: 'notOnMachine',
+                            label: 'Not on devbox yet',
+                            options: [
+                                { id: 'antigravity', label: 'Antigravity', sectionId: 'notOnMachine', muted: true, statusMarker: React.createElement('Marker', { testID: 'marker-antigravity' }) },
+                                { id: 'gemini', label: 'Gemini', sectionId: 'notOnMachine', muted: true, statusMarker: React.createElement('Marker', { testID: 'marker-gemini' }) },
+                            ],
+                        },
+                    ]}
+                    focusedOptionId="gemini"
+                    selectedOptionId="gemini"
+                    onFocusOption={vi.fn()}
+                />);
+
+        expect(screen.findByTestId('agent-input-chip-picker.top-selector-divider:notOnMachine')).toBeTruthy();
+        expect(screen.findByTestId('marker-antigravity')).toBeTruthy();
+        // The selection shows as the selection, not as "not installed".
+        expect(screen.findByTestId('marker-gemini')).toBeFalsy();
     });
 });

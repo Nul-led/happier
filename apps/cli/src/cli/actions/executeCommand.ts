@@ -382,7 +382,6 @@ export async function runCompiledActionCliCommand(params: Readonly<{
     }
     result = await executor.execute(command.actionId, input, {
       surface: 'cli',
-      authority: 'present_user',
       actionRequestId: invocationId,
       defaultSessionId: typeof input.sessionId === 'string' ? input.sessionId : null,
       ...(requestSignal ? { signal: requestSignal } : {}),

@@ -7,6 +7,7 @@ import {
     SESSION_LIST_ROW_HEIGHT_MINIMAL_NATIVE_PHONE,
 } from './sessionListRowHeights';
 import { resolveSessionListDensityViewState } from './resolveSessionListDensityViewState';
+import { SessionListRowSubtitle, SessionListRowTitle } from './row/SessionListRowPresentation';
 
 describe('resolveSessionListDensityViewState', () => {
     it('uses the default row height and expanded flags for detailed or unknown density values', () => {
@@ -74,5 +75,34 @@ describe('resolveSessionListDensityViewState', () => {
             compactMinimal: true,
             rowHeight: SESSION_LIST_ROW_HEIGHT_MINIMAL,
         });
+    });
+
+    it('raises the row floor for large UI text without changing the density choice', () => {
+        expect(resolveSessionListDensityViewState('detailed', {
+            isTablet: false,
+            platform: 'web',
+            uiFontScale: 1.3,
+        }).rowHeight).toBeGreaterThan(SESSION_LIST_ROW_HEIGHT_DEFAULT);
+        expect(resolveSessionListDensityViewState('detailed', {
+            isTablet: false,
+            platform: 'web',
+            uiFontScale: 1,
+        }).rowHeight).toBe(SESSION_LIST_ROW_HEIGHT_DEFAULT);
+    });
+
+    it('allows long localized row title and context lines to reflow at large text scale', () => {
+        const title = SessionListRowTitle({
+            density: 'default',
+            textScale: 1.3,
+            children: 'A long localized session title that must remain readable',
+        });
+        const subtitle = SessionListRowSubtitle({
+            density: 'default',
+            textScale: 1.3,
+            children: 'Home · Team · Project · a duplicated context label',
+        });
+
+        expect(title).toHaveProperty('props.numberOfLines', 2);
+        expect(subtitle).toHaveProperty('props.numberOfLines', 2);
     });
 });

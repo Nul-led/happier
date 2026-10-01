@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { deriveSessionCreationTagV1, type SessionInputAdmissionResultV1 } from '@happier-dev/protocol';
+import { buildSessionSpawnInitialInputLocalIdV1, deriveSessionCreationTagV1, type SessionInputAdmissionResultV1 } from '@happier-dev/protocol';
 
 const mocks = vi.hoisted(() => ({
   resolveSessionTransportContext: vi.fn(),
@@ -107,7 +107,7 @@ describe('sendSessionMessage machine admission', () => {
           creationKey: 'machine-admission-test',
         }),
         recipe: {
-          execution: { machineId: 'target-machine', directory: '/workspace' },
+          execution: { machineId: 'target-machine', directory: { kind: 'path', path: '/workspace' } },
           organization: { folderId: null, tagIds: [] },
           agentTarget: {
             kind: 'agent',
@@ -214,6 +214,76 @@ describe('sendSessionMessage machine admission', () => {
       requestedAction: { v: 1, kind: 'steer_if_active' },
     }));
     expect(mocks.enqueuePendingQueueV2MessageViaHttp).not.toHaveBeenCalled();
+  });
+
+  it('admits a spawn first turn with its stable local id before E2EE owner metadata is visible', async () => {
+    setInactiveE2eeSession();
+    mocks.tryDecryptSessionOwnerMetadataView.mockReturnValue({ permissionMode: 'default' });
+    const sessionCreationTag = deriveSessionCreationTagV1({
+      callerCreationNamespace: 'user',
+      creationKey: 'spawn-before-metadata',
+    });
+    const localId = buildSessionSpawnInitialInputLocalIdV1({ sessionCreationTag });
+    const machineAdmissionTransport = vi.fn(async (request: MachineAdmissionRequest) => ({
+      status: 'accepted' as const,
+      localId: request.localId,
+    }));
+
+    const result = await sendSessionMessage({
+      ...protectedHostSendParams(localId),
+      targetMachineId: 'target-machine',
+      machineAdmissionTransport,
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      localId,
+      admissionResult: { status: 'accepted', localId },
+    });
+    expect(machineAdmissionTransport).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: 'session-1',
+      targetMachineId: 'target-machine',
+      localId,
+      requestEqualityEvidenceV1: { kind: 'e2eeTag', tag: expect.any(String) },
+    }));
+    expect(mocks.enqueuePendingQueueV2MessageViaHttp).not.toHaveBeenCalled();
+  });
+
+  it('reports unavailable local admission separately from a target that needs an update', async () => {
+    setInactiveE2eeSession();
+    const localId = 'plugin-input-v1:missing-transport';
+    await expect(sendSessionMessage({
+      ...protectedHostSendParams(localId),
+    })).resolves.toMatchObject({
+      ok: false,
+      admissionResult: { status: 'rejected', code: 'session_input_target_unavailable' },
+    });
+    const machineAdmissionTransport = vi.fn(async () => ({
+      status: 'rejected' as const,
+      code: 'session_input_target_update_required' as const,
+    }));
+    await expect(sendSessionMessage({
+      ...protectedHostSendParams('plugin-input-v1:unsupported-target'),
+      machineAdmissionTransport,
+    })).resolves.toMatchObject({
+      ok: false,
+      admissionResult: { status: 'rejected', code: 'session_input_target_update_required' },
+    });
+    expect(machineAdmissionTransport).toHaveBeenCalledOnce();
+  });
+
+  it('rejects a creation target that conflicts with the Session owner target', async () => {
+    setInactiveE2eeSession();
+    const machineAdmissionTransport = vi.fn();
+    await expect(sendSessionMessage({
+      ...protectedHostSendParams('plugin-input-v1:wrong-target'),
+      targetMachineId: 'different-machine',
+      machineAdmissionTransport,
+    })).resolves.toMatchObject({
+      ok: false,
+      admissionResult: { status: 'rejected', code: 'session_input_target_unavailable' },
+    });
+    expect(machineAdmissionTransport).not.toHaveBeenCalled();
   });
 
   it('cancels a protected machine-admission acknowledgement through transport options without serializing the signal', async () => {
@@ -342,7 +412,7 @@ describe('sendSessionMessage machine admission', () => {
             creationKey: 'machine-admission-test',
           }),
           recipe: {
-            execution: { machineId: 'target-machine', directory: '/workspace' },
+            execution: { machineId: 'target-machine', directory: { kind: 'path', path: '/workspace' } },
             organization: { folderId: null, tagIds: [] },
             agentTarget: { kind: 'agent', identity: { pluginId: 'happier.agent.claude', localId: 'claude' } },
             modelSelection: null,
@@ -368,7 +438,7 @@ describe('sendSessionMessage machine admission', () => {
             creationKey: 'machine-admission-test',
           }),
           recipe: {
-            execution: { machineId: 'target-machine', directory: '/workspace' },
+            execution: { machineId: 'target-machine', directory: { kind: 'path', path: '/workspace' } },
             organization: { folderId: null, tagIds: [] },
             agentTarget: { kind: 'agent', identity: { pluginId: 'happier.agent.claude', localId: 'claude' } },
             modelSelection: null,
@@ -502,9 +572,9 @@ describe('sendSessionMessage machine admission', () => {
     mocks.listPendingQueueV2DeliveryStatusesFromServer.mockResolvedValue([
       { localId, status: 'queued' },
     ]);
-    const machineAdmissionTransport = vi.fn(async () => ({
+    const machineAdmissionTransport = vi.fn(async (request: MachineAdmissionRequest) => ({
       status: 'alreadyAccepted' as const,
-      localId,
+      localId: request.localId,
     }));
 
     const result = await sendSessionMessage({
@@ -522,6 +592,9 @@ describe('sendSessionMessage machine admission', () => {
       token: 'token',
       sessionId: 'session-1',
     });
+    expect(machineAdmissionTransport).toHaveBeenCalledWith(expect.objectContaining({
+      requestedAction: { v: 1, kind: 'send_now' },
+    }));
     expect(mocks.requestInactiveSessionResume).toHaveBeenCalledOnce();
   });
 
@@ -703,7 +776,7 @@ describe('sendSessionMessage machine admission', () => {
             creationKey: 'machine-admission-plain-drift',
           }),
           recipe: {
-            execution: { machineId: 'target-machine', directory: '/workspace' },
+            execution: { machineId: 'target-machine', directory: { kind: 'path', path: '/workspace' } },
             organization: { folderId: null, tagIds: [] },
             agentTarget: { kind: 'agent', identity: { pluginId: 'happier.agent.claude', localId: 'claude' } },
             modelSelection: null,
@@ -729,7 +802,7 @@ describe('sendSessionMessage machine admission', () => {
             creationKey: 'machine-admission-plain-drift',
           }),
           recipe: {
-            execution: { machineId: 'target-machine', directory: '/workspace' },
+            execution: { machineId: 'target-machine', directory: { kind: 'path', path: '/workspace' } },
             organization: { folderId: null, tagIds: [] },
             agentTarget: { kind: 'agent', identity: { pluginId: 'happier.agent.claude', localId: 'claude' } },
             modelSelection: null,
@@ -842,10 +915,11 @@ describe('sendSessionMessage machine admission', () => {
       },
     })).resolves.toMatchObject({
       ok: false,
-      code: 'admission_rejected',
+      code: 'machine_admission_transport_unavailable',
+      message: expect.stringContaining('daemon'),
       admissionResult: {
         status: 'rejected',
-        code: 'session_input_target_update_required',
+        code: 'session_input_target_unavailable',
       },
     });
     expect(mocks.enqueuePendingQueueV2MessageViaHttp).not.toHaveBeenCalled();

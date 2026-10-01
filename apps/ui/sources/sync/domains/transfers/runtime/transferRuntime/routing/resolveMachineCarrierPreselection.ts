@@ -1,11 +1,12 @@
 import {
     IrohEndpointDescriptorV1Schema,
+    readMachineIrohEndpointAuthorityV1,
     readServerEnabledBit,
     supportsMachineOperationProtocolCapabilityV1,
     type FeaturesResponse as ServerFeatures,
     type IrohEndpointDescriptorV1,
 } from '@happier-dev/protocol';
-import type { PeerRouteViabilityRecord } from '@happier-dev/peer-mediation';
+import type { HomeApplicationCarrierEligibility } from '@happier-dev/cli-common/homeEnrollment';
 
 export type MachineCarrierHostEligibility =
     | Readonly<{ kind: 'browser' }>
@@ -17,7 +18,6 @@ export type MachineCarrierPreselection =
         carrierKind: 'browser_stream' | 'native_http';
         targetEndpoint: IrohEndpointDescriptorV1;
     }>
-    | Readonly<{ kind: 'legacy_machine_rpc' }>
     | Readonly<{ kind: 'unavailable' }>;
 
 /**
@@ -36,17 +36,41 @@ export function isMachineFiniteTransferRpcDeclared(input: Readonly<{
     return supportsMachineOperationProtocolCapabilityV1(input.capabilities, 'finiteTransferRpc');
 }
 
+/** The server-accepted Machine projection owns the current endpoint and hints. */
+export function readCurrentMachineIrohEndpoint(input: Readonly<{
+    capabilities: unknown;
+    revision: unknown;
+    active?: boolean | null;
+    revokedAt?: unknown;
+}>): IrohEndpointDescriptorV1 | null {
+    if (input.active === false || (input.revokedAt !== null && input.revokedAt !== undefined)) return null;
+    const authority = readMachineIrohEndpointAuthorityV1({
+        capabilities: input.capabilities,
+        revision: input.revision,
+    });
+    if (!authority) return null;
+    return {
+        endpointId: authority.endpointId,
+        ...(authority.relayUrls ? { relayUrls: [...authority.relayUrls] } : {}),
+        ...(authority.directAddresses ? { directAddresses: [...authority.directAddresses] } : {}),
+    };
+}
+
+/** The feature contract for selecting the current Iroh Machine carrier. */
+export function isIrohMachineCarrierFeatureEnabled(serverFeatures: ServerFeatures | null): boolean {
+    return serverFeatures !== null
+        && readServerEnabledBit(serverFeatures, 'machines.transfer.directPeer') === true
+        && readServerEnabledBit(serverFeatures, 'machines.peerMediation') === true;
+}
+
 /** The one pure, pre-prepare finite-transfer route decision shared by controls and execution. */
 export function resolveMachineCarrierPreselection(input: Readonly<{
+    applicationCarrierEligibility?: HomeApplicationCarrierEligibility;
     serverFeatures: ServerFeatures | null;
     targetEndpoint: unknown;
     host: MachineCarrierHostEligibility;
-    legacyTransferSupported: boolean;
     /** Exact current finite-transfer application support for this Machine role. */
     finiteTransferApplicationSupported: boolean;
-    /** Current Runner declaration; authoritative, so it needs no daemon probe. */
-    runnerFiniteTransferRpcDeclared?: boolean;
-    machineRpcDirectRoute: PeerRouteViabilityRecord;
 }>): MachineCarrierPreselection {
     if (!input.serverFeatures || readServerEnabledBit(input.serverFeatures, 'machines.transfer') !== true) {
         return { kind: 'unavailable' };
@@ -54,9 +78,10 @@ export function resolveMachineCarrierPreselection(input: Readonly<{
 
     const endpoint = IrohEndpointDescriptorV1Schema.safeParse(input.targetEndpoint);
     if (
-        input.finiteTransferApplicationSupported
+        input.applicationCarrierEligibility !== 'standard_only'
+        && input.finiteTransferApplicationSupported
         && endpoint.success
-        && readServerEnabledBit(input.serverFeatures, 'machines.transfer.directPeer') === true
+        && isIrohMachineCarrierFeatureEnabled(input.serverFeatures)
     ) {
         if (input.host.kind === 'browser' && (endpoint.data.relayUrls?.length ?? 0) > 0) {
             return { kind: 'iroh_peer', carrierKind: 'browser_stream', targetEndpoint: endpoint.data };
@@ -64,16 +89,6 @@ export function resolveMachineCarrierPreselection(input: Readonly<{
         if (input.host.kind === 'native' && input.host.lifecycleAvailable) {
             return { kind: 'iroh_peer', carrierKind: 'native_http', targetEndpoint: endpoint.data };
         }
-    }
-
-    // A Runner has no daemon transfer state. Its strict operation declaration is
-    // published only after its handlers exist, so it establishes reachability.
-    if (input.runnerFiniteTransferRpcDeclared === true) {
-        return { kind: 'legacy_machine_rpc' };
-    }
-
-    if (input.legacyTransferSupported && input.machineRpcDirectRoute.status === 'viable') {
-        return { kind: 'legacy_machine_rpc' };
     }
 
     return { kind: 'unavailable' };

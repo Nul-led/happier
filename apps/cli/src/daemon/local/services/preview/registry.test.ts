@@ -61,6 +61,24 @@ describe("daemon local service preview registry", () => {
         expect(result).toEqual({ ok: false, reasonCode: "non_loopback_target" });
     });
 
+    it("uses the protocol loopback owner for equivalent IPv4 literal forms", async () => {
+        const mod = await loadPreviewRegistryModule();
+        const registry = mod!.createLocalServicePreviewRegistry();
+
+        const result = mod!.registerLocalServicePreview(registry, {
+            previewId: "preview_integer_loopback",
+            sessionId: "session_123",
+            machineId: "machine_123",
+            owner: { kind: "agent", id: "agent_1" },
+            target: { scheme: "http", host: "2130706433", port: 5173 },
+            initialPath: { pathname: "/", search: "" },
+            display: { title: "Kitchen Sink", addressLabel: "localhost:5173" },
+            originMode: "host",
+        });
+
+        expect(result.ok).toBe(true);
+    });
+
     it("unregisters resources without clearing unrelated previews", async () => {
         const mod = await loadPreviewRegistryModule();
         const registry = mod!.createLocalServicePreviewRegistry();

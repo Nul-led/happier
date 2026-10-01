@@ -110,7 +110,6 @@ function createGatedPreviewExecutor(params: {
         boundedTimeoutMs: null,
         reviewBoundedTimeoutMs: null,
         maxTurns: null,
-        maxDepth: 3,
       },
     }),
     isExecutionRunsEnabled: () => true,

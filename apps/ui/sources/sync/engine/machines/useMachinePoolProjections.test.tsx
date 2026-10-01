@@ -120,6 +120,33 @@ describe('useMachinePoolProjections', () => {
         await hook.unmount();
     });
 
+    it('settles a Home requested by its local profile id once it has a portable server identity', async () => {
+        // Credentials, Actions and the Pool store all key this Home by its portable identity; a
+        // Machines group still names it by the local profile id. The projection must not stay
+        // "loading" forever because it read those owners under the other identifier.
+        const { setServerProfileIdentityForUrl } = await import('@/sync/domains/server/serverProfiles');
+        await setServerProfileIdentityForUrl('https://machine-pool-projections.test', 'srv_projection_home');
+        storage.setState({
+            profileScope: { serverId: 'srv_projection_home', accountId: 'account-a' },
+            settingsScope: { serverId: 'srv_projection_home', accountId: 'account-a' },
+        });
+        await publishPoolsFeature(true);
+        const scopes: MachinePoolProjectionScope[] = [{ serverId: boundary.serverId, machines: [] }];
+        const hook = await renderHook(() => useMachinePoolProjections(scopes));
+
+        await vi.waitFor(() => {
+            expect(hook.getCurrent()[0]).toMatchObject({
+                serverId: boundary.serverId,
+                accountId: 'account-a',
+                featureEnabled: true,
+                pools: [pool],
+                status: 'idle',
+                ready: true,
+            });
+        });
+        await hook.unmount();
+    });
+
     it('settles a first Pool list failure into the terminal error consumers can retry', async () => {
         setRuntimeFetch(async (url) => {
             if (String(url).endsWith('/v1/features')) {

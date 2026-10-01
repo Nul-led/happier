@@ -112,14 +112,14 @@ export function resolveSessionListViewEmptyState(input: Readonly<{
             action: 'retry',
         };
     }
-    // Every page was read, yet the Home withheld historical shares pending their
-    // owner's upgrade: never present that as an authoritative empty or whole list.
-    if (input.presentation.complete && input.presentation.historicalSharesWithheld) {
+    // Withheld shares make coverage incomplete even when pagination is exhausted.
+    // Explain the owner-upgrade recovery without inventing another page to load.
+    if (input.presentation.historicalSharesWithheld) {
         return {
             mode: hasRows ? 'status' : 'empty',
             titleKey: 'sessionsList.queryHistoricalSharesWithheldTitle',
             descriptionKey: 'sessionsList.queryHistoricalSharesWithheldDescription',
-            action: null,
+            action: input.presentation.hasMore === true ? 'load_more' : null,
         };
     }
     if (hasRows) {

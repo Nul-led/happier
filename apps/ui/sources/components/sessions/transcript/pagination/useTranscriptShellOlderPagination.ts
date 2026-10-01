@@ -1,8 +1,9 @@
+import { useSessionTranscriptSource } from '@/components/sessions/transcript/source/SessionTranscriptSourceContext';
 import * as React from 'react';
 import { Platform, type LayoutChangeEvent, type NativeScrollEvent, type NativeSyntheticEvent } from 'react-native';
 
 import { sync } from '@/sync/sync';
-import type { TranscriptOlderPageLoadResult } from '@/sync/domains/messages/transcriptOlderPageLoad';
+import type { TranscriptOlderPageLoadResult } from "@happier-dev/session-core/messages";
 
 import {
     resolveTranscriptEdgePrefetchThresholdPx,
@@ -107,17 +108,19 @@ export function useTranscriptShellOlderPagination<TItem>(
         readSourceIndexForRenderedIndex,
         sessionId,
     } = input;
+    const transcriptSource = useSessionTranscriptSource();
+    const sourceLoadOlder = transcriptSource.history.loadOlder;
     const syncTuning = sync.getSyncTuning();
     const configuredBackwardPrefetchThresholdPx = syncTuning.transcriptBackwardPrefetchThresholdPx;
 
     const readersRef = React.useRef({
-        loadOlder: input.loadOlder,
+        loadOlder: sourceLoadOlder ?? undefined,
         readCanonicalItemCount,
         readRenderedItemCount,
         readSourceIndexForRenderedIndex,
     });
     useCommittedTranscriptRef(readersRef, {
-        loadOlder: input.loadOlder,
+        loadOlder: sourceLoadOlder ?? undefined,
         readCanonicalItemCount,
         readRenderedItemCount,
         readSourceIndexForRenderedIndex,
@@ -221,7 +224,7 @@ export function useTranscriptShellOlderPagination<TItem>(
     }, [loadOlder]);
 
     const olderPagination = useTranscriptOlderPagination({
-        enabled: typeof input.loadOlder === 'function',
+        enabled: sourceLoadOlder !== null,
         loadOlder: paginationLoadOlder,
         thresholdPx: resolveTopPrefetchThresholdPx(listLayoutHeight),
         thresholdItems: syncTuning.transcriptBackwardPrefetchThresholdItems,

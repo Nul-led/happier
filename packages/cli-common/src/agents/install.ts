@@ -4,14 +4,20 @@ import type {
   AgentCliInstallPlatform as AgentCliInstallPlatform,
 } from '@happier-dev/agents';
 import { getAgentCliRuntimeSpec } from '@happier-dev/agents';
+import { resolveAgentSetupHostPlatform } from '@happier-dev/protocol/agents/setup';
 
 import type { ManagedInstallDeps } from './install/managedInstall.js';
+import { updateInstalledAgentCli } from './install/nativeUpdateInstall.js';
 import { runRuntimeInstallCoordinator } from './install/runtimeInstallCoordinator.js';
 import { runRuntimeInstallPreflight } from './install/runtimeInstallPreflight.js';
 import {
+  type AgentCliResolutionSource,
   type AgentCliRuntimeDescriptor,
   type AgentCliSourcePolicy,
 } from './resolution.js';
+import { classifyAgentCliInstall } from './update.js';
+import type { AgentInstallProgressCallback } from './installProgress.js';
+export type { AgentInstallProgressEvent, AgentInstallProgressCallback } from './installProgress.js';
 
 export type AgentCliInstallCommand = Readonly<{
   cmd: string;
@@ -22,6 +28,17 @@ export type AgentCliInstallCommand = Readonly<{
 
 export type AgentCliInstallMode = 'vendor_recipe' | 'managed_package' | 'github_release_binary';
 export type AgentCliInstallIntent = 'install' | 'update';
+
+/**
+ * The installed executable an `update` intent acts on: exactly what detect reported. With it, the
+ * update goes to that install's owner (managed reinstall, or the declared vendor updater) and a
+ * package-manager install is refused with its own command. Without it only the managed install is
+ * updated.
+ */
+export type AgentCliUpdateTarget = Readonly<{
+  command: string;
+  source: AgentCliResolutionSource;
+}>;
 
 export type AgentCliInstallPlan = Readonly<{
   agentId: string;
@@ -51,6 +68,9 @@ export type InstallAgentCliResult =
         | 'command-timed-out'
         | 'command-failed'
         | 'managed-runtime-unavailable'
+        | 'download-failed'
+        | 'verification-failed'
+        | 'termination-failed'
         | 'update-not-available';
       errorMessage: string;
       plan: AgentCliInstallPlan | null;
@@ -60,10 +80,7 @@ export type InstallAgentCliResult =
 type InstallAgentCliDeps = ManagedInstallDeps;
 
 export function resolvePlatformFromNodePlatform(nodePlatform: string): AgentCliInstallPlatform | null {
-  if (nodePlatform === 'darwin') return 'darwin';
-  if (nodePlatform === 'linux') return 'linux';
-  if (nodePlatform === 'win32') return 'win32';
-  return null;
+  return resolveAgentSetupHostPlatform(nodePlatform);
 }
 
 function resolveAgentInstallCommands(
@@ -187,9 +204,11 @@ export async function installAgentCliForRuntime(params: Readonly<{
   dryRun?: boolean;
   skipIfInstalled?: boolean;
   intent?: AgentCliInstallIntent;
+  updateTarget?: AgentCliUpdateTarget;
   allowVendorRecipeExecution?: boolean;
   sourcePolicy?: AgentCliSourcePolicy;
   signal?: AbortSignal;
+  onProgress?: AgentInstallProgressCallback;
   deps?: InstallAgentCliDeps;
 }>): Promise<InstallAgentCliResult> {
   params.signal?.throwIfAborted();
@@ -198,6 +217,32 @@ export async function installAgentCliForRuntime(params: Readonly<{
   const deps = params.deps ?? {};
 
   const planned = planAgentCliInstallForRuntime({ runtimeSpec, platform: params.platform });
+  if (params.intent === 'update' && params.updateTarget) {
+    const facts = classifyAgentCliInstall({
+      runtimeSpec,
+      command: params.updateTarget.command,
+      source: params.updateTarget.source,
+      platform: params.platform,
+      env,
+    });
+    // A managed install continues to the managed reinstall below; every other owner is handled
+    // here, so an update never adds a managed copy beside a CLI the user installed.
+    if (facts.installSource !== 'managed') {
+      return await updateInstalledAgentCli({
+        runtimeSpec,
+        plan: planned.ok ? planned.plan : createInstalledOnlyAgentCliInstallPlan({ runtimeSpec, platform: params.platform }),
+        command: params.updateTarget.command,
+        facts,
+        env,
+        logDir: params.logDir,
+        dryRun: params.dryRun,
+        allowVendorRecipeExecution: params.allowVendorRecipeExecution,
+        signal: params.signal,
+        onProgress: params.onProgress,
+        deps,
+      });
+    }
+  }
   if (
     params.intent === 'update'
     && (!planned.ok || planned.plan.managedInstall === null)
@@ -243,6 +288,7 @@ export async function installAgentCliForRuntime(params: Readonly<{
     env,
     logDir: params.logDir,
     signal: params.signal,
+    onProgress: params.onProgress,
     dryRun: params.dryRun,
     skipIfInstalled: params.skipIfInstalled,
     intent: params.intent,
@@ -260,9 +306,11 @@ export async function installAgentCli(params: Readonly<{
   dryRun?: boolean;
   skipIfInstalled?: boolean;
   intent?: AgentCliInstallIntent;
+  updateTarget?: AgentCliUpdateTarget;
   allowVendorRecipeExecution?: boolean;
   sourcePolicy?: AgentCliSourcePolicy;
   signal?: AbortSignal;
+  onProgress?: AgentInstallProgressCallback;
   deps?: InstallAgentCliDeps;
 }>): Promise<InstallAgentCliResult> {
   const runtimeSpec = getAgentCliRuntimeSpec(params.agentId);
@@ -281,9 +329,11 @@ export async function installAgentCli(params: Readonly<{
     env: params.env,
     logDir: params.logDir,
     signal: params.signal,
+    onProgress: params.onProgress,
     dryRun: params.dryRun,
     skipIfInstalled: params.skipIfInstalled,
     intent: params.intent,
+    ...(params.updateTarget ? { updateTarget: params.updateTarget } : {}),
     allowVendorRecipeExecution: params.allowVendorRecipeExecution,
     sourcePolicy: params.sourcePolicy,
     deps: params.deps,

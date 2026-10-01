@@ -1,5 +1,5 @@
 import type { FeatureId } from '@happier-dev/protocol';
-import type { TranslationKey } from '@/text';
+import type { TranslationKeyNoParams } from '@/text';
 
 import {
     getUiFeatureDefinition,
@@ -18,12 +18,8 @@ export type UiFeatureToggleDefinition = Readonly<{
     isExperimental: boolean;
     defaultEnabled: boolean;
     serverVisibilityScope: UiFeatureToggleServerVisibilityScope;
-    titleKey: TranslationKey;
-    subtitleKey: TranslationKey;
-    icon: Readonly<{
-        ioniconName: string;
-        color: string;
-    }>;
+    titleKey: TranslationKeyNoParams;
+    subtitleKey: TranslationKeyNoParams;
 }>;
 
 export function listUiFeatureToggleDefinitions(): ReadonlyArray<UiFeatureToggleDefinition> {
@@ -39,7 +35,6 @@ export function listUiFeatureToggleDefinitions(): ReadonlyArray<UiFeatureToggleD
             serverVisibilityScope: toggle.serverVisibilityScope ?? 'main_selection',
             titleKey: toggle.titleKey,
             subtitleKey: toggle.subtitleKey,
-            icon: toggle.icon,
         });
     }
     return out;

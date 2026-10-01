@@ -16,6 +16,7 @@ import {
     type ComposerInputLockRequestV1,
     type PluginContributionIdentityV1,
     type SessionExecutionTargetV1,
+    type SessionDirectoryIntentV1,
 } from '@happier-dev/protocol';
 import { composerRefV1Key } from '@happier-dev/protocol/plugins/ui/composerRef';
 import type {
@@ -174,6 +175,12 @@ export type ComposerPresentationTarget = Readonly<{
      * Account, replaced scope, or unmounted input can be observed or focused.
      */
     isCurrent?: () => boolean;
+    /**
+     * Whether this input is visible to the viewer now. Several presentations of one Session may be
+     * mounted at once (a retained hidden route surface, an embedded plugin pane); command
+     * targeting prefers a presented one. Absent means presented.
+     */
+    isPresented?: () => boolean;
     readSnapshot?: () => ComposerSnapshotV1;
     commitDocument?: (input: Readonly<{
         expectedRevision: number;
@@ -189,6 +196,16 @@ export type ComposerPresentationTarget = Readonly<{
     createAttachmentInstanceId?: () => string;
     /** Focuses the exact visual input; `false` means this target is not editable. */
     focusComposer?: () => boolean | void;
+    /**
+     * Opens one of this input's action chips (its popover) for an explicit request from another
+     * surface, such as the Work tab opening the Goal control. `false` while the chip is absent or the
+     * input is not on screen; the request then waits for that same input.
+     */
+    openActionChip?: (chipKey: string) => boolean;
+    /** Whether this input offers the action chip now; read by surfaces that offer to open it. */
+    hasActionChip?: (chipKey: string) => boolean;
+    /** The mounted New Session directory owner; never a launch or filesystem write. */
+    applyNewSessionDirectoryIntent?: (intent: SessionDirectoryIntentV1, expectedScope?: Readonly<Partial<ServerAccountScope>>) => boolean;
     /**
      * Projects an ephemeral, owner-scoped decoration into the incumbent input.
      * The owner plus key is the visual identity; it must not mutate text,
@@ -253,6 +270,9 @@ export function useStableComposerPresentationTarget(
                 ...(target.isCurrent ? {
                     isCurrent: () => readCurrent().isCurrent?.() ?? true,
                 } : {}),
+                ...(target.isPresented ? {
+                    isPresented: () => readCurrent().isPresented?.() ?? true,
+                } : {}),
                 ...(target.readSnapshot ? {
                     readSnapshot: () => readCurrent().readSnapshot!(),
                 } : {}),
@@ -267,6 +287,15 @@ export function useStableComposerPresentationTarget(
                 } : {}),
                 ...(target.focusComposer ? {
                     focusComposer: () => readCurrent().focusComposer!(),
+                } : {}),
+                ...(target.openActionChip ? {
+                    openActionChip: (chipKey) => readCurrent().openActionChip?.(chipKey) ?? false,
+                } : {}),
+                ...(target.hasActionChip ? {
+                    hasActionChip: (chipKey) => readCurrent().hasActionChip?.(chipKey) ?? false,
+                } : {}),
+                ...(target.applyNewSessionDirectoryIntent ? {
+                    applyNewSessionDirectoryIntent: (intent, expectedScope) => readCurrent().applyNewSessionDirectoryIntent?.(intent, expectedScope) ?? false,
                 } : {}),
                 ...(target.setComposerDecorations ? {
                     setComposerDecorations: (input) => readCurrent().setComposerDecorations!(input),
@@ -298,12 +327,18 @@ export type ComposerPresentationTargetRead = Readonly<{
     applySessionPresentationIntent?: NonNullable<ComposerPresentationTarget['applySessionPresentationIntent']>;
 }>;
 
-const targets = new Map<string, ComposerPresentationTarget>();
+/**
+ * Mounted targets per key, in registration order. Every presentation of one document keeps its
+ * registration; resolution picks exactly one (see {@link resolveTargetRegistration}), so removing
+ * the resolved one restores the next eligible presentation instead of leaving the key empty.
+ */
+const targets = new Map<string, ComposerPresentationTarget[]>();
 // Exact-address index over the same mounted targets. ComposerRefV1 remains the
 // public document identity, while navigation focus must distinguish Homes that
 // contain the same raw Session id.
-const qualifiedSessionTargetByAddress = new Map<string, ComposerPresentationTarget>();
+const qualifiedSessionTargets = new Map<string, ComposerPresentationTarget[]>();
 let pendingSessionComposerFocusAddressKey: string | null = null;
+let pendingSessionComposerActionChip: Readonly<{ addressKey: string; chipKey: string }> | null = null;
 const listeners = new Set<() => void>();
 const listenersByTargetKey = new Map<string, Set<() => void>>();
 
@@ -320,8 +355,7 @@ function encodePart(value: string): string {
 }
 
 function readRegisteredTarget(ref: ComposerRefV1): ComposerPresentationTarget | null {
-    const target = targets.get(composerRefV1Key(ref)) ?? null;
-    return target && isComposerPresentationTargetCurrent(target) ? target : null;
+    return resolveRegisteredTarget(composerRefV1Key(ref));
 }
 
 function isComposerPresentationTargetCurrent(target: ComposerPresentationTarget): boolean {
@@ -330,6 +364,57 @@ function isComposerPresentationTargetCurrent(target: ComposerPresentationTarget)
     } catch {
         return false;
     }
+}
+
+function isComposerPresentationTargetPresented(target: ComposerPresentationTarget): boolean {
+    try {
+        return target.isPresented?.() !== false;
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * The one target that answers for a document: the most recently registered one that is current
+ * and presented, else the most recently registered current one. A hidden retained presentation
+ * therefore never takes commands from a visible one, whichever mounted last.
+ */
+function resolveTargetRegistration(
+    registrations: readonly ComposerPresentationTarget[] | undefined,
+): ComposerPresentationTarget | null {
+    if (!registrations) return null;
+    let latestCurrent: ComposerPresentationTarget | null = null;
+    for (let index = registrations.length - 1; index >= 0; index -= 1) {
+        const target = registrations[index]!;
+        if (!isComposerPresentationTargetCurrent(target)) continue;
+        if (isComposerPresentationTargetPresented(target)) return target;
+        latestCurrent ??= target;
+    }
+    return latestCurrent;
+}
+
+function resolveRegisteredTarget(key: string): ComposerPresentationTarget | null {
+    return resolveTargetRegistration(targets.get(key));
+}
+
+function resolveQualifiedSessionTarget(addressKey: string): ComposerPresentationTarget | null {
+    return resolveTargetRegistration(qualifiedSessionTargets.get(addressKey));
+}
+
+function addTargetRegistration(
+    registry: Map<string, ComposerPresentationTarget[]>,
+    key: string,
+    target: ComposerPresentationTarget,
+): () => boolean {
+    registry.set(key, [...(registry.get(key) ?? []), target]);
+    return () => {
+        const registrations = registry.get(key);
+        if (!registrations?.includes(target)) return false;
+        const remaining = registrations.filter((candidate) => candidate !== target);
+        if (remaining.length > 0) registry.set(key, remaining);
+        else registry.delete(key);
+        return true;
+    };
 }
 
 function readPersistentSessionId(ref: ComposerRefV1): string | null {
@@ -1053,7 +1138,7 @@ function prepareComposerPresentationTransactionApply(input: Readonly<{
     | Readonly<{ ok: false; result: ComposerTransactionResultV1 }> {
     const { request } = input;
     const targetKey = composerRefV1Key(request.ref);
-    const registeredTarget = targets.get(targetKey) ?? null;
+    const registeredTarget = resolveRegisteredTarget(targetKey);
     const target = input.target === undefined ? readTarget(request.ref) : input.target;
     if (!isCommittableComposerPresentationTarget(target)) {
         return { ok: false, result: { status: 'composerUnavailable' } };
@@ -1236,7 +1321,7 @@ function isCustodyAttemptCurrent(input: Readonly<{
     if (input.isTargetCurrent?.(input.plan.target) === false) return false;
     if (!isComposerPresentationTargetCurrent(input.plan.target)) return false;
     return !input.plan.requiresRegisteredTargetCurrent
-        || targets.get(composerRefV1Key(input.ref)) === input.plan.target;
+        || resolveRegisteredTarget(composerRefV1Key(input.ref)) === input.plan.target;
 }
 
 async function applyComposerPresentationTransactionWithAttachmentCustody(input: Readonly<{
@@ -1343,13 +1428,13 @@ export function createComposerPresentationTransactionApplier(input: Readonly<{
             return Object.freeze({ target: null, isTargetCurrent: () => false });
         }
         const addressKey = sessionAddressKey(address);
-        const target = qualifiedSessionTargetByAddress.get(addressKey) ?? null;
+        const target = resolveQualifiedSessionTarget(addressKey);
         return Object.freeze({
             target,
             isTargetCurrent: (candidate) => (
                 target !== null
                 && candidate === target
-                && qualifiedSessionTargetByAddress.get(addressKey) === target
+                && resolveQualifiedSessionTarget(addressKey) === target
                 && isComposerPresentationTargetCurrent(target)
             ),
         });
@@ -1412,12 +1497,10 @@ export function registerComposerPresentationTarget(
     ref: ComposerRefV1,
     target: ComposerPresentationTarget,
 ): () => void {
-    const key = composerRefV1Key(ref);
-    targets.set(key, target);
+    const remove = addTargetRegistration(targets, composerRefV1Key(ref), target);
     emit(ref);
     return () => {
-        if (targets.get(key) !== target) return;
-        targets.delete(key);
+        if (!remove()) return;
         emit(ref);
     };
 }
@@ -1425,6 +1508,20 @@ export function registerComposerPresentationTarget(
 export function readComposerPresentationTarget(ref: ComposerRefV1): ComposerPresentationTargetRead | null {
     const target = readTarget(ref);
     return target ? Object.freeze({ revision: target.readRevision(), replace: target.replace }) : null;
+}
+
+/** Focuses one exact mounted composer ref through the incumbent presentation registry. */
+export function requestRegisteredComposerFocus(ref: ComposerRefV1): boolean {
+    return tryFocusVisualSessionComposer(readRegisteredTarget(ref));
+}
+
+export function applyRegisteredNewSessionDirectoryIntent(ref: ComposerRefV1, intent: SessionDirectoryIntentV1, expectedScope?: Readonly<Partial<ServerAccountScope>>): boolean {
+    if (ref.kind !== 'newSession') return false;
+    const target = readRegisteredTarget(ref);
+    if (!target || !isComposerPresentationTargetPresented(target)) return false;
+    const snapshot = target.readSnapshot?.();
+    if (!snapshot?.state.editable || snapshot.state.submitting) return false;
+    return target.applyNewSessionDirectoryIntent?.(intent, expectedScope) === true;
 }
 
 /**
@@ -1836,13 +1933,14 @@ export function createComposerPresentationHostHandlers(
             const refusal = requestRefusal(options, 'composer_active_cancelled');
             if (refusal) return refusal;
             let active: ComposerRefV1 | null = null;
-            for (const [targetKey, target] of targets) {
-                if (!isComposerPresentationTargetCurrent(target)) continue;
+            for (const targetKey of Array.from(targets.keys())) {
+                const target = resolveRegisteredTarget(targetKey);
+                if (!target) continue;
                 const snapshot = readComposerSnapshot(target);
                 if (!snapshot?.state.focused) continue;
                 // A snapshot reader can synchronously cause a scope replacement.
                 // Never let the just-retired target participate in active lookup.
-                if (targets.get(targetKey) !== target || !isComposerPresentationTargetCurrent(target)) continue;
+                if (resolveRegisteredTarget(targetKey) !== target) continue;
                 if (active !== null) return null;
                 active = snapshot.ref;
             }
@@ -2268,14 +2366,15 @@ export function registerSessionComposerPresentationTarget(
     const address = normalizeSessionAddress(addressRaw.serverId, addressRaw.sessionId);
     if (!address) return () => undefined;
     const addressKey = sessionAddressKey(address);
-    qualifiedSessionTargetByAddress.set(addressKey, target);
+    const removeQualified = addTargetRegistration(qualifiedSessionTargets, addressKey, target);
     const unregister = registerComposerPresentationTarget({ kind: 'session', sessionId: address.sessionId }, target);
     deliverPendingSessionComposerFocus(addressKey, target);
+    deliverPendingSessionComposerActionChip(addressKey, target);
     return () => {
+        // Remove the qualified entry first so the generic observers woken by `unregister` already
+        // resolve to the restored presentation.
+        removeQualified();
         unregister();
-        if (qualifiedSessionTargetByAddress.get(addressKey) === target) {
-            qualifiedSessionTargetByAddress.delete(addressKey);
-        }
     };
 }
 
@@ -2295,11 +2394,11 @@ export function readSessionComposerPresentationTargetAtAddress(
     const address = normalizeSessionAddress(addressRaw.serverId, addressRaw.sessionId);
     if (!address) return null;
     const addressKey = sessionAddressKey(address);
-    const target = qualifiedSessionTargetByAddress.get(addressKey) ?? null;
-    if (!target || !isComposerPresentationTargetCurrent(target)) return null;
+    const target = resolveQualifiedSessionTarget(addressKey);
+    if (!target) return null;
     const isExactTargetCurrent = (candidate: ComposerPresentationTarget = target): boolean => (
         candidate === target
-        && qualifiedSessionTargetByAddress.get(addressKey) === target
+        && resolveQualifiedSessionTarget(addressKey) === target
         && isComposerPresentationTargetCurrent(target)
     );
     return Object.freeze({
@@ -2343,7 +2442,7 @@ function tryFocusVisualSessionComposer(target: ComposerPresentationTarget | null
 
 function deliverPendingSessionComposerFocus(addressKey: string, target: ComposerPresentationTarget): boolean {
     if (pendingSessionComposerFocusAddressKey !== addressKey) return false;
-    if (qualifiedSessionTargetByAddress.get(addressKey) !== target) return false;
+    if (resolveQualifiedSessionTarget(addressKey) !== target) return false;
     if (!tryFocusVisualSessionComposer(target)) return false;
     pendingSessionComposerFocusAddressKey = null;
     return true;
@@ -2358,7 +2457,7 @@ export function requestRegisteredSessionComposerFocus(addressRaw: SessionAddress
     const address = normalizeSessionAddress(addressRaw.serverId, addressRaw.sessionId);
     if (!address) return false;
     const addressKey = sessionAddressKey(address);
-    const target = qualifiedSessionTargetByAddress.get(addressKey) ?? null;
+    const target = resolveQualifiedSessionTarget(addressKey);
     if (target && tryFocusVisualSessionComposer(target)) {
         pendingSessionComposerFocusAddressKey = null;
         return true;
@@ -2373,8 +2472,65 @@ export function flushPendingRegisteredSessionComposerFocus(addressRaw: SessionAd
     if (!address) return false;
     const addressKey = sessionAddressKey(address);
     if (pendingSessionComposerFocusAddressKey !== addressKey) return false;
-    const target = qualifiedSessionTargetByAddress.get(addressKey) ?? null;
+    const target = resolveQualifiedSessionTarget(addressKey);
     return target ? deliverPendingSessionComposerFocus(addressKey, target) : false;
+}
+
+function tryOpenSessionComposerActionChip(target: ComposerPresentationTarget | null, chipKey: string): boolean {
+    if (!target?.openActionChip || target.isCurrent?.() === false) return false;
+    try {
+        return target.openActionChip(chipKey) === true;
+    } catch {
+        return false;
+    }
+}
+
+function deliverPendingSessionComposerActionChip(addressKey: string, target: ComposerPresentationTarget): boolean {
+    const pending = pendingSessionComposerActionChip;
+    if (pending?.addressKey !== addressKey) return false;
+    if (resolveQualifiedSessionTarget(addressKey) !== target) return false;
+    if (!tryOpenSessionComposerActionChip(target, pending.chipKey)) return false;
+    pendingSessionComposerActionChip = null;
+    return true;
+}
+
+/**
+ * Opens an action chip of the exact mounted visual Session composer (the Goal control is the
+ * composer's goal chip), or retains one qualified request until that same Home/Session composer can
+ * open it. Like focus, this is presentation state only: no navigation owner and no persistence.
+ */
+export function requestRegisteredSessionComposerActionChip(addressRaw: SessionAddress, chipKey: string): boolean {
+    const address = normalizeSessionAddress(addressRaw.serverId, addressRaw.sessionId);
+    if (!address) return false;
+    const addressKey = sessionAddressKey(address);
+    if (tryOpenSessionComposerActionChip(resolveQualifiedSessionTarget(addressKey), chipKey)) {
+        pendingSessionComposerActionChip = null;
+        return true;
+    }
+    pendingSessionComposerActionChip = { addressKey, chipKey };
+    return false;
+}
+
+/** Retries only an already-pending exact-address chip request as its visual surface becomes ready. */
+export function flushPendingRegisteredSessionComposerActionChip(addressRaw: SessionAddress): boolean {
+    const address = normalizeSessionAddress(addressRaw.serverId, addressRaw.sessionId);
+    if (!address) return false;
+    const addressKey = sessionAddressKey(address);
+    const target = resolveQualifiedSessionTarget(addressKey);
+    return target ? deliverPendingSessionComposerActionChip(addressKey, target) : false;
+}
+
+/** Whether the exact Session composer offers the action chip (subscribe with `subscribeSessionComposerPresentationTargets`). */
+export function readSessionComposerActionChipAvailable(addressRaw: SessionAddress, chipKey: string): boolean {
+    const address = normalizeSessionAddress(addressRaw.serverId, addressRaw.sessionId);
+    if (!address) return false;
+    const target = resolveQualifiedSessionTarget(sessionAddressKey(address));
+    if (!target?.hasActionChip || target.isCurrent?.() === false) return false;
+    try {
+        return target.hasActionChip(chipKey) === true;
+    } catch {
+        return false;
+    }
 }
 
 /**

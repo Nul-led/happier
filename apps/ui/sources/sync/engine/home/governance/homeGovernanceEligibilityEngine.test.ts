@@ -8,7 +8,7 @@ vi.mock('@/sync/runtime/connectivity/serverReachabilityRuntimeFetch', () => ({
 }));
 
 vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
-    const { createTokenStorageModuleMock } = await import('@/dev/testkit');
+    const { createTokenStorageModuleMock } = await import('@/dev/testkit/mocks/tokenStorage');
     return createTokenStorageModuleMock({
         importOriginal,
         tokenStorage: { getCredentialsForServerUrl: getCredentialsForServerUrlMock },
@@ -59,7 +59,7 @@ describe('homeGovernanceEligibilityEngine', () => {
     it('reads only the minimum eligibility Action for one exact Home and Account', async () => {
         const home = (await upsertServerProfile({ serverUrl: 'https://home-a.example', name: 'Home A' })).id;
         await setActiveServerId(home, { scope: 'device' });
-        runtimeFetchMock.mockResolvedValue(response({ teamsEnabled: true, createTeam: true }));
+        runtimeFetchMock.mockResolvedValue(response({ teamsEnabled: true, createTeam: true, createTeamForChosenAccount: false }));
         const scope = createServerAccountScope(home, 'member-a')!;
 
         const release = observeHomeGovernanceEligibility(scope);
@@ -68,6 +68,7 @@ describe('homeGovernanceEligibilityEngine', () => {
         expect(getHomeGovernanceEligibilitySnapshot(scope)?.data).toEqual({
             teamsEnabled: true,
             createTeam: true,
+            createTeamForChosenAccount: false,
         });
         expect(runtimeFetchMock).toHaveBeenCalledWith(expect.objectContaining({
             serverUrl: 'https://home-a.example',
@@ -100,7 +101,7 @@ describe('homeGovernanceEligibilityEngine', () => {
         const home = (await upsertServerProfile({ serverUrl: 'https://home-c.example', name: 'Home C' })).id;
         await setActiveServerId(home, { scope: 'device' });
         const scope = createServerAccountScope(home, 'member-a')!;
-        runtimeFetchMock.mockResolvedValue(response({ teamsEnabled: true, createTeam: true }));
+        runtimeFetchMock.mockResolvedValue(response({ teamsEnabled: true, createTeam: true, createTeamForChosenAccount: false }));
 
         const release = observeHomeGovernanceEligibility(scope);
         await vi.waitFor(() => expect(getHomeGovernanceEligibilitySnapshot(scope)?.status).toBe('ready'));
@@ -108,7 +109,7 @@ describe('homeGovernanceEligibilityEngine', () => {
         await refreshHomeGovernanceEligibility(scope);
 
         expect(getHomeGovernanceEligibilitySnapshot(scope)).toMatchObject({
-            data: { teamsEnabled: true, createTeam: true },
+            data: { teamsEnabled: true, createTeam: true, createTeamForChosenAccount: false },
             stale: true,
             reachability: 'unreachable',
             error: { kind: 'unreachable', retryable: true },
@@ -120,11 +121,11 @@ describe('homeGovernanceEligibilityEngine', () => {
         const home = (await upsertServerProfile({ serverUrl: 'https://home-d.example', name: 'Home D' })).id;
         await setActiveServerId(home, { scope: 'device' });
         const scope = createServerAccountScope(home, 'member-a')!;
-        runtimeFetchMock.mockResolvedValue(response({ teamsEnabled: true, createTeam: true }));
+        runtimeFetchMock.mockResolvedValue(response({ teamsEnabled: true, createTeam: true, createTeamForChosenAccount: false }));
 
         const release = observeHomeGovernanceEligibility(scope);
         await vi.waitFor(() => expect(getHomeGovernanceEligibilitySnapshot(scope)?.status).toBe('ready'));
-        runtimeFetchMock.mockResolvedValue(response({ teamsEnabled: true, createTeam: false }));
+        runtimeFetchMock.mockResolvedValue(response({ teamsEnabled: true, createTeam: false, createTeamForChosenAccount: false }));
         publishHomeAccountChange(home, ['self']);
 
         await vi.waitFor(() => {

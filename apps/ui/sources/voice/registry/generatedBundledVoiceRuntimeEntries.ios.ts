@@ -2,17 +2,17 @@
  * GENERATED FILE CONTRACT (VOICE-FIRST-PARTY-RUNTIME-PROJECTION)
  *
  * This file is emitted by:
- * - `scripts/migrations/extensions/generateBundledPluginEntries.ts`
+ * - `apps/cli/scripts/build-owned/generateBundledPluginEntries.ts`
  *
  * Executable first-party Voice activation roots for ios.
  * Contributions that do not declare this host platform are absent.
  */
 
 import { createBundledConversationRuntimeEntries, type BundledConversationRuntimeEntry } from './bundledConversationRuntimeEntries';
-import { activate as CODEX_BUNDLED_VOICE_ACTIVATE } from '@happier-dev/plugins-codex/ui/voice';
-import { activate as ELEVENLABS_BUNDLED_VOICE_ACTIVATE } from '@happier-dev/plugins-elevenlabs/ui/voice';
-import { activate as OPENAI_BUNDLED_VOICE_ACTIVATE } from '@happier-dev/plugins-openai/ui/voice';
-import { activate as XAI_BUNDLED_VOICE_ACTIVATE } from '@happier-dev/plugins-xai/ui/voice';
+import { activate as CODEX_BUNDLED_VOICE_ACTIVATE } from '@happier-dev/plugins-codex/happier-plugin-ui/voice-runtime-web';
+import { activate as ELEVENLABS_BUNDLED_VOICE_ACTIVATE } from '@happier-dev/plugins-elevenlabs/happier-plugin-ui/voice-runtime';
+import { activate as OPENAI_BUNDLED_VOICE_ACTIVATE } from '@happier-dev/plugins-openai/happier-plugin-ui/voice-runtime-web';
+import { activate as XAI_BUNDLED_VOICE_ACTIVATE } from '@happier-dev/plugins-xai/happier-plugin-ui/voice-runtime-web';
 
 const CODEX_BUNDLED_PLUGIN_MANIFEST = Object.freeze(
 {
@@ -105,6 +105,7 @@ const CODEX_BUNDLED_PLUGIN_MANIFEST = Object.freeze(
                 "checkNow"
               ]
             },
+            "workspaceWrites": "deny",
             "workStateSources": [
               {
                 "id": "goals",
@@ -224,6 +225,15 @@ const CODEX_BUNDLED_PLUGIN_MANIFEST = Object.freeze(
             "manual": {
               "kind": "command"
             },
+            "nativeUpdate": {
+              "args": [
+                "update"
+              ],
+              "installPaths": [
+                ".codex/packages/standalone"
+              ]
+            },
+            "npmPackageName": "@openai/codex",
             "recommendationOrder": 20
           }
         },
@@ -287,7 +297,7 @@ const CODEX_BUNDLED_PLUGIN_MANIFEST = Object.freeze(
         "surfaces": {
           "externalSession": {
             "externalLinkedTakeover": {
-              "writerSafety": "unsupported"
+              "writerSafety": "native_prevention"
             },
             "sources": [
               {
@@ -456,7 +466,7 @@ const CODEX_BUNDLED_PLUGIN_MANIFEST = Object.freeze(
         "recoveryCredits": {
           "supported": true
         },
-        "title": "Codex"
+        "title": "ChatGPT"
       }
     ],
     "daemonDatabases": [],
@@ -754,8 +764,7 @@ const CODEX_BUNDLED_PLUGIN_MANIFEST = Object.freeze(
         },
         "client": {
           "artifactId": "voice-runtime-web",
-          "exportName": "activate",
-          "modulePath": "./ui/voice"
+          "exportName": "activate"
         },
         "execution": {
           "agent": "codex",
@@ -888,6 +897,19 @@ const CODEX_BUNDLED_PLUGIN_MANIFEST = Object.freeze(
   },
   "id": "happier.agent.codex",
   "runtime": {
+    "agentFactories": [
+      {
+        "loadMode": "immutable-js",
+        "localAgentId": "codex",
+        "locator": {
+          "export": "createCodexAgentRuntime",
+          "externalSessionsExport": "codexExternalSessionsContribution",
+          "module": "./agent/runtime/engine",
+          "runtimeApiVersion": 1
+        },
+        "normalizedModulePath": ".happier-plugin/agent/runtime/engine.js"
+      }
+    ],
     "apiVersion": 1
   },
   "schemaVersion": 2,
@@ -1034,8 +1056,7 @@ const ELEVENLABS_BUNDLED_PLUGIN_MANIFEST = Object.freeze(
         },
         "client": {
           "artifactId": "voice-runtime",
-          "exportName": "activate",
-          "modulePath": "./ui/voice"
+          "exportName": "activate"
         },
         "credentials": {
           "hostMediated": {
@@ -2181,8 +2202,7 @@ const OPENAI_BUNDLED_PLUGIN_MANIFEST = Object.freeze(
         },
         "client": {
           "artifactId": "voice-runtime-web",
-          "exportName": "activate",
-          "modulePath": "./ui/voice"
+          "exportName": "activate"
         },
         "credentials": {
           "hostMediated": {
@@ -2570,8 +2590,7 @@ const XAI_BUNDLED_PLUGIN_MANIFEST = Object.freeze(
         },
         "client": {
           "artifactId": "voice-runtime-web",
-          "exportName": "activate",
-          "modulePath": "./ui/voice"
+          "exportName": "activate"
         },
         "credentials": {
           "hostMediated": {

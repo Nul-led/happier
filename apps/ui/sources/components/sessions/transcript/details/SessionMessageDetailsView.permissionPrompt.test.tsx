@@ -2,7 +2,7 @@ import * as React from 'react';
 import renderer from 'react-test-renderer';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { Message } from '@/sync/domains/messages/messageTypes';
+import type { Message } from "@happier-dev/session-core/messages";
 import type { Session } from '@/sync/domains/state/storageTypes';
 import { renderScreen } from '@/dev/testkit';
 import {
@@ -187,6 +187,10 @@ describe('SessionMessageDetailsView permission prompt fallback', () => {
                 }))).tree;
 
         expect(tree).toBeDefined();
+        const { SessionTranscriptSourceProvider } = await import('@/components/sessions/transcript/source/SessionTranscriptSourceContext');
+        expect(tree?.root.findAllByType(SessionTranscriptSourceProvider).map((root) => root.props.source)).toEqual([
+            expect.objectContaining({ kind: 'app', sessionId: 'session-1', serverId: 'home-b' }),
+        ]);
         expect(toolFullViewSpy).toHaveBeenCalledWith(expect.objectContaining({
             forcePermissionFooterInTranscript: true,
             owningMessageId: 'message-1',

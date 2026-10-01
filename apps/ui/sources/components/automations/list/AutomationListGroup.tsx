@@ -23,13 +23,14 @@ import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { Icon } from '@/components/ui/icons/Icon';
 import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
 import { formatAutomationErrorMessage } from '@/components/automations/automationErrorFormatting';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 const minimumInteractiveTargetSize = resolveMinimumInteractiveTargetSize(Platform.OS);
 const MAX_VISIBLE_TRIGGER_SUMMARY_LINES = 3;
 
 type Props = Readonly<{
     title?: string;
-    automations: ReadonlyArray<Pick<AutomationDefinition, 'id' | 'name' | 'enabled' | 'triggers'>>;
+    automations: ReadonlyArray<Pick<AutomationDefinition, 'id' | 'name' | 'enabled' | 'triggers' | 'targetType'>>;
     onOpenAutomation?: (automationId: string) => void;
     /** Parent read currentness gates only mutations; list navigation remains available. */
     mutationsEnabled?: boolean;
@@ -69,9 +70,12 @@ export const AutomationListGroup = React.memo((props: Props) => {
     const enabledMutationIdsRef = React.useRef(new Set<string>());
     const [enabledMutationIds, setEnabledMutationIds] = React.useState<ReadonlySet<string>>(() => new Set());
 
-    const handleRunNow = React.useCallback(async (automationId: string) => {
+    const handleRunNow = React.useCallback(async (
+        automationId: string,
+        targetType: AutomationDefinition['targetType'],
+    ) => {
         if (!mutationsEnabled) return;
-        const admitted = await runNowController.runNow(automationId, {
+        const admitted = await runNowController.runNow(automationId, targetType, {
             isInvocationCurrent: props.isInvocationCurrent,
         });
         // Only the server's declared correspondence opens a managed Run. A
@@ -162,10 +166,12 @@ export const AutomationListGroup = React.memo((props: Props) => {
                         rightElement={(
                             <View style={styles.rowRight}>
                                 <Pressable
-                                    onPress={mutationsEnabled ? () => void handleRunNow(automation.id) : undefined}
+                                    onPress={mutationsEnabled
+                                        ? () => void handleRunNow(automation.id, automation.targetType)
+                                        : undefined}
                                     style={({ pressed }) => ([
                                         styles.runNowButton,
-                                        { opacity: runNowDisabled ? 0.5 : pressed ? 0.7 : 1 },
+                                        { opacity: runNowDisabled ? 0.5 : pressed ? motionTokens.press.opacity : 1 },
                                     ])}
                                     disabled={runNowDisabled}
                                     accessibilityRole="button"

@@ -1,6 +1,11 @@
 import type { SessionBroadcast, SocketRpcCallPayload, SocketRpcCallResponse, SocketRpcRequestPayload, Update } from '../types';
 import { SOCKET_RPC_EVENTS } from '@happier-dev/protocol/socketRpc';
 import {
+  TEAM_CREDENTIAL_EXTERNAL_PROVIDER_OPERATION_RETIRE_EVENT_V1,
+  type TeamCredentialExternalProviderOperationRetireV1,
+  type TeamCredentialExternalProviderOperationRetireResponseV1,
+} from '@happier-dev/protocol/teams';
+import {
   EXTERNAL_SESSION_OPERATION_SOCKET_EVENT_V1,
   EXTERNAL_SESSION_SOURCE_UNAVAILABLE_OCCURRENCE_EVENT_V1,
   EXTERNAL_SESSION_STATUS_DEMAND_EVENT_V1,
@@ -22,7 +27,7 @@ import {
   type ExternalSessionOperationSocketCommandV1,
   type ExternalSessionOperationSocketResponseV1,
   type ExternalSessionStatusDemandDaemonMessageV1,
-  type MachineLiveStreamRelayEnvelopeV1,
+  type MachineLiveStreamWireEnvelopeV1,
   type MachineUpdateMetadataRequest,
   type MachineUpdateMetadataResponse,
   type MachineSessionTerminalCaptureRequestV1,
@@ -51,13 +56,17 @@ export interface ServerToDaemonEvents {
   [SOCKET_RPC_EVENTS.MACHINE_TRANSFER_ENVELOPE]: (data: MachineTransferReceiveEnvelope) => void;
   [TRANSFER_RELAY_V2_SOCKET_EVENT]: (data: TransferRelayV2SendEnvelope) => void;
   [PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT]: (data: PeerTcpTunnelRelayEnvelope) => void;
-  [MACHINE_LIVE_STREAM_SOCKET_EVENT]: (data: MachineLiveStreamRelayEnvelopeV1) => void;
+  [MACHINE_LIVE_STREAM_SOCKET_EVENT]: (data: MachineLiveStreamWireEnvelopeV1) => void;
   [EXTERNAL_SESSION_STATUS_DEMAND_EVENT_V1]: (data: ExternalSessionStatusDemandDaemonMessageV1) => void;
   auth: (data: { success: boolean; user: string }) => void;
   error: (data: { message: string }) => void;
 }
 
 export interface DaemonToServerEvents {
+  [TEAM_CREDENTIAL_EXTERNAL_PROVIDER_OPERATION_RETIRE_EVENT_V1]: (
+    data: TeamCredentialExternalProviderOperationRetireV1,
+    cb: (answer: TeamCredentialExternalProviderOperationRetireResponseV1) => void,
+  ) => void;
   'machine-alive': (data: { machineId: string; time: number }) => void;
   'session-end': (data: { sid: string; time: number; exit?: any }) => void;
   [ACTION_OPERATION_REVISION_EPHEMERAL_EVENT_V1]: (data: ActionOperationRevisionEphemeralV1) => void;
@@ -116,5 +125,5 @@ export interface DaemonToServerEvents {
   [SOCKET_RPC_EVENTS.MACHINE_TRANSFER_ENVELOPE]: (data: MachineTransferSendEnvelope) => void;
   [TRANSFER_RELAY_V2_SOCKET_EVENT]: (data: TransferRelayV2SendEnvelope) => void;
   [PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT]: (data: PeerTcpTunnelRelayEnvelope) => void;
-  [MACHINE_LIVE_STREAM_SOCKET_EVENT]: (data: MachineLiveStreamRelayEnvelopeV1) => void;
+  [MACHINE_LIVE_STREAM_SOCKET_EVENT]: (data: MachineLiveStreamWireEnvelopeV1) => void;
 }

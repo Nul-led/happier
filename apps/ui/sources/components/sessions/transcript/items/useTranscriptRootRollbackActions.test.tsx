@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { renderHook } from '@/dev/testkit';
-import type { Message } from '@/sync/domains/messages/messageTypes';
+import type { Message } from "@happier-dev/session-core/messages";
 import type { Session } from '@/sync/domains/state/storageTypes';
 
 import { useTranscriptRootRollbackActions } from './useTranscriptRootRollbackActions';

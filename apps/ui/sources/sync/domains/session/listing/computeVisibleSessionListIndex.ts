@@ -1,3 +1,4 @@
+import { nestSessionListReports } from './nestSessionListReports';
 import type { ServerSelectionPresentation } from '@/sync/domains/server/selection/serverSelectionTypes';
 import type { SessionListIndexItem } from '@/sync/domains/sessionList/sessionListIndex';
 import { syncPerformanceTelemetry } from '@/sync/runtime/syncPerformanceTelemetry';
@@ -6,8 +7,7 @@ import { applySessionListIndexPresentation } from './sessionListIndexPresentatio
 import {
     applySessionListAttentionPlacementWithinGroups,
     applySessionListWorkingPlacementWithinGroups,
-    buildSessionListAttentionPlacement,
-    buildSessionListWorkingPlacement,
+    buildSessionListGlobalPlacements,
     normalizeSessionListAttentionPlacementMode,
     normalizeSessionListWorkingPlacementMode,
     type SessionListAttentionPlacementOptions,
@@ -1045,8 +1045,8 @@ function recordSourceProjectionTelemetry(
 }
 
 type VisibleSessionListGlobalPlacementPlan = Readonly<{
-    attentionPlacement: ReturnType<typeof buildSessionListAttentionPlacement>;
-    workingPlacement: ReturnType<typeof buildSessionListWorkingPlacement>;
+    attentionPlacement: Readonly<{ attentionItems: SessionListIndexItem[] }> | null;
+    workingPlacement: Readonly<{ workingItems: SessionListIndexItem[] }> | null;
     remainder: SessionListIndexItem[];
 }>;
 
@@ -1056,28 +1056,26 @@ function buildVisibleSessionListGlobalPlacementPlan(params: Readonly<{
     nowMs: number;
 }>): VisibleSessionListGlobalPlacementPlan {
     const globalAttentionSource = pruneOrphanHeaders(params.ordered);
-    const attentionPlacement = buildSessionListAttentionPlacement({
+    const globalPlacements = buildSessionListGlobalPlacements({
         source: globalAttentionSource,
-        options: params.options.attentionPlacement,
+        attentionOptions: params.options.attentionPlacement,
+        workingOptions: params.options.workingPlacement,
         resolveSessionRow: params.options.resolveSessionRow,
         nowMs: params.nowMs,
     });
-    const orderedWithoutGlobalAttention = attentionPlacement
-        ? pruneOrphanHeaders(attentionPlacement.remainder)
-        : globalAttentionSource;
-    const workingPlacement = buildSessionListWorkingPlacement({
-        source: pruneOrphanHeaders(orderedWithoutGlobalAttention),
-        options: params.options.workingPlacement,
-        resolveSessionRow: params.options.resolveSessionRow,
-        nowMs: params.nowMs,
-    });
+    const attentionPlacement = globalPlacements && globalPlacements.attentionPromotedCount > 0
+        ? { attentionItems: globalPlacements.attentionItems }
+        : null;
+    const workingPlacement = globalPlacements && globalPlacements.workingPromotedCount > 0
+        ? { workingItems: globalPlacements.workingItems }
+        : null;
 
     return {
         attentionPlacement,
         workingPlacement,
-        remainder: workingPlacement
-            ? pruneOrphanHeaders(workingPlacement.remainder)
-            : orderedWithoutGlobalAttention,
+        remainder: globalPlacements
+            ? pruneOrphanHeaders(globalPlacements.remainder)
+            : globalAttentionSource,
     };
 }
 
@@ -1085,8 +1083,8 @@ function applyVisibleSessionListWithinGroupPlacement(params: Readonly<{
     source: ReadonlyArray<SessionListIndexItem>;
     options: ComputeVisibleSessionListIndexParams;
     nowMs: number;
-    attentionPlacement: ReturnType<typeof buildSessionListAttentionPlacement>;
-    workingPlacement: ReturnType<typeof buildSessionListWorkingPlacement>;
+    attentionPlacement: VisibleSessionListGlobalPlacementPlan['attentionPlacement'];
+    workingPlacement: VisibleSessionListGlobalPlacementPlan['workingPlacement'];
 }>): SessionListIndexItem[] {
     const remainderPruned = pruneOrphanHeaders(params.source);
     const remainderAfterWorking = params.workingPlacement
@@ -1358,13 +1356,35 @@ function computeVisibleSessionListIndexUnmeasured(
     return result;
 }
 
+/**
+ * One row resolution per Session per compute: the placement passes and the `reportsTo` nesting pass
+ * read the same rows, so they share one lookup instead of each resolving the row again.
+ */
+function resolveEachSessionRowOnce(
+    resolveSessionRow: ComputeVisibleSessionListIndexParams['resolveSessionRow'],
+): ComputeVisibleSessionListIndexParams['resolveSessionRow'] {
+    const rows = new Map<string, SessionListRenderableSession | null>();
+    return (serverId, sessionId) => {
+        const key = `${serverId ?? ''}\u0000${sessionId}`;
+        if (rows.has(key)) return rows.get(key) ?? null;
+        const row = resolveSessionRow(serverId, sessionId);
+        rows.set(key, row);
+        return row;
+    };
+}
+
 export function computeVisibleSessionListIndex(
-    params: ComputeVisibleSessionListIndexParams,
+    inputParams: ComputeVisibleSessionListIndexParams,
 ): SessionListIndexItem[] | null {
-    const source = params.source;
+    const source = inputParams.source;
     if (!source) return null;
+    const params: ComputeVisibleSessionListIndexParams = {
+        ...inputParams,
+        resolveSessionRow: resolveEachSessionRowOnce(inputParams.resolveSessionRow),
+    };
     if (!syncPerformanceTelemetry.isEnabled()) {
-        return computeVisibleSessionListIndexUnmeasured(params);
+        const visible = computeVisibleSessionListIndexUnmeasured(params);
+        return visible ? nestSessionListReports(visible, params.resolveSessionRow) : visible;
     }
 
     const startedAtMs = nowMs();
@@ -1400,5 +1420,5 @@ export function computeVisibleSessionListIndex(
             storageFilter: params.storageFilterApplied === true ? 1 : 0,
         },
     );
-    return result;
+    return result ? nestSessionListReports(result, params.resolveSessionRow) : result;
 }

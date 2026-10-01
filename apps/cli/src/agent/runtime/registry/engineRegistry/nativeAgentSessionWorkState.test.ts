@@ -97,7 +97,7 @@ function createHarness(
         pluginId: 'acme.agent',
         contributionId: 'runtime',
         agentId: 'runtime',
-        generationId: 'generation-1',
+        occurrenceId: 'occurrence-1',
         declarations,
         isCurrent: () => true,
         recordRuntimeLimitMeasurement: (sample) => samples.push(sample),

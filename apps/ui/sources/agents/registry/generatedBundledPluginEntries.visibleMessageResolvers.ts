@@ -6,7 +6,7 @@
  * session subagent visible-message resolvers.
  *
  * This file is emitted by:
- * - `scripts/migrations/extensions/generateBundledPluginEntries.ts`
+ * - `apps/cli/scripts/build-owned/generateBundledPluginEntries.ts`
  */
 
 import type { SessionSubagentVisibleMessagesResolver } from '@/sync/domains/session/subagents/visibleMessages/types';

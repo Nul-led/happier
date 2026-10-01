@@ -16,12 +16,12 @@ import {
 type ExactSessionSnapshot = Omit<Session, 'presence'> & { presence?: 'online' | number };
 
 export type ExactSessionSnapshotState =
-    | Readonly<{ key: string; kind: 'loading'; session: null; retry: () => void }>
+    | Readonly<{ key: string; kind: 'loading'; session: ExactSessionSnapshot | null; retry: () => void }>
     | Readonly<{ key: string; kind: 'ready'; session: ExactSessionSnapshot; retry: () => void }>
     | Readonly<{
         key: string;
         kind: 'authorization_lost' | 'unsupported' | 'unavailable';
-        session: null;
+        session: ExactSessionSnapshot | null;
         retry: () => void;
     }>;
 
@@ -81,7 +81,16 @@ export function useExactSessionSnapshot(
         // every Session change the surface is watching.
         setState((previous) => (previous.key === key && previous.kind === 'ready'
             ? previous
-            : { key, kind: 'loading', session: null }));
+            : {
+                key,
+                kind: 'loading',
+                // Preserve a same-scope last-good projection while retrying a
+                // transient failure. This keeps retained modal/controller
+                // instances mounted so their authority fence can be updated
+                // when the retry succeeds, without treating stale facts as
+                // currently authorized.
+                session: previous.key === key ? previous.session : null,
+            }));
         void runWithServerRequestAuthorityForServerAccountScope(
             { scope, activeRequest: noActiveRequest },
             async (authority) => await readSessionSnapshotForAuthority({
@@ -94,7 +103,18 @@ export function useExactSessionSnapshot(
                 if (current) setState({ key, kind: 'ready', session: snapshot.session });
             },
             (error: unknown) => {
-                if (current) setState({ key, kind: classifySnapshotFailure(error), session: null });
+                if (current) {
+                    const kind = classifySnapshotFailure(error);
+                    setState((previous) => ({
+                        key,
+                        kind,
+                        // Only an unavailable read is transient. Definitive
+                        // authorization loss or an unsupported response must
+                        // purge the stale Session so retained controls and
+                        // one-time bearers cannot survive a real scope loss.
+                        session: kind === 'unavailable' && previous.key === key ? previous.session : null,
+                    }));
+                }
             },
         );
         return () => { current = false; };
@@ -102,5 +122,5 @@ export function useExactSessionSnapshot(
 
     if (state.key !== key) return { key, kind: 'loading', session: null, retry };
     if (state.kind === 'ready' && state.session) return { key, kind: 'ready', session: state.session, retry };
-    return { key, kind: state.kind === 'ready' ? 'unavailable' : state.kind, session: null, retry };
+    return { key, kind: state.kind === 'ready' ? 'unavailable' : state.kind, session: state.session, retry };
 }

@@ -15,6 +15,18 @@ vi.mock('@/agent/catalog/snapshot', () => ({
 import { buildInactiveSessionResumeSpawnOptions } from './buildInactiveSessionResumeSpawnOptions';
 
 describe('buildInactiveSessionResumeSpawnOptions', () => {
+  it('does not consent to recreating a managed session directory during an automatic resume', () => {
+    const result = buildInactiveSessionResumeSpawnOptions({
+      sessionId: 'session-managed',
+      rawSession: { machineId: 'machine-1', path: '/private/chat' },
+      metadata: {
+        machineId: 'machine-1', path: '/private/chat', flavor: 'codex',
+        sessionDirectoryV1: { v: 1, kind: 'managed' },
+      },
+    });
+    expect(result).toMatchObject({ directoryKind: 'managed', approvedNewDirectoryCreation: false });
+  });
+
   beforeEach(() => {
     readAgentCatalogSnapshot.mockReturnValue({
       agentDefinitionsById: new Map(),
@@ -39,7 +51,7 @@ describe('buildInactiveSessionResumeSpawnOptions', () => {
       v: 1,
       sessionCreationTag,
       recipe: {
-        execution: { machineId: 'machine-1', directory: '/home/coder/project' },
+        execution: { machineId: 'machine-1', directory: { kind: 'path', path: '/home/coder/project' } },
         organization: { folderId: null, tagIds: [] },
         agentTarget: {
           kind: 'agent',

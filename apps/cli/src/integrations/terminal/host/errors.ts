@@ -29,7 +29,7 @@ export class TerminalHostStartupError extends Error {
 }
 
 function isTerminalHostKind(value: unknown): value is TerminalHostKind {
-  return value === 'tmux' || value === 'zellij';
+  return value === 'tmux' || value === 'zellij' || value === 'herdr';
 }
 
 function isTerminalHostStartupFailureReason(value: unknown): value is TerminalHostStartupFailureReason {

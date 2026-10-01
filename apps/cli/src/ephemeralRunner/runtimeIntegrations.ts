@@ -291,12 +291,11 @@ export async function createProductionEphemeralRunnerApplication(input: Readonly
   let activeConnection: ReturnType<typeof createEphemeralRunnerHttpControlConnection> | null = null;
   let activeRuntimeOrigin: string | null = null;
   const dependencies: EphemeralRunnerDependencies<RunnerLaunchManifestV1, Materialized, Preparation> = {
-    createConnection: async ({ home, homeDirectory, binding, activationSecretKey, installation, signal }) => {
+    createConnection: async ({ home, binding, activationSecretKey, installation, signal }) => {
       const acquired = await acquireTerminalAuthEnrollmentRuntime(
         home,
         undefined,
         signal,
-        { happyHomeDir: homeDirectory },
       );
       if (!acquired.ok) throw new Error(`runner_home_${acquired.reason}`);
       const installationSecretKey = decodeBase64(installation.privateKey, 'base64url');
@@ -406,9 +405,13 @@ export async function createProductionEphemeralRunnerApplication(input: Readonly
         signal,
       });
     },
-    materialize: async ({ binding, claim, manifest, launchManifestCommitment, runnerBoxSecretKey, preparation, signal }) => {
+    materialize: async ({ binding, claim, manifest, launchManifestCommitment, runnerBoxSecretKey, preparation, signal, retryTransportErrors }) => {
       if (!activeConnection || !activeRuntimeOrigin) throw new Error('runner_control_connection_unavailable');
-      const projected = await activeConnection.waitForMaterialization({ launchManifestCommitment, signal });
+      const projected = await activeConnection.waitForMaterialization({
+        launchManifestCommitment,
+        signal,
+        ...(retryTransportErrors === undefined ? {} : { retryTransportErrors }),
+      });
       const sealed = openBoxBundleWithSecretKey({
         bundle: decodeBase64(projected.sealedBootstrap, 'base64url'),
         recipientSecretKey: runnerBoxSecretKey,
@@ -816,10 +819,14 @@ export async function createProductionEphemeralRunnerApplication(input: Readonly
         contributions: materialized.pluginRuntime.lease.registry.contributes,
       });
       const connectedAccountCredentialFileCleanups: Array<() => void | Promise<void>> = [];
+      const runnerSessionCredentials = Object.freeze({
+        token: materialized.runtimeToken,
+        encryption: null,
+      });
       let plan: Awaited<ReturnType<SessionHostBridge['createSessionRuntime']>>;
       try {
         plan = await runWithServerHttpBaseUrl(materialized.runtimeOrigin, async () => await new SessionHostBridge().createSessionRuntime(backendId, {
-        credentials: { token: materialized.runtimeToken, encryption: null },
+        credentials: runnerSessionCredentials,
         happyHomeDir: localState.homeDirectory,
         agentCliLaunch: bindAgentCliLaunchSpec({
           localAgentId: materialized.pluginRuntime.selected.localId,
@@ -992,6 +999,11 @@ export async function createProductionEphemeralRunnerApplication(input: Readonly
               ...plan.config,
               processLifecycleOwnership: 'caller',
               runtimeActionSettingsProvider: actionsSettingsProvider,
+              runtimeAuthority: {
+                scope: 'session',
+                sessionCredentials: runnerSessionCredentials,
+                accountCredentials: null,
+              },
               resolvedMcpServers,
               sessionFollowSourceMaterialResolver: sourceMaterial,
               // A restricted Runner receives only the shared Session metadata

@@ -213,6 +213,11 @@ export function createRepositoryComposerDocumentOwner(input: Readonly<{
                     structuredInputMentions: false,
                     composerAttachments: false,
                 },
+                acceptedFieldsCurrent: {
+                    text: false,
+                    structuredInputMentions: false,
+                    composerAttachments: false,
+                },
             } as const);
             if (input.isCurrent?.() === false) return noChange();
             if (!sameComposerDocumentRef(input.ref, currentness.ref)) return noChange();
@@ -254,6 +259,11 @@ export function createRepositoryComposerDocumentOwner(input: Readonly<{
             return {
                 changed,
                 changes,
+                acceptedFieldsCurrent: {
+                    text: textCurrent,
+                    structuredInputMentions: textCurrent,
+                    composerAttachments: attachmentsCurrent,
+                },
             };
         },
         clear: () => {

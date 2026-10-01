@@ -15,7 +15,7 @@ import {
     TargetedPluginSurfaceHost,
     type TargetedPluginSurfaceMountRequest,
 } from './TargetedPluginSurfaceHost';
-import type { PreparedDaemonPluginUiTargetedSurfaceMountV1 } from '@/agents/backendCatalog/loadDaemonMergedProjectionInputs';
+import type { PreparedDaemonPluginUiTargetedSurfaceMountV1 } from './mountedTargetedContributions';
 import { createPluginDeclarativeModelFixture } from '@/dev/testkit/fixtures/pluginDeclarativeModelFixture';
 
 function prepareTargetedMount(
@@ -34,7 +34,8 @@ function prepareTargetedMount(
 
 const target = Object.freeze({
     pluginId: 'acme.triage',
-    immutableGenerationId: 'triage-generation-a',
+    occurrenceId: 'triage-generation-a',
+    sourceCustody: Object.freeze({ kind: 'development' as const, registeredRootId: 'triage-root' }),
 });
 
 const surface = Object.freeze({
@@ -45,7 +46,8 @@ const surface = Object.freeze({
     contributor: Object.freeze({
         pluginId: 'acme.review',
         contributionId: 'review-detail',
-        immutableGenerationId: 'review-generation-b',
+        occurrenceId: 'review-generation-b',
+        sourceCustody: Object.freeze({ kind: 'development' as const, registeredRootId: 'review-root' }),
     }),
     role: 'detail',
     presentation: 'content' as const,
@@ -68,7 +70,7 @@ const mount = prepareTargetedMount(DaemonPluginUiTargetedSurfaceMountV1Schema.pa
             model: createPluginDeclarativeModelFixture({
                 pluginId: 'acme.review',
                 localId: 'review-detail',
-                generation: 'review-generation-b',
+                occurrenceId: 'review-occurrence-b',
                 document: { version: 1, root: { kind: 'state', state: 'empty', title: 'No review selected' } },
             }),
         }),
@@ -84,7 +86,11 @@ const mount = prepareTargetedMount(DaemonPluginUiTargetedSurfaceMountV1Schema.pa
     }),
     resourceCapability: Object.freeze({ readable: true, dynamic: true }),
     contributorTargetedContributions: Object.freeze({
-        target: Object.freeze({ pluginId: 'acme.review', immutableGenerationId: 'review-generation-b' }),
+        target: Object.freeze({
+            pluginId: 'acme.review',
+            occurrenceId: 'review-generation-b',
+            sourceCustody: Object.freeze({ kind: 'development' as const, registeredRootId: 'review-root' }),
+        }),
         points: Object.freeze([]),
     }),
 }));
@@ -152,7 +158,7 @@ describe('TargetedPluginSurfaceHost', () => {
                             ...surface,
                             contributor: {
                                 ...surface.contributor,
-                                immutableGenerationId: 'review-generation-c',
+                                occurrenceId: 'review-generation-c',
                             },
                         },
                     }}
@@ -227,7 +233,7 @@ describe('TargetedPluginSurfaceHost', () => {
                     node={normalizedLeaf}
                     fallback={<TargetedFallback />}
                     mounts={[mount]}
-                    target={{ ...target, immutableGenerationId: 'triage-generation-b' }}
+                    target={{ ...target, occurrenceId: 'triage-generation-b' }}
                     renderMountedSurface={renderMountedSurface}
                 />,
             );

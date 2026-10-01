@@ -1215,11 +1215,11 @@ describe('SessionHeaderActionMenu handoff', () => {
       generation: 7,
       installedPackagesById: {},
       agentsById: {},
-      backendsById: {},
       actionsById: {
         'acme.preview/run': {
           id: 'run',
           pluginId: 'acme.preview',
+          occurrenceId: 'acme-preview-occurrence-7',
           title: 'Preview',
           scopes: ['session'],
           surfaces: ['ui'],
@@ -1240,6 +1240,7 @@ describe('SessionHeaderActionMenu handoff', () => {
             'translations:acme.preview': {
               id: 'translations:acme.preview',
               pluginId: 'acme.preview',
+              occurrenceId: 'acme-preview-occurrence-7',
               contributionKind: 'translations',
               locales: ['en'],
               bundles: {
@@ -1251,6 +1252,7 @@ describe('SessionHeaderActionMenu handoff', () => {
             'sessionHeaderAction:acme.preview:run-preview': {
               id: 'sessionHeaderAction:acme.preview:run-preview',
               pluginId: 'acme.preview',
+              occurrenceId: 'acme-preview-occurrence-7',
               contributionKind: 'sessionHeaderAction',
               descriptorId: 'run-preview',
               title: {
@@ -1331,7 +1333,7 @@ describe('SessionHeaderActionMenu handoff', () => {
       method: RPC_METHODS.DAEMON_PLUGIN_STRUCTURED_MESSAGE_ACTION_EXECUTE,
       payload: {
         machineId: 'machine-projection',
-        expectedGeneration: '7',
+        expectedContributorOccurrenceId: '7',
         qualifiedActionId: 'acme.preview/run',
         sessionId: 'sess_1',
         executionSurface: 'ui',
@@ -1393,11 +1395,11 @@ describe('SessionHeaderActionMenu handoff', () => {
       generation: 7,
       installedPackagesById: {},
       agentsById: {},
-      backendsById: {},
       actionsById: {
         'acme.preview/run': {
           id: 'run',
           pluginId: 'acme.preview',
+          occurrenceId: 'acme-preview-occurrence-7',
           title: 'Preview',
           scopes: ['session'],
           surfaces: ['ui'],
@@ -1418,6 +1420,7 @@ describe('SessionHeaderActionMenu handoff', () => {
             'sessionHeaderAction:acme.preview:run-preview': {
               id: 'sessionHeaderAction:acme.preview:run-preview',
               pluginId: 'acme.preview',
+              occurrenceId: 'acme-preview-occurrence-7',
               contributionKind: 'sessionHeaderAction',
               descriptorId: 'run-preview',
               title: {
@@ -1527,7 +1530,6 @@ describe('SessionHeaderActionMenu handoff', () => {
       generation: 7,
       installedPackagesById: {},
       agentsById: {},
-      backendsById: {},
       actionsById: {},
       toolsById: {},
       commandsById: {},
@@ -1540,6 +1542,7 @@ describe('SessionHeaderActionMenu handoff', () => {
             'sessionHeaderAction:acme.preview:open-preview': {
               id: 'sessionHeaderAction:acme.preview:open-preview',
               pluginId: 'acme.preview',
+              occurrenceId: 'acme-preview-occurrence-7',
               contributionKind: 'sessionHeaderAction',
               descriptorId: 'open-preview',
               title: 'Open preview',
@@ -1876,29 +1879,6 @@ describe('SessionHeaderActionMenu handoff', () => {
     };
     expect(updatedExecutorConfig.resolveServerIdForSessionId('sess_1')).toBe('server-updated');
 
-  });
-
-  it('opens execution Runs on the exact Session Home', async () => {
-    preferredServerIdState.current = 'home-b';
-    const { SessionHeaderActionMenu } = await import('./SessionHeaderActionMenu');
-
-    const screen = await renderScreen(<SessionHeaderActionMenu
-      sessionId="duplicate_session"
-      session={{
-        id: 'duplicate_session',
-        serverId: 'home-b',
-        metadata: { machineId: 'machine-b', flavor: 'claude' },
-      } as any}
-      extraItems={[{ id: 'header.openRuns', title: 'Runs' }]}
-    />);
-
-    const dropdown = screen.findByType('DropdownMenu' as any);
-    await act(async () => {
-      dropdown.props.onSelect('header.openRuns');
-    });
-
-    expect(sessionActionsModuleState.routerPushSpy)
-      .toHaveBeenCalledWith('/session/duplicate_session/runs?serverId=home-b');
   });
 
   it('opens the fork strategy modal from the header menu and issues no fork effect', async () => {

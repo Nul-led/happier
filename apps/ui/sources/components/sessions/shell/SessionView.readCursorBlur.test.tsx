@@ -1,8 +1,9 @@
 import * as React from 'react';
+import { createReactNavigationNativeMock } from '@/dev/testkit/mocks/reactNavigation';
 import { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { AppPaneProvider } from '@/components/appShell/panes/AppPaneProvider';
-import { renderHook, renderScreen } from '@/dev/testkit';
+import { renderHook } from '@/dev/testkit/hooks/renderHook';
+import { renderScreen } from '@/dev/testkit/render/renderScreen';
 import { installSessionShellCommonModuleMocks } from './sessionShellTestHelpers';
 
 
@@ -36,6 +37,7 @@ vi.mock('react-native-safe-area-context', () => ({
 }));
 
 vi.mock('@react-navigation/native', () => ({
+    ...createReactNavigationNativeMock(),
     useFocusEffect: () => {},
     useIsFocused: () => true,
 }));
@@ -275,6 +277,7 @@ vi.mock('@/platform/randomUUID', () => ({
     randomUUID: () => 'uuid',
 }));
 vi.mock('@/utils/sessions/sessionUtils', () => ({
+    isUntitledSessionName: (name: string) => name === 'session.untitled',
     formatPathRelativeToHome: () => '/tmp',
     getSessionAvatarId: () => 'avatar',
     getSessionName: () => 'Session',
@@ -372,6 +375,8 @@ vi.mock('@/sync/domains/session/control/localControlSwitch', () => ({
 vi.mock('@/sync/domains/session/control/controlSwitchUiTimeout', () => ({
     readControlSwitchUiTimeoutMsFromEnv: () => 1000,
 }));
+
+const { AppPaneProvider } = await import('@/components/appShell/panes/AppPaneProvider');
 
 describe('SessionView read cursor on blur', () => {
     beforeEach(() => {

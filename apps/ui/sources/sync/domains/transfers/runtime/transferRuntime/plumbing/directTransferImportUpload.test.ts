@@ -24,6 +24,37 @@ describe('uploadBulkPayloadFromFileViaDirectImport', () => {
         resetRuntimeFetch();
     });
 
+    it('reports only the shape of an unsupported prepare response', async () => {
+        prepareImportSessionMock.mockResolvedValue({
+            ok: true,
+            result: { secret: 'must-not-leak' },
+        });
+
+        const result = await uploadBulkPayloadFromFileViaDirectImport({
+            machineId: 'machine-1',
+            serverId: 'server-1',
+            fileReader: {
+                sizeBytes: 1,
+                readBytes: async () => new Uint8Array([1]),
+                close: async () => {},
+            },
+            request: {
+                t: 'session_file_upload_v1',
+                workingDirectory: '/repo',
+                path: 'payload.bin',
+                sizeBytes: 1,
+                overwrite: true,
+            },
+        });
+
+        expect(result).toMatchObject({
+            success: false,
+            errorCode: 'DIRECT_IMPORT_PREPARE_INVALID',
+            error: 'Direct import prepare returned an unsupported response (shape: object; success=undefined; error=undefined; ok=boolean; result=object)',
+        });
+        expect(JSON.stringify(result)).not.toContain('must-not-leak');
+    });
+
     it('prepares a direct import session and uploads encrypted chunks through the HTTP transfer endpoints', async () => {
         const order: string[] = [];
         const release = vi.fn(async () => {});

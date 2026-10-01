@@ -21,6 +21,8 @@ function signedAuthority(): SignedProviderBrokerRouteGrantV1 {
     v: 1, grantId: 'grant-1', aud: 'happier-provider-broker-route-v1', issuedAt: 100, expiresAt: 10_000,
     teamId: 'team-1', resourceId: 'resource-1',
     sourceRevision: 'source-revision-7',
+    brokerPlacementFingerprint: 'c'.repeat(64),
+    initiatorTokenEpoch: 0,
     initiator: { accountId: 'account-a', machineId: 'machine-a', endpointId: sourceEndpoint },
     target: { custodianAccountId: 'account-b', machineId: 'machine-b', endpointId: targetEndpoint },
     consumer: { kind: 'session', sessionId: 'session-1' },

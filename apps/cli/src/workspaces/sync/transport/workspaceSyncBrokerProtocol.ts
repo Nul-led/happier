@@ -2,6 +2,7 @@ import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import {
   WORKSPACE_SYNC_MAX_PATTERN_BYTES,
   WORKSPACE_SYNC_MAX_PATTERNS,
+  WorkspaceSyncSelectionDiagnoseV1Schema,
 } from '@happier-dev/protocol';
 
 export const WORKSPACE_SYNC_BROKER_PROTOCOL = 1 as const;
@@ -27,8 +28,12 @@ export type MutagenEndpointSummaryV1 = Readonly<{
   protocol: 'external';
   host: string;
   path: '';
-  connected: boolean;
-  scanned: boolean;
+  state: Readonly<{
+    connected: boolean;
+    scanned: boolean;
+    scanProblemCount: number;
+    transitionProblemCount: number;
+  }> | null;
 }>;
 export type MutagenSessionSummaryV1 = Readonly<{
   identifier: string;
@@ -86,6 +91,7 @@ export type MutagenControlCommandV1 =
   | Readonly<{ t: 'terminate'; requestId: string; sessionIdentifier: string }>
   | Readonly<{ t: 'get_policy'; requestId: string; sessionIdentifier: string; cursor?: string; limit: number }>
   | Readonly<{ t: 'list_conflicts'; requestId: string; sessionIdentifier: string; cursor?: string; limit: number }>
+  | Readonly<{ t: 'diagnose_selection'; requestId: string; sessionIdentifier: string; side: 'alpha' | 'beta'; path: string }>
   | Readonly<{ t: 'shutdown'; requestId: string }>;
 
 export const WORKSPACE_SYNC_BROKER_TERMINAL_ERROR_CODES = [
@@ -214,6 +220,7 @@ const commandFields: Record<MutagenControlCommandV1['t'], readonly string[]> = {
   pause: ['t', 'requestId', 'sessionIdentifier'], resume: ['t', 'requestId', 'sessionIdentifier'], terminate: ['t', 'requestId', 'sessionIdentifier'],
   get_policy: ['t', 'requestId', 'sessionIdentifier', 'cursor', 'limit'],
   list_conflicts: ['t', 'requestId', 'sessionIdentifier', 'cursor', 'limit'], shutdown: ['t', 'requestId'],
+  diagnose_selection: ['t', 'requestId', 'sessionIdentifier', 'side', 'path'],
 };
 
 function strictFields(value: Record<string, unknown>, allowed: readonly string[], owner: string): void {
@@ -305,6 +312,12 @@ export function parseMutagenControlCommandV1(value: unknown): MutagenControlComm
     }
     case 'shutdown':
       return { t: tag, requestId };
+    case 'diagnose_selection': {
+      if (value.side !== 'alpha' && value.side !== 'beta') throw new Error('invalid selection diagnosis side');
+      const path = WorkspaceSyncSelectionDiagnoseV1Schema.shape.path.parse(value.path);
+      if (path.includes('\\')) throw new Error('invalid selection diagnosis path');
+      return { t: tag, requestId, sessionIdentifier: boundedIdentifier(value.sessionIdentifier, 'sessionIdentifier'), side: value.side, path };
+    }
     case 'get_policy':
     case 'list_conflicts': {
       if (!Number.isInteger(value.limit) || (value.limit as number) < 1 || (value.limit as number) > 100) {

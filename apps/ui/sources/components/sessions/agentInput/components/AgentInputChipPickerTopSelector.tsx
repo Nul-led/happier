@@ -1,4 +1,5 @@
 import React from 'react';
+import { normalizeNodeForView } from '@/components/ui/rendering/normalizeNodeForView';
 import { Platform, Pressable, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
@@ -23,7 +24,6 @@ export type AgentInputChipPickerTopSelectorProps = Readonly<{
     onFocusOption: (optionId: string) => void;
 }>;
 
-const PICKER_OPTION_SIZE = 36;
 const PICKER_OPTION_TOUCH_TARGET_SIZE = resolveMinimumInteractiveTargetSize(Platform.OS);
 
 type WebHoverablePressableState = Readonly<{
@@ -56,14 +56,17 @@ export function AgentInputChipPickerTopSelector(props: AgentInputChipPickerTopSe
                 fadeLeftStyle={styles.fadeLeft}
                 fadeRightStyle={styles.fadeRight}
             >
-                {options.map((option) => {
+                {options.map((option, index) => {
+                    // A new labelled group ("Not on devbox yet") starts after a thin divider (lab agent-setup E1p).
+                    const startsGroup = index > 0 && option.sectionId !== undefined && option.sectionId !== options[index - 1]?.sectionId;
                     const active = props.focusedOptionId === option.id || props.selectedOptionId === option.id;
                     const disabled = option.disabled === true;
                     const muted = option.muted === true;
 
                     return (
+                        <React.Fragment key={option.id}>
+                        {startsGroup ? <View testID={`agent-input-chip-picker.top-selector-divider:${option.sectionId}`} style={styles.groupDivider} /> : null}
                         <Pressable
-                            key={option.id}
                             testID={`agent-input-chip-picker.top-selector-option:${option.id}`}
                             accessibilityRole="button"
                             accessibilityLabel={resolveAgentInputChipPickerOptionAccessibilityLabel(option, props.selectedOptionId === option.id)}
@@ -96,7 +99,11 @@ export function AgentInputChipPickerTopSelector(props: AgentInputChipPickerTopSe
                             }}
                         >
                             {normalizeAgentInputChipPickerOptionIcon(option.icon)}
+                            {option.statusMarker && props.selectedOptionId !== option.id ? (
+                                <View style={styles.statusBadge} pointerEvents="none">{normalizeNodeForView(option.statusMarker)}</View>
+                            ) : null}
                         </Pressable>
+                        </React.Fragment>
                     );
                 })}
             </HorizontalScrollableRow>
@@ -111,7 +118,7 @@ const stylesheet = StyleSheet.create((theme) => ({
     },
     scrollContainer: {
         width: '100%',
-        minHeight: PICKER_OPTION_SIZE + 20,
+        minHeight: PICKER_OPTION_TOUCH_TARGET_SIZE + 20,
         backgroundColor: theme.colors.background.canvas,
     },
     scrollContent: {
@@ -122,14 +129,31 @@ const stylesheet = StyleSheet.create((theme) => ({
         paddingVertical: 10,
     },
     optionButton: {
-        width: PICKER_OPTION_SIZE,
-        height: PICKER_OPTION_SIZE,
+        width: PICKER_OPTION_TOUCH_TARGET_SIZE,
+        height: PICKER_OPTION_TOUCH_TARGET_SIZE,
         minWidth: PICKER_OPTION_TOUCH_TARGET_SIZE,
         minHeight: PICKER_OPTION_TOUCH_TARGET_SIZE,
         borderRadius: AGENT_INPUT_CHIP_PICKER_OPTION_ROW_RADIUS,
         alignItems: 'center',
         justifyContent: 'center',
         backgroundColor: 'transparent',
+    },
+    groupDivider: {
+        width: StyleSheet.hairlineWidth,
+        height: 26,
+        marginHorizontal: 4,
+        backgroundColor: theme.colors.border.default,
+    },
+    statusBadge: {
+        position: 'absolute',
+        right: 3,
+        bottom: 3,
+        minWidth: 14,
+        height: 14,
+        borderRadius: 7,
+        alignItems: 'center',
+        justifyContent: 'center',
+        backgroundColor: theme.colors.background.canvas,
     },
     fadeLeft: {
         position: 'absolute',

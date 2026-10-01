@@ -1,3 +1,5 @@
+import { readSessionDirectoryKind } from '@happier-dev/protocol';
+
 import { resolveAbsolutePath } from '@/utils/path/pathUtils';
 import { normalizeNonEmptyString } from '@/utils/strings/normalizeNonEmptyString';
 import { normalizeTrimmedString } from './normalizeTrimmedString';
@@ -29,18 +31,19 @@ export type SessionProjectGroupingKeyParts = Readonly<{
     host: string | null;
     machineId: string | null;
     homeDir: string | null;
+    /** `''` for a no-folder session: its private folder is never a project. */
     pathKey: string;
+    /** `managed`: the machine's no-folder sessions, which group together as its Chats. */
+    bucket: 'path' | 'managed';
 }>;
 
 export type SessionProjectGroupingKeyPartsWithMachineMetadata = SessionProjectGroupingKeyParts & Readonly<{
     displayPath: string | null;
 }>;
 
-export type SessionProjectGroupingIdentity = readonly [
-    serverId: string | null,
-    machineId: string | null,
-    pathKey: string,
-];
+export type SessionProjectGroupingIdentity =
+    | readonly [serverId: string | null, machineId: string | null, pathKey: string]
+    | readonly [serverId: string | null, machineId: string | null, pathKey: '', bucket: 'managed'];
 
 function normalizeHostForProjectGrouping(value: unknown): string | null {
     const host = normalizeNonEmptyString(value);
@@ -49,13 +52,13 @@ function normalizeHostForProjectGrouping(value: unknown): string | null {
 
 export function buildSessionProjectGroupingIdentity(
     serverIdInput: unknown,
-    parts: Pick<SessionProjectGroupingKeyParts, 'machineId' | 'pathKey'>,
+    parts: Pick<SessionProjectGroupingKeyParts, 'machineId' | 'pathKey'> & Partial<Pick<SessionProjectGroupingKeyParts, 'bucket'>>,
 ): SessionProjectGroupingIdentity {
-    return [
-        normalizeTrimmedString(serverIdInput) || null,
-        parts.machineId,
-        parts.pathKey,
-    ];
+    const serverId = normalizeTrimmedString(serverIdInput) || null;
+    // Folder identities keep their three-part shape, so existing group keys stay stable.
+    return parts.bucket === 'managed'
+        ? [serverId, parts.machineId, '', 'managed']
+        : [serverId, parts.machineId, parts.pathKey];
 }
 
 /** Stable, reversible encoding of the exact Home/Machine/path tuple. */
@@ -63,17 +66,21 @@ export function sessionProjectGroupingIdentityKey(identity: SessionProjectGroupi
     return JSON.stringify(identity);
 }
 
-export function resolveSessionProjectGroupingKeyParts(metadata: Readonly<{
+type SessionProjectGroupingMetadata = Readonly<{
     host?: unknown;
     machineId?: unknown;
     path?: unknown;
     homeDir?: unknown;
-}> | null | undefined): SessionProjectGroupingKeyParts {
+    sessionDirectoryV1?: unknown;
+}> | null | undefined;
+
+export function resolveSessionProjectGroupingKeyParts(metadata: SessionProjectGroupingMetadata): SessionProjectGroupingKeyParts {
     const host = normalizeHostForProjectGrouping(metadata?.host);
     const machineId = normalizeNonEmptyString(metadata?.machineId);
     const homeDirRaw = normalizeNonEmptyString(metadata?.homeDir);
     const homeDir = homeDirRaw ? normalizePathForProjectGrouping(homeDirRaw) : null;
-    const pathKey = normalizeSessionPathForProjectGrouping(metadata?.path, homeDir);
+    const bucket = readSessionDirectoryKind(metadata) === 'managed' ? 'managed' : 'path';
+    const pathKey = bucket === 'managed' ? '' : normalizeSessionPathForProjectGrouping(metadata?.path, homeDir);
     const machineGroupId = machineId ? `id:${machineId}` : 'unknown';
 
     return {
@@ -82,16 +89,12 @@ export function resolveSessionProjectGroupingKeyParts(metadata: Readonly<{
         machineId,
         homeDir,
         pathKey,
+        bucket,
     };
 }
 
 export function resolveSessionProjectGroupingKeyPartsWithMachineMetadata(
-    metadata: Readonly<{
-        host?: unknown;
-        machineId?: unknown;
-        path?: unknown;
-        homeDir?: unknown;
-    }> | null | undefined,
+    metadata: SessionProjectGroupingMetadata,
     machineMetadata: Readonly<{
         host?: unknown;
         homeDir?: unknown;
@@ -102,8 +105,9 @@ export function resolveSessionProjectGroupingKeyPartsWithMachineMetadata(
     const host = normalizeHostForProjectGrouping(machineMetadata?.host) || parts.host;
     const homeDirRaw = normalizeTrimmedString(machineMetadata?.homeDir);
     const homeDir = homeDirRaw ? normalizePathForProjectGrouping(homeDirRaw) : parts.homeDir;
-    const displayPath = normalizeTrimmedString(displayPathInput ?? metadata?.path) || null;
-    const pathKey = normalizeSessionPathForProjectGrouping(displayPathInput ?? metadata?.path, homeDir);
+    const managed = parts.bucket === 'managed';
+    const displayPath = managed ? null : normalizeTrimmedString(displayPathInput ?? metadata?.path) || null;
+    const pathKey = managed ? '' : normalizeSessionPathForProjectGrouping(displayPathInput ?? metadata?.path, homeDir);
     const machineGroupId = parts.machineId ? `id:${parts.machineId}` : 'unknown';
 
     return {
@@ -112,6 +116,7 @@ export function resolveSessionProjectGroupingKeyPartsWithMachineMetadata(
         machineId: parts.machineId,
         homeDir,
         pathKey,
+        bucket: parts.bucket,
         displayPath,
     };
 }

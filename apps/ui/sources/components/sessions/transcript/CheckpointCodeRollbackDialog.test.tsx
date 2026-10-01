@@ -41,6 +41,27 @@ describe('CheckpointCodeRollbackDialog', () => {
         await screen.unmount();
     });
 
+    it('puts its title in the shared modal title band, not in the body', async () => {
+        const setChrome = vi.fn();
+        const { CheckpointCodeRollbackDialog } = await import('./CheckpointCodeRollbackDialog');
+        const screen = await renderScreen(
+            <CheckpointCodeRollbackDialog
+                visible
+                conversationRollbackSupported
+                onCancel={() => undefined}
+                onConfirm={() => undefined}
+                setChrome={setChrome}
+            />,
+        );
+
+        expect(setChrome).toHaveBeenLastCalledWith(expect.objectContaining({
+            kind: 'card',
+            title: 'session.rollback.checkpointCode.title',
+        }));
+        expect(screen.getTextContent()).not.toContain('session.rollback.checkpointCode.title');
+        await screen.unmount();
+    });
+
     it('requires explicit transcript-divergence confirmation before confirming code-only rollback', async () => {
         const onConfirm = vi.fn();
         const { CheckpointCodeRollbackDialog } = await import('./CheckpointCodeRollbackDialog');

@@ -5,6 +5,7 @@ import type {
     ComposerTransactionResultV1,
     MentionRefV1,
     ComposerAttachmentViewV1,
+    SessionDirectoryIntentV1,
 } from '@happier-dev/protocol';
 import { sameStrictJsonValue } from '@happier-dev/protocol';
 import { composerRefsV1Equal } from '@happier-dev/protocol/plugins/ui/composerRef';
@@ -49,9 +50,11 @@ import type { DaemonMergedProjectionPhase } from '@/agents/backendCatalog/useDae
 import { randomUUID } from '@/platform/randomUUID';
 import { captureActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
 import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
+import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
 import type { ComposerStructuredInputMention } from '@/sync/domains/input/draftValues/sessionDraftValueTypes';
 import type { NewSessionComposerAttachmentSeedV1 } from '@/sync/domains/state/persistence';
 import { t } from '@/text';
+import { useLayoutPresentationActive } from '@/components/ui/presentation/PluginSurfaceFocusEligibility';
 
 import type { NewSessionPromptStore } from './newSessionPromptStore';
 
@@ -103,7 +106,22 @@ export type NewSessionComposerDocument = Readonly<{
     /** Bound by the mounted New Session input; never a global focus registry. */
     onComposerFocusChange: (focused: boolean) => void;
     onComposerFocusRequestChange: (request: (() => void) | null) => void;
+    onComposerInputFlushRequestChange: (request: (() => void) | null) => void;
+    flushComposerInput: () => void;
     onComposerActionBarLayoutChange: (layout: ComposerSnapshotV1['layout']) => void;
+    /**
+     * The mounted input's own caret/selection seam, the same one an existing
+     * Session composer uses. The input is the only owner of where the caret
+     * is, so the document reads it from here rather than keeping a second
+     * idea of it; the snapshot below then carries the caret that is on screen.
+     */
+    inputPersistence: Readonly<{
+        restoreToken: string;
+        onSelectionChangePersist: (
+            selection: NonNullable<ComposerSnapshotV1['selection']>,
+            textLength: number,
+        ) => void;
+    }>;
     composerDecorations: readonly AgentInputComposerDecoration[];
     composerInputLock: AgentInputComposerInputLock | null;
     attachmentRowItems: readonly AgentInputAttachmentsRowItem[];
@@ -115,6 +133,16 @@ export type NewSessionComposerDocument = Readonly<{
     readCurrentExecutionTarget?: () => Readonly<{ serverId: string; machineId: string }> | null;
     captureSubmissionSnapshot: (inputTextOverride?: string) => ComposerSnapshotV1 | null;
     clearAcceptedSnapshot: (snapshot: ComposerSnapshotV1) => boolean;
+    /**
+     * What is on screen right now — exact text, placed references and attachment
+     * availability — without claiming it is being submitted.
+     *
+     * The screen model does not rerender per keystroke, so anything derived from
+     * the last render can lag the input. An action that hands this document
+     * somewhere else reads it here instead, which is the same document owner
+     * submission reads and therefore not a second store.
+     */
+    readCurrentDocumentSnapshot: () => ComposerSnapshotV1 | null;
 }>;
 
 function sameDocumentState(
@@ -160,7 +188,10 @@ export function useNewSessionComposerDocument(params: Readonly<{
     /** Derived by the New Session authoring owner after this adapter is mounted. */
     canSubmitRef: React.RefObject<boolean>;
     isSubmitting: boolean;
+    setDirectoryIntent?: (intent: SessionDirectoryIntentV1) => void;
+    isPresented?: boolean;
 }>): NewSessionComposerDocument {
+    const layoutPresented = useLayoutPresentationActive();
     const [legacyHarnessDraftId] = React.useState(randomUUID);
     const draftId = params.draftId ?? legacyHarnessDraftId;
     const draftScope = params.draftScope ?? null;
@@ -185,8 +216,16 @@ export function useNewSessionComposerDocument(params: Readonly<{
     refRef.current = ref;
     const mountedRef = React.useRef(true);
     const composerInputFocusedRef = React.useRef(false);
+    // The caret belongs to the mounted input and to this exact document
+    // identity. A replaced owner mints a new identity, so a stale caret from
+    // the retired scope can never be reported as this document's.
+    const composerSelectionRef = React.useRef<Readonly<{
+        instanceId: string;
+        selection: NonNullable<ComposerSnapshotV1['selection']>;
+    }> | null>(null);
     const composerActionBarLayoutRef = React.useRef<ComposerSnapshotV1['layout']>('wrap');
     const composerFocusRequestRef = React.useRef<(() => void) | null>(null);
+    const composerInputFlushRequestRef = React.useRef<(() => void) | null>(null);
     const isSubmittingRef = React.useRef(params.isSubmitting);
     isSubmittingRef.current = params.isSubmitting;
     const suppressPromptNotificationRef = React.useRef(false);
@@ -339,6 +378,23 @@ export function useNewSessionComposerDocument(params: Readonly<{
     const onComposerFocusRequestChange = React.useCallback((request: (() => void) | null) => {
         composerFocusRequestRef.current = request;
     }, []);
+    const onComposerInputFlushRequestChange = React.useCallback((request: (() => void) | null) => {
+        composerInputFlushRequestRef.current = request;
+    }, []);
+    const flushComposerInput = React.useCallback(() => {
+        composerInputFlushRequestRef.current?.();
+    }, []);
+
+    const onSelectionChangePersist = React.useCallback((
+        selection: NonNullable<ComposerSnapshotV1['selection']>,
+    ) => {
+        if (!mountedRef.current || !composerRefsV1Equal(refRef.current, ref)) return;
+        composerSelectionRef.current = { instanceId: ref.instanceId, selection };
+    }, [ref]);
+    const inputPersistence = React.useMemo(() => ({
+        restoreToken: ref.instanceId,
+        onSelectionChangePersist,
+    }), [onSelectionChangePersist, ref.instanceId]);
 
     const onComposerActionBarLayoutChange = React.useCallback((layout: ComposerSnapshotV1['layout']) => {
         if (!mountedRef.current || !composerRefsV1Equal(refRef.current, ref)) return;
@@ -421,6 +477,16 @@ export function useNewSessionComposerDocument(params: Readonly<{
             && !isSubmittingRef.current
             && attachmentsReady;
         const inputLock = composerInputEffects.readComposerInputLock();
+        // A caret is only reported while it still describes the live text: a
+        // programmatic write can shorten the document between two input
+        // events, and an offset into text that no longer exists would restore
+        // a selection over bytes the person never chose.
+        const reported = composerSelectionRef.current;
+        const selection = reported !== null
+            && reported.instanceId === ref.instanceId
+            && reported.selection.end <= text.length
+            ? reported.selection
+            : undefined;
         // Readiness gates submission, not authoring. In particular an
         // unavailable seeded attachment must remain removable so the user can
         // clear the canonical placeholder and its pending seed custody.
@@ -430,6 +496,7 @@ export function useNewSessionComposerDocument(params: Readonly<{
             revision: documentOwner.read().revision,
             ref,
             text,
+            ...(selection ? { selection } : {}),
             // The scope adapter exposes immutable normalized references. The
             // Protocol snapshot is the wire-shaped mutable-array boundary.
             references: [...composerReferencesFromStructuredMentions({ text, mentions: state.mentions })],
@@ -504,6 +571,15 @@ export function useNewSessionComposerDocument(params: Readonly<{
             });
         },
         readSnapshot,
+        isPresented: () => layoutPresented && params.isPresented !== false,
+        applyNewSessionDirectoryIntent: (intent, expectedScope) => {
+            if (!params.setDirectoryIntent || !readSnapshot().state.editable) return false;
+            const ownerScope = draftScope ?? composerAccountLifetime?.scope;
+            if (expectedScope?.serverId && (!ownerScope || !areServerProfileIdentifiersEquivalent(ownerScope.serverId, expectedScope.serverId))) return false;
+            if (expectedScope?.accountId && ownerScope?.accountId !== expectedScope.accountId) return false;
+            params.setDirectoryIntent(intent);
+            return true;
+        },
         commitDocument,
         createAttachmentInstanceId: randomUUID,
         setComposerDecorations: composerInputEffects.setComposerDecorations,
@@ -701,6 +777,10 @@ export function useNewSessionComposerDocument(params: Readonly<{
         return snapshot;
     }, [documentOwner, params.promptStore, readSnapshot, updateDocument]);
 
+    const readCurrentDocumentSnapshot = React.useCallback((): ComposerSnapshotV1 | null => (
+        mountedRef.current ? readSnapshot() : null
+    ), [readSnapshot]);
+
     const clearAcceptedSnapshot = React.useCallback((snapshot: ComposerSnapshotV1): boolean => {
         if (!mountedRef.current || !composerRefsV1Equal(refRef.current, snapshot.ref)) return false;
         const currentness = submissionCurrentnessRef.current.get(snapshot);
@@ -811,7 +891,10 @@ export function useNewSessionComposerDocument(params: Readonly<{
         onStructuredInputMentionsChange,
         onComposerFocusChange,
         onComposerFocusRequestChange,
+        onComposerInputFlushRequestChange,
+        flushComposerInput,
         onComposerActionBarLayoutChange,
+        inputPersistence,
         composerDecorations: composerInputEffects.composerDecorations,
         composerInputLock: composerInputEffects.composerInputLock,
         attachmentRowItems,
@@ -822,11 +905,13 @@ export function useNewSessionComposerDocument(params: Readonly<{
         readCurrentExecutionTarget,
         captureSubmissionSnapshot,
         clearAcceptedSnapshot,
+        readCurrentDocumentSnapshot,
     }), [
         attachmentRowItems,
         attachmentViews,
         captureSubmissionSnapshot,
         clearAcceptedSnapshot,
+        readCurrentDocumentSnapshot,
         composerInputEffects.composerDecorations,
         composerInputEffects.composerInputLock,
         composerPluginPresentation.afterComposer,
@@ -837,7 +922,10 @@ export function useNewSessionComposerDocument(params: Readonly<{
         onComposerActionBarLayoutChange,
         onComposerFocusChange,
         onComposerFocusRequestChange,
+        onComposerInputFlushRequestChange,
+        flushComposerInput,
         onStructuredInputMentionsChange,
+        inputPersistence,
         isNewSessionComposerCurrent,
         isNewSessionReferenceSearchCurrent,
         readCurrentExecutionTarget,

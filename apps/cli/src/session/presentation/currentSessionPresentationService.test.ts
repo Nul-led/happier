@@ -102,6 +102,31 @@ const defaultOwner = {
 } as const;
 
 describe('current-session presentation service', () => {
+  it('keeps the same binding and metadata revision when its identical bind repeats', async () => {
+    const harness = createHarness();
+    const bind = { clientId: 'client-a', focused: true, draftRevision: 3 } as const;
+    const first = await harness.handlers.get(CURRENT_SESSION_PRESENTATION_BIND_RPC_METHOD)?.(
+      bind, presentationContext('connection-a'),
+    );
+    const state = harness.readState();
+    const attempts = harness.readStateWriteAttemptCount();
+
+    const repeated = await harness.handlers.get(CURRENT_SESSION_PRESENTATION_BIND_RPC_METHOD)?.(
+      bind, presentationContext('connection-a'),
+    );
+    expect(repeated).toEqual(first);
+    expect(harness.readState()).toEqual(state);
+    expect(harness.readStateWriteAttemptCount()).toBe(attempts);
+
+    const changed = await harness.handlers.get(CURRENT_SESSION_PRESENTATION_BIND_RPC_METHOD)?.(
+      { ...bind, draftRevision: 4 }, presentationContext('connection-a'),
+    );
+    expect(changed).toMatchObject({ status: 'bound' });
+    expect(harness.readState()).toEqual(state);
+    expect(harness.readStateWriteAttemptCount()).toBe(attempts);
+    expect(changed).toMatchObject({ revision: first?.revision });
+  });
+
   it('refuses local or forwarded custody calls without the private authenticated origin', async () => {
     const harness = createHarness();
     const contextWithoutOrigin = { signal: new AbortController().signal };

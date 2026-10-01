@@ -129,10 +129,6 @@ export function evaluateBrowserTargetPolicy(
         }
     }
 
-    if (input.target.kind === 'streamedBrowser') {
-        return deniedDecision(input, 'adapter_unavailable');
-    }
-
     return allowedDecision(input);
 }
 

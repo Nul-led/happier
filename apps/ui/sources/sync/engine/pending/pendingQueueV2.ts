@@ -16,13 +16,16 @@ import {
     type PersistedPendingOutboxMessage,
 } from '@/sync/domains/state/pendingOutboxPersistence';
 import type { Encryption } from '@/sync/encryption/encryption';
+import type { SessionEncryption } from '@/sync/encryption/sessionEncryption';
+import { createSessionEncryptionUnavailableError } from '@/sync/encryption/sessionEncryptionUnavailableError';
 import { nowServerMs } from '@/sync/runtime/time';
 import {
     RawRecordSchema,
     type RawRecord,
-} from '@/sync/typesRaw';
+} from "@happier-dev/session-core/raw";
 import { randomUUID } from '@/platform/randomUUID';
 import type { DecryptedArtifact } from '@/sync/domains/artifacts/artifactTypes';
+import type { PermissionMode } from '@/constants/PermissionModes';
 import type {
     DiscardedPendingMessage,
     PendingDeliveryStatus,
@@ -74,6 +77,7 @@ import {
     type SessionStoredMessageContent,
     type SessionMediaMessageMetaV1,
     type SessionInputAdmissionRejectionCodeV1,
+    type ProviderBoundModelRef,
 } from '@happier-dev/protocol';
 import {
     admitMentionRefsV1ForText,
@@ -104,7 +108,7 @@ import type { SessionMessageHostAdmissionOrigin } from '@/sync/domains/session/i
 import { encodeBase64 } from '@/encryption/base64';
 import { stableJsonStringify } from '@/utils/json/stableJsonStringify';
 import { isPendingMessageForRecipient } from '@/sync/domains/pending/pendingMessageRecipient';
-import { applyTranscriptAccountActorMetadata, readTranscriptAccountActorMetadata } from '@/sync/domains/messages/transcriptAccountActor';
+import { applyTranscriptAccountActorMetadata, readTranscriptAccountActorMetadata } from "@happier-dev/session-core/messages";
 
 export { assertValidPendingMessageId } from '@/sync/domains/pending/pendingMessageId';
 
@@ -129,7 +133,7 @@ type PendingRow = {
     deliveryBlockedReason: string | null;
     deliveryStatus: PendingDeliveryStatusV1;
     authorAccountId: string | null;
-    accountActor?: import('@/sync/domains/messages/transcriptAccountActor').TranscriptAccountActor | null;
+    accountActor?: import("@happier-dev/session-core/messages").TranscriptAccountActor | null;
     requestedAction: PendingRequestedActionV1 | null;
     requestedActionMalformed?: true;
 };
@@ -148,6 +152,13 @@ type PendingQueueSessionEncryption = Readonly<{
  */
 type PendingMutationEqualityTagOwner = Readonly<{
     deriveInputEqualityTagV1: (canonicalIntent: string) => string;
+}>;
+
+/** An edit re-seals the whole record and re-derives its mutation tag, so it needs the full reader. */
+type PendingQueueUpdateEncryption = Readonly<{
+    getSessionEncryption: (
+        sessionId: string,
+    ) => SessionEncryption | null | undefined | Promise<SessionEncryption | null | undefined>;
 }>;
 
 export type PendingQueueEncryption = Readonly<{
@@ -1165,7 +1176,7 @@ function derivePendingMessageMutationFingerprintV1(params: Readonly<{
     const canonicalIntent = `${PENDING_MESSAGE_MUTATION_FINGERPRINT_DOMAIN_V1}\u0000${canonicalPayload}`;
     if (params.sessionEncryptionMode === 'e2ee') {
         if (!params.sessionEncryption) {
-            throw new Error(`Session ${params.sessionId} not found`);
+            throw createSessionEncryptionUnavailableError(params.sessionId);
         }
         return PendingMessageMutationFingerprintV1Schema.parse(
             params.sessionEncryption.deriveInputEqualityTagV1(canonicalIntent),
@@ -1602,7 +1613,7 @@ async function buildPendingUserMessageWriteBody(params: {
         };
     }
     if (!params.sessionEncryption) {
-        throw new Error(`Session ${params.sessionId} not found`);
+        throw createSessionEncryptionUnavailableError(params.sessionId);
     }
     return {
         localId: params.localId,
@@ -2216,6 +2227,9 @@ async function enqueuePendingMessageV2Owned(params: {
     encryption: PendingQueueEncryption | null;
     metaOverrides?: Record<string, unknown>;
     hostAdmissionOrigin?: SessionMessageHostAdmissionOrigin;
+    /** The models this sender may run; the message runs on the first allowed one when needed. */
+    allowedModels?: readonly ProviderBoundModelRef[] | null;
+    allowedPermissionModes?: readonly PermissionMode[] | null;
     fetchArtifactWithBody?: (artifactId: string) => Promise<DecryptedArtifact | null>;
     updateArtifact?: (artifact: DecryptedArtifact) => void;
     request: (path: string, init?: RequestInit) => Promise<Response>;
@@ -2285,6 +2299,8 @@ async function enqueuePendingMessageV2Owned(params: {
         session,
         metaOverrides,
         hostAdmissionOrigin: params.hostAdmissionOrigin,
+        allowedModels: params.allowedModels,
+        allowedPermissionModes: params.allowedPermissionModes,
     });
     const parsedRawRecord = RawRecordSchema.safeParse(candidateRawRecord);
     const rawRecord = parsedRawRecord.success && parsedRawRecord.data.role === 'user'
@@ -2364,7 +2380,7 @@ async function enqueuePendingMessageV2Owned(params: {
                 ? null
                 : await encryption?.getSessionEncryption(sessionId);
             if (!existingOutboxRow && sessionEncryptionMode === 'e2ee' && !sessionEncryption) {
-                throw new Error(`Session ${sessionId} not found`);
+                throw createSessionEncryptionUnavailableError(sessionId);
             }
             const currentExistingOutboxRow = existingOutboxRow
                 ? (await findPendingOutboxMessage(sessionId, localId, outboxScope))
@@ -2810,7 +2826,7 @@ export async function updatePendingMessageV2(params: {
             envelope: SessionMediaMessageMetaV1;
         }>;
     }>;
-    encryption: Encryption | null;
+    encryption: PendingQueueUpdateEncryption | null;
     fetchArtifactWithBody?: (artifactId: string) => Promise<DecryptedArtifact | null>;
     updateArtifact?: (artifact: DecryptedArtifact) => void;
     request: (path: string, init?: RequestInit) => Promise<Response>;
@@ -2852,9 +2868,9 @@ export async function updatePendingMessageV2(params: {
         throw new Error('Pending owner Session does not match its server-account scope');
     }
     const sessionEncryptionMode: 'e2ee' | 'plain' = session?.encryptionMode === 'plain' ? 'plain' : 'e2ee';
-    const sessionEncryption = sessionEncryptionMode === 'plain' ? null : encryption?.getSessionEncryption(sessionId);
+    const sessionEncryption = sessionEncryptionMode === 'plain' ? null : await encryption?.getSessionEncryption(sessionId);
     if (sessionEncryptionMode === 'e2ee' && !sessionEncryption) {
-        throw new Error(`Session ${sessionId} not found`);
+        throw createSessionEncryptionUnavailableError(sessionId);
     }
 
     const existing = resolvedTarget;

@@ -1,5 +1,5 @@
-import type { Message } from '@/sync/domains/messages/messageTypes';
-import { messageAttentionImpact } from '@/sync/domains/messages/messageUserAttention';
+import type { Message } from "@happier-dev/session-core/messages";
+import { messageAttentionImpact } from "@happier-dev/session-core/messages";
 
 /**
  * Canonical per-message fold for session-list readable activity.

@@ -225,14 +225,16 @@ test.describe('ui e2e: System Status + Diagnosis screens', () => {
     await page.keyboard.press('Enter');
 
     const popover = page.getByTestId('connection-popover-content');
-    await expect(page.getByText('Connection', { exact: true })).toBeVisible();
+    await expect(page.getByText('Homes', { exact: true })).toBeVisible();
     await expect(trigger).toHaveAttribute('aria-expanded', 'true');
     await expect.poll(async () => popover.evaluate((element) => element.contains(document.activeElement))).toBe(true);
 
-    const disclosure = page.getByRole('button', { name: 'Details', expanded: false });
-    await disclosure.focus();
+    // Technical facts sit behind the one Connection details row; opening it moves focus to its back row.
+    const detailsRow = page.getByTestId('connection-popover-details');
+    await detailsRow.focus();
     await page.keyboard.press('Space');
-    await expect(disclosure).toHaveAttribute('aria-expanded', 'true');
+    const detailsBack = page.getByTestId('connection-popover-details-back');
+    await expect(detailsBack).toBeFocused();
 
     await expect(page.getByText('Connection Details', { exact: true })).toBeVisible();
     await expect(page.getByText('Canonical address', { exact: true })).toBeVisible();
@@ -287,9 +289,13 @@ test.describe('ui e2e: System Status + Diagnosis screens', () => {
     await trigger.focus();
     await page.keyboard.press('Enter');
     await expect(popover).toBeVisible();
-    await disclosure.focus();
+    await page.getByTestId('connection-popover-details').focus();
     await page.keyboard.press('Space');
     await expect(page.getByText('Connection Details', { exact: true })).toBeVisible();
+    // Back returns to the first layer with focus on the row that opened the step.
+    await page.getByTestId('connection-popover-details-back').focus();
+    await page.keyboard.press('Space');
+    await expect(page.getByTestId('connection-popover-details')).toBeFocused();
     await test.info().attach('connection-details-light', {
       body: await page.screenshot(),
       contentType: 'image/png',

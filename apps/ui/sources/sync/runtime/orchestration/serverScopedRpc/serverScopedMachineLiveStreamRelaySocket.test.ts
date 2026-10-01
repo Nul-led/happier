@@ -6,7 +6,7 @@ import {
 import type { createEphemeralServerSocketClient as createEphemeralServerSocketClientFn } from './createEphemeralServerSocketClient';
 import type { resolveServerScopedContext as resolveServerScopedContextFn } from './resolveServerScopedContext';
 import type { ScopedRpcEncryptionContext } from './serverScopedRpcTypes';
-import { createStorageModuleStub } from '@/dev/testkit/mocks/storage';
+import { resolveServerScopedMachineLiveStreamRelaySocket } from './serverScopedMachineLiveStreamRelaySocket';
 
 const state = vi.hoisted(() => ({
     profileId: 'user-1',
@@ -22,15 +22,14 @@ const scopedRpcEncryptionStub: ScopedRpcEncryptionContext = {
     getMachineEncryption: () => null,
 };
 
-const storageMock = createStorageModuleStub({
-    storage: {
-        getState: () => ({
-            profile: state.profileId ? { id: state.profileId } : null,
-        }),
-    } as any,
+vi.mock('@/sync/domains/state/storage', async () => {
+    const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
+    return createStorageModuleStub({
+        storage: {
+            getState: () => ({ profile: state.profileId ? { id: state.profileId } : null }),
+        },
+    });
 });
-
-vi.mock('@/sync/domains/state/storage', () => storageMock);
 
 vi.mock('@/sync/api/session/apiSocket', () => ({
     apiSocket: {
@@ -89,7 +88,6 @@ describe('resolveServerScopedMachineLiveStreamRelaySocket', () => {
             timeoutMs: 1_000,
         });
 
-        const { resolveServerScopedMachineLiveStreamRelaySocket } = await import('./serverScopedMachineLiveStreamRelaySocket');
         const client = await resolveServerScopedMachineLiveStreamRelaySocket({
             machineId: 'daemon-1',
             serverId: 'server-a',
@@ -115,6 +113,7 @@ describe('resolveServerScopedMachineLiveStreamRelaySocket', () => {
     });
 
     it('opens an ephemeral scoped socket on the live-stream channel for a non-active server', async () => {
+        const token = `e30.${Buffer.from(JSON.stringify({ sub: 'user-2' })).toString('base64')}.signature`;
         const socketOffSpy = vi.fn();
         const socketDisconnectSpy = vi.fn();
         const socketOnSpy = vi.fn();
@@ -133,11 +132,10 @@ describe('resolveServerScopedMachineLiveStreamRelaySocket', () => {
             timeoutMs: 2_000,
             targetServerId: 'server-b',
             targetServerUrl: 'https://server-b.example.test',
-            token: 'token-b',
+            token,
             encryption: scopedRpcEncryptionStub,
         });
 
-        const { resolveServerScopedMachineLiveStreamRelaySocket } = await import('./serverScopedMachineLiveStreamRelaySocket');
         const client = await resolveServerScopedMachineLiveStreamRelaySocket({
             machineId: 'daemon-2',
             serverId: 'server-b',
@@ -147,25 +145,33 @@ describe('resolveServerScopedMachineLiveStreamRelaySocket', () => {
         // The ephemeral cross-server socket now surfaces its connection id, so the viewer is
         // targeted per-tab (`io.to(socketId)`) instead of falling back to the shared user room.
         expect(client.socketId).toBe('viewer-socket-2');
+        expect(client.scopeUserId).toBe('user-2');
 
         const listener = vi.fn();
         const unsubscribe = client.onEnvelope(listener);
 
         expect(createEphemeralServerSocketClientSpy).toHaveBeenCalledWith({
             serverUrl: 'https://server-b.example.test',
-            token: 'token-b',
+            reachabilityServerUrl: 'https://server-b.example.test',
+            token,
             timeoutMs: 2_000,
+            takeCarrierRelease: expect.any(Function),
         });
-        expect(socketOnSpy).toHaveBeenCalledWith(MACHINE_LIVE_STREAM_SOCKET_EVENT, listener);
+        const receive = socketOnSpy.mock.calls.find(([event]) => event === MACHINE_LIVE_STREAM_SOCKET_EVENT)?.[1];
+        expect(receive).toBeTypeOf('function');
 
         const envelope = makeStartEnvelope();
         client.sendEnvelope(envelope);
         expect(socketEmitSpy).toHaveBeenCalledWith(MACHINE_LIVE_STREAM_SOCKET_EVENT, envelope);
+        receive(envelope);
+        expect(listener).toHaveBeenCalledWith(envelope);
 
         unsubscribe();
-        expect(socketOffSpy).toHaveBeenCalledWith(MACHINE_LIVE_STREAM_SOCKET_EVENT, listener);
+        listener.mockClear(); receive(envelope);
+        expect(listener).not.toHaveBeenCalled();
 
         client.disconnect();
+        expect(socketOffSpy).toHaveBeenCalledWith(MACHINE_LIVE_STREAM_SOCKET_EVENT, receive);
         expect(socketDisconnectSpy).toHaveBeenCalledTimes(1);
     });
 
@@ -176,8 +182,6 @@ describe('resolveServerScopedMachineLiveStreamRelaySocket', () => {
             machineId: 'daemon-1',
             timeoutMs: 1_000,
         });
-
-        const { resolveServerScopedMachineLiveStreamRelaySocket } = await import('./serverScopedMachineLiveStreamRelaySocket');
 
         await expect(resolveServerScopedMachineLiveStreamRelaySocket({
             machineId: 'daemon-1',

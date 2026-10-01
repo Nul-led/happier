@@ -137,7 +137,7 @@ describe('waitForInitialAppUi', () => {
   it('returns when the post-auth setup wizard is visible', async () => {
     const page = createFakePage({
       testIdCounts: {
-        'setupWizard.surface': [1],
+        'settings.machines.draft.form': [1],
       },
     });
 

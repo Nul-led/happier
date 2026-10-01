@@ -11,16 +11,17 @@ vi.mock('@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc', (
 }));
 
 import { uploadDaemonPromptAsset } from '../families/promptAssetTransfers';
+import type { PromptAssetWriteRequest } from '@happier-dev/protocol';
 
-const request = {
+const request: PromptAssetWriteRequest = {
     assetTypeId: 'agents.skill',
-    scope: 'user' as const,
+    scope: 'user',
     externalRef: null,
     targetName: 'writer',
     title: 'Writer',
     bundleSchemaId: 'skills.skill_md_v1',
     bundleBody: {
-        v: 1 as const,
+        v: 1,
         entries: [],
         createdAtMs: 1,
         updatedAtMs: 1,

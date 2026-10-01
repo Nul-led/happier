@@ -8,7 +8,6 @@ import { resolveMachineCarrierRoute } from '../plumbing/machineCarrierHttpLease'
 import { downloadBulkPayloadViaDirectExportToDestination } from '../plumbing/directTransferExportDownload';
 
 import { createBufferedTransferDestination } from '../carriers/createBufferedTransferDestination';
-import { downloadBulkPayloadViaMachineRpcToDestination } from '../carriers/downloadBulkPayloadViaMachineRpcToDestination';
 import { createWorkspaceFileTransferRpcCaller } from './workspaceFileTransferRpcCaller';
 
 type WorkspaceRpcFailure = Readonly<{ success: false; error: string; errorCode?: string }>;
@@ -188,24 +187,6 @@ export async function downloadDaemonWorkspaceFileToDestination(params: Readonly<
         return { ok: false, error: machineRoute.error, errorCode: machineRoute.errorCode };
     }
 
-    if (machineRoute.kind === 'legacy_machine_rpc') {
-        const rpc = createWorkspaceFileTransferRpcCaller({ machineId: params.machineId, serverId: params.serverId });
-        return await downloadBulkPayloadViaMachineRpcToDestination({
-            destination: params.destination,
-            init: async ({ recipientPublicKeyBase64 }, signal) => await rpc.call({
-                machineMethod: RPC_METHODS.DAEMON_TRANSFER_DOWNLOAD_INIT,
-                request: { t: 'session_file_download_v1', path: absolutePath, asZip: params.request.asZip, recipientPublicKeyBase64 },
-                signal,
-            }),
-            readChunk: async (request, signal) => await rpc.call({ machineMethod: RPC_METHODS.DAEMON_TRANSFER_DOWNLOAD_CHUNK, request, signal }),
-            finalize: async (request, signal) => await rpc.call({ machineMethod: RPC_METHODS.DAEMON_TRANSFER_DOWNLOAD_FINALIZE, request, signal }),
-            abort: async (request) => await rpc.call({ machineMethod: RPC_METHODS.DAEMON_TRANSFER_DOWNLOAD_ABORT, request }),
-            onInit: params.onInit ?? null,
-            signal: params.signal ?? null,
-            onProgress: params.onProgress ?? null,
-        });
-    }
-
     return await downloadBulkPayloadViaDirectExportToDestination({
         machineId: params.machineId,
         ...(typeof params.serverId === 'string' ? { serverId: params.serverId } : {}),
@@ -277,26 +258,6 @@ export async function downloadDaemonWorkspaceFileToBase64(params: Readonly<{
     const machineRoute = await resolveMachineCarrierRoute(params.machineId, params.serverId);
     if (machineRoute.kind === 'unavailable') {
         return { ok: false, error: machineRoute.error, errorCode: machineRoute.errorCode };
-    }
-
-    if (machineRoute.kind === 'legacy_machine_rpc') {
-        const rpc = createWorkspaceFileTransferRpcCaller({ machineId: params.machineId, serverId: params.serverId });
-        const result = await downloadBulkPayloadViaMachineRpcToDestination({
-            destination: directBufferedDestination.destination,
-            init: async ({ recipientPublicKeyBase64 }, signal) => await rpc.call({
-                machineMethod: RPC_METHODS.DAEMON_TRANSFER_DOWNLOAD_INIT,
-                request: { t: 'session_file_download_v1', path: absolutePath, asZip: false, recipientPublicKeyBase64 },
-                signal,
-            }),
-            readChunk: async (request, signal) => await rpc.call({ machineMethod: RPC_METHODS.DAEMON_TRANSFER_DOWNLOAD_CHUNK, request, signal }),
-            finalize: async (request, signal) => await rpc.call({ machineMethod: RPC_METHODS.DAEMON_TRANSFER_DOWNLOAD_FINALIZE, request, signal }),
-            abort: async (request) => await rpc.call({ machineMethod: RPC_METHODS.DAEMON_TRANSFER_DOWNLOAD_ABORT, request }),
-            onInit: async (init) => init.sizeBytes > params.maxBytes
-                ? { success: false as const, error: 'File exceeds the inline file read size limit' }
-                : undefined,
-            signal: params.signal ?? null,
-        });
-        return result.ok ? { ok: true, contentBase64: directBufferedDestination.toBase64() } : result;
     }
 
     const directExportResult = await downloadBulkPayloadViaDirectExportToDestination({

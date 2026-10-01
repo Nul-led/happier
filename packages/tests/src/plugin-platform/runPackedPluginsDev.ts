@@ -18,7 +18,7 @@ import {
 } from '../../scripts/plugin-platform/run-packed-author-ui-compat.mjs';
 import {
   computePluginUiArtifactFileSetSha256DigestV1,
-  PluginUiArtifactsManifestV1Schema,
+  PluginUiArtifactsManifestV2Schema,
 } from '@happier-dev/protocol/plugins/ui';
 import {
   parsePluginsDevChangeLine,
@@ -962,19 +962,12 @@ type PackedPluginsDevGeneration = Readonly<{
 type PackedPluginsDevUiArtifactEvidence = Readonly<{
   generation: string;
   mode: PackedPluginsDevUiMode;
-  contributionId: string;
+  artifactId: string;
   artifacts: readonly Readonly<{
-    platform: 'android' | 'ios' | 'web';
     digest: string;
     fileCount: number;
   }>[];
 }>;
-
-function isPackedPluginsDevUiArtifactPlatform(
-  value: unknown,
-): value is 'android' | 'ios' | 'web' {
-  return value === 'android' || value === 'ios' || value === 'web';
-}
 
 function readRequiredGeneration(value: unknown, label: string): PackedPluginsDevGeneration {
   if (!isRecord(value) || typeof value.desiredGeneration !== 'string' || typeof value.appliedGeneration !== 'string') {
@@ -1021,38 +1014,26 @@ export async function readPackedPluginsDevUiArtifactEvidence(params: Readonly<{
     'dist',
     'happier-plugin-ui',
   );
-  const graph = PluginUiArtifactsManifestV1Schema.parse(JSON.parse(await readFile(
+  const graph = PluginUiArtifactsManifestV2Schema.parse(JSON.parse(await readFile(
     join(artifactRoot, 'ui-artifacts.json'),
     'utf8',
   )) as unknown);
   const tier = params.mode === 'reactNative' ? 'reactNative' : 'hostedWeb';
   const entries = graph.entries.filter((entry) => entry.tier === tier);
-  const expectedPlatforms = params.mode === 'reactNative'
-    ? ['android', 'ios', 'web']
-    : ['web'];
-  const actualPlatforms = entries.map((entry) => entry.platform).sort();
-  if (JSON.stringify(actualPlatforms) !== JSON.stringify(expectedPlatforms)) {
-    fail(`Development ${params.mode} artifact platforms differ from the generated contract: ${JSON.stringify(actualPlatforms)}`);
-  }
-  const contributionIds = [...new Set(entries.map((entry) => entry.contributionId))];
-  if (contributionIds.length !== 1 || !contributionIds[0]) {
-    fail(`Development ${params.mode} artifacts do not describe one generated surface: ${JSON.stringify(contributionIds)}`);
+  const artifactIds = [...new Set(entries.map((entry) => entry.artifactId))];
+  if (artifactIds.length !== 1 || !artifactIds[0]) {
+    fail(`Development ${params.mode} artifacts do not describe one generated surface: ${JSON.stringify(artifactIds)}`);
   }
   const artifacts = await Promise.all(entries.map(async (entry) => {
-    const platform = entry.platform;
-    if (!isPackedPluginsDevUiArtifactPlatform(platform)) {
-      fail(`Development ${params.mode} artifact platform is outside the generated contract: ${String(platform)}`);
-    }
     const files = await Promise.all(entry.files.map(async (file) => Object.freeze({
       relativePath: file.relativePath,
       bytes: await readFile(join(artifactRoot, ...file.relativePath.split('/'))),
     })));
     const digest = computePluginUiArtifactFileSetSha256DigestV1(files);
     if (digest !== entry.digest) {
-      fail(`Development ${params.mode} artifact digest did not match emitted bytes for ${entry.platform}`);
+      fail(`Development ${params.mode} artifact digest did not match emitted bytes for ${entry.artifactId}`);
     }
     return Object.freeze({
-      platform,
       digest: entry.digest,
       fileCount: entry.files.length,
     });
@@ -1060,8 +1041,8 @@ export async function readPackedPluginsDevUiArtifactEvidence(params: Readonly<{
   return Object.freeze({
     generation: params.generation,
     mode: params.mode,
-    contributionId: contributionIds[0],
-    artifacts: Object.freeze(artifacts.sort((left, right) => left.platform.localeCompare(right.platform))),
+    artifactId: artifactIds[0],
+    artifacts: Object.freeze(artifacts),
   });
 }
 

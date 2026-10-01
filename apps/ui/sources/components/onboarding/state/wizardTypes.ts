@@ -1,7 +1,7 @@
 import type { TranslationKey } from '@/text';
 import type { RelayAccessProviderId } from '@happier-dev/cli-common/relayAccess/catalog';
 
-export type WizardMode = 'onboarding' | 'setup';
+export type WizardMode = 'onboarding';
 
 export type WizardPlatform = 'web' | 'native' | 'desktop';
 
@@ -22,12 +22,7 @@ export type WizardStepId =
     | 'auth_secret_key'
     | 'auth_service_select'
     | 'auth_lost_access'
-    | 'setup_chooser'
-    | 'setup_this_computer'
-    | 'remote_ssh_setup'
-    | 'confirm_switch_relay'
-    | 'providers_optional'
-    | 'done';
+    | 'confirm_switch_relay';
 
 export type WizardRelayChoiceId = 'cloud' | 'thisComputer' | 'remoteComputer' | 'customUrl';
 
@@ -51,7 +46,6 @@ export type WizardContext = Readonly<{
     relayLockConfirmationPending: boolean;
     relaySwitchConfirmationPending: boolean;
     authIntent: WizardAuthIntent;
-    setupAction: 'local' | 'relayLocal' | 'remote' | null;
 }>;
 
 export type WizardStepKind = 'entry' | 'choice' | 'auth' | 'recovery' | 'setup' | 'finish';
@@ -92,5 +86,4 @@ export type WizardAction =
     | Readonly<{ type: 'wizard/setRelayLockConfirmationPending'; pending: boolean }>
     | Readonly<{ type: 'wizard/setRelaySwitchConfirmationPending'; pending: boolean }>
     | Readonly<{ type: 'wizard/setAuthIntent'; authIntent: WizardAuthIntent }>
-    | Readonly<{ type: 'wizard/setSetupAction'; setupAction: 'local' | 'relayLocal' | 'remote' | null }>
     | Readonly<{ type: 'wizard/setScanStepEnabled'; enabled: boolean }>;

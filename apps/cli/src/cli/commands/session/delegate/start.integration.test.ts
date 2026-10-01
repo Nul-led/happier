@@ -135,7 +135,7 @@ describe('happier session delegate start (integration)', () => {
         expect(decrypted.intent).toBe('delegate');
         expect(decrypted.backendTarget).toEqual({ kind: 'builtInAgent', agentId: 'codex' });
         expect(decrypted.permissionMode).toBe('read_only');
-        expect(decrypted.intentInput?.backendTargetKey).toBe('backend:codex');
+        expect(decrypted.intentInput?.backendTargetKey).toBe('agent:happier.agent.codex/codex');
 
         const resultPayload = { runId: 'run_1', callId: 'call_1', sidechainId: 'call_1' };
         cb?.({
@@ -198,7 +198,7 @@ describe('happier session delegate start (integration)', () => {
       expect(parsed.kind).toBe('session_delegate_start');
       expect(parsed.data?.sessionId).toBe('sess_integration_delegate_start_123');
       expect(parsed.data?.results?.length).toBe(1);
-      expect(parsed.data?.results?.[0]?.key).toBe('backend:codex');
+      expect(parsed.data?.results?.[0]?.key).toBe('agent:happier.agent.codex/codex');
       expect(parsed.data?.results?.[0]?.ok, JSON.stringify(parsed)).toBe(true);
     } finally {
       output.restore();

@@ -62,6 +62,28 @@ describe('createLoopbackReadinessProbe', () => {
     expect(axiosGet).not.toHaveBeenCalled();
   });
 
+  it('uses the feature request owner deadline rather than a shorter identity cutoff', async () => {
+    vi.useFakeTimers();
+    try {
+      let respond: (response: Response) => void = () => undefined;
+      vi.stubGlobal('fetch', vi.fn<typeof fetch>(async (_url, init) => await new Promise<Response>((resolve, reject) => {
+        respond = resolve;
+        init?.signal?.addEventListener('abort', () => reject(new DOMException('timeout', 'AbortError')), { once: true });
+      })));
+      axiosGet.mockResolvedValue({ status: 200 });
+      const readiness = createLoopbackReadinessProbe({
+        serverUrl: 'https://home.example.test', token: 'account-token', expectedServerIdentityId: 'srv_expected',
+      })();
+      await vi.advanceTimersByTimeAsync(5_001);
+      respond(new Response(JSON.stringify({ features: {}, capabilities: { serverIdentity: { serverIdentityId: 'srv_expected' } } }), {
+        status: 200, headers: { 'content-type': 'application/json' },
+      }));
+      await expect(readiness).resolves.toEqual({ status: 'ready' });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('consumes only the bounded feature stream before rejecting an oversized Home identity payload', async () => {
     let chunksRead = 0;
     const cancel = vi.fn();

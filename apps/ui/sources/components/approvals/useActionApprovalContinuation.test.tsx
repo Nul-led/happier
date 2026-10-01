@@ -29,6 +29,9 @@ import type { ActionApprovalContinuation } from './actionApprovalContinuation';
 
 const harness = createHomeGovernanceHarness();
 installHomeGovernanceBoundaries(harness);
+const { useActionApprovalContinuation } = await import('./useActionApprovalContinuation');
+const { createIdentityAdministrationClient } = await import('@/components/settings/teams/identity/identityAdministrationClient');
+const { createServerAccountScope } = await import('@/sync/domains/scope/serverAccountScope');
 
 const ACCOUNT_ID = 'account-a';
 const TEAM_UPDATE_PATH = '/v1/teams/update';
@@ -61,7 +64,6 @@ function answerRename(serverId: string): void {
 }
 
 async function renderContinuation(serverId: string, onExecuted: () => void = vi.fn()) {
-    const { useActionApprovalContinuation } = await import('./useActionApprovalContinuation');
     return await renderHook(({ scopeKey }: { scopeKey: string }) => useActionApprovalContinuation({
         scopeKey,
         serverId,
@@ -140,6 +142,51 @@ describe('useActionApprovalContinuation', () => {
         expect(hook.getCurrent().approvalId).toBeNull();
     });
 
+    it('delivers both concurrently registered read results even when the Inbox decides the second first', async () => {
+        const serverId = await addApprovalHome();
+        await harness.requireUiApproval(serverId, 'teams.identity.connections.list');
+        harness.answer(serverId, '/v1/teams/identity/connections/list', {
+            body: {
+                items: [], eligibleProviders: [], memberSignInUrl: null,
+                admissionModeApplicability: { v: 1, modes: {
+                    invite_only: { status: 'available' },
+                    provisioned: { status: 'unavailable', reason: 'directory_source_required' },
+                    jit: { status: 'unavailable', reason: 'team_connection_required' },
+                } },
+            },
+        });
+        harness.answer(serverId, 'GET /v1/teams/team-1/directory-sources', {
+            body: { items: [], nextCursor: null },
+        });
+        const hook = await renderContinuation(serverId);
+        const scope = createServerAccountScope(serverId, ACCOUNT_ID)!;
+        const client = createIdentityAdministrationClient(scope, { onApprovalPending: hook.getCurrent().requestApproval });
+        const firstResult = vi.fn();
+        const secondResult = vi.fn();
+        await act(async () => { await client.execute('teams.identity.connections.list', { v: 1, teamId: 'team-1' }, { onApprovalSucceeded: firstResult }); });
+        await harness.requireUiApproval(serverId, 'teams.directory.sources.list');
+        await act(async () => { await client.executeDirectory('teams.directory.sources.list', { v: 1, teamId: 'team-1' }, { onApprovalSucceeded: secondResult }); });
+        await waitForHomeGovernance(() => expect(harness.artifacts(serverId).list()).toHaveLength(2));
+        const artifactIdFor = (actionId: string) => harness.artifacts(serverId).list().find((row) => {
+            const body = harness.artifacts(serverId).readPlainBody(row.id);
+            return body !== null && ApprovalRequestV2Schema.parse(JSON.parse(body)).actionId === actionId;
+        })!.id;
+        const firstId = artifactIdFor('teams.identity.connections.list');
+        const secondId = artifactIdFor('teams.directory.sources.list');
+        await expect(decideApprovalAsInbox(serverId, secondId, 'approve')).resolves.toMatchObject({ ok: true, result: { status: 'executed' } });
+        await expect(decideApprovalAsInbox(serverId, firstId, 'approve')).resolves.toMatchObject({ ok: true, result: { status: 'executed' } });
+
+        await waitForHomeGovernance(() => {
+            expect(firstResult).toHaveBeenCalledOnce();
+            expect(secondResult).toHaveBeenCalledOnce();
+        });
+        expect(firstResult).toHaveBeenCalledWith(expect.objectContaining({ items: [], eligibleProviders: [] }));
+        expect(secondResult).toHaveBeenCalledWith({ items: [], nextCursor: null });
+        expect(hook.getCurrent().approvalId).toBeNull();
+        expect(harness.requestsFor('/v1/teams/identity/connections/list')).toHaveLength(1);
+        expect(harness.requestsFor('/v1/teams/team-1/directory-sources')).toHaveLength(1);
+    });
+
     it.each([
         { status: 'rejected' as const, decision: 'reject' as const, homeAnswer: null },
         // The Home refuses the replayed rename, so execution settles failed.
@@ -211,13 +258,44 @@ describe('useActionApprovalContinuation', () => {
 
     it('discards process-local custody when the exact scope changes', async () => {
         const serverId = await addApprovalHome();
+        answerRename(serverId);
         const artifactId = await openRenameApproval(serverId, 'rename-scope');
+        const queuedArtifactId = await openRenameApproval(serverId, 'rename-queued-scope');
         const hook = await renderContinuation(serverId);
+        const onExecuted = vi.fn(async () => 'consumed' as const);
 
-        act(() => hook.getCurrent().requestApproval({ artifactId, onExecuted: vi.fn() }));
+        act(() => hook.getCurrent().requestApproval({ artifactId, onExecuted }));
         expect(hook.getCurrent().approvalId).toBe(artifactId);
+        act(() => hook.getCurrent().requestApproval({ artifactId: queuedArtifactId, onExecuted }));
 
         await hook.rerender({ scopeKey: `${serverId}:account-b` });
         expect(hook.getCurrent().approvalId).toBeNull();
+        await decideApprovalAsInbox(serverId, artifactId, 'approve');
+        await decideApprovalAsInbox(serverId, queuedArtifactId, 'approve');
+        expect(onExecuted).not.toHaveBeenCalled();
+    });
+
+    it('releases an aborted loader without canceling its durable approval or losing the next result', async () => {
+        const serverId = await addApprovalHome();
+        answerRename(serverId);
+        const firstId = await openRenameApproval(serverId, 'abandoned-load');
+        const secondId = await openRenameApproval(serverId, 'current-load');
+        const hook = await renderContinuation(serverId);
+        const abandoned = new AbortController();
+        const firstResult = vi.fn(async () => 'consumed' as const);
+        const secondResult = vi.fn(async () => 'consumed' as const);
+        act(() => {
+            hook.getCurrent().requestApproval({ artifactId: firstId, onExecuted: firstResult, signal: abandoned.signal });
+            hook.getCurrent().requestApproval({ artifactId: secondId, onExecuted: secondResult });
+        });
+        expect(hook.getCurrent().approvalId).toBe(firstId);
+
+        act(() => abandoned.abort());
+        await waitForHomeGovernance(() => expect(hook.getCurrent().approvalId).toBe(secondId));
+        const abandonedBody = harness.artifacts(serverId).readPlainBody(firstId);
+        expect(ApprovalRequestV2Schema.parse(JSON.parse(abandonedBody!)).status).toBe('open');
+        await decideApprovalAsInbox(serverId, secondId, 'approve');
+        await waitForHomeGovernance(() => expect(secondResult).toHaveBeenCalledOnce());
+        expect(firstResult).not.toHaveBeenCalled();
     });
 });

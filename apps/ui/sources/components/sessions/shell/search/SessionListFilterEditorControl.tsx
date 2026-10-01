@@ -3,13 +3,16 @@ import { Platform, Pressable, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { Icon } from '@/components/ui/icons/Icon';
-import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
+import { resolveTouchTargetFloorPx } from '@/components/ui/interactiveTargetSize';
 import { MODAL_AWARE_FLOATING_POPOVER_PORTAL_OPTIONS, Popover } from '@/components/ui/popover';
+import { FloatingOverlay } from '@/components/ui/overlays/FloatingOverlay';
 import { Text } from '@/components/ui/text/Text';
+import { Typography } from '@/constants/Typography';
 import { useIsTablet } from '@/utils/platform/responsive';
 import { Modal } from '@/modal';
 import type { CustomModalInjectedProps } from '@/modal/types';
 
+import { SESSION_LIST_COLUMN_METRICS } from '../sessionListStyles';
 import {
     SessionListFilterEditor,
     type SessionListFilterEditorProps,
@@ -23,30 +26,48 @@ export type SessionListFilterEditorControlProps = Readonly<{
     editor: EditorProps;
 }>;
 
-const MINIMUM_TRIGGER_TARGET_SIZE = resolveMinimumInteractiveTargetSize(Platform.OS);
+/**
+ * The title fills the column's title row (lab S1); where the primary pointer is a finger it takes the
+ * platform's touch floor instead.
+ */
+const MINIMUM_TRIGGER_TARGET_SIZE = resolveTouchTargetFloorPx() ?? SESSION_LIST_COLUMN_METRICS.titleRowHeightPx;
+/**
+ * The scope popover's width: the approved panel (design lab C2) — two scope columns side by side in a
+ * compact surface that never takes the sidebar's full width; longer tile labels wrap in their tiles.
+ */
+const SCOPE_POPOVER_WIDTH_PX = 312;
+/** Tall enough for every facet on a laptop screen; beyond it the panel scrolls inside. */
+const SCOPE_POPOVER_MAX_HEIGHT_PX = 520;
+/** Keeps the popover off the window's edges when it is clamped there (phones). */
+const SCOPE_POPOVER_EDGE_PADDING = { horizontal: 8, vertical: 8 } as const;
 
 const stylesheet = StyleSheet.create((theme) => ({
+    // The list's title is its scope: "My work ⌄" opens the scope menu. It reads as a title (primary
+    // text, semibold), not as a filter pill; the funnel appears only when the view is narrowed beyond
+    // the default, so the list never looks inexplicably short.
     trigger: {
         minHeight: MINIMUM_TRIGGER_TARGET_SIZE,
         minWidth: MINIMUM_TRIGGER_TARGET_SIZE,
-        maxWidth: 190,
-        paddingHorizontal: 10,
-        borderRadius: 10,
+        flexShrink: 1,
+        paddingHorizontal: 6,
+        // Optical alignment: the label, not the press fill, sits on the group labels' edge.
+        marginLeft: -6,
+        borderRadius: 8,
         flexDirection: 'row',
         alignItems: 'center',
-        justifyContent: 'center',
+        justifyContent: 'flex-start',
         gap: 6,
-    },
-    triggerActive: {
-        backgroundColor: theme.colors.surface.selected,
     },
     triggerPressed: {
         backgroundColor: theme.colors.surface.pressed,
     },
     triggerLabel: {
+        ...Typography.default('semiBold'),
         minWidth: 0,
         flexShrink: 1,
-        color: theme.colors.text.secondary,
+        fontSize: 15,
+        lineHeight: 20,
+        color: theme.colors.text.primary,
     },
     modalBody: {
         minHeight: 320,
@@ -80,11 +101,26 @@ export const SessionListFilterEditorControl = React.memo(function SessionListFil
     const anchorRef = React.useRef<View>(null);
     const modalIdRef = React.useRef<string | null>(null);
 
+    const openArchivedFromEditor = props.editor.onOpenArchived;
+    // Leaving for the archived list closes the menu first, whichever host it is in.
+    const handleOpenArchived = React.useMemo(() => (openArchivedFromEditor ? () => {
+        setPopoverOpen(false);
+        const modalId = modalIdRef.current;
+        if (modalId) {
+            modalIdRef.current = null;
+            Modal.hide(modalId);
+        }
+        openArchivedFromEditor();
+    } : undefined), [openArchivedFromEditor]);
+    const editorProps = React.useMemo<EditorProps>(() => (
+        handleOpenArchived ? { ...props.editor, onOpenArchived: handleOpenArchived } : props.editor
+    ), [handleOpenArchived, props.editor]);
+
     React.useEffect(() => {
         const modalId = modalIdRef.current;
         if (!modalId) return;
-        Modal.update(modalId, props.editor);
-    }, [props.editor]);
+        Modal.update(modalId, editorProps);
+    }, [editorProps]);
 
     const open = React.useCallback(() => {
         if (usePopoverHost) {
@@ -95,7 +131,7 @@ export const SessionListFilterEditorControl = React.memo(function SessionListFil
         let modalId = '';
         modalId = Modal.show({
             component: SessionListFilterEditorModal,
-            props: props.editor,
+            props: editorProps,
             chrome: {
                 kind: 'card',
                 title: props.editor.labels.title,
@@ -109,7 +145,7 @@ export const SessionListFilterEditorControl = React.memo(function SessionListFil
             },
         });
         modalIdRef.current = modalId;
-    }, [props.editor, usePopoverHost]);
+    }, [editorProps, props.editor.labels.title, usePopoverHost]);
 
     const trigger = (
         <Pressable
@@ -118,23 +154,24 @@ export const SessionListFilterEditorControl = React.memo(function SessionListFil
             accessibilityRole="button"
             accessibilityLabel={props.label}
             accessibilityState={{ expanded: usePopoverHost ? popoverOpen : undefined, selected: props.active }}
+            aria-expanded={usePopoverHost ? popoverOpen : undefined}
+            aria-haspopup={usePopoverHost ? 'dialog' : undefined}
+            aria-pressed={props.active}
             onPress={open}
             style={({ pressed }) => [
                 styles.trigger,
-                props.active ? styles.triggerActive : null,
                 pressed ? styles.triggerPressed : null,
             ]}
         >
-            <Icon
-                name="funnel-simple"
-                size={16}
-                color={props.active ? theme.colors.accent.blue : theme.colors.text.secondary}
-            />
-            {usePopoverHost ? (
-                <Text numberOfLines={1} style={styles.triggerLabel}>{props.label}</Text>
-            ) : null}
-            {usePopoverHost ? (
-                <Icon name="caret-down" size={12} color={theme.colors.text.secondary} />
+            <Text numberOfLines={1} style={styles.triggerLabel}>{props.label}</Text>
+            <Icon name="caret-down" size={12} color={theme.colors.text.secondary} />
+            {props.active ? (
+                <Icon
+                    testID="session-list-filter-trigger-narrowed"
+                    name="funnel-simple"
+                    size={14}
+                    color={theme.colors.accent.blue}
+                />
             ) : null}
         </Pressable>
     );
@@ -148,8 +185,13 @@ export const SessionListFilterEditorControl = React.memo(function SessionListFil
                 anchorRef={anchorRef}
                 placement="bottom"
                 gap={6}
-                maxWidthCap={420}
-                maxHeightCap={560}
+                // Surface geometry (lane craft-p2): a compact panel hanging from the title, measured
+                // against the window rather than the sidebar, so it is never squeezed against or
+                // clipped by the sidebar's edge; the content scrolls inside the height cap.
+                boundaryRef={null}
+                edgePadding={SCOPE_POPOVER_EDGE_PADDING}
+                maxWidthCap={SCOPE_POPOVER_WIDTH_PX}
+                maxHeightCap={SCOPE_POPOVER_MAX_HEIGHT_PX}
                 autoFocusOnOpen
                 portal={MODAL_AWARE_FLOATING_POPOVER_PORTAL_OPTIONS}
                 onRequestClose={() => setPopoverOpen(false)}
@@ -158,10 +200,14 @@ export const SessionListFilterEditorControl = React.memo(function SessionListFil
                 containerStyle={{ paddingHorizontal: 0 }}
             >
                 {({ maxHeight }) => (
-                    <SessionListFilterEditor
-                        {...props.editor}
-                        maxHeight={maxHeight}
-                    />
+                    // The canonical popover surface paints the sheet; the editor lays out inside it
+                    // and owns its own scroll so the result count and Reset stay in view.
+                    <FloatingOverlay maxHeight={maxHeight} surfaceChrome="theme" scrollEnabled={false}>
+                        <SessionListFilterEditor
+                            {...editorProps}
+                            maxHeight={maxHeight}
+                        />
+                    </FloatingOverlay>
                 )}
             </Popover>
         </>

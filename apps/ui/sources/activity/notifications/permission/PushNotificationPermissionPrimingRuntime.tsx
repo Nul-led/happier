@@ -2,16 +2,12 @@ import * as React from 'react';
 
 import { isExpoPushNotificationChannelEnabled } from '@happier-dev/protocol';
 
-import { useIsDataReady, useSettings } from '@/sync/domains/state/storage';
+import { useIsDataReady, useSetting } from '@/sync/domains/state/storage';
 import { sync } from '@/sync/sync';
 import { fireAndForget } from '@/utils/system/fireAndForget';
 
 import { isPushNotificationRuntimeSupported } from './pushNotificationAccess';
 import { runPushNotificationPermissionPriming } from './pushNotificationPermissionPriming';
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-    return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
 
 /**
  * Asks once, with in-app framing, for notification permission.
@@ -22,15 +18,18 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * this mounts unconditionally inside the authenticated shell and stays inert in every other case.
  */
 export function PushNotificationPermissionPrimingRuntime(): React.ReactElement | null {
-    const settings = useSettings();
+    const attentionDeliveryPolicyV1 = useSetting('attentionDeliveryPolicyV1');
     const isDataReady = useIsDataReady();
-    const pushEnabled = isExpoPushNotificationChannelEnabled(isRecord(settings) ? settings : {});
+    const pushEnabled = React.useMemo(
+        () => isExpoPushNotificationChannelEnabled({ attentionDeliveryPolicyV1 }),
+        [attentionDeliveryPolicyV1],
+    );
     const hasRunRef = React.useRef(false);
 
     React.useEffect(() => {
         if (hasRunRef.current) return;
         if (!isPushNotificationRuntimeSupported()) return;
-        // `useSettings` falls back to defaults before hydration, so the account preference is only
+        // Settings hooks fall back to defaults before hydration, so the account preference is only
         // trustworthy once the store reports data ready. This also keeps the ask from landing over
         // first-run loading.
         if (!isDataReady) return;

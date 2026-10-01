@@ -8,6 +8,7 @@ import { resolveSessionTransportContext } from '@/session/services/resolveSessio
 import { wantsJson, printJsonEnvelope, writeJsonStdout } from '@/cli/output/jsonEnvelope';
 import { hasFlag, readCommandPositionals, readFlagValue, readRawFlagValue } from '@/cli/commands/shared/argvFlags';
 import { SESSION_HELP_LINES } from '@/cli/commands/session/shared/sessionCommandUsage';
+import { assertSessionCommandArguments } from '@/cli/commands/session/shared/assertSessionCommandArguments';
 import { ExternalActionRequestIdV1Schema, getActionContextualDefaults, type ActionId } from '@happier-dev/protocol';
 import { ensureCliActionPolicySettings } from '@/session/actions/ensureCliActionPolicySettings';
 import { configuration } from '@/configuration';
@@ -67,6 +68,15 @@ export async function cmdSessionActionsExecute(
   argv: string[],
   deps: Readonly<{ readCredentialsFn: () => Promise<StoredCredentials | null> }>,
 ): Promise<void> {
+  // Workflow flags and the Action's whole-input JSON are the complete grammar;
+  // anything else fails here, before credentials or Session resolution.
+  assertSessionCommandArguments(argv, {
+    usage: `Usage: ${SESSION_HELP_LINES.actionsExecute}`,
+    startIndex: 2,
+    booleanFlags: ['--json', '--resume-action-request'],
+    valueFlags: ['--input-json', '--action-request-id'],
+    maxPositionals: 2,
+  });
   const json = wantsJson(argv);
   const [idOrPrefix = '', actionId = ''] = readCommandPositionals(argv, {
     startIndex: 2,
@@ -190,7 +200,6 @@ export async function cmdSessionActionsExecute(
     {
       defaultSessionId: sessionId,
       surface: 'cli',
-      authority: 'present_user',
       ...(effectiveActionRequestId ? { actionRequestId: effectiveActionRequestId } : {}),
       ...(resumeActionRequest ? { resumeActionRequest: true } : {}),
     },

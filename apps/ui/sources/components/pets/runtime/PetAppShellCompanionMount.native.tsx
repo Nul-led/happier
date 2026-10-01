@@ -1,6 +1,6 @@
 import * as Haptics from 'expo-haptics';
 import * as React from 'react';
-import { AccessibilityInfo, Pressable, View, useWindowDimensions, type GestureResponderEvent, type ViewStyle } from 'react-native';
+import { Pressable, View, useWindowDimensions, type GestureResponderEvent, type ViewStyle } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 import { GestureDetector } from 'react-native-gesture-handler';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -51,6 +51,7 @@ import { useLocalSetting } from '@/sync/domains/state/storage';
 import { createDefaultActionExecutor } from '@/sync/ops/actions/defaultActionExecutor';
 import { useApplyLocalSettings } from '@/sync/store/settingsWriters';
 import { useKeyboardHeight } from '@/hooks/ui/useKeyboardHeight';
+import { useReducedMotionPreference } from '@/hooks/ui/useReducedMotionPreference';
 import { useHostActivelyViewed } from '@/utils/runtime/useHostActivelyViewed';
 
 const PET_TAP_REACTION_STATE = 'jumping' satisfies PetAnimationStateV1;
@@ -58,30 +59,6 @@ const PET_TAP_REACTION_HAPTIC_STYLE: Record<typeof PET_TAP_REACTION_HAPTIC, Hapt
     light: Haptics.ImpactFeedbackStyle.Light,
 };
 const NATIVE_PET_TRAY_GAP_PX = 18;
-
-function useReducedMotionPreference(): boolean {
-    const [reducedMotion, setReducedMotion] = React.useState(false);
-
-    React.useEffect(() => {
-        let mounted = true;
-        void AccessibilityInfo.isReduceMotionEnabled()
-            .then((enabled) => {
-                if (mounted) setReducedMotion(enabled);
-            })
-            .catch(() => {
-                if (mounted) setReducedMotion(false);
-            });
-        const subscription = AccessibilityInfo.addEventListener('reduceMotionChanged', (enabled) => {
-            setReducedMotion(enabled);
-        });
-        return () => {
-            mounted = false;
-            subscription.remove();
-        };
-    }, []);
-
-    return reducedMotion;
-}
 
 function useTapReactionState(): Readonly<{
     reactionState: PetAnimationStateV1 | null;

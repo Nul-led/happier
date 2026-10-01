@@ -1,4 +1,4 @@
-import { useRouter } from 'expo-router';
+import { useDestinationRouter, useDestinationInstanceKey } from '@/components/appShell/workspace/DestinationInstanceHost';
 import { Platform } from 'react-native';
 import * as React from 'react';
 
@@ -25,6 +25,11 @@ export type UseSessionViewBootstrapInput = Readonly<{
     surfaceVisible: boolean;
     routeAnchor: boolean;
     paneUrlSyncRouteActive: boolean;
+    /**
+     * `false` for a Session presented inside another surface: it never mirrors pane state into
+     * the URL or route params and never opens a pane on its own. Default `true`.
+     */
+    paneEffectsEnabled?: boolean;
 }>;
 
 export type UseSessionViewBootstrapResult = Readonly<{
@@ -35,8 +40,10 @@ export type UseSessionViewBootstrapResult = Readonly<{
 }>;
 
 export function useSessionViewBootstrap(input: UseSessionViewBootstrapInput): UseSessionViewBootstrapResult {
-    const router = useRouter();
+    const router = useDestinationRouter();
+    const hosted = useDestinationInstanceKey() !== null;
     const pane = useAppPaneScope(input.paneScopeId);
+    const paneEffectsEnabled = input.paneEffectsEnabled !== false;
     const {
         machineReachable,
         machineOnline,
@@ -46,18 +53,25 @@ export function useSessionViewBootstrap(input: UseSessionViewBootstrapInput): Us
         ?? (machineReachable ? 'reachable' : 'unreachable');
 
     useSessionPaneUrlSync({
-        enabled: input.paneUrlSyncRouteActive && input.multiPaneEnabled && Platform.OS === 'web',
-        routeParamSyncEnabled: input.paneUrlSyncRouteActive,
+        enabled: paneEffectsEnabled
+            && (hosted ? input.surfaceVisible : input.paneUrlSyncRouteActive)
+            && input.multiPaneEnabled
+            && Platform.OS === 'web',
+        browserMirrorsEnabled: paneEffectsEnabled && !hosted,
+        routeParamSyncEnabled: paneEffectsEnabled && (hosted || input.paneUrlSyncRouteActive),
         scopeKey: input.paneScopeId,
         scopeState: pane.scopeState,
         urlState: input.paneUrlState,
         pane,
-        setParams: input.paneUrlSyncRouteActive && typeof (router as any)?.setParams === 'function'
-            ? (router as any).setParams.bind(router)
+        setParams: paneEffectsEnabled
+            && (hosted || input.paneUrlSyncRouteActive)
+            && typeof router.setParams === 'function'
+            ? router.setParams.bind(router)
             : null,
     });
 
     React.useEffect(() => {
+        if (!paneEffectsEnabled) return;
         if (!input.sessionsRightPaneDefaultOpen) return;
         if (!input.multiPaneEnabled) return;
         if (!(Platform.OS === 'web' || input.deviceType === 'tablet')) return;
@@ -74,6 +88,7 @@ export function useSessionViewBootstrap(input: UseSessionViewBootstrapInput): Us
         input.paneUrlState?.rightTabId,
         input.sessionsRightPaneDefaultOpen,
         pane,
+        paneEffectsEnabled,
     ]);
 
     const visibleSurfaceCanSync = input.surfaceFocused || input.routeAnchor;

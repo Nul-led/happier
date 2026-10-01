@@ -56,6 +56,7 @@ function buildMaterialSnapshot(snapshot: ConnectedServiceQuotaSnapshotV1): JsonV
     activeAccountId: snapshot.activeAccountId,
     source: snapshot.source,
     confidence: snapshot.confidence,
+    subscription: snapshot.subscription ?? null,
     meters: snapshot.meters,
   });
 }

@@ -1,9 +1,10 @@
 import type { DiscardedPendingMessage, PendingMessage } from '@/sync/domains/state/storageTypes';
-import type { Message } from '@/sync/domains/messages/messageTypes';
+import type { Message } from "@happier-dev/session-core/messages";
 import type { SessionActionDraft } from '@/sync/domains/sessionActions/sessionActionDraftTypes';
 import { isToolCallMessageGroupableInTranscript } from '@/components/sessions/transcript/toolCalls/isToolCallMessageGroupableInTranscript';
 import { filterVisibleContextCompactionLifecycleMessageIds } from '@/components/sessions/transcript/events/contextCompactionLifecycleProjection';
 import type { PendingPermissionRequest } from '@/utils/sessions/sessionUtils';
+import { isSessionToolAnswerDeliveryMeta } from '@happier-dev/protocol';
 import type {
     ExternalSessionOperationProgressV1,
     ExternalSessionOperationSharedPresentationV1,
@@ -21,6 +22,12 @@ export function resolveChatListMessageRowType(message: Message | null): ChatList
     if (message.kind === 'tool-call') return 'message:tool';
     if (message.kind === 'agent-text' && (message.isThinking === true)) return 'message:thinking';
     return `message:${message.kind}`;
+}
+
+function isPendingToolAnswerDelivery(message: PendingMessage): boolean {
+    return isSessionToolAnswerDeliveryMeta(message.rawRecord?.meta)
+        && message.pendingDeliveryStatus !== 'blocked'
+        && message.sendState !== 'failed';
 }
 
 export type ChatListItem =
@@ -247,7 +254,7 @@ function buildPendingUserActionItems(
 }
 
 export function buildChatListItems(opts: {
-    messageIdsOldestFirst: string[];
+    messageIdsOldestFirst: readonly string[];
     messagesById: Record<string, Message>;
     pendingMessages: readonly PendingMessage[];
     discardedMessages?: readonly DiscardedPendingMessage[] | null;
@@ -272,7 +279,7 @@ export function buildChatListItems(opts: {
         pendingMessages: opts.pendingMessages,
         discardedMessages: opts.discardedMessages,
     });
-    const pending = opts.pendingMessages.filter((p) => !isPendingTranscriptMessageHiddenByCrossover(p, crossover));
+    const pending = opts.pendingMessages.filter((p) => !isPendingToolAnswerDelivery(p) && !isPendingTranscriptMessageHiddenByCrossover(p, crossover));
     const discarded = Array.isArray(opts.discardedMessages) ? opts.discardedMessages : [];
     const items: ChatListItem[] = [];
     const visibleMessageIds = new Set(filterVisibleContextCompactionLifecycleMessageIds(opts.messageIdsOldestFirst, opts.messagesById));
@@ -339,7 +346,7 @@ export function buildChatListItems(opts: {
 
 export function buildChatListItemsCached(opts: {
     cache: ChatListItemsBuildCache | null;
-    messageIdsOldestFirst: string[];
+    messageIdsOldestFirst: readonly string[];
     messagesById: Record<string, Message>;
     pendingMessages: readonly PendingMessage[];
     discardedMessages?: readonly DiscardedPendingMessage[] | null;
@@ -464,7 +471,7 @@ export function buildChatListItemsCached(opts: {
         pendingMessages: opts.pendingMessages,
         discardedMessages: opts.discardedMessages,
     });
-    const pending = opts.pendingMessages.filter((p) => !isPendingTranscriptMessageHiddenByCrossover(p, crossover));
+    const pending = opts.pendingMessages.filter((p) => !isPendingToolAnswerDelivery(p) && !isPendingTranscriptMessageHiddenByCrossover(p, crossover));
     const discarded = Array.isArray(opts.discardedMessages) ? opts.discardedMessages : [];
     const pendingUserActionItems = buildPendingUserActionItems(
         opts.pendingUserActionRequests,

@@ -2,10 +2,12 @@ import React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createSessionFixture, renderScreen, standardCleanup } from '@/dev/testkit';
-import type { UserTextMessage } from '@/sync/domains/messages/messageTypes';
+import { createTestSessionTranscriptSource, wrapWithSessionTranscriptSource } from '@/dev/testkit/sessionTranscriptSource';
+import type { UserTextMessage } from "@happier-dev/session-core/messages";
 import { upsertServerProfile } from '@/sync/domains/server/serverProfiles';
 import { storage } from '@/sync/domains/state/storage';
 import type { PendingMessage } from '@/sync/domains/state/storageTypes';
+import { t } from '@/text';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -59,13 +61,27 @@ function createRunPendingMessage(overrides: Partial<PendingMessage>): PendingMes
     } as PendingMessage;
 }
 
+
+function createChainTestRoot(Content: typeof import('./ChainTranscriptList')['ChainTranscriptList']) {
+    return function ChainTestRoot(props: React.ComponentProps<typeof Content>) {
+        const [source] = React.useState(() => createTestSessionTranscriptSource({
+            sessionId: props.sessionId, serverId: props.serverId, messages: props.messages,
+            metadata: props.metadata, interaction: props.interaction,
+            loadSidechain: async () => 'not_ready',
+            history: { loadOlder: props.loadOlder ?? (async () => ({ loaded: 0, hasMore: false, status: 'not_ready' })) },
+        }));
+        return wrapWithSessionTranscriptSource(React.createElement(Content, props), source);
+    };
+}
+
 describe('ChainTranscriptList target-scoped pending queue', () => {
     type ChainTranscriptListTestProps =
         Omit<React.ComponentProps<typeof import('./ChainTranscriptList')['ChainTranscriptList']>, 'datasetKey'>
         & { datasetKey?: string };
 
     async function renderChainTranscriptList(props: ChainTranscriptListTestProps) {
-        const { ChainTranscriptList } = await import('./ChainTranscriptList');
+        const { ChainTranscriptList: ChainContent } = await import('./ChainTranscriptList');
+        const ChainTranscriptList = createChainTestRoot(ChainContent);
         return renderScreen(React.createElement(ChainTranscriptList, {
             ...props,
             datasetKey: props.datasetKey ?? JSON.stringify([props.sessionId, 'test-sidechain']),
@@ -75,7 +91,6 @@ describe('ChainTranscriptList target-scoped pending queue', () => {
     const interaction = {
         canSendMessages: true,
         canApprovePermissions: true,
-        disableToolNavigation: true,
     } as const;
 
     afterEach(() => {
@@ -106,7 +121,8 @@ describe('ChainTranscriptList target-scoped pending queue', () => {
     });
 
     it('refreshes the pending-row callback when only the exact Home changes', async () => {
-        const { ChainTranscriptList } = await import('./ChainTranscriptList');
+        const { ChainTranscriptList: ChainContent } = await import('./ChainTranscriptList');
+        const ChainTranscriptList = createChainTestRoot(ChainContent);
         const pendingMessages = [createRunPendingMessage({
             id: 'p_run',
             localId: 'p_run',
@@ -161,8 +177,8 @@ describe('ChainTranscriptList target-scoped pending queue', () => {
                 },
             },
             sessionListIndexByServerId: {
-                [homeA.id]: ['transcript'],
-                [homeB.id]: ['transcript'],
+                [homeA.id]: [{ type: 'session', sessionId: 'transcript', serverId: homeA.id }],
+                [homeB.id]: [{ type: 'session', sessionId: 'transcript', serverId: homeB.id }],
             },
         });
         const committedMessage: UserTextMessage = {
@@ -196,7 +212,7 @@ describe('ChainTranscriptList target-scoped pending queue', () => {
         });
 
         expect(screen.findHostByTestId('transcript-account-attribution:committed-home-b')?.props.accessibilityLabel)
-            .toBe('message.accountActorSentBy(name=message.accountActorYou)');
+            .toBe(t('message.accountActorSentBy', { name: t('message.accountActorYou') }));
         expect(screen.findByTestId('pending-block')?.props.serverId).toBe(homeB.id);
     });
 

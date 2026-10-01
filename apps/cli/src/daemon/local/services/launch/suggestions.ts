@@ -1,17 +1,13 @@
 import type {
-    BrowserExternalUrlTargetV1,
-    BrowserHttpUrlV1,
     BrowserLocalServicePreviewTargetV1,
     LocalServiceLauncherSnapshotV1,
     LocalServiceLaunchTargetActionV1,
     LocalServiceLaunchTargetV1,
     LocalServicePreviewResourceV1,
 } from '@happier-dev/protocol';
-import { BrowserHttpUrlV1Schema } from '@happier-dev/protocol';
 
 import type { LocalServiceRunTarget } from './runTargets';
 import type { NormalizedLocalServiceInventoryEntry } from '../inventory/scanner';
-import { buildLocalServiceEndpointUrl } from '../inventory/endpoint';
 import { isWorkspacePathWithin } from '../inventory/provenance';
 import { resolveLocalServiceActionEligibility } from '../actions/policy';
 
@@ -117,32 +113,8 @@ function terminalUrlCandidateMatchesInventoryEntry(
         && (!candidate.host || hostMatchesCandidate(entry.address.host, candidate.host));
 }
 
-/**
- * The ONE loopback-origin URL authority. The scanner owns scheme detection; callers
- * consume the endpoint fact instead of guessing `http://localhost:${port}`.
- */
-function loopbackServiceUrl(entry: NormalizedLocalServiceInventoryEntry): BrowserHttpUrlV1 | null {
-    const url = entry.endpoint ? buildLocalServiceEndpointUrl(entry.endpoint) : null;
-    if (!url) return null;
-    const parsed = BrowserHttpUrlV1Schema.safeParse(url);
-    return parsed.success ? parsed.data : null;
-}
-
 function entryHasLoopbackPreviewCandidate(entry: NormalizedLocalServiceInventoryEntry): boolean {
     return entry.address.kind === 'loopback' || entry.address.kind === 'wildcard';
-}
-
-function loopbackExternalUrlTarget(
-    entry: NormalizedLocalServiceInventoryEntry,
-): BrowserExternalUrlTargetV1 | null {
-    const url = loopbackServiceUrl(entry); // ONE URL authority (IPv6/wildcard/scheme-safe)
-    if (!url) return null; // not loopback/wildcard, or unbuildable
-    return {
-        kind: 'externalUrl',
-        targetId: `inventory-loopback:${entry.id}`,
-        url,
-        display: { title: entryTitle(entry), addressLabel: addressLabel(entry) },
-    };
 }
 
 function browserTargetForPreview(preview: LocalServicePreviewResourceV1): BrowserLocalServicePreviewTargetV1 {
@@ -164,7 +136,6 @@ function browserTargetForPreview(preview: LocalServicePreviewResourceV1): Browse
 function targetFromTerminalUrlCandidate(
     candidate: LocalServiceTerminalUrlLaunchCandidate,
     machineId: string,
-    sessionId: string | undefined,
 ): LocalServiceLaunchTargetV1 {
     return {
         id: `terminal-url:${candidate.sourceId}`,
@@ -177,7 +148,6 @@ function targetFromTerminalUrlCandidate(
             ...(typeof candidate.port === 'number' ? { port: candidate.port } : {}),
         },
         machineId,
-        ...(sessionId ? { sessionId } : {}),
         ...(candidate.workspaceId ? { workspaceId: candidate.workspaceId } : {}),
         ...(candidate.cwd ? { cwd: candidate.cwd } : {}),
         title: candidate.title ?? candidate.addressLabel,
@@ -193,7 +163,6 @@ function targetFromTerminalUrlCandidate(
 function targetFromWorkspaceFileAssetCandidate(
     candidate: LocalServiceWorkspaceFileAssetLaunchCandidate,
     machineId: string,
-    sessionId: string | undefined,
 ): LocalServiceLaunchTargetV1 {
     return {
         id: `workspace-file-asset:${candidate.assetRef}`,
@@ -205,7 +174,6 @@ function targetFromWorkspaceFileAssetCandidate(
             ...(candidate.mediaType ? { mediaType: candidate.mediaType } : {}),
         },
         machineId,
-        ...(sessionId ? { sessionId } : {}),
         ...(candidate.workspaceId ? { workspaceId: candidate.workspaceId } : {}),
         ...(candidate.cwd ? { cwd: candidate.cwd } : {}),
         title: candidate.title,
@@ -241,14 +209,9 @@ function targetFromPreview(preview: LocalServicePreviewResourceV1): LocalService
 function targetFromInventoryEntry(
     entry: NormalizedLocalServiceInventoryEntry,
     preview: LocalServicePreviewResourceV1 | undefined,
-    sessionId: string | undefined,
     terminateDetectedEnabled: boolean,
 ): LocalServiceLaunchTargetV1 {
-    // Attribution passthrough (D1): a terminal-registered entry carries its originating
-    // session id on its provenance. Project that onto the target's sessionId so the UI
-    // can group "this session" first. Fall back to the request session for un-attributed
-    // entries (preserves prior behavior).
-    const attributedSessionId = entry.provenance?.session?.id ?? sessionId;
+    const attributedSessionId = entry.provenance?.session?.id;
     if (entry.state !== 'listening') {
         return {
             id: `inventory:${entry.id}`,
@@ -270,20 +233,17 @@ function targetFromInventoryEntry(
         };
     }
 
-    // Local-open path (S-RC2): when there is no preview but a loopback target can be
-    // formed, attach an externalUrl loopback target and advertise `open` — independent of
-    // preview registration / exposure gating. Non-loopback entries stay register_preview only.
+    // Every viewer resolves the resource through the same private-preview access owner.
     const endpointUnknownReason = !preview
         && entryHasLoopbackPreviewCandidate(entry)
         && (!entry.endpoint || entry.endpoint.scheme === 'unknown')
         ? 'endpoint_scheme_unknown'
         : null;
-    const loopbackTarget = preview ? undefined : loopbackExternalUrlTarget(entry);
-    const browserTarget = preview ? browserTargetForPreview(preview) : loopbackTarget ?? undefined;
+    const browserTarget = preview ? browserTargetForPreview(preview) : undefined;
 
     const actions: LocalServiceLaunchTargetActionV1[] = preview
         ? ['open_preview', 'register_preview']
-        : loopbackTarget ? ['open'] : endpointUnknownReason ? [] : ['register_preview'];
+        : endpointUnknownReason ? [] : ['register_preview'];
     if (resolveLocalServiceActionEligibility({
         action: 'terminate_detected',
         target: { kind: 'inventory_entry', entry },
@@ -314,7 +274,7 @@ function targetFromInventoryEntry(
     };
 }
 
-function targetFromRunTarget(target: LocalServiceRunTarget, machineId: string, sessionId: string | undefined): LocalServiceLaunchTargetV1 {
+function targetFromRunTarget(target: LocalServiceRunTarget, machineId: string): LocalServiceLaunchTargetV1 {
     return {
         id: `package:${target.id}`,
         source: 'package_script',
@@ -326,7 +286,6 @@ function targetFromRunTarget(target: LocalServiceRunTarget, machineId: string, s
             cwd: target.cwd,
         },
         machineId,
-        ...(sessionId ? { sessionId } : {}),
         cwd: target.cwd,
         title: `${target.packageName}:${target.scriptName}`,
         subtitle: target.cwd,
@@ -379,29 +338,29 @@ export function buildLocalServiceLauncherSnapshot(
 
     for (const entry of availableInventoryEntries) {
         const preview = previews.find((candidate) => previewMatchesEntry(candidate, entry));
-        targets.push(targetFromInventoryEntry(entry, preview, input.sessionId, input.terminateDetectedEnabled === true));
+        targets.push(targetFromInventoryEntry(entry, preview, input.terminateDetectedEnabled === true));
     }
 
     for (const target of input.runTargets) {
         if (!matchesWorkspaceScope(target.cwd, scopePaths)) continue;
-        targets.push(targetFromRunTarget(target, input.machineId, input.sessionId));
+        targets.push(targetFromRunTarget(target, input.machineId));
     }
 
     for (const candidate of terminalUrlCandidates) {
         const matchesCurrentTarget = previews.some((preview) => terminalUrlCandidateMatchesPreview(candidate, preview))
             || availableInventoryEntries.some((entry) => terminalUrlCandidateMatchesInventoryEntry(candidate, entry));
         if (!matchesCurrentTarget) {
-            targets.push(targetFromTerminalUrlCandidate(candidate, input.machineId, input.sessionId));
+            targets.push(targetFromTerminalUrlCandidate(candidate, input.machineId));
         }
     }
 
     for (const candidate of workspaceFileAssetCandidates) {
-        targets.push(targetFromWorkspaceFileAssetCandidate(candidate, input.machineId, input.sessionId));
+        targets.push(targetFromWorkspaceFileAssetCandidate(candidate, input.machineId));
     }
 
     for (const entry of unavailableInventoryEntries) {
         const preview = previews.find((candidate) => previewMatchesEntry(candidate, entry));
-        targets.push(targetFromInventoryEntry(entry, preview, input.sessionId, input.terminateDetectedEnabled === true));
+        targets.push(targetFromInventoryEntry(entry, preview, input.terminateDetectedEnabled === true));
     }
 
     return {

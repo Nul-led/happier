@@ -7,6 +7,7 @@ import { useTranscriptExpansionState } from '@/components/sessions/transcript/ro
 import { useNativeFactSource } from '@/components/sessions/transcript/viewport/driver/useNativeFactSource';
 import { useTranscriptViewportCommandHostWiring } from '@/components/sessions/transcript/viewport/driver/useTranscriptViewportCommandHostWiring';
 import type { TranscriptViewportDriverDeps } from '@/components/sessions/transcript/viewport/driver/types';
+import { createTranscriptUserScrollIntentOwner } from '@/components/sessions/transcript/viewport/driver/userScrollIntentOwner';
 import { useTranscriptNativeEntryRestorePaintRelease } from '@/components/sessions/transcript/viewport/entryRestore/host/useTranscriptNativeEntryRestorePaintRelease';
 import { useTranscriptSessionEntryLifecycle } from '@/components/sessions/transcript/viewport/entryRestore/host/useTranscriptSessionEntryLifecycle';
 import { useTranscriptNativeMountSettleLifecycle } from '@/components/sessions/transcript/viewport/lifecycle/host/useTranscriptNativeMountSettleLifecycle';
@@ -242,6 +243,7 @@ describe('phase2 M10 hook identity stability', () => {
             sessionOpenLatch,
             setExpandedToolCallsAnchorMessageIds: vi.fn(),
             setListContentHeight: vi.fn(),
+            userScrollIntent: createTranscriptUserScrollIntentOwner(),
             viewportCommandController: { resetForSession: vi.fn() },
             wantsPinnedRef: createRef(true),
             webDomObservation: { reset: vi.fn() },

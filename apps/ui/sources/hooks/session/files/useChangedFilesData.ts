@@ -1,6 +1,6 @@
 import * as React from 'react';
 import {
-    combineChangedFilesAttribution,
+    projectChangedFilesAttribution,
     type CheckpointOverlapObservation,
     type FileChangeEvidence,
     type RepositoryCheckpointTurnMetadata,
@@ -13,10 +13,10 @@ import {
 
 import type { ScmWorkingSnapshot } from '@/sync/domains/state/storageTypes';
 import type { SessionAttributedFile } from '@/scm/scmAttribution';
-import { snapshotToScmStatusFiles, type ScmFileStatus, type ScmStatusFiles } from '@/scm/scmStatusFiles';
+import { selectScmChangedFiles, snapshotToScmStatusFiles, type ScmFileStatus, type ScmStatusFiles } from '@/scm/scmStatusFiles';
 import { deriveSessionWorkingTreeProjection } from '@/sync/domains/session/changes/derivation/deriveSessionWorkingTreeProjection';
+import { deriveFileChangeDiff } from '@/sync/domains/session/changes/derivation/deriveFileChangeDiff';
 
-import { buildAllRepositoryChangedFiles } from '@/components/sessions/files/filesUtils';
 
 type UseChangedFilesDataInput = {
     sessionId: string;
@@ -25,6 +25,8 @@ type UseChangedFilesDataInput = {
     workspaceTouchedPaths: readonly string[];
     searchQuery: string;
     showAllRepositoryFiles: boolean;
+    /** Canonical Session lifecycle identity, even when no Diff row was published. */
+    latestTurnId?: string | null;
     latestTurnChangeSet?: SessionChangeSet | null;
     latestTurnEvidence?: TurnChangeSet | null;
     sessionChangeSet?: SessionChangeSet | null;
@@ -97,7 +99,8 @@ function buildEvidenceFileStatus(file: SessionChangeSetFile): ScmFileStatus {
     const segments = fullPath.split('/');
     const fileName = segments[segments.length - 1] || fullPath;
     const filePath = segments.slice(0, -1).join('/');
-    const stats = countUnifiedDiffStats(file.unifiedDiff);
+    const diff = deriveFileChangeDiff(file);
+    const stats = countUnifiedDiffStats(diff);
     return {
         fileName,
         filePath,
@@ -108,6 +111,7 @@ function buildEvidenceFileStatus(file: SessionChangeSetFile): ScmFileStatus {
         linesRemoved: file.stats?.removedLines ?? stats.linesRemoved,
         oldPath: file.previousFilePath ?? undefined,
         isBinary: file.binary,
+        ...(diff === null && !file.stats ? { isComplete: false } : {}),
     };
 }
 
@@ -135,35 +139,14 @@ function buildAttributedScope(params: Readonly<{
     allRepositoryChangedFiles: readonly ScmFileStatus[];
     projection: NonNullable<ReturnType<typeof deriveSessionWorkingTreeProjection>>;
     includeUnmatchedEvidence?: boolean;
-    changeSet: SessionChangeSet | null;
+    evidenceByFilePath: ReadonlyMap<string, readonly FileChangeEvidence[]>;
 }>): ScopedProjectionResult {
-    const evidenceByPath = new Map<string, FileChangeEvidence[]>();
-    for (const turn of params.changeSet?.turns ?? []) {
-        for (const evidence of turn.files) {
-            const entries = evidenceByPath.get(evidence.filePath);
-            if (entries) entries.push(evidence);
-            else evidenceByPath.set(evidence.filePath, [evidence]);
-        }
-    }
-    for (const file of params.changeSet?.files ?? []) {
-        if (!evidenceByPath.has(file.filePath)) evidenceByPath.set(file.filePath, [file]);
-    }
-    // A rename folds its source path into the final file, so the contributions recorded before the
-    // rename must stay reachable from the row that now carries them. A copy keeps both rows, so it
-    // never absorbs its source's lineage.
-    const readEvidence = (change: SessionChangeSetFile): readonly FileChangeEvidence[] => {
-        const current = evidenceByPath.get(change.filePath) ?? [];
-        const renamedFrom = change.changeKind === 'renamed' ? change.previousFilePath : null;
-        if (!renamedFrom || renamedFrom === change.filePath) return current;
-        const previous = evidenceByPath.get(renamedFrom) ?? [];
-        return previous.length > 0 ? [...previous, ...current] : current;
-    };
     const qualify = (change: SessionChangeSetFile): Omit<SessionAttributedFile, 'file'> => ({
         turns: change.turns,
         content: { source: change.source, confidence: change.confidence },
         attribution: change.attribution,
         checkpointOverlap: change.checkpointOverlap,
-        evidence: readEvidence(change),
+        evidence: params.evidenceByFilePath.get(change.filePath) ?? [],
     });
     const filesByPath = new Map(params.allRepositoryChangedFiles.map((file) => [file.fullPath, file] as const));
     const matchedAttributedFiles = params.projection.matchedFiles
@@ -197,6 +180,7 @@ export function useChangedFilesData(input: UseChangedFilesDataInput): UseChanged
         workspaceTouchedPaths,
         searchQuery,
         showAllRepositoryFiles,
+        latestTurnId = null,
         latestTurnChangeSet = null,
         latestTurnEvidence = null,
         sessionChangeSet = null,
@@ -210,19 +194,22 @@ export function useChangedFilesData(input: UseChangedFilesDataInput): UseChanged
         return snapshotToScmStatusFiles(scmSnapshot);
     }, [scmSnapshot]);
 
-    const changedFilesCount = (scmStatusFiles?.totalIncluded ?? 0) + (scmStatusFiles?.totalPending ?? 0);
+    // The one changed-file list (and so the one count) every surface shows.
+    const allRepositoryChangedFiles = React.useMemo<ScmFileStatus[]>(
+        () => (scmStatusFiles && scmSnapshot ? [...selectScmChangedFiles(scmSnapshot)] : []),
+        [scmSnapshot, scmStatusFiles]
+    );
+    const changedFilesCount = allRepositoryChangedFiles.length;
     const shouldShowAllFiles = Boolean(searchQuery) || showAllRepositoryFiles || changedFilesCount === 0;
 
-    const allRepositoryChangedFiles = React.useMemo(
-        () => buildAllRepositoryChangedFiles(scmStatusFiles),
-        [scmStatusFiles]
-    );
-
-    const latestTurnEvidenceChangeSet = React.useMemo(() => combineChangedFilesAttribution({
+    const repoRootPath = scmSnapshot?.repo.rootPath;
+    const latestTurnAttribution = React.useMemo(() => projectChangedFilesAttribution({
         sessionId,
         turns: latestTurnEvidence ? [latestTurnEvidence] : [],
         canonicalChangeSet: latestTurnChangeSet,
-    }), [latestTurnChangeSet, latestTurnEvidence, sessionId]);
+        repoRootPath,
+    }), [latestTurnChangeSet, latestTurnEvidence, repoRootPath, sessionId]);
+    const latestTurnEvidenceChangeSet = latestTurnAttribution.changeSet;
 
     const latestTurnProjection = React.useMemo(() => {
         return deriveSessionWorkingTreeProjection({
@@ -231,25 +218,27 @@ export function useChangedFilesData(input: UseChangedFilesDataInput): UseChanged
         });
     }, [latestTurnEvidenceChangeSet, scmSnapshot]);
 
-    const latestTurnAgentReportedChangeSet = React.useMemo(() => {
+    const latestTurnAgentReportedAttribution = React.useMemo(() => {
         if (!latestTurnEvidence) return null;
-        const scoped = combineChangedFilesAttribution({
+        return projectChangedFilesAttribution({
             sessionId,
             turns: [latestTurnEvidence],
             evidenceScope: 'agent_reported',
+            repoRootPath,
         });
-        return scoped.files.length > 0 ? scoped : null;
-    }, [latestTurnEvidence, sessionId]);
+    }, [latestTurnEvidence, repoRootPath, sessionId]);
+    const latestTurnAgentReportedChangeSet = latestTurnAgentReportedAttribution?.changeSet ?? null;
 
-    const latestTurnCheckpointChangeSet = React.useMemo(() => {
+    const latestTurnCheckpointAttribution = React.useMemo(() => {
         if (!latestTurnEvidence) return null;
-        const scoped = combineChangedFilesAttribution({
+        return projectChangedFilesAttribution({
             sessionId,
             turns: [latestTurnEvidence],
             evidenceScope: 'checkpoint',
+            repoRootPath,
         });
-        return scoped.files.length > 0 ? scoped : null;
-    }, [latestTurnEvidence, sessionId]);
+    }, [latestTurnEvidence, repoRootPath, sessionId]);
+    const latestTurnCheckpointChangeSet = latestTurnCheckpointAttribution?.changeSet ?? null;
 
     const latestTurnAgentReportedProjection = React.useMemo(() => {
         return deriveSessionWorkingTreeProjection({
@@ -270,11 +259,13 @@ export function useChangedFilesData(input: UseChangedFilesDataInput): UseChanged
         [allRepositoryChangedFiles, workspaceTouchedPaths],
     );
 
-    const sessionAttributionChangeSet = React.useMemo(() => combineChangedFilesAttribution({
+    const sessionAttributionProjection = React.useMemo(() => projectChangedFilesAttribution({
         sessionId,
         canonicalChangeSet: sessionChangeSet,
         workspaceTouchedFiles,
-    }), [sessionChangeSet, sessionId, workspaceTouchedFiles]);
+        repoRootPath,
+    }), [repoRootPath, sessionChangeSet, sessionId, workspaceTouchedFiles]);
+    const sessionAttributionChangeSet = sessionAttributionProjection.changeSet;
 
     const sessionProjection = React.useMemo(() => {
         return deriveSessionWorkingTreeProjection({
@@ -292,47 +283,47 @@ export function useChangedFilesData(input: UseChangedFilesDataInput): UseChanged
             return buildAttributedScope({
                 allRepositoryChangedFiles,
                 projection: latestTurnProjection,
-                changeSet: latestTurnEvidenceChangeSet,
+                evidenceByFilePath: latestTurnAttribution.evidenceByFilePath,
                 includeUnmatchedEvidence: latestTurnEvidence !== null,
             });
         }
 
         return EMPTY_SCOPE_RESULT(allRepositoryChangedFiles);
-    }, [allRepositoryChangedFiles, computeAttribution, latestTurnEvidence, latestTurnEvidenceChangeSet, latestTurnProjection]);
+    }, [allRepositoryChangedFiles, computeAttribution, latestTurnEvidence, latestTurnAttribution, latestTurnProjection]);
 
     const turnAgentReportedScope = React.useMemo<ScopedProjectionResult>(() => {
         if (!computeAttribution) {
             return EMPTY_SCOPE_RESULT(allRepositoryChangedFiles);
         }
 
-        if (latestTurnAgentReportedProjection) {
+        if (latestTurnAgentReportedProjection && latestTurnAgentReportedAttribution) {
             return buildAttributedScope({
                 allRepositoryChangedFiles,
                 projection: latestTurnAgentReportedProjection,
-                changeSet: latestTurnAgentReportedChangeSet,
+                evidenceByFilePath: latestTurnAgentReportedAttribution.evidenceByFilePath,
                 includeUnmatchedEvidence: true,
             });
         }
 
         return EMPTY_SCOPE_RESULT(allRepositoryChangedFiles);
-    }, [allRepositoryChangedFiles, computeAttribution, latestTurnAgentReportedChangeSet, latestTurnAgentReportedProjection]);
+    }, [allRepositoryChangedFiles, computeAttribution, latestTurnAgentReportedAttribution, latestTurnAgentReportedProjection]);
 
     const turnCheckpointScope = React.useMemo<ScopedProjectionResult>(() => {
         if (!computeAttribution) {
             return EMPTY_SCOPE_RESULT(allRepositoryChangedFiles);
         }
 
-        if (latestTurnCheckpointProjection) {
+        if (latestTurnCheckpointProjection && latestTurnCheckpointAttribution) {
             return buildAttributedScope({
                 allRepositoryChangedFiles,
                 projection: latestTurnCheckpointProjection,
-                changeSet: latestTurnCheckpointChangeSet,
+                evidenceByFilePath: latestTurnCheckpointAttribution.evidenceByFilePath,
                 includeUnmatchedEvidence: true,
             });
         }
 
         return EMPTY_SCOPE_RESULT(allRepositoryChangedFiles);
-    }, [allRepositoryChangedFiles, computeAttribution, latestTurnCheckpointChangeSet, latestTurnCheckpointProjection]);
+    }, [allRepositoryChangedFiles, computeAttribution, latestTurnCheckpointAttribution, latestTurnCheckpointProjection]);
 
     const sessionScope = React.useMemo<ScopedProjectionResult>(() => {
         if (!computeAttribution) {
@@ -343,19 +334,22 @@ export function useChangedFilesData(input: UseChangedFilesDataInput): UseChanged
             return buildAttributedScope({
                 allRepositoryChangedFiles,
                 projection: sessionProjection,
-                changeSet: sessionAttributionChangeSet,
+                evidenceByFilePath: sessionAttributionProjection.evidenceByFilePath,
                 includeUnmatchedEvidence: true,
             });
         }
 
         return EMPTY_SCOPE_RESULT(allRepositoryChangedFiles);
-    }, [allRepositoryChangedFiles, computeAttribution, sessionAttributionChangeSet, sessionProjection]);
+    }, [allRepositoryChangedFiles, computeAttribution, sessionAttributionProjection, sessionProjection]);
 
     const showTurnViewToggle = React.useMemo(() => {
         if (!computeAttribution) return false;
-        if (latestTurnEvidence?.files.length) return true;
+        // A real latest-turn identity is useful even when the turn produced no
+        // file evidence: the Turn view must be able to explain that empty result.
+        if (typeof latestTurnId === 'string' && latestTurnId.trim().length > 0) return true;
+        if (latestTurnEvidence) return true;
         return turnScope.attributedFiles.length > 0;
-    }, [computeAttribution, latestTurnEvidence?.files.length, turnScope.attributedFiles.length]);
+    }, [computeAttribution, latestTurnEvidence, latestTurnId, turnScope.attributedFiles.length]);
 
     const showTurnAgentReportedViewToggle = React.useMemo(() => {
         if (!computeAttribution) return false;

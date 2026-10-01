@@ -1,4 +1,5 @@
 import React from 'react';
+import { t } from '@/text';
 
 import { ReviewCommentsV1Schema } from '@/sync/domains/input/reviewComments/reviewCommentMeta';
 import { ReviewCommentsMessageCard } from '@/components/sessions/reviews/messages/ReviewCommentsMessageCard';
@@ -20,14 +21,14 @@ import { ReviewFindingsMessageCard } from '@/components/sessions/reviews/message
 import { ReviewFollowUpMessageCard } from '@/components/sessions/reviews/messages/ReviewFollowUpMessageCard';
 import { PlanOutputMessageCard } from '@/components/sessions/plans/messages/PlanOutputMessageCard';
 import { DelegateOutputMessageCard } from '@/components/sessions/delegations/messages/DelegateOutputMessageCard';
-import type { Message } from '@/sync/domains/messages/messageTypes';
+import type { Message } from "@happier-dev/session-core/messages";
 import type { ReviewCommentAnchor, ReviewCommentSource } from '@/sync/domains/input/reviewComments/reviewCommentTypes';
 import { readStructuredUserMessageText } from '@/components/sessions/transcript/structured/readStructuredUserMessageText';
 import { ParticipantMessageCard } from '@/components/sessions/participants/messages/ParticipantMessageCard';
 import { SubagentLaunchMessageCard } from '@/components/sessions/subagents/messages/SubagentLaunchMessageCard';
 import { SubagentCommandMessageCard } from '@/components/sessions/subagents/messages/SubagentCommandMessageCard';
 import type { TranscriptInteraction } from '@/utils/sessions/deriveTranscriptInteraction';
-import { ExecutionRunCompletionMessageCard } from '@/components/sessions/runs/messages/ExecutionRunCompletionMessageCard';
+import { WorkerUpdateCard } from '@/components/sessions/work/WorkerUpdateCard';
 
 export type StructuredMessageKind =
     | 'participant_message.v1'
@@ -46,6 +47,7 @@ export type StructuredMessageKind =
 
 export type StructuredMessageRendererParams = Readonly<{
     sessionId: string;
+    serverId?: string | null;
     message: Message;
     interaction: TranscriptInteraction;
     onJumpToAnchor?: (target: { filePath: string; source: ReviewCommentSource; anchor: ReviewCommentAnchor }) => void;
@@ -116,6 +118,7 @@ const structuredMessageRegistryEntries: readonly StructuredMessageRegistryEntry<
             <ReviewFindingsMessageCard
                 payload={payload}
                 sessionId={params.sessionId}
+                serverId={params.serverId}
                 canSendMessages={params.interaction.canSendMessages === true}
             />
         ),
@@ -127,6 +130,7 @@ const structuredMessageRegistryEntries: readonly StructuredMessageRegistryEntry<
             <ReviewFindingsMessageCard
                 payload={payload}
                 sessionId={params.sessionId}
+                serverId={params.serverId}
                 canSendMessages={params.interaction.canSendMessages === true}
             />
         ),
@@ -157,7 +161,13 @@ const structuredMessageRegistryEntries: readonly StructuredMessageRegistryEntry<
     {
         kind: 'execution_run_completion.v1',
         schema: ExecutionRunCompletionV1Schema,
-        render: (payload) => <ExecutionRunCompletionMessageCard payload={payload} />,
+        // Retained 0.2 rows have no effective-engine fact; do not infer one from the current lead.
+        render: (payload, params) => <WorkerUpdateCard update={{
+            v: 1, workerKind: 'execution_run', workerId: payload.runId, ownerState: payload.status,
+            wake: 'finished', headline: t('executionRuns.details.titles.executionRun'),
+            result: payload.summary ?? '', canInspect: payload.canInspect,
+            transcriptPointer: { kind: 'execution_run', sessionId: params.sessionId, runId: payload.runId },
+        }} serverId={params.serverId} navigationEnabled={params.interaction.permissionDisabledReason !== 'public'} />,
     },
     {
         kind: 'voice_agent_turn.v1',

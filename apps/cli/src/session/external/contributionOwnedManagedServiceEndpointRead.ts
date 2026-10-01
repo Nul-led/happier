@@ -36,7 +36,7 @@ export type ContributionOwnedManagedServiceEndpointReadIdentity = Readonly<{
     pluginId: string;
     pluginVersion: string;
     agentId: string;
-    generation: string;
+    occurrenceId: string;
 }>;
 
 /**
@@ -65,13 +65,13 @@ export function createContributionOwnedManagedServiceEndpointReadHost(params: Re
     identity: ContributionOwnedManagedServiceEndpointReadIdentity;
     createAgentInvocationServices: CreateAgentInvocationServices;
     cwd: string;
-    isGenerationActive(): boolean;
+    isOccurrenceActive(): boolean;
     retirementSignal: AbortSignal;
 }>): ContributionOwnedManagedServiceEndpointReadHosts | null {
     const declare = params.contribution.resolveManagedEndpointService;
     if (typeof declare !== 'function') return null;
 
-    // One acquisition identity for the whole generation. The managed-services
+    // One acquisition identity for the whole runtime occurrence. The managed-services
     // owner derives both the service lifetime and the credential redaction
     // correlation from this identity, so a per-read correlation would spawn a
     // server per page turn and would stop redacting the minted password the
@@ -81,7 +81,7 @@ export function createContributionOwnedManagedServiceEndpointReadHost(params: Re
     const acquisition = new AbortController();
     const abortAcquisition = (): void => {
         acquisition.abort(new Error(
-            'Agent External Sessions managed endpoint owner belongs to a retired generation',
+            'Agent External Sessions managed endpoint owner belongs to a retired occurrence',
         ));
     };
     if (params.retirementSignal.aborted) abortAcquisition();
@@ -94,15 +94,15 @@ export function createContributionOwnedManagedServiceEndpointReadHost(params: Re
             pluginId: params.identity.pluginId,
             pluginVersion: params.identity.pluginVersion,
             agentId: params.identity.agentId,
-            generation: params.identity.generation,
+            occurrenceId: params.identity.occurrenceId,
             correlationId,
             cwd: params.cwd,
             signal: acquisition.signal,
-            isGenerationCurrent: params.isGenerationActive,
+            isOccurrenceCurrent: params.isOccurrenceActive,
         });
         servicesPromise = pending;
         // A failed acquisition belongs to the attempt that failed, not to the
-        // generation. Retaining the rejected promise would replay that one
+        // occurrence. Retaining the rejected promise would replay that one
         // failure on every later browse, so drop it and let the next browse
         // acquire again.
         pending.catch(() => {
@@ -116,11 +116,11 @@ export function createContributionOwnedManagedServiceEndpointReadHost(params: Re
         signal: AbortSignal,
         admit: 'ownedOrAttached' | 'attachedOnly',
     ): Promise<ManagedServiceHandle | null> => {
-        // The declaration is stamped with the same generation-bound execution
+        // The declaration is stamped with the same occurrence-bound execution
         // authority the contribution's reads receive, so a specification whose
         // readiness check depends on which executable the host will spawn is
         // decided from that resolution rather than from a guess. Acquisition is
-        // the same cached, generation-bound one the supervise call below uses.
+        // the same cached, occurrence-bound one the supervise call below uses.
         const services = await ensureServices();
         const spec = await declare({ source, signal, exec: services.exec });
         if (!spec) {
@@ -132,7 +132,7 @@ export function createContributionOwnedManagedServiceEndpointReadHost(params: Re
         // passive follow reaches it exactly like an explicit browse does. An
         // owned spawn is the only shape passive following must not reach.
         if (admit === 'attachedOnly' && spec.mode.kind !== 'attach') return null;
-        // Supervision is bounded by the generation, not by the browse operation
+        // Supervision is bounded by the occurrence, not by the browse operation
         // that first needed it. A cold start can outlast one operation deadline;
         // binding establishment to that operation's signal would tear the
         // starting server down on the timeout and make every retry cold again.
@@ -145,9 +145,9 @@ export function createContributionOwnedManagedServiceEndpointReadHost(params: Re
         input: Parameters<AgentExternalSessionsManagedEndpointReadHost>[0],
         admit: 'ownedOrAttached' | 'attachedOnly',
     ): Promise<AgentExternalSessionsManagedEndpointRead | null> => {
-        if (!params.isGenerationActive() || params.retirementSignal.aborted) {
+        if (!params.isOccurrenceActive() || params.retirementSignal.aborted) {
             throw new Error(
-                'Agent External Sessions managed endpoint owner belongs to a retired generation',
+                'Agent External Sessions managed endpoint owner belongs to a retired occurrence',
             );
         }
         const handle = await acquire(input.source, input.signal, admit);

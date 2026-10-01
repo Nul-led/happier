@@ -74,6 +74,33 @@ async function renderScmCommitMessageEditorModal(
 }
 
 describe('ScmCommitMessageEditorModal', () => {
+    it('names the card and offers Commit as its one primary action through the shared button owner', async () => {
+        const { ScmCommitMessageEditorModal } = await import('./ScmCommitMessageEditorModal');
+
+        const screen = await renderScmCommitMessageEditorModal(ScmCommitMessageEditorModal, {
+            initialMessage: '',
+            canGenerate: true,
+            onGenerate: async () => ({ ok: true, message: 'feat: generated' }),
+            onResolve: vi.fn(),
+            onClose: vi.fn(),
+        });
+
+        expect(screen.findByTestId('modal-card-header')).toBeTruthy();
+        expect(screen.getTextContent()).toContain('Create commit');
+        // One entry per shared RoundButton (its outermost composite instance carries the display role).
+        const seen = new Set<string>();
+        const buttons = screen.findAll((node) => typeof node.type !== 'string'
+            && ['Cancel', 'Generate', 'Commit'].includes(node.props?.title)
+            && typeof node.props?.onPress === 'function')
+            .filter((node) => !seen.has(node.props.title) && Boolean(seen.add(node.props.title)))
+            .map((node) => [node.props.title, node.props.display ?? 'default']);
+        expect(buttons).toEqual([
+            ['Cancel', 'inverted'],
+            ['Generate', 'secondary'],
+            ['Commit', 'default'],
+        ]);
+    });
+
     it('fills the message when Generate succeeds', async () => {
         const { ScmCommitMessageEditorModal } = await import('./ScmCommitMessageEditorModal');
         const onResolve = vi.fn();

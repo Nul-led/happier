@@ -1,4 +1,5 @@
 import type { SessionConnectedServicesAuthSwitchRestartState } from '@/components/sessions/agentInput/hooks/useSessionConnectedServicesAuthSwitch';
+import type { SessionState } from '@/utils/sessions/sessionUtils';
 export type SessionViewConnectionStatus = Readonly<{
     text: string;
     color: string;
@@ -12,13 +13,26 @@ export function resolveSessionViewConnectionStatus(input: Readonly<{
     switchFailedText: string;
     inactiveStatusText: string | null;
     sessionStatusResuming: boolean;
+    /** The canonical presented Session state (`presentSessionAwarenessV1`). */
+    sessionStatusState: SessionState;
     sessionStatusText: string;
     sessionStatusColor: string;
     sessionStatusDotColor: string;
     sessionStatusPulsing: boolean;
-}>): SessionViewConnectionStatus {
+}>): SessionViewConnectionStatus | null {
     const restartPending = input.connectedServicesRestartState?.status === 'restarting'
         || input.connectedServicesRestartState?.status === 'pending_confirmation';
+    // Before the runtime has been observed there is no status to state: the line stays empty
+    // rather than reading "unknown". A restart, a failed switch or an inactive Session is a real
+    // fact and still speaks.
+    if (
+        input.sessionStatusState === 'unknown'
+        && !restartPending
+        && input.connectedServicesRestartState?.status !== 'failed'
+        && !input.inactiveStatusText
+    ) {
+        return null;
+    }
     return {
         text: restartPending
             ? input.restartingText

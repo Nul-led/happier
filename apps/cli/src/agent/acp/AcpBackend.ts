@@ -30,7 +30,6 @@ import {
   type Stream,
 } from '@agentclientprotocol/sdk';
 import { redactBugReportSensitiveText } from '@happier-dev/protocol';
-import { AgentRuntimeJsonValueV1Schema } from '@happier-dev/protocol/runtime';
 import { randomUUID } from 'node:crypto';
 import { createWriteStream } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -39,8 +38,8 @@ import type {
   AgentMessageHandler,
   SessionId,
   StartSessionResult,
-  McpServerConfig,
 } from '../core';
+import type { AgentSessionMcpLaunchConfig } from '@happier-dev/plugin-sdk/agents/runtime';
 import type {
   AcpPromptSubmissionResult,
   AcpPromptSubmissionSettledResult,
@@ -127,6 +126,13 @@ import type { AcpTurnOutcome } from './turn/outcome';
 import { mapStopReasonToAcpTurnOutcome, readPromptStopReason } from './turn/completion';
 import { abortPendingAcpPermissionRequests } from './permissions/permissionFinalization';
 import { readNonBlankOpaqueIdentifier } from '@happier-dev/protocol';
+import {
+  readAdvertisedAuthMethodIds,
+  readBoundedInitializeMetadata,
+  validateAuthenticationSelection,
+  type AcpAuthenticationSelection,
+  type AcpAuthenticationSelector,
+} from './AcpAuthentication';
 
 export type { AcpPermissionHandler } from './permissions/acpPermissionHandler';
 export { isAcpFsEnabled, buildInitializeRequest, createAcpClientFsMethods } from './fs/acpClientFsMethods';
@@ -187,9 +193,6 @@ class AcpStartupTimeoutError extends Error {
 
 const MAX_RECENT_STDERR_DIAGNOSTICS = 3;
 const MAX_STARTUP_DIAGNOSTIC_CHARS = 1_200;
-const MAX_AUTH_METHODS = 64;
-const MAX_AUTH_METHOD_ID_CODE_UNITS = 256;
-const MAX_INITIALIZE_METADATA_CODE_UNITS = 16_384;
 
 /** The established best-effort bound for one graceful ACP teardown call. */
 const GRACEFUL_TEARDOWN_BOUND_MS = 2_000;
@@ -254,15 +257,7 @@ function truncateStartupDiagnostic(value: string): string {
   return `${trimmed.slice(0, MAX_STARTUP_DIAGNOSTIC_CHARS)}...`;
 }
 
-export type AcpAuthenticationSelection = Readonly<{
-  methodId: string;
-  metadata?: Readonly<Record<string, unknown>>;
-}>;
-
-export type AcpAuthenticationSelector = (context: Readonly<{
-  advertisedMethodIds: readonly string[];
-  initializeMetadata: Readonly<Record<string, unknown>> | null;
-}>) => AcpAuthenticationSelection | null | Promise<AcpAuthenticationSelection | null>;
+export type { AcpAuthenticationSelection, AcpAuthenticationSelector } from './AcpAuthentication';
 
 export type AcpSetModelResponseProjector = (input: Readonly<{
   response: unknown;
@@ -278,51 +273,6 @@ export type AcpNegotiatedSessionCapabilities = Readonly<{
   closeSession: boolean;
   deleteSession: boolean;
 }>;
-
-function readAdvertisedAuthMethodIds(initResponse: InitializeResponse): readonly string[] {
-  const output: string[] = [];
-  const seen = new Set<string>();
-  const methods = Array.isArray(initResponse.authMethods) ? initResponse.authMethods : [];
-  for (const method of methods) {
-    if (output.length >= MAX_AUTH_METHODS) break;
-    const record = asRecord(method);
-    const id = record ? getString(record, 'id')?.trim() : undefined;
-    if (!id || id.length > MAX_AUTH_METHOD_ID_CODE_UNITS || seen.has(id)) continue;
-    seen.add(id);
-    output.push(id);
-  }
-  return Object.freeze(output);
-}
-
-function readBoundedInitializeMetadata(initResponse: InitializeResponse): Readonly<Record<string, unknown>> | null {
-  const candidate = asRecord(initResponse)?.['_meta'];
-  const parsed = AgentRuntimeJsonValueV1Schema.safeParse(candidate);
-  if (!parsed.success) return null;
-  const record = asRecord(parsed.data);
-  if (!record || JSON.stringify(record).length > MAX_INITIALIZE_METADATA_CODE_UNITS) return null;
-  return Object.freeze({ ...record });
-}
-
-function validateAuthenticationSelection(
-  selection: AcpAuthenticationSelection,
-  advertisedMethodIds: readonly string[],
-): AcpAuthenticationSelection {
-  const methodId = typeof selection.methodId === 'string' ? selection.methodId.trim() : '';
-  if (!methodId || methodId.length > MAX_AUTH_METHOD_ID_CODE_UNITS) {
-    throw new Error('[AcpBackend] ACP authentication selector returned an invalid method id');
-  }
-  if (!advertisedMethodIds.includes(methodId)) {
-    throw new Error(`[AcpBackend] ACP agent does not advertise auth method '${methodId}'`);
-  }
-  const metadata = selection.metadata;
-  if (metadata === undefined) return Object.freeze({ methodId });
-  const parsed = AgentRuntimeJsonValueV1Schema.safeParse(metadata);
-  const record = parsed.success ? asRecord(parsed.data) : null;
-  if (!record || JSON.stringify(record).length > MAX_INITIALIZE_METADATA_CODE_UNITS) {
-    throw new Error('[AcpBackend] ACP authentication selector returned invalid metadata');
-  }
-  return Object.freeze({ methodId, metadata: Object.freeze({ ...record }) });
-}
 
 /**
  * Configuration for AcpBackend
@@ -355,7 +305,7 @@ export interface AcpBackendOptions {
   networkTransport?: AcpBackendNetworkTransport;
 
   /** MCP servers to make available to the agent */
-  mcpServers?: Record<string, McpServerConfig>;
+  mcpServers?: Readonly<Record<string, AgentSessionMcpLaunchConfig>>;
 
   /** Optional permission handler for tool approval */
   permissionHandler?: AcpPermissionHandler;
@@ -2655,6 +2605,7 @@ export class AcpBackend implements CatalogAcpBackend {
     let returnedState = this.options.prepareSessionModels
       ? await this.options.prepareSessionModels(response)
       : readSessionModelStateFromSessionResponse(response, this.options.projectModel);
+    const observedCatalog = returnedState !== null;
     if (
       !returnedState
       && (this.options.projectSetModelResponse
@@ -2707,7 +2658,9 @@ export class AcpBackend implements CatalogAcpBackend {
       throw new Error('ACP session/set_model returned a different current model');
     }
     this.sessionModelState = returnedState;
-    this.emit({ type: 'event', name: 'session_models_state', payload: returnedState });
+    this.emit(observedCatalog
+      ? { type: 'event', name: 'session_models_state', payload: returnedState }
+      : { type: 'event', name: 'current_model_update', payload: { currentModelId: returnedState.currentModelId } });
   }
 
   /**

@@ -62,7 +62,7 @@ describe('buildSessionListReachabilityModels', () => {
 
         const summary = buildSessionListReachabilitySummary({
             listItems: [{ type: 'session', sessionId: 'session-1', serverId: 'server-a' } as any],
-            machinesById: new Map<string, unknown>([
+            machinesById: new Map([
                 [
                     'machine-stale',
                     { id: 'machine-stale', metadata: { host: 'same-host.local', displayName: 'Old Machine' } },

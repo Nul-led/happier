@@ -58,7 +58,7 @@ import { seedCurrentLocalPathPluginFixture } from '@/plugins/store/registry/curr
 import { encrypt } from '@/api/encryption';
 // The published SDK is the creator's client here: the protected round trip is
 // only real if the same entry point an API-token consumer uses seals it.
-import { connect } from '../../../../packages/sdk/src/index';
+import { connect } from '@happier-dev/sdk';
 
 const boundary = vi.hoisted(() => ({
   io: vi.fn(),
@@ -626,7 +626,6 @@ describe('production Ephemeral Runner composition under an e2ee bootstrap', () =
                   publicKey: Buffer.alloc(32, 7).toString('base64url'),
                   expiresAt: null,
                 }],
-                directRouteGrantProofMintVersions: [2],
               },
             },
           },
@@ -735,6 +734,8 @@ describe('production Ephemeral Runner composition under an e2ee bootstrap', () =
           teamId: 'team-1',
           resourceId: 'resource-1',
           sourceRevision: 'source-3',
+          brokerPlacementFingerprint: 'c'.repeat(64),
+          initiatorTokenEpoch: 0,
           initiator: {
             accountId: 'account-1',
             machineId: 'machine-1',
@@ -755,6 +756,7 @@ describe('production Ephemeral Runner composition under an e2ee bootstrap', () =
         brokerMachineId: 'broker-1',
         endpointId: 'b'.repeat(64),
         endpointRevision: 1,
+        endpoint: { endpointId: 'b'.repeat(64) },
       },
       request,
     }));

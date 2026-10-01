@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { BrowserIrohStream } from './endpointClient';
+import { BROWSER_IROH_STREAM_CHUNK_BYTES } from './protocol';
 import {
-    BROWSER_IROH_HTTP_MAX_HEAD_BYTES,
+    BROWSER_IROH_HTTP_MAX_REQUEST_HEAD_BYTES,
     BrowserIrohHttpError,
     createBrowserIrohHttpConnectionRequester,
     createBrowserIrohHomeHttpRequester,
@@ -32,18 +33,19 @@ function createFakeHomeStream(
     countOf: (call: StreamCall) => number;
 }> {
     const queued: Uint8Array[] = [];
-    const written: number[] = [];
+    const written: Uint8Array[] = [];
     const calls: StreamCall[] = [];
     let ended = false;
-    let pendingRead: ((value: Readonly<{ bytes: Uint8Array; done: boolean }>) => void) | null = null;
+    let pendingRead: Readonly<{ maxBytes: number; resolve: (value: Readonly<{ bytes: Uint8Array; done: boolean }>) => void }> | null = null;
 
     function deliverPendingRead(): void {
         if (pendingRead === null) return;
-        const resolve = pendingRead;
+        const { resolve, maxBytes } = pendingRead;
         const next = queued.shift();
         if (next !== undefined) {
             pendingRead = null;
-            resolve({ bytes: next, done: false });
+            if (next.byteLength > maxBytes) queued.unshift(next.subarray(maxBytes));
+            resolve({ bytes: next.subarray(0, maxBytes), done: false });
             return;
         }
         if (ended) {
@@ -69,12 +71,12 @@ function createFakeHomeStream(
             }
             if (ended) return { bytes: new Uint8Array(), done: true };
             return await new Promise((resolve) => {
-                pendingRead = resolve;
+                pendingRead = { maxBytes, resolve };
             });
         },
         write: async (bytes) => {
             calls.push('write');
-            written.push(...bytes);
+            written.push(bytes.slice());
         },
         finishWrite: async () => {
             calls.push('finishWrite');
@@ -87,6 +89,16 @@ function createFakeHomeStream(
         },
     };
 
+    const writtenBytes = (): Uint8Array => {
+        const bytes = new Uint8Array(written.reduce((length, chunk) => length + chunk.byteLength, 0));
+        let offset = 0;
+        for (const chunk of written) {
+            bytes.set(chunk, offset);
+            offset += chunk.byteLength;
+        }
+        return bytes;
+    };
+
     return {
         stream,
         push: (payload) => {
@@ -97,8 +109,8 @@ function createFakeHomeStream(
             ended = true;
             deliverPendingRead();
         },
-        writtenText: () => TEXT.decode(new Uint8Array(written)),
-        writtenBytes: () => new Uint8Array(written),
+        writtenText: () => TEXT.decode(writtenBytes()),
+        writtenBytes,
         hasPendingRead: () => pendingRead !== null,
         countOf: (call) => calls.filter((entry) => entry === call).length,
     };
@@ -122,6 +134,72 @@ async function expectHttpErrorCode(pending: Promise<unknown>, code: string): Pro
 }
 
 describe('sync/runtime/browserIroh/homeTunnelHttp', () => {
+    it('allows a request head at the actual single-write boundary beyond the retired quota', async () => {
+        const baseline = createFakeHomeStream();
+        baseline.push('HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n');
+        const { response: baselineResponse } = await requesterFor(baseline)('https://home.example.test/v1/a', {
+            headers: { 'x-context': 'a' },
+        });
+        await baselineResponse.text();
+
+        const fake = createFakeHomeStream();
+        const context = 'a'.repeat(BROWSER_IROH_HTTP_MAX_REQUEST_HEAD_BYTES - baseline.writtenBytes().byteLength + 1);
+        fake.push('HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n');
+        const { response } = await requesterFor(fake)('https://home.example.test/v1/a', {
+            headers: { 'x-context': context },
+        });
+        await expect(response.text()).resolves.toBe('');
+        expect(fake.writtenBytes().byteLength).toBe(BROWSER_IROH_HTTP_MAX_REQUEST_HEAD_BYTES);
+        expect(fake.writtenText()).toContain(context);
+    });
+
+    it('rejects request heads that cannot fit the actual single-write budget before writing', async () => {
+        const fake = createFakeHomeStream();
+        await expectHttpErrorCode(requesterFor(fake)('https://home.example.test/v1/a', {
+            headers: { 'x-context': 'a'.repeat(BROWSER_IROH_HTTP_MAX_REQUEST_HEAD_BYTES) },
+        }), 'head_too_large');
+        expect(fake.countOf('write')).toBe(0);
+    });
+
+    it('accepts a response head larger than one worker payload across bounded reads', async () => {
+        const fake = createFakeHomeStream();
+        const prefix = 'HTTP/1.1 200 OK\r\ncontent-length: 2\r\nx-context: ';
+        const suffix = '\r\n\r\n';
+        const context = 'a'.repeat(BROWSER_IROH_STREAM_CHUNK_BYTES * 2 - prefix.length - suffix.length);
+        const pending = requesterFor(fake)('https://home.example.test/v1/a');
+        fake.push(`${prefix}${context}${suffix}ok`);
+        const { response } = await pending;
+        expect(response.headers.get('x-context')).toBe(context);
+        await expect(response.text()).resolves.toBe('ok');
+        expect(fake.countOf('cancel')).toBe(0);
+    });
+
+    it('accepts a near-boundary head whose terminator arrives separately', async () => {
+        const fake = createFakeHomeStream();
+        const prefix = 'HTTP/1.1 200 OK\r\ncontent-length: 0\r\nx-context: ';
+        const context = 'a'.repeat(BROWSER_IROH_STREAM_CHUNK_BYTES - prefix.length - 4);
+        const pending = requesterFor(fake)('https://home.example.test/v1/a');
+        fake.push(`${prefix}${context}\r\n\r`);
+        await vi.waitFor(() => expect(fake.hasPendingRead()).toBe(true));
+        fake.push('\n');
+        const { response } = await pending;
+        expect(response.headers.get('x-context')).toBe(context);
+        await expect(response.text()).resolves.toBe('');
+        expect(fake.countOf('cancel')).toBe(0);
+    });
+
+    it('consumes a trailer section larger than one worker payload across bounded reads', async () => {
+        const fake = createFakeHomeStream();
+        const pending = requesterFor(fake)('https://home.example.test/v1/a');
+        fake.push('HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n0\r\n');
+        const { response } = await pending;
+        const body = response.text();
+        fake.push(`x-context: ${'a'.repeat(BROWSER_IROH_STREAM_CHUNK_BYTES)}\r\n\r\n`);
+        await expect(body).resolves.toBe('');
+        expect(fake.countOf('cancel')).toBe(0);
+        expect(fake.countOf('close')).toBe(1);
+    });
+
     it('passes the request signal to a pending Home stream open', async () => {
         const controller = new AbortController();
         let receivedSignal: AbortSignal | undefined;
@@ -535,12 +613,13 @@ describe('sync/runtime/browserIroh/homeTunnelHttp', () => {
         expect(truncated.countOf('cancel')).toBe(1);
     });
 
-    it('bounds the response head block', async () => {
+    it('reports a truncated large response head when the stream ends before its delimiter', async () => {
         const fake = createFakeHomeStream();
         const pending = requesterFor(fake)('https://home.example.test/v1/a');
         fake.push('HTTP/1.1 200 OK\r\n');
-        fake.push(`x-huge: ${'a'.repeat(BROWSER_IROH_HTTP_MAX_HEAD_BYTES)}\r\n`);
-        await expectHttpErrorCode(pending, 'head_too_large');
+        fake.push(`x-huge: ${'a'.repeat(BROWSER_IROH_HTTP_MAX_REQUEST_HEAD_BYTES)}\r\n`);
+        fake.end();
+        await expectHttpErrorCode(pending, 'truncated_response');
         expect(fake.countOf('cancel')).toBe(1);
     });
 

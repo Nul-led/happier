@@ -52,7 +52,7 @@ describe('Agent runtime daemon provider binding service protocol', () => {
       operation: {
         kind: 'provider_broker.binding.open', requestId: 'request-1',
         resourceId: 'resource-1', expectedResourceRevision: 3,
-        agentTargetKey: 'backend:codex', modelId: 'model-1',
+        agentTargetKey: 'agent:happier.agent.codex/codex', modelId: 'model-1',
         consumer: { kind: 'execution_run', executionRunId: 'run-1' },
         teamId: 'team-b',
         deliveryMode: 'direct',

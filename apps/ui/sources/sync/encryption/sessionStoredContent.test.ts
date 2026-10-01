@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { openSessionStoredContent } from './sessionStoredContent';
+import { openSessionStoredContent } from '@happier-dev/sync-client';
 
 describe('persisted Session content', () => {
     it('reports a failed crypto operation without turning it into missing content', async () => {

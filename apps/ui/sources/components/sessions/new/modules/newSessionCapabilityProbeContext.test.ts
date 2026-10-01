@@ -25,6 +25,25 @@ describe('resolveNewSessionCapabilityProbeContext (stability)', () => {
         });
     });
 
+    it('reads the runtime kind from the canonical settings it is given instead of rebuilding them', async () => {
+        // The open engine picker resolves this context on every render. Re-parsing
+        // the whole Account settings there measured ~10% of page CPU and stalled
+        // the web composer for seconds per store update.
+        vi.resetModules();
+        const resolveConfiguredAgentRuntimeKindFromUiBehavior = vi.fn((_input: Readonly<{ settings: unknown }>) => 'appServer');
+        vi.doMock('@/agents/registry/registryUiBehavior', () => ({ resolveConfiguredAgentRuntimeKindFromUiBehavior }));
+        const { resolveNewSessionCapabilityProbeContext } = await import('./newSessionCapabilityProbeContext');
+        const settings = {} as any;
+
+        resolveNewSessionCapabilityProbeContext({
+            backendTarget: { kind: 'agent' as const, identity: BUNDLED_AGENT_CONTRIBUTION_IDENTITIES.codex },
+            settings,
+        });
+
+        expect(resolveConfiguredAgentRuntimeKindFromUiBehavior).toHaveBeenCalledTimes(1);
+        expect(resolveConfiguredAgentRuntimeKindFromUiBehavior.mock.calls[0]?.[0].settings).toBe(settings);
+    });
+
     it('returns stable references when runtimeKind is unchanged', async () => {
         vi.resetModules();
 

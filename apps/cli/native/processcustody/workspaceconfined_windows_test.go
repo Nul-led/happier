@@ -27,6 +27,21 @@ func TestWindowsWorkspaceConfinedRelativePathPreservesExactComponents(t *testing
 	}
 }
 
+func TestWindowsWorkspaceConfinedDirectoryNameRequiresLosslessUTF16(t *testing.T) {
+	for _, raw := range [][]uint16{{0xd800}, {0xd801}} {
+		if name, err := decodeWorkspaceConfinedWindowsDirectoryName(raw); err == nil {
+			t.Fatalf("unpaired surrogate produced an authoritative name %q", name)
+		}
+	}
+	valid := []uint16{'c', 'a', 'f', 0x00e9, 0xd83d, 0xde00}
+	if name, err := decodeWorkspaceConfinedWindowsDirectoryName(valid); err != nil || name != "café😀" {
+		t.Fatalf("valid Unicode name changed: %q %v", name, err)
+	}
+	if name, err := decodeWorkspaceConfinedWindowsDirectoryName([]uint16{0xfffd}); err != nil || name != "�" {
+		t.Fatalf("literal replacement character changed: %q %v", name, err)
+	}
+}
+
 func beginWorkspaceConfinedExchange(t *testing.T, command func([]string, io.Reader, io.Writer) error, request any) (*bufio.Reader, *io.PipeWriter, <-chan error) {
 	t.Helper()
 	inputReader, inputWriter := io.Pipe()
@@ -465,5 +480,91 @@ func TestWorkspaceConfinedRejectsUnsafeRelativePaths(t *testing.T) {
 		if strings.Contains(output.String(), "workspace-confined-prepared") {
 			t.Fatalf("unsafe path %q reached prepared: %s", relative, output.String())
 		}
+	}
+}
+
+func TestWindowsWorkspaceConfinedObserveCaptureApplyAndRecover(t *testing.T) {
+	root := t.TempDir()
+	captureDirectory := t.TempDir()
+	recoveryDirectory := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "selected"), []byte("selected bytes"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "destination"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	observeReader, observeInput, observeDone := beginWorkspaceConfinedExchange(t, workspaceConfinedObserveCommand, map[string]any{"v": 1, "rootPath": root, "relativePath": "selected"})
+	observed := commitWorkspaceConfinedExchange(t, observeReader, observeInput, observeDone)
+	selected := observed["expectation"]
+	if observed["status"] != "observed" || selected == nil {
+		t.Fatalf("unexpected observation: %#v", observed)
+	}
+
+	captureReader, captureInput, captureDone := beginWorkspaceConfinedExchange(t, workspaceConfinedCaptureCommand, map[string]any{
+		"v": 1, "rootPath": root, "relativePath": "selected", "expected": selected, "captureDirectory": captureDirectory, "operationId": "native-e2e",
+	})
+	captured := commitWorkspaceConfinedExchange(t, captureReader, captureInput, captureDone)
+	materialPath, ok := captured["materialPath"].(string)
+	if captured["status"] != "captured" || !ok {
+		t.Fatalf("unexpected capture: %#v", captured)
+	}
+	destination, err := observeWorkspaceConfinedPrivateMaterial(filepath.Join(root, "destination"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	applyReader, applyInput, applyDone := beginWorkspaceConfinedExchange(t, workspaceConfinedApplyCommand, map[string]any{
+		"v": 1, "rootPath": root, "relativePath": "destination", "expectedDestination": destination, "selectedExpectation": selected,
+		"materialPath": materialPath, "recoveryDirectory": recoveryDirectory, "operationId": "native-e2e",
+	})
+	applied := commitWorkspaceConfinedExchange(t, applyReader, applyInput, applyDone)
+	if applied["status"] != "installed" {
+		t.Fatalf("unexpected apply: %#v", applied)
+	}
+	if content, err := os.ReadFile(filepath.Join(root, "destination")); err != nil || string(content) != "selected bytes" {
+		t.Fatalf("selected file was not installed: %q %v", content, err)
+	}
+
+	recoverReader, recoverInput, recoverDone := beginWorkspaceConfinedExchange(t, workspaceConfinedRecoverCommand, map[string]any{"v": 1, "rootPath": root, "recoveryDirectory": recoveryDirectory, "operationId": "native-e2e"})
+	recovered := commitWorkspaceConfinedExchange(t, recoverReader, recoverInput, recoverDone)
+	if recovered["status"] != "settled" {
+		t.Fatalf("completed apply left recovery blocked: %#v", recovered)
+	}
+}
+
+func TestWindowsWorkspaceConfinedRecoverRetainsChangedDisplacedEntry(t *testing.T) {
+	root := t.TempDir()
+	recovery := t.TempDir()
+	priorName := ".happier-conflict-resolution-op-prior"
+	priorPath := filepath.Join(root, priorName)
+	if err := os.WriteFile(priorPath, []byte("reviewed"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	prior, _ := observeWorkspaceConfinedPrivateMaterial(priorPath)
+	if err := os.WriteFile(filepath.Join(root, "entry"), []byte("selected"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	selected, _ := observeWorkspaceConfinedPrivateMaterial(filepath.Join(root, "entry"))
+	held, domainErr := openWorkspaceConfinedHeldPath(root, "entry", true)
+	if domainErr != nil {
+		t.Fatal(domainErr)
+	}
+	identity := windowsWorkspaceConfinedIdentity(held.handles[0])
+	held.close()
+	record := workspaceConfinedRecoveryRecord{V: 1, OperationID: "op", RootPath: root, RootIdentity: identity, RelativePath: "entry", ExpectedDestination: prior, SelectedExpectation: selected, CandidateName: ".happier-conflict-resolution-op-selected", PriorName: priorName}
+	if err := workspaceConfinedWriteRecoveryRecord(workspaceConfinedRecoveryRecordPath(recovery, "op"), record); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(priorPath, []byte("unreviewed"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reader, input, done := beginWorkspaceConfinedExchange(t, workspaceConfinedRecoverCommand, map[string]any{"v": 1, "rootPath": root, "recoveryDirectory": recovery, "operationId": "op"})
+	result := commitWorkspaceConfinedExchange(t, reader, input, done)
+	if result["status"] != "recovery_needed" {
+		t.Fatalf("changed displaced entry was settled: %#v", result)
+	}
+	if content, err := os.ReadFile(priorPath); err != nil || string(content) != "unreviewed" {
+		t.Fatalf("changed displaced bytes were removed: %q %v", content, err)
 	}
 }

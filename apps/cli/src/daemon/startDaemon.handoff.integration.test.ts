@@ -352,19 +352,6 @@ vi.mock('@/plugins/projection/registry/sources/generatedBundledPluginManifests',
     };
 });
 
-// This integration lane proves the moving source composition. Leave Claude out of the
-// release-artifact inventory so the production bundled activation owner selects its
-// canonical source-development entry instead of validating concurrently published bytes.
-vi.mock('@/plugins/projection/registry/sources/generatedBundledPluginArtifacts', async (importOriginal) => {
-    const original = await importOriginal<typeof import('@/plugins/projection/registry/sources/generatedBundledPluginArtifacts')>();
-    return {
-        ...original,
-        BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS: original.BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS.filter(
-            (artifact) => artifact.record.pluginId !== 'happier.agent.claude',
-        ),
-    };
-});
-
 vi.mock('@/api/changes', async (importOriginal) => ({
     ...await importOriginal<typeof import('@/api/changes')>(),
     fetchChangesAccountId: vi.fn(async () => 'account-session-handoff'),
@@ -838,7 +825,6 @@ describe('startDaemon session handoff wiring (integration)', () => {
         const { resolveAccountSettingsScopeKey } = await import('@/settings/accountSettings/accountSettingsScopeKey');
         harness.bindAccountSettingsScope(resolveAccountSettingsScopeKey(harness.credentials));
         process.env.HAPPIER_CONNECTED_SERVICES_REFRESH_ENABLED = 'false';
-        delete process.env.HAPPIER_DAEMON_DIAGNOSTIC_DISABLE_MACHINE_SYNC;
         loggerDebug.mockClear();
     });
 
@@ -859,7 +845,6 @@ describe('startDaemon session handoff wiring (integration)', () => {
         delete process.env.HAPPIER_FEATURE_MACHINES_TRANSFER_DIRECT_PEER__ENABLED;
         delete process.env.HAPPIER_MACHINE_TRANSFER_DIRECT_PEER_BIND_PORT;
         delete process.env.HAPPIER_CONNECTED_SERVICES_REFRESH_ENABLED;
-        delete process.env.HAPPIER_DAEMON_DIAGNOSTIC_DISABLE_MACHINE_SYNC;
   });
 
     it('enters session.handoff through the loaded daemon and reaches relationship and target authorities', async () => {

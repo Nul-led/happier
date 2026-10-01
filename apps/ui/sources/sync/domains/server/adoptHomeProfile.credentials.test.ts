@@ -3,21 +3,22 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 type TokenStorageModule = typeof import('@/auth/storage/tokenStorage');
 type SetCredentialsForServerUrl = TokenStorageModule['TokenStorage']['setCredentialsForServerUrl'];
 type SetCredentialsForServerUrlWithRollback = TokenStorageModule['TokenStorage']['setCredentialsForServerUrlWithRollback'];
+type SetHomeCredentialsWithRollbackUnderMutationAuthority = TokenStorageModule['setHomeCredentialsWithRollbackUnderMutationAuthority'];
 
 const setCredentialsForServerUrlMock = vi.hoisted(() => vi.fn<SetCredentialsForServerUrl>(async () => true));
-const setCredentialsForServerUrlWithRollbackMock = vi.hoisted(() => vi.fn<SetCredentialsForServerUrlWithRollback>());
+const setCredentialsForServerUrlWithRollbackMock = vi.hoisted(() => vi.fn<SetHomeCredentialsWithRollbackUnderMutationAuthority>());
+const publicSetCredentialsForServerUrlWithRollbackMock = vi.hoisted(() => vi.fn<SetCredentialsForServerUrlWithRollback>());
 const getHomeCredentialsUnderMutationAuthorityMock = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => null as { token: string } | null));
 
 vi.mock('@/auth/storage/tokenStorage', () => ({
     getHomeCredentialsUnderMutationAuthority: (...args: unknown[]) => getHomeCredentialsUnderMutationAuthorityMock(...args),
     removeHomeCredentialsUnderMutationAuthority: vi.fn(async () => true),
     setHomeCredentialsWithRollbackUnderMutationAuthority: (
-        _authority: unknown,
-        ...args: Parameters<SetCredentialsForServerUrlWithRollback>
+        ...args: Parameters<SetHomeCredentialsWithRollbackUnderMutationAuthority>
     ) => setCredentialsForServerUrlWithRollbackMock(...args),
     TokenStorage: {
         setCredentialsForServerUrl: (...args: Parameters<SetCredentialsForServerUrl>) => setCredentialsForServerUrlMock(...args),
-        setCredentialsForServerUrlWithRollback: (...args: Parameters<SetCredentialsForServerUrlWithRollback>) => setCredentialsForServerUrlWithRollbackMock(...args),
+        setCredentialsForServerUrlWithRollback: (...args: Parameters<SetCredentialsForServerUrlWithRollback>) => publicSetCredentialsForServerUrlWithRollbackMock(...args),
     },
 }));
 
@@ -28,6 +29,7 @@ describe('adoptHomeProfileWithCredentials', () => {
         setCredentialsForServerUrlMock.mockReset();
         setCredentialsForServerUrlMock.mockResolvedValue(true);
         setCredentialsForServerUrlWithRollbackMock.mockReset();
+        publicSetCredentialsForServerUrlWithRollbackMock.mockReset();
         getHomeCredentialsUnderMutationAuthorityMock.mockReset();
         getHomeCredentialsUnderMutationAuthorityMock.mockResolvedValue(null);
         if (previousScope === undefined) delete process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE;
@@ -49,9 +51,9 @@ describe('adoptHomeProfileWithCredentials', () => {
             },
         });
         setCredentialsForServerUrlWithRollbackMock.mockResolvedValueOnce(null);
-        const { adoptHomeProfileWithCanonicalUrlMigration } = await import('./adoptHomeProfile');
+        const { adoptHomeProfileWithCredentials } = await import('./adoptHomeProfile');
 
-        await expect(adoptHomeProfileWithCanonicalUrlMigration({
+        await expect(adoptHomeProfileWithCredentials({
             source: 'qr',
             credentials: { token: 'new-home-token' },
             descriptor: {
@@ -96,9 +98,9 @@ describe('adoptHomeProfileWithCredentials', () => {
                 rollback,
             };
         });
-        const { adoptHomeProfileWithCanonicalUrlMigration } = await import('./adoptHomeProfile');
+        const { adoptHomeProfileWithCredentials } = await import('./adoptHomeProfile');
 
-        await expect(adoptHomeProfileWithCanonicalUrlMigration({
+        await expect(adoptHomeProfileWithCredentials({
             source: 'qr',
             credentials: { token: 'new-home-token' },
             descriptor: {
@@ -108,7 +110,10 @@ describe('adoptHomeProfileWithCredentials', () => {
                 revision: 2,
                 endpoints: [{ kind: 'https', url: 'https://moving-home-new.test' }],
             },
-        })).resolves.toMatchObject({ kind: 'migrated' });
+        })).resolves.toMatchObject({
+            canonicalServerUrl: 'https://moving-home-new.test',
+            serverIdentityId: 'srv_moving_home',
+        });
 
         expect(rollback).not.toHaveBeenCalled();
         await expect(competitor!).resolves.toBeNull();
@@ -141,6 +146,7 @@ describe('adoptHomeProfileWithCredentials', () => {
         });
         let competitor: Promise<unknown> | null = null;
         setCredentialsForServerUrlWithRollbackMock.mockImplementationOnce(async (
+            _authority,
             _serverUrl: string,
             _options: unknown,
             credentials: typeof priorCredential,
@@ -189,12 +195,17 @@ describe('adoptHomeProfileWithCredentials', () => {
         const rollback = vi.fn(async () => {
             throw new Error('credential rollback failed');
         });
-        setCredentialsForServerUrlWithRollbackMock.mockImplementationOnce(async () => {
-            const competitor = await profiles.upsertServerProfile({
-                serverUrl: 'https://home-b.test',
+        setCredentialsForServerUrlWithRollbackMock.mockImplementationOnce(async (authority) => {
+            await profiles.adoptHomeProfileUnderMutationAuthority({
+                descriptor: {
+                    v: 1,
+                    homeServerIdentityId: 'srv_competing_home',
+                    canonicalServerUrl: 'https://home-b.test',
+                    revision: 1,
+                    endpoints: [{ kind: 'https', url: 'https://home-b.test' }],
+                },
                 source: 'manual',
-            });
-            await profiles.setServerProfileIdentityForUrl(competitor.serverUrl, 'srv_competing_home');
+            }, authority);
             return {
                 serverUrl: 'https://home-b.test',
                 serverId: 'srv_home_b',
@@ -250,12 +261,17 @@ describe('adoptHomeProfileWithCredentials', () => {
             if (storedCredential !== concurrentWinner) storedCredential = { token: 'unexpected-rollback' };
             return false;
         });
-        setCredentialsForServerUrlWithRollbackMock.mockImplementationOnce(async () => {
-            const competitor = await profiles.upsertServerProfile({
-                serverUrl: 'https://home-b.test',
+        setCredentialsForServerUrlWithRollbackMock.mockImplementationOnce(async (authority) => {
+            await profiles.adoptHomeProfileUnderMutationAuthority({
+                descriptor: {
+                    v: 1,
+                    homeServerIdentityId: 'srv_competing_home',
+                    canonicalServerUrl: 'https://home-b.test',
+                    revision: 1,
+                    endpoints: [{ kind: 'https', url: 'https://home-b.test' }],
+                },
                 source: 'manual',
-            });
-            await profiles.setServerProfileIdentityForUrl(competitor.serverUrl, 'srv_competing_home');
+            }, authority);
             storedCredential = concurrentWinner;
             return {
                 serverUrl: 'https://home-b.test',
@@ -338,6 +354,7 @@ describe('adoptHomeProfileWithCredentials', () => {
         expect(adopted.serverIdentityId).toBe('srv_home_b');
         expect(adopted.name).toBe('Home B');
         expect(setCredentialsForServerUrlWithRollbackMock).toHaveBeenCalledWith(
+            expect.any(Object),
             adopted.canonicalServerUrl ?? adopted.serverUrl,
             { serverId: adopted.serverIdentityId },
             { token: 'home-b-token' },
@@ -460,7 +477,12 @@ describe('adoptHomeProfileWithCredentials', () => {
         });
         expect(created.name).toBe('Directory Home');
 
-        await profiles.renameServerProfile(created.id, 'My Home');
+        await profiles.adoptHomeProfile({
+            descriptor: { serverUrl: created.serverUrl },
+            source: 'manual',
+            suggestedName: 'My Home',
+            preserveUserLabel: false,
+        });
         const preserved = await profiles.adoptHomeProfile({
             descriptor: {
                 v: 1,

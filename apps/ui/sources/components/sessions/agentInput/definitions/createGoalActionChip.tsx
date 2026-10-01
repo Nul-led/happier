@@ -9,6 +9,8 @@ import {
     type SessionWorkStateGoalSetRequest,
     type SessionWorkStateOperationResult,
 } from '@/components/sessions/workState/SessionWorkStateContent';
+import type { SessionGoalContinuationContext } from '@/components/sessions/workState/sessionGoalContinuation';
+import { SESSION_GOAL_CHIP_KEY } from '@/components/sessions/workState/sessionGoalChipKey';
 import type { SessionWorkStateSnapshot } from '@/sync/domains/session/workState/sessionWorkStateTypes';
 import { normalizeNodeForView } from '@/components/ui/rendering/normalizeNodeForView';
 import { hapticsLight } from '@/components/ui/theme/haptics';
@@ -16,7 +18,6 @@ import { t } from '@/text';
 import { ICON_SIZE, Icon } from '@/components/ui/icons/Icon';
 import { AGENT_INPUT_CHIP_ICON_SIZE_PX, AGENT_INPUT_CHIP_ICON_STYLE, AGENT_INPUT_MENU_ICON_SIZE_PX } from './agentInputChipIconMetrics';
 
-const GOAL_CHIP_KEY = 'session-goal';
 const PRIMER_GOAL_ICON_PATHS = [
     'M20.172 6.75h-1.861l-4.566 4.564a1.874 1.874 0 1 1-1.06-1.06l4.565-4.565V3.828a.94.94 0 0 1 .275-.664l1.73-1.73a.249.249 0 0 1 .25-.063c.089.026.155.1.173.191l.46 2.301 2.3.46c.09.018.164.084.19.173a.25.25 0 0 1-.062.249l-1.731 1.73a.937.937 0 0 1-.663.275Z',
     'M2.625 12A9.375 9.375 0 0 0 12 21.375 9.375 9.375 0 0 0 21.375 12c0-.898-.126-1.766-.361-2.587A.75.75 0 0 1 22.455 9c.274.954.42 1.96.42 3 0 6.006-4.869 10.875-10.875 10.875S1.125 18.006 1.125 12 5.994 1.125 12 1.125c1.015-.001 2.024.14 3 .419a.75.75 0 1 1-.413 1.442A9.39 9.39 0 0 0 12 2.625 9.375 9.375 0 0 0 2.625 12Z',
@@ -39,6 +40,8 @@ export function createGoalActionChip(params: Readonly<{
     currentObjective: string | null;
     onSetGoal?: (request: SessionWorkStateGoalSetRequest) => Promise<SessionWorkStateOperationResult>;
     onClearGoal?: () => Promise<SessionWorkStateOperationResult>;
+    /** The Goal control's continuation owner row (Keep going or the agent's own mode). */
+    continuation?: SessionGoalContinuationContext | null;
 }>): AgentInputExtraActionChip {
     const objective = params.currentObjective?.trim() ?? '';
     const hasGoal = objective.length > 0;
@@ -52,7 +55,7 @@ export function createGoalActionChip(params: Readonly<{
         : t('session.workState.goal.set');
 
     return {
-        key: GOAL_CHIP_KEY,
+        key: SESSION_GOAL_CHIP_KEY,
         controlId: 'goal',
         labelPolicy: 'auto-hide',
         collapsedContentPopover: {
@@ -70,6 +73,7 @@ export function createGoalActionChip(params: Readonly<{
                     requestClose={requestClose}
                     onSetGoal={params.onSetGoal}
                     onClearGoal={params.onClearGoal}
+                    continuation={params.continuation ?? null}
                 />
             ),
         },
@@ -82,7 +86,7 @@ export function createGoalActionChip(params: Readonly<{
                 accessibilityState={{ disabled: !params.editableGoal }}
                 onPress={() => {
                     hapticsLight();
-                    toggleCollapsedPopover?.(GOAL_CHIP_KEY);
+                    toggleCollapsedPopover?.(SESSION_GOAL_CHIP_KEY);
                 }}
                 hitSlop={{ top: 8, bottom: 10, left: 4, right: 4 }}
                 style={(state) => chipStyle(state.pressed)}

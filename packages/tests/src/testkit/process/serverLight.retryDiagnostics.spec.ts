@@ -86,6 +86,7 @@ describe('startServerLight retry diagnostics', () => {
     const testDir = await mkdtemp(join(tmpdir(), 'happier-server-light-retry-diagnostics-'));
     const dataDir = join(testDir, 'server-light-data');
     let server: Awaited<ReturnType<typeof startServerLight>> | null = null;
+    const beforeSpawnAttempts: number[] = [];
 
     try {
       await mkdir(dataDir, { recursive: true });
@@ -101,7 +102,12 @@ describe('startServerLight retry diagnostics', () => {
           HAPPIER_E2E_PROVIDER_USE_SERVER_SOURCE_ENTRYPOINT: '0',
         },
         __portAllocator: async () => 41_000 + healthAttempt,
+        __beforeSpawnAttempt: async () => {
+          beforeSpawnAttempts.push(spawnAttempt);
+        },
       });
+
+      expect(beforeSpawnAttempts).toEqual([0, 1]);
 
       await expect(readFile(join(testDir, 'server.attempt-1.stdout.log'), 'utf8')).resolves.toBe('stdout attempt 1\n');
       await expect(readFile(join(testDir, 'server.attempt-1.stderr.log'), 'utf8')).resolves.toBe('stderr attempt 1\n');

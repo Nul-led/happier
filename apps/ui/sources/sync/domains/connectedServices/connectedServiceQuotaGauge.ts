@@ -14,9 +14,9 @@ import {
 import { getAgentCore, resolveAgentIdFromFlavor } from '@/agents/registry/registryCore';
 import { clampQuotaPct, deriveQuotaUtilizationPct } from './deriveQuotaUtilizationPct';
 import {
-    QUOTA_REMAINING_CRITICAL_THRESHOLD_PCT,
-    QUOTA_REMAINING_WARNING_THRESHOLD_PCT,
+    resolveQuotaTone,
 } from './resolveQuotaTone';
+import { formatResetCountdown } from './formatResetCountdown';
 
 export type ConnectedServiceQuotaGaugeWindowMode =
     | 'most_constrained'
@@ -44,6 +44,8 @@ export type ConnectedServiceQuotaGaugeMeterRow = Readonly<{
     usedLimitSemantics: 'used' | null;
     usedLimitLabel: string | null;
     resetLabel: string | null;
+    /** When the window resets (epoch ms), when the provider reports it. */
+    resetsAt: number | null;
     tone: ConnectedServiceQuotaGaugeTone;
 }>;
 
@@ -210,29 +212,6 @@ export function selectComparableConnectedServiceQuotaMeters(
     return orderedGroups[0]?.meters ?? [];
 }
 
-function formatResetCountdown(
-    nowMs: number,
-    resetsAtMs: number | null,
-    formatter: ConnectedServiceQuotaGaugeLabelFormatter,
-): string | null {
-    if (!resetsAtMs) return null;
-    const delta = resetsAtMs - nowMs;
-    if (!Number.isFinite(delta)) return formatter.durationOutdated();
-    if (delta < 0) return formatter.durationOutdated();
-    if (delta === 0) return formatter.durationNow();
-
-    const totalMinutes = Math.floor(delta / 60000);
-    const days = Math.floor(totalMinutes / (60 * 24));
-    const hours = Math.floor((totalMinutes - days * 60 * 24) / 60);
-    const minutes = totalMinutes - days * 60 * 24 - hours * 60;
-
-    if (days > 0) return formatter.durationDaysHours({ days, hours });
-    if (hours > 0) return minutes > 0
-        ? formatter.durationHoursMinutes({ hours, minutes })
-        : formatter.durationHours({ hours });
-    return formatter.durationMinutes({ minutes });
-}
-
 function formatNumber(value: number): string {
     return Number.isInteger(value) ? String(value) : String(Number(value.toFixed(1)));
 }
@@ -269,9 +248,11 @@ export function summarizeConnectedServiceQuotaRecoveryCredits(
         : null;
 }
 
+/** The gauge's vocabulary for the one quota tone owner's answer; a healthy gauge stays quiet. */
 function resolveTone(remainingPct: number): ConnectedServiceQuotaGaugeTone {
-    if (remainingPct <= QUOTA_REMAINING_CRITICAL_THRESHOLD_PCT) return 'critical';
-    if (remainingPct <= QUOTA_REMAINING_WARNING_THRESHOLD_PCT) return 'warning';
+    const tone = resolveQuotaTone(remainingPct);
+    if (tone === 'danger') return 'critical';
+    if (tone === 'warning') return 'warning';
     return 'neutral';
 }
 
@@ -305,6 +286,7 @@ function buildMeterRow(
             ? formatter.used({ used: formatNumber(meter.used), limit: formatNumber(meter.limit) })
             : null,
         resetLabel,
+        resetsAt: meter.resetAtMs ?? meter.resetsAt ?? null,
         tone: resolveTone(remainingPct),
     };
 }

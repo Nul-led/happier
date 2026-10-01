@@ -161,9 +161,11 @@ describe('sessionScm', () => {
         expect(machineRpcMock).toHaveBeenCalledWith(
             'machine-1',
             RPC_METHODS.SCM_STATUS_SNAPSHOT,
-            {
+            expect.objectContaining({
                 cwd: '~/repo',
-            },
+                outcomeVersion: 1,
+                operationStateVersion: 1,
+            }),
             {
                 serverId: 'server-owned',
                 timeoutMs: expect.any(Number),
@@ -205,9 +207,11 @@ describe('sessionScm', () => {
         expect(machineRpcMock).toHaveBeenCalledWith(
             'machine-direct',
             RPC_METHODS.SCM_STATUS_SNAPSHOT,
-            {
+            expect.objectContaining({
                 cwd: '/workspace/direct-repo',
-            },
+                outcomeVersion: 1,
+                operationStateVersion: 1,
+            }),
             {
                 serverId: 'server-owned',
                 timeoutMs: expect.any(Number),
@@ -250,9 +254,11 @@ describe('sessionScm', () => {
         expect(machineRpcMock).toHaveBeenCalledWith(
             'machine-1',
             RPC_METHODS.SCM_STATUS_SNAPSHOT,
-            {
+            expect.objectContaining({
                 cwd: '/workspace/repo/.dev/worktree/gentle-meadow',
-            },
+                outcomeVersion: 1,
+                operationStateVersion: 1,
+            }),
             {
                 serverId: 'server-owned',
                 timeoutMs: expect.any(Number),
@@ -287,13 +293,15 @@ describe('sessionScm', () => {
         expect(machineRpcMock).toHaveBeenCalledWith(
             'machine-1',
             RPC_METHODS.SCM_STATUS_SNAPSHOT,
-            {
+            expect.objectContaining({
                 cwd: '~/repo',
                 backendPreference: {
                     kind: 'prefer',
                     backendId: 'sapling',
                 },
-            },
+                outcomeVersion: 1,
+                operationStateVersion: 1,
+            }),
             {
                 serverId: 'server-owned',
                 timeoutMs: expect.any(Number),
@@ -489,73 +497,80 @@ describe('sessionScm', () => {
             1,
             'machine-1',
             RPC_METHODS.SCM_REMOTE_ADD,
-            {
+            expect.objectContaining({
                 cwd: '~/repo',
                 name: 'origin',
                 fetchUrl: 'git@example.com:repo.git',
-            },
+                outcomeVersion: 1,
+            }),
             { serverId: 'server-owned', timeoutMs: expect.any(Number) },
         );
         expect(machineRpcMock).toHaveBeenNthCalledWith(
             2,
             'machine-1',
             RPC_METHODS.SCM_REMOTE_SET_URL,
-            {
+            expect.objectContaining({
                 cwd: '~/repo',
                 name: 'origin',
                 fetchUrl: 'git@example.com:next.git',
                 pushUrl: null,
-            },
+                outcomeVersion: 1,
+            }),
             { serverId: 'server-owned', timeoutMs: expect.any(Number) },
         );
         expect(machineRpcMock).toHaveBeenNthCalledWith(
             3,
             'machine-1',
             RPC_METHODS.SCM_REMOTE_REMOVE,
-            {
+            expect.objectContaining({
                 cwd: '~/repo',
                 name: 'origin',
-            },
+                outcomeVersion: 1,
+            }),
             { serverId: 'server-owned', timeoutMs: expect.any(Number) },
         );
         expect(machineRpcMock).toHaveBeenNthCalledWith(
             4,
             'machine-1',
             RPC_METHODS.SCM_BRANCH_MERGE,
-            {
+            expect.objectContaining({
                 cwd: '~/repo',
                 sourceRef: 'origin/main',
-            },
+                outcomeVersion: 1,
+            }),
             { serverId: 'server-owned', timeoutMs: expect.any(Number) },
         );
         expect(machineRpcMock).toHaveBeenNthCalledWith(
             5,
             'machine-1',
             RPC_METHODS.SCM_BRANCH_REBASE,
-            {
+            expect.objectContaining({
                 cwd: '~/repo',
                 sourceRef: 'origin/main',
-            },
+                outcomeVersion: 1,
+            }),
             { serverId: 'server-owned', timeoutMs: expect.any(Number) },
         );
         expect(machineRpcMock).toHaveBeenNthCalledWith(
             6,
             'machine-1',
             RPC_METHODS.SCM_BRANCH_OPERATION_CONTINUE,
-            {
+            expect.objectContaining({
                 cwd: '~/repo',
                 operation: 'merge',
-            },
+                outcomeVersion: 1,
+            }),
             { serverId: 'server-owned', timeoutMs: expect.any(Number) },
         );
         expect(machineRpcMock).toHaveBeenNthCalledWith(
             7,
             'machine-1',
             RPC_METHODS.SCM_BRANCH_OPERATION_ABORT,
-            {
+            expect.objectContaining({
                 cwd: '~/repo',
                 operation: 'rebase',
-            },
+                outcomeVersion: 1,
+            }),
             { serverId: 'server-owned', timeoutMs: expect.any(Number) },
         );
         expect(sessionRpcMock).not.toHaveBeenCalled();
@@ -617,27 +632,29 @@ describe('sessionScm', () => {
             1,
             'machine-1',
             RPC_METHODS.SCM_REPOSITORY_INIT,
-            {
+            expect.objectContaining({
                 cwd: '~/repo',
                 initialBranch: 'main',
-            },
+                outcomeVersion: 1,
+            }),
             { serverId: 'server-owned', timeoutMs: expect.any(Number) },
         );
         expect(machineRpcMock).toHaveBeenNthCalledWith(
             2,
             'machine-1',
             RPC_METHODS.SCM_HOSTING_REPOSITORY_DESCRIBE_PUBLISH_TARGETS,
-            {
+            expect.objectContaining({
                 cwd: '~/repo',
                 providerKind: 'github',
-            },
+                outcomeVersion: 1,
+            }),
             { serverId: 'server-owned', timeoutMs: expect.any(Number) },
         );
         expect(machineRpcMock).toHaveBeenNthCalledWith(
             3,
             'machine-1',
             RPC_METHODS.SCM_HOSTING_REPOSITORY_PUBLISH,
-            {
+            expect.objectContaining({
                 cwd: '~/repo',
                 providerKind: 'github',
                 owner: 'happier-dev',
@@ -648,7 +665,8 @@ describe('sessionScm', () => {
                 remoteUrlKind: 'https',
                 remoteConflictStrategy: 'fail',
                 pushCurrentBranch: true,
-            },
+                outcomeVersion: 1,
+            }),
             { serverId: 'server-owned', timeoutMs: expect.any(Number) },
         );
         expect(sessionRpcMock).not.toHaveBeenCalled();
@@ -706,53 +724,58 @@ describe('sessionScm', () => {
             1,
             'machine-1',
             RPC_METHODS.SCM_PULL_REQUEST_LIST,
-            {
+            expect.objectContaining({
                 cwd: '~/repo',
                 head: 'feature/prs',
-            },
+                outcomeVersion: 1,
+            }),
             { serverId: 'server-owned', timeoutMs: expect.any(Number) },
         );
         expect(machineRpcMock).toHaveBeenNthCalledWith(
             2,
             'machine-1',
             RPC_METHODS.SCM_PULL_REQUEST_GET,
-            {
+            expect.objectContaining({
                 cwd: '~/repo',
                 prReference: { number: 42 },
-            },
+                outcomeVersion: 1,
+            }),
             { serverId: 'server-owned', timeoutMs: expect.any(Number) },
         );
         expect(machineRpcMock).toHaveBeenNthCalledWith(
             3,
             'machine-1',
             RPC_METHODS.SCM_PULL_REQUEST_OPEN_COMPOSE,
-            {
+            expect.objectContaining({
                 cwd: '~/repo',
                 base: 'main',
                 head: 'feature/prs',
-            },
+                outcomeVersion: 1,
+            }),
             { serverId: 'server-owned', timeoutMs: expect.any(Number) },
         );
         expect(machineRpcMock).toHaveBeenNthCalledWith(
             5,
             'machine-1',
             RPC_METHODS.SCM_REPOSITORY_REMOVE_INDEX_LOCK,
-            {
+            expect.objectContaining({
                 cwd: '~/repo',
-            },
+                outcomeVersion: 1,
+            }),
             { serverId: 'server-owned', timeoutMs: expect.any(Number) },
         );
         expect(machineRpcMock).toHaveBeenNthCalledWith(
             4,
             'machine-1',
             RPC_METHODS.SCM_PULL_REQUEST_OPEN_OR_REUSE,
-            {
+            expect.objectContaining({
                 cwd: '~/repo',
                 base: 'main',
                 head: 'feature/prs',
                 title: 'Feature PR',
                 body: '',
-            },
+                outcomeVersion: 1,
+            }),
             { serverId: 'server-owned', timeoutMs: expect.any(Number) },
         );
         expect(sessionRpcMock).not.toHaveBeenCalled();

@@ -2,7 +2,7 @@ import * as React from 'react';
 import { Pressable, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
-import { getAgentIconSource, getAgentIconSvgXml } from '@/agents/catalog/catalog';
+import { hasAgentIconMark } from '@/agents/catalog/catalog';
 import { AgentIcon } from '@/agents/registry/AgentIcon';
 import type { AgentId } from '@/agents/registry/registryCore';
 import { StatusDot } from '@/components/ui/status/StatusDot';
@@ -23,7 +23,7 @@ export type AgentsLogoMultiSelectProps = Readonly<{
     /**
      * Providers detected as already installed/ready (D22): they render with a
      * green readiness dot, present as selected, and are locked — tapping them
-     * never toggles them off. Readiness truth stays with `useProviderReadiness`
+     * never toggles them off. Readiness truth stays with the machine-agent inventory
      * at the call site; this is presentation only.
      */
     readyAgentIds?: readonly string[];
@@ -46,11 +46,9 @@ const stylesheet = StyleSheet.create((theme) => ({
         justifyContent: 'center',
         borderWidth: 1,
         borderColor: theme.colors.border.default,
-        backgroundColor: theme.colors.surface.base,
     },
     tileSelected: {
         borderColor: theme.colors.border.strong,
-        backgroundColor: theme.colors.surface.pressedOverlay,
     },
     readyDot: {
         position: 'absolute',
@@ -78,8 +76,7 @@ export const AgentsLogoMultiSelect = React.memo(function AgentsLogoMultiSelect(p
             return entries.filter((entry) => {
                 if (entry.icon) return true;
                 if (!entry.iconAgentId) return Boolean(entry.iconName);
-                return getAgentIconSvgXml(entry.iconAgentId, theme) != null
-                    || getAgentIconSource(entry.iconAgentId) != null;
+                return hasAgentIconMark(entry.iconAgentId, theme);
             });
         },
         [props.agentEntries, props.agentIds, theme],

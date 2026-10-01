@@ -1,6 +1,8 @@
 import { readNonBlankOpaqueIdentifier } from '@happier-dev/protocol';
+import { processIdentityMatches, readProcessInstanceFingerprintSync } from '@happier-dev/cli-common/processInstance';
 
 import { ALLOWED_HAPPY_SESSION_PROCESS_TYPES } from './pidSafety';
+import { daemonProcessMatchesCurrentScope } from './ownership/daemonProcessScopeIdentity';
 import type { HappyProcessInfo } from './doctor';
 import { hashProcessCommand, writeSessionMarker } from './sessionRegistry';
 import type { DaemonSessionMarker } from './sessionRegistry';
@@ -21,7 +23,7 @@ import {
   PersistedProviderResumeBindingError,
   readPersistedProviderResumeState,
 } from '@/providers/lifecycle/readPersistedResumeSelection';
-import { processGenerationMatches, readProcessIdentityByPid } from './processIdentity';
+import { readProcessIdentityByPid } from './processIdentity';
 import type { LocalServiceProcessFact } from './local/services/inventory/provenance';
 import {
   normalizeProcessCommandPathValue,
@@ -129,6 +131,14 @@ function canAdoptDaemonStartedHashDriftMarker(params: Readonly<{
   );
 }
 
+export function hasAuthorityRestorationMarker(marker: DaemonSessionMarker): boolean {
+  return marker.startedBy === 'daemon'
+    && marker.processStartTimeMs !== undefined
+    && !!marker.processCommandHash
+    && !!marker.respawn
+    && !!marker.agentRuntimeDaemonServiceAuthorityFilePath;
+}
+
 export function adoptSessionsFromMarkers(params: {
   markers: DaemonSessionMarker[];
   happyProcesses: HappyProcessInfo[];
@@ -136,16 +146,34 @@ export function adoptSessionsFromMarkers(params: {
   credentials?: StoredCredentials | null;
   deviceLocalSecretStorage?: DeviceLocalSecretStorage;
   processIdentityByPid?: ReadonlyMap<number, LocalServiceProcessFact>;
+  readProcessInstanceFingerprintFn?: (pid: number, expected: string) => string | null;
 }): { adopted: number; eligible: number } {
   const happyPidToType = new Map(params.happyProcesses.map((p) => [p.pid, p.type] as const));
+  const happyPidToProcess = new Map(params.happyProcesses.map((p) => [p.pid, p] as const));
   const happyPidToCommandHash = new Map(params.happyProcesses.map((p) => [p.pid, hashProcessCommand(p.command)] as const));
   const happyPidToCommand = new Map(params.happyProcesses.map((p) => [p.pid, p.command] as const));
   const encryptionMaterial = params.credentials?.encryption ?? undefined;
 
   let adopted = 0;
   let eligible = 0;
+  const preferredSessionIds = new Set(
+    params.markers
+      .filter(hasAuthorityRestorationMarker)
+      .map((marker) => marker.happySessionId),
+  );
+  const adoptedSessionIds = new Set(
+    [...params.pidToTrackedSession.values()]
+      .map((tracked) => tracked.happySessionId)
+      .filter((sessionId): sessionId is string => !!sessionId),
+  );
 
-  for (const marker of params.markers) {
+  for (const marker of [...params.markers].sort((left, right) =>
+    Number(hasAuthorityRestorationMarker(right)) - Number(hasAuthorityRestorationMarker(left))
+  )) {
+    if (adoptedSessionIds.has(marker.happySessionId)) continue;
+    if (preferredSessionIds.has(marker.happySessionId) && !hasAuthorityRestorationMarker(marker)) continue;
+    const liveProcess = happyPidToProcess.get(marker.pid);
+    if (liveProcess && !daemonProcessMatchesCurrentScope(liveProcess)) continue;
     // Safety: avoid PID reuse adopting an unrelated process. Only adopt if PID currently looks
     // like a Happy session process (best-effort cross-platform via ps-list classification).
     const procType = happyPidToType.get(marker.pid);
@@ -153,30 +181,36 @@ export function adoptSessionsFromMarkers(params: {
       continue;
     }
     eligible++;
-    if (marker.processStartTimeMs !== undefined) {
-      const processIdentity = params.processIdentityByPid?.get(marker.pid);
-      if (!processGenerationMatches(
-        marker.processStartTimeMs,
-        processIdentity?.processStartTimeMs,
-      )) {
-        continue;
-      }
+    if (marker.processInstanceFingerprint) {
+      const observedFingerprint = params.readProcessInstanceFingerprintFn
+        ? params.readProcessInstanceFingerprintFn(marker.pid, marker.processInstanceFingerprint)
+        : readProcessInstanceFingerprintSync(marker.pid, {
+            expectedFingerprint: marker.processInstanceFingerprint,
+          });
+      if (observedFingerprint !== marker.processInstanceFingerprint) continue;
     }
 
     // Legacy markers without a process-generation witness require strict command continuity.
-    if (!marker.processCommandHash) {
+    if (!marker.processCommandHash && marker.processStartTimeMs === undefined) {
       continue;
     }
     const currentHash = happyPidToCommandHash.get(marker.pid);
-    if (!currentHash) {
+    if (!currentHash && marker.processStartTimeMs === undefined) {
       continue;
     }
+    const observedStartTimeMs = params.processIdentityByPid
+      ?.get(marker.pid)?.processStartTimeMs;
     const markerHasRespawnDescriptor = marker.respawn !== undefined;
     const respawnParsed = SessionRunnerRespawnDescriptorV1Schema.safeParse(marker.respawn);
     if (markerHasRespawnDescriptor && !respawnParsed.success) {
       continue;
     }
-    if (currentHash !== marker.processCommandHash && marker.processStartTimeMs === undefined) {
+    if (!processIdentityMatches(marker, {
+      pid: marker.pid,
+      processStartTimeMs: observedStartTimeMs,
+      processCommandHash: currentHash,
+    })) {
+      if (marker.processStartTimeMs !== undefined) continue;
       const currentCommand = happyPidToCommand.get(marker.pid);
       if (
         !canAdoptDaemonStartedHashDriftMarker({
@@ -265,6 +299,7 @@ export function adoptSessionsFromMarkers(params: {
       processCommand: currentCommand,
       reattachedFromDiskMarker: true,
     }));
+    adoptedSessionIds.add(marker.happySessionId);
     adopted++;
   }
 
@@ -280,6 +315,7 @@ export async function adoptLiveDaemonSessionsFromProcesses(params: Readonly<{
   let adopted = 0;
 
   for (const proc of params.happyProcesses) {
+    if (!daemonProcessMatchesCurrentScope(proc, { requireScopeIdentity: true })) continue;
     if (!LIVE_RECOVERABLE_HAPPY_SESSION_PROCESS_TYPES.has(proc.type as LiveRecoverableHappySessionProcessType)) {
       continue;
     }

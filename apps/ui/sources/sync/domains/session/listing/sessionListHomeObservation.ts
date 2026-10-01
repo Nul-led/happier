@@ -33,6 +33,7 @@ export function resolveOrdinarySessionListCoverage(input: Readonly<{
     fetchMoreInFlight: boolean;
     hasNext: boolean;
     attentionHasNext: boolean;
+    metadataUpgradeRequiredCount?: number;
 }>): 'complete' | 'incomplete' {
     return input.serverId
         && input.hasFetchedSnapshot
@@ -41,6 +42,7 @@ export function resolveOrdinarySessionListCoverage(input: Readonly<{
         && !input.fetchMoreInFlight
         && !input.hasNext
         && !input.attentionHasNext
+        && (input.metadataUpgradeRequiredCount ?? 0) === 0
         ? 'complete'
         : 'incomplete';
 }
@@ -61,6 +63,7 @@ export function isSessionListQueryHomeCoverageComplete(input: Readonly<{
         && state.phase === 'ready'
         && !state.hasNext
         && !state.attentionHasNext
+        && (state.metadataUpgradeRequiredCount ?? 0) === 0
         && state.appliedSourceKind === 'query'
     );
 }

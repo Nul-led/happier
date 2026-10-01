@@ -2,6 +2,7 @@ import * as React from 'react';
 
 import { useHomeViewSelectionSettings } from '@/hooks/server/useHomeViewSelectionSettings';
 import { listServerProfiles } from '@/sync/domains/server/serverProfiles';
+import { useUsableHomeServerIds } from '@/sync/domains/scope/usableHomeServerIds';
 import {
     listServerProfileScopeIds,
     normalizeServerSelectionSettingsForProfileScopeIds,
@@ -85,6 +86,7 @@ export function useResolvedActiveServerSelection(): ResolvedActiveServerSelectio
         serverSelectionActiveTargetId: activeId,
     } = useHomeViewSelectionSettings();
     const activeServer = useActiveServerSelectionSource();
+    const usableServerIds = useUsableHomeServerIds();
 
     return React.useMemo(
         () => {
@@ -97,9 +99,10 @@ export function useResolvedActiveServerSelection(): ResolvedActiveServerSelectio
                 activeServerId: activeServer.activeServerId,
                 availableServerIds: activeServer.availableServerIds,
                 settings,
+                usableServerIds,
             });
         },
-        [activeId, activeKind, activeServer, groups],
+        [activeId, activeKind, activeServer, groups, usableServerIds],
     );
 }
 
@@ -110,6 +113,7 @@ export function useEffectiveServerSelection(): EffectiveServerSelection {
         serverSelectionActiveTargetId: activeId,
     } = useHomeViewSelectionSettings();
     const activeServer = useActiveServerSelectionSource();
+    const usableServerIds = useUsableHomeServerIds();
 
     return React.useMemo(
         () => {
@@ -122,8 +126,9 @@ export function useEffectiveServerSelection(): EffectiveServerSelection {
                 activeServerId: activeServer.activeServerId,
                 availableServerIds: activeServer.availableServerIds,
                 settings,
+                usableServerIds,
             });
         },
-        [activeId, activeKind, activeServer, groups],
+        [activeId, activeKind, activeServer, groups, usableServerIds],
     );
 }

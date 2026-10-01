@@ -1,14 +1,15 @@
 import { resolveAgentIdFromSessionMetadata } from '@happier-dev/agents';
-import type { ToolCall } from '@/sync/domains/messages/messageTypes';
-import type { Metadata } from '@/sync/domains/state/storageTypes';
+import type { ToolCall } from "@happier-dev/session-core/messages";
+import type { Metadata } from '@happier-dev/session-core/state';
 
 import { getAgentCore } from '@/agents/catalog/catalog';
 import { t } from '@/text';
+import type { TranscriptPermissionDisabledReason } from '@/utils/sessions/deriveTranscriptInteraction';
 
 export function resolveToolPermissionTerminalErrorMessage(params: Readonly<{
     tool: ToolCall;
     metadata: Metadata | null;
-    permissionDisabledReason?: 'public' | 'readOnly' | 'notGranted' | 'inactive';
+    permissionDisabledReason?: TranscriptPermissionDisabledReason;
     /**
      * The Agent that produced this row, when the transcript has divider
      * evidence for it. This outcome is already terminal, so the Session's

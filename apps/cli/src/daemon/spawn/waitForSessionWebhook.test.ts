@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { SPAWN_SESSION_ERROR_CODES } from '@/rpc/handlers/registerSessionHandlers';
 import type { TrackedSession } from '../types';
+import type { SpawnSessionResult } from '@/session/shared/spawnSessionContract';
+import { createPersistedTakeoverAdmissionWaiter } from './persistedTakeoverAdmission';
 
 import { hasSessionWebhookPidTimedOut, waitForSessionWebhook } from './waitForSessionWebhook';
 
@@ -34,6 +36,44 @@ describe('waitForSessionWebhook', () => {
     expect(pidToAwaiter.has(42)).toBe(false);
     expect(pidToSpawnResultResolver.has(42)).toBe(false);
     expect(pidToSpawnWebhookTimeout.has(42)).toBe(false);
+  });
+
+  it('does not acknowledge the webhook until async startup finalization completes', async () => {
+    const pidToAwaiter = new Map<number, (session: any) => void>();
+    const pidToSpawnResultResolver = new Map<number, (result: any) => void>();
+    const pidToSpawnWebhookTimeout = new Map<number, NodeJS.Timeout>();
+    let finishFinalization!: () => void;
+    const finalization = new Promise<void>((resolve) => {
+      finishFinalization = resolve;
+    });
+
+    const promise = waitForSessionWebhook({
+      pid: 44,
+      pidToAwaiter,
+      pidToSpawnResultResolver,
+      pidToSpawnWebhookTimeout,
+      timeoutErrorMessage: 'timeout',
+      onSuccess: async () => {
+        await finalization;
+      },
+    });
+
+    const resolver = pidToAwaiter.get(44);
+    expect(typeof resolver).toBe('function');
+    resolver?.({ happySessionId: 'session-finalized' });
+    let settled = false;
+    void promise.then(() => {
+      settled = true;
+    });
+
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    finishFinalization();
+    await expect(promise).resolves.toEqual({
+      type: 'success',
+      sessionId: 'session-finalized',
+    });
   });
 
   it('returns the authoritative create-or-rejoin outcome carried by the matched runner', async () => {
@@ -411,4 +451,123 @@ describe('waitForSessionWebhook', () => {
       sessionId: 'session-ready-5150',
     });
   });
+});
+
+
+describe('takeover admission within canonical spawn readiness', () => {
+  afterEach(() => vi.useRealTimers());
+
+  function start(mode: 'persisted' | 'external_linked', signal?: AbortSignal) {
+    const waiter = createPersistedTakeoverAdmissionWaiter();
+    const correlation = { mode, operationId: 'operation-1', attemptId: 'attempt-1' };
+    const admission = waiter.register(correlation, { signal });
+    const tracked: TrackedSession = { pid: 4201, startedBy: 'daemon', happySessionId: 'session-1' };
+    const pidToAwaiter = new Map<number, (session: TrackedSession) => void>();
+    const pidToSpawnResultResolver = new Map<number, (result: SpawnSessionResult) => void>();
+    const pidToSpawnWebhookTimeout = new Map<number, NodeJS.Timeout>();
+    const pidToTrackedSession = new Map([[tracked.pid, tracked]]);
+    const promise = waitForSessionWebhook({
+      pid: tracked.pid,
+      pidToAwaiter,
+      pidToSpawnResultResolver,
+      pidToSpawnWebhookTimeout,
+      pidToTrackedSession,
+      takeoverAdmission: admission,
+      timeoutErrorMessage: 'startup timed out',
+    });
+    return { waiter, correlation, admission, tracked, promise, pidToAwaiter, pidToSpawnResultResolver, pidToSpawnWebhookTimeout, pidToTrackedSession };
+  }
+
+  it.each(['persisted', 'external_linked'] as const)('keeps %s pending beyond 30 seconds and ACKs the ordinary webhook before runtime binding', async (mode) => {
+    vi.useFakeTimers();
+    const current = start(mode);
+    let result: SpawnSessionResult | undefined;
+    void current.promise.then((value) => { result = value; });
+    await vi.advanceTimersByTimeAsync(30_001);
+    expect(current.admission.readOutcome()).toBeNull();
+    // The HTTP owner calls this void callback: it must ACK without waiting for runtime_bound.
+    expect(current.pidToAwaiter.get(current.tracked.pid)?.(current.tracked)).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(result).toBeUndefined();
+    expect(current.waiter.settle({ ...current.correlation, attemptId: 'other-attempt' }, { status: 'committed' })).toBe(false);
+    current.waiter.settle(current.correlation, { status: 'committed' });
+    await expect(current.promise).resolves.toMatchObject({ type: 'success', sessionId: 'session-1' });
+    expect(current.pidToSpawnWebhookTimeout.size).toBe(0);
+  });
+
+  it('uses the owning startup timeout after the ordinary webhook and revokes a reserved admission', async () => {
+    vi.useFakeTimers();
+    const current = start('persisted');
+    current.pidToAwaiter.get(current.tracked.pid)?.(current.tracked);
+    const reserved = current.waiter.reserveRuntimeBound(current.correlation);
+    if (reserved.status !== 'reserved') throw new Error('Expected exact reservation');
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    await expect(current.promise).resolves.toMatchObject({ type: 'error', errorCode: SPAWN_SESSION_ERROR_CODES.SESSION_WEBHOOK_TIMEOUT });
+    expect(current.admission.readOutcome()?.status).toBe('failed');
+    expect(reserved.reservation.commit()).toBe(false);
+    expect(current.pidToSpawnResultResolver.size).toBe(0);
+  });
+
+  it.each(['abort', 'child_exit'] as const)('settles admission and cleans startup on %s after the ordinary webhook', async (reason) => {
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    const current = start('external_linked', controller.signal);
+    current.pidToAwaiter.get(current.tracked.pid)?.(current.tracked);
+    if (reason === 'abort') controller.abort();
+    else current.pidToSpawnResultResolver.get(current.tracked.pid)?.({ type: 'error', errorCode: SPAWN_SESSION_ERROR_CODES.CHILD_EXITED_BEFORE_WEBHOOK, errorMessage: 'exited' });
+    await expect(current.promise).resolves.toMatchObject({ type: 'error' });
+    expect(current.admission.readOutcome()?.status).toBe('failed');
+    expect(current.pidToSpawnWebhookTimeout.size).toBe(0);
+    expect(current.pidToSpawnResultResolver.size).toBe(0);
+    expect(current.waiter.reserveRuntimeBound(current.correlation).status).toBe('unavailable');
+  });
+  it('retains committed admission until the ordinary webhook completes', async () => {
+    vi.useFakeTimers();
+    const current = start('persisted');
+    let result: SpawnSessionResult | undefined;
+    void current.promise.then((value) => { result = value; });
+    current.waiter.settle(current.correlation, { status: 'committed' });
+    await vi.advanceTimersByTimeAsync(1);
+    expect(result).toBeUndefined();
+    current.pidToAwaiter.get(current.tracked.pid)?.(current.tracked);
+    await expect(current.promise).resolves.toMatchObject({ type: 'success' });
+    current.admission.cancel();
+    expect(current.admission.readOutcome()).toEqual({ status: 'committed' });
+  });
+
+  it('rejects an already-cancelled registration without waiting for the startup timer', async () => {
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    controller.abort();
+    const current = start('persisted', controller.signal);
+    await expect(current.promise).resolves.toMatchObject({ type: 'error' });
+    expect(current.pidToSpawnWebhookTimeout.size).toBe(0);
+    expect(current.waiter.getRegistration(current.correlation)).toBeNull();
+  });
+
+  it.each(['pending', 'timed_out'] as const)('keeps a replacement PID owner isolated from a %s admission callback', async (state) => {
+    vi.useFakeTimers();
+    const current = start('persisted');
+    const lateCallback = current.pidToAwaiter.get(current.tracked.pid)!;
+    lateCallback(current.tracked);
+    if (state === 'timed_out') await vi.advanceTimersByTimeAsync(5 * 60_000);
+    const replacement: TrackedSession = { pid: current.tracked.pid, startedBy: 'daemon', happySessionId: 'replacement' };
+    current.pidToTrackedSession.set(replacement.pid, replacement);
+    const replacementCallback = () => undefined;
+    const replacementResolver = () => undefined;
+    const replacementTimeout = setTimeout(() => undefined, 10_000);
+    current.pidToAwaiter.set(replacement.pid, replacementCallback);
+    current.pidToSpawnResultResolver.set(replacement.pid, replacementResolver);
+    current.pidToSpawnWebhookTimeout.set(replacement.pid, replacementTimeout);
+    current.waiter.settle(current.correlation, { status: 'committed' });
+    lateCallback(current.tracked);
+    await expect(current.promise).resolves.toMatchObject({ type: 'error' });
+    expect(current.pidToAwaiter.get(replacement.pid)).toBe(replacementCallback);
+    expect(current.pidToSpawnResultResolver.get(replacement.pid)).toBe(replacementResolver);
+    expect(current.pidToSpawnWebhookTimeout.get(replacement.pid)).toBe(replacementTimeout);
+    expect(replacement.spawnStartupReadinessFailure).toBeUndefined();
+    expect(replacement.sessionWebhookTimedOutAtMs).toBeUndefined();
+    clearTimeout(replacementTimeout);
+  });
+
 });

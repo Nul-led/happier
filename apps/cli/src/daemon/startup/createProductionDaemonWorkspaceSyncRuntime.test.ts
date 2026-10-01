@@ -12,6 +12,7 @@ import {
   AccountSettingsSchema,
   computeWorkspaceSyncPolicyDigest,
   type HandoffTargetReplacementApprovalV1,
+  type WorkspaceSyncConflictResolveActionInputV1,
 } from '@happier-dev/protocol';
 
 import type { ActiveAccountSettingsSnapshot } from '@/settings/accountSettings/activeAccountSettingsSnapshot';
@@ -81,6 +82,8 @@ describe('createProductionDaemonWorkspaceSyncRuntime', () => {
     type ProductionInput = Parameters<typeof createProductionDaemonWorkspaceSyncRuntime>[0];
     const controller = Object.freeze({
       marker: 'controller',
+      resolveLocalResolutionEndpoint: vi.fn(async () => null),
+      borrowSourceRootForCopy: vi.fn(async (): Promise<{ handle: unknown; release: () => Promise<void> } | null> => null),
       withAuthorizedSourceSeedExport: vi.fn(async (
         _request: Readonly<{ operationId: string }>,
         exportSource: (sourcePath: string) => Promise<unknown>,
@@ -115,10 +118,17 @@ describe('createProductionDaemonWorkspaceSyncRuntime', () => {
       .mockRejectedValueOnce(Object.assign(new Error('target temporarily unavailable'), { code: 'peer_unavailable' }))
       .mockResolvedValueOnce({ ok: true as const, released: true });
     const targetAuthority = {
-      deleteConflictLoserHere: vi.fn(async () => undefined),
       readFileHere: vi.fn(),
-      deleteConflictLoserAtTarget: vi.fn(async () => undefined),
+      observeEntryHere: vi.fn(),
+      stageConflictResolutionHere: vi.fn(async () => undefined),
+      applyStagedConflictResolutionHere: vi.fn(async () => ({ status: 'installed' as const })),
+      recoverConflictResolutionHere: vi.fn(async () => ({ status: 'settled' as const })),
+      stageConflictResolutionAtTarget: vi.fn(async () => undefined),
+      applyStagedConflictResolutionAtTarget: vi.fn(async () => ({ status: 'installed' as const })),
+      recoverConflictResolutionAtTarget: vi.fn(async () => ({ status: 'settled' as const })),
+      prepareConflictResolutionExport: vi.fn(),
       readFileAtTarget: vi.fn(),
+      observeEntryAtTarget: vi.fn(),
       prepareBootstrapHere: vi.fn(),
       releaseBootstrapHere: vi.fn(),
       prepareBootstrapAtTarget,
@@ -175,9 +185,12 @@ describe('createProductionDaemonWorkspaceSyncRuntime', () => {
       alphaPath: '/work/alpha',
       betaPath: '/work/beta',
       mode: 'keep_both_in_sync' as const,
-      changedFiles: 0,
+      endpointStates: {
+        alpha: { connected: true, scanned: true, scanProblemCount: 0, transitionProblemCount: 0 },
+        beta: { connected: true, scanned: true, scanProblemCount: 0, transitionProblemCount: 0 },
+      },
       conflictCount: 0,
-      lastSuccessfulSyncAtMs: null,
+      lastCycleObservedAtMs: null,
     };
     const callMachineRpc = vi.fn(async (request: { method: string }) => (
       request.method === 'daemon.directTransfer.export.prepare'
@@ -189,6 +202,11 @@ describe('createProductionDaemonWorkspaceSyncRuntime', () => {
             }],
             sizeBytes: 50, manifestHash: `sha256:${'a'.repeat(64)}`,
           }
+        : request.method === 'daemon.workspaceSync.prepareBetween.v1'
+        ? { ok: true, traversed: [
+            { relationshipId: 'rel-2', policyDigest: contentPolicy.policyDigest, status: { ...controllerStatus, relationshipId: 'rel-2' } },
+            { relationshipId: 'rel-1', policyDigest: contentPolicy.policyDigest, status: controllerStatus },
+          ] }
         : request.method.startsWith('daemon.workspaceSync.')
         ? { status: controllerStatus }
         : { ok: true }
@@ -239,6 +257,7 @@ describe('createProductionDaemonWorkspaceSyncRuntime', () => {
       status: 'absent',
       path: join(activeServerDir, 'workspace-replication'),
     }) as WorkspaceSyncLegacyStateInspection);
+    let activeSnapshot = settingsSnapshot();
     const factories = {
       createDaemonRuntime,
       createTargetAuthority,
@@ -251,7 +270,7 @@ describe('createProductionDaemonWorkspaceSyncRuntime', () => {
       prepareGitTarget,
       createRelationshipOwner,
       refreshSettings,
-      getSettingsSnapshot: settingsSnapshot,
+      getSettingsSnapshot: () => activeSnapshot,
       subscribeSettingsSnapshot,
       callMachineRpc,
       inspectLegacyState,
@@ -319,16 +338,21 @@ describe('createProductionDaemonWorkspaceSyncRuntime', () => {
     await expect(assertTargetReplacementAuthorized('approval-receipt-1', approvedActionInput, approval)).resolves.toBeUndefined();
     expect(approvalsGet).toHaveBeenCalledWith({ artifactId: 'approval-receipt-1', serverId: 'server-1' });
     const conflictInput = {
-      controllerMachineId: 'machine-a',
-      request: { relationshipId: 'rel-1', path: 'conflict.txt', keep: 'alpha' as const, expectedKind: 'file' as const, expectedDigest: 'a'.repeat(40) },
-    };
+      controllerMachineId: 'machine-b',
+      hubWorkspaceRefId: 'workspace-beta',
+      path: 'conflict.txt',
+      source: { workspaceRefId: 'workspace-alpha', expected: { kind: 'file' as const, digest: 'a'.repeat(40), executable: false, size: 1 } },
+      targets: [{ workspaceRefId: 'workspace-beta', expected: { kind: 'file' as const, digest: 'b'.repeat(40), executable: false, size: 1 } }],
+      relationshipIds: ['rel-1'],
+      strategy: 'use_source' as const,
+    } satisfies WorkspaceSyncConflictResolveActionInputV1;
     const conflictArtifact = {
       ...approvedArtifact,
       actionId: 'workspace.sync.conflict.resolve' as const,
       executionOriginV1: {
         ...approvedArtifact.executionOriginV1,
         actionId: 'workspace.sync.conflict.resolve' as const,
-        machineId: 'machine-a',
+        machineId: 'machine-b',
         requestId: 'conflict-request-1',
       },
       actionArgs: conflictInput,
@@ -341,7 +365,12 @@ describe('createProductionDaemonWorkspaceSyncRuntime', () => {
     approvalsGet.mockResolvedValueOnce({
       ...conflictArtifact,
       actionArgs: {
-        request: { ...conflictInput.request },
+        strategy: conflictInput.strategy,
+        relationshipIds: [...conflictInput.relationshipIds],
+        targets: [...conflictInput.targets],
+        source: { ...conflictInput.source },
+        path: conflictInput.path,
+        hubWorkspaceRefId: conflictInput.hubWorkspaceRefId,
         controllerMachineId: conflictInput.controllerMachineId,
       },
     });
@@ -349,7 +378,7 @@ describe('createProductionDaemonWorkspaceSyncRuntime', () => {
     approvalsGet.mockResolvedValueOnce(conflictArtifact);
     await expect(assertConflictResolutionAuthorized('conflict-receipt-1', {
       ...conflictInput,
-      request: { ...conflictInput.request, expectedDigest: 'b'.repeat(40) },
+      source: { ...conflictInput.source, expected: { ...conflictInput.source.expected, digest: 'c'.repeat(40) } },
     })).rejects.toMatchObject({ code: 'approval_stale' });
     approvalsGet.mockResolvedValueOnce({ ...conflictArtifact, v: 1 });
     await expect(assertConflictResolutionAuthorized('conflict-receipt-1', conflictInput)).rejects.toMatchObject({ code: 'approval_stale' });
@@ -415,6 +444,8 @@ describe('createProductionDaemonWorkspaceSyncRuntime', () => {
     });
     expect(createTargetAuthority).toHaveBeenCalledOnce();
     expect(createDaemonRuntime).toHaveBeenCalledOnce();
+    expect(createDaemonRuntime.mock.calls[0]?.[0].observeEntryAtTarget).toBe(targetAuthority.observeEntryAtTarget);
+    expect(production.workspaceSync.observeEntryAtTarget).toBe(targetAuthority.observeEntryHere);
     expect(runtime.start).toHaveBeenCalledOnce();
     expect(warn).toHaveBeenCalledWith(
       '[DAEMON RUN] Workspace sync engine is initially unavailable; commands and settings changes may retry it',
@@ -426,7 +457,15 @@ describe('createProductionDaemonWorkspaceSyncRuntime', () => {
     });
     expect(production.handoffAdapter).toBe(handoffAdapter);
     expect(production.workspaceSync.controller).toBe(controller);
-    expect(production.workspaceSync.relationshipOwner).toBe(relationshipOwner);
+    expect(production.workspaceSync.relationshipOwner).toEqual(expect.objectContaining({
+      create: expect.any(Function),
+      setEnabled: expect.any(Function),
+      stop: expect.any(Function),
+    }));
+    await production.workspaceSync.relationshipOwner.setEnabled('rel-1', false);
+    await production.workspaceSync.relationshipOwner.stop('rel-1');
+    expect(relationshipOwner.setEnabled).toHaveBeenCalledWith('rel-1', false, undefined);
+    expect(relationshipOwner.stop).toHaveBeenCalledWith('rel-1', undefined);
     expect(createRelationshipOwner).toHaveBeenCalledOnce();
 
     const relationshipOwnerInput = createRelationshipOwner.mock.calls[0]![0];
@@ -480,6 +519,41 @@ describe('createProductionDaemonWorkspaceSyncRuntime', () => {
       method: 'daemon.workspaceSync.flush.v1',
       request: { relationshipId: 'rel-1' },
     }));
+
+    activeSnapshot = {
+      ...activeSnapshot,
+      settings: AccountSettingsSchema.parse({
+        ...activeSnapshot.settings,
+        workspaceRefsV1: [
+          ...activeSnapshot.settings.workspaceRefsV1,
+          { id: 'workspace-c', serverId: 'server-1', machineId: 'machine-c', rootPath: '/work/c', createdAtMs: 1 },
+        ],
+        workspaceSyncRelationshipsV1: [
+          ...activeSnapshot.settings.workspaceSyncRelationshipsV1,
+          { v: 1, relationshipId: 'rel-2', controllerMachineId: 'machine-b', alphaWorkspaceRefId: 'workspace-beta', betaWorkspaceRefId: 'workspace-c', mode: 'keep_both_in_sync', contentPolicy, enabled: true, createdAtMs: 1, updatedAtMs: 1 },
+        ],
+      }),
+    };
+    await expect(daemonRuntimeInput.handoffPrepareBetween!({
+      sourceWorkspaceRefId: 'workspace-c', targetWorkspaceRefId: 'workspace-alpha',
+    })).resolves.toMatchObject({ ok: true, traversed: [{ relationshipId: 'rel-2' }, { relationshipId: 'rel-1' }] });
+    expect(callMachineRpc).toHaveBeenCalledWith(expect.objectContaining({
+      machineId: 'machine-b', method: 'daemon.workspaceSync.prepareBetween.v1',
+      request: { sourceWorkspaceRefId: 'workspace-c', targetWorkspaceRefId: 'workspace-alpha' },
+    }));
+    const linkedFence = await daemonRuntimeInput.bootstrap({
+      operationId: 'handoff-linked', action: { kind: 'linked_workspace' },
+      sourceMachineId: 'machine-c', targetMachineId: 'machine-a',
+      sourceWorkspaceRefId: 'workspace-c', targetWorkspaceRefId: 'workspace-alpha',
+      sourceRootPath: '/work/c', targetRootPath: '/work/alpha',
+    });
+    expect(prepareBootstrapAtTarget).toHaveBeenLastCalledWith(expect.objectContaining({
+      owner: { kind: 'relationship', relationshipId: 'rel-1' },
+      targetWorkspaceRefId: 'workspace-alpha', endpointRole: 'alpha', createIfMissing: false,
+    }));
+    expect(prepareBootstrapAtTarget.mock.lastCall).not.toHaveProperty('0.targetBootstrap');
+    expect(prepareSourceSeedExport).not.toHaveBeenCalled();
+    await linkedFence.release('commit');
 
     await expect(daemonRuntimeInput.createBroker({
       brokerDir: '/broker',
@@ -610,6 +684,27 @@ describe('createProductionDaemonWorkspaceSyncRuntime', () => {
       targetMachineId: 'machine-b',
       reason: 'copy_committed',
     });
+    expect(sourceOwnership.release).toHaveBeenCalledOnce();
+
+    const releaseLinkedSource = vi.fn(async () => undefined);
+    controller.borrowSourceRootForCopy.mockResolvedValueOnce({
+      handle: sourceOwnership,
+      release: releaseLinkedSource,
+    });
+    const acquisitionsBeforeLinkedCopy = rootOwnershipManager.tryAcquire.mock.calls.length;
+    const linkedCopyFence = await daemonRuntimeInput.bootstrap({
+      operationId: 'copy-linked-source',
+      action: { kind: 'copy_once', contentPolicy },
+      sourceMachineId: 'machine-a',
+      targetMachineId: 'machine-b',
+      sourceWorkspaceRefId: 'workspace-alpha',
+      targetWorkspaceRefId: 'workspace-beta',
+      sourceRootPath: '/caller/source',
+      targetRootPath: '/caller/target',
+    });
+    expect(rootOwnershipManager.tryAcquire).toHaveBeenCalledTimes(acquisitionsBeforeLinkedCopy);
+    await linkedCopyFence.release('commit');
+    expect(releaseLinkedSource).toHaveBeenCalledOnce();
     expect(sourceOwnership.release).toHaveBeenCalledOnce();
 
     // Cancellation ends forward synchronization work, but must not cancel the
@@ -750,22 +845,6 @@ describe('createProductionDaemonWorkspaceSyncRuntime', () => {
             endpointRole: 'alpha',
             policyDigest: contentPolicy.policyDigest,
             createIfMissing: true,
-          }));
-          await expectTyped(production.workspaceSync.deleteConflictLoserAtTarget({
-            actionReceiptId: 'conflict-receipt-1',
-            actionInput: {
-              controllerMachineId: 'machine-b',
-              request: {
-                relationshipId: 'rel-1',
-                path: 'src/x.ts',
-                keep: 'alpha',
-                expectedKind: 'file',
-              },
-            },
-            relationshipId: 'rel-1',
-            workspaceRefId: 'workspace-alpha',
-            path: 'src/x.ts',
-            expectedKind: 'file',
           }));
           await expectTyped(production.acquireWorkspaceSyncMachineIngress({
             operationId: 'rel-1',

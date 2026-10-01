@@ -3,6 +3,29 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DaemonExecutionRunMarkerSchema } from '@happier-dev/protocol';
+import { reloadConfiguration } from '@/configuration';
+
+const filesystemBoundary = vi.hoisted(() => ({
+  afterRead: null as null | ((path: unknown) => Promise<void>),
+  writeFileSpy: vi.fn<(...args: Parameters<typeof import('node:fs/promises')['writeFile']>) => void>(),
+}));
+
+// Keep the real filesystem and owner modules loaded; individual tests control only OS interleavings.
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return {
+    ...actual,
+    readFile: async (...args: Parameters<typeof actual.readFile>) => {
+      const contents = await actual.readFile(...args);
+      await filesystemBoundary.afterRead?.(args[0]);
+      return contents;
+    },
+    writeFile: async (...args: Parameters<typeof actual.writeFile>) => {
+      filesystemBoundary.writeFileSpy(...args);
+      return actual.writeFile(...args);
+    },
+  };
+});
 
 describe('executionRunRegistry', () => {
   const originalHappyHomeDir = process.env.HAPPIER_HOME_DIR;
@@ -17,7 +40,10 @@ describe('executionRunRegistry', () => {
     delete process.env.HAPPIER_PUBLIC_RELEASE_CHANNEL;
     delete process.env.HAPPIER_RELEASE_RING;
     delete process.env.HAPPIER_RELEASE_CHANNEL;
-    vi.resetModules();
+    filesystemBoundary.afterRead = null;
+    filesystemBoundary.writeFileSpy.mockClear();
+    // Reload the real live configuration instead of rebuilding the entire Protocol/CLI graph.
+    reloadConfiguration();
   });
 
   afterEach(() => {
@@ -44,6 +70,8 @@ describe('executionRunRegistry', () => {
     } else {
       process.env.HAPPIER_RELEASE_CHANNEL = originalReleaseChannel;
     }
+    filesystemBoundary.afterRead = null;
+    reloadConfiguration();
   });
 
   it('writes and lists execution run markers', async () => {
@@ -268,7 +296,7 @@ describe('executionRunRegistry', () => {
 
   it('writes markers into a channel-scoped tmp dir for the dev public ring', async () => {
     process.env.HAPPIER_RELEASE_RING = 'dev';
-    vi.resetModules();
+    reloadConfiguration();
 
     const { configuration } = await import('@/configuration');
     const { writeExecutionRunMarker } = await import('./executionRunRegistry');
@@ -290,19 +318,59 @@ describe('executionRunRegistry', () => {
     expect(existsSync(filePath)).toBe(true);
   });
 
-  it('uses a unique temp file per marker write to avoid cross-write corruption', async () => {
-    const writeFileSpy = vi.fn();
-    vi.doMock('node:fs/promises', async (importOriginal) => {
-      const actual = await importOriginal<typeof import('node:fs/promises')>();
-      return {
-        ...actual,
-        writeFile: async (...args: Parameters<typeof actual.writeFile>) => {
-          writeFileSpy(...args);
-          return actual.writeFile(...args);
+  it('does not resurrect accepted completion custody when cleanup publishes a stale marker', async () => {
+    let pauseCleanupRead = false;
+    let cleanupReadReached!: () => void;
+    let releaseCleanupRead!: () => void;
+    const reached = new Promise<void>((resolve) => { cleanupReadReached = resolve; });
+    const released = new Promise<void>((resolve) => { releaseCleanupRead = resolve; });
+    const markerPath = join(happyHomeDir, 'tmp', 'daemon-execution-runs', 'run-run_ack_cleanup.json');
+    // The filesystem is the competing daemon/process boundary; registry logic stays real.
+    filesystemBoundary.afterRead = async (path) => {
+      if (pauseCleanupRead && path === markerPath) {
+        pauseCleanupRead = false;
+        cleanupReadReached();
+        await released;
+      }
+    };
+    try {
+      const registry = await import('./executionRunRegistry');
+      const pending: import('./executionRunRegistry').RetainedExecutionRunWorkerUpdate = {
+        sessionId: 'session-1', localId: 'completion-1', update: {
+          v: 1, workerKind: 'execution_run', workerId: 'run_ack_cleanup',
+          ownerState: 'succeeded', wake: 'finished', headline: 'Run completed', result: 'First result', canInspect: true,
         },
       };
-    });
-    vi.resetModules();
+      await registry.retainExecutionRunWorkerUpdate(pending);
+      await registry.writeExecutionRunMarker({
+        pid: 123, happySessionId: pending.sessionId, runId: pending.update.workerId,
+        callId: 'call-1', sidechainId: 'side-1', intent: 'agent',
+        backendTarget: { kind: 'backend', backendId: 'codex' },
+        status: 'succeeded', startedAtMs: 1, updatedAtMs: 2, finishedAtMs: 2,
+        executionRunConnectedServicesCleanupReceiptV1: {
+          v: 1, activationId: '55555555-5555-4555-8555-555555555555', runKey: pending.update.workerId, agentId: 'codex',
+        },
+      });
+      pauseCleanupRead = true;
+      const cleanup = registry.clearExecutionRunConnectedServicesCleanupReceipt(pending.update.workerId);
+      await reached;
+      expect(await registry.acknowledgeExecutionRunWorkerUpdate({ ...pending, sessionId: 'different-session' })).toBe(false);
+      expect(await registry.readPendingExecutionRunWorkerUpdates()).toEqual([pending]);
+      expect(await registry.acknowledgeExecutionRunWorkerUpdate(pending)).toBe(true);
+      releaseCleanupRead();
+      await cleanup;
+      expect(await registry.readPendingExecutionRunWorkerUpdates()).toEqual([]);
+      expect(await registry.gcExecutionRunMarkers({
+        nowMs: 100, terminalTtlMs: 0, isPidAlive: () => false, isPidSafeHappyProcess: () => false,
+      })).toEqual({ removedRunIds: [pending.update.workerId] });
+    } finally {
+      releaseCleanupRead();
+      filesystemBoundary.afterRead = null;
+    }
+  });
+
+  it('uses a unique temp file per marker write to avoid cross-write corruption', async () => {
+    const writeFileSpy = filesystemBoundary.writeFileSpy;
 
     const { writeExecutionRunMarker } = await import('./executionRunRegistry');
 

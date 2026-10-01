@@ -1,3 +1,4 @@
+import { useAuthoringMemoryField } from '@/sync/domains/state/storage';
 import * as React from 'react';
 
 import { useUnistyles } from 'react-native-unistyles';
@@ -11,6 +12,8 @@ import { getModelDropdownMenuItems, REFRESH_MODELS_DROPDOWN_ITEM_ID } from '@/co
 import { renderDropdownItemIcon } from '@/components/settings/pickers/renderDropdownItemIcon';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
+import { SegmentedChoiceItem } from '@/components/ui/lists/SegmentedChoiceItem';
+import { FieldValueItem } from '@/components/ui/forms/FieldValueItem';
 import { DropdownMenu } from '@/components/ui/forms/dropdown/DropdownMenu';
 import { Switch } from '@/components/ui/forms/Switch';
 import { Modal } from '@/modal';
@@ -58,23 +61,16 @@ export function LocalConversationSection(props: {
   const voiceAgentEnabled = useFeatureEnabled('voice.agent');
   const enabledAgentIds = useEnabledAgentIds();
   const settings = useSettings();
+  // "Custom…" in a model or agent menu opens an inline field under that menu, not a prompt.
+  const [customEntry, setCustomEntry] = React.useState<null | 'agentId' | 'chatModelId' | 'commitModelId'>(null);
   const [openMenu, setOpenMenu] = React.useState<
     | null
-    | 'conversationMode'
-    | 'mediatorRootSessionPolicy'
-    | 'mediatorAgentSource'
     | 'mediatorAgentId'
     | 'providerChatAgentSelection'
-    | 'mediatorPermissionPolicy'
-    | 'mediatorTranscriptPersistence'
     | 'mediatorResumabilityMode'
     | 'mediatorReplayStrategy'
-    | 'mediatorWelcomeMode'
-    | 'mediatorChatModelSource'
     | 'mediatorChatModelId'
-    | 'mediatorCommitModelSource'
     | 'mediatorCommitModelId'
-    | 'mediatorVerbosity'
   >(null);
 
   const voice = voiceSettingsParse(props.voice);
@@ -83,7 +79,7 @@ export function LocalConversationSection(props: {
   const executionMachine = voice.executionMachine;
   const enabled = resolveVoiceProviderIdFromSettings(voice) === 'local_conversation';
   const machines = useAllMachines();
-  const recentMachinePaths = useSetting('recentMachinePaths') as any[] | undefined;
+  const recentMachinePaths = useAuthoringMemoryField('recentMachinePaths');
 
   const selectedAgentIdForDropdown = React.useMemo(() => {
     const raw = String(cfg.agent.agentId ?? '').trim();
@@ -220,27 +216,18 @@ export function LocalConversationSection(props: {
     ];
   }, [selectableModelMenuItems, theme.colors.text.secondary]);
 
-  const rootSessionPolicyItems = React.useMemo(() => {
-    return [
-      {
-        id: 'single',
-        title: t('settingsVoice.local.conversation.rootSessionPolicy.singleTitle'),
-        subtitle: t('settingsVoice.local.conversation.rootSessionPolicy.singleSubtitle'),
-        icon: <Icon name="radio-button" size={20} color={theme.colors.text.secondary} />,
-      },
-      {
-        id: 'keep_warm',
-        title: t('settingsVoice.local.conversation.rootSessionPolicy.keepWarmTitle'),
-        subtitle: t('settingsVoice.local.conversation.rootSessionPolicy.keepWarmSubtitle'),
-        icon: <Icon name="flame" size={20} color={theme.colors.text.secondary} />,
-      },
-    ] as const;
-  }, [theme.colors.text.secondary]);
-
-  const rootSessionPolicySelectedItem = React.useMemo(() => {
-    const selectedId = cfg.agent.rootSessionPolicy === 'keep_warm' ? 'keep_warm' : 'single';
-    return rootSessionPolicyItems.find((it) => it.id === selectedId) ?? rootSessionPolicyItems[0];
-  }, [cfg.agent.rootSessionPolicy, rootSessionPolicyItems]);
+  const rootSessionPolicyOptions = React.useMemo(() => [
+    {
+      id: 'single' as const,
+      label: t('settingsVoice.local.conversation.rootSessionPolicy.singleTitle'),
+      description: t('settingsVoice.local.conversation.rootSessionPolicy.singleSubtitle'),
+    },
+    {
+      id: 'keep_warm' as const,
+      label: t('settingsVoice.local.conversation.rootSessionPolicy.keepWarmTitle'),
+      description: t('settingsVoice.local.conversation.rootSessionPolicy.keepWarmSubtitle'),
+    },
+  ], []);
 
   const providerResumeSupportedByAgent = React.useMemo(() => {
     if (!enabled) return true;
@@ -279,39 +266,17 @@ export function LocalConversationSection(props: {
 
   return (
     <>
-      <ItemGroup title={t('settingsVoice.local.title')} footer={t('settingsVoice.local.footer')}>
-        <DropdownMenu
-          open={openMenu === 'conversationMode'}
-          onOpenChange={(next) => setOpenMenu(next ? 'conversationMode' : null)}
-          variant="selectable"
-          search={false}
-          selectedId={cfg.conversationMode}
-          showCategoryTitles={false}
-          matchTriggerWidth={true}
-          connectToTrigger={true}
-          rowKind="item"
-          popoverBoundaryRef={props.popoverBoundaryRef}
-          itemTrigger={{
-            title: t('settingsVoice.local.conversationMode'),
-          }}
-          items={[
-            {
-              id: 'agent',
-              title: t('settingsFeatures.expVoiceAgent'),
-              subtitle: t('settingsVoice.local.conversation.mode.voiceAgentSubtitle'),
-              icon: <Icon name="chat-circle-dots" size={20} color={theme.colors.text.secondary} />,
-            },
-            {
-              id: 'direct_session',
-              title: t('settingsVoice.local.conversation.mode.directTitle'),
-              subtitle: t('settingsVoice.local.conversation.mode.directSubtitle'),
-              icon: <Icon name="paper-plane" size={20} color={theme.colors.text.secondary} />,
-            },
+      <ItemGroup title={t('settingsVoice.local.title')} description={t('settingsVoice.local.footer')}>
+        <SegmentedChoiceItem
+          title={t('settingsVoice.local.conversationMode')}
+          subtitleLines={0}
+          testIDPrefix="settings.voice.local.conversationMode"
+          value={cfg.conversationMode}
+          onChange={(next) => setCfg({ conversationMode: next })}
+          options={[
+            { id: 'agent', label: t('settingsFeatures.expVoiceAgent'), description: t('settingsVoice.local.conversation.mode.voiceAgentSubtitle') },
+            { id: 'direct_session', label: t('settingsVoice.local.conversation.mode.directTitle'), description: t('settingsVoice.local.conversation.mode.directSubtitle') },
           ]}
-          onSelect={(id) => {
-            setCfg({ conversationMode: id as any });
-            setOpenMenu(null);
-          }}
         />
       </ItemGroup>
 
@@ -336,52 +301,26 @@ export function LocalConversationSection(props: {
               />
             }
           />
-          <Item
+          <FieldValueItem
             title={t('settingsVoice.local.conversation.handsFree.silenceTitle')}
-            detail={String(cfg.handsFree.endpointing.silenceMs)}
-            onPress={() => {
-              fireAndForget((async () => {
-                const raw = await Modal.prompt(t('settingsVoice.local.conversation.handsFree.silenceTitle'), undefined, {
-                  inputType: 'numeric',
-                  placeholder: String(cfg.handsFree.endpointing.silenceMs),
-                });
-                if (raw === null) return;
-                const next = Number(String(raw).trim());
-                if (!Number.isFinite(next)) return;
-                setCfg({
-                  handsFree: {
-                    ...cfg.handsFree,
-                    endpointing: {
-                      ...cfg.handsFree.endpointing,
-                      silenceMs: Math.max(0, Math.min(5000, Math.floor(next))),
-                    },
-                  },
-                });
-              })(), { tag: 'LocalConversationSection.prompt.handsFree.silenceMs' });
+            fieldTestID="settings.voice.local.handsFree.silenceMs.field"
+            kind="integer"
+            value={String(cfg.handsFree.endpointing.silenceMs)}
+            onCommit={(draft) => {
+              const next = Math.max(0, Math.min(5000, Math.floor(Number(draft))));
+              setCfg({ handsFree: { ...cfg.handsFree, endpointing: { ...cfg.handsFree.endpointing, silenceMs: next } } });
+              return String(next);
             }}
           />
-          <Item
+          <FieldValueItem
             title={t('settingsVoice.local.conversation.handsFree.minSpeechTitle')}
-            detail={String(cfg.handsFree.endpointing.minSpeechMs)}
-            onPress={() => {
-              fireAndForget((async () => {
-                const raw = await Modal.prompt(t('settingsVoice.local.conversation.handsFree.minSpeechTitle'), undefined, {
-                  inputType: 'numeric',
-                  placeholder: String(cfg.handsFree.endpointing.minSpeechMs),
-                });
-                if (raw === null) return;
-                const next = Number(String(raw).trim());
-                if (!Number.isFinite(next)) return;
-                setCfg({
-                  handsFree: {
-                    ...cfg.handsFree,
-                    endpointing: {
-                      ...cfg.handsFree.endpointing,
-                      minSpeechMs: Math.max(0, Math.min(5000, Math.floor(next))),
-                    },
-                  },
-                });
-              })(), { tag: 'LocalConversationSection.prompt.handsFree.minSpeechMs' });
+            fieldTestID="settings.voice.local.handsFree.minSpeechMs.field"
+            kind="integer"
+            value={String(cfg.handsFree.endpointing.minSpeechMs)}
+            onCommit={(draft) => {
+              const next = Math.max(0, Math.min(5000, Math.floor(Number(draft))));
+              setCfg({ handsFree: { ...cfg.handsFree, endpointing: { ...cfg.handsFree.endpointing, minSpeechMs: next } } });
+              return String(next);
             }}
           />
         </ItemGroup>
@@ -407,38 +346,16 @@ export function LocalConversationSection(props: {
       {cfg.conversationMode === 'agent' ? (
         <>
           <ItemGroup title={t('settingsFeatures.expVoiceAgent')}>
-            <DropdownMenu
-              open={openMenu === 'mediatorTranscriptPersistence'}
-              onOpenChange={(next) => setOpenMenu(next ? 'mediatorTranscriptPersistence' : null)}
-              variant="selectable"
-              search={false}
-              selectedId={cfg.agent.transcript?.persistenceMode ?? 'ephemeral'}
-              showCategoryTitles={false}
-              matchTriggerWidth={true}
-              connectToTrigger={true}
-              rowKind="item"
-              popoverBoundaryRef={props.popoverBoundaryRef}
-              itemTrigger={{
-                title: t('settingsVoice.local.conversation.persistence.title'),
-              }}
-              items={[
-                {
-                  id: 'ephemeral',
-                  title: t('settingsVoice.local.conversation.persistence.ephemeralTitle'),
-                  subtitle: t('settingsVoice.local.conversation.persistence.ephemeralSubtitle'),
-                  icon: <Icon name="lightning" size={20} color={theme.colors.text.secondary} />,
-                },
-                {
-                  id: 'persistent',
-                  title: t('settingsVoice.local.conversation.persistence.persistentTitle'),
-                  subtitle: t('settingsVoice.local.conversation.persistence.persistentSubtitle'),
-                  icon: <Icon name="infinity" size={20} color={theme.colors.text.secondary} />,
-                },
+            <SegmentedChoiceItem
+              title={t('settingsVoice.local.conversation.persistence.title')}
+              subtitleLines={0}
+              testIDPrefix="settings.voice.local.mediatorTranscriptPersistence"
+              value={cfg.agent.transcript?.persistenceMode ?? 'ephemeral'}
+              onChange={(next) => setAgent({ transcript: { ...(cfg.agent.transcript ?? {}), persistenceMode: next } })}
+              options={[
+                { id: 'ephemeral', label: t('settingsVoice.local.conversation.persistence.ephemeralTitle'), description: t('settingsVoice.local.conversation.persistence.ephemeralSubtitle') },
+                { id: 'persistent', label: t('settingsVoice.local.conversation.persistence.persistentTitle'), description: t('settingsVoice.local.conversation.persistence.persistentSubtitle') },
               ]}
-              onSelect={(id) => {
-                setAgent({ transcript: { ...(cfg.agent.transcript ?? {}), persistenceMode: id as any } });
-                setOpenMenu(null);
-              }}
             />
 
             {(cfg.agent.transcript?.persistenceMode ?? 'ephemeral') === 'persistent' ? (
@@ -540,24 +457,16 @@ export function LocalConversationSection(props: {
                   }}
                 />
 
-                <Item
+                <FieldValueItem
                   title={t('settingsSession.replayResume.recentMessagesTitle')}
-                  detail={String(cfg.agent.replay?.recentMessagesCount ?? 16)}
-                  onPress={() => {
-                    fireAndForget((async () => {
-                      const raw = await Modal.prompt(
-                        t('settingsSession.replayResume.recentMessagesTitle'),
-                        t('settingsVoice.local.conversation.replayRecentMessagesPromptBody'),
-                        {
-                        inputType: 'numeric',
-                        placeholder: String(cfg.agent.replay?.recentMessagesCount ?? 16),
-                        }
-                      );
-                      if (raw === null) return;
-                      const next = Number(String(raw).trim());
-                      if (!Number.isFinite(next)) return;
-                      setAgent({ replay: { ...(cfg.agent.replay ?? {}), recentMessagesCount: Math.max(1, Math.min(100, Math.floor(next))) } });
-                    })(), { tag: 'LocalConversationSection.prompt.replay.recentMessagesCount' });
+                  subtitle={t('settingsVoice.local.conversation.replayRecentMessagesPromptBody')}
+                  fieldTestID="settings.voice.local.replay.recentMessagesCount.field"
+                  kind="integer"
+                  value={String(cfg.agent.replay?.recentMessagesCount ?? 16)}
+                  onCommit={(draft) => {
+                    const next = Math.max(1, Math.min(100, Math.floor(Number(draft))));
+                    setAgent({ replay: { ...(cfg.agent.replay ?? {}), recentMessagesCount: next } });
+                    return String(next);
                   }}
                 />
               </>
@@ -575,47 +484,17 @@ export function LocalConversationSection(props: {
               }
             />
 
-            <DropdownMenu
-              open={openMenu === 'mediatorWelcomeMode'}
-              onOpenChange={(next) => setOpenMenu(next ? 'mediatorWelcomeMode' : null)}
-              variant="selectable"
-              search={false}
-              selectedId={resolveVoiceWelcomeSelection(voice.welcome)}
-              showCategoryTitles={false}
-              matchTriggerWidth={true}
-              connectToTrigger={true}
-              rowKind="item"
-              popoverBoundaryRef={props.popoverBoundaryRef}
-              itemTrigger={{
-                title: t('settingsVoice.local.conversation.welcome.title'),
-              }}
-              items={[
-                {
-                  id: 'off',
-                  title: t('settingsVoice.local.conversation.welcome.offTitle'),
-                  subtitle: t('settingsVoice.local.conversation.welcome.offSubtitle'),
-                  icon: <Icon name="x" size={20} color={theme.colors.text.secondary} />,
-                },
-                {
-                  id: 'immediate',
-                  title: t('settingsVoice.local.conversation.welcome.immediateTitle'),
-                  subtitle: t('settingsVoice.local.conversation.welcome.immediateSubtitle'),
-                  icon: <Icon name="smiley" size={20} color={theme.colors.text.secondary} />,
-                },
-                {
-                  id: 'on_first_turn',
-                  title: t('settingsVoice.local.conversation.welcome.onFirstTurnTitle'),
-                  subtitle: t('settingsVoice.local.conversation.welcome.onFirstTurnSubtitle'),
-                  icon: <Icon name="chat" size={20} color={theme.colors.text.secondary} />,
-                },
+            <SegmentedChoiceItem
+              title={t('settingsVoice.local.conversation.welcome.title')}
+              subtitleLines={0}
+              testIDPrefix="settings.voice.local.mediatorWelcomeMode"
+              value={resolveVoiceWelcomeSelection(voice.welcome)}
+              onChange={(next) => props.setVoice(applyVoiceWelcomeSelection(voice, next))}
+              options={[
+                { id: 'off', label: t('settingsVoice.local.conversation.welcome.offTitle'), description: t('settingsVoice.local.conversation.welcome.offSubtitle') },
+                { id: 'immediate', label: t('settingsVoice.local.conversation.welcome.immediateTitle'), description: t('settingsVoice.local.conversation.welcome.immediateSubtitle') },
+                { id: 'on_first_turn', label: t('settingsVoice.local.conversation.welcome.onFirstTurnTitle'), description: t('settingsVoice.local.conversation.welcome.onFirstTurnSubtitle') },
               ]}
-              onSelect={(id) => {
-                props.setVoice(applyVoiceWelcomeSelection(
-                  voice,
-                  id === 'on_first_turn' ? 'on_first_turn' : id === 'off' ? 'off' : 'immediate',
-                ));
-                setOpenMenu(null);
-              }}
             />
 
               {(cfg.agent.transcript?.persistenceMode ?? 'ephemeral') === 'persistent' ? (
@@ -679,46 +558,26 @@ export function LocalConversationSection(props: {
                 selected={false}
               />
 
-              <DropdownMenu
-                open={openMenu === 'mediatorRootSessionPolicy'}
-                onOpenChange={(next) => setOpenMenu(next ? 'mediatorRootSessionPolicy' : null)}
-                variant="selectable"
-                search={false}
-                selectedId={cfg.agent.rootSessionPolicy ?? 'single'}
-                showCategoryTitles={false}
-                matchTriggerWidth={true}
-                connectToTrigger={true}
-                rowKind="item"
-                popoverBoundaryRef={props.popoverBoundaryRef}
-                itemTrigger={{
-                  title: t('settingsVoice.local.conversation.rootSessionPolicy.title'),
-                  subtitleFormatter: () => (rootSessionPolicySelectedItem?.subtitle ?? t('settingsVoice.local.conversation.rootSessionPolicy.fallbackSubtitle')),
-                  detailFormatter: () => (rootSessionPolicySelectedItem?.title ?? t('settingsVoice.local.conversation.rootSessionPolicy.singleTitle')),
-                }}
-                items={rootSessionPolicyItems as any}
-                onSelect={(id) => {
-                  setAgent({ rootSessionPolicy: id as any });
-                  setOpenMenu(null);
-                }}
+              <SegmentedChoiceItem
+                title={t('settingsVoice.local.conversation.rootSessionPolicy.title')}
+                subtitleLines={0}
+                testIDPrefix="settings.voice.local.mediatorRootSessionPolicy"
+                value={cfg.agent.rootSessionPolicy === 'keep_warm' ? 'keep_warm' : 'single'}
+                onChange={(next) => setAgent({ rootSessionPolicy: next })}
+                options={rootSessionPolicyOptions}
               />
 
               {cfg.agent.rootSessionPolicy === 'keep_warm' ? (
-                <Item
+                <FieldValueItem
                   title={t('settingsVoice.local.conversation.rootSessionPolicy.maxWarmRootsTitle')}
                   subtitle={t('settingsVoice.local.conversation.rootSessionPolicy.maxWarmRootsSubtitle')}
-                  detail={String(cfg.agent.maxWarmRoots ?? 3)}
-                  onPress={() => {
-                    fireAndForget((async () => {
-                      const raw = await Modal.prompt(t('settingsVoice.local.conversation.rootSessionPolicy.maxWarmRootsTitle'), undefined, {
-                        inputType: 'numeric',
-                        placeholder: String(cfg.agent.maxWarmRoots ?? 3),
-                      });
-                      if (raw === null) return;
-                      const next = Number(String(raw).trim());
-                      if (!Number.isFinite(next)) return;
-                      const clamped = Math.max(1, Math.min(10, Math.floor(next)));
-                      setAgent({ maxWarmRoots: clamped });
-                    })(), { tag: 'LocalConversationSection.prompt.maxWarmRoots' });
+                  fieldTestID="settings.voice.local.maxWarmRoots.field"
+                  kind="integer"
+                  value={String(cfg.agent.maxWarmRoots ?? 3)}
+                  onCommit={(draft) => {
+                    const next = Math.max(1, Math.min(10, Math.floor(Number(draft))));
+                    setAgent({ maxWarmRoots: next });
+                    return String(next);
                   }}
                 />
               ) : null}
@@ -761,43 +620,19 @@ export function LocalConversationSection(props: {
         ) : null}
         {!hasConfiguredProviderChat ? (
           <>
-        <DropdownMenu
-          open={openMenu === 'mediatorAgentSource'}
-          onOpenChange={(next) => setOpenMenu(next ? 'mediatorAgentSource' : null)}
-          variant="selectable"
-          search={false}
-          selectedId={cfg.agent.agentSource}
-          showCategoryTitles={false}
-          matchTriggerWidth={true}
-          connectToTrigger={true}
-          rowKind="item"
-            popoverBoundaryRef={props.popoverBoundaryRef}
-          itemTrigger={{
-            title: t('settingsVoice.local.mediatorAgentSource'),
-            subtitleFormatter: () => (cfg.agent.agentSource === 'session'
-              ? t('settingsVoice.local.conversation.agentSource.followSessionSubtitle')
-              : t('settingsVoice.local.conversation.agentSource.fixedAgentSubtitle')),
-          }}
-          items={[
-            {
-              id: 'session',
-              title: t('settingsVoice.local.conversation.agentSource.followSessionTitle'),
-              subtitle: t('settingsVoice.local.conversation.agentSource.followSessionSubtitle'),
-              icon: <Icon name="arrows-left-right" size={20} color={theme.colors.text.secondary} />,
-            },
-            {
-              id: 'agent',
-              title: t('settingsVoice.local.conversation.agentSource.fixedAgentTitle'),
-              subtitle: t('settingsVoice.local.conversation.agentSource.fixedAgentSubtitle'),
-              icon: <Icon name="person" size={20} color={theme.colors.text.secondary} />,
-            },
+        <SegmentedChoiceItem
+          title={t('settingsVoice.local.mediatorAgentSource')}
+          subtitleLines={0}
+          testIDPrefix="settings.voice.local.mediatorAgentSource"
+          value={cfg.agent.agentSource}
+          onChange={(next) => setAgent({ agentSource: next })}
+          options={[
+            { id: 'session', label: t('settingsVoice.local.conversation.agentSource.followSessionTitle'), description: t('settingsVoice.local.conversation.agentSource.followSessionSubtitle') },
+            { id: 'agent', label: t('settingsVoice.local.conversation.agentSource.fixedAgentTitle'), description: t('settingsVoice.local.conversation.agentSource.fixedAgentSubtitle') },
           ]}
-          onSelect={(id) => {
-            setAgent({ agentSource: id as any });
-            setOpenMenu(null);
-          }}
         />
         {cfg.agent.agentSource === 'agent' ? (
+          <>
           <DropdownMenu
             open={openMenu === 'mediatorAgentId'}
             onOpenChange={(next) => setOpenMenu(next ? 'mediatorAgentId' : null)}
@@ -819,17 +654,7 @@ export function LocalConversationSection(props: {
             onSelect={(id) => {
               if (id === '__custom__') {
                 setOpenMenu(null);
-                fireAndForget((async () => {
-                  const raw = await Modal.prompt(
-                    t('settingsVoice.local.mediatorAgentId'),
-                    t('settingsVoice.local.mediatorAgentIdSubtitle'),
-                    { placeholder: String(cfg.agent.agentId) },
-                  );
-                  if (raw === null) return;
-                  const next = String(raw).trim();
-                  if (!next) return;
-                  setAgent({ agentId: next });
-                })(), { tag: 'LocalConversationSection.prompt.agentId' });
+                setCustomEntry('agentId');
                 return;
               }
 
@@ -839,91 +664,54 @@ export function LocalConversationSection(props: {
               setOpenMenu(null);
             }}
           />
+          {customEntry === 'agentId' ? (
+            <FieldValueItem
+              title={t('settingsVoice.local.mediatorAgentId')}
+              subtitle={t('settingsVoice.local.mediatorAgentIdSubtitle')}
+              fieldTestID="settings.voice.local.agentId.custom.field"
+              monospace
+              autoFocus
+              value={String(cfg.agent.agentId ?? '')}
+              onCommit={(draft) => {
+                setCustomEntry(null);
+                if (!draft) return String(cfg.agent.agentId ?? '');
+                setAgent({ agentId: draft });
+              }}
+            />
+          ) : null}
+          </>
         ) : null}
           </>
         ) : null}
-        <DropdownMenu
-          open={openMenu === 'mediatorPermissionPolicy'}
-          onOpenChange={(next) => setOpenMenu(next ? 'mediatorPermissionPolicy' : null)}
-          variant="selectable"
-          search={false}
-          selectedId={cfg.agent.permissionIntent}
-          showCategoryTitles={false}
-          matchTriggerWidth={true}
-          connectToTrigger={true}
-          rowKind="item"
-          popoverBoundaryRef={props.popoverBoundaryRef}
-          itemTrigger={{
-            title: t('settingsVoice.local.mediatorPermissionPolicy'),
-          }}
-          items={[
-            {
-              id: 'default',
-              title: t('agentInput.permissionMode.default'),
-              subtitle: t('settingsActions.spawnPolicy.permissionCeiling.options.default.subtitle'),
-              icon: <Icon name="eye" size={20} color={theme.colors.text.secondary} />,
-            },
-            {
-              id: 'read-only',
-              title: t('agentInput.permissionMode.readOnly'),
-              subtitle: t('settingsActions.spawnPolicy.permissionCeiling.options.read-only.subtitle'),
-              icon: <Icon name="hand" size={20} color={theme.colors.text.secondary} />,
-            },
-            {
-              id: 'safe-yolo',
-              title: t('agentInput.permissionMode.safeYolo'),
-              subtitle: t('settingsActions.spawnPolicy.permissionCeiling.options.safe-yolo.subtitle'),
-              icon: <Icon name="shield-check" size={20} color={theme.colors.text.secondary} />,
-            },
-            {
-              id: 'yolo',
-              title: t('agentInput.permissionMode.yolo'),
-              subtitle: t('settingsActions.spawnPolicy.permissionCeiling.options.yolo.subtitle'),
-              icon: <Icon name="lightning" size={20} color={theme.colors.text.secondary} />,
-            },
+        <SegmentedChoiceItem
+          title={t('settingsVoice.local.mediatorPermissionPolicy')}
+          subtitleLines={0}
+          testIDPrefix="settings.voice.local.mediatorPermissionPolicy"
+          value={cfg.agent.permissionIntent}
+          onChange={(next) => setAgent({ permissionIntent: next })}
+          options={[
+            { id: 'default', label: t('agentInput.permissionMode.default'), description: t('settingsActions.spawnPolicy.permissionCeiling.options.default.subtitle') },
+            { id: 'read-only', label: t('agentInput.permissionMode.readOnly'), description: t('settingsActions.spawnPolicy.permissionCeiling.options.read-only.subtitle') },
+            { id: 'safe-yolo', label: t('agentInput.permissionMode.safeYolo'), description: t('settingsActions.spawnPolicy.permissionCeiling.options.safe-yolo.subtitle') },
+            { id: 'yolo', label: t('agentInput.permissionMode.yolo'), description: t('settingsActions.spawnPolicy.permissionCeiling.options.yolo.subtitle') },
           ]}
-          onSelect={(id) => {
-            setAgent({ permissionIntent: id as any });
-            setOpenMenu(null);
-          }}
         />
 
         {!hasConfiguredProviderChat ? (
           <>
-        <DropdownMenu
-          open={openMenu === 'mediatorChatModelSource'}
-          onOpenChange={(next) => setOpenMenu(next ? 'mediatorChatModelSource' : null)}
-          variant="selectable"
-          search={false}
-          selectedId={cfg.agent.chatModelSource}
-          showCategoryTitles={false}
-          matchTriggerWidth={true}
-          connectToTrigger={true}
-          rowKind="item"
-          popoverBoundaryRef={props.popoverBoundaryRef}
-          itemTrigger={{
-            title: t('settingsVoice.local.mediatorChatModelSource'),
-          }}
-          items={[
-            {
-              id: 'session',
-              title: t('settingsVoice.local.mediatorChatModelSourceSession'),
-              subtitle: t('settingsVoice.local.conversation.chatModelSource.sessionSubtitle'),
-              icon: <Icon name="stack-simple" size={20} color={theme.colors.text.secondary} />,
-            },
-            {
-              id: 'custom',
-              title: t('settingsVoice.local.mediatorChatModelSourceCustom'),
-              subtitle: t('settingsVoice.local.conversation.chatModelSource.customSubtitle'),
-              icon: <Icon name="sliders-horizontal" size={20} color={theme.colors.text.secondary} />,
-            },
+        <SegmentedChoiceItem
+          title={t('settingsVoice.local.mediatorChatModelSource')}
+          subtitleLines={0}
+          testIDPrefix="settings.voice.local.mediatorChatModelSource"
+          value={cfg.agent.chatModelSource}
+          onChange={(next) => setAgent({ chatModelSource: next })}
+          options={[
+            { id: 'session', label: t('settingsVoice.local.mediatorChatModelSourceSession'), description: t('settingsVoice.local.conversation.chatModelSource.sessionSubtitle') },
+            { id: 'custom', label: t('settingsVoice.local.mediatorChatModelSourceCustom'), description: t('settingsVoice.local.conversation.chatModelSource.customSubtitle') },
           ]}
-          onSelect={(id) => {
-            setAgent({ chatModelSource: id as any });
-            setOpenMenu(null);
-          }}
         />
         {cfg.agent.chatModelSource === 'custom' ? (
+          <>
           <DropdownMenu
             open={openMenu === 'mediatorChatModelId'}
             onOpenChange={(next) => setOpenMenu(next ? 'mediatorChatModelId' : null)}
@@ -956,17 +744,7 @@ export function LocalConversationSection(props: {
               }
               if (id === '__custom__') {
                 setOpenMenu(null);
-                fireAndForget((async () => {
-                  const raw = await Modal.prompt(
-                    t('settingsVoice.local.conversation.chatModelId.title'),
-                    t('settingsVoice.local.conversation.chatModelId.subtitle'),
-                    { placeholder: String(cfg.agent.chatModelId) },
-                  );
-                  if (raw === null) return;
-                  const next = String(raw).trim();
-                  if (!next) return;
-                  setAgent({ chatModelId: next });
-                })(), { tag: 'LocalConversationSection.prompt.chatModelId' });
+                setCustomEntry('chatModelId');
                 return;
               }
 
@@ -976,47 +754,37 @@ export function LocalConversationSection(props: {
               setOpenMenu(null);
             }}
           />
+          {customEntry === 'chatModelId' ? (
+            <FieldValueItem
+              title={t('settingsVoice.local.conversation.chatModelId.title')}
+              subtitle={t('settingsVoice.local.conversation.chatModelId.subtitle')}
+              fieldTestID="settings.voice.local.chatModelId.custom.field"
+              monospace
+              autoFocus
+              value={String(cfg.agent.chatModelId ?? '')}
+              onCommit={(draft) => {
+                setCustomEntry(null);
+                if (!draft) return String(cfg.agent.chatModelId ?? '');
+                setAgent({ chatModelId: draft });
+              }}
+            />
+          ) : null}
+          </>
         ) : null}
-        <DropdownMenu
-          open={openMenu === 'mediatorCommitModelSource'}
-          onOpenChange={(next) => setOpenMenu(next ? 'mediatorCommitModelSource' : null)}
-          variant="selectable"
-          search={false}
-          selectedId={cfg.agent.commitModelSource}
-          showCategoryTitles={false}
-          matchTriggerWidth={true}
-          connectToTrigger={true}
-          rowKind="item"
-          popoverBoundaryRef={props.popoverBoundaryRef}
-          itemTrigger={{
-            title: t('settingsVoice.local.mediatorCommitModelSource'),
-          }}
-          items={[
-            {
-              id: 'chat',
-              title: t('settingsVoice.local.mediatorCommitModelSourceChat'),
-              subtitle: t('settingsVoice.local.conversation.commitModelSource.chatSubtitle'),
-              icon: <Icon name="chat-circle-dots" size={20} color={theme.colors.text.secondary} />,
-            },
-            {
-              id: 'session',
-              title: t('settingsVoice.local.mediatorCommitModelSourceSession'),
-              subtitle: t('settingsVoice.local.conversation.commitModelSource.sessionSubtitle'),
-              icon: <Icon name="stack-simple" size={20} color={theme.colors.text.secondary} />,
-            },
-            {
-              id: 'custom',
-              title: t('settingsVoice.local.mediatorCommitModelSourceCustom'),
-              subtitle: t('settingsVoice.local.conversation.commitModelSource.customSubtitle'),
-              icon: <Icon name="sliders-horizontal" size={20} color={theme.colors.text.secondary} />,
-            },
+        <SegmentedChoiceItem
+          title={t('settingsVoice.local.mediatorCommitModelSource')}
+          subtitleLines={0}
+          testIDPrefix="settings.voice.local.mediatorCommitModelSource"
+          value={cfg.agent.commitModelSource}
+          onChange={(next) => setAgent({ commitModelSource: next })}
+          options={[
+            { id: 'chat', label: t('settingsVoice.local.mediatorCommitModelSourceChat'), description: t('settingsVoice.local.conversation.commitModelSource.chatSubtitle') },
+            { id: 'session', label: t('settingsVoice.local.mediatorCommitModelSourceSession'), description: t('settingsVoice.local.conversation.commitModelSource.sessionSubtitle') },
+            { id: 'custom', label: t('settingsVoice.local.mediatorCommitModelSourceCustom'), description: t('settingsVoice.local.conversation.commitModelSource.customSubtitle') },
           ]}
-          onSelect={(id) => {
-            setAgent({ commitModelSource: id as any });
-            setOpenMenu(null);
-          }}
         />
         {cfg.agent.commitModelSource === 'custom' ? (
+          <>
           <DropdownMenu
             open={openMenu === 'mediatorCommitModelId'}
             onOpenChange={(next) => setOpenMenu(next ? 'mediatorCommitModelId' : null)}
@@ -1049,17 +817,7 @@ export function LocalConversationSection(props: {
               }
               if (id === '__custom__') {
                 setOpenMenu(null);
-                fireAndForget((async () => {
-                  const raw = await Modal.prompt(
-                    t('settingsVoice.local.conversation.commitModelId.title'),
-                    t('settingsVoice.local.conversation.commitModelId.subtitle'),
-                    { placeholder: String(cfg.agent.commitModelId) },
-                  );
-                  if (raw === null) return;
-                  const next = String(raw).trim();
-                  if (!next) return;
-                  setAgent({ commitModelId: next });
-                })(), { tag: 'LocalConversationSection.prompt.commitModelId' });
+                setCustomEntry('commitModelId');
                 return;
               }
 
@@ -1069,6 +827,22 @@ export function LocalConversationSection(props: {
               setOpenMenu(null);
             }}
           />
+          {customEntry === 'commitModelId' ? (
+            <FieldValueItem
+              title={t('settingsVoice.local.conversation.commitModelId.title')}
+              subtitle={t('settingsVoice.local.conversation.commitModelId.subtitle')}
+              fieldTestID="settings.voice.local.commitModelId.custom.field"
+              monospace
+              autoFocus
+              value={String(cfg.agent.commitModelId ?? '')}
+              onCommit={(draft) => {
+                setCustomEntry(null);
+                if (!draft) return String(cfg.agent.commitModelId ?? '');
+                setAgent({ commitModelId: draft });
+              }}
+            />
+          ) : null}
+          </>
         ) : null}
           </>
         ) : null}
@@ -1091,54 +865,28 @@ export function LocalConversationSection(props: {
             selected={false}
           />
         ) : null}
-        <Item
+        <FieldValueItem
           title={t('settingsVoice.local.mediatorIdleTtl')}
-          detail={String(cfg.agent.idleTtlSeconds)}
-          onPress={() => {
-            fireAndForget((async () => {
-              const raw = await Modal.prompt(t('settingsVoice.local.mediatorIdleTtlTitle'), t('settingsVoice.local.mediatorIdleTtlDescription'), {
-                inputType: 'numeric',
-                placeholder: String(cfg.agent.idleTtlSeconds),
-              });
-              if (raw === null) return;
-              const next = Number(String(raw).trim());
-              if (!Number.isFinite(next)) return;
-              setAgent({ idleTtlSeconds: Math.max(60, Math.min(21600, Math.floor(next))) });
-            })(), { tag: 'LocalConversationSection.prompt.idleTtlSeconds' });
+          subtitle={t('settingsVoice.local.mediatorIdleTtlDescription')}
+          fieldTestID="settings.voice.local.idleTtlSeconds.field"
+          kind="integer"
+          value={String(cfg.agent.idleTtlSeconds)}
+          onCommit={(draft) => {
+            const next = Math.max(60, Math.min(21600, Math.floor(Number(draft))));
+            setAgent({ idleTtlSeconds: next });
+            return String(next);
           }}
         />
-        <DropdownMenu
-          open={openMenu === 'mediatorVerbosity'}
-          onOpenChange={(next) => setOpenMenu(next ? 'mediatorVerbosity' : null)}
-          variant="selectable"
-          search={false}
-          selectedId={cfg.agent.verbosity}
-          showCategoryTitles={false}
-          matchTriggerWidth={true}
-          connectToTrigger={true}
-          rowKind="item"
-          popoverBoundaryRef={props.popoverBoundaryRef}
-          itemTrigger={{
-            title: t('settingsVoice.local.mediatorVerbosity'),
-          }}
-          items={[
-            {
-              id: 'short',
-              title: t('settingsVoice.local.mediatorVerbosityShort'),
-              subtitle: t('settingsVoice.local.conversation.verbosity.shortSubtitle'),
-              icon: <Icon name="minus" size={20} color={theme.colors.text.secondary} />,
-            },
-            {
-              id: 'balanced',
-              title: t('settingsVoice.local.mediatorVerbosityBalanced'),
-              subtitle: t('settingsVoice.local.conversation.verbosity.balancedSubtitle'),
-              icon: <Icon name="list" size={20} color={theme.colors.text.secondary} />,
-            },
+        <SegmentedChoiceItem
+          title={t('settingsVoice.local.mediatorVerbosity')}
+          subtitleLines={0}
+          testIDPrefix="settings.voice.local.mediatorVerbosity"
+          value={cfg.agent.verbosity}
+          onChange={(next) => setAgent({ verbosity: next })}
+          options={[
+            { id: 'short', label: t('settingsVoice.local.mediatorVerbosityShort'), description: t('settingsVoice.local.conversation.verbosity.shortSubtitle') },
+            { id: 'balanced', label: t('settingsVoice.local.mediatorVerbosityBalanced'), description: t('settingsVoice.local.conversation.verbosity.balancedSubtitle') },
           ]}
-          onSelect={(id) => {
-            setAgent({ verbosity: id as any });
-            setOpenMenu(null);
-          }}
         />
       </ItemGroup>
 
@@ -1165,21 +913,16 @@ export function LocalConversationSection(props: {
             />
           )}
         />
-        <Item
+        <FieldValueItem
           title={t('settingsVoice.local.conversation.streaming.ttsChunkCharsTitle')}
-          detail={String(cfg.streaming.ttsChunkChars)}
-          onPress={() => {
-            fireAndForget((async () => {
-              const raw = await Modal.prompt(
-                t('settingsVoice.local.conversation.streaming.ttsChunkCharsTitle'),
-                t('settingsVoice.local.conversation.streaming.ttsChunkCharsPromptBody'),
-                { inputType: 'numeric', placeholder: String(cfg.streaming.ttsChunkChars) },
-              );
-              if (raw === null) return;
-              const next = Number(String(raw).trim());
-              if (!Number.isFinite(next)) return;
-              setStreaming({ ttsChunkChars: Math.max(32, Math.min(2000, Math.floor(next))) });
-            })(), { tag: 'LocalConversationSection.prompt.streaming.ttsChunkChars' });
+          subtitle={t('settingsVoice.local.conversation.streaming.ttsChunkCharsPromptBody')}
+          fieldTestID="settings.voice.local.streaming.ttsChunkChars.field"
+          kind="integer"
+          value={String(cfg.streaming.ttsChunkChars)}
+          onCommit={(draft) => {
+            const next = Math.max(32, Math.min(2000, Math.floor(Number(draft))));
+            setStreaming({ ttsChunkChars: next });
+            return String(next);
           }}
         />
       </ItemGroup>
@@ -1187,24 +930,16 @@ export function LocalConversationSection(props: {
       ) : null}
 
       <ItemGroup title={t('settingsVoice.local.conversation.network.title')}>
-        <Item
+        <FieldValueItem
           title={t('settingsVoice.local.conversation.network.timeoutTitle')}
-          detail={String(cfg.networkTimeoutMs)}
-          onPress={() => {
-            fireAndForget((async () => {
-              const raw = await Modal.prompt(
-                t('settingsVoice.local.conversation.network.timeoutTitle'),
-                t('settingsVoice.local.conversation.network.timeoutPromptBody'),
-                {
-                inputType: 'numeric',
-                placeholder: String(cfg.networkTimeoutMs),
-                }
-              );
-              if (raw === null) return;
-              const next = Number(String(raw).trim());
-              if (!Number.isFinite(next)) return;
-              setCfg({ networkTimeoutMs: Math.max(1000, Math.min(60000, Math.floor(next))) });
-            })(), { tag: 'LocalConversationSection.prompt.networkTimeoutMs' });
+          subtitle={t('settingsVoice.local.conversation.network.timeoutPromptBody')}
+          fieldTestID="settings.voice.local.networkTimeoutMs.field"
+          kind="integer"
+          value={String(cfg.networkTimeoutMs)}
+          onCommit={(draft) => {
+            const next = Math.max(1000, Math.min(60000, Math.floor(Number(draft))));
+            setCfg({ networkTimeoutMs: next });
+            return String(next);
           }}
         />
       </ItemGroup>

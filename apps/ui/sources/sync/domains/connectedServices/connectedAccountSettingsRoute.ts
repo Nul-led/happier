@@ -23,7 +23,9 @@ export const CONNECTED_ACCOUNT_SETTINGS_ROUTE =
 
 export type ConnectedAccountSettingsRouteFocus =
     | Readonly<{ kind: 'account'; accountId: string }>
-    | Readonly<{ kind: 'group'; groupId: string }>;
+    | Readonly<{ kind: 'group'; groupId: string }>
+    /** A pool being drafted: not a pool yet, so it has no id (`?newPool=1`). */
+    | Readonly<{ kind: 'newPool' }>;
 
 export type ConnectedAccountSettingsRouteResolution = Readonly<{
     service: PluginContributionIdentityV1;
@@ -84,14 +86,21 @@ function resolveMatchingLegacyServiceId(
 function resolveRouteFocus(params: Readonly<{
     accountId?: unknown;
     groupId?: unknown;
+    newPool?: unknown;
 }>): Readonly<{
     valid: boolean;
     focus: ConnectedAccountSettingsRouteFocus | null;
 }> {
     const accountPresent = params.accountId !== undefined;
     const groupPresent = params.groupId !== undefined;
-    if (accountPresent && groupPresent) {
+    const newPoolPresent = params.newPool !== undefined;
+    if (Number(accountPresent) + Number(groupPresent) + Number(newPoolPresent) > 1) {
         return { valid: false, focus: null };
+    }
+    if (newPoolPresent) {
+        return readSingleRouteParam(params.newPool) === '1'
+            ? { valid: true, focus: { kind: 'newPool' } }
+            : { valid: false, focus: null };
     }
     if (accountPresent) {
         const rawAccountId = readSingleRouteParam(params.accountId);
@@ -110,12 +119,23 @@ function resolveRouteFocus(params: Readonly<{
     return { valid: true, focus: null };
 }
 
-/** Query flag that opens a service page on its new-account draft. */
+/** Released ingress flag translated to the collection's setup request. */
 const CONNECTED_ACCOUNT_ADD_PARAM = 'add';
 
 /** Whether a service page was opened to add an account (`?add=1`). */
 export function readConnectedAccountAddRequest(params: Readonly<Record<string, unknown>>): boolean {
     return readSingleRouteParam(params[CONNECTED_ACCOUNT_ADD_PARAM]) === '1';
+}
+
+/** Query flag of a new-pool draft focus (lab `csvc` rail Pools "+"). */
+const CONNECTED_ACCOUNT_NEW_POOL_PARAM = 'newPool';
+
+/**
+ * Where "New pool" goes: the service's page focused on a draft pool (name + members), which becomes a
+ * real pool only when it is created. The Connected services rail's Pools "+" and the pool list use it.
+ */
+export function buildNewConnectedAccountPoolRoute(service: PluginContributionIdentityV1) {
+    return buildConnectedAccountSettingsRoute(service, { kind: 'newPool' });
 }
 
 export function buildConnectedAccountSettingsRoute(
@@ -124,29 +144,39 @@ export function buildConnectedAccountSettingsRoute(
     options: Readonly<{ add?: boolean }> = {},
 ) {
     const parsed = PluginContributionIdentityV1Schema.parse(service);
-    const parsedFocus = focus === null
-        ? null
-        : focus.kind === 'account'
+    if (focus === null) {
+        return {
+            pathname: CONNECTED_ACCOUNTS_SETTINGS_ROUTE,
+            params: options.add
+                ? { connect: '1', service: buildQualifiedPluginContributionKey(parsed) }
+                : {},
+        } as const;
+    }
+    const parsedFocus = focus.kind === 'account'
             ? {
                 kind: 'account' as const,
                 accountId: QualifiedConnectedAccountIdSchema.parse(focus.accountId),
             }
-            : {
-                kind: 'group' as const,
-                groupId: ConnectedServiceAuthGroupIdSchema.parse(focus.groupId),
-            };
+            : focus.kind === 'group'
+                ? {
+                    kind: 'group' as const,
+                    groupId: ConnectedServiceAuthGroupIdSchema.parse(focus.groupId),
+                }
+                : { kind: 'newPool' as const };
     return {
         pathname: CONNECTED_ACCOUNT_SETTINGS_ROUTE,
         params: {
             pluginId: parsed.pluginId,
             localId: parsed.localId,
-            ...(parsedFocus?.kind === 'account'
+            ...(parsedFocus.kind === 'account'
                 ? { accountId: parsedFocus.accountId }
                 : {}),
-            ...(parsedFocus?.kind === 'group'
+            ...(parsedFocus.kind === 'group'
                 ? { groupId: parsedFocus.groupId }
                 : {}),
-            ...(options.add && parsedFocus === null ? { [CONNECTED_ACCOUNT_ADD_PARAM]: '1' } : {}),
+            ...(parsedFocus.kind === 'newPool'
+                ? { [CONNECTED_ACCOUNT_NEW_POOL_PARAM]: '1' }
+                : {}),
         },
     } as const;
 }
@@ -178,6 +208,7 @@ export function resolveQualifiedConnectedAccountSettingsRoute(
         accountId?: unknown;
         profileId?: unknown;
         groupId?: unknown;
+        newPool?: unknown;
         serverId?: unknown;
         machineId?: unknown;
     }>,
@@ -188,6 +219,7 @@ export function resolveQualifiedConnectedAccountSettingsRoute(
     const focus = resolveRouteFocus({
         accountId: params.accountId,
         groupId: params.groupId,
+        newPool: params.newPool,
     });
     if (
         pluginId === null
@@ -229,6 +261,7 @@ export function resolveConnectedAccountSettingsRoute(
         accountId?: unknown;
         profileId?: unknown;
         groupId?: unknown;
+        newPool?: unknown;
         serverId?: unknown;
         machineId?: unknown;
     }>,
@@ -255,6 +288,7 @@ export function resolveConnectedAccountSettingsRoute(
             localId: qualifiedService.localId,
             accountId: params.accountId ?? params.profileId,
             groupId: params.groupId,
+            newPool: params.newPool,
             serverId: params.serverId,
             machineId: params.machineId,
         }, entries);

@@ -17,9 +17,15 @@ import {
     type AutomationReplyHandoffSettlementV1,
     type AutomationRunResultCorrespondenceV1,
 } from '@happier-dev/protocol';
-import { openWorkflowFinalResultStoredEnvelopeV1 } from '@happier-dev/protocol/workflows';
+import {
+    openWorkflowFinalResultStoredEnvelopeV1,
+    resolveWorkflowRunDataKeyV1,
+    WorkflowRunRecipientCensusResponseV1Schema,
+    type WorkflowRunRecipientCensusResponseV1,
+} from '@happier-dev/protocol/workflows';
 
 import type { RpcHandlerRegistrar } from '@/api/rpc/types';
+import type { createWorkflowRunStorageClient } from '@/daemon/workflows/workflowRunStorageClient';
 import { executeContributedAction } from '@/plugins/runtime/invocation/actions/executeContributedAction';
 import {
     createPluginRegistryStateStore,
@@ -66,6 +72,8 @@ function createCurrentAutomationReplyTargetMaterializationResolver(): ResolveCur
 export type AutomationReplyHandoffRpcRegistrationOptions = Readonly<{
     /** The exact authenticated Machine hosting this daemon connection. */
     machineId: string;
+    /** Canonical authenticated Run storage; Workflow results never use Account content keys. */
+    workflowRunStorage: Pick<ReturnType<typeof createWorkflowRunStorageClient>, 'execute'>;
     /** The current account belonging to that Machine's authenticated daemon. */
     resolveAccountId: (signal?: AbortSignal) => Promise<string | null>;
     /** The persisted daemon-installation identity; absent identity fails closed. */
@@ -242,6 +250,32 @@ export function registerAutomationReplyHandoffRpcHandler(
         }
 
         const recipeKind = request.handoff.recipeKind ?? 'legacy';
+        let workflowCensus: WorkflowRunRecipientCensusResponseV1 | null = null;
+        if (recipeKind === 'workflow-v2') {
+            try {
+                workflowCensus = WorkflowRunRecipientCensusResponseV1Schema.parse(
+                    await options.workflowRunStorage.execute(
+                        { operation: 'run-key.census', runId: request.handoff.runId },
+                        { signal },
+                    ),
+                );
+            } catch {
+                return signal.aborted ? unavailable('cancelled') : unavailable('targetUnavailable');
+            }
+            if (signal.aborted) return unavailable('cancelled');
+            if (workflowCensus.runId !== request.handoff.runId || workflowCensus.ownerAccountId !== accountId) {
+                return unavailable('targetMismatch');
+            }
+            if (!sameAutomationAccountCurrentnessWitnessV1(
+                workflowCensus.ownerAccountCurrentness,
+                encryptionAtOpen.witness,
+            )) {
+                return settled({
+                    settlement: { kind: 'retry', retryAfterMs: 0 },
+                    accountCurrentness: encryptionAtOpen.witness,
+                });
+            }
+        }
         // Each recipe opens a different envelope and proves its correspondence
         // differently: the workflow-v2 binding seals the Account and Run into the
         // envelope, while a legacy envelope carries the correspondence as opened
@@ -250,10 +284,12 @@ export function registerAutomationReplyHandoffRpcHandler(
         // instead of being re-narrowed at every later read.
         const resultContent = recipeKind === 'workflow-v2'
             ? (() => {
+                if (!workflowCensus) return { kind: 'unavailable' as const };
+                const resolved = resolveWorkflowRunDataKeyV1({ encryption: encryptionAtOpen, census: workflowCensus });
+                if (resolved.kind !== 'available') return { kind: 'unavailable' as const };
                 const opened = openWorkflowFinalResultStoredEnvelopeV1({
-                    mode: encryptionAtOpen.witness.mode,
-                    ...(encryptionAtOpen.material ? { material: encryptionAtOpen.material.material } : {}),
-                    binding: { v: 1, purpose: 'final_result', accountId, runId: request.handoff.runId },
+                    ...resolved.encryption.runCrypto,
+                    binding: { v: 1, purpose: 'final_result', accountId: workflowCensus.ownerAccountId, runId: request.handoff.runId },
                     envelope: request.handoff.resultEnvelope,
                 });
                 return opened.kind === 'available' && opened.content.result.kind === 'text'

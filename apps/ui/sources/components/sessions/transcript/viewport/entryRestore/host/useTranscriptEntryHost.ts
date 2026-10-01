@@ -1,3 +1,4 @@
+import { useSessionTranscriptSource } from '@/components/sessions/transcript/source/SessionTranscriptSourceContext';
 import * as React from 'react';
 import { useCommittedTranscriptRef } from '@/components/sessions/transcript/viewport/lifecycle/host/useCommittedTranscriptRef';
 import { Platform } from 'react-native';
@@ -233,6 +234,7 @@ const WEB_FILL_TRANSIENT_RETRY_MS = 25;
 const WEB_FILL_MAX_TRANSIENT_RETRIES = 6;
 
 export function useTranscriptEntryHost(deps: TranscriptEntryHostDeps): TranscriptEntryHost {
+    const transcriptSource = useSessionTranscriptSource();
     const requestSessionOpenInitialFillRef = React.useRef<() => void>(() => {});
     const [materializationCommit, requestMaterializationCommit] = React.useReducer((value: number) => value + 1, 0);
     const hasObservedScrollSinceSessionEntry = React.useCallback((): boolean => {
@@ -500,7 +502,7 @@ export function useTranscriptEntryHost(deps: TranscriptEntryHostDeps): Transcrip
                 if (typeof targetSeq === 'number' && Number.isFinite(targetSeq) && targetSeq > 0) {
                     const normalizedTargetSeq = Math.trunc(targetSeq);
                     const target = { kind: 'seq' as const, seq: normalizedTargetSeq };
-                    const result = await sync.loadTargetWindowMessages(requestedSessionId, target, {
+                    const result = await transcriptSource.history.loadTargetWindow?.(target, {
                         direction: 'initial',
                     });
                     if (!isCurrentSession()) return;
@@ -530,7 +532,7 @@ export function useTranscriptEntryHost(deps: TranscriptEntryHostDeps): Transcrip
             }
         })(), { tag: 'ChatList.restoreEntryAnchorLookup' });
         return true;
-    }, [deps.activeTargetWindowTargetRef, deps.currentSessionIdRef, deps.loadOlder, deps.sessionId]);
+    }, [deps.activeTargetWindowTargetRef, deps.currentSessionIdRef, deps.loadOlder, deps.sessionId, transcriptSource.history.loadTargetWindow]);
 
     const verifyWebEntryRestoreTransaction = React.useCallback(() => {
         if (Platform.OS !== 'web') return;

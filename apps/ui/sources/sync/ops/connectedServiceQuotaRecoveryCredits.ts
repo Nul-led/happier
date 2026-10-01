@@ -2,6 +2,7 @@ import {
     buildRecoveryCreditConsumeIdempotencyKey,
     ConnectedServiceQuotaRecoveryCreditConsumeRequestV1Schema,
     ConnectedServiceQuotaRecoveryCreditConsumeResponseV1Schema,
+    parseQualifiedPluginContributionKey,
     type ConnectedServiceId,
     type ConnectedServiceQuotaRecoveryCreditConsumeReceiptV1,
     type ConnectedServiceQuotaRecoveryCreditConsumeResponseV1,
@@ -11,6 +12,7 @@ import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 import { t } from '@/text';
 import { sanitizeEndpointErrorMessage } from '@/sync/runtime/connectivity/sanitizeEndpointErrorMessage';
 import { machineRpcWithServerScope } from '@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc';
+import { reloadQualifiedQuotaSnapshotAfterRecovery } from '@/hooks/server/connectedServices/qualifiedConnectedAccountQuotaSnapshotStore';
 import {
     getActiveServerSnapshot,
     type ActiveServerSnapshot,
@@ -76,6 +78,7 @@ export async function connectedServiceQuotaRecoveryCreditConsume(params: Readonl
             : {}),
     });
     if (!request.success) return failure('invalid_parameters');
+    const serverBasis = params.expectedActiveServer ?? getActiveServerSnapshot();
 
     try {
         const assertExpectedServerIsCurrent = (): void => {
@@ -107,6 +110,17 @@ export async function connectedServiceQuotaRecoveryCreditConsume(params: Readonl
         });
         const parsed = ConnectedServiceQuotaRecoveryCreditConsumeResponseV1Schema.safeParse(response);
         if (!parsed.success) return failure('invalid_response');
+        const service = parseQualifiedPluginContributionKey(request.data.serviceId);
+        const currentServer = getActiveServerSnapshot();
+        if (service && parsed.data.receipt
+            && currentServer.serverId === serverBasis.serverId
+            && currentServer.generation === serverBasis.generation
+            && (params.serverId == null || params.serverId === serverBasis.serverId)) {
+            await reloadQualifiedQuotaSnapshotAfterRecovery({
+                ref: { service, accountId: profileId },
+                serverBasis,
+            });
+        }
         if (!parsed.data.ok) return failure(parsed.data.errorCode, parsed.data.error, parsed.data.receipt);
         return parsed.data;
     } catch (error) {

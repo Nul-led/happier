@@ -27,4 +27,12 @@ describe('parseCliArgs', () => {
             'status',
         ]);
     });
+
+    it('strips runtime context before command flags but leaves provider arguments alone', () => {
+        const payload = Buffer.from(JSON.stringify({ HAPPIER_HOME_DIR: '/sentinel' })).toString('base64url');
+        expect(parseCliArgs(['src/index.ts', '--runtime-context', payload, 'resume', 'session-sentinel']).args)
+            .toEqual(['resume', 'session-sentinel']);
+        expect(parseCliArgs(['agent-sentinel', '--runtime-context', 'provider-value']).args)
+            .toEqual(['agent-sentinel', '--runtime-context', 'provider-value']);
+    });
 });

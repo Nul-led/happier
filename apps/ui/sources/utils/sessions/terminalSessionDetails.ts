@@ -1,4 +1,4 @@
-import type { Metadata } from '@/sync/domains/state/storageTypes';
+import type { Metadata } from '@happier-dev/session-core/state';
 
 export function getAttachCommandForSession(params: {
     sessionId: string;

@@ -71,6 +71,20 @@ const SCOPES: readonly SessionListScopeV1[] = [
     'all_accessible',
 ];
 
+/** Scope availability shared by the panel and its client Actions. */
+export function resolveSessionListFilterScopeAvailability(input: Readonly<{
+    queryEnabled: boolean;
+    followingAvailable: boolean;
+}>): Readonly<Record<SessionListScopeV1, boolean>> {
+    return {
+        my_work: input.queryEnabled,
+        assigned_to_me: input.queryEnabled,
+        following: input.queryEnabled && input.followingAvailable,
+        involving_me: input.queryEnabled,
+        all_accessible: input.queryEnabled,
+    };
+}
+
 function encodeId(prefix: 'audience' | 'tag', key: string): string {
     return `${prefix}:${key}`;
 }
@@ -148,6 +162,9 @@ function selectedIds(
     return selected;
 }
 
+/** The scope menu's one destination: it navigates to the archived list instead of writing a facet. */
+export const SESSION_LIST_FILTER_ARCHIVED_DESTINATION_OPTION_ID = 'destination:archived';
+
 export function buildSessionListFilterEditorModel(input: Readonly<{
     filters: SessionListViewFilters;
     includeInactive: boolean;
@@ -168,6 +185,11 @@ export function buildSessionListFilterEditorModel(input: Readonly<{
     audiencePresentation?: SessionListFilterAudiencePresentation;
     fixedHomeServerIds?: ReadonlySet<string>;
     fixedAudienceKeys?: ReadonlySet<string>;
+    /**
+     * The Archived destination, offered after the scope choices on the active corpus only. It opens
+     * the archived list; it is never a facet and never part of the selection.
+     */
+    archivedLabel?: string;
 }>): SessionListFilterEditorModel {
     const homeSet = new Set(input.filters.homeServerIds);
     const showOptions: SelectionListOption[] = SCOPES.map((scope) => ({
@@ -221,17 +243,20 @@ export function buildSessionListFilterEditorModel(input: Readonly<{
             disabled: tag.disabled,
         }));
     const showOptionsAvailable = showOptions.some((option) => option.disabled !== true);
+    const archivedOptions: SelectionListOption[] = input.archivedLabel
+        ? [{ id: SESSION_LIST_FILTER_ARCHIVED_DESTINATION_OPTION_ID, label: input.archivedLabel }]
+        : [];
     return {
         rootStep: {
             id: 'session-list-filters',
             inputPlaceholder: input.labels.search,
             emptyStateLabel: input.labels.noOptions,
             sections: [
-                ...(showOptionsAvailable ? [{
+                ...(showOptionsAvailable || archivedOptions.length > 0 ? [{
                     kind: 'static' as const,
                     id: 'show',
                     title: input.labels.show,
-                    options: showOptions,
+                    options: [...(showOptionsAvailable ? showOptions : []), ...archivedOptions],
                 }] : []),
                 ...(input.attentionAvailable !== false ? [{
                     kind: 'static' as const,
@@ -251,7 +276,8 @@ export function buildSessionListFilterEditorModel(input: Readonly<{
                         { id: 'inactive:hide', label: input.labels.hideInactive },
                     ],
                 }] : []),
-                ...(homeOptions.length > 0 ? [{
+                // Choosing among Homes needs at least two; one Home is the whole corpus, not a choice.
+                ...(homeOptions.length > 1 ? [{
                     kind: 'static' as const,
                     id: 'homes',
                     title: input.labels.homes,
@@ -329,6 +355,9 @@ function reduceAudienceSelection(
         : null;
     const narrowsPinnedTeam = pinnedTeamKey !== null
         && context?.fixedAudienceKeys?.has(pinnedTeamKey) === true;
+    const viewContext = narrowsPinnedTeam && audience.kind === 'group'
+        ? { kind: 'team' as const, team: { serverId: audience.serverId, teamId: audience.teamId } }
+        : undefined;
 
     if (!exists && narrowsPinnedTeam) {
         return normalizeSessionListViewFilters({
@@ -339,36 +368,16 @@ function reduceAudienceSelection(
                 ),
                 audience,
             ],
-        });
+        }, viewContext);
     }
 
     const remaining = filters.audiences.filter(
         (candidate) => buildQualifiedAudienceSelectionKey(candidate) !== key,
     );
-    if (exists && narrowsPinnedTeam && audience.kind === 'group') {
-        const keepsAnotherGroup = remaining.some((candidate) => (
-            candidate.kind === 'group'
-            && candidate.serverId === audience.serverId
-            && candidate.teamId === audience.teamId
-        ));
-        // Clearing the last Group narrowing restores the Team-wide corpus this
-        // host pins, so the list never loses its audience entirely.
-        return normalizeSessionListViewFilters({
-            ...filters,
-            audiences: keepsAnotherGroup
-                ? remaining
-                : [...remaining, {
-                    serverId: audience.serverId,
-                    kind: 'team' as const,
-                    teamId: audience.teamId,
-                  }],
-        });
-    }
-
     return normalizeSessionListViewFilters({
         ...filters,
         audiences: exists ? remaining : [...filters.audiences, audience],
-    });
+    }, viewContext);
 }
 
 export function reduceSessionListFilterEditorSelection(

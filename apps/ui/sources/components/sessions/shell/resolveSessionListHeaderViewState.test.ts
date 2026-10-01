@@ -20,6 +20,7 @@ describe('resolveSessionListHeaderViewState', () => {
             workspaceRefId: 'workspace_ref_1',
             legacyWorkspaceKey: 'legacy-key',
             scopeHint: { serverId: 'server_a', machineId: 'machine_a', rootPath: '/repo' },
+            newSessionTarget: { serverId: 'server_a', machineId: 'machine_a', rootPath: '/repo' },
             seedSessionId: null,
         };
         const input = {
@@ -41,6 +42,7 @@ describe('resolveSessionListHeaderViewState', () => {
             hasCustomLabel: true,
             legacyWorkspaceKey: 'legacy-key',
             scopeHint: { serverId: 'server_a', machineId: 'machine_a', rootPath: '/repo' },
+            newSessionTarget: { serverId: 'server_a', machineId: 'machine_a', rootPath: '/repo' },
             seedSessionId: null,
             workspaceRefId: 'workspace_ref_1',
         });
@@ -62,6 +64,7 @@ describe('resolveSessionListHeaderViewState', () => {
             workspaceRefId: 'workspace_ref_1',
             legacyWorkspaceKey: 'legacy-key',
             scopeHint: { serverId: 'server_a', machineId: 'machine_a', rootPath: '/repo' },
+            newSessionTarget: { serverId: 'server_a', machineId: 'machine_a', rootPath: '/repo' },
             seedSessionId: null,
         };
 
@@ -78,6 +81,7 @@ describe('resolveSessionListHeaderViewState', () => {
             hasCustomLabel: true,
             legacyWorkspaceKey: 'legacy-key',
             scopeHint: { serverId: 'server_a', machineId: 'machine_a', rootPath: '/repo' },
+            newSessionTarget: { serverId: 'server_a', machineId: 'machine_a', rootPath: '/repo' },
             seedSessionId: null,
             workspaceRefId: 'workspace_ref_1',
         });
@@ -144,5 +148,24 @@ describe('resolveSessionListHeaderViewState', () => {
             projectHeaderViewModelByGroupKey: new Map(),
             translateServerHeader: (server) => server,
         })).toBeNull();
+    });
+
+    it('starts a Chats group\'s new session as a no-folder session on its machine', () => {
+        const state = resolveSessionListHeaderViewState({
+            item: {
+                type: 'header',
+                title: 'Chats',
+                headerKind: 'project',
+                groupKey: 'chats-m1',
+                workspaceScopeHint: null,
+                workspace: { t: 'managedSessions', serverId: 'server_a', machineId: 'machine_a' },
+            },
+            collapsedKeys: {},
+            projectHeaderViewModelByGroupKey: new Map(),
+            translateServerHeader: (server: string) => server,
+        });
+        expect(state?.kind === 'project' ? state.newSessionTarget : undefined)
+            .toEqual({ kind: 'managed', serverId: 'server_a', machineId: 'machine_a' });
+        expect(state?.kind === 'project' ? state.scopeHint : undefined).toBeNull();
     });
 });

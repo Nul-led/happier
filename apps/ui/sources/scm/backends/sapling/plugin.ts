@@ -1,3 +1,4 @@
+import { selectScmChangedFiles } from '@/scm/scmStatusFiles';
 import type { ScmUiBackendPlugin } from '@/scm/registry/scmUiBackendPlugin';
 import {
     resolveScmCommitSelectionPolicy,
@@ -19,11 +20,6 @@ export const saplingScmUiPlugin: ScmUiBackendPlugin = {
         return {
             defaultMode: 'pending',
             availableModes: [...availableModes],
-            labels: {
-                included: 'Included',
-                pending: 'Pending',
-                both: 'Combined',
-            },
         };
     },
     commitActionConfig(snapshot) {
@@ -53,7 +49,7 @@ export const saplingScmUiPlugin: ScmUiBackendPlugin = {
     statusSummaryMapper(snapshot) {
         if (!snapshot) return null;
         return {
-            changedFiles: snapshot.entries.length,
+            changedFiles: selectScmChangedFiles(snapshot).length,
             includedFiles: snapshot.totals.includedFiles,
             pendingFiles: snapshot.totals.pendingFiles,
             untrackedFiles: snapshot.totals.untrackedFiles,

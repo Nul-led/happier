@@ -306,6 +306,11 @@ export function createSystemTaskRunner(options: Readonly<{
             record.promptContinuation = continuation;
             continuePrompt(taskId);
         },
+        listActiveTasks() {
+            return [...tasks.values()]
+                .filter((record) => record.state.result === null)
+                .map((record) => ({ taskId: record.state.taskId, spec: record.spec }));
+        },
         listPromptContinuations(): readonly SystemTaskPromptContinuationRegistration[] {
             return [...tasks.values()]
                 .filter((record) => record.promptContinuation !== null && record.state.result === null)
@@ -314,6 +319,9 @@ export function createSystemTaskRunner(options: Readonly<{
         getSnapshot(taskId: string): SystemTaskRunState | null {
             const record = tasks.get(taskId);
             return record ? record.state : null;
+        },
+        getTaskSpec(taskId: string): SystemTaskSpec | null {
+            return tasks.get(taskId)?.spec ?? null;
         },
         subscribe(taskId: string, listenerOrOnEvent?: (() => void) | ((event: SystemTaskEvent) => void), onResult?: (result: SystemTaskResult) => void): () => void {
             const record = tasks.get(taskId);

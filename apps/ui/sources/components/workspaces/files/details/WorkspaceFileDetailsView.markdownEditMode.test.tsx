@@ -312,6 +312,7 @@ function createOpenableContentViewerHost(): WorkspaceFileOpenableContentViewerHo
     const placement = {
         id: 'surfacePlacement:plugin.preview:text-viewer',
         pluginId: 'plugin.preview',
+        occurrenceId: 'plugin-preview-occurrence',
         contributionKind: 'surfacePlacement',
         descriptorId: 'text-viewer',
         binding,
@@ -368,7 +369,6 @@ function createOpenableContentViewerHost(): WorkspaceFileOpenableContentViewerHo
         scopedLaunchFacts: {
             serverId: 'srv1',
             machineId: 'm1',
-            generation: 9,
             interactionEnabled: true,
         },
     };
@@ -399,6 +399,7 @@ function createTwoViewerOpenableContentViewerHost(): WorkspaceFileOpenableConten
     const placement = {
         id: 'surfacePlacement:plugin.preview:markdown-viewer',
         pluginId: 'plugin.preview',
+        occurrenceId: 'plugin-preview-occurrence',
         contributionKind: 'surfacePlacement',
         descriptorId: 'markdown-viewer',
         binding,

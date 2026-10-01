@@ -1,3 +1,4 @@
+import { useNewSessionPreflightModelsState } from './useNewSessionPreflightModelsState';
 import * as React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import renderer, { act } from 'react-test-renderer';
@@ -8,10 +9,10 @@ import { NEW_SESSION_MODEL_PROBE_TIMEOUT_MS } from '@/components/sessions/new/mo
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
-const machineCapabilitiesInvokeMock = vi.fn(async (_machineId: any, _request: any, _options: any) => ({
+const { machineCapabilitiesInvokeMock } = vi.hoisted(() => ({ machineCapabilitiesInvokeMock: vi.fn(async (_machineId: any, _request: any, _options: any) => ({
   supported: true as const,
   response: { ok: true as const, result: { availableModels: [{ id: 'model-a', name: 'Model A' }], supportsFreeform: false } },
-}));
+})) }));
 
 vi.mock('@/sync/ops/capabilities', () => ({
   machineCapabilitiesInvoke: machineCapabilitiesInvokeMock,
@@ -49,7 +50,6 @@ vi.mock('@/agents/catalog/catalog', () => {
 
 describe('useNewSessionPreflightModelsState', () => {
   it('passes params.cwd through to capabilities.invoke(cli.* probeModels)', async () => {
-    const { useNewSessionPreflightModelsState } = await import('./useNewSessionPreflightModelsState');
 
     machineCapabilitiesInvokeMock.mockClear();
     resetDynamicModelProbeCacheForTests();
@@ -80,7 +80,6 @@ describe('useNewSessionPreflightModelsState', () => {
   });
 
   it('probes a caller-named externally installed Agent under its own id', async () => {
-    const { useNewSessionPreflightModelsState } = await import('./useNewSessionPreflightModelsState');
 
     machineCapabilitiesInvokeMock.mockClear();
     resetDynamicModelProbeCacheForTests();
@@ -109,7 +108,6 @@ describe('useNewSessionPreflightModelsState', () => {
   });
 
   it('forwards probeContext.capabilityParams to capabilities.invoke(... probeModels)', async () => {
-    const { useNewSessionPreflightModelsState } = await import('./useNewSessionPreflightModelsState');
 
     machineCapabilitiesInvokeMock.mockClear();
     resetDynamicModelProbeCacheForTests();
@@ -147,7 +145,6 @@ describe('useNewSessionPreflightModelsState', () => {
   });
 
   it('returns an idle empty state when no backend target is provided', async () => {
-    const { useNewSessionPreflightModelsState } = await import('./useNewSessionPreflightModelsState');
 
     machineCapabilitiesInvokeMock.mockClear();
     resetDynamicModelProbeCacheForTests();
@@ -176,7 +173,6 @@ describe('useNewSessionPreflightModelsState', () => {
   });
 
   it('uses the extended model-probe timeout for slow provider model discovery', async () => {
-    const { useNewSessionPreflightModelsState } = await import('./useNewSessionPreflightModelsState');
 
     machineCapabilitiesInvokeMock.mockClear();
     resetDynamicModelProbeCacheForTests();
@@ -209,7 +205,6 @@ describe('useNewSessionPreflightModelsState', () => {
   });
 
   it('does not synthesize a legacy compat sentinel for configured backend targets without a runtime carrier', async () => {
-    const { useNewSessionPreflightModelsState } = await import('./useNewSessionPreflightModelsState');
 
     machineCapabilitiesInvokeMock.mockClear();
     resetDynamicModelProbeCacheForTests();
@@ -238,7 +233,6 @@ describe('useNewSessionPreflightModelsState', () => {
   });
 
   it('uses the runtime carrier agent id when probing a configured backend target', async () => {
-    const { useNewSessionPreflightModelsState } = await import('./useNewSessionPreflightModelsState');
 
     machineCapabilitiesInvokeMock.mockClear();
     resetDynamicModelProbeCacheForTests();

@@ -122,7 +122,6 @@ describe('happier session run list', () => {
         },
         expect.objectContaining({
           surface: 'cli',
-          authority: 'present_user',
           defaultSessionId: 'sess-1',
           actionRequestId: expect.stringMatching(/^[0-9a-f-]{36}$/u),
         }),
@@ -167,7 +166,6 @@ describe('happier session run list', () => {
         },
         expect.objectContaining({
           surface: 'cli',
-          authority: 'present_user',
           defaultSessionId: 'sess-1',
           actionRequestId: expect.stringMatching(/^[0-9a-f-]{36}$/u),
         }),

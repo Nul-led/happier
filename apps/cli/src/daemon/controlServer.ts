@@ -8,8 +8,25 @@ import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 import { serializerCompiler, validatorCompiler, ZodTypeProvider } from 'fastify-type-provider-zod';
 import { configuration } from '@/configuration';
+import { AUTHORITY_CEILING_HEADER_V1, resolveInvocationAuthority } from '@happier-dev/protocol/actions/invocationAuthority';
+import { waitForTerminalPresentUserPolicyRefresh, type TerminalPresentUserPolicyScope } from '@/settings/accountSettings/resolveEffectiveTerminalPresentUserPolicy';
 import { logger } from '@/ui/logger';
+import { resolveRuntimeActionExecutionFamily } from '@happier-dev/protocol';
 import { createDaemonControlAuthGuard } from './controlAuth';
+import { isCanonicalSpawnSessionId as isCanonicalSessionId } from './sessions/resolveSpawnWebhookResult';
+import type { RecoveredSpawnNonceAdmissionResult } from './spawn/recoveredSpawnNonceAdmission';
+import {
+  BROWSER_RUNTIME_ACTION_CONTROL_PATH,
+  BrowserRuntimeActionControlRequestSchema,
+  BrowserRuntimeActionControlResponseSchema,
+} from './browser/actions/controlTransport';
+import { getDaemonAgentInstallJobOwner } from '@/capabilities/installJobs/agentInstallJobOwner';
+import {
+  DaemonAgentInstallStartRequestSchema, DaemonAgentInstallStartResponseSchema,
+  DaemonAgentInstallReadRequestSchema, DaemonAgentInstallReadResponseSchema,
+  DaemonAgentInstallCancelRequestSchema, DaemonAgentInstallCancelResponseSchema,
+  DaemonAgentInstallListRequestSchema, DaemonAgentInstallListResponseSchema,
+} from '@happier-dev/protocol/daemon/agent-install-jobs';
 import { isUnattestedPublicV1RunnerRolloutMutation } from './plannedRunnerRestart/restartSessionRunnerOnCurrentRuntime';
 import { Metadata, type SessionCreationOutcome } from '@/api/types';
 import {
@@ -36,7 +53,12 @@ import {
   StopSessionResultSchema,
   type StopSessionResult,
 } from './sessions/stopSessionContract';
-import { SPAWN_SESSION_ERROR_CODES, SpawnSessionOptions, SpawnSessionResult } from '@/session/shared/spawnSessionContract';
+import {
+  SPAWN_SESSION_ERROR_CODES, SpawnSessionOptions, SpawnSessionResult,
+  SessionCreationOutcomeSchema, SpawnSessionControlBadRequestSchema,
+  SpawnSessionControlErrorResponseSchema, SpawnSessionNonceControlResponseSchema,
+  projectSpawnSessionControlErrorResponse,
+} from '@/session/shared/spawnSessionContract';
 import { mergeSpawnSessionOptions, SpawnDaemonSessionRequestSchema } from '@/rpc/handlers/spawnSessionOptionsContract';
 import { continueSessionWithReplay } from '@/session/replay/continueWithReplay';
 import { parseSessionContinueWithReplayRpcParamsCompatIngress } from '@/session/replay/continueWithReplayCompatIngress';
@@ -76,9 +98,7 @@ import {
   SessionRunnerStatusGetRequestV1Schema,
   SessionRunnerRuntimeStateV1Schema,
   SessionRunnerRuntimeStatusV2Schema,
-  SessionOrganizationPlacementV1Schema,
   SessionCreationTerminalSpawnErrorDetailSchema,
-  isSessionCreationTerminalSpawnErrorDetail,
   SpawnSessionErrorCodeSchema,
   SessionUsageLimitRecoveryResumePromptModeV1Schema,
   SimulatorPreviewActionResultV1Schema,
@@ -88,8 +108,11 @@ import {
   SshTunnelReleaseRequestSchema,
   SshTunnelStopRequestSchema,
   StrictJsonValueSchema,
+  createUnavailableRuntimeActionExecutor,
+  type RuntimeActionExecute,
   type ConnectedServiceBindingsV2,
   type ConnectedServiceId,
+  ConnectedServiceQuotaRecoveryCreditConsumeRequestV1Schema,
   type ConnectedServiceQuotaRecoveryCreditConsumeRequestV1,
   type ConnectedServiceUsageSourceV1,
   type ProviderAccountUsageSnapshotV1,
@@ -106,6 +129,7 @@ import {
   type SpawnSessionErrorDetail,
   type SessionMetadataPublisherPreconditionV1,
   type SessionUsageLimitRecoveryResumePromptModeV1,
+  pluginSourceCustodyV1Equal,
 } from '@happier-dev/protocol';
 import {
   ConnectedAccountRequestAuthError,
@@ -256,6 +280,7 @@ type DaemonSelfRestartRequest = Readonly<{
 }>;
 type DaemonExternalActionApi = Readonly<{
   currentServerId: string;
+  terminalPolicyScope?: TerminalPresentUserPolicyScope;
   verifyPat: DaemonPatVerifier;
   readEncryptionAccess?: AccountServerPatEncryptionAccessReader;
   executor: ExternalActionExecutor;
@@ -355,13 +380,6 @@ function isProviderAccountUsageAdoptionIntakeAccepted(result: unknown): boolean 
   );
 }
 
-function isCanonicalSessionId(value: unknown): value is string {
-  if (typeof value !== 'string') return false;
-  const normalized = value.trim();
-  if (!normalized) return false;
-  return !/^PID-\d+$/.test(normalized);
-}
-
 type TrackedAgentRuntimeDaemonServiceAuthority = Readonly<{
   tracked: TrackedSession;
   authorityPath: string;
@@ -421,8 +439,11 @@ async function resolveTrackedAgentRuntimeDaemonServiceAuthority(
     });
   if (
     !authority
-    || tracked.runnerAgentImmutableGenerationId
-      !== authority.retainedAgent.immutableGenerationId
+    || !tracked.runnerAgentSourceCustodyV1
+    || !pluginSourceCustodyV1Equal(
+      tracked.runnerAgentSourceCustodyV1,
+      authority.retainedAgent.sourceCustody,
+    )
     || !verifyAgentRuntimeSessionBridgeToken({
       providedToken: authority.capability,
       expectedTokenHash: capabilityHash,
@@ -606,6 +627,7 @@ type SpawnNonceCorrelationRecord = Readonly<{
   sessionCreationOutcome?: SessionCreationOutcome;
   errorCode?: SpawnSessionErrorCode;
   errorMessage?: string;
+  agentId?: string;
   errorDetail?: SpawnSessionErrorDetail;
   updatedAtMs: number;
   expiresAtMs: number;
@@ -615,13 +637,8 @@ type SpawnNonceAdmissionResult =
   | { type: 'none' }
   | { type: 'claimed' }
   | { type: 'pending' }
-  | { type: 'error'; errorCode: SpawnSessionErrorCode; errorMessage: string; errorDetail?: SpawnSessionErrorDetail }
+  | { type: 'error'; errorCode: SpawnSessionErrorCode; errorMessage: string; agentId?: string; errorDetail?: SpawnSessionErrorDetail }
   | { type: 'success'; sessionId: string; sessionCreationOutcome?: SessionCreationOutcome };
-
-const SessionCreationOutcomeSchema = z.object({
-  disposition: z.enum(['created', 'rejoined']),
-  organizationPlacement: SessionOrganizationPlacementV1Schema,
-}).strict();
 
 // Success remains shape-compatible with released runners; failure is a strict
 // terminal counterpart on the same authenticated callback and carries no
@@ -672,6 +689,7 @@ export function createDaemonControlApp({
   isShuttingDown,
   onHappySessionWebhook,
   onSessionStartupFailure,
+  resolveRecoveredSpawnNonce,
   admitPersistedTakeover,
   controlToken,
   connectedAccountRequestAuth,
@@ -709,6 +727,7 @@ export function createDaemonControlApp({
   pluginChangeService,
   pluginActionCurrentIntent,
   externalActionApi,
+  runtimeActionExecute,
   readPluginHardRevocationRevision,
 }: {
   getChildren: () => TrackedSession[];
@@ -737,6 +756,7 @@ export function createDaemonControlApp({
     spawnNonce: string;
     errorDetail: SessionCreationTerminalSpawnErrorDetail;
   }>) => boolean | Promise<boolean>;
+  resolveRecoveredSpawnNonce?: (spawnNonce: string) => Promise<RecoveredSpawnNonceAdmissionResult>;
   admitPersistedTakeover?: (input: Readonly<{
     sessionId: string;
     mode: TakeoverAdmissionMode;
@@ -845,6 +865,8 @@ export function createDaemonControlApp({
   ) => Promise<TargetActionCurrentIntentResult>;
   /** Public PAT-only ingress; intentionally outside the daemon control-token guard. */
   externalActionApi?: DaemonExternalActionApi;
+  /** Canonical daemon runtime owner; session processes have already admitted their Action. */
+  runtimeActionExecute?: RuntimeActionExecute;
   readPluginHardRevocationRevision?: (pluginId: string) => Promise<number>;
 }): FastifyInstance {
   const normalizedRuntimeId = runtimeId.trim();
@@ -1005,6 +1027,7 @@ export function createDaemonControlApp({
     error: Readonly<{
       errorCode: SpawnSessionErrorCode;
       errorMessage: string;
+      agentId?: string;
       errorDetail?: SpawnSessionErrorDetail;
     }>,
   ): void => {
@@ -1019,6 +1042,7 @@ export function createDaemonControlApp({
       status: 'error',
       errorCode: error.errorCode,
       errorMessage,
+      ...(error.agentId !== undefined ? { agentId: error.agentId } : {}),
       ...(error.errorDetail ? { errorDetail: error.errorDetail } : {}),
       updatedAtMs: nowMs,
       expiresAtMs: nowMs + spawnNonceSuccessTtlMs,
@@ -1031,36 +1055,23 @@ export function createDaemonControlApp({
     spawnNonceCorrelationByNonce.delete(normalizedNonce);
   };
 
-  const readTrackedSpawnNonceAdmission = (spawnNonce: string): Exclude<SpawnNonceAdmissionResult, { type: 'none' | 'claimed' }> | null => {
+  const readTrackedSpawnNonceAdmission = async (spawnNonce: string): Promise<Exclude<SpawnNonceAdmissionResult, { type: 'none' | 'claimed' }> | null> => {
     const normalizedNonce = spawnNonce.trim();
     if (!normalizedNonce) return null;
-
-    let foundPending = false;
-    for (const child of getChildren()) {
-      const childNonce = typeof child.spawnOptions?.spawnNonce === 'string'
-        ? child.spawnOptions.spawnNonce.trim()
-        : '';
-      if (childNonce !== normalizedNonce) continue;
-
-      const childSessionId = typeof child.happySessionId === 'string'
-        ? child.happySessionId.trim()
-        : '';
-      if (isCanonicalSessionId(childSessionId)) {
-        return {
-          type: 'success',
-          sessionId: childSessionId,
-          ...(child.sessionCreationOutcome
-            ? { sessionCreationOutcome: child.sessionCreationOutcome }
-            : {}),
-        };
+    if (resolveRecoveredSpawnNonce) {
+      try {
+        const result = await resolveRecoveredSpawnNonce(normalizedNonce);
+        return result.type === 'not_found' ? null : result;
+      } catch {
+        logger.warn('[DAEMON RUN] Recovered spawn readiness proof failed; keeping nonce pending');
+        return { type: 'pending' };
       }
-      foundPending = true;
     }
-
-    return foundPending ? { type: 'pending' } : null;
+    return getChildren().some(child => child.spawnOptions?.spawnNonce?.trim() === normalizedNonce)
+      ? { type: 'pending' } : null;
   };
 
-  const claimSpawnNonceAdmission = (spawnNonce: string): SpawnNonceAdmissionResult => {
+  const claimSpawnNonceAdmission = async (spawnNonce: string): Promise<SpawnNonceAdmissionResult> => {
     const normalizedNonce = spawnNonce.trim();
     if (!normalizedNonce) return { type: 'none' };
     const nowMs = Date.now();
@@ -1083,10 +1094,16 @@ export function createDaemonControlApp({
         type: 'error',
         errorCode: current.errorCode,
         errorMessage: current.errorMessage,
+        ...(current.agentId !== undefined ? { agentId: current.agentId } : {}),
         ...(current.errorDetail ? { errorDetail: current.errorDetail } : {}),
       };
     }
-    const tracked = readTrackedSpawnNonceAdmission(normalizedNonce);
+    markSpawnNoncePending(normalizedNonce);
+    const reservation = spawnNonceCorrelationByNonce.get(normalizedNonce);
+    const tracked = await readTrackedSpawnNonceAdmission(normalizedNonce);
+    if (spawnNonceCorrelationByNonce.get(normalizedNonce) !== reservation) {
+      return await claimSpawnNonceAdmission(normalizedNonce);
+    }
     if (tracked?.type === 'success') {
       markSpawnNonceSuccess(
         normalizedNonce,
@@ -1096,7 +1113,11 @@ export function createDaemonControlApp({
       return tracked;
     }
     if (tracked?.type === 'pending') {
-      markSpawnNoncePending(normalizedNonce);
+      spawnNonceCorrelationByNonce.delete(normalizedNonce);
+      return tracked;
+    }
+    if (tracked?.type === 'error') {
+      markSpawnNonceError(normalizedNonce, tracked);
       return tracked;
     }
     spawnNonceCorrelationByNonce.set(normalizedNonce, {
@@ -1132,6 +1153,22 @@ export function createDaemonControlApp({
   });
 
   const requireAuth = createDaemonControlAuthGuard(normalizedControlToken);
+  typed.post('/agents/install/start', {
+    onRequest: requireAuth,
+    schema: { body: DaemonAgentInstallStartRequestSchema, response: { 200: DaemonAgentInstallStartResponseSchema } },
+  }, async (request) => await getDaemonAgentInstallJobOwner().start(request.body));
+  typed.post('/agents/install/read', {
+    onRequest: requireAuth,
+    schema: { body: DaemonAgentInstallReadRequestSchema, response: { 200: DaemonAgentInstallReadResponseSchema } },
+  }, async (request) => await getDaemonAgentInstallJobOwner().read(request.body));
+  typed.post('/agents/install/cancel', {
+    onRequest: requireAuth,
+    schema: { body: DaemonAgentInstallCancelRequestSchema, response: { 200: DaemonAgentInstallCancelResponseSchema } },
+  }, async (request) => await getDaemonAgentInstallJobOwner().cancel(request.body));
+  typed.post('/agents/install/list', {
+    onRequest: requireAuth,
+    schema: { body: DaemonAgentInstallListRequestSchema, response: { 200: DaemonAgentInstallListResponseSchema } },
+  }, async () => await getDaemonAgentInstallJobOwner().list());
   if (externalActionApi) {
     app.post(SIGNED_ROOT_ACTION_EXECUTE_PATH, { preHandler: requireAuth }, async (request, reply) => {
       const parsed = SignedRootActionExecuteRequestSchema.safeParse(request.body);
@@ -1150,7 +1187,14 @@ export function createDaemonControlApp({
           ...(parsed.data.target ? { target: parsed.data.target } : {}),
           ...(parsed.data.actionRequestId ? { requestId: parsed.data.actionRequestId } : {}),
         },
-        principal: { authority: 'present_user' },
+        principal: {
+          authority: resolveInvocationAuthority({
+            credential: 'terminal', surface: 'cli',
+            terminalPolicy: request.headers[AUTHORITY_CEILING_HEADER_V1] === 'account_automation'
+              ? 'disallowed'
+              : await waitForTerminalPresentUserPolicyRefresh(externalActionApi.terminalPolicyScope),
+          }),
+        },
         surface: 'cli',
         currentMachineId: machineId,
         currentServerId: externalActionApi.currentServerId,
@@ -1236,7 +1280,7 @@ export function createDaemonControlApp({
     return sendConnectedAccountRequestAuthError(reply, 'request_auth_unavailable');
   };
 
-  const createConnectedAccountRequestAuthRequestLifetime = (
+  const createDaemonControlRequestLifetime = (
     request: FastifyRequest,
     reply: FastifyReply,
   ): Readonly<{
@@ -1246,7 +1290,7 @@ export function createDaemonControlApp({
     const controller = new AbortController();
     const abort = () => {
       if (!controller.signal.aborted) {
-        controller.abort(new Error('Connected-account request-auth request ended'));
+        controller.abort(new Error('Daemon control request ended'));
       }
     };
     const abortIfResponseDidNotFinish = () => {
@@ -1267,6 +1311,29 @@ export function createDaemonControlApp({
       },
     };
   };
+
+  typed.post(BROWSER_RUNTIME_ACTION_CONTROL_PATH, {
+    schema: { body: BrowserRuntimeActionControlRequestSchema },
+    preHandler: requireAuth,
+  }, async (request, reply) => {
+    if (isDaemonQuiescing()) return reply.code(503).send(daemonShuttingDownResponse());
+    const lifetime = createDaemonControlRequestLifetime(request, reply);
+    try {
+      const result = await (runtimeActionExecute ?? createUnavailableRuntimeActionExecutor())({
+        actionId: request.body.actionId,
+        input: request.body.input,
+        context: { defaultSessionId: request.body.sessionId, signal: lifetime.signal,
+          authority: 'account_automation',
+          ...(request.body.approvalAdmitted ? { bypassApprovals: true } : {}) },
+      });
+      const response = BrowserRuntimeActionControlResponseSchema.safeParse({ result });
+      return response.success ? response.data : {
+        result: { ok: false, errorCode: 'invalid_action_output', error: 'invalid_action_output' },
+      };
+    } finally {
+      lifetime.dispose();
+    }
+  });
 
 
   // Least-privilege gate for the execution-run connected-services bridge. Accepts only the scoped
@@ -1295,7 +1362,10 @@ export function createDaemonControlApp({
             request.input,
             {
               surface: request.surface,
-              authority: request.authority,
+              authority: resolveInvocationAuthority({
+                credential: 'terminal', surface: request.surface,
+                terminalPolicy: await waitForTerminalPresentUserPolicyRefresh(externalActionApi.terminalPolicyScope),
+              }),
               actionCaller: { kind: 'host' },
               ...(request.defaultSessionId ? { defaultSessionId: request.defaultSessionId } : {}),
             },
@@ -1372,7 +1442,7 @@ export function createDaemonControlApp({
     if (!principal || !connectedAccountRequestAuth) {
       return sendConnectedAccountRequestAuthError(reply, 'request_auth_unauthorized');
     }
-    const requestLifetime = createConnectedAccountRequestAuthRequestLifetime(request, reply);
+    const requestLifetime = createDaemonControlRequestLifetime(request, reply);
     try {
       const value = await connectedAccountRequestAuth.lookupRequestAuth({
         subject: principal,
@@ -1404,7 +1474,7 @@ export function createDaemonControlApp({
     if (!principal || !connectedAccountRequestAuth) {
       return sendConnectedAccountRequestAuthError(reply, 'request_auth_unauthorized');
     }
-    const requestLifetime = createConnectedAccountRequestAuthRequestLifetime(request, reply);
+    const requestLifetime = createDaemonControlRequestLifetime(request, reply);
     try {
       const value = await connectedAccountRequestAuth.refreshAfterAuthFailure({
         subject: principal,
@@ -1436,7 +1506,7 @@ export function createDaemonControlApp({
     if (!principal || !connectedAccountRequestAuth) {
       return sendConnectedAccountRequestAuthError(reply, 'request_auth_unauthorized');
     }
-    const requestLifetime = createConnectedAccountRequestAuthRequestLifetime(request, reply);
+    const requestLifetime = createDaemonControlRequestLifetime(request, reply);
     try {
       const value = await connectedAccountRequestAuth.reportQuotaFailure({
         subject: principal,
@@ -2244,12 +2314,7 @@ export function createDaemonControlApp({
 
   typed.post('/connected-service-quota-recovery-credit/consume', {
     schema: {
-      body: z.object({
-        serviceId: ConnectedServiceIdSchema,
-        profileId: z.string().trim().min(1),
-        idempotencyKey: z.string().trim().min(1).max(256),
-        providerCreditId: z.string().trim().min(1).max(256).optional(),
-      }),
+      body: ConnectedServiceQuotaRecoveryCreditConsumeRequestV1Schema,
       response: {
         200: z.object({
           ok: z.literal(true),
@@ -3351,12 +3416,7 @@ export function createDaemonControlApp({
           status: z.literal('pending'),
           errorCode: z.literal(SPAWN_SESSION_ERROR_CODES.SESSION_WEBHOOK_TIMEOUT),
         }),
-        400: z.object({
-          success: z.boolean(),
-          error: z.string(),
-          errorCode: z.string().optional(),
-          errorDetail: SessionCreationTerminalSpawnErrorDetailSchema.optional(),
-        }),
+        400: SpawnSessionControlBadRequestSchema,
         401: authSchema401,
         409: z.object({
           success: z.boolean(),
@@ -3369,12 +3429,7 @@ export function createDaemonControlApp({
           error: z.string(),
           errorCode: z.literal('daemon_shutting_down'),
         }),
-        500: z.object({
-          success: z.boolean(),
-          error: z.string().optional(),
-          errorCode: z.string().optional(),
-          errorDetail: SessionCreationTerminalSpawnErrorDetailSchema.optional(),
-        })
+        500: SpawnSessionControlErrorResponseSchema,
       }
     },
     preHandler: requireAuth,
@@ -3396,7 +3451,7 @@ export function createDaemonControlApp({
         const requestBody = parsedRequest.data;
         const { existingSessionId } = requestBody;
         const spawnNonce = typeof requestBody.spawnNonce === 'string' ? requestBody.spawnNonce.trim() : '';
-        const nonceAdmission = claimSpawnNonceAdmission(spawnNonce);
+        const nonceAdmission = await claimSpawnNonceAdmission(spawnNonce);
         if (nonceAdmission.type === 'success') {
           return {
             success: true,
@@ -3417,14 +3472,7 @@ export function createDaemonControlApp({
         }
         if (nonceAdmission.type === 'error') {
           reply.code(500);
-          return {
-            success: false as const,
-            error: nonceAdmission.errorMessage,
-            errorCode: nonceAdmission.errorCode,
-            ...(isSessionCreationTerminalSpawnErrorDetail(nonceAdmission.errorDetail)
-              ? { errorDetail: nonceAdmission.errorDetail }
-              : {}),
-          };
+          return projectSpawnSessionControlErrorResponse(nonceAdmission);
         }
 
         let result: SpawnSessionResult;
@@ -3510,18 +3558,12 @@ export function createDaemonControlApp({
           markSpawnNonceError(spawnNonce, {
             errorCode: result.errorCode,
             errorMessage: result.errorMessage,
+            ...(result.agentId !== undefined ? { agentId: result.agentId } : {}),
             ...(result.errorDetail ? { errorDetail: result.errorDetail } : {}),
           });
         }
         reply.code(500);
-        return { 
-          success: false,
-          error: result.errorMessage,
-          errorCode: result.errorCode,
-          ...(isSessionCreationTerminalSpawnErrorDetail(
-            result.errorDetail,
-          ) ? { errorDetail: result.errorDetail } : {}),
-        };
+        return projectSpawnSessionControlErrorResponse(result);
     }
   });
 
@@ -3531,15 +3573,7 @@ export function createDaemonControlApp({
         spawnNonce: z.string(),
       }),
       response: {
-        200: z.object({
-          success: z.literal(true),
-          status: z.enum(['success', 'error', 'pending', 'not_found']),
-          sessionId: z.string().optional(),
-          sessionCreationOutcome: SessionCreationOutcomeSchema.optional(),
-          errorCode: SpawnSessionErrorCodeSchema.optional(),
-          errorMessage: z.string().optional(),
-          errorDetail: z.unknown().optional(),
-        }),
+        200: SpawnSessionNonceControlResponseSchema,
         401: authSchema401,
       },
     },
@@ -3579,12 +3613,25 @@ export function createDaemonControlApp({
           status: 'error' as const,
           errorCode: record.errorCode,
           errorMessage: record.errorMessage,
+          ...(record.agentId !== undefined ? { agentId: record.agentId } : {}),
           ...(record.errorDetail ? { errorDetail: record.errorDetail } : {}),
         };
       }
     }
 
-    const tracked = readTrackedSpawnNonceAdmission(normalizedNonce);
+    const tracked = await readTrackedSpawnNonceAdmission(normalizedNonce);
+    // Canonical report/spawn completion can publish while recovered proof awaits I/O.
+    const completed = spawnNonceCorrelationByNonce.get(normalizedNonce);
+    if (completed?.status === 'success' && isCanonicalSessionId(completed.sessionId)) {
+      return { success: true as const, status: 'success' as const, sessionId: completed.sessionId,
+        ...(completed.sessionCreationOutcome ? { sessionCreationOutcome: completed.sessionCreationOutcome } : {}) };
+    }
+    if (completed?.status === 'error' && completed.errorCode && completed.errorMessage) {
+      return { success: true as const, status: 'error' as const, errorCode: completed.errorCode,
+        errorMessage: completed.errorMessage, ...(completed.agentId !== undefined ? { agentId: completed.agentId } : {}),
+        ...(completed.errorDetail ? { errorDetail: completed.errorDetail } : {}) };
+    }
+    if (completed?.status === 'pending') return { success: true as const, status: 'pending' as const };
     if (tracked) {
       if (tracked.type === 'success') {
         markSpawnNonceSuccess(
@@ -3601,7 +3648,12 @@ export function createDaemonControlApp({
             : {}),
         };
       }
-      markSpawnNoncePending(normalizedNonce);
+      if (tracked.type === 'error') {
+        markSpawnNonceError(normalizedNonce, tracked);
+        return { success: true as const, status: 'error' as const, errorCode: tracked.errorCode,
+          errorMessage: tracked.errorMessage, ...(tracked.agentId !== undefined ? { agentId: tracked.agentId } : {}),
+          ...(tracked.errorDetail ? { errorDetail: tracked.errorDetail } : {}) };
+      }
       return {
         success: true as const,
         status: 'pending' as const,
@@ -3788,23 +3840,24 @@ export function createDaemonControlApp({
     }
 
     restartState = 'restarting';
-    setTimeout(() => {
-      void (async () => {
-        try {
-          const successorDistClosureFingerprint = request.body?.successorDistClosureFingerprint;
-          await requestSelfRestart(
-            successorDistClosureFingerprint ? { successorDistClosureFingerprint } : undefined,
-          );
-        } catch (error) {
-          logger.debug('[CONTROL SERVER] Daemon self-restart request failed; keeping current daemon alive', error);
-        } finally {
-          restartState = 'idle';
-        }
-      })();
-    }, 50);
-
-    reply.code(202);
-    return { status: 'restarting' as const };
+    reply.code(202).send({ status: 'restarting' as const });
+    // The response acknowledges admission. The Stack client separately waits for
+    // the successor's authenticated /ping; startup work must not consume the
+    // control request's short HTTP timeout.
+    void (async () => {
+      try {
+        await requestSelfRestart({
+          ...(request.body?.successorDistClosureFingerprint
+            ? { successorDistClosureFingerprint: request.body.successorDistClosureFingerprint }
+            : {}),
+        });
+      } catch (error) {
+        logger.debug('[CONTROL SERVER] Daemon self-restart request failed; keeping current daemon alive', error);
+      } finally {
+        restartState = 'idle';
+      }
+    })();
+    return reply;
   });
 
   // Stop daemon
@@ -3897,6 +3950,7 @@ export function startDaemonControlServer({
   isShuttingDown,
   onHappySessionWebhook,
   onSessionStartupFailure,
+  resolveRecoveredSpawnNonce,
   admitPersistedTakeover,
   controlToken,
   connectedAccountRequestAuth,
@@ -3934,6 +3988,7 @@ export function startDaemonControlServer({
   pluginChangeService,
   pluginActionCurrentIntent,
   externalActionApi,
+  runtimeActionExecute,
 }: {
   getChildren: () => TrackedSession[];
   machineId: string;
@@ -3956,6 +4011,7 @@ export function startDaemonControlServer({
     spawnNonce: string;
     errorDetail: SessionCreationTerminalSpawnErrorDetail;
   }>) => boolean | Promise<boolean>;
+  resolveRecoveredSpawnNonce?: (spawnNonce: string) => Promise<RecoveredSpawnNonceAdmissionResult>;
   admitPersistedTakeover?: (input: Readonly<{
     sessionId: string;
     mode: TakeoverAdmissionMode;
@@ -4053,6 +4109,7 @@ export function startDaemonControlServer({
   ) => Promise<TargetActionCurrentIntentResult>;
   /** Public PAT-only ingress; intentionally outside the daemon control-token guard. */
   externalActionApi?: DaemonExternalActionApi;
+  runtimeActionExecute?: RuntimeActionExecute;
 }): Promise<{ port: number; stop: () => Promise<void> }> {
   return new Promise((resolve) => {
     const app = createDaemonControlApp({
@@ -4067,6 +4124,7 @@ export function startDaemonControlServer({
       isShuttingDown,
       onHappySessionWebhook,
       onSessionStartupFailure,
+      resolveRecoveredSpawnNonce,
       admitPersistedTakeover,
       controlToken,
       connectedAccountRequestAuth,
@@ -4104,6 +4162,7 @@ export function startDaemonControlServer({
       pluginChangeService,
       pluginActionCurrentIntent,
       externalActionApi,
+      runtimeActionExecute,
     });
 
     app.listen({ port: resolveDaemonControlListenPort(process.env), host: '127.0.0.1' }, (err, address) => {

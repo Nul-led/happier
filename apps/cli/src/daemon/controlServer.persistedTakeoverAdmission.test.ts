@@ -1,3 +1,4 @@
+import { createStoppedTakeoverQuiescenceFixture } from '@/testkit/backends/externalSessionFixtures';
 import { createHash } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -36,6 +37,7 @@ import type {
 } from '@/session/actions/externalSessions/takeoverPhaseRunner';
 import { SPAWN_SESSION_ERROR_CODES } from '@/session/shared/spawnSessionContract';
 import { withJsonOwnerFileLock } from '@/utils/fs/jsonOwnerFileLock';
+import { createPluginRuntimeOccurrenceId } from '@/plugins/runtime/runtimeSlots';
 
 import { createDaemonControlApp } from './controlServer';
 
@@ -143,7 +145,7 @@ function admittingRecord(): ExternalSessionOperationRecordV1 {
     materializedThroughSourceAt: 10,
     publishedThroughServerSeq: 3,
   };
-  const request = {
+  const request: ExternalSessionOperationRecordV1['request'] = {
     v: 1 as const,
     idempotencyKey: 'takeover-request-1',
     sessionId: 'session-1',
@@ -157,7 +159,7 @@ function admittingRecord(): ExternalSessionOperationRecordV1 {
       },
       linkGeneration: 'link-1',
       sourceGeneration: 'source-1',
-      contributionGeneration: 'contribution-1',
+      sourceCustody: { kind: 'development', registeredRootId: 'contribution-1' },
     },
     plan: 'takeover' as const,
     targetStorageMode: 'persisted' as const,
@@ -212,8 +214,9 @@ function currentSource(
     ? 8
     : 7;
   return {
-    pluginGeneration: 'contribution-1',
+    occurrenceId: createPluginRuntimeOccurrenceId('com.example.agent'),
     quiescenceIdentity: 'stopped-source-1',
+    quiescence: createStoppedTakeoverQuiescenceFixture(admittingRecord()),
     linked: {
       rawSession: {
         id: 'session-1',
@@ -250,9 +253,9 @@ function resolvedSpawn(): ExternalTakeoverSpawnResolution {
       },
       remoteSessionId: 'remote-1',
       origin: {
-        agentId: 'claude',
-        pluginId: 'claude',
-        generation: 'contribution-1',
+      agentId: 'claude',
+      pluginId: 'claude',
+      occurrenceId: createPluginRuntimeOccurrenceId('claude'),
       },
     },
   };
@@ -286,7 +289,7 @@ describe('strict persisted takeover /session-started admission', () => {
 
   it('admits token-only plaintext credentials to the canonical metadata writer boundary', async () => {
     const activeServerDir = await mkdtemp(join(tmpdir(), 'happier-admission-plain-'));
-    const waiter = createPersistedTakeoverAdmissionWaiter({ timeoutMs: 5_000 });
+    const waiter = createPersistedTakeoverAdmissionWaiter();
     const record = admittingRecord();
     waiter.register(persistedAdmissionWaiterCorrelation({
       operationId: record.operationId,
@@ -344,7 +347,7 @@ describe('strict persisted takeover /session-started admission', () => {
 
   it('abandons runtime_bound completion when the reporting request ends before a delayed durable write', async () => {
     const activeServerDir = await mkdtemp(join(tmpdir(), 'happier-runtime-bound-abandoned-'));
-    const waiter = createPersistedTakeoverAdmissionWaiter({ timeoutMs: 5_000 });
+    const waiter = createPersistedTakeoverAdmissionWaiter();
     const registration = waiter.register(persistedAdmissionWaiterCorrelation({
       operationId: 'external-takeover:operation-1',
       attemptId: 'attempt-1',
@@ -456,7 +459,7 @@ describe('strict persisted takeover /session-started admission', () => {
 
   it('converges hosted-offline when durable completion fails after waiter reservation', async () => {
     const activeServerDir = await mkdtemp(join(tmpdir(), 'happier-runtime-bound-failure-'));
-    const waiter = createPersistedTakeoverAdmissionWaiter({ timeoutMs: 5_000 });
+    const waiter = createPersistedTakeoverAdmissionWaiter();
     const registration = waiter.register(persistedAdmissionWaiterCorrelation({
       operationId: 'external-takeover:operation-1',
       attemptId: 'attempt-1',
@@ -543,7 +546,7 @@ describe('strict persisted takeover /session-started admission', () => {
 
   it('requires already-current source continuity before spawn preparation and admission', async () => {
     const activeServerDir = await mkdtemp(join(tmpdir(), 'happier-admission-continuity-'));
-    const waiter = createPersistedTakeoverAdmissionWaiter({ timeoutMs: 5_000 });
+    const waiter = createPersistedTakeoverAdmissionWaiter();
     waiter.register(persistedAdmissionWaiterCorrelation({
       operationId: 'external-takeover:operation-1',
       attemptId: 'attempt-1',
@@ -595,7 +598,7 @@ describe('strict persisted takeover /session-started admission', () => {
 
   it('fails closed at both authority reads when exact source continuity is unavailable', async () => {
     const activeServerDir = await mkdtemp(join(tmpdir(), 'happier-admission-continuity-failure-'));
-    const waiter = createPersistedTakeoverAdmissionWaiter({ timeoutMs: 5_000 });
+    const waiter = createPersistedTakeoverAdmissionWaiter();
     waiter.register(persistedAdmissionWaiterCorrelation({
       operationId: 'external-takeover:operation-1',
       attemptId: 'attempt-1',
@@ -638,7 +641,7 @@ describe('strict persisted takeover /session-started admission', () => {
 
   it('commits admission without completing the waiter, then completes only at exact runtime_bound', async () => {
     const activeServerDir = await mkdtemp(join(tmpdir(), 'happier-admission-route-'));
-    const waiter = createPersistedTakeoverAdmissionWaiter({ timeoutMs: 5_000 });
+    const waiter = createPersistedTakeoverAdmissionWaiter();
     const registration = waiter.register(persistedAdmissionWaiterCorrelation({
       operationId: 'external-takeover:operation-1',
       attemptId: 'attempt-1',
@@ -733,7 +736,6 @@ describe('strict persisted takeover /session-started admission', () => {
         canonicalOwnerEvidence: {
           linkedSessionRevision: 8,
           transcriptAuthorityRevision: 3,
-          pendingAdmissionRevision: 4,
         },
       });
       expect(sent).toEqual([expect.objectContaining({
@@ -742,7 +744,6 @@ describe('strict persisted takeover /session-started admission', () => {
         attemptId: 'attempt-1',
         expectedSessionMetadataVersion: 8,
         expectedSessionSeq: 3,
-        expectedPending: { version: 4, count: 2, blockedCount: 1 },
         expectedPublication: {
           materializationPublicationId: 'publication-1',
           materializedThroughSourceAt: 10,
@@ -834,12 +835,6 @@ describe('strict persisted takeover /session-started admission', () => {
   it.each([
     ['wrong session', { sessionId: 'session-2' }, currentSource(), true],
     ['wrong attempt', { attemptId: 'attempt-2' }, currentSource(), true],
-    [
-      'wrong generation',
-      {},
-      { ...currentSource(), pluginGeneration: 'contribution-2' },
-      true,
-    ],
     ['follow active', {}, currentSource(), false],
   ])('rejects %s without server or operation effects', async (
     _name,
@@ -848,7 +843,7 @@ describe('strict persisted takeover /session-started admission', () => {
     followSuspended,
   ) => {
     const activeServerDir = await mkdtemp(join(tmpdir(), 'happier-admission-reject-'));
-    const waiter = createPersistedTakeoverAdmissionWaiter({ timeoutMs: 5_000 });
+    const waiter = createPersistedTakeoverAdmissionWaiter();
     const input = {
       sessionId: 'session-1',
       operationId: 'external-takeover:operation-1',
@@ -886,7 +881,7 @@ describe('strict persisted takeover /session-started admission', () => {
 
   it('keeps a committed server admission hosted and offline when claim loss wins the local race', async () => {
     const activeServerDir = await mkdtemp(join(tmpdir(), 'happier-admission-race-'));
-    const waiter = createPersistedTakeoverAdmissionWaiter({ timeoutMs: 5_000 });
+    const waiter = createPersistedTakeoverAdmissionWaiter();
     const registration = waiter.register(persistedAdmissionWaiterCorrelation({
       operationId: 'external-takeover:operation-1',
       attemptId: 'attempt-1',
@@ -954,7 +949,7 @@ describe('strict persisted takeover /session-started admission', () => {
 
   it('continues the exact attempt when an identical retry validates a lost admission ack', async () => {
     const activeServerDir = await mkdtemp(join(tmpdir(), 'happier-admission-ack-loss-'));
-    const waiter = createPersistedTakeoverAdmissionWaiter({ timeoutMs: 5_000 });
+    const waiter = createPersistedTakeoverAdmissionWaiter();
     const registration = waiter.register(persistedAdmissionWaiterCorrelation({
       operationId: 'external-takeover:operation-1',
       attemptId: 'attempt-1',
@@ -1031,7 +1026,7 @@ describe('strict persisted takeover /session-started admission', () => {
 
   it('reconciles canonical hosted authority after both admission acknowledgements are lost', async () => {
     const activeServerDir = await mkdtemp(join(tmpdir(), 'happier-admission-double-ack-loss-'));
-    const waiter = createPersistedTakeoverAdmissionWaiter({ timeoutMs: 5_000 });
+    const waiter = createPersistedTakeoverAdmissionWaiter();
     const registration = waiter.register(persistedAdmissionWaiterCorrelation({
       operationId: 'external-takeover:operation-1',
       attemptId: 'attempt-1',
@@ -1094,7 +1089,7 @@ describe('strict persisted takeover /session-started admission', () => {
 
   it('keeps explicit reconciliation recoverable when both acknowledgements and the target reread are unavailable', async () => {
     const activeServerDir = await mkdtemp(join(tmpdir(), 'happier-admission-unresolved-'));
-    const waiter = createPersistedTakeoverAdmissionWaiter({ timeoutMs: 5_000 });
+    const waiter = createPersistedTakeoverAdmissionWaiter();
     waiter.register(persistedAdmissionWaiterCorrelation({
       operationId: 'external-takeover:operation-1',
       attemptId: 'attempt-1',
@@ -1152,7 +1147,6 @@ describe('strict persisted takeover /session-started admission', () => {
         canonicalOwnerEvidence: {
           linkedSessionRevision: 8,
           transcriptAuthorityRevision: 3,
-          pendingAdmissionRevision: 4,
         },
       });
       expect(fenced && isExternalSessionPersistedTakeoverAdmissionReady(fenced))
@@ -1191,7 +1185,6 @@ describe('strict persisted takeover /session-started admission', () => {
       canonicalOwnerEvidence: {
         ...initial.canonicalOwnerEvidence,
         transcriptAuthorityRevision: 3,
-        pendingAdmissionRevision: 4,
       },
       error: {
         code: 'admission_failed',
@@ -1240,7 +1233,6 @@ describe('strict persisted takeover /session-started admission', () => {
       canonicalOwnerEvidence: {
         ...admittingRecord().canonicalOwnerEvidence,
         transcriptAuthorityRevision: 3,
-        pendingAdmissionRevision: 4,
       },
     };
     await writeExternalSessionOperationRecord(activeServerDir, initial);

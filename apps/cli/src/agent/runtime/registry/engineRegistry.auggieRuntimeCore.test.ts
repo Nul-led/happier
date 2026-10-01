@@ -173,7 +173,7 @@ describe('engineRegistry (auggie runtimeCore)', () => {
             v: 1,
             updatedAt: 102,
             ref: {
-              agentTargetKey: 'backend:auggie',
+              agentTargetKey: 'agent:happier.agent.auggie/auggie',
               providerConnectionId: null,
               modelId: 'model-auggie-native',
             },
@@ -213,7 +213,7 @@ describe('engineRegistry (auggie runtimeCore)', () => {
           directory,
           metadata: createTestMetadata({ path: directory }),
           machineId: 'machine-auggie-native',
-          agentTargetKey: 'backend:auggie',
+          agentTargetKey: 'agent:happier.agent.auggie/auggie',
           session,
           transcriptSession: session,
           messageBuffer: new MessageBuffer(),

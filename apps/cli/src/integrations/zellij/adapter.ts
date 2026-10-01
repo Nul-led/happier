@@ -15,6 +15,7 @@ import type { TerminalPromptSubmitVerificationPolicy } from '../terminalHost/pro
 
 import {
   defaultZellijActions,
+  DEFAULT_ZELLIJ_ACTION_TIMEOUT_MS,
   DEFAULT_ZELLIJ_WRITE_BYTES_CHUNK_SIZE,
   isZellijActionTimeoutError,
   resolveZellijActionPasteSafeBytes,
@@ -39,7 +40,6 @@ import {
   runTerminalPromptSubmission,
 } from '../terminalHost/promptSubmitVerification';
 
-const DEFAULT_ACTION_TIMEOUT_MS = 5_000;
 const DEFAULT_STARTUP_ACTION_TIMEOUT_MS = 60_000;
 const DEFAULT_INPUT_STABILITY_DELAY_MS = 50;
 const MAX_LIVENESS_SCREEN_DUMP_CHARS = 2_000;
@@ -277,7 +277,7 @@ export function createZellijTerminalHostAdapter(params: Readonly<{
 }>): TerminalHostAdapter {
   const actions = params.actions ?? defaultZellijActions;
   const now = params.now ?? Date.now;
-  const actionTimeoutMs = params.actionTimeoutMs ?? DEFAULT_ACTION_TIMEOUT_MS;
+  const actionTimeoutMs = params.actionTimeoutMs ?? DEFAULT_ZELLIJ_ACTION_TIMEOUT_MS;
   const startupActionTimeoutMs = params.startupActionTimeoutMs
     ?? params.actionTimeoutMs
     ?? DEFAULT_STARTUP_ACTION_TIMEOUT_MS;
@@ -496,6 +496,9 @@ export function createZellijTerminalHostAdapter(params: Readonly<{
           isLiveTerminalPane(pane) && !paneMatches(pane, paneId),
         );
         return {
+          ...(opts.spawnEnv.HAPPIER_TERMINAL_ATTACHMENT_ID?.trim()
+            ? { attachmentId: opts.spawnEnv.HAPPIER_TERMINAL_ATTACHMENT_ID.trim() as NonNullable<TerminalHostHandle['attachmentId']> }
+            : {}),
           kind: 'zellij',
           sessionName: opts.sessionName,
           paneId,
@@ -641,7 +644,7 @@ export function createZellijTerminalHostAdapter(params: Readonly<{
               zellijBinary: params.zellijBinary,
               env: baseEnv(params.socketDir),
               paneId,
-              timeoutMs: remainingTimeoutMs ?? DEFAULT_ACTION_TIMEOUT_MS,
+              timeoutMs: remainingTimeoutMs ?? DEFAULT_ZELLIJ_ACTION_TIMEOUT_MS,
             });
             return 'success';
           },

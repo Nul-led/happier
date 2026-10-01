@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Session } from '@/sync/domains/state/storageTypes';
-import type { NormalizedMessage } from '@/sync/typesRaw';
+import type { NormalizedMessage } from "@happier-dev/session-core/raw";
 import { handleMessageUpdatedSocketUpdate } from './sessionSocketUpdate';
-import { advanceSessionReceivedMessageCurrentness } from './sessionMessageCurrentness';
+import { advanceSessionReceivedMessageCurrentness } from "@happier-dev/session-core/transcript";
 
 type TestAttentionImpact = {
     affectsUnread: boolean;

@@ -32,7 +32,7 @@ describe('NarrationColumn', () => {
         expect(transition.props).toMatchObject({
             contentKey: 'A2',
             direction: 'forward',
-            preset: 'soft',
+            preset: 'signature',
             blur: true,
             reducedMotion: true,
             testID: 'journey-narration-transition',

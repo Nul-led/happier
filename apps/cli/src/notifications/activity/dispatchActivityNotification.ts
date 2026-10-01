@@ -2,6 +2,7 @@ import {
   accountSettingsParse,
   type AttentionDeliveryDecision,
   type AttentionDeliveryEventId,
+  type PluginNotificationChannelKindV1,
   BUILT_IN_EXPO_PUSH_NOTIFICATION_CHANNEL_ID,
   isPushNotificationBundledSoundId,
   resolveExpoNotificationSoundName,
@@ -15,6 +16,10 @@ import type { PushNotificationDeliveryOptions } from '@/api/pushNotifications';
 import { serializeAxiosErrorForLog } from '@/api/client/serializeAxiosErrorForLog';
 import { logger } from '@/ui/logger';
 import type { ActivityNotificationEvent } from './activityNotificationEvent';
+import type { StablePluginNotificationsOwner } from '@/plugins/runtime/invocation/services/notifications';
+import { buildActivityNotificationContent } from './buildActivityNotificationContent';
+import { createHostPluginNotificationChannels } from './pluginNotificationChannels';
+import { isSessionActivityNotificationEligible, type SessionNotificationContextReader } from './sessionActivityNotificationEligibility';
 import { buildLiveActivityRemoteUpdateRequest } from './liveActivity/buildLiveActivityRemoteUpdateRequest';
 import {
   sendLiveActivityRemoteUpdate,
@@ -41,7 +46,7 @@ function isTopicEnabled(channel: {
   };
 }, topic: ActivityNotificationEvent['topic']): boolean {
   if (channel.enabled !== true) return false;
-  if (topic === 'workflow_run_update') return true;
+  if (topic === 'workflow_run_update' || topic === 'notify_me') return true;
   if (topic === 'ready') return channel.topics.ready === true;
   if (topic === 'permission_request') return channel.topics.permissionRequest === true;
   if (topic === 'user_action_request') return channel.topics.userActionRequest === true;
@@ -55,6 +60,9 @@ function isTopicEnabled(channel: {
 const recentDispatchesByKey = new Map<string, number>();
 
 function notificationDedupeKey(event: ActivityNotificationEvent): string | null {
+  if (event.topic === 'notify_me') {
+    return event.actionRequestId ? [event.topic, event.actionRequestId].join('\0') : null;
+  }
   if (event.topic === 'workflow_run_update') {
     return [event.topic, event.runId, event.updateKind].join('\0');
   }
@@ -135,7 +143,7 @@ export function resolveActivityNotificationPolicyEvent(
 
 function resolveChannelDecision(params: Readonly<{
   settings: AccountSettings;
-  channel: 'expo_push' | 'webhook' | 'live_activity';
+  channel: PluginNotificationChannelKindV1;
   event: ActivityNotificationEvent;
   now: Date;
 }>): AttentionDeliveryDecision {
@@ -187,6 +195,25 @@ function buildCanonicalExpoPushChannel(decision: AttentionDeliveryDecision): Exp
   };
 }
 
+/** Discovery projects the same configured delivery set the Activity owner dispatches. */
+export async function listActivityNotificationChannels(params: Readonly<{
+  settings: AccountSettings | null | undefined;
+  pluginNotifications?: Pick<StablePluginNotificationsOwner, 'availableHostChannels'> | null;
+}>): Promise<readonly Readonly<{ value: string; label: string }>[]> {
+  const settings = accountSettingsParse(params.settings ?? {});
+  const pluginNotifications = params.pluginNotifications === undefined
+    ? createHostPluginNotificationChannels()
+    : params.pluginNotifications;
+  return [
+    { value: BUILT_IN_EXPO_PUSH_NOTIFICATION_CHANNEL_ID, label: 'Push notifications' },
+    ...resolveNotificationChannelsV1FromAccountSettings(settings)
+      .filter((channel) => channel.kind === 'webhook')
+      .map((channel) => ({ value: channel.id, label: channel.id })),
+    ...(await pluginNotifications?.availableHostChannels() ?? [])
+      .map(({ value, label }) => ({ value, label })),
+  ];
+}
+
 export async function dispatchActivityNotificationAsync(params: Readonly<{
   settings: AccountSettings | null | undefined;
   settingsSecretsReadKeys?: ReadonlyArray<Uint8Array | null | undefined>;
@@ -196,7 +223,13 @@ export async function dispatchActivityNotificationAsync(params: Readonly<{
   nowMs?: () => number;
   dedupeWindowMs?: number;
   webhookNetwork?: WebhookActivityNotificationNetworkDependencies;
+  fetchSessionNotificationContext?: SessionNotificationContextReader['fetchSessionNotificationContext'];
+  channels?: readonly string[];
+  pluginNotifications?: Pick<StablePluginNotificationsOwner, 'availableHostChannels' | 'sendHostNotification'> | null;
 }>): Promise<Readonly<{ attemptedChannels: number; deliveredChannels: number }>> {
+  if (!await isSessionActivityNotificationEligible(params)) {
+    return { attemptedChannels: 0, deliveredChannels: 0 };
+  }
   const settings = accountSettingsParse(params.settings ?? {});
   const channels = resolveNotificationChannelsV1FromAccountSettings(settings);
   const nowMs = params.nowMs?.() ?? Date.now();
@@ -207,6 +240,11 @@ export async function dispatchActivityNotificationAsync(params: Readonly<{
   const policyNow = new Date(nowMs);
   let attemptedChannels = 0;
   let deliveredChannels = 0;
+  const selectedChannelIds = params.channels ? new Set(params.channels) : null;
+  const selects = (id: string) => !selectedChannelIds || selectedChannelIds.has(id);
+  const pluginNotifications = params.pluginNotifications === undefined
+    ? createHostPluginNotificationChannels()
+    : params.pluginNotifications;
 
   const expoDecision = resolveChannelDecision({
     settings,
@@ -214,7 +252,7 @@ export async function dispatchActivityNotificationAsync(params: Readonly<{
     event: params.event,
     now: policyNow,
   });
-  if (expoDecision.delivery !== 'suppress') {
+  if (selects(BUILT_IN_EXPO_PUSH_NOTIFICATION_CHANNEL_ID) && expoDecision.delivery !== 'suppress') {
     attemptedChannels += 1;
     if (params.expoPushSender) {
       try {
@@ -223,6 +261,7 @@ export async function dispatchActivityNotificationAsync(params: Readonly<{
           event: params.event,
           sender: params.expoPushSender,
           deliveryOptions: resolveExpoPushDeliveryOptions(expoDecision),
+          previewBehavior: expoDecision.previewBehavior,
         });
         deliveredChannels += 1;
       } catch (error) {
@@ -237,7 +276,7 @@ export async function dispatchActivityNotificationAsync(params: Readonly<{
     event: params.event,
     now: policyNow,
   });
-  const liveActivityRequest = params.liveActivityRemoteSender
+  const liveActivityRequest = !selectedChannelIds && params.liveActivityRemoteSender
     ? buildLiveActivityRemoteUpdateRequest({
         event: params.event,
         decision: liveActivityDecision,
@@ -260,6 +299,7 @@ export async function dispatchActivityNotificationAsync(params: Readonly<{
 
   for (const channel of channels) {
     if (channel.kind !== 'webhook') continue;
+    if (!selects(channel.id)) continue;
     if (!isTopicEnabled(channel, params.event.topic)) continue;
     const decision = resolveChannelDecision({
       settings,
@@ -273,10 +313,8 @@ export async function dispatchActivityNotificationAsync(params: Readonly<{
     attemptedChannels += 1;
     try {
       await sendWebhookActivityNotificationAsync({
-        channel: {
-          ...channel,
-          requestIncludeMessageText: decision.previewBehavior === 'include_preview' && channel.requestIncludeMessageText !== false,
-        },
+        channel,
+        previewBehavior: decision.previewBehavior,
         event: params.event,
         settingsSecretsReadKeys: params.settingsSecretsReadKeys,
         nowMs: params.nowMs,
@@ -285,6 +323,30 @@ export async function dispatchActivityNotificationAsync(params: Readonly<{
       deliveredChannels += 1;
     } catch (error) {
       logger.debug('[activityNotifications] Failed to dispatch outbound notification', serializeAxiosErrorForLog(error));
+    }
+  }
+
+  if (pluginNotifications) {
+    for (const channel of await pluginNotifications.availableHostChannels()) {
+      if (!selects(channel.value)) continue;
+      const decision = resolveChannelDecision({ settings,
+        channel: channel.kind,
+        event: params.event, now: policyNow });
+      if (decision.delivery !== 'suppress') {
+        attemptedChannels += 1;
+        try {
+          const content = buildActivityNotificationContent(params.event, {
+            readyIncludeMessageText: decision.previewBehavior === 'include_preview',
+            requestIncludeMessageText: decision.previewBehavior === 'include_preview',
+            previewBehavior: decision.previewBehavior,
+          });
+          if (await pluginNotifications.sendHostNotification({
+            channelId: channel.value, title: content.title, body: content.body, data: content.data,
+          })) deliveredChannels += 1;
+        } catch (error) {
+          logger.debug('[activityNotifications] Failed to dispatch plugin notification', serializeAxiosErrorForLog(error));
+        }
+      }
     }
   }
 

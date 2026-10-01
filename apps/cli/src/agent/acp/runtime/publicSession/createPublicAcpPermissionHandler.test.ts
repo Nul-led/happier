@@ -82,7 +82,7 @@ describe('createPublicAcpPermissionHandler', () => {
         contributionId: 'test',
         runtimeId: 'test',
         sessionId: 'public-acp-permission-test',
-        generationId: 'generation-1',
+        occurrenceId: 'occurrence-1',
         interactionDeadlineMs: 1_000,
         isCurrent: () => true,
         signal: new AbortController().signal,

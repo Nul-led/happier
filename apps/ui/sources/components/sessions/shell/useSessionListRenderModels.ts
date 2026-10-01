@@ -388,7 +388,7 @@ export function useSessionListRenderModels(input: Readonly<{
         for (const item of listItems) {
             if (item.type !== 'session' || (item.serverId && item.serverId !== draftScope.serverId)) continue;
             const projection = getExistingSessionDraftProjection(draftScope, item.sessionId);
-            if (projection) drafts.set(sessionTagKey(draftScope.serverId, item.sessionId), projection);
+            if (projection?.listed) drafts.set(sessionTagKey(draftScope.serverId, item.sessionId), projection);
         }
         return drafts;
     }, [draftListRevision, draftScope, listItems]);

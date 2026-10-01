@@ -1,11 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
-import type {
-    MachineLiveStreamFrameV1,
-    MachineLiveStreamRelayEnvelopeV1,
-} from '@happier-dev/protocol';
+import { PEER_MEDIATION_RECEIPTS, type MachineLiveStreamFrameV1, type MachineLiveStreamRelayEnvelopeV1 } from '@happier-dev/protocol';
 
-import { resolveLiveStreamViewerCapabilities } from '@/sync/domains/machines/peer/mediation/stream';
+import { resolveLiveStreamViewerCapabilities } from '@/sync/domains/machines/peer/mediation/stream/capabilities';
 
 import {
     createSimulatorRelayStreamState,
@@ -81,12 +78,26 @@ describe('reduceSimulatorRelayStreamState', () => {
             frame: h264Frame(1),
         });
         const stream = toSimulatorPreviewStreamState(state);
-        expect(stream.phase).toBe('playing');
+        expect(stream.phase).toBe('opening');
         expect(stream.selectedCodec).toBe('h264.avcc');
         expect(stream.activeRenderer).toBe('webcodecs');
         expect(stream.lastFrameUrl).toBeUndefined();
         expect(stream.avccChunks?.length).toBe(1);
-        expect(stream.decodedFrames).toBe(1);
+        expect(stream.decodedFrames).toBe(0);
+    });
+
+    it('does not turn unsupported H264 bytes into a playing stream', () => {
+        const opened = reduceSimulatorRelayStreamState(createSimulatorRelayStreamState(STREAM_ID), {
+            type: 'open', sourceCodecs: ['h264.avcc'],
+            capabilities: resolveLiveStreamViewerCapabilities({ platform: 'native', renderers: {
+                mjpeg: true, webcodecs: false, mse: false, wasm: false, nativeVideo: false,
+            } }),
+        });
+        const state = reduceSimulatorRelayStreamState(opened, { type: 'frame', frame: h264Frame(1) });
+        expect(state.player.phase).toBe('error');
+        expect(state.player.decodedFrames).toBe(0);
+        expect(state.player.activeRenderer).toBe('fallback');
+        expect(state.player.diagnostic).toEqual(opened.player.diagnostic);
     });
 
     it('preserves the last MJPEG frame across a reconnect', () => {
@@ -159,6 +170,17 @@ describe('mapSimulatorRelayEnvelopeToIngestionEvent', () => {
             streamId: STREAM_ID,
         });
         expect(event).toEqual({ type: 'stopped', reasonCode: 'done' });
+    });
+
+    it('maps a source terminal receipt and ignores other streams and nonterminal pressure', () => {
+        const receipt = { v: 1, streamId: STREAM_ID, flowKind: 'live_stream', routeKind: 'server_relay',
+            id: PEER_MEDIATION_RECEIPTS.streamPaused, reasonCode: 'capture_stopped', terminal: true };
+        const map = (value: unknown) => mapSimulatorRelayEnvelopeToIngestionEvent({
+            envelope: envelope({ kind: 'receipt', receipt: value }), sourceMachineId: SOURCE, targetMachineId: TARGET, streamId: STREAM_ID,
+        });
+        expect(map(receipt)).toEqual({ type: 'stopped', reasonCode: 'capture_stopped' });
+        expect(map({ ...receipt, streamId: 'another_stream' })).toBeNull();
+        expect(map({ ...receipt, terminal: false, reasonCode: 'backpressure_window_exhausted' })).toBeNull();
     });
 
     it('maps a rejected start_response to an error event', () => {

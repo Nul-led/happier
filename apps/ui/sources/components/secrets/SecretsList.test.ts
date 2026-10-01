@@ -9,7 +9,7 @@ import {
     renderScreen,
 } from '@/dev/testkit';
 import type { SavedSecret } from '@/sync/domains/settings/savedSecretTypes';
-import type { SavedSecretCatalogCorruptEntryV1, SavedSecretCatalogEntryV1 } from '@happier-dev/protocol';
+import type { SavedSecretCatalogEntryV1 } from '@happier-dev/protocol';
 import { SecretsList } from './SecretsList';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -105,16 +105,6 @@ async function renderSecretsList(params?: {
     includeNoneRow?: boolean;
     defaultId?: string | null;
     sharedEntries?: readonly SavedSecretCatalogEntryV1[];
-    corruptEntries?: readonly SavedSecretCatalogCorruptEntryV1[];
-    onDeleteCorruptShared?: (entry: Extract<SavedSecretCatalogCorruptEntryV1, { relationship: 'owner' }>) => void;
-    onRenameShared?: (entry: SavedSecretCatalogEntryV1) => void;
-    onRotateShared?: (entry: SavedSecretCatalogEntryV1) => void;
-    onMakeSharedHomeManaged?: (entry: SavedSecretCatalogEntryV1) => void;
-    onEncryptShared?: (entry: SavedSecretCatalogEntryV1) => void;
-    onManageAccessShared?: (entry: SavedSecretCatalogEntryV1) => void;
-    onDeleteShared?: (entry: SavedSecretCatalogEntryV1) => void;
-    onSharePersonal?: (secret: SavedSecret) => void;
-    onCreateShared?: () => void;
     sharedCatalogStale?: boolean;
     onRetrySharedCatalog?: () => void;
 }) {
@@ -138,16 +128,6 @@ async function renderSecretsList(params?: {
             includeNoneRow: params?.includeNoneRow,
             allowAdd: params?.allowAdd,
             sharedEntries: params?.sharedEntries,
-            corruptEntries: params?.corruptEntries,
-            onDeleteCorruptShared: params?.onDeleteCorruptShared,
-            onRenameShared: params?.onRenameShared,
-            onRotateShared: params?.onRotateShared,
-            onMakeSharedHomeManaged: params?.onMakeSharedHomeManaged,
-            onEncryptShared: params?.onEncryptShared,
-            onManageAccessShared: params?.onManageAccessShared,
-            onDeleteShared: params?.onDeleteShared,
-            onSharePersonal: params?.onSharePersonal,
-            onCreateShared: params?.onCreateShared,
             sharedCatalogStale: params?.sharedCatalogStale,
             onRetrySharedCatalog: params?.onRetrySharedCatalog,
         }),
@@ -167,50 +147,6 @@ describe('SecretsList', () => {
 
     afterEach(() => {
         vi.restoreAllMocks();
-    });
-
-    it('exposes only server-projected capabilities for owner resource rows', async () => {
-        const entry = {
-            ref: 'happier:shared-secret:v1:shared-a', source: 'shared_resource', relationship: 'owner',
-            name: 'Shared key', kind: 'apiKey', encryptionMode: null, owner: null, accessSources: [], audience: null,
-            ownerAccountId: 'owner-a', revision: 2, materialStatus: 'ready',
-            capabilities: { use: true, rename: true, rotate: true, manageAccess: true, delete: true },
-        } as const satisfies SavedSecretCatalogEntryV1;
-        const callbacks = {
-            onRenameShared: vi.fn(), onRotateShared: vi.fn(), onManageAccessShared: vi.fn(), onDeleteShared: vi.fn(),
-        };
-        const { screen } = await renderSecretsList({ sharedEntries: [entry], ...callbacks });
-        const actions = findTestInstanceByTypeWithProps(screen, 'ItemRowActions', {
-            overflowTriggerTestID: `saved-secret:${entry.ref}:more`,
-        })!;
-
-        expect(actions.props.actions.map((action: { id: string }) => action.id))
-            .toEqual(['rename', 'rotate', 'manageAccess', 'delete']);
-    });
-
-    it('offers the one conversion out of each row\'s current mode, and only where the screen allows it', async () => {
-        const ownedEntry = (encryptionMode: 'e2ee' | 'plain'): SavedSecretCatalogEntryV1 => ({
-            ref: `happier:shared-secret:v1:${encryptionMode}`, source: 'shared_resource', relationship: 'owner',
-            name: `${encryptionMode} key`, kind: 'apiKey', encryptionMode, owner: null, accessSources: [],
-            audience: null, ownerAccountId: 'owner-a', revision: 2, materialStatus: 'ready',
-            capabilities: { use: true, rename: false, rotate: true, manageAccess: false, delete: false },
-        });
-        const e2ee = ownedEntry('e2ee');
-        const plain = ownedEntry('plain');
-        const onMakeSharedHomeManaged = vi.fn();
-        const actionsFor = (screen: Awaited<ReturnType<typeof renderSecretsList>>['screen'], ref: string) =>
-            findTestInstanceByTypeWithProps(screen, 'ItemRowActions', { overflowTriggerTestID: `saved-secret:${ref}:more` })
-                ?.props.actions as Array<{ id: string; title: string; onPress: () => void }> | undefined;
-
-        const { screen } = await renderSecretsList({ sharedEntries: [e2ee, plain], onMakeSharedHomeManaged });
-        const e2eeActions = actionsFor(screen, e2ee.ref)!;
-        expect(e2eeActions.map((action) => [action.id, action.title]))
-            .toContainEqual(['convertMode', 'secrets.catalog.actions.convertToPlain']);
-        // No handler for the other direction, so the Plain row offers nothing.
-        expect(actionsFor(screen, plain.ref)?.map((action) => action.id) ?? []).not.toContain('convertMode');
-
-        e2eeActions.find((action) => action.id === 'convertMode')!.onPress();
-        expect(onMakeSharedHomeManaged).toHaveBeenCalledWith(e2ee);
     });
 
     it('states who shared a recipient row and which access carries it', async () => {
@@ -247,34 +183,6 @@ describe('SecretsList', () => {
         await screen.pressByTestIdAsync('saved-secret-catalog-retry');
 
         expect(onRetrySharedCatalog).toHaveBeenCalledOnce();
-    });
-
-    it('renders corrupt owner and recipient rows as nonselectable information and only offers owner repair', async () => {
-        const owner = {
-            materialStatus: 'resource_corrupt', relationship: 'owner',
-            repair: { kind: 'delete_resource', resourceId: 'opaque-owner-row', expectedRevision: 9 },
-        } as const satisfies SavedSecretCatalogCorruptEntryV1;
-        const recipient = {
-            materialStatus: 'resource_corrupt', relationship: 'recipient', repair: null,
-        } as const satisfies SavedSecretCatalogCorruptEntryV1;
-        const onDeleteCorruptShared = vi.fn();
-        const { screen, onSelectId } = await renderSecretsList({
-            corruptEntries: [owner, recipient],
-            onDeleteCorruptShared,
-        });
-
-        expect(screen.findByTestId('saved-secret-corrupt:owner:0')).toBeTruthy();
-        expect(screen.findByTestId('saved-secret-corrupt:recipient:0')).toBeTruthy();
-        expect(onSelectId).not.toHaveBeenCalled();
-        const ownerActions = findTestInstanceByTypeWithProps(screen, 'ItemRowActions', {
-            overflowTriggerTestID: 'saved-secret-corrupt:owner:0:more',
-        })!;
-        expect(ownerActions.props.actions.map((action: { id: string }) => action.id)).toEqual(['delete']);
-        ownerActions.props.actions[0].onPress();
-        expect(onDeleteCorruptShared).toHaveBeenCalledWith(owner);
-        expect(screen.findAllByType('ItemRowActions').some((row) => (
-            row.props.overflowTriggerTestID === 'saved-secret-corrupt:recipient:0:more'
-        ))).toBe(false);
     });
 
     it('adds a secret via the inline expander without modal prompts', async () => {
@@ -350,16 +258,6 @@ describe('SecretsList', () => {
         expect(findTestInstanceByTypeContainingText(screen, 'Pressable', 'common.add')).toBeUndefined();
     });
 
-    it('exposes direct shared-resource creation separately from personal add', async () => {
-        const onCreateShared = vi.fn();
-        const { screen } = await renderSecretsList({ onCreateShared });
-
-        await screen.pressByTestIdAsync('saved-secret-create-shared');
-
-        expect(onCreateShared).toHaveBeenCalledOnce();
-        expect(screen.findByTestId('saved-secret-add')).toBeTruthy();
-    });
-
     it('moves default secret to the first rendered position', async () => {
         const secrets: SavedSecret[] = [
             {
@@ -396,8 +294,7 @@ describe('SecretsList', () => {
             createdAt: 1,
             updatedAt: 1,
         };
-        const onSharePersonal = vi.fn();
-        const { screen } = await renderSecretsList({ secrets: [secret], onSharePersonal });
+        const { screen } = await renderSecretsList({ secrets: [secret] });
 
         expect(screen.findByTestId('saved-secret:secret-a')).toBeTruthy();
         expect(screen.findByTestId('saved-secret-add')).toBeTruthy();
@@ -408,12 +305,8 @@ describe('SecretsList', () => {
             .toEqual([
                 'saved-secret:secret-a:rename',
                 'saved-secret:secret-a:replace',
-                'saved-secret:secret-a:share',
                 'saved-secret:secret-a:delete',
             ]);
-        const share = editActions?.props.actions.find((action: { id: string }) => action.id === 'share');
-        share?.onPress();
-        expect(onSharePersonal).toHaveBeenCalledWith(secret);
     });
 
     it('selects none row when include-none entry is pressed', async () => {

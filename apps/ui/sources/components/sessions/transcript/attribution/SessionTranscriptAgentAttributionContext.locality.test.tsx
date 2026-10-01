@@ -2,8 +2,8 @@ import * as React from 'react';
 import renderer, { act } from 'react-test-renderer';
 import { describe, expect, it } from 'vitest';
 
-import { createAgentTransitionDividerMessageFixture, createMixedAgentTranscriptFixture } from '@/dev/testkit/fixtures/sessionAgentTransitionFixtures';
-import type { Message } from '@/sync/domains/messages/messageTypes';
+import { createAgentTransitionDividerMessageFixture, createMixedAgentTranscriptFixture } from "../../../../../../../packages/session-core/src/testkit/sessionAgentTransitionFixtures.js";
+import type { Message } from "@happier-dev/session-core/messages";
 
 import {
     SessionTranscriptAgentAttributionProvider,

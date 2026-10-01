@@ -4,6 +4,7 @@ import * as React from 'react';
 import 'fake-indexeddb/auto';
 
 import { createTextModuleMock } from '@/dev/testkit/mocks/text';
+import { createAuthoringMemoryHttpBoundary } from '@/dev/testkit/mocks/authoringMemoryHttp';
 import { renderHook } from '@/dev/testkit';
 import { installTokenStorageWebPlatformMocks } from '@/auth/storage/tokenStorage.testHelpers';
 import { installLocalStorageMock, type LocalStorageMockHandle } from '@/auth/storage/tokenStorage.web.testHelpers';
@@ -167,7 +168,10 @@ describe('multi-Home Session creation composition', () => {
         const { buildServerFeaturesResponse } = await import('@/hooks/server/serverFeaturesTestUtils');
         const features = buildServerFeaturesResponse();
         const { setRuntimeFetch } = await import('@/utils/system/runtimeFetch');
-        setRuntimeFetch(async (input) => {
+        const authoringMemoryHttp = createAuthoringMemoryHttpBoundary();
+        setRuntimeFetch(async (input, init) => {
+            const authoringResponse = await authoringMemoryHttp.handle(input, init);
+            if (authoringResponse) return authoringResponse;
             const url = String(input);
             socketBoundary.fetches(url);
             if (url.endsWith('/v1/features')) {
@@ -191,6 +195,7 @@ describe('multi-Home Session creation composition', () => {
             }
             if (url.endsWith('/v1/machines/pools/list')) return Response.json({ pools: [] });
             if (url.endsWith('/v1/account/encryption')) return Response.json({ mode: 'plain', updatedAt: 1 });
+            if (url.endsWith('/v2/account/settings') && (!init?.method || init.method === 'GET')) return Response.json({ content: null, version: 1 });
             if (url.endsWith('/v1/auth/ping') || url.endsWith('/health')) return Response.json({ ok: true });
             return Response.json({ ok: false }, { status: 404 });
         });
@@ -278,13 +283,14 @@ describe('multi-Home Session creation composition', () => {
     let draftSequence = 0;
     async function renderProductionCreateCaller(params: Readonly<{
         activeServerId: string;
+        accountId?: string;
         targetServerId?: string;
         draftId?: string;
     }>) {
         const { createMachineFixture } = await import('@/dev/testkit/fixtures/machineFixtures');
         const { storage } = await import('@/sync/domains/state/storageStore');
-        storage.getState().activateProfileScope({ serverId: params.activeServerId, accountId: 'account-a' });
-        await storage.getState().activateSettingsScope({ serverId: params.activeServerId, accountId: 'account-a' });
+        storage.getState().activateProfileScope({ serverId: params.activeServerId, accountId: params.accountId ?? 'account-a' });
+        await storage.getState().activateSettingsScope({ serverId: params.activeServerId, accountId: params.accountId ?? 'account-a' });
         storage.getState().applySettings(storage.getState().settings, 1);
         if (params.targetServerId) {
             storage.getState().applyMachines([
@@ -492,7 +498,7 @@ describe('multi-Home Session creation composition', () => {
             expect(profiles.getActiveServerSnapshot().serverId).toBe(homeAScopeId);
 
             const { storage } = await import('@/sync/domains/state/storageStore');
-            const originalPaths = storage.getState().settings.recentMachinePaths;
+            const originalPaths = storage.getState().authoringMemory.recentMachinePaths;
             socketBoundary.fetches.mockClear();
             socketBoundary.emits.mockClear();
             await act(async () => {
@@ -512,7 +518,7 @@ describe('multi-Home Session creation composition', () => {
             });
             expect(modalBoundary.alert).toHaveBeenCalledWith('common.error', 'newSession.failedToStart');
             expect(observabilityBoundary.capture).not.toHaveBeenCalled();
-            expect(storage.getState().settings.recentMachinePaths).toEqual(originalPaths);
+            expect(storage.getState().authoringMemory.recentMachinePaths).toEqual(originalPaths);
         } finally {
             await createHook.unmount().catch(() => undefined);
         }
@@ -644,8 +650,11 @@ describe('multi-Home Session creation composition', () => {
         ({ homeA, homeAScopeId, homeAToken } = await arrangeFocusedHomeA());
         await arrangeHomeB();
         await profiles.saveHomeViewState({ version: 1, activeTargetKind: 'server', activeTargetId: homeBScopeId, groups: [] });
+        await profiles.setActiveServerId(homeBScopeId, { scope: 'device' });
+        await profiles.setActiveServerId(homeBScopeId, { scope: 'tab' });
+        await sync!.restore({ token: homeBToken }, null);
         routeBoundary.params = { machineId: 'machine-b', directory: '/same-home/project', spawnServerId: homeBScopeId };
-        const createHook = await renderProductionCreateCaller({ activeServerId: homeAScopeId, targetServerId: homeBScopeId });
+        const createHook = await renderProductionCreateCaller({ activeServerId: homeBScopeId, accountId: 'account-b', targetServerId: homeBScopeId });
         try {
             const { storage } = await import('@/sync/domains/state/storageStore');
             await act(async () => {
@@ -655,9 +664,78 @@ describe('multi-Home Session creation composition', () => {
             socketBoundary.emits.mockClear();
             await act(async () => { await readProductionCreateAction(createHook.getCurrent())({ initialMessage: 'skip' }); });
             expect(socketBoundary.emits).toHaveBeenCalledOnce();
-            expect(storage.getState().settings.recentMachinePaths[0]).toEqual({ machineId: 'machine-b', path: '/same-home/project' });
+            await vi.waitFor(() => expect(storage.getState().authoringMemory.recentMachinePaths[0]).toEqual({ machineId: 'machine-b', path: '/same-home/project' }));
         } finally {
             await createHook.unmount();
+        }
+    });
+
+    it('places an embedded surface from its host\'s own params and writes placement back to the host, never the route', async () => {
+        ({ homeA, homeAScopeId, homeAToken } = await arrangeFocusedHomeA());
+        await arrangeHomeB();
+        await profiles.saveHomeViewState({ version: 1, activeTargetKind: 'server', activeTargetId: homeBScopeId, groups: [] });
+        // Home embeds the surface: the route it sits on carries no New Session params at all.
+        routeBoundary.params = {};
+        const { NewSessionEmbeddedHostProvider, mergeNewSessionHostParams } = await import('../navigation/newSessionHost');
+        const hostWrites: Array<Readonly<Record<string, unknown>>> = [];
+        function EmbeddedHost(props: Readonly<{ children?: React.ReactNode }>) {
+            const [params, setParamsState] = React.useState<Record<string, string | string[] | undefined>>({
+                machineId: 'machine-b',
+                directory: '/embedded/project',
+                spawnServerId: homeBScopeId,
+            });
+            const host = React.useMemo(() => ({
+                params,
+                setParams: (patch: Readonly<Record<string, unknown>>) => {
+                    hostWrites.push(patch);
+                    setParamsState((current) => ({ ...mergeNewSessionHostParams(current, patch) }));
+                },
+                openDraft: () => undefined,
+                onHandedOff: () => undefined,
+                demanded: true,
+            }), [params]);
+            return <NewSessionEmbeddedHostProvider host={host}>{props.children}</NewSessionEmbeddedHostProvider>;
+        }
+        const { createMachineFixture } = await import('@/dev/testkit/fixtures/machineFixtures');
+        const { storage } = await import('@/sync/domains/state/storageStore');
+        storage.getState().activateProfileScope({ serverId: homeAScopeId, accountId: 'account-a' });
+        await storage.getState().activateSettingsScope({ serverId: homeAScopeId, accountId: 'account-a' });
+        storage.getState().applySettings(storage.getState().settings, 1);
+        storage.getState().applyMachines([
+            createMachineFixture({
+                id: 'machine-b',
+                metadata: { host: 'home-b-machine', platform: 'linux', happyCliVersion: '0.0.0-test', happyHomeDir: '/workspace/.happy', homeDir: '/workspace' },
+            }),
+        ], true, { sourceServerId: homeBScopeId });
+        const createHook = await renderHook(
+            () => useNewSessionScreenModel({ draftId: `multi-home-composed-draft-${++draftSequence}` }),
+            { wrapper: EmbeddedHost },
+        );
+        try {
+            // The surface is placed from the host's params: Home B, its machine and the host's folder.
+            const placed = createHook.getCurrent();
+            expect(placed.variant).toBe('simple');
+            if (placed.variant !== 'simple') throw new Error('Embedded surface must be the composer');
+            expect(placed.simpleProps.targetServerId).toBe(homeBScopeId);
+            expect(placed.simpleProps.selectedMachineId).toBe('machine-b');
+            expect(placed.simpleProps.selectedPath).toBe('/embedded/project');
+
+            // Choosing a Machine is a placement write: it lands in the host, and the route stays untouched.
+            const model = createHook.getCurrent();
+            const props = model.variant === 'simple' ? model.simpleProps : model.wizardProps.footer;
+            const renderPicker = props.machinePopover?.renderContent;
+            if (typeof renderPicker !== 'function') throw new Error('Missing Machine picker renderer');
+            const picker = renderPicker({ maxHeight: 560, requestClose: () => {} });
+            type PickerProps = React.ComponentProps<typeof import('../components/NewSessionMachineSelectionContent').NewSessionMachineSelectionContent>;
+            if (!React.isValidElement<PickerProps>(picker)) throw new Error('Missing Machine picker');
+            const machine = storage.getState().machineListByServerId[homeBScopeId]?.find((candidate) => candidate.id === 'machine-b');
+            if (!machine) throw new Error('Missing Home B fixture');
+            await act(async () => picker.props.onSelectScopedMachine({ ...machine, serverId: homeBScopeId, serverName: 'Home B' }));
+            expect(hostWrites).toContainEqual(expect.objectContaining({ machineId: 'machine-b', spawnServerId: homeBScopeId }));
+            expect(routeBoundary.params).toEqual({});
+        } finally {
+            await createHook.unmount();
+            routeBoundary.params = { machineId: 'machine-b', directory: '/workspace/project', spawnServerId: homeBScopeId };
         }
     });
 
@@ -685,10 +763,9 @@ describe('multi-Home Session creation composition', () => {
         try {
             await act(async () => {
                 if (historySource === 'settings') {
-                    storage.getState().applySettings({
-                        ...storage.getState().settings,
+                    storage.getState().applyAuthoringMemory({
                         recentMachinePaths: [{ machineId: 'machine-b', path: '/home-a/recent' }],
-                    }, 2);
+                    });
                 } else {
                     const { createSessionFixture } = await import('@/dev/testkit');
                     const session = createSessionFixture({
@@ -700,7 +777,7 @@ describe('multi-Home Session creation composition', () => {
             });
             expect(storage.getState().settingsScope?.serverId).toBe(homeAScopeId);
             if (historySource === 'settings') {
-                expect(storage.getState().settings.recentMachinePaths).toEqual([{ machineId: 'machine-b', path: '/home-a/recent' }]);
+                expect(storage.getState().authoringMemory.recentMachinePaths).toEqual([{ machineId: 'machine-b', path: '/home-a/recent' }]);
             } else {
                 expect(storage.getState().profileScope?.serverId).toBe(homeAScopeId);
                 expect(storage.getState().sessions['home-a-session']?.metadata?.path).toBe('/home-a/session-path');

@@ -43,6 +43,23 @@ function buildModel(overrides: Partial<Parameters<typeof buildNewSessionConnecte
 }
 
 describe('buildNewSessionConnectedServicesSelectionListModel', () => {
+    it('keeps routing identity out of an account row after device identity presentation', () => {
+        const setBindingForService = vi.fn();
+        const model = buildModel({
+            profileOptionsByServiceId: { anthropic: [{
+                profileId: 'opaque-route-42', status: 'connected', label: 'Work', providerEmail: 'wo•••@e•••.com',
+            }, { profileId: 'unnamed-route-43', status: 'connected' }] },
+            setBindingForService,
+        });
+        const row = firstStaticSection(model).options.find((option) => option.id === createConnectedServiceOptionId('anthropic', 'opaque-route-42'));
+        expect(row).toMatchObject({ label: 'Work', subtitle: 'wo•••@e•••.com' });
+        expect(row?.accessibilityLabel).not.toContain('opaque-route-42');
+        expect(firstStaticSection(model).options.find((option) => option.id === createConnectedServiceOptionId('anthropic', 'unnamed-route-43')))
+            .toMatchObject({ label: 'service:anthropic' });
+        row?.onSelect?.();
+        expect(setBindingForService).toHaveBeenCalledWith('anthropic', { source: 'connected', selection: 'profile', profileId: 'opaque-route-42' });
+    });
+
     it('offers each brokered Connected Account and Pool resource exactly once', () => {
         const setBindingForService = vi.fn();
         const service = { pluginId: 'service.plugin', localId: 'mail' } as const;
@@ -167,6 +184,53 @@ describe('buildNewSessionConnectedServicesSelectionListModel', () => {
         expect(setBindingForService).not.toHaveBeenCalled();
     });
 
+    it('retains a stale catalog resource with recovery instead of silently removing it', () => {
+        const recover = vi.fn();
+        const selection = {
+            source: 'team_resource' as const,
+            resourceId: 'stale-resource',
+            deliveryMode: 'brokered' as const,
+        };
+        const resource = {
+            id: selection.resourceId,
+            teamId: 'team-1',
+            displayName: 'Shared build account',
+            resourceRevision: 8,
+            readiness: { kind: 'available' as const },
+            recoveryAction: null,
+            mayBroker: true,
+            mayReceiveDirect: false,
+            directMaterialState: 'never_delivered' as const,
+            sessionUsePolicy: 'personal_allowed' as const,
+            providerModels: [],
+            sourcePresentation: {
+                kind: 'connected_service' as const,
+                service: { pluginId: 'service.plugin', localId: 'mail' },
+            },
+            connectedServiceSelections: [selection],
+        };
+        const model = buildModel({
+            supportedServiceIds: ['service.plugin/mail'],
+            profileOptionsByServiceId: {},
+            bindingsByServiceId: {},
+            includeNativeAuthOption: false,
+            teamCredentialResources: [resource],
+            teamCredentialResourceCurrentKeys: new Set(),
+            teamNameById: { 'team-1': 'Acme' },
+            onRecoverTeamCredentialResource: recover,
+        });
+
+        const option = firstStaticSection(model).options.find((candidate) => (
+            candidate.id === createTeamResourceServiceOptionId(selection)
+        ));
+        expect(option).toMatchObject({
+            disabled: false,
+            subtitle: 'Acme · teams.unavailable.retry',
+        });
+        option?.onSelect?.();
+        expect(recover).toHaveBeenCalledWith(resource);
+    });
+
     it('keeps a missing retained Team resource selected and unavailable instead of selecting native', () => {
         const binding = {
             source: 'team_resource' as const,
@@ -276,7 +340,7 @@ describe('buildNewSessionConnectedServicesSelectionListModel', () => {
         expect(accountOption).toEqual(expect.objectContaining({
             id: createConnectedServiceOptionId('anthropic', 'work'),
             label: 'work@example.com',
-            subtitle: 'work',
+            subtitle: undefined,
         }));
 
         accountOption?.onSelect?.();
@@ -310,7 +374,7 @@ describe('buildNewSessionConnectedServicesSelectionListModel', () => {
         expect(groupOption).toEqual(expect.objectContaining({
             id: createConnectedServiceGroupOptionId('anthropic', 'team'),
             label: 'Team',
-            subtitle: 'Active work@example.com · work',
+            subtitle: 'Active work@example.com',
         }));
 
         groupOption?.onSelect?.();

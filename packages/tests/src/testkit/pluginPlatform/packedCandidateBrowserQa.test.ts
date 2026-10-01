@@ -318,32 +318,13 @@ describe('packed candidate browser run attestation', () => {
       cliVersion: '1.2.3',
       cliIntegrity: 'sha512-cli',
       cliEntrypoint: '/candidate/happier.mjs',
-      inspectorContributionId: 'inspector-app-native',
-      inspectorWebArtifactDigest: 'sha256:inspector-web',
-      inspectorIosArtifactDigest: 'sha256:inspector-ios',
-      inspectorAndroidArtifactDigest: 'sha256:inspector-android',
-      inspectorRepackContainerName: 'happier_inspector_inspector_app_native',
-      inspectorRepackModulePath: './renderSurface',
-      inspectorRepackExportName: 'renderSurface',
-      inspectorPlatforms: {
-        web: {
-          artifactDigest: 'sha256:inspector-web',
-          builtWith: { bundler: 'vite', version: '7.3.1' },
-          hostUiApiVersion: '1.0.0',
-          compat: { react: '19.2.0', reactNative: '0.83.4' },
-        },
-        ios: {
-          artifactDigest: 'sha256:inspector-ios',
-          builtWith: { bundler: 'repack', version: '5.2.5' },
-          hostUiApiVersion: '1.0.0',
-          compat: { react: '19.2.0', reactNative: '0.83.4' },
-        },
-        android: {
-          artifactDigest: 'sha256:inspector-android',
-          builtWith: { bundler: 'repack', version: '5.2.5' },
-          hostUiApiVersion: '1.0.0',
-          compat: { react: '19.2.0', reactNative: '0.83.4' },
-        },
+      inspectorArtifactId: 'inspector-app-native',
+      inspectorArtifactDigest: 'sha256:inspector-universal',
+      inspectorArtifact: {
+        artifactDigest: 'sha256:inspector-universal',
+        builtWith: { bundler: 'esbuild', version: '0.27.2' },
+        hostUiApiRange: '^1.0.0',
+        executableExports: ['renderSurface'],
       },
     };
 
@@ -572,7 +553,7 @@ describe('packed candidate browser QA preparation', () => {
                 runtime: { state: 'available' },
                 runtimeMode: { kind: 'installedStaticAssets' },
                 artifactGraph: {
-                  contributionId: 'review-web',
+                  artifactId: 'review-web',
                   tier: 'hostedWeb',
                   platform: 'web',
                   digest: publicAuthoring.hostedWeb.digest,
@@ -606,7 +587,7 @@ describe('packed candidate browser QA preparation', () => {
                     'hostedWeb:examples.public-sdk-review-assistant:review-web'
                   ],
                   artifactGraph: {
-                    contributionId: 'review-web',
+                    artifactId: 'review-web',
                     tier: 'hostedWeb',
                     platform: 'web',
                     digest: `sha256:${'c'.repeat(64)}`,
@@ -800,32 +781,12 @@ describe('packed candidate browser QA preparation', () => {
     const assertPackedCliEntrypoint = vi.fn();
     const assertCandidateManifestArtifacts = vi.fn(async () => {});
     const attestPackedInspectorArtifacts = vi.fn(async () => ({
-      contributionId: 'inspector-app-native' as const,
-      webArtifactDigest: 'sha256:web',
-      iosArtifactDigest: 'sha256:ios',
-      androidArtifactDigest: 'sha256:android',
-      repackContainerName: 'happier_inspector_inspector_app_native' as const,
-      repackModulePath: './renderSurface' as const,
-      repackExportName: 'renderSurface' as const,
-      platforms: {
-        web: {
-          artifactDigest: 'sha256:web',
-          builtWith: { bundler: 'vite' as const, version: '7.3.1' },
-          hostUiApiVersion: '1.0.0',
-          compat: { react: '19.2.0', reactNative: '0.83.4' },
-        },
-        ios: {
-          artifactDigest: 'sha256:ios',
-          builtWith: { bundler: 'repack' as const, version: '5.2.5' },
-          hostUiApiVersion: '1.0.0',
-          compat: { react: '19.2.0', reactNative: '0.83.4' },
-        },
-        android: {
-          artifactDigest: 'sha256:android',
-          builtWith: { bundler: 'repack' as const, version: '5.2.5' },
-          hostUiApiVersion: '1.0.0',
-          compat: { react: '19.2.0', reactNative: '0.83.4' },
-        },
+      artifactId: 'inspector-app-native' as const,
+      artifact: {
+        artifactDigest: 'sha256:universal',
+        builtWith: { bundler: 'esbuild' as const, version: '0.27.2' },
+        hostUiApiRange: '^1.0.0',
+        executableExports: ['renderSurface'],
       },
     }));
     const verifiedCandidateRoot = '/materialized/verified-candidate-test';
@@ -917,32 +878,13 @@ describe('packed candidate browser QA preparation', () => {
       cliVersion: '0.9.4',
       cliIntegrity: candidate.cli.integrity,
       cliEntrypoint: MATERIALIZED_CLI_ENTRYPOINT,
-      inspectorContributionId: 'inspector-app-native',
-      inspectorWebArtifactDigest: 'sha256:web',
-      inspectorIosArtifactDigest: 'sha256:ios',
-      inspectorAndroidArtifactDigest: 'sha256:android',
-      inspectorRepackContainerName: 'happier_inspector_inspector_app_native',
-      inspectorRepackModulePath: './renderSurface',
-      inspectorRepackExportName: 'renderSurface',
-      inspectorPlatforms: {
-        web: {
-          artifactDigest: 'sha256:web',
-          builtWith: { bundler: 'vite', version: '7.3.1' },
-          hostUiApiVersion: '1.0.0',
-          compat: { react: '19.2.0', reactNative: '0.83.4' },
-        },
-        ios: {
-          artifactDigest: 'sha256:ios',
-          builtWith: { bundler: 'repack', version: '5.2.5' },
-          hostUiApiVersion: '1.0.0',
-          compat: { react: '19.2.0', reactNative: '0.83.4' },
-        },
-        android: {
-          artifactDigest: 'sha256:android',
-          builtWith: { bundler: 'repack', version: '5.2.5' },
-          hostUiApiVersion: '1.0.0',
-          compat: { react: '19.2.0', reactNative: '0.83.4' },
-        },
+      inspectorArtifactId: 'inspector-app-native',
+      inspectorArtifactDigest: 'sha256:universal',
+      inspectorArtifact: {
+        artifactDigest: 'sha256:universal',
+        builtWith: { bundler: 'esbuild', version: '0.27.2' },
+        hostUiApiRange: '^1.0.0',
+        executableExports: ['renderSurface'],
       },
     });
     expect(attestPackedInspectorArtifacts).toHaveBeenCalledWith({
@@ -1131,32 +1073,12 @@ describe('packed candidate browser QA preparation', () => {
         assertPackedCliEntrypoint: vi.fn(),
         materializePackedCli,
         attestPackedInspectorArtifacts: vi.fn(async () => ({
-          contributionId: 'inspector-app-native' as const,
-          webArtifactDigest: 'sha256:web',
-          iosArtifactDigest: 'sha256:ios',
-          androidArtifactDigest: 'sha256:android',
-          repackContainerName: 'happier_inspector_inspector_app_native' as const,
-          repackModulePath: './renderSurface' as const,
-          repackExportName: 'renderSurface' as const,
-          platforms: {
-            web: {
-              artifactDigest: 'sha256:web',
-              builtWith: { bundler: 'vite' as const, version: '7.3.1' },
-              hostUiApiVersion: '1.0.0',
-              compat: { react: '19.2.0', reactNative: '0.83.4' },
-            },
-            ios: {
-              artifactDigest: 'sha256:ios',
-              builtWith: { bundler: 'repack' as const, version: '5.2.5' },
-              hostUiApiVersion: '1.0.0',
-              compat: { react: '19.2.0', reactNative: '0.83.4' },
-            },
-            android: {
-              artifactDigest: 'sha256:android',
-              builtWith: { bundler: 'repack' as const, version: '5.2.5' },
-              hostUiApiVersion: '1.0.0',
-              compat: { react: '19.2.0', reactNative: '0.83.4' },
-            },
+          artifactId: 'inspector-app-native' as const,
+          artifact: {
+            artifactDigest: 'sha256:universal',
+            builtWith: { bundler: 'esbuild' as const, version: '0.27.2' },
+            hostUiApiRange: '^1.0.0',
+            executableExports: ['renderSurface'],
           },
         })),
       },
@@ -1314,57 +1236,32 @@ describe('packed candidate browser QA preparation', () => {
     expect(materializePackedCli).not.toHaveBeenCalled();
   });
 
-  it('attests every generated Inspector artifact file and exact native Re.Pack identity', async () => {
+  it('attests the generated universal Inspector artifact and its declared export', async () => {
+    const entryPath = 'react-native/inspector-app-native/entry.cjs.bundle';
     const files = new Map<string, Buffer>([
-      ['react-native-web/inspector-app-native/entry.mjs.bundle', Buffer.from('web')],
-      ['react-native/inspector-app-native/ios/ios.bundle', Buffer.from('ios')],
-      ['react-native/inspector-app-native/android/android.bundle', Buffer.from('android')],
+      [entryPath, Buffer.from('universal')],
     ]);
     const digest = (bytes: Uint8Array) =>
       `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
     const graphDigest = (relativePath: string, bytes: Uint8Array) =>
       computePluginUiArtifactFileSetSha256DigestV1([{ relativePath, bytes }]);
     const rawGraph = JSON.stringify({
-      version: 1,
+      version: 2,
       entries: [
         {
-          contributionId: 'inspector-app-native',
+          artifactId: 'inspector-app-native',
           tier: 'reactNative',
-          platform: 'web',
-          digest: graphDigest(
-            'react-native-web/inspector-app-native/entry.mjs.bundle',
-            files.get('react-native-web/inspector-app-native/entry.mjs.bundle')!,
-          ),
-          entry: 'react-native-web/inspector-app-native/entry.mjs.bundle',
+          digest: graphDigest(entryPath, files.get(entryPath)!),
+          entry: entryPath,
           files: [{
-            relativePath: 'react-native-web/inspector-app-native/entry.mjs.bundle',
-            digest: digest(files.get('react-native-web/inspector-app-native/entry.mjs.bundle')!),
-            byteSize: 3,
+            relativePath: entryPath,
+            digest: digest(files.get(entryPath)!),
+            byteSize: files.get(entryPath)!.byteLength,
           }],
-          builtWith: { bundler: 'vite', version: '7.3.1' },
-          hostUiApiVersion: '1.0.0',
-          compat: { react: '19.2.0', reactNative: '0.83.4' },
+          builtWith: { bundler: 'esbuild', version: '0.27.2' },
+          executable: { exports: ['renderSurface'] },
+          hostUiApiRange: '^1.0.0',
         },
-        ...(['ios', 'android'] as const).map((platform) => {
-          const relativePath = `react-native/inspector-app-native/${platform}/${platform}.bundle`;
-          const bytes = files.get(relativePath)!;
-          return {
-            contributionId: 'inspector-app-native',
-            tier: 'reactNative',
-            platform,
-            digest: graphDigest(relativePath, bytes),
-            entry: relativePath,
-            files: [{ relativePath, digest: digest(bytes), byteSize: bytes.byteLength }],
-            builtWith: { bundler: 'repack', version: '5.2.5' },
-            repack: {
-              containerName: 'happier_inspector_inspector_app_native',
-              modulePath: './renderSurface',
-              exportName: 'renderSurface',
-            },
-            hostUiApiVersion: '1.0.0',
-            compat: { react: '19.2.0', reactNative: '0.83.4' },
-          };
-        }),
       ],
     });
     const inspectorArtifactRoot = join(
@@ -1391,50 +1288,12 @@ describe('packed candidate browser QA preparation', () => {
     }, {
       readFile: readInspectorArtifactFile,
     })).resolves.toEqual({
-      contributionId: 'inspector-app-native',
-      webArtifactDigest: graphDigest(
-        'react-native-web/inspector-app-native/entry.mjs.bundle',
-        Buffer.from('web'),
-      ),
-      iosArtifactDigest: graphDigest(
-        'react-native/inspector-app-native/ios/ios.bundle',
-        Buffer.from('ios'),
-      ),
-      androidArtifactDigest: graphDigest(
-        'react-native/inspector-app-native/android/android.bundle',
-        Buffer.from('android'),
-      ),
-      repackContainerName: 'happier_inspector_inspector_app_native',
-      repackModulePath: './renderSurface',
-      repackExportName: 'renderSurface',
-      platforms: {
-        web: {
-          artifactDigest: graphDigest(
-            'react-native-web/inspector-app-native/entry.mjs.bundle',
-            Buffer.from('web'),
-          ),
-          builtWith: { bundler: 'vite', version: '7.3.1' },
-          hostUiApiVersion: '1.0.0',
-          compat: { react: '19.2.0', reactNative: '0.83.4' },
-        },
-        ios: {
-          artifactDigest: graphDigest(
-            'react-native/inspector-app-native/ios/ios.bundle',
-            Buffer.from('ios'),
-          ),
-          builtWith: { bundler: 'repack', version: '5.2.5' },
-          hostUiApiVersion: '1.0.0',
-          compat: { react: '19.2.0', reactNative: '0.83.4' },
-        },
-        android: {
-          artifactDigest: graphDigest(
-            'react-native/inspector-app-native/android/android.bundle',
-            Buffer.from('android'),
-          ),
-          builtWith: { bundler: 'repack', version: '5.2.5' },
-          hostUiApiVersion: '1.0.0',
-          compat: { react: '19.2.0', reactNative: '0.83.4' },
-        },
+      artifactId: 'inspector-app-native',
+      artifact: {
+        artifactDigest: graphDigest(entryPath, Buffer.from('universal')),
+        builtWith: { bundler: 'esbuild', version: '0.27.2' },
+        hostUiApiRange: '^1.0.0',
+        executableExports: ['renderSurface'],
       },
     });
     expect(readInspectorArtifactFile).toHaveBeenCalledWith(
@@ -1443,16 +1302,12 @@ describe('packed candidate browser QA preparation', () => {
   });
 
   it('fails closed when an Inspector graph digest does not match its candidate artifact bytes', async () => {
+    const relativePath = 'react-native/inspector-app-native/entry.cjs.bundle';
     const rawGraph = JSON.stringify({
-      version: 1,
-      entries: (['web', 'ios', 'android'] as const).map((platform) => {
-        const relativePath = platform === 'web'
-          ? 'react-native-web/inspector-app-native/entry.mjs.bundle'
-          : `react-native/inspector-app-native/${platform}/${platform}.bundle`;
-        return {
-          contributionId: 'inspector-app-native',
+      version: 2,
+      entries: [{
+          artifactId: 'inspector-app-native',
           tier: 'reactNative',
-          platform,
           digest: `sha256:${'a'.repeat(64)}`,
           entry: relativePath,
           files: [{
@@ -1460,21 +1315,10 @@ describe('packed candidate browser QA preparation', () => {
             digest: `sha256:${'a'.repeat(64)}`,
             byteSize: 3,
           }],
-          builtWith: {
-            bundler: platform === 'web' ? 'vite' : 'repack',
-            version: platform === 'web' ? '7.3.1' : '5.2.5',
-          },
-          ...(platform === 'web' ? {} : {
-            repack: {
-              containerName: 'happier_inspector_inspector_app_native',
-              modulePath: './renderSurface',
-              exportName: 'renderSurface',
-            },
-          }),
-          hostUiApiVersion: '1.0.0',
-          compat: { react: '19.2.0', reactNative: '0.83.4' },
-        };
-      }),
+          builtWith: { bundler: 'esbuild', version: '0.27.2' },
+          executable: { exports: ['renderSurface'] },
+          hostUiApiRange: '^1.0.0',
+      }],
     });
 
     await expect(attestPackedInspectorArtifacts({
@@ -1489,34 +1333,19 @@ describe('packed candidate browser QA preparation', () => {
   it('rejects a graph digest that does not bind the otherwise valid complete file set', async () => {
     const bytes = Buffer.from('web');
     const fileDigest = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+    const relativePath = 'react-native/inspector-app-native/entry.cjs.bundle';
     const rawGraph = JSON.stringify({
-      version: 1,
-      entries: (['web', 'ios', 'android'] as const).map((platform) => {
-        const relativePath = platform === 'web'
-          ? 'react-native-web/inspector-app-native/entry.mjs.bundle'
-          : `react-native/inspector-app-native/${platform}/${platform}.bundle`;
-        return {
-          contributionId: 'inspector-app-native',
+      version: 2,
+      entries: [{
+          artifactId: 'inspector-app-native',
           tier: 'reactNative',
-          platform,
           digest: `sha256:${'a'.repeat(64)}`,
           entry: relativePath,
           files: [{ relativePath, digest: fileDigest, byteSize: bytes.byteLength }],
-          builtWith: {
-            bundler: platform === 'web' ? 'vite' : 'repack',
-            version: platform === 'web' ? '7.3.1' : '5.2.5',
-          },
-          ...(platform === 'web' ? {} : {
-            repack: {
-              containerName: 'happier_inspector_inspector_app_native',
-              modulePath: './renderSurface',
-              exportName: 'renderSurface',
-            },
-          }),
-          hostUiApiVersion: '1.0.0',
-          compat: { react: '19.2.0', reactNative: '0.83.4' },
-        };
-      }),
+          builtWith: { bundler: 'esbuild', version: '0.27.2' },
+          executable: { exports: ['renderSurface'] },
+          hostUiApiRange: '^1.0.0',
+      }],
     });
 
     await expect(attestPackedInspectorArtifacts({
@@ -1525,7 +1354,7 @@ describe('packed candidate browser QA preparation', () => {
       readFile: vi.fn(async (path: string) => (
         path.endsWith('/ui-artifacts.json') ? Buffer.from(rawGraph) : bytes
       )),
-    })).rejects.toThrow('packed_candidate_inspector_graph_digest_mismatch:web');
+    })).rejects.toThrow('packed_candidate_inspector_graph_digest_mismatch:inspector-app-native');
   });
 
   it('binds the daemon runtime projection to the exact CLI and packed Inspector web graph', () => {
@@ -1544,8 +1373,7 @@ describe('packed candidate browser QA preparation', () => {
                   pluginId: 'happier.inspector',
                   contributionId: 'inspector-renderer',
                   artifactGraph: {
-                    contributionId: 'inspector-app-native',
-                    platform: 'web',
+                    artifactId: 'inspector-app-native',
                     digest: inspectorWebArtifactDigest,
                   },
                   runtime: {
@@ -1553,7 +1381,6 @@ describe('packed candidate browser QA preparation', () => {
                     decision: { state: 'load', reason: 'compatible' },
                     cacheIdentity: {
                       artifactDigest: inspectorWebArtifactDigest,
-                      projectionGeneration: 41,
                     },
                     loadPolicy: { source: 'installedArtifact' },
                   },
@@ -1597,8 +1424,7 @@ describe('packed candidate browser QA preparation', () => {
               entriesById: {
                 'reactNativeBundle:happier.inspector:inspector-renderer': {
                   artifactGraph: {
-                    contributionId: 'inspector-app-native',
-                    platform: 'web',
+                    artifactId: 'inspector-app-native',
                     digest: `sha256:${'c'.repeat(64)}`,
                   },
                   runtime: {
@@ -1606,7 +1432,6 @@ describe('packed candidate browser QA preparation', () => {
                     decision: { state: 'load' },
                     cacheIdentity: {
                       artifactDigest: `sha256:${'c'.repeat(64)}`,
-                      projectionGeneration: 1,
                     },
                     loadPolicy: { source: 'installedArtifact' },
                   },

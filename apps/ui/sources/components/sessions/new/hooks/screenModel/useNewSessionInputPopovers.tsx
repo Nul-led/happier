@@ -9,6 +9,7 @@ import type { ServerScopedMachineGroup } from '@/components/sessions/new/hooks/m
 import type { Machine } from '@/sync/domains/state/storageTypes';
 import { useProfile as useAccountProfile } from '@/sync/store/hooks';
 import { t } from '@/text';
+import { announceAccessibilityMessage } from '@/components/ui/accessibility/announceAccessibilityMessage';
 import { openExternalSessionsResumeIdPickerModal } from '@/components/sessions/external/browse/openExternalSessionsResumeIdPickerModal';
 import { canBrowseExternalSessions, resolveExternalSessionBrowseLockedSource } from '@/components/sessions/external/browse/resolveExternalSessionBrowseLockedSourceOption';
 import type { PluginProjectionV2, SessionAuthoringExecutionTargetV2 } from '@happier-dev/protocol';
@@ -57,6 +58,10 @@ export function useNewSessionInputPopovers(params: Readonly<{
     selectedPath: string;
     setSelectedPath: React.Dispatch<React.SetStateAction<string>>;
     setDraftSelectedPath: (path: string) => void;
+    /** The draft has no folder; the picker marks "No folder". */
+    noFolderSelected: boolean;
+    /** Chooses no folder; absent where no-folder is not offered (Temporary computer). */
+    onSelectNoFolder?: () => void;
     recentPaths: ReadonlyArray<string>;
     usePathPickerSearch: boolean;
     pathPickerSearchQuery: string;
@@ -164,6 +169,7 @@ export function useNewSessionInputPopovers(params: Readonly<{
                 commitDraftOnBlur={true}
                 onSubmitSelectedPath={(nextPath) => {
                     params.setSelectedPath(nextPath);
+                    announceAccessibilityMessage(t('newSession.folder.a11y.set', { path: nextPath }));
                     requestClose();
                 }}
                 recentPaths={params.recentPaths}
@@ -173,6 +179,13 @@ export function useNewSessionInputPopovers(params: Readonly<{
                 favoriteDirectories={params.favoriteDirectories}
                 onChangeFavoriteDirectories={params.setFavoriteDirectories}
                 focusInputOnSelect={false}
+                noFolderOption={params.onSelectNoFolder ? {
+                    selected: params.noFolderSelected,
+                    onSelect: () => {
+                        params.onSelectNoFolder?.();
+                        requestClose();
+                    },
+                } : undefined}
                 machineBrowse={{
                     enabled: true,
                     machineId: params.selectedMachine?.id ?? null,
@@ -189,6 +202,8 @@ export function useNewSessionInputPopovers(params: Readonly<{
     }), [
         modalPortalTarget,
         params.favoriteDirectories,
+        params.noFolderSelected,
+        params.onSelectNoFolder,
         params.pathPickerSearchQuery,
         params.recentPaths,
         params.selectedMachine?.id,

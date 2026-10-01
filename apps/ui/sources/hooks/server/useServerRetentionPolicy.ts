@@ -1,41 +1,48 @@
 import * as React from 'react';
 
-import { useServerFeaturesSnapshotForServerId } from '@/sync/domains/features/featureDecisionRuntime';
 import {
     getCachedServerRetentionPolicy,
     getServerRetentionPolicy,
 } from '@/sync/api/capabilities/serverRetentionPolicyClient';
-import {
-    readServerRetentionPolicy,
-    type ServerRetentionPolicyView,
-} from '@/sync/domains/server/retention/serverRetentionPolicy';
+import type { ServerRetentionPolicyView } from '@/sync/domains/server/retention/serverRetentionPolicy';
 
-export function useServerRetentionPolicy(serverId?: string | null): ServerRetentionPolicyView | null {
+/**
+ * A Home's retention policy as a reader shows it: `loading` until the policy answers (never a
+ * partial verdict meanwhile), `failed` with a retry when it could not be read.
+ */
+export type ServerRetentionPolicyState =
+    | Readonly<{ status: 'loading' }>
+    | Readonly<{ status: 'ready'; policy: ServerRetentionPolicyView }>
+    | Readonly<{ status: 'failed'; retry: () => void }>;
+
+const LOADING: ServerRetentionPolicyState = { status: 'loading' };
+
+function cachedState(serverId: string): ServerRetentionPolicyState {
+    const cached = serverId ? getCachedServerRetentionPolicy(serverId) : null;
+    return cached ? { status: 'ready', policy: cached } : LOADING;
+}
+
+export function useServerRetentionPolicy(serverId?: string | null): ServerRetentionPolicyState {
     const normalizedServerId = String(serverId ?? '').trim();
-    const snapshot = useServerFeaturesSnapshotForServerId(normalizedServerId || null, { enabled: Boolean(normalizedServerId) });
-    const legacy = React.useMemo(
-        () => snapshot.status === 'ready' ? readServerRetentionPolicy(snapshot.features) : null,
-        [snapshot],
-    );
-    const [policy, setPolicy] = React.useState<ServerRetentionPolicyView | null>(
-        () => getCachedServerRetentionPolicy(normalizedServerId || undefined) ?? legacy,
-    );
+    const [state, setState] = React.useState<ServerRetentionPolicyState>(() => cachedState(normalizedServerId));
+    const [attempt, setAttempt] = React.useState(0);
+    const retry = React.useCallback(() => setAttempt((current) => current + 1), []);
 
     React.useEffect(() => {
         if (!normalizedServerId) {
-            setPolicy(null);
+            setState(LOADING);
             return;
         }
         let active = true;
-        const cached = getCachedServerRetentionPolicy(normalizedServerId);
-        setPolicy(cached ?? legacy);
-        void getServerRetentionPolicy({ serverId: normalizedServerId }).then((next) => {
-            if (active) setPolicy(next ?? legacy);
+        setState(cachedState(normalizedServerId));
+        void getServerRetentionPolicy({ serverId: normalizedServerId, force: attempt > 0 }).then((read) => {
+            if (!active) return;
+            setState(read.status === 'ready' ? { status: 'ready', policy: read.policy } : { status: 'failed', retry });
         });
         return () => {
             active = false;
         };
-    }, [legacy, normalizedServerId]);
+    }, [attempt, normalizedServerId, retry]);
 
-    return policy;
+    return state;
 }
